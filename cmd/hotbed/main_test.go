@@ -11,7 +11,10 @@ import (
 	"testing"
 
 	"github.com/semistrict/hotbed/internal/api"
+	"google.golang.org/protobuf/encoding/protojson"
+
 	"github.com/semistrict/hotbed/internal/controller"
+	pb "github.com/semistrict/hotbed/internal/gen/hotbed/v1"
 	"github.com/semistrict/hotbed/internal/statedir"
 	"github.com/semistrict/hotbed/internal/tailnet"
 	"github.com/semistrict/hotbed/internal/tailnet/tailnettest"
@@ -94,7 +97,7 @@ func TestUnknownCommandIsInvalidArgs(t *testing.T) {
 }
 
 func TestRunUninitializedDir(t *testing.T) {
-	code, out := hotbed(t, fakeDeps(), "run", t.TempDir())
+	code, out := hotbed(t, fakeDeps(), "serve", t.TempDir())
 	if code != exitError || out.Error.Code != api.CodeNotInitialized {
 		t.Errorf("exit %d, error %+v; want exit 1, NOT_INITIALIZED", code, out.Error)
 	}
@@ -164,11 +167,11 @@ func TestNodesAgainstRunningController(t *testing.T) {
 	if code != exitOK {
 		t.Fatalf("nodes: exit %d, %+v", code, out.Error)
 	}
-	var data api.NodesResponse
-	if err := json.Unmarshal(out.Data, &data); err != nil {
+	data := &pb.ListNodesResponse{}
+	if err := protojson.Unmarshal(out.Data, data); err != nil {
 		t.Fatal(err)
 	}
-	if data.ClusterID != cluster.ClusterID || len(data.Nodes) != 0 {
-		t.Errorf("nodes data = %+v, want cluster %s with no nodes", data, cluster.ClusterID)
+	if data.ClusterId != cluster.ClusterID || len(data.Nodes) != 0 {
+		t.Errorf("nodes data = %v, want cluster %s with no nodes", data, cluster.ClusterID)
 	}
 }

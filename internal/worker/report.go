@@ -2,7 +2,6 @@ package worker
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"log/slog"
 	"os"
@@ -11,7 +10,9 @@ import (
 	"strconv"
 	"syscall"
 
-	"github.com/semistrict/hotbed/internal/api"
+	"google.golang.org/protobuf/encoding/protojson"
+
+	pb "github.com/semistrict/hotbed/internal/gen/hotbed/v1"
 	"github.com/semistrict/hotbed/internal/sysinfo"
 	"github.com/semistrict/hotbed/internal/unit"
 )
@@ -20,55 +21,58 @@ const maxReportItems = 500
 
 // Report is the worker's account of itself for the controller, with the
 // finished commands and events it has not had acknowledged.
-func (e *Engine) Report(clusterID string) (api.Report, error) {
+func (e *Engine) Report(clusterID string) (*pb.ReportRequest, error) {
 	items, err := e.db.pending(maxReportItems)
 	if err != nil {
-		return api.Report{}, err
+		return nil, err
 	}
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	e.forgetReleased()
-	r := api.Report{
-		ClusterID: clusterID, Resources: e.resources, Usage: e.usage,
-		DiskBytes: e.diskBytes, Disk: e.disk, Storage: e.cfg.Store.Kind(), OOMKills: e.oomKills,
-		Bases: []api.Base{}, Workspaces: []api.Workspace{}, Commands: []api.Command{},
-		Finished: []api.Sequenced[api.FinishedCommand]{}, Events: []api.Sequenced[api.WorkerEvent]{},
+	r := &pb.ReportRequest{
+		ClusterId: clusterID, Resources: clone(e.resources), Usage: clone(e.usage),
+		DiskBytes: e.diskBytes, Disk: clone(e.disk), Storage: e.cfg.Store.Kind(), OomKills: e.oomKills,
 	}
 	for _, c := range e.commands {
-		if c.State == api.CommandRunning || c.State == api.CommandParked {
-			r.Reserved += c.Limits.MemoryLowBytes
+		if s := c.cmd().State; s == running || s == parked {
+			r.ReservedMemoryBytes += c.cmd().Limits.MemoryLowBytes
 		}
-		if c.Kind == "freshen" {
-			continue
+		if c.cmd().Kind != "freshen" {
+			r.Commands = append(r.Commands, clone(c.cmd()))
 		}
-		r.Commands = append(r.Commands, c.Command)
 	}
 	for _, b := range e.bases {
-		if b.State == api.BaseBuilding {
+		if b.State == building {
 			b.Progress = e.baseProgress(b)
 		}
-		r.Bases = append(r.Bases, *b)
+		r.Bases = append(r.Bases, clone(b))
 	}
 	for _, w := range e.workspaces {
-		r.Workspaces = append(r.Workspaces, w.Workspace)
+		r.Workspaces = append(r.Workspaces, clone(w.ws()))
 	}
 	sort.Slice(r.Commands, func(i, j int) bool { return r.Commands[i].QueuedAt < r.Commands[j].QueuedAt })
-	sort.Slice(r.Bases, func(i, j int) bool { return r.Bases[i].ID < r.Bases[j].ID })
-	sort.Slice(r.Workspaces, func(i, j int) bool { return r.Workspaces[i].ID < r.Workspaces[j].ID })
+	sort.Slice(r.Bases, func(i, j int) bool { return r.Bases[i].Id < r.Bases[j].Id })
+	sort.Slice(r.Workspaces, func(i, j int) bool { return r.Workspaces[i].Id < r.Workspaces[j].Id })
 	for _, it := range items {
 		switch it.kind {
 		case "finished":
-			var f api.FinishedCommand
-			if err := json.Unmarshal(it.doc, &f); err != nil {
-				return api.Report{}, fmt.Errorf("outbox %d: %w", it.seq, err)
+			f := &pb.FinishedCommand{}
+			if err := protojson.Unmarshal(it.doc, f); err != nil {
+				return nil, fmt.Errorf("outbox %d: %w", it.seq, err)
 			}
-			r.Finished = append(r.Finished, api.Sequenced[api.FinishedCommand]{Seq: it.seq, Item: f})
+			r.Finished = append(r.Finished, &pb.SequencedFinished{Seq: it.seq, Item: f})
 		case "event":
-			var ev api.WorkerEvent
-			if err := json.Unmarshal(it.doc, &ev); err != nil {
-				return api.Report{}, fmt.Errorf("outbox %d: %w", it.seq, err)
+			ev := &pb.WorkerEvent{}
+			if err := protojson.Unmarshal(it.doc, ev); err != nil {
+				return nil, fmt.Errorf("outbox %d: %w", it.seq, err)
 			}
-			r.Events = append(r.Events, api.Sequenced[api.WorkerEvent]{Seq: it.seq, Item: ev})
+			r.Events = append(r.Events, &pb.SequencedEvent{Seq: it.seq, Item: ev})
+		case "session":
+			ev := &pb.SessionEvent{}
+			if err := protojson.Unmarshal(it.doc, ev); err != nil {
+				return nil, fmt.Errorf("outbox %d: %w", it.seq, err)
+			}
+			r.SessionEvents = append(r.SessionEvents, &pb.SequencedSessionEvent{Seq: it.seq, Item: ev})
 		}
 	}
 	return r, nil
@@ -85,14 +89,28 @@ func (e *Engine) Acknowledged(seq int64) {
 }
 
 // Command returns a command this node has, live or recently ended.
-func (e *Engine) Command(id string) (api.Command, bool) {
+func (e *Engine) Command(id string) (*pb.Command, bool) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	c, ok := e.commands[id]
 	if !ok {
-		return api.Command{}, false
+		return nil, false
 	}
-	return c.Command, true
+	return clone(c.cmd()), true
+}
+
+// Commands lists the commands this node has, live or recently ended.
+func (e *Engine) Commands() []*pb.Command {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	out := []*pb.Command{}
+	for _, c := range e.commands {
+		if c.cmd().Kind != "freshen" {
+			out = append(out, clone(c.cmd()))
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].QueuedAt < out[j].QueuedAt })
+	return out
 }
 
 // Follow marks a client as reading a command's output, so an attached
@@ -113,7 +131,7 @@ func (e *Engine) Follow(id string) (string, func(), error) {
 	}
 	path := e.logPath(id)
 	if _, err := os.Stat(path); err != nil {
-		return "", nil, api.Errorf(api.CodeNotFound, "no command %s on this node", id)
+		return "", nil, notFound("command", id)
 	}
 	return path, func() {}, nil
 }
@@ -123,7 +141,7 @@ func (e *Engine) Live(id string) bool {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	c, ok := e.commands[id]
-	return ok && c.State.Live()
+	return ok && live(c.cmd().State)
 }
 
 func lookupUser(name string) (*syscall.Credential, string, error) {
@@ -162,7 +180,7 @@ func (Systemd) Stop(ctx context.Context, name string) error   { return unit.Stop
 // Linux measures the node from /proc.
 type Linux struct{ cpu sysinfo.CPU }
 
-func (*Linux) Resources() (api.Resources, error)  { return sysinfo.Resources() }
+func (*Linux) Resources() (*pb.Resources, error)  { return sysinfo.Resources() }
 func (*Linux) Meminfo() (sysinfo.Mem, error)      { return sysinfo.Meminfo() }
 func (*Linux) Pressure(r string) (float64, error) { return sysinfo.Pressure(r) }
 func (l *Linux) CPUBusy() (float64, error)        { return l.cpu.Busy() }

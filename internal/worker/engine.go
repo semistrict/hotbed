@@ -2,7 +2,6 @@ package worker
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"log/slog"
 	"os"
@@ -12,7 +11,10 @@ import (
 	"syscall"
 	"time"
 
+	"google.golang.org/protobuf/proto"
+
 	"github.com/semistrict/hotbed/internal/api"
+	pb "github.com/semistrict/hotbed/internal/gen/hotbed/v1"
 	"github.com/semistrict/hotbed/internal/storage"
 	"github.com/semistrict/hotbed/internal/sysinfo"
 	"github.com/semistrict/hotbed/internal/unit"
@@ -34,7 +36,7 @@ const (
 	keepReleased  = 10 * time.Minute
 )
 
-// Units starts and controls commands; *systemd is the real one.
+// Units starts and controls commands; Systemd is the real one.
 type Units interface {
 	Start(ctx context.Context, s unit.Spec) error
 	Status(ctx context.Context, name string) (unit.State, error)
@@ -45,9 +47,9 @@ type Units interface {
 	Stop(ctx context.Context, name string) error
 }
 
-// System measures the node; *linuxSystem is the real one.
+// System measures the node; Linux is the real one.
 type System interface {
-	Resources() (api.Resources, error)
+	Resources() (*pb.Resources, error)
 	Meminfo() (sysinfo.Mem, error)
 	Pressure(resource string) (float64, error)
 	CPUBusy() (float64, error)
@@ -70,7 +72,8 @@ type EngineConfig struct {
 	Now            func() time.Time
 }
 
-// Engine is a worker's bases, workspaces and commands.
+// Engine is a worker's bases, workspaces and commands. The messages it
+// holds are its own; it hands out clones.
 type Engine struct {
 	cfg  EngineConfig
 	db   *db
@@ -78,15 +81,15 @@ type Engine struct {
 	home string
 
 	mu         sync.Mutex
-	repos      map[string]api.Repo
-	bases      map[string]*api.Base
+	repos      map[string]*pb.Repo
+	bases      map[string]*pb.Base
 	workspaces map[string]*workspace
 	commands   map[string]*command
-	usage      api.NodeUsage
-	disk       api.DiskUsage
-	oomKills   int64
+	usage      *pb.NodeUsage
+	disk       *pb.DiskUsage
 	diskBytes  int64
-	resources  api.Resources
+	oomKills   int64
+	resources  *pb.Resources
 	heads      map[string]remoteHead
 
 	kick  chan struct{} // something changed: report soon
@@ -100,25 +103,15 @@ type remoteHead struct {
 
 // workspace is a workspace and what only the worker needs about it.
 type workspace struct {
-	api.Workspace
-	Volume   string `json:"volume"`
-	BaseSnap string `json:"baseSnap"`
-	sync     sync.Mutex
+	rec  *pb.WorkspaceRecord
+	sync sync.Mutex // one sync at a time
 }
+
+func (w *workspace) ws() *pb.Workspace { return w.rec.Workspace }
 
 // command is a command and what only the worker needs about it.
 type command struct {
-	api.Command
-	RepoID   string    `json:"repoID"`
-	Agent    string    `json:"agent"`
-	Volume   string    `json:"volume"`
-	Dir      string    `json:"dir"`
-	Env      []string  `json:"env"`
-	BaseID   string    `json:"baseID,omitempty"` // set for a freshen
-	Parks    int       `json:"parks"`
-	ParkedAt time.Time `json:"parkedAt"`
-	Peak     int64     `json:"peak"`
-	Cgroup   string    `json:"cgroup"`
+	rec *pb.CommandRecord
 
 	cpuNanos   uint64
 	cpuAt      time.Time
@@ -126,7 +119,12 @@ type command struct {
 	lastFollow time.Time
 }
 
-func (c *command) unitName() string { return "hotbed-" + c.ID }
+func (c *command) cmd() *pb.Command { return c.rec.Command }
+func (c *command) unitName() string { return "hotbed-" + c.cmd().Id }
+
+func live(s pb.CommandState) bool {
+	return s == pb.CommandState_COMMAND_STATE_QUEUED || s == pb.CommandState_COMMAND_STATE_RUNNING || s == pb.CommandState_COMMAND_STATE_PARKED
+}
 
 // NewEngine loads the worker's state from dir.
 func NewEngine(ctx context.Context, cfg EngineConfig) (*Engine, error) {
@@ -148,8 +146,9 @@ func NewEngine(ctx context.Context, cfg EngineConfig) (*Engine, error) {
 	}
 	e := &Engine{
 		cfg: cfg, db: d, cred: cred, home: home,
-		repos: map[string]api.Repo{}, bases: map[string]*api.Base{},
+		repos: map[string]*pb.Repo{}, bases: map[string]*pb.Base{},
 		workspaces: map[string]*workspace{}, commands: map[string]*command{},
+		usage: &pb.NodeUsage{}, disk: &pb.DiskUsage{},
 		heads: map[string]remoteHead{}, kick: make(chan struct{}, 1), repoc: make(chan struct{}, 1),
 	}
 	if e.resources, err = cfg.System.Resources(); err != nil {
@@ -164,36 +163,23 @@ func NewEngine(ctx context.Context, cfg EngineConfig) (*Engine, error) {
 }
 
 func (e *Engine) load() error {
-	if err := e.db.all("base", func(doc []byte) error {
-		var b api.Base
-		if err := json.Unmarshal(doc, &b); err != nil {
-			return err
-		}
-		e.bases[b.ID] = &b
-		return nil
+	if err := e.db.all("base", func() proto.Message { return &pb.Base{} }, func(m proto.Message) {
+		b := m.(*pb.Base)
+		e.bases[b.Id] = b
 	}); err != nil {
 		return err
 	}
-	if err := e.db.all("workspace", func(doc []byte) error {
-		w := &workspace{}
-		if err := json.Unmarshal(doc, w); err != nil {
-			return err
-		}
-		e.workspaces[w.ID] = w
-		return nil
+	if err := e.db.all("workspace", func() proto.Message { return &pb.WorkspaceRecord{} }, func(m proto.Message) {
+		r := m.(*pb.WorkspaceRecord)
+		e.workspaces[r.Workspace.Id] = &workspace{rec: r}
 	}); err != nil {
 		return err
 	}
-	return e.db.all("command", func(doc []byte) error {
-		c := &command{}
-		if err := json.Unmarshal(doc, c); err != nil {
-			return err
-		}
+	return e.db.all("command", func() proto.Message { return &pb.CommandRecord{} }, func(m proto.Message) {
+		r := m.(*pb.CommandRecord)
 		// A command that was running when the worker stopped is still a
 		// systemd unit; the next tick reads how it is doing.
-		c.lastFollow = e.cfg.Now()
-		e.commands[c.ID] = c
-		return nil
+		e.commands[r.Command.Id] = &command{rec: r, lastFollow: e.now()}
 	})
 }
 
@@ -201,7 +187,8 @@ func (e *Engine) load() error {
 func (e *Engine) Close() error { return e.db.close() }
 
 // Run drives the node until ctx ends: commands every second, samples every
-// report interval, bases and disk usage less often.
+// report interval, bases when repos change and every 30 seconds, disk
+// usage every two minutes.
 func (e *Engine) Run(ctx context.Context) {
 	tick := time.NewTicker(time.Second)
 	defer tick.Stop()
@@ -244,44 +231,45 @@ func (e *Engine) changed() {
 
 func (e *Engine) now() time.Time { return e.cfg.Now() }
 
-func (e *Engine) stamp() string { return e.now().UTC().Format(time.RFC3339Nano) }
+func (e *Engine) nowMs() int64 { return e.now().UnixMilli() }
 
 // event queues an event for the controller. Call with e.mu held.
-func (e *Engine) event(kind, text string, ref *api.EventRef) {
-	ev := api.WorkerEvent{At: e.now(), Kind: kind, Text: text, Ref: ref}
-	if _, err := e.db.enqueue("event", ev); err != nil {
+func (e *Engine) event(kind, text string, ref *pb.EventRef) {
+	if _, err := e.db.enqueue("event", &pb.WorkerEvent{At: e.nowMs(), Kind: kind, Text: text, Ref: ref}); err != nil {
 		slog.Error("queue event", "err", err)
 	}
 	e.changed()
 }
 
-func (e *Engine) saveBase(b *api.Base) {
-	if err := e.db.put("base", b.ID, b); err != nil {
-		slog.Error("save base", "base", b.ID, "err", err)
+func ref(kind, id string) *pb.EventRef { return &pb.EventRef{Type: kind, Id: id} }
+
+func (e *Engine) saveBase(b *pb.Base) {
+	if err := e.db.put("base", b.Id, b); err != nil {
+		slog.Error("save base", "base", b.Id, "err", err)
 	}
 }
 
 func (e *Engine) saveWorkspace(w *workspace) {
-	if err := e.db.put("workspace", w.ID, w); err != nil {
-		slog.Error("save workspace", "workspace", w.ID, "err", err)
+	if err := e.db.put("workspace", w.ws().Id, w.rec); err != nil {
+		slog.Error("save workspace", "workspace", w.ws().Id, "err", err)
 	}
 }
 
 func (e *Engine) saveCommand(c *command) {
-	if err := e.db.put("command", c.ID, c); err != nil {
-		slog.Error("save command", "command", c.ID, "err", err)
+	if err := e.db.put("command", c.cmd().Id, c.rec); err != nil {
+		slog.Error("save command", "command", c.cmd().Id, "err", err)
 	}
 }
 
 // SetRepos is what the controller says this node hosts.
-func (e *Engine) SetRepos(repos []api.Repo) {
+func (e *Engine) SetRepos(repos []*pb.Repo) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
-	next := map[string]api.Repo{}
+	next := map[string]*pb.Repo{}
 	changed := len(repos) != len(e.repos)
 	for _, r := range repos {
-		next[r.ID] = r
-		if old, ok := e.repos[r.ID]; !ok || old.URL != r.URL || old.Branch != r.Branch || !slices.Equal(old.Freshen, r.Freshen) {
+		next[r.Id] = r
+		if old, ok := e.repos[r.Id]; !ok || old.Url != r.Url || old.Branch != r.Branch || !slices.Equal(old.Freshen, r.Freshen) {
 			changed = true
 		}
 	}
@@ -317,11 +305,11 @@ func (e *Engine) sample() {
 	}
 	e.mu.Lock()
 	e.oomKills = oom
-	e.usage = api.NodeUsage{
-		CPUBusy:         busy,
+	e.usage = &pb.NodeUsage{
+		CpuBusy:         busy,
 		MemoryUsedBytes: mem.Used(),
 		SwapUsedBytes:   mem.SwapTotal - mem.SwapFree,
-		CPUPressure:     cpuP,
+		CpuPressure:     cpuP,
 		MemoryPressure:  memP,
 	}
 	e.mu.Unlock()
@@ -339,11 +327,11 @@ func (e *Engine) measureDisk(ctx context.Context) {
 	e.mu.Lock()
 	vols := map[string]string{}
 	for _, b := range e.bases {
-		vols["b:"+b.ID] = baseVolume(b.RepoID, b.Generation)
+		vols["b:"+b.Id] = baseVolume(b.RepoId, b.Generation)
 	}
 	for _, w := range e.workspaces {
-		if w.State != api.WorkspaceReleased {
-			vols["w:"+w.ID] = w.Volume
+		if w.ws().State != pb.WorkspaceState_WORKSPACE_STATE_RELEASED {
+			vols["w:"+w.ws().Id] = w.rec.Volume
 		}
 	}
 	e.mu.Unlock()
@@ -360,23 +348,25 @@ func (e *Engine) measureDisk(ctx context.Context) {
 	defer e.mu.Unlock()
 	var bases, forks int64
 	for _, b := range e.bases {
-		if u, ok := use["b:"+b.ID]; ok {
+		if u, ok := use["b:"+b.Id]; ok {
 			b.SizeBytes = u.Referenced
 		}
-		if b.State != api.BaseStale {
+		if b.State != pb.BaseState_BASE_STATE_STALE {
 			bases += b.SizeBytes
 		}
 	}
 	for _, w := range e.workspaces {
-		if u, ok := use["w:"+w.ID]; ok {
-			w.ExclusiveBytes = u.Exclusive
-			w.SharedBytes = max(0, u.Referenced-u.Exclusive)
+		ws := w.ws()
+		if u, ok := use["w:"+ws.Id]; ok {
+			ws.ExclusiveBytes = u.Exclusive
+			ws.SharedBytes = max(0, u.Referenced-u.Exclusive)
 		}
-		if w.State != api.WorkspaceReleased {
-			forks += w.ExclusiveBytes
+		if ws.State != pb.WorkspaceState_WORKSPACE_STATE_RELEASED {
+			forks += ws.ExclusiveBytes
 		}
 	}
-	other := max(0, sp.Size-sp.Free-bases-forks)
 	e.diskBytes = sp.Size
-	e.disk = api.DiskUsage{BasesBytes: bases, ForksExclusiveBytes: forks, OtherBytes: other, FreeBytes: sp.Free}
+	e.disk = &pb.DiskUsage{BasesBytes: bases, ForksExclusiveBytes: forks, OtherBytes: max(0, sp.Size-sp.Free-bases-forks), FreeBytes: sp.Free}
 }
+
+func clone[T proto.Message](m T) T { return proto.Clone(m).(T) }

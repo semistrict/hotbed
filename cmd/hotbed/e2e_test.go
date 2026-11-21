@@ -9,13 +9,21 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
+	"sync"
 	"testing"
 	"time"
+
+	"connectrpc.com/connect/v2/connecthttp"
+	"google.golang.org/protobuf/encoding/protojson"
+	"google.golang.org/protobuf/proto"
 
 	"github.com/semistrict/hotbed/internal/api"
 	"github.com/semistrict/hotbed/internal/controller"
 	"github.com/semistrict/hotbed/internal/fake"
+	pb "github.com/semistrict/hotbed/internal/gen/hotbed/v1"
+	"github.com/semistrict/hotbed/internal/gen/hotbed/v1/hotbedv1connect"
 	"github.com/semistrict/hotbed/internal/httpx"
 	"github.com/semistrict/hotbed/internal/statedir"
 	"github.com/semistrict/hotbed/internal/tailnet"
@@ -26,17 +34,33 @@ import (
 var asahi = tailnet.Peer{NodeID: "nAsahi", Hostname: "asahimbp", Login: "ramon@"}
 
 // cluster is a controller and one worker in this process: the real
-// controller, engine and CLI, with fakes only where Linux and root would be
-// needed (volumes are copied, commands are local processes).
+// controller, engine and CLI over Connect, with fakes only where Linux and
+// root would be needed (volumes are copied, commands are local processes).
 type cluster struct {
 	t        *testing.T
-	tn       *tailnettest.Fake
 	id       string
-	ctrl     string // controller host:port
+	server   *controller.Server
 	engine   *worker.Engine
-	sys      *fake.System
+	asWorker hotbedv1connect.ClusterServiceClient
 	cli      deps
-	asWorker *api.Client
+	clock    *clock
+}
+
+type clock struct {
+	mu     sync.Mutex
+	offset time.Duration
+}
+
+func (c *clock) Now() time.Time {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return time.Now().Add(c.offset)
+}
+
+func (c *clock) advance(d time.Duration) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.offset += d
 }
 
 func newCluster(t *testing.T) *cluster {
@@ -57,75 +81,66 @@ func newCluster(t *testing.T) *cluster {
 	}
 	t.Cleanup(func() { store.Close() })
 
-	sys := fake.NewSystem()
 	eng, err := worker.NewEngine(t.Context(), worker.EngineConfig{
 		Dir: filepath.Join(t.TempDir(), "worker"), NodeID: asahi.NodeID, Host: asahi.Hostname,
-		Store: &fake.Store{Root: t.TempDir()}, Units: &fake.Units{}, System: sys,
+		Store: &fake.Store{Root: t.TempDir()}, Units: &fake.Units{}, System: fake.NewSystem(),
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { eng.Close() })
-	workerSrv := httptest.NewServer(httpx.Owner(tn, "ramon@", eng.Handler()))
+	workerSrv := httptest.NewServer(workerHandler(tn, eng))
 	t.Cleanup(workerSrv.Close)
 
-	ctrlSrv := httptest.NewServer(controller.NewServer(controller.ServerConfig{
-		Store: store, Identifier: tn, Cluster: *cfg.Controller, Controller: "ubu1",
+	clk := &clock{}
+	server := controller.NewServer(controller.ServerConfig{
+		Store: store, Identifier: tn, Cluster: *cfg.Controller, Controller: "ubu1", Now: clk.Now,
 		Workers:    tn.Client(ubu1.Peer),
 		WorkerAddr: func(string) string { return strings.TrimPrefix(workerSrv.URL, "http://") },
-	}).Handler())
+	})
+	ctrlSrv := httptest.NewServer(server.Handler())
 	t.Cleanup(ctrlSrv.Close)
 	ctrl := strings.TrimPrefix(ctrlSrv.URL, "http://")
 
-	asWorker, err := api.NewClient(ctrl, tn.Client(asahi))
+	asWorker, _, err := api.Controller(ctrl, tn.Client(asahi))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := asWorker.Join(t.Context()); err != nil {
+	if _, err := asWorker.Join(t.Context(), &pb.JoinRequest{}); err != nil {
 		t.Fatal(err)
 	}
 	ctx, cancel := context.WithCancel(t.Context())
 	done := make(chan struct{})
 	go func() { eng.Run(ctx); close(done) }()
+	go func() { worker.Reports(ctx, eng, asWorker, init.ClusterID) }()
 	t.Cleanup(func() { cancel(); <-done })
 
-	c := &cluster{t: t, tn: tn, id: init.ClusterID, ctrl: ctrl, engine: eng, sys: sys, asWorker: asWorker}
-	c.cli = deps{tailnet: tn, http: tn.Client(laptop), stream: tn.Client(laptop)}
 	t.Setenv("HOTBED_CONTROLLER", ctrl)
-	return c
+	return &cluster{
+		t: t, id: init.ClusterID, server: server, engine: eng, asWorker: asWorker, clock: clk,
+		cli: deps{
+			// The CLI runs on the laptop: its tailnet says so, and its calls
+			// come from the laptop.
+			tailnet: tailnettest.New(tailnet.Self{Peer: laptop}),
+			http:    tn.Client(laptop), stream: tn.Client(laptop), cache: t.TempDir(),
+		},
+	}
 }
 
-// report sends the worker's report, as its report loop does.
-func (c *cluster) report() {
-	c.t.Helper()
-	r, err := c.engine.Report(c.id)
-	if err != nil {
-		c.t.Fatal(err)
-	}
-	reply, err := c.asWorker.Report(c.t.Context(), r)
-	if err != nil {
-		c.t.Fatal(err)
-	}
-	c.engine.Acknowledged(reply.Ack)
-	c.engine.SetRepos(reply.Repos)
-}
-
-// eventually reports until cond holds; the engine works on its own clock.
+// eventually waits for cond; the engine and its reports run on their own.
 func (c *cluster) eventually(what string, cond func() bool) {
 	c.t.Helper()
 	deadline := time.Now().Add(30 * time.Second)
 	for time.Now().Before(deadline) {
-		c.report()
 		if cond() {
 			return
 		}
-		time.Sleep(100 * time.Millisecond)
+		time.Sleep(50 * time.Millisecond)
 	}
 	c.t.Fatalf("timed out waiting for %s", what)
 }
 
-// hotbed runs the CLI against the cluster and returns its exit status,
-// stdout and stderr.
+// hotbed runs the CLI and returns its exit status, stdout and stderr.
 func (c *cluster) hotbed(args ...string) (int, string, string) {
 	c.t.Helper()
 	var stdout, stderr bytes.Buffer
@@ -135,8 +150,9 @@ func (c *cluster) hotbed(args ...string) (int, string, string) {
 	return code, stdout.String(), stderr.String()
 }
 
-// envelope runs the CLI and decodes a successful envelope's data into v.
-func (c *cluster) envelope(v any, args ...string) {
+// ok runs the CLI, expects a successful envelope, and decodes its data
+// into m (a protobuf message, or anything JSON).
+func (c *cluster) ok(m any, args ...string) {
 	c.t.Helper()
 	code, stdout, stderr := c.hotbed(args...)
 	var out output
@@ -146,14 +162,44 @@ func (c *cluster) envelope(v any, args ...string) {
 	if code != 0 || !out.OK {
 		c.t.Fatalf("hotbed %v: exit %d, error %+v", args, code, out.Error)
 	}
-	if v != nil {
+	switch v := m.(type) {
+	case nil:
+	case proto.Message:
+		if err := protojson.Unmarshal(out.Data, v); err != nil {
+			c.t.Fatal(err)
+		}
+	default:
 		if err := json.Unmarshal(out.Data, v); err != nil {
 			c.t.Fatal(err)
 		}
 	}
 }
 
-func git(t *testing.T, dir string, args ...string) string {
+// fails runs the CLI and returns the error of the envelope it printed.
+func (c *cluster) fails(args ...string) (int, *api.Error) {
+	c.t.Helper()
+	code, stdout, _ := c.hotbed(args...)
+	var out output
+	if err := json.Unmarshal([]byte(stdout), &out); err != nil || out.OK {
+		c.t.Fatalf("hotbed %v printed %q, want an error envelope", args, stdout)
+	}
+	return code, out.Error
+}
+
+// warmRepo registers a repo and waits for its first base.
+func (c *cluster) warmRepo(origin string) {
+	c.t.Helper()
+	c.ok(nil, "repo", "add", "app", origin, "--freshen", freshen)
+	c.eventually("the controller to see a warm base", func() bool {
+		snap, err := c.asWorker.GetSnapshot(c.t.Context(), &pb.GetSnapshotRequest{})
+		if err != nil {
+			c.t.Fatal(err)
+		}
+		return len(snap.Bases) == 1 && snap.Bases[0].State == pb.BaseState_BASE_STATE_WARM
+	})
+}
+
+func gitIn(t *testing.T, dir string, args ...string) string {
 	t.Helper()
 	cmd := exec.Command("git", args...)
 	cmd.Dir = dir
@@ -179,187 +225,238 @@ func write(t *testing.T, path, data string) {
 // into target/ and keeps a cache in the workspace's cache directory.
 func upstream(t *testing.T) string {
 	dir := t.TempDir()
-	git(t, dir, "init", "--quiet", "-b", "main")
+	gitIn(t, dir, "init", "--quiet", "-b", "main")
 	write(t, filepath.Join(dir, "src/lib.txt"), "base\n")
 	write(t, filepath.Join(dir, "src/keep.txt"), "keep\n")
 	write(t, filepath.Join(dir, ".gitignore"), "target/\n")
-	git(t, dir, "add", "-A")
-	git(t, dir, "commit", "--quiet", "-m", "First commit")
+	gitIn(t, dir, "add", "-A")
+	gitIn(t, dir, "commit", "--quiet", "-m", "First commit")
 	return dir
 }
 
 const freshen = `mkdir -p target "$XDG_CACHE_HOME" && cp -R src target/ && echo "   Compiling app v0.1.0 (/work/app)" && echo warm > "$XDG_CACHE_HOME/marker"`
 
-func TestEndToEnd(t *testing.T) {
+func TestSessionWithSyncedCheckout(t *testing.T) {
 	c := newCluster(t)
 	origin := upstream(t)
+	c.warmRepo(origin)
 
-	var repo api.Repo
-	c.envelope(&repo, "repo", "add", "app", origin, "--freshen", freshen)
-	if repo.ID != "app" || len(repo.Freshen) != 1 {
-		t.Fatalf("repo add = %+v", repo)
+	sess := &pb.Session{}
+	c.ok(sess, "session", "start")
+	if !sessionNameRE.MatchString(sess.Id) {
+		t.Fatalf("session name %q is not adjective-noun", sess.Id)
 	}
+	S := sess.Id
 
-	// The worker learns of the repo from its next report and builds g1.
-	var bases []api.Base
-	c.eventually("a warm base", func() bool {
-		r, err := c.engine.Report(c.id)
-		if err != nil {
-			t.Fatal(err)
-		}
-		bases = r.Bases
-		return len(bases) == 1 && bases[0].State == api.BaseWarm
-	})
-	if b := bases[0]; b.Generation != 1 || !b.Cold || b.Message != "First commit" || b.Units != 1 {
-		t.Errorf("base = %+v", b)
-	}
-
-	var ws api.Workspace
-	c.envelope(&ws, "ws", "new", "app", "--agent", "claude/test")
-	if ws.RepoID != "app" || ws.NodeID != asahi.NodeID || ws.Path != "/work/app" || ws.Agent != "claude/test" {
-		t.Fatalf("ws new = %+v", ws)
-	}
-
-	// An agent's checkout with an uncommitted edit and a new file.
 	agent := filepath.Join(t.TempDir(), "agent")
-	git(t, filepath.Dir(agent), "clone", "--quiet", origin, agent)
+	gitIn(t, filepath.Dir(agent), "clone", "--quiet", origin, agent)
 	write(t, filepath.Join(agent, "src/lib.txt"), "edited\n")
 	write(t, filepath.Join(agent, "src/new.txt"), "new\n")
 
-	code, stdout, stderr := c.hotbed("exec", ws.ID, "--dir", agent, "--", "sh", "-c",
-		`cat src/lib.txt src/new.txt target/src/keep.txt "$XDG_CACHE_HOME/marker"; pwd`)
-	if code != 0 {
-		t.Fatalf("exec: exit %d\nstdout %q\nstderr %q", code, stdout, stderr)
+	ws := &pb.Workspace{}
+	c.ok(ws, "add", S, "app", "--sync", agent)
+	if ws.RepoId != "app" || ws.SessionId != S || ws.Path != "/work/app" || ws.SyncDir != agent || ws.SyncHost != "laptop" || ws.FilesChanged != 2 {
+		t.Fatalf("add = %v", ws)
 	}
-	lines := strings.Split(strings.TrimSpace(stdout), "\n")
-	if len(lines) != 5 || strings.Join(lines[:4], ",") != "edited,new,keep,warm" || !strings.HasSuffix(lines[4], "/ws/"+ws.ID+"/app") {
-		t.Errorf("exec saw %q: want the agent's edit, its new file, the base's build and cache, in the workspace", stdout)
-	}
-	if !strings.Contains(stderr, "synced 2 changed files") {
-		t.Errorf("exec stderr %q, want the sync reported", stderr)
+	again := &pb.Workspace{}
+	c.ok(again, "add", S, "app")
+	if again.Id != ws.Id {
+		t.Errorf("second add made workspace %s, want the session's %s", again.Id, ws.Id)
 	}
 
-	// The same tree again: nothing to send.
-	var again api.SyncResult
-	c.envelope(&again, "sync", ws.ID, "--dir", agent)
-	if !again.Skipped {
-		t.Errorf("second sync = %+v, want skipped", again)
+	// run sees the agent's edits, the base's build and caches, in the fork.
+	code, stdout, stderr := c.hotbed("run", S, "app", "--", "sh", "-c", `cat src/lib.txt src/new.txt target/src/keep.txt "$XDG_CACHE_HOME/marker"`)
+	if code != 0 || stdout != "edited\nnew\nkeep\nwarm\n" {
+		t.Fatalf("run: exit %d, stdout %q, stderr %q", code, stdout, stderr)
+	}
+	if strings.Contains(stderr, "synced") {
+		t.Errorf("run synced an unchanged checkout: %q", stderr)
 	}
 
-	// exec passes the command's status through.
-	if code, _, _ := c.hotbed("exec", ws.ID, "--no-sync", "--", "sh", "-c", "exit 3"); code != 3 {
-		t.Errorf("exec exit 3 returned %d", code)
+	// An edit after add is synced by the next run.
+	write(t, filepath.Join(agent, "src/lib.txt"), "edited again\n")
+	code, stdout, stderr = c.hotbed("run", S, "app", "--", "cat", "src/lib.txt")
+	if code != 0 || stdout != "edited again\n" || !strings.Contains(stderr, "synced 2 changed files") {
+		t.Fatalf("run after an edit: exit %d, stdout %q, stderr %q", code, stdout, stderr)
 	}
 
-	// A detached command shows up in ps, prints to logs, and stops.
-	var srv api.Command
-	c.envelope(&srv, "exec", ws.ID, "--no-sync", "--detach", "--port", "5173", "--", "sh", "-c", "echo serving; sleep 300")
-	if srv.State != api.CommandQueued || srv.URL == nil || *srv.URL != "http://asahimbp:5173" || srv.Attached {
-		t.Errorf("detached exec = %+v", srv)
+	// run passes the command's status through.
+	if code, _, _ := c.hotbed("run", S, "app", "--", "sh", "-c", "exit 3"); code != 3 {
+		t.Errorf("run of exit 3 returned %d", code)
 	}
-	c.eventually("the server running", func() bool {
-		var ps struct{ Commands []api.Command }
-		c.envelope(&ps, "ps")
-		for _, cmd := range ps.Commands {
-			if cmd.ID == srv.ID && cmd.State == api.CommandRunning {
-				return true
-			}
-		}
-		return false
+
+	// wait reports what happened to the session's commands, each event once.
+	var events []*pb.SessionEvent
+	c.eventually("the session's events", func() bool {
+		res := &pb.WaitSessionResponse{}
+		c.ok(res, "wait", S, "--timeout", "1")
+		events = append(events, res.Events...)
+		return countWhat(events, "exited") == 3
 	})
+	if n := countWhat(events, "admitted"); n != 3 {
+		t.Errorf("%d admitted events, want 3: %v", n, events)
+	}
+	last := events[len(events)-1]
+	if last.What != "exited" || last.GetExitCode() != 3 || last.State != pb.CommandState_COMMAND_STATE_FAILED || last.WorkspaceId != ws.Id {
+		t.Errorf("last event = %v", last)
+	}
+	quiet := &pb.WaitSessionResponse{}
+	c.ok(quiet, "wait", S, "--timeout", "1")
+	if len(quiet.Events) != 0 || quiet.Live != 0 {
+		t.Errorf("wait with nothing new = %v", quiet)
+	}
+
+	// A detached command runs until stopped.
+	srv := &pb.Command{}
+	c.ok(srv, "run", S, "app", "--detach", "--port", "5173", "--", "sh", "-c", "echo serving; sleep 300")
+	if srv.Url != "http://asahimbp:5173" || srv.Attached || srv.SessionId != S {
+		t.Errorf("detached run = %v", srv)
+	}
 	c.eventually("the server's output", func() bool {
-		_, out, _ := c.hotbed("logs", srv.ID)
+		_, out, _ := c.hotbed("logs", S, srv.Id)
 		return out == "serving\n"
 	})
-	var stopped api.Command
-	c.envelope(&stopped, "stop", srv.ID)
-	if stopped.State != api.CommandCancelled {
-		t.Errorf("after stop: %+v", stopped)
+	ps := &pb.ListCommandsResponse{}
+	c.ok(ps, "ps", S)
+	if !containsLive(ps.Commands, srv.Id) {
+		t.Errorf("ps = %v, want %s live", ps.Commands, srv.Id)
+	}
+	stopped := &pb.Command{}
+	c.ok(stopped, "stop", S, srv.Id)
+	if stopped.State != pb.CommandState_COMMAND_STATE_CANCELLED {
+		t.Errorf("after stop: %v", stopped)
 	}
 
-	// The cockpit sees all of it.
-	c.report()
-	var snap api.Snapshot
-	if err := c.asWorker.Do(t.Context(), http.MethodGet, "/v1/ui/snapshot", nil, &snap); err != nil {
-		t.Fatal(err)
+	// Another session cannot see this one's commands.
+	other := &pb.Session{}
+	c.ok(other, "session", "start", "quiet-heron")
+	if _, e := c.fails("logs", "quiet-heron", srv.Id); e.Code != api.CodeNotFound {
+		t.Errorf("logs from another session: %+v", e)
 	}
-	if len(snap.Nodes) != 1 || !snap.Nodes[0].Online || snap.Nodes[0].Machine != "Test Machine" {
-		t.Errorf("snapshot nodes = %+v", snap.Nodes)
+	if _, e := c.fails("session", "start", "quiet-heron"); e.Code != api.CodeConflict {
+		t.Errorf("start of a taken name: %+v", e)
+	}
+
+	// The cockpit sees it all.
+	snap, err := c.asWorker.GetSnapshot(t.Context(), &pb.GetSnapshotRequest{})
+	if err != nil {
+		t.Fatal(err)
 	}
 	if len(snap.Repos) != 1 || snap.Repos[0].Units != 1 || snap.Repos[0].ColdBuildSeconds <= 0 {
-		t.Errorf("snapshot repos = %+v", snap.Repos)
+		t.Errorf("snapshot repos = %v", snap.Repos)
 	}
-	states := map[api.CommandState]int{}
-	for _, h := range snap.History {
-		states[h.State]++
-	}
-	if states[api.CommandSucceeded] != 1 || states[api.CommandFailed] != 1 || states[api.CommandCancelled] != 1 {
-		t.Errorf("history states = %v, want one ok, one failed, one cancelled", states)
-	}
-	var ok api.FinishedCommand
-	for _, h := range snap.History {
-		if h.State == api.CommandSucceeded {
-			ok = h
-		}
-	}
-	if ok.ColdSeconds != nil {
-		t.Errorf("a shell command got a cold time %v; only builds and tests do", *ok.ColdSeconds)
-	}
-	if snap.Totals24h.Forks != 1 || snap.Totals24h.OOMKills != 0 {
-		t.Errorf("totals = %+v", snap.Totals24h)
-	}
-	kinds := map[string]bool{}
-	for _, e := range snap.Events {
-		kinds[e.Kind] = true
-	}
-	for _, k := range []string{"base", "fork", "admit", "finish", "fail"} {
-		if !kinds[k] {
-			t.Errorf("no %s event in %+v", k, snap.Events)
-		}
+	if len(snap.Sessions) != 2 || snap.Totals24H.Forks != 1 {
+		t.Errorf("snapshot sessions %v, totals %v", snap.Sessions, snap.Totals24H)
 	}
 
-	// Files and their changes against the base.
-	var files []api.FileEntry
-	if err := c.asWorker.Do(t.Context(), http.MethodGet, "/v1/workspaces/"+ws.ID+"/files", nil, &files); err != nil {
-		t.Fatal(err)
+	ended := &pb.Session{}
+	c.ok(ended, "session", "end", S)
+	if ended.EndedAt == nil || ended.EndReason != "ended by its agent" || len(ended.WorkspaceIds) != 0 {
+		t.Errorf("session end = %v", ended)
 	}
-	changes := map[string]string{}
-	for _, f := range files {
-		if f.Change != nil {
-			changes[f.Path] = *f.Change
-		}
-	}
-	if changes["src/lib.txt"] != "modified" || changes["src/new.txt"] != "added" || len(changes) != 2 {
-		t.Errorf("file changes = %v", changes)
-	}
-	var file api.FileContent
-	if err := c.asWorker.Do(t.Context(), http.MethodGet, "/v1/workspaces/"+ws.ID+"/files/src/lib.txt", nil, &file); err != nil {
-		t.Fatal(err)
-	}
-	if file.Text != "edited\n" || len(file.ChangedLines) != 1 || file.ChangedLines[0] != 1 {
-		t.Errorf("file = %+v", file)
-	}
-
-	var released map[string]string
-	c.envelope(&released, "ws", "rm", ws.ID)
-	c.report()
-	var left struct{ Workspaces []api.Workspace }
-	c.envelope(&left, "ws", "ls")
-	if len(left.Workspaces) != 0 {
-		t.Errorf("after ws rm: %+v", left.Workspaces)
+	if _, e := c.fails("run", S, "app", "--", "true"); e.Code != api.CodeNotFound {
+		t.Errorf("run in an ended session: %+v", e)
 	}
 }
 
-func TestExecBeforeAnyBaseIsRetryable(t *testing.T) {
+func TestRemoteOnlyWorkspace(t *testing.T) {
 	c := newCluster(t)
-	c.envelope(nil, "repo", "add", "app", "/nonexistent/repo", "--freshen", "true")
-	c.report()
-	code, stdout, _ := c.hotbed("ws", "new", "app")
-	var out output
-	if err := json.Unmarshal([]byte(stdout), &out); err != nil {
+	c.warmRepo(upstream(t))
+	sess := &pb.Session{}
+	c.ok(sess, "session", "start", "brave-otter")
+
+	ws := &pb.Workspace{}
+	c.ok(ws, "add", "brave-otter", "app")
+	if ws.SyncDir != "" {
+		t.Fatalf("add without --sync follows %q", ws.SyncDir)
+	}
+	// The agent edits and commits in the workspace itself; it persists.
+	for _, args := range [][]string{
+		{"sh", "-c", "printf 'remote\\n' > src/lib.txt"},
+		{"git", "-c", "user.name=a", "-c", "user.email=a@a", "commit", "-qam", "remote edit"},
+	} {
+		if code, out, errOut := c.hotbed(append([]string{"run", "brave-otter", "app", "--"}, args...)...); code != 0 {
+			t.Fatalf("run %v: exit %d %q %q", args, code, out, errOut)
+		}
+	}
+	code, stdout, _ := c.hotbed("run", "brave-otter", "app", "--", "git", "log", "-1", "--format=%s")
+	if code != 0 || stdout != "remote edit\n" {
+		t.Errorf("git log in the workspace: exit %d, %q", code, stdout)
+	}
+	if _, e := c.fails("sync", "brave-otter", "app"); e.Code != api.CodeInvalidArgs {
+		t.Errorf("sync of a remote-only workspace: %+v", e)
+	}
+}
+
+func TestAbandonedSessionEnds(t *testing.T) {
+	c := newCluster(t)
+	c.warmRepo(upstream(t))
+	c.ok(nil, "session", "start", "idle-yak")
+	c.ok(nil, "add", "idle-yak", "app")
+	srv := &pb.Command{}
+	c.ok(srv, "run", "idle-yak", "app", "--detach", "--", "sleep", "300")
+
+	c.clock.advance(59 * time.Minute)
+	if err := c.server.ReapIdle(t.Context()); err != nil {
 		t.Fatal(err)
 	}
-	if code != exitError || out.Error.Code != api.CodeNoWarmBase || !out.Error.Retryable {
-		t.Errorf("ws new before a base: exit %d, %+v", code, out.Error)
+	res := &pb.WaitSessionResponse{}
+	c.ok(res, "wait", "idle-yak", "--timeout", "1") // keeps it alive for another hour
+	if res.Ended {
+		t.Fatalf("session ended before an hour idle: %v", res)
 	}
+
+	c.clock.advance(61 * time.Minute)
+	if err := c.server.ReapIdle(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	if _, e := c.fails("wait", "idle-yak"); e.Code != api.CodeNotFound || !strings.Contains(e.Message, "abandoned") {
+		t.Errorf("wait on an abandoned session: %+v", e)
+	}
+	c.eventually("the abandoned session's command to stop", func() bool {
+		cmd, ok := c.engine.Command(srv.Id)
+		return ok && cmd.State == pb.CommandState_COMMAND_STATE_CANCELLED
+	})
+}
+
+func TestAddBeforeAnyBaseIsRetryable(t *testing.T) {
+	c := newCluster(t)
+	c.ok(nil, "repo", "add", "app", "/nonexistent/repo", "--freshen", "true")
+	c.ok(nil, "session", "start", "eager-gnu")
+	code, e := c.fails("add", "eager-gnu", "app")
+	if code != exitError || e.Code != api.CodeNoWarmBase || !e.Retryable {
+		t.Errorf("add before a base: exit %d, %+v", code, e)
+	}
+}
+
+func countWhat(events []*pb.SessionEvent, what string) int {
+	n := 0
+	for _, e := range events {
+		if e.What == what {
+			n++
+		}
+	}
+	return n
+}
+
+func containsLive(cmds []*pb.Command, id string) bool {
+	for _, c := range cmds {
+		if c.Id == id && live(c.State) {
+			return true
+		}
+	}
+	return false
+}
+
+var sessionNameRE = regexpMust(`^[a-z]+-[a-z]+$`)
+
+func regexpMust(s string) *regexp.Regexp { return regexp.MustCompile(s) }
+
+// workerHandler serves an engine as a worker does, to the cluster's owner.
+func workerHandler(tn *tailnettest.Fake, eng *worker.Engine) http.Handler {
+	server := httpx.NewServer("ramon@")
+	hotbedv1connect.RegisterWorkspaceServiceHandler(server, &worker.Service{E: eng})
+	mux := http.NewServeMux()
+	connecthttp.Mount(mux, server)
+	return httpx.Identify(tn, mux)
 }

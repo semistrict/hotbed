@@ -1,16 +1,15 @@
 package controller
 
 import (
+	"context"
 	"math"
-	"net/http"
 	"path/filepath"
 	"slices"
 	"sort"
 	"strings"
 	"time"
 
-	"github.com/semistrict/hotbed/internal/api"
-	"github.com/semistrict/hotbed/internal/httpx"
+	pb "github.com/semistrict/hotbed/internal/gen/hotbed/v1"
 )
 
 const (
@@ -19,84 +18,76 @@ const (
 	eventsShown   = 80
 )
 
-// snapshot is the cockpit's whole view of the cluster, in the shapes of
-// ui/src/api/types.ts.
-func (s *Server) snapshot(w http.ResponseWriter, r *http.Request) error {
-	ctx := r.Context()
-	now := s.cfg.Now()
+// GetSnapshot is the cockpit's whole view of the cluster.
+func (s *Server) GetSnapshot(ctx context.Context, _ *pb.GetSnapshotRequest) (*pb.Snapshot, error) {
+	now := s.now()
 	day := now.Add(-24 * time.Hour)
 	rows, err := s.cfg.Store.Nodes(ctx)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	repos, err := s.cfg.Store.Repos(ctx)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	history, err := s.cfg.Store.History(ctx, day)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	events, err := s.cfg.Store.Events(ctx, eventsShown)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	samples, err := s.cfg.Store.Samples(ctx, day)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	forks, err := s.cfg.Store.Forks(ctx, day)
 	if err != nil {
-		return err
+		return nil, err
+	}
+	sessions, err := s.cfg.Store.LiveSessions(ctx)
+	if err != nil {
+		return nil, err
 	}
 
-	snap := api.Snapshot{
-		ClusterID: s.cfg.Cluster.ClusterID, Controller: s.cfg.Controller,
-		Now: now.UTC().Format(time.RFC3339Nano), SampleSeconds: sampleSeconds,
-		Nodes: []api.CockpitNode{}, Repos: []api.CockpitRepo{}, Bases: []api.Base{},
-		Workspaces: []api.Workspace{}, Commands: []api.Command{}, Events: events,
-		Series: map[string][]api.Sample{}, Load: []api.LoadSample{},
-		NodeHourly: map[string][]api.NodeHour{}, History: history,
+	snap := &pb.Snapshot{
+		ClusterId: s.cfg.Cluster.ClusterID, Controller: s.cfg.Controller,
+		Now: now.UnixMilli(), SampleSeconds: sampleSeconds, Events: events, History: history,
+		Sessions: sessions,
 	}
 	for _, n := range rows {
-		online := s.withOnline(n.Node).Online
-		cn := api.CockpitNode{ID: n.ID, Hostname: n.Hostname, Online: online, JoinedAt: n.JoinedAt.Format(time.RFC3339Nano)}
-		if n.LastSeen != nil {
-			cn.LastSeen = n.LastSeen.Format(time.RFC3339Nano)
+		node := s.withOnline(n.node)
+		if !node.Online {
+			node.Usage = &pb.NodeUsage{}
 		}
-		if rep := n.Report; rep != nil {
-			cn.Arch, cn.Machine, cn.Kernel = rep.Resources.Arch, rep.Resources.Machine, rep.Resources.Kernel
-			cn.CPUs, cn.MemoryBytes, cn.SwapBytes = rep.Resources.CPUs, rep.Resources.MemoryBytes, rep.Resources.SwapBytes
-			cn.DiskBytes, cn.Disk, cn.ReservedMemoryBytes = rep.DiskBytes, rep.Disk, rep.Reserved
-			if online {
-				cn.Usage = rep.Usage
-			}
-			snap.Bases = append(snap.Bases, rep.Bases...)
-			snap.Workspaces = append(snap.Workspaces, rep.Workspaces...)
-			if online {
-				snap.Commands = append(snap.Commands, rep.Commands...)
+		snap.Nodes = append(snap.Nodes, node)
+		if r := n.report; r != nil {
+			snap.Bases = append(snap.Bases, r.Bases...)
+			snap.Workspaces = append(snap.Workspaces, r.Workspaces...)
+			if node.Online {
+				snap.Commands = append(snap.Commands, r.Commands...)
 			}
 		}
-		snap.Nodes = append(snap.Nodes, cn)
 	}
 	for _, repo := range repos {
-		snap.Repos = append(snap.Repos, cockpitRepo(repo, snap.Bases, rows))
+		snap.Repos = append(snap.Repos, summarize(repo, snap.Bases))
 	}
 	snap.Series, snap.Load, snap.NodeHourly = series(samples, now)
-	snap.Hourly = hourly(history, forks, samples, now)
-	snap.Totals24h = totals(history, forks, samples)
-	return httpx.JSON(w, snap)
+	snap.Hourly = hourly(history, forks, now)
+	snap.Totals24H = totals(history, forks, samples)
+	return snap, nil
 }
 
-// cockpitRepo describes a repo by its newest cold base: what it is written
+// summarize describes a repo by its newest cold base: what it is written
 // in, how many units it builds, how long that takes from nothing.
-func cockpitRepo(repo api.Repo, bases []api.Base, rows []nodeRow) api.CockpitRepo {
-	out := api.CockpitRepo{ID: repo.ID, Name: strings.TrimSuffix(nameOf(repo.URL), ".git")}
-	var cold *api.Base
-	for i, b := range bases {
-		if b.RepoID == repo.ID && b.Cold && (b.State == api.BaseWarm || b.State == api.BaseStale) {
+func summarize(repo *pb.Repo, bases []*pb.Base) *pb.RepoSummary {
+	out := &pb.RepoSummary{Id: repo.Id, Name: strings.TrimSuffix(nameOf(repo.Url), ".git")}
+	var cold *pb.Base
+	for _, b := range bases {
+		if b.RepoId == repo.Id && b.Cold && (b.State == pb.BaseState_BASE_STATE_WARM || b.State == pb.BaseState_BASE_STATE_STALE) {
 			if cold == nil || b.Generation > cold.Generation {
-				cold = &bases[i]
+				cold = b
 			}
 		}
 	}
@@ -107,40 +98,37 @@ func cockpitRepo(repo api.Repo, bases []api.Base, rows []nodeRow) api.CockpitRep
 			out.Language = "rust"
 		case strings.HasPrefix(cold.Toolchain, "go"):
 			out.Language = "go"
+		case strings.HasPrefix(cold.Toolchain, "node"):
+			out.Language = "typescript"
 		}
 	}
 	if out.Language == "" {
-		out.Language = guessLanguage(repo.Freshen)
+		all := strings.Join(repo.Freshen, " ")
+		switch {
+		case strings.Contains(all, "cargo"):
+			out.Language = "rust"
+		case strings.Contains(all, "go "):
+			out.Language = "go"
+		default:
+			out.Language = "typescript"
+		}
 	}
 	return out
 }
 
 func nameOf(u string) string {
-	u = strings.TrimSuffix(u, "/")
-	parts := strings.FieldsFunc(u, func(r rune) bool { return r == '/' || r == ':' })
+	parts := strings.FieldsFunc(strings.TrimSuffix(u, "/"), func(r rune) bool { return r == '/' || r == ':' })
 	if len(parts) >= 2 {
 		return parts[len(parts)-2] + "/" + parts[len(parts)-1]
 	}
 	return filepath.Base(u)
 }
 
-func guessLanguage(freshen []string) string {
-	all := strings.Join(freshen, " ")
-	switch {
-	case strings.Contains(all, "cargo"):
-		return "rust"
-	case strings.Contains(all, "go "):
-		return "go"
-	default:
-		return "typescript"
-	}
-}
-
-// series turns samples into the cockpit's live charts (the last 15 minutes
-// per node, and the cluster's command counts) and its 24-hour heatmap.
-func series(samples []sampleRow, now time.Time) (map[string][]api.Sample, []api.LoadSample, map[string][]api.NodeHour) {
-	live := map[string][]api.Sample{}
-	load := map[int64]*api.LoadSample{}
+// series turns samples into the live charts (the last 15 minutes per node,
+// and the cluster's command counts) and the 24-hour heatmap.
+func series(samples []sampleRow, now time.Time) (map[string]*pb.Samples, []*pb.LoadSample, map[string]*pb.NodeHours) {
+	live := map[string]*pb.Samples{}
+	load := map[int64]*pb.LoadSample{}
 	type acc struct {
 		cpu, mem float64
 		n        int
@@ -149,21 +137,24 @@ func series(samples []sampleRow, now time.Time) (map[string][]api.Sample, []api.
 	since := now.Add(-liveWindow).UnixMilli()
 	for _, s := range samples {
 		if s.t >= since {
-			live[s.node] = append(live[s.node], api.Sample{T: s.t, CPUBusy: s.cpu, MemoryUsed: s.memory, MemoryPressure: s.psi})
+			if live[s.node] == nil {
+				live[s.node] = &pb.Samples{}
+			}
+			live[s.node].Samples = append(live[s.node].Samples, &pb.Sample{T: s.t, CpuBusy: s.cpu, MemoryUsed: s.memory, MemoryPressure: s.psi})
 			b := s.t / (sampleSeconds * 1000) * (sampleSeconds * 1000)
 			l, ok := load[b]
 			if !ok {
-				l = &api.LoadSample{T: b}
+				l = &pb.LoadSample{T: b}
 				load[b] = l
 			}
-			l.Running += s.running
-			l.Queued += s.queued
-			l.Parked += s.parked
+			l.Running += int32(s.running)
+			l.Queued += int32(s.queued)
+			l.Parked += int32(s.parked)
 		}
-		h := hourOf(s.t)
 		if hours[s.node] == nil {
 			hours[s.node] = map[int64]*acc{}
 		}
+		h := hourOf(s.t)
 		a := hours[s.node][h]
 		if a == nil {
 			a = &acc{}
@@ -173,31 +164,33 @@ func series(samples []sampleRow, now time.Time) (map[string][]api.Sample, []api.
 		a.mem += s.memory
 		a.n++
 	}
-	loads := make([]api.LoadSample, 0, len(load))
+	loads := make([]*pb.LoadSample, 0, len(load))
 	for _, l := range load {
-		loads = append(loads, *l)
+		loads = append(loads, l)
 	}
 	sort.Slice(loads, func(i, j int) bool { return loads[i].T < loads[j].T })
-	nodeHourly := map[string][]api.NodeHour{}
+	nodeHourly := map[string]*pb.NodeHours{}
 	for node, hs := range hours {
+		out := &pb.NodeHours{}
 		for _, h := range dayHours(now) {
-			nh := api.NodeHour{Hour: h}
+			nh := &pb.NodeHour{Hour: h}
 			if a := hs[h]; a != nil {
-				nh.CPUBusy, nh.MemoryUsed = a.cpu/float64(a.n), a.mem/float64(a.n)
+				nh.CpuBusy, nh.MemoryUsed = a.cpu/float64(a.n), a.mem/float64(a.n)
 			}
-			nodeHourly[node] = append(nodeHourly[node], nh)
+			out.Hours = append(out.Hours, nh)
 		}
+		nodeHourly[node] = out
 	}
 	return live, loads, nodeHourly
 }
 
 // hourly is the last 24 hours, one bucket per hour, from history and forks.
-func hourly(history []api.FinishedCommand, forks []forkRow, samples []sampleRow, now time.Time) []api.HourBucket {
+func hourly(history []*pb.FinishedCommand, forks []forkRow, now time.Time) []*pb.HourBucket {
 	idx := map[int64]int{}
-	out := []api.HourBucket{}
+	var out []*pb.HourBucket
 	for i, h := range dayHours(now) {
 		idx[h] = i
-		out = append(out, api.HourBucket{Hour: h})
+		out = append(out, &pb.HourBucket{Hour: h})
 	}
 	waits := make([][]float64, len(out))
 	for _, c := range history {
@@ -205,10 +198,10 @@ func hourly(history []api.FinishedCommand, forks []forkRow, samples []sampleRow,
 		if !ok {
 			continue
 		}
-		b := &out[i]
+		b := out[i]
 		waits[i] = append(waits[i], c.QueuedSeconds)
 		b.Parks += c.Parks
-		if c.ColdSeconds == nil || c.State == api.CommandCancelled {
+		if c.ColdSeconds == nil || c.State == pb.CommandState_COMMAND_STATE_CANCELLED {
 			continue
 		}
 		b.Builds++
@@ -226,17 +219,17 @@ func hourly(history []api.FinishedCommand, forks []forkRow, samples []sampleRow,
 	return out
 }
 
-func totals(history []api.FinishedCommand, forks []forkRow, samples []sampleRow) api.Totals {
-	var t api.Totals
+func totals(history []*pb.FinishedCommand, forks []forkRow, samples []sampleRow) *pb.Totals {
+	t := &pb.Totals{}
 	for _, c := range history {
 		t.Parks += c.Parks
-		if c.ColdSeconds == nil || c.State == api.CommandCancelled {
+		if c.ColdSeconds == nil || c.State == pb.CommandState_COMMAND_STATE_CANCELLED {
 			continue
 		}
 		t.Builds++
 		t.SavedSeconds += math.Max(0, *c.ColdSeconds-c.Seconds)
 	}
-	t.Forks = len(forks)
+	t.Forks = int32(len(forks))
 	var ms []float64
 	for _, f := range forks {
 		if f.millis >= 0 {
@@ -252,12 +245,12 @@ func totals(history []api.FinishedCommand, forks []forkRow, samples []sampleRow)
 			first[s.node] = s.oom
 		}
 		if s.oom < last[s.node] {
-			first[s.node] -= last[s.node] // rebooted: count what came before
+			first[s.node] -= last[s.node] // rebooted: keep what came before
 		}
 		last[s.node] = s.oom
 	}
 	for n, l := range last {
-		t.OOMKills += int(l - first[n])
+		t.OomKills += int32(l - first[n])
 	}
 	return t
 }

@@ -9,17 +9,17 @@ set -euo pipefail
 
 dir=${1:?usage: $0 DIR}
 mkdir -p "$dir"
-trap 'cd /; for s in "$dir"/*; do btrfs subvolume delete -q "$s" 2>/dev/null || rm -rf "$s"; done; rmdir "$dir"' EXIT
+trap 'cd /; for s in "$dir"/*; do btrfs subvolume delete "$s" >/dev/null 2>&1 || rm -rf "$s"; done; rmdir "$dir"' EXIT
 
-btrfs subvolume create -q "$dir/base"
+btrfs subvolume create "$dir/base" >/dev/null
 cd "$dir/base"
 cat > Cargo.toml <<'EOF'
 [workspace]
 members = ["app", "core"]
 resolver = "3"
 EOF
-cargo new -q --lib core
-cargo new -q app
+cargo new -q --vcs none --lib core
+cargo new -q --vcs none app
 cat >> core/Cargo.toml <<'EOF'
 serde = { version = "1", features = ["derive"] }
 anyhow = "1"
@@ -40,7 +40,7 @@ units() { cargo build --all-targets 2>&1 | grep -c '^ *Compiling' || true; }
 echo "cold build at base path:        $(units) compiled"
 echo "rebuild at base path:           $(units) compiled"
 
-btrfs subvolume snapshot -q "$dir/base" "$dir/fork"
+btrfs subvolume snapshot "$dir/base" "$dir/fork" >/dev/null
 cd "$dir/fork"
 echo "fork at another path, no edit:  $(units) compiled"
 echo '// touched' >> app/src/main.rs

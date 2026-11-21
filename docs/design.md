@@ -57,8 +57,10 @@ Not a container: the host's kernel, users, network and `/usr`, with just enough 
 that a fork is indistinguishable from the base it came from.
 
 - **A fixed path.** Each command has its own mount namespace with its workspace volume at `/work`
-  and the checkout at `/work/<repo>`, the path the base was built at. Cargo bakes absolute paths
-  into its fingerprints; `scripts/cargo-relocation-check.sh` measures what moving costs.
+  and the checkout at `/work/<repo>`, the path the base was built at. Cargo itself copes with a
+  moved workspace (`scripts/cargo-relocation-check.sh` on asahimbp, 2026-11-21: a fork at another
+  path rebuilt 0 of 10 units, and 1 after an edit), but the toolchain and cache homes below are
+  absolute paths, and build scripts and other tools bake paths in too.
 - **Its tools and caches inside the workspace.** Everything a build would put in the home
   directory goes under `/work/.hotbed` instead, so the base carries it and every fork starts with
   it: `RUSTUP_HOME` and `CARGO_HOME` (toolchains from `rust-toolchain.toml`, the registry),

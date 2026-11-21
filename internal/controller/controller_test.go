@@ -14,6 +14,7 @@ import (
 
 	"github.com/semistrict/hotbed/internal/api"
 	"github.com/semistrict/hotbed/internal/controller"
+	pb "github.com/semistrict/hotbed/internal/gen/hotbed/v1"
 	"github.com/semistrict/hotbed/internal/statedir"
 	"github.com/semistrict/hotbed/internal/tailnet"
 	"github.com/semistrict/hotbed/internal/tailnet/tailnettest"
@@ -124,21 +125,21 @@ func TestNodesSurviveRestart(t *testing.T) {
 	}
 
 	addr, stop := serve(t, dir, tn)
-	first, err := api.NewClient(addr, tn.Client(asahi))
+	first, _, err := api.Controller(addr, tn.Client(asahi))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := first.Join(t.Context()); err != nil {
+	if _, err := first.Join(t.Context(), &pb.JoinRequest{}); err != nil {
 		t.Fatal(err)
 	}
 	stop()
 
 	addr, _ = serve(t, dir, tn)
-	second, err := api.NewClient(addr, tn.Client(asahi))
+	second, _, err := api.Controller(addr, tn.Client(asahi))
 	if err != nil {
 		t.Fatal(err)
 	}
-	res, err := second.Nodes(t.Context())
+	res, err := second.ListNodes(t.Context(), &pb.ListNodesRequest{})
 	if err != nil {
 		t.Fatal(err)
 	}

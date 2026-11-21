@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"os"
+	"path/filepath"
 	"runtime"
 	"runtime/debug"
 	"strings"
@@ -14,8 +16,8 @@ import (
 
 	"github.com/semistrict/hotbed/internal/api"
 	"github.com/semistrict/hotbed/internal/controller"
-	"github.com/semistrict/hotbed/internal/skills"
 	"github.com/semistrict/hotbed/internal/worker"
+	"github.com/semistrict/hotbed/skills"
 )
 
 // deps is what commands use from the outside world, so tests can replace it.
@@ -26,6 +28,8 @@ type deps struct {
 	check        worker.Check
 	stdout       io.Writer
 	stderr       io.Writer
+	// cache keeps per-session cursors for hotbed wait.
+	cache string
 }
 
 // command is a leaf of the command tree. Exec returns the envelope's data.
@@ -33,34 +37,39 @@ type command interface {
 	Exec(ctx context.Context, d deps) (any, error)
 }
 
-// rawCommand is a command whose output is not an envelope: exec, attached,
+// rawCommand is a command whose output is not an envelope: run, attached,
 // prints its command's output and exits with its status. When it fails
 // before the command starts, it prints an envelope like any other.
 type rawCommand interface {
-	Raw(ctx context.Context, d deps) (exitCode int, raw bool, err error)
+	Raw(ctx context.Context, d deps) (exitCode int, printed bool, err error)
 }
 
 const description = `For AI agents, read this first:
-  hotbed skills get hotbed     Core guide: setting up a cluster, the JSON output, error codes
+  hotbed skills get hotbed     How to work in hotbed: sessions, run, wait, the JSON output, errors
+  hotbed skills install        Install the guides into ~/.claude/skills
   hotbed COMMAND --help        Flags and arguments for one command
 
-Every command prints one JSON envelope on stdout.
+Every command prints one JSON envelope on stdout, except run (attached) and
+logs, which print the command's output.
 
-Run builds, tests and dev servers on a cluster of Linux machines on your tailnet.`
+Run builds, tests and dev servers on a cluster of Linux machines on your
+tailnet, each in a fork of a repo whose main is already built.`
 
 type cli struct {
-	Ws      wsCmd      `cmd:"" help:"Workspaces: forks of a repo's warm base (new, ls, rm)."`
-	Sync    syncCmd    `cmd:"" help:"Send this checkout's changes, uncommitted ones too, to a workspace."`
-	Exec    execCmd    `cmd:"" help:"Sync, then run a command in a workspace; prints its output and exits with its status."`
-	Ps      psCmd      `cmd:"" help:"List running, queued and parked commands."`
+	Session sessionCmd `cmd:"" help:"Start or end a session; everything an agent runs belongs to one."`
+	Add     addCmd     `cmd:"" help:"Give a session its workspace of a repo: a fork of the repo's built main."`
+	Run     runCmd     `cmd:"" help:"Run a command in a session's workspace (syncing first if it follows a checkout)."`
+	Sync    syncCmd    `cmd:"" help:"Send a checkout's state, uncommitted changes too, to a session's workspace."`
+	Wait    waitCmd    `cmd:"" help:"Wait (up to two minutes) for something to happen to a session's commands."`
+	Ps      psCmd      `cmd:"" help:"List a session's commands."`
 	Logs    logsCmd    `cmd:"" help:"Print a command's output."`
 	Stop    stopCmd    `cmd:"" help:"Stop a command."`
-	Repo    repoCmd    `cmd:"" help:"Repos the cluster keeps warm bases of (add, ls, rm)."`
+	Repo    repoCmd    `cmd:"" help:"Repos the cluster keeps built bases of (add, ls, rm)."`
 	Nodes   nodesCmd   `cmd:"" help:"List the cluster's workers."`
 	Init    initCmd    `cmd:"" help:"Create a cluster with this machine as its controller."`
 	Join    joinCmd    `cmd:"" help:"Join this machine to a cluster as a worker (as root)."`
-	Run     runCmd     `cmd:"" help:"Run the controller or worker whose state is in DIR, until stopped."`
-	Skills  skillsCmd  `cmd:"" help:"Guides for AI agents, compiled into this binary (list, get)."`
+	Serve   serveCmd   `cmd:"" help:"Run the controller or worker whose state is in DIR, until stopped."`
+	Skills  skillsCmd  `cmd:"" help:"Guides for AI agents, compiled into this binary (list, get, install)."`
 	Version versionCmd `cmd:"" help:"Show hotbed's version, OS and architecture."`
 }
 
@@ -126,27 +135,45 @@ func commandName(n *kong.Node) string {
 }
 
 type skillsCmd struct {
-	List skillsListCmd `cmd:"" help:"List the guides."`
-	Get  skillsGetCmd  `cmd:"" help:"Print one guide."`
+	List    skillsListCmd    `cmd:"" help:"List the guides."`
+	Get     skillsGetCmd     `cmd:"" help:"Print a guide, or one of its references."`
+	Install skillsInstallCmd `cmd:"" help:"Write the guides into an agent's skills directory."`
 }
 
 type skillsListCmd struct{}
 
 func (c *skillsListCmd) Exec(context.Context, deps) (any, error) {
-	return map[string]any{"skills": skills.List()}, nil
+	list, err := skills.List()
+	return map[string]any{"skills": list}, err
 }
 
 type skillsGetCmd struct {
-	Name string `arg:"" help:"The guide's name, from skills list."`
+	Name string `arg:"" help:"A guide's name (hotbed), or a reference in it (hotbed/references/errors.md)."`
 }
 
 func (c *skillsGetCmd) Exec(context.Context, deps) (any, error) {
-	content, ok := skills.Get(c.Name)
-	if !ok {
-		return nil, api.Errorf(api.CodeInvalidArgs, "no guide called %q", c.Name).
-			WithSuggestion("hotbed skills list names every guide")
+	content, err := skills.Get(c.Name)
+	if err != nil {
+		return nil, api.Errorf(api.CodeInvalidArgs, "%v", err).WithSuggestion("hotbed skills list names every guide and its references")
 	}
 	return map[string]string{"name": c.Name, "content": content}, nil
+}
+
+type skillsInstallCmd struct {
+	Dir string `type:"path" help:"Skills directory to write into (default ~/.claude/skills)."`
+}
+
+func (c *skillsInstallCmd) Exec(context.Context, deps) (any, error) {
+	dir := c.Dir
+	if dir == "" {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return nil, err
+		}
+		dir = filepath.Join(home, ".claude", "skills")
+	}
+	wrote, err := skills.Install(dir)
+	return map[string]any{"dir": dir, "files": wrote}, err
 }
 
 type versionCmd struct{}

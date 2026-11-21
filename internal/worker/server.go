@@ -2,130 +2,124 @@ package worker
 
 import (
 	"bufio"
+	"context"
 	"errors"
 	"io"
-	"net/http"
 	"os"
-	"strconv"
 	"strings"
 	"time"
 
 	"github.com/semistrict/hotbed/internal/api"
+	pb "github.com/semistrict/hotbed/internal/gen/hotbed/v1"
+	"github.com/semistrict/hotbed/internal/gen/hotbed/v1/hotbedv1connect"
 	"github.com/semistrict/hotbed/internal/httpx"
 )
 
-// Handler serves the engine to the controller, which proxies clients' calls
-// about workspaces and commands on this node here.
-func (e *Engine) Handler() http.Handler {
-	mux := http.NewServeMux()
-	h := httpx.Handle
-	mux.HandleFunc("POST /v1/workspaces/{id}", h(func(w http.ResponseWriter, r *http.Request) error {
-		var req api.CreateWorkspace
-		if err := httpx.Decode(r, &req); err != nil {
-			return err
-		}
-		ws, err := e.CreateWorkspace(r.Context(), r.PathValue("id"), req)
-		if err != nil {
-			return err
-		}
-		return httpx.JSON(w, ws)
-	}))
-	mux.HandleFunc("GET /v1/workspaces/{id}", h(func(w http.ResponseWriter, r *http.Request) error {
-		ws, err := e.Workspace(r.PathValue("id"))
-		if err != nil {
-			return err
-		}
-		return httpx.JSON(w, ws)
-	}))
-	mux.HandleFunc("DELETE /v1/workspaces/{id}", h(func(w http.ResponseWriter, r *http.Request) error {
-		if err := e.ReleaseWorkspace(r.Context(), r.PathValue("id")); err != nil {
-			return err
-		}
-		w.WriteHeader(http.StatusNoContent)
-		return nil
-	}))
-	mux.HandleFunc("POST /v1/workspaces/{id}/sync", h(func(w http.ResponseWriter, r *http.Request) error {
-		q := r.URL.Query()
-		res, err := e.Sync(r.Context(), r.PathValue("id"), r.Body, q.Get("commit"), q.Get("tree"))
-		if err != nil {
-			return err
-		}
-		return httpx.JSON(w, res)
-	}))
-	mux.HandleFunc("GET /v1/workspaces/{id}/files", h(func(w http.ResponseWriter, r *http.Request) error {
-		files, err := e.Files(r.Context(), r.PathValue("id"))
-		if err != nil {
-			return err
-		}
-		return httpx.JSON(w, files)
-	}))
-	mux.HandleFunc("GET /v1/workspaces/{id}/files/{path...}", h(func(w http.ResponseWriter, r *http.Request) error {
-		f, err := e.File(r.Context(), r.PathValue("id"), r.PathValue("path"))
-		if err != nil {
-			return err
-		}
-		return httpx.JSON(w, f)
-	}))
-	mux.HandleFunc("POST /v1/workspaces/{id}/commands/{cid}", h(func(w http.ResponseWriter, r *http.Request) error {
-		var req api.RunCommand
-		if err := httpx.Decode(r, &req); err != nil {
-			return err
-		}
-		c, err := e.Exec(r.Context(), r.PathValue("id"), r.PathValue("cid"), req)
-		if err != nil {
-			return err
-		}
-		return httpx.JSON(w, c)
-	}))
-	mux.HandleFunc("GET /v1/commands/{id}", h(func(w http.ResponseWriter, r *http.Request) error {
-		c, ok := e.Command(r.PathValue("id"))
-		if !ok {
-			return api.Errorf(api.CodeNotFound, "no command %s on this node", r.PathValue("id"))
-		}
-		return httpx.JSON(w, c)
-	}))
-	mux.HandleFunc("POST /v1/commands/{id}/stop", h(func(w http.ResponseWriter, r *http.Request) error {
-		if err := e.Stop(r.Context(), r.PathValue("id"), "stopped by "+httpx.Peer(r.Context()).Hostname); err != nil {
-			return err
-		}
-		w.WriteHeader(http.StatusNoContent)
-		return nil
-	}))
-	mux.HandleFunc("GET /v1/commands/{id}/log", h(e.serveLog))
-	mux.HandleFunc("GET /v1/commands/{id}/lines", h(func(w http.ResponseWriter, r *http.Request) error {
-		path, done, err := e.Follow(r.PathValue("id"))
-		if err != nil {
-			return err
-		}
-		done()
-		tail, _ := strconv.Atoi(r.URL.Query().Get("tail"))
-		if tail <= 0 {
-			tail = 2000
-		}
-		lines, err := tailLines(path, tail)
-		if err != nil {
-			return err
-		}
-		return httpx.JSON(w, api.CommandLog{CommandID: r.PathValue("id"), Lines: lines})
-	}))
-	return mux
+// Service serves the engine's workspaces to the controller, which forwards
+// clients' calls about workspaces and commands on this node here.
+type Service struct {
+	hotbedv1connect.UnimplementedWorkspaceServiceHandler
+	E *Engine
 }
 
-// serveLog streams a command's output from offset. With follow=1 it keeps
+func notFound(kind, id string) *api.Error {
+	return api.Errorf(api.CodeNotFound, "no %s %s on this node", kind, id)
+}
+
+func (s *Service) CreateWorkspace(ctx context.Context, req *pb.CreateWorkspaceRequest) (*pb.Workspace, error) {
+	return s.E.CreateWorkspace(ctx, req)
+}
+
+func (s *Service) GetWorkspace(_ context.Context, req *pb.GetWorkspaceRequest) (*pb.Workspace, error) {
+	return s.E.Workspace(req.Id)
+}
+
+func (s *Service) ListWorkspaces(context.Context, *pb.ListWorkspacesRequest) (*pb.ListWorkspacesResponse, error) {
+	return &pb.ListWorkspacesResponse{Workspaces: s.E.Workspaces()}, nil
+}
+
+func (s *Service) ReleaseWorkspace(ctx context.Context, req *pb.ReleaseWorkspaceRequest) (*pb.ReleaseWorkspaceResponse, error) {
+	return &pb.ReleaseWorkspaceResponse{}, s.E.ReleaseWorkspace(ctx, req.Id)
+}
+
+// Sync reads the header, then hands the rest of the stream to the engine as
+// the bundle's bytes.
+func (s *Service) Sync(ctx context.Context, stream hotbedv1connect.WorkspaceServiceSyncServerStream) (*pb.SyncResponse, error) {
+	first, err := stream.Receive()
+	if err != nil {
+		return nil, err
+	}
+	h := first.GetHeader()
+	if h == nil {
+		return nil, api.Errorf(api.CodeInvalidArgs, "sync must start with a header")
+	}
+	return s.E.Sync(ctx, h, &chunks{recv: stream.Receive})
+}
+
+// chunks reads a stream of SyncRequest chunks as one byte stream.
+type chunks struct {
+	recv func() (*pb.SyncRequest, error)
+	buf  []byte
+}
+
+func (c *chunks) Read(p []byte) (int, error) {
+	for len(c.buf) == 0 {
+		m, err := c.recv()
+		if errors.Is(err, io.EOF) {
+			return 0, io.EOF
+		}
+		if err != nil {
+			return 0, err
+		}
+		c.buf = m.GetChunk()
+	}
+	n := copy(p, c.buf)
+	c.buf = c.buf[n:]
+	return n, nil
+}
+
+func (s *Service) ListFiles(ctx context.Context, req *pb.ListFilesRequest) (*pb.ListFilesResponse, error) {
+	files, err := s.E.Files(ctx, req.WorkspaceId)
+	if err != nil {
+		return nil, err
+	}
+	return &pb.ListFilesResponse{Files: files}, nil
+}
+
+func (s *Service) GetFile(ctx context.Context, req *pb.GetFileRequest) (*pb.FileContent, error) {
+	return s.E.File(ctx, req.WorkspaceId, req.Path)
+}
+
+func (s *Service) RunCommand(ctx context.Context, req *pb.RunCommandRequest) (*pb.Command, error) {
+	return s.E.Exec(ctx, req)
+}
+
+func (s *Service) GetCommand(_ context.Context, req *pb.GetCommandRequest) (*pb.Command, error) {
+	c, ok := s.E.Command(req.Id)
+	if !ok {
+		return nil, notFound("command", req.Id)
+	}
+	return c, nil
+}
+
+func (s *Service) ListCommands(context.Context, *pb.ListCommandsRequest) (*pb.ListCommandsResponse, error) {
+	return &pb.ListCommandsResponse{Commands: s.E.Commands()}, nil
+}
+
+func (s *Service) StopCommand(ctx context.Context, req *pb.StopCommandRequest) (*pb.Command, error) {
+	return s.E.Stop(ctx, req.Id, "stopped by "+httpx.Peer(ctx).Hostname)
+}
+
+// FollowLog streams a command's output from an offset. Following, it keeps
 // the stream open until the command ends, which is how an attached exec
 // shows output and keeps its command from counting as orphaned.
-func (e *Engine) serveLog(w http.ResponseWriter, r *http.Request) error {
-	id := r.PathValue("id")
-	path, done, err := e.Follow(id)
+func (s *Service) FollowLog(ctx context.Context, req *pb.FollowLogRequest, stream hotbedv1connect.WorkspaceServiceFollowLogServerStream) error {
+	path, done, err := s.E.Follow(req.Id)
 	if err != nil {
 		return err
 	}
 	defer done()
-	offset, _ := strconv.ParseInt(r.URL.Query().Get("offset"), 10, 64)
-	follow := r.URL.Query().Get("follow") == "1"
-	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
-	w.Header().Set("X-Content-Type-Options", "nosniff")
-	flusher, _ := w.(http.Flusher)
+	offset, follow := req.Offset, req.Follow
 	buf := make([]byte, 64<<10)
 	for {
 		f, err := os.Open(path)
@@ -142,7 +136,7 @@ func (e *Engine) serveLog(w http.ResponseWriter, r *http.Request) error {
 			for {
 				n, rerr := f.Read(buf)
 				if n > 0 {
-					if _, err := w.Write(buf[:n]); err != nil {
+					if err := stream.Send(&pb.LogChunk{Data: buf[:n]}); err != nil {
 						f.Close()
 						return nil // the client went away
 					}
@@ -154,24 +148,38 @@ func (e *Engine) serveLog(w http.ResponseWriter, r *http.Request) error {
 			}
 			f.Close()
 		}
-		if flusher != nil {
-			flusher.Flush()
-		}
-		if !follow || !e.Live(id) {
-			// One more read catches output written between the last read
-			// and the command ending.
-			if follow {
-				follow = false
-				continue
-			}
+		if !follow {
 			return nil
 		}
+		if !s.E.Live(req.Id) {
+			// One more read catches output written between the last read
+			// and the command ending.
+			follow = false
+			continue
+		}
 		select {
-		case <-r.Context().Done():
+		case <-ctx.Done():
 			return nil
 		case <-time.After(200 * time.Millisecond):
 		}
 	}
+}
+
+func (s *Service) GetLogLines(_ context.Context, req *pb.GetLogLinesRequest) (*pb.CommandLog, error) {
+	path, done, err := s.E.Follow(req.Id)
+	if err != nil {
+		return nil, err
+	}
+	done()
+	tail := int(req.Tail)
+	if tail <= 0 {
+		tail = 2000
+	}
+	lines, err := tailLines(path, tail)
+	if err != nil {
+		return nil, err
+	}
+	return &pb.CommandLog{CommandId: req.Id, Lines: lines}, nil
 }
 
 // tailLines returns the last n lines of a file.

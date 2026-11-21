@@ -3,16 +3,17 @@ package worker
 import (
 	"context"
 	"database/sql"
-	"encoding/json"
 	"fmt"
 
+	"google.golang.org/protobuf/encoding/protojson"
+	"google.golang.org/protobuf/proto"
 	_ "modernc.org/sqlite"
 )
 
 // db is the worker's own state, so a restarted worker picks up its bases,
 // workspaces and running commands where it left them. Each record is one
-// JSON document: the worker reads them all at start and writes each one
-// whenever it changes.
+// message, stored as protobuf JSON: the worker reads them all at start and
+// writes each one whenever it changes.
 type db struct {
 	sql *sql.DB
 }
@@ -46,8 +47,8 @@ func openDB(ctx context.Context, path string) (*db, error) {
 
 func (d *db) close() error { return d.sql.Close() }
 
-func (d *db) put(kind, id string, v any) error {
-	b, err := json.Marshal(v)
+func (d *db) put(kind, id string, m proto.Message) error {
+	b, err := protojson.Marshal(m)
 	if err != nil {
 		return err
 	}
@@ -61,8 +62,8 @@ func (d *db) delete(kind, id string) error {
 	return err
 }
 
-// all decodes every record of a kind with fn.
-func (d *db) all(kind string, fn func(doc []byte) error) error {
+// all decodes every record of a kind into a new message and hands it to fn.
+func (d *db) all(kind string, newMsg func() proto.Message, fn func(proto.Message)) error {
 	rows, err := d.sql.Query(`SELECT doc FROM records WHERE kind = ?`, kind)
 	if err != nil {
 		return err
@@ -73,16 +74,18 @@ func (d *db) all(kind string, fn func(doc []byte) error) error {
 		if err := rows.Scan(&doc); err != nil {
 			return err
 		}
-		if err := fn([]byte(doc)); err != nil {
-			return err
+		m := newMsg()
+		if err := protojson.Unmarshal([]byte(doc), m); err != nil {
+			return fmt.Errorf("decode %s record: %w", kind, err)
 		}
+		fn(m)
 	}
 	return rows.Err()
 }
 
 // enqueue adds an item for the controller and returns its sequence number.
-func (d *db) enqueue(kind string, v any) (int64, error) {
-	b, err := json.Marshal(v)
+func (d *db) enqueue(kind string, m proto.Message) (int64, error) {
+	b, err := protojson.Marshal(m)
 	if err != nil {
 		return 0, err
 	}

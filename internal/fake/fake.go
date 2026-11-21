@@ -17,7 +17,7 @@ import (
 	"sync"
 	"syscall"
 
-	"github.com/semistrict/hotbed/internal/api"
+	pb "github.com/semistrict/hotbed/internal/gen/hotbed/v1"
 	"github.com/semistrict/hotbed/internal/storage"
 	"github.com/semistrict/hotbed/internal/sysinfo"
 	"github.com/semistrict/hotbed/internal/unit"
@@ -264,10 +264,10 @@ func NewSystem() *System {
 	return &System{Mem: sysinfo.Mem{Total: 16 << 30, Available: 12 << 30, SwapTotal: 8 << 30, SwapFree: 8 << 30}}
 }
 
-func (s *System) Resources() (api.Resources, error) {
+func (s *System) Resources() (*pb.Resources, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return api.Resources{Arch: "arm64", CPUs: 8, MemoryBytes: s.Mem.Total, SwapBytes: s.Mem.SwapTotal, Kernel: "fake", Machine: "Test Machine"}, nil
+	return &pb.Resources{Arch: "arm64", Cpus: 8, MemoryBytes: s.Mem.Total, SwapBytes: s.Mem.SwapTotal, Kernel: "fake", Machine: "Test Machine"}, nil
 }
 
 func (s *System) Meminfo() (sysinfo.Mem, error) {

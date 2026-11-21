@@ -4,13 +4,12 @@ package main
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
-	"io"
 	"log/slog"
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"syscall"
 	"time"
 
@@ -28,6 +27,7 @@ func main() {
 		check:   worker.CheckMachine,
 		stdout:  os.Stdout,
 		stderr:  os.Stderr,
+		cache:   cacheDir(),
 	})
 	stop()
 	os.Exit(code)
@@ -67,9 +67,11 @@ func run(ctx context.Context, args []string, d deps) int {
 	return exitOK
 }
 
-func decodeJSON(r io.Reader, v any) error {
-	if err := json.NewDecoder(r).Decode(v); err != nil {
-		return fmt.Errorf("decode reply: %w", err)
+// cacheDir is where the CLI keeps per-session state, such as wait cursors.
+func cacheDir() string {
+	dir, err := os.UserCacheDir()
+	if err != nil {
+		return filepath.Join(os.TempDir(), "hotbed")
 	}
-	return nil
+	return filepath.Join(dir, "hotbed")
 }

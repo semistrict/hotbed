@@ -16,6 +16,7 @@ import (
 	"golang.org/x/sync/errgroup"
 
 	"github.com/semistrict/hotbed/internal/api"
+	"github.com/semistrict/hotbed/internal/httpx"
 	"github.com/semistrict/hotbed/internal/statedir"
 	"github.com/semistrict/hotbed/internal/tailnet"
 	"github.com/semistrict/hotbed/ui"
@@ -25,7 +26,7 @@ const dbName = "hotbed.db"
 
 // Tailnet is what the controller needs from this machine's tailscaled.
 type Tailnet interface {
-	Identifier
+	httpx.Identifier
 	Self(ctx context.Context) (tailnet.Self, error)
 }
 
@@ -102,6 +103,7 @@ func Run(ctx context.Context, dir string, cluster statedir.ControllerConfig, tn 
 // Controller is a controller that is listening but not yet serving.
 type Controller struct {
 	store     *Store
+	api       *Server
 	srv       *http.Server
 	listeners []net.Listener
 }
@@ -117,11 +119,14 @@ func Listen(ctx context.Context, dir string, cluster statedir.ControllerConfig, 
 	if err != nil {
 		return nil, err
 	}
+	api := NewServer(ServerConfig{Store: store, Identifier: tn, Cluster: cluster, UI: ui.Handler(), Controller: self.Hostname})
 	c := &Controller{
 		store: store,
+		api:   api,
 		srv: &http.Server{
-			Handler:           NewServer(ServerConfig{Store: store, Identifier: tn, Cluster: cluster, UI: ui.Handler(), Controller: self.Hostname}).Handler(),
+			Handler:           api.Handler(),
 			ReadHeaderTimeout: 10 * time.Second,
+			Protocols:         httpx.Protocols(),
 		},
 	}
 	for _, addr := range self.Addrs {
@@ -157,6 +162,10 @@ func (c *Controller) Serve(ctx context.Context) error {
 			return nil
 		})
 	}
+	g.Go(func() error {
+		c.api.Reap(gctx)
+		return nil
+	})
 	g.Go(func() error {
 		t := time.NewTicker(10 * time.Minute)
 		defer t.Stop()

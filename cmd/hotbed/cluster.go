@@ -6,6 +6,8 @@ import (
 
 	"github.com/semistrict/hotbed/internal/api"
 	"github.com/semistrict/hotbed/internal/controller"
+	pb "github.com/semistrict/hotbed/internal/gen/hotbed/v1"
+	"github.com/semistrict/hotbed/internal/gen/hotbed/v1/hotbedv1connect"
 	"github.com/semistrict/hotbed/internal/statedir"
 	"github.com/semistrict/hotbed/internal/worker"
 )
@@ -15,8 +17,22 @@ type controllerFlag struct {
 	Controller string `required:"" env:"HOTBED_CONTROLLER" help:"The controller's tailnet name or address (or set HOTBED_CONTROLLER)."`
 }
 
-func (f controllerFlag) client(hc *http.Client) (*api.Client, error) {
-	return api.NewClient(f.Controller, hc)
+type clients struct {
+	cluster    hotbedv1connect.ClusterServiceClient
+	sessions   hotbedv1connect.SessionServiceClient
+	workspaces hotbedv1connect.WorkspaceServiceClient
+}
+
+func (f controllerFlag) clients(hc *http.Client) (clients, error) {
+	conn, err := api.Dial(f.Controller, api.DefaultPort, hc)
+	if err != nil {
+		return clients{}, err
+	}
+	return clients{
+		cluster:    hotbedv1connect.NewClusterServiceClient(conn),
+		sessions:   hotbedv1connect.NewSessionServiceClient(conn),
+		workspaces: hotbedv1connect.NewWorkspaceServiceClient(conn),
+	}, nil
 }
 
 type initCmd struct {
@@ -42,23 +58,23 @@ func (c *joinCmd) Exec(ctx context.Context, d deps) (any, error) {
 	}, d.http, d.check)
 }
 
-type runCmd struct {
+type serveCmd struct {
 	Dir string `arg:"" type:"path" help:"State directory made by init or join."`
 }
 
-type runResult struct {
+type serveResult struct {
 	Role string `json:"role"`
 }
 
-func (c *runCmd) Exec(ctx context.Context, d deps) (any, error) {
+func (c *serveCmd) Exec(ctx context.Context, d deps) (any, error) {
 	cfg, err := statedir.Load(c.Dir)
 	if err != nil {
 		return nil, err
 	}
 	if cfg.Controller != nil {
-		return runResult{Role: "controller"}, controller.Run(ctx, c.Dir, *cfg.Controller, d.tailnet)
+		return serveResult{Role: "controller"}, controller.Run(ctx, c.Dir, *cfg.Controller, d.tailnet)
 	}
-	return runResult{Role: "worker"}, worker.Run(ctx, c.Dir, *cfg.Worker, d.tailnet, d.http)
+	return serveResult{Role: "worker"}, worker.Run(ctx, c.Dir, *cfg.Worker, d.tailnet, d.http)
 }
 
 type nodesCmd struct {
@@ -66,36 +82,34 @@ type nodesCmd struct {
 }
 
 func (c *nodesCmd) Exec(ctx context.Context, d deps) (any, error) {
-	client, err := c.client(d.http)
+	cl, err := c.clients(d.http)
 	if err != nil {
 		return nil, err
 	}
-	return client.Nodes(ctx)
+	return cl.cluster.ListNodes(ctx, &pb.ListNodesRequest{})
 }
 
 type repoCmd struct {
-	Add repoAddCmd `cmd:"" help:"Add or update a repo; workers start keeping warm bases of it."`
+	Add repoAddCmd `cmd:"" help:"Add or update a repo; workers start keeping built bases of it."`
 	Ls  repoLsCmd  `cmd:"" help:"List repos."`
 	Rm  repoRmCmd  `cmd:"" help:"Remove a repo; workers stop keeping its bases."`
 }
 
 type repoAddCmd struct {
 	controllerFlag
-	ID      string   `arg:"" help:"Short name, such as ratel; workspaces mount the checkout at /work/<name>."`
+	ID      string   `arg:"" help:"Short name, such as ratel; workspaces see the checkout at /work/<name>."`
 	URL     string   `arg:"" help:"What git clones."`
 	Branch  string   `help:"Branch bases follow (default: the remote's default branch)."`
-	Freshen []string `help:"Command that brings a checkout up to date, run in it by every base, in order: pnpm install, cargo build --all-targets. Repeatable."`
+	Freshen []string `help:"Command that brings a checkout up to date after a pull, such as pnpm install or cargo build --all-targets; bases run them in order. Repeatable."`
 	Host    []string `help:"Node (host name) that keeps bases; default every worker. Repeatable."`
 }
 
 func (c *repoAddCmd) Exec(ctx context.Context, d deps) (any, error) {
-	client, err := c.client(d.http)
+	cl, err := c.clients(d.http)
 	if err != nil {
 		return nil, err
 	}
-	var out api.Repo
-	err = client.Do(ctx, http.MethodPost, "/v1/repos", api.Repo{ID: c.ID, URL: c.URL, Branch: c.Branch, Freshen: c.Freshen, Hosts: c.Host}, &out)
-	return out, err
+	return cl.cluster.PutRepo(ctx, &pb.PutRepoRequest{Repo: &pb.Repo{Id: c.ID, Url: c.URL, Branch: c.Branch, Freshen: c.Freshen, Hosts: c.Host}})
 }
 
 type repoLsCmd struct {
@@ -103,13 +117,11 @@ type repoLsCmd struct {
 }
 
 func (c *repoLsCmd) Exec(ctx context.Context, d deps) (any, error) {
-	client, err := c.client(d.http)
+	cl, err := c.clients(d.http)
 	if err != nil {
 		return nil, err
 	}
-	var out []api.Repo
-	err = client.Do(ctx, http.MethodGet, "/v1/repos", nil, &out)
-	return map[string]any{"repos": out}, err
+	return cl.cluster.ListRepos(ctx, &pb.ListReposRequest{})
 }
 
 type repoRmCmd struct {
@@ -118,9 +130,9 @@ type repoRmCmd struct {
 }
 
 func (c *repoRmCmd) Exec(ctx context.Context, d deps) (any, error) {
-	client, err := c.client(d.http)
+	cl, err := c.clients(d.http)
 	if err != nil {
 		return nil, err
 	}
-	return map[string]string{"removed": c.ID}, client.Do(ctx, http.MethodDelete, "/v1/repos/"+c.ID, nil, nil)
+	return cl.cluster.DeleteRepo(ctx, &pb.DeleteRepoRequest{Id: c.ID})
 }

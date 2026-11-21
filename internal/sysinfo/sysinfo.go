@@ -15,7 +15,7 @@ import (
 
 	"golang.org/x/sys/unix"
 
-	"github.com/semistrict/hotbed/internal/api"
+	pb "github.com/semistrict/hotbed/internal/gen/hotbed/v1"
 )
 
 // Root is where /proc and /sys are; tests point it at fixtures.
@@ -24,18 +24,18 @@ var Root = "/"
 func path(p string) string { return strings.TrimSuffix(Root, "/") + p }
 
 // Resources measures the machine.
-func Resources() (api.Resources, error) {
+func Resources() (*pb.Resources, error) {
 	mem, err := Meminfo()
 	if err != nil {
-		return api.Resources{}, err
+		return nil, err
 	}
 	var u unix.Utsname
 	if err := unix.Uname(&u); err != nil {
-		return api.Resources{}, fmt.Errorf("uname: %w", err)
+		return nil, fmt.Errorf("uname: %w", err)
 	}
-	return api.Resources{
+	return &pb.Resources{
 		Arch:        runtime.GOARCH,
-		CPUs:        runtime.NumCPU(),
+		Cpus:        int32(runtime.NumCPU()),
 		MemoryBytes: mem.Total,
 		SwapBytes:   mem.SwapTotal,
 		Kernel:      string(bytes.TrimRight(u.Release[:], "\x00")),

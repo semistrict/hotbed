@@ -1,0 +1,681 @@
+syntax = "proto3";
+
+// hotbed's API, spoken by the CLI, the cockpit, the controller and the
+// workers. Times are unix milliseconds; sizes are bytes. Every 64-bit number
+// is a JavaScript number in the cockpit, which needs no more than 2^53.
+package hotbed.v1;
+
+option go_package = "github.com/semistrict/hotbed/internal/gen/hotbed/v1;hotbedv1";
+
+// The controller: membership, reports, repos and the cockpit's view.
+service ClusterService {
+  // Join admits the calling tailnet node as a worker.
+  rpc Join(JoinRequest) returns (JoinResponse);
+  // Report is a worker's periodic account of itself.
+  rpc Report(ReportRequest) returns (ReportResponse);
+  rpc ListNodes(ListNodesRequest) returns (ListNodesResponse);
+  rpc ListRepos(ListReposRequest) returns (ListReposResponse);
+  rpc PutRepo(PutRepoRequest) returns (Repo);
+  rpc DeleteRepo(DeleteRepoRequest) returns (DeleteRepoResponse);
+  // GetSnapshot is everything the cockpit shows.
+  rpc GetSnapshot(GetSnapshotRequest) returns (Snapshot);
+}
+
+// An agent's sessions, on the controller. A session holds workspaces, of
+// any repos on any nodes, and an agent waits on everything that happens to
+// the commands it runs in them.
+service SessionService {
+  rpc StartSession(StartSessionRequest) returns (Session);
+  // EndSession stops the session's commands and releases its workspaces.
+  // A session nothing touches for an hour ends the same way; WaitSession
+  // keeps it alive.
+  rpc EndSession(EndSessionRequest) returns (Session);
+  // WaitSession returns what happened to the session's commands after a
+  // cursor, waiting up to two minutes for something to.
+  rpc WaitSession(WaitSessionRequest) returns (WaitSessionResponse);
+}
+
+// Workspaces and the commands in them. The controller serves it to clients
+// and forwards each call to the worker that holds the workspace; workers
+// serve it to the controller.
+service WorkspaceService {
+  rpc CreateWorkspace(CreateWorkspaceRequest) returns (Workspace);
+  rpc GetWorkspace(GetWorkspaceRequest) returns (Workspace);
+  rpc ListWorkspaces(ListWorkspacesRequest) returns (ListWorkspacesResponse);
+  rpc ReleaseWorkspace(ReleaseWorkspaceRequest) returns (ReleaseWorkspaceResponse);
+  // Sync checks out an agent's worktree in a workspace. The first message
+  // names the snapshot; the rest carry a git bundle of it.
+  rpc Sync(stream SyncRequest) returns (SyncResponse);
+  rpc ListFiles(ListFilesRequest) returns (ListFilesResponse);
+  rpc GetFile(GetFileRequest) returns (FileContent);
+  rpc RunCommand(RunCommandRequest) returns (Command);
+  rpc GetCommand(GetCommandRequest) returns (Command);
+  rpc ListCommands(ListCommandsRequest) returns (ListCommandsResponse);
+  rpc StopCommand(StopCommandRequest) returns (Command);
+  // FollowLog streams a command's output from an offset; with follow, until
+  // the command ends. An attached command stops when no one follows it.
+  rpc FollowLog(FollowLogRequest) returns (stream LogChunk);
+  rpc GetLogLines(GetLogLinesRequest) returns (CommandLog);
+}
+
+// ErrorInfo rides on every error as a detail: a code programs act on, what
+// to do about it, and whether the same call can succeed later.
+message ErrorInfo {
+  string code = 1;
+  string suggestion = 2;
+  bool retryable = 3;
+}
+
+// ---- nodes -------------------------------------------------------------
+
+message Resources {
+  string arch = 1;
+  int32 cpus = 2;
+  int64 memory_bytes = 3 [jstype = JS_NUMBER];
+  int64 swap_bytes = 4 [jstype = JS_NUMBER];
+  string kernel = 5;
+  // What the machine is, as a person would say it: "MacBook Pro (14-inch, M3 Pro, Nov 2023)".
+  string machine = 6;
+}
+
+message NodeUsage {
+  // Share of CPU time busy across all CPUs, 0..1.
+  double cpu_busy = 1;
+  int64 memory_used_bytes = 2 [jstype = JS_NUMBER];
+  int64 swap_used_bytes = 3 [jstype = JS_NUMBER];
+  // PSI "some" avg10, percent of time at least one task stalled.
+  double cpu_pressure = 4;
+  double memory_pressure = 5;
+}
+
+// A node's filesystem, by what the blocks belong to.
+message DiskUsage {
+  int64 bases_bytes = 1 [jstype = JS_NUMBER];
+  int64 forks_exclusive_bytes = 2 [jstype = JS_NUMBER];
+  int64 other_bytes = 3 [jstype = JS_NUMBER];
+  int64 free_bytes = 4 [jstype = JS_NUMBER];
+}
+
+// A worker. Its identity (id, hostname, login) comes from the tailnet.
+message Node {
+  string id = 1;
+  string hostname = 2;
+  string login = 3;
+  int64 joined_at = 4 [jstype = JS_NUMBER];
+  optional int64 last_seen = 5 [jstype = JS_NUMBER];
+  bool online = 6;
+  Resources resources = 7;
+  NodeUsage usage = 8;
+  int64 disk_bytes = 9 [jstype = JS_NUMBER];
+  DiskUsage disk = 10;
+  // What admitted commands are guaranteed: the sum of their memory.low.
+  int64 reserved_memory_bytes = 11 [jstype = JS_NUMBER];
+  string storage = 12;
+}
+
+message JoinRequest {}
+
+message JoinResponse {
+  string cluster_id = 1;
+  Node node = 2;
+}
+
+message ListNodesRequest {}
+
+message ListNodesResponse {
+  string cluster_id = 1;
+  repeated Node nodes = 2;
+}
+
+// ---- repos and bases --------------------------------------------------
+
+message Repo {
+  // Short name, such as ratel; workspaces see the checkout at /work/<id>.
+  string id = 1;
+  string url = 2;
+  // The branch bases follow; empty means the remote's default.
+  string branch = 3;
+  // Commands that bring a checkout up to date the way a person would after
+  // a pull, run in order in every base so forks start with their output.
+  repeated string freshen = 4;
+  // Host names of the nodes that keep bases; empty means every worker.
+  repeated string hosts = 5;
+  int64 created_at = 6 [jstype = JS_NUMBER];
+}
+
+message ListReposRequest {}
+
+message ListReposResponse {
+  repeated Repo repos = 1;
+}
+
+message PutRepoRequest {
+  Repo repo = 1;
+}
+
+message DeleteRepoRequest {
+  string id = 1;
+}
+
+message DeleteRepoResponse {}
+
+enum BaseState {
+  BASE_STATE_UNSPECIFIED = 0;
+  BASE_STATE_BUILDING = 1;
+  BASE_STATE_WARM = 2;
+  BASE_STATE_STALE = 3;
+  BASE_STATE_FAILED = 4;
+}
+
+// One generation of a repo's branch, checked out, freshened and snapshotted
+// on one node.
+message Base {
+  // <repo>-g<generation>, unique on its node.
+  string id = 1;
+  string repo_id = 2;
+  string node_id = 3;
+  int32 generation = 4;
+  string commit = 5;
+  string message = 6;
+  BaseState state = 7;
+  // Share of freshen steps done while building, 0..1.
+  double progress = 8;
+  optional int64 built_at = 9 [jstype = JS_NUMBER];
+  double build_seconds = 10;
+  // The generation started from nothing, so its time is what a fork saves.
+  bool cold = 11;
+  int64 size_bytes = 12 [jstype = JS_NUMBER];
+  string toolchain = 13;
+  repeated string baked = 14;
+  // Units (cargo crates) a cold freshen compiled.
+  int32 units = 15;
+  // The freshen command's ID, for its log.
+  string command = 16;
+}
+
+// ---- workspaces ---------------------------------------------------------
+
+enum WorkspaceState {
+  WORKSPACE_STATE_UNSPECIFIED = 0;
+  WORKSPACE_STATE_ACTIVE = 1;
+  WORKSPACE_STATE_IDLE = 2;
+  WORKSPACE_STATE_RELEASED = 3;
+}
+
+// A writable fork of a base that one agent works in.
+message Workspace {
+  string id = 1;
+  string repo_id = 2;
+  string base_id = 3;
+  string node_id = 4;
+  string agent = 5;
+  string branch = 6;
+  // The commit last synced, or the base's.
+  string head = 7;
+  string base_commit = 8;
+  // The tree last synced, so a sync of the same tree sends nothing.
+  string tree = 9;
+  int32 files_changed = 10;
+  WorkspaceState state = 11;
+  int64 created_at = 12 [jstype = JS_NUMBER];
+  int64 fork_millis = 13 [jstype = JS_NUMBER];
+  int64 exclusive_bytes = 14 [jstype = JS_NUMBER];
+  int64 shared_bytes = 15 [jstype = JS_NUMBER];
+  int64 last_active_at = 16 [jstype = JS_NUMBER];
+  // Where commands see the checkout, such as /work/ratel.
+  string path = 17;
+  string session_id = 18;
+  // A local checkout this workspace follows: hotbed run from sync_host syncs
+  // sync_dir first. Empty for a remote-only workspace, which agents change
+  // only through commands run in it.
+  string sync_dir = 19;
+  string sync_host = 20;
+}
+
+message CreateWorkspaceRequest {
+  string repo = 1;
+  string agent = 2;
+  string branch = 3;
+  // Pins the workspace to a node (host name); otherwise the controller picks
+  // the one with a warm base and the most free memory.
+  string node = 4;
+  // Set by the controller when it forwards the call to a worker.
+  string id = 5;
+  string session_id = 6;
+  // A local checkout (on the calling machine) the workspace follows; empty
+  // for remote-only.
+  string sync_dir = 7;
+  // Set by the controller: the calling machine's host name.
+  string sync_host = 8;
+}
+
+message GetWorkspaceRequest {
+  string id = 1;
+}
+
+message ListWorkspacesRequest {
+  // Only this session's workspaces.
+  string session_id = 1;
+}
+
+message ListWorkspacesResponse {
+  repeated Workspace workspaces = 1;
+}
+
+message ReleaseWorkspaceRequest {
+  string id = 1;
+}
+
+message ReleaseWorkspaceResponse {}
+
+message SyncRequest {
+  oneof msg {
+    SyncHeader header = 1;
+    bytes chunk = 2;
+  }
+}
+
+message SyncHeader {
+  string workspace_id = 1;
+  string commit = 2;
+  string tree = 3;
+}
+
+message SyncResponse {
+  string workspace_id = 1;
+  string head = 2;
+  string tree = 3;
+  int32 files_changed = 4;
+  // The workspace already had this tree; nothing was sent.
+  bool skipped = 5;
+  int64 bundle_bytes = 6 [jstype = JS_NUMBER];
+}
+
+message FileEntry {
+  string path = 1;
+  // file or dir
+  string kind = 2;
+  int64 size_bytes = 3 [jstype = JS_NUMBER];
+  // Against the workspace's base: added, modified, or empty.
+  string change = 4;
+}
+
+message ListFilesRequest {
+  string workspace_id = 1;
+}
+
+message ListFilesResponse {
+  repeated FileEntry files = 1;
+}
+
+message GetFileRequest {
+  string workspace_id = 1;
+  string path = 2;
+}
+
+message FileContent {
+  string path = 1;
+  string text = 2;
+  // Line numbers (1-based) the workspace changed against its base.
+  repeated int32 changed_lines = 3;
+}
+
+// ---- commands -----------------------------------------------------------
+
+enum CommandState {
+  COMMAND_STATE_UNSPECIFIED = 0;
+  COMMAND_STATE_QUEUED = 1;
+  COMMAND_STATE_RUNNING = 2;
+  // Frozen under memory pressure, its memory in swap, until there is room.
+  COMMAND_STATE_PARKED = 3;
+  COMMAND_STATE_SUCCEEDED = 4;
+  COMMAND_STATE_FAILED = 5;
+  COMMAND_STATE_CANCELLED = 6;
+}
+
+message CommandLimits {
+  // cgroup cpu.weight: the share of contended CPU.
+  int32 cpu_weight = 1;
+  // cgroup memory.low: guaranteed; admission waits until it fits.
+  int64 memory_low_bytes = 2 [jstype = JS_NUMBER];
+  // cgroup memory.high: past it the command is throttled and swapped.
+  int64 memory_high_bytes = 3 [jstype = JS_NUMBER];
+}
+
+message Rebuilt {
+  int32 units = 1;
+  int32 of = 2;
+}
+
+message CommandEvent {
+  int64 at = 1 [jstype = JS_NUMBER];
+  // queued, admitted, parked, thawed, exited, cancelled
+  string what = 2;
+  string detail = 3;
+}
+
+// A command in a workspace, live or just ended.
+message Command {
+  string id = 1;
+  string workspace_id = 2;
+  string node_id = 3;
+  // Shell-quoted, for display.
+  string argv = 4;
+  repeated string args = 5;
+  // build, test, check, server, shell, freshen
+  string kind = 6;
+  CommandState state = 7;
+  int64 queued_at = 8 [jstype = JS_NUMBER];
+  optional int64 started_at = 9 [jstype = JS_NUMBER];
+  optional int64 ended_at = 10 [jstype = JS_NUMBER];
+  optional int32 exit_code = 11;
+  CommandLimits limits = 12;
+  double cpu_cores = 13;
+  int64 memory_bytes = 14 [jstype = JS_NUMBER];
+  int64 swap_bytes = 15 [jstype = JS_NUMBER];
+  // Cargo's units compiled; unset for commands that build nothing.
+  Rebuilt rebuilt = 16;
+  // How long the same command takes from nothing; unset when it builds nothing.
+  optional double cold_seconds = 17;
+  // Why it waits, sleeps or failed.
+  string reason = 18;
+  // A dev server's address.
+  string url = 19;
+  repeated CommandEvent timeline = 20;
+  // Stops when no client has followed its output for a while.
+  bool attached = 21;
+  string session_id = 22;
+}
+
+// A command that ended, as history keeps it.
+message FinishedCommand {
+  string id = 1;
+  string repo_id = 2;
+  string node_id = 3;
+  string workspace_id = 4;
+  string agent = 5;
+  string argv = 6;
+  string kind = 7;
+  CommandState state = 8;
+  optional int32 exit_code = 9;
+  // compile, test, lint, signal, exit; empty when it succeeded.
+  string failure = 10;
+  int64 ended_at = 11 [jstype = JS_NUMBER];
+  double queued_seconds = 12;
+  double seconds = 13;
+  optional double cold_seconds = 14;
+  optional int32 rebuilt = 15;
+  optional int32 of = 16;
+  int64 peak_memory_bytes = 17 [jstype = JS_NUMBER];
+  int32 parks = 18;
+  string session_id = 19;
+}
+
+message RunCommandRequest {
+  string workspace_id = 1;
+  repeated string args = 2;
+  // KEY=VALUE
+  repeated string env = 3;
+  string kind = 4;
+  CommandLimits limits = 5;
+  bool attached = 6;
+  // The port a dev server listens on, for its URL.
+  int32 port = 7;
+  // Set by the controller when it forwards the call to a worker.
+  string id = 8;
+}
+
+message GetCommandRequest {
+  string id = 1;
+}
+
+message ListCommandsRequest {
+  // Only this session's commands.
+  string session_id = 1;
+}
+
+message ListCommandsResponse {
+  repeated Command commands = 1;
+}
+
+message StopCommandRequest {
+  string id = 1;
+}
+
+message FollowLogRequest {
+  string id = 1;
+  int64 offset = 2 [jstype = JS_NUMBER];
+  bool follow = 3;
+}
+
+message LogChunk {
+  bytes data = 1;
+}
+
+// ---- sessions -------------------------------------------------------------
+
+message Session {
+  // adjective-noun, such as brave-otter.
+  string id = 1;
+  string agent = 2;
+  int64 started_at = 3 [jstype = JS_NUMBER];
+  optional int64 ended_at = 4 [jstype = JS_NUMBER];
+  repeated string workspace_ids = 5;
+  // The last call that touched the session; an hour after it, the session
+  // is abandoned and ends.
+  int64 last_active_at = 6 [jstype = JS_NUMBER];
+  // Why it ended: ended by its agent, or abandoned.
+  string end_reason = 7;
+}
+
+message StartSessionRequest {
+  // The session's name, adjective-noun; it must be free.
+  string id = 1;
+  string agent = 2;
+}
+
+message EndSessionRequest {
+  string id = 1;
+}
+
+message WaitSessionRequest {
+  string session_id = 1;
+  // Return events after this one (0 for the first).
+  int64 after = 2 [jstype = JS_NUMBER];
+  // Give up after this long with no events; at most and by default 120.
+  int32 timeout_seconds = 3;
+}
+
+message WaitSessionResponse {
+  repeated SessionEvent events = 1;
+  // Pass as after to wait for what comes next.
+  int64 cursor = 2 [jstype = JS_NUMBER];
+  // Commands in the session that have not ended.
+  int32 live = 3;
+  // The session ended (by its agent, or abandoned); no more events will come.
+  bool ended = 4;
+  string end_reason = 5;
+}
+
+// Something that happened to a command in a session.
+message SessionEvent {
+  // The controller's cursor for the event; workers leave it 0.
+  int64 seq = 1 [jstype = JS_NUMBER];
+  int64 at = 2 [jstype = JS_NUMBER];
+  string command_id = 3;
+  string argv = 4;
+  // admitted, parked, thawed, exited, cancelled
+  string what = 5;
+  CommandState state = 6;
+  optional int32 exit_code = 7;
+  string detail = 8;
+  string session_id = 9;
+  string workspace_id = 10;
+}
+
+message GetLogLinesRequest {
+  string id = 1;
+  int32 tail = 2;
+}
+
+message CommandLog {
+  string command_id = 1;
+  repeated string lines = 2;
+}
+
+// ---- reports ------------------------------------------------------------
+
+message WorkerEvent {
+  int64 at = 1 [jstype = JS_NUMBER];
+  // fork, release, admit, finish, fail, park, thaw, base, node
+  string kind = 2;
+  string text = 3;
+  EventRef ref = 4;
+}
+
+message EventRef {
+  // command, workspace or node
+  string type = 1;
+  string id = 2;
+}
+
+// Finished commands and events carry sequence numbers; a worker sends each
+// until the controller acknowledges it, and the controller ignores ones it
+// already has.
+message SequencedFinished {
+  int64 seq = 1;
+  FinishedCommand item = 2;
+}
+
+message SequencedEvent {
+  int64 seq = 1;
+  WorkerEvent item = 2;
+}
+
+message SequencedSessionEvent {
+  int64 seq = 1;
+  SessionEvent item = 2;
+}
+
+message ReportRequest {
+  string cluster_id = 1;
+  Resources resources = 2;
+  NodeUsage usage = 3;
+  int64 disk_bytes = 4 [jstype = JS_NUMBER];
+  DiskUsage disk = 5;
+  int64 reserved_memory_bytes = 6 [jstype = JS_NUMBER];
+  // The kernel's OOM kills since boot; hotbed parks instead of killing, so
+  // it should not move.
+  int64 oom_kills = 7 [jstype = JS_NUMBER];
+  string storage = 8;
+  repeated Base bases = 9;
+  repeated Workspace workspaces = 10;
+  repeated Command commands = 11;
+  repeated SequencedFinished finished = 12;
+  repeated SequencedEvent events = 13;
+  repeated SequencedSessionEvent session_events = 14;
+}
+
+message ReportResponse {
+  // Every sequence number up to this one is stored.
+  int64 ack = 1;
+  // The repos this worker keeps bases of.
+  repeated Repo repos = 2;
+  // Workspaces to release: their sessions ended while the worker was away.
+  repeated string release = 3;
+}
+
+// ---- the cockpit ----------------------------------------------------------
+
+// A repo as the cockpit describes it, from its newest cold base.
+message RepoSummary {
+  string id = 1;
+  string name = 2;
+  // rust, go, typescript
+  string language = 3;
+  int32 units = 4;
+  double cold_build_seconds = 5;
+}
+
+message ClusterEvent {
+  int64 id = 1 [jstype = JS_NUMBER];
+  int64 at = 2 [jstype = JS_NUMBER];
+  string kind = 3;
+  string node_id = 4;
+  string text = 5;
+  EventRef ref = 6;
+}
+
+message Totals {
+  // Cold time minus actual, over builds that ended in the window.
+  double saved_seconds = 1;
+  int32 builds = 2;
+  int32 forks = 3;
+  int64 median_fork_millis = 4 [jstype = JS_NUMBER];
+  int32 oom_kills = 5;
+  int32 parks = 6;
+}
+
+message Sample {
+  int64 t = 1 [jstype = JS_NUMBER];
+  double cpu_busy = 2;
+  double memory_used = 3;
+  double memory_pressure = 4;
+}
+
+message Samples {
+  repeated Sample samples = 1;
+}
+
+// The cluster's command counts at one sample.
+message LoadSample {
+  int64 t = 1 [jstype = JS_NUMBER];
+  int32 running = 2;
+  int32 queued = 3;
+  int32 parked = 4;
+}
+
+// One hour of the cluster's history.
+message HourBucket {
+  int64 hour = 1 [jstype = JS_NUMBER];
+  int32 builds = 2;
+  double spent_seconds = 3;
+  double saved_seconds = 4;
+  int32 forks = 5;
+  int32 parks = 6;
+  double queue_wait_p95_seconds = 7;
+}
+
+message NodeHour {
+  int64 hour = 1 [jstype = JS_NUMBER];
+  double cpu_busy = 2;
+  double memory_used = 3;
+}
+
+message NodeHours {
+  repeated NodeHour hours = 1;
+}
+
+message GetSnapshotRequest {}
+
+message Snapshot {
+  string cluster_id = 1;
+  string controller = 2;
+  int64 now = 3 [jstype = JS_NUMBER];
+  int32 sample_seconds = 4;
+  repeated Node nodes = 5;
+  repeated RepoSummary repos = 6;
+  repeated Base bases = 7;
+  repeated Workspace workspaces = 8;
+  repeated Command commands = 9;
+  repeated ClusterEvent events = 10;
+  Totals totals24h = 11;
+  // Live samples per node ID, oldest first.
+  map<string, Samples> series = 12;
+  repeated LoadSample load = 13;
+  // The last 24 hours, oldest first.
+  repeated HourBucket hourly = 14;
+  map<string, NodeHours> node_hourly = 15;
+  repeated FinishedCommand history = 16;
+  repeated Session sessions = 17;
+}

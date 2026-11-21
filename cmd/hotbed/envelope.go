@@ -7,6 +7,10 @@ import (
 	"io"
 	"log/slog"
 
+	"connectrpc.com/connect/v2"
+	"google.golang.org/protobuf/encoding/protojson"
+	"google.golang.org/protobuf/proto"
+
 	"github.com/semistrict/hotbed/internal/api"
 	"github.com/semistrict/hotbed/internal/statedir"
 )
@@ -30,7 +34,16 @@ type envelope struct {
 	Error   *api.Error `json:"error,omitempty"`
 }
 
+// success wraps a command's data; a protobuf message is written as
+// protobuf JSON, the same field names the API uses.
 func success(command string, data any) envelope {
+	if m, ok := data.(proto.Message); ok {
+		b, err := protojson.MarshalOptions{EmitDefaultValues: true}.Marshal(m)
+		if err != nil {
+			return failure(command, api.Errorf(api.CodeInternal, "encode output: %v", err))
+		}
+		data = json.RawMessage(b)
+	}
 	return envelope{Version: envelopeVersion, OK: true, Command: command, Data: data}
 }
 
@@ -64,13 +77,20 @@ func toAPIError(err error) *api.Error {
 	switch {
 	case errors.As(err, &e):
 		return e
+	case isConnect(err):
+		return api.FromConnect(err)
 	case errors.Is(err, statedir.ErrAlreadyInitialized):
 		return api.Errorf(api.CodeAlreadyInitialized, "%v", err).
-			WithSuggestion("start it with hotbed run DIR, or pick another directory")
+			WithSuggestion("serve it with hotbed serve DIR, or pick another directory")
 	case errors.Is(err, statedir.ErrNotInitialized):
 		return api.Errorf(api.CodeNotInitialized, "%v", err).
 			WithSuggestion("create it with hotbed init DIR (controller) or hotbed join CONTROLLER DIR (worker)")
 	default:
 		return api.Errorf(api.CodeInternal, "%v", err)
 	}
+}
+
+func isConnect(err error) bool {
+	var ce *connect.Error
+	return errors.As(err, &ce)
 }

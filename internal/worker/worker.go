@@ -17,9 +17,12 @@ import (
 	"strconv"
 	"time"
 
+	"connectrpc.com/connect/v2/connecthttp"
 	"golang.org/x/sync/errgroup"
 
 	"github.com/semistrict/hotbed/internal/api"
+	pb "github.com/semistrict/hotbed/internal/gen/hotbed/v1"
+	"github.com/semistrict/hotbed/internal/gen/hotbed/v1/hotbedv1connect"
 	"github.com/semistrict/hotbed/internal/httpx"
 	"github.com/semistrict/hotbed/internal/statedir"
 	"github.com/semistrict/hotbed/internal/storage"
@@ -48,15 +51,15 @@ type JoinResult struct {
 	Controller string   `json:"controller"`
 	Storage    string   `json:"storage"`
 	User       string   `json:"user"`
-	Node       api.Node `json:"node"`
+	Node       string   `json:"node"`
 	Next       []string `json:"next"`
 }
 
-// Check verifies a machine can be a worker: Linux, root, a user to run
-// commands as, and a state directory on a filesystem that can fork.
+// Check verifies a machine can be a worker and says which storage it has.
 type Check func(ctx context.Context, o JoinOptions) (storage string, err error)
 
-// CheckMachine is the real Check.
+// CheckMachine is the real Check: Linux, root, a user to run commands as,
+// and a state directory on a filesystem that can fork.
 func CheckMachine(ctx context.Context, o JoinOptions) (string, error) {
 	if runtime.GOOS != "linux" {
 		return "", api.Errorf(api.CodePlatformNotSupported, "workers need Linux; this is %s", runtime.GOOS).
@@ -74,8 +77,7 @@ func CheckMachine(ctx context.Context, o JoinOptions) (string, error) {
 	}
 	s, err := storage.Open(ctx, o.Dir, o.Dataset)
 	if err != nil {
-		return "", api.Errorf(api.CodeInvalidArgs, "%v", err).
-			WithSuggestion("put the state directory on btrfs or zfs")
+		return "", api.Errorf(api.CodeInvalidArgs, "%v", err).WithSuggestion("put the state directory on btrfs or zfs")
 	}
 	return s.Kind(), nil
 }
@@ -99,21 +101,21 @@ func Join(ctx context.Context, o JoinOptions, hc *http.Client, check Check) (Joi
 	if err != nil {
 		return JoinResult{}, err
 	}
-	client, err := api.NewClient(controller, hc)
+	cluster, _, err := api.Controller(controller, hc)
 	if err != nil {
 		return JoinResult{}, err
 	}
-	joined, err := client.Join(ctx)
+	joined, err := cluster.Join(ctx, &pb.JoinRequest{})
 	if err != nil {
-		return JoinResult{}, err
+		return JoinResult{}, api.FromConnect(err)
 	}
-	cfg := statedir.WorkerConfig{ClusterID: joined.ClusterID, Controller: controller, User: o.User, Dataset: o.Dataset, UnitProperties: o.UnitProperties}
+	cfg := statedir.WorkerConfig{ClusterID: joined.ClusterId, Controller: controller, User: o.User, Dataset: o.Dataset, UnitProperties: o.UnitProperties}
 	if err := statedir.Commit(dir, statedir.Config{Worker: &cfg}); err != nil {
 		return JoinResult{}, err
 	}
 	return JoinResult{
-		ClusterID: joined.ClusterID, Dir: dir, Controller: controller, Storage: kind, User: o.User,
-		Node: joined.Node, Next: []string{"sudo hotbed run " + dir},
+		ClusterID: joined.ClusterId, Dir: dir, Controller: controller, Storage: kind, User: o.User,
+		Node: joined.Node.GetHostname(), Next: []string{"sudo hotbed run " + dir},
 	}, nil
 }
 
@@ -136,12 +138,16 @@ func Run(ctx context.Context, dir string, cfg statedir.WorkerConfig, tn Tailnet,
 		return err
 	}
 	defer eng.Close()
-	client, err := api.NewClient(cfg.Controller, hc)
+	cluster, _, err := api.Controller(cfg.Controller, hc)
 	if err != nil {
 		return err
 	}
 
-	srv := &http.Server{Handler: httpx.Owner(tn, self.Login, eng.Handler()), ReadHeaderTimeout: 10 * time.Second}
+	server := httpx.NewServer(self.Login)
+	hotbedv1connect.RegisterWorkspaceServiceHandler(server, &Service{E: eng})
+	mux := http.NewServeMux()
+	connecthttp.Mount(mux, server)
+	srv := &http.Server{Handler: httpx.Identify(tn, mux), ReadHeaderTimeout: 10 * time.Second, Protocols: httpx.Protocols()}
 	var listeners []net.Listener
 	for _, addr := range self.Addrs {
 		l, err := net.Listen("tcp", net.JoinHostPort(addr.String(), strconv.Itoa(api.WorkerPort)))
@@ -168,7 +174,7 @@ func Run(ctx context.Context, dir string, cfg statedir.WorkerConfig, tn Tailnet,
 		eng.Run(gctx)
 		return nil
 	})
-	g.Go(func() error { return report(gctx, eng, client, cfg.ClusterID) })
+	g.Go(func() error { return Reports(gctx, eng, cluster, cfg.ClusterID) })
 	g.Go(func() error {
 		<-gctx.Done()
 		shutdown, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
@@ -178,36 +184,32 @@ func Run(ctx context.Context, dir string, cfg statedir.WorkerConfig, tn Tailnet,
 	return g.Wait()
 }
 
-// report sends the engine's report every ReportInterval, and soon after
+// Reports sends the engine's report every ReportInterval, and soon after
 // anything changes. It rides out failures a retry can fix, such as the
 // controller restarting, and stops at one it cannot.
-func report(ctx context.Context, eng *Engine, client *api.Client, cluster string) error {
+func Reports(ctx context.Context, eng *Engine, cluster hotbedv1connect.ClusterServiceClient, clusterID string) error {
 	t := time.NewTicker(api.ReportInterval)
 	defer t.Stop()
 	failing := false
 	for {
-		r, err := eng.Report(cluster)
-		if err != nil {
-			return err
-		}
-		reply, err := client.Report(ctx, r)
-		switch {
-		case err == nil:
+		if err := ReportOnce(ctx, eng, cluster, clusterID); err != nil {
+			e := api.FromConnect(err)
+			switch {
+			case ctx.Err() != nil:
+				return nil
+			case e.Retryable:
+				if !failing {
+					slog.Warn("report failed; retrying", "err", e)
+				}
+				failing = true
+			default:
+				return e
+			}
+		} else {
 			if failing {
 				slog.Info("reporting to controller again")
 			}
 			failing = false
-			eng.Acknowledged(reply.Ack)
-			eng.SetRepos(reply.Repos)
-		case ctx.Err() != nil:
-			return nil
-		case retryable(err):
-			if !failing {
-				slog.Warn("report failed; retrying", "err", err)
-			}
-			failing = true
-		default:
-			return err
 		}
 		select {
 		case <-ctx.Done():
@@ -224,7 +226,22 @@ func report(ctx context.Context, eng *Engine, client *api.Client, cluster string
 	}
 }
 
-func retryable(err error) bool {
-	var e *api.Error
-	return errors.As(err, &e) && e.Retryable
+// ReportOnce sends one report and applies the reply.
+func ReportOnce(ctx context.Context, eng *Engine, cluster hotbedv1connect.ClusterServiceClient, clusterID string) error {
+	r, err := eng.Report(clusterID)
+	if err != nil {
+		return err
+	}
+	reply, err := cluster.Report(ctx, r)
+	if err != nil {
+		return err
+	}
+	eng.Acknowledged(reply.Ack)
+	eng.SetRepos(reply.Repos)
+	for _, id := range reply.Release {
+		if err := eng.ReleaseWorkspace(ctx, id); err != nil && api.FromConnect(err).Code != api.CodeNotFound {
+			slog.Error("release workspace of an ended session", "workspace", id, "err", err)
+		}
+	}
+	return nil
 }

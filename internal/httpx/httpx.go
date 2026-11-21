@@ -1,13 +1,15 @@
-// Package httpx is what the controller's and workers' HTTP servers share:
-// tailnet authorization, and JSON replies and errors in the API's shapes.
+// Package httpx is what the controller's and workers' servers share: who is
+// calling, by the tailnet's account, and Connect servers that admit only the
+// cluster's owner and send errors with hotbed's codes.
 package httpx
 
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"log/slog"
 	"net/http"
+
+	"connectrpc.com/connect/v2"
 
 	"github.com/semistrict/hotbed/internal/api"
 	"github.com/semistrict/hotbed/internal/tailnet"
@@ -20,90 +22,98 @@ type Identifier interface {
 
 type peerKey struct{}
 
-// Owner admits only callers the tailnet says are owned by owner, and puts
-// the caller in the request's context.
-func Owner(id Identifier, owner string, next http.Handler) http.Handler {
+type caller struct {
+	peer tailnet.Peer
+	err  error
+}
+
+// Identify asks the tailnet who is calling and puts the answer in the
+// request's context, for the owner checks below.
+func Identify(id Identifier, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		peer, err := id.WhoIs(r.Context(), r.RemoteAddr)
 		if err != nil {
-			slog.Warn("refused caller the tailnet does not know", "remote", r.RemoteAddr, "err", err)
-			ErrorStatus(w, http.StatusUnauthorized, &api.Error{Code: api.CodeNotAuthorized, Message: "the tailnet does not know the caller at " + r.RemoteAddr, Suggestion: "call over the tailnet address"})
-			return
+			slog.Warn("caller the tailnet does not know", "remote", r.RemoteAddr, "err", err)
 		}
-		if peer.Login != owner {
-			slog.Warn("refused caller owned by another user", "peer", peer.Hostname, "login", peer.Login)
-			Error(w, api.Errorf(api.CodeNotAuthorized, "%s is owned by %s; this cluster admits only %s", peer.Hostname, peer.Login, owner))
-			return
-		}
-		next.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), peerKey{}, peer)))
+		next.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), peerKey{}, caller{peer, err})))
 	})
 }
 
-// Peer is the authorized caller of a request that went through Owner.
+// Peer is the caller of a request that went through Identify.
 func Peer(ctx context.Context) tailnet.Peer {
-	p, _ := ctx.Value(peerKey{}).(tailnet.Peer)
-	return p
+	c, _ := ctx.Value(peerKey{}).(caller)
+	return c.peer
 }
 
-// Handle adapts a handler that returns an error: an *api.Error goes back as
-// is, anything else as INTERNAL.
-func Handle(h func(w http.ResponseWriter, r *http.Request) error) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		if err := h(w, r); err != nil {
-			var e *api.Error
-			if !errors.As(err, &e) {
-				slog.Error("request failed", "method", r.Method, "path", r.URL.Path, "err", err)
-				e = &api.Error{Code: api.CodeInternal, Message: err.Error()}
-			}
-			Error(w, e)
-		}
-	}
-}
-
-// JSON writes v.
-func JSON(w http.ResponseWriter, v any) error {
-	w.Header().Set("Content-Type", "application/json")
-	return json.NewEncoder(w).Encode(v)
-}
-
-// Decode reads a JSON body into v.
-func Decode(r *http.Request, v any) error {
-	if err := json.NewDecoder(r.Body).Decode(v); err != nil {
-		return api.Errorf(api.CodeInvalidArgs, "decode request: %v", err)
+// checkOwner says why the caller in ctx may not use the cluster, if it may not.
+func checkOwner(ctx context.Context, owner string) *api.Error {
+	c, ok := ctx.Value(peerKey{}).(caller)
+	switch {
+	case !ok || c.err != nil:
+		return &api.Error{Code: api.CodeNotAuthorized, Message: "the tailnet does not know the caller", Suggestion: "call over the tailnet address"}
+	case c.peer.Login != owner:
+		slog.Warn("refused caller owned by another user", "peer", c.peer.Hostname, "login", c.peer.Login)
+		return api.Errorf(api.CodeNotAuthorized, "%s is owned by %s; this cluster admits only %s", c.peer.Hostname, c.peer.Login, owner)
 	}
 	return nil
 }
 
-// Error writes e with the status its code means.
-func Error(w http.ResponseWriter, e *api.Error) {
-	ErrorStatus(w, Status(e.Code), e)
+// NewServer returns a Connect server that admits only owner's tailnet nodes
+// and sends every handler error with its hotbed code, suggestion and
+// whether to retry.
+func NewServer(owner string) *connect.Server {
+	return connect.NewServer(errors, ownerOnly(owner))
 }
 
-// ErrorStatus writes e with status.
-func ErrorStatus(w http.ResponseWriter, status int, e *api.Error) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(status)
-	if err := json.NewEncoder(w).Encode(e); err != nil {
-		slog.Warn("write error reply", "err", err)
+func errors(next connect.ServerFunc) connect.ServerFunc {
+	return func(ctx context.Context, spec connect.Spec, stream connect.ServerStream) error {
+		err := next(ctx, spec, stream)
+		if err == nil {
+			return nil
+		}
+		if e := api.FromConnect(err); e.Code == api.CodeInternal {
+			slog.Error("call failed", "procedure", spec.Procedure, "err", err)
+		}
+		return api.ToConnect(err)
 	}
 }
 
-// Status is the HTTP status for an error code.
-func Status(c api.Code) int {
-	switch c {
-	case api.CodeInvalidArgs, api.CodeSyncRefused:
-		return http.StatusBadRequest
-	case api.CodeNotAuthorized:
-		return http.StatusForbidden
-	case api.CodeNotJoined:
-		return http.StatusForbidden
-	case api.CodeNotFound:
-		return http.StatusNotFound
-	case api.CodeConflict, api.CodeClusterMismatch:
-		return http.StatusConflict
-	case api.CodeNoWarmBase, api.CodeWorkerUnreachable:
-		return http.StatusServiceUnavailable
-	default:
-		return http.StatusInternalServerError
+func ownerOnly(owner string) connect.ServerInterceptor {
+	return func(next connect.ServerFunc) connect.ServerFunc {
+		return func(ctx context.Context, spec connect.Spec, stream connect.ServerStream) error {
+			if e := checkOwner(ctx, owner); e != nil {
+				return e
+			}
+			return next(ctx, spec, stream)
+		}
 	}
+}
+
+// RequireOwner admits only owner's tailnet nodes to a plain HTTP handler,
+// such as the cockpit's files.
+func RequireOwner(owner string, next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if e := checkOwner(r.Context(), owner); e != nil {
+			status := http.StatusForbidden
+			if c, _ := r.Context().Value(peerKey{}).(caller); c.err != nil {
+				status = http.StatusUnauthorized
+			}
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(status)
+			if err := json.NewEncoder(w).Encode(e); err != nil {
+				slog.Warn("write error reply", "err", err)
+			}
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+// Protocols serves HTTP/1.1 and, without TLS, HTTP/2: the tailnet already
+// encrypts, and HTTP/2 lets streams share a connection.
+func Protocols() *http.Protocols {
+	p := new(http.Protocols)
+	p.SetHTTP1(true)
+	p.SetUnencryptedHTTP2(true)
+	return p
 }
