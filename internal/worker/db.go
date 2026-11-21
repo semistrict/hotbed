@@ -75,7 +75,7 @@ func (d *db) all(kind string, newMsg func() proto.Message, fn func(proto.Message
 			return err
 		}
 		m := newMsg()
-		if err := protojson.Unmarshal([]byte(doc), m); err != nil {
+		if err := decode([]byte(doc), m); err != nil {
 			return fmt.Errorf("decode %s record: %w", kind, err)
 		}
 		fn(m)
@@ -126,4 +126,10 @@ func (d *db) pending(limit int) ([]outboxItem, error) {
 func (d *db) ack(seq int64) error {
 	_, err := d.sql.Exec(`DELETE FROM outbox WHERE seq <= ?`, seq)
 	return err
+}
+
+// decode reads a stored record. Fields a newer hotbed dropped are ignored,
+// so records written before an upgrade still load.
+func decode(doc []byte, m proto.Message) error {
+	return protojson.UnmarshalOptions{DiscardUnknown: true}.Unmarshal(doc, m)
 }

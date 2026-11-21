@@ -17,6 +17,7 @@ import (
 
 	"github.com/semistrict/hotbed/internal/api"
 	pb "github.com/semistrict/hotbed/internal/gen/hotbed/v1"
+	"github.com/semistrict/hotbed/internal/shell"
 	"github.com/semistrict/hotbed/internal/unit"
 )
 
@@ -46,10 +47,12 @@ func cacheEnv() []string {
 		"COREPACK_HOME=" + h + "/corepack",
 		"npm_config_cache=" + h + "/cache/npm",
 		"CARGO_TERM_COLOR=never",
+		// Where steps put the programs they install, so forks have them.
+		"HOTBED_BIN=" + h + "/bin",
 	}
 }
 
-var cachePath = []string{WorkPath + "/.hotbed/cargo/bin", WorkPath + "/.hotbed/go/bin"}
+var cachePath = []string{WorkPath + "/.hotbed/bin", WorkPath + "/.hotbed/cargo/bin", WorkPath + "/.hotbed/go/bin"}
 
 // Exec queues a command in a workspace; it starts once the node admits it.
 func (e *Engine) Exec(_ context.Context, req *pb.RunCommandRequest) (*pb.Command, error) {
@@ -85,7 +88,7 @@ func (e *Engine) Exec(_ context.Context, req *pb.RunCommandRequest) (*pb.Command
 		rec: &pb.CommandRecord{
 			Command: &pb.Command{
 				Id: req.Id, WorkspaceId: req.WorkspaceId, NodeId: e.cfg.NodeID,
-				Argv: shellJoin(req.Args), Args: req.Args, Kind: kind,
+				Argv: shell.Join(req.Args), Args: req.Args, Kind: kind,
 				State: queued, QueuedAt: now, Limits: limits, Attached: req.Attached,
 				SessionId: w.ws().SessionId,
 				Timeline:  []*pb.CommandEvent{{At: now, What: "queued", Detail: "by " + w.ws().Agent}},
@@ -144,6 +147,7 @@ func (e *Engine) Stop(ctx context.Context, id, why string) (*pb.Command, error) 
 		return nil, api.Errorf(api.CodeNotFound, "no command %s on this node", id)
 	}
 	state := c.cmd().State
+	c.stopping = true
 	e.mu.Unlock()
 	if live(state) && state != queued {
 		if state == parked {
@@ -153,11 +157,15 @@ func (e *Engine) Stop(ctx context.Context, id, why string) (*pb.Command, error) 
 			}
 		}
 		if err := e.cfg.Units.Stop(ctx, c.unitName()); err != nil {
+			e.mu.Lock()
+			c.stopping = false
+			e.mu.Unlock()
 			return nil, err
 		}
 	}
 	e.mu.Lock()
 	defer e.mu.Unlock()
+	c.stopping = false
 	e.end(c, cancelled, nil, why)
 	return clone(c.cmd()), nil
 }
@@ -191,7 +199,7 @@ func (e *Engine) observe(ctx context.Context, c *command, st unit.State) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	cmd := c.cmd()
-	if !live(cmd.State) {
+	if !live(cmd.State) || c.stopping {
 		return
 	}
 	now := e.now()
@@ -586,22 +594,6 @@ func scanLog(path string, state pb.CommandState, code *int32, kind string) (unit
 	default:
 		return units, "exit"
 	}
-}
-
-// shellJoin quotes args the way a shell would need them, for display.
-func shellJoin(args []string) string {
-	out := make([]string, len(args))
-	for i, a := range args {
-		if a != "" && strings.IndexFunc(a, func(r rune) bool {
-			return !(r == '-' || r == '_' || r == '.' || r == '/' || r == '=' || r == ':' || r == ',' || r == '@' || r == '+' ||
-				r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9')
-		}) < 0 {
-			out[i] = a
-		} else {
-			out[i] = "'" + strings.ReplaceAll(a, "'", `'\''`) + "'"
-		}
-	}
-	return strings.Join(out, " ")
 }
 
 func codeText(code *int32) string {

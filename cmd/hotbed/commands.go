@@ -49,8 +49,8 @@ const description = `For AI agents, read this first:
   hotbed skills install        Install the guides into ~/.claude/skills
   hotbed COMMAND --help        Flags and arguments for one command
 
-Every command prints one JSON envelope on stdout, except run (attached) and
-logs, which print the command's output.
+Every command prints one JSON envelope on stdout, except run (attached),
+logs and step show, which print the command's output or the step's script.
 
 Run builds, tests and dev servers on a cluster of Linux machines on your
 tailnet, each in a fork of a repo whose main is already built.`
@@ -64,7 +64,8 @@ type cli struct {
 	Ps      psCmd      `cmd:"" help:"List a session's commands."`
 	Logs    logsCmd    `cmd:"" help:"Print a command's output."`
 	Stop    stopCmd    `cmd:"" help:"Stop a command."`
-	Repo    repoCmd    `cmd:"" help:"Repos the cluster keeps built bases of (add, ls, rm)."`
+	Repo    repoCmd    `cmd:"" help:"Repos the cluster keeps built bases of (add, ls, rm, rebuild)."`
+	Step    stepCmd    `cmd:"" help:"A repo's setup steps: what brings its bases up to date (add, set, ls, show, rm)."`
 	Nodes   nodesCmd   `cmd:"" help:"List the cluster's workers."`
 	Init    initCmd    `cmd:"" help:"Create a cluster with this machine as its controller."`
 	Join    joinCmd    `cmd:"" help:"Join this machine to a cluster as a worker (as root)."`

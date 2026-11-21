@@ -20,6 +20,13 @@ service ClusterService {
   // Bases are otherwise built incrementally: each generation forks the one
   // before, pulls, and freshens.
   rpc RebuildRepo(RebuildRepoRequest) returns (Repo);
+  // PutStep adds a setup step to a repo, or replaces the one of that name.
+  // The next workspace of the repo gets a base that has run it.
+  rpc PutStep(PutStepRequest) returns (Repo);
+  rpc DeleteStep(DeleteStepRequest) returns (Repo);
+  // ListSteps is a repo's steps and, for each, whether each node's newest
+  // base has run it.
+  rpc ListSteps(ListStepsRequest) returns (ListStepsResponse);
   // GetSnapshot is everything the cockpit shows.
   rpc GetSnapshot(GetSnapshotRequest) returns (Snapshot);
 }
@@ -144,15 +151,91 @@ message Repo {
   string url = 2;
   // The branch bases follow; empty means the remote's default.
   string branch = 3;
-  // Commands that bring a checkout up to date the way a person would after
-  // a pull, run in order in every base so forks start with their output.
-  repeated string freshen = 4;
+  reserved 4;
+  reserved "freshen";
   // Host names of the nodes that keep bases; empty means every worker.
   repeated string hosts = 5;
   int64 created_at = 6;
   // Raised by RebuildRepo: a worker whose newest base has a lower epoch
   // builds the next one from nothing.
   int64 scratch_epoch = 7;
+  // What brings a checkout up to date, run in order in each base so that
+  // forks start with it: toolchains, dependencies, builds.
+  repeated Step steps = 8;
+}
+
+// A setup step: an idempotent bash script, run with -eo pipefail in the
+// checkout. Like a database migration, a base runs it once and again only
+// when its script changes; an every_pull step also runs after every pull.
+message Step {
+  // Lowercase words joined by dashes, such as playwright-browsers.
+  string name = 1;
+  string script = 2;
+  // Run after every pull too: builds, and installs from a lockfile.
+  bool every_pull = 3;
+  // The script's sha256, 12 hex digits: a base that ran another hash runs it again.
+  string hash = 4;
+  int64 updated_at = 5;
+  // The machine it was set from.
+  string updated_by = 6;
+}
+
+// What a base did with one of its repo's steps.
+message AppliedStep {
+  string name = 1;
+  // The script's hash as the base ran it, or inherited it from the base it
+  // forked.
+  string hash = 2;
+  // Ran in this generation, rather than inherited.
+  bool ran = 3;
+  // False for the step that failed this generation's freshen.
+  bool ok = 4;
+  double seconds = 5;
+}
+
+message PutStepRequest {
+  string repo_id = 1;
+  // hash, updated_at and updated_by are the controller's to set.
+  Step step = 2;
+  // Put the step before this one; empty keeps a replaced step where it is
+  // and puts a new one last.
+  string before = 3;
+}
+
+message DeleteStepRequest {
+  string repo_id = 1;
+  string name = 2;
+}
+
+message ListStepsRequest {
+  string repo_id = 1;
+}
+
+message ListStepsResponse {
+  repeated StepStatus steps = 1;
+}
+
+enum StepState {
+  STEP_STATE_UNSPECIFIED = 0;
+  // The node's newest base ran this version of the script.
+  STEP_STATE_APPLIED = 1;
+  // It has not: the next base there will run it.
+  STEP_STATE_PENDING = 2;
+  // This version failed in the node's newest freshen.
+  STEP_STATE_FAILED = 3;
+}
+
+message StepStatus {
+  Step step = 1;
+  repeated StepOnNode nodes = 2;
+}
+
+message StepOnNode {
+  string node = 1;
+  // The node's newest base of the repo that is not still building.
+  string base_id = 2;
+  StepState state = 3;
+  double seconds = 4;
 }
 
 message ListReposRequest {}
@@ -209,6 +292,11 @@ message Base {
   string command = 16;
   // The repo's scratch_epoch when this generation was started.
   int64 scratch_epoch = 17;
+  // Every step of the repo as this generation left it, in order.
+  repeated AppliedStep steps = 18;
+  // A fingerprint of the commit and steps it was built for, so a failed
+  // freshen is not tried again until one of them changes.
+  string recipe = 19;
 }
 
 // ---- workspaces ---------------------------------------------------------
@@ -253,7 +341,8 @@ message Workspace {
   // only through commands run in it.
   string sync_dir = 19;
   string sync_host = 20;
-  // Why it failed, or what it waits for while preparing.
+  // Why it failed, what it waits for while preparing, or, once ready, why
+  // its base is not up to date (a step failed in the newer one).
   string reason = 21;
 }
 

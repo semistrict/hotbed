@@ -115,9 +115,12 @@ func waitReady(ctx context.Context, stream clients, ws *pb.Workspace, stderr io.
 			}
 		}
 	}
+	if ws.State != pb.WorkspaceState_WORKSPACE_STATE_FAILED && ws.Reason != "" {
+		fmt.Fprintf(stderr, "hotbed: warning: %s %s\n", ws.Id, ws.Reason)
+	}
 	if ws.State == pb.WorkspaceState_WORKSPACE_STATE_FAILED {
 		return nil, api.Errorf(api.CodeWorkspaceFailed, "workspace %s failed: %s", ws.Id, ws.Reason).
-			WithSuggestion("see the freshen's log in the cockpit, fix the repo's freshen commands (hotbed repo add), and add the repo again")
+			WithSuggestion("fix the failing step (hotbed step ls REPO, then hotbed step add), and add the repo again")
 	}
 	return ws, nil
 }
@@ -296,20 +299,24 @@ func (c *runCmd) Raw(ctx context.Context, d deps) (int, bool, error) {
 		return exitOK, true, nil
 	}
 	fmt.Fprintf(d.stderr, "hotbed: %s running in %s (hotbed stop %s %s)\n", cmd.Id, ws.Id, c.Session, cmd.Id)
-	code, err := follow(ctx, cl, stream, cmd.Id, d.stdout)
+	code, err := attach(ctx, cl, stream, cmd.Id, d.stdout, d.stderr)
+	return code, true, err
+}
+
+// attach prints an attached command's output to w until it ends and returns
+// its exit status. Interrupted, it stops the command, which ends with its
+// client, and returns 130 as a shell would.
+func attach(ctx context.Context, cl, stream clients, id string, w, stderr io.Writer) (int, error) {
+	code, err := follow(ctx, cl, stream, id, w)
 	if ctx.Err() != nil {
-		// Interrupted: an attached command stops with its client.
 		stopCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
 		defer cancel()
-		if _, err := cl.workspaces.StopCommand(stopCtx, &pb.StopCommandRequest{Id: cmd.Id}); err != nil {
-			fmt.Fprintf(d.stderr, "hotbed: could not stop %s: %v\n", cmd.Id, api.FromConnect(err))
+		if _, err := cl.workspaces.StopCommand(stopCtx, &pb.StopCommandRequest{Id: id}); err != nil {
+			fmt.Fprintf(stderr, "hotbed: could not stop %s: %v\n", id, api.FromConnect(err))
 		}
-		return 130, true, nil
+		return 130, nil
 	}
-	if err != nil {
-		return 0, true, err
-	}
-	return code, true, nil
+	return code, err
 }
 
 func (c *runCmd) Exec(context.Context, deps) (any, error) { return nil, errors.New("run is raw") }

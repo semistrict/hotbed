@@ -57,7 +57,7 @@ func (e *Engine) CreateWorkspace(ctx context.Context, req *pb.CreateWorkspaceReq
 	}
 	lock := e.repoLock(r.Id)
 	lock.Lock()
-	base, err := e.baseFor(ctx, r)
+	base, note, err := e.baseFor(ctx, r)
 	lock.Unlock()
 	if err != nil {
 		return nil, err
@@ -71,7 +71,7 @@ func (e *Engine) CreateWorkspace(ctx context.Context, req *pb.CreateWorkspaceReq
 			SessionId: req.SessionId, SyncDir: req.SyncDir, SyncHost: req.SyncHost,
 			Reason: fmt.Sprintf("waiting for base %s to freshen", base.Id),
 		},
-		Volume: "ws/" + req.Id, BaseSnapshot: base.Id,
+		Volume: "ws/" + req.Id, BaseSnapshot: base.Id, Note: note,
 	}}
 	e.mu.Lock()
 	e.workspaces[req.Id] = w
@@ -82,8 +82,8 @@ func (e *Engine) CreateWorkspace(ctx context.Context, req *pb.CreateWorkspaceReq
 	if b, ok := e.bases[base.Id]; ok {
 		state = b.State
 	}
-	if state == broken {
-		e.failPreparing(base.Id, "its base "+base.Id+" failed to freshen")
+	if b, ok := e.bases[base.Id]; ok && state == broken {
+		e.baseFailed(b, baseFailure(b))
 	}
 	e.mu.Unlock()
 	if state == warm {
@@ -94,10 +94,11 @@ func (e *Engine) CreateWorkspace(ctx context.Context, req *pb.CreateWorkspaceReq
 	return e.Workspace(req.Id)
 }
 
-// fork makes a preparing workspace's volume from its base's snapshot.
+// fork makes a preparing workspace's volume from its base's snapshot. A
+// note (such as why the base is not up to date) becomes its reason.
 func (e *Engine) fork(ctx context.Context, w *workspace) error {
 	e.mu.Lock()
-	snap, vol := w.rec.BaseSnapshot, w.rec.Volume
+	snap, vol, note := w.rec.BaseSnapshot, w.rec.Volume, w.rec.Note
 	e.mu.Unlock()
 	start := e.now()
 	err := e.cfg.Store.Clone(ctx, snap, vol)
@@ -111,7 +112,7 @@ func (e *Engine) fork(ctx context.Context, w *workspace) error {
 		e.workspaceEvent(ws, "failed", ws.Reason)
 		return err
 	}
-	ws.State, ws.Reason, ws.ForkMillis = idle, "", forkMs
+	ws.State, ws.Reason, ws.ForkMillis = idle, note, forkMs
 	if b, ok := e.bases[snap]; ok {
 		ws.SharedBytes = b.SizeBytes
 	}
@@ -139,18 +140,40 @@ func (e *Engine) forkPrepared(base string) {
 	}
 }
 
-// failPreparing fails every workspace that waited for base. Call with e.mu held.
-func (e *Engine) failPreparing(base, why string) {
+// baseFailed deals with the workspaces that waited for base b, which failed
+// to freshen: they fork the repo's newest warm base instead, with a note
+// saying why it is not up to date, or fail when there is none. One broken
+// step does not stop agents from working. Call with e.mu held.
+func (e *Engine) baseFailed(b *pb.Base, why string) {
+	var fallback *pb.Base
+	for _, o := range e.bases {
+		if o.RepoId == b.RepoId && o.State == warm && (fallback == nil || o.Generation > fallback.Generation) {
+			fallback = o
+		}
+	}
 	for _, w := range e.workspaces {
 		ws := w.ws()
-		if ws.State == preparing && ws.BaseId == base {
-			ws.State, ws.Reason = failedWS, why
+		if ws.State != preparing || ws.BaseId != b.Id {
+			continue
+		}
+		if fallback != nil {
+			ws.BaseId, ws.Head, ws.BaseCommit = fallback.Id, fallback.Commit, fallback.Commit
+			w.rec.BaseSnapshot = fallback.Id
+			w.rec.Note = fmt.Sprintf("on %s, not up to date: %s", fallback.Id, why)
 			e.saveWorkspace(w)
-			e.workspaceEvent(ws, "failed", why)
-			for _, c := range e.commands {
-				if c.cmd().WorkspaceId == ws.Id && c.cmd().State == queued {
-					e.end(c, failed, nil, "its workspace failed: "+why)
+			go func() {
+				if err := e.fork(context.Background(), w); err != nil {
+					slog.Error("fork workspace onto an older base", "workspace", ws.Id, "err", err)
 				}
+			}()
+			continue
+		}
+		ws.State, ws.Reason = failedWS, why
+		e.saveWorkspace(w)
+		e.workspaceEvent(ws, "failed", why)
+		for _, c := range e.commands {
+			if c.cmd().WorkspaceId == ws.Id && c.cmd().State == queued {
+				e.end(c, failed, nil, "its workspace failed: "+why)
 			}
 		}
 	}

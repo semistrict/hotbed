@@ -12,6 +12,9 @@ message WorkspaceRecord {
   Workspace workspace = 1;
   string volume = 2;
   string base_snapshot = 3;
+  // Why the base it forks is not up to date, if it is not; its reason once
+  // it is ready.
+  string note = 4;
 }
 
 message CommandRecord {

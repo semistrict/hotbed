@@ -6,7 +6,9 @@
 | `NOT_FOUND` | No such session, repo, workspace or command, or the session ended | Check the name; `hotbed session start` for a new session; `hotbed add S REPO` for a workspace |
 | `CONFLICT` | The session name is taken, or the workspace is still preparing (retryable) | Pick another, or leave it out for a random one |
 | `REPO_UNREACHABLE` | The worker cannot read the repo's remote (retryable) | Check the URL in `hotbed repo ls` and the node's access to it, then retry |
-| `WORKSPACE_FAILED` | The workspace's base failed to freshen, or its fork failed | Read the reason; fix the repo's freshen commands (`hotbed repo add`, or `hotbed repo rebuild` if incremental state broke) and `hotbed add` again |
+| `WORKSPACE_FAILED` | The repo's first base failed at a step, or the fork failed | Read the message, which names the step; fix it with `hotbed step add` (or `hotbed repo rebuild` if incremental state broke) and `hotbed add` again |
+| `STEP_FAILED` | `step add`: the script failed in your workspace; it was not saved | Read its output (`hotbed logs S CMD`), fix the script, add it again |
+| `STEP_NOT_IDEMPOTENT` | `step add`: the script worked once but failed when run again; it was not saved | Make it safe to repeat (check before installing, `mkdir -p`, `--force`) and add it again |
 | `SYNC_REFUSED` | The checkout cannot be synced: hidden edits (`skip-worktree`, `assume-unchanged`), a dirty submodule, or a missing base commit | Do what the suggestion says, then sync again |
 | `CONTROLLER_UNREACHABLE` | No answer from the controller (retryable) | Check `tailscale status` and that the controller runs `hotbed serve` |
 | `WORKER_UNREACHABLE` | The node holding the workspace is offline (retryable) | Wait for it, or end the session and start one elsewhere |

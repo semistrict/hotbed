@@ -90,10 +90,10 @@ func (c *nodesCmd) Exec(ctx context.Context, d deps) (any, error) {
 }
 
 type repoCmd struct {
-	Add     repoAddCmd     `cmd:"" help:"Add or update a repo; workspaces of it fork bases freshened when they ask."`
+	Add     repoAddCmd     `cmd:"" help:"Add or update a repo; give it setup steps with hotbed step set."`
 	Ls      repoLsCmd      `cmd:"" help:"List repos."`
 	Rm      repoRmCmd      `cmd:"" help:"Remove a repo; workers delete its bases once no workspace uses them."`
-	Rebuild repoRebuildCmd `cmd:"" help:"Build the repo's next base from nothing on every worker. Bases are otherwise built incrementally: pull, then freshen."`
+	Rebuild repoRebuildCmd `cmd:"" help:"Build the repo's next base from nothing on every worker. Bases are otherwise built incrementally: pull, then the steps that need to run."`
 }
 
 type repoRebuildCmd struct {
@@ -111,11 +111,10 @@ func (c *repoRebuildCmd) Exec(ctx context.Context, d deps) (any, error) {
 
 type repoAddCmd struct {
 	controllerFlag
-	ID      string   `arg:"" help:"Short name, such as ratel; workspaces see the checkout at /work/<name>."`
-	URL     string   `arg:"" help:"What git clones."`
-	Branch  string   `help:"Branch bases follow (default: the remote's default branch)."`
-	Freshen []string `help:"Command that brings a checkout up to date after a pull, such as pnpm install or cargo build --all-targets; bases run them in order. Repeatable."`
-	Host    []string `help:"Node (host name) that keeps bases; default every worker. Repeatable."`
+	ID     string   `arg:"" help:"Short name, such as ratel; workspaces see the checkout at /work/<name>."`
+	URL    string   `arg:"" help:"What git clones."`
+	Branch string   `help:"Branch bases follow (default: the remote's default branch)."`
+	Host   []string `help:"Node (host name) that keeps bases; default every worker. Repeatable."`
 }
 
 func (c *repoAddCmd) Exec(ctx context.Context, d deps) (any, error) {
@@ -123,7 +122,7 @@ func (c *repoAddCmd) Exec(ctx context.Context, d deps) (any, error) {
 	if err != nil {
 		return nil, err
 	}
-	return cl.cluster.PutRepo(ctx, &pb.PutRepoRequest{Repo: &pb.Repo{Id: c.ID, Url: c.URL, Branch: c.Branch, Freshen: c.Freshen, Hosts: c.Host}})
+	return cl.cluster.PutRepo(ctx, &pb.PutRepoRequest{Repo: &pb.Repo{Id: c.ID, Url: c.URL, Branch: c.Branch, Hosts: c.Host}})
 }
 
 type repoLsCmd struct {

@@ -69,7 +69,7 @@ func (s *workspaces) place(ctx context.Context, req *pb.CreateWorkspaceRequest) 
 	}
 	i := slices.IndexFunc(repos, func(r *pb.Repo) bool { return r.Id == req.Repo })
 	if i < 0 {
-		return nodeRow{}, nil, api.Errorf(api.CodeNotFound, "no repo %s", req.Repo).WithSuggestion("hotbed repo add NAME URL --freshen CMD")
+		return nodeRow{}, nil, api.Errorf(api.CodeNotFound, "no repo %s", req.Repo).WithSuggestion("hotbed repo add NAME URL, then hotbed step set NAME build --every-pull -- CMD")
 	}
 	repo := repos[i]
 	rows, err := s.cfg.Store.Nodes(ctx)

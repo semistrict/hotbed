@@ -152,12 +152,22 @@ func (u *Units) Start(_ context.Context, s unit.Spec) error {
 	if err != nil {
 		return err
 	}
-	cmd := exec.Command(args[0], args[1:]...)
+	// Like a real unit, put the spec's directories around PATH before
+	// looking the command up.
+	cmd := exec.Command("/bin/sh", append([]string{"-c", `PATH="${HOTBED_PATH:+$HOTBED_PATH:}$PATH${HOTBED_PATH_AFTER:+:$HOTBED_PATH_AFTER}"; exec "$@"`, "hotbed"}, args...)...)
 	cmd.Dir = rewrite(s.Dir)
 	cmd.Env = os.Environ()
 	for _, e := range s.Env {
 		cmd.Env = append(cmd.Env, rewrite(e))
 	}
+	paths := func(dirs []string) string {
+		out := make([]string, len(dirs))
+		for i, d := range dirs {
+			out[i] = rewrite(d)
+		}
+		return strings.Join(out, ":")
+	}
+	cmd.Env = append(cmd.Env, "HOTBED_PATH="+paths(s.PathPrefix), "HOTBED_PATH_AFTER="+paths(s.PathSuffix))
 	cmd.Stdout, cmd.Stderr = log, log
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	if err := cmd.Start(); err != nil {

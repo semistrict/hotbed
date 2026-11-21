@@ -166,8 +166,10 @@ func marshal(m proto.Message) (string, error) {
 	return string(b), err
 }
 
+// unmarshal decodes a stored record. Fields a newer hotbed dropped are
+// ignored, so records written before an upgrade still load.
 func unmarshal[T proto.Message](doc string, m T) (T, error) {
-	return m, protojson.Unmarshal([]byte(doc), m)
+	return m, protojson.UnmarshalOptions{DiscardUnknown: true}.Unmarshal([]byte(doc), m)
 }
 
 // Join records p as a worker, or updates its name and owner if it joined

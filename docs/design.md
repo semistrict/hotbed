@@ -37,22 +37,33 @@ is detected from the state directory's filesystem; a ZFS worker keeps its datase
 
 ## Bases and workspaces
 
-A repo is registered once (`hotbed repo add NAME URL --freshen CMD...`) with the commands that
-bring a checkout up to date, the way a person would after pulling: `pnpm install`,
-`cargo build --all-targets`, `cargo nextest run --no-run`. Bases are brought up to date only when
-a workspace asks for one; nothing builds in the background. When a workspace is created, its node
-looks at the head of the repo's branch:
+A repo (`hotbed repo add NAME URL`) has **setup steps**: idempotent bash scripts, in order, that
+bring a checkout up to date the way a person would after pulling: install a toolchain, `pnpm
+install`, `cargo build --all-targets`. They live on the controller, and agents edit them whenever
+they find something missing (`hotbed step add`, which tries the script twice in the agent's own
+workspace before saving it). Steps work like database migrations. Each base records the hash of
+every step it ran or inherited. A generation runs a step only when its script changed since the
+base it forks (or it is new), and `--every-pull` steps also run whenever the branch moved.
 
-- If its newest warm base is at that commit, the workspace is a clone of it, at once.
-- If a base of that commit is already freshening (another workspace asked first), the workspace
-  waits for it.
-- Otherwise the node makes the next generation: clone the newest warm base (or start empty if
-  there is none), fetch, check out the branch's head and update submodules recursively, run the
-  freshen commands in it as commands like any other (so they get limits, logs, history), and
-  snapshot it read-only. That snapshot is generation N, warm, and the waiting workspaces fork it.
+Bases are brought up to date only when a workspace asks for one; nothing builds in the background.
+When a workspace is created, its node compares the head of the repo's branch and the repo's steps
+with its newest warm base:
 
-A workspace is *preparing* while its base freshens and *failed* if the freshen fails; commands run
-in it wait for it, and `hotbed add` waits too unless given `--no-wait`. Because each generation
+- If that base is at the head and has run every step as it is now, the workspace is a clone of
+  it, at once.
+- If a base for the same commit and steps (the same *recipe*) is already freshening (another
+  workspace asked first), the workspace waits for it.
+- Otherwise the node makes the next generation. It clones the newest warm base (or starts empty if
+  there is none), fetches, checks out the branch's head and updates submodules recursively. It runs
+  the steps that need to run, in one command like any other (so it gets limits, logs, history), and
+  snapshots the result read-only. That snapshot is generation N, warm, and the waiting workspaces
+  fork it.
+
+A workspace is *preparing* while its base freshens; commands run in it wait for it, and
+`hotbed add` waits too unless given `--no-wait`. A freshen that fails does not stop work. The
+waiting workspaces fork the newest warm base instead, with a reason naming the step that failed.
+The same recipe is not tried again until the commit or a step changes. A workspace *fails* only
+when there is no warm base to fall back to. Because each generation
 starts from the previous one, a freshen is a pull and an incremental build. Only
 `hotbed repo rebuild NAME` makes the next generation start empty, for when incremental state has
 gone bad. The controller places a workspace on a node that hosts the repo, preferring one with a

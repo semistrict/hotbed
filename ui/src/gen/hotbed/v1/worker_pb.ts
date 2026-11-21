@@ -15,7 +15,7 @@ import type { Message } from "@bufbuild/protobuf";
  * Describes the file hotbed/v1/worker.proto.
  */
 export const file_hotbed_v1_worker: GenFile = /*@__PURE__*/
-  fileDesc("ChZob3RiZWQvdjEvd29ya2VyLnByb3RvEglob3RiZWQudjEiYQoPV29ya3NwYWNlUmVjb3JkEicKCXdvcmtzcGFjZRgBIAEoCzIULmhvdGJlZC52MS5Xb3Jrc3BhY2USDgoGdm9sdW1lGAIgASgJEhUKDWJhc2Vfc25hcHNob3QYAyABKAki3AEKDUNvbW1hbmRSZWNvcmQSIwoHY29tbWFuZBgBIAEoCzISLmhvdGJlZC52MS5Db21tYW5kEg8KB3JlcG9faWQYAiABKAkSDQoFYWdlbnQYAyABKAkSDgoGdm9sdW1lGAQgASgJEgsKA2RpchgFIAEoCRILCgNlbnYYBiADKAkSDwoHYmFzZV9pZBgHIAEoCRINCgVwYXJrcxgIIAEoBRIRCglwYXJrZWRfYXQYCSABKAMSGQoRcGVha19tZW1vcnlfYnl0ZXMYCiABKAMSDgoGY2dyb3VwGAsgASgJQj5aPGdpdGh1Yi5jb20vc2VtaXN0cmljdC9ob3RiZWQvaW50ZXJuYWwvZ2VuL2hvdGJlZC92MTtob3RiZWR2MWIGcHJvdG8z", [file_hotbed_v1_hotbed]);
+  fileDesc("ChZob3RiZWQvdjEvd29ya2VyLnByb3RvEglob3RiZWQudjEibwoPV29ya3NwYWNlUmVjb3JkEicKCXdvcmtzcGFjZRgBIAEoCzIULmhvdGJlZC52MS5Xb3Jrc3BhY2USDgoGdm9sdW1lGAIgASgJEhUKDWJhc2Vfc25hcHNob3QYAyABKAkSDAoEbm90ZRgEIAEoCSLcAQoNQ29tbWFuZFJlY29yZBIjCgdjb21tYW5kGAEgASgLMhIuaG90YmVkLnYxLkNvbW1hbmQSDwoHcmVwb19pZBgCIAEoCRINCgVhZ2VudBgDIAEoCRIOCgZ2b2x1bWUYBCABKAkSCwoDZGlyGAUgASgJEgsKA2VudhgGIAMoCRIPCgdiYXNlX2lkGAcgASgJEg0KBXBhcmtzGAggASgFEhEKCXBhcmtlZF9hdBgJIAEoAxIZChFwZWFrX21lbW9yeV9ieXRlcxgKIAEoAxIOCgZjZ3JvdXAYCyABKAlCPlo8Z2l0aHViLmNvbS9zZW1pc3RyaWN0L2hvdGJlZC9pbnRlcm5hbC9nZW4vaG90YmVkL3YxO2hvdGJlZHYxYgZwcm90bzM", [file_hotbed_v1_hotbed]);
 
 /**
  * @generated from message hotbed.v1.WorkspaceRecord
@@ -35,6 +35,14 @@ export type WorkspaceRecord = Message<"hotbed.v1.WorkspaceRecord"> & {
    * @generated from field: string base_snapshot = 3;
    */
   baseSnapshot: string;
+
+  /**
+   * Why the base it forks is not up to date, if it is not; its reason once
+   * it is ready.
+   *
+   * @generated from field: string note = 4;
+   */
+  note: string;
 };
 
 /**

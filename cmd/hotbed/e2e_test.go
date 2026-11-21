@@ -5,12 +5,14 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -192,7 +194,8 @@ func (c *cluster) fails(args ...string) (int, *api.Error) {
 // addRepo registers a repo; its first base is built when a workspace asks.
 func (c *cluster) addRepo(origin string) {
 	c.t.Helper()
-	c.ok(nil, "repo", "add", "app", origin, "--freshen", freshen)
+	c.ok(nil, "repo", "add", "app", origin)
+	c.ok(nil, "step", "set", "app", "build", "--every-pull", "--", freshen)
 }
 
 func gitIn(t *testing.T, dir string, args ...string) string {
@@ -509,7 +512,7 @@ func TestRemovedRepoBasesAreDeleted(t *testing.T) {
 
 func TestAddUnreachableRepoIsRetryable(t *testing.T) {
 	c := newCluster(t)
-	c.ok(nil, "repo", "add", "app", "/nonexistent/repo", "--freshen", "true")
+	c.ok(nil, "repo", "add", "app", "/nonexistent/repo")
 	c.ok(nil, "session", "start", "eager-gnu")
 	code, e := c.fails("add", "eager-gnu", "app")
 	if code != exitError || e.Code != api.CodeRepoUnreachable || !e.Retryable {
@@ -519,10 +522,11 @@ func TestAddUnreachableRepoIsRetryable(t *testing.T) {
 
 func TestAddFailsWhenFreshenFails(t *testing.T) {
 	c := newCluster(t)
-	c.ok(nil, "repo", "add", "app", upstream(t), "--freshen", "echo broken build >&2; exit 3")
+	c.ok(nil, "repo", "add", "app", upstream(t))
+	c.ok(nil, "step", "set", "app", "build", "--every-pull", "--", "echo broken build >&2; exit 3")
 	c.ok(nil, "session", "start", "eager-gnu")
 	code, e := c.fails("add", "eager-gnu", "app")
-	if code != exitError || e.Code != api.CodeWorkspaceFailed || e.Retryable || !strings.Contains(e.Message, "freshen") {
+	if code != exitError || e.Code != api.CodeWorkspaceFailed || e.Retryable || !strings.Contains(e.Message, "failed at step build") {
 		t.Errorf("add with a failing freshen: exit %d, %+v", code, e)
 	}
 }
@@ -557,4 +561,162 @@ func workerHandler(tn *tailnettest.Fake, eng *worker.Engine) http.Handler {
 	mux := http.NewServeMux()
 	connecthttp.Mount(mux, server)
 	return httpx.Identify(tn, mux)
+}
+
+// runs counts the lines a step appended to a file in the workspace's cache.
+func (c *cluster) runs(session, file string) int {
+	c.t.Helper()
+	code, out, stderr := c.hotbed("run", session, "app", "--", "sh", "-c", `cat "$XDG_CACHE_HOME/`+file+`" 2>/dev/null || true`)
+	if code != 0 {
+		c.t.Fatalf("count %s: exit %d: %s", file, code, stderr)
+	}
+	return strings.Count(out, "\n")
+}
+
+// Steps are migrations: a base runs a step once and again only when its
+// script changes, while an every-pull step also runs whenever the branch
+// moved.
+func TestStepsRunLikeMigrations(t *testing.T) {
+	c := newCluster(t)
+	origin := upstream(t)
+	c.ok(nil, "repo", "add", "app", origin)
+	c.ok(nil, "step", "set", "app", "tool", "--", `mkdir -p "$XDG_CACHE_HOME" && echo run >> "$XDG_CACHE_HOME/tool"`)
+	c.ok(nil, "step", "set", "app", "build", "--every-pull", "--", `mkdir -p "$XDG_CACHE_HOME" && echo run >> "$XDG_CACHE_HOME/build"`)
+	add := func(session string) *pb.Workspace {
+		t.Helper()
+		c.ok(nil, "session", "start", session)
+		ws := &pb.Workspace{}
+		c.ok(ws, "add", session, "app")
+		return ws
+	}
+	counts := func(session string) [2]int { return [2]int{c.runs(session, "tool"), c.runs(session, "build")} }
+
+	add("one-ant")
+	if got := counts("one-ant"); got != [2]int{1, 1} {
+		t.Errorf("first base ran tool, build %v times, want once each", got)
+	}
+
+	write(t, filepath.Join(origin, "src/lib.txt"), "moved\n")
+	gitIn(t, origin, "commit", "--quiet", "-am", "Move the branch")
+	if ws := add("two-bee"); ws.BaseId != "app-g2" {
+		t.Fatalf("after a pull the workspace forked %s, want app-g2", ws.BaseId)
+	}
+	if got := counts("two-bee"); got != [2]int{1, 2} {
+		t.Errorf("after a pull tool, build ran %v times, want only build again", got)
+	}
+
+	c.ok(nil, "step", "set", "app", "tool", "--", `mkdir -p "$XDG_CACHE_HOME" && echo run v2 >> "$XDG_CACHE_HOME/tool"`)
+	if ws := add("three-cat"); ws.BaseId != "app-g3" {
+		t.Fatalf("after a step changed the workspace forked %s, want app-g3", ws.BaseId)
+	}
+	if got := counts("three-cat"); got != [2]int{2, 2} {
+		t.Errorf("after tool changed tool, build ran %v times, want only tool again", got)
+	}
+	if ws := add("four-dog"); ws.BaseId != "app-g3" {
+		t.Errorf("with nothing changed the workspace forked %s, want app-g3", ws.BaseId)
+	}
+
+	// step ls is the cluster as workers last reported it.
+	want := []string{"tool asahimbp app-g3 STEP_STATE_APPLIED", "build asahimbp app-g3 STEP_STATE_APPLIED"}
+	var got []string
+	c.eventually("step ls to show app-g3", func() bool {
+		ls := &pb.ListStepsResponse{}
+		c.ok(ls, "step", "ls", "app")
+		got = got[:0]
+		for _, s := range ls.Steps {
+			for _, n := range s.Nodes {
+				got = append(got, fmt.Sprintf("%s %s %s %s", s.Step.Name, n.Node, n.BaseId, n.State))
+			}
+		}
+		return len(got) == 2 && strings.Contains(got[0], "app-g3")
+	})
+	if !slices.Equal(got, want) {
+		t.Errorf("step ls = %q, want %q", got, want)
+	}
+	code, out, _ := c.hotbed("step", "show", "app", "tool")
+	if code != 0 || out != `mkdir -p "$XDG_CACHE_HOME" && echo run v2 >> "$XDG_CACHE_HOME/tool"`+"\n" {
+		t.Errorf("step show: exit %d, %q", code, out)
+	}
+}
+
+// step add gives the agent's workspace what the step installs at once, and
+// saves only a step that works twice.
+func TestStepAddTriesItTwice(t *testing.T) {
+	c := newCluster(t)
+	c.addRepo(upstream(t))
+	c.ok(nil, "session", "start", "keen-elk")
+	c.ok(nil, "add", "keen-elk", "app")
+
+	repo := &pb.Repo{}
+	c.ok(repo, "step", "add", "keen-elk", "app", "tool", "--", `mkdir -p "$HOTBED_BIN" && printf '#!/bin/sh\necho tool works\n' > "$HOTBED_BIN/tool" && chmod +x "$HOTBED_BIN/tool"`)
+	if len(repo.Steps) != 2 || repo.Steps[1].Name != "tool" || len(repo.Steps[1].Hash) != 12 || repo.Steps[1].UpdatedBy != "laptop" {
+		t.Fatalf("steps after add = %v", repo.Steps)
+	}
+	if code, out, _ := c.hotbed("run", "keen-elk", "app", "--", "tool"); code != 0 || out != "tool works\n" {
+		t.Errorf("the tool in the agent's workspace: exit %d, %q", code, out)
+	}
+
+	code, e := c.fails("step", "add", "keen-elk", "app", "once", "--", `mkdir -p "$XDG_DATA_HOME" && mkdir "$XDG_DATA_HOME/once-only"`)
+	if code != exitError || e.Code != api.CodeStepNotIdempotent {
+		t.Errorf("a step that fails when repeated: exit %d, %+v", code, e)
+	}
+	code, e = c.fails("step", "add", "keen-elk", "app", "broken", "--", "exit 4")
+	if code != exitError || e.Code != api.CodeStepFailed || !strings.Contains(e.Message, "exited 4") {
+		t.Errorf("a failing step: exit %d, %+v", code, e)
+	}
+	ls := &pb.ListStepsResponse{}
+	c.ok(ls, "step", "ls", "app")
+	var names []string
+	for _, s := range ls.Steps {
+		names = append(names, s.Step.Name)
+	}
+	if !slices.Equal(names, []string{"build", "tool"}) {
+		t.Errorf("saved steps = %v, want only build and tool", names)
+	}
+
+	// A new workspace's base ran the step, so it has the tool too.
+	c.ok(nil, "session", "start", "next-fox")
+	ws := &pb.Workspace{}
+	c.ok(ws, "add", "next-fox", "app")
+	if code, out, _ := c.hotbed("run", "next-fox", "app", "--", "tool"); ws.BaseId != "app-g2" || code != 0 || out != "tool works\n" {
+		t.Errorf("the tool in a new workspace on %s: exit %d, %q", ws.BaseId, code, out)
+	}
+}
+
+// A step that breaks the freshen does not stop work: workspaces get the
+// newest warm base with a note, and the broken recipe is not built again.
+func TestFailingStepFallsBackToTheWarmBase(t *testing.T) {
+	c := newCluster(t)
+	c.addRepo(upstream(t))
+	c.ok(nil, "session", "start", "old-gnu")
+	c.ok(nil, "add", "old-gnu", "app")
+
+	c.ok(nil, "step", "set", "app", "broken", "--", "echo nope >&2; exit 5")
+	for _, s := range []string{"new-hen", "late-jay"} {
+		c.ok(nil, "session", "start", s)
+		ws := &pb.Workspace{}
+		c.ok(ws, "add", s, "app")
+		if ws.BaseId != "app-g1" || ws.State != pb.WorkspaceState_WORKSPACE_STATE_IDLE || !strings.HasPrefix(ws.Reason, "on app-g1, not up to date: base app-g2 failed at step broken") {
+			t.Errorf("add in %s = %v, want app-g1 with a note", s, ws)
+		}
+	}
+	// The worker reports its bases on its own; wait for the report, then
+	// check that the broken recipe was built only once.
+	want := []string{"app-g1 BASE_STATE_WARM", "app-g2 BASE_STATE_FAILED"}
+	var bases []string
+	c.eventually("the controller to see both bases", func() bool {
+		snap, err := c.asWorker.GetSnapshot(t.Context(), &pb.GetSnapshotRequest{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		bases = bases[:0]
+		for _, b := range snap.Bases {
+			bases = append(bases, b.Id+" "+b.State.String())
+		}
+		slices.Sort(bases)
+		return len(bases) >= 2 && !strings.HasSuffix(bases[len(bases)-1], "BUILDING")
+	})
+	if !slices.Equal(bases, want) {
+		t.Errorf("bases = %v, want %v", bases, want)
+	}
 }

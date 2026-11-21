@@ -25,9 +25,10 @@ hotbed session end $S
 - **Everything happens in a session.** The session's name is the first argument of every command.
   `session start` picks a free adjective-noun name, or takes one you give it.
 - **A session has one workspace per repo.** `hotbed add S REPO` makes it or returns the one it has.
-  It is a fork of the repo's base at the branch's head. When the branch has moved since the newest
-  base, `add` first pulls and freshens a new base from the previous one (incremental, usually
-  seconds to a minute; a repo's very first base builds from nothing). It waits for that, saying
+  It is a fork of the repo's base at the branch's head. When the branch has moved or the repo's
+  setup steps changed since the newest base, `add` first freshens a new base from the previous
+  one: a pull and the steps that need to run (usually seconds to a minute; a repo's very first
+  base builds from nothing). It waits for that, saying
   so on stderr; `--no-wait` returns at once with a `WORKSPACE_STATE_PREPARING` workspace, and
   commands run in it wait. Commands run in it at `/work/REPO`, and it keeps its state between
   commands.
@@ -39,6 +40,34 @@ hotbed session end $S
   - Without `--sync` the workspace is **remote-only**: change it with commands, as you would over
     ssh: `hotbed run S ratel -- git checkout -b fix`, `hotbed run S ratel -- sed -i ...`,
     `hotbed run S ratel -- bash -c 'cat > src/x.rs <<EOF ... EOF'`, `git commit`, `git push`.
+
+## Missing a tool or dependency? Add a step
+
+Never install things ad hoc in a workspace: the next workspace, and every other agent, would
+lack them again. Make it a **setup step** of the repo instead:
+
+```sh
+hotbed step add $S ratel playwright -- 'pnpm exec playwright install chromium'
+```
+
+`step add` runs the script in your workspace, so you have what it installs at once. It runs it a
+second time to check that it is idempotent, then saves it to the repo. Every base built after that
+runs it, so every new workspace starts with it. A step is a bash script run with `-eo pipefail`
+in the checkout, and it is like a database migration: a base runs it once, and again only when
+its script changes. Add `--every-pull` for steps that must follow the code, such as builds and
+installs from a lockfile.
+
+- Install into the workspace, never into `$HOME` or the system, or forks won't have it. Programs go
+  in `$HOTBED_BIN` (on PATH). Caches and data go in `$XDG_CACHE_HOME` and `$XDG_DATA_HOME`.
+  `CARGO_HOME`, `RUSTUP_HOME`, `GOPATH` and npm's cache already point into the workspace.
+- Make steps safe to repeat: check before installing, use `mkdir -p` and `--force`. A step that fails
+  its second run is refused (`STEP_NOT_IDEMPOTENT`).
+- To fix a step, add it again under the same name. `hotbed step ls REPO` shows each step and
+  whether each node's newest base ran it. `hotbed step show REPO NAME` prints its script.
+- If a step breaks a later base, new workspaces still get the last good base, with a warning
+  (`reason`) that names the failed step. Fix the step and the next `add` retries.
+- Steps run as an unprivileged user. OS packages (`apt`, `dnf`) are not steps: ask the person
+  who runs the cluster.
 
 ## Keeping a session alive
 
@@ -86,7 +115,8 @@ means the session is over (`endReason` says why).
 | `hotbed ps S` | The session's commands, live and just ended |
 | `hotbed logs S CMD [-f]` | A command's output; `-f` follows until it ends |
 | `hotbed stop S CMD` | Stops a command |
-| `hotbed repo ls` | Repos and their freshen commands |
+| `hotbed repo ls` | Repos and their setup steps |
+| `hotbed step ls REPO` | A repo's steps and which each node's newest base ran |
 | `hotbed nodes` | The cluster's machines |
 
 ## Output

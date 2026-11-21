@@ -44,6 +44,12 @@ const (
 	ClusterServiceDeleteRepoProcedure = "/hotbed.v1.ClusterService/DeleteRepo"
 	// ClusterServiceRebuildRepoProcedure is the procedure name of the ClusterService's RebuildRepo RPC.
 	ClusterServiceRebuildRepoProcedure = "/hotbed.v1.ClusterService/RebuildRepo"
+	// ClusterServicePutStepProcedure is the procedure name of the ClusterService's PutStep RPC.
+	ClusterServicePutStepProcedure = "/hotbed.v1.ClusterService/PutStep"
+	// ClusterServiceDeleteStepProcedure is the procedure name of the ClusterService's DeleteStep RPC.
+	ClusterServiceDeleteStepProcedure = "/hotbed.v1.ClusterService/DeleteStep"
+	// ClusterServiceListStepsProcedure is the procedure name of the ClusterService's ListSteps RPC.
+	ClusterServiceListStepsProcedure = "/hotbed.v1.ClusterService/ListSteps"
 	// ClusterServiceGetSnapshotProcedure is the procedure name of the ClusterService's GetSnapshot RPC.
 	ClusterServiceGetSnapshotProcedure = "/hotbed.v1.ClusterService/GetSnapshot"
 	// SessionServiceStartSessionProcedure is the procedure name of the SessionService's StartSession
@@ -144,6 +150,27 @@ var (
 			Procedure:  ClusterServiceRebuildRepoProcedure,
 		}
 	})
+	clusterServicePutStepSpec = sync.OnceValue(func() connect.Spec {
+		return connect.Spec{
+			StreamType: connect.StreamTypeUnary,
+			Schema:     v1.File_hotbed_v1_hotbed_proto.Services().ByName("ClusterService").Methods().ByName("PutStep"),
+			Procedure:  ClusterServicePutStepProcedure,
+		}
+	})
+	clusterServiceDeleteStepSpec = sync.OnceValue(func() connect.Spec {
+		return connect.Spec{
+			StreamType: connect.StreamTypeUnary,
+			Schema:     v1.File_hotbed_v1_hotbed_proto.Services().ByName("ClusterService").Methods().ByName("DeleteStep"),
+			Procedure:  ClusterServiceDeleteStepProcedure,
+		}
+	})
+	clusterServiceListStepsSpec = sync.OnceValue(func() connect.Spec {
+		return connect.Spec{
+			StreamType: connect.StreamTypeUnary,
+			Schema:     v1.File_hotbed_v1_hotbed_proto.Services().ByName("ClusterService").Methods().ByName("ListSteps"),
+			Procedure:  ClusterServiceListStepsProcedure,
+		}
+	})
 	clusterServiceGetSnapshotSpec = sync.OnceValue(func() connect.Spec {
 		return connect.Spec{
 			StreamType: connect.StreamTypeUnary,
@@ -167,6 +194,13 @@ type ClusterServiceClient interface {
 	// Bases are otherwise built incrementally: each generation forks the one
 	// before, pulls, and freshens.
 	RebuildRepo(context.Context, *v1.RebuildRepoRequest) (*v1.Repo, error)
+	// PutStep adds a setup step to a repo, or replaces the one of that name.
+	// The next workspace of the repo gets a base that has run it.
+	PutStep(context.Context, *v1.PutStepRequest) (*v1.Repo, error)
+	DeleteStep(context.Context, *v1.DeleteStepRequest) (*v1.Repo, error)
+	// ListSteps is a repo's steps and, for each, whether each node's newest
+	// base has run it.
+	ListSteps(context.Context, *v1.ListStepsRequest) (*v1.ListStepsResponse, error)
 	// GetSnapshot is everything the cockpit shows.
 	GetSnapshot(context.Context, *v1.GetSnapshotRequest) (*v1.Snapshot, error)
 }
@@ -191,6 +225,13 @@ type ClusterServiceHandler interface {
 	// Bases are otherwise built incrementally: each generation forks the one
 	// before, pulls, and freshens.
 	RebuildRepo(context.Context, *v1.RebuildRepoRequest) (*v1.Repo, error)
+	// PutStep adds a setup step to a repo, or replaces the one of that name.
+	// The next workspace of the repo gets a base that has run it.
+	PutStep(context.Context, *v1.PutStepRequest) (*v1.Repo, error)
+	DeleteStep(context.Context, *v1.DeleteStepRequest) (*v1.Repo, error)
+	// ListSteps is a repo's steps and, for each, whether each node's newest
+	// base has run it.
+	ListSteps(context.Context, *v1.ListStepsRequest) (*v1.ListStepsResponse, error)
 	// GetSnapshot is everything the cockpit shows.
 	GetSnapshot(context.Context, *v1.GetSnapshotRequest) (*v1.Snapshot, error)
 }
@@ -207,6 +248,9 @@ func RegisterClusterServiceHandler(server *connect.Server, svc ClusterServiceHan
 		connect.Method{Spec: clusterServicePutRepoSpec(), Handler: adapter.putRepo},
 		connect.Method{Spec: clusterServiceDeleteRepoSpec(), Handler: adapter.deleteRepo},
 		connect.Method{Spec: clusterServiceRebuildRepoSpec(), Handler: adapter.rebuildRepo},
+		connect.Method{Spec: clusterServicePutStepSpec(), Handler: adapter.putStep},
+		connect.Method{Spec: clusterServiceDeleteStepSpec(), Handler: adapter.deleteStep},
+		connect.Method{Spec: clusterServiceListStepsSpec(), Handler: adapter.listSteps},
 		connect.Method{Spec: clusterServiceGetSnapshotSpec(), Handler: adapter.getSnapshot},
 	)
 }
@@ -240,6 +284,18 @@ func (UnimplementedClusterServiceHandler) DeleteRepo(context.Context, *v1.Delete
 
 func (UnimplementedClusterServiceHandler) RebuildRepo(context.Context, *v1.RebuildRepoRequest) (*v1.Repo, error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, "hotbed.v1.ClusterService.RebuildRepo is not implemented")
+}
+
+func (UnimplementedClusterServiceHandler) PutStep(context.Context, *v1.PutStepRequest) (*v1.Repo, error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, "hotbed.v1.ClusterService.PutStep is not implemented")
+}
+
+func (UnimplementedClusterServiceHandler) DeleteStep(context.Context, *v1.DeleteStepRequest) (*v1.Repo, error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, "hotbed.v1.ClusterService.DeleteStep is not implemented")
+}
+
+func (UnimplementedClusterServiceHandler) ListSteps(context.Context, *v1.ListStepsRequest) (*v1.ListStepsResponse, error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, "hotbed.v1.ClusterService.ListSteps is not implemented")
 }
 
 func (UnimplementedClusterServiceHandler) GetSnapshot(context.Context, *v1.GetSnapshotRequest) (*v1.Snapshot, error) {
@@ -301,6 +357,30 @@ func (c *clusterServiceClient) DeleteRepo(ctx context.Context, req *v1.DeleteRep
 func (c *clusterServiceClient) RebuildRepo(ctx context.Context, req *v1.RebuildRepoRequest) (*v1.Repo, error) {
 	var res v1.Repo
 	if err := c.client.CallUnary(ctx, clusterServiceRebuildRepoSpec(), req, &res); err != nil {
+		return nil, err
+	}
+	return &res, nil
+}
+
+func (c *clusterServiceClient) PutStep(ctx context.Context, req *v1.PutStepRequest) (*v1.Repo, error) {
+	var res v1.Repo
+	if err := c.client.CallUnary(ctx, clusterServicePutStepSpec(), req, &res); err != nil {
+		return nil, err
+	}
+	return &res, nil
+}
+
+func (c *clusterServiceClient) DeleteStep(ctx context.Context, req *v1.DeleteStepRequest) (*v1.Repo, error) {
+	var res v1.Repo
+	if err := c.client.CallUnary(ctx, clusterServiceDeleteStepSpec(), req, &res); err != nil {
+		return nil, err
+	}
+	return &res, nil
+}
+
+func (c *clusterServiceClient) ListSteps(ctx context.Context, req *v1.ListStepsRequest) (*v1.ListStepsResponse, error) {
+	var res v1.ListStepsResponse
+	if err := c.client.CallUnary(ctx, clusterServiceListStepsSpec(), req, &res); err != nil {
 		return nil, err
 	}
 	return &res, nil
@@ -394,6 +474,42 @@ func (h clusterServiceHandler) rebuildRepo(ctx context.Context, _ connect.Spec, 
 		return err
 	}
 	res, err := h.svc.RebuildRepo(ctx, &req)
+	if err != nil {
+		return err
+	}
+	return stream.Send(res)
+}
+
+func (h clusterServiceHandler) putStep(ctx context.Context, _ connect.Spec, stream connect.ServerStream) error {
+	var req v1.PutStepRequest
+	if err := stream.Receive(&req); err != nil {
+		return err
+	}
+	res, err := h.svc.PutStep(ctx, &req)
+	if err != nil {
+		return err
+	}
+	return stream.Send(res)
+}
+
+func (h clusterServiceHandler) deleteStep(ctx context.Context, _ connect.Spec, stream connect.ServerStream) error {
+	var req v1.DeleteStepRequest
+	if err := stream.Receive(&req); err != nil {
+		return err
+	}
+	res, err := h.svc.DeleteStep(ctx, &req)
+	if err != nil {
+		return err
+	}
+	return stream.Send(res)
+}
+
+func (h clusterServiceHandler) listSteps(ctx context.Context, _ connect.Spec, stream connect.ServerStream) error {
+	var req v1.ListStepsRequest
+	if err := stream.Receive(&req); err != nil {
+		return err
+	}
+	res, err := h.svc.ListSteps(ctx, &req)
 	if err != nil {
 		return err
 	}

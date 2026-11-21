@@ -61,6 +61,10 @@ type Server struct {
 	mu      sync.Mutex
 	workers map[string]hotbedv1connect.WorkspaceServiceClient
 	waiters map[string]chan struct{} // closed when a session gets events
+
+	// repoEdits makes each change to a repo (its steps, its epoch) read and
+	// write it in one go, so agents editing steps at once lose nothing.
+	repoEdits sync.Mutex
 }
 
 func NewServer(cfg ServerConfig) *Server {
@@ -175,14 +179,12 @@ func (s *Server) PutRepo(ctx context.Context, req *pb.PutRepoRequest) (*pb.Repo,
 		return nil, api.Errorf(api.CodeInvalidArgs, "repo %s has no URL", repo.Id)
 	}
 	repo.CreatedAt = s.now().UnixMilli()
+	s.repoEdits.Lock()
+	defer s.repoEdits.Unlock()
 	// Updating a repo keeps its scratch epoch, so it does not rebuild
-	// from nothing.
-	if repos, err := s.cfg.Store.Repos(ctx); err == nil {
-		for _, r := range repos {
-			if r.Id == repo.Id {
-				repo.ScratchEpoch = r.ScratchEpoch
-			}
-		}
+	// from nothing, and its steps, which have their own calls.
+	if old, err := s.repo(ctx, repo.Id); err == nil {
+		repo.ScratchEpoch, repo.Steps = old.ScratchEpoch, old.Steps
 	}
 	return repo, s.cfg.Store.PutRepo(ctx, repo)
 }
@@ -190,17 +192,28 @@ func (s *Server) PutRepo(ctx context.Context, req *pb.PutRepoRequest) (*pb.Repo,
 // RebuildRepo raises the repo's scratch epoch, which has each worker build
 // its next base from nothing.
 func (s *Server) RebuildRepo(ctx context.Context, req *pb.RebuildRepoRequest) (*pb.Repo, error) {
+	s.repoEdits.Lock()
+	defer s.repoEdits.Unlock()
+	r, err := s.repo(ctx, req.Id)
+	if err != nil {
+		return nil, err
+	}
+	r.ScratchEpoch++
+	return r, s.cfg.Store.PutRepo(ctx, r)
+}
+
+// repo is the repo called id.
+func (s *Server) repo(ctx context.Context, id string) (*pb.Repo, error) {
 	repos, err := s.cfg.Store.Repos(ctx)
 	if err != nil {
 		return nil, err
 	}
 	for _, r := range repos {
-		if r.Id == req.Id {
-			r.ScratchEpoch++
-			return r, s.cfg.Store.PutRepo(ctx, r)
+		if r.Id == id {
+			return r, nil
 		}
 	}
-	return nil, api.Errorf(api.CodeNotFound, "no repo %s", req.Id)
+	return nil, api.Errorf(api.CodeNotFound, "no repo %s", id).WithSuggestion("hotbed repo ls")
 }
 
 func (s *Server) DeleteRepo(ctx context.Context, req *pb.DeleteRepoRequest) (*pb.DeleteRepoResponse, error) {

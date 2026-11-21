@@ -103,7 +103,11 @@ func summarize(repo *pb.Repo, bases []*pb.Base) *pb.RepoSummary {
 		}
 	}
 	if out.Language == "" {
-		all := strings.Join(repo.Freshen, " ")
+		var scripts []string
+		for _, s := range repo.Steps {
+			scripts = append(scripts, s.Script)
+		}
+		all := strings.Join(scripts, " ")
 		switch {
 		case strings.Contains(all, "cargo"):
 			out.Language = "rust"

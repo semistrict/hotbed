@@ -8,12 +8,12 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
-	"strconv"
 	"strings"
 
 	"github.com/semistrict/hotbed/internal/api"
 	pb "github.com/semistrict/hotbed/internal/gen/hotbed/v1"
 	"github.com/semistrict/hotbed/internal/gitops"
+	"github.com/semistrict/hotbed/internal/shell"
 	"github.com/semistrict/hotbed/internal/storage"
 )
 
@@ -29,23 +29,29 @@ func baseVolume(repo string, gen int32) string { return fmt.Sprintf("bases/%s/g%
 func baseSnapshot(repo string, gen int32) string { return fmt.Sprintf("%s-g%d", repo, gen) }
 
 // baseFor returns the base a new workspace of r forks: the newest warm base
-// when it is at the branch's head, or the generation being built to bring
-// it there, started now when none is. Bases are only ever brought up to date
-// here, when a workspace asks: nothing builds in the background.
-func (e *Engine) baseFor(ctx context.Context, r *pb.Repo) (*pb.Base, error) {
+// when it is at the branch's head and has run the repo's steps as they are,
+// or the generation being built to bring it there, started now when none
+// is. Bases are only ever brought up to date here, when a workspace asks:
+// nothing builds in the background.
+//
+// When the newest generation already failed for the same commit and steps,
+// nothing is built again: the workspace gets the newest warm base, and
+// note says why it is not up to date.
+func (e *Engine) baseFor(ctx context.Context, r *pb.Repo) (b *pb.Base, note string, err error) {
 	head, err := e.remoteHead(ctx, r)
 	if err != nil {
-		return nil, err
+		return nil, "", err
 	}
+	want := recipe(r, head)
 	e.mu.Lock()
 	var newest, newestWarm *pb.Base
 	for _, b := range e.bases {
 		if b.RepoId != r.Id {
 			continue
 		}
-		if b.State == building && b.Commit == head && b.ScratchEpoch >= r.ScratchEpoch {
+		if b.State == building && b.Recipe == want {
 			e.mu.Unlock()
-			return clone(b), nil // already on its way
+			return clone(b), "", nil // already on its way
 		}
 		if newest == nil || b.Generation > newest.Generation {
 			newest = b
@@ -55,9 +61,18 @@ func (e *Engine) baseFor(ctx context.Context, r *pb.Repo) (*pb.Base, error) {
 		}
 	}
 	scratch := newestWarm != nil && r.ScratchEpoch > newestWarm.ScratchEpoch
-	if !scratch && newestWarm != nil && newestWarm.Commit == head {
+	if !scratch && newestWarm != nil && newestWarm.Commit == head && len(toRun(r, newestWarm, head)) == 0 {
 		defer e.mu.Unlock()
-		return clone(newestWarm), nil
+		return clone(newestWarm), "", nil
+	}
+	if newest != nil && newest.State == broken && newest.Recipe == want {
+		defer e.mu.Unlock()
+		why := baseFailure(newest)
+		if newestWarm == nil {
+			return nil, "", api.Errorf(api.CodeWorkspaceFailed, "%s", why).
+				WithSuggestion("fix the step with hotbed step add (hotbed step ls shows them), then add the repo again")
+		}
+		return clone(newestWarm), fmt.Sprintf("on %s, not up to date: %s", newestWarm.Id, why), nil
 	}
 	gen := int32(1)
 	if newest != nil {
@@ -68,7 +83,16 @@ func (e *Engine) baseFor(ctx context.Context, r *pb.Repo) (*pb.Base, error) {
 		from = nil // asked to build from nothing
 	}
 	e.mu.Unlock()
-	return e.startFreshen(ctx, r, gen, from, head)
+	b, err = e.startFreshen(ctx, r, gen, from, head, want)
+	return b, "", err
+}
+
+// baseFailure says why a broken base broke.
+func baseFailure(b *pb.Base) string {
+	if s := failedStep(b); s != "" {
+		return fmt.Sprintf("base %s failed at step %s (its log is command %s)", b.Id, s, b.Command)
+	}
+	return fmt.Sprintf("base %s failed to freshen (its log is command %s)", b.Id, b.Command)
 }
 
 // remoteHead asks the remote for the commit the repo's branch is at.
@@ -92,7 +116,7 @@ func (e *Engine) remoteHead(ctx context.Context, r *pb.Repo) (string, error) {
 // startFreshen makes generation gen's volume, as a fork of prev (the newest
 // warm base) when there is one, and queues the freshen that pulls commit and
 // builds it: incrementally, unless there is nothing to fork.
-func (e *Engine) startFreshen(ctx context.Context, r *pb.Repo, gen int32, prev *pb.Base, commit string) (*pb.Base, error) {
+func (e *Engine) startFreshen(ctx context.Context, r *pb.Repo, gen int32, prev *pb.Base, commit, recipe string) (*pb.Base, error) {
 	cold := true
 	vol := baseVolume(r.Id, gen)
 	if err := e.cfg.Store.Destroy(ctx, vol); err != nil && !errors.Is(err, storage.ErrNotFound) {
@@ -115,16 +139,17 @@ func (e *Engine) startFreshen(ctx context.Context, r *pb.Repo, gen int32, prev *
 	}
 	id := fmt.Sprintf("f-%s-g%d-%s", r.Id, gen, randomHex(3))
 	now := e.nowMs()
+	run := toRun(r, prev, commit)
 	b := &pb.Base{
 		Id: baseSnapshot(r.Id, gen), RepoId: r.Id, NodeId: e.cfg.NodeID, Generation: gen,
-		Commit: commit, State: building, Cold: cold, Baked: r.Freshen, Command: id,
-		ScratchEpoch: r.ScratchEpoch,
+		Commit: commit, State: building, Cold: cold, Command: id,
+		ScratchEpoch: r.ScratchEpoch, Steps: plannedSteps(r, prev, run), Recipe: recipe,
 	}
 	c := &command{
 		rec: &pb.CommandRecord{
 			Command: &pb.Command{
 				Id: id, NodeId: e.cfg.NodeID, Argv: fmt.Sprintf("freshen %s g%d", r.Id, gen),
-				Args: []string{"/bin/bash", "-c", freshenScript(r, commit)}, Kind: "freshen",
+				Args: []string{"/bin/bash", "-c", freshenScript(r, commit, run)}, Kind: "freshen",
 				State: queued, QueuedAt: now, Limits: &pb.CommandLimits{CpuWeight: 100},
 				Timeline: []*pb.CommandEvent{{At: now, What: "queued", Detail: "base " + b.Id}},
 			},
@@ -147,12 +172,11 @@ func (e *Engine) startFreshen(ctx context.Context, r *pb.Repo, gen int32, prev *
 	return clone(b), nil
 }
 
-// freshenScript checks out commit with its submodules and runs the repo's
-// freshen commands, printing a marker before each so progress can be read
-// from the log.
-func freshenScript(r *pb.Repo, commit string) string {
+// freshenScript checks out commit with its submodules and runs the steps
+// the generation needs.
+func freshenScript(r *pb.Repo, commit string, run []*pb.Step) string {
 	var b strings.Builder
-	q := func(s string) string { return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'" }
+	q := shell.Quote
 	fmt.Fprintf(&b, "set -euo pipefail\ncd %s\n", WorkPath)
 	fmt.Fprintf(&b, "if [ ! -d %s/.git ]; then git clone --no-checkout %s %s; fi\n", q(r.Id), q(r.Url), q(r.Id))
 	fmt.Fprintf(&b, "cd %s\n", q(r.Id))
@@ -162,15 +186,9 @@ func freshenScript(r *pb.Repo, commit string) string {
 	// A workspace's own toolchain home starts empty; give rustup a default
 	// when the repo does not pin one.
 	b.WriteString(`if [ -f Cargo.toml ] && [ ! -f rust-toolchain.toml ] && [ ! -f rust-toolchain ] && command -v rustup >/dev/null; then rustup show active-toolchain >/dev/null 2>&1 || rustup default stable; fi` + "\n")
-	for i, cmd := range r.Freshen {
-		fmt.Fprintf(&b, "echo %s\n", q(fmt.Sprintf("::hotbed:: freshen %d/%d: %s", i+1, len(r.Freshen), cmd)))
-		b.WriteString(cmd + "\n")
-	}
-	fmt.Fprintf(&b, "echo %s\n", q(fmt.Sprintf("::hotbed:: freshen %d/%d: done", len(r.Freshen), len(r.Freshen))))
+	b.WriteString(stepsScript(run))
 	return b.String()
 }
-
-var freshenStep = regexp.MustCompile(`::hotbed:: freshen (\d+)/(\d+)`)
 
 // freshened finishes a base whose freshen ended: a snapshot makes it warm.
 // Call with e.mu held; snapshotting is one ioctl or one zfs command.
@@ -179,13 +197,25 @@ func (e *Engine) freshened(c *command, ok bool, seconds float64, units int) {
 	if !found {
 		return
 	}
+	if log, err := os.ReadFile(e.logPath(c.cmd().Id)); err == nil {
+		b.Steps = settleSteps(b.Steps, log)
+	} else {
+		slog.Error("read freshen log", "base", b.Id, "err", err)
+	}
+	b.Baked = nil
+	for _, s := range b.Steps {
+		if s.Ok {
+			b.Baked = append(b.Baked, s.Name)
+		}
+	}
 	if !ok {
 		now := e.nowMs()
 		b.State = broken
 		b.BuiltAt = &now
 		e.saveBase(b)
-		e.event("fail", fmt.Sprintf("base %s g%d failed to freshen; see its log", b.RepoId, b.Generation), ref("command", c.cmd().Id))
-		e.failPreparing(b.Id, fmt.Sprintf("its base %s failed to freshen; its log is command %s in the cockpit", b.Id, c.cmd().Id))
+		why := baseFailure(b)
+		e.event("fail", why, ref("command", c.cmd().Id))
+		e.baseFailed(b, why)
 		return
 	}
 	vol := baseVolume(b.RepoId, b.Generation)
@@ -193,8 +223,9 @@ func (e *Engine) freshened(c *command, ok bool, seconds float64, units int) {
 		slog.Error("snapshot base", "base", b.Id, "err", err)
 		b.State = broken
 		e.saveBase(b)
-		e.event("fail", fmt.Sprintf("base %s g%d could not be snapshotted: %v", b.RepoId, b.Generation, err), nil)
-		e.failPreparing(b.Id, "its base could not be snapshotted: "+err.Error())
+		why := fmt.Sprintf("base %s could not be snapshotted: %v", b.Id, err)
+		e.event("fail", why, nil)
+		e.baseFailed(b, why)
 		return
 	}
 	now := e.nowMs()
@@ -288,24 +319,7 @@ func (e *Engine) collectBases(ctx context.Context) {
 }
 
 // baseProgress reads how far a building base's freshen got from its log.
-func (e *Engine) baseProgress(b *pb.Base) float64 {
-	data, err := os.ReadFile(e.logPath(b.Command))
-	if err != nil {
-		return 0
-	}
-	m := freshenStep.FindAllSubmatch(data, -1)
-	if len(m) == 0 {
-		return 0
-	}
-	last := m[len(m)-1]
-	done, _ := strconv.Atoi(string(last[1]))
-	total, _ := strconv.Atoi(string(last[2]))
-	if total == 0 {
-		return 0
-	}
-	// Step k of n starting means k-1 are done.
-	return float64(done-1) / float64(total)
-}
+func (e *Engine) baseProgress(b *pb.Base) float64 { return stepProgress(e.logPath(b.Command)) }
 
 var (
 	channel = regexp.MustCompile(`channel\s*=\s*"([^"]+)"`)

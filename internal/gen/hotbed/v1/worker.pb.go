@@ -25,10 +25,13 @@ const (
 )
 
 type WorkspaceRecord struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Workspace     *Workspace             `protobuf:"bytes,1,opt,name=workspace,proto3" json:"workspace,omitempty"`
-	Volume        string                 `protobuf:"bytes,2,opt,name=volume,proto3" json:"volume,omitempty"`
-	BaseSnapshot  string                 `protobuf:"bytes,3,opt,name=base_snapshot,json=baseSnapshot,proto3" json:"base_snapshot,omitempty"`
+	state        protoimpl.MessageState `protogen:"open.v1"`
+	Workspace    *Workspace             `protobuf:"bytes,1,opt,name=workspace,proto3" json:"workspace,omitempty"`
+	Volume       string                 `protobuf:"bytes,2,opt,name=volume,proto3" json:"volume,omitempty"`
+	BaseSnapshot string                 `protobuf:"bytes,3,opt,name=base_snapshot,json=baseSnapshot,proto3" json:"base_snapshot,omitempty"`
+	// Why the base it forks is not up to date, if it is not; its reason once
+	// it is ready.
+	Note          string `protobuf:"bytes,4,opt,name=note,proto3" json:"note,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -80,6 +83,13 @@ func (x *WorkspaceRecord) GetVolume() string {
 func (x *WorkspaceRecord) GetBaseSnapshot() string {
 	if x != nil {
 		return x.BaseSnapshot
+	}
+	return ""
+}
+
+func (x *WorkspaceRecord) GetNote() string {
+	if x != nil {
+		return x.Note
 	}
 	return ""
 }
@@ -214,11 +224,12 @@ var File_hotbed_v1_worker_proto protoreflect.FileDescriptor
 
 const file_hotbed_v1_worker_proto_rawDesc = "" +
 	"\n" +
-	"\x16hotbed/v1/worker.proto\x12\thotbed.v1\x1a\x16hotbed/v1/hotbed.proto\"\x82\x01\n" +
+	"\x16hotbed/v1/worker.proto\x12\thotbed.v1\x1a\x16hotbed/v1/hotbed.proto\"\x96\x01\n" +
 	"\x0fWorkspaceRecord\x122\n" +
 	"\tworkspace\x18\x01 \x01(\v2\x14.hotbed.v1.WorkspaceR\tworkspace\x12\x16\n" +
 	"\x06volume\x18\x02 \x01(\tR\x06volume\x12#\n" +
-	"\rbase_snapshot\x18\x03 \x01(\tR\fbaseSnapshot\"\xb8\x02\n" +
+	"\rbase_snapshot\x18\x03 \x01(\tR\fbaseSnapshot\x12\x12\n" +
+	"\x04note\x18\x04 \x01(\tR\x04note\"\xb8\x02\n" +
 	"\rCommandRecord\x12,\n" +
 	"\acommand\x18\x01 \x01(\v2\x12.hotbed.v1.CommandR\acommand\x12\x17\n" +
 	"\arepo_id\x18\x02 \x01(\tR\x06repoId\x12\x14\n" +

@@ -10,7 +10,6 @@ import (
 	"strconv"
 	"syscall"
 
-	"google.golang.org/protobuf/encoding/protojson"
 
 	pb "github.com/semistrict/hotbed/internal/gen/hotbed/v1"
 	"github.com/semistrict/hotbed/internal/sysinfo"
@@ -57,19 +56,19 @@ func (e *Engine) Report(clusterID string) (*pb.ReportRequest, error) {
 		switch it.kind {
 		case "finished":
 			f := &pb.FinishedCommand{}
-			if err := protojson.Unmarshal(it.doc, f); err != nil {
+			if err := decode(it.doc, f); err != nil {
 				return nil, fmt.Errorf("outbox %d: %w", it.seq, err)
 			}
 			r.Finished = append(r.Finished, &pb.SequencedFinished{Seq: it.seq, Item: f})
 		case "event":
 			ev := &pb.WorkerEvent{}
-			if err := protojson.Unmarshal(it.doc, ev); err != nil {
+			if err := decode(it.doc, ev); err != nil {
 				return nil, fmt.Errorf("outbox %d: %w", it.seq, err)
 			}
 			r.Events = append(r.Events, &pb.SequencedEvent{Seq: it.seq, Item: ev})
 		case "session":
 			ev := &pb.SessionEvent{}
-			if err := protojson.Unmarshal(it.doc, ev); err != nil {
+			if err := decode(it.doc, ev); err != nil {
 				return nil, fmt.Errorf("outbox %d: %w", it.seq, err)
 			}
 			r.SessionEvents = append(r.SessionEvents, &pb.SequencedSessionEvent{Seq: it.seq, Item: ev})

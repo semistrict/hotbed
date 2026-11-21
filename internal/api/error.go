@@ -20,6 +20,8 @@ const (
 	CodeConflict              Code = "CONFLICT"
 	CodeRepoUnreachable       Code = "REPO_UNREACHABLE"
 	CodeWorkspaceFailed       Code = "WORKSPACE_FAILED"
+	CodeStepFailed            Code = "STEP_FAILED"
+	CodeStepNotIdempotent     Code = "STEP_NOT_IDEMPOTENT"
 	CodeSyncRefused           Code = "SYNC_REFUSED"
 	CodeWorkerUnreachable     Code = "WORKER_UNREACHABLE"
 	CodeInternal              Code = "INTERNAL"

@@ -121,6 +121,9 @@ type command struct {
 	cpuAt      time.Time
 	followers  int
 	lastFollow time.Time
+	// stopping is set while Stop ends the command, which then owns its
+	// ending: its unit exiting meanwhile is the stop, not a failure.
+	stopping bool
 }
 
 func (c *command) cmd() *pb.Command { return c.rec.Command }
