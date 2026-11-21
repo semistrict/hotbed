@@ -11,7 +11,7 @@ import (
 	"golang.org/x/sys/unix"
 )
 
-const zfsSuperMagic = 0x2fc12fc2
+const zfsSuperMagic = 0x2fc12fc1
 
 // Open returns the store for state directory dir, by the filesystem dir is
 // on: btrfs keeps volumes in dir/volumes; zfs keeps them in a dataset

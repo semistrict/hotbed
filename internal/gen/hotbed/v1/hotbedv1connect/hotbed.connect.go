@@ -3,8 +3,7 @@
 // Source: hotbed/v1/hotbed.proto
 
 // hotbed's API, spoken by the CLI, the cockpit, the controller and the
-// workers. Times are unix milliseconds; sizes are bytes. Every 64-bit number
-// is a JavaScript number in the cockpit, which needs no more than 2^53.
+// workers. Times are unix milliseconds; sizes are bytes.
 package hotbedv1connect
 
 import (
@@ -43,6 +42,8 @@ const (
 	ClusterServicePutRepoProcedure = "/hotbed.v1.ClusterService/PutRepo"
 	// ClusterServiceDeleteRepoProcedure is the procedure name of the ClusterService's DeleteRepo RPC.
 	ClusterServiceDeleteRepoProcedure = "/hotbed.v1.ClusterService/DeleteRepo"
+	// ClusterServiceRebuildRepoProcedure is the procedure name of the ClusterService's RebuildRepo RPC.
+	ClusterServiceRebuildRepoProcedure = "/hotbed.v1.ClusterService/RebuildRepo"
 	// ClusterServiceGetSnapshotProcedure is the procedure name of the ClusterService's GetSnapshot RPC.
 	ClusterServiceGetSnapshotProcedure = "/hotbed.v1.ClusterService/GetSnapshot"
 	// SessionServiceStartSessionProcedure is the procedure name of the SessionService's StartSession
@@ -132,6 +133,13 @@ var (
 			Procedure:  ClusterServiceDeleteRepoProcedure,
 		}
 	})
+	clusterServiceRebuildRepoSpec = sync.OnceValue(func() connect.Spec {
+		return connect.Spec{
+			StreamType: connect.StreamTypeUnary,
+			Schema:     v1.File_hotbed_v1_hotbed_proto.Services().ByName("ClusterService").Methods().ByName("RebuildRepo"),
+			Procedure:  ClusterServiceRebuildRepoProcedure,
+		}
+	})
 	clusterServiceGetSnapshotSpec = sync.OnceValue(func() connect.Spec {
 		return connect.Spec{
 			StreamType: connect.StreamTypeUnary,
@@ -151,6 +159,10 @@ type ClusterServiceClient interface {
 	ListRepos(context.Context, *v1.ListReposRequest) (*v1.ListReposResponse, error)
 	PutRepo(context.Context, *v1.PutRepoRequest) (*v1.Repo, error)
 	DeleteRepo(context.Context, *v1.DeleteRepoRequest) (*v1.DeleteRepoResponse, error)
+	// RebuildRepo has every worker build the repo's next base from nothing.
+	// Bases are otherwise built incrementally: each generation forks the one
+	// before, pulls, and freshens.
+	RebuildRepo(context.Context, *v1.RebuildRepoRequest) (*v1.Repo, error)
 	// GetSnapshot is everything the cockpit shows.
 	GetSnapshot(context.Context, *v1.GetSnapshotRequest) (*v1.Snapshot, error)
 }
@@ -171,6 +183,10 @@ type ClusterServiceHandler interface {
 	ListRepos(context.Context, *v1.ListReposRequest) (*v1.ListReposResponse, error)
 	PutRepo(context.Context, *v1.PutRepoRequest) (*v1.Repo, error)
 	DeleteRepo(context.Context, *v1.DeleteRepoRequest) (*v1.DeleteRepoResponse, error)
+	// RebuildRepo has every worker build the repo's next base from nothing.
+	// Bases are otherwise built incrementally: each generation forks the one
+	// before, pulls, and freshens.
+	RebuildRepo(context.Context, *v1.RebuildRepoRequest) (*v1.Repo, error)
 	// GetSnapshot is everything the cockpit shows.
 	GetSnapshot(context.Context, *v1.GetSnapshotRequest) (*v1.Snapshot, error)
 }
@@ -186,6 +202,7 @@ func RegisterClusterServiceHandler(server *connect.Server, svc ClusterServiceHan
 		connect.Method{Spec: clusterServiceListReposSpec(), Handler: adapter.listRepos},
 		connect.Method{Spec: clusterServicePutRepoSpec(), Handler: adapter.putRepo},
 		connect.Method{Spec: clusterServiceDeleteRepoSpec(), Handler: adapter.deleteRepo},
+		connect.Method{Spec: clusterServiceRebuildRepoSpec(), Handler: adapter.rebuildRepo},
 		connect.Method{Spec: clusterServiceGetSnapshotSpec(), Handler: adapter.getSnapshot},
 	)
 }
@@ -215,6 +232,10 @@ func (UnimplementedClusterServiceHandler) PutRepo(context.Context, *v1.PutRepoRe
 
 func (UnimplementedClusterServiceHandler) DeleteRepo(context.Context, *v1.DeleteRepoRequest) (*v1.DeleteRepoResponse, error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, "hotbed.v1.ClusterService.DeleteRepo is not implemented")
+}
+
+func (UnimplementedClusterServiceHandler) RebuildRepo(context.Context, *v1.RebuildRepoRequest) (*v1.Repo, error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, "hotbed.v1.ClusterService.RebuildRepo is not implemented")
 }
 
 func (UnimplementedClusterServiceHandler) GetSnapshot(context.Context, *v1.GetSnapshotRequest) (*v1.Snapshot, error) {
@@ -268,6 +289,14 @@ func (c *clusterServiceClient) PutRepo(ctx context.Context, req *v1.PutRepoReque
 func (c *clusterServiceClient) DeleteRepo(ctx context.Context, req *v1.DeleteRepoRequest) (*v1.DeleteRepoResponse, error) {
 	var res v1.DeleteRepoResponse
 	if err := c.client.CallUnary(ctx, clusterServiceDeleteRepoSpec(), req, &res); err != nil {
+		return nil, err
+	}
+	return &res, nil
+}
+
+func (c *clusterServiceClient) RebuildRepo(ctx context.Context, req *v1.RebuildRepoRequest) (*v1.Repo, error) {
+	var res v1.Repo
+	if err := c.client.CallUnary(ctx, clusterServiceRebuildRepoSpec(), req, &res); err != nil {
 		return nil, err
 	}
 	return &res, nil
@@ -349,6 +378,18 @@ func (h clusterServiceHandler) deleteRepo(ctx context.Context, _ connect.Spec, s
 		return err
 	}
 	res, err := h.svc.DeleteRepo(ctx, &req)
+	if err != nil {
+		return err
+	}
+	return stream.Send(res)
+}
+
+func (h clusterServiceHandler) rebuildRepo(ctx context.Context, _ connect.Spec, stream connect.ServerStream) error {
+	var req v1.RebuildRepoRequest
+	if err := stream.Receive(&req); err != nil {
+		return err
+	}
+	res, err := h.svc.RebuildRepo(ctx, &req)
 	if err != nil {
 		return err
 	}

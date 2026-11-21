@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -44,6 +45,7 @@ type cluster struct {
 	asWorker hotbedv1connect.ClusterServiceClient
 	cli      deps
 	clock    *clock
+	store    *fake.Store // the worker's volumes
 }
 
 type clock struct {
@@ -81,9 +83,10 @@ func newCluster(t *testing.T) *cluster {
 	}
 	t.Cleanup(func() { store.Close() })
 
+	volumes := &fake.Store{Root: t.TempDir()}
 	eng, err := worker.NewEngine(t.Context(), worker.EngineConfig{
 		Dir: filepath.Join(t.TempDir(), "worker"), NodeID: asahi.NodeID, Host: asahi.Hostname,
-		Store: &fake.Store{Root: t.TempDir()}, Units: &fake.Units{}, System: fake.NewSystem(),
+		Store: volumes, Units: &fake.Units{}, System: fake.NewSystem(),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -117,7 +120,7 @@ func newCluster(t *testing.T) *cluster {
 
 	t.Setenv("HOTBED_CONTROLLER", ctrl)
 	return &cluster{
-		t: t, id: init.ClusterID, server: server, engine: eng, asWorker: asWorker, clock: clk,
+		t: t, id: init.ClusterID, server: server, engine: eng, asWorker: asWorker, clock: clk, store: volumes,
 		cli: deps{
 			// The CLI runs on the laptop: its tailnet says so, and its calls
 			// come from the laptop.
@@ -186,17 +189,10 @@ func (c *cluster) fails(args ...string) (int, *api.Error) {
 	return code, out.Error
 }
 
-// warmRepo registers a repo and waits for its first base.
-func (c *cluster) warmRepo(origin string) {
+// addRepo registers a repo; its first base is built when a workspace asks.
+func (c *cluster) addRepo(origin string) {
 	c.t.Helper()
 	c.ok(nil, "repo", "add", "app", origin, "--freshen", freshen)
-	c.eventually("the controller to see a warm base", func() bool {
-		snap, err := c.asWorker.GetSnapshot(c.t.Context(), &pb.GetSnapshotRequest{})
-		if err != nil {
-			c.t.Fatal(err)
-		}
-		return len(snap.Bases) == 1 && snap.Bases[0].State == pb.BaseState_BASE_STATE_WARM
-	})
 }
 
 func gitIn(t *testing.T, dir string, args ...string) string {
@@ -239,7 +235,7 @@ const freshen = `mkdir -p target "$XDG_CACHE_HOME" && cp -R src target/ && echo 
 func TestSessionWithSyncedCheckout(t *testing.T) {
 	c := newCluster(t)
 	origin := upstream(t)
-	c.warmRepo(origin)
+	c.addRepo(origin)
 
 	sess := &pb.Session{}
 	c.ok(sess, "session", "start")
@@ -361,7 +357,7 @@ func TestSessionWithSyncedCheckout(t *testing.T) {
 
 func TestRemoteOnlyWorkspace(t *testing.T) {
 	c := newCluster(t)
-	c.warmRepo(upstream(t))
+	c.addRepo(upstream(t))
 	sess := &pb.Session{}
 	c.ok(sess, "session", "start", "brave-otter")
 
@@ -390,7 +386,7 @@ func TestRemoteOnlyWorkspace(t *testing.T) {
 
 func TestAbandonedSessionEnds(t *testing.T) {
 	c := newCluster(t)
-	c.warmRepo(upstream(t))
+	c.addRepo(upstream(t))
 	c.ok(nil, "session", "start", "idle-yak")
 	c.ok(nil, "add", "idle-yak", "app")
 	srv := &pb.Command{}
@@ -419,13 +415,115 @@ func TestAbandonedSessionEnds(t *testing.T) {
 	})
 }
 
-func TestAddBeforeAnyBaseIsRetryable(t *testing.T) {
+// base waits for the controller to hear of base id and returns it.
+func (c *cluster) base(id string) *pb.Base {
+	c.t.Helper()
+	var found *pb.Base
+	c.eventually("the controller to see base "+id, func() bool {
+		snap, err := c.asWorker.GetSnapshot(c.t.Context(), &pb.GetSnapshotRequest{})
+		if err != nil {
+			c.t.Fatal(err)
+		}
+		for _, b := range snap.Bases {
+			if b.Id == id && b.State == pb.BaseState_BASE_STATE_WARM {
+				found = b
+				return true
+			}
+		}
+		return false
+	})
+	return found
+}
+
+// Bases are freshened when a workspace asks for one and the branch has moved
+// since the newest: incrementally, from the newest, unless a rebuild asked
+// for one from nothing.
+func TestBasesFreshenOnDemand(t *testing.T) {
+	c := newCluster(t)
+	origin := upstream(t)
+	c.addRepo(origin)
+	add := func(session string) *pb.Workspace {
+		t.Helper()
+		c.ok(nil, "session", "start", session)
+		ws := &pb.Workspace{}
+		c.ok(ws, "add", session, "app")
+		if ws.State != pb.WorkspaceState_WORKSPACE_STATE_IDLE {
+			t.Fatalf("add in %s = %v, want a ready, idle workspace", session, ws)
+		}
+		return ws
+	}
+
+	first := add("first-ant")
+	g1 := c.base(first.BaseId)
+	if g1.Generation != 1 || !g1.Cold || g1.Commit != gitIn(t, origin, "rev-parse", "HEAD") {
+		t.Fatalf("first base = %v, want generation 1, cold, at the branch's head", g1)
+	}
+
+	if again := add("second-bee"); again.BaseId != first.BaseId {
+		t.Errorf("add with the branch unmoved forked %s, want %s", again.BaseId, first.BaseId)
+	}
+
+	write(t, filepath.Join(origin, "src/lib.txt"), "moved\n")
+	gitIn(t, origin, "commit", "--quiet", "-am", "Move the branch")
+	moved := add("third-cat")
+	g2 := c.base(moved.BaseId)
+	if g2.Generation != 2 || g2.Cold || g2.Commit != gitIn(t, origin, "rev-parse", "HEAD") {
+		t.Fatalf("base after the branch moved = %v, want generation 2, incremental, at the new head", g2)
+	}
+	code, out, _ := c.hotbed("run", "third-cat", "app", "--", "cat", "src/lib.txt")
+	if code != 0 || out != "moved\n" {
+		t.Errorf("the new base's checkout: exit %d, %q", code, out)
+	}
+
+	c.ok(nil, "repo", "rebuild", "app")
+	rebuilt := add("fourth-dog")
+	g3 := c.base(rebuilt.BaseId)
+	if g3.Generation != 3 || !g3.Cold {
+		t.Fatalf("base after a rebuild = %v, want generation 3, from nothing", g3)
+	}
+	if after := add("fifth-eel"); after.BaseId != rebuilt.BaseId {
+		t.Errorf("add after the rebuild's base forked %s, want %s", after.BaseId, rebuilt.BaseId)
+	}
+}
+
+func TestRemovedRepoBasesAreDeleted(t *testing.T) {
+	c := newCluster(t)
+	c.addRepo(upstream(t))
+	c.ok(nil, "session", "start", "last-owl")
+	ws := &pb.Workspace{}
+	c.ok(ws, "add", "last-owl", "app")
+	c.base(ws.BaseId)
+	c.ok(nil, "session", "end", "last-owl")
+	c.ok(nil, "repo", "rm", "app")
+	c.eventually("the controller to see the repo's bases gone", func() bool {
+		snap, err := c.asWorker.GetSnapshot(c.t.Context(), &pb.GetSnapshotRequest{})
+		if err != nil {
+			c.t.Fatal(err)
+		}
+		return len(snap.Bases) == 0
+	})
+	if _, err := os.Stat(c.store.Path("bases/app/g1")); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("the base's volume is still there: %v", err)
+	}
+}
+
+func TestAddUnreachableRepoIsRetryable(t *testing.T) {
 	c := newCluster(t)
 	c.ok(nil, "repo", "add", "app", "/nonexistent/repo", "--freshen", "true")
 	c.ok(nil, "session", "start", "eager-gnu")
 	code, e := c.fails("add", "eager-gnu", "app")
-	if code != exitError || e.Code != api.CodeNoWarmBase || !e.Retryable {
-		t.Errorf("add before a base: exit %d, %+v", code, e)
+	if code != exitError || e.Code != api.CodeRepoUnreachable || !e.Retryable {
+		t.Errorf("add of an unreachable repo: exit %d, %+v", code, e)
+	}
+}
+
+func TestAddFailsWhenFreshenFails(t *testing.T) {
+	c := newCluster(t)
+	c.ok(nil, "repo", "add", "app", upstream(t), "--freshen", "echo broken build >&2; exit 3")
+	c.ok(nil, "session", "start", "eager-gnu")
+	code, e := c.fails("add", "eager-gnu", "app")
+	if code != exitError || e.Code != api.CodeWorkspaceFailed || e.Retryable || !strings.Contains(e.Message, "freshen") {
+		t.Errorf("add with a failing freshen: exit %d, %+v", code, e)
 	}
 }
 

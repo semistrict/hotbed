@@ -69,9 +69,13 @@ func Init(ctx context.Context, dir string, port int, tn Tailnet) (InitResult, er
 	if err := statedir.Commit(dir, statedir.Config{Controller: &cluster}); err != nil {
 		return InitResult{}, err
 	}
-	address := self.Hostname
+	host := self.Hostname
+	if self.DNSName != "" {
+		host = self.DNSName
+	}
+	address := host
 	if port != api.DefaultPort {
-		address = net.JoinHostPort(self.Hostname, strconv.Itoa(port))
+		address = net.JoinHostPort(host, strconv.Itoa(port))
 	}
 	return InitResult{
 		ClusterID: cluster.ClusterID,
@@ -79,8 +83,8 @@ func Init(ctx context.Context, dir string, port int, tn Tailnet) (InitResult, er
 		Owner:     self.Login,
 		Address:   address,
 		Next: []string{
-			"on this machine: hotbed run " + dir,
-			"on each worker: hotbed join " + address + " DIR, then hotbed run DIR",
+			"on this machine: hotbed serve " + dir,
+			"on each worker: hotbed join " + address + " DIR, then sudo hotbed serve DIR",
 		},
 	}, nil
 }

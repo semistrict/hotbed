@@ -20,12 +20,19 @@ type Peer struct {
 	NodeID   string // Tailscale's stable node ID
 	Hostname string // MagicDNS name, without the tailnet's domain
 	Login    string // owner's login name, such as user@example.com
+	// Addr is its tailnet address (IPv4 when it has one), to reach it
+	// without depending on name resolution.
+	Addr netip.Addr
 }
 
 // Self is this machine's own tailnet node.
 type Self struct {
 	Peer
-	Addrs []netip.Addr
+	// DNSName is its MagicDNS name, such as ubu1.tail1234.ts.net, which
+	// resolves to its tailnet address even on itself, where /etc/hosts may
+	// map the bare host name to loopback.
+	DNSName string
+	Addrs   []netip.Addr
 }
 
 // Local asks this machine's tailscaled.
@@ -53,7 +60,8 @@ func (l *Local) Self(ctx context.Context) (Self, error) {
 			Hostname: firstLabel(st.Self.DNSName),
 			Login:    user.LoginName,
 		},
-		Addrs: st.Self.TailscaleIPs,
+		DNSName: strings.TrimSuffix(st.Self.DNSName, "."),
+		Addrs:   st.Self.TailscaleIPs,
 	}, nil
 }
 
@@ -66,11 +74,17 @@ func (l *Local) WhoIs(ctx context.Context, remoteAddr string) (Peer, error) {
 	if w.Node == nil || w.UserProfile == nil {
 		return Peer{}, fmt.Errorf("whois %s: tailscaled returned no node or owner", remoteAddr)
 	}
-	return Peer{
+	p := Peer{
 		NodeID:   string(w.Node.StableID),
 		Hostname: w.Node.ComputedName,
 		Login:    w.UserProfile.LoginName,
-	}, nil
+	}
+	for _, pfx := range w.Node.Addresses {
+		if a := pfx.Addr(); !p.Addr.IsValid() || (a.Is4() && !p.Addr.Is4()) {
+			p.Addr = a
+		}
+	}
+	return p, nil
 }
 
 func unavailable(err error) error {

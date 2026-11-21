@@ -80,7 +80,8 @@ export interface Base {
   baked: string[];
 }
 
-export type WorkspaceState = "active" | "idle" | "released";
+/** Preparing: waiting for its base to be pulled and freshened. */
+export type WorkspaceState = "preparing" | "active" | "idle" | "released" | "failed";
 
 /** A fork of a base that one agent works in. */
 export interface Workspace {
@@ -93,6 +94,8 @@ export interface Workspace {
   head: string;
   filesChanged: number;
   state: WorkspaceState;
+  /** What a preparing workspace waits for, or why a failed one failed. */
+  reason: string;
   createdAt: string;
   forkMillis: number;
   exclusiveBytes: number;

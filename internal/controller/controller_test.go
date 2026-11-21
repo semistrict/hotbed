@@ -39,8 +39,8 @@ func TestInit(t *testing.T) {
 		Owner:   "ramon@",
 		Address: "ubu1:7121",
 		Next: []string{
-			"on this machine: hotbed run " + dir,
-			"on each worker: hotbed join ubu1:7121 DIR, then hotbed run DIR",
+			"on this machine: hotbed serve " + dir,
+			"on each worker: hotbed join ubu1:7121 DIR, then sudo hotbed serve DIR",
 		},
 	}
 	if diff := cmp.Diff(want, res, cmpopts.IgnoreFields(controller.InitResult{}, "ClusterID")); diff != "" {

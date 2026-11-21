@@ -24,9 +24,13 @@ hotbed session end $S
 
 - **Everything happens in a session.** The session's name is the first argument of every command.
   `session start` picks a free adjective-noun name, or takes one you give it.
-- **A session has one workspace per repo.** `hotbed add S REPO` makes it (a fork of the newest warm
-  base) or returns the one it has. Commands run in it at `/work/REPO`, and it keeps its state
-  between commands.
+- **A session has one workspace per repo.** `hotbed add S REPO` makes it or returns the one it has.
+  It is a fork of the repo's base at the branch's head. When the branch has moved since the newest
+  base, `add` first pulls and freshens a new base from the previous one (incremental, usually
+  seconds to a minute; a repo's very first base builds from nothing). It waits for that, saying
+  so on stderr; `--no-wait` returns at once with a `WORKSPACE_STATE_PREPARING` workspace, and
+  commands run in it wait. Commands run in it at `/work/REPO`, and it keeps its state between
+  commands.
 - **Two ways to change code:**
   - `--sync DIR` ties the workspace to a local checkout. Every `hotbed run` from this machine first
     sends the checkout's state, uncommitted and untracked files included, ignored files not. Only
@@ -82,7 +86,7 @@ means the session is over (`endReason` says why).
 | `hotbed ps S` | The session's commands, live and just ended |
 | `hotbed logs S CMD [-f]` | A command's output; `-f` follows until it ends |
 | `hotbed stop S CMD` | Stops a command |
-| `hotbed repo ls` | Repos with warm bases, and their freshen commands |
+| `hotbed repo ls` | Repos and their freshen commands |
 | `hotbed nodes` | The cluster's machines |
 
 ## Output
@@ -90,7 +94,7 @@ means the session is over (`endReason` says why).
 Every command except an attached `run` and `logs` prints one JSON envelope on stdout:
 
 ```json
-{"version":"1","ok":false,"command":"add","error":{"code":"NO_WARM_BASE","message":"...","suggestion":"wait: g1 on asahimbp is 60% freshened","retryable":true}}
+{"version":"1","ok":false,"command":"add","error":{"code":"REPO_UNREACHABLE","message":"...","suggestion":"check the repo's URL (hotbed repo ls) and that this node can reach it; retry once it can","retryable":true}}
 ```
 
 Act on `error.code`, never the message. `retryable: true` means the same command can succeed later

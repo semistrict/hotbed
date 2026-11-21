@@ -115,7 +115,7 @@ func Join(ctx context.Context, o JoinOptions, hc *http.Client, check Check) (Joi
 	}
 	return JoinResult{
 		ClusterID: joined.ClusterId, Dir: dir, Controller: controller, Storage: kind, User: o.User,
-		Node: joined.Node.GetHostname(), Next: []string{"sudo hotbed run " + dir},
+		Node: joined.Node.GetHostname(), Next: []string{"sudo hotbed serve " + dir},
 	}, nil
 }
 

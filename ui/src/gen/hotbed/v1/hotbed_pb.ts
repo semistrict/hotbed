@@ -3,8 +3,7 @@
 /* eslint-disable */
 
 // hotbed's API, spoken by the CLI, the cockpit, the controller and the
-// workers. Times are unix milliseconds; sizes are bytes. Every 64-bit number
-// is a JavaScript number in the cockpit, which needs no more than 2^53.
+// workers. Times are unix milliseconds; sizes are bytes.
 
 import type { GenEnum, GenFile, GenMessage, GenService } from "@bufbuild/protobuf/codegenv2";
 import { enumDesc, fileDesc, messageDesc, serviceDesc } from "@bufbuild/protobuf/codegenv2";
@@ -14,7 +13,7 @@ import type { Message } from "@bufbuild/protobuf";
  * Describes the file hotbed/v1/hotbed.proto.
  */
 export const file_hotbed_v1_hotbed: GenFile = /*@__PURE__*/
-  fileDesc("ChZob3RiZWQvdjEvaG90YmVkLnByb3RvEglob3RiZWQudjEiQAoJRXJyb3JJbmZvEgwKBGNvZGUYASABKAkSEgoKc3VnZ2VzdGlvbhgCIAEoCRIRCglyZXRyeWFibGUYAyABKAgiegoJUmVzb3VyY2VzEgwKBGFyY2gYASABKAkSDAoEY3B1cxgCIAEoBRIYCgxtZW1vcnlfYnl0ZXMYAyABKANCAjACEhYKCnN3YXBfYnl0ZXMYBCABKANCAjACEg4KBmtlcm5lbBgFIAEoCRIPCgdtYWNoaW5lGAYgASgJIogBCglOb2RlVXNhZ2USEAoIY3B1X2J1c3kYASABKAESHQoRbWVtb3J5X3VzZWRfYnl0ZXMYAiABKANCAjACEhsKD3N3YXBfdXNlZF9ieXRlcxgDIAEoA0ICMAISFAoMY3B1X3ByZXNzdXJlGAQgASgBEhcKD21lbW9yeV9wcmVzc3VyZRgFIAEoASJ4CglEaXNrVXNhZ2USFwoLYmFzZXNfYnl0ZXMYASABKANCAjACEiEKFWZvcmtzX2V4Y2x1c2l2ZV9ieXRlcxgCIAEoA0ICMAISFwoLb3RoZXJfYnl0ZXMYAyABKANCAjACEhYKCmZyZWVfYnl0ZXMYBCABKANCAjACIsICCgROb2RlEgoKAmlkGAEgASgJEhAKCGhvc3RuYW1lGAIgASgJEg0KBWxvZ2luGAMgASgJEhUKCWpvaW5lZF9hdBgEIAEoA0ICMAISGgoJbGFzdF9zZWVuGAUgASgDQgIwAkgAiAEBEg4KBm9ubGluZRgGIAEoCBInCglyZXNvdXJjZXMYByABKAsyFC5ob3RiZWQudjEuUmVzb3VyY2VzEiMKBXVzYWdlGAggASgLMhQuaG90YmVkLnYxLk5vZGVVc2FnZRIWCgpkaXNrX2J5dGVzGAkgASgDQgIwAhIiCgRkaXNrGAogASgLMhQuaG90YmVkLnYxLkRpc2tVc2FnZRIhChVyZXNlcnZlZF9tZW1vcnlfYnl0ZXMYCyABKANCAjACEg8KB3N0b3JhZ2UYDCABKAlCDAoKX2xhc3Rfc2VlbiINCgtKb2luUmVxdWVzdCJBCgxKb2luUmVzcG9uc2USEgoKY2x1c3Rlcl9pZBgBIAEoCRIdCgRub2RlGAIgASgLMg8uaG90YmVkLnYxLk5vZGUiEgoQTGlzdE5vZGVzUmVxdWVzdCJHChFMaXN0Tm9kZXNSZXNwb25zZRISCgpjbHVzdGVyX2lkGAEgASgJEh4KBW5vZGVzGAIgAygLMg8uaG90YmVkLnYxLk5vZGUiZwoEUmVwbxIKCgJpZBgBIAEoCRILCgN1cmwYAiABKAkSDgoGYnJhbmNoGAMgASgJEg8KB2ZyZXNoZW4YBCADKAkSDQoFaG9zdHMYBSADKAkSFgoKY3JlYXRlZF9hdBgGIAEoA0ICMAIiEgoQTGlzdFJlcG9zUmVxdWVzdCIzChFMaXN0UmVwb3NSZXNwb25zZRIeCgVyZXBvcxgBIAMoCzIPLmhvdGJlZC52MS5SZXBvIi8KDlB1dFJlcG9SZXF1ZXN0Eh0KBHJlcG8YASABKAsyDy5ob3RiZWQudjEuUmVwbyIfChFEZWxldGVSZXBvUmVxdWVzdBIKCgJpZBgBIAEoCSIUChJEZWxldGVSZXBvUmVzcG9uc2UixwIKBEJhc2USCgoCaWQYASABKAkSDwoHcmVwb19pZBgCIAEoCRIPCgdub2RlX2lkGAMgASgJEhIKCmdlbmVyYXRpb24YBCABKAUSDgoGY29tbWl0GAUgASgJEg8KB21lc3NhZ2UYBiABKAkSIwoFc3RhdGUYByABKA4yFC5ob3RiZWQudjEuQmFzZVN0YXRlEhAKCHByb2dyZXNzGAggASgBEhkKCGJ1aWx0X2F0GAkgASgDQgIwAkgAiAEBEhUKDWJ1aWxkX3NlY29uZHMYCiABKAESDAoEY29sZBgLIAEoCBIWCgpzaXplX2J5dGVzGAwgASgDQgIwAhIRCgl0b29sY2hhaW4YDSABKAkSDQoFYmFrZWQYDiADKAkSDQoFdW5pdHMYDyABKAUSDwoHY29tbWFuZBgQIAEoCUILCglfYnVpbHRfYXQipgMKCVdvcmtzcGFjZRIKCgJpZBgBIAEoCRIPCgdyZXBvX2lkGAIgASgJEg8KB2Jhc2VfaWQYAyABKAkSDwoHbm9kZV9pZBgEIAEoCRINCgVhZ2VudBgFIAEoCRIOCgZicmFuY2gYBiABKAkSDAoEaGVhZBgHIAEoCRITCgtiYXNlX2NvbW1pdBgIIAEoCRIMCgR0cmVlGAkgASgJEhUKDWZpbGVzX2NoYW5nZWQYCiABKAUSKAoFc3RhdGUYCyABKA4yGS5ob3RiZWQudjEuV29ya3NwYWNlU3RhdGUSFgoKY3JlYXRlZF9hdBgMIAEoA0ICMAISFwoLZm9ya19taWxsaXMYDSABKANCAjACEhsKD2V4Y2x1c2l2ZV9ieXRlcxgOIAEoA0ICMAISGAoMc2hhcmVkX2J5dGVzGA8gASgDQgIwAhIaCg5sYXN0X2FjdGl2ZV9hdBgQIAEoA0ICMAISDAoEcGF0aBgRIAEoCRISCgpzZXNzaW9uX2lkGBIgASgJEhAKCHN5bmNfZGlyGBMgASgJEhEKCXN5bmNfaG9zdBgUIAEoCSKYAQoWQ3JlYXRlV29ya3NwYWNlUmVxdWVzdBIMCgRyZXBvGAEgASgJEg0KBWFnZW50GAIgASgJEg4KBmJyYW5jaBgDIAEoCRIMCgRub2RlGAQgASgJEgoKAmlkGAUgASgJEhIKCnNlc3Npb25faWQYBiABKAkSEAoIc3luY19kaXIYByABKAkSEQoJc3luY19ob3N0GAggASgJIiEKE0dldFdvcmtzcGFjZVJlcXVlc3QSCgoCaWQYASABKAkiKwoVTGlzdFdvcmtzcGFjZXNSZXF1ZXN0EhIKCnNlc3Npb25faWQYASABKAkiQgoWTGlzdFdvcmtzcGFjZXNSZXNwb25zZRIoCgp3b3Jrc3BhY2VzGAEgAygLMhQuaG90YmVkLnYxLldvcmtzcGFjZSIlChdSZWxlYXNlV29ya3NwYWNlUmVxdWVzdBIKCgJpZBgBIAEoCSIaChhSZWxlYXNlV29ya3NwYWNlUmVzcG9uc2UiTgoLU3luY1JlcXVlc3QSJwoGaGVhZGVyGAEgASgLMhUuaG90YmVkLnYxLlN5bmNIZWFkZXJIABIPCgVjaHVuaxgCIAEoDEgAQgUKA21zZyJACgpTeW5jSGVhZGVyEhQKDHdvcmtzcGFjZV9pZBgBIAEoCRIOCgZjb21taXQYAiABKAkSDAoEdHJlZRgDIAEoCSKCAQoMU3luY1Jlc3BvbnNlEhQKDHdvcmtzcGFjZV9pZBgBIAEoCRIMCgRoZWFkGAIgASgJEgwKBHRyZWUYAyABKAkSFQoNZmlsZXNfY2hhbmdlZBgEIAEoBRIPCgdza2lwcGVkGAUgASgIEhgKDGJ1bmRsZV9ieXRlcxgGIAEoA0ICMAIiTwoJRmlsZUVudHJ5EgwKBHBhdGgYASABKAkSDAoEa2luZBgCIAEoCRIWCgpzaXplX2J5dGVzGAMgASgDQgIwAhIOCgZjaGFuZ2UYBCABKAkiKAoQTGlzdEZpbGVzUmVxdWVzdBIUCgx3b3Jrc3BhY2VfaWQYASABKAkiOAoRTGlzdEZpbGVzUmVzcG9uc2USIwoFZmlsZXMYASADKAsyFC5ob3RiZWQudjEuRmlsZUVudHJ5IjQKDkdldEZpbGVSZXF1ZXN0EhQKDHdvcmtzcGFjZV9pZBgBIAEoCRIMCgRwYXRoGAIgASgJIkAKC0ZpbGVDb250ZW50EgwKBHBhdGgYASABKAkSDAoEdGV4dBgCIAEoCRIVCg1jaGFuZ2VkX2xpbmVzGAMgAygFImAKDUNvbW1hbmRMaW1pdHMSEgoKY3B1X3dlaWdodBgBIAEoBRIcChBtZW1vcnlfbG93X2J5dGVzGAIgASgDQgIwAhIdChFtZW1vcnlfaGlnaF9ieXRlcxgDIAEoA0ICMAIiJAoHUmVidWlsdBINCgV1bml0cxgBIAEoBRIKCgJvZhgCIAEoBSI8CgxDb21tYW5kRXZlbnQSDgoCYXQYASABKANCAjACEgwKBHdoYXQYAiABKAkSDgoGZGV0YWlsGAMgASgJIs0ECgdDb21tYW5kEgoKAmlkGAEgASgJEhQKDHdvcmtzcGFjZV9pZBgCIAEoCRIPCgdub2RlX2lkGAMgASgJEgwKBGFyZ3YYBCABKAkSDAoEYXJncxgFIAMoCRIMCgRraW5kGAYgASgJEiYKBXN0YXRlGAcgASgOMhcuaG90YmVkLnYxLkNvbW1hbmRTdGF0ZRIVCglxdWV1ZWRfYXQYCCABKANCAjACEhsKCnN0YXJ0ZWRfYXQYCSABKANCAjACSACIAQESGQoIZW5kZWRfYXQYCiABKANCAjACSAGIAQESFgoJZXhpdF9jb2RlGAsgASgFSAKIAQESKAoGbGltaXRzGAwgASgLMhguaG90YmVkLnYxLkNvbW1hbmRMaW1pdHMSEQoJY3B1X2NvcmVzGA0gASgBEhgKDG1lbW9yeV9ieXRlcxgOIAEoA0ICMAISFgoKc3dhcF9ieXRlcxgPIAEoA0ICMAISIwoHcmVidWlsdBgQIAEoCzISLmhvdGJlZC52MS5SZWJ1aWx0EhkKDGNvbGRfc2Vjb25kcxgRIAEoAUgDiAEBEg4KBnJlYXNvbhgSIAEoCRILCgN1cmwYEyABKAkSKQoIdGltZWxpbmUYFCADKAsyFy5ob3RiZWQudjEuQ29tbWFuZEV2ZW50EhAKCGF0dGFjaGVkGBUgASgIEhIKCnNlc3Npb25faWQYFiABKAlCDQoLX3N0YXJ0ZWRfYXRCCwoJX2VuZGVkX2F0QgwKCl9leGl0X2NvZGVCDwoNX2NvbGRfc2Vjb25kcyLGAwoPRmluaXNoZWRDb21tYW5kEgoKAmlkGAEgASgJEg8KB3JlcG9faWQYAiABKAkSDwoHbm9kZV9pZBgDIAEoCRIUCgx3b3Jrc3BhY2VfaWQYBCABKAkSDQoFYWdlbnQYBSABKAkSDAoEYXJndhgGIAEoCRIMCgRraW5kGAcgASgJEiYKBXN0YXRlGAggASgOMhcuaG90YmVkLnYxLkNvbW1hbmRTdGF0ZRIWCglleGl0X2NvZGUYCSABKAVIAIgBARIPCgdmYWlsdXJlGAogASgJEhQKCGVuZGVkX2F0GAsgASgDQgIwAhIWCg5xdWV1ZWRfc2Vjb25kcxgMIAEoARIPCgdzZWNvbmRzGA0gASgBEhkKDGNvbGRfc2Vjb25kcxgOIAEoAUgBiAEBEhQKB3JlYnVpbHQYDyABKAVIAogBARIPCgJvZhgQIAEoBUgDiAEBEh0KEXBlYWtfbWVtb3J5X2J5dGVzGBEgASgDQgIwAhINCgVwYXJrcxgSIAEoBRISCgpzZXNzaW9uX2lkGBMgASgJQgwKCl9leGl0X2NvZGVCDwoNX2NvbGRfc2Vjb25kc0IKCghfcmVidWlsdEIFCgNfb2YiqAEKEVJ1bkNvbW1hbmRSZXF1ZXN0EhQKDHdvcmtzcGFjZV9pZBgBIAEoCRIMCgRhcmdzGAIgAygJEgsKA2VudhgDIAMoCRIMCgRraW5kGAQgASgJEigKBmxpbWl0cxgFIAEoCzIYLmhvdGJlZC52MS5Db21tYW5kTGltaXRzEhAKCGF0dGFjaGVkGAYgASgIEgwKBHBvcnQYByABKAUSCgoCaWQYCCABKAkiHwoRR2V0Q29tbWFuZFJlcXVlc3QSCgoCaWQYASABKAkiKQoTTGlzdENvbW1hbmRzUmVxdWVzdBISCgpzZXNzaW9uX2lkGAEgASgJIjwKFExpc3RDb21tYW5kc1Jlc3BvbnNlEiQKCGNvbW1hbmRzGAEgAygLMhIuaG90YmVkLnYxLkNvbW1hbmQiIAoSU3RvcENvbW1hbmRSZXF1ZXN0EgoKAmlkGAEgASgJIkIKEEZvbGxvd0xvZ1JlcXVlc3QSCgoCaWQYASABKAkSEgoGb2Zmc2V0GAIgASgDQgIwAhIOCgZmb2xsb3cYAyABKAgiGAoITG9nQ2h1bmsSDAoEZGF0YRgBIAEoDCKrAQoHU2Vzc2lvbhIKCgJpZBgBIAEoCRINCgVhZ2VudBgCIAEoCRIWCgpzdGFydGVkX2F0GAMgASgDQgIwAhIZCghlbmRlZF9hdBgEIAEoA0ICMAJIAIgBARIVCg13b3Jrc3BhY2VfaWRzGAUgAygJEhoKDmxhc3RfYWN0aXZlX2F0GAYgASgDQgIwAhISCgplbmRfcmVhc29uGAcgASgJQgsKCV9lbmRlZF9hdCIwChNTdGFydFNlc3Npb25SZXF1ZXN0EgoKAmlkGAEgASgJEg0KBWFnZW50GAIgASgJIh8KEUVuZFNlc3Npb25SZXF1ZXN0EgoKAmlkGAEgASgJIlQKEldhaXRTZXNzaW9uUmVxdWVzdBISCgpzZXNzaW9uX2lkGAEgASgJEhEKBWFmdGVyGAIgASgDQgIwAhIXCg90aW1lb3V0X3NlY29uZHMYAyABKAUigwEKE1dhaXRTZXNzaW9uUmVzcG9uc2USJwoGZXZlbnRzGAEgAygLMhcuaG90YmVkLnYxLlNlc3Npb25FdmVudBISCgZjdXJzb3IYAiABKANCAjACEgwKBGxpdmUYAyABKAUSDQoFZW5kZWQYBCABKAgSEgoKZW5kX3JlYXNvbhgFIAEoCSLnAQoMU2Vzc2lvbkV2ZW50Eg8KA3NlcRgBIAEoA0ICMAISDgoCYXQYAiABKANCAjACEhIKCmNvbW1hbmRfaWQYAyABKAkSDAoEYXJndhgEIAEoCRIMCgR3aGF0GAUgASgJEiYKBXN0YXRlGAYgASgOMhcuaG90YmVkLnYxLkNvbW1hbmRTdGF0ZRIWCglleGl0X2NvZGUYByABKAVIAIgBARIOCgZkZXRhaWwYCCABKAkSEgoKc2Vzc2lvbl9pZBgJIAEoCRIUCgx3b3Jrc3BhY2VfaWQYCiABKAlCDAoKX2V4aXRfY29kZSIuChJHZXRMb2dMaW5lc1JlcXVlc3QSCgoCaWQYASABKAkSDAoEdGFpbBgCIAEoBSIvCgpDb21tYW5kTG9nEhIKCmNvbW1hbmRfaWQYASABKAkSDQoFbGluZXMYAiADKAkiWwoLV29ya2VyRXZlbnQSDgoCYXQYASABKANCAjACEgwKBGtpbmQYAiABKAkSDAoEdGV4dBgDIAEoCRIgCgNyZWYYBCABKAsyEy5ob3RiZWQudjEuRXZlbnRSZWYiJAoIRXZlbnRSZWYSDAoEdHlwZRgBIAEoCRIKCgJpZBgCIAEoCSJKChFTZXF1ZW5jZWRGaW5pc2hlZBILCgNzZXEYASABKAMSKAoEaXRlbRgCIAEoCzIaLmhvdGJlZC52MS5GaW5pc2hlZENvbW1hbmQiQwoOU2VxdWVuY2VkRXZlbnQSCwoDc2VxGAEgASgDEiQKBGl0ZW0YAiABKAsyFi5ob3RiZWQudjEuV29ya2VyRXZlbnQiSwoVU2VxdWVuY2VkU2Vzc2lvbkV2ZW50EgsKA3NlcRgBIAEoAxIlCgRpdGVtGAIgASgLMhcuaG90YmVkLnYxLlNlc3Npb25FdmVudCL9AwoNUmVwb3J0UmVxdWVzdBISCgpjbHVzdGVyX2lkGAEgASgJEicKCXJlc291cmNlcxgCIAEoCzIULmhvdGJlZC52MS5SZXNvdXJjZXMSIwoFdXNhZ2UYAyABKAsyFC5ob3RiZWQudjEuTm9kZVVzYWdlEhYKCmRpc2tfYnl0ZXMYBCABKANCAjACEiIKBGRpc2sYBSABKAsyFC5ob3RiZWQudjEuRGlza1VzYWdlEiEKFXJlc2VydmVkX21lbW9yeV9ieXRlcxgGIAEoA0ICMAISFQoJb29tX2tpbGxzGAcgASgDQgIwAhIPCgdzdG9yYWdlGAggASgJEh4KBWJhc2VzGAkgAygLMg8uaG90YmVkLnYxLkJhc2USKAoKd29ya3NwYWNlcxgKIAMoCzIULmhvdGJlZC52MS5Xb3Jrc3BhY2USJAoIY29tbWFuZHMYCyADKAsyEi5ob3RiZWQudjEuQ29tbWFuZBIuCghmaW5pc2hlZBgMIAMoCzIcLmhvdGJlZC52MS5TZXF1ZW5jZWRGaW5pc2hlZBIpCgZldmVudHMYDSADKAsyGS5ob3RiZWQudjEuU2VxdWVuY2VkRXZlbnQSOAoOc2Vzc2lvbl9ldmVudHMYDiADKAsyIC5ob3RiZWQudjEuU2VxdWVuY2VkU2Vzc2lvbkV2ZW50Ik4KDlJlcG9ydFJlc3BvbnNlEgsKA2FjaxgBIAEoAxIeCgVyZXBvcxgCIAMoCzIPLmhvdGJlZC52MS5SZXBvEg8KB3JlbGVhc2UYAyADKAkiZAoLUmVwb1N1bW1hcnkSCgoCaWQYASABKAkSDAoEbmFtZRgCIAEoCRIQCghsYW5ndWFnZRgDIAEoCRINCgV1bml0cxgEIAEoBRIaChJjb2xkX2J1aWxkX3NlY29uZHMYBSABKAEifQoMQ2x1c3RlckV2ZW50Eg4KAmlkGAEgASgDQgIwAhIOCgJhdBgCIAEoA0ICMAISDAoEa2luZBgDIAEoCRIPCgdub2RlX2lkGAQgASgJEgwKBHRleHQYBSABKAkSIAoDcmVmGAYgASgLMhMuaG90YmVkLnYxLkV2ZW50UmVmIoABCgZUb3RhbHMSFQoNc2F2ZWRfc2Vjb25kcxgBIAEoARIOCgZidWlsZHMYAiABKAUSDQoFZm9ya3MYAyABKAUSHgoSbWVkaWFuX2ZvcmtfbWlsbGlzGAQgASgDQgIwAhIRCglvb21fa2lsbHMYBSABKAUSDQoFcGFya3MYBiABKAUiVwoGU2FtcGxlEg0KAXQYASABKANCAjACEhAKCGNwdV9idXN5GAIgASgBEhMKC21lbW9yeV91c2VkGAMgASgBEhcKD21lbW9yeV9wcmVzc3VyZRgEIAEoASItCgdTYW1wbGVzEiIKB3NhbXBsZXMYASADKAsyES5ob3RiZWQudjEuU2FtcGxlIkwKCkxvYWRTYW1wbGUSDQoBdBgBIAEoA0ICMAISDwoHcnVubmluZxgCIAEoBRIOCgZxdWV1ZWQYAyABKAUSDgoGcGFya2VkGAQgASgFIpoBCgpIb3VyQnVja2V0EhAKBGhvdXIYASABKANCAjACEg4KBmJ1aWxkcxgCIAEoBRIVCg1zcGVudF9zZWNvbmRzGAMgASgBEhUKDXNhdmVkX3NlY29uZHMYBCABKAESDQoFZm9ya3MYBSABKAUSDQoFcGFya3MYBiABKAUSHgoWcXVldWVfd2FpdF9wOTVfc2Vjb25kcxgHIAEoASJDCghOb2RlSG91chIQCgRob3VyGAEgASgDQgIwAhIQCghjcHVfYnVzeRgCIAEoARITCgttZW1vcnlfdXNlZBgDIAEoASIvCglOb2RlSG91cnMSIgoFaG91cnMYASADKAsyEy5ob3RiZWQudjEuTm9kZUhvdXIiFAoSR2V0U25hcHNob3RSZXF1ZXN0IvcFCghTbmFwc2hvdBISCgpjbHVzdGVyX2lkGAEgASgJEhIKCmNvbnRyb2xsZXIYAiABKAkSDwoDbm93GAMgASgDQgIwAhIWCg5zYW1wbGVfc2Vjb25kcxgEIAEoBRIeCgVub2RlcxgFIAMoCzIPLmhvdGJlZC52MS5Ob2RlEiUKBXJlcG9zGAYgAygLMhYuaG90YmVkLnYxLlJlcG9TdW1tYXJ5Eh4KBWJhc2VzGAcgAygLMg8uaG90YmVkLnYxLkJhc2USKAoKd29ya3NwYWNlcxgIIAMoCzIULmhvdGJlZC52MS5Xb3Jrc3BhY2USJAoIY29tbWFuZHMYCSADKAsyEi5ob3RiZWQudjEuQ29tbWFuZBInCgZldmVudHMYCiADKAsyFy5ob3RiZWQudjEuQ2x1c3RlckV2ZW50EiQKCXRvdGFsczI0aBgLIAEoCzIRLmhvdGJlZC52MS5Ub3RhbHMSLwoGc2VyaWVzGAwgAygLMh8uaG90YmVkLnYxLlNuYXBzaG90LlNlcmllc0VudHJ5EiMKBGxvYWQYDSADKAsyFS5ob3RiZWQudjEuTG9hZFNhbXBsZRIlCgZob3VybHkYDiADKAsyFS5ob3RiZWQudjEuSG91ckJ1Y2tldBI4Cgtub2RlX2hvdXJseRgPIAMoCzIjLmhvdGJlZC52MS5TbmFwc2hvdC5Ob2RlSG91cmx5RW50cnkSKwoHaGlzdG9yeRgQIAMoCzIaLmhvdGJlZC52MS5GaW5pc2hlZENvbW1hbmQSJAoIc2Vzc2lvbnMYESADKAsyEi5ob3RiZWQudjEuU2Vzc2lvbhpBCgtTZXJpZXNFbnRyeRILCgNrZXkYASABKAkSIQoFdmFsdWUYAiABKAsyEi5ob3RiZWQudjEuU2FtcGxlczoCOAEaRwoPTm9kZUhvdXJseUVudHJ5EgsKA2tleRgBIAEoCRIjCgV2YWx1ZRgCIAEoCzIULmhvdGJlZC52MS5Ob2RlSG91cnM6AjgBKoIBCglCYXNlU3RhdGUSGgoWQkFTRV9TVEFURV9VTlNQRUNJRklFRBAAEhcKE0JBU0VfU1RBVEVfQlVJTERJTkcQARITCg9CQVNFX1NUQVRFX1dBUk0QAhIUChBCQVNFX1NUQVRFX1NUQUxFEAMSFQoRQkFTRV9TVEFURV9GQUlMRUQQBCqFAQoOV29ya3NwYWNlU3RhdGUSHwobV09SS1NQQUNFX1NUQVRFX1VOU1BFQ0lGSUVEEAASGgoWV09SS1NQQUNFX1NUQVRFX0FDVElWRRABEhgKFFdPUktTUEFDRV9TVEFURV9JRExFEAISHAoYV09SS1NQQUNFX1NUQVRFX1JFTEVBU0VEEAMq0AEKDENvbW1hbmRTdGF0ZRIdChlDT01NQU5EX1NUQVRFX1VOU1BFQ0lGSUVEEAASGAoUQ09NTUFORF9TVEFURV9RVUVVRUQQARIZChVDT01NQU5EX1NUQVRFX1JVTk5JTkcQAhIYChRDT01NQU5EX1NUQVRFX1BBUktFRBADEhsKF0NPTU1BTkRfU1RBVEVfU1VDQ0VFREVEEAQSGAoUQ09NTUFORF9TVEFURV9GQUlMRUQQBRIbChdDT01NQU5EX1NUQVRFX0NBTkNFTExFRBAGMt0DCg5DbHVzdGVyU2VydmljZRI3CgRKb2luEhYuaG90YmVkLnYxLkpvaW5SZXF1ZXN0GhcuaG90YmVkLnYxLkpvaW5SZXNwb25zZRI9CgZSZXBvcnQSGC5ob3RiZWQudjEuUmVwb3J0UmVxdWVzdBoZLmhvdGJlZC52MS5SZXBvcnRSZXNwb25zZRJGCglMaXN0Tm9kZXMSGy5ob3RiZWQudjEuTGlzdE5vZGVzUmVxdWVzdBocLmhvdGJlZC52MS5MaXN0Tm9kZXNSZXNwb25zZRJGCglMaXN0UmVwb3MSGy5ob3RiZWQudjEuTGlzdFJlcG9zUmVxdWVzdBocLmhvdGJlZC52MS5MaXN0UmVwb3NSZXNwb25zZRI1CgdQdXRSZXBvEhkuaG90YmVkLnYxLlB1dFJlcG9SZXF1ZXN0Gg8uaG90YmVkLnYxLlJlcG8SSQoKRGVsZXRlUmVwbxIcLmhvdGJlZC52MS5EZWxldGVSZXBvUmVxdWVzdBodLmhvdGJlZC52MS5EZWxldGVSZXBvUmVzcG9uc2USQQoLR2V0U25hcHNob3QSHS5ob3RiZWQudjEuR2V0U25hcHNob3RSZXF1ZXN0GhMuaG90YmVkLnYxLlNuYXBzaG90MuIBCg5TZXNzaW9uU2VydmljZRJCCgxTdGFydFNlc3Npb24SHi5ob3RiZWQudjEuU3RhcnRTZXNzaW9uUmVxdWVzdBoSLmhvdGJlZC52MS5TZXNzaW9uEj4KCkVuZFNlc3Npb24SHC5ob3RiZWQudjEuRW5kU2Vzc2lvblJlcXVlc3QaEi5ob3RiZWQudjEuU2Vzc2lvbhJMCgtXYWl0U2Vzc2lvbhIdLmhvdGJlZC52MS5XYWl0U2Vzc2lvblJlcXVlc3QaHi5ob3RiZWQudjEuV2FpdFNlc3Npb25SZXNwb25zZTKyBwoQV29ya3NwYWNlU2VydmljZRJKCg9DcmVhdGVXb3Jrc3BhY2USIS5ob3RiZWQudjEuQ3JlYXRlV29ya3NwYWNlUmVxdWVzdBoULmhvdGJlZC52MS5Xb3Jrc3BhY2USRAoMR2V0V29ya3NwYWNlEh4uaG90YmVkLnYxLkdldFdvcmtzcGFjZVJlcXVlc3QaFC5ob3RiZWQudjEuV29ya3NwYWNlElUKDkxpc3RXb3Jrc3BhY2VzEiAuaG90YmVkLnYxLkxpc3RXb3Jrc3BhY2VzUmVxdWVzdBohLmhvdGJlZC52MS5MaXN0V29ya3NwYWNlc1Jlc3BvbnNlElsKEFJlbGVhc2VXb3Jrc3BhY2USIi5ob3RiZWQudjEuUmVsZWFzZVdvcmtzcGFjZVJlcXVlc3QaIy5ob3RiZWQudjEuUmVsZWFzZVdvcmtzcGFjZVJlc3BvbnNlEjkKBFN5bmMSFi5ob3RiZWQudjEuU3luY1JlcXVlc3QaFy5ob3RiZWQudjEuU3luY1Jlc3BvbnNlKAESRgoJTGlzdEZpbGVzEhsuaG90YmVkLnYxLkxpc3RGaWxlc1JlcXVlc3QaHC5ob3RiZWQudjEuTGlzdEZpbGVzUmVzcG9uc2USPAoHR2V0RmlsZRIZLmhvdGJlZC52MS5HZXRGaWxlUmVxdWVzdBoWLmhvdGJlZC52MS5GaWxlQ29udGVudBI+CgpSdW5Db21tYW5kEhwuaG90YmVkLnYxLlJ1bkNvbW1hbmRSZXF1ZXN0GhIuaG90YmVkLnYxLkNvbW1hbmQSPgoKR2V0Q29tbWFuZBIcLmhvdGJlZC52MS5HZXRDb21tYW5kUmVxdWVzdBoSLmhvdGJlZC52MS5Db21tYW5kEk8KDExpc3RDb21tYW5kcxIeLmhvdGJlZC52MS5MaXN0Q29tbWFuZHNSZXF1ZXN0Gh8uaG90YmVkLnYxLkxpc3RDb21tYW5kc1Jlc3BvbnNlEkAKC1N0b3BDb21tYW5kEh0uaG90YmVkLnYxLlN0b3BDb21tYW5kUmVxdWVzdBoSLmhvdGJlZC52MS5Db21tYW5kEj8KCUZvbGxvd0xvZxIbLmhvdGJlZC52MS5Gb2xsb3dMb2dSZXF1ZXN0GhMuaG90YmVkLnYxLkxvZ0NodW5rMAESQwoLR2V0TG9nTGluZXMSHS5ob3RiZWQudjEuR2V0TG9nTGluZXNSZXF1ZXN0GhUuaG90YmVkLnYxLkNvbW1hbmRMb2dCPlo8Z2l0aHViLmNvbS9zZW1pc3RyaWN0L2hvdGJlZC9pbnRlcm5hbC9nZW4vaG90YmVkL3YxO2hvdGJlZHYxYgZwcm90bzM");
+  fileDesc("ChZob3RiZWQvdjEvaG90YmVkLnByb3RvEglob3RiZWQudjEiQAoJRXJyb3JJbmZvEgwKBGNvZGUYASABKAkSEgoKc3VnZ2VzdGlvbhgCIAEoCRIRCglyZXRyeWFibGUYAyABKAgicgoJUmVzb3VyY2VzEgwKBGFyY2gYASABKAkSDAoEY3B1cxgCIAEoBRIUCgxtZW1vcnlfYnl0ZXMYAyABKAMSEgoKc3dhcF9ieXRlcxgEIAEoAxIOCgZrZXJuZWwYBSABKAkSDwoHbWFjaGluZRgGIAEoCSKAAQoJTm9kZVVzYWdlEhAKCGNwdV9idXN5GAEgASgBEhkKEW1lbW9yeV91c2VkX2J5dGVzGAIgASgDEhcKD3N3YXBfdXNlZF9ieXRlcxgDIAEoAxIUCgxjcHVfcHJlc3N1cmUYBCABKAESFwoPbWVtb3J5X3ByZXNzdXJlGAUgASgBImgKCURpc2tVc2FnZRITCgtiYXNlc19ieXRlcxgBIAEoAxIdChVmb3Jrc19leGNsdXNpdmVfYnl0ZXMYAiABKAMSEwoLb3RoZXJfYnl0ZXMYAyABKAMSEgoKZnJlZV9ieXRlcxgEIAEoAyKyAgoETm9kZRIKCgJpZBgBIAEoCRIQCghob3N0bmFtZRgCIAEoCRINCgVsb2dpbhgDIAEoCRIRCglqb2luZWRfYXQYBCABKAMSFgoJbGFzdF9zZWVuGAUgASgDSACIAQESDgoGb25saW5lGAYgASgIEicKCXJlc291cmNlcxgHIAEoCzIULmhvdGJlZC52MS5SZXNvdXJjZXMSIwoFdXNhZ2UYCCABKAsyFC5ob3RiZWQudjEuTm9kZVVzYWdlEhIKCmRpc2tfYnl0ZXMYCSABKAMSIgoEZGlzaxgKIAEoCzIULmhvdGJlZC52MS5EaXNrVXNhZ2USHQoVcmVzZXJ2ZWRfbWVtb3J5X2J5dGVzGAsgASgDEg8KB3N0b3JhZ2UYDCABKAlCDAoKX2xhc3Rfc2VlbiINCgtKb2luUmVxdWVzdCJBCgxKb2luUmVzcG9uc2USEgoKY2x1c3Rlcl9pZBgBIAEoCRIdCgRub2RlGAIgASgLMg8uaG90YmVkLnYxLk5vZGUiEgoQTGlzdE5vZGVzUmVxdWVzdCJHChFMaXN0Tm9kZXNSZXNwb25zZRISCgpjbHVzdGVyX2lkGAEgASgJEh4KBW5vZGVzGAIgAygLMg8uaG90YmVkLnYxLk5vZGUiegoEUmVwbxIKCgJpZBgBIAEoCRILCgN1cmwYAiABKAkSDgoGYnJhbmNoGAMgASgJEg8KB2ZyZXNoZW4YBCADKAkSDQoFaG9zdHMYBSADKAkSEgoKY3JlYXRlZF9hdBgGIAEoAxIVCg1zY3JhdGNoX2Vwb2NoGAcgASgDIhIKEExpc3RSZXBvc1JlcXVlc3QiMwoRTGlzdFJlcG9zUmVzcG9uc2USHgoFcmVwb3MYASADKAsyDy5ob3RiZWQudjEuUmVwbyIvCg5QdXRSZXBvUmVxdWVzdBIdCgRyZXBvGAEgASgLMg8uaG90YmVkLnYxLlJlcG8iHwoRRGVsZXRlUmVwb1JlcXVlc3QSCgoCaWQYASABKAkiFAoSRGVsZXRlUmVwb1Jlc3BvbnNlIiAKElJlYnVpbGRSZXBvUmVxdWVzdBIKCgJpZBgBIAEoCSLWAgoEQmFzZRIKCgJpZBgBIAEoCRIPCgdyZXBvX2lkGAIgASgJEg8KB25vZGVfaWQYAyABKAkSEgoKZ2VuZXJhdGlvbhgEIAEoBRIOCgZjb21taXQYBSABKAkSDwoHbWVzc2FnZRgGIAEoCRIjCgVzdGF0ZRgHIAEoDjIULmhvdGJlZC52MS5CYXNlU3RhdGUSEAoIcHJvZ3Jlc3MYCCABKAESFQoIYnVpbHRfYXQYCSABKANIAIgBARIVCg1idWlsZF9zZWNvbmRzGAogASgBEgwKBGNvbGQYCyABKAgSEgoKc2l6ZV9ieXRlcxgMIAEoAxIRCgl0b29sY2hhaW4YDSABKAkSDQoFYmFrZWQYDiADKAkSDQoFdW5pdHMYDyABKAUSDwoHY29tbWFuZBgQIAEoCRIVCg1zY3JhdGNoX2Vwb2NoGBEgASgDQgsKCV9idWlsdF9hdCKiAwoJV29ya3NwYWNlEgoKAmlkGAEgASgJEg8KB3JlcG9faWQYAiABKAkSDwoHYmFzZV9pZBgDIAEoCRIPCgdub2RlX2lkGAQgASgJEg0KBWFnZW50GAUgASgJEg4KBmJyYW5jaBgGIAEoCRIMCgRoZWFkGAcgASgJEhMKC2Jhc2VfY29tbWl0GAggASgJEgwKBHRyZWUYCSABKAkSFQoNZmlsZXNfY2hhbmdlZBgKIAEoBRIoCgVzdGF0ZRgLIAEoDjIZLmhvdGJlZC52MS5Xb3Jrc3BhY2VTdGF0ZRISCgpjcmVhdGVkX2F0GAwgASgDEhMKC2ZvcmtfbWlsbGlzGA0gASgDEhcKD2V4Y2x1c2l2ZV9ieXRlcxgOIAEoAxIUCgxzaGFyZWRfYnl0ZXMYDyABKAMSFgoObGFzdF9hY3RpdmVfYXQYECABKAMSDAoEcGF0aBgRIAEoCRISCgpzZXNzaW9uX2lkGBIgASgJEhAKCHN5bmNfZGlyGBMgASgJEhEKCXN5bmNfaG9zdBgUIAEoCRIOCgZyZWFzb24YFSABKAkivgEKFkNyZWF0ZVdvcmtzcGFjZVJlcXVlc3QSDAoEcmVwbxgBIAEoCRINCgVhZ2VudBgCIAEoCRIOCgZicmFuY2gYAyABKAkSDAoEbm9kZRgEIAEoCRIKCgJpZBgFIAEoCRISCgpzZXNzaW9uX2lkGAYgASgJEhAKCHN5bmNfZGlyGAcgASgJEhEKCXN5bmNfaG9zdBgIIAEoCRIkCgtyZXBvX2NvbmZpZxgJIAEoCzIPLmhvdGJlZC52MS5SZXBvIiEKE0dldFdvcmtzcGFjZVJlcXVlc3QSCgoCaWQYASABKAkiKwoVTGlzdFdvcmtzcGFjZXNSZXF1ZXN0EhIKCnNlc3Npb25faWQYASABKAkiQgoWTGlzdFdvcmtzcGFjZXNSZXNwb25zZRIoCgp3b3Jrc3BhY2VzGAEgAygLMhQuaG90YmVkLnYxLldvcmtzcGFjZSIlChdSZWxlYXNlV29ya3NwYWNlUmVxdWVzdBIKCgJpZBgBIAEoCSIaChhSZWxlYXNlV29ya3NwYWNlUmVzcG9uc2UiTgoLU3luY1JlcXVlc3QSJwoGaGVhZGVyGAEgASgLMhUuaG90YmVkLnYxLlN5bmNIZWFkZXJIABIPCgVjaHVuaxgCIAEoDEgAQgUKA21zZyJACgpTeW5jSGVhZGVyEhQKDHdvcmtzcGFjZV9pZBgBIAEoCRIOCgZjb21taXQYAiABKAkSDAoEdHJlZRgDIAEoCSJ+CgxTeW5jUmVzcG9uc2USFAoMd29ya3NwYWNlX2lkGAEgASgJEgwKBGhlYWQYAiABKAkSDAoEdHJlZRgDIAEoCRIVCg1maWxlc19jaGFuZ2VkGAQgASgFEg8KB3NraXBwZWQYBSABKAgSFAoMYnVuZGxlX2J5dGVzGAYgASgDIksKCUZpbGVFbnRyeRIMCgRwYXRoGAEgASgJEgwKBGtpbmQYAiABKAkSEgoKc2l6ZV9ieXRlcxgDIAEoAxIOCgZjaGFuZ2UYBCABKAkiKAoQTGlzdEZpbGVzUmVxdWVzdBIUCgx3b3Jrc3BhY2VfaWQYASABKAkiOAoRTGlzdEZpbGVzUmVzcG9uc2USIwoFZmlsZXMYASADKAsyFC5ob3RiZWQudjEuRmlsZUVudHJ5IjQKDkdldEZpbGVSZXF1ZXN0EhQKDHdvcmtzcGFjZV9pZBgBIAEoCRIMCgRwYXRoGAIgASgJIkAKC0ZpbGVDb250ZW50EgwKBHBhdGgYASABKAkSDAoEdGV4dBgCIAEoCRIVCg1jaGFuZ2VkX2xpbmVzGAMgAygFIlgKDUNvbW1hbmRMaW1pdHMSEgoKY3B1X3dlaWdodBgBIAEoBRIYChBtZW1vcnlfbG93X2J5dGVzGAIgASgDEhkKEW1lbW9yeV9oaWdoX2J5dGVzGAMgASgDIiQKB1JlYnVpbHQSDQoFdW5pdHMYASABKAUSCgoCb2YYAiABKAUiOAoMQ29tbWFuZEV2ZW50EgoKAmF0GAEgASgDEgwKBHdoYXQYAiABKAkSDgoGZGV0YWlsGAMgASgJIrkECgdDb21tYW5kEgoKAmlkGAEgASgJEhQKDHdvcmtzcGFjZV9pZBgCIAEoCRIPCgdub2RlX2lkGAMgASgJEgwKBGFyZ3YYBCABKAkSDAoEYXJncxgFIAMoCRIMCgRraW5kGAYgASgJEiYKBXN0YXRlGAcgASgOMhcuaG90YmVkLnYxLkNvbW1hbmRTdGF0ZRIRCglxdWV1ZWRfYXQYCCABKAMSFwoKc3RhcnRlZF9hdBgJIAEoA0gAiAEBEhUKCGVuZGVkX2F0GAogASgDSAGIAQESFgoJZXhpdF9jb2RlGAsgASgFSAKIAQESKAoGbGltaXRzGAwgASgLMhguaG90YmVkLnYxLkNvbW1hbmRMaW1pdHMSEQoJY3B1X2NvcmVzGA0gASgBEhQKDG1lbW9yeV9ieXRlcxgOIAEoAxISCgpzd2FwX2J5dGVzGA8gASgDEiMKB3JlYnVpbHQYECABKAsyEi5ob3RiZWQudjEuUmVidWlsdBIZCgxjb2xkX3NlY29uZHMYESABKAFIA4gBARIOCgZyZWFzb24YEiABKAkSCwoDdXJsGBMgASgJEikKCHRpbWVsaW5lGBQgAygLMhcuaG90YmVkLnYxLkNvbW1hbmRFdmVudBIQCghhdHRhY2hlZBgVIAEoCBISCgpzZXNzaW9uX2lkGBYgASgJQg0KC19zdGFydGVkX2F0QgsKCV9lbmRlZF9hdEIMCgpfZXhpdF9jb2RlQg8KDV9jb2xkX3NlY29uZHMivgMKD0ZpbmlzaGVkQ29tbWFuZBIKCgJpZBgBIAEoCRIPCgdyZXBvX2lkGAIgASgJEg8KB25vZGVfaWQYAyABKAkSFAoMd29ya3NwYWNlX2lkGAQgASgJEg0KBWFnZW50GAUgASgJEgwKBGFyZ3YYBiABKAkSDAoEa2luZBgHIAEoCRImCgVzdGF0ZRgIIAEoDjIXLmhvdGJlZC52MS5Db21tYW5kU3RhdGUSFgoJZXhpdF9jb2RlGAkgASgFSACIAQESDwoHZmFpbHVyZRgKIAEoCRIQCghlbmRlZF9hdBgLIAEoAxIWCg5xdWV1ZWRfc2Vjb25kcxgMIAEoARIPCgdzZWNvbmRzGA0gASgBEhkKDGNvbGRfc2Vjb25kcxgOIAEoAUgBiAEBEhQKB3JlYnVpbHQYDyABKAVIAogBARIPCgJvZhgQIAEoBUgDiAEBEhkKEXBlYWtfbWVtb3J5X2J5dGVzGBEgASgDEg0KBXBhcmtzGBIgASgFEhIKCnNlc3Npb25faWQYEyABKAlCDAoKX2V4aXRfY29kZUIPCg1fY29sZF9zZWNvbmRzQgoKCF9yZWJ1aWx0QgUKA19vZiKoAQoRUnVuQ29tbWFuZFJlcXVlc3QSFAoMd29ya3NwYWNlX2lkGAEgASgJEgwKBGFyZ3MYAiADKAkSCwoDZW52GAMgAygJEgwKBGtpbmQYBCABKAkSKAoGbGltaXRzGAUgASgLMhguaG90YmVkLnYxLkNvbW1hbmRMaW1pdHMSEAoIYXR0YWNoZWQYBiABKAgSDAoEcG9ydBgHIAEoBRIKCgJpZBgIIAEoCSIfChFHZXRDb21tYW5kUmVxdWVzdBIKCgJpZBgBIAEoCSIpChNMaXN0Q29tbWFuZHNSZXF1ZXN0EhIKCnNlc3Npb25faWQYASABKAkiPAoUTGlzdENvbW1hbmRzUmVzcG9uc2USJAoIY29tbWFuZHMYASADKAsyEi5ob3RiZWQudjEuQ29tbWFuZCIgChJTdG9wQ29tbWFuZFJlcXVlc3QSCgoCaWQYASABKAkiPgoQRm9sbG93TG9nUmVxdWVzdBIKCgJpZBgBIAEoCRIOCgZvZmZzZXQYAiABKAMSDgoGZm9sbG93GAMgASgIIhgKCExvZ0NodW5rEgwKBGRhdGEYASABKAwinwEKB1Nlc3Npb24SCgoCaWQYASABKAkSDQoFYWdlbnQYAiABKAkSEgoKc3RhcnRlZF9hdBgDIAEoAxIVCghlbmRlZF9hdBgEIAEoA0gAiAEBEhUKDXdvcmtzcGFjZV9pZHMYBSADKAkSFgoObGFzdF9hY3RpdmVfYXQYBiABKAMSEgoKZW5kX3JlYXNvbhgHIAEoCUILCglfZW5kZWRfYXQiMAoTU3RhcnRTZXNzaW9uUmVxdWVzdBIKCgJpZBgBIAEoCRINCgVhZ2VudBgCIAEoCSIfChFFbmRTZXNzaW9uUmVxdWVzdBIKCgJpZBgBIAEoCSJQChJXYWl0U2Vzc2lvblJlcXVlc3QSEgoKc2Vzc2lvbl9pZBgBIAEoCRINCgVhZnRlchgCIAEoAxIXCg90aW1lb3V0X3NlY29uZHMYAyABKAUifwoTV2FpdFNlc3Npb25SZXNwb25zZRInCgZldmVudHMYASADKAsyFy5ob3RiZWQudjEuU2Vzc2lvbkV2ZW50Eg4KBmN1cnNvchgCIAEoAxIMCgRsaXZlGAMgASgFEg0KBWVuZGVkGAQgASgIEhIKCmVuZF9yZWFzb24YBSABKAki3wEKDFNlc3Npb25FdmVudBILCgNzZXEYASABKAMSCgoCYXQYAiABKAMSEgoKY29tbWFuZF9pZBgDIAEoCRIMCgRhcmd2GAQgASgJEgwKBHdoYXQYBSABKAkSJgoFc3RhdGUYBiABKA4yFy5ob3RiZWQudjEuQ29tbWFuZFN0YXRlEhYKCWV4aXRfY29kZRgHIAEoBUgAiAEBEg4KBmRldGFpbBgIIAEoCRISCgpzZXNzaW9uX2lkGAkgASgJEhQKDHdvcmtzcGFjZV9pZBgKIAEoCUIMCgpfZXhpdF9jb2RlIi4KEkdldExvZ0xpbmVzUmVxdWVzdBIKCgJpZBgBIAEoCRIMCgR0YWlsGAIgASgFIi8KCkNvbW1hbmRMb2cSEgoKY29tbWFuZF9pZBgBIAEoCRINCgVsaW5lcxgCIAMoCSJXCgtXb3JrZXJFdmVudBIKCgJhdBgBIAEoAxIMCgRraW5kGAIgASgJEgwKBHRleHQYAyABKAkSIAoDcmVmGAQgASgLMhMuaG90YmVkLnYxLkV2ZW50UmVmIiQKCEV2ZW50UmVmEgwKBHR5cGUYASABKAkSCgoCaWQYAiABKAkiSgoRU2VxdWVuY2VkRmluaXNoZWQSCwoDc2VxGAEgASgDEigKBGl0ZW0YAiABKAsyGi5ob3RiZWQudjEuRmluaXNoZWRDb21tYW5kIkMKDlNlcXVlbmNlZEV2ZW50EgsKA3NlcRgBIAEoAxIkCgRpdGVtGAIgASgLMhYuaG90YmVkLnYxLldvcmtlckV2ZW50IksKFVNlcXVlbmNlZFNlc3Npb25FdmVudBILCgNzZXEYASABKAMSJQoEaXRlbRgCIAEoCzIXLmhvdGJlZC52MS5TZXNzaW9uRXZlbnQi8QMKDVJlcG9ydFJlcXVlc3QSEgoKY2x1c3Rlcl9pZBgBIAEoCRInCglyZXNvdXJjZXMYAiABKAsyFC5ob3RiZWQudjEuUmVzb3VyY2VzEiMKBXVzYWdlGAMgASgLMhQuaG90YmVkLnYxLk5vZGVVc2FnZRISCgpkaXNrX2J5dGVzGAQgASgDEiIKBGRpc2sYBSABKAsyFC5ob3RiZWQudjEuRGlza1VzYWdlEh0KFXJlc2VydmVkX21lbW9yeV9ieXRlcxgGIAEoAxIRCglvb21fa2lsbHMYByABKAMSDwoHc3RvcmFnZRgIIAEoCRIeCgViYXNlcxgJIAMoCzIPLmhvdGJlZC52MS5CYXNlEigKCndvcmtzcGFjZXMYCiADKAsyFC5ob3RiZWQudjEuV29ya3NwYWNlEiQKCGNvbW1hbmRzGAsgAygLMhIuaG90YmVkLnYxLkNvbW1hbmQSLgoIZmluaXNoZWQYDCADKAsyHC5ob3RiZWQudjEuU2VxdWVuY2VkRmluaXNoZWQSKQoGZXZlbnRzGA0gAygLMhkuaG90YmVkLnYxLlNlcXVlbmNlZEV2ZW50EjgKDnNlc3Npb25fZXZlbnRzGA4gAygLMiAuaG90YmVkLnYxLlNlcXVlbmNlZFNlc3Npb25FdmVudCJOCg5SZXBvcnRSZXNwb25zZRILCgNhY2sYASABKAMSHgoFcmVwb3MYAiADKAsyDy5ob3RiZWQudjEuUmVwbxIPCgdyZWxlYXNlGAMgAygJImQKC1JlcG9TdW1tYXJ5EgoKAmlkGAEgASgJEgwKBG5hbWUYAiABKAkSEAoIbGFuZ3VhZ2UYAyABKAkSDQoFdW5pdHMYBCABKAUSGgoSY29sZF9idWlsZF9zZWNvbmRzGAUgASgBInUKDENsdXN0ZXJFdmVudBIKCgJpZBgBIAEoAxIKCgJhdBgCIAEoAxIMCgRraW5kGAMgASgJEg8KB25vZGVfaWQYBCABKAkSDAoEdGV4dBgFIAEoCRIgCgNyZWYYBiABKAsyEy5ob3RiZWQudjEuRXZlbnRSZWYifAoGVG90YWxzEhUKDXNhdmVkX3NlY29uZHMYASABKAESDgoGYnVpbGRzGAIgASgFEg0KBWZvcmtzGAMgASgFEhoKEm1lZGlhbl9mb3JrX21pbGxpcxgEIAEoAxIRCglvb21fa2lsbHMYBSABKAUSDQoFcGFya3MYBiABKAUiUwoGU2FtcGxlEgkKAXQYASABKAMSEAoIY3B1X2J1c3kYAiABKAESEwoLbWVtb3J5X3VzZWQYAyABKAESFwoPbWVtb3J5X3ByZXNzdXJlGAQgASgBIi0KB1NhbXBsZXMSIgoHc2FtcGxlcxgBIAMoCzIRLmhvdGJlZC52MS5TYW1wbGUiSAoKTG9hZFNhbXBsZRIJCgF0GAEgASgDEg8KB3J1bm5pbmcYAiABKAUSDgoGcXVldWVkGAMgASgFEg4KBnBhcmtlZBgEIAEoBSKWAQoKSG91ckJ1Y2tldBIMCgRob3VyGAEgASgDEg4KBmJ1aWxkcxgCIAEoBRIVCg1zcGVudF9zZWNvbmRzGAMgASgBEhUKDXNhdmVkX3NlY29uZHMYBCABKAESDQoFZm9ya3MYBSABKAUSDQoFcGFya3MYBiABKAUSHgoWcXVldWVfd2FpdF9wOTVfc2Vjb25kcxgHIAEoASI/CghOb2RlSG91chIMCgRob3VyGAEgASgDEhAKCGNwdV9idXN5GAIgASgBEhMKC21lbW9yeV91c2VkGAMgASgBIi8KCU5vZGVIb3VycxIiCgVob3VycxgBIAMoCzITLmhvdGJlZC52MS5Ob2RlSG91ciIUChJHZXRTbmFwc2hvdFJlcXVlc3Qi8wUKCFNuYXBzaG90EhIKCmNsdXN0ZXJfaWQYASABKAkSEgoKY29udHJvbGxlchgCIAEoCRILCgNub3cYAyABKAMSFgoOc2FtcGxlX3NlY29uZHMYBCABKAUSHgoFbm9kZXMYBSADKAsyDy5ob3RiZWQudjEuTm9kZRIlCgVyZXBvcxgGIAMoCzIWLmhvdGJlZC52MS5SZXBvU3VtbWFyeRIeCgViYXNlcxgHIAMoCzIPLmhvdGJlZC52MS5CYXNlEigKCndvcmtzcGFjZXMYCCADKAsyFC5ob3RiZWQudjEuV29ya3NwYWNlEiQKCGNvbW1hbmRzGAkgAygLMhIuaG90YmVkLnYxLkNvbW1hbmQSJwoGZXZlbnRzGAogAygLMhcuaG90YmVkLnYxLkNsdXN0ZXJFdmVudBIkCgl0b3RhbHMyNGgYCyABKAsyES5ob3RiZWQudjEuVG90YWxzEi8KBnNlcmllcxgMIAMoCzIfLmhvdGJlZC52MS5TbmFwc2hvdC5TZXJpZXNFbnRyeRIjCgRsb2FkGA0gAygLMhUuaG90YmVkLnYxLkxvYWRTYW1wbGUSJQoGaG91cmx5GA4gAygLMhUuaG90YmVkLnYxLkhvdXJCdWNrZXQSOAoLbm9kZV9ob3VybHkYDyADKAsyIy5ob3RiZWQudjEuU25hcHNob3QuTm9kZUhvdXJseUVudHJ5EisKB2hpc3RvcnkYECADKAsyGi5ob3RiZWQudjEuRmluaXNoZWRDb21tYW5kEiQKCHNlc3Npb25zGBEgAygLMhIuaG90YmVkLnYxLlNlc3Npb24aQQoLU2VyaWVzRW50cnkSCwoDa2V5GAEgASgJEiEKBXZhbHVlGAIgASgLMhIuaG90YmVkLnYxLlNhbXBsZXM6AjgBGkcKD05vZGVIb3VybHlFbnRyeRILCgNrZXkYASABKAkSIwoFdmFsdWUYAiABKAsyFC5ob3RiZWQudjEuTm9kZUhvdXJzOgI4ASqCAQoJQmFzZVN0YXRlEhoKFkJBU0VfU1RBVEVfVU5TUEVDSUZJRUQQABIXChNCQVNFX1NUQVRFX0JVSUxESU5HEAESEwoPQkFTRV9TVEFURV9XQVJNEAISFAoQQkFTRV9TVEFURV9TVEFMRRADEhUKEUJBU0VfU1RBVEVfRkFJTEVEEAQqwAEKDldvcmtzcGFjZVN0YXRlEh8KG1dPUktTUEFDRV9TVEFURV9VTlNQRUNJRklFRBAAEhoKFldPUktTUEFDRV9TVEFURV9BQ1RJVkUQARIYChRXT1JLU1BBQ0VfU1RBVEVfSURMRRACEhwKGFdPUktTUEFDRV9TVEFURV9SRUxFQVNFRBADEh0KGVdPUktTUEFDRV9TVEFURV9QUkVQQVJJTkcQBBIaChZXT1JLU1BBQ0VfU1RBVEVfRkFJTEVEEAUq0AEKDENvbW1hbmRTdGF0ZRIdChlDT01NQU5EX1NUQVRFX1VOU1BFQ0lGSUVEEAASGAoUQ09NTUFORF9TVEFURV9RVUVVRUQQARIZChVDT01NQU5EX1NUQVRFX1JVTk5JTkcQAhIYChRDT01NQU5EX1NUQVRFX1BBUktFRBADEhsKF0NPTU1BTkRfU1RBVEVfU1VDQ0VFREVEEAQSGAoUQ09NTUFORF9TVEFURV9GQUlMRUQQBRIbChdDT01NQU5EX1NUQVRFX0NBTkNFTExFRBAGMpwECg5DbHVzdGVyU2VydmljZRI3CgRKb2luEhYuaG90YmVkLnYxLkpvaW5SZXF1ZXN0GhcuaG90YmVkLnYxLkpvaW5SZXNwb25zZRI9CgZSZXBvcnQSGC5ob3RiZWQudjEuUmVwb3J0UmVxdWVzdBoZLmhvdGJlZC52MS5SZXBvcnRSZXNwb25zZRJGCglMaXN0Tm9kZXMSGy5ob3RiZWQudjEuTGlzdE5vZGVzUmVxdWVzdBocLmhvdGJlZC52MS5MaXN0Tm9kZXNSZXNwb25zZRJGCglMaXN0UmVwb3MSGy5ob3RiZWQudjEuTGlzdFJlcG9zUmVxdWVzdBocLmhvdGJlZC52MS5MaXN0UmVwb3NSZXNwb25zZRI1CgdQdXRSZXBvEhkuaG90YmVkLnYxLlB1dFJlcG9SZXF1ZXN0Gg8uaG90YmVkLnYxLlJlcG8SSQoKRGVsZXRlUmVwbxIcLmhvdGJlZC52MS5EZWxldGVSZXBvUmVxdWVzdBodLmhvdGJlZC52MS5EZWxldGVSZXBvUmVzcG9uc2USPQoLUmVidWlsZFJlcG8SHS5ob3RiZWQudjEuUmVidWlsZFJlcG9SZXF1ZXN0Gg8uaG90YmVkLnYxLlJlcG8SQQoLR2V0U25hcHNob3QSHS5ob3RiZWQudjEuR2V0U25hcHNob3RSZXF1ZXN0GhMuaG90YmVkLnYxLlNuYXBzaG90MuIBCg5TZXNzaW9uU2VydmljZRJCCgxTdGFydFNlc3Npb24SHi5ob3RiZWQudjEuU3RhcnRTZXNzaW9uUmVxdWVzdBoSLmhvdGJlZC52MS5TZXNzaW9uEj4KCkVuZFNlc3Npb24SHC5ob3RiZWQudjEuRW5kU2Vzc2lvblJlcXVlc3QaEi5ob3RiZWQudjEuU2Vzc2lvbhJMCgtXYWl0U2Vzc2lvbhIdLmhvdGJlZC52MS5XYWl0U2Vzc2lvblJlcXVlc3QaHi5ob3RiZWQudjEuV2FpdFNlc3Npb25SZXNwb25zZTKyBwoQV29ya3NwYWNlU2VydmljZRJKCg9DcmVhdGVXb3Jrc3BhY2USIS5ob3RiZWQudjEuQ3JlYXRlV29ya3NwYWNlUmVxdWVzdBoULmhvdGJlZC52MS5Xb3Jrc3BhY2USRAoMR2V0V29ya3NwYWNlEh4uaG90YmVkLnYxLkdldFdvcmtzcGFjZVJlcXVlc3QaFC5ob3RiZWQudjEuV29ya3NwYWNlElUKDkxpc3RXb3Jrc3BhY2VzEiAuaG90YmVkLnYxLkxpc3RXb3Jrc3BhY2VzUmVxdWVzdBohLmhvdGJlZC52MS5MaXN0V29ya3NwYWNlc1Jlc3BvbnNlElsKEFJlbGVhc2VXb3Jrc3BhY2USIi5ob3RiZWQudjEuUmVsZWFzZVdvcmtzcGFjZVJlcXVlc3QaIy5ob3RiZWQudjEuUmVsZWFzZVdvcmtzcGFjZVJlc3BvbnNlEjkKBFN5bmMSFi5ob3RiZWQudjEuU3luY1JlcXVlc3QaFy5ob3RiZWQudjEuU3luY1Jlc3BvbnNlKAESRgoJTGlzdEZpbGVzEhsuaG90YmVkLnYxLkxpc3RGaWxlc1JlcXVlc3QaHC5ob3RiZWQudjEuTGlzdEZpbGVzUmVzcG9uc2USPAoHR2V0RmlsZRIZLmhvdGJlZC52MS5HZXRGaWxlUmVxdWVzdBoWLmhvdGJlZC52MS5GaWxlQ29udGVudBI+CgpSdW5Db21tYW5kEhwuaG90YmVkLnYxLlJ1bkNvbW1hbmRSZXF1ZXN0GhIuaG90YmVkLnYxLkNvbW1hbmQSPgoKR2V0Q29tbWFuZBIcLmhvdGJlZC52MS5HZXRDb21tYW5kUmVxdWVzdBoSLmhvdGJlZC52MS5Db21tYW5kEk8KDExpc3RDb21tYW5kcxIeLmhvdGJlZC52MS5MaXN0Q29tbWFuZHNSZXF1ZXN0Gh8uaG90YmVkLnYxLkxpc3RDb21tYW5kc1Jlc3BvbnNlEkAKC1N0b3BDb21tYW5kEh0uaG90YmVkLnYxLlN0b3BDb21tYW5kUmVxdWVzdBoSLmhvdGJlZC52MS5Db21tYW5kEj8KCUZvbGxvd0xvZxIbLmhvdGJlZC52MS5Gb2xsb3dMb2dSZXF1ZXN0GhMuaG90YmVkLnYxLkxvZ0NodW5rMAESQwoLR2V0TG9nTGluZXMSHS5ob3RiZWQudjEuR2V0TG9nTGluZXNSZXF1ZXN0GhUuaG90YmVkLnYxLkNvbW1hbmRMb2dCPlo8Z2l0aHViLmNvbS9zZW1pc3RyaWN0L2hvdGJlZC9pbnRlcm5hbC9nZW4vaG90YmVkL3YxO2hvdGJlZHYxYgZwcm90bzM");
 
 /**
  * ErrorInfo rides on every error as a detail: a code programs act on, what
@@ -61,12 +60,12 @@ export type Resources = Message<"hotbed.v1.Resources"> & {
   cpus: number;
 
   /**
-   * @generated from field: int64 memory_bytes = 3 [jstype = JS_NUMBER];
+   * @generated from field: int64 memory_bytes = 3;
    */
   memoryBytes: bigint;
 
   /**
-   * @generated from field: int64 swap_bytes = 4 [jstype = JS_NUMBER];
+   * @generated from field: int64 swap_bytes = 4;
    */
   swapBytes: bigint;
 
@@ -102,12 +101,12 @@ export type NodeUsage = Message<"hotbed.v1.NodeUsage"> & {
   cpuBusy: number;
 
   /**
-   * @generated from field: int64 memory_used_bytes = 2 [jstype = JS_NUMBER];
+   * @generated from field: int64 memory_used_bytes = 2;
    */
   memoryUsedBytes: bigint;
 
   /**
-   * @generated from field: int64 swap_used_bytes = 3 [jstype = JS_NUMBER];
+   * @generated from field: int64 swap_used_bytes = 3;
    */
   swapUsedBytes: bigint;
 
@@ -138,22 +137,22 @@ export const NodeUsageSchema: GenMessage<NodeUsage> = /*@__PURE__*/
  */
 export type DiskUsage = Message<"hotbed.v1.DiskUsage"> & {
   /**
-   * @generated from field: int64 bases_bytes = 1 [jstype = JS_NUMBER];
+   * @generated from field: int64 bases_bytes = 1;
    */
   basesBytes: bigint;
 
   /**
-   * @generated from field: int64 forks_exclusive_bytes = 2 [jstype = JS_NUMBER];
+   * @generated from field: int64 forks_exclusive_bytes = 2;
    */
   forksExclusiveBytes: bigint;
 
   /**
-   * @generated from field: int64 other_bytes = 3 [jstype = JS_NUMBER];
+   * @generated from field: int64 other_bytes = 3;
    */
   otherBytes: bigint;
 
   /**
-   * @generated from field: int64 free_bytes = 4 [jstype = JS_NUMBER];
+   * @generated from field: int64 free_bytes = 4;
    */
   freeBytes: bigint;
 };
@@ -187,12 +186,12 @@ export type Node = Message<"hotbed.v1.Node"> & {
   login: string;
 
   /**
-   * @generated from field: int64 joined_at = 4 [jstype = JS_NUMBER];
+   * @generated from field: int64 joined_at = 4;
    */
   joinedAt: bigint;
 
   /**
-   * @generated from field: optional int64 last_seen = 5 [jstype = JS_NUMBER];
+   * @generated from field: optional int64 last_seen = 5;
    */
   lastSeen?: bigint | undefined;
 
@@ -212,7 +211,7 @@ export type Node = Message<"hotbed.v1.Node"> & {
   usage?: NodeUsage | undefined;
 
   /**
-   * @generated from field: int64 disk_bytes = 9 [jstype = JS_NUMBER];
+   * @generated from field: int64 disk_bytes = 9;
    */
   diskBytes: bigint;
 
@@ -224,7 +223,7 @@ export type Node = Message<"hotbed.v1.Node"> & {
   /**
    * What admitted commands are guaranteed: the sum of their memory.low.
    *
-   * @generated from field: int64 reserved_memory_bytes = 11 [jstype = JS_NUMBER];
+   * @generated from field: int64 reserved_memory_bytes = 11;
    */
   reservedMemoryBytes: bigint;
 
@@ -350,9 +349,17 @@ export type Repo = Message<"hotbed.v1.Repo"> & {
   hosts: string[];
 
   /**
-   * @generated from field: int64 created_at = 6 [jstype = JS_NUMBER];
+   * @generated from field: int64 created_at = 6;
    */
   createdAt: bigint;
+
+  /**
+   * Raised by RebuildRepo: a worker whose newest base has a lower epoch
+   * builds the next one from nothing.
+   *
+   * @generated from field: int64 scratch_epoch = 7;
+   */
+  scratchEpoch: bigint;
 };
 
 /**
@@ -440,6 +447,23 @@ export const DeleteRepoResponseSchema: GenMessage<DeleteRepoResponse> = /*@__PUR
   messageDesc(file_hotbed_v1_hotbed, 14);
 
 /**
+ * @generated from message hotbed.v1.RebuildRepoRequest
+ */
+export type RebuildRepoRequest = Message<"hotbed.v1.RebuildRepoRequest"> & {
+  /**
+   * @generated from field: string id = 1;
+   */
+  id: string;
+};
+
+/**
+ * Describes the message hotbed.v1.RebuildRepoRequest.
+ * Use `create(RebuildRepoRequestSchema)` to create a new message.
+ */
+export const RebuildRepoRequestSchema: GenMessage<RebuildRepoRequest> = /*@__PURE__*/
+  messageDesc(file_hotbed_v1_hotbed, 15);
+
+/**
  * One generation of a repo's branch, checked out, freshened and snapshotted
  * on one node.
  *
@@ -491,7 +515,7 @@ export type Base = Message<"hotbed.v1.Base"> & {
   progress: number;
 
   /**
-   * @generated from field: optional int64 built_at = 9 [jstype = JS_NUMBER];
+   * @generated from field: optional int64 built_at = 9;
    */
   builtAt?: bigint | undefined;
 
@@ -508,7 +532,7 @@ export type Base = Message<"hotbed.v1.Base"> & {
   cold: boolean;
 
   /**
-   * @generated from field: int64 size_bytes = 12 [jstype = JS_NUMBER];
+   * @generated from field: int64 size_bytes = 12;
    */
   sizeBytes: bigint;
 
@@ -535,6 +559,13 @@ export type Base = Message<"hotbed.v1.Base"> & {
    * @generated from field: string command = 16;
    */
   command: string;
+
+  /**
+   * The repo's scratch_epoch when this generation was started.
+   *
+   * @generated from field: int64 scratch_epoch = 17;
+   */
+  scratchEpoch: bigint;
 };
 
 /**
@@ -542,7 +573,7 @@ export type Base = Message<"hotbed.v1.Base"> & {
  * Use `create(BaseSchema)` to create a new message.
  */
 export const BaseSchema: GenMessage<Base> = /*@__PURE__*/
-  messageDesc(file_hotbed_v1_hotbed, 15);
+  messageDesc(file_hotbed_v1_hotbed, 16);
 
 /**
  * A writable fork of a base that one agent works in.
@@ -610,27 +641,27 @@ export type Workspace = Message<"hotbed.v1.Workspace"> & {
   state: WorkspaceState;
 
   /**
-   * @generated from field: int64 created_at = 12 [jstype = JS_NUMBER];
+   * @generated from field: int64 created_at = 12;
    */
   createdAt: bigint;
 
   /**
-   * @generated from field: int64 fork_millis = 13 [jstype = JS_NUMBER];
+   * @generated from field: int64 fork_millis = 13;
    */
   forkMillis: bigint;
 
   /**
-   * @generated from field: int64 exclusive_bytes = 14 [jstype = JS_NUMBER];
+   * @generated from field: int64 exclusive_bytes = 14;
    */
   exclusiveBytes: bigint;
 
   /**
-   * @generated from field: int64 shared_bytes = 15 [jstype = JS_NUMBER];
+   * @generated from field: int64 shared_bytes = 15;
    */
   sharedBytes: bigint;
 
   /**
-   * @generated from field: int64 last_active_at = 16 [jstype = JS_NUMBER];
+   * @generated from field: int64 last_active_at = 16;
    */
   lastActiveAt: bigint;
 
@@ -659,6 +690,13 @@ export type Workspace = Message<"hotbed.v1.Workspace"> & {
    * @generated from field: string sync_host = 20;
    */
   syncHost: string;
+
+  /**
+   * Why it failed, or what it waits for while preparing.
+   *
+   * @generated from field: string reason = 21;
+   */
+  reason: string;
 };
 
 /**
@@ -666,7 +704,7 @@ export type Workspace = Message<"hotbed.v1.Workspace"> & {
  * Use `create(WorkspaceSchema)` to create a new message.
  */
 export const WorkspaceSchema: GenMessage<Workspace> = /*@__PURE__*/
-  messageDesc(file_hotbed_v1_hotbed, 16);
+  messageDesc(file_hotbed_v1_hotbed, 17);
 
 /**
  * @generated from message hotbed.v1.CreateWorkspaceRequest
@@ -721,6 +759,13 @@ export type CreateWorkspaceRequest = Message<"hotbed.v1.CreateWorkspaceRequest">
    * @generated from field: string sync_host = 8;
    */
   syncHost: string;
+
+  /**
+   * Set by the controller: the repo's configuration, for its freshen.
+   *
+   * @generated from field: hotbed.v1.Repo repo_config = 9;
+   */
+  repoConfig?: Repo | undefined;
 };
 
 /**
@@ -728,7 +773,7 @@ export type CreateWorkspaceRequest = Message<"hotbed.v1.CreateWorkspaceRequest">
  * Use `create(CreateWorkspaceRequestSchema)` to create a new message.
  */
 export const CreateWorkspaceRequestSchema: GenMessage<CreateWorkspaceRequest> = /*@__PURE__*/
-  messageDesc(file_hotbed_v1_hotbed, 17);
+  messageDesc(file_hotbed_v1_hotbed, 18);
 
 /**
  * @generated from message hotbed.v1.GetWorkspaceRequest
@@ -745,7 +790,7 @@ export type GetWorkspaceRequest = Message<"hotbed.v1.GetWorkspaceRequest"> & {
  * Use `create(GetWorkspaceRequestSchema)` to create a new message.
  */
 export const GetWorkspaceRequestSchema: GenMessage<GetWorkspaceRequest> = /*@__PURE__*/
-  messageDesc(file_hotbed_v1_hotbed, 18);
+  messageDesc(file_hotbed_v1_hotbed, 19);
 
 /**
  * @generated from message hotbed.v1.ListWorkspacesRequest
@@ -764,7 +809,7 @@ export type ListWorkspacesRequest = Message<"hotbed.v1.ListWorkspacesRequest"> &
  * Use `create(ListWorkspacesRequestSchema)` to create a new message.
  */
 export const ListWorkspacesRequestSchema: GenMessage<ListWorkspacesRequest> = /*@__PURE__*/
-  messageDesc(file_hotbed_v1_hotbed, 19);
+  messageDesc(file_hotbed_v1_hotbed, 20);
 
 /**
  * @generated from message hotbed.v1.ListWorkspacesResponse
@@ -781,7 +826,7 @@ export type ListWorkspacesResponse = Message<"hotbed.v1.ListWorkspacesResponse">
  * Use `create(ListWorkspacesResponseSchema)` to create a new message.
  */
 export const ListWorkspacesResponseSchema: GenMessage<ListWorkspacesResponse> = /*@__PURE__*/
-  messageDesc(file_hotbed_v1_hotbed, 20);
+  messageDesc(file_hotbed_v1_hotbed, 21);
 
 /**
  * @generated from message hotbed.v1.ReleaseWorkspaceRequest
@@ -798,7 +843,7 @@ export type ReleaseWorkspaceRequest = Message<"hotbed.v1.ReleaseWorkspaceRequest
  * Use `create(ReleaseWorkspaceRequestSchema)` to create a new message.
  */
 export const ReleaseWorkspaceRequestSchema: GenMessage<ReleaseWorkspaceRequest> = /*@__PURE__*/
-  messageDesc(file_hotbed_v1_hotbed, 21);
+  messageDesc(file_hotbed_v1_hotbed, 22);
 
 /**
  * @generated from message hotbed.v1.ReleaseWorkspaceResponse
@@ -811,7 +856,7 @@ export type ReleaseWorkspaceResponse = Message<"hotbed.v1.ReleaseWorkspaceRespon
  * Use `create(ReleaseWorkspaceResponseSchema)` to create a new message.
  */
 export const ReleaseWorkspaceResponseSchema: GenMessage<ReleaseWorkspaceResponse> = /*@__PURE__*/
-  messageDesc(file_hotbed_v1_hotbed, 22);
+  messageDesc(file_hotbed_v1_hotbed, 23);
 
 /**
  * @generated from message hotbed.v1.SyncRequest
@@ -840,7 +885,7 @@ export type SyncRequest = Message<"hotbed.v1.SyncRequest"> & {
  * Use `create(SyncRequestSchema)` to create a new message.
  */
 export const SyncRequestSchema: GenMessage<SyncRequest> = /*@__PURE__*/
-  messageDesc(file_hotbed_v1_hotbed, 23);
+  messageDesc(file_hotbed_v1_hotbed, 24);
 
 /**
  * @generated from message hotbed.v1.SyncHeader
@@ -867,7 +912,7 @@ export type SyncHeader = Message<"hotbed.v1.SyncHeader"> & {
  * Use `create(SyncHeaderSchema)` to create a new message.
  */
 export const SyncHeaderSchema: GenMessage<SyncHeader> = /*@__PURE__*/
-  messageDesc(file_hotbed_v1_hotbed, 24);
+  messageDesc(file_hotbed_v1_hotbed, 25);
 
 /**
  * @generated from message hotbed.v1.SyncResponse
@@ -901,7 +946,7 @@ export type SyncResponse = Message<"hotbed.v1.SyncResponse"> & {
   skipped: boolean;
 
   /**
-   * @generated from field: int64 bundle_bytes = 6 [jstype = JS_NUMBER];
+   * @generated from field: int64 bundle_bytes = 6;
    */
   bundleBytes: bigint;
 };
@@ -911,7 +956,7 @@ export type SyncResponse = Message<"hotbed.v1.SyncResponse"> & {
  * Use `create(SyncResponseSchema)` to create a new message.
  */
 export const SyncResponseSchema: GenMessage<SyncResponse> = /*@__PURE__*/
-  messageDesc(file_hotbed_v1_hotbed, 25);
+  messageDesc(file_hotbed_v1_hotbed, 26);
 
 /**
  * @generated from message hotbed.v1.FileEntry
@@ -930,7 +975,7 @@ export type FileEntry = Message<"hotbed.v1.FileEntry"> & {
   kind: string;
 
   /**
-   * @generated from field: int64 size_bytes = 3 [jstype = JS_NUMBER];
+   * @generated from field: int64 size_bytes = 3;
    */
   sizeBytes: bigint;
 
@@ -947,7 +992,7 @@ export type FileEntry = Message<"hotbed.v1.FileEntry"> & {
  * Use `create(FileEntrySchema)` to create a new message.
  */
 export const FileEntrySchema: GenMessage<FileEntry> = /*@__PURE__*/
-  messageDesc(file_hotbed_v1_hotbed, 26);
+  messageDesc(file_hotbed_v1_hotbed, 27);
 
 /**
  * @generated from message hotbed.v1.ListFilesRequest
@@ -964,7 +1009,7 @@ export type ListFilesRequest = Message<"hotbed.v1.ListFilesRequest"> & {
  * Use `create(ListFilesRequestSchema)` to create a new message.
  */
 export const ListFilesRequestSchema: GenMessage<ListFilesRequest> = /*@__PURE__*/
-  messageDesc(file_hotbed_v1_hotbed, 27);
+  messageDesc(file_hotbed_v1_hotbed, 28);
 
 /**
  * @generated from message hotbed.v1.ListFilesResponse
@@ -981,7 +1026,7 @@ export type ListFilesResponse = Message<"hotbed.v1.ListFilesResponse"> & {
  * Use `create(ListFilesResponseSchema)` to create a new message.
  */
 export const ListFilesResponseSchema: GenMessage<ListFilesResponse> = /*@__PURE__*/
-  messageDesc(file_hotbed_v1_hotbed, 28);
+  messageDesc(file_hotbed_v1_hotbed, 29);
 
 /**
  * @generated from message hotbed.v1.GetFileRequest
@@ -1003,7 +1048,7 @@ export type GetFileRequest = Message<"hotbed.v1.GetFileRequest"> & {
  * Use `create(GetFileRequestSchema)` to create a new message.
  */
 export const GetFileRequestSchema: GenMessage<GetFileRequest> = /*@__PURE__*/
-  messageDesc(file_hotbed_v1_hotbed, 29);
+  messageDesc(file_hotbed_v1_hotbed, 30);
 
 /**
  * @generated from message hotbed.v1.FileContent
@@ -1032,7 +1077,7 @@ export type FileContent = Message<"hotbed.v1.FileContent"> & {
  * Use `create(FileContentSchema)` to create a new message.
  */
 export const FileContentSchema: GenMessage<FileContent> = /*@__PURE__*/
-  messageDesc(file_hotbed_v1_hotbed, 30);
+  messageDesc(file_hotbed_v1_hotbed, 31);
 
 /**
  * @generated from message hotbed.v1.CommandLimits
@@ -1048,14 +1093,14 @@ export type CommandLimits = Message<"hotbed.v1.CommandLimits"> & {
   /**
    * cgroup memory.low: guaranteed; admission waits until it fits.
    *
-   * @generated from field: int64 memory_low_bytes = 2 [jstype = JS_NUMBER];
+   * @generated from field: int64 memory_low_bytes = 2;
    */
   memoryLowBytes: bigint;
 
   /**
    * cgroup memory.high: past it the command is throttled and swapped.
    *
-   * @generated from field: int64 memory_high_bytes = 3 [jstype = JS_NUMBER];
+   * @generated from field: int64 memory_high_bytes = 3;
    */
   memoryHighBytes: bigint;
 };
@@ -1065,7 +1110,7 @@ export type CommandLimits = Message<"hotbed.v1.CommandLimits"> & {
  * Use `create(CommandLimitsSchema)` to create a new message.
  */
 export const CommandLimitsSchema: GenMessage<CommandLimits> = /*@__PURE__*/
-  messageDesc(file_hotbed_v1_hotbed, 31);
+  messageDesc(file_hotbed_v1_hotbed, 32);
 
 /**
  * @generated from message hotbed.v1.Rebuilt
@@ -1087,14 +1132,14 @@ export type Rebuilt = Message<"hotbed.v1.Rebuilt"> & {
  * Use `create(RebuiltSchema)` to create a new message.
  */
 export const RebuiltSchema: GenMessage<Rebuilt> = /*@__PURE__*/
-  messageDesc(file_hotbed_v1_hotbed, 32);
+  messageDesc(file_hotbed_v1_hotbed, 33);
 
 /**
  * @generated from message hotbed.v1.CommandEvent
  */
 export type CommandEvent = Message<"hotbed.v1.CommandEvent"> & {
   /**
-   * @generated from field: int64 at = 1 [jstype = JS_NUMBER];
+   * @generated from field: int64 at = 1;
    */
   at: bigint;
 
@@ -1116,7 +1161,7 @@ export type CommandEvent = Message<"hotbed.v1.CommandEvent"> & {
  * Use `create(CommandEventSchema)` to create a new message.
  */
 export const CommandEventSchema: GenMessage<CommandEvent> = /*@__PURE__*/
-  messageDesc(file_hotbed_v1_hotbed, 33);
+  messageDesc(file_hotbed_v1_hotbed, 34);
 
 /**
  * A command in a workspace, live or just ended.
@@ -1164,17 +1209,17 @@ export type Command = Message<"hotbed.v1.Command"> & {
   state: CommandState;
 
   /**
-   * @generated from field: int64 queued_at = 8 [jstype = JS_NUMBER];
+   * @generated from field: int64 queued_at = 8;
    */
   queuedAt: bigint;
 
   /**
-   * @generated from field: optional int64 started_at = 9 [jstype = JS_NUMBER];
+   * @generated from field: optional int64 started_at = 9;
    */
   startedAt?: bigint | undefined;
 
   /**
-   * @generated from field: optional int64 ended_at = 10 [jstype = JS_NUMBER];
+   * @generated from field: optional int64 ended_at = 10;
    */
   endedAt?: bigint | undefined;
 
@@ -1194,12 +1239,12 @@ export type Command = Message<"hotbed.v1.Command"> & {
   cpuCores: number;
 
   /**
-   * @generated from field: int64 memory_bytes = 14 [jstype = JS_NUMBER];
+   * @generated from field: int64 memory_bytes = 14;
    */
   memoryBytes: bigint;
 
   /**
-   * @generated from field: int64 swap_bytes = 15 [jstype = JS_NUMBER];
+   * @generated from field: int64 swap_bytes = 15;
    */
   swapBytes: bigint;
 
@@ -1254,7 +1299,7 @@ export type Command = Message<"hotbed.v1.Command"> & {
  * Use `create(CommandSchema)` to create a new message.
  */
 export const CommandSchema: GenMessage<Command> = /*@__PURE__*/
-  messageDesc(file_hotbed_v1_hotbed, 34);
+  messageDesc(file_hotbed_v1_hotbed, 35);
 
 /**
  * A command that ended, as history keeps it.
@@ -1315,7 +1360,7 @@ export type FinishedCommand = Message<"hotbed.v1.FinishedCommand"> & {
   failure: string;
 
   /**
-   * @generated from field: int64 ended_at = 11 [jstype = JS_NUMBER];
+   * @generated from field: int64 ended_at = 11;
    */
   endedAt: bigint;
 
@@ -1345,7 +1390,7 @@ export type FinishedCommand = Message<"hotbed.v1.FinishedCommand"> & {
   of?: number | undefined;
 
   /**
-   * @generated from field: int64 peak_memory_bytes = 17 [jstype = JS_NUMBER];
+   * @generated from field: int64 peak_memory_bytes = 17;
    */
   peakMemoryBytes: bigint;
 
@@ -1365,7 +1410,7 @@ export type FinishedCommand = Message<"hotbed.v1.FinishedCommand"> & {
  * Use `create(FinishedCommandSchema)` to create a new message.
  */
 export const FinishedCommandSchema: GenMessage<FinishedCommand> = /*@__PURE__*/
-  messageDesc(file_hotbed_v1_hotbed, 35);
+  messageDesc(file_hotbed_v1_hotbed, 36);
 
 /**
  * @generated from message hotbed.v1.RunCommandRequest
@@ -1423,7 +1468,7 @@ export type RunCommandRequest = Message<"hotbed.v1.RunCommandRequest"> & {
  * Use `create(RunCommandRequestSchema)` to create a new message.
  */
 export const RunCommandRequestSchema: GenMessage<RunCommandRequest> = /*@__PURE__*/
-  messageDesc(file_hotbed_v1_hotbed, 36);
+  messageDesc(file_hotbed_v1_hotbed, 37);
 
 /**
  * @generated from message hotbed.v1.GetCommandRequest
@@ -1440,7 +1485,7 @@ export type GetCommandRequest = Message<"hotbed.v1.GetCommandRequest"> & {
  * Use `create(GetCommandRequestSchema)` to create a new message.
  */
 export const GetCommandRequestSchema: GenMessage<GetCommandRequest> = /*@__PURE__*/
-  messageDesc(file_hotbed_v1_hotbed, 37);
+  messageDesc(file_hotbed_v1_hotbed, 38);
 
 /**
  * @generated from message hotbed.v1.ListCommandsRequest
@@ -1459,7 +1504,7 @@ export type ListCommandsRequest = Message<"hotbed.v1.ListCommandsRequest"> & {
  * Use `create(ListCommandsRequestSchema)` to create a new message.
  */
 export const ListCommandsRequestSchema: GenMessage<ListCommandsRequest> = /*@__PURE__*/
-  messageDesc(file_hotbed_v1_hotbed, 38);
+  messageDesc(file_hotbed_v1_hotbed, 39);
 
 /**
  * @generated from message hotbed.v1.ListCommandsResponse
@@ -1476,7 +1521,7 @@ export type ListCommandsResponse = Message<"hotbed.v1.ListCommandsResponse"> & {
  * Use `create(ListCommandsResponseSchema)` to create a new message.
  */
 export const ListCommandsResponseSchema: GenMessage<ListCommandsResponse> = /*@__PURE__*/
-  messageDesc(file_hotbed_v1_hotbed, 39);
+  messageDesc(file_hotbed_v1_hotbed, 40);
 
 /**
  * @generated from message hotbed.v1.StopCommandRequest
@@ -1493,7 +1538,7 @@ export type StopCommandRequest = Message<"hotbed.v1.StopCommandRequest"> & {
  * Use `create(StopCommandRequestSchema)` to create a new message.
  */
 export const StopCommandRequestSchema: GenMessage<StopCommandRequest> = /*@__PURE__*/
-  messageDesc(file_hotbed_v1_hotbed, 40);
+  messageDesc(file_hotbed_v1_hotbed, 41);
 
 /**
  * @generated from message hotbed.v1.FollowLogRequest
@@ -1505,7 +1550,7 @@ export type FollowLogRequest = Message<"hotbed.v1.FollowLogRequest"> & {
   id: string;
 
   /**
-   * @generated from field: int64 offset = 2 [jstype = JS_NUMBER];
+   * @generated from field: int64 offset = 2;
    */
   offset: bigint;
 
@@ -1520,7 +1565,7 @@ export type FollowLogRequest = Message<"hotbed.v1.FollowLogRequest"> & {
  * Use `create(FollowLogRequestSchema)` to create a new message.
  */
 export const FollowLogRequestSchema: GenMessage<FollowLogRequest> = /*@__PURE__*/
-  messageDesc(file_hotbed_v1_hotbed, 41);
+  messageDesc(file_hotbed_v1_hotbed, 42);
 
 /**
  * @generated from message hotbed.v1.LogChunk
@@ -1537,7 +1582,7 @@ export type LogChunk = Message<"hotbed.v1.LogChunk"> & {
  * Use `create(LogChunkSchema)` to create a new message.
  */
 export const LogChunkSchema: GenMessage<LogChunk> = /*@__PURE__*/
-  messageDesc(file_hotbed_v1_hotbed, 42);
+  messageDesc(file_hotbed_v1_hotbed, 43);
 
 /**
  * @generated from message hotbed.v1.Session
@@ -1556,12 +1601,12 @@ export type Session = Message<"hotbed.v1.Session"> & {
   agent: string;
 
   /**
-   * @generated from field: int64 started_at = 3 [jstype = JS_NUMBER];
+   * @generated from field: int64 started_at = 3;
    */
   startedAt: bigint;
 
   /**
-   * @generated from field: optional int64 ended_at = 4 [jstype = JS_NUMBER];
+   * @generated from field: optional int64 ended_at = 4;
    */
   endedAt?: bigint | undefined;
 
@@ -1574,7 +1619,7 @@ export type Session = Message<"hotbed.v1.Session"> & {
    * The last call that touched the session; an hour after it, the session
    * is abandoned and ends.
    *
-   * @generated from field: int64 last_active_at = 6 [jstype = JS_NUMBER];
+   * @generated from field: int64 last_active_at = 6;
    */
   lastActiveAt: bigint;
 
@@ -1591,7 +1636,7 @@ export type Session = Message<"hotbed.v1.Session"> & {
  * Use `create(SessionSchema)` to create a new message.
  */
 export const SessionSchema: GenMessage<Session> = /*@__PURE__*/
-  messageDesc(file_hotbed_v1_hotbed, 43);
+  messageDesc(file_hotbed_v1_hotbed, 44);
 
 /**
  * @generated from message hotbed.v1.StartSessionRequest
@@ -1615,7 +1660,7 @@ export type StartSessionRequest = Message<"hotbed.v1.StartSessionRequest"> & {
  * Use `create(StartSessionRequestSchema)` to create a new message.
  */
 export const StartSessionRequestSchema: GenMessage<StartSessionRequest> = /*@__PURE__*/
-  messageDesc(file_hotbed_v1_hotbed, 44);
+  messageDesc(file_hotbed_v1_hotbed, 45);
 
 /**
  * @generated from message hotbed.v1.EndSessionRequest
@@ -1632,7 +1677,7 @@ export type EndSessionRequest = Message<"hotbed.v1.EndSessionRequest"> & {
  * Use `create(EndSessionRequestSchema)` to create a new message.
  */
 export const EndSessionRequestSchema: GenMessage<EndSessionRequest> = /*@__PURE__*/
-  messageDesc(file_hotbed_v1_hotbed, 45);
+  messageDesc(file_hotbed_v1_hotbed, 46);
 
 /**
  * @generated from message hotbed.v1.WaitSessionRequest
@@ -1646,7 +1691,7 @@ export type WaitSessionRequest = Message<"hotbed.v1.WaitSessionRequest"> & {
   /**
    * Return events after this one (0 for the first).
    *
-   * @generated from field: int64 after = 2 [jstype = JS_NUMBER];
+   * @generated from field: int64 after = 2;
    */
   after: bigint;
 
@@ -1663,7 +1708,7 @@ export type WaitSessionRequest = Message<"hotbed.v1.WaitSessionRequest"> & {
  * Use `create(WaitSessionRequestSchema)` to create a new message.
  */
 export const WaitSessionRequestSchema: GenMessage<WaitSessionRequest> = /*@__PURE__*/
-  messageDesc(file_hotbed_v1_hotbed, 46);
+  messageDesc(file_hotbed_v1_hotbed, 47);
 
 /**
  * @generated from message hotbed.v1.WaitSessionResponse
@@ -1677,7 +1722,7 @@ export type WaitSessionResponse = Message<"hotbed.v1.WaitSessionResponse"> & {
   /**
    * Pass as after to wait for what comes next.
    *
-   * @generated from field: int64 cursor = 2 [jstype = JS_NUMBER];
+   * @generated from field: int64 cursor = 2;
    */
   cursor: bigint;
 
@@ -1706,7 +1751,7 @@ export type WaitSessionResponse = Message<"hotbed.v1.WaitSessionResponse"> & {
  * Use `create(WaitSessionResponseSchema)` to create a new message.
  */
 export const WaitSessionResponseSchema: GenMessage<WaitSessionResponse> = /*@__PURE__*/
-  messageDesc(file_hotbed_v1_hotbed, 47);
+  messageDesc(file_hotbed_v1_hotbed, 48);
 
 /**
  * Something that happened to a command in a session.
@@ -1717,12 +1762,12 @@ export type SessionEvent = Message<"hotbed.v1.SessionEvent"> & {
   /**
    * The controller's cursor for the event; workers leave it 0.
    *
-   * @generated from field: int64 seq = 1 [jstype = JS_NUMBER];
+   * @generated from field: int64 seq = 1;
    */
   seq: bigint;
 
   /**
-   * @generated from field: int64 at = 2 [jstype = JS_NUMBER];
+   * @generated from field: int64 at = 2;
    */
   at: bigint;
 
@@ -1737,7 +1782,8 @@ export type SessionEvent = Message<"hotbed.v1.SessionEvent"> & {
   argv: string;
 
   /**
-   * admitted, parked, thawed, exited, cancelled
+   * admitted, parked, thawed, exited, cancelled; or ready and failed for a
+   * workspace (command_id empty)
    *
    * @generated from field: string what = 5;
    */
@@ -1774,7 +1820,7 @@ export type SessionEvent = Message<"hotbed.v1.SessionEvent"> & {
  * Use `create(SessionEventSchema)` to create a new message.
  */
 export const SessionEventSchema: GenMessage<SessionEvent> = /*@__PURE__*/
-  messageDesc(file_hotbed_v1_hotbed, 48);
+  messageDesc(file_hotbed_v1_hotbed, 49);
 
 /**
  * @generated from message hotbed.v1.GetLogLinesRequest
@@ -1796,7 +1842,7 @@ export type GetLogLinesRequest = Message<"hotbed.v1.GetLogLinesRequest"> & {
  * Use `create(GetLogLinesRequestSchema)` to create a new message.
  */
 export const GetLogLinesRequestSchema: GenMessage<GetLogLinesRequest> = /*@__PURE__*/
-  messageDesc(file_hotbed_v1_hotbed, 49);
+  messageDesc(file_hotbed_v1_hotbed, 50);
 
 /**
  * @generated from message hotbed.v1.CommandLog
@@ -1818,14 +1864,14 @@ export type CommandLog = Message<"hotbed.v1.CommandLog"> & {
  * Use `create(CommandLogSchema)` to create a new message.
  */
 export const CommandLogSchema: GenMessage<CommandLog> = /*@__PURE__*/
-  messageDesc(file_hotbed_v1_hotbed, 50);
+  messageDesc(file_hotbed_v1_hotbed, 51);
 
 /**
  * @generated from message hotbed.v1.WorkerEvent
  */
 export type WorkerEvent = Message<"hotbed.v1.WorkerEvent"> & {
   /**
-   * @generated from field: int64 at = 1 [jstype = JS_NUMBER];
+   * @generated from field: int64 at = 1;
    */
   at: bigint;
 
@@ -1852,7 +1898,7 @@ export type WorkerEvent = Message<"hotbed.v1.WorkerEvent"> & {
  * Use `create(WorkerEventSchema)` to create a new message.
  */
 export const WorkerEventSchema: GenMessage<WorkerEvent> = /*@__PURE__*/
-  messageDesc(file_hotbed_v1_hotbed, 51);
+  messageDesc(file_hotbed_v1_hotbed, 52);
 
 /**
  * @generated from message hotbed.v1.EventRef
@@ -1876,7 +1922,7 @@ export type EventRef = Message<"hotbed.v1.EventRef"> & {
  * Use `create(EventRefSchema)` to create a new message.
  */
 export const EventRefSchema: GenMessage<EventRef> = /*@__PURE__*/
-  messageDesc(file_hotbed_v1_hotbed, 52);
+  messageDesc(file_hotbed_v1_hotbed, 53);
 
 /**
  * Finished commands and events carry sequence numbers; a worker sends each
@@ -1902,7 +1948,7 @@ export type SequencedFinished = Message<"hotbed.v1.SequencedFinished"> & {
  * Use `create(SequencedFinishedSchema)` to create a new message.
  */
 export const SequencedFinishedSchema: GenMessage<SequencedFinished> = /*@__PURE__*/
-  messageDesc(file_hotbed_v1_hotbed, 53);
+  messageDesc(file_hotbed_v1_hotbed, 54);
 
 /**
  * @generated from message hotbed.v1.SequencedEvent
@@ -1924,7 +1970,7 @@ export type SequencedEvent = Message<"hotbed.v1.SequencedEvent"> & {
  * Use `create(SequencedEventSchema)` to create a new message.
  */
 export const SequencedEventSchema: GenMessage<SequencedEvent> = /*@__PURE__*/
-  messageDesc(file_hotbed_v1_hotbed, 54);
+  messageDesc(file_hotbed_v1_hotbed, 55);
 
 /**
  * @generated from message hotbed.v1.SequencedSessionEvent
@@ -1946,7 +1992,7 @@ export type SequencedSessionEvent = Message<"hotbed.v1.SequencedSessionEvent"> &
  * Use `create(SequencedSessionEventSchema)` to create a new message.
  */
 export const SequencedSessionEventSchema: GenMessage<SequencedSessionEvent> = /*@__PURE__*/
-  messageDesc(file_hotbed_v1_hotbed, 55);
+  messageDesc(file_hotbed_v1_hotbed, 56);
 
 /**
  * @generated from message hotbed.v1.ReportRequest
@@ -1968,7 +2014,7 @@ export type ReportRequest = Message<"hotbed.v1.ReportRequest"> & {
   usage?: NodeUsage | undefined;
 
   /**
-   * @generated from field: int64 disk_bytes = 4 [jstype = JS_NUMBER];
+   * @generated from field: int64 disk_bytes = 4;
    */
   diskBytes: bigint;
 
@@ -1978,7 +2024,7 @@ export type ReportRequest = Message<"hotbed.v1.ReportRequest"> & {
   disk?: DiskUsage | undefined;
 
   /**
-   * @generated from field: int64 reserved_memory_bytes = 6 [jstype = JS_NUMBER];
+   * @generated from field: int64 reserved_memory_bytes = 6;
    */
   reservedMemoryBytes: bigint;
 
@@ -1986,7 +2032,7 @@ export type ReportRequest = Message<"hotbed.v1.ReportRequest"> & {
    * The kernel's OOM kills since boot; hotbed parks instead of killing, so
    * it should not move.
    *
-   * @generated from field: int64 oom_kills = 7 [jstype = JS_NUMBER];
+   * @generated from field: int64 oom_kills = 7;
    */
   oomKills: bigint;
 
@@ -2031,7 +2077,7 @@ export type ReportRequest = Message<"hotbed.v1.ReportRequest"> & {
  * Use `create(ReportRequestSchema)` to create a new message.
  */
 export const ReportRequestSchema: GenMessage<ReportRequest> = /*@__PURE__*/
-  messageDesc(file_hotbed_v1_hotbed, 56);
+  messageDesc(file_hotbed_v1_hotbed, 57);
 
 /**
  * @generated from message hotbed.v1.ReportResponse
@@ -2064,7 +2110,7 @@ export type ReportResponse = Message<"hotbed.v1.ReportResponse"> & {
  * Use `create(ReportResponseSchema)` to create a new message.
  */
 export const ReportResponseSchema: GenMessage<ReportResponse> = /*@__PURE__*/
-  messageDesc(file_hotbed_v1_hotbed, 57);
+  messageDesc(file_hotbed_v1_hotbed, 58);
 
 /**
  * A repo as the cockpit describes it, from its newest cold base.
@@ -2105,19 +2151,19 @@ export type RepoSummary = Message<"hotbed.v1.RepoSummary"> & {
  * Use `create(RepoSummarySchema)` to create a new message.
  */
 export const RepoSummarySchema: GenMessage<RepoSummary> = /*@__PURE__*/
-  messageDesc(file_hotbed_v1_hotbed, 58);
+  messageDesc(file_hotbed_v1_hotbed, 59);
 
 /**
  * @generated from message hotbed.v1.ClusterEvent
  */
 export type ClusterEvent = Message<"hotbed.v1.ClusterEvent"> & {
   /**
-   * @generated from field: int64 id = 1 [jstype = JS_NUMBER];
+   * @generated from field: int64 id = 1;
    */
   id: bigint;
 
   /**
-   * @generated from field: int64 at = 2 [jstype = JS_NUMBER];
+   * @generated from field: int64 at = 2;
    */
   at: bigint;
 
@@ -2147,7 +2193,7 @@ export type ClusterEvent = Message<"hotbed.v1.ClusterEvent"> & {
  * Use `create(ClusterEventSchema)` to create a new message.
  */
 export const ClusterEventSchema: GenMessage<ClusterEvent> = /*@__PURE__*/
-  messageDesc(file_hotbed_v1_hotbed, 59);
+  messageDesc(file_hotbed_v1_hotbed, 60);
 
 /**
  * @generated from message hotbed.v1.Totals
@@ -2171,7 +2217,7 @@ export type Totals = Message<"hotbed.v1.Totals"> & {
   forks: number;
 
   /**
-   * @generated from field: int64 median_fork_millis = 4 [jstype = JS_NUMBER];
+   * @generated from field: int64 median_fork_millis = 4;
    */
   medianForkMillis: bigint;
 
@@ -2191,14 +2237,14 @@ export type Totals = Message<"hotbed.v1.Totals"> & {
  * Use `create(TotalsSchema)` to create a new message.
  */
 export const TotalsSchema: GenMessage<Totals> = /*@__PURE__*/
-  messageDesc(file_hotbed_v1_hotbed, 60);
+  messageDesc(file_hotbed_v1_hotbed, 61);
 
 /**
  * @generated from message hotbed.v1.Sample
  */
 export type Sample = Message<"hotbed.v1.Sample"> & {
   /**
-   * @generated from field: int64 t = 1 [jstype = JS_NUMBER];
+   * @generated from field: int64 t = 1;
    */
   t: bigint;
 
@@ -2223,7 +2269,7 @@ export type Sample = Message<"hotbed.v1.Sample"> & {
  * Use `create(SampleSchema)` to create a new message.
  */
 export const SampleSchema: GenMessage<Sample> = /*@__PURE__*/
-  messageDesc(file_hotbed_v1_hotbed, 61);
+  messageDesc(file_hotbed_v1_hotbed, 62);
 
 /**
  * @generated from message hotbed.v1.Samples
@@ -2240,7 +2286,7 @@ export type Samples = Message<"hotbed.v1.Samples"> & {
  * Use `create(SamplesSchema)` to create a new message.
  */
 export const SamplesSchema: GenMessage<Samples> = /*@__PURE__*/
-  messageDesc(file_hotbed_v1_hotbed, 62);
+  messageDesc(file_hotbed_v1_hotbed, 63);
 
 /**
  * The cluster's command counts at one sample.
@@ -2249,7 +2295,7 @@ export const SamplesSchema: GenMessage<Samples> = /*@__PURE__*/
  */
 export type LoadSample = Message<"hotbed.v1.LoadSample"> & {
   /**
-   * @generated from field: int64 t = 1 [jstype = JS_NUMBER];
+   * @generated from field: int64 t = 1;
    */
   t: bigint;
 
@@ -2274,7 +2320,7 @@ export type LoadSample = Message<"hotbed.v1.LoadSample"> & {
  * Use `create(LoadSampleSchema)` to create a new message.
  */
 export const LoadSampleSchema: GenMessage<LoadSample> = /*@__PURE__*/
-  messageDesc(file_hotbed_v1_hotbed, 63);
+  messageDesc(file_hotbed_v1_hotbed, 64);
 
 /**
  * One hour of the cluster's history.
@@ -2283,7 +2329,7 @@ export const LoadSampleSchema: GenMessage<LoadSample> = /*@__PURE__*/
  */
 export type HourBucket = Message<"hotbed.v1.HourBucket"> & {
   /**
-   * @generated from field: int64 hour = 1 [jstype = JS_NUMBER];
+   * @generated from field: int64 hour = 1;
    */
   hour: bigint;
 
@@ -2323,14 +2369,14 @@ export type HourBucket = Message<"hotbed.v1.HourBucket"> & {
  * Use `create(HourBucketSchema)` to create a new message.
  */
 export const HourBucketSchema: GenMessage<HourBucket> = /*@__PURE__*/
-  messageDesc(file_hotbed_v1_hotbed, 64);
+  messageDesc(file_hotbed_v1_hotbed, 65);
 
 /**
  * @generated from message hotbed.v1.NodeHour
  */
 export type NodeHour = Message<"hotbed.v1.NodeHour"> & {
   /**
-   * @generated from field: int64 hour = 1 [jstype = JS_NUMBER];
+   * @generated from field: int64 hour = 1;
    */
   hour: bigint;
 
@@ -2350,7 +2396,7 @@ export type NodeHour = Message<"hotbed.v1.NodeHour"> & {
  * Use `create(NodeHourSchema)` to create a new message.
  */
 export const NodeHourSchema: GenMessage<NodeHour> = /*@__PURE__*/
-  messageDesc(file_hotbed_v1_hotbed, 65);
+  messageDesc(file_hotbed_v1_hotbed, 66);
 
 /**
  * @generated from message hotbed.v1.NodeHours
@@ -2367,7 +2413,7 @@ export type NodeHours = Message<"hotbed.v1.NodeHours"> & {
  * Use `create(NodeHoursSchema)` to create a new message.
  */
 export const NodeHoursSchema: GenMessage<NodeHours> = /*@__PURE__*/
-  messageDesc(file_hotbed_v1_hotbed, 66);
+  messageDesc(file_hotbed_v1_hotbed, 67);
 
 /**
  * @generated from message hotbed.v1.GetSnapshotRequest
@@ -2380,7 +2426,7 @@ export type GetSnapshotRequest = Message<"hotbed.v1.GetSnapshotRequest"> & {
  * Use `create(GetSnapshotRequestSchema)` to create a new message.
  */
 export const GetSnapshotRequestSchema: GenMessage<GetSnapshotRequest> = /*@__PURE__*/
-  messageDesc(file_hotbed_v1_hotbed, 67);
+  messageDesc(file_hotbed_v1_hotbed, 68);
 
 /**
  * @generated from message hotbed.v1.Snapshot
@@ -2397,7 +2443,7 @@ export type Snapshot = Message<"hotbed.v1.Snapshot"> & {
   controller: string;
 
   /**
-   * @generated from field: int64 now = 3 [jstype = JS_NUMBER];
+   * @generated from field: int64 now = 3;
    */
   now: bigint;
 
@@ -2481,7 +2527,7 @@ export type Snapshot = Message<"hotbed.v1.Snapshot"> & {
  * Use `create(SnapshotSchema)` to create a new message.
  */
 export const SnapshotSchema: GenMessage<Snapshot> = /*@__PURE__*/
-  messageDesc(file_hotbed_v1_hotbed, 68);
+  messageDesc(file_hotbed_v1_hotbed, 69);
 
 /**
  * @generated from enum hotbed.v1.BaseState
@@ -2542,6 +2588,21 @@ export enum WorkspaceState {
    * @generated from enum value: WORKSPACE_STATE_RELEASED = 3;
    */
   RELEASED = 3,
+
+  /**
+   * Its base is being brought up to date (pulled and freshened); commands
+   * run in it queue until it is ready.
+   *
+   * @generated from enum value: WORKSPACE_STATE_PREPARING = 4;
+   */
+  PREPARING = 4,
+
+  /**
+   * Its base failed to freshen; reason says why.
+   *
+   * @generated from enum value: WORKSPACE_STATE_FAILED = 5;
+   */
+  FAILED = 5,
 }
 
 /**
@@ -2655,6 +2716,18 @@ export const ClusterService: GenService<{
     methodKind: "unary";
     input: typeof DeleteRepoRequestSchema;
     output: typeof DeleteRepoResponseSchema;
+  },
+  /**
+   * RebuildRepo has every worker build the repo's next base from nothing.
+   * Bases are otherwise built incrementally: each generation forks the one
+   * before, pulls, and freshens.
+   *
+   * @generated from rpc hotbed.v1.ClusterService.RebuildRepo
+   */
+  rebuildRepo: {
+    methodKind: "unary";
+    input: typeof RebuildRepoRequestSchema;
+    output: typeof RepoSchema;
   },
   /**
    * GetSnapshot is everything the cockpit shows.

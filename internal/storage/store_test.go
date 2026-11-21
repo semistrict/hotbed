@@ -9,6 +9,9 @@ package storage
 
 import (
 	"context"
+
+	"golang.org/x/sys/unix"
+
 	"crypto/rand"
 	"errors"
 	"os"
@@ -92,8 +95,11 @@ func conformance(t *testing.T, s Store) {
 		}
 	}
 
-	// Generation 1: built, then frozen.
+	// Generation 1: built, then frozen. Part of it is written through a
+	// shared mapping, as a linker writes its output, and never synced: the
+	// snapshot must still hold it.
 	must(s.Create(ctx, "bases/app/g1"))
+	mapped := writeMapped(t, filepath.Join(s.Path("bases/app/g1"), "app.so"), 1<<20)
 	// Random, so compression (zfs's default on many pools) cannot shrink it.
 	big := make([]byte, 8<<20)
 	rand.Read(big)
@@ -110,6 +116,9 @@ func conformance(t *testing.T, s Store) {
 	write("ws/ws-1", "main.rs", "fn main() { one() }")
 	if got := read("ws/ws-2", "main.rs"); got != "fn main() {}" {
 		t.Errorf("ws-2 sees ws-1's edit: %q", got)
+	}
+	if got := read("ws/ws-2", "app.so"); got != mapped {
+		t.Errorf("ws-2's app.so differs from what was written through mmap (first bytes %q)", got[:8])
 	}
 	if got := read("bases/app/g1", "main.rs"); got != "fn main() {}" {
 		t.Errorf("base sees a workspace's edit: %q", got)
@@ -154,4 +163,28 @@ func conformance(t *testing.T, s Store) {
 	if _, err := s.Usage(ctx, "ws/ws-1"); !errors.Is(err, ErrNotFound) {
 		t.Errorf("usage of destroyed volume = %v, want ErrNotFound", err)
 	}
+}
+
+// writeMapped writes n random bytes into a new file through a shared
+// mapping, unmaps it without msync, and returns what it wrote.
+func writeMapped(t *testing.T, path string, n int) string {
+	t.Helper()
+	f, err := os.Create(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+	if err := f.Truncate(int64(n)); err != nil {
+		t.Fatal(err)
+	}
+	m, err := unix.Mmap(int(f.Fd()), 0, n, unix.PROT_READ|unix.PROT_WRITE, unix.MAP_SHARED)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rand.Read(m)
+	data := string(m)
+	if err := unix.Munmap(m); err != nil {
+		t.Fatal(err)
+	}
+	return data
 }

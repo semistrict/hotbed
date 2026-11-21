@@ -1,6 +1,6 @@
 import { useQuery } from "@tanstack/react-query";
 import { useNavigate, useParams, useSearch } from "@tanstack/react-router";
-import { api, type FileEntry } from "../api";
+import { api, type FileEntry, type Workspace } from "../api";
 import { SegmentedBar } from "../components/charts/Bars";
 import { HistoryTable, LiveCommandTable } from "../components/CommandTable";
 import { Card, Empty, StatTile } from "../components/ui/Card";
@@ -10,6 +10,23 @@ import { isLive } from "../lib/live";
 import { savings } from "../lib/stats";
 import { NotFound } from "./NotFound";
 import { PageTitle } from "./Nodes";
+
+export const stateTone: Record<Workspace["state"], string> = {
+  preparing: "text-warning",
+  active: "text-sprout",
+  idle: "text-sprout",
+  released: "text-faint",
+  failed: "text-critical",
+};
+
+/** A workspace's state as a word, colored by what it means for its agent. */
+export function WorkspaceStateLabel({ w, now }: { w: Workspace; now: number }) {
+  return (
+    <span className={`font-mono text-[11px] ${stateTone[w.state]}`}>
+      {w.state === "released" ? `released ${ago(w.lastActiveAt, now)}` : w.state}
+    </span>
+  );
+}
 
 export function WorkspacePage() {
   const { id } = useParams({ from: "/workspaces/$id" });
@@ -29,8 +46,14 @@ export function WorkspacePage() {
       <PageTitle
         title={w.id}
         sub={`${w.agent} on ${w.branch} · ${repoName(s, w.repoId)} · ${nodeName(s, w.nodeId)}`}
-        right={w.state === "released" ? <span className="font-mono text-[11px] text-faint">released {ago(w.lastActiveAt, now)}</span> : <span className="font-mono text-[11px] text-sprout">{w.state}</span>}
+        right={<WorkspaceStateLabel w={w} now={now} />}
       />
+      {w.reason && (w.state === "preparing" || w.state === "failed") && (
+        <p className={`font-mono text-[11px] ${w.state === "failed" ? "text-critical" : "text-warning"}`}>
+          {w.state === "failed" ? "✕ failed: " : "◌ "}
+          {w.reason}
+        </p>
+      )}
       <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 xl:grid-cols-6">
         <StatTile label="Forked in" value={w.forkMillis} unit="ms" tone="ember" foot={ago(w.createdAt, now)} />
         <StatTile label="Base" value={`g${base?.generation ?? "?"}`} foot={base ? `${base.commit} · ${base.message}` : "gone"} />

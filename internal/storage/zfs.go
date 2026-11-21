@@ -69,6 +69,9 @@ func (z *ZFS) Snapshot(ctx context.Context, vol, snap string) error {
 	} else if !errors.Is(err, ErrNotFound) {
 		return err
 	}
+	if err := flush(z.Path(vol)); err != nil {
+		return err
+	}
 	_, err := run(ctx, "zfs", "snapshot", z.dataset(vol)+"@"+snap)
 	return err
 }

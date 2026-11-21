@@ -44,9 +44,10 @@ type ServerConfig struct {
 	UI http.Handler
 	// Workers is how the controller calls workers; nil uses a default client.
 	Workers *http.Client
-	// WorkerAddr maps a worker's host name to the address its API listens
-	// on; nil means host:api.WorkerPort.
-	WorkerAddr func(hostname string) string
+	// WorkerAddr maps a worker's tailnet address (or host name, when the
+	// tailnet gave no address) to where its API listens; nil means
+	// addr:api.WorkerPort.
+	WorkerAddr func(addr string) string
 	// Controller is this machine's tailnet host name, for the cockpit.
 	Controller string
 }
@@ -174,7 +175,32 @@ func (s *Server) PutRepo(ctx context.Context, req *pb.PutRepoRequest) (*pb.Repo,
 		return nil, api.Errorf(api.CodeInvalidArgs, "repo %s has no URL", repo.Id)
 	}
 	repo.CreatedAt = s.now().UnixMilli()
+	// Updating a repo keeps its scratch epoch, so it does not rebuild
+	// from nothing.
+	if repos, err := s.cfg.Store.Repos(ctx); err == nil {
+		for _, r := range repos {
+			if r.Id == repo.Id {
+				repo.ScratchEpoch = r.ScratchEpoch
+			}
+		}
+	}
 	return repo, s.cfg.Store.PutRepo(ctx, repo)
+}
+
+// RebuildRepo raises the repo's scratch epoch, which has each worker build
+// its next base from nothing.
+func (s *Server) RebuildRepo(ctx context.Context, req *pb.RebuildRepoRequest) (*pb.Repo, error) {
+	repos, err := s.cfg.Store.Repos(ctx)
+	if err != nil {
+		return nil, err
+	}
+	for _, r := range repos {
+		if r.Id == req.Id {
+			r.ScratchEpoch++
+			return r, s.cfg.Store.PutRepo(ctx, r)
+		}
+	}
+	return nil, api.Errorf(api.CodeNotFound, "no repo %s", req.Id)
 }
 
 func (s *Server) DeleteRepo(ctx context.Context, req *pb.DeleteRepoRequest) (*pb.DeleteRepoResponse, error) {
@@ -197,6 +223,10 @@ func (s *Server) worker(ctx context.Context, nodeID string) (hotbedv1connect.Wor
 		return nil, "", err
 	}
 	host := n.node.Hostname
+	target := n.addr
+	if target == "" {
+		target = host
+	}
 	if !s.withOnline(n.node).Online {
 		return nil, host, &api.Error{Code: api.CodeWorkerUnreachable, Message: host + " is offline", Retryable: true}
 	}
@@ -205,7 +235,7 @@ func (s *Server) worker(ctx context.Context, nodeID string) (hotbedv1connect.Wor
 	if c, ok := s.workers[host]; ok {
 		return c, host, nil
 	}
-	conn, err := api.Dial(s.cfg.WorkerAddr(host), api.WorkerPort, s.cfg.Workers)
+	conn, err := api.Dial(s.cfg.WorkerAddr(target), api.WorkerPort, s.cfg.Workers)
 	if err != nil {
 		return nil, host, err
 	}

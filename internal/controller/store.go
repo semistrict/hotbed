@@ -26,6 +26,7 @@ var migrations = []string{
 		id        TEXT PRIMARY KEY, -- tailnet stable node ID
 		hostname  TEXT NOT NULL,
 		login     TEXT NOT NULL,
+		addr      TEXT NOT NULL DEFAULT '', -- tailnet address, to call it
 		joined_at INTEGER NOT NULL, -- unix ms
 		last_seen INTEGER,
 		report    TEXT,             -- the latest ReportRequest, without its outbox
@@ -172,10 +173,14 @@ func unmarshal[T proto.Message](doc string, m T) (T, error) {
 // Join records p as a worker, or updates its name and owner if it joined
 // before. Joining again keeps its join time and last report.
 func (s *Store) Join(ctx context.Context, p tailnet.Peer, now time.Time) (*pb.Node, error) {
+	addr := ""
+	if p.Addr.IsValid() {
+		addr = p.Addr.String()
+	}
 	_, err := s.db.ExecContext(ctx, `
-		INSERT INTO nodes (id, hostname, login, joined_at) VALUES (?, ?, ?, ?)
-		ON CONFLICT (id) DO UPDATE SET hostname = excluded.hostname, login = excluded.login`,
-		p.NodeID, p.Hostname, p.Login, now.UnixMilli())
+		INSERT INTO nodes (id, hostname, login, addr, joined_at) VALUES (?, ?, ?, ?, ?)
+		ON CONFLICT (id) DO UPDATE SET hostname = excluded.hostname, login = excluded.login, addr = excluded.addr`,
+		p.NodeID, p.Hostname, p.Login, addr, now.UnixMilli())
 	if err != nil {
 		return nil, fmt.Errorf("record join of %s: %w", p.Hostname, err)
 	}
@@ -300,10 +305,11 @@ func (s *Store) Prune(ctx context.Context, now time.Time) error {
 // nodeRow is a node with its latest report.
 type nodeRow struct {
 	node   *pb.Node
+	addr   string            // tailnet address; empty when the tailnet gave none
 	report *pb.ReportRequest // nil before the first report
 }
 
-const nodeColumns = `id, hostname, login, joined_at, last_seen, report`
+const nodeColumns = `id, hostname, login, addr, joined_at, last_seen, report`
 
 // Nodes lists every worker by host name. Online is left false; the server
 // decides it from last_seen.
@@ -335,13 +341,14 @@ func (s *Store) node(ctx context.Context, id string) (nodeRow, error) {
 func scanNode(row interface{ Scan(...any) error }) (nodeRow, error) {
 	var (
 		n        = &pb.Node{}
+		addr     string
 		lastSeen sql.NullInt64
 		report   sql.NullString
 	)
-	if err := row.Scan(&n.Id, &n.Hostname, &n.Login, &n.JoinedAt, &lastSeen, &report); err != nil {
+	if err := row.Scan(&n.Id, &n.Hostname, &n.Login, &addr, &n.JoinedAt, &lastSeen, &report); err != nil {
 		return nodeRow{}, err
 	}
-	out := nodeRow{node: n}
+	out := nodeRow{node: n, addr: addr}
 	if lastSeen.Valid {
 		n.LastSeen = &lastSeen.Int64
 	}

@@ -25,45 +25,135 @@ import (
 
 const released = pb.WorkspaceState_WORKSPACE_STATE_RELEASED
 
-// CreateWorkspace forks the newest warm base of a repo.
+const (
+	preparing = pb.WorkspaceState_WORKSPACE_STATE_PREPARING
+	idle      = pb.WorkspaceState_WORKSPACE_STATE_IDLE
+	failedWS  = pb.WorkspaceState_WORKSPACE_STATE_FAILED
+	activeWS  = pb.WorkspaceState_WORKSPACE_STATE_ACTIVE
+)
+
+// CreateWorkspace gives a session a workspace of a repo at its branch's
+// head: a fork of the newest base when that is at the head, or, while the
+// base is brought up to date, a workspace that is preparing and becomes a
+// fork of the new base when its freshen ends.
 func (e *Engine) CreateWorkspace(ctx context.Context, req *pb.CreateWorkspaceRequest) (*pb.Workspace, error) {
 	if req.Id == "" {
 		return nil, api.Errorf(api.CodeInvalidArgs, "workspace has no ID")
 	}
-	e.mu.Lock()
-	if _, dup := e.workspaces[req.Id]; dup {
+	r := req.RepoConfig
+	if r == nil {
+		e.mu.Lock()
+		r = e.repos[req.Repo]
 		e.mu.Unlock()
+	}
+	if r == nil {
+		return nil, api.Errorf(api.CodeNotFound, "this node does not host %s", req.Repo)
+	}
+	e.mu.Lock()
+	_, dup := e.workspaces[req.Id]
+	e.mu.Unlock()
+	if dup {
 		return nil, api.Errorf(api.CodeConflict, "workspace %s exists", req.Id)
 	}
-	base := e.warmBase(req.Repo)
-	e.mu.Unlock()
-	if base == nil {
-		return nil, (&api.Error{Code: api.CodeNoWarmBase, Message: fmt.Sprintf("no warm base of %s on this node yet", req.Repo), Retryable: true}).
-			WithSuggestion("its first base is still building; the cockpit shows its progress")
-	}
-	vol := "ws/" + req.Id
-	start := e.now()
-	if err := e.cfg.Store.Clone(ctx, base.Id, vol); err != nil {
+	lock := e.repoLock(r.Id)
+	lock.Lock()
+	base, err := e.baseFor(ctx, r)
+	lock.Unlock()
+	if err != nil {
 		return nil, err
 	}
-	forkMs := e.now().Sub(start).Milliseconds()
 	now := e.nowMs()
 	w := &workspace{rec: &pb.WorkspaceRecord{
 		Workspace: &pb.Workspace{
-			Id: req.Id, RepoId: req.Repo, BaseId: base.Id, NodeId: e.cfg.NodeID, Agent: req.Agent,
-			Branch: req.Branch, Head: base.Commit, BaseCommit: base.Commit,
-			State: pb.WorkspaceState_WORKSPACE_STATE_IDLE, CreatedAt: now, ForkMillis: forkMs,
-			SharedBytes: base.SizeBytes, LastActiveAt: now, Path: WorkPath + "/" + req.Repo,
+			Id: req.Id, RepoId: r.Id, BaseId: base.Id, NodeId: e.cfg.NodeID, Agent: req.Agent,
+			Branch: req.Branch, Head: base.Commit, BaseCommit: base.Commit, State: preparing,
+			CreatedAt: now, LastActiveAt: now, Path: WorkPath + "/" + r.Id,
 			SessionId: req.SessionId, SyncDir: req.SyncDir, SyncHost: req.SyncHost,
+			Reason: fmt.Sprintf("waiting for base %s to freshen", base.Id),
 		},
-		Volume: vol, BaseSnapshot: base.Id,
+		Volume: "ws/" + req.Id, BaseSnapshot: base.Id,
 	}}
 	e.mu.Lock()
-	defer e.mu.Unlock()
 	e.workspaces[req.Id] = w
 	e.saveWorkspace(w)
-	e.event("fork", fmt.Sprintf("fork %s ← %s@g%d in %d ms · %s", req.Id, req.Repo, base.Generation, forkMs, req.Agent), ref("workspace", req.Id))
-	return clone(w.ws()), nil
+	// The base's freshen may have ended between baseFor and now, before
+	// this workspace was there to be forked or failed with it.
+	state := base.State
+	if b, ok := e.bases[base.Id]; ok {
+		state = b.State
+	}
+	if state == broken {
+		e.failPreparing(base.Id, "its base "+base.Id+" failed to freshen")
+	}
+	e.mu.Unlock()
+	if state == warm {
+		if err := e.fork(ctx, w); err != nil {
+			return nil, err
+		}
+	}
+	return e.Workspace(req.Id)
+}
+
+// fork makes a preparing workspace's volume from its base's snapshot.
+func (e *Engine) fork(ctx context.Context, w *workspace) error {
+	e.mu.Lock()
+	snap, vol := w.rec.BaseSnapshot, w.rec.Volume
+	e.mu.Unlock()
+	start := e.now()
+	err := e.cfg.Store.Clone(ctx, snap, vol)
+	forkMs := e.now().Sub(start).Milliseconds()
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	ws := w.ws()
+	if err != nil {
+		ws.State, ws.Reason = failedWS, "could not fork its base: "+err.Error()
+		e.saveWorkspace(w)
+		e.workspaceEvent(ws, "failed", ws.Reason)
+		return err
+	}
+	ws.State, ws.Reason, ws.ForkMillis = idle, "", forkMs
+	if b, ok := e.bases[snap]; ok {
+		ws.SharedBytes = b.SizeBytes
+	}
+	ws.LastActiveAt = e.nowMs()
+	e.saveWorkspace(w)
+	e.workspaceEvent(ws, "ready", fmt.Sprintf("forked from %s in %d ms", snap, forkMs))
+	e.event("fork", fmt.Sprintf("fork %s ← %s in %d ms · %s", ws.Id, snap, forkMs, ws.Agent), ref("workspace", ws.Id))
+	return nil
+}
+
+// forkPrepared forks every workspace that waited for base.
+func (e *Engine) forkPrepared(base string) {
+	e.mu.Lock()
+	var waiting []*workspace
+	for _, w := range e.workspaces {
+		if w.ws().State == preparing && w.ws().BaseId == base {
+			waiting = append(waiting, w)
+		}
+	}
+	e.mu.Unlock()
+	for _, w := range waiting {
+		if err := e.fork(context.Background(), w); err != nil {
+			slog.Error("fork prepared workspace", "workspace", w.ws().Id, "err", err)
+		}
+	}
+}
+
+// failPreparing fails every workspace that waited for base. Call with e.mu held.
+func (e *Engine) failPreparing(base, why string) {
+	for _, w := range e.workspaces {
+		ws := w.ws()
+		if ws.State == preparing && ws.BaseId == base {
+			ws.State, ws.Reason = failedWS, why
+			e.saveWorkspace(w)
+			e.workspaceEvent(ws, "failed", why)
+			for _, c := range e.commands {
+				if c.cmd().WorkspaceId == ws.Id && c.cmd().State == queued {
+					e.end(c, failed, nil, "its workspace failed: "+why)
+				}
+			}
+		}
+	}
 }
 
 // Workspace returns a workspace this node has.
@@ -89,17 +179,6 @@ func (e *Engine) Workspaces() []*pb.Workspace {
 	return out
 }
 
-// warmBase is the newest warm base of repo. Call with e.mu held.
-func (e *Engine) warmBase(repo string) *pb.Base {
-	var best *pb.Base
-	for _, b := range e.bases {
-		if b.RepoId == repo && b.State == warm && (best == nil || b.Generation > best.Generation) {
-			best = b
-		}
-	}
-	return best
-}
-
 // ReleaseWorkspace stops the workspace's commands and deletes its volume.
 func (e *Engine) ReleaseWorkspace(ctx context.Context, id string) error {
 	e.mu.Lock()
@@ -121,6 +200,7 @@ func (e *Engine) ReleaseWorkspace(ctx context.Context, id string) error {
 		}
 	}
 	if err := e.cfg.Store.Destroy(ctx, w.rec.Volume); err != nil && !errors.Is(err, storage.ErrNotFound) {
+		// A workspace that never got its fork has no volume.
 		return err
 	}
 	e.mu.Lock()
@@ -129,6 +209,7 @@ func (e *Engine) ReleaseWorkspace(ctx context.Context, id string) error {
 	w.ws().LastActiveAt = e.nowMs()
 	e.saveWorkspace(w)
 	e.event("release", fmt.Sprintf("release %s · %s · %s freed", id, w.ws().Agent, gib(w.ws().ExclusiveBytes)), ref("workspace", id))
+	e.collectSoon()
 	return nil
 }
 
@@ -146,6 +227,12 @@ func (e *Engine) Sync(ctx context.Context, h *pb.SyncHeader, bundle io.Reader) (
 	e.mu.Lock()
 	ws := clone(w.ws())
 	e.mu.Unlock()
+	switch ws.State {
+	case preparing:
+		return nil, &api.Error{Code: api.CodeConflict, Message: "workspace " + ws.Id + " is still preparing: " + ws.Reason, Retryable: true}
+	case failedWS:
+		return nil, api.Errorf(api.CodeWorkspaceFailed, "workspace %s failed: %s", ws.Id, ws.Reason)
+	}
 	if h.Tree != "" && h.Tree == ws.Tree {
 		if _, err := io.Copy(io.Discard, bundle); err != nil {
 			return nil, err

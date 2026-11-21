@@ -71,6 +71,9 @@ func (b *Btrfs) Snapshot(ctx context.Context, vol, snap string) error {
 	if err := b.absent(b.snapPath(snap)); err != nil {
 		return err
 	}
+	if err := flush(b.Path(vol)); err != nil {
+		return err
+	}
 	_, err := run(ctx, "btrfs", "subvolume", "snapshot", "-r", b.Path(vol), b.snapPath(snap))
 	return err
 }

@@ -62,6 +62,10 @@ func (e *Engine) Exec(_ context.Context, req *pb.RunCommandRequest) (*pb.Command
 	if !ok || w.ws().State == pb.WorkspaceState_WORKSPACE_STATE_RELEASED {
 		return nil, api.Errorf(api.CodeNotFound, "no workspace %s on this node", req.WorkspaceId)
 	}
+	if w.ws().State == failedWS {
+		return nil, api.Errorf(api.CodeConflict, "workspace %s failed: %s", req.WorkspaceId, w.ws().Reason).
+			WithSuggestion("hotbed add the repo again to try a new workspace")
+	}
 	if _, dup := e.commands[req.Id]; dup || req.Id == "" {
 		return nil, api.Errorf(api.CodeConflict, "command ID %q is taken or empty", req.Id)
 	}
@@ -100,7 +104,9 @@ func (e *Engine) Exec(_ context.Context, req *pb.RunCommandRequest) (*pb.Command
 		}
 	}
 	w.ws().LastActiveAt = now
-	w.ws().State = pb.WorkspaceState_WORKSPACE_STATE_ACTIVE
+	if w.ws().State != preparing {
+		w.ws().State = activeWS
+	}
 	e.saveWorkspace(w)
 	e.commands[req.Id] = c
 	e.saveCommand(c)
@@ -279,6 +285,9 @@ func (e *Engine) admit(ctx context.Context) {
 // admissionBlocker says why c cannot start now, or "" if it can. Call with
 // e.mu held.
 func (e *Engine) admissionBlocker(c *command) string {
+	if w, ok := e.workspaces[c.cmd().WorkspaceId]; ok && w.ws().State == preparing {
+		return w.ws().Reason
+	}
 	var reserved int64
 	for _, o := range e.commands {
 		if s := o.cmd().State; s == running || s == parked {
@@ -311,6 +320,7 @@ func (e *Engine) spec(c *command) unit.Spec {
 		User:       e.cfg.User,
 		Env:        env,
 		PathPrefix: cachePath,
+		PathSuffix: []string{e.home + "/.cargo/bin", e.home + "/.local/bin", e.home + "/go/bin", e.home + "/.local/go/bin", "/usr/local/go/bin"},
 		CPUWeight:  int(cmd.Limits.CpuWeight),
 		MemoryLow:  cmd.Limits.MemoryLowBytes,
 		MemoryHigh: cmd.Limits.MemoryHighBytes,
@@ -483,8 +493,8 @@ func (e *Engine) end(c *command, state pb.CommandState, code *int32, why string)
 	}
 	if w, ok := e.workspaces[cmd.WorkspaceId]; ok {
 		w.ws().LastActiveAt = now
-		if !e.workspaceBusy(w.ws().Id) {
-			w.ws().State = pb.WorkspaceState_WORKSPACE_STATE_IDLE
+		if w.ws().State == activeWS && !e.workspaceBusy(w.ws().Id) {
+			w.ws().State = idle
 		}
 		e.saveWorkspace(w)
 	}

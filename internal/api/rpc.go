@@ -106,7 +106,7 @@ func FromConnect(err error) *Error {
 		return &Error{
 			Code:       CodeControllerUnreachable,
 			Message:    err.Error(),
-			Suggestion: "check that `tailscale status` lists the controller and that `hotbed run` is running there",
+			Suggestion: "check that `tailscale status` lists the controller and that `hotbed serve` is running there",
 			Retryable:  true,
 		}
 	case connect.CodePermissionDenied, connect.CodeUnauthenticated:
@@ -128,7 +128,7 @@ func connectCode(c Code) connect.Code {
 		return connect.CodeAlreadyExists
 	case CodeNotJoined, CodeClusterMismatch, CodeSyncRefused, CodeNotInitialized:
 		return connect.CodeFailedPrecondition
-	case CodeNoWarmBase, CodeWorkerUnreachable, CodeControllerUnreachable, CodeTailscaleUnavailable:
+	case CodeRepoUnreachable, CodeWorkerUnreachable, CodeControllerUnreachable, CodeTailscaleUnavailable:
 		return connect.CodeUnavailable
 	case CodePlatformNotSupported:
 		return connect.CodeUnimplemented

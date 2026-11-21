@@ -7,6 +7,7 @@ import { nodeName, useSnapshot } from "../lib/data";
 import { ago, bytes, compact, duration, quantile } from "../lib/format";
 import { isLive } from "../lib/live";
 import { PageTitle } from "./Nodes";
+import { stateTone } from "./Workspace";
 
 export function WorkspacesPage() {
   const { data: s } = useSnapshot();
@@ -127,7 +128,7 @@ function WorkspaceTable({ s, now }: { s: Snapshot; now: number }) {
                   <Link to="/workspaces/$id" params={{ id: w.id }} className="text-foreground hover:text-primary">
                     {w.id}
                   </Link>
-                  {w.state === "released" && <span className="ml-2 text-[9.5px] text-faint">released</span>}
+                  {w.state !== "active" && w.state !== "idle" && <span className={`ml-2 text-[9.5px] ${stateTone[w.state]}`}>{w.state}</span>}
                 </td>
                 <td className="px-2 py-2 text-muted-foreground">{w.agent}</td>
                 <td className="px-2 py-2 text-muted-foreground">{w.repoId}</td>

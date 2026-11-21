@@ -90,9 +90,23 @@ func (c *nodesCmd) Exec(ctx context.Context, d deps) (any, error) {
 }
 
 type repoCmd struct {
-	Add repoAddCmd `cmd:"" help:"Add or update a repo; workers start keeping built bases of it."`
-	Ls  repoLsCmd  `cmd:"" help:"List repos."`
-	Rm  repoRmCmd  `cmd:"" help:"Remove a repo; workers stop keeping its bases."`
+	Add     repoAddCmd     `cmd:"" help:"Add or update a repo; workspaces of it fork bases freshened when they ask."`
+	Ls      repoLsCmd      `cmd:"" help:"List repos."`
+	Rm      repoRmCmd      `cmd:"" help:"Remove a repo; workers delete its bases once no workspace uses them."`
+	Rebuild repoRebuildCmd `cmd:"" help:"Build the repo's next base from nothing on every worker. Bases are otherwise built incrementally: pull, then freshen."`
+}
+
+type repoRebuildCmd struct {
+	controllerFlag
+	ID string `arg:"" help:"The repo's name."`
+}
+
+func (c *repoRebuildCmd) Exec(ctx context.Context, d deps) (any, error) {
+	cl, err := c.clients(d.http)
+	if err != nil {
+		return nil, err
+	}
+	return cl.cluster.RebuildRepo(ctx, &pb.RebuildRepoRequest{Id: c.ID})
 }
 
 type repoAddCmd struct {

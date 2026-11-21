@@ -508,6 +508,7 @@ export class MockCluster {
       head: this.rng.hex(7),
       filesChanged: initial ? this.rng.int(1, 14) : 0,
       state: "idle",
+      reason: "",
       createdAt: iso(createdAt),
       forkMillis: ms,
       exclusiveBytes: (initial ? this.rng.range(0.15, 2.2) : 0.01) * GiB,

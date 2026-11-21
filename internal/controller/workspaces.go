@@ -3,7 +3,6 @@ package controller
 import (
 	"context"
 	"errors"
-	"fmt"
 	"io"
 	"log/slog"
 	"slices"
@@ -21,7 +20,8 @@ import (
 type workspaces struct{ *Server }
 
 // CreateWorkspace gives a session its workspace of a repo: the one it has,
-// or a fork of the newest warm base on the node with the most free memory.
+// or a new one on a node that hosts the repo, which brings its base up to
+// date first when the branch has moved.
 func (s *workspaces) CreateWorkspace(ctx context.Context, req *pb.CreateWorkspaceRequest) (*pb.Workspace, error) {
 	sess, err := s.cfg.Store.LiveSession(ctx, req.SessionId, s.now())
 	if err != nil {
@@ -32,13 +32,13 @@ func (s *workspaces) CreateWorkspace(ctx context.Context, req *pb.CreateWorkspac
 	} else if ok {
 		return s.GetWorkspace(ctx, &pb.GetWorkspaceRequest{Id: w.id})
 	}
-	node, err := s.place(ctx, req)
+	node, repo, err := s.place(ctx, req)
 	if err != nil {
 		return nil, err
 	}
 	fwd := &pb.CreateWorkspaceRequest{
 		Repo: req.Repo, Agent: sess.Agent, Branch: req.Branch, Id: newID(), SessionId: sess.Id,
-		SyncDir: req.SyncDir,
+		SyncDir: req.SyncDir, RepoConfig: repo,
 	}
 	if req.SyncDir != "" {
 		fwd.SyncHost = httpx.Peer(ctx).Hostname
@@ -60,63 +60,53 @@ func (s *workspaces) CreateWorkspace(ctx context.Context, req *pb.CreateWorkspac
 	return nil, err
 }
 
-// place picks the online node with a warm base of the repo and the most
-// free memory.
-func (s *workspaces) place(ctx context.Context, req *pb.CreateWorkspaceRequest) (nodeRow, error) {
-	rows, err := s.cfg.Store.Nodes(ctx)
-	if err != nil {
-		return nodeRow{}, err
-	}
-	var best *nodeRow
-	var bestFree int64
-	building := ""
-	for i := range rows {
-		n := rows[i]
-		if !s.withOnline(n.node).Online || n.report == nil || (req.Node != "" && n.node.Hostname != req.Node) {
-			continue
-		}
-		warm := false
-		for _, b := range n.report.Bases {
-			if b.RepoId != req.Repo {
-				continue
-			}
-			switch b.State {
-			case pb.BaseState_BASE_STATE_WARM:
-				warm = true
-			case pb.BaseState_BASE_STATE_BUILDING:
-				if building == "" {
-					building = fmt.Sprintf("g%d on %s is %.0f%% freshened", b.Generation, n.node.Hostname, 100*b.Progress)
-				}
-			}
-		}
-		if !warm {
-			continue
-		}
-		r := n.report
-		free := r.GetResources().GetMemoryBytes() - max(r.GetUsage().GetMemoryUsedBytes(), r.ReservedMemoryBytes)
-		if best == nil || free > bestFree {
-			best, bestFree = &rows[i], free
-		}
-	}
-	if best != nil {
-		return *best, nil
-	}
+// place picks, among the online nodes that host the repo, one that has a
+// warm base of it (so its freshen is incremental) with the most free memory.
+func (s *workspaces) place(ctx context.Context, req *pb.CreateWorkspaceRequest) (nodeRow, *pb.Repo, error) {
 	repos, err := s.cfg.Store.Repos(ctx)
 	if err != nil {
-		return nodeRow{}, err
+		return nodeRow{}, nil, err
 	}
-	if !slices.ContainsFunc(repos, func(r *pb.Repo) bool { return r.Id == req.Repo }) {
-		return nodeRow{}, api.Errorf(api.CodeNotFound, "no repo %s", req.Repo).WithSuggestion("hotbed repo add NAME URL --freshen CMD")
+	i := slices.IndexFunc(repos, func(r *pb.Repo) bool { return r.Id == req.Repo })
+	if i < 0 {
+		return nodeRow{}, nil, api.Errorf(api.CodeNotFound, "no repo %s", req.Repo).WithSuggestion("hotbed repo add NAME URL --freshen CMD")
 	}
-	e := &api.Error{Code: api.CodeNoWarmBase, Message: "no online node has a warm base of " + req.Repo, Retryable: true}
-	if req.Node != "" {
-		e.Message += " on " + req.Node
+	repo := repos[i]
+	rows, err := s.cfg.Store.Nodes(ctx)
+	if err != nil {
+		return nodeRow{}, nil, err
 	}
-	e.Suggestion = "check hotbed nodes, and the repo's freshen in the cockpit"
-	if building != "" {
-		e.Suggestion = "wait: " + building
+	var best *nodeRow
+	var bestWarm bool
+	var bestFree int64
+	for i := range rows {
+		n := rows[i]
+		if !s.withOnline(n.node).Online || n.report == nil {
+			continue
+		}
+		if req.Node != "" && n.node.Hostname != req.Node {
+			continue
+		}
+		if len(repo.Hosts) > 0 && !slices.Contains(repo.Hosts, n.node.Hostname) {
+			continue
+		}
+		warm := slices.ContainsFunc(n.report.Bases, func(b *pb.Base) bool {
+			return b.RepoId == req.Repo && b.State == pb.BaseState_BASE_STATE_WARM
+		})
+		r := n.report
+		free := r.GetResources().GetMemoryBytes() - max(r.GetUsage().GetMemoryUsedBytes(), r.ReservedMemoryBytes)
+		if best == nil || (warm && !bestWarm) || (warm == bestWarm && free > bestFree) {
+			best, bestWarm, bestFree = &rows[i], warm, free
+		}
 	}
-	return nodeRow{}, e
+	if best == nil {
+		e := &api.Error{Code: api.CodeWorkerUnreachable, Message: "no online node hosts " + req.Repo, Retryable: true}
+		if req.Node != "" {
+			e.Message = req.Node + " is not online or does not host " + req.Repo
+		}
+		return nodeRow{}, nil, e.WithSuggestion("hotbed nodes lists the workers and whether they are online")
+	}
+	return *best, repo, nil
 }
 
 // workspaceOf is a live workspace's worker, and keeps its session alive.

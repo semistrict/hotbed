@@ -6,7 +6,6 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
-	"slices"
 	"sync"
 	"syscall"
 	"time"
@@ -90,15 +89,13 @@ type Engine struct {
 	diskBytes  int64
 	oomKills   int64
 	resources  *pb.Resources
-	heads      map[string]remoteHead
 
-	kick  chan struct{} // something changed: report soon
-	repoc chan struct{} // the hosted repos changed: look at bases now
-}
+	kick    chan struct{} // something changed: report soon
+	collect chan struct{} // a base may have become garbage: collect soon
 
-type remoteHead struct {
-	commit string
-	at     time.Time
+	// One workspace request at a time decides how to bring a repo's base up
+	// to date, so two requests share one freshen.
+	repoLocks sync.Map // repo ID -> *sync.Mutex
 }
 
 // workspace is a workspace and what only the worker needs about it.
@@ -146,10 +143,10 @@ func NewEngine(ctx context.Context, cfg EngineConfig) (*Engine, error) {
 	}
 	e := &Engine{
 		cfg: cfg, db: d, cred: cred, home: home,
-		repos: map[string]*pb.Repo{}, bases: map[string]*pb.Base{},
+		bases: map[string]*pb.Base{},
 		workspaces: map[string]*workspace{}, commands: map[string]*command{},
 		usage: &pb.NodeUsage{}, disk: &pb.DiskUsage{},
-		heads: map[string]remoteHead{}, kick: make(chan struct{}, 1), repoc: make(chan struct{}, 1),
+		kick: make(chan struct{}, 1), collect: make(chan struct{}, 1),
 	}
 	if e.resources, err = cfg.System.Resources(); err != nil {
 		d.close()
@@ -187,20 +184,17 @@ func (e *Engine) load() error {
 func (e *Engine) Close() error { return e.db.close() }
 
 // Run drives the node until ctx ends: commands every second, samples every
-// report interval, bases when repos change and every 30 seconds, disk
-// usage every two minutes.
+// report interval, disk usage and old bases every two minutes. Bases are
+// built only when a workspace asks for one, never here.
 func (e *Engine) Run(ctx context.Context) {
 	tick := time.NewTicker(time.Second)
 	defer tick.Stop()
 	sample := time.NewTicker(api.ReportInterval)
 	defer sample.Stop()
-	bases := time.NewTicker(30 * time.Second)
-	defer bases.Stop()
 	usage := time.NewTicker(2 * time.Minute)
 	defer usage.Stop()
 	e.sample()
 	e.measureDisk(ctx)
-	e.maintainBases(ctx)
 	for {
 		select {
 		case <-ctx.Done():
@@ -209,11 +203,10 @@ func (e *Engine) Run(ctx context.Context) {
 			e.step(ctx)
 		case <-sample.C:
 			e.sample()
-		case <-bases.C:
-			e.maintainBases(ctx)
-		case <-e.repoc:
-			e.maintainBases(ctx)
+		case <-e.collect:
+			e.collectBases(ctx)
 		case <-usage.C:
+			e.collectBases(ctx)
 			e.measureDisk(ctx)
 		}
 	}
@@ -221,6 +214,14 @@ func (e *Engine) Run(ctx context.Context) {
 
 // Kicked is signalled whenever something worth reporting changed.
 func (e *Engine) Kicked() <-chan struct{} { return e.kick }
+
+// collectSoon asks Run to delete the bases no one needs any more.
+func (e *Engine) collectSoon() {
+	select {
+	case e.collect <- struct{}{}:
+	default:
+	}
+}
 
 func (e *Engine) changed() {
 	select {
@@ -262,24 +263,33 @@ func (e *Engine) saveCommand(c *command) {
 }
 
 // SetRepos is what the controller says this node hosts.
+// SetRepos records the cluster's repos, as the controller reports them. The
+// bases of a repo that was removed go stale, so they are deleted once no
+// workspace uses them.
 func (e *Engine) SetRepos(repos []*pb.Repo) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	next := map[string]*pb.Repo{}
-	changed := len(repos) != len(e.repos)
 	for _, r := range repos {
 		next[r.Id] = r
-		if old, ok := e.repos[r.Id]; !ok || old.Url != r.Url || old.Branch != r.Branch || !slices.Equal(old.Freshen, r.Freshen) {
-			changed = true
-		}
 	}
 	e.repos = next
-	if changed {
-		select {
-		case e.repoc <- struct{}{}:
-		default:
+	removed := false
+	for _, b := range e.bases {
+		if next[b.RepoId] == nil && (b.State == warm || b.State == broken) {
+			b.State = stale
+			e.saveBase(b)
+			removed = true
 		}
 	}
+	if removed {
+		e.collectSoon()
+	}
+}
+
+func (e *Engine) repoLock(id string) *sync.Mutex {
+	m, _ := e.repoLocks.LoadOrStore(id, &sync.Mutex{})
+	return m.(*sync.Mutex)
 }
 
 func (e *Engine) sample() {

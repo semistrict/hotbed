@@ -31,7 +31,7 @@ func TestHostPort(t *testing.T) {
 
 // An error's code, suggestion and retryability survive the wire.
 func TestErrorsRoundTrip(t *testing.T) {
-	sent := Errorf(CodeNoWarmBase, "no warm base of ratel").WithSuggestion("wait: g1 is 40% freshened")
+	sent := Errorf(CodeRepoUnreachable, "cannot read ratel's remote").WithSuggestion("check the repo's URL")
 	sent.Retryable = true
 	wire := ToConnect(sent)
 	var ce *connect.Error

@@ -10,16 +10,14 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
-	"time"
 
+	"github.com/semistrict/hotbed/internal/api"
 	pb "github.com/semistrict/hotbed/internal/gen/hotbed/v1"
 	"github.com/semistrict/hotbed/internal/gitops"
 	"github.com/semistrict/hotbed/internal/storage"
 )
 
 const (
-	checkRemoteEvery = time.Minute
-
 	building = pb.BaseState_BASE_STATE_BUILDING
 	warm     = pb.BaseState_BASE_STATE_WARM
 	stale    = pb.BaseState_BASE_STATE_STALE
@@ -30,57 +28,47 @@ func baseVolume(repo string, gen int32) string { return fmt.Sprintf("bases/%s/g%
 
 func baseSnapshot(repo string, gen int32) string { return fmt.Sprintf("%s-g%d", repo, gen) }
 
-// maintainBases keeps a warm base of each hosted repo's branch: when the
-// branch moves, it builds the next generation from the newest base, and it
-// deletes old generations nothing uses any more.
-func (e *Engine) maintainBases(ctx context.Context) {
-	e.mu.Lock()
-	repos := make([]*pb.Repo, 0, len(e.repos))
-	for _, r := range e.repos {
-		repos = append(repos, r)
+// baseFor returns the base a new workspace of r forks: the newest warm base
+// when it is at the branch's head, or the generation being built to bring
+// it there, started now when none is. Bases are only ever brought up to date
+// here, when a workspace asks: nothing builds in the background.
+func (e *Engine) baseFor(ctx context.Context, r *pb.Repo) (*pb.Base, error) {
+	head, err := e.remoteHead(ctx, r)
+	if err != nil {
+		return nil, err
 	}
-	e.mu.Unlock()
-	for _, r := range repos {
-		if err := e.maintainBase(ctx, r); err != nil {
-			slog.Error("maintain base", "repo", r.Id, "err", err)
-		}
-	}
-	e.collectBases(ctx)
-}
-
-func (e *Engine) maintainBase(ctx context.Context, r *pb.Repo) error {
 	e.mu.Lock()
-	var newest *pb.Base
+	var newest, newestWarm *pb.Base
 	for _, b := range e.bases {
 		if b.RepoId != r.Id {
 			continue
 		}
-		if b.State == building {
+		if b.State == building && b.Commit == head && b.ScratchEpoch >= r.ScratchEpoch {
 			e.mu.Unlock()
-			return nil // one generation at a time
+			return clone(b), nil // already on its way
 		}
 		if newest == nil || b.Generation > newest.Generation {
 			newest = b
 		}
-	}
-	h := e.heads[r.Id]
-	fresh := e.now().Sub(h.at) < checkRemoteEvery
-	e.mu.Unlock()
-
-	head := h.commit
-	if !fresh {
-		var err error
-		if head, err = e.remoteHead(ctx, r); err != nil {
-			return err
+		if b.State == warm && (newestWarm == nil || b.Generation > newestWarm.Generation) {
+			newestWarm = b
 		}
-		e.mu.Lock()
-		e.heads[r.Id] = remoteHead{commit: head, at: e.now()}
-		e.mu.Unlock()
 	}
-	if newest != nil && newest.Commit == head {
-		return nil // up to date, or this commit already failed to build
+	scratch := newestWarm != nil && r.ScratchEpoch > newestWarm.ScratchEpoch
+	if !scratch && newestWarm != nil && newestWarm.Commit == head {
+		defer e.mu.Unlock()
+		return clone(newestWarm), nil
 	}
-	return e.startFreshen(ctx, r, newest, head)
+	gen := int32(1)
+	if newest != nil {
+		gen = newest.Generation + 1
+	}
+	from := newestWarm
+	if scratch {
+		from = nil // asked to build from nothing
+	}
+	e.mu.Unlock()
+	return e.startFreshen(ctx, r, gen, from, head)
 }
 
 // remoteHead asks the remote for the commit the repo's branch is at.
@@ -91,7 +79,8 @@ func (e *Engine) remoteHead(ctx context.Context, r *pb.Repo) (string, error) {
 	}
 	out, err := e.git("").Run(ctx, "ls-remote", r.Url, ref)
 	if err != nil {
-		return "", err
+		return "", (&api.Error{Code: api.CodeRepoUnreachable, Message: fmt.Sprintf("cannot read %s's remote: %v", r.Id, err), Retryable: true}).
+			WithSuggestion("check the repo's URL (hotbed repo ls) and that this node can reach it; retry once it can")
 	}
 	commit, _, ok := strings.Cut(out, "\t")
 	if !ok || len(commit) < 40 {
@@ -100,30 +89,27 @@ func (e *Engine) remoteHead(ctx context.Context, r *pb.Repo) (string, error) {
 	return commit, nil
 }
 
-// startFreshen makes the next generation's volume, from the newest warm base
-// when there is one, and queues the freshen that checks out commit and
-// builds it.
-func (e *Engine) startFreshen(ctx context.Context, r *pb.Repo, prev *pb.Base, commit string) error {
-	gen, cold := int32(1), true
-	if prev != nil {
-		gen = prev.Generation + 1
-	}
+// startFreshen makes generation gen's volume, as a fork of prev (the newest
+// warm base) when there is one, and queues the freshen that pulls commit and
+// builds it: incrementally, unless there is nothing to fork.
+func (e *Engine) startFreshen(ctx context.Context, r *pb.Repo, gen int32, prev *pb.Base, commit string) (*pb.Base, error) {
+	cold := true
 	vol := baseVolume(r.Id, gen)
 	if err := e.cfg.Store.Destroy(ctx, vol); err != nil && !errors.Is(err, storage.ErrNotFound) {
-		return fmt.Errorf("clear leftover %s: %w", vol, err)
+		return nil, fmt.Errorf("clear leftover %s: %w", vol, err)
 	}
-	if prev != nil && prev.State == warm {
+	if prev != nil {
 		if err := e.cfg.Store.Clone(ctx, prev.Id, vol); err != nil {
-			return err
+			return nil, err
 		}
 		cold = false
 	} else {
 		if err := e.cfg.Store.Create(ctx, vol); err != nil {
-			return err
+			return nil, err
 		}
 		if e.cred != nil {
 			if err := os.Chown(e.cfg.Store.Path(vol), int(e.cred.Uid), int(e.cred.Gid)); err != nil {
-				return err
+				return nil, err
 			}
 		}
 	}
@@ -132,6 +118,7 @@ func (e *Engine) startFreshen(ctx context.Context, r *pb.Repo, prev *pb.Base, co
 	b := &pb.Base{
 		Id: baseSnapshot(r.Id, gen), RepoId: r.Id, NodeId: e.cfg.NodeID, Generation: gen,
 		Commit: commit, State: building, Cold: cold, Baked: r.Freshen, Command: id,
+		ScratchEpoch: r.ScratchEpoch,
 	}
 	c := &command{
 		rec: &pb.CommandRecord{
@@ -156,7 +143,8 @@ func (e *Engine) startFreshen(ctx context.Context, r *pb.Repo, prev *pb.Base, co
 		from = fmt.Sprintf("from g%d", prev.Generation)
 	}
 	e.event("base", fmt.Sprintf("base %s g%d building %s at %s", r.Id, gen, from, short(commit)), ref("command", id))
-	return nil
+	e.changed()
+	return clone(b), nil
 }
 
 // freshenScript checks out commit with its submodules and runs the repo's
@@ -192,9 +180,12 @@ func (e *Engine) freshened(c *command, ok bool, seconds float64, units int) {
 		return
 	}
 	if !ok {
+		now := e.nowMs()
 		b.State = broken
+		b.BuiltAt = &now
 		e.saveBase(b)
 		e.event("fail", fmt.Sprintf("base %s g%d failed to freshen; see its log", b.RepoId, b.Generation), ref("command", c.cmd().Id))
+		e.failPreparing(b.Id, fmt.Sprintf("its base %s failed to freshen; its log is command %s in the cockpit", b.Id, c.cmd().Id))
 		return
 	}
 	vol := baseVolume(b.RepoId, b.Generation)
@@ -203,6 +194,7 @@ func (e *Engine) freshened(c *command, ok bool, seconds float64, units int) {
 		b.State = broken
 		e.saveBase(b)
 		e.event("fail", fmt.Sprintf("base %s g%d could not be snapshotted: %v", b.RepoId, b.Generation, err), nil)
+		e.failPreparing(b.Id, "its base could not be snapshotted: "+err.Error())
 		return
 	}
 	now := e.nowMs()
@@ -228,8 +220,13 @@ func (e *Engine) freshened(c *command, ok bool, seconds float64, units int) {
 			e.saveBase(o)
 		}
 	}
+	if e.repos != nil && e.repos[b.RepoId] == nil {
+		b.State = stale // its repo was removed while it freshened
+	}
 	e.saveBase(b)
 	e.event("base", fmt.Sprintf("base %s g%d warm · built in %s", b.RepoId, b.Generation, dur(seconds)), nil)
+	e.collectSoon()
+	go e.forkPrepared(b.Id)
 }
 
 func (e *Engine) previousBase(b *pb.Base) *pb.Base {
@@ -243,9 +240,15 @@ func (e *Engine) previousBase(b *pb.Base) *pb.Base {
 }
 
 // collectBases deletes generations that are stale or failed and that no
-// live workspace was forked from.
+// live workspace was forked from. A repo's newest generation stays recorded
+// even when it failed, so the same commit is not built again and again; only
+// its volume goes. A removed repo's records go too.
 func (e *Engine) collectBases(ctx context.Context) {
 	e.mu.Lock()
+	newest := map[string]int32{}
+	for _, b := range e.bases {
+		newest[b.RepoId] = max(newest[b.RepoId], b.Generation)
+	}
 	var dead []*pb.Base
 	for _, b := range e.bases {
 		if b.State != stale && b.State != broken {
@@ -273,9 +276,12 @@ func (e *Engine) collectBases(ctx context.Context) {
 			continue
 		}
 		e.mu.Lock()
-		delete(e.bases, b.Id)
-		if err := e.db.delete("base", b.Id); err != nil {
-			slog.Error("forget base", "base", b.Id, "err", err)
+		// e.repos is nil until the controller has said which repos exist.
+		if b.Generation < newest[b.RepoId] || (e.repos != nil && e.repos[b.RepoId] == nil) {
+			delete(e.bases, b.Id)
+			if err := e.db.delete("base", b.Id); err != nil {
+				slog.Error("forget base", "base", b.Id, "err", err)
+			}
 		}
 		e.mu.Unlock()
 	}

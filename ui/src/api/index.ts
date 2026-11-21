@@ -1,13 +1,14 @@
-import { createHttpApi } from "./http";
+import { createConnectApi } from "./connect";
 import { createMockApi } from "./mock";
 import type { Api } from "./types";
 
 /**
- * The UI runs against a simulated cluster until the controller serves the
- * same API; build with VITE_HOTBED_API=http to use the controller.
+ * The controller's API, over Connect. `pnpm dev` runs against a simulated
+ * cluster instead (VITE_HOTBED_API=mock), so the UI can be worked on
+ * without one.
  */
-export const api: Api = import.meta.env.VITE_HOTBED_API === "http" ? createHttpApi() : createMockApi();
+export const usingMock = import.meta.env.VITE_HOTBED_API === "mock";
 
-export const usingMock = import.meta.env.VITE_HOTBED_API !== "http";
+export const api: Api = usingMock ? createMockApi() : createConnectApi();
 
 export type * from "./types";

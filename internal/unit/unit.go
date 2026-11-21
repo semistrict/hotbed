@@ -35,6 +35,7 @@ type Spec struct {
 	User       string
 	Env        []string // KEY=VALUE, beyond what the user's login shell sets
 	PathPrefix []string // directories put first on PATH, after the login shell set it
+	PathSuffix []string // directories put last on PATH, for tools a non-interactive login shell misses
 	CPUWeight  int      // 1..10000; 100 is the default share
 	MemoryLow  int64    // guaranteed bytes; 0 for none
 	MemoryHigh int64    // bytes past which the kernel throttles and reclaims; 0 for none
@@ -100,12 +101,20 @@ func Start(ctx context.Context, s Spec) error {
 	if len(s.PathPrefix) > 0 {
 		args = append(args, "--setenv=HOTBED_PATH="+strings.Join(s.PathPrefix, ":"))
 	}
+	if len(s.PathSuffix) > 0 {
+		args = append(args, "--setenv=HOTBED_PATH_AFTER="+strings.Join(s.PathSuffix, ":"))
+	}
 	// The login shell sets PATH from the user's profile; HOTBED_PATH goes in
-	// front of it afterwards, so tools installed in the workspace win.
-	args = append(args, "--", "/bin/bash", "-lc", `if [ -n "${HOTBED_PATH:-}" ]; then PATH="$HOTBED_PATH:$PATH"; fi; exec "$@"`, "hotbed")
+	// front of it afterwards, so tools installed in the workspace win, and
+	// HOTBED_PATH_AFTER behind it, for tools (rustup, go) a profile adds only
+	// to interactive shells.
+	args = append(args, "--", "/bin/bash", "-lc",
+		`PATH="${HOTBED_PATH:+$HOTBED_PATH:}$PATH${HOTBED_PATH_AFTER:+:$HOTBED_PATH_AFTER}"; exec "$@"`, "hotbed")
 	args = append(args, s.Argv...)
-	_, err := run(ctx, "systemd-run", args...)
-	return err
+	if _, err := run(ctx, "systemd-run", args...); err != nil {
+		return fmt.Errorf("start unit %s: %w", s.Name, err)
+	}
+	return nil
 }
 
 // State is a unit as systemd sees it.
@@ -219,7 +228,8 @@ func run(ctx context.Context, name string, args ...string) (string, error) {
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
 	if err := cmd.Run(); err != nil {
-		return "", fmt.Errorf("%s %s: %w: %s", name, strings.Join(args, " "), err, strings.TrimSpace(stderr.String()))
+		// The arguments carry whole scripts; the first one says enough.
+		return "", fmt.Errorf("%s %s: %w: %s", name, args[0], err, strings.TrimSpace(stderr.String()))
 	}
 	return stdout.String(), nil
 }

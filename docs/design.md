@@ -39,17 +39,24 @@ is detected from the state directory's filesystem; a ZFS worker keeps its datase
 
 A repo is registered once (`hotbed repo add NAME URL --freshen CMD...`) with the commands that
 bring a checkout up to date, the way a person would after pulling: `pnpm install`,
-`cargo build --all-targets`, `cargo nextest run --no-run`. Each worker that hosts the repo keeps a
-base per generation of its default branch:
+`cargo build --all-targets`, `cargo nextest run --no-run`. Bases are brought up to date only when
+a workspace asks for one; nothing builds in the background. When a workspace is created, its node
+looks at the head of the repo's branch:
 
-1. Clone the newest base (or start empty), fetch, check out the branch's new commit and update
-   submodules recursively.
-2. Run the freshen commands in it, as commands like any other (so they get limits, logs, history).
-3. Snapshot it read-only: that snapshot is generation N, warm.
+- If its newest warm base is at that commit, the workspace is a clone of it, at once.
+- If a base of that commit is already freshening (another workspace asked first), the workspace
+  waits for it.
+- Otherwise the node makes the next generation: clone the newest warm base (or start empty if
+  there is none), fetch, check out the branch's head and update submodules recursively, run the
+  freshen commands in it as commands like any other (so they get limits, logs, history), and
+  snapshot it read-only. That snapshot is generation N, warm, and the waiting workspaces fork it.
 
-A workspace is a clone of the newest warm base on the node it is placed on. The controller places
-it on a node that hosts the repo, preferring the most free memory. An older base is deleted once
-no workspace uses it.
+A workspace is *preparing* while its base freshens and *failed* if the freshen fails; commands run
+in it wait for it, and `hotbed add` waits too unless given `--no-wait`. Because each generation
+starts from the previous one, a freshen is a pull and an incremental build. Only
+`hotbed repo rebuild NAME` makes the next generation start empty, for when incremental state has
+gone bad. The controller places a workspace on a node that hosts the repo, preferring one with a
+warm base, then the most free memory. An older base is deleted once no workspace uses it.
 
 ## What a command sees
 

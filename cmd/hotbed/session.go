@@ -56,6 +56,7 @@ type addCmd struct {
 	Sync    string `type:"path" help:"A local checkout of the repo the workspace follows: run from this machine syncs it first. Without it the workspace is remote-only."`
 	Node    string `help:"Put the workspace on this node (host name)."`
 	Branch  string `help:"The branch you work on, for the cockpit."`
+	NoWait  bool   `help:"Return while the workspace is still preparing (its base being pulled and freshened); commands run in it queue until it is ready."`
 }
 
 func (c *addCmd) Exec(ctx context.Context, d deps) (any, error) {
@@ -69,6 +70,12 @@ func (c *addCmd) Exec(ctx context.Context, d deps) (any, error) {
 	if err != nil {
 		return nil, err
 	}
+	if c.NoWait {
+		return ws, nil
+	}
+	if ws, err = waitReady(ctx, cl, ws, d.stderr); err != nil {
+		return nil, err
+	}
 	if c.Sync != "" {
 		if _, err := syncTo(ctx, cl, ws, c.Sync); err != nil {
 			return nil, err
@@ -76,6 +83,32 @@ func (c *addCmd) Exec(ctx context.Context, d deps) (any, error) {
 		if ws, err = cl.workspaces.GetWorkspace(ctx, &pb.GetWorkspaceRequest{Id: ws.Id}); err != nil {
 			return nil, err
 		}
+	}
+	return ws, nil
+}
+
+// waitReady waits for a preparing workspace (its base being pulled and
+// freshened) to be ready, saying what it waits for on stderr.
+func waitReady(ctx context.Context, cl clients, ws *pb.Workspace, stderr io.Writer) (*pb.Workspace, error) {
+	said := ""
+	for ws.State == pb.WorkspaceState_WORKSPACE_STATE_PREPARING {
+		if ws.Reason != said {
+			fmt.Fprintf(stderr, "hotbed: %s is preparing: %s\n", ws.Id, ws.Reason)
+			said = ws.Reason
+		}
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-time.After(time.Second):
+		}
+		var err error
+		if ws, err = cl.workspaces.GetWorkspace(ctx, &pb.GetWorkspaceRequest{Id: ws.Id}); err != nil {
+			return nil, err
+		}
+	}
+	if ws.State == pb.WorkspaceState_WORKSPACE_STATE_FAILED {
+		return nil, api.Errorf(api.CodeWorkspaceFailed, "workspace %s failed: %s", ws.Id, ws.Reason).
+			WithSuggestion("see the freshen's log in the cockpit, fix the repo's freshen commands (hotbed repo add), and add the repo again")
 	}
 	return ws, nil
 }
@@ -206,6 +239,9 @@ func (c *runCmd) Raw(ctx context.Context, d deps) (int, bool, error) {
 		case err != nil:
 			fmt.Fprintf(d.stderr, "hotbed: not syncing: %v\n", err)
 		case self.Hostname == ws.SyncHost:
+			if ws, err = waitReady(ctx, cl, ws, d.stderr); err != nil {
+				return 0, false, err
+			}
 			res, err := syncTo(ctx, cl, ws, ws.SyncDir)
 			if err != nil {
 				return 0, false, err

@@ -1,8 +1,7 @@
 syntax = "proto3";
 
 // hotbed's API, spoken by the CLI, the cockpit, the controller and the
-// workers. Times are unix milliseconds; sizes are bytes. Every 64-bit number
-// is a JavaScript number in the cockpit, which needs no more than 2^53.
+// workers. Times are unix milliseconds; sizes are bytes.
 package hotbed.v1;
 
 option go_package = "github.com/semistrict/hotbed/internal/gen/hotbed/v1;hotbedv1";
@@ -17,6 +16,10 @@ service ClusterService {
   rpc ListRepos(ListReposRequest) returns (ListReposResponse);
   rpc PutRepo(PutRepoRequest) returns (Repo);
   rpc DeleteRepo(DeleteRepoRequest) returns (DeleteRepoResponse);
+  // RebuildRepo has every worker build the repo's next base from nothing.
+  // Bases are otherwise built incrementally: each generation forks the one
+  // before, pulls, and freshens.
+  rpc RebuildRepo(RebuildRepoRequest) returns (Repo);
   // GetSnapshot is everything the cockpit shows.
   rpc GetSnapshot(GetSnapshotRequest) returns (Snapshot);
 }
@@ -71,8 +74,8 @@ message ErrorInfo {
 message Resources {
   string arch = 1;
   int32 cpus = 2;
-  int64 memory_bytes = 3 [jstype = JS_NUMBER];
-  int64 swap_bytes = 4 [jstype = JS_NUMBER];
+  int64 memory_bytes = 3;
+  int64 swap_bytes = 4;
   string kernel = 5;
   // What the machine is, as a person would say it: "MacBook Pro (14-inch, M3 Pro, Nov 2023)".
   string machine = 6;
@@ -81,8 +84,8 @@ message Resources {
 message NodeUsage {
   // Share of CPU time busy across all CPUs, 0..1.
   double cpu_busy = 1;
-  int64 memory_used_bytes = 2 [jstype = JS_NUMBER];
-  int64 swap_used_bytes = 3 [jstype = JS_NUMBER];
+  int64 memory_used_bytes = 2;
+  int64 swap_used_bytes = 3;
   // PSI "some" avg10, percent of time at least one task stalled.
   double cpu_pressure = 4;
   double memory_pressure = 5;
@@ -90,10 +93,10 @@ message NodeUsage {
 
 // A node's filesystem, by what the blocks belong to.
 message DiskUsage {
-  int64 bases_bytes = 1 [jstype = JS_NUMBER];
-  int64 forks_exclusive_bytes = 2 [jstype = JS_NUMBER];
-  int64 other_bytes = 3 [jstype = JS_NUMBER];
-  int64 free_bytes = 4 [jstype = JS_NUMBER];
+  int64 bases_bytes = 1;
+  int64 forks_exclusive_bytes = 2;
+  int64 other_bytes = 3;
+  int64 free_bytes = 4;
 }
 
 // A worker. Its identity (id, hostname, login) comes from the tailnet.
@@ -101,15 +104,15 @@ message Node {
   string id = 1;
   string hostname = 2;
   string login = 3;
-  int64 joined_at = 4 [jstype = JS_NUMBER];
-  optional int64 last_seen = 5 [jstype = JS_NUMBER];
+  int64 joined_at = 4;
+  optional int64 last_seen = 5;
   bool online = 6;
   Resources resources = 7;
   NodeUsage usage = 8;
-  int64 disk_bytes = 9 [jstype = JS_NUMBER];
+  int64 disk_bytes = 9;
   DiskUsage disk = 10;
   // What admitted commands are guaranteed: the sum of their memory.low.
-  int64 reserved_memory_bytes = 11 [jstype = JS_NUMBER];
+  int64 reserved_memory_bytes = 11;
   string storage = 12;
 }
 
@@ -140,7 +143,10 @@ message Repo {
   repeated string freshen = 4;
   // Host names of the nodes that keep bases; empty means every worker.
   repeated string hosts = 5;
-  int64 created_at = 6 [jstype = JS_NUMBER];
+  int64 created_at = 6;
+  // Raised by RebuildRepo: a worker whose newest base has a lower epoch
+  // builds the next one from nothing.
+  int64 scratch_epoch = 7;
 }
 
 message ListReposRequest {}
@@ -158,6 +164,10 @@ message DeleteRepoRequest {
 }
 
 message DeleteRepoResponse {}
+
+message RebuildRepoRequest {
+  string id = 1;
+}
 
 enum BaseState {
   BASE_STATE_UNSPECIFIED = 0;
@@ -180,17 +190,19 @@ message Base {
   BaseState state = 7;
   // Share of freshen steps done while building, 0..1.
   double progress = 8;
-  optional int64 built_at = 9 [jstype = JS_NUMBER];
+  optional int64 built_at = 9;
   double build_seconds = 10;
   // The generation started from nothing, so its time is what a fork saves.
   bool cold = 11;
-  int64 size_bytes = 12 [jstype = JS_NUMBER];
+  int64 size_bytes = 12;
   string toolchain = 13;
   repeated string baked = 14;
   // Units (cargo crates) a cold freshen compiled.
   int32 units = 15;
   // The freshen command's ID, for its log.
   string command = 16;
+  // The repo's scratch_epoch when this generation was started.
+  int64 scratch_epoch = 17;
 }
 
 // ---- workspaces ---------------------------------------------------------
@@ -200,6 +212,11 @@ enum WorkspaceState {
   WORKSPACE_STATE_ACTIVE = 1;
   WORKSPACE_STATE_IDLE = 2;
   WORKSPACE_STATE_RELEASED = 3;
+  // Its base is being brought up to date (pulled and freshened); commands
+  // run in it queue until it is ready.
+  WORKSPACE_STATE_PREPARING = 4;
+  // Its base failed to freshen; reason says why.
+  WORKSPACE_STATE_FAILED = 5;
 }
 
 // A writable fork of a base that one agent works in.
@@ -217,11 +234,11 @@ message Workspace {
   string tree = 9;
   int32 files_changed = 10;
   WorkspaceState state = 11;
-  int64 created_at = 12 [jstype = JS_NUMBER];
-  int64 fork_millis = 13 [jstype = JS_NUMBER];
-  int64 exclusive_bytes = 14 [jstype = JS_NUMBER];
-  int64 shared_bytes = 15 [jstype = JS_NUMBER];
-  int64 last_active_at = 16 [jstype = JS_NUMBER];
+  int64 created_at = 12;
+  int64 fork_millis = 13;
+  int64 exclusive_bytes = 14;
+  int64 shared_bytes = 15;
+  int64 last_active_at = 16;
   // Where commands see the checkout, such as /work/ratel.
   string path = 17;
   string session_id = 18;
@@ -230,6 +247,8 @@ message Workspace {
   // only through commands run in it.
   string sync_dir = 19;
   string sync_host = 20;
+  // Why it failed, or what it waits for while preparing.
+  string reason = 21;
 }
 
 message CreateWorkspaceRequest {
@@ -247,6 +266,8 @@ message CreateWorkspaceRequest {
   string sync_dir = 7;
   // Set by the controller: the calling machine's host name.
   string sync_host = 8;
+  // Set by the controller: the repo's configuration, for its freshen.
+  Repo repo_config = 9;
 }
 
 message GetWorkspaceRequest {
@@ -288,14 +309,14 @@ message SyncResponse {
   int32 files_changed = 4;
   // The workspace already had this tree; nothing was sent.
   bool skipped = 5;
-  int64 bundle_bytes = 6 [jstype = JS_NUMBER];
+  int64 bundle_bytes = 6;
 }
 
 message FileEntry {
   string path = 1;
   // file or dir
   string kind = 2;
-  int64 size_bytes = 3 [jstype = JS_NUMBER];
+  int64 size_bytes = 3;
   // Against the workspace's base: added, modified, or empty.
   string change = 4;
 }
@@ -337,9 +358,9 @@ message CommandLimits {
   // cgroup cpu.weight: the share of contended CPU.
   int32 cpu_weight = 1;
   // cgroup memory.low: guaranteed; admission waits until it fits.
-  int64 memory_low_bytes = 2 [jstype = JS_NUMBER];
+  int64 memory_low_bytes = 2;
   // cgroup memory.high: past it the command is throttled and swapped.
-  int64 memory_high_bytes = 3 [jstype = JS_NUMBER];
+  int64 memory_high_bytes = 3;
 }
 
 message Rebuilt {
@@ -348,7 +369,7 @@ message Rebuilt {
 }
 
 message CommandEvent {
-  int64 at = 1 [jstype = JS_NUMBER];
+  int64 at = 1;
   // queued, admitted, parked, thawed, exited, cancelled
   string what = 2;
   string detail = 3;
@@ -365,14 +386,14 @@ message Command {
   // build, test, check, server, shell, freshen
   string kind = 6;
   CommandState state = 7;
-  int64 queued_at = 8 [jstype = JS_NUMBER];
-  optional int64 started_at = 9 [jstype = JS_NUMBER];
-  optional int64 ended_at = 10 [jstype = JS_NUMBER];
+  int64 queued_at = 8;
+  optional int64 started_at = 9;
+  optional int64 ended_at = 10;
   optional int32 exit_code = 11;
   CommandLimits limits = 12;
   double cpu_cores = 13;
-  int64 memory_bytes = 14 [jstype = JS_NUMBER];
-  int64 swap_bytes = 15 [jstype = JS_NUMBER];
+  int64 memory_bytes = 14;
+  int64 swap_bytes = 15;
   // Cargo's units compiled; unset for commands that build nothing.
   Rebuilt rebuilt = 16;
   // How long the same command takes from nothing; unset when it builds nothing.
@@ -400,13 +421,13 @@ message FinishedCommand {
   optional int32 exit_code = 9;
   // compile, test, lint, signal, exit; empty when it succeeded.
   string failure = 10;
-  int64 ended_at = 11 [jstype = JS_NUMBER];
+  int64 ended_at = 11;
   double queued_seconds = 12;
   double seconds = 13;
   optional double cold_seconds = 14;
   optional int32 rebuilt = 15;
   optional int32 of = 16;
-  int64 peak_memory_bytes = 17 [jstype = JS_NUMBER];
+  int64 peak_memory_bytes = 17;
   int32 parks = 18;
   string session_id = 19;
 }
@@ -444,7 +465,7 @@ message StopCommandRequest {
 
 message FollowLogRequest {
   string id = 1;
-  int64 offset = 2 [jstype = JS_NUMBER];
+  int64 offset = 2;
   bool follow = 3;
 }
 
@@ -458,12 +479,12 @@ message Session {
   // adjective-noun, such as brave-otter.
   string id = 1;
   string agent = 2;
-  int64 started_at = 3 [jstype = JS_NUMBER];
-  optional int64 ended_at = 4 [jstype = JS_NUMBER];
+  int64 started_at = 3;
+  optional int64 ended_at = 4;
   repeated string workspace_ids = 5;
   // The last call that touched the session; an hour after it, the session
   // is abandoned and ends.
-  int64 last_active_at = 6 [jstype = JS_NUMBER];
+  int64 last_active_at = 6;
   // Why it ended: ended by its agent, or abandoned.
   string end_reason = 7;
 }
@@ -481,7 +502,7 @@ message EndSessionRequest {
 message WaitSessionRequest {
   string session_id = 1;
   // Return events after this one (0 for the first).
-  int64 after = 2 [jstype = JS_NUMBER];
+  int64 after = 2;
   // Give up after this long with no events; at most and by default 120.
   int32 timeout_seconds = 3;
 }
@@ -489,7 +510,7 @@ message WaitSessionRequest {
 message WaitSessionResponse {
   repeated SessionEvent events = 1;
   // Pass as after to wait for what comes next.
-  int64 cursor = 2 [jstype = JS_NUMBER];
+  int64 cursor = 2;
   // Commands in the session that have not ended.
   int32 live = 3;
   // The session ended (by its agent, or abandoned); no more events will come.
@@ -500,11 +521,12 @@ message WaitSessionResponse {
 // Something that happened to a command in a session.
 message SessionEvent {
   // The controller's cursor for the event; workers leave it 0.
-  int64 seq = 1 [jstype = JS_NUMBER];
-  int64 at = 2 [jstype = JS_NUMBER];
+  int64 seq = 1;
+  int64 at = 2;
   string command_id = 3;
   string argv = 4;
-  // admitted, parked, thawed, exited, cancelled
+  // admitted, parked, thawed, exited, cancelled; or ready and failed for a
+  // workspace (command_id empty)
   string what = 5;
   CommandState state = 6;
   optional int32 exit_code = 7;
@@ -526,7 +548,7 @@ message CommandLog {
 // ---- reports ------------------------------------------------------------
 
 message WorkerEvent {
-  int64 at = 1 [jstype = JS_NUMBER];
+  int64 at = 1;
   // fork, release, admit, finish, fail, park, thaw, base, node
   string kind = 2;
   string text = 3;
@@ -561,12 +583,12 @@ message ReportRequest {
   string cluster_id = 1;
   Resources resources = 2;
   NodeUsage usage = 3;
-  int64 disk_bytes = 4 [jstype = JS_NUMBER];
+  int64 disk_bytes = 4;
   DiskUsage disk = 5;
-  int64 reserved_memory_bytes = 6 [jstype = JS_NUMBER];
+  int64 reserved_memory_bytes = 6;
   // The kernel's OOM kills since boot; hotbed parks instead of killing, so
   // it should not move.
-  int64 oom_kills = 7 [jstype = JS_NUMBER];
+  int64 oom_kills = 7;
   string storage = 8;
   repeated Base bases = 9;
   repeated Workspace workspaces = 10;
@@ -598,8 +620,8 @@ message RepoSummary {
 }
 
 message ClusterEvent {
-  int64 id = 1 [jstype = JS_NUMBER];
-  int64 at = 2 [jstype = JS_NUMBER];
+  int64 id = 1;
+  int64 at = 2;
   string kind = 3;
   string node_id = 4;
   string text = 5;
@@ -611,13 +633,13 @@ message Totals {
   double saved_seconds = 1;
   int32 builds = 2;
   int32 forks = 3;
-  int64 median_fork_millis = 4 [jstype = JS_NUMBER];
+  int64 median_fork_millis = 4;
   int32 oom_kills = 5;
   int32 parks = 6;
 }
 
 message Sample {
-  int64 t = 1 [jstype = JS_NUMBER];
+  int64 t = 1;
   double cpu_busy = 2;
   double memory_used = 3;
   double memory_pressure = 4;
@@ -629,7 +651,7 @@ message Samples {
 
 // The cluster's command counts at one sample.
 message LoadSample {
-  int64 t = 1 [jstype = JS_NUMBER];
+  int64 t = 1;
   int32 running = 2;
   int32 queued = 3;
   int32 parked = 4;
@@ -637,7 +659,7 @@ message LoadSample {
 
 // One hour of the cluster's history.
 message HourBucket {
-  int64 hour = 1 [jstype = JS_NUMBER];
+  int64 hour = 1;
   int32 builds = 2;
   double spent_seconds = 3;
   double saved_seconds = 4;
@@ -647,7 +669,7 @@ message HourBucket {
 }
 
 message NodeHour {
-  int64 hour = 1 [jstype = JS_NUMBER];
+  int64 hour = 1;
   double cpu_busy = 2;
   double memory_used = 3;
 }
@@ -661,7 +683,7 @@ message GetSnapshotRequest {}
 message Snapshot {
   string cluster_id = 1;
   string controller = 2;
-  int64 now = 3 [jstype = JS_NUMBER];
+  int64 now = 3;
   int32 sample_seconds = 4;
   repeated Node nodes = 5;
   repeated RepoSummary repos = 6;

@@ -4,8 +4,9 @@
 |---|---|---|
 | `INVALID_ARGS` | A bad flag, argument, name or size | Fix the command; `hotbed COMMAND --help` |
 | `NOT_FOUND` | No such session, repo, workspace or command, or the session ended | Check the name; `hotbed session start` for a new session; `hotbed add S REPO` for a workspace |
-| `CONFLICT` | The session name is taken | Pick another, or leave it out for a random one |
-| `NO_WARM_BASE` | The repo has no built base on any online node yet (retryable) | Wait; the suggestion says how far its build is |
+| `CONFLICT` | The session name is taken, or the workspace is still preparing (retryable) | Pick another, or leave it out for a random one |
+| `REPO_UNREACHABLE` | The worker cannot read the repo's remote (retryable) | Check the URL in `hotbed repo ls` and the node's access to it, then retry |
+| `WORKSPACE_FAILED` | The workspace's base failed to freshen, or its fork failed | Read the reason; fix the repo's freshen commands (`hotbed repo add`, or `hotbed repo rebuild` if incremental state broke) and `hotbed add` again |
 | `SYNC_REFUSED` | The checkout cannot be synced: hidden edits (`skip-worktree`, `assume-unchanged`), a dirty submodule, or a missing base commit | Do what the suggestion says, then sync again |
 | `CONTROLLER_UNREACHABLE` | No answer from the controller (retryable) | Check `tailscale status` and that the controller runs `hotbed serve` |
 | `WORKER_UNREACHABLE` | The node holding the workspace is offline (retryable) | Wait for it, or end the session and start one elsewhere |
