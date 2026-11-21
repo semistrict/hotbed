@@ -190,6 +190,7 @@ message AppliedStep {
   bool ran = 3;
   // False for the step that failed this generation's freshen.
   bool ok = 4;
+  // How long it took in the generation that ran it.
   double seconds = 5;
 }
 

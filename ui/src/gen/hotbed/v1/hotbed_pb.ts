@@ -457,6 +457,8 @@ export type AppliedStep = Message<"hotbed.v1.AppliedStep"> & {
   ok: boolean;
 
   /**
+   * How long it took in the generation that ran it.
+   *
    * @generated from field: double seconds = 5;
    */
   seconds: number;

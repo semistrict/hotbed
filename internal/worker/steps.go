@@ -65,13 +65,19 @@ func plannedSteps(r *pb.Repo, prev *pb.Base, run []*pb.Step) []*pb.AppliedStep {
 	for _, s := range run {
 		running[s.Name] = true
 	}
+	took := map[string]float64{} // how long inherited steps took where they ran
+	if prev != nil {
+		for _, a := range prev.Steps {
+			took[a.Name] = a.Seconds
+		}
+	}
 	have := applied(prev)
 	var out []*pb.AppliedStep
 	for _, s := range r.Steps {
 		if running[s.Name] {
 			out = append(out, &pb.AppliedStep{Name: s.Name, Hash: s.Hash, Ran: true})
 		} else {
-			out = append(out, &pb.AppliedStep{Name: s.Name, Hash: have[s.Name], Ok: true})
+			out = append(out, &pb.AppliedStep{Name: s.Name, Hash: have[s.Name], Ok: true, Seconds: took[s.Name]})
 		}
 	}
 	return out

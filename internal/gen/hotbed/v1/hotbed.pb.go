@@ -1061,7 +1061,8 @@ type AppliedStep struct {
 	// Ran in this generation, rather than inherited.
 	Ran bool `protobuf:"varint,3,opt,name=ran,proto3" json:"ran,omitempty"`
 	// False for the step that failed this generation's freshen.
-	Ok            bool    `protobuf:"varint,4,opt,name=ok,proto3" json:"ok,omitempty"`
+	Ok bool `protobuf:"varint,4,opt,name=ok,proto3" json:"ok,omitempty"`
+	// How long it took in the generation that ran it.
 	Seconds       float64 `protobuf:"fixed64,5,opt,name=seconds,proto3" json:"seconds,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
