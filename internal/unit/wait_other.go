@@ -8,4 +8,4 @@ import (
 )
 
 // Wait needs Linux's cgroups; workers run only there.
-func Wait(context.Context, string) error { return errors.New("units need Linux") }
+func Wait(context.Context, string, string) error { return errors.New("units need Linux") }

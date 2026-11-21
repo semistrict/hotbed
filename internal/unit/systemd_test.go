@@ -28,7 +28,7 @@ func waitExit(t *testing.T, name string) State {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
 	defer cancel()
-	if err := Wait(ctx, name); err != nil {
+	if err := Wait(ctx, DefaultSlice, name); err != nil {
 		t.Fatalf("wait for %s: %v", name, err)
 	}
 	s, err := Status(t.Context(), name)
@@ -146,7 +146,7 @@ func TestWaitReturnsWhenTheUnitExits(t *testing.T) {
 	}
 	short, cancel := context.WithTimeout(t.Context(), 200*time.Millisecond)
 	defer cancel()
-	if err := Wait(short, n); err != context.DeadlineExceeded {
+	if err := Wait(short, DefaultSlice, n); err != context.DeadlineExceeded {
 		t.Fatalf("wait on a running unit = %v, want the deadline", err)
 	}
 	start := time.Now()
@@ -154,7 +154,7 @@ func TestWaitReturnsWhenTheUnitExits(t *testing.T) {
 	if d := time.Since(start); d > 1500*time.Millisecond {
 		t.Errorf("wait returned %v after a 1s command that had run for 0.2s", d)
 	}
-	if err := Wait(t.Context(), "hotbed-test-no-such-unit"); err != nil {
+	if err := Wait(t.Context(), DefaultSlice, "hotbed-test-no-such-unit"); err != nil {
 		t.Errorf("wait on a unit that is not there = %v, want nil", err)
 	}
 }
@@ -173,7 +173,7 @@ func TestCommandRunsInItsUnitsCgroup(t *testing.T) {
 		t.Fatal(err)
 	}
 	u := testUser(t)
-	want := fmt.Sprintf("0::/%s/%s.service\n%s /home/%s\n", Slice, n, u, u)
+	want := fmt.Sprintf("0::%s/%s.service\n%s /home/%s\n", SliceDir(DefaultSlice), n, u, u)
 	if string(b) != want {
 		t.Errorf("command saw %q, want %q", b, want)
 	}
@@ -194,5 +194,28 @@ func TestShellVariablesReachTheShell(t *testing.T) {
 	}
 	if string(b) != "[shell] [shell]\n" {
 		t.Errorf("command printed %q", b)
+	}
+}
+
+// A worker may put its commands in a slice under another, such as
+// user.slice, to share that slice's memory limit; Wait finds them there.
+func TestNestedSlice(t *testing.T) {
+	n := name(t)
+	const slice = "user-hotbedtest.slice"
+	log := filepath.Join(t.TempDir(), "out.log")
+	if err := Start(t.Context(), Spec{Name: n, Slice: slice, Argv: []string{"sh", "-c", "sleep 0.3; cat /proc/self/cgroup"}, User: testUser(t), Log: log}); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+	defer cancel()
+	if err := Wait(ctx, slice, n); err != nil {
+		t.Fatal(err)
+	}
+	b, err := os.ReadFile(log)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := "0::/user.slice/user-hotbedtest.slice/" + n + ".service\n"; string(b) != want {
+		t.Errorf("command saw %q, want %q", b, want)
 	}
 }

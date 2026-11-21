@@ -44,3 +44,24 @@ func TestParseShow(t *testing.T) {
 		}
 	}
 }
+
+func TestSliceDir(t *testing.T) {
+	for slice, want := range map[string]string{
+		"hotbed.slice":         "/hotbed.slice",
+		"user-hotbed.slice":    "/user.slice/user-hotbed.slice",
+		"a-b-c.slice":          "/a.slice/a-b.slice/a-b-c.slice",
+		"system-getty_x.slice": "/system.slice/system-getty_x.slice",
+	} {
+		if got := SliceDir(slice); got != want {
+			t.Errorf("SliceDir(%s) = %s, want %s", slice, got, want)
+		}
+	}
+	for _, bad := range []string{"hotbed", "-x.slice", "a--b.slice", "a/b.slice", ".slice"} {
+		if CheckSlice(bad) == nil {
+			t.Errorf("CheckSlice(%q) passed", bad)
+		}
+	}
+	if err := CheckSlice("user-hotbed.slice"); err != nil {
+		t.Error(err)
+	}
+}

@@ -1,6 +1,7 @@
 package worker
 
 import (
+	"cmp"
 	"context"
 	"fmt"
 	"log/slog"
@@ -9,7 +10,6 @@ import (
 	"sort"
 	"strconv"
 	"syscall"
-
 
 	pb "github.com/semistrict/hotbed/internal/gen/hotbed/v1"
 	"github.com/semistrict/hotbed/internal/sysinfo"
@@ -164,8 +164,8 @@ func lookupUser(name string) (*syscall.Credential, string, error) {
 	return &syscall.Credential{Uid: uint32(uid), Gid: uint32(gid)}, u.HomeDir, nil
 }
 
-// Systemd runs commands as systemd units.
-type Systemd struct{}
+// Systemd runs commands as systemd units in a slice.
+type Systemd struct{ Slice string }
 
 func (Systemd) Start(ctx context.Context, s unit.Spec) error { return unit.Start(ctx, s) }
 func (Systemd) Status(ctx context.Context, name string) (unit.State, error) {
@@ -176,13 +176,21 @@ func (Systemd) Thaw(ctx context.Context, name string) error   { return unit.Thaw
 func (Systemd) Reclaim(cgroup string, n int64) error          { return unit.Reclaim(cgroup, n) }
 func (Systemd) Swap(cgroup string) (int64, error)             { return unit.Swap(cgroup) }
 func (Systemd) Stop(ctx context.Context, name string) error   { return unit.Stop(ctx, name) }
-func (Systemd) Wait(ctx context.Context, name string) error   { return unit.Wait(ctx, name) }
+func (s Systemd) Wait(ctx context.Context, name string) error {
+	return unit.Wait(ctx, cmp.Or(s.Slice, unit.DefaultSlice), name)
+}
 
 // Linux measures the node from /proc.
-type Linux struct{ cpu sysinfo.CPU }
+// Linux measures this machine as commands in a slice get it.
+type Linux struct {
+	Slice string
+	cpu   sysinfo.CPU
+}
 
-func (*Linux) Resources() (*pb.Resources, error)  { return sysinfo.Resources() }
-func (*Linux) Meminfo() (sysinfo.Mem, error)      { return sysinfo.Meminfo() }
-func (*Linux) Pressure(r string) (float64, error) { return sysinfo.Pressure(r) }
-func (l *Linux) CPUBusy() (float64, error)        { return l.cpu.Busy() }
-func (*Linux) OOMKills() (int64, error)           { return sysinfo.OOMKills() }
+func (l *Linux) sliceDir() string { return unit.SliceDir(cmp.Or(l.Slice, unit.DefaultSlice)) }
+
+func (l *Linux) Resources() (*pb.Resources, error) { return sysinfo.Resources(l.sliceDir()) }
+func (l *Linux) Meminfo() (sysinfo.Mem, error)     { return sysinfo.Memory(l.sliceDir()) }
+func (*Linux) Pressure(r string) (float64, error)  { return sysinfo.Pressure(r) }
+func (l *Linux) CPUBusy() (float64, error)         { return l.cpu.Busy() }
+func (*Linux) OOMKills() (int64, error)            { return sysinfo.OOMKills() }

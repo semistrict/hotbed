@@ -7,6 +7,7 @@ package unit
 
 import (
 	"bytes"
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -18,8 +19,34 @@ import (
 	"syscall"
 )
 
-// Slice holds every hotbed command, so a node's commands share one subtree.
-const Slice = "hotbed.slice"
+// DefaultSlice holds every hotbed command unless the worker names another,
+// so a node's commands share one subtree.
+const DefaultSlice = "hotbed.slice"
+
+// SliceDir is where systemd puts a slice, under /sys/fs/cgroup: a dash in
+// its name nests it, so user-hotbed.slice is /user.slice/user-hotbed.slice.
+func SliceDir(slice string) string {
+	name := strings.TrimSuffix(slice, ".slice")
+	dir := ""
+	for i := range name {
+		if name[i] == '-' {
+			dir += "/" + name[:i] + ".slice"
+		}
+	}
+	return dir + "/" + slice
+}
+
+// CheckSlice says whether s can name a slice.
+func CheckSlice(s string) error {
+	name, ok := strings.CutSuffix(s, ".slice")
+	if !ok || name == "" || strings.HasPrefix(name, "-") || strings.HasSuffix(name, "-") || strings.Contains(name, "--") ||
+		strings.ContainsFunc(name, func(r rune) bool {
+			return !(r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' || r == '-' || r == '_' || r == '.')
+		}) {
+		return fmt.Errorf("%q is not a systemd slice name, such as hotbed.slice or user-hotbed.slice", s)
+	}
+	return nil
+}
 
 // Bind shows Source at Target inside the command's mount namespace.
 type Bind struct {
@@ -29,6 +56,7 @@ type Bind struct {
 // Spec is a command to start.
 type Spec struct {
 	Name       string // unit name without .service, such as hotbed-c-3f2a01
+	Slice      string // the slice it runs in; empty for DefaultSlice
 	Argv       []string
 	Dir        string // working directory, as the command sees it
 	Binds      []Bind
@@ -58,7 +86,7 @@ func Start(ctx context.Context, s Spec) error {
 	}
 	args := []string{
 		"--unit=" + s.Name,
-		"--slice=" + Slice,
+		"--slice=" + cmp.Or(s.Slice, DefaultSlice),
 		// systemd would otherwise substitute $VAR and ${VAR} in the command
 		// line itself, before the shell sees them.
 		"--expand-environment=no",

@@ -18,8 +18,8 @@ import (
 // The kernel rewrites a cgroup's cgroup.events when it empties, so Wait
 // watches that file with inotify instead of asking systemd over and over. A
 // unit whose cgroup is already gone has exited.
-func Wait(ctx context.Context, name string) error {
-	events := filepath.Join("/sys/fs/cgroup", Slice, name+".service", "cgroup.events")
+func Wait(ctx context.Context, slice, name string) error {
+	events := filepath.Join("/sys/fs/cgroup", SliceDir(slice), name+".service", "cgroup.events")
 	fd, err := unix.InotifyInit1(unix.IN_CLOEXEC | unix.IN_NONBLOCK)
 	if err != nil {
 		return fmt.Errorf("inotify: %w", err)

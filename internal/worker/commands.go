@@ -2,6 +2,7 @@ package worker
 
 import (
 	"bufio"
+	"cmp"
 	"context"
 	"fmt"
 	"log/slog"
@@ -324,6 +325,7 @@ func (e *Engine) spec(c *command) unit.Spec {
 	env = append(env, "HOTBED_WORKSPACE="+cmd.WorkspaceId, "HOTBED_COMMAND="+cmd.Id)
 	return unit.Spec{
 		Name:       c.unitName(),
+		Slice:      e.cfg.Slice,
 		Argv:       cmd.Args,
 		Dir:        c.rec.Dir,
 		Binds:      []unit.Bind{{Source: e.cfg.Store.Path(c.rec.Volume), Target: WorkPath}},
@@ -377,15 +379,19 @@ func (e *Engine) park(ctx context.Context) {
 		defer e.mu.Unlock()
 		cmd := victim.cmd()
 		pct := 100 * float64(mem.Used()) / total
+		of := "memory"
+		if mem.Domain != "" {
+			of = "of " + mem.Domain + "'s memory"
+		}
 		cmd.State = parked
 		cmd.CpuCores = 0
-		cmd.Reason = fmt.Sprintf("frozen at %.0f%% memory in use; its memory goes to swap until there is room", pct)
+		cmd.Reason = fmt.Sprintf("frozen at %.0f%% %s in use; its memory goes to swap until there is room", pct, of)
 		cmd.Timeline = append(cmd.Timeline, &pb.CommandEvent{At: e.nowMs(), What: "parked", Detail: cmd.Reason})
 		victim.rec.Parks++
 		victim.rec.ParkedAt = e.nowMs()
 		e.saveCommand(victim)
 		e.sessionEvent(victim, "parked", cmd.Reason)
-		e.event("park", fmt.Sprintf("park %s · memory at %.0f%%", cmd.Argv, pct), ref("command", cmd.Id))
+		e.event("park", fmt.Sprintf("park %s · %s at %.0f%%", cmd.Argv, cmp.Or(mem.Domain, "memory"), pct), ref("command", cmd.Id))
 		return
 	}
 	if len(parkedCmds) == 0 {

@@ -45,6 +45,8 @@ type WorkerConfig struct {
 	Dataset string `json:"dataset,omitempty"`
 	// UnitProperties are systemd properties every command gets.
 	UnitProperties []string `json:"unitProperties,omitempty"`
+	// Slice is the systemd slice commands run in; empty for hotbed.slice.
+	Slice string `json:"slice,omitempty"`
 }
 
 func (c Config) validate() error {

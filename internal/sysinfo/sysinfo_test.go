@@ -42,3 +42,25 @@ func TestFixtures(t *testing.T) {
 		t.Errorf("Busy with no time passed = %v, want 0", again)
 	}
 }
+
+// Commands in a slice under a capped user.slice get its memory, when it is
+// fuller than the host's.
+func TestMemoryOfTheTightestDomain(t *testing.T) {
+	Root = "testdata"
+	t.Cleanup(func() { Root = "/" })
+	m, err := Memory("/user.slice/user-hotbed.slice")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := Mem{Total: 8 << 30, Available: 1 << 30, SwapTotal: 8192000 * 1024, SwapFree: 8000000 * 1024, Domain: "/user.slice"}
+	if m != want {
+		t.Errorf("Memory = %+v, want %+v", m, want)
+	}
+	host, err := Memory("/hotbed.slice")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if host.Domain != "" || host.Total != 16384000*1024 {
+		t.Errorf("Memory outside any limit = %+v, want the host's", host)
+	}
+}

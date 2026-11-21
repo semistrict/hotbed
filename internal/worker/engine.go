@@ -64,6 +64,10 @@ type EngineConfig struct {
 	NodeID string
 	Host   string // tailnet host name, for dev server URLs
 	User   string // commands run as this user
+	// Slice is the systemd slice commands run in; empty for hotbed.slice.
+	// One under a capped slice (user-hotbed.slice, in user.slice) shares that
+	// slice's memory, and the engine admits and parks against it.
+	Slice string
 	// UnitProperties are systemd properties every command gets, to grant
 	// what builds need beyond a plain user: AmbientCapabilities=,
 	// DeviceAllow=, LimitMEMLOCK= and so on.

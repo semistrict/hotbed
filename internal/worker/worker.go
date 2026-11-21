@@ -27,6 +27,7 @@ import (
 	"github.com/semistrict/hotbed/internal/statedir"
 	"github.com/semistrict/hotbed/internal/storage"
 	"github.com/semistrict/hotbed/internal/tailnet"
+	"github.com/semistrict/hotbed/internal/unit"
 )
 
 // Tailnet is what a worker needs from this machine's tailscaled.
@@ -42,6 +43,7 @@ type JoinOptions struct {
 	User           string
 	Dataset        string
 	UnitProperties []string
+	Slice          string
 }
 
 // JoinResult describes a worker that joined.
@@ -68,6 +70,11 @@ func CheckMachine(ctx context.Context, o JoinOptions) (string, error) {
 	if os.Geteuid() != 0 {
 		return "", api.Errorf(api.CodeInvalidArgs, "a worker runs as root, to fork volumes and start systemd units").
 			WithSuggestion("run it with sudo; commands still run as --user")
+	}
+	if o.Slice != "" {
+		if err := unit.CheckSlice(o.Slice); err != nil {
+			return "", api.Errorf(api.CodeInvalidArgs, "%v", err)
+		}
 	}
 	if _, err := user.Lookup(o.User); err != nil {
 		return "", api.Errorf(api.CodeInvalidArgs, "no user %q to run commands as", o.User)
@@ -109,7 +116,7 @@ func Join(ctx context.Context, o JoinOptions, hc *http.Client, check Check) (Joi
 	if err != nil {
 		return JoinResult{}, api.FromConnect(err)
 	}
-	cfg := statedir.WorkerConfig{ClusterID: joined.ClusterId, Controller: controller, User: o.User, Dataset: o.Dataset, UnitProperties: o.UnitProperties}
+	cfg := statedir.WorkerConfig{ClusterID: joined.ClusterId, Controller: controller, User: o.User, Dataset: o.Dataset, UnitProperties: o.UnitProperties, Slice: o.Slice}
 	if err := statedir.Commit(dir, statedir.Config{Worker: &cfg}); err != nil {
 		return JoinResult{}, err
 	}
@@ -132,7 +139,8 @@ func Run(ctx context.Context, dir string, cfg statedir.WorkerConfig, tn Tailnet,
 	}
 	eng, err := NewEngine(ctx, EngineConfig{
 		Dir: dir, NodeID: self.NodeID, Host: self.Hostname, User: cfg.User,
-		UnitProperties: cfg.UnitProperties, Store: store, Units: Systemd{}, System: &Linux{},
+		Slice: cfg.Slice, UnitProperties: cfg.UnitProperties, Store: store,
+		Units: Systemd{Slice: cfg.Slice}, System: &Linux{Slice: cfg.Slice},
 	})
 	if err != nil {
 		return err
