@@ -16,6 +16,11 @@ const (
 	CodeNotJoined             Code = "NOT_JOINED"
 	CodeClusterMismatch       Code = "CLUSTER_MISMATCH"
 	CodePlatformNotSupported  Code = "PLATFORM_NOT_SUPPORTED"
+	CodeNotFound              Code = "NOT_FOUND"
+	CodeConflict              Code = "CONFLICT"
+	CodeNoWarmBase            Code = "NO_WARM_BASE"
+	CodeSyncRefused           Code = "SYNC_REFUSED"
+	CodeWorkerUnreachable     Code = "WORKER_UNREACHABLE"
 	CodeInternal              Code = "INTERNAL"
 )
 

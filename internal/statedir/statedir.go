@@ -27,17 +27,24 @@ type Config struct {
 
 // ControllerConfig is a cluster as its controller created it.
 type ControllerConfig struct {
-	ClusterID string `json:"cluster_id"`
+	ClusterID string `json:"clusterId"`
 	// Owner is the tailnet login allowed to use the cluster: the owner of the
 	// controller's own node when it was initialized.
 	Owner string `json:"owner"`
 	Port  int    `json:"port"`
 }
 
-// WorkerConfig is the cluster a worker joined.
+// WorkerConfig is the cluster a worker joined and how it runs work.
 type WorkerConfig struct {
-	ClusterID  string `json:"cluster_id"`
+	ClusterID  string `json:"clusterId"`
 	Controller string `json:"controller"` // host:port
+	// User runs every command; the worker itself runs as root.
+	User string `json:"user"`
+	// Dataset is the zfs dataset for volumes, when the state directory is on
+	// zfs and the default (<pool>/hotbed) will not do.
+	Dataset string `json:"dataset,omitempty"`
+	// UnitProperties are systemd properties every command gets.
+	UnitProperties []string `json:"unitProperties,omitempty"`
 }
 
 func (c Config) validate() error {

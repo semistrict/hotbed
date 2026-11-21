@@ -21,7 +21,12 @@ type Client struct {
 // NewClient returns a client for the controller at addr: a tailnet host name
 // or address, with or without a port (DefaultPort when it has none).
 func NewClient(addr string, hc *http.Client) (*Client, error) {
-	hostPort, err := ControllerHostPort(addr)
+	return NewClientPort(addr, DefaultPort, hc)
+}
+
+// NewClientPort is NewClient with another default port, for workers.
+func NewClientPort(addr string, port int, hc *http.Client) (*Client, error) {
+	hostPort, err := HostPort(addr, port)
 	if err != nil {
 		return nil, err
 	}
@@ -32,6 +37,11 @@ func NewClient(addr string, hc *http.Client) (*Client, error) {
 // host:port. "ubu1" becomes "ubu1:7120"; "ubu1:9000" and "[fd7a::1]:7120"
 // stay as they are; a bare IPv6 address gets brackets and the default port.
 func ControllerHostPort(addr string) (string, error) {
+	return HostPort(addr, DefaultPort)
+}
+
+// HostPort is ControllerHostPort with another default port.
+func HostPort(addr string, defaultPort int) (string, error) {
 	invalid := func(why string) error {
 		return Errorf(CodeInvalidArgs, "controller address %q %s", addr, why).
 			WithSuggestion("give the controller's tailnet name or address, such as ubu1 or ubu1:7120")
@@ -45,7 +55,7 @@ func ControllerHostPort(addr string) (string, error) {
 	host, port, err := net.SplitHostPort(addr)
 	if err != nil {
 		// No port, or a bare IPv6 address, whose colons SplitHostPort reads as a port.
-		return net.JoinHostPort(addr, strconv.Itoa(DefaultPort)), nil
+		return net.JoinHostPort(addr, strconv.Itoa(defaultPort)), nil
 	}
 	if host == "" {
 		return "", invalid("has no host")
@@ -59,20 +69,57 @@ func ControllerHostPort(addr string) (string, error) {
 // Join asks the controller to admit the calling node as a worker.
 func (c *Client) Join(ctx context.Context) (JoinResponse, error) {
 	var out JoinResponse
-	err := c.do(ctx, http.MethodPost, "/v1/join", nil, &out)
+	err := c.Do(ctx, http.MethodPost, "/v1/join", nil, &out)
 	return out, err
 }
 
-// Heartbeat reports the calling worker's resources.
-func (c *Client) Heartbeat(ctx context.Context, hb Heartbeat) error {
-	return c.do(ctx, http.MethodPost, "/v1/heartbeat", hb, nil)
+// Report sends a worker's report.
+func (c *Client) Report(ctx context.Context, r Report) (ReportReply, error) {
+	var out ReportReply
+	err := c.Do(ctx, http.MethodPost, "/v1/report", r, &out)
+	return out, err
 }
 
 // Nodes lists the cluster's workers.
 func (c *Client) Nodes(ctx context.Context) (NodesResponse, error) {
 	var out NodesResponse
-	err := c.do(ctx, http.MethodGet, "/v1/nodes", nil, &out)
+	err := c.Do(ctx, http.MethodGet, "/v1/nodes", nil, &out)
 	return out, err
+}
+
+// Do sends in as JSON (when not nil) and decodes the reply into out (when not nil).
+func (c *Client) Do(ctx context.Context, method, path string, in, out any) error {
+	return c.do(ctx, method, path, in, out)
+}
+
+// Stream sends body as is and returns the reply for the caller to read and
+// close. A failure status comes back as an *Error.
+func (c *Client) Stream(ctx context.Context, method, path string, body io.Reader, contentType string) (*http.Response, error) {
+	req, err := http.NewRequestWithContext(ctx, method, c.base+path, body)
+	if err != nil {
+		return nil, fmt.Errorf("build %s request: %w", path, err)
+	}
+	if contentType != "" {
+		req.Header.Set("Content-Type", contentType)
+	}
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return nil, unreachable(err)
+	}
+	if resp.StatusCode/100 != 2 {
+		defer resp.Body.Close()
+		return nil, decodeError(resp)
+	}
+	return resp, nil
+}
+
+func unreachable(err error) *Error {
+	return &Error{
+		Code:       CodeControllerUnreachable,
+		Message:    err.Error(),
+		Suggestion: "check that `tailscale status` lists the controller and that `hotbed run` is running there",
+		Retryable:  true,
+	}
 }
 
 func (c *Client) do(ctx context.Context, method, path string, in, out any) error {
@@ -93,12 +140,7 @@ func (c *Client) do(ctx context.Context, method, path string, in, out any) error
 	}
 	resp, err := c.http.Do(req)
 	if err != nil {
-		return &Error{
-			Code:       CodeControllerUnreachable,
-			Message:    err.Error(),
-			Suggestion: "check that `tailscale status` lists the controller and that `hotbed run` is running there",
-			Retryable:  true,
-		}
+		return unreachable(err)
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode/100 != 2 {

@@ -34,10 +34,14 @@ type Spec struct {
 	Binds      []Bind
 	User       string
 	Env        []string // KEY=VALUE, beyond what the user's login shell sets
+	PathPrefix []string // directories put first on PATH, after the login shell set it
 	CPUWeight  int      // 1..10000; 100 is the default share
 	MemoryLow  int64    // guaranteed bytes; 0 for none
 	MemoryHigh int64    // bytes past which the kernel throttles and reclaims; 0 for none
 	Log        string   // file that gets stdout and stderr
+	// Properties are more systemd properties (KEY=VALUE), such as
+	// AmbientCapabilities=CAP_SYS_ADMIN, for what a build needs.
+	Properties []string
 }
 
 // Start starts the command. It returns once systemd has the unit, not when
@@ -87,10 +91,18 @@ func Start(ctx context.Context, s Spec) error {
 	if s.MemoryHigh > 0 {
 		args = append(args, "--property=MemoryHigh="+strconv.FormatInt(s.MemoryHigh, 10))
 	}
+	for _, p := range s.Properties {
+		args = append(args, "--property="+p)
+	}
 	for _, e := range s.Env {
 		args = append(args, "--setenv="+e)
 	}
-	args = append(args, "--", "/bin/bash", "-lc", `exec "$@"`, "hotbed")
+	if len(s.PathPrefix) > 0 {
+		args = append(args, "--setenv=HOTBED_PATH="+strings.Join(s.PathPrefix, ":"))
+	}
+	// The login shell sets PATH from the user's profile; HOTBED_PATH goes in
+	// front of it afterwards, so tools installed in the workspace win.
+	args = append(args, "--", "/bin/bash", "-lc", `if [ -n "${HOTBED_PATH:-}" ]; then PATH="$HOTBED_PATH:$PATH"; fi; exec "$@"`, "hotbed")
 	args = append(args, s.Argv...)
 	_, err := run(ctx, "systemd-run", args...)
 	return err

@@ -15,20 +15,29 @@ import (
 	"github.com/semistrict/hotbed/internal/api"
 	"github.com/semistrict/hotbed/internal/controller"
 	"github.com/semistrict/hotbed/internal/skills"
-	"github.com/semistrict/hotbed/internal/statedir"
 	"github.com/semistrict/hotbed/internal/worker"
 )
 
 // deps is what commands use from the outside world, so tests can replace it.
 type deps struct {
 	tailnet controller.Tailnet
-	http    *http.Client
-	probe   worker.Prober
+	// http calls the API; stream reads output, which has no deadline.
+	http, stream *http.Client
+	check        worker.Check
+	stdout       io.Writer
+	stderr       io.Writer
 }
 
 // command is a leaf of the command tree. Exec returns the envelope's data.
 type command interface {
 	Exec(ctx context.Context, d deps) (any, error)
+}
+
+// rawCommand is a command whose output is not an envelope: exec, attached,
+// prints its command's output and exits with its status. When it fails
+// before the command starts, it prints an envelope like any other.
+type rawCommand interface {
+	Raw(ctx context.Context, d deps) (exitCode int, raw bool, err error)
 }
 
 const description = `For AI agents, read this first:
@@ -40,10 +49,17 @@ Every command prints one JSON envelope on stdout.
 Run builds, tests and dev servers on a cluster of Linux machines on your tailnet.`
 
 type cli struct {
-	Init    initCmd    `cmd:"" help:"Create a cluster with this machine as its controller."`
-	Join    joinCmd    `cmd:"" help:"Join this machine to a cluster as a worker."`
-	Run     runCmd     `cmd:"" help:"Run the controller or worker whose state is in DIR, until stopped."`
+	Ws      wsCmd      `cmd:"" help:"Workspaces: forks of a repo's warm base (new, ls, rm)."`
+	Sync    syncCmd    `cmd:"" help:"Send this checkout's changes, uncommitted ones too, to a workspace."`
+	Exec    execCmd    `cmd:"" help:"Sync, then run a command in a workspace; prints its output and exits with its status."`
+	Ps      psCmd      `cmd:"" help:"List running, queued and parked commands."`
+	Logs    logsCmd    `cmd:"" help:"Print a command's output."`
+	Stop    stopCmd    `cmd:"" help:"Stop a command."`
+	Repo    repoCmd    `cmd:"" help:"Repos the cluster keeps warm bases of (add, ls, rm)."`
 	Nodes   nodesCmd   `cmd:"" help:"List the cluster's workers."`
+	Init    initCmd    `cmd:"" help:"Create a cluster with this machine as its controller."`
+	Join    joinCmd    `cmd:"" help:"Join this machine to a cluster as a worker (as root)."`
+	Run     runCmd     `cmd:"" help:"Run the controller or worker whose state is in DIR, until stopped."`
 	Skills  skillsCmd  `cmd:"" help:"Guides for AI agents, compiled into this binary (list, get)."`
 	Version versionCmd `cmd:"" help:"Show hotbed's version, OS and architecture."`
 }
@@ -107,59 +123,6 @@ func commandName(n *kong.Node) string {
 		parts = append([]string{n.Name}, parts...)
 	}
 	return strings.Join(parts, " ")
-}
-
-type initCmd struct {
-	Dir  string `arg:"" type:"path" help:"State directory to create; holds the cluster's database."`
-	Port int    `default:"7120" help:"Port to serve on, on this machine's tailnet addresses."`
-}
-
-func (c *initCmd) Exec(ctx context.Context, d deps) (any, error) {
-	return controller.Init(ctx, c.Dir, c.Port, d.tailnet)
-}
-
-type joinCmd struct {
-	Controller string `arg:"" help:"The controller's tailnet name or address, with :PORT unless it is 7120."`
-	Dir        string `arg:"" type:"path" help:"State directory to create for this worker."`
-}
-
-func (c *joinCmd) Exec(ctx context.Context, d deps) (any, error) {
-	return worker.Join(ctx, c.Dir, c.Controller, d.http, d.probe)
-}
-
-type runCmd struct {
-	Dir string `arg:"" type:"path" help:"State directory made by init or join."`
-}
-
-type runResult struct {
-	Role string `json:"role"`
-}
-
-func (c *runCmd) Exec(ctx context.Context, d deps) (any, error) {
-	cfg, err := statedir.Load(c.Dir)
-	if err != nil {
-		return nil, err
-	}
-	if cfg.Controller != nil {
-		return runResult{Role: "controller"}, controller.Run(ctx, c.Dir, *cfg.Controller, d.tailnet)
-	}
-	w, err := worker.New(*cfg.Worker, d.http, d.probe)
-	if err != nil {
-		return nil, err
-	}
-	return runResult{Role: "worker"}, w.Run(ctx)
-}
-
-type nodesCmd struct {
-	Controller string `required:"" env:"HOTBED_CONTROLLER" help:"The controller's tailnet name or address."`
-}
-
-func (c *nodesCmd) Exec(ctx context.Context, d deps) (any, error) {
-	client, err := api.NewClient(c.Controller, d.http)
-	if err != nil {
-		return nil, err
-	}
-	return client.Nodes(ctx)
 }
 
 type skillsCmd struct {

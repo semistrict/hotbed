@@ -31,7 +31,7 @@ type Tailnet interface {
 
 // InitResult describes a new cluster.
 type InitResult struct {
-	ClusterID string   `json:"cluster_id"`
+	ClusterID string   `json:"clusterId"`
 	Dir       string   `json:"dir"`
 	Owner     string   `json:"owner"`
 	Address   string   `json:"address"` // what workers pass to hotbed join
@@ -120,7 +120,7 @@ func Listen(ctx context.Context, dir string, cluster statedir.ControllerConfig, 
 	c := &Controller{
 		store: store,
 		srv: &http.Server{
-			Handler:           NewServer(ServerConfig{Store: store, Identifier: tn, Cluster: cluster, UI: ui.Handler()}).Handler(),
+			Handler:           NewServer(ServerConfig{Store: store, Identifier: tn, Cluster: cluster, UI: ui.Handler(), Controller: self.Hostname}).Handler(),
 			ReadHeaderTimeout: 10 * time.Second,
 		},
 	}
@@ -157,6 +157,20 @@ func (c *Controller) Serve(ctx context.Context) error {
 			return nil
 		})
 	}
+	g.Go(func() error {
+		t := time.NewTicker(10 * time.Minute)
+		defer t.Stop()
+		for {
+			if err := c.store.Prune(gctx, time.Now()); err != nil {
+				slog.Error("prune old samples and history", "err", err)
+			}
+			select {
+			case <-gctx.Done():
+				return nil
+			case <-t.C:
+			}
+		}
+	})
 	g.Go(func() error {
 		<-gctx.Done()
 		shutdownCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)

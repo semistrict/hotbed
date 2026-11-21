@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"io"
 	"net/netip"
 	"path/filepath"
 	"strings"
@@ -34,7 +35,8 @@ type output struct {
 func hotbed(t *testing.T, d deps, args ...string) (int, output) {
 	t.Helper()
 	var stdout bytes.Buffer
-	code := run(t.Context(), args, &stdout, d)
+	d.stdout, d.stderr = &stdout, io.Discard
+	code := run(t.Context(), args, d)
 	var out output
 	if err := json.Unmarshal(stdout.Bytes(), &out); err != nil {
 		t.Fatalf("hotbed %s printed %q, not one JSON envelope: %v", strings.Join(args, " "), stdout.String(), err)
@@ -47,7 +49,7 @@ func hotbed(t *testing.T, d deps, args ...string) (int, output) {
 
 func fakeDeps() deps {
 	tn := tailnettest.New(ubu1)
-	return deps{tailnet: tn, http: tn.Client(laptop), probe: worker.Probe}
+	return deps{tailnet: tn, http: tn.Client(laptop), stream: tn.Client(laptop), check: worker.CheckMachine}
 }
 
 func TestInitPrintsSuccessEnvelope(t *testing.T) {
@@ -100,7 +102,9 @@ func TestRunUninitializedDir(t *testing.T) {
 
 func TestHelpPrintsGuidePointerAndExitsZero(t *testing.T) {
 	var stdout bytes.Buffer
-	code := run(t.Context(), []string{"--help"}, &stdout, fakeDeps())
+	d := fakeDeps()
+	d.stdout, d.stderr = &stdout, io.Discard
+	code := run(t.Context(), []string{"--help"}, d)
 	if code != exitOK {
 		t.Errorf("--help exit %d, want 0", code)
 	}
