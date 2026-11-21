@@ -1,0 +1,44 @@
+package api
+
+import "fmt"
+
+// Code names a failure in a way a program can act on. The controller sends
+// codes over HTTP and the CLI prints them unchanged, so one set covers both.
+type Code string
+
+const (
+	CodeInvalidArgs           Code = "INVALID_ARGS"
+	CodeAlreadyInitialized    Code = "ALREADY_INITIALIZED"
+	CodeNotInitialized        Code = "NOT_INITIALIZED"
+	CodeTailscaleUnavailable  Code = "TAILSCALE_UNAVAILABLE"
+	CodeControllerUnreachable Code = "CONTROLLER_UNREACHABLE"
+	CodeNotAuthorized         Code = "NOT_AUTHORIZED"
+	CodeNotJoined             Code = "NOT_JOINED"
+	CodeClusterMismatch       Code = "CLUSTER_MISMATCH"
+	CodePlatformNotSupported  Code = "PLATFORM_NOT_SUPPORTED"
+	CodeInternal              Code = "INTERNAL"
+)
+
+// Error is a failure with a code, a hint for what to do next, and whether
+// repeating the same request unchanged can succeed.
+type Error struct {
+	Code       Code   `json:"code"`
+	Message    string `json:"message"`
+	Suggestion string `json:"suggestion,omitempty"`
+	Retryable  bool   `json:"retryable"`
+}
+
+func (e *Error) Error() string {
+	return fmt.Sprintf("%s: %s", e.Code, e.Message)
+}
+
+// Errorf returns an Error with code and a formatted message that is not retryable.
+func Errorf(code Code, format string, args ...any) *Error {
+	return &Error{Code: code, Message: fmt.Sprintf(format, args...)}
+}
+
+// WithSuggestion returns e with its suggestion set.
+func (e *Error) WithSuggestion(s string) *Error {
+	e.Suggestion = s
+	return e
+}

@@ -1,0 +1,76 @@
+package main
+
+import (
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	"log/slog"
+
+	"github.com/semistrict/hotbed/internal/api"
+	"github.com/semistrict/hotbed/internal/statedir"
+)
+
+// envelopeVersion changes when a field of the envelope, or of a command's
+// data, changes meaning or goes away.
+const envelopeVersion = "1"
+
+const (
+	exitOK          = 0
+	exitError       = 1
+	exitInvalidArgs = 2
+)
+
+// envelope is the one JSON object every command prints.
+type envelope struct {
+	Version string     `json:"version"`
+	OK      bool       `json:"ok"`
+	Command string     `json:"command"`
+	Data    any        `json:"data,omitempty"`
+	Error   *api.Error `json:"error,omitempty"`
+}
+
+func success(command string, data any) envelope {
+	return envelope{Version: envelopeVersion, OK: true, Command: command, Data: data}
+}
+
+func failure(command string, e *api.Error) envelope {
+	return envelope{Version: envelopeVersion, OK: false, Command: command, Error: e}
+}
+
+func writeEnvelope(w io.Writer, e envelope) {
+	b, err := json.Marshal(e)
+	if err != nil {
+		// Only a command's data can fail to encode; report that instead.
+		b, _ = json.Marshal(failure(e.Command, api.Errorf(api.CodeInternal, "encode output: %v", err)))
+	}
+	if _, err := fmt.Fprintf(w, "%s\n", b); err != nil {
+		slog.Error("write output", "err", err)
+	}
+}
+
+func invalidArgs(err error) *api.Error {
+	var e *api.Error
+	if errors.As(err, &e) {
+		return e
+	}
+	return api.Errorf(api.CodeInvalidArgs, "%v", err).WithSuggestion("see hotbed --help, or hotbed COMMAND --help")
+}
+
+// toAPIError gives every failure a code: an *api.Error keeps its own, the
+// state directory's errors get theirs, and anything else is INTERNAL.
+func toAPIError(err error) *api.Error {
+	var e *api.Error
+	switch {
+	case errors.As(err, &e):
+		return e
+	case errors.Is(err, statedir.ErrAlreadyInitialized):
+		return api.Errorf(api.CodeAlreadyInitialized, "%v", err).
+			WithSuggestion("start it with hotbed run DIR, or pick another directory")
+	case errors.Is(err, statedir.ErrNotInitialized):
+		return api.Errorf(api.CodeNotInitialized, "%v", err).
+			WithSuggestion("create it with hotbed init DIR (controller) or hotbed join CONTROLLER DIR (worker)")
+	default:
+		return api.Errorf(api.CodeInternal, "%v", err)
+	}
+}
