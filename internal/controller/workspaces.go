@@ -151,6 +151,45 @@ func (s *workspaces) GetWorkspace(ctx context.Context, req *pb.GetWorkspaceReque
 	return ws, nil
 }
 
+// WatchWorkspace relays a workspace's changes from its worker. Watching
+// counts as using the session: a first base can take long to freshen.
+func (s *workspaces) WatchWorkspace(ctx context.Context, req *pb.WatchWorkspaceRequest, out hotbedv1connect.WorkspaceServiceWatchWorkspaceServerStream) error {
+	c, host, w, err := s.workspaceOf(ctx, req.Id)
+	if err != nil {
+		return err
+	}
+	in, err := c.WatchWorkspace(ctx, req)
+	if err != nil {
+		return fromWorker(host, err)
+	}
+	defer in.Close()
+	return relay(ctx, s.Server, w.session, host, in.Receive, out.Send)
+}
+
+// relay forwards a worker's stream to a client until either ends, keeping
+// the session alive meanwhile.
+func relay[T any](ctx context.Context, s *Server, session, host string, receive func() (*T, error), send func(*T) error) error {
+	touched := time.Now()
+	for {
+		m, err := receive()
+		if errors.Is(err, io.EOF) || ctx.Err() != nil {
+			return nil // the worker is done, or the client went away
+		}
+		if err != nil {
+			return fromWorker(host, err)
+		}
+		if err := send(m); err != nil {
+			return nil // the client went away
+		}
+		if session != "" && time.Since(touched) > time.Minute {
+			touched = time.Now()
+			if err := s.cfg.Store.Touch(ctx, session, s.now()); err != nil {
+				slog.Warn("keep session alive", "session", session, "err", err)
+			}
+		}
+	}
+}
+
 // ListWorkspaces lists a session's workspaces as their workers have them,
 // or, without a session, every live workspace as its node last reported it.
 func (s *workspaces) ListWorkspaces(ctx context.Context, req *pb.ListWorkspacesRequest) (*pb.ListWorkspacesResponse, error) {
@@ -293,18 +332,49 @@ func (s *workspaces) GetCommand(ctx context.Context, req *pb.GetCommandRequest) 
 
 // ListCommands lists live and just-ended commands as their nodes last
 // reported them.
+// ListCommands lists a live session's commands as their workers have them
+// now, and otherwise every command (or an ended session's) as its node
+// last reported it.
 func (s *workspaces) ListCommands(ctx context.Context, req *pb.ListCommandsRequest) (*pb.ListCommandsResponse, error) {
+	asked := map[string]bool{} // nodes whose workers answered
+	out := &pb.ListCommandsResponse{}
 	if req.SessionId != "" {
 		if err := s.cfg.Store.Touch(ctx, req.SessionId, s.now()); err != nil {
 			return nil, err
+		}
+		sess, err := s.cfg.Store.Session(ctx, req.SessionId)
+		if err != nil {
+			return nil, err
+		}
+		for _, id := range sess.WorkspaceIds {
+			w, err := s.cfg.Store.Workspace(ctx, id)
+			if err != nil {
+				return nil, err
+			}
+			if w.released || asked[w.node] {
+				continue
+			}
+			c, host, err := s.worker(ctx, w.node)
+			if err == nil {
+				var res *pb.ListCommandsResponse
+				if res, err = c.ListCommands(ctx, req); err == nil {
+					out.Commands = append(out.Commands, res.Commands...)
+					asked[w.node] = true
+					continue
+				}
+				err = fromWorker(host, err)
+			}
+			slog.Warn("list commands; using the node's last report", "node", w.node, "err", err)
 		}
 	}
 	rows, err := s.cfg.Store.Nodes(ctx)
 	if err != nil {
 		return nil, err
 	}
-	out := &pb.ListCommandsResponse{}
 	for _, n := range rows {
+		if asked[n.node.Id] {
+			continue
+		}
 		for _, c := range n.report.GetCommands() {
 			if req.SessionId == "" || c.SessionId == req.SessionId {
 				out.Commands = append(out.Commands, c)
@@ -344,25 +414,7 @@ func (s *workspaces) FollowLog(ctx context.Context, req *pb.FollowLogRequest, ou
 		return fromWorker(host, err)
 	}
 	defer in.Close()
-	touched := time.Now()
-	for {
-		chunk, err := in.Receive()
-		if errors.Is(err, io.EOF) {
-			return nil
-		}
-		if err != nil {
-			return fromWorker(host, err)
-		}
-		if err := out.Send(chunk); err != nil {
-			return nil // the client went away
-		}
-		if session != "" && time.Since(touched) > time.Minute {
-			touched = time.Now()
-			if err := s.cfg.Store.Touch(ctx, session, s.now()); err != nil {
-				slog.Warn("keep session alive", "session", session, "err", err)
-			}
-		}
-	}
+	return relay(ctx, s.Server, session, host, in.Receive, out.Send)
 }
 
 func (s *workspaces) GetLogLines(ctx context.Context, req *pb.GetLogLinesRequest) (*pb.CommandLog, error) {

@@ -167,6 +167,18 @@ func (e *Engine) Workspace(id string) (*pb.Workspace, error) {
 	return clone(w.ws()), nil
 }
 
+// WatchWorkspace returns the workspace now and a channel closed when it, or
+// anything else of the engine's, next changes.
+func (e *Engine) WatchWorkspace(id string) (*pb.Workspace, <-chan struct{}, error) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	w, ok := e.workspaces[id]
+	if !ok {
+		return nil, nil, api.Errorf(api.CodeNotFound, "no workspace %s on this node", id)
+	}
+	return clone(w.ws()), e.updated, nil
+}
+
 // Workspaces lists the workspaces this node has, released ones included for a while.
 func (e *Engine) Workspaces() []*pb.Workspace {
 	e.mu.Lock()

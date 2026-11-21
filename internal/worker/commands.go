@@ -111,6 +111,7 @@ func (e *Engine) Exec(_ context.Context, req *pb.RunCommandRequest) (*pb.Command
 	e.commands[req.Id] = c
 	e.saveCommand(c)
 	e.changed()
+	e.stepSoon()
 	return clone(c.cmd()), nil
 }
 
@@ -275,6 +276,7 @@ func (e *Engine) admit(ctx context.Context) {
 		cmd.Timeline = append(cmd.Timeline, &pb.CommandEvent{At: now, What: "admitted", Detail: fmt.Sprintf("weight %d · low %s · high %s", cmd.Limits.CpuWeight, gib(cmd.Limits.MemoryLowBytes), gib(cmd.Limits.MemoryHighBytes))})
 		e.saveCommand(c)
 		e.sessionEvent(c, "admitted", "")
+		go e.watchExit(ctx, c.unitName())
 		if cmd.Kind != "freshen" {
 			e.event("admit", fmt.Sprintf("admit %s · %s", cmd.Argv, cmd.WorkspaceId), ref("command", cmd.Id))
 		}

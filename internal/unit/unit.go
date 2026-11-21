@@ -75,7 +75,11 @@ func Start(ctx context.Context, s Spec) error {
 		"--property=MemorySwapMax=infinity",
 	}
 	if s.User != "" {
-		args = append(args, "--uid="+s.User, "--property=PAMName=login")
+		// No PAMName: pam_systemd would move the command into a login
+		// session's scope under user.slice, out of this unit's cgroup and
+		// every limit and freeze set on it. systemd sets HOME, USER and
+		// SHELL for User= itself, and the login shell reads the profile.
+		args = append(args, "--uid="+s.User)
 	}
 	if s.Dir != "" {
 		args = append(args, "--working-directory="+s.Dir)
@@ -192,10 +196,22 @@ func Thaw(ctx context.Context, name string) error {
 // (to swap, for anonymous memory), as memory.reclaim does.
 func Reclaim(cgroup string, n int64) error {
 	f := filepath.Join("/sys/fs/cgroup", cgroup, "memory.reclaim")
-	err := os.WriteFile(f, []byte(strconv.FormatInt(n, 10)), 0)
+	// Not os.WriteFile: cgroup files are pollable, so Go's runtime would take
+	// the kernel's EAGAIN for "try again when writable" and wait forever.
+	fd, err := syscall.Open(f, syscall.O_WRONLY|syscall.O_CLOEXEC, 0)
+	if err != nil {
+		return fmt.Errorf("reclaim %s: %w", f, err)
+	}
+	defer syscall.Close(fd)
+	for {
+		_, err = syscall.Write(fd, []byte(strconv.FormatInt(n, 10)))
+		if err != syscall.EINTR {
+			break
+		}
+	}
 	// The kernel answers EAGAIN when it reclaimed less than asked, which is
 	// not a failure for a best-effort push to swap.
-	if err != nil && !errors.Is(err, syscall.EAGAIN) {
+	if err != nil && err != syscall.EAGAIN {
 		return fmt.Errorf("reclaim %s: %w", f, err)
 	}
 	return nil

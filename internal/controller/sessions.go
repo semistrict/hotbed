@@ -9,6 +9,7 @@ import (
 
 	"github.com/semistrict/hotbed/internal/api"
 	pb "github.com/semistrict/hotbed/internal/gen/hotbed/v1"
+	"github.com/semistrict/hotbed/internal/gen/hotbed/v1/hotbedv1connect"
 	"github.com/semistrict/hotbed/internal/httpx"
 )
 
@@ -46,12 +47,12 @@ func (s *sessions) EndSession(ctx context.Context, req *pb.EndSessionRequest) (*
 	return s.endSession(ctx, req.Id, "ended by its agent")
 }
 
-// WaitSession long-polls: it returns the session's events after the cursor
-// as soon as there are any, or empty-handed after the timeout (at most two
-// minutes). Every call keeps the session alive.
-func (s *sessions) WaitSession(ctx context.Context, req *pb.WaitSessionRequest) (*pb.WaitSessionResponse, error) {
+// WatchSession streams the session: how it stands now, then each new batch
+// of events as workers report them, until the session ends or the watch
+// times out (at most two minutes). Every watch keeps the session alive.
+func (s *sessions) WatchSession(ctx context.Context, req *pb.WatchSessionRequest, out hotbedv1connect.SessionServiceWatchSessionServerStream) error {
 	if _, err := s.cfg.Store.LiveSession(ctx, req.SessionId, s.now()); err != nil {
-		return nil, err
+		return err
 	}
 	wait := maxWait
 	if t := time.Duration(req.TimeoutSeconds) * time.Second; t > 0 && t < wait {
@@ -59,24 +60,34 @@ func (s *sessions) WaitSession(ctx context.Context, req *pb.WaitSessionRequest) 
 	}
 	deadline := time.NewTimer(wait)
 	defer deadline.Stop()
+	after, first := req.After, true
 	for {
 		woken := s.waiter(req.SessionId)
-		res, err := s.sessionState(ctx, req.SessionId, req.After)
-		if err != nil || len(res.Events) > 0 || res.Ended {
-			return res, err
+		res, err := s.sessionState(ctx, req.SessionId, after)
+		if err != nil {
+			return err
+		}
+		if first || len(res.Events) > 0 || res.Ended {
+			if err := out.Send(res); err != nil {
+				return nil // the client went away
+			}
+			first, after = false, res.Cursor
+		}
+		if res.Ended {
+			return nil
 		}
 		select {
 		case <-ctx.Done():
-			return res, nil
+			return nil
 		case <-deadline.C:
-			return res, nil
+			return nil
 		case <-woken:
 		}
 	}
 }
 
 // sessionState is the session's events after a cursor and its live commands.
-func (s *sessions) sessionState(ctx context.Context, id string, after int64) (*pb.WaitSessionResponse, error) {
+func (s *sessions) sessionState(ctx context.Context, id string, after int64) (*pb.WatchSessionResponse, error) {
 	sess, err := s.cfg.Store.Session(ctx, id)
 	if err != nil {
 		return nil, err
@@ -85,7 +96,7 @@ func (s *sessions) sessionState(ctx context.Context, id string, after int64) (*p
 	if err != nil {
 		return nil, err
 	}
-	res := &pb.WaitSessionResponse{Events: events, Cursor: after, Ended: sess.EndedAt != nil, EndReason: sess.EndReason}
+	res := &pb.WatchSessionResponse{Events: events, Cursor: after, Ended: sess.EndedAt != nil, EndReason: sess.EndReason}
 	if n := len(events); n > 0 {
 		res.Cursor = events[n-1].Seq
 	}

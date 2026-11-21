@@ -23,22 +23,22 @@ func testUser(t *testing.T) string {
 	return u
 }
 
-// waitExit polls until the unit's command exits. Units run asynchronously;
-// there is no event to wait on without D-Bus.
+// waitExit waits for the unit's command to exit and returns its state.
 func waitExit(t *testing.T, name string) State {
 	t.Helper()
-	for range 200 {
-		s, err := Status(t.Context(), name)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if s.Exited {
-			return s
-		}
-		time.Sleep(50 * time.Millisecond)
+	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+	defer cancel()
+	if err := Wait(ctx, name); err != nil {
+		t.Fatalf("wait for %s: %v", name, err)
 	}
-	t.Fatalf("%s did not exit in 10s", name)
-	return State{}
+	s, err := Status(t.Context(), name)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !s.Exited {
+		t.Fatalf("%s has no processes left but is %+v", name, s)
+	}
+	return s
 }
 
 func name(t *testing.T) string {
@@ -136,5 +136,45 @@ func TestFreezeThawStop(t *testing.T) {
 	}
 	if s, _ := Status(t.Context(), n); s.Loaded {
 		t.Errorf("after stop: %+v", s)
+	}
+}
+
+func TestWaitReturnsWhenTheUnitExits(t *testing.T) {
+	n := name(t)
+	if err := Start(t.Context(), Spec{Name: n, Argv: []string{"sleep", "1"}, User: testUser(t), Log: filepath.Join(t.TempDir(), "out.log")}); err != nil {
+		t.Fatal(err)
+	}
+	short, cancel := context.WithTimeout(t.Context(), 200*time.Millisecond)
+	defer cancel()
+	if err := Wait(short, n); err != context.DeadlineExceeded {
+		t.Fatalf("wait on a running unit = %v, want the deadline", err)
+	}
+	start := time.Now()
+	waitExit(t, n)
+	if d := time.Since(start); d > 1500*time.Millisecond {
+		t.Errorf("wait returned %v after a 1s command that had run for 0.2s", d)
+	}
+	if err := Wait(t.Context(), "hotbed-test-no-such-unit"); err != nil {
+		t.Errorf("wait on a unit that is not there = %v, want nil", err)
+	}
+}
+
+// The command must run inside its unit's cgroup, where its limits, freezing
+// and reclaim apply; a PAM login session would move it to user.slice.
+func TestCommandRunsInItsUnitsCgroup(t *testing.T) {
+	n := name(t)
+	log := filepath.Join(t.TempDir(), "out.log")
+	if err := Start(t.Context(), Spec{Name: n, Argv: []string{"sh", "-c", `cat /proc/self/cgroup; echo "$USER $HOME"`}, User: testUser(t), Log: log}); err != nil {
+		t.Fatal(err)
+	}
+	waitExit(t, n)
+	b, err := os.ReadFile(log)
+	if err != nil {
+		t.Fatal(err)
+	}
+	u := testUser(t)
+	want := fmt.Sprintf("0::/%s/%s.service\n%s /home/%s\n", Slice, n, u, u)
+	if string(b) != want {
+		t.Errorf("command saw %q, want %q", b, want)
 	}
 }

@@ -51,14 +51,18 @@ const (
 	SessionServiceStartSessionProcedure = "/hotbed.v1.SessionService/StartSession"
 	// SessionServiceEndSessionProcedure is the procedure name of the SessionService's EndSession RPC.
 	SessionServiceEndSessionProcedure = "/hotbed.v1.SessionService/EndSession"
-	// SessionServiceWaitSessionProcedure is the procedure name of the SessionService's WaitSession RPC.
-	SessionServiceWaitSessionProcedure = "/hotbed.v1.SessionService/WaitSession"
+	// SessionServiceWatchSessionProcedure is the procedure name of the SessionService's WatchSession
+	// RPC.
+	SessionServiceWatchSessionProcedure = "/hotbed.v1.SessionService/WatchSession"
 	// WorkspaceServiceCreateWorkspaceProcedure is the procedure name of the WorkspaceService's
 	// CreateWorkspace RPC.
 	WorkspaceServiceCreateWorkspaceProcedure = "/hotbed.v1.WorkspaceService/CreateWorkspace"
 	// WorkspaceServiceGetWorkspaceProcedure is the procedure name of the WorkspaceService's
 	// GetWorkspace RPC.
 	WorkspaceServiceGetWorkspaceProcedure = "/hotbed.v1.WorkspaceService/GetWorkspace"
+	// WorkspaceServiceWatchWorkspaceProcedure is the procedure name of the WorkspaceService's
+	// WatchWorkspace RPC.
+	WorkspaceServiceWatchWorkspaceProcedure = "/hotbed.v1.WorkspaceService/WatchWorkspace"
 	// WorkspaceServiceListWorkspacesProcedure is the procedure name of the WorkspaceService's
 	// ListWorkspaces RPC.
 	WorkspaceServiceListWorkspacesProcedure = "/hotbed.v1.WorkspaceService/ListWorkspaces"
@@ -423,11 +427,11 @@ var (
 			Procedure:  SessionServiceEndSessionProcedure,
 		}
 	})
-	sessionServiceWaitSessionSpec = sync.OnceValue(func() connect.Spec {
+	sessionServiceWatchSessionSpec = sync.OnceValue(func() connect.Spec {
 		return connect.Spec{
-			StreamType: connect.StreamTypeUnary,
-			Schema:     v1.File_hotbed_v1_hotbed_proto.Services().ByName("SessionService").Methods().ByName("WaitSession"),
-			Procedure:  SessionServiceWaitSessionProcedure,
+			StreamType: connect.StreamTypeServer,
+			Schema:     v1.File_hotbed_v1_hotbed_proto.Services().ByName("SessionService").Methods().ByName("WatchSession"),
+			Procedure:  SessionServiceWatchSessionProcedure,
 		}
 	})
 )
@@ -436,12 +440,14 @@ var (
 type SessionServiceClient interface {
 	StartSession(context.Context, *v1.StartSessionRequest) (*v1.Session, error)
 	// EndSession stops the session's commands and releases its workspaces.
-	// A session nothing touches for an hour ends the same way; WaitSession
+	// A session nothing touches for an hour ends the same way; WatchSession
 	// keeps it alive.
 	EndSession(context.Context, *v1.EndSessionRequest) (*v1.Session, error)
-	// WaitSession returns what happened to the session's commands after a
-	// cursor, waiting up to two minutes for something to.
-	WaitSession(context.Context, *v1.WaitSessionRequest) (*v1.WaitSessionResponse, error)
+	// WatchSession streams what happens to the session's commands after a
+	// cursor: first how things stand, then each new batch of events as it
+	// happens. It ends when the session does, or after at most two minutes, so
+	// an agent that wants the session kept has to keep watching it.
+	WatchSession(context.Context, *v1.WatchSessionRequest) (SessionServiceWatchSessionClientStream, error)
 }
 
 // NewSessionServiceClient constructs a client for the hotbed.v1.SessionService service. Multiple
@@ -450,16 +456,39 @@ func NewSessionServiceClient(client *connect.Client) SessionServiceClient {
 	return &sessionServiceClient{client: client}
 }
 
+// SessionServiceWatchSessionClientStream is the client stream for the SessionService's WatchSession
+// RPC.
+type SessionServiceWatchSessionClientStream struct {
+	stream connect.ClientStream
+}
+
+// Receive returns the next response message from the server.
+func (s SessionServiceWatchSessionClientStream) Receive() (*v1.WatchSessionResponse, error) {
+	var res v1.WatchSessionResponse
+	if err := s.stream.Receive(&res); err != nil {
+		return nil, err
+	}
+	return &res, nil
+}
+
+// Close releases the stream's resources. It is idempotent and is typically deferred to clean up a
+// stream abandoned before io.EOF.
+func (s SessionServiceWatchSessionClientStream) Close() error {
+	return s.stream.Close()
+}
+
 // SessionServiceHandler is an implementation of the hotbed.v1.SessionService service.
 type SessionServiceHandler interface {
 	StartSession(context.Context, *v1.StartSessionRequest) (*v1.Session, error)
 	// EndSession stops the session's commands and releases its workspaces.
-	// A session nothing touches for an hour ends the same way; WaitSession
+	// A session nothing touches for an hour ends the same way; WatchSession
 	// keeps it alive.
 	EndSession(context.Context, *v1.EndSessionRequest) (*v1.Session, error)
-	// WaitSession returns what happened to the session's commands after a
-	// cursor, waiting up to two minutes for something to.
-	WaitSession(context.Context, *v1.WaitSessionRequest) (*v1.WaitSessionResponse, error)
+	// WatchSession streams what happens to the session's commands after a
+	// cursor: first how things stand, then each new batch of events as it
+	// happens. It ends when the session does, or after at most two minutes, so
+	// an agent that wants the session kept has to keep watching it.
+	WatchSession(context.Context, *v1.WatchSessionRequest, SessionServiceWatchSessionServerStream) error
 }
 
 // RegisterSessionServiceHandler registers svc as the hotbed.v1.SessionService implementation on
@@ -469,8 +498,24 @@ func RegisterSessionServiceHandler(server *connect.Server, svc SessionServiceHan
 	server.Register(
 		connect.Method{Spec: sessionServiceStartSessionSpec(), Handler: adapter.startSession},
 		connect.Method{Spec: sessionServiceEndSessionSpec(), Handler: adapter.endSession},
-		connect.Method{Spec: sessionServiceWaitSessionSpec(), Handler: adapter.waitSession},
+		connect.Method{Spec: sessionServiceWatchSessionSpec(), Handler: adapter.watchSession},
 	)
+}
+
+// SessionServiceWatchSessionServerStream is the server stream for the SessionService's WatchSession
+// RPC.
+type SessionServiceWatchSessionServerStream struct {
+	stream connect.ServerStream
+}
+
+// SendHeaders flushes the response headers without a message. The first Send does this implicitly.
+func (s SessionServiceWatchSessionServerStream) SendHeaders() error {
+	return s.stream.SendHeaders()
+}
+
+// Send sends a response message to the client.
+func (s SessionServiceWatchSessionServerStream) Send(res *v1.WatchSessionResponse) error {
+	return s.stream.Send(res)
 }
 
 // UnimplementedSessionServiceHandler returns CodeUnimplemented from all methods.
@@ -484,8 +529,8 @@ func (UnimplementedSessionServiceHandler) EndSession(context.Context, *v1.EndSes
 	return nil, connect.NewError(connect.CodeUnimplemented, "hotbed.v1.SessionService.EndSession is not implemented")
 }
 
-func (UnimplementedSessionServiceHandler) WaitSession(context.Context, *v1.WaitSessionRequest) (*v1.WaitSessionResponse, error) {
-	return nil, connect.NewError(connect.CodeUnimplemented, "hotbed.v1.SessionService.WaitSession is not implemented")
+func (UnimplementedSessionServiceHandler) WatchSession(context.Context, *v1.WatchSessionRequest, SessionServiceWatchSessionServerStream) error {
+	return connect.NewError(connect.CodeUnimplemented, "hotbed.v1.SessionService.WatchSession is not implemented")
 }
 
 type sessionServiceClient struct {
@@ -508,12 +553,12 @@ func (c *sessionServiceClient) EndSession(ctx context.Context, req *v1.EndSessio
 	return &res, nil
 }
 
-func (c *sessionServiceClient) WaitSession(ctx context.Context, req *v1.WaitSessionRequest) (*v1.WaitSessionResponse, error) {
-	var res v1.WaitSessionResponse
-	if err := c.client.CallUnary(ctx, sessionServiceWaitSessionSpec(), req, &res); err != nil {
-		return nil, err
+func (c *sessionServiceClient) WatchSession(ctx context.Context, req *v1.WatchSessionRequest) (SessionServiceWatchSessionClientStream, error) {
+	stream, err := c.client.CallServerStream(ctx, sessionServiceWatchSessionSpec(), req)
+	if err != nil {
+		return SessionServiceWatchSessionClientStream{}, err
 	}
-	return &res, nil
+	return SessionServiceWatchSessionClientStream{stream: stream}, nil
 }
 
 type sessionServiceHandler struct{ svc SessionServiceHandler }
@@ -542,16 +587,12 @@ func (h sessionServiceHandler) endSession(ctx context.Context, _ connect.Spec, s
 	return stream.Send(res)
 }
 
-func (h sessionServiceHandler) waitSession(ctx context.Context, _ connect.Spec, stream connect.ServerStream) error {
-	var req v1.WaitSessionRequest
+func (h sessionServiceHandler) watchSession(ctx context.Context, _ connect.Spec, stream connect.ServerStream) error {
+	var req v1.WatchSessionRequest
 	if err := stream.Receive(&req); err != nil {
 		return err
 	}
-	res, err := h.svc.WaitSession(ctx, &req)
-	if err != nil {
-		return err
-	}
-	return stream.Send(res)
+	return h.svc.WatchSession(ctx, &req, SessionServiceWatchSessionServerStream{stream: stream})
 }
 
 var (
@@ -567,6 +608,13 @@ var (
 			StreamType: connect.StreamTypeUnary,
 			Schema:     v1.File_hotbed_v1_hotbed_proto.Services().ByName("WorkspaceService").Methods().ByName("GetWorkspace"),
 			Procedure:  WorkspaceServiceGetWorkspaceProcedure,
+		}
+	})
+	workspaceServiceWatchWorkspaceSpec = sync.OnceValue(func() connect.Spec {
+		return connect.Spec{
+			StreamType: connect.StreamTypeServer,
+			Schema:     v1.File_hotbed_v1_hotbed_proto.Services().ByName("WorkspaceService").Methods().ByName("WatchWorkspace"),
+			Procedure:  WorkspaceServiceWatchWorkspaceProcedure,
 		}
 	})
 	workspaceServiceListWorkspacesSpec = sync.OnceValue(func() connect.Spec {
@@ -652,6 +700,10 @@ var (
 type WorkspaceServiceClient interface {
 	CreateWorkspace(context.Context, *v1.CreateWorkspaceRequest) (*v1.Workspace, error)
 	GetWorkspace(context.Context, *v1.GetWorkspaceRequest) (*v1.Workspace, error)
+	// WatchWorkspace streams the workspace as it is, then again each time it
+	// changes (such as from preparing to ready), until it is released or the
+	// caller stops listening.
+	WatchWorkspace(context.Context, *v1.WatchWorkspaceRequest) (WorkspaceServiceWatchWorkspaceClientStream, error)
 	ListWorkspaces(context.Context, *v1.ListWorkspacesRequest) (*v1.ListWorkspacesResponse, error)
 	ReleaseWorkspace(context.Context, *v1.ReleaseWorkspaceRequest) (*v1.ReleaseWorkspaceResponse, error)
 	// Sync checks out an agent's worktree in a workspace. The first message
@@ -673,6 +725,27 @@ type WorkspaceServiceClient interface {
 // Multiple service clients may share a single connect.Client.
 func NewWorkspaceServiceClient(client *connect.Client) WorkspaceServiceClient {
 	return &workspaceServiceClient{client: client}
+}
+
+// WorkspaceServiceWatchWorkspaceClientStream is the client stream for the WorkspaceService's
+// WatchWorkspace RPC.
+type WorkspaceServiceWatchWorkspaceClientStream struct {
+	stream connect.ClientStream
+}
+
+// Receive returns the next response message from the server.
+func (s WorkspaceServiceWatchWorkspaceClientStream) Receive() (*v1.Workspace, error) {
+	var res v1.Workspace
+	if err := s.stream.Receive(&res); err != nil {
+		return nil, err
+	}
+	return &res, nil
+}
+
+// Close releases the stream's resources. It is idempotent and is typically deferred to clean up a
+// stream abandoned before io.EOF.
+func (s WorkspaceServiceWatchWorkspaceClientStream) Close() error {
+	return s.stream.Close()
 }
 
 // WorkspaceServiceSyncClientStream is the client stream for the WorkspaceService's Sync RPC.
@@ -729,6 +802,10 @@ func (s WorkspaceServiceFollowLogClientStream) Close() error {
 type WorkspaceServiceHandler interface {
 	CreateWorkspace(context.Context, *v1.CreateWorkspaceRequest) (*v1.Workspace, error)
 	GetWorkspace(context.Context, *v1.GetWorkspaceRequest) (*v1.Workspace, error)
+	// WatchWorkspace streams the workspace as it is, then again each time it
+	// changes (such as from preparing to ready), until it is released or the
+	// caller stops listening.
+	WatchWorkspace(context.Context, *v1.WatchWorkspaceRequest, WorkspaceServiceWatchWorkspaceServerStream) error
 	ListWorkspaces(context.Context, *v1.ListWorkspacesRequest) (*v1.ListWorkspacesResponse, error)
 	ReleaseWorkspace(context.Context, *v1.ReleaseWorkspaceRequest) (*v1.ReleaseWorkspaceResponse, error)
 	// Sync checks out an agent's worktree in a workspace. The first message
@@ -753,6 +830,7 @@ func RegisterWorkspaceServiceHandler(server *connect.Server, svc WorkspaceServic
 	server.Register(
 		connect.Method{Spec: workspaceServiceCreateWorkspaceSpec(), Handler: adapter.createWorkspace},
 		connect.Method{Spec: workspaceServiceGetWorkspaceSpec(), Handler: adapter.getWorkspace},
+		connect.Method{Spec: workspaceServiceWatchWorkspaceSpec(), Handler: adapter.watchWorkspace},
 		connect.Method{Spec: workspaceServiceListWorkspacesSpec(), Handler: adapter.listWorkspaces},
 		connect.Method{Spec: workspaceServiceReleaseWorkspaceSpec(), Handler: adapter.releaseWorkspace},
 		connect.Method{Spec: workspaceServiceSyncSpec(), Handler: adapter.sync},
@@ -765,6 +843,22 @@ func RegisterWorkspaceServiceHandler(server *connect.Server, svc WorkspaceServic
 		connect.Method{Spec: workspaceServiceFollowLogSpec(), Handler: adapter.followLog},
 		connect.Method{Spec: workspaceServiceGetLogLinesSpec(), Handler: adapter.getLogLines},
 	)
+}
+
+// WorkspaceServiceWatchWorkspaceServerStream is the server stream for the WorkspaceService's
+// WatchWorkspace RPC.
+type WorkspaceServiceWatchWorkspaceServerStream struct {
+	stream connect.ServerStream
+}
+
+// SendHeaders flushes the response headers without a message. The first Send does this implicitly.
+func (s WorkspaceServiceWatchWorkspaceServerStream) SendHeaders() error {
+	return s.stream.SendHeaders()
+}
+
+// Send sends a response message to the client.
+func (s WorkspaceServiceWatchWorkspaceServerStream) Send(res *v1.Workspace) error {
+	return s.stream.Send(res)
 }
 
 // WorkspaceServiceSyncServerStream is the server stream for the WorkspaceService's Sync RPC.
@@ -806,6 +900,10 @@ func (UnimplementedWorkspaceServiceHandler) CreateWorkspace(context.Context, *v1
 
 func (UnimplementedWorkspaceServiceHandler) GetWorkspace(context.Context, *v1.GetWorkspaceRequest) (*v1.Workspace, error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, "hotbed.v1.WorkspaceService.GetWorkspace is not implemented")
+}
+
+func (UnimplementedWorkspaceServiceHandler) WatchWorkspace(context.Context, *v1.WatchWorkspaceRequest, WorkspaceServiceWatchWorkspaceServerStream) error {
+	return connect.NewError(connect.CodeUnimplemented, "hotbed.v1.WorkspaceService.WatchWorkspace is not implemented")
 }
 
 func (UnimplementedWorkspaceServiceHandler) ListWorkspaces(context.Context, *v1.ListWorkspacesRequest) (*v1.ListWorkspacesResponse, error) {
@@ -870,6 +968,14 @@ func (c *workspaceServiceClient) GetWorkspace(ctx context.Context, req *v1.GetWo
 		return nil, err
 	}
 	return &res, nil
+}
+
+func (c *workspaceServiceClient) WatchWorkspace(ctx context.Context, req *v1.WatchWorkspaceRequest) (WorkspaceServiceWatchWorkspaceClientStream, error) {
+	stream, err := c.client.CallServerStream(ctx, workspaceServiceWatchWorkspaceSpec(), req)
+	if err != nil {
+		return WorkspaceServiceWatchWorkspaceClientStream{}, err
+	}
+	return WorkspaceServiceWatchWorkspaceClientStream{stream: stream}, nil
 }
 
 func (c *workspaceServiceClient) ListWorkspaces(ctx context.Context, req *v1.ListWorkspacesRequest) (*v1.ListWorkspacesResponse, error) {
@@ -984,6 +1090,14 @@ func (h workspaceServiceHandler) getWorkspace(ctx context.Context, _ connect.Spe
 		return err
 	}
 	return stream.Send(res)
+}
+
+func (h workspaceServiceHandler) watchWorkspace(ctx context.Context, _ connect.Spec, stream connect.ServerStream) error {
+	var req v1.WatchWorkspaceRequest
+	if err := stream.Receive(&req); err != nil {
+		return err
+	}
+	return h.svc.WatchWorkspace(ctx, &req, WorkspaceServiceWatchWorkspaceServerStream{stream: stream})
 }
 
 func (h workspaceServiceHandler) listWorkspaces(ctx context.Context, _ connect.Spec, stream connect.ServerStream) error {

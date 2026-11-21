@@ -136,12 +136,13 @@ func (e *Engine) Follow(id string) (string, func(), error) {
 	return path, func() {}, nil
 }
 
-// Live reports whether a command has yet to end.
-func (e *Engine) Live(id string) bool {
+// Live reports whether a command has yet to end, and returns a channel
+// closed at the engine's next change.
+func (e *Engine) Live(id string) (bool, <-chan struct{}) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	c, ok := e.commands[id]
-	return ok && live(c.cmd().State)
+	return ok && live(c.cmd().State), e.updated
 }
 
 func lookupUser(name string) (*syscall.Credential, string, error) {
@@ -176,6 +177,7 @@ func (Systemd) Thaw(ctx context.Context, name string) error   { return unit.Thaw
 func (Systemd) Reclaim(cgroup string, n int64) error          { return unit.Reclaim(cgroup, n) }
 func (Systemd) Swap(cgroup string) (int64, error)             { return unit.Swap(cgroup) }
 func (Systemd) Stop(ctx context.Context, name string) error   { return unit.Stop(ctx, name) }
+func (Systemd) Wait(ctx context.Context, name string) error   { return unit.Wait(ctx, name) }
 
 // Linux measures the node from /proc.
 type Linux struct{ cpu sysinfo.CPU }

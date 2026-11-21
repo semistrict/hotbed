@@ -13,6 +13,7 @@ import (
 	pb "github.com/semistrict/hotbed/internal/gen/hotbed/v1"
 	"github.com/semistrict/hotbed/internal/gen/hotbed/v1/hotbedv1connect"
 	"github.com/semistrict/hotbed/internal/httpx"
+	"google.golang.org/protobuf/proto"
 )
 
 // Service serves the engine's workspaces to the controller, which forwards
@@ -102,8 +103,14 @@ func (s *Service) GetCommand(_ context.Context, req *pb.GetCommandRequest) (*pb.
 	return c, nil
 }
 
-func (s *Service) ListCommands(context.Context, *pb.ListCommandsRequest) (*pb.ListCommandsResponse, error) {
-	return &pb.ListCommandsResponse{Commands: s.E.Commands()}, nil
+func (s *Service) ListCommands(_ context.Context, req *pb.ListCommandsRequest) (*pb.ListCommandsResponse, error) {
+	out := &pb.ListCommandsResponse{}
+	for _, c := range s.E.Commands() {
+		if req.SessionId == "" || c.SessionId == req.SessionId {
+			out.Commands = append(out.Commands, c)
+		}
+	}
+	return out, nil
 }
 
 func (s *Service) StopCommand(ctx context.Context, req *pb.StopCommandRequest) (*pb.Command, error) {
@@ -151,16 +158,45 @@ func (s *Service) FollowLog(ctx context.Context, req *pb.FollowLogRequest, strea
 		if !follow {
 			return nil
 		}
-		if !s.E.Live(req.Id) {
+		live, updated := s.E.Live(req.Id)
+		if !live {
 			// One more read catches output written between the last read
 			// and the command ending.
 			follow = false
 			continue
 		}
+		// Output is read every 200ms; the command's end is seen at once.
 		select {
 		case <-ctx.Done():
 			return nil
+		case <-updated:
 		case <-time.After(200 * time.Millisecond):
+		}
+	}
+}
+
+// WatchWorkspace sends the workspace whenever it changes, until it is
+// released or the caller goes.
+func (s *Service) WatchWorkspace(ctx context.Context, req *pb.WatchWorkspaceRequest, stream hotbedv1connect.WorkspaceServiceWatchWorkspaceServerStream) error {
+	var sent *pb.Workspace
+	for {
+		ws, updated, err := s.E.WatchWorkspace(req.Id)
+		if err != nil {
+			return err
+		}
+		if !proto.Equal(ws, sent) {
+			if err := stream.Send(ws); err != nil {
+				return nil // the caller went away
+			}
+			sent = ws
+		}
+		if ws.State == pb.WorkspaceState_WORKSPACE_STATE_RELEASED {
+			return nil
+		}
+		select {
+		case <-ctx.Done():
+			return nil
+		case <-updated:
 		}
 	}
 }

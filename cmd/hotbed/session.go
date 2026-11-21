@@ -73,7 +73,11 @@ func (c *addCmd) Exec(ctx context.Context, d deps) (any, error) {
 	if c.NoWait {
 		return ws, nil
 	}
-	if ws, err = waitReady(ctx, cl, ws, d.stderr); err != nil {
+	stream, err := c.clients(d.stream)
+	if err != nil {
+		return nil, err
+	}
+	if ws, err = waitReady(ctx, stream, ws, d.stderr); err != nil {
 		return nil, err
 	}
 	if c.Sync != "" {
@@ -88,22 +92,27 @@ func (c *addCmd) Exec(ctx context.Context, d deps) (any, error) {
 }
 
 // waitReady waits for a preparing workspace (its base being pulled and
-// freshened) to be ready, saying what it waits for on stderr.
-func waitReady(ctx context.Context, cl clients, ws *pb.Workspace, stderr io.Writer) (*pb.Workspace, error) {
-	said := ""
-	for ws.State == pb.WorkspaceState_WORKSPACE_STATE_PREPARING {
-		if ws.Reason != said {
-			fmt.Fprintf(stderr, "hotbed: %s is preparing: %s\n", ws.Id, ws.Reason)
-			said = ws.Reason
-		}
-		select {
-		case <-ctx.Done():
-			return nil, ctx.Err()
-		case <-time.After(time.Second):
-		}
-		var err error
-		if ws, err = cl.workspaces.GetWorkspace(ctx, &pb.GetWorkspaceRequest{Id: ws.Id}); err != nil {
+// freshened) to be ready, watching it on a stream (stream's clients, which
+// have no timeout) and saying what it waits for on stderr.
+func waitReady(ctx context.Context, stream clients, ws *pb.Workspace, stderr io.Writer) (*pb.Workspace, error) {
+	if ws.State == pb.WorkspaceState_WORKSPACE_STATE_PREPARING {
+		in, err := stream.workspaces.WatchWorkspace(ctx, &pb.WatchWorkspaceRequest{Id: ws.Id})
+		if err != nil {
 			return nil, err
+		}
+		defer in.Close()
+		said := ""
+		for ws.State == pb.WorkspaceState_WORKSPACE_STATE_PREPARING {
+			if ws.Reason != said {
+				fmt.Fprintf(stderr, "hotbed: %s is preparing: %s\n", ws.Id, ws.Reason)
+				said = ws.Reason
+			}
+			if ws, err = in.Receive(); err != nil {
+				if errors.Is(err, io.EOF) {
+					err = api.Errorf(api.CodeNotFound, "workspace was released while it prepared")
+				}
+				return nil, err
+			}
 		}
 	}
 	if ws.State == pb.WorkspaceState_WORKSPACE_STATE_FAILED {
@@ -111,6 +120,30 @@ func waitReady(ctx context.Context, cl clients, ws *pb.Workspace, stderr io.Writ
 			WithSuggestion("see the freshen's log in the cockpit, fix the repo's freshen commands (hotbed repo add), and add the repo again")
 	}
 	return ws, nil
+}
+
+// watchSession returns the session's first update with events (or its end),
+// or how it stands when the watch times out.
+func watchSession(ctx context.Context, stream clients, req *pb.WatchSessionRequest) (*pb.WatchSessionResponse, error) {
+	in, err := stream.sessions.WatchSession(ctx, req)
+	if err != nil {
+		return nil, err
+	}
+	defer in.Close()
+	var last *pb.WatchSessionResponse
+	for {
+		res, err := in.Receive()
+		if errors.Is(err, io.EOF) && last != nil {
+			return last, nil
+		}
+		if err != nil {
+			return nil, err
+		}
+		if len(res.Events) > 0 || res.Ended {
+			return res, nil
+		}
+		last = res
+	}
 }
 
 // workspace is the session's workspace of a repo (or with that ID).
@@ -239,7 +272,7 @@ func (c *runCmd) Raw(ctx context.Context, d deps) (int, bool, error) {
 		case err != nil:
 			fmt.Fprintf(d.stderr, "hotbed: not syncing: %v\n", err)
 		case self.Hostname == ws.SyncHost:
-			if ws, err = waitReady(ctx, cl, ws, d.stderr); err != nil {
+			if ws, err = waitReady(ctx, stream, ws, d.stderr); err != nil {
 				return 0, false, err
 			}
 			res, err := syncTo(ctx, cl, ws, ws.SyncDir)
@@ -339,10 +372,10 @@ type waitCmd struct {
 	Timeout int    `default:"120" help:"Seconds to wait for an event, at most 120."`
 }
 
-// Exec long-polls the session. It remembers the cursor per session on this
+// Exec watches the session until something happens. It remembers the cursor per session on this
 // machine, so repeated hotbed wait calls return each event once.
 func (c *waitCmd) Exec(ctx context.Context, d deps) (any, error) {
-	cl, err := c.clients(d.http)
+	stream, err := c.clients(d.stream)
 	if err != nil {
 		return nil, err
 	}
@@ -354,7 +387,7 @@ func (c *waitCmd) Exec(ctx context.Context, d deps) (any, error) {
 			after, _ = strconv.ParseInt(strings.TrimSpace(string(b)), 10, 64)
 		}
 	}
-	res, err := cl.sessions.WaitSession(ctx, &pb.WaitSessionRequest{SessionId: c.Session, After: after, TimeoutSeconds: int32(c.Timeout)})
+	res, err := watchSession(ctx, stream, &pb.WatchSessionRequest{SessionId: c.Session, After: after, TimeoutSeconds: int32(c.Timeout)})
 	if err != nil {
 		return nil, err
 	}

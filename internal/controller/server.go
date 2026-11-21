@@ -29,7 +29,7 @@ const (
 	// A session nothing touches for this long is abandoned: its commands
 	// stop and its workspaces go.
 	sessionIdle = time.Hour
-	// WaitSession waits at most this long, so agents call it regularly,
+	// WatchSession streams at most this long, so agents call it regularly,
 	// which keeps their sessions alive.
 	maxWait = 2 * time.Minute
 )

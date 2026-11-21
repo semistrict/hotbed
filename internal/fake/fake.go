@@ -119,6 +119,7 @@ type Units struct {
 
 type proc struct {
 	cmd    *exec.Cmd
+	exited chan struct{} // closed once done
 	done   bool
 	code   int
 	signal int
@@ -163,7 +164,7 @@ func (u *Units) Start(_ context.Context, s unit.Spec) error {
 		log.Close()
 		return err
 	}
-	p := &proc{cmd: cmd}
+	p := &proc{cmd: cmd, exited: make(chan struct{})}
 	u.units[s.Name] = p
 	go func() {
 		err := cmd.Wait()
@@ -171,6 +172,7 @@ func (u *Units) Start(_ context.Context, s unit.Spec) error {
 		u.mu.Lock()
 		defer u.mu.Unlock()
 		p.done = true
+		close(p.exited)
 		var exit *exec.ExitError
 		if errors.As(err, &exit) {
 			if ws, ok := exit.Sys().(syscall.WaitStatus); ok && ws.Signaled() {
@@ -230,6 +232,22 @@ func (u *Units) Thaw(_ context.Context, name string) error {
 	return nil
 }
 
+// Wait returns once the unit's process has exited.
+func (u *Units) Wait(ctx context.Context, name string) error {
+	u.mu.Lock()
+	p, ok := u.units[name]
+	u.mu.Unlock()
+	if !ok {
+		return nil
+	}
+	select {
+	case <-p.exited:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
 func (u *Units) Reclaim(string, int64) error { return nil }
 func (u *Units) Swap(string) (int64, error)  { return 0, nil }
 
@@ -241,10 +259,12 @@ func (u *Units) Stop(_ context.Context, name string) error {
 	if !ok {
 		return nil
 	}
-	if !p.done {
+	select {
+	case <-p.exited:
+	default:
 		syscall.Kill(-p.cmd.Process.Pid, syscall.SIGCONT)
 		syscall.Kill(-p.cmd.Process.Pid, syscall.SIGKILL)
-		p.cmd.Process.Wait()
+		<-p.exited // Start's goroutine reaps it
 	}
 	u.mu.Lock()
 	delete(u.units, name)

@@ -284,7 +284,7 @@ func TestSessionWithSyncedCheckout(t *testing.T) {
 	// wait reports what happened to the session's commands, each event once.
 	var events []*pb.SessionEvent
 	c.eventually("the session's events", func() bool {
-		res := &pb.WaitSessionResponse{}
+		res := &pb.WatchSessionResponse{}
 		c.ok(res, "wait", S, "--timeout", "1")
 		events = append(events, res.Events...)
 		return countWhat(events, "exited") == 3
@@ -296,7 +296,7 @@ func TestSessionWithSyncedCheckout(t *testing.T) {
 	if last.What != "exited" || last.GetExitCode() != 3 || last.State != pb.CommandState_COMMAND_STATE_FAILED || last.WorkspaceId != ws.Id {
 		t.Errorf("last event = %v", last)
 	}
-	quiet := &pb.WaitSessionResponse{}
+	quiet := &pb.WatchSessionResponse{}
 	c.ok(quiet, "wait", S, "--timeout", "1")
 	if len(quiet.Events) != 0 || quiet.Live != 0 {
 		t.Errorf("wait with nothing new = %v", quiet)
@@ -396,7 +396,7 @@ func TestAbandonedSessionEnds(t *testing.T) {
 	if err := c.server.ReapIdle(t.Context()); err != nil {
 		t.Fatal(err)
 	}
-	res := &pb.WaitSessionResponse{}
+	res := &pb.WatchSessionResponse{}
 	c.ok(res, "wait", "idle-yak", "--timeout", "1") // keeps it alive for another hour
 	if res.Ended {
 		t.Fatalf("session ended before an hour idle: %v", res)

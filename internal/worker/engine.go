@@ -44,6 +44,9 @@ type Units interface {
 	Reclaim(cgroup string, n int64) error
 	Swap(cgroup string) (int64, error)
 	Stop(ctx context.Context, name string) error
+	// Wait returns once the unit's processes have all exited (or ctx is
+	// done), so the engine notices an exit without waiting for its tick.
+	Wait(ctx context.Context, name string) error
 }
 
 // System measures the node; Linux is the real one.
@@ -92,6 +95,10 @@ type Engine struct {
 
 	kick    chan struct{} // something changed: report soon
 	collect chan struct{} // a base may have become garbage: collect soon
+	stepc   chan struct{} // a command may start or have ended: step soon
+	// updated is closed, and replaced, whenever a base, workspace or
+	// command changes, to wake whoever watches them.
+	updated chan struct{}
 
 	// One workspace request at a time decides how to bring a repo's base up
 	// to date, so two requests share one freshen.
@@ -132,8 +139,14 @@ func NewEngine(ctx context.Context, cfg EngineConfig) (*Engine, error) {
 	if err != nil {
 		return nil, err
 	}
-	for _, d := range []string{"logs", "bundles"} {
-		if err := os.MkdirAll(filepath.Join(cfg.Dir, d), 0o755); err != nil {
+	// The command user runs git in volumes below the state directory and
+	// reads sync bundles from it, so it may pass through (not list) them.
+	for _, d := range []string{"", "logs", "bundles"} {
+		dir := filepath.Join(cfg.Dir, d)
+		if err := os.MkdirAll(dir, 0o711); err != nil {
+			return nil, err
+		}
+		if err := os.Chmod(dir, 0o711); err != nil {
 			return nil, err
 		}
 	}
@@ -143,10 +156,11 @@ func NewEngine(ctx context.Context, cfg EngineConfig) (*Engine, error) {
 	}
 	e := &Engine{
 		cfg: cfg, db: d, cred: cred, home: home,
-		bases: map[string]*pb.Base{},
+		bases:      map[string]*pb.Base{},
 		workspaces: map[string]*workspace{}, commands: map[string]*command{},
 		usage: &pb.NodeUsage{}, disk: &pb.DiskUsage{},
-		kick: make(chan struct{}, 1), collect: make(chan struct{}, 1),
+		kick: make(chan struct{}, 1), collect: make(chan struct{}, 1), stepc: make(chan struct{}, 1),
+		updated: make(chan struct{}),
 	}
 	if e.resources, err = cfg.System.Resources(); err != nil {
 		d.close()
@@ -195,11 +209,20 @@ func (e *Engine) Run(ctx context.Context) {
 	defer usage.Stop()
 	e.sample()
 	e.measureDisk(ctx)
+	e.mu.Lock()
+	for _, c := range e.commands {
+		if s := c.cmd().State; s == running || s == parked {
+			go e.watchExit(ctx, c.unitName())
+		}
+	}
+	e.mu.Unlock()
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case <-tick.C:
+			e.step(ctx)
+		case <-e.stepc:
 			e.step(ctx)
 		case <-sample.C:
 			e.sample()
@@ -214,6 +237,33 @@ func (e *Engine) Run(ctx context.Context) {
 
 // Kicked is signalled whenever something worth reporting changed.
 func (e *Engine) Kicked() <-chan struct{} { return e.kick }
+
+// stepSoon asks Run to step now rather than at its next tick: a command was
+// queued, or one may have ended.
+func (e *Engine) stepSoon() {
+	select {
+	case e.stepc <- struct{}{}:
+	default:
+	}
+}
+
+// watchExit steps as soon as a command's unit has exited. The tick would
+// notice too, a second later.
+func (e *Engine) watchExit(ctx context.Context, name string) {
+	if err := e.cfg.Units.Wait(ctx, name); err != nil {
+		if ctx.Err() == nil {
+			slog.Warn("watch command for its exit", "unit", name, "err", err)
+		}
+		return
+	}
+	e.stepSoon()
+}
+
+// notify wakes everyone waiting on updated. Call with e.mu held.
+func (e *Engine) notify() {
+	close(e.updated)
+	e.updated = make(chan struct{})
+}
 
 // collectSoon asks Run to delete the bases no one needs any more.
 func (e *Engine) collectSoon() {
@@ -248,18 +298,21 @@ func (e *Engine) saveBase(b *pb.Base) {
 	if err := e.db.put("base", b.Id, b); err != nil {
 		slog.Error("save base", "base", b.Id, "err", err)
 	}
+	e.notify()
 }
 
 func (e *Engine) saveWorkspace(w *workspace) {
 	if err := e.db.put("workspace", w.ws().Id, w.rec); err != nil {
 		slog.Error("save workspace", "workspace", w.ws().Id, "err", err)
 	}
+	e.notify()
 }
 
 func (e *Engine) saveCommand(c *command) {
 	if err := e.db.put("command", c.cmd().Id, c.rec); err != nil {
 		slog.Error("save command", "command", c.cmd().Id, "err", err)
 	}
+	e.notify()
 }
 
 // SetRepos is what the controller says this node hosts.

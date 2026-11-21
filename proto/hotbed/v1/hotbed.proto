@@ -30,12 +30,14 @@ service ClusterService {
 service SessionService {
   rpc StartSession(StartSessionRequest) returns (Session);
   // EndSession stops the session's commands and releases its workspaces.
-  // A session nothing touches for an hour ends the same way; WaitSession
+  // A session nothing touches for an hour ends the same way; WatchSession
   // keeps it alive.
   rpc EndSession(EndSessionRequest) returns (Session);
-  // WaitSession returns what happened to the session's commands after a
-  // cursor, waiting up to two minutes for something to.
-  rpc WaitSession(WaitSessionRequest) returns (WaitSessionResponse);
+  // WatchSession streams what happens to the session's commands after a
+  // cursor: first how things stand, then each new batch of events as it
+  // happens. It ends when the session does, or after at most two minutes, so
+  // an agent that wants the session kept has to keep watching it.
+  rpc WatchSession(WatchSessionRequest) returns (stream WatchSessionResponse);
 }
 
 // Workspaces and the commands in them. The controller serves it to clients
@@ -44,6 +46,10 @@ service SessionService {
 service WorkspaceService {
   rpc CreateWorkspace(CreateWorkspaceRequest) returns (Workspace);
   rpc GetWorkspace(GetWorkspaceRequest) returns (Workspace);
+  // WatchWorkspace streams the workspace as it is, then again each time it
+  // changes (such as from preparing to ready), until it is released or the
+  // caller stops listening.
+  rpc WatchWorkspace(WatchWorkspaceRequest) returns (stream Workspace);
   rpc ListWorkspaces(ListWorkspacesRequest) returns (ListWorkspacesResponse);
   rpc ReleaseWorkspace(ReleaseWorkspaceRequest) returns (ReleaseWorkspaceResponse);
   // Sync checks out an agent's worktree in a workspace. The first message
@@ -274,6 +280,10 @@ message GetWorkspaceRequest {
   string id = 1;
 }
 
+message WatchWorkspaceRequest {
+  string id = 1;
+}
+
 message ListWorkspacesRequest {
   // Only this session's workspaces.
   string session_id = 1;
@@ -499,15 +509,15 @@ message EndSessionRequest {
   string id = 1;
 }
 
-message WaitSessionRequest {
+message WatchSessionRequest {
   string session_id = 1;
-  // Return events after this one (0 for the first).
+  // Send events after this one (0 for the first).
   int64 after = 2;
-  // Give up after this long with no events; at most and by default 120.
+  // Stop watching after this long; at most and by default 120.
   int32 timeout_seconds = 3;
 }
 
-message WaitSessionResponse {
+message WatchSessionResponse {
   repeated SessionEvent events = 1;
   // Pass as after to wait for what comes next.
   int64 cursor = 2;
