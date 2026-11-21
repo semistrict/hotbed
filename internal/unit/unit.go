@@ -59,6 +59,9 @@ func Start(ctx context.Context, s Spec) error {
 	args := []string{
 		"--unit=" + s.Name,
 		"--slice=" + Slice,
+		// systemd would otherwise substitute $VAR and ${VAR} in the command
+		// line itself, before the shell sees them.
+		"--expand-environment=no",
 		"--description=hotbed " + strings.Join(s.Argv, " "),
 		"--property=Type=exec",
 		// Keep the unit, and its exit status, after the command ends; the

@@ -178,3 +178,21 @@ func TestCommandRunsInItsUnitsCgroup(t *testing.T) {
 		t.Errorf("command saw %q, want %q", b, want)
 	}
 }
+
+// A command's $variables are its shell's, not systemd's: systemd would
+// substitute them in the command line before the shell runs.
+func TestShellVariablesReachTheShell(t *testing.T) {
+	n := name(t)
+	log := filepath.Join(t.TempDir(), "out.log")
+	if err := Start(t.Context(), Spec{Name: n, Argv: []string{"sh", "-c", `x=shell; echo "[$x] [${x}]"`}, User: testUser(t), Log: log}); err != nil {
+		t.Fatal(err)
+	}
+	waitExit(t, n)
+	b, err := os.ReadFile(log)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(b) != "[shell] [shell]\n" {
+		t.Errorf("command printed %q", b)
+	}
+}
