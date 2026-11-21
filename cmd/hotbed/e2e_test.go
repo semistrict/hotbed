@@ -720,3 +720,20 @@ func TestFailingStepFallsBackToTheWarmBase(t *testing.T) {
 		t.Errorf("bases = %v, want %v", bases, want)
 	}
 }
+
+// Each command has a TMPDIR of its own, on disk, gone once it ends.
+func TestCommandsHaveTheirOwnTmpdir(t *testing.T) {
+	c := newCluster(t)
+	c.addRepo(upstream(t))
+	c.ok(nil, "session", "start", "tidy-owl")
+	c.ok(nil, "add", "tidy-owl", "app")
+	code, out, _ := c.hotbed("run", "tidy-owl", "app", "--", "sh", "-c", `echo "$TMPDIR"; ls -ld "$TMPDIR" | cut -c1-10; echo store > "$TMPDIR/store"`)
+	lines := strings.Split(strings.TrimSpace(out), "\n")
+	if code != 0 || len(lines) != 2 || filepath.Base(filepath.Dir(lines[0])) != "tmp" || lines[1] != "drwxrwxrwt" {
+		t.Fatalf("run: exit %d, %q, want its own sticky TMPDIR under the state directory's tmp", code, out)
+	}
+	c.eventually("the command's TMPDIR to go", func() bool {
+		_, err := os.Stat(lines[0])
+		return errors.Is(err, os.ErrNotExist)
+	})
+}

@@ -44,6 +44,7 @@ type JoinOptions struct {
 	Dataset        string
 	UnitProperties []string
 	Slice          string
+	TmpDir         string
 }
 
 // JoinResult describes a worker that joined.
@@ -70,6 +71,9 @@ func CheckMachine(ctx context.Context, o JoinOptions) (string, error) {
 	if os.Geteuid() != 0 {
 		return "", api.Errorf(api.CodeInvalidArgs, "a worker runs as root, to fork volumes and start systemd units").
 			WithSuggestion("run it with sudo; commands still run as --user")
+	}
+	if o.TmpDir != "" && !filepath.IsAbs(o.TmpDir) {
+		return "", api.Errorf(api.CodeInvalidArgs, "--tmp-dir %s is not an absolute path", o.TmpDir)
 	}
 	if o.Slice != "" {
 		if err := unit.CheckSlice(o.Slice); err != nil {
@@ -116,7 +120,7 @@ func Join(ctx context.Context, o JoinOptions, hc *http.Client, check Check) (Joi
 	if err != nil {
 		return JoinResult{}, api.FromConnect(err)
 	}
-	cfg := statedir.WorkerConfig{ClusterID: joined.ClusterId, Controller: controller, User: o.User, Dataset: o.Dataset, UnitProperties: o.UnitProperties, Slice: o.Slice}
+	cfg := statedir.WorkerConfig{ClusterID: joined.ClusterId, Controller: controller, User: o.User, Dataset: o.Dataset, UnitProperties: o.UnitProperties, Slice: o.Slice, TmpDir: o.TmpDir}
 	if err := statedir.Commit(dir, statedir.Config{Worker: &cfg}); err != nil {
 		return JoinResult{}, err
 	}
@@ -139,7 +143,7 @@ func Run(ctx context.Context, dir string, cfg statedir.WorkerConfig, tn Tailnet,
 	}
 	eng, err := NewEngine(ctx, EngineConfig{
 		Dir: dir, NodeID: self.NodeID, Host: self.Hostname, User: cfg.User,
-		Slice: cfg.Slice, UnitProperties: cfg.UnitProperties, Store: store,
+		Slice: cfg.Slice, TmpDir: cfg.TmpDir, UnitProperties: cfg.UnitProperties, Store: store,
 		Units: Systemd{Slice: cfg.Slice}, System: &Linux{Slice: cfg.Slice},
 	})
 	if err != nil {

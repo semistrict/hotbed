@@ -13,6 +13,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"sync"
 	"syscall"
@@ -137,9 +138,16 @@ func (u *Units) Start(_ context.Context, s unit.Spec) error {
 	}
 	rewrite := func(x string) string { return x }
 	for _, b := range s.Binds {
-		src, dst := b.Source, b.Target
-		prev := rewrite
-		rewrite = func(x string) string { return strings.ReplaceAll(prev(x), dst, src) }
+		// The bind's target as a whole path component: /work/app, not /worker.
+		re := regexp.MustCompile(`(^|[^\w.-])` + regexp.QuoteMeta(b.Target) + `(/|$|[^\w.-])`)
+		src, prev := b.Source, rewrite
+		rewrite = func(x string) string {
+			x = prev(x)
+			for range 2 { // a match takes the character after it, which may begin the next
+				x = re.ReplaceAllString(x, "${1}"+strings.ReplaceAll(src, "$", "$$")+"${2}")
+			}
+			return x
+		}
 	}
 	args := make([]string, len(s.Argv))
 	for i, a := range s.Argv {

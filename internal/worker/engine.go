@@ -68,6 +68,9 @@ type EngineConfig struct {
 	// One under a capped slice (user-hotbed.slice, in user.slice) shares that
 	// slice's memory, and the engine admits and parks against it.
 	Slice string
+	// TmpDir holds each command's TMPDIR, a directory of its own removed
+	// when it ends; empty for the state directory's tmp.
+	TmpDir string
 	// UnitProperties are systemd properties every command gets, to grant
 	// what builds need beyond a plain user: AmbientCapabilities=,
 	// DeviceAllow=, LimitMEMLOCK= and so on.
@@ -216,6 +219,7 @@ func (e *Engine) Run(ctx context.Context) {
 	defer usage.Stop()
 	e.sample()
 	e.measureDisk(ctx)
+	e.sweepTmp()
 	e.mu.Lock()
 	for _, c := range e.commands {
 		if s := c.cmd().State; s == running || s == parked {

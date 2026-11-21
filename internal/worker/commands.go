@@ -270,7 +270,12 @@ func (e *Engine) admit(ctx context.Context) {
 		c.cmd().Reason = ""
 		spec := e.spec(c)
 		e.mu.Unlock()
-		err := e.cfg.Units.Start(ctx, spec)
+		err := e.makeTmp(c.cmd().Id)
+		if err != nil {
+			err = fmt.Errorf("make its TMPDIR: %w", err)
+		} else {
+			err = e.cfg.Units.Start(ctx, spec)
+		}
 		e.mu.Lock()
 		if err != nil {
 			slog.Error("start command", "command", c.cmd().Id, "err", err)
@@ -322,7 +327,7 @@ func (e *Engine) admissionBlocker(c *command) string {
 func (e *Engine) spec(c *command) unit.Spec {
 	cmd := c.cmd()
 	env := append(cacheEnv(), c.rec.Env...)
-	env = append(env, "HOTBED_WORKSPACE="+cmd.WorkspaceId, "HOTBED_COMMAND="+cmd.Id)
+	env = append(env, "HOTBED_WORKSPACE="+cmd.WorkspaceId, "HOTBED_COMMAND="+cmd.Id, "TMPDIR="+e.tmpDir(cmd.Id))
 	return unit.Spec{
 		Name:       c.unitName(),
 		Slice:      e.cfg.Slice,
@@ -471,6 +476,8 @@ func (e *Engine) end(c *command, state pb.CommandState, code *int32, why string)
 	}
 	cmd.Timeline = append(cmd.Timeline, &pb.CommandEvent{At: now, What: what, Detail: detail})
 	e.sessionEvent(c, what, detail)
+	// Its processes are gone: the unit has exited or been stopped.
+	go e.removeTmp(cmd.Id)
 
 	started := cmd.QueuedAt
 	if cmd.StartedAt != nil {

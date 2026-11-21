@@ -50,12 +50,13 @@ type joinCmd struct {
 	User           string   `required:"" help:"User every command runs as."`
 	ZFSDataset     string   `name:"zfs-dataset" help:"ZFS dataset for volumes, when the directory is on zfs (default <pool>/hotbed)."`
 	UnitProperties []string `name:"unit-property" help:"systemd property every command gets, such as AmbientCapabilities=CAP_SYS_ADMIN or DeviceAllow=/dev/kvm. Repeatable."`
+	TmpDir         string   `name:"tmp-dir" help:"Directory each command's TMPDIR is made in, a directory of its own removed when it ends (default the state directory's tmp), such as a scratch disk."`
 	Slice          string   `help:"systemd slice commands run in (default hotbed.slice). user-hotbed.slice puts them in user.slice, sharing its memory limit; hotbed admits and parks against the fullest limit above them."`
 }
 
 func (c *joinCmd) Exec(ctx context.Context, d deps) (any, error) {
 	return worker.Join(ctx, worker.JoinOptions{
-		Dir: c.Dir, Controller: c.Controller, User: c.User, Dataset: c.ZFSDataset, UnitProperties: c.UnitProperties, Slice: c.Slice,
+		Dir: c.Dir, Controller: c.Controller, User: c.User, Dataset: c.ZFSDataset, UnitProperties: c.UnitProperties, Slice: c.Slice, TmpDir: c.TmpDir,
 	}, d.http, d.check)
 }
 
