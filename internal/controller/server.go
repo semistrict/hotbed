@@ -26,6 +26,8 @@ type ServerConfig struct {
 	Identifier Identifier
 	Cluster    statedir.ControllerConfig
 	Now        func() time.Time // time.Now when nil
+	// UI serves every path outside /v1; none when nil.
+	UI http.Handler
 }
 
 // Server serves the controller's HTTP API.
@@ -47,6 +49,12 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /v1/join", s.authorized(s.join))
 	mux.HandleFunc("POST /v1/heartbeat", s.authorized(s.heartbeat))
 	mux.HandleFunc("GET /v1/nodes", s.authorized(s.nodes))
+	if s.cfg.UI != nil {
+		mux.HandleFunc("GET /", s.authorized(func(w http.ResponseWriter, r *http.Request, _ tailnet.Peer) error {
+			s.cfg.UI.ServeHTTP(w, r)
+			return nil
+		}))
+	}
 	return mux
 }
 

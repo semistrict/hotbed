@@ -18,6 +18,7 @@ import (
 	"github.com/semistrict/hotbed/internal/api"
 	"github.com/semistrict/hotbed/internal/statedir"
 	"github.com/semistrict/hotbed/internal/tailnet"
+	"github.com/semistrict/hotbed/ui"
 )
 
 const dbName = "hotbed.db"
@@ -119,7 +120,7 @@ func Listen(ctx context.Context, dir string, cluster statedir.ControllerConfig, 
 	c := &Controller{
 		store: store,
 		srv: &http.Server{
-			Handler:           NewServer(ServerConfig{Store: store, Identifier: tn, Cluster: cluster}).Handler(),
+			Handler:           NewServer(ServerConfig{Store: store, Identifier: tn, Cluster: cluster, UI: ui.Handler()}).Handler(),
 			ReadHeaderTimeout: 10 * time.Second,
 		},
 	}

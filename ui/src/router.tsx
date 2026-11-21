@@ -1,0 +1,68 @@
+import { createRootRoute, createRoute, createRouter } from "@tanstack/react-router";
+import type { CommandState } from "./api";
+import { Shell } from "./components/Shell";
+import { CommandPage } from "./pages/Command";
+import { CommandsPage } from "./pages/Commands";
+import { HistoryPage } from "./pages/History";
+import { NodePage } from "./pages/Node";
+import { NodesPage } from "./pages/Nodes";
+import { NotFound } from "./pages/NotFound";
+import { OverviewPage } from "./pages/Overview";
+import { WorkspacePage } from "./pages/Workspace";
+import { WorkspacesPage } from "./pages/Workspaces";
+
+const root = createRootRoute({ component: Shell, notFoundComponent: NotFound });
+
+const overview = createRoute({ getParentRoute: () => root, path: "/", component: OverviewPage });
+const nodes = createRoute({ getParentRoute: () => root, path: "/nodes", component: NodesPage });
+const node = createRoute({ getParentRoute: () => root, path: "/nodes/$hostname", component: NodePage });
+const workspaces = createRoute({ getParentRoute: () => root, path: "/workspaces", component: WorkspacesPage });
+const workspace = createRoute({
+  getParentRoute: () => root,
+  path: "/workspaces/$id",
+  component: WorkspacePage,
+  validateSearch: (s: Record<string, unknown>): { file?: string } => (typeof s.file === "string" ? { file: s.file } : {}),
+});
+
+export interface CommandsSearch {
+  state?: CommandState | "live";
+  node?: string;
+}
+
+const commands = createRoute({
+  getParentRoute: () => root,
+  path: "/commands",
+  component: CommandsPage,
+  validateSearch: (s: Record<string, unknown>): CommandsSearch => ({
+    state: typeof s.state === "string" ? (s.state as CommandsSearch["state"]) : undefined,
+    node: typeof s.node === "string" ? s.node : undefined,
+  }),
+});
+const command = createRoute({ getParentRoute: () => root, path: "/commands/$id", component: CommandPage });
+
+export interface HistorySearch {
+  repo?: string;
+  outcome?: "failed" | "succeeded";
+}
+
+const history = createRoute({
+  getParentRoute: () => root,
+  path: "/history",
+  component: HistoryPage,
+  validateSearch: (s: Record<string, unknown>): HistorySearch => ({
+    repo: typeof s.repo === "string" ? s.repo : undefined,
+    outcome: s.outcome === "failed" || s.outcome === "succeeded" ? s.outcome : undefined,
+  }),
+});
+
+const routeTree = root.addChildren([overview, nodes, node, workspaces, workspace, commands, command, history]);
+
+export const router = createRouter({ routeTree, defaultPreload: "intent", scrollRestoration: true });
+
+declare module "@tanstack/react-router" {
+  interface Register {
+    router: typeof router;
+  }
+}
+
+export { command, commands, history, node, workspace };
