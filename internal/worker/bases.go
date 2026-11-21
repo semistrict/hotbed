@@ -178,7 +178,9 @@ func freshenScript(r *pb.Repo, commit string, run []*pb.Step) string {
 	var b strings.Builder
 	q := shell.Quote
 	fmt.Fprintf(&b, "set -euo pipefail\ncd %s\n", WorkPath)
-	fmt.Fprintf(&b, "if [ ! -d %s/.git ]; then git clone --no-checkout %s %s; fi\n", q(r.Id), q(r.Url), q(r.Id))
+	// Blobless: a base needs the files of the commits it checks out, not every version of
+	// every file (cladefs's history is 2.5 GiB of packs); git fetches others when asked for.
+	fmt.Fprintf(&b, "if [ ! -d %s/.git ]; then git clone --quiet --filter=blob:none --no-checkout %s %s; fi\n", q(r.Id), q(r.Url), q(r.Id))
 	fmt.Fprintf(&b, "cd %s\n", q(r.Id))
 	fmt.Fprintf(&b, "git fetch --quiet --force origin %s || git fetch --quiet --force origin\n", q(commit))
 	fmt.Fprintf(&b, "git checkout --quiet --detach --force %s\n", q(commit))

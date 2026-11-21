@@ -54,7 +54,8 @@ with its newest warm base:
 - If a base for the same commit and steps (the same *recipe*) is already freshening (another
   workspace asked first), the workspace waits for it.
 - Otherwise the node makes the next generation. It clones the newest warm base (or starts empty if
-  there is none), fetches, checks out the branch's head and updates submodules recursively. It runs
+  there is none, and clones the repo blobless: the files of the commits it checks out, not every
+  version of every file), fetches, checks out the branch's head and updates submodules recursively. It runs
   the steps that need to run, in one command like any other (so it gets limits, logs, history), and
   snapshots the result read-only. That snapshot is generation N, warm, and the waiting workspaces
   fork it.
