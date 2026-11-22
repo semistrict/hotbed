@@ -33,6 +33,16 @@ export function pick(picked: string[], label: string, multi: boolean): string[] 
   return picked.includes(label) ? picked.filter((p) => p !== label) : [...picked, label];
 }
 
+/**
+ * What clicking option `label` does to an answer: a single-choice question
+ * picks it and submits at once; a multi-select question toggles it and waits
+ * for the Answer button.
+ */
+export function chooseOption(answer: Answer, label: string, multi: boolean): { answer: Answer; submit: boolean } {
+  if (!multi) return { answer: { ...answer, picked: [label] }, submit: true };
+  return { answer: { ...answer, picked: pick(answer.picked, label, true) }, submit: false };
+}
+
 /** The user's response in a line: `SQLite; and a note`, or `dismissed: not now`. */
 export function responseLine(q: Question): string {
   if (q.dismissed) return q.dismissed.reason ? `dismissed: ${q.dismissed.reason}` : "dismissed";

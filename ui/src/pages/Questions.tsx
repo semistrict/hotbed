@@ -8,7 +8,7 @@ import { ProjectTag } from "../components/ProjectTag";
 import { useProject, useScopedSnapshot } from "../lib/project";
 import { remoteName } from "../lib/projects";
 import { ago } from "../lib/format";
-import { answerReady, dropAt, pick, placement, reorder, responseLine, shortHead, TAB_STATES, who, type QuestionTab } from "../lib/questions";
+import { answerReady, chooseOption, dropAt, placement, reorder, responseLine, shortHead, TAB_STATES, who, type QuestionTab } from "../lib/questions";
 import { PageTitle } from "./Nodes";
 
 export interface QuestionsSearch {
@@ -293,9 +293,15 @@ function AnswerForm({ q }: { q: Question }) {
   const [dismissing, setDismissing] = useState(false);
   const [reason, setReason] = useState("");
   const settle = () => Promise.all([qc.invalidateQueries({ queryKey: ["questions"] }), qc.invalidateQueries({ queryKey: ["snapshot"] })]);
-  const send = useMutation({ mutationFn: () => api.answerQuestion(q.id, answer), onSettled: settle });
+  const send = useMutation({ mutationFn: (a: Answer) => api.answerQuestion(q.id, a), onSettled: settle });
   const dismiss = useMutation({ mutationFn: () => api.dismissQuestion(q.id, reason), onSettled: settle });
   const busy = send.isPending || dismiss.isPending;
+  const choose = (label: string) => {
+    if (busy) return;
+    const next = chooseOption(answer, label, q.prompt.multiSelect);
+    setAnswer(next.answer);
+    if (next.submit) send.mutate(next.answer);
+  };
   const withPreview = q.prompt.options.filter((o) => o.preview);
   const shown = q.prompt.options.find((o) => o.label === focused && o.preview) ?? q.prompt.options.find((o) => answer.picked.includes(o.label) && o.preview) ?? withPreview[0];
   const field = "w-full rounded-lg border border-border bg-background/60 px-3 py-2 text-[12.5px] placeholder:text-faint focus:border-primary/50 focus:ring-2 focus:ring-primary/20 focus:outline-none";
@@ -305,7 +311,7 @@ function AnswerForm({ q }: { q: Question }) {
       className="space-y-3"
       onSubmit={(e) => {
         e.preventDefault();
-        if (answerReady(answer)) send.mutate();
+        if (answerReady(answer) && !busy) send.mutate(answer);
       }}
     >
       <div className={withPreview.length > 0 ? "grid gap-3 lg:grid-cols-[minmax(0,1fr)_minmax(0,1fr)]" : ""}>
@@ -318,10 +324,11 @@ function AnswerForm({ q }: { q: Question }) {
                 type="button"
                 role={q.prompt.multiSelect ? "checkbox" : "radio"}
                 aria-checked={on}
-                onClick={() => setAnswer({ ...answer, picked: pick(answer.picked, o.label, q.prompt.multiSelect) })}
+                disabled={busy}
+                onClick={() => choose(o.label)}
                 onFocus={() => setFocused(o.label)}
                 onMouseEnter={() => setFocused(o.label)}
-                className={`flex w-full items-start gap-2.5 rounded-lg border px-3 py-2 text-left transition-colors ${on ? "border-primary/60 bg-ember-wash" : "border-border hover:border-border-strong hover:bg-muted/60"}`}
+                className={`flex w-full items-start gap-2.5 rounded-lg border px-3 py-2 text-left transition-colors disabled:opacity-60 ${on ? "border-primary/60 bg-ember-wash" : "border-border hover:border-border-strong hover:bg-muted/60"}`}
               >
                 <span aria-hidden className={`mt-px font-mono text-[12px] ${on ? "text-primary" : "text-faint"}`}>
                   {q.prompt.multiSelect ? (on ? "☑" : "☐") : on ? "◉" : "○"}

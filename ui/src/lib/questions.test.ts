@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { Question } from "../api";
-import { answerReady, dropAt, pick, placement, reorder, responseLine } from "./questions";
+import { answerReady, chooseOption, dropAt, pick, placement, reorder, responseLine } from "./questions";
 
 describe("placement", () => {
   const order = [5, 3, 1, 2];
@@ -39,6 +39,38 @@ describe("pick", () => {
   it("toggles among several for multiSelect", () => {
     expect(pick(["A"], "B", true)).toEqual(["A", "B"]);
     expect(pick(["A", "B"], "A", true)).toEqual(["B"]);
+  });
+});
+
+describe("chooseOption", () => {
+  it("picks and submits at once for a single choice, keeping other and notes", () => {
+    expect(chooseOption({ picked: [], other: "", notes: "" }, "A", false)).toEqual({
+      answer: { picked: ["A"], other: "", notes: "" },
+      submit: true,
+    });
+    expect(chooseOption({ picked: ["A"], other: "extra", notes: "fyi" }, "B", false)).toEqual({
+      answer: { picked: ["B"], other: "extra", notes: "fyi" },
+      submit: true,
+    });
+    // Clicking the already-picked option (e.g. retrying after a failed send) still submits it.
+    expect(chooseOption({ picked: ["A"], other: "", notes: "retry" }, "A", false)).toEqual({
+      answer: { picked: ["A"], other: "", notes: "retry" },
+      submit: true,
+    });
+  });
+  it("toggles without submitting for multiSelect", () => {
+    expect(chooseOption({ picked: [], other: "", notes: "note" }, "A", true)).toEqual({
+      answer: { picked: ["A"], other: "", notes: "note" },
+      submit: false,
+    });
+    expect(chooseOption({ picked: ["A"], other: "", notes: "note" }, "B", true)).toEqual({
+      answer: { picked: ["A", "B"], other: "", notes: "note" },
+      submit: false,
+    });
+    expect(chooseOption({ picked: ["A", "B"], other: "", notes: "note" }, "A", true)).toEqual({
+      answer: { picked: ["B"], other: "", notes: "note" },
+      submit: false,
+    });
   });
 });
 
