@@ -76,6 +76,7 @@ type cli struct {
 	Nodes    nodesCmd    `cmd:"" help:"List the cluster's workers."`
 	Init     initCmd     `cmd:"" help:"Create a cluster with this machine as its controller."`
 	Join     joinCmd     `cmd:"" help:"Join this machine to a cluster as a worker (as root)."`
+	Worker   workerCmd   `cmd:"" help:"Set up and manage a worker node on this machine in ~/.hotbed (setup, status, start, stop, trim, ssh, destroy)."`
 	Serve    serveCmd    `cmd:"" help:"Run the controller or worker whose state is in DIR, until stopped."`
 	Skills   skillsCmd   `cmd:"" help:"Guides for AI agents, compiled into this binary (list, get, install)."`
 	Version  versionCmd  `cmd:"" help:"Show hotbed's version, OS and architecture."`

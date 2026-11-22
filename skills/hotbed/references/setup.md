@@ -11,7 +11,16 @@ that identity: there are no tokens.
 hotbed init /var/lib/hotbed               # data.address is what workers join
 hotbed serve /var/lib/hotbed
 
-# Each worker (Linux, as root; the directory on btrfs or zfs):
+# Each worker (single command, sets up in ~/.hotbed):
+# - Linux: reuses btrfs/zfs if ~/.hotbed is on one, else creates a sparse file-backed ZFS pool
+#   with autotrim=on, joins the cluster, and installs/starts hotbed-worker.service.
+sudo hotbed worker setup ubu1
+# - macOS: boots an Ubuntu LTS QEMU (HVF) VM in ~/.hotbed/vm with sparse discard-enabled qcow2
+#   ZFS + swap disks that grow on demand and punch holes back out when data is deleted.
+hotbed worker setup ubu1
+#   hotbed worker status | start | stop | trim | ssh | destroy
+
+# Or manually on Linux (as root; the directory on btrfs or zfs):
 sudo hotbed join ubu1 /var/lib/hotbed --user you
 sudo hotbed serve /var/lib/hotbed
 #   --zfs-dataset pool/hotbed     where zfs volumes go (default <pool>/hotbed)

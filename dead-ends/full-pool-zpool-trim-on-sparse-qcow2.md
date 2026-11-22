@@ -1,0 +1,7 @@
+# Full-pool `zpool trim -w` on sparse qcow2/file-backed ZFS images
+
+**Tried:** 2026-11-21, board 6287 (`internal/setup`).
+**Idea:** Run `zpool trim -w hotbed` during `hotbed worker trim` and on the hourly trim timer to guarantee all freed space is punched out of `zfs.qcow2` / `zfs.img`.
+**Result:** In live QEMU Ubuntu 26.04 + APFS tests (`TestLiveQEMUAndZFSSparsePunchHole`), writing 128 MiB of random data grew `zfs.qcow2` from 3.1 MiB to 144.2 MiB, and running `zpool trim -w` after `zfs destroy` left 45.4 MiB allocated (and a second trim grew it to 61.4 MiB). `/sys/block/sdb/stat` showed `zpool trim -w` issued +3,404 writes (+39.6 MiB) across all 128 metaslabs. By contrast, `autotrim=on` with `zfs_trim_txg_batch=1` + `zpool wait -t free` + `zpool sync` punched out 128.4 MiB down to 15.8 MiB with only 7 SCSI UNMAP ops and zero untouched metaslabs initialized.
+**Why it's dead:** OpenZFS's manual `zpool trim` walks every metaslab on the vdev, loading and initializing space maps for previously untouched metaslabs and writing tens of MiB of permanent metadata into a sparse virtual image. `autotrim=on` with `zfs_trim_txg_batch=1` only trims metaslabs that actually freed blocks and reclaims deleted data promptly without bloating untouched space.
+**Reopen if:** OpenZFS adds a `zpool trim` flag that trims only initialized/dirty metaslabs without allocating space maps on untouched metaslabs.
