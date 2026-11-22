@@ -1,6 +1,6 @@
 import { useQuery } from "@tanstack/react-query";
 import { Link, useParams } from "@tanstack/react-router";
-import { useEffect, useRef } from "react";
+import { useLayoutEffect, useRef } from "react";
 import { api, type Command, type CommandEvent, type FinishedCommand, type Snapshot } from "../api";
 import { Meter } from "../components/charts/Bars";
 import { SpeedBars } from "../components/charts/SpeedBars";
@@ -9,6 +9,7 @@ import { FAILURE } from "../components/CommandTable";
 import { Card, StatTile } from "../components/ui/Card";
 import { BenchTag, KindTag, StateBadge } from "../components/ui/State";
 import { nodeName, useSnapshot } from "../lib/data";
+import { atEnd } from "../lib/follow";
 import { bytes, duration, hhmmss, speedup } from "../lib/format";
 import { isLive } from "../lib/live";
 import { NotFound } from "./NotFound";
@@ -109,7 +110,8 @@ function CommandView({ s, live, done, id }: { s: Snapshot; live: Command | null;
         </Card>
       )}
 
-      <div className="grid gap-4 lg:grid-cols-[1fr_320px]">
+      {/* minmax(0,…) keeps long log lines from widening the column past the page: the log scrolls in its own box. */}
+      <div className="grid grid-cols-[minmax(0,1fr)] gap-4 lg:grid-cols-[minmax(0,1fr)_320px]">
         <Card title="Output" sub={live && isLive(live) ? "Live" : "Captured"}>
           <LogView id={id} live={!!live && isLive(live)} />
         </Card>
@@ -170,20 +172,27 @@ function Timeline({ events }: { events: CommandEvent[] }) {
 
 function LogView({ id, live }: { id: string; live: boolean }) {
   const log = useQuery({ queryKey: ["log", id], queryFn: () => api.commandLog(id), refetchInterval: live ? 1000 : false });
-  const end = useRef<HTMLDivElement>(null);
+  const box = useRef<HTMLDivElement>(null);
+  const following = useRef(true);
   const lines = log.data?.lines.length ?? 0;
-  useEffect(() => {
-    if (live) end.current?.scrollIntoView({ block: "nearest" });
+  // Scroll only the log's own box (scrollIntoView would scroll the page too),
+  // and only while the reader sits at its end.
+  useLayoutEffect(() => {
+    const el = box.current;
+    if (el && live && following.current) el.scrollTop = el.scrollHeight;
   }, [lines, live]);
   return (
-    <div className="max-h-[520px] overflow-auto rounded-lg border border-border bg-background/60 p-3 font-mono text-[11.5px] leading-[1.7]">
+    <div
+      ref={box}
+      onScroll={(e) => (following.current = atEnd(e.currentTarget))}
+      className="max-h-[520px] overflow-auto rounded-lg border border-border bg-background/60 p-3 font-mono text-[11.5px] leading-[1.7]"
+    >
       {log.data?.lines.map((l, i) => (
         <div key={i} className={`whitespace-pre ${tone(l)}`}>
           {l || " "}
         </div>
       ))}
       {live && <div className="ember-pulse text-primary">▍</div>}
-      <div ref={end} />
     </div>
   );
 }
