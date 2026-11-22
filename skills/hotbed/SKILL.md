@@ -22,6 +22,11 @@ hotbed wait                                      # blocks until a command in the
 hotbed session end
 ```
 
+- **A session works on a project.** A project is one or more repos, named by their canonical git
+  remotes (`github.com/semistrict/hotbed`). `session start` picks the one project that holds this
+  checkout's repo; a repo no project holds gets a project of its own name. When several projects
+  hold it, or outside a checkout, name one: `-p PROJECT` or `HOTBED_PROJECT`. `hotbed project ls`
+  lists them; `hotbed project add NAME --repo REMOTE...` makes one or adds repos to it.
 - **Everything happens in a session.** Session and repo are never positional arguments: override them with `-s`/`HOTBED_SESSION` and `-r`/`HOTBED_REPO`, or let hotbed default the session from `T3CODE_THREAD_ID` → current git worktree (stored in `~/.hotbed/sessions.json`) and infer the repo from the current git checkout. `hotbed session current` prints the active session.
   `session start` picks a free adjective-noun name, or takes one you give it.
 - **A session has one workspace per repo.** `hotbed add` (with `-r REPO` outside a checkout) makes it or returns the one it has.
@@ -68,6 +73,36 @@ installs from a lockfile.
   (`reason`) that names the failed step. Fix the step and the next `add` retries.
 - Steps run as an unprivileged user. OS packages (`apt`, `dnf`) are not steps: ask the person
   who runs the cluster.
+
+## Asking the user: questions
+
+When you need the user's decision, don't stop and wait: ask on the project's question list, carry
+on with your best guess, and read the answer when it comes. A question takes exactly the JSON
+AskUserQuestion takes; each of its questions becomes an entry of its own:
+
+```sh
+hotbed question add <<'EOF'
+{"questions": [{"question": "Which store should sessions use?", "header": "Store", "multiSelect": false,
+  "options": [{"label": "SQLite (Recommended)", "description": "One file, already used"},
+              {"label": "Postgres", "description": "A server to run"}]}]}
+EOF
+hotbed question wait 12          # up to two minutes; or keep working and let hotbed wait tell you
+hotbed question outbox           # answers waiting for an agent
+hotbed question ack 12           # you read it and acted on it: it is handled
+```
+
+- **One list per project, every session's.** `question ls` lists your project's questions, newest
+  first (`--sort oldest|updated|rank`, `--state open|answered|dismissed|handled|deleted|all`,
+  `-p PROJECT`, `--all-projects`). Read it before asking: another session may have asked already.
+- **The user answers in the cockpit**, or dismisses (no answer will come). An answer waits in the
+  outbox until an agent acknowledges it; any agent of the project may act on and ack an answer.
+  An answer or dismissal is also an event of the asking session, so its `hotbed wait` wakes.
+- **Any session may edit (`question edit ID`, while open) or delete (`question rm ID --reason`)
+  any question** it finds wrong or no longer needed. Nothing is lost: `question show ID` has the
+  whole history, each change with its session and time.
+- A question records where you asked from (checkout, branch, commit, changed files) and, if the
+  project holds your checkout's repo, that it is about that repo (`--repo REMOTE` names another).
+- Never answer a question yourself (`question answer`) unless the user told you the answer.
 
 ## Keeping a session alive
 
@@ -151,6 +186,8 @@ hotbed schedule run cladefs-nightly         # a run now; prints its session, for
 | Command | Does |
 |---|---|
 | `hotbed session current` | Active session and where it came from (`flag`, `env`, `thread`, `worktree`) |
+| `hotbed session ls` | The project's live sessions (`--ended`, `--all-projects`) |
+| `hotbed project ls` | Projects, their repos, live sessions and questions |
 | `hotbed ps` | The session's commands, live and just ended |
 | `hotbed logs CMD [-f]` | A command's output; `-f` follows until it ends |
 | `hotbed stop CMD` | Stops a command |

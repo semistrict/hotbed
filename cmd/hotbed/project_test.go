@@ -1,6 +1,7 @@
 package main
 
 import (
+	"maps"
 	"slices"
 	"strings"
 	"testing"
@@ -90,4 +91,50 @@ func projectRepos(ls *pb.ListProjectsResponse, name string) []string {
 		}
 	}
 	return nil
+}
+
+// project ls counts each project's live sessions and questions; session ls
+// lists a project's sessions.
+func TestProjectsCountTheirWork(t *testing.T) {
+	c, user := questionCluster(t)
+	c.ok(nil, "project", "add", "other")
+	c.ok(nil, "session", "start", "far-fox", "-p", "other")
+	c.ask("brave-otter", storeQuestion)
+	c.ask("brave-otter", storeQuestion)
+	if _, err := user.AnswerQuestion(t.Context(), &pb.AnswerQuestionRequest{Id: 1, Answer: &pb.Answer{Other: "yes"}}); err != nil {
+		t.Fatal(err)
+	}
+	c.ok(nil, "session", "end", "-s", "calm-heron")
+
+	ls := &pb.ListProjectsResponse{}
+	c.ok(ls, "project", "ls")
+	counts := map[string][3]int32{}
+	for _, p := range ls.Projects {
+		counts[p.Name] = [3]int32{p.LiveSessions, p.OpenQuestions, p.Outbox}
+	}
+	if want := map[string][3]int32{"test": {1, 1, 1}, "other": {1, 0, 0}}; !maps.Equal(counts, want) {
+		t.Errorf("project ls counts (live sessions, open, outbox) = %v, want %v", counts, want)
+	}
+
+	sessions := &pb.ListSessionsResponse{}
+	c.ok(sessions, "session", "ls")
+	if got := sessionIDs(sessions); !slices.Equal(got, []string{"brave-otter"}) {
+		t.Errorf("session ls in test = %v", got)
+	}
+	c.ok(sessions, "session", "ls", "--ended")
+	if got := sessionIDs(sessions); !slices.Contains(got, "calm-heron") || len(got) != 2 {
+		t.Errorf("session ls --ended = %v, want brave-otter and calm-heron", got)
+	}
+	c.ok(sessions, "session", "ls", "--all-projects")
+	if got := sessionIDs(sessions); len(got) != 2 || !slices.Contains(got, "far-fox") {
+		t.Errorf("session ls --all-projects = %v, want brave-otter and far-fox", got)
+	}
+}
+
+func sessionIDs(res *pb.ListSessionsResponse) []string {
+	var out []string
+	for _, s := range res.Sessions {
+		out = append(out, s.Id)
+	}
+	return out
 }

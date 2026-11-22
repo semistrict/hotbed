@@ -17,7 +17,7 @@ export class MockQuestions {
     const at = (m: number, session: string | null, reason = ""): Stamp => ({ at: new Date(ago(m)).toISOString(), session, host: session ? "asahimbp" : "laptop", reason });
     const from = { dir: "/Users/ramon/src/hotbed", remote: "git@github.com:semistrict/hotbed.git", branch: "questions", head: "8d708783e1f0c2b4", dirtyFiles: 3, dirty: [" M internal/controller/questions.go", " M proto/hotbed/v1/hotbed.proto", "?? cmd/hotbed/question.go"] };
 
-    this.ask(at(190, "calm-heron"), from, {
+    this.ask("hotbed", at(190, "calm-heron"), from, {
       question: "Should handled answers stay in the cockpit's All tab forever, or age out after 30 days?",
       header: "Retention",
       multiSelect: false,
@@ -29,7 +29,7 @@ export class MockQuestions {
     this.answer(1, { picked: ["Forever (Recommended)"], other: "", notes: "" }, at(170, null));
     this.handle(1, at(160, "calm-heron"));
 
-    this.ask(at(95, "brave-otter"), from, {
+    this.ask("hotbed", at(95, "brave-otter"), from, {
       question: "The parked command's swap stays high after it thaws. Reclaim it on thaw?",
       header: "Swap",
       multiSelect: false,
@@ -40,7 +40,7 @@ export class MockQuestions {
     });
     this.delete(2, at(80, "brave-otter", "measured: the kernel brings it back within a minute"));
 
-    this.ask(at(42, "brave-otter"), from, {
+    this.ask("cladefs", at(42, "brave-otter"), { ...from, dir: "/Users/ramon/src/cladefs", remote: "git@github.com:semistrict/cladefs.git", branch: "nightly" }, {
       question: "Which machines should a nightly measurement run on?",
       header: "Nightly",
       multiSelect: true,
@@ -52,7 +52,7 @@ export class MockQuestions {
     });
     this.answer(3, { picked: ["ubu1", "oldpc"], other: "", notes: "asahimbp when it has its bench CPUs" }, at(30, null));
 
-    this.ask(at(18, "quiet-lynx"), null, {
+    this.ask("hotbed", at(18, "quiet-lynx"), null, {
       question: "How should a step that fails on one node but not others be reported?",
       header: "Step fails",
       multiSelect: false,
@@ -61,7 +61,7 @@ export class MockQuestions {
         { label: "Worst wins", description: "Failed anywhere is failed.", preview: "step ls -r app\n  build      ✕ failed on asahimbp" },
       ],
     });
-    this.ask(at(6, "brave-otter"), from, {
+    this.ask("hotbed", at(6, "brave-otter"), from, {
       question: "Name for the outbox's acknowledged state in the CLI?",
       header: "Naming",
       multiSelect: false,
@@ -73,9 +73,9 @@ export class MockQuestions {
     });
   }
 
-  list({ states = [], order = "newest" }: QuestionFilter): QuestionList {
+  list({ project, states = [], order = "newest" }: QuestionFilter): QuestionList {
     const want: QuestionState[] = states.length > 0 ? states : ["open", "answered", "dismissed", "handled"];
-    const picked = this.questions.filter((q) => want.includes(q.state));
+    const picked = this.questions.filter((q) => want.includes(q.state) && (!project || q.project === project));
     const by: Record<NonNullable<QuestionFilter["order"]>, (a: Question, b: Question) => number> = {
       newest: (a, b) => b.asked.at.localeCompare(a.asked.at) || b.id - a.id,
       oldest: (a, b) => a.asked.at.localeCompare(b.asked.at) || a.id - b.id,
@@ -90,8 +90,10 @@ export class MockQuestions {
     return structuredClone(this.changes.filter((c) => c.id === id).map((c) => c.change));
   }
 
-  openCount(): number {
-    return this.questions.filter((q) => q.state === "open").length;
+  /** A project's questions waiting on the user and on agents; every project's for null. */
+  counts(project: string | null): { open: number; outbox: number } {
+    const mine = this.questions.filter((q) => project === null || q.project === project);
+    return { open: mine.filter((q) => q.state === "open").length, outbox: mine.filter((q) => q.state === "answered" || q.state === "dismissed").length };
   }
 
   answer(id: number, answer: Answer, by: Stamp = user()): Question {
@@ -120,10 +122,12 @@ export class MockQuestions {
     return this.change(q, "moved", by, () => (q.rank = rank));
   }
 
-  private ask(by: Stamp, askedFrom: Question["askedFrom"], prompt: Prompt) {
+  private ask(project: string, by: Stamp, askedFrom: Question["askedFrom"], prompt: Prompt) {
     const top = Math.min(0, ...this.questions.map((q) => q.rank));
     const q: Question = {
       id: this.questions.length + 1,
+      project,
+      repo: askedFrom ? `github.com/semistrict/${project}` : null,
       prompt,
       state: "open",
       rank: top - 1,

@@ -56,6 +56,8 @@ export interface Repo {
   units: number;
   /** A full build from nothing on a typical node. */
   coldBuildSeconds: number;
+  /** Its canonical git remote, which projects hold it by. */
+  remote: string;
 }
 
 export type BaseState = "building" | "warm" | "stale";
@@ -106,6 +108,8 @@ export interface Session {
   schedule: string | null;
   /** Its scheduled run is in progress: the idle hour does not apply. */
   scheduleRunning: boolean;
+  /** The project it works on; null for one from before projects. */
+  project: string | null;
 }
 
 export interface SessionWorkspace {
@@ -292,8 +296,25 @@ export interface Snapshot {
   sessions: Session[];
   /** By name, each with its recent runs. */
   schedules: ScheduledCommand[];
-  /** Questions waiting for the user's answer. */
+  /** Questions waiting for the user's answer, every project's. */
   openQuestions: number;
+  /** Every project, by name. */
+  projects: Project[];
+}
+
+/**
+ * What sessions work on and questions are about: one or more repos, each
+ * named by its canonical git remote, as a T3 Code project holds folders.
+ */
+export interface Project {
+  name: string;
+  /** Canonical git remotes: github.com/semistrict/hotbed. */
+  repos: string[];
+  createdAt: string;
+  liveSessions: number;
+  openQuestions: number;
+  /** Questions answered or dismissed, waiting for an agent. */
+  outbox: number;
 }
 
 /**
@@ -420,6 +441,9 @@ export interface AskedFrom {
 
 export interface Question {
   id: number;
+  project: string;
+  /** The project's repo it is about, a canonical remote; null for the whole project. */
+  repo: string | null;
   prompt: Prompt;
   state: QuestionState;
   /** Its place in the user's order, lower first. */
@@ -447,6 +471,8 @@ export interface QuestionChange {
 }
 
 export interface QuestionFilter {
+  /** Only this project's; null or unset for every project's. */
+  project?: string | null;
   /** None: every state but deleted. */
   states?: QuestionState[];
   order?: QuestionOrder;

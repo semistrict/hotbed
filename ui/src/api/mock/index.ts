@@ -16,7 +16,12 @@ export function createMockApi(seed = 7120): Api {
   return {
     async snapshot(): Promise<Snapshot> {
       sync();
-      return { ...cluster.snapshot(), openQuestions: questions.openCount() };
+      const snap = cluster.snapshot();
+      return {
+        ...snap,
+        openQuestions: questions.counts(null).open,
+        projects: snap.projects.map((p) => ({ ...p, openQuestions: questions.counts(p.name).open, outbox: questions.counts(p.name).outbox })),
+      };
     },
 
     async commandLog(id: string): Promise<CommandLog> {

@@ -75,6 +75,9 @@ const (
 	SessionServiceStartSessionProcedure = "/hotbed.v1.SessionService/StartSession"
 	// SessionServiceGetSessionProcedure is the procedure name of the SessionService's GetSession RPC.
 	SessionServiceGetSessionProcedure = "/hotbed.v1.SessionService/GetSession"
+	// SessionServiceListSessionsProcedure is the procedure name of the SessionService's ListSessions
+	// RPC.
+	SessionServiceListSessionsProcedure = "/hotbed.v1.SessionService/ListSessions"
 	// SessionServiceEndSessionProcedure is the procedure name of the SessionService's EndSession RPC.
 	SessionServiceEndSessionProcedure = "/hotbed.v1.SessionService/EndSession"
 	// SessionServiceWatchSessionProcedure is the procedure name of the SessionService's WatchSession
@@ -842,6 +845,13 @@ var (
 			Procedure:  SessionServiceGetSessionProcedure,
 		}
 	})
+	sessionServiceListSessionsSpec = sync.OnceValue(func() connect.Spec {
+		return connect.Spec{
+			StreamType: connect.StreamTypeUnary,
+			Schema:     v1.File_hotbed_v1_hotbed_proto.Services().ByName("SessionService").Methods().ByName("ListSessions"),
+			Procedure:  SessionServiceListSessionsProcedure,
+		}
+	})
 	sessionServiceEndSessionSpec = sync.OnceValue(func() connect.Spec {
 		return connect.Spec{
 			StreamType: connect.StreamTypeUnary,
@@ -865,6 +875,10 @@ type SessionServiceClient interface {
 	// holds is a project of its own, made for it.
 	StartSession(context.Context, *v1.StartSessionRequest) (*v1.Session, error)
 	GetSession(context.Context, *v1.GetSessionRequest) (*v1.Session, error)
+	// ListSessions lists a project's sessions, or every project's: those
+	// live, and with ended, those that ended in the last day too; the most
+	// recently active first.
+	ListSessions(context.Context, *v1.ListSessionsRequest) (*v1.ListSessionsResponse, error)
 	// EndSession stops the session's commands and releases its workspaces.
 	// A session nothing touches for an hour ends the same way; WatchSession
 	// keeps it alive.
@@ -910,6 +924,10 @@ type SessionServiceHandler interface {
 	// holds is a project of its own, made for it.
 	StartSession(context.Context, *v1.StartSessionRequest) (*v1.Session, error)
 	GetSession(context.Context, *v1.GetSessionRequest) (*v1.Session, error)
+	// ListSessions lists a project's sessions, or every project's: those
+	// live, and with ended, those that ended in the last day too; the most
+	// recently active first.
+	ListSessions(context.Context, *v1.ListSessionsRequest) (*v1.ListSessionsResponse, error)
 	// EndSession stops the session's commands and releases its workspaces.
 	// A session nothing touches for an hour ends the same way; WatchSession
 	// keeps it alive.
@@ -928,6 +946,7 @@ func RegisterSessionServiceHandler(server *connect.Server, svc SessionServiceHan
 	server.Register(
 		connect.Method{Spec: sessionServiceStartSessionSpec(), Handler: adapter.startSession},
 		connect.Method{Spec: sessionServiceGetSessionSpec(), Handler: adapter.getSession},
+		connect.Method{Spec: sessionServiceListSessionsSpec(), Handler: adapter.listSessions},
 		connect.Method{Spec: sessionServiceEndSessionSpec(), Handler: adapter.endSession},
 		connect.Method{Spec: sessionServiceWatchSessionSpec(), Handler: adapter.watchSession},
 	)
@@ -960,6 +979,10 @@ func (UnimplementedSessionServiceHandler) GetSession(context.Context, *v1.GetSes
 	return nil, connect.NewError(connect.CodeUnimplemented, "hotbed.v1.SessionService.GetSession is not implemented")
 }
 
+func (UnimplementedSessionServiceHandler) ListSessions(context.Context, *v1.ListSessionsRequest) (*v1.ListSessionsResponse, error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, "hotbed.v1.SessionService.ListSessions is not implemented")
+}
+
 func (UnimplementedSessionServiceHandler) EndSession(context.Context, *v1.EndSessionRequest) (*v1.Session, error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, "hotbed.v1.SessionService.EndSession is not implemented")
 }
@@ -983,6 +1006,14 @@ func (c *sessionServiceClient) StartSession(ctx context.Context, req *v1.StartSe
 func (c *sessionServiceClient) GetSession(ctx context.Context, req *v1.GetSessionRequest) (*v1.Session, error) {
 	var res v1.Session
 	if err := c.client.CallUnary(ctx, sessionServiceGetSessionSpec(), req, &res); err != nil {
+		return nil, err
+	}
+	return &res, nil
+}
+
+func (c *sessionServiceClient) ListSessions(ctx context.Context, req *v1.ListSessionsRequest) (*v1.ListSessionsResponse, error) {
+	var res v1.ListSessionsResponse
+	if err := c.client.CallUnary(ctx, sessionServiceListSessionsSpec(), req, &res); err != nil {
 		return nil, err
 	}
 	return &res, nil
@@ -1024,6 +1055,18 @@ func (h sessionServiceHandler) getSession(ctx context.Context, _ connect.Spec, s
 		return err
 	}
 	res, err := h.svc.GetSession(ctx, &req)
+	if err != nil {
+		return err
+	}
+	return stream.Send(res)
+}
+
+func (h sessionServiceHandler) listSessions(ctx context.Context, _ connect.Spec, stream connect.ServerStream) error {
+	var req v1.ListSessionsRequest
+	if err := stream.Receive(&req); err != nil {
+		return err
+	}
+	res, err := h.svc.ListSessions(ctx, &req)
 	if err != nil {
 		return err
 	}

@@ -5,7 +5,9 @@ Silicon laptops on Asahi) on one tailnet. Its one trick: every workspace is a co
 a **warm base**, a checkout of main that is already built, so a branch compiles only what it changed.
 
 Scope comes from two ends: the agent experience (the CLI, `hotbed skills get hotbed`) and the human
-experience (the read-only cockpit in `ui/`, whose `src/api/types.ts` is the API it needs).
+experience (the cockpit in `ui/`, whose `src/api/types.ts` is the API it needs). The cockpit
+watches the cluster and is where the user answers agents' questions; whatever it does, the CLI
+does too.
 
 ## Pieces
 
@@ -86,6 +88,41 @@ cockpit.
   session expiry: the controller ends no session with a workspace on a worker it has not heard from,
   for up to a day. On a worker's own machine, the worker admits only root and the user its
   commands run as; anyone else gets a refusal saying so.
+
+## Projects
+
+A **project** is what sessions work on and questions are about, as in T3 Code: one or more repos,
+each named by its canonical git remote (`github.com/semistrict/hotbed`, whatever form the remote
+was written in). Projects are their own table (`projects`, with `project_repos` naming the repos
+each holds), and a repo may be in several.
+
+- **Every session belongs to one.** `session start -p NAME` names it. Otherwise the CLI sends its
+  checkout's remote and the session joins the one project that holds it; a repo no project holds
+  becomes a project of its own name, made then; a repo several projects hold, or no checkout at
+  all, needs `-p`. A scheduled run joins its repo's project the same way.
+- **The cockpit is organized around them.** Its home lists projects with their sessions, running
+  commands and questions; choosing one scopes every page (sessions, questions, commands,
+  history, workspaces, schedules) to it. The machines (Cluster, Nodes) are every project's.
+
+## Questions
+
+Agents ask the user questions the way AskUserQuestion asks them (the same JSON: a question, a
+header, two to four options with descriptions and previews, multiSelect), without stopping for
+the answer. Each is an entry on its project's list, which every session of the project shares
+and may edit or delete.
+
+- **Lifecycle.** *open* (the user's inbox, in an order the user sets) → *answered* (picks, words
+  of the user's own, a note) or *dismissed* (no answer will come), which wait in the **outbox**
+  until an agent acknowledges them → *handled*. Any session may delete a question (*deleted*).
+- **Nothing is removed.** `questions` holds each question as it is; `question_changes` holds every
+  change (asked, edited, moved, answered, dismissed, handled, deleted) with when, which session
+  (empty for the user) on which machine, why, and the question as the change left it.
+- **Where it was asked.** A question keeps its asker's directory, origin, branch, commit and
+  changed files, and the project's repo it is about (the asker's checkout, when the project
+  holds it).
+- **Hearing back.** `question wait` long-polls until a named question is no longer open, or the
+  project's outbox holds something. An answer or dismissal is also an event of the asking
+  session, so its `hotbed wait` wakes.
 
 ## Storage
 

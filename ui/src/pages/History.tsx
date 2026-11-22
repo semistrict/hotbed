@@ -1,16 +1,16 @@
 import { Link, useSearch } from "@tanstack/react-router";
 import type { FinishedCommand, Snapshot } from "../api";
-import { Columns } from "../components/charts/Columns";
 import { FAILURE, HistoryTable } from "../components/CommandTable";
+import { Columns } from "../components/charts/Columns";
 import { Card, StatTile } from "../components/ui/Card";
-import { useSnapshot } from "../lib/data";
 import { compact, duration, percent, quantile } from "../lib/format";
+import { useScopedSnapshot } from "../lib/project";
 import { compiled, failureRate, savings } from "../lib/stats";
 import { PageTitle } from "./Nodes";
 
 export function HistoryPage() {
   const { repo, outcome } = useSearch({ from: "/history" });
-  const { data: s } = useSnapshot();
+  const { data: s } = useScopedSnapshot();
   if (!s) return null;
   const rows = s.history.filter((c) => (!repo || c.repoId === repo) && (!outcome || c.state === outcome)).reverse();
   const scoped = s.history.filter((c) => !repo || c.repoId === repo);

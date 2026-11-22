@@ -49,6 +49,29 @@ func (s *sessions) GetSession(ctx context.Context, req *pb.GetSessionRequest) (*
 	return s.cfg.Store.Session(ctx, req.Id)
 }
 
+func (s *sessions) ListSessions(ctx context.Context, req *pb.ListSessionsRequest) (*pb.ListSessionsResponse, error) {
+	if req.Project != "" {
+		if _, err := s.cfg.Store.Project(ctx, req.Project); err != nil {
+			return nil, err
+		}
+	}
+	since := s.now().Add(time.Millisecond) // only live ones
+	if req.Ended {
+		since = s.now().Add(-24 * time.Hour)
+	}
+	all, err := s.cfg.Store.RecentSessions(ctx, since)
+	if err != nil {
+		return nil, err
+	}
+	out := &pb.ListSessionsResponse{}
+	for _, sess := range all {
+		if req.Project == "" || sess.Project == req.Project {
+			out.Sessions = append(out.Sessions, sess)
+		}
+	}
+	return out, nil
+}
+
 func (s *sessions) EndSession(ctx context.Context, req *pb.EndSessionRequest) (*pb.Session, error) {
 	if _, err := s.cfg.Store.LiveSession(ctx, req.Id, s.now()); err != nil {
 		return nil, err

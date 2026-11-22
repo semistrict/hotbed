@@ -45,6 +45,7 @@ describe("toSnapshot", () => {
         {
           id: "brave-otter",
           agent: "laptop",
+          project: "app",
           startedAt: 1795299000000n,
           lastActiveAt: 1795299900000n,
           workspaces: [{ id: "p1", repoId: "app", nodeId: "nAsahi", createdAt: 1795299000000n, releasedAt: 1795299500000n }],
@@ -113,6 +114,7 @@ describe("toSnapshot", () => {
         workspaces: [{ id: "p1", repoId: "app", nodeId: "nAsahi", createdAt: "2026-11-21T22:10:00.000Z", releasedAt: "2026-11-21T22:18:20.000Z" }],
         schedule: null,
         scheduleRunning: false,
+        project: "app",
       },
       {
         id: "nightly-20261121-0200",
@@ -124,6 +126,7 @@ describe("toSnapshot", () => {
         workspaces: [],
         schedule: "nightly",
         scheduleRunning: true,
+        project: null,
       },
     ]);
     expect(s.schedules).toEqual([
@@ -189,6 +192,8 @@ describe("toQuestion", () => {
   it("maps a question's stamps, state and answer, leaving unset stamps null", () => {
     const wire = create(QuestionSchema, {
       id: 12,
+      project: "app",
+      repo: "github.com/o/app",
       prompt: { question: "Which store?", header: "Store", multiSelect: true, options: [{ label: "SQLite", description: "One file", preview: "sqlite3 x.db" }] },
       state: QuestionState.HANDLED,
       rank: -3n,
@@ -201,6 +206,8 @@ describe("toQuestion", () => {
     });
     expect(toQuestion(wire)).toEqual({
       id: 12,
+      project: "app",
+      repo: "github.com/o/app",
       prompt: { question: "Which store?", header: "Store", multiSelect: true, options: [{ label: "SQLite", description: "One file", preview: "sqlite3 x.db" }] },
       state: "handled",
       rank: -3,

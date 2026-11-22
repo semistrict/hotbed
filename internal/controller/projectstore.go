@@ -116,6 +116,25 @@ func project(ctx context.Context, q querier, name string) (*pb.Project, error) {
 	return p, rows.Err()
 }
 
+// LiveSessionsByProject counts each project's sessions that have not ended.
+func (s *Store) LiveSessionsByProject(ctx context.Context) (map[string]int32, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT p.name, COUNT(*) FROM sessions s JOIN projects p ON p.id = s.project_id WHERE s.ended_at IS NULL GROUP BY p.name`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := map[string]int32{}
+	for rows.Next() {
+		var name string
+		var n int32
+		if err := rows.Scan(&name, &n); err != nil {
+			return nil, err
+		}
+		out[name] = n
+	}
+	return out, rows.Err()
+}
+
 // projectID is the row of the project called name.
 func projectID(ctx context.Context, q querier, name string) (int64, error) {
 	var id int64

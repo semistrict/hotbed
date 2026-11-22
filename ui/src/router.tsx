@@ -8,6 +8,7 @@ import { NodePage } from "./pages/Node";
 import { NodesPage } from "./pages/Nodes";
 import { NotFound } from "./pages/NotFound";
 import { OverviewPage } from "./pages/Overview";
+import { ProjectsPage } from "./pages/Projects";
 import { QuestionsPage, type QuestionsSearch } from "./pages/Questions";
 import { SessionPage } from "./pages/Session";
 import { SchedulesPage } from "./pages/Schedules";
@@ -17,9 +18,10 @@ import { WorkspacesPage } from "./pages/Workspaces";
 
 const root = createRootRoute({ component: Shell, notFoundComponent: NotFound });
 
-// Sessions are what an agent works in, so they are the cockpit's home; the
-// cluster's own view is a page of its own.
-const sessions = createRoute({ getParentRoute: () => root, path: "/", component: SessionsPage });
+// Projects are the cockpit's home: what sessions work on, what questions are
+// about. The project chosen scopes every page but the machines' own.
+const projects = createRoute({ getParentRoute: () => root, path: "/", component: ProjectsPage });
+const sessions = createRoute({ getParentRoute: () => root, path: "/sessions", component: SessionsPage });
 const session = createRoute({ getParentRoute: () => root, path: "/sessions/$id", component: SessionPage });
 const schedules = createRoute({ getParentRoute: () => root, path: "/schedules", component: SchedulesPage });
 const TABS = ["inbox", "outbox", "handled", "deleted", "all"];
@@ -75,7 +77,7 @@ const history = createRoute({
   }),
 });
 
-const routeTree = root.addChildren([sessions, session, questions, schedules, overview, nodes, node, workspaces, workspace, commands, command, history]);
+const routeTree = root.addChildren([projects, sessions, session, questions, schedules, overview, nodes, node, workspaces, workspace, commands, command, history]);
 
 export const router = createRouter({ routeTree, defaultPreload: "intent", scrollRestoration: true });
 

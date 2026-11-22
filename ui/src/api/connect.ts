@@ -70,8 +70,8 @@ export function createConnectApi(baseUrl = window.location.origin): Api {
       const f = await workspaces.getFile({ workspaceId, path });
       return { path: f.path, text: f.text, changedLines: f.changedLines };
     },
-    questions: async ({ states = [], order = "newest" }) => {
-      const res = await questions.listQuestions({ states: states.map((st) => TO_STATE[st]), order: TO_ORDER[order] });
+    questions: async ({ project, states = [], order = "newest" }) => {
+      const res = await questions.listQuestions({ project: project ?? "", states: states.map((st) => TO_STATE[st]), order: TO_ORDER[order] });
       return { questions: res.questions.map(toQuestion), total: res.total };
     },
     questionHistory: async (id) => (await questions.getQuestion({ id })).history.map(toChange),
@@ -115,6 +115,8 @@ export function toQuestion(q: PbQuestion): Question {
   const f = q.askedFrom;
   return {
     id: q.id,
+    project: q.project,
+    repo: orNull(q.repo),
     prompt: {
       question: p?.question ?? "",
       header: p?.header ?? "",
@@ -162,6 +164,7 @@ export function toSnapshot(s: PbSnapshot): Snapshot {
       language: r.language === "go" || r.language === "rust" ? r.language : "typescript",
       units: r.units,
       coldBuildSeconds: r.coldBuildSeconds,
+      remote: r.remote,
     })),
     bases: s.bases.map(toBase),
     workspaces: s.workspaces.map(toWorkspace),
@@ -221,10 +224,19 @@ export function toSnapshot(s: PbSnapshot): Snapshot {
         })),
         schedule: orNull(x.schedule),
         scheduleRunning: x.scheduleRunning,
+        project: orNull(x.project),
       }),
     ),
     schedules: s.schedules.map(toScheduled),
     openQuestions: s.openQuestions,
+    projects: s.projects.map((p) => ({
+      name: p.name,
+      repos: p.repos,
+      createdAt: iso(p.createdAt),
+      liveSessions: p.liveSessions,
+      openQuestions: p.openQuestions,
+      outbox: p.outbox,
+    })),
   };
 }
 

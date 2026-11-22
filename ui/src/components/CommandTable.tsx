@@ -1,9 +1,12 @@
 import { Link } from "@tanstack/react-router";
 import type { Command, FinishedCommand, Snapshot } from "../api";
 import { nodeName } from "../lib/data";
+import { useProject } from "../lib/project";
+import { commandProject } from "../lib/projects";
 import { ago, bytes, duration, speedup } from "../lib/format";
 import { Meter } from "./charts/Bars";
 import { CommandInline } from "./CommandBlock";
+import { ProjectTag } from "./ProjectTag";
 import { SessionLink } from "./SessionLink";
 import { Empty } from "./ui/Card";
 import { BenchTag, KindTag, StateBadge } from "./ui/State";
@@ -11,13 +14,14 @@ import { BenchTag, KindTag, StateBadge } from "./ui/State";
 /** Live commands: what each is doing now, against its limits. */
 export function LiveCommandTable({ s, commands }: { s: Snapshot; commands: Command[] }) {
   const now = Date.parse(s.now);
+  const [project] = useProject();
   if (commands.length === 0) return <Empty>No commands here right now.</Empty>;
   return (
     <div className="overflow-x-auto">
       <table className="w-full text-left text-[12px]">
         <thead className="eyebrow">
           <tr className="border-b border-border">
-            {["state", "command", "session", "workspace", "node", "for", "cpu", "memory · high", "crates", "why"].map((h) => (
+            {["state", "command", "session", ...(project ? [] : ["project"]), "workspace", "node", "for", "cpu", "memory · high", "crates", "why"].map((h) => (
               <th key={h} className="px-2 py-2 font-normal whitespace-nowrap">
                 {h}
               </th>
@@ -49,6 +53,11 @@ export function LiveCommandTable({ s, commands }: { s: Snapshot; commands: Comma
                 <td className="px-2 py-2.5">
                   <SessionLink id={c.sessionId} />
                 </td>
+                {!project && (
+                  <td className="px-2 py-2.5">
+                    <ProjectTag name={commandProject(s, c.sessionId, null)} />
+                  </td>
+                )}
                 <td className="px-2 py-2.5">
                   <Link to="/workspaces/$id" params={{ id: c.workspaceId }} className="font-mono text-[11px] text-muted-foreground hover:text-primary">
                     {c.workspaceId}
@@ -84,13 +93,14 @@ export function LiveCommandTable({ s, commands }: { s: Snapshot; commands: Comma
 /** Commands that ended: outcome, time against cold, and why it failed. */
 export function HistoryTable({ s, rows, limit = 200 }: { s: Snapshot; rows: FinishedCommand[]; limit?: number }) {
   const now = Date.parse(s.now);
+  const [project] = useProject();
   if (rows.length === 0) return <Empty>Nothing matches.</Empty>;
   return (
     <div className="overflow-x-auto">
       <table className="w-full text-left text-[12px]">
         <thead className="eyebrow">
           <tr className="border-b border-border">
-            {["outcome", "command", "session", "repo", "node", "ended", "took", "cold", "speedup", "crates", "peak mem", "why"].map((h) => (
+            {["outcome", "command", "session", ...(project ? [] : ["project"]), "repo", "node", "ended", "took", "cold", "speedup", "crates", "peak mem", "why"].map((h) => (
               <th key={h} className="px-2 py-2 font-normal whitespace-nowrap">
                 {h}
               </th>
@@ -112,6 +122,11 @@ export function HistoryTable({ s, rows, limit = 200 }: { s: Snapshot; rows: Fini
               <td className="px-2 py-2">
                 <SessionLink id={c.sessionId} />
               </td>
+              {!project && (
+                <td className="px-2 py-2">
+                  <ProjectTag name={commandProject(s, c.sessionId, c.repoId)} />
+                </td>
+              )}
               <td className="px-2 py-2 text-muted-foreground">{c.repoId}</td>
               <td className="px-2 py-2 text-muted-foreground">{nodeName(s, c.nodeId)}</td>
               <td className="px-2 py-2 whitespace-nowrap text-muted-foreground">{ago(c.endedAt, now)}</td>

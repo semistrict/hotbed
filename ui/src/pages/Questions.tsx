@@ -4,7 +4,9 @@ import { useState, type DragEvent } from "react";
 import { api, type Answer, type Question, type QuestionList, type QuestionOrder, type Snapshot, type Stamp } from "../api";
 import { SessionLink } from "../components/SessionLink";
 import { Card, Empty } from "../components/ui/Card";
-import { useSnapshot } from "../lib/data";
+import { ProjectTag } from "../components/ProjectTag";
+import { useProject, useScopedSnapshot } from "../lib/project";
+import { remoteName } from "../lib/projects";
 import { ago } from "../lib/format";
 import { answerReady, pick, placement, reorder, responseLine, shortHead, TAB_STATES, who, type QuestionTab } from "../lib/questions";
 import { PageTitle } from "./Nodes";
@@ -30,7 +32,7 @@ const SORTS: { sort: QuestionOrder; label: string }[] = [
 ];
 
 export function QuestionsPage() {
-  const { data: s } = useSnapshot();
+  const { data: s } = useScopedSnapshot();
   if (!s) return null;
   return <Questions s={s} />;
 }
@@ -41,9 +43,10 @@ function Questions({ s }: { s: Snapshot }) {
   const tab = search.tab ?? "inbox";
   // The inbox is in the user's order, which puts new questions on top: newest first until reordered.
   const sort = search.sort ?? (tab === "inbox" ? "rank" : "newest");
-  const key = ["questions", tab, sort] as const;
-  const list = useQuery({ queryKey: key, queryFn: () => api.questions({ states: TAB_STATES[tab], order: sort }), refetchInterval: 2000, placeholderData: keepPreviousData });
-  const outbox = useQuery({ queryKey: ["questions", "outbox", "count"], queryFn: () => api.questions({ states: TAB_STATES.outbox }), refetchInterval: 2000 });
+  const [project] = useProject();
+  const key = ["questions", project, tab, sort] as const;
+  const list = useQuery({ queryKey: key, queryFn: () => api.questions({ project, states: TAB_STATES[tab], order: sort }), refetchInterval: 2000, placeholderData: keepPreviousData });
+  const outbox = useQuery({ queryKey: ["questions", project, "outbox", "count"], queryFn: () => api.questions({ project, states: TAB_STATES.outbox }), refetchInterval: 2000 });
   const now = Date.parse(s.now);
   const movable = tab === "inbox" && sort === "rank";
   const questions = list.data?.questions ?? [];
@@ -54,7 +57,7 @@ function Questions({ s }: { s: Snapshot }) {
     <div className="space-y-6">
       <PageTitle
         title="Questions"
-        sub="What agents asked you, every session's in one list. Answer when you like: an answer waits in the outbox until an agent reads it and marks it handled. Nothing is ever removed."
+        sub={`What agents asked you about ${project ?? "every project"}: each project's sessions share one list. Answer when you like; an answer waits in the outbox until an agent reads it and marks it handled. Nothing is ever removed.`}
       />
       <div className="rise flex flex-wrap items-center gap-3">
         <div role="tablist" aria-label="Questions" className="flex rounded-lg border border-border bg-card/70 p-0.5">
@@ -212,6 +215,8 @@ const STATE_TAG: Record<Question["state"], { text: string; className: string }> 
 
 function QuestionCard({ s, q, now, delay, mover }: { s: Snapshot; q: Question; now: number; delay: number; mover: React.ReactNode }) {
   const tag = STATE_TAG[q.state];
+  const [project] = useProject();
+  const showProject = project === null;
   return (
     <Card delay={delay} className={q.state === "deleted" ? "opacity-70" : ""}>
       <div className="flex gap-3">
@@ -220,6 +225,8 @@ function QuestionCard({ s, q, now, delay, mover }: { s: Snapshot; q: Question; n
           <header className="flex flex-wrap items-baseline gap-x-3 gap-y-1">
             <span className="eyebrow text-foreground">{q.prompt.header}</span>
             <span className="font-mono text-[10.5px] text-faint">#{q.id}</span>
+            {showProject && <ProjectTag name={q.project} />}
+            {q.repo && <span className="font-mono text-[10.5px] text-muted-foreground" title={q.repo}>{remoteName(q.repo)}</span>}
             <span className={`font-mono text-[10.5px] ${tag.className}`}>{tag.text}</span>
             {q.prompt.multiSelect && <span className="font-mono text-[10px] tracking-wider text-faint uppercase">pick any</span>}
             <span className="ml-auto text-[11px] text-muted-foreground">

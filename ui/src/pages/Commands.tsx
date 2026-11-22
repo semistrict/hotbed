@@ -1,11 +1,11 @@
 import { Link, useSearch } from "@tanstack/react-router";
 import type { CommandState } from "../api";
-import { Columns } from "../components/charts/Columns";
 import { HistoryTable, LiveCommandTable } from "../components/CommandTable";
+import { Columns } from "../components/charts/Columns";
 import { Card, StatTile } from "../components/ui/Card";
-import { useSnapshot } from "../lib/data";
 import { bytes, duration } from "../lib/format";
 import { isLive } from "../lib/live";
+import { useScopedSnapshot } from "../lib/project";
 import { clusterNow } from "../lib/stats";
 import { PageTitle } from "./Nodes";
 
@@ -18,7 +18,7 @@ const STATES: { id: CommandState | "live"; label: string }[] = [
 
 export function CommandsPage() {
   const { state = "live", node } = useSearch({ from: "/commands" });
-  const { data: s } = useSnapshot();
+  const { data: s } = useScopedSnapshot();
   if (!s) return null;
   const now = clusterNow(s);
   const live = s.commands

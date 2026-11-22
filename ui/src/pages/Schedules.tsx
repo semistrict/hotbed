@@ -3,13 +3,14 @@ import { CommandBlock } from "../components/CommandBlock";
 import { SessionLink } from "../components/SessionLink";
 import { Card, Empty, StatTile } from "../components/ui/Card";
 import { OutcomeBadge } from "../components/ui/State";
-import { nodeName, repoName, useSnapshot } from "../lib/data";
+import { nodeName, repoName } from "../lib/data";
 import { duration, hhmm } from "../lib/format";
+import { useScopedSnapshot } from "../lib/project";
 import { nextRun } from "../lib/schedules";
 import { PageTitle } from "./Nodes";
 
 export function SchedulesPage() {
-  const { data: s } = useSnapshot();
+  const { data: s } = useScopedSnapshot();
   if (!s) return null;
   return <Schedules s={s} />;
 }

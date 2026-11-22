@@ -13,6 +13,7 @@ const session: Session = {
   workspaces: [{ id: "ws1", repoId: "cladefs", nodeId: "nUbu1", createdAt: "2026-11-21T11:00:00Z", releasedAt: null }],
   schedule: null,
   scheduleRunning: false,
+  project: "cladefs",
 };
 
 function command(id: string, state: Command["state"], startedAt: string, endedAt: string | null): Command {

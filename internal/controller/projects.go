@@ -39,8 +39,34 @@ func (s *Server) AddProject(ctx context.Context, req *pb.AddProjectRequest) (*pb
 }
 
 func (s *Server) ListProjects(ctx context.Context, _ *pb.ListProjectsRequest) (*pb.ListProjectsResponse, error) {
-	ps, err := s.cfg.Store.Projects(ctx)
+	ps, err := s.projects(ctx)
 	return &pb.ListProjectsResponse{Projects: ps}, err
+}
+
+// projects is every project, with its live sessions and its questions
+// waiting on the user and on agents counted.
+func (s *Server) projects(ctx context.Context) ([]*pb.Project, error) {
+	ps, err := s.cfg.Store.Projects(ctx)
+	if err != nil {
+		return nil, err
+	}
+	live, err := s.cfg.Store.LiveSessionsByProject(ctx)
+	if err != nil {
+		return nil, err
+	}
+	questions, err := s.cfg.Store.QuestionProjects(ctx)
+	if err != nil {
+		return nil, err
+	}
+	for _, p := range ps {
+		p.LiveSessions = live[p.Name]
+		for _, q := range questions {
+			if q.Name == p.Name {
+				p.OpenQuestions, p.Outbox = q.Open, q.Outbox
+			}
+		}
+	}
+	return ps, nil
 }
 
 // sessionProject is the project a session starts in: the one named, or

@@ -20,6 +20,7 @@ import (
 type sessionCmd struct {
 	Start   sessionStartCmd   `cmd:"" help:"Start a session in a project (-p, or the one holding this checkout's repo) and bind it to this T3 thread or git worktree in ~/.hotbed/sessions.json. Call hotbed wait at least hourly, or it is abandoned."`
 	Current sessionCurrentCmd `cmd:"" help:"Print the active session resolved from -s, HOTBED_SESSION, T3CODE_THREAD_ID, or the current git worktree."`
+	Ls      sessionLsCmd      `cmd:"" help:"A project's live sessions (default: this session's project), the most recently active first."`
 	End     sessionEndCmd     `cmd:"" help:"End a session: stop its commands, release its workspaces, and clear its local mapping."`
 }
 
@@ -53,6 +54,26 @@ type sessionCurrentCmd struct {
 
 func (c *sessionCurrentCmd) Exec(ctx context.Context, d deps) (any, error) {
 	return c.sessionFlag.resolveBinding(ctx, d)
+}
+
+type sessionLsCmd struct {
+	controllerFlag
+	sessionFlag
+	projectFlag
+	AllProjects bool `help:"Every project's sessions."`
+	Ended       bool `help:"Those that ended in the last day too."`
+}
+
+func (c *sessionLsCmd) Exec(ctx context.Context, d deps) (any, error) {
+	cl, err := c.clients(d.http)
+	if err != nil {
+		return nil, err
+	}
+	project, err := c.listed(ctx, d, cl, c.sessionFlag, c.AllProjects)
+	if err != nil {
+		return nil, err
+	}
+	return cl.sessions.ListSessions(ctx, &pb.ListSessionsRequest{Project: project, Ended: c.Ended})
 }
 
 type sessionEndCmd struct {

@@ -58,6 +58,10 @@ service SessionService {
   // holds is a project of its own, made for it.
   rpc StartSession(StartSessionRequest) returns (Session);
   rpc GetSession(GetSessionRequest) returns (Session);
+  // ListSessions lists a project's sessions, or every project's: those
+  // live, and with ended, those that ended in the last day too; the most
+  // recently active first.
+  rpc ListSessions(ListSessionsRequest) returns (ListSessionsResponse);
   // EndSession stops the session's commands and releases its workspaces.
   // A session nothing touches for an hour ends the same way; WatchSession
   // keeps it alive.
@@ -693,6 +697,16 @@ message GetSessionRequest {
   string id = 1;
 }
 
+message ListSessionsRequest {
+  // Empty for every project's.
+  string project = 1;
+  bool ended = 2;
+}
+
+message ListSessionsResponse {
+  repeated Session sessions = 1;
+}
+
 // ---- projects ---------------------------------------------------------------
 
 // What sessions work on, and what questions are about: one or more repos,
@@ -705,6 +719,11 @@ message Project {
   // Canonical git remotes, sorted.
   repeated string repos = 2;
   int64 created_at = 3;
+  // Set when listed: its sessions that have not ended, its questions
+  // waiting for the user, and those waiting for an agent.
+  int32 live_sessions = 4;
+  int32 open_questions = 5;
+  int32 outbox = 6;
 }
 
 message AddProjectRequest {
@@ -983,6 +1002,8 @@ message RepoSummary {
   string language = 3;
   int32 units = 4;
   double cold_build_seconds = 5;
+  // Its canonical git remote, which projects hold it by.
+  string remote = 6;
 }
 
 message ClusterEvent {
@@ -1070,6 +1091,8 @@ message Snapshot {
   repeated ScheduledCommand schedules = 18;
   // Questions waiting for the user's answer.
   int32 open_questions = 19;
+  // Every project, with what it has going on.
+  repeated Project projects = 20;
 }
 
 // ---- scheduled commands ---------------------------------------------------

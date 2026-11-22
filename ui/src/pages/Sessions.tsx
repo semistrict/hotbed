@@ -1,15 +1,17 @@
 import { Link } from "@tanstack/react-router";
 import type { Session, Snapshot } from "../api";
+import { ProjectTag } from "../components/ProjectTag";
 import { Meter } from "../components/charts/Bars";
 import { Card, Empty, StatTile } from "../components/ui/Card";
-import { nodeName, useSnapshot } from "../lib/data";
+import { nodeName } from "../lib/data";
 import { ago, duration } from "../lib/format";
 import { isLive } from "../lib/live";
+import { useProject, useScopedSnapshot } from "../lib/project";
 import { idleLeftMs, SESSION_IDLE_MS, sessionState, type SessionState } from "../lib/sessions";
 import { PageTitle } from "./Nodes";
 
 export function SessionsPage() {
-  const { data: s } = useSnapshot();
+  const { data: s } = useScopedSnapshot();
   if (!s) return null;
   return <Sessions s={s} />;
 }
@@ -67,12 +69,15 @@ function rank(s: Snapshot, x: Session): number {
 }
 
 export function SessionTable({ s, sessions, now }: { s: Snapshot; sessions: Session[]; now: number }) {
+  // Every project's sessions say whose they are.
+  const [project] = useProject();
+  const columns = ["session", ...(project ? [] : ["project"]), "state", "agent", "workspaces", "commands", "failed", "started", "last active", "abandoned in · ended"];
   return (
     <div className="overflow-x-auto">
       <table className="w-full text-left text-[12px]">
         <thead className="eyebrow">
           <tr className="border-b border-border">
-            {["session", "state", "agent", "workspaces", "commands", "failed", "started", "last active", "abandoned in · ended"].map((h) => (
+            {columns.map((h) => (
               <th key={h} className="px-2 py-2 font-normal whitespace-nowrap">
                 {h}
               </th>
@@ -97,6 +102,11 @@ export function SessionTable({ s, sessions, now }: { s: Snapshot; sessions: Sess
                     </Link>
                   )}
                 </td>
+                {!project && (
+                  <td className="px-2 py-2.5">
+                    <ProjectTag name={x.project} />
+                  </td>
+                )}
                 <td className="px-2 py-2.5">
                   <SessionStateLabel s={s} session={x} />
                 </td>

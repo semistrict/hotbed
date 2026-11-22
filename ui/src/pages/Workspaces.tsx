@@ -3,14 +3,15 @@ import type { Snapshot } from "../api";
 import { Columns } from "../components/charts/Columns";
 import { ForkTree } from "../components/charts/ForkTree";
 import { Card, StatTile } from "../components/ui/Card";
-import { nodeName, useSnapshot } from "../lib/data";
+import { nodeName } from "../lib/data";
 import { ago, bytes, compact, duration, quantile } from "../lib/format";
 import { isLive } from "../lib/live";
+import { useScopedSnapshot } from "../lib/project";
 import { PageTitle } from "./Nodes";
 import { stateTone } from "./Workspace";
 
 export function WorkspacesPage() {
-  const { data: s } = useSnapshot();
+  const { data: s } = useScopedSnapshot();
   if (!s) return null;
   const now = Date.parse(s.now);
   const live = s.workspaces.filter((w) => w.state !== "released");
