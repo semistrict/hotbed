@@ -45,12 +45,12 @@ func TestRunParseWithFlagsEnvAndRejectsPositionals(t *testing.T) {
 	}{
 		{
 			name:     "defaulted session and repo before --",
-			args:     []string{"run", "--controller", "ubu1", "--", "go", "test", "-race", "./..."},
+			args:     []string{"run", "--", "go", "test", "-race", "./..."},
 			wantArgs: []string{"go", "test", "-race", "./..."},
 		},
 		{
 			name:        "flags before -- and nested -- after",
-			args:        []string{"run", "--controller", "ubu1", "-s", "s1", "-r", "hotbed", "--detach", "--", "go", "test", "--", "-run", "Foo"},
+			args:        []string{"run", "-s", "s1", "-r", "hotbed", "--detach", "--", "go", "test", "--", "-run", "Foo"},
 			wantSession: "s1",
 			wantRepo:    "hotbed",
 			wantArgs:    []string{"go", "test", "--", "-run", "Foo"},
@@ -76,12 +76,12 @@ func TestRunParseWithFlagsEnvAndRejectsPositionals(t *testing.T) {
 
 	// Positional session or repo arguments must be rejected on add/sync/ps/wait/session end.
 	for _, bad := range [][]string{
-		{"add", "--controller", "ubu1", "s1", "app"},
-		{"sync", "--controller", "ubu1", "s1"},
-		{"ps", "--controller", "ubu1", "s1"},
-		{"wait", "--controller", "ubu1", "s1"},
-		{"session", "end", "--controller", "ubu1", "s1"},
-		{"step", "ls", "--controller", "ubu1", "app"},
+		{"add", "s1", "app"},
+		{"sync", "s1"},
+		{"ps", "s1"},
+		{"wait", "s1"},
+		{"session", "end", "s1"},
+		{"step", "ls", "app"},
 	} {
 		if _, _, _, err := parse(bad, io.Discard); err == nil {
 			t.Errorf("parse(%v) succeeded, want error rejecting positional session/repo", bad)
@@ -201,7 +201,8 @@ func TestUICommand(t *testing.T) {
 		return nil
 	}
 
-	code, out := hotbed(t, d, "ui", "--controller", "ubu1")
+	d.controller = at("ubu1")
+	code, out := hotbed(t, d, "ui")
 	if code != exitOK || !out.OK || out.Command != "ui" {
 		t.Fatalf("ui: exit %d, envelope %+v", code, out)
 	}
@@ -217,7 +218,8 @@ func TestUICommand(t *testing.T) {
 	opened = nil
 	var buf bytes.Buffer
 	d.stdout, d.stderr = &buf, io.Discard
-	if code := run(t.Context(), []string{"ui", "--controller", "ubu1:9000", "--no-open"}, d); code != exitOK {
+	d.controller = at("ubu1:9000")
+	if code := run(t.Context(), []string{"ui", "--no-open"}, d); code != exitOK {
 		t.Fatalf("ui --no-open exit %d", code)
 	}
 	var env output

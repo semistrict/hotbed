@@ -283,6 +283,10 @@ func Setup(ctx context.Context, o Options, _ worker.Tailnet, _ *http.Client, _ w
 	}, nil
 }
 
+// workerRecord is the file worker init records the VM's setup in, its
+// controller among it.
+func workerRecord(baseDir string) string { return NewVMPaths(baseDir).Config }
+
 // GetStatus reports the local macOS QEMU worker VM's state and sparse disk usage.
 func GetStatus(ctx context.Context, dir string) (Status, error) {
 	baseDir, err := ResolveDir(dir)

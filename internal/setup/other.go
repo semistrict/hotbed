@@ -15,6 +15,9 @@ func unsupported() error {
 	return api.Errorf(api.CodePlatformNotSupported, "worker setup is supported on Linux and macOS; this is %s", runtime.GOOS)
 }
 
+// workerRecord is "": worker init sets up no worker here.
+func workerRecord(string) string { return "" }
+
 func Setup(context.Context, Options, worker.Tailnet, *http.Client, worker.Check) (Result, error) {
 	return Result{}, unsupported()
 }

@@ -1,6 +1,6 @@
 ---
 name: hotbed
-description: Run builds, tests and dev servers on a hotbed cluster instead of this machine, in workspaces forked from a repo's already-built main, so a change compiles incrementally. Use when HOTBED_CONTROLLER is set or the hotbed CLI is installed and work needs compiling, testing or serving, especially Rust.
+description: Run builds, tests and dev servers on a hotbed cluster instead of this machine, in workspaces forked from a repo's already-built main, so a change compiles incrementally. Use when the hotbed CLI is installed and work needs compiling, testing or serving, especially Rust.
 license: Apache-2.0
 ---
 

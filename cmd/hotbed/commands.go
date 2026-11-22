@@ -28,8 +28,10 @@ type deps struct {
 	// http calls the API; stream reads output, which has no deadline.
 	http, stream *http.Client
 	check        worker.Check
-	stdout       io.Writer
-	stderr       io.Writer
+	// controller is the controller client commands call (localController).
+	controller func() (string, error)
+	stdout     io.Writer
+	stderr     io.Writer
 	// cache keeps per-session cursors for hotbed wait.
 	cache string
 	// sessionsFile maps T3CODE_THREAD_ID / git worktree roots to default sessions

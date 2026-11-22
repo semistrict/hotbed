@@ -19,7 +19,7 @@ import (
 //     of this checkout's remotes (origin checked first).
 //  3. A registered repo whose ID matches the checkout's directory name (or the
 //     main repository's directory name for a linked git worktree).
-func (f controllerFlag) resolveRepo(ctx context.Context, d deps, session, explicit, dir string) (string, error) {
+func (f controllerClient) resolveRepo(ctx context.Context, d deps, session, explicit, dir string) (string, error) {
 	if explicit != "" {
 		return explicit, nil
 	}

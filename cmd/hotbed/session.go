@@ -24,7 +24,7 @@ type sessionCmd struct {
 }
 
 type sessionStartCmd struct {
-	controllerFlag
+	controllerClient
 	Name  string `arg:"" optional:"" help:"adjective-noun, such as brave-otter (default: a random free one)."`
 	Agent string `env:"HOTBED_AGENT" help:"Who you are, for the cockpit (default: this machine)."`
 }
@@ -51,7 +51,7 @@ func (c *sessionCurrentCmd) Exec(ctx context.Context, d deps) (any, error) {
 }
 
 type sessionEndCmd struct {
-	controllerFlag
+	controllerClient
 	sessionFlag
 }
 
@@ -73,7 +73,7 @@ func (c *sessionEndCmd) Exec(ctx context.Context, d deps) (any, error) {
 }
 
 type addCmd struct {
-	controllerFlag
+	controllerClient
 	sessionFlag
 	repoFlag
 	Sync   string `type:"path" help:"A local checkout of the repo the workspace follows: run from this machine syncs it first. Without it the workspace is remote-only."`
@@ -212,7 +212,7 @@ func watchSession(ctx context.Context, stream clients, req *pb.WatchSessionReque
 }
 
 type syncCmd struct {
-	controllerFlag
+	controllerClient
 	sessionFlag
 	repoFlag
 	Dir string `type:"path" help:"The checkout to send (default: the one the workspace follows)."`
@@ -310,7 +310,7 @@ func (f commandFlags) request(args []string, example string) (*pb.RunCommandRequ
 }
 
 type runCmd struct {
-	controllerFlag
+	controllerClient
 	sessionFlag
 	repoFlag
 	Args   []string `arg:"" optional:"" passthrough:"" help:"The command, after --."`
@@ -484,7 +484,7 @@ func live(s pb.CommandState) bool {
 }
 
 type waitCmd struct {
-	controllerFlag
+	controllerClient
 	sessionFlag
 	After   int64 `default:"-1" help:"Return events after this cursor (default: after the last ones this machine saw)."`
 	Timeout int   `default:"120" help:"Seconds to wait for an event, at most 120."`
@@ -522,7 +522,7 @@ func (c *waitCmd) Exec(ctx context.Context, d deps) (any, error) {
 }
 
 type psCmd struct {
-	controllerFlag
+	controllerClient
 	sessionFlag
 }
 
@@ -539,7 +539,7 @@ func (c *psCmd) Exec(ctx context.Context, d deps) (any, error) {
 }
 
 type logsCmd struct {
-	controllerFlag
+	controllerClient
 	sessionFlag
 	Command string `arg:"" help:"The command's ID."`
 	Follow  bool   `short:"f" help:"Keep printing until the command ends."`
@@ -585,7 +585,7 @@ func (c *logsCmd) Raw(ctx context.Context, d deps) (int, bool, error) {
 func (c *logsCmd) Exec(context.Context, deps) (any, error) { return nil, errors.New("logs is raw") }
 
 type stopCmd struct {
-	controllerFlag
+	controllerClient
 	sessionFlag
 	Command string `arg:"" help:"The command's ID."`
 }

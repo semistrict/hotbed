@@ -17,9 +17,11 @@ import (
 	"github.com/semistrict/hotbed/internal/worker"
 )
 
-// controllerFlag is the flag every client command takes.
-type controllerFlag struct {
-	Controller string `required:"" env:"HOTBED_CONTROLLER" help:"The controller's tailnet name or address (or set HOTBED_CONTROLLER)."`
+// controllerClient is in every command that calls the controller. Which
+// controller is this machine's, never a flag: run sets it from deps.controller
+// before the command runs.
+type controllerClient struct {
+	Controller string `kong:"-"`
 }
 
 type clients struct {
@@ -29,10 +31,10 @@ type clients struct {
 	schedules  hotbedv1connect.ScheduleServiceClient
 }
 
-// controller is the controller a command calls.
-func (f controllerFlag) controller() string { return f.Controller }
+// callController has the command call the controller at addr.
+func (f *controllerClient) callController(addr string) { f.Controller = addr }
 
-func (f controllerFlag) clients(hc *http.Client) (clients, error) {
+func (f controllerClient) clients(hc *http.Client) (clients, error) {
 	conn, err := api.Dial(f.Controller, api.DefaultPort, hc)
 	if err != nil {
 		return clients{}, err
@@ -126,7 +128,7 @@ func afterServe(res serveResult, err error, exe string, argv []string, execve fu
 }
 
 type nodesCmd struct {
-	controllerFlag
+	controllerClient
 }
 
 func (c *nodesCmd) Exec(ctx context.Context, d deps) (any, error) {
@@ -145,7 +147,7 @@ type repoCmd struct {
 }
 
 type repoRebuildCmd struct {
-	controllerFlag
+	controllerClient
 	repoFlag
 }
 
@@ -162,7 +164,7 @@ func (c *repoRebuildCmd) Exec(ctx context.Context, d deps) (any, error) {
 }
 
 type repoAddCmd struct {
-	controllerFlag
+	controllerClient
 	ID     string   `arg:"" help:"Short name, such as ratel; workspaces see the checkout at /work/<name>."`
 	URL    string   `arg:"" help:"What git clones."`
 	Branch string   `help:"Branch bases follow (default: the remote's default branch)."`
@@ -178,7 +180,7 @@ func (c *repoAddCmd) Exec(ctx context.Context, d deps) (any, error) {
 }
 
 type repoLsCmd struct {
-	controllerFlag
+	controllerClient
 }
 
 func (c *repoLsCmd) Exec(ctx context.Context, d deps) (any, error) {
@@ -190,7 +192,7 @@ func (c *repoLsCmd) Exec(ctx context.Context, d deps) (any, error) {
 }
 
 type repoRmCmd struct {
-	controllerFlag
+	controllerClient
 	ID string `arg:"" help:"The repo's name."`
 }
 

@@ -1,5 +1,14 @@
 # Decisions
 
+## Client commands take their controller from worker init, never a flag (2026-11-21)
+
+`--controller` is gone from every client command. They call the controller `hotbed worker init`
+recorded in `~/.hotbed` (`vm/config.json` on macOS, `setup.json` on Linux). `HOTBED_CONTROLLER`
+stays, and wins, for machines that are no worker (laptops, ubu1 when its worker was set up with
+`hotbed join`, scripts): without it they could not call the cluster at all. To drop it, delete
+the env read in `localController` (cmd/hotbed/main.go) and give such machines another way to
+record a controller.
+
 ## The event stream keeps old workers working (2026-11-21, branch event-stream)
 
 AGENTS.md says no migrations or compatibility shims. The brief for the event stream asked for a

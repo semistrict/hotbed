@@ -14,7 +14,8 @@ hotbed init /var/lib/hotbed            # on the controller
 hotbed serve /var/lib/hotbed
 sudo hotbed worker init ubu1           # on a Linux worker (uses ~/.hotbed)
 hotbed worker init ubu1                # on macOS (QEMU Ubuntu + sparse qcow2 ZFS in ~/.hotbed)
-HOTBED_CONTROLLER=ubu1 hotbed nodes    # anywhere on the tailnet
+hotbed nodes                           # on a worker: its controller, recorded by worker init
+HOTBED_CONTROLLER=ubu1 hotbed nodes    # on any other machine on the tailnet
 ```
 
 Every command prints one JSON envelope. Agents start with `hotbed skills get hotbed`.

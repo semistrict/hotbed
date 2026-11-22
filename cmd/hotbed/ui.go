@@ -10,7 +10,7 @@ import (
 )
 
 type uiCmd struct {
-	controllerFlag
+	controllerClient
 	NoOpen bool `name:"no-open" help:"Print the cockpit URL without opening a browser."`
 }
 

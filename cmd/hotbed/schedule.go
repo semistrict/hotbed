@@ -17,7 +17,7 @@ type scheduleCmd struct {
 }
 
 type scheduleAddCmd struct {
-	controllerFlag
+	controllerClient
 	repoFlag
 	Name   string   `arg:"" help:"Lowercase words joined by dashes, such as cladefs-nightly; each run's session is NAME-YYYYMMDD-HHMM."`
 	Cron   string   `required:"" help:"When it runs: five-field cron (minute hour day-of-month month day-of-week) in the controller's time zone, such as '0 2 * * *'; CRON_TZ=ZONE in front for another zone. A slot that passes while the controller is down is missed, not run late, and a slot that comes while the previous run is in progress is skipped."`
@@ -48,7 +48,7 @@ func (c *scheduleAddCmd) Exec(ctx context.Context, d deps) (any, error) {
 }
 
 type scheduleLsCmd struct {
-	controllerFlag
+	controllerClient
 }
 
 func (c *scheduleLsCmd) Exec(ctx context.Context, d deps) (any, error) {
@@ -61,7 +61,7 @@ func (c *scheduleLsCmd) Exec(ctx context.Context, d deps) (any, error) {
 
 // scheduleNamed is the argument of the commands that act on one schedule.
 type scheduleNamed struct {
-	controllerFlag
+	controllerClient
 	Name string `arg:"" help:"The scheduled command's name."`
 }
 
