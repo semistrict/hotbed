@@ -226,6 +226,9 @@ func ridesOut(t *testing.T, logs bool) {
 		out, err string
 	}
 	done := make(chan result, 1)
+	nd := c.nodes[0]
+	// add followed the base's freshen: the client's own stream comes after.
+	opened := nd.follows.Load()
 	script := []string{"sh", "-c", `echo before; while [ ! -e "$1" ]; do sleep 0.05; done; echo after`, "sh", filepath.Join(string(g), "go")}
 	if logs {
 		cmd := c.detach(nil, script...)
@@ -239,8 +242,7 @@ func ridesOut(t *testing.T, logs bool) {
 			done <- result{code, out, stderr}
 		}()
 	}
-	nd := c.nodes[0]
-	c.eventually("the client to follow the command's output", func() bool { return nd.follows.Load() > 0 })
+	c.eventually("the client to follow the command's output", func() bool { return nd.follows.Load() > opened })
 	nd.halt()
 	c.eventually("the client to find its worker stopped", func() bool { return nd.refused.Load() > 0 })
 	g.open(t, "go")

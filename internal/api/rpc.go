@@ -2,10 +2,12 @@ package api
 
 import (
 	"errors"
+	"io"
 	"net"
 	"net/http"
 	"strconv"
 	"strings"
+	"syscall"
 
 	"connectrpc.com/connect/v2"
 	"connectrpc.com/connect/v2/connecthttp"
@@ -101,7 +103,13 @@ func FromConnect(err error) *Error {
 			return &Error{Code: Code(info.Code), Message: ce.Message(), Suggestion: info.Suggestion, Retryable: info.Retryable}
 		}
 	}
-	switch ce.Code() {
+	code := ce.Code()
+	if brokenConnection(err) {
+		// The transport calls it canceled or unknown; it is a peer
+		// restarting, out of reach for now.
+		code = connect.CodeUnavailable
+	}
+	switch code {
 	case connect.CodeUnavailable, connect.CodeDeadlineExceeded:
 		return &Error{
 			Code:       CodeControllerUnreachable,
@@ -114,6 +122,13 @@ func FromConnect(err error) *Error {
 	default:
 		return &Error{Code: CodeInternal, Message: err.Error()}
 	}
+}
+
+// brokenConnection says whether err is a connection that broke under a
+// call: reset, closed mid-write, or ended before its answer.
+func brokenConnection(err error) bool {
+	return errors.Is(err, syscall.ECONNRESET) || errors.Is(err, syscall.EPIPE) ||
+		errors.Is(err, syscall.ECONNREFUSED) || errors.Is(err, io.ErrUnexpectedEOF)
 }
 
 func connectCode(c Code) connect.Code {
