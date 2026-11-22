@@ -22,8 +22,18 @@ hotbed wait                                      # blocks until a command in the
 hotbed session end
 ```
 
+- **A session works on a project.** A project is one or more repos, named by their canonical git
+  remotes (`github.com/semistrict/hotbed`). `session start` picks the one project that holds this
+  checkout's repo; a repo no project holds gets a project of its own name. When several projects
+  hold it, or outside a checkout, name one: `-p PROJECT` or `HOTBED_PROJECT`. `hotbed project ls`
+  lists them; `hotbed project add NAME --repo REMOTE...` makes one or adds repos to it (a repo
+  another project holds needs `--shared`, since its checkouts' sessions would then need `-p`);
+  `hotbed project rm-repo NAME --repo REMOTE` takes one out; `hotbed project show NAME` has every
+  change, with who made it.
 - **Everything happens in a session.** Session and repo are never positional arguments: override them with `-s`/`HOTBED_SESSION` and `-r`/`HOTBED_REPO`, or let hotbed default the session from `T3CODE_THREAD_ID` → current git worktree (stored in `~/.hotbed/sessions.json`) and infer the repo from the current git checkout. `hotbed session current` prints the active session.
-  `session start` picks a free adjective-noun name, or takes one you give it.
+  `session start` picks a free adjective-noun name, or takes one you give it. In a thread or
+  worktree already bound to a live session it fails with `CONFLICT` naming that session: keep
+  using it, end it first, or pass `--replace` to end it and bind the new one.
 - **A session has one workspace per repo.** `hotbed add` (with `-r REPO` outside a checkout) makes it or returns the one it has.
   It is a fork of the repo's base at the branch's head. When the branch has moved or the repo's
   setup steps changed since the newest base, `add` first freshens a new base from the previous
@@ -68,6 +78,82 @@ installs from a lockfile.
   (`reason`) that names the failed step. Fix the step and the next `add` retries.
 - Steps run as an unprivileged user. OS packages (`apt`, `dnf`) are not steps: ask the person
   who runs the cluster.
+
+## Asking the user: questions
+
+When you need the user's decision, don't stop and wait: ask on the project's question list, carry
+on with your best guess, and read the answer when it comes. A question takes exactly the JSON
+AskUserQuestion takes; each of its questions becomes an entry of its own:
+
+```sh
+hotbed question add <<'EOF'
+{"questions": [{"question": "Which store should sessions use?", "header": "Store", "multiSelect": false,
+  "options": [{"label": "SQLite (Recommended)", "description": "One file, already used"},
+              {"label": "Postgres", "description": "A server to run"}]}]}
+EOF
+hotbed question wait 12          # up to two minutes; or keep working and let hotbed wait tell you
+                                 # (no IDs: any of this session's questions; --project-wide: any)
+hotbed question outbox           # answers waiting for an agent
+hotbed question ack 12           # you read it and acted on it: it is handled
+```
+
+- **One list per project, every session's.** `question ls` lists your project's questions, newest
+  first (`--sort oldest|updated|rank`, `--state open|answered|dismissed|handled|deleted|all`,
+  `-p PROJECT`, `--all-projects`). Read it before asking: another session may have asked already.
+- **The user answers in the cockpit**, or dismisses (no answer will come). An answer waits in the
+  outbox until an agent acknowledges it; any agent of the project may act on and ack an answer.
+  An answer or dismissal is also an event of the asking session, so its `hotbed wait` wakes.
+- **Any session may edit (`question edit ID`, while open) or delete (`question rm ID --reason`)
+  any question** it finds wrong or no longer needed. Nothing is lost: `question show ID` has the
+  whole history, each change with its session and time.
+- A question records where you asked from (checkout, branch, commit, changed files) and, if the
+  project holds your checkout's repo, that it is about that repo (`--repo REMOTE` names another).
+- A session changes only its own project's questions (edit, rm, ack, answer, dismiss, move).
+- Never answer a question yourself unless the user told you the answer: then pass it on with
+  `question answer ID --pick LABEL [--other TEXT] [--notes TEXT] -s SESSION`, or `question dismiss
+  ID --reason WHY`. `question move ID --first|--last|--before ID` reorders the user's list within
+  the question's project. `question projects` counts every project's open and outbox questions.
+
+## Reviews: asking a reviewer agent, and the user
+
+A review is of an exact version: the commits it names never move. Ask for one in the checkout to
+review, then give its number to a reviewer agent:
+
+```sh
+hotbed review request --title "Retry on lost leases" --instructions "look for races"
+                                 # base: where HEAD left origin's default branch (--base REF, --whole)
+                                 # head: HEAD, or a snapshot commit of uncommitted changes, pinned
+hotbed review wait 7             # up to two minutes; or keep working and let hotbed wait tell you
+hotbed review show 7             # findings, with locations, decisions and responses
+hotbed review accept 7 1 3 --reason "fixing"
+hotbed review dismiss 7 2 --reason "pre-existing; not this change"
+hotbed review link 7             # the review's page in the cockpit: send it to the user
+hotbed review wait 7 --responses # until the user (or anyone else) responds
+hotbed review responses 7        # the responses since you last read them
+```
+
+The reviewer, in its own session:
+
+```sh
+hotbed review start 7            # claim it; review show 7 has base, head and instructions
+git diff BASE HEAD               # the commits are in the requester's checkout (refs/hotbed/reviews/HEAD)
+hotbed review findings 7 <<'EOF'
+{"findings": [{"short_summary": "Lease renewal races expiry", "summary": "...", "failure_scenario": "...",
+  "category": "correctness", "severity": "important", "verdict": "CONFIRMED", "file": "lease.go", "line": 88,
+  "locations": [{"path": "renew.go", "start_line": 12, "end_line": 20, "excerpt": "..."}]}]}
+EOF
+hotbed review finish 7 --summary "One race, one nit."   # or: hotbed review fail 7 --reason WHY
+```
+
+- A finding is ReportFindings' JSON (severity `important`, `pre_existing` or `nit`; verdict
+  `CONFIRMED`, `PLAUSIBLE` or none), with any number of `locations` besides, or none. Put the
+  lines in `excerpt`: the cockpit shows them without the code.
+- The user responds on the review's page, per finding, with a quick response (verify, fix if
+  verified, won't fix), a comment, or both. A response, and the review's end, are events of the
+  requesting session, so its `hotbed wait` wakes. Reply with `hotbed review respond 7 --finding 1
+  --comment TEXT`; pass the user's word on with `--quick verify|fix-if-verified|wont-fix`.
+- `hotbed review ls` lists the project's reviews; `review cancel` withdraws one; `review reopen`
+  makes a decided finding open again. Nothing is removed: `review show` has every event.
 
 ## Keeping a session alive
 
@@ -144,7 +230,8 @@ hotbed schedule run cladefs-nightly         # a run now; prints its session, for
 - **Cron** has five fields in the controller's time zone (`CRON_TZ=Europe/Lisbon 0 2 * * *` for
   another). Runs never overlap: a slot that comes while the previous run is still going is
   `skipped`. A slot that passes while the controller is down is `missed`, not run late.
-- `schedule add` with an existing name replaces it. `schedule pause`, `resume`, `rm`, `ls`.
+- `schedule add` with an existing name replaces it. `schedule ls [-p PROJECT | --all-projects]`
+  lists the active project's schedules by default. `schedule pause`, `resume`, `rm`.
 
 ## Other commands
 
@@ -152,15 +239,28 @@ hotbed schedule run cladefs-nightly         # a run now; prints its session, for
 |---|---|
 | `hotbed session status` | Active session state, idle time, workspaces, and commands |
 | `hotbed session current` | Active session and where it came from (`flag`, `env`, `thread`, `worktree`) |
-| `hotbed ps` | The session's commands, live and just ended |
-| `hotbed logs CMD [-f]` | A command's output; `-f` follows until it ends |
+| `hotbed session ls` | The project's live sessions (`--ended`, `--all-projects`) |
+| `hotbed project ls` | Projects, their repos, live sessions, schedules, reviews and questions |
+| `hotbed project show NAME` | A project and every change to it |
+| `hotbed project rm-repo NAME --repo REMOTE` | Take a repo out of a project |
+| `hotbed schedule add ... -p PROJECT` | A schedule's runs work on its project (default: the one holding its repo) |
+| `hotbed schedule ls [-p PROJECT \| --all-projects]` | The project's schedules (`--all-projects`: every project's) |
+| `hotbed ps [-p PROJECT \| --all]` | The session's commands, live and just ended (`-p`: a project's, `--all`: every session's) |
+| `hotbed logs CMD [-f \| -n N]` | A command's output; `-f` follows until it ends, `-n N` its last N lines |
 | `hotbed stop CMD` | Stops a command |
 | `hotbed inspect [procs\|files\|cgroup\|kstack\|maps\|limits] CMD` | Opt-in Linux `/proc` & cgroup v2 inspection of a live command |
 | `hotbed trace [strace\|perf\|stat\|stacks\|bpf] CMD` | Opt-in active Linux tracing (`strace`, `perf`, thread stacks, `bpftrace`) of a live command |
 | `hotbed profile CMD [--query Q] [--format json\|folded\|top]` | Query the always-on OpenTelemetry eBPF continuous profile of a live or finished command |
-| `hotbed repo ls` | Repos and their setup steps |
+| `hotbed workspace ls [-p PROJECT \| --all]` | The session's workspaces (`-p`: a project's, `--all`: every session's) |
+| `hotbed workspace show` | The session's workspace of a repo, as its worker has it now |
+| `hotbed workspace files` | Its files, each `added`/`modified` against the base or unchanged |
+| `hotbed workspace file PATH` | A file's text and the lines it changed against the base |
+| `hotbed workspace release` | Gives the workspace up; the session goes on, and `hotbed add` gives it a new one |
+| `hotbed repo add ID URL [-p PROJECT]` | Registers a repo, attaching it to `PROJECT` (or auto-creating a project for it) |
+| `hotbed repo ls [-p PROJECT]` | Repos and their setup steps (`-p`: only a project's repos) |
 | `hotbed step ls` | A repo's steps and which each node's newest base ran |
 | `hotbed nodes` | The cluster's machines, and the build each runs |
+| `hotbed snapshot` | Everything the cockpit shows, as JSON |
 | `hotbed upgrade` | Install the controller's build over this hotbed (a CI build does it by itself) |
 
 ## Output
@@ -174,6 +274,10 @@ Every command except an attached `run` and `logs` prints one JSON envelope on st
 Act on `error.code`, never the message. `retryable: true` means the same command can succeed later
 unchanged; otherwise `suggestion` says what to change. Exit status: 0 ok, 1 error, 2 bad arguments.
 `run` exits with its command's status, and hotbed's own failures go to stderr.
+
+Every session, workspace, command and node in the output carries `cockpitUrl`, its page in the
+cockpit (the controller's UI): give it to the user when they want to watch or look into it. A
+command's `url` is something else, the dev server it serves.
 
 Codes and what to do: `hotbed skills get hotbed/references/errors.md`. Setting up a cluster:
 `hotbed skills get hotbed/references/setup.md`.

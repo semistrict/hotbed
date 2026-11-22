@@ -22,6 +22,10 @@ const (
 	WorkspaceServiceName = "hotbed.v1.WorkspaceService"
 	// ScheduleServiceName is the fully-qualified name of the ScheduleService service.
 	ScheduleServiceName = "hotbed.v1.ScheduleService"
+	// QuestionServiceName is the fully-qualified name of the QuestionService service.
+	QuestionServiceName = "hotbed.v1.QuestionService"
+	// ReviewServiceName is the fully-qualified name of the ReviewService service.
+	ReviewServiceName = "hotbed.v1.ReviewService"
 )
 
 // These constants are the procedure names of the RPCs defined in this package. They're exposed at
@@ -61,6 +65,16 @@ const (
 	ClusterServiceDeleteStepProcedure = "/hotbed.v1.ClusterService/DeleteStep"
 	// ClusterServiceListStepsProcedure is the procedure name of the ClusterService's ListSteps RPC.
 	ClusterServiceListStepsProcedure = "/hotbed.v1.ClusterService/ListSteps"
+	// ClusterServiceAddProjectProcedure is the procedure name of the ClusterService's AddProject RPC.
+	ClusterServiceAddProjectProcedure = "/hotbed.v1.ClusterService/AddProject"
+	// ClusterServiceRemoveProjectReposProcedure is the procedure name of the ClusterService's
+	// RemoveProjectRepos RPC.
+	ClusterServiceRemoveProjectReposProcedure = "/hotbed.v1.ClusterService/RemoveProjectRepos"
+	// ClusterServiceListProjectsProcedure is the procedure name of the ClusterService's ListProjects
+	// RPC.
+	ClusterServiceListProjectsProcedure = "/hotbed.v1.ClusterService/ListProjects"
+	// ClusterServiceGetProjectProcedure is the procedure name of the ClusterService's GetProject RPC.
+	ClusterServiceGetProjectProcedure = "/hotbed.v1.ClusterService/GetProject"
 	// ClusterServiceGetSnapshotProcedure is the procedure name of the ClusterService's GetSnapshot RPC.
 	ClusterServiceGetSnapshotProcedure = "/hotbed.v1.ClusterService/GetSnapshot"
 	// SessionServiceStartSessionProcedure is the procedure name of the SessionService's StartSession
@@ -68,6 +82,9 @@ const (
 	SessionServiceStartSessionProcedure = "/hotbed.v1.SessionService/StartSession"
 	// SessionServiceGetSessionProcedure is the procedure name of the SessionService's GetSession RPC.
 	SessionServiceGetSessionProcedure = "/hotbed.v1.SessionService/GetSession"
+	// SessionServiceListSessionsProcedure is the procedure name of the SessionService's ListSessions
+	// RPC.
+	SessionServiceListSessionsProcedure = "/hotbed.v1.SessionService/ListSessions"
 	// SessionServiceEndSessionProcedure is the procedure name of the SessionService's EndSession RPC.
 	SessionServiceEndSessionProcedure = "/hotbed.v1.SessionService/EndSession"
 	// SessionServiceWatchSessionProcedure is the procedure name of the SessionService's WatchSession
@@ -138,6 +155,64 @@ const (
 	// ScheduleServicePauseScheduleProcedure is the procedure name of the ScheduleService's
 	// PauseSchedule RPC.
 	ScheduleServicePauseScheduleProcedure = "/hotbed.v1.ScheduleService/PauseSchedule"
+	// QuestionServiceAddQuestionsProcedure is the procedure name of the QuestionService's AddQuestions
+	// RPC.
+	QuestionServiceAddQuestionsProcedure = "/hotbed.v1.QuestionService/AddQuestions"
+	// QuestionServiceEditQuestionProcedure is the procedure name of the QuestionService's EditQuestion
+	// RPC.
+	QuestionServiceEditQuestionProcedure = "/hotbed.v1.QuestionService/EditQuestion"
+	// QuestionServiceDeleteQuestionProcedure is the procedure name of the QuestionService's
+	// DeleteQuestion RPC.
+	QuestionServiceDeleteQuestionProcedure = "/hotbed.v1.QuestionService/DeleteQuestion"
+	// QuestionServiceListQuestionsProcedure is the procedure name of the QuestionService's
+	// ListQuestions RPC.
+	QuestionServiceListQuestionsProcedure = "/hotbed.v1.QuestionService/ListQuestions"
+	// QuestionServiceListQuestionProjectsProcedure is the procedure name of the QuestionService's
+	// ListQuestionProjects RPC.
+	QuestionServiceListQuestionProjectsProcedure = "/hotbed.v1.QuestionService/ListQuestionProjects"
+	// QuestionServiceGetQuestionProcedure is the procedure name of the QuestionService's GetQuestion
+	// RPC.
+	QuestionServiceGetQuestionProcedure = "/hotbed.v1.QuestionService/GetQuestion"
+	// QuestionServiceAnswerQuestionProcedure is the procedure name of the QuestionService's
+	// AnswerQuestion RPC.
+	QuestionServiceAnswerQuestionProcedure = "/hotbed.v1.QuestionService/AnswerQuestion"
+	// QuestionServiceDismissQuestionProcedure is the procedure name of the QuestionService's
+	// DismissQuestion RPC.
+	QuestionServiceDismissQuestionProcedure = "/hotbed.v1.QuestionService/DismissQuestion"
+	// QuestionServiceMoveQuestionProcedure is the procedure name of the QuestionService's MoveQuestion
+	// RPC.
+	QuestionServiceMoveQuestionProcedure = "/hotbed.v1.QuestionService/MoveQuestion"
+	// QuestionServiceAckQuestionsProcedure is the procedure name of the QuestionService's AckQuestions
+	// RPC.
+	QuestionServiceAckQuestionsProcedure = "/hotbed.v1.QuestionService/AckQuestions"
+	// QuestionServiceWaitQuestionsProcedure is the procedure name of the QuestionService's
+	// WaitQuestions RPC.
+	QuestionServiceWaitQuestionsProcedure = "/hotbed.v1.QuestionService/WaitQuestions"
+	// ReviewServiceRequestReviewProcedure is the procedure name of the ReviewService's RequestReview
+	// RPC.
+	ReviewServiceRequestReviewProcedure = "/hotbed.v1.ReviewService/RequestReview"
+	// ReviewServiceListReviewsProcedure is the procedure name of the ReviewService's ListReviews RPC.
+	ReviewServiceListReviewsProcedure = "/hotbed.v1.ReviewService/ListReviews"
+	// ReviewServiceGetReviewProcedure is the procedure name of the ReviewService's GetReview RPC.
+	ReviewServiceGetReviewProcedure = "/hotbed.v1.ReviewService/GetReview"
+	// ReviewServiceStartReviewProcedure is the procedure name of the ReviewService's StartReview RPC.
+	ReviewServiceStartReviewProcedure = "/hotbed.v1.ReviewService/StartReview"
+	// ReviewServiceAddFindingsProcedure is the procedure name of the ReviewService's AddFindings RPC.
+	ReviewServiceAddFindingsProcedure = "/hotbed.v1.ReviewService/AddFindings"
+	// ReviewServiceFinishReviewProcedure is the procedure name of the ReviewService's FinishReview RPC.
+	ReviewServiceFinishReviewProcedure = "/hotbed.v1.ReviewService/FinishReview"
+	// ReviewServiceCancelReviewProcedure is the procedure name of the ReviewService's CancelReview RPC.
+	ReviewServiceCancelReviewProcedure = "/hotbed.v1.ReviewService/CancelReview"
+	// ReviewServiceDecideFindingsProcedure is the procedure name of the ReviewService's DecideFindings
+	// RPC.
+	ReviewServiceDecideFindingsProcedure = "/hotbed.v1.ReviewService/DecideFindings"
+	// ReviewServiceRespondProcedure is the procedure name of the ReviewService's Respond RPC.
+	ReviewServiceRespondProcedure = "/hotbed.v1.ReviewService/Respond"
+	// ReviewServiceListResponsesProcedure is the procedure name of the ReviewService's ListResponses
+	// RPC.
+	ReviewServiceListResponsesProcedure = "/hotbed.v1.ReviewService/ListResponses"
+	// ReviewServiceWaitReviewProcedure is the procedure name of the ReviewService's WaitReview RPC.
+	ReviewServiceWaitReviewProcedure = "/hotbed.v1.ReviewService/WaitReview"
 )
 
 var (
@@ -239,6 +314,34 @@ var (
 			Procedure:  ClusterServiceListStepsProcedure,
 		}
 	})
+	clusterServiceAddProjectSpec = sync.OnceValue(func() connect.Spec {
+		return connect.Spec{
+			StreamType: connect.StreamTypeUnary,
+			Schema:     v1.File_hotbed_v1_hotbed_proto.Services().ByName("ClusterService").Methods().ByName("AddProject"),
+			Procedure:  ClusterServiceAddProjectProcedure,
+		}
+	})
+	clusterServiceRemoveProjectReposSpec = sync.OnceValue(func() connect.Spec {
+		return connect.Spec{
+			StreamType: connect.StreamTypeUnary,
+			Schema:     v1.File_hotbed_v1_hotbed_proto.Services().ByName("ClusterService").Methods().ByName("RemoveProjectRepos"),
+			Procedure:  ClusterServiceRemoveProjectReposProcedure,
+		}
+	})
+	clusterServiceListProjectsSpec = sync.OnceValue(func() connect.Spec {
+		return connect.Spec{
+			StreamType: connect.StreamTypeUnary,
+			Schema:     v1.File_hotbed_v1_hotbed_proto.Services().ByName("ClusterService").Methods().ByName("ListProjects"),
+			Procedure:  ClusterServiceListProjectsProcedure,
+		}
+	})
+	clusterServiceGetProjectSpec = sync.OnceValue(func() connect.Spec {
+		return connect.Spec{
+			StreamType: connect.StreamTypeUnary,
+			Schema:     v1.File_hotbed_v1_hotbed_proto.Services().ByName("ClusterService").Methods().ByName("GetProject"),
+			Procedure:  ClusterServiceGetProjectProcedure,
+		}
+	})
 	clusterServiceGetSnapshotSpec = sync.OnceValue(func() connect.Spec {
 		return connect.Spec{
 			StreamType: connect.StreamTypeUnary,
@@ -284,6 +387,15 @@ type ClusterServiceClient interface {
 	// ListSteps is a repo's steps and, for each, whether each node's newest
 	// base has run it.
 	ListSteps(context.Context, *v1.ListStepsRequest) (*v1.ListStepsResponse, error)
+	// AddProject creates a project, or adds repos to the one of that name. A
+	// repo another project holds is refused unless shared: sessions starting
+	// in its checkouts would then have to name their project.
+	AddProject(context.Context, *v1.AddProjectRequest) (*v1.Project, error)
+	// RemoveProjectRepos takes repos out of a project.
+	RemoveProjectRepos(context.Context, *v1.RemoveProjectReposRequest) (*v1.Project, error)
+	ListProjects(context.Context, *v1.ListProjectsRequest) (*v1.ListProjectsResponse, error)
+	// GetProject is a project with every change made to it.
+	GetProject(context.Context, *v1.GetProjectRequest) (*v1.Project, error)
 	// GetSnapshot is everything the cockpit shows.
 	GetSnapshot(context.Context, *v1.GetSnapshotRequest) (*v1.Snapshot, error)
 }
@@ -330,6 +442,15 @@ type ClusterServiceHandler interface {
 	// ListSteps is a repo's steps and, for each, whether each node's newest
 	// base has run it.
 	ListSteps(context.Context, *v1.ListStepsRequest) (*v1.ListStepsResponse, error)
+	// AddProject creates a project, or adds repos to the one of that name. A
+	// repo another project holds is refused unless shared: sessions starting
+	// in its checkouts would then have to name their project.
+	AddProject(context.Context, *v1.AddProjectRequest) (*v1.Project, error)
+	// RemoveProjectRepos takes repos out of a project.
+	RemoveProjectRepos(context.Context, *v1.RemoveProjectReposRequest) (*v1.Project, error)
+	ListProjects(context.Context, *v1.ListProjectsRequest) (*v1.ListProjectsResponse, error)
+	// GetProject is a project with every change made to it.
+	GetProject(context.Context, *v1.GetProjectRequest) (*v1.Project, error)
 	// GetSnapshot is everything the cockpit shows.
 	GetSnapshot(context.Context, *v1.GetSnapshotRequest) (*v1.Snapshot, error)
 }
@@ -353,6 +474,10 @@ func RegisterClusterServiceHandler(server *connect.Server, svc ClusterServiceHan
 		connect.Method{Spec: clusterServicePutStepSpec(), Handler: adapter.putStep},
 		connect.Method{Spec: clusterServiceDeleteStepSpec(), Handler: adapter.deleteStep},
 		connect.Method{Spec: clusterServiceListStepsSpec(), Handler: adapter.listSteps},
+		connect.Method{Spec: clusterServiceAddProjectSpec(), Handler: adapter.addProject},
+		connect.Method{Spec: clusterServiceRemoveProjectReposSpec(), Handler: adapter.removeProjectRepos},
+		connect.Method{Spec: clusterServiceListProjectsSpec(), Handler: adapter.listProjects},
+		connect.Method{Spec: clusterServiceGetProjectSpec(), Handler: adapter.getProject},
 		connect.Method{Spec: clusterServiceGetSnapshotSpec(), Handler: adapter.getSnapshot},
 	)
 }
@@ -414,6 +539,22 @@ func (UnimplementedClusterServiceHandler) DeleteStep(context.Context, *v1.Delete
 
 func (UnimplementedClusterServiceHandler) ListSteps(context.Context, *v1.ListStepsRequest) (*v1.ListStepsResponse, error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, "hotbed.v1.ClusterService.ListSteps is not implemented")
+}
+
+func (UnimplementedClusterServiceHandler) AddProject(context.Context, *v1.AddProjectRequest) (*v1.Project, error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, "hotbed.v1.ClusterService.AddProject is not implemented")
+}
+
+func (UnimplementedClusterServiceHandler) RemoveProjectRepos(context.Context, *v1.RemoveProjectReposRequest) (*v1.Project, error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, "hotbed.v1.ClusterService.RemoveProjectRepos is not implemented")
+}
+
+func (UnimplementedClusterServiceHandler) ListProjects(context.Context, *v1.ListProjectsRequest) (*v1.ListProjectsResponse, error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, "hotbed.v1.ClusterService.ListProjects is not implemented")
+}
+
+func (UnimplementedClusterServiceHandler) GetProject(context.Context, *v1.GetProjectRequest) (*v1.Project, error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, "hotbed.v1.ClusterService.GetProject is not implemented")
 }
 
 func (UnimplementedClusterServiceHandler) GetSnapshot(context.Context, *v1.GetSnapshotRequest) (*v1.Snapshot, error) {
@@ -531,6 +672,38 @@ func (c *clusterServiceClient) DeleteStep(ctx context.Context, req *v1.DeleteSte
 func (c *clusterServiceClient) ListSteps(ctx context.Context, req *v1.ListStepsRequest) (*v1.ListStepsResponse, error) {
 	var res v1.ListStepsResponse
 	if err := c.client.CallUnary(ctx, clusterServiceListStepsSpec(), req, &res); err != nil {
+		return nil, err
+	}
+	return &res, nil
+}
+
+func (c *clusterServiceClient) AddProject(ctx context.Context, req *v1.AddProjectRequest) (*v1.Project, error) {
+	var res v1.Project
+	if err := c.client.CallUnary(ctx, clusterServiceAddProjectSpec(), req, &res); err != nil {
+		return nil, err
+	}
+	return &res, nil
+}
+
+func (c *clusterServiceClient) RemoveProjectRepos(ctx context.Context, req *v1.RemoveProjectReposRequest) (*v1.Project, error) {
+	var res v1.Project
+	if err := c.client.CallUnary(ctx, clusterServiceRemoveProjectReposSpec(), req, &res); err != nil {
+		return nil, err
+	}
+	return &res, nil
+}
+
+func (c *clusterServiceClient) ListProjects(ctx context.Context, req *v1.ListProjectsRequest) (*v1.ListProjectsResponse, error) {
+	var res v1.ListProjectsResponse
+	if err := c.client.CallUnary(ctx, clusterServiceListProjectsSpec(), req, &res); err != nil {
+		return nil, err
+	}
+	return &res, nil
+}
+
+func (c *clusterServiceClient) GetProject(ctx context.Context, req *v1.GetProjectRequest) (*v1.Project, error) {
+	var res v1.Project
+	if err := c.client.CallUnary(ctx, clusterServiceGetProjectSpec(), req, &res); err != nil {
 		return nil, err
 	}
 	return &res, nil
@@ -714,6 +887,54 @@ func (h clusterServiceHandler) listSteps(ctx context.Context, _ connect.Spec, st
 	return stream.Send(res)
 }
 
+func (h clusterServiceHandler) addProject(ctx context.Context, _ connect.Spec, stream connect.ServerStream) error {
+	var req v1.AddProjectRequest
+	if err := stream.Receive(&req); err != nil {
+		return err
+	}
+	res, err := h.svc.AddProject(ctx, &req)
+	if err != nil {
+		return err
+	}
+	return stream.Send(res)
+}
+
+func (h clusterServiceHandler) removeProjectRepos(ctx context.Context, _ connect.Spec, stream connect.ServerStream) error {
+	var req v1.RemoveProjectReposRequest
+	if err := stream.Receive(&req); err != nil {
+		return err
+	}
+	res, err := h.svc.RemoveProjectRepos(ctx, &req)
+	if err != nil {
+		return err
+	}
+	return stream.Send(res)
+}
+
+func (h clusterServiceHandler) listProjects(ctx context.Context, _ connect.Spec, stream connect.ServerStream) error {
+	var req v1.ListProjectsRequest
+	if err := stream.Receive(&req); err != nil {
+		return err
+	}
+	res, err := h.svc.ListProjects(ctx, &req)
+	if err != nil {
+		return err
+	}
+	return stream.Send(res)
+}
+
+func (h clusterServiceHandler) getProject(ctx context.Context, _ connect.Spec, stream connect.ServerStream) error {
+	var req v1.GetProjectRequest
+	if err := stream.Receive(&req); err != nil {
+		return err
+	}
+	res, err := h.svc.GetProject(ctx, &req)
+	if err != nil {
+		return err
+	}
+	return stream.Send(res)
+}
+
 func (h clusterServiceHandler) getSnapshot(ctx context.Context, _ connect.Spec, stream connect.ServerStream) error {
 	var req v1.GetSnapshotRequest
 	if err := stream.Receive(&req); err != nil {
@@ -741,6 +962,13 @@ var (
 			Procedure:  SessionServiceGetSessionProcedure,
 		}
 	})
+	sessionServiceListSessionsSpec = sync.OnceValue(func() connect.Spec {
+		return connect.Spec{
+			StreamType: connect.StreamTypeUnary,
+			Schema:     v1.File_hotbed_v1_hotbed_proto.Services().ByName("SessionService").Methods().ByName("ListSessions"),
+			Procedure:  SessionServiceListSessionsProcedure,
+		}
+	})
 	sessionServiceEndSessionSpec = sync.OnceValue(func() connect.Spec {
 		return connect.Spec{
 			StreamType: connect.StreamTypeUnary,
@@ -759,10 +987,17 @@ var (
 
 // SessionServiceClient is a client for the hotbed.v1.SessionService service.
 type SessionServiceClient interface {
+	// StartSession starts a session in a project: the one named, or else the
+	// one project that holds the caller's checkout's repo. A repo no project
+	// holds is a project of its own, made for it.
 	StartSession(context.Context, *v1.StartSessionRequest) (*v1.Session, error)
 	// GetSession returns a session (live or ended) with its workspaces and
 	// commands, without resetting its idle timer.
 	GetSession(context.Context, *v1.GetSessionRequest) (*v1.GetSessionResponse, error)
+	// ListSessions lists a project's sessions, or every project's: those
+	// live, and with ended, those that ended in the last day too; the most
+	// recently active first.
+	ListSessions(context.Context, *v1.ListSessionsRequest) (*v1.ListSessionsResponse, error)
 	// EndSession stops the session's commands and releases its workspaces.
 	// A session nothing touches for an hour ends the same way; WatchSession
 	// keeps it alive.
@@ -803,10 +1038,17 @@ func (s SessionServiceWatchSessionClientStream) Close() error {
 
 // SessionServiceHandler is an implementation of the hotbed.v1.SessionService service.
 type SessionServiceHandler interface {
+	// StartSession starts a session in a project: the one named, or else the
+	// one project that holds the caller's checkout's repo. A repo no project
+	// holds is a project of its own, made for it.
 	StartSession(context.Context, *v1.StartSessionRequest) (*v1.Session, error)
 	// GetSession returns a session (live or ended) with its workspaces and
 	// commands, without resetting its idle timer.
 	GetSession(context.Context, *v1.GetSessionRequest) (*v1.GetSessionResponse, error)
+	// ListSessions lists a project's sessions, or every project's: those
+	// live, and with ended, those that ended in the last day too; the most
+	// recently active first.
+	ListSessions(context.Context, *v1.ListSessionsRequest) (*v1.ListSessionsResponse, error)
 	// EndSession stops the session's commands and releases its workspaces.
 	// A session nothing touches for an hour ends the same way; WatchSession
 	// keeps it alive.
@@ -825,6 +1067,7 @@ func RegisterSessionServiceHandler(server *connect.Server, svc SessionServiceHan
 	server.Register(
 		connect.Method{Spec: sessionServiceStartSessionSpec(), Handler: adapter.startSession},
 		connect.Method{Spec: sessionServiceGetSessionSpec(), Handler: adapter.getSession},
+		connect.Method{Spec: sessionServiceListSessionsSpec(), Handler: adapter.listSessions},
 		connect.Method{Spec: sessionServiceEndSessionSpec(), Handler: adapter.endSession},
 		connect.Method{Spec: sessionServiceWatchSessionSpec(), Handler: adapter.watchSession},
 	)
@@ -857,6 +1100,10 @@ func (UnimplementedSessionServiceHandler) GetSession(context.Context, *v1.GetSes
 	return nil, connect.NewError(connect.CodeUnimplemented, "hotbed.v1.SessionService.GetSession is not implemented")
 }
 
+func (UnimplementedSessionServiceHandler) ListSessions(context.Context, *v1.ListSessionsRequest) (*v1.ListSessionsResponse, error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, "hotbed.v1.SessionService.ListSessions is not implemented")
+}
+
 func (UnimplementedSessionServiceHandler) EndSession(context.Context, *v1.EndSessionRequest) (*v1.Session, error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, "hotbed.v1.SessionService.EndSession is not implemented")
 }
@@ -880,6 +1127,14 @@ func (c *sessionServiceClient) StartSession(ctx context.Context, req *v1.StartSe
 func (c *sessionServiceClient) GetSession(ctx context.Context, req *v1.GetSessionRequest) (*v1.GetSessionResponse, error) {
 	var res v1.GetSessionResponse
 	if err := c.client.CallUnary(ctx, sessionServiceGetSessionSpec(), req, &res); err != nil {
+		return nil, err
+	}
+	return &res, nil
+}
+
+func (c *sessionServiceClient) ListSessions(ctx context.Context, req *v1.ListSessionsRequest) (*v1.ListSessionsResponse, error) {
+	var res v1.ListSessionsResponse
+	if err := c.client.CallUnary(ctx, sessionServiceListSessionsSpec(), req, &res); err != nil {
 		return nil, err
 	}
 	return &res, nil
@@ -921,6 +1176,18 @@ func (h sessionServiceHandler) getSession(ctx context.Context, _ connect.Spec, s
 		return err
 	}
 	res, err := h.svc.GetSession(ctx, &req)
+	if err != nil {
+		return err
+	}
+	return stream.Send(res)
+}
+
+func (h sessionServiceHandler) listSessions(ctx context.Context, _ connect.Spec, stream connect.ServerStream) error {
+	var req v1.ListSessionsRequest
+	if err := stream.Receive(&req); err != nil {
+		return err
+	}
+	res, err := h.svc.ListSessions(ctx, &req)
 	if err != nil {
 		return err
 	}
@@ -1971,6 +2238,900 @@ func (h scheduleServiceHandler) pauseSchedule(ctx context.Context, _ connect.Spe
 		return err
 	}
 	res, err := h.svc.PauseSchedule(ctx, &req)
+	if err != nil {
+		return err
+	}
+	return stream.Send(res)
+}
+
+var (
+	questionServiceAddQuestionsSpec = sync.OnceValue(func() connect.Spec {
+		return connect.Spec{
+			StreamType: connect.StreamTypeUnary,
+			Schema:     v1.File_hotbed_v1_hotbed_proto.Services().ByName("QuestionService").Methods().ByName("AddQuestions"),
+			Procedure:  QuestionServiceAddQuestionsProcedure,
+		}
+	})
+	questionServiceEditQuestionSpec = sync.OnceValue(func() connect.Spec {
+		return connect.Spec{
+			StreamType: connect.StreamTypeUnary,
+			Schema:     v1.File_hotbed_v1_hotbed_proto.Services().ByName("QuestionService").Methods().ByName("EditQuestion"),
+			Procedure:  QuestionServiceEditQuestionProcedure,
+		}
+	})
+	questionServiceDeleteQuestionSpec = sync.OnceValue(func() connect.Spec {
+		return connect.Spec{
+			StreamType: connect.StreamTypeUnary,
+			Schema:     v1.File_hotbed_v1_hotbed_proto.Services().ByName("QuestionService").Methods().ByName("DeleteQuestion"),
+			Procedure:  QuestionServiceDeleteQuestionProcedure,
+		}
+	})
+	questionServiceListQuestionsSpec = sync.OnceValue(func() connect.Spec {
+		return connect.Spec{
+			StreamType: connect.StreamTypeUnary,
+			Schema:     v1.File_hotbed_v1_hotbed_proto.Services().ByName("QuestionService").Methods().ByName("ListQuestions"),
+			Procedure:  QuestionServiceListQuestionsProcedure,
+		}
+	})
+	questionServiceListQuestionProjectsSpec = sync.OnceValue(func() connect.Spec {
+		return connect.Spec{
+			StreamType: connect.StreamTypeUnary,
+			Schema:     v1.File_hotbed_v1_hotbed_proto.Services().ByName("QuestionService").Methods().ByName("ListQuestionProjects"),
+			Procedure:  QuestionServiceListQuestionProjectsProcedure,
+		}
+	})
+	questionServiceGetQuestionSpec = sync.OnceValue(func() connect.Spec {
+		return connect.Spec{
+			StreamType: connect.StreamTypeUnary,
+			Schema:     v1.File_hotbed_v1_hotbed_proto.Services().ByName("QuestionService").Methods().ByName("GetQuestion"),
+			Procedure:  QuestionServiceGetQuestionProcedure,
+		}
+	})
+	questionServiceAnswerQuestionSpec = sync.OnceValue(func() connect.Spec {
+		return connect.Spec{
+			StreamType: connect.StreamTypeUnary,
+			Schema:     v1.File_hotbed_v1_hotbed_proto.Services().ByName("QuestionService").Methods().ByName("AnswerQuestion"),
+			Procedure:  QuestionServiceAnswerQuestionProcedure,
+		}
+	})
+	questionServiceDismissQuestionSpec = sync.OnceValue(func() connect.Spec {
+		return connect.Spec{
+			StreamType: connect.StreamTypeUnary,
+			Schema:     v1.File_hotbed_v1_hotbed_proto.Services().ByName("QuestionService").Methods().ByName("DismissQuestion"),
+			Procedure:  QuestionServiceDismissQuestionProcedure,
+		}
+	})
+	questionServiceMoveQuestionSpec = sync.OnceValue(func() connect.Spec {
+		return connect.Spec{
+			StreamType: connect.StreamTypeUnary,
+			Schema:     v1.File_hotbed_v1_hotbed_proto.Services().ByName("QuestionService").Methods().ByName("MoveQuestion"),
+			Procedure:  QuestionServiceMoveQuestionProcedure,
+		}
+	})
+	questionServiceAckQuestionsSpec = sync.OnceValue(func() connect.Spec {
+		return connect.Spec{
+			StreamType: connect.StreamTypeUnary,
+			Schema:     v1.File_hotbed_v1_hotbed_proto.Services().ByName("QuestionService").Methods().ByName("AckQuestions"),
+			Procedure:  QuestionServiceAckQuestionsProcedure,
+		}
+	})
+	questionServiceWaitQuestionsSpec = sync.OnceValue(func() connect.Spec {
+		return connect.Spec{
+			StreamType: connect.StreamTypeUnary,
+			Schema:     v1.File_hotbed_v1_hotbed_proto.Services().ByName("QuestionService").Methods().ByName("WaitQuestions"),
+			Procedure:  QuestionServiceWaitQuestionsProcedure,
+		}
+	})
+)
+
+// QuestionServiceClient is a client for the hotbed.v1.QuestionService service.
+type QuestionServiceClient interface {
+	// AddQuestions adds AskUserQuestion's questions to the list, each an
+	// entry of its own, at the top of the user's order.
+	AddQuestions(context.Context, *v1.AddQuestionsRequest) (*v1.AddQuestionsResponse, error)
+	// EditQuestion rewrites an open question.
+	EditQuestion(context.Context, *v1.EditQuestionRequest) (*v1.Question, error)
+	// DeleteQuestion takes a question off the list, whoever asked it.
+	DeleteQuestion(context.Context, *v1.DeleteQuestionRequest) (*v1.Question, error)
+	// ListQuestions lists a project's questions, every session's, newest
+	// first unless asked for another order.
+	ListQuestions(context.Context, *v1.ListQuestionsRequest) (*v1.ListQuestionsResponse, error)
+	// ListQuestionProjects is every project that has questions, with how
+	// many wait on the user and on agents.
+	ListQuestionProjects(context.Context, *v1.ListQuestionProjectsRequest) (*v1.ListQuestionProjectsResponse, error)
+	// GetQuestion is one question with every change made to it.
+	GetQuestion(context.Context, *v1.GetQuestionRequest) (*v1.Question, error)
+	// AnswerQuestion records the user's answer to an open question, which
+	// puts it in the outbox.
+	AnswerQuestion(context.Context, *v1.AnswerQuestionRequest) (*v1.Question, error)
+	// DismissQuestion is the user declining to answer an open question; it
+	// goes to the outbox too, so its asker learns it will get no answer.
+	DismissQuestion(context.Context, *v1.DismissQuestionRequest) (*v1.Question, error)
+	// MoveQuestion puts an open question elsewhere in the user's order.
+	MoveQuestion(context.Context, *v1.MoveQuestionRequest) (*v1.Question, error)
+	// AckQuestions takes questions out of the outbox: an agent has read
+	// their answers. They are handled, all of them or, if one is not in the
+	// outbox, none.
+	AckQuestions(context.Context, *v1.AckQuestionsRequest) (*v1.AckQuestionsResponse, error)
+	// WaitQuestions waits, two minutes at most, until one of the named
+	// questions is no longer open, or, naming none, until the outbox (a
+	// project's, or a session's questions') holds something. It returns those questions, or the outbox, as they are then.
+	WaitQuestions(context.Context, *v1.WaitQuestionsRequest) (*v1.ListQuestionsResponse, error)
+}
+
+// NewQuestionServiceClient constructs a client for the hotbed.v1.QuestionService service. Multiple
+// service clients may share a single connect.Client.
+func NewQuestionServiceClient(client *connect.Client) QuestionServiceClient {
+	return &questionServiceClient{client: client}
+}
+
+// QuestionServiceHandler is an implementation of the hotbed.v1.QuestionService service.
+type QuestionServiceHandler interface {
+	// AddQuestions adds AskUserQuestion's questions to the list, each an
+	// entry of its own, at the top of the user's order.
+	AddQuestions(context.Context, *v1.AddQuestionsRequest) (*v1.AddQuestionsResponse, error)
+	// EditQuestion rewrites an open question.
+	EditQuestion(context.Context, *v1.EditQuestionRequest) (*v1.Question, error)
+	// DeleteQuestion takes a question off the list, whoever asked it.
+	DeleteQuestion(context.Context, *v1.DeleteQuestionRequest) (*v1.Question, error)
+	// ListQuestions lists a project's questions, every session's, newest
+	// first unless asked for another order.
+	ListQuestions(context.Context, *v1.ListQuestionsRequest) (*v1.ListQuestionsResponse, error)
+	// ListQuestionProjects is every project that has questions, with how
+	// many wait on the user and on agents.
+	ListQuestionProjects(context.Context, *v1.ListQuestionProjectsRequest) (*v1.ListQuestionProjectsResponse, error)
+	// GetQuestion is one question with every change made to it.
+	GetQuestion(context.Context, *v1.GetQuestionRequest) (*v1.Question, error)
+	// AnswerQuestion records the user's answer to an open question, which
+	// puts it in the outbox.
+	AnswerQuestion(context.Context, *v1.AnswerQuestionRequest) (*v1.Question, error)
+	// DismissQuestion is the user declining to answer an open question; it
+	// goes to the outbox too, so its asker learns it will get no answer.
+	DismissQuestion(context.Context, *v1.DismissQuestionRequest) (*v1.Question, error)
+	// MoveQuestion puts an open question elsewhere in the user's order.
+	MoveQuestion(context.Context, *v1.MoveQuestionRequest) (*v1.Question, error)
+	// AckQuestions takes questions out of the outbox: an agent has read
+	// their answers. They are handled, all of them or, if one is not in the
+	// outbox, none.
+	AckQuestions(context.Context, *v1.AckQuestionsRequest) (*v1.AckQuestionsResponse, error)
+	// WaitQuestions waits, two minutes at most, until one of the named
+	// questions is no longer open, or, naming none, until the outbox (a
+	// project's, or a session's questions') holds something. It returns those questions, or the outbox, as they are then.
+	WaitQuestions(context.Context, *v1.WaitQuestionsRequest) (*v1.ListQuestionsResponse, error)
+}
+
+// RegisterQuestionServiceHandler registers svc as the hotbed.v1.QuestionService implementation on
+// server.
+func RegisterQuestionServiceHandler(server *connect.Server, svc QuestionServiceHandler) {
+	adapter := questionServiceHandler{svc: svc}
+	server.Register(
+		connect.Method{Spec: questionServiceAddQuestionsSpec(), Handler: adapter.addQuestions},
+		connect.Method{Spec: questionServiceEditQuestionSpec(), Handler: adapter.editQuestion},
+		connect.Method{Spec: questionServiceDeleteQuestionSpec(), Handler: adapter.deleteQuestion},
+		connect.Method{Spec: questionServiceListQuestionsSpec(), Handler: adapter.listQuestions},
+		connect.Method{Spec: questionServiceListQuestionProjectsSpec(), Handler: adapter.listQuestionProjects},
+		connect.Method{Spec: questionServiceGetQuestionSpec(), Handler: adapter.getQuestion},
+		connect.Method{Spec: questionServiceAnswerQuestionSpec(), Handler: adapter.answerQuestion},
+		connect.Method{Spec: questionServiceDismissQuestionSpec(), Handler: adapter.dismissQuestion},
+		connect.Method{Spec: questionServiceMoveQuestionSpec(), Handler: adapter.moveQuestion},
+		connect.Method{Spec: questionServiceAckQuestionsSpec(), Handler: adapter.ackQuestions},
+		connect.Method{Spec: questionServiceWaitQuestionsSpec(), Handler: adapter.waitQuestions},
+	)
+}
+
+// UnimplementedQuestionServiceHandler returns CodeUnimplemented from all methods.
+type UnimplementedQuestionServiceHandler struct{}
+
+func (UnimplementedQuestionServiceHandler) AddQuestions(context.Context, *v1.AddQuestionsRequest) (*v1.AddQuestionsResponse, error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, "hotbed.v1.QuestionService.AddQuestions is not implemented")
+}
+
+func (UnimplementedQuestionServiceHandler) EditQuestion(context.Context, *v1.EditQuestionRequest) (*v1.Question, error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, "hotbed.v1.QuestionService.EditQuestion is not implemented")
+}
+
+func (UnimplementedQuestionServiceHandler) DeleteQuestion(context.Context, *v1.DeleteQuestionRequest) (*v1.Question, error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, "hotbed.v1.QuestionService.DeleteQuestion is not implemented")
+}
+
+func (UnimplementedQuestionServiceHandler) ListQuestions(context.Context, *v1.ListQuestionsRequest) (*v1.ListQuestionsResponse, error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, "hotbed.v1.QuestionService.ListQuestions is not implemented")
+}
+
+func (UnimplementedQuestionServiceHandler) ListQuestionProjects(context.Context, *v1.ListQuestionProjectsRequest) (*v1.ListQuestionProjectsResponse, error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, "hotbed.v1.QuestionService.ListQuestionProjects is not implemented")
+}
+
+func (UnimplementedQuestionServiceHandler) GetQuestion(context.Context, *v1.GetQuestionRequest) (*v1.Question, error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, "hotbed.v1.QuestionService.GetQuestion is not implemented")
+}
+
+func (UnimplementedQuestionServiceHandler) AnswerQuestion(context.Context, *v1.AnswerQuestionRequest) (*v1.Question, error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, "hotbed.v1.QuestionService.AnswerQuestion is not implemented")
+}
+
+func (UnimplementedQuestionServiceHandler) DismissQuestion(context.Context, *v1.DismissQuestionRequest) (*v1.Question, error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, "hotbed.v1.QuestionService.DismissQuestion is not implemented")
+}
+
+func (UnimplementedQuestionServiceHandler) MoveQuestion(context.Context, *v1.MoveQuestionRequest) (*v1.Question, error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, "hotbed.v1.QuestionService.MoveQuestion is not implemented")
+}
+
+func (UnimplementedQuestionServiceHandler) AckQuestions(context.Context, *v1.AckQuestionsRequest) (*v1.AckQuestionsResponse, error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, "hotbed.v1.QuestionService.AckQuestions is not implemented")
+}
+
+func (UnimplementedQuestionServiceHandler) WaitQuestions(context.Context, *v1.WaitQuestionsRequest) (*v1.ListQuestionsResponse, error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, "hotbed.v1.QuestionService.WaitQuestions is not implemented")
+}
+
+type questionServiceClient struct {
+	client *connect.Client
+}
+
+func (c *questionServiceClient) AddQuestions(ctx context.Context, req *v1.AddQuestionsRequest) (*v1.AddQuestionsResponse, error) {
+	var res v1.AddQuestionsResponse
+	if err := c.client.CallUnary(ctx, questionServiceAddQuestionsSpec(), req, &res); err != nil {
+		return nil, err
+	}
+	return &res, nil
+}
+
+func (c *questionServiceClient) EditQuestion(ctx context.Context, req *v1.EditQuestionRequest) (*v1.Question, error) {
+	var res v1.Question
+	if err := c.client.CallUnary(ctx, questionServiceEditQuestionSpec(), req, &res); err != nil {
+		return nil, err
+	}
+	return &res, nil
+}
+
+func (c *questionServiceClient) DeleteQuestion(ctx context.Context, req *v1.DeleteQuestionRequest) (*v1.Question, error) {
+	var res v1.Question
+	if err := c.client.CallUnary(ctx, questionServiceDeleteQuestionSpec(), req, &res); err != nil {
+		return nil, err
+	}
+	return &res, nil
+}
+
+func (c *questionServiceClient) ListQuestions(ctx context.Context, req *v1.ListQuestionsRequest) (*v1.ListQuestionsResponse, error) {
+	var res v1.ListQuestionsResponse
+	if err := c.client.CallUnary(ctx, questionServiceListQuestionsSpec(), req, &res); err != nil {
+		return nil, err
+	}
+	return &res, nil
+}
+
+func (c *questionServiceClient) ListQuestionProjects(ctx context.Context, req *v1.ListQuestionProjectsRequest) (*v1.ListQuestionProjectsResponse, error) {
+	var res v1.ListQuestionProjectsResponse
+	if err := c.client.CallUnary(ctx, questionServiceListQuestionProjectsSpec(), req, &res); err != nil {
+		return nil, err
+	}
+	return &res, nil
+}
+
+func (c *questionServiceClient) GetQuestion(ctx context.Context, req *v1.GetQuestionRequest) (*v1.Question, error) {
+	var res v1.Question
+	if err := c.client.CallUnary(ctx, questionServiceGetQuestionSpec(), req, &res); err != nil {
+		return nil, err
+	}
+	return &res, nil
+}
+
+func (c *questionServiceClient) AnswerQuestion(ctx context.Context, req *v1.AnswerQuestionRequest) (*v1.Question, error) {
+	var res v1.Question
+	if err := c.client.CallUnary(ctx, questionServiceAnswerQuestionSpec(), req, &res); err != nil {
+		return nil, err
+	}
+	return &res, nil
+}
+
+func (c *questionServiceClient) DismissQuestion(ctx context.Context, req *v1.DismissQuestionRequest) (*v1.Question, error) {
+	var res v1.Question
+	if err := c.client.CallUnary(ctx, questionServiceDismissQuestionSpec(), req, &res); err != nil {
+		return nil, err
+	}
+	return &res, nil
+}
+
+func (c *questionServiceClient) MoveQuestion(ctx context.Context, req *v1.MoveQuestionRequest) (*v1.Question, error) {
+	var res v1.Question
+	if err := c.client.CallUnary(ctx, questionServiceMoveQuestionSpec(), req, &res); err != nil {
+		return nil, err
+	}
+	return &res, nil
+}
+
+func (c *questionServiceClient) AckQuestions(ctx context.Context, req *v1.AckQuestionsRequest) (*v1.AckQuestionsResponse, error) {
+	var res v1.AckQuestionsResponse
+	if err := c.client.CallUnary(ctx, questionServiceAckQuestionsSpec(), req, &res); err != nil {
+		return nil, err
+	}
+	return &res, nil
+}
+
+func (c *questionServiceClient) WaitQuestions(ctx context.Context, req *v1.WaitQuestionsRequest) (*v1.ListQuestionsResponse, error) {
+	var res v1.ListQuestionsResponse
+	if err := c.client.CallUnary(ctx, questionServiceWaitQuestionsSpec(), req, &res); err != nil {
+		return nil, err
+	}
+	return &res, nil
+}
+
+type questionServiceHandler struct{ svc QuestionServiceHandler }
+
+func (h questionServiceHandler) addQuestions(ctx context.Context, _ connect.Spec, stream connect.ServerStream) error {
+	var req v1.AddQuestionsRequest
+	if err := stream.Receive(&req); err != nil {
+		return err
+	}
+	res, err := h.svc.AddQuestions(ctx, &req)
+	if err != nil {
+		return err
+	}
+	return stream.Send(res)
+}
+
+func (h questionServiceHandler) editQuestion(ctx context.Context, _ connect.Spec, stream connect.ServerStream) error {
+	var req v1.EditQuestionRequest
+	if err := stream.Receive(&req); err != nil {
+		return err
+	}
+	res, err := h.svc.EditQuestion(ctx, &req)
+	if err != nil {
+		return err
+	}
+	return stream.Send(res)
+}
+
+func (h questionServiceHandler) deleteQuestion(ctx context.Context, _ connect.Spec, stream connect.ServerStream) error {
+	var req v1.DeleteQuestionRequest
+	if err := stream.Receive(&req); err != nil {
+		return err
+	}
+	res, err := h.svc.DeleteQuestion(ctx, &req)
+	if err != nil {
+		return err
+	}
+	return stream.Send(res)
+}
+
+func (h questionServiceHandler) listQuestions(ctx context.Context, _ connect.Spec, stream connect.ServerStream) error {
+	var req v1.ListQuestionsRequest
+	if err := stream.Receive(&req); err != nil {
+		return err
+	}
+	res, err := h.svc.ListQuestions(ctx, &req)
+	if err != nil {
+		return err
+	}
+	return stream.Send(res)
+}
+
+func (h questionServiceHandler) listQuestionProjects(ctx context.Context, _ connect.Spec, stream connect.ServerStream) error {
+	var req v1.ListQuestionProjectsRequest
+	if err := stream.Receive(&req); err != nil {
+		return err
+	}
+	res, err := h.svc.ListQuestionProjects(ctx, &req)
+	if err != nil {
+		return err
+	}
+	return stream.Send(res)
+}
+
+func (h questionServiceHandler) getQuestion(ctx context.Context, _ connect.Spec, stream connect.ServerStream) error {
+	var req v1.GetQuestionRequest
+	if err := stream.Receive(&req); err != nil {
+		return err
+	}
+	res, err := h.svc.GetQuestion(ctx, &req)
+	if err != nil {
+		return err
+	}
+	return stream.Send(res)
+}
+
+func (h questionServiceHandler) answerQuestion(ctx context.Context, _ connect.Spec, stream connect.ServerStream) error {
+	var req v1.AnswerQuestionRequest
+	if err := stream.Receive(&req); err != nil {
+		return err
+	}
+	res, err := h.svc.AnswerQuestion(ctx, &req)
+	if err != nil {
+		return err
+	}
+	return stream.Send(res)
+}
+
+func (h questionServiceHandler) dismissQuestion(ctx context.Context, _ connect.Spec, stream connect.ServerStream) error {
+	var req v1.DismissQuestionRequest
+	if err := stream.Receive(&req); err != nil {
+		return err
+	}
+	res, err := h.svc.DismissQuestion(ctx, &req)
+	if err != nil {
+		return err
+	}
+	return stream.Send(res)
+}
+
+func (h questionServiceHandler) moveQuestion(ctx context.Context, _ connect.Spec, stream connect.ServerStream) error {
+	var req v1.MoveQuestionRequest
+	if err := stream.Receive(&req); err != nil {
+		return err
+	}
+	res, err := h.svc.MoveQuestion(ctx, &req)
+	if err != nil {
+		return err
+	}
+	return stream.Send(res)
+}
+
+func (h questionServiceHandler) ackQuestions(ctx context.Context, _ connect.Spec, stream connect.ServerStream) error {
+	var req v1.AckQuestionsRequest
+	if err := stream.Receive(&req); err != nil {
+		return err
+	}
+	res, err := h.svc.AckQuestions(ctx, &req)
+	if err != nil {
+		return err
+	}
+	return stream.Send(res)
+}
+
+func (h questionServiceHandler) waitQuestions(ctx context.Context, _ connect.Spec, stream connect.ServerStream) error {
+	var req v1.WaitQuestionsRequest
+	if err := stream.Receive(&req); err != nil {
+		return err
+	}
+	res, err := h.svc.WaitQuestions(ctx, &req)
+	if err != nil {
+		return err
+	}
+	return stream.Send(res)
+}
+
+var (
+	reviewServiceRequestReviewSpec = sync.OnceValue(func() connect.Spec {
+		return connect.Spec{
+			StreamType: connect.StreamTypeUnary,
+			Schema:     v1.File_hotbed_v1_hotbed_proto.Services().ByName("ReviewService").Methods().ByName("RequestReview"),
+			Procedure:  ReviewServiceRequestReviewProcedure,
+		}
+	})
+	reviewServiceListReviewsSpec = sync.OnceValue(func() connect.Spec {
+		return connect.Spec{
+			StreamType: connect.StreamTypeUnary,
+			Schema:     v1.File_hotbed_v1_hotbed_proto.Services().ByName("ReviewService").Methods().ByName("ListReviews"),
+			Procedure:  ReviewServiceListReviewsProcedure,
+		}
+	})
+	reviewServiceGetReviewSpec = sync.OnceValue(func() connect.Spec {
+		return connect.Spec{
+			StreamType: connect.StreamTypeUnary,
+			Schema:     v1.File_hotbed_v1_hotbed_proto.Services().ByName("ReviewService").Methods().ByName("GetReview"),
+			Procedure:  ReviewServiceGetReviewProcedure,
+		}
+	})
+	reviewServiceStartReviewSpec = sync.OnceValue(func() connect.Spec {
+		return connect.Spec{
+			StreamType: connect.StreamTypeUnary,
+			Schema:     v1.File_hotbed_v1_hotbed_proto.Services().ByName("ReviewService").Methods().ByName("StartReview"),
+			Procedure:  ReviewServiceStartReviewProcedure,
+		}
+	})
+	reviewServiceAddFindingsSpec = sync.OnceValue(func() connect.Spec {
+		return connect.Spec{
+			StreamType: connect.StreamTypeUnary,
+			Schema:     v1.File_hotbed_v1_hotbed_proto.Services().ByName("ReviewService").Methods().ByName("AddFindings"),
+			Procedure:  ReviewServiceAddFindingsProcedure,
+		}
+	})
+	reviewServiceFinishReviewSpec = sync.OnceValue(func() connect.Spec {
+		return connect.Spec{
+			StreamType: connect.StreamTypeUnary,
+			Schema:     v1.File_hotbed_v1_hotbed_proto.Services().ByName("ReviewService").Methods().ByName("FinishReview"),
+			Procedure:  ReviewServiceFinishReviewProcedure,
+		}
+	})
+	reviewServiceCancelReviewSpec = sync.OnceValue(func() connect.Spec {
+		return connect.Spec{
+			StreamType: connect.StreamTypeUnary,
+			Schema:     v1.File_hotbed_v1_hotbed_proto.Services().ByName("ReviewService").Methods().ByName("CancelReview"),
+			Procedure:  ReviewServiceCancelReviewProcedure,
+		}
+	})
+	reviewServiceDecideFindingsSpec = sync.OnceValue(func() connect.Spec {
+		return connect.Spec{
+			StreamType: connect.StreamTypeUnary,
+			Schema:     v1.File_hotbed_v1_hotbed_proto.Services().ByName("ReviewService").Methods().ByName("DecideFindings"),
+			Procedure:  ReviewServiceDecideFindingsProcedure,
+		}
+	})
+	reviewServiceRespondSpec = sync.OnceValue(func() connect.Spec {
+		return connect.Spec{
+			StreamType: connect.StreamTypeUnary,
+			Schema:     v1.File_hotbed_v1_hotbed_proto.Services().ByName("ReviewService").Methods().ByName("Respond"),
+			Procedure:  ReviewServiceRespondProcedure,
+		}
+	})
+	reviewServiceListResponsesSpec = sync.OnceValue(func() connect.Spec {
+		return connect.Spec{
+			StreamType: connect.StreamTypeUnary,
+			Schema:     v1.File_hotbed_v1_hotbed_proto.Services().ByName("ReviewService").Methods().ByName("ListResponses"),
+			Procedure:  ReviewServiceListResponsesProcedure,
+		}
+	})
+	reviewServiceWaitReviewSpec = sync.OnceValue(func() connect.Spec {
+		return connect.Spec{
+			StreamType: connect.StreamTypeUnary,
+			Schema:     v1.File_hotbed_v1_hotbed_proto.Services().ByName("ReviewService").Methods().ByName("WaitReview"),
+			Procedure:  ReviewServiceWaitReviewProcedure,
+		}
+	})
+)
+
+// ReviewServiceClient is a client for the hotbed.v1.ReviewService service.
+type ReviewServiceClient interface {
+	// RequestReview asks for a review of a version, in the requesting
+	// session's project.
+	RequestReview(context.Context, *v1.RequestReviewRequest) (*v1.Review, error)
+	// ListReviews lists a project's reviews, or every project's, newest first,
+	// without their findings and events.
+	ListReviews(context.Context, *v1.ListReviewsRequest) (*v1.ListReviewsResponse, error)
+	// GetReview is a review with its findings and every event.
+	GetReview(context.Context, *v1.GetReviewRequest) (*v1.Review, error)
+	// StartReview claims a requested review for the calling session, its
+	// reviewer.
+	StartReview(context.Context, *v1.StartReviewRequest) (*v1.Review, error)
+	// AddFindings adds the reviewer's findings, as ReportFindings reports
+	// them, with locations besides; it may be called more than once.
+	AddFindings(context.Context, *v1.AddFindingsRequest) (*v1.AddFindingsResponse, error)
+	// FinishReview ends a review: done, with the reviewer's summary, or
+	// failed, with why.
+	FinishReview(context.Context, *v1.FinishReviewRequest) (*v1.Review, error)
+	// CancelReview withdraws a review that has not ended.
+	CancelReview(context.Context, *v1.CancelReviewRequest) (*v1.Review, error)
+	// DecideFindings accepts or dismisses findings, or opens them again.
+	DecideFindings(context.Context, *v1.DecideFindingsRequest) (*v1.DecideFindingsResponse, error)
+	// Respond answers a finding, or the review as a whole: a quick response,
+	// a comment, or both.
+	Respond(context.Context, *v1.RespondRequest) (*v1.ReviewEvent, error)
+	// ListResponses lists the responses to a review after a cursor.
+	ListResponses(context.Context, *v1.ListResponsesRequest) (*v1.ListResponsesResponse, error)
+	// WaitReview waits, two minutes at most, until a review has ended, or,
+	// with responses, until someone other than the caller responds after a
+	// cursor. It returns the review as it is then.
+	WaitReview(context.Context, *v1.WaitReviewRequest) (*v1.Review, error)
+}
+
+// NewReviewServiceClient constructs a client for the hotbed.v1.ReviewService service. Multiple
+// service clients may share a single connect.Client.
+func NewReviewServiceClient(client *connect.Client) ReviewServiceClient {
+	return &reviewServiceClient{client: client}
+}
+
+// ReviewServiceHandler is an implementation of the hotbed.v1.ReviewService service.
+type ReviewServiceHandler interface {
+	// RequestReview asks for a review of a version, in the requesting
+	// session's project.
+	RequestReview(context.Context, *v1.RequestReviewRequest) (*v1.Review, error)
+	// ListReviews lists a project's reviews, or every project's, newest first,
+	// without their findings and events.
+	ListReviews(context.Context, *v1.ListReviewsRequest) (*v1.ListReviewsResponse, error)
+	// GetReview is a review with its findings and every event.
+	GetReview(context.Context, *v1.GetReviewRequest) (*v1.Review, error)
+	// StartReview claims a requested review for the calling session, its
+	// reviewer.
+	StartReview(context.Context, *v1.StartReviewRequest) (*v1.Review, error)
+	// AddFindings adds the reviewer's findings, as ReportFindings reports
+	// them, with locations besides; it may be called more than once.
+	AddFindings(context.Context, *v1.AddFindingsRequest) (*v1.AddFindingsResponse, error)
+	// FinishReview ends a review: done, with the reviewer's summary, or
+	// failed, with why.
+	FinishReview(context.Context, *v1.FinishReviewRequest) (*v1.Review, error)
+	// CancelReview withdraws a review that has not ended.
+	CancelReview(context.Context, *v1.CancelReviewRequest) (*v1.Review, error)
+	// DecideFindings accepts or dismisses findings, or opens them again.
+	DecideFindings(context.Context, *v1.DecideFindingsRequest) (*v1.DecideFindingsResponse, error)
+	// Respond answers a finding, or the review as a whole: a quick response,
+	// a comment, or both.
+	Respond(context.Context, *v1.RespondRequest) (*v1.ReviewEvent, error)
+	// ListResponses lists the responses to a review after a cursor.
+	ListResponses(context.Context, *v1.ListResponsesRequest) (*v1.ListResponsesResponse, error)
+	// WaitReview waits, two minutes at most, until a review has ended, or,
+	// with responses, until someone other than the caller responds after a
+	// cursor. It returns the review as it is then.
+	WaitReview(context.Context, *v1.WaitReviewRequest) (*v1.Review, error)
+}
+
+// RegisterReviewServiceHandler registers svc as the hotbed.v1.ReviewService implementation on
+// server.
+func RegisterReviewServiceHandler(server *connect.Server, svc ReviewServiceHandler) {
+	adapter := reviewServiceHandler{svc: svc}
+	server.Register(
+		connect.Method{Spec: reviewServiceRequestReviewSpec(), Handler: adapter.requestReview},
+		connect.Method{Spec: reviewServiceListReviewsSpec(), Handler: adapter.listReviews},
+		connect.Method{Spec: reviewServiceGetReviewSpec(), Handler: adapter.getReview},
+		connect.Method{Spec: reviewServiceStartReviewSpec(), Handler: adapter.startReview},
+		connect.Method{Spec: reviewServiceAddFindingsSpec(), Handler: adapter.addFindings},
+		connect.Method{Spec: reviewServiceFinishReviewSpec(), Handler: adapter.finishReview},
+		connect.Method{Spec: reviewServiceCancelReviewSpec(), Handler: adapter.cancelReview},
+		connect.Method{Spec: reviewServiceDecideFindingsSpec(), Handler: adapter.decideFindings},
+		connect.Method{Spec: reviewServiceRespondSpec(), Handler: adapter.respond},
+		connect.Method{Spec: reviewServiceListResponsesSpec(), Handler: adapter.listResponses},
+		connect.Method{Spec: reviewServiceWaitReviewSpec(), Handler: adapter.waitReview},
+	)
+}
+
+// UnimplementedReviewServiceHandler returns CodeUnimplemented from all methods.
+type UnimplementedReviewServiceHandler struct{}
+
+func (UnimplementedReviewServiceHandler) RequestReview(context.Context, *v1.RequestReviewRequest) (*v1.Review, error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, "hotbed.v1.ReviewService.RequestReview is not implemented")
+}
+
+func (UnimplementedReviewServiceHandler) ListReviews(context.Context, *v1.ListReviewsRequest) (*v1.ListReviewsResponse, error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, "hotbed.v1.ReviewService.ListReviews is not implemented")
+}
+
+func (UnimplementedReviewServiceHandler) GetReview(context.Context, *v1.GetReviewRequest) (*v1.Review, error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, "hotbed.v1.ReviewService.GetReview is not implemented")
+}
+
+func (UnimplementedReviewServiceHandler) StartReview(context.Context, *v1.StartReviewRequest) (*v1.Review, error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, "hotbed.v1.ReviewService.StartReview is not implemented")
+}
+
+func (UnimplementedReviewServiceHandler) AddFindings(context.Context, *v1.AddFindingsRequest) (*v1.AddFindingsResponse, error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, "hotbed.v1.ReviewService.AddFindings is not implemented")
+}
+
+func (UnimplementedReviewServiceHandler) FinishReview(context.Context, *v1.FinishReviewRequest) (*v1.Review, error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, "hotbed.v1.ReviewService.FinishReview is not implemented")
+}
+
+func (UnimplementedReviewServiceHandler) CancelReview(context.Context, *v1.CancelReviewRequest) (*v1.Review, error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, "hotbed.v1.ReviewService.CancelReview is not implemented")
+}
+
+func (UnimplementedReviewServiceHandler) DecideFindings(context.Context, *v1.DecideFindingsRequest) (*v1.DecideFindingsResponse, error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, "hotbed.v1.ReviewService.DecideFindings is not implemented")
+}
+
+func (UnimplementedReviewServiceHandler) Respond(context.Context, *v1.RespondRequest) (*v1.ReviewEvent, error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, "hotbed.v1.ReviewService.Respond is not implemented")
+}
+
+func (UnimplementedReviewServiceHandler) ListResponses(context.Context, *v1.ListResponsesRequest) (*v1.ListResponsesResponse, error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, "hotbed.v1.ReviewService.ListResponses is not implemented")
+}
+
+func (UnimplementedReviewServiceHandler) WaitReview(context.Context, *v1.WaitReviewRequest) (*v1.Review, error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, "hotbed.v1.ReviewService.WaitReview is not implemented")
+}
+
+type reviewServiceClient struct {
+	client *connect.Client
+}
+
+func (c *reviewServiceClient) RequestReview(ctx context.Context, req *v1.RequestReviewRequest) (*v1.Review, error) {
+	var res v1.Review
+	if err := c.client.CallUnary(ctx, reviewServiceRequestReviewSpec(), req, &res); err != nil {
+		return nil, err
+	}
+	return &res, nil
+}
+
+func (c *reviewServiceClient) ListReviews(ctx context.Context, req *v1.ListReviewsRequest) (*v1.ListReviewsResponse, error) {
+	var res v1.ListReviewsResponse
+	if err := c.client.CallUnary(ctx, reviewServiceListReviewsSpec(), req, &res); err != nil {
+		return nil, err
+	}
+	return &res, nil
+}
+
+func (c *reviewServiceClient) GetReview(ctx context.Context, req *v1.GetReviewRequest) (*v1.Review, error) {
+	var res v1.Review
+	if err := c.client.CallUnary(ctx, reviewServiceGetReviewSpec(), req, &res); err != nil {
+		return nil, err
+	}
+	return &res, nil
+}
+
+func (c *reviewServiceClient) StartReview(ctx context.Context, req *v1.StartReviewRequest) (*v1.Review, error) {
+	var res v1.Review
+	if err := c.client.CallUnary(ctx, reviewServiceStartReviewSpec(), req, &res); err != nil {
+		return nil, err
+	}
+	return &res, nil
+}
+
+func (c *reviewServiceClient) AddFindings(ctx context.Context, req *v1.AddFindingsRequest) (*v1.AddFindingsResponse, error) {
+	var res v1.AddFindingsResponse
+	if err := c.client.CallUnary(ctx, reviewServiceAddFindingsSpec(), req, &res); err != nil {
+		return nil, err
+	}
+	return &res, nil
+}
+
+func (c *reviewServiceClient) FinishReview(ctx context.Context, req *v1.FinishReviewRequest) (*v1.Review, error) {
+	var res v1.Review
+	if err := c.client.CallUnary(ctx, reviewServiceFinishReviewSpec(), req, &res); err != nil {
+		return nil, err
+	}
+	return &res, nil
+}
+
+func (c *reviewServiceClient) CancelReview(ctx context.Context, req *v1.CancelReviewRequest) (*v1.Review, error) {
+	var res v1.Review
+	if err := c.client.CallUnary(ctx, reviewServiceCancelReviewSpec(), req, &res); err != nil {
+		return nil, err
+	}
+	return &res, nil
+}
+
+func (c *reviewServiceClient) DecideFindings(ctx context.Context, req *v1.DecideFindingsRequest) (*v1.DecideFindingsResponse, error) {
+	var res v1.DecideFindingsResponse
+	if err := c.client.CallUnary(ctx, reviewServiceDecideFindingsSpec(), req, &res); err != nil {
+		return nil, err
+	}
+	return &res, nil
+}
+
+func (c *reviewServiceClient) Respond(ctx context.Context, req *v1.RespondRequest) (*v1.ReviewEvent, error) {
+	var res v1.ReviewEvent
+	if err := c.client.CallUnary(ctx, reviewServiceRespondSpec(), req, &res); err != nil {
+		return nil, err
+	}
+	return &res, nil
+}
+
+func (c *reviewServiceClient) ListResponses(ctx context.Context, req *v1.ListResponsesRequest) (*v1.ListResponsesResponse, error) {
+	var res v1.ListResponsesResponse
+	if err := c.client.CallUnary(ctx, reviewServiceListResponsesSpec(), req, &res); err != nil {
+		return nil, err
+	}
+	return &res, nil
+}
+
+func (c *reviewServiceClient) WaitReview(ctx context.Context, req *v1.WaitReviewRequest) (*v1.Review, error) {
+	var res v1.Review
+	if err := c.client.CallUnary(ctx, reviewServiceWaitReviewSpec(), req, &res); err != nil {
+		return nil, err
+	}
+	return &res, nil
+}
+
+type reviewServiceHandler struct{ svc ReviewServiceHandler }
+
+func (h reviewServiceHandler) requestReview(ctx context.Context, _ connect.Spec, stream connect.ServerStream) error {
+	var req v1.RequestReviewRequest
+	if err := stream.Receive(&req); err != nil {
+		return err
+	}
+	res, err := h.svc.RequestReview(ctx, &req)
+	if err != nil {
+		return err
+	}
+	return stream.Send(res)
+}
+
+func (h reviewServiceHandler) listReviews(ctx context.Context, _ connect.Spec, stream connect.ServerStream) error {
+	var req v1.ListReviewsRequest
+	if err := stream.Receive(&req); err != nil {
+		return err
+	}
+	res, err := h.svc.ListReviews(ctx, &req)
+	if err != nil {
+		return err
+	}
+	return stream.Send(res)
+}
+
+func (h reviewServiceHandler) getReview(ctx context.Context, _ connect.Spec, stream connect.ServerStream) error {
+	var req v1.GetReviewRequest
+	if err := stream.Receive(&req); err != nil {
+		return err
+	}
+	res, err := h.svc.GetReview(ctx, &req)
+	if err != nil {
+		return err
+	}
+	return stream.Send(res)
+}
+
+func (h reviewServiceHandler) startReview(ctx context.Context, _ connect.Spec, stream connect.ServerStream) error {
+	var req v1.StartReviewRequest
+	if err := stream.Receive(&req); err != nil {
+		return err
+	}
+	res, err := h.svc.StartReview(ctx, &req)
+	if err != nil {
+		return err
+	}
+	return stream.Send(res)
+}
+
+func (h reviewServiceHandler) addFindings(ctx context.Context, _ connect.Spec, stream connect.ServerStream) error {
+	var req v1.AddFindingsRequest
+	if err := stream.Receive(&req); err != nil {
+		return err
+	}
+	res, err := h.svc.AddFindings(ctx, &req)
+	if err != nil {
+		return err
+	}
+	return stream.Send(res)
+}
+
+func (h reviewServiceHandler) finishReview(ctx context.Context, _ connect.Spec, stream connect.ServerStream) error {
+	var req v1.FinishReviewRequest
+	if err := stream.Receive(&req); err != nil {
+		return err
+	}
+	res, err := h.svc.FinishReview(ctx, &req)
+	if err != nil {
+		return err
+	}
+	return stream.Send(res)
+}
+
+func (h reviewServiceHandler) cancelReview(ctx context.Context, _ connect.Spec, stream connect.ServerStream) error {
+	var req v1.CancelReviewRequest
+	if err := stream.Receive(&req); err != nil {
+		return err
+	}
+	res, err := h.svc.CancelReview(ctx, &req)
+	if err != nil {
+		return err
+	}
+	return stream.Send(res)
+}
+
+func (h reviewServiceHandler) decideFindings(ctx context.Context, _ connect.Spec, stream connect.ServerStream) error {
+	var req v1.DecideFindingsRequest
+	if err := stream.Receive(&req); err != nil {
+		return err
+	}
+	res, err := h.svc.DecideFindings(ctx, &req)
+	if err != nil {
+		return err
+	}
+	return stream.Send(res)
+}
+
+func (h reviewServiceHandler) respond(ctx context.Context, _ connect.Spec, stream connect.ServerStream) error {
+	var req v1.RespondRequest
+	if err := stream.Receive(&req); err != nil {
+		return err
+	}
+	res, err := h.svc.Respond(ctx, &req)
+	if err != nil {
+		return err
+	}
+	return stream.Send(res)
+}
+
+func (h reviewServiceHandler) listResponses(ctx context.Context, _ connect.Spec, stream connect.ServerStream) error {
+	var req v1.ListResponsesRequest
+	if err := stream.Receive(&req); err != nil {
+		return err
+	}
+	res, err := h.svc.ListResponses(ctx, &req)
+	if err != nil {
+		return err
+	}
+	return stream.Send(res)
+}
+
+func (h reviewServiceHandler) waitReview(ctx context.Context, _ connect.Spec, stream connect.ServerStream) error {
+	var req v1.WaitReviewRequest
+	if err := stream.Receive(&req); err != nil {
+		return err
+	}
+	res, err := h.svc.WaitReview(ctx, &req)
 	if err != nil {
 		return err
 	}

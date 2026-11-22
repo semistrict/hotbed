@@ -74,7 +74,7 @@ func (f controllerClient) locate(ctx context.Context, d deps, session, repo stri
 			return nil, workerClients{}, err
 		}
 		fmt.Fprintf(d.stderr, "hotbed: the controller is out of reach; using %s on its worker\n", known[repo].ID)
-		found = &pb.Workspace{Id: known[repo].ID, NodeAddr: known[repo].NodeAddr}
+		found = &pb.Workspace{Id: known[repo].ID, NodeAddr: known[repo].NodeAddr, Project: known[repo].Project}
 	default:
 		return nil, workerClients{}, err
 	}
@@ -87,6 +87,9 @@ func (f controllerClient) locate(ctx context.Context, d deps, session, repo stri
 		return nil, workerClients{}, refusal(err, found.NodeAddr)
 	}
 	ws.NodeAddr = found.NodeAddr
+	if ws.Project == "" {
+		ws.Project = found.Project
+	}
 	remember(d, session, ws)
 	return ws, w, nil
 }
@@ -158,6 +161,7 @@ type spot struct {
 	ID       string `json:"id"`
 	NodeAddr string `json:"nodeAddr"`
 	SyncDir  string `json:"syncDir,omitempty"`
+	Project  string `json:"project,omitempty"`
 }
 
 func knownFile(d deps, session string) string {
@@ -180,18 +184,35 @@ func remember(d deps, session string, ws *pb.Workspace) {
 	if err != nil {
 		k = known{}
 	}
-	if k[ws.RepoId].ID == ws.Id && k[ws.RepoId].NodeAddr == ws.NodeAddr && k[ws.RepoId].SyncDir == ws.SyncDir {
+	if k[ws.RepoId].ID == ws.Id && k[ws.RepoId].NodeAddr == ws.NodeAddr && k[ws.RepoId].SyncDir == ws.SyncDir && k[ws.RepoId].Project == ws.Project {
 		return
 	}
-	k[ws.RepoId] = spot{ID: ws.Id, NodeAddr: ws.NodeAddr, SyncDir: ws.SyncDir}
-	b, err := json.Marshal(k)
-	if err == nil {
-		err = os.MkdirAll(filepath.Dir(knownFile(d, session)), 0o755)
-	}
-	if err == nil {
-		err = os.WriteFile(knownFile(d, session), b, 0o644)
-	}
-	if err != nil {
+	k[ws.RepoId] = spot{ID: ws.Id, NodeAddr: ws.NodeAddr, SyncDir: ws.SyncDir, Project: ws.Project}
+	if err := saveKnown(d, session, k); err != nil {
 		fmt.Fprintf(d.stderr, "hotbed: could not note where %s is: %v\n", ws.Id, err)
 	}
+}
+
+// forget drops a session's released workspace of a repo from what this
+// machine knows.
+func forget(d deps, session, repo string) {
+	k, err := loadKnown(d, session)
+	if err != nil || k[repo].ID == "" {
+		return
+	}
+	delete(k, repo)
+	if err := saveKnown(d, session, k); err != nil {
+		fmt.Fprintf(d.stderr, "hotbed: could not forget %s's workspace of %s: %v\n", session, repo, err)
+	}
+}
+
+func saveKnown(d deps, session string, k known) error {
+	b, err := json.Marshal(k)
+	if err != nil {
+		return err
+	}
+	if err := os.MkdirAll(filepath.Dir(knownFile(d, session)), 0o755); err != nil {
+		return err
+	}
+	return os.WriteFile(knownFile(d, session), b, 0o644)
 }

@@ -3,9 +3,10 @@ import { Link, useNavigate, useParams, useSearch } from "@tanstack/react-router"
 import { api, type FileEntry, type Workspace } from "../api";
 import { SegmentedBar } from "../components/charts/Bars";
 import { HistoryTable, LiveCommandTable } from "../components/CommandTable";
+import { Crumbs } from "../components/Crumbs";
 import { Card, Empty, StatTile } from "../components/ui/Card";
 import { nodeName, repoName, useSnapshot } from "../lib/data";
-import { ago, bytes, duration } from "../lib/format";
+import { ago, bytes, duration, shortSha } from "../lib/format";
 import { isLive } from "../lib/live";
 import { savings } from "../lib/stats";
 import { NotFound } from "./NotFound";
@@ -43,6 +44,7 @@ export function WorkspacePage() {
 
   return (
     <div className="space-y-6">
+      <Crumbs repoId={w.repoId} here={w.id} />
       <PageTitle
         title={w.id}
         sub={`${repoName(s, w.repoId)} · ${nodeName(s, w.nodeId)} · ${w.agent}${w.branch ? ` on ${w.branch}` : ""}`}
@@ -64,7 +66,7 @@ export function WorkspacePage() {
       )}
       <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 xl:grid-cols-6">
         <StatTile label="Forked in" value={w.forkMillis} unit="ms" tone="ember" foot={ago(w.createdAt, now)} />
-        <StatTile label="Base" value={`g${base?.generation ?? "?"}`} foot={base ? `${base.commit} · ${base.message}` : "gone"} />
+        <StatTile label="Base" value={`g${base?.generation ?? "?"}`} foot={base ? <span title={base.commit} className="line-clamp-3 break-words">{shortSha(base.commit)} · {base.message}</span> : "gone"} />
         <StatTile label="Owns" value={bytes(w.exclusiveBytes)} foot="rewritten by its builds" />
         <StatTile label="Shares" value={bytes(w.sharedBytes)} foot="with its base" />
         <StatTile label="Files changed" value={w.filesChanged} foot={`head ${w.head}`} />
@@ -82,15 +84,19 @@ export function WorkspacePage() {
         />
       </Card>
 
-      <Card title="Files" sub={base ? `Against base g${base.generation} (${base.commit}). Changed lines are marked.` : undefined}>
+      <Card title="Files" sub={base ? `Against base g${base.generation} (${shortSha(base.commit)}). Changed lines are marked.` : undefined}>
         <FileBrowser workspaceId={w.id} selected={file} />
       </Card>
 
-      <Card title="Commands now">
-        <LiveCommandTable s={s} commands={live} />
-      </Card>
-      <Card title="Commands that ended" sub="Last 24 hours">
-        <HistoryTable s={s} rows={history} />
+      <Card title="Commands" sub="Running now, then those that ended in the last 24 hours">
+        {live.length === 0 && history.length === 0 ? (
+          <Empty>No commands have run here.</Empty>
+        ) : (
+          <div className="space-y-5">
+            {live.length > 0 && <LiveCommandTable s={s} commands={live} />}
+            {history.length > 0 && <HistoryTable s={s} rows={history} />}
+          </div>
+        )}
       </Card>
       {base && (
         <Card title="Built into the base" sub={`${base.toolchain} · built in ${duration(base.buildSeconds)} · ${bytes(base.sizeBytes)}`}>
@@ -122,7 +128,7 @@ function FileBrowser({ workspaceId, selected }: { workspaceId: string; selected?
     <div className="grid gap-4 lg:grid-cols-[280px_1fr]">
       <ul className="max-h-[480px] overflow-y-auto rounded-lg border border-border bg-background/40 p-2 font-mono text-[11px]">
         {files.data.map((f) => (
-          <TreeRow key={f.path} f={f} active={f.path === path} onPick={() => navigate({ to: "/workspaces/$id", params: { id: workspaceId }, search: { file: f.path }, replace: true })} />
+          <TreeRow key={f.path} f={f} active={f.path === path} onPick={() => navigate({ to: "/workspaces/$id", params: { id: workspaceId }, search: { file: f.path }, replace: true, resetScroll: false })} />
         ))}
       </ul>
       <div className="min-w-0 overflow-hidden rounded-lg border border-border bg-background/40">

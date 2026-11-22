@@ -5,7 +5,9 @@ Silicon laptops on Asahi) on one tailnet. Its one trick: every workspace is a co
 a **warm base**, a checkout of main that is already built, so a branch compiles only what it changed.
 
 Scope comes from two ends: the agent experience (the CLI, `hotbed skills get hotbed`) and the human
-experience (the read-only cockpit in `ui/`, whose `src/api/types.ts` is the API it needs).
+experience (the cockpit in `ui/`, whose `src/api/types.ts` is the API it needs). The cockpit
+watches the cluster and is where the user answers agents' questions; whatever it does, the CLI
+does too.
 
 ## Pieces
 
@@ -86,6 +88,68 @@ cockpit.
   session expiry: the controller ends no session with a workspace on a worker it has not heard from,
   for up to a day. On a worker's own machine, the worker admits only root and the user its
   commands run as; anyone else gets a refusal saying so.
+
+## Projects
+
+A **project** is what sessions work on and questions are about, as in T3 Code: one or more repos,
+each named by its canonical git remote (`github.com/semistrict/hotbed`, whatever form the remote
+was written in). Projects are their own table (`projects`, with `project_repos` naming the repos
+each holds), and a repo may be in several.
+
+- **Every session belongs to one.** `session start -p NAME` names it. Otherwise the CLI sends its
+  checkout's remote and the session joins the one project that holds it; a repo no project holds
+  becomes a project of its own name, made then; a repo several projects hold, or no checkout at
+  all, needs `-p`. A scheduled run joins its repo's project the same way.
+- **One project per repo unless shared.** `project add` refuses a repo another project holds
+  unless given `--shared`, because a repo in two projects makes every session starting in its
+  checkouts name its project. `project rm-repo` takes a repo out. Every change (created, repo
+  added, repo removed) is kept in `project_changes` with who made it: a session, a person, or
+  the controller, which says why it made a project by itself.
+- **The cockpit is organized around them.** Its home lists projects with their sessions, running
+  commands and questions; choosing one scopes every page (sessions, questions, commands,
+  history, workspaces, schedules) to it. The machines (Cluster, Nodes) are every project's.
+
+## Questions
+
+Agents ask the user questions the way AskUserQuestion asks them (the same JSON: a question, a
+header, two to four options with descriptions and previews, multiSelect), without stopping for
+the answer. Each is an entry on its project's list, which every session of the project shares
+and may edit or delete.
+
+- **Lifecycle.** *open* (the user's inbox, in an order the user sets) → *answered* (picks, words
+  of the user's own, a note) or *dismissed* (no answer will come), which wait in the **outbox**
+  until an agent acknowledges them → *handled*. Any session may delete a question (*deleted*).
+- **Nothing is removed.** `questions` holds each question as it is; `question_changes` holds every
+  change (asked, edited, moved, answered, dismissed, handled, deleted) with when, which session
+  (empty for the user) on which machine, why, and the question as the change left it.
+- **Where it was asked.** A question keeps its asker's directory, origin, branch, commit and
+  changed files, and the project's repo it is about (the asker's checkout, when the project
+  holds it).
+- **Hearing back.** `question wait` long-polls until a named question is no longer open, or the
+  project's outbox holds something. An answer or dismissal is also an event of the asking
+  session, so its `hotbed wait` wakes.
+
+## Reviews
+
+A review is of an exact version: a repo's base and head commits (no base: the whole tree), in the
+requesting session's project. A dirty worktree is reviewed as a snapshot commit on HEAD (the one
+`sync` makes), and every head is pinned under `refs/hotbed/reviews/` in the requester's checkout,
+so the reviewer can read it and git keeps it.
+
+- **Lifecycle.** *requested* → *in progress* (a reviewer session claims it; only it reports
+  findings and ends it) → *done*, with a summary, or *failed*, with why; *cancelled* by its
+  project's sessions before it ends.
+- **Findings** take ReportFindings' JSON (summary, failure scenario, category, severity, short
+  summary, verdict, file and line) and any number of locations besides: path, lines and the
+  excerpt the reviewer saw, so the cockpit shows them without the code. The requester decides each:
+  accepted, dismissed, or open again.
+- **Responses.** The user responds in the cockpit, per finding or to the review: a quick response
+  (verify, fix if verified, won't fix), a comment, or both. Agents reply the same way. The
+  requester reads them after a cursor and can wait for new ones; a response, and the review's end,
+  are also events of its session.
+- **Nothing is removed.** `reviews` and `review_findings` hold each as it is; `review_events`
+  holds every change (with the review or finding as it left it) and every response, with when,
+  which session (empty for the user) and which machine.
 
 ## Storage
 

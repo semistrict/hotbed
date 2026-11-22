@@ -1,0 +1,16 @@
+version: "2"
+sql:
+  - engine: "sqlite"
+    schema: "internal/controller/db/migrations"
+    queries: "internal/controller/db/queries"
+    gen:
+      go:
+        package: "controllerdb"
+        out: "internal/controller/db/gen"
+  - engine: "sqlite"
+    schema: "internal/worker/db/migrations"
+    queries: "internal/worker/db/queries"
+    gen:
+      go:
+        package: "workerdb"
+        out: "internal/worker/db/gen"

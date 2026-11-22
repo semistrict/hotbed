@@ -2,6 +2,7 @@ package controller
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"regexp"
@@ -13,6 +14,7 @@ import (
 
 	"github.com/semistrict/hotbed/internal/api"
 	pb "github.com/semistrict/hotbed/internal/gen/hotbed/v1"
+	"github.com/semistrict/hotbed/internal/gitops"
 )
 
 // Scheduled commands: the controller starts each run by itself, in a session
@@ -90,7 +92,7 @@ func (s *Server) TickSchedules(ctx context.Context) error {
 	if err := s.settleRuns(ctx); err != nil {
 		return err
 	}
-	all, err := s.cfg.Store.Schedules(ctx)
+	all, err := s.cfg.Store.Schedules(ctx, "")
 	if err != nil {
 		return err
 	}
@@ -193,13 +195,22 @@ func (s *Server) start(ctx context.Context, sc *pb.ScheduledCommand, slot *int64
 	if slot != nil {
 		at = time.UnixMilli(*slot)
 	}
-	session, err := s.runSession(ctx, sc.Name+"-"+at.In(loc).Format("20060102-1504"), "schedule:"+sc.Name)
+	run := &pb.ScheduledRun{Schedule: sc.Name, SlotAt: slot, StartedAt: now.UnixMilli(), Outcome: pb.RunOutcome_RUN_OUTCOME_RUNNING}
+	project, err := s.runProject(ctx, sc)
+	var refused *api.Error
+	if errors.As(err, &refused) {
+		ended := now.UnixMilli()
+		run.Outcome, run.Reason, run.EndedAt = pb.RunOutcome_RUN_OUTCOME_NOT_STARTED, refused.Message, &ended
+		return run, s.cfg.Store.AddRun(ctx, run)
+	}
 	if err != nil {
 		return nil, err
 	}
-	run := &pb.ScheduledRun{
-		Schedule: sc.Name, SlotAt: slot, StartedAt: now.UnixMilli(), Outcome: pb.RunOutcome_RUN_OUTCOME_RUNNING, SessionId: session,
+	session, err := s.runSession(ctx, sc.Name+"-"+at.In(loc).Format("20060102-1504"), "schedule:"+sc.Name, project.Name)
+	if err != nil {
+		return nil, err
 	}
+	run.SessionId = session
 	if err := s.cfg.Store.AddRun(ctx, run); err != nil {
 		return nil, err
 	}
@@ -220,15 +231,20 @@ func (s *Server) start(ctx context.Context, sc *pb.ScheduledCommand, slot *int64
 	return run, err
 }
 
+// runProject is the project a schedule's runs work on.
+func (s *Server) runProject(ctx context.Context, sc *pb.ScheduledCommand) (*pb.Project, error) {
+	return s.cfg.Store.Project(ctx, sc.Project)
+}
+
 // runSession starts a run's session, called name, or name-2, name-3 when
 // that is taken (two runs in a minute, or an agent's session).
-func (s *Server) runSession(ctx context.Context, name, agent string) (string, error) {
+func (s *Server) runSession(ctx context.Context, name, agent, project string) (string, error) {
 	for n := 1; n <= 20; n++ {
 		id := name
 		if n > 1 {
 			id = fmt.Sprintf("%s-%d", name, n)
 		}
-		_, err := s.cfg.Store.StartSession(ctx, id, agent, s.now())
+		_, err := s.cfg.Store.StartSession(ctx, id, agent, project, s.now())
 		if err == nil {
 			return id, nil
 		}
@@ -371,9 +387,17 @@ func (s *schedules) PutSchedule(ctx context.Context, req *pb.PutScheduleRequest)
 	if _, _, err := parseCron(sc.Cron); err != nil {
 		return nil, err
 	}
-	if _, err := s.repo(ctx, sc.Repo); err != nil {
+	repo, err := s.repo(ctx, sc.Repo)
+	if err != nil {
 		return nil, err
 	}
+	// Settled now, so a repo that a second project takes in later does not
+	// leave the runs not knowing which project they are in.
+	project, err := s.sessionProject(ctx, sc.Project, gitops.CanonicalRemote(repo.Url))
+	if err != nil {
+		return nil, err
+	}
+	sc.Project = project.Name
 	if len(sc.GetCommand().GetArgs()) == 0 {
 		return nil, api.Errorf(api.CodeInvalidArgs, "scheduled command %s has no command", sc.Name).
 			WithSuggestion("hotbed schedule add NAME REPO --cron '0 2 * * *' -- CMD...")
@@ -423,9 +447,10 @@ func (s *Server) withRuns(ctx context.Context, sc *pb.ScheduledCommand, n int) (
 	return sc, err
 }
 
-// allSchedules is every scheduled command with its recent runs.
-func (s *Server) allSchedules(ctx context.Context) ([]*pb.ScheduledCommand, error) {
-	all, err := s.cfg.Store.Schedules(ctx)
+// allSchedules is every scheduled command of project (empty: every
+// project's), with its recent runs.
+func (s *Server) allSchedules(ctx context.Context, project string) ([]*pb.ScheduledCommand, error) {
+	all, err := s.cfg.Store.Schedules(ctx, project)
 	if err != nil {
 		return nil, err
 	}
@@ -437,8 +462,13 @@ func (s *Server) allSchedules(ctx context.Context) ([]*pb.ScheduledCommand, erro
 	return all, nil
 }
 
-func (s *schedules) ListSchedules(ctx context.Context, _ *pb.ListSchedulesRequest) (*pb.ListSchedulesResponse, error) {
-	all, err := s.allSchedules(ctx)
+func (s *schedules) ListSchedules(ctx context.Context, req *pb.ListSchedulesRequest) (*pb.ListSchedulesResponse, error) {
+	if req.GetProject() != "" {
+		if _, err := s.cfg.Store.Project(ctx, req.Project); err != nil {
+			return nil, err
+		}
+	}
+	all, err := s.allSchedules(ctx, req.GetProject())
 	return &pb.ListSchedulesResponse{Schedules: all}, err
 }
 

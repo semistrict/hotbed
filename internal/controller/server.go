@@ -22,6 +22,7 @@ import (
 	"github.com/semistrict/hotbed/internal/api"
 	pb "github.com/semistrict/hotbed/internal/gen/hotbed/v1"
 	"github.com/semistrict/hotbed/internal/gen/hotbed/v1/hotbedv1connect"
+	"github.com/semistrict/hotbed/internal/gitops"
 	"github.com/semistrict/hotbed/internal/httpx"
 	"github.com/semistrict/hotbed/internal/statedir"
 	"github.com/semistrict/hotbed/internal/tailnet"
@@ -81,7 +82,13 @@ type Server struct {
 
 	mu      sync.Mutex
 	workers map[string]hotbedv1connect.WorkspaceServiceClient
-	waiters map[string]chan struct{} // closed when a session gets events
+
+	// sessionWakes wakes a session's watchers when it gets events;
+	// questionWakes wakes everyone waiting on questions when one changes.
+	sessionWakes  wakeups
+	questionWakes wakeups
+	// reviewWakes wakes those waiting on a review (by its ID) when it changes.
+	reviewWakes wakeups
 
 	// repoEdits makes each change to a repo (its steps, its epoch) read and
 	// write it in one go, so agents editing steps at once lose nothing.
@@ -101,7 +108,7 @@ func NewServer(cfg ServerConfig) *Server {
 	if cfg.WorkerAddr == nil {
 		cfg.WorkerAddr = func(h string) string { return net.JoinHostPort(h, strconv.Itoa(api.WorkerPort)) }
 	}
-	return &Server{cfg: cfg, workers: map[string]hotbedv1connect.WorkspaceServiceClient{}, waiters: map[string]chan struct{}{}}
+	return &Server{cfg: cfg, workers: map[string]hotbedv1connect.WorkspaceServiceClient{}}
 }
 
 // Handler serves the API and the cockpit to the cluster's owner only.
@@ -113,6 +120,8 @@ func (s *Server) Handler() http.Handler {
 	hotbedv1connect.RegisterSessionServiceHandler(server, &sessions{s})
 	hotbedv1connect.RegisterWorkspaceServiceHandler(server, &workspaces{s})
 	hotbedv1connect.RegisterScheduleServiceHandler(server, &schedules{s})
+	hotbedv1connect.RegisterQuestionServiceHandler(server, &questions{s})
+	hotbedv1connect.RegisterReviewServiceHandler(server, &reviews{s})
 	mux := http.NewServeMux()
 	connecthttp.Mount(mux, server)
 	mux.HandleFunc("GET /builds/{build}/{asset}", s.serveBuild)
@@ -336,7 +345,7 @@ func (s *Server) settleSoon(ctx context.Context) {
 
 func (s *Server) wakeAll(sessions map[string]bool) {
 	for session := range sessions {
-		s.wake(session)
+		s.sessionWakes.wake(session)
 	}
 }
 
@@ -359,9 +368,25 @@ func (s *Server) withOnline(n *pb.Node) *pb.Node {
 
 var repoID = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,39}$`)
 
-func (s *Server) ListRepos(ctx context.Context, _ *pb.ListReposRequest) (*pb.ListReposResponse, error) {
+func (s *Server) ListRepos(ctx context.Context, req *pb.ListReposRequest) (*pb.ListReposResponse, error) {
 	repos, err := s.cfg.Store.Repos(ctx)
-	return &pb.ListReposResponse{Repos: repos}, err
+	if err != nil {
+		return nil, err
+	}
+	if req.GetProject() != "" {
+		p, err := s.cfg.Store.Project(ctx, req.Project)
+		if err != nil {
+			return nil, err
+		}
+		var filtered []*pb.Repo
+		for _, r := range repos {
+			if slices.Contains(p.Repos, gitops.CanonicalRemote(r.Url)) {
+				filtered = append(filtered, r)
+			}
+		}
+		repos = filtered
+	}
+	return &pb.ListReposResponse{Repos: repos}, nil
 }
 
 func (s *Server) PutRepo(ctx context.Context, req *pb.PutRepoRequest) (*pb.Repo, error) {
@@ -372,6 +397,11 @@ func (s *Server) PutRepo(ctx context.Context, req *pb.PutRepoRequest) (*pb.Repo,
 	if repo.Url == "" {
 		return nil, api.Errorf(api.CodeInvalidArgs, "repo %s has no URL", repo.Id)
 	}
+	if req.Project != "" {
+		if _, err := s.cfg.Store.Project(ctx, req.Project); err != nil {
+			return nil, err
+		}
+	}
 	repo.CreatedAt = s.now().UnixMilli()
 	s.repoEdits.Lock()
 	defer s.repoEdits.Unlock()
@@ -380,7 +410,21 @@ func (s *Server) PutRepo(ctx context.Context, req *pb.PutRepoRequest) (*pb.Repo,
 	if old, err := s.repo(ctx, repo.Id); err == nil {
 		repo.ScratchEpoch, repo.Steps = old.ScratchEpoch, old.Steps
 	}
-	return repo, s.cfg.Store.PutRepo(ctx, repo)
+	if err := s.cfg.Store.PutRepo(ctx, repo); err != nil {
+		return nil, err
+	}
+	if req.Project != "" {
+		var remotes []string
+		if remote := gitops.CanonicalRemote(repo.Url); remote != "" {
+			remotes = []string{remote}
+		}
+		if _, err := s.cfg.Store.AddProject(ctx, req.Project, remotes, s.madeBy(ctx, "for registered repo "+repo.Id)); err != nil {
+			return nil, err
+		}
+	} else if _, err := s.ensureRepoProject(ctx, repo.Id, repo.Url); err != nil {
+		return nil, err
+	}
+	return repo, nil
 }
 
 // RebuildRepo raises the repo's scratch epoch, which has each worker build
@@ -459,26 +503,6 @@ func fromWorker(host string, err error) error {
 		return &api.Error{Code: api.CodeWorkerUnreachable, Message: host + ": " + e.Message, Retryable: true}
 	}
 	return e
-}
-
-func (s *Server) wake(session string) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if ch, ok := s.waiters[session]; ok {
-		close(ch)
-		delete(s.waiters, session)
-	}
-}
-
-func (s *Server) waiter(session string) <-chan struct{} {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	ch, ok := s.waiters[session]
-	if !ok {
-		ch = make(chan struct{})
-		s.waiters[session] = ch
-	}
-	return ch
 }
 
 // newID is eight random base32 characters, lowercase.
@@ -570,7 +594,7 @@ func (s *Server) endSession(ctx context.Context, id, reason string) (*pb.Session
 	if err := s.cfg.Store.EndSession(ctx, id, reason, s.now()); err != nil {
 		return nil, err
 	}
-	s.wake(id)
+	s.sessionWakes.wake(id)
 	return s.cfg.Store.Session(ctx, id)
 }
 

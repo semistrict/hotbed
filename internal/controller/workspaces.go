@@ -53,6 +53,7 @@ func (s *workspaces) CreateWorkspace(ctx context.Context, req *pb.CreateWorkspac
 		var ws *pb.Workspace
 		if ws, err = c.CreateWorkspace(ctx, fwd); err == nil {
 			ws.NodeAddr = s.addrOf(node.nodeRow)
+			ws.Project = sess.Project
 			return ws, nil
 		}
 		err = fromWorker(host, err)
@@ -113,43 +114,46 @@ func (s *workspaces) place(ctx context.Context, req *pb.CreateWorkspaceRequest) 
 }
 
 // workspaceOf is a live workspace's worker, and keeps its session alive.
-func (s *workspaces) workspaceOf(ctx context.Context, id string) (hotbedv1connect.WorkspaceServiceClient, string, workspaceRow, error) {
+func (s *workspaces) workspaceOf(ctx context.Context, id string) (hotbedv1connect.WorkspaceServiceClient, string, workspaceRow, string, error) {
 	w, err := s.cfg.Store.Workspace(ctx, id)
 	if err != nil {
-		return nil, "", w, err
+		return nil, "", w, "", err
 	}
 	if w.released {
-		return nil, "", w, api.Errorf(api.CodeNotFound, "workspace %s was released", id)
+		return nil, "", w, "", api.Errorf(api.CodeNotFound, "workspace %s was released", id)
 	}
-	if _, err := s.cfg.Store.LiveSession(ctx, w.session, s.now()); err != nil {
-		return nil, "", w, err
+	sess, err := s.cfg.Store.LiveSession(ctx, w.session, s.now())
+	if err != nil {
+		return nil, "", w, "", err
 	}
 	c, host, err := s.worker(ctx, w.node)
-	return c, host, w, err
+	return c, host, w, sess.Project, err
 }
 
 // commandOf is a command's worker; it keeps the command's session alive.
-func (s *workspaces) commandOf(ctx context.Context, id string) (hotbedv1connect.WorkspaceServiceClient, string, error) {
+func (s *workspaces) commandOf(ctx context.Context, id string) (hotbedv1connect.WorkspaceServiceClient, string, string, error) {
 	session, node, err := s.cfg.Store.Command(ctx, id)
 	if err != nil {
-		return nil, "", err
+		return nil, "", "", err
 	}
 	if session != "" {
 		if err := s.cfg.Store.Touch(ctx, session, s.now()); err != nil {
-			return nil, "", err
+			return nil, "", "", err
 		}
 	}
-	return s.worker(ctx, node)
+	c, host, err := s.worker(ctx, node)
+	return c, host, session, err
 }
 
 // GetWorkspace asks the workspace's worker, or, when it is out of reach,
 // answers from its node's view.
 func (s *workspaces) GetWorkspace(ctx context.Context, req *pb.GetWorkspaceRequest) (*pb.Workspace, error) {
-	c, host, w, err := s.workspaceOf(ctx, req.Id)
+	c, host, w, project, err := s.workspaceOf(ctx, req.Id)
 	if err == nil {
 		var ws *pb.Workspace
 		if ws, err = c.GetWorkspace(ctx, req); err == nil {
 			ws.NodeAddr = s.nodeAddr(ctx, w.node)
+			ws.Project = project
 			return ws, nil
 		}
 		err = fromWorker(host, err)
@@ -163,7 +167,7 @@ func (s *workspaces) GetWorkspace(ctx context.Context, req *pb.GetWorkspaceReque
 // WatchWorkspace relays a workspace's changes from its worker. Watching
 // counts as using the session: a first base can take long to freshen.
 func (s *workspaces) WatchWorkspace(ctx context.Context, req *pb.WatchWorkspaceRequest, out hotbedv1connect.WorkspaceServiceWatchWorkspaceServerStream) error {
-	c, host, w, err := s.workspaceOf(ctx, req.Id)
+	c, host, w, project, err := s.workspaceOf(ctx, req.Id)
 	if err != nil {
 		return err
 	}
@@ -172,7 +176,10 @@ func (s *workspaces) WatchWorkspace(ctx context.Context, req *pb.WatchWorkspaceR
 		return fromWorker(host, err)
 	}
 	defer in.Close()
-	return relay(ctx, s.Server, w.session, host, in.Receive, out.Send)
+	return relay(ctx, s.Server, w.session, host, in.Receive, func(ws *pb.Workspace) error {
+		ws.Project = project
+		return out.Send(ws)
+	})
 }
 
 // relay forwards a worker's stream to a client until either ends, keeping
@@ -200,12 +207,17 @@ func relay[T any](ctx context.Context, s *Server, session, host string, receive 
 }
 
 // ListWorkspaces lists the live workspaces of a session (which it keeps
-// alive), or of every session, as their nodes' views have them.
+// alive), a project, or every session, as their nodes' views have them.
 func (s *workspaces) ListWorkspaces(ctx context.Context, req *pb.ListWorkspacesRequest) (*pb.ListWorkspacesResponse, error) {
 	var sess *pb.Session
 	if req.SessionId != "" {
 		var err error
 		if sess, err = s.cfg.Store.LiveSession(ctx, req.SessionId, s.now()); err != nil {
+			return nil, err
+		}
+	}
+	if req.Project != "" {
+		if _, err := s.cfg.Store.Project(ctx, req.Project); err != nil {
 			return nil, err
 		}
 	}
@@ -217,10 +229,17 @@ func (s *workspaces) ListWorkspaces(ctx context.Context, req *pb.ListWorkspacesR
 	seen := map[string]bool{}
 	for _, nv := range nvs {
 		for _, ws := range nv.workspaces {
-			if ws.State != pb.WorkspaceState_WORKSPACE_STATE_RELEASED && (req.SessionId == "" || ws.SessionId == req.SessionId) {
-				out.Workspaces = append(out.Workspaces, ws)
-				seen[ws.Id] = true
+			if ws.State == pb.WorkspaceState_WORKSPACE_STATE_RELEASED {
+				continue
 			}
+			if req.SessionId != "" && ws.SessionId != req.SessionId {
+				continue
+			}
+			if req.Project != "" && ws.Project != req.Project {
+				continue
+			}
+			out.Workspaces = append(out.Workspaces, ws)
+			seen[ws.Id] = true
 		}
 	}
 	// A workspace just created may not be in its node's view yet: its
@@ -234,6 +253,9 @@ func (s *workspaces) ListWorkspaces(ctx context.Context, req *pb.ListWorkspacesR
 			slog.Warn("list a workspace not in its node's view", "workspace", id, "err", err)
 			continue
 		}
+		if req.Project != "" && ws.Project != req.Project {
+			continue
+		}
 		out.Workspaces = append(out.Workspaces, ws)
 	}
 	slices.SortFunc(out.Workspaces, func(a, b *pb.Workspace) int { return cmp.Compare(a.CreatedAt, b.CreatedAt) })
@@ -241,7 +263,7 @@ func (s *workspaces) ListWorkspaces(ctx context.Context, req *pb.ListWorkspacesR
 }
 
 func (s *workspaces) ReleaseWorkspace(ctx context.Context, req *pb.ReleaseWorkspaceRequest) (*pb.ReleaseWorkspaceResponse, error) {
-	if _, _, _, err := s.workspaceOf(ctx, req.Id); err != nil {
+	if _, _, _, _, err := s.workspaceOf(ctx, req.Id); err != nil {
 		return nil, err
 	}
 	return &pb.ReleaseWorkspaceResponse{}, s.releaseWorkspace(ctx, req.Id)
@@ -257,7 +279,7 @@ func (s *workspaces) Sync(ctx context.Context, in hotbedv1connect.WorkspaceServi
 	if h == nil {
 		return nil, api.Errorf(api.CodeInvalidArgs, "sync must start with a header")
 	}
-	c, host, _, err := s.workspaceOf(ctx, h.WorkspaceId)
+	c, host, _, _, err := s.workspaceOf(ctx, h.WorkspaceId)
 	if err != nil {
 		return nil, err
 	}
@@ -288,7 +310,7 @@ func (s *workspaces) Sync(ctx context.Context, in hotbedv1connect.WorkspaceServi
 }
 
 func (s *workspaces) ListFiles(ctx context.Context, req *pb.ListFilesRequest) (*pb.ListFilesResponse, error) {
-	c, host, _, err := s.workspaceOf(ctx, req.WorkspaceId)
+	c, host, _, _, err := s.workspaceOf(ctx, req.WorkspaceId)
 	if err != nil {
 		return nil, err
 	}
@@ -300,7 +322,7 @@ func (s *workspaces) ListFiles(ctx context.Context, req *pb.ListFilesRequest) (*
 }
 
 func (s *workspaces) GetFile(ctx context.Context, req *pb.GetFileRequest) (*pb.FileContent, error) {
-	c, host, _, err := s.workspaceOf(ctx, req.WorkspaceId)
+	c, host, _, _, err := s.workspaceOf(ctx, req.WorkspaceId)
 	if err != nil {
 		return nil, err
 	}
@@ -313,7 +335,7 @@ func (s *workspaces) GetFile(ctx context.Context, req *pb.GetFileRequest) (*pb.F
 
 // RunCommand gives the command an ID and runs it on the workspace's worker.
 func (s *workspaces) RunCommand(ctx context.Context, req *pb.RunCommandRequest) (*pb.Command, error) {
-	c, host, w, err := s.workspaceOf(ctx, req.WorkspaceId)
+	c, host, w, project, err := s.workspaceOf(ctx, req.WorkspaceId)
 	if err != nil {
 		return nil, err
 	}
@@ -331,17 +353,23 @@ func (s *workspaces) RunCommand(ctx context.Context, req *pb.RunCommandRequest) 
 		}
 		return nil, fromWorker(host, err)
 	}
+	cmd.Project = project
 	return cmd, nil
 }
 
 // GetCommand asks the command's worker, or, when it is out of reach,
 // answers from its node's view.
 func (s *workspaces) GetCommand(ctx context.Context, req *pb.GetCommandRequest) (*pb.Command, error) {
-	c, host, err := s.commandOf(ctx, req.Id)
+	c, host, session, err := s.commandOf(ctx, req.Id)
 	if err == nil {
 		var cmd *pb.Command
 		if cmd, err = c.GetCommand(ctx, req); err == nil {
 			cmd.NodeAddr = s.nodeAddr(ctx, cmd.NodeId)
+			if session != "" {
+				if sess, serr := s.cfg.Store.Session(ctx, session); serr == nil {
+					cmd.Project = sess.Project
+				}
+			}
 			return cmd, nil
 		}
 		err = fromWorker(host, err)
@@ -353,10 +381,15 @@ func (s *workspaces) GetCommand(ctx context.Context, req *pb.GetCommandRequest) 
 }
 
 // ListCommands lists the live and just-ended commands of a session (which
-// it keeps alive), or of every session, as their nodes' views have them.
+// it keeps alive), a project, or every session, as their nodes' views have them.
 func (s *workspaces) ListCommands(ctx context.Context, req *pb.ListCommandsRequest) (*pb.ListCommandsResponse, error) {
 	if req.SessionId != "" {
 		if err := s.cfg.Store.Touch(ctx, req.SessionId, s.now()); err != nil {
+			return nil, err
+		}
+	}
+	if req.Project != "" {
+		if _, err := s.cfg.Store.Project(ctx, req.Project); err != nil {
 			return nil, err
 		}
 	}
@@ -367,9 +400,16 @@ func (s *workspaces) ListCommands(ctx context.Context, req *pb.ListCommandsReque
 	out := &pb.ListCommandsResponse{}
 	for _, nv := range nvs {
 		for _, c := range nv.commands {
-			if c.Kind != "freshen" && (req.SessionId == "" || c.SessionId == req.SessionId) {
-				out.Commands = append(out.Commands, c)
+			if c.Kind == "freshen" {
+				continue
 			}
+			if req.SessionId != "" && c.SessionId != req.SessionId {
+				continue
+			}
+			if req.Project != "" && c.Project != req.Project {
+				continue
+			}
+			out.Commands = append(out.Commands, c)
 		}
 	}
 	slices.SortFunc(out.Commands, func(a, b *pb.Command) int { return strings.Compare(a.Id, b.Id) })
@@ -378,7 +418,7 @@ func (s *workspaces) ListCommands(ctx context.Context, req *pb.ListCommandsReque
 }
 
 func (s *workspaces) StopCommand(ctx context.Context, req *pb.StopCommandRequest) (*pb.Command, error) {
-	c, host, err := s.commandOf(ctx, req.Id)
+	c, host, session, err := s.commandOf(ctx, req.Id)
 	if err != nil {
 		return nil, err
 	}
@@ -386,17 +426,18 @@ func (s *workspaces) StopCommand(ctx context.Context, req *pb.StopCommandRequest
 	if err != nil {
 		return nil, fromWorker(host, err)
 	}
+	if session != "" {
+		if sess, serr := s.cfg.Store.Session(ctx, session); serr == nil {
+			res.Project = sess.Project
+		}
+	}
 	return res, nil
 }
 
 // FollowLog relays a command's output from its worker. Following a long
 // command counts as using the session, so it is not abandoned meanwhile.
 func (s *workspaces) FollowLog(ctx context.Context, req *pb.FollowLogRequest, out hotbedv1connect.WorkspaceServiceFollowLogServerStream) error {
-	c, host, err := s.commandOf(ctx, req.Id)
-	if err != nil {
-		return err
-	}
-	session, _, err := s.cfg.Store.Command(ctx, req.Id)
+	c, host, session, err := s.commandOf(ctx, req.Id)
 	if err != nil {
 		return err
 	}
@@ -409,7 +450,7 @@ func (s *workspaces) FollowLog(ctx context.Context, req *pb.FollowLogRequest, ou
 }
 
 func (s *workspaces) GetLogLines(ctx context.Context, req *pb.GetLogLinesRequest) (*pb.CommandLog, error) {
-	c, host, err := s.commandOf(ctx, req.Id)
+	c, host, _, err := s.commandOf(ctx, req.Id)
 	if err != nil {
 		return nil, err
 	}
@@ -421,7 +462,7 @@ func (s *workspaces) GetLogLines(ctx context.Context, req *pb.GetLogLinesRequest
 }
 
 func (s *workspaces) InspectCommand(ctx context.Context, req *pb.InspectCommandRequest) (*pb.InspectCommandResponse, error) {
-	c, host, err := s.commandOf(ctx, req.Id)
+	c, host, _, err := s.commandOf(ctx, req.Id)
 	if err != nil {
 		return nil, err
 	}
@@ -433,11 +474,7 @@ func (s *workspaces) InspectCommand(ctx context.Context, req *pb.InspectCommandR
 }
 
 func (s *workspaces) TraceCommand(ctx context.Context, req *pb.TraceCommandRequest, out hotbedv1connect.WorkspaceServiceTraceCommandServerStream) error {
-	c, host, err := s.commandOf(ctx, req.Id)
-	if err != nil {
-		return err
-	}
-	session, _, err := s.cfg.Store.Command(ctx, req.Id)
+	c, host, session, err := s.commandOf(ctx, req.Id)
 	if err != nil {
 		return err
 	}
@@ -459,7 +496,7 @@ func (s *workspaces) GetCommandProfile(ctx context.Context, req *pb.GetCommandPr
 		stored.Live = false
 		return profiler.QueryProfile(stored, req), nil
 	}
-	c, host, err := s.commandOf(ctx, req.Id)
+	c, host, _, err := s.commandOf(ctx, req.Id)
 	if err == nil {
 		res, werr := c.GetCommandProfile(ctx, req)
 		if werr == nil {

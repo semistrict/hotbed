@@ -27,8 +27,8 @@ func TestNormalizeGitURL(t *testing.T) {
 		{"ssh://git@github.com:22/semistrict/hotbed.git", "github.com/semistrict/hotbed"},
 	}
 	for _, tc := range cases {
-		if got := normalizeGitURL(tc[0]); got != tc[1] {
-			t.Errorf("normalizeGitURL(%q) = %q, want %q", tc[0], got, tc[1])
+		if got := gitops.CanonicalRemote(tc[0]); got != tc[1] {
+			t.Errorf("gitops.CanonicalRemote(%q) = %q, want %q", tc[0], got, tc[1])
 		}
 	}
 }
@@ -94,11 +94,8 @@ func TestRunParseWithFlagsEnvAndRejectsPositionals(t *testing.T) {
 // inside a checkout using T3CODE_THREAD_ID, git worktree fallback, HOTBED_SESSION,
 // and HOTBED_REPO.
 func TestSessionAndRepoDefaultFromThreadWorktreeAndEnv(t *testing.T) {
-	t.Setenv("HOTBED_SESSION", "")
-	t.Setenv("HOTBED_REPO", "")
-	t.Setenv("T3CODE_THREAD_ID", "thread-alpha-123")
-
 	c := newCluster(t)
+	t.Setenv("T3CODE_THREAD_ID", "thread-alpha-123")
 	remote := upstream(t)
 	// Register the repo under a different name than the local checkout folder
 	// (like ~/src/fxdax -> cladefs).
@@ -128,7 +125,7 @@ func TestSessionAndRepoDefaultFromThreadWorktreeAndEnv(t *testing.T) {
 	var ws pb.Workspace
 	c.ok(&ws, "add", "--sync", checkout)
 	if ws.RepoId != "cladefs" || ws.SessionId != "thread-fox" {
-		t.Fatalf("add with defaults = %v, want cladefs in thread-fox", ws)
+		t.Fatalf("add with defaults = %v, want cladefs in thread-fox", &ws)
 	}
 
 	code, stdout, stderr := c.hotbed("run", "--", "cat", "src/lib.txt")
@@ -170,7 +167,7 @@ func TestSessionAndRepoDefaultFromThreadWorktreeAndEnv(t *testing.T) {
 	t.Setenv("T3CODE_THREAD_ID", "")
 	c.ok(&pb.Session{}, "session", "start", "wt-owl")
 	c.ok(&cur, "session", "current")
-	if cur.ID != "wt-owl" || cur.Source != "worktree" || cur.Key != canonicalPath(checkout) {
+	if cur.ID != "wt-owl" || cur.Source != "worktree" || cur.Key != gitops.CanonicalPath(checkout) {
 		t.Fatalf("worktree session current = %+v, want wt-owl from worktree", cur)
 	}
 
@@ -184,7 +181,7 @@ func TestSessionAndRepoDefaultFromThreadWorktreeAndEnv(t *testing.T) {
 	}
 	c.ok(&ws, "add")
 	if ws.RepoId != "cladefs" || ws.SessionId != "wt-owl" {
-		t.Fatalf("add with HOTBED_SESSION+HOTBED_REPO = %v", ws)
+		t.Fatalf("add with HOTBED_SESSION+HOTBED_REPO = %v", &ws)
 	}
 
 	// Outside a checkout with HOTBED_REPO unset, step ls fails cleanly.
@@ -245,8 +242,6 @@ func TestSessionStatus(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Chdir(checkout)
-	t.Setenv("HOTBED_SESSION", "")
-	t.Setenv("HOTBED_REPO", "")
 	t.Setenv("T3CODE_THREAD_ID", "thread-status-test")
 
 	// Reject positional session argument.
@@ -341,10 +336,82 @@ func TestSessionStatus(t *testing.T) {
 	}
 
 	// Stale local binding in sessions.json returns active=false, state="not_found" cleanly.
-	bindSessionForContext(t.Context(), c.cli, "ghost-otter")
+	place, ok := startPlace(t.Context())
+	if !ok {
+		t.Fatal("the test runs in no T3 thread or git worktree")
+	}
+	if err := updateSessionMap(sessionsFilePath(c.cli), func(m sessionMap) { m.bind(place, "ghost-otter") }); err != nil {
+		t.Fatal(err)
+	}
 	var stale sessionStatusResult
 	c.ok(&stale, "session", "status")
 	if stale.Active || stale.State != "not_found" || stale.ID != "ghost-otter" || stale.Source != "thread" {
 		t.Fatalf("stale binding status = %+v, want state=not_found id=ghost-otter", stale)
+	}
+}
+
+// session start in a T3 thread or worktree bound to a live session refuses
+// to start another unless told to replace it, which ends the old one; a
+// bound session that ended or that the controller never had is no obstacle.
+func TestSessionStartReplacesOnlyWhenTold(t *testing.T) {
+	c := newCluster(t)
+	t.Setenv("T3CODE_THREAD_ID", "thread-replace")
+	bindHere := func(id string) {
+		t.Helper()
+		place, ok := startPlace(t.Context())
+		if !ok {
+			t.Fatal("no T3 thread to bind to")
+		}
+		if err := updateSessionMap(sessionsFilePath(c.cli), func(m sessionMap) { m.bind(place, id) }); err != nil {
+			t.Fatal(err)
+		}
+	}
+	current := func(want string) {
+		t.Helper()
+		var cur sessionBinding
+		c.ok(&cur, "session", "current")
+		if cur.ID != want || cur.Source != "thread" {
+			t.Fatalf("session current = %+v, want %s from the thread", cur, want)
+		}
+	}
+
+	c.ok(nil, "session", "start", "one-fox")
+	_, e := c.fails("session", "start", "two-fox")
+	if e.Code != api.CodeConflict || e.Message != "T3 thread thread-replace is bound to session one-fox, which is live" ||
+		e.Suggestion != "keep using one-fox (hotbed session status), end it first (hotbed session end), or pass --replace to end it and start a new one" {
+		t.Fatalf("second start = %+v, want CONFLICT naming one-fox", e)
+	}
+	if _, e := c.fails("session", "status", "-s", "two-fox"); e.Code != api.CodeNotFound {
+		t.Fatalf("a refused start started two-fox: %+v", e)
+	}
+	current("one-fox")
+
+	c.ok(nil, "session", "start", "two-fox", "--replace")
+	current("two-fox")
+	if s := c.session("one-fox"); s.EndedAt == nil {
+		t.Fatalf("--replace left one-fox live: %v", s)
+	}
+
+	// Bound to a session that ended, or one the controller never had.
+	c.ok(nil, "session", "end")
+	bindHere("two-fox")
+	c.ok(nil, "session", "start", "three-fox")
+	current("three-fox")
+	bindHere("ghost-fox")
+	c.ok(nil, "session", "start", "four-fox")
+	current("four-fox")
+	if s := c.session("three-fox"); s.EndedAt != nil {
+		t.Fatalf("starting over a ghost ended three-fox, bound before it: %v", s)
+	}
+
+	// A sessions file it cannot read stops it before it starts anything.
+	if err := os.WriteFile(sessionsFilePath(c.cli), []byte("not json"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if code, e := c.fails("session", "start", "five-fox"); code != exitError || e.Code != api.CodeInternal {
+		t.Fatalf("start with an unreadable sessions file: exit %d, %+v, want exit 1 INTERNAL", code, e)
+	}
+	if _, e := c.fails("session", "status", "-s", "five-fox"); e.Code != api.CodeNotFound {
+		t.Fatalf("start with an unreadable sessions file started five-fox: %+v", e)
 	}
 }

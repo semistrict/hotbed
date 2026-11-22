@@ -150,9 +150,15 @@ func (c *cluster) eventually(what string, cond func() bool) {
 // hotbed runs the CLI and returns its exit status, stdout and stderr.
 func (c *cluster) hotbed(args ...string) (int, string, string) {
 	c.t.Helper()
+	return c.hotbedIn("", args...)
+}
+
+// hotbedIn is hotbed with stdin.
+func (c *cluster) hotbedIn(stdin string, args ...string) (int, string, string) {
+	c.t.Helper()
 	var stdout, stderr bytes.Buffer
 	d := c.cli
-	d.stdout, d.stderr = &stdout, &stderr
+	d.stdin, d.stdout, d.stderr = strings.NewReader(stdin), &stdout, &stderr
 	code := run(c.t.Context(), args, d)
 	return code, stdout.String(), stderr.String()
 }
@@ -161,7 +167,13 @@ func (c *cluster) hotbed(args ...string) (int, string, string) {
 // into m (a protobuf message, or anything JSON).
 func (c *cluster) ok(m any, args ...string) {
 	c.t.Helper()
-	code, stdout, stderr := c.hotbed(args...)
+	c.okIn("", m, args...)
+}
+
+// okIn is ok with stdin.
+func (c *cluster) okIn(stdin string, m any, args ...string) {
+	c.t.Helper()
+	code, stdout, stderr := c.hotbedIn(stdin, args...)
 	var out output
 	if err := json.Unmarshal([]byte(stdout), &out); err != nil {
 		c.t.Fatalf("hotbed %v printed %q (stderr %q)", args, stdout, stderr)
@@ -185,7 +197,13 @@ func (c *cluster) ok(m any, args ...string) {
 // fails runs the CLI and returns the error of the envelope it printed.
 func (c *cluster) fails(args ...string) (int, *api.Error) {
 	c.t.Helper()
-	code, stdout, _ := c.hotbed(args...)
+	return c.failsIn("", args...)
+}
+
+// failsIn is fails with stdin.
+func (c *cluster) failsIn(stdin string, args ...string) (int, *api.Error) {
+	c.t.Helper()
+	code, stdout, _ := c.hotbedIn(stdin, args...)
 	var out output
 	if err := json.Unmarshal([]byte(stdout), &out); err != nil || out.OK {
 		c.t.Fatalf("hotbed %v printed %q, want an error envelope", args, stdout)
@@ -339,10 +357,8 @@ func TestSessionWithSyncedCheckout(t *testing.T) {
 	}
 
 	// The cockpit sees it all.
-	snap, err := c.asWorker.GetSnapshot(t.Context(), &pb.GetSnapshotRequest{})
-	if err != nil {
-		t.Fatal(err)
-	}
+	snap := &pb.Snapshot{}
+	c.ok(snap, "snapshot")
 	if len(snap.Repos) != 1 || snap.Repos[0].Units != 1 || snap.Repos[0].ColdBuildSeconds <= 0 {
 		t.Errorf("snapshot repos = %v", snap.Repos)
 	}
@@ -792,10 +808,8 @@ func TestSnapshotKeepsEndedSessions(t *testing.T) {
 	ws := &pb.Workspace{}
 	c.ok(ws, "add", "-s", "spent-owl", "-r", "app")
 	c.ok(nil, "session", "end", "-s", "spent-owl")
-	snap, err := c.asWorker.GetSnapshot(t.Context(), &pb.GetSnapshotRequest{})
-	if err != nil {
-		t.Fatal(err)
-	}
+	snap := &pb.Snapshot{}
+	c.ok(snap, "snapshot")
 	var got *pb.Session
 	for _, s := range snap.Sessions {
 		if s.Id == "spent-owl" {

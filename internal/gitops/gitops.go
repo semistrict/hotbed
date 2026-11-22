@@ -34,6 +34,20 @@ func (g Git) Run(ctx context.Context, args ...string) (string, error) {
 	return strings.TrimSpace(out.String()), nil
 }
 
+// Lines runs git and returns its stdout's lines, as written: leading
+// spaces, which say something in git status --porcelain, are kept.
+func (g Git) Lines(ctx context.Context, args ...string) ([]string, error) {
+	var out bytes.Buffer
+	if err := g.run(ctx, nil, &out, args...); err != nil {
+		return nil, err
+	}
+	text := strings.TrimRight(out.String(), "\n")
+	if text == "" {
+		return nil, nil
+	}
+	return strings.Split(text, "\n"), nil
+}
+
 func (g Git) run(ctx context.Context, stdin io.Reader, stdout io.Writer, args ...string) error {
 	cmd := exec.CommandContext(ctx, "git", args...)
 	cmd.Dir = g.Dir

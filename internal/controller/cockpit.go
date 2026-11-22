@@ -11,6 +11,7 @@ import (
 	"time"
 
 	pb "github.com/semistrict/hotbed/internal/gen/hotbed/v1"
+	"github.com/semistrict/hotbed/internal/gitops"
 )
 
 const (
@@ -47,11 +48,19 @@ func (s *Server) GetSnapshot(ctx context.Context, _ *pb.GetSnapshotRequest) (*pb
 	if err != nil {
 		return nil, err
 	}
-	sessions, err := s.cfg.Store.RecentSessions(ctx, day)
+	sessions, err := s.cfg.Store.RecentSessions(ctx, day, "")
 	if err != nil {
 		return nil, err
 	}
-	schedules, err := s.allSchedules(ctx)
+	schedules, err := s.allSchedules(ctx, "")
+	if err != nil {
+		return nil, err
+	}
+	open, err := s.cfg.Store.OpenQuestions(ctx)
+	if err != nil {
+		return nil, err
+	}
+	projects, err := s.projects(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -59,7 +68,7 @@ func (s *Server) GetSnapshot(ctx context.Context, _ *pb.GetSnapshotRequest) (*pb
 	snap := &pb.Snapshot{
 		ClusterId: s.cfg.Cluster.ClusterID, Controller: s.cfg.Controller,
 		Now: now.UnixMilli(), SampleSeconds: sampleSeconds, Events: events, History: history,
-		Sessions: sessions, Schedules: schedules,
+		Sessions: sessions, Schedules: schedules, OpenQuestions: open, Projects: projects,
 	}
 	for _, nv := range nvs {
 		node := nv.node
@@ -90,7 +99,7 @@ func (s *Server) GetSnapshot(ctx context.Context, _ *pb.GetSnapshotRequest) (*pb
 // summarize describes a repo by its newest cold base: what it is written
 // in, how many units it builds, how long that takes from nothing.
 func summarize(repo *pb.Repo, bases []*pb.Base) *pb.RepoSummary {
-	out := &pb.RepoSummary{Id: repo.Id, Name: strings.TrimSuffix(nameOf(repo.Url), ".git")}
+	out := &pb.RepoSummary{Id: repo.Id, Name: strings.TrimSuffix(nameOf(repo.Url), ".git"), Remote: gitops.CanonicalRemote(repo.Url)}
 	var cold *pb.Base
 	for _, b := range bases {
 		if b.RepoId == repo.Id && b.Cold && (b.State == pb.BaseState_BASE_STATE_WARM || b.State == pb.BaseState_BASE_STATE_STALE) {

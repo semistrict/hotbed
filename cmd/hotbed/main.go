@@ -29,6 +29,7 @@ func main() {
 		http:         &http.Client{Timeout: 60 * time.Second},
 		stream:       &http.Client{},
 		check:        worker.CheckMachine,
+		stdin:        os.Stdin,
 		controller:   localController,
 		stdout:       os.Stdout,
 		stderr:       os.Stderr,
@@ -61,6 +62,10 @@ func run(ctx context.Context, args []string, d deps) int {
 			return exitError
 		}
 		c.callController(addr)
+		if d.cockpit, err = newCockpit(addr); err != nil {
+			writeEnvelope(d.stdout, failure(name, toAPIError(err)))
+			return exitError
+		}
 		if name != "upgrade" && name != "admin upgrade" {
 			var seen atomic.Int64
 			d = watchBuild(d, &seen)
@@ -86,6 +91,7 @@ func run(ctx context.Context, args []string, d deps) int {
 		writeEnvelope(d.stdout, failure(name, toAPIError(err)))
 		return exitError
 	}
+	d.cockpit.fill(data)
 	writeEnvelope(d.stdout, success(name, data))
 	return exitOK
 }

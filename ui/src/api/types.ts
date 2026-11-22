@@ -66,6 +66,8 @@ export interface Repo {
   units: number;
   /** A full build from nothing on a typical node. */
   coldBuildSeconds: number;
+  /** Its canonical git remote, which projects hold it by. */
+  remote: string;
 }
 
 export type BaseState = "building" | "warm" | "stale";
@@ -116,6 +118,8 @@ export interface Session {
   schedule: string | null;
   /** Its scheduled run is in progress: the idle hour does not apply. */
   scheduleRunning: boolean;
+  /** The project it works on; null for one from before projects. */
+  project: string | null;
 }
 
 export interface SessionWorkspace {
@@ -145,6 +149,8 @@ export interface Workspace {
   exclusiveBytes: number;
   sharedBytes: number;
   lastActiveAt: string;
+  /** The project its session works on. */
+  project?: string | null;
 }
 
 export type CommandKind = "build" | "test" | "check" | "server" | "shell";
@@ -184,6 +190,8 @@ export interface Command {
   /** A measurement (hotbed run --bench): alone on the node's measurement CPUs, isolated, never parked. */
   bench: boolean;
   timeline: CommandEvent[];
+  /** The project its session works on. */
+  project?: string | null;
 }
 
 export interface CommandEvent {
@@ -274,6 +282,8 @@ export interface FinishedCommand {
   /** Times it was frozen for memory and thawed again. */
   parks: number;
   bench: boolean;
+  /** The project its session worked on; null for a sessionless freshen. */
+  project?: string | null;
 }
 
 export type FailureKind = "compile" | "test" | "lint" | "signal" | "exit";
@@ -302,6 +312,31 @@ export interface Snapshot {
   sessions: Session[];
   /** By name, each with its recent runs. */
   schedules: ScheduledCommand[];
+  /** Questions waiting for the user's answer, every project's. */
+  openQuestions: number;
+  /** Every project, by name. */
+  projects: Project[];
+}
+
+/**
+ * What sessions work on and questions are about: one or more repos, each
+ * named by its canonical git remote, as a T3 Code project holds folders.
+ */
+export interface Project {
+  name: string;
+  /** Canonical git remotes: github.com/semistrict/hotbed. */
+  repos: string[];
+  createdAt: string;
+  liveSessions: number;
+  openQuestions: number;
+  /** Questions answered or dismissed, waiting for an agent. */
+  outbox: number;
+  /** Reviews requested or in progress. */
+  activeReviews: number;
+  /** Reviews done with findings no one has decided yet. */
+  reviewsToDecide: number;
+  /** Scheduled commands in this project. */
+  schedules: number;
 }
 
 /**
@@ -325,6 +360,8 @@ export interface ScheduledCommand {
   nextAt: string | null;
   /** The newest first. */
   runs: ScheduledRun[];
+  /** The project its runs work on; null for one added before schedules had one. */
+  project: string | null;
 }
 
 /**
@@ -633,6 +670,185 @@ export interface CommandProfile {
   buckets: ProfileBucket[];
 }
 
+/**
+ * open: waiting for the user. answered and dismissed: in the outbox, until
+ * an agent acknowledges the response, which makes it handled. deleted: a
+ * session took it off the list. Nothing is ever removed.
+ */
+export type QuestionState = "open" | "answered" | "dismissed" | "handled" | "deleted";
+
+/** newest or oldest asked first, the most recently changed first, or the user's own order. */
+export type QuestionOrder = "newest" | "oldest" | "updated" | "rank";
+
+/** What an agent asks, as AskUserQuestion takes it. */
+export interface Prompt {
+  question: string;
+  /** At most 12 characters. */
+  header: string;
+  /** Two to four. */
+  options: PromptOption[];
+  multiSelect: boolean;
+}
+
+export interface PromptOption {
+  label: string;
+  description: string;
+  /** Shown beside the option when it is focused: a mockup, code; empty for none. */
+  preview: string;
+}
+
+/** Who changed a question and when: an agent's session, or the user (null). */
+export interface Stamp {
+  at: string;
+  session: string | null;
+  host: string;
+  /** A dismissal's or a deletion's reason. */
+  reason: string;
+}
+
+export interface Answer {
+  /** The labels picked: one at most unless multiSelect. */
+  picked: string[];
+  /** Words of the user's own, instead of picking or besides. */
+  other: string;
+  notes: string;
+}
+
+/** The asking agent's checkout, when it was in one. */
+export interface AskedFrom {
+  dir: string;
+  remote: string;
+  branch: string;
+  head: string;
+  dirtyFiles: number;
+  /** The first lines of git status --porcelain. */
+  dirty: string[];
+}
+
+export interface Question {
+  id: number;
+  project: string;
+  /** The project's repo it is about, a canonical remote; null for the whole project. */
+  repo: string | null;
+  prompt: Prompt;
+  state: QuestionState;
+  /** Its place in the user's order, lower first. */
+  rank: number;
+  answer: Answer | null;
+  asked: Stamp;
+  askedFrom: AskedFrom | null;
+  edited: Stamp | null;
+  answered: Stamp | null;
+  dismissed: Stamp | null;
+  handled: Stamp | null;
+  deleted: Stamp | null;
+  /** Its last change other than a move. */
+  updatedAt: string;
+}
+
+/** One change to a question, as its history keeps it. */
+export interface QuestionChange {
+  seq: number;
+  /** asked, edited, moved, answered, dismissed, handled, deleted */
+  what: string;
+  by: Stamp;
+  /** The question as the change left it. */
+  question: Question;
+}
+
+export interface QuestionFilter {
+  /** Only this project's; null or unset for every project's. */
+  project?: string | null;
+  /** None: every state but deleted. */
+  states?: QuestionState[];
+  order?: QuestionOrder;
+}
+
+export interface QuestionList {
+  questions: Question[];
+  total: number;
+}
+
+/** requested: waiting for a reviewer; in-progress: claimed, finding; then one of three ends. */
+export type ReviewState = "requested" | "in-progress" | "done" | "failed" | "cancelled";
+
+/** As ReportFindings grades it: a bug the change adds, one that was there before, a minor issue. */
+export type Severity = "important" | "pre-existing" | "nit";
+
+/** What the requesting agent made of a finding. */
+export type Decision = "open" | "accepted" | "dismissed";
+
+/** What the user can say of a finding with one click. */
+export type Quick = "verify" | "fix-if-verified" | "wont-fix";
+
+/** A place in the reviewed version. */
+export interface Location {
+  path: string;
+  /** 1-based; 0 for the whole file. */
+  startLine: number;
+  endLine: number;
+  /** The lines as the reviewer saw them; empty when it gave none. */
+  excerpt: string;
+}
+
+export interface Finding {
+  id: number;
+  reviewId: number;
+  title: string;
+  summary: string;
+  failureScenario: string;
+  category: string;
+  severity: Severity;
+  /** How sure the reviewer is; null when not verified. */
+  verdict: "confirmed" | "plausible" | null;
+  /** Zero or more. */
+  locations: Location[];
+  decision: Decision;
+  decided: Stamp | null;
+  found: Stamp;
+  /** The latest quick response to it. */
+  quick: Quick | null;
+  responses: number;
+}
+
+/** Something that happened to a review: a change, or a response (what "responded"). */
+export interface ReviewEvent {
+  seq: number;
+  reviewId: number;
+  /** null for the review as a whole. */
+  findingId: number | null;
+  what: string;
+  by: Stamp;
+  quick: Quick | null;
+  text: string;
+}
+
+export interface Review {
+  id: number;
+  project: string;
+  /** Canonical remote; null outside a repo. */
+  repo: string | null;
+  title: string;
+  instructions: string;
+  /** null: the whole tree at head. */
+  base: string | null;
+  head: string;
+  branch: string;
+  /** head is a snapshot of uncommitted changes on this commit. */
+  snapshotOf: string | null;
+  state: ReviewState;
+  /** The reviewer's summary when done; why it failed or was cancelled. */
+  summary: string;
+  requested: Stamp;
+  started: Stamp | null;
+  ended: Stamp | null;
+  updatedAt: string;
+  /** Only from review(id). */
+  findings: Finding[];
+  events: ReviewEvent[];
+  counts: { important: number; preExisting: number; nits: number; open: number; responses: number };
+}
+
 export interface Api {
   snapshot(): Promise<Snapshot>;
   commandLog(id: string): Promise<CommandLog>;
@@ -641,4 +857,16 @@ export interface Api {
   inspectCommand(id: string, opts?: { sections?: InspectSection[]; pid?: number }): Promise<InspectCommandResult>;
   traceCommand(id: string, opts: TraceOptions, onChunk: (chunk: TraceChunk) => void, signal?: AbortSignal): Promise<TraceSummary | null>;
   commandProfile(id: string, query?: ProfileQuery): Promise<CommandProfile>;
+  questions(filter: QuestionFilter): Promise<QuestionList>;
+  /** Every change to a question, oldest first. */
+  questionHistory(id: number): Promise<QuestionChange[]>;
+  answerQuestion(id: number, answer: Answer): Promise<Question>;
+  dismissQuestion(id: number, reason: string): Promise<Question>;
+  /** Puts an open question just before another, or last (before null). */
+  moveQuestion(id: number, before: number | null): Promise<Question>;
+  /** A project's reviews (every project's for null), newest first, without findings and events. */
+  reviews(project: string | null): Promise<Review[]>;
+  review(id: number): Promise<Review>;
+  /** The user's response to a finding (or, findingId null, the review): a quick response, a comment, or both. */
+  respond(reviewId: number, findingId: number | null, quick: Quick | null, text: string): Promise<ReviewEvent>;
 }

@@ -18,16 +18,19 @@ import (
 )
 
 type sessionCmd struct {
-	Start   sessionStartCmd   `cmd:"" help:"Start a session and bind it to this T3 thread or git worktree in ~/.hotbed/sessions.json. Call hotbed wait at least hourly, or it is abandoned."`
+	Start   sessionStartCmd   `cmd:"" help:"Start a session in a project (-p, or the one holding this checkout's repo) and bind it to this T3 thread or git worktree in ~/.hotbed/sessions.json. Call hotbed wait at least hourly, or it is abandoned."`
 	Status  sessionStatusCmd  `cmd:"" help:"Show the active session's state, idle time, workspaces, and commands."`
 	Current sessionCurrentCmd `cmd:"" help:"Print the active session resolved from -s, HOTBED_SESSION, T3CODE_THREAD_ID, or the current git worktree."`
+	Ls      sessionLsCmd      `cmd:"" help:"A project's live sessions (default: this session's project), the most recently active first."`
 	End     sessionEndCmd     `cmd:"" help:"End a session: stop its commands, release its workspaces, and clear its local mapping."`
 }
 
 type sessionStartCmd struct {
 	controllerClient
-	Name  string `arg:"" optional:"" help:"adjective-noun, such as brave-otter (default: a random free one)."`
-	Agent string `env:"HOTBED_AGENT" help:"Who you are, for the cockpit (default: this machine)."`
+	projectFlag
+	Name    string `arg:"" optional:"" help:"adjective-noun, such as brave-otter (default: a random free one)."`
+	Agent   string `env:"HOTBED_AGENT" help:"Who you are, for the cockpit (default: this machine)."`
+	Replace bool   `help:"End the live session already bound to this T3 thread or git worktree and bind the new one in its place."`
 }
 
 func (c *sessionStartCmd) Exec(ctx context.Context, d deps) (any, error) {
@@ -35,12 +38,65 @@ func (c *sessionStartCmd) Exec(ctx context.Context, d deps) (any, error) {
 	if err != nil {
 		return nil, err
 	}
-	sess, err := cl.sessions.StartSession(ctx, &pb.StartSessionRequest{Id: c.Name, Agent: c.Agent})
+	remote, err := checkoutRemote(ctx)
 	if err != nil {
 		return nil, err
 	}
-	bindSessionForContext(ctx, d, sess.Id)
+	path := sessionsFilePath(d)
+	m, err := loadSessionMap(path)
+	if err != nil {
+		return nil, err
+	}
+	place, binds := startPlace(ctx)
+	// replaced is the live session bound here that the new one replaces.
+	var replaced string
+	if bound := m.bound(place); binds && bound != "" {
+		live, err := sessionLive(ctx, cl, bound)
+		if err != nil {
+			return nil, err
+		}
+		if live && !c.Replace {
+			return nil, api.Errorf(api.CodeConflict, "%s is bound to session %s, which is live", place, bound).
+				WithSuggestion(fmt.Sprintf("keep using %s (hotbed session status), end it first (hotbed session end), or pass --replace to end it and start a new one", bound))
+		}
+		if live {
+			replaced = bound
+		}
+	}
+	sess, err := cl.sessions.StartSession(ctx, &pb.StartSessionRequest{Id: c.Name, Agent: c.Agent, Project: c.Project, Remote: remote})
+	if err != nil {
+		return nil, err
+	}
+	if binds {
+		if replaced != "" {
+			m.unbind(replaced)
+		}
+		m.bind(place, sess.Id)
+		if err := saveSessionMap(path, m); err != nil {
+			return nil, api.Errorf(api.CodeInternal, "started session %s, but could not bind it to %s: %v", sess.Id, place, err).
+				WithSuggestion(fmt.Sprintf("pass -s %s to every command, or set HOTBED_SESSION=%s", sess.Id, sess.Id))
+		}
+	}
+	if replaced != "" {
+		if _, err := cl.sessions.EndSession(ctx, &pb.EndSessionRequest{Id: replaced}); err != nil && api.FromConnect(err).Code != api.CodeNotFound {
+			return nil, api.Errorf(api.CodeInternal, "started session %s in place of %s, but could not end %s: %v", sess.Id, replaced, replaced, toAPIError(err)).
+				WithSuggestion(fmt.Sprintf("hotbed session end -s %s", replaced))
+		}
+	}
 	return sess, nil
+}
+
+// sessionLive says whether the controller has session id and it has not
+// ended.
+func sessionLive(ctx context.Context, cl clients, id string) (bool, error) {
+	res, err := cl.sessions.GetSession(ctx, &pb.GetSessionRequest{Id: id})
+	if err != nil {
+		if api.FromConnect(err).Code == api.CodeNotFound {
+			return false, nil
+		}
+		return false, err
+	}
+	return res.Session.EndedAt == nil, nil
 }
 
 type sessionStatusCmd struct {
@@ -64,6 +120,7 @@ type sessionStatusResult struct {
 	ExpiresInSeconds   *int64                   `json:"expiresInSeconds,omitempty"`
 	Schedule           string                   `json:"schedule,omitempty"`
 	ScheduleRunning    bool                     `json:"scheduleRunning,omitempty"`
+	CockpitURL         string                   `json:"cockpitUrl,omitempty"`
 	LiveCommands       int                      `json:"liveCommands"`
 	Workspaces         []sessionWorkspaceStatus `json:"workspaces"`
 	Commands           []sessionCommandStatus   `json:"commands"`
@@ -84,6 +141,7 @@ type sessionWorkspaceStatus struct {
 	Reason       string `json:"reason,omitempty"`
 	CreatedAt    int64  `json:"createdAt,omitempty"`
 	ReleasedAt   *int64 `json:"releasedAt,omitempty"`
+	CockpitURL   string `json:"cockpitUrl,omitempty"`
 }
 
 type sessionCommandStatus struct {
@@ -99,11 +157,15 @@ type sessionCommandStatus struct {
 	QueuedAt    int64  `json:"queuedAt,omitempty"`
 	StartedAt   *int64 `json:"startedAt,omitempty"`
 	EndedAt     *int64 `json:"endedAt,omitempty"`
+	CockpitURL  string `json:"cockpitUrl,omitempty"`
 }
 
 func (c *sessionStatusCmd) Exec(ctx context.Context, d deps) (any, error) {
-	binding, err := c.sessionFlag.resolveBinding(ctx, d)
+	binding, found, err := c.sessionFlag.lookupBinding(ctx, d)
 	if err != nil {
+		return nil, err
+	}
+	if !found {
 		return sessionStatusResult{
 			Active:     false,
 			State:      "none",
@@ -145,6 +207,7 @@ func (c *sessionStatusCmd) Exec(ctx context.Context, d deps) (any, error) {
 		IdleTimeoutSeconds: res.IdleTimeoutSeconds,
 		Schedule:           sess.Schedule,
 		ScheduleRunning:    sess.ScheduleRunning,
+		CockpitURL:         d.cockpit.session(sess.Id),
 		Workspaces:         make([]sessionWorkspaceStatus, 0, len(sess.Workspaces)),
 		Commands:           make([]sessionCommandStatus, 0, len(res.Commands)),
 	}
@@ -166,21 +229,7 @@ func (c *sessionStatusCmd) Exec(ctx context.Context, d deps) (any, error) {
 	for _, sw := range sess.Workspaces {
 		seen[sw.Id] = true
 		if ws, ok := liveWS[sw.Id]; ok {
-			out.Workspaces = append(out.Workspaces, sessionWorkspaceStatus{
-				ID:           ws.Id,
-				Repo:         ws.RepoId,
-				Node:         res.NodeHosts[ws.NodeId],
-				NodeID:       ws.NodeId,
-				State:        workspaceStateName(ws.State),
-				BaseID:       ws.BaseId,
-				Branch:       ws.Branch,
-				Head:         ws.Head,
-				SyncDir:      ws.SyncDir,
-				SyncHost:     ws.SyncHost,
-				FilesChanged: ws.FilesChanged,
-				Reason:       ws.Reason,
-				CreatedAt:    ws.CreatedAt,
-			})
+			out.Workspaces = append(out.Workspaces, liveWorkspaceStatus(ws, res.NodeHosts, d.cockpit))
 			continue
 		}
 		state := "released"
@@ -195,27 +244,14 @@ func (c *sessionStatusCmd) Exec(ctx context.Context, d deps) (any, error) {
 			State:      state,
 			CreatedAt:  sw.CreatedAt,
 			ReleasedAt: sw.ReleasedAt,
+			CockpitURL: d.cockpit.workspace(sw.Id),
 		})
 	}
 	for _, ws := range res.Workspaces {
 		if seen[ws.Id] {
 			continue
 		}
-		out.Workspaces = append(out.Workspaces, sessionWorkspaceStatus{
-			ID:           ws.Id,
-			Repo:         ws.RepoId,
-			Node:         res.NodeHosts[ws.NodeId],
-			NodeID:       ws.NodeId,
-			State:        workspaceStateName(ws.State),
-			BaseID:       ws.BaseId,
-			Branch:       ws.Branch,
-			Head:         ws.Head,
-			SyncDir:      ws.SyncDir,
-			SyncHost:     ws.SyncHost,
-			FilesChanged: ws.FilesChanged,
-			Reason:       ws.Reason,
-			CreatedAt:    ws.CreatedAt,
-		})
+		out.Workspaces = append(out.Workspaces, liveWorkspaceStatus(ws, res.NodeHosts, d.cockpit))
 	}
 	for _, cmd := range res.Commands {
 		if live(cmd.State) {
@@ -234,9 +270,31 @@ func (c *sessionStatusCmd) Exec(ctx context.Context, d deps) (any, error) {
 			QueuedAt:    cmd.QueuedAt,
 			StartedAt:   cmd.StartedAt,
 			EndedAt:     cmd.EndedAt,
+			CockpitURL:  d.cockpit.command(cmd.Id),
 		})
 	}
 	return out, nil
+}
+
+// liveWorkspaceStatus is a workspace its node still has, as session status
+// shows it.
+func liveWorkspaceStatus(ws *pb.Workspace, nodeHosts map[string]string, c cockpit) sessionWorkspaceStatus {
+	return sessionWorkspaceStatus{
+		ID:           ws.Id,
+		Repo:         ws.RepoId,
+		Node:         nodeHosts[ws.NodeId],
+		NodeID:       ws.NodeId,
+		State:        workspaceStateName(ws.State),
+		BaseID:       ws.BaseId,
+		Branch:       ws.Branch,
+		Head:         ws.Head,
+		SyncDir:      ws.SyncDir,
+		SyncHost:     ws.SyncHost,
+		FilesChanged: ws.FilesChanged,
+		Reason:       ws.Reason,
+		CreatedAt:    ws.CreatedAt,
+		CockpitURL:   c.workspace(ws.Id),
+	}
 }
 
 func workspaceStateName(s pb.WorkspaceState) string {
@@ -283,6 +341,26 @@ func (c *sessionCurrentCmd) Exec(ctx context.Context, d deps) (any, error) {
 	return c.sessionFlag.resolveBinding(ctx, d)
 }
 
+type sessionLsCmd struct {
+	controllerClient
+	sessionFlag
+	projectFlag
+	AllProjects bool `help:"Every project's sessions."`
+	Ended       bool `help:"Those that ended in the last day too."`
+}
+
+func (c *sessionLsCmd) Exec(ctx context.Context, d deps) (any, error) {
+	cl, err := c.clients(d.http)
+	if err != nil {
+		return nil, err
+	}
+	project, err := c.listed(ctx, d, cl, c.sessionFlag, c.AllProjects)
+	if err != nil {
+		return nil, err
+	}
+	return cl.sessions.ListSessions(ctx, &pb.ListSessionsRequest{Project: project, Ended: c.Ended})
+}
+
 type sessionEndCmd struct {
 	controllerClient
 	sessionFlag
@@ -301,7 +379,9 @@ func (c *sessionEndCmd) Exec(ctx context.Context, d deps) (any, error) {
 	if err != nil {
 		return nil, err
 	}
-	unbindSession(d, sessID)
+	if err := unbindSession(d, sessID); err != nil {
+		return nil, api.Errorf(api.CodeInternal, "ended session %s, but could not clear its binding in %s: %v", sessID, sessionsFilePath(d), err)
+	}
 	return res, nil
 }
 
@@ -349,11 +429,11 @@ func (c *addCmd) Exec(ctx context.Context, d deps) (any, error) {
 		if _, err := syncTo(ctx, w, ws, c.Sync); err != nil {
 			return nil, err
 		}
-		addr := ws.NodeAddr
+		addr, project := ws.NodeAddr, ws.Project
 		if ws, err = w.calls.GetWorkspace(ctx, &pb.GetWorkspaceRequest{Id: ws.Id}); err != nil {
 			return nil, err
 		}
-		ws.NodeAddr = addr
+		ws.NodeAddr, ws.Project = addr, project
 	}
 	return ws, nil
 }
@@ -362,8 +442,13 @@ func (c *addCmd) Exec(ctx context.Context, d deps) (any, error) {
 // freshened) to be ready, watching it on its worker and saying what it waits
 // for on stderr.
 func waitReady(ctx context.Context, w workerClients, ws *pb.Workspace, stderr io.Writer) (*pb.Workspace, error) {
-	addr := ws.NodeAddr
-	defer func() { ws.NodeAddr = addr }()
+	addr, project := ws.NodeAddr, ws.Project
+	defer func() {
+		ws.NodeAddr = addr
+		if ws.Project == "" {
+			ws.Project = project
+		}
+	}()
 	said := ""
 	var lost time.Time // when the watch first dropped, of the drops since it last worked
 	for ws.State == pb.WorkspaceState_WORKSPACE_STATE_PREPARING {
@@ -597,7 +682,11 @@ func (c *runCmd) Raw(ctx context.Context, d deps) (int, bool, error) {
 	if err != nil {
 		return 0, false, err
 	}
+	if cmd.Project == "" {
+		cmd.Project = ws.Project
+	}
 	if c.Detach {
+		d.cockpit.fill(cmd)
 		writeEnvelope(d.stdout, success("run", cmd))
 		return exitOK, true, nil
 	}
@@ -757,30 +846,39 @@ func (c *waitCmd) Exec(ctx context.Context, d deps) (any, error) {
 type psCmd struct {
 	controllerClient
 	sessionFlag
+	Project string `short:"p" help:"Every live command in this project."`
+	All     bool   `help:"Every session's commands."`
 }
 
 func (c *psCmd) Exec(ctx context.Context, d deps) (any, error) {
-	session, err := c.sessionFlag.resolve(ctx, d)
-	if err != nil {
-		return nil, err
+	var session string
+	if !c.All && c.Project == "" {
+		var err error
+		if session, err = c.sessionFlag.resolve(ctx, d); err != nil {
+			return nil, err
+		}
 	}
 	cl, err := c.clients(d.http)
 	if err != nil {
 		return nil, err
 	}
-	return cl.workspaces.ListCommands(ctx, &pb.ListCommandsRequest{SessionId: session})
+	return cl.workspaces.ListCommands(ctx, &pb.ListCommandsRequest{SessionId: session, Project: c.Project})
 }
 
 type logsCmd struct {
 	controllerClient
 	sessionFlag
 	Command string `arg:"" help:"The command's ID."`
-	Follow  bool   `short:"f" help:"Keep printing until the command ends."`
+	Follow  bool   `short:"f" xor:"tail" help:"Keep printing until the command ends."`
+	Tail    int    `short:"n" xor:"tail" help:"Print only the last N lines."`
 }
 
 // Raw prints the command's output as is, from its worker. A base's
 // freshen, whose log a failed add names, can be read from any session.
 func (c *logsCmd) Raw(ctx context.Context, d deps) (int, bool, error) {
+	if c.Tail < 0 {
+		return 0, false, api.Errorf(api.CodeInvalidArgs, "--tail %d is negative", c.Tail).WithSuggestion("pass --tail N with N > 0")
+	}
 	session, err := c.sessionFlag.resolve(ctx, d)
 	if err != nil {
 		return 0, false, err
@@ -788,6 +886,18 @@ func (c *logsCmd) Raw(ctx context.Context, d deps) (int, bool, error) {
 	_, w, err := c.locateCommand(ctx, d, session, c.Command, true)
 	if err != nil {
 		return 0, false, err
+	}
+	if c.Tail > 0 {
+		log, err := w.calls.GetLogLines(ctx, &pb.GetLogLinesRequest{Id: c.Command, Tail: int32(c.Tail)})
+		if err != nil {
+			return 0, false, err
+		}
+		for _, line := range log.Lines {
+			if _, err := fmt.Fprintln(d.stdout, line); err != nil {
+				return 0, true, err
+			}
+		}
+		return exitOK, true, nil
 	}
 	if c.Follow {
 		// Until it ends, across its worker's restarts.

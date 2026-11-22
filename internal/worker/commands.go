@@ -357,7 +357,7 @@ func (e *Engine) admit(ctx context.Context) {
 		if cmd.Bench {
 			share = "measurement on CPUs " + e.cfg.Bench.CPUs().String()
 		}
-		cmd.Timeline = append(cmd.Timeline, &pb.CommandEvent{At: now, What: "admitted", Detail: fmt.Sprintf("%s · low %s · high %s", share, gib(cmd.Limits.MemoryLowBytes), gib(cmd.Limits.MemoryHighBytes))})
+		cmd.Timeline = append(cmd.Timeline, &pb.CommandEvent{At: now, What: "admitted", Detail: fmt.Sprintf("%s · low %s · high %s", share, limit(cmd.Limits.MemoryLowBytes), limit(cmd.Limits.MemoryHighBytes))})
 		ch := change{what: "admitted"}
 		switch {
 		case cmd.Bench:
@@ -760,6 +760,14 @@ func codeText(code *int32) string {
 }
 
 func gib(b int64) string { return fmt.Sprintf("%.1f GiB", float64(b)/(1<<30)) }
+
+// limit reads a cgroup memory limit, where 0 sets none.
+func limit(b int64) string {
+	if b == 0 {
+		return "none"
+	}
+	return gib(b)
+}
 
 func dur(s float64) string {
 	if s < 60 {

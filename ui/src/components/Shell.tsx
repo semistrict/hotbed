@@ -1,16 +1,20 @@
 import { Link, Outlet } from "@tanstack/react-router";
 import { useEffect, useState } from "react";
-import { usingMock } from "../api";
+import { usingMock, type Snapshot } from "../api";
 import { useSnapshot } from "../lib/data";
+import { useProject, useScopedSnapshot } from "../lib/project";
 
+// A project's work first, as the chosen project sees it; then the machines,
+// which every project shares.
 const NAV = [
-  { to: "/", label: "Sessions" },
-  { to: "/schedules", label: "Schedules" },
-  { to: "/cluster", label: "Cluster" },
-  { to: "/nodes", label: "Nodes" },
-  { to: "/workspaces", label: "Workspaces" },
+  { to: "/", label: "Projects" },
+  { to: "/questions", label: "Questions" },
+  { to: "/reviews", label: "Reviews" },
+  { to: "/sessions", label: "Sessions" },
   { to: "/commands", label: "Commands" },
-  { to: "/history", label: "History" },
+  { to: "/schedules", label: "Schedules" },
+  { to: "/cluster", label: "Cluster", shared: true },
+  { to: "/nodes", label: "Nodes", shared: true },
 ] as const;
 
 type Theme = "system" | "light" | "dark";
@@ -38,9 +42,10 @@ function useTheme(): [Theme, () => void] {
 }
 
 export function Shell() {
-  const { data, isError, error } = useSnapshot();
+  const { data: whole, isError, error } = useSnapshot();
+  const { data } = useScopedSnapshot();
   const [theme, nextTheme] = useTheme();
-  const online = data?.nodes.filter((n) => n.online).length ?? 0;
+  const online = whole?.nodes.filter((n) => n.online).length ?? 0;
 
   return (
     <div className="mx-auto max-w-[1440px] px-4 pb-16 sm:px-6 lg:px-8">
@@ -51,25 +56,33 @@ export function Shell() {
             <span className="display text-[22px] leading-none font-semibold italic">hotbed</span>
           </Link>
           <nav className="-mb-px flex h-full items-stretch gap-1 overflow-x-auto">
+            <ProjectPicker />
             {NAV.map((n) => (
               <Link
                 key={n.to}
                 to={n.to}
+                title={"shared" in n ? "The machines, which every project shares" : undefined}
                 activeOptions={{ exact: n.to === "/" }}
-                className="flex items-center border-b-2 border-transparent px-2.5 text-[12.5px] text-muted-foreground transition-colors hover:text-foreground"
+                className={`flex items-center border-b-2 border-transparent px-2.5 text-[12.5px] whitespace-nowrap text-muted-foreground transition-colors hover:text-foreground ${n.to === "/cluster" ? "ml-3 border-l border-l-border pl-4" : ""}`}
                 activeProps={{ className: "!border-primary !text-foreground" }}
               >
                 {n.label}
+                {n.to === "/reviews" && data && <ReviewBadge s={data} />}
+                {n.to === "/questions" && data && data.openQuestions > 0 && (
+                  <span className="ml-1.5 rounded-full bg-primary px-1.5 font-mono text-[10px] leading-4 text-primary-foreground" aria-label={`${data.openQuestions} waiting for you`}>
+                    {data.openQuestions}
+                  </span>
+                )}
               </Link>
             ))}
           </nav>
           <div className="ml-auto flex items-center gap-4 font-mono text-[10.5px] text-muted-foreground">
-            {usingMock && <span className="hidden rounded border border-dashed border-border-strong px-1.5 py-0.5 text-faint md:inline">simulated cluster</span>}
-            {data && (
-              <span className="hidden items-center gap-2 sm:flex">
+            {usingMock && <span className="hidden rounded border border-dashed border-border-strong px-1.5 py-0.5 whitespace-nowrap text-faint 2xl:inline">simulated cluster</span>}
+            {whole && (
+              <span className="hidden items-center gap-2 whitespace-nowrap 2xl:flex">
                 <span className="live-dot inline-block size-1.5 rounded-full bg-primary text-primary" />
                 <span>
-                  {data.controller} · {online}/{data.nodes.length} nodes
+                  {whole.controller} · {online}/{whole.nodes.length} nodes
                 </span>
               </span>
             )}
@@ -79,7 +92,7 @@ export function Shell() {
           </div>
         </div>
       </header>
-      {data ? (
+      {whole ? (
         <>
           {isError && (
             <div className="mb-4 rounded-xl border border-critical/40 bg-card px-4 py-2.5 font-mono text-[11.5px] text-critical">
@@ -106,5 +119,45 @@ function Logo() {
       <path d="M5 26h22" stroke="var(--primary)" strokeWidth="2.6" strokeLinecap="round" />
       <path d="M8 29.5h16" stroke="var(--primary)" strokeOpacity=".45" strokeWidth="1.6" strokeLinecap="round" />
     </svg>
+  );
+}
+
+/** Which project the cockpit shows: one, or every one. */
+function ProjectPicker() {
+  const { data } = useSnapshot();
+  const [project, choose] = useProject();
+  if (!data) return null;
+  return (
+    <label className="mr-2 flex items-center gap-1.5 self-center rounded-lg border border-border bg-card/70 py-1 pr-1 pl-2.5 font-mono text-[11px] text-muted-foreground focus-within:border-primary/50">
+      <span aria-hidden className={project ? "text-primary" : "text-faint"}>
+        ◆
+      </span>
+      <select
+        aria-label="Project"
+        value={project ?? ""}
+        onChange={(e) => choose(e.target.value || null)}
+        className="max-w-40 bg-transparent py-0.5 text-[12px] text-foreground focus:outline-none"
+      >
+        <option value="">every project</option>
+        {data.projects.map((p) => (
+          <option key={p.name} value={p.name}>
+            {p.name}
+            {p.openQuestions > 0 ? ` (${p.openQuestions} ?)` : ""}
+          </option>
+        ))}
+      </select>
+    </label>
+  );
+}
+
+/** Reviews of the project shown (or every project) done with findings still undecided. */
+function ReviewBadge({ s }: { s: Snapshot }) {
+  const [project] = useProject();
+  const n = s.projects.filter((p) => project === null || p.name === project).reduce((sum, p) => sum + p.reviewsToDecide, 0);
+  if (n === 0) return null;
+  return (
+    <span className="ml-1.5 rounded-full border border-primary/50 px-1.5 font-mono text-[10px] leading-4 text-primary" aria-label={`${n} with findings to decide`}>
+      {n}
+    </span>
   );
 }

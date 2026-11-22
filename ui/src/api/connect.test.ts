@@ -1,7 +1,21 @@
 import { create } from "@bufbuild/protobuf";
 import { describe, expect, it } from "vitest";
-import { BaseState, CommandState, RunOutcome, SnapshotSchema, WorkspaceState } from "../gen/hotbed/v1/hotbed_pb";
-import { toSnapshot } from "./connect";
+import {
+  BaseState,
+  CommandState,
+  FindingDecision,
+  FindingSeverity,
+  FindingVerdict,
+  QuestionSchema,
+  QuestionState,
+  QuickResponse,
+  ReviewSchema,
+  ReviewState,
+  RunOutcome,
+  SnapshotSchema,
+  WorkspaceState,
+} from "../gen/hotbed/v1/hotbed_pb";
+import { toQuestion, toReview, toSnapshot } from "./connect";
 
 describe("toSnapshot", () => {
   it("maps the wire's bigints, enums and unset fields onto the cockpit's types", () => {
@@ -46,6 +60,7 @@ describe("toSnapshot", () => {
         {
           id: "brave-otter",
           agent: "laptop",
+          project: "app",
           startedAt: 1795299000000n,
           lastActiveAt: 1795299900000n,
           workspaces: [{ id: "p1", repoId: "app", nodeId: "nAsahi", createdAt: 1795299000000n, releasedAt: 1795299500000n }],
@@ -57,6 +72,7 @@ describe("toSnapshot", () => {
           name: "nightly",
           cron: "0 2 * * *",
           repo: "app",
+          project: "app",
           node: "ubu1",
           command: { args: ["sh", "-c", "echo it's late", "plain"], env: ["WHO=nightly"] },
           createdAt: 1795200000000n,
@@ -115,6 +131,7 @@ describe("toSnapshot", () => {
         workspaces: [{ id: "p1", repoId: "app", nodeId: "nAsahi", createdAt: "2026-11-21T22:10:00.000Z", releasedAt: "2026-11-21T22:18:20.000Z" }],
         schedule: null,
         scheduleRunning: false,
+        project: "app",
       },
       {
         id: "nightly-20261121-0200",
@@ -126,6 +143,7 @@ describe("toSnapshot", () => {
         workspaces: [],
         schedule: "nightly",
         scheduleRunning: true,
+        project: null,
       },
     ]);
     expect(s.schedules).toEqual([
@@ -168,6 +186,7 @@ describe("toSnapshot", () => {
             reason: "the controller was down",
           },
         ],
+        project: "app",
       },
       {
         name: "soak",
@@ -181,8 +200,94 @@ describe("toSnapshot", () => {
         updatedAt: "1970-01-01T00:00:00.000Z",
         nextAt: null,
         runs: [],
+        project: null,
       },
     ]);
     expect(s.series.nAsahi).toEqual([{ t: 1795299995000, cpuBusy: 0.25, memoryUsed: 0.22, memoryPressure: 0 }]);
+  });
+});
+
+describe("toQuestion", () => {
+  it("maps a question's stamps, state and answer, leaving unset stamps null", () => {
+    const wire = create(QuestionSchema, {
+      id: 12,
+      project: "app",
+      repo: "github.com/o/app",
+      prompt: { question: "Which store?", header: "Store", multiSelect: true, options: [{ label: "SQLite", description: "One file", preview: "sqlite3 x.db" }] },
+      state: QuestionState.HANDLED,
+      rank: -3n,
+      answer: { picked: ["SQLite"], other: "and a cache", notes: "for now" },
+      asked: { at: 1795299000000n, session: "brave-otter", host: "asahimbp" },
+      askedFrom: { dir: "/src/app", remote: "git@x:app.git", branch: "main", head: "0123456789abcdef", dirtyFiles: 1, dirty: [" M a.go"] },
+      answered: { at: 1795299100000n, host: "laptop" },
+      handled: { at: 1795299200000n, session: "calm-heron", host: "ubu1" },
+      updatedAt: 1795299200000n,
+    });
+    expect(toQuestion(wire)).toEqual({
+      id: 12,
+      project: "app",
+      repo: "github.com/o/app",
+      prompt: { question: "Which store?", header: "Store", multiSelect: true, options: [{ label: "SQLite", description: "One file", preview: "sqlite3 x.db" }] },
+      state: "handled",
+      rank: -3,
+      answer: { picked: ["SQLite"], other: "and a cache", notes: "for now" },
+      asked: { at: "2026-11-21T22:10:00.000Z", session: "brave-otter", host: "asahimbp", reason: "" },
+      askedFrom: { dir: "/src/app", remote: "git@x:app.git", branch: "main", head: "0123456789abcdef", dirtyFiles: 1, dirty: [" M a.go"] },
+      edited: null,
+      answered: { at: "2026-11-21T22:11:40.000Z", session: null, host: "laptop", reason: "" },
+      dismissed: null,
+      handled: { at: "2026-11-21T22:13:20.000Z", session: "calm-heron", host: "ubu1", reason: "" },
+      deleted: null,
+      updatedAt: "2026-11-21T22:13:20.000Z",
+    });
+  });
+});
+
+describe("toReview", () => {
+  it("maps a review's version, findings and events, unset to null", () => {
+    const r = toReview(
+      create(ReviewSchema, {
+        id: 3,
+        project: "app",
+        repo: "github.com/o/app",
+        title: "Add A",
+        head: "6cb0ca1f37",
+        branch: "work",
+        state: ReviewState.DONE,
+        requested: { at: 1795299000000n, session: "brave-otter", host: "laptop" },
+        findings: [
+          {
+            id: 7,
+            reviewId: 3,
+            title: "A drops errors",
+            severity: FindingSeverity.PRE_EXISTING,
+            verdict: FindingVerdict.PLAUSIBLE,
+            decision: FindingDecision.DISMISSED,
+            decided: { at: 1795299100000n, session: "brave-otter", reason: "later" },
+            quick: QuickResponse.WONT_FIX,
+            responses: 1,
+            locations: [{ path: "a.go", startLine: 3, excerpt: "x" }],
+          },
+        ],
+        events: [{ seq: 9n, reviewId: 3, what: "responded", by: { at: 1795299200000n }, quick: QuickResponse.WONT_FIX }],
+        important: 0,
+        preExisting: 1,
+        responses: 1,
+      }),
+    );
+    expect(r.base).toBeNull();
+    expect(r.snapshotOf).toBeNull();
+    expect(r.started).toBeNull();
+    expect(r.state).toBe("done");
+    expect(r.counts).toEqual({ important: 0, preExisting: 1, nits: 0, open: 0, responses: 1 });
+    expect(r.findings[0]).toMatchObject({
+      severity: "pre-existing",
+      verdict: "plausible",
+      decision: "dismissed",
+      decided: { session: "brave-otter", reason: "later" },
+      quick: "wont-fix",
+      locations: [{ path: "a.go", startLine: 3, endLine: 0, excerpt: "x" }],
+    });
+    expect(r.events[0]).toMatchObject({ seq: 9, findingId: null, what: "responded", quick: "wont-fix", by: { session: null } });
   });
 });

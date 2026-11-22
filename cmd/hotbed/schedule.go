@@ -19,6 +19,7 @@ type scheduleCmd struct {
 type scheduleAddCmd struct {
 	controllerClient
 	repoFlag
+	projectFlag
 	Name   string   `arg:"" help:"Lowercase words joined by dashes, such as cladefs-nightly; each run's session is NAME-YYYYMMDD-HHMM."`
 	Cron   string   `required:"" help:"When it runs: five-field cron (minute hour day-of-month month day-of-week) in the controller's time zone, such as '0 2 * * *'; CRON_TZ=ZONE in front for another zone. A slot that passes while the controller is down is missed, not run late, and a slot that comes while the previous run is in progress is skipped."`
 	Node   string   `help:"Run on this node (host name), such as the one earlier measurements came from."`
@@ -43,12 +44,15 @@ func (c *scheduleAddCmd) Exec(ctx context.Context, d deps) (any, error) {
 		return nil, err
 	}
 	return cl.schedules.PutSchedule(ctx, &pb.PutScheduleRequest{Schedule: &pb.ScheduledCommand{
-		Name: c.Name, Cron: c.Cron, Repo: repo, Node: c.Node, Paused: c.Paused, Command: req,
+		Name: c.Name, Cron: c.Cron, Repo: repo, Node: c.Node, Paused: c.Paused, Command: req, Project: c.Project,
 	}})
 }
 
 type scheduleLsCmd struct {
 	controllerClient
+	sessionFlag
+	projectFlag
+	AllProjects bool `help:"Every project's scheduled commands."`
 }
 
 func (c *scheduleLsCmd) Exec(ctx context.Context, d deps) (any, error) {
@@ -56,7 +60,11 @@ func (c *scheduleLsCmd) Exec(ctx context.Context, d deps) (any, error) {
 	if err != nil {
 		return nil, err
 	}
-	return cl.schedules.ListSchedules(ctx, &pb.ListSchedulesRequest{})
+	project, err := c.listed(ctx, d, cl, c.sessionFlag, c.AllProjects)
+	if err != nil {
+		return nil, err
+	}
+	return cl.schedules.ListSchedules(ctx, &pb.ListSchedulesRequest{Project: project})
 }
 
 // scheduleNamed is the argument of the commands that act on one schedule.

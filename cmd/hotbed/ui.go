@@ -20,11 +20,7 @@ type uiResult struct {
 }
 
 func (c *uiCmd) Exec(ctx context.Context, d deps) (any, error) {
-	hostPort, err := api.ControllerHostPort(c.Controller)
-	if err != nil {
-		return nil, err
-	}
-	url := "http://" + hostPort + "/"
+	url := d.cockpit.home()
 	if c.NoOpen {
 		return uiResult{URL: url, Opened: false}, nil
 	}

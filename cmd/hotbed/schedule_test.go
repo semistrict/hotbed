@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -356,7 +357,10 @@ func TestInterruptedStartIsNotStarted(t *testing.T) {
 	c.addRepo(upstream(t))
 	c.ok(nil, "schedule", "add", "half", "-r", "app", "--cron", nightly, "--", "true")
 	store, now := c.serverCfg.Store, c.clock.Now()
-	if _, err := store.StartSession(t.Context(), "half-20261122-0200", "schedule:half", now); err != nil {
+	if _, err := store.AddProject(t.Context(), "app", nil, &pb.Stamp{At: now.UnixMilli()}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.StartSession(t.Context(), "half-20261122-0200", "schedule:half", "app", now); err != nil {
 		t.Fatal(err)
 	}
 	if err := store.AddRun(t.Context(), &pb.ScheduledRun{
@@ -372,5 +376,77 @@ func TestInterruptedStartIsNotStarted(t *testing.T) {
 	}
 	if s := c.session("half-20261122-0200"); s.EndedAt == nil || s.EndReason != "its scheduled run could not start" || s.ScheduleRunning {
 		t.Errorf("its session = %v", s)
+	}
+}
+
+// A schedule keeps the project it was added in, so a repo that another
+// project takes in later does not leave its runs not knowing which.
+func TestScheduleKeepsItsProject(t *testing.T) {
+	c := newCluster(t)
+	t.Setenv("HOTBED_PROJECT", "")
+	origin := upstream(t)
+	c.addRepo(origin)
+	sc := &pb.ScheduledCommand{}
+	c.ok(sc, "schedule", "add", "nightly", "-r", "app", "--cron", nightly, "--", "true")
+	if sc.Project == "" {
+		t.Fatalf("schedule add: no project in %v", sc)
+	}
+	c.ok(nil, "project", "add", "elsewhere", "--repo", origin, "--shared")
+
+	run := &pb.ScheduledRun{}
+	c.ok(run, "schedule", "run", "nightly")
+	if run.Outcome == pb.RunOutcome_RUN_OUTCOME_NOT_STARTED {
+		t.Fatalf("run of a schedule whose repo two projects hold: not started: %s", run.Reason)
+	}
+	if s := c.session(run.SessionId); s.Project != sc.Project {
+		t.Errorf("the run's session is in %q, want the schedule's %q", s.Project, sc.Project)
+	}
+	c.eventually("the run to succeed", func() bool {
+		return c.schedule("nightly").Runs[0].Outcome == pb.RunOutcome_RUN_OUTCOME_SUCCEEDED
+	})
+}
+
+// Schedules belong to a project: schedule ls lists the active project's by
+// default, -p narrows to another, --all-projects lists every project's, and
+// project ls counts them.
+func TestSchedulesBelongToAProject(t *testing.T) {
+	c := newCluster(t)
+	origin := upstream(t)
+	c.addRepo(origin)
+	c.ok(nil, "project", "add", "other", "--repo", origin, "--shared")
+
+	c.ok(nil, "schedule", "add", "in-test", "-r", "app", "-p", "test", "--cron", nightly, "--", "true")
+	c.ok(nil, "schedule", "add", "in-other", "-r", "app", "-p", "other", "--cron", nightly, "--", "true")
+
+	names := func(res *pb.ListSchedulesResponse) []string {
+		var out []string
+		for _, sc := range res.Schedules {
+			out = append(out, sc.Name)
+		}
+		return out
+	}
+
+	ls := &pb.ListSchedulesResponse{}
+	c.ok(ls, "schedule", "ls")
+	if got := names(ls); !slices.Equal(got, []string{"in-test"}) {
+		t.Errorf("schedule ls (default project test) = %v, want [in-test]", got)
+	}
+	c.ok(ls, "schedule", "ls", "-p", "other")
+	if got := names(ls); !slices.Equal(got, []string{"in-other"}) {
+		t.Errorf("schedule ls -p other = %v, want [in-other]", got)
+	}
+	c.ok(ls, "schedule", "ls", "--all-projects")
+	if got := names(ls); !slices.Equal(got, []string{"in-other", "in-test"}) {
+		t.Errorf("schedule ls --all-projects = %v, want [in-other in-test]", got)
+	}
+
+	projects := &pb.ListProjectsResponse{}
+	c.ok(projects, "project", "ls")
+	counts := map[string]int32{}
+	for _, p := range projects.Projects {
+		counts[p.Name] = p.Schedules
+	}
+	if counts["test"] != 1 || counts["other"] != 1 {
+		t.Errorf("project ls schedule counts = %v, want test=1 other=1", counts)
 	}
 }

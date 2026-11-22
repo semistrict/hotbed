@@ -52,7 +52,7 @@ func hotbed(t *testing.T, d deps, args ...string) (int, output) {
 
 func fakeDeps() deps {
 	tn := tailnettest.New(ubu1)
-	return deps{tailnet: tn, http: tn.Client(laptop), stream: tn.Client(laptop), check: worker.CheckMachine, controller: noController}
+	return deps{tailnet: tn, http: recording(tn.Client(laptop)), stream: recording(tn.Client(laptop)), check: worker.CheckMachine, controller: noController}
 }
 
 // at is a machine whose controller is addr.

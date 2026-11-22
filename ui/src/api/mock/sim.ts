@@ -26,6 +26,8 @@ import {
   HOSTS,
   NODES,
   NOUNS,
+  PROJECTS,
+  projectOf,
   REPOS,
   TOPICS,
   type CommandTemplate,
@@ -121,6 +123,7 @@ export class MockCluster {
 
   snapshot(): Snapshot {
     const nodes: Node[] = NODES.map((spec) => this.node(spec));
+    const schedules = mockSchedules(this.now);
     const snap: Snapshot = structuredClone({
       clusterId: "54074bcb94bbfbe2",
       controller: "ubu1",
@@ -139,7 +142,18 @@ export class MockCluster {
       nodeHourly: this.nodeHourly,
       history: [] as FinishedCommand[],
       sessions: [...this.sessions, ...this.past.values()].sort((a, b) => b.lastActiveAt.localeCompare(a.lastActiveAt)),
-      schedules: mockSchedules(this.now),
+      schedules,
+      // The questions are the mock API's, beside the cluster: it counts them.
+      openQuestions: 0,
+      projects: PROJECTS.map((p) => ({
+        ...p,
+        liveSessions: this.sessions.filter((x) => x.endedAt === null && x.project === p.name).length,
+        openQuestions: 0,
+        outbox: 0,
+        activeReviews: 0,
+        reviewsToDecide: 0,
+        schedules: schedules.filter((sc) => sc.project === p.name).length,
+      })),
     }) satisfies Snapshot;
     // Finished commands never change once recorded, so they need no copy.
     snap.history = [...this.history];
@@ -543,7 +557,7 @@ export class MockCluster {
     const others = this.sessions.filter((x) => x.endedAt === null && !x.workspaces.some((sw) => sw.repoId === repo.id));
     let session = !initial && others.length > 0 && this.rng.chance(0.2) ? this.rng.pick(others) : undefined;
     if (!session) {
-      session = { id: this.sessionName(), agent: this.rng.pick(AGENT_HOSTS), startedAt: iso(createdAt), lastActiveAt: iso(createdAt), endedAt: null, endReason: "", workspaces: [], schedule: null, scheduleRunning: false };
+      session = { id: this.sessionName(), agent: this.rng.pick(AGENT_HOSTS), startedAt: iso(createdAt), lastActiveAt: iso(createdAt), endedAt: null, endReason: "", workspaces: [], schedule: null, scheduleRunning: false, project: projectOf(repo.id) };
       this.sessions.push(session);
     }
     const w: Workspace = {
@@ -714,6 +728,7 @@ export class MockCluster {
         workspaces: [],
         schedule: null,
         scheduleRunning: false,
+        project: projectOf(repoId),
       };
       this.past.set(key, session);
     }

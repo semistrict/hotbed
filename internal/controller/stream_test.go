@@ -127,7 +127,7 @@ func cmdEvent(seq int64, what string, c *pb.Command, finished *pb.FinishedComman
 // changes nothing.
 func TestEventsFoldIntoTheControllersView(t *testing.T) {
 	s := newStreamed(t)
-	if _, err := s.sessions.StartSession(t.Context(), &pb.StartSessionRequest{Id: "calm-owl"}); err != nil {
+	if _, err := s.sessions.StartSession(t.Context(), &pb.StartSessionRequest{Id: "calm-owl", Remote: "github.com/o/app"}); err != nil {
 		t.Fatal(err)
 	}
 	first := s.push(&pb.PushEventsRequest{Epoch: "e1"})
@@ -203,7 +203,7 @@ func TestEventsFoldIntoTheControllersView(t *testing.T) {
 // workspaces failed, and they count as released.
 func TestANewEpochStartsFromACheckpoint(t *testing.T) {
 	s := newStreamed(t)
-	if _, err := s.sessions.StartSession(t.Context(), &pb.StartSessionRequest{Id: "lost-elk"}); err != nil {
+	if _, err := s.sessions.StartSession(t.Context(), &pb.StartSessionRequest{Id: "lost-elk", Remote: "github.com/o/app"}); err != nil {
 		t.Fatal(err)
 	}
 	s.push(&pb.PushEventsRequest{Epoch: "old", Checkpoint: &pb.Checkpoint{Seq: 7}})
@@ -242,7 +242,7 @@ func TestANewEpochStartsFromACheckpoint(t *testing.T) {
 // released by the worker's next heartbeat.
 func TestHeartbeatReleasesWorkspacesOfEndedSessions(t *testing.T) {
 	s := newStreamed(t)
-	if _, err := s.sessions.StartSession(t.Context(), &pb.StartSessionRequest{Id: "gone-yak"}); err != nil {
+	if _, err := s.sessions.StartSession(t.Context(), &pb.StartSessionRequest{Id: "gone-yak", Remote: "github.com/o/app"}); err != nil {
 		t.Fatal(err)
 	}
 	s.push(&pb.PushEventsRequest{Epoch: "e1", Checkpoint: &pb.Checkpoint{Workspaces: []*pb.Workspace{
@@ -265,7 +265,7 @@ func TestHeartbeatReleasesWorkspacesOfEndedSessions(t *testing.T) {
 // which the controller takes as its view of the node.
 func TestLegacyReportFillsTheView(t *testing.T) {
 	s := newStreamed(t)
-	if _, err := s.sessions.StartSession(t.Context(), &pb.StartSessionRequest{Id: "old-ram"}); err != nil {
+	if _, err := s.sessions.StartSession(t.Context(), &pb.StartSessionRequest{Id: "old-ram", Remote: "github.com/o/app"}); err != nil {
 		t.Fatal(err)
 	}
 	_, err := s.worker.Report(t.Context(), &pb.ReportRequest{
@@ -289,7 +289,7 @@ func TestLegacyReportFillsTheView(t *testing.T) {
 // command that ended and was forgotten is not lost.
 func TestCheckpointCarriesTheEventsItIncludes(t *testing.T) {
 	s := newStreamed(t)
-	if _, err := s.sessions.StartSession(t.Context(), &pb.StartSessionRequest{Id: "late-bat"}); err != nil {
+	if _, err := s.sessions.StartSession(t.Context(), &pb.StartSessionRequest{Id: "late-bat", Remote: "github.com/o/app"}); err != nil {
 		t.Fatal(err)
 	}
 	s.push(&pb.PushEventsRequest{Epoch: "e1", Checkpoint: &pb.Checkpoint{Seq: 1}})

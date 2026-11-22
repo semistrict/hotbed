@@ -2,6 +2,8 @@ import type { Api, CommandLog, CommandProfile, FileContent, FileEntry, InspectCo
 import { mockCommandProfile, mockInspect, mockTrace } from "./diagnostics";
 import { mockFile, mockFiles } from "./files";
 import { mockLog } from "./logs";
+import { MockQuestions } from "./questions";
+import { MockReviews } from "./reviews";
 import { MockCluster } from "./sim";
 
 /**
@@ -10,12 +12,25 @@ import { MockCluster } from "./sim";
  */
 export function createMockApi(seed = 7120): Api {
   const cluster = new MockCluster(seed, Date.now());
+  const questions = new MockQuestions(Date.now());
+  const reviews = new MockReviews(Date.now());
   const sync = () => cluster.advanceTo(Date.now());
 
   return {
     async snapshot(): Promise<Snapshot> {
       sync();
-      return cluster.snapshot();
+      const snap = cluster.snapshot();
+      return {
+        ...snap,
+        openQuestions: questions.counts(null).open,
+        projects: snap.projects.map((p) => ({
+          ...p,
+          openQuestions: questions.counts(p.name).open,
+          outbox: questions.counts(p.name).outbox,
+          activeReviews: reviews.counts(p.name).active,
+          reviewsToDecide: reviews.counts(p.name).toDecide,
+        })),
+      };
     },
 
     async commandLog(id: string): Promise<CommandLog> {
@@ -89,5 +104,14 @@ export function createMockApi(seed = 7120): Api {
       }
       throw new Error(`no command ${id}`);
     },
+
+    questions: async (filter) => questions.list(filter),
+    questionHistory: async (id) => questions.history(id),
+    answerQuestion: async (id, answer) => questions.answer(id, answer),
+    dismissQuestion: async (id, reason) => questions.dismiss(id, reason),
+    moveQuestion: async (id, before) => questions.move(id, before),
+    reviews: async (project) => reviews.list(project),
+    review: async (id) => reviews.get(id),
+    respond: async (reviewId, findingId, quick, text) => reviews.respond(reviewId, findingId, quick, text),
   };
 }

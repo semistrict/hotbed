@@ -1,15 +1,17 @@
 import type { ScheduledCommand, ScheduledRun, Snapshot } from "../api";
 import { CommandBlock } from "../components/CommandBlock";
+import { ProjectTag } from "../components/ProjectTag";
 import { SessionLink } from "../components/SessionLink";
 import { Card, Empty, StatTile } from "../components/ui/Card";
 import { OutcomeBadge } from "../components/ui/State";
-import { nodeName, repoName, useSnapshot } from "../lib/data";
+import { nodeName, repoName } from "../lib/data";
 import { duration, hhmm } from "../lib/format";
+import { useProject, useScopedSnapshot } from "../lib/project";
 import { nextRun } from "../lib/schedules";
 import { PageTitle } from "./Nodes";
 
 export function SchedulesPage() {
-  const { data: s } = useSnapshot();
+  const { data: s } = useScopedSnapshot();
   if (!s) return null;
   return <Schedules s={s} />;
 }
@@ -50,11 +52,17 @@ function Schedules({ s }: { s: Snapshot }) {
 }
 
 function ScheduleCard({ s, sc, now, delay }: { s: Snapshot; sc: ScheduledCommand; now: number; delay: number }) {
+  const [project] = useProject();
   const where = `${repoName(s, sc.repoId)}${sc.node ? ` @${sc.node}` : ""}`;
   const when = sc.paused ? "paused" : sc.nextAt ? `next ${until(Date.parse(sc.nextAt), now)}, ${dayTime(Date.parse(sc.nextAt))}` : "";
   return (
     <Card
-      title={<span className="display text-[20px] font-medium">{sc.name}</span>}
+      title={
+        <span className="inline-flex items-baseline gap-2.5">
+          <span className="display text-[20px] font-medium">{sc.name}</span>
+          {project === null && sc.project && <ProjectTag name={sc.project} />}
+        </span>
+      }
       sub={
         <>
           <span className="font-mono text-foreground">{sc.cron}</span> · {where} · <span className={sc.paused ? "text-warning" : ""}>{when}</span>

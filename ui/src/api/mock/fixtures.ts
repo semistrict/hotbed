@@ -33,12 +33,29 @@ export const NODES: NodeSpec[] = [
 ];
 
 export const REPOS: Repo[] = [
-  { id: "cladefs", name: "semistrict/cladefs", language: "rust", units: 412, coldBuildSeconds: 580 },
-  { id: "ratel", name: "semistrict/ratel", language: "rust", units: 286, coldBuildSeconds: 370 },
-  { id: "lnx", name: "semistrict/lnx", language: "rust", units: 197, coldBuildSeconds: 245 },
-  { id: "langlang", name: "semistrict/langlang", language: "rust", units: 133, coldBuildSeconds: 175 },
-  { id: "hotbed", name: "semistrict/hotbed", language: "go", units: 64, coldBuildSeconds: 70 },
+  { id: "cladefs", name: "semistrict/cladefs", language: "rust", units: 412, coldBuildSeconds: 580, remote: "github.com/semistrict/cladefs" },
+  { id: "ratel", name: "semistrict/ratel", language: "rust", units: 286, coldBuildSeconds: 370, remote: "github.com/semistrict/ratel" },
+  { id: "lnx", name: "semistrict/lnx", language: "rust", units: 197, coldBuildSeconds: 245, remote: "github.com/semistrict/lnx" },
+  { id: "langlang", name: "semistrict/langlang", language: "rust", units: 133, coldBuildSeconds: 175, remote: "github.com/semistrict/langlang" },
+  { id: "hotbed", name: "semistrict/hotbed", language: "go", units: 64, coldBuildSeconds: 70, remote: "github.com/semistrict/hotbed" },
 ];
+
+/**
+ * The projects: most are one repo; ratel spans ratel and lnx, as a project
+ * of several repos does. A repo's sessions work on its project.
+ */
+export const PROJECTS: { name: string; repos: string[]; createdAt: string }[] = [
+  { name: "cladefs", repos: ["github.com/semistrict/cladefs"], createdAt: "2026-10-02T09:00:00.000Z" },
+  { name: "hotbed", repos: ["github.com/semistrict/hotbed"], createdAt: "2026-11-21T08:00:00.000Z" },
+  { name: "langlang", repos: ["github.com/semistrict/langlang"], createdAt: "2026-09-14T09:00:00.000Z" },
+  { name: "ratel", repos: ["github.com/semistrict/lnx", "github.com/semistrict/ratel"], createdAt: "2026-08-30T09:00:00.000Z" },
+];
+
+/** The project a repo's sessions work on. */
+export function projectOf(repoId: string): string {
+  const remote = REPOS.find((r) => r.id === repoId)?.remote;
+  return PROJECTS.find((p) => remote !== undefined && p.repos.includes(remote))?.name ?? repoId;
+}
 
 /** Which nodes keep a warm base of each repo. */
 export const HOSTS: Record<string, string[]> = {

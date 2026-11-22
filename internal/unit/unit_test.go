@@ -1,6 +1,8 @@
 package unit
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -116,5 +118,27 @@ func TestParseProperties(t *testing.T) {
 		if strings.Join(got[k], "|") != strings.Join(v, "|") {
 			t.Errorf("%s = %q, want %q", k, got[k], v)
 		}
+	}
+}
+
+// A bind's target on the host cannot be removed as an empty directory once a
+// unit was given it: removing it would detach the binds on it in every
+// running command's namespace (board 6114).
+func TestPinMountpointKeepsTheTargetFromRemoval(t *testing.T) {
+	target := filepath.Join(t.TempDir(), "work")
+	for range 2 { // the second unit's start finds it pinned
+		if err := pinMountpoint(target); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.Remove(target); err == nil {
+		t.Fatalf("removed %s, a pinned mountpoint", target)
+	}
+	entries, err := os.ReadDir(target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 1 || entries[0].Name() != PinFile {
+		t.Errorf("%s holds %v, want only %s", target, entries, PinFile)
 	}
 }
