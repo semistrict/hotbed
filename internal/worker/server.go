@@ -16,8 +16,11 @@ import (
 	"google.golang.org/protobuf/proto"
 )
 
-// Service serves the engine's workspaces to the controller, which forwards
-// clients' calls about workspaces and commands on this node here.
+// Service serves the engine's workspaces to clients, which call it directly
+// once the controller says where a workspace is, and to the controller,
+// which forwards older clients' calls. Each call about a session's
+// workspace or command counts as using the session, which the next
+// heartbeat tells the controller.
 type Service struct {
 	hotbedv1connect.UnimplementedWorkspaceServiceHandler
 	E *Engine
@@ -32,6 +35,7 @@ func (s *Service) CreateWorkspace(ctx context.Context, req *pb.CreateWorkspaceRe
 }
 
 func (s *Service) GetWorkspace(_ context.Context, req *pb.GetWorkspaceRequest) (*pb.Workspace, error) {
+	s.E.usedWorkspace(req.Id)
 	return s.E.Workspace(req.Id)
 }
 
@@ -40,6 +44,7 @@ func (s *Service) ListWorkspaces(context.Context, *pb.ListWorkspacesRequest) (*p
 }
 
 func (s *Service) ReleaseWorkspace(ctx context.Context, req *pb.ReleaseWorkspaceRequest) (*pb.ReleaseWorkspaceResponse, error) {
+	s.E.usedWorkspace(req.Id)
 	return &pb.ReleaseWorkspaceResponse{}, s.E.ReleaseWorkspace(ctx, req.Id)
 }
 
@@ -54,6 +59,7 @@ func (s *Service) Sync(ctx context.Context, stream hotbedv1connect.WorkspaceServ
 	if h == nil {
 		return nil, api.Errorf(api.CodeInvalidArgs, "sync must start with a header")
 	}
+	s.E.usedWorkspace(h.WorkspaceId)
 	return s.E.Sync(ctx, h, &chunks{recv: stream.Receive})
 }
 
@@ -80,6 +86,7 @@ func (c *chunks) Read(p []byte) (int, error) {
 }
 
 func (s *Service) ListFiles(ctx context.Context, req *pb.ListFilesRequest) (*pb.ListFilesResponse, error) {
+	s.E.usedWorkspace(req.WorkspaceId)
 	files, err := s.E.Files(ctx, req.WorkspaceId)
 	if err != nil {
 		return nil, err
@@ -88,14 +95,17 @@ func (s *Service) ListFiles(ctx context.Context, req *pb.ListFilesRequest) (*pb.
 }
 
 func (s *Service) GetFile(ctx context.Context, req *pb.GetFileRequest) (*pb.FileContent, error) {
+	s.E.usedWorkspace(req.WorkspaceId)
 	return s.E.File(ctx, req.WorkspaceId, req.Path)
 }
 
 func (s *Service) RunCommand(ctx context.Context, req *pb.RunCommandRequest) (*pb.Command, error) {
+	s.E.usedWorkspace(req.WorkspaceId)
 	return s.E.Exec(ctx, req)
 }
 
 func (s *Service) GetCommand(_ context.Context, req *pb.GetCommandRequest) (*pb.Command, error) {
+	s.E.usedCommand(req.Id)
 	c, ok := s.E.Command(req.Id)
 	if !ok {
 		return nil, notFound("command", req.Id)
@@ -114,6 +124,7 @@ func (s *Service) ListCommands(_ context.Context, req *pb.ListCommandsRequest) (
 }
 
 func (s *Service) StopCommand(ctx context.Context, req *pb.StopCommandRequest) (*pb.Command, error) {
+	s.E.usedCommand(req.Id)
 	return s.E.Stop(ctx, req.Id, "stopped by "+httpx.Peer(ctx).Hostname)
 }
 
@@ -121,6 +132,7 @@ func (s *Service) StopCommand(ctx context.Context, req *pb.StopCommandRequest) (
 // the stream open until the command ends, which is how an attached exec
 // shows output and keeps its command from counting as orphaned.
 func (s *Service) FollowLog(ctx context.Context, req *pb.FollowLogRequest, stream hotbedv1connect.WorkspaceServiceFollowLogServerStream) error {
+	s.E.usedCommand(req.Id)
 	path, done, err := s.E.Follow(req.Id)
 	if err != nil {
 		return err
@@ -178,6 +190,7 @@ func (s *Service) FollowLog(ctx context.Context, req *pb.FollowLogRequest, strea
 // WatchWorkspace sends the workspace whenever it changes, until it is
 // released or the caller goes.
 func (s *Service) WatchWorkspace(ctx context.Context, req *pb.WatchWorkspaceRequest, stream hotbedv1connect.WorkspaceServiceWatchWorkspaceServerStream) error {
+	s.E.usedWorkspace(req.Id)
 	var sent *pb.Workspace
 	for {
 		ws, updated, err := s.E.WatchWorkspace(req.Id)
@@ -202,6 +215,7 @@ func (s *Service) WatchWorkspace(ctx context.Context, req *pb.WatchWorkspaceRequ
 }
 
 func (s *Service) GetLogLines(_ context.Context, req *pb.GetLogLinesRequest) (*pb.CommandLog, error) {
+	s.E.usedCommand(req.Id)
 	path, done, err := s.E.Follow(req.Id)
 	if err != nil {
 		return nil, err

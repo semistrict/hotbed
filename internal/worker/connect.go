@@ -160,10 +160,12 @@ func (p *pusher) drain(ctx context.Context) (bool, error) {
 
 // HeartbeatOnce sends one heartbeat and applies the reply.
 func HeartbeatOnce(ctx context.Context, eng *Engine, cluster hotbedv1connect.ClusterServiceClient, clusterID string) error {
-	reply, err := cluster.Heartbeat(ctx, eng.Heartbeat(clusterID))
+	h := eng.Heartbeat(clusterID)
+	reply, err := cluster.Heartbeat(ctx, h)
 	if err != nil {
 		return err
 	}
+	eng.delivered(h)
 	eng.SetRepos(reply.Repos)
 	for _, id := range reply.Release {
 		if err := eng.ReleaseWorkspace(ctx, id); err != nil && api.FromConnect(err).Code != api.CodeNotFound {

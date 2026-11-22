@@ -51,12 +51,21 @@ func (e *Engine) Heartbeat(clusterID string) *pb.HeartbeatRequest {
 	for s := range e.active {
 		h.ActiveSessions = append(h.ActiveSessions, s)
 	}
-	clear(e.active)
 	sort.Slice(h.Commands, func(i, j int) bool { return h.Commands[i].Id < h.Commands[j].Id })
 	sort.Slice(h.Bases, func(i, j int) bool { return h.Bases[i].Id < h.Bases[j].Id })
 	sort.Slice(h.Workspaces, func(i, j int) bool { return h.Workspaces[i].Id < h.Workspaces[j].Id })
 	sort.Strings(h.ActiveSessions)
 	return h
+}
+
+// delivered forgets the sessions a heartbeat told the controller about;
+// those of a heartbeat that failed go with the next one.
+func (e *Engine) delivered(h *pb.HeartbeatRequest) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	for _, s := range h.ActiveSessions {
+		delete(e.active, s)
+	}
 }
 
 // usedWorkspace and usedCommand note that a client used a session's
@@ -84,6 +93,7 @@ const maxLegacyItems = 500
 // items still queued delivers once that way.
 func (e *Engine) legacyReport(clusterID string, items []outboxItem) (*pb.ReportRequest, error) {
 	h := e.Heartbeat(clusterID)
+	h.ActiveSessions = nil
 	cp, err := e.db.checkpoint()
 	if err != nil {
 		return nil, err

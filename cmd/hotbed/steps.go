@@ -76,19 +76,15 @@ func (c *stepAddCmd) Exec(ctx context.Context, d deps) (any, error) {
 	if err != nil {
 		return nil, err
 	}
-	stream, err := c.clients(d.stream)
+	ws, w, err := c.locate(ctx, d, c.Session, c.Repo)
 	if err != nil {
 		return nil, err
 	}
-	ws, err := workspace(ctx, cl, c.Session, c.Repo)
-	if err != nil {
-		return nil, err
-	}
-	if ws, err = waitReady(ctx, stream, ws, d.stderr); err != nil {
+	if ws, err = waitReady(ctx, w, ws, d.stderr); err != nil {
 		return nil, err
 	}
 	for try := 1; try <= 2; try++ {
-		cmd, err := cl.workspaces.RunCommand(ctx, &pb.RunCommandRequest{
+		cmd, err := w.calls.RunCommand(ctx, &pb.RunCommandRequest{
 			WorkspaceId: ws.Id, Args: []string{"bash", "-eo", "pipefail", "-c", script}, Kind: "shell", Attached: true,
 			Limits: &pb.CommandLimits{CpuWeight: 100},
 		})
@@ -97,7 +93,7 @@ func (c *stepAddCmd) Exec(ctx context.Context, d deps) (any, error) {
 		}
 		fmt.Fprintf(d.stderr, "hotbed: trying step %s in %s, run %d of 2 (%s)\n", c.Name, ws.Id, try, cmd.Id)
 		// The step's output goes to stderr: stdout is the envelope.
-		code, err := attach(ctx, cl, stream, cmd.Id, d.stderr, d.stderr)
+		code, err := attach(ctx, w, cmd.Id, d.stderr, d.stderr)
 		if err != nil {
 			return nil, err
 		}

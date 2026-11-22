@@ -70,35 +70,40 @@ func (c *addCmd) Exec(ctx context.Context, d deps) (any, error) {
 	if err != nil {
 		return nil, err
 	}
+	remember(d, c.Session, ws)
 	if c.NoWait {
 		return ws, nil
 	}
-	stream, err := c.clients(d.stream)
+	w, err := c.reach(d, ws.NodeAddr)
 	if err != nil {
 		return nil, err
 	}
-	if ws, err = waitReady(ctx, stream, ws, d.stderr); err != nil {
+	if ws, err = waitReady(ctx, w, ws, d.stderr); err != nil {
 		return nil, err
 	}
 	if c.Sync != "" {
-		if _, err := syncTo(ctx, cl, ws, c.Sync); err != nil {
+		if _, err := syncTo(ctx, w, ws, c.Sync); err != nil {
 			return nil, err
 		}
-		if ws, err = cl.workspaces.GetWorkspace(ctx, &pb.GetWorkspaceRequest{Id: ws.Id}); err != nil {
+		addr := ws.NodeAddr
+		if ws, err = w.calls.GetWorkspace(ctx, &pb.GetWorkspaceRequest{Id: ws.Id}); err != nil {
 			return nil, err
 		}
+		ws.NodeAddr = addr
 	}
 	return ws, nil
 }
 
 // waitReady waits for a preparing workspace (its base being pulled and
-// freshened) to be ready, watching it on a stream (stream's clients, which
-// have no timeout) and saying what it waits for on stderr.
-func waitReady(ctx context.Context, stream clients, ws *pb.Workspace, stderr io.Writer) (*pb.Workspace, error) {
+// freshened) to be ready, watching it on its worker and saying what it waits
+// for on stderr.
+func waitReady(ctx context.Context, w workerClients, ws *pb.Workspace, stderr io.Writer) (*pb.Workspace, error) {
+	addr := ws.NodeAddr
+	defer func() { ws.NodeAddr = addr }()
 	said := ""
 	var lost time.Time // when the watch first dropped, of the drops since it last worked
 	for ws.State == pb.WorkspaceState_WORKSPACE_STATE_PREPARING {
-		in, err := stream.workspaces.WatchWorkspace(ctx, &pb.WatchWorkspaceRequest{Id: ws.Id})
+		in, err := w.stream.WatchWorkspace(ctx, &pb.WatchWorkspaceRequest{Id: ws.Id})
 		if err == nil {
 			for ws.State == pb.WorkspaceState_WORKSPACE_STATE_PREPARING {
 				if ws.Reason != said {
@@ -175,21 +180,6 @@ func watchSession(ctx context.Context, stream clients, req *pb.WatchSessionReque
 	}
 }
 
-// workspace is the session's workspace of a repo (or with that ID).
-func workspace(ctx context.Context, cl clients, session, repo string) (*pb.Workspace, error) {
-	list, err := cl.workspaces.ListWorkspaces(ctx, &pb.ListWorkspacesRequest{SessionId: session})
-	if err != nil {
-		return nil, err
-	}
-	for _, w := range list.Workspaces {
-		if w.RepoId == repo || w.Id == repo {
-			return cl.workspaces.GetWorkspace(ctx, &pb.GetWorkspaceRequest{Id: w.Id})
-		}
-	}
-	return nil, api.Errorf(api.CodeNotFound, "session %s has no workspace of %s", session, repo).
-		WithSuggestion(fmt.Sprintf("hotbed add %s %s (with --sync DIR to follow a local checkout)", session, repo))
-}
-
 type syncCmd struct {
 	controllerFlag
 	Session string `arg:"" help:"The session's name."`
@@ -198,11 +188,7 @@ type syncCmd struct {
 }
 
 func (c *syncCmd) Exec(ctx context.Context, d deps) (any, error) {
-	cl, err := c.clients(d.http)
-	if err != nil {
-		return nil, err
-	}
-	ws, err := workspace(ctx, cl, c.Session, c.Repo)
+	ws, w, err := c.locate(ctx, d, c.Session, c.Repo)
 	if err != nil {
 		return nil, err
 	}
@@ -213,14 +199,14 @@ func (c *syncCmd) Exec(ctx context.Context, d deps) (any, error) {
 	if dir == "" {
 		return nil, api.Errorf(api.CodeInvalidArgs, "the workspace follows no checkout").WithSuggestion("pass --dir CHECKOUT")
 	}
-	return syncTo(ctx, cl, ws, dir)
+	return syncTo(ctx, w, ws, dir)
 }
 
 const syncChunk = 256 << 10
 
 // syncTo sends the checkout's state to a workspace, unless the workspace
 // already has exactly this tree.
-func syncTo(ctx context.Context, cl clients, ws *pb.Workspace, dir string) (*pb.SyncResponse, error) {
+func syncTo(ctx context.Context, w workerClients, ws *pb.Workspace, dir string) (*pb.SyncResponse, error) {
 	snap, err := gitops.Snapshot(ctx, dir)
 	if err != nil {
 		return nil, err
@@ -232,7 +218,7 @@ func syncTo(ctx context.Context, cl clients, ws *pb.Workspace, dir string) (*pb.
 	if err := gitops.Bundle(ctx, snap, ws.BaseCommit, &bundle); err != nil {
 		return nil, err
 	}
-	stream, err := cl.workspaces.Sync(ctx)
+	stream, err := w.stream.Sync(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -301,15 +287,7 @@ func (c *runCmd) Raw(ctx context.Context, d deps) (int, bool, error) {
 	if err != nil {
 		return 0, false, err
 	}
-	cl, err := c.clients(d.http)
-	if err != nil {
-		return 0, false, err
-	}
-	stream, err := c.clients(d.stream)
-	if err != nil {
-		return 0, false, err
-	}
-	ws, err := workspace(ctx, cl, c.Session, c.Repo)
+	ws, w, err := c.locate(ctx, d, c.Session, c.Repo)
 	if err != nil {
 		return 0, false, err
 	}
@@ -319,10 +297,10 @@ func (c *runCmd) Raw(ctx context.Context, d deps) (int, bool, error) {
 		case err != nil:
 			fmt.Fprintf(d.stderr, "hotbed: not syncing: %v\n", err)
 		case self.Hostname == ws.SyncHost:
-			if ws, err = waitReady(ctx, stream, ws, d.stderr); err != nil {
+			if ws, err = waitReady(ctx, w, ws, d.stderr); err != nil {
 				return 0, false, err
 			}
-			res, err := syncTo(ctx, cl, ws, ws.SyncDir)
+			res, err := syncTo(ctx, w, ws, ws.SyncDir)
 			if err != nil {
 				return 0, false, err
 			}
@@ -332,7 +310,7 @@ func (c *runCmd) Raw(ctx context.Context, d deps) (int, bool, error) {
 		}
 	}
 	req.WorkspaceId, req.Attached, req.Port = ws.Id, !c.Detach, int32(c.Port)
-	cmd, err := cl.workspaces.RunCommand(ctx, req)
+	cmd, err := w.calls.RunCommand(ctx, req)
 	if err != nil {
 		return 0, false, err
 	}
@@ -341,19 +319,19 @@ func (c *runCmd) Raw(ctx context.Context, d deps) (int, bool, error) {
 		return exitOK, true, nil
 	}
 	fmt.Fprintf(d.stderr, "hotbed: %s running in %s (hotbed stop %s %s)\n", cmd.Id, ws.Id, c.Session, cmd.Id)
-	code, err := attach(ctx, cl, stream, cmd.Id, d.stdout, d.stderr)
+	code, err := attach(ctx, w, cmd.Id, d.stdout, d.stderr)
 	return code, true, err
 }
 
 // attach prints an attached command's output to w until it ends and returns
 // its exit status. Interrupted, it stops the command, which ends with its
 // client, and returns 130 as a shell would.
-func attach(ctx context.Context, cl, stream clients, id string, w, stderr io.Writer) (int, error) {
-	code, err := follow(ctx, cl, stream, id, w)
+func attach(ctx context.Context, wk workerClients, id string, w, stderr io.Writer) (int, error) {
+	code, err := follow(ctx, wk, id, w)
 	if ctx.Err() != nil {
 		stopCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
 		defer cancel()
-		if _, err := cl.workspaces.StopCommand(stopCtx, &pb.StopCommandRequest{Id: id}); err != nil {
+		if _, err := wk.calls.StopCommand(stopCtx, &pb.StopCommandRequest{Id: id}); err != nil {
 			fmt.Fprintf(stderr, "hotbed: could not stop %s: %v\n", id, api.FromConnect(err))
 		}
 		return 130, nil
@@ -365,10 +343,10 @@ func (c *runCmd) Exec(context.Context, deps) (any, error) { return nil, errors.N
 
 // follow copies a command's output to w until it ends, picking up where it
 // left off if the stream drops, and returns its exit status.
-func follow(ctx context.Context, cl, stream clients, id string, w io.Writer) (int, error) {
+func follow(ctx context.Context, wk workerClients, id string, w io.Writer) (int, error) {
 	var offset int64
 	for {
-		in, err := stream.workspaces.FollowLog(ctx, &pb.FollowLogRequest{Id: id, Offset: offset, Follow: true})
+		in, err := wk.stream.FollowLog(ctx, &pb.FollowLogRequest{Id: id, Offset: offset, Follow: true})
 		if err != nil {
 			return 0, err
 		}
@@ -388,7 +366,7 @@ func follow(ctx context.Context, cl, stream clients, id string, w io.Writer) (in
 		if ctx.Err() != nil {
 			return 0, ctx.Err()
 		}
-		c, err := cl.workspaces.GetCommand(ctx, &pb.GetCommandRequest{Id: id})
+		c, err := wk.calls.GetCommand(ctx, &pb.GetCommandRequest{Id: id})
 		if err != nil {
 			return 0, err
 		}
@@ -461,18 +439,6 @@ func (c *psCmd) Exec(ctx context.Context, d deps) (any, error) {
 	return cl.workspaces.ListCommands(ctx, &pb.ListCommandsRequest{SessionId: c.Session})
 }
 
-// sessionCommand is a command of the session, or NOT_FOUND.
-func sessionCommand(ctx context.Context, cl clients, session, id string) (*pb.Command, error) {
-	cmd, err := cl.workspaces.GetCommand(ctx, &pb.GetCommandRequest{Id: id})
-	if err != nil {
-		return nil, err
-	}
-	if cmd.SessionId != session {
-		return nil, api.Errorf(api.CodeNotFound, "session %s has no command %s", session, id)
-	}
-	return cmd, nil
-}
-
 type logsCmd struct {
 	controllerFlag
 	Session string `arg:"" help:"The session's name."`
@@ -480,20 +446,14 @@ type logsCmd struct {
 	Follow  bool   `short:"f" help:"Keep printing until the command ends."`
 }
 
-// Raw prints the command's output as is.
+// Raw prints the command's output as is, from its worker. A base's
+// freshen, whose log a failed add names, can be read from any session.
 func (c *logsCmd) Raw(ctx context.Context, d deps) (int, bool, error) {
-	cl, err := c.clients(d.http)
+	_, w, err := c.locateCommand(ctx, d, c.Session, c.Command, true)
 	if err != nil {
 		return 0, false, err
 	}
-	stream, err := c.clients(d.stream)
-	if err != nil {
-		return 0, false, err
-	}
-	if _, err := sessionCommand(ctx, cl, c.Session, c.Command); err != nil {
-		return 0, false, err
-	}
-	in, err := stream.workspaces.FollowLog(ctx, &pb.FollowLogRequest{Id: c.Command, Follow: c.Follow})
+	in, err := w.stream.FollowLog(ctx, &pb.FollowLogRequest{Id: c.Command, Follow: c.Follow})
 	if err != nil {
 		return 0, false, err
 	}
@@ -521,14 +481,11 @@ type stopCmd struct {
 }
 
 func (c *stopCmd) Exec(ctx context.Context, d deps) (any, error) {
-	cl, err := c.clients(d.http)
+	_, w, err := c.locateCommand(ctx, d, c.Session, c.Command, false)
 	if err != nil {
 		return nil, err
 	}
-	if _, err := sessionCommand(ctx, cl, c.Session, c.Command); err != nil {
-		return nil, err
-	}
-	return cl.workspaces.StopCommand(ctx, &pb.StopCommandRequest{Id: c.Command})
+	return w.calls.StopCommand(ctx, &pb.StopCommandRequest{Id: c.Command})
 }
 
 // parseSize reads 512M, 2G, 1.5G or a plain byte count.

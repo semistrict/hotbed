@@ -177,10 +177,16 @@ func Run(ctx context.Context, dir string, cfg statedir.WorkerConfig, tn Tailnet,
 		return err
 	}
 
-	// The controller alone may call a worker: it is the one that knows
-	// which sessions may touch which workspaces.
+	// A worker admits what the controller admits: the owner's machines,
+	// whose clients call it directly to sync, run commands and read their
+	// output, and the controller among them. On this machine itself, root
+	// and the user commands run as.
+	local, err := localUsers(cfg.User)
+	if err != nil {
+		return err
+	}
 	srv := &http.Server{Handler: Handler(tn, httpx.Policy{
-		Owner: cfg.Owner, Nodes: []string{cfg.ControllerNode}, Self: self.Addrs,
+		Owner: cfg.Owner, Self: self.Addrs, LocalUsers: local,
 	}, eng), ReadHeaderTimeout: 10 * time.Second, Protocols: httpx.Protocols()}
 	var listeners []net.Listener
 	for _, addr := range self.Addrs {
@@ -216,6 +222,16 @@ func Run(ctx context.Context, dir string, cfg statedir.WorkerConfig, tn Tailnet,
 		return srv.Shutdown(shutdown)
 	})
 	return g.Wait()
+}
+
+// localUsers is the unix user commands run as, which may call the worker
+// from this machine besides root.
+func localUsers(name string) ([]uint32, error) {
+	cred, _, err := lookupUser(name)
+	if err != nil || cred == nil {
+		return nil, err
+	}
+	return []uint32{cred.Uid}, nil
 }
 
 // Handler serves an engine's WorkspaceService behind a gate.

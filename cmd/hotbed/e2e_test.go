@@ -41,16 +41,18 @@ var asahi = tailnet.Peer{NodeID: "nAsahi", Hostname: "asahimbp", Login: "ramon@"
 // controller, engine and CLI over Connect, with fakes only where Linux and
 // root would be needed (volumes are copied, commands are local processes).
 type cluster struct {
-	t        *testing.T
-	id       string
-	server   *controller.Server
-	engine   *worker.Engine
-	asWorker hotbedv1connect.ClusterServiceClient
-	cli      deps
-	clock    *clock
-	store    *fake.Store // the worker's volumes
-	ctrlSrv  *httptest.Server
-	system   *fake.System // the worker's memory, which tests set
+	t         *testing.T
+	id        string
+	server    *controller.Server
+	engine    *worker.Engine
+	asWorker  hotbedv1connect.ClusterServiceClient
+	cli       deps
+	clock     *clock
+	store     *fake.Store // the worker's volumes
+	ctrlSrv   *httptest.Server
+	ctrl      *switchboard // in front of the controller; tests take it down
+	workerSrv *httptest.Server
+	system    *fake.System // the worker's memory, which tests set
 	// restart swaps in a new controller on the same database.
 	serverCfg controller.ServerConfig
 	handler   atomic.Pointer[http.Handler]
@@ -62,6 +64,56 @@ func (c *cluster) restart() {
 	c.server = controller.NewServer(c.serverCfg)
 	h := c.server.Handler()
 	c.handler.Store(&h)
+}
+
+// switchboard serves the controller, records the calls it gets, and, taken
+// down, answers every call as unavailable, as a proxy in front of an
+// unreachable machine would.
+type switchboard struct {
+	next  http.Handler
+	mu    sync.Mutex
+	down  bool
+	calls []string
+}
+
+func (s *switchboard) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	s.mu.Lock()
+	down := s.down
+	if !down {
+		s.calls = append(s.calls, r.URL.Path)
+	}
+	s.mu.Unlock()
+	if down {
+		http.Error(w, "controller down", http.StatusServiceUnavailable)
+		return
+	}
+	s.next.ServeHTTP(w, r)
+}
+
+func (s *switchboard) setDown(down bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.down = down
+}
+
+// record clears the calls recorded so far and returns a func that lists
+// the WorkspaceService calls since.
+func (s *switchboard) record() func() []string {
+	s.mu.Lock()
+	s.calls = nil
+	s.mu.Unlock()
+	return func() []string {
+		s.mu.Lock()
+		defer s.mu.Unlock()
+		var out []string
+		for _, c := range s.calls {
+			if m, ok := strings.CutPrefix(c, "/hotbed.v1.WorkspaceService/"); ok && !slices.Contains(out, m) {
+				out = append(out, m)
+			}
+		}
+		slices.Sort(out)
+		return out
+	}
 }
 
 type clock struct {
@@ -125,9 +177,10 @@ func newCluster(t *testing.T) *cluster {
 		Workers:    tn.Client(ubu1.Peer),
 		WorkerAddr: func(string) string { return strings.TrimPrefix(workerSrv.URL, "http://") },
 	}
-	c := &cluster{t: t, id: init.ClusterID, engine: eng, clock: clk, store: volumes, system: system, serverCfg: serverCfg}
+	c := &cluster{t: t, id: init.ClusterID, engine: eng, clock: clk, store: volumes, system: system, serverCfg: serverCfg, workerSrv: workerSrv}
 	c.restart()
-	ctrlSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { (*c.handler.Load()).ServeHTTP(w, r) }))
+	c.ctrl = &switchboard{next: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { (*c.handler.Load()).ServeHTTP(w, r) })}
+	ctrlSrv := httptest.NewServer(c.ctrl)
 	t.Cleanup(ctrlSrv.Close)
 	ctrl := strings.TrimPrefix(ctrlSrv.URL, "http://")
 
@@ -436,6 +489,7 @@ func TestAbandonedSessionEnds(t *testing.T) {
 	c.ok(nil, "add", "idle-yak", "app")
 	srv := &pb.Command{}
 	c.ok(srv, "run", "idle-yak", "app", "--detach", "--", "sleep", "300")
+	c.heartbeat() // the run counts as using the session now, not after the clock moves
 
 	c.clock.advance(59 * time.Minute)
 	if err := c.server.ReapIdle(t.Context()); err != nil {
@@ -597,10 +651,10 @@ var sessionNameRE = regexpMust(`^[a-z]+-[a-z]+$`)
 
 func regexpMust(s string) *regexp.Regexp { return regexp.MustCompile(s) }
 
-// workerHandler serves an engine as a worker does: to the controller's node
-// alone, over the fake tailnet (loopback).
+// workerHandler serves an engine as a worker does: to the owner's
+// machines, over the fake tailnet (loopback).
 func workerHandler(tn *tailnettest.Fake, eng *worker.Engine) http.Handler {
-	return worker.Handler(tn, httpx.Policy{Owner: "ramon@", Nodes: []string{ubu1.NodeID}, Self: loopback}, eng)
+	return worker.Handler(tn, httpx.Policy{Owner: "ramon@", Self: loopback}, eng)
 }
 
 var loopback = []netip.Addr{netip.MustParseAddr("127.0.0.1")}
@@ -780,8 +834,8 @@ func TestCommandsHaveTheirOwnTmpdir(t *testing.T) {
 	})
 }
 
-// A deploy restarts the controller under a waiting add: the watch drops, and
-// add watches again rather than failing.
+// A deploy restarts the worker under a waiting add: the watch drops, and add
+// watches again rather than failing.
 func TestAddWatchesAgainWhenTheStreamDrops(t *testing.T) {
 	c := newCluster(t)
 	c.ok(nil, "repo", "add", "app", upstream(t))
@@ -808,7 +862,7 @@ func TestAddWatchesAgainWhenTheStreamDrops(t *testing.T) {
 		}
 		return false
 	})
-	c.ctrlSrv.CloseClientConnections()
+	c.workerSrv.CloseClientConnections()
 	r := <-done
 	ws := &pb.Workspace{}
 	var out output
@@ -925,4 +979,104 @@ func TestSupersededBaseBuildIsDropped(t *testing.T) {
 		}
 		return slices.Equal(bases, []string{"app-g2 BASE_STATE_WARM"})
 	})
+}
+
+// The CLI syncs, runs and follows output on the workspace's worker itself:
+// the controller only says where the workspace is.
+func TestCLITalksToTheWorkerDirectly(t *testing.T) {
+	c := newCluster(t)
+	origin := upstream(t)
+	c.addRepo(origin)
+	c.ok(nil, "session", "start", "near-fox")
+	agent := filepath.Join(t.TempDir(), "agent")
+	gitIn(t, filepath.Dir(agent), "clone", "--quiet", origin, agent)
+	calls := c.ctrl.record()
+	ws := &pb.Workspace{}
+	c.ok(ws, "add", "near-fox", "app", "--sync", agent)
+	if ws.NodeAddr == "" || ws.FilesChanged != 0 {
+		t.Fatalf("add = %v, want the worker's address", ws)
+	}
+	if got := calls(); !slices.Equal(got, []string{"CreateWorkspace"}) {
+		t.Errorf("add called the controller's %v, want only CreateWorkspace", got)
+	}
+
+	write(t, filepath.Join(agent, "src/lib.txt"), "edited\n")
+	calls = c.ctrl.record()
+	code, stdout, stderr := c.hotbed("run", "near-fox", "app", "--", "cat", "src/lib.txt")
+	if code != 0 || stdout != "edited\n" || !strings.Contains(stderr, "synced 1 changed files") {
+		t.Fatalf("run: exit %d, stdout %q, stderr %q", code, stdout, stderr)
+	}
+	if got := calls(); !slices.Equal(got, []string{"ListWorkspaces"}) {
+		t.Errorf("run called the controller's %v, want only ListWorkspaces", got)
+	}
+
+	srv := &pb.Command{}
+	c.ok(srv, "run", "near-fox", "app", "--detach", "--", "sh", "-c", "echo up; sleep 300")
+	calls = c.ctrl.record()
+	c.eventually("the server's output", func() bool {
+		_, out, _ := c.hotbed("logs", "near-fox", srv.Id)
+		return out == "up\n"
+	})
+	c.ok(nil, "stop", "near-fox", srv.Id)
+	if got := calls(); !slices.Equal(got, []string{"GetCommand"}) {
+		t.Errorf("logs and stop called the controller's %v, want only GetCommand", got)
+	}
+}
+
+// With the controller out of reach, an agent keeps running commands in its
+// workspace; what happened reaches the session once the controller is
+// back, and the session, used meanwhile, is not abandoned.
+func TestWorkGoesOnWithoutTheController(t *testing.T) {
+	c := newCluster(t)
+	c.addRepo(upstream(t))
+	c.ok(nil, "session", "start", "lone-gnu")
+	c.ok(nil, "add", "lone-gnu", "app")
+	cursor := &pb.WatchSessionResponse{}
+	c.ok(cursor, "wait", "lone-gnu", "--timeout", "1")
+
+	c.ctrl.setDown(true)
+	code, stdout, stderr := c.hotbed("run", "lone-gnu", "app", "--", "sh", "-c", "echo alone; exit 4")
+	if code != 4 || stdout != "alone\n" {
+		t.Fatalf("run with the controller down: exit %d, stdout %q, stderr %q", code, stdout, stderr)
+	}
+	if _, e := c.fails("ps", "lone-gnu"); e.Code != api.CodeControllerUnreachable {
+		t.Errorf("ps with the controller down: %+v", e)
+	}
+	c.clock.advance(61 * time.Minute)
+	c.ctrl.setDown(false)
+	c.online()
+	if err := c.server.ReapIdle(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	var events []*pb.SessionEvent
+	c.eventually("the command run meanwhile to reach the session", func() bool {
+		res := &pb.WatchSessionResponse{}
+		c.ok(res, "wait", "lone-gnu", "--timeout", "1")
+		if res.Ended {
+			t.Fatalf("the session was abandoned while it was used: %v", res)
+		}
+		events = append(events, res.Events...)
+		return countWhat(events, "exited") == 1
+	})
+	if last := events[len(events)-1]; last.GetExitCode() != 4 {
+		t.Errorf("exited event = %v, want exit 4", last)
+	}
+}
+
+// A base's freshen log, which a failed add names, can be read from the
+// session.
+func TestFreshenLogIsReadable(t *testing.T) {
+	c := newCluster(t)
+	c.ok(nil, "repo", "add", "app", upstream(t))
+	c.ok(nil, "step", "set", "app", "build", "--every-pull", "--", "echo broken build >&2; exit 3")
+	c.ok(nil, "session", "start", "keen-ox")
+	_, e := c.fails("add", "keen-ox", "app")
+	m := regexp.MustCompile(`its log is command (f-\S+)\)`).FindStringSubmatch(e.Message)
+	if m == nil {
+		t.Fatalf("add's error names no log: %+v", e)
+	}
+	code, out, stderr := c.hotbed("logs", "keen-ox", m[1])
+	if code != 0 || !strings.Contains(out, "broken build") {
+		t.Errorf("logs of the freshen: exit %d, %q, stderr %q", code, out, stderr)
+	}
 }
