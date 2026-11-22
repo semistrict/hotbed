@@ -1,4 +1,5 @@
 import type { Project, Snapshot } from "../api";
+import { workspaceRepo } from "./sessions";
 
 /** A canonical remote as people say it: github.com/semistrict/hotbed → semistrict/hotbed. */
 export function remoteName(remote: string): string {
@@ -9,6 +10,13 @@ export function remoteName(remote: string): string {
 /** The hotbed repos (by ID) a project holds: those whose remote it names. */
 export function projectRepoIds(s: Snapshot, project: Project): Set<string> {
   return new Set(s.repos.filter((r) => project.repos.includes(r.remote)).map((r) => r.id));
+}
+
+/** The project holding a repo, if any. */
+export function repoProject(s: Snapshot, repoId: string | null | undefined): string | null {
+  if (!repoId) return null;
+  const remote = s.repos.find((r) => r.id === repoId)?.remote;
+  return s.projects.find((p) => remote !== undefined && p.repos.includes(remote))?.name ?? null;
 }
 
 /**
@@ -22,12 +30,22 @@ export function scope(s: Snapshot, name: string | null): Snapshot {
   const project = s.projects.find((p) => p.name === name);
   if (!project) return s;
   const repos = projectRepoIds(s, project);
-  const sessions = s.sessions.filter((x) => x.project === project.name);
+  const repoOf = workspaceRepo(s);
+  const sessionProject = new Map(s.sessions.map((x) => [x.id, x.project]));
+  const sessions = s.sessions.filter((x) => x.project === project.name || (x.project === null && x.workspaces.some((w) => repos.has(w.repoId))));
   const sessionIds = new Set(sessions.map((x) => x.id));
-  const workspaces = s.workspaces.filter((w) => sessionIds.has(w.sessionId));
-  const commands = s.commands.filter((c) => sessionIds.has(c.sessionId));
+  const belongsTo = (sessionId: string, repoId: string) => {
+    if (sessionId) {
+      const sp = sessionProject.get(sessionId);
+      if (sp !== undefined && sp !== null) return sp === project.name;
+      if (sessionIds.has(sessionId)) return true;
+    }
+    return repos.has(repoId);
+  };
+  const workspaces = s.workspaces.filter((w) => belongsTo(w.sessionId, w.repoId));
+  const commands = s.commands.filter((c) => belongsTo(c.sessionId, repoOf(c.workspaceId)));
   // A base's build belongs to no session: it is its repo's.
-  const history = s.history.filter((h) => (h.sessionId ? sessionIds.has(h.sessionId) : repos.has(h.repoId)));
+  const history = s.history.filter((h) => belongsTo(h.sessionId, h.repoId));
   const workspaceIds = new Set(workspaces.map((w) => w.id));
   const commandIds = new Set([...commands.map((c) => c.id), ...history.map((h) => h.id)]);
   return {
@@ -46,9 +64,11 @@ export function scope(s: Snapshot, name: string | null): Snapshot {
   };
 }
 
-/** The project a session's command belongs to; a base build's (no session) is its repo's. */
+/** The project a command belongs to: its session's, or its repo's when the session has none. */
 export function commandProject(s: Snapshot, sessionId: string, repoId: string | null): string | null {
-  if (sessionId) return s.sessions.find((x) => x.id === sessionId)?.project ?? null;
-  const remote = s.repos.find((r) => r.id === repoId)?.remote;
-  return s.projects.find((p) => remote !== undefined && p.repos.includes(remote))?.name ?? null;
+  if (sessionId) {
+    const p = s.sessions.find((x) => x.id === sessionId)?.project;
+    if (p) return p;
+  }
+  return repoProject(s, repoId);
 }

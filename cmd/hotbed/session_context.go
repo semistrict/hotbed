@@ -123,89 +123,132 @@ func saveSessionMap(path string, m sessionMap) error {
 	return os.Rename(tmp.Name(), path)
 }
 
-// bindSessionForContext records sessionID in ~/.hotbed/sessions.json under
-// T3CODE_THREAD_ID when set, otherwise under the current git worktree root.
-func bindSessionForContext(ctx context.Context, d deps, sessionID string) {
-	path := sessionsFilePath(d)
-	if path == "" || sessionID == "" {
-		return
+// bindPlace is where session start binds a session: this T3 thread when
+// T3CODE_THREAD_ID is set, else the git worktree around the working directory.
+type bindPlace struct {
+	Source string // "thread" or "worktree"
+	Key    string
+}
+
+// String names the place for a person: "T3 thread X" or "git worktree X".
+func (p bindPlace) String() string {
+	if p.Source == "thread" {
+		return "T3 thread " + p.Key
 	}
-	m, err := loadSessionMap(path)
-	if err != nil {
-		return
-	}
-	changed := false
+	return "git worktree " + p.Key
+}
+
+// startPlace returns where session start binds; ok is false outside a T3
+// thread and a git checkout, where nothing binds.
+func startPlace(ctx context.Context) (p bindPlace, ok bool) {
 	if tid := strings.TrimSpace(os.Getenv("T3CODE_THREAD_ID")); tid != "" {
-		m.Threads[tid] = sessionID
-		changed = true
-	} else if cwd, err := os.Getwd(); err == nil {
-		if root, err := gitCheckoutRoot(ctx, cwd); err == nil && root != "" {
-			m.Worktrees[gitops.CanonicalPath(root)] = sessionID
-			changed = true
-		}
+		return bindPlace{Source: "thread", Key: tid}, true
 	}
-	if changed {
-		_ = saveSessionMap(path, m)
+	return worktreePlace(ctx)
+}
+
+// worktreePlace is the git worktree around the working directory.
+func worktreePlace(ctx context.Context) (p bindPlace, ok bool) {
+	cwd, err := os.Getwd()
+	if err != nil {
+		return bindPlace{}, false
+	}
+	root, err := gitCheckoutRoot(ctx, cwd)
+	if err != nil || root == "" {
+		return bindPlace{}, false
+	}
+	return bindPlace{Source: "worktree", Key: gitops.CanonicalPath(root)}, true
+}
+
+// bound returns the session bound at p, or "".
+func (m sessionMap) bound(p bindPlace) string {
+	if p.Source == "thread" {
+		return m.Threads[p.Key]
+	}
+	return m.Worktrees[p.Key]
+}
+
+// bind binds sessionID at p.
+func (m sessionMap) bind(p bindPlace, sessionID string) {
+	if p.Source == "thread" {
+		m.Threads[p.Key] = sessionID
+	} else {
+		m.Worktrees[p.Key] = sessionID
 	}
 }
 
-// unbindSession removes any thread or worktree mapping pointing to sessionID.
-func unbindSession(d deps, sessionID string) {
-	path := sessionsFilePath(d)
-	if path == "" || sessionID == "" {
-		return
-	}
-	m, err := loadSessionMap(path)
-	if err != nil {
-		return
-	}
-	changed := false
+// unbind removes every binding of sessionID.
+func (m sessionMap) unbind(sessionID string) {
 	for k, v := range m.Threads {
 		if v == sessionID {
 			delete(m.Threads, k)
-			changed = true
 		}
 	}
 	for k, v := range m.Worktrees {
 		if v == sessionID {
 			delete(m.Worktrees, k)
-			changed = true
 		}
-	}
-	if changed {
-		_ = saveSessionMap(path, m)
 	}
 }
 
-// resolve returns the active session binding in priority order:
+// updateSessionMap applies f to the sessions file at path.
+func updateSessionMap(path string, f func(sessionMap)) error {
+	m, err := loadSessionMap(path)
+	if err != nil {
+		return err
+	}
+	f(m)
+	return saveSessionMap(path, m)
+}
+
+// unbindSession removes every binding of sessionID from the sessions file.
+func unbindSession(d deps, sessionID string) error {
+	return updateSessionMap(sessionsFilePath(d), func(m sessionMap) { m.unbind(sessionID) })
+}
+
+// lookupBinding returns the active session binding in priority order, found
+// false when there is none:
 //  1. -s/--session (or HOTBED_SESSION via Kong env)
 //  2. T3CODE_THREAD_ID mapping in ~/.hotbed/sessions.json
 //  3. current git worktree mapping in ~/.hotbed/sessions.json
-func (f sessionFlag) resolveBinding(ctx context.Context, d deps) (sessionBinding, error) {
+func (f sessionFlag) lookupBinding(ctx context.Context, d deps) (b sessionBinding, found bool, err error) {
 	if s := strings.TrimSpace(f.Session); s != "" {
 		if strings.TrimSpace(os.Getenv("HOTBED_SESSION")) == s {
-			return sessionBinding{ID: s, Source: "env", Key: "HOTBED_SESSION"}, nil
+			return sessionBinding{ID: s, Source: "env", Key: "HOTBED_SESSION"}, true, nil
 		}
-		return sessionBinding{ID: s, Source: "flag"}, nil
+		return sessionBinding{ID: s, Source: "flag"}, true, nil
 	}
 	m, err := loadSessionMap(sessionsFilePath(d))
-	if err == nil {
-		if tid := strings.TrimSpace(os.Getenv("T3CODE_THREAD_ID")); tid != "" {
-			if s := m.Threads[tid]; s != "" {
-				return sessionBinding{ID: s, Source: "thread", Key: tid}, nil
-			}
-		}
-		if cwd, err := os.Getwd(); err == nil {
-			if root, err := gitCheckoutRoot(ctx, cwd); err == nil && root != "" {
-				canon := gitops.CanonicalPath(root)
-				if s := m.Worktrees[canon]; s != "" {
-					return sessionBinding{ID: s, Source: "worktree", Key: canon}, nil
-				}
-			}
+	if err != nil {
+		return sessionBinding{}, false, err
+	}
+	// A thread with no session of its own uses its worktree's.
+	var places []bindPlace
+	if tid := strings.TrimSpace(os.Getenv("T3CODE_THREAD_ID")); tid != "" {
+		places = append(places, bindPlace{Source: "thread", Key: tid})
+	}
+	if p, ok := worktreePlace(ctx); ok {
+		places = append(places, p)
+	}
+	for _, p := range places {
+		if s := m.bound(p); s != "" {
+			return sessionBinding{ID: s, Source: p.Source, Key: p.Key}, true, nil
 		}
 	}
-	return sessionBinding{}, api.Errorf(api.CodeInvalidArgs, "no session specified and none bound to this thread or worktree").
-		WithSuggestion("run `hotbed session start`, set HOTBED_SESSION, or pass -s SESSION")
+	return sessionBinding{}, false, nil
+}
+
+// resolveBinding is lookupBinding, failing when there is no session.
+func (f sessionFlag) resolveBinding(ctx context.Context, d deps) (sessionBinding, error) {
+	b, found, err := f.lookupBinding(ctx, d)
+	if err != nil {
+		return sessionBinding{}, err
+	}
+	if !found {
+		return sessionBinding{}, api.Errorf(api.CodeInvalidArgs, "no session specified and none bound to this thread or worktree").
+			WithSuggestion("run `hotbed session start`, set HOTBED_SESSION, or pass -s SESSION")
+	}
+	return b, nil
 }
 
 func (f sessionFlag) resolve(ctx context.Context, d deps) (string, error) {

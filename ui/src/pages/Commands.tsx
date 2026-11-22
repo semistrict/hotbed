@@ -1,12 +1,15 @@
 import { Link, useSearch } from "@tanstack/react-router";
-import type { CommandState } from "../api";
-import { HistoryTable, LiveCommandTable } from "../components/CommandTable";
+import { useState, type ReactNode } from "react";
+import type { CommandState, FinishedCommand, Snapshot } from "../api";
+import { FAILURE, HistoryTable, LiveCommandTable } from "../components/CommandTable";
 import { Columns } from "../components/charts/Columns";
 import { Card, StatTile } from "../components/ui/Card";
-import { bytes, duration } from "../lib/format";
+import { bytes, compact, duration, percent, quantile } from "../lib/format";
 import { isLive } from "../lib/live";
 import { useScopedSnapshot } from "../lib/project";
-import { clusterNow } from "../lib/stats";
+import { workspaceRepo } from "../lib/sessions";
+import { clusterNow, compiled, failureRate, savings } from "../lib/stats";
+import type { CommandsSearch } from "../router";
 import { PageTitle } from "./Nodes";
 
 const STATES: { id: CommandState | "live"; label: string }[] = [
@@ -16,22 +19,39 @@ const STATES: { id: CommandState | "live"; label: string }[] = [
   { id: "parked", label: "parked" },
 ];
 
+const INITIAL_HISTORY = 20;
+
 export function CommandsPage() {
-  const { state = "live", node } = useSearch({ from: "/commands" });
+  const { state = "live", node, repo, outcome } = useSearch({ from: "/commands" });
   const { data: s } = useScopedSnapshot();
+  const [showAll, setShowAll] = useState(false);
   if (!s) return null;
+
   const now = clusterNow(s);
+  const repoOf = workspaceRepo(s);
   const live = s.commands
     .filter((c) => (state === "live" ? isLive(c) : c.state === state))
     .filter((c) => !node || c.nodeId === node)
+    .filter((c) => !repo || repoOf(c.workspaceId) === repo)
     .sort((a, b) => order(a.state) - order(b.state) || a.queuedAt.localeCompare(b.queuedAt));
-  const ended = s.history.slice(-12).reverse();
+
+  const scopedHistory = s.history.filter((c) => (!repo || c.repoId === repo) && (!node || c.nodeId === node));
+  const ended = scopedHistory.filter((c) => !outcome || c.state === outcome).reverse();
+  const day = savings(scopedHistory);
+  const times = compiled(scopedHistory).map((c) => c.seconds);
+
   const waiting = s.commands.filter((c) => c.state === "queued");
   const reserved = s.nodes.reduce((n, x) => n + x.reservedMemoryBytes, 0);
+  const baseSearch: CommandsSearch = { state: state === "live" ? undefined : state, node, repo, outcome };
+  const limit = showAll ? 200 : INITIAL_HISTORY;
 
   return (
     <div className="space-y-6">
-      <PageTitle title="Commands" sub="Builds, tests and dev servers agents run in their workspaces. Each runs in its own cgroup: a CPU weight, a memory guarantee and a ceiling." />
+      <PageTitle
+        title="Commands"
+        sub="Live builds, tests and dev servers in their cgroups, plus the last 24 hours of completed runs and stats."
+      />
+
       <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 xl:grid-cols-6">
         <StatTile label="Running" value={now.running} tone="ember" foot={`${now.coresBusy.toFixed(0)} of ${now.cores} cores busy`} />
         <StatTile label="Queued" value={now.queued} foot={waiting[0]?.reason ?? "nothing waiting"} />
@@ -43,41 +63,132 @@ export function CommandsPage() {
 
       <div className="rise flex flex-wrap items-center gap-2">
         {STATES.map((x) => (
-          <Link
-            key={x.id}
-            to="/commands"
-            search={{ state: x.id === "live" ? undefined : x.id, node }}
-            className={`rounded-full border px-3 py-1 font-mono text-[11px] ${state === x.id ? "border-primary bg-ember-wash text-foreground" : "border-border text-muted-foreground hover:border-border-strong"}`}
-          >
+          <Chip key={x.id} active={state === x.id} search={{ ...baseSearch, state: x.id === "live" ? undefined : x.id }}>
             {x.label}
-          </Link>
+          </Chip>
         ))}
-        <span className="mx-2 h-4 w-px bg-border" />
-        <Link to="/commands" search={{ state: state === "live" ? undefined : state }} className={`rounded-full border px-3 py-1 font-mono text-[11px] ${!node ? "border-primary text-foreground" : "border-border text-muted-foreground"}`}>
+        <span className="mx-1 h-4 w-px bg-border" />
+        <Chip active={!node} search={{ ...baseSearch, node: undefined }}>
           every node
-        </Link>
+        </Chip>
         {s.nodes
           .filter((n) => n.online)
           .map((n) => (
-            <Link
-              key={n.id}
-              to="/commands"
-              search={{ state: state === "live" ? undefined : state, node: n.id }}
-              className={`rounded-full border px-3 py-1 font-mono text-[11px] ${node === n.id ? "border-primary text-foreground" : "border-border text-muted-foreground hover:border-border-strong"}`}
-            >
+            <Chip key={n.id} active={node === n.id} search={{ ...baseSearch, node: n.id }}>
               {n.hostname}
-            </Link>
+            </Chip>
           ))}
+        {s.repos.length > 1 && (
+          <>
+            <span className="mx-1 h-4 w-px bg-border" />
+            <Chip active={!repo} search={{ ...baseSearch, repo: undefined }}>
+              every repo
+            </Chip>
+            {s.repos.map((r) => (
+              <Chip key={r.id} active={repo === r.id} search={{ ...baseSearch, repo: r.id }}>
+                {r.id}
+              </Chip>
+            ))}
+          </>
+        )}
       </div>
 
       <Card title={`${live.length} ${state === "live" ? "live" : state}`}>
         <LiveCommandTable s={s} commands={live} />
       </Card>
 
-      <div className="grid gap-4">
-        <Card title="Just ended" right={<Link to="/history" className="font-mono text-[11px] text-muted-foreground hover:text-primary">all history →</Link>}>
-          <HistoryTable s={s} rows={ended} />
+      <div className="space-y-3">
+        <div className="rise flex flex-wrap items-center gap-2">
+          <Chip active={!outcome} search={{ ...baseSearch, outcome: undefined }}>
+            any outcome
+          </Chip>
+          <Chip active={outcome === "failed"} search={{ ...baseSearch, outcome: "failed" }}>
+            ✕ failed
+          </Chip>
+          <Chip active={outcome === "succeeded"} search={{ ...baseSearch, outcome: "succeeded" }}>
+            ✓ ok
+          </Chip>
+          <a href="#command-stats" className="ml-auto font-mono text-[11px] text-muted-foreground hover:text-primary">
+            24h stats ↓
+          </a>
+        </div>
+
+        <Card
+          title={`${ended.length} ended`}
+          sub="Last 24 hours, newest first"
+          right={
+            ended.length > INITIAL_HISTORY ? (
+              <button
+                type="button"
+                onClick={() => setShowAll((v) => !v)}
+                className="font-mono text-[11px] text-muted-foreground hover:text-primary"
+              >
+                {showAll ? `show latest ${INITIAL_HISTORY}` : `show all ${Math.min(ended.length, 200)}`}
+              </button>
+            ) : undefined
+          }
+        >
+          <HistoryTable s={s} rows={ended} limit={limit} />
+          {!showAll && ended.length > INITIAL_HISTORY && (
+            <div className="mt-3 text-center">
+              <button
+                type="button"
+                onClick={() => setShowAll(true)}
+                className="rounded-full border border-border px-3 py-1 font-mono text-[11px] text-muted-foreground hover:border-border-strong hover:text-foreground"
+              >
+                show all {Math.min(ended.length, 200)} commands
+              </button>
+            </div>
+          )}
         </Card>
+      </div>
+
+      <section id="command-stats" className="space-y-4 pt-2">
+        <header className="rise">
+          <h2 className="display text-[22px] leading-none font-medium">Last 24 hours</h2>
+          <p className="mt-1 text-[12.5px] text-muted-foreground">Outcomes, compile time saved, failure breakdown and build times across ended commands.</p>
+        </header>
+
+        <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 xl:grid-cols-6">
+          <StatTile label="Commands" value={compact(scopedHistory.length)} foot="ended, 24 h" />
+          <StatTile label="Failed" value={percent(failureRate(scopedHistory))} foot={`${scopedHistory.filter((c) => c.state === "failed").length} commands`} />
+          <StatTile label="Saved" value={duration(day.saved)} tone="ember" foot={`${day.ratio.toFixed(0)}× less compile time`} />
+          <StatTile label="Build p50" value={duration(quantile(times, 0.5))} foot={`p95 ${duration(quantile(times, 0.95))}`} />
+          <StatTile label="Parked" value={scopedHistory.reduce((n, c) => n + c.parks, 0)} unit="times" tone="frost" foot="frozen, swapped, resumed" />
+          <StatTile label="OOM kills" value={s.totals24h.oomKills} tone="good" foot="none, ever" />
+        </div>
+
+        <div className="grid gap-4 lg:grid-cols-3">
+          <Card className="lg:col-span-2" title="Outcomes per hour">
+            <Columns
+              columns={perHour(s, scopedHistory).map((h) => ({ key: String(h.hour), label: String(new Date(h.hour).getHours()).padStart(2, "0"), values: [h.ok, h.failed] }))}
+              series={[
+                { id: "ok", label: "ok", color: "var(--series-1)" },
+                { id: "failed", label: "failed", color: "var(--series-8)" },
+              ]}
+              format={(v) => compact(v)}
+              labelEvery={3}
+            />
+          </Card>
+          <Card title="Why they failed">
+            <FailureBars rows={scopedHistory} />
+          </Card>
+        </div>
+
+        <div className="grid gap-4 lg:grid-cols-2">
+          <Card title="Failure rate by repo">
+            <Columns
+              columns={s.repos.map((r) => ({ key: r.id, label: r.id, values: [failureRate(s.history.filter((c) => c.repoId === r.id)) * 100] }))}
+              series={[{ id: "rate", label: "failed", color: "var(--series-8)" }]}
+              format={(v) => `${v.toFixed(0)}%`}
+              height={150}
+            />
+          </Card>
+          <Card title="Build time by repo, p50" sub="Warm forks; the cold build is the faint mark">
+            <RepoTimes s={s} />
+          </Card>
+        </div>
+
         <Card title="Queue wait, p95" sub="How long commands waited for room, per hour, last 24 hours">
           <Columns
             columns={s.hourly.map((h) => ({ key: String(h.hour), label: String(new Date(h.hour).getHours()).padStart(2, "0"), values: [h.queueWaitP95Seconds] }))}
@@ -87,11 +198,76 @@ export function CommandsPage() {
             height={140}
           />
         </Card>
-      </div>
+      </section>
     </div>
+  );
+}
+
+function Chip({ active, search, children }: { active: boolean; search: CommandsSearch; children: ReactNode }) {
+  return (
+    <Link
+      to="/commands"
+      search={search}
+      resetScroll={false}
+      className={`rounded-full border px-3 py-1 font-mono text-[11px] ${active ? "border-primary bg-ember-wash text-foreground" : "border-border text-muted-foreground hover:border-border-strong"}`}
+    >
+      {children}
+    </Link>
   );
 }
 
 function order(s: CommandState): number {
   return { running: 0, parked: 1, queued: 2, succeeded: 3, failed: 4, cancelled: 5 }[s];
+}
+
+function perHour(s: Snapshot, rows: FinishedCommand[]) {
+  return s.hourly.map((h) => {
+    const inHour = rows.filter((c) => c.endedAt >= h.hour && c.endedAt < h.hour + 3600_000);
+    return { hour: h.hour, ok: inHour.filter((c) => c.state === "succeeded").length, failed: inHour.filter((c) => c.state === "failed").length };
+  });
+}
+
+function FailureBars({ rows }: { rows: FinishedCommand[] }) {
+  const failed = rows.filter((c) => c.failure);
+  const kinds = (Object.keys(FAILURE) as (keyof typeof FAILURE)[]).map((k) => ({ k, n: failed.filter((c) => c.failure === k).length })).sort((a, b) => b.n - a.n);
+  const max = Math.max(1, ...kinds.map((x) => x.n));
+  return (
+    <ul className="space-y-3">
+      {kinds.map(({ k, n }) => (
+        <li key={k}>
+          <div className="mb-1 flex justify-between text-[11.5px]">
+            <span className="text-muted-foreground">{FAILURE[k]}</span>
+            <span className="num font-mono text-foreground">{n}</span>
+          </div>
+          <div className="h-2 rounded-r-[4px] bg-[var(--series-8)]" style={{ width: `${(n / max) * 100}%`, minWidth: n ? 3 : 0 }} />
+        </li>
+      ))}
+    </ul>
+  );
+}
+
+function RepoTimes({ s }: { s: Snapshot }) {
+  const rows = s.repos.map((r) => {
+    const c = compiled(s.history.filter((x) => x.repoId === r.id));
+    return { r, p50: quantile(c.map((x) => x.seconds), 0.5), cold: quantile(c.map((x) => x.coldSeconds), 0.5) };
+  });
+  const max = Math.max(1, ...rows.map((x) => x.cold));
+  return (
+    <ul className="space-y-3">
+      {rows.map(({ r, p50, cold }) => (
+        <li key={r.id}>
+          <div className="mb-1 flex justify-between text-[11.5px]">
+            <span className="font-mono text-foreground">{r.id}</span>
+            <span className="num font-mono text-muted-foreground">
+              <span className="text-foreground">{duration(p50)}</span> · cold {duration(cold)}
+            </span>
+          </div>
+          <div className="relative h-2">
+            <div className="absolute inset-y-0 left-0 rounded-r-[4px] border border-border-strong" style={{ width: `${(cold / max) * 100}%` }} />
+            <div className="absolute inset-y-0 left-0 rounded-r-[4px] bg-primary" style={{ width: `max(3px, ${(p50 / max) * 100}%)` }} />
+          </div>
+        </li>
+      ))}
+    </ul>
+  );
 }

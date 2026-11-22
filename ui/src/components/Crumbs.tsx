@@ -1,7 +1,10 @@
-import { Link } from "@tanstack/react-router";
+import { Link, useNavigate } from "@tanstack/react-router";
 import { Fragment } from "react";
+import { useSnapshot } from "../lib/data";
+import { useProject } from "../lib/project";
+import { repoProject } from "../lib/projects";
 
-/** Where a page sits under Workspaces: its repo, then its workspace. */
+/** Where a page sits under Projects: its project, repo, and workspace. */
 export interface Trail {
   repoId?: string;
   workspaceId?: string;
@@ -11,16 +14,33 @@ export interface Trail {
 
 const link = "text-muted-foreground hover:text-primary";
 
-/** Workspaces › repo › workspace › here, each a way back up. */
+/** Projects › project › repo › workspace › here, each a way back up. */
 export function Crumbs({ repoId, workspaceId, here }: Trail) {
+  const { data: s } = useSnapshot();
+  const [, choose] = useProject();
+  const navigate = useNavigate();
+  const project = s && repoId ? repoProject(s, repoId) : null;
   const steps = [
-    <Link key="all" to="/workspaces" className={link}>
-      workspaces
+    <Link key="all" to="/" onClick={() => choose(null)} className={link}>
+      projects
     </Link>,
+    project && (
+      <button
+        key="project"
+        type="button"
+        onClick={() => {
+          choose(project);
+          void navigate({ to: "/" });
+        }}
+        className={link}
+      >
+        {project}
+      </button>
+    ),
     repoId && (
-      <Link key="repo" to="/workspaces" search={{ repo: repoId }} className={link}>
+      <span key="repo" className="text-muted-foreground">
         {repoId}
-      </Link>
+      </span>
     ),
     workspaceId && (
       <Link key="ws" to="/workspaces/$id" params={{ id: workspaceId }} className={link}>
@@ -30,9 +50,9 @@ export function Crumbs({ repoId, workspaceId, here }: Trail) {
   ].filter(Boolean);
   return (
     <nav aria-label="Breadcrumb" className="rise flex flex-wrap items-center gap-1.5 font-mono text-[11px] text-faint">
-      {steps.map((s, i) => (
+      {steps.map((step, i) => (
         <Fragment key={i}>
-          {s}
+          {step}
           <span aria-hidden>›</span>
         </Fragment>
       ))}

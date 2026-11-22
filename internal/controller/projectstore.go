@@ -145,6 +145,56 @@ func projectID(ctx context.Context, q querier, name string) (int64, error) {
 	return id, err
 }
 
+// projectlessSession is a session whose project_id is NULL, with the repos
+// of the workspaces it has held, oldest first.
+type projectlessSession struct {
+	id    string
+	repos []string
+}
+
+// SessionsWithoutProject lists sessions that have no project yet, together
+// with the repo IDs of any workspaces they created.
+func (s *Store) SessionsWithoutProject(ctx context.Context) ([]projectlessSession, error) {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT s.id, COALESCE(w.repo_id, '')
+		FROM sessions s
+		LEFT JOIN workspaces w ON w.session_id = s.id
+		WHERE s.project_id IS NULL
+		ORDER BY s.started_at, w.created_at`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []projectlessSession
+	idx := map[string]int{}
+	for rows.Next() {
+		var id, repo string
+		if err := rows.Scan(&id, &repo); err != nil {
+			return nil, err
+		}
+		i, ok := idx[id]
+		if !ok {
+			i = len(out)
+			idx[id] = i
+			out = append(out, projectlessSession{id: id})
+		}
+		if repo != "" && !slices.Contains(out[i].repos, repo) {
+			out[i].repos = append(out[i].repos, repo)
+		}
+	}
+	return out, rows.Err()
+}
+
+// SetSessionProject attaches a session that has no project yet to project.
+func (s *Store) SetSessionProject(ctx context.Context, sessionID, project string) error {
+	pid, err := projectID(ctx, s.db, project)
+	if err != nil {
+		return err
+	}
+	_, err = s.db.ExecContext(ctx, `UPDATE sessions SET project_id = ? WHERE id = ? AND project_id IS NULL`, pid, sessionID)
+	return err
+}
+
 func noProject(name string) *api.Error {
 	return api.Errorf(api.CodeNotFound, "no project %s", name).WithSuggestion("hotbed project ls; hotbed project add NAME --repo REMOTE makes one")
 }

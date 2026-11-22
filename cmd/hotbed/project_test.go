@@ -26,8 +26,6 @@ func checkout(t *testing.T, remote string) string {
 func TestSessionStartsInItsCheckoutsProject(t *testing.T) {
 	c := newCluster(t)
 	t.Setenv("HOTBED_PROJECT", "")
-	t.Setenv("HOTBED_SESSION", "")
-	t.Setenv("T3CODE_THREAD_ID", "")
 	checkout(t, "git@github.com:o/app.git")
 
 	sess := &pb.Session{}
@@ -48,10 +46,14 @@ func TestSessionStartsInItsCheckoutsProject(t *testing.T) {
 	if !slices.Equal(web.Repos, []string{"github.com/o/api", "github.com/o/app", "github.com/o/ui"}) {
 		t.Errorf("project web holds %v, want the repos of both adds", web.Repos)
 	}
-	if _, e := c.fails("session", "start", "second-one"); e.Code != api.CodeInvalidArgs || !strings.Contains(e.Message, "github.com/o/app is in projects app, web") {
+	// first-one is bound to this checkout: each start here replaces it.
+	if _, e := c.fails("session", "start", "second-one", "--replace"); e.Code != api.CodeInvalidArgs || !strings.Contains(e.Message, "github.com/o/app is in projects app, web") {
 		t.Errorf("start in a repo two projects hold = %v, want INVALID_ARGS naming them", e)
 	}
-	c.ok(sess, "session", "start", "second-one", "-p", "web")
+	if s := c.session("first-one"); s.EndedAt != nil {
+		t.Errorf("a refused start ended the session it was to replace: %v", s)
+	}
+	c.ok(sess, "session", "start", "second-one", "-p", "web", "--replace")
 	if sess.Project != "web" {
 		t.Errorf("start -p web: project %q", sess.Project)
 	}
@@ -66,7 +68,7 @@ func TestSessionStartsInItsCheckoutsProject(t *testing.T) {
 		t.Errorf("the cockpit's session = %v", s)
 	}
 
-	if _, e := c.fails("session", "start", "-p", "nosuch"); e.Code != api.CodeNotFound {
+	if _, e := c.fails("session", "start", "-p", "nosuch", "--replace"); e.Code != api.CodeNotFound {
 		t.Errorf("start -p nosuch = %v, want NOT_FOUND", e)
 	}
 	t.Chdir(t.TempDir())
@@ -145,8 +147,6 @@ func sessionIDs(res *pb.ListSessionsResponse) []string {
 func TestRepoProjectNames(t *testing.T) {
 	c := newCluster(t)
 	t.Setenv("HOTBED_PROJECT", "")
-	t.Setenv("HOTBED_SESSION", "")
-	t.Setenv("T3CODE_THREAD_ID", "")
 
 	checkout(t, "https://github.com/vercel/Next.js.git")
 	sess := &pb.Session{}
@@ -171,5 +171,26 @@ func TestRepoProjectNames(t *testing.T) {
 	c.ok(ls, "project", "ls")
 	if projectRepos(ls, "fresh") != nil || len(ls.Projects) != 3 {
 		t.Errorf("a refused start made a project: %v", ls.Projects)
+	}
+}
+
+// Registering a repo auto-creates a single-repo project for it when no project
+// holds it yet; adding a repo already held by a project leaves projects alone.
+func TestRepoAddCreatesItsOwnProject(t *testing.T) {
+	c := newCluster(t)
+	c.ok(nil, "repo", "add", "cladefs", "https://github.com/semistrict/cladefs.git")
+
+	ls := &pb.ListProjectsResponse{}
+	c.ok(ls, "project", "ls")
+	if got := projectRepos(ls, "cladefs"); !slices.Equal(got, []string{"github.com/semistrict/cladefs"}) {
+		t.Fatalf("project cladefs after repo add = %v, want [github.com/semistrict/cladefs]", got)
+	}
+
+	// A repo already in a multi-repo project does not sprout a duplicate project.
+	c.ok(nil, "project", "add", "suite", "--repo", "https://github.com/semistrict/other.git")
+	c.ok(nil, "repo", "add", "other", "git@github.com:semistrict/other.git")
+	c.ok(ls, "project", "ls")
+	if projectRepos(ls, "other") != nil {
+		t.Errorf("repo already in project suite should not make a project called other: %v", ls.Projects)
 	}
 }

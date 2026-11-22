@@ -68,7 +68,7 @@ function Overview({ s, colors }: { s: Snapshot; colors: Map<string, string> }) {
         </div>
       </section>
 
-      <Card className="col-span-12 lg:col-span-5" title="Latest builds" sub="Forked from a warm base, against the same command from nothing" delay={60} right={<Link to="/history" className="font-mono text-[11px] text-muted-foreground hover:text-primary">history →</Link>}>
+      <Card className="col-span-12 lg:col-span-5" title="Latest builds" sub="Forked from a warm base, against the same command from nothing" delay={60} right={<Link to="/commands" className="font-mono text-[11px] text-muted-foreground hover:text-primary">commands →</Link>}>
         <SpeedBars
           rows={recent.map((c) => ({
             id: c.id,

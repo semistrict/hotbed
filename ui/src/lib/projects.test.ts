@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { Snapshot } from "../api";
-import { remoteName, scope } from "./projects";
+import { commandProject, remoteName, repoProject, scope } from "./projects";
 
 const stamp = "2026-11-21T12:00:00Z";
 const s = {
@@ -14,9 +14,18 @@ const s = {
     { id: "hotbed", remote: "github.com/o/hotbed" },
   ],
   bases: [{ id: "lnx-g1", repoId: "lnx" }, { id: "hotbed-g4", repoId: "hotbed" }],
-  sessions: [{ id: "brave-otter", project: "ratel" }, { id: "calm-heron", project: "hotbed" }],
-  workspaces: [{ id: "w1", sessionId: "brave-otter" }, { id: "w2", sessionId: "calm-heron" }],
-  commands: [{ id: "c1", sessionId: "brave-otter" }, { id: "c2", sessionId: "calm-heron" }],
+  sessions: [
+    { id: "brave-otter", project: "ratel", workspaces: [{ id: "w1", repoId: "ratel" }] },
+    { id: "calm-heron", project: "hotbed", workspaces: [{ id: "w2", repoId: "hotbed" }] },
+  ],
+  workspaces: [
+    { id: "w1", sessionId: "brave-otter", repoId: "ratel" },
+    { id: "w2", sessionId: "calm-heron", repoId: "hotbed" },
+  ],
+  commands: [
+    { id: "c1", sessionId: "brave-otter", workspaceId: "w1" },
+    { id: "c2", sessionId: "calm-heron", workspaceId: "w2" },
+  ],
   history: [
     { id: "h1", sessionId: "brave-otter", repoId: "ratel" },
     { id: "h2", sessionId: "calm-heron", repoId: "hotbed" },
@@ -61,6 +70,20 @@ describe("scope", () => {
   it("is every project for none, or one it does not know", () => {
     expect(scope(s, null)).toBe(s);
     expect(scope(s, "gone")).toBe(s);
+  });
+});
+
+describe("commandProject", () => {
+  it("uses the session's project when set, and falls back to the repo's project", () => {
+    const withOrphan = {
+      ...s,
+      sessions: [...s.sessions, { id: "old-owl", project: null, workspaces: [{ id: "w3", repoId: "lnx" }] }],
+    } as unknown as Snapshot;
+    expect(commandProject(withOrphan, "brave-otter", "hotbed")).toBe("ratel");
+    expect(commandProject(withOrphan, "old-owl", "lnx")).toBe("ratel");
+    expect(commandProject(withOrphan, "missing-session", "hotbed")).toBe("hotbed");
+    expect(commandProject(withOrphan, "", "lnx")).toBe("ratel");
+    expect(repoProject(withOrphan, "lnx")).toBe("ratel");
   });
 });
 
