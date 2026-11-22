@@ -436,12 +436,17 @@ func (s *Server) endSession(ctx context.Context, id, reason string) (*pb.Session
 	if err != nil {
 		return nil, err
 	}
+	// Its scheduled runs end because the session does: settled first, before
+	// the worker's word that releasing the workspace cancelled their commands.
+	if err := s.endRuns(ctx, id, reason); err != nil {
+		return nil, err
+	}
 	for _, ws := range sess.WorkspaceIds {
 		err := s.releaseWorkspace(ctx, ws)
 		switch e := api.FromConnect(err); {
 		case err == nil, e.Code == api.CodeNotFound:
 		case e.Code == api.CodeWorkerUnreachable:
-			// Its worker releases it when it reports again.
+			// Its worker's next heartbeat releases it.
 			slog.Warn("release workspace later", "workspace", ws, "err", err)
 			if err := s.cfg.Store.ReleaseWorkspace(ctx, ws, s.now()); err != nil {
 				return nil, err
@@ -451,9 +456,6 @@ func (s *Server) endSession(ctx context.Context, id, reason string) (*pb.Session
 		}
 	}
 	if err := s.cfg.Store.EndSession(ctx, id, reason, s.now()); err != nil {
-		return nil, err
-	}
-	if err := s.endRuns(ctx, id, reason); err != nil {
 		return nil, err
 	}
 	s.wake(id)
