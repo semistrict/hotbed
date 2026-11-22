@@ -3275,8 +3275,9 @@ type Command struct {
 	// Stops when no client has followed its output for a while.
 	Attached  bool   `protobuf:"varint,21,opt,name=attached,proto3" json:"attached,omitempty"`
 	SessionId string `protobuf:"bytes,22,opt,name=session_id,json=sessionId,proto3" json:"session_id,omitempty"`
-	// Set by the controller: where clients call the command's worker.
-	NodeAddr      string `protobuf:"bytes,23,opt,name=node_addr,json=nodeAddr,proto3" json:"node_addr,omitempty"`
+	// Set by the controller: where clients call the command's worker. (Not
+	// 23: branch bench-mode, already deployed, has bench there.)
+	NodeAddr      string `protobuf:"bytes,24,opt,name=node_addr,json=nodeAddr,proto3" json:"node_addr,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -7828,7 +7829,7 @@ const file_hotbed_v1_hotbed_proto_rawDesc = "" +
 	"\battached\x18\x15 \x01(\bR\battached\x12\x1d\n" +
 	"\n" +
 	"session_id\x18\x16 \x01(\tR\tsessionId\x12\x1b\n" +
-	"\tnode_addr\x18\x17 \x01(\tR\bnodeAddrB\r\n" +
+	"\tnode_addr\x18\x18 \x01(\tR\bnodeAddrB\r\n" +
 	"\v_started_atB\v\n" +
 	"\t_ended_atB\f\n" +
 	"\n" +

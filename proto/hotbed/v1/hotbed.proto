@@ -520,8 +520,9 @@ message Command {
   // Stops when no client has followed its output for a while.
   bool attached = 21;
   string session_id = 22;
-  // Set by the controller: where clients call the command's worker.
-  string node_addr = 23;
+  // Set by the controller: where clients call the command's worker. (Not
+  // 23: branch bench-mode, already deployed, has bench there.)
+  string node_addr = 24;
 }
 
 // A command that ended, as history keeps it.
