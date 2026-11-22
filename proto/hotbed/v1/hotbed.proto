@@ -51,12 +51,15 @@ service ClusterService {
 // the commands it runs in them.
 service SessionService {
   rpc StartSession(StartSessionRequest) returns (Session);
+  // GetSession returns a session (live or ended) with its workspaces and
+  // commands, without resetting its idle timer.
+  rpc GetSession(GetSessionRequest) returns (GetSessionResponse);
   // EndSession stops the session's commands and releases its workspaces.
   // A session nothing touches for an hour ends the same way; WatchSession
   // keeps it alive.
   rpc EndSession(EndSessionRequest) returns (Session);
   // WatchSession streams what happens to the session's commands after a
-  // cursor: first how things stand, then each new batch of events as it
+  // cursor: first how it stands, then each new batch of events as it
   // happens. It ends when the session does, or after at most two minutes, so
   // an agent that wants the session kept has to keep watching it.
   rpc WatchSession(WatchSessionRequest) returns (stream WatchSessionResponse);
@@ -673,6 +676,24 @@ message StartSessionRequest {
   // The session's name, adjective-noun; it must be free.
   string id = 1;
   string agent = 2;
+}
+
+message GetSessionRequest {
+  string id = 1;
+}
+
+message GetSessionResponse {
+  Session session = 1;
+  // Live workspaces of the session from their nodes' views.
+  repeated Workspace workspaces = 2;
+  // Live and just-ended commands of the session.
+  repeated Command commands = 3;
+  // Controller's current time (unix ms).
+  int64 now = 4;
+  // Idle timeout in seconds before an inactive session is abandoned.
+  int64 idle_timeout_seconds = 5;
+  // Map of node_id -> hostname for nodes referenced by workspaces/commands.
+  map<string, string> node_hosts = 6;
 }
 
 message EndSessionRequest {

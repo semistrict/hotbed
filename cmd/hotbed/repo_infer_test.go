@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"slices"
 	"testing"
+	"time"
 
 	"github.com/semistrict/hotbed/internal/api"
 	pb "github.com/semistrict/hotbed/internal/gen/hotbed/v1"
@@ -231,5 +232,119 @@ func TestUICommand(t *testing.T) {
 	}
 	if res.URL != "http://ubu1:9000/" || res.Opened || len(opened) != 0 {
 		t.Fatalf("ui --no-open res=%+v opened=%v", res, opened)
+	}
+}
+
+func TestSessionStatus(t *testing.T) {
+	c := newCluster(t)
+	up := upstream(t)
+	c.addRepo(up)
+
+	checkout := filepath.Join(t.TempDir(), "local-checkout")
+	if _, err := (gitops.Git{}).Run(t.Context(), "clone", up, checkout); err != nil {
+		t.Fatal(err)
+	}
+	t.Chdir(checkout)
+	t.Setenv("HOTBED_SESSION", "")
+	t.Setenv("HOTBED_REPO", "")
+	t.Setenv("T3CODE_THREAD_ID", "thread-status-test")
+
+	// Reject positional session argument.
+	if code, err := c.fails("session", "status", "tidy-owl"); code != exitInvalidArgs || err.Code != api.CodeInvalidArgs {
+		t.Fatalf("positional session status: exit %d, %+v, want exit 2 INVALID_ARGS", code, err)
+	}
+
+	// No session bound locally: returns active=false, state="none" with exit 0.
+	var st sessionStatusResult
+	c.ok(&st, "session", "status")
+	if st.Active || st.State != "none" || st.ID != "" {
+		t.Fatalf("unbound session status = %+v, want active=false state=none", st)
+	}
+
+	// Start a session (bound to T3CODE_THREAD_ID), add a workspace, and run a command.
+	var started pb.Session
+	c.ok(&started, "session", "start")
+	c.ok(nil, "add", "--sync", ".")
+	if code, _, stderr := c.hotbed("run", "--", "sh", "-c", "echo hi"); code != 0 {
+		t.Fatalf("run: exit %d, stderr %q", code, stderr)
+	}
+	c.eventually("command appears in controller view", func() bool {
+		var cur sessionStatusResult
+		c.ok(&cur, "session", "status")
+		return len(cur.Commands) == 1 && cur.Commands[0].State == "succeeded"
+	})
+
+	// Advance clock by 5 minutes: session status must report idleSeconds >= 300
+	// without resetting lastActiveAt.
+	c.clock.advance(5 * time.Minute)
+	var active1, active2 sessionStatusResult
+	c.ok(&active1, "session", "status")
+	c.clock.advance(1 * time.Minute)
+	c.ok(&active2, "session", "status")
+
+	if !active1.Active || active1.State != "active" || active1.ID != started.Id {
+		t.Fatalf("active1 = %+v, want active %s", active1, started.Id)
+	}
+	if active1.Source != "thread" || active1.Key != "thread-status-test" {
+		t.Fatalf("active1 source/key = %q/%q, want thread/thread-status-test", active1.Source, active1.Key)
+	}
+	if active1.IdleTimeoutSeconds != 3600 || active1.IdleSeconds == nil || *active1.IdleSeconds < 300 {
+		t.Fatalf("active1 idle = %+v (timeout=%d), want >=300s", active1.IdleSeconds, active1.IdleTimeoutSeconds)
+	}
+	if active1.ExpiresInSeconds == nil || *active1.ExpiresInSeconds > 3300 {
+		t.Fatalf("active1 expiresIn = %v, want <=3300s", active1.ExpiresInSeconds)
+	}
+	if active2.LastActiveAt != active1.LastActiveAt {
+		t.Fatalf("session status reset lastActiveAt: %d -> %d", active1.LastActiveAt, active2.LastActiveAt)
+	}
+	if active2.IdleSeconds == nil || *active2.IdleSeconds < *active1.IdleSeconds+60 {
+		t.Fatalf("idleSeconds did not advance across read-only status calls: %v -> %v", active1.IdleSeconds, active2.IdleSeconds)
+	}
+	if len(active1.Workspaces) != 1 || active1.Workspaces[0].Repo != "app" || active1.Workspaces[0].Node == "" {
+		t.Fatalf("workspaces = %+v, want 1 workspace of app with node hostname", active1.Workspaces)
+	}
+	if len(active1.Commands) != 1 || active1.Commands[0].State != "succeeded" || active1.LiveCommands != 0 {
+		t.Fatalf("commands = %+v (live=%d), want 1 succeeded", active1.Commands, active1.LiveCommands)
+	}
+
+	// Let the worker heartbeat under the advanced clock so it is online when
+	// session end releases the workspace.
+	c.eventually("worker online", func() bool {
+		var nodes pb.ListNodesResponse
+		c.ok(&nodes, "nodes")
+		return len(nodes.Nodes) == 1 && nodes.Nodes[0].Online
+	})
+
+	// End session: unbound locally -> "none"; querying by -s shows "ended" with released workspace.
+	c.ok(nil, "session", "end")
+	var afterEnd sessionStatusResult
+	c.ok(&afterEnd, "session", "status")
+	if afterEnd.Active || afterEnd.State != "none" {
+		t.Fatalf("after end default status = %+v, want state=none", afterEnd)
+	}
+
+	var ended sessionStatusResult
+	c.ok(&ended, "session", "status", "-s", started.Id)
+	if ended.Active || ended.State != "ended" || ended.EndedAt == nil || ended.EndReason != "ended by its agent" {
+		t.Fatalf("ended status = %+v", ended)
+	}
+	if ended.Source != "flag" || ended.IdleSeconds != nil || ended.ExpiresInSeconds != nil {
+		t.Fatalf("ended status source/idle = %+v", ended)
+	}
+	if len(ended.Workspaces) != 1 || ended.Workspaces[0].State != "released" || ended.Workspaces[0].ReleasedAt == nil {
+		t.Fatalf("ended workspaces = %+v, want 1 released workspace", ended.Workspaces)
+	}
+
+	// Explicit nonexistent session returns NOT_FOUND.
+	if code, err := c.fails("session", "status", "-s", "ghost-otter"); code != exitError || err.Code != api.CodeNotFound {
+		t.Fatalf("explicit ghost-otter: exit %d, %+v, want exit 1 NOT_FOUND", code, err)
+	}
+
+	// Stale local binding in sessions.json returns active=false, state="not_found" cleanly.
+	bindSessionForContext(t.Context(), c.cli, "ghost-otter")
+	var stale sessionStatusResult
+	c.ok(&stale, "session", "status")
+	if stale.Active || stale.State != "not_found" || stale.ID != "ghost-otter" || stale.Source != "thread" {
+		t.Fatalf("stale binding status = %+v, want state=not_found id=ghost-otter", stale)
 	}
 }

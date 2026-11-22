@@ -1,8 +1,12 @@
 package controller
 
 import (
+	"cmp"
 	"context"
+	"log/slog"
 	"regexp"
+	"slices"
+	"strings"
 	"time"
 
 	petname "github.com/dustinkirkland/golang-petname"
@@ -38,6 +42,75 @@ func (s *sessions) StartSession(ctx context.Context, req *pb.StartSessionRequest
 		}
 	}
 	return nil, api.Errorf(api.CodeConflict, "could not find a free session name")
+}
+
+func (s *sessions) GetSession(ctx context.Context, req *pb.GetSessionRequest) (*pb.GetSessionResponse, error) {
+	sess, err := s.cfg.Store.Session(ctx, req.Id)
+	if err != nil {
+		return nil, err
+	}
+	nvs, err := s.views(ctx)
+	if err != nil {
+		return nil, err
+	}
+	nodeHosts := make(map[string]string, len(nvs))
+	releasedWS := make(map[string]bool, len(sess.Workspaces))
+	for _, sw := range sess.Workspaces {
+		if sw.ReleasedAt != nil {
+			releasedWS[sw.Id] = true
+		}
+	}
+	var wsList []*pb.Workspace
+	seenWS := map[string]bool{}
+	var cmdList []*pb.Command
+	for _, nv := range nvs {
+		nodeHosts[nv.node.Id] = nv.node.Hostname
+		for _, ws := range nv.workspaces {
+			if ws.State != pb.WorkspaceState_WORKSPACE_STATE_RELEASED && !releasedWS[ws.Id] && ws.SessionId == req.Id {
+				wsList = append(wsList, ws)
+				seenWS[ws.Id] = true
+			}
+		}
+		for _, c := range nv.commands {
+			if c.Kind != "freshen" && c.SessionId == req.Id {
+				cmdList = append(cmdList, c)
+			}
+		}
+	}
+	// A workspace just created may not be in its node's view yet: ask its
+	// worker directly without touching the session's idle timer.
+	for _, id := range sess.GetWorkspaceIds() {
+		if seenWS[id] {
+			continue
+		}
+		w, err := s.cfg.Store.Workspace(ctx, id)
+		if err != nil || w.released {
+			continue
+		}
+		c, _, err := s.worker(ctx, w.node)
+		if err != nil {
+			slog.Warn("get session workspace not in view", "workspace", id, "err", err)
+			continue
+		}
+		ws, err := c.GetWorkspace(ctx, &pb.GetWorkspaceRequest{Id: id})
+		if err != nil {
+			slog.Warn("get session workspace not in view", "workspace", id, "err", err)
+			continue
+		}
+		ws.NodeAddr = s.nodeAddr(ctx, w.node)
+		wsList = append(wsList, ws)
+	}
+	slices.SortFunc(wsList, func(a, b *pb.Workspace) int { return cmp.Compare(a.CreatedAt, b.CreatedAt) })
+	slices.SortFunc(cmdList, func(a, b *pb.Command) int { return strings.Compare(a.Id, b.Id) })
+	slices.SortStableFunc(cmdList, func(a, b *pb.Command) int { return cmp.Compare(a.QueuedAt, b.QueuedAt) })
+	return &pb.GetSessionResponse{
+		Session:            sess,
+		Workspaces:         wsList,
+		Commands:           cmdList,
+		Now:                s.now().UnixMilli(),
+		IdleTimeoutSeconds: int64(sessionIdle / time.Second),
+		NodeHosts:          nodeHosts,
+	}, nil
 }
 
 func (s *sessions) EndSession(ctx context.Context, req *pb.EndSessionRequest) (*pb.Session, error) {

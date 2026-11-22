@@ -66,6 +66,8 @@ const (
 	// SessionServiceStartSessionProcedure is the procedure name of the SessionService's StartSession
 	// RPC.
 	SessionServiceStartSessionProcedure = "/hotbed.v1.SessionService/StartSession"
+	// SessionServiceGetSessionProcedure is the procedure name of the SessionService's GetSession RPC.
+	SessionServiceGetSessionProcedure = "/hotbed.v1.SessionService/GetSession"
 	// SessionServiceEndSessionProcedure is the procedure name of the SessionService's EndSession RPC.
 	SessionServiceEndSessionProcedure = "/hotbed.v1.SessionService/EndSession"
 	// SessionServiceWatchSessionProcedure is the procedure name of the SessionService's WatchSession
@@ -723,6 +725,13 @@ var (
 			Procedure:  SessionServiceStartSessionProcedure,
 		}
 	})
+	sessionServiceGetSessionSpec = sync.OnceValue(func() connect.Spec {
+		return connect.Spec{
+			StreamType: connect.StreamTypeUnary,
+			Schema:     v1.File_hotbed_v1_hotbed_proto.Services().ByName("SessionService").Methods().ByName("GetSession"),
+			Procedure:  SessionServiceGetSessionProcedure,
+		}
+	})
 	sessionServiceEndSessionSpec = sync.OnceValue(func() connect.Spec {
 		return connect.Spec{
 			StreamType: connect.StreamTypeUnary,
@@ -742,12 +751,15 @@ var (
 // SessionServiceClient is a client for the hotbed.v1.SessionService service.
 type SessionServiceClient interface {
 	StartSession(context.Context, *v1.StartSessionRequest) (*v1.Session, error)
+	// GetSession returns a session (live or ended) with its workspaces and
+	// commands, without resetting its idle timer.
+	GetSession(context.Context, *v1.GetSessionRequest) (*v1.GetSessionResponse, error)
 	// EndSession stops the session's commands and releases its workspaces.
 	// A session nothing touches for an hour ends the same way; WatchSession
 	// keeps it alive.
 	EndSession(context.Context, *v1.EndSessionRequest) (*v1.Session, error)
 	// WatchSession streams what happens to the session's commands after a
-	// cursor: first how things stand, then each new batch of events as it
+	// cursor: first how it stands, then each new batch of events as it
 	// happens. It ends when the session does, or after at most two minutes, so
 	// an agent that wants the session kept has to keep watching it.
 	WatchSession(context.Context, *v1.WatchSessionRequest) (SessionServiceWatchSessionClientStream, error)
@@ -783,12 +795,15 @@ func (s SessionServiceWatchSessionClientStream) Close() error {
 // SessionServiceHandler is an implementation of the hotbed.v1.SessionService service.
 type SessionServiceHandler interface {
 	StartSession(context.Context, *v1.StartSessionRequest) (*v1.Session, error)
+	// GetSession returns a session (live or ended) with its workspaces and
+	// commands, without resetting its idle timer.
+	GetSession(context.Context, *v1.GetSessionRequest) (*v1.GetSessionResponse, error)
 	// EndSession stops the session's commands and releases its workspaces.
 	// A session nothing touches for an hour ends the same way; WatchSession
 	// keeps it alive.
 	EndSession(context.Context, *v1.EndSessionRequest) (*v1.Session, error)
 	// WatchSession streams what happens to the session's commands after a
-	// cursor: first how things stand, then each new batch of events as it
+	// cursor: first how it stands, then each new batch of events as it
 	// happens. It ends when the session does, or after at most two minutes, so
 	// an agent that wants the session kept has to keep watching it.
 	WatchSession(context.Context, *v1.WatchSessionRequest, SessionServiceWatchSessionServerStream) error
@@ -800,6 +815,7 @@ func RegisterSessionServiceHandler(server *connect.Server, svc SessionServiceHan
 	adapter := sessionServiceHandler{svc: svc}
 	server.Register(
 		connect.Method{Spec: sessionServiceStartSessionSpec(), Handler: adapter.startSession},
+		connect.Method{Spec: sessionServiceGetSessionSpec(), Handler: adapter.getSession},
 		connect.Method{Spec: sessionServiceEndSessionSpec(), Handler: adapter.endSession},
 		connect.Method{Spec: sessionServiceWatchSessionSpec(), Handler: adapter.watchSession},
 	)
@@ -828,6 +844,10 @@ func (UnimplementedSessionServiceHandler) StartSession(context.Context, *v1.Star
 	return nil, connect.NewError(connect.CodeUnimplemented, "hotbed.v1.SessionService.StartSession is not implemented")
 }
 
+func (UnimplementedSessionServiceHandler) GetSession(context.Context, *v1.GetSessionRequest) (*v1.GetSessionResponse, error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, "hotbed.v1.SessionService.GetSession is not implemented")
+}
+
 func (UnimplementedSessionServiceHandler) EndSession(context.Context, *v1.EndSessionRequest) (*v1.Session, error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, "hotbed.v1.SessionService.EndSession is not implemented")
 }
@@ -843,6 +863,14 @@ type sessionServiceClient struct {
 func (c *sessionServiceClient) StartSession(ctx context.Context, req *v1.StartSessionRequest) (*v1.Session, error) {
 	var res v1.Session
 	if err := c.client.CallUnary(ctx, sessionServiceStartSessionSpec(), req, &res); err != nil {
+		return nil, err
+	}
+	return &res, nil
+}
+
+func (c *sessionServiceClient) GetSession(ctx context.Context, req *v1.GetSessionRequest) (*v1.GetSessionResponse, error) {
+	var res v1.GetSessionResponse
+	if err := c.client.CallUnary(ctx, sessionServiceGetSessionSpec(), req, &res); err != nil {
 		return nil, err
 	}
 	return &res, nil
@@ -872,6 +900,18 @@ func (h sessionServiceHandler) startSession(ctx context.Context, _ connect.Spec,
 		return err
 	}
 	res, err := h.svc.StartSession(ctx, &req)
+	if err != nil {
+		return err
+	}
+	return stream.Send(res)
+}
+
+func (h sessionServiceHandler) getSession(ctx context.Context, _ connect.Spec, stream connect.ServerStream) error {
+	var req v1.GetSessionRequest
+	if err := stream.Receive(&req); err != nil {
+		return err
+	}
+	res, err := h.svc.GetSession(ctx, &req)
 	if err != nil {
 		return err
 	}

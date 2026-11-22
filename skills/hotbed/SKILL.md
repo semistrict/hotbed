@@ -150,6 +150,7 @@ hotbed schedule run cladefs-nightly         # a run now; prints its session, for
 
 | Command | Does |
 |---|---|
+| `hotbed session status` | Active session state, idle time, workspaces, and commands |
 | `hotbed session current` | Active session and where it came from (`flag`, `env`, `thread`, `worktree`) |
 | `hotbed ps` | The session's commands, live and just ended |
 | `hotbed logs CMD [-f]` | A command's output; `-f` follows until it ends |
