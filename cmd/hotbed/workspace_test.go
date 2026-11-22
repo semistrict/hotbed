@@ -124,3 +124,63 @@ func workspaceIDs(res *pb.ListWorkspacesResponse) []string {
 	}
 	return ids
 }
+
+// Workspaces and commands carry their session's project and can be filtered
+// with -p PROJECT.
+func TestWorkspaceAndCommandProjectFiltering(t *testing.T) {
+	c := newCluster(t)
+	origin := upstream(t)
+	c.addRepo(origin)
+	c.ok(nil, "project", "add", "other", "--repo", origin, "--shared")
+
+	c.ok(nil, "session", "start", "alpha-fox", "-p", "test")
+	c.ok(nil, "session", "start", "beta-owl", "-p", "other")
+
+	wsA := &pb.Workspace{}
+	wsB := &pb.Workspace{}
+	c.ok(wsA, "add", "-s", "alpha-fox", "-r", "app")
+	c.ok(wsB, "add", "-s", "beta-owl", "-r", "app")
+	if wsA.Project != "test" || wsB.Project != "other" {
+		t.Fatalf("workspace projects = %q, %q; want test, other", wsA.Project, wsB.Project)
+	}
+
+	wsList := &pb.ListWorkspacesResponse{}
+	c.ok(wsList, "workspace", "ls", "-p", "test")
+	if got := workspaceIDs(wsList); !slices.Equal(got, []string{wsA.Id}) || wsList.Workspaces[0].Project != "test" {
+		t.Errorf("workspace ls -p test = %v", wsList.Workspaces)
+	}
+	c.ok(wsList, "workspace", "ls", "-p", "other")
+	if got := workspaceIDs(wsList); !slices.Equal(got, []string{wsB.Id}) || wsList.Workspaces[0].Project != "other" {
+		t.Errorf("workspace ls -p other = %v", wsList.Workspaces)
+	}
+
+	cmdA := &pb.Command{}
+	cmdB := &pb.Command{}
+	c.ok(cmdA, "run", "-s", "alpha-fox", "-r", "app", "--detach", "--", "sh", "-c", "sleep 30")
+	c.ok(cmdB, "run", "-s", "beta-owl", "-r", "app", "--detach", "--", "sh", "-c", "sleep 30")
+	t.Cleanup(func() {
+		c.hotbed("stop", "-s", "alpha-fox", cmdA.Id)
+		c.hotbed("stop", "-s", "beta-owl", cmdB.Id)
+	})
+
+	cmdIDs := func(res *pb.ListCommandsResponse) []string {
+		var out []string
+		for _, cmd := range res.Commands {
+			out = append(out, cmd.Id)
+		}
+		return out
+	}
+	ps := &pb.ListCommandsResponse{}
+	c.ok(ps, "ps", "-p", "test")
+	if got := cmdIDs(ps); !slices.Equal(got, []string{cmdA.Id}) || ps.Commands[0].Project != "test" {
+		t.Errorf("ps -p test = %v", ps.Commands)
+	}
+	c.ok(ps, "ps", "-p", "other")
+	if got := cmdIDs(ps); !slices.Equal(got, []string{cmdB.Id}) || ps.Commands[0].Project != "other" {
+		t.Errorf("ps -p other = %v", ps.Commands)
+	}
+	c.ok(ps, "ps", "--all")
+	if got := cmdIDs(ps); len(got) != 2 || !slices.Contains(got, cmdA.Id) || !slices.Contains(got, cmdB.Id) {
+		t.Errorf("ps --all = %v, want both commands", got)
+	}
+}

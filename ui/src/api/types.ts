@@ -139,6 +139,8 @@ export interface Workspace {
   exclusiveBytes: number;
   sharedBytes: number;
   lastActiveAt: string;
+  /** The project its session works on. */
+  project?: string | null;
 }
 
 export type CommandKind = "build" | "test" | "check" | "server" | "shell";
@@ -178,6 +180,8 @@ export interface Command {
   /** A measurement (hotbed run --bench): alone on the node's measurement CPUs, isolated, never parked. */
   bench: boolean;
   timeline: CommandEvent[];
+  /** The project its session works on. */
+  project?: string | null;
 }
 
 export interface CommandEvent {
@@ -268,6 +272,8 @@ export interface FinishedCommand {
   /** Times it was frozen for memory and thawed again. */
   parks: number;
   bench: boolean;
+  /** The project its session worked on; null for a sessionless freshen. */
+  project?: string | null;
 }
 
 export type FailureKind = "compile" | "test" | "lint" | "signal" | "exit";
@@ -319,6 +325,8 @@ export interface Project {
   activeReviews: number;
   /** Reviews done with findings no one has decided yet. */
   reviewsToDecide: number;
+  /** Scheduled commands in this project. */
+  schedules: number;
 }
 
 /**

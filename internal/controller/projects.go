@@ -2,6 +2,7 @@ package controller
 
 import (
 	"context"
+	"fmt"
 	"regexp"
 	"strings"
 
@@ -11,9 +12,9 @@ import (
 	"github.com/semistrict/hotbed/internal/httpx"
 )
 
-// A project is what sessions work on and questions are about: one or more
-// repos, each named by its canonical git remote. A repo no project holds is
-// the project of its own name, made the first time a session starts in it.
+// A project is what sessions work on, schedules run in, and questions and
+// reviews belong to: one or more repos, each named by its canonical git
+// remote. A repo no project holds becomes a project of its own name.
 
 var projectName = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,39}$`)
 
@@ -52,7 +53,7 @@ func (s *Server) AddProject(ctx context.Context, req *pb.AddProjectRequest) (*pb
 			}
 		}
 	}
-	by, err := s.userStamp(ctx, req.SessionId, "")
+	by, _, err := s.userStamp(ctx, req.SessionId, "")
 	if err != nil {
 		return nil, err
 	}
@@ -67,7 +68,7 @@ func (s *Server) RemoveProjectRepos(ctx context.Context, req *pb.RemoveProjectRe
 	if err != nil {
 		return nil, err
 	}
-	by, err := s.userStamp(ctx, req.SessionId, "")
+	by, _, err := s.userStamp(ctx, req.SessionId, "")
 	if err != nil {
 		return nil, err
 	}
@@ -117,14 +118,18 @@ func (s *Server) ListProjects(ctx context.Context, _ *pb.ListProjectsRequest) (*
 	return &pb.ListProjectsResponse{Projects: ps}, err
 }
 
-// projects is every project, with its live sessions, its questions waiting
-// on the user and on agents, and its reviews under way or to decide counted.
+// projects is every project, with its live sessions, schedules, questions
+// waiting on the user and on agents, and reviews under way or to decide.
 func (s *Server) projects(ctx context.Context) ([]*pb.Project, error) {
 	ps, err := s.cfg.Store.Projects(ctx)
 	if err != nil {
 		return nil, err
 	}
 	live, err := s.cfg.Store.LiveSessionsByProject(ctx)
+	if err != nil {
+		return nil, err
+	}
+	scheds, err := s.cfg.Store.SchedulesByProject(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -137,7 +142,7 @@ func (s *Server) projects(ctx context.Context) ([]*pb.Project, error) {
 		return nil, err
 	}
 	for _, p := range ps {
-		p.LiveSessions, p.ActiveReviews, p.ReviewsToDecide = live[p.Name], active[p.Name], toDecide[p.Name]
+		p.LiveSessions, p.ActiveReviews, p.ReviewsToDecide, p.Schedules = live[p.Name], active[p.Name], toDecide[p.Name], scheds[p.Name]
 		for _, q := range questions {
 			if q.Name == p.Name {
 				p.OpenQuestions, p.Outbox = q.Open, q.Outbox
@@ -194,9 +199,9 @@ func (s *Server) sessionProject(ctx context.Context, name, remote string) (*pb.P
 var notInName = regexp.MustCompile(`[^a-z0-9]+`)
 
 // ensureRepoProject makes a single-repo project for repoURL when no project
-// holds its canonical remote yet. It returns the unique project holding the
-// repo, or nil if several projects hold it or no candidate project name is
-// free.
+// holds its canonical remote yet. If the preferred name is held by a project
+// with other repos, it tries repoID and numbered suffixes so every registered
+// repo belongs to a project.
 func (s *Server) ensureRepoProject(ctx context.Context, repoID, repoURL string) (*pb.Project, error) {
 	remote := gitops.CanonicalRemote(repoURL)
 	if remote == "" {
@@ -219,6 +224,18 @@ func (s *Server) ensureRepoProject(ctx context.Context, repoID, repoURL string) 
 	if repoID != "" && (len(candidates) == 0 || candidates[0] != repoID) && checkProjectName(repoID) == nil {
 		candidates = append(candidates, repoID)
 	}
+	base := "repo"
+	if len(candidates) > 0 {
+		base = candidates[0]
+	}
+	for n := 2; n <= 99; n++ {
+		suffix := fmt.Sprintf("-%d", n)
+		prefix := base
+		if len(prefix)+len(suffix) > 40 {
+			prefix = strings.TrimRight(prefix[:40-len(suffix)], "-")
+		}
+		candidates = append(candidates, prefix+suffix)
+	}
 	for _, name := range candidates {
 		p, err := s.cfg.Store.Project(ctx, name)
 		switch {
@@ -229,49 +246,8 @@ func (s *Server) ensureRepoProject(ctx context.Context, repoID, repoURL string) 
 		}
 		return s.cfg.Store.AddProject(ctx, name, []string{remote}, s.madeBy(ctx, "for registered repo "+repoID+", which no project held"))
 	}
-	return nil, nil
-}
-
-// EnsureProjects makes sure every registered repo belongs to a project (making
-// a single-repo project for any repo none holds yet) and attaches any session
-// that has no project yet to its workspace's repo's project when unambiguous.
-func (s *Server) EnsureProjects(ctx context.Context) error {
-	repos, err := s.cfg.Store.Repos(ctx)
-	if err != nil {
-		return err
-	}
-	repoRemote := make(map[string]string, len(repos))
-	for _, r := range repos {
-		if _, err := s.ensureRepoProject(ctx, r.Id, r.Url); err != nil {
-			return err
-		}
-		if remote := gitops.CanonicalRemote(r.Url); remote != "" {
-			repoRemote[r.Id] = remote
-		}
-	}
-	orphans, err := s.cfg.Store.SessionsWithoutProject(ctx)
-	if err != nil {
-		return err
-	}
-	for _, sess := range orphans {
-		for _, repoID := range sess.repos {
-			remote := repoRemote[repoID]
-			if remote == "" {
-				continue
-			}
-			holding, err := s.cfg.Store.ProjectsHolding(ctx, remote)
-			if err != nil {
-				return err
-			}
-			if len(holding) == 1 {
-				if err := s.cfg.Store.SetSessionProject(ctx, sess.id, holding[0].Name); err != nil {
-					return err
-				}
-				break
-			}
-		}
-	}
-	return nil
+	return nil, api.Errorf(api.CodeConflict, "could not find a free project name for repo %s", repoID).
+		WithSuggestion("pass -p PROJECT to place the repo in an explicit project")
 }
 
 // projectNameFor is the project named after a repo: its remote's last

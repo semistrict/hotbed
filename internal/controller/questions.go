@@ -144,11 +144,14 @@ func (s *questions) GetQuestion(ctx context.Context, req *pb.GetQuestionRequest)
 }
 
 func (s *questions) AnswerQuestion(ctx context.Context, req *pb.AnswerQuestionRequest) (*pb.Question, error) {
-	by, err := s.userStamp(ctx, req.SessionId, "")
+	by, project, err := s.userStamp(ctx, req.SessionId, "")
 	if err != nil {
 		return nil, err
 	}
 	q, err := s.change(ctx, req.Id, questionAnswered, by, func(q *pb.Question) error {
+		if err := inProject("question", q.Id, q.Project, project, by); err != nil {
+			return err
+		}
 		if err := mustBeOpen(q, "answered"); err != nil {
 			return err
 		}
@@ -165,11 +168,14 @@ func (s *questions) AnswerQuestion(ctx context.Context, req *pb.AnswerQuestionRe
 }
 
 func (s *questions) DismissQuestion(ctx context.Context, req *pb.DismissQuestionRequest) (*pb.Question, error) {
-	by, err := s.userStamp(ctx, req.SessionId, req.Reason)
+	by, project, err := s.userStamp(ctx, req.SessionId, req.Reason)
 	if err != nil {
 		return nil, err
 	}
 	q, err := s.change(ctx, req.Id, questionDismissed, by, func(q *pb.Question) error {
+		if err := inProject("question", q.Id, q.Project, project, by); err != nil {
+			return err
+		}
 		if err := mustBeOpen(q, "dismissed"); err != nil {
 			return err
 		}
@@ -183,7 +189,7 @@ func (s *questions) DismissQuestion(ctx context.Context, req *pb.DismissQuestion
 }
 
 func (s *questions) MoveQuestion(ctx context.Context, req *pb.MoveQuestionRequest) (*pb.Question, error) {
-	by, err := s.userStamp(ctx, req.SessionId, "")
+	by, project, err := s.userStamp(ctx, req.SessionId, "")
 	if err != nil {
 		return nil, err
 	}
@@ -191,8 +197,14 @@ func (s *questions) MoveQuestion(ctx context.Context, req *pb.MoveQuestionReques
 		return nil, api.Errorf(api.CodeInvalidArgs, "question %d cannot go before itself", req.Id)
 	}
 	q, err := s.cfg.Store.MoveQuestion(ctx, req.Id, req.Before, by, func(q, before *pb.Question) error {
+		if err := inProject("question", q.Id, q.Project, project, by); err != nil {
+			return err
+		}
 		if err := mustBeOpen(q, "moved"); err != nil {
 			return err
+		}
+		if before != nil && before.Project != q.Project {
+			return api.Errorf(api.CodeInvalidArgs, "question %d is in project %s, not %s: move questions within their own project", before.Id, before.Project, q.Project)
 		}
 		if before != nil && before.State != pb.QuestionState_QUESTION_STATE_OPEN {
 			return api.Errorf(api.CodeConflict, "question %d is %s: only open questions have a place in the order", before.Id, stateWord(before.State))

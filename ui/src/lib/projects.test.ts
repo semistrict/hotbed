@@ -71,6 +71,23 @@ describe("scope", () => {
     expect(scope(s, null)).toBe(s);
     expect(scope(s, "gone")).toBe(s);
   });
+  it("prefers direct project fields on workspaces, commands, and history", () => {
+    const direct = {
+      ...s,
+      sessions: [],
+      workspaces: [{ id: "w9", sessionId: "gone-session", repoId: "lnx", project: "hotbed" }],
+      commands: [{ id: "c9", sessionId: "gone-session", workspaceId: "w9", project: "hotbed" }],
+      history: [{ id: "h9", sessionId: "gone-session", repoId: "lnx", project: "hotbed" }],
+    } as unknown as Snapshot;
+    const h = scope(direct, "hotbed");
+    expect(ids(h.workspaces)).toEqual(["w9"]);
+    expect(ids(h.commands)).toEqual(["c9"]);
+    expect(ids(h.history)).toEqual(["h9"]);
+    const r = scope(direct, "ratel");
+    expect(ids(r.workspaces)).toEqual([]);
+    expect(ids(r.commands)).toEqual([]);
+    expect(ids(r.history)).toEqual([]);
+  });
 });
 
 describe("commandProject", () => {

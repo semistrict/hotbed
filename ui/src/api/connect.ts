@@ -256,6 +256,7 @@ export function toSnapshot(s: PbSnapshot): Snapshot {
       outbox: p.outbox,
       activeReviews: p.activeReviews,
       reviewsToDecide: p.reviewsToDecide,
+      schedules: p.schedules,
     })),
   };
 }
@@ -381,6 +382,7 @@ function toWorkspace(w: PbWorkspace): Workspace {
     exclusiveBytes: num(w.exclusiveBytes),
     sharedBytes: num(w.sharedBytes),
     lastActiveAt: iso(w.lastActiveAt),
+    project: orNull(w.project),
   };
 }
 
@@ -447,6 +449,7 @@ function toCommand(c: PbCommand): Command {
     url: orNull(c.url),
     bench: c.bench,
     timeline: c.timeline.map((e) => ({ at: iso(e.at), what: e.what as Command["timeline"][number]["what"], detail: e.detail })),
+    project: orNull(c.project),
   };
 }
 
@@ -472,6 +475,7 @@ function toFinished(f: PbFinished): FinishedCommand {
     peakMemoryBytes: num(f.peakMemoryBytes),
     parks: f.parks,
     bench: f.bench,
+    project: orNull(f.project),
   };
 }
 

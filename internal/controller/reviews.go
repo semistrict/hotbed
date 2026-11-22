@@ -202,12 +202,14 @@ func (s *reviews) Respond(ctx context.Context, req *pb.RespondRequest) (*pb.Revi
 	if req.Quick != pb.QuickResponse_QUICK_RESPONSE_UNSPECIFIED && req.FindingId == 0 {
 		return nil, api.Errorf(api.CodeInvalidArgs, "a quick response is to a finding: name it")
 	}
-	by, err := s.userStamp(ctx, req.SessionId, "")
+	by, project, err := s.userStamp(ctx, req.SessionId, "")
 	if err != nil {
 		return nil, err
 	}
 	e := &pb.ReviewEvent{ReviewId: req.ReviewId, FindingId: req.FindingId, By: by, Quick: req.Quick, Text: req.Text}
-	if e, err = s.cfg.Store.AddResponse(ctx, e, func(*pb.Review) error { return nil }); err != nil {
+	if e, err = s.cfg.Store.AddResponse(ctx, e, func(r *pb.Review) error {
+		return inProject("review", r.Id, r.Project, project, by)
+	}); err != nil {
 		return nil, err
 	}
 	s.wakeReview(req.ReviewId)

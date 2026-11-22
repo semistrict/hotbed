@@ -2184,7 +2184,9 @@ func (x *StepOnNode) GetSeconds() float64 {
 }
 
 type ListReposRequest struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Only repos held by this project; empty for every repo.
+	Project       string `protobuf:"bytes,1,opt,name=project,proto3" json:"project,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -2217,6 +2219,13 @@ func (x *ListReposRequest) ProtoReflect() protoreflect.Message {
 // Deprecated: Use ListReposRequest.ProtoReflect.Descriptor instead.
 func (*ListReposRequest) Descriptor() ([]byte, []int) {
 	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{22}
+}
+
+func (x *ListReposRequest) GetProject() string {
+	if x != nil {
+		return x.Project
+	}
+	return ""
 }
 
 type ListReposResponse struct {
@@ -2264,8 +2273,11 @@ func (x *ListReposResponse) GetRepos() []*Repo {
 }
 
 type PutRepoRequest struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Repo          *Repo                  `protobuf:"bytes,1,opt,name=repo,proto3" json:"repo,omitempty"`
+	state protoimpl.MessageState `protogen:"open.v1"`
+	Repo  *Repo                  `protobuf:"bytes,1,opt,name=repo,proto3" json:"repo,omitempty"`
+	// Place the repo in this project (making it if needed); empty makes a
+	// single-repo project unless a project holds its remote already.
+	Project       string `protobuf:"bytes,2,opt,name=project,proto3" json:"project,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -2305,6 +2317,13 @@ func (x *PutRepoRequest) GetRepo() *Repo {
 		return x.Repo
 	}
 	return nil
+}
+
+func (x *PutRepoRequest) GetProject() string {
+	if x != nil {
+		return x.Project
+	}
+	return ""
 }
 
 type DeleteRepoRequest struct {
@@ -2667,7 +2686,9 @@ type Workspace struct {
 	NodeAddr string `protobuf:"bytes,22,opt,name=node_addr,json=nodeAddr,proto3" json:"node_addr,omitempty"`
 	// Its page in the cockpit. The CLI fills it from the controller it
 	// calls (cmd/hotbed/cockpit.go); the API leaves it empty.
-	CockpitUrl    string `protobuf:"bytes,23,opt,name=cockpit_url,json=cockpitUrl,proto3" json:"cockpit_url,omitempty"`
+	CockpitUrl string `protobuf:"bytes,23,opt,name=cockpit_url,json=cockpitUrl,proto3" json:"cockpit_url,omitempty"`
+	// Set by the controller: the project its session works on.
+	Project       string `protobuf:"bytes,24,opt,name=project,proto3" json:"project,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -2859,6 +2880,13 @@ func (x *Workspace) GetNodeAddr() string {
 func (x *Workspace) GetCockpitUrl() string {
 	if x != nil {
 		return x.CockpitUrl
+	}
+	return ""
+}
+
+func (x *Workspace) GetProject() string {
+	if x != nil {
+		return x.Project
 	}
 	return ""
 }
@@ -3069,7 +3097,9 @@ func (x *WatchWorkspaceRequest) GetId() string {
 type ListWorkspacesRequest struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// Only this session's workspaces.
-	SessionId     string `protobuf:"bytes,1,opt,name=session_id,json=sessionId,proto3" json:"session_id,omitempty"`
+	SessionId string `protobuf:"bytes,1,opt,name=session_id,json=sessionId,proto3" json:"session_id,omitempty"`
+	// Only this project's workspaces; empty for every project's.
+	Project       string `protobuf:"bytes,2,opt,name=project,proto3" json:"project,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -3107,6 +3137,13 @@ func (*ListWorkspacesRequest) Descriptor() ([]byte, []int) {
 func (x *ListWorkspacesRequest) GetSessionId() string {
 	if x != nil {
 		return x.SessionId
+	}
+	return ""
+}
+
+func (x *ListWorkspacesRequest) GetProject() string {
+	if x != nil {
+		return x.Project
 	}
 	return ""
 }
@@ -3948,7 +3985,9 @@ type Command struct {
 	NodeAddr string `protobuf:"bytes,24,opt,name=node_addr,json=nodeAddr,proto3" json:"node_addr,omitempty"`
 	// Its page in the cockpit. The CLI fills it from the controller it
 	// calls (cmd/hotbed/cockpit.go); the API leaves it empty.
-	CockpitUrl    string `protobuf:"bytes,25,opt,name=cockpit_url,json=cockpitUrl,proto3" json:"cockpit_url,omitempty"`
+	CockpitUrl string `protobuf:"bytes,25,opt,name=cockpit_url,json=cockpitUrl,proto3" json:"cockpit_url,omitempty"`
+	// Set by the controller: the project its session works on.
+	Project       string `protobuf:"bytes,26,opt,name=project,proto3" json:"project,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -4158,6 +4197,13 @@ func (x *Command) GetCockpitUrl() string {
 	return ""
 }
 
+func (x *Command) GetProject() string {
+	if x != nil {
+		return x.Project
+	}
+	return ""
+}
+
 // A command that ended, as history keeps it.
 type FinishedCommand struct {
 	state       protoimpl.MessageState `protogen:"open.v1"`
@@ -4186,7 +4232,9 @@ type FinishedCommand struct {
 	Reason string `protobuf:"bytes,21,opt,name=reason,proto3" json:"reason,omitempty"`
 	// Its page in the cockpit. The CLI fills it from the controller it
 	// calls (cmd/hotbed/cockpit.go); the API leaves it empty.
-	CockpitUrl    string `protobuf:"bytes,22,opt,name=cockpit_url,json=cockpitUrl,proto3" json:"cockpit_url,omitempty"`
+	CockpitUrl string `protobuf:"bytes,22,opt,name=cockpit_url,json=cockpitUrl,proto3" json:"cockpit_url,omitempty"`
+	// The project its session worked on; empty for a sessionless freshen.
+	Project       string `protobuf:"bytes,23,opt,name=project,proto3" json:"project,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -4375,6 +4423,13 @@ func (x *FinishedCommand) GetCockpitUrl() string {
 	return ""
 }
 
+func (x *FinishedCommand) GetProject() string {
+	if x != nil {
+		return x.Project
+	}
+	return ""
+}
+
 type RunCommandRequest struct {
 	state       protoimpl.MessageState `protogen:"open.v1"`
 	WorkspaceId string                 `protobuf:"bytes,1,opt,name=workspace_id,json=workspaceId,proto3" json:"workspace_id,omitempty"`
@@ -4537,7 +4592,9 @@ func (x *GetCommandRequest) GetId() string {
 type ListCommandsRequest struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// Only this session's commands.
-	SessionId     string `protobuf:"bytes,1,opt,name=session_id,json=sessionId,proto3" json:"session_id,omitempty"`
+	SessionId string `protobuf:"bytes,1,opt,name=session_id,json=sessionId,proto3" json:"session_id,omitempty"`
+	// Only this project's commands; empty for every project's.
+	Project       string `protobuf:"bytes,2,opt,name=project,proto3" json:"project,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -4575,6 +4632,13 @@ func (*ListCommandsRequest) Descriptor() ([]byte, []int) {
 func (x *ListCommandsRequest) GetSessionId() string {
 	if x != nil {
 		return x.SessionId
+	}
+	return ""
+}
+
+func (x *ListCommandsRequest) GetProject() string {
+	if x != nil {
+		return x.Project
 	}
 	return ""
 }
@@ -5189,7 +5253,9 @@ type Project struct {
 	ActiveReviews   int32 `protobuf:"varint,7,opt,name=active_reviews,json=activeReviews,proto3" json:"active_reviews,omitempty"`
 	ReviewsToDecide int32 `protobuf:"varint,8,opt,name=reviews_to_decide,json=reviewsToDecide,proto3" json:"reviews_to_decide,omitempty"`
 	// Every change to it, oldest first; only from GetProject.
-	History       []*ProjectChange `protobuf:"bytes,9,rep,name=history,proto3" json:"history,omitempty"`
+	History []*ProjectChange `protobuf:"bytes,9,rep,name=history,proto3" json:"history,omitempty"`
+	// Its scheduled commands.
+	Schedules     int32 `protobuf:"varint,10,opt,name=schedules,proto3" json:"schedules,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -5285,6 +5351,13 @@ func (x *Project) GetHistory() []*ProjectChange {
 		return x.History
 	}
 	return nil
+}
+
+func (x *Project) GetSchedules() int32 {
+	if x != nil {
+		return x.Schedules
+	}
+	return 0
 }
 
 // One change to a project: created, added or removed (a repo).
@@ -8797,7 +8870,9 @@ func (x *PutScheduleRequest) GetSchedule() *ScheduledCommand {
 }
 
 type ListSchedulesRequest struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Only this project's schedules; empty for every project's.
+	Project       string `protobuf:"bytes,1,opt,name=project,proto3" json:"project,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -8830,6 +8905,13 @@ func (x *ListSchedulesRequest) ProtoReflect() protoreflect.Message {
 // Deprecated: Use ListSchedulesRequest.ProtoReflect.Descriptor instead.
 func (*ListSchedulesRequest) Descriptor() ([]byte, []int) {
 	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{110}
+}
+
+func (x *ListSchedulesRequest) GetProject() string {
+	if x != nil {
+		return x.Project
+	}
+	return ""
 }
 
 type ListSchedulesResponse struct {
@@ -12332,12 +12414,14 @@ const file_hotbed_v1_hotbed_proto_rawDesc = "" +
 	"\x04node\x18\x01 \x01(\tR\x04node\x12\x17\n" +
 	"\abase_id\x18\x02 \x01(\tR\x06baseId\x12*\n" +
 	"\x05state\x18\x03 \x01(\x0e2\x14.hotbed.v1.StepStateR\x05state\x12\x18\n" +
-	"\aseconds\x18\x04 \x01(\x01R\aseconds\"\x12\n" +
-	"\x10ListReposRequest\":\n" +
+	"\aseconds\x18\x04 \x01(\x01R\aseconds\",\n" +
+	"\x10ListReposRequest\x12\x18\n" +
+	"\aproject\x18\x01 \x01(\tR\aproject\":\n" +
 	"\x11ListReposResponse\x12%\n" +
-	"\x05repos\x18\x01 \x03(\v2\x0f.hotbed.v1.RepoR\x05repos\"5\n" +
+	"\x05repos\x18\x01 \x03(\v2\x0f.hotbed.v1.RepoR\x05repos\"O\n" +
 	"\x0ePutRepoRequest\x12#\n" +
-	"\x04repo\x18\x01 \x01(\v2\x0f.hotbed.v1.RepoR\x04repo\"#\n" +
+	"\x04repo\x18\x01 \x01(\v2\x0f.hotbed.v1.RepoR\x04repo\x12\x18\n" +
+	"\aproject\x18\x02 \x01(\tR\aproject\"#\n" +
 	"\x11DeleteRepoRequest\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\"\x14\n" +
 	"\x12DeleteRepoResponse\"$\n" +
@@ -12367,7 +12451,7 @@ const file_hotbed_v1_hotbed_proto_rawDesc = "" +
 	"\rscratch_epoch\x18\x11 \x01(\x03R\fscratchEpoch\x12,\n" +
 	"\x05steps\x18\x12 \x03(\v2\x16.hotbed.v1.AppliedStepR\x05steps\x12\x16\n" +
 	"\x06recipe\x18\x13 \x01(\tR\x06recipeB\v\n" +
-	"\t_built_at\"\xa6\x05\n" +
+	"\t_built_at\"\xc0\x05\n" +
 	"\tWorkspace\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x17\n" +
 	"\arepo_id\x18\x02 \x01(\tR\x06repoId\x12\x17\n" +
@@ -12397,7 +12481,8 @@ const file_hotbed_v1_hotbed_proto_rawDesc = "" +
 	"\x06reason\x18\x15 \x01(\tR\x06reason\x12\x1b\n" +
 	"\tnode_addr\x18\x16 \x01(\tR\bnodeAddr\x12\x1f\n" +
 	"\vcockpit_url\x18\x17 \x01(\tR\n" +
-	"cockpitUrl\"\x87\x02\n" +
+	"cockpitUrl\x12\x18\n" +
+	"\aproject\x18\x18 \x01(\tR\aproject\"\x87\x02\n" +
 	"\x16CreateWorkspaceRequest\x12\x12\n" +
 	"\x04repo\x18\x01 \x01(\tR\x04repo\x12\x14\n" +
 	"\x05agent\x18\x02 \x01(\tR\x05agent\x12\x16\n" +
@@ -12413,10 +12498,11 @@ const file_hotbed_v1_hotbed_proto_rawDesc = "" +
 	"\x13GetWorkspaceRequest\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\"'\n" +
 	"\x15WatchWorkspaceRequest\x12\x0e\n" +
-	"\x02id\x18\x01 \x01(\tR\x02id\"6\n" +
+	"\x02id\x18\x01 \x01(\tR\x02id\"P\n" +
 	"\x15ListWorkspacesRequest\x12\x1d\n" +
 	"\n" +
-	"session_id\x18\x01 \x01(\tR\tsessionId\"N\n" +
+	"session_id\x18\x01 \x01(\tR\tsessionId\x12\x18\n" +
+	"\aproject\x18\x02 \x01(\tR\aproject\"N\n" +
 	"\x16ListWorkspacesResponse\x124\n" +
 	"\n" +
 	"workspaces\x18\x01 \x03(\v2\x14.hotbed.v1.WorkspaceR\n" +
@@ -12468,7 +12554,7 @@ const file_hotbed_v1_hotbed_proto_rawDesc = "" +
 	"\fCommandEvent\x12\x0e\n" +
 	"\x02at\x18\x01 \x01(\x03R\x02at\x12\x12\n" +
 	"\x04what\x18\x02 \x01(\tR\x04what\x12\x16\n" +
-	"\x06detail\x18\x03 \x01(\tR\x06detail\"\xd3\x06\n" +
+	"\x06detail\x18\x03 \x01(\tR\x06detail\"\xed\x06\n" +
 	"\aCommand\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12!\n" +
 	"\fworkspace_id\x18\x02 \x01(\tR\vworkspaceId\x12\x17\n" +
@@ -12499,12 +12585,13 @@ const file_hotbed_v1_hotbed_proto_rawDesc = "" +
 	"\x05bench\x18\x17 \x01(\bR\x05bench\x12\x1b\n" +
 	"\tnode_addr\x18\x18 \x01(\tR\bnodeAddr\x12\x1f\n" +
 	"\vcockpit_url\x18\x19 \x01(\tR\n" +
-	"cockpitUrlB\r\n" +
+	"cockpitUrl\x12\x18\n" +
+	"\aproject\x18\x1a \x01(\tR\aprojectB\r\n" +
 	"\v_started_atB\v\n" +
 	"\t_ended_atB\f\n" +
 	"\n" +
 	"_exit_codeB\x0f\n" +
-	"\r_cold_seconds\"\xb9\x05\n" +
+	"\r_cold_seconds\"\xd3\x05\n" +
 	"\x0fFinishedCommand\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x17\n" +
 	"\arepo_id\x18\x02 \x01(\tR\x06repoId\x12\x17\n" +
@@ -12530,7 +12617,8 @@ const file_hotbed_v1_hotbed_proto_rawDesc = "" +
 	"\x05bench\x18\x14 \x01(\bR\x05bench\x12\x16\n" +
 	"\x06reason\x18\x15 \x01(\tR\x06reason\x12\x1f\n" +
 	"\vcockpit_url\x18\x16 \x01(\tR\n" +
-	"cockpitUrlB\f\n" +
+	"cockpitUrl\x12\x18\n" +
+	"\aproject\x18\x17 \x01(\tR\aprojectB\f\n" +
 	"\n" +
 	"_exit_codeB\x0f\n" +
 	"\r_cold_secondsB\n" +
@@ -12548,10 +12636,11 @@ const file_hotbed_v1_hotbed_proto_rawDesc = "" +
 	"\x02id\x18\b \x01(\tR\x02id\x12\x14\n" +
 	"\x05bench\x18\t \x01(\bR\x05bench\"#\n" +
 	"\x11GetCommandRequest\x12\x0e\n" +
-	"\x02id\x18\x01 \x01(\tR\x02id\"4\n" +
+	"\x02id\x18\x01 \x01(\tR\x02id\"N\n" +
 	"\x13ListCommandsRequest\x12\x1d\n" +
 	"\n" +
-	"session_id\x18\x01 \x01(\tR\tsessionId\"F\n" +
+	"session_id\x18\x01 \x01(\tR\tsessionId\x12\x18\n" +
+	"\aproject\x18\x02 \x01(\tR\aproject\"F\n" +
 	"\x14ListCommandsResponse\x12.\n" +
 	"\bcommands\x18\x01 \x03(\v2\x12.hotbed.v1.CommandR\bcommands\"$\n" +
 	"\x12StopCommandRequest\x12\x0e\n" +
@@ -12602,7 +12691,7 @@ const file_hotbed_v1_hotbed_proto_rawDesc = "" +
 	"\aproject\x18\x01 \x01(\tR\aproject\x12\x14\n" +
 	"\x05ended\x18\x02 \x01(\bR\x05ended\"F\n" +
 	"\x14ListSessionsResponse\x12.\n" +
-	"\bsessions\x18\x01 \x03(\v2\x12.hotbed.v1.SessionR\bsessions\"\xbd\x02\n" +
+	"\bsessions\x18\x01 \x03(\v2\x12.hotbed.v1.SessionR\bsessions\"\xdb\x02\n" +
 	"\aProject\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x12\x14\n" +
 	"\x05repos\x18\x02 \x03(\tR\x05repos\x12\x1d\n" +
@@ -12613,7 +12702,9 @@ const file_hotbed_v1_hotbed_proto_rawDesc = "" +
 	"\x06outbox\x18\x06 \x01(\x05R\x06outbox\x12%\n" +
 	"\x0eactive_reviews\x18\a \x01(\x05R\ractiveReviews\x12*\n" +
 	"\x11reviews_to_decide\x18\b \x01(\x05R\x0freviewsToDecide\x122\n" +
-	"\ahistory\x18\t \x03(\v2\x18.hotbed.v1.ProjectChangeR\ahistory\"k\n" +
+	"\ahistory\x18\t \x03(\v2\x18.hotbed.v1.ProjectChangeR\ahistory\x12\x1c\n" +
+	"\tschedules\x18\n" +
+	" \x01(\x05R\tschedules\"k\n" +
 	"\rProjectChange\x12\x10\n" +
 	"\x03seq\x18\x01 \x01(\x03R\x03seq\x12\x12\n" +
 	"\x04what\x18\x02 \x01(\tR\x04what\x12\x12\n" +
@@ -12938,8 +13029,9 @@ const file_hotbed_v1_hotbed_proto_rawDesc = "" +
 	"\n" +
 	"_exit_code\"M\n" +
 	"\x12PutScheduleRequest\x127\n" +
-	"\bschedule\x18\x01 \x01(\v2\x1b.hotbed.v1.ScheduledCommandR\bschedule\"\x16\n" +
-	"\x14ListSchedulesRequest\"R\n" +
+	"\bschedule\x18\x01 \x01(\v2\x1b.hotbed.v1.ScheduledCommandR\bschedule\"0\n" +
+	"\x14ListSchedulesRequest\x12\x18\n" +
+	"\aproject\x18\x01 \x01(\tR\aproject\"R\n" +
 	"\x15ListSchedulesResponse\x129\n" +
 	"\tschedules\x18\x01 \x03(\v2\x1b.hotbed.v1.ScheduledCommandR\tschedules\"(\n" +
 	"\x12GetScheduleRequest\x12\x12\n" +

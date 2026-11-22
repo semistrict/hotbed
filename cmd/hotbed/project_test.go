@@ -261,3 +261,38 @@ func TestProjectRepoIsSharedOnlyOnPurpose(t *testing.T) {
 		t.Errorf("show no such project = %v, want NOT_FOUND", e)
 	}
 }
+
+// repo add -p attaches the repo to a named project; repo ls -p lists only that
+// project's repos.
+func TestRepoAddAndListWithProject(t *testing.T) {
+	c := newCluster(t)
+	c.ok(nil, "project", "add", "alpha")
+	c.ok(nil, "project", "add", "beta")
+	c.ok(nil, "repo", "add", "r1", "https://github.com/o/r1.git", "-p", "alpha")
+	c.ok(nil, "repo", "add", "r2", "https://github.com/o/r2.git", "-p", "beta")
+
+	if _, e := c.fails("repo", "add", "r3", "https://github.com/o/r3.git", "-p", "nosuch"); e.Code != api.CodeNotFound {
+		t.Errorf("repo add -p nosuch = %v, want NOT_FOUND", e)
+	}
+
+	repoIDs := func(res *pb.ListReposResponse) []string {
+		var out []string
+		for _, r := range res.Repos {
+			out = append(out, r.Id)
+		}
+		return out
+	}
+	res := &pb.ListReposResponse{}
+	c.ok(res, "repo", "ls", "-p", "alpha")
+	if got := repoIDs(res); !slices.Equal(got, []string{"r1"}) {
+		t.Errorf("repo ls -p alpha = %v, want [r1]", got)
+	}
+	c.ok(res, "repo", "ls", "-p", "beta")
+	if got := repoIDs(res); !slices.Equal(got, []string{"r2"}) {
+		t.Errorf("repo ls -p beta = %v, want [r2]", got)
+	}
+	c.ok(res, "repo", "ls")
+	if got := repoIDs(res); !slices.Equal(got, []string{"r1", "r2"}) {
+		t.Errorf("repo ls = %v, want [r1 r2]", got)
+	}
+}

@@ -425,6 +425,18 @@ func (c *questionMoveCmd) Exec(ctx context.Context, d deps) (any, error) {
 			return nil, api.Errorf(api.CodeConflict, "no question is open")
 		}
 		if before = top.Questions[0].Id; before == c.ID {
+			if sid := c.named(); sid != "" {
+				res, err := cl.sessions.GetSession(ctx, &pb.GetSessionRequest{Id: sid})
+				if err != nil {
+					return nil, err
+				}
+				if res.Session.GetEndedAt() != 0 {
+					return nil, api.Errorf(api.CodeNotFound, "session %s ended", sid)
+				}
+				if res.Session.GetProject() != q.Project {
+					return nil, api.Errorf(api.CodeConflict, "question %d is project %s's; session %s works on %s", q.Id, q.Project, sid, res.Session.GetProject())
+				}
+			}
 			return top.Questions[0], nil // first already
 		}
 	case c.Last:

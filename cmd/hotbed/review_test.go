@@ -342,6 +342,9 @@ func TestReviewRefusals(t *testing.T) {
 	if _, e := c.fails("review", "start", "2", "-s", "far-fox"); e.Code != api.CodeConflict || !strings.Contains(e.Message, "is project test's") {
 		t.Errorf("start another project's review = %v, want CONFLICT", e)
 	}
+	if _, e := c.fails("review", "respond", "1", "--comment", "wrong project", "-s", "far-fox"); e.Code != api.CodeConflict || !strings.Contains(e.Message, "is project test's") {
+		t.Errorf("respond to another project's review = %v, want CONFLICT", e)
+	}
 	ls := &pb.ListReviewsResponse{}
 	c.ok(ls, "review", "ls", "-p", "other")
 	if len(ls.Reviews) != 0 {

@@ -591,10 +591,18 @@ func TestAgentsChangeOnlyTheirProjectsQuestions(t *testing.T) {
 	for _, args := range [][]string{
 		{"question", "ack", "-s", "far-fox", "1"},
 		{"question", "rm", "-s", "far-fox", "2"},
+		{"question", "answer", "-s", "far-fox", "2", "--other", "no"},
+		{"question", "dismiss", "-s", "far-fox", "2"},
+		{"question", "move", "-s", "far-fox", "2", "--first"},
+		{"question", "move", "-s", "far-fox", "2", "--last"},
 	} {
 		if _, e := c.fails(args...); e.Code != api.CodeConflict || !strings.Contains(e.Message, "is project test's; session far-fox works on other") {
 			t.Errorf("%v = %v, want CONFLICT", args, e)
 		}
+	}
+	c.ask("far-fox", storeQuestion) // 3, in project other
+	if _, e := c.fails("question", "move", "2", "--before", "3"); e.Code != api.CodeInvalidArgs || !strings.Contains(e.Message, "within their own project") {
+		t.Errorf("move across projects = %v, want INVALID_ARGS", e)
 	}
 	if _, e := c.failsIn(storeQuestion, "question", "edit", "-s", "far-fox", "2"); e.Code != api.CodeConflict {
 		t.Errorf("edit another project's question = %v, want CONFLICT", e)

@@ -108,11 +108,11 @@ hotbed question ack 12           # you read it and acted on it: it is handled
   whole history, each change with its session and time.
 - A question records where you asked from (checkout, branch, commit, changed files) and, if the
   project holds your checkout's repo, that it is about that repo (`--repo REMOTE` names another).
-- A session changes only its own project's questions (edit, rm, ack).
+- A session changes only its own project's questions (edit, rm, ack, answer, dismiss, move).
 - Never answer a question yourself unless the user told you the answer: then pass it on with
   `question answer ID --pick LABEL [--other TEXT] [--notes TEXT] -s SESSION`, or `question dismiss
-  ID --reason WHY`. `question move ID --first|--last|--before ID` reorders the user's list.
-  `question projects` counts every project's open and outbox questions.
+  ID --reason WHY`. `question move ID --first|--last|--before ID` reorders the user's list within
+  the question's project. `question projects` counts every project's open and outbox questions.
 
 ## Reviews: asking a reviewer agent, and the user
 
@@ -230,7 +230,8 @@ hotbed schedule run cladefs-nightly         # a run now; prints its session, for
 - **Cron** has five fields in the controller's time zone (`CRON_TZ=Europe/Lisbon 0 2 * * *` for
   another). Runs never overlap: a slot that comes while the previous run is still going is
   `skipped`. A slot that passes while the controller is down is `missed`, not run late.
-- `schedule add` with an existing name replaces it. `schedule pause`, `resume`, `rm`, `ls`.
+- `schedule add` with an existing name replaces it. `schedule ls [-p PROJECT | --all-projects]`
+  lists the active project's schedules by default. `schedule pause`, `resume`, `rm`.
 
 ## Other commands
 
@@ -239,19 +240,21 @@ hotbed schedule run cladefs-nightly         # a run now; prints its session, for
 | `hotbed session status` | Active session state, idle time, workspaces, and commands |
 | `hotbed session current` | Active session and where it came from (`flag`, `env`, `thread`, `worktree`) |
 | `hotbed session ls` | The project's live sessions (`--ended`, `--all-projects`) |
-| `hotbed project ls` | Projects, their repos, live sessions and questions |
+| `hotbed project ls` | Projects, their repos, live sessions, schedules, reviews and questions |
 | `hotbed project show NAME` | A project and every change to it |
 | `hotbed project rm-repo NAME --repo REMOTE` | Take a repo out of a project |
 | `hotbed schedule add ... -p PROJECT` | A schedule's runs work on its project (default: the one holding its repo) |
-| `hotbed ps` | The session's commands, live and just ended |
+| `hotbed schedule ls [-p PROJECT \| --all-projects]` | The project's schedules (`--all-projects`: every project's) |
+| `hotbed ps [-p PROJECT \| --all]` | The session's commands, live and just ended (`-p`: a project's, `--all`: every session's) |
 | `hotbed logs CMD [-f \| -n N]` | A command's output; `-f` follows until it ends, `-n N` its last N lines |
 | `hotbed stop CMD` | Stops a command |
-| `hotbed workspace ls [--all]` | The session's workspaces (`--all`: every session's) |
+| `hotbed workspace ls [-p PROJECT \| --all]` | The session's workspaces (`-p`: a project's, `--all`: every session's) |
 | `hotbed workspace show` | The session's workspace of a repo, as its worker has it now |
 | `hotbed workspace files` | Its files, each `added`/`modified` against the base or unchanged |
 | `hotbed workspace file PATH` | A file's text and the lines it changed against the base |
 | `hotbed workspace release` | Gives the workspace up; the session goes on, and `hotbed add` gives it a new one |
-| `hotbed repo ls` | Repos and their setup steps |
+| `hotbed repo add ID URL [-p PROJECT]` | Registers a repo, attaching it to `PROJECT` (or auto-creating a project for it) |
+| `hotbed repo ls [-p PROJECT]` | Repos and their setup steps (`-p`: only a project's repos) |
 | `hotbed step ls` | A repo's steps and which each node's newest base ran |
 | `hotbed nodes` | The cluster's machines, and the build each runs |
 | `hotbed snapshot` | Everything the cockpit shows, as JSON |

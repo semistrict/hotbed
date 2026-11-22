@@ -181,10 +181,11 @@ func (c *repoRebuildCmd) Exec(ctx context.Context, d deps) (any, error) {
 
 type repoAddCmd struct {
 	controllerClient
-	ID     string   `arg:"" help:"Short name, such as ratel; workspaces see the checkout at /work/<name>."`
-	URL    string   `arg:"" help:"What git clones."`
-	Branch string   `help:"Branch bases follow (default: the remote's default branch)."`
-	Host   []string `help:"Node (host name) that keeps bases; default every worker. Repeatable."`
+	ID      string   `arg:"" help:"Short name, such as ratel; workspaces see the checkout at /work/<name>."`
+	URL     string   `arg:"" help:"What git clones."`
+	Branch  string   `help:"Branch bases follow (default: the remote's default branch)."`
+	Host    []string `help:"Node (host name) that keeps bases; default every worker. Repeatable."`
+	Project string   `short:"p" help:"Place the repo in this project (making it if needed; default: auto-create a project for it unless one holds it already)."`
 }
 
 func (c *repoAddCmd) Exec(ctx context.Context, d deps) (any, error) {
@@ -192,11 +193,15 @@ func (c *repoAddCmd) Exec(ctx context.Context, d deps) (any, error) {
 	if err != nil {
 		return nil, err
 	}
-	return cl.cluster.PutRepo(ctx, &pb.PutRepoRequest{Repo: &pb.Repo{Id: c.ID, Url: c.URL, Branch: c.Branch, Hosts: c.Host}})
+	return cl.cluster.PutRepo(ctx, &pb.PutRepoRequest{
+		Repo:    &pb.Repo{Id: c.ID, Url: c.URL, Branch: c.Branch, Hosts: c.Host},
+		Project: c.Project,
+	})
 }
 
 type repoLsCmd struct {
 	controllerClient
+	Project string `short:"p" help:"Only repos held by this project."`
 }
 
 func (c *repoLsCmd) Exec(ctx context.Context, d deps) (any, error) {
@@ -204,7 +209,7 @@ func (c *repoLsCmd) Exec(ctx context.Context, d deps) (any, error) {
 	if err != nil {
 		return nil, err
 	}
-	return cl.cluster.ListRepos(ctx, &pb.ListReposRequest{})
+	return cl.cluster.ListRepos(ctx, &pb.ListReposRequest{Project: c.Project})
 }
 
 type repoRmCmd struct {

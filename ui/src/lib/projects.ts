@@ -34,7 +34,8 @@ export function scope(s: Snapshot, name: string | null): Snapshot {
   const sessionProject = new Map(s.sessions.map((x) => [x.id, x.project]));
   const sessions = s.sessions.filter((x) => x.project === project.name || (x.project === null && x.workspaces.some((w) => repos.has(w.repoId))));
   const sessionIds = new Set(sessions.map((x) => x.id));
-  const belongsTo = (sessionId: string, repoId: string) => {
+  const belongsTo = (directProject: string | null | undefined, sessionId: string, repoId: string) => {
+    if (directProject) return directProject === project.name;
     if (sessionId) {
       const sp = sessionProject.get(sessionId);
       if (sp !== undefined && sp !== null) return sp === project.name;
@@ -42,10 +43,10 @@ export function scope(s: Snapshot, name: string | null): Snapshot {
     }
     return repos.has(repoId);
   };
-  const workspaces = s.workspaces.filter((w) => belongsTo(w.sessionId, w.repoId));
-  const commands = s.commands.filter((c) => belongsTo(c.sessionId, repoOf(c.workspaceId)));
+  const workspaces = s.workspaces.filter((w) => belongsTo(w.project, w.sessionId, w.repoId));
+  const commands = s.commands.filter((c) => belongsTo(c.project, c.sessionId, repoOf(c.workspaceId)));
   // A base's build belongs to no session: it is its repo's.
-  const history = s.history.filter((h) => belongsTo(h.sessionId, h.repoId));
+  const history = s.history.filter((h) => belongsTo(h.project, h.sessionId, h.repoId));
   const workspaceIds = new Set(workspaces.map((w) => w.id));
   const commandIds = new Set([...commands.map((c) => c.id), ...history.map((h) => h.id)]);
   return {

@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -403,4 +404,49 @@ func TestScheduleKeepsItsProject(t *testing.T) {
 	c.eventually("the run to succeed", func() bool {
 		return c.schedule("nightly").Runs[0].Outcome == pb.RunOutcome_RUN_OUTCOME_SUCCEEDED
 	})
+}
+
+// Schedules belong to a project: schedule ls lists the active project's by
+// default, -p narrows to another, --all-projects lists every project's, and
+// project ls counts them.
+func TestSchedulesBelongToAProject(t *testing.T) {
+	c := newCluster(t)
+	origin := upstream(t)
+	c.addRepo(origin)
+	c.ok(nil, "project", "add", "other", "--repo", origin, "--shared")
+
+	c.ok(nil, "schedule", "add", "in-test", "-r", "app", "-p", "test", "--cron", nightly, "--", "true")
+	c.ok(nil, "schedule", "add", "in-other", "-r", "app", "-p", "other", "--cron", nightly, "--", "true")
+
+	names := func(res *pb.ListSchedulesResponse) []string {
+		var out []string
+		for _, sc := range res.Schedules {
+			out = append(out, sc.Name)
+		}
+		return out
+	}
+
+	ls := &pb.ListSchedulesResponse{}
+	c.ok(ls, "schedule", "ls")
+	if got := names(ls); !slices.Equal(got, []string{"in-test"}) {
+		t.Errorf("schedule ls (default project test) = %v, want [in-test]", got)
+	}
+	c.ok(ls, "schedule", "ls", "-p", "other")
+	if got := names(ls); !slices.Equal(got, []string{"in-other"}) {
+		t.Errorf("schedule ls -p other = %v, want [in-other]", got)
+	}
+	c.ok(ls, "schedule", "ls", "--all-projects")
+	if got := names(ls); !slices.Equal(got, []string{"in-other", "in-test"}) {
+		t.Errorf("schedule ls --all-projects = %v, want [in-other in-test]", got)
+	}
+
+	projects := &pb.ListProjectsResponse{}
+	c.ok(projects, "project", "ls")
+	counts := map[string]int32{}
+	for _, p := range projects.Projects {
+		counts[p.Name] = p.Schedules
+	}
+	if counts["test"] != 1 || counts["other"] != 1 {
+		t.Errorf("project ls schedule counts = %v, want test=1 other=1", counts)
+	}
 }

@@ -22,6 +22,7 @@ import (
 	"github.com/semistrict/hotbed/internal/api"
 	pb "github.com/semistrict/hotbed/internal/gen/hotbed/v1"
 	"github.com/semistrict/hotbed/internal/gen/hotbed/v1/hotbedv1connect"
+	"github.com/semistrict/hotbed/internal/gitops"
 	"github.com/semistrict/hotbed/internal/httpx"
 	"github.com/semistrict/hotbed/internal/statedir"
 	"github.com/semistrict/hotbed/internal/tailnet"
@@ -367,9 +368,25 @@ func (s *Server) withOnline(n *pb.Node) *pb.Node {
 
 var repoID = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,39}$`)
 
-func (s *Server) ListRepos(ctx context.Context, _ *pb.ListReposRequest) (*pb.ListReposResponse, error) {
+func (s *Server) ListRepos(ctx context.Context, req *pb.ListReposRequest) (*pb.ListReposResponse, error) {
 	repos, err := s.cfg.Store.Repos(ctx)
-	return &pb.ListReposResponse{Repos: repos}, err
+	if err != nil {
+		return nil, err
+	}
+	if req.GetProject() != "" {
+		p, err := s.cfg.Store.Project(ctx, req.Project)
+		if err != nil {
+			return nil, err
+		}
+		var filtered []*pb.Repo
+		for _, r := range repos {
+			if slices.Contains(p.Repos, gitops.CanonicalRemote(r.Url)) {
+				filtered = append(filtered, r)
+			}
+		}
+		repos = filtered
+	}
+	return &pb.ListReposResponse{Repos: repos}, nil
 }
 
 func (s *Server) PutRepo(ctx context.Context, req *pb.PutRepoRequest) (*pb.Repo, error) {
@@ -379,6 +396,11 @@ func (s *Server) PutRepo(ctx context.Context, req *pb.PutRepoRequest) (*pb.Repo,
 	}
 	if repo.Url == "" {
 		return nil, api.Errorf(api.CodeInvalidArgs, "repo %s has no URL", repo.Id)
+	}
+	if req.Project != "" {
+		if _, err := s.cfg.Store.Project(ctx, req.Project); err != nil {
+			return nil, err
+		}
 	}
 	repo.CreatedAt = s.now().UnixMilli()
 	s.repoEdits.Lock()
@@ -391,7 +413,15 @@ func (s *Server) PutRepo(ctx context.Context, req *pb.PutRepoRequest) (*pb.Repo,
 	if err := s.cfg.Store.PutRepo(ctx, repo); err != nil {
 		return nil, err
 	}
-	if _, err := s.ensureRepoProject(ctx, repo.Id, repo.Url); err != nil {
+	if req.Project != "" {
+		var remotes []string
+		if remote := gitops.CanonicalRemote(repo.Url); remote != "" {
+			remotes = []string{remote}
+		}
+		if _, err := s.cfg.Store.AddProject(ctx, req.Project, remotes, s.madeBy(ctx, "for registered repo "+repo.Id)); err != nil {
+			return nil, err
+		}
+	} else if _, err := s.ensureRepoProject(ctx, repo.Id, repo.Url); err != nil {
 		return nil, err
 	}
 	return repo, nil

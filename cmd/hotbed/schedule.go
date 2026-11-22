@@ -50,6 +50,9 @@ func (c *scheduleAddCmd) Exec(ctx context.Context, d deps) (any, error) {
 
 type scheduleLsCmd struct {
 	controllerClient
+	sessionFlag
+	projectFlag
+	AllProjects bool `help:"Every project's scheduled commands."`
 }
 
 func (c *scheduleLsCmd) Exec(ctx context.Context, d deps) (any, error) {
@@ -57,7 +60,11 @@ func (c *scheduleLsCmd) Exec(ctx context.Context, d deps) (any, error) {
 	if err != nil {
 		return nil, err
 	}
-	return cl.schedules.ListSchedules(ctx, &pb.ListSchedulesRequest{})
+	project, err := c.listed(ctx, d, cl, c.sessionFlag, c.AllProjects)
+	if err != nil {
+		return nil, err
+	}
+	return cl.schedules.ListSchedules(ctx, &pb.ListSchedulesRequest{Project: project})
 }
 
 // scheduleNamed is the argument of the commands that act on one schedule.

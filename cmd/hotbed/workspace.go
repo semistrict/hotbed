@@ -17,12 +17,13 @@ type workspaceCmd struct {
 type workspaceLsCmd struct {
 	controllerClient
 	sessionFlag
-	All bool `help:"Every session's workspaces."`
+	Project string `short:"p" help:"Every live workspace in this project."`
+	All     bool   `help:"Every session's workspaces."`
 }
 
 func (c *workspaceLsCmd) Exec(ctx context.Context, d deps) (any, error) {
 	var session string
-	if !c.All {
+	if !c.All && c.Project == "" {
 		var err error
 		if session, err = c.sessionFlag.resolve(ctx, d); err != nil {
 			return nil, err
@@ -32,7 +33,7 @@ func (c *workspaceLsCmd) Exec(ctx context.Context, d deps) (any, error) {
 	if err != nil {
 		return nil, err
 	}
-	return cl.workspaces.ListWorkspaces(ctx, &pb.ListWorkspacesRequest{SessionId: session})
+	return cl.workspaces.ListWorkspaces(ctx, &pb.ListWorkspacesRequest{SessionId: session, Project: c.Project})
 }
 
 // workspaceOfRepo is the flags that name a session's workspace of a repo.

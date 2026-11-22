@@ -28,6 +28,10 @@ func (s *Server) views(ctx context.Context) ([]nodeView, error) {
 	if err != nil {
 		return nil, err
 	}
+	sessProj, err := s.cfg.Store.SessionProjects(ctx)
+	if err != nil {
+		return nil, err
+	}
 	out := make([]nodeView, 0, len(rows))
 	for _, n := range rows {
 		v := all[n.node.Id]
@@ -38,9 +42,15 @@ func (s *Server) views(ctx context.Context) ([]nodeView, error) {
 		addr := s.addrOf(n)
 		for _, w := range v.workspaces {
 			w.NodeAddr = addr
+			if p := sessProj[w.SessionId]; p != "" {
+				w.Project = p
+			}
 		}
 		for _, c := range v.commands {
 			c.NodeAddr = addr
+			if p := sessProj[c.SessionId]; p != "" {
+				c.Project = p
+			}
 		}
 		if nv.online && n.hb != nil {
 			overlay(v, n.hb)

@@ -429,11 +429,11 @@ func (c *addCmd) Exec(ctx context.Context, d deps) (any, error) {
 		if _, err := syncTo(ctx, w, ws, c.Sync); err != nil {
 			return nil, err
 		}
-		addr := ws.NodeAddr
+		addr, project := ws.NodeAddr, ws.Project
 		if ws, err = w.calls.GetWorkspace(ctx, &pb.GetWorkspaceRequest{Id: ws.Id}); err != nil {
 			return nil, err
 		}
-		ws.NodeAddr = addr
+		ws.NodeAddr, ws.Project = addr, project
 	}
 	return ws, nil
 }
@@ -442,8 +442,13 @@ func (c *addCmd) Exec(ctx context.Context, d deps) (any, error) {
 // freshened) to be ready, watching it on its worker and saying what it waits
 // for on stderr.
 func waitReady(ctx context.Context, w workerClients, ws *pb.Workspace, stderr io.Writer) (*pb.Workspace, error) {
-	addr := ws.NodeAddr
-	defer func() { ws.NodeAddr = addr }()
+	addr, project := ws.NodeAddr, ws.Project
+	defer func() {
+		ws.NodeAddr = addr
+		if ws.Project == "" {
+			ws.Project = project
+		}
+	}()
 	said := ""
 	var lost time.Time // when the watch first dropped, of the drops since it last worked
 	for ws.State == pb.WorkspaceState_WORKSPACE_STATE_PREPARING {
@@ -677,6 +682,9 @@ func (c *runCmd) Raw(ctx context.Context, d deps) (int, bool, error) {
 	if err != nil {
 		return 0, false, err
 	}
+	if cmd.Project == "" {
+		cmd.Project = ws.Project
+	}
 	if c.Detach {
 		d.cockpit.fill(cmd)
 		writeEnvelope(d.stdout, success("run", cmd))
@@ -838,18 +846,23 @@ func (c *waitCmd) Exec(ctx context.Context, d deps) (any, error) {
 type psCmd struct {
 	controllerClient
 	sessionFlag
+	Project string `short:"p" help:"Every live command in this project."`
+	All     bool   `help:"Every session's commands."`
 }
 
 func (c *psCmd) Exec(ctx context.Context, d deps) (any, error) {
-	session, err := c.sessionFlag.resolve(ctx, d)
-	if err != nil {
-		return nil, err
+	var session string
+	if !c.All && c.Project == "" {
+		var err error
+		if session, err = c.sessionFlag.resolve(ctx, d); err != nil {
+			return nil, err
+		}
 	}
 	cl, err := c.clients(d.http)
 	if err != nil {
 		return nil, err
 	}
-	return cl.workspaces.ListCommands(ctx, &pb.ListCommandsRequest{SessionId: session})
+	return cl.workspaces.ListCommands(ctx, &pb.ListCommandsRequest{SessionId: session, Project: c.Project})
 }
 
 type logsCmd struct {

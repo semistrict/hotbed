@@ -92,7 +92,7 @@ func (s *Server) TickSchedules(ctx context.Context) error {
 	if err := s.settleRuns(ctx); err != nil {
 		return err
 	}
-	all, err := s.cfg.Store.Schedules(ctx)
+	all, err := s.cfg.Store.Schedules(ctx, "")
 	if err != nil {
 		return err
 	}
@@ -231,14 +231,9 @@ func (s *Server) start(ctx context.Context, sc *pb.ScheduledCommand, slot *int64
 	return run, err
 }
 
-// runProject is the project a schedule's runs work on: its own, or, for a
-// schedule added before schedules had one, the one holding its repo.
+// runProject is the project a schedule's runs work on.
 func (s *Server) runProject(ctx context.Context, sc *pb.ScheduledCommand) (*pb.Project, error) {
-	repo, err := s.repo(ctx, sc.Repo)
-	if err != nil {
-		return nil, err
-	}
-	return s.sessionProject(ctx, sc.Project, gitops.CanonicalRemote(repo.Url))
+	return s.cfg.Store.Project(ctx, sc.Project)
 }
 
 // runSession starts a run's session, called name, or name-2, name-3 when
@@ -452,9 +447,10 @@ func (s *Server) withRuns(ctx context.Context, sc *pb.ScheduledCommand, n int) (
 	return sc, err
 }
 
-// allSchedules is every scheduled command with its recent runs.
-func (s *Server) allSchedules(ctx context.Context) ([]*pb.ScheduledCommand, error) {
-	all, err := s.cfg.Store.Schedules(ctx)
+// allSchedules is every scheduled command of project (empty: every
+// project's), with its recent runs.
+func (s *Server) allSchedules(ctx context.Context, project string) ([]*pb.ScheduledCommand, error) {
+	all, err := s.cfg.Store.Schedules(ctx, project)
 	if err != nil {
 		return nil, err
 	}
@@ -466,8 +462,13 @@ func (s *Server) allSchedules(ctx context.Context) ([]*pb.ScheduledCommand, erro
 	return all, nil
 }
 
-func (s *schedules) ListSchedules(ctx context.Context, _ *pb.ListSchedulesRequest) (*pb.ListSchedulesResponse, error) {
-	all, err := s.allSchedules(ctx)
+func (s *schedules) ListSchedules(ctx context.Context, req *pb.ListSchedulesRequest) (*pb.ListSchedulesResponse, error) {
+	if req.GetProject() != "" {
+		if _, err := s.cfg.Store.Project(ctx, req.Project); err != nil {
+			return nil, err
+		}
+	}
+	all, err := s.allSchedules(ctx, req.GetProject())
 	return &pb.ListSchedulesResponse{Schedules: all}, err
 }
 

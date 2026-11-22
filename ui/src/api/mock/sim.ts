@@ -123,6 +123,7 @@ export class MockCluster {
 
   snapshot(): Snapshot {
     const nodes: Node[] = NODES.map((spec) => this.node(spec));
+    const schedules = mockSchedules(this.now);
     const snap: Snapshot = structuredClone({
       clusterId: "54074bcb94bbfbe2",
       controller: "ubu1",
@@ -141,7 +142,7 @@ export class MockCluster {
       nodeHourly: this.nodeHourly,
       history: [] as FinishedCommand[],
       sessions: [...this.sessions, ...this.past.values()].sort((a, b) => b.lastActiveAt.localeCompare(a.lastActiveAt)),
-      schedules: mockSchedules(this.now),
+      schedules,
       // The questions are the mock API's, beside the cluster: it counts them.
       openQuestions: 0,
       projects: PROJECTS.map((p) => ({
@@ -151,6 +152,7 @@ export class MockCluster {
         outbox: 0,
         activeReviews: 0,
         reviewsToDecide: 0,
+        schedules: schedules.filter((sc) => sc.project === p.name).length,
       })),
     }) satisfies Snapshot;
     // Finished commands never change once recorded, so they need no copy.

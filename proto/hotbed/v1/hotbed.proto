@@ -311,7 +311,10 @@ message StepOnNode {
   double seconds = 4;
 }
 
-message ListReposRequest {}
+message ListReposRequest {
+  // Only repos held by this project; empty for every repo.
+  string project = 1;
+}
 
 message ListReposResponse {
   repeated Repo repos = 1;
@@ -319,6 +322,9 @@ message ListReposResponse {
 
 message PutRepoRequest {
   Repo repo = 1;
+  // Place the repo in this project (making it if needed); empty makes a
+  // single-repo project unless a project holds its remote already.
+  string project = 2;
 }
 
 message DeleteRepoRequest {
@@ -423,6 +429,8 @@ message Workspace {
   // Its page in the cockpit. The CLI fills it from the controller it
   // calls (cmd/hotbed/cockpit.go); the API leaves it empty.
   string cockpit_url = 23;
+  // Set by the controller: the project its session works on.
+  string project = 24;
 }
 
 message CreateWorkspaceRequest {
@@ -455,6 +463,8 @@ message WatchWorkspaceRequest {
 message ListWorkspacesRequest {
   // Only this session's workspaces.
   string session_id = 1;
+  // Only this project's workspaces; empty for every project's.
+  string project = 2;
 }
 
 message ListWorkspacesResponse {
@@ -592,6 +602,8 @@ message Command {
   // Its page in the cockpit. The CLI fills it from the controller it
   // calls (cmd/hotbed/cockpit.go); the API leaves it empty.
   string cockpit_url = 25;
+  // Set by the controller: the project its session works on.
+  string project = 26;
 }
 
 // A command that ended, as history keeps it.
@@ -622,6 +634,8 @@ message FinishedCommand {
   // Its page in the cockpit. The CLI fills it from the controller it
   // calls (cmd/hotbed/cockpit.go); the API leaves it empty.
   string cockpit_url = 22;
+  // The project its session worked on; empty for a sessionless freshen.
+  string project = 23;
 }
 
 message RunCommandRequest {
@@ -650,6 +664,8 @@ message GetCommandRequest {
 message ListCommandsRequest {
   // Only this session's commands.
   string session_id = 1;
+  // Only this project's commands; empty for every project's.
+  string project = 2;
 }
 
 message ListCommandsResponse {
@@ -752,6 +768,8 @@ message Project {
   int32 reviews_to_decide = 8;
   // Every change to it, oldest first; only from GetProject.
   repeated ProjectChange history = 9;
+  // Its scheduled commands.
+  int32 schedules = 10;
 }
 
 // One change to a project: created, added or removed (a repo).
@@ -1256,7 +1274,10 @@ message PutScheduleRequest {
   ScheduledCommand schedule = 1;
 }
 
-message ListSchedulesRequest {}
+message ListSchedulesRequest {
+  // Only this project's schedules; empty for every project's.
+  string project = 1;
+}
 
 message ListSchedulesResponse {
   repeated ScheduledCommand schedules = 1;

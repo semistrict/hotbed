@@ -176,10 +176,6 @@ func Listen(ctx context.Context, dir string, cluster statedir.ControllerConfig, 
 		Store: store, Identifier: tn, Cluster: cluster, UI: ui.Handler(), Controller: self.Hostname,
 		Self: self.Addrs, LocalUsers: local, Builds: builds, Build: version.Number(), Follower: follow,
 	})
-	if err := server.EnsureProjects(ctx); err != nil {
-		store.Close()
-		return nil, fmt.Errorf("ensure projects: %w", err)
-	}
 	c := &Controller{
 		store:  store,
 		follow: follow,

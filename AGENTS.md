@@ -47,9 +47,14 @@ Tasks live on the team board, channel `tasks`: a Vercel Board (`@vercel/board`, 
 
 Never ask the user anything directly in chat when you can make a reasonable call: make your best decision, act on it, and record non-obvious design choices or anything that genuinely needs the user's call (e.g., signing into an account or a fact with no reasonable guess) in hotbed with `hotbed question add`, then carry on with whatever doesn't depend on it. Check `hotbed question ls` before asking, check `hotbed question outbox` before starting work, and acknowledge answers with `hotbed question ack ID` once acted on. Do not keep an `OPEN_QUESTIONS.md` file in the repo.
 
-## No migrations, ever: formats change outright
+## Database migrations (goose) and typed queries (sqlc)
 
-Never write migration code or compatibility shims to upgrade old on-disk or wire formats. Change formats outright when a cleaner design calls for it and refuse old formats explicitly.
+SQLite schemas for the controller (`internal/controller/db/migrations/`) and worker (`internal/worker/db/migrations/`) are managed with `github.com/pressly/goose/v3` and run automatically at startup inside `OpenStore` / `openDB` (`PRAGMA foreign_keys = ON` is enabled on every connection).
+
+- **DDL changes go in SQL migrations** (`NNNNN_name.sql` with `-- +goose Up` / `-- +goose Down`) so `sqlc` can parse the schema statically.
+- **Data backfills that need Go logic** (protobuf JSON, canonical remotes, etc.) go in numbered Go migrations registered with `goose.WithGoMigrations` in `migrations.go`.
+- **Typed queries live in `queries/*.sql` and compile via `make sqlc` (`sqlc generate`).** Never edit files in `db/gen/` by hand. With SQLite in `sqlc`, do not mix `sqlc.arg(...)` (`?N`) with bare `?` or `sqlc.slice(...)` in the same statement (`TestSQLcGeneratedQueriesHaveSafeSQLitePlaceholders` enforces this).
+- **Wire formats stay clean:** don't keep legacy wire-format compatibility shims when a cleaner RPC or protobuf change calls for it.
 
 ## No silent fallbacks to a costlier path: fail hard
 

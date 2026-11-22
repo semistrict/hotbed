@@ -52,7 +52,7 @@ func (s *Server) GetSnapshot(ctx context.Context, _ *pb.GetSnapshotRequest) (*pb
 	if err != nil {
 		return nil, err
 	}
-	schedules, err := s.allSchedules(ctx)
+	schedules, err := s.allSchedules(ctx, "")
 	if err != nil {
 		return nil, err
 	}

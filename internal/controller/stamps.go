@@ -19,26 +19,14 @@ func (s *Server) agentStamp(ctx context.Context, session, reason string) (*pb.St
 		return nil, nil, api.Errorf(api.CodeInvalidArgs, "name the session making the change: questions and reviews record which session did what").
 			WithSuggestion("pass -s SESSION, set HOTBED_SESSION, or run `hotbed session start`")
 	}
-	by, err := s.userStamp(ctx, session, reason)
-	if err != nil {
-		return nil, nil, err
-	}
-	sess, err := s.cfg.Store.Session(ctx, session)
-	if err != nil {
-		return nil, nil, err
-	}
-	if sess.Project == "" {
-		return nil, nil, api.Errorf(api.CodeInvalidArgs, "session %s started before sessions had projects, and questions and reviews are a project's", session).
-			WithSuggestion("start a new session: hotbed session start")
-	}
-	project, err := s.cfg.Store.Project(ctx, sess.Project)
-	return by, project, err
+	return s.userStamp(ctx, session, reason)
 }
 
 // inProject refuses an agent's change to another project's question or
 // review (what, id, of project of): its sessions are the ones that read it.
+// When project is nil (the user acting without a session), any project is allowed.
 func inProject(what string, id int32, of string, project *pb.Project, by *pb.Stamp) error {
-	if of == project.Name {
+	if project == nil || of == project.Name {
 		return nil
 	}
 	return api.Errorf(api.CodeConflict, "%s %d is project %s's; session %s works on %s", what, id, of, by.Session, project.Name).
@@ -46,12 +34,18 @@ func inProject(what string, id int32, of string, project *pb.Project, by *pb.Sta
 }
 
 // userStamp stamps a change the user makes: from the cockpit, with no
-// session, or passed on by an agent, as its session, which must be live.
-func (s *Server) userStamp(ctx context.Context, session, reason string) (*pb.Stamp, error) {
+// session (returning a nil project), or passed on by an agent, as its
+// session, which must be live and returns its project.
+func (s *Server) userStamp(ctx context.Context, session, reason string) (*pb.Stamp, *pb.Project, error) {
+	var project *pb.Project
 	if session != "" {
-		if _, err := s.cfg.Store.LiveSession(ctx, session, s.now()); err != nil {
-			return nil, err
+		sess, err := s.cfg.Store.LiveSession(ctx, session, s.now())
+		if err != nil {
+			return nil, nil, err
+		}
+		if project, err = s.cfg.Store.Project(ctx, sess.Project); err != nil {
+			return nil, nil, err
 		}
 	}
-	return &pb.Stamp{At: s.now().UnixMilli(), Session: session, Host: httpx.Peer(ctx).Hostname, Reason: reason}, nil
+	return &pb.Stamp{At: s.now().UnixMilli(), Session: session, Host: httpx.Peer(ctx).Hostname, Reason: reason}, project, nil
 }
