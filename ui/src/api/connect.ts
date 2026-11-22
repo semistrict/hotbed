@@ -327,6 +327,7 @@ function toNode(n: PbNode): Node {
     memoryBytes: num(r?.memoryBytes),
     swapBytes: num(r?.swapBytes),
     diskBytes: num(n.diskBytes),
+    storage: n.storage,
     usage: {
       cpuBusy: u?.cpuBusy ?? 0,
       memoryUsedBytes: num(u?.memoryUsedBytes),

@@ -74,7 +74,7 @@ export function NodePage() {
             height={150}
           />
         </Card>
-        <Card title="Disk" sub={`btrfs, ${bytes(n.diskBytes)}`}>
+        <Card title="Disk" sub={`${n.storage}, ${bytes(n.diskBytes)}`}>
           <SegmentedBar
             tall
             format={bytes}
