@@ -4,7 +4,13 @@ import {
   BaseState,
   ClusterService,
   CommandState,
+  FindingDecision,
+  FindingSeverity,
+  FindingVerdict,
   QuestionOrder as PbOrder,
+  QuickResponse,
+  ReviewService,
+  ReviewState as PbReviewState,
   QuestionService,
   QuestionState as PbQuestionState,
   RunOutcome,
@@ -14,7 +20,10 @@ import {
   type Command as PbCommand,
   type FinishedCommand as PbFinished,
   type Node as PbNode,
+  type Finding as PbFinding,
   type Question as PbQuestion,
+  type Review as PbReview,
+  type ReviewEvent as PbReviewEvent,
   type QuestionChange as PbChange,
   type Stamp as PbStamp,
   type ScheduledCommand as PbScheduled,
@@ -30,8 +39,12 @@ import type {
   FailureKind,
   FinishedCommand,
   Node,
+  Finding,
   Question,
   QuestionChange,
+  Quick,
+  Review,
+  ReviewEvent,
   QuestionOrder,
   QuestionState,
   ScheduledCommand,
@@ -51,6 +64,7 @@ export function createConnectApi(baseUrl = window.location.origin): Api {
   const cluster = createClient(ClusterService, transport);
   const workspaces = createClient(WorkspaceService, transport);
   const questions = createClient(QuestionService, transport);
+  const reviews = createClient(ReviewService, transport);
   return {
     snapshot: async () => toSnapshot(await cluster.getSnapshot({})),
     commandLog: async (id) => {
@@ -78,6 +92,10 @@ export function createConnectApi(baseUrl = window.location.origin): Api {
     answerQuestion: async (id, answer) => toQuestion(await questions.answerQuestion({ id, answer })),
     dismissQuestion: async (id, reason) => toQuestion(await questions.dismissQuestion({ id, reason })),
     moveQuestion: async (id, before) => toQuestion(await questions.moveQuestion({ id, before: before ?? 0 })),
+    reviews: async (project) => (await reviews.listReviews({ project: project ?? "" })).reviews.map(toReview),
+    review: async (id) => toReview(await reviews.getReview({ id })),
+    respond: async (reviewId, findingId, quick, text) =>
+      toReviewEvent(await reviews.respond({ reviewId, findingId: findingId ?? 0, quick: quick ? TO_QUICK[quick] : QuickResponse.UNSPECIFIED, text })),
   };
 }
 
@@ -236,6 +254,8 @@ export function toSnapshot(s: PbSnapshot): Snapshot {
       liveSessions: p.liveSessions,
       openQuestions: p.openQuestions,
       outbox: p.outbox,
+      activeReviews: p.activeReviews,
+      reviewsToDecide: p.reviewsToDecide,
     })),
   };
 }
@@ -452,5 +472,103 @@ function toFinished(f: PbFinished): FinishedCommand {
     peakMemoryBytes: num(f.peakMemoryBytes),
     parks: f.parks,
     bench: f.bench,
+  };
+}
+
+const REVIEW_STATE: Record<PbReviewState, Review["state"]> = {
+  [PbReviewState.UNSPECIFIED]: "requested",
+  [PbReviewState.REQUESTED]: "requested",
+  [PbReviewState.IN_PROGRESS]: "in-progress",
+  [PbReviewState.DONE]: "done",
+  [PbReviewState.FAILED]: "failed",
+  [PbReviewState.CANCELLED]: "cancelled",
+};
+
+const SEVERITY: Record<FindingSeverity, Finding["severity"]> = {
+  [FindingSeverity.UNSPECIFIED]: "nit",
+  [FindingSeverity.IMPORTANT]: "important",
+  [FindingSeverity.PRE_EXISTING]: "pre-existing",
+  [FindingSeverity.NIT]: "nit",
+};
+
+const VERDICT: Record<FindingVerdict, Finding["verdict"]> = {
+  [FindingVerdict.UNSPECIFIED]: null,
+  [FindingVerdict.CONFIRMED]: "confirmed",
+  [FindingVerdict.PLAUSIBLE]: "plausible",
+};
+
+const DECISION: Record<FindingDecision, Finding["decision"]> = {
+  [FindingDecision.UNSPECIFIED]: "open",
+  [FindingDecision.OPEN]: "open",
+  [FindingDecision.ACCEPTED]: "accepted",
+  [FindingDecision.DISMISSED]: "dismissed",
+};
+
+const QUICK: Record<QuickResponse, Quick | null> = {
+  [QuickResponse.UNSPECIFIED]: null,
+  [QuickResponse.VERIFY]: "verify",
+  [QuickResponse.FIX_IF_VERIFIED]: "fix-if-verified",
+  [QuickResponse.WONT_FIX]: "wont-fix",
+};
+
+const TO_QUICK: Record<Quick, QuickResponse> = {
+  verify: QuickResponse.VERIFY,
+  "fix-if-verified": QuickResponse.FIX_IF_VERIFIED,
+  "wont-fix": QuickResponse.WONT_FIX,
+};
+
+const NO_ONE: Stamp = { at: iso(0), session: null, host: "", reason: "" };
+
+export function toReview(r: PbReview): Review {
+  return {
+    id: r.id,
+    project: r.project,
+    repo: orNull(r.repo),
+    title: r.title,
+    instructions: r.instructions,
+    base: orNull(r.base),
+    head: r.head,
+    branch: r.branch,
+    snapshotOf: orNull(r.snapshotOf),
+    state: REVIEW_STATE[r.state],
+    summary: r.summary,
+    requested: toStamp(r.requested) ?? NO_ONE,
+    started: toStamp(r.started),
+    ended: toStamp(r.ended),
+    updatedAt: iso(r.updatedAt),
+    findings: r.findings.map(toFinding),
+    events: r.events.map(toReviewEvent),
+    counts: { important: r.important, preExisting: r.preExisting, nits: r.nits, open: r.open, responses: r.responses },
+  };
+}
+
+function toFinding(f: PbFinding): Finding {
+  return {
+    id: f.id,
+    reviewId: f.reviewId,
+    title: f.title,
+    summary: f.summary,
+    failureScenario: f.failureScenario,
+    category: f.category,
+    severity: SEVERITY[f.severity],
+    verdict: VERDICT[f.verdict],
+    locations: f.locations.map((l) => ({ path: l.path, startLine: l.startLine, endLine: l.endLine, excerpt: l.excerpt })),
+    decision: DECISION[f.decision],
+    decided: toStamp(f.decided),
+    found: toStamp(f.found) ?? NO_ONE,
+    quick: QUICK[f.quick],
+    responses: f.responses,
+  };
+}
+
+function toReviewEvent(e: PbReviewEvent): ReviewEvent {
+  return {
+    seq: num(e.seq),
+    reviewId: e.reviewId,
+    findingId: e.findingId === 0 ? null : e.findingId,
+    what: e.what,
+    by: toStamp(e.by) ?? NO_ONE,
+    quick: QUICK[e.quick],
+    text: e.text,
   };
 }

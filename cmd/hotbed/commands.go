@@ -93,6 +93,7 @@ type cli struct {
 	Step      stepCmd      `cmd:"" help:"A repo's setup steps: what brings its bases up to date (add, set, ls, show, rm)."`
 	Schedule  scheduleCmd  `cmd:"" help:"Scheduled commands: recurring work the cluster runs by itself, each run a session of its own (add, ls, show, rm, run, pause, resume)."`
 	Question  questionCmd  `cmd:"" help:"Questions for the user, one list per project that its sessions share: ask, and read the answers when they come (add, ls, show, edit, rm, outbox, ack, wait, answer, dismiss, move, projects)."`
+	Review    reviewCmd    `cmd:"" help:"Reviews of an exact version by reviewer agents: request one, wait, read and decide its findings, send the user its link, read the user's responses (request, ls, show, link, start, findings, finish, fail, cancel, accept, dismiss, reopen, respond, responses, wait)."`
 	Nodes     nodesCmd     `cmd:"" help:"List the cluster's workers."`
 	Snapshot  snapshotCmd  `cmd:"" help:"Everything the cockpit shows: nodes, repos, bases, workspaces, commands, sessions, schedules, events and history."`
 	UI        uiCmd        `cmd:"" help:"Open the controller's cockpit UI in the default browser."`

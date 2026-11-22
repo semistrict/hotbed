@@ -315,6 +315,10 @@ export interface Project {
   openQuestions: number;
   /** Questions answered or dismissed, waiting for an agent. */
   outbox: number;
+  /** Reviews requested or in progress. */
+  activeReviews: number;
+  /** Reviews done with findings no one has decided yet. */
+  reviewsToDecide: number;
 }
 
 /**
@@ -485,6 +489,86 @@ export interface QuestionList {
   total: number;
 }
 
+/** requested: waiting for a reviewer; in-progress: claimed, finding; then one of three ends. */
+export type ReviewState = "requested" | "in-progress" | "done" | "failed" | "cancelled";
+
+/** As ReportFindings grades it: a bug the change adds, one that was there before, a minor issue. */
+export type Severity = "important" | "pre-existing" | "nit";
+
+/** What the requesting agent made of a finding. */
+export type Decision = "open" | "accepted" | "dismissed";
+
+/** What the user can say of a finding with one click. */
+export type Quick = "verify" | "fix-if-verified" | "wont-fix";
+
+/** A place in the reviewed version. */
+export interface Location {
+  path: string;
+  /** 1-based; 0 for the whole file. */
+  startLine: number;
+  endLine: number;
+  /** The lines as the reviewer saw them; empty when it gave none. */
+  excerpt: string;
+}
+
+export interface Finding {
+  id: number;
+  reviewId: number;
+  title: string;
+  summary: string;
+  failureScenario: string;
+  category: string;
+  severity: Severity;
+  /** How sure the reviewer is; null when not verified. */
+  verdict: "confirmed" | "plausible" | null;
+  /** Zero or more. */
+  locations: Location[];
+  decision: Decision;
+  decided: Stamp | null;
+  found: Stamp;
+  /** The latest quick response to it. */
+  quick: Quick | null;
+  responses: number;
+}
+
+/** Something that happened to a review: a change, or a response (what "responded"). */
+export interface ReviewEvent {
+  seq: number;
+  reviewId: number;
+  /** null for the review as a whole. */
+  findingId: number | null;
+  what: string;
+  by: Stamp;
+  quick: Quick | null;
+  text: string;
+}
+
+export interface Review {
+  id: number;
+  project: string;
+  /** Canonical remote; null outside a repo. */
+  repo: string | null;
+  title: string;
+  instructions: string;
+  /** null: the whole tree at head. */
+  base: string | null;
+  head: string;
+  branch: string;
+  /** head is a snapshot of uncommitted changes on this commit. */
+  snapshotOf: string | null;
+  state: ReviewState;
+  /** The reviewer's summary when done; why it failed or was cancelled. */
+  summary: string;
+  requested: Stamp;
+  started: Stamp | null;
+  ended: Stamp | null;
+  updatedAt: string;
+  /** Only from review(id). */
+  findings: Finding[];
+  events: ReviewEvent[];
+  counts: { important: number; preExisting: number; nits: number; open: number; responses: number };
+}
+
 export interface Api {
   snapshot(): Promise<Snapshot>;
   commandLog(id: string): Promise<CommandLog>;
@@ -497,4 +581,9 @@ export interface Api {
   dismissQuestion(id: number, reason: string): Promise<Question>;
   /** Puts an open question just before another, or last (before null). */
   moveQuestion(id: number, before: number | null): Promise<Question>;
+  /** A project's reviews (every project's for null), newest first, without findings and events. */
+  reviews(project: string | null): Promise<Review[]>;
+  review(id: number): Promise<Review>;
+  /** The user's response to a finding (or, findingId null, the review): a quick response, a comment, or both. */
+  respond(reviewId: number, findingId: number | null, quick: Quick | null, text: string): Promise<ReviewEvent>;
 }

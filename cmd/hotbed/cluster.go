@@ -30,6 +30,7 @@ type clients struct {
 	workspaces hotbedv1connect.WorkspaceServiceClient
 	schedules  hotbedv1connect.ScheduleServiceClient
 	questions  hotbedv1connect.QuestionServiceClient
+	reviews    hotbedv1connect.ReviewServiceClient
 }
 
 // callController has the command call the controller at addr.
@@ -46,6 +47,7 @@ func (f controllerClient) clients(hc *http.Client) (clients, error) {
 		workspaces: hotbedv1connect.NewWorkspaceServiceClient(conn),
 		schedules:  hotbedv1connect.NewScheduleServiceClient(conn),
 		questions:  hotbedv1connect.NewQuestionServiceClient(conn),
+		reviews:    hotbedv1connect.NewReviewServiceClient(conn),
 	}, nil
 }
 

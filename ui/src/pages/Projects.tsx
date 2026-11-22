@@ -85,7 +85,7 @@ function ProjectCard({ s, a, now, delay }: { s: Snapshot; a: Activity; now: numb
   const [chosen, choose] = useProject();
   const navigate = useNavigate();
   const p = a.project;
-  const open = (to: "/sessions" | "/questions") => {
+  const open = (to: "/sessions" | "/questions" | "/reviews") => {
     choose(p.name);
     void navigate({ to });
   };
@@ -118,10 +118,11 @@ function ProjectCard({ s, a, now, delay }: { s: Snapshot; a: Activity; now: numb
             );
           })}
         </ul>
-        <dl className="grid grid-cols-3 gap-2 border-t border-border pt-3 text-[11px]">
+        <dl className="grid grid-cols-2 gap-2 border-t border-border pt-3 text-[11px] sm:grid-cols-4">
           <Figure label="sessions" value={a.working + a.idle} note={a.working > 0 ? `${a.working} working` : a.idle > 0 ? "idle" : ""} tone={a.working > 0 ? "text-primary" : ""} />
           <Figure label="running" value={a.running} note={a.failed > 0 ? `${a.failed} of ${a.finished} failed today` : `${a.finished} today`} tone="text-primary" noteTone={a.failed > 0 ? "text-critical" : ""} />
           <Figure label="questions" value={p.openQuestions} note={p.outbox > 0 ? `${p.outbox} in the outbox` : "for you"} tone={p.openQuestions > 0 ? "text-primary" : ""} onClick={() => open("/questions")} />
+          <Figure label="reviews" value={p.activeReviews} note={p.reviewsToDecide > 0 ? `${p.reviewsToDecide} to decide` : "under way"} tone="text-primary" noteTone={p.reviewsToDecide > 0 ? "text-primary" : ""} onClick={() => open("/reviews")} />
         </dl>
       </div>
     </Card>

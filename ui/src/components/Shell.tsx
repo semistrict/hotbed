@@ -1,6 +1,6 @@
 import { Link, Outlet } from "@tanstack/react-router";
 import { useEffect, useState } from "react";
-import { usingMock } from "../api";
+import { usingMock, type Snapshot } from "../api";
 import { useSnapshot } from "../lib/data";
 import { useProject, useScopedSnapshot } from "../lib/project";
 
@@ -9,6 +9,7 @@ import { useProject, useScopedSnapshot } from "../lib/project";
 const NAV = [
   { to: "/", label: "Projects" },
   { to: "/questions", label: "Questions" },
+  { to: "/reviews", label: "Reviews" },
   { to: "/sessions", label: "Sessions" },
   { to: "/commands", label: "Commands" },
   { to: "/history", label: "History" },
@@ -68,6 +69,7 @@ export function Shell() {
                 activeProps={{ className: "!border-primary !text-foreground" }}
               >
                 {n.label}
+                {n.to === "/reviews" && data && <ReviewBadge s={data} />}
                 {n.to === "/questions" && data && data.openQuestions > 0 && (
                   <span className="ml-1.5 rounded-full bg-primary px-1.5 font-mono text-[10px] leading-4 text-primary-foreground" aria-label={`${data.openQuestions} waiting for you`}>
                     {data.openQuestions}
@@ -147,5 +149,17 @@ function ProjectPicker() {
         ))}
       </select>
     </label>
+  );
+}
+
+/** Reviews of the project shown (or every project) done with findings still undecided. */
+function ReviewBadge({ s }: { s: Snapshot }) {
+  const [project] = useProject();
+  const n = s.projects.filter((p) => project === null || p.name === project).reduce((sum, p) => sum + p.reviewsToDecide, 0);
+  if (n === 0) return null;
+  return (
+    <span className="ml-1.5 rounded-full border border-primary/50 px-1.5 font-mono text-[10px] leading-4 text-primary" aria-label={`${n} with findings to decide`}>
+      {n}
+    </span>
   );
 }

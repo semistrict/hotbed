@@ -149,6 +149,8 @@ export class MockCluster {
         liveSessions: this.sessions.filter((x) => x.endedAt === null && x.project === p.name).length,
         openQuestions: 0,
         outbox: 0,
+        activeReviews: 0,
+        reviewsToDecide: 0,
       })),
     }) satisfies Snapshot;
     // Finished commands never change once recorded, so they need no copy.

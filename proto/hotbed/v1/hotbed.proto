@@ -722,6 +722,10 @@ message Project {
   int32 live_sessions = 4;
   int32 open_questions = 5;
   int32 outbox = 6;
+  // Its reviews requested or in progress, and those done with findings
+  // still open.
+  int32 active_reviews = 7;
+  int32 reviews_to_decide = 8;
 }
 
 message AddProjectRequest {
@@ -786,7 +790,8 @@ message SessionEvent {
   string command_id = 3;
   string argv = 4;
   // admitted, parked, thawed, exited, cancelled; ready and failed for a
-  // workspace; answered and dismissed for a question the session asked
+  // workspace; answered and dismissed for a question the session asked;
+  // reviewed, review failed and responded for a review it requested
   // (command_id empty)
   string what = 5;
   CommandState state = 6;
@@ -797,6 +802,9 @@ message SessionEvent {
   // For answered and dismissed (command_id empty): the session's question
   // that the user answered or dismissed.
   int32 question_id = 11;
+  // For reviewed, review failed and responded: the review the session
+  // requested that ended, or that someone responded to.
+  int32 review_id = 12;
 }
 
 message GetLogLinesRequest {
@@ -1493,4 +1501,313 @@ message WaitQuestionsRequest {
   string project = 3;
   // Naming no questions: only answers to this session's questions.
   string asked_by = 4;
+}
+
+// ---- reviews ----------------------------------------------------------------
+
+// Reviews of an exact version by reviewer agents. A session (the parent)
+// requests one; a reviewer session claims it, reports findings and finishes
+// it. The parent reads the findings, accepts or dismisses each, and sends
+// the user the review's page in the cockpit, where the user responds to
+// findings: a quick response, a comment, or both. The parent reads those
+// responses. Every change and response is kept, with when and which session
+// (or the user) made it.
+service ReviewService {
+  // RequestReview asks for a review of a version, in the requesting
+  // session's project.
+  rpc RequestReview(RequestReviewRequest) returns (Review);
+  // ListReviews lists a project's reviews, or every project's, newest first,
+  // without their findings and events.
+  rpc ListReviews(ListReviewsRequest) returns (ListReviewsResponse);
+  // GetReview is a review with its findings and every event.
+  rpc GetReview(GetReviewRequest) returns (Review);
+  // StartReview claims a requested review for the calling session, its
+  // reviewer.
+  rpc StartReview(StartReviewRequest) returns (Review);
+  // AddFindings adds the reviewer's findings, as ReportFindings reports
+  // them, with locations besides; it may be called more than once.
+  rpc AddFindings(AddFindingsRequest) returns (AddFindingsResponse);
+  // FinishReview ends a review: done, with the reviewer's summary, or
+  // failed, with why.
+  rpc FinishReview(FinishReviewRequest) returns (Review);
+  // CancelReview withdraws a review that has not ended.
+  rpc CancelReview(CancelReviewRequest) returns (Review);
+  // DecideFindings accepts or dismisses findings, or opens them again.
+  rpc DecideFindings(DecideFindingsRequest) returns (DecideFindingsResponse);
+  // Respond answers a finding, or the review as a whole: a quick response,
+  // a comment, or both.
+  rpc Respond(RespondRequest) returns (ReviewEvent);
+  // ListResponses lists the responses to a review after a cursor.
+  rpc ListResponses(ListResponsesRequest) returns (ListResponsesResponse);
+  // WaitReview waits, two minutes at most, until a review has ended, or,
+  // with responses, until someone other than the caller responds after a
+  // cursor. It returns the review as it is then.
+  rpc WaitReview(WaitReviewRequest) returns (Review);
+}
+
+enum ReviewState {
+  REVIEW_STATE_UNSPECIFIED = 0;
+  // Waiting for a reviewer.
+  REVIEW_STATE_REQUESTED = 1;
+  // A reviewer has claimed it and reports findings.
+  REVIEW_STATE_IN_PROGRESS = 2;
+  // The reviewer finished it.
+  REVIEW_STATE_DONE = 3;
+  // The reviewer could not finish it.
+  REVIEW_STATE_FAILED = 4;
+  // Withdrawn before it ended.
+  REVIEW_STATE_CANCELLED = 5;
+}
+
+// How much a finding matters, as ReportFindings grades it.
+enum FindingSeverity {
+  FINDING_SEVERITY_UNSPECIFIED = 0;
+  // A bug the change adds or makes worse.
+  FINDING_SEVERITY_IMPORTANT = 1;
+  // A bug that was there before the change.
+  FINDING_SEVERITY_PRE_EXISTING = 2;
+  // A minor issue.
+  FINDING_SEVERITY_NIT = 3;
+}
+
+// How sure the reviewer is, as ReportFindings says it.
+enum FindingVerdict {
+  // Not verified.
+  FINDING_VERDICT_UNSPECIFIED = 0;
+  FINDING_VERDICT_CONFIRMED = 1;
+  FINDING_VERDICT_PLAUSIBLE = 2;
+}
+
+// What the parent made of a finding.
+enum FindingDecision {
+  FINDING_DECISION_UNSPECIFIED = 0;
+  // Not decided yet.
+  FINDING_DECISION_OPEN = 1;
+  // To act on.
+  FINDING_DECISION_ACCEPTED = 2;
+  // Not to act on.
+  FINDING_DECISION_DISMISSED = 3;
+}
+
+// A response the user can give a finding with one click.
+enum QuickResponse {
+  QUICK_RESPONSE_UNSPECIFIED = 0;
+  // Check that it is real.
+  QUICK_RESPONSE_VERIFY = 1;
+  // Check that it is real, and fix it if it is.
+  QUICK_RESPONSE_FIX_IF_VERIFIED = 2;
+  // Leave it.
+  QUICK_RESPONSE_WONT_FIX = 3;
+}
+
+// A place in the reviewed version a finding is about.
+message Location {
+  // Relative to the repo's root.
+  string path = 1;
+  // 1-based; 0 for the file as a whole.
+  int32 start_line = 2;
+  // The last line, when it spans several.
+  int32 end_line = 3;
+  // The lines themselves, as the reviewer saw them, so the cockpit can show
+  // them without the code.
+  string excerpt = 4;
+}
+
+// A finding as a reviewer reports it: ReportFindings' fields, so the JSON
+// written for that tool is a finding here, with any number of locations
+// besides (file and line, when set, are its first).
+message ReportedFinding {
+  string file = 1;
+  int32 line = 2;
+  // The defect.
+  string summary = 3;
+  // Concrete inputs or state, and the wrong output or crash.
+  string failure_scenario = 4;
+  // A short kebab-case kind: correctness, efficiency, test-coverage.
+  string category = 5;
+  // important, pre_existing or nit.
+  string severity = 6;
+  // The claim alone, at most 60 characters.
+  string short_summary = 7;
+  // CONFIRMED or PLAUSIBLE; empty when not verified.
+  string verdict = 8;
+  repeated Location locations = 9;
+}
+
+message Finding {
+  // Counting up from 1 across every review.
+  int32 id = 1;
+  int32 review_id = 2;
+  string title = 3;
+  string summary = 4;
+  string failure_scenario = 5;
+  string category = 6;
+  FindingSeverity severity = 7;
+  FindingVerdict verdict = 8;
+  repeated Location locations = 9;
+  FindingDecision decision = 10;
+  // Who decided, when, and why; unset while open.
+  Stamp decided = 11;
+  Stamp found = 12;
+  // The latest quick response to it, if any, which says what the user wants.
+  QuickResponse quick = 13;
+  // How many responses it has.
+  int32 responses = 14;
+}
+
+message Review {
+  int32 id = 1;
+  // The requesting session's.
+  string project = 2;
+  // The reviewed repo's canonical remote; empty outside one.
+  string repo = 3;
+  string title = 4;
+  // What the reviewer should look at, or for.
+  string instructions = 5;
+  // The version: changes from base (empty: the whole tree) to head, exact
+  // commits. A snapshot of a dirty worktree is a commit too.
+  string base = 6;
+  string head = 7;
+  // The branch head was on, for people.
+  string branch = 8;
+  // head is a snapshot of uncommitted changes on top of this commit.
+  string snapshot_of = 9;
+  ReviewState state = 10;
+  // The reviewer's summary when done; why it failed or was cancelled.
+  string summary = 11;
+  Stamp requested = 12;
+  // Claimed by its reviewer session.
+  Stamp started = 13;
+  // Ended: done, failed or cancelled.
+  Stamp ended = 14;
+  int64 updated_at = 15;
+  // From GetReview and WaitReview, oldest first.
+  repeated Finding findings = 16;
+  repeated ReviewEvent events = 17;
+  // Counts, set when listed: findings by severity, still open, and responses.
+  int32 important = 18;
+  int32 pre_existing = 19;
+  int32 nits = 20;
+  int32 open = 21;
+  int32 responses = 22;
+}
+
+// Something that happened to a review: a change, or a response.
+message ReviewEvent {
+  // The cursor: counting up across every review.
+  int64 seq = 1;
+  int32 review_id = 2;
+  // The finding it is about; 0 for the review as a whole.
+  int32 finding_id = 3;
+  // requested, started, found, finished, failed, cancelled, accepted,
+  // dismissed, reopened, responded
+  string what = 4;
+  Stamp by = 5;
+  // A response's quick response, if it gave one.
+  QuickResponse quick = 6;
+  // A response's comment, a decision's or an end's reason.
+  string text = 7;
+}
+
+message RequestReviewRequest {
+  string session_id = 1;
+  string title = 2;
+  string instructions = 3;
+  // The repo's remote, in any form; canonical when stored.
+  string repo = 4;
+  string base = 5;
+  string head = 6;
+  string branch = 7;
+  string snapshot_of = 8;
+}
+
+message ListReviewsRequest {
+  // Empty for every project's.
+  string project = 1;
+  // Only reviews in these states; none for all.
+  repeated ReviewState states = 2;
+  // At most this many, newest first; 0 for all.
+  int32 limit = 3;
+}
+
+message ListReviewsResponse {
+  repeated Review reviews = 1;
+}
+
+message GetReviewRequest {
+  int32 id = 1;
+}
+
+message StartReviewRequest {
+  int32 id = 1;
+  string session_id = 2;
+}
+
+message AddFindingsRequest {
+  int32 review_id = 1;
+  string session_id = 2;
+  repeated ReportedFinding findings = 3;
+}
+
+message AddFindingsResponse {
+  repeated Finding findings = 1;
+}
+
+message FinishReviewRequest {
+  int32 id = 1;
+  string session_id = 2;
+  // The summary when done; why, when failed.
+  string summary = 3;
+  bool failed = 4;
+}
+
+message CancelReviewRequest {
+  int32 id = 1;
+  string session_id = 2;
+  string reason = 3;
+}
+
+message DecideFindingsRequest {
+  int32 review_id = 1;
+  repeated int32 finding_ids = 2;
+  FindingDecision decision = 3;
+  string reason = 4;
+  string session_id = 5;
+}
+
+message DecideFindingsResponse {
+  repeated Finding findings = 1;
+}
+
+message RespondRequest {
+  int32 review_id = 1;
+  // 0 for the review as a whole.
+  int32 finding_id = 2;
+  QuickResponse quick = 3;
+  string text = 4;
+  // Set when an agent responds; empty for the user.
+  string session_id = 5;
+}
+
+message ListResponsesRequest {
+  int32 review_id = 1;
+  // Events after this cursor (0 for all).
+  int64 after = 2;
+}
+
+message ListResponsesResponse {
+  repeated ReviewEvent responses = 1;
+  // Pass as after for what comes next.
+  int64 cursor = 2;
+}
+
+message WaitReviewRequest {
+  int32 id = 1;
+  // Wait for a response after this cursor, from anyone but session_id,
+  // rather than for the review to end.
+  bool responses = 2;
+  int64 after = 3;
+  string session_id = 4;
+  // At most and by default 120.
+  int32 timeout_seconds = 5;
 }

@@ -1,5 +1,21 @@
 # Decisions
 
+## Reviews (board 6476)
+
+- **Findings take ReportFindings' shape**, as questions take AskUserQuestion's, with `locations`
+  added for findings about several places (or none). Severity is therefore ReportFindings' three
+  (important, pre_existing, nit), not a scale of hotbed's own.
+- **A dirty worktree is reviewed as a snapshot commit**, pinned under `refs/hotbed/reviews/HEAD` in
+  the requester's checkout. The reviewer is expected to run where that checkout is (a subagent);
+  a reviewer elsewhere would need the commit pushed. The alternative was to refuse dirty trees.
+- **The default base is where HEAD left origin's default branch** (`origin/HEAD`); without one,
+  the request fails and asks for `--base` or `--whole`.
+- **Only the session that started a review reports findings and ends it**; any session of the
+  project may decide findings or cancel it.
+- **A quick response is only for a finding**; the review as a whole takes comments.
+- **The user's responses record no session** unless an agent passes them on with `-s`, as with
+  questions.
+
 ## Projects and questions (board 6434)
 
 - **A repo no project holds becomes a project of its own name** when a session first starts in
