@@ -43,4 +43,16 @@ fields.
   every release.
 - **CI keeps the newest 20 releases.**
 
+## Every API call has a CLI command (2026-11-21)
+
+- **Worker-to-controller calls are exempt** (Join, Report, PushEvents, Heartbeat): `hotbed join`
+  and `hotbed serve` make them for the node; a command for an agent to make them by hand would
+  only let it impersonate a worker. To change, drop them from `nodeProtocol` in
+  `cmd/hotbed/coverage_test.go` and add commands.
+- **The check runs only on a whole-suite run** (no `-run`/`-skip`), from `TestMain`: a filtered
+  run cannot tell an untested call from one it did not run.
+- **New commands:** `hotbed workspace ls|show|files|file|release`, `hotbed logs -n N`
+  (GetLogLines), `hotbed snapshot` (GetSnapshot). `workspace release` goes through the
+  controller, which keeps the session's account of its workspaces, not straight to the worker.
+
 # Open questions

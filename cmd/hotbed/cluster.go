@@ -139,6 +139,18 @@ func (c *nodesCmd) Exec(ctx context.Context, d deps) (any, error) {
 	return cl.cluster.ListNodes(ctx, &pb.ListNodesRequest{})
 }
 
+type snapshotCmd struct {
+	controllerClient
+}
+
+func (c *snapshotCmd) Exec(ctx context.Context, d deps) (any, error) {
+	cl, err := c.clients(d.http)
+	if err != nil {
+		return nil, err
+	}
+	return cl.cluster.GetSnapshot(ctx, &pb.GetSnapshotRequest{})
+}
+
 type repoCmd struct {
 	Add     repoAddCmd     `cmd:"" help:"Add or update a repo; give it setup steps with hotbed step set."`
 	Ls      repoLsCmd      `cmd:"" help:"List repos."`

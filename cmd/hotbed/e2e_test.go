@@ -339,10 +339,8 @@ func TestSessionWithSyncedCheckout(t *testing.T) {
 	}
 
 	// The cockpit sees it all.
-	snap, err := c.asWorker.GetSnapshot(t.Context(), &pb.GetSnapshotRequest{})
-	if err != nil {
-		t.Fatal(err)
-	}
+	snap := &pb.Snapshot{}
+	c.ok(snap, "snapshot")
 	if len(snap.Repos) != 1 || snap.Repos[0].Units != 1 || snap.Repos[0].ColdBuildSeconds <= 0 {
 		t.Errorf("snapshot repos = %v", snap.Repos)
 	}
@@ -792,10 +790,8 @@ func TestSnapshotKeepsEndedSessions(t *testing.T) {
 	ws := &pb.Workspace{}
 	c.ok(ws, "add", "-s", "spent-owl", "-r", "app")
 	c.ok(nil, "session", "end", "-s", "spent-owl")
-	snap, err := c.asWorker.GetSnapshot(t.Context(), &pb.GetSnapshotRequest{})
-	if err != nil {
-		t.Fatal(err)
-	}
+	snap := &pb.Snapshot{}
+	c.ok(snap, "snapshot")
 	var got *pb.Session
 	for _, s := range snap.Sessions {
 		if s.Id == "spent-owl" {

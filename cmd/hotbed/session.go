@@ -775,12 +775,16 @@ type logsCmd struct {
 	controllerClient
 	sessionFlag
 	Command string `arg:"" help:"The command's ID."`
-	Follow  bool   `short:"f" help:"Keep printing until the command ends."`
+	Follow  bool   `short:"f" xor:"tail" help:"Keep printing until the command ends."`
+	Tail    int    `short:"n" xor:"tail" help:"Print only the last N lines."`
 }
 
 // Raw prints the command's output as is, from its worker. A base's
 // freshen, whose log a failed add names, can be read from any session.
 func (c *logsCmd) Raw(ctx context.Context, d deps) (int, bool, error) {
+	if c.Tail < 0 {
+		return 0, false, api.Errorf(api.CodeInvalidArgs, "--tail %d is negative", c.Tail).WithSuggestion("pass --tail N with N > 0")
+	}
 	session, err := c.sessionFlag.resolve(ctx, d)
 	if err != nil {
 		return 0, false, err
@@ -788,6 +792,18 @@ func (c *logsCmd) Raw(ctx context.Context, d deps) (int, bool, error) {
 	_, w, err := c.locateCommand(ctx, d, session, c.Command, true)
 	if err != nil {
 		return 0, false, err
+	}
+	if c.Tail > 0 {
+		log, err := w.calls.GetLogLines(ctx, &pb.GetLogLinesRequest{Id: c.Command, Tail: int32(c.Tail)})
+		if err != nil {
+			return 0, false, err
+		}
+		for _, line := range log.Lines {
+			if _, err := fmt.Fprintln(d.stdout, line); err != nil {
+				return 0, true, err
+			}
+		}
+		return exitOK, true, nil
 	}
 	if c.Follow {
 		// Until it ends, across its worker's restarts.

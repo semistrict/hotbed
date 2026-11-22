@@ -153,11 +153,17 @@ hotbed schedule run cladefs-nightly         # a run now; prints its session, for
 | `hotbed session status` | Active session state, idle time, workspaces, and commands |
 | `hotbed session current` | Active session and where it came from (`flag`, `env`, `thread`, `worktree`) |
 | `hotbed ps` | The session's commands, live and just ended |
-| `hotbed logs CMD [-f]` | A command's output; `-f` follows until it ends |
+| `hotbed logs CMD [-f \| -n N]` | A command's output; `-f` follows until it ends, `-n N` its last N lines |
 | `hotbed stop CMD` | Stops a command |
+| `hotbed workspace ls [--all]` | The session's workspaces (`--all`: every session's) |
+| `hotbed workspace show` | The session's workspace of a repo, as its worker has it now |
+| `hotbed workspace files` | Its files, each `added`/`modified` against the base or unchanged |
+| `hotbed workspace file PATH` | A file's text and the lines it changed against the base |
+| `hotbed workspace release` | Gives the workspace up; the session goes on, and `hotbed add` gives it a new one |
 | `hotbed repo ls` | Repos and their setup steps |
 | `hotbed step ls` | A repo's steps and which each node's newest base ran |
 | `hotbed nodes` | The cluster's machines, and the build each runs |
+| `hotbed snapshot` | Everything the cockpit shows, as JSON |
 | `hotbed upgrade` | Install the controller's build over this hotbed (a CI build does it by itself) |
 
 ## Output

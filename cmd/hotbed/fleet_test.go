@@ -197,7 +197,7 @@ func newFleetWith(t *testing.T, n int, opts clusterOpts) *cluster {
 		// The CLI runs on the laptop: its tailnet says so, and its calls
 		// come from the laptop.
 		tailnet: tailnettest.New(tailnet.Self{Peer: laptop}),
-		http:    tn.Client(laptop), stream: tn.Client(laptop), cache: t.TempDir(),
+		http:    recording(tn.Client(laptop)), stream: recording(tn.Client(laptop)), cache: t.TempDir(),
 		sessionsFile: filepath.Join(t.TempDir(), "sessions.json"),
 		exe:          func() (string, error) { return "", errors.New("the tests' client has no binary to upgrade") },
 		reexec:       func(...string) error { return errors.New("the tests' client runs nothing") },
