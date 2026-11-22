@@ -216,7 +216,13 @@ func responseOn(about string, e *pb.ReviewEvent) string {
 
 // quickWord is a quick response as people say it: fix if verified.
 func quickWord(q pb.QuickResponse) string {
-	return strings.ReplaceAll(strings.ToLower(strings.TrimPrefix(q.String(), "QUICK_RESPONSE_")), "_", " ")
+	return quickWords[q]
+}
+
+var quickWords = map[pb.QuickResponse]string{
+	pb.QuickResponse_QUICK_RESPONSE_VERIFY:          "verify",
+	pb.QuickResponse_QUICK_RESPONSE_FIX_IF_VERIFIED: "fix if verified",
+	pb.QuickResponse_QUICK_RESPONSE_WONT_FIX:        "won't fix",
 }
 
 func firstLine(s string) string {
