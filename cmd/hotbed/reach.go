@@ -2,8 +2,6 @@ package main
 
 import (
 	"context"
-
-	"connectrpc.com/connect/v2"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -85,16 +83,8 @@ func (f controllerFlag) locate(ctx context.Context, d deps, session, repo string
 		return nil, workerClients{}, err
 	}
 	ws, err := w.calls.GetWorkspace(ctx, &pb.GetWorkspaceRequest{Id: found.Id})
-	if refused(err) {
-		// The worker does not take this caller (another user on the worker's
-		// own machine): the controller forwards for it.
-		if w, err = f.reach(d, ""); err != nil {
-			return nil, workerClients{}, err
-		}
-		ws, err = w.calls.GetWorkspace(ctx, &pb.GetWorkspaceRequest{Id: found.Id})
-	}
 	if err != nil {
-		return nil, workerClients{}, err
+		return nil, workerClients{}, refusal(err, found.NodeAddr)
 	}
 	ws.NodeAddr = found.NodeAddr
 	remember(d, session, ws)
@@ -125,23 +115,18 @@ func (f controllerFlag) locateCommand(ctx context.Context, d deps, session, id s
 		return nil, workerClients{}, api.Errorf(api.CodeNotFound, "session %s has no command %s", session, id)
 	}
 	w, err := f.reach(d, cmd.NodeAddr)
-	if err != nil || cmd.NodeAddr == "" {
-		return cmd, w, err
-	}
-	if _, err := w.calls.GetCommand(ctx, &pb.GetCommandRequest{Id: id}); refused(err) {
-		w, err = f.reach(d, "")
-		return cmd, w, err
-	}
-	return cmd, w, nil
+	return cmd, w, err
 }
 
-// refused says whether a worker would not take the caller's call: it does
-// not admit this user, or is older than workers that take clients' calls.
-func refused(err error) bool {
-	if err == nil {
-		return false
+// refusal says what to do about a worker that would not take the call: on
+// the worker's own machine, it admits only root and the user its commands
+// run as.
+func refusal(err error, addr string) error {
+	e := api.FromConnect(err)
+	if e.Code != api.CodeNotAuthorized {
+		return err
 	}
-	return api.FromConnect(err).Code == api.CodeNotAuthorized || connect.CodeOf(err) == connect.CodeUnimplemented
+	return e.WithSuggestion(fmt.Sprintf("on %s itself, run hotbed as root or as the user its commands run as; or run it from another of your machines", addr))
 }
 
 // askKnownWorkers looks for a command on the workers this machine last

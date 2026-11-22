@@ -84,8 +84,8 @@ cockpit.
   wait. The CLI goes by where this machine last found the session's workspace, so `run`, `sync`,
   `logs` and `stop` keep working. What pauses: new workspaces (placement), `wait` and `ps`, and
   session expiry: the controller ends no session with a workspace on a worker it has not heard from,
-  for up to a day. A caller a worker refuses (another user on the worker's own machine) goes through
-  the controller.
+  for up to a day. On a worker's own machine, the worker admits only root and the user its
+  commands run as; anyone else gets a refusal saying so.
 
 ## Storage
 
