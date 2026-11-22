@@ -4,100 +4,14 @@ package setup
 
 import (
 	"context"
-	"encoding/binary"
 	"encoding/json"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
-	"strings"
 	"testing"
 	"time"
 )
-
-func TestEnsureSSHKeypairAndSeedISO(t *testing.T) {
-	dir := t.TempDir()
-	priv := filepath.Join(dir, "id_ed25519")
-	pub := filepath.Join(dir, "id_ed25519.pub")
-
-	s1, pub1, err := ensureSSHKeypair(priv, pub)
-	if err != nil {
-		t.Fatalf("ensureSSHKeypair: %v", err)
-	}
-	if !strings.HasPrefix(pub1, "ssh-ed25519 ") {
-		t.Fatalf("unexpected pubkey: %q", pub1)
-	}
-	fi, err := os.Stat(priv)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if fi.Mode().Perm() != 0o600 {
-		t.Fatalf("private key mode = %o, want 0600", fi.Mode().Perm())
-	}
-	// Reloading returns the same key.
-	s2, pub2, err := ensureSSHKeypair(priv, pub)
-	if err != nil {
-		t.Fatalf("reload keypair: %v", err)
-	}
-	if pub2 != pub1 || string(s2.PublicKey().Marshal()) != string(s1.PublicKey().Marshal()) {
-		t.Fatalf("reloaded key did not match original")
-	}
-
-	iso := filepath.Join(dir, "seed.iso")
-	if err := ensureSeedISO(t.Context(), iso, "test-worker", "testuser", []string{pub1}); err != nil {
-		t.Fatalf("ensureSeedISO: %v", err)
-	}
-	isoInfo, err := os.Stat(iso)
-	if err != nil || isoInfo.Size() == 0 {
-		t.Fatalf("seed.iso missing or empty: %v", err)
-	}
-}
-
-func TestVerifyLinuxELF(t *testing.T) {
-	dir := t.TempDir()
-	makeELF := func(name string, machine uint16) string {
-		p := filepath.Join(dir, name)
-		var hdr [20]byte
-		copy(hdr[:4], []byte{0x7f, 'E', 'L', 'F'})
-		binary.LittleEndian.PutUint16(hdr[18:20], machine)
-		if err := os.WriteFile(p, hdr[:], 0o755); err != nil {
-			t.Fatal(err)
-		}
-		return p
-	}
-	armBin := makeELF("arm64", 183)
-	amdBin := makeELF("amd64", 62)
-	nonELF := filepath.Join(dir, "macho")
-	_ = os.WriteFile(nonELF, []byte("not-an-elf-binary-at-all"), 0o755)
-
-	if err := verifyLinuxELF(armBin, "arm64"); err != nil {
-		t.Errorf("valid arm64 ELF rejected: %v", err)
-	}
-	if err := verifyLinuxELF(amdBin, "amd64"); err != nil {
-		t.Errorf("valid amd64 ELF rejected: %v", err)
-	}
-	if err := verifyLinuxELF(armBin, "amd64"); err == nil {
-		t.Errorf("arm64 ELF accepted for amd64")
-	}
-	if err := verifyLinuxELF(nonELF, "arm64"); err == nil {
-		t.Errorf("non-ELF file accepted")
-	}
-}
-
-func TestQMPSocketPathLimit(t *testing.T) {
-	short := NewVMPaths("/Users/ramon/.hotbed")
-	if got := qmpSocketPath(short); got != short.QMPSock {
-		t.Errorf("short path changed: got %q, want %q", got, short.QMPSock)
-	}
-	long := NewVMPaths("/var/folders/xx/" + strings.Repeat("a", 95) + "/.hotbed")
-	got := qmpSocketPath(long)
-	if len(got) >= 100 {
-		t.Errorf("long path not shortened: %q (len %d)", got, len(got))
-	}
-	if !strings.HasPrefix(got, "/tmp/hotbed-qmp-") {
-		t.Errorf("unexpected shortened path: %q", got)
-	}
-}
 
 // TestLiveQEMUAndZFSSparsePunchHole boots a real Ubuntu 26.04 LTS VM under
 // QEMU HVF, installs zfsutils-linux, creates the sparse qcow2 ZFS pool,

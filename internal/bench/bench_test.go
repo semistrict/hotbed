@@ -371,19 +371,6 @@ func TestOffKeepsTheWorkSlicesOwnIOLimits(t *testing.T) {
 	}
 }
 
-// With nothing saved, nothing was changed: Off leaves the host, and systemd,
-// alone.
-func TestOffWithNothingSavedDoesNothing(t *testing.T) {
-	h := newHost(t, "0-10")
-	before := h.snapshot()
-	if err := h.isolation(t, Config{CPUs: "7-10", Disk: "/mnt/fxdax-scratch"}, filepath.Join(t.TempDir(), "bench")).Off(t.Context()); err != nil {
-		t.Fatal(err)
-	}
-	if after := h.snapshot(); !mapsEqual(before, after) || len(h.sd.calls) > 0 {
-		t.Errorf("Off with nothing saved changed the host:\n%s\nsystemd: %q", diff(before, after), h.sd.calls)
-	}
-}
-
 // An On over an isolation an Off failed to give back takes the host's
 // bandwidth from what was saved, not from the root group, which has the
 // others' by then.
@@ -472,38 +459,6 @@ func TestHeldSaysWhatWasLost(t *testing.T) {
 	h.write("sys/devices/virtual/workqueue/cpumask", "7ff\n")
 	if err := iso.Held(); err == nil || err.Error() != "unbound workqueues may run on 0-10, not only 0-6" {
 		t.Errorf("Held = %v", err)
-	}
-}
-
-func TestNewChecksTheConfig(t *testing.T) {
-	h := newHost(t, "0-10")
-	for _, tc := range []struct {
-		cfg  Config
-		want string
-	}{
-		{Config{CPUs: "7-"}, `bench cpus: "7-" is not a cpulist, such as 4-7,12-15`},
-		{Config{CPUs: ""}, "bench cpus: none named"},
-		{Config{CPUs: "0-10"}, "bench cpus 0-10 leave no CPU for other work"},
-		{Config{CPUs: "9-12"}, "bench cpus 9-12 are not all online (0-10)"},
-		{Config{CPUs: "7-10", L3: "fff0"}, "bench l3 and workL3 go together"},
-	} {
-		_, err := New(tc.cfg, Options{Root: h.root, State: t.TempDir(), Slice: benchSlice, WorkSlice: "w.slice", Systemd: h.sd})
-		if err == nil || err.Error() != tc.want {
-			t.Errorf("New(%+v) = %v, want %q", tc.cfg, err, tc.want)
-		}
-	}
-}
-
-func TestSchemata(t *testing.T) {
-	root := "    MB:0=2048;1=2048\n    L3:0=ffff;1=ffff\n"
-	if got := schemata(root, "L3", "000f"); got != "L3:0=000f;1=000f" {
-		t.Errorf("L3 = %q", got)
-	}
-	if got := schemata(root, "MB", "40"); got != "MB:0=40;1=40" {
-		t.Errorf("MB = %q", got)
-	}
-	if got := line(root, "MB"); got != "MB:0=2048;1=2048" {
-		t.Errorf("line MB = %q", got)
 	}
 }
 

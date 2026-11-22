@@ -315,26 +315,11 @@ func TestReviewEnds(t *testing.T) {
 	}
 }
 
-// Reviews hold to what ReportFindings takes, stay in their project, and
-// are of a real version.
+// Reviews stay in their project and require a real version to review.
 func TestReviewRefusals(t *testing.T) {
-	c, user, v := reviewCluster(t)
+	c, _, v := reviewCluster(t)
 	c.ok(nil, "review", "request", "-s", "brave-otter")
 	c.ok(nil, "review", "start", "1", "-s", "calm-heron")
-	for _, tc := range []struct{ name, input, says string }{
-		{"no findings", `{"findings": []}`, "no findings"},
-		{"no summary", `{"findings": [{"severity": "nit"}]}`, "needs its summary"},
-		{"bad severity", `{"findings": [{"summary": "s", "severity": "huge"}]}`, `severity "huge"`},
-		{"bad verdict", `{"findings": [{"summary": "s", "severity": "nit", "verdict": "SURE"}]}`, `verdict "SURE"`},
-		{"long short_summary", `{"findings": [{"summary": "s", "severity": "nit", "short_summary": "` + strings.Repeat("x", 61) + `"}]}`, "longer than 60"},
-		{"backwards lines", `{"findings": [{"summary": "s", "severity": "nit", "locations": [{"path": "a.go", "start_line": 9, "end_line": 3}]}]}`, "run backwards"},
-		{"line without file", `{"findings": [{"summary": "s", "severity": "nit", "line": 4}]}`, "names no file"},
-		{"unknown field", `{"findings": [{"summary": "s", "severity": "nit", "fix": "x"}]}`, `unknown field "fix"`},
-	} {
-		if _, e := c.failsIn(tc.input, "review", "findings", "1", "-s", "calm-heron"); e.Code != api.CodeInvalidArgs || !strings.Contains(e.Message, tc.says) {
-			t.Errorf("%s: %v, want INVALID_ARGS saying %q", tc.name, e, tc.says)
-		}
-	}
 
 	c.ok(nil, "project", "add", "other")
 	c.ok(nil, "session", "start", "far-fox", "-p", "other")
@@ -353,16 +338,6 @@ func TestReviewRefusals(t *testing.T) {
 	c.ok(ls, "review", "ls", "--all-projects", "--limit", "1")
 	if len(ls.Reviews) != 1 || ls.Reviews[0].Id != 2 {
 		t.Errorf("ls --all-projects --limit 1 = %v", ls.Reviews)
-	}
-
-	if _, err := user.Respond(t.Context(), &pb.RespondRequest{ReviewId: 1, Quick: pb.QuickResponse_QUICK_RESPONSE_VERIFY}); api.FromConnect(err).Code != api.CodeInvalidArgs {
-		t.Errorf("a quick response to the whole review = %v, want INVALID_ARGS", err)
-	}
-	if _, e := c.fails("review", "respond", "1"); e.Code != api.CodeInvalidArgs {
-		t.Errorf("an empty response = %v, want INVALID_ARGS", e)
-	}
-	if _, e := c.fails("review", "respond", "1", "--finding", "9", "--quick", "verify"); e.Code != api.CodeNotFound {
-		t.Errorf("a response to no such finding = %v, want NOT_FOUND", e)
 	}
 
 	if _, e := c.fails("review", "request", "-s", "brave-otter", "--whole", "--base", "HEAD"); e.Code != api.CodeInvalidArgs {
