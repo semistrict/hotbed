@@ -1,6 +1,9 @@
 package unit
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 func TestParseShow(t *testing.T) {
 	for _, tc := range []struct {
@@ -63,5 +66,16 @@ func TestSliceDir(t *testing.T) {
 	}
 	if err := CheckSlice("user-hotbed.slice"); err != nil {
 		t.Error(err)
+	}
+}
+
+func TestDescriptionIsOneShortLine(t *testing.T) {
+	got := description([]string{"bash", "-c", "set -e\ncd /work\n\techo hi"})
+	if got != "hotbed bash -c set -e cd /work echo hi" {
+		t.Errorf("description = %q", got)
+	}
+	long := description([]string{strings.Repeat("x", 300)})
+	if n := len([]rune(long)); n != len("hotbed ")+200 || !strings.HasSuffix(long, "…") {
+		t.Errorf("a long command's description has %d runes: %q", n, long)
 	}
 }

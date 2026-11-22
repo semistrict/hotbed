@@ -95,25 +95,51 @@ func (c *addCmd) Exec(ctx context.Context, d deps) (any, error) {
 // freshened) to be ready, watching it on a stream (stream's clients, which
 // have no timeout) and saying what it waits for on stderr.
 func waitReady(ctx context.Context, stream clients, ws *pb.Workspace, stderr io.Writer) (*pb.Workspace, error) {
-	if ws.State == pb.WorkspaceState_WORKSPACE_STATE_PREPARING {
+	said := ""
+	var lost time.Time // when the watch first dropped, of the drops since it last worked
+	for ws.State == pb.WorkspaceState_WORKSPACE_STATE_PREPARING {
 		in, err := stream.workspaces.WatchWorkspace(ctx, &pb.WatchWorkspaceRequest{Id: ws.Id})
-		if err != nil {
+		if err == nil {
+			for ws.State == pb.WorkspaceState_WORKSPACE_STATE_PREPARING {
+				if ws.Reason != said {
+					fmt.Fprintf(stderr, "hotbed: %s is preparing: %s\n", ws.Id, ws.Reason)
+					said = ws.Reason
+				}
+				var next *pb.Workspace
+				if next, err = in.Receive(); err != nil {
+					break
+				}
+				ws, lost = next, time.Time{}
+			}
+			in.Close()
+		}
+		if ws.State != pb.WorkspaceState_WORKSPACE_STATE_PREPARING {
+			break
+		}
+		if ctx.Err() != nil {
+			return nil, ctx.Err()
+		}
+		// The watch ends while the workspace still prepares when the controller or its
+		// worker restarts (a deploy): watch again, unless the workspace is gone or the
+		// cluster stays out of reach.
+		if e := api.FromConnect(err); e != nil && e.Code == api.CodeNotFound {
+			return nil, e
+		}
+		switch {
+		case lost.IsZero():
+			lost = time.Now()
+			fmt.Fprintf(stderr, "hotbed: lost the watch of %s (%v); watching again\n", ws.Id, err)
+		case time.Since(lost) > 2*time.Minute:
 			return nil, err
 		}
-		defer in.Close()
-		said := ""
-		for ws.State == pb.WorkspaceState_WORKSPACE_STATE_PREPARING {
-			if ws.Reason != said {
-				fmt.Fprintf(stderr, "hotbed: %s is preparing: %s\n", ws.Id, ws.Reason)
-				said = ws.Reason
-			}
-			if ws, err = in.Receive(); err != nil {
-				if errors.Is(err, io.EOF) {
-					err = api.Errorf(api.CodeNotFound, "workspace was released while it prepared")
-				}
-				return nil, err
-			}
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-time.After(time.Second):
 		}
+	}
+	if ws.State == pb.WorkspaceState_WORKSPACE_STATE_RELEASED {
+		return nil, api.Errorf(api.CodeNotFound, "workspace %s was released while it prepared", ws.Id)
 	}
 	if ws.State != pb.WorkspaceState_WORKSPACE_STATE_FAILED && ws.Reason != "" {
 		fmt.Fprintf(stderr, "hotbed: warning: %s %s\n", ws.Id, ws.Reason)

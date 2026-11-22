@@ -9,6 +9,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -217,5 +218,31 @@ func TestNestedSlice(t *testing.T) {
 	}
 	if want := "0::/user.slice/user-hotbedtest.slice/" + n + ".service\n"; string(b) != want {
 		t.Errorf("command saw %q, want %q", b, want)
+	}
+}
+
+// systemd rewrites a transient unit from its file on daemon-reload: a unit
+// running a script of many lines comes through it whole.
+func TestUnitOutlivesADaemonReload(t *testing.T) {
+	n := name(t)
+	log := filepath.Join(t.TempDir(), "out.log")
+	if err := Start(t.Context(), Spec{Name: n, Argv: []string{"bash", "-c", "sleep 0.5\necho after"}, User: testUser(t), Log: log}); err != nil {
+		t.Fatal(err)
+	}
+	if out, err := exec.Command("systemctl", "daemon-reload").CombinedOutput(); err != nil {
+		t.Fatalf("daemon-reload: %v: %s", err, out)
+	}
+	desc, err := exec.Command("systemctl", "show", "-P", "Description", n+".service").Output()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.TrimSpace(string(desc)); got != "hotbed bash -c sleep 0.5 echo after" {
+		t.Errorf("description after the reload = %q", got)
+	}
+	if s := waitExit(t, n); s.ExitCode != 0 {
+		t.Errorf("state %+v, want exit 0", s)
+	}
+	if b, _ := os.ReadFile(log); string(b) != "after\n" {
+		t.Errorf("log %q", b)
 	}
 }

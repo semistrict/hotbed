@@ -48,6 +48,7 @@ type cluster struct {
 	cli      deps
 	clock    *clock
 	store    *fake.Store // the worker's volumes
+	ctrlSrv  *httptest.Server
 }
 
 type clock struct {
@@ -122,7 +123,7 @@ func newCluster(t *testing.T) *cluster {
 
 	t.Setenv("HOTBED_CONTROLLER", ctrl)
 	return &cluster{
-		t: t, id: init.ClusterID, server: server, engine: eng, asWorker: asWorker, clock: clk, store: volumes,
+		t: t, id: init.ClusterID, server: server, engine: eng, asWorker: asWorker, clock: clk, store: volumes, ctrlSrv: ctrlSrv,
 		cli: deps{
 			// The CLI runs on the laptop: its tailnet says so, and its calls
 			// come from the laptop.
@@ -736,4 +737,47 @@ func TestCommandsHaveTheirOwnTmpdir(t *testing.T) {
 		_, err := os.Stat(lines[0])
 		return errors.Is(err, os.ErrNotExist)
 	})
+}
+
+// A deploy restarts the controller under a waiting add: the watch drops, and
+// add watches again rather than failing.
+func TestAddWatchesAgainWhenTheStreamDrops(t *testing.T) {
+	c := newCluster(t)
+	c.ok(nil, "repo", "add", "app", upstream(t))
+	c.ok(nil, "step", "set", "app", "build", "--every-pull", "--", "sleep 2")
+	c.ok(nil, "session", "start", "calm-yak")
+	type result struct {
+		code           int
+		stdout, stderr string
+	}
+	done := make(chan result, 1)
+	go func() {
+		code, out, errOut := c.hotbed("add", "calm-yak", "app")
+		done <- result{code, out, errOut}
+	}()
+	c.eventually("the workspace to be preparing", func() bool {
+		snap, err := c.asWorker.GetSnapshot(t.Context(), &pb.GetSnapshotRequest{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, w := range snap.Workspaces {
+			if w.State == pb.WorkspaceState_WORKSPACE_STATE_PREPARING {
+				return true
+			}
+		}
+		return false
+	})
+	c.ctrlSrv.CloseClientConnections()
+	r := <-done
+	ws := &pb.Workspace{}
+	var out output
+	if err := json.Unmarshal([]byte(r.stdout), &out); err != nil || !out.OK {
+		t.Fatalf("add: exit %d, %q, stderr %q", r.code, r.stdout, r.stderr)
+	}
+	if err := protojson.Unmarshal(out.Data, ws); err != nil {
+		t.Fatal(err)
+	}
+	if ws.State != pb.WorkspaceState_WORKSPACE_STATE_IDLE || !strings.Contains(r.stderr, "lost the watch") {
+		t.Errorf("add = %v, stderr %q; want a ready workspace after watching again", ws, r.stderr)
+	}
 }

@@ -17,6 +17,7 @@ import (
 	"strconv"
 	"strings"
 	"syscall"
+	"unicode"
 )
 
 // DefaultSlice holds every hotbed command unless the worker names another,
@@ -34,6 +35,23 @@ func SliceDir(slice string) string {
 		}
 	}
 	return dir + "/" + slice
+}
+
+// description is a unit's Description: its command on one short line.
+// systemd writes a transient unit to a file and reads it back on every
+// daemon-reload; a newline in the description (a script's) would be read
+// as lines of their own.
+func description(argv []string) string {
+	d := strings.Join(strings.Fields(strings.Map(func(r rune) rune {
+		if unicode.IsControl(r) {
+			return ' '
+		}
+		return r
+	}, strings.Join(argv, " "))), " ")
+	if r := []rune(d); len(r) > 200 {
+		d = string(r[:199]) + "…"
+	}
+	return "hotbed " + d
 }
 
 // CheckSlice says whether s can name a slice.
@@ -90,7 +108,7 @@ func Start(ctx context.Context, s Spec) error {
 		// systemd would otherwise substitute $VAR and ${VAR} in the command
 		// line itself, before the shell sees them.
 		"--expand-environment=no",
-		"--description=hotbed " + strings.Join(s.Argv, " "),
+		"--description=" + description(s.Argv),
 		"--property=Type=exec",
 		// Keep the unit, and its exit status, after the command ends; the
 		// worker reads the status and then removes the unit.
