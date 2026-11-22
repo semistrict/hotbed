@@ -32,6 +32,9 @@ type ControllerConfig struct {
 	// controller's own node when it was initialized.
 	Owner string `json:"owner"`
 	Port  int    `json:"port"`
+	// LocalUser is the unix user, besides root, who may call the controller
+	// from its own machine; none when empty.
+	LocalUser string `json:"localUser,omitempty"`
 }
 
 // WorkerConfig is the cluster a worker joined and how it runs work.
@@ -49,6 +52,10 @@ type WorkerConfig struct {
 	Slice string `json:"slice,omitempty"`
 	// TmpDir holds each command's TMPDIR; empty for the state directory's tmp.
 	TmpDir string `json:"tmpDir,omitempty"`
+	// Owner is the tailnet login the cluster belongs to, and ControllerNode
+	// its controller's stable node ID: the one node the worker admits.
+	Owner          string `json:"owner,omitempty"`
+	ControllerNode string `json:"controllerNode,omitempty"`
 }
 
 func (c Config) validate() error {
@@ -113,6 +120,38 @@ func Commit(dir string, cfg Config) error {
 		if errors.Is(err, fs.ErrExist) {
 			return fmt.Errorf("%s: %w", dir, ErrAlreadyInitialized)
 		}
+		return fmt.Errorf("write config: %w", err)
+	}
+	return nil
+}
+
+// Rewrite replaces dir's config with cfg, which never leaves it partly
+// written: a new file renamed over the old.
+func Rewrite(dir string, cfg Config) error {
+	if err := cfg.validate(); err != nil {
+		return err
+	}
+	b, err := json.MarshalIndent(cfg, "", "  ")
+	if err != nil {
+		return fmt.Errorf("encode config: %w", err)
+	}
+	tmp, err := os.CreateTemp(dir, configName+".*")
+	if err != nil {
+		return fmt.Errorf("write config: %w", err)
+	}
+	defer os.Remove(tmp.Name())
+	if _, err := tmp.Write(append(b, '\n')); err != nil {
+		tmp.Close()
+		return fmt.Errorf("write config: %w", err)
+	}
+	if err := tmp.Sync(); err != nil {
+		tmp.Close()
+		return fmt.Errorf("write config: %w", err)
+	}
+	if err := tmp.Close(); err != nil {
+		return fmt.Errorf("write config: %w", err)
+	}
+	if err := os.Rename(tmp.Name(), filepath.Join(dir, configName)); err != nil {
 		return fmt.Errorf("write config: %w", err)
 	}
 	return nil

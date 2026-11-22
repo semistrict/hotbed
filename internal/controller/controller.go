@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"os/user"
 	"path/filepath"
 	"strconv"
 	"time"
@@ -41,9 +42,16 @@ type InitResult struct {
 
 // Init makes dir the state directory of a new cluster whose controller is
 // this machine and whose owner is the owner of this machine's tailnet node.
-func Init(ctx context.Context, dir string, port int, tn Tailnet) (InitResult, error) {
+// localUser, when set, is the unix user besides root who may call the
+// controller from this machine.
+func Init(ctx context.Context, dir string, port int, localUser string, tn Tailnet) (InitResult, error) {
 	if port <= 0 || port > 65535 {
 		return InitResult{}, api.Errorf(api.CodeInvalidArgs, "port %d is out of range", port)
+	}
+	if localUser != "" {
+		if _, err := lookupUID(localUser); err != nil {
+			return InitResult{}, err
+		}
 	}
 	dir, err := filepath.Abs(dir)
 	if err != nil {
@@ -65,7 +73,7 @@ func Init(ctx context.Context, dir string, port int, tn Tailnet) (InitResult, er
 	if err := store.Close(); err != nil {
 		return InitResult{}, err
 	}
-	cluster := statedir.ControllerConfig{ClusterID: newClusterID(), Owner: self.Login, Port: port}
+	cluster := statedir.ControllerConfig{ClusterID: newClusterID(), Owner: self.Login, Port: port, LocalUser: localUser}
 	if err := statedir.Commit(dir, statedir.Config{Controller: &cluster}); err != nil {
 		return InitResult{}, err
 	}
@@ -123,12 +131,32 @@ func Listen(ctx context.Context, dir string, cluster statedir.ControllerConfig, 
 	if err != nil {
 		return nil, err
 	}
-	api := NewServer(ServerConfig{Store: store, Identifier: tn, Cluster: cluster, UI: ui.Handler(), Controller: self.Hostname})
+	// Serve nothing unless this machine is the owner's: a machine logged into
+	// the tailnet as someone else would admit the owner on that someone's
+	// say-so.
+	if self.Login != cluster.Owner {
+		store.Close()
+		return nil, api.Errorf(api.CodeNotAuthorized, "this machine is on the tailnet as %s, but the cluster belongs to %s: refusing to serve", self.Login, cluster.Owner).
+			WithSuggestion("log this machine into the owner's tailnet account (tailscale up)")
+	}
+	var local []uint32
+	if cluster.LocalUser != "" {
+		uid, err := lookupUID(cluster.LocalUser)
+		if err != nil {
+			store.Close()
+			return nil, err
+		}
+		local = append(local, uid)
+	}
+	server := NewServer(ServerConfig{
+		Store: store, Identifier: tn, Cluster: cluster, UI: ui.Handler(), Controller: self.Hostname,
+		Self: self.Addrs, LocalUsers: local,
+	})
 	c := &Controller{
 		store: store,
-		api:   api,
+		api:   server,
 		srv: &http.Server{
-			Handler:           api.Handler(),
+			Handler:           server.Handler(),
 			ReadHeaderTimeout: 10 * time.Second,
 			Protocols:         httpx.Protocols(),
 		},
@@ -200,4 +228,17 @@ func (c *Controller) close() {
 	if err := c.store.Close(); err != nil {
 		slog.Warn("close database", "err", err)
 	}
+}
+
+// lookupUID is a unix user's ID.
+func lookupUID(name string) (uint32, error) {
+	u, err := user.Lookup(name)
+	if err != nil {
+		return 0, api.Errorf(api.CodeInvalidArgs, "no unix user %q: %v", name, err)
+	}
+	uid, err := strconv.ParseUint(u.Uid, 10, 32)
+	if err != nil {
+		return 0, fmt.Errorf("user %s has uid %q", name, u.Uid)
+	}
+	return uint32(uid), nil
 }

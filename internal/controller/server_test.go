@@ -4,6 +4,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/netip"
 	"path/filepath"
 	"testing"
 
@@ -24,6 +25,7 @@ func TestUIIsServedOnlyToTheOwner(t *testing.T) {
 		Store:      store,
 		Identifier: tn,
 		Cluster:    statedir.ControllerConfig{ClusterID: "c0ffee", Owner: "ramon@", Port: 7120},
+		Self:       []netip.Addr{netip.MustParseAddr("127.0.0.1")},
 		UI:         http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { io.WriteString(w, "ui:"+r.URL.Path) }),
 	}).Handler())
 	t.Cleanup(srv.Close)

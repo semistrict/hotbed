@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"net/netip"
 	"sync"
 
 	"github.com/semistrict/hotbed/internal/tailnet"
@@ -15,6 +16,9 @@ import (
 // Fake is a tailnet whose nodes are HTTP clients made by Client.
 type Fake struct {
 	self tailnet.Self
+	// CallerUID is the unix user its connections were opened by; root
+	// unless a test says otherwise.
+	CallerUID uint32
 
 	mu    sync.Mutex
 	peers map[string]tailnet.Peer // keyed by a client connection's local address
@@ -25,6 +29,13 @@ func New(self tailnet.Self) *Fake {
 }
 
 func (f *Fake) Self(context.Context) (tailnet.Self, error) { return f.self, nil }
+
+// InTailnet treats loopback, where the fake's connections run, as the
+// tailnet.
+func (f *Fake) InTailnet(a netip.Addr) bool { return a.Unmap().IsLoopback() }
+
+// LocalUID is CallerUID: every connection of the fake's is local.
+func (f *Fake) LocalUID(netip.AddrPort, netip.AddrPort) (uint32, error) { return f.CallerUID, nil }
 
 // WhoIs returns the peer whose client made the connection from remoteAddr.
 func (f *Fake) WhoIs(_ context.Context, remoteAddr string) (tailnet.Peer, error) {

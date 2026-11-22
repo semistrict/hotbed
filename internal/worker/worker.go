@@ -95,7 +95,7 @@ func CheckMachine(ctx context.Context, o JoinOptions) (string, error) {
 
 // Join makes o.Dir the state directory of a worker in the cluster that the
 // controller at o.Controller runs.
-func Join(ctx context.Context, o JoinOptions, hc *http.Client, check Check) (JoinResult, error) {
+func Join(ctx context.Context, o JoinOptions, tn Tailnet, hc *http.Client, check Check) (JoinResult, error) {
 	dir, err := filepath.Abs(o.Dir)
 	if err != nil {
 		return JoinResult{}, err
@@ -120,7 +120,14 @@ func Join(ctx context.Context, o JoinOptions, hc *http.Client, check Check) (Joi
 	if err != nil {
 		return JoinResult{}, api.FromConnect(err)
 	}
-	cfg := statedir.WorkerConfig{ClusterID: joined.ClusterId, Controller: controller, User: o.User, Dataset: o.Dataset, UnitProperties: o.UnitProperties, Slice: o.Slice, TmpDir: o.TmpDir}
+	owner, ctrlNode, err := controllerIdentity(ctx, tn, controller)
+	if err != nil {
+		return JoinResult{}, err
+	}
+	cfg := statedir.WorkerConfig{
+		ClusterID: joined.ClusterId, Controller: controller, User: o.User, Dataset: o.Dataset,
+		UnitProperties: o.UnitProperties, Slice: o.Slice, TmpDir: o.TmpDir, Owner: owner, ControllerNode: ctrlNode,
+	}
 	if err := statedir.Commit(dir, statedir.Config{Worker: &cfg}); err != nil {
 		return JoinResult{}, err
 	}
@@ -136,6 +143,21 @@ func Run(ctx context.Context, dir string, cfg statedir.WorkerConfig, tn Tailnet,
 	self, err := tn.Self(ctx)
 	if err != nil {
 		return err
+	}
+	if cfg.Owner == "" || cfg.ControllerNode == "" {
+		// Joined before workers recorded whom they serve: record it now, from
+		// the tailnet's account of the controller's address.
+		if cfg.Owner, cfg.ControllerNode, err = controllerIdentity(ctx, tn, cfg.Controller); err != nil {
+			return err
+		}
+		if err := statedir.Rewrite(dir, statedir.Config{Worker: &cfg}); err != nil {
+			return err
+		}
+		slog.Info("recorded the controller worker admits", "node", cfg.ControllerNode, "owner", cfg.Owner)
+	}
+	if self.Login != cfg.Owner {
+		return api.Errorf(api.CodeNotAuthorized, "this machine is on the tailnet as %s, but the cluster belongs to %s: refusing to serve", self.Login, cfg.Owner).
+			WithSuggestion("log this machine into the owner's tailnet account (tailscale up)")
 	}
 	store, err := storage.Open(ctx, dir, cfg.Dataset)
 	if err != nil {
@@ -155,11 +177,11 @@ func Run(ctx context.Context, dir string, cfg statedir.WorkerConfig, tn Tailnet,
 		return err
 	}
 
-	server := httpx.NewServer(self.Login)
-	hotbedv1connect.RegisterWorkspaceServiceHandler(server, &Service{E: eng})
-	mux := http.NewServeMux()
-	connecthttp.Mount(mux, server)
-	srv := &http.Server{Handler: httpx.Identify(tn, mux), ReadHeaderTimeout: 10 * time.Second, Protocols: httpx.Protocols()}
+	// The controller alone may call a worker: it is the one that knows
+	// which sessions may touch which workspaces.
+	srv := &http.Server{Handler: Handler(tn, httpx.Policy{
+		Owner: cfg.Owner, Nodes: []string{cfg.ControllerNode}, Self: self.Addrs,
+	}, eng), ReadHeaderTimeout: 10 * time.Second, Protocols: httpx.Protocols()}
 	var listeners []net.Listener
 	for _, addr := range self.Addrs {
 		l, err := net.Listen("tcp", net.JoinHostPort(addr.String(), strconv.Itoa(api.WorkerPort)))
@@ -256,4 +278,33 @@ func ReportOnce(ctx context.Context, eng *Engine, cluster hotbedv1connect.Cluste
 		}
 	}
 	return nil
+}
+
+// Handler serves an engine's WorkspaceService behind a gate.
+func Handler(id httpx.Identifier, p httpx.Policy, eng *Engine) http.Handler {
+	server := httpx.NewServer()
+	hotbedv1connect.RegisterWorkspaceServiceHandler(server, &Service{E: eng})
+	mux := http.NewServeMux()
+	connecthttp.Mount(mux, server)
+	return httpx.Gate(id, p, mux)
+}
+
+// controllerIdentity is who owns the controller at hostPort and its stable
+// node ID, by the tailnet's account; the controller must be a user's node.
+func controllerIdentity(ctx context.Context, tn Tailnet, hostPort string) (owner, node string, err error) {
+	p, err := tailnet.NodeAt(ctx, tn, hostPort)
+	if err != nil {
+		return "", "", fmt.Errorf("identify the controller at %s: %w", hostPort, err)
+	}
+	if p.Login == "" || len(p.Tags) > 0 || p.Shared {
+		return "", "", api.Errorf(api.CodeNotAuthorized, "the controller at %s (%s) is not a user's own node", hostPort, p.Hostname)
+	}
+	self, err := tn.Self(ctx)
+	if err != nil {
+		return "", "", err
+	}
+	if p.Login != self.Login {
+		return "", "", api.Errorf(api.CodeNotAuthorized, "the controller at %s belongs to %s, this machine to %s", hostPort, p.Login, self.Login)
+	}
+	return p.Login, p.NodeID, nil
 }

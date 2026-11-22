@@ -7,12 +7,14 @@ package tailnet
 import (
 	"context"
 	"fmt"
+	"net"
 	"net/netip"
 	"strings"
 
 	"tailscale.com/client/local"
 
 	"github.com/semistrict/hotbed/internal/api"
+	"github.com/semistrict/hotbed/internal/peercred"
 )
 
 // Peer is a tailnet node and the user who owns it.
@@ -23,6 +25,32 @@ type Peer struct {
 	// Addr is its tailnet address (IPv4 when it has one), to reach it
 	// without depending on name resolution.
 	Addr netip.Addr
+	// Tags are its ACL tags; a tagged node belongs to no user.
+	Tags []string
+	// Shared says it is another tailnet's node, shared into this one.
+	Shared bool
+}
+
+// Tailscale gives nodes addresses in these ranges alone: the CGNAT block and
+// its IPv6 unique-local prefix.
+var (
+	cgnat = netip.MustParsePrefix("100.64.0.0/10")
+	ula   = netip.MustParsePrefix("fd7a:115c:a1e0::/48")
+)
+
+// InTailnet says whether a is an address Tailscale gives its nodes.
+func InTailnet(a netip.Addr) bool {
+	a = a.Unmap()
+	return cgnat.Contains(a) || ula.Contains(a)
+}
+
+// InTailnet says whether a is a tailnet address.
+func (l *Local) InTailnet(a netip.Addr) bool { return InTailnet(a) }
+
+// LocalUID is the unix user that opened a connection on this machine, from
+// the kernel's socket tables.
+func (l *Local) LocalUID(client, server netip.AddrPort) (uint32, error) {
+	return peercred.SocketUID(client, server)
 }
 
 // Self is this machine's own tailnet node.
@@ -78,6 +106,8 @@ func (l *Local) WhoIs(ctx context.Context, remoteAddr string) (Peer, error) {
 		NodeID:   string(w.Node.StableID),
 		Hostname: w.Node.ComputedName,
 		Login:    w.UserProfile.LoginName,
+		Tags:     w.Node.Tags,
+		Shared:   w.Node.Sharer != 0,
 	}
 	for _, pfx := range w.Node.Addresses {
 		if a := pfx.Addr(); !p.Addr.IsValid() || (a.Is4() && !p.Addr.Is4()) {
@@ -96,4 +126,30 @@ func unavailable(err error) error {
 func firstLabel(fqdn string) string {
 	name, _, _ := strings.Cut(fqdn, ".")
 	return name
+}
+
+// Identifier is what NodeAt asks.
+type Identifier interface {
+	WhoIs(ctx context.Context, remoteAddr string) (Peer, error)
+	InTailnet(a netip.Addr) bool
+}
+
+// NodeAt is the tailnet node at hostPort (a MagicDNS name or tailnet
+// address, and a port), by the tailnet's own account: resolved to a tailnet
+// address, then asked about.
+func NodeAt(ctx context.Context, id Identifier, hostPort string) (Peer, error) {
+	host, port, err := net.SplitHostPort(hostPort)
+	if err != nil {
+		return Peer{}, err
+	}
+	addrs, err := net.DefaultResolver.LookupNetIP(ctx, "ip", host)
+	if err != nil {
+		return Peer{}, fmt.Errorf("resolve %s: %w", host, err)
+	}
+	for _, a := range addrs {
+		if id.InTailnet(a) {
+			return id.WhoIs(ctx, net.JoinHostPort(a.Unmap().String(), port))
+		}
+	}
+	return Peer{}, fmt.Errorf("%s resolves to no tailnet address (%v)", host, addrs)
 }

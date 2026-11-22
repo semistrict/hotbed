@@ -3,6 +3,8 @@ package main
 import (
 	"context"
 	"net/http"
+	"os"
+	"os/user"
 
 	"github.com/semistrict/hotbed/internal/api"
 	"github.com/semistrict/hotbed/internal/controller"
@@ -36,12 +38,22 @@ func (f controllerFlag) clients(hc *http.Client) (clients, error) {
 }
 
 type initCmd struct {
-	Dir  string `arg:"" type:"path" help:"State directory to create; holds the cluster's database."`
-	Port int    `default:"7120" help:"Port to serve on, on this machine's tailnet addresses."`
+	Dir       string `arg:"" type:"path" help:"State directory to create; holds the cluster's database."`
+	Port      int    `default:"7120" help:"Port to serve on, on this machine's tailnet addresses."`
+	LocalUser string `help:"Unix user, besides root, who may call the controller from this machine (default: whoever ran sudo, or you). Other users on it are refused."`
 }
 
 func (c *initCmd) Exec(ctx context.Context, d deps) (any, error) {
-	return controller.Init(ctx, c.Dir, c.Port, d.tailnet)
+	local := c.LocalUser
+	if local == "" {
+		local = os.Getenv("SUDO_USER")
+	}
+	if local == "" {
+		if u, err := user.Current(); err == nil && u.Uid != "0" {
+			local = u.Username
+		}
+	}
+	return controller.Init(ctx, c.Dir, c.Port, local, d.tailnet)
 }
 
 type joinCmd struct {
@@ -57,7 +69,7 @@ type joinCmd struct {
 func (c *joinCmd) Exec(ctx context.Context, d deps) (any, error) {
 	return worker.Join(ctx, worker.JoinOptions{
 		Dir: c.Dir, Controller: c.Controller, User: c.User, Dataset: c.ZFSDataset, UnitProperties: c.UnitProperties, Slice: c.Slice, TmpDir: c.TmpDir,
-	}, d.http, d.check)
+	}, d.tailnet, d.http, d.check)
 }
 
 type serveCmd struct {

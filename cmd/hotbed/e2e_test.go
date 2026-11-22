@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"net/netip"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -18,7 +19,6 @@ import (
 	"testing"
 	"time"
 
-	"connectrpc.com/connect/v2/connecthttp"
 	"google.golang.org/protobuf/encoding/protojson"
 	"google.golang.org/protobuf/proto"
 
@@ -72,7 +72,7 @@ func newCluster(t *testing.T) *cluster {
 	t.Helper()
 	tn := tailnettest.New(ubu1)
 	dir := t.TempDir()
-	init, err := controller.Init(t.Context(), dir, api.DefaultPort, tn)
+	init, err := controller.Init(t.Context(), dir, api.DefaultPort, "", tn)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -100,7 +100,7 @@ func newCluster(t *testing.T) *cluster {
 
 	clk := &clock{}
 	server := controller.NewServer(controller.ServerConfig{
-		Store: store, Identifier: tn, Cluster: *cfg.Controller, Controller: "ubu1", Now: clk.Now,
+		Store: store, Identifier: tn, Cluster: *cfg.Controller, Controller: "ubu1", Now: clk.Now, Self: loopback,
 		Workers:    tn.Client(ubu1.Peer),
 		WorkerAddr: func(string) string { return strings.TrimPrefix(workerSrv.URL, "http://") },
 	})
@@ -555,14 +555,13 @@ var sessionNameRE = regexpMust(`^[a-z]+-[a-z]+$`)
 
 func regexpMust(s string) *regexp.Regexp { return regexp.MustCompile(s) }
 
-// workerHandler serves an engine as a worker does, to the cluster's owner.
+// workerHandler serves an engine as a worker does: to the controller's node
+// alone, over the fake tailnet (loopback).
 func workerHandler(tn *tailnettest.Fake, eng *worker.Engine) http.Handler {
-	server := httpx.NewServer("ramon@")
-	hotbedv1connect.RegisterWorkspaceServiceHandler(server, &worker.Service{E: eng})
-	mux := http.NewServeMux()
-	connecthttp.Mount(mux, server)
-	return httpx.Identify(tn, mux)
+	return worker.Handler(tn, httpx.Policy{Owner: "ramon@", Nodes: []string{ubu1.NodeID}, Self: loopback}, eng)
 }
+
+var loopback = []netip.Addr{netip.MustParseAddr("127.0.0.1")}
 
 // runs counts the lines a step appended to a file in the workspace's cache.
 func (c *cluster) runs(session, file string) int {

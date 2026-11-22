@@ -27,7 +27,7 @@ var (
 
 func TestInit(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "hotbed")
-	res, err := controller.Init(t.Context(), dir, 7121, tailnettest.New(ubu1))
+	res, err := controller.Init(t.Context(), dir, 7121, "", tailnettest.New(ubu1))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -57,7 +57,7 @@ func TestInit(t *testing.T) {
 }
 
 func TestInitDefaultPortAddressIsHostname(t *testing.T) {
-	res, err := controller.Init(t.Context(), t.TempDir(), api.DefaultPort, tailnettest.New(ubu1))
+	res, err := controller.Init(t.Context(), t.TempDir(), api.DefaultPort, "", tailnettest.New(ubu1))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -68,10 +68,10 @@ func TestInitDefaultPortAddressIsHostname(t *testing.T) {
 
 func TestInitRefusesInitializedDir(t *testing.T) {
 	dir := t.TempDir()
-	if _, err := controller.Init(t.Context(), dir, api.DefaultPort, tailnettest.New(ubu1)); err != nil {
+	if _, err := controller.Init(t.Context(), dir, api.DefaultPort, "", tailnettest.New(ubu1)); err != nil {
 		t.Fatal(err)
 	}
-	_, err := controller.Init(t.Context(), dir, api.DefaultPort, tailnettest.New(ubu1))
+	_, err := controller.Init(t.Context(), dir, api.DefaultPort, "", tailnettest.New(ubu1))
 	if !errors.Is(err, statedir.ErrAlreadyInitialized) {
 		t.Errorf("second Init = %v, want ErrAlreadyInitialized", err)
 	}
@@ -79,7 +79,7 @@ func TestInitRefusesInitializedDir(t *testing.T) {
 
 func TestInitRejectsBadPort(t *testing.T) {
 	for _, port := range []int{0, -1, 65536} {
-		_, err := controller.Init(t.Context(), t.TempDir(), port, tailnettest.New(ubu1))
+		_, err := controller.Init(t.Context(), t.TempDir(), port, "", tailnettest.New(ubu1))
 		var e *api.Error
 		if !errors.As(err, &e) || e.Code != api.CodeInvalidArgs {
 			t.Errorf("Init with port %d = %v, want INVALID_ARGS", port, err)
@@ -120,7 +120,7 @@ func serve(t *testing.T, dir string, tn *tailnettest.Fake) (string, func()) {
 func TestNodesSurviveRestart(t *testing.T) {
 	dir := t.TempDir()
 	tn := tailnettest.New(ubu1)
-	if _, err := controller.Init(t.Context(), dir, api.DefaultPort, tn); err != nil {
+	if _, err := controller.Init(t.Context(), dir, api.DefaultPort, "", tn); err != nil {
 		t.Fatal(err)
 	}
 

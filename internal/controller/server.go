@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"net/netip"
 	"regexp"
 	"slices"
 	"strconv"
@@ -50,6 +51,12 @@ type ServerConfig struct {
 	WorkerAddr func(addr string) string
 	// Controller is this machine's tailnet host name, for the cockpit.
 	Controller string
+	// Self is this machine's tailnet addresses, the only ones the gate lets
+	// requests in on.
+	Self []netip.Addr
+	// LocalUsers are the unix users, besides root, who may call from this
+	// machine itself.
+	LocalUsers []uint32
 }
 
 // Server is the controller's API: the cluster, sessions, and workspaces,
@@ -81,17 +88,21 @@ func NewServer(cfg ServerConfig) *Server {
 }
 
 // Handler serves the API and the cockpit to the cluster's owner only.
+// Handler serves the API and the cockpit, behind the gate that admits the
+// cluster's owner alone.
 func (s *Server) Handler() http.Handler {
-	server := httpx.NewServer(s.cfg.Cluster.Owner)
+	server := httpx.NewServer()
 	hotbedv1connect.RegisterClusterServiceHandler(server, s)
 	hotbedv1connect.RegisterSessionServiceHandler(server, &sessions{s})
 	hotbedv1connect.RegisterWorkspaceServiceHandler(server, &workspaces{s})
 	mux := http.NewServeMux()
 	connecthttp.Mount(mux, server)
 	if s.cfg.UI != nil {
-		mux.Handle("/", httpx.RequireOwner(s.cfg.Cluster.Owner, s.cfg.UI))
+		mux.Handle("/", s.cfg.UI)
 	}
-	return httpx.Identify(s.cfg.Identifier, mux)
+	return httpx.Gate(s.cfg.Identifier, httpx.Policy{
+		Owner: s.cfg.Cluster.Owner, Self: s.cfg.Self, LocalUsers: s.cfg.LocalUsers,
+	}, mux)
 }
 
 func (s *Server) now() time.Time { return s.cfg.Now() }
