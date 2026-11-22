@@ -35,7 +35,7 @@ export function NodePage() {
     <div className="space-y-6">
       <PageTitle
         title={n.hostname}
-        sub={`${n.machine} · ${n.kernel} · joined ${ago(n.joinedAt, now)}`}
+        sub={`${n.machine} · ${n.kernel} · ${n.benchCpus ? `measurements on CPUs ${n.benchCpus}` : "no measurements"} · joined ${ago(n.joinedAt, now)}`}
         right={
           <div className="flex items-center gap-3">
             <ArchBadge arch={n.arch} />

@@ -15,7 +15,7 @@ describe("toSnapshot", () => {
           hostname: "asahimbp",
           online: true,
           joinedAt: 1795200000000n,
-          resources: { arch: "arm64", cpus: 11, memoryBytes: 19327352832n, machine: "MacBook Pro (14-inch, M3 Pro, Nov 2023)" },
+          resources: { arch: "arm64", cpus: 11, memoryBytes: 19327352832n, machine: "MacBook Pro (14-inch, M3 Pro, Nov 2023)", benchCpus: "7-10" },
           usage: { cpuBusy: 0.25, memoryUsedBytes: 4294967296n },
         },
       ],
@@ -34,8 +34,12 @@ describe("toSnapshot", () => {
           reason: "frozen at 94% memory in use",
           timeline: [{ at: 1795299000000n, what: "queued", detail: "by claude" }],
         },
+        { id: "b3nch000", state: CommandState.RUNNING, kind: "shell", bench: true, queuedAt: 1795299000000n },
       ],
-      history: [{ id: "a", state: CommandState.FAILED, failure: "test", exitCode: 100, coldSeconds: 370, endedAt: 1795299500000n, seconds: 14.2 }],
+      history: [
+        { id: "a", state: CommandState.FAILED, failure: "test", exitCode: 100, coldSeconds: 370, endedAt: 1795299500000n, seconds: 14.2 },
+        { id: "b", state: CommandState.SUCCEEDED, bench: true, endedAt: 1795299500000n, seconds: 3 },
+      ],
       series: { nAsahi: { samples: [{ t: 1795299995000n, cpuBusy: 0.25, memoryUsed: 0.22 }] } },
       sessions: [
         {
@@ -81,6 +85,15 @@ describe("toSnapshot", () => {
     expect(s.now).toBe("2026-11-21T22:26:40.000Z");
     expect(s.nodes[0]).toMatchObject({ hostname: "asahimbp", arch: "arm64", cpus: 11, memoryBytes: 19327352832, lastSeen: "2026-11-20T18:40:00.000Z" });
     expect(s.nodes[0]?.usage.memoryUsedBytes).toBe(4294967296);
+    expect(s.nodes[0]?.benchCpus).toBe("7-10");
+    expect(s.commands.map((c) => [c.id, c.bench])).toEqual([
+      ["k3m9x2qa", false],
+      ["b3nch000", true],
+    ]);
+    expect(s.history.map((c) => [c.id, c.bench])).toEqual([
+      ["a", false],
+      ["b", true],
+    ]);
     expect(s.bases[0]).toMatchObject({ state: "warm", builtAt: "2026-11-21T08:33:20.000Z" });
     expect(s.commands[0]).toMatchObject({ state: "parked", kind: "test", startedAt: null, exitCode: null, url: null, reason: "frozen at 94% memory in use" });
     expect(s.history[0]).toMatchObject({ state: "failed", failure: "test", exitCode: 100, coldSeconds: 370, rebuilt: null });

@@ -2,7 +2,7 @@ import { Link, useParams } from "@tanstack/react-router";
 import type { Session, Snapshot } from "../api";
 import { FAILURE } from "../components/CommandTable";
 import { Card, Empty, StatTile } from "../components/ui/Card";
-import { KindTag, StateBadge } from "../components/ui/State";
+import { BenchTag, KindTag, StateBadge } from "../components/ui/State";
 import { nodeName, repoName, useSnapshot } from "../lib/data";
 import { ago, duration, hhmmss, speedup } from "../lib/format";
 import { idleLeftMs, sessionCommands, workspaceRepo } from "../lib/sessions";
@@ -125,6 +125,7 @@ function SessionView({ s, session }: { s: Snapshot; session: Session }) {
                       </Link>
                       <div className="mt-0.5 flex gap-2">
                         <KindTag kind={r.kind} />
+                        {r.bench && <BenchTag />}
                         {r.url && (
                           <a href={r.url} className="text-[10px] text-primary hover:underline" target="_blank" rel="noreferrer">
                             {r.url.replace("http://", "")} ↗

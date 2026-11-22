@@ -61,3 +61,13 @@ export function OutcomeBadge({ outcome }: { outcome: RunOutcome }) {
     </span>
   );
 }
+
+/** Marks a measurement (hotbed run --bench), in word and icon. */
+export function BenchTag() {
+  return (
+    <span className="inline-flex items-center gap-1 rounded border border-primary/40 px-1 font-mono text-[10px] tracking-wider text-primary uppercase" title="A measurement: alone on the node's measurement CPUs, isolated, never parked">
+      <span aria-hidden>⏱</span>
+      measurement
+    </span>
+  );
+}

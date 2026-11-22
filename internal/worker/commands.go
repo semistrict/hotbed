@@ -73,6 +73,10 @@ func (e *Engine) Exec(_ context.Context, req *pb.RunCommandRequest) (*pb.Command
 	if _, dup := e.commands[req.Id]; dup || req.Id == "" {
 		return nil, api.Errorf(api.CodeConflict, "command ID %q is taken or empty", req.Id)
 	}
+	if req.Bench && e.cfg.Bench == nil {
+		return nil, api.Errorf(api.CodeInvalidArgs, "%s takes no measurements: its worker's config names no bench CPUs", e.cfg.Host).
+			WithSuggestion("hotbed nodes shows the nodes that do (benchCpus); hotbed add --node one of them")
+	}
 	kind := req.Kind
 	if kind == "" {
 		kind = inferKind(req.Args)
@@ -91,8 +95,8 @@ func (e *Engine) Exec(_ context.Context, req *pb.RunCommandRequest) (*pb.Command
 				Id: req.Id, WorkspaceId: req.WorkspaceId, NodeId: e.cfg.NodeID,
 				Argv: shell.Join(req.Args), Args: req.Args, Kind: kind,
 				State: queued, QueuedAt: now, Limits: limits, Attached: req.Attached,
-				SessionId: w.ws().SessionId,
-				Timeline:  []*pb.CommandEvent{{At: now, What: "queued", Detail: "by " + w.ws().Agent}},
+				SessionId: w.ws().SessionId, Bench: req.Bench,
+				Timeline: []*pb.CommandEvent{{At: now, What: "queued", Detail: "by " + w.ws().Agent}},
 			},
 			RepoId: w.ws().RepoId, Agent: w.ws().Agent, Volume: w.rec.Volume,
 			Dir: WorkPath + "/" + w.ws().RepoId, Env: req.Env,
@@ -190,6 +194,7 @@ func (e *Engine) step(ctx context.Context) {
 		}
 		e.observe(ctx, c, st)
 	}
+	e.settleBench(ctx)
 	e.admit(ctx)
 	e.park(ctx)
 	e.reap(ctx)
@@ -226,6 +231,8 @@ func (e *Engine) observe(ctx context.Context, c *command, st unit.State) {
 			cmd.SwapBytes = swap
 		}
 	}
+	// While it runs and as it ends: the node is given back only after.
+	e.checkIsolation(c)
 	if !st.Exited {
 		return
 	}
@@ -238,6 +245,10 @@ func (e *Engine) observe(ctx context.Context, c *command, st unit.State) {
 		return
 	}
 	code := int32(st.ExitCode)
+	if lost := c.rec.IsolationLost; lost != "" {
+		e.end(c, failed, nil, fmt.Sprintf("exit %d, but the measurement lost its isolation: %s", code, lost))
+		return
+	}
 	state := succeeded
 	if code != 0 {
 		state = failed
@@ -256,14 +267,23 @@ func (e *Engine) admit(ctx context.Context) {
 	}
 	slices.SortFunc(waiting, func(a, b *command) int { return int(a.cmd().QueuedAt - b.cmd().QueuedAt) })
 	e.mu.Unlock()
+	// ahead is the oldest measurement still waiting, which later ones wait
+	// for; holder is one that waits for room, which later work waits behind.
+	var ahead, holder *command
 	for _, c := range waiting {
 		e.mu.Lock()
 		if c.cmd().State != queued {
 			e.mu.Unlock()
 			continue // stopped meanwhile
 		}
-		if reason := e.admissionBlocker(c); reason != "" {
+		if reason, holds := e.admissionBlocker(c, ahead, holder); reason != "" {
 			c.cmd().Reason = reason
+			if c.cmd().Bench {
+				ahead = cmp.Or(ahead, c)
+				if holds {
+					holder = cmp.Or(holder, c)
+				}
+			}
 			e.mu.Unlock()
 			continue
 		}
@@ -273,7 +293,13 @@ func (e *Engine) admit(ctx context.Context) {
 		err := e.makeTmp(c.cmd().Id)
 		if err != nil {
 			err = fmt.Errorf("make its TMPDIR: %w", err)
-		} else {
+		}
+		if err == nil && c.cmd().Bench {
+			if err = e.cfg.Bench.On(ctx); err != nil {
+				err = fmt.Errorf("isolate the node: %w", err)
+			}
+		}
+		if err == nil {
 			err = e.cfg.Units.Start(ctx, spec)
 		}
 		e.mu.Lock()
@@ -284,26 +310,64 @@ func (e *Engine) admit(ctx context.Context) {
 			continue
 		}
 		cmd := c.cmd()
+		if cmd.State != queued {
+			// Stopped while it started.
+			e.mu.Unlock()
+			if err := e.cfg.Units.Stop(ctx, c.unitName()); err != nil {
+				slog.Warn("stop a command stopped while it started", "command", cmd.Id, "err", err)
+			}
+			continue
+		}
 		now := e.nowMs()
 		cmd.State = running
 		cmd.StartedAt = &now
-		cmd.Timeline = append(cmd.Timeline, &pb.CommandEvent{At: now, What: "admitted", Detail: fmt.Sprintf("weight %d · low %s · high %s", cmd.Limits.CpuWeight, gib(cmd.Limits.MemoryLowBytes), gib(cmd.Limits.MemoryHighBytes))})
+		share := fmt.Sprintf("weight %d", cmd.Limits.CpuWeight)
+		if cmd.Bench {
+			share = "measurement on CPUs " + e.cfg.Bench.CPUs().String()
+		}
+		cmd.Timeline = append(cmd.Timeline, &pb.CommandEvent{At: now, What: "admitted", Detail: fmt.Sprintf("%s · low %s · high %s", share, gib(cmd.Limits.MemoryLowBytes), gib(cmd.Limits.MemoryHighBytes))})
 		e.saveCommand(c)
 		e.sessionEvent(c, "admitted", "")
-		go e.watchExit(ctx, c.unitName())
-		if cmd.Kind != "freshen" {
+		go e.watchExit(ctx, spec.Slice, c.unitName())
+		switch {
+		case cmd.Bench:
+			e.event("admit", fmt.Sprintf("measure %s · %s on CPUs %s", cmd.Argv, cmd.WorkspaceId, e.cfg.Bench.CPUs()), ref("command", cmd.Id))
+		case cmd.Kind != "freshen":
 			e.event("admit", fmt.Sprintf("admit %s · %s", cmd.Argv, cmd.WorkspaceId), ref("command", cmd.Id))
 		}
 		e.mu.Unlock()
 	}
 }
 
-// admissionBlocker says why c cannot start now, or "" if it can. Call with
-// e.mu held.
-func (e *Engine) admissionBlocker(c *command) string {
+// admissionBlocker says why c cannot start now, or "" if it can, and
+// whether a measurement's reason holds up the work queued after it: it
+// waits for room that work would take. ahead is the oldest measurement
+// still waiting, holder one that holds up work. Call with e.mu held.
+func (e *Engine) admissionBlocker(c, ahead, holder *command) (reason string, holds bool) {
 	if w, ok := e.workspaces[c.cmd().WorkspaceId]; ok && w.ws().State == preparing {
-		return w.ws().Reason
+		return w.ws().Reason, false
 	}
+	switch {
+	case c.cmd().Bench:
+		if r := e.benchBlocker(ahead); r != "" {
+			return r, false
+		}
+	case holder != nil:
+		return fmt.Sprintf("waiting behind measurement %s, which waits for room", holder.cmd().Id), false
+	}
+	if r := e.room(c); r != "" {
+		return r, true
+	}
+	if c.cmd().Bench {
+		if r := e.benchRoom(); r != "" {
+			return r, true
+		}
+	}
+	return "", false
+}
+
+// room says why the node has no room for c now, or "". Call with e.mu held.
+func (e *Engine) room(c *command) string {
 	var reserved int64
 	for _, o := range e.commands {
 		if s := o.cmd().State; s == running || s == parked {
@@ -328,9 +392,15 @@ func (e *Engine) spec(c *command) unit.Spec {
 	cmd := c.cmd()
 	env := append(cacheEnv(), c.rec.Env...)
 	env = append(env, "HOTBED_WORKSPACE="+cmd.WorkspaceId, "HOTBED_COMMAND="+cmd.Id, "TMPDIR="+e.tmpDir(cmd.Id))
+	props := e.cfg.UnitProperties
+	if cmd.Bench {
+		// At the default nice: on CPUs of its own it competes only with the
+		// kernel's per-CPU threads, which a niced measurement yields to.
+		props = slices.DeleteFunc(slices.Clone(props), func(p string) bool { return strings.HasPrefix(p, "Nice=") })
+	}
 	return unit.Spec{
 		Name:       c.unitName(),
-		Slice:      e.cfg.Slice,
+		Slice:      e.sliceOf(c),
 		Argv:       cmd.Args,
 		Dir:        c.rec.Dir,
 		Binds:      []unit.Bind{{Source: e.cfg.Store.Path(c.rec.Volume), Target: WorkPath}},
@@ -342,7 +412,8 @@ func (e *Engine) spec(c *command) unit.Spec {
 		MemoryLow:  cmd.Limits.MemoryLowBytes,
 		MemoryHigh: cmd.Limits.MemoryHighBytes,
 		Log:        e.logPath(cmd.Id),
-		Properties: e.cfg.UnitProperties,
+		NoSwap:     cmd.Bench,
+		Properties: props,
 	}
 }
 
@@ -351,7 +422,8 @@ func (e *Engine) spec(c *command) unit.Spec {
 // killed for memory. Parking frees memory for the commands left running,
 // so it never freezes the last of them, and with none left running it
 // thaws the oldest whatever memory says: else every command could sit
-// frozen, waiting for room that only running ones could make.
+// frozen, waiting for room that only running ones could make. A
+// measurement is never parked, but counts among those left running.
 func (e *Engine) park(ctx context.Context) {
 	mem, err := e.cfg.System.Meminfo()
 	if err != nil {
@@ -360,8 +432,11 @@ func (e *Engine) park(ctx context.Context) {
 	}
 	e.mu.Lock()
 	var runningCmds, parkedCmds []*command
+	measuring := 0
 	for _, c := range e.commands {
 		switch s := c.cmd().State; {
+		case s == running && c.cmd().Bench:
+			measuring++
 		case s == running && c.cmd().Kind != "server":
 			runningCmds = append(runningCmds, c)
 		case s == parked:
@@ -370,7 +445,7 @@ func (e *Engine) park(ctx context.Context) {
 	}
 	e.mu.Unlock()
 	total := float64(mem.Total)
-	if float64(mem.Used()) > total*parkAt && len(runningCmds) > 1 {
+	if float64(mem.Used()) > total*parkAt && len(runningCmds) > 0 && len(runningCmds)+measuring > 1 {
 		slices.SortFunc(runningCmds, func(a, b *command) int { return int(b.cmd().GetStartedAt() - a.cmd().GetStartedAt()) })
 		victim := runningCmds[0]
 		if err := e.cfg.Units.Freeze(ctx, victim.unitName()); err != nil {
@@ -407,7 +482,7 @@ func (e *Engine) park(ctx context.Context) {
 	}
 	slices.SortFunc(parkedCmds, func(a, b *command) int { return int(a.rec.ParkedAt - b.rec.ParkedAt) })
 	oldest := parkedCmds[0]
-	if len(runningCmds) > 0 && float64(mem.Used()+oldest.cmd().SwapBytes) > total*thawBelow {
+	if len(runningCmds)+measuring > 0 && float64(mem.Used()+oldest.cmd().SwapBytes) > total*thawBelow {
 		return
 	}
 	if err := e.cfg.Units.Thaw(ctx, oldest.unitName()); err != nil {
@@ -508,7 +583,7 @@ func (e *Engine) end(c *command, state pb.CommandState, code *int32, why string)
 		Argv: cmd.Argv, Kind: cmd.Kind, State: state, ExitCode: code, Failure: failure,
 		EndedAt: now, QueuedSeconds: float64(started-cmd.QueuedAt) / 1000, Seconds: seconds,
 		ColdSeconds: cmd.ColdSeconds, PeakMemoryBytes: c.rec.PeakMemoryBytes, Parks: c.rec.Parks,
-		SessionId: cmd.SessionId, Reason: why,
+		SessionId: cmd.SessionId, Reason: why, Bench: cmd.Bench,
 	}
 	if cmd.Rebuilt != nil {
 		units, of := cmd.Rebuilt.Units, cmd.Rebuilt.Of

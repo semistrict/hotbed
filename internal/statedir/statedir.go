@@ -10,6 +10,8 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+
+	"github.com/semistrict/hotbed/internal/bench"
 )
 
 const configName = "hotbed.json"
@@ -52,6 +54,9 @@ type WorkerConfig struct {
 	Slice string `json:"slice,omitempty"`
 	// TmpDir holds each command's TMPDIR; empty for the state directory's tmp.
 	TmpDir string `json:"tmpDir,omitempty"`
+	// Bench is the node's measurements (hotbed run --bench), as the host's
+	// setup step sets them; none taken without.
+	Bench *bench.Config `json:"bench,omitempty"`
 	// Owner is the tailnet login the cluster belongs to, and ControllerNode
 	// its controller's stable node ID: the one node the worker admits.
 	Owner          string `json:"owner,omitempty"`

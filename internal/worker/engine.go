@@ -44,9 +44,10 @@ type Units interface {
 	Reclaim(cgroup string, n int64) error
 	Swap(cgroup string) (int64, error)
 	Stop(ctx context.Context, name string) error
-	// Wait returns once the unit's processes have all exited (or ctx is
-	// done), so the engine notices an exit without waiting for its tick.
-	Wait(ctx context.Context, name string) error
+	// Wait returns once the processes of the unit name, in slice, have all
+	// exited (or ctx is done), so the engine notices an exit without
+	// waiting for its tick.
+	Wait(ctx context.Context, slice, name string) error
 }
 
 // System measures the node; Linux is the real one.
@@ -75,10 +76,13 @@ type EngineConfig struct {
 	// what builds need beyond a plain user: AmbientCapabilities=,
 	// DeviceAllow=, LimitMEMLOCK= and so on.
 	UnitProperties []string
-	Store          storage.Store
-	Units          Units
-	System         System
-	Now            func() time.Time
+	// Bench isolates the node for measurements; nil on a node that takes
+	// none.
+	Bench  Isolator
+	Store  storage.Store
+	Units  Units
+	System System
+	Now    func() time.Time
 }
 
 // Engine is a worker's bases, workspaces and commands. The messages it
@@ -99,6 +103,7 @@ type Engine struct {
 	diskBytes  int64
 	oomKills   int64
 	resources  *pb.Resources
+	offErr     string // the last failure to give back a measurement's isolation, logged once
 
 	kick    chan struct{} // something changed: report soon
 	collect chan struct{} // a base may have become garbage: collect soon
@@ -176,6 +181,9 @@ func NewEngine(ctx context.Context, cfg EngineConfig) (*Engine, error) {
 		d.close()
 		return nil, err
 	}
+	if cfg.Bench != nil {
+		e.resources.BenchCpus = cfg.Bench.CPUs().String()
+	}
 	if err := e.load(); err != nil {
 		d.close()
 		return nil, fmt.Errorf("load worker state: %w", err)
@@ -223,10 +231,11 @@ func (e *Engine) Run(ctx context.Context) {
 	e.mu.Lock()
 	for _, c := range e.commands {
 		if s := c.cmd().State; s == running || s == parked {
-			go e.watchExit(ctx, c.unitName())
+			go e.watchExit(ctx, e.sliceOf(c), c.unitName())
 		}
 	}
 	e.mu.Unlock()
+	e.settleBench(ctx)
 	for {
 		select {
 		case <-ctx.Done():
@@ -260,8 +269,8 @@ func (e *Engine) stepSoon() {
 
 // watchExit steps as soon as a command's unit has exited. The tick would
 // notice too, a second later.
-func (e *Engine) watchExit(ctx context.Context, name string) {
-	if err := e.cfg.Units.Wait(ctx, name); err != nil {
+func (e *Engine) watchExit(ctx context.Context, slice, name string) {
+	if err := e.cfg.Units.Wait(ctx, slice, name); err != nil {
 		if ctx.Err() == nil {
 			slog.Warn("watch command for its exit", "unit", name, "err", err)
 		}

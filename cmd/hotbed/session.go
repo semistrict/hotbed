@@ -258,6 +258,7 @@ type commandFlags struct {
 	MemHigh   string   `default:"0" help:"Memory past which it is throttled and swapped (memory.high), such as 8G; 0 for none."`
 	Env       []string `help:"KEY=VALUE for the command. Repeatable."`
 	Kind      string   `enum:",build,test,check,server,shell" default:"" help:"What it is, for history: build, test, check, server or shell (default: guessed)."`
+	Bench     bool     `help:"Run it as a measurement: alone among measurements on the node, once running work leaves it room, on the node's measurement CPUs, which no other command uses meanwhile, isolated for its whole run (cache, memory bandwidth, IRQs, others' clocks and disk IO where the node has them), never swapped or parked. It fails if the isolation was lost."`
 }
 
 // request is the command args (kong's passthrough, with or without its
@@ -278,7 +279,7 @@ func (f commandFlags) request(args []string, example string) (*pb.RunCommandRequ
 		return nil, err
 	}
 	return &pb.RunCommandRequest{
-		Args: args, Env: f.Env, Kind: f.Kind,
+		Args: args, Env: f.Env, Kind: f.Kind, Bench: f.Bench,
 		Limits: &pb.CommandLimits{CpuWeight: int32(f.CPUWeight), MemoryLowBytes: low, MemoryHighBytes: high},
 	}, nil
 }

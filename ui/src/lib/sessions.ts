@@ -36,6 +36,7 @@ export interface SessionCommand {
   /** Why it waits or sleeps, while live. */
   reason: string | null;
   url: string | null;
+  bench: boolean;
   live: boolean;
 }
 
@@ -63,6 +64,7 @@ export function sessionCommands(s: Snapshot, sessionId: string, repoOf: (workspa
     coldSeconds: f.coldSeconds,
     reason: null,
     url: null,
+    bench: f.bench,
     live: false,
   }));
   for (const c of s.commands) {
@@ -90,6 +92,7 @@ function fromCommand(c: Command, now: number, repoId: string): SessionCommand {
     coldSeconds: c.coldSeconds,
     reason: c.reason,
     url: c.url,
+    bench: c.bench,
     live: isLive(c),
   };
 }

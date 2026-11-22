@@ -86,6 +86,9 @@ type Spec struct {
 	MemoryLow  int64    // guaranteed bytes; 0 for none
 	MemoryHigh int64    // bytes past which the kernel throttles and reclaims; 0 for none
 	Log        string   // file that gets stdout and stderr
+	// NoSwap keeps all its memory in RAM (MemorySwapMax=0), as a
+	// measurement's: one swapped out measures the disk.
+	NoSwap bool
 	// Properties are more systemd properties (KEY=VALUE), such as
 	// AmbientCapabilities=CAP_SYS_ADMIN, for what a build needs.
 	Properties []string
@@ -101,6 +104,18 @@ func Start(ctx context.Context, s Spec) error {
 	}
 	if err := os.MkdirAll(filepath.Dir(s.Log), 0o755); err != nil {
 		return err
+	}
+	if _, err := run(ctx, "systemd-run", startArgs(s)...); err != nil {
+		return fmt.Errorf("start unit %s: %w", s.Name, err)
+	}
+	return nil
+}
+
+// startArgs is systemd-run's arguments for s.
+func startArgs(s Spec) []string {
+	swap := "infinity"
+	if s.NoSwap {
+		swap = "0"
 	}
 	args := []string{
 		"--unit=" + s.Name,
@@ -121,7 +136,7 @@ func Start(ctx context.Context, s Spec) error {
 		// Memory past MemoryHigh is reclaimed, never killed; the worker parks
 		// commands before memory runs out.
 		"--property=MemoryMax=infinity",
-		"--property=MemorySwapMax=infinity",
+		"--property=MemorySwapMax=" + swap,
 	}
 	if s.User != "" {
 		// No PAMName: pam_systemd would move the command into a login
@@ -163,11 +178,7 @@ func Start(ctx context.Context, s Spec) error {
 	// to interactive shells.
 	args = append(args, "--", "/bin/bash", "-lc",
 		`PATH="${HOTBED_PATH:+$HOTBED_PATH:}$PATH${HOTBED_PATH_AFTER:+:$HOTBED_PATH_AFTER}"; exec "$@"`, "hotbed")
-	args = append(args, s.Argv...)
-	if _, err := run(ctx, "systemd-run", args...); err != nil {
-		return fmt.Errorf("start unit %s: %w", s.Name, err)
-	}
-	return nil
+	return append(args, s.Argv...)
 }
 
 // State is a unit as systemd sees it.
@@ -285,6 +296,20 @@ func Stop(ctx context.Context, name string) error {
 		return err
 	}
 	return nil
+}
+
+// StartSlice starts a slice, which stays when its last unit ends, until
+// stopped.
+func StartSlice(ctx context.Context, slice string) error {
+	_, err := run(ctx, "systemctl", "start", slice)
+	return err
+}
+
+// SetProperties sets properties (KEY=VALUE; KEY= resets one) of a unit until
+// the next boot, as systemctl set-property --runtime does.
+func SetProperties(ctx context.Context, unit string, props ...string) error {
+	_, err := run(ctx, "systemctl", append([]string{"set-property", "--runtime", unit}, props...)...)
+	return err
 }
 
 func run(ctx context.Context, name string, args ...string) (string, error) {

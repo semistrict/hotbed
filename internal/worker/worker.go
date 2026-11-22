@@ -4,6 +4,7 @@
 package worker
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -21,6 +22,7 @@ import (
 	"golang.org/x/sync/errgroup"
 
 	"github.com/semistrict/hotbed/internal/api"
+	"github.com/semistrict/hotbed/internal/bench"
 	pb "github.com/semistrict/hotbed/internal/gen/hotbed/v1"
 	"github.com/semistrict/hotbed/internal/gen/hotbed/v1/hotbedv1connect"
 	"github.com/semistrict/hotbed/internal/httpx"
@@ -163,11 +165,24 @@ func Run(ctx context.Context, dir string, cfg statedir.WorkerConfig, tn Tailnet,
 	if err != nil {
 		return err
 	}
-	eng, err := NewEngine(ctx, EngineConfig{
+	ecfg := EngineConfig{
 		Dir: dir, NodeID: self.NodeID, Host: self.Hostname, User: cfg.User,
 		Slice: cfg.Slice, TmpDir: cfg.TmpDir, UnitProperties: cfg.UnitProperties, Store: store,
-		Units: Systemd{Slice: cfg.Slice}, System: &Linux{Slice: cfg.Slice},
-	})
+		Units: Systemd{}, System: &Linux{Slice: cfg.Slice},
+	}
+	if cfg.Bench != nil {
+		iso, err := bench.New(*cfg.Bench, bench.Options{
+			// Under /run: what it saves of the host lasts as long as the
+			// kernel's settings it changed.
+			State: "/run/hotbed/bench", Slice: BenchSlice(cfg.Slice),
+			WorkSlice: cmp.Or(cfg.Slice, unit.DefaultSlice), Systemd: Systemd{},
+		})
+		if err != nil {
+			return fmt.Errorf("the worker's measurements: %w", err)
+		}
+		ecfg.Bench = iso
+	}
+	eng, err := NewEngine(ctx, ecfg)
 	if err != nil {
 		return err
 	}

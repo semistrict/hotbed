@@ -5,7 +5,7 @@ import { ago, bytes, duration, speedup } from "../lib/format";
 import { Meter } from "./charts/Bars";
 import { SessionLink } from "./SessionLink";
 import { Empty } from "./ui/Card";
-import { KindTag, StateBadge } from "./ui/State";
+import { BenchTag, KindTag, StateBadge } from "./ui/State";
 
 /** Live commands: what each is doing now, against its limits. */
 export function LiveCommandTable({ s, commands }: { s: Snapshot; commands: Command[] }) {
@@ -37,6 +37,7 @@ export function LiveCommandTable({ s, commands }: { s: Snapshot; commands: Comma
                   </Link>
                   <div className="mt-0.5 flex gap-2">
                     <KindTag kind={c.kind} />
+                    {c.bench && <BenchTag />}
                     {c.url && (
                       <a href={c.url} className="font-mono text-[10px] text-primary hover:underline" target="_blank" rel="noreferrer">
                         {c.url.replace("http://", "")} ↗
@@ -105,6 +106,7 @@ export function HistoryTable({ s, rows, limit = 200 }: { s: Snapshot; rows: Fini
                 <Link to="/commands/$id" params={{ id: c.id }} className="block truncate text-foreground hover:text-primary">
                   {c.argv}
                 </Link>
+                {c.bench && <BenchTag />}
               </td>
               <td className="px-2 py-2">
                 <SessionLink id={c.sessionId} />

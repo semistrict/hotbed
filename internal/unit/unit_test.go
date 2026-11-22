@@ -79,3 +79,24 @@ func TestDescriptionIsOneShortLine(t *testing.T) {
 		t.Errorf("a long command's description has %d runes: %q", n, long)
 	}
 }
+
+// A measurement's unit never swaps: past its memory it is killed, not
+// pushed to a swap that is everyone's.
+func TestNoSwap(t *testing.T) {
+	has := func(args []string, a string) bool {
+		for _, x := range args {
+			if x == a {
+				return true
+			}
+		}
+		return false
+	}
+	args := startArgs(Spec{Name: "hotbed-c-1", Argv: []string{"true"}, Log: "/l"})
+	if !has(args, "--property=MemorySwapMax=infinity") || has(args, "--property=MemorySwapMax=0") {
+		t.Errorf("a command's unit may swap: %q", args)
+	}
+	args = startArgs(Spec{Name: "hotbed-c-1", Argv: []string{"true"}, Log: "/l", NoSwap: true})
+	if has(args, "--property=MemorySwapMax=infinity") || !has(args, "--property=MemorySwapMax=0") {
+		t.Errorf("a NoSwap unit has %q, want MemorySwapMax=0 alone", args)
+	}
+}

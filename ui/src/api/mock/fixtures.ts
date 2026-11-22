@@ -17,12 +17,14 @@ export interface NodeSpec {
   /** Relative speed of one core, so an M2 Max finishes before a T480. */
   speed: number;
   online: boolean;
+  /** A measurement's CPUs; "" where it takes none. */
+  benchCpus?: string;
 }
 
 // Old PCs and Apple Silicon laptops on Asahi: the fleet the product is for.
 export const NODES: NodeSpec[] = [
-  { id: "nUbu1", hostname: "ubu1", arch: "amd64", machine: "Ryzen 7 5800X desktop", kernel: "6.17.4-generic", cpus: 16, memoryBytes: 27 * GiB, swapBytes: 16 * GiB, diskBytes: 1800 * GiB, idleMemoryBytes: 2.6 * GiB, speed: 1.0, online: true },
-  { id: "nAsahi", hostname: "asahimbp", arch: "arm64", machine: "MacBook Pro (M3 Pro)", kernel: "7.2.12-402.asahi+16k", cpus: 11, memoryBytes: 18 * GiB, swapBytes: 12 * GiB, diskBytes: 460 * GiB, idleMemoryBytes: 1.7 * GiB, speed: 1.35, online: true },
+  { id: "nUbu1", hostname: "ubu1", arch: "amd64", machine: "Ryzen 7 5800X desktop", kernel: "6.17.4-generic", cpus: 16, memoryBytes: 27 * GiB, swapBytes: 16 * GiB, diskBytes: 1800 * GiB, idleMemoryBytes: 2.6 * GiB, speed: 1.0, online: true, benchCpus: "4-7,12-15" },
+  { id: "nAsahi", hostname: "asahimbp", arch: "arm64", machine: "MacBook Pro (M3 Pro)", kernel: "7.2.12-402.asahi+16k", cpus: 11, memoryBytes: 18 * GiB, swapBytes: 12 * GiB, diskBytes: 460 * GiB, idleMemoryBytes: 1.7 * GiB, speed: 1.35, online: true, benchCpus: "7-10" },
   { id: "nM2max", hostname: "m2max", arch: "arm64", machine: "MacBook Pro (M2 Max)", kernel: "7.2.12-402.asahi+16k", cpus: 12, memoryBytes: 32 * GiB, swapBytes: 16 * GiB, diskBytes: 920 * GiB, idleMemoryBytes: 1.9 * GiB, speed: 1.25, online: true },
   { id: "nM1pro", hostname: "m1pro", arch: "arm64", machine: "MacBook Pro (M1 Pro)", kernel: "7.2.12-402.asahi+16k", cpus: 10, memoryBytes: 16 * GiB, swapBytes: 12 * GiB, diskBytes: 460 * GiB, idleMemoryBytes: 1.6 * GiB, speed: 1.1, online: true },
   { id: "nM1air", hostname: "m1air", arch: "arm64", machine: "MacBook Air (M1)", kernel: "7.2.12-402.asahi+16k", cpus: 8, memoryBytes: 16 * GiB, swapBytes: 8 * GiB, diskBytes: 230 * GiB, idleMemoryBytes: 1.4 * GiB, speed: 0.95, online: true },

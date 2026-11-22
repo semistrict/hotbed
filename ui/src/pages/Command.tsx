@@ -6,7 +6,7 @@ import { Meter } from "../components/charts/Bars";
 import { SpeedBars } from "../components/charts/SpeedBars";
 import { FAILURE } from "../components/CommandTable";
 import { Card, StatTile } from "../components/ui/Card";
-import { KindTag, StateBadge } from "../components/ui/State";
+import { BenchTag, KindTag, StateBadge } from "../components/ui/State";
 import { nodeName, useSnapshot } from "../lib/data";
 import { bytes, duration, hhmmss, speedup } from "../lib/format";
 import { isLive } from "../lib/live";
@@ -42,6 +42,7 @@ function CommandView({ s, live, done, id }: { s: Snapshot; live: Command | null;
         <div className="flex flex-wrap items-center gap-3">
           <StateBadge state={state} />
           <KindTag kind={live?.kind ?? done?.kind ?? "build"} />
+          {(live?.bench ?? done?.bench) && <BenchTag />}
           <span className="font-mono text-[11px] text-faint">{id}</span>
         </div>
         <h1 className="mt-3 font-mono text-[26px] leading-tight text-foreground sm:text-[32px]">
@@ -152,12 +153,12 @@ function Limit({ label, value }: { label: string; value: string }) {
 }
 
 function Timeline({ events }: { events: CommandEvent[] }) {
-  const glyph: Record<CommandEvent["what"], string> = { queued: "◌", admitted: "▸", parked: "❄", thawed: "☀", exited: "■", cancelled: "⊘" };
+  const glyph: Record<CommandEvent["what"], string> = { queued: "◌", admitted: "▸", parked: "❄", thawed: "☀", "isolation lost": "⚠", exited: "■", cancelled: "⊘" };
   return (
     <ol className="relative ml-1 space-y-3 border-l border-border pl-4">
       {events.map((e, i) => (
         <li key={i} className="relative">
-          <span className={`absolute -left-[22px] top-0 w-3 bg-card text-center text-[11px] ${e.what === "parked" ? "text-frost" : e.what === "thawed" ? "text-primary" : "text-muted-foreground"}`}>{glyph[e.what]}</span>
+          <span className={`absolute -left-[22px] top-0 w-3 bg-card text-center text-[11px] ${e.what === "parked" ? "text-frost" : e.what === "thawed" ? "text-primary" : e.what === "isolation lost" ? "text-critical" : "text-muted-foreground"}`}>{glyph[e.what]}</span>
           <div className="font-mono text-[11px] text-foreground">
             {e.what} <span className="text-faint">{hhmmss(Date.parse(e.at))}</span>
           </div>
