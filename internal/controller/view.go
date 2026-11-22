@@ -59,6 +59,9 @@ func overlay(v *view, h *pb.HeartbeatRequest) {
 	for _, c := range v.commands {
 		if u := cmds[c.Id]; u != nil && live(c.State) {
 			c.CpuCores, c.MemoryBytes, c.SwapBytes = u.CpuCores, u.MemoryBytes, u.SwapBytes
+			if c.State == pb.CommandState_COMMAND_STATE_QUEUED && u.Reason != "" {
+				c.Reason = u.Reason
+			}
 		}
 	}
 	bases := map[string]*pb.BaseUsage{}
@@ -84,8 +87,12 @@ func overlay(v *view, h *pb.HeartbeatRequest) {
 	}
 }
 
-// addrOf is where clients reach a node's worker.
+// addrOf is where clients reach a node's worker; empty for a worker from
+// before the event stream, which admits only the controller.
 func (s *Server) addrOf(n nodeRow) string {
+	if !n.pushes {
+		return ""
+	}
 	target := n.addr
 	if target == "" {
 		target = n.node.Hostname

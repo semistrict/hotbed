@@ -34,6 +34,9 @@ const (
 	// WatchSession streams at most this long, so agents call it regularly,
 	// which keeps their sessions alive.
 	maxWait = 2 * time.Minute
+	// A session with a workspace on a worker out of reach waits this long
+	// at most before it is abandoned like any other.
+	offlineGrace = 24 * time.Hour
 )
 
 // ServerConfig is what a Server needs.
@@ -157,9 +160,15 @@ func (s *Server) PushEvents(ctx context.Context, req *pb.PushEventsRequest) (*pb
 		return nil, s.notJoined(peer, err)
 	}
 	if req.Checkpoint != nil {
-		slog.Info("took a worker's checkpoint", "node", peer.Hostname, "epoch", req.Epoch, "seq", req.Checkpoint.Seq)
+		slog.Info("took a worker's checkpoint", "node", peer.Hostname, "epoch", req.Epoch, "seq", req.Checkpoint.Seq, "lost", len(in.lost))
 	}
 	s.wakeAll(in.sessions)
+	if len(in.lost) > 0 {
+		// Their ends will never come: their scheduled runs end now.
+		if err := s.loseRuns(context.WithoutCancel(ctx), in.lost); err != nil {
+			slog.Error("end the scheduled runs of lost commands", "err", err)
+		}
+	}
 	if in.finished {
 		s.settleSoon(ctx)
 	}
@@ -215,6 +224,26 @@ func (s *Server) hosting(ctx context.Context, peer tailnet.Peer) ([]*pb.Repo, []
 	}
 	release, err := s.cfg.Store.ToRelease(ctx, peer.NodeID)
 	return out, release, err
+}
+
+// loseRuns ends, as cancelled, the scheduled runs whose commands a worker
+// lost.
+func (s *Server) loseRuns(ctx context.Context, commands []string) error {
+	runs, err := s.cfg.Store.LiveRuns(ctx)
+	if err != nil {
+		return err
+	}
+	for _, run := range runs {
+		if run.CommandId == "" || !slices.Contains(commands, run.CommandId) {
+			continue
+		}
+		ended := s.now().UnixMilli()
+		run.Outcome, run.Reason, run.EndedAt = pb.RunOutcome_RUN_OUTCOME_CANCELLED, lostDetail, &ended
+		if _, err := s.cfg.Store.UpdateRun(ctx, run); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // settleSoon settles the scheduled runs whose commands just ended: now,
@@ -407,9 +436,12 @@ func (s *Server) ReapIdle(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	// A worker unheard of for longer than offlineGrace is gone, not out of
+	// reach: its sessions end like any other.
 	offline := map[string]bool{}
 	for _, n := range rows {
-		offline[n.node.Id] = !s.withOnline(n.node).Online
+		recent := n.node.LastSeen != nil && s.now().Sub(time.UnixMilli(*n.node.LastSeen)) < offlineGrace
+		offline[n.node.Id] = !s.withOnline(n.node).Online && recent
 	}
 	var errs []error
 	for _, id := range ids {

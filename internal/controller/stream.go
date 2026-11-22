@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"log/slog"
 	"time"
 
 	"google.golang.org/protobuf/proto"
@@ -21,13 +22,16 @@ import (
 // pushed is what a push changed that someone may be waiting on.
 type pushed struct {
 	applied          int64
+	appliedAt        int64
 	checkpointNeeded bool
 	finished         bool            // commands ended, into history
+	lost             []string        // live commands a checkpoint no longer has
 	sessions         map[string]bool // sessions with new events
 }
 
-// lost is the detail of what a worker's checkpoint no longer has.
-const lost = "lost: its worker no longer has it (the worker's state was reset)"
+// lostDetail is what sessions hear of what a worker's checkpoint no longer
+// has.
+const lostDetail = "lost: its worker no longer has it (the worker's state was reset)"
 
 // Push folds a worker's events, or its checkpoint, into its view, in one
 // transaction with the offset it continues from, so each event applies
@@ -40,44 +44,84 @@ func (s *Store) Push(ctx context.Context, nodeID string, req *pb.PushEventsReque
 	}
 	defer tx.Rollback()
 	var epoch string
-	if err := tx.QueryRowContext(ctx, `SELECT epoch, applied FROM nodes WHERE id = ?`, nodeID).Scan(&epoch, &out.applied); errors.Is(err, sql.ErrNoRows) {
+	if err := tx.QueryRowContext(ctx, `SELECT epoch, applied, applied_at FROM nodes WHERE id = ?`, nodeID).Scan(&epoch, &out.applied, &out.appliedAt); errors.Is(err, sql.ErrNoRows) {
 		return out, errNotJoined
 	} else if err != nil {
 		return out, err
 	}
 	switch {
 	case req.Checkpoint != nil:
-		if err := applyCheckpoint(ctx, tx, nodeID, req.Checkpoint, now, out); err != nil {
+		// The events the checkpoint includes that this view may lack come
+		// first, for what derives from them; then the checkpoint is the view.
+		if req.Epoch != epoch {
+			out.applied = 0
+		}
+		if err := applyEvents(ctx, tx, nodeID, req.Events, &out); err != nil {
+			return out, err
+		}
+		if err := applyCheckpoint(ctx, tx, nodeID, req.Checkpoint, now, &out); err != nil {
 			return out, err
 		}
 		epoch, out.applied = req.Epoch, req.Checkpoint.Seq
+		if len(req.Events) == 0 || req.Events[len(req.Events)-1].Seq != req.Checkpoint.Seq {
+			out.appliedAt = 0 // not known: the next push is not checked against it
+		}
 	case req.Epoch != epoch:
 		// A new controller, or a worker whose database is new: nothing to
 		// continue from.
 		return pushed{checkpointNeeded: true}, nil
+	case !follows(req, out):
+		// A gap, or a different event at the applied one: the worker's
+		// database is not the history this view continues.
+		return pushed{applied: out.applied, checkpointNeeded: true}, nil
 	default:
-		for _, ev := range req.Events {
-			if ev.Seq <= out.applied {
-				continue // delivered before
-			}
-			if err := applyEvent(ctx, tx, nodeID, ev, out); err != nil {
-				return out, fmt.Errorf("apply event %d: %w", ev.Seq, err)
-			}
-			if c, ok := ev.Change.(*pb.Event_Command); ok && c.Command.Finished != nil {
-				out.finished = true
-			}
-			out.applied = ev.Seq
+		if err := applyEvents(ctx, tx, nodeID, req.Events, &out); err != nil {
+			return out, err
 		}
 	}
-	if _, err := tx.ExecContext(ctx, `UPDATE nodes SET epoch = ?, applied = ? WHERE id = ?`, epoch, out.applied, nodeID); err != nil {
+	if _, err := tx.ExecContext(ctx, `UPDATE nodes SET epoch = ?, applied = ?, applied_at = ? WHERE id = ?`, epoch, out.applied, out.appliedAt, nodeID); err != nil {
 		return out, err
 	}
 	return out, tx.Commit()
 }
 
+// follows says whether a push's events continue from the view's applied
+// event: the first new one is the next, and the worker's event at the
+// applied one is the one the view applied, when both sides know its time.
+func follows(req *pb.PushEventsRequest, at pushed) bool {
+	for _, ev := range req.Events {
+		if ev.Seq <= at.applied {
+			continue // delivered before
+		}
+		if ev.Seq != at.applied+1 {
+			return false
+		}
+		return req.AfterAt == 0 || at.appliedAt == 0 || req.AfterAt == at.appliedAt
+	}
+	return true
+}
+
+// applyEvents applies the events after out.applied, in order.
+func applyEvents(ctx context.Context, tx *sql.Tx, nodeID string, events []*pb.Event, out *pushed) error {
+	for _, ev := range events {
+		if ev.Seq <= out.applied {
+			continue // delivered before
+		}
+		if err := applyEvent(ctx, tx, nodeID, ev, out); err != nil {
+			return fmt.Errorf("apply event %d: %w", ev.Seq, err)
+		}
+		if c, ok := ev.Change.(*pb.Event_Command); ok && c.Command.Finished != nil {
+			out.finished = true
+		}
+		out.applied, out.appliedAt = ev.Seq, ev.At
+	}
+	return nil
+}
+
 // applyEvent folds one event into the node's view and what derives from
-// it: the session's timeline, history, the feed.
-func applyEvent(ctx context.Context, tx *sql.Tx, nodeID string, ev *pb.Event, out pushed) error {
+// it: the session's timeline, history, the feed. A change this controller
+// does not know (a newer worker's) is passed over.
+func applyEvent(ctx context.Context, tx *sql.Tx, nodeID string, ev *pb.Event, out *pushed) error {
 	if ev.Feed != nil {
 		if err := addFeed(ctx, tx, nodeID, ev.Feed); err != nil {
 			return err
@@ -138,7 +182,8 @@ func applyEvent(ctx context.Context, tx *sql.Tx, nodeID string, ev *pb.Event, ou
 		}
 		return nil
 	default:
-		return fmt.Errorf("event %d changes nothing", ev.Seq)
+		slog.Warn("passing over an event of a change this controller does not know", "node", nodeID, "seq", ev.Seq)
+		return nil
 	}
 }
 
@@ -147,7 +192,7 @@ func applyEvent(ctx context.Context, tx *sql.Tx, nodeID string, ev *pb.Event, ou
 // after it ended, a workspace a while after its release) or lost with its
 // database: sessions hear that their live commands and workspaces were
 // lost, and those workspaces count as released.
-func applyCheckpoint(ctx context.Context, tx *sql.Tx, nodeID string, cp *pb.Checkpoint, now time.Time, out pushed) error {
+func applyCheckpoint(ctx context.Context, tx *sql.Tx, nodeID string, cp *pb.Checkpoint, now time.Time, out *pushed) error {
 	old, err := loadView(ctx, tx, nodeID)
 	if err != nil {
 		return err
@@ -167,17 +212,18 @@ func applyCheckpoint(ctx context.Context, tx *sql.Tx, nodeID string, cp *pb.Chec
 		if _, err := tx.ExecContext(ctx, `UPDATE workspaces SET released_at = ? WHERE id = ? AND released_at IS NULL`, at, w.Id); err != nil {
 			return err
 		}
-		if err := addSessionEvent(ctx, tx, &pb.SessionEvent{At: at, What: "failed", Detail: lost, SessionId: w.SessionId, WorkspaceId: w.Id}, out); err != nil {
+		if err := addSessionEvent(ctx, tx, &pb.SessionEvent{At: at, What: "failed", Detail: lostDetail, SessionId: w.SessionId, WorkspaceId: w.Id}, out); err != nil {
 			return err
 		}
 	}
 	for _, c := range old.commands {
-		if kept["c:"+c.Id] || !live(c.State) || c.SessionId == "" {
+		if kept["c:"+c.Id] || !live(c.State) {
 			continue
 		}
+		out.lost = append(out.lost, c.Id)
 		if err := addSessionEvent(ctx, tx, &pb.SessionEvent{
 			At: at, CommandId: c.Id, Argv: c.Argv, What: "cancelled", State: pb.CommandState_COMMAND_STATE_CANCELLED,
-			Detail: lost, SessionId: c.SessionId, WorkspaceId: c.WorkspaceId,
+			Detail: lostDetail, SessionId: c.SessionId, WorkspaceId: c.WorkspaceId,
 		}, out); err != nil {
 			return err
 		}
@@ -280,7 +326,7 @@ func addFeed(ctx context.Context, tx *sql.Tx, nodeID string, e *pb.WorkerEvent) 
 	return nil
 }
 
-func addSessionEvent(ctx context.Context, tx *sql.Tx, e *pb.SessionEvent, out pushed) error {
+func addSessionEvent(ctx context.Context, tx *sql.Tx, e *pb.SessionEvent, out *pushed) error {
 	if e.SessionId == "" {
 		return nil
 	}

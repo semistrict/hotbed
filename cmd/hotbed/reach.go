@@ -2,6 +2,8 @@ package main
 
 import (
 	"context"
+
+	"connectrpc.com/connect/v2"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -83,6 +85,14 @@ func (f controllerFlag) locate(ctx context.Context, d deps, session, repo string
 		return nil, workerClients{}, err
 	}
 	ws, err := w.calls.GetWorkspace(ctx, &pb.GetWorkspaceRequest{Id: found.Id})
+	if refused(err) {
+		// The worker does not take this caller (another user on the worker's
+		// own machine): the controller forwards for it.
+		if w, err = f.reach(d, ""); err != nil {
+			return nil, workerClients{}, err
+		}
+		ws, err = w.calls.GetWorkspace(ctx, &pb.GetWorkspaceRequest{Id: found.Id})
+	}
 	if err != nil {
 		return nil, workerClients{}, err
 	}
@@ -99,25 +109,47 @@ func (f controllerFlag) locateCommand(ctx context.Context, d deps, session, id s
 		return nil, workerClients{}, err
 	}
 	cmd, err := cl.workspaces.GetCommand(ctx, &pb.GetCommandRequest{Id: id})
-	if err != nil && api.FromConnect(err).Code == api.CodeControllerUnreachable {
-		return f.askKnownWorkers(ctx, d, session, id, err)
-	}
+	var code api.Code
 	if err != nil {
+		code = api.FromConnect(err).Code
+	}
+	switch {
+	case code == api.CodeControllerUnreachable, code == api.CodeNotFound:
+		// Out of reach, or a command run on its worker a moment ago that the
+		// controller has not heard of yet: ask the session's workers.
+		return f.askKnownWorkers(ctx, d, session, id, err)
+	case err != nil:
 		return nil, workerClients{}, err
 	}
 	if cmd.SessionId != session && !(freshens && cmd.SessionId == "") {
 		return nil, workerClients{}, api.Errorf(api.CodeNotFound, "session %s has no command %s", session, id)
 	}
 	w, err := f.reach(d, cmd.NodeAddr)
-	return cmd, w, err
+	if err != nil || cmd.NodeAddr == "" {
+		return cmd, w, err
+	}
+	if _, err := w.calls.GetCommand(ctx, &pb.GetCommandRequest{Id: id}); refused(err) {
+		w, err = f.reach(d, "")
+		return cmd, w, err
+	}
+	return cmd, w, nil
+}
+
+// refused says whether a worker would not take the caller's call: it does
+// not admit this user, or is older than workers that take clients' calls.
+func refused(err error) bool {
+	if err == nil {
+		return false
+	}
+	return api.FromConnect(err).Code == api.CodeNotAuthorized || connect.CodeOf(err) == connect.CodeUnimplemented
 }
 
 // askKnownWorkers looks for a command on the workers this machine last
-// found the session's workspaces on.
-func (f controllerFlag) askKnownWorkers(ctx context.Context, d deps, session, id string, unreachable error) (*pb.Command, workerClients, error) {
+// found the session's workspaces on, and fails with notFound otherwise.
+func (f controllerFlag) askKnownWorkers(ctx context.Context, d deps, session, id string, notFound error) (*pb.Command, workerClients, error) {
 	known, err := loadKnown(d, session)
 	if err != nil {
-		return nil, workerClients{}, unreachable
+		return nil, workerClients{}, notFound
 	}
 	for _, k := range known {
 		if k.NodeAddr == "" {
@@ -131,7 +163,7 @@ func (f controllerFlag) askKnownWorkers(ctx context.Context, d deps, session, id
 			return cmd, w, nil
 		}
 	}
-	return nil, workerClients{}, unreachable
+	return nil, workerClients{}, notFound
 }
 
 // known is where this machine last found a session's workspaces, by repo.

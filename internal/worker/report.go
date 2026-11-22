@@ -31,7 +31,11 @@ func (e *Engine) Heartbeat(clusterID string) *pb.HeartbeatRequest {
 			h.ReservedMemoryBytes += cmd.Limits.MemoryLowBytes
 		}
 		if live(cmd.State) {
-			h.Commands = append(h.Commands, &pb.CommandUsage{Id: cmd.Id, CpuCores: cmd.CpuCores, MemoryBytes: cmd.MemoryBytes, SwapBytes: cmd.SwapBytes})
+			u := &pb.CommandUsage{Id: cmd.Id, CpuCores: cmd.CpuCores, MemoryBytes: cmd.MemoryBytes, SwapBytes: cmd.SwapBytes}
+			if cmd.State == queued {
+				u.Reason = cmd.Reason
+			}
+			h.Commands = append(h.Commands, u)
 		}
 		if c.followers > 0 && cmd.SessionId != "" {
 			e.active[cmd.SessionId] = true

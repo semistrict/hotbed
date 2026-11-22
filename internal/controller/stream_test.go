@@ -279,7 +279,77 @@ func TestLegacyReportFillsTheView(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(ps.Commands) != 1 || ps.Commands[0].Id != "cmd1" {
-		t.Errorf("ps = %v, want cmd1", ps.Commands)
+	if len(ps.Commands) != 1 || ps.Commands[0].Id != "cmd1" || ps.Commands[0].NodeAddr != "" {
+		t.Errorf("ps = %v, want cmd1, with no address: an old worker admits only the controller", ps.Commands)
+	}
+}
+
+// A checkpoint comes with the events it includes that the controller may
+// lack, so what happened in them still reaches history and sessions: a
+// command that ended and was forgotten is not lost.
+func TestCheckpointCarriesTheEventsItIncludes(t *testing.T) {
+	s := newStreamed(t)
+	if _, err := s.sessions.StartSession(t.Context(), &pb.StartSessionRequest{Id: "late-bat"}); err != nil {
+		t.Fatal(err)
+	}
+	s.push(&pb.PushEventsRequest{Epoch: "e1", Checkpoint: &pb.Checkpoint{Seq: 1}})
+	cmd := &pb.Command{Id: "cmd1", NodeId: asahi.NodeID, SessionId: "late-bat", State: pb.CommandState_COMMAND_STATE_RUNNING}
+	s.push(&pb.PushEventsRequest{Epoch: "e1", Events: []*pb.Event{cmdEvent(2, "admitted", cmd, nil)}})
+	cursor := s.watch("late-bat", 0).Cursor
+
+	// The controller fell behind what the worker kept: the events it still
+	// has (4 and 5; 3 is gone) come with the checkpoint, whose state no
+	// longer has the command.
+	done := proto.Clone(cmd).(*pb.Command)
+	done.State, done.ExitCode = pb.CommandState_COMMAND_STATE_SUCCEEDED, proto.Int32(0)
+	finished := &pb.FinishedCommand{Id: "cmd1", NodeId: asahi.NodeID, SessionId: "late-bat", State: pb.CommandState_COMMAND_STATE_SUCCEEDED, EndedAt: time.Now().UnixMilli()}
+	res := s.push(&pb.PushEventsRequest{Epoch: "e1", Checkpoint: &pb.Checkpoint{Seq: 5}, Events: []*pb.Event{
+		cmdEvent(4, "exited", done, finished),
+		cmdEvent(5, "forgotten", done, nil),
+	}})
+	if res.Applied != 5 {
+		t.Fatalf("checkpoint = %v, want applied 5", res)
+	}
+	if got := whats(s.watch("late-bat", cursor).Events); !slices.Equal(got, []string{"exited cmd1"}) {
+		t.Errorf("session events = %q, want the command's exit, not its loss", got)
+	}
+	snap, err := s.cockpit.GetSnapshot(t.Context(), &pb.GetSnapshotRequest{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(snap.History) != 1 || snap.History[0].Id != "cmd1" {
+		t.Errorf("history = %v, want cmd1", snap.History)
+	}
+}
+
+// The controller continues a worker's events only from where it is: a gap
+// after its applied event, or a different event at it (the worker's
+// database is an older copy that has written on since), asks for a
+// checkpoint rather than apply a history that does not follow.
+func TestEventsThatDoNotFollowAskForACheckpoint(t *testing.T) {
+	s := newStreamed(t)
+	s.push(&pb.PushEventsRequest{Epoch: "e1", Checkpoint: &pb.Checkpoint{Seq: 0}})
+	ws := &pb.Workspace{Id: "ws1", NodeId: asahi.NodeID}
+	if res := s.push(&pb.PushEventsRequest{Epoch: "e1", Events: []*pb.Event{wsEvent(1, "ready", ws)}}); res.Applied != 1 {
+		t.Fatalf("push = %v", res)
+	}
+	if res := s.push(&pb.PushEventsRequest{Epoch: "e1", AfterAt: 1001, Events: []*pb.Event{wsEvent(3, "idle", ws)}}); !res.CheckpointNeeded || res.Applied != 1 {
+		t.Errorf("events after a gap = %v, want a checkpoint asked for", res)
+	}
+	if res := s.push(&pb.PushEventsRequest{Epoch: "e1", AfterAt: 999, Events: []*pb.Event{wsEvent(2, "idle", ws)}}); !res.CheckpointNeeded || res.Applied != 1 {
+		t.Errorf("events after a different event 1 = %v, want a checkpoint asked for", res)
+	}
+	if res := s.push(&pb.PushEventsRequest{Epoch: "e1", AfterAt: 1001, Events: []*pb.Event{wsEvent(2, "idle", ws)}}); res.CheckpointNeeded || res.Applied != 2 {
+		t.Errorf("events that follow = %v, want applied 2", res)
+	}
+}
+
+// An event this controller does not understand (from a newer worker) is
+// passed over, not refused: refusing it would stop the worker's stream.
+func TestUnknownChangesArePassedOver(t *testing.T) {
+	s := newStreamed(t)
+	s.push(&pb.PushEventsRequest{Epoch: "e1", Checkpoint: &pb.Checkpoint{Seq: 0}})
+	if res := s.push(&pb.PushEventsRequest{Epoch: "e1", Events: []*pb.Event{{Seq: 1, At: 1001}}}); res.Applied != 1 || res.CheckpointNeeded {
+		t.Errorf("push of an unknown change = %v, want applied 1", res)
 	}
 }

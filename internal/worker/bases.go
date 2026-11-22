@@ -260,7 +260,7 @@ func (e *Engine) freshened(c *command, ok bool, seconds float64, units int) {
 			b.State = stale
 		}
 	}
-	if e.repos != nil && e.repos[b.RepoId] == nil {
+	if e.repoRemoved(b.RepoId) {
 		b.State = stale // its repo was removed while it freshened
 	}
 	what := "warm"
@@ -319,8 +319,7 @@ func (e *Engine) collectBases(ctx context.Context) {
 			continue
 		}
 		e.mu.Lock()
-		// e.repos is nil until the controller has said which repos exist.
-		if b.Generation < newest[b.RepoId] || (e.repos != nil && e.repos[b.RepoId] == nil) {
+		if b.Generation < newest[b.RepoId] || e.repoRemoved(b.RepoId) {
 			delete(e.bases, b.Id)
 			e.deleteBase(b, "collected")
 		}

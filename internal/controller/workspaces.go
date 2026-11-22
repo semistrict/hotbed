@@ -201,8 +201,10 @@ func relay[T any](ctx context.Context, s *Server, session, host string, receive 
 // ListWorkspaces lists the live workspaces of a session (which it keeps
 // alive), or of every session, as their nodes' views have them.
 func (s *workspaces) ListWorkspaces(ctx context.Context, req *pb.ListWorkspacesRequest) (*pb.ListWorkspacesResponse, error) {
+	var sess *pb.Session
 	if req.SessionId != "" {
-		if _, err := s.cfg.Store.LiveSession(ctx, req.SessionId, s.now()); err != nil {
+		var err error
+		if sess, err = s.cfg.Store.LiveSession(ctx, req.SessionId, s.now()); err != nil {
 			return nil, err
 		}
 	}
@@ -211,12 +213,27 @@ func (s *workspaces) ListWorkspaces(ctx context.Context, req *pb.ListWorkspacesR
 		return nil, err
 	}
 	out := &pb.ListWorkspacesResponse{}
+	seen := map[string]bool{}
 	for _, nv := range nvs {
 		for _, ws := range nv.workspaces {
 			if ws.State != pb.WorkspaceState_WORKSPACE_STATE_RELEASED && (req.SessionId == "" || ws.SessionId == req.SessionId) {
 				out.Workspaces = append(out.Workspaces, ws)
+				seen[ws.Id] = true
 			}
 		}
+	}
+	// A workspace just created may not be in its node's view yet: its
+	// worker says how it is.
+	for _, id := range sess.GetWorkspaceIds() {
+		if seen[id] {
+			continue
+		}
+		ws, err := s.GetWorkspace(ctx, &pb.GetWorkspaceRequest{Id: id})
+		if err != nil {
+			slog.Warn("list a workspace not in its node's view", "workspace", id, "err", err)
+			continue
+		}
+		out.Workspaces = append(out.Workspaces, ws)
 	}
 	slices.SortFunc(out.Workspaces, func(a, b *pb.Workspace) int { return cmp.Compare(a.CreatedAt, b.CreatedAt) })
 	return out, nil

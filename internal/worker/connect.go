@@ -3,6 +3,7 @@ package worker
 import (
 	"context"
 	"log/slog"
+	"slices"
 	"time"
 
 	"golang.org/x/sync/errgroup"
@@ -12,8 +13,12 @@ import (
 	"github.com/semistrict/hotbed/internal/gen/hotbed/v1/hotbedv1connect"
 )
 
-// pushBatch is how many events one push carries at most.
-const pushBatch = 500
+// pushBatch is how many events one push carries at most, and
+// checkpointEvents how many a checkpoint brings along.
+const (
+	pushBatch        = 500
+	checkpointEvents = 2000
+)
 
 // Connect keeps the controller up to date until ctx ends: the event stream,
 // in order, as soon as events are written, and a heartbeat every
@@ -34,10 +39,13 @@ func Connect(ctx context.Context, eng *Engine, cluster hotbedv1connect.ClusterSe
 }
 
 // keep runs once until ctx ends: again at once while it says there is more,
-// otherwise after ReportInterval or when kicked. It logs the first of a run
-// of retryable failures and backs off from them.
+// otherwise after ReportInterval or when kicked. Failures it backs off from
+// and retries, logging the first of a run, all but those no retry can fix:
+// a worker the controller does not know, or of another cluster. A
+// controller older than the worker (PushEvents unimplemented) is waited
+// out, not a reason to stop working.
 func keep(ctx context.Context, what string, kicked <-chan struct{}, once func(context.Context) (bool, error)) error {
-	failing := false
+	failures := 0
 	for {
 		more, err := once(ctx)
 		wait := api.ReportInterval
@@ -46,15 +54,16 @@ func keep(ctx context.Context, what string, kicked <-chan struct{}, once func(co
 			switch {
 			case ctx.Err() != nil:
 				return nil
-			case !e.Retryable:
+			case e.Code == api.CodeNotJoined || e.Code == api.CodeClusterMismatch:
 				return e
-			case !failing:
+			case failures == 0:
 				slog.Warn(what+" failed; retrying", "err", e)
 			}
-			failing, more, wait = true, false, time.Second
-		} else if failing {
-			slog.Info(what + " works again")
-			failing = false
+			failures++
+			more, wait = false, min(time.Second<<min(failures-1, 5), 30*time.Second)
+		} else if failures > 0 {
+			slog.Info(what+" works again", "failures", failures)
+			failures = 0
 		}
 		if more {
 			continue
@@ -89,6 +98,12 @@ func (p *pusher) once(ctx context.Context) (bool, error) {
 	if !p.known {
 		return true, p.push(ctx, &pb.PushEventsRequest{})
 	}
+	if cp, err := p.eng.unsaved(); err != nil || cp != nil {
+		if err != nil {
+			return false, err
+		}
+		return true, p.push(ctx, &pb.PushEventsRequest{Checkpoint: cp})
+	}
 	oldest, newest, err := p.eng.db.eventRange()
 	if err != nil {
 		return false, err
@@ -110,16 +125,26 @@ func (p *pusher) once(ctx context.Context) (bool, error) {
 		if err != nil {
 			return false, err
 		}
-		return true, p.push(ctx, &pb.PushEventsRequest{Checkpoint: cp})
+		// With the events it includes that the controller may lack, the
+		// newest of them, for what derives from them there.
+		events, err := p.eng.Events(max(p.applied, cp.Seq-checkpointEvents), checkpointEvents)
+		if err != nil {
+			return false, err
+		}
+		events = slices.DeleteFunc(events, func(ev *pb.Event) bool { return ev.Seq > cp.Seq })
+		return true, p.push(ctx, &pb.PushEventsRequest{Checkpoint: cp, Events: events})
 	}
 	events, err := p.eng.Events(p.applied, pushBatch)
 	if err != nil || len(events) == 0 {
 		return false, err
 	}
-	if err := p.push(ctx, &pb.PushEventsRequest{Events: events}); err != nil {
+	afterAt, err := p.eng.db.eventAt(p.applied)
+	if err != nil {
 		return false, err
 	}
-	p.eng.pruneEvents(p.applied)
+	if err := p.push(ctx, &pb.PushEventsRequest{Events: events, AfterAt: afterAt}); err != nil {
+		return false, err
+	}
 	return len(events) == pushBatch || p.checkpoint, nil
 }
 
@@ -130,6 +155,7 @@ func (p *pusher) push(ctx context.Context, req *pb.PushEventsRequest) error {
 		return err
 	}
 	p.known, p.applied, p.checkpoint = true, res.Applied, res.CheckpointNeeded
+	p.eng.applied.Store(res.Applied)
 	return nil
 }
 
@@ -160,13 +186,14 @@ func (p *pusher) drain(ctx context.Context) (bool, error) {
 
 // HeartbeatOnce sends one heartbeat and applies the reply.
 func HeartbeatOnce(ctx context.Context, eng *Engine, cluster hotbedv1connect.ClusterServiceClient, clusterID string) error {
+	sent := eng.now()
 	h := eng.Heartbeat(clusterID)
 	reply, err := cluster.Heartbeat(ctx, h)
 	if err != nil {
 		return err
 	}
 	eng.delivered(h)
-	eng.SetRepos(reply.Repos)
+	eng.setRepos(reply.Repos, sent)
 	for _, id := range reply.Release {
 		if err := eng.ReleaseWorkspace(ctx, id); err != nil && api.FromConnect(err).Code != api.CodeNotFound {
 			slog.Error("release workspace of an ended session", "workspace", id, "err", err)

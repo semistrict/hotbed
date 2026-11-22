@@ -5618,8 +5618,14 @@ type PushEventsRequest struct {
 	// In order, each after the controller's applied; may be empty, to learn
 	// where the controller is.
 	Events []*Event `protobuf:"bytes,3,rep,name=events,proto3" json:"events,omitempty"`
-	// Instead of events, when the controller asked for one.
-	Checkpoint    *Checkpoint `protobuf:"bytes,4,opt,name=checkpoint,proto3" json:"checkpoint,omitempty"`
+	// When the controller asked for one; events then are those the
+	// checkpoint includes that the controller may lack, which it applies
+	// first, for what derives from them (history, sessions' timelines).
+	Checkpoint *Checkpoint `protobuf:"bytes,4,opt,name=checkpoint,proto3" json:"checkpoint,omitempty"`
+	// The time of the worker's event at the controller's applied: a
+	// controller that applied a different event there (the worker's database
+	// is an older copy that has written on since) asks for a checkpoint.
+	AfterAt       int64 `protobuf:"varint,5,opt,name=after_at,json=afterAt,proto3" json:"after_at,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -5682,6 +5688,13 @@ func (x *PushEventsRequest) GetCheckpoint() *Checkpoint {
 	return nil
 }
 
+func (x *PushEventsRequest) GetAfterAt() int64 {
+	if x != nil {
+		return x.AfterAt
+	}
+	return 0
+}
+
 type PushEventsResponse struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// The last event of this epoch the controller has applied; the worker
@@ -5738,11 +5751,14 @@ func (x *PushEventsResponse) GetCheckpointNeeded() bool {
 }
 
 type CommandUsage struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Id            string                 `protobuf:"bytes,1,opt,name=id,proto3" json:"id,omitempty"`
-	CpuCores      float64                `protobuf:"fixed64,2,opt,name=cpu_cores,json=cpuCores,proto3" json:"cpu_cores,omitempty"`
-	MemoryBytes   int64                  `protobuf:"varint,3,opt,name=memory_bytes,json=memoryBytes,proto3" json:"memory_bytes,omitempty"`
-	SwapBytes     int64                  `protobuf:"varint,4,opt,name=swap_bytes,json=swapBytes,proto3" json:"swap_bytes,omitempty"`
+	state       protoimpl.MessageState `protogen:"open.v1"`
+	Id          string                 `protobuf:"bytes,1,opt,name=id,proto3" json:"id,omitempty"`
+	CpuCores    float64                `protobuf:"fixed64,2,opt,name=cpu_cores,json=cpuCores,proto3" json:"cpu_cores,omitempty"`
+	MemoryBytes int64                  `protobuf:"varint,3,opt,name=memory_bytes,json=memoryBytes,proto3" json:"memory_bytes,omitempty"`
+	SwapBytes   int64                  `protobuf:"varint,4,opt,name=swap_bytes,json=swapBytes,proto3" json:"swap_bytes,omitempty"`
+	// Why a queued command waits, with the numbers as they are now; an event
+	// says so only when the kind of wait changes.
+	Reason        string `protobuf:"bytes,5,opt,name=reason,proto3" json:"reason,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -5803,6 +5819,13 @@ func (x *CommandUsage) GetSwapBytes() int64 {
 		return x.SwapBytes
 	}
 	return 0
+}
+
+func (x *CommandUsage) GetReason() string {
+	if x != nil {
+		return x.Reason
+	}
+	return ""
 }
 
 type BaseUsage struct {
@@ -8025,7 +8048,7 @@ const file_hotbed_v1_hotbed_proto_rawDesc = "" +
 	"\n" +
 	"workspaces\x18\x03 \x03(\v2\x14.hotbed.v1.WorkspaceR\n" +
 	"workspaces\x12.\n" +
-	"\bcommands\x18\x04 \x03(\v2\x12.hotbed.v1.CommandR\bcommands\"\xa9\x01\n" +
+	"\bcommands\x18\x04 \x03(\v2\x12.hotbed.v1.CommandR\bcommands\"\xc4\x01\n" +
 	"\x11PushEventsRequest\x12\x1d\n" +
 	"\n" +
 	"cluster_id\x18\x01 \x01(\tR\tclusterId\x12\x14\n" +
@@ -8033,16 +8056,18 @@ const file_hotbed_v1_hotbed_proto_rawDesc = "" +
 	"\x06events\x18\x03 \x03(\v2\x10.hotbed.v1.EventR\x06events\x125\n" +
 	"\n" +
 	"checkpoint\x18\x04 \x01(\v2\x15.hotbed.v1.CheckpointR\n" +
-	"checkpoint\"[\n" +
+	"checkpoint\x12\x19\n" +
+	"\bafter_at\x18\x05 \x01(\x03R\aafterAt\"[\n" +
 	"\x12PushEventsResponse\x12\x18\n" +
 	"\aapplied\x18\x01 \x01(\x03R\aapplied\x12+\n" +
-	"\x11checkpoint_needed\x18\x02 \x01(\bR\x10checkpointNeeded\"}\n" +
+	"\x11checkpoint_needed\x18\x02 \x01(\bR\x10checkpointNeeded\"\x95\x01\n" +
 	"\fCommandUsage\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x1b\n" +
 	"\tcpu_cores\x18\x02 \x01(\x01R\bcpuCores\x12!\n" +
 	"\fmemory_bytes\x18\x03 \x01(\x03R\vmemoryBytes\x12\x1d\n" +
 	"\n" +
-	"swap_bytes\x18\x04 \x01(\x03R\tswapBytes\"V\n" +
+	"swap_bytes\x18\x04 \x01(\x03R\tswapBytes\x12\x16\n" +
+	"\x06reason\x18\x05 \x01(\tR\x06reason\"V\n" +
 	"\tBaseUsage\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x1a\n" +
 	"\bprogress\x18\x02 \x01(\x01R\bprogress\x12\x1d\n" +

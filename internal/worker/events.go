@@ -79,7 +79,10 @@ func (e *Engine) deleteCommand(c *command) {
 // events are numbered in the order the engine made the changes.
 func (e *Engine) write(kind, id string, rec proto.Message, ev *pb.Event) {
 	if err := e.db.commit(kind, id, rec, ev); err != nil {
+		// Neither the record nor its event is written (a full disk): the
+		// controller gets the state as the engine has it instead.
 		slog.Error("save "+kind, kind, id, "err", err)
+		e.dirty = true
 	}
 	e.notify()
 	e.changed()
@@ -96,6 +99,33 @@ func (e *Engine) Events(after int64, limit int) ([]*pb.Event, error) {
 // Checkpoint is the worker's whole state and the last event it includes.
 func (e *Engine) Checkpoint() (*pb.Checkpoint, error) { return e.db.checkpoint() }
 
+// unsaved returns the engine's state as a checkpoint when a save failed
+// since the last call, and nil otherwise: the database lacks a change, so
+// its own checkpoint would too.
+func (e *Engine) unsaved() (*pb.Checkpoint, error) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if !e.dirty {
+		return nil, nil
+	}
+	_, newest, err := e.db.eventRange()
+	if err != nil {
+		return nil, err
+	}
+	cp := &pb.Checkpoint{Seq: newest}
+	for _, b := range e.bases {
+		cp.Bases = append(cp.Bases, clone(b))
+	}
+	for _, w := range e.workspaces {
+		cp.Workspaces = append(cp.Workspaces, clone(w.ws()))
+	}
+	for _, c := range e.commands {
+		cp.Commands = append(cp.Commands, clone(c.cmd()))
+	}
+	e.dirty = false
+	return cp, nil
+}
+
 // Event retention: events the controller has applied are kept a day, for a
 // controller restored from an older copy to catch up from; and never more
 // than keepEvents, past which a controller that fell behind gets a
@@ -106,9 +136,10 @@ const (
 )
 
 // pruneEvents drops events past their retention, given what the controller
-// has applied.
-func (e *Engine) pruneEvents(applied int64) {
-	if err := e.db.prune(applied, e.now().Add(-keepAppliedEvents).UnixMilli(), keepEvents); err != nil {
+// last said it applied. It runs on a timer, so the cap holds while the
+// controller is out of reach.
+func (e *Engine) pruneEvents() {
+	if err := e.db.prune(e.applied.Load(), e.now().Add(-keepAppliedEvents).UnixMilli(), keepEvents); err != nil {
 		slog.Error("prune events", "err", err)
 	}
 }

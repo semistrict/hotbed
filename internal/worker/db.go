@@ -266,3 +266,10 @@ func (d *db) newEpoch() error {
 	d.epoch = epoch
 	return nil
 }
+
+// eventAt is the time of the event numbered seq, or 0 when it is not kept.
+func (d *db) eventAt(seq int64) (int64, error) {
+	var at int64
+	err := d.sql.QueryRow(`SELECT COALESCE((SELECT at FROM events WHERE seq = ?), 0)`, seq).Scan(&at)
+	return at, err
+}

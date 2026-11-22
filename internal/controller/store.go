@@ -120,6 +120,7 @@ var migrations = []string{
 	// last reports become the views the events continue from.
 	`ALTER TABLE nodes ADD COLUMN epoch TEXT NOT NULL DEFAULT '';
 	ALTER TABLE nodes ADD COLUMN applied INTEGER NOT NULL DEFAULT 0;
+	ALTER TABLE nodes ADD COLUMN applied_at INTEGER NOT NULL DEFAULT 0; -- the applied event's time
 	ALTER TABLE nodes ADD COLUMN heartbeat TEXT;
 	CREATE TABLE node_state (
 		node_id TEXT NOT NULL,
@@ -295,7 +296,7 @@ func (s *Store) Ingest(ctx context.Context, nodeID string, r *pb.ReportRequest, 
 		if e.Seq <= acked {
 			continue
 		}
-		if err := addSessionEvent(ctx, tx, e.Item, out); err != nil {
+		if err := addSessionEvent(ctx, tx, e.Item, &out); err != nil {
 			return out, err
 		}
 	}
@@ -335,9 +336,12 @@ type nodeRow struct {
 	node *pb.Node
 	addr string               // tailnet address; empty when the tailnet gave none
 	hb   *pb.HeartbeatRequest // nil before the first heartbeat
+	// pushes says the worker pushes events: it is new enough to take
+	// clients' calls itself. Older ones admit only the controller.
+	pushes bool
 }
 
-const nodeColumns = `id, hostname, login, addr, joined_at, last_seen, heartbeat`
+const nodeColumns = `id, hostname, login, addr, joined_at, last_seen, heartbeat, epoch != ''`
 
 // Nodes lists every worker by host name. Online is left false; the server
 // decides it from last_seen.
@@ -373,10 +377,11 @@ func scanNode(row interface{ Scan(...any) error }) (nodeRow, error) {
 		lastSeen sql.NullInt64
 		hb       sql.NullString
 	)
-	if err := row.Scan(&n.Id, &n.Hostname, &n.Login, &addr, &n.JoinedAt, &lastSeen, &hb); err != nil {
+	var pushes bool
+	if err := row.Scan(&n.Id, &n.Hostname, &n.Login, &addr, &n.JoinedAt, &lastSeen, &hb, &pushes); err != nil {
 		return nodeRow{}, err
 	}
-	out := nodeRow{node: n, addr: addr}
+	out := nodeRow{node: n, addr: addr, pushes: pushes}
 	if lastSeen.Valid {
 		n.LastSeen = &lastSeen.Int64
 	}

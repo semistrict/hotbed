@@ -126,12 +126,12 @@ func (e *Engine) Exec(_ context.Context, req *pb.RunCommandRequest) (*pb.Command
 	return clone(c.cmd()), nil
 }
 
-// newID is eight random base32 characters, lowercase, as the controller
-// names commands.
+// newID is ten random base32 characters, lowercase: 50 bits, so commands
+// workers name on their own do not meet across a cluster's history.
 func newID() string {
-	b := make([]byte, 5)
+	b := make([]byte, 10)
 	rand.Read(b)
-	return strings.ToLower(base32.StdEncoding.EncodeToString(b))
+	return strings.ToLower(base32.StdEncoding.EncodeToString(b))[:10]
 }
 
 func isBuild(kind string) bool { return kind == "build" || kind == "test" || kind == "check" }
@@ -277,9 +277,12 @@ func (e *Engine) admit(ctx context.Context) {
 			e.mu.Unlock()
 			continue // stopped meanwhile
 		}
-		if reason := e.admissionBlocker(c); reason != "" {
-			if reason != c.cmd().Reason {
-				c.cmd().Reason = reason
+		if kind, reason := e.admissionBlocker(c); kind != "" {
+			// The numbers change every step and go in heartbeats; the kind of
+			// wait is an event.
+			c.cmd().Reason = reason
+			if kind != c.waiting {
+				c.waiting = kind
 				e.saveCommand(c, change{what: "waiting", detail: reason})
 			}
 			e.mu.Unlock()
@@ -316,11 +319,12 @@ func (e *Engine) admit(ctx context.Context) {
 	}
 }
 
-// admissionBlocker says why c cannot start now, or "" if it can. Call with
-// e.mu held.
-func (e *Engine) admissionBlocker(c *command) string {
+// admissionBlocker says why c cannot start now, as a kind (preparing,
+// memory, pressure, disk) and a reason with the numbers as they are, or ""
+// if it can. Call with e.mu held.
+func (e *Engine) admissionBlocker(c *command) (kind, reason string) {
 	if w, ok := e.workspaces[c.cmd().WorkspaceId]; ok && w.ws().State == preparing {
-		return w.ws().Reason
+		return "preparing", w.ws().Reason
 	}
 	var reserved int64
 	for _, o := range e.commands {
@@ -332,13 +336,13 @@ func (e *Engine) admissionBlocker(c *command) string {
 	room := int64(float64(e.resources.MemoryBytes)*admitMemory) - reserved
 	switch {
 	case want > room:
-		return fmt.Sprintf("waiting for memory: needs %s guaranteed, %s left", gib(want), gib(max(0, room)))
+		return "memory", fmt.Sprintf("waiting for memory: needs %s guaranteed, %s left", gib(want), gib(max(0, room)))
 	case e.usage.MemoryPressure >= admitPressure:
-		return fmt.Sprintf("waiting: memory pressure %.0f%%", e.usage.MemoryPressure)
+		return "pressure", fmt.Sprintf("waiting: memory pressure %.0f%%", e.usage.MemoryPressure)
 	case e.diskBytes > 0 && float64(e.disk.FreeBytes) < float64(e.diskBytes)*minFreeDisk:
-		return fmt.Sprintf("waiting for disk: %s free", gib(e.disk.FreeBytes))
+		return "disk", fmt.Sprintf("waiting for disk: %s free", gib(e.disk.FreeBytes))
 	}
-	return ""
+	return "", ""
 }
 
 // spec is the unit for c. Call with e.mu held.

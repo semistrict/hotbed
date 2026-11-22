@@ -43,23 +43,31 @@ cockpit's feed when it is worth one. The records are the events folded.
   the node (`node_state`), the session's timeline, history and the feed, in one transaction with the
   offset, so an event applies once however often it is sent.
 - **Epochs and checkpoints.** A worker's database has an **epoch**, a random name. A controller
-  that does not know the epoch (it is new, or the worker's database is) asks for a **checkpoint**:
-  the worker's records and the last event they include. The view becomes the checkpoint, and events
-  continue after it. What the old view had and the checkpoint lacks is reported to its sessions as
-  lost (commands cancelled, workspaces failed and released). A worker whose database is an older
-  copy (the controller has applied events it never wrote) starts a new epoch.
+  that does not know the epoch (it is new, or the worker's database is), or whose next event is not
+  the one after its applied (a gap, or a different event at the applied one: the push names its
+  time), asks for a **checkpoint**: the worker's records and the last event they include, with the
+  newest events the worker kept up to it. The controller applies those events first, for history
+  and sessions' timelines, then makes the checkpoint its view. What the view still had and the
+  checkpoint lacks is reported to its sessions as lost (commands cancelled, workspaces failed and
+  released, scheduled runs cancelled). A worker whose database is an older copy (the controller
+  has applied events it never wrote) starts a new epoch, and one that could not save a change (a
+  full disk) sends its state as it holds it.
 - **Retention.** A worker keeps events the controller applied for a day, for a controller restored
-  from an older copy to catch up from, and never more than 50,000: a controller further behind gets
-  a checkpoint.
+  from an older copy to catch up from, and never more than 50,000, whether or not the controller is
+  in reach: a controller further behind gets a checkpoint. A queued command's wait is an event when
+  its kind changes (memory, pressure, disk, its workspace preparing); its numbers go in heartbeats.
 - **Heartbeat.** Live usage (CPU, memory, pressure, disk, each command's CPU and memory, a building
   base's progress) is lossy: a heartbeat every 5 s, the latest wins. It keeps the node online and
   names the sessions clients used on the worker since the last one delivered. Its reply is what the
   worker should host: the repos (with their steps and scratch epoch, so a step change or a rebuild
   needs no call of its own) and the workspaces of ended sessions to release. It is desired state,
-  not a stream of orders: idempotent, and complete in each reply.
-- **Workers from before** report their whole state (`Report`), which becomes their view; an
-  upgraded worker delivers what its old outbox held once that way, then pushes events. `Report` goes
-  once every worker pushes.
+  not a stream of orders: idempotent, and complete in each reply. A workspace request carries its
+  repo too, which counts over the reply to any heartbeat sent before it.
+- **Mixed versions.** Workers from before report their whole state (`Report`), which becomes
+  their view; an upgraded worker delivers what its old outbox held once that way, then pushes
+  events. The controller gives clients no worker address for a worker that does not push events
+  (it admits only the controller), and a worker whose controller is older waits for it rather than
+  stop. `Report` goes once every worker pushes.
 
 ## Talking to workers directly
 
@@ -75,7 +83,9 @@ cockpit.
 - **Without the controller.** Workers keep running, admitting, parking and building; their events
   wait. The CLI goes by where this machine last found the session's workspace, so `run`, `sync`,
   `logs` and `stop` keep working. What pauses: new workspaces (placement), `wait` and `ps`, and
-  session expiry: the controller ends no session with a workspace on a worker it cannot hear from.
+  session expiry: the controller ends no session with a workspace on a worker it has not heard from,
+  for up to a day. A caller a worker refuses (another user on the worker's own machine) goes through
+  the controller.
 
 ## Storage
 

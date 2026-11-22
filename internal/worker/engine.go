@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -89,8 +90,13 @@ type Engine struct {
 	cred *syscall.Credential
 	home string
 
-	mu         sync.Mutex
-	repos      map[string]*pb.Repo
+	mu sync.Mutex
+	// repos is what the controller's last heartbeat said this node hosts;
+	// nil until one has.
+	repos map[string]*pb.Repo
+	// vouched is when a workspace request last carried a repo's config: the
+	// controller's word that it exists, newer than a heartbeat sent before.
+	vouched    map[string]time.Time
 	bases      map[string]*pb.Base
 	workspaces map[string]*workspace
 	commands   map[string]*command
@@ -101,6 +107,11 @@ type Engine struct {
 	resources  *pb.Resources
 	// active is the sessions clients used here since the last heartbeat.
 	active map[string]bool
+	// dirty says a save failed: the next push is a checkpoint of the
+	// engine's state.
+	dirty bool
+	// applied is the last event the controller said it applied.
+	applied atomic.Int64
 
 	kick    chan struct{} // an event was written: push soon
 	collect chan struct{} // a base may have become garbage: collect soon
@@ -133,6 +144,8 @@ type command struct {
 	// stopping is set while Stop ends the command, which then owns its
 	// ending: its unit exiting meanwhile is the stop, not a failure.
 	stopping bool
+	// waiting is the kind of wait a queued command last said it had.
+	waiting string
 }
 
 func (c *command) cmd() *pb.Command { return c.rec.Command }
@@ -170,7 +183,7 @@ func NewEngine(ctx context.Context, cfg EngineConfig) (*Engine, error) {
 		cfg: cfg, db: d, cred: cred, home: home,
 		bases:      map[string]*pb.Base{},
 		workspaces: map[string]*workspace{}, commands: map[string]*command{},
-		usage: &pb.NodeUsage{}, disk: &pb.DiskUsage{}, active: map[string]bool{},
+		usage: &pb.NodeUsage{}, disk: &pb.DiskUsage{}, active: map[string]bool{}, vouched: map[string]time.Time{},
 		kick: make(chan struct{}, 1), collect: make(chan struct{}, 1), stepc: make(chan struct{}, 1),
 		updated: make(chan struct{}),
 	}
@@ -244,6 +257,7 @@ func (e *Engine) Run(ctx context.Context) {
 		case <-usage.C:
 			e.collectBases(ctx)
 			e.measureDisk(ctx)
+			e.pruneEvents()
 		}
 	}
 }
@@ -297,11 +311,10 @@ func (e *Engine) now() time.Time { return e.cfg.Now() }
 
 func (e *Engine) nowMs() int64 { return e.now().UnixMilli() }
 
-// SetRepos is what the controller says this node hosts.
-// SetRepos records the cluster's repos, as the controller reports them. The
-// bases of a repo that was removed go stale, so they are deleted once no
-// workspace uses them.
-func (e *Engine) SetRepos(repos []*pb.Repo) {
+// setRepos records the cluster's repos, as the reply to a heartbeat sent at
+// asOf has them. The bases of a repo that was removed go stale, so they are
+// deleted once no workspace uses them.
+func (e *Engine) setRepos(repos []*pb.Repo, asOf time.Time) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	next := map[string]*pb.Repo{}
@@ -309,9 +322,14 @@ func (e *Engine) SetRepos(repos []*pb.Repo) {
 		next[r.Id] = r
 	}
 	e.repos = next
+	for id, at := range e.vouched {
+		if next[id] != nil || at.Before(asOf) {
+			delete(e.vouched, id) // the reply is the newer word
+		}
+	}
 	removed := false
 	for _, b := range e.bases {
-		if next[b.RepoId] == nil && (b.State == warm || b.State == broken) {
+		if e.repoRemoved(b.RepoId) && (b.State == warm || b.State == broken) {
 			b.State = stale
 			e.saveBase(b, change{what: "stale", detail: "its repo was removed"})
 			removed = true
@@ -320,6 +338,17 @@ func (e *Engine) SetRepos(repos []*pb.Repo) {
 	if removed {
 		e.collectSoon()
 	}
+}
+
+// repoRemoved says whether the controller has said this node no longer
+// hosts a repo: a heartbeat's reply that does not list it, newer than any
+// workspace request that carried it. Call with e.mu held.
+func (e *Engine) repoRemoved(id string) bool {
+	if e.repos == nil || e.repos[id] != nil {
+		return false
+	}
+	_, vouched := e.vouched[id]
+	return !vouched
 }
 
 func (e *Engine) repoLock(id string) *sync.Mutex {

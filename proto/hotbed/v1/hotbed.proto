@@ -807,8 +807,14 @@ message PushEventsRequest {
   // In order, each after the controller's applied; may be empty, to learn
   // where the controller is.
   repeated Event events = 3;
-  // Instead of events, when the controller asked for one.
+  // When the controller asked for one; events then are those the
+  // checkpoint includes that the controller may lack, which it applies
+  // first, for what derives from them (history, sessions' timelines).
   Checkpoint checkpoint = 4;
+  // The time of the worker's event at the controller's applied: a
+  // controller that applied a different event there (the worker's database
+  // is an older copy that has written on since) asks for a checkpoint.
+  int64 after_at = 5;
 }
 
 message PushEventsResponse {
@@ -824,6 +830,9 @@ message CommandUsage {
   double cpu_cores = 2;
   int64 memory_bytes = 3;
   int64 swap_bytes = 4;
+  // Why a queued command waits, with the numbers as they are now; an event
+  // says so only when the kind of wait changes.
+  string reason = 5;
 }
 
 message BaseUsage {

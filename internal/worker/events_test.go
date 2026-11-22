@@ -83,7 +83,6 @@ func eventually(t *testing.T, what string, cond func() bool) {
 func TestEveryChangeIsAnEvent(t *testing.T) {
 	eng := engine(t, t.TempDir())
 	repo := &pb.Repo{Id: "app", Url: origin(t), Steps: []*pb.Step{{Name: "build", Script: "true", EveryPull: true, Hash: "h1"}}}
-	eng.SetRepos([]*pb.Repo{repo})
 	ctx := t.Context()
 	if _, err := eng.CreateWorkspace(ctx, &pb.CreateWorkspaceRequest{Id: "ws1", Repo: "app", SessionId: "s1", Agent: "a", RepoConfig: repo}); err != nil {
 		t.Fatal(err)
@@ -96,8 +95,8 @@ func TestEveryChangeIsAnEvent(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(cmd.Id) != 8 {
-		t.Errorf("a command run without an ID got %q, want eight characters the worker picked", cmd.Id)
+	if len(cmd.Id) != 10 {
+		t.Errorf("a command run without an ID got %q, want ten characters the worker picked", cmd.Id)
 	}
 	eventually(t, "the command to end", func() bool {
 		c, ok := eng.Command(cmd.Id)
@@ -227,5 +226,49 @@ func TestEpochNamesTheDatabase(t *testing.T) {
 	}
 	if other := epoch(t.TempDir()); other == first {
 		t.Errorf("a new database has the old epoch %q", other)
+	}
+}
+
+// A queued command's wait is an event when its kind changes, not each time
+// its numbers do: those go in heartbeats.
+func TestWaitingIsAnEventWhenItsKindChanges(t *testing.T) {
+	eng := engine(t, t.TempDir())
+	repo := &pb.Repo{Id: "app", Url: origin(t), Steps: []*pb.Step{{Name: "build", Script: "true", EveryPull: true, Hash: "h1"}}}
+	ctx := t.Context()
+	if _, err := eng.CreateWorkspace(ctx, &pb.CreateWorkspaceRequest{Id: "ws1", Repo: "app", SessionId: "s1", RepoConfig: repo}); err != nil {
+		t.Fatal(err)
+	}
+	eventually(t, "the workspace to be ready", func() bool {
+		ws, err := eng.Workspace("ws1")
+		return err == nil && ws.State == pb.WorkspaceState_WORKSPACE_STATE_IDLE
+	})
+	big, err := eng.Exec(ctx, &pb.RunCommandRequest{WorkspaceId: "ws1", Args: []string{"true"}, Limits: &pb.CommandLimits{MemoryLowBytes: 15 << 30}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Another command running and ending changes how much memory is left.
+	small, err := eng.Exec(ctx, &pb.RunCommandRequest{WorkspaceId: "ws1", Args: []string{"sleep", "1"}, Limits: &pb.CommandLimits{MemoryLowBytes: 1 << 30}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	eventually(t, "the small command to end", func() bool {
+		c, ok := eng.Command(small.Id)
+		return ok && c.State == pb.CommandState_COMMAND_STATE_SUCCEEDED
+	})
+	events, err := eng.Events(0, 1000)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var waits []string
+	for _, ev := range events {
+		if c := ev.GetCommand(); c != nil && c.Command.Id == big.Id && c.What == "waiting" {
+			waits = append(waits, c.Detail)
+		}
+	}
+	if len(waits) != 1 || !strings.HasPrefix(waits[0], "waiting for memory") {
+		t.Errorf("waiting events of the big command = %q, want one, for memory", waits)
+	}
+	if h := eng.Heartbeat("c"); len(h.Commands) != 1 || !strings.HasPrefix(h.Commands[0].Reason, "waiting for memory: needs 15.0 GiB") {
+		t.Errorf("heartbeat's commands = %v, want the big one with its reason", h.Commands)
 	}
 }

@@ -43,11 +43,9 @@ func (e *Engine) CreateWorkspace(ctx context.Context, req *pb.CreateWorkspaceReq
 	e.mu.Lock()
 	r := req.RepoConfig
 	if r != nil {
-		// The controller's word on the repo, newer than its last heartbeat's.
-		if e.repos == nil {
-			e.repos = map[string]*pb.Repo{}
-		}
-		e.repos[r.Id] = r
+		// The controller's word that the repo exists, newer than its last
+		// heartbeat's.
+		e.vouched[r.Id] = e.now()
 	} else {
 		r = e.repos[req.Repo]
 	}
