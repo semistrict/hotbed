@@ -54,7 +54,7 @@ function Sessions({ s }: { s: Snapshot }) {
           <SessionTable s={s} sessions={[...live].sort((a, b) => rank(s, a) - rank(s, b) || a.lastActiveAt.localeCompare(b.lastActiveAt))} now={now} />
         )}
       </Card>
-      <Card title="Ended in the last day" sub="By their agent, or abandoned" delay={60}>
+      <Card title="Ended in the last day" sub="By their agent, abandoned, or at the end of their scheduled run" delay={60}>
         {ended.length === 0 ? <Empty>None yet.</Empty> : <SessionTable s={s} sessions={ended} now={now} />}
       </Card>
     </div>
@@ -91,6 +91,11 @@ export function SessionTable({ s, sessions, now }: { s: Snapshot; sessions: Sess
                   <Link to="/sessions/$id" params={{ id: x.id }} className="display text-[16px] font-medium text-foreground hover:text-primary">
                     {x.id}
                   </Link>
+                  {x.schedule && (
+                    <Link to="/schedules" className="ml-2 text-[10.5px] text-muted-foreground hover:text-primary" title="a run of this scheduled command">
+                      ⟳ {x.schedule}
+                    </Link>
+                  )}
                 </td>
                 <td className="px-2 py-2.5">
                   <SessionStateLabel s={s} session={x} />
@@ -116,8 +121,10 @@ export function SessionTable({ s, sessions, now }: { s: Snapshot; sessions: Sess
                 <td className="w-44 px-2 py-2.5">
                   {x.endedAt ? (
                     <span className={x.endReason.startsWith("abandoned") ? "text-warning" : "text-faint"}>
-                      {ago(x.endedAt, now)} · {x.endReason.startsWith("abandoned") ? "abandoned" : "by its agent"}
+                      {ago(x.endedAt, now)} · {endedHow(x)}
                     </span>
+                  ) : x.scheduleRunning ? (
+                    <span className="text-[10.5px] text-muted-foreground">not while its run lasts</span>
                   ) : (
                     <IdleLeft left={left} />
                   )}
@@ -129,6 +136,13 @@ export function SessionTable({ s, sessions, now }: { s: Snapshot; sessions: Sess
       </table>
     </div>
   );
+}
+
+/** Why a session ended, in a word or two. */
+function endedHow(x: Session): string {
+  if (x.endReason.startsWith("abandoned")) return "abandoned";
+  if (x.schedule) return x.endReason.replace(/^its scheduled /, "");
+  return "by its agent";
 }
 
 /**

@@ -250,36 +250,54 @@ func syncTo(ctx context.Context, cl clients, ws *pb.Workspace, dir string) (*pb.
 	return stream.CloseAndReceive()
 }
 
-type runCmd struct {
-	controllerFlag
-	Session   string   `arg:"" help:"The session's name."`
-	Repo      string   `arg:"" help:"The repo whose workspace to run in."`
-	Args      []string `arg:"" passthrough:"" help:"The command, after --."`
-	NoSync    bool     `help:"Do not sync the checkout the workspace follows first."`
-	Detach    bool     `help:"Return once the command is queued; it runs until it ends or hotbed stop. For dev servers and long jobs; follow with hotbed wait."`
+// commandFlags are what a command is run with, by hotbed run and by a
+// scheduled command alike.
+type commandFlags struct {
 	CPUWeight int      `default:"100" help:"Share of contended CPU (cgroup cpu.weight, 1-10000)."`
 	MemLow    string   `default:"0" help:"Memory guaranteed to the command (memory.low), such as 2G; it waits until that fits."`
 	MemHigh   string   `default:"0" help:"Memory past which it is throttled and swapped (memory.high), such as 8G; 0 for none."`
-	Port      int      `help:"Port a dev server listens on, for its URL."`
 	Env       []string `help:"KEY=VALUE for the command. Repeatable."`
 	Kind      string   `enum:",build,test,check,server,shell" default:"" help:"What it is, for history: build, test, check, server or shell (default: guessed)."`
+}
+
+// request is the command args (kong's passthrough, with or without its
+// leading --) run with these flags, in no workspace yet.
+func (f commandFlags) request(args []string, example string) (*pb.RunCommandRequest, error) {
+	if len(args) > 0 && args[0] == "--" {
+		args = args[1:]
+	}
+	if len(args) == 0 {
+		return nil, api.Errorf(api.CodeInvalidArgs, "no command to run").WithSuggestion(example)
+	}
+	low, err := parseSize(f.MemLow)
+	if err != nil {
+		return nil, err
+	}
+	high, err := parseSize(f.MemHigh)
+	if err != nil {
+		return nil, err
+	}
+	return &pb.RunCommandRequest{
+		Args: args, Env: f.Env, Kind: f.Kind,
+		Limits: &pb.CommandLimits{CpuWeight: int32(f.CPUWeight), MemoryLowBytes: low, MemoryHighBytes: high},
+	}, nil
+}
+
+type runCmd struct {
+	controllerFlag
+	Session string   `arg:"" help:"The session's name."`
+	Repo    string   `arg:"" help:"The repo whose workspace to run in."`
+	Args    []string `arg:"" passthrough:"" help:"The command, after --."`
+	NoSync  bool     `help:"Do not sync the checkout the workspace follows first."`
+	Detach  bool     `help:"Return once the command is queued; it runs until it ends or hotbed stop. For dev servers and long jobs; follow with hotbed wait."`
+	Port    int      `help:"Port a dev server listens on, for its URL."`
+	commandFlags
 }
 
 // Raw syncs if the workspace follows a checkout on this machine, runs the
 // command, and streams its output to stdout. Interrupting stops it.
 func (c *runCmd) Raw(ctx context.Context, d deps) (int, bool, error) {
-	// kong's passthrough keeps the -- that ends hotbed's own flags.
-	if len(c.Args) > 0 && c.Args[0] == "--" {
-		c.Args = c.Args[1:]
-	}
-	if len(c.Args) == 0 {
-		return 0, false, api.Errorf(api.CodeInvalidArgs, "no command to run").WithSuggestion("hotbed run SESSION REPO -- cargo test")
-	}
-	low, err := parseSize(c.MemLow)
-	if err != nil {
-		return 0, false, err
-	}
-	high, err := parseSize(c.MemHigh)
+	req, err := c.request(c.Args, "hotbed run SESSION REPO -- cargo test")
 	if err != nil {
 		return 0, false, err
 	}
@@ -313,10 +331,8 @@ func (c *runCmd) Raw(ctx context.Context, d deps) (int, bool, error) {
 			}
 		}
 	}
-	cmd, err := cl.workspaces.RunCommand(ctx, &pb.RunCommandRequest{
-		WorkspaceId: ws.Id, Args: c.Args, Env: c.Env, Kind: c.Kind, Attached: !c.Detach, Port: int32(c.Port),
-		Limits: &pb.CommandLimits{CpuWeight: int32(c.CPUWeight), MemoryLowBytes: low, MemoryHighBytes: high},
-	})
+	req.WorkspaceId, req.Attached, req.Port = ws.Id, !c.Detach, int32(c.Port)
+	cmd, err := cl.workspaces.RunCommand(ctx, req)
 	if err != nil {
 		return 0, false, err
 	}

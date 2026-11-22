@@ -16,6 +16,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -50,6 +51,17 @@ type cluster struct {
 	store    *fake.Store // the worker's volumes
 	ctrlSrv  *httptest.Server
 	system   *fake.System // the worker's memory, which tests set
+	// restart swaps in a new controller on the same database.
+	serverCfg controller.ServerConfig
+	handler   atomic.Pointer[http.Handler]
+}
+
+// restart replaces the controller with a new one on the same database, as a
+// deploy does: whatever it knows must come from there.
+func (c *cluster) restart() {
+	c.server = controller.NewServer(c.serverCfg)
+	h := c.server.Handler()
+	c.handler.Store(&h)
 }
 
 type clock struct {
@@ -61,6 +73,13 @@ func (c *clock) Now() time.Time {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	return time.Now().Add(c.offset)
+}
+
+// set makes the clock read t.
+func (c *clock) set(t time.Time) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.offset = time.Until(t)
 }
 
 func (c *clock) advance(d time.Duration) {
@@ -101,12 +120,14 @@ func newCluster(t *testing.T) *cluster {
 	t.Cleanup(workerSrv.Close)
 
 	clk := &clock{}
-	server := controller.NewServer(controller.ServerConfig{
+	serverCfg := controller.ServerConfig{
 		Store: store, Identifier: tn, Cluster: *cfg.Controller, Controller: "ubu1", Now: clk.Now, Self: loopback,
 		Workers:    tn.Client(ubu1.Peer),
 		WorkerAddr: func(string) string { return strings.TrimPrefix(workerSrv.URL, "http://") },
-	})
-	ctrlSrv := httptest.NewServer(server.Handler())
+	}
+	c := &cluster{t: t, id: init.ClusterID, engine: eng, clock: clk, store: volumes, system: system, serverCfg: serverCfg}
+	c.restart()
+	ctrlSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { (*c.handler.Load()).ServeHTTP(w, r) }))
 	t.Cleanup(ctrlSrv.Close)
 	ctrl := strings.TrimPrefix(ctrlSrv.URL, "http://")
 
@@ -124,15 +145,14 @@ func newCluster(t *testing.T) *cluster {
 	t.Cleanup(func() { cancel(); <-done })
 
 	t.Setenv("HOTBED_CONTROLLER", ctrl)
-	return &cluster{
-		t: t, id: init.ClusterID, server: server, engine: eng, asWorker: asWorker, clock: clk, store: volumes, ctrlSrv: ctrlSrv, system: system,
-		cli: deps{
-			// The CLI runs on the laptop: its tailnet says so, and its calls
-			// come from the laptop.
-			tailnet: tailnettest.New(tailnet.Self{Peer: laptop}),
-			http:    tn.Client(laptop), stream: tn.Client(laptop), cache: t.TempDir(),
-		},
+	c.asWorker, c.ctrlSrv = asWorker, ctrlSrv
+	c.cli = deps{
+		// The CLI runs on the laptop: its tailnet says so, and its calls
+		// come from the laptop.
+		tailnet: tailnettest.New(tailnet.Self{Peer: laptop}),
+		http:    tn.Client(laptop), stream: tn.Client(laptop), cache: t.TempDir(),
 	}
+	return c
 }
 
 // eventually waits for cond; the engine and its reports run on their own.

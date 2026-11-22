@@ -32,6 +32,7 @@ import {
   type NodeSpec,
 } from "./fixtures";
 import { Rng } from "./rng";
+import { mockSchedules } from "./schedules";
 
 const GiB = 1024 ** 3;
 const HOUR = 3600_000;
@@ -138,6 +139,7 @@ export class MockCluster {
       nodeHourly: this.nodeHourly,
       history: [] as FinishedCommand[],
       sessions: [...this.sessions, ...this.past.values()].sort((a, b) => b.lastActiveAt.localeCompare(a.lastActiveAt)),
+      schedules: mockSchedules(this.now),
     }) satisfies Snapshot;
     // Finished commands never change once recorded, so they need no copy.
     snap.history = [...this.history];
@@ -539,7 +541,7 @@ export class MockCluster {
     const others = this.sessions.filter((x) => x.endedAt === null && !x.workspaces.some((sw) => sw.repoId === repo.id));
     let session = !initial && others.length > 0 && this.rng.chance(0.2) ? this.rng.pick(others) : undefined;
     if (!session) {
-      session = { id: this.sessionName(), agent: this.rng.pick(AGENT_HOSTS), startedAt: iso(createdAt), lastActiveAt: iso(createdAt), endedAt: null, endReason: "", workspaces: [] };
+      session = { id: this.sessionName(), agent: this.rng.pick(AGENT_HOSTS), startedAt: iso(createdAt), lastActiveAt: iso(createdAt), endedAt: null, endReason: "", workspaces: [], schedule: null, scheduleRunning: false };
       this.sessions.push(session);
     }
     const w: Workspace = {
@@ -707,6 +709,8 @@ export class MockCluster {
         endedAt: iso(ended),
         endReason: this.rng.chance(0.12) ? "abandoned: nothing touched it for an hour" : "ended by its agent",
         workspaces: [],
+        schedule: null,
+        scheduleRunning: false,
       };
       this.past.set(key, session);
     }

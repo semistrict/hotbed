@@ -72,6 +72,9 @@ type Server struct {
 	// repoEdits makes each change to a repo (its steps, its epoch) read and
 	// write it in one go, so agents editing steps at once lose nothing.
 	repoEdits sync.Mutex
+	// scheduling makes starting scheduled runs and changing schedules one at
+	// a time, so no slot runs twice and runs of a schedule never overlap.
+	scheduling sync.Mutex
 }
 
 func NewServer(cfg ServerConfig) *Server {
@@ -95,6 +98,7 @@ func (s *Server) Handler() http.Handler {
 	hotbedv1connect.RegisterClusterServiceHandler(server, s)
 	hotbedv1connect.RegisterSessionServiceHandler(server, &sessions{s})
 	hotbedv1connect.RegisterWorkspaceServiceHandler(server, &workspaces{s})
+	hotbedv1connect.RegisterScheduleServiceHandler(server, &schedules{s})
 	mux := http.NewServeMux()
 	connecthttp.Mount(mux, server)
 	if s.cfg.UI != nil {
@@ -135,6 +139,13 @@ func (s *Server) Report(ctx context.Context, rep *pb.ReportRequest) (*pb.ReportR
 	}
 	for session := range in.sessions {
 		s.wake(session)
+	}
+	if len(rep.Finished) > 0 {
+		// A scheduled run whose command ended ends now, not at the next tick,
+		// even if the worker stops waiting for this answer meanwhile.
+		if err := s.settleRuns(context.WithoutCancel(ctx)); err != nil {
+			slog.Error("settle scheduled runs", "err", err)
+		}
 	}
 	repos, err := s.cfg.Store.Repos(ctx)
 	if err != nil {
@@ -359,6 +370,9 @@ func (s *Server) endSession(ctx context.Context, id, reason string) (*pb.Session
 		}
 	}
 	if err := s.cfg.Store.EndSession(ctx, id, reason, s.now()); err != nil {
+		return nil, err
+	}
+	if err := s.endRuns(ctx, id, reason); err != nil {
 		return nil, err
 	}
 	s.wake(id)

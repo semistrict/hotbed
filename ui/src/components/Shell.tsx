@@ -5,6 +5,7 @@ import { useSnapshot } from "../lib/data";
 
 const NAV = [
   { to: "/", label: "Sessions" },
+  { to: "/schedules", label: "Schedules" },
   { to: "/cluster", label: "Cluster" },
   { to: "/nodes", label: "Nodes" },
   { to: "/workspaces", label: "Workspaces" },

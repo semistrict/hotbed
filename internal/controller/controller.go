@@ -199,6 +199,10 @@ func (c *Controller) Serve(ctx context.Context) error {
 		return nil
 	})
 	g.Go(func() error {
+		c.api.RunSchedules(gctx)
+		return nil
+	})
+	g.Go(func() error {
 		t := time.NewTicker(10 * time.Minute)
 		defer t.Stop()
 		for {

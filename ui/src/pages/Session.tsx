@@ -33,15 +33,20 @@ function SessionView({ s, session }: { s: Snapshot; session: Session }) {
     <div className="space-y-6">
       <PageTitle
         title={session.id}
-        sub={`${session.agent} · started ${ago(session.startedAt, now)} · last active ${ago(session.lastActiveAt, now)}${session.endedAt ? ` · ended ${ago(session.endedAt, now)}: ${session.endReason}` : ""}`}
+        sub={`${session.schedule ? `a run of the scheduled command ${session.schedule}` : session.agent} · started ${ago(session.startedAt, now)} · last active ${ago(session.lastActiveAt, now)}${session.endedAt ? ` · ended ${ago(session.endedAt, now)}: ${session.endReason}` : ""}`}
         right={<SessionStateLabel s={s} session={session} />}
       />
-      {!session.endedAt && (
-        <div className="rise max-w-md">
-          <div className="eyebrow mb-1">abandoned in</div>
-          <IdleLeft left={idleLeftMs(session, now)} />
-        </div>
-      )}
+      {!session.endedAt &&
+        (session.scheduleRunning ? (
+          <p className="rise text-[12px] text-muted-foreground">
+            A scheduled run: its session is not abandoned while the run lasts. It ends when the run succeeds; a failed run keeps it for an hour, for a look inside. <Link to="/schedules" className="text-primary hover:underline">Schedules</Link>
+          </p>
+        ) : (
+          <div className="rise max-w-md">
+            <div className="eyebrow mb-1">abandoned in</div>
+            <IdleLeft left={idleLeftMs(session, now)} />
+          </div>
+        ))}
       <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 xl:grid-cols-6">
         <StatTile label="Commands" value={rows.length} foot={`${live} live`} tone="ember" />
         <StatTile label="Failed" value={failed} foot={rows.length ? `${Math.round((100 * failed) / rows.length)}% of them` : "none run"} />

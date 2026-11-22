@@ -530,6 +530,8 @@ message FinishedCommand {
   int64 peak_memory_bytes = 17;
   int32 parks = 18;
   string session_id = 19;
+  // Why it failed or was cancelled, as the command's reason says.
+  string reason = 21;
 }
 
 message RunCommandRequest {
@@ -589,6 +591,10 @@ message Session {
   string end_reason = 7;
   // Every workspace it had, released ones too, oldest first.
   repeated SessionWorkspace workspaces = 8;
+  // The scheduled command this session is a run of; empty for an agent's.
+  string schedule = 9;
+  // Its scheduled run is in progress: the idle hour does not apply.
+  bool schedule_running = 10;
 }
 
 message SessionWorkspace {
@@ -810,4 +816,113 @@ message Snapshot {
   map<string, NodeHours> node_hourly = 15;
   repeated FinishedCommand history = 16;
   repeated Session sessions = 17;
+  // Every scheduled command, each with its recent runs.
+  repeated ScheduledCommand schedules = 18;
+}
+
+// ---- scheduled commands ---------------------------------------------------
+
+// Scheduled commands: recurring work the controller starts by itself, such
+// as a nightly measurement. Each run is a session of its own, with a fresh
+// workspace of the repo at its branch's head, in which the command runs
+// detached. A run that succeeds ends its session; one that fails leaves it
+// for the usual idle hour, so an agent can look inside.
+service ScheduleService {
+  // PutSchedule adds a scheduled command, or replaces the one of its name.
+  rpc PutSchedule(PutScheduleRequest) returns (ScheduledCommand);
+  rpc ListSchedules(ListSchedulesRequest) returns (ListSchedulesResponse);
+  // GetSchedule is one scheduled command, with more of its runs.
+  rpc GetSchedule(GetScheduleRequest) returns (ScheduledCommand);
+  // DeleteSchedule removes a scheduled command; a run in progress goes on.
+  rpc DeleteSchedule(DeleteScheduleRequest) returns (DeleteScheduleResponse);
+  // RunSchedule starts a run now, outside the schedule, unless one is in
+  // progress.
+  rpc RunSchedule(RunScheduleRequest) returns (ScheduledRun);
+  // PauseSchedule stops (or, with paused false, resumes) a schedule's runs.
+  rpc PauseSchedule(PauseScheduleRequest) returns (ScheduledCommand);
+}
+
+message ScheduledCommand {
+  // lowercase words joined by dashes, such as cladefs-nightly.
+  string name = 1;
+  // Five-field cron, in the controller's time zone unless it starts with
+  // CRON_TZ=ZONE, such as "0 2 * * *".
+  string cron = 2;
+  string repo = 3;
+  // Puts every run on this node (host name); otherwise the controller places
+  // each like any workspace.
+  string node = 4;
+  // The command, as hotbed run takes it. Its workspace_id, id, attached and
+  // port are the controller's to set.
+  RunCommandRequest command = 5;
+  bool paused = 6;
+  int64 created_at = 7;
+  int64 updated_at = 8;
+  // When the next run is due; unset while paused.
+  optional int64 next_at = 9;
+  // Its runs, the newest first: a few when listed, more from GetSchedule.
+  repeated ScheduledRun runs = 10;
+}
+
+enum RunOutcome {
+  RUN_OUTCOME_UNSPECIFIED = 0;
+  // Its command is queued or running.
+  RUN_OUTCOME_RUNNING = 1;
+  RUN_OUTCOME_SUCCEEDED = 2;
+  // Its command failed, or its workspace did.
+  RUN_OUTCOME_FAILED = 3;
+  // Its command was stopped, or its session ended under it.
+  RUN_OUTCOME_CANCELLED = 4;
+  // It could not start: no node to place it on, the repo gone.
+  RUN_OUTCOME_NOT_STARTED = 5;
+  // Its slot came while the previous run was still in progress.
+  RUN_OUTCOME_SKIPPED = 6;
+  // Its slot passed while the controller was down.
+  RUN_OUTCOME_MISSED = 7;
+}
+
+message ScheduledRun {
+  int64 id = 1;
+  string schedule = 2;
+  // The slot it was due at; unset for a run started by hand.
+  optional int64 slot_at = 3;
+  int64 started_at = 4;
+  optional int64 ended_at = 5;
+  RunOutcome outcome = 6;
+  string session_id = 7;
+  string workspace_id = 8;
+  string command_id = 9;
+  string node_id = 10;
+  optional int32 exit_code = 11;
+  // Why it failed, was skipped or missed, or did not start.
+  string reason = 12;
+}
+
+message PutScheduleRequest {
+  ScheduledCommand schedule = 1;
+}
+
+message ListSchedulesRequest {}
+
+message ListSchedulesResponse {
+  repeated ScheduledCommand schedules = 1;
+}
+
+message GetScheduleRequest {
+  string name = 1;
+}
+
+message DeleteScheduleRequest {
+  string name = 1;
+}
+
+message DeleteScheduleResponse {}
+
+message RunScheduleRequest {
+  string name = 1;
+}
+
+message PauseScheduleRequest {
+  string name = 1;
+  bool paused = 2;
 }

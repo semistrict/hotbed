@@ -3,8 +3,8 @@
 | Code | Meaning | What to do |
 |---|---|---|
 | `INVALID_ARGS` | A bad flag, argument, name or size | Fix the command; `hotbed COMMAND --help` |
-| `NOT_FOUND` | No such session, repo, workspace or command, or the session ended | Check the name; `hotbed session start` for a new session; `hotbed add S REPO` for a workspace |
-| `CONFLICT` | The session name is taken, or the workspace is still preparing (retryable) | Pick another, or leave it out for a random one |
+| `NOT_FOUND` | No such session, repo, workspace, command or scheduled command, or the session ended | Check the name; `hotbed session start` for a new session; `hotbed add S REPO` for a workspace |
+| `CONFLICT` | The session name is taken, the workspace is still preparing (retryable), or `schedule run` while a run is in progress | Pick another name, or leave it out for a random one; for a run, `hotbed wait` on the session the message names |
 | `REPO_UNREACHABLE` | The worker cannot read the repo's remote (retryable) | Check the URL in `hotbed repo ls` and the node's access to it, then retry |
 | `WORKSPACE_FAILED` | The repo's first base failed at a step, or the fork failed | Read the message, which names the step; fix it with `hotbed step add` (or `hotbed repo rebuild` if incremental state broke) and `hotbed add` again |
 | `STEP_FAILED` | `step add`: the script failed in your workspace; it was not saved | Read its output (`hotbed logs S CMD`), fix the script, add it again |

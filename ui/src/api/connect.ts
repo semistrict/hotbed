@@ -4,12 +4,15 @@ import {
   BaseState,
   ClusterService,
   CommandState,
+  RunOutcome,
   WorkspaceService,
   WorkspaceState,
   type Base as PbBase,
   type Command as PbCommand,
   type FinishedCommand as PbFinished,
   type Node as PbNode,
+  type ScheduledCommand as PbScheduled,
+  type ScheduledRun as PbRun,
   type Snapshot as PbSnapshot,
   type Workspace as PbWorkspace,
 } from "../gen/hotbed/v1/hotbed_pb";
@@ -21,6 +24,8 @@ import type {
   FailureKind,
   FinishedCommand,
   Node,
+  ScheduledCommand,
+  ScheduledRun,
   Session,
   Snapshot,
   Workspace,
@@ -134,9 +139,60 @@ export function toSnapshot(s: PbSnapshot): Snapshot {
           createdAt: iso(w.createdAt),
           releasedAt: isoOrNull(w.releasedAt),
         })),
+        schedule: orNull(x.schedule),
+        scheduleRunning: x.scheduleRunning,
       }),
     ),
+    schedules: s.schedules.map(toScheduled),
   };
+}
+
+function toScheduled(sc: PbScheduled): ScheduledCommand {
+  return {
+    name: sc.name,
+    cron: sc.cron,
+    repoId: sc.repo,
+    node: orNull(sc.node),
+    argv: shellJoin(sc.command?.args ?? []),
+    env: sc.command?.env ?? [],
+    paused: sc.paused,
+    createdAt: iso(sc.createdAt),
+    updatedAt: iso(sc.updatedAt),
+    nextAt: isoOrNull(sc.nextAt),
+    runs: sc.runs.map(toRun),
+  };
+}
+
+const OUTCOME: Record<RunOutcome, ScheduledRun["outcome"]> = {
+  [RunOutcome.UNSPECIFIED]: "running",
+  [RunOutcome.RUNNING]: "running",
+  [RunOutcome.SUCCEEDED]: "succeeded",
+  [RunOutcome.FAILED]: "failed",
+  [RunOutcome.CANCELLED]: "cancelled",
+  [RunOutcome.NOT_STARTED]: "not-started",
+  [RunOutcome.SKIPPED]: "skipped",
+  [RunOutcome.MISSED]: "missed",
+};
+
+function toRun(r: PbRun): ScheduledRun {
+  return {
+    id: num(r.id),
+    schedule: r.schedule,
+    slotAt: isoOrNull(r.slotAt),
+    startedAt: iso(r.startedAt),
+    endedAt: isoOrNull(r.endedAt),
+    outcome: OUTCOME[r.outcome],
+    sessionId: orNull(r.sessionId),
+    commandId: orNull(r.commandId),
+    nodeId: orNull(r.nodeId),
+    exitCode: r.exitCode ?? null,
+    reason: r.reason,
+  };
+}
+
+/** Words as a POSIX shell reads them back: plain ones bare, others single-quoted. */
+function shellJoin(args: string[]): string {
+  return args.map((a) => (/^[\w@%+=:,./-]+$/.test(a) ? a : `'${a.replaceAll("'", `'\\''`)}'`)).join(" ");
 }
 
 function toNode(n: PbNode): Node {

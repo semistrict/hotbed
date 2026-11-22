@@ -1,6 +1,6 @@
 import { create } from "@bufbuild/protobuf";
 import { describe, expect, it } from "vitest";
-import { BaseState, CommandState, SnapshotSchema, WorkspaceState } from "../gen/hotbed/v1/hotbed_pb";
+import { BaseState, CommandState, RunOutcome, SnapshotSchema, WorkspaceState } from "../gen/hotbed/v1/hotbed_pb";
 import { toSnapshot } from "./connect";
 
 describe("toSnapshot", () => {
@@ -45,6 +45,36 @@ describe("toSnapshot", () => {
           lastActiveAt: 1795299900000n,
           workspaces: [{ id: "p1", repoId: "app", nodeId: "nAsahi", createdAt: 1795299000000n, releasedAt: 1795299500000n }],
         },
+        { id: "nightly-20261121-0200", agent: "schedule:nightly", schedule: "nightly", scheduleRunning: true, startedAt: 1795251600000n, lastActiveAt: 1795251600000n },
+      ],
+      schedules: [
+        {
+          name: "nightly",
+          cron: "0 2 * * *",
+          repo: "app",
+          node: "ubu1",
+          command: { args: ["sh", "-c", "echo it's late", "plain"], env: ["WHO=nightly"] },
+          createdAt: 1795200000000n,
+          updatedAt: 1795200000000n,
+          nextAt: 1795338000000n,
+          runs: [
+            {
+              id: 2n,
+              schedule: "nightly",
+              slotAt: 1795251600000n,
+              startedAt: 1795251600000n,
+              outcome: RunOutcome.FAILED,
+              sessionId: "nightly-20261121-0200",
+              commandId: "k3m9x2qa",
+              nodeId: "nUbu1",
+              exitCode: 3,
+              reason: "exited 3",
+              endedAt: 1795255200000n,
+            },
+            { id: 1n, schedule: "nightly", slotAt: 1795165200000n, startedAt: 1795165500000n, endedAt: 1795165500000n, outcome: RunOutcome.MISSED, reason: "the controller was down" },
+          ],
+        },
+        { name: "soak", cron: "0 * * * *", repo: "app", paused: true, command: { args: ["true"] } },
       ],
     });
     const s = toSnapshot(wire);
@@ -68,6 +98,74 @@ describe("toSnapshot", () => {
         endedAt: null,
         endReason: "",
         workspaces: [{ id: "p1", repoId: "app", nodeId: "nAsahi", createdAt: "2026-11-21T22:10:00.000Z", releasedAt: "2026-11-21T22:18:20.000Z" }],
+        schedule: null,
+        scheduleRunning: false,
+      },
+      {
+        id: "nightly-20261121-0200",
+        agent: "schedule:nightly",
+        startedAt: "2026-11-21T09:00:00.000Z",
+        lastActiveAt: "2026-11-21T09:00:00.000Z",
+        endedAt: null,
+        endReason: "",
+        workspaces: [],
+        schedule: "nightly",
+        scheduleRunning: true,
+      },
+    ]);
+    expect(s.schedules).toEqual([
+      {
+        name: "nightly",
+        cron: "0 2 * * *",
+        repoId: "app",
+        node: "ubu1",
+        argv: "sh -c 'echo it'\\''s late' plain",
+        env: ["WHO=nightly"],
+        paused: false,
+        createdAt: "2026-11-20T18:40:00.000Z",
+        updatedAt: "2026-11-20T18:40:00.000Z",
+        nextAt: "2026-11-22T09:00:00.000Z",
+        runs: [
+          {
+            id: 2,
+            schedule: "nightly",
+            slotAt: "2026-11-21T09:00:00.000Z",
+            startedAt: "2026-11-21T09:00:00.000Z",
+            endedAt: "2026-11-21T10:00:00.000Z",
+            outcome: "failed",
+            sessionId: "nightly-20261121-0200",
+            commandId: "k3m9x2qa",
+            nodeId: "nUbu1",
+            exitCode: 3,
+            reason: "exited 3",
+          },
+          {
+            id: 1,
+            schedule: "nightly",
+            slotAt: "2026-11-20T09:00:00.000Z",
+            startedAt: "2026-11-20T09:05:00.000Z",
+            endedAt: "2026-11-20T09:05:00.000Z",
+            outcome: "missed",
+            sessionId: null,
+            commandId: null,
+            nodeId: null,
+            exitCode: null,
+            reason: "the controller was down",
+          },
+        ],
+      },
+      {
+        name: "soak",
+        cron: "0 * * * *",
+        repoId: "app",
+        node: null,
+        argv: "true",
+        env: [],
+        paused: true,
+        createdAt: "1970-01-01T00:00:00.000Z",
+        updatedAt: "1970-01-01T00:00:00.000Z",
+        nextAt: null,
+        runs: [],
       },
     ]);
     expect(s.series.nAsahi).toEqual([{ t: 1795299995000, cpuBusy: 0.25, memoryUsed: 0.22, memoryPressure: 0 }]);

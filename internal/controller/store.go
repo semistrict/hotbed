@@ -99,14 +99,32 @@ var migrations = []string{
 		ref_type TEXT NOT NULL,
 		ref_id   TEXT NOT NULL
 	) STRICT`,
+	`CREATE TABLE schedules (
+		name    TEXT PRIMARY KEY,
+		doc     TEXT NOT NULL,  -- the ScheduledCommand, without next_at and runs
+		next_at INTEGER         -- unix ms; NULL while paused
+	) STRICT;
+	CREATE TABLE schedule_runs (
+		id         INTEGER PRIMARY KEY AUTOINCREMENT,
+		schedule   TEXT NOT NULL,
+		session_id TEXT NOT NULL DEFAULT '',
+		command_id TEXT NOT NULL DEFAULT '',
+		ended_at   INTEGER,     -- NULL while it runs
+		doc        TEXT NOT NULL
+	) STRICT;
+	CREATE INDEX schedule_runs_schedule ON schedule_runs (schedule, id);
+	CREATE INDEX schedule_runs_session ON schedule_runs (session_id);
+	CREATE INDEX schedule_runs_live ON schedule_runs (ended_at) WHERE ended_at IS NULL`,
 }
 
 // Retention: samples and events serve the cockpit's day; history and
-// sessions serve longer questions.
+// sessions serve longer questions. A scheduled command keeps its last
+// keepRuns runs, however old: a nightly's go back months.
 const (
 	keepSamples = 25 * time.Hour
 	keepHistory = 30 * 24 * time.Hour
 	keepEvents  = 5000
+	keepRuns    = 200
 )
 
 // Store is the controller's database.
@@ -293,15 +311,28 @@ func (s *Store) Ingest(ctx context.Context, nodeID string, r *pb.ReportRequest, 
 	return out, tx.Commit()
 }
 
-// Prune drops samples, history and events past their retention.
+// Prune drops samples, history, events, commands and scheduled runs past
+// their retention. Each statement is an Exec of its own: given several, the
+// driver binds every one's parameters from the first argument.
 func (s *Store) Prune(ctx context.Context, now time.Time) error {
-	_, err := s.db.ExecContext(ctx, `
-		DELETE FROM samples WHERE t < ?;
-		DELETE FROM history WHERE ended_at < ?;
-		DELETE FROM events WHERE id <= (SELECT MAX(id) FROM events) - ?;
-		DELETE FROM commands WHERE created_at < ?;`,
-		now.Add(-keepSamples).UnixMilli(), now.Add(-keepHistory).UnixMilli(), keepEvents, now.Add(-keepHistory).UnixMilli())
-	return err
+	history := now.Add(-keepHistory).UnixMilli()
+	for _, p := range []struct {
+		query string
+		arg   any
+	}{
+		{`DELETE FROM samples WHERE t < ?`, now.Add(-keepSamples).UnixMilli()},
+		{`DELETE FROM history WHERE ended_at < ?`, history},
+		{`DELETE FROM events WHERE id <= (SELECT MAX(id) FROM events) - ?`, keepEvents},
+		{`DELETE FROM commands WHERE created_at < ?`, history},
+		{`DELETE FROM schedule_runs WHERE ended_at IS NOT NULL AND (
+			schedule NOT IN (SELECT name FROM schedules) OR
+			id NOT IN (SELECT id FROM schedule_runs r WHERE r.schedule = schedule_runs.schedule ORDER BY id DESC LIMIT ?))`, keepRuns},
+	} {
+		if _, err := s.db.ExecContext(ctx, p.query, p.arg); err != nil {
+			return fmt.Errorf("prune: %w", err)
+		}
+	}
+	return nil
 }
 
 // nodeRow is a node with its latest report.
@@ -435,6 +466,10 @@ func (s *Store) Session(ctx context.Context, id string) (*pb.Session, error) {
 	if ended.Valid {
 		out.EndedAt = &ended.Int64
 	}
+	err = s.db.QueryRowContext(ctx, `SELECT schedule, ended_at IS NULL FROM schedule_runs WHERE session_id = ? LIMIT 1`, id).Scan(&out.Schedule, &out.ScheduleRunning)
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return nil, err
+	}
 	rows, err := s.db.QueryContext(ctx, `SELECT id, repo_id, node_id, created_at, released_at FROM workspaces WHERE session_id = ? ORDER BY created_at`, id)
 	if err != nil {
 		return nil, err
@@ -515,9 +550,13 @@ func (s *Store) EndSession(ctx context.Context, id, reason string, now time.Time
 	return err
 }
 
-// IdleSessions lists live sessions nothing has touched since before.
+// IdleSessions lists live sessions nothing has touched since before. A
+// scheduled run's session is never idle while the run is in progress: no
+// agent is there to touch it.
 func (s *Store) IdleSessions(ctx context.Context, before time.Time) ([]string, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT id FROM sessions WHERE ended_at IS NULL AND last_active_at < ?`, before.UnixMilli())
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT id FROM sessions WHERE ended_at IS NULL AND last_active_at < ?
+		AND id NOT IN (SELECT session_id FROM schedule_runs WHERE ended_at IS NULL)`, before.UnixMilli())
 	if err != nil {
 		return nil, err
 	}
@@ -657,6 +696,21 @@ func (s *Store) Command(ctx context.Context, id string) (session, node string, e
 		return "", "", api.Errorf(api.CodeNotFound, "no command %s", id)
 	}
 	return session, node, err
+}
+
+// Finished is a command that ended, as history keeps it; ok is false
+// while it has not (or its worker has not said so yet).
+func (s *Store) Finished(ctx context.Context, id string) (f *pb.FinishedCommand, ok bool, err error) {
+	var doc string
+	err = s.db.QueryRowContext(ctx, `SELECT doc FROM history WHERE id = ?`, id).Scan(&doc)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, false, nil
+	}
+	if err != nil {
+		return nil, false, err
+	}
+	f, err = unmarshal(doc, &pb.FinishedCommand{})
+	return f, err == nil, err
 }
 
 // History lists commands that ended since since, oldest first.

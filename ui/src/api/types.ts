@@ -96,10 +96,14 @@ export interface Session {
   startedAt: string;
   lastActiveAt: string;
   endedAt: string | null;
-  /** Why it ended: by its agent, or abandoned. */
+  /** Why it ended: by its agent, abandoned, or its scheduled run's end. */
   endReason: string;
   /** Every workspace it had, released ones too, oldest first. */
   workspaces: SessionWorkspace[];
+  /** The scheduled command this session is a run of; null for an agent's. */
+  schedule: string | null;
+  /** Its scheduled run is in progress: the idle hour does not apply. */
+  scheduleRunning: boolean;
 }
 
 export interface SessionWorkspace {
@@ -281,6 +285,55 @@ export interface Snapshot {
   history: FinishedCommand[];
   /** Live sessions and those that ended in the last 24 hours, the most recently active first. */
   sessions: Session[];
+  /** By name, each with its recent runs. */
+  schedules: ScheduledCommand[];
+}
+
+/**
+ * Recurring work the controller starts by itself. Each run is a session of
+ * its own, with a fresh workspace of the repo, in which the command runs.
+ */
+export interface ScheduledCommand {
+  name: string;
+  /** Five-field cron, in the controller's time zone unless CRON_TZ= says otherwise. */
+  cron: string;
+  repoId: string;
+  /** The node every run is pinned to; null lets the controller place each. */
+  node: string | null;
+  /** The command, shell-quoted, as it runs at /work/REPO. */
+  argv: string;
+  env: string[];
+  paused: boolean;
+  createdAt: string;
+  updatedAt: string;
+  /** When the next run is due; null while paused. */
+  nextAt: string | null;
+  /** The newest first. */
+  runs: ScheduledRun[];
+}
+
+/**
+ * running and the three ends of a command; not-started: it could not be
+ * placed; skipped: the previous run was still in progress at its slot;
+ * missed: its slot passed while the controller was down.
+ */
+export type RunOutcome = "running" | "succeeded" | "failed" | "cancelled" | "not-started" | "skipped" | "missed";
+
+export interface ScheduledRun {
+  id: number;
+  schedule: string;
+  /** The slot it was due at; null for a run started by hand. */
+  slotAt: string | null;
+  startedAt: string;
+  endedAt: string | null;
+  outcome: RunOutcome;
+  /** Null for a slot skipped or missed, which started nothing. */
+  sessionId: string | null;
+  commandId: string | null;
+  nodeId: string | null;
+  exitCode: number | null;
+  /** Why it failed, was skipped or missed, or did not start. */
+  reason: string;
 }
 
 export interface CommandLog {

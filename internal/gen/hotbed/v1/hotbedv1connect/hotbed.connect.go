@@ -20,6 +20,8 @@ const (
 	SessionServiceName = "hotbed.v1.SessionService"
 	// WorkspaceServiceName is the fully-qualified name of the WorkspaceService service.
 	WorkspaceServiceName = "hotbed.v1.WorkspaceService"
+	// ScheduleServiceName is the fully-qualified name of the ScheduleService service.
+	ScheduleServiceName = "hotbed.v1.ScheduleService"
 )
 
 // These constants are the procedure names of the RPCs defined in this package. They're exposed at
@@ -98,6 +100,24 @@ const (
 	// WorkspaceServiceGetLogLinesProcedure is the procedure name of the WorkspaceService's GetLogLines
 	// RPC.
 	WorkspaceServiceGetLogLinesProcedure = "/hotbed.v1.WorkspaceService/GetLogLines"
+	// ScheduleServicePutScheduleProcedure is the procedure name of the ScheduleService's PutSchedule
+	// RPC.
+	ScheduleServicePutScheduleProcedure = "/hotbed.v1.ScheduleService/PutSchedule"
+	// ScheduleServiceListSchedulesProcedure is the procedure name of the ScheduleService's
+	// ListSchedules RPC.
+	ScheduleServiceListSchedulesProcedure = "/hotbed.v1.ScheduleService/ListSchedules"
+	// ScheduleServiceGetScheduleProcedure is the procedure name of the ScheduleService's GetSchedule
+	// RPC.
+	ScheduleServiceGetScheduleProcedure = "/hotbed.v1.ScheduleService/GetSchedule"
+	// ScheduleServiceDeleteScheduleProcedure is the procedure name of the ScheduleService's
+	// DeleteSchedule RPC.
+	ScheduleServiceDeleteScheduleProcedure = "/hotbed.v1.ScheduleService/DeleteSchedule"
+	// ScheduleServiceRunScheduleProcedure is the procedure name of the ScheduleService's RunSchedule
+	// RPC.
+	ScheduleServiceRunScheduleProcedure = "/hotbed.v1.ScheduleService/RunSchedule"
+	// ScheduleServicePauseScheduleProcedure is the procedure name of the ScheduleService's
+	// PauseSchedule RPC.
+	ScheduleServicePauseScheduleProcedure = "/hotbed.v1.ScheduleService/PauseSchedule"
 )
 
 var (
@@ -1334,6 +1354,256 @@ func (h workspaceServiceHandler) getLogLines(ctx context.Context, _ connect.Spec
 		return err
 	}
 	res, err := h.svc.GetLogLines(ctx, &req)
+	if err != nil {
+		return err
+	}
+	return stream.Send(res)
+}
+
+var (
+	scheduleServicePutScheduleSpec = sync.OnceValue(func() connect.Spec {
+		return connect.Spec{
+			StreamType: connect.StreamTypeUnary,
+			Schema:     v1.File_hotbed_v1_hotbed_proto.Services().ByName("ScheduleService").Methods().ByName("PutSchedule"),
+			Procedure:  ScheduleServicePutScheduleProcedure,
+		}
+	})
+	scheduleServiceListSchedulesSpec = sync.OnceValue(func() connect.Spec {
+		return connect.Spec{
+			StreamType: connect.StreamTypeUnary,
+			Schema:     v1.File_hotbed_v1_hotbed_proto.Services().ByName("ScheduleService").Methods().ByName("ListSchedules"),
+			Procedure:  ScheduleServiceListSchedulesProcedure,
+		}
+	})
+	scheduleServiceGetScheduleSpec = sync.OnceValue(func() connect.Spec {
+		return connect.Spec{
+			StreamType: connect.StreamTypeUnary,
+			Schema:     v1.File_hotbed_v1_hotbed_proto.Services().ByName("ScheduleService").Methods().ByName("GetSchedule"),
+			Procedure:  ScheduleServiceGetScheduleProcedure,
+		}
+	})
+	scheduleServiceDeleteScheduleSpec = sync.OnceValue(func() connect.Spec {
+		return connect.Spec{
+			StreamType: connect.StreamTypeUnary,
+			Schema:     v1.File_hotbed_v1_hotbed_proto.Services().ByName("ScheduleService").Methods().ByName("DeleteSchedule"),
+			Procedure:  ScheduleServiceDeleteScheduleProcedure,
+		}
+	})
+	scheduleServiceRunScheduleSpec = sync.OnceValue(func() connect.Spec {
+		return connect.Spec{
+			StreamType: connect.StreamTypeUnary,
+			Schema:     v1.File_hotbed_v1_hotbed_proto.Services().ByName("ScheduleService").Methods().ByName("RunSchedule"),
+			Procedure:  ScheduleServiceRunScheduleProcedure,
+		}
+	})
+	scheduleServicePauseScheduleSpec = sync.OnceValue(func() connect.Spec {
+		return connect.Spec{
+			StreamType: connect.StreamTypeUnary,
+			Schema:     v1.File_hotbed_v1_hotbed_proto.Services().ByName("ScheduleService").Methods().ByName("PauseSchedule"),
+			Procedure:  ScheduleServicePauseScheduleProcedure,
+		}
+	})
+)
+
+// ScheduleServiceClient is a client for the hotbed.v1.ScheduleService service.
+type ScheduleServiceClient interface {
+	// PutSchedule adds a scheduled command, or replaces the one of its name.
+	PutSchedule(context.Context, *v1.PutScheduleRequest) (*v1.ScheduledCommand, error)
+	ListSchedules(context.Context, *v1.ListSchedulesRequest) (*v1.ListSchedulesResponse, error)
+	// GetSchedule is one scheduled command, with more of its runs.
+	GetSchedule(context.Context, *v1.GetScheduleRequest) (*v1.ScheduledCommand, error)
+	// DeleteSchedule removes a scheduled command; a run in progress goes on.
+	DeleteSchedule(context.Context, *v1.DeleteScheduleRequest) (*v1.DeleteScheduleResponse, error)
+	// RunSchedule starts a run now, outside the schedule, unless one is in
+	// progress.
+	RunSchedule(context.Context, *v1.RunScheduleRequest) (*v1.ScheduledRun, error)
+	// PauseSchedule stops (or, with paused false, resumes) a schedule's runs.
+	PauseSchedule(context.Context, *v1.PauseScheduleRequest) (*v1.ScheduledCommand, error)
+}
+
+// NewScheduleServiceClient constructs a client for the hotbed.v1.ScheduleService service. Multiple
+// service clients may share a single connect.Client.
+func NewScheduleServiceClient(client *connect.Client) ScheduleServiceClient {
+	return &scheduleServiceClient{client: client}
+}
+
+// ScheduleServiceHandler is an implementation of the hotbed.v1.ScheduleService service.
+type ScheduleServiceHandler interface {
+	// PutSchedule adds a scheduled command, or replaces the one of its name.
+	PutSchedule(context.Context, *v1.PutScheduleRequest) (*v1.ScheduledCommand, error)
+	ListSchedules(context.Context, *v1.ListSchedulesRequest) (*v1.ListSchedulesResponse, error)
+	// GetSchedule is one scheduled command, with more of its runs.
+	GetSchedule(context.Context, *v1.GetScheduleRequest) (*v1.ScheduledCommand, error)
+	// DeleteSchedule removes a scheduled command; a run in progress goes on.
+	DeleteSchedule(context.Context, *v1.DeleteScheduleRequest) (*v1.DeleteScheduleResponse, error)
+	// RunSchedule starts a run now, outside the schedule, unless one is in
+	// progress.
+	RunSchedule(context.Context, *v1.RunScheduleRequest) (*v1.ScheduledRun, error)
+	// PauseSchedule stops (or, with paused false, resumes) a schedule's runs.
+	PauseSchedule(context.Context, *v1.PauseScheduleRequest) (*v1.ScheduledCommand, error)
+}
+
+// RegisterScheduleServiceHandler registers svc as the hotbed.v1.ScheduleService implementation on
+// server.
+func RegisterScheduleServiceHandler(server *connect.Server, svc ScheduleServiceHandler) {
+	adapter := scheduleServiceHandler{svc: svc}
+	server.Register(
+		connect.Method{Spec: scheduleServicePutScheduleSpec(), Handler: adapter.putSchedule},
+		connect.Method{Spec: scheduleServiceListSchedulesSpec(), Handler: adapter.listSchedules},
+		connect.Method{Spec: scheduleServiceGetScheduleSpec(), Handler: adapter.getSchedule},
+		connect.Method{Spec: scheduleServiceDeleteScheduleSpec(), Handler: adapter.deleteSchedule},
+		connect.Method{Spec: scheduleServiceRunScheduleSpec(), Handler: adapter.runSchedule},
+		connect.Method{Spec: scheduleServicePauseScheduleSpec(), Handler: adapter.pauseSchedule},
+	)
+}
+
+// UnimplementedScheduleServiceHandler returns CodeUnimplemented from all methods.
+type UnimplementedScheduleServiceHandler struct{}
+
+func (UnimplementedScheduleServiceHandler) PutSchedule(context.Context, *v1.PutScheduleRequest) (*v1.ScheduledCommand, error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, "hotbed.v1.ScheduleService.PutSchedule is not implemented")
+}
+
+func (UnimplementedScheduleServiceHandler) ListSchedules(context.Context, *v1.ListSchedulesRequest) (*v1.ListSchedulesResponse, error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, "hotbed.v1.ScheduleService.ListSchedules is not implemented")
+}
+
+func (UnimplementedScheduleServiceHandler) GetSchedule(context.Context, *v1.GetScheduleRequest) (*v1.ScheduledCommand, error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, "hotbed.v1.ScheduleService.GetSchedule is not implemented")
+}
+
+func (UnimplementedScheduleServiceHandler) DeleteSchedule(context.Context, *v1.DeleteScheduleRequest) (*v1.DeleteScheduleResponse, error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, "hotbed.v1.ScheduleService.DeleteSchedule is not implemented")
+}
+
+func (UnimplementedScheduleServiceHandler) RunSchedule(context.Context, *v1.RunScheduleRequest) (*v1.ScheduledRun, error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, "hotbed.v1.ScheduleService.RunSchedule is not implemented")
+}
+
+func (UnimplementedScheduleServiceHandler) PauseSchedule(context.Context, *v1.PauseScheduleRequest) (*v1.ScheduledCommand, error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, "hotbed.v1.ScheduleService.PauseSchedule is not implemented")
+}
+
+type scheduleServiceClient struct {
+	client *connect.Client
+}
+
+func (c *scheduleServiceClient) PutSchedule(ctx context.Context, req *v1.PutScheduleRequest) (*v1.ScheduledCommand, error) {
+	var res v1.ScheduledCommand
+	if err := c.client.CallUnary(ctx, scheduleServicePutScheduleSpec(), req, &res); err != nil {
+		return nil, err
+	}
+	return &res, nil
+}
+
+func (c *scheduleServiceClient) ListSchedules(ctx context.Context, req *v1.ListSchedulesRequest) (*v1.ListSchedulesResponse, error) {
+	var res v1.ListSchedulesResponse
+	if err := c.client.CallUnary(ctx, scheduleServiceListSchedulesSpec(), req, &res); err != nil {
+		return nil, err
+	}
+	return &res, nil
+}
+
+func (c *scheduleServiceClient) GetSchedule(ctx context.Context, req *v1.GetScheduleRequest) (*v1.ScheduledCommand, error) {
+	var res v1.ScheduledCommand
+	if err := c.client.CallUnary(ctx, scheduleServiceGetScheduleSpec(), req, &res); err != nil {
+		return nil, err
+	}
+	return &res, nil
+}
+
+func (c *scheduleServiceClient) DeleteSchedule(ctx context.Context, req *v1.DeleteScheduleRequest) (*v1.DeleteScheduleResponse, error) {
+	var res v1.DeleteScheduleResponse
+	if err := c.client.CallUnary(ctx, scheduleServiceDeleteScheduleSpec(), req, &res); err != nil {
+		return nil, err
+	}
+	return &res, nil
+}
+
+func (c *scheduleServiceClient) RunSchedule(ctx context.Context, req *v1.RunScheduleRequest) (*v1.ScheduledRun, error) {
+	var res v1.ScheduledRun
+	if err := c.client.CallUnary(ctx, scheduleServiceRunScheduleSpec(), req, &res); err != nil {
+		return nil, err
+	}
+	return &res, nil
+}
+
+func (c *scheduleServiceClient) PauseSchedule(ctx context.Context, req *v1.PauseScheduleRequest) (*v1.ScheduledCommand, error) {
+	var res v1.ScheduledCommand
+	if err := c.client.CallUnary(ctx, scheduleServicePauseScheduleSpec(), req, &res); err != nil {
+		return nil, err
+	}
+	return &res, nil
+}
+
+type scheduleServiceHandler struct{ svc ScheduleServiceHandler }
+
+func (h scheduleServiceHandler) putSchedule(ctx context.Context, _ connect.Spec, stream connect.ServerStream) error {
+	var req v1.PutScheduleRequest
+	if err := stream.Receive(&req); err != nil {
+		return err
+	}
+	res, err := h.svc.PutSchedule(ctx, &req)
+	if err != nil {
+		return err
+	}
+	return stream.Send(res)
+}
+
+func (h scheduleServiceHandler) listSchedules(ctx context.Context, _ connect.Spec, stream connect.ServerStream) error {
+	var req v1.ListSchedulesRequest
+	if err := stream.Receive(&req); err != nil {
+		return err
+	}
+	res, err := h.svc.ListSchedules(ctx, &req)
+	if err != nil {
+		return err
+	}
+	return stream.Send(res)
+}
+
+func (h scheduleServiceHandler) getSchedule(ctx context.Context, _ connect.Spec, stream connect.ServerStream) error {
+	var req v1.GetScheduleRequest
+	if err := stream.Receive(&req); err != nil {
+		return err
+	}
+	res, err := h.svc.GetSchedule(ctx, &req)
+	if err != nil {
+		return err
+	}
+	return stream.Send(res)
+}
+
+func (h scheduleServiceHandler) deleteSchedule(ctx context.Context, _ connect.Spec, stream connect.ServerStream) error {
+	var req v1.DeleteScheduleRequest
+	if err := stream.Receive(&req); err != nil {
+		return err
+	}
+	res, err := h.svc.DeleteSchedule(ctx, &req)
+	if err != nil {
+		return err
+	}
+	return stream.Send(res)
+}
+
+func (h scheduleServiceHandler) runSchedule(ctx context.Context, _ connect.Spec, stream connect.ServerStream) error {
+	var req v1.RunScheduleRequest
+	if err := stream.Receive(&req); err != nil {
+		return err
+	}
+	res, err := h.svc.RunSchedule(ctx, &req)
+	if err != nil {
+		return err
+	}
+	return stream.Send(res)
+}
+
+func (h scheduleServiceHandler) pauseSchedule(ctx context.Context, _ connect.Spec, stream connect.ServerStream) error {
+	var req v1.PauseScheduleRequest
+	if err := stream.Receive(&req); err != nil {
+		return err
+	}
+	res, err := h.svc.PauseSchedule(ctx, &req)
 	if err != nil {
 		return err
 	}

@@ -3,10 +3,14 @@ module github.com/semistrict/hotbed
 go 1.27.4
 
 require (
+	connectrpc.com/connect/v2 v2.0.2
 	github.com/alecthomas/kong v1.17.0
+	github.com/dustinkirkland/golang-petname v0.0.0-20261016130456-fdd95a3d0543
 	github.com/google/go-cmp v0.7.0
+	github.com/robfig/cron/v3 v3.0.1
 	golang.org/x/sync v0.25.0
 	golang.org/x/sys v0.50.0
+	google.golang.org/protobuf v1.36.12
 	modernc.org/sqlite v1.62.0
 	tailscale.com v1.104.7
 )
@@ -28,8 +32,6 @@ require (
 	buf.build/go/standard v0.1.1-0.20260325175353-2b287e071df5 // indirect
 	cel.dev/cel-go v0.32.0 // indirect
 	cel.dev/expr v0.25.3 // indirect
-	connectrpc.com/connect v1.21.1 // indirect
-	connectrpc.com/connect/v2 v2.0.2 // indirect
 	connectrpc.com/otelconnect v0.11.0 // indirect
 	filippo.io/edwards25519 v1.2.0 // indirect
 	github.com/Microsoft/go-winio v0.6.4 // indirect
@@ -51,7 +53,6 @@ require (
 	github.com/docker/go-connections v0.8.2 // indirect
 	github.com/docker/go-units v0.5.0 // indirect
 	github.com/dustin/go-humanize v1.1.0 // indirect
-	github.com/dustinkirkland/golang-petname v0.0.0-20261016130456-fdd95a3d0543 // indirect
 	github.com/felixge/httpsnoop v1.1.0 // indirect
 	github.com/fxamacker/cbor/v2 v2.9.3 // indirect
 	github.com/go-json-experiment/json v0.0.0-20260820222146-c27c302e5fc3 // indirect
@@ -117,7 +118,6 @@ require (
 	golang.zx2c4.com/wireguard/windows v1.0.1 // indirect
 	google.golang.org/genproto/googleapis/api v0.0.0-20261012220534-4341edf3f941 // indirect
 	google.golang.org/genproto/googleapis/rpc v0.0.0-20261012220534-4341edf3f941 // indirect
-	google.golang.org/protobuf v1.36.12 // indirect
 	modernc.org/libc v1.80.1 // indirect
 	modernc.org/mathutil v1.7.1 // indirect
 	modernc.org/memory v1.12.1 // indirect

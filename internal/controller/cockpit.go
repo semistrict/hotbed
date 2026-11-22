@@ -50,11 +50,15 @@ func (s *Server) GetSnapshot(ctx context.Context, _ *pb.GetSnapshotRequest) (*pb
 	if err != nil {
 		return nil, err
 	}
+	schedules, err := s.allSchedules(ctx)
+	if err != nil {
+		return nil, err
+	}
 
 	snap := &pb.Snapshot{
 		ClusterId: s.cfg.Cluster.ClusterID, Controller: s.cfg.Controller,
 		Now: now.UnixMilli(), SampleSeconds: sampleSeconds, Events: events, History: history,
-		Sessions: sessions,
+		Sessions: sessions, Schedules: schedules,
 	}
 	for _, n := range rows {
 		node := s.withOnline(n.node)

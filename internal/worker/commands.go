@@ -508,7 +508,7 @@ func (e *Engine) end(c *command, state pb.CommandState, code *int32, why string)
 		Argv: cmd.Argv, Kind: cmd.Kind, State: state, ExitCode: code, Failure: failure,
 		EndedAt: now, QueuedSeconds: float64(started-cmd.QueuedAt) / 1000, Seconds: seconds,
 		ColdSeconds: cmd.ColdSeconds, PeakMemoryBytes: c.rec.PeakMemoryBytes, Parks: c.rec.Parks,
-		SessionId: cmd.SessionId,
+		SessionId: cmd.SessionId, Reason: why,
 	}
 	if cmd.Rebuilt != nil {
 		units, of := cmd.Rebuilt.Units, cmd.Rebuilt.Of

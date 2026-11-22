@@ -108,6 +108,29 @@ machine:
 ended. An empty `events` after two minutes means nothing happened yet; call it again. `ended: true`
 means the session is over (`endReason` says why).
 
+## Scheduled commands
+
+Recurring work, such as a nightly measurement, runs by itself:
+
+```sh
+hotbed schedule add cladefs-nightly cladefs --cron '0 2 * * *' --node ubu1 \
+  --env BOARD_URL=https://example/api/board -- scripts/nightly-host.sh
+hotbed schedule show cladefs-nightly        # the command, the next run, its runs and their sessions
+hotbed schedule run cladefs-nightly         # a run now; prints its session, for hotbed wait and logs
+```
+
+- **Each run is a session of its own**, `NAME-YYYYMMDD-HHMM`, with a fresh workspace of the repo
+  at its branch's head, in which the command runs detached at `/work/REPO`. It takes `run`'s
+  flags (`--env`, `--mem-low`, `--mem-high`, `--kind`). Nothing persists between runs except what
+  the command keeps outside the workspace (pushed to git, or on the node: pin it with `--node`).
+- **Its session's end.** A run is never abandoned while its command runs. One that succeeds ends
+  its session. One that fails keeps it for the idle hour, so you can `hotbed run SESSION REPO --
+  ...` in its workspace to look; its log stays (`hotbed logs SESSION COMMAND`).
+- **Cron** has five fields in the controller's time zone (`CRON_TZ=Europe/Lisbon 0 2 * * *` for
+  another). Runs never overlap: a slot that comes while the previous run is still going is
+  `skipped`. A slot that passes while the controller is down is `missed`, not run late.
+- `schedule add` with an existing name replaces it. `schedule pause`, `resume`, `rm`, `ls`.
+
 ## Other commands
 
 | Command | Does |

@@ -23,6 +23,7 @@ type clients struct {
 	cluster    hotbedv1connect.ClusterServiceClient
 	sessions   hotbedv1connect.SessionServiceClient
 	workspaces hotbedv1connect.WorkspaceServiceClient
+	schedules  hotbedv1connect.ScheduleServiceClient
 }
 
 func (f controllerFlag) clients(hc *http.Client) (clients, error) {
@@ -34,6 +35,7 @@ func (f controllerFlag) clients(hc *http.Client) (clients, error) {
 		cluster:    hotbedv1connect.NewClusterServiceClient(conn),
 		sessions:   hotbedv1connect.NewSessionServiceClient(conn),
 		workspaces: hotbedv1connect.NewWorkspaceServiceClient(conn),
+		schedules:  hotbedv1connect.NewScheduleServiceClient(conn),
 	}, nil
 }
 

@@ -1,4 +1,4 @@
-import type { CommandState } from "../../api";
+import type { CommandState, RunOutcome } from "../../api";
 
 /** Command states, each an icon and a word, never color alone. */
 const STATES: Record<CommandState, { label: string; icon: string; className: string }> = {
@@ -42,4 +42,22 @@ export function ArchBadge({ arch }: { arch: "arm64" | "amd64" }) {
 
 export function KindTag({ kind }: { kind: string }) {
   return <span className="font-mono text-[10px] tracking-wider text-faint uppercase">{kind}</span>;
+}
+
+/** A scheduled run's outcome: a command's state while it ran, or why it never did. */
+const OUTCOMES: Record<"not-started" | "skipped" | "missed", { label: string; icon: string; className: string }> = {
+  "not-started": { label: "not started", icon: "⚠", className: "text-critical bg-[color-mix(in_oklab,var(--critical)_12%,transparent)]" },
+  skipped: { label: "skipped", icon: "⤼", className: "text-faint bg-muted" },
+  missed: { label: "missed", icon: "○", className: "text-warning bg-[color-mix(in_oklab,var(--warning)_14%,transparent)]" },
+};
+
+export function OutcomeBadge({ outcome }: { outcome: RunOutcome }) {
+  if (outcome === "running" || outcome === "succeeded" || outcome === "failed" || outcome === "cancelled") return <StateBadge state={outcome} />;
+  const o = OUTCOMES[outcome];
+  return (
+    <span className={`inline-flex items-center gap-1 rounded-md px-1.5 py-0.5 font-mono text-[10.5px] ${o.className}`}>
+      <span aria-hidden>{o.icon}</span>
+      {o.label}
+    </span>
+  );
 }

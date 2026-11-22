@@ -9,6 +9,7 @@ import { NodesPage } from "./pages/Nodes";
 import { NotFound } from "./pages/NotFound";
 import { OverviewPage } from "./pages/Overview";
 import { SessionPage } from "./pages/Session";
+import { SchedulesPage } from "./pages/Schedules";
 import { SessionsPage } from "./pages/Sessions";
 import { WorkspacePage } from "./pages/Workspace";
 import { WorkspacesPage } from "./pages/Workspaces";
@@ -19,6 +20,7 @@ const root = createRootRoute({ component: Shell, notFoundComponent: NotFound });
 // cluster's own view is a page of its own.
 const sessions = createRoute({ getParentRoute: () => root, path: "/", component: SessionsPage });
 const session = createRoute({ getParentRoute: () => root, path: "/sessions/$id", component: SessionPage });
+const schedules = createRoute({ getParentRoute: () => root, path: "/schedules", component: SchedulesPage });
 const overview = createRoute({ getParentRoute: () => root, path: "/cluster", component: OverviewPage });
 const nodes = createRoute({ getParentRoute: () => root, path: "/nodes", component: NodesPage });
 const node = createRoute({ getParentRoute: () => root, path: "/nodes/$hostname", component: NodePage });
@@ -61,7 +63,7 @@ const history = createRoute({
   }),
 });
 
-const routeTree = root.addChildren([sessions, session, overview, nodes, node, workspaces, workspace, commands, command, history]);
+const routeTree = root.addChildren([sessions, session, schedules, overview, nodes, node, workspaces, workspace, commands, command, history]);
 
 export const router = createRouter({ routeTree, defaultPreload: "intent", scrollRestoration: true });
 

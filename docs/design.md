@@ -116,6 +116,32 @@ and memory pressure (PSI some avg10) is under 22%, and the disk has room. When m
 newest running command (`systemctl freeze`, then `memory.reclaim` pushes it to swap) and thaws the
 oldest parked one when there is room again. Nothing is killed for memory.
 
+## Scheduled commands
+
+Recurring work (a nightly measurement, a soak) is a **scheduled command**: a repo, an optional
+node, a five-field cron and a `hotbed run`'s command (a `RunCommandRequest`, so whatever `run`
+learns, such as a measurement's isolation, a schedule carries). The controller keeps them and
+their runs in SQLite (`schedules`, `schedule_runs`) and looks every 15 seconds for a slot that has
+come.
+
+- **A run is a session.** The controller starts a session called `NAME-YYYYMMDD-HHMM`, gives it a
+  workspace of the repo (so a fork of the newest base, freshened if the branch moved), and runs the
+  command in it detached. The cockpit and the CLI see it as any agent's session; `Session.schedule`
+  says whose run it is.
+- **Its end.** A worker's report of the command's end settles the run (the next tick does too, so
+  nothing is lost across a restart). A run that succeeds ends its session. One that fails keeps it
+  for the usual idle hour, from its end, for an agent to look inside. The reaper never ends a
+  session whose run is in progress: no agent is there to touch it.
+- **No overlap, no catching up.** A slot that comes while the previous run is in progress is
+  recorded as skipped. A slot the controller first sees more than five minutes late (it was down)
+  is recorded as missed; within five minutes (a restart, a deploy) it still runs.
+- **A session that ends under its run** (`hotbed session end`, or a worker gone for good, whose
+  command's end would never be reported) ends the run as cancelled, so the next slot can run.
+- **Restarts.** A schedule's next slot is recorded before its run starts, so a controller that
+  stops halfway loses that slot rather than running it twice. A run is recorded before its
+  workspace and command; one left with no command is recorded as not started by the next tick.
+- A schedule keeps its last 200 runs, however old.
+
 ## Prior art
 
 crabbox (`~/src/crabbox`) leases remote boxes, rsyncs the worktree and runs commands over ssh.
