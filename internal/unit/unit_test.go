@@ -100,3 +100,21 @@ func TestNoSwap(t *testing.T) {
 		t.Errorf("a NoSwap unit has %q, want MemorySwapMax=0 alone", args)
 	}
 }
+
+// systemctl show prints a list property once per entry, and an empty one
+// not at all.
+func TestParseProperties(t *testing.T) {
+	got := parseProperties("IOReadBandwidthMax=/mnt/fxdax-scratch 64000000\nIOReadBandwidthMax=/dev/sda 10000000\nIOWriteIOPSMax=/dev/sda 1000\n")
+	want := map[string][]string{
+		"IOReadBandwidthMax": {"/mnt/fxdax-scratch 64000000", "/dev/sda 10000000"},
+		"IOWriteIOPSMax":     {"/dev/sda 1000"},
+	}
+	if len(got) != len(want) {
+		t.Fatalf("parseProperties = %q, want %q", got, want)
+	}
+	for k, v := range want {
+		if strings.Join(got[k], "|") != strings.Join(v, "|") {
+			t.Errorf("%s = %q, want %q", k, got[k], v)
+		}
+	}
+}

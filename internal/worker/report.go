@@ -185,6 +185,9 @@ func (Systemd) StartSlice(ctx context.Context, slice string) error {
 func (Systemd) SetProperties(ctx context.Context, name string, props ...string) error {
 	return unit.SetProperties(ctx, name, props...)
 }
+func (Systemd) Show(ctx context.Context, name string, props ...string) (map[string][]string, error) {
+	return unit.Show(ctx, name, props...)
+}
 
 // Linux measures the node from /proc.
 // Linux measures this machine as commands in a slice get it.

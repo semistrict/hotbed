@@ -75,12 +75,14 @@ func (e *Engine) measuring() *command {
 	return nil
 }
 
-// workCores is how many CPUs running commands other than measurements keep
-// busy. Call with e.mu held.
+// workCores is how many CPUs running work keeps busy: commands other than
+// measurements and dev servers, which run until stopped and would keep a
+// measurement, and everything queued behind it, waiting for good. Call with
+// e.mu held.
 func (e *Engine) workCores() float64 {
 	var cores float64
 	for _, c := range e.commands {
-		if c.cmd().State == running && !c.cmd().Bench {
+		if c.cmd().State == running && !c.cmd().Bench && c.cmd().Kind != "server" {
 			cores += c.cmd().CpuCores
 		}
 	}

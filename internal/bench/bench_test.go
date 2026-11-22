@@ -13,8 +13,22 @@ import (
 	"testing"
 )
 
-// fakeSystemd records what the isolation asks of systemd.
-type fakeSystemd struct{ calls []string }
+// fakeSystemd records what the isolation asks of systemd; props is what
+// Show reports of a unit's properties.
+type fakeSystemd struct {
+	calls []string
+	props map[string]map[string][]string
+}
+
+func (f *fakeSystemd) Show(_ context.Context, unit string, props ...string) (map[string][]string, error) {
+	out := map[string][]string{}
+	for _, p := range props {
+		if v := f.props[unit][p]; len(v) > 0 {
+			out[p] = v
+		}
+	}
+	return out, nil
+}
 
 func (f *fakeSystemd) StartSlice(_ context.Context, slice string) error {
 	f.calls = append(f.calls, "start "+slice)
@@ -37,7 +51,7 @@ type host struct {
 
 const benchSlice = "user-1000-hotbed_bench.slice"
 
-var chain = []string{"user.slice", "user.slice/user-1000.slice", "user.slice/user-1000.slice/" + benchSlice}
+var testChain = []string{"user.slice", "user.slice/user-1000.slice", "user.slice/user-1000.slice/" + benchSlice}
 
 func newHost(t *testing.T, cpus string) *host {
 	h := &host{t: t, root: t.TempDir(), sd: &fakeSystemd{}}
@@ -46,7 +60,7 @@ func newHost(t *testing.T, cpus string) *host {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, c := range chain {
+	for _, c := range testChain {
 		h.write("sys/fs/cgroup/"+c+"/cpuset.cpus.exclusive", "\n")
 		h.write("sys/fs/cgroup/"+c+"/cpuset.cpus", "\n")
 		h.write("sys/fs/cgroup/"+c+"/cpuset.cpus.partition", "member\n")
@@ -114,7 +128,7 @@ func (h *host) snapshot() map[string]string {
 // kernelPartitions has the fixture's bench slice take its CPUs, as the
 // kernel does once it is a valid partition root.
 func (h *host) kernelPartitions(cpus string) {
-	h.write("sys/fs/cgroup/"+chain[2]+"/cpuset.cpus.effective", cpus+"\n")
+	h.write("sys/fs/cgroup/"+testChain[2]+"/cpuset.cpus.effective", cpus+"\n")
 }
 
 func (h *host) isolation(t *testing.T, cfg Config, state string) *Isolation {
@@ -153,19 +167,19 @@ func TestOnAndOffOnAppleSilicon(t *testing.T) {
 	if err := iso.On(t.Context()); err != nil {
 		t.Fatal(err)
 	}
-	for _, c := range chain {
+	for _, c := range testChain {
 		if got := h.read("sys/fs/cgroup/" + c + "/cpuset.cpus.exclusive"); got != "7-10" {
 			t.Errorf("%s exclusive = %q, want 7-10", c, got)
 		}
 	}
 	for file, want := range map[string]string{
-		"sys/fs/cgroup/" + chain[2] + "/cpuset.cpus":           "7-10",
-		"sys/fs/cgroup/" + chain[2] + "/cpuset.cpus.partition": "root",
-		"sys/devices/virtual/workqueue/cpumask":                "0000007f",
-		"proc/irq/default_smp_affinity":                        "0000007f",
-		"proc/irq/1/smp_affinity_list":                         "0-6",
-		"proc/irq/24/smp_affinity_list":                        "0-6",
-		"proc/irq/30/smp_affinity_list":                        "5",
+		"sys/fs/cgroup/" + testChain[2] + "/cpuset.cpus":           "7-10",
+		"sys/fs/cgroup/" + testChain[2] + "/cpuset.cpus.partition": "root",
+		"sys/devices/virtual/workqueue/cpumask":                    "0000007f",
+		"proc/irq/default_smp_affinity":                            "0000007f",
+		"proc/irq/1/smp_affinity_list":                             "0-6",
+		"proc/irq/24/smp_affinity_list":                            "0-6",
+		"proc/irq/30/smp_affinity_list":                            "5",
 	} {
 		if got := h.read(file); got != want {
 			t.Errorf("%s = %q, want %q", file, got, want)
@@ -301,9 +315,97 @@ func TestOnFailsWhenThePartitionIsInvalid(t *testing.T) {
 	}
 }
 
-// The host's settings are saved once: a second On (the worker restarted
-// mid-measurement and isolated again) keeps the first's, not its own.
-// And a new worker undoes what an old one did, from what that one saved.
+// Off gives back what On changed, where it changed it, whatever the config
+// says by then (a new slice, no disk); and a worker whose config no longer
+// takes measurements gives it back all the same.
+func TestOffGivesBackWhereOnChanged(t *testing.T) {
+	for _, giveBack := range []func(h *host, state string) error{
+		func(h *host, state string) error {
+			return h.isolation(t, Config{CPUs: "1-2"}, state).Off(t.Context())
+		},
+		func(h *host, state string) error {
+			return GiveBack(t.Context(), Options{Root: h.root, State: state, Systemd: h.sd, Rmdir: os.RemoveAll})
+		},
+	} {
+		h := newHost(t, "0-10")
+		h.kernelPartitions("7-10")
+		before := h.snapshot()
+		state := filepath.Join(t.TempDir(), "bench")
+		if err := h.isolation(t, Config{CPUs: "7-10", Disk: "/mnt/fxdax-scratch"}, state).On(t.Context()); err != nil {
+			t.Fatal(err)
+		}
+		h.sd.calls = nil
+		if err := giveBack(h, state); err != nil {
+			t.Fatal(err)
+		}
+		if after := h.snapshot(); !mapsEqual(before, after) {
+			t.Errorf("Off left the host changed:\n%s", diff(before, after))
+		}
+		want := []string{
+			"set " + benchSlice + " AllowedCPUs=",
+			"set user-1000-hotbed.slice IOReadBandwidthMax= IOWriteBandwidthMax= IOReadIOPSMax= IOWriteIOPSMax=",
+		}
+		if !slices.Equal(h.sd.calls, want) {
+			t.Errorf("systemd calls\n got %q\nwant %q", h.sd.calls, want)
+		}
+	}
+}
+
+// The work slice's own IO limits, its unit files', are as they were after
+// Off: it resets what it capped to them, not to none.
+func TestOffKeepsTheWorkSlicesOwnIOLimits(t *testing.T) {
+	h := newHost(t, "0-10")
+	h.kernelPartitions("7-10")
+	h.sd.props = map[string]map[string][]string{"user-1000-hotbed.slice": {"IOReadBandwidthMax": {"/dev/sda 10000000", "/dev/sdb 20000000"}}}
+	iso := h.isolation(t, Config{CPUs: "7-10", Disk: "/mnt/fxdax-scratch"}, filepath.Join(t.TempDir(), "bench"))
+	if err := iso.On(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	h.sd.calls = nil
+	if err := iso.Off(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	want := "set user-1000-hotbed.slice IOReadBandwidthMax= IOReadBandwidthMax=/dev/sda 10000000 IOReadBandwidthMax=/dev/sdb 20000000 IOWriteBandwidthMax= IOReadIOPSMax= IOWriteIOPSMax="
+	if len(h.sd.calls) != 2 || h.sd.calls[1] != want {
+		t.Errorf("systemd calls %q, want the last\n%q", h.sd.calls, want)
+	}
+}
+
+// With nothing saved, nothing was changed: Off leaves the host, and systemd,
+// alone.
+func TestOffWithNothingSavedDoesNothing(t *testing.T) {
+	h := newHost(t, "0-10")
+	before := h.snapshot()
+	if err := h.isolation(t, Config{CPUs: "7-10", Disk: "/mnt/fxdax-scratch"}, filepath.Join(t.TempDir(), "bench")).Off(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	if after := h.snapshot(); !mapsEqual(before, after) || len(h.sd.calls) > 0 {
+		t.Errorf("Off with nothing saved changed the host:\n%s\nsystemd: %q", diff(before, after), h.sd.calls)
+	}
+}
+
+// An On over an isolation an Off failed to give back takes the host's
+// bandwidth from what was saved, not from the root group, which has the
+// others' by then.
+func TestOnAgainKeepsTheHostsBandwidth(t *testing.T) {
+	h := newHost(t, "0-15")
+	h.kernelPartitions("4-7,12-15")
+	h.write("sys/fs/resctrl/schemata", "    MB:0=2048;1=2048\n    L3:0=ffff;1=ffff\n")
+	state := filepath.Join(t.TempDir(), "bench")
+	iso := h.isolation(t, Config{CPUs: "4-7,12-15", L3: "fff0", WorkL3: "000f", WorkMB: 40}, state)
+	for range 2 {
+		if err := iso.On(t.Context()); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if got := h.read("sys/fs/resctrl/hotbed-bench/schemata"); got != "L3:0=fff0;1=fff0\nMB:0=2048;1=2048" {
+		t.Errorf("the measurement's class after a second On = %q, want the host's bandwidth", got)
+	}
+}
+
+// The host's settings are saved once: an On over an isolation an Off failed
+// to give back keeps the first's, not what it finds. And a new worker
+// undoes what an old one did, from what that one saved.
 func TestSavedStateOutlivesTheWorker(t *testing.T) {
 	h := newHost(t, "0-10")
 	h.kernelPartitions("7-10")
@@ -339,7 +441,7 @@ func TestOffWhereTheCpusetFilesAreGone(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, f := range []string{"cpuset.cpus.partition", "cpuset.cpus", "cpuset.cpus.effective", "cpuset.cpus.exclusive"} {
-		if err := os.Remove(h.path("sys/fs/cgroup/" + chain[2] + "/" + f)); err != nil {
+		if err := os.Remove(h.path("sys/fs/cgroup/" + testChain[2] + "/" + f)); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -348,7 +450,7 @@ func TestOffWhereTheCpusetFilesAreGone(t *testing.T) {
 	}
 	after := h.snapshot()
 	for _, f := range []string{"cpuset.cpus.partition", "cpuset.cpus", "cpuset.cpus.effective", "cpuset.cpus.exclusive"} {
-		delete(before, "sys/fs/cgroup/"+chain[2]+"/"+f)
+		delete(before, "sys/fs/cgroup/"+testChain[2]+"/"+f)
 	}
 	if !mapsEqual(before, after) {
 		t.Errorf("Off left the host changed:\n%s", diff(before, after))
@@ -362,11 +464,11 @@ func TestHeldSaysWhatWasLost(t *testing.T) {
 	if err := iso.On(t.Context()); err != nil {
 		t.Fatal(err)
 	}
-	h.write("sys/fs/cgroup/"+chain[2]+"/cpuset.cpus.partition", "root invalid (Cpu list in cpuset.cpus not exclusive)\n")
+	h.write("sys/fs/cgroup/"+testChain[2]+"/cpuset.cpus.partition", "root invalid (Cpu list in cpuset.cpus not exclusive)\n")
 	if err := iso.Held(); err == nil || err.Error() != "the measurement's slice is not a partition of 7-10: root invalid (Cpu list in cpuset.cpus not exclusive), its CPUs 7-10" {
 		t.Errorf("Held = %v", err)
 	}
-	h.write("sys/fs/cgroup/"+chain[2]+"/cpuset.cpus.partition", "root\n")
+	h.write("sys/fs/cgroup/"+testChain[2]+"/cpuset.cpus.partition", "root\n")
 	h.write("sys/devices/virtual/workqueue/cpumask", "7ff\n")
 	if err := iso.Held(); err == nil || err.Error() != "unbound workqueues may run on 0-10, not only 0-6" {
 		t.Errorf("Held = %v", err)

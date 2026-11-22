@@ -1,12 +1,16 @@
 package worker
 
 import (
+	"context"
 	"errors"
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
 	"github.com/semistrict/hotbed/internal/fake"
 	pb "github.com/semistrict/hotbed/internal/gen/hotbed/v1"
+	"github.com/semistrict/hotbed/internal/unit"
 )
 
 func TestBenchSlice(t *testing.T) {
@@ -78,5 +82,59 @@ func TestFailedOffIsRetriedLater(t *testing.T) {
 	e.settleBench(t.Context())
 	if iso.Offs() != 2 || iso.Active() {
 		t.Errorf("%d Offs, active %v, %v after a failed one, want given back on the second try", iso.Offs(), iso.Active(), offRetryAfter)
+	}
+}
+
+// Dev servers run until stopped: a measurement doesn't wait for their CPUs,
+// which would hold up every command behind it for good.
+func TestWorkCoresLeaveOutServersAndMeasurements(t *testing.T) {
+	e := benchEngine(t, fake.NewIsolation("7-10", 7))
+	for id, c := range map[string]*pb.Command{
+		"build":  {State: running, Kind: "build", CpuCores: 3},
+		"test":   {State: running, Kind: "test", CpuCores: 1.5},
+		"server": {State: running, Kind: "server", CpuCores: 8},
+		"bench":  {State: running, Kind: "shell", Bench: true, CpuCores: 4},
+		"parked": {State: parked, Kind: "build", CpuCores: 2},
+	} {
+		c.Id = id
+		e.commands[id] = &command{rec: &pb.CommandRecord{Command: c}}
+	}
+	if got := e.workCores(); got != 4.5 {
+		t.Errorf("workCores = %v, want the build's and the test's 4.5", got)
+	}
+}
+
+// A unit of a command's name already there (a worker that stopped between
+// starting it and recording that) is stopped before the command starts:
+// left, it would run on unwatched, in a measurement's slice too.
+func TestALeftoverUnitIsStoppedFirst(t *testing.T) {
+	units := &fake.Units{}
+	store := &fake.Store{Root: t.TempDir()}
+	e, err := NewEngine(t.Context(), EngineConfig{
+		Dir: t.TempDir(), NodeID: "n", Host: "asahimbp", Bench: fake.NewIsolation("7-10", 7),
+		Store: store, Units: units, System: fake.NewSystem(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { e.Close() })
+	if err := os.MkdirAll(filepath.Join(store.Path("v"), "app"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	e.workspaces["w"] = &workspace{rec: &pb.WorkspaceRecord{Workspace: &pb.Workspace{Id: "w", RepoId: "app", State: idle}, Volume: "v"}}
+	log := filepath.Join(t.TempDir(), "old.log")
+	if err := units.Start(t.Context(), unit.Spec{Name: "hotbed-c-1", Argv: []string{"sleep", "30"}, Log: log}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := e.Exec(t.Context(), &pb.RunCommandRequest{Id: "c-1", WorkspaceId: "w", Args: []string{"sleep", "30"}, Bench: true}); err != nil {
+		t.Fatal(err)
+	}
+	e.step(t.Context())
+	t.Cleanup(func() { units.Stop(context.WithoutCancel(t.Context()), "hotbed-c-1") })
+	if c := e.commands["c-1"].cmd(); c.State != running {
+		t.Fatalf("the command is %v: %s", c.State, c.Reason)
+	}
+	if spec, _ := units.Spec("hotbed-c-1"); spec.Log == log || !spec.NoSwap {
+		t.Errorf("the unit running is the leftover one: %+v", spec)
 	}
 }

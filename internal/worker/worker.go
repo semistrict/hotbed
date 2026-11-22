@@ -170,17 +170,21 @@ func Run(ctx context.Context, dir string, cfg statedir.WorkerConfig, tn Tailnet,
 		Slice: cfg.Slice, TmpDir: cfg.TmpDir, UnitProperties: cfg.UnitProperties, Store: store,
 		Units: Systemd{}, System: &Linux{Slice: cfg.Slice},
 	}
+	// Under /run: what an isolation saves of the host lasts as long as the
+	// kernel's settings it changed.
+	benchOpts := bench.Options{
+		State: "/run/hotbed/bench", Slice: BenchSlice(cfg.Slice),
+		WorkSlice: cmp.Or(cfg.Slice, unit.DefaultSlice), Systemd: Systemd{},
+	}
 	if cfg.Bench != nil {
-		iso, err := bench.New(*cfg.Bench, bench.Options{
-			// Under /run: what it saves of the host lasts as long as the
-			// kernel's settings it changed.
-			State: "/run/hotbed/bench", Slice: BenchSlice(cfg.Slice),
-			WorkSlice: cmp.Or(cfg.Slice, unit.DefaultSlice), Systemd: Systemd{},
-		})
+		iso, err := bench.New(*cfg.Bench, benchOpts)
 		if err != nil {
 			return fmt.Errorf("the worker's measurements: %w", err)
 		}
 		ecfg.Bench = iso
+	} else if err := bench.GiveBack(ctx, benchOpts); err != nil {
+		// A worker that took measurements before its config stopped them.
+		slog.Error("give back a measurement's isolation", "err", err)
 	}
 	eng, err := NewEngine(ctx, ecfg)
 	if err != nil {

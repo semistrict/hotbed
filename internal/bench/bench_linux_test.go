@@ -39,6 +39,9 @@ func (realSystemd) StartSlice(ctx context.Context, slice string) error {
 func (realSystemd) SetProperties(ctx context.Context, name string, props ...string) error {
 	return unit.SetProperties(ctx, name, props...)
 }
+func (realSystemd) Show(ctx context.Context, name string, props ...string) (map[string][]string, error) {
+	return unit.Show(ctx, name, props...)
+}
 
 func hostConfig(t *testing.T) Config {
 	t.Helper()
@@ -217,9 +220,9 @@ func TestHeldNoticesAPartitionCut(t *testing.T) {
 	if err := iso.On(t.Context()); err != nil {
 		t.Fatal(err)
 	}
-	chain := iso.chain()
+	ancestors := chain(testBench)
 	short := iso.cpus[:len(iso.cpus)-1]
-	if err := iso.write(chain[len(chain)-2]+"/cpuset.cpus.exclusive", short.String()); err != nil {
+	if err := iso.write(ancestors[len(ancestors)-2]+"/cpuset.cpus.exclusive", short.String()); err != nil {
 		t.Fatal(err)
 	}
 	if err := iso.Held(); err == nil || err.Error() != "the measurement's slice is not a partition of "+iso.cpus.String()+": root, its CPUs "+short.String() {

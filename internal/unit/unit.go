@@ -312,6 +312,30 @@ func SetProperties(ctx context.Context, unit string, props ...string) error {
 	return err
 }
 
+// Show is a unit's properties, each property's values: a list property,
+// such as IOReadBandwidthMax, has one per entry, an empty one none.
+func Show(ctx context.Context, unit string, props ...string) (map[string][]string, error) {
+	args := []string{"show", unit}
+	for _, p := range props {
+		args = append(args, "--property="+p)
+	}
+	out, err := run(ctx, "systemctl", args...)
+	if err != nil {
+		return nil, err
+	}
+	return parseProperties(out), nil
+}
+
+func parseProperties(out string) map[string][]string {
+	m := map[string][]string{}
+	for _, line := range strings.Split(out, "\n") {
+		if k, v, ok := strings.Cut(line, "="); ok && v != "" {
+			m[k] = append(m[k], v)
+		}
+	}
+	return m
+}
+
 func run(ctx context.Context, name string, args ...string) (string, error) {
 	cmd := exec.CommandContext(ctx, name, args...)
 	var stdout, stderr bytes.Buffer

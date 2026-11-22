@@ -64,12 +64,17 @@ type Config struct {
 // What other work may do on the scratch disk while a measurement runs (in
 // systemd's units: 32M is 32 MB/s): a dd loop of work's wrote 186 MB/s
 // beside one (fxjob's TASK-374).
-var workIO = []string{"IOReadBandwidthMax=%s 64M", "IOWriteBandwidthMax=%s 32M", "IOReadIOPSMax=%s 2000", "IOWriteIOPSMax=%s 1000"}
+var workIO = []struct{ prop, limit string }{
+	{"IOReadBandwidthMax", "64M"}, {"IOWriteBandwidthMax", "32M"}, {"IOReadIOPSMax", "2000"}, {"IOWriteIOPSMax", "1000"},
+}
 
 // Systemd is what the isolation asks of the system manager.
 type Systemd interface {
 	StartSlice(ctx context.Context, slice string) error
 	SetProperties(ctx context.Context, unit string, props ...string) error
+	// Show is a unit's properties, each property's values (a list
+	// property's several).
+	Show(ctx context.Context, unit string, props ...string) (map[string][]string, error)
 }
 
 // Options are where an Isolation works.
@@ -104,19 +109,7 @@ func New(cfg Config, o Options) (*Isolation, error) {
 	if len(cpus) == 0 {
 		return nil, errors.New("bench cpus: none named")
 	}
-	if o.Root == "" {
-		o.Root = "/"
-	}
-	if o.Mount == nil {
-		o.Mount = mountResctrl
-	}
-	if o.Mkdir == nil {
-		o.Mkdir = func(dir string) error { return os.Mkdir(dir, 0o755) }
-	}
-	if o.Rmdir == nil {
-		o.Rmdir = os.Remove
-	}
-	i := &Isolation{cfg: cfg, o: o, cpus: cpus, resctrl: cfg.L3 != "" || cfg.WorkMB != 0}
+	i := &Isolation{cfg: cfg, o: o.defaults(), cpus: cpus, resctrl: cfg.L3 != "" || cfg.WorkMB != 0}
 	online, err := i.readCPUs("/sys/devices/system/cpu/online")
 	if err != nil {
 		return nil, err
@@ -131,6 +124,29 @@ func New(cfg Config, o Options) (*Isolation, error) {
 		return nil, errors.New("bench l3 and workL3 go together")
 	}
 	return i, nil
+}
+
+func (o Options) defaults() Options {
+	if o.Root == "" {
+		o.Root = "/"
+	}
+	if o.Mount == nil {
+		o.Mount = mountResctrl
+	}
+	if o.Mkdir == nil {
+		o.Mkdir = func(dir string) error { return os.Mkdir(dir, 0o755) }
+	}
+	if o.Rmdir == nil {
+		o.Rmdir = os.Remove
+	}
+	return o
+}
+
+// GiveBack gives back an isolation On left, from what it saved under
+// o.State, for a worker that takes no measurements (any more): o needs only
+// its Root, State and Systemd.
+func GiveBack(ctx context.Context, o Options) error {
+	return (&Isolation{o: o.defaults()}).Off(ctx)
 }
 
 // Slice is the measurement's slice.
@@ -172,8 +188,13 @@ func (i *Isolation) On(ctx context.Context) (err error) {
 			return fmt.Errorf("mount resctrl: %w", err)
 		}
 	}
-	if err := i.save(); err != nil {
+	if err := i.save(ctx); err != nil {
 		return fmt.Errorf("save the host's settings: %w", err)
+	}
+	// The host's as saved: what an Off that failed left is the isolation's.
+	host, err := i.load()
+	if err != nil {
+		return err
 	}
 	defer func() {
 		if err != nil {
@@ -191,12 +212,12 @@ func (i *Isolation) On(ctx context.Context) (err error) {
 	if err := i.o.Systemd.SetProperties(ctx, i.o.Slice, "AllowedCPUs="+i.cpus.String()); err != nil {
 		return err
 	}
-	for _, c := range i.chain() {
+	for _, c := range chain(i.o.Slice) {
 		if err := i.write(c+"/cpuset.cpus.exclusive", i.cpus.String()); err != nil {
 			return err
 		}
 	}
-	slice := i.sliceDir()
+	slice := sliceDir(i.o.Slice)
 	if err := i.write(slice+"/cpuset.cpus", i.cpus.String()); err != nil {
 		return err
 	}
@@ -235,10 +256,6 @@ func (i *Isolation) On(ctx context.Context) (err error) {
 	}
 
 	if i.resctrl {
-		host, err := i.read(resctrl + "/schemata")
-		if err != nil {
-			return err
-		}
 		if err := i.o.Mkdir(i.path(resctrlGroup)); err != nil && !errors.Is(err, fs.ErrExist) {
 			return err
 		}
@@ -247,12 +264,12 @@ func (i *Isolation) On(ctx context.Context) (err error) {
 		}
 		var bench, work []string
 		if i.cfg.L3 != "" {
-			bench = append(bench, schemata(host, "L3", i.cfg.L3))
-			work = append(work, schemata(host, "L3", i.cfg.WorkL3))
+			bench = append(bench, schemata(host.Schemata, "L3", i.cfg.L3))
+			work = append(work, schemata(host.Schemata, "L3", i.cfg.WorkL3))
 		}
 		if i.cfg.WorkMB != 0 {
-			bench = append(bench, line(host, "MB"))
-			work = append(work, schemata(host, "MB", strconv.Itoa(i.cfg.WorkMB)))
+			bench = append(bench, line(host.Schemata, "MB"))
+			work = append(work, schemata(host.Schemata, "MB", strconv.Itoa(i.cfg.WorkMB)))
 		}
 		if err := i.write(resctrlGroup+"/schemata", strings.Join(bench, "\n")); err != nil {
 			return err
@@ -263,9 +280,9 @@ func (i *Isolation) On(ctx context.Context) (err error) {
 	}
 
 	if i.cfg.Disk != "" {
-		props := make([]string, len(workIO))
-		for n, p := range workIO {
-			props[n] = fmt.Sprintf(p, i.cfg.Disk)
+		var props []string
+		for _, w := range workIO {
+			props = append(props, w.prop+"="+i.cfg.Disk+" "+w.limit)
 		}
 		if err := i.o.Systemd.SetProperties(ctx, i.o.WorkSlice, props...); err != nil {
 			return err
@@ -274,9 +291,18 @@ func (i *Isolation) On(ctx context.Context) (err error) {
 	return nil
 }
 
-// Off gives back what On took, from what it saved. It does what it can and
-// keeps the saved settings while anything failed, for the next Off.
+// Off gives back what On took, where it took it (the slices and disk it
+// saved, whatever the config says by then), from what it saved. With
+// nothing saved, nothing was taken. It does what it can and keeps the saved
+// settings while anything failed, for the next Off.
 func (i *Isolation) Off(ctx context.Context) error {
+	s, err := i.load()
+	switch {
+	case errors.Is(err, fs.ErrNotExist):
+		return nil
+	case err != nil:
+		return err
+	}
 	var errs []error
 	try := func(err error) {
 		if err != nil {
@@ -285,36 +311,32 @@ func (i *Isolation) Off(ctx context.Context) error {
 	}
 	// Each file only where it is: systemd takes a slice's cpuset files away
 	// once nothing in it asks for CPUs.
-	slice := i.sliceDir()
+	slice := sliceDir(s.Slice)
 	for _, f := range []struct{ name, value string }{{"cpuset.cpus.partition", "member"}, {"cpuset.cpus", ""}} {
 		if i.exists(slice + "/" + f.name) {
 			try(i.write(slice+"/"+f.name, f.value))
 		}
 	}
-	chain := i.chain()
-	for n := len(chain) - 1; n >= 0; n-- {
-		if i.exists(chain[n] + "/cpuset.cpus.exclusive") {
-			try(i.write(chain[n]+"/cpuset.cpus.exclusive", ""))
+	ancestors := chain(s.Slice)
+	for n := len(ancestors) - 1; n >= 0; n-- {
+		if i.exists(ancestors[n] + "/cpuset.cpus.exclusive") {
+			try(i.write(ancestors[n]+"/cpuset.cpus.exclusive", ""))
 		}
 	}
-	try(i.o.Systemd.SetProperties(ctx, i.o.Slice, "AllowedCPUs="))
-	if i.cfg.Disk != "" {
-		props := make([]string, len(workIO))
-		for n, p := range workIO {
-			props[n], _, _ = strings.Cut(p, "=")
-			props[n] += "="
+	try(i.o.Systemd.SetProperties(ctx, s.Slice, "AllowedCPUs="))
+	if s.Disk != "" {
+		// Each capped list reset to what the slice had: its unit files'.
+		var props []string
+		for _, w := range workIO {
+			props = append(props, w.prop+"=")
+			for _, v := range s.WorkIO[w.prop] {
+				props = append(props, w.prop+"="+v)
+			}
 		}
-		try(i.o.Systemd.SetProperties(ctx, i.o.WorkSlice, props...))
+		try(i.o.Systemd.SetProperties(ctx, s.WorkSlice, props...))
 	}
 	if i.exists(resctrlGroup) {
 		try(i.o.Rmdir(i.path(resctrlGroup)))
-	}
-	s, err := i.load()
-	switch {
-	case errors.Is(err, fs.ErrNotExist):
-		return errors.Join(errs...)
-	case err != nil:
-		return errors.Join(append(errs, err)...)
 	}
 	if s.Schemata != "" {
 		try(i.write(resctrl+"/schemata", s.Schemata))
@@ -362,7 +384,7 @@ func (i *Isolation) Held() error {
 }
 
 func (i *Isolation) partitioned() error {
-	slice := i.sliceDir()
+	slice := sliceDir(i.o.Slice)
 	partition, err := i.read(slice + "/cpuset.cpus.partition")
 	if err != nil {
 		return err
@@ -377,8 +399,16 @@ func (i *Isolation) partitioned() error {
 	return nil
 }
 
-// saved is the host's settings that On changes, as they were.
+// saved is where On isolated and the host's settings that it changed, as
+// they were.
 type saved struct {
+	Slice     string `json:"slice"`
+	WorkSlice string `json:"workSlice"`
+	// Disk is where work's IO was capped, and WorkIO the work slice's own
+	// limits of each kind capped, as systemd showed them.
+	Disk   string              `json:"disk,omitempty"`
+	WorkIO map[string][]string `json:"workIO,omitempty"`
+
 	Workqueue       string            `json:"workqueue"`
 	DefaultAffinity string            `json:"defaultAffinity"`
 	IRQs            map[string]string `json:"irqs"`
@@ -391,12 +421,21 @@ func (i *Isolation) statePath() string { return filepath.Join(i.o.State, "saved.
 
 // save keeps the host's settings, once: after a worker that stopped before
 // its Off, what is set is the isolation's, not the host's.
-func (i *Isolation) save() error {
+func (i *Isolation) save(ctx context.Context) error {
 	if i.Active() {
 		return nil
 	}
-	var s saved
+	s := saved{Slice: i.o.Slice, WorkSlice: i.o.WorkSlice, Disk: i.cfg.Disk}
 	var err error
+	if s.Disk != "" {
+		props := make([]string, len(workIO))
+		for n, w := range workIO {
+			props[n] = w.prop
+		}
+		if s.WorkIO, err = i.o.Systemd.Show(ctx, i.o.WorkSlice, props...); err != nil {
+			return err
+		}
+	}
 	if s.Workqueue, err = i.read(workqueues); err != nil {
 		return err
 	}
@@ -520,15 +559,15 @@ func cpufreq(cpu int, file string) string {
 	return fmt.Sprintf("/sys/devices/system/cpu/cpu%d/cpufreq/%s", cpu, file)
 }
 
-// sliceDir is the measurement slice's cgroup.
-func (i *Isolation) sliceDir() string { return "/sys/fs/cgroup" + unit.SliceDir(i.o.Slice) }
+// sliceDir is a slice's cgroup.
+func sliceDir(slice string) string { return "/sys/fs/cgroup" + unit.SliceDir(slice) }
 
-// chain is the measurement slice's cgroup and each of its ancestors below
-// the root, outermost first.
-func (i *Isolation) chain() []string {
+// chain is a slice's cgroup and each of its ancestors below the root,
+// outermost first.
+func chain(slice string) []string {
 	var out []string
 	dir := "/sys/fs/cgroup"
-	for _, part := range strings.Split(strings.TrimPrefix(unit.SliceDir(i.o.Slice), "/"), "/") {
+	for _, part := range strings.Split(strings.TrimPrefix(unit.SliceDir(slice), "/"), "/") {
 		dir += "/" + part
 		out = append(out, dir)
 	}

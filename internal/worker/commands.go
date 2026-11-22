@@ -152,9 +152,16 @@ func (e *Engine) Stop(ctx context.Context, id, why string) (*pb.Command, error) 
 		return nil, api.Errorf(api.CodeNotFound, "no command %s on this node", id)
 	}
 	state := c.cmd().State
+	if state == queued {
+		// It ends here, under the lock: admit, starting it meanwhile, finds
+		// it ended and stops its unit.
+		e.end(c, cancelled, nil, why)
+		defer e.mu.Unlock()
+		return clone(c.cmd()), nil
+	}
 	c.stopping = true
 	e.mu.Unlock()
-	if live(state) && state != queued {
+	if live(state) {
 		if state == parked {
 			// A frozen unit cannot be stopped until it is thawed.
 			if err := e.cfg.Units.Thaw(ctx, c.unitName()); err != nil {
@@ -294,6 +301,9 @@ func (e *Engine) admit(ctx context.Context) {
 		if err != nil {
 			err = fmt.Errorf("make its TMPDIR: %w", err)
 		}
+		if err == nil {
+			err = e.stopLeftover(ctx, c)
+		}
 		if err == nil && c.cmd().Bench {
 			if err = e.cfg.Bench.On(ctx); err != nil {
 				err = fmt.Errorf("isolate the node: %w", err)
@@ -311,7 +321,7 @@ func (e *Engine) admit(ctx context.Context) {
 		}
 		cmd := c.cmd()
 		if cmd.State != queued {
-			// Stopped while it started.
+			// Stopped (ended by Stop) while it started.
 			e.mu.Unlock()
 			if err := e.cfg.Units.Stop(ctx, c.unitName()); err != nil {
 				slog.Warn("stop a command stopped while it started", "command", cmd.Id, "err", err)
@@ -337,6 +347,21 @@ func (e *Engine) admit(ctx context.Context) {
 		}
 		e.mu.Unlock()
 	}
+}
+
+// stopLeftover stops a unit of c's name already there: one a worker that
+// stopped between starting it and recording that left, running on
+// unwatched, in a measurement's slice too.
+func (e *Engine) stopLeftover(ctx context.Context, c *command) error {
+	st, err := e.cfg.Units.Status(ctx, c.unitName())
+	if err != nil || !st.Loaded {
+		return err
+	}
+	slog.Warn("stop a unit left by a worker that stopped as it started it", "command", c.cmd().Id)
+	if err := e.cfg.Units.Stop(ctx, c.unitName()); err != nil {
+		return fmt.Errorf("stop the unit a worker before left: %w", err)
+	}
+	return nil
 }
 
 // admissionBlocker says why c cannot start now, or "" if it can, and
