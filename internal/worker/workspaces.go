@@ -244,6 +244,7 @@ func (e *Engine) ReleaseWorkspace(ctx context.Context, id string) error {
 	w.ws().LastActiveAt = e.nowMs()
 	e.saveWorkspace(w)
 	e.event("release", fmt.Sprintf("release %s · %s · %s freed", id, w.ws().Agent, gib(w.ws().ExclusiveBytes)), ref("workspace", id))
+	e.dropSuperseded(w.ws().RepoId)
 	e.collectSoon()
 	return nil
 }

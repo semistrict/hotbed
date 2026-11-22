@@ -49,6 +49,7 @@ type cluster struct {
 	clock    *clock
 	store    *fake.Store // the worker's volumes
 	ctrlSrv  *httptest.Server
+	system   *fake.System // the worker's memory, which tests set
 }
 
 type clock struct {
@@ -87,9 +88,10 @@ func newCluster(t *testing.T) *cluster {
 	t.Cleanup(func() { store.Close() })
 
 	volumes := &fake.Store{Root: t.TempDir()}
+	system := fake.NewSystem()
 	eng, err := worker.NewEngine(t.Context(), worker.EngineConfig{
 		Dir: filepath.Join(t.TempDir(), "worker"), NodeID: asahi.NodeID, Host: asahi.Hostname,
-		Store: volumes, Units: &fake.Units{}, System: fake.NewSystem(),
+		Store: volumes, Units: &fake.Units{}, System: system,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -123,7 +125,7 @@ func newCluster(t *testing.T) *cluster {
 
 	t.Setenv("HOTBED_CONTROLLER", ctrl)
 	return &cluster{
-		t: t, id: init.ClusterID, server: server, engine: eng, asWorker: asWorker, clock: clk, store: volumes, ctrlSrv: ctrlSrv,
+		t: t, id: init.ClusterID, server: server, engine: eng, asWorker: asWorker, clock: clk, store: volumes, ctrlSrv: ctrlSrv, system: system,
 		cli: deps{
 			// The CLI runs on the laptop: its tailnet says so, and its calls
 			// come from the laptop.
@@ -803,4 +805,84 @@ func TestSnapshotKeepsEndedSessions(t *testing.T) {
 		got.Workspaces[0].Id != ws.Id || got.Workspaces[0].RepoId != "app" || got.Workspaces[0].ReleasedAt == nil {
 		t.Errorf("snapshot's session = %v", got)
 	}
+}
+
+// commandStates is the session's commands' states, by ID.
+func (c *cluster) commandStates(session string) map[string]pb.CommandState {
+	c.t.Helper()
+	ps := &pb.ListCommandsResponse{}
+	c.ok(ps, "ps", session)
+	out := map[string]pb.CommandState{}
+	for _, cmd := range ps.Commands {
+		out[cmd.Id] = cmd.State
+	}
+	return out
+}
+
+// Parking frees memory for other work; it never stops all of it. With
+// memory short and staying short, one of two commands is frozen, never
+// both, and the frozen one runs again once nothing else does.
+func TestParkingNeverStopsAllWork(t *testing.T) {
+	c := newCluster(t)
+	c.addRepo(upstream(t))
+	c.ok(nil, "session", "start", "full-yak")
+	c.ok(nil, "add", "full-yak", "app")
+	first, second := &pb.Command{}, &pb.Command{}
+	c.ok(first, "run", "full-yak", "app", "--detach", "--kind", "build", "--", "sleep", "300")
+	c.ok(second, "run", "full-yak", "app", "--detach", "--kind", "build", "--", "sleep", "300")
+	c.eventually("both to run", func() bool {
+		st := c.commandStates("full-yak")
+		return st[first.Id] == pb.CommandState_COMMAND_STATE_RUNNING && st[second.Id] == pb.CommandState_COMMAND_STATE_RUNNING
+	})
+
+	c.system.SetUsed(c.system.Mem.Total * 95 / 100)
+	c.eventually("the newest to be parked", func() bool {
+		return c.commandStates("full-yak")[second.Id] == pb.CommandState_COMMAND_STATE_PARKED
+	})
+	// The engine steps every second: three steps at 95% leave the other running.
+	for deadline := time.Now().Add(3 * time.Second); time.Now().Before(deadline); time.Sleep(200 * time.Millisecond) {
+		if st := c.commandStates("full-yak")[first.Id]; st != pb.CommandState_COMMAND_STATE_RUNNING {
+			t.Fatalf("the last running command went %s", st)
+		}
+	}
+
+	c.ok(nil, "stop", "full-yak", first.Id)
+	c.eventually("the parked one to run again, memory still short", func() bool {
+		return c.commandStates("full-yak")[second.Id] == pb.CommandState_COMMAND_STATE_RUNNING
+	})
+}
+
+// A base build no workspace waits for any more, with a newer generation of
+// its repo after it, is dropped: it would only hold memory and CPUs, and
+// on a full machine be parked forever.
+func TestSupersededBaseBuildIsDropped(t *testing.T) {
+	c := newCluster(t)
+	c.ok(nil, "repo", "add", "app", upstream(t))
+	c.ok(nil, "step", "set", "app", "build", "--every-pull", "--", "sleep 30")
+	c.ok(nil, "session", "start", "slow-ant")
+	waiting := &pb.Workspace{}
+	c.ok(waiting, "add", "slow-ant", "app", "--no-wait")
+	if waiting.BaseId != "app-g1" || waiting.State != pb.WorkspaceState_WORKSPACE_STATE_PREPARING {
+		t.Fatalf("first add = %v, want a workspace waiting for app-g1", waiting)
+	}
+	c.ok(nil, "step", "set", "app", "build", "--every-pull", "--", "true")
+	c.ok(nil, "session", "start", "fast-bee")
+	ws := &pb.Workspace{}
+	c.ok(ws, "add", "fast-bee", "app")
+	if ws.BaseId != "app-g2" {
+		t.Fatalf("second add forked %s, want app-g2", ws.BaseId)
+	}
+
+	c.ok(nil, "session", "end", "slow-ant")
+	c.eventually("app-g1 to be dropped, app-g2 kept", func() bool {
+		snap, err := c.asWorker.GetSnapshot(t.Context(), &pb.GetSnapshotRequest{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		var bases []string
+		for _, b := range snap.Bases {
+			bases = append(bases, b.Id+" "+b.State.String())
+		}
+		return slices.Equal(bases, []string{"app-g2 BASE_STATE_WARM"})
+	})
 }

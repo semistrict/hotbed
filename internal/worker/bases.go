@@ -168,6 +168,7 @@ func (e *Engine) startFreshen(ctx context.Context, r *pb.Repo, gen int32, prev *
 		from = fmt.Sprintf("from g%d", prev.Generation)
 	}
 	e.event("base", fmt.Sprintf("base %s g%d building %s at %s", r.Id, gen, from, short(commit)), ref("command", id))
+	e.dropSuperseded(r.Id)
 	e.changed()
 	return clone(b), nil
 }
@@ -196,8 +197,8 @@ func freshenScript(r *pb.Repo, commit string, run []*pb.Step) string {
 // Call with e.mu held; snapshotting is one ioctl or one zfs command.
 func (e *Engine) freshened(c *command, ok bool, seconds float64, units int) {
 	b, found := e.bases[c.rec.BaseId]
-	if !found {
-		return
+	if !found || b.State != building {
+		return // dropped as superseded while it built
 	}
 	if log, err := os.ReadFile(e.logPath(c.cmd().Id)); err == nil {
 		b.Steps = settleSteps(b.Steps, log)
@@ -247,10 +248,17 @@ func (e *Engine) freshened(c *command, ok bool, seconds float64, units int) {
 		slog.Warn("read base commit message", "base", b.Id, "err", err)
 	}
 	b.Toolchain = toolchain(src)
+	// It takes over from older generations; one that finished behind a
+	// newer warm one is stale itself.
 	for _, o := range e.bases {
-		if o != b && o.RepoId == b.RepoId && o.State == warm {
+		if o == b || o.RepoId != b.RepoId || o.State != warm {
+			continue
+		}
+		if o.Generation < b.Generation {
 			o.State = stale
 			e.saveBase(o)
+		} else {
+			b.State = stale
 		}
 	}
 	if e.repos != nil && e.repos[b.RepoId] == nil {
@@ -362,4 +370,41 @@ func short(commit string) string {
 // git runs git as the commands' user, in dir.
 func (e *Engine) git(dir string) gitops.Git {
 	return gitops.Git{Dir: dir, Cred: e.cred, Env: []string{"HOME=" + e.home, "GIT_TERMINAL_PROMPT=0"}}
+}
+
+// dropSuperseded stops the base builds of a repo that no workspace waits
+// for any more and that a newer generation follows: they would only hold
+// memory and CPUs, or, parked on a full machine, never finish. Call with
+// e.mu held.
+func (e *Engine) dropSuperseded(repo string) {
+	var newest int32
+	for _, b := range e.bases {
+		if b.RepoId == repo {
+			newest = max(newest, b.Generation)
+		}
+	}
+	for _, b := range e.bases {
+		if b.RepoId != repo || b.State != building || b.Generation >= newest || e.waitedFor(b.Id) {
+			continue
+		}
+		b.State = stale
+		e.saveBase(b)
+		e.event("base", fmt.Sprintf("base %s g%d dropped: superseded, and no workspace waits for it", b.RepoId, b.Generation), ref("command", b.Command))
+		go func(command string) {
+			if _, err := e.Stop(context.Background(), command, "its base was superseded"); err != nil {
+				slog.Warn("stop a superseded base build", "command", command, "err", err)
+			}
+			e.collectSoon()
+		}(b.Command)
+	}
+}
+
+// waitedFor says whether a workspace is preparing on base. Call with e.mu held.
+func (e *Engine) waitedFor(base string) bool {
+	for _, w := range e.workspaces {
+		if w.ws().State == preparing && w.ws().BaseId == base {
+			return true
+		}
+	}
+	return false
 }

@@ -348,7 +348,10 @@ func (e *Engine) spec(c *command) unit.Spec {
 
 // park freezes the newest running command when memory runs short, and
 // thaws the oldest parked one when there is room for it again. Nothing is
-// killed for memory.
+// killed for memory. Parking frees memory for the commands left running,
+// so it never freezes the last of them, and with none left running it
+// thaws the oldest whatever memory says: else every command could sit
+// frozen, waiting for room that only running ones could make.
 func (e *Engine) park(ctx context.Context) {
 	mem, err := e.cfg.System.Meminfo()
 	if err != nil {
@@ -367,7 +370,7 @@ func (e *Engine) park(ctx context.Context) {
 	}
 	e.mu.Unlock()
 	total := float64(mem.Total)
-	if float64(mem.Used()) > total*parkAt && len(runningCmds) > 0 {
+	if float64(mem.Used()) > total*parkAt && len(runningCmds) > 1 {
 		slices.SortFunc(runningCmds, func(a, b *command) int { return int(b.cmd().GetStartedAt() - a.cmd().GetStartedAt()) })
 		victim := runningCmds[0]
 		if err := e.cfg.Units.Freeze(ctx, victim.unitName()); err != nil {
@@ -404,7 +407,7 @@ func (e *Engine) park(ctx context.Context) {
 	}
 	slices.SortFunc(parkedCmds, func(a, b *command) int { return int(a.rec.ParkedAt - b.rec.ParkedAt) })
 	oldest := parkedCmds[0]
-	if float64(mem.Used()+oldest.cmd().SwapBytes) > total*thawBelow {
+	if len(runningCmds) > 0 && float64(mem.Used()+oldest.cmd().SwapBytes) > total*thawBelow {
 		return
 	}
 	if err := e.cfg.Units.Thaw(ctx, oldest.unitName()); err != nil {
