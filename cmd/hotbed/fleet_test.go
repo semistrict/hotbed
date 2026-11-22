@@ -67,6 +67,8 @@ type node struct {
 	// calls, as a stopped worker's port does, and refused counts them.
 	halted  atomic.Bool
 	refused atomic.Int64
+	// follows counts the streams of output clients opened to it.
+	follows atomic.Int64
 	cluster hotbedv1connect.ClusterServiceClient // the controller, as this worker
 	follow  *worker.Follow                       // how it follows the controller's build; nil for not
 	// reported is how its connection to the controller ended, each time.
@@ -144,6 +146,9 @@ func newFleetWith(t *testing.T, n int, opts clusterOpts) *cluster {
 				nd.refused.Add(1)
 				http.Error(w, "worker stopped", http.StatusServiceUnavailable)
 				return
+			}
+			if strings.HasSuffix(r.URL.Path, "/FollowLog") {
+				nd.follows.Add(1)
 			}
 			(*nd.handler.Load()).ServeHTTP(w, r)
 		}))

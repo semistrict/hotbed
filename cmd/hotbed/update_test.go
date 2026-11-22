@@ -239,12 +239,8 @@ func ridesOut(t *testing.T, logs bool) {
 			done <- result{code, out, stderr}
 		}()
 	}
-	c.eventually("the command to run", func() bool {
-		var ls pb.ListCommandsResponse
-		c.ok(&ls, "ps", "-s", "tidy-owl")
-		return len(ls.Commands) > 0 && ls.Commands[len(ls.Commands)-1].State == runningState
-	})
 	nd := c.nodes[0]
+	c.eventually("the client to follow the command's output", func() bool { return nd.follows.Load() > 0 })
 	nd.halt()
 	c.eventually("the client to find its worker stopped", func() bool { return nd.refused.Load() > 0 })
 	g.open(t, "go")
