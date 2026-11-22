@@ -63,6 +63,10 @@ type node struct {
 	// both ways, as a network partition would; clients still reach it.
 	cut     atomic.Bool
 	handler atomic.Pointer[http.Handler]
+	// halted is set while the worker is stopped: its server refuses
+	// calls, as a stopped worker's port does, and refused counts them.
+	halted  atomic.Bool
+	refused atomic.Int64
 	cluster hotbedv1connect.ClusterServiceClient // the controller, as this worker
 	follow  *worker.Follow                       // how it follows the controller's build; nil for not
 	// reported is how its connection to the controller ended, each time.
@@ -136,6 +140,11 @@ func newFleetWith(t *testing.T, n int, opts clusterOpts) *cluster {
 			w(&nd.cfg)
 		}
 		nd.srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if nd.halted.Load() {
+				nd.refused.Add(1)
+				http.Error(w, "worker stopped", http.StatusServiceUnavailable)
+				return
+			}
 			(*nd.handler.Load()).ServeHTTP(w, r)
 		}))
 		t.Cleanup(nd.srv.Close)
@@ -241,6 +250,7 @@ func (nd *node) start() {
 	}
 	h := workerHandler(nd.c.tn, eng)
 	nd.handler.Store(&h)
+	nd.halted.Store(false)
 	ctx, cancel := context.WithCancel(t.Context())
 	var wg sync.WaitGroup
 	wg.Add(2)
@@ -265,6 +275,9 @@ func (nd *node) start() {
 
 // halt stops the worker; its commands run on, as systemd units do.
 func (nd *node) halt() {
+	nd.halted.Store(true)
+	// Its connections end with it, clients' streams of output too.
+	nd.srv.CloseClientConnections()
 	nd.mu.Lock()
 	stop := nd.stop
 	nd.stop = nil

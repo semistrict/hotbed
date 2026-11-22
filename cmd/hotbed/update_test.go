@@ -154,3 +154,56 @@ func TestServeExecsTheNewBuild(t *testing.T) {
 		t.Errorf("afterServe passed on %v, want %v", err, other)
 	}
 }
+
+// A rollout restarts workers under attached clients: hotbed run and logs -f
+// ride out their worker's restart, printing all of the command's output
+// once; run exits with its status.
+func TestRunRidesOutAWorkerRestart(t *testing.T) {
+	for _, logs := range []bool{false, true} {
+		t.Run(map[bool]string{false: "run", true: "logs -f"}[logs], func(t *testing.T) { ridesOut(t, logs) })
+	}
+}
+
+func ridesOut(t *testing.T, logs bool) {
+	c := newCluster(t)
+	c.addRepo(upstream(t))
+	c.ok(nil, "session", "start", "tidy-owl")
+	c.ok(nil, "add", "tidy-owl", "app")
+	g := newGate(t)
+	type result struct {
+		code     int
+		out, err string
+	}
+	done := make(chan result, 1)
+	script := []string{"sh", "-c", `echo before; while [ ! -e "$1" ]; do sleep 0.05; done; echo after`, "sh", filepath.Join(string(g), "go")}
+	if logs {
+		cmd := c.detach(nil, script...)
+		go func() {
+			code, out, stderr := c.hotbed("logs", "tidy-owl", cmd.Id, "-f")
+			done <- result{code, out, stderr}
+		}()
+	} else {
+		go func() {
+			code, out, stderr := c.hotbed(append([]string{"run", "tidy-owl", "app", "--"}, script...)...)
+			done <- result{code, out, stderr}
+		}()
+	}
+	c.eventually("the command to run", func() bool {
+		var ls pb.ListCommandsResponse
+		c.ok(&ls, "ps", "tidy-owl")
+		return len(ls.Commands) > 0 && ls.Commands[len(ls.Commands)-1].State == runningState
+	})
+	nd := c.nodes[0]
+	nd.halt()
+	c.eventually("the client to find its worker stopped", func() bool { return nd.refused.Load() > 0 })
+	g.open(t, "go")
+	nd.start()
+	select {
+	case r := <-done:
+		if r.code != 0 || r.out != "before\nafter\n" {
+			t.Errorf("across its worker's restart: exit %d, %q, stderr %q", r.code, r.out, r.err)
+		}
+	case <-time.After(60 * time.Second):
+		t.Fatal("run never ended")
+	}
+}

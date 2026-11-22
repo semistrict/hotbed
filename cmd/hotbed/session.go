@@ -356,15 +356,64 @@ func attach(ctx context.Context, wk workerClients, id string, w, stderr io.Write
 
 func (c *runCmd) Exec(context.Context, deps) (any, error) { return nil, errors.New("run is raw") }
 
-// follow copies a command's output to w until it ends, picking up where it
-// left off if the stream drops, and returns its exit status.
+// rideOut is how long follow waits for a worker that stopped answering:
+// long enough for it to fetch and start a new build.
+const rideOut = 10 * time.Minute
+
+// follow prints a command's output until it ends (followLog) and returns
+// its exit status, a shell's 128 plus the signal for one a signal killed.
 func follow(ctx context.Context, wk workerClients, id string, w io.Writer) (int, error) {
+	c, err := followLog(ctx, wk, id, w)
+	if err != nil {
+		return 0, err
+	}
+	switch {
+	case c.ExitCode != nil:
+		return int(*c.ExitCode), nil
+	case c.State == pb.CommandState_COMMAND_STATE_CANCELLED:
+		return 0, api.Errorf(api.CodeInternal, "%s was cancelled: %s", id, c.Reason)
+	case strings.HasPrefix(c.Reason, "killed by signal "):
+		// Report it the way a shell would: 128 plus the signal.
+		sig, _ := strconv.Atoi(strings.TrimPrefix(c.Reason, "killed by signal "))
+		return 128 + sig, nil
+	default:
+		return 0, api.Errorf(api.CodeInternal, "%s failed: %s", id, c.Reason)
+	}
+}
+
+// followLog copies a command's output to w until the command ends, picking
+// up where it left off if the stream drops, and returns it as it ended.
+func followLog(ctx context.Context, wk workerClients, id string, w io.Writer) (*pb.Command, error) {
 	var offset int64
+	// A worker that stops answering is waited for (riding out its restart,
+	// such as a new build's) for rideOut, from its first failure.
+	var down time.Time
+	wait := func(err error) bool {
+		if ctx.Err() != nil || !api.FromConnect(err).Retryable {
+			return false
+		}
+		if down.IsZero() {
+			down = time.Now()
+		}
+		if time.Since(down) > rideOut {
+			return false
+		}
+		select {
+		case <-ctx.Done():
+			return false
+		case <-time.After(time.Second):
+			return true
+		}
+	}
 	for {
 		in, err := wk.stream.FollowLog(ctx, &pb.FollowLogRequest{Id: id, Offset: offset, Follow: true})
 		if err != nil {
-			return 0, err
+			if wait(err) {
+				continue
+			}
+			return nil, err
 		}
+		down = time.Time{}
 		for {
 			chunk, err := in.Receive()
 			if err != nil {
@@ -374,32 +423,24 @@ func follow(ctx context.Context, wk workerClients, id string, w io.Writer) (int,
 			offset += int64(n)
 			if werr != nil {
 				in.Close()
-				return 0, werr
+				return nil, werr
 			}
 		}
 		in.Close()
 		if ctx.Err() != nil {
-			return 0, ctx.Err()
+			return nil, ctx.Err()
 		}
 		c, err := wk.calls.GetCommand(ctx, &pb.GetCommandRequest{Id: id})
 		if err != nil {
-			return 0, err
+			if wait(err) {
+				continue
+			}
+			return nil, err
 		}
 		if live(c.State) {
 			continue
 		}
-		switch {
-		case c.ExitCode != nil:
-			return int(*c.ExitCode), nil
-		case c.State == pb.CommandState_COMMAND_STATE_CANCELLED:
-			return 0, api.Errorf(api.CodeInternal, "%s was cancelled: %s", id, c.Reason)
-		case strings.HasPrefix(c.Reason, "killed by signal "):
-			// Report it the way a shell would: 128 plus the signal.
-			sig, _ := strconv.Atoi(strings.TrimPrefix(c.Reason, "killed by signal "))
-			return 128 + sig, nil
-		default:
-			return 0, api.Errorf(api.CodeInternal, "%s failed: %s", id, c.Reason)
-		}
+		return c, nil
 	}
 }
 
@@ -468,7 +509,14 @@ func (c *logsCmd) Raw(ctx context.Context, d deps) (int, bool, error) {
 	if err != nil {
 		return 0, false, err
 	}
-	in, err := w.stream.FollowLog(ctx, &pb.FollowLogRequest{Id: c.Command, Follow: c.Follow})
+	if c.Follow {
+		// Until it ends, across its worker's restarts.
+		if _, err := followLog(ctx, w, c.Command, d.stdout); err != nil && ctx.Err() == nil {
+			return 0, true, err
+		}
+		return exitOK, true, nil
+	}
+	in, err := w.stream.FollowLog(ctx, &pb.FollowLogRequest{Id: c.Command})
 	if err != nil {
 		return 0, false, err
 	}
