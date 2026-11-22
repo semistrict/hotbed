@@ -8,6 +8,7 @@ import (
 	"github.com/semistrict/hotbed/internal/api"
 	pb "github.com/semistrict/hotbed/internal/gen/hotbed/v1"
 	"github.com/semistrict/hotbed/internal/gitops"
+	"github.com/semistrict/hotbed/internal/httpx"
 )
 
 // A project is what sessions work on and questions are about: one or more
@@ -27,15 +28,88 @@ func (s *Server) AddProject(ctx context.Context, req *pb.AddProjectRequest) (*pb
 	if err := checkProjectName(req.Name); err != nil {
 		return nil, err
 	}
-	remotes := make([]string, 0, len(req.Repos))
-	for _, r := range req.Repos {
+	remotes, err := canonicalRemotes(req.Repos)
+	if err != nil {
+		return nil, err
+	}
+	if !req.Shared {
+		// A repo in two projects leaves session start in its checkouts not
+		// knowing which to join: say so before it happens, not after.
+		for _, r := range remotes {
+			holding, err := s.cfg.Store.ProjectsHolding(ctx, r)
+			if err != nil {
+				return nil, err
+			}
+			var others []string
+			for _, p := range holding {
+				if p.Name != req.Name {
+					others = append(others, p.Name)
+				}
+			}
+			if len(others) > 0 {
+				return nil, api.Errorf(api.CodeConflict, "%s is in project %s already: in a second project, every session starting in its checkouts would have to name its project (-p)", r, strings.Join(others, ", ")).
+					WithSuggestion("pass --shared to add it anyway, or take it out of the other first: hotbed project rm-repo " + others[0] + " --repo " + r)
+			}
+		}
+	}
+	by, err := s.userStamp(ctx, req.SessionId, "")
+	if err != nil {
+		return nil, err
+	}
+	return s.cfg.Store.AddProject(ctx, req.Name, remotes, by)
+}
+
+func (s *Server) RemoveProjectRepos(ctx context.Context, req *pb.RemoveProjectReposRequest) (*pb.Project, error) {
+	if len(req.Repos) == 0 {
+		return nil, api.Errorf(api.CodeInvalidArgs, "name the repos to take out of project %s", req.Name).WithSuggestion("hotbed project rm-repo NAME --repo REMOTE")
+	}
+	remotes, err := canonicalRemotes(req.Repos)
+	if err != nil {
+		return nil, err
+	}
+	by, err := s.userStamp(ctx, req.SessionId, "")
+	if err != nil {
+		return nil, err
+	}
+	return s.cfg.Store.RemoveProjectRepos(ctx, req.Name, remotes, by)
+}
+
+func (s *Server) GetProject(ctx context.Context, req *pb.GetProjectRequest) (*pb.Project, error) {
+	ps, err := s.projects(ctx)
+	if err != nil {
+		return nil, err
+	}
+	for _, p := range ps {
+		if p.Name == req.Name {
+			if p.History, err = s.cfg.Store.ProjectHistory(ctx, req.Name); err != nil {
+				return nil, err
+			}
+			return p, nil
+		}
+	}
+	return nil, noProject(req.Name)
+}
+
+// canonicalRemotes are git remotes, in any form, as projects hold them.
+func canonicalRemotes(repos []string) ([]string, error) {
+	out := make([]string, 0, len(repos))
+	for _, r := range repos {
 		c := gitops.CanonicalRemote(r)
 		if c == "" {
 			return nil, api.Errorf(api.CodeInvalidArgs, "repo %q is not a git remote", r)
 		}
-		remotes = append(remotes, c)
+		out = append(out, c)
 	}
-	return s.cfg.Store.AddProject(ctx, req.Name, remotes, s.now())
+	return out, nil
+}
+
+// madeBy stamps a project the controller makes by itself, for why.
+func (s *Server) madeBy(ctx context.Context, why string) *pb.Stamp {
+	host := httpx.Peer(ctx).Hostname
+	if host == "" {
+		host = s.cfg.Controller
+	}
+	return &pb.Stamp{At: s.now().UnixMilli(), Host: host, Reason: why}
 }
 
 func (s *Server) ListProjects(ctx context.Context, _ *pb.ListProjectsRequest) (*pb.ListProjectsResponse, error) {
@@ -114,7 +188,7 @@ func (s *Server) sessionProject(ctx context.Context, name, remote string) (*pb.P
 	case err != nil && api.FromConnect(err).Code != api.CodeNotFound:
 		return nil, err
 	}
-	return s.cfg.Store.AddProject(ctx, own, []string{remote}, s.now())
+	return s.cfg.Store.AddProject(ctx, own, []string{remote}, s.madeBy(ctx, "for "+remote+", which a session started in and no project held"))
 }
 
 var notInName = regexp.MustCompile(`[^a-z0-9]+`)
@@ -153,7 +227,7 @@ func (s *Server) ensureRepoProject(ctx context.Context, repoID, repoURL string) 
 		case err != nil && api.FromConnect(err).Code != api.CodeNotFound:
 			return nil, err
 		}
-		return s.cfg.Store.AddProject(ctx, name, []string{remote}, s.now())
+		return s.cfg.Store.AddProject(ctx, name, []string{remote}, s.madeBy(ctx, "for registered repo "+repoID+", which no project held"))
 	}
 	return nil, nil
 }

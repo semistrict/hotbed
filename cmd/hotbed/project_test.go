@@ -41,7 +41,7 @@ func TestSessionStartsInItsCheckoutsProject(t *testing.T) {
 
 	// A project of several repos; the same repo in two projects.
 	web := &pb.Project{}
-	c.ok(web, "project", "add", "web", "--repo", "https://github.com/o/app", "--repo", "github.com/o/ui")
+	c.ok(web, "project", "add", "web", "--repo", "https://github.com/o/app", "--repo", "github.com/o/ui", "--shared")
 	c.ok(web, "project", "add", "web", "--repo", "ssh://git@github.com/o/api.git")
 	if !slices.Equal(web.Repos, []string{"github.com/o/api", "github.com/o/app", "github.com/o/ui"}) {
 		t.Errorf("project web holds %v, want the repos of both adds", web.Repos)
@@ -192,5 +192,72 @@ func TestRepoAddCreatesItsOwnProject(t *testing.T) {
 	c.ok(ls, "project", "ls")
 	if projectRepos(ls, "other") != nil {
 		t.Errorf("repo already in project suite should not make a project called other: %v", ls.Projects)
+	}
+}
+
+// A repo another project holds goes into a second only when shared, since
+// then sessions starting in its checkouts must name their project; taking it
+// out again restores the default. Every change is kept, with who made it.
+func TestProjectRepoIsSharedOnlyOnPurpose(t *testing.T) {
+	c := newCluster(t)
+	t.Setenv("HOTBED_PROJECT", "")
+	t.Setenv("HOTBED_SESSION", "")
+	t.Setenv("T3CODE_THREAD_ID", "")
+	checkout(t, "git@github.com:o/app.git")
+	c.ok(nil, "session", "start", "first-one") // makes project app, holding o/app
+
+	if _, e := c.fails("project", "add", "web", "--repo", "https://github.com/o/app.git"); e.Code != api.CodeConflict ||
+		!strings.Contains(e.Message, "github.com/o/app is in project app already") || !strings.Contains(e.Suggestion, "--shared") {
+		t.Fatalf("add a held repo = %v, want CONFLICT naming app and --shared", e)
+	}
+	ls := &pb.ListProjectsResponse{}
+	c.ok(ls, "project", "ls")
+	if projectRepos(ls, "web") != nil || len(ls.Projects) != 2 {
+		t.Errorf("a refused add changed the projects: %v", ls.Projects)
+	}
+
+	c.ok(nil, "project", "add", "web", "--repo", "https://github.com/o/app.git", "--shared", "-s", "first-one")
+	checkout(t, "git@github.com:o/app.git") // another checkout: first-one is bound to the first
+	if _, e := c.fails("session", "start", "second-one"); e.Code != api.CodeInvalidArgs || !strings.Contains(e.Message, "is in projects app, web") {
+		t.Errorf("start in a shared repo = %v, want INVALID_ARGS", e)
+	}
+
+	web := &pb.Project{}
+	c.ok(web, "project", "rm-repo", "web", "--repo", "github.com/o/app")
+	if len(web.Repos) != 0 {
+		t.Errorf("web after rm-repo holds %v", web.Repos)
+	}
+	sess := &pb.Session{}
+	c.ok(sess, "session", "start", "second-one")
+	if sess.Project != "app" {
+		t.Errorf("start after rm-repo: project %q, want app again", sess.Project)
+	}
+	if _, e := c.fails("project", "rm-repo", "web", "--repo", "github.com/o/app"); e.Code != api.CodeNotFound || !strings.Contains(e.Message, "does not hold github.com/o/app") {
+		t.Errorf("rm-repo of a repo it lacks = %v, want NOT_FOUND", e)
+	}
+	if _, e := c.fails("project", "rm-repo", "nosuch", "--repo", "github.com/o/app"); e.Code != api.CodeNotFound {
+		t.Errorf("rm-repo from no such project = %v, want NOT_FOUND", e)
+	}
+
+	c.ok(web, "project", "show", "web")
+	var got []string
+	for _, ch := range web.History {
+		who := ch.By.Session
+		if who == "" {
+			who = "person on " + ch.By.Host
+		}
+		got = append(got, strings.TrimSpace(ch.What+" "+ch.Repo)+" by "+who)
+	}
+	want := []string{"created by first-one", "added github.com/o/app by first-one", "removed github.com/o/app by person on laptop"}
+	if !slices.Equal(got, want) {
+		t.Errorf("web's history = %v\nwant %v", got, want)
+	}
+	app := &pb.Project{}
+	c.ok(app, "project", "show", "app")
+	if len(app.History) != 2 || app.History[0].What != "created" || app.History[0].By.Session != "" || !strings.Contains(app.History[0].By.Reason, "which a session started in and no project held") {
+		t.Errorf("app's history = %v, want it made by the controller, saying why", app.History)
+	}
+	if _, e := c.fails("project", "show", "nosuch"); e.Code != api.CodeNotFound {
+		t.Errorf("show no such project = %v, want NOT_FOUND", e)
 	}
 }

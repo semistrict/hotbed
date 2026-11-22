@@ -26,7 +26,10 @@ hotbed session end
   remotes (`github.com/semistrict/hotbed`). `session start` picks the one project that holds this
   checkout's repo; a repo no project holds gets a project of its own name. When several projects
   hold it, or outside a checkout, name one: `-p PROJECT` or `HOTBED_PROJECT`. `hotbed project ls`
-  lists them; `hotbed project add NAME --repo REMOTE...` makes one or adds repos to it.
+  lists them; `hotbed project add NAME --repo REMOTE...` makes one or adds repos to it (a repo
+  another project holds needs `--shared`, since its checkouts' sessions would then need `-p`);
+  `hotbed project rm-repo NAME --repo REMOTE` takes one out; `hotbed project show NAME` has every
+  change, with who made it.
 - **Everything happens in a session.** Session and repo are never positional arguments: override them with `-s`/`HOTBED_SESSION` and `-r`/`HOTBED_REPO`, or let hotbed default the session from `T3CODE_THREAD_ID` → current git worktree (stored in `~/.hotbed/sessions.json`) and infer the repo from the current git checkout. `hotbed session current` prints the active session.
   `session start` picks a free adjective-noun name, or takes one you give it. In a thread or
   worktree already bound to a live session it fails with `CONFLICT` naming that session: keep
@@ -237,6 +240,8 @@ hotbed schedule run cladefs-nightly         # a run now; prints its session, for
 | `hotbed session current` | Active session and where it came from (`flag`, `env`, `thread`, `worktree`) |
 | `hotbed session ls` | The project's live sessions (`--ended`, `--all-projects`) |
 | `hotbed project ls` | Projects, their repos, live sessions and questions |
+| `hotbed project show NAME` | A project and every change to it |
+| `hotbed project rm-repo NAME --repo REMOTE` | Take a repo out of a project |
 | `hotbed schedule add ... -p PROJECT` | A schedule's runs work on its project (default: the one holding its repo) |
 | `hotbed ps` | The session's commands, live and just ended |
 | `hotbed logs CMD [-f \| -n N]` | A command's output; `-f` follows until it ends, `-n N` its last N lines |

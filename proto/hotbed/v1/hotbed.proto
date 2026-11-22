@@ -42,9 +42,15 @@ service ClusterService {
   // ListSteps is a repo's steps and, for each, whether each node's newest
   // base has run it.
   rpc ListSteps(ListStepsRequest) returns (ListStepsResponse);
-  // AddProject creates a project, or adds repos to the one of that name.
+  // AddProject creates a project, or adds repos to the one of that name. A
+  // repo another project holds is refused unless shared: sessions starting
+  // in its checkouts would then have to name their project.
   rpc AddProject(AddProjectRequest) returns (Project);
+  // RemoveProjectRepos takes repos out of a project.
+  rpc RemoveProjectRepos(RemoveProjectReposRequest) returns (Project);
   rpc ListProjects(ListProjectsRequest) returns (ListProjectsResponse);
+  // GetProject is a project with every change made to it.
+  rpc GetProject(GetProjectRequest) returns (Project);
   // GetSnapshot is everything the cockpit shows.
   rpc GetSnapshot(GetSnapshotRequest) returns (Snapshot);
 }
@@ -744,6 +750,19 @@ message Project {
   // still open.
   int32 active_reviews = 7;
   int32 reviews_to_decide = 8;
+  // Every change to it, oldest first; only from GetProject.
+  repeated ProjectChange history = 9;
+}
+
+// One change to a project: created, added or removed (a repo).
+message ProjectChange {
+  int64 seq = 1;
+  string what = 2;
+  // The repo added or removed, canonical.
+  string repo = 3;
+  // Who made it: a session, or no session for a person or for the
+  // controller itself, which makes a project for a repo no project holds.
+  Stamp by = 4;
 }
 
 message AddProjectRequest {
@@ -751,6 +770,21 @@ message AddProjectRequest {
   // Git remotes in any form (https, ssh, host/path); added to what the
   // project holds.
   repeated string repos = 2;
+  // Add a repo another project holds too.
+  bool shared = 3;
+  // The session making the change, if an agent; empty for a person.
+  string session_id = 4;
+}
+
+message RemoveProjectReposRequest {
+  string name = 1;
+  // Git remotes in any form; each must be one the project holds.
+  repeated string repos = 2;
+  string session_id = 3;
+}
+
+message GetProjectRequest {
+  string name = 1;
 }
 
 message ListProjectsRequest {}

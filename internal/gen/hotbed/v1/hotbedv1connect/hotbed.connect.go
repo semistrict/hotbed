@@ -67,9 +67,14 @@ const (
 	ClusterServiceListStepsProcedure = "/hotbed.v1.ClusterService/ListSteps"
 	// ClusterServiceAddProjectProcedure is the procedure name of the ClusterService's AddProject RPC.
 	ClusterServiceAddProjectProcedure = "/hotbed.v1.ClusterService/AddProject"
+	// ClusterServiceRemoveProjectReposProcedure is the procedure name of the ClusterService's
+	// RemoveProjectRepos RPC.
+	ClusterServiceRemoveProjectReposProcedure = "/hotbed.v1.ClusterService/RemoveProjectRepos"
 	// ClusterServiceListProjectsProcedure is the procedure name of the ClusterService's ListProjects
 	// RPC.
 	ClusterServiceListProjectsProcedure = "/hotbed.v1.ClusterService/ListProjects"
+	// ClusterServiceGetProjectProcedure is the procedure name of the ClusterService's GetProject RPC.
+	ClusterServiceGetProjectProcedure = "/hotbed.v1.ClusterService/GetProject"
 	// ClusterServiceGetSnapshotProcedure is the procedure name of the ClusterService's GetSnapshot RPC.
 	ClusterServiceGetSnapshotProcedure = "/hotbed.v1.ClusterService/GetSnapshot"
 	// SessionServiceStartSessionProcedure is the procedure name of the SessionService's StartSession
@@ -307,11 +312,25 @@ var (
 			Procedure:  ClusterServiceAddProjectProcedure,
 		}
 	})
+	clusterServiceRemoveProjectReposSpec = sync.OnceValue(func() connect.Spec {
+		return connect.Spec{
+			StreamType: connect.StreamTypeUnary,
+			Schema:     v1.File_hotbed_v1_hotbed_proto.Services().ByName("ClusterService").Methods().ByName("RemoveProjectRepos"),
+			Procedure:  ClusterServiceRemoveProjectReposProcedure,
+		}
+	})
 	clusterServiceListProjectsSpec = sync.OnceValue(func() connect.Spec {
 		return connect.Spec{
 			StreamType: connect.StreamTypeUnary,
 			Schema:     v1.File_hotbed_v1_hotbed_proto.Services().ByName("ClusterService").Methods().ByName("ListProjects"),
 			Procedure:  ClusterServiceListProjectsProcedure,
+		}
+	})
+	clusterServiceGetProjectSpec = sync.OnceValue(func() connect.Spec {
+		return connect.Spec{
+			StreamType: connect.StreamTypeUnary,
+			Schema:     v1.File_hotbed_v1_hotbed_proto.Services().ByName("ClusterService").Methods().ByName("GetProject"),
+			Procedure:  ClusterServiceGetProjectProcedure,
 		}
 	})
 	clusterServiceGetSnapshotSpec = sync.OnceValue(func() connect.Spec {
@@ -359,9 +378,15 @@ type ClusterServiceClient interface {
 	// ListSteps is a repo's steps and, for each, whether each node's newest
 	// base has run it.
 	ListSteps(context.Context, *v1.ListStepsRequest) (*v1.ListStepsResponse, error)
-	// AddProject creates a project, or adds repos to the one of that name.
+	// AddProject creates a project, or adds repos to the one of that name. A
+	// repo another project holds is refused unless shared: sessions starting
+	// in its checkouts would then have to name their project.
 	AddProject(context.Context, *v1.AddProjectRequest) (*v1.Project, error)
+	// RemoveProjectRepos takes repos out of a project.
+	RemoveProjectRepos(context.Context, *v1.RemoveProjectReposRequest) (*v1.Project, error)
 	ListProjects(context.Context, *v1.ListProjectsRequest) (*v1.ListProjectsResponse, error)
+	// GetProject is a project with every change made to it.
+	GetProject(context.Context, *v1.GetProjectRequest) (*v1.Project, error)
 	// GetSnapshot is everything the cockpit shows.
 	GetSnapshot(context.Context, *v1.GetSnapshotRequest) (*v1.Snapshot, error)
 }
@@ -408,9 +433,15 @@ type ClusterServiceHandler interface {
 	// ListSteps is a repo's steps and, for each, whether each node's newest
 	// base has run it.
 	ListSteps(context.Context, *v1.ListStepsRequest) (*v1.ListStepsResponse, error)
-	// AddProject creates a project, or adds repos to the one of that name.
+	// AddProject creates a project, or adds repos to the one of that name. A
+	// repo another project holds is refused unless shared: sessions starting
+	// in its checkouts would then have to name their project.
 	AddProject(context.Context, *v1.AddProjectRequest) (*v1.Project, error)
+	// RemoveProjectRepos takes repos out of a project.
+	RemoveProjectRepos(context.Context, *v1.RemoveProjectReposRequest) (*v1.Project, error)
 	ListProjects(context.Context, *v1.ListProjectsRequest) (*v1.ListProjectsResponse, error)
+	// GetProject is a project with every change made to it.
+	GetProject(context.Context, *v1.GetProjectRequest) (*v1.Project, error)
 	// GetSnapshot is everything the cockpit shows.
 	GetSnapshot(context.Context, *v1.GetSnapshotRequest) (*v1.Snapshot, error)
 }
@@ -435,7 +466,9 @@ func RegisterClusterServiceHandler(server *connect.Server, svc ClusterServiceHan
 		connect.Method{Spec: clusterServiceDeleteStepSpec(), Handler: adapter.deleteStep},
 		connect.Method{Spec: clusterServiceListStepsSpec(), Handler: adapter.listSteps},
 		connect.Method{Spec: clusterServiceAddProjectSpec(), Handler: adapter.addProject},
+		connect.Method{Spec: clusterServiceRemoveProjectReposSpec(), Handler: adapter.removeProjectRepos},
 		connect.Method{Spec: clusterServiceListProjectsSpec(), Handler: adapter.listProjects},
+		connect.Method{Spec: clusterServiceGetProjectSpec(), Handler: adapter.getProject},
 		connect.Method{Spec: clusterServiceGetSnapshotSpec(), Handler: adapter.getSnapshot},
 	)
 }
@@ -503,8 +536,16 @@ func (UnimplementedClusterServiceHandler) AddProject(context.Context, *v1.AddPro
 	return nil, connect.NewError(connect.CodeUnimplemented, "hotbed.v1.ClusterService.AddProject is not implemented")
 }
 
+func (UnimplementedClusterServiceHandler) RemoveProjectRepos(context.Context, *v1.RemoveProjectReposRequest) (*v1.Project, error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, "hotbed.v1.ClusterService.RemoveProjectRepos is not implemented")
+}
+
 func (UnimplementedClusterServiceHandler) ListProjects(context.Context, *v1.ListProjectsRequest) (*v1.ListProjectsResponse, error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, "hotbed.v1.ClusterService.ListProjects is not implemented")
+}
+
+func (UnimplementedClusterServiceHandler) GetProject(context.Context, *v1.GetProjectRequest) (*v1.Project, error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, "hotbed.v1.ClusterService.GetProject is not implemented")
 }
 
 func (UnimplementedClusterServiceHandler) GetSnapshot(context.Context, *v1.GetSnapshotRequest) (*v1.Snapshot, error) {
@@ -635,9 +676,25 @@ func (c *clusterServiceClient) AddProject(ctx context.Context, req *v1.AddProjec
 	return &res, nil
 }
 
+func (c *clusterServiceClient) RemoveProjectRepos(ctx context.Context, req *v1.RemoveProjectReposRequest) (*v1.Project, error) {
+	var res v1.Project
+	if err := c.client.CallUnary(ctx, clusterServiceRemoveProjectReposSpec(), req, &res); err != nil {
+		return nil, err
+	}
+	return &res, nil
+}
+
 func (c *clusterServiceClient) ListProjects(ctx context.Context, req *v1.ListProjectsRequest) (*v1.ListProjectsResponse, error) {
 	var res v1.ListProjectsResponse
 	if err := c.client.CallUnary(ctx, clusterServiceListProjectsSpec(), req, &res); err != nil {
+		return nil, err
+	}
+	return &res, nil
+}
+
+func (c *clusterServiceClient) GetProject(ctx context.Context, req *v1.GetProjectRequest) (*v1.Project, error) {
+	var res v1.Project
+	if err := c.client.CallUnary(ctx, clusterServiceGetProjectSpec(), req, &res); err != nil {
 		return nil, err
 	}
 	return &res, nil
@@ -833,12 +890,36 @@ func (h clusterServiceHandler) addProject(ctx context.Context, _ connect.Spec, s
 	return stream.Send(res)
 }
 
+func (h clusterServiceHandler) removeProjectRepos(ctx context.Context, _ connect.Spec, stream connect.ServerStream) error {
+	var req v1.RemoveProjectReposRequest
+	if err := stream.Receive(&req); err != nil {
+		return err
+	}
+	res, err := h.svc.RemoveProjectRepos(ctx, &req)
+	if err != nil {
+		return err
+	}
+	return stream.Send(res)
+}
+
 func (h clusterServiceHandler) listProjects(ctx context.Context, _ connect.Spec, stream connect.ServerStream) error {
 	var req v1.ListProjectsRequest
 	if err := stream.Receive(&req); err != nil {
 		return err
 	}
 	res, err := h.svc.ListProjects(ctx, &req)
+	if err != nil {
+		return err
+	}
+	return stream.Send(res)
+}
+
+func (h clusterServiceHandler) getProject(ctx context.Context, _ connect.Spec, stream connect.ServerStream) error {
+	var req v1.GetProjectRequest
+	if err := stream.Receive(&req); err != nil {
+		return err
+	}
+	res, err := h.svc.GetProject(ctx, &req)
 	if err != nil {
 		return err
 	}

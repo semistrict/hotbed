@@ -100,6 +100,11 @@ each holds), and a repo may be in several.
   checkout's remote and the session joins the one project that holds it; a repo no project holds
   becomes a project of its own name, made then; a repo several projects hold, or no checkout at
   all, needs `-p`. A scheduled run joins its repo's project the same way.
+- **One project per repo unless shared.** `project add` refuses a repo another project holds
+  unless given `--shared`, because a repo in two projects makes every session starting in its
+  checkouts name its project. `project rm-repo` takes a repo out. Every change (created, repo
+  added, repo removed) is kept in `project_changes` with who made it: a session, a person, or
+  the controller, which says why it made a project by itself.
 - **The cockpit is organized around them.** Its home lists projects with their sessions, running
   commands and questions; choosing one scopes every page (sessions, questions, commands,
   history, workspaces, schedules) to it. The machines (Cluster, Nodes) are every project's.

@@ -194,7 +194,7 @@ func newFleetWith(t *testing.T, n int, opts clusterOpts) *cluster {
 	c.asWorker, c.reported = c.nodes[0].cluster, c.nodes[0].reported
 
 	// Sessions start in the tests' project unless a test names another.
-	if _, err := store.AddProject(t.Context(), "test", nil, time.Now()); err != nil {
+	if _, err := store.AddProject(t.Context(), "test", nil, &pb.Stamp{At: time.Now().UnixMilli(), Reason: "the tests' project"}); err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv("HOTBED_PROJECT", "test")
