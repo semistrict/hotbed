@@ -25,6 +25,8 @@ Commit changes once they have compiled and their tests have passed (`go test -ra
 
 A branch lives only as long as the work on it: once its tests pass, land it on `main` and push to `main` unless the user says otherwise. Pushing to `main` needs no question. Never leave finished work waiting on a branch, nor start work from a stale base: merge `main` in often so nothing drifts far from it.
 
+After every push to `main`, install its build on the PATH: once the push's `build` workflow run succeeds (`gh run list --workflow build --branch main`), run `hotbed admin upgrade && hotbed upgrade` and check that `hotbed version` names the pushed commit. Never copy a local `go build` over it: a dev build (build 0) stops following the controller.
+
 ## Tasks: the board
 
 Tasks live on the team board, channel `tasks`: a Vercel Board (`@vercel/board`, via `vb` or `vercel board`) on the tailnet. Tailscale says who you are: no login, no token. Run `vb <command> --help` (or `vercel board <command> --help`) before a command you haven't used; read the `board` skill for full details.
