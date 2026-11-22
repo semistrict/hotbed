@@ -244,15 +244,15 @@ release `build-N` with the binaries' `SHA256SUMS`.
 - **The controller follows CI.** With `updates` in its config (the repo, and a file holding a
   GitHub token that may read its releases), it looks for a newer release every two minutes. It
   fetches every platform's binary into `builds/N` in its state directory, each checked against
-  the sums, installs its own over its binary in one rename, and exits; systemd starts it again as
-  the new build. A dev build (built by hand, build 0) is replaced the same way: branches are
+  the sums, installs its own over its binary in one rename, and starts it in its own place
+  (exec, with the same arguments): what runs it need not restart it. A dev build (built by hand, build 0) is replaced the same way: branches are
   tried in hotbed sessions, not on the fleet's own nodes.
 - **Everything else follows the controller, from the controller.** Workers never reach GitHub.
   The controller serves the build it runs at `/builds/N/hotbed-OS-ARCH`, behind the same gate as
   its API, and hands each worker its platform's build (number, path, sha256) in every report's
   reply. A worker on another build, newer or older, downloads it, checks its sum, installs it
-  over itself and exits; its commands, systemd units, keep running across the restart, as they
-  do across any. A client on a CI build sees the controller's build on every answer
+  over itself and execs it; its commands, systemd units, keep running across the restart, as
+  they do across any. A client on a CI build sees the controller's build on every answer
   (`Hotbed-Build`) and installs it after the command it ran; `hotbed upgrade` does it on demand.
   So every node runs the controller's build.
 - **What it keeps.** The controller keeps the build it runs and fetches the next; CI keeps the

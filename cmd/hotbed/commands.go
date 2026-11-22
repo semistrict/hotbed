@@ -38,6 +38,8 @@ type deps struct {
 	exe     func() (string, error)
 	reexec  func(args ...string) error
 	openURL func(ctx context.Context, url string) error
+	// execve replaces the process with another program (syscall.Exec).
+	execve func(path string, argv, env []string) error
 }
 
 // dashDashCommand accepts passthrough arguments after "--", parsed before kong

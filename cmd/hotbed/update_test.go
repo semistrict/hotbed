@@ -2,6 +2,7 @@ package main
 
 import (
 	"errors"
+	"fmt"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -128,5 +129,28 @@ func TestADevControllerHandsOutNoBuild(t *testing.T) {
 	code, e := c.fails("upgrade")
 	if code != exitError || e.Code != "NOT_FOUND" || e.Message != "the controller runs "+version.String()+", a build it doesn't keep: nothing to upgrade to" {
 		t.Errorf("upgrade from a dev controller: exit %d, %+v", code, e)
+	}
+}
+
+// A node that installed a new build starts it in its own place (exec), as
+// whatever runs it may restart it only on failure (the worker setup's unit
+// does): serve exits only if that fails.
+func TestServeExecsTheNewBuild(t *testing.T) {
+	var ran []string
+	execve := func(path string, argv, env []string) error {
+		ran = append([]string{path}, argv...)
+		return nil
+	}
+	res, err := afterServe(serveResult{Role: "worker"}, fmt.Errorf("wrapped: %w", update.ErrRestart), "/usr/local/bin/hotbed", []string{"hotbed", "serve", "/var/lib/hotbed"}, execve)
+	if err != nil || !slices.Equal(ran, []string{"/usr/local/bin/hotbed", "hotbed", "serve", "/var/lib/hotbed"}) {
+		t.Fatalf("afterServe = %+v, %v; ran %q", res, err, ran)
+	}
+	failing := func(string, []string, []string) error { return errors.New("exec format error") }
+	if _, err := afterServe(serveResult{Role: "worker"}, update.ErrRestart, "/usr/local/bin/hotbed", nil, failing); err == nil || err.Error() != "start the new build /usr/local/bin/hotbed: exec format error" {
+		t.Errorf("afterServe with a failing exec = %v", err)
+	}
+	other := errors.New("listen: address in use")
+	if _, err := afterServe(serveResult{Role: "worker"}, other, "/x", nil, execve); err != other {
+		t.Errorf("afterServe passed on %v, want %v", err, other)
 	}
 }

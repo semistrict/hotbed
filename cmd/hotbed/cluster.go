@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	"os"
 	"os/user"
@@ -93,6 +94,11 @@ func (c *serveCmd) Exec(ctx context.Context, d deps) (any, error) {
 	if err != nil {
 		return nil, err
 	}
+	// Where the binary is now: a new build replaces the file there.
+	exe, err := d.exe()
+	if err != nil {
+		return nil, err
+	}
 	res := serveResult{Role: "worker"}
 	if cfg.Controller != nil {
 		res.Role = "controller"
@@ -100,12 +106,23 @@ func (c *serveCmd) Exec(ctx context.Context, d deps) (any, error) {
 	} else {
 		err = worker.Run(ctx, c.Dir, *cfg.Worker, d.tailnet, d.http)
 	}
-	if errors.Is(err, update.ErrRestart) {
-		// A new build is in place: the service manager starts it.
-		res.Restart = true
-		return res, nil
+	return afterServe(res, err, exe, os.Args, d.execve)
+}
+
+// afterServe starts the new build a node installed over itself (err is
+// update.ErrRestart) in the node's place, with the same arguments: whatever
+// runs the node may restart it only when it fails (a unit's
+// Restart=on-failure), and a node that exited cleanly would stay down. It
+// returns only when that fails.
+func afterServe(res serveResult, err error, exe string, argv []string, execve func(string, []string, []string) error) (serveResult, error) {
+	if !errors.Is(err, update.ErrRestart) {
+		return res, err
 	}
-	return res, err
+	if err := execve(exe, argv, os.Environ()); err != nil {
+		return res, fmt.Errorf("start the new build %s: %w", exe, err)
+	}
+	res.Restart = true
+	return res, nil
 }
 
 type nodesCmd struct {

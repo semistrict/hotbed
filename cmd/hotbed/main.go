@@ -33,6 +33,7 @@ func main() {
 		build:   version.Number(),
 		exe:     os.Executable,
 		reexec:  reexec,
+		execve:  syscall.Exec,
 	})
 	stop()
 	os.Exit(code)
