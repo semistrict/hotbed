@@ -234,6 +234,32 @@ come.
   workspace and command; one left with no command is recorded as not started by the next tick.
 - A schedule keeps its last 200 runs, however old.
 
+## Updates
+
+Nothing is deployed by hand. Every push to main is tested and built by CI
+(`.github/workflows/build.yml`) for each platform hotbed runs on (linux/amd64, linux/arm64,
+darwin/arm64), stamped with its build number (`internal/version`), and published as the GitHub
+release `build-N` with the binaries' `SHA256SUMS`.
+
+- **The controller follows CI.** With `updates` in its config (the repo, and a file holding a
+  GitHub token that may read its releases), it looks for a newer release every two minutes. It
+  fetches every platform's binary into `builds/N` in its state directory, each checked against
+  the sums, installs its own over its binary in one rename, and exits; systemd starts it again as
+  the new build. A dev build (built by hand, build 0) is replaced the same way: branches are
+  tried in hotbed sessions, not on the fleet's own nodes.
+- **Everything else follows the controller, from the controller.** Workers never reach GitHub.
+  The controller serves the build it runs at `/builds/N/hotbed-OS-ARCH`, behind the same gate as
+  its API, and hands each worker its platform's build (number, path, sha256) in every report's
+  reply. A worker on another build, newer or older, downloads it, checks its sum, installs it
+  over itself and exits; its commands, systemd units, keep running across the restart, as they
+  do across any. A client on a CI build sees the controller's build on every answer
+  (`Hotbed-Build`) and installs it after the command it ran; `hotbed upgrade` does it on demand.
+  So every node runs the controller's build.
+- **What it keeps.** The controller keeps the build it runs and fetches the next; CI keeps the
+  newest 20 releases.
+- A build that fails to start is not rolled back: CI's tests are what stand before the fleet.
+  The fleet skill's `hotbed/deploy.sh` installs a chosen release by hand.
+
 ## Prior art
 
 crabbox (`~/src/crabbox`) leases remote boxes, rsyncs the worktree and runs commands over ssh.

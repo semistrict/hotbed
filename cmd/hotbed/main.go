@@ -10,10 +10,12 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"sync/atomic"
 	"syscall"
 	"time"
 
 	"github.com/semistrict/hotbed/internal/tailnet"
+	"github.com/semistrict/hotbed/internal/version"
 	"github.com/semistrict/hotbed/internal/worker"
 )
 
@@ -28,6 +30,9 @@ func main() {
 		stdout:  os.Stdout,
 		stderr:  os.Stderr,
 		cache:   cacheDir(),
+		build:   version.Number(),
+		exe:     os.Executable,
+		reexec:  reexec,
 	})
 	stop()
 	os.Exit(code)
@@ -43,6 +48,11 @@ func run(ctx context.Context, args []string, d deps) int {
 	if err != nil {
 		writeEnvelope(d.stdout, failure(name, invalidArgs(err)))
 		return exitInvalidArgs
+	}
+	if c, ok := cmd.(interface{ controller() string }); ok && name != "upgrade" {
+		var seen atomic.Int64
+		d = watchBuild(d, &seen)
+		defer func() { followController(context.WithoutCancel(ctx), d, c.controller(), seen.Load()) }()
 	}
 	if raw, ok := cmd.(rawCommand); ok {
 		code, printed, err := raw.Raw(ctx, d)

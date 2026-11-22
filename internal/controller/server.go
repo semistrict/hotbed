@@ -25,6 +25,8 @@ import (
 	"github.com/semistrict/hotbed/internal/httpx"
 	"github.com/semistrict/hotbed/internal/statedir"
 	"github.com/semistrict/hotbed/internal/tailnet"
+	"github.com/semistrict/hotbed/internal/update"
+	"github.com/semistrict/hotbed/internal/version"
 )
 
 const (
@@ -61,6 +63,11 @@ type ServerConfig struct {
 	// LocalUsers are the unix users, besides root, who may call from this
 	// machine itself.
 	LocalUsers []uint32
+	// Builds keeps the builds the controller hands out, and Build is the one
+	// it runs (0 for a dev build): nodes and clients install it over
+	// themselves. Nil hands out none.
+	Builds *update.Cache
+	Build  int64
 }
 
 // Server is the controller's API: the cluster, sessions, and workspaces,
@@ -105,12 +112,64 @@ func (s *Server) Handler() http.Handler {
 	hotbedv1connect.RegisterScheduleServiceHandler(server, &schedules{s})
 	mux := http.NewServeMux()
 	connecthttp.Mount(mux, server)
+	mux.HandleFunc("GET /builds/{build}/{asset}", s.serveBuild)
 	if s.cfg.UI != nil {
 		mux.Handle("/", s.cfg.UI)
 	}
-	return httpx.Gate(s.cfg.Identifier, httpx.Policy{
+	gated := httpx.Gate(s.cfg.Identifier, httpx.Policy{
 		Owner: s.cfg.Cluster.Owner, Self: s.cfg.Self, LocalUsers: s.cfg.LocalUsers,
 	}, mux)
+	// Every answer says the build the controller runs, so a client on
+	// another notices.
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set(BuildHeader, strconv.FormatInt(s.cfg.Build, 10))
+		gated.ServeHTTP(w, r)
+	})
+}
+
+// BuildHeader is the response header that says the controller's build.
+const BuildHeader = "Hotbed-Build"
+
+// build is the controller's build for p, or nil when it keeps none: it runs
+// a dev build, or a build not yet fetched.
+func (s *Server) build(p update.Platform) *pb.Build {
+	if s.cfg.Builds == nil || s.cfg.Build == 0 {
+		return nil
+	}
+	_, sum, err := s.cfg.Builds.Binary(s.cfg.Build, p)
+	if err != nil {
+		return nil
+	}
+	return &pb.Build{Number: s.cfg.Build, Sha256: sum, Path: fmt.Sprintf("/builds/%d/%s", s.cfg.Build, p.Asset())}
+}
+
+// serveBuild serves a binary of the build the controller runs.
+func (s *Server) serveBuild(w http.ResponseWriter, r *http.Request) {
+	for _, p := range update.Platforms {
+		if b := s.build(p); b != nil && r.URL.Path == b.Path {
+			path, _, _ := s.cfg.Builds.Binary(s.cfg.Build, p)
+			w.Header().Set("Content-Type", "application/octet-stream")
+			http.ServeFile(w, r, path)
+			return
+		}
+	}
+	http.Error(w, fmt.Sprintf("the controller hands out only its own build's binaries; it runs %s", version.String()), http.StatusNotFound)
+}
+
+func (s *Server) GetBuild(_ context.Context, req *pb.GetBuildRequest) (*pb.Build, error) {
+	p := update.Platform{OS: req.Os, Arch: req.Arch}
+	if b := s.build(p); b != nil {
+		return b, nil
+	}
+	if s.cfg.Build > 0 && slices.Contains(update.Platforms, p) {
+		return nil, api.Errorf(api.CodeNotFound, "the controller runs build %d, which it has not fetched yet", s.cfg.Build).
+			WithSuggestion("try again in a few minutes")
+	}
+	if s.cfg.Build > 0 {
+		return nil, api.Errorf(api.CodeNotFound, "no build is made for %s", p)
+	}
+	return nil, api.Errorf(api.CodeNotFound, "the controller runs %s, a build it doesn't keep: nothing to upgrade to", version.String()).
+		WithSuggestion("it moves to CI's newest build within minutes once it follows CI (its config's updates)")
 }
 
 func (s *Server) now() time.Time { return s.cfg.Now() }
@@ -188,7 +247,9 @@ func (s *Server) Heartbeat(ctx context.Context, req *pb.HeartbeatRequest) (*pb.H
 	if err != nil {
 		return nil, err
 	}
-	return &pb.HeartbeatResponse{Repos: repos, Release: release}, nil
+	// Workers run Linux.
+	build := s.build(update.Platform{OS: "linux", Arch: req.GetResources().GetArch()})
+	return &pb.HeartbeatResponse{Repos: repos, Release: release, Build: build}, nil
 }
 
 // fromWorker is the calling worker, which must be of this cluster.
@@ -265,7 +326,7 @@ func (s *Server) ListNodes(ctx context.Context, _ *pb.ListNodesRequest) (*pb.Lis
 	if err != nil {
 		return nil, err
 	}
-	out := &pb.ListNodesResponse{ClusterId: s.cfg.Cluster.ClusterID}
+	out := &pb.ListNodesResponse{ClusterId: s.cfg.Cluster.ClusterID, ControllerVersion: version.String()}
 	for _, n := range rows {
 		out.Nodes = append(out.Nodes, s.withOnline(n.node))
 	}

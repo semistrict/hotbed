@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"os"
 	"os/user"
@@ -11,6 +12,7 @@ import (
 	pb "github.com/semistrict/hotbed/internal/gen/hotbed/v1"
 	"github.com/semistrict/hotbed/internal/gen/hotbed/v1/hotbedv1connect"
 	"github.com/semistrict/hotbed/internal/statedir"
+	"github.com/semistrict/hotbed/internal/update"
 	"github.com/semistrict/hotbed/internal/worker"
 )
 
@@ -25,6 +27,9 @@ type clients struct {
 	workspaces hotbedv1connect.WorkspaceServiceClient
 	schedules  hotbedv1connect.ScheduleServiceClient
 }
+
+// controller is the controller a command calls.
+func (f controllerFlag) controller() string { return f.Controller }
 
 func (f controllerFlag) clients(hc *http.Client) (clients, error) {
 	conn, err := api.Dial(f.Controller, api.DefaultPort, hc)
@@ -79,7 +84,8 @@ type serveCmd struct {
 }
 
 type serveResult struct {
-	Role string `json:"role"`
+	Role    string `json:"role"`
+	Restart bool   `json:"restart,omitempty"` // it installed a new build, to be started as
 }
 
 func (c *serveCmd) Exec(ctx context.Context, d deps) (any, error) {
@@ -87,10 +93,19 @@ func (c *serveCmd) Exec(ctx context.Context, d deps) (any, error) {
 	if err != nil {
 		return nil, err
 	}
+	res := serveResult{Role: "worker"}
 	if cfg.Controller != nil {
-		return serveResult{Role: "controller"}, controller.Run(ctx, c.Dir, *cfg.Controller, d.tailnet)
+		res.Role = "controller"
+		err = controller.Run(ctx, c.Dir, *cfg.Controller, d.tailnet)
+	} else {
+		err = worker.Run(ctx, c.Dir, *cfg.Worker, d.tailnet, d.http)
 	}
-	return serveResult{Role: "worker"}, worker.Run(ctx, c.Dir, *cfg.Worker, d.tailnet, d.http)
+	if errors.Is(err, update.ErrRestart) {
+		// A new build is in place: the service manager starts it.
+		res.Restart = true
+		return res, nil
+	}
+	return res, err
 }
 
 type nodesCmd struct {

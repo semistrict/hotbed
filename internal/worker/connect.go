@@ -2,7 +2,10 @@ package worker
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"log/slog"
+	"net/http"
 	"slices"
 	"time"
 
@@ -11,6 +14,8 @@ import (
 	"github.com/semistrict/hotbed/internal/api"
 	pb "github.com/semistrict/hotbed/internal/gen/hotbed/v1"
 	"github.com/semistrict/hotbed/internal/gen/hotbed/v1/hotbedv1connect"
+	"github.com/semistrict/hotbed/internal/update"
+	"github.com/semistrict/hotbed/internal/version"
 )
 
 // pushBatch is how many events one push carries at most, and
@@ -23,16 +28,18 @@ const (
 // Connect keeps the controller up to date until ctx ends: the event stream,
 // in order, as soon as events are written, and a heartbeat every
 // ReportInterval, whose reply says which repos to host and which workspaces
-// to release. Both ride out failures a retry can fix (the controller
-// restarting, or out of reach for days: the worker works on, and its events
-// wait), and stop at one they cannot.
-func Connect(ctx context.Context, eng *Engine, cluster hotbedv1connect.ClusterServiceClient, clusterID string) error {
+// to release, and the controller's build, which follow installs over the
+// worker (it returns update.ErrRestart then; a nil follow installs none).
+// Both ride out failures a retry can fix (the controller restarting, or out
+// of reach for days: the worker works on, and its events wait), and stop at
+// one they cannot.
+func Connect(ctx context.Context, eng *Engine, cluster hotbedv1connect.ClusterServiceClient, clusterID string, follow *Follow) error {
 	g, ctx := errgroup.WithContext(ctx)
 	p := &pusher{eng: eng, cluster: cluster, clusterID: clusterID}
 	g.Go(func() error { return keep(ctx, "push events", eng.Kicked(), p.once) })
 	g.Go(func() error {
 		return keep(ctx, "heartbeat", nil, func(ctx context.Context) (bool, error) {
-			return false, HeartbeatOnce(ctx, eng, cluster, clusterID)
+			return false, HeartbeatOnce(ctx, eng, cluster, clusterID, follow)
 		})
 	})
 	return g.Wait()
@@ -52,6 +59,8 @@ func keep(ctx context.Context, what string, kicked <-chan struct{}, once func(co
 		if err != nil {
 			e := api.FromConnect(err)
 			switch {
+			case errors.Is(err, update.ErrRestart):
+				return err
 			case ctx.Err() != nil:
 				return nil
 			case e.Code == api.CodeNotJoined || e.Code == api.CodeClusterMismatch:
@@ -184,8 +193,9 @@ func (p *pusher) drain(ctx context.Context) (bool, error) {
 	return true, nil
 }
 
-// HeartbeatOnce sends one heartbeat and applies the reply.
-func HeartbeatOnce(ctx context.Context, eng *Engine, cluster hotbedv1connect.ClusterServiceClient, clusterID string) error {
+// HeartbeatOnce sends one heartbeat and applies the reply, which may hand
+// it the controller's build to install over itself (update.ErrRestart).
+func HeartbeatOnce(ctx context.Context, eng *Engine, cluster hotbedv1connect.ClusterServiceClient, clusterID string, follow *Follow) error {
 	sent := eng.now()
 	h := eng.Heartbeat(clusterID)
 	reply, err := cluster.Heartbeat(ctx, h)
@@ -199,5 +209,44 @@ func HeartbeatOnce(ctx context.Context, eng *Engine, cluster hotbedv1connect.Clu
 			slog.Error("release workspace of an ended session", "workspace", id, "err", err)
 		}
 	}
-	return nil
+	return follow.To(ctx, reply.Build)
+}
+
+// Follow installs the controller's build over the worker, from the
+// controller, which keeps it: a worker never reaches GitHub.
+type Follow struct {
+	URL    string // the controller's, http://host:port
+	Client *http.Client
+	Exe    string // the worker's binary
+	Build  int64  // the build it runs, 0 for a dev build
+}
+
+// To installs b unless the worker runs it, returning update.ErrRestart once
+// it did. A failure to is logged, and tried again at the next report.
+func (f *Follow) To(ctx context.Context, b *pb.Build) error {
+	if f == nil || b == nil || b.Number == f.Build {
+		return nil
+	}
+	if err := f.install(ctx, b); err != nil {
+		slog.Error("install the controller's build", "build", b.Number, "err", err)
+		return nil
+	}
+	slog.Info("installed the controller's build: restarting as it", "build", b.Number, "was", version.String())
+	return update.ErrRestart
+}
+
+func (f *Follow) install(ctx context.Context, b *pb.Build) error {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, f.URL+b.Path, nil)
+	if err != nil {
+		return err
+	}
+	resp, err := f.Client.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("GET %s: %s", req.URL, resp.Status)
+	}
+	return update.Install(resp.Body, b.Sha256, f.Exe)
 }

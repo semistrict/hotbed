@@ -18,6 +18,7 @@ import (
 	"github.com/semistrict/hotbed/internal/storage"
 	"github.com/semistrict/hotbed/internal/sysinfo"
 	"github.com/semistrict/hotbed/internal/unit"
+	"github.com/semistrict/hotbed/internal/version"
 )
 
 // WorkPath is where every command sees its workspace volume; the checkout
@@ -197,6 +198,7 @@ func NewEngine(ctx context.Context, cfg EngineConfig) (*Engine, error) {
 		d.close()
 		return nil, err
 	}
+	e.resources.Version = version.String()
 	if cfg.Bench != nil {
 		e.resources.BenchCpus = cfg.Bench.CPUs().String()
 	}

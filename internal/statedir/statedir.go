@@ -37,6 +37,16 @@ type ControllerConfig struct {
 	// LocalUser is the unix user, besides root, who may call the controller
 	// from its own machine; none when empty.
 	LocalUser string `json:"localUser,omitempty"`
+	// Updates has the controller follow CI's builds; none when unset.
+	Updates *UpdatesConfig `json:"updates,omitempty"`
+}
+
+// UpdatesConfig is where CI publishes hotbed's builds, as GitHub releases.
+type UpdatesConfig struct {
+	// Repo is the GitHub repo, owner/name, such as semistrict/hotbed.
+	Repo string `json:"repo"`
+	// TokenFile holds a GitHub token that may read the repo's releases.
+	TokenFile string `json:"tokenFile"`
 }
 
 // WorkerConfig is the cluster a worker joined and how it runs work.

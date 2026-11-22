@@ -1,0 +1,57 @@
+# Every push to main is tested, built for each platform hotbed runs on, and published as the
+# release build-N (N the run number, which only grows). The controller follows the newest
+# release and its nodes follow the controller (internal/update): nothing is deployed by hand.
+name: build
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+# Builds publish in the order they were pushed.
+concurrency:
+  group: build
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.34.0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - name: UI
+        run: |
+          go generate ./ui
+          pnpm -C ui test
+          pnpm -C ui typecheck
+      - name: Test
+        run: go test -race ./...
+      - name: Build
+        run: |
+          mkdir out
+          for p in linux/amd64 linux/arm64 darwin/arm64; do
+            CGO_ENABLED=0 GOOS=${p%/*} GOARCH=${p#*/} go build -trimpath \
+              -ldflags "-X github.com/semistrict/hotbed/internal/version.build=${{ github.run_number }}" \
+              -o "out/hotbed-${p%/*}-${p#*/}" ./cmd/hotbed
+          done
+          (cd out && sha256sum hotbed-* > SHA256SUMS)
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "build-${{ github.run_number }}" out/* --target "${{ github.sha }}" \
+            --title "build ${{ github.run_number }}" --notes "${{ github.sha }}" --latest
+          # The newest 20 builds are kept.
+          gh release list --limit 200 --json tagName --jq '.[20:][].tagName' |
+            xargs -r -n1 gh release delete --cleanup-tag --yes

@@ -53,7 +53,9 @@ type cluster struct {
 	ctrlSrv   *httptest.Server
 	ctrl      *switchboard // in front of the controller; tests take it down
 	workerSrv *httptest.Server
-	system    *fake.System // the worker's memory, which tests set
+	// reported is how the worker's connection to the controller ended.
+	reported chan error
+	system   *fake.System // the worker's memory, which tests set
 	// restart swaps in a new controller on the same database.
 	serverCfg controller.ServerConfig
 	handler   atomic.Pointer[http.Handler]
@@ -145,6 +147,19 @@ func (c *clock) advance(d time.Duration) {
 // config first.
 func newCluster(t *testing.T, with ...func(*worker.EngineConfig)) *cluster {
 	t.Helper()
+	return newClusterWith(t, clusterOpts{engine: with})
+}
+
+// clusterOpts change a cluster before it starts.
+type clusterOpts struct {
+	engine []func(*worker.EngineConfig)
+	server func(*controller.ServerConfig)
+	// follow is how the worker follows the controller's build at ctrl.
+	follow func(ctrl string, hc *http.Client) *worker.Follow
+}
+
+func newClusterWith(t *testing.T, opts clusterOpts) *cluster {
+	t.Helper()
 	tn := tailnettest.New(ubu1)
 	dir := t.TempDir()
 	init, err := controller.Init(t.Context(), dir, api.DefaultPort, "", tn)
@@ -166,7 +181,7 @@ func newCluster(t *testing.T, with ...func(*worker.EngineConfig)) *cluster {
 		Dir: filepath.Join(t.TempDir(), "worker"), NodeID: asahi.NodeID, Host: asahi.Hostname,
 		Store: volumes, Units: units, System: system,
 	}
-	for _, w := range with {
+	for _, w := range opts.engine {
 		w(&ecfg)
 	}
 	eng, err := worker.NewEngine(t.Context(), ecfg)
@@ -183,7 +198,10 @@ func newCluster(t *testing.T, with ...func(*worker.EngineConfig)) *cluster {
 		Workers:    tn.Client(ubu1.Peer),
 		WorkerAddr: func(string) string { return strings.TrimPrefix(workerSrv.URL, "http://") },
 	}
-	c := &cluster{t: t, id: init.ClusterID, engine: eng, clock: clk, store: volumes, units: units, system: system, serverCfg: serverCfg, workerSrv: workerSrv}
+	if opts.server != nil {
+		opts.server(&serverCfg)
+	}
+	c := &cluster{reported: make(chan error, 1), t: t, id: init.ClusterID, engine: eng, clock: clk, store: volumes, units: units, system: system, serverCfg: serverCfg, workerSrv: workerSrv}
 	c.restart()
 	c.ctrl = &switchboard{next: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { (*c.handler.Load()).ServeHTTP(w, r) })}
 	ctrlSrv := httptest.NewServer(c.ctrl)
@@ -200,7 +218,11 @@ func newCluster(t *testing.T, with ...func(*worker.EngineConfig)) *cluster {
 	ctx, cancel := context.WithCancel(t.Context())
 	done := make(chan struct{})
 	go func() { eng.Run(ctx); close(done) }()
-	go func() { worker.Connect(ctx, eng, asWorker, init.ClusterID) }()
+	var follow *worker.Follow
+	if opts.follow != nil {
+		follow = opts.follow(ctrl, tn.Client(asahi))
+	}
+	go func() { c.reported <- worker.Connect(ctx, eng, asWorker, init.ClusterID, follow) }()
 	t.Cleanup(func() { cancel(); <-done })
 
 	t.Setenv("HOTBED_CONTROLLER", ctrl)
@@ -210,6 +232,8 @@ func newCluster(t *testing.T, with ...func(*worker.EngineConfig)) *cluster {
 		// come from the laptop.
 		tailnet: tailnettest.New(tailnet.Self{Peer: laptop}),
 		http:    tn.Client(laptop), stream: tn.Client(laptop), cache: t.TempDir(),
+		exe:    func() (string, error) { return "", errors.New("the tests' client has no binary to upgrade") },
+		reexec: func(...string) error { return errors.New("the tests' client runs nothing") },
 	}
 	return c
 }
@@ -218,7 +242,7 @@ func newCluster(t *testing.T, with ...func(*worker.EngineConfig)) *cluster {
 // used on it since the last one.
 func (c *cluster) heartbeat() {
 	c.t.Helper()
-	if err := worker.HeartbeatOnce(c.t.Context(), c.engine, c.asWorker, c.id); err != nil {
+	if err := worker.HeartbeatOnce(c.t.Context(), c.engine, c.asWorker, c.id, nil); err != nil {
 		c.t.Fatal(err)
 	}
 }

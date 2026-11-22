@@ -30,6 +30,7 @@ import (
 	"github.com/semistrict/hotbed/internal/storage"
 	"github.com/semistrict/hotbed/internal/tailnet"
 	"github.com/semistrict/hotbed/internal/unit"
+	"github.com/semistrict/hotbed/internal/version"
 )
 
 // Tailnet is what a worker needs from this machine's tailscaled.
@@ -233,7 +234,14 @@ func Run(ctx context.Context, dir string, cfg statedir.WorkerConfig, tn Tailnet,
 		eng.Run(gctx)
 		return nil
 	})
-	g.Go(func() error { return Connect(gctx, eng, cluster, cfg.ClusterID) })
+	exe, err := os.Executable()
+	if err != nil {
+		return err
+	}
+	// A binary takes longer than an API call's minute over a slow tailnet.
+	follow := &Follow{URL: "http://" + cfg.Controller, Client: &http.Client{Transport: hc.Transport, Timeout: 10 * time.Minute}, Exe: exe, Build: version.Number()}
+	// Its update.ErrRestart ends the others, and Run with it.
+	g.Go(func() error { return Connect(gctx, eng, cluster, cfg.ClusterID, follow) })
 	g.Go(func() error {
 		<-gctx.Done()
 		shutdown, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)

@@ -22,6 +22,9 @@ service ClusterService {
   // the node online, and its reply is what the worker should host.
   rpc Heartbeat(HeartbeatRequest) returns (HeartbeatResponse);
   rpc ListNodes(ListNodesRequest) returns (ListNodesResponse);
+  // GetBuild is the build the controller runs, for a platform: what a node
+  // or client on it installs to run the controller's build.
+  rpc GetBuild(GetBuildRequest) returns (Build);
   rpc ListRepos(ListReposRequest) returns (ListReposResponse);
   rpc PutRepo(PutRepoRequest) returns (Repo);
   rpc DeleteRepo(DeleteRepoRequest) returns (DeleteRepoResponse);
@@ -106,6 +109,8 @@ message Resources {
   // The CPUs a measurement has to itself (a cpulist, 4-7,12-15); empty on a
   // node that takes no measurements.
   string bench_cpus = 7;
+  // The hotbed build it runs: "build 42 (0123456789ab)", or "dev (...)".
+  string version = 8;
 }
 
 message NodeUsage {
@@ -155,6 +160,23 @@ message ListNodesRequest {}
 message ListNodesResponse {
   string cluster_id = 1;
   repeated Node nodes = 2;
+  // The hotbed build the controller runs, which every node follows.
+  string controller_version = 3;
+}
+
+// A build of hotbed the controller keeps for one platform, which nodes
+// install over themselves.
+message Build {
+  int64 number = 1;
+  // Its binary's sha256, hex.
+  string sha256 = 2;
+  // Where the controller serves its binary: /builds/N/hotbed-OS-ARCH.
+  string path = 3;
+}
+
+message GetBuildRequest {
+  string os = 1;
+  string arch = 2;
 }
 
 // ---- repos and bases --------------------------------------------------
@@ -882,6 +904,10 @@ message HeartbeatResponse {
   repeated Repo repos = 1;
   // Workspaces to release: their sessions ended.
   repeated string release = 2;
+  // The controller's build, for the worker's platform, which the worker
+  // installs over itself unless it runs it; unset while the controller runs
+  // a build it doesn't keep (a dev build).
+  Build build = 3;
 }
 
 // ---- the cockpit ----------------------------------------------------------
