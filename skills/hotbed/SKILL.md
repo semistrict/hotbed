@@ -158,9 +158,13 @@ hotbed review finish 7 --summary "One race, one nit."   # or: hotbed review fail
 ## Keeping a session alive
 
 A session nothing touches for **an hour** is abandoned: its commands stop and its workspaces are
-deleted. Every hotbed call that names the session counts. While waiting on long work, call
-`hotbed wait` in a loop: each call returns within two minutes, with or without events, and keeps
-the session alive.
+deleted. Every hotbed call that names the session counts, and so does an attached `hotbed run` or
+`hotbed logs -f` for as long as it streams, however many hours that is.
+
+So never write a keep-alive loop. To wait on long work, either run it attached (in the
+background if your harness lets you, and read its output when it exits) or `--detach` it and call
+`hotbed wait`, which returns on its next event or after two minutes. A detached command nothing
+follows or waits on is what the hour is for: an agent that went away leaves no dev server behind.
 
 ## When the controller is out of reach
 

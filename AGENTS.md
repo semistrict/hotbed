@@ -11,7 +11,7 @@ hotbed run -- go test -race ./...
 hotbed session end
 ```
 
-Read `hotbed skills get hotbed` for the full CLI workflow. Session and repo are flags (`-s`/`HOTBED_SESSION`, `-r`/`HOTBED_REPO`) defaulted from `T3CODE_THREAD_ID` / the current git worktree and checkout, never positional arguments. A session idle for an hour is abandoned; keep it alive with `hotbed wait` or other session calls while working, and end it with `hotbed session end` when done.
+Read `hotbed skills get hotbed` for the full CLI workflow. Session and repo are flags (`-s`/`HOTBED_SESSION`, `-r`/`HOTBED_REPO`) defaulted from `T3CODE_THREAD_ID` / the current git worktree and checkout, never positional arguments. A session idle for an hour is abandoned; any session call, and an attached `hotbed run` for as long as it runs, keeps it alive, so never wrap a run in a keep-alive loop. End it with `hotbed session end` when done.
 
 ## Every API call has a CLI command
 
