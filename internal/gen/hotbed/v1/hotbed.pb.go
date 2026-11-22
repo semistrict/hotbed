@@ -397,7 +397,10 @@ type Resources struct {
 	SwapBytes   int64                  `protobuf:"varint,4,opt,name=swap_bytes,json=swapBytes,proto3" json:"swap_bytes,omitempty"`
 	Kernel      string                 `protobuf:"bytes,5,opt,name=kernel,proto3" json:"kernel,omitempty"`
 	// What the machine is, as a person would say it: "MacBook Pro (14-inch, M3 Pro, Nov 2023)".
-	Machine       string `protobuf:"bytes,6,opt,name=machine,proto3" json:"machine,omitempty"`
+	Machine string `protobuf:"bytes,6,opt,name=machine,proto3" json:"machine,omitempty"`
+	// The CPUs a measurement has to itself (a cpulist, 4-7,12-15); empty on a
+	// node that takes no measurements.
+	BenchCpus     string `protobuf:"bytes,7,opt,name=bench_cpus,json=benchCpus,proto3" json:"bench_cpus,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -470,6 +473,13 @@ func (x *Resources) GetKernel() string {
 func (x *Resources) GetMachine() string {
 	if x != nil {
 		return x.Machine
+	}
+	return ""
+}
+
+func (x *Resources) GetBenchCpus() string {
+	if x != nil {
+		return x.BenchCpus
 	}
 	return ""
 }
@@ -3275,8 +3285,10 @@ type Command struct {
 	// Stops when no client has followed its output for a while.
 	Attached  bool   `protobuf:"varint,21,opt,name=attached,proto3" json:"attached,omitempty"`
 	SessionId string `protobuf:"bytes,22,opt,name=session_id,json=sessionId,proto3" json:"session_id,omitempty"`
-	// Set by the controller: where clients call the command's worker. (Not
-	// 23: branch bench-mode, already deployed, has bench there.)
+	// A measurement: it runs alone on the node's measurement CPUs, isolated,
+	// never swapped or parked.
+	Bench bool `protobuf:"varint,23,opt,name=bench,proto3" json:"bench,omitempty"`
+	// Set by the controller: where clients call the command's worker.
 	NodeAddr      string `protobuf:"bytes,24,opt,name=node_addr,json=nodeAddr,proto3" json:"node_addr,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
@@ -3466,6 +3478,13 @@ func (x *Command) GetSessionId() string {
 	return ""
 }
 
+func (x *Command) GetBench() bool {
+	if x != nil {
+		return x.Bench
+	}
+	return false
+}
+
 func (x *Command) GetNodeAddr() string {
 	if x != nil {
 		return x.NodeAddr
@@ -3496,6 +3515,7 @@ type FinishedCommand struct {
 	PeakMemoryBytes int64    `protobuf:"varint,17,opt,name=peak_memory_bytes,json=peakMemoryBytes,proto3" json:"peak_memory_bytes,omitempty"`
 	Parks           int32    `protobuf:"varint,18,opt,name=parks,proto3" json:"parks,omitempty"`
 	SessionId       string   `protobuf:"bytes,19,opt,name=session_id,json=sessionId,proto3" json:"session_id,omitempty"`
+	Bench           bool     `protobuf:"varint,20,opt,name=bench,proto3" json:"bench,omitempty"`
 	// Why it failed or was cancelled, as the command's reason says.
 	Reason        string `protobuf:"bytes,21,opt,name=reason,proto3" json:"reason,omitempty"`
 	unknownFields protoimpl.UnknownFields
@@ -3665,6 +3685,13 @@ func (x *FinishedCommand) GetSessionId() string {
 	return ""
 }
 
+func (x *FinishedCommand) GetBench() bool {
+	if x != nil {
+		return x.Bench
+	}
+	return false
+}
+
 func (x *FinishedCommand) GetReason() string {
 	if x != nil {
 		return x.Reason
@@ -3685,7 +3712,11 @@ type RunCommandRequest struct {
 	Port int32 `protobuf:"varint,7,opt,name=port,proto3" json:"port,omitempty"`
 	// Set by the controller when it forwards the call to a worker; a worker
 	// called directly picks one when it is empty.
-	Id            string `protobuf:"bytes,8,opt,name=id,proto3" json:"id,omitempty"`
+	Id string `protobuf:"bytes,8,opt,name=id,proto3" json:"id,omitempty"`
+	// Run it as a measurement: alone among measurements on the node, once
+	// running work leaves it room, on CPUs no other command uses, isolated
+	// for its whole run, never swapped or parked.
+	Bench         bool `protobuf:"varint,9,opt,name=bench,proto3" json:"bench,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -3774,6 +3805,13 @@ func (x *RunCommandRequest) GetId() string {
 		return x.Id
 	}
 	return ""
+}
+
+func (x *RunCommandRequest) GetBench() bool {
+	if x != nil {
+		return x.Bench
+	}
+	return false
 }
 
 type GetCommandRequest struct {
@@ -5468,8 +5506,9 @@ func (x *WorkspaceChange) GetDetail() string {
 
 type CommandChange struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
-	// queued, waiting (why it is not admitted changed), admitted, parked,
-	// thawed, exited, cancelled, or forgotten (deleted a while after it ended).
+	// queued, waiting (the kind of wait changed), admitted, parked, thawed,
+	// isolation lost (a measurement's), exited, cancelled, or forgotten
+	// (deleted a while after it ended).
 	What    string   `protobuf:"bytes,1,opt,name=what,proto3" json:"what,omitempty"`
 	Command *Command `protobuf:"bytes,2,opt,name=command,proto3" json:"command,omitempty"`
 	Detail  string   `protobuf:"bytes,3,opt,name=detail,proto3" json:"detail,omitempty"`
@@ -7595,7 +7634,7 @@ const file_hotbed_v1_hotbed_proto_rawDesc = "" +
 	"\n" +
 	"suggestion\x18\x02 \x01(\tR\n" +
 	"suggestion\x12\x1c\n" +
-	"\tretryable\x18\x03 \x01(\bR\tretryable\"\xa7\x01\n" +
+	"\tretryable\x18\x03 \x01(\bR\tretryable\"\xc6\x01\n" +
 	"\tResources\x12\x12\n" +
 	"\x04arch\x18\x01 \x01(\tR\x04arch\x12\x12\n" +
 	"\x04cpus\x18\x02 \x01(\x05R\x04cpus\x12!\n" +
@@ -7603,7 +7642,9 @@ const file_hotbed_v1_hotbed_proto_rawDesc = "" +
 	"\n" +
 	"swap_bytes\x18\x04 \x01(\x03R\tswapBytes\x12\x16\n" +
 	"\x06kernel\x18\x05 \x01(\tR\x06kernel\x12\x18\n" +
-	"\amachine\x18\x06 \x01(\tR\amachine\"\xc6\x01\n" +
+	"\amachine\x18\x06 \x01(\tR\amachine\x12\x1d\n" +
+	"\n" +
+	"bench_cpus\x18\a \x01(\tR\tbenchCpus\"\xc6\x01\n" +
 	"\tNodeUsage\x12\x19\n" +
 	"\bcpu_busy\x18\x01 \x01(\x01R\acpuBusy\x12*\n" +
 	"\x11memory_used_bytes\x18\x02 \x01(\x03R\x0fmemoryUsedBytes\x12&\n" +
@@ -7824,7 +7865,7 @@ const file_hotbed_v1_hotbed_proto_rawDesc = "" +
 	"\fCommandEvent\x12\x0e\n" +
 	"\x02at\x18\x01 \x01(\x03R\x02at\x12\x12\n" +
 	"\x04what\x18\x02 \x01(\tR\x04what\x12\x16\n" +
-	"\x06detail\x18\x03 \x01(\tR\x06detail\"\x9c\x06\n" +
+	"\x06detail\x18\x03 \x01(\tR\x06detail\"\xb2\x06\n" +
 	"\aCommand\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12!\n" +
 	"\fworkspace_id\x18\x02 \x01(\tR\vworkspaceId\x12\x17\n" +
@@ -7851,13 +7892,14 @@ const file_hotbed_v1_hotbed_proto_rawDesc = "" +
 	"\btimeline\x18\x14 \x03(\v2\x17.hotbed.v1.CommandEventR\btimeline\x12\x1a\n" +
 	"\battached\x18\x15 \x01(\bR\battached\x12\x1d\n" +
 	"\n" +
-	"session_id\x18\x16 \x01(\tR\tsessionId\x12\x1b\n" +
+	"session_id\x18\x16 \x01(\tR\tsessionId\x12\x14\n" +
+	"\x05bench\x18\x17 \x01(\bR\x05bench\x12\x1b\n" +
 	"\tnode_addr\x18\x18 \x01(\tR\bnodeAddrB\r\n" +
 	"\v_started_atB\v\n" +
 	"\t_ended_atB\f\n" +
 	"\n" +
 	"_exit_codeB\x0f\n" +
-	"\r_cold_seconds\"\x82\x05\n" +
+	"\r_cold_seconds\"\x98\x05\n" +
 	"\x0fFinishedCommand\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x17\n" +
 	"\arepo_id\x18\x02 \x01(\tR\x06repoId\x12\x17\n" +
@@ -7879,14 +7921,15 @@ const file_hotbed_v1_hotbed_proto_rawDesc = "" +
 	"\x11peak_memory_bytes\x18\x11 \x01(\x03R\x0fpeakMemoryBytes\x12\x14\n" +
 	"\x05parks\x18\x12 \x01(\x05R\x05parks\x12\x1d\n" +
 	"\n" +
-	"session_id\x18\x13 \x01(\tR\tsessionId\x12\x16\n" +
+	"session_id\x18\x13 \x01(\tR\tsessionId\x12\x14\n" +
+	"\x05bench\x18\x14 \x01(\bR\x05bench\x12\x16\n" +
 	"\x06reason\x18\x15 \x01(\tR\x06reasonB\f\n" +
 	"\n" +
 	"_exit_codeB\x0f\n" +
 	"\r_cold_secondsB\n" +
 	"\n" +
 	"\b_rebuiltB\x05\n" +
-	"\x03_of\"\xe2\x01\n" +
+	"\x03_of\"\xf8\x01\n" +
 	"\x11RunCommandRequest\x12!\n" +
 	"\fworkspace_id\x18\x01 \x01(\tR\vworkspaceId\x12\x12\n" +
 	"\x04args\x18\x02 \x03(\tR\x04args\x12\x10\n" +
@@ -7895,7 +7938,8 @@ const file_hotbed_v1_hotbed_proto_rawDesc = "" +
 	"\x06limits\x18\x05 \x01(\v2\x18.hotbed.v1.CommandLimitsR\x06limits\x12\x1a\n" +
 	"\battached\x18\x06 \x01(\bR\battached\x12\x12\n" +
 	"\x04port\x18\a \x01(\x05R\x04port\x12\x0e\n" +
-	"\x02id\x18\b \x01(\tR\x02id\"#\n" +
+	"\x02id\x18\b \x01(\tR\x02id\x12\x14\n" +
+	"\x05bench\x18\t \x01(\bR\x05bench\"#\n" +
 	"\x11GetCommandRequest\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\"4\n" +
 	"\x13ListCommandsRequest\x12\x1d\n" +

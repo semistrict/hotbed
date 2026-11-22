@@ -318,7 +318,7 @@ func (s *workspaces) RunCommand(ctx context.Context, req *pb.RunCommandRequest) 
 	}
 	fwd := &pb.RunCommandRequest{
 		WorkspaceId: req.WorkspaceId, Args: req.Args, Env: req.Env, Kind: req.Kind,
-		Limits: req.Limits, Attached: req.Attached, Port: req.Port, Id: newID(),
+		Limits: req.Limits, Attached: req.Attached, Port: req.Port, Bench: req.Bench, Id: newID(),
 	}
 	if err := s.cfg.Store.AddCommand(ctx, fwd.Id, w.session, w.node, w.id, s.now()); err != nil {
 		return nil, err

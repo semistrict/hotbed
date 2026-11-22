@@ -172,7 +172,7 @@ func applyEvent(ctx context.Context, tx *sql.Tx, nodeID string, ev *pb.Event, ou
 			}
 		}
 		switch c.Command.What {
-		case "admitted", "parked", "thawed", "exited", "cancelled":
+		case "admitted", "parked", "thawed", "isolation lost", "exited", "cancelled":
 			return addSessionEvent(ctx, tx, &pb.SessionEvent{
 				At: ev.At, CommandId: cmd.Id, Argv: cmd.Argv, What: c.Command.What, State: cmd.State,
 				ExitCode: cmd.ExitCode, Detail: c.Command.Detail, SessionId: cmd.SessionId, WorkspaceId: cmd.WorkspaceId,

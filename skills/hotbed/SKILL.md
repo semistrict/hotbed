@@ -96,6 +96,14 @@ reaches `wait` once the controller is back.
   **parked** (frozen, its memory swapped out) and resumes later. `wait` reports `parked` and
   `thawed`.
 - No time limit. Commands run until they end or `hotbed stop S CMD`.
+- `--bench` runs it as a **measurement**, for numbers you will compare (benchmarks, timings). It
+  waits for any other measurement on the node to end and for running work to fit beside it, then
+  runs alone on the node's measurement CPUs (`hotbed nodes`: `benchCpus`), which no other command
+  uses meanwhile, with IRQs and kernel work moved off them and, where the node can, its own cache
+  and memory bandwidth, the other cores' clocks capped and other work's disk IO capped. It never
+  swaps and is never parked. If that isolation is lost mid-run it fails, saying so, whatever its
+  status: rerun it. A node with no `benchCpus` refuses it: `hotbed add --node` one that has them,
+  and compare only numbers from the same node.
 - Toolchains and caches (`RUSTUP_HOME`, `CARGO_HOME`, `GOMODCACHE`, `GOCACHE`, `XDG_*`) live
   inside the workspace, so the base's downloads and builds are already there.
 

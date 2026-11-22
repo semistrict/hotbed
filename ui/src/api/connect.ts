@@ -226,6 +226,7 @@ function toNode(n: PbNode): Node {
       otherBytes: num(d?.otherBytes),
       freeBytes: num(d?.freeBytes),
     },
+    benchCpus: r?.benchCpus ?? "",
   };
 }
 
@@ -330,6 +331,7 @@ function toCommand(c: PbCommand): Command {
     coldSeconds: c.coldSeconds ?? null,
     reason: orNull(c.reason),
     url: orNull(c.url),
+    bench: c.bench,
     timeline: c.timeline.map((e) => ({ at: iso(e.at), what: e.what as Command["timeline"][number]["what"], detail: e.detail })),
   };
 }
@@ -355,5 +357,6 @@ function toFinished(f: PbFinished): FinishedCommand {
     of: f.of ?? null,
     peakMemoryBytes: num(f.peakMemoryBytes),
     parks: f.parks,
+    bench: f.bench,
   };
 }

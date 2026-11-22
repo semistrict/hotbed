@@ -49,6 +49,7 @@ type cluster struct {
 	cli       deps
 	clock     *clock
 	store     *fake.Store // the worker's volumes
+	units     *fake.Units
 	ctrlSrv   *httptest.Server
 	ctrl      *switchboard // in front of the controller; tests take it down
 	workerSrv *httptest.Server
@@ -140,7 +141,9 @@ func (c *clock) advance(d time.Duration) {
 	c.offset += d
 }
 
-func newCluster(t *testing.T) *cluster {
+// newCluster starts a cluster; each of with changes the worker's engine
+// config first.
+func newCluster(t *testing.T, with ...func(*worker.EngineConfig)) *cluster {
 	t.Helper()
 	tn := tailnettest.New(ubu1)
 	dir := t.TempDir()
@@ -158,12 +161,15 @@ func newCluster(t *testing.T) *cluster {
 	}
 	t.Cleanup(func() { store.Close() })
 
-	volumes := &fake.Store{Root: t.TempDir()}
-	system := fake.NewSystem()
-	eng, err := worker.NewEngine(t.Context(), worker.EngineConfig{
+	volumes, units, system := &fake.Store{Root: t.TempDir()}, &fake.Units{}, fake.NewSystem()
+	ecfg := worker.EngineConfig{
 		Dir: filepath.Join(t.TempDir(), "worker"), NodeID: asahi.NodeID, Host: asahi.Hostname,
-		Store: volumes, Units: &fake.Units{}, System: system,
-	})
+		Store: volumes, Units: units, System: system,
+	}
+	for _, w := range with {
+		w(&ecfg)
+	}
+	eng, err := worker.NewEngine(t.Context(), ecfg)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -177,7 +183,7 @@ func newCluster(t *testing.T) *cluster {
 		Workers:    tn.Client(ubu1.Peer),
 		WorkerAddr: func(string) string { return strings.TrimPrefix(workerSrv.URL, "http://") },
 	}
-	c := &cluster{t: t, id: init.ClusterID, engine: eng, clock: clk, store: volumes, system: system, serverCfg: serverCfg, workerSrv: workerSrv}
+	c := &cluster{t: t, id: init.ClusterID, engine: eng, clock: clk, store: volumes, units: units, system: system, serverCfg: serverCfg, workerSrv: workerSrv}
 	c.restart()
 	c.ctrl = &switchboard{next: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { (*c.handler.Load()).ServeHTTP(w, r) })}
 	ctrlSrv := httptest.NewServer(c.ctrl)

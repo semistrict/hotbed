@@ -103,6 +103,9 @@ message Resources {
   string kernel = 5;
   // What the machine is, as a person would say it: "MacBook Pro (14-inch, M3 Pro, Nov 2023)".
   string machine = 6;
+  // The CPUs a measurement has to itself (a cpulist, 4-7,12-15); empty on a
+  // node that takes no measurements.
+  string bench_cpus = 7;
 }
 
 message NodeUsage {
@@ -520,8 +523,10 @@ message Command {
   // Stops when no client has followed its output for a while.
   bool attached = 21;
   string session_id = 22;
-  // Set by the controller: where clients call the command's worker. (Not
-  // 23: branch bench-mode, already deployed, has bench there.)
+  // A measurement: it runs alone on the node's measurement CPUs, isolated,
+  // never swapped or parked.
+  bool bench = 23;
+  // Set by the controller: where clients call the command's worker.
   string node_addr = 24;
 }
 
@@ -547,6 +552,7 @@ message FinishedCommand {
   int64 peak_memory_bytes = 17;
   int32 parks = 18;
   string session_id = 19;
+  bool bench = 20;
   // Why it failed or was cancelled, as the command's reason says.
   string reason = 21;
 }
@@ -564,6 +570,10 @@ message RunCommandRequest {
   // Set by the controller when it forwards the call to a worker; a worker
   // called directly picks one when it is empty.
   string id = 8;
+  // Run it as a measurement: alone among measurements on the node, once
+  // running work leaves it room, on CPUs no other command uses, isolated
+  // for its whole run, never swapped or parked.
+  bool bench = 9;
 }
 
 message GetCommandRequest {
@@ -779,8 +789,9 @@ message WorkspaceChange {
 }
 
 message CommandChange {
-  // queued, waiting (why it is not admitted changed), admitted, parked,
-  // thawed, exited, cancelled, or forgotten (deleted a while after it ended).
+  // queued, waiting (the kind of wait changed), admitted, parked, thawed,
+  // isolation lost (a measurement's), exited, cancelled, or forgotten
+  // (deleted a while after it ended).
   string what = 1;
   Command command = 2;
   string detail = 3;

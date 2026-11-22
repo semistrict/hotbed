@@ -7,6 +7,8 @@ import (
 	"testing"
 
 	"github.com/google/go-cmp/cmp"
+
+	"github.com/semistrict/hotbed/internal/bench"
 )
 
 func TestCommitThenLoad(t *testing.T) {
@@ -85,5 +87,23 @@ func TestCommitNeedsExactlyOneRole(t *testing.T) {
 func TestLoadUninitialized(t *testing.T) {
 	if _, err := Load(t.TempDir()); !errors.Is(err, ErrNotInitialized) {
 		t.Errorf("Load = %v, want ErrNotInitialized", err)
+	}
+}
+
+// A host's setup step writes a worker's measurements into its config, as
+// JSON in this form.
+func TestLoadBench(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "hotbed.json"), []byte(`{"worker": {"clusterId": "c1", "controller": "ubu1:7120",
+		"bench": {"cpus": "4-7,12-15", "l3": "fff0", "workL3": "000f", "workMB": 40, "capClocks": true, "disk": "/mnt/fxdax-scratch"}}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	got, err := Load(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := &bench.Config{CPUs: "4-7,12-15", L3: "fff0", WorkL3: "000f", WorkMB: 40, CapClocks: true, Disk: "/mnt/fxdax-scratch"}
+	if diff := cmp.Diff(want, got.Worker.Bench); diff != "" {
+		t.Errorf("bench (-want +got):\n%s", diff)
 	}
 }

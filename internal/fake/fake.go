@@ -17,7 +17,9 @@ import (
 	"strings"
 	"sync"
 	"syscall"
+	"time"
 
+	"github.com/semistrict/hotbed/internal/bench"
 	pb "github.com/semistrict/hotbed/internal/gen/hotbed/v1"
 	"github.com/semistrict/hotbed/internal/storage"
 	"github.com/semistrict/hotbed/internal/sysinfo"
@@ -116,22 +118,40 @@ func copyTree(src, dst string) error {
 type Units struct {
 	mu    sync.Mutex
 	units map[string]*proc
+	specs map[string]unit.Spec
+	cores float64
+}
+
+// SetCores has every command report keeping this many CPUs busy.
+func (u *Units) SetCores(cores float64) {
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	u.cores = cores
+}
+
+// Spec is what the unit name was started with, after it ended too.
+func (u *Units) Spec(name string) (unit.Spec, bool) {
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	s, ok := u.specs[name]
+	return s, ok
 }
 
 type proc struct {
-	cmd    *exec.Cmd
-	exited chan struct{} // closed once done
-	done   bool
-	code   int
-	signal int
-	frozen bool
+	cmd     *exec.Cmd
+	started time.Time
+	exited  chan struct{} // closed once done
+	done    bool
+	code    int
+	signal  int
+	frozen  bool
 }
 
 func (u *Units) Start(_ context.Context, s unit.Spec) error {
 	u.mu.Lock()
 	defer u.mu.Unlock()
 	if u.units == nil {
-		u.units = map[string]*proc{}
+		u.units, u.specs = map[string]*proc{}, map[string]unit.Spec{}
 	}
 	if _, dup := u.units[s.Name]; dup {
 		return fmt.Errorf("unit %s exists", s.Name)
@@ -182,8 +202,9 @@ func (u *Units) Start(_ context.Context, s unit.Spec) error {
 		log.Close()
 		return err
 	}
-	p := &proc{cmd: cmd, exited: make(chan struct{})}
+	p := &proc{cmd: cmd, started: time.Now(), exited: make(chan struct{})}
 	u.units[s.Name] = p
+	u.specs[s.Name] = s
 	go func() {
 		err := cmd.Wait()
 		log.Close()
@@ -214,6 +235,7 @@ func (u *Units) Status(_ context.Context, name string) (unit.State, error) {
 		Loaded: true, Running: !p.done, Exited: p.done, Frozen: p.frozen,
 		ExitCode: p.code, Signal: p.signal, PID: p.cmd.Process.Pid,
 		Cgroup: "/hotbed.slice/" + name + ".service", Memory: 64 << 20,
+		CPUNanos: uint64(u.cores * float64(time.Since(p.started))),
 	}, nil
 }
 
@@ -251,7 +273,7 @@ func (u *Units) Thaw(_ context.Context, name string) error {
 }
 
 // Wait returns once the unit's process has exited.
-func (u *Units) Wait(ctx context.Context, name string) error {
+func (u *Units) Wait(ctx context.Context, _, name string) error {
 	u.mu.Lock()
 	p, ok := u.units[name]
 	u.mu.Unlock()
@@ -336,4 +358,95 @@ func (s *System) SetUsed(used int64) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.Mem.Available = s.Mem.Total - used
+}
+
+// Isolation stands in for a node's measurement isolation: it records what
+// the engine asks of it, and loses its hold when a test says so.
+type Isolation struct {
+	cpus bench.CPUs
+	work int
+
+	mu        sync.Mutex
+	active    bool
+	ons, offs int
+	lost      error
+	offErr    error
+}
+
+// NewIsolation isolates cpus (a cpulist), leaving work CPUs to the rest.
+func NewIsolation(cpus string, work int) *Isolation {
+	cs, err := bench.ParseCPUs(cpus)
+	if err != nil {
+		panic(err)
+	}
+	return &Isolation{cpus: cs, work: work}
+}
+
+func (f *Isolation) Slice() string            { return "hotbed_bench.slice" }
+func (f *Isolation) CPUs() bench.CPUs         { return f.cpus }
+func (f *Isolation) Count() (bench, work int) { return len(f.cpus), f.work }
+
+func (f *Isolation) Active() bool {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.active
+}
+
+func (f *Isolation) On(context.Context) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.active = true
+	f.ons++
+	return nil
+}
+
+func (f *Isolation) Off(context.Context) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.offs++
+	if f.offErr != nil {
+		return f.offErr
+	}
+	f.active = false
+	return nil
+}
+
+// SetOffErr has Off fail with err, leaving the node isolated.
+func (f *Isolation) SetOffErr(err error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.offErr = err
+}
+
+func (f *Isolation) Held() error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.lost
+}
+
+// SetLost has Held report err from now on.
+func (f *Isolation) SetLost(err error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.lost = err
+}
+
+// SetActive leaves the node isolated, as a worker that stopped would.
+func (f *Isolation) SetActive(active bool) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.active = active
+}
+
+// Ons and Offs count the times the node was isolated and given back.
+func (f *Isolation) Ons() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.ons
+}
+
+func (f *Isolation) Offs() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.offs
 }

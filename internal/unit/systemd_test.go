@@ -2,7 +2,7 @@
 
 // Run as root on a systemd machine:
 //
-//	sudo HOTBED_TEST_USER=$USER go test -tags systemdtest ./internal/unit/
+//	sudo HOTBED_TEST_USER=$USER HOTBED_TEST_DISK=/mnt/fxdax-scratch go test -tags systemdtest ./internal/unit/
 package unit
 
 import (
@@ -244,5 +244,59 @@ func TestUnitOutlivesADaemonReload(t *testing.T) {
 	}
 	if b, _ := os.ReadFile(log); string(b) != "after\n" {
 		t.Errorf("log %q", b)
+	}
+}
+
+// A measurement's unit never swaps: memory.swap.max 0.
+func TestNoSwapUnit(t *testing.T) {
+	n := name(t)
+	log := filepath.Join(t.TempDir(), "out.log")
+	if err := Start(t.Context(), Spec{Name: n, Argv: []string{"sh", "-c", `cat "/sys/fs/cgroup$(sed -n 's/^0:://p' /proc/self/cgroup)/memory.swap.max"`}, User: testUser(t), Log: log, NoSwap: true}); err != nil {
+		t.Fatal(err)
+	}
+	waitExit(t, n)
+	if b, _ := os.ReadFile(log); string(b) != "0\n" {
+		t.Errorf("a NoSwap unit's memory.swap.max = %q, want 0", b)
+	}
+}
+
+// StartSlice starts a slice that has no unit file, and SetProperties sets,
+// then resets, its properties.
+func TestStartSliceAndSetProperties(t *testing.T) {
+	const slice = "hotbedtest-props.slice"
+	t.Cleanup(func() {
+		// Stopped, and what set-property left of it removed: the host as it was.
+		for _, args := range [][]string{{"stop", slice, "hotbedtest.slice"}, {"revert", slice}} {
+			if out, err := exec.Command("systemctl", args...).CombinedOutput(); err != nil {
+				t.Errorf("systemctl %v: %v: %s", args, err, out)
+			}
+		}
+	})
+	if err := StartSlice(t.Context(), slice); err != nil {
+		t.Fatal(err)
+	}
+	dir := "/sys/fs/cgroup" + SliceDir(slice)
+	disk := os.Getenv("HOTBED_TEST_DISK")
+	if disk == "" {
+		t.Fatal("set HOTBED_TEST_DISK to a path on a block device, such as a scratch disk's mount")
+	}
+	if err := SetProperties(t.Context(), slice, "AllowedCPUs=0", "IOWriteBandwidthMax="+disk+" 32M"); err != nil {
+		t.Fatal(err)
+	}
+	if b, _ := os.ReadFile(dir + "/cpuset.cpus"); string(b) != "0\n" {
+		t.Errorf("cpuset.cpus = %q, want 0", b)
+	}
+	// systemd's M is 1000², a disk's.
+	if b, _ := os.ReadFile(dir + "/io.max"); !strings.Contains(string(b), " wbps=32000000 ") {
+		t.Errorf("io.max = %q, want 32 MB/s of writes", b)
+	}
+	if err := SetProperties(t.Context(), slice, "AllowedCPUs=", "IOWriteBandwidthMax="); err != nil {
+		t.Fatal(err)
+	}
+	if b, _ := os.ReadFile(dir + "/cpuset.cpus"); strings.TrimSpace(string(b)) != "" {
+		t.Errorf("cpuset.cpus after the reset = %q, want none", b)
+	}
+	if b, _ := os.ReadFile(dir + "/io.max"); strings.Contains(string(b), "wbps=32000000") {
+		t.Errorf("io.max after the reset = %q, want no cap", b)
 	}
 }

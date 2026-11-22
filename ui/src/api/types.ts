@@ -34,6 +34,8 @@ export interface Node {
   /** What admitted commands are guaranteed: the sum of their memory.low. */
   reservedMemoryBytes: number;
   disk: DiskUsage;
+  /** The CPUs a measurement has to itself (a cpulist); "" on a node that takes none. */
+  benchCpus: string;
 }
 
 /** A node's btrfs pool, split by what the blocks belong to. */
@@ -169,12 +171,14 @@ export interface Command {
   reason: string | null;
   /** A dev server's address. */
   url: string | null;
+  /** A measurement (hotbed run --bench): alone on the node's measurement CPUs, isolated, never parked. */
+  bench: boolean;
   timeline: CommandEvent[];
 }
 
 export interface CommandEvent {
   at: string;
-  what: "queued" | "admitted" | "parked" | "thawed" | "exited" | "cancelled";
+  what: "queued" | "admitted" | "parked" | "thawed" | "isolation lost" | "exited" | "cancelled";
   detail: string;
 }
 
@@ -259,6 +263,7 @@ export interface FinishedCommand {
   peakMemoryBytes: number;
   /** Times it was frozen for memory and thawed again. */
   parks: number;
+  bench: boolean;
 }
 
 export type FailureKind = "compile" | "test" | "lint" | "signal" | "exit";

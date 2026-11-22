@@ -299,6 +299,7 @@ export class MockCluster {
       coldSeconds: template.kind === "server" ? null : Math.round(repo.coldBuildSeconds / spec.speed + 0),
       reason: null,
       url: template.kind === "server" ? `http://${spec.hostname}:${5170 + this.rng.int(0, 29)}` : null,
+      bench: false,
       timeline: [{ at: iso(this.now), what: "queued", detail: `by ${w.agent}` }],
     };
     const runLeft = template.kind === "server" ? Infinity : this.rng.range(template.run[0], template.run[1]);
@@ -441,6 +442,7 @@ export class MockCluster {
       of: c.rebuilt?.of ?? null,
       peakMemoryBytes: r.peakMemory,
       parks: r.parks,
+      bench: c.bench,
     };
     this.history.push(record);
     this.bumpHour((h) => {
@@ -687,6 +689,7 @@ export class MockCluster {
       of: repo.units,
       peakMemoryBytes: this.rng.range(template.memoryGiB[0], template.memoryGiB[1]) * GiB,
       parks,
+      bench: false,
     };
   }
 
@@ -746,6 +749,7 @@ export class MockCluster {
       usage: { ...usage },
       reservedMemoryBytes: this.reserved(spec.id),
       disk: { basesBytes: bases, forksExclusiveBytes: forks, otherBytes: other, freeBytes: Math.max(0, spec.diskBytes - bases - forks - other) },
+      benchCpus: spec.benchCpus ?? "",
     };
   }
 

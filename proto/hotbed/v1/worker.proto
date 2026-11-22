@@ -31,4 +31,6 @@ message CommandRecord {
   int64 parked_at = 9;
   int64 peak_memory_bytes = 10;
   string cgroup = 11;
+  // Why a measurement's isolation no longer held, once it didn't.
+  string isolation_lost = 12;
 }

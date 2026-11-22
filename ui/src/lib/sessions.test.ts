@@ -19,7 +19,7 @@ function command(id: string, state: Command["state"], startedAt: string, endedAt
   return {
     id, sessionId: "brave-otter", workspaceId: "ws1", nodeId: "nUbu1", argv: `cargo test ${id}`, kind: "test", state,
     queuedAt: startedAt, startedAt, endedAt, exitCode: null, limits: { cpuWeight: 100, memoryLowBytes: 0, memoryHighBytes: 0 },
-    cpuCores: 0, memoryBytes: 0, swapBytes: 0, rebuilt: null, coldSeconds: null, reason: null, url: null, timeline: [],
+    cpuCores: 0, memoryBytes: 0, swapBytes: 0, rebuilt: null, coldSeconds: null, reason: null, url: null, bench: false, timeline: [],
   };
 }
 
@@ -27,7 +27,7 @@ function finished(id: string, endedAt: string, seconds: number, state: FinishedC
   return {
     id, sessionId: "brave-otter", repoId: "cladefs", nodeId: "nUbu1", workspaceId: "ws1", agent: "laptop", argv: `cargo build ${id}`,
     kind: "build", state, exitCode: state === "failed" ? 101 : 0, failure: state === "failed" ? "compile" : null,
-    endedAt: Date.parse(endedAt), seconds, coldSeconds: 300, rebuilt: 1, of: 40, peakMemoryBytes: 0, parks: 0,
+    endedAt: Date.parse(endedAt), seconds, coldSeconds: 300, rebuilt: 1, of: 40, peakMemoryBytes: 0, parks: 0, bench: false,
   };
 }
 

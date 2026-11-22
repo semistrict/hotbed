@@ -109,8 +109,10 @@ type CommandRecord struct {
 	ParkedAt        int64  `protobuf:"varint,9,opt,name=parked_at,json=parkedAt,proto3" json:"parked_at,omitempty"`
 	PeakMemoryBytes int64  `protobuf:"varint,10,opt,name=peak_memory_bytes,json=peakMemoryBytes,proto3" json:"peak_memory_bytes,omitempty"`
 	Cgroup          string `protobuf:"bytes,11,opt,name=cgroup,proto3" json:"cgroup,omitempty"`
-	unknownFields   protoimpl.UnknownFields
-	sizeCache       protoimpl.SizeCache
+	// Why a measurement's isolation no longer held, once it didn't.
+	IsolationLost string `protobuf:"bytes,12,opt,name=isolation_lost,json=isolationLost,proto3" json:"isolation_lost,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *CommandRecord) Reset() {
@@ -220,6 +222,13 @@ func (x *CommandRecord) GetCgroup() string {
 	return ""
 }
 
+func (x *CommandRecord) GetIsolationLost() string {
+	if x != nil {
+		return x.IsolationLost
+	}
+	return ""
+}
+
 var File_hotbed_v1_worker_proto protoreflect.FileDescriptor
 
 const file_hotbed_v1_worker_proto_rawDesc = "" +
@@ -229,7 +238,7 @@ const file_hotbed_v1_worker_proto_rawDesc = "" +
 	"\tworkspace\x18\x01 \x01(\v2\x14.hotbed.v1.WorkspaceR\tworkspace\x12\x16\n" +
 	"\x06volume\x18\x02 \x01(\tR\x06volume\x12#\n" +
 	"\rbase_snapshot\x18\x03 \x01(\tR\fbaseSnapshot\x12\x12\n" +
-	"\x04note\x18\x04 \x01(\tR\x04note\"\xb8\x02\n" +
+	"\x04note\x18\x04 \x01(\tR\x04note\"\xdf\x02\n" +
 	"\rCommandRecord\x12,\n" +
 	"\acommand\x18\x01 \x01(\v2\x12.hotbed.v1.CommandR\acommand\x12\x17\n" +
 	"\arepo_id\x18\x02 \x01(\tR\x06repoId\x12\x14\n" +
@@ -242,7 +251,8 @@ const file_hotbed_v1_worker_proto_rawDesc = "" +
 	"\tparked_at\x18\t \x01(\x03R\bparkedAt\x12*\n" +
 	"\x11peak_memory_bytes\x18\n" +
 	" \x01(\x03R\x0fpeakMemoryBytes\x12\x16\n" +
-	"\x06cgroup\x18\v \x01(\tR\x06cgroupB>Z<github.com/semistrict/hotbed/internal/gen/hotbed/v1;hotbedv1b\x06proto3"
+	"\x06cgroup\x18\v \x01(\tR\x06cgroup\x12%\n" +
+	"\x0eisolation_lost\x18\f \x01(\tR\risolationLostB>Z<github.com/semistrict/hotbed/internal/gen/hotbed/v1;hotbedv1b\x06proto3"
 
 var (
 	file_hotbed_v1_worker_proto_rawDescOnce sync.Once

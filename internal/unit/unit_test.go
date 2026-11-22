@@ -79,3 +79,42 @@ func TestDescriptionIsOneShortLine(t *testing.T) {
 		t.Errorf("a long command's description has %d runes: %q", n, long)
 	}
 }
+
+// A measurement's unit never swaps: past its memory it is killed, not
+// pushed to a swap that is everyone's.
+func TestNoSwap(t *testing.T) {
+	has := func(args []string, a string) bool {
+		for _, x := range args {
+			if x == a {
+				return true
+			}
+		}
+		return false
+	}
+	args := startArgs(Spec{Name: "hotbed-c-1", Argv: []string{"true"}, Log: "/l"})
+	if !has(args, "--property=MemorySwapMax=infinity") || has(args, "--property=MemorySwapMax=0") {
+		t.Errorf("a command's unit may swap: %q", args)
+	}
+	args = startArgs(Spec{Name: "hotbed-c-1", Argv: []string{"true"}, Log: "/l", NoSwap: true})
+	if has(args, "--property=MemorySwapMax=infinity") || !has(args, "--property=MemorySwapMax=0") {
+		t.Errorf("a NoSwap unit has %q, want MemorySwapMax=0 alone", args)
+	}
+}
+
+// systemctl show prints a list property once per entry, and an empty one
+// not at all.
+func TestParseProperties(t *testing.T) {
+	got := parseProperties("IOReadBandwidthMax=/mnt/fxdax-scratch 64000000\nIOReadBandwidthMax=/dev/sda 10000000\nIOWriteIOPSMax=/dev/sda 1000\n")
+	want := map[string][]string{
+		"IOReadBandwidthMax": {"/mnt/fxdax-scratch 64000000", "/dev/sda 10000000"},
+		"IOWriteIOPSMax":     {"/dev/sda 1000"},
+	}
+	if len(got) != len(want) {
+		t.Fatalf("parseProperties = %q, want %q", got, want)
+	}
+	for k, v := range want {
+		if strings.Join(got[k], "|") != strings.Join(v, "|") {
+			t.Errorf("%s = %q, want %q", k, got[k], v)
+		}
+	}
+}

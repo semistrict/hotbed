@@ -214,8 +214,8 @@ func lookupUser(name string) (*syscall.Credential, string, error) {
 	return &syscall.Credential{Uid: uint32(uid), Gid: uint32(gid)}, u.HomeDir, nil
 }
 
-// Systemd runs commands as systemd units in a slice.
-type Systemd struct{ Slice string }
+// Systemd runs commands as systemd units.
+type Systemd struct{}
 
 func (Systemd) Start(ctx context.Context, s unit.Spec) error { return unit.Start(ctx, s) }
 func (Systemd) Status(ctx context.Context, name string) (unit.State, error) {
@@ -226,8 +226,17 @@ func (Systemd) Thaw(ctx context.Context, name string) error   { return unit.Thaw
 func (Systemd) Reclaim(cgroup string, n int64) error          { return unit.Reclaim(cgroup, n) }
 func (Systemd) Swap(cgroup string) (int64, error)             { return unit.Swap(cgroup) }
 func (Systemd) Stop(ctx context.Context, name string) error   { return unit.Stop(ctx, name) }
-func (s Systemd) Wait(ctx context.Context, name string) error {
-	return unit.Wait(ctx, cmp.Or(s.Slice, unit.DefaultSlice), name)
+func (Systemd) Wait(ctx context.Context, slice, name string) error {
+	return unit.Wait(ctx, cmp.Or(slice, unit.DefaultSlice), name)
+}
+func (Systemd) StartSlice(ctx context.Context, slice string) error {
+	return unit.StartSlice(ctx, slice)
+}
+func (Systemd) SetProperties(ctx context.Context, name string, props ...string) error {
+	return unit.SetProperties(ctx, name, props...)
+}
+func (Systemd) Show(ctx context.Context, name string, props ...string) (map[string][]string, error) {
+	return unit.Show(ctx, name, props...)
 }
 
 // Linux measures the node from /proc.

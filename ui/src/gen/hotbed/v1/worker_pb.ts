@@ -15,7 +15,7 @@ import type { Message } from "@bufbuild/protobuf";
  * Describes the file hotbed/v1/worker.proto.
  */
 export const file_hotbed_v1_worker: GenFile = /*@__PURE__*/
-  fileDesc("ChZob3RiZWQvdjEvd29ya2VyLnByb3RvEglob3RiZWQudjEibwoPV29ya3NwYWNlUmVjb3JkEicKCXdvcmtzcGFjZRgBIAEoCzIULmhvdGJlZC52MS5Xb3Jrc3BhY2USDgoGdm9sdW1lGAIgASgJEhUKDWJhc2Vfc25hcHNob3QYAyABKAkSDAoEbm90ZRgEIAEoCSLcAQoNQ29tbWFuZFJlY29yZBIjCgdjb21tYW5kGAEgASgLMhIuaG90YmVkLnYxLkNvbW1hbmQSDwoHcmVwb19pZBgCIAEoCRINCgVhZ2VudBgDIAEoCRIOCgZ2b2x1bWUYBCABKAkSCwoDZGlyGAUgASgJEgsKA2VudhgGIAMoCRIPCgdiYXNlX2lkGAcgASgJEg0KBXBhcmtzGAggASgFEhEKCXBhcmtlZF9hdBgJIAEoAxIZChFwZWFrX21lbW9yeV9ieXRlcxgKIAEoAxIOCgZjZ3JvdXAYCyABKAlCPlo8Z2l0aHViLmNvbS9zZW1pc3RyaWN0L2hvdGJlZC9pbnRlcm5hbC9nZW4vaG90YmVkL3YxO2hvdGJlZHYxYgZwcm90bzM", [file_hotbed_v1_hotbed]);
+  fileDesc("ChZob3RiZWQvdjEvd29ya2VyLnByb3RvEglob3RiZWQudjEibwoPV29ya3NwYWNlUmVjb3JkEicKCXdvcmtzcGFjZRgBIAEoCzIULmhvdGJlZC52MS5Xb3Jrc3BhY2USDgoGdm9sdW1lGAIgASgJEhUKDWJhc2Vfc25hcHNob3QYAyABKAkSDAoEbm90ZRgEIAEoCSL0AQoNQ29tbWFuZFJlY29yZBIjCgdjb21tYW5kGAEgASgLMhIuaG90YmVkLnYxLkNvbW1hbmQSDwoHcmVwb19pZBgCIAEoCRINCgVhZ2VudBgDIAEoCRIOCgZ2b2x1bWUYBCABKAkSCwoDZGlyGAUgASgJEgsKA2VudhgGIAMoCRIPCgdiYXNlX2lkGAcgASgJEg0KBXBhcmtzGAggASgFEhEKCXBhcmtlZF9hdBgJIAEoAxIZChFwZWFrX21lbW9yeV9ieXRlcxgKIAEoAxIOCgZjZ3JvdXAYCyABKAkSFgoOaXNvbGF0aW9uX2xvc3QYDCABKAlCPlo8Z2l0aHViLmNvbS9zZW1pc3RyaWN0L2hvdGJlZC9pbnRlcm5hbC9nZW4vaG90YmVkL3YxO2hvdGJlZHYxYgZwcm90bzM", [file_hotbed_v1_hotbed]);
 
 /**
  * @generated from message hotbed.v1.WorkspaceRecord
@@ -114,6 +114,13 @@ export type CommandRecord = Message<"hotbed.v1.CommandRecord"> & {
    * @generated from field: string cgroup = 11;
    */
   cgroup: string;
+
+  /**
+   * Why a measurement's isolation no longer held, once it didn't.
+   *
+   * @generated from field: string isolation_lost = 12;
+   */
+  isolationLost: string;
 };
 
 /**

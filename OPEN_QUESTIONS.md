@@ -12,13 +12,3 @@ commands that end during it, and old workers would drop out until upgraded.
 Undoing it, once every worker pushes events: delete `Server.Report`, `Store.Ingest`, the worker's
 `legacyReport`/`drain`/outbox table, and the `report` copy in migration 3; reserve the proto
 fields.
-
-# Open questions
-
-## May event-stream land on main and be pushed, then deployed?
-
-The brief said to commit on the branch and not push; AGENTS.md says to land on main and push.
-Deploying the branch without landing it would raise the controller's schema to 3, and the next
-deploy of main (schema 2) would crash-loop the controller until the branch is deployed again.
-bench-mode is deployed from its own branch the same way. Until main has both, a deploy of either
-takes the other's features off the fleet.
