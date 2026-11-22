@@ -120,3 +120,5 @@ fields.
   controller, which keeps the session's account of its workspaces, not straight to the worker.
 
 # Open questions
+
+Open questions live in hotbed (`hotbed question ls -p hotbed` / `hotbed question add`). This file records `# Decisions` made without waiting on the user.
