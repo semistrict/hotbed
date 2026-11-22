@@ -2,12 +2,10 @@ package main
 
 import (
 	"bytes"
-	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
-	"net/http/httptest"
 	"net/netip"
 	"os"
 	"os/exec"
@@ -16,7 +14,6 @@ import (
 	"slices"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"testing"
 	"time"
 
@@ -24,48 +21,14 @@ import (
 	"google.golang.org/protobuf/proto"
 
 	"github.com/semistrict/hotbed/internal/api"
-	"github.com/semistrict/hotbed/internal/controller"
-	"github.com/semistrict/hotbed/internal/fake"
 	pb "github.com/semistrict/hotbed/internal/gen/hotbed/v1"
-	"github.com/semistrict/hotbed/internal/gen/hotbed/v1/hotbedv1connect"
 	"github.com/semistrict/hotbed/internal/httpx"
-	"github.com/semistrict/hotbed/internal/statedir"
 	"github.com/semistrict/hotbed/internal/tailnet"
 	"github.com/semistrict/hotbed/internal/tailnet/tailnettest"
 	"github.com/semistrict/hotbed/internal/worker"
 )
 
 var asahi = tailnet.Peer{NodeID: "nAsahi", Hostname: "asahimbp", Login: "ramon@"}
-
-// cluster is a controller and one worker in this process: the real
-// controller, engine and CLI over Connect, with fakes only where Linux and
-// root would be needed (volumes are copied, commands are local processes).
-type cluster struct {
-	t         *testing.T
-	id        string
-	server    *controller.Server
-	engine    *worker.Engine
-	asWorker  hotbedv1connect.ClusterServiceClient
-	cli       deps
-	clock     *clock
-	store     *fake.Store // the worker's volumes
-	units     *fake.Units
-	ctrlSrv   *httptest.Server
-	ctrl      *switchboard // in front of the controller; tests take it down
-	workerSrv *httptest.Server
-	system    *fake.System // the worker's memory, which tests set
-	// restart swaps in a new controller on the same database.
-	serverCfg controller.ServerConfig
-	handler   atomic.Pointer[http.Handler]
-}
-
-// restart replaces the controller with a new one on the same database, as a
-// deploy does: whatever it knows must come from there.
-func (c *cluster) restart() {
-	c.server = controller.NewServer(c.serverCfg)
-	h := c.server.Handler()
-	c.handler.Store(&h)
-}
 
 // switchboard serves the controller, records the calls it gets, and, taken
 // down, answers every call as unavailable, as a proxy in front of an
@@ -143,93 +106,31 @@ func (c *clock) advance(d time.Duration) {
 
 // newCluster starts a cluster; each of with changes the worker's engine
 // config first.
-func newCluster(t *testing.T, with ...func(*worker.EngineConfig)) *cluster {
-	t.Helper()
-	tn := tailnettest.New(ubu1)
-	dir := t.TempDir()
-	init, err := controller.Init(t.Context(), dir, api.DefaultPort, "", tn)
-	if err != nil {
-		t.Fatal(err)
-	}
-	cfg, err := statedir.Load(dir)
-	if err != nil {
-		t.Fatal(err)
-	}
-	store, err := controller.OpenStore(t.Context(), filepath.Join(dir, "hotbed.db"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { store.Close() })
-
-	volumes, units, system := &fake.Store{Root: t.TempDir()}, &fake.Units{}, fake.NewSystem()
-	ecfg := worker.EngineConfig{
-		Dir: filepath.Join(t.TempDir(), "worker"), NodeID: asahi.NodeID, Host: asahi.Hostname,
-		Store: volumes, Units: units, System: system,
-	}
-	for _, w := range with {
-		w(&ecfg)
-	}
-	eng, err := worker.NewEngine(t.Context(), ecfg)
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { eng.Close() })
-	workerSrv := httptest.NewServer(workerHandler(tn, eng))
-	t.Cleanup(workerSrv.Close)
-
-	clk := &clock{}
-	serverCfg := controller.ServerConfig{
-		Store: store, Identifier: tn, Cluster: *cfg.Controller, Controller: "ubu1", Now: clk.Now, Self: loopback,
-		Workers:    tn.Client(ubu1.Peer),
-		WorkerAddr: func(string) string { return strings.TrimPrefix(workerSrv.URL, "http://") },
-	}
-	c := &cluster{t: t, id: init.ClusterID, engine: eng, clock: clk, store: volumes, units: units, system: system, serverCfg: serverCfg, workerSrv: workerSrv}
-	c.restart()
-	c.ctrl = &switchboard{next: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { (*c.handler.Load()).ServeHTTP(w, r) })}
-	ctrlSrv := httptest.NewServer(c.ctrl)
-	t.Cleanup(ctrlSrv.Close)
-	ctrl := strings.TrimPrefix(ctrlSrv.URL, "http://")
-
-	asWorker, _, err := api.Controller(ctrl, tn.Client(asahi))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := asWorker.Join(t.Context(), &pb.JoinRequest{}); err != nil {
-		t.Fatal(err)
-	}
-	ctx, cancel := context.WithCancel(t.Context())
-	done := make(chan struct{})
-	go func() { eng.Run(ctx); close(done) }()
-	go func() { worker.Connect(ctx, eng, asWorker, init.ClusterID) }()
-	t.Cleanup(func() { cancel(); <-done })
-
-	t.Setenv("HOTBED_CONTROLLER", ctrl)
-	c.asWorker, c.ctrlSrv = asWorker, ctrlSrv
-	c.cli = deps{
-		// The CLI runs on the laptop: its tailnet says so, and its calls
-		// come from the laptop.
-		tailnet: tailnettest.New(tailnet.Self{Peer: laptop}),
-		http:    tn.Client(laptop), stream: tn.Client(laptop), cache: t.TempDir(),
-	}
-	return c
-}
 
 // heartbeat sends the worker's heartbeat now, with the sessions clients
 // used on it since the last one.
 func (c *cluster) heartbeat() {
 	c.t.Helper()
-	if err := worker.HeartbeatOnce(c.t.Context(), c.engine, c.asWorker, c.id); err != nil {
+	if err := worker.HeartbeatOnce(c.t.Context(), c.engine(), c.asWorker, c.id); err != nil {
 		c.t.Fatal(err)
 	}
 }
 
-// online waits for the worker to be online by the controller's clock: a
+// online waits for the workers to be online by the controller's clock: a
 // heartbeat since the clock last moved.
 func (c *cluster) online() {
 	c.t.Helper()
-	c.eventually("the worker to be online", func() bool {
+	c.eventually("the workers to be online", func() bool {
 		res, err := c.asWorker.ListNodes(c.t.Context(), &pb.ListNodesRequest{})
-		return err == nil && len(res.Nodes) == 1 && res.Nodes[0].Online
+		if err != nil || len(res.Nodes) != len(c.nodes) {
+			return false
+		}
+		for _, n := range res.Nodes {
+			if !n.Online {
+				return false
+			}
+		}
+		return true
 	})
 }
 
@@ -516,7 +417,7 @@ func TestAbandonedSessionEnds(t *testing.T) {
 		t.Errorf("wait on an abandoned session: %+v", e)
 	}
 	c.eventually("the abandoned session's command to stop", func() bool {
-		cmd, ok := c.engine.Command(srv.Id)
+		cmd, ok := c.engine().Command(srv.Id)
 		return ok && cmd.State == pb.CommandState_COMMAND_STATE_CANCELLED
 	})
 }
@@ -608,7 +509,7 @@ func TestRemovedRepoBasesAreDeleted(t *testing.T) {
 		}
 		return len(snap.Bases) == 0
 	})
-	if _, err := os.Stat(c.store.Path("bases/app/g1")); !errors.Is(err, os.ErrNotExist) {
+	if _, err := os.Stat(c.nodes[0].store.Path("bases/app/g1")); !errors.Is(err, os.ErrNotExist) {
 		t.Errorf("the base's volume is still there: %v", err)
 	}
 }
@@ -868,7 +769,7 @@ func TestAddWatchesAgainWhenTheStreamDrops(t *testing.T) {
 		}
 		return false
 	})
-	c.workerSrv.CloseClientConnections()
+	c.nodes[0].srv.CloseClientConnections()
 	r := <-done
 	ws := &pb.Workspace{}
 	var out output
@@ -935,7 +836,7 @@ func TestParkingNeverStopsAllWork(t *testing.T) {
 		return st[first.Id] == pb.CommandState_COMMAND_STATE_RUNNING && st[second.Id] == pb.CommandState_COMMAND_STATE_RUNNING
 	})
 
-	c.system.SetUsed(c.system.Mem.Total * 95 / 100)
+	c.nodes[0].system.SetUsed(c.nodes[0].system.Mem.Total * 95 / 100)
 	c.eventually("the newest to be parked", func() bool {
 		return c.commandStates("full-yak")[second.Id] == pb.CommandState_COMMAND_STATE_PARKED
 	})

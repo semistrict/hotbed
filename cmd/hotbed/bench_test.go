@@ -107,7 +107,7 @@ func TestBenchRunsIsolated(t *testing.T) {
 	if cmd.State != okState || cmd.Timeline[1].What != "admitted" || cmd.Timeline[1].Detail != "measurement on CPUs 4-7 · low 0.0 GiB · high 0.0 GiB" {
 		t.Errorf("the measurement is %v, timeline %v", cmd.State, cmd.Timeline)
 	}
-	spec, ok := c.units.Spec("hotbed-" + cmd.Id)
+	spec, ok := c.nodes[0].units.Spec("hotbed-" + cmd.Id)
 	if !ok {
 		t.Fatal("no unit was started for the measurement")
 	}
@@ -145,12 +145,12 @@ func TestBenchIsNeverParked(t *testing.T) {
 	c.eventually("the work to run", func() bool { return c.command(w.Id).State == runningState })
 	b := c.detach([]string{"--bench"}, g.until("b")...)
 	c.eventually("the measurement to run", func() bool { return c.command(b.Id).State == runningState })
-	c.system.SetUsed(c.system.Mem.Total / 100 * 97)
+	c.nodes[0].system.SetUsed(c.nodes[0].system.Mem.Total / 100 * 97)
 	c.eventually("the work to be parked", func() bool { return c.command(w.Id).State == parkedState })
 	if got := c.command(b.Id); got.State != runningState {
 		t.Errorf("the measurement is %v: %s", got.State, got.Reason)
 	}
-	c.system.SetUsed(0)
+	c.nodes[0].system.SetUsed(0)
 	g.open(t, "w")
 	g.open(t, "b")
 }
@@ -184,7 +184,7 @@ func TestMeasurementsTakeTurns(t *testing.T) {
 // and work queued after it waits behind it, so that the work ahead drains.
 func TestBenchWaitsForRoomAndHoldsTheLine(t *testing.T) {
 	c, iso := benchCluster(t)
-	c.units.SetCores(6) // each command keeps 6 CPUs busy
+	c.nodes[0].units.SetCores(6) // each command keeps 6 CPUs busy
 	g := newGate(t)
 	w1 := c.detach(nil, g.until("w1")...)
 	c.eventually("the work to run on 6 CPUs", func() bool { return c.command(w1.Id).CpuCores > 5.9 })

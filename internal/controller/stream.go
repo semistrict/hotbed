@@ -502,3 +502,19 @@ func (s *Store) ToRelease(ctx context.Context, nodeID string) ([]string, error) 
 	}
 	return out, rows.Err()
 }
+
+// NodeView is the controller's view of a worker, as a checkpoint at the last
+// event it applied: what a worker's own checkpoint should equal once the
+// controller has caught up.
+func (s *Store) NodeView(ctx context.Context, nodeID string) (*pb.Checkpoint, error) {
+	cp := &pb.Checkpoint{}
+	if err := s.db.QueryRowContext(ctx, `SELECT applied FROM nodes WHERE id = ?`, nodeID).Scan(&cp.Seq); err != nil {
+		return nil, err
+	}
+	v, err := loadView(ctx, s.db, nodeID)
+	if err != nil {
+		return nil, err
+	}
+	cp.Bases, cp.Workspaces, cp.Commands = v.bases, v.workspaces, v.commands
+	return cp, nil
+}

@@ -119,6 +119,13 @@ func (e *Engine) remoteHead(ctx context.Context, r *pb.Repo) (string, error) {
 func (e *Engine) startFreshen(ctx context.Context, r *pb.Repo, gen int32, prev *pb.Base, commit, recipe string) (*pb.Base, error) {
 	cold := true
 	vol := baseVolume(r.Id, gen)
+	// No record names generation gen, but its snapshot and volume may be
+	// there: left by a build that stopped midway, or by a database since
+	// lost. Nothing uses them; they go first.
+	snap := baseSnapshot(r.Id, gen)
+	if err := e.cfg.Store.DestroySnapshot(ctx, snap); err != nil && !errors.Is(err, storage.ErrNotFound) {
+		return nil, fmt.Errorf("clear leftover snapshot %s (workspaces of a lost worker database may still be its clones): %w", snap, err)
+	}
 	if err := e.cfg.Store.Destroy(ctx, vol); err != nil && !errors.Is(err, storage.ErrNotFound) {
 		return nil, fmt.Errorf("clear leftover %s: %w", vol, err)
 	}
