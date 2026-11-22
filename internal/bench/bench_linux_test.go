@@ -254,3 +254,24 @@ func TestOffByAnotherWorker(t *testing.T) {
 		t.Errorf("Off left the host changed:\n%s", diff(before, after))
 	}
 }
+
+// Off and the next On straight after it, as a worker runs them between two measurements: the next
+// saves the host's clocks, not the caps the one before is lifting (cpufreq applies a new limit
+// from a work item, after the write returns), and every Off gives back the host as it was.
+func TestBackToBack(t *testing.T) {
+	cfg := hostConfig(t)
+	testSlices(t)
+	before := hostState(t)
+	iso := realIsolation(t, cfg, filepath.Join(t.TempDir(), "bench"))
+	for n := range 5 {
+		if err := iso.On(t.Context()); err != nil {
+			t.Fatalf("On %d: %v", n, err)
+		}
+		if err := iso.Off(t.Context()); err != nil {
+			t.Fatalf("Off %d: %v", n, err)
+		}
+	}
+	if after := hostState(t); !mapsEqual(before, after) {
+		t.Errorf("Off left the host changed:\n%s", diff(before, after))
+	}
+}

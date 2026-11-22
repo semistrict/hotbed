@@ -1,7 +1,9 @@
 package worker
 
 import (
+	"errors"
 	"testing"
+	"time"
 
 	"github.com/semistrict/hotbed/internal/fake"
 	pb "github.com/semistrict/hotbed/internal/gen/hotbed/v1"
@@ -55,5 +57,26 @@ func TestRestartKeepsARunningMeasurementIsolated(t *testing.T) {
 	e.settleBench(t.Context())
 	if !iso.Active() || iso.Offs() != 0 {
 		t.Errorf("active %v after %d Offs, want kept", iso.Active(), iso.Offs())
+	}
+}
+
+// An Off that fails is tried again a while later, not at every step.
+func TestFailedOffIsRetriedLater(t *testing.T) {
+	iso := fake.NewIsolation("7-10", 7)
+	iso.SetActive(true)
+	iso.SetOffErr(errors.New("cpu0's max clock reads 4001000 after giving back 5263061"))
+	now := time.Unix(1795300000, 0)
+	e := benchEngine(t, iso)
+	e.cfg.Now = func() time.Time { return now }
+	e.settleBench(t.Context())
+	e.settleBench(t.Context())
+	if iso.Offs() != 1 {
+		t.Fatalf("%d Offs right after a failed one, want 1", iso.Offs())
+	}
+	iso.SetOffErr(nil)
+	now = now.Add(offRetryAfter)
+	e.settleBench(t.Context())
+	if iso.Offs() != 2 || iso.Active() {
+		t.Errorf("%d Offs, active %v, %v after a failed one, want given back on the second try", iso.Offs(), iso.Active(), offRetryAfter)
 	}
 }

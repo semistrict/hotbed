@@ -216,6 +216,7 @@ func TestOnAndOffWithCacheBandwidthAndClocks(t *testing.T) {
 	for c := range 16 {
 		cpu := "sys/devices/system/cpu/cpu" + itoa(c)
 		h.write(cpu+"/cpufreq/scaling_max_freq", "4200000\n")
+		h.write(cpu+"/cpufreq/cpuinfo_max_freq", "4200000\n")
 		h.write(cpu+"/cpufreq/related_cpus", itoa(c)+"\n")
 		h.write(cpu+"/acpi_cppc/nominal_freq", "3000\n")
 	}

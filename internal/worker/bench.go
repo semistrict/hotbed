@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"strings"
+	"time"
 
 	"github.com/semistrict/hotbed/internal/bench"
 	pb "github.com/semistrict/hotbed/internal/gen/hotbed/v1"
@@ -25,6 +26,10 @@ import (
 //   - It never swaps, is never parked, and runs at the default nice.
 //   - Its isolation is checked while it runs and as it ends: a measurement
 //     whose isolation was lost fails, whatever its status.
+
+// offRetryAfter is how long a worker waits to try again to give back an
+// isolation it failed to.
+const offRetryAfter = 30 * time.Second
 
 // Isolator isolates a node for its measurements; *bench.Isolation is the
 // real one.
@@ -133,16 +138,19 @@ func (e *Engine) settleBench(ctx context.Context) {
 	e.mu.Lock()
 	m := e.measuring()
 	e.mu.Unlock()
-	if m != nil || !iso.Active() {
+	if m != nil || !iso.Active() || e.now().Before(e.offRetry) {
 		return
 	}
 	if err := iso.Off(ctx); err != nil {
+		// Tried again a while later, not every step: each try asks systemd
+		// too. A measurement meanwhile isolates from what was saved first.
+		e.offRetry = e.now().Add(offRetryAfter)
 		if msg := err.Error(); msg != e.offErr {
 			slog.Error("give back the measurement's isolation", "err", err)
 			e.offErr = msg
 		}
 		return
 	}
-	e.offErr = ""
+	e.offErr, e.offRetry = "", time.Time{}
 	slog.Info("gave back the measurement's isolation")
 }

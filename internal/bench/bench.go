@@ -37,6 +37,7 @@ import (
 	"strconv"
 	"strings"
 	"syscall"
+	"time"
 
 	"github.com/semistrict/hotbed/internal/unit"
 )
@@ -222,18 +223,14 @@ func (i *Isolation) On(ctx context.Context) (err error) {
 	}
 
 	if i.cfg.CapClocks {
+		caps := map[int]string{}
 		for _, c := range i.work {
-			nominal, err := i.read(fmt.Sprintf("/sys/devices/system/cpu/cpu%d/acpi_cppc/nominal_freq", c))
-			if err != nil {
+			if caps[c], err = i.clockCap(c); err != nil {
 				return err
 			}
-			mhz, err := strconv.ParseInt(nominal, 10, 64)
-			if err != nil {
-				return fmt.Errorf("cpu%d's nominal_freq %q: %w", c, nominal, err)
-			}
-			if err := i.write(cpufreq(c, "scaling_max_freq"), strconv.FormatInt(mhz*1000, 10)); err != nil {
-				return err
-			}
+		}
+		if err := i.setClocks(caps); err != nil {
+			return err
 		}
 	}
 
@@ -328,8 +325,8 @@ func (i *Isolation) Off(ctx context.Context) error {
 		// An IRQ gone since, or one that refused to move.
 		_ = i.write(irqAffinity(irq), aff)
 	}
-	for c, freq := range s.MaxFreq {
-		try(i.write(cpufreq(c, "scaling_max_freq"), freq))
+	if len(s.MaxFreq) > 0 {
+		try(i.setClocks(s.MaxFreq))
 	}
 	if len(errs) > 0 {
 		return errors.Join(errs...)
@@ -461,6 +458,53 @@ func (i *Isolation) load() (saved, error) {
 		return s, fmt.Errorf("%s: %w", i.statePath(), err)
 	}
 	return s, nil
+}
+
+// clockCap is what On caps a CPU's clock at, in kHz: its nominal clock.
+func (i *Isolation) clockCap(cpu int) (string, error) {
+	nominal, err := i.read(fmt.Sprintf("/sys/devices/system/cpu/cpu%d/acpi_cppc/nominal_freq", cpu))
+	if err != nil {
+		return "", err
+	}
+	mhz, err := strconv.ParseInt(nominal, 10, 64)
+	if err != nil {
+		return "", fmt.Errorf("cpu%d's nominal_freq %q: %w", cpu, nominal, err)
+	}
+	return strconv.FormatInt(mhz*1000, 10), nil
+}
+
+// clockSettle is how long setClocks waits for the kernel to apply new
+// clock limits.
+const clockSettle = 2 * time.Second
+
+// setClocks sets CPUs' max clocks (kHz) and waits until each reads back as
+// set. cpufreq applies a new limit from a work item after the write
+// returns, and until then reads the old one: an On straight after an Off
+// (a worker between two measurements) would save a cap being lifted as the
+// host's, and keep it for good (seen on ubu1).
+func (i *Isolation) setClocks(khz map[int]string) error {
+	for c, v := range khz {
+		if err := i.write(cpufreq(c, "scaling_max_freq"), v); err != nil {
+			return err
+		}
+	}
+	deadline := time.Now().Add(clockSettle)
+	for c, v := range khz {
+		for {
+			got, err := i.read(cpufreq(c, "scaling_max_freq"))
+			if err != nil {
+				return err
+			}
+			if got == v {
+				break
+			}
+			if time.Now().After(deadline) {
+				return fmt.Errorf("cpu%d's max clock still reads %s %v after setting it to %s", c, got, clockSettle, v)
+			}
+			time.Sleep(5 * time.Millisecond)
+		}
+	}
+	return nil
 }
 
 const (

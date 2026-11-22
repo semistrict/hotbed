@@ -370,6 +370,7 @@ type Isolation struct {
 	active    bool
 	ons, offs int
 	lost      error
+	offErr    error
 }
 
 // NewIsolation isolates cpus (a cpulist), leaving work CPUs to the rest.
@@ -402,9 +403,19 @@ func (f *Isolation) On(context.Context) error {
 func (f *Isolation) Off(context.Context) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	f.active = false
 	f.offs++
+	if f.offErr != nil {
+		return f.offErr
+	}
+	f.active = false
 	return nil
+}
+
+// SetOffErr has Off fail with err, leaving the node isolated.
+func (f *Isolation) SetOffErr(err error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.offErr = err
 }
 
 func (f *Isolation) Held() error {

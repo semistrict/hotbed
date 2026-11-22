@@ -116,6 +116,33 @@ and memory pressure (PSI some avg10) is under 22%, and the disk has room. When m
 newest running command (`systemctl freeze`, then `memory.reclaim` pushes it to swap) and thaws the
 oldest parked one when there is room again. Nothing is killed for memory.
 
+## Measurements
+
+`hotbed run --bench` makes a command a **measurement**: numbers taken from it are comparable with
+earlier ones from the same node, whatever else the node runs. A worker takes measurements when
+its config names its measurement CPUs (`bench` in `hotbed.json`, written by the host's setup
+step; `hotbed nodes` shows them as `benchCpus`). `internal/bench` does the isolating, after
+fxjob-isolate, which did it for fxjob before hotbed replaced it.
+
+- **One at a time.** A measurement waits for the one before it, and for running work to fit in
+  the CPUs it leaves them (the commands' CPU use, measured each second). While it waits for room,
+  work queued after it waits behind it, so the work ahead drains; while it waits for another
+  measurement, work goes on past it.
+- **Isolated for its whole run.** Just before it starts, its slice (beside the commands' slice,
+  in the same parent, so it shares their memory but not their IO caps) becomes a cpuset partition
+  root of the measurement CPUs, handed them through every ancestor's `cpuset.cpus.exclusive`: the
+  kernel takes them from every other cgroup. Unbound workqueues and movable IRQs go to the other
+  CPUs. Where configured, resctrl gives it most of the L3 and the others little memory
+  bandwidth, and the other cores' clocks are capped at nominal, leaving it the power budget. Other
+  commands' IO on the scratch disk is capped.
+- **Nothing in its way.** It never swaps (`MemorySwapMax=0`), is never parked, and runs at nice 0.
+- **Checked.** Its isolation is checked every second and as it ends: a measurement whose
+  partition the kernel invalidated or cut short, or whose workqueues or cache class went, fails.
+- **Given back.** What the isolation changes is saved first under `/run/hotbed/bench` (as long as
+  the kernel's settings last), and restored once no measurement runs: after it ends, or when a
+  restarted worker finds none running. Restored clocks are read back; a failed restore is tried
+  again later.
+
 ## Scheduled commands
 
 Recurring work (a nightly measurement, a soak) is a **scheduled command**: a repo, an optional

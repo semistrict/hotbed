@@ -37,4 +37,23 @@ need to run, and snapshots the result as the next base. So a freshen is incremen
 repo's first base builds from nothing, and that can take a while. `hotbed repo rebuild NAME` makes the next base build from nothing again, for when
 incremental state has gone bad.
 
+## Measurements
+
+A worker takes measurements (`hotbed run --bench`) once its config, `hotbed.json` in its state
+directory, names its measurement CPUs under `worker.bench`; it reads it when it starts:
+
+```json
+"bench": {"cpus": "4-7,12-15", "l3": "fff0", "workL3": "000f", "workMB": 40, "capClocks": true, "disk": "/mnt/scratch"}
+```
+
+- `cpus`: a cpulist the measurement has to itself, a cpuset partition; at least one CPU must be
+  left for everything else.
+- `l3` and `workL3` (both or neither): the measurement's and everyone else's L3 ways, capacity
+  bitmasks for resctrl (Intel CAT, AMD L3 CAT). `workMB`: everyone else's memory bandwidth, in
+  resctrl MBA's units. Leave them out where there is no resctrl (Apple Silicon).
+- `capClocks`: cap the other CPUs at their nominal clock (ACPI CPPC). Refused where a CPU shares
+  its clock with a measurement CPU (a cluster, on Apple Silicon).
+- `disk`: a path on the disk measurements keep their stores on; other commands' IO on it is
+  capped while one runs.
+
 The controller serves a read-only cockpit at `http://CONTROLLER:7120/`.

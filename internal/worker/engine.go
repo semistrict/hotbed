@@ -103,7 +103,8 @@ type Engine struct {
 	diskBytes  int64
 	oomKills   int64
 	resources  *pb.Resources
-	offErr     string // the last failure to give back a measurement's isolation, logged once
+	offErr     string    // the last failure to give back a measurement's isolation, logged once
+	offRetry   time.Time // when to try to give it back again, after a failure
 
 	kick    chan struct{} // something changed: report soon
 	collect chan struct{} // a base may have become garbage: collect soon
