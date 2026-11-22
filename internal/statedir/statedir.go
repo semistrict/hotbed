@@ -52,10 +52,9 @@ type WorkerConfig struct {
 	Slice string `json:"slice,omitempty"`
 	// TmpDir holds each command's TMPDIR; empty for the state directory's tmp.
 	TmpDir string `json:"tmpDir,omitempty"`
-	// Owner is the tailnet login the cluster belongs to, and ControllerNode
-	// its controller's stable node ID: the one node the worker admits.
-	Owner          string `json:"owner,omitempty"`
-	ControllerNode string `json:"controllerNode,omitempty"`
+	// Owner is the tailnet login the cluster belongs to: the worker admits
+	// its machines.
+	Owner string `json:"owner,omitempty"`
 }
 
 func (c Config) validate() error {

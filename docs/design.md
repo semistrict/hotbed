@@ -11,16 +11,71 @@ experience (the read-only cockpit in `ui/`, whose `src/api/types.ts` is the API 
 
 One binary. A node is the controller or a worker; any machine can be a client.
 
-- **Controller** (`hotbed run` on a controller state dir): the cluster's source of truth in SQLite
-  (`hotbed.db`): nodes, repos, bases, workspaces, commands, history, samples. Places workspaces on
-  nodes, serves the API and the UI, and proxies workspace traffic to the worker that holds it.
-- **Worker** (`hotbed run` on a worker state dir, as root): owns its volumes and commands, keeps its
-  own SQLite (`worker.db`) so it picks everything up again after a restart, admits commands, parks
-  them under memory pressure, builds bases, and reports to the controller.
+- **Controller** (`hotbed serve` on a controller state dir): the truth about what spans nodes, in
+  SQLite (`hotbed.db`): repos and their steps, sessions, placement, schedules, history. Places
+  workspaces on nodes, serves the API and the UI, and keeps a view of each worker folded from its
+  events (below). It is not the truth about any worker's own state.
+- **Worker** (`hotbed serve` on a worker state dir, as root): the truth about its own bases,
+  workspaces and commands, in its SQLite (`worker.db`), so it picks everything up again after a
+  restart. Admits commands, parks them under memory pressure, builds bases, and serves clients'
+  calls about its workspaces directly.
 - **Client**: agents and people. Every command prints one JSON envelope.
 
-Auth is the tailnet: every request's caller is looked up with tailscaled's WhoIs and must be owned
-by the cluster's owner. Workers also accept the controller's node.
+Auth is the tailnet: every request's caller is looked up with tailscaled's WhoIs and must be one of
+the owner's machines (not tagged, not shared in from another tailnet). Controller and workers admit
+the same callers; on the machine itself, only root and the configured local user.
+
+The controller may be far from its workers (they go where hardware is cheapest), so nothing
+between them assumes it is near or always there.
+
+## Workers' state: an event stream
+
+Every change to a worker's bases, workspaces and commands is written to `worker.db` together with
+an **event** saying what changed, in one transaction, numbered by a sequence that only grows. An
+event carries the whole entity as it now is (`Event` in `hotbed.proto`: `BaseChange` building, warm,
+stale, failed, dropped, collected; `WorkspaceChange` created, ready, rebased, failed, synced,
+active, idle, released, forgotten; `CommandChange` queued, waiting, admitted, parked, thawed,
+exited, cancelled, forgotten, with the history entry when a command ends), plus a line for the
+cockpit's feed when it is worth one. The records are the events folded.
+
+- **Push.** The worker pushes its events in order (`PushEvents`), as soon as they are written,
+  from after the controller's **applied** offset for it. The controller folds each into its view of
+  the node (`node_state`), the session's timeline, history and the feed, in one transaction with the
+  offset, so an event applies once however often it is sent.
+- **Epochs and checkpoints.** A worker's database has an **epoch**, a random name. A controller
+  that does not know the epoch (it is new, or the worker's database is) asks for a **checkpoint**:
+  the worker's records and the last event they include. The view becomes the checkpoint, and events
+  continue after it. What the old view had and the checkpoint lacks is reported to its sessions as
+  lost (commands cancelled, workspaces failed and released). A worker whose database is an older
+  copy (the controller has applied events it never wrote) starts a new epoch.
+- **Retention.** A worker keeps events the controller applied for a day, for a controller restored
+  from an older copy to catch up from, and never more than 50,000: a controller further behind gets
+  a checkpoint.
+- **Heartbeat.** Live usage (CPU, memory, pressure, disk, each command's CPU and memory, a building
+  base's progress) is lossy: a heartbeat every 5 s, the latest wins. It keeps the node online and
+  names the sessions clients used on the worker since the last one delivered. Its reply is what the
+  worker should host: the repos (with their steps and scratch epoch, so a step change or a rebuild
+  needs no call of its own) and the workspaces of ended sessions to release. It is desired state,
+  not a stream of orders: idempotent, and complete in each reply.
+- **Workers from before** report their whole state (`Report`), which becomes their view; an
+  upgraded worker delivers what its old outbox held once that way, then pushes events. `Report` goes
+  once every worker pushes.
+
+## Talking to workers directly
+
+The controller says where a workspace is (`Workspace.node_addr`, also on commands); the CLI then
+syncs, runs commands, reads their output and stops them on the worker itself, so bundles and logs
+never detour through the controller. `add`, `wait`, `ps` and the cockpit stay on the controller,
+which sees every node. The controller still forwards workspace calls for older clients and the
+cockpit.
+
+- **Sessions.** A worker counts every call about a session's workspace or command as using the
+  session and says so in its next heartbeat, so a session worked on only through its worker stays
+  alive.
+- **Without the controller.** Workers keep running, admitting, parking and building; their events
+  wait. The CLI goes by where this machine last found the session's workspace, so `run`, `sync`,
+  `logs` and `stop` keep working. What pauses: new workspaces (placement), `wait` and `ps`, and
+  session expiry: the controller ends no session with a workspace on a worker it cannot hear from.
 
 ## Storage
 
@@ -128,7 +183,7 @@ come.
   workspace of the repo (so a fork of the newest base, freshened if the branch moved), and runs the
   command in it detached. The cockpit and the CLI see it as any agent's session; `Session.schedule`
   says whose run it is.
-- **Its end.** A worker's report of the command's end settles the run (the next tick does too, so
+- **Its end.** The worker's event of the command's end settles the run (the next tick does too, so
   nothing is lost across a restart). A run that succeeds ends its session. One that fails keeps it
   for the usual idle hour, from its end, for an agent to look inside. The reaper never ends a
   session whose run is in progress: no agent is there to touch it.
@@ -136,7 +191,7 @@ come.
   recorded as skipped. A slot the controller first sees more than five minutes late (it was down)
   is recorded as missed; within five minutes (a restart, a deploy) it still runs.
 - **A session that ends under its run** (`hotbed session end`, or a worker gone for good, whose
-  command's end would never be reported) ends the run as cancelled, so the next slot can run.
+  command's end would never arrive) ends the run as cancelled, so the next slot can run.
 - **Restarts.** A schedule's next slot is recorded before its run starts, so a controller that
   stops halfway loses that slot rather than running it twice. A run is recorded before its
   workspace and command; one left with no command is recorded as not started by the next tick.

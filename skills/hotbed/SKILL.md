@@ -76,6 +76,13 @@ deleted. Every hotbed call that names the session counts. While waiting on long 
 `hotbed wait S` in a loop: each call returns within two minutes, with or without events, and keeps
 the session alive.
 
+## When the controller is out of reach
+
+`run`, `sync`, `logs` and `stop` talk to the workspace's machine directly, so they keep working
+on a workspace this machine used before, and the session stays alive while you do. `add`, `wait`
+and `ps` need the controller: retry them on `CONTROLLER_UNREACHABLE`. What happened meanwhile
+reaches `wait` once the controller is back.
+
 ## run
 
 `hotbed run S REPO [flags] -- CMD...`

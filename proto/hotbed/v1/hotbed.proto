@@ -56,9 +56,11 @@ service SessionService {
   rpc WatchSession(WatchSessionRequest) returns (stream WatchSessionResponse);
 }
 
-// Workspaces and the commands in them. The controller serves it to clients
-// and forwards each call to the worker that holds the workspace; workers
-// serve it to the controller.
+// Workspaces and the commands in them. Workers serve it to clients, which
+// call the worker that holds a workspace (Workspace.node_addr) directly. The
+// controller serves it too: it creates workspaces, lists them and their
+// commands from its view of each worker, and forwards the other calls, for
+// older clients and the cockpit.
 service WorkspaceService {
   rpc CreateWorkspace(CreateWorkspaceRequest) returns (Workspace);
   rpc GetWorkspace(GetWorkspaceRequest) returns (Workspace);

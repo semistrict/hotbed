@@ -10,7 +10,7 @@
 | `STEP_FAILED` | `step add`: the script failed in your workspace; it was not saved | Read its output (`hotbed logs S CMD`), fix the script, add it again |
 | `STEP_NOT_IDEMPOTENT` | `step add`: the script worked once but failed when run again; it was not saved | Make it safe to repeat (check before installing, `mkdir -p`, `--force`) and add it again |
 | `SYNC_REFUSED` | The checkout cannot be synced: hidden edits (`skip-worktree`, `assume-unchanged`), a dirty submodule, or a missing base commit | Do what the suggestion says, then sync again |
-| `CONTROLLER_UNREACHABLE` | No answer from the controller (retryable) | Check `tailscale status` and that the controller runs `hotbed serve` |
+| `CONTROLLER_UNREACHABLE` | No answer from the controller, or from the workspace's machine (retryable) | Check `tailscale status` and that the machine runs `hotbed serve`. `run`, `sync`, `logs` and `stop` on a workspace you used before work without the controller |
 | `WORKER_UNREACHABLE` | The node holding the workspace is offline (retryable) | Wait for it, or end the session and start one elsewhere |
 | `NOT_AUTHORIZED` | The caller is not on the tailnet, or another user owns it | Call from one of the cluster owner's machines |
 | `ALREADY_INITIALIZED` | `init` or `join` on a directory that has a node | `hotbed serve DIR`, or another directory |

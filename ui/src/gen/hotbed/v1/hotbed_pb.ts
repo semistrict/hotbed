@@ -4048,9 +4048,11 @@ export const SessionService: GenService<{
   serviceDesc(file_hotbed_v1_hotbed, 1);
 
 /**
- * Workspaces and the commands in them. The controller serves it to clients
- * and forwards each call to the worker that holds the workspace; workers
- * serve it to the controller.
+ * Workspaces and the commands in them. Workers serve it to clients, which
+ * call the worker that holds a workspace (Workspace.node_addr) directly. The
+ * controller serves it too: it creates workspaces, lists them and their
+ * commands from its view of each worker, and forwards the other calls, for
+ * older clients and the cockpit.
  *
  * @generated from service hotbed.v1.WorkspaceService
  */
