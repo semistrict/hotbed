@@ -1,7 +1,7 @@
 import { Link } from "@tanstack/react-router";
 import type { Command, FinishedCommand, Snapshot } from "../api";
 import { nodeName } from "../lib/data";
-import { ago, bytes, duration, speedup } from "../lib/format";
+import { ago, bytes, duration, limit, speedup } from "../lib/format";
 import { Meter } from "./charts/Bars";
 import { CommandInline } from "./CommandBlock";
 import { SessionLink } from "./SessionLink";
@@ -59,14 +59,14 @@ export function LiveCommandTable({ s, commands }: { s: Snapshot; commands: Comma
                 <td className="num px-2 py-2.5 font-mono text-[11px]">{c.state === "running" ? `${c.cpuCores.toFixed(1)} cores` : "—"}</td>
                 <td className="w-40 px-2 py-2.5">
                   {c.state === "queued" ? (
-                    <span className="font-mono text-[11px] text-faint">low {bytes(c.limits.memoryLowBytes)}</span>
+                    <span className="font-mono text-[11px] text-faint">low {limit(c.limits.memoryLowBytes)}</span>
                   ) : (
                     <>
                       <div className="num mb-1 font-mono text-[10.5px] text-muted-foreground">
-                        {bytes(c.memoryBytes)} · {bytes(c.limits.memoryHighBytes)}
+                        {bytes(c.memoryBytes)} · {limit(c.limits.memoryHighBytes)}
                         {c.swapBytes > 0 && <span className="text-frost"> +{bytes(c.swapBytes)} swap</span>}
                       </div>
-                      <Meter value={c.memoryBytes / c.limits.memoryHighBytes} marker={c.limits.memoryLowBytes / c.limits.memoryHighBytes} />
+                      {c.limits.memoryHighBytes > 0 && <Meter value={c.memoryBytes / c.limits.memoryHighBytes} marker={c.limits.memoryLowBytes / c.limits.memoryHighBytes} />}
                     </>
                   )}
                 </td>

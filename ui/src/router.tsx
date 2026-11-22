@@ -24,7 +24,20 @@ const schedules = createRoute({ getParentRoute: () => root, path: "/schedules", 
 const overview = createRoute({ getParentRoute: () => root, path: "/cluster", component: OverviewPage });
 const nodes = createRoute({ getParentRoute: () => root, path: "/nodes", component: NodesPage });
 const node = createRoute({ getParentRoute: () => root, path: "/nodes/$hostname", component: NodePage });
-const workspaces = createRoute({ getParentRoute: () => root, path: "/workspaces", component: WorkspacesPage });
+export interface WorkspacesSearch {
+  repo?: string;
+  q?: string;
+}
+
+const workspaces = createRoute({
+  getParentRoute: () => root,
+  path: "/workspaces",
+  component: WorkspacesPage,
+  validateSearch: (s: Record<string, unknown>): WorkspacesSearch => ({
+    repo: typeof s.repo === "string" ? s.repo : undefined,
+    q: typeof s.q === "string" && s.q !== "" ? s.q : undefined,
+  }),
+});
 const workspace = createRoute({
   getParentRoute: () => root,
   path: "/workspaces/$id",

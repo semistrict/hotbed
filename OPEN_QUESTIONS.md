@@ -1,5 +1,13 @@
 # Decisions
 
+## The workspaces page drops its fork graph (2026-11-21)
+
+Ramon found the per-repo fork graph (bases as squares, forks as sprouts, one lane per node) not
+useful and wanted the workspaces themselves first. The page now leads with the table, filtered by
+repo chips and a search box (`?repo=`, `?q=`), and the "owned storage by repo" chart went with the
+graph. Keeping the graph lower on the page was the alternative. To bring it back, restore
+`ui/src/components/charts/ForkTree.tsx` from git history and render it under the table.
+
 ## Client commands take their controller from worker init, never a flag (2026-11-21)
 
 `--controller` is gone from every client command. They call the controller `hotbed worker init`

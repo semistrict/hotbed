@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { ago, bytes, compact, duration, durationParts, percent, quantile, speedup } from "./format";
+import { ago, bytes, compact, duration, durationParts, limit, percent, quantile, shortSha, speedup } from "./format";
 
 const GiB = 1024 ** 3;
 
@@ -11,6 +11,19 @@ describe("bytes", () => {
     expect(bytes(24 * GiB)).toBe("24 GiB");
     expect(bytes(212.4 * GiB)).toBe("212 GiB");
     expect(bytes(1.9 * 1024 * GiB)).toBe("1.9 TiB");
+  });
+});
+
+describe("limit", () => {
+  it("reads 0 as no limit, not as zero bytes", () => {
+    expect(limit(0)).toBe("none");
+    expect(limit(4 * GiB)).toBe("4 GiB");
+  });
+});
+
+describe("shortSha", () => {
+  it("keeps the first 10 hex digits", () => {
+    expect(shortSha("0082e3d3910223c703c9ab8d0b7f123bd34add2d")).toBe("0082e3d391");
   });
 });
 
