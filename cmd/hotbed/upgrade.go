@@ -51,6 +51,43 @@ func (c *upgradeCmd) Exec(ctx context.Context, d deps) (any, error) {
 	return upgradeResult{Build: b.Number, Upgraded: true, From: d.build}, nil
 }
 
+type adminCmd struct {
+	Upgrade adminUpgradeCmd `cmd:"" help:"Have the controller check CI for a newer build now and restart into it (workers follow within seconds)."`
+}
+
+type adminUpgradeCmd struct {
+	controllerFlag
+}
+
+type adminUpgradeResult struct {
+	Build      int64 `json:"build"`
+	Upgraded   bool  `json:"upgraded"`
+	From       int64 `json:"from,omitempty"`
+	Restarting bool  `json:"restarting"`
+}
+
+func (c *adminUpgradeCmd) Exec(ctx context.Context, d deps) (any, error) {
+	// Downloading every platform's binary from GitHub can exceed the short RPC
+	// timeout on d.http, so call over d.stream.
+	cl, err := c.clients(d.stream)
+	if err != nil {
+		return nil, err
+	}
+	res, err := cl.cluster.UpgradeController(ctx, &pb.UpgradeControllerRequest{})
+	if err != nil {
+		return nil, err
+	}
+	out := adminUpgradeResult{
+		Build:      res.Build,
+		Upgraded:   res.Restarting,
+		Restarting: res.Restarting,
+	}
+	if res.Restarting {
+		out.From = res.From
+	}
+	return out, nil
+}
+
 // install puts the controller's build b over this client's binary, then has
 // the new binary install its skills.
 func install(ctx context.Context, controllerAddr string, d deps, b *pb.Build) error {

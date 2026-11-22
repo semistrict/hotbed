@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"testing"
+	"time"
 
 	"github.com/semistrict/hotbed/internal/update"
 	"github.com/semistrict/hotbed/internal/update/updatetest"
@@ -66,6 +67,55 @@ func TestFollowerReplacesADevBuild(t *testing.T) {
 	f, _ := follower(t, g, 0)
 	if err := f.Check(t.Context()); !errors.Is(err, update.ErrRestart) {
 		t.Fatalf("Check = %v, want a restart", err)
+	}
+}
+
+// An explicit Upgrade wakes a sleeping Run immediately to restart as the new
+// build, without waiting for followEvery.
+func TestFollowerUpgradeWakesRun(t *testing.T) {
+	g := updatetest.NewGitHub(t)
+	g.Publish(8)
+	f, exe := follower(t, g, 8)
+
+	done := make(chan error, 1)
+	go func() { done <- f.Run(t.Context()) }()
+
+	// Wait until Run's initial check has cached build 8 and gone to sleep.
+	deadline := time.Now().Add(5 * time.Second)
+	for !f.Cache.Has(8) {
+		if time.Now().After(deadline) {
+			t.Fatal("Run never finished its initial check")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	// Already on 8: Upgrade does not trigger a restart.
+	b, restarting, err := f.Upgrade(t.Context())
+	if err != nil || b != 8 || restarting {
+		t.Fatalf("Upgrade on latest = (%d, %v, %v), want (8, false, nil)", b, restarting, err)
+	}
+
+	g.Publish(9)
+	b, restarting, err = f.Upgrade(t.Context())
+	if err != nil || b != 9 || !restarting {
+		t.Fatalf("Upgrade after publish = (%d, %v, %v), want (9, true, nil)", b, restarting, err)
+	}
+	// A repeat call while restarting is idempotent.
+	b2, restarting2, err2 := f.Upgrade(t.Context())
+	if err2 != nil || b2 != 9 || !restarting2 {
+		t.Fatalf("repeat Upgrade = (%d, %v, %v), want (9, true, nil)", b2, restarting2, err2)
+	}
+	select {
+	case err := <-done:
+		if !errors.Is(err, update.ErrRestart) {
+			t.Fatalf("Run ended with %v, want update.ErrRestart", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("Run did not wake on Upgrade")
+	}
+	want := "hotbed build 9 for " + runtime.GOOS + "/" + runtime.GOARCH
+	if got, _ := os.ReadFile(exe); string(got) != want {
+		t.Errorf("the controller's binary is %q, want %q", got, want)
 	}
 }
 

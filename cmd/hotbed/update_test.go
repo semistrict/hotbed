@@ -130,6 +130,57 @@ func TestADevControllerHandsOutNoBuild(t *testing.T) {
 	if code != exitError || e.Code != "NOT_FOUND" || e.Message != "the controller runs "+version.String()+", a build it doesn't keep: nothing to upgrade to" {
 		t.Errorf("upgrade from a dev controller: exit %d, %+v", code, e)
 	}
+	// Without updates configured on the controller, admin upgrade says why.
+	code, e = c.fails("admin", "upgrade")
+	if code != exitError || e.Code != "NOT_FOUND" || !strings.Contains(e.Message, "does not follow CI builds") {
+		t.Errorf("admin upgrade without updates configured: exit %d, %+v", code, e)
+	}
+}
+
+func TestAdminUpgradeTriggersControllerRestart(t *testing.T) {
+	g := updatetest.NewGitHub(t)
+	g.Publish(7)
+	cache := update.Cache{Dir: t.TempDir()}
+	ctrlExe := writeExe(t, "controller build 7")
+	f := &controller.Follower{GitHub: g.Client(), Cache: cache, Exe: ctrlExe, Build: 7}
+
+	c := newClusterWith(t, clusterOpts{
+		server: func(s *controller.ServerConfig) {
+			s.Builds, s.Build, s.Follower = &cache, 7, f
+		},
+	})
+
+	runDone := make(chan error, 1)
+	go func() { runDone <- f.Run(t.Context()) }()
+
+	// Already on build 7: admin upgrade reports no restart.
+	var res adminUpgradeResult
+	c.ok(&res, "admin", "upgrade")
+	if res != (adminUpgradeResult{Build: 7, Upgraded: false, Restarting: false}) {
+		t.Fatalf("admin upgrade on latest = %+v", res)
+	}
+
+	// Publish build 8: admin upgrade installs it immediately and wakes Run.
+	g.Publish(8)
+	c.ok(&res, "admin", "upgrade")
+	if res != (adminUpgradeResult{Build: 8, Upgraded: true, From: 7, Restarting: true}) {
+		t.Fatalf("admin upgrade to 8 = %+v", res)
+	}
+	select {
+	case err := <-runDone:
+		if !errors.Is(err, update.ErrRestart) {
+			t.Fatalf("Follower.Run ended with %v, want update.ErrRestart", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("Follower.Run did not restart after admin upgrade")
+	}
+	want := "hotbed build 8 for " + runtime.GOOS + "/" + runtime.GOARCH
+	if got := read(t, ctrlExe); got != want {
+		t.Errorf("controller binary is %q, want %q", got, want)
+	}
+	if !cache.Has(8) {
+		t.Error("controller build cache does not have build 8")
+	}
 }
 
 // A node that installed a new build starts it in its own place (exec), as

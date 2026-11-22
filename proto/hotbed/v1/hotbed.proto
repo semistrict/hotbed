@@ -25,6 +25,9 @@ service ClusterService {
   // GetBuild is the build the controller runs, for a platform: what a node
   // or client on it installs to run the controller's build.
   rpc GetBuild(GetBuildRequest) returns (Build);
+  // UpgradeController checks CI for a newer build immediately, installs it
+  // over the controller, and restarts the controller as it.
+  rpc UpgradeController(UpgradeControllerRequest) returns (UpgradeControllerResponse);
   rpc ListRepos(ListReposRequest) returns (ListReposResponse);
   rpc PutRepo(PutRepoRequest) returns (Repo);
   rpc DeleteRepo(DeleteRepoRequest) returns (DeleteRepoResponse);
@@ -177,6 +180,17 @@ message Build {
 message GetBuildRequest {
   string os = 1;
   string arch = 2;
+}
+
+message UpgradeControllerRequest {}
+
+message UpgradeControllerResponse {
+  // The build the controller runs, or is restarting into.
+  int64 build = 1;
+  // The build the controller was running before (0 for a dev build).
+  int64 from = 2;
+  // True when a new build was installed and the controller is restarting.
+  bool restarting = 3;
 }
 
 // ---- repos and bases --------------------------------------------------

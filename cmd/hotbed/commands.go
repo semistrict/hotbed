@@ -93,6 +93,7 @@ type cli struct {
 	Skills   skillsCmd   `cmd:"" help:"Guides for AI agents, compiled into this binary (list, get, install)."`
 	Version  versionCmd  `cmd:"" help:"Show hotbed's version, OS and architecture."`
 	Upgrade  upgradeCmd  `cmd:"" help:"Install the controller's build over this hotbed (a client on a CI build does it by itself)."`
+	Admin    adminCmd    `cmd:"" help:"Cluster administration (upgrade)."`
 }
 
 // exited is how parse learns that kong finished the run itself, as it does

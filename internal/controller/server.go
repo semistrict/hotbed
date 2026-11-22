@@ -68,6 +68,9 @@ type ServerConfig struct {
 	// themselves. Nil hands out none.
 	Builds *update.Cache
 	Build  int64
+	// Follower checks CI for newer builds when configured; nil disables
+	// controller self-upgrades.
+	Follower *Follower
 }
 
 // Server is the controller's API: the cluster, sessions, and workspaces,
@@ -170,6 +173,22 @@ func (s *Server) GetBuild(_ context.Context, req *pb.GetBuildRequest) (*pb.Build
 	}
 	return nil, api.Errorf(api.CodeNotFound, "the controller runs %s, a build it doesn't keep: nothing to upgrade to", version.String()).
 		WithSuggestion("it moves to CI's newest build within minutes once it follows CI (its config's updates)")
+}
+
+func (s *Server) UpgradeController(ctx context.Context, _ *pb.UpgradeControllerRequest) (*pb.UpgradeControllerResponse, error) {
+	if s.cfg.Follower == nil {
+		return nil, api.Errorf(api.CodeNotFound, "this controller does not follow CI builds: nothing to upgrade from").
+			WithSuggestion("configure updates (repo and tokenFile) in the controller's config")
+	}
+	b, restarting, err := s.cfg.Follower.Upgrade(ctx)
+	if err != nil {
+		return nil, api.Errorf(api.CodeInternal, "upgrade controller: %v", err)
+	}
+	return &pb.UpgradeControllerResponse{
+		Build:      b,
+		From:       s.cfg.Build,
+		Restarting: restarting,
+	}, nil
 }
 
 func (s *Server) now() time.Time { return s.cfg.Now() }

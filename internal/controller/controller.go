@@ -174,7 +174,7 @@ func Listen(ctx context.Context, dir string, cluster statedir.ControllerConfig, 
 	}
 	server := NewServer(ServerConfig{
 		Store: store, Identifier: tn, Cluster: cluster, UI: ui.Handler(), Controller: self.Hostname,
-		Self: self.Addrs, LocalUsers: local, Builds: builds, Build: version.Number(),
+		Self: self.Addrs, LocalUsers: local, Builds: builds, Build: version.Number(), Follower: follow,
 	})
 	c := &Controller{
 		store:  store,

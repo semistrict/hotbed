@@ -50,7 +50,7 @@ func run(ctx context.Context, args []string, d deps) int {
 		writeEnvelope(d.stdout, failure(name, invalidArgs(err)))
 		return exitInvalidArgs
 	}
-	if c, ok := cmd.(interface{ controller() string }); ok && name != "upgrade" {
+	if c, ok := cmd.(interface{ controller() string }); ok && name != "upgrade" && name != "admin upgrade" {
 		var seen atomic.Int64
 		d = watchBuild(d, &seen)
 		defer func() { followController(context.WithoutCancel(ctx), d, c.controller(), seen.Load()) }()
