@@ -69,17 +69,28 @@ func TestExitCodeAndLog(t *testing.T) {
 	}
 }
 
-func TestBindShowsWorkspaceAtFixedPath(t *testing.T) {
-	ws := t.TempDir()
+// workspace makes a workspace holding a marker file, and a mountpoint of its
+// own to bind it at. Never the worker's /work: tidying that away on a live
+// worker would take every running command's workspace (board 6114). Call
+// before name, so the unit is stopped before the mountpoint goes.
+func workspace(t *testing.T) (ws, target string) {
+	ws = t.TempDir()
 	if err := os.Chmod(ws, 0o777); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(filepath.Join(ws, "marker"), []byte("forked\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
+	root := fmt.Sprintf("/run/hotbed-test-%d", time.Now().UnixNano())
+	t.Cleanup(func() { os.RemoveAll(root) })
+	return ws, root + "/work"
+}
+
+func TestBindShowsWorkspaceAtFixedPath(t *testing.T) {
+	ws, target := workspace(t)
 	n := name(t)
 	log := filepath.Join(t.TempDir(), "out.log")
-	err := Start(t.Context(), Spec{Name: n, Argv: []string{"sh", "-c", "pwd; cat marker; whoami"}, User: testUser(t), Dir: "/work/app", Binds: []Bind{{Source: ws, Target: "/work/app"}}, Log: log})
+	err := Start(t.Context(), Spec{Name: n, Argv: []string{"sh", "-c", "pwd; cat marker; whoami"}, User: testUser(t), Dir: target, Binds: []Bind{{Source: ws, Target: target}}, Log: log})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -90,15 +101,39 @@ func TestBindShowsWorkspaceAtFixedPath(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if want := "/work/app\nforked\n" + testUser(t) + "\n"; string(b) != want {
+	if want := target + "\nforked\n" + testUser(t) + "\n"; string(b) != want {
 		t.Errorf("log %q, want %q", b, want)
 	}
-	// systemd leaves an empty mountpoint behind on the host.
-	if entries, err := os.ReadDir("/work/app"); err != nil || len(entries) != 0 {
-		t.Errorf("/work/app outside the command's namespace: %v %v, want an empty directory", entries, err)
+	// On the host, the mountpoint holds only its pin.
+	if entries, err := os.ReadDir(target); err != nil || len(entries) != 1 || entries[0].Name() != PinFile {
+		t.Errorf("%s outside the command's namespace: %v %v, want only %s", target, entries, err, PinFile)
 	}
-	os.Remove("/work/app")
-	os.Remove("/work")
+}
+
+// Removing a directory that is a mountpoint in another namespace detaches
+// the mounts on it there: a running command would keep its working
+// directory but lose its workspace's path. The host cannot remove a pinned
+// mountpoint, so a command reading its workspace by absolute path goes on.
+func TestRunningCommandKeepsItsWorkspaceWhenTheHostTidiesUp(t *testing.T) {
+	ws, target := workspace(t)
+	n := name(t)
+	log := filepath.Join(t.TempDir(), "out.log")
+	err := Start(t.Context(), Spec{Name: n, Argv: []string{"sh", "-c", "sleep 1; cat " + target + "/marker"}, User: testUser(t), Dir: target, Binds: []Bind{{Source: ws, Target: target}}, Log: log})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if s, err := Status(t.Context(), n); err != nil || !s.Running {
+		t.Fatalf("after start: %+v %v", s, err)
+	}
+	if err := os.Remove(target); err == nil {
+		t.Errorf("removed %s under a running command", target)
+	}
+	if s := waitExit(t, n); s.ExitCode != 0 {
+		t.Errorf("state %+v, want exit 0", s)
+	}
+	if b, _ := os.ReadFile(log); string(b) != "forked\n" {
+		t.Errorf("log %q, want the marker read by its absolute path", b)
+	}
 }
 
 func TestFreezeThawStop(t *testing.T) {
