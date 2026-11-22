@@ -105,8 +105,41 @@ func Start(ctx context.Context, s Spec) error {
 	if err := os.MkdirAll(filepath.Dir(s.Log), 0o755); err != nil {
 		return err
 	}
+	for _, b := range s.Binds {
+		if err := pinMountpoint(b.Target); err != nil {
+			return err
+		}
+	}
 	if _, err := run(ctx, "systemd-run", startArgs(s)...); err != nil {
 		return fmt.Errorf("start unit %s: %w", s.Name, err)
+	}
+	return nil
+}
+
+// PinFile is what pinMountpoint leaves in a bind's target on the host.
+const PinFile = "README.hotbed"
+
+// pinMountpoint makes a bind's target on the host a directory that is not
+// empty. On the host it is only the mountpoint systemd binds a command's
+// workspace onto, in the command's own mount namespace. Left empty, anything
+// that tidies it away (a test did: board 6114) would remove it, and the
+// kernel then detaches the binds on it in every namespace: each running
+// command keeps its working directory but loses the path, and absolute paths
+// into its workspace (cargo's out dirs) fail with ENOENT.
+func pinMountpoint(target string) error {
+	if err := os.MkdirAll(target, 0o755); err != nil {
+		return fmt.Errorf("make mountpoint %s: %w", target, err)
+	}
+	pin := filepath.Join(target, PinFile)
+	if _, err := os.Stat(pin); err == nil {
+		return nil
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("pin mountpoint %s: %w", target, err)
+	}
+	const text = "hotbed binds each command's workspace here, in the command's own mount namespace.\n" +
+		"This file keeps the directory from being removed: that would detach the workspace of every running command.\n"
+	if err := os.WriteFile(pin, []byte(text), 0o444); err != nil {
+		return fmt.Errorf("pin mountpoint %s: %w", target, err)
 	}
 	return nil
 }
