@@ -1,5 +1,11 @@
 # Decisions
 
+## Always-on profiling embeds OpenTelemetry eBPF Profiler directly in the Linux worker (2026-11-21)
+
+- **Embedded vs external daemon:** Rather than requiring every worker host to install and manage a separate `otelcol-ebpf-profiler` / Pyroscope stack, the Linux worker embeds `go.opentelemetry.io/ebpf-profiler` directly (`CGO_ENABLED=0`, using its embedded `tracer.ebpf.amd64` / `tracer.ebpf.arm64` objects) at 20 Hz, always on. Processes are attributed to hotbed commands via a `MetaEnricher` reading `/proc/<pid>/cgroup` (`hotbed-<id>.service`) and `HOTBED_COMMAND` env fallback. Native ELF/Go/Rust/C++ frames are symbolized locally via Go's `debug/elf`, `debug/gosym`, and `demangle`, while kernel (`kallsyms`) and interpreted runtimes (Python, V8, JVM, Ruby, PHP, Perl, .NET, BEAM, LuaJIT) are symbolized by the profiler itself.
+- **Storage & retention:** Live profiles accumulate in bounded memory on the worker; on command completion a compact gzip-compressed protobuf snapshot (`CommandProfile`) is saved to `<stateDir>/profiles/<id>.pb.gz` and shipped on `CommandChange.profile` to the controller's `command_profiles` SQLite table (same 30-day retention as `history`), making profiles queryable after commands end or workers go offline.
+- **Alternatives & undoing:** An alternative is exporting OTLP Profiles (`pprofile.Profiles`) to an external OTel Collector + Pyroscope backend. To switch, replace `hotbedReporter` in `internal/profiler/otel_linux.go` with `ebpf-profiler`'s OTLP reporter or add a dual-export consumer alongside the in-memory `Store`.
+
 ## Client commands take their controller from worker init, never a flag (2026-11-21)
 
 `--controller` is gone from every client command. They call the controller `hotbed worker init`

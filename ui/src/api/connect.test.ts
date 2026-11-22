@@ -17,6 +17,7 @@ describe("toSnapshot", () => {
           joinedAt: 1795200000000n,
           resources: { arch: "arm64", cpus: 11, memoryBytes: 19327352832n, machine: "MacBook Pro (14-inch, M3 Pro, Nov 2023)", benchCpus: "7-10" },
           usage: { cpuBusy: 0.25, memoryUsedBytes: 4294967296n },
+          profiler: { active: true, engine: "opentelemetry-ebpf-profiler", sampleHz: 20, totalSamples: 1234n },
         },
       ],
       workspaces: [
@@ -86,6 +87,7 @@ describe("toSnapshot", () => {
     expect(s.nodes[0]).toMatchObject({ hostname: "asahimbp", arch: "arm64", cpus: 11, memoryBytes: 19327352832, lastSeen: "2026-11-20T18:40:00.000Z" });
     expect(s.nodes[0]?.usage.memoryUsedBytes).toBe(4294967296);
     expect(s.nodes[0]?.benchCpus).toBe("7-10");
+    expect(s.nodes[0]?.profiler).toEqual({ active: true, engine: "opentelemetry-ebpf-profiler", sampleHz: 20, totalSamples: 1234, error: "" });
     expect(s.commands.map((c) => [c.id, c.bench])).toEqual([
       ["k3m9x2qa", false],
       ["b3nch000", true],

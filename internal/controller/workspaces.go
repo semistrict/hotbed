@@ -14,6 +14,7 @@ import (
 	pb "github.com/semistrict/hotbed/internal/gen/hotbed/v1"
 	"github.com/semistrict/hotbed/internal/gen/hotbed/v1/hotbedv1connect"
 	"github.com/semistrict/hotbed/internal/httpx"
+	"github.com/semistrict/hotbed/internal/profiler"
 )
 
 // workspaces serves WorkspaceService to clients by forwarding each call to
@@ -417,4 +418,65 @@ func (s *workspaces) GetLogLines(ctx context.Context, req *pb.GetLogLinesRequest
 		return nil, fromWorker(host, err)
 	}
 	return res, nil
+}
+
+func (s *workspaces) InspectCommand(ctx context.Context, req *pb.InspectCommandRequest) (*pb.InspectCommandResponse, error) {
+	c, host, err := s.commandOf(ctx, req.Id)
+	if err != nil {
+		return nil, err
+	}
+	res, err := c.InspectCommand(ctx, req)
+	if err != nil {
+		return nil, fromWorker(host, err)
+	}
+	return res, nil
+}
+
+func (s *workspaces) TraceCommand(ctx context.Context, req *pb.TraceCommandRequest, out hotbedv1connect.WorkspaceServiceTraceCommandServerStream) error {
+	c, host, err := s.commandOf(ctx, req.Id)
+	if err != nil {
+		return err
+	}
+	session, _, err := s.cfg.Store.Command(ctx, req.Id)
+	if err != nil {
+		return err
+	}
+	in, err := c.TraceCommand(ctx, req)
+	if err != nil {
+		return fromWorker(host, err)
+	}
+	defer in.Close()
+	return relay(ctx, s.Server, session, host, in.Receive, out.Send)
+}
+
+func (s *workspaces) GetCommandProfile(ctx context.Context, req *pb.GetCommandProfileRequest) (*pb.CommandProfile, error) {
+	// If the command has already finished and its profile was persisted in the
+	// controller database, query it directly so it remains available even after
+	// the worker forgets the command or goes offline.
+	if stored, ok, err := s.cfg.Store.CommandProfile(ctx, req.Id); err != nil {
+		return nil, err
+	} else if ok {
+		stored.Live = false
+		return profiler.QueryProfile(stored, req), nil
+	}
+	c, host, err := s.commandOf(ctx, req.Id)
+	if err == nil {
+		res, werr := c.GetCommandProfile(ctx, req)
+		if werr == nil {
+			return res, nil
+		}
+		err = fromWorker(host, werr)
+	}
+	// If the command exists in history (ended with zero captured samples, or
+	// profiler was inactive on that worker), return an empty profile instead of 404.
+	if f, ok, ferr := s.cfg.Store.Finished(ctx, req.Id); ferr == nil && ok && f != nil {
+		return &pb.CommandProfile{
+			CommandId:  req.Id,
+			Profiler:   profiler.EngineName,
+			Live:       false,
+			Active:     false,
+			StatusNote: "no continuous eBPF samples were recorded for this command",
+		}, nil
+	}
+	return nil, err
 }

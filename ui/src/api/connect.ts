@@ -4,16 +4,21 @@ import {
   BaseState,
   ClusterService,
   CommandState,
+  InspectSection as PbInspectSection,
   RunOutcome,
+  TraceKind as PbTraceKind,
   WorkspaceService,
   WorkspaceState,
   type Base as PbBase,
   type Command as PbCommand,
+  type CommandProfile as PbCommandProfile,
   type FinishedCommand as PbFinished,
+  type InspectCommandResponse as PbInspectResp,
   type Node as PbNode,
   type ScheduledCommand as PbScheduled,
   type ScheduledRun as PbRun,
   type Snapshot as PbSnapshot,
+  type TraceSummary as PbTraceSummary,
   type Workspace as PbWorkspace,
 } from "../gen/hotbed/v1/hotbed_pb";
 import type {
@@ -21,13 +26,22 @@ import type {
   Base,
   ClusterEvent,
   Command,
+  CommandProfile,
   FailureKind,
   FinishedCommand,
+  InspectCommandResult,
+  InspectSection,
   Node,
+  OpenFile,
+  ProfileQuery,
   ScheduledCommand,
   ScheduledRun,
   Session,
   Snapshot,
+  TraceChunk,
+  TraceKind,
+  TraceOptions,
+  TraceSummary,
   Workspace,
 } from "./types";
 
@@ -57,6 +71,43 @@ export function createConnectApi(baseUrl = window.location.origin): Api {
     file: async (workspaceId, path) => {
       const f = await workspaces.getFile({ workspaceId, path });
       return { path: f.path, text: f.text, changedLines: f.changedLines };
+    },
+    inspectCommand: async (id, opts) => {
+      const sections = (opts?.sections ?? []).map((s) => INSPECT_SECTION_TO_PB[s]);
+      const res = await workspaces.inspectCommand({ id, sections, pid: opts?.pid ?? 0 });
+      return toInspectResult(res);
+    },
+    traceCommand: async (id, opts: TraceOptions, onChunk: (chunk: TraceChunk) => void, signal?: AbortSignal) => {
+      const stream = workspaces.traceCommand(
+        {
+          id,
+          kind: TRACE_KIND_TO_PB[opts.kind],
+          durationSeconds: opts.durationSeconds ?? 5,
+          pid: opts.pid ?? 0,
+          filter: opts.filter ?? "",
+          frequencyHz: opts.frequencyHz ?? 0,
+        },
+        { signal },
+      );
+      let finalSummary: TraceSummary | null = null;
+      for await (const ch of stream) {
+        const summary = ch.summary ? toTraceSummary(ch.summary) : null;
+        if (summary) finalSummary = summary;
+        onChunk({ status: ch.status, text: ch.text, summary, done: ch.done });
+      }
+      return finalSummary;
+    },
+    commandProfile: async (id, query?: ProfileQuery) => {
+      const res = await workspaces.getCommandProfile({
+        id,
+        query: query?.query ?? "",
+        frameType: query?.frameType ?? "",
+        comm: query?.comm ?? "",
+        fromMs: BigInt(query?.fromMs ?? 0),
+        toMs: BigInt(query?.toMs ?? 0),
+        limit: query?.limit ?? 200,
+      });
+      return toCommandProfile(res);
     },
   };
 }
@@ -227,6 +278,15 @@ function toNode(n: PbNode): Node {
       freeBytes: num(d?.freeBytes),
     },
     benchCpus: r?.benchCpus ?? "",
+    profiler: n.profiler
+      ? {
+          active: n.profiler.active,
+          engine: n.profiler.engine,
+          sampleHz: n.profiler.sampleHz,
+          totalSamples: num(n.profiler.totalSamples),
+          error: n.profiler.error,
+        }
+      : null,
   };
 }
 
@@ -358,5 +418,232 @@ function toFinished(f: PbFinished): FinishedCommand {
     peakMemoryBytes: num(f.peakMemoryBytes),
     parks: f.parks,
     bench: f.bench,
+  };
+}
+
+const INSPECT_SECTION_TO_PB: Record<InspectSection, PbInspectSection> = {
+  procs: PbInspectSection.PROCS,
+  files: PbInspectSection.FILES,
+  cgroup: PbInspectSection.CGROUP,
+  kstack: PbInspectSection.KSTACK,
+  maps: PbInspectSection.MAPS,
+  limits: PbInspectSection.LIMITS,
+};
+
+const TRACE_KIND_TO_PB: Record<TraceKind, PbTraceKind> = {
+  strace: PbTraceKind.STRACE,
+  strace_summary: PbTraceKind.STRACE_SUMMARY,
+  perf_cpu: PbTraceKind.PERF_CPU,
+  perf_stat: PbTraceKind.PERF_STAT,
+  stacks: PbTraceKind.STACKS,
+  bpf_execsnoop: PbTraceKind.BPF_EXECSNOOP,
+  bpf_opensnoop: PbTraceKind.BPF_OPENSNOOP,
+  bpf_vfsstat: PbTraceKind.BPF_VFSSTAT,
+  bpf_offcpu: PbTraceKind.BPF_OFFCPU,
+  bpf_net: PbTraceKind.BPF_NET,
+};
+
+const PB_TO_TRACE_KIND: Record<PbTraceKind, TraceKind> = {
+  [PbTraceKind.UNSPECIFIED]: "strace",
+  [PbTraceKind.STRACE]: "strace",
+  [PbTraceKind.STRACE_SUMMARY]: "strace_summary",
+  [PbTraceKind.PERF_CPU]: "perf_cpu",
+  [PbTraceKind.PERF_STAT]: "perf_stat",
+  [PbTraceKind.STACKS]: "stacks",
+  [PbTraceKind.BPF_EXECSNOOP]: "bpf_execsnoop",
+  [PbTraceKind.BPF_OPENSNOOP]: "bpf_opensnoop",
+  [PbTraceKind.BPF_VFSSTAT]: "bpf_vfsstat",
+  [PbTraceKind.BPF_OFFCPU]: "bpf_offcpu",
+  [PbTraceKind.BPF_NET]: "bpf_net",
+};
+
+function toInspectResult(r: PbInspectResp): InspectCommandResult {
+  return {
+    commandId: r.commandId,
+    collectedAt: num(r.collectedAt),
+    cgroup: r.cgroup,
+    unitName: r.unitName,
+    procs: r.procs.map((p) => ({
+      pid: p.pid,
+      ppid: p.ppid,
+      state: p.state,
+      comm: p.comm,
+      cmdline: p.cmdline,
+      threadsCount: p.threadsCount,
+      rssBytes: num(p.rssBytes),
+      vsizeBytes: num(p.vsizeBytes),
+      cpuUserMs: num(p.cpuUserMs),
+      cpuSysMs: num(p.cpuSysMs),
+      ioReadBytes: num(p.ioReadBytes),
+      ioWriteBytes: num(p.ioWriteBytes),
+      wchan: p.wchan,
+      oomScore: p.oomScore,
+      voluntaryCtxtSwitches: num(p.voluntaryCtxtSwitches),
+      nonvoluntaryCtxtSwitches: num(p.nonvoluntaryCtxtSwitches),
+      threads: p.threads.map((t) => ({
+        tid: t.tid,
+        name: t.name,
+        state: t.state,
+        wchan: t.wchan,
+        cpuUserMs: num(t.cpuUserMs),
+        cpuSysMs: num(t.cpuSysMs),
+      })),
+    })),
+    files: r.files.map((f) => ({
+      pid: f.pid,
+      comm: f.comm,
+      fd: f.fd,
+      kind: (f.kind as OpenFile["kind"]) || "other",
+      target: f.target,
+      mode: f.mode,
+      pos: num(f.pos),
+      inode: num(f.inode),
+      socketProto: f.socketProto,
+      socketState: f.socketState,
+      localAddr: f.localAddr,
+      remoteAddr: f.remoteAddr,
+    })),
+    cgroupStats: r.cgroupStats
+      ? {
+          cpuUsageUsec: num(r.cgroupStats.cpuUsageUsec),
+          cpuUserUsec: num(r.cgroupStats.cpuUserUsec),
+          cpuSystemUsec: num(r.cgroupStats.cpuSystemUsec),
+          nrThrottled: num(r.cgroupStats.nrThrottled),
+          throttledUsec: num(r.cgroupStats.throttledUsec),
+          memoryCurrentBytes: num(r.cgroupStats.memoryCurrentBytes),
+          memoryPeakBytes: num(r.cgroupStats.memoryPeakBytes),
+          memoryAnonBytes: num(r.cgroupStats.memoryAnonBytes),
+          memoryFileBytes: num(r.cgroupStats.memoryFileBytes),
+          memoryKernelBytes: num(r.cgroupStats.memoryKernelBytes),
+          memorySlabBytes: num(r.cgroupStats.memorySlabBytes),
+          memorySockBytes: num(r.cgroupStats.memorySockBytes),
+          memoryShmemBytes: num(r.cgroupStats.memoryShmemBytes),
+          memorySwapBytes: num(r.cgroupStats.memorySwapBytes),
+          pgfault: num(r.cgroupStats.pgfault),
+          pgmajfault: num(r.cgroupStats.pgmajfault),
+          pidsCurrent: num(r.cgroupStats.pidsCurrent),
+          pidsPeak: num(r.cgroupStats.pidsPeak),
+          psiCpuSomeAvg10: r.cgroupStats.psiCpuSomeAvg10,
+          psiCpuFullAvg10: r.cgroupStats.psiCpuFullAvg10,
+          psiMemSomeAvg10: r.cgroupStats.psiMemSomeAvg10,
+          psiMemFullAvg10: r.cgroupStats.psiMemFullAvg10,
+          psiIoSomeAvg10: r.cgroupStats.psiIoSomeAvg10,
+          psiIoFullAvg10: r.cgroupStats.psiIoFullAvg10,
+          io: r.cgroupStats.io.map((io) => ({
+            device: io.device,
+            rbytes: num(io.rbytes),
+            wbytes: num(io.wbytes),
+            rios: num(io.rios),
+            wios: num(io.wios),
+          })),
+        }
+      : null,
+    kstacks: r.kstacks.map((k) => ({
+      pid: k.pid,
+      tid: k.tid,
+      comm: k.comm,
+      threadName: k.threadName,
+      state: k.state,
+      wchan: k.wchan,
+      frames: k.frames,
+    })),
+    maps: r.maps.map((m) => ({
+      pid: m.pid,
+      comm: m.comm,
+      rssBytes: num(m.rssBytes),
+      pssBytes: num(m.pssBytes),
+      privateDirtyBytes: num(m.privateDirtyBytes),
+      sharedCleanBytes: num(m.sharedCleanBytes),
+      swapBytes: num(m.swapBytes),
+      anonBytes: num(m.anonBytes),
+      shmemBytes: num(m.shmemBytes),
+      topRegions: m.topRegions.map((reg) => ({
+        perms: reg.perms,
+        path: reg.path,
+        sizeBytes: num(reg.sizeBytes),
+        rssBytes: num(reg.rssBytes),
+        pssBytes: num(reg.pssBytes),
+      })),
+    })),
+    limits: r.limits.map((l) => ({
+      pid: l.pid,
+      comm: l.comm,
+      items: l.items.map((it) => ({ name: it.name, soft: it.soft, hard: it.hard, units: it.units })),
+      capEff: l.capEff,
+      seccomp: l.seccomp,
+      noNewPrivs: l.noNewPrivs,
+    })),
+    availableTools: r.availableTools.map((t) => ({ name: t.name, available: t.available, detail: t.detail })),
+  };
+}
+
+function toTraceSummary(s: PbTraceSummary): TraceSummary {
+  return {
+    kind: PB_TO_TRACE_KIND[s.kind],
+    startedAt: num(s.startedAt),
+    endedAt: num(s.endedAt),
+    durationMs: num(s.durationMs),
+    pidsAttached: s.pidsAttached,
+    commandLine: s.commandLine,
+    stacks: s.stacks.map((st) => ({ stack: st.stack, samples: num(st.samples), leafType: st.leafType, comm: st.comm })),
+    topFunctions: s.topFunctions.map((fn) => ({
+      name: fn.name,
+      module: fn.module,
+      frameType: fn.frameType,
+      sourceFile: fn.sourceFile,
+      sourceLine: fn.sourceLine,
+      selfSamples: num(fn.selfSamples),
+      totalSamples: num(fn.totalSamples),
+      selfPct: fn.selfPct,
+      totalPct: fn.totalPct,
+    })),
+    counters: s.counters.map((c) => ({ name: c.name, value: c.value, unit: c.unit, note: c.note })),
+    syscalls: s.syscalls.map((sc) => ({
+      name: sc.name,
+      pctTime: sc.pctTime,
+      seconds: sc.seconds,
+      usecsPerCall: num(sc.usecsPerCall),
+      calls: num(sc.calls),
+      errors: num(sc.errors),
+    })),
+    raw: s.raw,
+  };
+}
+
+function toCommandProfile(p: PbCommandProfile): CommandProfile {
+  return {
+    commandId: p.commandId,
+    profiler: p.profiler,
+    live: p.live,
+    active: p.active,
+    statusNote: p.statusNote,
+    sampleHz: p.sampleHz,
+    startedAt: num(p.startedAt),
+    updatedAt: num(p.updatedAt),
+    totalSamples: num(p.totalSamples),
+    matchedSamples: num(p.matchedSamples),
+    kernelSamples: num(p.kernelSamples),
+    userSamples: num(p.userSamples),
+    comms: p.comms,
+    frameTypes: p.frameTypes,
+    stacks: p.stacks.map((st) => ({ stack: st.stack, samples: num(st.samples), leafType: st.leafType, comm: st.comm })),
+    topFunctions: p.topFunctions.map((fn) => ({
+      name: fn.name,
+      module: fn.module,
+      frameType: fn.frameType,
+      sourceFile: fn.sourceFile,
+      sourceLine: fn.sourceLine,
+      selfSamples: num(fn.selfSamples),
+      totalSamples: num(fn.totalSamples),
+      selfPct: fn.selfPct,
+      totalPct: fn.totalPct,
+    })),
+    buckets: p.buckets.map((b) => ({
+      t: num(b.t),
+      samples: num(b.samples),
+      kernelSamples: num(b.kernelSamples),
+      userSamples: num(b.userSamples),
+      topFunction: b.topFunction,
+    })),
   };
 }

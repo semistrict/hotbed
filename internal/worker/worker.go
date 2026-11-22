@@ -26,6 +26,8 @@ import (
 	pb "github.com/semistrict/hotbed/internal/gen/hotbed/v1"
 	"github.com/semistrict/hotbed/internal/gen/hotbed/v1/hotbedv1connect"
 	"github.com/semistrict/hotbed/internal/httpx"
+	"github.com/semistrict/hotbed/internal/inspect"
+	"github.com/semistrict/hotbed/internal/profiler"
 	"github.com/semistrict/hotbed/internal/statedir"
 	"github.com/semistrict/hotbed/internal/storage"
 	"github.com/semistrict/hotbed/internal/tailnet"
@@ -166,9 +168,16 @@ func Run(ctx context.Context, dir string, cfg statedir.WorkerConfig, tn Tailnet,
 	if err != nil {
 		return err
 	}
+	prof := profiler.NewOTel(profiler.DefaultSampleHz)
+	if err := prof.Start(ctx); err != nil {
+		slog.Warn("always-on OpenTelemetry eBPF profiler could not start; continuing without continuous profiling", "err", err)
+	}
+	defer prof.Stop()
+
 	ecfg := EngineConfig{
 		Dir: dir, NodeID: self.NodeID, Host: self.Hostname, User: cfg.User,
 		Slice: cfg.Slice, TmpDir: cfg.TmpDir, UnitProperties: cfg.UnitProperties, Store: store,
+		Inspector: inspect.Linux{}, Profiler: prof,
 		Units: Systemd{}, System: &Linux{Slice: cfg.Slice},
 	}
 	// Under /run: what an isolation saves of the host lasts as long as the

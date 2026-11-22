@@ -171,6 +171,11 @@ func applyEvent(ctx context.Context, tx *sql.Tx, nodeID string, ev *pb.Event, ou
 				return err
 			}
 		}
+		if c.Command.Profile != nil {
+			if err := addCommandProfile(ctx, tx, nodeID, cmd.GetEndedAt(), c.Command.Profile); err != nil {
+				return err
+			}
+		}
 		switch c.Command.What {
 		case "admitted", "parked", "thawed", "isolation lost", "exited", "cancelled":
 			return addSessionEvent(ctx, tx, &pb.SessionEvent{

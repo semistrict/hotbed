@@ -6,6 +6,8 @@ import { Meter } from "../components/charts/Bars";
 import { SpeedBars } from "../components/charts/SpeedBars";
 import { CommandBlock } from "../components/CommandBlock";
 import { FAILURE } from "../components/CommandTable";
+import { ContinuousProfilePanel } from "../components/ContinuousProfilePanel";
+import { LiveDiagnosticsPanel } from "../components/LiveDiagnosticsPanel";
 import { Card, StatTile } from "../components/ui/Card";
 import { BenchTag, KindTag, StateBadge } from "../components/ui/State";
 import { nodeName, useSnapshot } from "../lib/data";
@@ -109,6 +111,12 @@ function CommandView({ s, live, done, id }: { s: Snapshot; live: Command | null;
           <SpeedBars rows={[{ id, argv, sub: "this run", seconds: took, coldSeconds: cold, failed: state === "failed" }]} />
         </Card>
       )}
+
+      {/* Opt-in Linux process inspection & active tracing (strace, perf, stacks, eBPF): zero overhead until clicked. */}
+      {live && isLive(live) && <LiveDiagnosticsPanel key={`diag-${id}`} id={id} />}
+
+      {/* Always-on OpenTelemetry eBPF continuous profile: queryable both while running and after exit. */}
+      <ContinuousProfilePanel key={`prof-${id}`} id={id} live={!!live && isLive(live)} />
 
       {/* minmax(0,…) keeps long log lines from widening the column past the page: the log scrolls in its own box. */}
       <div className="grid grid-cols-[minmax(0,1fr)] gap-4 lg:grid-cols-[minmax(0,1fr)_320px]">

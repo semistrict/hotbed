@@ -232,6 +232,23 @@ func (s *Service) GetLogLines(_ context.Context, req *pb.GetLogLinesRequest) (*p
 	return &pb.CommandLog{CommandId: req.Id, Lines: lines}, nil
 }
 
+func (s *Service) InspectCommand(ctx context.Context, req *pb.InspectCommandRequest) (*pb.InspectCommandResponse, error) {
+	s.E.usedCommand(req.Id)
+	return s.E.Inspect(ctx, req)
+}
+
+func (s *Service) TraceCommand(ctx context.Context, req *pb.TraceCommandRequest, stream hotbedv1connect.WorkspaceServiceTraceCommandServerStream) error {
+	s.E.usedCommand(req.Id)
+	return s.E.Trace(ctx, req, func(chunk *pb.TraceCommandChunk) error {
+		return stream.Send(chunk)
+	})
+}
+
+func (s *Service) GetCommandProfile(_ context.Context, req *pb.GetCommandProfileRequest) (*pb.CommandProfile, error) {
+	s.E.usedCommand(req.Id)
+	return s.E.CommandProfile(req)
+}
+
 // tailLines returns the last n lines of a file.
 func tailLines(path string, n int) ([]string, error) {
 	f, err := os.Open(path)

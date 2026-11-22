@@ -92,6 +92,17 @@ service WorkspaceService {
   // the command ends. An attached command stops when no one follows it.
   rpc FollowLog(FollowLogRequest) returns (stream LogChunk);
   rpc GetLogLines(GetLogLinesRequest) returns (CommandLog);
+  // InspectCommand takes an opt-in, non-intrusive Linux snapshot of a live
+  // command's cgroup (processes, open files/sockets, cgroup stats, kernel
+  // stacks, memory maps, limits) and reports which tracing tools exist on the node.
+  rpc InspectCommand(InspectCommandRequest) returns (InspectCommandResponse);
+  // TraceCommand runs an opt-in, time-bounded active Linux trace on a live
+  // command (strace, perf CPU profile, perf stat, thread stack dump, or
+  // curated bpftrace probe) and streams progress and results until complete or cancelled.
+  rpc TraceCommand(TraceCommandRequest) returns (stream TraceCommandChunk);
+  // GetCommandProfile queries the always-on OpenTelemetry eBPF continuous
+  // profile collected for a command (live on the worker, or persisted after end).
+  rpc GetCommandProfile(GetCommandProfileRequest) returns (CommandProfile);
 }
 
 // ErrorInfo rides on every error as a detail: a code programs act on, what
@@ -152,6 +163,19 @@ message Node {
   // What admitted commands are guaranteed: the sum of their memory.low.
   int64 reserved_memory_bytes = 11;
   string storage = 12;
+  // Status of the always-on OpenTelemetry eBPF continuous profiler on this worker.
+  ProfilerStatus profiler = 13;
+}
+
+// Status of a worker's always-on continuous eBPF profiler.
+message ProfilerStatus {
+  bool active = 1;
+  // Engine name, e.g. "opentelemetry-ebpf-profiler".
+  string engine = 2;
+  int32 sample_hz = 3;
+  int64 total_samples = 4;
+  // Non-empty when profiling could not start or is unavailable.
+  string error = 5;
 }
 
 message JoinRequest {}
@@ -854,6 +878,8 @@ message CommandChange {
   string detail = 3;
   // Set when a command (not a freshen) ends: the history entry.
   FinishedCommand finished = 4;
+  // Set when a command ends and continuous eBPF profiling collected samples for it.
+  CommandProfile profile = 5;
 }
 
 // Everything a worker has, as of an event: what the controller starts from
@@ -932,6 +958,8 @@ message HeartbeatRequest {
   // since the last heartbeat, or that a client follows now: calls the
   // controller does not see, which keep a session alive.
   repeated string active_sessions = 12;
+  // Status of the worker's always-on OpenTelemetry eBPF continuous profiler.
+  ProfilerStatus profiler = 13;
 }
 
 message HeartbeatResponse {
@@ -1147,4 +1175,299 @@ message RunScheduleRequest {
 message PauseScheduleRequest {
   string name = 1;
   bool paused = 2;
+}
+
+// ---- process inspection, active tracing & continuous profiling ------------
+
+enum InspectSection {
+  INSPECT_SECTION_UNSPECIFIED = 0;
+  INSPECT_SECTION_PROCS = 1;
+  INSPECT_SECTION_FILES = 2;
+  INSPECT_SECTION_CGROUP = 3;
+  INSPECT_SECTION_KSTACK = 4;
+  INSPECT_SECTION_MAPS = 5;
+  INSPECT_SECTION_LIMITS = 6;
+}
+
+message InspectCommandRequest {
+  string id = 1;
+  // Empty means all sections.
+  repeated InspectSection sections = 2;
+  // Optional: limit detailed sections (files, kstack, maps, limits) to one PID in the command's cgroup.
+  int32 pid = 3;
+}
+
+message ThreadInfo {
+  int32 tid = 1;
+  string name = 2;
+  string state = 3;
+  string wchan = 4;
+  int64 cpu_user_ms = 5;
+  int64 cpu_sys_ms = 6;
+}
+
+message ProcessInfo {
+  int32 pid = 1;
+  int32 ppid = 2;
+  string state = 3;
+  string comm = 4;
+  string cmdline = 5;
+  int32 threads_count = 6;
+  int64 rss_bytes = 7;
+  int64 vsize_bytes = 8;
+  int64 cpu_user_ms = 9;
+  int64 cpu_sys_ms = 10;
+  int64 io_read_bytes = 11;
+  int64 io_write_bytes = 12;
+  string wchan = 13;
+  int32 oom_score = 14;
+  int64 voluntary_ctxt_switches = 15;
+  int64 nonvoluntary_ctxt_switches = 16;
+  repeated ThreadInfo threads = 17;
+}
+
+message OpenFile {
+  int32 pid = 1;
+  string comm = 2;
+  int32 fd = 3;
+  // file, socket, pipe, anon_inode, device, deleted, other
+  string kind = 4;
+  string target = 5;
+  // r, w, rw
+  string mode = 6;
+  int64 pos = 7;
+  uint64 inode = 8;
+  string socket_proto = 9;
+  string socket_state = 10;
+  string local_addr = 11;
+  string remote_addr = 12;
+}
+
+message CgroupIO {
+  string device = 1;
+  int64 rbytes = 2;
+  int64 wbytes = 3;
+  int64 rios = 4;
+  int64 wios = 5;
+}
+
+message CgroupStats {
+  int64 cpu_usage_usec = 1;
+  int64 cpu_user_usec = 2;
+  int64 cpu_system_usec = 3;
+  int64 nr_throttled = 4;
+  int64 throttled_usec = 5;
+  int64 memory_current_bytes = 6;
+  int64 memory_peak_bytes = 7;
+  int64 memory_anon_bytes = 8;
+  int64 memory_file_bytes = 9;
+  int64 memory_kernel_bytes = 10;
+  int64 memory_slab_bytes = 11;
+  int64 memory_sock_bytes = 12;
+  int64 memory_shmem_bytes = 13;
+  int64 memory_swap_bytes = 14;
+  int64 pgfault = 15;
+  int64 pgmajfault = 16;
+  int64 pids_current = 17;
+  int64 pids_peak = 18;
+  double psi_cpu_some_avg10 = 19;
+  double psi_cpu_full_avg10 = 20;
+  double psi_mem_some_avg10 = 21;
+  double psi_mem_full_avg10 = 22;
+  double psi_io_some_avg10 = 23;
+  double psi_io_full_avg10 = 24;
+  repeated CgroupIO io = 25;
+}
+
+message ThreadKernelStack {
+  int32 pid = 1;
+  int32 tid = 2;
+  string comm = 3;
+  string thread_name = 4;
+  string state = 5;
+  string wchan = 6;
+  repeated string frames = 7;
+}
+
+message MemoryRegion {
+  string perms = 1;
+  string path = 2;
+  int64 size_bytes = 3;
+  int64 rss_bytes = 4;
+  int64 pss_bytes = 5;
+}
+
+message ProcessMemoryMap {
+  int32 pid = 1;
+  string comm = 2;
+  int64 rss_bytes = 3;
+  int64 pss_bytes = 4;
+  int64 private_dirty_bytes = 5;
+  int64 shared_clean_bytes = 6;
+  int64 swap_bytes = 7;
+  int64 anon_bytes = 8;
+  int64 shmem_bytes = 9;
+  repeated MemoryRegion top_regions = 10;
+}
+
+message ResourceLimit {
+  string name = 1;
+  string soft = 2;
+  string hard = 3;
+  string units = 4;
+}
+
+message ProcessLimits {
+  int32 pid = 1;
+  string comm = 2;
+  repeated ResourceLimit items = 3;
+  string cap_eff = 4;
+  string seccomp = 5;
+  bool no_new_privs = 6;
+}
+
+message ToolCapability {
+  string name = 1;
+  bool available = 2;
+  string detail = 3;
+}
+
+message InspectCommandResponse {
+  string command_id = 1;
+  int64 collected_at = 2;
+  string cgroup = 3;
+  string unit_name = 4;
+  repeated ProcessInfo procs = 5;
+  repeated OpenFile files = 6;
+  CgroupStats cgroup_stats = 7;
+  repeated ThreadKernelStack kstacks = 8;
+  repeated ProcessMemoryMap maps = 9;
+  repeated ProcessLimits limits = 10;
+  repeated ToolCapability available_tools = 11;
+}
+
+enum TraceKind {
+  TRACE_KIND_UNSPECIFIED = 0;
+  TRACE_KIND_STRACE = 1;
+  TRACE_KIND_STRACE_SUMMARY = 2;
+  TRACE_KIND_PERF_CPU = 3;
+  TRACE_KIND_PERF_STAT = 4;
+  TRACE_KIND_STACKS = 5;
+  TRACE_KIND_BPF_EXECSNOOP = 6;
+  TRACE_KIND_BPF_OPENSNOOP = 7;
+  TRACE_KIND_BPF_VFSSTAT = 8;
+  TRACE_KIND_BPF_OFFCPU = 9;
+  TRACE_KIND_BPF_NET = 10;
+}
+
+message TraceCommandRequest {
+  string id = 1;
+  TraceKind kind = 2;
+  // Capture duration in seconds (default 5, max 60; ignored for instant snapshots like stacks).
+  int32 duration_seconds = 3;
+  // Optional: target one PID inside the command's cgroup (0 = all PIDs in the cgroup).
+  int32 pid = 4;
+  // Optional: syscall filter expression for strace (e.g. "file", "network", "openat,read,write").
+  string filter = 5;
+  // Optional: sampling frequency in Hz for perf CPU profiling (default 99, max 999).
+  int32 frequency_hz = 6;
+}
+
+message PerfCounter {
+  string name = 1;
+  string value = 2;
+  string unit = 3;
+  string note = 4;
+}
+
+message SyscallStat {
+  string name = 1;
+  double pct_time = 2;
+  double seconds = 3;
+  int64 usecs_per_call = 4;
+  int64 calls = 5;
+  int64 errors = 6;
+}
+
+message TraceSummary {
+  TraceKind kind = 1;
+  int64 started_at = 2;
+  int64 ended_at = 3;
+  int64 duration_ms = 4;
+  repeated int32 pids_attached = 5;
+  string command_line = 6;
+  repeated FoldedStack stacks = 7;
+  repeated ProfileFunction top_functions = 8;
+  repeated PerfCounter counters = 9;
+  repeated SyscallStat syscalls = 10;
+  string raw = 11;
+}
+
+message TraceCommandChunk {
+  string status = 1;
+  string text = 2;
+  TraceSummary summary = 3;
+  bool done = 4;
+}
+
+message GetCommandProfileRequest {
+  string id = 1;
+  // Case-insensitive substring filter over stack frame names/modules.
+  string query = 2;
+  // Filter by frame type (e.g. "kernel", "native", "go", "python", "v8").
+  string frame_type = 3;
+  // Filter by process comm (e.g. "go", "rustc", "node").
+  string comm = 4;
+  // Optional time range filter (unix ms, inclusive).
+  int64 from_ms = 5;
+  int64 to_ms = 6;
+  // Maximum top functions / stacks to return (default 200).
+  int32 limit = 7;
+}
+
+message FoldedStack {
+  string stack = 1;
+  int64 samples = 2;
+  string leaf_type = 3;
+  string comm = 4;
+}
+
+message ProfileFunction {
+  string name = 1;
+  string module = 2;
+  string frame_type = 3;
+  string source_file = 4;
+  int32 source_line = 5;
+  int64 self_samples = 6;
+  int64 total_samples = 7;
+  double self_pct = 8;
+  double total_pct = 9;
+}
+
+message ProfileBucket {
+  int64 t = 1;
+  int64 samples = 2;
+  int64 kernel_samples = 3;
+  int64 user_samples = 4;
+  string top_function = 5;
+}
+
+message CommandProfile {
+  string command_id = 1;
+  string profiler = 2;
+  bool live = 3;
+  bool active = 4;
+  string status_note = 5;
+  int32 sample_hz = 6;
+  int64 started_at = 7;
+  int64 updated_at = 8;
+  int64 total_samples = 9;
+  int64 matched_samples = 10;
+  int64 kernel_samples = 11;
+  int64 user_samples = 12;
+  repeated string comms = 13;
+  repeated string frame_types = 14;
+  repeated FoldedStack stacks = 15;
+  repeated ProfileFunction top_functions = 16;
+  repeated ProfileBucket buckets = 17;
 }

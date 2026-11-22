@@ -16,6 +16,8 @@ type change struct {
 	feed *pb.WorkerEvent
 	// finished is a command's history entry, when it ends.
 	finished *pb.FinishedCommand
+	// profile is the command's continuous eBPF profile snapshot, when it ends.
+	profile *pb.CommandProfile
 }
 
 // feed makes a line for the cockpit's feed.
@@ -50,7 +52,7 @@ func (e *Engine) saveWorkspace(w *workspace, ch change) {
 // saveCommand records a command's new state. Call with e.mu held.
 func (e *Engine) saveCommand(c *command, ch change) {
 	ev := e.newEvent(ch)
-	ev.Change = &pb.Event_Command{Command: &pb.CommandChange{What: ch.what, Command: clone(c.cmd()), Detail: ch.detail, Finished: ch.finished}}
+	ev.Change = &pb.Event_Command{Command: &pb.CommandChange{What: ch.what, Command: clone(c.cmd()), Detail: ch.detail, Finished: ch.finished, Profile: ch.profile}}
 	e.write("command", c.cmd().Id, c.rec, ev)
 }
 

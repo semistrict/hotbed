@@ -37,7 +37,17 @@ export function NodePage() {
         title={n.hostname}
         sub={`${n.machine} · ${n.kernel} · ${n.benchCpus ? `measurements on CPUs ${n.benchCpus}` : "no measurements"} · joined ${ago(n.joinedAt, now)}`}
         right={
-          <div className="flex items-center gap-3">
+          <div className="flex flex-wrap items-center gap-2.5">
+            {n.profiler && (
+              <span
+                title={n.profiler.error || `${n.profiler.engine} · ${n.profiler.totalSamples.toLocaleString()} samples`}
+                className={`rounded-full px-2.5 py-0.5 font-mono text-[10.5px] ${
+                  n.profiler.active ? "bg-ember-wash text-primary" : "bg-muted text-muted-foreground"
+                }`}
+              >
+                {n.profiler.active ? `OTel eBPF · ${n.profiler.sampleHz} Hz` : "OTel eBPF off"}
+              </span>
+            )}
             <ArchBadge arch={n.arch} />
             <OnlineBadge online={n.online} />
           </div>

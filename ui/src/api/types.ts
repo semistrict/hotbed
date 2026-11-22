@@ -36,6 +36,16 @@ export interface Node {
   disk: DiskUsage;
   /** The CPUs a measurement has to itself (a cpulist); "" on a node that takes none. */
   benchCpus: string;
+  /** Status of the always-on OpenTelemetry eBPF continuous profiler on this worker. */
+  profiler: ProfilerStatus | null;
+}
+
+export interface ProfilerStatus {
+  active: boolean;
+  engine: string;
+  sampleHz: number;
+  totalSamples: number;
+  error: string;
 }
 
 /** A node's btrfs pool, split by what the blocks belong to. */
@@ -361,9 +371,274 @@ export interface FileContent {
   changedLines: number[];
 }
 
+export type InspectSection = "procs" | "files" | "cgroup" | "kstack" | "maps" | "limits";
+
+export interface ThreadInfo {
+  tid: number;
+  name: string;
+  state: string;
+  wchan: string;
+  cpuUserMs: number;
+  cpuSysMs: number;
+}
+
+export interface ProcessInfo {
+  pid: number;
+  ppid: number;
+  state: string;
+  comm: string;
+  cmdline: string;
+  threadsCount: number;
+  rssBytes: number;
+  vsizeBytes: number;
+  cpuUserMs: number;
+  cpuSysMs: number;
+  ioReadBytes: number;
+  ioWriteBytes: number;
+  wchan: string;
+  oomScore: number;
+  voluntaryCtxtSwitches: number;
+  nonvoluntaryCtxtSwitches: number;
+  threads: ThreadInfo[];
+}
+
+export interface OpenFile {
+  pid: number;
+  comm: string;
+  fd: number;
+  kind: "file" | "socket" | "pipe" | "anon_inode" | "device" | "deleted" | "other";
+  target: string;
+  mode: string;
+  pos: number;
+  inode: number;
+  socketProto: string;
+  socketState: string;
+  localAddr: string;
+  remoteAddr: string;
+}
+
+export interface CgroupIO {
+  device: string;
+  rbytes: number;
+  wbytes: number;
+  rios: number;
+  wios: number;
+}
+
+export interface CgroupStats {
+  cpuUsageUsec: number;
+  cpuUserUsec: number;
+  cpuSystemUsec: number;
+  nrThrottled: number;
+  throttledUsec: number;
+  memoryCurrentBytes: number;
+  memoryPeakBytes: number;
+  memoryAnonBytes: number;
+  memoryFileBytes: number;
+  memoryKernelBytes: number;
+  memorySlabBytes: number;
+  memorySockBytes: number;
+  memoryShmemBytes: number;
+  memorySwapBytes: number;
+  pgfault: number;
+  pgmajfault: number;
+  pidsCurrent: number;
+  pidsPeak: number;
+  psiCpuSomeAvg10: number;
+  psiCpuFullAvg10: number;
+  psiMemSomeAvg10: number;
+  psiMemFullAvg10: number;
+  psiIoSomeAvg10: number;
+  psiIoFullAvg10: number;
+  io: CgroupIO[];
+}
+
+export interface ThreadKernelStack {
+  pid: number;
+  tid: number;
+  comm: string;
+  threadName: string;
+  state: string;
+  wchan: string;
+  frames: string[];
+}
+
+export interface MemoryRegion {
+  perms: string;
+  path: string;
+  sizeBytes: number;
+  rssBytes: number;
+  pssBytes: number;
+}
+
+export interface ProcessMemoryMap {
+  pid: number;
+  comm: string;
+  rssBytes: number;
+  pssBytes: number;
+  privateDirtyBytes: number;
+  sharedCleanBytes: number;
+  swapBytes: number;
+  anonBytes: number;
+  shmemBytes: number;
+  topRegions: MemoryRegion[];
+}
+
+export interface ResourceLimit {
+  name: string;
+  soft: string;
+  hard: string;
+  units: string;
+}
+
+export interface ProcessLimits {
+  pid: number;
+  comm: string;
+  items: ResourceLimit[];
+  capEff: string;
+  seccomp: string;
+  noNewPrivs: boolean;
+}
+
+export interface ToolCapability {
+  name: string;
+  available: boolean;
+  detail: string;
+}
+
+export interface InspectCommandResult {
+  commandId: string;
+  collectedAt: number;
+  cgroup: string;
+  unitName: string;
+  procs: ProcessInfo[];
+  files: OpenFile[];
+  cgroupStats: CgroupStats | null;
+  kstacks: ThreadKernelStack[];
+  maps: ProcessMemoryMap[];
+  limits: ProcessLimits[];
+  availableTools: ToolCapability[];
+}
+
+export type TraceKind =
+  | "strace"
+  | "strace_summary"
+  | "perf_cpu"
+  | "perf_stat"
+  | "stacks"
+  | "bpf_execsnoop"
+  | "bpf_opensnoop"
+  | "bpf_vfsstat"
+  | "bpf_offcpu"
+  | "bpf_net";
+
+export interface TraceOptions {
+  kind: TraceKind;
+  durationSeconds?: number;
+  pid?: number;
+  filter?: string;
+  frequencyHz?: number;
+}
+
+export interface PerfCounter {
+  name: string;
+  value: string;
+  unit: string;
+  note: string;
+}
+
+export interface SyscallStat {
+  name: string;
+  pctTime: number;
+  seconds: number;
+  usecsPerCall: number;
+  calls: number;
+  errors: number;
+}
+
+export interface FoldedStack {
+  stack: string;
+  samples: number;
+  leafType: string;
+  comm: string;
+}
+
+export interface ProfileFunction {
+  name: string;
+  module: string;
+  frameType: string;
+  sourceFile: string;
+  sourceLine: number;
+  selfSamples: number;
+  totalSamples: number;
+  selfPct: number;
+  totalPct: number;
+}
+
+export interface ProfileBucket {
+  t: number;
+  samples: number;
+  kernelSamples: number;
+  userSamples: number;
+  topFunction: string;
+}
+
+export interface TraceSummary {
+  kind: TraceKind;
+  startedAt: number;
+  endedAt: number;
+  durationMs: number;
+  pidsAttached: number[];
+  commandLine: string;
+  stacks: FoldedStack[];
+  topFunctions: ProfileFunction[];
+  counters: PerfCounter[];
+  syscalls: SyscallStat[];
+  raw: string;
+}
+
+export interface TraceChunk {
+  status: string;
+  text: string;
+  summary: TraceSummary | null;
+  done: boolean;
+}
+
+export interface ProfileQuery {
+  query?: string;
+  frameType?: string;
+  comm?: string;
+  fromMs?: number;
+  toMs?: number;
+  limit?: number;
+}
+
+export interface CommandProfile {
+  commandId: string;
+  profiler: string;
+  live: boolean;
+  active: boolean;
+  statusNote: string;
+  sampleHz: number;
+  startedAt: number;
+  updatedAt: number;
+  totalSamples: number;
+  matchedSamples: number;
+  kernelSamples: number;
+  userSamples: number;
+  comms: string[];
+  frameTypes: string[];
+  stacks: FoldedStack[];
+  topFunctions: ProfileFunction[];
+  buckets: ProfileBucket[];
+}
+
 export interface Api {
   snapshot(): Promise<Snapshot>;
   commandLog(id: string): Promise<CommandLog>;
   files(workspaceId: string): Promise<FileEntry[]>;
   file(workspaceId: string, path: string): Promise<FileContent>;
+  inspectCommand(id: string, opts?: { sections?: InspectSection[]; pid?: number }): Promise<InspectCommandResult>;
+  traceCommand(id: string, opts: TraceOptions, onChunk: (chunk: TraceChunk) => void, signal?: AbortSignal): Promise<TraceSummary | null>;
+  commandProfile(id: string, query?: ProfileQuery): Promise<CommandProfile>;
 }

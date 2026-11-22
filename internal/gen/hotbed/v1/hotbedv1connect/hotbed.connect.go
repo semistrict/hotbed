@@ -111,6 +111,15 @@ const (
 	// WorkspaceServiceGetLogLinesProcedure is the procedure name of the WorkspaceService's GetLogLines
 	// RPC.
 	WorkspaceServiceGetLogLinesProcedure = "/hotbed.v1.WorkspaceService/GetLogLines"
+	// WorkspaceServiceInspectCommandProcedure is the procedure name of the WorkspaceService's
+	// InspectCommand RPC.
+	WorkspaceServiceInspectCommandProcedure = "/hotbed.v1.WorkspaceService/InspectCommand"
+	// WorkspaceServiceTraceCommandProcedure is the procedure name of the WorkspaceService's
+	// TraceCommand RPC.
+	WorkspaceServiceTraceCommandProcedure = "/hotbed.v1.WorkspaceService/TraceCommand"
+	// WorkspaceServiceGetCommandProfileProcedure is the procedure name of the WorkspaceService's
+	// GetCommandProfile RPC.
+	WorkspaceServiceGetCommandProfileProcedure = "/hotbed.v1.WorkspaceService/GetCommandProfile"
 	// ScheduleServicePutScheduleProcedure is the procedure name of the ScheduleService's PutSchedule
 	// RPC.
 	ScheduleServicePutScheduleProcedure = "/hotbed.v1.ScheduleService/PutSchedule"
@@ -1037,6 +1046,27 @@ var (
 			Procedure:  WorkspaceServiceGetLogLinesProcedure,
 		}
 	})
+	workspaceServiceInspectCommandSpec = sync.OnceValue(func() connect.Spec {
+		return connect.Spec{
+			StreamType: connect.StreamTypeUnary,
+			Schema:     v1.File_hotbed_v1_hotbed_proto.Services().ByName("WorkspaceService").Methods().ByName("InspectCommand"),
+			Procedure:  WorkspaceServiceInspectCommandProcedure,
+		}
+	})
+	workspaceServiceTraceCommandSpec = sync.OnceValue(func() connect.Spec {
+		return connect.Spec{
+			StreamType: connect.StreamTypeServer,
+			Schema:     v1.File_hotbed_v1_hotbed_proto.Services().ByName("WorkspaceService").Methods().ByName("TraceCommand"),
+			Procedure:  WorkspaceServiceTraceCommandProcedure,
+		}
+	})
+	workspaceServiceGetCommandProfileSpec = sync.OnceValue(func() connect.Spec {
+		return connect.Spec{
+			StreamType: connect.StreamTypeUnary,
+			Schema:     v1.File_hotbed_v1_hotbed_proto.Services().ByName("WorkspaceService").Methods().ByName("GetCommandProfile"),
+			Procedure:  WorkspaceServiceGetCommandProfileProcedure,
+		}
+	})
 )
 
 // WorkspaceServiceClient is a client for the hotbed.v1.WorkspaceService service.
@@ -1062,6 +1092,17 @@ type WorkspaceServiceClient interface {
 	// the command ends. An attached command stops when no one follows it.
 	FollowLog(context.Context, *v1.FollowLogRequest) (WorkspaceServiceFollowLogClientStream, error)
 	GetLogLines(context.Context, *v1.GetLogLinesRequest) (*v1.CommandLog, error)
+	// InspectCommand takes an opt-in, non-intrusive Linux snapshot of a live
+	// command's cgroup (processes, open files/sockets, cgroup stats, kernel
+	// stacks, memory maps, limits) and reports which tracing tools exist on the node.
+	InspectCommand(context.Context, *v1.InspectCommandRequest) (*v1.InspectCommandResponse, error)
+	// TraceCommand runs an opt-in, time-bounded active Linux trace on a live
+	// command (strace, perf CPU profile, perf stat, thread stack dump, or
+	// curated bpftrace probe) and streams progress and results until complete or cancelled.
+	TraceCommand(context.Context, *v1.TraceCommandRequest) (WorkspaceServiceTraceCommandClientStream, error)
+	// GetCommandProfile queries the always-on OpenTelemetry eBPF continuous
+	// profile collected for a command (live on the worker, or persisted after end).
+	GetCommandProfile(context.Context, *v1.GetCommandProfileRequest) (*v1.CommandProfile, error)
 }
 
 // NewWorkspaceServiceClient constructs a client for the hotbed.v1.WorkspaceService service.
@@ -1141,6 +1182,27 @@ func (s WorkspaceServiceFollowLogClientStream) Close() error {
 	return s.stream.Close()
 }
 
+// WorkspaceServiceTraceCommandClientStream is the client stream for the WorkspaceService's
+// TraceCommand RPC.
+type WorkspaceServiceTraceCommandClientStream struct {
+	stream connect.ClientStream
+}
+
+// Receive returns the next response message from the server.
+func (s WorkspaceServiceTraceCommandClientStream) Receive() (*v1.TraceCommandChunk, error) {
+	var res v1.TraceCommandChunk
+	if err := s.stream.Receive(&res); err != nil {
+		return nil, err
+	}
+	return &res, nil
+}
+
+// Close releases the stream's resources. It is idempotent and is typically deferred to clean up a
+// stream abandoned before io.EOF.
+func (s WorkspaceServiceTraceCommandClientStream) Close() error {
+	return s.stream.Close()
+}
+
 // WorkspaceServiceHandler is an implementation of the hotbed.v1.WorkspaceService service.
 type WorkspaceServiceHandler interface {
 	CreateWorkspace(context.Context, *v1.CreateWorkspaceRequest) (*v1.Workspace, error)
@@ -1164,6 +1226,17 @@ type WorkspaceServiceHandler interface {
 	// the command ends. An attached command stops when no one follows it.
 	FollowLog(context.Context, *v1.FollowLogRequest, WorkspaceServiceFollowLogServerStream) error
 	GetLogLines(context.Context, *v1.GetLogLinesRequest) (*v1.CommandLog, error)
+	// InspectCommand takes an opt-in, non-intrusive Linux snapshot of a live
+	// command's cgroup (processes, open files/sockets, cgroup stats, kernel
+	// stacks, memory maps, limits) and reports which tracing tools exist on the node.
+	InspectCommand(context.Context, *v1.InspectCommandRequest) (*v1.InspectCommandResponse, error)
+	// TraceCommand runs an opt-in, time-bounded active Linux trace on a live
+	// command (strace, perf CPU profile, perf stat, thread stack dump, or
+	// curated bpftrace probe) and streams progress and results until complete or cancelled.
+	TraceCommand(context.Context, *v1.TraceCommandRequest, WorkspaceServiceTraceCommandServerStream) error
+	// GetCommandProfile queries the always-on OpenTelemetry eBPF continuous
+	// profile collected for a command (live on the worker, or persisted after end).
+	GetCommandProfile(context.Context, *v1.GetCommandProfileRequest) (*v1.CommandProfile, error)
 }
 
 // RegisterWorkspaceServiceHandler registers svc as the hotbed.v1.WorkspaceService implementation on
@@ -1185,6 +1258,9 @@ func RegisterWorkspaceServiceHandler(server *connect.Server, svc WorkspaceServic
 		connect.Method{Spec: workspaceServiceStopCommandSpec(), Handler: adapter.stopCommand},
 		connect.Method{Spec: workspaceServiceFollowLogSpec(), Handler: adapter.followLog},
 		connect.Method{Spec: workspaceServiceGetLogLinesSpec(), Handler: adapter.getLogLines},
+		connect.Method{Spec: workspaceServiceInspectCommandSpec(), Handler: adapter.inspectCommand},
+		connect.Method{Spec: workspaceServiceTraceCommandSpec(), Handler: adapter.traceCommand},
+		connect.Method{Spec: workspaceServiceGetCommandProfileSpec(), Handler: adapter.getCommandProfile},
 	)
 }
 
@@ -1231,6 +1307,22 @@ func (s WorkspaceServiceFollowLogServerStream) SendHeaders() error {
 
 // Send sends a response message to the client.
 func (s WorkspaceServiceFollowLogServerStream) Send(res *v1.LogChunk) error {
+	return s.stream.Send(res)
+}
+
+// WorkspaceServiceTraceCommandServerStream is the server stream for the WorkspaceService's
+// TraceCommand RPC.
+type WorkspaceServiceTraceCommandServerStream struct {
+	stream connect.ServerStream
+}
+
+// SendHeaders flushes the response headers without a message. The first Send does this implicitly.
+func (s WorkspaceServiceTraceCommandServerStream) SendHeaders() error {
+	return s.stream.SendHeaders()
+}
+
+// Send sends a response message to the client.
+func (s WorkspaceServiceTraceCommandServerStream) Send(res *v1.TraceCommandChunk) error {
 	return s.stream.Send(res)
 }
 
@@ -1291,6 +1383,18 @@ func (UnimplementedWorkspaceServiceHandler) FollowLog(context.Context, *v1.Follo
 
 func (UnimplementedWorkspaceServiceHandler) GetLogLines(context.Context, *v1.GetLogLinesRequest) (*v1.CommandLog, error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, "hotbed.v1.WorkspaceService.GetLogLines is not implemented")
+}
+
+func (UnimplementedWorkspaceServiceHandler) InspectCommand(context.Context, *v1.InspectCommandRequest) (*v1.InspectCommandResponse, error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, "hotbed.v1.WorkspaceService.InspectCommand is not implemented")
+}
+
+func (UnimplementedWorkspaceServiceHandler) TraceCommand(context.Context, *v1.TraceCommandRequest, WorkspaceServiceTraceCommandServerStream) error {
+	return connect.NewError(connect.CodeUnimplemented, "hotbed.v1.WorkspaceService.TraceCommand is not implemented")
+}
+
+func (UnimplementedWorkspaceServiceHandler) GetCommandProfile(context.Context, *v1.GetCommandProfileRequest) (*v1.CommandProfile, error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, "hotbed.v1.WorkspaceService.GetCommandProfile is not implemented")
 }
 
 type workspaceServiceClient struct {
@@ -1404,6 +1508,30 @@ func (c *workspaceServiceClient) FollowLog(ctx context.Context, req *v1.FollowLo
 func (c *workspaceServiceClient) GetLogLines(ctx context.Context, req *v1.GetLogLinesRequest) (*v1.CommandLog, error) {
 	var res v1.CommandLog
 	if err := c.client.CallUnary(ctx, workspaceServiceGetLogLinesSpec(), req, &res); err != nil {
+		return nil, err
+	}
+	return &res, nil
+}
+
+func (c *workspaceServiceClient) InspectCommand(ctx context.Context, req *v1.InspectCommandRequest) (*v1.InspectCommandResponse, error) {
+	var res v1.InspectCommandResponse
+	if err := c.client.CallUnary(ctx, workspaceServiceInspectCommandSpec(), req, &res); err != nil {
+		return nil, err
+	}
+	return &res, nil
+}
+
+func (c *workspaceServiceClient) TraceCommand(ctx context.Context, req *v1.TraceCommandRequest) (WorkspaceServiceTraceCommandClientStream, error) {
+	stream, err := c.client.CallServerStream(ctx, workspaceServiceTraceCommandSpec(), req)
+	if err != nil {
+		return WorkspaceServiceTraceCommandClientStream{}, err
+	}
+	return WorkspaceServiceTraceCommandClientStream{stream: stream}, nil
+}
+
+func (c *workspaceServiceClient) GetCommandProfile(ctx context.Context, req *v1.GetCommandProfileRequest) (*v1.CommandProfile, error) {
+	var res v1.CommandProfile
+	if err := c.client.CallUnary(ctx, workspaceServiceGetCommandProfileSpec(), req, &res); err != nil {
 		return nil, err
 	}
 	return &res, nil
@@ -1561,6 +1689,38 @@ func (h workspaceServiceHandler) getLogLines(ctx context.Context, _ connect.Spec
 		return err
 	}
 	res, err := h.svc.GetLogLines(ctx, &req)
+	if err != nil {
+		return err
+	}
+	return stream.Send(res)
+}
+
+func (h workspaceServiceHandler) inspectCommand(ctx context.Context, _ connect.Spec, stream connect.ServerStream) error {
+	var req v1.InspectCommandRequest
+	if err := stream.Receive(&req); err != nil {
+		return err
+	}
+	res, err := h.svc.InspectCommand(ctx, &req)
+	if err != nil {
+		return err
+	}
+	return stream.Send(res)
+}
+
+func (h workspaceServiceHandler) traceCommand(ctx context.Context, _ connect.Spec, stream connect.ServerStream) error {
+	var req v1.TraceCommandRequest
+	if err := stream.Receive(&req); err != nil {
+		return err
+	}
+	return h.svc.TraceCommand(ctx, &req, WorkspaceServiceTraceCommandServerStream{stream: stream})
+}
+
+func (h workspaceServiceHandler) getCommandProfile(ctx context.Context, _ connect.Spec, stream connect.ServerStream) error {
+	var req v1.GetCommandProfileRequest
+	if err := stream.Receive(&req); err != nil {
+		return err
+	}
+	res, err := h.svc.GetCommandProfile(ctx, &req)
 	if err != nil {
 		return err
 	}

@@ -750,6 +750,13 @@ export class MockCluster {
       reservedMemoryBytes: this.reserved(spec.id),
       disk: { basesBytes: bases, forksExclusiveBytes: forks, otherBytes: other, freeBytes: Math.max(0, spec.diskBytes - bases - forks - other) },
       benchCpus: spec.benchCpus ?? "",
+      profiler: {
+        active: spec.online,
+        engine: "opentelemetry-ebpf-profiler",
+        sampleHz: 20,
+        totalSamples: spec.online ? 148_200 : 0,
+        error: spec.online ? "" : "node offline",
+      },
     };
   }
 

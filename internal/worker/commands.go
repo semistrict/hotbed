@@ -20,6 +20,7 @@ import (
 
 	"github.com/semistrict/hotbed/internal/api"
 	pb "github.com/semistrict/hotbed/internal/gen/hotbed/v1"
+	"github.com/semistrict/hotbed/internal/profiler"
 	"github.com/semistrict/hotbed/internal/shell"
 	"github.com/semistrict/hotbed/internal/unit"
 )
@@ -583,6 +584,9 @@ func (e *Engine) forget() {
 		if time.Duration(e.nowMs()-c.cmd().GetEndedAt())*time.Millisecond > keepEnded {
 			delete(e.commands, id)
 			e.deleteCommand(c)
+			if e.cfg.Profiler != nil {
+				e.cfg.Profiler.Forget(id)
+			}
 		}
 	}
 }
@@ -652,7 +656,16 @@ func (e *Engine) end(c *command, state pb.CommandState, code *int32, why string)
 	default:
 		line = feed("finish", fmt.Sprintf("cancelled %s · %s", cmd.Argv, why), r)
 	}
-	e.saveCommand(c, change{what: what, detail: detail, finished: f, feed: line})
+	var prof *pb.CommandProfile
+	if e.cfg.Profiler != nil {
+		if snap := e.cfg.Profiler.Snapshot(cmd.Id); snap != nil && snap.TotalSamples > 0 {
+			if err := profiler.SaveProfile(e.profilePath(cmd.Id), snap); err != nil {
+				slog.Warn("save command profile", "command", cmd.Id, "err", err)
+			}
+			prof = snap
+		}
+	}
+	e.saveCommand(c, change{what: what, detail: detail, finished: f, feed: line, profile: prof})
 	if w, ok := e.workspaces[cmd.WorkspaceId]; ok {
 		w.ws().LastActiveAt = now
 		if w.ws().State == activeWS && !e.workspaceBusy(w.ws().Id) {

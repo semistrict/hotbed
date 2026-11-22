@@ -1,10 +1,13 @@
 package controller
 
 import (
+	"bytes"
+	"compress/gzip"
 	"context"
 	"database/sql"
 	"errors"
 	"fmt"
+	"io"
 	"time"
 
 	"google.golang.org/protobuf/encoding/protojson"
@@ -138,6 +141,14 @@ var migrations = []string{
 	-- A report's usage fields read as a heartbeat's.
 	UPDATE nodes SET heartbeat = report;
 	ALTER TABLE nodes DROP COLUMN report`,
+	// Always-on OpenTelemetry eBPF continuous profiles captured for finished commands.
+	`CREATE TABLE command_profiles (
+		id       TEXT PRIMARY KEY,
+		node_id  TEXT NOT NULL,
+		ended_at INTEGER NOT NULL,
+		doc      BLOB NOT NULL
+	) STRICT;
+	CREATE INDEX command_profiles_ended ON command_profiles (ended_at)`,
 }
 
 // Retention: samples and events serve the cockpit's day; history and
@@ -318,6 +329,7 @@ func (s *Store) Prune(ctx context.Context, now time.Time) error {
 	}{
 		{`DELETE FROM samples WHERE t < ?`, now.Add(-keepSamples).UnixMilli()},
 		{`DELETE FROM history WHERE ended_at < ?`, history},
+		{`DELETE FROM command_profiles WHERE ended_at < ?`, history},
 		{`DELETE FROM events WHERE id <= (SELECT MAX(id) FROM events) - ?`, keepEvents},
 		{`DELETE FROM commands WHERE created_at < ?`, history},
 		{`DELETE FROM schedule_runs WHERE ended_at IS NOT NULL AND (
@@ -392,7 +404,7 @@ func scanNode(row interface{ Scan(...any) error }) (nodeRow, error) {
 		}
 		out.hb = h
 		n.Resources, n.Usage, n.DiskBytes, n.Disk = h.Resources, h.Usage, h.DiskBytes, h.Disk
-		n.ReservedMemoryBytes, n.Storage = h.ReservedMemoryBytes, h.Storage
+		n.ReservedMemoryBytes, n.Storage, n.Profiler = h.ReservedMemoryBytes, h.Storage, h.Profiler
 	}
 	return out, nil
 }
@@ -711,6 +723,61 @@ func (s *Store) Finished(ctx context.Context, id string) (f *pb.FinishedCommand,
 	}
 	f, err = unmarshal(doc, &pb.FinishedCommand{})
 	return f, err == nil, err
+}
+
+// CommandProfile returns a finished command's persisted continuous eBPF profile,
+// or (nil, false, nil) if none was recorded.
+func (s *Store) CommandProfile(ctx context.Context, id string) (*pb.CommandProfile, bool, error) {
+	var raw []byte
+	err := s.db.QueryRowContext(ctx, `SELECT doc FROM command_profiles WHERE id = ?`, id).Scan(&raw)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, false, nil
+	}
+	if err != nil {
+		return nil, false, err
+	}
+	gz, err := gzip.NewReader(bytes.NewReader(raw))
+	if err != nil {
+		return nil, false, err
+	}
+	defer gz.Close()
+	b, err := io.ReadAll(io.LimitReader(gz, 16<<20))
+	if err != nil {
+		return nil, false, err
+	}
+	p := &pb.CommandProfile{}
+	if err := proto.Unmarshal(b, p); err != nil {
+		return nil, false, err
+	}
+	return p, true, nil
+}
+
+func addCommandProfile(ctx context.Context, tx *sql.Tx, nodeID string, endedAt int64, p *pb.CommandProfile) error {
+	if p == nil || p.CommandId == "" {
+		return nil
+	}
+	raw, err := proto.Marshal(p)
+	if err != nil {
+		return err
+	}
+	var buf bytes.Buffer
+	gz := gzip.NewWriter(&buf)
+	if _, err := gz.Write(raw); err != nil {
+		return err
+	}
+	if err := gz.Close(); err != nil {
+		return err
+	}
+	if endedAt == 0 {
+		endedAt = p.UpdatedAt
+	}
+	_, err = tx.ExecContext(ctx, `INSERT INTO command_profiles (id, node_id, ended_at, doc) VALUES (?, ?, ?, ?)
+		ON CONFLICT (id) DO UPDATE SET ended_at = excluded.ended_at, doc = excluded.doc`,
+		p.CommandId, nodeID, endedAt, buf.Bytes())
+	if err != nil {
+		return fmt.Errorf("record command profile: %w", err)
+	}
+	return nil
 }
 
 // History lists commands that ended since since, oldest first.

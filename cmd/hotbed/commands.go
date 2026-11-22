@@ -86,6 +86,9 @@ type cli struct {
 	Ps       psCmd       `cmd:"" help:"List a session's commands."`
 	Logs     logsCmd     `cmd:"" help:"Print a command's output."`
 	Stop     stopCmd     `cmd:"" help:"Stop a command."`
+	Inspect  inspectCmd  `cmd:"" help:"Opt-in Linux inspection of a running command (procs, files, cgroup, kstack, maps, limits)."`
+	Trace    traceCmd    `cmd:"" help:"Opt-in active Linux tracing of a running command (strace, perf, stat, stacks, bpf)."`
+	Profile  profileCmd  `cmd:"" help:"Query the always-on OpenTelemetry eBPF continuous profile for a live or finished command."`
 	Repo     repoCmd     `cmd:"" help:"Repos the cluster keeps built bases of (add, ls, rm, rebuild)."`
 	Step     stepCmd     `cmd:"" help:"A repo's setup steps: what brings its bases up to date (add, set, ls, show, rm)."`
 	Schedule scheduleCmd `cmd:"" help:"Scheduled commands: recurring work the cluster runs by itself, each run a session of its own (add, ls, show, rm, run, pause, resume)."`

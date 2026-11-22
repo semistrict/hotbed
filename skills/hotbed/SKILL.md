@@ -155,6 +155,9 @@ hotbed schedule run cladefs-nightly         # a run now; prints its session, for
 | `hotbed ps` | The session's commands, live and just ended |
 | `hotbed logs CMD [-f]` | A command's output; `-f` follows until it ends |
 | `hotbed stop CMD` | Stops a command |
+| `hotbed inspect [procs\|files\|cgroup\|kstack\|maps\|limits] CMD` | Opt-in Linux `/proc` & cgroup v2 inspection of a live command |
+| `hotbed trace [strace\|perf\|stat\|stacks\|bpf] CMD` | Opt-in active Linux tracing (`strace`, `perf`, thread stacks, `bpftrace`) of a live command |
+| `hotbed profile CMD [--query Q] [--format json\|folded\|top]` | Query the always-on OpenTelemetry eBPF continuous profile of a live or finished command |
 | `hotbed repo ls` | Repos and their setup steps |
 | `hotbed step ls` | A repo's steps and which each node's newest base ran |
 | `hotbed nodes` | The cluster's machines, and the build each runs |

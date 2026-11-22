@@ -25,6 +25,9 @@ func (e *Engine) Heartbeat(clusterID string) *pb.HeartbeatRequest {
 		ClusterId: clusterID, Resources: clone(e.resources), Usage: clone(e.usage),
 		DiskBytes: e.diskBytes, Disk: clone(e.disk), Storage: e.cfg.Store.Kind(), OomKills: e.oomKills,
 	}
+	if e.cfg.Profiler != nil {
+		h.Profiler = e.cfg.Profiler.Status()
+	}
 	for _, c := range e.commands {
 		cmd := c.cmd()
 		if s := cmd.State; s == running || s == parked {

@@ -15,6 +15,8 @@ import (
 
 	"github.com/semistrict/hotbed/internal/api"
 	pb "github.com/semistrict/hotbed/internal/gen/hotbed/v1"
+	"github.com/semistrict/hotbed/internal/inspect"
+	"github.com/semistrict/hotbed/internal/profiler"
 	"github.com/semistrict/hotbed/internal/storage"
 	"github.com/semistrict/hotbed/internal/sysinfo"
 	"github.com/semistrict/hotbed/internal/unit"
@@ -80,11 +82,13 @@ type EngineConfig struct {
 	UnitProperties []string
 	// Bench isolates the node for measurements; nil on a node that takes
 	// none.
-	Bench  Isolator
-	Store  storage.Store
-	Units  Units
-	System System
-	Now    func() time.Time
+	Bench     Isolator
+	Inspector inspect.Inspector
+	Profiler  profiler.Profiler
+	Store     storage.Store
+	Units     Units
+	System    System
+	Now       func() time.Time
 }
 
 // Engine is a worker's bases, workspaces and commands. The messages it
@@ -173,7 +177,7 @@ func NewEngine(ctx context.Context, cfg EngineConfig) (*Engine, error) {
 	}
 	// The command user runs git in volumes below the state directory and
 	// reads sync bundles from it, so it may pass through (not list) them.
-	for _, d := range []string{"", "logs", "bundles"} {
+	for _, d := range []string{"", "logs", "bundles", "profiles"} {
 		dir := filepath.Join(cfg.Dir, d)
 		if err := os.MkdirAll(dir, 0o711); err != nil {
 			return nil, err
