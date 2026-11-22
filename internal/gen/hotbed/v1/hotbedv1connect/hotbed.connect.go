@@ -42,6 +42,8 @@ const (
 	ClusterServiceHeartbeatProcedure = "/hotbed.v1.ClusterService/Heartbeat"
 	// ClusterServiceListNodesProcedure is the procedure name of the ClusterService's ListNodes RPC.
 	ClusterServiceListNodesProcedure = "/hotbed.v1.ClusterService/ListNodes"
+	// ClusterServiceGetBuildProcedure is the procedure name of the ClusterService's GetBuild RPC.
+	ClusterServiceGetBuildProcedure = "/hotbed.v1.ClusterService/GetBuild"
 	// ClusterServiceListReposProcedure is the procedure name of the ClusterService's ListRepos RPC.
 	ClusterServiceListReposProcedure = "/hotbed.v1.ClusterService/ListRepos"
 	// ClusterServicePutRepoProcedure is the procedure name of the ClusterService's PutRepo RPC.
@@ -160,6 +162,13 @@ var (
 			Procedure:  ClusterServiceListNodesProcedure,
 		}
 	})
+	clusterServiceGetBuildSpec = sync.OnceValue(func() connect.Spec {
+		return connect.Spec{
+			StreamType: connect.StreamTypeUnary,
+			Schema:     v1.File_hotbed_v1_hotbed_proto.Services().ByName("ClusterService").Methods().ByName("GetBuild"),
+			Procedure:  ClusterServiceGetBuildProcedure,
+		}
+	})
 	clusterServiceListReposSpec = sync.OnceValue(func() connect.Spec {
 		return connect.Spec{
 			StreamType: connect.StreamTypeUnary,
@@ -234,6 +243,9 @@ type ClusterServiceClient interface {
 	// the node online, and its reply is what the worker should host.
 	Heartbeat(context.Context, *v1.HeartbeatRequest) (*v1.HeartbeatResponse, error)
 	ListNodes(context.Context, *v1.ListNodesRequest) (*v1.ListNodesResponse, error)
+	// GetBuild is the build the controller runs, for a platform: what a node
+	// or client on it installs to run the controller's build.
+	GetBuild(context.Context, *v1.GetBuildRequest) (*v1.Build, error)
 	ListRepos(context.Context, *v1.ListReposRequest) (*v1.ListReposResponse, error)
 	PutRepo(context.Context, *v1.PutRepoRequest) (*v1.Repo, error)
 	DeleteRepo(context.Context, *v1.DeleteRepoRequest) (*v1.DeleteRepoResponse, error)
@@ -274,6 +286,9 @@ type ClusterServiceHandler interface {
 	// the node online, and its reply is what the worker should host.
 	Heartbeat(context.Context, *v1.HeartbeatRequest) (*v1.HeartbeatResponse, error)
 	ListNodes(context.Context, *v1.ListNodesRequest) (*v1.ListNodesResponse, error)
+	// GetBuild is the build the controller runs, for a platform: what a node
+	// or client on it installs to run the controller's build.
+	GetBuild(context.Context, *v1.GetBuildRequest) (*v1.Build, error)
 	ListRepos(context.Context, *v1.ListReposRequest) (*v1.ListReposResponse, error)
 	PutRepo(context.Context, *v1.PutRepoRequest) (*v1.Repo, error)
 	DeleteRepo(context.Context, *v1.DeleteRepoRequest) (*v1.DeleteRepoResponse, error)
@@ -302,6 +317,7 @@ func RegisterClusterServiceHandler(server *connect.Server, svc ClusterServiceHan
 		connect.Method{Spec: clusterServicePushEventsSpec(), Handler: adapter.pushEvents},
 		connect.Method{Spec: clusterServiceHeartbeatSpec(), Handler: adapter.heartbeat},
 		connect.Method{Spec: clusterServiceListNodesSpec(), Handler: adapter.listNodes},
+		connect.Method{Spec: clusterServiceGetBuildSpec(), Handler: adapter.getBuild},
 		connect.Method{Spec: clusterServiceListReposSpec(), Handler: adapter.listRepos},
 		connect.Method{Spec: clusterServicePutRepoSpec(), Handler: adapter.putRepo},
 		connect.Method{Spec: clusterServiceDeleteRepoSpec(), Handler: adapter.deleteRepo},
@@ -334,6 +350,10 @@ func (UnimplementedClusterServiceHandler) Heartbeat(context.Context, *v1.Heartbe
 
 func (UnimplementedClusterServiceHandler) ListNodes(context.Context, *v1.ListNodesRequest) (*v1.ListNodesResponse, error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, "hotbed.v1.ClusterService.ListNodes is not implemented")
+}
+
+func (UnimplementedClusterServiceHandler) GetBuild(context.Context, *v1.GetBuildRequest) (*v1.Build, error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, "hotbed.v1.ClusterService.GetBuild is not implemented")
 }
 
 func (UnimplementedClusterServiceHandler) ListRepos(context.Context, *v1.ListReposRequest) (*v1.ListReposResponse, error) {
@@ -407,6 +427,14 @@ func (c *clusterServiceClient) Heartbeat(ctx context.Context, req *v1.HeartbeatR
 func (c *clusterServiceClient) ListNodes(ctx context.Context, req *v1.ListNodesRequest) (*v1.ListNodesResponse, error) {
 	var res v1.ListNodesResponse
 	if err := c.client.CallUnary(ctx, clusterServiceListNodesSpec(), req, &res); err != nil {
+		return nil, err
+	}
+	return &res, nil
+}
+
+func (c *clusterServiceClient) GetBuild(ctx context.Context, req *v1.GetBuildRequest) (*v1.Build, error) {
+	var res v1.Build
+	if err := c.client.CallUnary(ctx, clusterServiceGetBuildSpec(), req, &res); err != nil {
 		return nil, err
 	}
 	return &res, nil
@@ -532,6 +560,18 @@ func (h clusterServiceHandler) listNodes(ctx context.Context, _ connect.Spec, st
 		return err
 	}
 	res, err := h.svc.ListNodes(ctx, &req)
+	if err != nil {
+		return err
+	}
+	return stream.Send(res)
+}
+
+func (h clusterServiceHandler) getBuild(ctx context.Context, _ connect.Spec, stream connect.ServerStream) error {
+	var req v1.GetBuildRequest
+	if err := stream.Receive(&req); err != nil {
+		return err
+	}
+	res, err := h.svc.GetBuild(ctx, &req)
 	if err != nil {
 		return err
 	}

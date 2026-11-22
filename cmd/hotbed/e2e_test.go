@@ -111,7 +111,7 @@ func (c *clock) advance(d time.Duration) {
 // used on it since the last one.
 func (c *cluster) heartbeat() {
 	c.t.Helper()
-	if err := worker.HeartbeatOnce(c.t.Context(), c.engine(), c.asWorker, c.id); err != nil {
+	if err := worker.HeartbeatOnce(c.t.Context(), c.engine(), c.asWorker, c.id, nil); err != nil {
 		c.t.Fatal(err)
 	}
 }

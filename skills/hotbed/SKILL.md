@@ -155,7 +155,8 @@ hotbed schedule run cladefs-nightly         # a run now; prints its session, for
 | `hotbed stop S CMD` | Stops a command |
 | `hotbed repo ls` | Repos and their setup steps |
 | `hotbed step ls REPO` | A repo's steps and which each node's newest base ran |
-| `hotbed nodes` | The cluster's machines |
+| `hotbed nodes` | The cluster's machines, and the build each runs |
+| `hotbed upgrade` | Install the controller's build over this hotbed (a CI build does it by itself) |
 
 ## Output
 

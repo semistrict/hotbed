@@ -40,6 +40,9 @@ type cluster struct {
 	ctrlSrv  *httptest.Server
 	ctrl     *switchboard // in front of the controller; tests take it down
 	nodes    []*node
+	// reported is how the first worker's connection to the controller
+	// ended.
+	reported chan error
 	// restart swaps in a new controller on the same database.
 	serverCfg controller.ServerConfig
 	handler   atomic.Pointer[http.Handler]
@@ -61,6 +64,9 @@ type node struct {
 	cut     atomic.Bool
 	handler atomic.Pointer[http.Handler]
 	cluster hotbedv1connect.ClusterServiceClient // the controller, as this worker
+	follow  *worker.Follow                       // how it follows the controller's build; nil for not
+	// reported is how its connection to the controller ended, each time.
+	reported chan error
 
 	mu     sync.Mutex
 	engine *worker.Engine
@@ -75,11 +81,31 @@ var fleetPeers = []tailnet.Peer{
 
 // newCluster is a controller with one worker, asahimbp.
 func newCluster(t *testing.T, with ...func(*worker.EngineConfig)) *cluster {
-	return newFleet(t, 1, with...)
+	t.Helper()
+	return newFleetWith(t, 1, clusterOpts{engine: with})
+}
+
+// newClusterWith is newCluster with opts.
+func newClusterWith(t *testing.T, opts clusterOpts) *cluster {
+	t.Helper()
+	return newFleetWith(t, 1, opts)
 }
 
 // newFleet is a controller with n workers: asahimbp, mini and oldpc.
-func newFleet(t *testing.T, n int, with ...func(*worker.EngineConfig)) *cluster {
+func newFleet(t *testing.T, n int) *cluster {
+	t.Helper()
+	return newFleetWith(t, n, clusterOpts{})
+}
+
+// clusterOpts change a cluster before it starts.
+type clusterOpts struct {
+	engine []func(*worker.EngineConfig)
+	server func(*controller.ServerConfig)
+	// follow is how a worker follows the controller's build at ctrl.
+	follow func(ctrl string, hc *http.Client) *worker.Follow
+}
+
+func newFleetWith(t *testing.T, n int, opts clusterOpts) *cluster {
 	t.Helper()
 	tn := tailnettest.New(ubu1)
 	dir := t.TempDir()
@@ -100,13 +126,13 @@ func newFleet(t *testing.T, n int, with ...func(*worker.EngineConfig)) *cluster 
 	c := &cluster{t: t, id: init.ClusterID, tn: tn, store: store, clock: &clock{}}
 	addrs := map[string]string{} // worker host name -> its server's address
 	for i := range n {
-		nd := &node{c: c, peer: fleetPeers[i], store: &fake.Store{Root: t.TempDir()}, units: &fake.Units{}, system: fake.NewSystem()}
+		nd := &node{c: c, peer: fleetPeers[i], store: &fake.Store{Root: t.TempDir()}, units: &fake.Units{}, system: fake.NewSystem(), reported: make(chan error, 1)}
 		nd.dir = filepath.Join(t.TempDir(), "worker")
 		nd.cfg = worker.EngineConfig{
 			Dir: nd.dir, NodeID: nd.peer.NodeID, Host: nd.peer.Hostname,
 			Store: nd.store, Units: nd.units, System: nd.system,
 		}
-		for _, w := range with {
+		for _, w := range opts.engine {
 			w(&nd.cfg)
 		}
 		nd.srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -121,6 +147,9 @@ func newFleet(t *testing.T, n int, with ...func(*worker.EngineConfig)) *cluster 
 		// The controller's calls to a worker that is cut off fail.
 		Workers:    &http.Client{Transport: partition{next: tn.Client(ubu1.Peer).Transport, cut: c.cutAt}},
 		WorkerAddr: func(host string) string { return addrs[host] },
+	}
+	if opts.server != nil {
+		opts.server(&c.serverCfg)
 	}
 	c.restart()
 	c.ctrl = &switchboard{next: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { (*c.handler.Load()).ServeHTTP(w, r) })}
@@ -141,10 +170,13 @@ func newFleet(t *testing.T, n int, with ...func(*worker.EngineConfig)) *cluster 
 		if _, err := joiner.Join(t.Context(), &pb.JoinRequest{}); err != nil {
 			t.Fatal(err)
 		}
+		if opts.follow != nil {
+			nd.follow = opts.follow(ctrl, tn.Client(nd.peer))
+		}
 		nd.start()
 		t.Cleanup(nd.halt)
 	}
-	c.asWorker = c.nodes[0].cluster
+	c.asWorker, c.reported = c.nodes[0].cluster, c.nodes[0].reported
 
 	t.Setenv("HOTBED_CONTROLLER", ctrl)
 	c.cli = deps{
@@ -152,6 +184,8 @@ func newFleet(t *testing.T, n int, with ...func(*worker.EngineConfig)) *cluster 
 		// come from the laptop.
 		tailnet: tailnettest.New(tailnet.Self{Peer: laptop}),
 		http:    tn.Client(laptop), stream: tn.Client(laptop), cache: t.TempDir(),
+		exe:    func() (string, error) { return "", errors.New("the tests' client has no binary to upgrade") },
+		reexec: func(...string) error { return errors.New("the tests' client runs nothing") },
 	}
 	return c
 }
@@ -211,7 +245,14 @@ func (nd *node) start() {
 	var wg sync.WaitGroup
 	wg.Add(2)
 	go func() { defer wg.Done(); eng.Run(ctx) }()
-	go func() { defer wg.Done(); worker.Connect(ctx, eng, nd.cluster, nd.c.id) }()
+	go func() {
+		defer wg.Done()
+		err := worker.Connect(ctx, eng, nd.cluster, nd.c.id, nd.follow)
+		select {
+		case nd.reported <- err:
+		default: // an earlier end not read yet
+		}
+	}()
 	nd.mu.Lock()
 	nd.engine = eng
 	nd.stop = func() {

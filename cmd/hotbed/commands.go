@@ -16,6 +16,7 @@ import (
 
 	"github.com/semistrict/hotbed/internal/api"
 	"github.com/semistrict/hotbed/internal/controller"
+	"github.com/semistrict/hotbed/internal/version"
 	"github.com/semistrict/hotbed/internal/worker"
 	"github.com/semistrict/hotbed/skills"
 )
@@ -30,6 +31,11 @@ type deps struct {
 	stderr       io.Writer
 	// cache keeps per-session cursors for hotbed wait.
 	cache string
+	// build is the client's build (0 for a dev build), exe its binary, and
+	// reexec runs a binary: what following the controller's build needs.
+	build  int64
+	exe    func() (string, error)
+	reexec func(args ...string) error
 }
 
 // command is a leaf of the command tree. Exec returns the envelope's data.
@@ -70,9 +76,11 @@ type cli struct {
 	Nodes    nodesCmd    `cmd:"" help:"List the cluster's workers."`
 	Init     initCmd     `cmd:"" help:"Create a cluster with this machine as its controller."`
 	Join     joinCmd     `cmd:"" help:"Join this machine to a cluster as a worker (as root)."`
+	Worker   workerCmd   `cmd:"" help:"Set up and manage a worker node on this machine in ~/.hotbed (setup, status, start, stop, trim, ssh, destroy)."`
 	Serve    serveCmd    `cmd:"" help:"Run the controller or worker whose state is in DIR, until stopped."`
 	Skills   skillsCmd   `cmd:"" help:"Guides for AI agents, compiled into this binary (list, get, install)."`
 	Version  versionCmd  `cmd:"" help:"Show hotbed's version, OS and architecture."`
+	Upgrade  upgradeCmd  `cmd:"" help:"Install the controller's build over this hotbed (a client on a CI build does it by itself)."`
 }
 
 // exited is how parse learns that kong finished the run itself, as it does
@@ -182,15 +190,15 @@ type versionCmd struct{}
 
 type versionResult struct {
 	Version string `json:"version"`
+	Build   int64  `json:"build"` // 0 for a dev build
 	Commit  string `json:"commit,omitempty"`
 	OS      string `json:"os"`
 	Arch    string `json:"arch"`
 }
 
 func (c *versionCmd) Exec(context.Context, deps) (any, error) {
-	v := versionResult{Version: "(devel)", OS: runtime.GOOS, Arch: runtime.GOARCH}
+	v := versionResult{Version: version.String(), Build: version.Number(), OS: runtime.GOOS, Arch: runtime.GOARCH}
 	if info, ok := debug.ReadBuildInfo(); ok {
-		v.Version = info.Main.Version
 		for _, s := range info.Settings {
 			if s.Key == "vcs.revision" {
 				v.Commit = s.Value

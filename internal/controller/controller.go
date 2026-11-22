@@ -9,9 +9,11 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"os"
 	"os/user"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"time"
 
 	"golang.org/x/sync/errgroup"
@@ -20,6 +22,8 @@ import (
 	"github.com/semistrict/hotbed/internal/httpx"
 	"github.com/semistrict/hotbed/internal/statedir"
 	"github.com/semistrict/hotbed/internal/tailnet"
+	"github.com/semistrict/hotbed/internal/update"
+	"github.com/semistrict/hotbed/internal/version"
 	"github.com/semistrict/hotbed/ui"
 )
 
@@ -115,6 +119,7 @@ func Run(ctx context.Context, dir string, cluster statedir.ControllerConfig, tn 
 // Controller is a controller that is listening but not yet serving.
 type Controller struct {
 	store     *Store
+	follow    *Follower
 	api       *Server
 	srv       *http.Server
 	listeners []net.Listener
@@ -148,13 +153,33 @@ func Listen(ctx context.Context, dir string, cluster statedir.ControllerConfig, 
 		}
 		local = append(local, uid)
 	}
+	builds := &update.Cache{Dir: filepath.Join(dir, "builds")}
+	var follow *Follower
+	if u := cluster.Updates; u != nil {
+		token, err := os.ReadFile(u.TokenFile)
+		if err != nil {
+			store.Close()
+			return nil, api.Errorf(api.CodeInvalidArgs, "the controller follows CI's builds of %s, but can't read its GitHub token: %v", u.Repo, err).
+				WithSuggestion("write a token that may read the repo's releases to " + u.TokenFile + ", or remove updates from the config")
+		}
+		exe, err := os.Executable()
+		if err != nil {
+			store.Close()
+			return nil, err
+		}
+		follow = &Follower{
+			GitHub: &update.GitHub{API: "https://api.github.com", Repo: u.Repo, Token: strings.TrimSpace(string(token)), Client: &http.Client{Timeout: 5 * time.Minute}},
+			Cache:  *builds, Exe: exe, Build: version.Number(),
+		}
+	}
 	server := NewServer(ServerConfig{
 		Store: store, Identifier: tn, Cluster: cluster, UI: ui.Handler(), Controller: self.Hostname,
-		Self: self.Addrs, LocalUsers: local,
+		Self: self.Addrs, LocalUsers: local, Builds: builds, Build: version.Number(),
 	})
 	c := &Controller{
-		store: store,
-		api:   server,
+		store:  store,
+		follow: follow,
+		api:    server,
 		srv: &http.Server{
 			Handler:           server.Handler(),
 			ReadHeaderTimeout: 10 * time.Second,
@@ -202,6 +227,10 @@ func (c *Controller) Serve(ctx context.Context) error {
 		c.api.RunSchedules(gctx)
 		return nil
 	})
+	if c.follow != nil {
+		// Its update.ErrRestart ends the others, and Serve with it.
+		g.Go(func() error { return c.follow.Run(gctx) })
+	}
 	g.Go(func() error {
 		t := time.NewTicker(10 * time.Minute)
 		defer t.Stop()

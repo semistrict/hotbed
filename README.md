@@ -11,9 +11,9 @@ Run AI coding agents' commands on a homelab fleet: old PCs plus Apple Silicon Ma
 
 ```sh
 hotbed init /var/lib/hotbed            # on the controller
-hotbed run /var/lib/hotbed
-hotbed join ubu1 /var/lib/hotbed       # on each Linux worker
-hotbed run /var/lib/hotbed
+hotbed serve /var/lib/hotbed
+sudo hotbed worker setup ubu1          # on a Linux worker (uses ~/.hotbed)
+hotbed worker setup ubu1               # on macOS (QEMU Ubuntu + sparse qcow2 ZFS in ~/.hotbed)
 HOTBED_CONTROLLER=ubu1 hotbed nodes    # anywhere on the tailnet
 ```
 
