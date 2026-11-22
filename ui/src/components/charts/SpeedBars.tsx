@@ -1,5 +1,6 @@
 import { Link } from "@tanstack/react-router";
 import { duration, speedup } from "../../lib/format";
+import { CommandInline } from "../CommandBlock";
 
 export interface SpeedRow {
   id: string;
@@ -22,7 +23,7 @@ export function SpeedBars({ rows }: { rows: SpeedRow[] }) {
         <li key={r.id} className="slide-in" style={{ animationDelay: `${i * 40}ms` }}>
           <Link to="/commands/$id" params={{ id: r.id }} className="group block">
             <div className="mb-1 flex items-baseline gap-3 text-[11.5px]">
-              <span className="truncate font-mono text-foreground group-hover:text-primary">{r.argv}</span>
+              <CommandInline argv={r.argv} className="font-mono text-foreground group-hover:text-primary" />
               <span className="truncate text-faint">{r.sub}</span>
               <span className="ml-auto shrink-0 font-mono">
                 <span className="num font-semibold text-foreground">{duration(r.seconds)}</span>

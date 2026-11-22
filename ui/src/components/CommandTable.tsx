@@ -3,6 +3,7 @@ import type { Command, FinishedCommand, Snapshot } from "../api";
 import { nodeName } from "../lib/data";
 import { ago, bytes, duration, speedup } from "../lib/format";
 import { Meter } from "./charts/Bars";
+import { CommandInline } from "./CommandBlock";
 import { SessionLink } from "./SessionLink";
 import { Empty } from "./ui/Card";
 import { BenchTag, KindTag, StateBadge } from "./ui/State";
@@ -32,8 +33,8 @@ export function LiveCommandTable({ s, commands }: { s: Snapshot; commands: Comma
                   <StateBadge state={c.state} />
                 </td>
                 <td className="max-w-[320px] px-2 py-2.5">
-                  <Link to="/commands/$id" params={{ id: c.id }} className="block truncate font-mono text-[11.5px] text-foreground hover:text-primary">
-                    {c.argv}
+                  <Link to="/commands/$id" params={{ id: c.id }} className="block font-mono text-[11.5px] text-foreground hover:text-primary">
+                    <CommandInline argv={c.argv} />
                   </Link>
                   <div className="mt-0.5 flex gap-2">
                     <KindTag kind={c.kind} />
@@ -103,8 +104,8 @@ export function HistoryTable({ s, rows, limit = 200 }: { s: Snapshot; rows: Fini
                 <StateBadge state={c.state} />
               </td>
               <td className="max-w-[300px] px-2 py-2">
-                <Link to="/commands/$id" params={{ id: c.id }} className="block truncate text-foreground hover:text-primary">
-                  {c.argv}
+                <Link to="/commands/$id" params={{ id: c.id }} className="block text-foreground hover:text-primary">
+                  <CommandInline argv={c.argv} />
                 </Link>
                 {c.bench && <BenchTag />}
               </td>

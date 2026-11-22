@@ -79,10 +79,17 @@ export function Shell() {
           </div>
         </div>
       </header>
-      {isError ? (
+      {data ? (
+        <>
+          {isError && (
+            <div className="mb-4 rounded-xl border border-critical/40 bg-card px-4 py-2.5 font-mono text-[11.5px] text-critical">
+              Lost connection to the controller — showing last snapshot ({String(error)})
+            </div>
+          )}
+          <Outlet />
+        </>
+      ) : isError ? (
         <div className="rounded-xl border border-critical/40 bg-card p-6 font-mono text-[12px] text-critical">Cannot reach the controller: {String(error)}</div>
-      ) : data ? (
-        <Outlet />
       ) : (
         <div className="py-24 text-center font-mono text-[12px] text-muted-foreground">warming up…</div>
       )}

@@ -4,6 +4,7 @@ import { useEffect, useRef } from "react";
 import { api, type Command, type CommandEvent, type FinishedCommand, type Snapshot } from "../api";
 import { Meter } from "../components/charts/Bars";
 import { SpeedBars } from "../components/charts/SpeedBars";
+import { CommandBlock } from "../components/CommandBlock";
 import { FAILURE } from "../components/CommandTable";
 import { Card, StatTile } from "../components/ui/Card";
 import { BenchTag, KindTag, StateBadge } from "../components/ui/State";
@@ -45,9 +46,7 @@ function CommandView({ s, live, done, id }: { s: Snapshot; live: Command | null;
           {(live?.bench ?? done?.bench) && <BenchTag />}
           <span className="font-mono text-[11px] text-faint">{id}</span>
         </div>
-        <h1 className="mt-3 font-mono text-[26px] leading-tight text-foreground sm:text-[32px]">
-          <span className="text-primary">$</span> {argv}
-        </h1>
+        <CommandBlock key={id} argv={argv} />
         <p className="mt-2 text-[13px] text-muted-foreground">
           {sessionId && (
             <>

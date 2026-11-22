@@ -1,5 +1,6 @@
 import { Link, useParams } from "@tanstack/react-router";
 import type { Session, Snapshot } from "../api";
+import { CommandInline } from "../components/CommandBlock";
 import { FAILURE } from "../components/CommandTable";
 import { Card, Empty, StatTile } from "../components/ui/Card";
 import { BenchTag, KindTag, StateBadge } from "../components/ui/State";
@@ -120,8 +121,8 @@ function SessionView({ s, session }: { s: Snapshot; session: Session }) {
                       <StateBadge state={r.state} />
                     </td>
                     <td className="max-w-[420px] px-2 py-2">
-                      <Link to="/commands/$id" params={{ id: r.id }} className="block truncate text-foreground hover:text-primary">
-                        {r.argv}
+                      <Link to="/commands/$id" params={{ id: r.id }} className="block text-foreground hover:text-primary">
+                        <CommandInline argv={r.argv} />
                       </Link>
                       <div className="mt-0.5 flex gap-2">
                         <KindTag kind={r.kind} />

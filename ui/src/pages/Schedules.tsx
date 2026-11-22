@@ -1,4 +1,5 @@
 import type { ScheduledCommand, ScheduledRun, Snapshot } from "../api";
+import { CommandBlock } from "../components/CommandBlock";
 import { SessionLink } from "../components/SessionLink";
 import { Card, Empty, StatTile } from "../components/ui/Card";
 import { OutcomeBadge } from "../components/ui/State";
@@ -62,14 +63,7 @@ function ScheduleCard({ s, sc, now, delay }: { s: Snapshot; sc: ScheduledCommand
       right={<RunStrip runs={sc.runs} />}
       delay={delay}
     >
-      <pre className="mb-4 overflow-x-auto rounded-lg border border-border bg-muted/50 px-3 py-2 font-mono text-[11.5px] text-foreground">
-        {sc.env.map((e) => (
-          <span key={e} className="text-muted-foreground">
-            {e}{" "}
-          </span>
-        ))}
-        {sc.argv}
-      </pre>
+      <CommandBlock argv={sc.argv} env={sc.env} variant="compact" maxLines={8} />
       {sc.runs.length === 0 ? <Empty>No runs yet.</Empty> : <RunTable s={s} runs={sc.runs} now={now} />}
     </Card>
   );
