@@ -11,10 +11,13 @@ import type {
   NodeHour,
   Repo,
   Sample,
+  Session,
   Snapshot,
   Workspace,
 } from "../types";
 import {
+  ADJECTIVES,
+  AGENT_HOSTS,
   AGENTS,
   BASE_SIZE,
   COMMANDS,
@@ -22,6 +25,7 @@ import {
   CRATES,
   HOSTS,
   NODES,
+  NOUNS,
   REPOS,
   TOPICS,
   type CommandTemplate,
@@ -76,6 +80,10 @@ export class MockCluster {
   private commands: Command[] = [];
   private runs = new Map<string, Run>();
   private history: FinishedCommand[] = [];
+  /** Live sessions and those that ended in the last day; the synthesized day's are in past. */
+  private sessions: Session[] = [];
+  private past = new Map<string, Session>();
+  private names = new Set<string>();
   private events: ClusterEvent[] = [];
   private series: Record<string, Sample[]> = {};
   private load: LoadSample[] = [];
@@ -129,6 +137,7 @@ export class MockCluster {
       hourly: this.hourly,
       nodeHourly: this.nodeHourly,
       history: [] as FinishedCommand[],
+      sessions: [...this.sessions, ...this.past.values()].sort((a, b) => b.lastActiveAt.localeCompare(a.lastActiveAt)),
     }) satisfies Snapshot;
     // Finished commands never change once recorded, so they need no copy.
     snap.history = [...this.history];
@@ -217,6 +226,28 @@ export class MockCluster {
       if (!busy && !hasServer && Date.parse(w.lastActiveAt) < this.now - 150_000 && this.rng.chance(dt / 90)) {
         w.state = "released";
         this.event("release", w.nodeId, `release ${w.id} · ${w.agent} · ${gib(w.exclusiveBytes)} freed`, { type: "workspace", id: w.id });
+        this.released(w);
+      }
+    }
+  }
+
+  /** A workspace's session ends with its last workspace: by its agent, or now and then abandoned. */
+  private released(w: Workspace): void {
+    const s = this.sessions.find((x) => x.id === w.sessionId);
+    if (!s) return;
+    const sw = s.workspaces.find((x) => x.id === w.id);
+    if (sw) sw.releasedAt = iso(this.now);
+    if (s.workspaces.some((x) => x.releasedAt === null)) return;
+    s.endedAt = iso(this.now);
+    s.endReason = this.rng.chance(0.12) ? "abandoned: nothing touched it for an hour" : "ended by its agent";
+  }
+
+  private sessionName(): string {
+    for (;;) {
+      const name = `${this.rng.pick(ADJECTIVES)}-${this.rng.pick(NOUNS)}`;
+      if (!this.names.has(name)) {
+        this.names.add(name);
+        return name;
       }
     }
   }
@@ -240,8 +271,11 @@ export class MockCluster {
           : "compile"
       : null;
     const id = `c-${this.rng.hex(6)}`;
+    const session = this.sessions.find((x) => x.id === w.sessionId);
+    if (session) session.lastActiveAt = iso(this.now);
     const cmd: Command = {
       id,
+      sessionId: w.sessionId,
       workspaceId: w.id,
       nodeId: w.nodeId,
       argv,
@@ -388,6 +422,7 @@ export class MockCluster {
     }
     const record: FinishedCommand = {
       id: c.id,
+      sessionId: c.sessionId,
       repoId: repo.id,
       nodeId: c.nodeId,
       workspaceId: c.workspaceId,
@@ -436,6 +471,7 @@ export class MockCluster {
       return keep;
     });
     this.workspaces = this.workspaces.filter((w) => w.state !== "released" || Date.parse(w.lastActiveAt) > this.now - 600_000);
+    this.sessions = this.sessions.filter((x) => x.endedAt === null || Date.parse(x.endedAt) > this.now - 24 * HOUR);
     const day = this.now - 24 * HOUR;
     while (this.history[0] && this.history[0].endedAt < day) this.history.shift();
   }
@@ -498,8 +534,17 @@ export class MockCluster {
     this.forkMillis.push(ms);
     if (this.forkMillis.length > 200) this.forkMillis.shift();
     const createdAt = initial ? this.now - this.rng.range(60, 3600) * 1000 : this.now;
+    // Now and then a live session adds a workspace of another repo; mostly an
+    // agent starts a session for the repo it works on.
+    const others = this.sessions.filter((x) => x.endedAt === null && !x.workspaces.some((sw) => sw.repoId === repo.id));
+    let session = !initial && others.length > 0 && this.rng.chance(0.2) ? this.rng.pick(others) : undefined;
+    if (!session) {
+      session = { id: this.sessionName(), agent: this.rng.pick(AGENT_HOSTS), startedAt: iso(createdAt), lastActiveAt: iso(createdAt), endedAt: null, endReason: "", workspaces: [] };
+      this.sessions.push(session);
+    }
     const w: Workspace = {
       id: `ws-${this.rng.hex(4)}`,
+      sessionId: session.id,
       repoId: repo.id,
       baseId: base.id,
       nodeId,
@@ -516,6 +561,8 @@ export class MockCluster {
       lastActiveAt: iso(createdAt),
     };
     this.workspaces.push(w);
+    session.workspaces.push({ id: w.id, repoId: repo.id, nodeId, createdAt: w.createdAt, releasedAt: null });
+    session.lastActiveAt = iso(Math.max(Date.parse(session.lastActiveAt), createdAt));
     this.bumpHour((h) => (h.forks += 1));
     if (!initial) {
       this.event("fork", nodeId, `fork ${w.id} ← ${repo.id}@g${base.generation} on ${this.spec(nodeId).hostname} in ${ms} ms · ${w.agent}`, { type: "workspace", id: w.id });
@@ -618,11 +665,13 @@ export class MockCluster {
         : template.argv.includes("clippy") ? "lint" : this.rng.chance(0.1) ? "signal" : "compile"
       : null;
     const parks = spec.memoryBytes <= 18 * GiB && this.rng.chance(0.04) ? 1 : 0;
+    const { session, workspaceId } = this.pastSession(at, repo.id, nodeId);
     return {
       id: `c-${this.rng.hex(6)}`,
+      sessionId: session.id,
       repoId: repo.id,
       nodeId,
-      workspaceId: `ws-${this.rng.hex(4)}`,
+      workspaceId,
       agent: `${this.rng.pick(AGENTS)}/${this.rng.pick(TOPICS[repo.id] ?? ["work"])}`,
       argv: template.argv.replace("{crate}", this.rng.pick(CRATES[repo.id] ?? ["core"])),
       kind: template.kind,
@@ -637,6 +686,37 @@ export class MockCluster {
       peakMemoryBytes: this.rng.range(template.memoryGiB[0], template.memoryGiB[1]) * GiB,
       parks,
     };
+  }
+
+  /**
+   * The ended session a synthesized command at `at` belonged to: one of a few
+   * per hour and a half, each with a workspace per repo it touched.
+   */
+  private pastSession(at: number, repoId: string, nodeId: string): { session: Session; workspaceId: string } {
+    const window = 90 * 60_000;
+    const from = Math.floor(at / window) * window;
+    const key = `${from}:${this.rng.int(0, 5)}`;
+    let session = this.past.get(key);
+    if (!session) {
+      const ended = Math.min(from + window + this.rng.range(5, 40) * 60_000, Math.floor(this.now / 1000) * 1000);
+      session = {
+        id: this.sessionName(),
+        agent: this.rng.pick(AGENT_HOSTS),
+        startedAt: iso(from),
+        lastActiveAt: iso(from),
+        endedAt: iso(ended),
+        endReason: this.rng.chance(0.12) ? "abandoned: nothing touched it for an hour" : "ended by its agent",
+        workspaces: [],
+      };
+      this.past.set(key, session);
+    }
+    let ws = session.workspaces.find((w) => w.repoId === repoId);
+    if (!ws) {
+      ws = { id: `ws-${this.rng.hex(4)}`, repoId, nodeId, createdAt: session.startedAt, releasedAt: session.endedAt };
+      session.workspaces.push(ws);
+    }
+    if (at > Date.parse(session.lastActiveAt)) session.lastActiveAt = iso(at);
+    return { session, workspaceId: ws.id };
   }
 
   // ---- helpers --------------------------------------------------------

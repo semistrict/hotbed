@@ -83,9 +83,37 @@ export interface Base {
 /** Preparing: waiting for its base to be pulled and freshened. */
 export type WorkspaceState = "preparing" | "active" | "idle" | "released" | "failed";
 
+/**
+ * An agent's session: everything it runs belongs to one. It holds a workspace
+ * per repo it works in, and ends when its agent ends it or after an hour
+ * with nothing touching it (abandoned).
+ */
+export interface Session {
+  /** adjective-noun, such as brave-otter. */
+  id: string;
+  /** The machine the agent runs on. */
+  agent: string;
+  startedAt: string;
+  lastActiveAt: string;
+  endedAt: string | null;
+  /** Why it ended: by its agent, or abandoned. */
+  endReason: string;
+  /** Every workspace it had, released ones too, oldest first. */
+  workspaces: SessionWorkspace[];
+}
+
+export interface SessionWorkspace {
+  id: string;
+  repoId: string;
+  nodeId: string;
+  createdAt: string;
+  releasedAt: string | null;
+}
+
 /** A fork of a base that one agent works in. */
 export interface Workspace {
   id: string;
+  sessionId: string;
   repoId: string;
   baseId: string;
   nodeId: string;
@@ -114,6 +142,7 @@ export interface CommandLimits {
 
 export interface Command {
   id: string;
+  sessionId: string;
   workspaceId: string;
   nodeId: string;
   argv: string;
@@ -206,6 +235,7 @@ export interface NodeHour {
  */
 export interface FinishedCommand {
   id: string;
+  sessionId: string;
   repoId: string;
   nodeId: string;
   workspaceId: string;
@@ -249,6 +279,8 @@ export interface Snapshot {
   hourly: HourBucket[];
   nodeHourly: Record<string, NodeHour[]>;
   history: FinishedCommand[];
+  /** Live sessions and those that ended in the last 24 hours, the most recently active first. */
+  sessions: Session[];
 }
 
 export interface CommandLog {

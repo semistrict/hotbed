@@ -37,6 +37,15 @@ describe("toSnapshot", () => {
       ],
       history: [{ id: "a", state: CommandState.FAILED, failure: "test", exitCode: 100, coldSeconds: 370, endedAt: 1795299500000n, seconds: 14.2 }],
       series: { nAsahi: { samples: [{ t: 1795299995000n, cpuBusy: 0.25, memoryUsed: 0.22 }] } },
+      sessions: [
+        {
+          id: "brave-otter",
+          agent: "laptop",
+          startedAt: 1795299000000n,
+          lastActiveAt: 1795299900000n,
+          workspaces: [{ id: "p1", repoId: "app", nodeId: "nAsahi", createdAt: 1795299000000n, releasedAt: 1795299500000n }],
+        },
+      ],
     });
     const s = toSnapshot(wire);
     expect(s.now).toBe("2026-11-21T22:26:40.000Z");
@@ -49,6 +58,17 @@ describe("toSnapshot", () => {
       ["p1", "preparing", "waiting for base app-g2 to freshen"],
       ["f1", "failed", "freshen exited 3"],
       ["i1", "idle", ""],
+    ]);
+    expect(s.sessions).toEqual([
+      {
+        id: "brave-otter",
+        agent: "laptop",
+        startedAt: "2026-11-21T22:10:00.000Z",
+        lastActiveAt: "2026-11-21T22:25:00.000Z",
+        endedAt: null,
+        endReason: "",
+        workspaces: [{ id: "p1", repoId: "app", nodeId: "nAsahi", createdAt: "2026-11-21T22:10:00.000Z", releasedAt: "2026-11-21T22:18:20.000Z" }],
+      },
     ]);
     expect(s.series.nAsahi).toEqual([{ t: 1795299995000, cpuBusy: 0.25, memoryUsed: 0.22, memoryPressure: 0 }]);
   });

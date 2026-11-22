@@ -3,6 +3,7 @@ import type { Command, FinishedCommand, Snapshot } from "../api";
 import { nodeName } from "../lib/data";
 import { ago, bytes, duration, speedup } from "../lib/format";
 import { Meter } from "./charts/Bars";
+import { SessionLink } from "./SessionLink";
 import { Empty } from "./ui/Card";
 import { KindTag, StateBadge } from "./ui/State";
 
@@ -15,7 +16,7 @@ export function LiveCommandTable({ s, commands }: { s: Snapshot; commands: Comma
       <table className="w-full text-left text-[12px]">
         <thead className="eyebrow">
           <tr className="border-b border-border">
-            {["state", "command", "workspace", "node", "for", "cpu", "memory · high", "crates", "why"].map((h) => (
+            {["state", "command", "session", "workspace", "node", "for", "cpu", "memory · high", "crates", "why"].map((h) => (
               <th key={h} className="px-2 py-2 font-normal whitespace-nowrap">
                 {h}
               </th>
@@ -42,6 +43,9 @@ export function LiveCommandTable({ s, commands }: { s: Snapshot; commands: Comma
                       </a>
                     )}
                   </div>
+                </td>
+                <td className="px-2 py-2.5">
+                  <SessionLink id={c.sessionId} />
                 </td>
                 <td className="px-2 py-2.5">
                   <Link to="/workspaces/$id" params={{ id: c.workspaceId }} className="font-mono text-[11px] text-muted-foreground hover:text-primary">
@@ -84,7 +88,7 @@ export function HistoryTable({ s, rows, limit = 200 }: { s: Snapshot; rows: Fini
       <table className="w-full text-left text-[12px]">
         <thead className="eyebrow">
           <tr className="border-b border-border">
-            {["outcome", "command", "repo", "node", "agent", "ended", "took", "cold", "speedup", "crates", "peak mem", "why"].map((h) => (
+            {["outcome", "command", "session", "repo", "node", "ended", "took", "cold", "speedup", "crates", "peak mem", "why"].map((h) => (
               <th key={h} className="px-2 py-2 font-normal whitespace-nowrap">
                 {h}
               </th>
@@ -102,9 +106,11 @@ export function HistoryTable({ s, rows, limit = 200 }: { s: Snapshot; rows: Fini
                   {c.argv}
                 </Link>
               </td>
+              <td className="px-2 py-2">
+                <SessionLink id={c.sessionId} />
+              </td>
               <td className="px-2 py-2 text-muted-foreground">{c.repoId}</td>
               <td className="px-2 py-2 text-muted-foreground">{nodeName(s, c.nodeId)}</td>
-              <td className="px-2 py-2 text-muted-foreground">{c.agent}</td>
               <td className="px-2 py-2 whitespace-nowrap text-muted-foreground">{ago(c.endedAt, now)}</td>
               <td className="px-2 py-2">{duration(c.seconds)}</td>
               <td className="px-2 py-2 text-faint">{c.coldSeconds !== null ? duration(c.coldSeconds) : "—"}</td>

@@ -57,6 +57,13 @@ export const BASE_SIZE: Record<string, number> = {
 
 export const AGENTS = ["claude", "codex", "claude", "claude", "pi", "codex"];
 
+/** The machines agents run hotbed from: a session's agent. */
+export const AGENT_HOSTS = ["ramons-macbook-pro", "ramons-macbook-pro", "ramons-macbook-pro", "mbp-air", "ubu1"];
+
+/** Session names are adjective-noun, as hotbed session start picks them. */
+export const ADJECTIVES = ["brave", "calm", "eager", "fond", "gentle", "keen", "live", "mellow", "noble", "poetic", "quiet", "rapid", "steady", "tidy", "vivid", "witty", "bold", "clever", "humble", "lucid"];
+export const NOUNS = ["otter", "newt", "walleye", "ox", "gnu", "yak", "owl", "heron", "lynx", "badger", "marten", "ibis", "tapir", "finch", "hare", "koi", "mole", "seal", "wren", "elk"];
+
 export const TOPICS: Record<string, string[]> = {
   cladefs: ["dax-fault-path", "extent-gc", "fork-time", "graft-store", "pmem-flush", "overlay-whiteouts", "lsm-compaction"],
   ratel: ["raft-leases", "range-split", "node-local-uuids", "txn-pipelining", "snapshot-ship"],

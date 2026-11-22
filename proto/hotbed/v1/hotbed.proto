@@ -587,6 +587,16 @@ message Session {
   int64 last_active_at = 6;
   // Why it ended: ended by its agent, or abandoned.
   string end_reason = 7;
+  // Every workspace it had, released ones too, oldest first.
+  repeated SessionWorkspace workspaces = 8;
+}
+
+message SessionWorkspace {
+  string id = 1;
+  string repo_id = 2;
+  string node_id = 3;
+  int64 created_at = 4;
+  optional int64 released_at = 5;
 }
 
 message StartSessionRequest {

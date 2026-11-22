@@ -435,19 +435,56 @@ func (s *Store) Session(ctx context.Context, id string) (*pb.Session, error) {
 	if ended.Valid {
 		out.EndedAt = &ended.Int64
 	}
-	rows, err := s.db.QueryContext(ctx, `SELECT id FROM workspaces WHERE session_id = ? AND released_at IS NULL ORDER BY created_at`, id)
+	rows, err := s.db.QueryContext(ctx, `SELECT id, repo_id, node_id, created_at, released_at FROM workspaces WHERE session_id = ? ORDER BY created_at`, id)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
 	for rows.Next() {
-		var ws string
-		if err := rows.Scan(&ws); err != nil {
+		w := &pb.SessionWorkspace{}
+		var released sql.NullInt64
+		if err := rows.Scan(&w.Id, &w.RepoId, &w.NodeId, &w.CreatedAt, &released); err != nil {
 			return nil, err
 		}
-		out.WorkspaceIds = append(out.WorkspaceIds, ws)
+		if released.Valid {
+			w.ReleasedAt = &released.Int64
+		} else {
+			out.WorkspaceIds = append(out.WorkspaceIds, w.Id)
+		}
+		out.Workspaces = append(out.Workspaces, w)
 	}
 	return out, rows.Err()
+}
+
+// RecentSessions are the live sessions and those that ended since, the
+// most recently active first.
+func (s *Store) RecentSessions(ctx context.Context, since time.Time) ([]*pb.Session, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT id FROM sessions WHERE ended_at IS NULL OR ended_at >= ? ORDER BY last_active_at DESC LIMIT 500`, since.UnixMilli())
+	if err != nil {
+		return nil, err
+	}
+	var ids []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			rows.Close()
+			return nil, err
+		}
+		ids = append(ids, id)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	out := make([]*pb.Session, 0, len(ids))
+	for _, id := range ids {
+		sess, err := s.Session(ctx, id)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, sess)
+	}
+	return out, nil
 }
 
 // LiveSession returns a session that has not ended, and marks it active.

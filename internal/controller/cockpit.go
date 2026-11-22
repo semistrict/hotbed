@@ -46,7 +46,7 @@ func (s *Server) GetSnapshot(ctx context.Context, _ *pb.GetSnapshotRequest) (*pb
 	if err != nil {
 		return nil, err
 	}
-	sessions, err := s.cfg.Store.LiveSessions(ctx)
+	sessions, err := s.cfg.Store.RecentSessions(ctx, day)
 	if err != nil {
 		return nil, err
 	}

@@ -1,5 +1,5 @@
 import { useQuery } from "@tanstack/react-query";
-import { useNavigate, useParams, useSearch } from "@tanstack/react-router";
+import { Link, useNavigate, useParams, useSearch } from "@tanstack/react-router";
 import { api, type FileEntry, type Workspace } from "../api";
 import { SegmentedBar } from "../components/charts/Bars";
 import { HistoryTable, LiveCommandTable } from "../components/CommandTable";
@@ -45,9 +45,17 @@ export function WorkspacePage() {
     <div className="space-y-6">
       <PageTitle
         title={w.id}
-        sub={`${w.agent} on ${w.branch} · ${repoName(s, w.repoId)} · ${nodeName(s, w.nodeId)}`}
+        sub={`${repoName(s, w.repoId)} · ${nodeName(s, w.nodeId)} · ${w.agent}${w.branch ? ` on ${w.branch}` : ""}`}
         right={<WorkspaceStateLabel w={w} now={now} />}
       />
+      {w.sessionId && (
+        <p className="rise -mt-3 text-[13px] text-muted-foreground">
+          session{" "}
+          <Link to="/sessions/$id" params={{ id: w.sessionId }} className="font-mono text-foreground hover:text-primary">
+            {w.sessionId}
+          </Link>
+        </p>
+      )}
       {w.reason && (w.state === "preparing" || w.state === "failed") && (
         <p className={`font-mono text-[11px] ${w.state === "failed" ? "text-critical" : "text-warning"}`}>
           {w.state === "failed" ? "✕ failed: " : "◌ "}

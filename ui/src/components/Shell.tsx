@@ -4,7 +4,8 @@ import { usingMock } from "../api";
 import { useSnapshot } from "../lib/data";
 
 const NAV = [
-  { to: "/", label: "Overview" },
+  { to: "/", label: "Sessions" },
+  { to: "/cluster", label: "Cluster" },
   { to: "/nodes", label: "Nodes" },
   { to: "/workspaces", label: "Workspaces" },
   { to: "/commands", label: "Commands" },

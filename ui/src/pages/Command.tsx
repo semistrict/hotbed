@@ -27,6 +27,7 @@ function CommandView({ s, live, done, id }: { s: Snapshot; live: Command | null;
   const argv = live?.argv ?? done?.argv ?? "";
   const state = live?.state ?? done?.state ?? "succeeded";
   const workspaceId = live?.workspaceId ?? done?.workspaceId ?? "";
+  const sessionId = live?.sessionId ?? done?.sessionId ?? "";
   const nodeId = live?.nodeId ?? done?.nodeId ?? "";
   const started = live ? Date.parse(live.startedAt ?? live.queuedAt) : (done?.endedAt ?? now) - (done?.seconds ?? 0) * 1000;
   const ended = live?.endedAt ? Date.parse(live.endedAt) : done ? done.endedAt : null;
@@ -47,6 +48,15 @@ function CommandView({ s, live, done, id }: { s: Snapshot; live: Command | null;
           <span className="text-primary">$</span> {argv}
         </h1>
         <p className="mt-2 text-[13px] text-muted-foreground">
+          {sessionId && (
+            <>
+              session{" "}
+              <Link to="/sessions/$id" params={{ id: sessionId }} className="font-mono text-foreground hover:text-primary">
+                {sessionId}
+              </Link>
+              ,{" "}
+            </>
+          )}
           in{" "}
           {workspaceExists ? (
             <Link to="/workspaces/$id" params={{ id: workspaceId }} className="font-mono text-foreground hover:text-primary">

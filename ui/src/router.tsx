@@ -8,12 +8,18 @@ import { NodePage } from "./pages/Node";
 import { NodesPage } from "./pages/Nodes";
 import { NotFound } from "./pages/NotFound";
 import { OverviewPage } from "./pages/Overview";
+import { SessionPage } from "./pages/Session";
+import { SessionsPage } from "./pages/Sessions";
 import { WorkspacePage } from "./pages/Workspace";
 import { WorkspacesPage } from "./pages/Workspaces";
 
 const root = createRootRoute({ component: Shell, notFoundComponent: NotFound });
 
-const overview = createRoute({ getParentRoute: () => root, path: "/", component: OverviewPage });
+// Sessions are what an agent works in, so they are the cockpit's home; the
+// cluster's own view is a page of its own.
+const sessions = createRoute({ getParentRoute: () => root, path: "/", component: SessionsPage });
+const session = createRoute({ getParentRoute: () => root, path: "/sessions/$id", component: SessionPage });
+const overview = createRoute({ getParentRoute: () => root, path: "/cluster", component: OverviewPage });
 const nodes = createRoute({ getParentRoute: () => root, path: "/nodes", component: NodesPage });
 const node = createRoute({ getParentRoute: () => root, path: "/nodes/$hostname", component: NodePage });
 const workspaces = createRoute({ getParentRoute: () => root, path: "/workspaces", component: WorkspacesPage });
@@ -55,7 +61,7 @@ const history = createRoute({
   }),
 });
 
-const routeTree = root.addChildren([overview, nodes, node, workspaces, workspace, commands, command, history]);
+const routeTree = root.addChildren([sessions, session, overview, nodes, node, workspaces, workspace, commands, command, history]);
 
 export const router = createRouter({ routeTree, defaultPreload: "intent", scrollRestoration: true });
 

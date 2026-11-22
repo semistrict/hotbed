@@ -41,4 +41,21 @@ describe("MockCluster", () => {
       if (cmd.state === "queued") expect(cmd.startedAt).toBeNull();
     }
   });
+
+  it("puts every command and workspace in a session the snapshot lists", () => {
+    const c = new MockCluster(7120, t);
+    c.advanceTo(t + 10 * 60_000);
+    const s = c.snapshot();
+    const sessions = new Map(s.sessions.map((x) => [x.id, x]));
+    for (const cmd of [...s.commands, ...s.history]) expect(sessions.has(cmd.sessionId)).toBe(true);
+    for (const w of s.workspaces) {
+      expect(sessions.get(w.sessionId)?.workspaces.map((sw) => sw.id)).toContain(w.id);
+    }
+    for (const x of s.sessions) {
+      expect(x.id).toMatch(/^[a-z]+-[a-z]+$/);
+      if (x.endedAt === null) expect(x.workspaces.some((sw) => sw.releasedAt === null)).toBe(true);
+    }
+    const active = s.sessions.map((x) => x.lastActiveAt);
+    expect(active).toEqual([...active].sort().reverse());
+  });
 });

@@ -21,6 +21,7 @@ import type {
   FailureKind,
   FinishedCommand,
   Node,
+  Session,
   Snapshot,
   Workspace,
 } from "./types";
@@ -118,6 +119,23 @@ export function toSnapshot(s: PbSnapshot): Snapshot {
       Object.entries(s.nodeHourly).map(([node, v]) => [node, v.hours.map((h) => ({ hour: num(h.hour), cpuBusy: h.cpuBusy, memoryUsed: h.memoryUsed }))]),
     ),
     history: s.history.map(toFinished),
+    sessions: s.sessions.map(
+      (x): Session => ({
+        id: x.id,
+        agent: x.agent,
+        startedAt: iso(x.startedAt),
+        lastActiveAt: iso(x.lastActiveAt),
+        endedAt: isoOrNull(x.endedAt),
+        endReason: x.endReason,
+        workspaces: x.workspaces.map((w) => ({
+          id: w.id,
+          repoId: w.repoId,
+          nodeId: w.nodeId,
+          createdAt: iso(w.createdAt),
+          releasedAt: isoOrNull(w.releasedAt),
+        })),
+      }),
+    ),
   };
 }
 
@@ -177,10 +195,11 @@ function toBase(b: PbBase): Base {
 function toWorkspace(w: PbWorkspace): Workspace {
   return {
     id: w.id,
+    sessionId: w.sessionId,
     repoId: w.repoId,
     baseId: w.baseId,
     nodeId: w.nodeId,
-    agent: w.sessionId ? `${w.agent} · ${w.sessionId}` : w.agent,
+    agent: w.agent,
     branch: w.branch || w.sessionId,
     head: w.head.slice(0, 10),
     filesChanged: w.filesChanged,
@@ -233,6 +252,7 @@ function kind(k: string): Command["kind"] {
 function toCommand(c: PbCommand): Command {
   return {
     id: c.id,
+    sessionId: c.sessionId,
     workspaceId: c.workspaceId,
     nodeId: c.nodeId,
     argv: c.argv,
@@ -262,10 +282,11 @@ function toFinished(f: PbFinished): FinishedCommand {
   const st = state(f.state);
   return {
     id: f.id,
+    sessionId: f.sessionId,
     repoId: f.repoId,
     nodeId: f.nodeId,
     workspaceId: f.workspaceId,
-    agent: f.sessionId ? `${f.agent} · ${f.sessionId}` : f.agent,
+    agent: f.agent,
     argv: f.argv,
     kind: kind(f.kind),
     state: st === "succeeded" || st === "failed" ? st : "cancelled",

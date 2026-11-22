@@ -780,3 +780,27 @@ func TestAddWatchesAgainWhenTheStreamDrops(t *testing.T) {
 		t.Errorf("add = %v, stderr %q; want a ready workspace after watching again", ws, r.stderr)
 	}
 }
+
+// The cockpit shows sessions that ended, with the workspaces they had.
+func TestSnapshotKeepsEndedSessions(t *testing.T) {
+	c := newCluster(t)
+	c.addRepo(upstream(t))
+	c.ok(nil, "session", "start", "spent-owl")
+	ws := &pb.Workspace{}
+	c.ok(ws, "add", "spent-owl", "app")
+	c.ok(nil, "session", "end", "spent-owl")
+	snap, err := c.asWorker.GetSnapshot(t.Context(), &pb.GetSnapshotRequest{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got *pb.Session
+	for _, s := range snap.Sessions {
+		if s.Id == "spent-owl" {
+			got = s
+		}
+	}
+	if got == nil || got.EndedAt == nil || got.EndReason != "ended by its agent" || len(got.Workspaces) != 1 ||
+		got.Workspaces[0].Id != ws.Id || got.Workspaces[0].RepoId != "app" || got.Workspaces[0].ReleasedAt == nil {
+		t.Errorf("snapshot's session = %v", got)
+	}
+}
