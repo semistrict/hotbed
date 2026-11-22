@@ -31,7 +31,7 @@ func benchCluster(t *testing.T) (*cluster, *fake.Isolation) {
 	})
 	c.addRepo(upstream(t))
 	c.ok(nil, "session", "start", "tidy-owl")
-	c.ok(nil, "add", "tidy-owl", "app")
+	c.ok(nil, "add", "-s", "tidy-owl", "-r", "app")
 	return c, iso
 }
 
@@ -39,7 +39,7 @@ func benchCluster(t *testing.T) (*cluster, *fake.Isolation) {
 func (c *cluster) command(id string) *pb.Command {
 	c.t.Helper()
 	var ls pb.ListCommandsResponse
-	c.ok(&ls, "ps", "tidy-owl")
+	c.ok(&ls, "ps", "-s", "tidy-owl")
 	for _, cmd := range ls.Commands {
 		if cmd.Id == id {
 			return cmd
@@ -54,7 +54,7 @@ func (c *cluster) command(id string) *pb.Command {
 func (c *cluster) detach(flags []string, args ...string) *pb.Command {
 	c.t.Helper()
 	var cmd pb.Command
-	c.ok(&cmd, append(append(append([]string{"run", "tidy-owl", "app", "--detach"}, flags...), "--"), args...)...)
+	c.ok(&cmd, append(append(append([]string{"run", "-s", "tidy-owl", "-r", "app", "--detach"}, flags...), "--"), args...)...)
 	return &cmd
 }
 
@@ -78,8 +78,8 @@ func TestBenchOnANodeThatTakesNoMeasurementsFails(t *testing.T) {
 	c := newCluster(t)
 	c.addRepo(upstream(t))
 	c.ok(nil, "session", "start", "tidy-owl")
-	c.ok(nil, "add", "tidy-owl", "app")
-	code, e := c.fails("run", "tidy-owl", "app", "--bench", "--", "true")
+	c.ok(nil, "add", "-s", "tidy-owl", "-r", "app")
+	code, e := c.fails("run", "-s", "tidy-owl", "-r", "app", "--bench", "--", "true")
 	if code != exitError || e.Code != api.CodeInvalidArgs || e.Message != "asahimbp takes no measurements: its worker's config names no bench CPUs" {
 		t.Fatalf("run --bench: exit %d, %+v", code, e)
 	}
@@ -89,7 +89,7 @@ func TestBenchOnANodeThatTakesNoMeasurementsFails(t *testing.T) {
 // starts until after it ends, never swapping, and at the default nice.
 func TestBenchRunsIsolated(t *testing.T) {
 	c, iso := benchCluster(t)
-	code, out, stderr := c.hotbed("run", "tidy-owl", "app", "--bench", "--", "sh", "-c", "echo measured")
+	code, out, stderr := c.hotbed("run", "-s", "tidy-owl", "-r", "app", "--bench", "--", "sh", "-c", "echo measured")
 	if code != 0 || out != "measured\n" {
 		t.Fatalf("run --bench: exit %d, %q, stderr %q", code, out, stderr)
 	}
@@ -98,7 +98,7 @@ func TestBenchRunsIsolated(t *testing.T) {
 	}
 	c.eventually("the isolation to be given back", func() bool { return iso.Offs() == 1 && !iso.Active() })
 	var ls pb.ListCommandsResponse
-	c.ok(&ls, "ps", "tidy-owl")
+	c.ok(&ls, "ps", "-s", "tidy-owl")
 	i := slices.IndexFunc(ls.Commands, func(cmd *pb.Command) bool { return cmd.Bench })
 	if i < 0 {
 		t.Fatalf("ps lists no measurement: %v", ls.Commands)
@@ -121,11 +121,11 @@ func TestBenchRunsIsolated(t *testing.T) {
 func TestBenchThatLostItsIsolationFails(t *testing.T) {
 	c, iso := benchCluster(t)
 	iso.SetLost(errors.New("the measurement's slice is not a partition of 4-7: root invalid, its CPUs 0-7"))
-	code, out, stderr := c.hotbed("run", "tidy-owl", "app", "--bench", "--", "true")
+	code, out, stderr := c.hotbed("run", "-s", "tidy-owl", "-r", "app", "--bench", "--", "true")
 	var ls pb.ListCommandsResponse
-	c.ok(&ls, "ps", "tidy-owl")
+	c.ok(&ls, "ps", "-s", "tidy-owl")
 	cmd := ls.Commands[len(ls.Commands)-1]
-	want := "hotbed: " + cmd.Id + " running in " + cmd.WorkspaceId + " (hotbed stop tidy-owl " + cmd.Id + ")\n" +
+	want := "hotbed: " + cmd.Id + " running in " + cmd.WorkspaceId + " (hotbed stop -s tidy-owl " + cmd.Id + ")\n" +
 		"hotbed: INTERNAL: " + cmd.Id + " failed: exit 0, but the measurement lost its isolation: the measurement's slice is not a partition of 4-7: root invalid, its CPUs 0-7\n"
 	if code != exitError || out != "" || stderr != want {
 		t.Fatalf("run --bench: exit %d, %q, stderr %q", code, out, stderr)

@@ -32,6 +32,9 @@ type deps struct {
 	stderr       io.Writer
 	// cache keeps per-session cursors for hotbed wait.
 	cache string
+	// sessionsFile maps T3CODE_THREAD_ID / git worktree roots to default sessions
+	// (default ~/.hotbed/sessions.json).
+	sessionsFile string
 	// build is the client's build (0 for a dev build), exe its binary, and
 	// reexec runs a binary: what following the controller's build needs.
 	build   int64

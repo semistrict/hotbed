@@ -66,7 +66,7 @@ func (f controllerFlag) locate(ctx context.Context, d deps, session, repo string
 		}
 		if found == nil {
 			return nil, workerClients{}, api.Errorf(api.CodeNotFound, "session %s has no workspace of %s", session, repo).
-				WithSuggestion(fmt.Sprintf("hotbed add %s %s (with --sync DIR to follow a local checkout)", session, repo))
+				WithSuggestion(fmt.Sprintf("hotbed add -s %s -r %s (with --sync DIR to follow a local checkout)", session, repo))
 		}
 	case api.FromConnect(err).Code == api.CodeControllerUnreachable:
 		known, cerr := loadKnown(d, session)

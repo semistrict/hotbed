@@ -29,7 +29,7 @@ sudo hotbed serve /var/lib/hotbed
 # Repos, from anywhere on the tailnet:
 export HOTBED_CONTROLLER=ubu1
 hotbed repo add ratel https://github.com/you/ratel
-hotbed step set ratel build --every-pull -- 'cargo build --all-targets && cargo nextest run --no-run'
+hotbed step set -r ratel build --every-pull -- 'cargo build --all-targets && cargo nextest run --no-run'
 hotbed repo ls
 hotbed nodes
 ```
@@ -43,7 +43,7 @@ Nothing builds when a repo is added. A worker freshens a new base when a workspa
 and the branch has moved or a step changed. The worker is one of those named with `--host`, or
 any. It forks its newest base, pulls the branch's head with its submodules, runs the steps that
 need to run, and snapshots the result as the next base. So a freshen is incremental. Only a
-repo's first base builds from nothing, and that can take a while. `hotbed repo rebuild NAME` makes the next base build from nothing again, for when
+repo's first base builds from nothing, and that can take a while. `hotbed repo rebuild -r NAME` makes the next base build from nothing again, for when
 incremental state has gone bad.
 
 ## Measurements

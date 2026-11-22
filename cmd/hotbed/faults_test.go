@@ -81,7 +81,7 @@ var started = regexp.MustCompile(`hotbed: (\S+) running in `)
 
 func (c *cluster) runAttached(session string, args ...string) (id string, code int) {
 	c.t.Helper()
-	code, _, stderr := c.hotbed(append([]string{"run", session, "app", "--"}, args...)...)
+	code, _, stderr := c.hotbed(append([]string{"run", "-s", session, "-r", "app", "--"}, args...)...)
 	m := started.FindStringSubmatch(stderr)
 	if m == nil {
 		c.t.Fatalf("run %v started nothing: exit %d, stderr %q", args, code, stderr)
@@ -95,9 +95,9 @@ func TestWorkerRestartMidCommand(t *testing.T) {
 	c := newCluster(t)
 	c.addRepo(upstream(t))
 	c.ok(nil, "session", "start", "warm-elk")
-	c.ok(nil, "add", "warm-elk", "app")
+	c.ok(nil, "add", "-s", "warm-elk", "-r", "app")
 	cmd := &pb.Command{}
-	c.ok(cmd, "run", "warm-elk", "app", "--detach", "--", "sh", "-c", "sleep 2; exit 3")
+	c.ok(cmd, "run", "-s", "warm-elk", "-r", "app", "--detach", "--", "sh", "-c", "sleep 2; exit 3")
 	c.nodes[0].restart()
 	c.eventually("the command's end", func() bool { return len(ends(c.events("warm-elk"), cmd.Id)) > 0 })
 	c.converged()
@@ -113,7 +113,7 @@ func TestControllerRestartWithEventsInFlight(t *testing.T) {
 	c := newCluster(t)
 	c.addRepo(upstream(t))
 	c.ok(nil, "session", "start", "busy-ant")
-	c.ok(nil, "add", "busy-ant", "app")
+	c.ok(nil, "add", "-s", "busy-ant", "-r", "app")
 	c.ctrl.setDown(true)
 	var ids []string
 	for i := range 3 {
@@ -150,9 +150,9 @@ func TestLostWorkerDatabase(t *testing.T) {
 	c.addRepo(upstream(t))
 	c.ok(nil, "session", "start", "poor-cod")
 	first := &pb.Workspace{}
-	c.ok(first, "add", "poor-cod", "app")
+	c.ok(first, "add", "-s", "poor-cod", "-r", "app")
 	cmd := &pb.Command{}
-	c.ok(cmd, "run", "poor-cod", "app", "--detach", "--", "sleep", "30")
+	c.ok(cmd, "run", "-s", "poor-cod", "-r", "app", "--detach", "--", "sleep", "30")
 	c.eventually("the command to run", func() bool { return c.commandStates("poor-cod")[cmd.Id] == pb.CommandState_COMMAND_STATE_RUNNING })
 	c.nodes[0].wipe()
 	c.eventually("the loss to reach the session", func() bool { return len(ends(c.events("poor-cod"), cmd.Id)) > 0 })
@@ -167,11 +167,11 @@ func TestLostWorkerDatabase(t *testing.T) {
 		t.Errorf("no failed event for workspace %s in %v", first.Id, evs)
 	}
 	again := &pb.Workspace{}
-	c.ok(again, "add", "poor-cod", "app")
+	c.ok(again, "add", "-s", "poor-cod", "-r", "app")
 	if again.Id == first.Id {
 		t.Fatalf("add after the loss returned the lost workspace %s", first.Id)
 	}
-	if code, out, stderr := c.hotbed("run", "poor-cod", "app", "--", "cat", "src/lib.txt"); code != 0 || out != "base\n" {
+	if code, out, stderr := c.hotbed("run", "-s", "poor-cod", "-r", "app", "--", "cat", "src/lib.txt"); code != 0 || out != "base\n" {
 		t.Errorf("run in the new workspace: exit %d, %q, stderr %q", code, out, stderr)
 	}
 }
@@ -185,10 +185,10 @@ func TestPartitionedWorker(t *testing.T) {
 	for _, s := range []string{"near-yak", "far-gnu", "gone-emu"} {
 		c.ok(nil, "session", "start", s)
 	}
-	c.ok(nil, "add", "near-yak", "app", "--node", "asahimbp")
-	c.ok(nil, "add", "far-gnu", "app", "--node", "mini")
+	c.ok(nil, "add", "-s", "near-yak", "-r", "app", "--node", "asahimbp")
+	c.ok(nil, "add", "-s", "far-gnu", "-r", "app", "--node", "mini")
 	gone := &pb.Workspace{}
-	c.ok(gone, "add", "gone-emu", "app", "--node", "mini")
+	c.ok(gone, "add", "-s", "gone-emu", "-r", "app", "--node", "mini")
 
 	c.nodes[1].cut.Store(true)
 	far, code := c.runAttached("far-gnu", "sh", "-c", "exit 5")
@@ -203,7 +203,7 @@ func TestPartitionedWorker(t *testing.T) {
 	if got := ends(c.events("far-gnu"), far); len(got) != 0 {
 		t.Errorf("the cut-off worker's command reached its session: %q", got)
 	}
-	c.ok(nil, "session", "end", "gone-emu")
+	c.ok(nil, "session", "end", "-s", "gone-emu")
 
 	c.nodes[1].cut.Store(false)
 	c.converged()

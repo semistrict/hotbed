@@ -79,7 +79,7 @@ func TestScheduledCommandRunsInItsOwnSession(t *testing.T) {
 	c.at(tomorrowAt(1, 59))
 
 	sc := &pb.ScheduledCommand{}
-	c.ok(sc, "schedule", "add", "nightly", "app", "--cron", nightly, "--env", "WHO=nightly", "--",
+	c.ok(sc, "schedule", "add", "nightly", "-r", "app", "--cron", nightly, "--env", "WHO=nightly", "--",
 		"sh", "-c", `echo "$WHO at $(cat target/src/keep.txt)"`)
 	slot := tomorrowAt(2, 0)
 	if sc.Name != "nightly" || sc.Cron != nightly || sc.Repo != "app" || sc.GetNextAt() != slot.UnixMilli() ||
@@ -119,7 +119,7 @@ func TestScheduledCommandRunsInItsOwnSession(t *testing.T) {
 	if s := c.session(wantSession); s.EndedAt == nil || s.EndReason != "its scheduled run succeeded" {
 		t.Errorf("the succeeded run's session = %v", s)
 	}
-	_, out, _ := c.hotbed("logs", wantSession, run.CommandId)
+	_, out, _ := c.hotbed("logs", "-s", wantSession, run.CommandId)
 	if out != "nightly at keep\n" {
 		t.Errorf("the run's output = %q", out)
 	}
@@ -137,7 +137,7 @@ func TestFailedScheduledRunLingers(t *testing.T) {
 	c := newCluster(t)
 	c.addRepo(upstream(t))
 	flag := filepath.Join(t.TempDir(), "go")
-	c.ok(nil, "schedule", "add", "flaky", "app", "--cron", nightly, "--", "sh", "-c", waitFor(flag, "exit 3"))
+	c.ok(nil, "schedule", "add", "flaky", "-r", "app", "--cron", nightly, "--", "sh", "-c", waitFor(flag, "exit 3"))
 	run := &pb.ScheduledRun{}
 	c.ok(run, "schedule", "run", "flaky")
 	if run.Outcome != pb.RunOutcome_RUN_OUTCOME_RUNNING || run.SlotAt != nil || run.SessionId == "" {
@@ -187,7 +187,7 @@ func TestScheduledRunsAreSkippedOrMissed(t *testing.T) {
 	flag := filepath.Join(t.TempDir(), "go")
 	first := tomorrowAt(2, 0)
 	c.at(first.Add(-time.Minute))
-	c.ok(nil, "schedule", "add", "hourly", "app", "--cron", "CRON_TZ=UTC 0 * * * *", "--", "sh", "-c", waitFor(flag, "true"))
+	c.ok(nil, "schedule", "add", "hourly", "-r", "app", "--cron", "CRON_TZ=UTC 0 * * * *", "--", "sh", "-c", waitFor(flag, "true"))
 
 	c.at(first.Add(5 * time.Second))
 	c.tick()
@@ -236,7 +236,7 @@ func TestScheduledRunSurvivesRestart(t *testing.T) {
 	c := newCluster(t)
 	c.addRepo(upstream(t))
 	flag := filepath.Join(t.TempDir(), "go")
-	c.ok(nil, "schedule", "add", "soak", "app", "--cron", nightly, "--", "sh", "-c", waitFor(flag, "true"))
+	c.ok(nil, "schedule", "add", "soak", "-r", "app", "--cron", nightly, "--", "sh", "-c", waitFor(flag, "true"))
 	run := &pb.ScheduledRun{}
 	c.ok(run, "schedule", "run", "soak")
 
@@ -254,7 +254,7 @@ func TestScheduledRunSurvivesRestart(t *testing.T) {
 func TestScheduledRunThatCannotStart(t *testing.T) {
 	c := newCluster(t)
 	c.addRepo(upstream(t))
-	c.ok(nil, "schedule", "add", "pinned", "app", "--cron", nightly, "--node", "nowhere", "--", "true")
+	c.ok(nil, "schedule", "add", "pinned", "-r", "app", "--cron", nightly, "--node", "nowhere", "--", "true")
 	run := &pb.ScheduledRun{}
 	c.ok(run, "schedule", "run", "pinned")
 	if run.Outcome != pb.RunOutcome_RUN_OUTCOME_NOT_STARTED || run.Reason != "nowhere is not online or does not host app" || run.EndedAt == nil {
@@ -271,7 +271,7 @@ func TestPausedScheduleRunsNothing(t *testing.T) {
 	c := newCluster(t)
 	c.addRepo(upstream(t))
 	c.at(tomorrowAt(1, 0))
-	c.ok(nil, "schedule", "add", "nightly", "app", "--cron", nightly, "--", "true")
+	c.ok(nil, "schedule", "add", "nightly", "-r", "app", "--cron", nightly, "--", "true")
 	paused := &pb.ScheduledCommand{}
 	c.ok(paused, "schedule", "pause", "nightly")
 	if !paused.Paused || paused.NextAt != nil {
@@ -297,11 +297,11 @@ func TestScheduleAddChecksItsArguments(t *testing.T) {
 		args []string
 		code api.Code
 	}{
-		{[]string{"nightly", "app", "--cron", "0 2 * *", "--", "true"}, api.CodeInvalidArgs},
-		{[]string{"nightly", "app", "--cron", "0 0 30 2 *", "--", "true"}, api.CodeInvalidArgs}, // February 30 never comes
-		{[]string{"Nightly", "app", "--cron", nightly, "--", "true"}, api.CodeInvalidArgs},
-		{[]string{"nightly", "nope", "--cron", nightly, "--", "true"}, api.CodeNotFound},
-		{[]string{"nightly", "app", "--cron", nightly}, api.CodeInvalidArgs},
+		{[]string{"nightly", "-r", "app", "--cron", "0 2 * *", "--", "true"}, api.CodeInvalidArgs},
+		{[]string{"nightly", "-r", "app", "--cron", "0 0 30 2 *", "--", "true"}, api.CodeInvalidArgs}, // February 30 never comes
+		{[]string{"Nightly", "-r", "app", "--cron", nightly, "--", "true"}, api.CodeInvalidArgs},
+		{[]string{"nightly", "-r", "nope", "--cron", nightly, "--", "true"}, api.CodeNotFound},
+		{[]string{"nightly", "-r", "app", "--cron", nightly}, api.CodeInvalidArgs},
 	} {
 		if _, e := c.fails(append([]string{"schedule", "add"}, tc.args...)...); e.Code != tc.code {
 			t.Errorf("schedule add %v: %+v, want %s", tc.args, e, tc.code)
@@ -316,11 +316,11 @@ func TestScheduledRunEndsWithItsSession(t *testing.T) {
 	c := newCluster(t)
 	c.addRepo(upstream(t))
 	flag := filepath.Join(t.TempDir(), "go")
-	c.ok(nil, "schedule", "add", "soak", "app", "--cron", nightly, "--", "sh", "-c", waitFor(flag, "true"))
+	c.ok(nil, "schedule", "add", "soak", "-r", "app", "--cron", nightly, "--", "sh", "-c", waitFor(flag, "true"))
 	run := &pb.ScheduledRun{}
 	c.ok(run, "schedule", "run", "soak")
 	c.admitted(run.SessionId) // its base built, so nothing is left building when the test ends
-	c.ok(nil, "session", "end", run.SessionId)
+	c.ok(nil, "session", "end", "-s", run.SessionId)
 	got := c.schedule("soak").Runs[0]
 	if got.Outcome != pb.RunOutcome_RUN_OUTCOME_CANCELLED || got.Reason != "its session ended: ended by its agent" || got.EndedAt == nil {
 		t.Fatalf("run after its session ended = %v", got)
@@ -343,7 +343,7 @@ func (c *cluster) admitted(session string) {
 	var events []*pb.SessionEvent
 	c.eventually("a command of "+session+" to be admitted", func() bool {
 		res := &pb.WatchSessionResponse{}
-		c.ok(res, "wait", session, "--timeout", "1")
+		c.ok(res, "wait", "-s", session, "--timeout", "1")
 		events = append(events, res.Events...)
 		return countWhat(events, "admitted") > 0
 	})
@@ -354,7 +354,7 @@ func (c *cluster) admitted(session string) {
 func TestInterruptedStartIsNotStarted(t *testing.T) {
 	c := newCluster(t)
 	c.addRepo(upstream(t))
-	c.ok(nil, "schedule", "add", "half", "app", "--cron", nightly, "--", "true")
+	c.ok(nil, "schedule", "add", "half", "-r", "app", "--cron", nightly, "--", "true")
 	store, now := c.serverCfg.Store, c.clock.Now()
 	if _, err := store.StartSession(t.Context(), "half-20261122-0200", "schedule:half", now); err != nil {
 		t.Fatal(err)

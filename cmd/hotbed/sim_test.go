@@ -142,7 +142,7 @@ func (s *sim) add() string {
 	}
 	ss := free[s.rng.IntN(len(free))]
 	node := s.rng.IntN(len(s.c.nodes))
-	code, _, _ := s.c.hotbed("add", ss.id, "app", "--node", s.c.nodes[node].peer.Hostname)
+	code, _, _ := s.c.hotbed("add", "-s", ss.id, "-r", "app", "--node", s.c.nodes[node].peer.Hostname)
 	if code != 0 {
 		return fmt.Sprintf("add %s on %s: failed", ss.id, s.c.nodes[node].peer.Hostname)
 	}
@@ -157,7 +157,7 @@ func (s *sim) run() string {
 	}
 	ss := ws[s.rng.IntN(len(ws))]
 	want := s.rng.IntN(4)
-	code, _, stderr := s.c.hotbed("run", ss.id, "app", "--", "sh", "-c", fmt.Sprintf("exit %d", want))
+	code, _, stderr := s.c.hotbed("run", "-s", ss.id, "-r", "app", "--", "sh", "-c", fmt.Sprintf("exit %d", want))
 	m := started.FindStringSubmatch(stderr)
 	if m == nil {
 		return fmt.Sprintf("run in %s: started nothing (exit %d)", ss.id, code)
@@ -176,7 +176,7 @@ func (s *sim) detach() string {
 	}
 	ss := ws[s.rng.IntN(len(ws))]
 	cmd := &pb.Command{}
-	code, stdout, _ := s.c.hotbed("run", ss.id, "app", "--detach", "--", "sh", "-c", fmt.Sprintf("sleep 0.%d; exit %d", s.rng.IntN(9)+1, s.rng.IntN(3)))
+	code, stdout, _ := s.c.hotbed("run", "-s", ss.id, "-r", "app", "--detach", "--", "sh", "-c", fmt.Sprintf("sleep 0.%d; exit %d", s.rng.IntN(9)+1, s.rng.IntN(3)))
 	if code != 0 || decode(stdout, cmd) != nil {
 		return fmt.Sprintf("detach in %s: failed", ss.id)
 	}
@@ -194,7 +194,7 @@ func (s *sim) stop() string {
 	}
 	slices.Sort(ids)
 	id := ids[s.rng.IntN(len(ids))]
-	code, _, _ := s.c.hotbed("stop", s.cmds[id].session, id)
+	code, _, _ := s.c.hotbed("stop", "-s", s.cmds[id].session, id)
 	return fmt.Sprintf("stop %s: exit %d", id, code)
 }
 
@@ -204,7 +204,7 @@ func (s *sim) end() string {
 		return s.start()
 	}
 	ss := l[s.rng.IntN(len(l))]
-	if code, _, _ := s.c.hotbed("session", "end", ss.id); code != 0 {
+	if code, _, _ := s.c.hotbed("session", "end", "-s", ss.id); code != 0 {
 		return "end " + ss.id + ": failed"
 	}
 	ss.ended = true

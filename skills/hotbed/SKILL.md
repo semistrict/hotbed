@@ -14,17 +14,17 @@ you changed.
 ## The loop
 
 ```sh
-S=$(hotbed session start | jq -r .data.id)       # e.g. brave-otter
-hotbed add $S --sync .                           # a workspace of this repo that follows this checkout (or pass REPO outside a checkout)
-hotbed run $S -- cargo nextest run               # syncs your edits, runs, prints output, exits with its status
-hotbed run $S --detach -- cargo build --release
-hotbed wait $S                                   # blocks until a command in the session changes state
-hotbed session end $S
+S=$(hotbed session start | jq -r .data.id)       # e.g. brave-otter (bound to T3CODE_THREAD_ID or this git worktree in ~/.hotbed/sessions.json)
+hotbed add --sync .                              # workspace of this repo following this checkout
+hotbed run -- cargo nextest run                  # syncs your edits, runs, prints output, exits with its status
+hotbed run --detach -- cargo build --release
+hotbed wait                                      # blocks until a command in the session changes state
+hotbed session end
 ```
 
-- **Everything happens in a session.** The session's name is the first argument of every command.
+- **Everything happens in a session.** Session and repo are never positional arguments: override them with `-s`/`HOTBED_SESSION` and `-r`/`HOTBED_REPO`, or let hotbed default the session from `T3CODE_THREAD_ID` → current git worktree (stored in `~/.hotbed/sessions.json`) and infer the repo from the current git checkout. `hotbed session current` prints the active session.
   `session start` picks a free adjective-noun name, or takes one you give it.
-- **A session has one workspace per repo.** `hotbed add S REPO` makes it or returns the one it has.
+- **A session has one workspace per repo.** `hotbed add` (with `-r REPO` outside a checkout) makes it or returns the one it has.
   It is a fork of the repo's base at the branch's head. When the branch has moved or the repo's
   setup steps changed since the newest base, `add` first freshens a new base from the previous
   one: a pull and the steps that need to run (usually seconds to a minute; a repo's very first
@@ -35,11 +35,11 @@ hotbed session end $S
 - **Two ways to change code:**
   - `--sync DIR` ties the workspace to a local checkout. Every `hotbed run` from this machine first
     sends the checkout's state, uncommitted and untracked files included, ignored files not. Only
-    files that differ are rewritten, so builds stay incremental. `hotbed sync S REPO` does it
+    files that differ are rewritten, so builds stay incremental. `hotbed sync` does it
     explicitly.
   - Without `--sync` the workspace is **remote-only**: change it with commands, as you would over
-    ssh: `hotbed run S ratel -- git checkout -b fix`, `hotbed run S ratel -- sed -i ...`,
-    `hotbed run S ratel -- bash -c 'cat > src/x.rs <<EOF ... EOF'`, `git commit`, `git push`.
+    ssh: `hotbed run -r ratel -- git checkout -b fix`, `hotbed run -r ratel -- sed -i ...`,
+    `hotbed run -r ratel -- bash -c 'cat > src/x.rs <<EOF ... EOF'`, `git commit`, `git push`.
 
 ## Missing a tool or dependency? Add a step
 
@@ -47,7 +47,7 @@ Never install things ad hoc in a workspace: the next workspace, and every other 
 lack them again. Make it a **setup step** of the repo instead:
 
 ```sh
-hotbed step add $S ratel playwright -- 'pnpm exec playwright install chromium'
+hotbed step add -r ratel playwright -- 'pnpm exec playwright install chromium'
 ```
 
 `step add` runs the script in your workspace, so you have what it installs at once. It runs it a
@@ -62,8 +62,8 @@ installs from a lockfile.
   `CARGO_HOME`, `RUSTUP_HOME`, `GOPATH` and npm's cache already point into the workspace.
 - Make steps safe to repeat: check before installing, use `mkdir -p` and `--force`. A step that fails
   its second run is refused (`STEP_NOT_IDEMPOTENT`).
-- To fix a step, add it again under the same name. `hotbed step ls REPO` shows each step and
-  whether each node's newest base ran it. `hotbed step show REPO NAME` prints its script.
+- To fix a step, add it again under the same name. `hotbed step ls` (or `-r REPO`) shows each step and
+  whether each node's newest base ran it. `hotbed step show NAME` (or `-r REPO`) prints its script.
 - If a step breaks a later base, new workspaces still get the last good base, with a warning
   (`reason`) that names the failed step. Fix the step and the next `add` retries.
 - Steps run as an unprivileged user. OS packages (`apt`, `dnf`) are not steps: ask the person
@@ -73,7 +73,7 @@ installs from a lockfile.
 
 A session nothing touches for **an hour** is abandoned: its commands stop and its workspaces are
 deleted. Every hotbed call that names the session counts. While waiting on long work, call
-`hotbed wait S` in a loop: each call returns within two minutes, with or without events, and keeps
+`hotbed wait` in a loop: each call returns within two minutes, with or without events, and keeps
 the session alive.
 
 ## When the controller is out of reach
@@ -85,7 +85,7 @@ reaches `wait` once the controller is back.
 
 ## run
 
-`hotbed run S REPO [flags] -- CMD...`
+`hotbed run [flags] -- CMD...` (session defaults from `HOTBED_SESSION` / `T3CODE_THREAD_ID` / git worktree; repo defaults from `HOTBED_REPO` / current git checkout; override with `-s` / `-r`)
 
 - Attached (the default): prints the command's output as it runs and exits with its status. Ctrl-C
   or killing `hotbed run` stops the command.
@@ -95,7 +95,7 @@ reaches `wait` once the controller is back.
   and swaps past that. Nothing is killed for memory: when a node runs short, its newest command is
   **parked** (frozen, its memory swapped out) and resumes later. `wait` reports `parked` and
   `thawed`.
-- No time limit. Commands run until they end or `hotbed stop S CMD`.
+- No time limit. Commands run until they end or `hotbed stop CMD`.
 - `--bench` runs it as a **measurement**, for numbers you will compare (benchmarks, timings). It
   waits for any other measurement on the node to end and for running work to fit beside it, then
   runs alone on the node's measurement CPUs (`hotbed nodes`: `benchCpus`), which no other command
@@ -109,7 +109,7 @@ reaches `wait` once the controller is back.
 
 ## wait
 
-`hotbed wait S` returns what happened to the session's commands since the last `wait` on this
+`hotbed wait` returns what happened to the session's commands since the last `wait` on this
 machine:
 
 ```json
@@ -128,7 +128,7 @@ means the session is over (`endReason` says why).
 Recurring work, such as a nightly measurement, runs by itself:
 
 ```sh
-hotbed schedule add cladefs-nightly cladefs --cron '0 2 * * *' --node ubu1 \
+hotbed schedule add cladefs-nightly -r cladefs --cron '0 2 * * *' --node ubu1 \
   --env BOARD_URL=https://example/api/board -- scripts/nightly-host.sh
 hotbed schedule show cladefs-nightly        # the command, the next run, its runs and their sessions
 hotbed schedule run cladefs-nightly         # a run now; prints its session, for hotbed wait and logs
@@ -139,8 +139,8 @@ hotbed schedule run cladefs-nightly         # a run now; prints its session, for
   flags (`--env`, `--mem-low`, `--mem-high`, `--kind`). Nothing persists between runs except what
   the command keeps outside the workspace (pushed to git, or on the node: pin it with `--node`).
 - **Its session's end.** A run is never abandoned while its command runs. One that succeeds ends
-  its session. One that fails keeps it for the idle hour, so you can `hotbed run SESSION REPO --
-  ...` in its workspace to look; its log stays (`hotbed logs SESSION COMMAND`).
+  its session. One that fails keeps it for the idle hour, so you can `hotbed run -s SESSION -r REPO --
+  ...` in its workspace to look; its log stays (`hotbed logs -s SESSION COMMAND`).
 - **Cron** has five fields in the controller's time zone (`CRON_TZ=Europe/Lisbon 0 2 * * *` for
   another). Runs never overlap: a slot that comes while the previous run is still going is
   `skipped`. A slot that passes while the controller is down is `missed`, not run late.
@@ -150,11 +150,12 @@ hotbed schedule run cladefs-nightly         # a run now; prints its session, for
 
 | Command | Does |
 |---|---|
-| `hotbed ps S` | The session's commands, live and just ended |
-| `hotbed logs S CMD [-f]` | A command's output; `-f` follows until it ends |
-| `hotbed stop S CMD` | Stops a command |
+| `hotbed session current` | Active session and where it came from (`flag`, `env`, `thread`, `worktree`) |
+| `hotbed ps` | The session's commands, live and just ended |
+| `hotbed logs CMD [-f]` | A command's output; `-f` follows until it ends |
+| `hotbed stop CMD` | Stops a command |
 | `hotbed repo ls` | Repos and their setup steps |
-| `hotbed step ls REPO` | A repo's steps and which each node's newest base ran |
+| `hotbed step ls` | A repo's steps and which each node's newest base ran |
 | `hotbed nodes` | The cluster's machines, and the build each runs |
 | `hotbed upgrade` | Install the controller's build over this hotbed (a CI build does it by itself) |
 

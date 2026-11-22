@@ -18,8 +18,9 @@ import (
 )
 
 type sessionCmd struct {
-	Start sessionStartCmd `cmd:"" help:"Start a session; prints its name. Call hotbed wait at least hourly, or it is abandoned."`
-	End   sessionEndCmd   `cmd:"" help:"End a session: stop its commands and release its workspaces."`
+	Start   sessionStartCmd   `cmd:"" help:"Start a session and bind it to this T3 thread or git worktree in ~/.hotbed/sessions.json. Call hotbed wait at least hourly, or it is abandoned."`
+	Current sessionCurrentCmd `cmd:"" help:"Print the active session resolved from -s, HOTBED_SESSION, T3CODE_THREAD_ID, or the current git worktree."`
+	End     sessionEndCmd     `cmd:"" help:"End a session: stop its commands, release its workspaces, and clear its local mapping."`
 }
 
 type sessionStartCmd struct {
@@ -33,34 +34,60 @@ func (c *sessionStartCmd) Exec(ctx context.Context, d deps) (any, error) {
 	if err != nil {
 		return nil, err
 	}
-	return cl.sessions.StartSession(ctx, &pb.StartSessionRequest{Id: c.Name, Agent: c.Agent})
+	sess, err := cl.sessions.StartSession(ctx, &pb.StartSessionRequest{Id: c.Name, Agent: c.Agent})
+	if err != nil {
+		return nil, err
+	}
+	bindSessionForContext(ctx, d, sess.Id)
+	return sess, nil
+}
+
+type sessionCurrentCmd struct {
+	sessionFlag
+}
+
+func (c *sessionCurrentCmd) Exec(ctx context.Context, d deps) (any, error) {
+	return c.sessionFlag.resolveBinding(ctx, d)
 }
 
 type sessionEndCmd struct {
 	controllerFlag
-	Session string `arg:"" help:"The session's name."`
+	sessionFlag
 }
 
 func (c *sessionEndCmd) Exec(ctx context.Context, d deps) (any, error) {
+	sessID, err := c.sessionFlag.resolve(ctx, d)
+	if err != nil {
+		return nil, err
+	}
 	cl, err := c.clients(d.http)
 	if err != nil {
 		return nil, err
 	}
-	return cl.sessions.EndSession(ctx, &pb.EndSessionRequest{Id: c.Session})
+	res, err := cl.sessions.EndSession(ctx, &pb.EndSessionRequest{Id: sessID})
+	if err != nil {
+		return nil, err
+	}
+	unbindSession(d, sessID)
+	return res, nil
 }
 
 type addCmd struct {
 	controllerFlag
-	Session string `arg:"" help:"The session's name."`
-	Repo    string `arg:"" optional:"" help:"The repo's name, from hotbed repo ls (default: inferred from the current checkout)."`
-	Sync    string `type:"path" help:"A local checkout of the repo the workspace follows: run from this machine syncs it first. Without it the workspace is remote-only."`
-	Node    string `help:"Put the workspace on this node (host name)."`
-	Branch  string `help:"The branch you work on, for the cockpit."`
-	NoWait  bool   `help:"Return while the workspace is still preparing (its base being pulled and freshened); commands run in it queue until it is ready."`
+	sessionFlag
+	repoFlag
+	Sync   string `type:"path" help:"A local checkout of the repo the workspace follows: run from this machine syncs it first. Without it the workspace is remote-only."`
+	Node   string `help:"Put the workspace on this node (host name)."`
+	Branch string `help:"The branch you work on, for the cockpit."`
+	NoWait bool   `help:"Return while the workspace is still preparing (its base being pulled and freshened); commands run in it queue until it is ready."`
 }
 
 func (c *addCmd) Exec(ctx context.Context, d deps) (any, error) {
-	repo, err := c.resolveRepo(ctx, d, c.Session, c.Repo, c.Sync)
+	session, err := c.sessionFlag.resolve(ctx, d)
+	if err != nil {
+		return nil, err
+	}
+	repo, err := c.resolveRepo(ctx, d, session, c.Repo, c.Sync)
 	if err != nil {
 		return nil, err
 	}
@@ -69,12 +96,12 @@ func (c *addCmd) Exec(ctx context.Context, d deps) (any, error) {
 		return nil, err
 	}
 	ws, err := cl.workspaces.CreateWorkspace(ctx, &pb.CreateWorkspaceRequest{
-		SessionId: c.Session, Repo: repo, SyncDir: c.Sync, Node: c.Node, Branch: c.Branch,
+		SessionId: session, Repo: repo, SyncDir: c.Sync, Node: c.Node, Branch: c.Branch,
 	})
 	if err != nil {
 		return nil, err
 	}
-	remember(d, c.Session, ws)
+	remember(d, session, ws)
 	if c.NoWait {
 		return ws, nil
 	}
@@ -155,7 +182,7 @@ func waitReady(ctx context.Context, w workerClients, ws *pb.Workspace, stderr io
 	}
 	if ws.State == pb.WorkspaceState_WORKSPACE_STATE_FAILED {
 		return nil, api.Errorf(api.CodeWorkspaceFailed, "workspace %s failed: %s", ws.Id, ws.Reason).
-			WithSuggestion("fix the failing step (hotbed step ls REPO, then hotbed step add), and add the repo again")
+			WithSuggestion("fix the failing step (hotbed step ls -r REPO, then hotbed step add), and add the repo again")
 	}
 	return ws, nil
 }
@@ -186,17 +213,21 @@ func watchSession(ctx context.Context, stream clients, req *pb.WatchSessionReque
 
 type syncCmd struct {
 	controllerFlag
-	Session string `arg:"" help:"The session's name."`
-	Repo    string `arg:"" optional:"" help:"The repo's name (default: inferred from the current checkout)."`
-	Dir     string `type:"path" help:"The checkout to send (default: the one the workspace follows)."`
+	sessionFlag
+	repoFlag
+	Dir string `type:"path" help:"The checkout to send (default: the one the workspace follows)."`
 }
 
 func (c *syncCmd) Exec(ctx context.Context, d deps) (any, error) {
-	repo, err := c.resolveRepo(ctx, d, c.Session, c.Repo, c.Dir)
+	session, err := c.sessionFlag.resolve(ctx, d)
 	if err != nil {
 		return nil, err
 	}
-	ws, w, err := c.locate(ctx, d, c.Session, repo)
+	repo, err := c.resolveRepo(ctx, d, session, c.Repo, c.Dir)
+	if err != nil {
+		return nil, err
+	}
+	ws, w, err := c.locate(ctx, d, session, repo)
 	if err != nil {
 		return nil, err
 	}
@@ -280,12 +311,12 @@ func (f commandFlags) request(args []string, example string) (*pb.RunCommandRequ
 
 type runCmd struct {
 	controllerFlag
-	Session string   `arg:"" help:"The session's name."`
-	Repo    string   `arg:"" optional:"" help:"The repo whose workspace to run in (default: inferred from the current checkout)."`
-	Args    []string `arg:"" optional:"" passthrough:"" help:"The command, after --."`
-	NoSync  bool     `help:"Do not sync the checkout the workspace follows first."`
-	Detach  bool     `help:"Return once the command is queued; it runs until it ends or hotbed stop. For dev servers and long jobs; follow with hotbed wait."`
-	Port    int      `help:"Port a dev server listens on, for its URL."`
+	sessionFlag
+	repoFlag
+	Args   []string `arg:"" optional:"" passthrough:"" help:"The command, after --."`
+	NoSync bool     `help:"Do not sync the checkout the workspace follows first."`
+	Detach bool     `help:"Return once the command is queued; it runs until it ends or hotbed stop. For dev servers and long jobs; follow with hotbed wait."`
+	Port   int      `help:"Port a dev server listens on, for its URL."`
 	commandFlags
 }
 
@@ -294,15 +325,19 @@ func (c *runCmd) SetDashArgs(args []string) { c.Args = args }
 // Raw syncs if the workspace follows a checkout on this machine, runs the
 // command, and streams its output to stdout. Interrupting stops it.
 func (c *runCmd) Raw(ctx context.Context, d deps) (int, bool, error) {
-	req, err := c.request(c.Args, "hotbed run SESSION [REPO] -- cargo test")
+	req, err := c.request(c.Args, "hotbed run -- cargo test")
 	if err != nil {
 		return 0, false, err
 	}
-	repo, err := c.resolveRepo(ctx, d, c.Session, c.Repo, "")
+	session, err := c.sessionFlag.resolve(ctx, d)
 	if err != nil {
 		return 0, false, err
 	}
-	ws, w, err := c.locate(ctx, d, c.Session, repo)
+	repo, err := c.resolveRepo(ctx, d, session, c.Repo, "")
+	if err != nil {
+		return 0, false, err
+	}
+	ws, w, err := c.locate(ctx, d, session, repo)
 	if err != nil {
 		return 0, false, err
 	}
@@ -333,7 +368,7 @@ func (c *runCmd) Raw(ctx context.Context, d deps) (int, bool, error) {
 		writeEnvelope(d.stdout, success("run", cmd))
 		return exitOK, true, nil
 	}
-	fmt.Fprintf(d.stderr, "hotbed: %s running in %s (hotbed stop %s %s)\n", cmd.Id, ws.Id, c.Session, cmd.Id)
+	fmt.Fprintf(d.stderr, "hotbed: %s running in %s (hotbed stop -s %s %s)\n", cmd.Id, ws.Id, session, cmd.Id)
 	code, err := attach(ctx, w, cmd.Id, d.stdout, d.stderr)
 	return code, true, err
 }
@@ -450,19 +485,23 @@ func live(s pb.CommandState) bool {
 
 type waitCmd struct {
 	controllerFlag
-	Session string `arg:"" help:"The session's name."`
-	After   int64  `default:"-1" help:"Return events after this cursor (default: after the last ones this machine saw)."`
-	Timeout int    `default:"120" help:"Seconds to wait for an event, at most 120."`
+	sessionFlag
+	After   int64 `default:"-1" help:"Return events after this cursor (default: after the last ones this machine saw)."`
+	Timeout int   `default:"120" help:"Seconds to wait for an event, at most 120."`
 }
 
 // Exec watches the session until something happens. It remembers the cursor per session on this
 // machine, so repeated hotbed wait calls return each event once.
 func (c *waitCmd) Exec(ctx context.Context, d deps) (any, error) {
+	session, err := c.sessionFlag.resolve(ctx, d)
+	if err != nil {
+		return nil, err
+	}
 	stream, err := c.clients(d.stream)
 	if err != nil {
 		return nil, err
 	}
-	cursorFile := filepath.Join(d.cache, "sessions", c.Session+".cursor")
+	cursorFile := filepath.Join(d.cache, "sessions", session+".cursor")
 	after := c.After
 	if after < 0 {
 		after = 0
@@ -470,7 +509,7 @@ func (c *waitCmd) Exec(ctx context.Context, d deps) (any, error) {
 			after, _ = strconv.ParseInt(strings.TrimSpace(string(b)), 10, 64)
 		}
 	}
-	res, err := watchSession(ctx, stream, &pb.WatchSessionRequest{SessionId: c.Session, After: after, TimeoutSeconds: int32(c.Timeout)})
+	res, err := watchSession(ctx, stream, &pb.WatchSessionRequest{SessionId: session, After: after, TimeoutSeconds: int32(c.Timeout)})
 	if err != nil {
 		return nil, err
 	}
@@ -484,20 +523,24 @@ func (c *waitCmd) Exec(ctx context.Context, d deps) (any, error) {
 
 type psCmd struct {
 	controllerFlag
-	Session string `arg:"" help:"The session's name."`
+	sessionFlag
 }
 
 func (c *psCmd) Exec(ctx context.Context, d deps) (any, error) {
+	session, err := c.sessionFlag.resolve(ctx, d)
+	if err != nil {
+		return nil, err
+	}
 	cl, err := c.clients(d.http)
 	if err != nil {
 		return nil, err
 	}
-	return cl.workspaces.ListCommands(ctx, &pb.ListCommandsRequest{SessionId: c.Session})
+	return cl.workspaces.ListCommands(ctx, &pb.ListCommandsRequest{SessionId: session})
 }
 
 type logsCmd struct {
 	controllerFlag
-	Session string `arg:"" help:"The session's name."`
+	sessionFlag
 	Command string `arg:"" help:"The command's ID."`
 	Follow  bool   `short:"f" help:"Keep printing until the command ends."`
 }
@@ -505,7 +548,11 @@ type logsCmd struct {
 // Raw prints the command's output as is, from its worker. A base's
 // freshen, whose log a failed add names, can be read from any session.
 func (c *logsCmd) Raw(ctx context.Context, d deps) (int, bool, error) {
-	_, w, err := c.locateCommand(ctx, d, c.Session, c.Command, true)
+	session, err := c.sessionFlag.resolve(ctx, d)
+	if err != nil {
+		return 0, false, err
+	}
+	_, w, err := c.locateCommand(ctx, d, session, c.Command, true)
 	if err != nil {
 		return 0, false, err
 	}
@@ -539,12 +586,16 @@ func (c *logsCmd) Exec(context.Context, deps) (any, error) { return nil, errors.
 
 type stopCmd struct {
 	controllerFlag
-	Session string `arg:"" help:"The session's name."`
+	sessionFlag
 	Command string `arg:"" help:"The command's ID."`
 }
 
 func (c *stopCmd) Exec(ctx context.Context, d deps) (any, error) {
-	_, w, err := c.locateCommand(ctx, d, c.Session, c.Command, false)
+	session, err := c.sessionFlag.resolve(ctx, d)
+	if err != nil {
+		return nil, err
+	}
+	_, w, err := c.locateCommand(ctx, d, session, c.Command, false)
 	if err != nil {
 		return nil, err
 	}

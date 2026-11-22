@@ -32,33 +32,29 @@ func TestNormalizeGitURL(t *testing.T) {
 	}
 }
 
-func TestRunParseWithOmittedRepoAndDashDash(t *testing.T) {
+func TestRunParseWithFlagsEnvAndRejectsPositionals(t *testing.T) {
+	t.Setenv("HOTBED_SESSION", "")
+	t.Setenv("HOTBED_REPO", "")
 	cases := []struct {
-		name     string
-		args     []string
-		wantRepo string
-		wantArgs []string
-		wantDet  bool
+		name        string
+		args        []string
+		wantSession string
+		wantRepo    string
+		wantArgs    []string
+		wantDet     bool
 	}{
 		{
-			name:     "omitted repo before --",
-			args:     []string{"run", "--controller", "ubu1", "s1", "--", "go", "test", "-race", "./..."},
-			wantRepo: "",
+			name:     "defaulted session and repo before --",
+			args:     []string{"run", "--controller", "ubu1", "--", "go", "test", "-race", "./..."},
 			wantArgs: []string{"go", "test", "-race", "./..."},
 		},
 		{
-			name:     "omitted repo with flags before -- and nested -- after",
-			args:     []string{"run", "--controller", "ubu1", "s1", "--detach", "--", "go", "test", "--", "-run", "Foo"},
-			wantRepo: "",
-			wantArgs: []string{"go", "test", "--", "-run", "Foo"},
-			wantDet:  true,
-		},
-		{
-			name:     "explicit repo with flags before --",
-			args:     []string{"run", "--controller", "ubu1", "s1", "hotbed", "--detach", "--", "echo", "hi"},
-			wantRepo: "hotbed",
-			wantArgs: []string{"echo", "hi"},
-			wantDet:  true,
+			name:        "flags before -- and nested -- after",
+			args:        []string{"run", "--controller", "ubu1", "-s", "s1", "-r", "hotbed", "--detach", "--", "go", "test", "--", "-run", "Foo"},
+			wantSession: "s1",
+			wantRepo:    "hotbed",
+			wantArgs:    []string{"go", "test", "--", "-run", "Foo"},
+			wantDet:     true,
 		},
 	}
 	for _, tc := range cases {
@@ -71,15 +67,36 @@ func TestRunParseWithOmittedRepoAndDashDash(t *testing.T) {
 			if !ok {
 				t.Fatalf("got %T, want *runCmd", cmd)
 			}
-			if rc.Repo != tc.wantRepo || rc.Detach != tc.wantDet || !slices.Equal(rc.Args, tc.wantArgs) {
-				t.Errorf("got repo=%q detach=%v args=%v; want repo=%q detach=%v args=%v",
-					rc.Repo, rc.Detach, rc.Args, tc.wantRepo, tc.wantDet, tc.wantArgs)
+			if rc.Session != tc.wantSession || rc.Repo != tc.wantRepo || rc.Detach != tc.wantDet || !slices.Equal(rc.Args, tc.wantArgs) {
+				t.Errorf("got session=%q repo=%q detach=%v args=%v; want session=%q repo=%q detach=%v args=%v",
+					rc.Session, rc.Repo, rc.Detach, rc.Args, tc.wantSession, tc.wantRepo, tc.wantDet, tc.wantArgs)
 			}
 		})
 	}
+
+	// Positional session or repo arguments must be rejected on add/sync/ps/wait/session end.
+	for _, bad := range [][]string{
+		{"add", "--controller", "ubu1", "s1", "app"},
+		{"sync", "--controller", "ubu1", "s1"},
+		{"ps", "--controller", "ubu1", "s1"},
+		{"wait", "--controller", "ubu1", "s1"},
+		{"session", "end", "--controller", "ubu1", "s1"},
+		{"step", "ls", "--controller", "ubu1", "app"},
+	} {
+		if _, _, _, err := parse(bad, io.Discard); err == nil {
+			t.Errorf("parse(%v) succeeded, want error rejecting positional session/repo", bad)
+		}
+	}
 }
 
-func TestInferRepoFromCheckout(t *testing.T) {
+// TestSessionAndRepoDefaultFromThreadWorktreeAndEnv verifies zero-flag usage
+// inside a checkout using T3CODE_THREAD_ID, git worktree fallback, HOTBED_SESSION,
+// and HOTBED_REPO.
+func TestSessionAndRepoDefaultFromThreadWorktreeAndEnv(t *testing.T) {
+	t.Setenv("HOTBED_SESSION", "")
+	t.Setenv("HOTBED_REPO", "")
+	t.Setenv("T3CODE_THREAD_ID", "thread-alpha-123")
+
 	c := newCluster(t)
 	remote := upstream(t)
 	// Register the repo under a different name than the local checkout folder
@@ -90,50 +107,87 @@ func TestInferRepoFromCheckout(t *testing.T) {
 	if _, err := (gitops.Git{}).Run(t.Context(), "clone", "--quiet", remote, checkout); err != nil {
 		t.Fatal(err)
 	}
-	// Also test from inside a nested subdirectory of the checkout.
 	sub := filepath.Join(checkout, "src")
 	if err := os.MkdirAll(sub, 0o755); err != nil {
 		t.Fatal(err)
 	}
 	t.Chdir(sub)
 
-	// Start a session, add workspace without naming the repo, run without naming
-	// the repo, sync without naming the repo, and manage steps without naming the repo.
+	// 1. Start session with T3CODE_THREAD_ID set -> bound to thread in sessions.json.
 	var sess pb.Session
-	c.ok(&sess, "session", "start", "inferred-fox")
+	c.ok(&sess, "session", "start", "thread-fox")
 
-	var ws pb.Workspace
-	c.ok(&ws, "add", sess.Id, "--sync", checkout)
-	if ws.RepoId != "cladefs" {
-		t.Fatalf("inferred workspace repoId = %q, want cladefs", ws.RepoId)
+	var cur sessionBinding
+	c.ok(&cur, "session", "current")
+	if cur.ID != "thread-fox" || cur.Source != "thread" || cur.Key != "thread-alpha-123" {
+		t.Fatalf("session current = %+v, want thread-fox from thread", cur)
 	}
 
-	code, stdout, stderr := c.hotbed("run", sess.Id, "--", "cat", "src/lib.txt")
+	// Zero-flag add, run, sync, ps, wait, logs, stop, step commands!
+	var ws pb.Workspace
+	c.ok(&ws, "add", "--sync", checkout)
+	if ws.RepoId != "cladefs" || ws.SessionId != "thread-fox" {
+		t.Fatalf("add with defaults = %v, want cladefs in thread-fox", ws)
+	}
+
+	code, stdout, stderr := c.hotbed("run", "--", "cat", "src/lib.txt")
 	if code != 0 || stdout != "base\n" {
-		t.Fatalf("run without repo: exit %d, stdout %q, stderr %q", code, stdout, stderr)
+		t.Fatalf("run with defaults: exit %d, stdout %q, stderr %q", code, stdout, stderr)
 	}
 
 	var syncRes pb.SyncResponse
-	c.ok(&syncRes, "sync", sess.Id)
+	c.ok(&syncRes, "sync")
 	if syncRes.WorkspaceId != ws.Id {
-		t.Fatalf("sync without repo hit workspace %q, want %q", syncRes.WorkspaceId, ws.Id)
+		t.Fatalf("sync with defaults hit %q, want %q", syncRes.WorkspaceId, ws.Id)
 	}
 
-	// Step commands without explicit repo name.
+	var ps pb.ListCommandsResponse
+	c.ok(&ps, "ps")
+	if len(ps.Commands) == 0 {
+		t.Fatalf("ps with defaults returned no commands")
+	}
+
 	c.ok(&pb.Repo{}, "step", "set", "check", "--", "true")
 	var steps pb.ListStepsResponse
 	c.ok(&steps, "step", "ls")
 	if len(steps.Steps) != 1 || steps.Steps[0].Step.Name != "check" {
-		t.Fatalf("step ls without repo = %+v", steps.Steps)
+		t.Fatalf("step ls with defaults = %+v", steps.Steps)
 	}
 	code, showOut, showErr := c.hotbed("step", "show", "check")
 	if code != 0 || showOut != "true\n" {
-		t.Fatalf("step show without repo: exit %d, out %q, err %q", code, showOut, showErr)
+		t.Fatalf("step show with defaults: exit %d, out %q, err %q", code, showOut, showErr)
 	}
 	c.ok(&pb.Repo{}, "step", "rm", "check")
 
-	// Running outside a git checkout without REPO must fail with INVALID_ARGS.
+	// Ending session clears the thread binding.
+	c.ok(&pb.Session{}, "session", "end")
+	if _, e := c.fails("session", "current"); e.Code != api.CodeInvalidArgs {
+		t.Errorf("session current after end = %+v, want INVALID_ARGS", e)
+	}
+
+	// 2. Without T3CODE_THREAD_ID, session binds to the git worktree root.
+	t.Setenv("T3CODE_THREAD_ID", "")
+	c.ok(&pb.Session{}, "session", "start", "wt-owl")
+	c.ok(&cur, "session", "current")
+	if cur.ID != "wt-owl" || cur.Source != "worktree" || cur.Key != canonicalPath(checkout) {
+		t.Fatalf("worktree session current = %+v, want wt-owl from worktree", cur)
+	}
+
+	// 3. HOTBED_SESSION + HOTBED_REPO override both thread and worktree, even outside a checkout.
 	t.Chdir(t.TempDir())
+	t.Setenv("HOTBED_SESSION", "wt-owl")
+	t.Setenv("HOTBED_REPO", "cladefs")
+	c.ok(&cur, "session", "current")
+	if cur.ID != "wt-owl" || cur.Source != "env" {
+		t.Fatalf("env session current = %+v, want wt-owl from env", cur)
+	}
+	c.ok(&ws, "add")
+	if ws.RepoId != "cladefs" || ws.SessionId != "wt-owl" {
+		t.Fatalf("add with HOTBED_SESSION+HOTBED_REPO = %v", ws)
+	}
+
+	// Outside a checkout with HOTBED_REPO unset, step ls fails cleanly.
+	t.Setenv("HOTBED_REPO", "")
 	if _, e := c.fails("step", "ls"); e.Code != api.CodeInvalidArgs {
 		t.Errorf("step ls outside checkout = %+v, want INVALID_ARGS", e)
 	}

@@ -146,11 +146,11 @@ type repoCmd struct {
 
 type repoRebuildCmd struct {
 	controllerFlag
-	ID string `arg:"" optional:"" help:"The repo's name (default: inferred from the current checkout)."`
+	repoFlag
 }
 
 func (c *repoRebuildCmd) Exec(ctx context.Context, d deps) (any, error) {
-	id, err := c.resolveRepo(ctx, d, "", c.ID, "")
+	id, err := c.resolveRepo(ctx, d, "", c.Repo, "")
 	if err != nil {
 		return nil, err
 	}

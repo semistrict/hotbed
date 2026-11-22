@@ -32,8 +32,8 @@ func (f controllerFlag) resolveRepo(ctx context.Context, d deps, session, explic
 	}
 	root, err := gitCheckoutRoot(ctx, dir)
 	if err != nil {
-		return "", api.Errorf(api.CodeInvalidArgs, "repo name is required outside a git checkout (%s)", dir).
-			WithSuggestion("run from inside a repo checkout, or pass REPO explicitly")
+		return "", api.Errorf(api.CodeInvalidArgs, "repo is required outside a git checkout (%s)", dir).
+			WithSuggestion("run from inside a repo checkout, set HOTBED_REPO, or pass -r REPO")
 	}
 	canonRoot := canonicalPath(root)
 
@@ -93,7 +93,7 @@ func (f controllerFlag) resolveRepo(ctx context.Context, d deps, session, explic
 	}
 
 	return "", api.Errorf(api.CodeInvalidArgs, "could not infer hotbed repo from checkout %s", root).
-		WithSuggestion("pass REPO explicitly, or check registered repos with `hotbed repo ls`")
+		WithSuggestion("pass -r REPO, set HOTBED_REPO, or check registered repos with `hotbed repo ls`")
 }
 
 func gitCheckoutRoot(ctx context.Context, dir string) (string, error) {

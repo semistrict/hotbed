@@ -197,7 +197,7 @@ func (c *cluster) fails(args ...string) (int, *api.Error) {
 func (c *cluster) addRepo(origin string) {
 	c.t.Helper()
 	c.ok(nil, "repo", "add", "app", origin)
-	c.ok(nil, "step", "set", "app", "build", "--every-pull", "--", freshen)
+	c.ok(nil, "step", "set", "-r", "app", "build", "--every-pull", "--", freshen)
 }
 
 func gitIn(t *testing.T, dir string, args ...string) string {
@@ -255,18 +255,18 @@ func TestSessionWithSyncedCheckout(t *testing.T) {
 	write(t, filepath.Join(agent, "src/new.txt"), "new\n")
 
 	ws := &pb.Workspace{}
-	c.ok(ws, "add", S, "app", "--sync", agent)
+	c.ok(ws, "add", "-s", S, "-r", "app", "--sync", agent)
 	if ws.RepoId != "app" || ws.SessionId != S || ws.Path != "/work/app" || ws.SyncDir != agent || ws.SyncHost != "laptop" || ws.FilesChanged != 2 {
 		t.Fatalf("add = %v", ws)
 	}
 	again := &pb.Workspace{}
-	c.ok(again, "add", S, "app")
+	c.ok(again, "add", "-s", S, "-r", "app")
 	if again.Id != ws.Id {
 		t.Errorf("second add made workspace %s, want the session's %s", again.Id, ws.Id)
 	}
 
 	// run sees the agent's edits, the base's build and caches, in the fork.
-	code, stdout, stderr := c.hotbed("run", S, "app", "--", "sh", "-c", `cat src/lib.txt src/new.txt target/src/keep.txt "$XDG_CACHE_HOME/marker"`)
+	code, stdout, stderr := c.hotbed("run", "-s", S, "-r", "app", "--", "sh", "-c", `cat src/lib.txt src/new.txt target/src/keep.txt "$XDG_CACHE_HOME/marker"`)
 	if code != 0 || stdout != "edited\nnew\nkeep\nwarm\n" {
 		t.Fatalf("run: exit %d, stdout %q, stderr %q", code, stdout, stderr)
 	}
@@ -276,13 +276,13 @@ func TestSessionWithSyncedCheckout(t *testing.T) {
 
 	// An edit after add is synced by the next run.
 	write(t, filepath.Join(agent, "src/lib.txt"), "edited again\n")
-	code, stdout, stderr = c.hotbed("run", S, "app", "--", "cat", "src/lib.txt")
+	code, stdout, stderr = c.hotbed("run", "-s", S, "-r", "app", "--", "cat", "src/lib.txt")
 	if code != 0 || stdout != "edited again\n" || !strings.Contains(stderr, "synced 2 changed files") {
 		t.Fatalf("run after an edit: exit %d, stdout %q, stderr %q", code, stdout, stderr)
 	}
 
 	// run passes the command's status through.
-	if code, _, _ := c.hotbed("run", S, "app", "--", "sh", "-c", "exit 3"); code != 3 {
+	if code, _, _ := c.hotbed("run", "-s", S, "-r", "app", "--", "sh", "-c", "exit 3"); code != 3 {
 		t.Errorf("run of exit 3 returned %d", code)
 	}
 
@@ -290,7 +290,7 @@ func TestSessionWithSyncedCheckout(t *testing.T) {
 	var events []*pb.SessionEvent
 	c.eventually("the session's events", func() bool {
 		res := &pb.WatchSessionResponse{}
-		c.ok(res, "wait", S, "--timeout", "1")
+		c.ok(res, "wait", "-s", S, "--timeout", "1")
 		events = append(events, res.Events...)
 		return countWhat(events, "exited") == 3
 	})
@@ -302,28 +302,28 @@ func TestSessionWithSyncedCheckout(t *testing.T) {
 		t.Errorf("last event = %v", last)
 	}
 	quiet := &pb.WatchSessionResponse{}
-	c.ok(quiet, "wait", S, "--timeout", "1")
+	c.ok(quiet, "wait", "-s", S, "--timeout", "1")
 	if len(quiet.Events) != 0 || quiet.Live != 0 {
 		t.Errorf("wait with nothing new = %v", quiet)
 	}
 
 	// A detached command runs until stopped.
 	srv := &pb.Command{}
-	c.ok(srv, "run", S, "app", "--detach", "--port", "5173", "--", "sh", "-c", "echo serving; sleep 300")
+	c.ok(srv, "run", "-s", S, "-r", "app", "--detach", "--port", "5173", "--", "sh", "-c", "echo serving; sleep 300")
 	if srv.Url != "http://asahimbp:5173" || srv.Attached || srv.SessionId != S {
 		t.Errorf("detached run = %v", srv)
 	}
 	c.eventually("the server's output", func() bool {
-		_, out, _ := c.hotbed("logs", S, srv.Id)
+		_, out, _ := c.hotbed("logs", "-s", S, srv.Id)
 		return out == "serving\n"
 	})
 	ps := &pb.ListCommandsResponse{}
-	c.ok(ps, "ps", S)
+	c.ok(ps, "ps", "-s", S)
 	if !containsLive(ps.Commands, srv.Id) {
 		t.Errorf("ps = %v, want %s live", ps.Commands, srv.Id)
 	}
 	stopped := &pb.Command{}
-	c.ok(stopped, "stop", S, srv.Id)
+	c.ok(stopped, "stop", "-s", S, srv.Id)
 	if stopped.State != pb.CommandState_COMMAND_STATE_CANCELLED {
 		t.Errorf("after stop: %v", stopped)
 	}
@@ -331,7 +331,7 @@ func TestSessionWithSyncedCheckout(t *testing.T) {
 	// Another session cannot see this one's commands.
 	other := &pb.Session{}
 	c.ok(other, "session", "start", "quiet-heron")
-	if _, e := c.fails("logs", "quiet-heron", srv.Id); e.Code != api.CodeNotFound {
+	if _, e := c.fails("logs", "-s", "quiet-heron", srv.Id); e.Code != api.CodeNotFound {
 		t.Errorf("logs from another session: %+v", e)
 	}
 	if _, e := c.fails("session", "start", "quiet-heron"); e.Code != api.CodeConflict {
@@ -351,11 +351,11 @@ func TestSessionWithSyncedCheckout(t *testing.T) {
 	}
 
 	ended := &pb.Session{}
-	c.ok(ended, "session", "end", S)
+	c.ok(ended, "session", "end", "-s", S)
 	if ended.EndedAt == nil || ended.EndReason != "ended by its agent" || len(ended.WorkspaceIds) != 0 {
 		t.Errorf("session end = %v", ended)
 	}
-	if _, e := c.fails("run", S, "app", "--", "true"); e.Code != api.CodeNotFound {
+	if _, e := c.fails("run", "-s", S, "-r", "app", "--", "true"); e.Code != api.CodeNotFound {
 		t.Errorf("run in an ended session: %+v", e)
 	}
 }
@@ -367,7 +367,7 @@ func TestRemoteOnlyWorkspace(t *testing.T) {
 	c.ok(sess, "session", "start", "brave-otter")
 
 	ws := &pb.Workspace{}
-	c.ok(ws, "add", "brave-otter", "app")
+	c.ok(ws, "add", "-s", "brave-otter", "-r", "app")
 	if ws.SyncDir != "" {
 		t.Fatalf("add without --sync follows %q", ws.SyncDir)
 	}
@@ -376,15 +376,15 @@ func TestRemoteOnlyWorkspace(t *testing.T) {
 		{"sh", "-c", "printf 'remote\\n' > src/lib.txt"},
 		{"git", "-c", "user.name=a", "-c", "user.email=a@a", "commit", "-qam", "remote edit"},
 	} {
-		if code, out, errOut := c.hotbed(append([]string{"run", "brave-otter", "app", "--"}, args...)...); code != 0 {
+		if code, out, errOut := c.hotbed(append([]string{"run", "-s", "brave-otter", "-r", "app", "--"}, args...)...); code != 0 {
 			t.Fatalf("run %v: exit %d %q %q", args, code, out, errOut)
 		}
 	}
-	code, stdout, _ := c.hotbed("run", "brave-otter", "app", "--", "git", "log", "-1", "--format=%s")
+	code, stdout, _ := c.hotbed("run", "-s", "brave-otter", "-r", "app", "--", "git", "log", "-1", "--format=%s")
 	if code != 0 || stdout != "remote edit\n" {
 		t.Errorf("git log in the workspace: exit %d, %q", code, stdout)
 	}
-	if _, e := c.fails("sync", "brave-otter", "app"); e.Code != api.CodeInvalidArgs {
+	if _, e := c.fails("sync", "-s", "brave-otter", "-r", "app"); e.Code != api.CodeInvalidArgs {
 		t.Errorf("sync of a remote-only workspace: %+v", e)
 	}
 }
@@ -393,9 +393,9 @@ func TestAbandonedSessionEnds(t *testing.T) {
 	c := newCluster(t)
 	c.addRepo(upstream(t))
 	c.ok(nil, "session", "start", "idle-yak")
-	c.ok(nil, "add", "idle-yak", "app")
+	c.ok(nil, "add", "-s", "idle-yak", "-r", "app")
 	srv := &pb.Command{}
-	c.ok(srv, "run", "idle-yak", "app", "--detach", "--", "sleep", "300")
+	c.ok(srv, "run", "-s", "idle-yak", "-r", "app", "--detach", "--", "sleep", "300")
 	c.heartbeat() // the run counts as using the session now, not after the clock moves
 
 	c.clock.advance(59 * time.Minute)
@@ -403,7 +403,7 @@ func TestAbandonedSessionEnds(t *testing.T) {
 		t.Fatal(err)
 	}
 	res := &pb.WatchSessionResponse{}
-	c.ok(res, "wait", "idle-yak", "--timeout", "1") // keeps it alive for another hour
+	c.ok(res, "wait", "-s", "idle-yak", "--timeout", "1") // keeps it alive for another hour
 	if res.Ended {
 		t.Fatalf("session ended before an hour idle: %v", res)
 	}
@@ -413,7 +413,7 @@ func TestAbandonedSessionEnds(t *testing.T) {
 	if err := c.server.ReapIdle(t.Context()); err != nil {
 		t.Fatal(err)
 	}
-	if _, e := c.fails("wait", "idle-yak"); e.Code != api.CodeNotFound || !strings.Contains(e.Message, "abandoned") {
+	if _, e := c.fails("wait", "-s", "idle-yak"); e.Code != api.CodeNotFound || !strings.Contains(e.Message, "abandoned") {
 		t.Errorf("wait on an abandoned session: %+v", e)
 	}
 	c.eventually("the abandoned session's command to stop", func() bool {
@@ -453,7 +453,7 @@ func TestBasesFreshenOnDemand(t *testing.T) {
 		t.Helper()
 		c.ok(nil, "session", "start", session)
 		ws := &pb.Workspace{}
-		c.ok(ws, "add", session, "app")
+		c.ok(ws, "add", "-s", session, "-r", "app")
 		if ws.State != pb.WorkspaceState_WORKSPACE_STATE_IDLE {
 			t.Fatalf("add in %s = %v, want a ready, idle workspace", session, ws)
 		}
@@ -477,12 +477,12 @@ func TestBasesFreshenOnDemand(t *testing.T) {
 	if g2.Generation != 2 || g2.Cold || g2.Commit != gitIn(t, origin, "rev-parse", "HEAD") {
 		t.Fatalf("base after the branch moved = %v, want generation 2, incremental, at the new head", g2)
 	}
-	code, out, _ := c.hotbed("run", "third-cat", "app", "--", "cat", "src/lib.txt")
+	code, out, _ := c.hotbed("run", "-s", "third-cat", "-r", "app", "--", "cat", "src/lib.txt")
 	if code != 0 || out != "moved\n" {
 		t.Errorf("the new base's checkout: exit %d, %q", code, out)
 	}
 
-	c.ok(nil, "repo", "rebuild", "app")
+	c.ok(nil, "repo", "rebuild", "-r", "app")
 	rebuilt := add("fourth-dog")
 	g3 := c.base(rebuilt.BaseId)
 	if g3.Generation != 3 || !g3.Cold {
@@ -498,9 +498,9 @@ func TestRemovedRepoBasesAreDeleted(t *testing.T) {
 	c.addRepo(upstream(t))
 	c.ok(nil, "session", "start", "last-owl")
 	ws := &pb.Workspace{}
-	c.ok(ws, "add", "last-owl", "app")
+	c.ok(ws, "add", "-s", "last-owl", "-r", "app")
 	c.base(ws.BaseId)
-	c.ok(nil, "session", "end", "last-owl")
+	c.ok(nil, "session", "end", "-s", "last-owl")
 	c.ok(nil, "repo", "rm", "app")
 	c.eventually("the controller to see the repo's bases gone", func() bool {
 		snap, err := c.asWorker.GetSnapshot(c.t.Context(), &pb.GetSnapshotRequest{})
@@ -518,7 +518,7 @@ func TestAddUnreachableRepoIsRetryable(t *testing.T) {
 	c := newCluster(t)
 	c.ok(nil, "repo", "add", "app", "/nonexistent/repo")
 	c.ok(nil, "session", "start", "eager-gnu")
-	code, e := c.fails("add", "eager-gnu", "app")
+	code, e := c.fails("add", "-s", "eager-gnu", "-r", "app")
 	if code != exitError || e.Code != api.CodeRepoUnreachable || !e.Retryable {
 		t.Errorf("add of an unreachable repo: exit %d, %+v", code, e)
 	}
@@ -527,9 +527,9 @@ func TestAddUnreachableRepoIsRetryable(t *testing.T) {
 func TestAddFailsWhenFreshenFails(t *testing.T) {
 	c := newCluster(t)
 	c.ok(nil, "repo", "add", "app", upstream(t))
-	c.ok(nil, "step", "set", "app", "build", "--every-pull", "--", "echo broken build >&2; exit 3")
+	c.ok(nil, "step", "set", "-r", "app", "build", "--every-pull", "--", "echo broken build >&2; exit 3")
 	c.ok(nil, "session", "start", "eager-gnu")
-	code, e := c.fails("add", "eager-gnu", "app")
+	code, e := c.fails("add", "-s", "eager-gnu", "-r", "app")
 	if code != exitError || e.Code != api.CodeWorkspaceFailed || e.Retryable || !strings.Contains(e.Message, "failed at step build") {
 		t.Errorf("add with a failing freshen: exit %d, %+v", code, e)
 	}
@@ -569,7 +569,7 @@ var loopback = []netip.Addr{netip.MustParseAddr("127.0.0.1")}
 // runs counts the lines a step appended to a file in the workspace's cache.
 func (c *cluster) runs(session, file string) int {
 	c.t.Helper()
-	code, out, stderr := c.hotbed("run", session, "app", "--", "sh", "-c", `cat "$XDG_CACHE_HOME/`+file+`" 2>/dev/null || true`)
+	code, out, stderr := c.hotbed("run", "-s", session, "-r", "app", "--", "sh", "-c", `cat "$XDG_CACHE_HOME/`+file+`" 2>/dev/null || true`)
 	if code != 0 {
 		c.t.Fatalf("count %s: exit %d: %s", file, code, stderr)
 	}
@@ -583,13 +583,13 @@ func TestStepsRunLikeMigrations(t *testing.T) {
 	c := newCluster(t)
 	origin := upstream(t)
 	c.ok(nil, "repo", "add", "app", origin)
-	c.ok(nil, "step", "set", "app", "tool", "--", `mkdir -p "$XDG_CACHE_HOME" && echo run >> "$XDG_CACHE_HOME/tool"`)
-	c.ok(nil, "step", "set", "app", "build", "--every-pull", "--", `mkdir -p "$XDG_CACHE_HOME" && echo run >> "$XDG_CACHE_HOME/build"`)
+	c.ok(nil, "step", "set", "-r", "app", "tool", "--", `mkdir -p "$XDG_CACHE_HOME" && echo run >> "$XDG_CACHE_HOME/tool"`)
+	c.ok(nil, "step", "set", "-r", "app", "build", "--every-pull", "--", `mkdir -p "$XDG_CACHE_HOME" && echo run >> "$XDG_CACHE_HOME/build"`)
 	add := func(session string) *pb.Workspace {
 		t.Helper()
 		c.ok(nil, "session", "start", session)
 		ws := &pb.Workspace{}
-		c.ok(ws, "add", session, "app")
+		c.ok(ws, "add", "-s", session, "-r", "app")
 		return ws
 	}
 	counts := func(session string) [2]int { return [2]int{c.runs(session, "tool"), c.runs(session, "build")} }
@@ -608,7 +608,7 @@ func TestStepsRunLikeMigrations(t *testing.T) {
 		t.Errorf("after a pull tool, build ran %v times, want only build again", got)
 	}
 
-	c.ok(nil, "step", "set", "app", "tool", "--", `mkdir -p "$XDG_CACHE_HOME" && echo run v2 >> "$XDG_CACHE_HOME/tool"`)
+	c.ok(nil, "step", "set", "-r", "app", "tool", "--", `mkdir -p "$XDG_CACHE_HOME" && echo run v2 >> "$XDG_CACHE_HOME/tool"`)
 	if ws := add("three-cat"); ws.BaseId != "app-g3" {
 		t.Fatalf("after a step changed the workspace forked %s, want app-g3", ws.BaseId)
 	}
@@ -624,7 +624,7 @@ func TestStepsRunLikeMigrations(t *testing.T) {
 	var got []string
 	c.eventually("step ls to show app-g3", func() bool {
 		ls := &pb.ListStepsResponse{}
-		c.ok(ls, "step", "ls", "app")
+		c.ok(ls, "step", "ls", "-r", "app")
 		got = got[:0]
 		for _, s := range ls.Steps {
 			for _, n := range s.Nodes {
@@ -636,7 +636,7 @@ func TestStepsRunLikeMigrations(t *testing.T) {
 	if !slices.Equal(got, want) {
 		t.Errorf("step ls = %q, want %q", got, want)
 	}
-	code, out, _ := c.hotbed("step", "show", "app", "tool")
+	code, out, _ := c.hotbed("step", "show", "-r", "app", "tool")
 	if code != 0 || out != `mkdir -p "$XDG_CACHE_HOME" && echo run v2 >> "$XDG_CACHE_HOME/tool"`+"\n" {
 		t.Errorf("step show: exit %d, %q", code, out)
 	}
@@ -648,27 +648,27 @@ func TestStepAddTriesItTwice(t *testing.T) {
 	c := newCluster(t)
 	c.addRepo(upstream(t))
 	c.ok(nil, "session", "start", "keen-elk")
-	c.ok(nil, "add", "keen-elk", "app")
+	c.ok(nil, "add", "-s", "keen-elk", "-r", "app")
 
 	repo := &pb.Repo{}
-	c.ok(repo, "step", "add", "keen-elk", "app", "tool", "--", `mkdir -p "$HOTBED_BIN" && printf '#!/bin/sh\necho tool works\n' > "$HOTBED_BIN/tool" && chmod +x "$HOTBED_BIN/tool"`)
+	c.ok(repo, "step", "add", "-s", "keen-elk", "-r", "app", "tool", "--", `mkdir -p "$HOTBED_BIN" && printf '#!/bin/sh\necho tool works\n' > "$HOTBED_BIN/tool" && chmod +x "$HOTBED_BIN/tool"`)
 	if len(repo.Steps) != 2 || repo.Steps[1].Name != "tool" || len(repo.Steps[1].Hash) != 12 || repo.Steps[1].UpdatedBy != "laptop" {
 		t.Fatalf("steps after add = %v", repo.Steps)
 	}
-	if code, out, _ := c.hotbed("run", "keen-elk", "app", "--", "tool"); code != 0 || out != "tool works\n" {
+	if code, out, _ := c.hotbed("run", "-s", "keen-elk", "-r", "app", "--", "tool"); code != 0 || out != "tool works\n" {
 		t.Errorf("the tool in the agent's workspace: exit %d, %q", code, out)
 	}
 
-	code, e := c.fails("step", "add", "keen-elk", "app", "once", "--", `mkdir -p "$XDG_DATA_HOME" && mkdir "$XDG_DATA_HOME/once-only"`)
+	code, e := c.fails("step", "add", "-s", "keen-elk", "-r", "app", "once", "--", `mkdir -p "$XDG_DATA_HOME" && mkdir "$XDG_DATA_HOME/once-only"`)
 	if code != exitError || e.Code != api.CodeStepNotIdempotent {
 		t.Errorf("a step that fails when repeated: exit %d, %+v", code, e)
 	}
-	code, e = c.fails("step", "add", "keen-elk", "app", "broken", "--", "exit 4")
+	code, e = c.fails("step", "add", "-s", "keen-elk", "-r", "app", "broken", "--", "exit 4")
 	if code != exitError || e.Code != api.CodeStepFailed || !strings.Contains(e.Message, "exited 4") {
 		t.Errorf("a failing step: exit %d, %+v", code, e)
 	}
 	ls := &pb.ListStepsResponse{}
-	c.ok(ls, "step", "ls", "app")
+	c.ok(ls, "step", "ls", "-r", "app")
 	var names []string
 	for _, s := range ls.Steps {
 		names = append(names, s.Step.Name)
@@ -680,8 +680,8 @@ func TestStepAddTriesItTwice(t *testing.T) {
 	// A new workspace's base ran the step, so it has the tool too.
 	c.ok(nil, "session", "start", "next-fox")
 	ws := &pb.Workspace{}
-	c.ok(ws, "add", "next-fox", "app")
-	if code, out, _ := c.hotbed("run", "next-fox", "app", "--", "tool"); ws.BaseId != "app-g2" || code != 0 || out != "tool works\n" {
+	c.ok(ws, "add", "-s", "next-fox", "-r", "app")
+	if code, out, _ := c.hotbed("run", "-s", "next-fox", "-r", "app", "--", "tool"); ws.BaseId != "app-g2" || code != 0 || out != "tool works\n" {
 		t.Errorf("the tool in a new workspace on %s: exit %d, %q", ws.BaseId, code, out)
 	}
 }
@@ -692,13 +692,13 @@ func TestFailingStepFallsBackToTheWarmBase(t *testing.T) {
 	c := newCluster(t)
 	c.addRepo(upstream(t))
 	c.ok(nil, "session", "start", "old-gnu")
-	c.ok(nil, "add", "old-gnu", "app")
+	c.ok(nil, "add", "-s", "old-gnu", "-r", "app")
 
-	c.ok(nil, "step", "set", "app", "broken", "--", "echo nope >&2; exit 5")
+	c.ok(nil, "step", "set", "-r", "app", "broken", "--", "echo nope >&2; exit 5")
 	for _, s := range []string{"new-hen", "late-jay"} {
 		c.ok(nil, "session", "start", s)
 		ws := &pb.Workspace{}
-		c.ok(ws, "add", s, "app")
+		c.ok(ws, "add", "-s", s, "-r", "app")
 		if ws.BaseId != "app-g1" || ws.State != pb.WorkspaceState_WORKSPACE_STATE_IDLE || !strings.HasPrefix(ws.Reason, "on app-g1, not up to date: base app-g2 failed at step broken") {
 			t.Errorf("add in %s = %v, want app-g1 with a note", s, ws)
 		}
@@ -729,8 +729,8 @@ func TestCommandsHaveTheirOwnTmpdir(t *testing.T) {
 	c := newCluster(t)
 	c.addRepo(upstream(t))
 	c.ok(nil, "session", "start", "tidy-owl")
-	c.ok(nil, "add", "tidy-owl", "app")
-	code, out, _ := c.hotbed("run", "tidy-owl", "app", "--", "sh", "-c", `echo "$TMPDIR"; ls -ld "$TMPDIR" | cut -c1-10; echo store > "$TMPDIR/store"`)
+	c.ok(nil, "add", "-s", "tidy-owl", "-r", "app")
+	code, out, _ := c.hotbed("run", "-s", "tidy-owl", "-r", "app", "--", "sh", "-c", `echo "$TMPDIR"; ls -ld "$TMPDIR" | cut -c1-10; echo store > "$TMPDIR/store"`)
 	lines := strings.Split(strings.TrimSpace(out), "\n")
 	if code != 0 || len(lines) != 2 || filepath.Base(filepath.Dir(lines[0])) != "tmp" || lines[1] != "drwxrwxrwt" {
 		t.Fatalf("run: exit %d, %q, want its own sticky TMPDIR under the state directory's tmp", code, out)
@@ -746,7 +746,7 @@ func TestCommandsHaveTheirOwnTmpdir(t *testing.T) {
 func TestAddWatchesAgainWhenTheStreamDrops(t *testing.T) {
 	c := newCluster(t)
 	c.ok(nil, "repo", "add", "app", upstream(t))
-	c.ok(nil, "step", "set", "app", "build", "--every-pull", "--", "sleep 2")
+	c.ok(nil, "step", "set", "-r", "app", "build", "--every-pull", "--", "sleep 2")
 	c.ok(nil, "session", "start", "calm-yak")
 	type result struct {
 		code           int
@@ -754,7 +754,7 @@ func TestAddWatchesAgainWhenTheStreamDrops(t *testing.T) {
 	}
 	done := make(chan result, 1)
 	go func() {
-		code, out, errOut := c.hotbed("add", "calm-yak", "app")
+		code, out, errOut := c.hotbed("add", "-s", "calm-yak", "-r", "app")
 		done <- result{code, out, errOut}
 	}()
 	c.eventually("the workspace to be preparing", func() bool {
@@ -790,8 +790,8 @@ func TestSnapshotKeepsEndedSessions(t *testing.T) {
 	c.addRepo(upstream(t))
 	c.ok(nil, "session", "start", "spent-owl")
 	ws := &pb.Workspace{}
-	c.ok(ws, "add", "spent-owl", "app")
-	c.ok(nil, "session", "end", "spent-owl")
+	c.ok(ws, "add", "-s", "spent-owl", "-r", "app")
+	c.ok(nil, "session", "end", "-s", "spent-owl")
 	snap, err := c.asWorker.GetSnapshot(t.Context(), &pb.GetSnapshotRequest{})
 	if err != nil {
 		t.Fatal(err)
@@ -812,7 +812,7 @@ func TestSnapshotKeepsEndedSessions(t *testing.T) {
 func (c *cluster) commandStates(session string) map[string]pb.CommandState {
 	c.t.Helper()
 	ps := &pb.ListCommandsResponse{}
-	c.ok(ps, "ps", session)
+	c.ok(ps, "ps", "-s", session)
 	out := map[string]pb.CommandState{}
 	for _, cmd := range ps.Commands {
 		out[cmd.Id] = cmd.State
@@ -827,10 +827,10 @@ func TestParkingNeverStopsAllWork(t *testing.T) {
 	c := newCluster(t)
 	c.addRepo(upstream(t))
 	c.ok(nil, "session", "start", "full-yak")
-	c.ok(nil, "add", "full-yak", "app")
+	c.ok(nil, "add", "-s", "full-yak", "-r", "app")
 	first, second := &pb.Command{}, &pb.Command{}
-	c.ok(first, "run", "full-yak", "app", "--detach", "--kind", "build", "--", "sleep", "300")
-	c.ok(second, "run", "full-yak", "app", "--detach", "--kind", "build", "--", "sleep", "300")
+	c.ok(first, "run", "-s", "full-yak", "-r", "app", "--detach", "--kind", "build", "--", "sleep", "300")
+	c.ok(second, "run", "-s", "full-yak", "-r", "app", "--detach", "--kind", "build", "--", "sleep", "300")
 	c.eventually("both to run", func() bool {
 		st := c.commandStates("full-yak")
 		return st[first.Id] == pb.CommandState_COMMAND_STATE_RUNNING && st[second.Id] == pb.CommandState_COMMAND_STATE_RUNNING
@@ -847,7 +847,7 @@ func TestParkingNeverStopsAllWork(t *testing.T) {
 		}
 	}
 
-	c.ok(nil, "stop", "full-yak", first.Id)
+	c.ok(nil, "stop", "-s", "full-yak", first.Id)
 	c.eventually("the parked one to run again, memory still short", func() bool {
 		return c.commandStates("full-yak")[second.Id] == pb.CommandState_COMMAND_STATE_RUNNING
 	})
@@ -859,22 +859,22 @@ func TestParkingNeverStopsAllWork(t *testing.T) {
 func TestSupersededBaseBuildIsDropped(t *testing.T) {
 	c := newCluster(t)
 	c.ok(nil, "repo", "add", "app", upstream(t))
-	c.ok(nil, "step", "set", "app", "build", "--every-pull", "--", "sleep 30")
+	c.ok(nil, "step", "set", "-r", "app", "build", "--every-pull", "--", "sleep 30")
 	c.ok(nil, "session", "start", "slow-ant")
 	waiting := &pb.Workspace{}
-	c.ok(waiting, "add", "slow-ant", "app", "--no-wait")
+	c.ok(waiting, "add", "-s", "slow-ant", "-r", "app", "--no-wait")
 	if waiting.BaseId != "app-g1" || waiting.State != pb.WorkspaceState_WORKSPACE_STATE_PREPARING {
 		t.Fatalf("first add = %v, want a workspace waiting for app-g1", waiting)
 	}
-	c.ok(nil, "step", "set", "app", "build", "--every-pull", "--", "true")
+	c.ok(nil, "step", "set", "-r", "app", "build", "--every-pull", "--", "true")
 	c.ok(nil, "session", "start", "fast-bee")
 	ws := &pb.Workspace{}
-	c.ok(ws, "add", "fast-bee", "app")
+	c.ok(ws, "add", "-s", "fast-bee", "-r", "app")
 	if ws.BaseId != "app-g2" {
 		t.Fatalf("second add forked %s, want app-g2", ws.BaseId)
 	}
 
-	c.ok(nil, "session", "end", "slow-ant")
+	c.ok(nil, "session", "end", "-s", "slow-ant")
 	c.eventually("app-g1 to be dropped, app-g2 kept", func() bool {
 		snap, err := c.asWorker.GetSnapshot(t.Context(), &pb.GetSnapshotRequest{})
 		if err != nil {
@@ -899,7 +899,7 @@ func TestCLITalksToTheWorkerDirectly(t *testing.T) {
 	gitIn(t, filepath.Dir(agent), "clone", "--quiet", origin, agent)
 	calls := c.ctrl.record()
 	ws := &pb.Workspace{}
-	c.ok(ws, "add", "near-fox", "app", "--sync", agent)
+	c.ok(ws, "add", "-s", "near-fox", "-r", "app", "--sync", agent)
 	if ws.NodeAddr == "" || ws.FilesChanged != 0 {
 		t.Fatalf("add = %v, want the worker's address", ws)
 	}
@@ -909,7 +909,7 @@ func TestCLITalksToTheWorkerDirectly(t *testing.T) {
 
 	write(t, filepath.Join(agent, "src/lib.txt"), "edited\n")
 	calls = c.ctrl.record()
-	code, stdout, stderr := c.hotbed("run", "near-fox", "app", "--", "cat", "src/lib.txt")
+	code, stdout, stderr := c.hotbed("run", "-s", "near-fox", "-r", "app", "--", "cat", "src/lib.txt")
 	if code != 0 || stdout != "edited\n" || !strings.Contains(stderr, "synced 1 changed files") {
 		t.Fatalf("run: exit %d, stdout %q, stderr %q", code, stdout, stderr)
 	}
@@ -918,13 +918,13 @@ func TestCLITalksToTheWorkerDirectly(t *testing.T) {
 	}
 
 	srv := &pb.Command{}
-	c.ok(srv, "run", "near-fox", "app", "--detach", "--", "sh", "-c", "echo up; sleep 300")
+	c.ok(srv, "run", "-s", "near-fox", "-r", "app", "--detach", "--", "sh", "-c", "echo up; sleep 300")
 	calls = c.ctrl.record()
 	c.eventually("the server's output", func() bool {
-		_, out, _ := c.hotbed("logs", "near-fox", srv.Id)
+		_, out, _ := c.hotbed("logs", "-s", "near-fox", srv.Id)
 		return out == "up\n"
 	})
-	c.ok(nil, "stop", "near-fox", srv.Id)
+	c.ok(nil, "stop", "-s", "near-fox", srv.Id)
 	if got := calls(); !slices.Equal(got, []string{"GetCommand"}) {
 		t.Errorf("logs and stop called the controller's %v, want only GetCommand", got)
 	}
@@ -937,16 +937,16 @@ func TestWorkGoesOnWithoutTheController(t *testing.T) {
 	c := newCluster(t)
 	c.addRepo(upstream(t))
 	c.ok(nil, "session", "start", "lone-gnu")
-	c.ok(nil, "add", "lone-gnu", "app")
+	c.ok(nil, "add", "-s", "lone-gnu", "-r", "app")
 	cursor := &pb.WatchSessionResponse{}
-	c.ok(cursor, "wait", "lone-gnu", "--timeout", "1")
+	c.ok(cursor, "wait", "-s", "lone-gnu", "--timeout", "1")
 
 	c.ctrl.setDown(true)
-	code, stdout, stderr := c.hotbed("run", "lone-gnu", "app", "--", "sh", "-c", "echo alone; exit 4")
+	code, stdout, stderr := c.hotbed("run", "-s", "lone-gnu", "-r", "app", "--", "sh", "-c", "echo alone; exit 4")
 	if code != 4 || stdout != "alone\n" {
 		t.Fatalf("run with the controller down: exit %d, stdout %q, stderr %q", code, stdout, stderr)
 	}
-	if _, e := c.fails("ps", "lone-gnu"); e.Code != api.CodeControllerUnreachable {
+	if _, e := c.fails("ps", "-s", "lone-gnu"); e.Code != api.CodeControllerUnreachable {
 		t.Errorf("ps with the controller down: %+v", e)
 	}
 	c.clock.advance(61 * time.Minute)
@@ -958,7 +958,7 @@ func TestWorkGoesOnWithoutTheController(t *testing.T) {
 	var events []*pb.SessionEvent
 	c.eventually("the command run meanwhile to reach the session", func() bool {
 		res := &pb.WatchSessionResponse{}
-		c.ok(res, "wait", "lone-gnu", "--timeout", "1")
+		c.ok(res, "wait", "-s", "lone-gnu", "--timeout", "1")
 		if res.Ended {
 			t.Fatalf("the session was abandoned while it was used: %v", res)
 		}
@@ -975,14 +975,14 @@ func TestWorkGoesOnWithoutTheController(t *testing.T) {
 func TestFreshenLogIsReadable(t *testing.T) {
 	c := newCluster(t)
 	c.ok(nil, "repo", "add", "app", upstream(t))
-	c.ok(nil, "step", "set", "app", "build", "--every-pull", "--", "echo broken build >&2; exit 3")
+	c.ok(nil, "step", "set", "-r", "app", "build", "--every-pull", "--", "echo broken build >&2; exit 3")
 	c.ok(nil, "session", "start", "keen-ox")
-	_, e := c.fails("add", "keen-ox", "app")
+	_, e := c.fails("add", "-s", "keen-ox", "-r", "app")
 	m := regexp.MustCompile(`its log is command (f-\S+)\)`).FindStringSubmatch(e.Message)
 	if m == nil {
 		t.Fatalf("add's error names no log: %+v", e)
 	}
-	code, out, stderr := c.hotbed("logs", "keen-ox", m[1])
+	code, out, stderr := c.hotbed("logs", "-s", "keen-ox", m[1])
 	if code != 0 || !strings.Contains(out, "broken build") {
 		t.Errorf("logs of the freshen: exit %d, %q, stderr %q", code, out, stderr)
 	}

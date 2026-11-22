@@ -122,7 +122,7 @@ func TestADevControllerHandsOutNoBuild(t *testing.T) {
 	})
 	c.addRepo(upstream(t))
 	c.ok(nil, "session", "start", "tidy-owl")
-	c.ok(nil, "add", "tidy-owl", "app") // the worker reported, and was answered
+	c.ok(nil, "add", "-s", "tidy-owl", "-r", "app") // the worker reported, and was answered
 	if got := read(t, workerExe); got != "old worker" {
 		t.Errorf("the worker's binary is %q", got)
 	}
@@ -219,7 +219,7 @@ func ridesOut(t *testing.T, logs bool) {
 	c := newCluster(t)
 	c.addRepo(upstream(t))
 	c.ok(nil, "session", "start", "tidy-owl")
-	c.ok(nil, "add", "tidy-owl", "app")
+	c.ok(nil, "add", "-s", "tidy-owl", "-r", "app")
 	g := newGate(t)
 	type result struct {
 		code     int
@@ -230,18 +230,18 @@ func ridesOut(t *testing.T, logs bool) {
 	if logs {
 		cmd := c.detach(nil, script...)
 		go func() {
-			code, out, stderr := c.hotbed("logs", "tidy-owl", cmd.Id, "-f")
+			code, out, stderr := c.hotbed("logs", "-s", "tidy-owl", cmd.Id, "-f")
 			done <- result{code, out, stderr}
 		}()
 	} else {
 		go func() {
-			code, out, stderr := c.hotbed(append([]string{"run", "tidy-owl", "app", "--"}, script...)...)
+			code, out, stderr := c.hotbed(append([]string{"run", "-s", "tidy-owl", "-r", "app", "--"}, script...)...)
 			done <- result{code, out, stderr}
 		}()
 	}
 	c.eventually("the command to run", func() bool {
 		var ls pb.ListCommandsResponse
-		c.ok(&ls, "ps", "tidy-owl")
+		c.ok(&ls, "ps", "-s", "tidy-owl")
 		return len(ls.Commands) > 0 && ls.Commands[len(ls.Commands)-1].State == runningState
 	})
 	nd := c.nodes[0]
