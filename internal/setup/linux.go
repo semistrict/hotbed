@@ -38,7 +38,7 @@ const (
 func Setup(ctx context.Context, o Options, tn worker.Tailnet, hc *http.Client, check worker.Check) (Result, error) {
 	if os.Geteuid() != 0 {
 		return Result{}, api.Errorf(api.CodeInvalidArgs, "setting up a Linux worker requires root privileges (for storage, join, and systemd)").
-			WithSuggestion("run with sudo: sudo hotbed worker setup " + o.Controller)
+			WithSuggestion("run with sudo: sudo hotbed worker init " + o.Controller)
 	}
 	controller, err := api.ControllerHostPort(o.Controller)
 	if err != nil {
@@ -389,7 +389,7 @@ func GetStatus(ctx context.Context, dir string) (Status, error) {
 	if err != nil {
 		if errors.Is(err, fs.ErrNotExist) {
 			return Status{}, api.Errorf(api.CodeNotInitialized, "no worker configured in %s", baseDir).
-				WithSuggestion("run `sudo hotbed worker setup CONTROLLER`")
+				WithSuggestion("run `sudo hotbed worker init CONTROLLER`")
 		}
 		return Status{}, err
 	}

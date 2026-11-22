@@ -5,6 +5,7 @@ package setup
 import (
 	"context"
 	"encoding/binary"
+	"encoding/json"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -228,7 +229,16 @@ sudo swapon --discard ` + swapDiskByID + `
 		t.Fatalf("upload hotbed binary: %v", err)
 	}
 	verOut, err := sshRun(ctx, cl, vmBinPath+" version")
-	if err != nil || !strings.Contains(verOut, `"os":"linux"`) {
+	if err != nil {
+		t.Fatalf("guest hotbed version failed: %v (%s)", err, verOut)
+	}
+	var verEnv struct {
+		OK   bool `json:"ok"`
+		Data struct {
+			OS string `json:"os"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal([]byte(verOut), &verEnv); err != nil || !verEnv.OK || verEnv.Data.OS != "linux" {
 		t.Fatalf("guest hotbed version = %q, err = %v", verOut, err)
 	}
 

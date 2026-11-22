@@ -52,10 +52,10 @@ func failure(command string, e *api.Error) envelope {
 }
 
 func writeEnvelope(w io.Writer, e envelope) {
-	b, err := json.Marshal(e)
+	b, err := json.MarshalIndent(e, "", "  ")
 	if err != nil {
 		// Only a command's data can fail to encode; report that instead.
-		b, _ = json.Marshal(failure(e.Command, api.Errorf(api.CodeInternal, "encode output: %v", err)))
+		b, _ = json.MarshalIndent(failure(e.Command, api.Errorf(api.CodeInternal, "encode output: %v", err)), "", "  ")
 	}
 	if _, err := fmt.Fprintf(w, "%s\n", b); err != nil {
 		slog.Error("write output", "err", err)

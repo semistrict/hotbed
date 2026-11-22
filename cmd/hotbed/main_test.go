@@ -70,6 +70,26 @@ func TestInitPrintsSuccessEnvelope(t *testing.T) {
 	}
 }
 
+func TestOutputJSONIsFormattedByDefault(t *testing.T) {
+	var stdout bytes.Buffer
+	d := fakeDeps()
+	d.stdout, d.stderr = &stdout, io.Discard
+	if code := run(t.Context(), []string{"version"}, d); code != exitOK {
+		t.Fatalf("version exit %d", code)
+	}
+	got := stdout.String()
+	if !strings.Contains(got, "\n  \"version\": \"1\",\n") || !strings.Contains(got, "\n    \"os\": ") {
+		t.Errorf("expected pretty-printed JSON with 2-space indent, got:\n%s", got)
+	}
+
+	// Also verify proto.Message payloads (json.RawMessage) are indented.
+	var protoBuf bytes.Buffer
+	writeEnvelope(&protoBuf, success("nodes", &pb.ListNodesResponse{ClusterId: "abc"}))
+	if !strings.Contains(protoBuf.String(), "\n    \"clusterId\": \"abc\"") {
+		t.Errorf("expected indented protobuf JSON payload, got:\n%s", protoBuf.String())
+	}
+}
+
 func TestInitTwiceIsAlreadyInitialized(t *testing.T) {
 	dir := t.TempDir()
 	d := fakeDeps()

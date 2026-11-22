@@ -9,32 +9,32 @@ import (
 	"github.com/semistrict/hotbed/internal/api"
 )
 
-func TestWorkerSetupHelpFlags(t *testing.T) {
+func TestWorkerInitHelpFlags(t *testing.T) {
 	var stdout bytes.Buffer
 	d := fakeDeps()
 	d.stdout, d.stderr = &stdout, io.Discard
-	code := run(t.Context(), []string{"worker", "setup", "--help"}, d)
+	code := run(t.Context(), []string{"worker", "init", "--help"}, d)
 	if code != exitOK {
-		t.Fatalf("worker setup --help exited %d", code)
+		t.Fatalf("worker init --help exited %d", code)
 	}
 	out := stdout.String()
 	for _, want := range []string{"--cpus=INT", "--disk-size=", "--memory=", "--root-size=", "--swap-size=", "--tailscale-auth-key="} {
 		if !strings.Contains(out, want) {
-			t.Errorf("worker setup --help missing %q:\n%s", want, out)
+			t.Errorf("worker init --help missing %q:\n%s", want, out)
 		}
 	}
 }
 
-func TestWorkerSetupRequiresController(t *testing.T) {
+func TestWorkerInitRequiresController(t *testing.T) {
 	t.Setenv("HOTBED_CONTROLLER", "")
-	code, out := hotbed(t, fakeDeps(), "worker", "setup", "--dir", t.TempDir())
+	code, out := hotbed(t, fakeDeps(), "worker", "init", "--dir", t.TempDir())
 	if code != exitError || out.OK || out.Error == nil || out.Error.Code != api.CodeInvalidArgs {
 		t.Fatalf("expected INVALID_ARGS without controller, got exit %d, envelope %+v", code, out)
 	}
 }
 
-func TestWorkerSetupInvalidSize(t *testing.T) {
-	code, out := hotbed(t, fakeDeps(), "worker", "setup", "ubu1", "--dir", t.TempDir(), "--disk-size", "not-a-size")
+func TestWorkerInitInvalidSize(t *testing.T) {
+	code, out := hotbed(t, fakeDeps(), "worker", "init", "ubu1", "--dir", t.TempDir(), "--disk-size", "not-a-size")
 	if code != exitError || out.OK || out.Error == nil || out.Error.Code != api.CodeInvalidArgs {
 		t.Fatalf("expected INVALID_ARGS for bad --disk-size, got exit %d, envelope %+v", code, out)
 	}

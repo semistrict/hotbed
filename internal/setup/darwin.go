@@ -294,7 +294,7 @@ func GetStatus(ctx context.Context, dir string) (Status, error) {
 	if err := readJSON(p.Config, &cfg); err != nil {
 		if errors.Is(err, fs.ErrNotExist) {
 			return Status{}, api.Errorf(api.CodeNotInitialized, "no worker VM configured in %s", baseDir).
-				WithSuggestion("run `hotbed worker setup CONTROLLER`")
+				WithSuggestion("run `hotbed worker init CONTROLLER`")
 		}
 		return Status{}, err
 	}
@@ -351,7 +351,7 @@ func Start(ctx context.Context, dir string) (Status, error) {
 	if err := readJSON(p.Config, &cfg); err != nil {
 		if errors.Is(err, fs.ErrNotExist) {
 			return Status{}, api.Errorf(api.CodeNotInitialized, "no worker VM configured in %s", baseDir).
-				WithSuggestion("run `hotbed worker setup CONTROLLER`")
+				WithSuggestion("run `hotbed worker init CONTROLLER`")
 		}
 		return Status{}, err
 	}
@@ -489,7 +489,7 @@ func SSH(ctx context.Context, dir string, args []string) (int, error) {
 	if err := readJSON(p.Config, &cfg); err != nil {
 		if errors.Is(err, fs.ErrNotExist) {
 			return 1, api.Errorf(api.CodeNotInitialized, "no worker VM configured in %s", baseDir).
-				WithSuggestion("run `hotbed worker setup CONTROLLER`")
+				WithSuggestion("run `hotbed worker init CONTROLLER`")
 		}
 		return 1, err
 	}

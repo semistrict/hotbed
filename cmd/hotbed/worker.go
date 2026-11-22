@@ -9,16 +9,16 @@ import (
 )
 
 type workerCmd struct {
-	Setup   workerSetupCmd   `cmd:"" help:"Set up and start a worker node on this machine in ~/.hotbed (direct on Linux, QEMU Ubuntu+ZFS sparse qcow2 VM on macOS)."`
+	Init    workerInitCmd    `cmd:"" help:"Initialize and start a worker node on this machine in ~/.hotbed (direct on Linux, QEMU Ubuntu+ZFS sparse qcow2 VM on macOS)."`
 	Status  workerStatusCmd  `cmd:"" help:"Show the local worker's state and sparse disk usage."`
 	Start   workerStartCmd   `cmd:"" help:"Start the local worker (systemd service on Linux, QEMU VM on macOS)."`
 	Stop    workerStopCmd    `cmd:"" help:"Gracefully stop the local worker."`
-	Trim    workerTrimCmd    `cmd:"" help:"Punch freed blocks out of sparse worker storage (zpool trim / fstrim)."`
+	Trim    workerTrimCmd    `cmd:"" help:"Punch freed blocks out of sparse worker storage (ZFS autotrim / fstrim)."`
 	SSH     workerSSHCmd     `cmd:"" help:"Open an SSH shell or run a command inside the macOS QEMU worker VM."`
 	Destroy workerDestroyCmd `cmd:"" help:"Stop and remove the local worker setup from ~/.hotbed."`
 }
 
-type workerSetupCmd struct {
+type workerInitCmd struct {
 	Controller       string   `arg:"" optional:"" env:"HOTBED_CONTROLLER" help:"The controller's tailnet name or address, with :PORT unless 7120 (or set HOTBED_CONTROLLER)."`
 	Dir              string   `type:"path" help:"Base directory for worker state and VM files (default ~/.hotbed)."`
 	User             string   `help:"Unix user commands run as (default: invoking user)."`
@@ -41,10 +41,10 @@ type workerSetupCmd struct {
 	NoAutostart      bool     `name:"no-autostart" help:"macOS VM: do not install a LaunchAgent to auto-start the VM at login."`
 }
 
-func (c *workerSetupCmd) Exec(ctx context.Context, d deps) (any, error) {
+func (c *workerInitCmd) Exec(ctx context.Context, d deps) (any, error) {
 	if strings.TrimSpace(c.Controller) == "" {
 		return nil, api.Errorf(api.CodeInvalidArgs, "controller address is required").
-			WithSuggestion("pass the controller as an argument (`hotbed worker setup CONTROLLER`) or set HOTBED_CONTROLLER")
+			WithSuggestion("pass the controller as an argument (`hotbed worker init CONTROLLER`) or set HOTBED_CONTROLLER")
 	}
 	diskSize, err := setup.ParseBytes(c.DiskSize)
 	if err != nil {

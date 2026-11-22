@@ -138,7 +138,7 @@ type DestroyResult struct {
 }
 
 // DefaultDir returns ~/.hotbed for the invoking user (respecting SUDO_USER on
-// Linux so `sudo hotbed worker setup` targets the user's home, not /root).
+// Linux so `sudo hotbed worker init` targets the user's home, not /root).
 func DefaultDir() (string, error) {
 	home, _, err := invokingUserHome()
 	if err != nil {
