@@ -124,6 +124,28 @@ and may edit or delete.
   project's outbox holds something. An answer or dismissal is also an event of the asking
   session, so its `hotbed wait` wakes.
 
+## Reviews
+
+A review is of an exact version: a repo's base and head commits (no base: the whole tree), in the
+requesting session's project. A dirty worktree is reviewed as a snapshot commit on HEAD (the one
+`sync` makes), and every head is pinned under `refs/hotbed/reviews/` in the requester's checkout,
+so the reviewer can read it and git keeps it.
+
+- **Lifecycle.** *requested* → *in progress* (a reviewer session claims it; only it reports
+  findings and ends it) → *done*, with a summary, or *failed*, with why; *cancelled* by its
+  project's sessions before it ends.
+- **Findings** take ReportFindings' JSON (summary, failure scenario, category, severity, short
+  summary, verdict, file and line) and any number of locations besides: path, lines and the
+  excerpt the reviewer saw, so the cockpit shows them without the code. The requester decides each:
+  accepted, dismissed, or open again.
+- **Responses.** The user responds in the cockpit, per finding or to the review: a quick response
+  (verify, fix if verified, won't fix), a comment, or both. Agents reply the same way. The
+  requester reads them after a cursor and can wait for new ones; a response, and the review's end,
+  are also events of its session.
+- **Nothing is removed.** `reviews` and `review_findings` hold each as it is; `review_events`
+  holds every change (with the review or finding as it left it) and every response, with when,
+  which session (empty for the user) and which machine.
+
 ## Storage
 
 `internal/storage` is the abstraction: named writable **volumes**, read-only **snapshots** of

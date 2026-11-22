@@ -24,6 +24,8 @@ const (
 	ScheduleServiceName = "hotbed.v1.ScheduleService"
 	// QuestionServiceName is the fully-qualified name of the QuestionService service.
 	QuestionServiceName = "hotbed.v1.QuestionService"
+	// ReviewServiceName is the fully-qualified name of the ReviewService service.
+	ReviewServiceName = "hotbed.v1.ReviewService"
 )
 
 // These constants are the procedure names of the RPCs defined in this package. They're exposed at
@@ -172,6 +174,31 @@ const (
 	// QuestionServiceWaitQuestionsProcedure is the procedure name of the QuestionService's
 	// WaitQuestions RPC.
 	QuestionServiceWaitQuestionsProcedure = "/hotbed.v1.QuestionService/WaitQuestions"
+	// ReviewServiceRequestReviewProcedure is the procedure name of the ReviewService's RequestReview
+	// RPC.
+	ReviewServiceRequestReviewProcedure = "/hotbed.v1.ReviewService/RequestReview"
+	// ReviewServiceListReviewsProcedure is the procedure name of the ReviewService's ListReviews RPC.
+	ReviewServiceListReviewsProcedure = "/hotbed.v1.ReviewService/ListReviews"
+	// ReviewServiceGetReviewProcedure is the procedure name of the ReviewService's GetReview RPC.
+	ReviewServiceGetReviewProcedure = "/hotbed.v1.ReviewService/GetReview"
+	// ReviewServiceStartReviewProcedure is the procedure name of the ReviewService's StartReview RPC.
+	ReviewServiceStartReviewProcedure = "/hotbed.v1.ReviewService/StartReview"
+	// ReviewServiceAddFindingsProcedure is the procedure name of the ReviewService's AddFindings RPC.
+	ReviewServiceAddFindingsProcedure = "/hotbed.v1.ReviewService/AddFindings"
+	// ReviewServiceFinishReviewProcedure is the procedure name of the ReviewService's FinishReview RPC.
+	ReviewServiceFinishReviewProcedure = "/hotbed.v1.ReviewService/FinishReview"
+	// ReviewServiceCancelReviewProcedure is the procedure name of the ReviewService's CancelReview RPC.
+	ReviewServiceCancelReviewProcedure = "/hotbed.v1.ReviewService/CancelReview"
+	// ReviewServiceDecideFindingsProcedure is the procedure name of the ReviewService's DecideFindings
+	// RPC.
+	ReviewServiceDecideFindingsProcedure = "/hotbed.v1.ReviewService/DecideFindings"
+	// ReviewServiceRespondProcedure is the procedure name of the ReviewService's Respond RPC.
+	ReviewServiceRespondProcedure = "/hotbed.v1.ReviewService/Respond"
+	// ReviewServiceListResponsesProcedure is the procedure name of the ReviewService's ListResponses
+	// RPC.
+	ReviewServiceListResponsesProcedure = "/hotbed.v1.ReviewService/ListResponses"
+	// ReviewServiceWaitReviewProcedure is the procedure name of the ReviewService's WaitReview RPC.
+	ReviewServiceWaitReviewProcedure = "/hotbed.v1.ReviewService/WaitReview"
 )
 
 var (
@@ -2418,6 +2445,452 @@ func (h questionServiceHandler) waitQuestions(ctx context.Context, _ connect.Spe
 		return err
 	}
 	res, err := h.svc.WaitQuestions(ctx, &req)
+	if err != nil {
+		return err
+	}
+	return stream.Send(res)
+}
+
+var (
+	reviewServiceRequestReviewSpec = sync.OnceValue(func() connect.Spec {
+		return connect.Spec{
+			StreamType: connect.StreamTypeUnary,
+			Schema:     v1.File_hotbed_v1_hotbed_proto.Services().ByName("ReviewService").Methods().ByName("RequestReview"),
+			Procedure:  ReviewServiceRequestReviewProcedure,
+		}
+	})
+	reviewServiceListReviewsSpec = sync.OnceValue(func() connect.Spec {
+		return connect.Spec{
+			StreamType: connect.StreamTypeUnary,
+			Schema:     v1.File_hotbed_v1_hotbed_proto.Services().ByName("ReviewService").Methods().ByName("ListReviews"),
+			Procedure:  ReviewServiceListReviewsProcedure,
+		}
+	})
+	reviewServiceGetReviewSpec = sync.OnceValue(func() connect.Spec {
+		return connect.Spec{
+			StreamType: connect.StreamTypeUnary,
+			Schema:     v1.File_hotbed_v1_hotbed_proto.Services().ByName("ReviewService").Methods().ByName("GetReview"),
+			Procedure:  ReviewServiceGetReviewProcedure,
+		}
+	})
+	reviewServiceStartReviewSpec = sync.OnceValue(func() connect.Spec {
+		return connect.Spec{
+			StreamType: connect.StreamTypeUnary,
+			Schema:     v1.File_hotbed_v1_hotbed_proto.Services().ByName("ReviewService").Methods().ByName("StartReview"),
+			Procedure:  ReviewServiceStartReviewProcedure,
+		}
+	})
+	reviewServiceAddFindingsSpec = sync.OnceValue(func() connect.Spec {
+		return connect.Spec{
+			StreamType: connect.StreamTypeUnary,
+			Schema:     v1.File_hotbed_v1_hotbed_proto.Services().ByName("ReviewService").Methods().ByName("AddFindings"),
+			Procedure:  ReviewServiceAddFindingsProcedure,
+		}
+	})
+	reviewServiceFinishReviewSpec = sync.OnceValue(func() connect.Spec {
+		return connect.Spec{
+			StreamType: connect.StreamTypeUnary,
+			Schema:     v1.File_hotbed_v1_hotbed_proto.Services().ByName("ReviewService").Methods().ByName("FinishReview"),
+			Procedure:  ReviewServiceFinishReviewProcedure,
+		}
+	})
+	reviewServiceCancelReviewSpec = sync.OnceValue(func() connect.Spec {
+		return connect.Spec{
+			StreamType: connect.StreamTypeUnary,
+			Schema:     v1.File_hotbed_v1_hotbed_proto.Services().ByName("ReviewService").Methods().ByName("CancelReview"),
+			Procedure:  ReviewServiceCancelReviewProcedure,
+		}
+	})
+	reviewServiceDecideFindingsSpec = sync.OnceValue(func() connect.Spec {
+		return connect.Spec{
+			StreamType: connect.StreamTypeUnary,
+			Schema:     v1.File_hotbed_v1_hotbed_proto.Services().ByName("ReviewService").Methods().ByName("DecideFindings"),
+			Procedure:  ReviewServiceDecideFindingsProcedure,
+		}
+	})
+	reviewServiceRespondSpec = sync.OnceValue(func() connect.Spec {
+		return connect.Spec{
+			StreamType: connect.StreamTypeUnary,
+			Schema:     v1.File_hotbed_v1_hotbed_proto.Services().ByName("ReviewService").Methods().ByName("Respond"),
+			Procedure:  ReviewServiceRespondProcedure,
+		}
+	})
+	reviewServiceListResponsesSpec = sync.OnceValue(func() connect.Spec {
+		return connect.Spec{
+			StreamType: connect.StreamTypeUnary,
+			Schema:     v1.File_hotbed_v1_hotbed_proto.Services().ByName("ReviewService").Methods().ByName("ListResponses"),
+			Procedure:  ReviewServiceListResponsesProcedure,
+		}
+	})
+	reviewServiceWaitReviewSpec = sync.OnceValue(func() connect.Spec {
+		return connect.Spec{
+			StreamType: connect.StreamTypeUnary,
+			Schema:     v1.File_hotbed_v1_hotbed_proto.Services().ByName("ReviewService").Methods().ByName("WaitReview"),
+			Procedure:  ReviewServiceWaitReviewProcedure,
+		}
+	})
+)
+
+// ReviewServiceClient is a client for the hotbed.v1.ReviewService service.
+type ReviewServiceClient interface {
+	// RequestReview asks for a review of a version, in the requesting
+	// session's project.
+	RequestReview(context.Context, *v1.RequestReviewRequest) (*v1.Review, error)
+	// ListReviews lists a project's reviews, or every project's, newest first,
+	// without their findings and events.
+	ListReviews(context.Context, *v1.ListReviewsRequest) (*v1.ListReviewsResponse, error)
+	// GetReview is a review with its findings and every event.
+	GetReview(context.Context, *v1.GetReviewRequest) (*v1.Review, error)
+	// StartReview claims a requested review for the calling session, its
+	// reviewer.
+	StartReview(context.Context, *v1.StartReviewRequest) (*v1.Review, error)
+	// AddFindings adds the reviewer's findings, as ReportFindings reports
+	// them, with locations besides; it may be called more than once.
+	AddFindings(context.Context, *v1.AddFindingsRequest) (*v1.AddFindingsResponse, error)
+	// FinishReview ends a review: done, with the reviewer's summary, or
+	// failed, with why.
+	FinishReview(context.Context, *v1.FinishReviewRequest) (*v1.Review, error)
+	// CancelReview withdraws a review that has not ended.
+	CancelReview(context.Context, *v1.CancelReviewRequest) (*v1.Review, error)
+	// DecideFindings accepts or dismisses findings, or opens them again.
+	DecideFindings(context.Context, *v1.DecideFindingsRequest) (*v1.DecideFindingsResponse, error)
+	// Respond answers a finding, or the review as a whole: a quick response,
+	// a comment, or both.
+	Respond(context.Context, *v1.RespondRequest) (*v1.ReviewEvent, error)
+	// ListResponses lists the responses to a review after a cursor.
+	ListResponses(context.Context, *v1.ListResponsesRequest) (*v1.ListResponsesResponse, error)
+	// WaitReview waits, two minutes at most, until a review has ended, or,
+	// with responses, until someone other than the caller responds after a
+	// cursor. It returns the review as it is then.
+	WaitReview(context.Context, *v1.WaitReviewRequest) (*v1.Review, error)
+}
+
+// NewReviewServiceClient constructs a client for the hotbed.v1.ReviewService service. Multiple
+// service clients may share a single connect.Client.
+func NewReviewServiceClient(client *connect.Client) ReviewServiceClient {
+	return &reviewServiceClient{client: client}
+}
+
+// ReviewServiceHandler is an implementation of the hotbed.v1.ReviewService service.
+type ReviewServiceHandler interface {
+	// RequestReview asks for a review of a version, in the requesting
+	// session's project.
+	RequestReview(context.Context, *v1.RequestReviewRequest) (*v1.Review, error)
+	// ListReviews lists a project's reviews, or every project's, newest first,
+	// without their findings and events.
+	ListReviews(context.Context, *v1.ListReviewsRequest) (*v1.ListReviewsResponse, error)
+	// GetReview is a review with its findings and every event.
+	GetReview(context.Context, *v1.GetReviewRequest) (*v1.Review, error)
+	// StartReview claims a requested review for the calling session, its
+	// reviewer.
+	StartReview(context.Context, *v1.StartReviewRequest) (*v1.Review, error)
+	// AddFindings adds the reviewer's findings, as ReportFindings reports
+	// them, with locations besides; it may be called more than once.
+	AddFindings(context.Context, *v1.AddFindingsRequest) (*v1.AddFindingsResponse, error)
+	// FinishReview ends a review: done, with the reviewer's summary, or
+	// failed, with why.
+	FinishReview(context.Context, *v1.FinishReviewRequest) (*v1.Review, error)
+	// CancelReview withdraws a review that has not ended.
+	CancelReview(context.Context, *v1.CancelReviewRequest) (*v1.Review, error)
+	// DecideFindings accepts or dismisses findings, or opens them again.
+	DecideFindings(context.Context, *v1.DecideFindingsRequest) (*v1.DecideFindingsResponse, error)
+	// Respond answers a finding, or the review as a whole: a quick response,
+	// a comment, or both.
+	Respond(context.Context, *v1.RespondRequest) (*v1.ReviewEvent, error)
+	// ListResponses lists the responses to a review after a cursor.
+	ListResponses(context.Context, *v1.ListResponsesRequest) (*v1.ListResponsesResponse, error)
+	// WaitReview waits, two minutes at most, until a review has ended, or,
+	// with responses, until someone other than the caller responds after a
+	// cursor. It returns the review as it is then.
+	WaitReview(context.Context, *v1.WaitReviewRequest) (*v1.Review, error)
+}
+
+// RegisterReviewServiceHandler registers svc as the hotbed.v1.ReviewService implementation on
+// server.
+func RegisterReviewServiceHandler(server *connect.Server, svc ReviewServiceHandler) {
+	adapter := reviewServiceHandler{svc: svc}
+	server.Register(
+		connect.Method{Spec: reviewServiceRequestReviewSpec(), Handler: adapter.requestReview},
+		connect.Method{Spec: reviewServiceListReviewsSpec(), Handler: adapter.listReviews},
+		connect.Method{Spec: reviewServiceGetReviewSpec(), Handler: adapter.getReview},
+		connect.Method{Spec: reviewServiceStartReviewSpec(), Handler: adapter.startReview},
+		connect.Method{Spec: reviewServiceAddFindingsSpec(), Handler: adapter.addFindings},
+		connect.Method{Spec: reviewServiceFinishReviewSpec(), Handler: adapter.finishReview},
+		connect.Method{Spec: reviewServiceCancelReviewSpec(), Handler: adapter.cancelReview},
+		connect.Method{Spec: reviewServiceDecideFindingsSpec(), Handler: adapter.decideFindings},
+		connect.Method{Spec: reviewServiceRespondSpec(), Handler: adapter.respond},
+		connect.Method{Spec: reviewServiceListResponsesSpec(), Handler: adapter.listResponses},
+		connect.Method{Spec: reviewServiceWaitReviewSpec(), Handler: adapter.waitReview},
+	)
+}
+
+// UnimplementedReviewServiceHandler returns CodeUnimplemented from all methods.
+type UnimplementedReviewServiceHandler struct{}
+
+func (UnimplementedReviewServiceHandler) RequestReview(context.Context, *v1.RequestReviewRequest) (*v1.Review, error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, "hotbed.v1.ReviewService.RequestReview is not implemented")
+}
+
+func (UnimplementedReviewServiceHandler) ListReviews(context.Context, *v1.ListReviewsRequest) (*v1.ListReviewsResponse, error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, "hotbed.v1.ReviewService.ListReviews is not implemented")
+}
+
+func (UnimplementedReviewServiceHandler) GetReview(context.Context, *v1.GetReviewRequest) (*v1.Review, error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, "hotbed.v1.ReviewService.GetReview is not implemented")
+}
+
+func (UnimplementedReviewServiceHandler) StartReview(context.Context, *v1.StartReviewRequest) (*v1.Review, error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, "hotbed.v1.ReviewService.StartReview is not implemented")
+}
+
+func (UnimplementedReviewServiceHandler) AddFindings(context.Context, *v1.AddFindingsRequest) (*v1.AddFindingsResponse, error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, "hotbed.v1.ReviewService.AddFindings is not implemented")
+}
+
+func (UnimplementedReviewServiceHandler) FinishReview(context.Context, *v1.FinishReviewRequest) (*v1.Review, error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, "hotbed.v1.ReviewService.FinishReview is not implemented")
+}
+
+func (UnimplementedReviewServiceHandler) CancelReview(context.Context, *v1.CancelReviewRequest) (*v1.Review, error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, "hotbed.v1.ReviewService.CancelReview is not implemented")
+}
+
+func (UnimplementedReviewServiceHandler) DecideFindings(context.Context, *v1.DecideFindingsRequest) (*v1.DecideFindingsResponse, error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, "hotbed.v1.ReviewService.DecideFindings is not implemented")
+}
+
+func (UnimplementedReviewServiceHandler) Respond(context.Context, *v1.RespondRequest) (*v1.ReviewEvent, error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, "hotbed.v1.ReviewService.Respond is not implemented")
+}
+
+func (UnimplementedReviewServiceHandler) ListResponses(context.Context, *v1.ListResponsesRequest) (*v1.ListResponsesResponse, error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, "hotbed.v1.ReviewService.ListResponses is not implemented")
+}
+
+func (UnimplementedReviewServiceHandler) WaitReview(context.Context, *v1.WaitReviewRequest) (*v1.Review, error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, "hotbed.v1.ReviewService.WaitReview is not implemented")
+}
+
+type reviewServiceClient struct {
+	client *connect.Client
+}
+
+func (c *reviewServiceClient) RequestReview(ctx context.Context, req *v1.RequestReviewRequest) (*v1.Review, error) {
+	var res v1.Review
+	if err := c.client.CallUnary(ctx, reviewServiceRequestReviewSpec(), req, &res); err != nil {
+		return nil, err
+	}
+	return &res, nil
+}
+
+func (c *reviewServiceClient) ListReviews(ctx context.Context, req *v1.ListReviewsRequest) (*v1.ListReviewsResponse, error) {
+	var res v1.ListReviewsResponse
+	if err := c.client.CallUnary(ctx, reviewServiceListReviewsSpec(), req, &res); err != nil {
+		return nil, err
+	}
+	return &res, nil
+}
+
+func (c *reviewServiceClient) GetReview(ctx context.Context, req *v1.GetReviewRequest) (*v1.Review, error) {
+	var res v1.Review
+	if err := c.client.CallUnary(ctx, reviewServiceGetReviewSpec(), req, &res); err != nil {
+		return nil, err
+	}
+	return &res, nil
+}
+
+func (c *reviewServiceClient) StartReview(ctx context.Context, req *v1.StartReviewRequest) (*v1.Review, error) {
+	var res v1.Review
+	if err := c.client.CallUnary(ctx, reviewServiceStartReviewSpec(), req, &res); err != nil {
+		return nil, err
+	}
+	return &res, nil
+}
+
+func (c *reviewServiceClient) AddFindings(ctx context.Context, req *v1.AddFindingsRequest) (*v1.AddFindingsResponse, error) {
+	var res v1.AddFindingsResponse
+	if err := c.client.CallUnary(ctx, reviewServiceAddFindingsSpec(), req, &res); err != nil {
+		return nil, err
+	}
+	return &res, nil
+}
+
+func (c *reviewServiceClient) FinishReview(ctx context.Context, req *v1.FinishReviewRequest) (*v1.Review, error) {
+	var res v1.Review
+	if err := c.client.CallUnary(ctx, reviewServiceFinishReviewSpec(), req, &res); err != nil {
+		return nil, err
+	}
+	return &res, nil
+}
+
+func (c *reviewServiceClient) CancelReview(ctx context.Context, req *v1.CancelReviewRequest) (*v1.Review, error) {
+	var res v1.Review
+	if err := c.client.CallUnary(ctx, reviewServiceCancelReviewSpec(), req, &res); err != nil {
+		return nil, err
+	}
+	return &res, nil
+}
+
+func (c *reviewServiceClient) DecideFindings(ctx context.Context, req *v1.DecideFindingsRequest) (*v1.DecideFindingsResponse, error) {
+	var res v1.DecideFindingsResponse
+	if err := c.client.CallUnary(ctx, reviewServiceDecideFindingsSpec(), req, &res); err != nil {
+		return nil, err
+	}
+	return &res, nil
+}
+
+func (c *reviewServiceClient) Respond(ctx context.Context, req *v1.RespondRequest) (*v1.ReviewEvent, error) {
+	var res v1.ReviewEvent
+	if err := c.client.CallUnary(ctx, reviewServiceRespondSpec(), req, &res); err != nil {
+		return nil, err
+	}
+	return &res, nil
+}
+
+func (c *reviewServiceClient) ListResponses(ctx context.Context, req *v1.ListResponsesRequest) (*v1.ListResponsesResponse, error) {
+	var res v1.ListResponsesResponse
+	if err := c.client.CallUnary(ctx, reviewServiceListResponsesSpec(), req, &res); err != nil {
+		return nil, err
+	}
+	return &res, nil
+}
+
+func (c *reviewServiceClient) WaitReview(ctx context.Context, req *v1.WaitReviewRequest) (*v1.Review, error) {
+	var res v1.Review
+	if err := c.client.CallUnary(ctx, reviewServiceWaitReviewSpec(), req, &res); err != nil {
+		return nil, err
+	}
+	return &res, nil
+}
+
+type reviewServiceHandler struct{ svc ReviewServiceHandler }
+
+func (h reviewServiceHandler) requestReview(ctx context.Context, _ connect.Spec, stream connect.ServerStream) error {
+	var req v1.RequestReviewRequest
+	if err := stream.Receive(&req); err != nil {
+		return err
+	}
+	res, err := h.svc.RequestReview(ctx, &req)
+	if err != nil {
+		return err
+	}
+	return stream.Send(res)
+}
+
+func (h reviewServiceHandler) listReviews(ctx context.Context, _ connect.Spec, stream connect.ServerStream) error {
+	var req v1.ListReviewsRequest
+	if err := stream.Receive(&req); err != nil {
+		return err
+	}
+	res, err := h.svc.ListReviews(ctx, &req)
+	if err != nil {
+		return err
+	}
+	return stream.Send(res)
+}
+
+func (h reviewServiceHandler) getReview(ctx context.Context, _ connect.Spec, stream connect.ServerStream) error {
+	var req v1.GetReviewRequest
+	if err := stream.Receive(&req); err != nil {
+		return err
+	}
+	res, err := h.svc.GetReview(ctx, &req)
+	if err != nil {
+		return err
+	}
+	return stream.Send(res)
+}
+
+func (h reviewServiceHandler) startReview(ctx context.Context, _ connect.Spec, stream connect.ServerStream) error {
+	var req v1.StartReviewRequest
+	if err := stream.Receive(&req); err != nil {
+		return err
+	}
+	res, err := h.svc.StartReview(ctx, &req)
+	if err != nil {
+		return err
+	}
+	return stream.Send(res)
+}
+
+func (h reviewServiceHandler) addFindings(ctx context.Context, _ connect.Spec, stream connect.ServerStream) error {
+	var req v1.AddFindingsRequest
+	if err := stream.Receive(&req); err != nil {
+		return err
+	}
+	res, err := h.svc.AddFindings(ctx, &req)
+	if err != nil {
+		return err
+	}
+	return stream.Send(res)
+}
+
+func (h reviewServiceHandler) finishReview(ctx context.Context, _ connect.Spec, stream connect.ServerStream) error {
+	var req v1.FinishReviewRequest
+	if err := stream.Receive(&req); err != nil {
+		return err
+	}
+	res, err := h.svc.FinishReview(ctx, &req)
+	if err != nil {
+		return err
+	}
+	return stream.Send(res)
+}
+
+func (h reviewServiceHandler) cancelReview(ctx context.Context, _ connect.Spec, stream connect.ServerStream) error {
+	var req v1.CancelReviewRequest
+	if err := stream.Receive(&req); err != nil {
+		return err
+	}
+	res, err := h.svc.CancelReview(ctx, &req)
+	if err != nil {
+		return err
+	}
+	return stream.Send(res)
+}
+
+func (h reviewServiceHandler) decideFindings(ctx context.Context, _ connect.Spec, stream connect.ServerStream) error {
+	var req v1.DecideFindingsRequest
+	if err := stream.Receive(&req); err != nil {
+		return err
+	}
+	res, err := h.svc.DecideFindings(ctx, &req)
+	if err != nil {
+		return err
+	}
+	return stream.Send(res)
+}
+
+func (h reviewServiceHandler) respond(ctx context.Context, _ connect.Spec, stream connect.ServerStream) error {
+	var req v1.RespondRequest
+	if err := stream.Receive(&req); err != nil {
+		return err
+	}
+	res, err := h.svc.Respond(ctx, &req)
+	if err != nil {
+		return err
+	}
+	return stream.Send(res)
+}
+
+func (h reviewServiceHandler) listResponses(ctx context.Context, _ connect.Spec, stream connect.ServerStream) error {
+	var req v1.ListResponsesRequest
+	if err := stream.Receive(&req); err != nil {
+		return err
+	}
+	res, err := h.svc.ListResponses(ctx, &req)
+	if err != nil {
+		return err
+	}
+	return stream.Send(res)
+}
+
+func (h reviewServiceHandler) waitReview(ctx context.Context, _ connect.Spec, stream connect.ServerStream) error {
+	var req v1.WaitReviewRequest
+	if err := stream.Receive(&req); err != nil {
+		return err
+	}
+	res, err := h.svc.WaitReview(ctx, &req)
 	if err != nil {
 		return err
 	}

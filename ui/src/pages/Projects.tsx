@@ -163,7 +163,7 @@ function ProjectSection({ s, a, now, q, delay }: { s: Snapshot; a: Activity; now
   const navigate = useNavigate();
   const p = a.project;
   const here = chosen === p.name;
-  const open = (to: "/sessions" | "/commands" | "/questions") => {
+  const open = (to: "/sessions" | "/commands" | "/questions" | "/reviews") => {
     choose(p.name);
     void navigate({ to });
   };
@@ -199,6 +199,10 @@ function ProjectSection({ s, a, now, q, delay }: { s: Snapshot; a: Activity; now
             <button type="button" onClick={() => open("/questions")} className="rounded-md border border-border px-2.5 py-1 text-muted-foreground hover:border-border-strong hover:text-foreground">
               <span className={p.openQuestions > 0 ? "text-primary" : "text-foreground"}>{p.openQuestions}</span> questions
               {p.outbox > 0 && <span className="text-frost"> · {p.outbox} outbox</span>}
+            </button>
+            <button type="button" onClick={() => open("/reviews")} className="rounded-md border border-border px-2.5 py-1 text-muted-foreground hover:border-border-strong hover:text-foreground">
+              <span className={p.activeReviews > 0 ? "text-primary" : "text-foreground"}>{p.activeReviews}</span> reviews
+              {p.reviewsToDecide > 0 && <span className="text-primary"> · {p.reviewsToDecide} to decide</span>}
             </button>
           </div>
         </header>

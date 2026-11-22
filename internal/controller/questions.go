@@ -11,7 +11,6 @@ import (
 	"github.com/semistrict/hotbed/internal/api"
 	pb "github.com/semistrict/hotbed/internal/gen/hotbed/v1"
 	"github.com/semistrict/hotbed/internal/gitops"
-	"github.com/semistrict/hotbed/internal/httpx"
 )
 
 // questions serves QuestionService: one list of questions for every
@@ -43,7 +42,7 @@ func (s *questions) AddQuestions(ctx context.Context, req *pb.AddQuestionsReques
 			return nil, api.Errorf(api.CodeInvalidArgs, "question %d of %d: %s", i+1, len(req.Questions), err.Message).WithSuggestion(err.Suggestion)
 		}
 	}
-	by, project, err := s.agent(ctx, req.SessionId, "")
+	by, project, err := s.agentStamp(ctx, req.SessionId, "")
 	if err != nil {
 		return nil, err
 	}
@@ -84,12 +83,12 @@ func (s *questions) EditQuestion(ctx context.Context, req *pb.EditQuestionReques
 	if err := checkPrompt(req.Prompt); err != nil {
 		return nil, err
 	}
-	by, project, err := s.agent(ctx, req.SessionId, "")
+	by, project, err := s.agentStamp(ctx, req.SessionId, "")
 	if err != nil {
 		return nil, err
 	}
 	return s.change(ctx, req.Id, questionEdited, by, func(q *pb.Question) error {
-		if err := mustBeOurs(q, project, by); err != nil {
+		if err := inProject("question", q.Id, q.Project, project, by); err != nil {
 			return err
 		}
 		if err := mustBeOpen(q, "edited"); err != nil {
@@ -101,12 +100,12 @@ func (s *questions) EditQuestion(ctx context.Context, req *pb.EditQuestionReques
 }
 
 func (s *questions) DeleteQuestion(ctx context.Context, req *pb.DeleteQuestionRequest) (*pb.Question, error) {
-	by, project, err := s.agent(ctx, req.SessionId, req.Reason)
+	by, project, err := s.agentStamp(ctx, req.SessionId, req.Reason)
 	if err != nil {
 		return nil, err
 	}
 	return s.change(ctx, req.Id, questionDeleted, by, func(q *pb.Question) error {
-		if err := mustBeOurs(q, project, by); err != nil {
+		if err := inProject("question", q.Id, q.Project, project, by); err != nil {
 			return err
 		}
 		if q.State == pb.QuestionState_QUESTION_STATE_DELETED {
@@ -145,7 +144,7 @@ func (s *questions) GetQuestion(ctx context.Context, req *pb.GetQuestionRequest)
 }
 
 func (s *questions) AnswerQuestion(ctx context.Context, req *pb.AnswerQuestionRequest) (*pb.Question, error) {
-	by, err := s.user(ctx, req.SessionId, "")
+	by, err := s.userStamp(ctx, req.SessionId, "")
 	if err != nil {
 		return nil, err
 	}
@@ -166,7 +165,7 @@ func (s *questions) AnswerQuestion(ctx context.Context, req *pb.AnswerQuestionRe
 }
 
 func (s *questions) DismissQuestion(ctx context.Context, req *pb.DismissQuestionRequest) (*pb.Question, error) {
-	by, err := s.user(ctx, req.SessionId, req.Reason)
+	by, err := s.userStamp(ctx, req.SessionId, req.Reason)
 	if err != nil {
 		return nil, err
 	}
@@ -184,7 +183,7 @@ func (s *questions) DismissQuestion(ctx context.Context, req *pb.DismissQuestion
 }
 
 func (s *questions) MoveQuestion(ctx context.Context, req *pb.MoveQuestionRequest) (*pb.Question, error) {
-	by, err := s.user(ctx, req.SessionId, "")
+	by, err := s.userStamp(ctx, req.SessionId, "")
 	if err != nil {
 		return nil, err
 	}
@@ -211,12 +210,12 @@ func (s *questions) AckQuestions(ctx context.Context, req *pb.AckQuestionsReques
 	if len(req.Ids) == 0 {
 		return nil, api.Errorf(api.CodeInvalidArgs, "name the questions whose answers you read").WithSuggestion("hotbed question outbox")
 	}
-	by, project, err := s.agent(ctx, req.SessionId, "")
+	by, project, err := s.agentStamp(ctx, req.SessionId, "")
 	if err != nil {
 		return nil, err
 	}
 	qs, err := s.cfg.Store.ChangeQuestions(ctx, req.Ids, questionHandled, by, func(q *pb.Question) error {
-		if err := mustBeOurs(q, project, by); err != nil {
+		if err := inProject("question", q.Id, q.Project, project, by); err != nil {
 			return err
 		}
 		if !inOutbox(q.State) {
@@ -288,51 +287,6 @@ func (s *questions) change(ctx context.Context, id int32, what string, by *pb.St
 	}
 	s.questionWakes.wake(anyQuestion)
 	return q, nil
-}
-
-// agent stamps a change an agent makes, and says the project it may make
-// it in: its session's. It must name its session, which must be live, and
-// which the change keeps alive.
-func (s *questions) agent(ctx context.Context, session, reason string) (*pb.Stamp, *pb.Project, error) {
-	if session == "" {
-		return nil, nil, api.Errorf(api.CodeInvalidArgs, "name the session making the change: questions record which session did what").
-			WithSuggestion("pass -s SESSION, set HOTBED_SESSION, or run `hotbed session start`")
-	}
-	by, err := s.user(ctx, session, reason)
-	if err != nil {
-		return nil, nil, err
-	}
-	sess, err := s.cfg.Store.Session(ctx, session)
-	if err != nil {
-		return nil, nil, err
-	}
-	if sess.Project == "" {
-		return nil, nil, api.Errorf(api.CodeInvalidArgs, "session %s started before sessions had projects, and questions are a project's", session).
-			WithSuggestion("start a new session: hotbed session start")
-	}
-	project, err := s.cfg.Store.Project(ctx, sess.Project)
-	return by, project, err
-}
-
-// mustBeOurs refuses an agent's change to another project's question: its
-// sessions are the ones that read that list.
-func mustBeOurs(q *pb.Question, project *pb.Project, by *pb.Stamp) error {
-	if q.Project == project.Name {
-		return nil
-	}
-	return api.Errorf(api.CodeConflict, "question %d is project %s's; session %s works on %s", q.Id, q.Project, by.Session, project.Name).
-		WithSuggestion("leave it to a session of " + q.Project)
-}
-
-// user stamps a change the user makes: from the cockpit, with no session,
-// or passed on by an agent, as its session.
-func (s *questions) user(ctx context.Context, session, reason string) (*pb.Stamp, error) {
-	if session != "" {
-		if _, err := s.cfg.Store.LiveSession(ctx, session, s.now()); err != nil {
-			return nil, err
-		}
-	}
-	return &pb.Stamp{At: s.now().UnixMilli(), Session: session, Host: httpx.Peer(ctx).Hostname, Reason: reason}, nil
 }
 
 var outbox = []pb.QuestionState{pb.QuestionState_QUESTION_STATE_ANSWERED, pb.QuestionState_QUESTION_STATE_DISMISSED}

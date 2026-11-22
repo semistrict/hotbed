@@ -186,20 +186,25 @@ func saveQuestion(ctx context.Context, tx *sql.Tx, q *pb.Question, what string, 
 // tellAsker adds the answer or dismissal of q to its asking session's
 // events, if the session is live.
 func tellAsker(ctx context.Context, tx *sql.Tx, q *pb.Question, what string) error {
-	session := q.GetAsked().GetSession()
-	var live bool
-	if err := tx.QueryRowContext(ctx, `SELECT EXISTS (SELECT 1 FROM sessions WHERE id = ? AND ended_at IS NULL)`, session).Scan(&live); err != nil || !live {
-		return err
-	}
 	stamp := q.Answered
 	if what == questionDismissed {
 		stamp = q.Dismissed
 	}
-	doc, err := marshal(&pb.SessionEvent{At: stamp.At, What: what, SessionId: session, QuestionId: q.Id, Detail: responseLine(q)})
+	return tellSession(ctx, tx, &pb.SessionEvent{At: stamp.At, What: what, SessionId: q.GetAsked().GetSession(), QuestionId: q.Id, Detail: responseLine(q)})
+}
+
+// tellSession adds e to its session's events, if the session is live, so
+// its agent's hotbed wait hears of it.
+func tellSession(ctx context.Context, tx *sql.Tx, e *pb.SessionEvent) error {
+	var live bool
+	if err := tx.QueryRowContext(ctx, `SELECT EXISTS (SELECT 1 FROM sessions WHERE id = ? AND ended_at IS NULL)`, e.SessionId).Scan(&live); err != nil || !live {
+		return err
+	}
+	doc, err := marshal(e)
 	if err != nil {
 		return err
 	}
-	_, err = tx.ExecContext(ctx, `INSERT INTO session_events (session_id, doc) VALUES (?, ?)`, session, doc)
+	_, err = tx.ExecContext(ctx, `INSERT INTO session_events (session_id, doc) VALUES (?, ?)`, e.SessionId, doc)
 	return err
 }
 

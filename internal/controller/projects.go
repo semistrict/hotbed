@@ -43,8 +43,8 @@ func (s *Server) ListProjects(ctx context.Context, _ *pb.ListProjectsRequest) (*
 	return &pb.ListProjectsResponse{Projects: ps}, err
 }
 
-// projects is every project, with its live sessions and its questions
-// waiting on the user and on agents counted.
+// projects is every project, with its live sessions, its questions waiting
+// on the user and on agents, and its reviews under way or to decide counted.
 func (s *Server) projects(ctx context.Context) ([]*pb.Project, error) {
 	ps, err := s.cfg.Store.Projects(ctx)
 	if err != nil {
@@ -58,8 +58,12 @@ func (s *Server) projects(ctx context.Context) ([]*pb.Project, error) {
 	if err != nil {
 		return nil, err
 	}
+	active, toDecide, err := s.cfg.Store.ReviewCounts(ctx)
+	if err != nil {
+		return nil, err
+	}
 	for _, p := range ps {
-		p.LiveSessions = live[p.Name]
+		p.LiveSessions, p.ActiveReviews, p.ReviewsToDecide = live[p.Name], active[p.Name], toDecide[p.Name]
 		for _, q := range questions {
 			if q.Name == p.Name {
 				p.OpenQuestions, p.Outbox = q.Open, q.Outbox

@@ -86,6 +86,8 @@ type Server struct {
 	// questionWakes wakes everyone waiting on questions when one changes.
 	sessionWakes  wakeups
 	questionWakes wakeups
+	// reviewWakes wakes those waiting on a review (by its ID) when it changes.
+	reviewWakes wakeups
 
 	// repoEdits makes each change to a repo (its steps, its epoch) read and
 	// write it in one go, so agents editing steps at once lose nothing.
@@ -118,6 +120,7 @@ func (s *Server) Handler() http.Handler {
 	hotbedv1connect.RegisterWorkspaceServiceHandler(server, &workspaces{s})
 	hotbedv1connect.RegisterScheduleServiceHandler(server, &schedules{s})
 	hotbedv1connect.RegisterQuestionServiceHandler(server, &questions{s})
+	hotbedv1connect.RegisterReviewServiceHandler(server, &reviews{s})
 	mux := http.NewServeMux()
 	connecthttp.Mount(mux, server)
 	mux.HandleFunc("GET /builds/{build}/{asset}", s.serveBuild)

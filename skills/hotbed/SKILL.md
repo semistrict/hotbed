@@ -109,6 +109,47 @@ hotbed question ack 12           # you read it and acted on it: it is handled
   ID --reason WHY`. `question move ID --first|--last|--before ID` reorders the user's list.
   `question projects` counts every project's open and outbox questions.
 
+## Reviews: asking a reviewer agent, and the user
+
+A review is of an exact version: the commits it names never move. Ask for one in the checkout to
+review, then give its number to a reviewer agent:
+
+```sh
+hotbed review request --title "Retry on lost leases" --instructions "look for races"
+                                 # base: where HEAD left origin's default branch (--base REF, --whole)
+                                 # head: HEAD, or a snapshot commit of uncommitted changes, pinned
+hotbed review wait 7             # up to two minutes; or keep working and let hotbed wait tell you
+hotbed review show 7             # findings, with locations, decisions and responses
+hotbed review accept 7 1 3 --reason "fixing"
+hotbed review dismiss 7 2 --reason "pre-existing; not this change"
+hotbed review link 7             # the review's page in the cockpit: send it to the user
+hotbed review wait 7 --responses # until the user (or anyone else) responds
+hotbed review responses 7        # the responses since you last read them
+```
+
+The reviewer, in its own session:
+
+```sh
+hotbed review start 7            # claim it; review show 7 has base, head and instructions
+git diff BASE HEAD               # the commits are in the requester's checkout (refs/hotbed/reviews/HEAD)
+hotbed review findings 7 <<'EOF'
+{"findings": [{"short_summary": "Lease renewal races expiry", "summary": "...", "failure_scenario": "...",
+  "category": "correctness", "severity": "important", "verdict": "CONFIRMED", "file": "lease.go", "line": 88,
+  "locations": [{"path": "renew.go", "start_line": 12, "end_line": 20, "excerpt": "..."}]}]}
+EOF
+hotbed review finish 7 --summary "One race, one nit."   # or: hotbed review fail 7 --reason WHY
+```
+
+- A finding is ReportFindings' JSON (severity `important`, `pre_existing` or `nit`; verdict
+  `CONFIRMED`, `PLAUSIBLE` or none), with any number of `locations` besides, or none. Put the
+  lines in `excerpt`: the cockpit shows them without the code.
+- The user responds on the review's page, per finding, with a quick response (verify, fix if
+  verified, won't fix), a comment, or both. A response, and the review's end, are events of the
+  requesting session, so its `hotbed wait` wakes. Reply with `hotbed review respond 7 --finding 1
+  --comment TEXT`; pass the user's word on with `--quick verify|fix-if-verified|wont-fix`.
+- `hotbed review ls` lists the project's reviews; `review cancel` withdraws one; `review reopen`
+  makes a decided finding open again. Nothing is removed: `review show` has every event.
+
 ## Keeping a session alive
 
 A session nothing touches for **an hour** is abandoned: its commands stop and its workspaces are

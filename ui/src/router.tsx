@@ -9,6 +9,8 @@ import { NotFound } from "./pages/NotFound";
 import { OverviewPage } from "./pages/Overview";
 import { ProjectsPage } from "./pages/Projects";
 import { QuestionsPage, type QuestionsSearch } from "./pages/Questions";
+import { ReviewPage } from "./pages/Review";
+import { ReviewsPage } from "./pages/Reviews";
 import { SessionPage } from "./pages/Session";
 import { SchedulesPage } from "./pages/Schedules";
 import { SessionsPage } from "./pages/Sessions";
@@ -22,6 +24,8 @@ const root = createRootRoute({ component: Shell, notFoundComponent: NotFound });
 const projects = createRoute({ getParentRoute: () => root, path: "/", component: ProjectsPage });
 const sessions = createRoute({ getParentRoute: () => root, path: "/sessions", component: SessionsPage });
 const session = createRoute({ getParentRoute: () => root, path: "/sessions/$id", component: SessionPage });
+const reviews = createRoute({ getParentRoute: () => root, path: "/reviews", component: ReviewsPage });
+const review = createRoute({ getParentRoute: () => root, path: "/reviews/$id", component: ReviewPage });
 const schedules = createRoute({ getParentRoute: () => root, path: "/schedules", component: SchedulesPage });
 const TABS = ["inbox", "outbox", "handled", "deleted", "all"];
 const SORTS = ["rank", "newest", "oldest", "updated"];
@@ -87,7 +91,7 @@ const history = createRoute({
   },
 });
 
-const routeTree = root.addChildren([projects, sessions, session, questions, schedules, overview, nodes, node, workspaces, workspace, commands, command, history]);
+const routeTree = root.addChildren([projects, sessions, session, questions, reviews, review, schedules, overview, nodes, node, workspaces, workspace, commands, command, history]);
 
 export const router = createRouter({ routeTree, defaultPreload: "intent", scrollRestoration: true });
 

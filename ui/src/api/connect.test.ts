@@ -1,7 +1,21 @@
 import { create } from "@bufbuild/protobuf";
 import { describe, expect, it } from "vitest";
-import { BaseState, CommandState, QuestionSchema, QuestionState, RunOutcome, SnapshotSchema, WorkspaceState } from "../gen/hotbed/v1/hotbed_pb";
-import { toQuestion, toSnapshot } from "./connect";
+import {
+  BaseState,
+  CommandState,
+  FindingDecision,
+  FindingSeverity,
+  FindingVerdict,
+  QuestionSchema,
+  QuestionState,
+  QuickResponse,
+  ReviewSchema,
+  ReviewState,
+  RunOutcome,
+  SnapshotSchema,
+  WorkspaceState,
+} from "../gen/hotbed/v1/hotbed_pb";
+import { toQuestion, toReview, toSnapshot } from "./connect";
 
 describe("toSnapshot", () => {
   it("maps the wire's bigints, enums and unset fields onto the cockpit's types", () => {
@@ -224,5 +238,54 @@ describe("toQuestion", () => {
       deleted: null,
       updatedAt: "2026-11-21T22:13:20.000Z",
     });
+  });
+});
+
+describe("toReview", () => {
+  it("maps a review's version, findings and events, unset to null", () => {
+    const r = toReview(
+      create(ReviewSchema, {
+        id: 3,
+        project: "app",
+        repo: "github.com/o/app",
+        title: "Add A",
+        head: "6cb0ca1f37",
+        branch: "work",
+        state: ReviewState.DONE,
+        requested: { at: 1795299000000n, session: "brave-otter", host: "laptop" },
+        findings: [
+          {
+            id: 7,
+            reviewId: 3,
+            title: "A drops errors",
+            severity: FindingSeverity.PRE_EXISTING,
+            verdict: FindingVerdict.PLAUSIBLE,
+            decision: FindingDecision.DISMISSED,
+            decided: { at: 1795299100000n, session: "brave-otter", reason: "later" },
+            quick: QuickResponse.WONT_FIX,
+            responses: 1,
+            locations: [{ path: "a.go", startLine: 3, excerpt: "x" }],
+          },
+        ],
+        events: [{ seq: 9n, reviewId: 3, what: "responded", by: { at: 1795299200000n }, quick: QuickResponse.WONT_FIX }],
+        important: 0,
+        preExisting: 1,
+        responses: 1,
+      }),
+    );
+    expect(r.base).toBeNull();
+    expect(r.snapshotOf).toBeNull();
+    expect(r.started).toBeNull();
+    expect(r.state).toBe("done");
+    expect(r.counts).toEqual({ important: 0, preExisting: 1, nits: 0, open: 0, responses: 1 });
+    expect(r.findings[0]).toMatchObject({
+      severity: "pre-existing",
+      verdict: "plausible",
+      decision: "dismissed",
+      decided: { session: "brave-otter", reason: "later" },
+      quick: "wont-fix",
+      locations: [{ path: "a.go", startLine: 3, endLine: 0, excerpt: "x" }],
+    });
+    expect(r.events[0]).toMatchObject({ seq: 9, findingId: null, what: "responded", quick: "wont-fix", by: { session: null } });
   });
 });
