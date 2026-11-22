@@ -2,6 +2,7 @@ package controller
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"regexp"
@@ -13,6 +14,7 @@ import (
 
 	"github.com/semistrict/hotbed/internal/api"
 	pb "github.com/semistrict/hotbed/internal/gen/hotbed/v1"
+	"github.com/semistrict/hotbed/internal/gitops"
 )
 
 // Scheduled commands: the controller starts each run by itself, in a session
@@ -193,13 +195,22 @@ func (s *Server) start(ctx context.Context, sc *pb.ScheduledCommand, slot *int64
 	if slot != nil {
 		at = time.UnixMilli(*slot)
 	}
-	session, err := s.runSession(ctx, sc.Name+"-"+at.In(loc).Format("20060102-1504"), "schedule:"+sc.Name)
+	run := &pb.ScheduledRun{Schedule: sc.Name, SlotAt: slot, StartedAt: now.UnixMilli(), Outcome: pb.RunOutcome_RUN_OUTCOME_RUNNING}
+	project, err := s.runProject(ctx, sc)
+	var refused *api.Error
+	if errors.As(err, &refused) {
+		ended := now.UnixMilli()
+		run.Outcome, run.Reason, run.EndedAt = pb.RunOutcome_RUN_OUTCOME_NOT_STARTED, refused.Message, &ended
+		return run, s.cfg.Store.AddRun(ctx, run)
+	}
 	if err != nil {
 		return nil, err
 	}
-	run := &pb.ScheduledRun{
-		Schedule: sc.Name, SlotAt: slot, StartedAt: now.UnixMilli(), Outcome: pb.RunOutcome_RUN_OUTCOME_RUNNING, SessionId: session,
+	session, err := s.runSession(ctx, sc.Name+"-"+at.In(loc).Format("20060102-1504"), "schedule:"+sc.Name, project.Name)
+	if err != nil {
+		return nil, err
 	}
+	run.SessionId = session
 	if err := s.cfg.Store.AddRun(ctx, run); err != nil {
 		return nil, err
 	}
@@ -220,15 +231,25 @@ func (s *Server) start(ctx context.Context, sc *pb.ScheduledCommand, slot *int64
 	return run, err
 }
 
+// runProject is the project a schedule's runs work on: the one holding its
+// repo, or the repo's own.
+func (s *Server) runProject(ctx context.Context, sc *pb.ScheduledCommand) (*pb.Project, error) {
+	repo, err := s.repo(ctx, sc.Repo)
+	if err != nil {
+		return nil, err
+	}
+	return s.sessionProject(ctx, "", gitops.CanonicalRemote(repo.Url), repo.Id)
+}
+
 // runSession starts a run's session, called name, or name-2, name-3 when
 // that is taken (two runs in a minute, or an agent's session).
-func (s *Server) runSession(ctx context.Context, name, agent string) (string, error) {
+func (s *Server) runSession(ctx context.Context, name, agent, project string) (string, error) {
 	for n := 1; n <= 20; n++ {
 		id := name
 		if n > 1 {
 			id = fmt.Sprintf("%s-%d", name, n)
 		}
-		_, err := s.cfg.Store.StartSession(ctx, id, agent, s.now())
+		_, err := s.cfg.Store.StartSession(ctx, id, agent, project, s.now())
 		if err == nil {
 			return id, nil
 		}

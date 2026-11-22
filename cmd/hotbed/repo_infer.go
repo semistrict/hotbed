@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -35,7 +34,7 @@ func (f controllerFlag) resolveRepo(ctx context.Context, d deps, session, explic
 		return "", api.Errorf(api.CodeInvalidArgs, "repo is required outside a git checkout (%s)", dir).
 			WithSuggestion("run from inside a repo checkout, set HOTBED_REPO, or pass -r REPO")
 	}
-	canonRoot := canonicalPath(root)
+	canonRoot := gitops.CanonicalPath(root)
 
 	cl, err := f.clients(d.http)
 	if err != nil {
@@ -46,14 +45,14 @@ func (f controllerFlag) resolveRepo(ctx context.Context, d deps, session, explic
 	if session != "" {
 		if list, lerr := cl.workspaces.ListWorkspaces(ctx, &pb.ListWorkspacesRequest{SessionId: session}); lerr == nil {
 			for _, w := range list.Workspaces {
-				if w.SyncDir != "" && canonicalPath(w.SyncDir) == canonRoot {
+				if w.SyncDir != "" && gitops.CanonicalPath(w.SyncDir) == canonRoot {
 					return w.RepoId, nil
 				}
 			}
 		} else if api.FromConnect(lerr).Code == api.CodeControllerUnreachable {
 			if known, kerr := loadKnown(d, session); kerr == nil {
 				for repoID, sp := range known {
-					if sp.SyncDir != "" && canonicalPath(sp.SyncDir) == canonRoot {
+					if sp.SyncDir != "" && gitops.CanonicalPath(sp.SyncDir) == canonRoot {
 						return repoID, nil
 					}
 				}
@@ -69,12 +68,12 @@ func (f controllerFlag) resolveRepo(ctx context.Context, d deps, session, explic
 	remotes := gitRemoteURLs(ctx, root)
 	if len(remotes) > 0 {
 		for _, rem := range remotes {
-			normRem := normalizeGitURL(rem)
+			normRem := gitops.CanonicalRemote(rem)
 			if normRem == "" {
 				continue
 			}
 			for _, r := range repos.Repos {
-				if normalizeGitURL(r.Url) == normRem {
+				if gitops.CanonicalRemote(r.Url) == normRem {
 					return r.Id, nil
 				}
 			}
@@ -98,17 +97,6 @@ func (f controllerFlag) resolveRepo(ctx context.Context, d deps, session, explic
 
 func gitCheckoutRoot(ctx context.Context, dir string) (string, error) {
 	return gitops.Git{Dir: dir}.Run(ctx, "rev-parse", "--show-toplevel")
-}
-
-func canonicalPath(p string) string {
-	abs, err := filepath.Abs(p)
-	if err == nil {
-		p = abs
-	}
-	if real, err := filepath.EvalSymlinks(p); err == nil {
-		return real
-	}
-	return filepath.Clean(p)
 }
 
 // gitRemoteURLs returns unique remote URLs for the git checkout at root, with
@@ -156,53 +144,13 @@ func gitRepoCandidateNames(ctx context.Context, root string) []string {
 		if !filepath.IsAbs(common) {
 			common = filepath.Join(root, common)
 		}
-		common = canonicalPath(common)
+		common = gitops.CanonicalPath(common)
 		if filepath.Base(common) == ".git" {
 			add(filepath.Base(filepath.Dir(common)))
 		} else {
 			add(strings.TrimSuffix(filepath.Base(common), ".git"))
 		}
 	}
-	add(filepath.Base(canonicalPath(root)))
+	add(filepath.Base(gitops.CanonicalPath(root)))
 	return names
-}
-
-// normalizeGitURL canonicalizes HTTPS, SSH, SCP-style, and local git URLs so
-// "git@github.com:semistrict/hotbed.git" and "https://github.com/semistrict/hotbed"
-// compare equal.
-func normalizeGitURL(raw string) string {
-	s := strings.TrimSpace(raw)
-	if s == "" {
-		return ""
-	}
-	// Local file paths (non-URL, non-SCP).
-	if strings.HasPrefix(s, "/") || strings.HasPrefix(s, ".") {
-		s = strings.TrimSuffix(filepath.Clean(s), ".git")
-		return canonicalPath(s)
-	}
-	if strings.HasPrefix(s, "file://") {
-		u, err := url.Parse(s)
-		if err == nil {
-			p := strings.TrimSuffix(filepath.Clean(u.Path), ".git")
-			return canonicalPath(p)
-		}
-	}
-	// SCP-style: [user@]host:path/to/repo.git
-	if !strings.Contains(s, "://") {
-		if hostPart, pathPart, ok := strings.Cut(s, ":"); ok && !strings.Contains(hostPart, "/") {
-			if _, host, hasUser := strings.Cut(hostPart, "@"); hasUser {
-				hostPart = host
-			}
-			pathPart = strings.Trim(pathPart, "/")
-			pathPart = strings.TrimSuffix(pathPart, ".git")
-			return strings.ToLower(hostPart) + "/" + pathPart
-		}
-	}
-	u, err := url.Parse(s)
-	if err != nil || u.Host == "" {
-		return strings.TrimSuffix(strings.TrimRight(s, "/"), ".git")
-	}
-	p := strings.Trim(u.Path, "/")
-	p = strings.TrimSuffix(p, ".git")
-	return strings.ToLower(u.Hostname()) + "/" + p
 }

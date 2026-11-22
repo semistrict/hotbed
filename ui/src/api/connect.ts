@@ -4,6 +4,9 @@ import {
   BaseState,
   ClusterService,
   CommandState,
+  QuestionOrder as PbOrder,
+  QuestionService,
+  QuestionState as PbQuestionState,
   RunOutcome,
   WorkspaceService,
   WorkspaceState,
@@ -11,6 +14,9 @@ import {
   type Command as PbCommand,
   type FinishedCommand as PbFinished,
   type Node as PbNode,
+  type Question as PbQuestion,
+  type QuestionChange as PbChange,
+  type Stamp as PbStamp,
   type ScheduledCommand as PbScheduled,
   type ScheduledRun as PbRun,
   type Snapshot as PbSnapshot,
@@ -24,10 +30,15 @@ import type {
   FailureKind,
   FinishedCommand,
   Node,
+  Question,
+  QuestionChange,
+  QuestionOrder,
+  QuestionState,
   ScheduledCommand,
   ScheduledRun,
   Session,
   Snapshot,
+  Stamp,
   Workspace,
 } from "./types";
 
@@ -39,6 +50,7 @@ export function createConnectApi(baseUrl = window.location.origin): Api {
   const transport = createConnectTransport({ baseUrl });
   const cluster = createClient(ClusterService, transport);
   const workspaces = createClient(WorkspaceService, transport);
+  const questions = createClient(QuestionService, transport);
   return {
     snapshot: async () => toSnapshot(await cluster.getSnapshot({})),
     commandLog: async (id) => {
@@ -58,7 +70,75 @@ export function createConnectApi(baseUrl = window.location.origin): Api {
       const f = await workspaces.getFile({ workspaceId, path });
       return { path: f.path, text: f.text, changedLines: f.changedLines };
     },
+    questions: async ({ states = [], order = "newest" }) => {
+      const res = await questions.listQuestions({ states: states.map((st) => TO_STATE[st]), order: TO_ORDER[order] });
+      return { questions: res.questions.map(toQuestion), total: res.total };
+    },
+    questionHistory: async (id) => (await questions.getQuestion({ id })).history.map(toChange),
+    answerQuestion: async (id, answer) => toQuestion(await questions.answerQuestion({ id, answer })),
+    dismissQuestion: async (id, reason) => toQuestion(await questions.dismissQuestion({ id, reason })),
+    moveQuestion: async (id, before) => toQuestion(await questions.moveQuestion({ id, before: before ?? 0 })),
   };
+}
+
+const STATE: Record<PbQuestionState, QuestionState> = {
+  [PbQuestionState.UNSPECIFIED]: "open",
+  [PbQuestionState.OPEN]: "open",
+  [PbQuestionState.ANSWERED]: "answered",
+  [PbQuestionState.DISMISSED]: "dismissed",
+  [PbQuestionState.HANDLED]: "handled",
+  [PbQuestionState.DELETED]: "deleted",
+};
+
+const TO_STATE: Record<QuestionState, PbQuestionState> = {
+  open: PbQuestionState.OPEN,
+  answered: PbQuestionState.ANSWERED,
+  dismissed: PbQuestionState.DISMISSED,
+  handled: PbQuestionState.HANDLED,
+  deleted: PbQuestionState.DELETED,
+};
+
+const TO_ORDER: Record<QuestionOrder, PbOrder> = {
+  newest: PbOrder.NEWEST,
+  oldest: PbOrder.OLDEST,
+  updated: PbOrder.UPDATED,
+  rank: PbOrder.RANK,
+};
+
+function toStamp(st: PbStamp | undefined): Stamp | null {
+  if (!st) return null;
+  return { at: iso(st.at), session: orNull(st.session), host: st.host, reason: st.reason };
+}
+
+export function toQuestion(q: PbQuestion): Question {
+  const p = q.prompt;
+  const f = q.askedFrom;
+  return {
+    id: q.id,
+    prompt: {
+      question: p?.question ?? "",
+      header: p?.header ?? "",
+      options: (p?.options ?? []).map((o) => ({ label: o.label, description: o.description, preview: o.preview })),
+      multiSelect: p?.multiSelect ?? false,
+    },
+    state: STATE[q.state],
+    rank: num(q.rank),
+    answer: q.answer ? { picked: q.answer.picked, other: q.answer.other, notes: q.answer.notes } : null,
+    asked: toStamp(q.asked) ?? { at: iso(0), session: null, host: "", reason: "" },
+    askedFrom: f ? { dir: f.dir, remote: f.remote, branch: f.branch, head: f.head, dirtyFiles: f.dirtyFiles, dirty: f.dirty } : null,
+    edited: toStamp(q.edited),
+    answered: toStamp(q.answered),
+    dismissed: toStamp(q.dismissed),
+    handled: toStamp(q.handled),
+    deleted: toStamp(q.deleted),
+    updatedAt: iso(q.updatedAt),
+  };
+}
+
+function toChange(c: PbChange): QuestionChange {
+  // The controller keeps the question as each change left it.
+  if (!c.question || !c.by) throw new Error(`change ${c.seq} to a question carries no question or stamp`);
+  return { seq: num(c.seq), what: c.what, by: toStamp(c.by) as Stamp, question: toQuestion(c.question) };
 }
 
 // The cockpit's view types predate the wire types; everything below maps
@@ -144,6 +224,7 @@ export function toSnapshot(s: PbSnapshot): Snapshot {
       }),
     ),
     schedules: s.schedules.map(toScheduled),
+    openQuestions: s.openQuestions,
   };
 }
 

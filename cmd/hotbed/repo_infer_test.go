@@ -26,8 +26,8 @@ func TestNormalizeGitURL(t *testing.T) {
 		{"ssh://git@github.com:22/semistrict/hotbed.git", "github.com/semistrict/hotbed"},
 	}
 	for _, tc := range cases {
-		if got := normalizeGitURL(tc[0]); got != tc[1] {
-			t.Errorf("normalizeGitURL(%q) = %q, want %q", tc[0], got, tc[1])
+		if got := gitops.CanonicalRemote(tc[0]); got != tc[1] {
+			t.Errorf("gitops.CanonicalRemote(%q) = %q, want %q", tc[0], got, tc[1])
 		}
 	}
 }
@@ -169,7 +169,7 @@ func TestSessionAndRepoDefaultFromThreadWorktreeAndEnv(t *testing.T) {
 	t.Setenv("T3CODE_THREAD_ID", "")
 	c.ok(&pb.Session{}, "session", "start", "wt-owl")
 	c.ok(&cur, "session", "current")
-	if cur.ID != "wt-owl" || cur.Source != "worktree" || cur.Key != canonicalPath(checkout) {
+	if cur.ID != "wt-owl" || cur.Source != "worktree" || cur.Key != gitops.CanonicalPath(checkout) {
 		t.Fatalf("worktree session current = %+v, want wt-owl from worktree", cur)
 	}
 

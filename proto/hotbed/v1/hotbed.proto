@@ -42,6 +42,9 @@ service ClusterService {
   // ListSteps is a repo's steps and, for each, whether each node's newest
   // base has run it.
   rpc ListSteps(ListStepsRequest) returns (ListStepsResponse);
+  // AddProject creates a project, or adds repos to the one of that name.
+  rpc AddProject(AddProjectRequest) returns (Project);
+  rpc ListProjects(ListProjectsRequest) returns (ListProjectsResponse);
   // GetSnapshot is everything the cockpit shows.
   rpc GetSnapshot(GetSnapshotRequest) returns (Snapshot);
 }
@@ -50,7 +53,11 @@ service ClusterService {
 // any repos on any nodes, and an agent waits on everything that happens to
 // the commands it runs in them.
 service SessionService {
+  // StartSession starts a session in a project: the one named, or else the
+  // one project that holds the caller's checkout's repo. A repo no project
+  // holds is a project of its own, made for it.
   rpc StartSession(StartSessionRequest) returns (Session);
+  rpc GetSession(GetSessionRequest) returns (Session);
   // EndSession stops the session's commands and releases its workspaces.
   // A session nothing touches for an hour ends the same way; WatchSession
   // keeps it alive.
@@ -659,6 +666,8 @@ message Session {
   string schedule = 9;
   // Its scheduled run is in progress: the idle hour does not apply.
   bool schedule_running = 10;
+  // The project it works on.
+  string project = 11;
 }
 
 message SessionWorkspace {
@@ -673,6 +682,42 @@ message StartSessionRequest {
   // The session's name, adjective-noun; it must be free.
   string id = 1;
   string agent = 2;
+  // The project it works on; empty for the one that holds remote.
+  string project = 3;
+  // The canonical remote of the checkout the session starts in
+  // (github.com/semistrict/hotbed), to find its project by.
+  string remote = 4;
+}
+
+message GetSessionRequest {
+  string id = 1;
+}
+
+// ---- projects ---------------------------------------------------------------
+
+// What sessions work on, and what questions are about: one or more repos,
+// each named by its canonical git remote (github.com/semistrict/hotbed), as
+// a T3 Code project is a folder holding repos. A repo belongs to the project
+// of its own name unless a project is made to hold it.
+message Project {
+  // Lowercase letters, digits and dashes.
+  string name = 1;
+  // Canonical git remotes, sorted.
+  repeated string repos = 2;
+  int64 created_at = 3;
+}
+
+message AddProjectRequest {
+  string name = 1;
+  // Git remotes in any form (https, ssh, host/path); added to what the
+  // project holds.
+  repeated string repos = 2;
+}
+
+message ListProjectsRequest {}
+
+message ListProjectsResponse {
+  repeated Project projects = 1;
 }
 
 message EndSessionRequest {
@@ -705,14 +750,18 @@ message SessionEvent {
   int64 at = 2;
   string command_id = 3;
   string argv = 4;
-  // admitted, parked, thawed, exited, cancelled; or ready and failed for a
-  // workspace (command_id empty)
+  // admitted, parked, thawed, exited, cancelled; ready and failed for a
+  // workspace; answered and dismissed for a question the session asked
+  // (command_id empty)
   string what = 5;
   CommandState state = 6;
   optional int32 exit_code = 7;
   string detail = 8;
   string session_id = 9;
   string workspace_id = 10;
+  // For answered and dismissed (command_id empty): the session's question
+  // that the user answered or dismissed.
+  int32 question_id = 11;
 }
 
 message GetLogLinesRequest {
@@ -1019,6 +1068,8 @@ message Snapshot {
   repeated Session sessions = 17;
   // Every scheduled command, each with its recent runs.
   repeated ScheduledCommand schedules = 18;
+  // Questions waiting for the user's answer.
+  int32 open_questions = 19;
 }
 
 // ---- scheduled commands ---------------------------------------------------
@@ -1126,4 +1177,276 @@ message RunScheduleRequest {
 message PauseScheduleRequest {
   string name = 1;
   bool paused = 2;
+}
+
+// ---- questions --------------------------------------------------------------
+
+// Questions agents ask the user: a list for each project, shared by every
+// session that works on it, which the
+// user answers in the cockpit whenever they like. A question asks what
+// AskUserQuestion asks. Answered (or dismissed), it waits in the outbox
+// until an agent acknowledges it, and is then handled. Any session may
+// delete any question it finds no longer needed. Nothing is ever removed:
+// every change is kept, with when it was made and by which session, or by
+// the user.
+service QuestionService {
+  // AddQuestions adds AskUserQuestion's questions to the list, each an
+  // entry of its own, at the top of the user's order.
+  rpc AddQuestions(AddQuestionsRequest) returns (AddQuestionsResponse);
+  // EditQuestion rewrites an open question.
+  rpc EditQuestion(EditQuestionRequest) returns (Question);
+  // DeleteQuestion takes a question off the list, whoever asked it.
+  rpc DeleteQuestion(DeleteQuestionRequest) returns (Question);
+  // ListQuestions lists a project's questions, every session's, newest
+  // first unless asked for another order.
+  rpc ListQuestions(ListQuestionsRequest) returns (ListQuestionsResponse);
+  // ListQuestionProjects is every project that has questions, with how
+  // many wait on the user and on agents.
+  rpc ListQuestionProjects(ListQuestionProjectsRequest) returns (ListQuestionProjectsResponse);
+  // GetQuestion is one question with every change made to it.
+  rpc GetQuestion(GetQuestionRequest) returns (Question);
+  // AnswerQuestion records the user's answer to an open question, which
+  // puts it in the outbox.
+  rpc AnswerQuestion(AnswerQuestionRequest) returns (Question);
+  // DismissQuestion is the user declining to answer an open question; it
+  // goes to the outbox too, so its asker learns it will get no answer.
+  rpc DismissQuestion(DismissQuestionRequest) returns (Question);
+  // MoveQuestion puts an open question elsewhere in the user's order.
+  rpc MoveQuestion(MoveQuestionRequest) returns (Question);
+  // AckQuestions takes questions out of the outbox: an agent has read
+  // their answers. They are handled, all of them or, if one is not in the
+  // outbox, none.
+  rpc AckQuestions(AckQuestionsRequest) returns (AckQuestionsResponse);
+  // WaitQuestions waits, two minutes at most, until one of the named
+  // questions is no longer open, or, naming none, until the project's
+  // outbox holds something. It returns those questions, or the outbox, as they are then.
+  rpc WaitQuestions(WaitQuestionsRequest) returns (ListQuestionsResponse);
+}
+
+// What an agent asks, exactly as AskUserQuestion takes one of its
+// questions, so JSON written for that tool is a question here too.
+message Prompt {
+  // The question, complete and ending in a question mark.
+  string question = 1;
+  // A short label for it, at most 12 characters: "Auth method".
+  string header = 2;
+  // Two to four choices.
+  repeated PromptOption options = 3;
+  // The user may pick several options.
+  bool multi_select = 4;
+}
+
+message PromptOption {
+  // What the user picks, 1-5 words.
+  string label = 1;
+  // What picking it means.
+  string description = 2;
+  // Shown beside the option when it is focused: a mockup, code, a diagram.
+  string preview = 3;
+}
+
+enum QuestionState {
+  QUESTION_STATE_UNSPECIFIED = 0;
+  // Waiting for the user.
+  QUESTION_STATE_OPEN = 1;
+  // The user answered it: in the outbox.
+  QUESTION_STATE_ANSWERED = 2;
+  // The user declined to answer it: in the outbox.
+  QUESTION_STATE_DISMISSED = 3;
+  // An agent acknowledged its answer or dismissal.
+  QUESTION_STATE_HANDLED = 4;
+  // A session took it off the list.
+  QUESTION_STATE_DELETED = 5;
+}
+
+// The user's answer.
+message Answer {
+  // The labels of the options picked: one at most unless the question is
+  // multi_select.
+  repeated string picked = 1;
+  // What the user wrote instead of picking, or besides: AskUserQuestion's
+  // "Other".
+  string other = 2;
+  // A note on the answer.
+  string notes = 3;
+}
+
+// Who changed a question, and when: an agent's session, or the user (no
+// session), and the machine either called from.
+message Stamp {
+  int64 at = 1;
+  string session = 2;
+  string host = 3;
+  // Why, when it says: a dismissal's or a deletion's reason.
+  string reason = 4;
+}
+
+// Where the asking agent was: its checkout, when it was in one, so an answer
+// that comes days later can be read in the setting it was asked in.
+message AskedFrom {
+  // The directory it asked from: its checkout's top, in one.
+  string dir = 1;
+  // The checkout's origin.
+  string remote = 2;
+  string branch = 3;
+  // The commit checked out.
+  string head = 4;
+  // How many files differ from it (git status --porcelain), and the first
+  // few of those lines.
+  int32 dirty_files = 5;
+  repeated string dirty = 6;
+}
+
+message Question {
+  // A number, counting up from 1 in the order questions were asked.
+  int32 id = 1;
+  Prompt prompt = 2;
+  QuestionState state = 3;
+  // Its place in the user's order: lower comes first.
+  int64 rank = 4;
+  // Set once answered; still there once handled.
+  Answer answer = 5;
+  Stamp asked = 6;
+  AskedFrom asked_from = 7;
+  // The last edit; unset if it was never edited.
+  Stamp edited = 8;
+  Stamp answered = 9;
+  Stamp dismissed = 10;
+  Stamp handled = 11;
+  Stamp deleted = 12;
+  // Its last change, other than a move in the user's order.
+  int64 updated_at = 13;
+  // Every change to it, oldest first; only from GetQuestion.
+  repeated QuestionChange history = 14;
+  // The project it is about: its asking session's.
+  string project = 15;
+  // The repo of the project it is about, its canonical remote; empty for
+  // the project as a whole.
+  string repo = 16;
+}
+
+// One change to a question, as its history keeps it.
+message QuestionChange {
+  int64 seq = 1;
+  // asked, edited, moved, answered, dismissed, handled, deleted
+  string what = 2;
+  Stamp by = 3;
+  // The question as the change left it, without its history.
+  Question question = 4;
+}
+
+message AddQuestionsRequest {
+  // One to four, as AskUserQuestion takes them.
+  repeated Prompt questions = 1;
+  // The asking session.
+  string session_id = 2;
+  AskedFrom asked_from = 3;
+  // The repo of the session's project they are about, as a remote in any
+  // form; empty for the one asked from (asked_from.remote) when the
+  // project holds it, or else the project as a whole.
+  string repo = 4;
+}
+
+message AddQuestionsResponse {
+  repeated Question questions = 1;
+}
+
+message EditQuestionRequest {
+  int32 id = 1;
+  Prompt prompt = 2;
+  string session_id = 3;
+}
+
+message DeleteQuestionRequest {
+  int32 id = 1;
+  string session_id = 2;
+  string reason = 3;
+}
+
+enum QuestionOrder {
+  // Newest first.
+  QUESTION_ORDER_UNSPECIFIED = 0;
+  QUESTION_ORDER_NEWEST = 1;
+  QUESTION_ORDER_OLDEST = 2;
+  // The most recently changed first.
+  QUESTION_ORDER_UPDATED = 3;
+  // The user's order.
+  QUESTION_ORDER_RANK = 4;
+}
+
+message ListQuestionsRequest {
+  // Only questions in these states; none means every state but deleted.
+  repeated QuestionState states = 1;
+  QuestionOrder order = 2;
+  // Only the questions this session asked.
+  string asked_by = 3;
+  // At most this many; 0 for all.
+  int32 limit = 4;
+  // Only this project's questions; empty for every project's.
+  string project = 5;
+}
+
+message ListQuestionsResponse {
+  repeated Question questions = 1;
+  // How many matched, limit aside.
+  int32 total = 2;
+}
+
+message ListQuestionProjectsRequest {}
+
+message ListQuestionProjectsResponse {
+  repeated QuestionProject projects = 1;
+}
+
+// A project's questions, counted.
+message QuestionProject {
+  string name = 1;
+  // Waiting for the user.
+  int32 open = 2;
+  // Answered or dismissed, waiting for an agent.
+  int32 outbox = 3;
+  // Every question, deleted ones too.
+  int32 total = 4;
+}
+
+message GetQuestionRequest {
+  int32 id = 1;
+}
+
+message AnswerQuestionRequest {
+  int32 id = 1;
+  Answer answer = 2;
+  // Set when an agent passes the user's answer on; empty for the user.
+  string session_id = 3;
+}
+
+message DismissQuestionRequest {
+  int32 id = 1;
+  string reason = 2;
+  string session_id = 3;
+}
+
+message MoveQuestionRequest {
+  int32 id = 1;
+  // Put it just before this open question; 0 puts it last.
+  int32 before = 2;
+  string session_id = 3;
+}
+
+message AckQuestionsRequest {
+  repeated int32 ids = 1;
+  string session_id = 2;
+}
+
+message AckQuestionsResponse {
+  repeated Question questions = 1;
+}
+
+message WaitQuestionsRequest {
+  repeated int32 ids = 1;
+  // At most and by default 120.
+  int32 timeout_seconds = 2;
+  // Naming no questions: the project whose outbox to wait on; empty for
+  // every project's.
+  string project = 3;
 }

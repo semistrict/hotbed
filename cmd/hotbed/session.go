@@ -18,13 +18,14 @@ import (
 )
 
 type sessionCmd struct {
-	Start   sessionStartCmd   `cmd:"" help:"Start a session and bind it to this T3 thread or git worktree in ~/.hotbed/sessions.json. Call hotbed wait at least hourly, or it is abandoned."`
+	Start   sessionStartCmd   `cmd:"" help:"Start a session in a project (-p, or the one holding this checkout's repo) and bind it to this T3 thread or git worktree in ~/.hotbed/sessions.json. Call hotbed wait at least hourly, or it is abandoned."`
 	Current sessionCurrentCmd `cmd:"" help:"Print the active session resolved from -s, HOTBED_SESSION, T3CODE_THREAD_ID, or the current git worktree."`
 	End     sessionEndCmd     `cmd:"" help:"End a session: stop its commands, release its workspaces, and clear its local mapping."`
 }
 
 type sessionStartCmd struct {
 	controllerFlag
+	projectFlag
 	Name  string `arg:"" optional:"" help:"adjective-noun, such as brave-otter (default: a random free one)."`
 	Agent string `env:"HOTBED_AGENT" help:"Who you are, for the cockpit (default: this machine)."`
 }
@@ -34,7 +35,11 @@ func (c *sessionStartCmd) Exec(ctx context.Context, d deps) (any, error) {
 	if err != nil {
 		return nil, err
 	}
-	sess, err := cl.sessions.StartSession(ctx, &pb.StartSessionRequest{Id: c.Name, Agent: c.Agent})
+	remote, err := checkoutRemote(ctx)
+	if err != nil {
+		return nil, err
+	}
+	sess, err := cl.sessions.StartSession(ctx, &pb.StartSessionRequest{Id: c.Name, Agent: c.Agent, Project: c.Project, Remote: remote})
 	if err != nil {
 		return nil, err
 	}

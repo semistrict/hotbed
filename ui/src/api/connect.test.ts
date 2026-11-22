@@ -1,7 +1,7 @@
 import { create } from "@bufbuild/protobuf";
 import { describe, expect, it } from "vitest";
-import { BaseState, CommandState, RunOutcome, SnapshotSchema, WorkspaceState } from "../gen/hotbed/v1/hotbed_pb";
-import { toSnapshot } from "./connect";
+import { BaseState, CommandState, QuestionSchema, QuestionState, RunOutcome, SnapshotSchema, WorkspaceState } from "../gen/hotbed/v1/hotbed_pb";
+import { toQuestion, toSnapshot } from "./connect";
 
 describe("toSnapshot", () => {
   it("maps the wire's bigints, enums and unset fields onto the cockpit's types", () => {
@@ -182,5 +182,37 @@ describe("toSnapshot", () => {
       },
     ]);
     expect(s.series.nAsahi).toEqual([{ t: 1795299995000, cpuBusy: 0.25, memoryUsed: 0.22, memoryPressure: 0 }]);
+  });
+});
+
+describe("toQuestion", () => {
+  it("maps a question's stamps, state and answer, leaving unset stamps null", () => {
+    const wire = create(QuestionSchema, {
+      id: 12,
+      prompt: { question: "Which store?", header: "Store", multiSelect: true, options: [{ label: "SQLite", description: "One file", preview: "sqlite3 x.db" }] },
+      state: QuestionState.HANDLED,
+      rank: -3n,
+      answer: { picked: ["SQLite"], other: "and a cache", notes: "for now" },
+      asked: { at: 1795299000000n, session: "brave-otter", host: "asahimbp" },
+      askedFrom: { dir: "/src/app", remote: "git@x:app.git", branch: "main", head: "0123456789abcdef", dirtyFiles: 1, dirty: [" M a.go"] },
+      answered: { at: 1795299100000n, host: "laptop" },
+      handled: { at: 1795299200000n, session: "calm-heron", host: "ubu1" },
+      updatedAt: 1795299200000n,
+    });
+    expect(toQuestion(wire)).toEqual({
+      id: 12,
+      prompt: { question: "Which store?", header: "Store", multiSelect: true, options: [{ label: "SQLite", description: "One file", preview: "sqlite3 x.db" }] },
+      state: "handled",
+      rank: -3,
+      answer: { picked: ["SQLite"], other: "and a cache", notes: "for now" },
+      asked: { at: "2026-11-21T22:10:00.000Z", session: "brave-otter", host: "asahimbp", reason: "" },
+      askedFrom: { dir: "/src/app", remote: "git@x:app.git", branch: "main", head: "0123456789abcdef", dirtyFiles: 1, dirty: [" M a.go"] },
+      edited: null,
+      answered: { at: "2026-11-21T22:11:40.000Z", session: null, host: "laptop", reason: "" },
+      dismissed: null,
+      handled: { at: "2026-11-21T22:13:20.000Z", session: "calm-heron", host: "ubu1", reason: "" },
+      deleted: null,
+      updatedAt: "2026-11-21T22:13:20.000Z",
+    });
   });
 });

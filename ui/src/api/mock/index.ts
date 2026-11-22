@@ -1,6 +1,7 @@
 import type { Api, CommandLog, FileContent, FileEntry, Snapshot } from "../types";
 import { mockFile, mockFiles } from "./files";
 import { mockLog } from "./logs";
+import { MockQuestions } from "./questions";
 import { MockCluster } from "./sim";
 
 /**
@@ -9,12 +10,13 @@ import { MockCluster } from "./sim";
  */
 export function createMockApi(seed = 7120): Api {
   const cluster = new MockCluster(seed, Date.now());
+  const questions = new MockQuestions(Date.now());
   const sync = () => cluster.advanceTo(Date.now());
 
   return {
     async snapshot(): Promise<Snapshot> {
       sync();
-      return cluster.snapshot();
+      return { ...cluster.snapshot(), openQuestions: questions.openCount() };
     },
 
     async commandLog(id: string): Promise<CommandLog> {
@@ -59,5 +61,11 @@ export function createMockApi(seed = 7120): Api {
       if (!w) throw new Error(`no workspace ${workspaceId}`);
       return mockFile(w, path);
     },
+
+    questions: async (filter) => questions.list(filter),
+    questionHistory: async (id) => questions.history(id),
+    answerQuestion: async (id, answer) => questions.answer(id, answer),
+    dismissQuestion: async (id, reason) => questions.dismiss(id, reason),
+    moveQuestion: async (id, before) => questions.move(id, before),
   };
 }

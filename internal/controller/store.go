@@ -138,6 +138,43 @@ var migrations = []string{
 	-- A report's usage fields read as a heartbeat's.
 	UPDATE nodes SET heartbeat = report;
 	ALTER TABLE nodes DROP COLUMN report`,
+	// Projects, which sessions work on and questions are about; questions
+	// agents ask the user, and every change made to them.
+	`CREATE TABLE projects (
+		id         INTEGER PRIMARY KEY AUTOINCREMENT,
+		name       TEXT NOT NULL UNIQUE,
+		created_at INTEGER NOT NULL
+	) STRICT;
+	CREATE TABLE project_repos (
+		project_id INTEGER NOT NULL REFERENCES projects (id),
+		remote     TEXT NOT NULL, -- canonical git remote: github.com/semistrict/hotbed
+		PRIMARY KEY (project_id, remote)
+	) STRICT;
+	CREATE INDEX project_repos_remote ON project_repos (remote);
+	ALTER TABLE sessions ADD COLUMN project_id INTEGER REFERENCES projects (id); -- NULL for sessions from before projects
+	CREATE TABLE questions (
+		id         INTEGER PRIMARY KEY AUTOINCREMENT,
+		project_id INTEGER NOT NULL REFERENCES projects (id),
+		repo       TEXT NOT NULL,    -- the project's repo it is about; empty for the whole project
+		state      TEXT NOT NULL,    -- QuestionState's name
+		rank       INTEGER NOT NULL, -- the user's order, lowest first
+		asked_by   TEXT NOT NULL,    -- the asking session
+		asked_at   INTEGER NOT NULL,
+		updated_at INTEGER NOT NULL,
+		doc        TEXT NOT NULL     -- the Question, without its project, rank and history
+	) STRICT;
+	CREATE INDEX questions_project ON questions (project_id, state);
+	CREATE TABLE question_changes (
+		seq         INTEGER PRIMARY KEY AUTOINCREMENT,
+		question_id INTEGER NOT NULL REFERENCES questions (id),
+		what        TEXT NOT NULL,
+		at          INTEGER NOT NULL,
+		session     TEXT NOT NULL, -- empty for the user
+		host        TEXT NOT NULL,
+		reason      TEXT NOT NULL,
+		doc         TEXT NOT NULL  -- the Question as the change left it
+	) STRICT;
+	CREATE INDEX question_changes_question ON question_changes (question_id, seq)`,
 }
 
 // Retention: samples and events serve the cockpit's day; history and
@@ -439,9 +476,14 @@ func (s *Store) Repos(ctx context.Context) ([]*pb.Repo, error) {
 	return out, rows.Err()
 }
 
-// StartSession records a new session; its name must be free.
-func (s *Store) StartSession(ctx context.Context, id, agent string, now time.Time) (*pb.Session, error) {
-	_, err := s.db.ExecContext(ctx, `INSERT INTO sessions (id, agent, started_at, last_active_at) VALUES (?, ?, ?, ?)`, id, agent, now.UnixMilli(), now.UnixMilli())
+// StartSession records a new session in a project; its name must be free.
+func (s *Store) StartSession(ctx context.Context, id, agent, project string, now time.Time) (*pb.Session, error) {
+	pid, err := projectID(ctx, s.db, project)
+	if err != nil {
+		return nil, err
+	}
+	_, err = s.db.ExecContext(ctx, `INSERT INTO sessions (id, agent, project_id, started_at, last_active_at) VALUES (?, ?, ?, ?, ?)`,
+		id, agent, pid, now.UnixMilli(), now.UnixMilli())
 	if err != nil {
 		if _, gerr := s.Session(ctx, id); gerr == nil {
 			return nil, api.Errorf(api.CodeConflict, "a session called %s exists", id).WithSuggestion("pick another name, or leave it out for a random one")
@@ -455,8 +497,10 @@ func (s *Store) StartSession(ctx context.Context, id, agent string, now time.Tim
 func (s *Store) Session(ctx context.Context, id string) (*pb.Session, error) {
 	out := &pb.Session{Id: id}
 	var ended sql.NullInt64
-	err := s.db.QueryRowContext(ctx, `SELECT agent, started_at, last_active_at, ended_at, end_reason FROM sessions WHERE id = ?`, id).
-		Scan(&out.Agent, &out.StartedAt, &out.LastActiveAt, &ended, &out.EndReason)
+	err := s.db.QueryRowContext(ctx, `
+		SELECT agent, COALESCE(p.name, ''), started_at, last_active_at, ended_at, end_reason
+		FROM sessions s LEFT JOIN projects p ON p.id = s.project_id WHERE s.id = ?`, id).
+		Scan(&out.Agent, &out.Project, &out.StartedAt, &out.LastActiveAt, &ended, &out.EndReason)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, api.Errorf(api.CodeNotFound, "no session %s", id).WithSuggestion("start one with hotbed session start")
 	}

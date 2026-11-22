@@ -5,6 +5,7 @@ import { useSnapshot } from "../lib/data";
 
 const NAV = [
   { to: "/", label: "Sessions" },
+  { to: "/questions", label: "Questions" },
   { to: "/schedules", label: "Schedules" },
   { to: "/cluster", label: "Cluster" },
   { to: "/nodes", label: "Nodes" },
@@ -60,6 +61,11 @@ export function Shell() {
                 activeProps={{ className: "!border-primary !text-foreground" }}
               >
                 {n.label}
+                {n.to === "/questions" && data && data.openQuestions > 0 && (
+                  <span className="ml-1.5 rounded-full bg-primary px-1.5 font-mono text-[10px] leading-4 text-primary-foreground" aria-label={`${data.openQuestions} waiting for you`}>
+                    {data.openQuestions}
+                  </span>
+                )}
               </Link>
             ))}
           </nav>

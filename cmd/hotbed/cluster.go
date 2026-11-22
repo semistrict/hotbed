@@ -27,6 +27,7 @@ type clients struct {
 	sessions   hotbedv1connect.SessionServiceClient
 	workspaces hotbedv1connect.WorkspaceServiceClient
 	schedules  hotbedv1connect.ScheduleServiceClient
+	questions  hotbedv1connect.QuestionServiceClient
 }
 
 // controller is the controller a command calls.
@@ -42,6 +43,7 @@ func (f controllerFlag) clients(hc *http.Client) (clients, error) {
 		sessions:   hotbedv1connect.NewSessionServiceClient(conn),
 		workspaces: hotbedv1connect.NewWorkspaceServiceClient(conn),
 		schedules:  hotbedv1connect.NewScheduleServiceClient(conn),
+		questions:  hotbedv1connect.NewQuestionServiceClient(conn),
 	}, nil
 }
 

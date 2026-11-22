@@ -11,6 +11,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/semistrict/hotbed/internal/api"
 	"github.com/semistrict/hotbed/internal/controller"
@@ -188,14 +189,19 @@ func newFleetWith(t *testing.T, n int, opts clusterOpts) *cluster {
 	c.asWorker, c.reported = c.nodes[0].cluster, c.nodes[0].reported
 
 	t.Setenv("HOTBED_CONTROLLER", ctrl)
+	// Sessions start in the tests' project unless a test names another.
+	if _, err := store.AddProject(t.Context(), "test", nil, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("HOTBED_PROJECT", "test")
 	c.cli = deps{
 		// The CLI runs on the laptop: its tailnet says so, and its calls
 		// come from the laptop.
-		tailnet:      tailnettest.New(tailnet.Self{Peer: laptop}),
-		http:         tn.Client(laptop), stream: tn.Client(laptop), cache: t.TempDir(),
+		tailnet: tailnettest.New(tailnet.Self{Peer: laptop}),
+		http:    tn.Client(laptop), stream: tn.Client(laptop), cache: t.TempDir(),
 		sessionsFile: filepath.Join(t.TempDir(), "sessions.json"),
-		exe:    func() (string, error) { return "", errors.New("the tests' client has no binary to upgrade") },
-		reexec: func(...string) error { return errors.New("the tests' client runs nothing") },
+		exe:          func() (string, error) { return "", errors.New("the tests' client has no binary to upgrade") },
+		reexec:       func(...string) error { return errors.New("the tests' client runs nothing") },
 	}
 	return c
 }

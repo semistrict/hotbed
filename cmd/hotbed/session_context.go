@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	"github.com/semistrict/hotbed/internal/api"
+	"github.com/semistrict/hotbed/internal/gitops"
 	"github.com/semistrict/hotbed/internal/setup"
 )
 
@@ -139,7 +140,7 @@ func bindSessionForContext(ctx context.Context, d deps, sessionID string) {
 		changed = true
 	} else if cwd, err := os.Getwd(); err == nil {
 		if root, err := gitCheckoutRoot(ctx, cwd); err == nil && root != "" {
-			m.Worktrees[canonicalPath(root)] = sessionID
+			m.Worktrees[gitops.CanonicalPath(root)] = sessionID
 			changed = true
 		}
 	}
@@ -196,7 +197,7 @@ func (f sessionFlag) resolveBinding(ctx context.Context, d deps) (sessionBinding
 		}
 		if cwd, err := os.Getwd(); err == nil {
 			if root, err := gitCheckoutRoot(ctx, cwd); err == nil && root != "" {
-				canon := canonicalPath(root)
+				canon := gitops.CanonicalPath(root)
 				if s := m.Worktrees[canon]; s != "" {
 					return sessionBinding{ID: s, Source: "worktree", Key: canon}, nil
 				}

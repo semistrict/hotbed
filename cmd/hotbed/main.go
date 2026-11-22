@@ -23,18 +23,19 @@ func main() {
 	slog.SetDefault(slog.New(slog.NewJSONHandler(os.Stderr, nil)))
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	code := run(ctx, os.Args[1:], deps{
-		tailnet: &tailnet.Local{},
-		http:    &http.Client{Timeout: 60 * time.Second},
-		stream:  &http.Client{},
-		check:   worker.CheckMachine,
+		tailnet:      &tailnet.Local{},
+		http:         &http.Client{Timeout: 60 * time.Second},
+		stream:       &http.Client{},
+		check:        worker.CheckMachine,
+		stdin:        os.Stdin,
 		stdout:       os.Stdout,
 		stderr:       os.Stderr,
 		cache:        cacheDir(),
 		sessionsFile: defaultSessionsFile(),
-		build:   version.Number(),
-		exe:     os.Executable,
-		reexec:  reexec,
-		execve:  syscall.Exec,
+		build:        version.Number(),
+		exe:          os.Executable,
+		reexec:       reexec,
+		execve:       syscall.Exec,
 	})
 	stop()
 	os.Exit(code)

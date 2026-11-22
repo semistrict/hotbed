@@ -55,11 +55,15 @@ func (s *Server) GetSnapshot(ctx context.Context, _ *pb.GetSnapshotRequest) (*pb
 	if err != nil {
 		return nil, err
 	}
+	open, err := s.cfg.Store.OpenQuestions(ctx)
+	if err != nil {
+		return nil, err
+	}
 
 	snap := &pb.Snapshot{
 		ClusterId: s.cfg.Cluster.ClusterID, Controller: s.cfg.Controller,
 		Now: now.UnixMilli(), SampleSeconds: sampleSeconds, Events: events, History: history,
-		Sessions: sessions, Schedules: schedules,
+		Sessions: sessions, Schedules: schedules, OpenQuestions: open,
 	}
 	for _, nv := range nvs {
 		node := nv.node

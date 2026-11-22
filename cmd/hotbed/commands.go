@@ -28,6 +28,7 @@ type deps struct {
 	// http calls the API; stream reads output, which has no deadline.
 	http, stream *http.Client
 	check        worker.Check
+	stdin        io.Reader
 	stdout       io.Writer
 	stderr       io.Writer
 	// cache keeps per-session cursors for hotbed wait.
@@ -84,9 +85,11 @@ type cli struct {
 	Ps       psCmd       `cmd:"" help:"List a session's commands."`
 	Logs     logsCmd     `cmd:"" help:"Print a command's output."`
 	Stop     stopCmd     `cmd:"" help:"Stop a command."`
+	Project  projectCmd  `cmd:"" help:"Projects: what sessions work on and questions are about, each one or more repos (add, ls)."`
 	Repo     repoCmd     `cmd:"" help:"Repos the cluster keeps built bases of (add, ls, rm, rebuild)."`
 	Step     stepCmd     `cmd:"" help:"A repo's setup steps: what brings its bases up to date (add, set, ls, show, rm)."`
 	Schedule scheduleCmd `cmd:"" help:"Scheduled commands: recurring work the cluster runs by itself, each run a session of its own (add, ls, show, rm, run, pause, resume)."`
+	Question questionCmd `cmd:"" help:"Questions for the user, one list per project that its sessions share: ask, and read the answers when they come (add, ls, show, edit, rm, outbox, ack, wait, answer, dismiss, move)."`
 	Nodes    nodesCmd    `cmd:"" help:"List the cluster's workers."`
 	UI       uiCmd       `cmd:"" help:"Open the controller's cockpit UI in the default browser."`
 	Init     initCmd     `cmd:"" help:"Create a cluster with this machine as its controller."`

@@ -292,6 +292,8 @@ export interface Snapshot {
   sessions: Session[];
   /** By name, each with its recent runs. */
   schedules: ScheduledCommand[];
+  /** Questions waiting for the user's answer. */
+  openQuestions: number;
 }
 
 /**
@@ -361,9 +363,110 @@ export interface FileContent {
   changedLines: number[];
 }
 
+/**
+ * open: waiting for the user. answered and dismissed: in the outbox, until
+ * an agent acknowledges the response, which makes it handled. deleted: a
+ * session took it off the list. Nothing is ever removed.
+ */
+export type QuestionState = "open" | "answered" | "dismissed" | "handled" | "deleted";
+
+/** newest or oldest asked first, the most recently changed first, or the user's own order. */
+export type QuestionOrder = "newest" | "oldest" | "updated" | "rank";
+
+/** What an agent asks, as AskUserQuestion takes it. */
+export interface Prompt {
+  question: string;
+  /** At most 12 characters. */
+  header: string;
+  /** Two to four. */
+  options: PromptOption[];
+  multiSelect: boolean;
+}
+
+export interface PromptOption {
+  label: string;
+  description: string;
+  /** Shown beside the option when it is focused: a mockup, code; empty for none. */
+  preview: string;
+}
+
+/** Who changed a question and when: an agent's session, or the user (null). */
+export interface Stamp {
+  at: string;
+  session: string | null;
+  host: string;
+  /** A dismissal's or a deletion's reason. */
+  reason: string;
+}
+
+export interface Answer {
+  /** The labels picked: one at most unless multiSelect. */
+  picked: string[];
+  /** Words of the user's own, instead of picking or besides. */
+  other: string;
+  notes: string;
+}
+
+/** The asking agent's checkout, when it was in one. */
+export interface AskedFrom {
+  dir: string;
+  remote: string;
+  branch: string;
+  head: string;
+  dirtyFiles: number;
+  /** The first lines of git status --porcelain. */
+  dirty: string[];
+}
+
+export interface Question {
+  id: number;
+  prompt: Prompt;
+  state: QuestionState;
+  /** Its place in the user's order, lower first. */
+  rank: number;
+  answer: Answer | null;
+  asked: Stamp;
+  askedFrom: AskedFrom | null;
+  edited: Stamp | null;
+  answered: Stamp | null;
+  dismissed: Stamp | null;
+  handled: Stamp | null;
+  deleted: Stamp | null;
+  /** Its last change other than a move. */
+  updatedAt: string;
+}
+
+/** One change to a question, as its history keeps it. */
+export interface QuestionChange {
+  seq: number;
+  /** asked, edited, moved, answered, dismissed, handled, deleted */
+  what: string;
+  by: Stamp;
+  /** The question as the change left it. */
+  question: Question;
+}
+
+export interface QuestionFilter {
+  /** None: every state but deleted. */
+  states?: QuestionState[];
+  order?: QuestionOrder;
+}
+
+export interface QuestionList {
+  questions: Question[];
+  total: number;
+}
+
 export interface Api {
   snapshot(): Promise<Snapshot>;
   commandLog(id: string): Promise<CommandLog>;
   files(workspaceId: string): Promise<FileEntry[]>;
   file(workspaceId: string, path: string): Promise<FileContent>;
+  questions(filter: QuestionFilter): Promise<QuestionList>;
+  /** Every change to a question, oldest first. */
+  questionHistory(id: number): Promise<QuestionChange[]>;
+  answerQuestion(id: number, answer: Answer): Promise<Question>;
+  dismissQuestion(id: number, reason: string): Promise<Question>;
+  /** Puts an open question just before another, or last (before null). */
+  moveQuestion(id: number, before: number | null): Promise<Question>;
 }

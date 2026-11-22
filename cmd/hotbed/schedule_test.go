@@ -356,7 +356,10 @@ func TestInterruptedStartIsNotStarted(t *testing.T) {
 	c.addRepo(upstream(t))
 	c.ok(nil, "schedule", "add", "half", "-r", "app", "--cron", nightly, "--", "true")
 	store, now := c.serverCfg.Store, c.clock.Now()
-	if _, err := store.StartSession(t.Context(), "half-20261122-0200", "schedule:half", now); err != nil {
+	if _, err := store.AddProject(t.Context(), "app", nil, now); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.StartSession(t.Context(), "half-20261122-0200", "schedule:half", "app", now); err != nil {
 		t.Fatal(err)
 	}
 	if err := store.AddRun(t.Context(), &pb.ScheduledRun{

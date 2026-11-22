@@ -8,6 +8,7 @@ import (
 	petname "github.com/dustinkirkland/golang-petname"
 
 	"github.com/semistrict/hotbed/internal/api"
+	"github.com/semistrict/hotbed/internal/gitops"
 	pb "github.com/semistrict/hotbed/internal/gen/hotbed/v1"
 	"github.com/semistrict/hotbed/internal/gen/hotbed/v1/hotbedv1connect"
 	"github.com/semistrict/hotbed/internal/httpx"
@@ -19,25 +20,33 @@ type sessions struct{ *Server }
 var sessionName = regexp.MustCompile(`^[a-z][a-z0-9]*(-[a-z0-9]+)+$`)
 
 // StartSession starts a session called req.Id, or a free adjective-noun
-// name when it has none.
+// name when it has none, in its project.
 func (s *sessions) StartSession(ctx context.Context, req *pb.StartSessionRequest) (*pb.Session, error) {
 	agent := req.Agent
 	if agent == "" {
 		agent = httpx.Peer(ctx).Hostname
 	}
+	if req.Id != "" && (!sessionName.MatchString(req.Id) || len(req.Id) > 48) {
+		return nil, api.Errorf(api.CodeInvalidArgs, "session name %q must look like adjective-noun: lowercase words joined by dashes", req.Id)
+	}
+	project, err := s.sessionProject(ctx, req.Project, gitops.CanonicalRemote(req.Remote), "")
+	if err != nil {
+		return nil, err
+	}
 	if req.Id != "" {
-		if !sessionName.MatchString(req.Id) || len(req.Id) > 48 {
-			return nil, api.Errorf(api.CodeInvalidArgs, "session name %q must look like adjective-noun: lowercase words joined by dashes", req.Id)
-		}
-		return s.cfg.Store.StartSession(ctx, req.Id, agent, s.now())
+		return s.cfg.Store.StartSession(ctx, req.Id, agent, project.Name, s.now())
 	}
 	for range 20 {
-		sess, err := s.cfg.Store.StartSession(ctx, petname.Generate(2, "-"), agent, s.now())
+		sess, err := s.cfg.Store.StartSession(ctx, petname.Generate(2, "-"), agent, project.Name, s.now())
 		if err == nil || api.FromConnect(err).Code != api.CodeConflict {
 			return sess, err
 		}
 	}
 	return nil, api.Errorf(api.CodeConflict, "could not find a free session name")
+}
+
+func (s *sessions) GetSession(ctx context.Context, req *pb.GetSessionRequest) (*pb.Session, error) {
+	return s.cfg.Store.Session(ctx, req.Id)
 }
 
 func (s *sessions) EndSession(ctx context.Context, req *pb.EndSessionRequest) (*pb.Session, error) {
@@ -62,7 +71,7 @@ func (s *sessions) WatchSession(ctx context.Context, req *pb.WatchSessionRequest
 	defer deadline.Stop()
 	after, first := req.After, true
 	for {
-		woken := s.waiter(req.SessionId)
+		woken := s.sessionWakes.wait(req.SessionId)
 		res, err := s.sessionState(ctx, req.SessionId, after)
 		if err != nil {
 			return err

@@ -81,7 +81,11 @@ type Server struct {
 
 	mu      sync.Mutex
 	workers map[string]hotbedv1connect.WorkspaceServiceClient
-	waiters map[string]chan struct{} // closed when a session gets events
+
+	// sessionWakes wakes a session's watchers when it gets events;
+	// questionWakes wakes everyone waiting on questions when one changes.
+	sessionWakes  wakeups
+	questionWakes wakeups
 
 	// repoEdits makes each change to a repo (its steps, its epoch) read and
 	// write it in one go, so agents editing steps at once lose nothing.
@@ -101,7 +105,7 @@ func NewServer(cfg ServerConfig) *Server {
 	if cfg.WorkerAddr == nil {
 		cfg.WorkerAddr = func(h string) string { return net.JoinHostPort(h, strconv.Itoa(api.WorkerPort)) }
 	}
-	return &Server{cfg: cfg, workers: map[string]hotbedv1connect.WorkspaceServiceClient{}, waiters: map[string]chan struct{}{}}
+	return &Server{cfg: cfg, workers: map[string]hotbedv1connect.WorkspaceServiceClient{}}
 }
 
 // Handler serves the API and the cockpit to the cluster's owner only.
@@ -113,6 +117,7 @@ func (s *Server) Handler() http.Handler {
 	hotbedv1connect.RegisterSessionServiceHandler(server, &sessions{s})
 	hotbedv1connect.RegisterWorkspaceServiceHandler(server, &workspaces{s})
 	hotbedv1connect.RegisterScheduleServiceHandler(server, &schedules{s})
+	hotbedv1connect.RegisterQuestionServiceHandler(server, &questions{s})
 	mux := http.NewServeMux()
 	connecthttp.Mount(mux, server)
 	mux.HandleFunc("GET /builds/{build}/{asset}", s.serveBuild)
@@ -336,7 +341,7 @@ func (s *Server) settleSoon(ctx context.Context) {
 
 func (s *Server) wakeAll(sessions map[string]bool) {
 	for session := range sessions {
-		s.wake(session)
+		s.sessionWakes.wake(session)
 	}
 }
 
@@ -461,26 +466,6 @@ func fromWorker(host string, err error) error {
 	return e
 }
 
-func (s *Server) wake(session string) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if ch, ok := s.waiters[session]; ok {
-		close(ch)
-		delete(s.waiters, session)
-	}
-}
-
-func (s *Server) waiter(session string) <-chan struct{} {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	ch, ok := s.waiters[session]
-	if !ok {
-		ch = make(chan struct{})
-		s.waiters[session] = ch
-	}
-	return ch
-}
-
 // newID is eight random base32 characters, lowercase.
 func newID() string {
 	b := make([]byte, 5)
@@ -570,7 +555,7 @@ func (s *Server) endSession(ctx context.Context, id, reason string) (*pb.Session
 	if err := s.cfg.Store.EndSession(ctx, id, reason, s.now()); err != nil {
 		return nil, err
 	}
-	s.wake(id)
+	s.sessionWakes.wake(id)
 	return s.cfg.Store.Session(ctx, id)
 }
 

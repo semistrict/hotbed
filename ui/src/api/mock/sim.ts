@@ -140,6 +140,8 @@ export class MockCluster {
       history: [] as FinishedCommand[],
       sessions: [...this.sessions, ...this.past.values()].sort((a, b) => b.lastActiveAt.localeCompare(a.lastActiveAt)),
       schedules: mockSchedules(this.now),
+      // The questions are the mock API's, beside the cluster.
+      openQuestions: 0,
     }) satisfies Snapshot;
     // Finished commands never change once recorded, so they need no copy.
     snap.history = [...this.history];
