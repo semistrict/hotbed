@@ -128,7 +128,7 @@ func TestSessionAndRepoDefaultFromThreadWorktreeAndEnv(t *testing.T) {
 	var ws pb.Workspace
 	c.ok(&ws, "add", "--sync", checkout)
 	if ws.RepoId != "cladefs" || ws.SessionId != "thread-fox" {
-		t.Fatalf("add with defaults = %v, want cladefs in thread-fox", ws)
+		t.Fatalf("add with defaults = %v, want cladefs in thread-fox", &ws)
 	}
 
 	code, stdout, stderr := c.hotbed("run", "--", "cat", "src/lib.txt")
@@ -184,7 +184,7 @@ func TestSessionAndRepoDefaultFromThreadWorktreeAndEnv(t *testing.T) {
 	}
 	c.ok(&ws, "add")
 	if ws.RepoId != "cladefs" || ws.SessionId != "wt-owl" {
-		t.Fatalf("add with HOTBED_SESSION+HOTBED_REPO = %v", ws)
+		t.Fatalf("add with HOTBED_SESSION+HOTBED_REPO = %v", &ws)
 	}
 
 	// Outside a checkout with HOTBED_REPO unset, step ls fails cleanly.
