@@ -34,6 +34,28 @@ func TestCommitThenLoad(t *testing.T) {
 	}
 }
 
+func TestPrepareLeavesParentsPassable(t *testing.T) {
+	root := t.TempDir()
+	dir := filepath.Join(root, "lib", "hotbed", "controller")
+	if err := Prepare(dir); err != nil {
+		t.Fatal(err)
+	}
+	for path, want := range map[string]os.FileMode{
+		filepath.Join(root, "lib"):           0o755,
+		filepath.Join(root, "lib", "hotbed"): 0o755,
+		dir:                                  0o700,
+	} {
+		info, err := os.Stat(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		// The parents' mode is less the umask, which may take more than 0o022.
+		if got := info.Mode().Perm(); got&0o111 != want&0o111 || got&^want != 0 {
+			t.Errorf("%s: mode %o, want %o (less the umask)", path, got, want)
+		}
+	}
+}
+
 func TestCommitRefusesSecondConfig(t *testing.T) {
 	dir := t.TempDir()
 	cfg := Config{Controller: &ControllerConfig{ClusterID: "c1", Owner: "ramon@", Port: 7120}}

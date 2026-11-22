@@ -58,9 +58,17 @@ func (c Config) validate() error {
 	return nil
 }
 
-// Prepare makes dir if it is missing and checks that it holds no config.
+// Prepare makes dir if it is missing and checks that it holds no config. The
+// state directory is its owner's alone (0700); the parents it makes are
+// anyone's to pass through (0755, less the umask), as a worker's sibling
+// directories under them are: a parent made 0700 too, as /var/lib/hotbed was
+// for the controller's /var/lib/hotbed/controller, kept the worker's
+// unprivileged commands and git out of /var/lib/hotbed/worker below it.
 func Prepare(dir string) error {
-	if err := os.MkdirAll(dir, 0o700); err != nil {
+	if err := os.MkdirAll(filepath.Dir(dir), 0o755); err != nil {
+		return fmt.Errorf("create state directory's parent: %w", err)
+	}
+	if err := os.Mkdir(dir, 0o700); err != nil && !errors.Is(err, fs.ErrExist) {
 		return fmt.Errorf("create state directory: %w", err)
 	}
 	_, err := os.Stat(filepath.Join(dir, configName))
