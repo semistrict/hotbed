@@ -1059,8 +1059,11 @@ type Node struct {
 	// What admitted commands are guaranteed: the sum of their memory.low.
 	ReservedMemoryBytes int64  `protobuf:"varint,11,opt,name=reserved_memory_bytes,json=reservedMemoryBytes,proto3" json:"reserved_memory_bytes,omitempty"`
 	Storage             string `protobuf:"bytes,12,opt,name=storage,proto3" json:"storage,omitempty"`
-	unknownFields       protoimpl.UnknownFields
-	sizeCache           protoimpl.SizeCache
+	// Its page in the cockpit. The CLI fills it from the controller it
+	// calls (cmd/hotbed/cockpit.go); the API leaves it empty.
+	CockpitUrl    string `protobuf:"bytes,13,opt,name=cockpit_url,json=cockpitUrl,proto3" json:"cockpit_url,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *Node) Reset() {
@@ -1173,6 +1176,13 @@ func (x *Node) GetReservedMemoryBytes() int64 {
 func (x *Node) GetStorage() string {
 	if x != nil {
 		return x.Storage
+	}
+	return ""
+}
+
+func (x *Node) GetCockpitUrl() string {
+	if x != nil {
+		return x.CockpitUrl
 	}
 	return ""
 }
@@ -2654,7 +2664,10 @@ type Workspace struct {
 	Reason string `protobuf:"bytes,21,opt,name=reason,proto3" json:"reason,omitempty"`
 	// Set by the controller: where clients call the workspace's worker
 	// (host:port) to sync, run commands and read their output.
-	NodeAddr      string `protobuf:"bytes,22,opt,name=node_addr,json=nodeAddr,proto3" json:"node_addr,omitempty"`
+	NodeAddr string `protobuf:"bytes,22,opt,name=node_addr,json=nodeAddr,proto3" json:"node_addr,omitempty"`
+	// Its page in the cockpit. The CLI fills it from the controller it
+	// calls (cmd/hotbed/cockpit.go); the API leaves it empty.
+	CockpitUrl    string `protobuf:"bytes,23,opt,name=cockpit_url,json=cockpitUrl,proto3" json:"cockpit_url,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -2839,6 +2852,13 @@ func (x *Workspace) GetReason() string {
 func (x *Workspace) GetNodeAddr() string {
 	if x != nil {
 		return x.NodeAddr
+	}
+	return ""
+}
+
+func (x *Workspace) GetCockpitUrl() string {
+	if x != nil {
+		return x.CockpitUrl
 	}
 	return ""
 }
@@ -3925,7 +3945,10 @@ type Command struct {
 	// never swapped or parked.
 	Bench bool `protobuf:"varint,23,opt,name=bench,proto3" json:"bench,omitempty"`
 	// Set by the controller: where clients call the command's worker.
-	NodeAddr      string `protobuf:"bytes,24,opt,name=node_addr,json=nodeAddr,proto3" json:"node_addr,omitempty"`
+	NodeAddr string `protobuf:"bytes,24,opt,name=node_addr,json=nodeAddr,proto3" json:"node_addr,omitempty"`
+	// Its page in the cockpit. The CLI fills it from the controller it
+	// calls (cmd/hotbed/cockpit.go); the API leaves it empty.
+	CockpitUrl    string `protobuf:"bytes,25,opt,name=cockpit_url,json=cockpitUrl,proto3" json:"cockpit_url,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -4128,6 +4151,13 @@ func (x *Command) GetNodeAddr() string {
 	return ""
 }
 
+func (x *Command) GetCockpitUrl() string {
+	if x != nil {
+		return x.CockpitUrl
+	}
+	return ""
+}
+
 // A command that ended, as history keeps it.
 type FinishedCommand struct {
 	state       protoimpl.MessageState `protogen:"open.v1"`
@@ -4153,7 +4183,10 @@ type FinishedCommand struct {
 	SessionId       string   `protobuf:"bytes,19,opt,name=session_id,json=sessionId,proto3" json:"session_id,omitempty"`
 	Bench           bool     `protobuf:"varint,20,opt,name=bench,proto3" json:"bench,omitempty"`
 	// Why it failed or was cancelled, as the command's reason says.
-	Reason        string `protobuf:"bytes,21,opt,name=reason,proto3" json:"reason,omitempty"`
+	Reason string `protobuf:"bytes,21,opt,name=reason,proto3" json:"reason,omitempty"`
+	// Its page in the cockpit. The CLI fills it from the controller it
+	// calls (cmd/hotbed/cockpit.go); the API leaves it empty.
+	CockpitUrl    string `protobuf:"bytes,22,opt,name=cockpit_url,json=cockpitUrl,proto3" json:"cockpit_url,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -4331,6 +4364,13 @@ func (x *FinishedCommand) GetBench() bool {
 func (x *FinishedCommand) GetReason() string {
 	if x != nil {
 		return x.Reason
+	}
+	return ""
+}
+
+func (x *FinishedCommand) GetCockpitUrl() string {
+	if x != nil {
+		return x.CockpitUrl
 	}
 	return ""
 }
@@ -4751,7 +4791,10 @@ type Session struct {
 	// Its scheduled run is in progress: the idle hour does not apply.
 	ScheduleRunning bool `protobuf:"varint,10,opt,name=schedule_running,json=scheduleRunning,proto3" json:"schedule_running,omitempty"`
 	// The project it works on.
-	Project       string `protobuf:"bytes,11,opt,name=project,proto3" json:"project,omitempty"`
+	Project string `protobuf:"bytes,11,opt,name=project,proto3" json:"project,omitempty"`
+	// Its page in the cockpit. The CLI fills it from the controller it
+	// calls (cmd/hotbed/cockpit.go); the API leaves it empty.
+	CockpitUrl    string `protobuf:"bytes,12,opt,name=cockpit_url,json=cockpitUrl,proto3" json:"cockpit_url,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -4863,13 +4906,23 @@ func (x *Session) GetProject() string {
 	return ""
 }
 
+func (x *Session) GetCockpitUrl() string {
+	if x != nil {
+		return x.CockpitUrl
+	}
+	return ""
+}
+
 type SessionWorkspace struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Id            string                 `protobuf:"bytes,1,opt,name=id,proto3" json:"id,omitempty"`
-	RepoId        string                 `protobuf:"bytes,2,opt,name=repo_id,json=repoId,proto3" json:"repo_id,omitempty"`
-	NodeId        string                 `protobuf:"bytes,3,opt,name=node_id,json=nodeId,proto3" json:"node_id,omitempty"`
-	CreatedAt     int64                  `protobuf:"varint,4,opt,name=created_at,json=createdAt,proto3" json:"created_at,omitempty"`
-	ReleasedAt    *int64                 `protobuf:"varint,5,opt,name=released_at,json=releasedAt,proto3,oneof" json:"released_at,omitempty"`
+	state      protoimpl.MessageState `protogen:"open.v1"`
+	Id         string                 `protobuf:"bytes,1,opt,name=id,proto3" json:"id,omitempty"`
+	RepoId     string                 `protobuf:"bytes,2,opt,name=repo_id,json=repoId,proto3" json:"repo_id,omitempty"`
+	NodeId     string                 `protobuf:"bytes,3,opt,name=node_id,json=nodeId,proto3" json:"node_id,omitempty"`
+	CreatedAt  int64                  `protobuf:"varint,4,opt,name=created_at,json=createdAt,proto3" json:"created_at,omitempty"`
+	ReleasedAt *int64                 `protobuf:"varint,5,opt,name=released_at,json=releasedAt,proto3,oneof" json:"released_at,omitempty"`
+	// Its page in the cockpit. The CLI fills it from the controller it
+	// calls (cmd/hotbed/cockpit.go); the API leaves it empty.
+	CockpitUrl    string `protobuf:"bytes,6,opt,name=cockpit_url,json=cockpitUrl,proto3" json:"cockpit_url,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -4937,6 +4990,13 @@ func (x *SessionWorkspace) GetReleasedAt() int64 {
 		return *x.ReleasedAt
 	}
 	return 0
+}
+
+func (x *SessionWorkspace) GetCockpitUrl() string {
+	if x != nil {
+		return x.CockpitUrl
+	}
+	return ""
 }
 
 type StartSessionRequest struct {
@@ -11978,7 +12038,7 @@ const file_hotbed_v1_hotbed_proto_rawDesc = "" +
 	"\vother_bytes\x18\x03 \x01(\x03R\n" +
 	"otherBytes\x12\x1d\n" +
 	"\n" +
-	"free_bytes\x18\x04 \x01(\x03R\tfreeBytes\"\xa4\x03\n" +
+	"free_bytes\x18\x04 \x01(\x03R\tfreeBytes\"\xc5\x03\n" +
 	"\x04Node\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x1a\n" +
 	"\bhostname\x18\x02 \x01(\tR\bhostname\x12\x14\n" +
@@ -11993,7 +12053,9 @@ const file_hotbed_v1_hotbed_proto_rawDesc = "" +
 	"\x04disk\x18\n" +
 	" \x01(\v2\x14.hotbed.v1.DiskUsageR\x04disk\x122\n" +
 	"\x15reserved_memory_bytes\x18\v \x01(\x03R\x13reservedMemoryBytes\x12\x18\n" +
-	"\astorage\x18\f \x01(\tR\astorageB\f\n" +
+	"\astorage\x18\f \x01(\tR\astorage\x12\x1f\n" +
+	"\vcockpit_url\x18\r \x01(\tR\n" +
+	"cockpitUrlB\f\n" +
 	"\n" +
 	"_last_seen\"\r\n" +
 	"\vJoinRequest\"R\n" +
@@ -12101,7 +12163,7 @@ const file_hotbed_v1_hotbed_proto_rawDesc = "" +
 	"\rscratch_epoch\x18\x11 \x01(\x03R\fscratchEpoch\x12,\n" +
 	"\x05steps\x18\x12 \x03(\v2\x16.hotbed.v1.AppliedStepR\x05steps\x12\x16\n" +
 	"\x06recipe\x18\x13 \x01(\tR\x06recipeB\v\n" +
-	"\t_built_at\"\x85\x05\n" +
+	"\t_built_at\"\xa6\x05\n" +
 	"\tWorkspace\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x17\n" +
 	"\arepo_id\x18\x02 \x01(\tR\x06repoId\x12\x17\n" +
@@ -12129,7 +12191,9 @@ const file_hotbed_v1_hotbed_proto_rawDesc = "" +
 	"\bsync_dir\x18\x13 \x01(\tR\asyncDir\x12\x1b\n" +
 	"\tsync_host\x18\x14 \x01(\tR\bsyncHost\x12\x16\n" +
 	"\x06reason\x18\x15 \x01(\tR\x06reason\x12\x1b\n" +
-	"\tnode_addr\x18\x16 \x01(\tR\bnodeAddr\"\x87\x02\n" +
+	"\tnode_addr\x18\x16 \x01(\tR\bnodeAddr\x12\x1f\n" +
+	"\vcockpit_url\x18\x17 \x01(\tR\n" +
+	"cockpitUrl\"\x87\x02\n" +
 	"\x16CreateWorkspaceRequest\x12\x12\n" +
 	"\x04repo\x18\x01 \x01(\tR\x04repo\x12\x14\n" +
 	"\x05agent\x18\x02 \x01(\tR\x05agent\x12\x16\n" +
@@ -12200,7 +12264,7 @@ const file_hotbed_v1_hotbed_proto_rawDesc = "" +
 	"\fCommandEvent\x12\x0e\n" +
 	"\x02at\x18\x01 \x01(\x03R\x02at\x12\x12\n" +
 	"\x04what\x18\x02 \x01(\tR\x04what\x12\x16\n" +
-	"\x06detail\x18\x03 \x01(\tR\x06detail\"\xb2\x06\n" +
+	"\x06detail\x18\x03 \x01(\tR\x06detail\"\xd3\x06\n" +
 	"\aCommand\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12!\n" +
 	"\fworkspace_id\x18\x02 \x01(\tR\vworkspaceId\x12\x17\n" +
@@ -12229,12 +12293,14 @@ const file_hotbed_v1_hotbed_proto_rawDesc = "" +
 	"\n" +
 	"session_id\x18\x16 \x01(\tR\tsessionId\x12\x14\n" +
 	"\x05bench\x18\x17 \x01(\bR\x05bench\x12\x1b\n" +
-	"\tnode_addr\x18\x18 \x01(\tR\bnodeAddrB\r\n" +
+	"\tnode_addr\x18\x18 \x01(\tR\bnodeAddr\x12\x1f\n" +
+	"\vcockpit_url\x18\x19 \x01(\tR\n" +
+	"cockpitUrlB\r\n" +
 	"\v_started_atB\v\n" +
 	"\t_ended_atB\f\n" +
 	"\n" +
 	"_exit_codeB\x0f\n" +
-	"\r_cold_seconds\"\x98\x05\n" +
+	"\r_cold_seconds\"\xb9\x05\n" +
 	"\x0fFinishedCommand\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x17\n" +
 	"\arepo_id\x18\x02 \x01(\tR\x06repoId\x12\x17\n" +
@@ -12258,7 +12324,9 @@ const file_hotbed_v1_hotbed_proto_rawDesc = "" +
 	"\n" +
 	"session_id\x18\x13 \x01(\tR\tsessionId\x12\x14\n" +
 	"\x05bench\x18\x14 \x01(\bR\x05bench\x12\x16\n" +
-	"\x06reason\x18\x15 \x01(\tR\x06reasonB\f\n" +
+	"\x06reason\x18\x15 \x01(\tR\x06reason\x12\x1f\n" +
+	"\vcockpit_url\x18\x16 \x01(\tR\n" +
+	"cockpitUrlB\f\n" +
 	"\n" +
 	"_exit_codeB\x0f\n" +
 	"\r_cold_secondsB\n" +
@@ -12289,7 +12357,7 @@ const file_hotbed_v1_hotbed_proto_rawDesc = "" +
 	"\x06offset\x18\x02 \x01(\x03R\x06offset\x12\x16\n" +
 	"\x06follow\x18\x03 \x01(\bR\x06follow\"\x1e\n" +
 	"\bLogChunk\x12\x12\n" +
-	"\x04data\x18\x01 \x01(\fR\x04data\"\x83\x03\n" +
+	"\x04data\x18\x01 \x01(\fR\x04data\"\xa4\x03\n" +
 	"\aSession\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x14\n" +
 	"\x05agent\x18\x02 \x01(\tR\x05agent\x12\x1d\n" +
@@ -12306,8 +12374,10 @@ const file_hotbed_v1_hotbed_proto_rawDesc = "" +
 	"\bschedule\x18\t \x01(\tR\bschedule\x12)\n" +
 	"\x10schedule_running\x18\n" +
 	" \x01(\bR\x0fscheduleRunning\x12\x18\n" +
-	"\aproject\x18\v \x01(\tR\aprojectB\v\n" +
-	"\t_ended_at\"\xa9\x01\n" +
+	"\aproject\x18\v \x01(\tR\aproject\x12\x1f\n" +
+	"\vcockpit_url\x18\f \x01(\tR\n" +
+	"cockpitUrlB\v\n" +
+	"\t_ended_at\"\xca\x01\n" +
 	"\x10SessionWorkspace\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x17\n" +
 	"\arepo_id\x18\x02 \x01(\tR\x06repoId\x12\x17\n" +
@@ -12315,7 +12385,9 @@ const file_hotbed_v1_hotbed_proto_rawDesc = "" +
 	"\n" +
 	"created_at\x18\x04 \x01(\x03R\tcreatedAt\x12$\n" +
 	"\vreleased_at\x18\x05 \x01(\x03H\x00R\n" +
-	"releasedAt\x88\x01\x01B\x0e\n" +
+	"releasedAt\x88\x01\x01\x12\x1f\n" +
+	"\vcockpit_url\x18\x06 \x01(\tR\n" +
+	"cockpitUrlB\x0e\n" +
 	"\f_released_at\"m\n" +
 	"\x13StartSessionRequest\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x14\n" +

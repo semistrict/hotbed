@@ -264,5 +264,9 @@ Act on `error.code`, never the message. `retryable: true` means the same command
 unchanged; otherwise `suggestion` says what to change. Exit status: 0 ok, 1 error, 2 bad arguments.
 `run` exits with its command's status, and hotbed's own failures go to stderr.
 
+Every session, workspace, command and node in the output carries `cockpitUrl`, its page in the
+cockpit (the controller's UI): give it to the user when they want to watch or look into it. A
+command's `url` is something else, the dev server it serves.
+
 Codes and what to do: `hotbed skills get hotbed/references/errors.md`. Setting up a cluster:
 `hotbed skills get hotbed/references/setup.md`.

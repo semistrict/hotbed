@@ -92,7 +92,7 @@ func TestWorkspaceCommands(t *testing.T) {
 	// release gives the workspace up; the session goes on and can add another.
 	released := releaseResult{}
 	c.ok(&released, "workspace", "release", "-s", S, "-r", "app")
-	if released != (releaseResult{ID: ws.Id, Repo: "app"}) {
+	if released != (releaseResult{ID: ws.Id, Repo: "app", CockpitURL: c.cockpit().workspace(ws.Id)}) {
 		t.Errorf("workspace release = %+v", released)
 	}
 	after := &pb.ListWorkspacesResponse{}

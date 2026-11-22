@@ -162,6 +162,9 @@ message Node {
   // What admitted commands are guaranteed: the sum of their memory.low.
   int64 reserved_memory_bytes = 11;
   string storage = 12;
+  // Its page in the cockpit. The CLI fills it from the controller it
+  // calls (cmd/hotbed/cockpit.go); the API leaves it empty.
+  string cockpit_url = 13;
 }
 
 message JoinRequest {}
@@ -411,6 +414,9 @@ message Workspace {
   // Set by the controller: where clients call the workspace's worker
   // (host:port) to sync, run commands and read their output.
   string node_addr = 22;
+  // Its page in the cockpit. The CLI fills it from the controller it
+  // calls (cmd/hotbed/cockpit.go); the API leaves it empty.
+  string cockpit_url = 23;
 }
 
 message CreateWorkspaceRequest {
@@ -577,6 +583,9 @@ message Command {
   bool bench = 23;
   // Set by the controller: where clients call the command's worker.
   string node_addr = 24;
+  // Its page in the cockpit. The CLI fills it from the controller it
+  // calls (cmd/hotbed/cockpit.go); the API leaves it empty.
+  string cockpit_url = 25;
 }
 
 // A command that ended, as history keeps it.
@@ -604,6 +613,9 @@ message FinishedCommand {
   bool bench = 20;
   // Why it failed or was cancelled, as the command's reason says.
   string reason = 21;
+  // Its page in the cockpit. The CLI fills it from the controller it
+  // calls (cmd/hotbed/cockpit.go); the API leaves it empty.
+  string cockpit_url = 22;
 }
 
 message RunCommandRequest {
@@ -674,6 +686,9 @@ message Session {
   bool schedule_running = 10;
   // The project it works on.
   string project = 11;
+  // Its page in the cockpit. The CLI fills it from the controller it
+  // calls (cmd/hotbed/cockpit.go); the API leaves it empty.
+  string cockpit_url = 12;
 }
 
 message SessionWorkspace {
@@ -682,6 +697,9 @@ message SessionWorkspace {
   string node_id = 3;
   int64 created_at = 4;
   optional int64 released_at = 5;
+  // Its page in the cockpit. The CLI fills it from the controller it
+  // calls (cmd/hotbed/cockpit.go); the API leaves it empty.
+  string cockpit_url = 6;
 }
 
 message StartSessionRequest {

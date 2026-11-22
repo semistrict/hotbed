@@ -120,6 +120,7 @@ type sessionStatusResult struct {
 	ExpiresInSeconds   *int64                   `json:"expiresInSeconds,omitempty"`
 	Schedule           string                   `json:"schedule,omitempty"`
 	ScheduleRunning    bool                     `json:"scheduleRunning,omitempty"`
+	CockpitURL         string                   `json:"cockpitUrl,omitempty"`
 	LiveCommands       int                      `json:"liveCommands"`
 	Workspaces         []sessionWorkspaceStatus `json:"workspaces"`
 	Commands           []sessionCommandStatus   `json:"commands"`
@@ -140,6 +141,7 @@ type sessionWorkspaceStatus struct {
 	Reason       string `json:"reason,omitempty"`
 	CreatedAt    int64  `json:"createdAt,omitempty"`
 	ReleasedAt   *int64 `json:"releasedAt,omitempty"`
+	CockpitURL   string `json:"cockpitUrl,omitempty"`
 }
 
 type sessionCommandStatus struct {
@@ -155,6 +157,7 @@ type sessionCommandStatus struct {
 	QueuedAt    int64  `json:"queuedAt,omitempty"`
 	StartedAt   *int64 `json:"startedAt,omitempty"`
 	EndedAt     *int64 `json:"endedAt,omitempty"`
+	CockpitURL  string `json:"cockpitUrl,omitempty"`
 }
 
 func (c *sessionStatusCmd) Exec(ctx context.Context, d deps) (any, error) {
@@ -204,6 +207,7 @@ func (c *sessionStatusCmd) Exec(ctx context.Context, d deps) (any, error) {
 		IdleTimeoutSeconds: res.IdleTimeoutSeconds,
 		Schedule:           sess.Schedule,
 		ScheduleRunning:    sess.ScheduleRunning,
+		CockpitURL:         d.cockpit.session(sess.Id),
 		Workspaces:         make([]sessionWorkspaceStatus, 0, len(sess.Workspaces)),
 		Commands:           make([]sessionCommandStatus, 0, len(res.Commands)),
 	}
@@ -225,21 +229,7 @@ func (c *sessionStatusCmd) Exec(ctx context.Context, d deps) (any, error) {
 	for _, sw := range sess.Workspaces {
 		seen[sw.Id] = true
 		if ws, ok := liveWS[sw.Id]; ok {
-			out.Workspaces = append(out.Workspaces, sessionWorkspaceStatus{
-				ID:           ws.Id,
-				Repo:         ws.RepoId,
-				Node:         res.NodeHosts[ws.NodeId],
-				NodeID:       ws.NodeId,
-				State:        workspaceStateName(ws.State),
-				BaseID:       ws.BaseId,
-				Branch:       ws.Branch,
-				Head:         ws.Head,
-				SyncDir:      ws.SyncDir,
-				SyncHost:     ws.SyncHost,
-				FilesChanged: ws.FilesChanged,
-				Reason:       ws.Reason,
-				CreatedAt:    ws.CreatedAt,
-			})
+			out.Workspaces = append(out.Workspaces, liveWorkspaceStatus(ws, res.NodeHosts, d.cockpit))
 			continue
 		}
 		state := "released"
@@ -254,27 +244,14 @@ func (c *sessionStatusCmd) Exec(ctx context.Context, d deps) (any, error) {
 			State:      state,
 			CreatedAt:  sw.CreatedAt,
 			ReleasedAt: sw.ReleasedAt,
+			CockpitURL: d.cockpit.workspace(sw.Id),
 		})
 	}
 	for _, ws := range res.Workspaces {
 		if seen[ws.Id] {
 			continue
 		}
-		out.Workspaces = append(out.Workspaces, sessionWorkspaceStatus{
-			ID:           ws.Id,
-			Repo:         ws.RepoId,
-			Node:         res.NodeHosts[ws.NodeId],
-			NodeID:       ws.NodeId,
-			State:        workspaceStateName(ws.State),
-			BaseID:       ws.BaseId,
-			Branch:       ws.Branch,
-			Head:         ws.Head,
-			SyncDir:      ws.SyncDir,
-			SyncHost:     ws.SyncHost,
-			FilesChanged: ws.FilesChanged,
-			Reason:       ws.Reason,
-			CreatedAt:    ws.CreatedAt,
-		})
+		out.Workspaces = append(out.Workspaces, liveWorkspaceStatus(ws, res.NodeHosts, d.cockpit))
 	}
 	for _, cmd := range res.Commands {
 		if live(cmd.State) {
@@ -293,9 +270,31 @@ func (c *sessionStatusCmd) Exec(ctx context.Context, d deps) (any, error) {
 			QueuedAt:    cmd.QueuedAt,
 			StartedAt:   cmd.StartedAt,
 			EndedAt:     cmd.EndedAt,
+			CockpitURL:  d.cockpit.command(cmd.Id),
 		})
 	}
 	return out, nil
+}
+
+// liveWorkspaceStatus is a workspace its node still has, as session status
+// shows it.
+func liveWorkspaceStatus(ws *pb.Workspace, nodeHosts map[string]string, c cockpit) sessionWorkspaceStatus {
+	return sessionWorkspaceStatus{
+		ID:           ws.Id,
+		Repo:         ws.RepoId,
+		Node:         nodeHosts[ws.NodeId],
+		NodeID:       ws.NodeId,
+		State:        workspaceStateName(ws.State),
+		BaseID:       ws.BaseId,
+		Branch:       ws.Branch,
+		Head:         ws.Head,
+		SyncDir:      ws.SyncDir,
+		SyncHost:     ws.SyncHost,
+		FilesChanged: ws.FilesChanged,
+		Reason:       ws.Reason,
+		CreatedAt:    ws.CreatedAt,
+		CockpitURL:   c.workspace(ws.Id),
+	}
 }
 
 func workspaceStateName(s pb.WorkspaceState) string {
@@ -679,6 +678,7 @@ func (c *runCmd) Raw(ctx context.Context, d deps) (int, bool, error) {
 		return 0, false, err
 	}
 	if c.Detach {
+		d.cockpit.fill(cmd)
 		writeEnvelope(d.stdout, success("run", cmd))
 		return exitOK, true, nil
 	}

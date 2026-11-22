@@ -88,8 +88,9 @@ func (c *workspaceFileCmd) Exec(ctx context.Context, d deps) (any, error) {
 type workspaceReleaseCmd struct{ workspaceOfRepo }
 
 type releaseResult struct {
-	ID   string `json:"id"`
-	Repo string `json:"repo"`
+	ID         string `json:"id"`
+	Repo       string `json:"repo"`
+	CockpitURL string `json:"cockpitUrl"`
 }
 
 // Exec releases the workspace through the controller, which keeps the
@@ -107,5 +108,5 @@ func (c *workspaceReleaseCmd) Exec(ctx context.Context, d deps) (any, error) {
 		return nil, err
 	}
 	forget(d, ws.SessionId, ws.RepoId)
-	return releaseResult{ID: ws.Id, Repo: ws.RepoId}, nil
+	return releaseResult{ID: ws.Id, Repo: ws.RepoId, CockpitURL: d.cockpit.workspace(ws.Id)}, nil
 }

@@ -44,6 +44,9 @@ type deps struct {
 	exe     func() (string, error)
 	reexec  func(args ...string) error
 	openURL func(ctx context.Context, url string) error
+	// cockpit makes the cockpit's URLs; run sets it for a command that
+	// calls the controller.
+	cockpit cockpit
 	// execve replaces the process with another program (syscall.Exec).
 	execve func(path string, argv, env []string) error
 }
