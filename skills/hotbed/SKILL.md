@@ -28,7 +28,9 @@ hotbed session end
   hold it, or outside a checkout, name one: `-p PROJECT` or `HOTBED_PROJECT`. `hotbed project ls`
   lists them; `hotbed project add NAME --repo REMOTE...` makes one or adds repos to it.
 - **Everything happens in a session.** Session and repo are never positional arguments: override them with `-s`/`HOTBED_SESSION` and `-r`/`HOTBED_REPO`, or let hotbed default the session from `T3CODE_THREAD_ID` → current git worktree (stored in `~/.hotbed/sessions.json`) and infer the repo from the current git checkout. `hotbed session current` prints the active session.
-  `session start` picks a free adjective-noun name, or takes one you give it.
+  `session start` picks a free adjective-noun name, or takes one you give it. In a thread or
+  worktree already bound to a live session it fails with `CONFLICT` naming that session: keep
+  using it, end it first, or pass `--replace` to end it and bind the new one.
 - **A session has one workspace per repo.** `hotbed add` (with `-r REPO` outside a checkout) makes it or returns the one it has.
   It is a fork of the repo's base at the branch's head. When the branch has moved or the repo's
   setup steps changed since the newest base, `add` first freshens a new base from the previous

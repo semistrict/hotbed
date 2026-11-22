@@ -41,11 +41,8 @@ const twoQuestions = `{"questions": [
 // no session.
 func questionCluster(t *testing.T) (*cluster, hotbedv1connect.QuestionServiceClient) {
 	t.Helper()
-	t.Setenv("HOTBED_SESSION", "")
-	t.Setenv("T3CODE_THREAD_ID", "")
-	// Outside any checkout, so the sessions bind to nothing: a command
-	// names its session, or has none.
-	t.Chdir(t.TempDir())
+	// newCluster leaves us outside any checkout, so the sessions bind to
+	// nothing: a command names its session, or has none.
 	c := newCluster(t)
 	c.ok(nil, "session", "start", "brave-otter")
 	c.ok(nil, "session", "start", "calm-heron")

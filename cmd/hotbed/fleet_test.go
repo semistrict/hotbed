@@ -198,6 +198,13 @@ func newFleetWith(t *testing.T, n int, opts clusterOpts) *cluster {
 		t.Fatal(err)
 	}
 	t.Setenv("HOTBED_PROJECT", "test")
+	// Where the tests run says nothing of where sessions bind: they start
+	// outside any T3 thread or checkout, so a session binds to nothing and
+	// a command names its session, unless a test goes somewhere itself.
+	for _, k := range []string{"T3CODE_THREAD_ID", "HOTBED_SESSION", "HOTBED_REPO", "HOTBED_AGENT"} {
+		t.Setenv(k, "")
+	}
+	t.Chdir(t.TempDir())
 	c.cli = deps{
 		controller: at(ctrl),
 		// The CLI runs on the laptop: its tailnet says so, and its calls

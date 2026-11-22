@@ -28,8 +28,9 @@ type sessionCmd struct {
 type sessionStartCmd struct {
 	controllerClient
 	projectFlag
-	Name  string `arg:"" optional:"" help:"adjective-noun, such as brave-otter (default: a random free one)."`
-	Agent string `env:"HOTBED_AGENT" help:"Who you are, for the cockpit (default: this machine)."`
+	Name    string `arg:"" optional:"" help:"adjective-noun, such as brave-otter (default: a random free one)."`
+	Agent   string `env:"HOTBED_AGENT" help:"Who you are, for the cockpit (default: this machine)."`
+	Replace bool   `help:"End the live session already bound to this T3 thread or git worktree and bind the new one in its place."`
 }
 
 func (c *sessionStartCmd) Exec(ctx context.Context, d deps) (any, error) {
@@ -41,12 +42,61 @@ func (c *sessionStartCmd) Exec(ctx context.Context, d deps) (any, error) {
 	if err != nil {
 		return nil, err
 	}
+	path := sessionsFilePath(d)
+	m, err := loadSessionMap(path)
+	if err != nil {
+		return nil, err
+	}
+	place, binds := startPlace(ctx)
+	// replaced is the live session bound here that the new one replaces.
+	var replaced string
+	if bound := m.bound(place); binds && bound != "" {
+		live, err := sessionLive(ctx, cl, bound)
+		if err != nil {
+			return nil, err
+		}
+		if live && !c.Replace {
+			return nil, api.Errorf(api.CodeConflict, "%s is bound to session %s, which is live", place, bound).
+				WithSuggestion(fmt.Sprintf("keep using %s (hotbed session status), end it first (hotbed session end), or pass --replace to end it and start a new one", bound))
+		}
+		if live {
+			replaced = bound
+		}
+	}
 	sess, err := cl.sessions.StartSession(ctx, &pb.StartSessionRequest{Id: c.Name, Agent: c.Agent, Project: c.Project, Remote: remote})
 	if err != nil {
 		return nil, err
 	}
-	bindSessionForContext(ctx, d, sess.Id)
+	if binds {
+		if replaced != "" {
+			m.unbind(replaced)
+		}
+		m.bind(place, sess.Id)
+		if err := saveSessionMap(path, m); err != nil {
+			return nil, api.Errorf(api.CodeInternal, "started session %s, but could not bind it to %s: %v", sess.Id, place, err).
+				WithSuggestion(fmt.Sprintf("pass -s %s to every command, or set HOTBED_SESSION=%s", sess.Id, sess.Id))
+		}
+	}
+	if replaced != "" {
+		if _, err := cl.sessions.EndSession(ctx, &pb.EndSessionRequest{Id: replaced}); err != nil && api.FromConnect(err).Code != api.CodeNotFound {
+			return nil, api.Errorf(api.CodeInternal, "started session %s in place of %s, but could not end %s: %v", sess.Id, replaced, replaced, toAPIError(err)).
+				WithSuggestion(fmt.Sprintf("hotbed session end -s %s", replaced))
+		}
+	}
 	return sess, nil
+}
+
+// sessionLive says whether the controller has session id and it has not
+// ended.
+func sessionLive(ctx context.Context, cl clients, id string) (bool, error) {
+	res, err := cl.sessions.GetSession(ctx, &pb.GetSessionRequest{Id: id})
+	if err != nil {
+		if api.FromConnect(err).Code == api.CodeNotFound {
+			return false, nil
+		}
+		return false, err
+	}
+	return res.Session.EndedAt == nil, nil
 }
 
 type sessionStatusCmd struct {
@@ -108,8 +158,11 @@ type sessionCommandStatus struct {
 }
 
 func (c *sessionStatusCmd) Exec(ctx context.Context, d deps) (any, error) {
-	binding, err := c.sessionFlag.resolveBinding(ctx, d)
+	binding, found, err := c.sessionFlag.lookupBinding(ctx, d)
 	if err != nil {
+		return nil, err
+	}
+	if !found {
 		return sessionStatusResult{
 			Active:     false,
 			State:      "none",
@@ -327,7 +380,9 @@ func (c *sessionEndCmd) Exec(ctx context.Context, d deps) (any, error) {
 	if err != nil {
 		return nil, err
 	}
-	unbindSession(d, sessID)
+	if err := unbindSession(d, sessID); err != nil {
+		return nil, api.Errorf(api.CodeInternal, "ended session %s, but could not clear its binding in %s: %v", sessID, sessionsFilePath(d), err)
+	}
 	return res, nil
 }
 
