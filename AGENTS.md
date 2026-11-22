@@ -6,8 +6,8 @@ Use hotbed itself to build, test, and verify hotbed actively while working on th
 
 ```sh
 S=$(hotbed session start | jq -r .data.id)   # e.g. selected-pug
-hotbed add "$S" hotbed --sync .
-hotbed run "$S" hotbed -- go test -race ./...
+hotbed add "$S" --sync .
+hotbed run "$S" -- go test -race ./...
 hotbed session end "$S"
 ```
 

@@ -129,15 +129,19 @@ type repoCmd struct {
 
 type repoRebuildCmd struct {
 	controllerFlag
-	ID string `arg:"" help:"The repo's name."`
+	ID string `arg:"" optional:"" help:"The repo's name (default: inferred from the current checkout)."`
 }
 
 func (c *repoRebuildCmd) Exec(ctx context.Context, d deps) (any, error) {
+	id, err := c.resolveRepo(ctx, d, "", c.ID, "")
+	if err != nil {
+		return nil, err
+	}
 	cl, err := c.clients(d.http)
 	if err != nil {
 		return nil, err
 	}
-	return cl.cluster.RebuildRepo(ctx, &pb.RebuildRepoRequest{Id: c.ID})
+	return cl.cluster.RebuildRepo(ctx, &pb.RebuildRepoRequest{Id: id})
 }
 
 type repoAddCmd struct {

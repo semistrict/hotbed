@@ -157,6 +157,7 @@ type known map[string]spot
 type spot struct {
 	ID       string `json:"id"`
 	NodeAddr string `json:"nodeAddr"`
+	SyncDir  string `json:"syncDir,omitempty"`
 }
 
 func knownFile(d deps, session string) string {
@@ -179,10 +180,10 @@ func remember(d deps, session string, ws *pb.Workspace) {
 	if err != nil {
 		k = known{}
 	}
-	if k[ws.RepoId].ID == ws.Id && k[ws.RepoId].NodeAddr == ws.NodeAddr {
+	if k[ws.RepoId].ID == ws.Id && k[ws.RepoId].NodeAddr == ws.NodeAddr && k[ws.RepoId].SyncDir == ws.SyncDir {
 		return
 	}
-	k[ws.RepoId] = spot{ID: ws.Id, NodeAddr: ws.NodeAddr}
+	k[ws.RepoId] = spot{ID: ws.Id, NodeAddr: ws.NodeAddr, SyncDir: ws.SyncDir}
 	b, err := json.Marshal(k)
 	if err == nil {
 		err = os.MkdirAll(filepath.Dir(knownFile(d, session)), 0o755)

@@ -59,9 +59,18 @@ func (s stepScript) put(ctx context.Context, cl clients, repo, name, script stri
 type stepAddCmd struct {
 	controllerFlag
 	Session string `arg:"" help:"The session whose workspace of the repo tries the step."`
-	Repo    string `arg:"" help:"The repo."`
-	Name    string `arg:"" help:"The step's name, such as playwright-browsers; a step of that name is replaced."`
+	Arg1    string `arg:"" name:"repo-or-name" help:"The repo (omit inside a checkout), or the step's name."`
+	Arg2    string `arg:"" optional:"" name:"name" help:"The step's name, when REPO is given."`
 	stepScript
+}
+
+func (c *stepAddCmd) SetDashArgs(args []string) { c.Args = args }
+
+func splitRepoAndName(arg1, arg2 string) (repo, name string) {
+	if arg2 == "" {
+		return "", arg1
+	}
+	return arg1, arg2
 }
 
 // Exec runs the step in the session's workspace, so the agent has what it
@@ -72,11 +81,16 @@ func (c *stepAddCmd) Exec(ctx context.Context, d deps) (any, error) {
 	if err != nil {
 		return nil, err
 	}
+	rawRepo, name := splitRepoAndName(c.Arg1, c.Arg2)
+	repo, err := c.resolveRepo(ctx, d, c.Session, rawRepo, "")
+	if err != nil {
+		return nil, err
+	}
 	cl, err := c.clients(d.http)
 	if err != nil {
 		return nil, err
 	}
-	ws, w, err := c.locate(ctx, d, c.Session, c.Repo)
+	ws, w, err := c.locate(ctx, d, c.Session, repo)
 	if err != nil {
 		return nil, err
 	}
@@ -91,7 +105,7 @@ func (c *stepAddCmd) Exec(ctx context.Context, d deps) (any, error) {
 		if err != nil {
 			return nil, err
 		}
-		fmt.Fprintf(d.stderr, "hotbed: trying step %s in %s, run %d of 2 (%s)\n", c.Name, ws.Id, try, cmd.Id)
+		fmt.Fprintf(d.stderr, "hotbed: trying step %s in %s, run %d of 2 (%s)\n", name, ws.Id, try, cmd.Id)
 		// The step's output goes to stderr: stdout is the envelope.
 		code, err := attach(ctx, w, cmd.Id, d.stderr, d.stderr)
 		if err != nil {
@@ -99,66 +113,82 @@ func (c *stepAddCmd) Exec(ctx context.Context, d deps) (any, error) {
 		}
 		switch {
 		case code != 0 && try == 1:
-			return nil, api.Errorf(api.CodeStepFailed, "step %s exited %d in %s; it was not saved", c.Name, code, ws.Id).
+			return nil, api.Errorf(api.CodeStepFailed, "step %s exited %d in %s; it was not saved", name, code, ws.Id).
 				WithSuggestion(fmt.Sprintf("read its output (hotbed logs %s %s), fix the script and add it again", c.Session, cmd.Id))
 		case code != 0:
-			return nil, api.Errorf(api.CodeStepNotIdempotent, "step %s worked once but exited %d run again in %s; it was not saved", c.Name, code, ws.Id).
+			return nil, api.Errorf(api.CodeStepNotIdempotent, "step %s worked once but exited %d run again in %s; it was not saved", name, code, ws.Id).
 				WithSuggestion("bases run steps over what they already have: make the script safe to repeat (check before installing, mkdir -p, --force), then add it again")
 		}
 	}
-	return c.put(ctx, cl, c.Repo, c.Name, script)
+	return c.put(ctx, cl, repo, name, script)
 }
 
 type stepSetCmd struct {
 	controllerFlag
-	Repo string `arg:"" help:"The repo."`
-	Name string `arg:"" help:"The step's name; a step of that name is replaced."`
+	Arg1 string `arg:"" name:"repo-or-name" help:"The repo (omit inside a checkout), or the step's name."`
+	Arg2 string `arg:"" optional:"" name:"name" help:"The step's name, when REPO is given."`
 	stepScript
 }
+
+func (c *stepSetCmd) SetDashArgs(args []string) { c.Args = args }
 
 func (c *stepSetCmd) Exec(ctx context.Context, d deps) (any, error) {
 	script, err := c.script()
 	if err != nil {
 		return nil, err
 	}
+	rawRepo, name := splitRepoAndName(c.Arg1, c.Arg2)
+	repo, err := c.resolveRepo(ctx, d, "", rawRepo, "")
+	if err != nil {
+		return nil, err
+	}
 	cl, err := c.clients(d.http)
 	if err != nil {
 		return nil, err
 	}
-	return c.put(ctx, cl, c.Repo, c.Name, script)
+	return c.put(ctx, cl, repo, name, script)
 }
 
 type stepLsCmd struct {
 	controllerFlag
-	Repo string `arg:"" help:"The repo."`
+	Repo string `arg:"" optional:"" help:"The repo (default: inferred from the current checkout)."`
 }
 
 func (c *stepLsCmd) Exec(ctx context.Context, d deps) (any, error) {
+	repo, err := c.resolveRepo(ctx, d, "", c.Repo, "")
+	if err != nil {
+		return nil, err
+	}
 	cl, err := c.clients(d.http)
 	if err != nil {
 		return nil, err
 	}
-	return cl.cluster.ListSteps(ctx, &pb.ListStepsRequest{RepoId: c.Repo})
+	return cl.cluster.ListSteps(ctx, &pb.ListStepsRequest{RepoId: repo})
 }
 
 type stepShowCmd struct {
 	controllerFlag
-	Repo string `arg:"" help:"The repo."`
-	Name string `arg:"" help:"The step."`
+	Arg1 string `arg:"" name:"repo-or-name" help:"The repo (omit inside a checkout), or the step's name."`
+	Arg2 string `arg:"" optional:"" name:"name" help:"The step's name, when REPO is given."`
 }
 
 // Raw prints the script as is, to read or to edit and add again.
 func (c *stepShowCmd) Raw(ctx context.Context, d deps) (int, bool, error) {
+	rawRepo, name := splitRepoAndName(c.Arg1, c.Arg2)
+	repo, err := c.resolveRepo(ctx, d, "", rawRepo, "")
+	if err != nil {
+		return 0, false, err
+	}
 	cl, err := c.clients(d.http)
 	if err != nil {
 		return 0, false, err
 	}
-	res, err := cl.cluster.ListSteps(ctx, &pb.ListStepsRequest{RepoId: c.Repo})
+	res, err := cl.cluster.ListSteps(ctx, &pb.ListStepsRequest{RepoId: repo})
 	if err != nil {
 		return 0, false, err
 	}
 	for _, s := range res.Steps {
-		if s.Step.Name == c.Name {
+		if s.Step.Name == name {
 			script := s.Step.Script
 			if !strings.HasSuffix(script, "\n") {
 				script += "\n"
@@ -167,7 +197,7 @@ func (c *stepShowCmd) Raw(ctx context.Context, d deps) (int, bool, error) {
 			return exitOK, true, err
 		}
 	}
-	return 0, false, api.Errorf(api.CodeNotFound, "repo %s has no step %s", c.Repo, c.Name).WithSuggestion("hotbed step ls " + c.Repo)
+	return 0, false, api.Errorf(api.CodeNotFound, "repo %s has no step %s", repo, name).WithSuggestion("hotbed step ls " + repo)
 }
 
 func (c *stepShowCmd) Exec(context.Context, deps) (any, error) {
@@ -176,14 +206,19 @@ func (c *stepShowCmd) Exec(context.Context, deps) (any, error) {
 
 type stepRmCmd struct {
 	controllerFlag
-	Repo string `arg:"" help:"The repo."`
-	Name string `arg:"" help:"The step."`
+	Arg1 string `arg:"" name:"repo-or-name" help:"The repo (omit inside a checkout), or the step's name."`
+	Arg2 string `arg:"" optional:"" name:"name" help:"The step's name, when REPO is given."`
 }
 
 func (c *stepRmCmd) Exec(ctx context.Context, d deps) (any, error) {
+	rawRepo, name := splitRepoAndName(c.Arg1, c.Arg2)
+	repo, err := c.resolveRepo(ctx, d, "", rawRepo, "")
+	if err != nil {
+		return nil, err
+	}
 	cl, err := c.clients(d.http)
 	if err != nil {
 		return nil, err
 	}
-	return cl.cluster.DeleteStep(ctx, &pb.DeleteStepRequest{RepoId: c.Repo, Name: c.Name})
+	return cl.cluster.DeleteStep(ctx, &pb.DeleteStepRequest{RepoId: repo, Name: name})
 }

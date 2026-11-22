@@ -52,7 +52,7 @@ func (c *sessionEndCmd) Exec(ctx context.Context, d deps) (any, error) {
 type addCmd struct {
 	controllerFlag
 	Session string `arg:"" help:"The session's name."`
-	Repo    string `arg:"" help:"The repo's name, from hotbed repo ls."`
+	Repo    string `arg:"" optional:"" help:"The repo's name, from hotbed repo ls (default: inferred from the current checkout)."`
 	Sync    string `type:"path" help:"A local checkout of the repo the workspace follows: run from this machine syncs it first. Without it the workspace is remote-only."`
 	Node    string `help:"Put the workspace on this node (host name)."`
 	Branch  string `help:"The branch you work on, for the cockpit."`
@@ -60,12 +60,16 @@ type addCmd struct {
 }
 
 func (c *addCmd) Exec(ctx context.Context, d deps) (any, error) {
+	repo, err := c.resolveRepo(ctx, d, c.Session, c.Repo, c.Sync)
+	if err != nil {
+		return nil, err
+	}
 	cl, err := c.clients(d.http)
 	if err != nil {
 		return nil, err
 	}
 	ws, err := cl.workspaces.CreateWorkspace(ctx, &pb.CreateWorkspaceRequest{
-		SessionId: c.Session, Repo: c.Repo, SyncDir: c.Sync, Node: c.Node, Branch: c.Branch,
+		SessionId: c.Session, Repo: repo, SyncDir: c.Sync, Node: c.Node, Branch: c.Branch,
 	})
 	if err != nil {
 		return nil, err
@@ -183,12 +187,16 @@ func watchSession(ctx context.Context, stream clients, req *pb.WatchSessionReque
 type syncCmd struct {
 	controllerFlag
 	Session string `arg:"" help:"The session's name."`
-	Repo    string `arg:"" help:"The repo's name."`
+	Repo    string `arg:"" optional:"" help:"The repo's name (default: inferred from the current checkout)."`
 	Dir     string `type:"path" help:"The checkout to send (default: the one the workspace follows)."`
 }
 
 func (c *syncCmd) Exec(ctx context.Context, d deps) (any, error) {
-	ws, w, err := c.locate(ctx, d, c.Session, c.Repo)
+	repo, err := c.resolveRepo(ctx, d, c.Session, c.Repo, c.Dir)
+	if err != nil {
+		return nil, err
+	}
+	ws, w, err := c.locate(ctx, d, c.Session, repo)
 	if err != nil {
 		return nil, err
 	}
@@ -273,22 +281,28 @@ func (f commandFlags) request(args []string, example string) (*pb.RunCommandRequ
 type runCmd struct {
 	controllerFlag
 	Session string   `arg:"" help:"The session's name."`
-	Repo    string   `arg:"" help:"The repo whose workspace to run in."`
-	Args    []string `arg:"" passthrough:"" help:"The command, after --."`
+	Repo    string   `arg:"" optional:"" help:"The repo whose workspace to run in (default: inferred from the current checkout)."`
+	Args    []string `arg:"" optional:"" passthrough:"" help:"The command, after --."`
 	NoSync  bool     `help:"Do not sync the checkout the workspace follows first."`
 	Detach  bool     `help:"Return once the command is queued; it runs until it ends or hotbed stop. For dev servers and long jobs; follow with hotbed wait."`
 	Port    int      `help:"Port a dev server listens on, for its URL."`
 	commandFlags
 }
 
+func (c *runCmd) SetDashArgs(args []string) { c.Args = args }
+
 // Raw syncs if the workspace follows a checkout on this machine, runs the
 // command, and streams its output to stdout. Interrupting stops it.
 func (c *runCmd) Raw(ctx context.Context, d deps) (int, bool, error) {
-	req, err := c.request(c.Args, "hotbed run SESSION REPO -- cargo test")
+	req, err := c.request(c.Args, "hotbed run SESSION [REPO] -- cargo test")
 	if err != nil {
 		return 0, false, err
 	}
-	ws, w, err := c.locate(ctx, d, c.Session, c.Repo)
+	repo, err := c.resolveRepo(ctx, d, c.Session, c.Repo, "")
+	if err != nil {
+		return 0, false, err
+	}
+	ws, w, err := c.locate(ctx, d, c.Session, repo)
 	if err != nil {
 		return 0, false, err
 	}

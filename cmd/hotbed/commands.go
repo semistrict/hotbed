@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"runtime/debug"
+	"slices"
 	"strings"
 
 	"github.com/alecthomas/kong"
@@ -33,9 +34,17 @@ type deps struct {
 	cache string
 	// build is the client's build (0 for a dev build), exe its binary, and
 	// reexec runs a binary: what following the controller's build needs.
-	build  int64
-	exe    func() (string, error)
-	reexec func(args ...string) error
+	build   int64
+	exe     func() (string, error)
+	reexec  func(args ...string) error
+	openURL func(ctx context.Context, url string) error
+}
+
+// dashDashCommand accepts passthrough arguments after "--", parsed before kong
+// so optional positional arguments (like an inferred repo name) never swallow
+// the command after "--".
+type dashDashCommand interface {
+	SetDashArgs(args []string)
 }
 
 // command is a leaf of the command tree. Exec returns the envelope's data.
@@ -74,6 +83,7 @@ type cli struct {
 	Step     stepCmd     `cmd:"" help:"A repo's setup steps: what brings its bases up to date (add, set, ls, show, rm)."`
 	Schedule scheduleCmd `cmd:"" help:"Scheduled commands: recurring work the cluster runs by itself, each run a session of its own (add, ls, show, rm, run, pause, resume)."`
 	Nodes    nodesCmd    `cmd:"" help:"List the cluster's workers."`
+	UI       uiCmd       `cmd:"" help:"Open the controller's cockpit UI in the default browser."`
 	Init     initCmd     `cmd:"" help:"Create a cluster with this machine as its controller."`
 	Join     joinCmd     `cmd:"" help:"Join this machine to a cluster as a worker (as root)."`
 	Worker   workerCmd   `cmd:"" help:"Initialize and manage a worker node on this machine in ~/.hotbed (init, status, start, stop, trim, ssh, destroy)."`
@@ -93,6 +103,19 @@ func parse(args []string, stdout io.Writer) (cmd command, name string, exitCode 
 	if len(args) == 0 {
 		args = []string{"--help"}
 	}
+	if sep := slices.Index(args, "--"); sep >= 0 {
+		cmd, name, exitCode, err = parseOnce(args[:sep], stdout)
+		if err == nil && exitCode == nil {
+			if dd, ok := cmd.(dashDashCommand); ok {
+				dd.SetDashArgs(args[sep+1:])
+				return cmd, name, nil, nil
+			}
+		}
+	}
+	return parseOnce(args, stdout)
+}
+
+func parseOnce(args []string, stdout io.Writer) (cmd command, name string, exitCode *int, err error) {
 	var c cli
 	parser, err := kong.New(&c,
 		kong.Name("hotbed"),

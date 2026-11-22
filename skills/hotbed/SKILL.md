@@ -15,9 +15,9 @@ you changed.
 
 ```sh
 S=$(hotbed session start | jq -r .data.id)       # e.g. brave-otter
-hotbed add $S ratel --sync .                     # a workspace of ratel that follows this checkout
-hotbed run $S ratel -- cargo nextest run         # syncs your edits, runs, prints output, exits with its status
-hotbed run $S ratel --detach -- cargo build --release
+hotbed add $S --sync .                           # a workspace of this repo that follows this checkout (or pass REPO outside a checkout)
+hotbed run $S -- cargo nextest run               # syncs your edits, runs, prints output, exits with its status
+hotbed run $S --detach -- cargo build --release
 hotbed wait $S                                   # blocks until a command in the session changes state
 hotbed session end $S
 ```
