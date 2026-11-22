@@ -2,14 +2,14 @@
 
 ## Projects and questions (board 6434)
 
-- **A repo no project holds becomes a project of its own name** when a session first starts in
-  it, so `session start` in a checkout keeps working without setup. The alternative was to refuse
-  until someone runs `hotbed project add`. To undo: make `sessionProject` return an error in the
-  "no project holds it" case.
+- **A repo no project holds becomes a project of its own name** when registered (`hotbed repo add`),
+  on controller startup for already-registered repos, or when a session first starts in it, so every
+  repo and session has a project without manual setup. Sessions from before projects are also
+  attached on startup (or on `CreateWorkspace`) to their workspace's repo's project when unambiguous.
+  To undo: drop `ensureRepoProject` from `PutRepo` / `EnsureProjects` and make `sessionProject`
+  return an error in the "no project holds it" case.
 - **A project may hold no repos** (`project add NAME` alone), for work that is not in a repo yet,
   and the tests' project. Requiring one repo is a check in `AddProject`.
-- **Sessions from before projects keep no project** (`sessions.project_id` NULL); they cannot ask
-  questions and say to start a new session. Nothing migrates them: they end within the idle hour.
 - **Question IDs are one sequence across projects** (`question 12`), so commands that name a
   question need no project. Per-project numbers would need a project on every such command.
 - **"handled"** names an acknowledged answer (over "archived"): it says an agent dealt with it.

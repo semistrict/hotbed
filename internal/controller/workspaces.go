@@ -37,6 +37,15 @@ func (s *workspaces) CreateWorkspace(ctx context.Context, req *pb.CreateWorkspac
 	if err != nil {
 		return nil, err
 	}
+	if sess.Project == "" {
+		if p, perr := s.ensureRepoProject(ctx, repo.Id, repo.Url); perr != nil {
+			slog.Warn("attach projectless session to repo project", "session", sess.Id, "repo", repo.Id, "err", perr)
+		} else if p != nil {
+			if serr := s.cfg.Store.SetSessionProject(ctx, sess.Id, p.Name); serr != nil {
+				slog.Warn("set session project", "session", sess.Id, "project", p.Name, "err", serr)
+			}
+		}
+	}
 	fwd := &pb.CreateWorkspaceRequest{
 		Repo: req.Repo, Agent: sess.Agent, Branch: req.Branch, Id: newID(), SessionId: sess.Id,
 		SyncDir: req.SyncDir, RepoConfig: repo,

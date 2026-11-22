@@ -385,7 +385,13 @@ func (s *Server) PutRepo(ctx context.Context, req *pb.PutRepoRequest) (*pb.Repo,
 	if old, err := s.repo(ctx, repo.Id); err == nil {
 		repo.ScratchEpoch, repo.Steps = old.ScratchEpoch, old.Steps
 	}
-	return repo, s.cfg.Store.PutRepo(ctx, repo)
+	if err := s.cfg.Store.PutRepo(ctx, repo); err != nil {
+		return nil, err
+	}
+	if _, err := s.ensureRepoProject(ctx, repo.Id, repo.Url); err != nil {
+		return nil, err
+	}
+	return repo, nil
 }
 
 // RebuildRepo raises the repo's scratch epoch, which has each worker build

@@ -11,8 +11,6 @@ const NAV = [
   { to: "/questions", label: "Questions" },
   { to: "/sessions", label: "Sessions" },
   { to: "/commands", label: "Commands" },
-  { to: "/history", label: "History" },
-  { to: "/workspaces", label: "Workspaces" },
   { to: "/schedules", label: "Schedules" },
   { to: "/cluster", label: "Cluster", shared: true },
   { to: "/nodes", label: "Nodes", shared: true },

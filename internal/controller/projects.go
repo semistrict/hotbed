@@ -115,6 +115,87 @@ func (s *Server) sessionProject(ctx context.Context, name, remote string) (*pb.P
 
 var notInName = regexp.MustCompile(`[^a-z0-9]+`)
 
+// ensureRepoProject makes a single-repo project for repoURL when no project
+// holds its canonical remote yet. It returns the unique project holding the
+// repo, or nil if several projects hold it or no candidate project name is
+// free.
+func (s *Server) ensureRepoProject(ctx context.Context, repoID, repoURL string) (*pb.Project, error) {
+	remote := gitops.CanonicalRemote(repoURL)
+	if remote == "" {
+		return nil, nil
+	}
+	holding, err := s.cfg.Store.ProjectsHolding(ctx, remote)
+	if err != nil {
+		return nil, err
+	}
+	if len(holding) == 1 {
+		return holding[0], nil
+	}
+	if len(holding) > 1 {
+		return nil, nil
+	}
+	var candidates []string
+	if own := projectNameFor(remote); own != "" {
+		candidates = append(candidates, own)
+	}
+	if repoID != "" && (len(candidates) == 0 || candidates[0] != repoID) && checkProjectName(repoID) == nil {
+		candidates = append(candidates, repoID)
+	}
+	for _, name := range candidates {
+		p, err := s.cfg.Store.Project(ctx, name)
+		switch {
+		case err == nil && len(p.Repos) > 0:
+			continue
+		case err != nil && api.FromConnect(err).Code != api.CodeNotFound:
+			return nil, err
+		}
+		return s.cfg.Store.AddProject(ctx, name, []string{remote}, s.now())
+	}
+	return nil, nil
+}
+
+// EnsureProjects makes sure every registered repo belongs to a project (making
+// a single-repo project for any repo none holds yet) and attaches any session
+// that has no project yet to its workspace's repo's project when unambiguous.
+func (s *Server) EnsureProjects(ctx context.Context) error {
+	repos, err := s.cfg.Store.Repos(ctx)
+	if err != nil {
+		return err
+	}
+	repoRemote := make(map[string]string, len(repos))
+	for _, r := range repos {
+		if _, err := s.ensureRepoProject(ctx, r.Id, r.Url); err != nil {
+			return err
+		}
+		if remote := gitops.CanonicalRemote(r.Url); remote != "" {
+			repoRemote[r.Id] = remote
+		}
+	}
+	orphans, err := s.cfg.Store.SessionsWithoutProject(ctx)
+	if err != nil {
+		return err
+	}
+	for _, sess := range orphans {
+		for _, repoID := range sess.repos {
+			remote := repoRemote[repoID]
+			if remote == "" {
+				continue
+			}
+			holding, err := s.cfg.Store.ProjectsHolding(ctx, remote)
+			if err != nil {
+				return err
+			}
+			if len(holding) == 1 {
+				if err := s.cfg.Store.SetSessionProject(ctx, sess.id, holding[0].Name); err != nil {
+					return err
+				}
+				break
+			}
+		}
+	}
+	return nil
+}
+
 // projectNameFor is the project named after a repo: its remote's last
 // part, lowercased, with anything else a name may not hold made a dash
 // (github.com/vercel/Next.js is next-js); empty when nothing is left.

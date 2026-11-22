@@ -173,3 +173,24 @@ func TestRepoProjectNames(t *testing.T) {
 		t.Errorf("a refused start made a project: %v", ls.Projects)
 	}
 }
+
+// Registering a repo auto-creates a single-repo project for it when no project
+// holds it yet; adding a repo already held by a project leaves projects alone.
+func TestRepoAddCreatesItsOwnProject(t *testing.T) {
+	c := newCluster(t)
+	c.ok(nil, "repo", "add", "cladefs", "https://github.com/semistrict/cladefs.git")
+
+	ls := &pb.ListProjectsResponse{}
+	c.ok(ls, "project", "ls")
+	if got := projectRepos(ls, "cladefs"); !slices.Equal(got, []string{"github.com/semistrict/cladefs"}) {
+		t.Fatalf("project cladefs after repo add = %v, want [github.com/semistrict/cladefs]", got)
+	}
+
+	// A repo already in a multi-repo project does not sprout a duplicate project.
+	c.ok(nil, "project", "add", "suite", "--repo", "https://github.com/semistrict/other.git")
+	c.ok(nil, "repo", "add", "other", "git@github.com:semistrict/other.git")
+	c.ok(ls, "project", "ls")
+	if projectRepos(ls, "other") != nil {
+		t.Errorf("repo already in project suite should not make a project called other: %v", ls.Projects)
+	}
+}
