@@ -70,10 +70,10 @@ func (s *Server) projects(ctx context.Context) ([]*pb.Project, error) {
 }
 
 // sessionProject is the project a session starts in: the one named, or
-// else the one that holds remote (canonical), or else the project of
-// remote's own name, made for it, with fallback the name to make when
-// remote's own (its last part) is not one.
-func (s *Server) sessionProject(ctx context.Context, name, remote, fallback string) (*pb.Project, error) {
+// else the one that holds remote (canonical), or else the project named
+// after remote (its last part, made a project's name), made for it or, when
+// a project of that name holds no repo yet, given it.
+func (s *Server) sessionProject(ctx context.Context, name, remote string) (*pb.Project, error) {
 	if name != "" {
 		return s.cfg.Store.Project(ctx, name)
 	}
@@ -97,19 +97,32 @@ func (s *Server) sessionProject(ctx context.Context, name, remote, fallback stri
 		return nil, api.Errorf(api.CodeInvalidArgs, "%s is in projects %s: name the session's project", remote, strings.Join(names, ", ")).
 			WithSuggestion("pass -p PROJECT or set HOTBED_PROJECT")
 	}
-	own := remote[strings.LastIndex(remote, "/")+1:]
-	if checkProjectName(own) != nil {
-		own = fallback
-	}
-	if err := checkProjectName(own); err != nil {
+	own := projectNameFor(remote)
+	if own == "" {
 		return nil, api.Errorf(api.CodeInvalidArgs, "no project holds %s, and its name makes none", remote).
 			WithSuggestion("make one: hotbed project add NAME --repo " + remote)
 	}
-	if p, err := s.cfg.Store.Project(ctx, own); err == nil {
+	p, err := s.cfg.Store.Project(ctx, own)
+	switch {
+	case err == nil && len(p.Repos) > 0:
 		return nil, api.Errorf(api.CodeInvalidArgs, "no project holds %s, and project %s holds other repos (%s)", remote, own, strings.Join(p.Repos, ", ")).
 			WithSuggestion("add it there (hotbed project add " + own + " --repo " + remote + "), or pass -p PROJECT")
-	} else if api.FromConnect(err).Code != api.CodeNotFound {
+	case err != nil && api.FromConnect(err).Code != api.CodeNotFound:
 		return nil, err
 	}
 	return s.cfg.Store.AddProject(ctx, own, []string{remote}, s.now())
+}
+
+var notInName = regexp.MustCompile(`[^a-z0-9]+`)
+
+// projectNameFor is the project named after a repo: its remote's last
+// part, lowercased, with anything else a name may not hold made a dash
+// (github.com/vercel/Next.js is next-js); empty when nothing is left.
+func projectNameFor(remote string) string {
+	name := strings.ToLower(remote[strings.LastIndex(remote, "/")+1:])
+	name = strings.Trim(notInName.ReplaceAllString(name, "-"), "-")
+	if len(name) > 40 {
+		name = strings.TrimRight(name[:40], "-")
+	}
+	return name
 }

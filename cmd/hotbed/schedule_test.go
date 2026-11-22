@@ -377,3 +377,30 @@ func TestInterruptedStartIsNotStarted(t *testing.T) {
 		t.Errorf("its session = %v", s)
 	}
 }
+
+// A schedule keeps the project it was added in, so a repo that another
+// project takes in later does not leave its runs not knowing which.
+func TestScheduleKeepsItsProject(t *testing.T) {
+	c := newCluster(t)
+	t.Setenv("HOTBED_PROJECT", "")
+	origin := upstream(t)
+	c.addRepo(origin)
+	sc := &pb.ScheduledCommand{}
+	c.ok(sc, "schedule", "add", "nightly", "-r", "app", "--cron", nightly, "--", "true")
+	if sc.Project == "" {
+		t.Fatalf("schedule add: no project in %v", sc)
+	}
+	c.ok(nil, "project", "add", "elsewhere", "--repo", origin)
+
+	run := &pb.ScheduledRun{}
+	c.ok(run, "schedule", "run", "nightly")
+	if run.Outcome == pb.RunOutcome_RUN_OUTCOME_NOT_STARTED {
+		t.Fatalf("run of a schedule whose repo two projects hold: not started: %s", run.Reason)
+	}
+	if s := c.session(run.SessionId); s.Project != sc.Project {
+		t.Errorf("the run's session is in %q, want the schedule's %q", s.Project, sc.Project)
+	}
+	c.eventually("the run to succeed", func() bool {
+		return c.schedule("nightly").Runs[0].Outcome == pb.RunOutcome_RUN_OUTCOME_SUCCEEDED
+	})
+}

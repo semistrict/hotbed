@@ -1,16 +1,19 @@
 import { useQuery } from "@tanstack/react-query";
 import { Link, useParams } from "@tanstack/react-router";
-import { useEffect, useRef } from "react";
+import { type ReactNode, useLayoutEffect, useRef, useState } from "react";
 import { api, type Command, type CommandEvent, type FinishedCommand, type Snapshot } from "../api";
 import { Meter } from "../components/charts/Bars";
 import { SpeedBars } from "../components/charts/SpeedBars";
 import { CommandBlock } from "../components/CommandBlock";
+import { Crumbs } from "../components/Crumbs";
 import { FAILURE } from "../components/CommandTable";
 import { Card, StatTile } from "../components/ui/Card";
 import { BenchTag, KindTag, StateBadge } from "../components/ui/State";
 import { nodeName, useSnapshot } from "../lib/data";
-import { bytes, duration, hhmmss, speedup } from "../lib/format";
+import { atEnd } from "../lib/follow";
+import { bytes, duration, hhmmss, limit, speedup } from "../lib/format";
 import { isLive } from "../lib/live";
+import { searchLog, type LogMatch } from "../lib/logsearch";
 import { NotFound } from "./NotFound";
 
 export function CommandPage() {
@@ -35,16 +38,17 @@ function CommandView({ s, live, done, id }: { s: Snapshot; live: Command | null;
   const took = ((ended ?? now) - started) / 1000;
   const cold = live?.coldSeconds ?? done?.coldSeconds ?? null;
   const rebuilt = live?.rebuilt ? live.rebuilt : done?.rebuilt !== null && done ? { units: done.rebuilt ?? 0, of: done.of ?? 0 } : null;
-  const workspaceExists = s.workspaces.some((w) => w.id === workspaceId);
+  const workspace = s.workspaces.find((w) => w.id === workspaceId);
+  const repoId = done?.repoId ?? workspace?.repoId;
 
   return (
     <div className="space-y-6">
+      <Crumbs repoId={repoId} workspaceId={workspace ? workspaceId : undefined} here={id} />
       <div className="rise">
         <div className="flex flex-wrap items-center gap-3">
           <StateBadge state={state} />
           <KindTag kind={live?.kind ?? done?.kind ?? "build"} />
           {(live?.bench ?? done?.bench) && <BenchTag />}
-          <span className="font-mono text-[11px] text-faint">{id}</span>
         </div>
         <CommandBlock key={id} argv={argv} />
         <p className="mt-2 text-[13px] text-muted-foreground">
@@ -58,7 +62,7 @@ function CommandView({ s, live, done, id }: { s: Snapshot; live: Command | null;
             </>
           )}
           in{" "}
-          {workspaceExists ? (
+          {workspace ? (
             <Link to="/workspaces/$id" params={{ id: workspaceId }} className="font-mono text-foreground hover:text-primary">
               {workspaceId}
             </Link>
@@ -109,26 +113,27 @@ function CommandView({ s, live, done, id }: { s: Snapshot; live: Command | null;
         </Card>
       )}
 
-      <div className="grid gap-4 lg:grid-cols-[1fr_320px]">
-        <Card title="Output" sub={live && isLive(live) ? "Live" : "Captured"}>
-          <LogView id={id} live={!!live && isLive(live)} />
-        </Card>
+      {/* minmax(0,…) keeps long log lines from widening the column past the page: the log scrolls in its own box. */}
+      <div className="grid grid-cols-[minmax(0,1fr)] gap-4 lg:grid-cols-[minmax(0,1fr)_320px]">
+        <LogCard id={id} live={!!live && isLive(live)} />
         <div className="space-y-4">
           {live && (
             <Card title="Limits" sub="cgroup v2, set at admission">
               <dl className="space-y-3 text-[11.5px]">
                 <Limit label="cpu.weight" value={String(live.limits.cpuWeight)} />
-                <Limit label="memory.low" value={bytes(live.limits.memoryLowBytes)} />
-                <Limit label="memory.high" value={bytes(live.limits.memoryHighBytes)} />
+                <Limit label="memory.low" value={limit(live.limits.memoryLowBytes)} />
+                <Limit label="memory.high" value={limit(live.limits.memoryHighBytes)} />
                 <Limit label="memory.max" value="none — park, don't kill" />
               </dl>
-              <div className="mt-4">
-                <div className="mb-1 flex justify-between font-mono text-[10.5px] text-muted-foreground">
-                  <span>{bytes(live.memoryBytes)} used</span>
-                  <span>high {bytes(live.limits.memoryHighBytes)}</span>
+              {live.limits.memoryHighBytes > 0 && (
+                <div className="mt-4">
+                  <div className="mb-1 flex justify-between font-mono text-[10.5px] text-muted-foreground">
+                    <span>{bytes(live.memoryBytes)} used</span>
+                    <span>high {bytes(live.limits.memoryHighBytes)}</span>
+                  </div>
+                  <Meter value={live.memoryBytes / live.limits.memoryHighBytes} marker={live.limits.memoryLowBytes / live.limits.memoryHighBytes} />
                 </div>
-                <Meter value={live.memoryBytes / live.limits.memoryHighBytes} marker={live.limits.memoryLowBytes / live.limits.memoryHighBytes} />
-              </div>
+              )}
             </Card>
           )}
           {live && (
@@ -168,22 +173,76 @@ function Timeline({ events }: { events: CommandEvent[] }) {
   );
 }
 
-function LogView({ id, live }: { id: string; live: boolean }) {
+function LogCard({ id, live }: { id: string; live: boolean }) {
   const log = useQuery({ queryKey: ["log", id], queryFn: () => api.commandLog(id), refetchInterval: live ? 1000 : false });
-  const end = useRef<HTMLDivElement>(null);
-  const lines = log.data?.lines.length ?? 0;
-  useEffect(() => {
-    if (live) end.current?.scrollIntoView({ block: "nearest" });
-  }, [lines, live]);
+  const [query, setQuery] = useState("");
+  const lines = log.data?.lines ?? [];
+  const matches = searchLog(lines, query);
+  const searching = query.trim() !== "";
   return (
-    <div className="max-h-[520px] overflow-auto rounded-lg border border-border bg-background/60 p-3 font-mono text-[11.5px] leading-[1.7]">
-      {log.data?.lines.map((l, i) => (
+    <Card
+      title="Output"
+      sub={searching ? `${matches.length} of ${lines.length} lines match` : live ? "Live" : "Captured"}
+      right={
+        <input
+          type="search"
+          value={query}
+          onChange={(e) => setQuery(e.target.value)}
+          placeholder="search output"
+          aria-label="Search output"
+          className="w-44 rounded-full border border-border bg-background/40 px-3 py-1 font-mono text-[11px] text-foreground placeholder:text-faint focus:border-primary focus:outline-none sm:w-60"
+        />
+      }
+    >
+      {searching ? <LogMatches lines={lines} matches={matches} /> : <LogView lines={lines} live={live} />}
+    </Card>
+  );
+}
+
+const logBox = "max-h-[520px] overflow-auto rounded-lg border border-border bg-background/60 p-3 font-mono text-[11.5px] leading-[1.7]";
+
+function LogView({ lines, live }: { lines: string[]; live: boolean }) {
+  const box = useRef<HTMLDivElement>(null);
+  const following = useRef(true);
+  // Scroll only the log's own box (scrollIntoView would scroll the page too),
+  // and only while the reader sits at its end.
+  useLayoutEffect(() => {
+    const el = box.current;
+    if (el && live && following.current) el.scrollTop = el.scrollHeight;
+  }, [lines.length, live]);
+  return (
+    <div ref={box} onScroll={(e) => (following.current = atEnd(e.currentTarget))} className={logBox}>
+      {lines.map((l, i) => (
         <div key={i} className={`whitespace-pre ${tone(l)}`}>
           {l || " "}
         </div>
       ))}
       {live && <div className="ember-pulse text-primary">▍</div>}
-      <div ref={end} />
+    </div>
+  );
+}
+
+/** Only the lines that match, numbered by where they sit in the log, matches marked. */
+function LogMatches({ lines, matches }: { lines: string[]; matches: LogMatch[] }) {
+  if (matches.length === 0) return <div className={`${logBox} text-faint`}>No line matches.</div>;
+  return (
+    <div className={logBox}>
+      {matches.map(({ line, ranges }) => {
+        const text = lines[line] ?? "";
+        const parts: ReactNode[] = [];
+        let at = 0;
+        for (const [a, b] of ranges) {
+          parts.push(text.slice(at, a), <mark key={a} className="rounded-sm bg-ember-wash text-primary">{text.slice(a, b)}</mark>);
+          at = b;
+        }
+        parts.push(text.slice(at));
+        return (
+          <div key={line} className={`flex whitespace-pre ${tone(text)}`}>
+            <span className="w-12 shrink-0 pr-3 text-right text-faint select-none">{line + 1}</span>
+            <span>{parts}</span>
+          </div>
+        );
+      })}
     </div>
   );
 }

@@ -2,6 +2,10 @@ package api
 
 import (
 	"errors"
+	"io"
+	"net"
+	"os"
+	"syscall"
 	"testing"
 
 	"connectrpc.com/connect/v2"
@@ -48,5 +52,26 @@ func TestUnreachableIsRetryable(t *testing.T) {
 	got := FromConnect(connect.NewError(connect.CodeUnavailable, "dial tcp: connection refused"))
 	if got.Code != CodeControllerUnreachable || !got.Retryable {
 		t.Errorf("FromConnect(unavailable) = %+v", got)
+	}
+}
+
+// A connection that broke under a call (the worker or controller
+// restarting) is a peer out of reach for now, whatever code the transport
+// gave it: retryable, as a refused one is.
+func TestBrokenConnectionsAreRetryable(t *testing.T) {
+	for _, cause := range []error{
+		&net.OpError{Op: "read", Net: "tcp", Err: os.NewSyscallError("read", syscall.ECONNRESET)},
+		&net.OpError{Op: "write", Net: "tcp", Err: os.NewSyscallError("write", syscall.EPIPE)},
+		io.ErrUnexpectedEOF,
+	} {
+		for _, code := range []connect.Code{connect.CodeCanceled, connect.CodeUnknown, connect.CodeInternal} {
+			e := FromConnect(connect.NewError(code, cause.Error()).WithCause(cause))
+			if e.Code != CodeControllerUnreachable || !e.Retryable {
+				t.Errorf("%v from %v = %+v, want unreachable and retryable", code, cause, e)
+			}
+		}
+	}
+	if e := FromConnect(connect.NewError(connect.CodeInternal, "boom").WithCause(errors.New("boom"))); e.Retryable {
+		t.Errorf("an internal error = %+v, want it not retryable", e)
 	}
 }

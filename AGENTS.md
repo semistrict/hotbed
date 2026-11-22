@@ -13,6 +13,10 @@ hotbed session end
 
 Read `hotbed skills get hotbed` for the full CLI workflow. Session and repo are flags (`-s`/`HOTBED_SESSION`, `-r`/`HOTBED_REPO`) defaulted from `T3CODE_THREAD_ID` / the current git worktree and checkout, never positional arguments. A session idle for an hour is abandoned; keep it alive with `hotbed wait` or other session calls while working, and end it with `hotbed session end` when done.
 
+## Every API call has a CLI command
+
+Whatever the API (`proto/hotbed/v1/hotbed.proto`) can do, the `hotbed` CLI can do: when you add or change an RPC, add or change the command that makes it in the same change, test that command in `cmd/hotbed`, and list it in `skills/hotbed/SKILL.md`. A full `go test ./cmd/hotbed` run fails on any RPC the tests' CLI never called (`cmd/hotbed/coverage_test.go`). The only exceptions are the calls workers make to the controller on their own (`nodeProtocol` there); a new one goes on that list only if no person or agent would ever make it.
+
 ## Commit only what compiled and passed its tests
 
 Commit changes once they have compiled and their tests have passed (`go test -race ./...` via hotbed on Linux as well as local macOS tests for darwin code, plus `pnpm -C ui test && pnpm -C ui typecheck` when touching `ui/`): never commit a change that has not been compiled and tested.

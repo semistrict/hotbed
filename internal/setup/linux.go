@@ -25,12 +25,12 @@ import (
 )
 
 const (
-	zfsSuperMagic         = 0x2fc12fc1
-	linuxWorkerService    = "hotbed-worker.service"
-	linuxTrimService      = "hotbed-worker-trim.service"
-	linuxTrimTimer        = "hotbed-worker-trim.timer"
-	systemdUnitDir        = "/etc/systemd/system"
-	selinuxInstalledBin   = "/usr/local/bin/hotbed"
+	zfsSuperMagic       = 0x2fc12fc1
+	linuxWorkerService  = "hotbed-worker.service"
+	linuxTrimService    = "hotbed-worker-trim.service"
+	linuxTrimTimer      = "hotbed-worker-trim.timer"
+	systemdUnitDir      = "/etc/systemd/system"
+	selinuxInstalledBin = "/usr/local/bin/hotbed"
 )
 
 // Setup configures and starts a hotbed worker directly on this Linux host,
@@ -370,6 +370,10 @@ func copyFileAtomic(src, dst string, perm fs.FileMode) error {
 	}
 	return os.Rename(tmp.Name(), dst)
 }
+
+// workerRecord is the file worker init records the worker's setup in, its
+// controller among it.
+func workerRecord(baseDir string) string { return filepath.Join(baseDir, "setup.json") }
 
 func loadLinuxMeta(baseDir string) (LinuxSetupMeta, error) {
 	var m LinuxSetupMeta

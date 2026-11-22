@@ -874,7 +874,9 @@ type SessionServiceClient interface {
 	// one project that holds the caller's checkout's repo. A repo no project
 	// holds is a project of its own, made for it.
 	StartSession(context.Context, *v1.StartSessionRequest) (*v1.Session, error)
-	GetSession(context.Context, *v1.GetSessionRequest) (*v1.Session, error)
+	// GetSession returns a session (live or ended) with its workspaces and
+	// commands, without resetting its idle timer.
+	GetSession(context.Context, *v1.GetSessionRequest) (*v1.GetSessionResponse, error)
 	// ListSessions lists a project's sessions, or every project's: those
 	// live, and with ended, those that ended in the last day too; the most
 	// recently active first.
@@ -884,7 +886,7 @@ type SessionServiceClient interface {
 	// keeps it alive.
 	EndSession(context.Context, *v1.EndSessionRequest) (*v1.Session, error)
 	// WatchSession streams what happens to the session's commands after a
-	// cursor: first how things stand, then each new batch of events as it
+	// cursor: first how it stands, then each new batch of events as it
 	// happens. It ends when the session does, or after at most two minutes, so
 	// an agent that wants the session kept has to keep watching it.
 	WatchSession(context.Context, *v1.WatchSessionRequest) (SessionServiceWatchSessionClientStream, error)
@@ -923,7 +925,9 @@ type SessionServiceHandler interface {
 	// one project that holds the caller's checkout's repo. A repo no project
 	// holds is a project of its own, made for it.
 	StartSession(context.Context, *v1.StartSessionRequest) (*v1.Session, error)
-	GetSession(context.Context, *v1.GetSessionRequest) (*v1.Session, error)
+	// GetSession returns a session (live or ended) with its workspaces and
+	// commands, without resetting its idle timer.
+	GetSession(context.Context, *v1.GetSessionRequest) (*v1.GetSessionResponse, error)
 	// ListSessions lists a project's sessions, or every project's: those
 	// live, and with ended, those that ended in the last day too; the most
 	// recently active first.
@@ -933,7 +937,7 @@ type SessionServiceHandler interface {
 	// keeps it alive.
 	EndSession(context.Context, *v1.EndSessionRequest) (*v1.Session, error)
 	// WatchSession streams what happens to the session's commands after a
-	// cursor: first how things stand, then each new batch of events as it
+	// cursor: first how it stands, then each new batch of events as it
 	// happens. It ends when the session does, or after at most two minutes, so
 	// an agent that wants the session kept has to keep watching it.
 	WatchSession(context.Context, *v1.WatchSessionRequest, SessionServiceWatchSessionServerStream) error
@@ -975,7 +979,7 @@ func (UnimplementedSessionServiceHandler) StartSession(context.Context, *v1.Star
 	return nil, connect.NewError(connect.CodeUnimplemented, "hotbed.v1.SessionService.StartSession is not implemented")
 }
 
-func (UnimplementedSessionServiceHandler) GetSession(context.Context, *v1.GetSessionRequest) (*v1.Session, error) {
+func (UnimplementedSessionServiceHandler) GetSession(context.Context, *v1.GetSessionRequest) (*v1.GetSessionResponse, error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, "hotbed.v1.SessionService.GetSession is not implemented")
 }
 
@@ -1003,8 +1007,8 @@ func (c *sessionServiceClient) StartSession(ctx context.Context, req *v1.StartSe
 	return &res, nil
 }
 
-func (c *sessionServiceClient) GetSession(ctx context.Context, req *v1.GetSessionRequest) (*v1.Session, error) {
-	var res v1.Session
+func (c *sessionServiceClient) GetSession(ctx context.Context, req *v1.GetSessionRequest) (*v1.GetSessionResponse, error) {
+	var res v1.GetSessionResponse
 	if err := c.client.CallUnary(ctx, sessionServiceGetSessionSpec(), req, &res); err != nil {
 		return nil, err
 	}
@@ -2082,8 +2086,8 @@ type QuestionServiceClient interface {
 	// outbox, none.
 	AckQuestions(context.Context, *v1.AckQuestionsRequest) (*v1.AckQuestionsResponse, error)
 	// WaitQuestions waits, two minutes at most, until one of the named
-	// questions is no longer open, or, naming none, until the project's
-	// outbox holds something. It returns those questions, or the outbox, as they are then.
+	// questions is no longer open, or, naming none, until the outbox (a
+	// project's, or a session's questions') holds something. It returns those questions, or the outbox, as they are then.
 	WaitQuestions(context.Context, *v1.WaitQuestionsRequest) (*v1.ListQuestionsResponse, error)
 }
 
@@ -2123,8 +2127,8 @@ type QuestionServiceHandler interface {
 	// outbox, none.
 	AckQuestions(context.Context, *v1.AckQuestionsRequest) (*v1.AckQuestionsResponse, error)
 	// WaitQuestions waits, two minutes at most, until one of the named
-	// questions is no longer open, or, naming none, until the project's
-	// outbox holds something. It returns those questions, or the outbox, as they are then.
+	// questions is no longer open, or, naming none, until the outbox (a
+	// project's, or a session's questions') holds something. It returns those questions, or the outbox, as they are then.
 	WaitQuestions(context.Context, *v1.WaitQuestionsRequest) (*v1.ListQuestionsResponse, error)
 }
 

@@ -28,7 +28,7 @@ type questionCmd struct {
 	Outbox   questionOutboxCmd   `cmd:"" help:"A project's questions the user answered or dismissed that no agent has acknowledged yet, the newest answer first."`
 	Projects questionProjectsCmd `cmd:"" help:"Every project with questions: how many wait on the user, and on agents."`
 	Ack      questionAckCmd      `cmd:"" help:"Acknowledge answers you have read and acted on: they leave the outbox, handled."`
-	Wait     questionWaitCmd     `cmd:"" help:"Wait (up to two minutes) until one of the named questions is answered, dismissed or deleted; naming none, until the outbox holds something."`
+	Wait     questionWaitCmd     `cmd:"" help:"Wait (up to two minutes) until one of the named questions is answered, dismissed or deleted; naming none, until one of this session's questions is in the outbox."`
 	Answer   questionAnswerCmd   `cmd:"" help:"Answer a question for the user. The user answers in the cockpit; use this only to pass on what the user said."`
 	Dismiss  questionDismissCmd  `cmd:"" help:"Dismiss a question for the user: it will get no answer."`
 	Move     questionMoveCmd     `cmd:"" help:"Move an open question in the user's order."`
@@ -121,18 +121,16 @@ type questionID struct {
 	ID int32 `arg:"" help:"The question's number."`
 }
 
-// optional is the session of a change the user makes, which an agent may
-// be passing on: none when no session is named or bound here.
-func (f sessionFlag) optional(ctx context.Context, d deps) string {
-	session, err := f.resolve(ctx, d)
-	if err != nil {
-		return ""
-	}
-	return session
+// named is the session of a change the user makes, which an agent passing
+// it on names with -s or HOTBED_SESSION; none otherwise. A session merely
+// bound to this thread or worktree is not used: it may long have ended, and
+// the change is the user's.
+func (f sessionFlag) named() string {
+	return strings.TrimSpace(f.Session)
 }
 
 type questionAddCmd struct {
-	controllerFlag
+	controllerClient
 	sessionFlag
 	questionInput
 	Repo string `help:"The repo of the session's project they are about, as a git remote (default: this checkout's, if the project holds it, or else the project as a whole)."`
@@ -191,7 +189,7 @@ func askedFrom(ctx context.Context) (*pb.AskedFrom, error) {
 }
 
 type questionLsCmd struct {
-	controllerFlag
+	controllerClient
 	sessionFlag
 	projectFlag
 	AllProjects bool     `help:"Every project's questions."`
@@ -235,7 +233,7 @@ func questionOrder(word string) pb.QuestionOrder {
 }
 
 type questionShowCmd struct {
-	controllerFlag
+	controllerClient
 	questionID
 }
 
@@ -248,7 +246,7 @@ func (c *questionShowCmd) Exec(ctx context.Context, d deps) (any, error) {
 }
 
 type questionEditCmd struct {
-	controllerFlag
+	controllerClient
 	sessionFlag
 	questionID
 	questionInput
@@ -271,7 +269,7 @@ func (c *questionEditCmd) Exec(ctx context.Context, d deps) (any, error) {
 }
 
 type questionRmCmd struct {
-	controllerFlag
+	controllerClient
 	sessionFlag
 	questionID
 	Reason string `help:"Why it is no longer needed."`
@@ -290,7 +288,7 @@ func (c *questionRmCmd) Exec(ctx context.Context, d deps) (any, error) {
 }
 
 type questionOutboxCmd struct {
-	controllerFlag
+	controllerClient
 	sessionFlag
 	projectFlag
 	AllProjects bool   `help:"Every project's outbox."`
@@ -312,7 +310,7 @@ func (c *questionOutboxCmd) Exec(ctx context.Context, d deps) (any, error) {
 }
 
 type questionAckCmd struct {
-	controllerFlag
+	controllerClient
 	sessionFlag
 	IDs []int32 `arg:"" name:"id" help:"The questions whose answers you read."`
 }
@@ -330,11 +328,12 @@ func (c *questionAckCmd) Exec(ctx context.Context, d deps) (any, error) {
 }
 
 type questionWaitCmd struct {
-	controllerFlag
+	controllerClient
 	sessionFlag
 	projectFlag
-	AllProjects bool    `help:"Naming no questions, wait for any project's outbox."`
-	IDs         []int32 `arg:"" optional:"" name:"id" help:"The questions to wait on (default: wait for the project's outbox)."`
+	ProjectWide bool    `help:"Naming no questions, wait for any answer in the project's outbox, not only to this session's questions."`
+	AllProjects bool    `help:"With --project-wide, any project's outbox."`
+	IDs         []int32 `arg:"" optional:"" name:"id" help:"The questions to wait on (default: wait for an answer to one of this session's questions)."`
 	Timeout     int32   `default:"120" help:"Seconds to wait, at most 120."`
 }
 
@@ -343,17 +342,25 @@ func (c *questionWaitCmd) Exec(ctx context.Context, d deps) (any, error) {
 	if err != nil {
 		return nil, err
 	}
-	project := ""
-	if len(c.IDs) == 0 {
-		if project, err = c.listed(ctx, d, stream, c.sessionFlag, c.AllProjects); err != nil {
+	req := &pb.WaitQuestionsRequest{Ids: c.IDs, TimeoutSeconds: c.Timeout}
+	switch {
+	case len(c.IDs) > 0:
+	case c.ProjectWide:
+		if req.Project, err = c.listed(ctx, d, stream, c.sessionFlag, c.AllProjects); err != nil {
+			return nil, err
+		}
+	default:
+		// An answer left in the outbox by another session, which may never
+		// ack it, would end every wait at once: wait for this session's.
+		if req.AskedBy, err = c.resolve(ctx, d); err != nil {
 			return nil, err
 		}
 	}
-	return stream.questions.WaitQuestions(ctx, &pb.WaitQuestionsRequest{Ids: c.IDs, TimeoutSeconds: c.Timeout, Project: project})
+	return stream.questions.WaitQuestions(ctx, req)
 }
 
 type questionAnswerCmd struct {
-	controllerFlag
+	controllerClient
 	sessionFlag
 	questionID
 	Pick  []string `help:"The label of an option the user picked. Repeatable for a multiSelect question."`
@@ -367,12 +374,12 @@ func (c *questionAnswerCmd) Exec(ctx context.Context, d deps) (any, error) {
 		return nil, err
 	}
 	return cl.questions.AnswerQuestion(ctx, &pb.AnswerQuestionRequest{
-		Id: c.ID, Answer: &pb.Answer{Picked: c.Pick, Other: c.Other, Notes: c.Notes}, SessionId: c.optional(ctx, d),
+		Id: c.ID, Answer: &pb.Answer{Picked: c.Pick, Other: c.Other, Notes: c.Notes}, SessionId: c.named(),
 	})
 }
 
 type questionDismissCmd struct {
-	controllerFlag
+	controllerClient
 	sessionFlag
 	questionID
 	Reason string `help:"Why it gets no answer."`
@@ -383,11 +390,11 @@ func (c *questionDismissCmd) Exec(ctx context.Context, d deps) (any, error) {
 	if err != nil {
 		return nil, err
 	}
-	return cl.questions.DismissQuestion(ctx, &pb.DismissQuestionRequest{Id: c.ID, Reason: c.Reason, SessionId: c.optional(ctx, d)})
+	return cl.questions.DismissQuestion(ctx, &pb.DismissQuestionRequest{Id: c.ID, Reason: c.Reason, SessionId: c.named()})
 }
 
 type questionMoveCmd struct {
-	controllerFlag
+	controllerClient
 	sessionFlag
 	questionID
 	Before int32 `help:"Put it just before this open question." xor:"place"`
@@ -403,9 +410,13 @@ func (c *questionMoveCmd) Exec(ctx context.Context, d deps) (any, error) {
 	before := c.Before
 	switch {
 	case c.First:
-		// First of every project's: the order is one, whatever a view shows.
+		// First of its project's list, as the user sees it.
+		q, err := cl.questions.GetQuestion(ctx, &pb.GetQuestionRequest{Id: c.ID})
+		if err != nil {
+			return nil, err
+		}
 		top, err := cl.questions.ListQuestions(ctx, &pb.ListQuestionsRequest{
-			States: questionStates([]string{"open"}), Order: pb.QuestionOrder_QUESTION_ORDER_RANK, Limit: 1,
+			States: questionStates([]string{"open"}), Order: pb.QuestionOrder_QUESTION_ORDER_RANK, Project: q.Project, Limit: 1,
 		})
 		if err != nil {
 			return nil, err
@@ -421,11 +432,11 @@ func (c *questionMoveCmd) Exec(ctx context.Context, d deps) (any, error) {
 	case before == 0:
 		return nil, api.Errorf(api.CodeInvalidArgs, "say where: --before ID, --first or --last")
 	}
-	return cl.questions.MoveQuestion(ctx, &pb.MoveQuestionRequest{Id: c.ID, Before: before, SessionId: c.optional(ctx, d)})
+	return cl.questions.MoveQuestion(ctx, &pb.MoveQuestionRequest{Id: c.ID, Before: before, SessionId: c.named()})
 }
 
 type questionProjectsCmd struct {
-	controllerFlag
+	controllerClient
 }
 
 func (c *questionProjectsCmd) Exec(ctx context.Context, d deps) (any, error) {

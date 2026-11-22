@@ -1,16 +1,20 @@
 package controller
 
 import (
+	"cmp"
 	"context"
+	"log/slog"
 	"regexp"
+	"slices"
+	"strings"
 	"time"
 
 	petname "github.com/dustinkirkland/golang-petname"
 
 	"github.com/semistrict/hotbed/internal/api"
-	"github.com/semistrict/hotbed/internal/gitops"
 	pb "github.com/semistrict/hotbed/internal/gen/hotbed/v1"
 	"github.com/semistrict/hotbed/internal/gen/hotbed/v1/hotbedv1connect"
+	"github.com/semistrict/hotbed/internal/gitops"
 	"github.com/semistrict/hotbed/internal/httpx"
 )
 
@@ -29,7 +33,13 @@ func (s *sessions) StartSession(ctx context.Context, req *pb.StartSessionRequest
 	if req.Id != "" && (!sessionName.MatchString(req.Id) || len(req.Id) > 48) {
 		return nil, api.Errorf(api.CodeInvalidArgs, "session name %q must look like adjective-noun: lowercase words joined by dashes", req.Id)
 	}
-	project, err := s.sessionProject(ctx, req.Project, gitops.CanonicalRemote(req.Remote), "")
+	if req.Id != "" {
+		// Refused before its project is looked for, which may make one.
+		if _, err := s.cfg.Store.Session(ctx, req.Id); err == nil {
+			return nil, api.Errorf(api.CodeConflict, "a session called %s exists", req.Id).WithSuggestion("pick another name, or leave it out for a random one")
+		}
+	}
+	project, err := s.sessionProject(ctx, req.Project, gitops.CanonicalRemote(req.Remote))
 	if err != nil {
 		return nil, err
 	}
@@ -45,8 +55,73 @@ func (s *sessions) StartSession(ctx context.Context, req *pb.StartSessionRequest
 	return nil, api.Errorf(api.CodeConflict, "could not find a free session name")
 }
 
-func (s *sessions) GetSession(ctx context.Context, req *pb.GetSessionRequest) (*pb.Session, error) {
-	return s.cfg.Store.Session(ctx, req.Id)
+func (s *sessions) GetSession(ctx context.Context, req *pb.GetSessionRequest) (*pb.GetSessionResponse, error) {
+	sess, err := s.cfg.Store.Session(ctx, req.Id)
+	if err != nil {
+		return nil, err
+	}
+	nvs, err := s.views(ctx)
+	if err != nil {
+		return nil, err
+	}
+	nodeHosts := make(map[string]string, len(nvs))
+	releasedWS := make(map[string]bool, len(sess.Workspaces))
+	for _, sw := range sess.Workspaces {
+		if sw.ReleasedAt != nil {
+			releasedWS[sw.Id] = true
+		}
+	}
+	var wsList []*pb.Workspace
+	seenWS := map[string]bool{}
+	var cmdList []*pb.Command
+	for _, nv := range nvs {
+		nodeHosts[nv.node.Id] = nv.node.Hostname
+		for _, ws := range nv.workspaces {
+			if ws.State != pb.WorkspaceState_WORKSPACE_STATE_RELEASED && !releasedWS[ws.Id] && ws.SessionId == req.Id {
+				wsList = append(wsList, ws)
+				seenWS[ws.Id] = true
+			}
+		}
+		for _, c := range nv.commands {
+			if c.Kind != "freshen" && c.SessionId == req.Id {
+				cmdList = append(cmdList, c)
+			}
+		}
+	}
+	// A workspace just created may not be in its node's view yet: ask its
+	// worker directly without touching the session's idle timer.
+	for _, id := range sess.GetWorkspaceIds() {
+		if seenWS[id] {
+			continue
+		}
+		w, err := s.cfg.Store.Workspace(ctx, id)
+		if err != nil || w.released {
+			continue
+		}
+		c, _, err := s.worker(ctx, w.node)
+		if err != nil {
+			slog.Warn("get session workspace not in view", "workspace", id, "err", err)
+			continue
+		}
+		ws, err := c.GetWorkspace(ctx, &pb.GetWorkspaceRequest{Id: id})
+		if err != nil {
+			slog.Warn("get session workspace not in view", "workspace", id, "err", err)
+			continue
+		}
+		ws.NodeAddr = s.nodeAddr(ctx, w.node)
+		wsList = append(wsList, ws)
+	}
+	slices.SortFunc(wsList, func(a, b *pb.Workspace) int { return cmp.Compare(a.CreatedAt, b.CreatedAt) })
+	slices.SortFunc(cmdList, func(a, b *pb.Command) int { return strings.Compare(a.Id, b.Id) })
+	slices.SortStableFunc(cmdList, func(a, b *pb.Command) int { return cmp.Compare(a.QueuedAt, b.QueuedAt) })
+	return &pb.GetSessionResponse{
+		Session:            sess,
+		Workspaces:         wsList,
+		Commands:           cmdList,
+		Now:                s.now().UnixMilli(),
+		IdleTimeoutSeconds: int64(sessionIdle / time.Second),
+		NodeHosts:          nodeHosts,
+	}, nil
 }
 
 func (s *sessions) ListSessions(ctx context.Context, req *pb.ListSessionsRequest) (*pb.ListSessionsResponse, error) {
@@ -59,17 +134,8 @@ func (s *sessions) ListSessions(ctx context.Context, req *pb.ListSessionsRequest
 	if req.Ended {
 		since = s.now().Add(-24 * time.Hour)
 	}
-	all, err := s.cfg.Store.RecentSessions(ctx, since)
-	if err != nil {
-		return nil, err
-	}
-	out := &pb.ListSessionsResponse{}
-	for _, sess := range all {
-		if req.Project == "" || sess.Project == req.Project {
-			out.Sessions = append(out.Sessions, sess)
-		}
-	}
-	return out, nil
+	sessions, err := s.cfg.Store.RecentSessions(ctx, since, req.Project)
+	return &pb.ListSessionsResponse{Sessions: sessions}, err
 }
 
 func (s *sessions) EndSession(ctx context.Context, req *pb.EndSessionRequest) (*pb.Session, error) {

@@ -57,6 +57,7 @@ describe("toSnapshot", () => {
           name: "nightly",
           cron: "0 2 * * *",
           repo: "app",
+          project: "app",
           node: "ubu1",
           command: { args: ["sh", "-c", "echo it's late", "plain"], env: ["WHO=nightly"] },
           createdAt: 1795200000000n,
@@ -169,6 +170,7 @@ describe("toSnapshot", () => {
             reason: "the controller was down",
           },
         ],
+        project: "app",
       },
       {
         name: "soak",
@@ -182,6 +184,7 @@ describe("toSnapshot", () => {
         updatedAt: "1970-01-01T00:00:00.000Z",
         nextAt: null,
         runs: [],
+        project: null,
       },
     ]);
     expect(s.series.nAsahi).toEqual([{ t: 1795299995000, cpuBusy: 0.25, memoryUsed: 0.22, memoryPressure: 0 }]);

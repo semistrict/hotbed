@@ -104,7 +104,7 @@ func TestBenchRunsIsolated(t *testing.T) {
 		t.Fatalf("ps lists no measurement: %v", ls.Commands)
 	}
 	cmd := ls.Commands[i]
-	if cmd.State != okState || cmd.Timeline[1].What != "admitted" || cmd.Timeline[1].Detail != "measurement on CPUs 4-7 · low 0.0 GiB · high 0.0 GiB" {
+	if cmd.State != okState || cmd.Timeline[1].What != "admitted" || cmd.Timeline[1].Detail != "measurement on CPUs 4-7 · low none · high none" {
 		t.Errorf("the measurement is %v, timeline %v", cmd.State, cmd.Timeline)
 	}
 	spec, ok := c.nodes[0].units.Spec("hotbed-" + cmd.Id)

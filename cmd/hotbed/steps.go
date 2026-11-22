@@ -57,7 +57,7 @@ func (s stepScript) put(ctx context.Context, cl clients, repo, name, script stri
 }
 
 type stepAddCmd struct {
-	controllerFlag
+	controllerClient
 	sessionFlag
 	repoFlag
 	Name string `arg:"" help:"The step's name, such as playwright-browsers; a step of that name is replaced."`
@@ -120,7 +120,7 @@ func (c *stepAddCmd) Exec(ctx context.Context, d deps) (any, error) {
 }
 
 type stepSetCmd struct {
-	controllerFlag
+	controllerClient
 	repoFlag
 	Name string `arg:"" help:"The step's name; a step of that name is replaced."`
 	stepScript
@@ -145,7 +145,7 @@ func (c *stepSetCmd) Exec(ctx context.Context, d deps) (any, error) {
 }
 
 type stepLsCmd struct {
-	controllerFlag
+	controllerClient
 	repoFlag
 }
 
@@ -162,7 +162,7 @@ func (c *stepLsCmd) Exec(ctx context.Context, d deps) (any, error) {
 }
 
 type stepShowCmd struct {
-	controllerFlag
+	controllerClient
 	repoFlag
 	Name string `arg:"" help:"The step."`
 }
@@ -199,7 +199,7 @@ func (c *stepShowCmd) Exec(context.Context, deps) (any, error) {
 }
 
 type stepRmCmd struct {
-	controllerFlag
+	controllerClient
 	repoFlag
 	Name string `arg:"" help:"The step."`
 }

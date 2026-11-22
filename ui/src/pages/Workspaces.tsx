@@ -1,16 +1,17 @@
-import { Link } from "@tanstack/react-router";
-import type { Snapshot } from "../api";
-import { Columns } from "../components/charts/Columns";
-import { ForkTree } from "../components/charts/ForkTree";
-import { Card, StatTile } from "../components/ui/Card";
+import { Link, useNavigate, useSearch } from "@tanstack/react-router";
+import type { Snapshot, Workspace } from "../api";
+import { Card, Empty, StatTile } from "../components/ui/Card";
 import { nodeName } from "../lib/data";
 import { ago, bytes, compact, duration, quantile } from "../lib/format";
 import { isLive } from "../lib/live";
+import { filterWorkspaces } from "../lib/workspaces";
 import { useScopedSnapshot } from "../lib/project";
 import { PageTitle } from "./Nodes";
 import { stateTone } from "./Workspace";
 
 export function WorkspacesPage() {
+  const { repo, q } = useSearch({ from: "/workspaces" });
+  const navigate = useNavigate({ from: "/workspaces" });
   const { data: s } = useScopedSnapshot();
   if (!s) return null;
   const now = Date.parse(s.now);
@@ -19,6 +20,8 @@ export function WorkspacesPage() {
   const owned = live.reduce((n, w) => n + w.exclusiveBytes, 0);
   const shared = live.reduce((n, w) => n + w.sharedBytes, 0);
   const forkMs = live.map((w) => w.forkMillis);
+  const rows = filterWorkspaces(s.workspaces, { repo, q }, (id) => nodeName(s, id));
+  const r = s.repos.find((x) => x.id === repo);
 
   return (
     <div className="space-y-6">
@@ -32,87 +35,53 @@ export function WorkspacesPage() {
         <StatTile label="Warm bases" value={s.bases.filter((b) => b.state === "warm").length} foot={`${s.bases.filter((b) => b.state === "building").length} building`} />
       </div>
 
-      {s.repos.map((r, i) => {
-        const hosts = [...new Set(s.bases.filter((b) => b.repoId === r.id).map((b) => b.nodeId))];
-        const forks = live.filter((w) => w.repoId === r.id);
-        const lanes = hosts.map((id) => {
-          const n = s.nodes.find((x) => x.id === id);
-          return {
-            nodeId: id,
-            hostname: n?.hostname ?? id,
-            online: n?.online ?? false,
-            bases: s.bases.filter((b) => b.repoId === r.id && b.nodeId === id).sort((a, b) => a.generation - b.generation),
-            forks: forks.filter((w) => w.nodeId === id),
-          };
-        });
-        return (
-          <Card
-            key={r.id}
-            delay={i * 60}
-            title={
-              <span className="flex items-baseline gap-3">
-                <span className="display text-[24px] font-semibold">{r.id}</span>
-                <span className="font-mono text-[11px] font-normal text-faint">{r.name}</span>
-              </span>
-            }
-            sub={`${r.language} · ${r.units} ${r.language === "rust" ? "crates" : "packages"} · cold build ${duration(r.coldBuildSeconds)}`}
-            right={
-              <div className="flex gap-4 text-right font-mono text-[10.5px] text-muted-foreground">
-                <div>
-                  <div className="text-[15px] text-foreground">{forks.length}</div>forks
-                </div>
-                <div>
-                  <div className="text-[15px] text-foreground">{bytes(forks.reduce((n, w) => n + w.exclusiveBytes, 0))}</div>owned
-                </div>
-              </div>
-            }
-          >
-            <ForkTree lanes={lanes} now={now} activeIds={activeIds} />
-            <div className="mt-2 flex flex-wrap gap-4 font-mono text-[10px] text-faint">
-              <span className="flex items-center gap-1.5">
-                <span className="inline-block size-2.5 rounded-[3px] bg-primary" /> warm base
-              </span>
-              <span className="flex items-center gap-1.5">
-                <span className="inline-block size-2.5 rounded-[3px] border-2 border-faint" /> older base, kept for its forks
-              </span>
-              <span className="flex items-center gap-1.5">
-                <span className="inline-block size-2.5 rounded-full border-2 border-primary" /> building
-              </span>
-              <span className="flex items-center gap-1.5">
-                <span className="inline-block size-2.5 rounded-full bg-primary" /> fork running a command
-              </span>
-              <span className="flex items-center gap-1.5">
-                <span className="inline-block size-2.5 rounded-full border-2 border-sprout" /> idle fork
-              </span>
-            </div>
-          </Card>
-        );
-      })}
-
-      <div className="grid gap-4 lg:grid-cols-3">
-        <Card className="lg:col-span-2" title="All workspaces">
-          <WorkspaceTable s={s} now={now} />
-        </Card>
-        <Card title="Owned storage by repo" sub="What forks' builds rewrote">
-          <Columns
-            columns={s.repos.map((r) => ({ key: r.id, label: r.id, values: [live.filter((w) => w.repoId === r.id).reduce((n, w) => n + w.exclusiveBytes, 0) / 1024 ** 3] }))}
-            series={[{ id: "owned", label: "owned", color: "var(--series-2)" }]}
-            format={(v) => `${v.toFixed(0)} GiB`}
-          />
-        </Card>
+      <div className="rise flex flex-wrap items-center gap-2">
+        <RepoChip label="every repo" active={!repo} search={{ q }} count={live.length} />
+        {s.repos.map((x) => (
+          <RepoChip key={x.id} label={x.id} active={repo === x.id} search={{ repo: x.id, q }} count={live.filter((w) => w.repoId === x.id).length} />
+        ))}
+        <input
+          type="search"
+          value={q ?? ""}
+          onChange={(e) => navigate({ search: (p) => ({ ...p, q: e.target.value || undefined }), replace: true, resetScroll: false })}
+          placeholder="find a workspace, session, agent or node"
+          aria-label="Find a workspace"
+          className="ml-auto w-full rounded-full border border-border bg-background/40 px-3 py-1 font-mono text-[11px] text-foreground placeholder:text-faint focus:border-primary focus:outline-none sm:w-80"
+        />
       </div>
+
+      <Card
+        title={r ? r.name : "All workspaces"}
+        sub={r ? `${r.language} · ${r.units} ${r.language === "rust" ? "crates" : "packages"} · cold build ${duration(r.coldBuildSeconds)}` : "Live first, then released, by latest activity"}
+        right={<span className="font-mono text-[10.5px] text-muted-foreground">{rows.length} shown</span>}
+      >
+        <WorkspaceTable s={s} rows={rows} now={now} />
+      </Card>
     </div>
   );
 }
 
-function WorkspaceTable({ s, now }: { s: Snapshot; now: number }) {
-  const rows = [...s.workspaces].sort((a, b) => Number(a.state === "released") - Number(b.state === "released") || b.lastActiveAt.localeCompare(a.lastActiveAt));
+function RepoChip({ label, active, search, count }: { label: string; active: boolean; search: { repo?: string; q?: string }; count: number }) {
+  return (
+    <Link
+      to="/workspaces"
+      search={search}
+      resetScroll={false}
+      className={`rounded-full border px-3 py-1 font-mono text-[11px] ${active ? "border-primary bg-ember-wash text-foreground" : "border-border text-muted-foreground hover:border-border-strong"}`}
+    >
+      {label} <span className="text-faint">{count}</span>
+    </Link>
+  );
+}
+
+function WorkspaceTable({ s, rows, now }: { s: Snapshot; rows: Workspace[]; now: number }) {
+  if (rows.length === 0) return <Empty>No workspace matches.</Empty>;
   return (
     <div className="overflow-x-auto">
       <table className="w-full text-left text-[12px]">
         <thead className="eyebrow">
           <tr className="border-b border-border">
-            {["workspace", "agent", "repo", "node", "base", "files", "owns", "fork", "created", "active"].map((h) => (
+            {["workspace", "session", "agent", "repo", "node", "base", "files", "owns", "fork", "created", "active"].map((h) => (
               <th key={h} className="px-2 py-2 font-normal">
                 {h}
               </th>
@@ -130,6 +99,15 @@ function WorkspaceTable({ s, now }: { s: Snapshot; now: number }) {
                     {w.id}
                   </Link>
                   {w.state !== "active" && w.state !== "idle" && <span className={`ml-2 text-[9.5px] ${stateTone[w.state]}`}>{w.state}</span>}
+                </td>
+                <td className="px-2 py-2">
+                  {w.sessionId ? (
+                    <Link to="/sessions/$id" params={{ id: w.sessionId }} className="text-muted-foreground hover:text-primary">
+                      {w.sessionId}
+                    </Link>
+                  ) : (
+                    <span className="text-faint">—</span>
+                  )}
                 </td>
                 <td className="px-2 py-2 text-muted-foreground">{w.agent}</td>
                 <td className="px-2 py-2 text-muted-foreground">{w.repoId}</td>

@@ -68,6 +68,8 @@ type node struct {
 	// calls, as a stopped worker's port does, and refused counts them.
 	halted  atomic.Bool
 	refused atomic.Int64
+	// follows counts the streams of output clients opened to it.
+	follows atomic.Int64
 	cluster hotbedv1connect.ClusterServiceClient // the controller, as this worker
 	follow  *worker.Follow                       // how it follows the controller's build; nil for not
 	// reported is how its connection to the controller ended, each time.
@@ -146,6 +148,9 @@ func newFleetWith(t *testing.T, n int, opts clusterOpts) *cluster {
 				http.Error(w, "worker stopped", http.StatusServiceUnavailable)
 				return
 			}
+			if strings.HasSuffix(r.URL.Path, "/FollowLog") {
+				nd.follows.Add(1)
+			}
 			(*nd.handler.Load()).ServeHTTP(w, r)
 		}))
 		t.Cleanup(nd.srv.Close)
@@ -188,17 +193,17 @@ func newFleetWith(t *testing.T, n int, opts clusterOpts) *cluster {
 	}
 	c.asWorker, c.reported = c.nodes[0].cluster, c.nodes[0].reported
 
-	t.Setenv("HOTBED_CONTROLLER", ctrl)
 	// Sessions start in the tests' project unless a test names another.
 	if _, err := store.AddProject(t.Context(), "test", nil, time.Now()); err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv("HOTBED_PROJECT", "test")
 	c.cli = deps{
+		controller: at(ctrl),
 		// The CLI runs on the laptop: its tailnet says so, and its calls
 		// come from the laptop.
 		tailnet: tailnettest.New(tailnet.Self{Peer: laptop}),
-		http:    tn.Client(laptop), stream: tn.Client(laptop), cache: t.TempDir(),
+		http:    recording(tn.Client(laptop)), stream: recording(tn.Client(laptop)), cache: t.TempDir(),
 		sessionsFile: filepath.Join(t.TempDir(), "sessions.json"),
 		exe:          func() (string, error) { return "", errors.New("the tests' client has no binary to upgrade") },
 		reexec:       func(...string) error { return errors.New("the tests' client runs nothing") },

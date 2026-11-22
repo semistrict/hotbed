@@ -1,6 +1,6 @@
 ---
 name: hotbed
-description: Run builds, tests and dev servers on a hotbed cluster instead of this machine, in workspaces forked from a repo's already-built main, so a change compiles incrementally. Use when HOTBED_CONTROLLER is set or the hotbed CLI is installed and work needs compiling, testing or serving, especially Rust.
+description: Run builds, tests and dev servers on a hotbed cluster instead of this machine, in workspaces forked from a repo's already-built main, so a change compiles incrementally. Use when the hotbed CLI is installed and work needs compiling, testing or serving, especially Rust.
 license: Apache-2.0
 ---
 
@@ -87,6 +87,7 @@ hotbed question add <<'EOF'
               {"label": "Postgres", "description": "A server to run"}]}]}
 EOF
 hotbed question wait 12          # up to two minutes; or keep working and let hotbed wait tell you
+                                 # (no IDs: any of this session's questions; --project-wide: any)
 hotbed question outbox           # answers waiting for an agent
 hotbed question ack 12           # you read it and acted on it: it is handled
 ```
@@ -102,7 +103,11 @@ hotbed question ack 12           # you read it and acted on it: it is handled
   whole history, each change with its session and time.
 - A question records where you asked from (checkout, branch, commit, changed files) and, if the
   project holds your checkout's repo, that it is about that repo (`--repo REMOTE` names another).
-- Never answer a question yourself (`question answer`) unless the user told you the answer.
+- A session changes only its own project's questions (edit, rm, ack).
+- Never answer a question yourself unless the user told you the answer: then pass it on with
+  `question answer ID --pick LABEL [--other TEXT] [--notes TEXT] -s SESSION`, or `question dismiss
+  ID --reason WHY`. `question move ID --first|--last|--before ID` reorders the user's list.
+  `question projects` counts every project's open and outbox questions.
 
 ## Keeping a session alive
 
@@ -185,15 +190,23 @@ hotbed schedule run cladefs-nightly         # a run now; prints its session, for
 
 | Command | Does |
 |---|---|
+| `hotbed session status` | Active session state, idle time, workspaces, and commands |
 | `hotbed session current` | Active session and where it came from (`flag`, `env`, `thread`, `worktree`) |
 | `hotbed session ls` | The project's live sessions (`--ended`, `--all-projects`) |
 | `hotbed project ls` | Projects, their repos, live sessions and questions |
+| `hotbed schedule add ... -p PROJECT` | A schedule's runs work on its project (default: the one holding its repo) |
 | `hotbed ps` | The session's commands, live and just ended |
-| `hotbed logs CMD [-f]` | A command's output; `-f` follows until it ends |
+| `hotbed logs CMD [-f \| -n N]` | A command's output; `-f` follows until it ends, `-n N` its last N lines |
 | `hotbed stop CMD` | Stops a command |
+| `hotbed workspace ls [--all]` | The session's workspaces (`--all`: every session's) |
+| `hotbed workspace show` | The session's workspace of a repo, as its worker has it now |
+| `hotbed workspace files` | Its files, each `added`/`modified` against the base or unchanged |
+| `hotbed workspace file PATH` | A file's text and the lines it changed against the base |
+| `hotbed workspace release` | Gives the workspace up; the session goes on, and `hotbed add` gives it a new one |
 | `hotbed repo ls` | Repos and their setup steps |
 | `hotbed step ls` | A repo's steps and which each node's newest base ran |
 | `hotbed nodes` | The cluster's machines, and the build each runs |
+| `hotbed snapshot` | Everything the cockpit shows, as JSON |
 | `hotbed upgrade` | Install the controller's build over this hotbed (a CI build does it by itself) |
 
 ## Output

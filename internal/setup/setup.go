@@ -190,6 +190,30 @@ func ResolveDir(dir string) (string, error) {
 	return filepath.Abs(dir)
 }
 
+// JoinedController is the controller `hotbed worker init` joined this
+// machine's worker to, as it recorded it in dir (default ~/.hotbed): what
+// client commands call. It is "" when no worker was set up there.
+func JoinedController(dir string) (string, error) {
+	baseDir, err := ResolveDir(dir)
+	if err != nil {
+		return "", err
+	}
+	path := workerRecord(baseDir)
+	if path == "" {
+		return "", nil
+	}
+	var rec struct {
+		Controller string `json:"controller"`
+	}
+	if err := readJSON(path, &rec); err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return "", nil
+		}
+		return "", fmt.Errorf("read %s: %w", path, err)
+	}
+	return rec.Controller, nil
+}
+
 // ParseBytes parses human-readable byte sizes such as "256G", "8GiB", "4096M",
 // or "1T". Bare numbers are bytes.
 func ParseBytes(s string) (int64, error) {

@@ -28,9 +28,11 @@ type deps struct {
 	// http calls the API; stream reads output, which has no deadline.
 	http, stream *http.Client
 	check        worker.Check
-	stdin        io.Reader
-	stdout       io.Writer
-	stderr       io.Writer
+	// controller is the controller client commands call (localController).
+	controller func() (string, error)
+	stdin      io.Reader
+	stdout     io.Writer
+	stderr     io.Writer
 	// cache keeps per-session cursors for hotbed wait.
 	cache string
 	// sessionsFile maps T3CODE_THREAD_ID / git worktree roots to default sessions
@@ -77,29 +79,31 @@ Run builds, tests and dev servers on a cluster of Linux machines on your
 tailnet, each in a fork of a repo whose main is already built.`
 
 type cli struct {
-	Session  sessionCmd  `cmd:"" help:"Start or end a session; everything an agent runs belongs to one."`
-	Add      addCmd      `cmd:"" help:"Give a session its workspace of a repo: a fork of the repo's built main."`
-	Run      runCmd      `cmd:"" help:"Run a command in a session's workspace (syncing first if it follows a checkout)."`
-	Sync     syncCmd     `cmd:"" help:"Send a checkout's state, uncommitted changes too, to a session's workspace."`
-	Wait     waitCmd     `cmd:"" help:"Wait (up to two minutes) for something to happen to a session's commands."`
-	Ps       psCmd       `cmd:"" help:"List a session's commands."`
-	Logs     logsCmd     `cmd:"" help:"Print a command's output."`
-	Stop     stopCmd     `cmd:"" help:"Stop a command."`
-	Project  projectCmd  `cmd:"" help:"Projects: what sessions work on and questions are about, each one or more repos (add, ls)."`
-	Repo     repoCmd     `cmd:"" help:"Repos the cluster keeps built bases of (add, ls, rm, rebuild)."`
-	Step     stepCmd     `cmd:"" help:"A repo's setup steps: what brings its bases up to date (add, set, ls, show, rm)."`
-	Schedule scheduleCmd `cmd:"" help:"Scheduled commands: recurring work the cluster runs by itself, each run a session of its own (add, ls, show, rm, run, pause, resume)."`
-	Question questionCmd `cmd:"" help:"Questions for the user, one list per project that its sessions share: ask, and read the answers when they come (add, ls, show, edit, rm, outbox, ack, wait, answer, dismiss, move)."`
-	Nodes    nodesCmd    `cmd:"" help:"List the cluster's workers."`
-	UI       uiCmd       `cmd:"" help:"Open the controller's cockpit UI in the default browser."`
-	Init     initCmd     `cmd:"" help:"Create a cluster with this machine as its controller."`
-	Join     joinCmd     `cmd:"" help:"Join this machine to a cluster as a worker (as root)."`
-	Worker   workerCmd   `cmd:"" help:"Initialize and manage a worker node on this machine in ~/.hotbed (init, status, start, stop, trim, ssh, destroy)."`
-	Serve    serveCmd    `cmd:"" help:"Run the controller or worker whose state is in DIR, until stopped."`
-	Skills   skillsCmd   `cmd:"" help:"Guides for AI agents, compiled into this binary (list, get, install)."`
-	Version  versionCmd  `cmd:"" help:"Show hotbed's version, OS and architecture."`
-	Upgrade  upgradeCmd  `cmd:"" help:"Install the controller's build over this hotbed (a client on a CI build does it by itself)."`
-	Admin    adminCmd    `cmd:"" help:"Cluster administration (upgrade)."`
+	Session   sessionCmd   `cmd:"" help:"Start or end a session; everything an agent runs belongs to one."`
+	Add       addCmd       `cmd:"" help:"Give a session its workspace of a repo: a fork of the repo's built main."`
+	Run       runCmd       `cmd:"" help:"Run a command in a session's workspace (syncing first if it follows a checkout)."`
+	Sync      syncCmd      `cmd:"" help:"Send a checkout's state, uncommitted changes too, to a session's workspace."`
+	Wait      waitCmd      `cmd:"" help:"Wait (up to two minutes) for something to happen to a session's commands."`
+	Ps        psCmd        `cmd:"" help:"List a session's commands."`
+	Logs      logsCmd      `cmd:"" help:"Print a command's output (all of it, its last lines, or until it ends)."`
+	Stop      stopCmd      `cmd:"" help:"Stop a command."`
+	Workspace workspaceCmd `cmd:"" help:"A session's workspaces (ls, show, files, file, release); hotbed add gives it one."`
+	Project   projectCmd   `cmd:"" help:"Projects: what sessions work on and questions are about, each one or more repos (add, ls)."`
+	Repo      repoCmd      `cmd:"" help:"Repos the cluster keeps built bases of (add, ls, rm, rebuild)."`
+	Step      stepCmd      `cmd:"" help:"A repo's setup steps: what brings its bases up to date (add, set, ls, show, rm)."`
+	Schedule  scheduleCmd  `cmd:"" help:"Scheduled commands: recurring work the cluster runs by itself, each run a session of its own (add, ls, show, rm, run, pause, resume)."`
+	Question  questionCmd  `cmd:"" help:"Questions for the user, one list per project that its sessions share: ask, and read the answers when they come (add, ls, show, edit, rm, outbox, ack, wait, answer, dismiss, move, projects)."`
+	Nodes     nodesCmd     `cmd:"" help:"List the cluster's workers."`
+	Snapshot  snapshotCmd  `cmd:"" help:"Everything the cockpit shows: nodes, repos, bases, workspaces, commands, sessions, schedules, events and history."`
+	UI        uiCmd        `cmd:"" help:"Open the controller's cockpit UI in the default browser."`
+	Init      initCmd      `cmd:"" help:"Create a cluster with this machine as its controller."`
+	Join      joinCmd      `cmd:"" help:"Join this machine to a cluster as a worker (as root)."`
+	Worker    workerCmd    `cmd:"" help:"Initialize and manage a worker node on this machine in ~/.hotbed (init, status, start, stop, trim, ssh, destroy)."`
+	Serve     serveCmd     `cmd:"" help:"Run the controller or worker whose state is in DIR, until stopped."`
+	Skills    skillsCmd    `cmd:"" help:"Guides for AI agents, compiled into this binary (list, get, install)."`
+	Version   versionCmd   `cmd:"" help:"Show hotbed's version, OS and architecture."`
+	Upgrade   upgradeCmd   `cmd:"" help:"Install the controller's build over this hotbed (a client on a CI build does it by itself)."`
+	Admin     adminCmd     `cmd:"" help:"Cluster administration (upgrade)."`
 }
 
 // exited is how parse learns that kong finished the run itself, as it does

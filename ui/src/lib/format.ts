@@ -11,6 +11,16 @@ export function bytes(n: number): string {
   return `${Math.round(n)} B`;
 }
 
+/** A cgroup memory limit, where 0 sets none: "none", "4 GiB". */
+export function limit(n: number): string {
+  return n === 0 ? "none" : bytes(n);
+}
+
+/** A commit as people quote it: its first 10 hex digits. */
+export function shortSha(sha: string): string {
+  return sha.slice(0, 10);
+}
+
 /** 840 ms, 14.2 s, 6m 10s, 3h 12m, 41h 12m. */
 export function duration(seconds: number): string {
   if (!Number.isFinite(seconds) || seconds < 0) return "—";

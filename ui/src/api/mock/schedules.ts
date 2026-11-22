@@ -30,6 +30,7 @@ export function mockSchedules(now: number): ScheduledCommand[] {
       updatedAt: new Date(lastSlot - 3 * DAY).toISOString(),
       nextAt: new Date(lastSlot + DAY).toISOString(),
       runs,
+      project: "cladefs",
     },
     {
       name: "ratel-soak",
@@ -43,6 +44,7 @@ export function mockSchedules(now: number): ScheduledCommand[] {
       updatedAt: new Date(lastSlot - 2 * DAY).toISOString(),
       nextAt: null,
       runs: [],
+      project: "ratel",
     },
   ];
 }

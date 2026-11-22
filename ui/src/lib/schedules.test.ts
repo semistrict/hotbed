@@ -5,7 +5,7 @@ import { nextRun } from "./schedules";
 function schedule(name: string, nextAt: string | null): ScheduledCommand {
   return {
     name, cron: "0 2 * * *", repoId: "cladefs", node: "ubu1", argv: "scripts/nightly-host.sh", env: [], paused: nextAt === null,
-    createdAt: "2026-11-01T00:00:00Z", updatedAt: "2026-11-01T00:00:00Z", nextAt, runs: [],
+    createdAt: "2026-11-01T00:00:00Z", updatedAt: "2026-11-01T00:00:00Z", nextAt, runs: [], project: null,
   };
 }
 

@@ -52,7 +52,17 @@ func hotbed(t *testing.T, d deps, args ...string) (int, output) {
 
 func fakeDeps() deps {
 	tn := tailnettest.New(ubu1)
-	return deps{tailnet: tn, http: tn.Client(laptop), stream: tn.Client(laptop), check: worker.CheckMachine}
+	return deps{tailnet: tn, http: recording(tn.Client(laptop)), stream: recording(tn.Client(laptop)), check: worker.CheckMachine, controller: noController}
+}
+
+// at is a machine whose controller is addr.
+func at(addr string) func() (string, error) {
+	return func() (string, error) { return addr, nil }
+}
+
+// noController is a machine no worker init ran on.
+func noController() (string, error) {
+	return "", api.Errorf(api.CodeNotInitialized, "this machine has no controller")
 }
 
 func TestInitPrintsSuccessEnvelope(t *testing.T) {
@@ -183,7 +193,8 @@ func TestNodesAgainstRunningController(t *testing.T) {
 		}
 	}()
 
-	code, out := hotbed(t, d, "nodes", "--controller", c.Addrs()[0].String())
+	d.controller = at(c.Addrs()[0].String())
+	code, out := hotbed(t, d, "nodes")
 	if code != exitOK {
 		t.Fatalf("nodes: exit %d, %+v", code, out.Error)
 	}

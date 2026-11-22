@@ -26,8 +26,8 @@ sudo hotbed serve /var/lib/hotbed
 #   --zfs-dataset pool/hotbed     where zfs volumes go (default <pool>/hotbed)
 #   --unit-property DeviceAllow=/dev/kvm  grant what builds need, repeatable
 
-# Repos, from anywhere on the tailnet:
-export HOTBED_CONTROLLER=ubu1
+# Client commands call the controller worker init joined this machine to; no flag names it.
+# On a machine that is no worker, set HOTBED_CONTROLLER=ubu1 instead.
 hotbed repo add ratel https://github.com/you/ratel
 hotbed step set -r ratel build --every-pull -- 'cargo build --all-targets && cargo nextest run --no-run'
 hotbed repo ls

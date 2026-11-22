@@ -60,3 +60,14 @@ export const TAB_STATES: Record<QuestionTab, QuestionState[]> = {
 export function shortHead(head: string): string {
   return head.slice(0, 8);
 }
+
+/**
+ * Where a question dragged onto another goes, counted among the others: just
+ * before the target, or just after it. Undefined for a drop on itself, which
+ * moves nothing.
+ */
+export function dropAt(order: number[], dragged: number, target: number, after: boolean): number | undefined {
+  if (dragged === target) return undefined;
+  const at = order.filter((id) => id !== dragged).indexOf(target);
+  return at < 0 ? undefined : at + (after ? 1 : 0);
+}

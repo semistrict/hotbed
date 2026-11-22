@@ -24,7 +24,7 @@ import (
 // runs.
 
 type upgradeCmd struct {
-	controllerFlag
+	controllerClient
 }
 
 type upgradeResult struct {
@@ -56,7 +56,7 @@ type adminCmd struct {
 }
 
 type adminUpgradeCmd struct {
-	controllerFlag
+	controllerClient
 }
 
 type adminUpgradeResult struct {
@@ -170,7 +170,7 @@ func followController(ctx context.Context, d deps, addr string, seen int64) {
 	if d.build == 0 || seen == 0 || seen == d.build {
 		return
 	}
-	cl, err := controllerFlag{Controller: addr}.clients(d.http)
+	cl, err := controllerClient{Controller: addr}.clients(d.http)
 	if err == nil {
 		var b *pb.Build
 		if b, err = cl.cluster.GetBuild(ctx, &pb.GetBuildRequest{Os: runtime.GOOS, Arch: runtime.GOARCH}); err == nil {

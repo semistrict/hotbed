@@ -38,7 +38,9 @@ export function scope(s: Snapshot, name: string | null): Snapshot {
     workspaces,
     commands,
     history,
-    schedules: s.schedules.filter((sc) => repos.has(sc.repoId)),
+    // A schedule's runs are in its project; one from before schedules had
+    // one, in its repo's.
+    schedules: s.schedules.filter((sc) => (sc.project !== null ? sc.project === project.name : repos.has(sc.repoId))),
     events: s.events.filter((e) => e.ref !== null && (e.ref.type === "command" ? commandIds.has(e.ref.id) : e.ref.type === "workspace" && workspaceIds.has(e.ref.id))),
     openQuestions: project.openQuestions,
   };

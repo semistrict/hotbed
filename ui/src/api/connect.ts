@@ -253,6 +253,7 @@ function toScheduled(sc: PbScheduled): ScheduledCommand {
     updatedAt: iso(sc.updatedAt),
     nextAt: isoOrNull(sc.nextAt),
     runs: sc.runs.map(toRun),
+    project: orNull(sc.project),
   };
 }
 

@@ -1,4 +1,4 @@
-import { keepPreviousData, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { keepPreviousData, useIsMutating, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useNavigate, useSearch } from "@tanstack/react-router";
 import { useState, type DragEvent } from "react";
 import { api, type Answer, type Question, type QuestionList, type QuestionOrder, type Snapshot, type Stamp } from "../api";
@@ -8,7 +8,7 @@ import { ProjectTag } from "../components/ProjectTag";
 import { useProject, useScopedSnapshot } from "../lib/project";
 import { remoteName } from "../lib/projects";
 import { ago } from "../lib/format";
-import { answerReady, pick, placement, reorder, responseLine, shortHead, TAB_STATES, who, type QuestionTab } from "../lib/questions";
+import { answerReady, dropAt, pick, placement, reorder, responseLine, shortHead, TAB_STATES, who, type QuestionTab } from "../lib/questions";
 import { PageTitle } from "./Nodes";
 
 export interface QuestionsSearch {
@@ -45,7 +45,9 @@ function Questions({ s }: { s: Snapshot }) {
   const sort = search.sort ?? (tab === "inbox" ? "rank" : "newest");
   const [project] = useProject();
   const key = ["questions", project, tab, sort] as const;
-  const list = useQuery({ queryKey: key, queryFn: () => api.questions({ project, states: TAB_STATES[tab], order: sort }), refetchInterval: 2000, placeholderData: keepPreviousData });
+  // No refresh while a move is on its way: one landing first would show the old order again.
+  const moving = useIsMutating({ mutationKey: MOVE }) > 0;
+  const list = useQuery({ queryKey: key, queryFn: () => api.questions({ project, states: TAB_STATES[tab], order: sort }), refetchInterval: moving ? false : 2000, placeholderData: keepPreviousData });
   const outbox = useQuery({ queryKey: ["questions", project, "outbox", "count"], queryFn: () => api.questions({ project, states: TAB_STATES.outbox }), refetchInterval: 2000 });
   const now = Date.parse(s.now);
   const movable = tab === "inbox" && sort === "rank";
@@ -104,10 +106,13 @@ function Questions({ s }: { s: Snapshot }) {
   );
 }
 
+const MOVE = ["move-question"];
+
 /** Moves a question, showing it in its new place at once and putting it back if the controller refuses. */
 function useMove(key: readonly unknown[]) {
   const qc = useQueryClient();
   return useMutation({
+    mutationKey: MOVE,
     mutationFn: ({ id, before }: { id: number; before: number | null }) => api.moveQuestion(id, before),
     onMutate: async ({ id, before }) => {
       await qc.cancelQueries({ queryKey: key });
@@ -132,17 +137,16 @@ function QuestionList({ s, questions, now, movable, onMove }: { s: Snapshot; que
     if (p) onMove(id, p.before);
   };
   const over = (e: DragEvent, id: number) => {
-    if (dragged === null) return;
+    // Not a drop target for itself: letting go where it started moves nothing.
+    if (dragged === null || dragged === id) return;
     e.preventDefault();
     const box = e.currentTarget.getBoundingClientRect();
     setDrop({ id, after: e.clientY > box.top + box.height / 2 });
   };
   const dropped = (e: DragEvent) => {
     e.preventDefault();
-    if (dragged !== null && drop) {
-      const others = order.filter((x) => x !== dragged);
-      moveTo(dragged, others.indexOf(drop.id) + (drop.after ? 1 : 0));
-    }
+    const to = dragged !== null && drop ? dropAt(order, dragged, drop.id, drop.after) : undefined;
+    if (dragged !== null && to !== undefined) moveTo(dragged, to);
     setDragged(null);
     setDrop(null);
   };

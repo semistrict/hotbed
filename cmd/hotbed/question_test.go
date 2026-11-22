@@ -1,12 +1,14 @@
 package main
 
 import (
-	"os"
+	"encoding/json"
 	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
 	"time"
+
+	"google.golang.org/protobuf/encoding/protojson"
 
 	"github.com/semistrict/hotbed/internal/api"
 	pb "github.com/semistrict/hotbed/internal/gen/hotbed/v1"
@@ -47,7 +49,11 @@ func questionCluster(t *testing.T) (*cluster, hotbedv1connect.QuestionServiceCli
 	c := newCluster(t)
 	c.ok(nil, "session", "start", "brave-otter")
 	c.ok(nil, "session", "start", "calm-heron")
-	conn, err := api.Dial(os.Getenv("HOTBED_CONTROLLER"), api.DefaultPort, c.cli.http)
+	addr, err := c.cli.controller()
+	if err != nil {
+		t.Fatal(err)
+	}
+	conn, err := api.Dial(addr, api.DefaultPort, c.cli.http)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -267,7 +273,7 @@ func TestAgentPassesOnAnAnswer(t *testing.T) {
 // of the list unless asked for, and keeps its history. The user may
 // dismiss a question, which sends it to the outbox unanswered.
 func TestQuestionsAreEditedDeletedAndDismissed(t *testing.T) {
-	c, user := questionCluster(t)
+	c, _ := questionCluster(t)
 	c.ask("brave-otter", twoQuestions)
 
 	edited := &pb.Question{}
@@ -298,8 +304,10 @@ func TestQuestionsAreEditedDeletedAndDismissed(t *testing.T) {
 		t.Errorf("edit a deleted question = %v, want CONFLICT", e)
 	}
 
-	if _, err := user.DismissQuestion(t.Context(), &pb.DismissQuestionRequest{Id: 1, Reason: "ask me after the release"}); err != nil {
-		t.Fatal(err)
+	dismissed := &pb.Question{}
+	c.ok(dismissed, "question", "dismiss", "1", "--reason", "ask me after the release")
+	if dismissed.Dismissed.Session != "" || dismissed.Dismissed.Host != "laptop" {
+		t.Errorf("dismissed by %v, want the user on laptop", dismissed.Dismissed)
 	}
 	outbox := &pb.ListQuestionsResponse{}
 	c.ok(outbox, "question", "outbox")
@@ -383,22 +391,37 @@ func TestWaitForAnAnswer(t *testing.T) {
 		t.Fatalf("wait that timed out = %v, want question 1 still open", res.Questions)
 	}
 
-	done := make(chan *pb.ListQuestionsResponse, 2)
+	// Each wait reports its output, whatever it was: a failing call in a
+	// goroutine must fail the test, not leave it waiting.
+	type waited struct {
+		args   []string
+		code   int
+		stdout string
+	}
+	done := make(chan waited, 2)
 	start := time.Now()
-	for _, args := range [][]string{{"question", "wait", "1"}, {"question", "wait"}} {
+	for _, args := range [][]string{{"question", "wait", "1"}, {"question", "wait", "-s", "brave-otter"}} {
 		go func() {
-			res := &pb.ListQuestionsResponse{}
-			c.ok(res, args...)
-			done <- res
+			code, stdout, _ := c.hotbed(args...)
+			done <- waited{args, code, stdout}
 		}()
 	}
 	if _, err := user.AnswerQuestion(t.Context(), &pb.AnswerQuestionRequest{Id: 1, Answer: &pb.Answer{Picked: []string{"Postgres"}}}); err != nil {
 		t.Fatal(err)
 	}
 	for range 2 {
-		res := <-done
+		w := <-done
+		var out output
+		res := &pb.ListQuestionsResponse{}
+		if err := json.Unmarshal([]byte(w.stdout), &out); err != nil || w.code != 0 || !out.OK {
+			t.Errorf("hotbed %v: exit %d, %s", w.args, w.code, w.stdout)
+			continue
+		}
+		if err := protojson.Unmarshal(out.Data, res); err != nil {
+			t.Fatal(err)
+		}
 		if len(res.Questions) != 1 || res.Questions[0].State != pb.QuestionState_QUESTION_STATE_ANSWERED {
-			t.Errorf("wait = %v, want question 1 answered", res.Questions)
+			t.Errorf("hotbed %v = %v, want question 1 answered", w.args, res.Questions)
 		}
 	}
 	if took := time.Since(start); took > 30*time.Second {
@@ -499,7 +522,7 @@ func TestQuestionsBelongToAProject(t *testing.T) {
 	if len(outbox.Questions) != 0 {
 		t.Errorf("test's outbox = %v, want nothing: the answer is other's", ids(outbox.Questions))
 	}
-	c.ok(outbox, "question", "wait", "-p", "other", "--timeout", "5")
+	c.ok(outbox, "question", "wait", "--project-wide", "-p", "other", "--timeout", "5")
 	if !slices.Equal(ids(outbox.Questions), []int32{2}) {
 		t.Errorf("wait -p other = %v", ids(outbox.Questions))
 	}
@@ -508,5 +531,95 @@ func TestQuestionsBelongToAProject(t *testing.T) {
 	if got := projects.Projects; len(got) != 2 || got[0].Name != "other" || got[0].Outbox != 1 || got[0].Open != 0 ||
 		got[1].Name != "test" || got[1].Open != 1 || got[1].Total != 1 {
 		t.Errorf("question projects = %v", got)
+	}
+}
+
+// hotbed question wait, naming no questions, waits for an answer to one of
+// the session's own: an answer another session leaves unacked in the outbox
+// does not end it. --project-wide waits for any.
+func TestWaitForOwnAnswers(t *testing.T) {
+	c, user := questionCluster(t)
+	c.ask("brave-otter", storeQuestion)
+	c.ask("calm-heron", storeQuestion)
+	if _, err := user.AnswerQuestion(t.Context(), &pb.AnswerQuestionRequest{Id: 2, Answer: &pb.Answer{Other: "yes"}}); err != nil {
+		t.Fatal(err)
+	}
+	res := &pb.ListQuestionsResponse{}
+	c.ok(res, "question", "wait", "-s", "brave-otter", "--timeout", "1")
+	if len(res.Questions) != 0 {
+		t.Errorf("brave-otter's wait = %v, want nothing: the answer is to calm-heron's question", ids(res.Questions))
+	}
+	c.ok(res, "question", "wait", "-s", "calm-heron", "--timeout", "1")
+	if !slices.Equal(ids(res.Questions), []int32{2}) {
+		t.Errorf("calm-heron's wait = %v, want its answered question", ids(res.Questions))
+	}
+	c.ok(res, "question", "wait", "-s", "brave-otter", "--project-wide", "--timeout", "1")
+	if !slices.Equal(ids(res.Questions), []int32{2}) {
+		t.Errorf("wait --project-wide = %v, want the project's outbox", ids(res.Questions))
+	}
+}
+
+// A change the user makes is the user's: a session merely bound here, even
+// one long ended, is not recorded, and does not stop it. A session named
+// with -s is recorded, and must be live.
+func TestUserChangesIgnoreABoundSession(t *testing.T) {
+	c, _ := questionCluster(t)
+	c.ask("brave-otter", storeQuestion)
+	t.Setenv("T3CODE_THREAD_ID", "thread-old")
+	c.ok(nil, "session", "start", "old-owl")
+	c.ok(nil, "session", "end", "-s", "old-owl")
+
+	q := &pb.Question{}
+	c.ok(q, "question", "answer", "1", "--pick", "Postgres")
+	if q.Answered.Session != "" {
+		t.Errorf("answered as %q, want the user", q.Answered.Session)
+	}
+	c.ask("brave-otter", storeQuestion)
+	if _, e := c.fails("question", "dismiss", "2", "-s", "old-owl"); e.Code != api.CodeNotFound || !strings.Contains(e.Message, "ended") {
+		t.Errorf("dismiss -s of an ended session = %v, want NOT_FOUND", e)
+	}
+}
+
+// A session changes only its own project's questions: their list is what
+// its project's sessions read.
+func TestAgentsChangeOnlyTheirProjectsQuestions(t *testing.T) {
+	c, user := questionCluster(t)
+	c.ok(nil, "project", "add", "other")
+	c.ok(nil, "session", "start", "far-fox", "-p", "other")
+	c.ask("brave-otter", storeQuestion)
+	if _, err := user.AnswerQuestion(t.Context(), &pb.AnswerQuestionRequest{Id: 1, Answer: &pb.Answer{Other: "yes"}}); err != nil {
+		t.Fatal(err)
+	}
+	c.ask("brave-otter", storeQuestion)
+	for _, args := range [][]string{
+		{"question", "ack", "-s", "far-fox", "1"},
+		{"question", "rm", "-s", "far-fox", "2"},
+	} {
+		if _, e := c.fails(args...); e.Code != api.CodeConflict || !strings.Contains(e.Message, "is project test's; session far-fox works on other") {
+			t.Errorf("%v = %v, want CONFLICT", args, e)
+		}
+	}
+	if _, e := c.failsIn(storeQuestion, "question", "edit", "-s", "far-fox", "2"); e.Code != api.CodeConflict {
+		t.Errorf("edit another project's question = %v, want CONFLICT", e)
+	}
+	if got := whats(c.question("1")); !slices.Equal(got, []string{"asked by brave-otter", "answered by user"}) {
+		t.Errorf("refused changes left history %v", got)
+	}
+}
+
+// move --first puts a question first in its own project's list.
+func TestMoveFirstWithinItsProject(t *testing.T) {
+	c, _ := questionCluster(t)
+	c.ok(nil, "project", "add", "other")
+	c.ok(nil, "session", "start", "far-fox", "-p", "other")
+	c.ask("brave-otter", storeQuestion) // 1, test
+	c.ask("brave-otter", storeQuestion) // 2, test
+	c.ask("far-fox", storeQuestion)     // 3, other: first of every project's
+	c.ok(nil, "question", "move", "1", "--first")
+	if got := c.listed("--sort", "rank"); !slices.Equal(got, []int32{1, 2}) {
+		t.Errorf("test's order after move 1 --first = %v", got)
+	}
+	if got := c.listed("--all-projects", "--sort", "rank"); !slices.Equal(got, []int32{3, 1, 2}) {
+		t.Errorf("every project's order = %v: moving within test should leave 3 where it was", got)
 	}
 }

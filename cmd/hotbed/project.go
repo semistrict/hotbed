@@ -23,7 +23,7 @@ type projectFlag struct {
 }
 
 type projectAddCmd struct {
-	controllerFlag
+	controllerClient
 	Name string   `arg:"" help:"Lowercase letters, digits and dashes."`
 	Repo []string `help:"A git remote it holds, in any form (git@github.com:o/r.git, https://github.com/o/r, github.com/o/r). Repeatable."`
 }
@@ -37,7 +37,7 @@ func (c *projectAddCmd) Exec(ctx context.Context, d deps) (any, error) {
 }
 
 type projectLsCmd struct {
-	controllerFlag
+	controllerClient
 }
 
 func (c *projectLsCmd) Exec(ctx context.Context, d deps) (any, error) {
@@ -76,11 +76,12 @@ func (f projectFlag) listed(ctx context.Context, d deps, cl clients, session ses
 		return "", api.Errorf(api.CodeInvalidArgs, "say which project: no session is named or bound here to take it from").
 			WithSuggestion("pass -p PROJECT, --all-projects, or -s SESSION")
 	}
-	sess, err := cl.sessions.GetSession(ctx, &pb.GetSessionRequest{Id: id})
+	res, err := cl.sessions.GetSession(ctx, &pb.GetSessionRequest{Id: id})
 	if err != nil {
 		return "", err
 	}
-	if sess.Project == "" {
+	sess := res.Session
+	if sess.GetProject() == "" {
 		return "", api.Errorf(api.CodeInvalidArgs, "session %s has no project", id).WithSuggestion("pass -p PROJECT or --all-projects")
 	}
 	return sess.Project, nil

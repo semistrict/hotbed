@@ -138,3 +138,38 @@ func sessionIDs(res *pb.ListSessionsResponse) []string {
 	}
 	return out
 }
+
+// A repo's own project takes a name made of its remote's last part, and a
+// project of that name that holds no repo yet takes the repo in. A session
+// whose name is taken makes no project.
+func TestRepoProjectNames(t *testing.T) {
+	c := newCluster(t)
+	t.Setenv("HOTBED_PROJECT", "")
+	t.Setenv("HOTBED_SESSION", "")
+	t.Setenv("T3CODE_THREAD_ID", "")
+
+	checkout(t, "https://github.com/vercel/Next.js.git")
+	sess := &pb.Session{}
+	c.ok(sess, "session", "start", "next-one")
+	if sess.Project != "next-js" {
+		t.Errorf("session in vercel/Next.js: project %q, want next-js", sess.Project)
+	}
+
+	c.ok(nil, "project", "add", "app")
+	checkout(t, "git@github.com:o/app.git")
+	c.ok(sess, "session", "start", "app-one")
+	ls := &pb.ListProjectsResponse{}
+	c.ok(ls, "project", "ls")
+	if sess.Project != "app" || !slices.Equal(projectRepos(ls, "app"), []string{"github.com/o/app"}) {
+		t.Errorf("session in o/app with an empty project app: project %q holding %v", sess.Project, projectRepos(ls, "app"))
+	}
+
+	checkout(t, "git@github.com:o/fresh.git")
+	if _, e := c.fails("session", "start", "app-one"); e.Code != api.CodeConflict {
+		t.Errorf("start a taken name = %v, want CONFLICT", e)
+	}
+	c.ok(ls, "project", "ls")
+	if projectRepos(ls, "fresh") != nil || len(ls.Projects) != 3 {
+		t.Errorf("a refused start made a project: %v", ls.Projects)
+	}
+}

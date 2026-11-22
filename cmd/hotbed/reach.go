@@ -25,7 +25,7 @@ type workerClients struct {
 
 // reach is the worker at addr; with no address (a controller from before
 // workers took calls), the controller, which forwards them.
-func (f controllerFlag) reach(d deps, addr string) (workerClients, error) {
+func (f controllerClient) reach(d deps, addr string) (workerClients, error) {
 	if addr == "" {
 		cl, err := f.clients(d.http)
 		if err != nil {
@@ -49,7 +49,7 @@ func (f controllerFlag) reach(d deps, addr string) (workerClients, error) {
 // worker, and returns the workspace as its worker has it now. With the
 // controller out of reach, it goes by where this machine last found the
 // workspace.
-func (f controllerFlag) locate(ctx context.Context, d deps, session, repo string) (*pb.Workspace, workerClients, error) {
+func (f controllerClient) locate(ctx context.Context, d deps, session, repo string) (*pb.Workspace, workerClients, error) {
 	cl, err := f.clients(d.http)
 	if err != nil {
 		return nil, workerClients{}, err
@@ -93,7 +93,7 @@ func (f controllerFlag) locate(ctx context.Context, d deps, session, repo string
 
 // locateCommand finds a command of the session (or, for reading output,
 // a base's freshen, which belongs to no session) and its worker.
-func (f controllerFlag) locateCommand(ctx context.Context, d deps, session, id string, freshens bool) (*pb.Command, workerClients, error) {
+func (f controllerClient) locateCommand(ctx context.Context, d deps, session, id string, freshens bool) (*pb.Command, workerClients, error) {
 	cl, err := f.clients(d.http)
 	if err != nil {
 		return nil, workerClients{}, err
@@ -131,7 +131,7 @@ func refusal(err error, addr string) error {
 
 // askKnownWorkers looks for a command on the workers this machine last
 // found the session's workspaces on, and fails with notFound otherwise.
-func (f controllerFlag) askKnownWorkers(ctx context.Context, d deps, session, id string, notFound error) (*pb.Command, workerClients, error) {
+func (f controllerClient) askKnownWorkers(ctx context.Context, d deps, session, id string, notFound error) (*pb.Command, workerClients, error) {
 	known, err := loadKnown(d, session)
 	if err != nil {
 		return nil, workerClients{}, notFound
@@ -184,14 +184,31 @@ func remember(d deps, session string, ws *pb.Workspace) {
 		return
 	}
 	k[ws.RepoId] = spot{ID: ws.Id, NodeAddr: ws.NodeAddr, SyncDir: ws.SyncDir}
-	b, err := json.Marshal(k)
-	if err == nil {
-		err = os.MkdirAll(filepath.Dir(knownFile(d, session)), 0o755)
-	}
-	if err == nil {
-		err = os.WriteFile(knownFile(d, session), b, 0o644)
-	}
-	if err != nil {
+	if err := saveKnown(d, session, k); err != nil {
 		fmt.Fprintf(d.stderr, "hotbed: could not note where %s is: %v\n", ws.Id, err)
 	}
+}
+
+// forget drops a session's released workspace of a repo from what this
+// machine knows.
+func forget(d deps, session, repo string) {
+	k, err := loadKnown(d, session)
+	if err != nil || k[repo].ID == "" {
+		return
+	}
+	delete(k, repo)
+	if err := saveKnown(d, session, k); err != nil {
+		fmt.Fprintf(d.stderr, "hotbed: could not forget %s's workspace of %s: %v\n", session, repo, err)
+	}
+}
+
+func saveKnown(d deps, session string, k known) error {
+	b, err := json.Marshal(k)
+	if err != nil {
+		return err
+	}
+	if err := os.MkdirAll(filepath.Dir(knownFile(d, session)), 0o755); err != nil {
+		return err
+	}
+	return os.WriteFile(knownFile(d, session), b, 0o644)
 }

@@ -535,10 +535,13 @@ func (s *Store) Session(ctx context.Context, id string) (*pb.Session, error) {
 	return out, rows.Err()
 }
 
-// RecentSessions are the live sessions and those that ended since, the
-// most recently active first.
-func (s *Store) RecentSessions(ctx context.Context, since time.Time) ([]*pb.Session, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT id FROM sessions WHERE ended_at IS NULL OR ended_at >= ? ORDER BY last_active_at DESC LIMIT 500`, since.UnixMilli())
+// RecentSessions are the live sessions and those that ended since, of
+// project or, empty, of every project, the most recently active first.
+func (s *Store) RecentSessions(ctx context.Context, since time.Time, project string) ([]*pb.Session, error) {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT s.id FROM sessions s LEFT JOIN projects p ON p.id = s.project_id
+		WHERE (s.ended_at IS NULL OR s.ended_at >= ?) AND (? = '' OR p.name = ?)
+		ORDER BY s.last_active_at DESC LIMIT 500`, since.UnixMilli(), project, project)
 	if err != nil {
 		return nil, err
 	}

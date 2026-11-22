@@ -231,14 +231,14 @@ func (s *Server) start(ctx context.Context, sc *pb.ScheduledCommand, slot *int64
 	return run, err
 }
 
-// runProject is the project a schedule's runs work on: the one holding its
-// repo, or the repo's own.
+// runProject is the project a schedule's runs work on: its own, or, for a
+// schedule added before schedules had one, the one holding its repo.
 func (s *Server) runProject(ctx context.Context, sc *pb.ScheduledCommand) (*pb.Project, error) {
 	repo, err := s.repo(ctx, sc.Repo)
 	if err != nil {
 		return nil, err
 	}
-	return s.sessionProject(ctx, "", gitops.CanonicalRemote(repo.Url), repo.Id)
+	return s.sessionProject(ctx, sc.Project, gitops.CanonicalRemote(repo.Url))
 }
 
 // runSession starts a run's session, called name, or name-2, name-3 when
@@ -392,9 +392,17 @@ func (s *schedules) PutSchedule(ctx context.Context, req *pb.PutScheduleRequest)
 	if _, _, err := parseCron(sc.Cron); err != nil {
 		return nil, err
 	}
-	if _, err := s.repo(ctx, sc.Repo); err != nil {
+	repo, err := s.repo(ctx, sc.Repo)
+	if err != nil {
 		return nil, err
 	}
+	// Settled now, so a repo that a second project takes in later does not
+	// leave the runs not knowing which project they are in.
+	project, err := s.sessionProject(ctx, sc.Project, gitops.CanonicalRemote(repo.Url))
+	if err != nil {
+		return nil, err
+	}
+	sc.Project = project.Name
 	if len(sc.GetCommand().GetArgs()) == 0 {
 		return nil, api.Errorf(api.CodeInvalidArgs, "scheduled command %s has no command", sc.Name).
 			WithSuggestion("hotbed schedule add NAME REPO --cron '0 2 * * *' -- CMD...")

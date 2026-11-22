@@ -20,11 +20,42 @@
   history stays. Allowing re-answers would mean deciding what an agent that already acked sees.
 - **Questions belong to their asking session's project**; the repo they are about is the asker's
   checkout when the project holds it, else the whole project unless `--repo` names one.
-- **The user's ordering is one rank across all questions**, so a project's view and every
-  project's view agree.
+- **A session edits, deletes and acks only its own project's questions.** "Any session may
+  delete any question" holds within a project, whose sessions share the list; an agent of another
+  project acking an answer would take it from the sessions that read that outbox. To lift it,
+  drop `mustBeOurs` in internal/controller/questions.go.
+- **`question wait` with no IDs waits for an answer to the session's own questions**
+  (`--project-wide` for any), so an answer another session leaves unacked does not end every
+  wait at once. A cursor over the outbox was the alternative.
+- **A change the user makes records a session only when named (`-s`, HOTBED_SESSION)**, never a
+  session merely bound to the thread or worktree, which may have ended long ago.
+- **A repo's own project is named from its remote's last part, made a valid name** (Next.js →
+  next-js); a project of that name that holds no repo takes the repo in.
+- **A schedule keeps the project it was added in** (`schedule add -p`, or its repo's then), so a
+  repo another project takes in later does not stop its runs. Schedules added before keep
+  resolving by repo, and say to re-add with `-p` when that is ambiguous.
+- **The user's ordering is one rank across all questions**; `move --first` puts a question first
+  in its own project's list.
 - **The chosen project in the cockpit is per viewer**, kept in the browser (localStorage), not in
   the URL. Putting it in the URL would make views shareable at the cost of threading it through
   every link.
+
+## The workspaces page drops its fork graph (2026-11-21)
+
+Ramon found the per-repo fork graph (bases as squares, forks as sprouts, one lane per node) not
+useful and wanted the workspaces themselves first. The page now leads with the table, filtered by
+repo chips and a search box (`?repo=`, `?q=`), and the "owned storage by repo" chart went with the
+graph. Keeping the graph lower on the page was the alternative. To bring it back, restore
+`ui/src/components/charts/ForkTree.tsx` from git history and render it under the table.
+
+## Client commands take their controller from worker init, never a flag (2026-11-21)
+
+`--controller` is gone from every client command. They call the controller `hotbed worker init`
+recorded in `~/.hotbed` (`vm/config.json` on macOS, `setup.json` on Linux). `HOTBED_CONTROLLER`
+stays, and wins, for machines that are no worker (laptops, ubu1 when its worker was set up with
+`hotbed join`, scripts): without it they could not call the cluster at all. To drop it, delete
+the env read in `localController` (cmd/hotbed/main.go) and give such machines another way to
+record a controller.
 
 ## The event stream keeps old workers working (2026-11-21, branch event-stream)
 
@@ -59,5 +90,17 @@ fields.
   release installed by hand with the fleet skill's `hotbed/deploy.sh`. CI's full test run gates
   every release.
 - **CI keeps the newest 20 releases.**
+
+## Every API call has a CLI command (2026-11-21)
+
+- **Worker-to-controller calls are exempt** (Join, Report, PushEvents, Heartbeat): `hotbed join`
+  and `hotbed serve` make them for the node; a command for an agent to make them by hand would
+  only let it impersonate a worker. To change, drop them from `nodeProtocol` in
+  `cmd/hotbed/coverage_test.go` and add commands.
+- **The check runs only on a whole-suite run** (no `-run`/`-skip`), from `TestMain`: a filtered
+  run cannot tell an untested call from one it did not run.
+- **New commands:** `hotbed workspace ls|show|files|file|release`, `hotbed logs -n N`
+  (GetLogLines), `hotbed snapshot` (GetSnapshot). `workspace release` goes through the
+  controller, which keeps the session's account of its workspaces, not straight to the worker.
 
 # Open questions

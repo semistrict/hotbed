@@ -23,7 +23,11 @@ const s = {
     { id: "f1", sessionId: "", repoId: "lnx" },
     { id: "f2", sessionId: "", repoId: "hotbed" },
   ],
-  schedules: [{ name: "lnx-nightly", repoId: "lnx" }, { name: "hotbed-soak", repoId: "hotbed" }],
+  schedules: [
+    { name: "lnx-nightly", repoId: "lnx", project: null },
+    { name: "hotbed-soak", repoId: "hotbed", project: "hotbed" },
+    { name: "lnx-in-hotbed", repoId: "lnx", project: "hotbed" },
+  ],
   events: [
     { id: 1, ref: { type: "command", id: "c1" } },
     { id: 2, ref: { type: "workspace", id: "w2" } },
@@ -47,6 +51,7 @@ describe("scope", () => {
     expect(ids(r.repos)).toEqual(["ratel", "lnx"]);
     expect(ids(r.bases)).toEqual(["lnx-g1"]);
     expect(r.schedules.map((sc) => sc.name)).toEqual(["lnx-nightly"]);
+    expect(scope(s, "hotbed").schedules.map((sc) => sc.name)).toEqual(["hotbed-soak", "lnx-in-hotbed"]);
     expect(ids(r.events)).toEqual([1, 3]);
     expect(r.openQuestions).toBe(2);
   });

@@ -338,6 +338,8 @@ export interface ScheduledCommand {
   nextAt: string | null;
   /** The newest first. */
   runs: ScheduledRun[];
+  /** The project its runs work on; null for one added before schedules had one. */
+  project: string | null;
 }
 
 /**

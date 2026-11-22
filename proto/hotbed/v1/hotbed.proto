@@ -57,7 +57,9 @@ service SessionService {
   // one project that holds the caller's checkout's repo. A repo no project
   // holds is a project of its own, made for it.
   rpc StartSession(StartSessionRequest) returns (Session);
-  rpc GetSession(GetSessionRequest) returns (Session);
+  // GetSession returns a session (live or ended) with its workspaces and
+  // commands, without resetting its idle timer.
+  rpc GetSession(GetSessionRequest) returns (GetSessionResponse);
   // ListSessions lists a project's sessions, or every project's: those
   // live, and with ended, those that ended in the last day too; the most
   // recently active first.
@@ -67,7 +69,7 @@ service SessionService {
   // keeps it alive.
   rpc EndSession(EndSessionRequest) returns (Session);
   // WatchSession streams what happens to the session's commands after a
-  // cursor: first how things stand, then each new batch of events as it
+  // cursor: first how it stands, then each new batch of events as it
   // happens. It ends when the session does, or after at most two minutes, so
   // an agent that wants the session kept has to keep watching it.
   rpc WatchSession(WatchSessionRequest) returns (stream WatchSessionResponse);
@@ -693,10 +695,6 @@ message StartSessionRequest {
   string remote = 4;
 }
 
-message GetSessionRequest {
-  string id = 1;
-}
-
 message ListSessionsRequest {
   // Empty for every project's.
   string project = 1;
@@ -737,6 +735,24 @@ message ListProjectsRequest {}
 
 message ListProjectsResponse {
   repeated Project projects = 1;
+}
+
+message GetSessionRequest {
+  string id = 1;
+}
+
+message GetSessionResponse {
+  Session session = 1;
+  // Live workspaces of the session from their nodes' views.
+  repeated Workspace workspaces = 2;
+  // Live and just-ended commands of the session.
+  repeated Command commands = 3;
+  // Controller's current time (unix ms).
+  int64 now = 4;
+  // Idle timeout in seconds before an inactive session is abandoned.
+  int64 idle_timeout_seconds = 5;
+  // Map of node_id -> hostname for nodes referenced by workspaces/commands.
+  map<string, string> node_hosts = 6;
 }
 
 message EndSessionRequest {
@@ -1137,6 +1153,9 @@ message ScheduledCommand {
   optional int64 next_at = 9;
   // Its runs, the newest first: a few when listed, more from GetSchedule.
   repeated ScheduledRun runs = 10;
+  // The project its runs' sessions work on: the one named when it was
+  // added, or else the one that holds its repo.
+  string project = 11;
 }
 
 enum RunOutcome {
@@ -1241,8 +1260,8 @@ service QuestionService {
   // outbox, none.
   rpc AckQuestions(AckQuestionsRequest) returns (AckQuestionsResponse);
   // WaitQuestions waits, two minutes at most, until one of the named
-  // questions is no longer open, or, naming none, until the project's
-  // outbox holds something. It returns those questions, or the outbox, as they are then.
+  // questions is no longer open, or, naming none, until the outbox (a
+  // project's, or a session's questions') holds something. It returns those questions, or the outbox, as they are then.
   rpc WaitQuestions(WaitQuestionsRequest) returns (ListQuestionsResponse);
 }
 
@@ -1472,4 +1491,6 @@ message WaitQuestionsRequest {
   // Naming no questions: the project whose outbox to wait on; empty for
   // every project's.
   string project = 3;
+  // Naming no questions: only answers to this session's questions.
+  string asked_by = 4;
 }

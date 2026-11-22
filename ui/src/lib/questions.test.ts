@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { Question } from "../api";
-import { answerReady, pick, placement, reorder, responseLine } from "./questions";
+import { answerReady, dropAt, pick, placement, reorder, responseLine } from "./questions";
 
 describe("placement", () => {
   const order = [5, 3, 1, 2];
@@ -56,5 +56,24 @@ describe("responseLine", () => {
     expect(responseLine({ ...base, answer: { picked: ["linux", "darwin"], other: "freebsd later", notes: "" } })).toBe("linux; darwin; freebsd later");
     expect(responseLine({ ...base, dismissed: { at: "", session: null, host: "laptop", reason: "after the release" } })).toBe("dismissed: after the release");
     expect(responseLine({ ...base, dismissed: { at: "", session: null, host: "laptop", reason: "" } })).toBe("dismissed");
+  });
+});
+
+describe("dropAt", () => {
+  const order = [3, 2, 1];
+  it("puts a dragged question before or after the one it is dropped on", () => {
+    expect(dropAt(order, 1, 3, false)).toBe(0);
+    expect(dropAt(order, 1, 3, true)).toBe(1);
+    expect(dropAt(order, 3, 1, true)).toBe(2);
+  });
+  it("moves nothing dropped on itself, or on what the list lacks", () => {
+    expect(dropAt(order, 1, 1, false)).toBeUndefined();
+    expect(dropAt(order, 1, 1, true)).toBeUndefined();
+    expect(dropAt(order, 1, 9, true)).toBeUndefined();
+  });
+  it("leaves a question in place when dropped just beside itself", () => {
+    const to = dropAt(order, 1, 2, true);
+    expect(to).toBe(2);
+    expect(placement(order, 1, to as number)).toBeUndefined();
   });
 });
