@@ -30,6 +30,8 @@ export interface Node {
   memoryBytes: number;
   swapBytes: number;
   diskBytes: number;
+  /** The copy-on-write filesystem its volumes live on: "btrfs" or "zfs". */
+  storage: string;
   usage: NodeUsage;
   /** What admitted commands are guaranteed: the sum of their memory.low. */
   reservedMemoryBytes: number;
@@ -48,7 +50,7 @@ export interface ProfilerStatus {
   error: string;
 }
 
-/** A node's btrfs pool, split by what the blocks belong to. */
+/** A node's volume pool, split by what the blocks belong to. */
 export interface DiskUsage {
   /** Warm bases: the built checkouts every fork shares. */
   basesBytes: number;
@@ -74,7 +76,7 @@ export type BaseState = "building" | "warm" | "stale";
 
 /**
  * A warm base: one repo's main, checked out and built on one node, kept as a
- * read-only btrfs snapshot that workspaces fork from.
+ * read-only snapshot that workspaces fork from.
  */
 export interface Base {
   id: string;

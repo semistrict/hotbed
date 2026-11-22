@@ -100,7 +100,7 @@ function NodeCard({ n, s, color, now, delay }: { n: Node; s: Snapshot; color: st
             </Row>
             <div>
               <div className="mb-1.5 flex justify-between text-[10.5px] text-muted-foreground">
-                <span className="eyebrow">btrfs</span>
+                <span className="eyebrow">{n.storage}</span>
                 <span className="font-mono">
                   {bytes(n.disk.freeBytes)} free of {bytes(n.diskBytes)}
                 </span>

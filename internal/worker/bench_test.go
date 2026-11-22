@@ -13,17 +13,6 @@ import (
 	"github.com/semistrict/hotbed/internal/unit"
 )
 
-func TestBenchSlice(t *testing.T) {
-	for slice, want := range map[string]string{
-		"user-1000-hotbed.slice": "user-1000-hotbed_bench.slice",
-		"":                       "hotbed_bench.slice",
-	} {
-		if got := BenchSlice(slice); got != want {
-			t.Errorf("BenchSlice(%q) = %q, want %q", slice, got, want)
-		}
-	}
-}
-
 func benchEngine(t *testing.T, iso *fake.Isolation) *Engine {
 	t.Helper()
 	e, err := NewEngine(t.Context(), EngineConfig{

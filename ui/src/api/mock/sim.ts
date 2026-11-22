@@ -761,6 +761,7 @@ export class MockCluster {
       memoryBytes: spec.memoryBytes,
       swapBytes: spec.swapBytes,
       diskBytes: spec.diskBytes,
+      storage: spec.storage,
       usage: { ...usage },
       reservedMemoryBytes: this.reserved(spec.id),
       disk: { basesBytes: bases, forksExclusiveBytes: forks, otherBytes: other, freeBytes: Math.max(0, spec.diskBytes - bases - forks - other) },

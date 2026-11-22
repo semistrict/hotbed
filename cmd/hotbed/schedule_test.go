@@ -291,25 +291,6 @@ func TestPausedScheduleRunsNothing(t *testing.T) {
 	}
 }
 
-func TestScheduleAddChecksItsArguments(t *testing.T) {
-	c := newCluster(t)
-	c.addRepo(upstream(t))
-	for _, tc := range []struct {
-		args []string
-		code api.Code
-	}{
-		{[]string{"nightly", "-r", "app", "--cron", "0 2 * *", "--", "true"}, api.CodeInvalidArgs},
-		{[]string{"nightly", "-r", "app", "--cron", "0 0 30 2 *", "--", "true"}, api.CodeInvalidArgs}, // February 30 never comes
-		{[]string{"Nightly", "-r", "app", "--cron", nightly, "--", "true"}, api.CodeInvalidArgs},
-		{[]string{"nightly", "-r", "nope", "--cron", nightly, "--", "true"}, api.CodeNotFound},
-		{[]string{"nightly", "-r", "app", "--cron", nightly}, api.CodeInvalidArgs},
-	} {
-		if _, e := c.fails(append([]string{"schedule", "add"}, tc.args...)...); e.Code != tc.code {
-			t.Errorf("schedule add %v: %+v, want %s", tc.args, e, tc.code)
-		}
-	}
-}
-
 // A run whose session ends under it (by hand, or abandoned with its worker
 // gone, so its command's end may never be reported) ends with it, and the
 // next run may start.

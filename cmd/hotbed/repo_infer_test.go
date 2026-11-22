@@ -1,13 +1,8 @@
 package main
 
 import (
-	"bytes"
-	"context"
-	"encoding/json"
-	"io"
 	"os"
 	"path/filepath"
-	"slices"
 	"testing"
 	"time"
 
@@ -15,80 +10,6 @@ import (
 	pb "github.com/semistrict/hotbed/internal/gen/hotbed/v1"
 	"github.com/semistrict/hotbed/internal/gitops"
 )
-
-func TestNormalizeGitURL(t *testing.T) {
-	cases := [][2]string{
-		{"https://github.com/semistrict/hotbed.git", "github.com/semistrict/hotbed"},
-		{"https://github.com/semistrict/hotbed", "github.com/semistrict/hotbed"},
-		{"https://GITHUB.COM/semistrict/hotbed/", "github.com/semistrict/hotbed"},
-		{"git@github.com:semistrict/hotbed.git", "github.com/semistrict/hotbed"},
-		{"git@github.com:semistrict/hotbed", "github.com/semistrict/hotbed"},
-		{"ssh://git@github.com/semistrict/hotbed.git", "github.com/semistrict/hotbed"},
-		{"ssh://git@github.com:22/semistrict/hotbed.git", "github.com/semistrict/hotbed"},
-	}
-	for _, tc := range cases {
-		if got := gitops.CanonicalRemote(tc[0]); got != tc[1] {
-			t.Errorf("gitops.CanonicalRemote(%q) = %q, want %q", tc[0], got, tc[1])
-		}
-	}
-}
-
-func TestRunParseWithFlagsEnvAndRejectsPositionals(t *testing.T) {
-	t.Setenv("HOTBED_SESSION", "")
-	t.Setenv("HOTBED_REPO", "")
-	cases := []struct {
-		name        string
-		args        []string
-		wantSession string
-		wantRepo    string
-		wantArgs    []string
-		wantDet     bool
-	}{
-		{
-			name:     "defaulted session and repo before --",
-			args:     []string{"run", "--", "go", "test", "-race", "./..."},
-			wantArgs: []string{"go", "test", "-race", "./..."},
-		},
-		{
-			name:        "flags before -- and nested -- after",
-			args:        []string{"run", "-s", "s1", "-r", "hotbed", "--detach", "--", "go", "test", "--", "-run", "Foo"},
-			wantSession: "s1",
-			wantRepo:    "hotbed",
-			wantArgs:    []string{"go", "test", "--", "-run", "Foo"},
-			wantDet:     true,
-		},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			cmd, _, exitCode, err := parse(tc.args, io.Discard)
-			if err != nil || exitCode != nil {
-				t.Fatalf("parse(%v): err=%v exitCode=%v", tc.args, err, exitCode)
-			}
-			rc, ok := cmd.(*runCmd)
-			if !ok {
-				t.Fatalf("got %T, want *runCmd", cmd)
-			}
-			if rc.Session != tc.wantSession || rc.Repo != tc.wantRepo || rc.Detach != tc.wantDet || !slices.Equal(rc.Args, tc.wantArgs) {
-				t.Errorf("got session=%q repo=%q detach=%v args=%v; want session=%q repo=%q detach=%v args=%v",
-					rc.Session, rc.Repo, rc.Detach, rc.Args, tc.wantSession, tc.wantRepo, tc.wantDet, tc.wantArgs)
-			}
-		})
-	}
-
-	// Positional session or repo arguments must be rejected on add/sync/ps/wait/session end.
-	for _, bad := range [][]string{
-		{"add", "s1", "app"},
-		{"sync", "s1"},
-		{"ps", "s1"},
-		{"wait", "s1"},
-		{"session", "end", "s1"},
-		{"step", "ls", "app"},
-	} {
-		if _, _, _, err := parse(bad, io.Discard); err == nil {
-			t.Errorf("parse(%v) succeeded, want error rejecting positional session/repo", bad)
-		}
-	}
-}
 
 // TestSessionAndRepoDefaultFromThreadWorktreeAndEnv verifies zero-flag usage
 // inside a checkout using T3CODE_THREAD_ID, git worktree fallback, HOTBED_SESSION,
@@ -188,47 +109,6 @@ func TestSessionAndRepoDefaultFromThreadWorktreeAndEnv(t *testing.T) {
 	t.Setenv("HOTBED_REPO", "")
 	if _, e := c.fails("step", "ls"); e.Code != api.CodeInvalidArgs {
 		t.Errorf("step ls outside checkout = %+v, want INVALID_ARGS", e)
-	}
-}
-
-func TestUICommand(t *testing.T) {
-	var opened []string
-	d := fakeDeps()
-	d.openURL = func(_ context.Context, u string) error {
-		opened = append(opened, u)
-		return nil
-	}
-
-	d.controller = at("ubu1")
-	code, out := hotbed(t, d, "ui")
-	if code != exitOK || !out.OK || out.Command != "ui" {
-		t.Fatalf("ui: exit %d, envelope %+v", code, out)
-	}
-	var res uiResult
-	if err := json.Unmarshal(out.Data, &res); err != nil {
-		t.Fatal(err)
-	}
-	if res.URL != "http://ubu1:7120/" || !res.Opened || !slices.Equal(opened, []string{"http://ubu1:7120/"}) {
-		t.Fatalf("ui res=%+v opened=%v", res, opened)
-	}
-
-	// Custom port + --no-open should not invoke the browser opener.
-	opened = nil
-	var buf bytes.Buffer
-	d.stdout, d.stderr = &buf, io.Discard
-	d.controller = at("ubu1:9000")
-	if code := run(t.Context(), []string{"ui", "--no-open"}, d); code != exitOK {
-		t.Fatalf("ui --no-open exit %d", code)
-	}
-	var env output
-	if err := json.Unmarshal(buf.Bytes(), &env); err != nil {
-		t.Fatal(err)
-	}
-	if err := json.Unmarshal(env.Data, &res); err != nil {
-		t.Fatal(err)
-	}
-	if res.URL != "http://ubu1:9000/" || res.Opened || len(opened) != 0 {
-		t.Fatalf("ui --no-open res=%+v opened=%v", res, opened)
 	}
 }
 

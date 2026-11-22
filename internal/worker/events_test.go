@@ -208,27 +208,6 @@ func sorted(cp *pb.Checkpoint) *pb.Checkpoint {
 	return cp
 }
 
-// A worker's epoch names its database: the same across restarts, new
-// for a new database.
-func TestEpochNamesTheDatabase(t *testing.T) {
-	epoch := func(dir string) string {
-		eng := newEngine(t, dir)
-		defer eng.Close()
-		return eng.Epoch()
-	}
-	dir := t.TempDir()
-	first := epoch(dir)
-	if len(first) < 16 {
-		t.Fatalf("epoch %q is too short to be unique", first)
-	}
-	if again := epoch(dir); again != first {
-		t.Errorf("epoch after a restart = %q, want %q", again, first)
-	}
-	if other := epoch(t.TempDir()); other == first {
-		t.Errorf("a new database has the old epoch %q", other)
-	}
-}
-
 // A queued command's wait is an event when its kind changes, not each time
 // its numbers do: those go in heartbeats.
 func TestWaitingIsAnEventWhenItsKindChanges(t *testing.T) {

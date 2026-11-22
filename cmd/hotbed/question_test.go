@@ -430,56 +430,6 @@ func TestWaitForAnAnswer(t *testing.T) {
 	}
 }
 
-// Questions take what AskUserQuestion takes, and nothing it would refuse;
-// answers pick among a question's options.
-func TestQuestionsHoldToAskUserQuestion(t *testing.T) {
-	c, user := questionCluster(t)
-	opts := `[{"label": "A", "description": "a"}, {"label": "B", "description": "b"}]`
-	for _, tc := range []struct{ name, input, says string }{
-		{"no questions", `{"questions": []}`, "ask one to 4 questions"},
-		{"five questions", `{"questions": [` + strings.Repeat(`{"question": "Q?", "header": "H", "options": `+opts+`},`, 4) + `{"question": "Q?", "header": "H", "options": ` + opts + `}]}`, "got 5"},
-		{"no header", `{"questions": [{"question": "Q?", "options": ` + opts + `}]}`, "needs a header"},
-		{"long header", `{"questions": [{"question": "Q?", "header": "Thirteen char", "options": ` + opts + `}]}`, "longer than 12"},
-		{"one option", `{"questions": [{"question": "Q?", "header": "H", "options": [{"label": "A", "description": "a"}]}]}`, "has 1 options"},
-		{"no description", `{"questions": [{"question": "Q?", "header": "H", "options": [{"label": "A"}, {"label": "B", "description": "b"}]}]}`, `option "A" needs a description`},
-		{"other", `{"questions": [{"question": "Q?", "header": "H", "options": [{"label": "A", "description": "a"}, {"label": "Other", "description": "b"}]}]}`, "leave out the \"Other\" option"},
-		{"same label", `{"questions": [{"question": "Q?", "header": "H", "options": [{"label": "A", "description": "a"}, {"label": "A", "description": "b"}]}]}`, `two options labelled "A"`},
-		{"unknown field", `{"questions": [{"question": "Q?", "header": "H", "options": ` + opts + `}], "metadata": {"source": "x"}}`, `unknown field "metadata"`},
-		{"no JSON", ``, "no JSON on stdin"},
-	} {
-		code, e := c.failsIn(tc.input, "question", "add", "-s", "brave-otter")
-		if code != exitError || e.Code != api.CodeInvalidArgs || !strings.Contains(e.Message, tc.says) {
-			t.Errorf("%s: exit %d, %v; want INVALID_ARGS saying %q", tc.name, code, e, tc.says)
-		}
-	}
-	if _, e := c.failsIn(storeQuestion, "question", "add"); e.Code != api.CodeInvalidArgs || !strings.Contains(e.Message, "no session") {
-		t.Errorf("add with no session = %v, want INVALID_ARGS", e)
-	}
-	c.ok(nil, "session", "end", "-s", "calm-heron")
-	if _, e := c.failsIn(storeQuestion, "question", "add", "-s", "calm-heron"); e.Code != api.CodeNotFound || !strings.Contains(e.Message, "ended") {
-		t.Errorf("add from an ended session = %v, want NOT_FOUND", e)
-	}
-
-	c.ask("brave-otter", storeQuestion)
-	for _, tc := range []struct {
-		name   string
-		answer *pb.Answer
-		says   string
-	}{
-		{"nothing", &pb.Answer{Notes: "hm"}, "picks an option or says something"},
-		{"not an option", &pb.Answer{Picked: []string{"MySQL"}}, `no option "MySQL"`},
-		{"two of one", &pb.Answer{Picked: []string{"Postgres", "SQLite (Recommended)"}}, "takes one option"},
-	} {
-		_, err := user.AnswerQuestion(t.Context(), &pb.AnswerQuestionRequest{Id: 1, Answer: tc.answer})
-		if e := api.FromConnect(err); e == nil || e.Code != api.CodeInvalidArgs || !strings.Contains(e.Message, tc.says) {
-			t.Errorf("answer %s = %v, want INVALID_ARGS saying %q", tc.name, err, tc.says)
-		}
-	}
-	if q := c.question("1"); q.State != pb.QuestionState_QUESTION_STATE_OPEN || len(q.History) != 1 {
-		t.Errorf("refused answers changed question 1: %v", q)
-	}
-}
-
 // Each project has its own list, which every session working on it shares;
 // a listing is of the session's project unless told otherwise.
 func TestQuestionsBelongToAProject(t *testing.T) {

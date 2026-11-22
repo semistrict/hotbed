@@ -1,10 +1,12 @@
 package main
 
 import (
+	"bufio"
 	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/netip"
 	"os"
@@ -436,6 +438,53 @@ func TestAbandonedSessionEnds(t *testing.T) {
 		cmd, ok := c.engine().Command(srv.Id)
 		return ok && cmd.State == pb.CommandState_COMMAND_STATE_CANCELLED
 	})
+}
+
+// An attached hotbed run keeps its session alive for as long as it runs,
+// however long: an agent waiting on it needs no hotbed wait loop beside it.
+func TestAttachedRunKeepsSessionAlive(t *testing.T) {
+	c := newCluster(t)
+	c.addRepo(upstream(t))
+	c.ok(nil, "session", "start", "busy-elk")
+	c.ok(nil, "add", "-s", "busy-elk", "-r", "app")
+	flag := filepath.Join(t.TempDir(), "go")
+	out, w := io.Pipe()
+	done := make(chan int, 1)
+	go func() {
+		d := c.cli
+		d.stdin, d.stdout, d.stderr = strings.NewReader(""), w, io.Discard
+		code := run(t.Context(), []string{"run", "-s", "busy-elk", "-r", "app", "--", "sh", "-c", "echo started; " + waitFor(flag, "echo finished")}, d)
+		w.Close()
+		done <- code
+	}()
+	lines := bufio.NewScanner(out)
+	if !lines.Scan() || lines.Text() != "started" {
+		t.Fatalf("attached run's first line = %q (%v)", lines.Text(), lines.Err())
+	}
+
+	// Its output streams, so it follows the command. Two idle hours pass,
+	// each ending in a heartbeat: only the follow, not a one-off call,
+	// can keep the session alive through both.
+	for range 2 {
+		c.clock.advance(61 * time.Minute)
+		c.heartbeat()
+		if err := c.server.ReapIdle(t.Context()); err != nil {
+			t.Fatal(err)
+		}
+		if s := c.session("busy-elk"); s.EndedAt != nil {
+			t.Fatalf("session ended while an attached run followed its command: %s", s.EndReason)
+		}
+	}
+
+	if err := os.WriteFile(flag, nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if !lines.Scan() || lines.Text() != "finished" {
+		t.Errorf("attached run's last line = %q (%v)", lines.Text(), lines.Err())
+	}
+	if code := <-done; code != 0 {
+		t.Errorf("attached run exited %d", code)
+	}
 }
 
 // base waits for the controller to hear of base id and returns it.

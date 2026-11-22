@@ -2,6 +2,7 @@ package controller_test
 
 import (
 	"net/http/httptest"
+	"net/netip"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -22,7 +23,11 @@ import (
 
 const cluster = "c0ffee"
 
-var laptop = tailnet.Peer{NodeID: "nLaptop", Hostname: "laptop", Login: "ramon@"}
+var (
+	ubu1   = tailnet.Self{Peer: tailnet.Peer{NodeID: "nUbu1", Hostname: "ubu1", Login: "ramon@"}, Addrs: []netip.Addr{netip.MustParseAddr("127.0.0.1")}}
+	asahi  = tailnet.Peer{NodeID: "nAsahi", Hostname: "asahimbp", Login: "ramon@"}
+	laptop = tailnet.Peer{NodeID: "nLaptop", Hostname: "laptop", Login: "ramon@"}
+)
 
 // streamed is a controller with asahimbp joined, and clients as the worker
 // and as an agent on a laptop.
