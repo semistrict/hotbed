@@ -115,6 +115,28 @@ var migrations = []string{
 	CREATE INDEX schedule_runs_schedule ON schedule_runs (schedule, id);
 	CREATE INDEX schedule_runs_session ON schedule_runs (session_id);
 	CREATE INDEX schedule_runs_live ON schedule_runs (ended_at) WHERE ended_at IS NULL`,
+	// Workers push their events, which the controller folds into its view
+	// of each node (node_state), instead of reporting their whole state; the
+	// last reports become the views the events continue from.
+	`ALTER TABLE nodes ADD COLUMN epoch TEXT NOT NULL DEFAULT '';
+	ALTER TABLE nodes ADD COLUMN applied INTEGER NOT NULL DEFAULT 0;
+	ALTER TABLE nodes ADD COLUMN heartbeat TEXT;
+	CREATE TABLE node_state (
+		node_id TEXT NOT NULL,
+		kind    TEXT NOT NULL, -- base, workspace, command
+		id      TEXT NOT NULL,
+		doc     TEXT NOT NULL,
+		PRIMARY KEY (node_id, kind, id)
+	) STRICT;
+	INSERT INTO node_state (node_id, kind, id, doc)
+		SELECT n.id, 'base', json_extract(j.value, '$.id'), j.value FROM nodes n, json_each(n.report, '$.bases') j WHERE n.report IS NOT NULL;
+	INSERT INTO node_state (node_id, kind, id, doc)
+		SELECT n.id, 'workspace', json_extract(j.value, '$.id'), j.value FROM nodes n, json_each(n.report, '$.workspaces') j WHERE n.report IS NOT NULL;
+	INSERT INTO node_state (node_id, kind, id, doc)
+		SELECT n.id, 'command', json_extract(j.value, '$.id'), j.value FROM nodes n, json_each(n.report, '$.commands') j WHERE n.report IS NOT NULL;
+	-- A report's usage fields read as a heartbeat's.
+	UPDATE nodes SET heartbeat = report;
+	ALTER TABLE nodes DROP COLUMN report`,
 }
 
 // Retention: samples and events serve the cockpit's day; history and
@@ -211,16 +233,11 @@ func (s *Store) Join(ctx context.Context, p tailnet.Peer, now time.Time) (*pb.No
 	return n.node, nil
 }
 
-// ingested is what a report changed that someone may be waiting on.
-type ingested struct {
-	ack      int64
-	sessions map[string]bool // sessions with new events
-}
-
-// Ingest stores a worker's report: its state, a sample, and the finished
-// commands and events it has not delivered before.
-func (s *Store) Ingest(ctx context.Context, nodeID string, r *pb.ReportRequest, now time.Time) (ingested, error) {
-	out := ingested{sessions: map[string]bool{}}
+// Ingest stores a report from a worker before the event stream: its whole
+// state becomes the node's view, its usage the node's heartbeat, and the
+// finished commands and events it has not delivered before go to history.
+func (s *Store) Ingest(ctx context.Context, nodeID string, r *pb.ReportRequest, now time.Time) (pushed, error) {
+	out := pushed{sessions: map[string]bool{}}
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return out, err
@@ -232,38 +249,27 @@ func (s *Store) Ingest(ctx context.Context, nodeID string, r *pb.ReportRequest, 
 	} else if err != nil {
 		return out, err
 	}
-	state := proto.Clone(r).(*pb.ReportRequest)
-	state.Finished, state.Events, state.SessionEvents = nil, nil, nil
-	doc, err := marshal(state)
-	if err != nil {
+	if err := replaceView(ctx, tx, nodeID, r.Bases, r.Workspaces, r.Commands); err != nil {
 		return out, err
 	}
-	if _, err := tx.ExecContext(ctx, `UPDATE nodes SET last_seen = ?, report = ? WHERE id = ?`, now.UnixMilli(), doc, nodeID); err != nil {
-		return out, fmt.Errorf("record report: %w", err)
+	hb := &pb.HeartbeatRequest{
+		ClusterId: r.ClusterId, Resources: r.Resources, Usage: r.Usage, DiskBytes: r.DiskBytes, Disk: r.Disk,
+		ReservedMemoryBytes: r.ReservedMemoryBytes, OomKills: r.OomKills, Storage: r.Storage,
 	}
-	var runningN, queuedN, parkedN int
 	for _, c := range r.Commands {
-		switch c.State {
-		case pb.CommandState_COMMAND_STATE_RUNNING:
-			runningN++
-		case pb.CommandState_COMMAND_STATE_QUEUED:
-			queuedN++
-		case pb.CommandState_COMMAND_STATE_PARKED:
-			parkedN++
-		}
+		hb.Commands = append(hb.Commands, &pb.CommandUsage{Id: c.Id, CpuCores: c.CpuCores, MemoryBytes: c.MemoryBytes, SwapBytes: c.SwapBytes})
 	}
-	memFrac := 0.0
-	if mb := r.GetResources().GetMemoryBytes(); mb > 0 {
-		memFrac = float64(r.GetUsage().GetMemoryUsedBytes()) / float64(mb)
-	}
-	if _, err := tx.ExecContext(ctx, `INSERT OR REPLACE INTO samples (node_id, t, cpu, memory, psi, running, queued, parked, oom) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		nodeID, now.UnixMilli(), r.GetUsage().GetCpuBusy(), memFrac, r.GetUsage().GetMemoryPressure(), runningN, queuedN, parkedN, r.OomKills); err != nil {
-		return out, fmt.Errorf("record sample: %w", err)
+	for _, b := range r.Bases {
+		hb.Bases = append(hb.Bases, &pb.BaseUsage{Id: b.Id, Progress: b.Progress, SizeBytes: b.SizeBytes})
 	}
 	for _, w := range r.Workspaces {
+		hb.Workspaces = append(hb.Workspaces, &pb.WorkspaceUsage{Id: w.Id, ExclusiveBytes: w.ExclusiveBytes, SharedBytes: w.SharedBytes})
 		if _, err := tx.ExecContext(ctx, `UPDATE workspaces SET fork_millis = ? WHERE id = ?`, w.ForkMillis, w.Id); err != nil {
 			return out, err
 		}
+	}
+	if err := beat(ctx, tx, nodeID, hb, now); err != nil {
+		return out, err
 	}
 	high := acked
 	for _, f := range r.Finished {
@@ -271,13 +277,8 @@ func (s *Store) Ingest(ctx context.Context, nodeID string, r *pb.ReportRequest, 
 		if f.Seq <= acked {
 			continue
 		}
-		doc, err := marshal(f.Item)
-		if err != nil {
+		if err := addHistory(ctx, tx, nodeID, f.Item); err != nil {
 			return out, err
-		}
-		if _, err := tx.ExecContext(ctx, `INSERT OR IGNORE INTO history (id, node_id, repo_id, ended_at, doc) VALUES (?, ?, ?, ?, ?)`,
-			f.Item.Id, nodeID, f.Item.RepoId, f.Item.EndedAt, doc); err != nil {
-			return out, fmt.Errorf("record finished command: %w", err)
 		}
 	}
 	for _, e := range r.Events {
@@ -285,9 +286,8 @@ func (s *Store) Ingest(ctx context.Context, nodeID string, r *pb.ReportRequest, 
 		if e.Seq <= acked {
 			continue
 		}
-		if _, err := tx.ExecContext(ctx, `INSERT INTO events (at, kind, node_id, text, ref_type, ref_id) VALUES (?, ?, ?, ?, ?, ?)`,
-			e.Item.At, e.Item.Kind, nodeID, e.Item.Text, e.Item.GetRef().GetType(), e.Item.GetRef().GetId()); err != nil {
-			return out, fmt.Errorf("record event: %w", err)
+		if err := addFeed(ctx, tx, nodeID, e.Item); err != nil {
+			return out, err
 		}
 	}
 	for _, e := range r.SessionEvents {
@@ -295,19 +295,14 @@ func (s *Store) Ingest(ctx context.Context, nodeID string, r *pb.ReportRequest, 
 		if e.Seq <= acked {
 			continue
 		}
-		doc, err := marshal(e.Item)
-		if err != nil {
+		if err := addSessionEvent(ctx, tx, e.Item, out); err != nil {
 			return out, err
 		}
-		if _, err := tx.ExecContext(ctx, `INSERT INTO session_events (session_id, doc) VALUES (?, ?)`, e.Item.SessionId, doc); err != nil {
-			return out, fmt.Errorf("record session event: %w", err)
-		}
-		out.sessions[e.Item.SessionId] = true
 	}
 	if _, err := tx.ExecContext(ctx, `UPDATE nodes SET acked = ? WHERE id = ?`, high, nodeID); err != nil {
 		return out, err
 	}
-	out.ack = high
+	out.applied = high
 	return out, tx.Commit()
 }
 
@@ -335,14 +330,14 @@ func (s *Store) Prune(ctx context.Context, now time.Time) error {
 	return nil
 }
 
-// nodeRow is a node with its latest report.
+// nodeRow is a node with its latest heartbeat.
 type nodeRow struct {
-	node   *pb.Node
-	addr   string            // tailnet address; empty when the tailnet gave none
-	report *pb.ReportRequest // nil before the first report
+	node *pb.Node
+	addr string               // tailnet address; empty when the tailnet gave none
+	hb   *pb.HeartbeatRequest // nil before the first heartbeat
 }
 
-const nodeColumns = `id, hostname, login, addr, joined_at, last_seen, report`
+const nodeColumns = `id, hostname, login, addr, joined_at, last_seen, heartbeat`
 
 // Nodes lists every worker by host name. Online is left false; the server
 // decides it from last_seen.
@@ -376,23 +371,23 @@ func scanNode(row interface{ Scan(...any) error }) (nodeRow, error) {
 		n        = &pb.Node{}
 		addr     string
 		lastSeen sql.NullInt64
-		report   sql.NullString
+		hb       sql.NullString
 	)
-	if err := row.Scan(&n.Id, &n.Hostname, &n.Login, &addr, &n.JoinedAt, &lastSeen, &report); err != nil {
+	if err := row.Scan(&n.Id, &n.Hostname, &n.Login, &addr, &n.JoinedAt, &lastSeen, &hb); err != nil {
 		return nodeRow{}, err
 	}
 	out := nodeRow{node: n, addr: addr}
 	if lastSeen.Valid {
 		n.LastSeen = &lastSeen.Int64
 	}
-	if report.Valid {
-		r, err := unmarshal(report.String, &pb.ReportRequest{})
+	if hb.Valid {
+		h, err := unmarshal(hb.String, &pb.HeartbeatRequest{})
 		if err != nil {
-			return nodeRow{}, fmt.Errorf("read node %s report: %w", n.Hostname, err)
+			return nodeRow{}, fmt.Errorf("read node %s heartbeat: %w", n.Hostname, err)
 		}
-		out.report = r
-		n.Resources, n.Usage, n.DiskBytes, n.Disk = r.Resources, r.Usage, r.DiskBytes, r.Disk
-		n.ReservedMemoryBytes, n.Storage = r.ReservedMemoryBytes, r.Storage
+		out.hb = h
+		n.Resources, n.Usage, n.DiskBytes, n.Disk = h.Resources, h.Usage, h.DiskBytes, h.Disk
+		n.ReservedMemoryBytes, n.Storage = h.ReservedMemoryBytes, h.Storage
 	}
 	return out, nil
 }

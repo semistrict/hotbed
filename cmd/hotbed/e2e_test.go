@@ -141,7 +141,7 @@ func newCluster(t *testing.T) *cluster {
 	ctx, cancel := context.WithCancel(t.Context())
 	done := make(chan struct{})
 	go func() { eng.Run(ctx); close(done) }()
-	go func() { worker.Reports(ctx, eng, asWorker, init.ClusterID) }()
+	go func() { worker.Connect(ctx, eng, asWorker, init.ClusterID) }()
 	t.Cleanup(func() { cancel(); <-done })
 
 	t.Setenv("HOTBED_CONTROLLER", ctrl)
@@ -155,7 +155,26 @@ func newCluster(t *testing.T) *cluster {
 	return c
 }
 
-// eventually waits for cond; the engine and its reports run on their own.
+// heartbeat sends the worker's heartbeat now, with the sessions clients
+// used on it since the last one.
+func (c *cluster) heartbeat() {
+	c.t.Helper()
+	if err := worker.HeartbeatOnce(c.t.Context(), c.engine, c.asWorker, c.id); err != nil {
+		c.t.Fatal(err)
+	}
+}
+
+// online waits for the worker to be online by the controller's clock: a
+// heartbeat since the clock last moved.
+func (c *cluster) online() {
+	c.t.Helper()
+	c.eventually("the worker to be online", func() bool {
+		res, err := c.asWorker.ListNodes(c.t.Context(), &pb.ListNodesRequest{})
+		return err == nil && len(res.Nodes) == 1 && res.Nodes[0].Online
+	})
+}
+
+// eventually waits for cond; the engine and its connection run on their own.
 func (c *cluster) eventually(what string, cond func() bool) {
 	c.t.Helper()
 	deadline := time.Now().Add(30 * time.Second)
@@ -429,6 +448,7 @@ func TestAbandonedSessionEnds(t *testing.T) {
 	}
 
 	c.clock.advance(61 * time.Minute)
+	c.online() // a session on an unreachable worker waits for it
 	if err := c.server.ReapIdle(t.Context()); err != nil {
 		t.Fatal(err)
 	}

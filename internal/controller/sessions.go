@@ -100,12 +100,12 @@ func (s *sessions) sessionState(ctx context.Context, id string, after int64) (*p
 	if n := len(events); n > 0 {
 		res.Cursor = events[n-1].Seq
 	}
-	rows, err := s.cfg.Store.Nodes(ctx)
+	views, err := s.cfg.Store.Views(ctx)
 	if err != nil {
 		return nil, err
 	}
-	for _, n := range rows {
-		for _, c := range n.report.GetCommands() {
+	for _, v := range views {
+		for _, c := range v.commands {
 			if c.SessionId == id && live(c.State) {
 				res.Live++
 			}

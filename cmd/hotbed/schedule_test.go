@@ -33,32 +33,18 @@ func (c *cluster) schedule(name string) *pb.ScheduledCommand {
 	return sc
 }
 
-// at moves the clock to t and has the worker report at once, so the
-// controller, its clock jumped, still counts the worker online.
+// at moves the clock to t and has the worker send a heartbeat at once, so
+// the controller, its clock jumped, still counts the worker online.
 func (c *cluster) at(t time.Time) {
 	c.t.Helper()
 	c.clock.set(t)
-	c.report()
+	c.heartbeat()
 }
 
 // later moves the clock on by d, as at does.
 func (c *cluster) later(d time.Duration) {
 	c.t.Helper()
 	c.at(c.clock.Now().Add(d))
-}
-
-// report sends the worker's report now, as its loop does every few seconds.
-func (c *cluster) report() {
-	c.t.Helper()
-	rep, err := c.engine.Report(c.id)
-	if err != nil {
-		c.t.Fatal(err)
-	}
-	res, err := c.asWorker.Report(c.t.Context(), rep)
-	if err != nil {
-		c.t.Fatal(err)
-	}
-	c.engine.Acknowledged(res.Ack)
 }
 
 // tick has the controller start what is due, as its loop does.
@@ -118,7 +104,7 @@ func TestScheduledCommandRunsInItsOwnSession(t *testing.T) {
 		t.Errorf("the run's session = %v", s)
 	}
 
-	// The worker's report of its end settles the run, without a tick.
+	// The worker's event of its end settles the run, without a tick.
 	c.eventually("the run to succeed", func() bool {
 		return c.schedule("nightly").Runs[0].Outcome == pb.RunOutcome_RUN_OUTCOME_SUCCEEDED
 	})

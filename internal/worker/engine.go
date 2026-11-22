@@ -99,8 +99,10 @@ type Engine struct {
 	diskBytes  int64
 	oomKills   int64
 	resources  *pb.Resources
+	// active is the sessions clients used here since the last heartbeat.
+	active map[string]bool
 
-	kick    chan struct{} // something changed: report soon
+	kick    chan struct{} // an event was written: push soon
 	collect chan struct{} // a base may have become garbage: collect soon
 	stepc   chan struct{} // a command may start or have ended: step soon
 	// updated is closed, and replaced, whenever a base, workspace or
@@ -168,7 +170,7 @@ func NewEngine(ctx context.Context, cfg EngineConfig) (*Engine, error) {
 		cfg: cfg, db: d, cred: cred, home: home,
 		bases:      map[string]*pb.Base{},
 		workspaces: map[string]*workspace{}, commands: map[string]*command{},
-		usage: &pb.NodeUsage{}, disk: &pb.DiskUsage{},
+		usage: &pb.NodeUsage{}, disk: &pb.DiskUsage{}, active: map[string]bool{},
 		kick: make(chan struct{}, 1), collect: make(chan struct{}, 1), stepc: make(chan struct{}, 1),
 		updated: make(chan struct{}),
 	}
@@ -246,7 +248,7 @@ func (e *Engine) Run(ctx context.Context) {
 	}
 }
 
-// Kicked is signalled whenever something worth reporting changed.
+// Kicked is signalled whenever an event was written.
 func (e *Engine) Kicked() <-chan struct{} { return e.kick }
 
 // stepSoon asks Run to step now rather than at its next tick: a command was
@@ -295,37 +297,6 @@ func (e *Engine) now() time.Time { return e.cfg.Now() }
 
 func (e *Engine) nowMs() int64 { return e.now().UnixMilli() }
 
-// event queues an event for the controller. Call with e.mu held.
-func (e *Engine) event(kind, text string, ref *pb.EventRef) {
-	if _, err := e.db.enqueue("event", &pb.WorkerEvent{At: e.nowMs(), Kind: kind, Text: text, Ref: ref}); err != nil {
-		slog.Error("queue event", "err", err)
-	}
-	e.changed()
-}
-
-func ref(kind, id string) *pb.EventRef { return &pb.EventRef{Type: kind, Id: id} }
-
-func (e *Engine) saveBase(b *pb.Base) {
-	if err := e.db.put("base", b.Id, b); err != nil {
-		slog.Error("save base", "base", b.Id, "err", err)
-	}
-	e.notify()
-}
-
-func (e *Engine) saveWorkspace(w *workspace) {
-	if err := e.db.put("workspace", w.ws().Id, w.rec); err != nil {
-		slog.Error("save workspace", "workspace", w.ws().Id, "err", err)
-	}
-	e.notify()
-}
-
-func (e *Engine) saveCommand(c *command) {
-	if err := e.db.put("command", c.cmd().Id, c.rec); err != nil {
-		slog.Error("save command", "command", c.cmd().Id, "err", err)
-	}
-	e.notify()
-}
-
 // SetRepos is what the controller says this node hosts.
 // SetRepos records the cluster's repos, as the controller reports them. The
 // bases of a repo that was removed go stale, so they are deleted once no
@@ -342,7 +313,7 @@ func (e *Engine) SetRepos(repos []*pb.Repo) {
 	for _, b := range e.bases {
 		if next[b.RepoId] == nil && (b.State == warm || b.State == broken) {
 			b.State = stale
-			e.saveBase(b)
+			e.saveBase(b, change{what: "stale", detail: "its repo was removed"})
 			removed = true
 		}
 	}

@@ -1,6 +1,7 @@
 package controller
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"io"
@@ -50,6 +51,7 @@ func (s *workspaces) CreateWorkspace(ctx context.Context, req *pb.CreateWorkspac
 	if err == nil {
 		var ws *pb.Workspace
 		if ws, err = c.CreateWorkspace(ctx, fwd); err == nil {
+			ws.NodeAddr = s.addrOf(node.nodeRow)
 			return ws, nil
 		}
 		err = fromWorker(host, err)
@@ -62,26 +64,26 @@ func (s *workspaces) CreateWorkspace(ctx context.Context, req *pb.CreateWorkspac
 
 // place picks, among the online nodes that host the repo, one that has a
 // warm base of it (so its freshen is incremental) with the most free memory.
-func (s *workspaces) place(ctx context.Context, req *pb.CreateWorkspaceRequest) (nodeRow, *pb.Repo, error) {
+func (s *workspaces) place(ctx context.Context, req *pb.CreateWorkspaceRequest) (nodeView, *pb.Repo, error) {
 	repos, err := s.cfg.Store.Repos(ctx)
 	if err != nil {
-		return nodeRow{}, nil, err
+		return nodeView{}, nil, err
 	}
 	i := slices.IndexFunc(repos, func(r *pb.Repo) bool { return r.Id == req.Repo })
 	if i < 0 {
-		return nodeRow{}, nil, api.Errorf(api.CodeNotFound, "no repo %s", req.Repo).WithSuggestion("hotbed repo add NAME URL, then hotbed step set NAME build --every-pull -- CMD")
+		return nodeView{}, nil, api.Errorf(api.CodeNotFound, "no repo %s", req.Repo).WithSuggestion("hotbed repo add NAME URL, then hotbed step set NAME build --every-pull -- CMD")
 	}
 	repo := repos[i]
-	rows, err := s.cfg.Store.Nodes(ctx)
+	rows, err := s.views(ctx)
 	if err != nil {
-		return nodeRow{}, nil, err
+		return nodeView{}, nil, err
 	}
-	var best *nodeRow
+	var best *nodeView
 	var bestWarm bool
 	var bestFree int64
 	for i := range rows {
 		n := rows[i]
-		if !s.withOnline(n.node).Online || n.report == nil {
+		if !n.online || n.hb == nil {
 			continue
 		}
 		if req.Node != "" && n.node.Hostname != req.Node {
@@ -90,10 +92,10 @@ func (s *workspaces) place(ctx context.Context, req *pb.CreateWorkspaceRequest) 
 		if len(repo.Hosts) > 0 && !slices.Contains(repo.Hosts, n.node.Hostname) {
 			continue
 		}
-		warm := slices.ContainsFunc(n.report.Bases, func(b *pb.Base) bool {
+		warm := slices.ContainsFunc(n.bases, func(b *pb.Base) bool {
 			return b.RepoId == req.Repo && b.State == pb.BaseState_BASE_STATE_WARM
 		})
-		r := n.report
+		r := n.hb
 		free := r.GetResources().GetMemoryBytes() - max(r.GetUsage().GetMemoryUsedBytes(), r.ReservedMemoryBytes)
 		if best == nil || (warm && !bestWarm) || (warm == bestWarm && free > bestFree) {
 			best, bestWarm, bestFree = &rows[i], warm, free
@@ -104,7 +106,7 @@ func (s *workspaces) place(ctx context.Context, req *pb.CreateWorkspaceRequest) 
 		if req.Node != "" {
 			e.Message = req.Node + " is not online or does not host " + req.Repo
 		}
-		return nodeRow{}, nil, e.WithSuggestion("hotbed nodes lists the workers and whether they are online")
+		return nodeView{}, nil, e.WithSuggestion("hotbed nodes lists the workers and whether they are online")
 	}
 	return *best, repo, nil
 }
@@ -139,16 +141,22 @@ func (s *workspaces) commandOf(ctx context.Context, id string) (hotbedv1connect.
 	return s.worker(ctx, node)
 }
 
+// GetWorkspace asks the workspace's worker, or, when it is out of reach,
+// answers from its node's view.
 func (s *workspaces) GetWorkspace(ctx context.Context, req *pb.GetWorkspaceRequest) (*pb.Workspace, error) {
-	c, host, _, err := s.workspaceOf(ctx, req.Id)
-	if err != nil {
-		return nil, err
+	c, host, w, err := s.workspaceOf(ctx, req.Id)
+	if err == nil {
+		var ws *pb.Workspace
+		if ws, err = c.GetWorkspace(ctx, req); err == nil {
+			ws.NodeAddr = s.nodeAddr(ctx, w.node)
+			return ws, nil
+		}
+		err = fromWorker(host, err)
 	}
-	ws, err := c.GetWorkspace(ctx, req)
-	if err != nil {
-		return nil, fromWorker(host, err)
+	if unreachable(err) {
+		return s.viewWorkspace(ctx, req.Id)
 	}
-	return ws, nil
+	return nil, err
 }
 
 // WatchWorkspace relays a workspace's changes from its worker. Watching
@@ -190,37 +198,27 @@ func relay[T any](ctx context.Context, s *Server, session, host string, receive 
 	}
 }
 
-// ListWorkspaces lists a session's workspaces as their workers have them,
-// or, without a session, every live workspace as its node last reported it.
+// ListWorkspaces lists the live workspaces of a session (which it keeps
+// alive), or of every session, as their nodes' views have them.
 func (s *workspaces) ListWorkspaces(ctx context.Context, req *pb.ListWorkspacesRequest) (*pb.ListWorkspacesResponse, error) {
 	if req.SessionId != "" {
-		sess, err := s.cfg.Store.LiveSession(ctx, req.SessionId, s.now())
-		if err != nil {
+		if _, err := s.cfg.Store.LiveSession(ctx, req.SessionId, s.now()); err != nil {
 			return nil, err
 		}
-		out := &pb.ListWorkspacesResponse{}
-		for _, id := range sess.WorkspaceIds {
-			ws, err := s.GetWorkspace(ctx, &pb.GetWorkspaceRequest{Id: id})
-			if err != nil {
-				return nil, err
-			}
-			out.Workspaces = append(out.Workspaces, ws)
-		}
-		return out, nil
 	}
-	rows, err := s.cfg.Store.Nodes(ctx)
+	nvs, err := s.views(ctx)
 	if err != nil {
 		return nil, err
 	}
 	out := &pb.ListWorkspacesResponse{}
-	for _, n := range rows {
-		for _, ws := range n.report.GetWorkspaces() {
+	for _, nv := range nvs {
+		for _, ws := range nv.workspaces {
 			if ws.State != pb.WorkspaceState_WORKSPACE_STATE_RELEASED && (req.SessionId == "" || ws.SessionId == req.SessionId) {
 				out.Workspaces = append(out.Workspaces, ws)
 			}
 		}
 	}
-	slices.SortFunc(out.Workspaces, func(a, b *pb.Workspace) int { return int(a.CreatedAt - b.CreatedAt) })
+	slices.SortFunc(out.Workspaces, func(a, b *pb.Workspace) int { return cmp.Compare(a.CreatedAt, b.CreatedAt) })
 	return out, nil
 }
 
@@ -318,71 +316,46 @@ func (s *workspaces) RunCommand(ctx context.Context, req *pb.RunCommandRequest) 
 	return cmd, nil
 }
 
+// GetCommand asks the command's worker, or, when it is out of reach,
+// answers from its node's view.
 func (s *workspaces) GetCommand(ctx context.Context, req *pb.GetCommandRequest) (*pb.Command, error) {
 	c, host, err := s.commandOf(ctx, req.Id)
-	if err != nil {
-		return nil, err
+	if err == nil {
+		var cmd *pb.Command
+		if cmd, err = c.GetCommand(ctx, req); err == nil {
+			cmd.NodeAddr = s.nodeAddr(ctx, cmd.NodeId)
+			return cmd, nil
+		}
+		err = fromWorker(host, err)
 	}
-	res, err := c.GetCommand(ctx, req)
-	if err != nil {
-		return nil, fromWorker(host, err)
+	if unreachable(err) {
+		return s.viewCommand(ctx, req.Id)
 	}
-	return res, nil
+	return nil, err
 }
 
-// ListCommands lists live and just-ended commands as their nodes last
-// reported them.
-// ListCommands lists a live session's commands as their workers have them
-// now, and otherwise every command (or an ended session's) as its node
-// last reported it.
+// ListCommands lists the live and just-ended commands of a session (which
+// it keeps alive), or of every session, as their nodes' views have them.
 func (s *workspaces) ListCommands(ctx context.Context, req *pb.ListCommandsRequest) (*pb.ListCommandsResponse, error) {
-	asked := map[string]bool{} // nodes whose workers answered
-	out := &pb.ListCommandsResponse{}
 	if req.SessionId != "" {
 		if err := s.cfg.Store.Touch(ctx, req.SessionId, s.now()); err != nil {
 			return nil, err
 		}
-		sess, err := s.cfg.Store.Session(ctx, req.SessionId)
-		if err != nil {
-			return nil, err
-		}
-		for _, id := range sess.WorkspaceIds {
-			w, err := s.cfg.Store.Workspace(ctx, id)
-			if err != nil {
-				return nil, err
-			}
-			if w.released || asked[w.node] {
-				continue
-			}
-			c, host, err := s.worker(ctx, w.node)
-			if err == nil {
-				var res *pb.ListCommandsResponse
-				if res, err = c.ListCommands(ctx, req); err == nil {
-					out.Commands = append(out.Commands, res.Commands...)
-					asked[w.node] = true
-					continue
-				}
-				err = fromWorker(host, err)
-			}
-			slog.Warn("list commands; using the node's last report", "node", w.node, "err", err)
-		}
 	}
-	rows, err := s.cfg.Store.Nodes(ctx)
+	nvs, err := s.views(ctx)
 	if err != nil {
 		return nil, err
 	}
-	for _, n := range rows {
-		if asked[n.node.Id] {
-			continue
-		}
-		for _, c := range n.report.GetCommands() {
-			if req.SessionId == "" || c.SessionId == req.SessionId {
+	out := &pb.ListCommandsResponse{}
+	for _, nv := range nvs {
+		for _, c := range nv.commands {
+			if c.Kind != "freshen" && (req.SessionId == "" || c.SessionId == req.SessionId) {
 				out.Commands = append(out.Commands, c)
 			}
 		}
 	}
 	slices.SortFunc(out.Commands, func(a, b *pb.Command) int { return strings.Compare(a.Id, b.Id) })
-	slices.SortStableFunc(out.Commands, func(a, b *pb.Command) int { return int(a.QueuedAt - b.QueuedAt) })
+	slices.SortStableFunc(out.Commands, func(a, b *pb.Command) int { return cmp.Compare(a.QueuedAt, b.QueuedAt) })
 	return out, nil
 }
 

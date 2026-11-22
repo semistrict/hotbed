@@ -4,6 +4,8 @@ import (
 	"bufio"
 	"cmp"
 	"context"
+	"crypto/rand"
+	"encoding/base32"
 	"fmt"
 	"log/slog"
 	"os"
@@ -70,8 +72,14 @@ func (e *Engine) Exec(_ context.Context, req *pb.RunCommandRequest) (*pb.Command
 		return nil, api.Errorf(api.CodeConflict, "workspace %s failed: %s", req.WorkspaceId, w.ws().Reason).
 			WithSuggestion("hotbed add the repo again to try a new workspace")
 	}
-	if _, dup := e.commands[req.Id]; dup || req.Id == "" {
-		return nil, api.Errorf(api.CodeConflict, "command ID %q is taken or empty", req.Id)
+	// The controller names the commands it forwards; a client calling this
+	// worker directly leaves that to the worker.
+	id := req.Id
+	if id == "" {
+		id = newID()
+	}
+	if _, dup := e.commands[id]; dup {
+		return nil, api.Errorf(api.CodeConflict, "command ID %q is taken", id)
 	}
 	kind := req.Kind
 	if kind == "" {
@@ -88,7 +96,7 @@ func (e *Engine) Exec(_ context.Context, req *pb.RunCommandRequest) (*pb.Command
 	c := &command{
 		rec: &pb.CommandRecord{
 			Command: &pb.Command{
-				Id: req.Id, WorkspaceId: req.WorkspaceId, NodeId: e.cfg.NodeID,
+				Id: id, WorkspaceId: req.WorkspaceId, NodeId: e.cfg.NodeID,
 				Argv: shell.Join(req.Args), Args: req.Args, Kind: kind,
 				State: queued, QueuedAt: now, Limits: limits, Attached: req.Attached,
 				SessionId: w.ws().SessionId,
@@ -111,12 +119,19 @@ func (e *Engine) Exec(_ context.Context, req *pb.RunCommandRequest) (*pb.Command
 	if w.ws().State != preparing {
 		w.ws().State = activeWS
 	}
-	e.saveWorkspace(w)
-	e.commands[req.Id] = c
-	e.saveCommand(c)
-	e.changed()
+	e.saveWorkspace(w, change{what: "active", detail: "running " + id})
+	e.commands[id] = c
+	e.saveCommand(c, change{what: "queued", detail: "by " + w.ws().Agent})
 	e.stepSoon()
 	return clone(c.cmd()), nil
+}
+
+// newID is eight random base32 characters, lowercase, as the controller
+// names commands.
+func newID() string {
+	b := make([]byte, 5)
+	rand.Read(b)
+	return strings.ToLower(base32.StdEncoding.EncodeToString(b))
 }
 
 func isBuild(kind string) bool { return kind == "build" || kind == "test" || kind == "check" }
@@ -263,7 +278,10 @@ func (e *Engine) admit(ctx context.Context) {
 			continue // stopped meanwhile
 		}
 		if reason := e.admissionBlocker(c); reason != "" {
-			c.cmd().Reason = reason
+			if reason != c.cmd().Reason {
+				c.cmd().Reason = reason
+				e.saveCommand(c, change{what: "waiting", detail: reason})
+			}
 			e.mu.Unlock()
 			continue
 		}
@@ -288,12 +306,12 @@ func (e *Engine) admit(ctx context.Context) {
 		cmd.State = running
 		cmd.StartedAt = &now
 		cmd.Timeline = append(cmd.Timeline, &pb.CommandEvent{At: now, What: "admitted", Detail: fmt.Sprintf("weight %d · low %s · high %s", cmd.Limits.CpuWeight, gib(cmd.Limits.MemoryLowBytes), gib(cmd.Limits.MemoryHighBytes))})
-		e.saveCommand(c)
-		e.sessionEvent(c, "admitted", "")
-		go e.watchExit(ctx, c.unitName())
+		ch := change{what: "admitted"}
 		if cmd.Kind != "freshen" {
-			e.event("admit", fmt.Sprintf("admit %s · %s", cmd.Argv, cmd.WorkspaceId), ref("command", cmd.Id))
+			ch.feed = feed("admit", fmt.Sprintf("admit %s · %s", cmd.Argv, cmd.WorkspaceId), ref("command", cmd.Id))
 		}
+		e.saveCommand(c, ch)
+		go e.watchExit(ctx, c.unitName())
 		e.mu.Unlock()
 	}
 }
@@ -397,9 +415,10 @@ func (e *Engine) park(ctx context.Context) {
 		cmd.Timeline = append(cmd.Timeline, &pb.CommandEvent{At: e.nowMs(), What: "parked", Detail: cmd.Reason})
 		victim.rec.Parks++
 		victim.rec.ParkedAt = e.nowMs()
-		e.saveCommand(victim)
-		e.sessionEvent(victim, "parked", cmd.Reason)
-		e.event("park", fmt.Sprintf("park %s · %s at %.0f%%", cmd.Argv, cmp.Or(mem.Domain, "memory"), pct), ref("command", cmd.Id))
+		e.saveCommand(victim, change{
+			what: "parked", detail: cmd.Reason,
+			feed: feed("park", fmt.Sprintf("park %s · %s at %.0f%%", cmd.Argv, cmp.Or(mem.Domain, "memory"), pct), ref("command", cmd.Id)),
+		})
 		return
 	}
 	if len(parkedCmds) == 0 {
@@ -421,9 +440,10 @@ func (e *Engine) park(ctx context.Context) {
 	cmd.State = running
 	cmd.Reason = ""
 	cmd.Timeline = append(cmd.Timeline, &pb.CommandEvent{At: e.nowMs(), What: "thawed", Detail: "after " + slept.String()})
-	e.saveCommand(oldest)
-	e.sessionEvent(oldest, "thawed", "after "+slept.String())
-	e.event("thaw", fmt.Sprintf("thaw %s after %s", cmd.Argv, slept), ref("command", cmd.Id))
+	e.saveCommand(oldest, change{
+		what: "thawed", detail: "after " + slept.String(),
+		feed: feed("thaw", fmt.Sprintf("thaw %s after %s", cmd.Argv, slept), ref("command", cmd.Id)),
+	})
 }
 
 // reap stops attached commands whose client went away: no one has followed
@@ -444,19 +464,19 @@ func (e *Engine) reap(ctx context.Context) {
 	}
 }
 
-// forget drops commands that ended a while ago; history keeps them.
+// forget drops commands that ended a while ago, which history keeps, and
+// workspaces released a while ago.
 func (e *Engine) forget() {
 	e.mu.Lock()
 	defer e.mu.Unlock()
+	e.forgetReleased()
 	for id, c := range e.commands {
 		if live(c.cmd().State) || c.cmd().EndedAt == nil {
 			continue
 		}
 		if time.Duration(e.nowMs()-c.cmd().GetEndedAt())*time.Millisecond > keepEnded {
 			delete(e.commands, id)
-			if err := e.db.delete("command", id); err != nil {
-				slog.Error("forget command", "command", id, "err", err)
-			}
+			e.deleteCommand(c)
 		}
 	}
 }
@@ -478,7 +498,6 @@ func (e *Engine) end(c *command, state pb.CommandState, code *int32, why string)
 		what, detail = "cancelled", why
 	}
 	cmd.Timeline = append(cmd.Timeline, &pb.CommandEvent{At: now, What: what, Detail: detail})
-	e.sessionEvent(c, what, detail)
 	// Its processes are gone: the unit has exited or been stopped.
 	go e.removeTmp(cmd.Id)
 
@@ -497,9 +516,8 @@ func (e *Engine) end(c *command, state pb.CommandState, code *int32, why string)
 		total := cold + seconds
 		cmd.ColdSeconds = &total
 	}
-	e.saveCommand(c)
-
 	if cmd.Kind == "freshen" {
+		e.saveCommand(c, change{what: what, detail: detail})
 		e.freshened(c, state == succeeded, seconds, units)
 		return
 	}
@@ -514,28 +532,31 @@ func (e *Engine) end(c *command, state pb.CommandState, code *int32, why string)
 		units, of := cmd.Rebuilt.Units, cmd.Rebuilt.Of
 		f.Rebuilt, f.Of = &units, &of
 	}
-	if _, err := e.db.enqueue("finished", f); err != nil {
-		slog.Error("queue finished command", "command", cmd.Id, "err", err)
-	}
-	if w, ok := e.workspaces[cmd.WorkspaceId]; ok {
-		w.ws().LastActiveAt = now
-		if w.ws().State == activeWS && !e.workspaceBusy(w.ws().Id) {
-			w.ws().State = idle
-		}
-		e.saveWorkspace(w)
-	}
 	r := ref("command", cmd.Id)
+	var line *pb.WorkerEvent
 	switch state {
 	case succeeded:
 		text := fmt.Sprintf("ok %s · %s · %s", cmd.Argv, c.rec.RepoId, dur(seconds))
 		if cmd.ColdSeconds != nil {
 			text += fmt.Sprintf(" (cold %s, %.0f×)", dur(*cmd.ColdSeconds), *cmd.ColdSeconds/max(seconds, 0.1))
 		}
-		e.event("finish", text, r)
+		line = feed("finish", text, r)
 	case failed:
-		e.event("fail", fmt.Sprintf("fail %s · %s · %s", cmd.Argv, c.rec.RepoId, orDefault(why, "exit "+codeText(code))), r)
+		line = feed("fail", fmt.Sprintf("fail %s · %s · %s", cmd.Argv, c.rec.RepoId, orDefault(why, "exit "+codeText(code))), r)
 	default:
-		e.event("finish", fmt.Sprintf("cancelled %s · %s", cmd.Argv, why), r)
+		line = feed("finish", fmt.Sprintf("cancelled %s · %s", cmd.Argv, why), r)
+	}
+	e.saveCommand(c, change{what: what, detail: detail, finished: f, feed: line})
+	if w, ok := e.workspaces[cmd.WorkspaceId]; ok {
+		w.ws().LastActiveAt = now
+		if w.ws().State == activeWS && !e.workspaceBusy(w.ws().Id) {
+			w.ws().State = idle
+		}
+		wsWhat := "active"
+		if w.ws().State == idle {
+			wsWhat = "idle"
+		}
+		e.saveWorkspace(w, change{what: wsWhat, detail: cmd.Id + " ended"})
 	}
 }
 

@@ -24,6 +24,7 @@ import (
 	"github.com/semistrict/hotbed/internal/gen/hotbed/v1/hotbedv1connect"
 	"github.com/semistrict/hotbed/internal/httpx"
 	"github.com/semistrict/hotbed/internal/statedir"
+	"github.com/semistrict/hotbed/internal/tailnet"
 )
 
 const (
@@ -123,49 +124,111 @@ func (s *Server) Join(ctx context.Context, _ *pb.JoinRequest) (*pb.JoinResponse,
 	return &pb.JoinResponse{ClusterId: s.cfg.Cluster.ClusterID, Node: s.withOnline(node)}, nil
 }
 
+// Report takes a report from a worker before the event stream.
 func (s *Server) Report(ctx context.Context, rep *pb.ReportRequest) (*pb.ReportResponse, error) {
-	peer := httpx.Peer(ctx)
-	if rep.ClusterId != s.cfg.Cluster.ClusterID {
-		return nil, api.Errorf(api.CodeClusterMismatch, "%s joined cluster %s, but this controller runs cluster %s", peer.Hostname, rep.ClusterId, s.cfg.Cluster.ClusterID).
-			WithSuggestion("join this cluster with a new state directory: hotbed join CONTROLLER DIR")
+	peer, err := s.fromWorker(ctx, rep.ClusterId)
+	if err != nil {
+		return nil, err
 	}
 	in, err := s.cfg.Store.Ingest(ctx, peer.NodeID, rep, s.now())
+	if err != nil {
+		return nil, s.notJoined(peer, err)
+	}
+	s.wakeAll(in.sessions)
+	if len(rep.Finished) > 0 {
+		s.settleSoon(ctx)
+	}
+	repos, release, err := s.hosting(ctx, peer)
+	if err != nil {
+		return nil, err
+	}
+	return &pb.ReportResponse{Ack: in.applied, Repos: repos, Release: release}, nil
+}
+
+// PushEvents folds a worker's events into its node's view, and wakes the
+// sessions they concern.
+func (s *Server) PushEvents(ctx context.Context, req *pb.PushEventsRequest) (*pb.PushEventsResponse, error) {
+	peer, err := s.fromWorker(ctx, req.ClusterId)
+	if err != nil {
+		return nil, err
+	}
+	in, err := s.cfg.Store.Push(ctx, peer.NodeID, req, s.now())
+	if err != nil {
+		return nil, s.notJoined(peer, err)
+	}
+	if req.Checkpoint != nil {
+		slog.Info("took a worker's checkpoint", "node", peer.Hostname, "epoch", req.Epoch, "seq", req.Checkpoint.Seq)
+	}
+	s.wakeAll(in.sessions)
+	if in.finished {
+		s.settleSoon(ctx)
+	}
+	return &pb.PushEventsResponse{Applied: in.applied, CheckpointNeeded: in.checkpointNeeded}, nil
+}
+
+// Heartbeat records a worker's live usage and tells it what to host.
+func (s *Server) Heartbeat(ctx context.Context, req *pb.HeartbeatRequest) (*pb.HeartbeatResponse, error) {
+	peer, err := s.fromWorker(ctx, req.ClusterId)
+	if err != nil {
+		return nil, err
+	}
+	if err := s.cfg.Store.Beat(ctx, peer.NodeID, req, s.now()); err != nil {
+		return nil, s.notJoined(peer, err)
+	}
+	repos, release, err := s.hosting(ctx, peer)
+	if err != nil {
+		return nil, err
+	}
+	return &pb.HeartbeatResponse{Repos: repos, Release: release}, nil
+}
+
+// fromWorker is the calling worker, which must be of this cluster.
+func (s *Server) fromWorker(ctx context.Context, clusterID string) (tailnet.Peer, error) {
+	peer := httpx.Peer(ctx)
+	if clusterID != s.cfg.Cluster.ClusterID {
+		return peer, api.Errorf(api.CodeClusterMismatch, "%s joined cluster %s, but this controller runs cluster %s", peer.Hostname, clusterID, s.cfg.Cluster.ClusterID).
+			WithSuggestion("join this cluster with a new state directory: hotbed join CONTROLLER DIR")
+	}
+	return peer, nil
+}
+
+func (s *Server) notJoined(peer tailnet.Peer, err error) error {
 	if errors.Is(err, errNotJoined) {
-		return nil, api.Errorf(api.CodeNotJoined, "%s has not joined this cluster", peer.Hostname).
+		return api.Errorf(api.CodeNotJoined, "%s has not joined this cluster", peer.Hostname).
 			WithSuggestion("join with a new state directory: hotbed join CONTROLLER DIR")
 	}
-	if err != nil {
-		return nil, err
-	}
-	for session := range in.sessions {
-		s.wake(session)
-	}
-	if len(rep.Finished) > 0 {
-		// A scheduled run whose command ended ends now, not at the next tick,
-		// even if the worker stops waiting for this answer meanwhile.
-		if err := s.settleRuns(context.WithoutCancel(ctx)); err != nil {
-			slog.Error("settle scheduled runs", "err", err)
-		}
-	}
+	return err
+}
+
+// hosting is what a worker should host: the repos it keeps bases of, and
+// the workspaces of ended sessions it still has, to release.
+func (s *Server) hosting(ctx context.Context, peer tailnet.Peer) ([]*pb.Repo, []string, error) {
 	repos, err := s.cfg.Store.Repos(ctx)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-	out := &pb.ReportResponse{Ack: in.ack}
-	for _, ws := range rep.Workspaces {
-		if ws.State == pb.WorkspaceState_WORKSPACE_STATE_RELEASED {
-			continue
-		}
-		if w, err := s.cfg.Store.Workspace(ctx, ws.Id); err == nil && w.released {
-			out.Release = append(out.Release, ws.Id)
-		}
-	}
+	var out []*pb.Repo
 	for _, repo := range repos {
 		if len(repo.Hosts) == 0 || slices.Contains(repo.Hosts, peer.Hostname) {
-			out.Repos = append(out.Repos, repo)
+			out = append(out, repo)
 		}
 	}
-	return out, nil
+	release, err := s.cfg.Store.ToRelease(ctx, peer.NodeID)
+	return out, release, err
+}
+
+// settleSoon settles the scheduled runs whose commands just ended: now,
+// not at the next tick, even if the worker stops waiting for the answer.
+func (s *Server) settleSoon(ctx context.Context) {
+	if err := s.settleRuns(context.WithoutCancel(ctx)); err != nil {
+		slog.Error("settle scheduled runs", "err", err)
+	}
+}
+
+func (s *Server) wakeAll(sessions map[string]bool) {
+	for session := range sessions {
+		s.wake(session)
+	}
 }
 
 func (s *Server) ListNodes(ctx context.Context, _ *pb.ListNodesRequest) (*pb.ListNodesResponse, error) {
@@ -332,14 +395,32 @@ func (s *Server) Reap(ctx context.Context) {
 	}
 }
 
-// ReapIdle ends every session nothing has touched for sessionIdle.
+// ReapIdle ends every session nothing has touched for sessionIdle. A
+// session with a workspace on a worker out of reach waits: clients may be
+// using that worker directly, and only its heartbeats would say so.
 func (s *Server) ReapIdle(ctx context.Context) error {
 	ids, err := s.cfg.Store.IdleSessions(ctx, s.now().Add(-sessionIdle))
 	if err != nil {
 		return err
 	}
+	rows, err := s.cfg.Store.Nodes(ctx)
+	if err != nil {
+		return err
+	}
+	offline := map[string]bool{}
+	for _, n := range rows {
+		offline[n.node.Id] = !s.withOnline(n.node).Online
+	}
 	var errs []error
 	for _, id := range ids {
+		sess, err := s.cfg.Store.Session(ctx, id)
+		if err != nil {
+			errs = append(errs, err)
+			continue
+		}
+		if slices.ContainsFunc(sess.Workspaces, func(w *pb.SessionWorkspace) bool { return w.ReleasedAt == nil && offline[w.NodeId] }) {
+			continue
+		}
 		slog.Info("ending abandoned session", "session", id)
 		if _, err := s.endSession(ctx, id, fmt.Sprintf("abandoned: nothing called it for %s", sessionIdle)); err != nil {
 			errs = append(errs, fmt.Errorf("%s: %w", id, err))

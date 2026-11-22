@@ -1,6 +1,7 @@
 package controller
 
 import (
+	"cmp"
 	"context"
 	"math"
 	"path/filepath"
@@ -22,7 +23,7 @@ const (
 func (s *Server) GetSnapshot(ctx context.Context, _ *pb.GetSnapshotRequest) (*pb.Snapshot, error) {
 	now := s.now()
 	day := now.Add(-24 * time.Hour)
-	rows, err := s.cfg.Store.Nodes(ctx)
+	nvs, err := s.views(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -60,20 +61,23 @@ func (s *Server) GetSnapshot(ctx context.Context, _ *pb.GetSnapshotRequest) (*pb
 		Now: now.UnixMilli(), SampleSeconds: sampleSeconds, Events: events, History: history,
 		Sessions: sessions, Schedules: schedules,
 	}
-	for _, n := range rows {
-		node := s.withOnline(n.node)
-		if !node.Online {
+	for _, nv := range nvs {
+		node := nv.node
+		if !nv.online {
 			node.Usage = &pb.NodeUsage{}
 		}
 		snap.Nodes = append(snap.Nodes, node)
-		if r := n.report; r != nil {
-			snap.Bases = append(snap.Bases, r.Bases...)
-			snap.Workspaces = append(snap.Workspaces, r.Workspaces...)
-			if node.Online {
-				snap.Commands = append(snap.Commands, r.Commands...)
+		snap.Bases = append(snap.Bases, nv.bases...)
+		snap.Workspaces = append(snap.Workspaces, nv.workspaces...)
+		if nv.online {
+			for _, c := range nv.commands {
+				if c.Kind != "freshen" {
+					snap.Commands = append(snap.Commands, c)
+				}
 			}
 		}
 	}
+	slices.SortFunc(snap.Commands, func(a, b *pb.Command) int { return cmp.Compare(a.QueuedAt, b.QueuedAt) })
 	for _, repo := range repos {
 		snap.Repos = append(snap.Repos, summarize(repo, snap.Bases))
 	}

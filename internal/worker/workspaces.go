@@ -40,12 +40,18 @@ func (e *Engine) CreateWorkspace(ctx context.Context, req *pb.CreateWorkspaceReq
 	if req.Id == "" {
 		return nil, api.Errorf(api.CodeInvalidArgs, "workspace has no ID")
 	}
+	e.mu.Lock()
 	r := req.RepoConfig
-	if r == nil {
-		e.mu.Lock()
+	if r != nil {
+		// The controller's word on the repo, newer than its last heartbeat's.
+		if e.repos == nil {
+			e.repos = map[string]*pb.Repo{}
+		}
+		e.repos[r.Id] = r
+	} else {
 		r = e.repos[req.Repo]
-		e.mu.Unlock()
 	}
+	e.mu.Unlock()
 	if r == nil {
 		return nil, api.Errorf(api.CodeNotFound, "this node does not host %s", req.Repo)
 	}
@@ -75,7 +81,7 @@ func (e *Engine) CreateWorkspace(ctx context.Context, req *pb.CreateWorkspaceReq
 	}}
 	e.mu.Lock()
 	e.workspaces[req.Id] = w
-	e.saveWorkspace(w)
+	e.saveWorkspace(w, change{what: "created", detail: w.ws().Reason})
 	// The base's freshen may have ended between baseFor and now, before
 	// this workspace was there to be forked or failed with it.
 	state := base.State
@@ -108,8 +114,7 @@ func (e *Engine) fork(ctx context.Context, w *workspace) error {
 	ws := w.ws()
 	if err != nil {
 		ws.State, ws.Reason = failedWS, "could not fork its base: "+err.Error()
-		e.saveWorkspace(w)
-		e.workspaceEvent(ws, "failed", ws.Reason)
+		e.saveWorkspace(w, change{what: "failed", detail: ws.Reason})
 		return err
 	}
 	ws.State, ws.Reason, ws.ForkMillis = idle, note, forkMs
@@ -117,9 +122,10 @@ func (e *Engine) fork(ctx context.Context, w *workspace) error {
 		ws.SharedBytes = b.SizeBytes
 	}
 	ws.LastActiveAt = e.nowMs()
-	e.saveWorkspace(w)
-	e.workspaceEvent(ws, "ready", fmt.Sprintf("forked from %s in %d ms", snap, forkMs))
-	e.event("fork", fmt.Sprintf("fork %s ← %s in %d ms · %s", ws.Id, snap, forkMs, ws.Agent), ref("workspace", ws.Id))
+	e.saveWorkspace(w, change{
+		what: "ready", detail: fmt.Sprintf("forked from %s in %d ms", snap, forkMs),
+		feed: feed("fork", fmt.Sprintf("fork %s ← %s in %d ms · %s", ws.Id, snap, forkMs, ws.Agent), ref("workspace", ws.Id)),
+	})
 	return nil
 }
 
@@ -160,7 +166,7 @@ func (e *Engine) baseFailed(b *pb.Base, why string) {
 			ws.BaseId, ws.Head, ws.BaseCommit = fallback.Id, fallback.Commit, fallback.Commit
 			w.rec.BaseSnapshot = fallback.Id
 			w.rec.Note = fmt.Sprintf("on %s, not up to date: %s", fallback.Id, why)
-			e.saveWorkspace(w)
+			e.saveWorkspace(w, change{what: "rebased", detail: w.rec.Note})
 			go func() {
 				if err := e.fork(context.Background(), w); err != nil {
 					slog.Error("fork workspace onto an older base", "workspace", ws.Id, "err", err)
@@ -169,8 +175,7 @@ func (e *Engine) baseFailed(b *pb.Base, why string) {
 			continue
 		}
 		ws.State, ws.Reason = failedWS, why
-		e.saveWorkspace(w)
-		e.workspaceEvent(ws, "failed", why)
+		e.saveWorkspace(w, change{what: "failed", detail: why})
 		for _, c := range e.commands {
 			if c.cmd().WorkspaceId == ws.Id && c.cmd().State == queued {
 				e.end(c, failed, nil, "its workspace failed: "+why)
@@ -242,8 +247,10 @@ func (e *Engine) ReleaseWorkspace(ctx context.Context, id string) error {
 	defer e.mu.Unlock()
 	w.ws().State = released
 	w.ws().LastActiveAt = e.nowMs()
-	e.saveWorkspace(w)
-	e.event("release", fmt.Sprintf("release %s · %s · %s freed", id, w.ws().Agent, gib(w.ws().ExclusiveBytes)), ref("workspace", id))
+	e.saveWorkspace(w, change{
+		what: "released",
+		feed: feed("release", fmt.Sprintf("release %s · %s · %s freed", id, w.ws().Agent, gib(w.ws().ExclusiveBytes)), ref("workspace", id)),
+	})
 	e.dropSuperseded(w.ws().RepoId)
 	e.collectSoon()
 	return nil
@@ -311,8 +318,7 @@ func (e *Engine) Sync(ctx context.Context, h *pb.SyncHeader, bundle io.Reader) (
 	cur := w.ws()
 	cur.Head, cur.Tree, cur.FilesChanged = commit, h.Tree, int32(changed)
 	cur.LastActiveAt = e.nowMs()
-	e.saveWorkspace(w)
-	e.changed()
+	e.saveWorkspace(w, change{what: "synced", detail: fmt.Sprintf("%d files changed", changed)})
 	return &pb.SyncResponse{WorkspaceId: ws.Id, Head: commit, Tree: h.Tree, FilesChanged: int32(changed), BundleBytes: n}, nil
 }
 
@@ -434,9 +440,7 @@ func (e *Engine) forgetReleased() {
 		}
 		if time.Duration(e.nowMs()-w.ws().LastActiveAt)*time.Millisecond > keepReleased {
 			delete(e.workspaces, id)
-			if err := e.db.delete("workspace", id); err != nil {
-				slog.Error("forget workspace", "workspace", id, "err", err)
-			}
+			e.deleteWorkspace(w)
 		}
 	}
 }

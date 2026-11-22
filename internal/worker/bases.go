@@ -159,17 +159,18 @@ func (e *Engine) startFreshen(ctx context.Context, r *pb.Repo, gen int32, prev *
 	}
 	e.mu.Lock()
 	defer e.mu.Unlock()
-	e.bases[b.Id] = b
-	e.saveBase(b)
-	e.commands[id] = c
-	e.saveCommand(c)
 	from := "from nothing"
 	if !cold {
 		from = fmt.Sprintf("from g%d", prev.Generation)
 	}
-	e.event("base", fmt.Sprintf("base %s g%d building %s at %s", r.Id, gen, from, short(commit)), ref("command", id))
+	e.bases[b.Id] = b
+	e.saveBase(b, change{
+		what: "building", detail: from,
+		feed: feed("base", fmt.Sprintf("base %s g%d building %s at %s", r.Id, gen, from, short(commit)), ref("command", id)),
+	})
+	e.commands[id] = c
+	e.saveCommand(c, change{what: "queued", detail: "base " + b.Id})
 	e.dropSuperseded(r.Id)
-	e.changed()
 	return clone(b), nil
 }
 
@@ -215,9 +216,8 @@ func (e *Engine) freshened(c *command, ok bool, seconds float64, units int) {
 		now := e.nowMs()
 		b.State = broken
 		b.BuiltAt = &now
-		e.saveBase(b)
 		why := baseFailure(b)
-		e.event("fail", why, ref("command", c.cmd().Id))
+		e.saveBase(b, change{what: "failed", detail: why, feed: feed("fail", why, ref("command", c.cmd().Id))})
 		e.baseFailed(b, why)
 		return
 	}
@@ -225,9 +225,8 @@ func (e *Engine) freshened(c *command, ok bool, seconds float64, units int) {
 	if err := e.cfg.Store.Snapshot(context.Background(), vol, b.Id); err != nil {
 		slog.Error("snapshot base", "base", b.Id, "err", err)
 		b.State = broken
-		e.saveBase(b)
 		why := fmt.Sprintf("base %s could not be snapshotted: %v", b.Id, err)
-		e.event("fail", why, nil)
+		e.saveBase(b, change{what: "failed", detail: why, feed: feed("fail", why, nil)})
 		e.baseFailed(b, why)
 		return
 	}
@@ -256,7 +255,7 @@ func (e *Engine) freshened(c *command, ok bool, seconds float64, units int) {
 		}
 		if o.Generation < b.Generation {
 			o.State = stale
-			e.saveBase(o)
+			e.saveBase(o, change{what: "stale", detail: "superseded by " + b.Id})
 		} else {
 			b.State = stale
 		}
@@ -264,8 +263,11 @@ func (e *Engine) freshened(c *command, ok bool, seconds float64, units int) {
 	if e.repos != nil && e.repos[b.RepoId] == nil {
 		b.State = stale // its repo was removed while it freshened
 	}
-	e.saveBase(b)
-	e.event("base", fmt.Sprintf("base %s g%d warm · built in %s", b.RepoId, b.Generation, dur(seconds)), nil)
+	what := "warm"
+	if b.State == stale {
+		what = "stale"
+	}
+	e.saveBase(b, change{what: what, feed: feed("base", fmt.Sprintf("base %s g%d warm · built in %s", b.RepoId, b.Generation, dur(seconds)), nil)})
 	e.collectSoon()
 	go e.forkPrepared(b.Id)
 }
@@ -320,9 +322,7 @@ func (e *Engine) collectBases(ctx context.Context) {
 		// e.repos is nil until the controller has said which repos exist.
 		if b.Generation < newest[b.RepoId] || (e.repos != nil && e.repos[b.RepoId] == nil) {
 			delete(e.bases, b.Id)
-			if err := e.db.delete("base", b.Id); err != nil {
-				slog.Error("forget base", "base", b.Id, "err", err)
-			}
+			e.deleteBase(b, "collected")
 		}
 		e.mu.Unlock()
 	}
@@ -388,8 +388,10 @@ func (e *Engine) dropSuperseded(repo string) {
 			continue
 		}
 		b.State = stale
-		e.saveBase(b)
-		e.event("base", fmt.Sprintf("base %s g%d dropped: superseded, and no workspace waits for it", b.RepoId, b.Generation), ref("command", b.Command))
+		e.saveBase(b, change{
+			what: "dropped", detail: "superseded, and no workspace waits for it",
+			feed: feed("base", fmt.Sprintf("base %s g%d dropped: superseded, and no workspace waits for it", b.RepoId, b.Generation), ref("command", b.Command)),
+		})
 		go func(command string) {
 			if _, err := e.Stop(context.Background(), command, "its base was superseded"); err != nil {
 				slog.Warn("stop a superseded base build", "command", command, "err", err)

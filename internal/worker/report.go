@@ -4,7 +4,6 @@ import (
 	"cmp"
 	"context"
 	"fmt"
-	"log/slog"
 	"os"
 	"os/user"
 	"sort"
@@ -16,42 +15,89 @@ import (
 	"github.com/semistrict/hotbed/internal/unit"
 )
 
-const maxReportItems = 500
-
-// Report is the worker's account of itself for the controller, with the
-// finished commands and events it has not had acknowledged.
-func (e *Engine) Report(clusterID string) (*pb.ReportRequest, error) {
-	items, err := e.db.pending(maxReportItems)
-	if err != nil {
-		return nil, err
-	}
+// Heartbeat is the worker's live usage for the controller: lossy, the
+// latest wins. It names the sessions clients used here since the last one,
+// which keeps them alive.
+func (e *Engine) Heartbeat(clusterID string) *pb.HeartbeatRequest {
 	e.mu.Lock()
 	defer e.mu.Unlock()
-	e.forgetReleased()
-	r := &pb.ReportRequest{
+	h := &pb.HeartbeatRequest{
 		ClusterId: clusterID, Resources: clone(e.resources), Usage: clone(e.usage),
 		DiskBytes: e.diskBytes, Disk: clone(e.disk), Storage: e.cfg.Store.Kind(), OomKills: e.oomKills,
 	}
 	for _, c := range e.commands {
-		if s := c.cmd().State; s == running || s == parked {
-			r.ReservedMemoryBytes += c.cmd().Limits.MemoryLowBytes
+		cmd := c.cmd()
+		if s := cmd.State; s == running || s == parked {
+			h.ReservedMemoryBytes += cmd.Limits.MemoryLowBytes
 		}
-		if c.cmd().Kind != "freshen" {
-			r.Commands = append(r.Commands, clone(c.cmd()))
+		if live(cmd.State) {
+			h.Commands = append(h.Commands, &pb.CommandUsage{Id: cmd.Id, CpuCores: cmd.CpuCores, MemoryBytes: cmd.MemoryBytes, SwapBytes: cmd.SwapBytes})
+		}
+		if c.followers > 0 && cmd.SessionId != "" {
+			e.active[cmd.SessionId] = true
 		}
 	}
 	for _, b := range e.bases {
+		u := &pb.BaseUsage{Id: b.Id, SizeBytes: b.SizeBytes, Progress: b.Progress}
 		if b.State == building {
-			b.Progress = e.baseProgress(b)
+			u.Progress = e.baseProgress(b)
 		}
-		r.Bases = append(r.Bases, clone(b))
+		h.Bases = append(h.Bases, u)
 	}
 	for _, w := range e.workspaces {
-		r.Workspaces = append(r.Workspaces, clone(w.ws()))
+		ws := w.ws()
+		h.Workspaces = append(h.Workspaces, &pb.WorkspaceUsage{Id: ws.Id, ExclusiveBytes: ws.ExclusiveBytes, SharedBytes: ws.SharedBytes})
 	}
-	sort.Slice(r.Commands, func(i, j int) bool { return r.Commands[i].QueuedAt < r.Commands[j].QueuedAt })
-	sort.Slice(r.Bases, func(i, j int) bool { return r.Bases[i].Id < r.Bases[j].Id })
-	sort.Slice(r.Workspaces, func(i, j int) bool { return r.Workspaces[i].Id < r.Workspaces[j].Id })
+	for s := range e.active {
+		h.ActiveSessions = append(h.ActiveSessions, s)
+	}
+	clear(e.active)
+	sort.Slice(h.Commands, func(i, j int) bool { return h.Commands[i].Id < h.Commands[j].Id })
+	sort.Slice(h.Bases, func(i, j int) bool { return h.Bases[i].Id < h.Bases[j].Id })
+	sort.Slice(h.Workspaces, func(i, j int) bool { return h.Workspaces[i].Id < h.Workspaces[j].Id })
+	sort.Strings(h.ActiveSessions)
+	return h
+}
+
+// usedWorkspace and usedCommand note that a client used a session's
+// workspace or command on this worker, for the next heartbeat.
+func (e *Engine) usedWorkspace(id string) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if w, ok := e.workspaces[id]; ok && w.ws().SessionId != "" {
+		e.active[w.ws().SessionId] = true
+	}
+}
+
+func (e *Engine) usedCommand(id string) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if c, ok := e.commands[id]; ok && c.cmd().SessionId != "" {
+		e.active[c.cmd().SessionId] = true
+	}
+}
+
+const maxLegacyItems = 500
+
+// legacyReport is a report as workers before the event stream sent it: the
+// whole state and the old outbox's items, which a worker upgraded with
+// items still queued delivers once that way.
+func (e *Engine) legacyReport(clusterID string, items []outboxItem) (*pb.ReportRequest, error) {
+	h := e.Heartbeat(clusterID)
+	cp, err := e.db.checkpoint()
+	if err != nil {
+		return nil, err
+	}
+	r := &pb.ReportRequest{
+		ClusterId: clusterID, Resources: h.Resources, Usage: h.Usage, DiskBytes: h.DiskBytes, Disk: h.Disk,
+		ReservedMemoryBytes: h.ReservedMemoryBytes, OomKills: h.OomKills, Storage: h.Storage,
+		Bases: cp.Bases, Workspaces: cp.Workspaces,
+	}
+	for _, c := range cp.Commands {
+		if c.Kind != "freshen" {
+			r.Commands = append(r.Commands, c)
+		}
+	}
 	for _, it := range items {
 		switch it.kind {
 		case "finished":
@@ -75,16 +121,6 @@ func (e *Engine) Report(clusterID string) (*pb.ReportRequest, error) {
 		}
 	}
 	return r, nil
-}
-
-// Acknowledged drops what the controller has stored.
-func (e *Engine) Acknowledged(seq int64) {
-	if seq <= 0 {
-		return
-	}
-	if err := e.db.ack(seq); err != nil {
-		slog.Error("drop acknowledged items", "seq", seq, "err", err)
-	}
 }
 
 // Command returns a command this node has, live or recently ended.

@@ -82,7 +82,7 @@ func (s *Server) ListSteps(ctx context.Context, req *pb.ListStepsRequest) (*pb.L
 	if err != nil {
 		return nil, err
 	}
-	rows, err := s.cfg.Store.Nodes(ctx)
+	nvs, err := s.views(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -91,12 +91,12 @@ func (s *Server) ListSteps(ctx context.Context, req *pb.ListStepsRequest) (*pb.L
 		base *pb.Base
 	}
 	var nodes []newest
-	for _, n := range rows {
+	for _, n := range nvs {
 		if len(r.Hosts) > 0 && !slices.Contains(r.Hosts, n.node.Hostname) {
 			continue
 		}
 		nb := newest{node: n.node.Hostname}
-		for _, b := range n.report.GetBases() {
+		for _, b := range n.bases {
 			if b.RepoId == r.Id && b.State != pb.BaseState_BASE_STATE_BUILDING && (nb.base == nil || b.Generation > nb.base.Generation) {
 				nb.base = b
 			}

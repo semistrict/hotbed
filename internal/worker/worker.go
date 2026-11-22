@@ -208,7 +208,7 @@ func Run(ctx context.Context, dir string, cfg statedir.WorkerConfig, tn Tailnet,
 		eng.Run(gctx)
 		return nil
 	})
-	g.Go(func() error { return Reports(gctx, eng, cluster, cfg.ClusterID) })
+	g.Go(func() error { return Connect(gctx, eng, cluster, cfg.ClusterID) })
 	g.Go(func() error {
 		<-gctx.Done()
 		shutdown, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
@@ -216,68 +216,6 @@ func Run(ctx context.Context, dir string, cfg statedir.WorkerConfig, tn Tailnet,
 		return srv.Shutdown(shutdown)
 	})
 	return g.Wait()
-}
-
-// Reports sends the engine's report every ReportInterval, and soon after
-// anything changes. It rides out failures a retry can fix, such as the
-// controller restarting, and stops at one it cannot.
-func Reports(ctx context.Context, eng *Engine, cluster hotbedv1connect.ClusterServiceClient, clusterID string) error {
-	t := time.NewTicker(api.ReportInterval)
-	defer t.Stop()
-	failing := false
-	for {
-		if err := ReportOnce(ctx, eng, cluster, clusterID); err != nil {
-			e := api.FromConnect(err)
-			switch {
-			case ctx.Err() != nil:
-				return nil
-			case e.Retryable:
-				if !failing {
-					slog.Warn("report failed; retrying", "err", e)
-				}
-				failing = true
-			default:
-				return e
-			}
-		} else {
-			if failing {
-				slog.Info("reporting to controller again")
-			}
-			failing = false
-		}
-		select {
-		case <-ctx.Done():
-			return nil
-		case <-t.C:
-		case <-eng.Kicked():
-			// Let a burst of changes settle into one report.
-			select {
-			case <-ctx.Done():
-				return nil
-			case <-time.After(300 * time.Millisecond):
-			}
-		}
-	}
-}
-
-// ReportOnce sends one report and applies the reply.
-func ReportOnce(ctx context.Context, eng *Engine, cluster hotbedv1connect.ClusterServiceClient, clusterID string) error {
-	r, err := eng.Report(clusterID)
-	if err != nil {
-		return err
-	}
-	reply, err := cluster.Report(ctx, r)
-	if err != nil {
-		return err
-	}
-	eng.Acknowledged(reply.Ack)
-	eng.SetRepos(reply.Repos)
-	for _, id := range reply.Release {
-		if err := eng.ReleaseWorkspace(ctx, id); err != nil && api.FromConnect(err).Code != api.CodeNotFound {
-			slog.Error("release workspace of an ended session", "workspace", id, "err", err)
-		}
-	}
-	return nil
 }
 
 // Handler serves an engine's WorkspaceService behind a gate.

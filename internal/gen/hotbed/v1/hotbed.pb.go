@@ -2005,7 +2005,10 @@ type Workspace struct {
 	SyncHost string `protobuf:"bytes,20,opt,name=sync_host,json=syncHost,proto3" json:"sync_host,omitempty"`
 	// Why it failed, what it waits for while preparing, or, once ready, why
 	// its base is not up to date (a step failed in the newer one).
-	Reason        string `protobuf:"bytes,21,opt,name=reason,proto3" json:"reason,omitempty"`
+	Reason string `protobuf:"bytes,21,opt,name=reason,proto3" json:"reason,omitempty"`
+	// Set by the controller: where clients call the workspace's worker
+	// (host:port) to sync, run commands and read their output.
+	NodeAddr      string `protobuf:"bytes,22,opt,name=node_addr,json=nodeAddr,proto3" json:"node_addr,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -2183,6 +2186,13 @@ func (x *Workspace) GetSyncHost() string {
 func (x *Workspace) GetReason() string {
 	if x != nil {
 		return x.Reason
+	}
+	return ""
+}
+
+func (x *Workspace) GetNodeAddr() string {
+	if x != nil {
+		return x.NodeAddr
 	}
 	return ""
 }
@@ -3263,8 +3273,10 @@ type Command struct {
 	Url      string          `protobuf:"bytes,19,opt,name=url,proto3" json:"url,omitempty"`
 	Timeline []*CommandEvent `protobuf:"bytes,20,rep,name=timeline,proto3" json:"timeline,omitempty"`
 	// Stops when no client has followed its output for a while.
-	Attached      bool   `protobuf:"varint,21,opt,name=attached,proto3" json:"attached,omitempty"`
-	SessionId     string `protobuf:"bytes,22,opt,name=session_id,json=sessionId,proto3" json:"session_id,omitempty"`
+	Attached  bool   `protobuf:"varint,21,opt,name=attached,proto3" json:"attached,omitempty"`
+	SessionId string `protobuf:"bytes,22,opt,name=session_id,json=sessionId,proto3" json:"session_id,omitempty"`
+	// Set by the controller: where clients call the command's worker.
+	NodeAddr      string `protobuf:"bytes,23,opt,name=node_addr,json=nodeAddr,proto3" json:"node_addr,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -3449,6 +3461,13 @@ func (x *Command) GetAttached() bool {
 func (x *Command) GetSessionId() string {
 	if x != nil {
 		return x.SessionId
+	}
+	return ""
+}
+
+func (x *Command) GetNodeAddr() string {
+	if x != nil {
+		return x.NodeAddr
 	}
 	return ""
 }
@@ -3663,7 +3682,8 @@ type RunCommandRequest struct {
 	Attached bool           `protobuf:"varint,6,opt,name=attached,proto3" json:"attached,omitempty"`
 	// The port a dev server listens on, for its URL.
 	Port int32 `protobuf:"varint,7,opt,name=port,proto3" json:"port,omitempty"`
-	// Set by the controller when it forwards the call to a worker.
+	// Set by the controller when it forwards the call to a worker; a worker
+	// called directly picks one when it is empty.
 	Id            string `protobuf:"bytes,8,opt,name=id,proto3" json:"id,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
@@ -5191,6 +5211,909 @@ func (x *ReportResponse) GetRelease() []string {
 	return nil
 }
 
+// Something that changed in a worker's own state: its bases, workspaces and
+// commands. The worker writes each event in the same transaction as the
+// change, numbered by a sequence that only grows, and the controller folds
+// them, in order, into its view of the node. Each change carries the whole
+// entity as it now is, so applying one twice changes nothing.
+type Event struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// The worker's; unique and increasing within its epoch.
+	Seq int64 `protobuf:"varint,1,opt,name=seq,proto3" json:"seq,omitempty"`
+	At  int64 `protobuf:"varint,2,opt,name=at,proto3" json:"at,omitempty"`
+	// Types that are valid to be assigned to Change:
+	//
+	//	*Event_Base
+	//	*Event_Workspace
+	//	*Event_Command
+	Change isEvent_Change `protobuf_oneof:"change"`
+	// A line for the cockpit's feed, when the change is worth one.
+	Feed          *WorkerEvent `protobuf:"bytes,6,opt,name=feed,proto3" json:"feed,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *Event) Reset() {
+	*x = Event{}
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[69]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *Event) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*Event) ProtoMessage() {}
+
+func (x *Event) ProtoReflect() protoreflect.Message {
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[69]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use Event.ProtoReflect.Descriptor instead.
+func (*Event) Descriptor() ([]byte, []int) {
+	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{69}
+}
+
+func (x *Event) GetSeq() int64 {
+	if x != nil {
+		return x.Seq
+	}
+	return 0
+}
+
+func (x *Event) GetAt() int64 {
+	if x != nil {
+		return x.At
+	}
+	return 0
+}
+
+func (x *Event) GetChange() isEvent_Change {
+	if x != nil {
+		return x.Change
+	}
+	return nil
+}
+
+func (x *Event) GetBase() *BaseChange {
+	if x != nil {
+		if x, ok := x.Change.(*Event_Base); ok {
+			return x.Base
+		}
+	}
+	return nil
+}
+
+func (x *Event) GetWorkspace() *WorkspaceChange {
+	if x != nil {
+		if x, ok := x.Change.(*Event_Workspace); ok {
+			return x.Workspace
+		}
+	}
+	return nil
+}
+
+func (x *Event) GetCommand() *CommandChange {
+	if x != nil {
+		if x, ok := x.Change.(*Event_Command); ok {
+			return x.Command
+		}
+	}
+	return nil
+}
+
+func (x *Event) GetFeed() *WorkerEvent {
+	if x != nil {
+		return x.Feed
+	}
+	return nil
+}
+
+type isEvent_Change interface {
+	isEvent_Change()
+}
+
+type Event_Base struct {
+	Base *BaseChange `protobuf:"bytes,3,opt,name=base,proto3,oneof"`
+}
+
+type Event_Workspace struct {
+	Workspace *WorkspaceChange `protobuf:"bytes,4,opt,name=workspace,proto3,oneof"`
+}
+
+type Event_Command struct {
+	Command *CommandChange `protobuf:"bytes,5,opt,name=command,proto3,oneof"`
+}
+
+func (*Event_Base) isEvent_Change() {}
+
+func (*Event_Workspace) isEvent_Change() {}
+
+func (*Event_Command) isEvent_Change() {}
+
+type BaseChange struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// building, warm, stale, failed, dropped (superseded while building), or
+	// collected (the worker deleted it: drop it from the view).
+	What          string `protobuf:"bytes,1,opt,name=what,proto3" json:"what,omitempty"`
+	Base          *Base  `protobuf:"bytes,2,opt,name=base,proto3" json:"base,omitempty"`
+	Detail        string `protobuf:"bytes,3,opt,name=detail,proto3" json:"detail,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *BaseChange) Reset() {
+	*x = BaseChange{}
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[70]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *BaseChange) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*BaseChange) ProtoMessage() {}
+
+func (x *BaseChange) ProtoReflect() protoreflect.Message {
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[70]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use BaseChange.ProtoReflect.Descriptor instead.
+func (*BaseChange) Descriptor() ([]byte, []int) {
+	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{70}
+}
+
+func (x *BaseChange) GetWhat() string {
+	if x != nil {
+		return x.What
+	}
+	return ""
+}
+
+func (x *BaseChange) GetBase() *Base {
+	if x != nil {
+		return x.Base
+	}
+	return nil
+}
+
+func (x *BaseChange) GetDetail() string {
+	if x != nil {
+		return x.Detail
+	}
+	return ""
+}
+
+type WorkspaceChange struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// created (preparing), ready, rebased (onto an older base: its own failed
+	// to freshen), failed, synced, active, idle, released, or forgotten (the
+	// worker deleted it, a while after its release).
+	What          string     `protobuf:"bytes,1,opt,name=what,proto3" json:"what,omitempty"`
+	Workspace     *Workspace `protobuf:"bytes,2,opt,name=workspace,proto3" json:"workspace,omitempty"`
+	Detail        string     `protobuf:"bytes,3,opt,name=detail,proto3" json:"detail,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *WorkspaceChange) Reset() {
+	*x = WorkspaceChange{}
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[71]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *WorkspaceChange) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*WorkspaceChange) ProtoMessage() {}
+
+func (x *WorkspaceChange) ProtoReflect() protoreflect.Message {
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[71]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use WorkspaceChange.ProtoReflect.Descriptor instead.
+func (*WorkspaceChange) Descriptor() ([]byte, []int) {
+	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{71}
+}
+
+func (x *WorkspaceChange) GetWhat() string {
+	if x != nil {
+		return x.What
+	}
+	return ""
+}
+
+func (x *WorkspaceChange) GetWorkspace() *Workspace {
+	if x != nil {
+		return x.Workspace
+	}
+	return nil
+}
+
+func (x *WorkspaceChange) GetDetail() string {
+	if x != nil {
+		return x.Detail
+	}
+	return ""
+}
+
+type CommandChange struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// queued, waiting (why it is not admitted changed), admitted, parked,
+	// thawed, exited, cancelled, or forgotten (deleted a while after it ended).
+	What    string   `protobuf:"bytes,1,opt,name=what,proto3" json:"what,omitempty"`
+	Command *Command `protobuf:"bytes,2,opt,name=command,proto3" json:"command,omitempty"`
+	Detail  string   `protobuf:"bytes,3,opt,name=detail,proto3" json:"detail,omitempty"`
+	// Set when a command (not a freshen) ends: the history entry.
+	Finished      *FinishedCommand `protobuf:"bytes,4,opt,name=finished,proto3" json:"finished,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *CommandChange) Reset() {
+	*x = CommandChange{}
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[72]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *CommandChange) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*CommandChange) ProtoMessage() {}
+
+func (x *CommandChange) ProtoReflect() protoreflect.Message {
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[72]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use CommandChange.ProtoReflect.Descriptor instead.
+func (*CommandChange) Descriptor() ([]byte, []int) {
+	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{72}
+}
+
+func (x *CommandChange) GetWhat() string {
+	if x != nil {
+		return x.What
+	}
+	return ""
+}
+
+func (x *CommandChange) GetCommand() *Command {
+	if x != nil {
+		return x.Command
+	}
+	return nil
+}
+
+func (x *CommandChange) GetDetail() string {
+	if x != nil {
+		return x.Detail
+	}
+	return ""
+}
+
+func (x *CommandChange) GetFinished() *FinishedCommand {
+	if x != nil {
+		return x.Finished
+	}
+	return nil
+}
+
+// Everything a worker has, as of an event: what the controller starts from
+// when it has no view of the node it can continue (a new controller, or a
+// worker whose database is new).
+type Checkpoint struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// The last event the state includes; events after it follow.
+	Seq           int64        `protobuf:"varint,1,opt,name=seq,proto3" json:"seq,omitempty"`
+	Bases         []*Base      `protobuf:"bytes,2,rep,name=bases,proto3" json:"bases,omitempty"`
+	Workspaces    []*Workspace `protobuf:"bytes,3,rep,name=workspaces,proto3" json:"workspaces,omitempty"`
+	Commands      []*Command   `protobuf:"bytes,4,rep,name=commands,proto3" json:"commands,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *Checkpoint) Reset() {
+	*x = Checkpoint{}
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[73]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *Checkpoint) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*Checkpoint) ProtoMessage() {}
+
+func (x *Checkpoint) ProtoReflect() protoreflect.Message {
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[73]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use Checkpoint.ProtoReflect.Descriptor instead.
+func (*Checkpoint) Descriptor() ([]byte, []int) {
+	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{73}
+}
+
+func (x *Checkpoint) GetSeq() int64 {
+	if x != nil {
+		return x.Seq
+	}
+	return 0
+}
+
+func (x *Checkpoint) GetBases() []*Base {
+	if x != nil {
+		return x.Bases
+	}
+	return nil
+}
+
+func (x *Checkpoint) GetWorkspaces() []*Workspace {
+	if x != nil {
+		return x.Workspaces
+	}
+	return nil
+}
+
+func (x *Checkpoint) GetCommands() []*Command {
+	if x != nil {
+		return x.Commands
+	}
+	return nil
+}
+
+type PushEventsRequest struct {
+	state     protoimpl.MessageState `protogen:"open.v1"`
+	ClusterId string                 `protobuf:"bytes,1,opt,name=cluster_id,json=clusterId,proto3" json:"cluster_id,omitempty"`
+	// Names the worker's database. A worker whose database was lost starts
+	// a new epoch, and its sequence starts again.
+	Epoch string `protobuf:"bytes,2,opt,name=epoch,proto3" json:"epoch,omitempty"`
+	// In order, each after the controller's applied; may be empty, to learn
+	// where the controller is.
+	Events []*Event `protobuf:"bytes,3,rep,name=events,proto3" json:"events,omitempty"`
+	// Instead of events, when the controller asked for one.
+	Checkpoint    *Checkpoint `protobuf:"bytes,4,opt,name=checkpoint,proto3" json:"checkpoint,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *PushEventsRequest) Reset() {
+	*x = PushEventsRequest{}
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[74]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *PushEventsRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*PushEventsRequest) ProtoMessage() {}
+
+func (x *PushEventsRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[74]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use PushEventsRequest.ProtoReflect.Descriptor instead.
+func (*PushEventsRequest) Descriptor() ([]byte, []int) {
+	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{74}
+}
+
+func (x *PushEventsRequest) GetClusterId() string {
+	if x != nil {
+		return x.ClusterId
+	}
+	return ""
+}
+
+func (x *PushEventsRequest) GetEpoch() string {
+	if x != nil {
+		return x.Epoch
+	}
+	return ""
+}
+
+func (x *PushEventsRequest) GetEvents() []*Event {
+	if x != nil {
+		return x.Events
+	}
+	return nil
+}
+
+func (x *PushEventsRequest) GetCheckpoint() *Checkpoint {
+	if x != nil {
+		return x.Checkpoint
+	}
+	return nil
+}
+
+type PushEventsResponse struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// The last event of this epoch the controller has applied; the worker
+	// sends what follows.
+	Applied int64 `protobuf:"varint,1,opt,name=applied,proto3" json:"applied,omitempty"`
+	// The controller has no view of this epoch to continue: send a checkpoint.
+	CheckpointNeeded bool `protobuf:"varint,2,opt,name=checkpoint_needed,json=checkpointNeeded,proto3" json:"checkpoint_needed,omitempty"`
+	unknownFields    protoimpl.UnknownFields
+	sizeCache        protoimpl.SizeCache
+}
+
+func (x *PushEventsResponse) Reset() {
+	*x = PushEventsResponse{}
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[75]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *PushEventsResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*PushEventsResponse) ProtoMessage() {}
+
+func (x *PushEventsResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[75]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use PushEventsResponse.ProtoReflect.Descriptor instead.
+func (*PushEventsResponse) Descriptor() ([]byte, []int) {
+	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{75}
+}
+
+func (x *PushEventsResponse) GetApplied() int64 {
+	if x != nil {
+		return x.Applied
+	}
+	return 0
+}
+
+func (x *PushEventsResponse) GetCheckpointNeeded() bool {
+	if x != nil {
+		return x.CheckpointNeeded
+	}
+	return false
+}
+
+type CommandUsage struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Id            string                 `protobuf:"bytes,1,opt,name=id,proto3" json:"id,omitempty"`
+	CpuCores      float64                `protobuf:"fixed64,2,opt,name=cpu_cores,json=cpuCores,proto3" json:"cpu_cores,omitempty"`
+	MemoryBytes   int64                  `protobuf:"varint,3,opt,name=memory_bytes,json=memoryBytes,proto3" json:"memory_bytes,omitempty"`
+	SwapBytes     int64                  `protobuf:"varint,4,opt,name=swap_bytes,json=swapBytes,proto3" json:"swap_bytes,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *CommandUsage) Reset() {
+	*x = CommandUsage{}
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[76]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *CommandUsage) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*CommandUsage) ProtoMessage() {}
+
+func (x *CommandUsage) ProtoReflect() protoreflect.Message {
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[76]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use CommandUsage.ProtoReflect.Descriptor instead.
+func (*CommandUsage) Descriptor() ([]byte, []int) {
+	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{76}
+}
+
+func (x *CommandUsage) GetId() string {
+	if x != nil {
+		return x.Id
+	}
+	return ""
+}
+
+func (x *CommandUsage) GetCpuCores() float64 {
+	if x != nil {
+		return x.CpuCores
+	}
+	return 0
+}
+
+func (x *CommandUsage) GetMemoryBytes() int64 {
+	if x != nil {
+		return x.MemoryBytes
+	}
+	return 0
+}
+
+func (x *CommandUsage) GetSwapBytes() int64 {
+	if x != nil {
+		return x.SwapBytes
+	}
+	return 0
+}
+
+type BaseUsage struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	Id    string                 `protobuf:"bytes,1,opt,name=id,proto3" json:"id,omitempty"`
+	// Share of freshen steps done while building, 0..1.
+	Progress      float64 `protobuf:"fixed64,2,opt,name=progress,proto3" json:"progress,omitempty"`
+	SizeBytes     int64   `protobuf:"varint,3,opt,name=size_bytes,json=sizeBytes,proto3" json:"size_bytes,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *BaseUsage) Reset() {
+	*x = BaseUsage{}
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[77]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *BaseUsage) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*BaseUsage) ProtoMessage() {}
+
+func (x *BaseUsage) ProtoReflect() protoreflect.Message {
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[77]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use BaseUsage.ProtoReflect.Descriptor instead.
+func (*BaseUsage) Descriptor() ([]byte, []int) {
+	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{77}
+}
+
+func (x *BaseUsage) GetId() string {
+	if x != nil {
+		return x.Id
+	}
+	return ""
+}
+
+func (x *BaseUsage) GetProgress() float64 {
+	if x != nil {
+		return x.Progress
+	}
+	return 0
+}
+
+func (x *BaseUsage) GetSizeBytes() int64 {
+	if x != nil {
+		return x.SizeBytes
+	}
+	return 0
+}
+
+type WorkspaceUsage struct {
+	state          protoimpl.MessageState `protogen:"open.v1"`
+	Id             string                 `protobuf:"bytes,1,opt,name=id,proto3" json:"id,omitempty"`
+	ExclusiveBytes int64                  `protobuf:"varint,2,opt,name=exclusive_bytes,json=exclusiveBytes,proto3" json:"exclusive_bytes,omitempty"`
+	SharedBytes    int64                  `protobuf:"varint,3,opt,name=shared_bytes,json=sharedBytes,proto3" json:"shared_bytes,omitempty"`
+	unknownFields  protoimpl.UnknownFields
+	sizeCache      protoimpl.SizeCache
+}
+
+func (x *WorkspaceUsage) Reset() {
+	*x = WorkspaceUsage{}
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[78]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *WorkspaceUsage) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*WorkspaceUsage) ProtoMessage() {}
+
+func (x *WorkspaceUsage) ProtoReflect() protoreflect.Message {
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[78]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use WorkspaceUsage.ProtoReflect.Descriptor instead.
+func (*WorkspaceUsage) Descriptor() ([]byte, []int) {
+	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{78}
+}
+
+func (x *WorkspaceUsage) GetId() string {
+	if x != nil {
+		return x.Id
+	}
+	return ""
+}
+
+func (x *WorkspaceUsage) GetExclusiveBytes() int64 {
+	if x != nil {
+		return x.ExclusiveBytes
+	}
+	return 0
+}
+
+func (x *WorkspaceUsage) GetSharedBytes() int64 {
+	if x != nil {
+		return x.SharedBytes
+	}
+	return 0
+}
+
+type HeartbeatRequest struct {
+	state               protoimpl.MessageState `protogen:"open.v1"`
+	ClusterId           string                 `protobuf:"bytes,1,opt,name=cluster_id,json=clusterId,proto3" json:"cluster_id,omitempty"`
+	Resources           *Resources             `protobuf:"bytes,2,opt,name=resources,proto3" json:"resources,omitempty"`
+	Usage               *NodeUsage             `protobuf:"bytes,3,opt,name=usage,proto3" json:"usage,omitempty"`
+	DiskBytes           int64                  `protobuf:"varint,4,opt,name=disk_bytes,json=diskBytes,proto3" json:"disk_bytes,omitempty"`
+	Disk                *DiskUsage             `protobuf:"bytes,5,opt,name=disk,proto3" json:"disk,omitempty"`
+	ReservedMemoryBytes int64                  `protobuf:"varint,6,opt,name=reserved_memory_bytes,json=reservedMemoryBytes,proto3" json:"reserved_memory_bytes,omitempty"`
+	OomKills            int64                  `protobuf:"varint,7,opt,name=oom_kills,json=oomKills,proto3" json:"oom_kills,omitempty"`
+	Storage             string                 `protobuf:"bytes,8,opt,name=storage,proto3" json:"storage,omitempty"`
+	Commands            []*CommandUsage        `protobuf:"bytes,9,rep,name=commands,proto3" json:"commands,omitempty"`
+	Bases               []*BaseUsage           `protobuf:"bytes,10,rep,name=bases,proto3" json:"bases,omitempty"`
+	Workspaces          []*WorkspaceUsage      `protobuf:"bytes,11,rep,name=workspaces,proto3" json:"workspaces,omitempty"`
+	// Sessions whose workspaces or commands clients used on this worker
+	// since the last heartbeat, or that a client follows now: calls the
+	// controller does not see, which keep a session alive.
+	ActiveSessions []string `protobuf:"bytes,12,rep,name=active_sessions,json=activeSessions,proto3" json:"active_sessions,omitempty"`
+	unknownFields  protoimpl.UnknownFields
+	sizeCache      protoimpl.SizeCache
+}
+
+func (x *HeartbeatRequest) Reset() {
+	*x = HeartbeatRequest{}
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[79]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *HeartbeatRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*HeartbeatRequest) ProtoMessage() {}
+
+func (x *HeartbeatRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[79]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use HeartbeatRequest.ProtoReflect.Descriptor instead.
+func (*HeartbeatRequest) Descriptor() ([]byte, []int) {
+	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{79}
+}
+
+func (x *HeartbeatRequest) GetClusterId() string {
+	if x != nil {
+		return x.ClusterId
+	}
+	return ""
+}
+
+func (x *HeartbeatRequest) GetResources() *Resources {
+	if x != nil {
+		return x.Resources
+	}
+	return nil
+}
+
+func (x *HeartbeatRequest) GetUsage() *NodeUsage {
+	if x != nil {
+		return x.Usage
+	}
+	return nil
+}
+
+func (x *HeartbeatRequest) GetDiskBytes() int64 {
+	if x != nil {
+		return x.DiskBytes
+	}
+	return 0
+}
+
+func (x *HeartbeatRequest) GetDisk() *DiskUsage {
+	if x != nil {
+		return x.Disk
+	}
+	return nil
+}
+
+func (x *HeartbeatRequest) GetReservedMemoryBytes() int64 {
+	if x != nil {
+		return x.ReservedMemoryBytes
+	}
+	return 0
+}
+
+func (x *HeartbeatRequest) GetOomKills() int64 {
+	if x != nil {
+		return x.OomKills
+	}
+	return 0
+}
+
+func (x *HeartbeatRequest) GetStorage() string {
+	if x != nil {
+		return x.Storage
+	}
+	return ""
+}
+
+func (x *HeartbeatRequest) GetCommands() []*CommandUsage {
+	if x != nil {
+		return x.Commands
+	}
+	return nil
+}
+
+func (x *HeartbeatRequest) GetBases() []*BaseUsage {
+	if x != nil {
+		return x.Bases
+	}
+	return nil
+}
+
+func (x *HeartbeatRequest) GetWorkspaces() []*WorkspaceUsage {
+	if x != nil {
+		return x.Workspaces
+	}
+	return nil
+}
+
+func (x *HeartbeatRequest) GetActiveSessions() []string {
+	if x != nil {
+		return x.ActiveSessions
+	}
+	return nil
+}
+
+type HeartbeatResponse struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// The repos this worker keeps bases of.
+	Repos []*Repo `protobuf:"bytes,1,rep,name=repos,proto3" json:"repos,omitempty"`
+	// Workspaces to release: their sessions ended.
+	Release       []string `protobuf:"bytes,2,rep,name=release,proto3" json:"release,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *HeartbeatResponse) Reset() {
+	*x = HeartbeatResponse{}
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[80]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *HeartbeatResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*HeartbeatResponse) ProtoMessage() {}
+
+func (x *HeartbeatResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[80]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use HeartbeatResponse.ProtoReflect.Descriptor instead.
+func (*HeartbeatResponse) Descriptor() ([]byte, []int) {
+	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{80}
+}
+
+func (x *HeartbeatResponse) GetRepos() []*Repo {
+	if x != nil {
+		return x.Repos
+	}
+	return nil
+}
+
+func (x *HeartbeatResponse) GetRelease() []string {
+	if x != nil {
+		return x.Release
+	}
+	return nil
+}
+
 // A repo as the cockpit describes it, from its newest cold base.
 type RepoSummary struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
@@ -5206,7 +6129,7 @@ type RepoSummary struct {
 
 func (x *RepoSummary) Reset() {
 	*x = RepoSummary{}
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[69]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[81]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -5218,7 +6141,7 @@ func (x *RepoSummary) String() string {
 func (*RepoSummary) ProtoMessage() {}
 
 func (x *RepoSummary) ProtoReflect() protoreflect.Message {
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[69]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[81]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -5231,7 +6154,7 @@ func (x *RepoSummary) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RepoSummary.ProtoReflect.Descriptor instead.
 func (*RepoSummary) Descriptor() ([]byte, []int) {
-	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{69}
+	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{81}
 }
 
 func (x *RepoSummary) GetId() string {
@@ -5283,7 +6206,7 @@ type ClusterEvent struct {
 
 func (x *ClusterEvent) Reset() {
 	*x = ClusterEvent{}
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[70]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[82]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -5295,7 +6218,7 @@ func (x *ClusterEvent) String() string {
 func (*ClusterEvent) ProtoMessage() {}
 
 func (x *ClusterEvent) ProtoReflect() protoreflect.Message {
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[70]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[82]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -5308,7 +6231,7 @@ func (x *ClusterEvent) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ClusterEvent.ProtoReflect.Descriptor instead.
 func (*ClusterEvent) Descriptor() ([]byte, []int) {
-	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{70}
+	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{82}
 }
 
 func (x *ClusterEvent) GetId() int64 {
@@ -5368,7 +6291,7 @@ type Totals struct {
 
 func (x *Totals) Reset() {
 	*x = Totals{}
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[71]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[83]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -5380,7 +6303,7 @@ func (x *Totals) String() string {
 func (*Totals) ProtoMessage() {}
 
 func (x *Totals) ProtoReflect() protoreflect.Message {
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[71]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[83]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -5393,7 +6316,7 @@ func (x *Totals) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Totals.ProtoReflect.Descriptor instead.
 func (*Totals) Descriptor() ([]byte, []int) {
-	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{71}
+	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{83}
 }
 
 func (x *Totals) GetSavedSeconds() float64 {
@@ -5450,7 +6373,7 @@ type Sample struct {
 
 func (x *Sample) Reset() {
 	*x = Sample{}
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[72]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[84]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -5462,7 +6385,7 @@ func (x *Sample) String() string {
 func (*Sample) ProtoMessage() {}
 
 func (x *Sample) ProtoReflect() protoreflect.Message {
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[72]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[84]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -5475,7 +6398,7 @@ func (x *Sample) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Sample.ProtoReflect.Descriptor instead.
 func (*Sample) Descriptor() ([]byte, []int) {
-	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{72}
+	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{84}
 }
 
 func (x *Sample) GetT() int64 {
@@ -5515,7 +6438,7 @@ type Samples struct {
 
 func (x *Samples) Reset() {
 	*x = Samples{}
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[73]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[85]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -5527,7 +6450,7 @@ func (x *Samples) String() string {
 func (*Samples) ProtoMessage() {}
 
 func (x *Samples) ProtoReflect() protoreflect.Message {
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[73]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[85]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -5540,7 +6463,7 @@ func (x *Samples) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Samples.ProtoReflect.Descriptor instead.
 func (*Samples) Descriptor() ([]byte, []int) {
-	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{73}
+	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{85}
 }
 
 func (x *Samples) GetSamples() []*Sample {
@@ -5563,7 +6486,7 @@ type LoadSample struct {
 
 func (x *LoadSample) Reset() {
 	*x = LoadSample{}
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[74]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[86]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -5575,7 +6498,7 @@ func (x *LoadSample) String() string {
 func (*LoadSample) ProtoMessage() {}
 
 func (x *LoadSample) ProtoReflect() protoreflect.Message {
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[74]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[86]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -5588,7 +6511,7 @@ func (x *LoadSample) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use LoadSample.ProtoReflect.Descriptor instead.
 func (*LoadSample) Descriptor() ([]byte, []int) {
-	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{74}
+	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{86}
 }
 
 func (x *LoadSample) GetT() int64 {
@@ -5635,7 +6558,7 @@ type HourBucket struct {
 
 func (x *HourBucket) Reset() {
 	*x = HourBucket{}
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[75]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[87]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -5647,7 +6570,7 @@ func (x *HourBucket) String() string {
 func (*HourBucket) ProtoMessage() {}
 
 func (x *HourBucket) ProtoReflect() protoreflect.Message {
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[75]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[87]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -5660,7 +6583,7 @@ func (x *HourBucket) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use HourBucket.ProtoReflect.Descriptor instead.
 func (*HourBucket) Descriptor() ([]byte, []int) {
-	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{75}
+	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{87}
 }
 
 func (x *HourBucket) GetHour() int64 {
@@ -5723,7 +6646,7 @@ type NodeHour struct {
 
 func (x *NodeHour) Reset() {
 	*x = NodeHour{}
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[76]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[88]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -5735,7 +6658,7 @@ func (x *NodeHour) String() string {
 func (*NodeHour) ProtoMessage() {}
 
 func (x *NodeHour) ProtoReflect() protoreflect.Message {
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[76]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[88]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -5748,7 +6671,7 @@ func (x *NodeHour) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use NodeHour.ProtoReflect.Descriptor instead.
 func (*NodeHour) Descriptor() ([]byte, []int) {
-	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{76}
+	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{88}
 }
 
 func (x *NodeHour) GetHour() int64 {
@@ -5781,7 +6704,7 @@ type NodeHours struct {
 
 func (x *NodeHours) Reset() {
 	*x = NodeHours{}
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[77]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[89]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -5793,7 +6716,7 @@ func (x *NodeHours) String() string {
 func (*NodeHours) ProtoMessage() {}
 
 func (x *NodeHours) ProtoReflect() protoreflect.Message {
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[77]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[89]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -5806,7 +6729,7 @@ func (x *NodeHours) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use NodeHours.ProtoReflect.Descriptor instead.
 func (*NodeHours) Descriptor() ([]byte, []int) {
-	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{77}
+	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{89}
 }
 
 func (x *NodeHours) GetHours() []*NodeHour {
@@ -5824,7 +6747,7 @@ type GetSnapshotRequest struct {
 
 func (x *GetSnapshotRequest) Reset() {
 	*x = GetSnapshotRequest{}
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[78]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[90]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -5836,7 +6759,7 @@ func (x *GetSnapshotRequest) String() string {
 func (*GetSnapshotRequest) ProtoMessage() {}
 
 func (x *GetSnapshotRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[78]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[90]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -5849,7 +6772,7 @@ func (x *GetSnapshotRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetSnapshotRequest.ProtoReflect.Descriptor instead.
 func (*GetSnapshotRequest) Descriptor() ([]byte, []int) {
-	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{78}
+	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{90}
 }
 
 type Snapshot struct {
@@ -5881,7 +6804,7 @@ type Snapshot struct {
 
 func (x *Snapshot) Reset() {
 	*x = Snapshot{}
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[79]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[91]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -5893,7 +6816,7 @@ func (x *Snapshot) String() string {
 func (*Snapshot) ProtoMessage() {}
 
 func (x *Snapshot) ProtoReflect() protoreflect.Message {
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[79]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[91]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -5906,7 +6829,7 @@ func (x *Snapshot) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Snapshot.ProtoReflect.Descriptor instead.
 func (*Snapshot) Descriptor() ([]byte, []int) {
-	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{79}
+	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{91}
 }
 
 func (x *Snapshot) GetClusterId() string {
@@ -6062,7 +6985,7 @@ type ScheduledCommand struct {
 
 func (x *ScheduledCommand) Reset() {
 	*x = ScheduledCommand{}
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[80]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[92]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -6074,7 +6997,7 @@ func (x *ScheduledCommand) String() string {
 func (*ScheduledCommand) ProtoMessage() {}
 
 func (x *ScheduledCommand) ProtoReflect() protoreflect.Message {
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[80]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[92]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -6087,7 +7010,7 @@ func (x *ScheduledCommand) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ScheduledCommand.ProtoReflect.Descriptor instead.
 func (*ScheduledCommand) Descriptor() ([]byte, []int) {
-	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{80}
+	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{92}
 }
 
 func (x *ScheduledCommand) GetName() string {
@@ -6182,7 +7105,7 @@ type ScheduledRun struct {
 
 func (x *ScheduledRun) Reset() {
 	*x = ScheduledRun{}
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[81]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[93]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -6194,7 +7117,7 @@ func (x *ScheduledRun) String() string {
 func (*ScheduledRun) ProtoMessage() {}
 
 func (x *ScheduledRun) ProtoReflect() protoreflect.Message {
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[81]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[93]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -6207,7 +7130,7 @@ func (x *ScheduledRun) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ScheduledRun.ProtoReflect.Descriptor instead.
 func (*ScheduledRun) Descriptor() ([]byte, []int) {
-	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{81}
+	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{93}
 }
 
 func (x *ScheduledRun) GetId() int64 {
@@ -6303,7 +7226,7 @@ type PutScheduleRequest struct {
 
 func (x *PutScheduleRequest) Reset() {
 	*x = PutScheduleRequest{}
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[82]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[94]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -6315,7 +7238,7 @@ func (x *PutScheduleRequest) String() string {
 func (*PutScheduleRequest) ProtoMessage() {}
 
 func (x *PutScheduleRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[82]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[94]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -6328,7 +7251,7 @@ func (x *PutScheduleRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PutScheduleRequest.ProtoReflect.Descriptor instead.
 func (*PutScheduleRequest) Descriptor() ([]byte, []int) {
-	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{82}
+	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{94}
 }
 
 func (x *PutScheduleRequest) GetSchedule() *ScheduledCommand {
@@ -6346,7 +7269,7 @@ type ListSchedulesRequest struct {
 
 func (x *ListSchedulesRequest) Reset() {
 	*x = ListSchedulesRequest{}
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[83]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[95]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -6358,7 +7281,7 @@ func (x *ListSchedulesRequest) String() string {
 func (*ListSchedulesRequest) ProtoMessage() {}
 
 func (x *ListSchedulesRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[83]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[95]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -6371,7 +7294,7 @@ func (x *ListSchedulesRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListSchedulesRequest.ProtoReflect.Descriptor instead.
 func (*ListSchedulesRequest) Descriptor() ([]byte, []int) {
-	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{83}
+	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{95}
 }
 
 type ListSchedulesResponse struct {
@@ -6383,7 +7306,7 @@ type ListSchedulesResponse struct {
 
 func (x *ListSchedulesResponse) Reset() {
 	*x = ListSchedulesResponse{}
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[84]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[96]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -6395,7 +7318,7 @@ func (x *ListSchedulesResponse) String() string {
 func (*ListSchedulesResponse) ProtoMessage() {}
 
 func (x *ListSchedulesResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[84]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[96]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -6408,7 +7331,7 @@ func (x *ListSchedulesResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListSchedulesResponse.ProtoReflect.Descriptor instead.
 func (*ListSchedulesResponse) Descriptor() ([]byte, []int) {
-	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{84}
+	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{96}
 }
 
 func (x *ListSchedulesResponse) GetSchedules() []*ScheduledCommand {
@@ -6427,7 +7350,7 @@ type GetScheduleRequest struct {
 
 func (x *GetScheduleRequest) Reset() {
 	*x = GetScheduleRequest{}
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[85]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[97]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -6439,7 +7362,7 @@ func (x *GetScheduleRequest) String() string {
 func (*GetScheduleRequest) ProtoMessage() {}
 
 func (x *GetScheduleRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[85]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[97]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -6452,7 +7375,7 @@ func (x *GetScheduleRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetScheduleRequest.ProtoReflect.Descriptor instead.
 func (*GetScheduleRequest) Descriptor() ([]byte, []int) {
-	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{85}
+	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{97}
 }
 
 func (x *GetScheduleRequest) GetName() string {
@@ -6471,7 +7394,7 @@ type DeleteScheduleRequest struct {
 
 func (x *DeleteScheduleRequest) Reset() {
 	*x = DeleteScheduleRequest{}
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[86]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[98]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -6483,7 +7406,7 @@ func (x *DeleteScheduleRequest) String() string {
 func (*DeleteScheduleRequest) ProtoMessage() {}
 
 func (x *DeleteScheduleRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[86]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[98]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -6496,7 +7419,7 @@ func (x *DeleteScheduleRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DeleteScheduleRequest.ProtoReflect.Descriptor instead.
 func (*DeleteScheduleRequest) Descriptor() ([]byte, []int) {
-	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{86}
+	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{98}
 }
 
 func (x *DeleteScheduleRequest) GetName() string {
@@ -6514,7 +7437,7 @@ type DeleteScheduleResponse struct {
 
 func (x *DeleteScheduleResponse) Reset() {
 	*x = DeleteScheduleResponse{}
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[87]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[99]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -6526,7 +7449,7 @@ func (x *DeleteScheduleResponse) String() string {
 func (*DeleteScheduleResponse) ProtoMessage() {}
 
 func (x *DeleteScheduleResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[87]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[99]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -6539,7 +7462,7 @@ func (x *DeleteScheduleResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DeleteScheduleResponse.ProtoReflect.Descriptor instead.
 func (*DeleteScheduleResponse) Descriptor() ([]byte, []int) {
-	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{87}
+	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{99}
 }
 
 type RunScheduleRequest struct {
@@ -6551,7 +7474,7 @@ type RunScheduleRequest struct {
 
 func (x *RunScheduleRequest) Reset() {
 	*x = RunScheduleRequest{}
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[88]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[100]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -6563,7 +7486,7 @@ func (x *RunScheduleRequest) String() string {
 func (*RunScheduleRequest) ProtoMessage() {}
 
 func (x *RunScheduleRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[88]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[100]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -6576,7 +7499,7 @@ func (x *RunScheduleRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RunScheduleRequest.ProtoReflect.Descriptor instead.
 func (*RunScheduleRequest) Descriptor() ([]byte, []int) {
-	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{88}
+	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{100}
 }
 
 func (x *RunScheduleRequest) GetName() string {
@@ -6596,7 +7519,7 @@ type PauseScheduleRequest struct {
 
 func (x *PauseScheduleRequest) Reset() {
 	*x = PauseScheduleRequest{}
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[89]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[101]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -6608,7 +7531,7 @@ func (x *PauseScheduleRequest) String() string {
 func (*PauseScheduleRequest) ProtoMessage() {}
 
 func (x *PauseScheduleRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[89]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[101]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -6621,7 +7544,7 @@ func (x *PauseScheduleRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PauseScheduleRequest.ProtoReflect.Descriptor instead.
 func (*PauseScheduleRequest) Descriptor() ([]byte, []int) {
-	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{89}
+	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{101}
 }
 
 func (x *PauseScheduleRequest) GetName() string {
@@ -6778,7 +7701,7 @@ const file_hotbed_v1_hotbed_proto_rawDesc = "" +
 	"\rscratch_epoch\x18\x11 \x01(\x03R\fscratchEpoch\x12,\n" +
 	"\x05steps\x18\x12 \x03(\v2\x16.hotbed.v1.AppliedStepR\x05steps\x12\x16\n" +
 	"\x06recipe\x18\x13 \x01(\tR\x06recipeB\v\n" +
-	"\t_built_at\"\xe8\x04\n" +
+	"\t_built_at\"\x85\x05\n" +
 	"\tWorkspace\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x17\n" +
 	"\arepo_id\x18\x02 \x01(\tR\x06repoId\x12\x17\n" +
@@ -6805,7 +7728,8 @@ const file_hotbed_v1_hotbed_proto_rawDesc = "" +
 	"session_id\x18\x12 \x01(\tR\tsessionId\x12\x19\n" +
 	"\bsync_dir\x18\x13 \x01(\tR\asyncDir\x12\x1b\n" +
 	"\tsync_host\x18\x14 \x01(\tR\bsyncHost\x12\x16\n" +
-	"\x06reason\x18\x15 \x01(\tR\x06reason\"\x87\x02\n" +
+	"\x06reason\x18\x15 \x01(\tR\x06reason\x12\x1b\n" +
+	"\tnode_addr\x18\x16 \x01(\tR\bnodeAddr\"\x87\x02\n" +
 	"\x16CreateWorkspaceRequest\x12\x12\n" +
 	"\x04repo\x18\x01 \x01(\tR\x04repo\x12\x14\n" +
 	"\x05agent\x18\x02 \x01(\tR\x05agent\x12\x16\n" +
@@ -6876,7 +7800,7 @@ const file_hotbed_v1_hotbed_proto_rawDesc = "" +
 	"\fCommandEvent\x12\x0e\n" +
 	"\x02at\x18\x01 \x01(\x03R\x02at\x12\x12\n" +
 	"\x04what\x18\x02 \x01(\tR\x04what\x12\x16\n" +
-	"\x06detail\x18\x03 \x01(\tR\x06detail\"\xff\x05\n" +
+	"\x06detail\x18\x03 \x01(\tR\x06detail\"\x9c\x06\n" +
 	"\aCommand\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12!\n" +
 	"\fworkspace_id\x18\x02 \x01(\tR\vworkspaceId\x12\x17\n" +
@@ -6903,7 +7827,8 @@ const file_hotbed_v1_hotbed_proto_rawDesc = "" +
 	"\btimeline\x18\x14 \x03(\v2\x17.hotbed.v1.CommandEventR\btimeline\x12\x1a\n" +
 	"\battached\x18\x15 \x01(\bR\battached\x12\x1d\n" +
 	"\n" +
-	"session_id\x18\x16 \x01(\tR\tsessionIdB\r\n" +
+	"session_id\x18\x16 \x01(\tR\tsessionId\x12\x1b\n" +
+	"\tnode_addr\x18\x17 \x01(\tR\bnodeAddrB\r\n" +
 	"\v_started_atB\v\n" +
 	"\t_ended_atB\f\n" +
 	"\n" +
@@ -7069,7 +7994,84 @@ const file_hotbed_v1_hotbed_proto_rawDesc = "" +
 	"\x0eReportResponse\x12\x10\n" +
 	"\x03ack\x18\x01 \x01(\x03R\x03ack\x12%\n" +
 	"\x05repos\x18\x02 \x03(\v2\x0f.hotbed.v1.RepoR\x05repos\x12\x18\n" +
-	"\arelease\x18\x03 \x03(\tR\arelease\"\x91\x01\n" +
+	"\arelease\x18\x03 \x03(\tR\arelease\"\xfe\x01\n" +
+	"\x05Event\x12\x10\n" +
+	"\x03seq\x18\x01 \x01(\x03R\x03seq\x12\x0e\n" +
+	"\x02at\x18\x02 \x01(\x03R\x02at\x12+\n" +
+	"\x04base\x18\x03 \x01(\v2\x15.hotbed.v1.BaseChangeH\x00R\x04base\x12:\n" +
+	"\tworkspace\x18\x04 \x01(\v2\x1a.hotbed.v1.WorkspaceChangeH\x00R\tworkspace\x124\n" +
+	"\acommand\x18\x05 \x01(\v2\x18.hotbed.v1.CommandChangeH\x00R\acommand\x12*\n" +
+	"\x04feed\x18\x06 \x01(\v2\x16.hotbed.v1.WorkerEventR\x04feedB\b\n" +
+	"\x06change\"]\n" +
+	"\n" +
+	"BaseChange\x12\x12\n" +
+	"\x04what\x18\x01 \x01(\tR\x04what\x12#\n" +
+	"\x04base\x18\x02 \x01(\v2\x0f.hotbed.v1.BaseR\x04base\x12\x16\n" +
+	"\x06detail\x18\x03 \x01(\tR\x06detail\"q\n" +
+	"\x0fWorkspaceChange\x12\x12\n" +
+	"\x04what\x18\x01 \x01(\tR\x04what\x122\n" +
+	"\tworkspace\x18\x02 \x01(\v2\x14.hotbed.v1.WorkspaceR\tworkspace\x12\x16\n" +
+	"\x06detail\x18\x03 \x01(\tR\x06detail\"\xa1\x01\n" +
+	"\rCommandChange\x12\x12\n" +
+	"\x04what\x18\x01 \x01(\tR\x04what\x12,\n" +
+	"\acommand\x18\x02 \x01(\v2\x12.hotbed.v1.CommandR\acommand\x12\x16\n" +
+	"\x06detail\x18\x03 \x01(\tR\x06detail\x126\n" +
+	"\bfinished\x18\x04 \x01(\v2\x1a.hotbed.v1.FinishedCommandR\bfinished\"\xab\x01\n" +
+	"\n" +
+	"Checkpoint\x12\x10\n" +
+	"\x03seq\x18\x01 \x01(\x03R\x03seq\x12%\n" +
+	"\x05bases\x18\x02 \x03(\v2\x0f.hotbed.v1.BaseR\x05bases\x124\n" +
+	"\n" +
+	"workspaces\x18\x03 \x03(\v2\x14.hotbed.v1.WorkspaceR\n" +
+	"workspaces\x12.\n" +
+	"\bcommands\x18\x04 \x03(\v2\x12.hotbed.v1.CommandR\bcommands\"\xa9\x01\n" +
+	"\x11PushEventsRequest\x12\x1d\n" +
+	"\n" +
+	"cluster_id\x18\x01 \x01(\tR\tclusterId\x12\x14\n" +
+	"\x05epoch\x18\x02 \x01(\tR\x05epoch\x12(\n" +
+	"\x06events\x18\x03 \x03(\v2\x10.hotbed.v1.EventR\x06events\x125\n" +
+	"\n" +
+	"checkpoint\x18\x04 \x01(\v2\x15.hotbed.v1.CheckpointR\n" +
+	"checkpoint\"[\n" +
+	"\x12PushEventsResponse\x12\x18\n" +
+	"\aapplied\x18\x01 \x01(\x03R\aapplied\x12+\n" +
+	"\x11checkpoint_needed\x18\x02 \x01(\bR\x10checkpointNeeded\"}\n" +
+	"\fCommandUsage\x12\x0e\n" +
+	"\x02id\x18\x01 \x01(\tR\x02id\x12\x1b\n" +
+	"\tcpu_cores\x18\x02 \x01(\x01R\bcpuCores\x12!\n" +
+	"\fmemory_bytes\x18\x03 \x01(\x03R\vmemoryBytes\x12\x1d\n" +
+	"\n" +
+	"swap_bytes\x18\x04 \x01(\x03R\tswapBytes\"V\n" +
+	"\tBaseUsage\x12\x0e\n" +
+	"\x02id\x18\x01 \x01(\tR\x02id\x12\x1a\n" +
+	"\bprogress\x18\x02 \x01(\x01R\bprogress\x12\x1d\n" +
+	"\n" +
+	"size_bytes\x18\x03 \x01(\x03R\tsizeBytes\"l\n" +
+	"\x0eWorkspaceUsage\x12\x0e\n" +
+	"\x02id\x18\x01 \x01(\tR\x02id\x12'\n" +
+	"\x0fexclusive_bytes\x18\x02 \x01(\x03R\x0eexclusiveBytes\x12!\n" +
+	"\fshared_bytes\x18\x03 \x01(\x03R\vsharedBytes\"\x8a\x04\n" +
+	"\x10HeartbeatRequest\x12\x1d\n" +
+	"\n" +
+	"cluster_id\x18\x01 \x01(\tR\tclusterId\x122\n" +
+	"\tresources\x18\x02 \x01(\v2\x14.hotbed.v1.ResourcesR\tresources\x12*\n" +
+	"\x05usage\x18\x03 \x01(\v2\x14.hotbed.v1.NodeUsageR\x05usage\x12\x1d\n" +
+	"\n" +
+	"disk_bytes\x18\x04 \x01(\x03R\tdiskBytes\x12(\n" +
+	"\x04disk\x18\x05 \x01(\v2\x14.hotbed.v1.DiskUsageR\x04disk\x122\n" +
+	"\x15reserved_memory_bytes\x18\x06 \x01(\x03R\x13reservedMemoryBytes\x12\x1b\n" +
+	"\toom_kills\x18\a \x01(\x03R\boomKills\x12\x18\n" +
+	"\astorage\x18\b \x01(\tR\astorage\x123\n" +
+	"\bcommands\x18\t \x03(\v2\x17.hotbed.v1.CommandUsageR\bcommands\x12*\n" +
+	"\x05bases\x18\n" +
+	" \x03(\v2\x14.hotbed.v1.BaseUsageR\x05bases\x129\n" +
+	"\n" +
+	"workspaces\x18\v \x03(\v2\x19.hotbed.v1.WorkspaceUsageR\n" +
+	"workspaces\x12'\n" +
+	"\x0factive_sessions\x18\f \x03(\tR\x0eactiveSessions\"T\n" +
+	"\x11HeartbeatResponse\x12%\n" +
+	"\x05repos\x18\x01 \x03(\v2\x0f.hotbed.v1.RepoR\x05repos\x12\x18\n" +
+	"\arelease\x18\x02 \x03(\tR\arelease\"\x91\x01\n" +
 	"\vRepoSummary\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x12\n" +
 	"\x04name\x18\x02 \x01(\tR\x04name\x12\x1a\n" +
@@ -7241,10 +8243,13 @@ const file_hotbed_v1_hotbed_proto_rawDesc = "" +
 	"\x15RUN_OUTCOME_CANCELLED\x10\x04\x12\x1b\n" +
 	"\x17RUN_OUTCOME_NOT_STARTED\x10\x05\x12\x17\n" +
 	"\x13RUN_OUTCOME_SKIPPED\x10\x06\x12\x16\n" +
-	"\x12RUN_OUTCOME_MISSED\x10\a2\xd8\x05\n" +
+	"\x12RUN_OUTCOME_MISSED\x10\a2\xeb\x06\n" +
 	"\x0eClusterService\x127\n" +
 	"\x04Join\x12\x16.hotbed.v1.JoinRequest\x1a\x17.hotbed.v1.JoinResponse\x12=\n" +
-	"\x06Report\x12\x18.hotbed.v1.ReportRequest\x1a\x19.hotbed.v1.ReportResponse\x12F\n" +
+	"\x06Report\x12\x18.hotbed.v1.ReportRequest\x1a\x19.hotbed.v1.ReportResponse\x12I\n" +
+	"\n" +
+	"PushEvents\x12\x1c.hotbed.v1.PushEventsRequest\x1a\x1d.hotbed.v1.PushEventsResponse\x12F\n" +
+	"\tHeartbeat\x12\x1b.hotbed.v1.HeartbeatRequest\x1a\x1c.hotbed.v1.HeartbeatResponse\x12F\n" +
 	"\tListNodes\x12\x1b.hotbed.v1.ListNodesRequest\x1a\x1c.hotbed.v1.ListNodesResponse\x12F\n" +
 	"\tListRepos\x12\x1b.hotbed.v1.ListReposRequest\x1a\x1c.hotbed.v1.ListReposResponse\x125\n" +
 	"\aPutRepo\x12\x19.hotbed.v1.PutRepoRequest\x1a\x0f.hotbed.v1.Repo\x12I\n" +
@@ -7299,7 +8304,7 @@ func file_hotbed_v1_hotbed_proto_rawDescGZIP() []byte {
 }
 
 var file_hotbed_v1_hotbed_proto_enumTypes = make([]protoimpl.EnumInfo, 5)
-var file_hotbed_v1_hotbed_proto_msgTypes = make([]protoimpl.MessageInfo, 92)
+var file_hotbed_v1_hotbed_proto_msgTypes = make([]protoimpl.MessageInfo, 104)
 var file_hotbed_v1_hotbed_proto_goTypes = []any{
 	(StepState)(0),                   // 0: hotbed.v1.StepState
 	(BaseState)(0),                   // 1: hotbed.v1.BaseState
@@ -7375,29 +8380,41 @@ var file_hotbed_v1_hotbed_proto_goTypes = []any{
 	(*SequencedSessionEvent)(nil),    // 71: hotbed.v1.SequencedSessionEvent
 	(*ReportRequest)(nil),            // 72: hotbed.v1.ReportRequest
 	(*ReportResponse)(nil),           // 73: hotbed.v1.ReportResponse
-	(*RepoSummary)(nil),              // 74: hotbed.v1.RepoSummary
-	(*ClusterEvent)(nil),             // 75: hotbed.v1.ClusterEvent
-	(*Totals)(nil),                   // 76: hotbed.v1.Totals
-	(*Sample)(nil),                   // 77: hotbed.v1.Sample
-	(*Samples)(nil),                  // 78: hotbed.v1.Samples
-	(*LoadSample)(nil),               // 79: hotbed.v1.LoadSample
-	(*HourBucket)(nil),               // 80: hotbed.v1.HourBucket
-	(*NodeHour)(nil),                 // 81: hotbed.v1.NodeHour
-	(*NodeHours)(nil),                // 82: hotbed.v1.NodeHours
-	(*GetSnapshotRequest)(nil),       // 83: hotbed.v1.GetSnapshotRequest
-	(*Snapshot)(nil),                 // 84: hotbed.v1.Snapshot
-	(*ScheduledCommand)(nil),         // 85: hotbed.v1.ScheduledCommand
-	(*ScheduledRun)(nil),             // 86: hotbed.v1.ScheduledRun
-	(*PutScheduleRequest)(nil),       // 87: hotbed.v1.PutScheduleRequest
-	(*ListSchedulesRequest)(nil),     // 88: hotbed.v1.ListSchedulesRequest
-	(*ListSchedulesResponse)(nil),    // 89: hotbed.v1.ListSchedulesResponse
-	(*GetScheduleRequest)(nil),       // 90: hotbed.v1.GetScheduleRequest
-	(*DeleteScheduleRequest)(nil),    // 91: hotbed.v1.DeleteScheduleRequest
-	(*DeleteScheduleResponse)(nil),   // 92: hotbed.v1.DeleteScheduleResponse
-	(*RunScheduleRequest)(nil),       // 93: hotbed.v1.RunScheduleRequest
-	(*PauseScheduleRequest)(nil),     // 94: hotbed.v1.PauseScheduleRequest
-	nil,                              // 95: hotbed.v1.Snapshot.SeriesEntry
-	nil,                              // 96: hotbed.v1.Snapshot.NodeHourlyEntry
+	(*Event)(nil),                    // 74: hotbed.v1.Event
+	(*BaseChange)(nil),               // 75: hotbed.v1.BaseChange
+	(*WorkspaceChange)(nil),          // 76: hotbed.v1.WorkspaceChange
+	(*CommandChange)(nil),            // 77: hotbed.v1.CommandChange
+	(*Checkpoint)(nil),               // 78: hotbed.v1.Checkpoint
+	(*PushEventsRequest)(nil),        // 79: hotbed.v1.PushEventsRequest
+	(*PushEventsResponse)(nil),       // 80: hotbed.v1.PushEventsResponse
+	(*CommandUsage)(nil),             // 81: hotbed.v1.CommandUsage
+	(*BaseUsage)(nil),                // 82: hotbed.v1.BaseUsage
+	(*WorkspaceUsage)(nil),           // 83: hotbed.v1.WorkspaceUsage
+	(*HeartbeatRequest)(nil),         // 84: hotbed.v1.HeartbeatRequest
+	(*HeartbeatResponse)(nil),        // 85: hotbed.v1.HeartbeatResponse
+	(*RepoSummary)(nil),              // 86: hotbed.v1.RepoSummary
+	(*ClusterEvent)(nil),             // 87: hotbed.v1.ClusterEvent
+	(*Totals)(nil),                   // 88: hotbed.v1.Totals
+	(*Sample)(nil),                   // 89: hotbed.v1.Sample
+	(*Samples)(nil),                  // 90: hotbed.v1.Samples
+	(*LoadSample)(nil),               // 91: hotbed.v1.LoadSample
+	(*HourBucket)(nil),               // 92: hotbed.v1.HourBucket
+	(*NodeHour)(nil),                 // 93: hotbed.v1.NodeHour
+	(*NodeHours)(nil),                // 94: hotbed.v1.NodeHours
+	(*GetSnapshotRequest)(nil),       // 95: hotbed.v1.GetSnapshotRequest
+	(*Snapshot)(nil),                 // 96: hotbed.v1.Snapshot
+	(*ScheduledCommand)(nil),         // 97: hotbed.v1.ScheduledCommand
+	(*ScheduledRun)(nil),             // 98: hotbed.v1.ScheduledRun
+	(*PutScheduleRequest)(nil),       // 99: hotbed.v1.PutScheduleRequest
+	(*ListSchedulesRequest)(nil),     // 100: hotbed.v1.ListSchedulesRequest
+	(*ListSchedulesResponse)(nil),    // 101: hotbed.v1.ListSchedulesResponse
+	(*GetScheduleRequest)(nil),       // 102: hotbed.v1.GetScheduleRequest
+	(*DeleteScheduleRequest)(nil),    // 103: hotbed.v1.DeleteScheduleRequest
+	(*DeleteScheduleResponse)(nil),   // 104: hotbed.v1.DeleteScheduleResponse
+	(*RunScheduleRequest)(nil),       // 105: hotbed.v1.RunScheduleRequest
+	(*PauseScheduleRequest)(nil),     // 106: hotbed.v1.PauseScheduleRequest
+	nil,                              // 107: hotbed.v1.Snapshot.SeriesEntry
+	nil,                              // 108: hotbed.v1.Snapshot.NodeHourlyEntry
 }
 var file_hotbed_v1_hotbed_proto_depIdxs = []int32{
 	6,   // 0: hotbed.v1.Node.resources:type_name -> hotbed.v1.Resources
@@ -7444,103 +8461,127 @@ var file_hotbed_v1_hotbed_proto_depIdxs = []int32{
 	70,  // 41: hotbed.v1.ReportRequest.events:type_name -> hotbed.v1.SequencedEvent
 	71,  // 42: hotbed.v1.ReportRequest.session_events:type_name -> hotbed.v1.SequencedSessionEvent
 	14,  // 43: hotbed.v1.ReportResponse.repos:type_name -> hotbed.v1.Repo
-	68,  // 44: hotbed.v1.ClusterEvent.ref:type_name -> hotbed.v1.EventRef
-	77,  // 45: hotbed.v1.Samples.samples:type_name -> hotbed.v1.Sample
-	81,  // 46: hotbed.v1.NodeHours.hours:type_name -> hotbed.v1.NodeHour
-	9,   // 47: hotbed.v1.Snapshot.nodes:type_name -> hotbed.v1.Node
-	74,  // 48: hotbed.v1.Snapshot.repos:type_name -> hotbed.v1.RepoSummary
-	29,  // 49: hotbed.v1.Snapshot.bases:type_name -> hotbed.v1.Base
-	30,  // 50: hotbed.v1.Snapshot.workspaces:type_name -> hotbed.v1.Workspace
-	49,  // 51: hotbed.v1.Snapshot.commands:type_name -> hotbed.v1.Command
-	75,  // 52: hotbed.v1.Snapshot.events:type_name -> hotbed.v1.ClusterEvent
-	76,  // 53: hotbed.v1.Snapshot.totals24h:type_name -> hotbed.v1.Totals
-	95,  // 54: hotbed.v1.Snapshot.series:type_name -> hotbed.v1.Snapshot.SeriesEntry
-	79,  // 55: hotbed.v1.Snapshot.load:type_name -> hotbed.v1.LoadSample
-	80,  // 56: hotbed.v1.Snapshot.hourly:type_name -> hotbed.v1.HourBucket
-	96,  // 57: hotbed.v1.Snapshot.node_hourly:type_name -> hotbed.v1.Snapshot.NodeHourlyEntry
-	50,  // 58: hotbed.v1.Snapshot.history:type_name -> hotbed.v1.FinishedCommand
-	58,  // 59: hotbed.v1.Snapshot.sessions:type_name -> hotbed.v1.Session
-	85,  // 60: hotbed.v1.Snapshot.schedules:type_name -> hotbed.v1.ScheduledCommand
-	51,  // 61: hotbed.v1.ScheduledCommand.command:type_name -> hotbed.v1.RunCommandRequest
-	86,  // 62: hotbed.v1.ScheduledCommand.runs:type_name -> hotbed.v1.ScheduledRun
-	4,   // 63: hotbed.v1.ScheduledRun.outcome:type_name -> hotbed.v1.RunOutcome
-	85,  // 64: hotbed.v1.PutScheduleRequest.schedule:type_name -> hotbed.v1.ScheduledCommand
-	85,  // 65: hotbed.v1.ListSchedulesResponse.schedules:type_name -> hotbed.v1.ScheduledCommand
-	78,  // 66: hotbed.v1.Snapshot.SeriesEntry.value:type_name -> hotbed.v1.Samples
-	82,  // 67: hotbed.v1.Snapshot.NodeHourlyEntry.value:type_name -> hotbed.v1.NodeHours
-	10,  // 68: hotbed.v1.ClusterService.Join:input_type -> hotbed.v1.JoinRequest
-	72,  // 69: hotbed.v1.ClusterService.Report:input_type -> hotbed.v1.ReportRequest
-	12,  // 70: hotbed.v1.ClusterService.ListNodes:input_type -> hotbed.v1.ListNodesRequest
-	23,  // 71: hotbed.v1.ClusterService.ListRepos:input_type -> hotbed.v1.ListReposRequest
-	25,  // 72: hotbed.v1.ClusterService.PutRepo:input_type -> hotbed.v1.PutRepoRequest
-	26,  // 73: hotbed.v1.ClusterService.DeleteRepo:input_type -> hotbed.v1.DeleteRepoRequest
-	28,  // 74: hotbed.v1.ClusterService.RebuildRepo:input_type -> hotbed.v1.RebuildRepoRequest
-	17,  // 75: hotbed.v1.ClusterService.PutStep:input_type -> hotbed.v1.PutStepRequest
-	18,  // 76: hotbed.v1.ClusterService.DeleteStep:input_type -> hotbed.v1.DeleteStepRequest
-	19,  // 77: hotbed.v1.ClusterService.ListSteps:input_type -> hotbed.v1.ListStepsRequest
-	83,  // 78: hotbed.v1.ClusterService.GetSnapshot:input_type -> hotbed.v1.GetSnapshotRequest
-	60,  // 79: hotbed.v1.SessionService.StartSession:input_type -> hotbed.v1.StartSessionRequest
-	61,  // 80: hotbed.v1.SessionService.EndSession:input_type -> hotbed.v1.EndSessionRequest
-	62,  // 81: hotbed.v1.SessionService.WatchSession:input_type -> hotbed.v1.WatchSessionRequest
-	31,  // 82: hotbed.v1.WorkspaceService.CreateWorkspace:input_type -> hotbed.v1.CreateWorkspaceRequest
-	32,  // 83: hotbed.v1.WorkspaceService.GetWorkspace:input_type -> hotbed.v1.GetWorkspaceRequest
-	33,  // 84: hotbed.v1.WorkspaceService.WatchWorkspace:input_type -> hotbed.v1.WatchWorkspaceRequest
-	34,  // 85: hotbed.v1.WorkspaceService.ListWorkspaces:input_type -> hotbed.v1.ListWorkspacesRequest
-	36,  // 86: hotbed.v1.WorkspaceService.ReleaseWorkspace:input_type -> hotbed.v1.ReleaseWorkspaceRequest
-	38,  // 87: hotbed.v1.WorkspaceService.Sync:input_type -> hotbed.v1.SyncRequest
-	42,  // 88: hotbed.v1.WorkspaceService.ListFiles:input_type -> hotbed.v1.ListFilesRequest
-	44,  // 89: hotbed.v1.WorkspaceService.GetFile:input_type -> hotbed.v1.GetFileRequest
-	51,  // 90: hotbed.v1.WorkspaceService.RunCommand:input_type -> hotbed.v1.RunCommandRequest
-	52,  // 91: hotbed.v1.WorkspaceService.GetCommand:input_type -> hotbed.v1.GetCommandRequest
-	53,  // 92: hotbed.v1.WorkspaceService.ListCommands:input_type -> hotbed.v1.ListCommandsRequest
-	55,  // 93: hotbed.v1.WorkspaceService.StopCommand:input_type -> hotbed.v1.StopCommandRequest
-	56,  // 94: hotbed.v1.WorkspaceService.FollowLog:input_type -> hotbed.v1.FollowLogRequest
-	65,  // 95: hotbed.v1.WorkspaceService.GetLogLines:input_type -> hotbed.v1.GetLogLinesRequest
-	87,  // 96: hotbed.v1.ScheduleService.PutSchedule:input_type -> hotbed.v1.PutScheduleRequest
-	88,  // 97: hotbed.v1.ScheduleService.ListSchedules:input_type -> hotbed.v1.ListSchedulesRequest
-	90,  // 98: hotbed.v1.ScheduleService.GetSchedule:input_type -> hotbed.v1.GetScheduleRequest
-	91,  // 99: hotbed.v1.ScheduleService.DeleteSchedule:input_type -> hotbed.v1.DeleteScheduleRequest
-	93,  // 100: hotbed.v1.ScheduleService.RunSchedule:input_type -> hotbed.v1.RunScheduleRequest
-	94,  // 101: hotbed.v1.ScheduleService.PauseSchedule:input_type -> hotbed.v1.PauseScheduleRequest
-	11,  // 102: hotbed.v1.ClusterService.Join:output_type -> hotbed.v1.JoinResponse
-	73,  // 103: hotbed.v1.ClusterService.Report:output_type -> hotbed.v1.ReportResponse
-	13,  // 104: hotbed.v1.ClusterService.ListNodes:output_type -> hotbed.v1.ListNodesResponse
-	24,  // 105: hotbed.v1.ClusterService.ListRepos:output_type -> hotbed.v1.ListReposResponse
-	14,  // 106: hotbed.v1.ClusterService.PutRepo:output_type -> hotbed.v1.Repo
-	27,  // 107: hotbed.v1.ClusterService.DeleteRepo:output_type -> hotbed.v1.DeleteRepoResponse
-	14,  // 108: hotbed.v1.ClusterService.RebuildRepo:output_type -> hotbed.v1.Repo
-	14,  // 109: hotbed.v1.ClusterService.PutStep:output_type -> hotbed.v1.Repo
-	14,  // 110: hotbed.v1.ClusterService.DeleteStep:output_type -> hotbed.v1.Repo
-	20,  // 111: hotbed.v1.ClusterService.ListSteps:output_type -> hotbed.v1.ListStepsResponse
-	84,  // 112: hotbed.v1.ClusterService.GetSnapshot:output_type -> hotbed.v1.Snapshot
-	58,  // 113: hotbed.v1.SessionService.StartSession:output_type -> hotbed.v1.Session
-	58,  // 114: hotbed.v1.SessionService.EndSession:output_type -> hotbed.v1.Session
-	63,  // 115: hotbed.v1.SessionService.WatchSession:output_type -> hotbed.v1.WatchSessionResponse
-	30,  // 116: hotbed.v1.WorkspaceService.CreateWorkspace:output_type -> hotbed.v1.Workspace
-	30,  // 117: hotbed.v1.WorkspaceService.GetWorkspace:output_type -> hotbed.v1.Workspace
-	30,  // 118: hotbed.v1.WorkspaceService.WatchWorkspace:output_type -> hotbed.v1.Workspace
-	35,  // 119: hotbed.v1.WorkspaceService.ListWorkspaces:output_type -> hotbed.v1.ListWorkspacesResponse
-	37,  // 120: hotbed.v1.WorkspaceService.ReleaseWorkspace:output_type -> hotbed.v1.ReleaseWorkspaceResponse
-	40,  // 121: hotbed.v1.WorkspaceService.Sync:output_type -> hotbed.v1.SyncResponse
-	43,  // 122: hotbed.v1.WorkspaceService.ListFiles:output_type -> hotbed.v1.ListFilesResponse
-	45,  // 123: hotbed.v1.WorkspaceService.GetFile:output_type -> hotbed.v1.FileContent
-	49,  // 124: hotbed.v1.WorkspaceService.RunCommand:output_type -> hotbed.v1.Command
-	49,  // 125: hotbed.v1.WorkspaceService.GetCommand:output_type -> hotbed.v1.Command
-	54,  // 126: hotbed.v1.WorkspaceService.ListCommands:output_type -> hotbed.v1.ListCommandsResponse
-	49,  // 127: hotbed.v1.WorkspaceService.StopCommand:output_type -> hotbed.v1.Command
-	57,  // 128: hotbed.v1.WorkspaceService.FollowLog:output_type -> hotbed.v1.LogChunk
-	66,  // 129: hotbed.v1.WorkspaceService.GetLogLines:output_type -> hotbed.v1.CommandLog
-	85,  // 130: hotbed.v1.ScheduleService.PutSchedule:output_type -> hotbed.v1.ScheduledCommand
-	89,  // 131: hotbed.v1.ScheduleService.ListSchedules:output_type -> hotbed.v1.ListSchedulesResponse
-	85,  // 132: hotbed.v1.ScheduleService.GetSchedule:output_type -> hotbed.v1.ScheduledCommand
-	92,  // 133: hotbed.v1.ScheduleService.DeleteSchedule:output_type -> hotbed.v1.DeleteScheduleResponse
-	86,  // 134: hotbed.v1.ScheduleService.RunSchedule:output_type -> hotbed.v1.ScheduledRun
-	85,  // 135: hotbed.v1.ScheduleService.PauseSchedule:output_type -> hotbed.v1.ScheduledCommand
-	102, // [102:136] is the sub-list for method output_type
-	68,  // [68:102] is the sub-list for method input_type
-	68,  // [68:68] is the sub-list for extension type_name
-	68,  // [68:68] is the sub-list for extension extendee
-	0,   // [0:68] is the sub-list for field type_name
+	75,  // 44: hotbed.v1.Event.base:type_name -> hotbed.v1.BaseChange
+	76,  // 45: hotbed.v1.Event.workspace:type_name -> hotbed.v1.WorkspaceChange
+	77,  // 46: hotbed.v1.Event.command:type_name -> hotbed.v1.CommandChange
+	67,  // 47: hotbed.v1.Event.feed:type_name -> hotbed.v1.WorkerEvent
+	29,  // 48: hotbed.v1.BaseChange.base:type_name -> hotbed.v1.Base
+	30,  // 49: hotbed.v1.WorkspaceChange.workspace:type_name -> hotbed.v1.Workspace
+	49,  // 50: hotbed.v1.CommandChange.command:type_name -> hotbed.v1.Command
+	50,  // 51: hotbed.v1.CommandChange.finished:type_name -> hotbed.v1.FinishedCommand
+	29,  // 52: hotbed.v1.Checkpoint.bases:type_name -> hotbed.v1.Base
+	30,  // 53: hotbed.v1.Checkpoint.workspaces:type_name -> hotbed.v1.Workspace
+	49,  // 54: hotbed.v1.Checkpoint.commands:type_name -> hotbed.v1.Command
+	74,  // 55: hotbed.v1.PushEventsRequest.events:type_name -> hotbed.v1.Event
+	78,  // 56: hotbed.v1.PushEventsRequest.checkpoint:type_name -> hotbed.v1.Checkpoint
+	6,   // 57: hotbed.v1.HeartbeatRequest.resources:type_name -> hotbed.v1.Resources
+	7,   // 58: hotbed.v1.HeartbeatRequest.usage:type_name -> hotbed.v1.NodeUsage
+	8,   // 59: hotbed.v1.HeartbeatRequest.disk:type_name -> hotbed.v1.DiskUsage
+	81,  // 60: hotbed.v1.HeartbeatRequest.commands:type_name -> hotbed.v1.CommandUsage
+	82,  // 61: hotbed.v1.HeartbeatRequest.bases:type_name -> hotbed.v1.BaseUsage
+	83,  // 62: hotbed.v1.HeartbeatRequest.workspaces:type_name -> hotbed.v1.WorkspaceUsage
+	14,  // 63: hotbed.v1.HeartbeatResponse.repos:type_name -> hotbed.v1.Repo
+	68,  // 64: hotbed.v1.ClusterEvent.ref:type_name -> hotbed.v1.EventRef
+	89,  // 65: hotbed.v1.Samples.samples:type_name -> hotbed.v1.Sample
+	93,  // 66: hotbed.v1.NodeHours.hours:type_name -> hotbed.v1.NodeHour
+	9,   // 67: hotbed.v1.Snapshot.nodes:type_name -> hotbed.v1.Node
+	86,  // 68: hotbed.v1.Snapshot.repos:type_name -> hotbed.v1.RepoSummary
+	29,  // 69: hotbed.v1.Snapshot.bases:type_name -> hotbed.v1.Base
+	30,  // 70: hotbed.v1.Snapshot.workspaces:type_name -> hotbed.v1.Workspace
+	49,  // 71: hotbed.v1.Snapshot.commands:type_name -> hotbed.v1.Command
+	87,  // 72: hotbed.v1.Snapshot.events:type_name -> hotbed.v1.ClusterEvent
+	88,  // 73: hotbed.v1.Snapshot.totals24h:type_name -> hotbed.v1.Totals
+	107, // 74: hotbed.v1.Snapshot.series:type_name -> hotbed.v1.Snapshot.SeriesEntry
+	91,  // 75: hotbed.v1.Snapshot.load:type_name -> hotbed.v1.LoadSample
+	92,  // 76: hotbed.v1.Snapshot.hourly:type_name -> hotbed.v1.HourBucket
+	108, // 77: hotbed.v1.Snapshot.node_hourly:type_name -> hotbed.v1.Snapshot.NodeHourlyEntry
+	50,  // 78: hotbed.v1.Snapshot.history:type_name -> hotbed.v1.FinishedCommand
+	58,  // 79: hotbed.v1.Snapshot.sessions:type_name -> hotbed.v1.Session
+	97,  // 80: hotbed.v1.Snapshot.schedules:type_name -> hotbed.v1.ScheduledCommand
+	51,  // 81: hotbed.v1.ScheduledCommand.command:type_name -> hotbed.v1.RunCommandRequest
+	98,  // 82: hotbed.v1.ScheduledCommand.runs:type_name -> hotbed.v1.ScheduledRun
+	4,   // 83: hotbed.v1.ScheduledRun.outcome:type_name -> hotbed.v1.RunOutcome
+	97,  // 84: hotbed.v1.PutScheduleRequest.schedule:type_name -> hotbed.v1.ScheduledCommand
+	97,  // 85: hotbed.v1.ListSchedulesResponse.schedules:type_name -> hotbed.v1.ScheduledCommand
+	90,  // 86: hotbed.v1.Snapshot.SeriesEntry.value:type_name -> hotbed.v1.Samples
+	94,  // 87: hotbed.v1.Snapshot.NodeHourlyEntry.value:type_name -> hotbed.v1.NodeHours
+	10,  // 88: hotbed.v1.ClusterService.Join:input_type -> hotbed.v1.JoinRequest
+	72,  // 89: hotbed.v1.ClusterService.Report:input_type -> hotbed.v1.ReportRequest
+	79,  // 90: hotbed.v1.ClusterService.PushEvents:input_type -> hotbed.v1.PushEventsRequest
+	84,  // 91: hotbed.v1.ClusterService.Heartbeat:input_type -> hotbed.v1.HeartbeatRequest
+	12,  // 92: hotbed.v1.ClusterService.ListNodes:input_type -> hotbed.v1.ListNodesRequest
+	23,  // 93: hotbed.v1.ClusterService.ListRepos:input_type -> hotbed.v1.ListReposRequest
+	25,  // 94: hotbed.v1.ClusterService.PutRepo:input_type -> hotbed.v1.PutRepoRequest
+	26,  // 95: hotbed.v1.ClusterService.DeleteRepo:input_type -> hotbed.v1.DeleteRepoRequest
+	28,  // 96: hotbed.v1.ClusterService.RebuildRepo:input_type -> hotbed.v1.RebuildRepoRequest
+	17,  // 97: hotbed.v1.ClusterService.PutStep:input_type -> hotbed.v1.PutStepRequest
+	18,  // 98: hotbed.v1.ClusterService.DeleteStep:input_type -> hotbed.v1.DeleteStepRequest
+	19,  // 99: hotbed.v1.ClusterService.ListSteps:input_type -> hotbed.v1.ListStepsRequest
+	95,  // 100: hotbed.v1.ClusterService.GetSnapshot:input_type -> hotbed.v1.GetSnapshotRequest
+	60,  // 101: hotbed.v1.SessionService.StartSession:input_type -> hotbed.v1.StartSessionRequest
+	61,  // 102: hotbed.v1.SessionService.EndSession:input_type -> hotbed.v1.EndSessionRequest
+	62,  // 103: hotbed.v1.SessionService.WatchSession:input_type -> hotbed.v1.WatchSessionRequest
+	31,  // 104: hotbed.v1.WorkspaceService.CreateWorkspace:input_type -> hotbed.v1.CreateWorkspaceRequest
+	32,  // 105: hotbed.v1.WorkspaceService.GetWorkspace:input_type -> hotbed.v1.GetWorkspaceRequest
+	33,  // 106: hotbed.v1.WorkspaceService.WatchWorkspace:input_type -> hotbed.v1.WatchWorkspaceRequest
+	34,  // 107: hotbed.v1.WorkspaceService.ListWorkspaces:input_type -> hotbed.v1.ListWorkspacesRequest
+	36,  // 108: hotbed.v1.WorkspaceService.ReleaseWorkspace:input_type -> hotbed.v1.ReleaseWorkspaceRequest
+	38,  // 109: hotbed.v1.WorkspaceService.Sync:input_type -> hotbed.v1.SyncRequest
+	42,  // 110: hotbed.v1.WorkspaceService.ListFiles:input_type -> hotbed.v1.ListFilesRequest
+	44,  // 111: hotbed.v1.WorkspaceService.GetFile:input_type -> hotbed.v1.GetFileRequest
+	51,  // 112: hotbed.v1.WorkspaceService.RunCommand:input_type -> hotbed.v1.RunCommandRequest
+	52,  // 113: hotbed.v1.WorkspaceService.GetCommand:input_type -> hotbed.v1.GetCommandRequest
+	53,  // 114: hotbed.v1.WorkspaceService.ListCommands:input_type -> hotbed.v1.ListCommandsRequest
+	55,  // 115: hotbed.v1.WorkspaceService.StopCommand:input_type -> hotbed.v1.StopCommandRequest
+	56,  // 116: hotbed.v1.WorkspaceService.FollowLog:input_type -> hotbed.v1.FollowLogRequest
+	65,  // 117: hotbed.v1.WorkspaceService.GetLogLines:input_type -> hotbed.v1.GetLogLinesRequest
+	99,  // 118: hotbed.v1.ScheduleService.PutSchedule:input_type -> hotbed.v1.PutScheduleRequest
+	100, // 119: hotbed.v1.ScheduleService.ListSchedules:input_type -> hotbed.v1.ListSchedulesRequest
+	102, // 120: hotbed.v1.ScheduleService.GetSchedule:input_type -> hotbed.v1.GetScheduleRequest
+	103, // 121: hotbed.v1.ScheduleService.DeleteSchedule:input_type -> hotbed.v1.DeleteScheduleRequest
+	105, // 122: hotbed.v1.ScheduleService.RunSchedule:input_type -> hotbed.v1.RunScheduleRequest
+	106, // 123: hotbed.v1.ScheduleService.PauseSchedule:input_type -> hotbed.v1.PauseScheduleRequest
+	11,  // 124: hotbed.v1.ClusterService.Join:output_type -> hotbed.v1.JoinResponse
+	73,  // 125: hotbed.v1.ClusterService.Report:output_type -> hotbed.v1.ReportResponse
+	80,  // 126: hotbed.v1.ClusterService.PushEvents:output_type -> hotbed.v1.PushEventsResponse
+	85,  // 127: hotbed.v1.ClusterService.Heartbeat:output_type -> hotbed.v1.HeartbeatResponse
+	13,  // 128: hotbed.v1.ClusterService.ListNodes:output_type -> hotbed.v1.ListNodesResponse
+	24,  // 129: hotbed.v1.ClusterService.ListRepos:output_type -> hotbed.v1.ListReposResponse
+	14,  // 130: hotbed.v1.ClusterService.PutRepo:output_type -> hotbed.v1.Repo
+	27,  // 131: hotbed.v1.ClusterService.DeleteRepo:output_type -> hotbed.v1.DeleteRepoResponse
+	14,  // 132: hotbed.v1.ClusterService.RebuildRepo:output_type -> hotbed.v1.Repo
+	14,  // 133: hotbed.v1.ClusterService.PutStep:output_type -> hotbed.v1.Repo
+	14,  // 134: hotbed.v1.ClusterService.DeleteStep:output_type -> hotbed.v1.Repo
+	20,  // 135: hotbed.v1.ClusterService.ListSteps:output_type -> hotbed.v1.ListStepsResponse
+	96,  // 136: hotbed.v1.ClusterService.GetSnapshot:output_type -> hotbed.v1.Snapshot
+	58,  // 137: hotbed.v1.SessionService.StartSession:output_type -> hotbed.v1.Session
+	58,  // 138: hotbed.v1.SessionService.EndSession:output_type -> hotbed.v1.Session
+	63,  // 139: hotbed.v1.SessionService.WatchSession:output_type -> hotbed.v1.WatchSessionResponse
+	30,  // 140: hotbed.v1.WorkspaceService.CreateWorkspace:output_type -> hotbed.v1.Workspace
+	30,  // 141: hotbed.v1.WorkspaceService.GetWorkspace:output_type -> hotbed.v1.Workspace
+	30,  // 142: hotbed.v1.WorkspaceService.WatchWorkspace:output_type -> hotbed.v1.Workspace
+	35,  // 143: hotbed.v1.WorkspaceService.ListWorkspaces:output_type -> hotbed.v1.ListWorkspacesResponse
+	37,  // 144: hotbed.v1.WorkspaceService.ReleaseWorkspace:output_type -> hotbed.v1.ReleaseWorkspaceResponse
+	40,  // 145: hotbed.v1.WorkspaceService.Sync:output_type -> hotbed.v1.SyncResponse
+	43,  // 146: hotbed.v1.WorkspaceService.ListFiles:output_type -> hotbed.v1.ListFilesResponse
+	45,  // 147: hotbed.v1.WorkspaceService.GetFile:output_type -> hotbed.v1.FileContent
+	49,  // 148: hotbed.v1.WorkspaceService.RunCommand:output_type -> hotbed.v1.Command
+	49,  // 149: hotbed.v1.WorkspaceService.GetCommand:output_type -> hotbed.v1.Command
+	54,  // 150: hotbed.v1.WorkspaceService.ListCommands:output_type -> hotbed.v1.ListCommandsResponse
+	49,  // 151: hotbed.v1.WorkspaceService.StopCommand:output_type -> hotbed.v1.Command
+	57,  // 152: hotbed.v1.WorkspaceService.FollowLog:output_type -> hotbed.v1.LogChunk
+	66,  // 153: hotbed.v1.WorkspaceService.GetLogLines:output_type -> hotbed.v1.CommandLog
+	97,  // 154: hotbed.v1.ScheduleService.PutSchedule:output_type -> hotbed.v1.ScheduledCommand
+	101, // 155: hotbed.v1.ScheduleService.ListSchedules:output_type -> hotbed.v1.ListSchedulesResponse
+	97,  // 156: hotbed.v1.ScheduleService.GetSchedule:output_type -> hotbed.v1.ScheduledCommand
+	104, // 157: hotbed.v1.ScheduleService.DeleteSchedule:output_type -> hotbed.v1.DeleteScheduleResponse
+	98,  // 158: hotbed.v1.ScheduleService.RunSchedule:output_type -> hotbed.v1.ScheduledRun
+	97,  // 159: hotbed.v1.ScheduleService.PauseSchedule:output_type -> hotbed.v1.ScheduledCommand
+	124, // [124:160] is the sub-list for method output_type
+	88,  // [88:124] is the sub-list for method input_type
+	88,  // [88:88] is the sub-list for extension type_name
+	88,  // [88:88] is the sub-list for extension extendee
+	0,   // [0:88] is the sub-list for field type_name
 }
 
 func init() { file_hotbed_v1_hotbed_proto_init() }
@@ -7559,15 +8600,20 @@ func file_hotbed_v1_hotbed_proto_init() {
 	file_hotbed_v1_hotbed_proto_msgTypes[53].OneofWrappers = []any{}
 	file_hotbed_v1_hotbed_proto_msgTypes[54].OneofWrappers = []any{}
 	file_hotbed_v1_hotbed_proto_msgTypes[59].OneofWrappers = []any{}
-	file_hotbed_v1_hotbed_proto_msgTypes[80].OneofWrappers = []any{}
-	file_hotbed_v1_hotbed_proto_msgTypes[81].OneofWrappers = []any{}
+	file_hotbed_v1_hotbed_proto_msgTypes[69].OneofWrappers = []any{
+		(*Event_Base)(nil),
+		(*Event_Workspace)(nil),
+		(*Event_Command)(nil),
+	}
+	file_hotbed_v1_hotbed_proto_msgTypes[92].OneofWrappers = []any{}
+	file_hotbed_v1_hotbed_proto_msgTypes[93].OneofWrappers = []any{}
 	type x struct{}
 	out := protoimpl.TypeBuilder{
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_hotbed_v1_hotbed_proto_rawDesc), len(file_hotbed_v1_hotbed_proto_rawDesc)),
 			NumEnums:      5,
-			NumMessages:   92,
+			NumMessages:   104,
 			NumExtensions: 0,
 			NumServices:   4,
 		},

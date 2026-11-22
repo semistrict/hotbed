@@ -36,6 +36,10 @@ const (
 	ClusterServiceJoinProcedure = "/hotbed.v1.ClusterService/Join"
 	// ClusterServiceReportProcedure is the procedure name of the ClusterService's Report RPC.
 	ClusterServiceReportProcedure = "/hotbed.v1.ClusterService/Report"
+	// ClusterServicePushEventsProcedure is the procedure name of the ClusterService's PushEvents RPC.
+	ClusterServicePushEventsProcedure = "/hotbed.v1.ClusterService/PushEvents"
+	// ClusterServiceHeartbeatProcedure is the procedure name of the ClusterService's Heartbeat RPC.
+	ClusterServiceHeartbeatProcedure = "/hotbed.v1.ClusterService/Heartbeat"
 	// ClusterServiceListNodesProcedure is the procedure name of the ClusterService's ListNodes RPC.
 	ClusterServiceListNodesProcedure = "/hotbed.v1.ClusterService/ListNodes"
 	// ClusterServiceListReposProcedure is the procedure name of the ClusterService's ListRepos RPC.
@@ -135,6 +139,20 @@ var (
 			Procedure:  ClusterServiceReportProcedure,
 		}
 	})
+	clusterServicePushEventsSpec = sync.OnceValue(func() connect.Spec {
+		return connect.Spec{
+			StreamType: connect.StreamTypeUnary,
+			Schema:     v1.File_hotbed_v1_hotbed_proto.Services().ByName("ClusterService").Methods().ByName("PushEvents"),
+			Procedure:  ClusterServicePushEventsProcedure,
+		}
+	})
+	clusterServiceHeartbeatSpec = sync.OnceValue(func() connect.Spec {
+		return connect.Spec{
+			StreamType: connect.StreamTypeUnary,
+			Schema:     v1.File_hotbed_v1_hotbed_proto.Services().ByName("ClusterService").Methods().ByName("Heartbeat"),
+			Procedure:  ClusterServiceHeartbeatProcedure,
+		}
+	})
 	clusterServiceListNodesSpec = sync.OnceValue(func() connect.Spec {
 		return connect.Spec{
 			StreamType: connect.StreamTypeUnary,
@@ -204,8 +222,17 @@ var (
 type ClusterServiceClient interface {
 	// Join admits the calling tailnet node as a worker.
 	Join(context.Context, *v1.JoinRequest) (*v1.JoinResponse, error)
-	// Report is a worker's periodic account of itself.
+	// Report is how workers before the event stream accounted for
+	// themselves: their whole state, which the controller took as the node's
+	// view. The controller still takes it until every worker pushes events.
 	Report(context.Context, *v1.ReportRequest) (*v1.ReportResponse, error)
+	// PushEvents delivers a worker's events, in order, from after what the
+	// controller has applied; or a checkpoint of its state when the
+	// controller cannot continue from what it has.
+	PushEvents(context.Context, *v1.PushEventsRequest) (*v1.PushEventsResponse, error)
+	// Heartbeat is a worker's live usage, lossy: the latest wins. It keeps
+	// the node online, and its reply is what the worker should host.
+	Heartbeat(context.Context, *v1.HeartbeatRequest) (*v1.HeartbeatResponse, error)
 	ListNodes(context.Context, *v1.ListNodesRequest) (*v1.ListNodesResponse, error)
 	ListRepos(context.Context, *v1.ListReposRequest) (*v1.ListReposResponse, error)
 	PutRepo(context.Context, *v1.PutRepoRequest) (*v1.Repo, error)
@@ -235,8 +262,17 @@ func NewClusterServiceClient(client *connect.Client) ClusterServiceClient {
 type ClusterServiceHandler interface {
 	// Join admits the calling tailnet node as a worker.
 	Join(context.Context, *v1.JoinRequest) (*v1.JoinResponse, error)
-	// Report is a worker's periodic account of itself.
+	// Report is how workers before the event stream accounted for
+	// themselves: their whole state, which the controller took as the node's
+	// view. The controller still takes it until every worker pushes events.
 	Report(context.Context, *v1.ReportRequest) (*v1.ReportResponse, error)
+	// PushEvents delivers a worker's events, in order, from after what the
+	// controller has applied; or a checkpoint of its state when the
+	// controller cannot continue from what it has.
+	PushEvents(context.Context, *v1.PushEventsRequest) (*v1.PushEventsResponse, error)
+	// Heartbeat is a worker's live usage, lossy: the latest wins. It keeps
+	// the node online, and its reply is what the worker should host.
+	Heartbeat(context.Context, *v1.HeartbeatRequest) (*v1.HeartbeatResponse, error)
 	ListNodes(context.Context, *v1.ListNodesRequest) (*v1.ListNodesResponse, error)
 	ListRepos(context.Context, *v1.ListReposRequest) (*v1.ListReposResponse, error)
 	PutRepo(context.Context, *v1.PutRepoRequest) (*v1.Repo, error)
@@ -263,6 +299,8 @@ func RegisterClusterServiceHandler(server *connect.Server, svc ClusterServiceHan
 	server.Register(
 		connect.Method{Spec: clusterServiceJoinSpec(), Handler: adapter.join},
 		connect.Method{Spec: clusterServiceReportSpec(), Handler: adapter.report},
+		connect.Method{Spec: clusterServicePushEventsSpec(), Handler: adapter.pushEvents},
+		connect.Method{Spec: clusterServiceHeartbeatSpec(), Handler: adapter.heartbeat},
 		connect.Method{Spec: clusterServiceListNodesSpec(), Handler: adapter.listNodes},
 		connect.Method{Spec: clusterServiceListReposSpec(), Handler: adapter.listRepos},
 		connect.Method{Spec: clusterServicePutRepoSpec(), Handler: adapter.putRepo},
@@ -284,6 +322,14 @@ func (UnimplementedClusterServiceHandler) Join(context.Context, *v1.JoinRequest)
 
 func (UnimplementedClusterServiceHandler) Report(context.Context, *v1.ReportRequest) (*v1.ReportResponse, error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, "hotbed.v1.ClusterService.Report is not implemented")
+}
+
+func (UnimplementedClusterServiceHandler) PushEvents(context.Context, *v1.PushEventsRequest) (*v1.PushEventsResponse, error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, "hotbed.v1.ClusterService.PushEvents is not implemented")
+}
+
+func (UnimplementedClusterServiceHandler) Heartbeat(context.Context, *v1.HeartbeatRequest) (*v1.HeartbeatResponse, error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, "hotbed.v1.ClusterService.Heartbeat is not implemented")
 }
 
 func (UnimplementedClusterServiceHandler) ListNodes(context.Context, *v1.ListNodesRequest) (*v1.ListNodesResponse, error) {
@@ -337,6 +383,22 @@ func (c *clusterServiceClient) Join(ctx context.Context, req *v1.JoinRequest) (*
 func (c *clusterServiceClient) Report(ctx context.Context, req *v1.ReportRequest) (*v1.ReportResponse, error) {
 	var res v1.ReportResponse
 	if err := c.client.CallUnary(ctx, clusterServiceReportSpec(), req, &res); err != nil {
+		return nil, err
+	}
+	return &res, nil
+}
+
+func (c *clusterServiceClient) PushEvents(ctx context.Context, req *v1.PushEventsRequest) (*v1.PushEventsResponse, error) {
+	var res v1.PushEventsResponse
+	if err := c.client.CallUnary(ctx, clusterServicePushEventsSpec(), req, &res); err != nil {
+		return nil, err
+	}
+	return &res, nil
+}
+
+func (c *clusterServiceClient) Heartbeat(ctx context.Context, req *v1.HeartbeatRequest) (*v1.HeartbeatResponse, error) {
+	var res v1.HeartbeatResponse
+	if err := c.client.CallUnary(ctx, clusterServiceHeartbeatSpec(), req, &res); err != nil {
 		return nil, err
 	}
 	return &res, nil
@@ -434,6 +496,30 @@ func (h clusterServiceHandler) report(ctx context.Context, _ connect.Spec, strea
 		return err
 	}
 	res, err := h.svc.Report(ctx, &req)
+	if err != nil {
+		return err
+	}
+	return stream.Send(res)
+}
+
+func (h clusterServiceHandler) pushEvents(ctx context.Context, _ connect.Spec, stream connect.ServerStream) error {
+	var req v1.PushEventsRequest
+	if err := stream.Receive(&req); err != nil {
+		return err
+	}
+	res, err := h.svc.PushEvents(ctx, &req)
+	if err != nil {
+		return err
+	}
+	return stream.Send(res)
+}
+
+func (h clusterServiceHandler) heartbeat(ctx context.Context, _ connect.Spec, stream connect.ServerStream) error {
+	var req v1.HeartbeatRequest
+	if err := stream.Receive(&req); err != nil {
+		return err
+	}
+	res, err := h.svc.Heartbeat(ctx, &req)
 	if err != nil {
 		return err
 	}

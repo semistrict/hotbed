@@ -10,8 +10,17 @@ option go_package = "github.com/semistrict/hotbed/internal/gen/hotbed/v1;hotbedv
 service ClusterService {
   // Join admits the calling tailnet node as a worker.
   rpc Join(JoinRequest) returns (JoinResponse);
-  // Report is a worker's periodic account of itself.
+  // Report is how workers before the event stream accounted for
+  // themselves: their whole state, which the controller took as the node's
+  // view. The controller still takes it until every worker pushes events.
   rpc Report(ReportRequest) returns (ReportResponse);
+  // PushEvents delivers a worker's events, in order, from after what the
+  // controller has applied; or a checkpoint of its state when the
+  // controller cannot continue from what it has.
+  rpc PushEvents(PushEventsRequest) returns (PushEventsResponse);
+  // Heartbeat is a worker's live usage, lossy: the latest wins. It keeps
+  // the node online, and its reply is what the worker should host.
+  rpc Heartbeat(HeartbeatRequest) returns (HeartbeatResponse);
   rpc ListNodes(ListNodesRequest) returns (ListNodesResponse);
   rpc ListRepos(ListReposRequest) returns (ListReposResponse);
   rpc PutRepo(PutRepoRequest) returns (Repo);
@@ -345,6 +354,9 @@ message Workspace {
   // Why it failed, what it waits for while preparing, or, once ready, why
   // its base is not up to date (a step failed in the newer one).
   string reason = 21;
+  // Set by the controller: where clients call the workspace's worker
+  // (host:port) to sync, run commands and read their output.
+  string node_addr = 22;
 }
 
 message CreateWorkspaceRequest {
@@ -506,6 +518,8 @@ message Command {
   // Stops when no client has followed its output for a while.
   bool attached = 21;
   string session_id = 22;
+  // Set by the controller: where clients call the command's worker.
+  string node_addr = 23;
 }
 
 // A command that ended, as history keeps it.
@@ -544,7 +558,8 @@ message RunCommandRequest {
   bool attached = 6;
   // The port a dev server listens on, for its URL.
   int32 port = 7;
-  // Set by the controller when it forwards the call to a worker.
+  // Set by the controller when it forwards the call to a worker; a worker
+  // called directly picks one when it is empty.
   string id = 8;
 }
 
@@ -721,6 +736,129 @@ message ReportResponse {
   repeated Repo repos = 2;
   // Workspaces to release: their sessions ended while the worker was away.
   repeated string release = 3;
+}
+
+// ---- the event stream ---------------------------------------------------
+
+// Something that changed in a worker's own state: its bases, workspaces and
+// commands. The worker writes each event in the same transaction as the
+// change, numbered by a sequence that only grows, and the controller folds
+// them, in order, into its view of the node. Each change carries the whole
+// entity as it now is, so applying one twice changes nothing.
+message Event {
+  // The worker's; unique and increasing within its epoch.
+  int64 seq = 1;
+  int64 at = 2;
+  oneof change {
+    BaseChange base = 3;
+    WorkspaceChange workspace = 4;
+    CommandChange command = 5;
+  }
+  // A line for the cockpit's feed, when the change is worth one.
+  WorkerEvent feed = 6;
+}
+
+message BaseChange {
+  // building, warm, stale, failed, dropped (superseded while building), or
+  // collected (the worker deleted it: drop it from the view).
+  string what = 1;
+  Base base = 2;
+  string detail = 3;
+}
+
+message WorkspaceChange {
+  // created (preparing), ready, rebased (onto an older base: its own failed
+  // to freshen), failed, synced, active, idle, released, or forgotten (the
+  // worker deleted it, a while after its release).
+  string what = 1;
+  Workspace workspace = 2;
+  string detail = 3;
+}
+
+message CommandChange {
+  // queued, waiting (why it is not admitted changed), admitted, parked,
+  // thawed, exited, cancelled, or forgotten (deleted a while after it ended).
+  string what = 1;
+  Command command = 2;
+  string detail = 3;
+  // Set when a command (not a freshen) ends: the history entry.
+  FinishedCommand finished = 4;
+}
+
+// Everything a worker has, as of an event: what the controller starts from
+// when it has no view of the node it can continue (a new controller, or a
+// worker whose database is new).
+message Checkpoint {
+  // The last event the state includes; events after it follow.
+  int64 seq = 1;
+  repeated Base bases = 2;
+  repeated Workspace workspaces = 3;
+  repeated Command commands = 4;
+}
+
+message PushEventsRequest {
+  string cluster_id = 1;
+  // Names the worker's database. A worker whose database was lost starts
+  // a new epoch, and its sequence starts again.
+  string epoch = 2;
+  // In order, each after the controller's applied; may be empty, to learn
+  // where the controller is.
+  repeated Event events = 3;
+  // Instead of events, when the controller asked for one.
+  Checkpoint checkpoint = 4;
+}
+
+message PushEventsResponse {
+  // The last event of this epoch the controller has applied; the worker
+  // sends what follows.
+  int64 applied = 1;
+  // The controller has no view of this epoch to continue: send a checkpoint.
+  bool checkpoint_needed = 2;
+}
+
+message CommandUsage {
+  string id = 1;
+  double cpu_cores = 2;
+  int64 memory_bytes = 3;
+  int64 swap_bytes = 4;
+}
+
+message BaseUsage {
+  string id = 1;
+  // Share of freshen steps done while building, 0..1.
+  double progress = 2;
+  int64 size_bytes = 3;
+}
+
+message WorkspaceUsage {
+  string id = 1;
+  int64 exclusive_bytes = 2;
+  int64 shared_bytes = 3;
+}
+
+message HeartbeatRequest {
+  string cluster_id = 1;
+  Resources resources = 2;
+  NodeUsage usage = 3;
+  int64 disk_bytes = 4;
+  DiskUsage disk = 5;
+  int64 reserved_memory_bytes = 6;
+  int64 oom_kills = 7;
+  string storage = 8;
+  repeated CommandUsage commands = 9;
+  repeated BaseUsage bases = 10;
+  repeated WorkspaceUsage workspaces = 11;
+  // Sessions whose workspaces or commands clients used on this worker
+  // since the last heartbeat, or that a client follows now: calls the
+  // controller does not see, which keep a session alive.
+  repeated string active_sessions = 12;
+}
+
+message HeartbeatResponse {
+  // The repos this worker keeps bases of.
+  repeated Repo repos = 1;
+  // Workspaces to release: their sessions ended.
+  repeated string release = 2;
 }
 
 // ---- the cockpit ----------------------------------------------------------
