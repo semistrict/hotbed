@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/semistrict/hotbed/internal/api"
 	"github.com/semistrict/hotbed/internal/controller"
 	pb "github.com/semistrict/hotbed/internal/gen/hotbed/v1"
 	"github.com/semistrict/hotbed/internal/update"
@@ -160,19 +161,34 @@ func TestAdminUpgradeTriggersControllerRestart(t *testing.T) {
 		t.Fatalf("admin upgrade on latest = %+v", res)
 	}
 
-	// Publish build 8: admin upgrade installs it immediately and wakes Run.
+	// Publish build 8: admin upgrade installs it immediately and wakes Run,
+	// which ends for the controller to start the new build in its place, as
+	// serve does; admin upgrade returns once the controller answers on it.
+	restarted := make(chan error, 1)
+	go func() {
+		err := <-runDone
+		if errors.Is(err, update.ErrRestart) {
+			c.serverCfg.Build = 8
+			c.serverCfg.Follower = &controller.Follower{GitHub: g.Client(), Cache: cache, Exe: ctrlExe, Build: 8}
+			c.restart()
+		}
+		restarted <- err
+	}()
 	g.Publish(8)
 	c.ok(&res, "admin", "upgrade")
 	if res != (adminUpgradeResult{Build: 8, Upgraded: true, From: 7, Restarting: true}) {
 		t.Fatalf("admin upgrade to 8 = %+v", res)
 	}
 	select {
-	case err := <-runDone:
+	case err := <-restarted:
 		if !errors.Is(err, update.ErrRestart) {
 			t.Fatalf("Follower.Run ended with %v, want update.ErrRestart", err)
 		}
-	case <-time.After(5 * time.Second):
-		t.Fatal("Follower.Run did not restart after admin upgrade")
+	default:
+		t.Fatal("admin upgrade returned before the controller restarted")
+	}
+	if b, err := c.asWorker.GetBuild(t.Context(), &pb.GetBuildRequest{Os: runtime.GOOS, Arch: runtime.GOARCH}); err != nil || b.Number != 8 {
+		t.Fatalf("the controller's build after admin upgrade = %v, %v; want 8", b, err)
 	}
 	want := "hotbed build 8 for " + runtime.GOOS + "/" + runtime.GOARCH
 	if got := read(t, ctrlExe); got != want {
@@ -180,6 +196,18 @@ func TestAdminUpgradeTriggersControllerRestart(t *testing.T) {
 	}
 	if !cache.Has(8) {
 		t.Error("controller build cache does not have build 8")
+	}
+
+	// A controller that does not come back on the new build is said to.
+	g.Publish(9)
+	code, e := c.fails("admin", "upgrade", "--wait", "1s")
+	if code != exitError || e.Code != api.CodeControllerUnreachable || e.Message != "the controller did not answer on build 9 within 1s (it still answers on build 8)" {
+		t.Errorf("admin upgrade to a build the controller never restarts into: exit %d, %+v", code, e)
+	}
+	// --wait 0 returns as it restarts.
+	c.ok(&res, "admin", "upgrade", "--wait", "0")
+	if res != (adminUpgradeResult{Build: 9, Upgraded: true, From: 8, Restarting: true}) {
+		t.Errorf("admin upgrade --wait 0 = %+v", res)
 	}
 }
 

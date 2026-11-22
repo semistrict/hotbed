@@ -25,7 +25,7 @@ Commit changes once they have compiled and their tests have passed (`go test -ra
 
 A branch lives only as long as the work on it: once its tests pass, land it on `main` and push to `main` unless the user says otherwise. Pushing to `main` needs no question. Never leave finished work waiting on a branch, nor start work from a stale base: merge `main` in often so nothing drifts far from it.
 
-After every push to `main`, install its build on the PATH: once the push's `build` workflow run succeeds (`gh run list --workflow build --branch main`), run `hotbed admin upgrade && hotbed upgrade` and check that `hotbed version` names the pushed commit. The controller restarts into a new build by itself within two minutes of CI, so these may fail `CONTROLLER_UNREACHABLE` (retryable) for a few seconds: run them again. Never copy a local `go build` over it: a dev build (build 0) stops following the controller.
+After every push to `main`, install its build on the PATH: once the push's `build` workflow run succeeds (`gh run list --workflow build --branch main`), run `hotbed admin upgrade && hotbed upgrade` and check that `hotbed version` names the pushed commit. `admin upgrade` returns once the controller answers on the new build; the controller also restarts into it by itself within two minutes of CI, and while it does the commands fail `CONTROLLER_UNREACHABLE` (retryable) for a few seconds: run them again. Never copy a local `go build` over it: a dev build (build 0) stops following the controller.
 
 ## Tasks: the board
 

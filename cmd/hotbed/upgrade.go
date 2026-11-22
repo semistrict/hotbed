@@ -9,6 +9,7 @@ import (
 	"runtime"
 	"strconv"
 	"sync/atomic"
+	"time"
 
 	"github.com/semistrict/hotbed/internal/api"
 	"github.com/semistrict/hotbed/internal/controller"
@@ -52,11 +53,12 @@ func (c *upgradeCmd) Exec(ctx context.Context, d deps) (any, error) {
 }
 
 type adminCmd struct {
-	Upgrade adminUpgradeCmd `cmd:"" help:"Have the controller check CI for a newer build now and restart into it (workers follow within seconds)."`
+	Upgrade adminUpgradeCmd `cmd:"" help:"Have the controller check CI for a newer build now and restart into it, and wait until it answers on it (workers follow within seconds)."`
 }
 
 type adminUpgradeCmd struct {
 	controllerClient
+	Wait time.Duration `default:"2m" help:"How long to wait for the restarted controller to answer on the new build (0: return as it restarts)."`
 }
 
 type adminUpgradeResult struct {
@@ -84,8 +86,51 @@ func (c *adminUpgradeCmd) Exec(ctx context.Context, d deps) (any, error) {
 	}
 	if res.Restarting {
 		out.From = res.From
+		if c.Wait > 0 {
+			if err := awaitControllerBuild(ctx, cl, res.Build, c.Wait); err != nil {
+				return nil, err
+			}
+		}
 	}
 	return out, nil
+}
+
+// awaitControllerBuild returns once the controller answers on build n, as
+// it does once it has restarted into it: until then the old process answers
+// on the old build, and then nothing does for a moment.
+func awaitControllerBuild(parent context.Context, cl clients, n int64, wait time.Duration) error {
+	ctx, cancel := context.WithTimeout(parent, wait)
+	defer cancel()
+	tick := time.NewTicker(250 * time.Millisecond)
+	defer tick.Stop()
+	var last string
+	timedOut := func() error {
+		if err := parent.Err(); err != nil {
+			return err
+		}
+		return api.Errorf(api.CodeControllerUnreachable, "the controller did not answer on build %d within %s (%s)", n, wait, last).
+			WithSuggestion("check that `hotbed serve` restarted on the controller, and its log")
+	}
+	for {
+		b, err := cl.cluster.GetBuild(ctx, &pb.GetBuildRequest{Os: runtime.GOOS, Arch: runtime.GOARCH})
+		switch {
+		case err == nil && b.Number == n:
+			return nil
+		case err == nil:
+			last = fmt.Sprintf("it still answers on build %d", b.Number)
+		case ctx.Err() != nil:
+			return timedOut()
+		case api.FromConnect(err).Retryable:
+			last = api.FromConnect(err).Message
+		default:
+			return err
+		}
+		select {
+		case <-ctx.Done():
+			return timedOut()
+		case <-tick.C:
+		}
+	}
 }
 
 // install puts the controller's build b over this client's binary, then has
