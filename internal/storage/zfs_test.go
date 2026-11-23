@@ -16,6 +16,7 @@ type fakeZFS struct {
 	mu       sync.Mutex
 	datasets map[string]bool            // full dataset name -> exists
 	snaps    map[string]map[string]bool // full dataset@snap -> clone datasets
+	mounts   map[string]string          // dataset -> mountpoint it was created with
 	calls    []string
 }
 
@@ -42,6 +43,16 @@ func (f *fakeZFS) run(_ context.Context, name string, args ...string) (string, e
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.calls = append(f.calls, name+" "+strings.Join(args, " "))
+	if name == "zpool" && len(args) == 5 && args[0] == "list" {
+		// zpool list -H -o name POOL: a pool is imported while a dataset of it exists.
+		pool := args[4]
+		for ds := range f.datasets {
+			if ds == pool || strings.HasPrefix(ds, pool+"/") {
+				return pool + "\n", nil
+			}
+		}
+		return "", fmt.Errorf("zpool list: exit status 1: cannot open '%s': no such pool", pool)
+	}
 	if name != "zfs" || len(args) == 0 {
 		return "", fmt.Errorf("unexpected command %s %v", name, args)
 	}
@@ -65,7 +76,24 @@ func (f *fakeZFS) run(_ context.Context, name string, args ...string) (string, e
 			return "", fmt.Errorf("zfs create: exit status 1: cannot create '%s': parent does not exist", ds)
 		}
 		f.datasets[ds] = true
+		for i, a := range args {
+			if a == "-o" && i+1 < len(args) {
+				if mp, ok := strings.CutPrefix(args[i+1], "mountpoint="); ok {
+					if f.mounts == nil {
+						f.mounts = map[string]string{}
+					}
+					f.mounts[ds] = mp
+				}
+			}
+		}
 		return "", nil
+	case "get":
+		// zfs get -H -o value mountpoint DS
+		ds := args[len(args)-1]
+		if !f.datasets[ds] || args[len(args)-2] != "mountpoint" {
+			return "", fmt.Errorf("unhandled zfs get %v", args)
+		}
+		return f.mounts[ds] + "\n", nil
 	case "snapshot":
 		full := args[len(args)-1]
 		ds, _, ok := strings.Cut(full, "@")
@@ -512,5 +540,33 @@ func TestZFSListVolumesAndSnapshots(t *testing.T) {
 	wantCustom := []string{"a/b", "v1"}
 	if !slices.Equal(vols, wantCustom) {
 		t.Errorf("ListVolumes with arbitrary volumes = %q, want %q", vols, wantCustom)
+	}
+}
+
+// A worker's dataset on a pool that is not imported (its disk late or gone,
+// board 9141) fails NewZFS with ErrPoolNotImported naming the pool, before
+// any zfs create, so the worker can wait for it and say why.
+func TestNewZFSPoolNotImported(t *testing.T) {
+	fz := &fakeZFS{datasets: map[string]bool{"rpool": true}, snaps: map[string]map[string]bool{}}
+	_, err := newZFS(t.Context(), &ZFS{root: "hotbed/hotbed", mount: "/var/lib/hotbed/worker/volumes", cmdRun: fz.run})
+	if !errors.Is(err, ErrPoolNotImported) {
+		t.Fatalf("newZFS = %v, want ErrPoolNotImported", err)
+	}
+	if want := "ZFS pool not imported: pool hotbed, of dataset hotbed/hotbed, is not imported (is its disk attached and its namespace not 0 B? zpool import hotbed): zpool list: exit status 1: cannot open 'hotbed': no such pool"; err.Error() != want {
+		t.Fatalf("newZFS error = %q, want %q", err, want)
+	}
+	if got, want := fz.getCalls(), []string{"zfs list -H -o name hotbed/hotbed", "zpool list -H -o name hotbed"}; !slices.Equal(got, want) {
+		t.Fatalf("calls = %q, want %q", got, want)
+	}
+}
+
+// With its pool imported, a missing root dataset is made, mounted where asked.
+func TestNewZFSCreatesRootOnImportedPool(t *testing.T) {
+	fz := &fakeZFS{datasets: map[string]bool{"hotbed": true}, snaps: map[string]map[string]bool{}}
+	if _, err := newZFS(t.Context(), &ZFS{root: "hotbed/hotbed", mount: "/mnt/hotbed", cmdRun: fz.run}); err != nil {
+		t.Fatalf("newZFS: %v", err)
+	}
+	if !fz.datasets["hotbed/hotbed"] {
+		t.Fatal("root dataset hotbed/hotbed was not created")
 	}
 }

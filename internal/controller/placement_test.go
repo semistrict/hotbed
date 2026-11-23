@@ -20,6 +20,9 @@ type machine struct {
 	bench      bool
 	ram, used  int64
 	offline    bool
+	// storageError: it heartbeats but cannot open its storage (so it is
+	// offline, as withOnline counts it).
+	storageError string
 	// asleep is a node powered off while idle (Standby): offline, its last
 	// heartbeat from before it slept.
 	asleep bool
@@ -61,10 +64,10 @@ func (m machine) view() nodeView {
 	}
 	return nodeView{
 		nodeRow: nodeRow{
-			node: &pb.Node{Id: "n-" + m.host, Hostname: m.host, Resources: res, Asleep: m.asleep, HostUsage: m.hostUsage},
+			node: &pb.Node{Id: "n-" + m.host, Hostname: m.host, Resources: res, Asleep: m.asleep, HostUsage: m.hostUsage, StorageError: m.storageError},
 			hb:   &pb.HeartbeatRequest{Resources: res, Usage: &pb.NodeUsage{CpuBusy: m.busy, MemoryUsedBytes: m.used, CpuPressure: m.pressure}, Admission: m.admission()},
 		},
-		online:     !m.offline && !m.asleep,
+		online:     !m.offline && !m.asleep && m.storageError == "",
 		wakeFailed: m.wakeFailed,
 		view:       v,
 	}
@@ -291,6 +294,13 @@ func TestPlacementRefusals(t *testing.T) {
 			p:    &pb.Placement{Arch: "arm64"}, syncs: true,
 			code: api.CodeWorkerUnreachable, retryable: true,
 			message: "no node can take the run: ubu1 is amd64, not arm64; asahimbp is offline",
+		},
+		{
+			name: "the one node that fits cannot open its storage",
+			ms:   []machine{{host: "ubu1", storageError: "ZFS pool not imported: pool hotbed"}, {host: "asahimbp", arch: "arm64"}},
+			p:    &pb.Placement{Arch: "amd64"}, syncs: true,
+			code: api.CodeWorkerUnreachable, retryable: true,
+			message: "no node can take the run: ubu1 cannot open its storage: ZFS pool not imported: pool hotbed; asahimbp is arm64, not amd64",
 		},
 		{
 			name: "the one node that fits did not wake when last woken",

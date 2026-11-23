@@ -29,8 +29,23 @@ type ZFS struct {
 // NewZFS returns a store under dataset root, creating it mounted at mount if
 // it does not exist. It changes nothing else about the pool.
 func NewZFS(ctx context.Context, root, mount string) (*ZFS, error) {
-	z := &ZFS{root: root, mount: mount}
+	return newZFS(ctx, &ZFS{root: root, mount: mount})
+}
+
+// ErrPoolNotImported is NewZFS's error when the root dataset's pool is not
+// imported: its disk is missing, or nothing has imported it yet. It may
+// pass; a worker waits for it.
+var ErrPoolNotImported = errors.New("ZFS pool not imported")
+
+func newZFS(ctx context.Context, z *ZFS) (*ZFS, error) {
+	root, mount := z.root, z.mount
 	if _, err := z.exec(ctx, "zfs", "list", "-H", "-o", "name", root); err != nil {
+		// Without its pool, the dataset cannot be made: say so, not what
+		// zfs create says of it.
+		pool, _, _ := strings.Cut(root, "/")
+		if _, perr := z.exec(ctx, "zpool", "list", "-H", "-o", "name", pool); perr != nil {
+			return nil, fmt.Errorf("%w: pool %s, of dataset %s, is not imported (is its disk attached and its namespace not 0 B? zpool import %s): %v", ErrPoolNotImported, pool, root, pool, perr)
+		}
 		if _, err := z.exec(ctx, "zfs", "create", "-p", "-o", "mountpoint="+mount, root); err != nil {
 			return nil, err
 		}

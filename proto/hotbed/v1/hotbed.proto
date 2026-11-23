@@ -53,7 +53,7 @@ service ClusterService {
     option (command) = {
       name: "nodes"
       read_only: true
-      format: "{{range .nodes}}{{pad 16 .hostname}}  {{with .resources}}{{pad 6 .arch}}  {{.cpus}} cpus{{else}}-       - cpus{{end}}{{if .asleep}}  asleep{{else if .online}}  online{{else}}  offline{{end}}\n{{end}}"
+      format: "{{range .nodes}}{{pad 16 .hostname}}  {{with .resources}}{{pad 6 .arch}}  {{.cpus}} cpus{{else}}-       - cpus{{end}}{{if .asleep}}  asleep{{else if .online}}  online{{else if .storageError}}  offline: cannot open its storage: {{.storageError}}{{else}}  offline{{end}}\n{{end}}"
     };
   }
   // GetBuild is the build the controller runs, for a platform: what a node
@@ -491,6 +491,10 @@ message Node {
   bool asleep = 17;
   // Host-side view of a VM worker, when its host supervisor reports it.
   HostUsage host_usage = 18;
+  // Why the worker cannot open its storage (a ZFS pool not imported, its
+  // disk missing), as of its last heartbeat: it waits for it and serves
+  // nothing meanwhile, so it is not online. Empty when its storage is open.
+  string storage_error = 19;
 }
 
 // Host-side view of a VM worker, reported by its host supervisor (macOS).
@@ -1854,6 +1858,10 @@ message HeartbeatRequest {
   // Summary and rotation state of the worker's WARN/ERROR slog daemon logs.
   DaemonLogSource daemon_logs = 14;
   Admission admission = 15;
+  // Set while the worker cannot open its storage: why. It heartbeats with
+  // this alone (and its resources' arch, CPUs and version, to follow the
+  // controller's build) until its storage opens.
+  string storage_error = 16;
 }
 
 message HeartbeatResponse {

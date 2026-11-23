@@ -137,6 +137,10 @@ func (c candidate) holds(p *pb.Placement) bool {
 func (c candidate) unfit(p *pb.Placement, hosts []string) string {
 	switch {
 	case !c.online && !c.asleep || c.hb == nil:
+		if why := c.node.GetStorageError(); why != "" {
+			// It heartbeats, but serves nothing until its storage opens.
+			return c.host + " cannot open its storage: " + why
+		}
 		return c.host + " is offline"
 	case c.asleep && c.wakeFailed:
 		return c.host + " did not wake when last woken"

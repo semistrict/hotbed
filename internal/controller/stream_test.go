@@ -661,3 +661,33 @@ func TestCanceledAndGhostWorkspacesAreCleanedUpAndReconciled(t *testing.T) {
 		}
 	}
 }
+
+// A worker that heartbeats but cannot open its storage (a pool on a
+// disk that came up at 0 B, board 9141) is listed offline with the reason,
+// and online again once a heartbeat no longer carries it.
+func TestNodeWithStorageErrorIsOfflineWithReason(t *testing.T) {
+	s := newStreamed(t)
+	const why = "ZFS pool not imported: pool hotbed, of dataset hotbed/hotbed, is not imported"
+	if _, err := s.worker.Heartbeat(t.Context(), &pb.HeartbeatRequest{ClusterId: cluster, StorageError: why, Resources: &pb.Resources{Arch: "amd64"}}); err != nil {
+		t.Fatal(err)
+	}
+	nodes, err := s.cockpit.ListNodes(t.Context(), &pb.ListNodesRequest{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(nodes.Nodes) != 1 {
+		t.Fatalf("nodes = %v, want one", nodes.Nodes)
+	}
+	if n := nodes.Nodes[0]; n.Online || n.StorageError != why || n.LastSeen == nil {
+		t.Fatalf("node = online %v, storage_error %q, last_seen %v; want offline, %q, seen", n.Online, n.StorageError, n.LastSeen, why)
+	}
+
+	s.beat()
+	nodes, err = s.cockpit.ListNodes(t.Context(), &pb.ListNodesRequest{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n := nodes.Nodes[0]; !n.Online || n.StorageError != "" {
+		t.Fatalf("node after storage opened = online %v, storage_error %q; want online, none", n.Online, n.StorageError)
+	}
+}

@@ -117,13 +117,14 @@ function NodeCard({ n, s, color, now, delay }: { n: Node; s: Snapshot; color: st
           </div>
         </div>
         <div className="ml-auto flex flex-col items-end gap-1 text-right">
-          <OnlineBadge online={n.online} asleep={n.asleep} />
+          <OnlineBadge online={n.online} asleep={n.asleep} storageError={n.storageError} />
           {n.online && <AdmissionBadge a={admission} now={now} />}
           <div className="mt-1 font-mono text-[10px] text-faint">
             {n.online ? `${res?.cpus ?? 0} cpu · ${bytes(memBytes)}` : `seen ${ago(n.lastSeen ?? n.joinedAt, now)}`}
           </div>
         </div>
       </div>
+      {!n.online && n.storageError && <div className="mt-3 font-mono text-[11px] break-words text-serious">{n.storageError}</div>}
 
       {n.online ? (
         <>
@@ -259,7 +260,7 @@ export function NodeTable({ s }: { s: Snapshot }) {
                 <td className="px-2 py-2 font-sans text-muted-foreground">{n.resources?.machine ?? ""}</td>
                 <td className="px-2 py-2 text-muted-foreground">{n.resources?.arch || "—"}</td>
                 <td className="px-2 py-2">
-                  <OnlineBadge online={n.online} asleep={n.asleep} />
+                  <OnlineBadge online={n.online} asleep={n.asleep} storageError={n.storageError} />
                 </td>
                 <td className="px-2 py-2" title={admission?.reason}>
                   {admission ? (admission.holding ? <span className="text-serious">holding</span> : "starting") : "—"}

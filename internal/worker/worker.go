@@ -221,7 +221,19 @@ func Run(ctx context.Context, dir string, cfg statedir.WorkerConfig, tn Tailnet,
 		return api.Errorf(api.CodeNotAuthorized, "this machine is on the tailnet as %s, but the cluster belongs to %s: refusing to serve", self.Login, cfg.Owner).
 			WithSuggestion("log this machine into the owner's tailnet account (tailscale up)")
 	}
-	store, err := storage.Open(ctx, dir, cfg.Dataset)
+	cluster, _, err := api.Controller(cfg.Controller, hc)
+	if err != nil {
+		return err
+	}
+	exe, err := os.Executable()
+	if err != nil {
+		return err
+	}
+	// A binary takes longer than an API call's minute over a slow tailnet.
+	follow := &Follow{URL: "http://" + cfg.Controller, Client: &http.Client{Transport: hc.Transport, Timeout: 10 * time.Minute}, Exe: exe, Build: version.Number()}
+	store, err := awaitStorage(ctx, func(ctx context.Context) (storage.Store, error) {
+		return storage.Open(ctx, dir, cfg.Dataset)
+	}, cluster, cfg.ClusterID, follow, api.ReportInterval)
 	if err != nil {
 		return err
 	}
@@ -243,10 +255,6 @@ func Run(ctx context.Context, dir string, cfg statedir.WorkerConfig, tn Tailnet,
 	}
 	baseRootFn := baseImg.ReadyRootDir
 
-	cluster, _, err := api.Controller(cfg.Controller, hc)
-	if err != nil {
-		return err
-	}
 	ctrlConn, err := api.Dial(cfg.Controller, api.DefaultPort, hc, api.RideOut(30*time.Second, func(err error) {
 		slog.Warn("waiting for controller to mint git token", "err", err)
 	}))
@@ -425,12 +433,6 @@ func Run(ctx context.Context, dir string, cfg statedir.WorkerConfig, tn Tailnet,
 			}
 		}
 	}()
-	exe, err := os.Executable()
-	if err != nil {
-		return err
-	}
-	// A binary takes longer than an API call's minute over a slow tailnet.
-	follow := &Follow{URL: "http://" + cfg.Controller, Client: &http.Client{Transport: hc.Transport, Timeout: 10 * time.Minute}, Exe: exe, Build: version.Number()}
 	// Its update.ErrRestart ends the others, and Run with it.
 	g.Go(func() error { return Connect(gctx, eng, cluster, cfg.ClusterID, follow) })
 	g.Go(func() error {

@@ -192,6 +192,7 @@ func toNodeRow(id, hostname, login, addr string, joinedAt int64, lastSeen sql.Nu
 		out.hb = h
 		n.Resources, n.Usage, n.DiskBytes, n.Disk = h.Resources, h.Usage, h.DiskBytes, h.Disk
 		n.ReservedMemoryBytes, n.Storage, n.Profiler, n.DaemonLogs, n.Admission = h.ReservedMemoryBytes, h.Storage, h.Profiler, h.DaemonLogs, h.Admission
+		n.StorageError = h.StorageError
 	}
 	return out, nil
 }

@@ -523,9 +523,11 @@ func (s *Server) ListNodes(ctx context.Context, _ *pb.ListNodesRequest) (*pb.Lis
 
 // withOnline fills in whether the node is online, whether it is asleep, and
 // any fresh host-side usage / starvation signals reported by its host supervisor.
+// A node that heartbeats but cannot open its storage (storage_error) serves
+// nothing, so it is not online: nothing is placed on it or asked of it.
 func (s *Server) withOnline(n *pb.Node) *pb.Node {
 	now := s.now()
-	n.Online = n.LastSeen != nil && now.Sub(time.UnixMilli(*n.LastSeen)) <= api.OnlineWindow
+	n.Online = n.LastSeen != nil && now.Sub(time.UnixMilli(*n.LastSeen)) <= api.OnlineWindow && n.StorageError == ""
 	n.Asleep = s.power.asleep(n)
 	if n.Online && !n.Asleep {
 		if hu := s.hostUsage(n.Hostname, now); hu != nil {

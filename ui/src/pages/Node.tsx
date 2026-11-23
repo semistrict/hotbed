@@ -92,10 +92,15 @@ export function NodePage() {
             <HostStealBadge guestBusy={usage?.cpuBusy ?? 0} host={host} />
             <AdmissionBadge a={admission} now={now} />
             <ArchBadge arch={res?.arch ?? ""} />
-            <OnlineBadge online={n.online} asleep={n.asleep} />
+            <OnlineBadge online={n.online} asleep={n.asleep} storageError={n.storageError} />
           </div>
         }
       />
+      {!n.online && n.storageError && (
+        <div className="rounded-2xl border border-border bg-card/80 p-4 font-mono text-[12px] break-words text-serious">
+          Its worker cannot open its storage, and serves nothing until it can: {n.storageError}
+        </div>
+      )}
       <div className={`grid grid-cols-2 gap-3 ${host ? "sm:grid-cols-4 xl:grid-cols-7" : "sm:grid-cols-3 xl:grid-cols-6"}`}>
         <StatTile label={host ? "Guest CPU" : "CPU busy"} value={percent(usage?.cpuBusy ?? 0)} unit={`of ${res?.cpus ?? 0}`} />
         <HostCpuTile guestBusy={usage?.cpuBusy ?? 0} vcpus={res?.cpus ?? 0} host={host} />

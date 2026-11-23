@@ -1757,7 +1757,11 @@ type Node struct {
 	// (Standby): it is not out of reach, and a run placed on it wakes it.
 	Asleep bool `protobuf:"varint,17,opt,name=asleep,proto3" json:"asleep,omitempty"`
 	// Host-side view of a VM worker, when its host supervisor reports it.
-	HostUsage     *HostUsage `protobuf:"bytes,18,opt,name=host_usage,json=hostUsage,proto3" json:"host_usage,omitempty"`
+	HostUsage *HostUsage `protobuf:"bytes,18,opt,name=host_usage,json=hostUsage,proto3" json:"host_usage,omitempty"`
+	// Why the worker cannot open its storage (a ZFS pool not imported, its
+	// disk missing), as of its last heartbeat: it waits for it and serves
+	// nothing meanwhile, so it is not online. Empty when its storage is open.
+	StorageError  string `protobuf:"bytes,19,opt,name=storage_error,json=storageError,proto3" json:"storage_error,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -1916,6 +1920,13 @@ func (x *Node) GetHostUsage() *HostUsage {
 		return x.HostUsage
 	}
 	return nil
+}
+
+func (x *Node) GetStorageError() string {
+	if x != nil {
+		return x.StorageError
+	}
+	return ""
 }
 
 // Host-side view of a VM worker, reported by its host supervisor (macOS).
@@ -10236,8 +10247,12 @@ type HeartbeatRequest struct {
 	// Status of the worker's always-on OpenTelemetry eBPF continuous profiler.
 	Profiler *ProfilerStatus `protobuf:"bytes,13,opt,name=profiler,proto3" json:"profiler,omitempty"`
 	// Summary and rotation state of the worker's WARN/ERROR slog daemon logs.
-	DaemonLogs    *DaemonLogSource `protobuf:"bytes,14,opt,name=daemon_logs,json=daemonLogs,proto3" json:"daemon_logs,omitempty"`
-	Admission     *Admission       `protobuf:"bytes,15,opt,name=admission,proto3" json:"admission,omitempty"`
+	DaemonLogs *DaemonLogSource `protobuf:"bytes,14,opt,name=daemon_logs,json=daemonLogs,proto3" json:"daemon_logs,omitempty"`
+	Admission  *Admission       `protobuf:"bytes,15,opt,name=admission,proto3" json:"admission,omitempty"`
+	// Set while the worker cannot open its storage: why. It heartbeats with
+	// this alone (and its resources' arch, CPUs and version, to follow the
+	// controller's build) until its storage opens.
+	StorageError  string `protobuf:"bytes,16,opt,name=storage_error,json=storageError,proto3" json:"storage_error,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -10375,6 +10390,13 @@ func (x *HeartbeatRequest) GetAdmission() *Admission {
 		return x.Admission
 	}
 	return nil
+}
+
+func (x *HeartbeatRequest) GetStorageError() string {
+	if x != nil {
+		return x.StorageError
+	}
+	return ""
 }
 
 type HeartbeatResponse struct {
@@ -22348,7 +22370,7 @@ const file_hotbed_v1_hotbed_proto_rawDesc = "" +
 	"\vother_bytes\x18\x03 \x01(\x03R\n" +
 	"otherBytes\x12\x1d\n" +
 	"\n" +
-	"free_bytes\x18\x04 \x01(\x03R\tfreeBytes\"\xba\x05\n" +
+	"free_bytes\x18\x04 \x01(\x03R\tfreeBytes\"\xdf\x05\n" +
 	"\x04Node\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x1a\n" +
 	"\bhostname\x18\x02 \x01(\tR\bhostname\x12\x14\n" +
@@ -22372,7 +22394,8 @@ const file_hotbed_v1_hotbed_proto_rawDesc = "" +
 	"\tadmission\x18\x10 \x01(\v2\x14.hotbed.v1.AdmissionR\tadmission\x12\x16\n" +
 	"\x06asleep\x18\x11 \x01(\bR\x06asleep\x123\n" +
 	"\n" +
-	"host_usage\x18\x12 \x01(\v2\x14.hotbed.v1.HostUsageR\thostUsageB\f\n" +
+	"host_usage\x18\x12 \x01(\v2\x14.hotbed.v1.HostUsageR\thostUsage\x12#\n" +
+	"\rstorage_error\x18\x13 \x01(\tR\fstorageErrorB\f\n" +
 	"\n" +
 	"_last_seen\"\x89\x02\n" +
 	"\tHostUsage\x12\x1e\n" +
@@ -23092,7 +23115,7 @@ const file_hotbed_v1_hotbed_proto_rawDesc = "" +
 	"\x0eWorkspaceUsage\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12'\n" +
 	"\x0fexclusive_bytes\x18\x02 \x01(\x03R\x0eexclusiveBytes\x12!\n" +
-	"\fshared_bytes\x18\x03 \x01(\x03R\vsharedBytes\"\xb2\x05\n" +
+	"\fshared_bytes\x18\x03 \x01(\x03R\vsharedBytes\"\xd7\x05\n" +
 	"\x10HeartbeatRequest\x12\x1d\n" +
 	"\n" +
 	"cluster_id\x18\x01 \x01(\tR\tclusterId\x122\n" +
@@ -23114,7 +23137,8 @@ const file_hotbed_v1_hotbed_proto_rawDesc = "" +
 	"\bprofiler\x18\r \x01(\v2\x19.hotbed.v1.ProfilerStatusR\bprofiler\x12;\n" +
 	"\vdaemon_logs\x18\x0e \x01(\v2\x1a.hotbed.v1.DaemonLogSourceR\n" +
 	"daemonLogs\x122\n" +
-	"\tadmission\x18\x0f \x01(\v2\x14.hotbed.v1.AdmissionR\tadmission\"\xcd\x01\n" +
+	"\tadmission\x18\x0f \x01(\v2\x14.hotbed.v1.AdmissionR\tadmission\x12#\n" +
+	"\rstorage_error\x18\x10 \x01(\tR\fstorageError\"\xcd\x01\n" +
 	"\x11HeartbeatResponse\x124\n" +
 	"\bprojects\x18\x04 \x03(\v2\x18.hotbed.v1.HostedProjectR\bprojects\x12\x18\n" +
 	"\arelease\x18\x02 \x03(\tR\arelease\x12&\n" +
@@ -24387,16 +24411,16 @@ const file_hotbed_v1_hotbed_proto_rawDesc = "" +
 	"\x1aQUICK_RESPONSE_UNSPECIFIED\x10\x00\x12\x19\n" +
 	"\x15QUICK_RESPONSE_VERIFY\x10\x01\x12\"\n" +
 	"\x1eQUICK_RESPONSE_FIX_IF_VERIFIED\x10\x02\x12\x1b\n" +
-	"\x17QUICK_RESPONSE_WONT_FIX\x10\x032\xb2%\n" +
+	"\x17QUICK_RESPONSE_WONT_FIX\x10\x032\x80&\n" +
 	"\x0eClusterService\x127\n" +
 	"\x04Join\x12\x16.hotbed.v1.JoinRequest\x1a\x17.hotbed.v1.JoinResponse\x12I\n" +
 	"\n" +
 	"PushEvents\x12\x1c.hotbed.v1.PushEventsRequest\x1a\x1d.hotbed.v1.PushEventsResponse\x12F\n" +
 	"\tHeartbeat\x12\x1b.hotbed.v1.HeartbeatRequest\x1a\x1c.hotbed.v1.HeartbeatResponse\x12B\n" +
 	"\aStandby\x12\x19.hotbed.v1.StandbyRequest\x1a\x1a.hotbed.v1.StandbyResponse0\x01\x12X\n" +
-	"\x0fReportHostUsage\x12!.hotbed.v1.ReportHostUsageRequest\x1a\".hotbed.v1.ReportHostUsageResponse\x12\xa3\x02\n" +
-	"\tListNodes\x12\x1b.hotbed.v1.ListNodesRequest\x1a\x1c.hotbed.v1.ListNodesResponse\"\xda\x01\x82\xb5\x18\xd2\x01\n" +
-	"\x05nodesP\x01b\xc6\x01{{range .nodes}}{{pad 16 .hostname}}  {{with .resources}}{{pad 6 .arch}}  {{.cpus}} cpus{{else}}-       - cpus{{end}}{{if .asleep}}  asleep{{else if .online}}  online{{else}}  offline{{end}}\n" +
+	"\x0fReportHostUsage\x12!.hotbed.v1.ReportHostUsageRequest\x1a\".hotbed.v1.ReportHostUsageResponse\x12\xf1\x02\n" +
+	"\tListNodes\x12\x1b.hotbed.v1.ListNodesRequest\x1a\x1c.hotbed.v1.ListNodesResponse\"\xa8\x02\x82\xb5\x18\xa0\x02\n" +
+	"\x05nodesP\x01b\x94\x02{{range .nodes}}{{pad 16 .hostname}}  {{with .resources}}{{pad 6 .arch}}  {{.cpus}} cpus{{else}}-       - cpus{{end}}{{if .asleep}}  asleep{{else if .online}}  online{{else if .storageError}}  offline: cannot open its storage: {{.storageError}}{{else}}  offline{{end}}\n" +
 	"{{end}}\x90\x02\x02\x12=\n" +
 	"\bGetBuild\x12\x1a.hotbed.v1.GetBuildRequest\x1a\x10.hotbed.v1.Build\"\x03\x90\x02\x02\x12^\n" +
 	"\x11UpgradeController\x12#.hotbed.v1.UpgradeControllerRequest\x1a$.hotbed.v1.UpgradeControllerResponse\x12\x8c\x01\n" +
