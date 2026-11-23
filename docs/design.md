@@ -288,7 +288,8 @@ or tracing packages.
   can run `sudo` as real root inside the chroot (e.g. `sudo apt-get install -y PKG`, adjusting
   cgroup limits, etc.). Interactive shells (`hotbed shell`) and worker-invoked checkout operations
   (`git`, `hotbed __sync-apply`) run chrooted inside a transient systemd scope (`unshare --mount
-  --propagation slave` + `chroot`).
+  --propagation slave` + `chroot`). The chroot is a build-environment isolation boundary for trusted
+  code on a single-owner tailnet, not an adversarial sandbox against hostile code or tailnet access.
 
 - **Shared base rootfs image (`internal/baseimage`).** Each worker pulls a minimal Debian OCI
   rootfs (`public.ecr.aws/debian/debian:trixie-slim`) for its architecture, provisions it once with
