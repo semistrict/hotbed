@@ -1,0 +1,499 @@
+<!-- Code generated from proto/hotbed/v1/hotbed.proto via `go generate ./skills`. DO NOT EDIT. -->
+
+# Proto-Generated CLI Commands
+
+Every command below is generated directly from `proto/hotbed/v1/hotbed.proto` and also exposed as an MCP tool (`hotbed mcp`).
+Pass `--json` for the JSON envelope, or `--jq EXPR` to filter the response JSON.
+
+## `nodes`
+
+### `hotbed nodes`
+
+List the cluster's workers.
+
+*MCP tool: `nodes`*
+
+## `repo`
+
+Repos the cluster keeps built bases of (add, ls, rm).
+
+### `hotbed repo ls`
+
+List repos registered with the cluster.
+
+*MCP tool: `repo_ls`*
+
+| Argument / Flag | Env | Help |
+| --- | --- | --- |
+| `-p`, `--project` |  | Only repos held by this project; empty for every repo. |
+
+### `hotbed repo add ID URL`
+
+Add or update a repo; its project's workspaces check it out at /work/<name>. Give the project setup steps with hotbed step set.
+
+*MCP tool: `repo_add`*
+
+| Argument / Flag | Env | Help |
+| --- | --- | --- |
+| `-p`, `--project` |  | Place the repo in this project (making it if needed; default: auto-create a single-repo project unless one holds its remote already). |
+| `ID` |  | Short name, such as ratel; workspaces see the checkout at /work/<name>. |
+| `URL` |  | Git URL to clone, in any form (https://github.com/o/r.git, git@github.com:o/r.git). |
+| `--branch` |  | Branch bases follow (default: the remote's default branch). |
+
+### `hotbed repo rm ID`
+
+Remove a repo; workers delete its bases once no workspace uses them.
+
+*MCP tool: `repo_rm`*
+
+| Argument / Flag | Env | Help |
+| --- | --- | --- |
+| `ID` |  | The repo's name. |
+
+## `project`
+
+Projects: what sessions work on and questions are about, each one or more repos (add, rm-repo, ls, show, bases, rebuild, hosts).
+
+### `hotbed project rebuild NAME`
+
+Build the project's next base from nothing on every worker. Bases are otherwise built incrementally: each generation forks the one before, pulls, and runs the steps that need to run.
+
+*MCP tool: `project_rebuild`*
+
+| Argument / Flag | Env | Help |
+| --- | --- | --- |
+| `NAME` |  | The project. |
+
+### `hotbed project hosts NAME [HOSTS...]`
+
+Say which nodes keep the project's bases; none for every worker.
+
+*MCP tool: `project_hosts`*
+
+| Argument / Flag | Env | Help |
+| --- | --- | --- |
+| `NAME` |  | The project. |
+| `HOSTS` |  | Nodes (host names) that keep its bases; none for every worker. |
+
+### `hotbed project add NAME`
+
+Make a project, or add repos to one. Its workspaces check each repo out at /work/<repo>. A repo no project holds is a project of its own name, made when a session first starts in it. A repo another project holds needs --shared.
+
+*MCP tool: `project_add` · uses `-s/--session`*
+
+| Argument / Flag | Env | Help |
+| --- | --- | --- |
+| `NAME` |  | Lowercase letters, digits and dashes. |
+| `--repo` |  | A git remote it holds, in any form (git@github.com:o/r.git, https://github.com/o/r, github.com/o/r). Repeatable. |
+| `--shared` |  | Add a repo another project holds too; sessions starting in its checkouts will then have to name their project (-p). |
+
+### `hotbed project rm-repo NAME`
+
+Take repos out of a project; sessions already in it stay.
+
+*MCP tool: `project_rm-repo` · uses `-s/--session`*
+
+| Argument / Flag | Env | Help |
+| --- | --- | --- |
+| `NAME` |  | The project. |
+| `--repo` |  | A git remote it holds, in any form (git@github.com:o/r.git, https://github.com/o/r, github.com/o/r). Repeatable. |
+
+### `hotbed project ls`
+
+List the projects, the repos each holds and their setup steps.
+
+*MCP tool: `project_ls`*
+
+### `hotbed project show NAME`
+
+A project, with every change made to it: who made it, and who added or took out each repo, when.
+
+*MCP tool: `project_show`*
+
+| Argument / Flag | Env | Help |
+| --- | --- | --- |
+| `NAME` |  | The project. |
+
+### `hotbed project bases [PROJECT]`
+
+List every node's bases for a project (or every project when none is named), newest generation first per node.
+
+*MCP tool: `project_bases`*
+
+| Argument / Flag | Env | Help |
+| --- | --- | --- |
+| `PROJECT` |  | Project name (or a repo ID held by a project); empty lists every project's bases. |
+| `--node` |  | Filter to bases on this node (host name or ID). |
+| `--state` |  | Filter by base state (building, warm, stale, failed). |
+
+## `snapshot`
+
+### `hotbed snapshot`
+
+Everything the cockpit shows: nodes, repos, bases, workspaces, commands, sessions, schedules, events and history.
+
+*MCP tool: `snapshot`*
+
+## `diagnostics`
+
+### `hotbed diagnostics ID`
+
+GetCommandDiagnostics is the diagnostics taken of a command as someone stopped or paused it (StopCommand, PauseCommand with diagnose), oldest first, live or long ended: the controller keeps them.
+
+*MCP tool: `diagnostics`*
+
+| Argument / Flag | Env | Help |
+| --- | --- | --- |
+| `ID` |  | The command's ID. |
+| `--seq` |  | Return only the diagnostics for this intervention sequence number (0 for all, paginated). |
+| `--after-seq` |  | Return diagnostics with sequence number strictly greater than this cursor. |
+
+## `node`
+
+Inspect or retire individual cluster worker nodes (show, retire).
+
+### `hotbed node show NODE`
+
+A node with how it decides whether to start new work (its admission: whether it holds work, why, and every signal it weighs against its limit), the work it recently held or made wait, and the placements that weighed it.
+
+*MCP tool: `node_show`*
+
+| Argument / Flag | Env | Help |
+| --- | --- | --- |
+| `NODE` |  | Its host name or ID. |
+| `--limit` |  | At most this many of its recent events and placements (default 30). |
+
+### `hotbed node retire NODE`
+
+Retire a node that is gone for good (its machine or VM deleted): it no longer shows in hotbed nodes or the cockpit and takes no runs, while its history (commands, events, placements) stays. Its sessions' runs go elsewhere. Refused while it is online. A worker joining again with the same tailnet identity is a node again.
+
+*MCP tool: `node_retire`*
+
+| Argument / Flag | Env | Help |
+| --- | --- | --- |
+| `NODE` |  | Its host name or ID. |
+
+## `placements`
+
+### `hotbed placements`
+
+Placement decisions, newest first: each candidate node with its cost in parts, or why it was ruled out, and the node chosen. Kept a day.
+
+*MCP tool: `placements`*
+
+| Argument / Flag | Env | Help |
+| --- | --- | --- |
+| `--node` |  | Only placements that weighed this node (host name or ID). |
+| `--session` |  | Only this session's. |
+| `--limit` |  | At most this many (default 50). |
+
+## `events`
+
+### `hotbed events`
+
+The cluster's events, newest first: what workers did (admitted, held, made wait, resumed, parked, forked, ...), narrowed by node and kind.
+
+*MCP tool: `events`*
+
+| Argument / Flag | Env | Help |
+| --- | --- | --- |
+| `--node` |  | Only this node's (host name or ID). |
+| `--kind` |  | Only these kinds (repeatable): admit, wait, hold, unhold, park, thaw, fork, release, finish, fail, base, ... |
+| `--limit` |  | At most this many (default 100). |
+
+## `poll`
+
+### `hotbed poll`
+
+Wait, two minutes at most, for what happens in the session: its commands admitted, parked, paused or ended, its workspaces ready or failed, the user's answers to its questions, its reviews' ends and responses. Returns the events after the cursor at once if there are any. The client keeps where this machine's last poll of the session left off, so each event comes once. Nothing after two minutes: nothing happened yet; poll again.
+
+*MCP tool: `poll` · uses `-s/--session` · waits (no short deadline)*
+
+| Argument / Flag | Env | Help |
+| --- | --- | --- |
+| `--after` |  | Return events after this cursor (default: after the last ones a poll of this session on this machine returned; 0 for all of them). |
+| `--timeout` |  | Seconds to wait for an event: at most and by default 120. |
+
+## `ps`
+
+### `hotbed ps`
+
+List a session's commands, live and just ended (-p for a project, --all for every session, -e for 30-day history).
+
+*MCP tool: `ps` · uses `-s/--session`*
+
+| Argument / Flag | Env | Help |
+| --- | --- | --- |
+| `-p`, `--project` |  | Every session's commands in this project. |
+| `-e`, `--ended` |  | Commands that ended long ago too, as history keeps them (30 days), not only live and just-ended ones. |
+| `-m`, `--match` |  | Only commands whose command line holds this text, as written (case-sensitive). |
+| `-n`, `--limit` |  | At most this many of the commands that ended, the newest to end (default 50); 0 for every one. Commands not yet ended are all listed. |
+| `--all` |  | Every session's commands. |
+
+## `daemon-logs`
+
+### `hotbed daemon-logs`
+
+GetDaemonLogs returns recent WARN and ERROR slog records from the controller, a worker, or all of them, newest first.
+
+*MCP tool: `daemon-logs`*
+
+| Argument / Flag | Env | Help |
+| --- | --- | --- |
+| `--source` |  | Which daemon to read: "controller", a worker hostname or node ID, or empty for the controller and every online worker combined. |
+| `--level` |  | Only entries of this level (warn or error); omit for both. |
+| `-q`, `--query` |  | Case-insensitive substring filter over message, attributes, and source location. |
+| `--from-ms` |  | Only entries at or after this unix ms timestamp (0 for no lower bound). |
+| `--to-ms` |  | Only entries at or before this unix ms timestamp (0 for no upper bound). |
+| `--since` |  | Only entries from the last duration (e.g. "15m", "1h", "24h", "7d"); sets from_ms relative to now on the server when from_ms is 0. |
+| `-n`, `--limit` |  | Maximum entries to return, newest first (default 200, max 1000). |
+
+## `question`
+
+Questions agents ask the user: a list for each project, shared by every session that works on it, which the user answers in the cockpit whenever they like.
+
+### `hotbed question add`
+
+Ask the user: AskUserQuestion's JSON ({"questions": [...]}) on stdin or --file. Each question is an entry of its own, at the top of the user's order, on the list of the session's project, which its sessions share; carry on with your best guess and read the answer later. With --answered, record decisions already taken instead: each question is answered with its implemented options and handled at once, for the user to reopen if they disagree.
+
+*MCP tool: `question_add` · uses `-s/--session` · reads JSON from stdin or `--file`*
+
+| Argument / Flag | Env | Help |
+| --- | --- | --- |
+| `--repo` |  | The repo of the session's project they are about, as a git remote in any form (default: the checkout's asked from, if the project holds it, or else the project as a whole). |
+| `--answered` |  | The questions record decisions the asking agent already took: each marks what it decided as implemented, and is kept answered with those options, by the asking session, and handled, never waiting in the outbox. The user reopens one to overturn it. |
+
+### `hotbed question edit ID`
+
+Rewrite an open question: one question's JSON on stdin or --file, bare or as add takes it.
+
+*MCP tool: `question_edit` · uses `-s/--session` · reads JSON from stdin or `--file`*
+
+| Argument / Flag | Env | Help |
+| --- | --- | --- |
+| `ID` |  | The question's number. |
+| `--if-revision` |  | Refuse with CONFLICT unless the question is at this revision. |
+
+### `hotbed question rm ID`
+
+Delete a question that is no longer needed, whichever session asked it; it stays in the history.
+
+*MCP tool: `question_rm` · uses `-s/--session`*
+
+| Argument / Flag | Env | Help |
+| --- | --- | --- |
+| `ID` |  | The question's number. |
+| `--reason` |  | Why it is no longer needed. |
+| `--if-revision` |  | Refuse with CONFLICT unless the question is at this revision. |
+
+### `hotbed question ls`
+
+A project's questions, every session's (every state but deleted), newest first unless asked for another order.
+
+*MCP tool: `question_ls` · uses `-s/--session`*
+
+| Argument / Flag | Env | Help |
+| --- | --- | --- |
+| `--state` |  | Only questions in this state (repeatable); none means every state but deleted. |
+| `--sort` |  | newest or oldest asked first, the most recently changed (updated) first, or the user's order (rank). |
+| `--asked-by` |  | Only the questions this session asked. |
+| `--limit` |  | At most this many; 0 for all. |
+| `-p`, `--project` | `HOTBED_PROJECT` | Only this project's questions (default: HOTBED_PROJECT, else the session's project, else the one holding this checkout's repo). |
+| `--all-projects` |  | Every project's questions. |
+
+### `hotbed question outbox`
+
+A project's questions the user answered or dismissed that no agent has acknowledged yet, the newest answer first.
+
+*MCP tool: `question_outbox` · uses `-s/--session`*
+
+| Argument / Flag | Env | Help |
+| --- | --- | --- |
+| `--asked-by` |  | Only the questions this session asked. |
+| `-p`, `--project` | `HOTBED_PROJECT` | Only this project's questions (default: HOTBED_PROJECT, else the session's project, else the one holding this checkout's repo). |
+| `--all-projects` |  | Every project's questions. |
+
+### `hotbed question projects`
+
+Every project with questions: how many wait on the user, and on agents.
+
+*MCP tool: `question_projects`*
+
+### `hotbed question show ID`
+
+A question with every change made to it: what, when, and by which session.
+
+*MCP tool: `question_show`*
+
+| Argument / Flag | Env | Help |
+| --- | --- | --- |
+| `ID` |  | The question's number. |
+
+### `hotbed question answer ID`
+
+Answer a question for the user, which puts it in the outbox; or change the answer of one in the outbox. The user answers in the cockpit; an agent uses this only to pass on what the user said.
+
+*MCP tool: `question_answer` · uses `-s/--session`*
+
+| Argument / Flag | Env | Help |
+| --- | --- | --- |
+| `ID` |  | The question's number. |
+| `--pick` |  | The label of an option the user picked; one at most unless the question is multi_select. |
+| `--other` |  | What the user wrote instead of picking, or besides: AskUserQuestion's "Other". |
+| `--notes` |  | A note on the answer. |
+| `--if-revision` |  | Refuse with CONFLICT unless the question is at this revision. |
+
+### `hotbed question dismiss ID`
+
+Dismiss a question for the user, open or answered in the outbox: it will get no answer. It goes to the outbox too, so its asker learns as much.
+
+*MCP tool: `question_dismiss` · uses `-s/--session`*
+
+| Argument / Flag | Env | Help |
+| --- | --- | --- |
+| `ID` |  | The question's number. |
+| `--reason` |  | Why it gets no answer. |
+| `--if-revision` |  | Refuse with CONFLICT unless the question is at this revision. |
+
+### `hotbed question revise ID`
+
+Rewrite a question for the user, in any state but deleted: the user does this in the cockpit; an agent only to pass on the user's words. An answer it has must still pick among its options. One question's JSON on stdin or --file, as question edit takes it.
+
+*MCP tool: `question_revise` · uses `-s/--session` · reads JSON from stdin or `--file`*
+
+| Argument / Flag | Env | Help |
+| --- | --- | --- |
+| `ID` |  | The question's number. |
+| `--if-revision` |  | Refuse with CONFLICT unless the question is at this revision. |
+
+### `hotbed question reopen ID`
+
+Return an answered, dismissed or handled question to the user, open again at the top of their order, its answer cleared: the user does this in the cockpit; an agent only when the user asks.
+
+*MCP tool: `question_reopen` · uses `-s/--session`*
+
+| Argument / Flag | Env | Help |
+| --- | --- | --- |
+| `ID` |  | The question's number. |
+
+### `hotbed question move ID`
+
+Move an open question in the user's order.
+
+*MCP tool: `question_move` · uses `-s/--session`*
+
+| Argument / Flag | Env | Help |
+| --- | --- | --- |
+| `ID` |  | The question's number. |
+| `--before` |  | Just before this open question. |
+| `--first` |  | First. |
+| `--last` |  | Last. |
+
+### `hotbed question ack [ID...]`
+
+Acknowledge answers you have read and acted on: they leave the outbox, handled; all of them or, if one is not in the outbox, none.
+
+*MCP tool: `question_ack` · uses `-s/--session`*
+
+| Argument / Flag | Env | Help |
+| --- | --- | --- |
+| `ID` |  | The questions whose answers you read. |
+
+## `auth`
+
+Centralized GitHub authentication held on the controller and delegated to every worker, session, and command (git HTTPS credential helper, git SSH protocol proxy, and worker gh REST/GraphQL proxy).
+
+### `hotbed auth login-start`
+
+Start a GitHub OAuth Device Flow on the controller and return the one-time user code and verification URL (use with `hotbed auth login --login-id`, or run `hotbed auth login` directly for the interactive flow).
+
+*MCP tool: `auth_login-start`*
+
+| Argument / Flag | Env | Help |
+| --- | --- | --- |
+| `--name` |  | Credential name to save on completion (default "github"). |
+| `--host` |  | GitHub host (default "github.com"). |
+| `--repo` |  | Optional repo patterns ("owner/repo" or "owner/*") this credential covers. |
+| `--scope` |  | Additional OAuth scopes beyond repo, read:org, gist. |
+| `--client-id` |  | OAuth App client ID override (default: Hotbed's public OAuth App). |
+| `--api-url` |  | Optional GitHub REST API base URL override. |
+| `--oauth-url` |  | Optional GitHub OAuth base URL override (default https://<host>). |
+
+### `hotbed auth login`
+
+Log in to GitHub on the controller via OAuth Device Flow (like `gh auth login`) and store the resulting user token centrally for all workers, sessions, and commands.
+
+*MCP tool: `auth_login` · waits (no short deadline)*
+
+| Argument / Flag | Env | Help |
+| --- | --- | --- |
+| `--login-id` |  | Pending login handle from `auth login-start` (omit for interactive login). |
+| `--name` |  | Credential name to save (local: used when starting interactive login). |
+| `--host` |  | GitHub host (local: used when starting interactive login). |
+| `--repo` |  | Optional repo patterns (local: used when starting interactive login). |
+| `--scope` |  | Additional OAuth scopes (local: used when starting interactive login). |
+| `--client-id` |  | OAuth App client ID override (local: used when starting interactive login). |
+| `--api-url` |  | Optional API base URL override (local: used when starting interactive login). |
+| `--oauth-url` |  | Optional OAuth base URL override (local: used when starting interactive login). |
+| `-w`, `--web` |  | Open the verification URL in your browser automatically. |
+
+### `hotbed auth set NAME`
+
+Add or replace a centralized git token on the controller (for headless or CI setup; prefer `hotbed auth login` for interactive OAuth login). Secrets are stored write-only on the controller and never returned by list calls.
+
+*MCP tool: `auth_set`*
+
+| Argument / Flag | Env | Help |
+| --- | --- | --- |
+| `NAME` |  | Unique credential name (lowercase letters, digits, dashes), e.g. github. |
+| `--host` |  | Git host (default github.com). |
+| `--repo` |  | Optional repo patterns ("owner/repo" or "owner/*") this credential covers; repeatable; omit for all repos on host. |
+| `--token` |  | Access token (prefer --token-file - to read from stdin). |
+| `--token-file` |  | Path to a file holding the token, or "-" to read from stdin. |
+| `--username` |  | Optional GitHub login name for display in `auth ls` and `gh auth status`. |
+| `--api-url` |  | Optional GitHub REST/GraphQL API base URL override (default https://api.github.com). |
+
+### `hotbed auth ls`
+
+List centralized git credentials configured on the controller (metadata only; secrets are never returned).
+
+*MCP tool: `auth_ls`*
+
+| Argument / Flag | Env | Help |
+| --- | --- | --- |
+| `--host` |  | Only credentials for this git host; empty for all. |
+
+### `hotbed auth rm NAME`
+
+Delete a centralized git credential from the controller.
+
+*MCP tool: `auth_rm`*
+
+| Argument / Flag | Env | Help |
+| --- | --- | --- |
+| `NAME` |  | Name of the credential to delete. |
+
+### `hotbed auth token REPO`
+
+Mint a short-lived git access token for a repository URL or canonical remote (e.g. https://github.com/semistrict/hotbed.git), refreshing an expiring OAuth token automatically when needed.
+
+*MCP tool: `auth_token`*
+
+| Argument / Flag | Env | Help |
+| --- | --- | --- |
+| `REPO` |  | Repository URL or canonical remote, e.g. https://github.com/semistrict/hotbed.git or github.com/semistrict/hotbed. |
+
+### `hotbed auth api PATH`
+
+Proxy a GitHub REST or GraphQL API request through the controller using its stored credentials so worker commands (`gh`) never need raw tokens.
+
+*MCP tool: `auth_api`*
+
+| Argument / Flag | Env | Help |
+| --- | --- | --- |
+| `PATH` |  | API path starting with "/", e.g. /user, /repos/semistrict/hotbed/pulls, or /graphql. |
+| `-X`, `--method` |  | HTTP method (default GET, or POST when body is set). |
+| `--host` |  | GitHub host (default github.com). |
+| `--repo` |  | Optional "owner/repo" hint for repo-scoped credential selection. |
+| `--body` |  | Optional request body (e.g. JSON for POST/PATCH/GraphQL). |
+| `-H`, `--header` |  | Additional request headers as "Key: Value" (Authorization/Cookie are ignored). |

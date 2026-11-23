@@ -1,0 +1,7 @@
+# virtio-balloon free page reporting on the macOS QEMU worker VM
+
+**Tried:** 2026-11-22, board 7603 (`internal/setup`).
+**Idea:** Add `-device virtio-balloon-pci,free-page-reporting=on` to the macOS worker VM so pages the Ubuntu guest frees go back to macOS, and an idle VM stops holding its whole RAM.
+**Result:** QEMU 11.1 (Homebrew, HVF, arm64) on macOS 27, a 4 GiB Ubuntu 26.04 guest (kernel 7.0, `CONFIG_PAGE_REPORTING=y`, `virtio_balloon` bound). After the guest allocated and freed 2-3 GiB of random data, `top -stats mem,cmprs` still showed the QEMU process at 4810M MEM (4672M compressed): the host held more than the whole guest RAM. `ps` RSS and `footprint` do not track HVF guest memory at all (RSS fell to 23 MB while the guest held 3 GiB), so only `top`'s MEM/CMPRS tell.
+**Why it's dead:** QEMU discards reported pages in `ram_block_discard_range` with `madvise(MADV_DONTNEED)`. On Darwin that only deactivates the pages; they stay dirty, so the compressor keeps them instead of freeing them. Darwin frees anonymous memory only for `MADV_FREE`/`MADV_FREE_REUSABLE`, which QEMU does not use.
+**Reopen if:** QEMU discards guest RAM on Darwin with `MADV_FREE_REUSABLE` (or another call that drops the pages), or hotbed moves the macOS VM to a hypervisor shown to return freed guest memory. Until then, a VM that powers off when idle (board 7603) is what gives memory back.

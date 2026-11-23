@@ -1,0 +1,361 @@
+package worker
+
+import (
+	"cmp"
+	"context"
+	"errors"
+	"fmt"
+	"log/slog"
+	"os"
+	"path/filepath"
+	"strings"
+	"time"
+
+	"github.com/semistrict/hotbed/internal/bench"
+	pb "github.com/semistrict/hotbed/internal/gen/hotbed/v1"
+	"github.com/semistrict/hotbed/internal/unit"
+)
+
+// Measurements (hotbed run --bench) run one at a time on a node, on the
+// node's measurement CPUs, which no other command uses while one runs:
+//
+//   - A measurement waits for another to end, and for running work to fit
+//     in the CPUs it leaves them. While it waits for room, work queued after
+//     it waits behind it, so that the work ahead drains; while it waits for
+//     another measurement, work goes on past it.
+//   - The node is isolated (bench.Isolation) just before it starts, and
+//     given back once no measurement runs: after it ends, and after a worker
+//     restart that finds none running.
+//   - It never swaps, is never parked, and runs at the default nice.
+//   - Where the node's volumes are on a ZFS pool, which no cgroup's IO cap
+//     reaches, the commands of volumes writing to it past the measurement's
+//     bound are held (parked) from just before it starts until it ends,
+//     and other volumes' queued commands wait for it to end.
+//   - Its isolation is checked while it runs and as it ends: a measurement
+//     whose isolation was lost (its disks' quiet too) fails, whatever its
+//     status.
+
+// offRetryAfter is how long a worker waits to try again to give back an
+// isolation it failed to.
+const offRetryAfter = 30 * time.Second
+
+// Isolator isolates a node for its measurements; *bench.Isolation is the
+// real one.
+type Isolator interface {
+	// Slice is the slice measurements run in.
+	Slice() string
+	// CPUs is the measurement's CPUs.
+	CPUs() bench.CPUs
+	// Count is how many CPUs a measurement takes, and how many it leaves.
+	Count() (bench, work int)
+	// Active says whether the node is isolated, or partly.
+	Active() bool
+	// On isolates the node, or fails having undone what it did.
+	On(ctx context.Context) error
+	// Off gives the node back.
+	Off(ctx context.Context) error
+	// Held says why the isolation no longer holds for the measurement in
+	// volume own, or nil while it does.
+	Held(own string) error
+	// Sample reads what others have written to the disks a measurement
+	// uses; the engine calls it every step.
+	Sample()
+	// Pool is the ZFS dataset the node's volumes are under, whose writers
+	// the engine holds back while a measurement runs; "" for none.
+	Pool() string
+	// Loud is the volumes other than own the engine must hold back for the
+	// pool to stay quiet, heaviest first.
+	Loud(own string) []bench.Writer
+}
+
+// BenchSlice is where a worker whose commands run in slice runs its
+// measurements: beside it, in the same parent (user-1000-hotbed.slice's in
+// user-1000.slice), so they share its memory but not its IO caps.
+func BenchSlice(slice string) string {
+	return strings.TrimSuffix(cmp.Or(slice, unit.DefaultSlice), ".slice") + "_bench.slice"
+}
+
+// sliceOf is the slice c's unit runs in.
+func (e *Engine) sliceOf(c *command) string {
+	if c.cmd().Bench && e.cfg.Bench != nil {
+		return e.cfg.Bench.Slice()
+	}
+	return e.cfg.Slice
+}
+
+// measuring is the measurement running now, if one is. Call with e.mu held.
+func (e *Engine) measuring() *command {
+	for _, c := range e.commands {
+		if s := c.cmd().State; c.cmd().Bench && (s == running || s == parked) {
+			return c
+		}
+	}
+	return nil
+}
+
+// workCores is how many CPUs running work keeps busy: commands other than
+// measurements and dev servers, which run until stopped and would keep a
+// measurement, and everything queued behind it, waiting for good. Call with
+// e.mu held.
+func (e *Engine) workCores() float64 {
+	var cores float64
+	for _, c := range e.commands {
+		if c.cmd().State == running && !c.cmd().Bench && c.cmd().Kind != "server" {
+			cores += c.cmd().CpuCores
+		}
+	}
+	return cores
+}
+
+// benchBlocker says why a measurement cannot start now, beyond what keeps
+// any command waiting, or "": ahead is an older one still waiting. Call
+// with e.mu held.
+func (e *Engine) benchBlocker(ahead *command) string {
+	if m := e.measuring(); m != nil {
+		return fmt.Sprintf("waiting for measurement %s to finish", m.cmd().Id)
+	}
+	if ahead != nil {
+		return fmt.Sprintf("waiting for measurement %s, queued before it", ahead.cmd().Id)
+	}
+	return ""
+}
+
+// benchRoom says why running work leaves the measurement no room, or "".
+// Call with e.mu held.
+func (e *Engine) benchRoom() string {
+	_, work := e.cfg.Bench.Count()
+	if cores := e.workCores(); cores > float64(work) {
+		return fmt.Sprintf("waiting for CPUs: running commands keep %.1f busy, more than the %d a measurement leaves them", cores, work)
+	}
+	return ""
+}
+
+// postExitIsolator is optionally implemented by Isolators (such as
+// *bench.Isolation) that can skip missing bench-slice cpuset files after exit
+// while still verifying workqueue, resctrl, and disk-quiet isolation.
+type postExitIsolator interface {
+	HeldAfterExit(own string) error
+}
+
+// checkIsolation records, once, that the measurement c lost its isolation.
+// When exited is true, ENOENT reading the bench slice's cpuset files is ignored
+// because systemd tears down the empty bench slice once the command exits
+// (board 7935), while workqueue, resctrl, and disk-quiet checks still run; any
+// loss while running or any other post-exit failure is still recorded. Call
+// with e.mu held.
+func (e *Engine) checkIsolation(c *command, exited bool) {
+	if !c.cmd().Bench || c.rec.IsolationLost != "" || e.cfg.Bench == nil {
+		return
+	}
+	var err error
+	if exited {
+		if pe, ok := e.cfg.Bench.(postExitIsolator); ok {
+			err = pe.HeldAfterExit(c.rec.Volume)
+		} else {
+			err = e.cfg.Bench.Held(c.rec.Volume)
+			if err != nil && isBenchSliceGone(err, e.cfg.Bench.Slice()) {
+				return
+			}
+		}
+	} else {
+		err = e.cfg.Bench.Held(c.rec.Volume)
+	}
+	if err == nil {
+		return
+	}
+	cmd := c.cmd()
+	c.rec.IsolationLost = err.Error()
+	cmd.Timeline = append(cmd.Timeline, &pb.CommandEvent{At: e.nowMs(), What: "isolation lost", Detail: err.Error()})
+	e.saveCommand(c, change{
+		what: "isolation lost", detail: err.Error(),
+		feed: feed(feedFail, fmt.Sprintf("measurement %s lost its isolation: %v", cmd.Argv, err), ref("command", cmd.Id)),
+	})
+}
+
+// isBenchSliceGone reports whether err is ENOENT reading the bench slice's
+// cpuset partition files after systemd tore down the empty slice when the
+// command exited.
+func isBenchSliceGone(err error, slice string) bool {
+	if !errors.Is(err, os.ErrNotExist) {
+		return false
+	}
+	var pe *os.PathError
+	if !errors.As(err, &pe) {
+		return false
+	}
+	base := filepath.Base(pe.Path)
+	if base != "cpuset.cpus.partition" && base != "cpuset.cpus.effective" {
+		return false
+	}
+	return slice == "" || filepath.Base(filepath.Dir(pe.Path)) == slice
+}
+
+// quietBlocker says why c, not a measurement, waits for the one running:
+// it would write to a pool no cap holds, beside it. Call with e.mu held.
+func (e *Engine) quietBlocker(c *command) string {
+	if e.cfg.Bench == nil || e.cfg.Bench.Pool() == "" {
+		return ""
+	}
+	m := e.measuring()
+	if m == nil || m.rec.Volume == c.rec.Volume {
+		return ""
+	}
+	return fmt.Sprintf("waiting for measurement %s to finish: it keeps %s quiet, which no cap can do on ZFS", m.cmd().Id, e.cfg.Bench.Pool())
+}
+
+// holdLoud holds the commands of the volumes writing to the pool past the
+// bound beside measurement m (about to start, or running), until no
+// measurement runs: frozen, not pushed to swap, as they'll be back soon.
+func (e *Engine) holdLoud(ctx context.Context, m *command) {
+	iso := e.cfg.Bench
+	if iso == nil || iso.Pool() == "" {
+		return
+	}
+	loud := iso.Loud(m.rec.Volume)
+	if len(loud) == 0 {
+		return
+	}
+	rates := map[string]float64{}
+	for _, w := range loud {
+		rates[w.Volume] = w.Rate
+	}
+	e.mu.Lock()
+	var victims []*command
+	for _, c := range e.commands {
+		if _, ok := rates[c.rec.Volume]; ok && c.cmd().State == running && !c.cmd().Bench && !c.stopping && !c.deactivating {
+			victims = append(victims, c)
+		}
+	}
+	e.mu.Unlock()
+	for _, c := range victims {
+		e.holdOneLoud(ctx, c, iso.Pool(), m.cmd().Id, rates[c.rec.Volume])
+	}
+}
+
+func (e *Engine) holdOneLoud(ctx context.Context, c *command, pool, benchID string, rateBytes float64) {
+	c.freezeMu.Lock()
+	defer c.freezeMu.Unlock()
+	e.mu.Lock()
+	if c.cmd().State != running || c.cmd().Bench || c.stopping || c.deactivating || c.intervening {
+		e.mu.Unlock()
+		return
+	}
+	unitName, id := c.unitName(), c.cmd().Id
+	e.mu.Unlock()
+	if err := e.cfg.Units.Freeze(ctx, unitName); err != nil {
+		if !e.reconcileInactiveUnit(ctx, c) {
+			slog.Error("hold a command beside a measurement", "command", id, "err", err)
+		}
+		return
+	}
+	e.mu.Lock()
+	cmd := c.cmd()
+	if cmd.State != running || c.stopping {
+		// Ended, stopped, or transitioned as it froze: only thaw if Stop is
+		// still tearing down a running unit (never thaw a paused/parked unit).
+		shouldThaw := c.stopping && cmd.State == running
+		e.mu.Unlock()
+		if shouldThaw {
+			if err := e.cfg.Units.Thaw(ctx, unitName); err != nil {
+				slog.Warn("thaw a command no longer to hold", "command", id, "err", err)
+			}
+		}
+		return
+	}
+	rate := rateBytes / 1e6
+	cmd.State = parked
+	cmd.CpuCores = 0
+	cmd.Reason = fmt.Sprintf("held: its volume wrote %.1f MB/s to %s beside measurement %s, past its bound; thawed once it ends", rate, pool, benchID)
+	cmd.Timeline = append(cmd.Timeline, &pb.CommandEvent{At: e.nowMs(), What: "held", Detail: cmd.Reason})
+	c.rec.HeldFor = benchID
+	c.rec.ParkedAt = e.nowMs()
+	c.reclaimed = false
+	e.saveCommand(c, change{
+		what: "held", detail: cmd.Reason,
+		feed: feed(feedPark, fmt.Sprintf("hold %s · %.1f MB/s to %s beside measurement %s", cmd.Argv, rate, pool, benchID), ref("command", cmd.Id)),
+	})
+	e.mu.Unlock()
+}
+
+// releaseHeld thaws the commands held beside a measurement, once none
+// runs. One paused meanwhile (its soft time limit) stays so.
+func (e *Engine) releaseHeld(ctx context.Context) {
+	e.mu.Lock()
+	var held []*command
+	for _, c := range e.commands {
+		if c.rec.HeldFor != "" {
+			held = append(held, c)
+		}
+	}
+	e.mu.Unlock()
+	for _, c := range held {
+		e.releaseOneHeld(ctx, c)
+	}
+}
+
+func (e *Engine) releaseOneHeld(ctx context.Context, c *command) {
+	c.freezeMu.Lock()
+	defer c.freezeMu.Unlock()
+	e.mu.Lock()
+	cmd := c.cmd()
+	if cmd.State != parked {
+		if c.rec.HeldFor != "" {
+			c.rec.HeldFor = ""
+			e.saveCommand(c, change{what: "released"})
+		}
+		e.mu.Unlock()
+		return
+	}
+	if c.rec.HeldFor == "" || c.deactivating || c.stopping {
+		e.mu.Unlock()
+		return
+	}
+	slept := (time.Duration(e.nowMs()-c.rec.ParkedAt) * time.Millisecond).Round(time.Second)
+	detail := fmt.Sprintf("after %s, measurement %s over", slept, c.rec.HeldFor)
+	if err := e.thawLocked(ctx, c, change{
+		what: "thawed", detail: detail,
+		feed: feed(feedThaw, fmt.Sprintf("thaw %s %s", cmd.Argv, detail), ref("command", cmd.Id)),
+	}); err != nil {
+		slog.Error("thaw a command held beside a measurement", "command", cmd.Id, "err", err)
+	}
+}
+
+// quiet keeps the pool quiet beside the measurement running, if one is.
+func (e *Engine) quiet(ctx context.Context) {
+	e.mu.Lock()
+	m := e.measuring()
+	e.mu.Unlock()
+	if m != nil {
+		e.holdLoud(ctx, m)
+	}
+}
+
+// settleBench gives the node back once no measurement runs: after one
+// ended, or after a worker that stopped mid-measurement started again.
+func (e *Engine) settleBench(ctx context.Context) {
+	iso := e.cfg.Bench
+	if iso == nil {
+		return
+	}
+	e.mu.Lock()
+	m := e.measuring()
+	e.mu.Unlock()
+	if m == nil {
+		e.releaseHeld(ctx)
+	}
+	if m != nil || !iso.Active() || e.now().Before(e.offRetry) {
+		return
+	}
+	if err := iso.Off(ctx); err != nil {
+		// Tried again a while later, not every step: each try asks systemd
+		// too. A measurement meanwhile isolates from what was saved first.
+		e.offRetry = e.now().Add(offRetryAfter)
+		if msg := err.Error(); msg != e.offErr {
+			slog.Error("give back the measurement's isolation", "err", err)
+			e.offErr = msg
+		}
+		return
+	}
+	e.offErr, e.offRetry = "", time.Time{}
+	slog.Info("gave back the measurement's isolation")
+}

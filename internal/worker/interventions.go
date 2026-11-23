@@ -1,0 +1,627 @@
+package worker
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"strings"
+	"time"
+	"unicode/utf8"
+
+	"google.golang.org/protobuf/proto"
+
+	"github.com/semistrict/hotbed/internal/api"
+	pb "github.com/semistrict/hotbed/internal/gen/hotbed/v1"
+	"github.com/semistrict/hotbed/internal/sysinfo"
+)
+
+// Intervention is someone's stop, pause or resume of a command by hand, as
+// their call asks it.
+type Intervention struct {
+	Comment string
+	// Diagnose takes the command's diagnostics first (a stop or pause).
+	Diagnose bool
+	// Session is the agent's session that asks it; empty for a person.
+	Session string
+	// Host is where the call came from.
+	Host string
+}
+
+// How long the activity sample taken of a command stopped or paused by hand
+// watches it, how long its diagnostics may take in all, and size bounds on
+// intervention comments, history, and diagnostics payloads.
+const (
+	diagnoseSampleSeconds       = 2
+	diagnoseTimeout             = time.Minute
+	maxInterventionCommentBytes = 2048
+	maxTimelineCommentBytes     = 200
+	maxCommandInterventions     = 32
+	maxDiagnosticsBytes         = 1 << 20
+)
+
+// byHand is a stop, pause or resume someone makes of a command, and the
+// diagnostics taken of it first, if any. A nil one is none: the engine's own
+// doing (a time limit, a client gone).
+type byHand struct {
+	iv   *pb.CommandIntervention
+	diag *pb.CommandDiagnostics
+}
+
+// record adds the intervention to cmd's, numbered monotonically after those
+// before it, caps retained interventions so replicated commands stay bounded,
+// and syncs the assigned Seq onto any captured diagnostics.
+func (h *byHand) record(cmd *pb.Command) {
+	if h == nil {
+		return
+	}
+	var nextSeq int32 = 1
+	if n := len(cmd.Interventions); n > 0 {
+		nextSeq = cmd.Interventions[n-1].GetSeq() + 1
+	}
+	h.iv.Seq = nextSeq
+	cmd.Interventions = append(cmd.Interventions, h.iv)
+	if len(cmd.Interventions) > maxCommandInterventions {
+		cmd.Interventions = append([]*pb.CommandIntervention(nil), cmd.Interventions[len(cmd.Interventions)-maxCommandInterventions:]...)
+	}
+	if h.diag != nil {
+		h.diag.Intervention = clone(h.iv)
+	}
+}
+
+func (h *byHand) diagnostics() *pb.CommandDiagnostics {
+	if h == nil {
+		return nil
+	}
+	return h.diag
+}
+
+// truncateBytesUTF8 shortens s to at most maxBytes bytes without splitting a
+// multi-byte UTF-8 rune, appending "..." when truncated.
+func truncateBytesUTF8(s string, maxBytes int) string {
+	if len(s) <= maxBytes {
+		return s
+	}
+	if maxBytes <= 3 {
+		return s[:maxBytes]
+	}
+	cut := maxBytes - 3
+	for cut > 0 && !utf8.RuneStart(s[cut]) {
+		cut--
+	}
+	return s[:cut] + "..."
+}
+
+// conciseInterventionNote formats an intervention note with the comment
+// preview capped to maxTimelineCommentBytes so timeline entries stay concise
+// while CommandIntervention.Comment preserves up to maxInterventionCommentBytes.
+func conciseInterventionNote(cmd *pb.Command, iv *pb.CommandIntervention) string {
+	if iv == nil {
+		return ""
+	}
+	if len(iv.Comment) <= maxTimelineCommentBytes {
+		return api.InterventionNote(cmd, iv)
+	}
+	short := clone(iv)
+	short.Comment = truncateBytesUTF8(iv.Comment, maxTimelineCommentBytes)
+	return api.InterventionNote(cmd, short)
+}
+
+// StopWith is someone's stop of command id: its diagnostics are taken first if
+// asked, and whoever waits on it is told who stopped it, what they wrote,
+// and how to read them. A command that has ended is returned as it ended.
+func (e *Engine) StopWith(ctx context.Context, id string, in Intervention) (*pb.Command, error) {
+	// The stop goes on once asked, whoever asked it gone or not.
+	ctx = context.WithoutCancel(ctx)
+	h, done, err := e.intervene(ctx, id, pb.InterventionKind_INTERVENTION_KIND_STOP, in)
+	if err != nil {
+		return nil, err
+	}
+	if h == nil {
+		return e.current(id)
+	}
+	defer done()
+	return e.stop(ctx, id, api.InterventionNote(h.cmd, h.iv), &h.byHand)
+}
+
+// Pause is someone's pause of command id: frozen, its memory to swap, as
+// its soft time limit would, after its diagnostics if asked; whoever waits on
+// it is told so. It stays paused until someone resumes it (Resume), or its
+// hard time limit stops it.
+func (e *Engine) Pause(ctx context.Context, id string, in Intervention) (*pb.Command, error) {
+	ctx = context.WithoutCancel(ctx)
+	h, done, err := e.intervene(ctx, id, pb.InterventionKind_INTERVENTION_KIND_PAUSE, in)
+	if err != nil {
+		return nil, err
+	}
+	if h == nil {
+		return nil, api.Errorf(api.CodeConflict, "command %s has ended: there is nothing to pause", id)
+	}
+	defer done()
+	c, note := h.c, api.InterventionNote(h.cmd, h.iv)
+	tlNote := conciseInterventionNote(h.cmd, h.iv)
+	pausedOK, err := e.pauseUnit(ctx, c, func(was pb.CommandState) bool {
+		return !c.stopping && c.cmd().State == was && (was == running || was == parked || was == paused)
+	}, func() {
+		cmd := c.cmd()
+		h.byHand.record(cmd)
+		cmd.State = paused
+		cmd.CpuCores = 0
+		cmd.Reason = note
+		c.rec.HeldFor = ""
+		c.preemptedBy = ""
+		c.reclaimed = false
+		cmd.Timeline = append(cmd.Timeline, &pb.CommandEvent{At: e.nowMs(), What: "paused", Detail: tlNote})
+		e.saveCommand(c, change{
+			what: "paused", detail: tlNote, diagnostics: h.diag,
+			feed: feed(feedPause, fmt.Sprintf("pause %s · by %s", cmd.Argv, api.Who(h.iv.By)), ref("command", cmd.Id)),
+		})
+	})
+	if err != nil {
+		return nil, fmt.Errorf("pause %s: %w", id, err)
+	}
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if !pausedOK {
+		return nil, api.Errorf(api.CodeConflict, "command %s became %s as it was paused", id, stateName(c.cmd().State)).
+			WithSuggestion("look at it again (hotbed ps), and pause it again if it still runs")
+	}
+	return clone(c.cmd()), nil
+}
+
+// Resume is someone's resume of command id, paused by hand or by its soft
+// time limit. It resets its soft limit timer from now and leaves it to its
+// limits, as a detached command is. When a benchmark, memory/host hold, or
+// higher-priority command forbids running it immediately, it transitions from
+// paused to parked (keeping its cgroup frozen) so the scheduler thaws it
+// automatically once the hold clears.
+func (e *Engine) Resume(ctx context.Context, id string, in Intervention) (*pb.Command, error) {
+	ctx = context.WithoutCancel(ctx)
+	in.Diagnose = false
+	h, done, err := e.intervene(ctx, id, pb.InterventionKind_INTERVENTION_KIND_RESUME, in)
+	if err != nil {
+		return nil, err
+	}
+	if h == nil {
+		return nil, api.Errorf(api.CodeConflict, "command %s has ended: there is nothing to resume", id)
+	}
+	defer done()
+	var mem sysinfo.Mem
+	var hasMem bool
+	if m, err := e.cfg.System.Meminfo(); err == nil && m.Total > 0 {
+		mem, hasMem = m, true
+	}
+	tlNote := conciseInterventionNote(h.cmd, h.iv)
+	h.c.freezeMu.Lock()
+	defer h.c.freezeMu.Unlock()
+	e.mu.Lock()
+	cmd := h.c.cmd()
+	if h.c.stopping || cmd.State != paused {
+		st := cmd.State
+		e.mu.Unlock()
+		return nil, api.Errorf(api.CodeConflict, "command %s became %s as it was resumed", id, stateName(st))
+	}
+	if blockReason, heldFor := e.canThawForResume(h.c, mem, hasMem); blockReason != "" {
+		now := e.nowMs()
+		h.byHand.record(cmd)
+		cmd.Attached = false
+		h.c.rec.WaitedAt = now
+		cmd.State = parked
+		cmd.CpuCores = 0
+		h.c.rec.ParkedAt = now
+		h.c.rec.HeldFor = heldFor
+		h.c.preemptedBy = ""
+		h.c.reclaimed = false
+		cmd.Reason = fmt.Sprintf("resumed; parked: %s", blockReason)
+		detail := cmd.Reason
+		if tlNote != "" {
+			detail = tlNote + " (parked: " + blockReason + ")"
+		}
+		cmd.Timeline = append(cmd.Timeline, &pb.CommandEvent{At: now, What: "parked", Detail: detail})
+		e.saveCommand(h.c, change{
+			what: "parked", detail: detail,
+			feed: feed(feedResume, fmt.Sprintf("resume %s (parked) · by %s", cmd.Argv, api.Who(h.iv.By)), ref("command", cmd.Id)),
+		})
+		e.stepSoon()
+		out := clone(cmd)
+		e.mu.Unlock()
+		return out, nil
+	}
+	if err := e.thawLockedBy(ctx, h.c, change{
+		what: "resumed", detail: tlNote,
+		feed: feed(feedResume, fmt.Sprintf("resume %s · by %s", cmd.Argv, api.Who(h.iv.By)), ref("command", cmd.Id)),
+	}, &h.byHand, false); err != nil {
+		return nil, fmt.Errorf("resume %s: %w", id, err)
+	}
+	return e.current(id)
+}
+
+// canThawForResume reports whether paused command c must remain frozen in
+// parked rather than thawing immediately into running under the scheduler's
+// benchmark, admission, memory, and priority rules. Call with e.mu held.
+func (e *Engine) canThawForResume(c *command, mem sysinfo.Mem, hasMem bool) (reason, heldFor string) {
+	now := e.now()
+	e.weighHold(now)
+	if wsID := c.cmd().WorkspaceId; wsID != "" {
+		if w, ok := e.workspaces[wsID]; ok {
+			if isSyncInProgress(w.ws().Reason) {
+				return "workspace is syncing", ""
+			}
+		}
+	}
+	if !c.cmd().Bench {
+		if r := e.quietBlocker(c); r != "" {
+			var mID string
+			if m := e.measuring(); m != nil {
+				mID = m.cmd().Id
+			}
+			return r, mID
+		}
+	}
+	if _, r := e.roomFor(c, false, mem, hasMem); r != "" {
+		return r, ""
+	}
+	runningCount := 0
+	for _, other := range e.commands {
+		if other.cmd().State == running && (other.cmd().Bench || other.cmd().Kind != "server") {
+			runningCount++
+		}
+	}
+	if e.thawBlockedByPriority(c, runningCount == 0, mem) {
+		return "waiting for higher-priority work", ""
+	}
+	return "", ""
+}
+
+// intervention is one under way: the command, a copy of it as it was when
+// it began, and what is done to it.
+type intervention struct {
+	byHand
+	c   *command
+	cmd *pb.Command
+}
+
+// intervene begins someone's stop, pause or resume (kind) of command id:
+// it checks that the command can take it, marks it as theirs until done is
+// called, and takes its diagnostics when asked. It returns a nil
+// intervention for a command that has ended.
+func (e *Engine) intervene(ctx context.Context, id string, kind pb.InterventionKind, in Intervention) (*intervention, func(), error) {
+	if len(in.Comment) > maxInterventionCommentBytes {
+		return nil, nil, api.Errorf(api.CodeInvalidArgs, "comment is too long (%d bytes; maximum is %d bytes)", len(in.Comment), maxInterventionCommentBytes)
+	}
+	var diagCtx context.Context
+	var cancelDiag context.CancelFunc
+	if in.Diagnose {
+		diagCtx, cancelDiag = context.WithTimeout(ctx, diagnoseTimeout)
+	}
+	e.mu.Lock()
+	c, ok := e.commands[id]
+	if !ok {
+		e.mu.Unlock()
+		if cancelDiag != nil {
+			cancelDiag()
+		}
+		if err := validateID(id); err != nil {
+			return nil, nil, err
+		}
+		return nil, nil, notFound("command", id)
+	}
+	cmd := c.cmd()
+	if !api.Live(cmd.State) {
+		e.mu.Unlock()
+		if cancelDiag != nil {
+			cancelDiag()
+		}
+		return nil, nil, nil
+	}
+	if err := canTake(cmd, kind); err != nil {
+		e.mu.Unlock()
+		if cancelDiag != nil {
+			cancelDiag()
+		}
+		return nil, nil, err
+	}
+	if c.intervening || c.stopping {
+		e.mu.Unlock()
+		if cancelDiag != nil {
+			cancelDiag()
+		}
+		return nil, nil, api.Errorf(api.CodeConflict, "command %s is being stopped, paused or resumed already", id).
+			WithSuggestion("wait for that to finish, then look at it again")
+	}
+	c.intervening = true
+	c.cancelDiag = cancelDiag
+	h := &intervention{c: c, cmd: clone(cmd), byHand: byHand{iv: &pb.CommandIntervention{
+		Kind: kind, Comment: in.Comment,
+		By: &pb.Stamp{At: e.nowMs(), Session: in.Session, Host: in.Host},
+	}}}
+	e.mu.Unlock()
+	done := func() {
+		e.mu.Lock()
+		c.intervening = false
+		c.cancelDiag = nil
+		e.mu.Unlock()
+		if cancelDiag != nil {
+			cancelDiag()
+		}
+	}
+	if in.Diagnose {
+		h.diag = e.diagnose(diagCtx, h.cmd, h.iv)
+		e.mu.Lock()
+		c.cancelDiag = nil
+		e.mu.Unlock()
+		cancelDiag()
+	}
+	return h, done, nil
+}
+
+// canTake says why a live command cannot be stopped, paused or resumed
+// (kind) by hand, if it cannot.
+func canTake(cmd *pb.Command, kind pb.InterventionKind) error {
+	switch kind {
+	case pb.InterventionKind_INTERVENTION_KIND_PAUSE:
+		switch {
+		case cmd.State == queued:
+			return api.Errorf(api.CodeConflict, "command %s has not started: there is nothing to pause", cmd.Id).
+				WithSuggestion("stop it instead (hotbed stop)")
+		case cmd.Bench:
+			return api.Errorf(api.CodeConflict, "command %s is a measurement: pausing it would spoil its numbers", cmd.Id).
+				WithSuggestion("stop it instead (hotbed stop)")
+		case api.PausedByHand(cmd):
+			return api.Errorf(api.CodeConflict, "command %s is paused already: %s", cmd.Id, cmd.Reason)
+		}
+	case pb.InterventionKind_INTERVENTION_KIND_RESUME:
+		if cmd.State != paused {
+			return api.Errorf(api.CodeConflict, "command %s is %s, not paused: there is nothing to resume", cmd.Id, stateName(cmd.State))
+		}
+	}
+	return nil
+}
+
+// diagnose takes what command cmd is doing now, for iv, someone's stop or
+// pause of it: its activity sample and its full inspection. iv says what
+// could not be taken and why; the stop or pause goes on regardless. It
+// returns nil when nothing could be taken or the bounded payload still exceeds
+// maxDiagnosticsBytes.
+func (e *Engine) diagnose(ctx context.Context, cmd *pb.Command, iv *pb.CommandIntervention) *pb.CommandDiagnostics {
+	switch {
+	case e.cfg.Inspector == nil:
+		iv.DiagnosticsError = "this worker takes no diagnostics: process inspection is not configured on it"
+		return nil
+	case cmd.State == queued:
+		iv.DiagnosticsError = "it had not started: it had no processes to diagnose"
+		return nil
+	}
+	target, err := e.commandTarget(ctx, cmd.Id)
+	if err != nil {
+		iv.DiagnosticsError = message(err)
+		return nil
+	}
+	d := &pb.CommandDiagnostics{CommandId: cmd.Id, Intervention: iv}
+	var failed []string
+	err = e.cfg.Inspector.Sample(ctx, target, &pb.SampleCommandRequest{Id: cmd.Id, DurationSeconds: diagnoseSampleSeconds}, func(ch *pb.SampleCommandChunk) error {
+		if ch.Sample != nil {
+			d.Sample = ch.Sample
+		}
+		return nil
+	})
+	if err != nil {
+		failed = append(failed, "its activity sample: "+message(err))
+	}
+	if ctx.Err() != nil {
+		failed = append(failed, "its inspection: "+message(ctx.Err()))
+	} else if d.Inspect, err = e.cfg.Inspector.Inspect(ctx, target, &pb.InspectCommandRequest{Id: cmd.Id}); err != nil {
+		failed = append(failed, "its inspection: "+message(err))
+	}
+	iv.DiagnosticsError = strings.Join(failed, "; ")
+	if d.Sample == nil && d.Inspect == nil {
+		if iv.DiagnosticsError == "" {
+			iv.DiagnosticsError = "its sample and inspection returned nothing"
+		}
+		return nil
+	}
+	bounded, ok := boundDiagnostics(d, iv)
+	if !ok {
+		iv.Diagnosed = false
+		return nil
+	}
+	iv.Diagnosed = true
+	return bounded
+}
+
+// boundDiagnostics ensures d encodes to at most maxDiagnosticsBytes (1 MiB) by
+// progressively trimming verbose sections (maps, files, kstacks, stacks,
+// processes) and recording a truncation note in iv.DiagnosticsError. If the
+// payload still exceeds maxDiagnosticsBytes after trimming, it records an
+// error in iv.DiagnosticsError and returns (nil, false).
+func boundDiagnostics(d *pb.CommandDiagnostics, iv *pb.CommandIntervention) (*pb.CommandDiagnostics, bool) {
+	if d == nil {
+		return nil, false
+	}
+	// Reserve headroom for seq varint and any truncation note added to iv.
+	const headroom = 512
+	budget := maxDiagnosticsBytes - headroom
+	if proto.Size(d) <= budget {
+		return d, true
+	}
+	d = proto.Clone(d).(*pb.CommandDiagnostics)
+	d.Intervention = iv
+	var trimmed []string
+	appendErr := func(note string) {
+		if iv.DiagnosticsError == "" {
+			iv.DiagnosticsError = note
+		} else {
+			iv.DiagnosticsError += "; " + note
+		}
+	}
+	fits := func() bool { return proto.Size(d) <= budget }
+
+	if !fits() {
+		dropped := false
+		if d.Inspect != nil && len(d.Inspect.Maps) > 0 {
+			d.Inspect.Maps = nil
+			dropped = true
+		}
+		if d.Sample != nil {
+			for _, p := range d.Sample.Procs {
+				if p.MemoryMap != nil {
+					p.MemoryMap = nil
+					dropped = true
+				}
+			}
+		}
+		if dropped {
+			trimmed = append(trimmed, "maps")
+		}
+	}
+	if !fits() {
+		dropped := false
+		if d.Inspect != nil && len(d.Inspect.Files) > 0 {
+			d.Inspect.Files = nil
+			dropped = true
+		}
+		if d.Sample != nil {
+			if len(d.Sample.Files) > 0 {
+				d.Sample.Files = nil
+				dropped = true
+			}
+			if len(d.Sample.Locks) > 0 {
+				d.Sample.Locks = nil
+				dropped = true
+			}
+		}
+		if dropped {
+			trimmed = append(trimmed, "files")
+		}
+	}
+	if !fits() {
+		dropped := false
+		if d.Inspect != nil && len(d.Inspect.Kstacks) > 0 {
+			d.Inspect.Kstacks = nil
+			dropped = true
+		}
+		if d.Sample != nil {
+			for _, p := range d.Sample.Procs {
+				for _, th := range p.Threads {
+					if len(th.KernelFrames) > 0 {
+						th.KernelFrames = nil
+						dropped = true
+					}
+				}
+			}
+		}
+		if dropped {
+			trimmed = append(trimmed, "kstacks")
+		}
+	}
+	if !fits() && d.Sample != nil {
+		dropped := false
+		if len(d.Sample.SampledStacks) > 0 {
+			d.Sample.SampledStacks = nil
+			dropped = true
+		}
+		if len(d.Sample.OnCpuStacks) > 0 {
+			d.Sample.OnCpuStacks = nil
+			dropped = true
+		}
+		if len(d.Sample.OnCpuTopFunctions) > 0 {
+			d.Sample.OnCpuTopFunctions = nil
+			dropped = true
+		}
+		if len(d.Sample.Frames) > 0 {
+			d.Sample.Frames = nil
+			dropped = true
+		}
+		for _, p := range d.Sample.Procs {
+			for _, th := range p.Threads {
+				if len(th.UserFrames) > 0 {
+					th.UserFrames = nil
+					dropped = true
+				}
+			}
+		}
+		if dropped {
+			trimmed = append(trimmed, "stacks")
+		}
+	}
+	if !fits() {
+		dropped := false
+		if d.Sample != nil && len(d.Sample.Procs) > 0 {
+			for _, p := range d.Sample.Procs {
+				if len(p.Threads) > 0 {
+					p.Threads = nil
+					dropped = true
+				}
+			}
+			if !fits() {
+				d.Sample.Procs = nil
+				dropped = true
+			}
+		}
+		if !fits() && d.Inspect != nil {
+			if len(d.Inspect.Limits) > 0 {
+				d.Inspect.Limits = nil
+				dropped = true
+			}
+			if len(d.Inspect.AvailableTools) > 0 {
+				d.Inspect.AvailableTools = nil
+				dropped = true
+			}
+			if !fits() && len(d.Inspect.Procs) > 0 {
+				d.Inspect.Procs = nil
+				dropped = true
+			}
+		}
+		if dropped {
+			trimmed = append(trimmed, "processes")
+		}
+	}
+	if !fits() && d.Inspect != nil && d.Sample != nil {
+		origInspect := d.Inspect
+		d.Inspect = nil
+		if fits() {
+			trimmed = append(trimmed, "inspection")
+		} else {
+			d.Inspect = origInspect
+			d.Sample = nil
+			if fits() {
+				trimmed = append(trimmed, "activity sample")
+			} else {
+				d.Inspect = nil
+				trimmed = append(trimmed, "inspection", "activity sample")
+			}
+		}
+	}
+	if len(trimmed) > 0 {
+		appendErr("diagnostics truncated to fit 1 MiB limit (dropped " + strings.Join(trimmed, ", ") + ")")
+	}
+	if (d.Sample == nil && d.Inspect == nil) || proto.Size(d) > maxDiagnosticsBytes {
+		appendErr(fmt.Sprintf("diagnostics exceeded %d byte limit even after truncation (%d bytes)", maxDiagnosticsBytes, proto.Size(d)))
+		return nil, false
+	}
+	return d, true
+}
+
+// current returns command id as it is.
+func (e *Engine) current(id string) (*pb.Command, error) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	c, ok := e.commands[id]
+	if !ok {
+		return nil, notFound("command", id)
+	}
+	return clone(c.cmd()), nil
+}
+
+// message is what err says, without the code an *api.Error has.
+func message(err error) string {
+	var e *api.Error
+	if errors.As(err, &e) {
+		return e.Message
+	}
+	return err.Error()
+}
+
+// stateName is a command state as people say it: running, paused.
+func stateName(s pb.CommandState) string {
+	return strings.ToLower(strings.TrimPrefix(s.String(), "COMMAND_STATE_"))
+}

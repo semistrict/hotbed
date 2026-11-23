@@ -1,0 +1,50 @@
+syntax = "proto3";
+
+// What a worker keeps in its own database to pick up after a restart. Never
+// on the wire.
+package hotbed.v1;
+
+import "hotbed/v1/hotbed.proto";
+
+option go_package = "github.com/semistrict/hotbed/internal/gen/hotbed/v1;hotbedv1";
+
+message WorkspaceRecord {
+  Workspace workspace = 1;
+  string volume = 2;
+  string base_snapshot = 3;
+  // Why the base it forks is not up to date, if it is not; its reason once
+  // it is ready.
+  string note = 4;
+}
+
+message CommandRecord {
+  Command command = 1;
+  // The project's repo it runs in; empty for /work itself.
+  string repo_id = 2;
+  // The project whose workspace or base it runs in.
+  string project = 14;
+  string agent = 3;
+  string volume = 4;
+  // Working directory, as the command sees it.
+  string dir = 5;
+  repeated string env = 6;
+  // Set for a freshen: the base it builds.
+  string base_id = 7;
+  int32 parks = 8;
+  int64 parked_at = 9;
+  int64 peak_memory_bytes = 10;
+  string cgroup = 11;
+  // Why a measurement's isolation no longer held, once it didn't.
+  string isolation_lost = 12;
+  // When an agent last started waiting on it: its soft time limit counts
+  // from then, or from its start if later.
+  int64 waited_at = 13;
+  // Set while it is parked beside measurement held_for (its id), its
+  // volume having written to a pool the measurement uses past the
+  // measurement's bound; it is thawed once no measurement runs.
+  string held_for = 15;
+  // The most memory it held of its own (anonymous and swapped, not file
+  // cache): while it runs or is parked, the node reserves at least this
+  // for it, as it may need it again.
+  int64 peak_held_bytes = 16;
+}

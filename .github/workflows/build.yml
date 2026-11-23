@@ -1,0 +1,177 @@
+# Every push to main is tested, built for each platform hotbed runs on, and published as the
+# release build-N (N the run number, which only grows). The controller follows the newest
+# release and its nodes follow the controller (internal/update): nothing is deployed by hand.
+name: build
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+# Builds publish in the order they were pushed.
+concurrency:
+  group: build
+  cancel-in-progress: false
+
+jobs:
+  test-linux:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.34.0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - name: UI
+        run: |
+          go generate ./ui
+          pnpm -C ui test
+          pnpm -C ui typecheck
+      - name: Vet
+        run: go vet ./...
+      - name: Test
+        run: go test -race -skip '^TestSimulation$' ./...
+      - name: Simulation
+        run: HOTBED_SIM_STEPS=120 go test -race -count=1 -run '^TestSimulation$' ./cmd/hotbed
+
+  test-linux-root:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: Preflight and host setup
+        run: |
+          set -euo pipefail
+
+          # Fail hard if systemd is not PID 1.
+          if [ ! -d /run/systemd/system ] || [ "$(ps -p 1 -o comm=)" != "systemd" ]; then
+            echo "systemd is not PID 1 on this runner" >&2
+            exit 1
+          fi
+          systemd_ver=$(systemctl show --property=Version --value)
+
+          # Fail hard if cgroup v2 or required controllers are unavailable.
+          if [ ! -f /sys/fs/cgroup/cgroup.controllers ]; then
+            echo "cgroup v2 unified hierarchy not mounted at /sys/fs/cgroup" >&2
+            exit 1
+          fi
+          controllers=$(cat /sys/fs/cgroup/cgroup.controllers)
+          for ctrl in cpu cpuset io memory; do
+            case " $controllers " in
+              *" $ctrl "*) ;;
+              *)
+                echo "missing required cgroup v2 controller: $ctrl (have: $controllers)" >&2
+                exit 1
+                ;;
+            esac
+          done
+
+          # Ensure VM/FUSE devices exist and match hotbed node policy (kvm/userfaultfd 0660 root:kvm).
+          sudo modprobe kvm 2>/dev/null || true
+          for dev in /dev/kvm /dev/userfaultfd /dev/fuse; do
+            if [ ! -c "$dev" ]; then
+              echo "missing required character device: $dev" >&2
+              exit 1
+            fi
+          done
+          sudo groupadd -f kvm
+          sudo usermod -aG kvm "$USER"
+          sudo chgrp kvm /dev/kvm /dev/userfaultfd
+          sudo chmod 0660 /dev/kvm /dev/userfaultfd
+
+          # Pick a block-backed mount for HOTBED_TEST_DISK (IOWriteBandwidthMax in unit tests).
+          disk=""
+          for cand in /mnt /; do
+            src=$(findmnt -n -o SOURCE --target "$cand" 2>/dev/null || true)
+            src="${src%%\[*}"
+            if [ -n "$src" ] && [ -b "$src" ]; then
+              disk="$cand"
+              break
+            fi
+          done
+          if [ -z "$disk" ]; then
+            echo "no block-backed mount found for HOTBED_TEST_DISK" >&2
+            exit 1
+          fi
+          echo "HOTBED_TEST_DISK=$disk" >> "$GITHUB_ENV"
+
+          echo "kernel=$(uname -r) systemd=${systemd_ver} tmpfs=$(stat -f -c %T /tmp) disk=${disk}"
+          ls -l /dev/kvm /dev/userfaultfd /dev/fuse
+      - name: Build root test binaries
+        run: |
+          set -euo pipefail
+          tmp=$(mktemp -d)
+          trap 'rm -rf "$tmp"' EXIT
+          for pkg in storage unit worker; do
+            CGO_ENABLED=0 go test -tags systemdtest -c -o "$tmp/hotbed-${pkg}.test" "./internal/${pkg}"
+            sudo install -m 0755 "$tmp/hotbed-${pkg}.test" "/usr/local/bin/hotbed-${pkg}.test"
+          done
+      - name: Test storage (root)
+        working-directory: internal/storage
+        run: sudo env TMPDIR=/tmp /usr/local/bin/hotbed-storage.test -test.v -test.count=1
+      - name: Test unit (root)
+        working-directory: internal/unit
+        run: sudo env TMPDIR=/tmp HOTBED_TEST_USER="$USER" HOTBED_TEST_DISK="$HOTBED_TEST_DISK" /usr/local/bin/hotbed-unit.test -test.v -test.count=1
+      - name: Test worker (root)
+        working-directory: internal/worker
+        run: sudo env TMPDIR=/tmp HOTBED_TEST_USER="$USER" /usr/local/bin/hotbed-worker.test -test.v -test.count=1
+      - name: Cleanup root test binaries
+        if: always()
+        run: sudo rm -f /usr/local/bin/hotbed-*.test
+
+  test-macos:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: Vet
+        run: go vet ./...
+      - name: Test
+        run: go test -race ./...
+
+  release:
+    runs-on: ubuntu-latest
+    needs: [test-linux, test-linux-root, test-macos]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.34.0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - name: UI
+        run: go generate ./ui
+      - name: Build
+        run: |
+          mkdir out
+          for p in linux/amd64 linux/arm64 darwin/arm64; do
+            CGO_ENABLED=0 GOOS=${p%/*} GOARCH=${p#*/} go build -trimpath \
+              -ldflags "-X github.com/semistrict/hotbed/internal/version.build=${{ github.run_number }}" \
+              -o "out/hotbed-${p%/*}-${p#*/}" ./cmd/hotbed
+          done
+          (cd out && sha256sum hotbed-* > SHA256SUMS)
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "build-${{ github.run_number }}" out/* --target "${{ github.sha }}" \
+            --title "build ${{ github.run_number }}" --notes "${{ github.sha }}" --latest
+          # The newest 20 builds are kept.
+          gh release list --limit 200 --json tagName --jq '.[20:][].tagName' |
+            xargs -r -n1 gh release delete --cleanup-tag --yes

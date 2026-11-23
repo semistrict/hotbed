@@ -1,0 +1,4105 @@
+syntax = "proto3";
+
+// hotbed's API, spoken by the CLI, the cockpit, the controller and the
+// workers. Times are unix milliseconds; sizes are bytes.
+//
+// The CLI's commands and the MCP server's tools are made from this file:
+// see "commands and tools" at its end.
+package hotbed.v1;
+
+import "google/protobuf/descriptor.proto";
+
+option go_package = "github.com/semistrict/hotbed/internal/gen/hotbed/v1;hotbedv1";
+
+// The controller: membership, events, repos and the cockpit's view.
+service ClusterService {
+  option (group) = {
+    name: "project"
+    help: "Projects: what sessions work on and questions are about, each one or more repos (add, rm-repo, ls, show, bases, rebuild, hosts)."
+  };
+  option (group) = {
+    name: "repo"
+    help: "Repos the cluster keeps built bases of (add, ls, rm)."
+  };
+  option (group) = {
+    name: "node"
+    help: "Inspect or retire individual cluster worker nodes (show, retire)."
+  };
+  // Join admits the calling tailnet node as a worker.
+  rpc Join(JoinRequest) returns (JoinResponse);
+  // PushEvents delivers a worker's events, in order, from after what the
+  // controller has applied; or a checkpoint of its state when the
+  // controller cannot continue from what it has.
+  rpc PushEvents(PushEventsRequest) returns (PushEventsResponse);
+  // Heartbeat is a worker's live usage, lossy: the latest wins. It keeps
+  // the node online, and its reply is what the worker should host.
+  rpc Heartbeat(HeartbeatRequest) returns (HeartbeatResponse);
+  // Standby is how a worker's host powers it as the controller says: the
+  // host that runs a worker in a VM (hotbed worker supervise) holds it open,
+  // and the controller says whether the VM should run, at once and whenever
+  // that changes. A node whose host holds it open sleeps once it has had no
+  // work for its sleep_after, and wakes when a run is placed on it. It ends
+  // after at most two minutes, and the host calls again with how the VM is
+  // then, as it does each time it has started or stopped the VM.
+  rpc Standby(StandbyRequest) returns (stream StandbyResponse);
+  // ReportHostUsage reports host-side truth about a VM worker (QEMU CPU,
+  // host CPU/load, host memory pressure) from its host supervisor so
+  // controller placement, worker admission, and the cockpit can see host
+  // starvation that the Linux guest cannot observe under HVF.
+  rpc ReportHostUsage(ReportHostUsageRequest) returns (ReportHostUsageResponse);
+  // List the cluster's workers.
+  rpc ListNodes(ListNodesRequest) returns (ListNodesResponse) {
+    option idempotency_level = IDEMPOTENT;
+    option (command) = {
+      name: "nodes"
+      read_only: true
+      format: "{{range .nodes}}{{pad 16 .hostname}}  {{with .resources}}{{pad 6 .arch}}  {{.cpus}} cpus{{else}}-       - cpus{{end}}{{if .asleep}}  asleep{{else if .online}}  online{{else}}  offline{{end}}\n{{end}}"
+    };
+  }
+  // GetBuild is the build the controller runs, for a platform: what a node
+  // or client on it installs to run the controller's build.
+  rpc GetBuild(GetBuildRequest) returns (Build) {
+    option idempotency_level = IDEMPOTENT;
+  }
+  // UpgradeController checks CI for a newer build immediately, installs it
+  // over the controller, and restarts the controller as it.
+  rpc UpgradeController(UpgradeControllerRequest) returns (UpgradeControllerResponse);
+  // List repos registered with the cluster.
+  rpc ListRepos(ListReposRequest) returns (ListReposResponse) {
+    option idempotency_level = IDEMPOTENT;
+    option (command) = {
+      name: "repo ls"
+      read_only: true
+      format: "{{range .repos}}{{pad 18 .id}}  {{.url}}\n{{end}}"
+    };
+  }
+  // Add or update a repo; its project's workspaces check it out at /work/<name>.
+  // Give the project setup steps with hotbed step set.
+  rpc PutRepo(PutRepoRequest) returns (Repo) {
+    option (command) = {
+      name: "repo add"
+      format: "{{.id}}  {{.url}}{{if .branch}}  branch={{.branch}}{{end}}{{if .reminder}}\n{{.reminder}}{{end}}"
+    };
+  }
+  // Remove a repo; workers delete its bases once no workspace uses them.
+  rpc DeleteRepo(DeleteRepoRequest) returns (DeleteRepoResponse) {
+    option (command) = {
+      name: "repo rm"
+      destructive: true
+    };
+  }
+  // Build the project's next base from nothing on every worker. Bases are
+  // otherwise built incrementally: each generation forks the one before,
+  // pulls, and runs the steps that need to run.
+  rpc RebuildProject(RebuildProjectRequest) returns (Project) {
+    option (command) = {
+      name: "project rebuild"
+    };
+  }
+  // Say which nodes keep the project's bases; none for every worker.
+  rpc SetProjectHosts(SetProjectHostsRequest) returns (Project) {
+    option (command) = {
+      name: "project hosts"
+    };
+  }
+  // PutStep adds a setup step to a project, or replaces the one of that
+  // name. The project's next workspace gets a base that has run it.
+  rpc PutStep(PutStepRequest) returns (Project);
+  rpc DeleteStep(DeleteStepRequest) returns (Project);
+  // ListSteps is a project's steps and, for each, whether each node's
+  // newest base has run it.
+  rpc ListSteps(ListStepsRequest) returns (ListStepsResponse) {
+    option idempotency_level = IDEMPOTENT;
+  }
+  // Make a project, or add repos to one. Its workspaces check each repo out
+  // at /work/<repo>. A repo no project holds is a project of its own name,
+  // made when a session first starts in it. A repo another project holds
+  // needs --shared.
+  rpc AddProject(AddProjectRequest) returns (Project) {
+    option (command) = {
+      name: "project add"
+      session: true
+      format: "{{.name}}{{if .repos}}  repos={{join \", \" .repos}}{{end}}{{if .reminder}}\n{{.reminder}}{{end}}"
+    };
+  }
+  // Take repos out of a project; sessions already in it stay.
+  rpc RemoveProjectRepos(RemoveProjectReposRequest) returns (Project) {
+    option (command) = {
+      name: "project rm-repo"
+      session: true
+      destructive: true
+    };
+  }
+  // List the projects, the repos each holds and their setup steps.
+  rpc ListProjects(ListProjectsRequest) returns (ListProjectsResponse) {
+    option idempotency_level = IDEMPOTENT;
+    option (command) = {
+      name: "project ls"
+      read_only: true
+      format: "{{range .projects}}{{pad 18 .name}}  repos={{len .repos}}  live={{.liveSessions}}  open={{.openQuestions}}  outbox={{.outbox}}\n{{end}}"
+    };
+  }
+  // A project, with every change made to it: who made it, and who added or
+  // took out each repo, when.
+  rpc GetProject(GetProjectRequest) returns (Project) {
+    option idempotency_level = IDEMPOTENT;
+    option (command) = {
+      name: "project show"
+      read_only: true
+    };
+  }
+  // List every node's bases for a project (or every project when none is
+  // named), newest generation first per node.
+  rpc ListBases(ListBasesRequest) returns (ListBasesResponse) {
+    option idempotency_level = IDEMPOTENT;
+    option (command) = {
+      name: "project bases"
+      read_only: true
+      format: "{{range .bases}}{{pad 14 .node}}{{with .base}}  {{pad 16 .project}}  {{pad 20 .id}}  {{pad 8 (state .state)}}{{if .repos}}  {{range $i, $r := .repos}}{{if $i}},{{end}}{{$r.repo}}@{{printf \"%.7s\" $r.commit}}{{end}}{{end}}{{if .command}}  cmd={{.command}}{{end}}{{end}}{{if .failedStep}}  failed={{.failedStep}}{{end}}\n{{end}}"
+    };
+  }
+  // Everything the cockpit shows: nodes, repos, bases, workspaces, commands,
+  // sessions, schedules, events and history.
+  rpc GetSnapshot(GetSnapshotRequest) returns (Snapshot) {
+    option idempotency_level = IDEMPOTENT;
+    option (command) = {
+      name: "snapshot"
+      read_only: true
+    };
+  }
+  // GetCommandDiagnostics is the diagnostics taken of a command as someone
+  // stopped or paused it (StopCommand, PauseCommand with diagnose), oldest
+  // first, live or long ended: the controller keeps them.
+  rpc GetCommandDiagnostics(GetCommandDiagnosticsRequest) returns (GetCommandDiagnosticsResponse) {
+    option idempotency_level = IDEMPOTENT;
+    option (command) = {
+      name: "diagnostics"
+      read_only: true
+    };
+  }
+  // SaveCommandDiagnostics delivers a command's captured intervention
+  // diagnostics from its worker to the controller with explicit
+  // acknowledgement, independent of the event-stream checkpoint path.
+  rpc SaveCommandDiagnostics(SaveCommandDiagnosticsRequest) returns (SaveCommandDiagnosticsResponse);
+  // A node with how it decides whether to start new work (its admission:
+  // whether it holds work, why, and every signal it weighs against its
+  // limit), the work it recently held or made wait, and the placements
+  // that weighed it.
+  rpc GetNode(GetNodeRequest) returns (NodeDetail) {
+    option idempotency_level = IDEMPOTENT;
+    option (command) = {
+      name: "node show"
+      read_only: true
+      format: "{{with .node}}{{.hostname}}  {{if .online}}online{{else}}offline{{end}}  {{with .resources}}{{.arch}}  {{.cpus}} cpus{{end}}{{with .admission}}\n{{if .holding}}holding new work: {{.reason}}{{else}}starting new work{{end}}{{range .signals}}\n  {{pad 16 .name}}  {{signal .}}{{if .holding}}  HOLDING{{end}}{{if .detail}}  ({{.detail}}){{end}}{{end}}{{end}}{{end}}{{if .events}}\nheld work:{{range .events}}\n  {{time .at}}  {{pad 6 .kind}}  {{.text}}{{end}}{{end}}{{if .placements}}\nplacements:{{range .placements}}\n  {{time .at}}  {{pad 14 .sessionId}}  {{if .hostname}}-> {{.hostname}}{{else}}refused{{end}}  {{.reason}}{{end}}{{end}}"
+    };
+  }
+  // Retire a node that is gone for good (its machine or VM deleted): it no
+  // longer shows in hotbed nodes or the cockpit and takes no runs, while
+  // its history (commands, events, placements) stays. Its sessions' runs go
+  // elsewhere. Refused while it is online. A worker joining again with the
+  // same tailnet identity is a node again.
+  rpc RetireNode(RetireNodeRequest) returns (Node) {
+    option (command) = {
+      name: "node retire"
+      format: "{{.hostname}}  retired"
+    };
+  }
+  // Placement decisions, newest first: each candidate node with its cost
+  // in parts, or why it was ruled out, and the node chosen. Kept a day.
+  rpc ListPlacements(ListPlacementsRequest) returns (ListPlacementsResponse) {
+    option idempotency_level = IDEMPOTENT;
+    option (command) = {
+      name: "placements"
+      read_only: true
+      format: "{{range .placements}}{{time .at}}  {{pad 14 .sessionId}}  {{if .hostname}}-> {{pad 12 .hostname}}{{else}}refused       {{end}}  {{.reason}}{{range .candidates}}\n    {{pad 12 .hostname}}  {{if .unfit}}ruled out: {{.unfit}}{{else}}cost {{printf \"%.2f\" .cost}}{{range .parts}}  {{.name}}={{printf \"%.2f\" .value}}{{end}}{{end}}{{if .chosen}}  CHOSEN{{end}}{{end}}\n{{end}}"
+    };
+  }
+  // The cluster's events, newest first: what workers did (admitted, held,
+  // made wait, resumed, parked, forked, ...), narrowed by node and kind.
+  rpc ListEvents(ListEventsRequest) returns (ListEventsResponse) {
+    option idempotency_level = IDEMPOTENT;
+    option (command) = {
+      name: "events"
+      read_only: true
+      format: "{{range .events}}{{time .at}}  {{pad 12 .hostname}}  {{pad 7 .kind}}  {{.text}}\n{{end}}"
+    };
+  }
+}
+
+// An agent's sessions, on the controller. A session holds workspaces, of
+// any repos on any nodes, and an agent waits on everything that happens to
+// the commands it runs in them.
+service SessionService {
+  // StartSession starts a session in a project: the one named, or else the
+  // one project that holds the caller's checkout's repo. A repo no project
+  // holds is a project of its own, made for it.
+  rpc StartSession(StartSessionRequest) returns (Session);
+  // GetSession returns a session (live or ended) with its workspaces and
+  // commands, without resetting its idle timer.
+  rpc GetSession(GetSessionRequest) returns (GetSessionResponse) {
+    option idempotency_level = IDEMPOTENT;
+  }
+  // ListSessions lists a project's sessions, or every project's: those
+  // live, and with ended, those that ended in the last day too; the most
+  // recently active first.
+  rpc ListSessions(ListSessionsRequest) returns (ListSessionsResponse) {
+    option idempotency_level = IDEMPOTENT;
+  }
+  // EndSession stops the session's commands and releases its workspaces.
+  // A session nothing touches for an hour ends the same way; WatchSession
+  // keeps it alive.
+  rpc EndSession(EndSessionRequest) returns (Session);
+  // WatchSession streams the session's events after a cursor: first how it
+  // stands, then each new batch of events as it happens. It ends when the
+  // session does, or after at most two minutes, so an agent that wants the
+  // session kept has to keep watching it.
+  rpc WatchSession(WatchSessionRequest) returns (stream SessionEvents) {
+    option idempotency_level = IDEMPOTENT;
+  }
+  // Wait, two minutes at most, for what happens in the session: its
+  // commands admitted, parked, paused or ended, its workspaces ready or
+  // failed, the user's answers to its questions, its reviews' ends and
+  // responses. Returns the events after the cursor at once if there are
+  // any. The client keeps where this machine's last poll of the session
+  // left off, so each event comes once. Nothing after two minutes: nothing
+  // happened yet; poll again.
+  rpc Poll(PollRequest) returns (SessionEvents) {
+    option idempotency_level = IDEMPOTENT;
+    option (command) = {
+      name: "poll"
+      session: true
+      waits: true
+      read_only: true
+      after: ["SavePollCursor"]
+      format: "{{range .events}}{{template \"event\" .}}\n{{else}}{{if not .ended}}nothing yet ({{.live}} live)\n{{end}}{{end}}{{if .ended}}session ended: {{.endReason}}\n{{end}}{{define \"event\"}}{{time .at}}  {{with .command}}{{.commandId}}  {{pad 14 (what .what)}}  {{short 60 .argv}}{{end}}{{with .workspace}}{{.workspaceId}}  workspace {{what .what}}{{end}}{{with .question}}question #{{.question.id}}  {{what .what}}{{end}}{{with .review}}review #{{.reviewId}}  {{what .what}}{{end}}{{with .detail}}  {{.}}{{end}}{{end}}"
+    };
+  }
+}
+
+// Workspaces and the commands in them. Workers serve it to clients, which
+// call the worker that holds a workspace (Workspace.node_addr) directly. The
+// controller serves workspace placement, lifecycle, listings, and cockpit
+// read/diagnostics calls.
+service WorkspaceService {
+  rpc CreateWorkspace(CreateWorkspaceRequest) returns (Workspace);
+  rpc GetWorkspace(GetWorkspaceRequest) returns (Workspace) {
+    option idempotency_level = IDEMPOTENT;
+  }
+  // WatchWorkspace streams the workspace as it is, then again each time it
+  // changes (such as from preparing to ready), until it is released or the
+  // caller stops listening.
+  rpc WatchWorkspace(WatchWorkspaceRequest) returns (stream Workspace) {
+    option idempotency_level = IDEMPOTENT;
+  }
+  rpc ListWorkspaces(ListWorkspacesRequest) returns (ListWorkspacesResponse) {
+    option idempotency_level = IDEMPOTENT;
+  }
+  rpc ReleaseWorkspace(ReleaseWorkspaceRequest) returns (ReleaseWorkspaceResponse);
+  // Sync checks out an agent's worktree in a workspace. The first message
+  // names the snapshot; the rest carry a git bundle of it.
+  rpc Sync(stream SyncRequest) returns (SyncResponse);
+  rpc ListFiles(ListFilesRequest) returns (ListFilesResponse) {
+    option idempotency_level = IDEMPOTENT;
+  }
+  rpc GetFile(GetFileRequest) returns (FileContent) {
+    option idempotency_level = IDEMPOTENT;
+  }
+  rpc RunCommand(RunCommandRequest) returns (Command);
+  // OpenShell issues a single-use, short-lived SSH ticket for an interactive
+  // shell (or command) in a workspace on this worker.
+  rpc OpenShell(OpenShellRequest) returns (OpenShellResponse);
+  rpc GetCommand(GetCommandRequest) returns (Command) {
+    option idempotency_level = IDEMPOTENT;
+  }
+  // List a session's commands, live and just ended (-p for a project, --all
+  // for every session, -e for 30-day history).
+  rpc ListCommands(ListCommandsRequest) returns (ListCommandsResponse) {
+    option idempotency_level = IDEMPOTENT;
+    option (command) = {
+      name: "ps"
+      session: true
+      read_only: true
+      format: "{{range .commands}}{{pad 12 .id}}  {{pad 10 (state .state)}}  {{pad 16 .sessionId}}  {{short 60 .argv}}\n{{end}}{{if .more}}(+{{.more}} older ended, not shown: --limit 0 for every one)\n{{end}}"
+    };
+  }
+  // StopCommand ends a command: a queued one never starts, a started one is
+  // stopped. With diagnose, what it is doing is taken first, and kept
+  // (GetCommandDiagnostics); the agent waiting on it is told who stopped it,
+  // the comment, and how to read them.
+  rpc StopCommand(StopCommandRequest) returns (Command);
+  // PauseCommand freezes a started command, its memory to swap, as a soft
+  // time limit would, with diagnostics and a comment as StopCommand takes;
+  // the agent waiting on it is told so. It stays paused, an agent waiting on
+  // it again or not, until ResumeCommand, or its hard time limit stops it.
+  rpc PauseCommand(PauseCommandRequest) returns (Command);
+  // ResumeCommand thaws a paused command, whatever paused it. It is left to
+  // its limits, as a detached one is: its soft limit counts from now.
+  rpc ResumeCommand(ResumeCommandRequest) returns (Command);
+  // FollowLog streams a command's output from an offset; with follow, until
+  // the command ends or is paused. An attached command stops when no one
+  // follows it.
+  rpc FollowLog(FollowLogRequest) returns (stream LogChunk) {
+    option idempotency_level = IDEMPOTENT;
+  }
+  // GetLogLines returns the last lines of a command's output, at most
+  // 1 MiB of them: FollowLog streams more.
+  rpc GetLogLines(GetLogLinesRequest) returns (CommandLog) {
+    option idempotency_level = IDEMPOTENT;
+  }
+  // InspectCommand takes an opt-in, non-intrusive Linux snapshot of a live
+  // command's cgroup (processes, open files/sockets, cgroup stats, kernel
+  // stacks, memory maps, limits) and reports which tracing tools exist on the node.
+  rpc InspectCommand(InspectCommandRequest) returns (InspectCommandResponse) {
+    option idempotency_level = IDEMPOTENT;
+  }
+  // TraceCommand runs an opt-in, time-bounded active Linux trace on a live
+  // command (strace, perf CPU profile, perf stat, thread stack dump, or
+  // curated bpftrace probe) and streams progress and results until complete or cancelled.
+  rpc TraceCommand(TraceCommandRequest) returns (stream TraceCommandChunk);
+  // SampleCommand takes a unified Activity Monitor-style Linux activity sample
+  // of a live command (or one PID in its cgroup): multi-snapshot user & kernel
+  // thread stacks, active syscalls with FD resolution, CPU/IO/schedstat &
+  // context-switch deltas, open files/sockets (with TX/RX queues, pipe peers,
+  // epoll targets, and /proc/locks), cgroup v2 & PSI stall deltas, hardware
+  // performance counters, and an on-CPU eBPF profile window.
+  rpc SampleCommand(SampleCommandRequest) returns (stream SampleCommandChunk);
+  // GetProfile queries the always-on OpenTelemetry eBPF continuous profile,
+  // either for a single command (command_id, live on its worker or persisted
+  // after it ended) or across all processes on a node (node).
+  rpc GetProfile(GetProfileRequest) returns (CommandProfile) {
+    option idempotency_level = IDEMPOTENT;
+  }
+  // GetDaemonLogs returns recent WARN and ERROR slog records from the
+  // controller, a worker, or all of them, newest first.
+  rpc GetDaemonLogs(GetDaemonLogsRequest) returns (GetDaemonLogsResponse) {
+    option idempotency_level = IDEMPOTENT;
+    option (command) = {
+      name: "daemon-logs"
+      read_only: true
+      format: "{{range .entries}}{{ts .at}}  {{pad 5 (upper (state .level))}}  {{pad 14 .source}}  {{.msg}}{{if .attrsJson}}  {{.attrsJson}}{{end}}{{if .sourceLoc}}  ({{.sourceLoc}}){{end}}\n{{end}}{{range .sources}}{{if not .reachable}}# {{.source}} ({{.role}}): unreachable{{if .error}}: {{.error}}{{end}}\n{{end}}{{end}}"
+    };
+  }
+}
+
+// ErrorInfo rides on every error as a detail: a code programs act on, what
+// to do about it, and whether the same call can succeed later.
+message ErrorInfo {
+  string code = 1;
+  string suggestion = 2;
+  bool retryable = 3;
+}
+
+// ---- nodes -------------------------------------------------------------
+
+message Resources {
+  string arch = 1;
+  int32 cpus = 2;
+  int64 memory_bytes = 3;
+  int64 swap_bytes = 4;
+  string kernel = 5;
+  // What the machine is, as a person would say it: "MacBook Pro (14-inch, M3 Pro, Nov 2023)".
+  string machine = 6;
+  // The CPUs a measurement has to itself (a cpulist, 4-7,12-15); empty on a
+  // node that takes no measurements.
+  string bench_cpus = 7;
+  // The hotbed build it runs: "build 42 (0123456789ab)", or "dev (...)".
+  string version = 8;
+}
+
+message NodeUsage {
+  // Share of CPU time busy across all CPUs, 0..1.
+  double cpu_busy = 1;
+  int64 memory_used_bytes = 2;
+  int64 swap_used_bytes = 3;
+  // PSI "some" avg10, percent of time at least one task stalled.
+  double cpu_pressure = 4;
+  double memory_pressure = 5;
+}
+
+// How a worker decides whether to start new work, as of its last
+// heartbeat. Measurements have CPUs of their own and wait by their own
+// rules; this is for all other work.
+message Admission {
+  // New work waits, whatever it would need.
+  bool holding = 1;
+  // What holds it: "CPU pressure 72%: holding new work until it is under
+  // 30%".
+  string reason = 2;
+  // When it began holding.
+  int64 since = 3;
+  // Every signal the worker weighs, with its value and limit.
+  repeated AdmissionSignal signals = 4;
+  // Commands queued on the node.
+  int32 queued = 5;
+}
+
+message AdmissionSignal {
+  // cpu-pressure, memory-pressure, memory-reserved or disk-free.
+  string name = 1;
+  double value = 2;
+  // Work waits at this value (above it; under it when floor).
+  double limit = 3;
+  // Held work starts again only under this (cpu-pressure); 0 when work
+  // starts again as soon as the value is back within its limit.
+  double resume = 4;
+  // "%" or "bytes".
+  string unit = 5;
+  // The limit is a minimum: work waits while the value is under it.
+  bool floor = 6;
+  // It holds work now.
+  bool holding = 7;
+  // How it reads: "peak 72% in the last 30s".
+  string detail = 8;
+  // Queued commands waiting on it.
+  int32 waiting = 9;
+}
+
+// A node's filesystem, by what the blocks belong to.
+message DiskUsage {
+  int64 bases_bytes = 1;
+  int64 forks_exclusive_bytes = 2;
+  int64 other_bytes = 3;
+  int64 free_bytes = 4;
+}
+
+// A worker. Its identity (id, hostname, login) comes from the tailnet.
+message Node {
+  string id = 1;
+  string hostname = 2;
+  string login = 3;
+  int64 joined_at = 4;
+  optional int64 last_seen = 5;
+  bool online = 6;
+  Resources resources = 7;
+  NodeUsage usage = 8;
+  int64 disk_bytes = 9;
+  DiskUsage disk = 10;
+  // What admitted commands are guaranteed: the sum of their memory.low.
+  int64 reserved_memory_bytes = 11;
+  string storage = 12;
+  // Its page in the cockpit. The CLI fills it from the controller it
+  // calls (cmd/hotbed/cockpit.go); the API leaves it empty.
+  string cockpit_url = 13;
+  // Status of the always-on OpenTelemetry eBPF continuous profiler on this worker.
+  ProfilerStatus profiler = 14;
+  // Summary and rotation state of this worker's WARN/ERROR slog daemon logs.
+  DaemonLogSource daemon_logs = 15;
+  // How it decides whether to start new work, as of its last heartbeat.
+  Admission admission = 16;
+  // Its host powered it off, or is powering it on, as the controller asked
+  // (Standby): it is not out of reach, and a run placed on it wakes it.
+  bool asleep = 17;
+  // Host-side view of a VM worker, when its host supervisor reports it.
+  HostUsage host_usage = 18;
+}
+
+// Host-side view of a VM worker, reported by its host supervisor (macOS).
+message HostUsage {
+  // Share of configured vCPUs the QEMU process actually got on the host
+  // (0..1; e.g. 1.5 cores used on a 7-vCPU VM = 0.214).
+  double vm_cpu_busy = 1;
+  // Share of host CPUs busy across the whole host (0..1).
+  double host_cpu_busy = 2;
+  // Host 1-minute load average.
+  double host_load_1m = 3;
+  // Logical CPUs on the host.
+  int32 host_cpus = 4;
+  // Host memory pressure, 0..100 (macOS normal=0, warn=50, critical=100).
+  double host_memory_pressure = 5;
+  // Unix milliseconds when sampled on the host.
+  int64 sampled_at = 6;
+  // Remaining freshness TTL (ms) from controller ingestion, populated on
+  // HeartbeatResponse so worker admission expires the sample at its original
+  // controller deadline rather than granting a second full TTL.
+  int64 remaining_ttl_ms = 7;
+}
+
+message ReportHostUsageRequest {
+  // The worker's host name (same as StandbyRequest.node).
+  string node = 1;
+  HostUsage usage = 2;
+}
+
+message ReportHostUsageResponse {}
+
+message StandbyRequest {
+  // The worker's host name.
+  string node = 1;
+  // Whether its VM runs now.
+  bool running = 2;
+  // How long it is to have had no work before it sleeps; 0 never to sleep.
+  int64 sleep_after_seconds = 3;
+}
+
+message StandbyResponse {
+  // Whether its VM should run.
+  bool run = 1;
+  // Why, for the host's log.
+  string reason = 2;
+}
+
+// Status of a worker's always-on continuous eBPF profiler.
+message ProfilerStatus {
+  bool active = 1;
+  // Engine name, e.g. "opentelemetry-ebpf-profiler".
+  string engine = 2;
+  int32 sample_hz = 3;
+  int64 total_samples = 4;
+  // Non-empty when profiling could not start or is unavailable.
+  string error = 5;
+}
+
+message JoinRequest {}
+
+message JoinResponse {
+  string cluster_id = 1;
+  Node node = 2;
+}
+
+message ListNodesRequest {}
+
+message ListNodesResponse {
+  string cluster_id = 1;
+  repeated Node nodes = 2;
+  // The hotbed build the controller runs, which every node follows.
+  string controller_version = 3;
+}
+
+// A build of hotbed the controller keeps for one platform, which nodes
+// install over themselves.
+message Build {
+  int64 number = 1;
+  // Its binary's sha256, hex.
+  string sha256 = 2;
+  // Where the controller serves its binary: /builds/N/hotbed-OS-ARCH.
+  string path = 3;
+}
+
+message GetBuildRequest {
+  string os = 1;
+  string arch = 2;
+}
+
+message UpgradeControllerRequest {}
+
+message UpgradeControllerResponse {
+  // The build the controller runs, or is restarting into.
+  int64 build = 1;
+  // The build the controller was running before (0 for a dev build).
+  int64 from = 2;
+  // True when a new build was installed and the controller is restarting.
+  bool restarting = 3;
+}
+
+// ---- repos and bases --------------------------------------------------
+
+// Where a project's code comes from: one git repo, checked out at
+// /work/<id> in the workspaces of each project that holds its remote.
+message Repo {
+  // Short name, such as ratel: the checkout's directory under /work.
+  string id = 1;
+  string url = 2;
+  // The branch bases follow; empty means the remote's default.
+  string branch = 3;
+  reserved 4, 5, 7, 8;
+  reserved "freshen", "hosts", "scratch_epoch", "steps";
+  int64 created_at = 6;
+  // Reminder for the agent (e.g. to configure setup steps on the repo's
+  // project); only set by PutRepo.
+  optional string reminder = 9;
+}
+
+// A setup step: an idempotent bash script, run with -eo pipefail in /work,
+// where the project's repos are checked out side by side. Like a database
+// migration, a base runs it once and again only when its script changes;
+// an every_pull step also runs whenever one of the repos moved.
+message Step {
+  // Lowercase words joined by dashes, such as playwright-browsers.
+  string name = 1;
+  string script = 2;
+  // Run after every pull too: builds, and installs from a lockfile.
+  bool every_pull = 3;
+  // The script's sha256, 12 hex digits: a base that ran another hash runs it again.
+  string hash = 4;
+  int64 updated_at = 5;
+  // The machine it was set from.
+  string updated_by = 6;
+}
+
+// What a base did with one of its project's steps.
+message AppliedStep {
+  string name = 1;
+  // The script's hash as the base ran it, or inherited it from the base it
+  // forked.
+  string hash = 2;
+  // Ran in this generation, rather than inherited.
+  bool ran = 3;
+  // False for the step that failed this generation's freshen.
+  bool ok = 4;
+  // How long it took in the generation that ran it.
+  double seconds = 5;
+}
+
+message PutStepRequest {
+  string project = 1;
+  // hash, updated_at and updated_by are the controller's to set.
+  Step step = 2;
+  // Put the step before this one; empty keeps a replaced step where it is
+  // and puts a new one last.
+  string before = 3;
+  // When > 0, refuse with CONFLICT unless the project's setup_revision matches.
+  int64 if_revision = 4;
+  // Root steps are gone: a step runs sudo in its sandbox (board 8145).
+  reserved 5;
+  reserved "root";
+}
+
+message DeleteStepRequest {
+  string project = 1;
+  string name = 2;
+  // When > 0, refuse with CONFLICT unless the project's setup_revision matches.
+  int64 if_revision = 3;
+  reserved 4;
+  reserved "root";
+}
+
+message ListStepsRequest {
+  string project = 1;
+}
+
+message ListStepsResponse {
+  repeated StepStatus steps = 1;
+  reserved 2;
+  reserved "root_steps";
+}
+
+enum StepState {
+  STEP_STATE_UNSPECIFIED = 0;
+  // The node's newest base ran this version of the script.
+  STEP_STATE_APPLIED = 1;
+  // It has not: the next base there will run it.
+  STEP_STATE_PENDING = 2;
+  // This version failed in the node's newest freshen.
+  STEP_STATE_FAILED = 3;
+}
+
+message StepStatus {
+  Step step = 1;
+  repeated StepOnNode nodes = 2;
+}
+
+message StepOnNode {
+  string node = 1;
+  // The node's newest base of the project that is not still building.
+  string base_id = 2;
+  StepState state = 3;
+  double seconds = 4;
+}
+
+message ListReposRequest {
+  // Only repos held by this project; empty for every repo.
+  string project = 1 [(param) = {short: "p"}];
+}
+
+message ListReposResponse {
+  repeated Repo repos = 1;
+}
+
+message PutRepoRequest {
+  Repo repo = 1 [(param) = {
+    hidden: true
+    hook: "RepoToPut"
+  }];
+  // Place the repo in this project (making it if needed; default: auto-create
+  // a single-repo project unless one holds its remote already).
+  string project = 2 [(param) = {short: "p"}];
+  // Short name, such as ratel; workspaces see the checkout at /work/<name>.
+  string id = 3 [(param) = {
+    positional: true
+    local: true
+  }];
+  // Git URL to clone, in any form (https://github.com/o/r.git,
+  // git@github.com:o/r.git).
+  string url = 4 [(param) = {
+    positional: true
+    local: true
+  }];
+  // Branch bases follow (default: the remote's default branch).
+  string branch = 5 [(param) = {local: true}];
+}
+
+message DeleteRepoRequest {
+  // The repo's name.
+  string id = 1 [(param) = {positional: true}];
+}
+
+message DeleteRepoResponse {}
+
+message RebuildProjectRequest {
+  // The project.
+  string name = 1 [(param) = {positional: true}];
+}
+
+message SetProjectHostsRequest {
+  // The project.
+  string name = 1 [(param) = {positional: true}];
+  // Nodes (host names) that keep its bases; none for every worker.
+  repeated string hosts = 2 [(param) = {positional: true}];
+}
+
+// A project as the workers that keep its bases need it: what to check out,
+// and what to run in the checkouts.
+message HostedProject {
+  string name = 1;
+  // The project's repos the cluster has, each checked out at /work/<id>.
+  repeated Repo repos = 2;
+  repeated Step steps = 3;
+  int64 scratch_epoch = 4;
+  reserved 5;
+  reserved "root_steps";
+}
+
+enum BaseState {
+  BASE_STATE_UNSPECIFIED = 0;
+  BASE_STATE_BUILDING = 1;
+  BASE_STATE_WARM = 2;
+  BASE_STATE_STALE = 3;
+  BASE_STATE_FAILED = 4;
+}
+
+// One generation of a project's repos, each checked out at its branch's
+// head, freshened and snapshotted on one node.
+message Base {
+  // <project>-g<generation>, unique on its node.
+  string id = 1;
+  reserved 2, 5, 6, 13;
+  reserved "repo_id", "commit", "message", "toolchain";
+  string node_id = 3;
+  int32 generation = 4;
+  BaseState state = 7;
+  // Share of freshen steps done while building, 0..1.
+  double progress = 8;
+  optional int64 built_at = 9;
+  double build_seconds = 10;
+  // The generation started from nothing, so its time is what a fork saves.
+  bool cold = 11;
+  int64 size_bytes = 12;
+  repeated string baked = 14;
+  // Units (cargo crates) a cold freshen compiled.
+  int32 units = 15;
+  // The freshen command's ID, for its log.
+  string command = 16;
+  // The project's scratch_epoch when this generation was started.
+  int64 scratch_epoch = 17;
+  // Every step of the project as this generation left it, in order.
+  repeated AppliedStep steps = 18;
+  // A fingerprint of the commits and steps it was built for, so a failed
+  // freshen is not tried again until one of them changes.
+  string recipe = 19;
+  string project = 20;
+  // Each repo checked out, by ID.
+  repeated BaseRepo repos = 21;
+  // The most memory its freshen held of its own (anonymous and swapped,
+  // not file cache): the project's next freshen on the node is guaranteed
+  // as much, so the node admits no more beside it than fits.
+  int64 peak_memory_bytes = 22;
+}
+
+// One repo of a base, as its generation checked it out.
+message BaseRepo {
+  string repo = 1;
+  string commit = 2;
+  // The commit's subject.
+  string message = 3;
+  // What it builds with, from its pin files: rust 1.91, go 1.25.
+  string toolchain = 4;
+}
+
+// ---- workspaces ---------------------------------------------------------
+
+enum WorkspaceState {
+  WORKSPACE_STATE_UNSPECIFIED = 0;
+  WORKSPACE_STATE_ACTIVE = 1;
+  WORKSPACE_STATE_IDLE = 2;
+  WORKSPACE_STATE_RELEASED = 3;
+  // Its base is being brought up to date (pulled and freshened); commands
+  // run in it queue until it is ready.
+  WORKSPACE_STATE_PREPARING = 4;
+  // Its base failed to freshen; reason says why.
+  WORKSPACE_STATE_FAILED = 5;
+}
+
+// A writable fork of a project's base that one session works in, with
+// every repo of the project at /work/<repo>.
+message Workspace {
+  string id = 1;
+  reserved 2, 6, 7, 8, 9, 10, 17, 19;
+  reserved "repo_id", "branch", "head", "base_commit", "tree", "files_changed", "path", "sync_dir";
+  string base_id = 3;
+  string node_id = 4;
+  string agent = 5;
+  WorkspaceState state = 11;
+  int64 created_at = 12;
+  int64 fork_millis = 13;
+  int64 exclusive_bytes = 14;
+  int64 shared_bytes = 15;
+  int64 last_active_at = 16;
+  string session_id = 18;
+  // The machine its runs synced checkouts from.
+  string sync_host = 20;
+  // Why it failed, what it waits for while preparing, or, once ready, why
+  // its base is not up to date (a step failed in the newer one).
+  string reason = 21;
+  // Set by the controller: where clients call the workspace's worker
+  // (host:port) to sync, run commands and read their output.
+  string node_addr = 22;
+  // Its page in the cockpit. The CLI fills it from the controller it
+  // calls (cmd/hotbed/cockpit.go); the API leaves it empty.
+  string cockpit_url = 23;
+  // The project whose base it forks: its session's.
+  string project = 24;
+  // Set by the controller: its node's host name.
+  string node = 25;
+  // Each repo checked out, by ID.
+  repeated WorkspaceRepo repos = 26;
+}
+
+// One repo of a workspace, at /work/<repo>.
+message WorkspaceRepo {
+  string repo = 1;
+  // The commit last synced, or the base's.
+  string head = 2;
+  string base_commit = 3;
+  // The tree last synced, so a sync of the same tree sends nothing.
+  string tree = 4;
+  int32 files_changed = 5;
+  // The local checkout (on the workspace's sync_host) last synced into it;
+  // empty when none has been.
+  string sync_dir = 6;
+}
+
+// CreateWorkspace, called on the controller, gives a session a workspace of
+// its project for a run: on the node the controller picks for it
+// (Placement), the session's workspace there, or a new one. A session has at
+// most one workspace per node. Called on a worker (by the controller), it
+// makes the workspace the request names.
+message CreateWorkspaceRequest {
+  reserved 3, 4, 9;
+  reserved "branch", "node", "repo_config";
+  // The project's repo the run syncs (sync_dir) and runs in; empty for none.
+  string repo = 1;
+  string agent = 2;
+  // Where the run may go and what it needs; empty for anywhere.
+  Placement placement = 10;
+  // Set by the controller when it forwards the call to a worker.
+  string id = 5;
+  string session_id = 6;
+  // The local checkout of repo (on the calling machine) the run syncs
+  // first; empty when it syncs none. A run that syncs nothing stays in the
+  // session's workspace it has, whose state lives only on its node.
+  string sync_dir = 7;
+  // Set by the controller: the calling machine's host name.
+  string sync_host = 8;
+  // Set by the controller: the session's project, for its freshen.
+  HostedProject project = 11;
+}
+
+// Placement narrows where a run may go. The controller picks among the nodes
+// left by load, preferring one where the session already has a workspace,
+// then one with a warm base of its project.
+message Placement {
+  // Only this node (host name).
+  string node = 1;
+  // Only nodes of this architecture, as Resources.arch says it: amd64 or arm64.
+  string arch = 2;
+  // A measurement: only nodes with measurement CPUs (Resources.bench_cpus).
+  bool bench = 3;
+  // The memory the run is guaranteed (memory.low): nodes with less RAM are
+  // left out, and those it fits on now preferred.
+  int64 memory_low_bytes = 4;
+}
+
+message GetWorkspaceRequest {
+  string id = 1;
+}
+
+message WatchWorkspaceRequest {
+  string id = 1;
+}
+
+message ListWorkspacesRequest {
+  // Only this session's workspaces.
+  string session_id = 1;
+  // Only this project's workspaces; empty for every project's.
+  string project = 2;
+}
+
+message ListWorkspacesResponse {
+  repeated Workspace workspaces = 1;
+}
+
+message ReleaseWorkspaceRequest {
+  string id = 1;
+}
+
+message ReleaseWorkspaceResponse {}
+
+message SyncRequest {
+  oneof msg {
+    SyncHeader header = 1;
+    bytes chunk = 2;
+  }
+}
+
+message SyncHeader {
+  string workspace_id = 1;
+  string commit = 2;
+  string tree = 3;
+  // The project's repo it checks out, at /work/<repo>.
+  string repo = 4;
+  // The local checkout it was made from, on the calling machine.
+  string dir = 5;
+  // The submodule snapshots it carries, parents before their submodules.
+  // The stream's bytes are each one's bundle, in this order, then the
+  // repo's own bundle to the end.
+  repeated SyncSubmodule submodules = 6;
+}
+
+// SyncSubmodule is a submodule snapshot a sync carries, as a git bundle.
+message SyncSubmodule {
+  // Relative to the repo's checkout, slash-separated: vendor/lib.
+  string path = 1;
+  string commit = 2;
+  int64 bundle_bytes = 3;
+}
+
+message SyncResponse {
+  string workspace_id = 1;
+  string head = 2;
+  string tree = 3;
+  int32 files_changed = 4;
+  // The workspace already had this tree; nothing was sent.
+  bool skipped = 5;
+  int64 bundle_bytes = 6;
+}
+
+message FileEntry {
+  // Below /work, starting with the repo: hotbed/go.mod.
+  string path = 1;
+  // file or dir
+  string kind = 2;
+  int64 size_bytes = 3;
+  // Against the workspace's base: added, modified, or empty.
+  string change = 4;
+}
+
+message ListFilesRequest {
+  string workspace_id = 1;
+}
+
+message ListFilesResponse {
+  repeated FileEntry files = 1;
+}
+
+message GetFileRequest {
+  string workspace_id = 1;
+  // Below /work, starting with the repo: hotbed/go.mod.
+  string path = 2;
+}
+
+message FileContent {
+  string path = 1;
+  string text = 2;
+  // Line numbers (1-based) the workspace changed against its base.
+  repeated int32 changed_lines = 3;
+}
+
+// ---- commands -----------------------------------------------------------
+
+enum CommandState {
+  COMMAND_STATE_UNSPECIFIED = 0;
+  COMMAND_STATE_QUEUED = 1;
+  COMMAND_STATE_RUNNING = 2;
+  // Frozen under memory pressure, its memory in swap, until there is room.
+  COMMAND_STATE_PARKED = 3;
+  COMMAND_STATE_SUCCEEDED = 4;
+  COMMAND_STATE_FAILED = 5;
+  COMMAND_STATE_CANCELLED = 6;
+  // Frozen, its memory in swap, because its soft time limit passed with no
+  // end: an agent waiting on it again (FollowLog with wait) thaws it.
+  COMMAND_STATE_PAUSED = 7;
+}
+
+message CommandLimits {
+  // cgroup cpu.weight: the share of contended CPU.
+  int32 cpu_weight = 1;
+  // cgroup memory.low: guaranteed; admission waits until it fits.
+  int64 memory_low_bytes = 2;
+  // cgroup memory.high: past it the command is throttled and swapped.
+  int64 memory_high_bytes = 3;
+  // How long it runs before it is paused unless it has ended, counted from
+  // its start and again from each time an agent starts waiting on it
+  // (FollowLog with wait); 0 for no soft limit.
+  int64 soft_limit_seconds = 4;
+  // How long after its start it is stopped, paused or not; 0 for none.
+  int64 hard_limit_seconds = 5;
+  // Scheduling priority (default 0 = normal; higher preempts lower by parking
+  // lower-priority running commands until this command fits).
+  int32 priority = 6;
+}
+
+message Rebuilt {
+  int32 units = 1;
+  int32 of = 2;
+}
+
+// What someone did to a command by hand.
+enum InterventionKind {
+  INTERVENTION_KIND_UNSPECIFIED = 0;
+  INTERVENTION_KIND_STOP = 1;
+  INTERVENTION_KIND_PAUSE = 2;
+  INTERVENTION_KIND_RESUME = 3;
+}
+
+// A stop, pause or resume someone made of a command: who, when, what they
+// said, and what the command was doing then.
+message CommandIntervention {
+  // 1 for the command's first, and so on.
+  int32 seq = 1;
+  InterventionKind kind = 2;
+  // When, and who: a session for an agent's, else the host it came from.
+  Stamp by = 3;
+  // What they wrote for whoever waits on the command.
+  string comment = 4;
+  // Diagnostics were taken first (GetCommandDiagnostics has them).
+  bool diagnosed = 5;
+  // What of the diagnostics asked for could not be taken, and why.
+  string diagnostics_error = 6;
+}
+
+// The diagnostics taken of a command as someone stopped or paused it.
+message CommandDiagnostics {
+  string command_id = 1;
+  CommandIntervention intervention = 2;
+  // Its activity sample: stacks, syscalls, files, locks, cgroup, counters.
+  ProcessSample sample = 3;
+  // Its full inspection: processes, files, cgroup, kernel stacks, maps,
+  // limits.
+  InspectCommandResponse inspect = 4;
+}
+
+message GetCommandDiagnosticsRequest {
+  // The command's ID.
+  string id = 1 [(param) = {
+    positional: true
+    required: true
+  }];
+  // Return only the diagnostics for this intervention sequence number (0 for all, paginated).
+  int32 seq = 2;
+  // Return diagnostics with sequence number strictly greater than this cursor.
+  int32 after_seq = 3;
+}
+
+message GetCommandDiagnosticsResponse {
+  // Oldest first.
+  repeated CommandDiagnostics diagnostics = 1;
+  // True when more diagnostics exist after this page.
+  bool has_more = 2;
+  // Sequence number to pass as after_seq for the next page.
+  int32 next_after_seq = 3;
+}
+
+message SaveCommandDiagnosticsRequest {
+  CommandDiagnostics diagnostics = 1;
+}
+
+message SaveCommandDiagnosticsResponse {}
+
+message CommandEvent {
+  int64 at = 1;
+  // queued, admitted, parked, thawed, paused, resumed, exited, cancelled
+  string what = 2;
+  string detail = 3;
+}
+
+// A command in a workspace, live or just ended.
+message Command {
+  string id = 1;
+  string workspace_id = 2;
+  string node_id = 3;
+  // Shell-quoted, for display.
+  string argv = 4;
+  repeated string args = 5;
+  // build, test, check, server, shell, freshen
+  string kind = 6;
+  CommandState state = 7;
+  int64 queued_at = 8;
+  optional int64 started_at = 9;
+  optional int64 ended_at = 10;
+  optional int32 exit_code = 11;
+  CommandLimits limits = 12;
+  double cpu_cores = 13;
+  int64 memory_bytes = 14;
+  int64 swap_bytes = 15;
+  // Cargo's units compiled; unset for commands that build nothing.
+  Rebuilt rebuilt = 16;
+  // How long the same command takes from nothing; unset when it builds nothing.
+  optional double cold_seconds = 17;
+  // Why it waits, sleeps or failed.
+  string reason = 18;
+  // A dev server's address.
+  string url = 19;
+  repeated CommandEvent timeline = 20;
+  // Stops when no client has followed its output for a while.
+  bool attached = 21;
+  string session_id = 22;
+  // A measurement: it runs alone on the node's measurement CPUs, isolated,
+  // never swapped or parked.
+  bool bench = 23;
+  // Set by the controller: where clients call the command's worker.
+  string node_addr = 24;
+  // Its page in the cockpit. The CLI fills it from the controller it
+  // calls (cmd/hotbed/cockpit.go); the API leaves it empty.
+  string cockpit_url = 25;
+  // Set by the controller: the project its session works on.
+  string project = 26;
+  // The project's repo it runs in, at /work/<repo>; empty for /work itself.
+  string repo = 27;
+  // Bytes of its output its log dropped, past the log's limit: the log
+  // keeps the first and the last, and says where it dropped the rest.
+  int64 dropped_output_bytes = 28;
+  // Its stops, pauses and resumes by hand, oldest first.
+  repeated CommandIntervention interventions = 29;
+}
+
+// A command that ended, as history keeps it.
+message FinishedCommand {
+  string id = 1;
+  // The project's repo it ran in; empty for one run in /work, such as a
+  // freshen.
+  string repo_id = 2;
+  string node_id = 3;
+  string workspace_id = 4;
+  string agent = 5;
+  string argv = 6;
+  string kind = 7;
+  CommandState state = 8;
+  optional int32 exit_code = 9;
+  // compile, test, lint, signal, exit; empty when it succeeded.
+  string failure = 10;
+  int64 ended_at = 11;
+  double queued_seconds = 12;
+  double seconds = 13;
+  optional double cold_seconds = 14;
+  optional int32 rebuilt = 15;
+  optional int32 of = 16;
+  int64 peak_memory_bytes = 17;
+  int32 parks = 18;
+  string session_id = 19;
+  bool bench = 20;
+  // Why it failed or was cancelled, as the command's reason says.
+  string reason = 21;
+  // Its page in the cockpit. The CLI fills it from the controller it
+  // calls (cmd/hotbed/cockpit.go); the API leaves it empty.
+  string cockpit_url = 22;
+  // The project its session worked on; empty for a sessionless freshen.
+  string project = 23;
+  // Its stops, pauses and resumes by hand, oldest first.
+  repeated CommandIntervention interventions = 24;
+}
+
+message RunCommandRequest {
+  string workspace_id = 1;
+  repeated string args = 2;
+  // KEY=VALUE
+  repeated string env = 3;
+  string kind = 4;
+  CommandLimits limits = 5;
+  bool attached = 6;
+  // The port a dev server listens on, for its URL.
+  int32 port = 7;
+  // Set by the controller when it forwards the call to a worker; a worker
+  // called directly picks one when it is empty.
+  string id = 8;
+  // Run it as a measurement: alone among measurements on the node, once
+  // running work leaves it room, on CPUs no other command uses, isolated
+  // for its whole run, never swapped or parked.
+  bool bench = 9;
+  // The project's repo it starts in, at /work/<repo>; empty for /work.
+  string repo = 10;
+}
+
+message OpenShellRequest {
+  string workspace_id = 1;
+  // The project's repo it starts in, at /work/<repo>; empty for /work.
+  string repo = 2;
+  // Command to run; empty for an interactive shell.
+  repeated string args = 3;
+  // Extra KEY=VALUE environment variables.
+  repeated string env = 4;
+  // Client's ephemeral SSH public key in OpenSSH authorized_keys format.
+  string public_key = 5;
+}
+
+message OpenShellResponse {
+  // Worker SSH address (host:port) on the tailnet.
+  string addr = 1;
+  // One-time SSH username (ticket) to authenticate with.
+  string user = 2;
+  // Worker's SSH host public key in OpenSSH authorized_keys format, for
+  // strict host key verification.
+  string host_public_key = 3;
+  // Unix milliseconds when the ticket expires if unused.
+  int64 expires_at = 4;
+}
+
+message GetCommandRequest {
+  string id = 1;
+}
+
+message ListCommandsRequest {
+  // Only this session's commands.
+  string session_id = 1 [(param) = {
+    hidden: true
+    hook: "PsSession"
+  }];
+  // Every session's commands in this project.
+  string project = 2 [(param) = {short: "p"}];
+  // Commands that ended long ago too, as history keeps them (30 days),
+  // not only live and just-ended ones.
+  bool ended = 3 [(param) = {short: "e"}];
+  // Only commands whose command line holds this text, as written
+  // (case-sensitive).
+  string match = 4 [(param) = {short: "m"}];
+  // At most this many of the commands that ended, the newest to end
+  // (default 50); 0 for every one. Commands not yet ended are all listed.
+  optional int32 limit = 5 [(param) = {short: "n"}];
+  // Every session's commands.
+  bool all = 6 [(param) = {local: true}];
+}
+
+message ListCommandsResponse {
+  // Oldest first.
+  repeated Command commands = 1;
+  // How many older ended commands matched but the limit left out.
+  int32 more = 2;
+}
+
+message StopCommandRequest {
+  string id = 1;
+  // For whoever waits on the command: why it was stopped.
+  string comment = 2;
+  // Take its diagnostics before it stops.
+  bool diagnose = 3;
+  // The session stopping it, for an agent; empty for a person.
+  string session_id = 4;
+  // Set by the controller when it forwards the call: the host the call came
+  // from. A worker called directly takes its caller's.
+  string host = 5;
+  // Internal controller/system cancellation (e.g. schedule cleanup): stops the
+  // command with reason without recording a human CommandIntervention.
+  bool internal = 6;
+  // Reason for an internal stop.
+  string reason = 7;
+}
+
+message PauseCommandRequest {
+  string id = 1;
+  // For whoever waits on the command: why it was paused.
+  string comment = 2;
+  // Take its diagnostics before it pauses.
+  bool diagnose = 3;
+  // The session pausing it, for an agent; empty for a person.
+  string session_id = 4;
+  // As StopCommandRequest's.
+  string host = 5;
+}
+
+message ResumeCommandRequest {
+  string id = 1;
+  string comment = 2;
+  // The session resuming it, for an agent; empty for a person.
+  string session_id = 3;
+  // As StopCommandRequest's.
+  string host = 4;
+}
+
+message FollowLogRequest {
+  string id = 1;
+  int64 offset = 2;
+  bool follow = 3;
+  // The caller waits on the command (with follow): a command its soft time
+  // limit paused resumes, and its soft limit counts again from now.
+  bool wait = 4;
+}
+
+message LogChunk {
+  // The command's output; where a long log dropped bytes past its limit, a
+  // line saying how many in their place.
+  bytes data = 1;
+  // The offset in the log to follow on from after this chunk (not the
+  // request's offset plus data's length, where data says bytes were
+  // dropped).
+  int64 next_offset = 2;
+  // Set on the terminal chunk when FollowLog stops following because the
+  // command paused or ended: captures the state and intervention at the moment
+  // the wait ended so a subsequent quick resume cannot hide a hand pause.
+  CommandState state = 3;
+  CommandIntervention ended_by = 4;
+}
+
+// ---- sessions -------------------------------------------------------------
+
+message Session {
+  // adjective-noun, such as brave-otter.
+  string id = 1;
+  string agent = 2;
+  int64 started_at = 3;
+  optional int64 ended_at = 4;
+  repeated string workspace_ids = 5;
+  // The last call that touched the session; an hour after it, the session
+  // is abandoned and ends.
+  int64 last_active_at = 6;
+  // Why it ended: ended by its agent, or abandoned.
+  string end_reason = 7;
+  // Every workspace it had, released ones too, oldest first.
+  repeated SessionWorkspace workspaces = 8;
+  // The scheduled command this session is a run of; empty for an agent's.
+  string schedule = 9;
+  // Its scheduled run is in progress: the idle hour does not apply.
+  bool schedule_running = 10;
+  // The project it works on.
+  string project = 11;
+  // Its page in the cockpit. The CLI fills it from the controller it
+  // calls (cmd/hotbed/cockpit.go); the API leaves it empty.
+  string cockpit_url = 12;
+  // Reminder for the agent starting the session (e.g. to configure setup
+  // steps on the project); only set by StartSession.
+  optional string reminder = 13;
+}
+
+message SessionWorkspace {
+  string id = 1;
+  reserved 2;
+  reserved "repo_id";
+  string node_id = 3;
+  int64 created_at = 4;
+  optional int64 released_at = 5;
+  // Its page in the cockpit. The CLI fills it from the controller it
+  // calls (cmd/hotbed/cockpit.go); the API leaves it empty.
+  string cockpit_url = 6;
+}
+
+message StartSessionRequest {
+  // The session's name, adjective-noun; it must be free.
+  string id = 1;
+  string agent = 2;
+  // The project it works on; empty for the one that holds remote.
+  string project = 3;
+  // The canonical remote of the checkout the session starts in
+  // (github.com/semistrict/hotbed), to find its project by.
+  string remote = 4;
+  // With an id, take up the session of that name if there is one rather
+  // than refuse: a live one as it is, an ended one live again (with no
+  // workspaces, its commands long stopped). It keeps its project.
+  bool resume = 5;
+}
+
+message ListSessionsRequest {
+  // Whose sessions: one project's or every project's; naming neither, the
+  // project of the session session_id names.
+  oneof scope {
+    string project = 1;
+    bool all_projects = 3;
+  }
+  // The session whose project's sessions these are, when scope names no
+  // project.
+  string session_id = 4;
+  bool ended = 2;
+  // The canonical remote of the caller's checkout (github.com/semistrict/hotbed):
+  // when neither scope nor session_id says whose, the project that holds it,
+  // if just one does.
+  string remote = 5;
+}
+
+message ListSessionsResponse {
+  repeated Session sessions = 1;
+}
+
+// ---- projects ---------------------------------------------------------------
+
+// What sessions work on, and what questions are about: one or more repos,
+// each named by its canonical git remote (github.com/semistrict/hotbed), as
+// a T3 Code project is a folder holding repos. A repo belongs to the project
+// of its own name unless a project is made to hold it.
+message Project {
+  // Lowercase letters, digits and dashes.
+  string name = 1;
+  // Canonical git remotes, sorted.
+  repeated string repos = 2;
+  int64 created_at = 3;
+  // Set when listed: its sessions that have not ended, its questions
+  // waiting for the user, and those waiting for an agent.
+  int32 live_sessions = 4;
+  int32 open_questions = 5;
+  int32 outbox = 6;
+  // Its reviews requested or in progress, and those done with findings
+  // still open.
+  int32 active_reviews = 7;
+  int32 reviews_to_decide = 8;
+  // Every change to it, oldest first; only from GetProject.
+  repeated ProjectChange history = 9;
+  // Its scheduled commands.
+  int32 schedules = 10;
+  // What brings its checkouts up to date, run in order in /work in each
+  // base so that forks start with it: toolchains, dependencies, builds.
+  repeated Step steps = 11;
+  // Host names of the nodes that keep its bases; empty means every worker.
+  repeated string hosts = 12;
+  // Raised by RebuildProject: a worker whose newest base has a lower epoch
+  // builds the next one from nothing.
+  int64 scratch_epoch = 13;
+  // Monotonic revision of the project's setup (steps, hosts, scratch_epoch),
+  // incremented on every change. Pass as --if-revision to avoid races.
+  int64 setup_revision = 14;
+  // Reminder for the agent (e.g. to configure setup steps); only set by
+  // AddProject.
+  optional string reminder = 15;
+  reserved 16;
+  reserved "root_steps";
+}
+
+// One change to a project: created, added or removed (a repo).
+message ProjectChange {
+  int64 seq = 1;
+  string what = 2;
+  // The repo added or removed, canonical.
+  string repo = 3;
+  // Who made it: a session, or no session for a person or for the
+  // controller itself, which makes a project for a repo no project holds.
+  Stamp by = 4;
+}
+
+message AddProjectRequest {
+  // Lowercase letters, digits and dashes.
+  string name = 1 [(param) = {positional: true}];
+  // A git remote it holds, in any form (git@github.com:o/r.git,
+  // https://github.com/o/r, github.com/o/r). Repeatable.
+  repeated string repos = 2 [(param) = {name: "repo"}];
+  // Add a repo another project holds too; sessions starting in its checkouts
+  // will then have to name their project (-p).
+  bool shared = 3;
+  // The session making the change, if an agent; empty for a person.
+  string session_id = 4 [(param) = {
+    hidden: true
+    default: "named_session"
+  }];
+}
+
+message RemoveProjectReposRequest {
+  // The project.
+  string name = 1 [(param) = {positional: true}];
+  // A git remote it holds, in any form (git@github.com:o/r.git,
+  // https://github.com/o/r, github.com/o/r). Repeatable.
+  repeated string repos = 2 [(param) = {
+    name: "repo"
+    required: true
+  }];
+  string session_id = 3 [(param) = {
+    hidden: true
+    default: "named_session"
+  }];
+}
+
+message GetProjectRequest {
+  // The project.
+  string name = 1 [(param) = {positional: true}];
+}
+
+message ListProjectsRequest {}
+
+message ListProjectsResponse {
+  repeated Project projects = 1;
+}
+
+message ListBasesRequest {
+  // Project name (or a repo ID held by a project); empty lists every project's bases.
+  string project = 1 [(param) = {
+    positional: true
+    optional: true
+  }];
+  // Filter to bases on this node (host name or ID).
+  string node = 2;
+  // Filter by base state (building, warm, stale, failed).
+  BaseState state = 3;
+}
+
+message ListBasesResponse {
+  repeated NodeBase bases = 1;
+}
+
+message NodeBase {
+  // Node host name.
+  string node = 1;
+  Base base = 2;
+  // Setup step that failed, when base.state is failed and a step broke it.
+  string failed_step = 3;
+}
+
+message GetSessionRequest {
+  string id = 1;
+}
+
+message GetSessionResponse {
+  Session session = 1;
+  // Live workspaces of the session from their nodes' views.
+  repeated Workspace workspaces = 2;
+  // Live and just-ended commands of the session.
+  repeated Command commands = 3;
+  // Controller's current time (unix ms).
+  int64 now = 4;
+  // Idle timeout in seconds before an inactive session is abandoned.
+  int64 idle_timeout_seconds = 5;
+  // Map of node_id -> hostname for nodes referenced by workspaces/commands.
+  map<string, string> node_hosts = 6;
+}
+
+message EndSessionRequest {
+  string id = 1;
+}
+
+message WatchSessionRequest {
+  string session_id = 1;
+  // Send events after this one (0 for the first).
+  int64 after = 2;
+  // Stop watching after this long; at most and by default 120.
+  int32 timeout_seconds = 3;
+}
+
+message PollRequest {
+  string session_id = 1 [(param) = {
+    hidden: true
+    default: "session"
+  }];
+  // Return events after this cursor (default: after the last ones a poll of
+  // this session on this machine returned; 0 for all of them).
+  int64 after = 2 [(param) = {hook: "PollCursor"}];
+  // Seconds to wait for an event: at most and by default 120.
+  int32 timeout_seconds = 3 [(param) = {name: "timeout"}];
+}
+
+// A session's events after a cursor, and how it stands.
+message SessionEvents {
+  repeated SessionEvent events = 1;
+  // Pass as after to wait for what comes next.
+  int64 cursor = 2;
+  // Commands in the session that have not ended.
+  int32 live = 3;
+  // The session ended (by its agent, or abandoned); no more events will come.
+  bool ended = 4;
+  string end_reason = 5;
+}
+
+// Something that happened in a session: to one of its commands or
+// workspaces, a question it asked, or a review it requested.
+message SessionEvent {
+  // The controller's cursor for the event.
+  int64 seq = 1;
+  int64 at = 2;
+  string session_id = 3;
+  oneof event {
+    CommandUpdate command = 4;
+    WorkspaceUpdate workspace = 5;
+    QuestionUpdate question = 6;
+    ReviewUpdate review = 7;
+  }
+  // What happened, in a line: why a command was parked or paused, why a
+  // workspace failed, the user's answer, a review's summary or response.
+  string detail = 8;
+}
+
+// A command of the session changed.
+message CommandUpdate {
+  enum What {
+    WHAT_UNSPECIFIED = 0;
+    // It started running.
+    WHAT_ADMITTED = 1;
+    // Frozen, its memory swapped out, while its node is short of memory.
+    WHAT_PARKED = 2;
+    WHAT_THAWED = 3;
+    // Its soft time limit froze it; waiting on it resumes it.
+    WHAT_PAUSED = 4;
+    WHAT_RESUMED = 5;
+    // A measurement's isolation was lost: its numbers are not to be trusted.
+    WHAT_ISOLATION_LOST = 6;
+    // It ended by itself: exit_code says how.
+    WHAT_EXITED = 7;
+    // It was stopped, or lost with its node.
+    WHAT_CANCELLED = 8;
+  }
+  What what = 1;
+  string command_id = 2;
+  string argv = 3;
+  string workspace_id = 4;
+  CommandState state = 5;
+  optional int32 exit_code = 6;
+}
+
+// A workspace of the session is ready, or failed.
+message WorkspaceUpdate {
+  enum What {
+    WHAT_UNSPECIFIED = 0;
+    WHAT_READY = 1;
+    // Its base failed to build, or its node lost it.
+    WHAT_FAILED = 2;
+  }
+  What what = 1;
+  string workspace_id = 2;
+}
+
+// The user answered or dismissed a question the session asked.
+message QuestionUpdate {
+  enum What {
+    WHAT_UNSPECIFIED = 0;
+    WHAT_ANSWERED = 1;
+    // No answer will come.
+    WHAT_DISMISSED = 2;
+  }
+  What what = 1;
+  // The question as the answer or dismissal left it, answer included,
+  // without its history.
+  Question question = 2;
+}
+
+// A review the session requested ended, or someone responded to it.
+message ReviewUpdate {
+  enum What {
+    WHAT_UNSPECIFIED = 0;
+    // Its reviewer finished it: its findings are in.
+    WHAT_FINISHED = 1;
+    // Its reviewer could not finish it.
+    WHAT_FAILED = 2;
+    // Someone else responded to it or one of its findings.
+    WHAT_RESPONDED = 3;
+  }
+  What what = 1;
+  int32 review_id = 2;
+}
+
+message GetLogLinesRequest {
+  string id = 1;
+  // How many lines; 0 for 2000.
+  int32 tail = 2;
+}
+
+message CommandLog {
+  string command_id = 1;
+  // Without newlines, as valid UTF-8 (U+FFFD for bytes that are not).
+  repeated string lines = 2;
+  // Fewer lines than asked for fit in the response's 1 MiB though the
+  // output has more: the first is the oldest that fit (or, when not even
+  // the last line fits, that line's end).
+  bool cut = 3;
+}
+
+// ---- reports ------------------------------------------------------------
+
+message WorkerEvent {
+  int64 at = 1;
+  // admit, wait, hold, unhold, finish, fail, park, thaw, pause, resume,
+  // fork, release, base (internal/worker/events.go feedKind)
+  string kind = 2;
+  string text = 3;
+  EventRef ref = 4;
+}
+
+message EventRef {
+  // command, workspace or node
+  string type = 1;
+  string id = 2;
+}
+
+// ---- the event stream ---------------------------------------------------
+
+// Something that changed in a worker's own state: its bases, workspaces and
+// commands. The worker writes each event in the same transaction as the
+// change, numbered by a sequence that only grows, and the controller folds
+// them, in order, into its view of the node. Each change carries the whole
+// entity as it now is, so applying one twice changes nothing.
+message Event {
+  // The worker's; unique and increasing within its epoch.
+  int64 seq = 1;
+  int64 at = 2;
+  oneof change {
+    BaseChange base = 3;
+    WorkspaceChange workspace = 4;
+    CommandChange command = 5;
+  }
+  // A line for the cockpit's feed, when the change is worth one.
+  WorkerEvent feed = 6;
+}
+
+message BaseChange {
+  // building, warm, stale, failed, dropped (superseded while building), or
+  // collected (the worker deleted it: drop it from the view).
+  string what = 1;
+  Base base = 2;
+  string detail = 3;
+}
+
+message WorkspaceChange {
+  // created (preparing), ready, rebased (onto an older base: its own failed
+  // to freshen), failed, synced, active, idle, released, or forgotten (the
+  // worker deleted it, a while after its release).
+  string what = 1;
+  Workspace workspace = 2;
+  string detail = 3;
+}
+
+message CommandChange {
+  // queued, waiting (the kind of wait changed), admitted, parked, thawed,
+  // paused, resumed, isolation lost (a measurement's), exited, cancelled, or
+  // forgotten (deleted a while after it ended).
+  string what = 1;
+  Command command = 2;
+  string detail = 3;
+  // Set when a command (not a freshen) ends: the history entry.
+  FinishedCommand finished = 4;
+  // Set when a command ends and continuous eBPF profiling collected samples for it.
+  CommandProfile profile = 5;
+  // Set when someone stopped or paused it and diagnostics were taken.
+  CommandDiagnostics diagnostics = 6;
+}
+
+// Everything a worker has, as of an event: what the controller starts from
+// when it has no view of the node it can continue (a new controller, or a
+// worker whose database is new).
+message Checkpoint {
+  // The last event the state includes; events after it follow.
+  int64 seq = 1;
+  repeated Base bases = 2;
+  repeated Workspace workspaces = 3;
+  repeated Command commands = 4;
+}
+
+message PushEventsRequest {
+  string cluster_id = 1;
+  // Names the worker's database. A worker whose database was lost starts
+  // a new epoch, and its sequence starts again.
+  string epoch = 2;
+  // In order, each after the controller's applied; may be empty, to learn
+  // where the controller is.
+  repeated Event events = 3;
+  // When the controller asked for one; events then are those the
+  // checkpoint includes that the controller may lack, which it applies
+  // first, for what derives from them (history, sessions' timelines).
+  Checkpoint checkpoint = 4;
+  // The time of the worker's event at the controller's applied: a
+  // controller that applied a different event there (the worker's database
+  // is an older copy that has written on since) asks for a checkpoint.
+  int64 after_at = 5;
+}
+
+message PushEventsResponse {
+  // The last event of this epoch the controller has applied; the worker
+  // sends what follows.
+  int64 applied = 1;
+  // The controller has no view of this epoch to continue: send a checkpoint.
+  bool checkpoint_needed = 2;
+}
+
+message CommandUsage {
+  string id = 1;
+  double cpu_cores = 2;
+  int64 memory_bytes = 3;
+  int64 swap_bytes = 4;
+  // Why a queued command waits, with the numbers as they are now; an event
+  // says so only when the kind of wait changes.
+  string reason = 5;
+  // As the command's: its output its log dropped so far.
+  int64 dropped_output_bytes = 6;
+}
+
+message BaseUsage {
+  string id = 1;
+  // Share of freshen steps done while building, 0..1.
+  double progress = 2;
+  int64 size_bytes = 3;
+}
+
+message WorkspaceUsage {
+  string id = 1;
+  int64 exclusive_bytes = 2;
+  int64 shared_bytes = 3;
+}
+
+message HeartbeatRequest {
+  string cluster_id = 1;
+  Resources resources = 2;
+  NodeUsage usage = 3;
+  int64 disk_bytes = 4;
+  DiskUsage disk = 5;
+  int64 reserved_memory_bytes = 6;
+  int64 oom_kills = 7;
+  string storage = 8;
+  repeated CommandUsage commands = 9;
+  repeated BaseUsage bases = 10;
+  repeated WorkspaceUsage workspaces = 11;
+  // Sessions whose workspaces or commands clients used on this worker
+  // since the last heartbeat, or that a client follows now: calls the
+  // controller does not see, which keep a session alive.
+  repeated string active_sessions = 12;
+  // Status of the worker's always-on OpenTelemetry eBPF continuous profiler.
+  ProfilerStatus profiler = 13;
+  // Summary and rotation state of the worker's WARN/ERROR slog daemon logs.
+  DaemonLogSource daemon_logs = 14;
+  Admission admission = 15;
+}
+
+message HeartbeatResponse {
+  reserved 1;
+  reserved "repos";
+  // The projects this worker keeps bases of.
+  repeated HostedProject projects = 4;
+  // Workspaces to release: their sessions ended.
+  repeated string release = 2;
+  // The controller's build, for the worker's platform, which the worker
+  // installs over itself unless it runs it; unset while the controller runs
+  // a build it doesn't keep (a dev build).
+  Build build = 3;
+  // Latest fresh host-side view of this VM worker, when its host supervisor
+  // reports it; used by worker admission to hold work during host starvation.
+  HostUsage host_usage = 5;
+}
+
+// ---- the cockpit ----------------------------------------------------------
+
+// A repo as the cockpit describes it, from its newest cold base.
+message RepoSummary {
+  string id = 1;
+  string name = 2;
+  // rust, go, typescript
+  string language = 3;
+  int32 units = 4;
+  double cold_build_seconds = 5;
+  // Its canonical git remote, which projects hold it by.
+  string remote = 6;
+}
+
+message ClusterEvent {
+  int64 id = 1;
+  int64 at = 2;
+  string kind = 3;
+  string node_id = 4;
+  string text = 5;
+  EventRef ref = 6;
+  // The node's host name, filled in for the CLI.
+  string hostname = 7;
+}
+
+message Totals {
+  // Cold time minus actual, over builds that ended in the window.
+  double saved_seconds = 1;
+  int32 builds = 2;
+  int32 forks = 3;
+  int64 median_fork_millis = 4;
+  int32 oom_kills = 5;
+  int32 parks = 6;
+}
+
+message Sample {
+  int64 t = 1;
+  double cpu_busy = 2;
+  double memory_used = 3;
+  double memory_pressure = 4;
+  double cpu_pressure = 5;
+  // The node held new work.
+  bool holding = 6;
+  // Host-side CPU readings for VM nodes, when reported by the host supervisor.
+  optional double vm_cpu_busy = 7;
+  optional double host_cpu_busy = 8;
+}
+
+message Samples {
+  repeated Sample samples = 1;
+}
+
+// The cluster's command counts at one sample.
+message LoadSample {
+  int64 t = 1;
+  int32 running = 2;
+  int32 queued = 3;
+  int32 parked = 4;
+}
+
+// One hour of the cluster's history.
+message HourBucket {
+  int64 hour = 1;
+  int32 builds = 2;
+  double spent_seconds = 3;
+  double saved_seconds = 4;
+  int32 forks = 5;
+  int32 parks = 6;
+  double queue_wait_p95_seconds = 7;
+}
+
+message NodeHour {
+  int64 hour = 1;
+  double cpu_busy = 2;
+  double memory_used = 3;
+  // Share of the hour the node held new work, 0..1.
+  double holding = 4;
+}
+
+message NodeHours {
+  repeated NodeHour hours = 1;
+}
+
+message GetSnapshotRequest {}
+
+message Snapshot {
+  string cluster_id = 1;
+  string controller = 2;
+  int64 now = 3;
+  int32 sample_seconds = 4;
+  repeated Node nodes = 5;
+  repeated RepoSummary repos = 6;
+  repeated Base bases = 7;
+  repeated Workspace workspaces = 8;
+  repeated Command commands = 9;
+  repeated ClusterEvent events = 10;
+  Totals totals24h = 11;
+  // Live samples per node ID, oldest first.
+  map<string, Samples> series = 12;
+  repeated LoadSample load = 13;
+  // The last 24 hours, oldest first.
+  repeated HourBucket hourly = 14;
+  map<string, NodeHours> node_hourly = 15;
+  repeated FinishedCommand history = 16;
+  repeated Session sessions = 17;
+  // Every scheduled command, each with its recent runs.
+  repeated ScheduledCommand schedules = 18;
+  // Questions waiting for the user's answer.
+  int32 open_questions = 19;
+  // Every project, with what it has going on.
+  repeated Project projects = 20;
+  // Summary and rotation state of the controller's WARN/ERROR slog daemon logs.
+  DaemonLogSource controller_logs = 21;
+  // Placement decisions of the last day, newest first.
+  repeated PlacementDecision placements = 22;
+  // Work the nodes held or made wait, and when they started it again (hold,
+  // unhold and wait events), newest first.
+  repeated ClusterEvent admission_events = 23;
+}
+
+// Where the controller put a session's workspace, and why: every node it
+// weighed, with its cost in parts, or why it was ruled out.
+message PlacementDecision {
+  int64 id = 1;
+  int64 at = 2;
+  string session_id = 3;
+  string project = 4;
+  string repo = 5;
+  // The node chosen; empty when none could take the workspace.
+  string node_id = 6;
+  string hostname = 7;
+  // Why it went there ("the least costly node"), or why it went nowhere.
+  string reason = 8;
+  repeated PlacementCandidate candidates = 9;
+}
+
+message PlacementCandidate {
+  string node_id = 1;
+  string hostname = 2;
+  // Why it could not take the workspace at all; empty when weighed.
+  string unfit = 3;
+  // The sum of its parts; the least costly node wins.
+  double cost = 4;
+  repeated CostPart parts = 5;
+  // The session's workspace is already here.
+  bool mine = 6;
+  bool chosen = 7;
+}
+
+message CostPart {
+  // cpu-busy, queued, cpu-pressure, holding, memory, move, cold, broken.
+  string name = 1;
+  double value = 2;
+  // How it was worked out: "72% pressure", "3 queued on 16 CPUs".
+  string detail = 3;
+}
+
+message RetireNodeRequest {
+  // Its host name or ID.
+  string node = 1 [(param) = {positional: true}];
+}
+
+message GetNodeRequest {
+  // Its host name or ID.
+  string node = 1 [(param) = {positional: true}];
+  // At most this many of its recent events and placements (default 30).
+  int32 limit = 2;
+}
+
+message NodeDetail {
+  Node node = 1;
+  // Work it held or made wait, and when it started it again (hold, unhold,
+  // wait events), newest first.
+  repeated ClusterEvent events = 2;
+  // Placements that weighed it, newest first.
+  repeated PlacementDecision placements = 3;
+}
+
+message ListPlacementsRequest {
+  // Only placements that weighed this node (host name or ID).
+  string node = 1;
+  // Only this session's.
+  string session = 2;
+  // At most this many (default 50).
+  int32 limit = 3;
+}
+
+message ListPlacementsResponse {
+  repeated PlacementDecision placements = 1;
+}
+
+message ListEventsRequest {
+  // Only this node's (host name or ID).
+  string node = 1;
+  // Only these kinds (repeatable): admit, wait, hold, unhold, park, thaw,
+  // fork, release, finish, fail, base, ...
+  repeated string kinds = 2 [(param) = {name: "kind"}];
+  // At most this many (default 100).
+  int32 limit = 3;
+}
+
+message ListEventsResponse {
+  repeated ClusterEvent events = 1;
+
+}
+
+// ---- daemon logs ----------------------------------------------------------
+
+enum DaemonLogLevel {
+  DAEMON_LOG_LEVEL_UNSPECIFIED = 0;
+  DAEMON_LOG_LEVEL_WARN = 1;
+  DAEMON_LOG_LEVEL_ERROR = 2;
+}
+
+message GetDaemonLogsRequest {
+  // Which daemon to read: "controller", a worker hostname or node ID, or empty
+  // for the controller and every online worker combined.
+  string source = 1;
+  // Only entries of this level (warn or error); omit for both.
+  DaemonLogLevel level = 2;
+  // Case-insensitive substring filter over message, attributes, and source location.
+  string query = 3 [(param) = {short: "q"}];
+  // Only entries at or after this unix ms timestamp (0 for no lower bound).
+  int64 from_ms = 4 [(param) = {name: "from-ms"}];
+  // Only entries at or before this unix ms timestamp (0 for no upper bound).
+  int64 to_ms = 5 [(param) = {name: "to-ms"}];
+  // Only entries from the last duration (e.g. "15m", "1h", "24h", "7d");
+  // sets from_ms relative to now on the server when from_ms is 0.
+  string since = 6;
+  // Maximum entries to return, newest first (default 200, max 1000).
+  int32 limit = 7 [(param) = {
+    short: "n"
+    default: "200"
+  }];
+}
+
+message DaemonLogEntry {
+  // Unix milliseconds when the record was logged.
+  int64 at = 1;
+  DaemonLogLevel level = 2;
+  // "controller" or the worker's hostname.
+  string source = 3;
+  // "controller" or "worker".
+  string role = 4;
+  // Tailnet hostname of the machine that logged it.
+  string host = 5;
+  // The slog message.
+  string msg = 6;
+  // Compact JSON object of structured slog attributes, if any.
+  string attrs_json = 7;
+  // Source file and line where slog was called, e.g. "internal/controller/server.go:274".
+  string source_loc = 8;
+}
+
+message DaemonLogSource {
+  // "controller" or the worker's hostname.
+  string source = 1;
+  // "controller" or "worker".
+  string role = 2;
+  // Tailnet hostname of the machine.
+  string host = 3;
+  // True when the daemon answered this query.
+  bool reachable = 4;
+  // Non-empty when the daemon was offline or the fetch failed.
+  string error = 5;
+  // Number of ERROR entries recorded in the last 24 hours.
+  int32 errors_24h = 6;
+  // Number of WARN entries recorded in the last 24 hours.
+  int32 warns_24h = 7;
+  // Unix ms of the newest recorded warn/error entry, if any.
+  optional int64 last_at = 8;
+  // Current disk bytes used across the active log file and its rotated backups.
+  int64 disk_bytes = 9;
+  // Current number of log files on disk (active + rotated backups).
+  int32 files = 10;
+  // Per-file rotation threshold in bytes.
+  int64 max_file_bytes = 11;
+  // Maximum files kept (1 active + rotated backups).
+  int32 max_files = 12;
+  // Maximum age in days for rotated backup files.
+  int32 max_age_days = 13;
+}
+
+message GetDaemonLogsResponse {
+  // Matching WARN and ERROR entries, newest first.
+  repeated DaemonLogEntry entries = 1;
+  // Status and rotation stats for each queried daemon (controller and workers).
+  repeated DaemonLogSource sources = 2;
+  // True when more matching entries existed than the requested limit.
+  bool truncated = 3;
+}
+
+// ---- scheduled commands ---------------------------------------------------
+
+// Scheduled commands: recurring work the controller starts by itself, such
+// as a nightly measurement. Each run is a session of its own, with a fresh
+// workspace of the repo at its branch's head, in which the command runs
+// detached. A run that succeeds ends its session; one that fails leaves it
+// for the usual idle hour, so an agent can look inside.
+service ScheduleService {
+  // PutSchedule adds a scheduled command, or replaces the one of its name.
+  rpc PutSchedule(PutScheduleRequest) returns (ScheduledCommand);
+  rpc ListSchedules(ListSchedulesRequest) returns (ListSchedulesResponse) {
+    option idempotency_level = IDEMPOTENT;
+  }
+  // GetSchedule is one scheduled command, with more of its runs.
+  rpc GetSchedule(GetScheduleRequest) returns (ScheduledCommand) {
+    option idempotency_level = IDEMPOTENT;
+  }
+  // DeleteSchedule removes a scheduled command; a run in progress goes on.
+  rpc DeleteSchedule(DeleteScheduleRequest) returns (DeleteScheduleResponse);
+  // RunSchedule starts a run now, outside the schedule, unless one is in
+  // progress.
+  rpc RunSchedule(RunScheduleRequest) returns (ScheduledRun);
+  // PauseSchedule stops (or, with paused false, resumes) a schedule's runs.
+  rpc PauseSchedule(PauseScheduleRequest) returns (ScheduledCommand);
+}
+
+message ScheduledCommand {
+  // lowercase words joined by dashes, such as cladefs-nightly.
+  string name = 1;
+  // Five-field cron, in the controller's time zone unless it starts with
+  // CRON_TZ=ZONE, such as "0 2 * * *".
+  string cron = 2;
+  string repo = 3;
+  // Puts every run on this node (host name), or on nodes of this
+  // architecture (amd64, arm64); otherwise the controller places each like
+  // any run (Placement).
+  string node = 4;
+  string arch = 12;
+  // The command, as hotbed run takes it. Its workspace_id, id, attached and
+  // port are the controller's to set.
+  RunCommandRequest command = 5;
+  bool paused = 6;
+  int64 created_at = 7;
+  int64 updated_at = 8;
+  // When the next run is due; unset while paused.
+  optional int64 next_at = 9;
+  // Its runs, the newest first: a few when listed, more from GetSchedule.
+  repeated ScheduledRun runs = 10;
+  // The project its runs' sessions work on: the one named when it was
+  // added, or else the one that holds its repo.
+  string project = 11;
+  // Reminder for the agent when PutSchedule created a project or added a
+  // repo to one; only set by PutSchedule.
+  optional string reminder = 13;
+}
+
+enum RunOutcome {
+  RUN_OUTCOME_UNSPECIFIED = 0;
+  // Its command is queued or running.
+  RUN_OUTCOME_RUNNING = 1;
+  RUN_OUTCOME_SUCCEEDED = 2;
+  // Its command failed, or its workspace did.
+  RUN_OUTCOME_FAILED = 3;
+  // Its command was stopped, or its session ended under it.
+  RUN_OUTCOME_CANCELLED = 4;
+  // It could not start: no node to place it on, the repo gone.
+  RUN_OUTCOME_NOT_STARTED = 5;
+  // Its slot came while the previous run was still in progress.
+  RUN_OUTCOME_SKIPPED = 6;
+  // Its slot passed while the controller was down.
+  RUN_OUTCOME_MISSED = 7;
+}
+
+message ScheduledRun {
+  int64 id = 1;
+  string schedule = 2;
+  // The slot it was due at; unset for a run started by hand.
+  optional int64 slot_at = 3;
+  int64 started_at = 4;
+  optional int64 ended_at = 5;
+  RunOutcome outcome = 6;
+  string session_id = 7;
+  string workspace_id = 8;
+  string command_id = 9;
+  string node_id = 10;
+  optional int32 exit_code = 11;
+  // Why it failed, was skipped or missed, or did not start.
+  string reason = 12;
+}
+
+message PutScheduleRequest {
+  ScheduledCommand schedule = 1;
+}
+
+message ListSchedulesRequest {
+  // Whose schedules: one project's or every project's; naming neither, the
+  // project of the session session_id names.
+  oneof scope {
+    string project = 1;
+    bool all_projects = 2;
+  }
+  // The session whose project's schedules these are, when scope names no
+  // project.
+  string session_id = 3;
+  // The canonical remote of the caller's checkout (github.com/semistrict/hotbed):
+  // when neither scope nor session_id says whose, the project that holds it,
+  // if just one does.
+  string remote = 4;
+}
+
+message ListSchedulesResponse {
+  repeated ScheduledCommand schedules = 1;
+}
+
+message GetScheduleRequest {
+  string name = 1;
+}
+
+message DeleteScheduleRequest {
+  string name = 1;
+}
+
+message DeleteScheduleResponse {}
+
+message RunScheduleRequest {
+  string name = 1;
+}
+
+message PauseScheduleRequest {
+  string name = 1;
+  bool paused = 2;
+}
+
+// ---- process inspection, active tracing & continuous profiling ------------
+
+enum InspectSection {
+  INSPECT_SECTION_UNSPECIFIED = 0;
+  INSPECT_SECTION_PROCS = 1;
+  INSPECT_SECTION_FILES = 2;
+  INSPECT_SECTION_CGROUP = 3;
+  INSPECT_SECTION_KSTACK = 4;
+  INSPECT_SECTION_MAPS = 5;
+  INSPECT_SECTION_LIMITS = 6;
+}
+
+message InspectCommandRequest {
+  string id = 1;
+  // Empty means all sections.
+  repeated InspectSection sections = 2;
+  // Optional: limit detailed sections (files, kstack, maps, limits) to one PID in the command's cgroup.
+  int32 pid = 3;
+}
+
+message ThreadInfo {
+  int32 tid = 1;
+  string name = 2;
+  string state = 3;
+  string wchan = 4;
+  int64 cpu_user_ms = 5;
+  int64 cpu_sys_ms = 6;
+}
+
+message ProcessInfo {
+  int32 pid = 1;
+  int32 ppid = 2;
+  string state = 3;
+  string comm = 4;
+  string cmdline = 5;
+  int32 threads_count = 6;
+  int64 rss_bytes = 7;
+  int64 vsize_bytes = 8;
+  int64 cpu_user_ms = 9;
+  int64 cpu_sys_ms = 10;
+  int64 io_read_bytes = 11;
+  int64 io_write_bytes = 12;
+  string wchan = 13;
+  int32 oom_score = 14;
+  int64 voluntary_ctxt_switches = 15;
+  int64 nonvoluntary_ctxt_switches = 16;
+  repeated ThreadInfo threads = 17;
+}
+
+message OpenFile {
+  int32 pid = 1;
+  string comm = 2;
+  int32 fd = 3;
+  // file, socket, pipe, anon_inode, device, deleted, other
+  string kind = 4;
+  string target = 5;
+  // r, w, rw
+  string mode = 6;
+  int64 pos = 7;
+  uint64 inode = 8;
+  string socket_proto = 9;
+  string socket_state = 10;
+  string local_addr = 11;
+  string remote_addr = 12;
+}
+
+message CgroupIO {
+  string device = 1;
+  int64 rbytes = 2;
+  int64 wbytes = 3;
+  int64 rios = 4;
+  int64 wios = 5;
+}
+
+message CgroupStats {
+  int64 cpu_usage_usec = 1;
+  int64 cpu_user_usec = 2;
+  int64 cpu_system_usec = 3;
+  int64 nr_throttled = 4;
+  int64 throttled_usec = 5;
+  int64 memory_current_bytes = 6;
+  int64 memory_peak_bytes = 7;
+  int64 memory_anon_bytes = 8;
+  int64 memory_file_bytes = 9;
+  int64 memory_kernel_bytes = 10;
+  int64 memory_slab_bytes = 11;
+  int64 memory_sock_bytes = 12;
+  int64 memory_shmem_bytes = 13;
+  int64 memory_swap_bytes = 14;
+  int64 pgfault = 15;
+  int64 pgmajfault = 16;
+  int64 pids_current = 17;
+  int64 pids_peak = 18;
+  double psi_cpu_some_avg10 = 19;
+  double psi_cpu_full_avg10 = 20;
+  double psi_mem_some_avg10 = 21;
+  double psi_mem_full_avg10 = 22;
+  double psi_io_some_avg10 = 23;
+  double psi_io_full_avg10 = 24;
+  repeated CgroupIO io = 25;
+}
+
+message ThreadKernelStack {
+  int32 pid = 1;
+  int32 tid = 2;
+  string comm = 3;
+  string thread_name = 4;
+  string state = 5;
+  string wchan = 6;
+  repeated string frames = 7;
+}
+
+message MemoryRegion {
+  string perms = 1;
+  string path = 2;
+  int64 size_bytes = 3;
+  int64 rss_bytes = 4;
+  int64 pss_bytes = 5;
+}
+
+message ProcessMemoryMap {
+  int32 pid = 1;
+  string comm = 2;
+  int64 rss_bytes = 3;
+  int64 pss_bytes = 4;
+  int64 private_dirty_bytes = 5;
+  int64 shared_clean_bytes = 6;
+  int64 swap_bytes = 7;
+  int64 anon_bytes = 8;
+  int64 shmem_bytes = 9;
+  repeated MemoryRegion top_regions = 10;
+}
+
+message ResourceLimit {
+  string name = 1;
+  string soft = 2;
+  string hard = 3;
+  string units = 4;
+}
+
+message ProcessLimits {
+  int32 pid = 1;
+  string comm = 2;
+  repeated ResourceLimit items = 3;
+  string cap_eff = 4;
+  string seccomp = 5;
+  bool no_new_privs = 6;
+}
+
+message ToolCapability {
+  string name = 1;
+  bool available = 2;
+  string detail = 3;
+}
+
+message InspectCommandResponse {
+  string command_id = 1;
+  int64 collected_at = 2;
+  string cgroup = 3;
+  string unit_name = 4;
+  repeated ProcessInfo procs = 5;
+  repeated OpenFile files = 6;
+  CgroupStats cgroup_stats = 7;
+  repeated ThreadKernelStack kstacks = 8;
+  repeated ProcessMemoryMap maps = 9;
+  repeated ProcessLimits limits = 10;
+  repeated ToolCapability available_tools = 11;
+}
+
+enum TraceKind {
+  TRACE_KIND_UNSPECIFIED = 0;
+  TRACE_KIND_STRACE = 1;
+  TRACE_KIND_STRACE_SUMMARY = 2;
+  TRACE_KIND_PERF_CPU = 3;
+  TRACE_KIND_PERF_STAT = 4;
+  TRACE_KIND_STACKS = 5;
+  TRACE_KIND_BPF_EXECSNOOP = 6;
+  TRACE_KIND_BPF_OPENSNOOP = 7;
+  TRACE_KIND_BPF_VFSSTAT = 8;
+  TRACE_KIND_BPF_OFFCPU = 9;
+  TRACE_KIND_BPF_NET = 10;
+}
+
+message TraceCommandRequest {
+  string id = 1;
+  TraceKind kind = 2;
+  // Capture duration in seconds (default 5, max 60; ignored for instant snapshots like stacks).
+  int32 duration_seconds = 3;
+  // Optional: target one PID inside the command's cgroup (0 = all PIDs in the cgroup).
+  int32 pid = 4;
+  // Optional: syscall filter expression for strace (e.g. "file", "network", "openat,read,write").
+  string filter = 5;
+  // Optional: sampling frequency in Hz for perf CPU profiling (default 99, max 999).
+  int32 frequency_hz = 6;
+}
+
+message PerfCounter {
+  string name = 1;
+  string value = 2;
+  string unit = 3;
+  string note = 4;
+}
+
+message SyscallStat {
+  string name = 1;
+  double pct_time = 2;
+  double seconds = 3;
+  int64 usecs_per_call = 4;
+  int64 calls = 5;
+  int64 errors = 6;
+}
+
+message TraceSummary {
+  TraceKind kind = 1;
+  int64 started_at = 2;
+  int64 ended_at = 3;
+  int64 duration_ms = 4;
+  repeated int32 pids_attached = 5;
+  string command_line = 6;
+  repeated FoldedStack stacks = 7;
+  repeated ProfileFunction top_functions = 8;
+  repeated PerfCounter counters = 9;
+  repeated SyscallStat syscalls = 10;
+  string raw = 11;
+  // The frames stacks and top_functions name, by index.
+  repeated ProfileFrame frames = 12;
+}
+
+message TraceCommandChunk {
+  string status = 1;
+  string text = 2;
+  TraceSummary summary = 3;
+  bool done = 4;
+}
+
+message SampleCommandRequest {
+  string id = 1;
+  // Sampling window in seconds (default 3, clamped to 1..30).
+  int32 duration_seconds = 2;
+  // Optional: focus on one PID inside the command's cgroup (0 = all PIDs in the cgroup).
+  int32 pid = 3;
+}
+
+message SampleCommandChunk {
+  // Human-readable progress phase while sampling.
+  string status = 1;
+  // 0..100 approximate progress percent.
+  int32 progress_pct = 2;
+  // Final comprehensive activity sample; set when done=true.
+  ProcessSample sample = 3;
+  bool done = 4;
+}
+
+// Status of one Linux telemetry collector used during a SampleCommand run.
+message SampleCollector {
+  string name = 1;
+  bool ok = 2;
+  string detail = 3;
+  int64 duration_ms = 4;
+}
+
+// Active syscall parsed from /proc/<pid>/task/<tid>/syscall, with FD correlation.
+message ThreadSyscall {
+  // -1 when executing in user space (not blocked in a syscall).
+  int64 number = 1;
+  // Human-readable syscall name (e.g. "futex", "epoll_pwait", "read", "running").
+  string name = 2;
+  repeated string args = 3;
+  string sp = 4;
+  string pc = 5;
+  // When arg0 is an FD for an fd-taking syscall, the resolved open file/socket/pipe description.
+  string fd_target = 6;
+}
+
+// One frame in a user-space or kernel stack trace.
+message StackFrame {
+  string symbol = 1;
+  string module = 2;
+  string address = 3;
+  string source = 4;
+  bool kernel = 5;
+}
+
+// One thread's sampled activity, deltas, and user+kernel stacks across the window.
+message SampledThread {
+  int32 tid = 1;
+  string name = 2;
+  string state = 3;
+  map<string, int32> state_counts = 4;
+  string wchan = 5;
+  int32 cpu_core = 6;
+  double cpu_user_delta_ms = 7;
+  double cpu_sys_delta_ms = 8;
+  double sched_run_delta_ms = 9;
+  double sched_wait_delta_ms = 10;
+  int64 sched_slices_delta = 11;
+  int64 voluntary_ctxt_delta = 12;
+  int64 nonvoluntary_ctxt_delta = 13;
+  int64 cpu_user_ms = 14;
+  int64 cpu_sys_ms = 15;
+  ThreadSyscall syscall = 16;
+  map<string, int32> syscall_counts = 17;
+  bool stationary = 18;
+  int32 polls_same_stack = 19;
+  int32 total_polls = 20;
+  repeated StackFrame user_frames = 21;
+  repeated string kernel_frames = 22;
+  int32 user_stack_samples = 23;
+}
+
+// Open file descriptor enriched with position deltas, socket queues, pipe peers, epoll targets, and locks.
+message SampledOpenFile {
+  int32 pid = 1;
+  string comm = 2;
+  int32 fd = 3;
+  string kind = 4;
+  string target = 5;
+  string mode = 6;
+  int64 pos = 7;
+  int64 pos_delta = 8;
+  uint64 inode = 9;
+  string socket_proto = 10;
+  string socket_state = 11;
+  string local_addr = 12;
+  string remote_addr = 13;
+  int64 tx_queue_bytes = 14;
+  int64 rx_queue_bytes = 15;
+  string peer = 16;
+  repeated int32 epoll_tfds = 17;
+  string lock_info = 18;
+}
+
+// POSIX, FLOCK, or OFD file lock from /proc/locks relevant to the command's PIDs or open inodes.
+message FileLock {
+  string kind = 1;
+  string mode = 2;
+  string access = 3;
+  int32 pid = 4;
+  string comm = 5;
+  uint64 inode = 6;
+  string range = 7;
+  bool blocked = 8;
+  string target = 9;
+}
+
+// One process in the command's cgroup with delta metrics and threads.
+message SampledProcess {
+  int32 pid = 1;
+  int32 ppid = 2;
+  string state = 3;
+  string comm = 4;
+  string cmdline = 5;
+  string exe = 6;
+  string cwd = 7;
+  int32 threads_count = 8;
+  int32 open_fds_count = 9;
+  int64 rss_bytes = 10;
+  int64 pss_bytes = 11;
+  int64 private_dirty_bytes = 12;
+  int64 swap_bytes = 13;
+  int64 vsize_bytes = 14;
+  int32 oom_score = 15;
+  double cpu_pct = 16;
+  double cpu_user_delta_ms = 17;
+  double cpu_sys_delta_ms = 18;
+  int64 io_read_delta_bytes = 19;
+  int64 io_write_delta_bytes = 20;
+  int64 io_read_bytes = 21;
+  int64 io_write_bytes = 22;
+  int64 voluntary_ctxt_delta = 23;
+  int64 nonvoluntary_ctxt_delta = 24;
+  int64 minor_faults_delta = 25;
+  int64 major_faults_delta = 26;
+  string wchan = 27;
+  repeated SampledThread threads = 28;
+  reserved 29;
+  reserved "call_tree";
+  string cap_eff = 30;
+  string seccomp = 31;
+  ProcessMemoryMap memory_map = 32;
+  ProcessLimits limits = 33;
+}
+
+// Cgroup v2 end state and deltas across the sample window.
+message SampledCgroup {
+  CgroupStats end = 1;
+  double cpu_cores_avg = 2;
+  int64 cpu_user_delta_usec = 3;
+  int64 cpu_system_delta_usec = 4;
+  int64 nr_throttled_delta = 5;
+  int64 throttled_delta_usec = 6;
+  int64 io_read_delta_bytes = 7;
+  int64 io_write_delta_bytes = 8;
+  int64 pgfault_delta = 9;
+  int64 pgmajfault_delta = 10;
+  int64 memory_delta_bytes = 11;
+  int64 memory_high_bytes = 12;
+  int64 memory_low_bytes = 13;
+  bool frozen = 14;
+  int64 psi_cpu_some_delta_usec = 15;
+  int64 psi_mem_some_delta_usec = 16;
+  int64 psi_mem_full_delta_usec = 17;
+  int64 psi_io_some_delta_usec = 18;
+  int64 psi_io_full_delta_usec = 19;
+}
+
+// Comprehensive Activity Monitor-style Linux process sample report.
+message ProcessSample {
+  string command_id = 1;
+  string unit_name = 2;
+  string cgroup = 3;
+  string hostname = 4;
+  string kernel = 5;
+  string arch = 6;
+  int64 started_at = 7;
+  int64 ended_at = 8;
+  int64 duration_ms = 9;
+  int32 poll_count = 10;
+  int32 user_stack_snapshots = 11;
+  reserved 12, 22;
+  reserved "diagnosis", "text_report";
+  repeated SampleCollector collectors = 13;
+  repeated SampledProcess procs = 14;
+  repeated SampledOpenFile files = 15;
+  repeated FileLock locks = 16;
+  SampledCgroup cgroup_stats = 17;
+  repeated FoldedStack sampled_stacks = 18;
+  repeated FoldedStack on_cpu_stacks = 19;
+  repeated ProfileFunction on_cpu_top_functions = 20;
+  repeated PerfCounter perf_counters = 21;
+  // The frames sampled_stacks, on_cpu_stacks and on_cpu_top_functions
+  // name, by index.
+  repeated ProfileFrame frames = 23;
+}
+
+message GetProfileRequest {
+  // Whose profile to query: one command (live or persisted) or host-wide across a node.
+  oneof target {
+    // Command ID (live on its worker or persisted on the controller after it ended).
+    string command_id = 1;
+    // Node hostname or ID.
+    string node = 2;
+  }
+  // Case-insensitive substring filter over stack frame names/modules.
+  string query = 3;
+  // Filter by frame type (e.g. "kernel", "native", "go", "python", "v8").
+  string frame_type = 4;
+  // Filter by process comm (e.g. "go", "rustc", "node", "hotbed").
+  string comm = 5;
+  // Optional time range filter (unix ms, inclusive).
+  int64 from_ms = 6;
+  int64 to_ms = 7;
+  // Maximum top functions / stacks to return (default 200).
+  int32 limit = 8;
+}
+
+// One function in a stack. A message carrying stacks lists each of its
+// frames once, in its `frames`, and its stacks, functions and buckets name
+// them by their index there: deep stacks of long names (a JVM's, say) would
+// otherwise repeat every name in every stack.
+message ProfileFrame {
+  string name = 1;
+  string module = 2;
+  // kernel, native, go, python, v8, ruby, php, hotspot, perl, dotnet,
+  // unknown, syscall, or process (a stack's root naming its process).
+  string frame_type = 3;
+  string source_file = 4;
+  int32 source_line = 5;
+}
+
+// A distinct stack and how often it was sampled.
+message FoldedStack {
+  reserved 1;
+  reserved "stack";
+  // Its frames, root first, as indexes into the message's frames.
+  repeated uint32 frames = 5;
+  int64 samples = 2;
+  string leaf_type = 3;
+  string comm = 4;
+}
+
+message ProfileFunction {
+  reserved 1 to 5;
+  reserved "name", "module", "frame_type", "source_file", "source_line";
+  // Index into the message's frames.
+  uint32 frame = 10;
+  int64 self_samples = 6;
+  int64 total_samples = 7;
+  double self_pct = 8;
+  double total_pct = 9;
+}
+
+message ProfileBucket {
+  int64 t = 1;
+  int64 samples = 2;
+  int64 kernel_samples = 3;
+  int64 user_samples = 4;
+  reserved 5;
+  reserved "top_function";
+  // The leaf sampled most in the bucket, as an index into the profile's
+  // frames, or 0xffffffff when no leaf frame was recorded (e.g. saturated
+  // frame table).
+  uint32 top_frame = 6;
+  // How long the bucket is, from t: 5 seconds, or, for a command that ran
+  // long enough to outgrow its timeline, a doubling of that.
+  int64 duration_ms = 7;
+  // Parallel packed slices recording each stack's sample count in this
+  // bucket, indexing into the enclosing CommandProfile's stacks, so
+  // time-window queries against persisted profiles reconstruct exact stacks.
+  repeated uint32 stack_indexes = 8;
+  repeated int64 stack_samples = 9;
+}
+
+message CommandProfile {
+  string command_id = 1;
+  string profiler = 2;
+  bool live = 3;
+  bool active = 4;
+  string status_note = 5;
+  int32 sample_hz = 6;
+  int64 started_at = 7;
+  int64 updated_at = 8;
+  int64 total_samples = 9;
+  int64 matched_samples = 10;
+  int64 kernel_samples = 11;
+  int64 user_samples = 12;
+  repeated string comms = 13;
+  repeated string frame_types = 14;
+  repeated FoldedStack stacks = 15;
+  repeated ProfileFunction top_functions = 16;
+  repeated ProfileBucket buckets = 17;
+  // Set when querying a node's host-wide continuous profile instead of a single command.
+  string node = 18;
+  // The frames stacks, top_functions and buckets name, by index.
+  repeated ProfileFrame frames = 19;
+}
+
+// ---- questions --------------------------------------------------------------
+
+// Questions agents ask the user: a list for each project, shared by every
+// session that works on it, which the
+// user answers in the cockpit whenever they like. A question asks what
+// AskUserQuestion asks. Answered (or dismissed), it waits in the outbox
+// until an agent acknowledges it, and is then handled. Any session may
+// delete any question it finds no longer needed. Nothing is ever removed:
+// every change is kept, with when it was made and by which session, or by
+// the user.
+service QuestionService {
+  // Ask the user: AskUserQuestion's JSON ({"questions": [...]}) on stdin
+  // or --file. Each question is an entry of its own, at the top of the
+  // user's order, on the list of the session's project, which its sessions
+  // share; carry on with your best guess and read the answer later. With
+  // --answered, record decisions already taken instead: each question is
+  // answered with its implemented options and handled at once, for the user
+  // to reopen if they disagree.
+  rpc AddQuestions(AddQuestionsRequest) returns (AddQuestionsResponse) {
+    option (command) = {
+      name: "question add"
+      session: true
+      input: {}
+      format: "{{range .questions}}#{{.id}}  {{state .state}}  rev={{.revision}}  {{with .prompt}}{{short 72 .question}}{{end}}\n{{end}}{{with .reminder}}{{.}}{{end}}"
+    };
+  }
+  // Rewrite an open question: one question's JSON on stdin or --file, bare
+  // or as add takes it.
+  rpc EditQuestion(EditQuestionRequest) returns (Question) {
+    option (command) = {
+      name: "question edit"
+      session: true
+      input: {
+        field: "prompt"
+        hook: "EditedPrompt"
+      }
+      format: "#{{.id}}  {{state .state}}  rev={{.revision}}  {{with .prompt}}{{.question}}{{end}}{{with .reminder}}\n{{.}}{{end}}"
+    };
+  }
+  // Delete a question that is no longer needed, whichever session asked
+  // it; it stays in the history.
+  rpc DeleteQuestion(DeleteQuestionRequest) returns (Question) {
+    option (command) = {
+      name: "question rm"
+      session: true
+      destructive: true
+      format: "#{{.id}}  {{state .state}}  rev={{.revision}}{{with .reminder}}\n{{.}}{{end}}"
+    };
+  }
+  // A project's questions, every session's (every state but deleted),
+  // newest first unless asked for another order.
+  rpc ListQuestions(ListQuestionsRequest) returns (ListQuestionsResponse) {
+    option idempotency_level = IDEMPOTENT;
+    option (command) = {
+      name: "question ls"
+      session: true
+      read_only: true
+      format: "{{range .questions}}#{{pad 4 .id}}  {{pad 9 (state .state)}}  {{with .prompt}}{{short 72 .question}}{{end}}\n{{end}}{{with .reminder}}{{.}}{{end}}"
+    };
+    option (command) = {
+      name: "question outbox"
+      help: "A project's questions the user answered or dismissed that no agent has acknowledged yet, the newest answer first."
+      session: true
+      read_only: true
+      format: "{{range .questions}}#{{pad 4 .id}}  {{pad 9 (state .state)}}  {{with .prompt}}{{short 72 .question}}{{end}}\n{{end}}{{with .reminder}}{{.}}{{end}}"
+      fixed: [
+        {
+          field: "states"
+          value: "[QuestionState.QUESTION_STATE_ANSWERED, QuestionState.QUESTION_STATE_DISMISSED]"
+        },
+        {
+          field: "order"
+          value: "QuestionOrder.QUESTION_ORDER_UPDATED"
+        },
+        {
+          field: "limit"
+          value: "0"
+        }
+      ]
+    };
+  }
+  // Every project with questions: how many wait on the user, and on
+  // agents.
+  rpc ListQuestionProjects(ListQuestionProjectsRequest) returns (ListQuestionProjectsResponse) {
+    option idempotency_level = IDEMPOTENT;
+    option (command) = {
+      name: "question projects"
+      read_only: true
+      format: "{{range .projects}}{{pad 18 .name}}  open={{.open}}  outbox={{.outbox}}\n{{end}}{{with .reminder}}{{.}}{{end}}"
+    };
+  }
+  // A question with every change made to it: what, when, and by which
+  // session.
+  rpc GetQuestion(GetQuestionRequest) returns (Question) {
+    option idempotency_level = IDEMPOTENT;
+    option (command) = {
+      name: "question show"
+      read_only: true
+      format: "#{{.id}}  {{state .state}}  rev={{.revision}}  {{with .prompt}}{{.question}}{{end}}{{if .project}}\nproject  {{.project}}{{end}}{{if .answer}}\nanswer   {{join \", \" .answer.picked}}{{if .answer.other}} ({{.answer.other}}){{end}}{{end}}{{with .reminder}}\n{{.}}{{end}}"
+    };
+  }
+  // Answer a question for the user, which puts it in the outbox; or change
+  // the answer of one in the outbox. The user answers in the cockpit; an
+  // agent uses this only to pass on what the user said.
+  rpc AnswerQuestion(AnswerQuestionRequest) returns (Question) {
+    option (command) = {
+      name: "question answer"
+      session: true
+      format: "#{{.id}}  {{state .state}}  rev={{.revision}}{{with .reminder}}\n{{.}}{{end}}"
+    };
+  }
+  // Dismiss a question for the user, open or answered in the outbox: it
+  // will get no answer. It goes to the outbox too, so its asker learns as
+  // much.
+  rpc DismissQuestion(DismissQuestionRequest) returns (Question) {
+    option (command) = {
+      name: "question dismiss"
+      session: true
+      format: "#{{.id}}  {{state .state}}  rev={{.revision}}{{with .reminder}}\n{{.}}{{end}}"
+    };
+  }
+  // Rewrite a question for the user, in any state but deleted: the user
+  // does this in the cockpit; an agent only to pass on the user's words.
+  // An answer it has must still pick among its options. One question's
+  // JSON on stdin or --file, as question edit takes it.
+  rpc ReviseQuestion(ReviseQuestionRequest) returns (Question) {
+    option (command) = {
+      name: "question revise"
+      session: true
+      input: {
+        field: "prompt"
+        hook: "RevisedPrompt"
+      }
+      format: "#{{.id}}  {{state .state}}  rev={{.revision}}  {{with .prompt}}{{.question}}{{end}}{{with .reminder}}\n{{.}}{{end}}"
+    };
+  }
+  // Return an answered, dismissed or handled question to the user, open
+  // again at the top of their order, its answer cleared: the user does
+  // this in the cockpit; an agent only when the user asks.
+  rpc ReopenQuestion(ReopenQuestionRequest) returns (Question) {
+    option (command) = {
+      name: "question reopen"
+      session: true
+      format: "#{{.id}}  {{state .state}}  rev={{.revision}}{{with .reminder}}\n{{.}}{{end}}"
+    };
+  }
+  // Move an open question in the user's order.
+  rpc MoveQuestion(MoveQuestionRequest) returns (Question) {
+    option (command) = {
+      name: "question move"
+      session: true
+      format: "#{{.id}}  rank={{.rank}}  rev={{.revision}}{{with .reminder}}\n{{.}}{{end}}"
+    };
+  }
+  // Acknowledge answers you have read and acted on: they leave the outbox,
+  // handled; all of them or, if one is not in the outbox, none.
+  rpc AckQuestions(AckQuestionsRequest) returns (AckQuestionsResponse) {
+    option (command) = {
+      name: "question ack"
+      session: true
+      format: "{{range .questions}}#{{.id}}  {{state .state}}  rev={{.revision}}\n{{end}}{{with .reminder}}{{.}}{{end}}"
+    };
+  }
+}
+
+// What an agent asks: what AskUserQuestion takes as one of its questions,
+// so JSON written for that tool is a question here too, and a little more.
+message Prompt {
+  // The question, complete and ending in a question mark: its title, one
+  // short sentence. Markdown, inline only (`code`, **bold**, links).
+  string question = 1;
+  // A short label for it, at most 12 characters: "Auth method".
+  string header = 2;
+  // Two to four choices.
+  repeated PromptOption options = 3;
+  // The user may pick several options.
+  bool multi_select = 4;
+  // What the user needs to know to answer, beyond the title: the setting,
+  // what was found, what is at stake. Markdown; optional.
+  string body = 5;
+}
+
+message PromptOption {
+  // What the user picks, 1-5 words. Markdown, inline only. Delivered
+  // verbatim; mark a recommended option with recommended = true rather
+  // than appending "(Recommended)" to the label.
+  string label = 1;
+  // What picking it means. Markdown.
+  string description = 2;
+  // Shown beside the option when it is focused: a mockup, code, a diagram.
+  // Shown as it is, in a fixed-width font.
+  string preview = 3;
+  // The agent took this answer and went ahead with it, which an agent
+  // should do rather than wait: it is what is built now. On a question
+  // that takes one option, one option at most.
+  bool implemented = 4;
+  // The agent recommends this way forward, which is not built yet. On a
+  // question that takes one option, one option at most, and never one
+  // that is implemented.
+  bool recommended = 5;
+}
+
+enum QuestionState {
+  QUESTION_STATE_UNSPECIFIED = 0;
+  // Waiting for the user.
+  QUESTION_STATE_OPEN = 1;
+  // The user answered it: in the outbox.
+  QUESTION_STATE_ANSWERED = 2;
+  // The user declined to answer it: in the outbox.
+  QUESTION_STATE_DISMISSED = 3;
+  // An agent acknowledged its answer or dismissal.
+  QUESTION_STATE_HANDLED = 4;
+  // A session took it off the list.
+  QUESTION_STATE_DELETED = 5;
+}
+
+// The user's answer.
+message Answer {
+  // The label of an option the user picked; one at most unless the
+  // question is multi_select.
+  repeated string picked = 1 [(param) = {name: "pick"}];
+  // What the user wrote instead of picking, or besides: AskUserQuestion's
+  // "Other".
+  string other = 2;
+  // A note on the answer.
+  string notes = 3;
+}
+
+// Who changed a question, and when: an agent's session, or the user (no
+// session), and the machine either called from.
+message Stamp {
+  int64 at = 1;
+  string session = 2;
+  string host = 3;
+  // Why, when it says: a dismissal's or a deletion's reason.
+  string reason = 4;
+}
+
+// Where the asking agent was: its checkout, when it was in one, so an answer
+// that comes days later can be read in the setting it was asked in.
+message AskedFrom {
+  // The directory it asked from: its checkout's top, in one.
+  string dir = 1;
+  // The checkout's origin.
+  string remote = 2;
+  string branch = 3;
+  // The commit checked out.
+  string head = 4;
+  // How many files differ from it (git status --porcelain), and the first
+  // few of those lines.
+  int32 dirty_files = 5;
+  repeated string dirty = 6;
+}
+
+message Question {
+  // A number, counting up from 1 in the order questions were asked.
+  int32 id = 1;
+  Prompt prompt = 2;
+  QuestionState state = 3;
+  // Its place in the user's order: lower comes first.
+  int64 rank = 4;
+  // Set once answered; still there once handled.
+  Answer answer = 5;
+  Stamp asked = 6;
+  AskedFrom asked_from = 7;
+  // The last edit; unset if it was never edited.
+  Stamp edited = 8;
+  Stamp answered = 9;
+  Stamp dismissed = 10;
+  Stamp handled = 11;
+  Stamp deleted = 12;
+  // Its last change, other than a move in the user's order.
+  int64 updated_at = 13;
+  // Every change to it, oldest first; only from GetQuestion.
+  repeated QuestionChange history = 14;
+  // The project it is about: its asking session's.
+  string project = 15;
+  // The repo of the project it is about, its canonical remote; empty for
+  // the project as a whole.
+  string repo = 16;
+  // Monotonic revision, incremented on every change. Pass as --if-revision
+  // on edits, answers, dismissals or deletes to avoid clobbering concurrent writes.
+  int64 revision = 17;
+  // Reminder for the agent: answers come in through hotbed poll. The
+  // controller sets it on every QuestionService response, never on a
+  // question inside another message.
+  optional string reminder = 18;
+}
+
+// One change to a question, as its history keeps it.
+message QuestionChange {
+  int64 seq = 1;
+  // asked, edited, moved, answered, dismissed, handled, reopened, deleted
+  string what = 2;
+  Stamp by = 3;
+  // The question as the change left it, without its history.
+  Question question = 4;
+}
+
+message AddQuestionsRequest {
+  // One to four, as AskUserQuestion takes them.
+  repeated Prompt questions = 1;
+  // The asking session.
+  string session_id = 2 [(param) = {
+    hidden: true
+    default: "session"
+  }];
+  AskedFrom asked_from = 3 [(param) = {
+    hidden: true
+    hook: "AskedFrom"
+  }];
+  // The repo of the session's project they are about, as a git remote in
+  // any form (default: the checkout's asked from, if the project holds it,
+  // or else the project as a whole).
+  string repo = 4;
+  // The questions record decisions the asking agent already took: each
+  // marks what it decided as implemented, and is kept answered with those
+  // options, by the asking session, and handled, never waiting in the
+  // outbox. The user reopens one to overturn it.
+  bool answered = 5;
+}
+
+message AddQuestionsResponse {
+  repeated Question questions = 1;
+  // Reminder for the agent: answers come in through hotbed poll. The
+  // controller sets it on every QuestionService response, never on a
+  // question inside another message.
+  optional string reminder = 2;
+}
+
+message EditQuestionRequest {
+  // The question's number.
+  int32 id = 1 [(param) = {positional: true}];
+  Prompt prompt = 2;
+  string session_id = 3 [(param) = {
+    hidden: true
+    default: "session"
+  }];
+  // Refuse with CONFLICT unless the question is at this revision.
+  int64 if_revision = 4 [(param) = {name: "if-revision"}];
+}
+
+message DeleteQuestionRequest {
+  // The question's number.
+  int32 id = 1 [(param) = {positional: true}];
+  string session_id = 2 [(param) = {
+    hidden: true
+    default: "session"
+  }];
+  // Why it is no longer needed.
+  string reason = 3;
+  // Refuse with CONFLICT unless the question is at this revision.
+  int64 if_revision = 4 [(param) = {name: "if-revision"}];
+}
+
+enum QuestionOrder {
+  // Newest first.
+  QUESTION_ORDER_UNSPECIFIED = 0;
+  QUESTION_ORDER_NEWEST = 1;
+  QUESTION_ORDER_OLDEST = 2;
+  // The most recently changed first.
+  QUESTION_ORDER_UPDATED = 3;
+  // The user's order.
+  QUESTION_ORDER_RANK = 4;
+}
+
+message ListQuestionsRequest {
+  // Only questions in this state (repeatable); none means every state but
+  // deleted.
+  repeated QuestionState states = 1 [(param) = {
+    name: "state"
+    every: "all"
+  }];
+  // newest or oldest asked first, the most recently changed (updated)
+  // first, or the user's order (rank).
+  QuestionOrder order = 2 [(param) = {name: "sort"}];
+  // Only the questions this session asked.
+  string asked_by = 3;
+  // At most this many; 0 for all.
+  int32 limit = 4;
+  // Whose questions: one project's or every project's.
+  oneof scope {
+    // Only this project's questions (default: HOTBED_PROJECT, else the
+    // session's project, else the one holding this checkout's repo).
+    string project = 5 [(param) = {
+      short: "p"
+      default: "env:HOTBED_PROJECT"
+    }];
+    // Every project's questions.
+    bool all_projects = 6;
+  }
+  // The session whose project's questions these are, when scope names no
+  // project.
+  string session_id = 7 [(param) = {
+    hidden: true
+    default: "session"
+  }];
+  // The canonical remote of the caller's checkout (github.com/semistrict/hotbed):
+  // when neither scope nor session_id says whose, the project that holds it,
+  // if just one does.
+  string remote = 8 [(param) = {
+    hidden: true
+    hook: "ListedRemote"
+  }];
+}
+
+message ListQuestionsResponse {
+  repeated Question questions = 1;
+  // How many matched, limit aside.
+  int32 total = 2;
+  // Reminder for the agent: answers come in through hotbed poll. The
+  // controller sets it on every QuestionService response, never on a
+  // question inside another message.
+  optional string reminder = 3;
+}
+
+message ListQuestionProjectsRequest {}
+
+message ListQuestionProjectsResponse {
+  repeated QuestionProject projects = 1;
+  // Reminder for the agent: answers come in through hotbed poll. The
+  // controller sets it on every QuestionService response, never on a
+  // question inside another message.
+  optional string reminder = 2;
+}
+
+// A project's questions, counted.
+message QuestionProject {
+  string name = 1;
+  // Waiting for the user.
+  int32 open = 2;
+  // Answered or dismissed, waiting for an agent.
+  int32 outbox = 3;
+  // Every question, deleted ones too.
+  int32 total = 4;
+}
+
+message GetQuestionRequest {
+  // The question's number.
+  int32 id = 1 [(param) = {positional: true}];
+}
+
+// A change the user makes is the user's: a session merely bound where the
+// CLI runs, which may long have ended, is not recorded. An agent passing
+// the change on names its session (-s, HOTBED_SESSION), which must be
+// live.
+
+message AnswerQuestionRequest {
+  // The question's number.
+  int32 id = 1 [(param) = {positional: true}];
+  Answer answer = 2 [(param) = {flatten: true}];
+  // Set when an agent passes the user's answer on; empty for the user.
+  string session_id = 3 [(param) = {
+    hidden: true
+    default: "named_session"
+  }];
+  // Refuse with CONFLICT unless the question is at this revision.
+  int64 if_revision = 4 [(param) = {name: "if-revision"}];
+}
+
+message DismissQuestionRequest {
+  // The question's number.
+  int32 id = 1 [(param) = {positional: true}];
+  // Why it gets no answer.
+  string reason = 2;
+  string session_id = 3 [(param) = {
+    hidden: true
+    default: "named_session"
+  }];
+  // Refuse with CONFLICT unless the question is at this revision.
+  int64 if_revision = 4 [(param) = {name: "if-revision"}];
+}
+
+message ReviseQuestionRequest {
+  // The question's number.
+  int32 id = 1 [(param) = {positional: true}];
+  Prompt prompt = 2;
+  // Set when an agent passes the user's words on; empty for the user.
+  string session_id = 3 [(param) = {
+    hidden: true
+    default: "named_session"
+  }];
+  // Refuse with CONFLICT unless the question is at this revision.
+  int64 if_revision = 4 [(param) = {name: "if-revision"}];
+}
+
+message ReopenQuestionRequest {
+  // The question's number.
+  int32 id = 1 [(param) = {positional: true}];
+  // Set when an agent reopens it at the user's word; empty for the user.
+  string session_id = 2 [(param) = {
+    hidden: true
+    default: "named_session"
+  }];
+}
+
+message MoveQuestionRequest {
+  // The question's number.
+  int32 id = 1 [(param) = {positional: true}];
+  // Where it goes, within its project's open questions.
+  oneof place {
+    // Just before this open question.
+    int32 before = 2;
+    // First.
+    bool first = 4;
+    // Last.
+    bool last = 5;
+  }
+  string session_id = 3 [(param) = {
+    hidden: true
+    default: "named_session"
+  }];
+}
+
+message AckQuestionsRequest {
+  // The questions whose answers you read.
+  repeated int32 ids = 1 [(param) = {
+    positional: true
+    name: "id"
+  }];
+  string session_id = 2 [(param) = {
+    hidden: true
+    default: "session"
+  }];
+}
+
+message AckQuestionsResponse {
+  repeated Question questions = 1;
+  // Reminder for the agent: answers come in through hotbed poll. The
+  // controller sets it on every QuestionService response, never on a
+  // question inside another message.
+  optional string reminder = 2;
+}
+
+// ---- reviews ----------------------------------------------------------------
+
+// Reviews of an exact version by reviewer agents. A session (the parent)
+// requests one; a reviewer session claims it, reports findings and finishes
+// it. The parent reads the findings, accepts or dismisses each, and sends
+// the user the review's page in the cockpit, where the user responds to
+// findings: a quick response, a comment, or both. The parent reads those
+// responses. Every change and response is kept, with when and which session
+// (or the user) made it.
+service ReviewService {
+  // RequestReview asks for a review of a version, in the requesting
+  // session's project.
+  rpc RequestReview(RequestReviewRequest) returns (Review);
+  // ListReviews lists a project's reviews, or every project's, newest first,
+  // without their findings, events and reports.
+  rpc ListReviews(ListReviewsRequest) returns (ListReviewsResponse) {
+    option idempotency_level = IDEMPOTENT;
+  }
+  // GetReview is a review with its findings and every event.
+  rpc GetReview(GetReviewRequest) returns (Review) {
+    option idempotency_level = IDEMPOTENT;
+  }
+  // StartReview claims a requested review for the calling session, its
+  // reviewer.
+  rpc StartReview(StartReviewRequest) returns (Review);
+  // AddFindings adds the reviewer's findings, as ReportFindings reports
+  // them, with locations besides, or the report that ends with them; none
+  // says it found nothing. It may be called more than once.
+  rpc AddFindings(AddFindingsRequest) returns (AddFindingsResponse);
+  // FinishReview ends a review: done, with the reviewer's summary, or
+  // failed, with why.
+  rpc FinishReview(FinishReviewRequest) returns (Review);
+  // CancelReview withdraws a review that has not ended.
+  rpc CancelReview(CancelReviewRequest) returns (Review);
+  // DecideFindings accepts or dismisses findings, marks them fixed (with
+  // the commit) or invalid (with evidence), or opens them again. A fixed
+  // finding is handled: it takes no more responses.
+  rpc DecideFindings(DecideFindingsRequest) returns (DecideFindingsResponse);
+  // Respond answers a finding, or the review as a whole: a quick response,
+  // a comment, or both.
+  rpc Respond(RespondRequest) returns (ReviewEvent);
+  // ListResponses lists the responses to a review after a cursor.
+  rpc ListResponses(ListResponsesRequest) returns (ListResponsesResponse) {
+    option idempotency_level = IDEMPOTENT;
+  }
+}
+
+enum ReviewState {
+  REVIEW_STATE_UNSPECIFIED = 0;
+  // Waiting for a reviewer.
+  REVIEW_STATE_REQUESTED = 1;
+  // A reviewer has claimed it and reports findings.
+  REVIEW_STATE_IN_PROGRESS = 2;
+  // The reviewer finished it.
+  REVIEW_STATE_DONE = 3;
+  // The reviewer could not finish it.
+  REVIEW_STATE_FAILED = 4;
+  // Withdrawn before it ended.
+  REVIEW_STATE_CANCELLED = 5;
+}
+
+// How much a finding matters, as ReportFindings grades it.
+enum FindingSeverity {
+  FINDING_SEVERITY_UNSPECIFIED = 0;
+  // A bug the change adds or makes worse.
+  FINDING_SEVERITY_IMPORTANT = 1;
+  // A bug that was there before the change.
+  FINDING_SEVERITY_PRE_EXISTING = 2;
+  // A minor issue.
+  FINDING_SEVERITY_NIT = 3;
+}
+
+// How sure the reviewer is, as ReportFindings says it.
+enum FindingVerdict {
+  // Not verified.
+  FINDING_VERDICT_UNSPECIFIED = 0;
+  FINDING_VERDICT_CONFIRMED = 1;
+  FINDING_VERDICT_PLAUSIBLE = 2;
+}
+
+// What the parent made of a finding.
+enum FindingDecision {
+  FINDING_DECISION_UNSPECIFIED = 0;
+  // Not decided yet.
+  FINDING_DECISION_OPEN = 1;
+  // To act on.
+  FINDING_DECISION_ACCEPTED = 2;
+  // Not to act on.
+  FINDING_DECISION_DISMISSED = 3;
+  // Acted on: fixed, as Finding.fix says. Handled: it takes no more
+  // responses.
+  FINDING_DECISION_FIXED = 4;
+  // Not a real defect, as Finding.evidence shows. The user may still
+  // respond, to dispute it.
+  FINDING_DECISION_INVALID = 5;
+}
+
+// A response the user can give a finding with one click.
+enum QuickResponse {
+  QUICK_RESPONSE_UNSPECIFIED = 0;
+  // Check that it is real.
+  QUICK_RESPONSE_VERIFY = 1;
+  // Check that it is real, and fix it if it is.
+  QUICK_RESPONSE_FIX_IF_VERIFIED = 2;
+  // Leave it.
+  QUICK_RESPONSE_WONT_FIX = 3;
+}
+
+// A place in the reviewed version a finding is about.
+message Location {
+  // Relative to the repo's root.
+  string path = 1;
+  // 1-based; 0 for the file as a whole.
+  int32 start_line = 2;
+  // The last line, when it spans several.
+  int32 end_line = 3;
+  // The lines themselves, as the reviewer saw them, so the cockpit can show
+  // them without the code.
+  string excerpt = 4;
+}
+
+// A finding as a reviewer reports it: ReportFindings' fields, so the JSON
+// written for that tool is a finding here, with any number of locations
+// besides (file and line, when set, are its first).
+message ReportedFinding {
+  string file = 1;
+  int32 line = 2;
+  // The defect.
+  string summary = 3;
+  // Concrete inputs or state, and the wrong output or crash.
+  string failure_scenario = 4;
+  // A short kebab-case kind: correctness, efficiency, test-coverage.
+  string category = 5;
+  // important, pre_existing or nit.
+  string severity = 6;
+  // The claim alone, at most 60 characters.
+  string short_summary = 7;
+  // CONFIRMED or PLAUSIBLE; empty when not verified.
+  string verdict = 8;
+  repeated Location locations = 9;
+}
+
+message Finding {
+  // Counting up from 1 across every review.
+  int32 id = 1;
+  int32 review_id = 2;
+  string title = 3;
+  string summary = 4;
+  string failure_scenario = 5;
+  string category = 6;
+  FindingSeverity severity = 7;
+  FindingVerdict verdict = 8;
+  repeated Location locations = 9;
+  FindingDecision decision = 10;
+  // Who decided, when, and why; unset while open.
+  Stamp decided = 11;
+  Stamp found = 12;
+  // The latest quick response to it, if any, which says what the user wants.
+  QuickResponse quick = 13;
+  // How many responses it has.
+  int32 responses = 14;
+  // How it was fixed, when fixed.
+  Fix fix = 15;
+  // Why it is not a real defect, when invalid: Markdown, which may cite
+  // commits, files and lines of the repo.
+  string evidence = 16;
+}
+
+// How a finding was fixed.
+message Fix {
+  // The full commit that fixed it: 40 or 64 hex digits.
+  string commit = 1;
+  // Where, in that commit; optional.
+  repeated Location locations = 2;
+  // What the fixing agent says of the fix, Markdown; optional.
+  string notes = 3;
+}
+
+message Review {
+  int32 id = 1;
+  // The requesting session's.
+  string project = 2;
+  // The reviewed repo's canonical remote; empty outside one.
+  string repo = 3;
+  string title = 4;
+  // What the reviewer should look at, or for.
+  string instructions = 5;
+  // The version: changes from base (empty: the whole tree) to head, exact
+  // commits. A snapshot of a dirty worktree is a commit too.
+  string base = 6;
+  string head = 7;
+  // The branch head was on, for people.
+  string branch = 8;
+  // head is a snapshot of uncommitted changes on top of this commit.
+  string snapshot_of = 9;
+  ReviewState state = 10;
+  // The reviewer's summary when done; why it failed or was cancelled.
+  string summary = 11;
+  Stamp requested = 12;
+  // Claimed by its reviewer session.
+  Stamp started = 13;
+  // Ended: done, failed or cancelled.
+  Stamp ended = 14;
+  int64 updated_at = 15;
+  // From GetReview, oldest first.
+  repeated Finding findings = 16;
+  repeated ReviewEvent events = 17;
+  // Counts, set when listed: findings by severity, still open, and responses.
+  int32 important = 18;
+  int32 pre_existing = 19;
+  int32 nits = 20;
+  int32 open = 21;
+  int32 responses = 22;
+  // The reviewer's whole report, Markdown, when it gave its findings as one
+  // (AddFindingsRequest.report); the latest, if it gave several.
+  string report = 23;
+  // The exact model that did the review, as its provider names it
+  // (claude-opus-5-5, gpt-5.5-codex), from StartReviewRequest; empty for a
+  // review started before reviews kept it.
+  string model = 24;
+}
+
+// Something that happened to a review: a change, or a response.
+message ReviewEvent {
+  // The cursor: counting up across every review.
+  int64 seq = 1;
+  int32 review_id = 2;
+  // The finding it is about; 0 for the review as a whole.
+  int32 finding_id = 3;
+  // requested, started, found, found none, reported, finished, failed,
+  // cancelled, accepted, dismissed, fixed, invalid, reopened, responded
+  string what = 4;
+  Stamp by = 5;
+  // A response's quick response, if it gave one.
+  QuickResponse quick = 6;
+  // A response's comment, a decision's or an end's reason.
+  string text = 7;
+}
+
+message RequestReviewRequest {
+  string session_id = 1;
+  string title = 2;
+  string instructions = 3;
+  // The repo's remote, in any form; canonical when stored.
+  string repo = 4;
+  string base = 5;
+  string head = 6;
+  string branch = 7;
+  string snapshot_of = 8;
+}
+
+message ListReviewsRequest {
+  // Whose reviews: one project's or every project's; naming neither, the
+  // project of the session session_id names.
+  oneof scope {
+    string project = 1;
+    bool all_projects = 4;
+  }
+  // The session whose project's reviews these are, when scope names no
+  // project.
+  string session_id = 5;
+  // The canonical remote of the caller's checkout (github.com/semistrict/hotbed):
+  // when neither scope nor session_id says whose, the project that holds it,
+  // if just one does.
+  string remote = 6;
+  // Only reviews in these states; none for all.
+  repeated ReviewState states = 2;
+  // At most this many, newest first; 0 for all.
+  int32 limit = 3;
+}
+
+message ListReviewsResponse {
+  repeated Review reviews = 1;
+}
+
+message GetReviewRequest {
+  int32 id = 1;
+}
+
+message StartReviewRequest {
+  int32 id = 1;
+  string session_id = 2;
+  // The exact model doing the review, as its provider names it
+  // (claude-opus-5-5, gpt-5.5-codex), not its family; required.
+  string model = 3;
+}
+
+message AddFindingsRequest {
+  int32 review_id = 1;
+  string session_id = 2;
+  // None says the reviewer found nothing, which the review's events keep.
+  repeated ReportedFinding findings = 3;
+  // Instead of findings, the reviewer's whole report (Markdown), which the
+  // review keeps: its findings are the last fenced block opened with
+  // ```json hotbed-findings, holding {"findings": [...]} as findings here.
+  // For a reviewer that cannot call hotbed itself, such as one in a
+  // network-isolated sandbox, whose caller passes its report on.
+  string report = 4;
+}
+
+message AddFindingsResponse {
+  repeated Finding findings = 1;
+}
+
+message FinishReviewRequest {
+  int32 id = 1;
+  string session_id = 2;
+  // The summary when done; why, when failed.
+  string summary = 3;
+  bool failed = 4;
+}
+
+message CancelReviewRequest {
+  int32 id = 1;
+  string session_id = 2;
+  string reason = 3;
+}
+
+message DecideFindingsRequest {
+  int32 review_id = 1;
+  repeated int32 finding_ids = 2;
+  FindingDecision decision = 3;
+  string reason = 4;
+  string session_id = 5;
+  // Fixed: how; given only then.
+  Fix fix = 6;
+  // Invalid: why it is not a real defect (Markdown); given only then.
+  string evidence = 7;
+}
+
+message DecideFindingsResponse {
+  repeated Finding findings = 1;
+}
+
+message RespondRequest {
+  int32 review_id = 1;
+  // 0 for the review as a whole.
+  int32 finding_id = 2;
+  QuickResponse quick = 3;
+  string text = 4;
+  // Set when an agent responds; empty for the user.
+  string session_id = 5;
+  // When > 0, refuse with CONFLICT if the review already has events after this seq.
+  int64 after = 6;
+}
+
+message ListResponsesRequest {
+  int32 review_id = 1;
+  // Events after this cursor (0 for all).
+  int64 after = 2;
+}
+
+message ListResponsesResponse {
+  repeated ReviewEvent responses = 1;
+  // Pass as after for what comes next.
+  int64 cursor = 2;
+}
+
+// ---- git authentication -----------------------------------------------------
+
+// Centralized GitHub authentication held on the controller and delegated to
+// every worker, session, and command (git HTTPS credential helper, git SSH
+// protocol proxy, and worker gh REST/GraphQL proxy). Workers store no GitHub
+// credentials of their own.
+service GitAuthService {
+  // Start a GitHub OAuth Device Flow on the controller and return the one-time
+  // user code and verification URL (use with `hotbed auth login --login-id`,
+  // or run `hotbed auth login` directly for the interactive flow).
+  rpc StartGitHubLogin(StartGitHubLoginRequest) returns (GitHubLoginChallenge) {
+    option (command) = {
+      name: "auth login-start"
+      format: "code={{.userCode}}  url={{.verificationUri}}  login={{.loginId}}"
+    };
+  }
+  // Log in to GitHub on the controller via OAuth Device Flow (like `gh auth
+  // login`) and store the resulting user token centrally for all workers,
+  // sessions, and commands.
+  rpc CompleteGitHubLogin(CompleteGitHubLoginRequest) returns (GitCredential) {
+    option (command) = {
+      name: "auth login"
+      before: ["StartGitHubLoginInteractive"]
+      waits: true
+      format: "{{.name}}  {{.host}}{{if .username}}  user={{.username}}{{end}}{{if .refreshable}}  refreshable{{end}}  repos={{if .repos}}{{join \",\" .repos}}{{else}}*{{end}}"
+    };
+  }
+  // Add or replace a centralized git token on the controller (for headless or
+  // CI setup; prefer `hotbed auth login` for interactive OAuth login). Secrets
+  // are stored write-only on the controller and never returned by list calls.
+  rpc PutGitCredential(PutGitCredentialRequest) returns (GitCredential) {
+    option (command) = {
+      name: "auth set"
+      before: ["LoadGitCredentialSecrets"]
+      format: "{{.name}}  {{.host}}{{if .username}}  user={{.username}}{{end}}  repos={{if .repos}}{{join \",\" .repos}}{{else}}*{{end}}"
+    };
+  }
+  // List centralized git credentials configured on the controller (metadata
+  // only; secrets are never returned).
+  rpc ListGitCredentials(ListGitCredentialsRequest) returns (ListGitCredentialsResponse) {
+    option idempotency_level = IDEMPOTENT;
+    option (command) = {
+      name: "auth ls"
+      read_only: true
+      format: "{{range .credentials}}{{pad 16 .name}}  {{pad 16 .host}}  {{pad 16 .username}}  repos={{if .repos}}{{join \",\" .repos}}{{else}}*{{end}}{{if .refreshable}}  refreshable{{end}}\n{{end}}"
+    };
+  }
+  // Delete a centralized git credential from the controller.
+  rpc DeleteGitCredential(DeleteGitCredentialRequest) returns (DeleteGitCredentialResponse) {
+    option (command) = {
+      name: "auth rm"
+      destructive: true
+      format: "deleted {{.name}}"
+    };
+  }
+  // Mint a short-lived git access token for a repository URL or canonical
+  // remote (e.g. https://github.com/semistrict/hotbed.git), refreshing an
+  // expiring OAuth token automatically when needed.
+  rpc MintGitToken(MintGitTokenRequest) returns (GitToken) {
+    option idempotency_level = IDEMPOTENT;
+    option (command) = {
+      name: "auth token"
+      read_only: true
+      format: "{{.host}}/{{.repository}}  credential={{.credential}}  expires={{.expiresAt}}"
+    };
+  }
+  // Proxy a GitHub REST or GraphQL API request through the controller using
+  // its stored credentials so worker commands (`gh`) never need raw tokens.
+  rpc ProxyGitHubAPI(ProxyGitHubAPIRequest) returns (ProxyGitHubAPIResponse) {
+    option (command) = {
+      name: "auth api"
+      format: "{{.body}}"
+    };
+  }
+}
+
+// Metadata of a centralized git credential stored on the controller. Secrets
+// (access tokens and refresh tokens) are never included.
+message GitCredential {
+  // Unique credential name (lowercase letters, digits, dashes), e.g. github.
+  string name = 1;
+  // Git host, lowercase, e.g. github.com.
+  string host = 2;
+  // Optional allowlist of "owner/repo" or "owner/*" patterns; empty matches any
+  // repository on host.
+  repeated string repos = 3;
+  // Authenticated GitHub login (populated by OAuth login or --username).
+  string username = 4;
+  // Optional GitHub REST/GraphQL API base URL; empty defaults to
+  // https://api.github.com for github.com or https://<host>/api/v3 otherwise.
+  string api_url = 5;
+  // Optional GitHub OAuth base URL (default https://<host>).
+  string oauth_url = 6;
+  // Whether this credential holds an OAuth refresh token for auto-refresh.
+  bool refreshable = 7;
+  // When the current access token expires (unix ms), 0 when non-expiring.
+  int64 expires_at = 8;
+  int64 updated_at = 9;
+  string updated_by = 10;
+}
+
+message StartGitHubLoginRequest {
+  // Credential name to save on completion (default "github").
+  string name = 1 [(param) = {default: "'github'"}];
+  // GitHub host (default "github.com").
+  string host = 2 [(param) = {default: "'github.com'"}];
+  // Optional repo patterns ("owner/repo" or "owner/*") this credential covers.
+  repeated string repos = 3 [(param) = {name: "repo"}];
+  // Additional OAuth scopes beyond repo, read:org, gist.
+  repeated string scopes = 4 [(param) = {name: "scope"}];
+  // OAuth App client ID override (default: Hotbed's public OAuth App).
+  string client_id = 5 [(param) = {name: "client-id"}];
+  // Optional GitHub REST API base URL override.
+  string api_url = 6 [(param) = {name: "api-url"}];
+  // Optional GitHub OAuth base URL override (default https://<host>).
+  string oauth_url = 7 [(param) = {name: "oauth-url"}];
+}
+
+message GitHubLoginChallenge {
+  // Opaque login handle to pass to CompleteGitHubLogin.
+  string login_id = 1;
+  // One-time user code to enter at verification_uri (e.g. ABCD-1234).
+  string user_code = 2;
+  // URL where the user authorizes Hotbed (e.g. https://github.com/login/device).
+  string verification_uri = 3;
+  // Seconds until the device code expires.
+  int32 expires_in = 4;
+  // Minimum polling interval in seconds.
+  int32 interval = 5;
+}
+
+message CompleteGitHubLoginRequest {
+  // Pending login handle from `auth login-start` (omit for interactive login).
+  string login_id = 1 [(param) = {name: "login-id"}];
+  // Credential name to save (local: used when starting interactive login).
+  string name = 2 [(param) = {
+    default: "'github'"
+    local: true
+  }];
+  // GitHub host (local: used when starting interactive login).
+  string host = 3 [(param) = {
+    default: "'github.com'"
+    local: true
+  }];
+  // Optional repo patterns (local: used when starting interactive login).
+  repeated string repos = 4 [(param) = {
+    name: "repo"
+    local: true
+  }];
+  // Additional OAuth scopes (local: used when starting interactive login).
+  repeated string scopes = 5 [(param) = {
+    name: "scope"
+    local: true
+  }];
+  // OAuth App client ID override (local: used when starting interactive login).
+  string client_id = 6 [(param) = {
+    name: "client-id"
+    local: true
+  }];
+  // Optional API base URL override (local: used when starting interactive login).
+  string api_url = 7 [(param) = {
+    name: "api-url"
+    local: true
+  }];
+  // Optional OAuth base URL override (local: used when starting interactive login).
+  string oauth_url = 8 [(param) = {
+    name: "oauth-url"
+    local: true
+  }];
+  // Open the verification URL in your browser automatically.
+  bool web = 9 [(param) = {
+    short: "w"
+    local: true
+  }];
+}
+
+message PutGitCredentialRequest {
+  // Unique credential name (lowercase letters, digits, dashes), e.g. github.
+  string name = 1 [(param) = {positional: true}];
+  // Git host (default github.com).
+  string host = 2 [(param) = {default: "'github.com'"}];
+  // Optional repo patterns ("owner/repo" or "owner/*") this credential covers;
+  // repeatable; omit for all repos on host.
+  repeated string repos = 3 [(param) = {name: "repo"}];
+  // Access token (prefer --token-file - to read from stdin).
+  string token = 4;
+  // Path to a file holding the token, or "-" to read from stdin.
+  string token_file = 5 [(param) = {
+    name: "token-file"
+    local: true
+  }];
+  // Optional GitHub login name for display in `auth ls` and `gh auth status`.
+  string username = 6;
+  // Optional GitHub REST/GraphQL API base URL override (default https://api.github.com).
+  string api_url = 7 [(param) = {name: "api-url"}];
+}
+
+message ListGitCredentialsRequest {
+  // Only credentials for this git host; empty for all.
+  string host = 1;
+}
+
+message ListGitCredentialsResponse {
+  repeated GitCredential credentials = 1;
+}
+
+message DeleteGitCredentialRequest {
+  // Name of the credential to delete.
+  string name = 1 [(param) = {positional: true}];
+}
+
+message DeleteGitCredentialResponse {
+  string name = 1;
+}
+
+message MintGitTokenRequest {
+  // Repository URL or canonical remote, e.g. https://github.com/semistrict/hotbed.git
+  // or github.com/semistrict/hotbed.
+  string repo = 1 [(param) = {positional: true}];
+}
+
+message GitToken {
+  string host = 1;
+  // Canonical "owner/repo" path on host.
+  string repository = 2;
+  // Username for HTTPS git authentication (e.g. "x-access-token").
+  string username = 3;
+  // Access token for HTTPS git authentication.
+  string token = 4;
+  // When this lease/token expires, unix milliseconds.
+  int64 expires_at = 5;
+  // Name of the controller credential that issued this token.
+  string credential = 6;
+}
+
+message ProxyGitHubAPIRequest {
+  // API path starting with "/", e.g. /user, /repos/semistrict/hotbed/pulls, or /graphql.
+  string path = 1 [(param) = {positional: true}];
+  // HTTP method (default GET, or POST when body is set).
+  string method = 2 [(param) = {short: "X"}];
+  // GitHub host (default github.com).
+  string host = 3 [(param) = {default: "'github.com'"}];
+  // Optional "owner/repo" hint for repo-scoped credential selection.
+  string repo = 4;
+  // Optional request body (e.g. JSON for POST/PATCH/GraphQL).
+  string body = 5;
+  // Additional request headers as "Key: Value" (Authorization/Cookie are ignored).
+  repeated string headers = 6 [(param) = {
+    name: "header"
+    short: "H"
+  }];
+}
+
+message ProxyGitHubAPIResponse {
+  int32 status_code = 1;
+  // Response headers as "Key: Value".
+  repeated string headers = 2;
+  string body = 3;
+}
+
+// ---- commands and tools -----------------------------------------------------
+//
+// An RPC that names a command is a command of the CLI (hotbed question ls)
+// and a tool of the MCP server (question_ls), made at run time from this
+// file's descriptors: its request's fields are the command's flags and
+// arguments and the tool's parameters, and comments are their help. A
+// field's default is an expression ("session", "named_session", "env:VAR",
+// or a literal matching the field's type); anything richer is a Go hook, a
+// method of the Hooks interface generated from these options (hotbedv1cli),
+// which the client implements.
+//
+// A field the command fixes takes that value; any other takes the value
+// given, else its default or hook's. A member of a oneof takes no default
+// while another member has a value.
+//
+// A request's local fields are the client's alone: commands and hooks read
+// them, and the client clears them before the call. The server refuses a
+// request that sets one.
+
+extend google.protobuf.ServiceOptions {
+  // Help for command groups declared in this service when it holds more than
+  // one group (such as "project", "repo", and "node" in ClusterService).
+  repeated GroupSpec group = 50000;
+}
+
+extend google.protobuf.MethodOptions {
+  // The commands an RPC is: usually one; more when each fixes some of its
+  // request's fields (question ls, question outbox).
+  repeated CommandSpec command = 50000;
+}
+
+extend google.protobuf.FieldOptions {
+  // How a request's field is given.
+  ParamSpec param = 50000;
+}
+
+message GroupSpec {
+  // The group's words, such as "project" or "repo".
+  string name = 1;
+  // One-line help for the group on the CLI and in generated docs.
+  string help = 2;
+}
+
+message CommandSpec {
+  // Its words, such as "question ls"; its MCP tool is them joined by "_".
+  string name = 1;
+  // Its help, when it is not the RPC's comment.
+  string help = 2;
+  // It acts as a session. The CLI takes -s/--session (default:
+  // HOTBED_SESSION, or the session bound to this T3 thread or git
+  // worktree); the MCP server is its session. Defaults read it as session
+  // and named_session.
+  bool session = 3;
+  reserved 4;
+  reserved "flags";
+  // Request fields it sets, each to a literal expression; they are not flags.
+  repeated FixedField fixed = 5;
+  // The request, or one field of it, is JSON: on the CLI, from stdin or
+  // --file; in MCP, its parameters.
+  InputSpec input = 6;
+  // Go hooks run before the call, which may change the request, and after
+  // it, which see the response too.
+  repeated string before = 7;
+  repeated string after = 8;
+  // The call waits, up to minutes, so it has no deadline.
+  bool waits = 9;
+  // For MCP: it changes nothing; it destroys something.
+  bool read_only = 10;
+  bool destructive = 11;
+  // Go text/template that renders the RPC's response protobuf message as
+  // plain text for the CLI (when neither --json nor --jq is given).
+  string format = 12;
+}
+
+message FixedField {
+  string field = 1;
+  // Literal value (or list of literals) matching the field's type.
+  string value = 2;
+}
+
+message InputSpec {
+  // The field the JSON is; empty for the whole request.
+  string field = 1;
+  // A Go hook that reads the JSON into it, when it is not simply its JSON.
+  string hook = 2;
+}
+
+message ParamSpec {
+  // Its flag's (and parameter's) name, when not the field's; dashes for
+  // underscores.
+  string name = 1;
+  // One letter: -p.
+  string short = 2;
+  // A positional argument, not a flag.
+  bool positional = 3;
+  reserved 4;
+  reserved "env";
+  // Its value when not given: "session", "named_session", "env:VAR", or a
+  // literal matching the field's type.
+  string default = 5;
+  // Its value when not given, from a Go hook, after the defaults.
+  string hook = 6;
+  // hotbed fills it in, by default or hook; it is never given.
+  bool hidden = 7;
+  // A message whose fields are each a flag (or parameter) of their own.
+  bool flatten = 8;
+  // A repeated enum's word for every value: --state all.
+  string every = 9;
+  // The client's alone, never sent: what only the client acts on, such as
+  // syncing a checkout before a run. Only a request's own field is local,
+  // and it is given, never hidden.
+  bool local = 10;
+  // The flag (or parameter) must be given.
+  bool required = 11;
+  // A positional argument that may be left out.
+  bool optional = 12;
+}

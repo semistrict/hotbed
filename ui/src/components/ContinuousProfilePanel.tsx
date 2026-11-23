@@ -1,0 +1,439 @@
+import { useQuery } from "@tanstack/react-query";
+import { useEffect, useState } from "react";
+import { api, type ProfileBucket, type ProfileFrame } from "../api";
+import { foldStack } from "../api/folded";
+import { duration, hhmmss } from "../lib/format";
+import { FlameGraph } from "./FlameGraph";
+import { Card, Empty } from "./ui/Card";
+
+type ProfileView = "flamegraph" | "top" | "folded";
+type RangeKey = "all" | "1m" | "5m" | "15m";
+
+const RANGE_MS: Record<RangeKey, number> = {
+  "1m": 60_000,
+  "5m": 5 * 60_000,
+  "15m": 15 * 60_000,
+  all: 0,
+};
+
+export interface ProfileTimeline {
+  buckets: readonly ProfileBucket[];
+  frames: readonly ProfileFrame[];
+}
+
+/**
+ * Choose the timeline buckets and matching frame table to display.
+ * When drilled into a single bucket, keep the full-range buckets paired with
+ * the exact `frames` table that indexed their `topFrame` IDs, because filtered
+ * responses renumber their own `frames` table.
+ */
+export function selectDisplayTimeline(
+  windowBucket: ProfileBucket | null,
+  rangeTimeline: ProfileTimeline | null,
+  current: ProfileTimeline | null,
+): ProfileTimeline {
+  if (windowBucket && rangeTimeline && rangeTimeline.buckets.length > 1) {
+    return rangeTimeline;
+  }
+  return current ?? { buckets: [], frames: [] };
+}
+
+export function resolveBucketTopFrame(bucket: ProfileBucket, frames: readonly ProfileFrame[]): string {
+  return frames[bucket.topFrame]?.name ?? "";
+}
+
+type ContinuousProfileProps =
+  | { id: string; node?: undefined; live: boolean }
+  | { node: string; id?: undefined; live: boolean };
+
+export function ContinuousProfilePanel({ id, node, live }: ContinuousProfileProps) {
+  const isNode = node !== undefined;
+  const targetKey = isNode ? node : id;
+
+  const [queryText, setQueryText] = useState("");
+  const [debouncedQuery, setDebouncedQuery] = useState("");
+  const [frameType, setFrameType] = useState("");
+  const [comm, setComm] = useState("");
+  const [range, setRange] = useState<RangeKey>("all");
+  const [windowBucket, setWindowBucket] = useState<ProfileBucket | null>(null);
+  const [rangeTimeline, setRangeTimeline] = useState<ProfileTimeline | null>(null);
+  const [view, setView] = useState<ProfileView>("flamegraph");
+  const [copied, setCopied] = useState(false);
+
+  // Debounce profile search text so typing does not fire a backend RPC per keystroke.
+  useEffect(() => {
+    const timer = setTimeout(() => setDebouncedQuery(queryText), 250);
+    return () => clearTimeout(timer);
+  }, [queryText]);
+
+  // Reset bucket selection when switching targets or range.
+  useEffect(() => {
+    setWindowBucket(null);
+    setRangeTimeline(null);
+  }, [targetKey, range]);
+
+  const profileQuery = useQuery({
+    queryKey: [isNode ? "node-profile" : "command-profile", targetKey, debouncedQuery, frameType, comm, isNode ? range : "all", windowBucket ? Number(windowBucket.t) : 0],
+    enabled: !isNode || live,
+    queryFn: () => {
+      const fromMs = windowBucket ? windowBucket.t : isNode && RANGE_MS[range] > 0 ? Date.now() - RANGE_MS[range] : undefined;
+      const toMs = windowBucket ? windowBucket.t + windowBucket.durationMs - 1n : undefined;
+      const q = {
+        query: debouncedQuery || undefined,
+        frameType: frameType || undefined,
+        comm: comm || undefined,
+        fromMs,
+        toMs,
+        limit: 200,
+      };
+      return isNode ? api.nodeProfile(node, q) : api.commandProfile(id, q);
+    },
+    refetchInterval: live ? 5000 : false,
+  });
+
+  const p = profileQuery.data;
+
+  // Preserve the full timeline bar and its matching frame table while narrowed
+  // to a single 5-second bucket so users can click between buckets without
+  // losing the timeline or resolving topFrame against renumbered frames.
+  useEffect(() => {
+    if (!windowBucket && p?.buckets) {
+      setRangeTimeline({ buckets: p.buckets, frames: p.frames });
+    }
+  }, [windowBucket, p]);
+
+  const displayTimeline = selectDisplayTimeline(
+    windowBucket,
+    rangeTimeline,
+    p ? { buckets: p.buckets, frames: p.frames } : null,
+  );
+  const displayBuckets = displayTimeline.buckets;
+  const userPct = p && p.matchedSamples > 0n ? Math.round((100 * Number(p.userSamples)) / Number(p.matchedSamples)) : 0;
+  const kernelPct = p && p.matchedSamples > 0n ? 100 - userPct : 0;
+
+  const foldedText = p?.stacks.map((s) => `${foldStack(s, p.frames)} ${s.samples}`).join("\n") ?? "";
+
+  const copyFolded = async () => {
+    if (!foldedText) return;
+    try {
+      await navigator.clipboard.writeText(foldedText + "\n");
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1800);
+    } catch {
+      // Clipboard may be blocked in non-HTTPS contexts.
+    }
+  };
+
+  const downloadFolded = () => {
+    if (!foldedText) return;
+    const blob = new Blob([foldedText + "\n"], { type: "text/plain;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `hotbed-${targetKey}-profile.folded`;
+    a.click();
+    URL.revokeObjectURL(url);
+  };
+
+  const statusBadge = p ? (
+    <div className="flex flex-wrap items-center gap-2 font-mono text-[10.5px]">
+      {p.active ? (
+        <span className="inline-flex items-center gap-1.5 rounded-full bg-ember-wash px-2.5 py-0.5 text-primary">
+          {p.live && <span className="live-dot h-1.5 w-1.5 rounded-full bg-primary" />}
+          {p.live ? "sampling" : "captured"} · {p.sampleHz} Hz
+        </span>
+      ) : (
+        <span className="rounded-full bg-muted px-2.5 py-0.5 text-muted-foreground">inactive</span>
+      )}
+      {p.totalSamples > 0n && (
+        <span className="num rounded-full border border-border px-2.5 py-0.5 text-muted-foreground">
+          {p.matchedSamples === p.totalSamples ? `${p.totalSamples.toLocaleString()} samples` : `${p.matchedSamples.toLocaleString()} / ${p.totalSamples.toLocaleString()} samples`}
+          {" · "}
+          {userPct}% user / {kernelPct}% kernel
+        </span>
+      )}
+      <button
+        type="button"
+        onClick={() => profileQuery.refetch()}
+        className="rounded-md border border-border px-2 py-0.5 text-muted-foreground hover:border-border-strong hover:text-foreground"
+      >
+        Refresh
+      </button>
+    </div>
+  ) : null;
+
+  return (
+    <Card
+      title="Continuous Profile"
+      sub={
+        isNode
+          ? "OpenTelemetry eBPF profiler · host-wide · rolling 30m ring buffer across all processes"
+          : "OpenTelemetry eBPF profiler · always on · queryable live and after exit"
+      }
+      right={statusBadge}
+    >
+      {isNode && !live ? (
+        <Empty>Node {node} is offline; host-wide continuous profiling is available while the worker is online.</Empty>
+      ) : (
+        <div className="space-y-4">
+          {/* Search, range (node mode), & view controls */}
+          <div className="flex flex-wrap items-center gap-2">
+            <input
+              type="search"
+              value={queryText}
+              onChange={(e) => setQueryText(e.target.value)}
+              placeholder="Filter functions, symbols, modules..."
+              aria-label="Filter profile functions"
+              className="min-w-[220px] flex-1 rounded-lg border border-border bg-background/70 px-3 py-1.5 font-mono text-[11.5px] text-foreground placeholder:text-faint focus:border-primary focus:outline-none"
+            />
+            {isNode && (
+              <div className="flex items-center rounded-lg border border-border bg-background/60 p-0.5 font-mono text-[11px]">
+                {(
+                  [
+                    ["1m", "1m"],
+                    ["5m", "5m"],
+                    ["15m", "15m"],
+                    ["all", "All (30m)"],
+                  ] as const
+                ).map(([k, label]) => (
+                  <button
+                    key={k}
+                    type="button"
+                    onClick={() => {
+                      setRange(k);
+                      setWindowBucket(null);
+                    }}
+                    className={`rounded-md px-2 py-1 transition-colors ${range === k && !windowBucket ? "bg-muted text-foreground" : "text-muted-foreground hover:text-foreground"}`}
+                  >
+                    {label}
+                  </button>
+                ))}
+              </div>
+            )}
+            <div className="flex items-center rounded-lg border border-border bg-background/60 p-0.5 font-mono text-[11px]">
+              {(
+                [
+                  ["flamegraph", "Flamegraph"],
+                  ["top", "Top functions"],
+                  ["folded", "Folded stacks"],
+                ] as const
+              ).map(([k, label]) => (
+                <button
+                  key={k}
+                  type="button"
+                  onClick={() => setView(k)}
+                  className={`rounded-md px-2.5 py-1 transition-colors ${view === k ? "bg-muted text-foreground" : "text-muted-foreground hover:text-foreground"}`}
+                >
+                  {label}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          {/* Runtime type & process comm filter chips */}
+          {p && (p.frameTypes.length > 0 || p.comms.length > 0) && (
+            <div className="flex flex-wrap items-center gap-2 text-[11px]">
+              {p.frameTypes.length > 0 && (
+                <div className="flex flex-wrap items-center gap-1">
+                  <span className="font-mono text-[10px] uppercase tracking-wider text-faint">Runtime:</span>
+                  <FilterChip active={frameType === ""} onClick={() => setFrameType("")}>
+                    all
+                  </FilterChip>
+                  {p.frameTypes.map((ft) => (
+                    <FilterChip key={ft} active={frameType === ft} onClick={() => setFrameType(frameType === ft ? "" : ft)}>
+                      {ft}
+                    </FilterChip>
+                  ))}
+                </div>
+              )}
+              {p.comms.length > 0 && (
+                <div className="flex flex-wrap items-center gap-1">
+                  <span className="ml-2 font-mono text-[10px] uppercase tracking-wider text-faint">Process:</span>
+                  <FilterChip active={comm === ""} onClick={() => setComm("")}>
+                    all
+                  </FilterChip>
+                  {p.comms.slice(0, isNode ? 12 : 10).map((c) => (
+                    <FilterChip key={c} active={comm === c} onClick={() => setComm(comm === c ? "" : c)}>
+                      {c}
+                    </FilterChip>
+                  ))}
+                </div>
+              )}
+              {windowBucket && (
+                <button
+                  type="button"
+                  onClick={() => setWindowBucket(null)}
+                  className="ml-auto rounded-md border border-primary/50 bg-ember-wash px-2 py-0.5 font-mono text-[10.5px] text-primary"
+                >
+                  Window {hhmmss(windowBucket.t)} (+{duration(Number(windowBucket.durationMs) / 1000)}) ×
+                </button>
+              )}
+            </div>
+          )}
+
+          {/* Timeline buckets: 5 s, longer for a long command */}
+          {displayBuckets.length > 1 && (
+            <div>
+              <div className="mb-1 flex items-center justify-between font-mono text-[10px] text-faint">
+                <span>SAMPLES OVER TIME ({duration(Number(displayBuckets[0]!.durationMs) / 1000)} buckets · click to filter)</span>
+                <span>
+                  {hhmmss(displayBuckets[0]!.t)} — {hhmmss(displayBuckets[displayBuckets.length - 1]!.t)}
+                </span>
+              </div>
+              <TimelineBuckets buckets={displayTimeline.buckets} frames={displayTimeline.frames} selected={windowBucket} onSelect={(b) => setWindowBucket(windowBucket?.t === b.t ? null : b)} />
+            </div>
+          )}
+
+          {/* Main view */}
+          {profileQuery.isLoading ? (
+            <div className="py-8 text-center font-mono text-[11.5px] text-muted-foreground">Loading OpenTelemetry eBPF profile...</div>
+          ) : profileQuery.error ? (
+            <div className="rounded-lg border border-critical/30 bg-[color-mix(in_oklab,var(--critical)_10%,transparent)] px-3 py-2 font-mono text-[11.5px] text-critical">
+              {String(profileQuery.error)}
+            </div>
+          ) : !p || p.totalSamples === 0n ? (
+            <Empty>
+              {p?.statusNote
+                ? `Continuous profiler: ${p.statusNote}`
+                : isNode
+                  ? "Waiting for host-wide eBPF stack samples (collected continuously at 20 Hz while processes execute on CPU)..."
+                  : live
+                    ? "Waiting for eBPF stack samples (collected continuously at 20 Hz while processes execute on CPU)..."
+                    : "No continuous eBPF samples were recorded for this command."}
+            </Empty>
+          ) : view === "flamegraph" ? (
+            <FlameGraph stacks={p.stacks} frames={p.frames} highlight={queryText} />
+          ) : view === "top" ? (
+            <div className="max-h-[420px] overflow-auto rounded-lg border border-border">
+              <table className="w-full border-collapse font-mono text-[11.5px]">
+                <thead className="sticky top-0 bg-card text-left text-[10px] uppercase tracking-wider text-muted-foreground">
+                  <tr className="border-b border-border">
+                    <th className="px-3 py-2 text-right">Self %</th>
+                    <th className="px-3 py-2 text-right">Total %</th>
+                    <th className="px-3 py-2 text-right">Samples</th>
+                    <th className="px-3 py-2">Runtime</th>
+                    <th className="px-3 py-2">Function</th>
+                    <th className="px-3 py-2">Module</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-border">
+                  {p.topFunctions.map((fn, i) => {
+                    const fr = p.frames[fn.frame];
+                    const name = fr?.name ?? "[unknown]";
+                    const module = fr?.module ?? "";
+                    const frameType = fr?.frameType ?? "";
+                    const sourceFile = fr?.sourceFile ?? "";
+                    const sourceLine = fr?.sourceLine ?? 0;
+                    return (
+                      <tr key={`${name}-${i}`} className="hover:bg-muted/40">
+                        <td className="num px-3 py-1.5 text-right text-primary">{fn.selfPct.toFixed(1)}%</td>
+                        <td className="num px-3 py-1.5 text-right text-foreground">{fn.totalPct.toFixed(1)}%</td>
+                        <td className="num px-3 py-1.5 text-right text-muted-foreground">
+                          {String(fn.selfSamples)} / {String(fn.totalSamples)}
+                        </td>
+                        <td className="px-3 py-1.5">
+                          <RuntimePill type={frameType} />
+                        </td>
+                        <td className="max-w-[380px] truncate px-3 py-1.5 text-foreground" title={name}>
+                          {name}
+                        </td>
+                        <td className="max-w-[160px] truncate px-3 py-1.5 text-muted-foreground" title={sourceFile ? `${sourceFile}:${sourceLine}` : module}>
+                          {module || "—"}
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          ) : (
+            <div className="space-y-2">
+              <div className="flex items-center justify-end gap-2">
+                <button
+                  type="button"
+                  onClick={copyFolded}
+                  className="rounded-md border border-border px-2.5 py-1 font-mono text-[11px] text-muted-foreground hover:border-border-strong hover:text-foreground"
+                >
+                  {copied ? "Copied" : "Copy folded"}
+                </button>
+                <button
+                  type="button"
+                  onClick={downloadFolded}
+                  className="rounded-md border border-border px-2.5 py-1 font-mono text-[11px] text-muted-foreground hover:border-border-strong hover:text-foreground"
+                >
+                  Download .folded
+                </button>
+              </div>
+              <pre className="max-h-[360px] overflow-auto rounded-lg border border-border bg-background/60 p-3 font-mono text-[11px] leading-relaxed text-foreground/85">
+                {foldedText || "(no matching stacks)"}
+              </pre>
+            </div>
+          )}
+        </div>
+      )}
+    </Card>
+  );
+}
+
+function FilterChip({ active, onClick, children }: { active: boolean; onClick: () => void; children: string }) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className={`rounded-md border px-2 py-0.5 font-mono text-[10.5px] transition-colors ${
+        active ? "border-primary bg-ember-wash text-primary" : "border-border bg-background/50 text-muted-foreground hover:border-border-strong hover:text-foreground"
+      }`}
+    >
+      {children}
+    </button>
+  );
+}
+
+function RuntimePill({ type }: { type: string }) {
+  const cls =
+    type === "kernel"
+      ? "bg-frost-wash text-frost"
+      : type === "go" || type === "python" || type === "v8"
+        ? "bg-[color-mix(in_oklab,var(--series-3)_15%,transparent)] text-good-ink"
+        : "bg-ember-wash text-primary";
+  return <span className={`inline-block rounded px-1.5 py-0.5 font-mono text-[10px] ${cls}`}>{type || "native"}</span>;
+}
+
+function TimelineBuckets({
+  buckets,
+  frames,
+  selected,
+  onSelect,
+}: {
+  buckets: readonly ProfileBucket[];
+  frames: readonly ProfileFrame[];
+  selected: ProfileBucket | null;
+  onSelect: (b: ProfileBucket) => void;
+}) {
+  const maxS = Math.max(1, ...buckets.map((b) => Number(b.samples)));
+  return (
+    <div className="flex h-12 items-end gap-1 rounded-lg border border-border bg-background/50 px-2 py-1.5">
+      {buckets.map((b) => {
+        const samples = Number(b.samples);
+        const totalPct = Math.max(8, (samples / maxS) * 100);
+        const kernelShare = samples > 0 ? (Number(b.kernelSamples) / samples) * 100 : 0;
+        const isSel = selected?.t === b.t;
+        const topFunction = resolveBucketTopFrame(b, frames);
+        return (
+          <button
+            key={String(b.t)}
+            type="button"
+            onClick={() => onSelect(b)}
+            title={`${hhmmss(b.t)} · ${samples} samples (${b.userSamples} user, ${b.kernelSamples} kernel)${topFunction ? ` · top: ${topFunction}` : ""}`}
+            className={`group flex h-full flex-1 flex-col justify-end rounded-xs transition-opacity ${isSel ? "ring-1 ring-primary" : "opacity-85 hover:opacity-100"}`}
+          >
+            <div className="flex w-full flex-col overflow-hidden rounded-t-[2px]" style={{ height: `${totalPct}%` }}>
+              {kernelShare > 0 && <div style={{ height: `${kernelShare}%`, background: "var(--frost)" }} />}
+              <div className="flex-1" style={{ background: "var(--primary)" }} />
+            </div>
+          </button>
+        );
+      })}
+    </div>
+  );
+}
