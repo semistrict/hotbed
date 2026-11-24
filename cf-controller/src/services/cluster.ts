@@ -5,7 +5,6 @@ import {
 	ClusterService,
 	CommandDiagnosticsSchema,
 	CommandState,
-	ControllerMigrationSchema,
 	DeleteRepoResponseSchema,
 	GetCommandDiagnosticsResponseSchema,
 	HeartbeatResponseSchema,
@@ -19,7 +18,6 @@ import {
 	ListReposResponseSchema,
 	ListStepsResponseSchema,
 	LoadSampleSchema,
-	MigrateControllerResponseSchema,
 	NodeBaseSchema,
 	NodeDetailSchema,
 	NodeHourSchema,
@@ -351,16 +349,6 @@ export function createClusterService(
 		async pushEvents(req, ctx) {
 			const caller = getCaller(ctx.values);
 			checkClusterId(caller.hostname, req.clusterId);
-			const mig = ctrl.store.getControllerMigration();
-			if (mig) {
-				return create(PushEventsResponseSchema, {
-					migratedTo: create(ControllerMigrationSchema, {
-						controller: mig.targetController,
-						token: mig.workerTokens[caller.nodeId] ?? mig.defaultToken,
-						controllerNodeId: mig.controllerNodeId,
-					}),
-				});
-			}
 			const res = ctrl.store.pushEvents(
 				caller.nodeId,
 				req,
@@ -379,16 +367,6 @@ export function createClusterService(
 		heartbeat(req, ctx) {
 			const caller = getCaller(ctx.values);
 			checkClusterId(caller.hostname, req.clusterId);
-			const mig = ctrl.store.getControllerMigration();
-			if (mig) {
-				return create(HeartbeatResponseSchema, {
-					migratedTo: create(ControllerMigrationSchema, {
-						controller: mig.targetController,
-						token: mig.workerTokens[caller.nodeId] ?? mig.defaultToken,
-						controllerNodeId: mig.controllerNodeId,
-					}),
-				});
-			}
 			const nowMs = ctrl.now();
 			const hu = ctrl.hostUsages.get(caller.hostname, nowMs);
 			ctrl.store.beat(caller.nodeId, req, nowMs);
@@ -422,75 +400,6 @@ export function createClusterService(
 				hostUsage: hu,
 				cladefsPeers,
 				decommissionIncarnations,
-			});
-		},
-
-		async migrateController(req, ctx) {
-			const caller = getCaller(ctx.values);
-			if (caller.role !== "owner") {
-				throw hotbedError(
-					ErrorCode.NotAuthorized,
-					"owner credentials required to migrate controller",
-				);
-			}
-			const target = req.targetController.trim().replace(/\/+$/, "");
-			if (!target) {
-				throw hotbedError(ErrorCode.InvalidArgs, "target_controller is required");
-			}
-			let importedTables = 0;
-			let importedRows = 0;
-			let controllerNodeId = `cf:${ctrl.clusterId}`;
-			let workerTokens: Record<string, string> = {};
-
-			if (!req.skipExport) {
-				const baseUrl =
-					target.startsWith("http://") || target.startsWith("https://")
-						? target
-						: `http://${target}`;
-				const snap = ctrl.store.exportSnapshot(ctrl.clusterId);
-				const headers: Record<string, string> = { "Content-Type": "application/json" };
-				if (req.targetToken.trim()) {
-					headers.Authorization = `Bearer ${req.targetToken.trim()}`;
-				}
-				const res = await fetch(`${baseUrl}/admin/import`, {
-					method: "POST",
-					headers,
-					body: JSON.stringify({ ...snap, force: req.force }),
-				});
-				if (!res.ok) {
-					const txt = await res.text().catch(() => "");
-					throw hotbedError(
-						ErrorCode.Internal,
-						`target controller import failed (HTTP ${res.status}): ${txt.slice(0, 300)}`,
-					);
-				}
-				const body = (await res.json()) as {
-					controllerNodeId?: string;
-					importedTables?: number;
-					importedRows?: number;
-					workerTokens?: Record<string, string>;
-				};
-				if (body.controllerNodeId) controllerNodeId = body.controllerNodeId;
-				importedTables = body.importedTables ?? 0;
-				importedRows = body.importedRows ?? 0;
-				workerTokens = body.workerTokens ?? {};
-			}
-
-			ctrl.store.setControllerMigration({
-				targetController: target,
-				controllerNodeId,
-				defaultToken: req.workerToken.trim(),
-				workerTokens,
-				migratedAt: ctrl.now(),
-			});
-
-			return create(MigrateControllerResponseSchema, {
-				clusterId: ctrl.clusterId,
-				targetController: target,
-				controllerNodeId,
-				importedTables,
-				importedRows,
-				mintedWorkerTokens: Object.keys(workerTokens).length,
 			});
 		},
 

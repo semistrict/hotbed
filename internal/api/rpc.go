@@ -19,6 +19,9 @@ import (
 	"github.com/semistrict/hotbed/internal/gen/hotbed/v1/hotbedv1connect"
 )
 
+// BuildHeader is the response header that says the controller's build number.
+const BuildHeader = "Hotbed-Build"
+
 // IsRemoteURL reports whether addr is an explicit HTTP(S) base URL (such as a
 // Cloudflare Workers controller URL) rather than a tailnet host[:port].
 func IsRemoteURL(addr string) bool {

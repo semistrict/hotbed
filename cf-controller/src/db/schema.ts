@@ -3,8 +3,6 @@ import { blob, index, integer, primaryKey, real, sqliteTable, text } from "drizz
 
 /**
  * Drizzle SQLite schema for the single Durable Object controller (`ControllerDO`).
- * Mirrors internal/controller/db/migrations/00011..00021 plus Cloudflare-DO
- * tables (`kv_meta`, `worker_tokens`, `daemon_logs`, `controller_migration`).
  *
  * Run `pnpm -C cf-controller run db:generate` after editing this file; the
  * generated migrations in `drizzle/` auto-run inside `ControllerDO`'s
@@ -14,15 +12,6 @@ import { blob, index, integer, primaryKey, real, sqliteTable, text } from "drizz
 export const kvMeta = sqliteTable("kv_meta", {
 	key: text("key").primaryKey(),
 	value: text("value").notNull(),
-});
-
-export const controllerMigration = sqliteTable("controller_migration", {
-	id: integer("id").primaryKey(),
-	targetController: text("target_controller").notNull(),
-	controllerNodeId: text("controller_node_id").notNull().default(""),
-	defaultToken: text("default_token").notNull().default(""),
-	workerTokensJson: text("worker_tokens_json").notNull().default("{}"),
-	migratedAt: integer("migrated_at").notNull(),
 });
 
 export const workerTokens = sqliteTable(

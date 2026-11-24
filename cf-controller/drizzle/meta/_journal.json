@@ -15,6 +15,13 @@
 			"when": 1795525121537,
 			"tag": "0001_good_talos",
 			"breakpoints": true
+		},
+		{
+			"idx": 2,
+			"version": "6",
+			"when": 1795527506148,
+			"tag": "0002_sad_jasper_sitwell",
+			"breakpoints": true
 		}
 	]
 }

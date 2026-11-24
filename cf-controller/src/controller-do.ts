@@ -36,7 +36,7 @@ import { createReviewService } from "./services/reviews.ts";
 import { createScheduleService, type ScheduleRunner } from "./services/schedules.ts";
 import { createSessionService } from "./services/sessions.ts";
 import { createWorkspaceService } from "./services/workspaces.ts";
-import { ControllerStore, type MigrationImportPayload } from "./store.ts";
+import { ControllerStore } from "./store.ts";
 import { WorkerTunnelHub } from "./tunnel.ts";
 
 export interface ControllerEnv extends AuthEnv, BuildsEnv {
@@ -148,20 +148,15 @@ export class ControllerDO extends DurableObject<ControllerEnv> {
 			const reviewSvc = createReviewService(this.ctrl);
 			const gitAuthSvc = createGitAuthService(this.ctrl);
 
-			this.dispatcher = createConnectFetchDispatcher(
-				(router) => {
-					router.service(ClusterService, clusterSvc);
-					router.service(SessionService, sessionSvc);
-					router.service(WorkspaceService, wsSvc.impl);
-					router.service(QuestionService, questionSvc);
-					router.service(ReviewService, reviewSvc);
-					router.service(ScheduleService, schedSvc.impl);
-					router.service(GitAuthService, gitAuthSvc);
-				},
-				{
-					migratedCheck: () => this.store.getControllerMigration(),
-				},
-			);
+			this.dispatcher = createConnectFetchDispatcher((router) => {
+				router.service(ClusterService, clusterSvc);
+				router.service(SessionService, sessionSvc);
+				router.service(WorkspaceService, wsSvc.impl);
+				router.service(QuestionService, questionSvc);
+				router.service(ReviewService, reviewSvc);
+				router.service(ScheduleService, schedSvc.impl);
+				router.service(GitAuthService, gitAuthSvc);
+			});
 		});
 	}
 
@@ -231,14 +226,12 @@ export class ControllerDO extends DurableObject<ControllerEnv> {
 
 		// 1. Health check (unauthenticated)
 		if (pathname === "/healthz" && request.method === "GET") {
-			const mig = this.store.getControllerMigration();
 			return Response.json({
 				ok: true,
 				clusterId: this.ctrl.clusterId,
 				version: this.builds.versionString(),
 				build: this.builds.currentBuildNumber(),
 				connectedWorkers: this.tunnel.connectedNodeIds().size,
-				...(mig ? { migratedTo: mig.targetController } : {}),
 			});
 		}
 
@@ -345,53 +338,6 @@ export class ControllerDO extends DurableObject<ControllerEnv> {
 				return Response.json(he.toJSON(), {
 					status: he.code === ErrorCode.NotAuthorized ? 403 : 500,
 				});
-			}
-		}
-
-		// 3b. Bulk state import for migrating an existing controller (owner-only)
-		if (pathname === "/admin/import" && request.method === "POST") {
-			try {
-				const caller = await authenticateRequest(request, this.env, this.store);
-				if (caller.role !== "owner") {
-					return Response.json(
-						{ code: ErrorCode.NotAuthorized, message: "owner token required" },
-						{ status: 403 },
-					);
-				}
-				const payload = (await request.json()) as MigrationImportPayload;
-				const result = this.store.importSnapshot(payload);
-				this.ctrl.clusterId = result.clusterId;
-
-				// Mint a dedicated per-worker token for every active imported node so
-				// the source controller can hand each worker its own credentials on redirect.
-				const workerTokens: Record<string, string> = {};
-				const nowMs = this.ctrl.now();
-				for (const node of result.activeNodes) {
-					const tok = `hbw_${randomHex(24)}`;
-					const hash = await sha256Hex(tok);
-					this.store.putWorkerToken(hash, node.id, node.hostname, nowMs);
-					workerTokens[node.id] = tok;
-				}
-				this.ctx.waitUntil(this.ensureAlarm());
-				return Response.json({
-					ok: true,
-					clusterId: result.clusterId,
-					controllerNodeId: `cf:${result.clusterId}`,
-					importedTables: result.importedTables,
-					importedRows: result.importedRows,
-					workerTokens,
-				});
-			} catch (err) {
-				const he = fromUnknownError(err);
-				const status =
-					he.code === ErrorCode.NotAuthorized
-						? 403
-						: he.code === ErrorCode.InvalidArgs
-							? 400
-							: he.code === ErrorCode.Conflict
-								? 409
-								: 500;
-				return Response.json(he.toJSON(), { status });
 			}
 		}
 

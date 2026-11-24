@@ -36,7 +36,6 @@ import (
 	"github.com/semistrict/hotbed/internal/sysinfo"
 	"github.com/semistrict/hotbed/internal/tailnet"
 	"github.com/semistrict/hotbed/internal/unit"
-	"github.com/semistrict/hotbed/internal/update"
 	"github.com/semistrict/hotbed/internal/version"
 )
 
@@ -285,9 +284,6 @@ func Run(ctx context.Context, dir string, cfg statedir.WorkerConfig, tn Tailnet,
 		Client: &http.Client{Transport: followTransport, Timeout: 10 * time.Minute},
 		Exe:    exe,
 		Build:  version.Number(),
-		OnMigrate: func(m *pb.ControllerMigration) error {
-			return applyControllerMigration(dir, cfg, m)
-		},
 	}
 	store, err := awaitStorage(ctx, func(ctx context.Context) (storage.Store, error) {
 		return storage.Open(ctx, dir, cfg.Dataset)
@@ -521,44 +517,6 @@ func Run(ctx context.Context, dir string, cfg statedir.WorkerConfig, tn Tailnet,
 		return srv.Shutdown(shutdown)
 	})
 	return g.Wait()
-}
-
-// applyControllerMigration rewrites dir's hotbed.json to point at m's target
-// controller and returns update.ErrRestart so `hotbed serve` re-execs into the
-// new controller without disrupting systemd-managed workloads or warm bases.
-func applyControllerMigration(dir string, cfg statedir.WorkerConfig, m *pb.ControllerMigration) error {
-	if m == nil || m.GetController() == "" {
-		return nil
-	}
-	target := m.GetController()
-	if api.IsRemoteURL(target) {
-		norm, err := api.ControllerBaseURL(target)
-		if err != nil {
-			return fmt.Errorf("invalid migration target %q: %w", target, err)
-		}
-		target = norm
-	} else {
-		hp, err := api.ControllerHostPort(target)
-		if err != nil {
-			return fmt.Errorf("invalid migration target %q: %w", target, err)
-		}
-		target = hp
-	}
-	if cfg.Controller == target && cfg.Token == m.GetToken() && (m.GetControllerNodeId() == "" || cfg.ControllerNodeID == m.GetControllerNodeId()) {
-		return nil
-	}
-	next := cfg
-	next.Controller = target
-	next.Token = m.GetToken()
-	if m.GetControllerNodeId() != "" {
-		next.ControllerNodeID = m.GetControllerNodeId()
-	}
-	if err := statedir.Rewrite(dir, statedir.Config{Worker: &next}); err != nil {
-		return fmt.Errorf("rewrite worker config for controller migration to %s: %w", target, err)
-	}
-	slog.Info("controller migrated: updated worker config and restarting to reconnect",
-		"from", cfg.Controller, "to", target, "controllerNodeId", next.ControllerNodeID)
-	return update.ErrRestart
 }
 
 // workerAdvertiseAddr returns this worker's direct tailnet address (host:7121)

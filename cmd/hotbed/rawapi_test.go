@@ -147,3 +147,29 @@ func TestRawAPICommand(t *testing.T) {
 		t.Fatalf("404 stderr = %q", errOut)
 	}
 }
+
+func TestControllerAuthToken(t *testing.T) {
+	dir := t.TempDir()
+	tokFile := filepath.Join(dir, "token")
+	if err := os.WriteFile(tokFile, []byte("  hbo_file_token \n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	orig := defaultHotbedDir
+	defaultHotbedDir = func() (string, error) { return dir, nil }
+	t.Cleanup(func() { defaultHotbedDir = orig })
+
+	t.Setenv("HOTBED_TOKEN", "")
+	if got := controllerAuthToken("ubu1:7120"); got != "" {
+		t.Fatalf("tailnet controller got token %q, want empty", got)
+	}
+	if got := controllerAuthToken("http://127.0.0.1:7120"); got != "" {
+		t.Fatalf("plaintext http controller got token %q, want empty", got)
+	}
+	if got := controllerAuthToken("https://ctrl.example.workers.dev"); got != "hbo_file_token" {
+		t.Fatalf("https controller got token %q, want hbo_file_token", got)
+	}
+	t.Setenv("HOTBED_TOKEN", "hbo_env_token")
+	if got := controllerAuthToken("https://ctrl.example.workers.dev"); got != "hbo_env_token" {
+		t.Fatalf("env override got token %q, want hbo_env_token", got)
+	}
+}

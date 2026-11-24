@@ -70,35 +70,6 @@ const workerRoleScopeInterceptor: Interceptor = (next) => async (req) => {
 	return next(req);
 };
 
-const MIGRATED_ALLOWED_PROCEDURES = new Set([
-	"/hotbed.v1.ClusterService/Heartbeat",
-	"/hotbed.v1.ClusterService/PushEvents",
-	"/hotbed.v1.ClusterService/ListNodes",
-	"/hotbed.v1.ClusterService/GetSnapshot",
-	"/hotbed.v1.ClusterService/GetBuild",
-	"/hotbed.v1.ClusterService/MigrateController",
-]);
-
-function makeMigratedInterceptor(
-	migratedCheck?: () => { targetController: string } | null,
-): Interceptor {
-	return (next) => async (req) => {
-		if (migratedCheck) {
-			const mig = migratedCheck();
-			const proc = `/${req.service.typeName}/${req.method.name}`;
-			if (mig && !MIGRATED_ALLOWED_PROCEDURES.has(proc)) {
-				throw hotbedError(
-					ErrorCode.Conflict,
-					`this controller has migrated to ${mig.targetController}`,
-				).withSuggestion(
-					`point your client to ${mig.targetController} (HOTBED_CONTROLLER=${mig.targetController})`,
-				);
-			}
-		}
-		return next(req);
-	};
-}
-
 export interface ConnectFetchDispatcher {
 	hasPath(pathname: string): boolean;
 	handle(req: Request, caller: CallerIdentity, buildNumber: number): Promise<Response>;
@@ -106,18 +77,12 @@ export interface ConnectFetchDispatcher {
 
 export function createConnectFetchDispatcher(
 	register: (router: ConnectRouter) => void,
-	opts?: { migratedCheck?: () => { targetController: string } | null },
 ): ConnectFetchDispatcher {
 	const router = createConnectRouter({
 		connect: true,
 		grpcWeb: true,
 		grpc: true,
-		interceptors: [
-			hotbedErrorInterceptor,
-			workerRoleScopeInterceptor,
-			noLocalFieldsInterceptor,
-			makeMigratedInterceptor(opts?.migratedCheck),
-		],
+		interceptors: [hotbedErrorInterceptor, workerRoleScopeInterceptor, noLocalFieldsInterceptor],
 	});
 	register(router);
 

@@ -6,14 +6,12 @@ import (
 	"fmt"
 	"net/http"
 	"os"
-	"os/user"
 	"path/filepath"
 	"strings"
 
 	"connectrpc.com/connect/v2"
 
 	"github.com/semistrict/hotbed/internal/api"
-	"github.com/semistrict/hotbed/internal/controller"
 	"github.com/semistrict/hotbed/internal/gen/hotbed/v1/hotbedv1connect"
 	"github.com/semistrict/hotbed/internal/setup"
 	"github.com/semistrict/hotbed/internal/statedir"
@@ -104,27 +102,8 @@ func (f controllerClient) clients(hc *http.Client) (clients, error) {
 	}, nil
 }
 
-type initCmd struct {
-	Dir       string `arg:"" type:"path" help:"State directory to create; holds the cluster's database."`
-	Port      int    `default:"7120" help:"Port to serve on, on this machine's tailnet addresses."`
-	LocalUser string `help:"Unix user, besides root, who may call the controller from this machine (default: whoever ran sudo, or you). Other users on it are refused."`
-}
-
-func (c *initCmd) Exec(ctx context.Context, d deps) (any, error) {
-	local := c.LocalUser
-	if local == "" {
-		local = os.Getenv("SUDO_USER")
-	}
-	if local == "" {
-		if u, err := user.Current(); err == nil && u.Uid != "0" {
-			local = u.Username
-		}
-	}
-	return controller.Init(ctx, c.Dir, c.Port, local, d.tailnet)
-}
-
 type joinCmd struct {
-	Controller     string   `arg:"" help:"The controller's tailnet name or address (with :PORT unless 7120), or an HTTPS controller URL."`
+	Controller     string   `arg:"" help:"The controller's HTTPS URL (or tailnet host[:port])."`
 	Dir            string   `arg:"" type:"path" help:"State directory to create, on btrfs or zfs; volumes live under it."`
 	User           string   `required:"" help:"User every command runs as."`
 	Token          string   `env:"HOTBED_TOKEN" help:"Bearer token for authenticating to a remote HTTPS controller."`
@@ -140,7 +119,7 @@ func (c *joinCmd) Exec(ctx context.Context, d deps) (any, error) {
 }
 
 type serveCmd struct {
-	Dir string `arg:"" type:"path" help:"State directory made by init or join."`
+	Dir string `arg:"" type:"path" help:"Worker state directory made by join."`
 }
 
 type serveResult struct {
@@ -153,18 +132,17 @@ func (c *serveCmd) Exec(ctx context.Context, d deps) (any, error) {
 	if err != nil {
 		return nil, err
 	}
+	if cfg.Worker == nil {
+		return nil, api.Errorf(api.CodeInvalidArgs, "the standalone Go controller has been retired").
+			WithSuggestion("deploy cf-controller on Cloudflare Workers instead")
+	}
 	// Where the binary is now: a new build replaces the file there.
 	exe, err := d.exe()
 	if err != nil {
 		return nil, err
 	}
 	res := serveResult{Role: "worker"}
-	if cfg.Controller != nil {
-		res.Role = "controller"
-		err = controller.Run(ctx, c.Dir, *cfg.Controller, d.tailnet)
-	} else {
-		err = worker.Run(ctx, c.Dir, *cfg.Worker, d.tailnet, d.http)
-	}
+	err = worker.Run(ctx, c.Dir, *cfg.Worker, d.tailnet, d.http)
 	return afterServe(res, err, exe, os.Args, d.execve)
 }
 

@@ -824,128 +824,15 @@ describe("Cloudflare Workers single-DO hotbed controller", () => {
 		await expect(owner.cluster.retireNode({ node: "clade1" })).rejects.toThrow(/is online/);
 	});
 
-	it("auto-runs Drizzle migrations, imports snapshots via /admin/import, and redirects workers once migrated", async () => {
-		const owner = ownerClients();
-
-		// Import a snapshot from an existing controller (e.g. ubu1) with force=true
-		const importRes = await SELF.fetch("https://controller.test/admin/import", {
+	it("auto-runs Drizzle migrations on DO boot and removes retired /admin/import", async () => {
+		const res = await SELF.fetch("https://controller.test/admin/import", {
 			method: "POST",
 			headers: {
 				Authorization: `Bearer ${OWNER_TOKEN}`,
 				"Content-Type": "application/json",
 			},
-			body: JSON.stringify({
-				clusterId: "imported-cluster-1",
-				force: true,
-				tables: {
-					nodes: [
-						{
-							id: "node-ubu1",
-							hostname: "ubu1",
-							login: "ramon",
-							addr: "100.73.156.10:7121",
-							joined_at: Date.now() - 1000,
-							last_seen: Date.now(),
-							epoch: "",
-							applied: 0,
-							applied_at: 0,
-							heartbeat: null,
-							retired_at: null,
-						},
-					],
-					repos: [
-						{
-							id: "hotbed",
-							doc: JSON.stringify({
-								id: "hotbed",
-								url: "https://github.com/semistrict/hotbed.git",
-								branch: "main",
-							}),
-						},
-					],
-					projects: [
-						{
-							id: 7,
-							name: "hotbed",
-							created_at: Date.now() - 1000,
-							setup: "{}",
-						},
-					],
-					project_repos: [{ project_id: 7, remote: "github.com/semistrict/hotbed" }],
-				},
-			}),
+			body: "{}",
 		});
-		expect(importRes.status).toBe(200);
-		const imported = (await importRes.json()) as {
-			ok: boolean;
-			clusterId: string;
-			controllerNodeId: string;
-			importedTables: number;
-			importedRows: number;
-			workerTokens: Record<string, string>;
-		};
-		expect(imported.ok).toBe(true);
-		expect(imported.clusterId).toBe("imported-cluster-1");
-		expect(imported.controllerNodeId).toBe("cf:imported-cluster-1");
-		expect(imported.importedTables).toBe(4);
-		expect(imported.importedRows).toBe(4);
-		expect(imported.workerTokens["node-ubu1"]?.startsWith("hbw_")).toBe(true);
-
-		// Non-force duplicate import is refused with 409 Conflict
-		const dupRes = await SELF.fetch("https://controller.test/admin/import", {
-			method: "POST",
-			headers: {
-				Authorization: `Bearer ${OWNER_TOKEN}`,
-				"Content-Type": "application/json",
-			},
-			body: JSON.stringify({ clusterId: "other", tables: {} }),
-		});
-		expect(dupRes.status).toBe(409);
-
-		// Imported node can authenticate using its freshly minted per-worker token
-		const worker = workerClients(
-			imported.workerTokens["node-ubu1"],
-			"node-ubu1",
-			"ubu1",
-			"100.73.156.10:7121",
-		);
-		const hb1 = await worker.cluster.heartbeat(
-			create(HeartbeatRequestSchema, { clusterId: "imported-cluster-1" }),
-		);
-		expect(hb1.migratedTo).toBeUndefined();
-		expect(hb1.projects.some((p) => p.name === "hotbed")).toBe(true);
-
-		// Transition controller into migrated state (skipExport: true)
-		const mig = await owner.cluster.migrateController({
-			targetController: "https://next-controller.example.workers.dev",
-			workerToken: "next-worker-token",
-			skipExport: true,
-		});
-		expect(mig.targetController).toBe("https://next-controller.example.workers.dev");
-
-		// /healthz reports migratedTo
-		const health = (await (await SELF.fetch("https://controller.test/healthz")).json()) as {
-			migratedTo?: string;
-		};
-		expect(health.migratedTo).toBe("https://next-controller.example.workers.dev");
-
-		// Worker Heartbeat & PushEvents now receive migratedTo redirect instructions
-		const hb2 = await worker.cluster.heartbeat(
-			create(HeartbeatRequestSchema, { clusterId: "imported-cluster-1" }),
-		);
-		expect(hb2.migratedTo?.controller).toBe("https://next-controller.example.workers.dev");
-		expect(hb2.migratedTo?.token).toBe("next-worker-token");
-		expect(hb2.migratedTo?.controllerNodeId).toBe("cf:imported-cluster-1");
-
-		const push2 = await worker.cluster.pushEvents({
-			clusterId: "imported-cluster-1",
-			epoch: "e1",
-		});
-		expect(push2.migratedTo?.controller).toBe("https://next-controller.example.workers.dev");
-
-		// Mutating RPCs are refused once migrated
-		await expect(owner.sessions.startSession({ project: "hotbed" })).rejects.toThrow(
-			/this controller has migrated to https:\/\/next-controller\.example\.workers\.dev/,
-		);
+		expect(res.status).toBe(404);
 	});
 });

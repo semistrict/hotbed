@@ -328,8 +328,8 @@ func TestMigrateFreshDatabase(t *testing.T) {
 	if err := db.QueryRowContext(ctx, `SELECT MAX(version_id) FROM `+goose.DefaultTablename+` WHERE is_applied = 1`).Scan(&ver); err != nil {
 		t.Fatal(err)
 	}
-	if ver != 21 {
-		t.Fatalf("schema version = %d, want 21", ver)
+	if ver != 20 {
+		t.Fatalf("schema version = %d, want 20", ver)
 	}
 
 	wantNodesCols := []string{
@@ -343,7 +343,6 @@ func TestMigrateFreshDatabase(t *testing.T) {
 	wantTables := []string{
 		"nodes", "node_state", "repos", "projects", "project_repos",
 		"sessions", "workspaces", "commands", "session_events",
-		"controller_migration",
 		"history", "command_profiles", "command_diagnostics", "samples", "events",
 		"schedules", "schedule_runs", "questions", "question_changes",
 		"reviews", "review_findings", "review_events",
@@ -555,8 +554,8 @@ func TestMigratePreExistingLiveDatabases(t *testing.T) {
 				if err := db.QueryRowContext(ctx, `SELECT MAX(version_id) FROM `+goose.DefaultTablename+` WHERE is_applied = 1`).Scan(&ver); err != nil {
 					t.Fatal(err)
 				}
-				if ver != 21 {
-					t.Fatalf("version after Migrate (%s) from v%d = %d, want 21", l.name, startVer, ver)
+				if ver != 20 {
+					t.Fatalf("version after Migrate (%s) from v%d = %d, want 20", l.name, startVer, ver)
 				}
 
 				// Re-running Migrate is idempotent.

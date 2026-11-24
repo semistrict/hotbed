@@ -18,7 +18,6 @@ import (
 
 	"github.com/semistrict/hotbed/internal/api"
 	"github.com/semistrict/hotbed/internal/apicmd"
-	"github.com/semistrict/hotbed/internal/controller"
 	"github.com/semistrict/hotbed/internal/version"
 	"github.com/semistrict/hotbed/internal/worker"
 	"github.com/semistrict/hotbed/skills"
@@ -26,7 +25,7 @@ import (
 
 // deps is what commands use from the outside world, so tests can replace it.
 type deps struct {
-	tailnet controller.Tailnet
+	tailnet worker.Tailnet
 	// http calls the API; stream reads output, which has no deadline.
 	http, stream *http.Client
 	check        worker.Check
@@ -112,14 +111,13 @@ type cli struct {
 	Review    reviewCmd    `cmd:"" help:"Reviews of an exact version by reviewer agents: request one, read and decide its findings, send the user its link, read the user's responses (request, ls, show, link, start, findings, finish, fail, cancel, accept, dismiss, reopen, respond, responses)."`
 	UI        uiCmd        `cmd:"" help:"Open the controller's cockpit UI in the default browser."`
 	MCP       mcpCmd       `cmd:"" name:"mcp" help:"Serve hotbed's commands as MCP tools on stdin and stdout, for an agent to start. The server is a session: the one HOTBED_SESSION or this T3 thread or git worktree names (resumed if it ended), or a new one bound here; it ends when the server does, and the next server started here resumes it."`
-	Init      initCmd      `cmd:"" help:"Create a cluster with this machine as its controller."`
 	Join      joinCmd      `cmd:"" help:"Join this machine to a cluster as a worker (as root)."`
 	Worker    workerCmd    `cmd:"" help:"Initialize and manage a worker node on this machine in ~/.hotbed (init, status, start, stop, trim, ssh, destroy)."`
-	Serve     serveCmd     `cmd:"" help:"Run the controller or worker whose state is in DIR, until stopped."`
+	Serve     serveCmd     `cmd:"" help:"Run the worker whose state is in DIR, until stopped."`
 	Skills    skillsCmd    `cmd:"" help:"Guides for AI agents, compiled into this binary (list, get, install)."`
 	Version   versionCmd   `cmd:"" help:"Show hotbed's version, OS and architecture."`
 	Upgrade   upgradeCmd   `cmd:"" help:"Install the controller's build over this hotbed (a client on a CI build does it by itself)."`
-	Admin     adminCmd     `cmd:"" help:"Cluster administration (upgrade, migrate)."`
+	Admin     adminCmd     `cmd:"" help:"Cluster administration (upgrade)."`
 	API       rawAPICmd    `cmd:"" name:"api" help:"Make an authenticated HTTP or ConnectRPC request to the controller (like gh api)."`
 }
 

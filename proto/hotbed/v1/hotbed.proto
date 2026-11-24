@@ -64,10 +64,6 @@ service ClusterService {
   // UpgradeController checks CI for a newer build immediately, installs it
   // over the controller, and restarts the controller as it.
   rpc UpgradeController(UpgradeControllerRequest) returns (UpgradeControllerResponse);
-  // MigrateController exports this controller's durable state to target_controller
-  // (via POST /admin/import) and puts this controller into migrated state so
-  // workers automatically redirect and reconnect to the target controller.
-  rpc MigrateController(MigrateControllerRequest) returns (MigrateControllerResponse);
   // List repos registered with the cluster.
   rpc ListRepos(ListReposRequest) returns (ListReposResponse) {
     option idempotency_level = IDEMPOTENT;
@@ -1879,9 +1875,7 @@ message PushEventsResponse {
   int64 applied = 1;
   // The controller has no view of this epoch to continue: send a checkpoint.
   bool checkpoint_needed = 2;
-  // Set once this controller has been migrated: the worker rewrites its
-  // controller config to this target and reconnects there.
-  ControllerMigration migrated_to = 3;
+  reserved 3;
 }
 
 message CommandUsage {
@@ -1956,46 +1950,11 @@ message HeartbeatResponse {
   // Latest fresh host-side view of this VM worker, when its host supervisor
   // reports it; used by worker admission to hold work during host starvation.
   HostUsage host_usage = 5;
-  // Set once this controller has been migrated: the worker rewrites its
-  // controller config to this target and reconnects there.
-  ControllerMigration migrated_to = 6;
+  reserved 6;
   // Online cladefs peer addresses (HOST:PORT) for cladefsd.SetPeers.
   repeated string cladefs_peers = 7;
   // Retired cladefs host incarnations for cladefsd.DecommissionHost.
   repeated uint64 decommission_incarnations = 8;
-}
-
-// Where a migrated controller directs workers to reconnect.
-message ControllerMigration {
-  // Target controller URL (e.g. https://hotbed-controller.example.workers.dev)
-  // or tailnet host[:port].
-  string controller = 1;
-  // Bearer token for authenticating to the target controller (empty for tailnet).
-  string token = 2;
-  // Target controller's stable node ID (e.g. "cf:<cluster_id>").
-  string controller_node_id = 3;
-}
-
-message MigrateControllerRequest {
-  // Target controller URL (https://...) or tailnet host[:port].
-  string target_controller = 1;
-  // Owner bearer token for authenticating to the target controller's /admin/import.
-  string target_token = 2;
-  // Optional fallback worker bearer token if the target does not mint per-worker tokens.
-  string worker_token = 3;
-  // Overwrite existing data on the target controller.
-  bool force = 4;
-  // Skip exporting/importing state; only enter migrated state so workers redirect.
-  bool skip_export = 5;
-}
-
-message MigrateControllerResponse {
-  string cluster_id = 1;
-  string target_controller = 2;
-  string controller_node_id = 3;
-  int32 imported_tables = 4;
-  int32 imported_rows = 5;
-  int32 minted_worker_tokens = 6;
 }
 
 // ---- the cockpit ----------------------------------------------------------

@@ -12,7 +12,6 @@ import (
 	"time"
 
 	"github.com/semistrict/hotbed/internal/api"
-	"github.com/semistrict/hotbed/internal/controller"
 	pb "github.com/semistrict/hotbed/internal/gen/hotbed/v1"
 	"github.com/semistrict/hotbed/internal/update"
 )
@@ -53,31 +52,7 @@ func (c *upgradeCmd) Exec(ctx context.Context, d deps) (any, error) {
 }
 
 type adminCmd struct {
-	Upgrade adminUpgradeCmd `cmd:"" help:"Have the controller check CI for a newer build now and restart into it, and wait until it answers on it (workers follow within seconds)."`
-	Migrate adminMigrateCmd `cmd:"" help:"Migrate this controller's cluster state to another controller and redirect workers to reconnect there."`
-}
-
-type adminMigrateCmd struct {
-	controllerClient
-	Target      string `arg:"" help:"Target controller URL (e.g. https://hotbed-controller.example.workers.dev) or tailnet host[:port]."`
-	Token       string `help:"Owner bearer token for authenticating to the target controller's /admin/import."`
-	WorkerToken string `name:"worker-token" help:"Optional fallback worker bearer token if the target does not mint per-worker tokens."`
-	Force       bool   `help:"Overwrite existing cluster state on the target controller."`
-	SkipExport  bool   `name:"skip-export" help:"Skip exporting/importing state; only put this controller into migrated state so workers redirect."`
-}
-
-func (c *adminMigrateCmd) Exec(ctx context.Context, d deps) (any, error) {
-	cl, err := c.clients(d.stream)
-	if err != nil {
-		return nil, err
-	}
-	return cl.cluster.MigrateController(ctx, &pb.MigrateControllerRequest{
-		TargetController: c.Target,
-		TargetToken:      c.Token,
-		WorkerToken:      c.WorkerToken,
-		Force:            c.Force,
-		SkipExport:       c.SkipExport,
-	})
+	Upgrade adminUpgradeCmd `cmd:"" help:"Have the controller check CI for a newer build now and refresh its release metadata (workers follow within seconds)."`
 }
 
 type adminUpgradeCmd struct {
@@ -211,7 +186,7 @@ type buildSeen struct {
 func (b buildSeen) RoundTrip(r *http.Request) (*http.Response, error) {
 	resp, err := b.base.RoundTrip(r)
 	if err == nil {
-		if n, perr := strconv.ParseInt(resp.Header.Get(controller.BuildHeader), 10, 64); perr == nil && n > 0 {
+		if n, perr := strconv.ParseInt(resp.Header.Get(api.BuildHeader), 10, 64); perr == nil && n > 0 {
 			b.n.Store(n)
 		}
 	}
