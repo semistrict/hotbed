@@ -998,8 +998,16 @@ func (s *Server) handleShellConn(ctx context.Context, conn net.Conn) {
 		}()
 
 		waitErr := cmd.Wait()
+		// Drain buffered PTY output before closing master: once the child
+		// closes the slave fd, master.Read returns the remaining bytes and
+		// then EIO/EOF. Bound the wait in case a grandchild kept the slave open.
+		select {
+		case <-outDone:
+		case <-time.After(250 * time.Millisecond):
+			_ = master.Close()
+			<-outDone
+		}
 		_ = master.Close()
-		<-outDone
 		var code [4]byte
 		binary.BigEndian.PutUint32(code[:], uint32(int32(exitCodeOf(waitErr))))
 		_ = send(frameExit, code[:])
