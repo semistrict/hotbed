@@ -37,6 +37,9 @@ func (e *Engine) Heartbeat(clusterID string) *pb.HeartbeatRequest {
 		h.CladefsIncarnation = inc
 		h.SharedBases = shared
 	}
+	if e.objectStore != nil {
+		h.ObjectStore = clone(e.objectStore)
+	}
 	if e.cfg.Profiler != nil {
 		h.Profiler = e.cfg.Profiler.Status()
 	}

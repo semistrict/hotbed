@@ -8,6 +8,7 @@ import { AdmissionBadge, AdmissionPanel, heldBands, PlacementList } from "../com
 import { ContinuousProfilePanel } from "../components/ContinuousProfilePanel";
 import { DaemonLogsPanel } from "../components/DaemonLogsPanel";
 import { EventFeed } from "../components/EventFeed";
+import { NodeObjectStoreSection } from "../components/ObjectStorePanel";
 import { Card, Empty, StatTile } from "../components/ui/Card";
 import { ArchBadge, BuildingBadge, OnlineBadge } from "../components/ui/State";
 import { useNodeColors, useSnapshot } from "../lib/data";
@@ -206,6 +207,8 @@ export function NodePage() {
           </ul>
         </Card>
       </div>
+
+      <NodeObjectStoreSection n={n} s={s} />
 
       <ContinuousProfilePanel key={`node-prof-${n.hostname}`} node={n.hostname} live={n.online} />
 

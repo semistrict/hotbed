@@ -12,6 +12,15 @@ export function bytes(n: number | bigint): string {
   return `${Math.round(v)} B`;
 }
 
+/** 14.2 MiB/s, 420 KiB/s, 0 B/s. */
+export function bytesPerSec(n: number): string {
+  if (!Number.isFinite(n) || n < 0) return "—";
+  if (n >= GiB) return `${trim(n / GiB, 1)} GiB/s`;
+  if (n >= MiB) return `${trim(n / MiB, n >= 100 * MiB ? 0 : 1)} MiB/s`;
+  if (n >= 1024) return `${Math.round(n / 1024)} KiB/s`;
+  return `${Math.round(n)} B/s`;
+}
+
 /** A cgroup memory limit, where 0 sets none: "none", "4 GiB". */
 export function limit(n: number | bigint): string {
   const v = Number(n);

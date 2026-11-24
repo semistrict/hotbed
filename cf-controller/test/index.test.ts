@@ -1410,4 +1410,85 @@ describe("Security, cron, daemon logs, tunnel, and workspace regression tests", 
 			ws.close(1000, "done");
 		}
 	});
+
+	it("computes R2 upload/download rates, 24h rollups, and restart deltas without first-sample spikes", async () => {
+		const { buildSeries } = await import("../src/services/cluster.ts");
+		const now = 1_760_000_000_000;
+		const base = {
+			node: "n1",
+			cpu: 0.2,
+			memory: 0.5,
+			psi: 0,
+			cpuPsi: 0,
+			holding: false,
+			running: 0,
+			queued: 0,
+			parked: 0,
+			oom: 0,
+		};
+		const samples = [
+			// Pre-upgrade sample (no R2 counters).
+			{
+				...base,
+				t: now - 30_000,
+				r2Up: 0,
+				r2Down: 0,
+				r2Puts: 0,
+				r2Gets: 0,
+				r2Fails: 0,
+				r2WaitNs: 0,
+			},
+			// First R2 sample carries existing since-boot totals: must establish baseline with 0 delta.
+			{
+				...base,
+				t: now - 20_000,
+				r2Up: 20_000_000,
+				r2Down: 5_000_000,
+				r2Puts: 100,
+				r2Gets: 50,
+				r2Fails: 0,
+				r2WaitNs: 1_000_000_000,
+			},
+			// 10 seconds later: +10 MiB up, +2 MiB down, +10 puts, +4 gets, +1 fail, +500 ms commit wait.
+			{
+				...base,
+				t: now - 10_000,
+				r2Up: 30_000_000,
+				r2Down: 7_000_000,
+				r2Puts: 110,
+				r2Gets: 54,
+				r2Fails: 1,
+				r2WaitNs: 1_500_000_000,
+			},
+			// Daemon restarted and uploaded 4 MiB more in 10s.
+			{
+				...base,
+				t: now,
+				r2Up: 4_000_000,
+				r2Down: 1_000_000,
+				r2Puts: 5,
+				r2Gets: 2,
+				r2Fails: 0,
+				r2WaitNs: 0,
+			},
+		];
+		const { series, nodeHourly, r2Totals } = buildSeries(samples, now);
+		expect(r2Totals.up).toBe(14_000_000);
+		expect(r2Totals.down).toBe(3_000_000);
+		expect(r2Totals.puts).toBe(15);
+		expect(r2Totals.gets).toBe(6);
+		expect(r2Totals.fails).toBe(1);
+		expect(r2Totals.waitNs).toBe(500_000_000);
+
+		const pts = series.n1.samples;
+		expect(pts).toHaveLength(4);
+		expect(pts[1].uploadBytesPerSec).toBe(0);
+		expect(pts[2].uploadBytesPerSec).toBeCloseTo(1_000_000, 1);
+		expect(pts[2].downloadBytesPerSec).toBeCloseTo(200_000, 1);
+		expect(pts[2].commitWaitMsPerSec).toBeCloseTo(50, 1);
+		expect(pts[3].uploadBytesPerSec).toBeCloseTo(400_000, 1);
+
+		const hourSumUp = nodeHourly.n1.hours.reduce((acc, h) => acc + Number(h.uploadBytes), 0);
+		expect(hourSumUp).toBe(14_000_000);
+	});
 });

@@ -440,6 +440,15 @@ func (s *Store) StatCell(ctx context.Context, relPath string) (*cladefsdv1.StatC
 	return resp, nil
 }
 
+// GetCounters returns cladefsd's cumulative daemon and object-store counters.
+func (s *Store) GetCounters(ctx context.Context) (*cladefsdv1.GetCountersResponse, error) {
+	resp, err := s.api.GetCounters(ctx, &cladefsdv1.GetCountersRequest{})
+	if err != nil {
+		return nil, mapErr("get counters", err)
+	}
+	return resp, nil
+}
+
 // DeleteCell deletes a cell both locally and in the bucket. Deleting an already
 // absent cell returns nil (idempotent).
 func (s *Store) DeleteCell(ctx context.Context, relPath string) error {

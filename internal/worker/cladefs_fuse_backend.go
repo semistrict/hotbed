@@ -237,6 +237,11 @@ func (b *CladefsFUSEBackend) HeartbeatMeta() (peerAddr string, incarnation uint6
 	return b.cfg.CladefsPeerAddr, b.incarnation, sharedBases
 }
 
+// SampleObjectStore fetches cumulative cladefsd R2 object-store counters.
+func (b *CladefsFUSEBackend) SampleObjectStore(ctx context.Context) *pb.ObjectStoreStats {
+	return sampleCladefsObjectStore(ctx, b.store)
+}
+
 // ApplyHeartbeat reconciles cladefs peer mesh (SetPeers) and retired-host
 // decommissioning (DecommissionHost) from HeartbeatResponse.
 func (b *CladefsFUSEBackend) ApplyHeartbeat(ctx context.Context, peers []string, decommission []uint64) {

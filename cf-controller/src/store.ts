@@ -153,6 +153,12 @@ export interface SampleRow {
 	queued: number;
 	parked: number;
 	oom: number;
+	r2Up: number;
+	r2Down: number;
+	r2Puts: number;
+	r2Gets: number;
+	r2Fails: number;
+	r2WaitNs: number;
 }
 
 export interface ForkRow {
@@ -921,6 +927,7 @@ export class ControllerStore {
 			node.daemonLogs = hb.daemonLogs;
 			node.admission = hb.admission;
 			node.storageError = hb.storageError;
+			node.objectStore = hb.objectStore;
 		}
 		return { node, addr: str(r.addr), hb };
 	}
@@ -1963,8 +1970,9 @@ export class ControllerStore {
 				.one();
 			const mb = Number(h.resources?.memoryBytes ?? 0n);
 			const memFrac = mb > 0 ? Number(h.usage?.memoryUsedBytes ?? 0n) / mb : 0;
+			const os = h.objectStore;
 			this.sql.exec(
-				"INSERT OR REPLACE INTO samples (node_id, t, cpu, memory, psi, cpu_psi, holding, running, queued, parked, oom) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+				"INSERT OR REPLACE INTO samples (node_id, t, cpu, memory, psi, cpu_psi, holding, running, queued, parked, oom, r2_up, r2_down, r2_puts, r2_gets, r2_fails, r2_wait_ns) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
 				nodeId,
 				nowMs,
 				h.usage?.cpuBusy ?? 0,
@@ -1976,6 +1984,12 @@ export class ControllerStore {
 				num(counts.queued),
 				num(counts.parked),
 				h.oomKills,
+				os?.uploadedBytes ?? 0n,
+				os?.downloadedBytes ?? 0n,
+				os?.putRequests ?? 0n,
+				os?.getRequests ?? 0n,
+				os?.failedRequests ?? 0n,
+				os?.commitWaitNs ?? 0n,
 			);
 			for (const session of h.activeSessions) {
 				this.touchSession(session, nowMs);
@@ -2220,7 +2234,7 @@ export class ControllerStore {
 	samplesSince(sinceMs: number): SampleRow[] {
 		return this.sql
 			.exec(
-				"SELECT node_id, t, cpu, memory, psi, cpu_psi, holding, running, queued, parked, oom FROM samples WHERE t >= ? ORDER BY t",
+				"SELECT node_id, t, cpu, memory, psi, cpu_psi, holding, running, queued, parked, oom, r2_up, r2_down, r2_puts, r2_gets, r2_fails, r2_wait_ns FROM samples WHERE t >= ? ORDER BY t",
 				sinceMs,
 			)
 			.toArray()
@@ -2236,6 +2250,12 @@ export class ControllerStore {
 				queued: num(r.queued),
 				parked: num(r.parked),
 				oom: num(r.oom),
+				r2Up: num(r.r2_up),
+				r2Down: num(r.r2_down),
+				r2Puts: num(r.r2_puts),
+				r2Gets: num(r.r2_gets),
+				r2Fails: num(r.r2_fails),
+				r2WaitNs: num(r.r2_wait_ns),
 			}));
 	}
 

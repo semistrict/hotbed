@@ -190,6 +190,14 @@ function NodeCard({ n, s, color, now, delay }: { n: Node; s: Snapshot; color: st
                 ]}
               />
             </div>
+            {n.objectStore && (
+              <div className="flex items-baseline justify-between text-[10.5px] text-muted-foreground">
+                <span className="eyebrow">R2</span>
+                <span className="num font-mono">
+                  ↑ {bytes(n.objectStore.uploadedBytes)} · ↓ {bytes(n.objectStore.downloadedBytes)}
+                </span>
+              </div>
+            )}
           </div>
           <div className="mt-4 flex items-center gap-3 border-t border-border pt-3 font-mono text-[10.5px] whitespace-nowrap text-muted-foreground">
             <span>

@@ -18,6 +18,7 @@ import (
 	"sync"
 	"time"
 
+	cladefsdv1 "github.com/semistrict/cladefs/go/cladefsd/v1"
 	"github.com/semistrict/hotbed/internal/baseimage"
 	"github.com/semistrict/hotbed/internal/cladefs"
 	pb "github.com/semistrict/hotbed/internal/gen/hotbed/v1"
@@ -216,6 +217,71 @@ func (b *VMBackend) HeartbeatMeta() (peerAddr string, incarnation uint64, shared
 		sharedBases = append(sharedBases, clone(sb))
 	}
 	return b.cfg.CladefsPeerAddr, b.incarnation, sharedBases
+}
+
+// SampleObjectStore fetches cumulative cladefsd R2 object-store counters.
+func (b *VMBackend) SampleObjectStore(ctx context.Context) *pb.ObjectStoreStats {
+	return sampleCladefsObjectStore(ctx, b.store)
+}
+
+func sampleCladefsObjectStore(ctx context.Context, store *cladefs.Store) *pb.ObjectStoreStats {
+	if store == nil {
+		return nil
+	}
+	cctx, cancel := context.WithTimeout(ctx, 2*time.Second)
+	defer cancel()
+	resp, err := store.GetCounters(cctx)
+	if err != nil {
+		slog.Warn("sample cladefsd object-store counters", "err", err)
+		return nil
+	}
+	return objectStoreStatsFromCounters(resp)
+}
+
+func objectStoreStatsFromCounters(resp interface {
+	GetCommitWaitNs() uint64
+	GetPageInBytes() uint64
+	GetFetchedBytes() uint64
+	GetObjectStorage() *cladefsdv1.ObjectStorageStats
+}) *pb.ObjectStoreStats {
+	if resp == nil {
+		return nil
+	}
+	out := &pb.ObjectStoreStats{
+		CommitWaitNs: resp.GetCommitWaitNs(),
+		PageInBytes:  resp.GetPageInBytes(),
+		FetchedBytes: resp.GetFetchedBytes(),
+	}
+	if os := resp.GetObjectStorage(); os != nil {
+		out.DownloadedBytes = os.GetDownloadedBytes()
+		for k, v := range os.GetUploadedBytes() {
+			out.UploadedBytes += v
+			switch k {
+			case "segments":
+				out.UploadedSegmentsBytes += v
+			case "extents":
+				out.UploadedExtentsBytes += v
+			case "checkpoints":
+				out.UploadedCheckpointsBytes += v
+			default:
+				out.UploadedOtherBytes += v
+			}
+		}
+		for k, v := range os.GetRequests() {
+			switch k {
+			case "get", "get-range":
+				out.GetRequests += v
+			case "create", "update", "overwrite":
+				out.PutRequests += v
+			default:
+				out.OtherRequests += v
+			}
+		}
+		for _, v := range os.GetFailures() {
+			out.FailedRequests += v
+		}
+	}
+	return out
 }
 
 // ApplyHeartbeat reconciles cladefs peer mesh (SetPeers) and retired-host

@@ -263,6 +263,12 @@ export const samples = sqliteTable(
 		queued: integer("queued").notNull(),
 		parked: integer("parked").notNull(),
 		oom: integer("oom").notNull(),
+		r2Up: integer("r2_up").notNull().default(0),
+		r2Down: integer("r2_down").notNull().default(0),
+		r2Puts: integer("r2_puts").notNull().default(0),
+		r2Gets: integer("r2_gets").notNull().default(0),
+		r2Fails: integer("r2_fails").notNull().default(0),
+		r2WaitNs: integer("r2_wait_ns").notNull().default(0),
 	},
 	(t) => [primaryKey({ columns: [t.nodeId, t.t] }), index("samples_t").on(t.t)],
 );

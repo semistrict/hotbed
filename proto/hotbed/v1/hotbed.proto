@@ -517,6 +517,25 @@ message Node {
   // disk missing), as of its last heartbeat: it waits for it and serves
   // nothing meanwhile, so it is not online. Empty when its storage is open.
   string storage_error = 19;
+  // Live cladefsd object-store (R2) counters when this node runs cladefsd.
+  ObjectStoreStats object_store = 20;
+}
+
+// Cumulative cladefsd object-store (R2) counters since daemon start.
+message ObjectStoreStats {
+  uint64 uploaded_bytes = 1;
+  uint64 uploaded_segments_bytes = 2;
+  uint64 uploaded_extents_bytes = 3;
+  uint64 uploaded_checkpoints_bytes = 4;
+  uint64 uploaded_other_bytes = 5;
+  uint64 downloaded_bytes = 6;
+  uint64 get_requests = 7;
+  uint64 put_requests = 8;
+  uint64 other_requests = 9;
+  uint64 failed_requests = 10;
+  uint64 commit_wait_ns = 11;
+  uint64 page_in_bytes = 12;
+  uint64 fetched_bytes = 13;
 }
 
 // Host-side view of a VM worker, reported by its host supervisor (macOS).
@@ -1967,6 +1986,8 @@ message HeartbeatRequest {
   uint64 cladefs_incarnation = 18;
   // Warm uploaded cladefs base versions advertised by this worker to the cluster.
   repeated CladefsCell shared_bases = 19;
+  // Cumulative cladefsd object-store (R2) counters since daemon start.
+  ObjectStoreStats object_store = 20;
 }
 
 message HeartbeatResponse {
@@ -2023,6 +2044,12 @@ message Totals {
   int64 median_fork_millis = 4;
   int32 oom_kills = 5;
   int32 parks = 6;
+  uint64 r2_upload_bytes = 7;
+  uint64 r2_download_bytes = 8;
+  uint64 r2_put_requests = 9;
+  uint64 r2_get_requests = 10;
+  uint64 r2_failed_requests = 11;
+  double r2_commit_wait_seconds = 12;
 }
 
 message Sample {
@@ -2036,6 +2063,10 @@ message Sample {
   // Host-side CPU readings for VM nodes, when reported by the host supervisor.
   optional double vm_cpu_busy = 7;
   optional double host_cpu_busy = 8;
+  // R2 object-store transfer and commit-wait rates at this sample.
+  double upload_bytes_per_sec = 9;
+  double download_bytes_per_sec = 10;
+  double commit_wait_ms_per_sec = 11;
 }
 
 message Samples {
@@ -2059,6 +2090,8 @@ message HourBucket {
   int32 forks = 5;
   int32 parks = 6;
   double queue_wait_p95_seconds = 7;
+  uint64 upload_bytes = 8;
+  uint64 download_bytes = 9;
 }
 
 message NodeHour {
@@ -2067,6 +2100,8 @@ message NodeHour {
   double memory_used = 3;
   // Share of the hour the node held new work, 0..1.
   double holding = 4;
+  uint64 upload_bytes = 5;
+  uint64 download_bytes = 6;
 }
 
 message NodeHours {

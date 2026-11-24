@@ -146,10 +146,35 @@ function summarizeRepo(repo: Repo, bases: Base[]): RepoSummary {
 	return out;
 }
 
-function buildSeries(
+interface R2Totals {
+	up: number;
+	down: number;
+	puts: number;
+	gets: number;
+	fails: number;
+	waitNs: number;
+}
+
+function hasR2Counters(s: SampleRow): boolean {
+	return (
+		s.r2Up > 0 || s.r2Down > 0 || s.r2Puts > 0 || s.r2Gets > 0 || s.r2Fails > 0 || s.r2WaitNs > 0
+	);
+}
+
+function counterDelta(curr: number, prev: number): number {
+	return curr >= prev ? curr - prev : curr;
+}
+
+export function buildSeries(
 	samples: SampleRow[],
 	nowMs: number,
-): { series: Record<string, Samples>; load: LoadSample[]; nodeHourly: Record<string, NodeHours> } {
+): {
+	series: Record<string, Samples>;
+	load: LoadSample[];
+	nodeHourly: Record<string, NodeHours>;
+	hourlyR2: Map<number, { up: number; down: number }>;
+	r2Totals: R2Totals;
+} {
 	const live: Record<string, Samples> = {};
 	const bucketNodes = new Map<
 		number,
@@ -157,11 +182,41 @@ function buildSeries(
 	>();
 	const hours = new Map<
 		string,
-		Map<number, { cpu: number; mem: number; held: number; n: number }>
+		Map<number, { cpu: number; mem: number; held: number; n: number; r2Up: number; r2Down: number }>
 	>();
+	const hourlyR2 = new Map<number, { up: number; down: number }>();
+	const prevR2 = new Map<string, SampleRow>();
+	const r2Totals: R2Totals = { up: 0, down: 0, puts: 0, gets: 0, fails: 0, waitNs: 0 };
 	const since = nowMs - LIVE_WINDOW_MS;
 
 	for (const s of samples) {
+		let dUp = 0;
+		let dDown = 0;
+		let dPuts = 0;
+		let dGets = 0;
+		let dFails = 0;
+		let dWaitNs = 0;
+		let dtSec = SAMPLE_SECONDS;
+		if (hasR2Counters(s)) {
+			const prev = prevR2.get(s.node);
+			if (prev !== undefined && s.t > prev.t) {
+				dtSec = Math.max(1, (s.t - prev.t) / 1000);
+				dUp = counterDelta(s.r2Up, prev.r2Up);
+				dDown = counterDelta(s.r2Down, prev.r2Down);
+				dPuts = counterDelta(s.r2Puts, prev.r2Puts);
+				dGets = counterDelta(s.r2Gets, prev.r2Gets);
+				dFails = counterDelta(s.r2Fails, prev.r2Fails);
+				dWaitNs = counterDelta(s.r2WaitNs, prev.r2WaitNs);
+			}
+			prevR2.set(s.node, s);
+		}
+		r2Totals.up += dUp;
+		r2Totals.down += dDown;
+		r2Totals.puts += dPuts;
+		r2Totals.gets += dGets;
+		r2Totals.fails += dFails;
+		r2Totals.waitNs += dWaitNs;
+
 		if (s.t >= since) {
 			if (!live[s.node]) live[s.node] = create(SamplesSchema);
 			live[s.node].samples.push(
@@ -172,6 +227,9 @@ function buildSeries(
 					memoryPressure: s.psi,
 					cpuPressure: s.cpuPsi,
 					holding: s.holding,
+					uploadBytesPerSec: dUp / dtSec,
+					downloadBytesPerSec: dDown / dtSec,
+					commitWaitMsPerSec: dWaitNs / 1e6 / dtSec,
 				}),
 			);
 			const b = Math.floor(s.t / (SAMPLE_SECONDS * 1000)) * (SAMPLE_SECONDS * 1000);
@@ -190,13 +248,25 @@ function buildSeries(
 		const h = hourOf(s.t);
 		let acc = hm.get(h);
 		if (!acc) {
-			acc = { cpu: 0, mem: 0, held: 0, n: 0 };
+			acc = { cpu: 0, mem: 0, held: 0, n: 0, r2Up: 0, r2Down: 0 };
 			hm.set(h, acc);
 		}
 		acc.cpu += s.cpu;
 		acc.mem += s.memory;
 		if (s.holding) acc.held++;
 		acc.n++;
+		acc.r2Up += dUp;
+		acc.r2Down += dDown;
+
+		if (dUp > 0 || dDown > 0) {
+			let hr = hourlyR2.get(h);
+			if (!hr) {
+				hr = { up: 0, down: 0 };
+				hourlyR2.set(h, hr);
+			}
+			hr.up += dUp;
+			hr.down += dDown;
+		}
 	}
 
 	const load: LoadSample[] = [];
@@ -222,20 +292,32 @@ function buildSeries(
 					cpuBusy: acc ? acc.cpu / acc.n : 0,
 					memoryUsed: acc ? acc.mem / acc.n : 0,
 					holding: acc ? acc.held / acc.n : 0,
+					uploadBytes: BigInt(Math.round(acc?.r2Up ?? 0)),
+					downloadBytes: BigInt(Math.round(acc?.r2Down ?? 0)),
 				}),
 			);
 		}
 		nodeHourly[node] = nh;
 	}
-	return { series: live, load, nodeHourly };
+	return { series: live, load, nodeHourly, hourlyR2, r2Totals };
 }
 
-function buildHourly(history: FinishedCommand[], forks: ForkRow[], nowMs: number): HourBucket[] {
+function buildHourly(
+	history: FinishedCommand[],
+	forks: ForkRow[],
+	nowMs: number,
+	hourlyR2: Map<number, { up: number; down: number }>,
+): HourBucket[] {
 	const dh = dayHours(nowMs);
 	const idx = new Map<number, number>();
 	const out = dh.map((h, i) => {
 		idx.set(h, i);
-		return create(HourBucketSchema, { hour: BigInt(h) });
+		const r2 = hourlyR2.get(h);
+		return create(HourBucketSchema, {
+			hour: BigInt(h),
+			uploadBytes: BigInt(Math.round(r2?.up ?? 0)),
+			downloadBytes: BigInt(Math.round(r2?.down ?? 0)),
+		});
 	});
 	const waits: number[][] = out.map(() => []);
 	for (const c of history) {
@@ -275,8 +357,22 @@ function countOomKills(samples: SampleRow[]): number {
 	return total;
 }
 
-function buildTotals(history: FinishedCommand[], forks: ForkRow[], oom: number): Totals {
-	const t = create(TotalsSchema, { oomKills: oom, forks: forks.length });
+function buildTotals(
+	history: FinishedCommand[],
+	forks: ForkRow[],
+	oom: number,
+	r2Totals: R2Totals,
+): Totals {
+	const t = create(TotalsSchema, {
+		oomKills: oom,
+		forks: forks.length,
+		r2UploadBytes: BigInt(Math.round(r2Totals.up)),
+		r2DownloadBytes: BigInt(Math.round(r2Totals.down)),
+		r2PutRequests: BigInt(Math.round(r2Totals.puts)),
+		r2GetRequests: BigInt(Math.round(r2Totals.gets)),
+		r2FailedRequests: BigInt(Math.round(r2Totals.fails)),
+		r2CommitWaitSeconds: r2Totals.waitNs / 1e9,
+	});
 	for (const c of history) {
 		t.parks += c.parks;
 		if (c.coldSeconds === undefined || c.state === CommandState.CANCELLED) continue;
@@ -880,7 +976,7 @@ export function createClusterService(
 			const history = ctrl.store.historySince(dayMs);
 			const events = ctrl.store.recentEvents(EVENTS_SHOWN);
 			const samples = ctrl.store.samplesSince(dayMs);
-			const { series, load, nodeHourly } = buildSeries(samples, nowMs);
+			const { series, load, nodeHourly, hourlyR2, r2Totals } = buildSeries(samples, nowMs);
 			const oom = countOomKills(samples);
 			const forks = ctrl.store.forksSince(dayMs);
 			const sessions = ctrl.store.recentSessions(dayMs, "", "");
@@ -933,9 +1029,9 @@ export function createClusterService(
 					nowMs,
 				),
 				load,
-				hourly: buildHourly(history, forks, nowMs),
+				hourly: buildHourly(history, forks, nowMs, hourlyR2),
 				nodeHourly,
-				totals24h: buildTotals(history, forks, oom),
+				totals24h: buildTotals(history, forks, oom, r2Totals),
 				sessions,
 				schedules: scheds,
 				openQuestions,

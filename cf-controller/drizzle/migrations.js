@@ -4,6 +4,7 @@ import m0001 from "./0001_good_talos.sql";
 import m0002 from "./0002_sad_jasper_sitwell.sql";
 import m0003 from "./0003_sleepy_psylocke.sql";
 import m0004 from "./0004_bumpy_thena.sql";
+import m0005 from "./0005_nice_lilandra.sql";
 
 export default {
 	journal,
@@ -13,5 +14,6 @@ export default {
 		m0002,
 		m0003,
 		m0004,
+		m0005,
 	},
 };

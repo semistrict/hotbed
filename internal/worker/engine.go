@@ -227,6 +227,7 @@ type Engine struct {
 	disk             *pb.DiskUsage
 	diskBytes        int64
 	oomKills         int64
+	objectStore      *pb.ObjectStoreStats
 	resources        *pb.Resources
 	offErr           string    // the last failure to give back a measurement's isolation, logged once
 	offRetry         time.Time // when to try to give it back again, after a failure
@@ -819,8 +820,17 @@ func (e *Engine) Sample() {
 	if err != nil {
 		slog.Warn("sample oom kills", "err", err)
 	}
+	var objStore *pb.ObjectStoreStats
+	if e.cfg.VM != nil {
+		objStore = e.cfg.VM.SampleObjectStore(context.Background())
+	} else if e.cfg.CladefsFUSE != nil {
+		objStore = e.cfg.CladefsFUSE.SampleObjectStore(context.Background())
+	}
 	e.mu.Lock()
 	e.oomKills = oom
+	if objStore != nil {
+		e.objectStore = objStore
+	}
 	if mem.Total > 0 {
 		e.lastMem = mem
 	}

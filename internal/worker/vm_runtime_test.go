@@ -21,6 +21,7 @@ import (
 	"github.com/semistrict/hotbed/internal/guestd"
 	"github.com/semistrict/hotbed/internal/runtime"
 	"github.com/semistrict/hotbed/internal/unit"
+	cladefsdv1 "github.com/semistrict/cladefs/go/cladefsd/v1"
 )
 
 type testGuestResolver struct {
@@ -386,5 +387,44 @@ func TestIsVMWorkspaceNoDeadlockUnderEngineLock(t *testing.T) {
 	}
 	if eng.usesRuntime("ws-chroot") {
 		t.Fatal("expected ws-chroot not to use runtime while e.mu is held")
+	}
+}
+
+func TestObjectStoreStatsFromCounters(t *testing.T) {
+	got := objectStoreStatsFromCounters(&cladefsdv1.GetCountersResponse{
+		CommitWaitNs: 1_500_000_000,
+		PageInBytes:  900,
+		FetchedBytes: 100,
+		ObjectStorage: &cladefsdv1.ObjectStorageStats{
+			DownloadedBytes: 4096,
+			UploadedBytes: map[string]uint64{
+				"segments":    1000,
+				"extents":     200,
+				"checkpoints": 50,
+				"other":       10,
+			},
+			Requests: map[string]uint64{
+				"get":       3,
+				"get-range": 7,
+				"create":    5,
+				"update":    2,
+				"overwrite": 1,
+				"head":      4,
+				"delete":    2,
+			},
+			Failures: map[string]uint64{
+				"create": 1,
+				"get":    2,
+			},
+		},
+	})
+	if got.UploadedBytes != 1260 || got.UploadedSegmentsBytes != 1000 || got.UploadedExtentsBytes != 200 || got.UploadedCheckpointsBytes != 50 || got.UploadedOtherBytes != 10 {
+		t.Fatalf("unexpected upload breakdown: %+v", got)
+	}
+	if got.DownloadedBytes != 4096 || got.GetRequests != 10 || got.PutRequests != 8 || got.OtherRequests != 6 || got.FailedRequests != 3 {
+		t.Fatalf("unexpected requests/downloads: %+v", got)
+	}
+	if got.CommitWaitNs != 1_500_000_000 || got.PageInBytes != 900 || got.FetchedBytes != 100 {
+		t.Fatalf("unexpected daemon counters: %+v", got)
 	}
 }
