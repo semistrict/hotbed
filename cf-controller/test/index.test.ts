@@ -13,6 +13,7 @@ import { describe, expect, it } from "vite-plus/test";
 import {
 	BaseSchema,
 	BaseState,
+	CladefsCellSchema,
 	ClusterService,
 	CommandLogSchema,
 	CommandSchema,
@@ -669,6 +670,158 @@ describe("Cloudflare Workers single-DO hotbed controller", () => {
 		});
 		expect(minted.token).toBe("ghp_test_secret_token_123");
 		expect(minted.username).toBe("x-access-token");
+	});
+
+	it("coordinates cladefs peer mesh, shared R2 bases, monotonic fencing tokens, runtime placement, and retired host decommission", async () => {
+		const owner = ownerClients();
+		const ubu1 = workerClients(OWNER_TOKEN, "node-clade-1", "clade1", "100.73.156.10:7121");
+		const node2 = workerClients(OWNER_TOKEN, "node-clade-2", "clade2", "100.73.156.20:7121");
+		const asahi = workerClients(OWNER_TOKEN, "node-asahi-1", "asahimbp", "100.73.156.30:7121");
+
+		const j1 = await ubu1.cluster.join({});
+		await node2.cluster.join({});
+		await asahi.cluster.join({});
+
+		await owner.cluster.putRepo({
+			repo: create(RepoSchema, {
+				id: "clade-demo",
+				url: "https://github.com/semistrict/clade-demo.git",
+				branch: "main",
+			}),
+		});
+
+		// clade1 advertises vm+chroot, cladefs peer addr, incarnation 111, and a warm shared R2 base
+		const hb1 = await ubu1.cluster.heartbeat(
+			create(HeartbeatRequestSchema, {
+				clusterId: j1.clusterId,
+				resources: create(ResourcesSchema, {
+					arch: "amd64",
+					cpus: 16,
+					memoryBytes: BigInt(32 * 1024 ** 3),
+					benchCpus: "4-7",
+					runtimes: ["vm", "chroot"],
+				}),
+				usage: create(NodeUsageSchema, { cpuBusy: 0.1, memoryUsedBytes: BigInt(4 * 1024 ** 3) }),
+				cladefsPeerAddr: "100.73.156.10:9185",
+				cladefsIncarnation: 111n,
+				sharedBases: [
+					create(CladefsCellSchema, {
+						project: "clade-demo",
+						arch: "amd64",
+						baseId: "clade-demo-g1",
+						recipe: "r1",
+						tenant: 0n,
+						cell: 42n,
+						version: 7n,
+					}),
+				],
+			}),
+		);
+		expect(hb1.cladefsPeers).toEqual(["100.73.156.10:9185"]);
+
+		// clade2 joins peer mesh without a local base; asahimbp is chroot-only
+		const hb2 = await node2.cluster.heartbeat(
+			create(HeartbeatRequestSchema, {
+				clusterId: j1.clusterId,
+				resources: create(ResourcesSchema, {
+					arch: "amd64",
+					cpus: 16,
+					memoryBytes: BigInt(32 * 1024 ** 3),
+					runtimes: ["vm", "chroot"],
+				}),
+				usage: create(NodeUsageSchema, { cpuBusy: 0.05, memoryUsedBytes: BigInt(2 * 1024 ** 3) }),
+				cladefsPeerAddr: "100.73.156.20:9185",
+				cladefsIncarnation: 222n,
+			}),
+		);
+		expect(hb2.cladefsPeers).toEqual(["100.73.156.10:9185", "100.73.156.20:9185"]);
+
+		await asahi.cluster.heartbeat(
+			create(HeartbeatRequestSchema, {
+				clusterId: j1.clusterId,
+				resources: create(ResourcesSchema, {
+					arch: "arm64",
+					cpus: 14,
+					memoryBytes: BigInt(36 * 1024 ** 3),
+					runtimes: ["chroot"],
+				}),
+				usage: create(NodeUsageSchema, { cpuBusy: 0.01, memoryUsedBytes: BigInt(4 * 1024 ** 3) }),
+			}),
+		);
+
+		const sess = await owner.sessions.startSession({ project: "clade-demo" });
+
+		// vm runtime rejected on chroot-only asahimbp
+		await expect(
+			owner.workspaces.createWorkspace({
+				sessionId: sess.id,
+				repo: "clade-demo",
+				placement: { node: "asahimbp", runtime: "vm" },
+			}),
+		).rejects.toThrow(/does not support vm runtime/);
+
+		// --bench + runtime=vm rejected
+		await expect(
+			owner.workspaces.createWorkspace({
+				sessionId: sess.id,
+				repo: "clade-demo",
+				placement: { node: "clade1", runtime: "vm", bench: true },
+			}),
+		).rejects.toThrow(/cannot run --bench inside vm runtime/);
+
+		// Connect /ws/worker tunnel for clade2 to capture forwarded CreateWorkspaceRequest
+		const captured: Array<MessageShape<typeof CreateWorkspaceRequestSchema>> = [];
+		const tunnel = await openMockWorkerTunnel(
+			OWNER_TOKEN,
+			"node-clade-2",
+			"clade2",
+			"100.73.156.20:7121",
+			{
+				unary: {
+					"/hotbed.v1.WorkspaceService/CreateWorkspace": (reqBytes) => {
+						const req = fromBinary(CreateWorkspaceRequestSchema, reqBytes);
+						captured.push(req);
+						return encodeProto(
+							WorkspaceSchema,
+							create(WorkspaceSchema, {
+								id: req.id,
+								sessionId: req.sessionId,
+								nodeId: "node-clade-2",
+								project: "clade-demo",
+								runtime: "vm",
+								state: WorkspaceState.IDLE,
+							}),
+						);
+					},
+				},
+			},
+		);
+
+		const created = await owner.workspaces.createWorkspace({
+			sessionId: sess.id,
+			repo: "clade-demo",
+			placement: { node: "clade2", runtime: "vm" },
+		});
+		expect(created.runtime).toBe("vm");
+		expect(captured.length).toBe(1);
+		expect(captured[0].runtime).toBe("vm");
+		expect(captured[0].sharedBase?.cell).toBe(42n);
+		expect(captured[0].sharedBase?.version).toBe(7n);
+		expect(captured[0].fencingToken).toBe(1n);
+
+		// Second session gets strictly higher monotonic fencing token (2n)
+		const sess2 = await owner.sessions.startSession({ project: "clade-demo" });
+		await owner.workspaces.createWorkspace({
+			sessionId: sess2.id,
+			repo: "clade-demo",
+			placement: { node: "clade2", runtime: "vm" },
+		});
+		expect(captured.length).toBe(2);
+		expect(captured[1].fencingToken).toBe(2n);
+		tunnel.close();
+
+		// Online cladefs node cannot be retired yet
+		await expect(owner.cluster.retireNode({ node: "clade1" })).rejects.toThrow(/is online/);
 	});
 
 	it("auto-runs Drizzle migrations, imports snapshots via /admin/import, and redirects workers once migrated", async () => {

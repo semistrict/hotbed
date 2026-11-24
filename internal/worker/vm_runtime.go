@@ -21,6 +21,57 @@ import (
 	"github.com/semistrict/hotbed/internal/unit"
 )
 
+// isVMWorkspace reports whether workspace wsID was created with runtime="vm".
+func (e *Engine) isVMWorkspace(wsID string) bool {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	w, ok := e.workspaces[wsID]
+	return ok && w.ws().Runtime == runtime.KindVM
+}
+
+// resolveWorkspaceRuntime picks "vm" or "chroot" for a CreateWorkspaceRequest.
+func (e *Engine) resolveWorkspaceRuntime(req *pb.CreateWorkspaceRequest) (string, error) {
+	rt := req.GetRuntime()
+	if rt == "" && req.GetPlacement() != nil {
+		rt = req.GetPlacement().GetRuntime()
+	}
+	if req.GetPlacement().GetBench() {
+		if rt == runtime.KindVM {
+			return "", api.Errorf(api.CodeInvalidArgs, "--bench requires chroot runtime, not vm")
+		}
+		return runtime.KindChroot, nil
+	}
+	if rt == "" {
+		if e.cfg.VM != nil {
+			return e.cfg.VM.DefaultRuntime(), nil
+		}
+		if e.cfg.Runtime != nil && e.cfg.RuntimeFor == nil {
+			return e.cfg.Runtime.Kind(), nil
+		}
+		return runtime.KindChroot, nil
+	}
+	switch rt {
+	case runtime.KindChroot:
+		return runtime.KindChroot, nil
+	case runtime.KindVM:
+		if e.cfg.VM == nil && e.cfg.Runtime == nil {
+			return "", api.Errorf(api.CodePlatformNotSupported, "vm runtime is not enabled on this worker")
+		}
+		return runtime.KindVM, nil
+	default:
+		return "", api.Errorf(api.CodeInvalidArgs, "unknown runtime %q (want vm or chroot)", rt)
+	}
+}
+
+// applyCladefsHeartbeat forwards controller-provided cladefs peer addresses
+// and retired host incarnations to the local cladefsd backend.
+func (e *Engine) applyCladefsHeartbeat(ctx context.Context, reply *pb.HeartbeatResponse) {
+	if e.cfg.VM == nil || reply == nil {
+		return
+	}
+	e.cfg.VM.ApplyHeartbeat(ctx, reply.GetCladefsPeers(), reply.GetDecommissionIncarnations())
+}
+
 // usesRuntime reports whether workspace wsID is executed via cfg.Runtime
 // (e.g. a Firecracker microVM via hotbed-guestd) instead of host chroot.
 func (e *Engine) usesRuntime(wsID string) bool {

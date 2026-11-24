@@ -333,6 +333,19 @@ func Run(ctx context.Context, dir string, cfg statedir.WorkerConfig, tn Tailnet,
 	if cfg.Bench != nil {
 		ecfg.ScratchDisk = cfg.Bench.Disk
 	}
+	if cfg.VM != nil && cfg.VM.Enabled {
+		vmb, err := OpenVMBackend(ctx, dir, *cfg.VM, workSlice, "")
+		if err != nil {
+			return fmt.Errorf("start cladefs Firecracker VM backend: %w", err)
+		}
+		defer vmb.Close()
+		ecfg.VM = vmb
+		slog.Info("cladefs + Firecracker VM runtime enabled",
+			"defaultRuntime", vmb.DefaultRuntime(),
+			"peerAddr", cfg.VM.CladefsPeerAddr,
+			"cellRoot", cfg.VM.CellRoot,
+		)
+	}
 	// Lower the work slice's CPU and IO priority so normal commands yield to
 	// desktop and system processes while still sharing spare CPU among
 	// themselves by their per-command CPUWeight=. Measurements run in a

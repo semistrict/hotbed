@@ -203,7 +203,7 @@ func (c *shellCmd) workspaceForShell(ctx context.Context, d deps, session, repo,
 			return ws, w, nil
 		}
 	}
-	return c.workspaceFor(ctx, d, session, repo, &pb.Placement{Node: c.Node, Arch: c.Arch}, dir)
+	return c.workspaceFor(ctx, d, session, repo, &pb.Placement{Node: c.Node, Arch: c.Arch, Runtime: c.Runtime}, dir)
 }
 
 func (c *shellCmd) existingWorkspace(ctx context.Context, d deps, session, node string) (*pb.Workspace, workerClients, bool, error) {

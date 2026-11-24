@@ -58,6 +58,13 @@ func (e *Engine) CreateWorkspace(ctx context.Context, req *pb.CreateWorkspaceReq
 	if dup {
 		return nil, api.Errorf(api.CodeConflict, "workspace %s exists", req.Id)
 	}
+	wsRuntime, err := e.resolveWorkspaceRuntime(req)
+	if err != nil {
+		return nil, err
+	}
+	if wsRuntime == "vm" && e.cfg.VM != nil {
+		return e.createVMWorkspace(ctx, req)
+	}
 	lock := e.projectLock(p.Name)
 	lock.Lock()
 	base, note, err := e.baseFor(ctx, p)
@@ -491,6 +498,12 @@ func (e *Engine) ReleaseWorkspace(ctx context.Context, id string) (retErr error)
 	if e.usesRuntime(id) {
 		if err := e.cfg.Runtime.Teardown(ctx, id); err != nil {
 			slog.Warn("teardown workspace runtime on release", "workspace", id, "err", err)
+		}
+		if e.cfg.VM != nil {
+			if err := e.cfg.VM.DeleteWorkspaceCell(ctx, id); err != nil {
+				slog.Warn("delete cladefs workspace cell on release", "workspace", id, "err", err)
+			}
+			vol = "" // cladefs cell deleted directly; no ZFS/btrfs volume
 		}
 	}
 

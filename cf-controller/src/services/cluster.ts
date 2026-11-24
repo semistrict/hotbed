@@ -392,14 +392,36 @@ export function createClusterService(
 			const nowMs = ctrl.now();
 			const hu = ctrl.hostUsages.get(caller.hostname, nowMs);
 			ctrl.store.beat(caller.nodeId, req, nowMs);
+			if (req.sharedBases.length > 0) {
+				ctrl.store.upsertSharedBases(
+					caller.nodeId,
+					req.resources?.arch ?? "",
+					req.sharedBases,
+					nowMs,
+				);
+			}
 			ctrl.power.changes.wake(caller.hostname);
 			const { projects, release } = ctrl.hostingFor(caller.nodeId, caller.hostname);
 			const build = ctrl.builds.buildFor("linux", req.resources?.arch ?? "");
+			const peerSet = new Set<string>();
+			for (const nr of ctrl.store.listNodes()) {
+				const peerAddr = nr.hb?.cladefsPeerAddr?.trim();
+				if (peerAddr && ctrl.withOnline(nr.node).online) {
+					peerSet.add(peerAddr);
+				}
+			}
+			const cladefsPeers = [...peerSet].sort();
+			const decommissionIncarnations =
+				req.cladefsPeerAddr || req.cladefsIncarnation > 0n
+					? ctrl.store.listPendingDecommissions(nowMs - 24 * 3600_000)
+					: [];
 			return create(HeartbeatResponseSchema, {
 				projects,
 				release,
 				build,
 				hostUsage: hu,
+				cladefsPeers,
+				decommissionIncarnations,
 			});
 		},
 
@@ -1036,7 +1058,12 @@ export function createClusterService(
 					`${n.hostname} is online: only a node gone for good is retired`,
 				).withSuggestion("stop its worker first: hotbed worker stop (or destroy) on its machine");
 			}
-			ctrl.store.retireNode(n.id, ctrl.now());
+			const nowMs = ctrl.now();
+			ctrl.store.retireNode(n.id, nowMs);
+			const inc = r.hb?.cladefsIncarnation ?? 0n;
+			if (inc > 0n) {
+				ctrl.store.recordRetiredIncarnation(inc, n.id, n.hostname, nowMs);
+			}
 			return n;
 		},
 

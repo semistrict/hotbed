@@ -467,7 +467,13 @@ export function createWorkspaceService(ctrl: ControllerContext): {
 					return { kind: "reconcile" as const, needRelease, needProbe };
 				}
 				const filtered = nvs.filter((nv) => !skip.has(nv.node.id));
-				const cs = buildCandidates(filtered, p.name, mine, (arch) => ctrl.follows(arch));
+				const cs = buildCandidates(
+					filtered,
+					p.name,
+					mine,
+					(arch) => ctrl.follows(arch),
+					(arch) => ctrl.store.hasSharedBase(p.name, arch),
+				);
 				const { chosen, why, err } = chooseCandidate(
 					cs,
 					req.placement,
@@ -490,6 +496,12 @@ export function createWorkspaceService(ctrl: ControllerContext): {
 				if (chosen.mine) {
 					return { kind: "done" as const, node: chosen, upgrading: [] };
 				}
+				const chosenArch = chosen.view.hb?.resources?.arch ?? "";
+				const chosenRuntimes = chosen.view.hb?.resources?.runtimes ?? [];
+				const reqRuntime = req.placement?.bench ? "chroot" : (req.placement?.runtime ?? "");
+				const usesVM = reqRuntime === "vm" || (reqRuntime === "" && chosenRuntimes.includes("vm"));
+				const sharedBase = usesVM ? ctrl.store.latestSharedBase(p.name, chosenArch) : undefined;
+				const fencingToken = usesVM ? ctrl.store.nextFencingToken() : 0n;
 				const fwd = create(CreateWorkspaceRequestSchema, {
 					repo: req.repo,
 					agent: sess.agent,
@@ -498,6 +510,9 @@ export function createWorkspaceService(ctrl: ControllerContext): {
 					syncDir: req.syncDir,
 					syncHost: req.syncDir ? syncHost : "",
 					project: hosted,
+					runtime: reqRuntime,
+					sharedBase,
+					fencingToken,
 				});
 				const ok = ctrl.store.addLiveWorkspace(
 					fwd.id,

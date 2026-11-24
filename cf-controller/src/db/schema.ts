@@ -382,3 +382,29 @@ export const gitCredentials = sqliteTable(
 	},
 	(t) => [index("git_credentials_host").on(t.host)],
 );
+
+export const sharedBases = sqliteTable(
+	"shared_bases",
+	{
+		project: text("project").notNull(),
+		arch: text("arch").notNull(),
+		recipe: text("recipe").notNull().default(""),
+		baseId: text("base_id").notNull(),
+		tenant: text("tenant").notNull(),
+		cell: text("cell").notNull(),
+		version: text("version").notNull(),
+		nodeId: text("node_id").notNull(),
+		updatedAt: integer("updated_at").notNull(),
+	},
+	(t) => [
+		primaryKey({ columns: [t.project, t.arch, t.recipe] }),
+		index("shared_bases_project_arch").on(t.project, t.arch, t.updatedAt),
+	],
+);
+
+export const cladefsRetiredIncarnations = sqliteTable("cladefs_retired_incarnations", {
+	incarnation: text("incarnation").primaryKey(),
+	nodeId: text("node_id").notNull(),
+	hostname: text("hostname").notNull(),
+	retiredAt: integer("retired_at").notNull(),
+});

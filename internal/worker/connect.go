@@ -366,6 +366,7 @@ func HeartbeatOnce(ctx context.Context, eng *Engine, cluster hotbedv1connect.Clu
 	eng.delivered(h)
 	eng.setProjects(reply.Projects, sent)
 	eng.SetHostUsage(reply.GetHostUsage())
+	eng.applyCladefsHeartbeat(ctx, reply)
 	for _, id := range reply.Release {
 		if err := eng.ReleaseWorkspace(ctx, id); err != nil && api.CodeOf(err) != api.CodeNotFound {
 			slog.Error("release workspace of an ended session", "workspace", id, "err", err)

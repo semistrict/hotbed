@@ -13,6 +13,7 @@ import {
 import * as dbSchema from "./db/schema.ts";
 import {
 	BaseSchema,
+	CladefsCellSchema,
 	ClusterEventSchema,
 	CommandDiagnosticsSchema,
 	CommandProfileSchema,
@@ -60,6 +61,7 @@ import {
 	WorkspaceUpdate_What,
 	WorkspaceUpdateSchema,
 	type Base,
+	type CladefsCell,
 	type Checkpoint,
 	type ClusterEvent,
 	type Command,
@@ -3212,6 +3214,114 @@ export class ControllerStore {
 				cred: unmarshal(GitCredentialSchema, str(r.doc)),
 				secret: JSON.parse(str(r.secret)) as GitCredentialSecret,
 			}));
+	}
+
+	// ---- cladefs coordination -------------------------------------------
+
+	nextFencingToken(): bigint {
+		let next = 1n;
+		this.transactionSync(() => {
+			const cur = this.getMeta("cladefs_fencing_token");
+			if (cur) {
+				next = BigInt(cur) + 1n;
+			}
+			this.setMeta("cladefs_fencing_token", next.toString());
+		});
+		return next;
+	}
+
+	upsertSharedBases(nodeId: string, arch: string, cells: CladefsCell[], nowMs: number): void {
+		if (cells.length === 0) return;
+		this.transactionSync(() => {
+			for (const c of cells) {
+				if (!c.project || c.cell === 0n || c.version === 0n) continue;
+				const cellArch = c.arch || arch;
+				if (!cellArch) continue;
+				this.sql.exec(
+					`INSERT INTO shared_bases (project, arch, recipe, base_id, tenant, cell, version, node_id, updated_at)
+					 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+					 ON CONFLICT (project, arch, recipe) DO UPDATE SET
+						base_id = excluded.base_id,
+						tenant = excluded.tenant,
+						cell = excluded.cell,
+						version = excluded.version,
+						node_id = excluded.node_id,
+						updated_at = excluded.updated_at`,
+					c.project,
+					cellArch,
+					c.recipe ?? "",
+					c.baseId ?? "",
+					c.tenant.toString(),
+					c.cell.toString(),
+					c.version.toString(),
+					nodeId,
+					nowMs,
+				);
+			}
+		});
+	}
+
+	latestSharedBase(project: string, arch: string): CladefsCell | undefined {
+		if (!project || !arch) return undefined;
+		const rows = this.sql
+			.exec(
+				`SELECT project, arch, recipe, base_id, tenant, cell, version
+				 FROM shared_bases
+				 WHERE project = ? AND arch = ?
+				 ORDER BY updated_at DESC LIMIT 1`,
+				project,
+				arch,
+			)
+			.toArray();
+		if (rows.length === 0) return undefined;
+		const r = rows[0];
+		return create(CladefsCellSchema, {
+			project: str(r.project),
+			arch: str(r.arch),
+			recipe: str(r.recipe),
+			baseId: str(r.base_id),
+			tenant: BigInt(str(r.tenant)),
+			cell: BigInt(str(r.cell)),
+			version: BigInt(str(r.version)),
+		});
+	}
+
+	hasSharedBase(project: string, arch: string): boolean {
+		if (!project || !arch) return false;
+		return (
+			this.sql
+				.exec("SELECT 1 FROM shared_bases WHERE project = ? AND arch = ? LIMIT 1", project, arch)
+				.toArray().length > 0
+		);
+	}
+
+	recordRetiredIncarnation(
+		incarnation: bigint,
+		nodeId: string,
+		hostname: string,
+		nowMs: number,
+	): void {
+		if (incarnation <= 0n) return;
+		this.sql.exec(
+			`INSERT INTO cladefs_retired_incarnations (incarnation, node_id, hostname, retired_at)
+			 VALUES (?, ?, ?, ?)
+			 ON CONFLICT (incarnation) DO UPDATE SET retired_at = excluded.retired_at`,
+			incarnation.toString(),
+			nodeId,
+			hostname,
+			nowMs,
+		);
+	}
+
+	listPendingDecommissions(sinceMs: number): bigint[] {
+		return this.sql
+			.exec(
+				`SELECT incarnation FROM cladefs_retired_incarnations
+				 WHERE retired_at >= ? ORDER BY retired_at ASC`,
+				sinceMs,
+			)
+			.toArray()
+			.map((r) => BigInt(str(r.incarnation)));
 	}
 
 	// ---- prune ----------------------------------------------------------

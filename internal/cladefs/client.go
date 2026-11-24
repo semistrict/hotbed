@@ -511,6 +511,20 @@ func (s *Store) DecommissionHost(ctx context.Context, incarnation uint64) (retir
 	return resp.GetRetired(), resp.GetLeft(), nil
 }
 
+// Incarnation returns this cladefsd daemon's ephemeral host incarnation ID
+// (0 if the daemon was started without CLADEFSD_EPHEMERAL).
+func (s *Store) Incarnation(ctx context.Context) (uint64, error) {
+	resp, err := s.api.GetStats(ctx, &cladefsdv1.GetStatsRequest{
+		LeaveOutVms:        true,
+		LeaveOutGuests:     true,
+		LeaveOutHistograms: true,
+	})
+	if err != nil {
+		return 0, mapErr("get stats", err)
+	}
+	return resp.GetIncarnation(), nil
+}
+
 func isNotFound(err error) bool {
 	if errors.Is(err, syscall.ENOENT) {
 		return true

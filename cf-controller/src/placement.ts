@@ -147,6 +147,17 @@ export function candidateUnfit(c: Candidate, p: Placement | undefined, hosts: st
 	if (p?.bench && !(c.view.hb.resources?.benchCpus ?? "")) {
 		return `${c.host} has no measurement CPUs`;
 	}
+	const reqRuntime = p?.runtime ?? "";
+	if (p?.bench && reqRuntime === "vm") {
+		return `${c.host} cannot run --bench inside vm runtime (requires chroot)`;
+	}
+	if (reqRuntime) {
+		const runtimes = c.view.hb.resources?.runtimes ?? [];
+		const supports = runtimes.length > 0 ? runtimes.includes(reqRuntime) : reqRuntime === "chroot";
+		if (!supports) {
+			return `${c.host} does not support ${reqRuntime} runtime`;
+		}
+	}
 	const memLow = p?.memoryLowBytes ?? 0n;
 	if (memLow > c.ram) {
 		return `${c.host} has ${c.ram} bytes of RAM, less than the ${memLow} guaranteed`;
@@ -173,6 +184,7 @@ export function buildCandidates(
 	project: string,
 	mine: Map<string, string>,
 	follows: (arch: string) => number,
+	sharedWarm?: (arch: string) => boolean,
 ): Candidate[] {
 	const out: Candidate[] = [];
 	for (const nv of nvs) {
@@ -188,6 +200,14 @@ export function buildCandidates(
 			if (b.project !== project) continue;
 			if (b.state === BaseState.WARM) warm = true;
 			if (!newest || b.generation > newest.generation) newest = b;
+		}
+		if (
+			!warm &&
+			sharedWarm &&
+			(res?.runtimes ?? []).includes("vm") &&
+			sharedWarm(res?.arch ?? "")
+		) {
+			warm = true;
 		}
 		const broken = !warm && !!newest && newest.state === BaseState.FAILED;
 

@@ -74,6 +74,31 @@ type WorkerConfig struct {
 	// Token is the bearer token used to authenticate to a remote HTTPS
 	// controller (such as Cloudflare Workers) and its /ws/worker tunnel.
 	Token string `json:"token,omitempty"`
+	// VM enables the cladefsd + Firecracker microVM runtime alongside chroot.
+	VM *VMConfig `json:"vm,omitempty"`
+}
+
+// VMConfig configures a worker's cladefsd + Firecracker microVM runtime.
+type VMConfig struct {
+	Enabled            bool     `json:"enabled,omitempty"`
+	Default            bool     `json:"default,omitempty"` // default non-bench workspaces to "vm"
+	CladefsControlSock string   `json:"cladefsControlSock,omitempty"`
+	CladefsVMSock      string   `json:"cladefsVMSock,omitempty"`
+	CladefsPeerAddr    string   `json:"cladefsPeerAddr,omitempty"`
+	CellRoot           string   `json:"cellRoot,omitempty"`
+	TenantID           uint64   `json:"tenantId,omitempty"`
+	FirecrackerBin     string   `json:"firecrackerBin,omitempty"`
+	KernelPath         string   `json:"kernelPath,omitempty"`
+	GuestdBin          string   `json:"guestdBin,omitempty"`
+	VMUser             string   `json:"vmUser,omitempty"`
+	VCPUs              int      `json:"vcpus,omitempty"`
+	MemMiB             int      `json:"memMiB,omitempty"`
+	DiskBytes          uint64   `json:"diskBytes,omitempty"`
+	DAXWindowBytes     uint64   `json:"daxWindowBytes,omitempty"`
+	DAXPrivateMaxBytes uint64   `json:"daxPrivateMaxBytes,omitempty"`
+	BridgeName         string   `json:"bridgeName,omitempty"`
+	BridgeCIDR         string   `json:"bridgeCIDR,omitempty"`
+	DNSServers         []string `json:"dnsServers,omitempty"`
 }
 
 func (c Config) validate() error {

@@ -26,6 +26,12 @@ func (e *Engine) Heartbeat(clusterID string) *pb.HeartbeatRequest {
 		ClusterId: clusterID, Resources: clone(e.resources), Usage: clone(e.usage),
 		DiskBytes: e.diskBytes, Disk: clone(e.disk), Storage: e.cfg.Store.Kind(), OomKills: e.oomKills,
 	}
+	if e.cfg.VM != nil {
+		peerAddr, inc, shared := e.cfg.VM.HeartbeatMeta()
+		h.CladefsPeerAddr = peerAddr
+		h.CladefsIncarnation = inc
+		h.SharedBases = shared
+	}
 	if e.cfg.Profiler != nil {
 		h.Profiler = e.cfg.Profiler.Status()
 	}

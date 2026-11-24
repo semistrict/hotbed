@@ -537,6 +537,14 @@ func (m *Manager) Stop(ctx context.Context, id string, syncFS bool) error {
 	return stopErr
 }
 
+// SetGitAuthHostSock sets the host Unix socket path for git-auth vsock
+// bridging (port 5002) for subsequently launched VMs.
+func (m *Manager) SetGitAuthHostSock(sock string) {
+	m.mu.Lock()
+	m.cfg.GitAuthHostSock = sock
+	m.mu.Unlock()
+}
+
 // Get returns the live Instance for id, or nil if none is running.
 func (m *Manager) Get(id string) *Instance {
 	m.mu.Lock()

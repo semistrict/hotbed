@@ -139,8 +139,12 @@ type EngineConfig struct {
 	// mixed vm + chroot on one node). Nil when Runtime != nil means all
 	// workspaces use Runtime.
 	RuntimeFor func(wsID string) bool
-	System     System
-	Now        func() time.Time
+	// VM, when non-nil, enables the cladefsd + Firecracker microVM backend
+	// alongside chroot for workspaces requesting runtime="vm" (or by default
+	// when VMConfig.Default is true).
+	VM     *VMBackend
+	System System
+	Now    func() time.Time
 	// LogLimit is what a command's log keeps once past it; zero for
 	// DefaultLogLimit.
 	LogLimit cmdlog.Limit
@@ -447,10 +451,23 @@ func NewEngine(ctx context.Context, cfg EngineConfig) (*Engine, error) {
 		return nil, err
 	}
 	e.resources.Version = version.String()
+	if cfg.VM != nil {
+		e.resources.Runtimes = cfg.VM.Runtimes()
+		if cfg.Runtime == nil {
+			e.cfg.Runtime = cfg.VM.Runtime()
+		}
+		if cfg.RuntimeFor == nil {
+			e.cfg.RuntimeFor = e.isVMWorkspace
+		}
+	} else if cfg.Runtime != nil {
+		e.resources.Runtimes = []string{runtime.KindVM, runtime.KindChroot}
+	} else {
+		e.resources.Runtimes = []string{runtime.KindChroot}
+	}
 	if cfg.Bench != nil {
 		e.resources.BenchCpus = cfg.Bench.CPUs().String()
 	}
-	if cfg.Runtime != nil {
+	if e.cfg.Runtime != nil {
 		var uid, gid int
 		if cred != nil {
 			uid, gid = int(cred.Uid), int(cred.Gid)
@@ -458,7 +475,7 @@ func NewEngine(ctx context.Context, cfg EngineConfig) (*Engine, error) {
 			sp := cfg.BaseImage.Spec.Normalized()
 			uid, gid = sp.UID, sp.GID
 		}
-		e.rtUnits = newRuntimeUnits(cfg.Units, cfg.Runtime, e.usesRuntime, uid, gid)
+		e.rtUnits = newRuntimeUnits(cfg.Units, e.cfg.Runtime, e.usesRuntime, uid, gid)
 		e.cfg.Units = e.rtUnits
 	}
 	if err := e.load(); err != nil {
@@ -484,6 +501,9 @@ func NewEngine(ctx context.Context, cfg EngineConfig) (*Engine, error) {
 			return nil, fmt.Errorf("start git-auth helper: %w", err)
 		}
 		e.gitAuth = ga
+		if e.cfg.VM != nil {
+			e.cfg.VM.SetGitAuthHostSock(ga.sockPath)
+		}
 	}
 	return e, nil
 }

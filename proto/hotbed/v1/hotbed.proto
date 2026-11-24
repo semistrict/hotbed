@@ -415,6 +415,21 @@ message Resources {
   string bench_cpus = 7;
   // The hotbed build it runs: "build 42 (0123456789ab)", or "dev (...)".
   string version = 8;
+  // Execution runtimes supported on this worker (e.g. "vm", "chroot").
+  repeated string runtimes = 9;
+}
+
+// CladefsCell identifies a cladefsd cell (and optionally an uploaded version)
+// in the shared object storage bucket (Cloudflare R2).
+message CladefsCell {
+  uint64 tenant = 1;
+  uint64 cell = 2;
+  uint64 version = 3;
+  uint64 fencing_token = 4;
+  string base_id = 5;
+  string project = 6;
+  string arch = 7;
+  string recipe = 8;
 }
 
 message NodeUsage {
@@ -818,6 +833,8 @@ message Base {
   // not file cache): the project's next freshen on the node is guaranteed
   // as much, so the node admits no more beside it than fits.
   int64 peak_memory_bytes = 22;
+  // Shared cladefsd cell version in R2 when this base is published to cladefs.
+  CladefsCell cladefs_cell = 23;
 }
 
 // One repo of a base, as its generation checked it out.
@@ -877,6 +894,10 @@ message Workspace {
   string node = 25;
   // Each repo checked out, by ID.
   repeated WorkspaceRepo repos = 26;
+  // Execution runtime backing this workspace ("vm" or "chroot").
+  string runtime = 27;
+  // Cladefs cell coordinates when backed by cladefsd + Firecracker.
+  CladefsCell cladefs_cell = 28;
 }
 
 // One repo of a workspace, at /work/<repo>.
@@ -917,6 +938,12 @@ message CreateWorkspaceRequest {
   string sync_host = 8;
   // Set by the controller: the session's project, for its freshen.
   HostedProject project = 11;
+  // Execution runtime requested/assigned ("vm", "chroot", or empty for worker default).
+  string runtime = 12;
+  // Set by the controller: shared cladefs base version in R2 to fork O(1).
+  CladefsCell shared_base = 13;
+  // Set by the controller: monotonic fencing token for cladefs PlaceCell/TakeCell.
+  uint64 fencing_token = 14;
 }
 
 // Placement narrows where a run may go. The controller picks among the nodes
@@ -932,6 +959,8 @@ message Placement {
   // The memory the run is guaranteed (memory.low): nodes with less RAM are
   // left out, and those it fits on now preferred.
   int64 memory_low_bytes = 4;
+  // Execution runtime required ("vm", "chroot", or empty for auto/default).
+  string runtime = 5;
 }
 
 message GetWorkspaceRequest {
@@ -1905,6 +1934,12 @@ message HeartbeatRequest {
   // this alone (and its resources' arch, CPUs and version, to follow the
   // controller's build) until its storage opens.
   string storage_error = 16;
+  // This worker's cladefsd peer mTLS address (HOST:PORT) for LAN GetPart.
+  string cladefs_peer_addr = 17;
+  // This worker's cladefsd ephemeral host incarnation (for DecommissionHost).
+  uint64 cladefs_incarnation = 18;
+  // Warm uploaded cladefs base versions advertised by this worker to the cluster.
+  repeated CladefsCell shared_bases = 19;
 }
 
 message HeartbeatResponse {
@@ -1924,6 +1959,10 @@ message HeartbeatResponse {
   // Set once this controller has been migrated: the worker rewrites its
   // controller config to this target and reconnects there.
   ControllerMigration migrated_to = 6;
+  // Online cladefs peer addresses (HOST:PORT) for cladefsd.SetPeers.
+  repeated string cladefs_peers = 7;
+  // Retired cladefs host incarnations for cladefsd.DecommissionHost.
+  repeated uint64 decommission_incarnations = 8;
 }
 
 // Where a migrated controller directs workers to reconnect.
