@@ -1119,13 +1119,37 @@ func handleTCPProxyConn(conn net.Conn) {
 	bridgeConns(&bufferedConn{Conn: conn, r: br}, target)
 }
 
+const guestGitCredentialHelper = `#!/bin/sh
+case "${1:-}" in
+  get)   path=/git-credential ;;
+  erase) path=/git-credential/erase ;;
+  *)     exit 0 ;;
+esac
+out=$(curl -sS --unix-socket "${HOTBED_GIT_CRED_SOCK:-/run/hotbed/git-auth/git-cred.sock}" -w '\n%{http_code}' --data-binary @- "http://localhost$path") || exit 1
+nl='
+'
+code=${out##*"$nl"}
+body=${out%"$nl"*}
+if [ "$code" = "200" ]; then
+  printf '%s\n' "$body"
+  exit 0
+fi
+if [ "$code" = "204" ]; then
+  exit 0
+fi
+printf '%s\n' "$body" >&2
+exit 1
+`
+
 // StartGitAuthBridge exposes a local Unix socket at sockPath inside the guest
 // (e.g. /run/hotbed/git-auth/git-cred.sock) and forwards every connection to
 // dialHost (vsock CID 2, GitAuthPort on Firecracker).
 func StartGitAuthBridge(ctx context.Context, sockPath string, dialHost func() (net.Conn, error)) error {
-	if err := os.MkdirAll(filepath.Dir(sockPath), 0o755); err != nil {
+	dir := filepath.Dir(sockPath)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return err
 	}
+	_ = os.WriteFile(filepath.Join(dir, "git-credential-helper"), []byte(guestGitCredentialHelper), 0o755)
 	_ = os.Remove(sockPath)
 	ln, err := net.Listen("unix", sockPath)
 	if err != nil {
