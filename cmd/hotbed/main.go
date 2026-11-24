@@ -31,7 +31,7 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	code := run(ctx, os.Args[1:], deps{
 		tailnet:      &tailnet.Local{},
-		http:         &http.Client{Timeout: 60 * time.Second},
+		http:         api.NewResilientHTTPClient(60 * time.Second),
 		stream:       &http.Client{},
 		rideOut:      peerRideOut,
 		check:        worker.CheckMachine,

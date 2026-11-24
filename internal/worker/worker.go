@@ -262,6 +262,13 @@ func Run(ctx context.Context, dir string, cfg statedir.WorkerConfig, tn Tailnet,
 			WithSuggestion("log this machine into the owner's tailnet account (tailscale up)")
 	}
 	workerAddr := workerAdvertiseAddr(self)
+	if hc == nil {
+		hc = api.NewResilientHTTPClient(60 * time.Second)
+	} else if hc.Transport == nil {
+		cloned := *hc
+		cloned.Transport = api.NewResilientTransport(nil)
+		hc = &cloned
+	}
 	var ctrlInterceptors []connect.ClientInterceptor
 	if remote || cfg.Token != "" {
 		ctrlInterceptors = append(ctrlInterceptors, api.AuthInterceptor(cfg.Token, self.NodeID, self.Hostname, workerAddr))
@@ -514,7 +521,13 @@ func Run(ctx context.Context, dir string, cfg statedir.WorkerConfig, tn Tailnet,
 		}
 	}()
 	// Its update.ErrRestart ends the others, and Run with it.
-	g.Go(func() error { return Connect(gctx, eng, cluster, cfg.ClusterID, follow) })
+	g.Go(func() error {
+		return connectWithReset(gctx, eng, cluster, cfg.ClusterID, follow, func() {
+			if api.ResetClientTransport(hc) {
+				slog.Warn("reset controller HTTP transport after RPC failure")
+			}
+		})
+	})
 	if remote {
 		g.Go(func() error {
 			return Tunnel(gctx, eng, ctrlBaseURL, cfg.Token, self, workerAddr, cfg.ControllerNodeID, cfg.Owner, hc)

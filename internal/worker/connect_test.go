@@ -922,3 +922,41 @@ func TestHeartbeatDefersUpgradeDuringActiveWork(t *testing.T) {
 		}
 	})
 }
+
+func TestKeepWithFailureHookResetsTransportOnTimeout(t *testing.T) {
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+
+	var attempts atomic.Int32
+	var resets atomic.Int32
+	done := make(chan struct{})
+
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- keepWithFailureHook(ctx, "heartbeat", nil, nil, func() {
+			close(done)
+			cancel()
+		}, func(err error) {
+			if errors.Is(err, context.DeadlineExceeded) {
+				resets.Add(1)
+			}
+		}, func(context.Context) (bool, error) {
+			if attempts.Add(1) == 1 {
+				return false, context.DeadlineExceeded
+			}
+			return false, nil
+		})
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for recovery after timeout")
+	}
+	if err := <-errCh; err != nil {
+		t.Fatalf("keepWithFailureHook returned %v", err)
+	}
+	if got := resets.Load(); got != 1 {
+		t.Fatalf("transport resets = %d, want 1", got)
+	}
+}

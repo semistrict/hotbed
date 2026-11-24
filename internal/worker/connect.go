@@ -61,7 +61,11 @@ func lastFitting(events []*pb.Event, budget int) []*pb.Event {
 // maxRetryWait caps exponential backoff after controller RPC failures so a
 // worker never stays offline past OnlineWindow once the controller returns,
 // while still retrying at half the healthy ReportInterval rate.
-const maxRetryWait = 2 * api.ReportInterval
+const (
+	maxRetryWait          = 2 * api.ReportInterval
+	heartbeatRPCTimeout   = 15 * time.Second
+	cladefsHeartbeatLimit = 10 * time.Second
+)
 
 // Connect keeps the controller up to date until ctx ends: the event stream,
 // in order, as soon as events are written, and a heartbeat every
@@ -74,6 +78,10 @@ const maxRetryWait = 2 * api.ReportInterval
 // failure backoff so online status, events, and workspace releases recover
 // together.
 func Connect(ctx context.Context, eng *Engine, cluster hotbedv1connect.ClusterServiceClient, clusterID string, follow *Follow) error {
+	return connectWithReset(ctx, eng, cluster, clusterID, follow, nil)
+}
+
+func connectWithReset(ctx context.Context, eng *Engine, cluster hotbedv1connect.ClusterServiceClient, clusterID string, follow *Follow, resetTransport func()) error {
 	g, ctx := errgroup.WithContext(ctx)
 	p := &pusher{eng: eng, cluster: cluster, clusterID: clusterID, follow: follow}
 	wakePush := make(chan struct{}, 1)
@@ -85,16 +93,24 @@ func Connect(ctx context.Context, eng *Engine, cluster hotbedv1connect.ClusterSe
 		default:
 		}
 	}
+	onFail := func(err error) {
+		if resetTransport == nil {
+			return
+		}
+		if errors.Is(err, context.DeadlineExceeded) || api.CodeOf(err) == api.CodeControllerUnreachable {
+			resetTransport()
+		}
+	}
 	g.Go(func() error {
-		return keep(ctx, "push events", eng.Kicked(), wakePush, func() {
+		return keepWithFailureHook(ctx, "push events", eng.Kicked(), wakePush, func() {
 			signal(wakeBeat)
 			if follow != nil && follow.deferred() != 0 && (!eng.hasActiveUpgradeWork() || follow.deferExpired()) {
 				signal(beatKick)
 			}
-		}, p.once)
+		}, onFail, p.once)
 	})
 	g.Go(func() error {
-		return keep(ctx, "heartbeat", beatKick, wakeBeat, func() { signal(wakePush) }, func(ctx context.Context) (bool, error) {
+		return keepWithFailureHook(ctx, "heartbeat", beatKick, wakeBeat, func() { signal(wakePush) }, onFail, func(ctx context.Context) (bool, error) {
 			return false, HeartbeatOnce(ctx, eng, cluster, clusterID, follow)
 		})
 	})
@@ -111,6 +127,10 @@ func Connect(ctx context.Context, eng *Engine, cluster hotbedv1connect.ClusterSe
 // While backing off (failures > 0), local kicks are ignored so event bursts
 // do not hammer a down controller, while peer recovery on wake retries at once.
 func keep(ctx context.Context, what string, kicked, wake <-chan struct{}, onOK func(), once func(context.Context) (bool, error)) error {
+	return keepWithFailureHook(ctx, what, kicked, wake, onOK, nil, once)
+}
+
+func keepWithFailureHook(ctx context.Context, what string, kicked, wake <-chan struct{}, onOK func(), onFail func(error), once func(context.Context) (bool, error)) error {
 	failures := 0
 	for {
 		if wake != nil {
@@ -130,8 +150,11 @@ func keep(ctx context.Context, what string, kicked, wake <-chan struct{}, onOK f
 				return nil
 			case e.Code == api.CodeNotJoined || e.Code == api.CodeClusterMismatch:
 				return e
-			case failures == 0:
-				slog.Warn(what+" failed; retrying", "err", e)
+			case failures == 0 || failures%10 == 0:
+				slog.Warn(what+" failed; retrying", "err", e, "failures", failures+1)
+			}
+			if onFail != nil {
+				onFail(err)
 			}
 			failures++
 			more, wait = false, min(time.Second<<min(failures-1, 4), maxRetryWait)
@@ -352,14 +375,18 @@ func (p *pusher) push(ctx context.Context, req *pb.PushEventsRequest) error {
 func HeartbeatOnce(ctx context.Context, eng *Engine, cluster hotbedv1connect.ClusterServiceClient, clusterID string, follow *Follow) error {
 	sent := eng.now()
 	h := eng.Heartbeat(clusterID)
-	reply, err := cluster.Heartbeat(ctx, h)
+	hbCtx, cancelHB := context.WithTimeout(ctx, heartbeatRPCTimeout)
+	reply, err := cluster.Heartbeat(hbCtx, h)
+	cancelHB()
 	if err != nil {
 		return err
 	}
 	eng.delivered(h)
 	eng.setProjects(reply.Projects, sent)
 	eng.SetHostUsage(reply.GetHostUsage())
-	eng.applyCladefsHeartbeat(ctx, reply)
+	cfCtx, cancelCF := context.WithTimeout(ctx, cladefsHeartbeatLimit)
+	eng.applyCladefsHeartbeat(cfCtx, reply)
+	cancelCF()
 	for _, id := range reply.Release {
 		if err := eng.ReleaseWorkspace(ctx, id); err != nil && api.CodeOf(err) != api.CodeNotFound {
 			slog.Error("release workspace of an ended session", "workspace", id, "err", err)
