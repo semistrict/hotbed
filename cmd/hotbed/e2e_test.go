@@ -25,6 +25,7 @@ import (
 	"github.com/semistrict/hotbed/internal/api"
 	pb "github.com/semistrict/hotbed/internal/gen/hotbed/v1"
 	"github.com/semistrict/hotbed/internal/gen/hotbed/v1/hotbedv1connect"
+	"github.com/semistrict/hotbed/internal/gitops"
 	"github.com/semistrict/hotbed/internal/httpx"
 	"github.com/semistrict/hotbed/internal/tailnet"
 	"github.com/semistrict/hotbed/internal/tailnet/tailnettest"
@@ -320,7 +321,7 @@ func write(t *testing.T, path, data string) {
 // upstream is the repo's origin: a project whose "build" copies its sources
 // into target/ and keeps a cache in the workspace's cache directory.
 func upstream(t *testing.T) string {
-	dir := t.TempDir()
+	dir := gitops.CanonicalPath(t.TempDir())
 	gitIn(t, dir, "init", "--quiet", "-b", "main")
 	write(t, filepath.Join(dir, "src/lib.txt"), "base\n")
 	write(t, filepath.Join(dir, "src/keep.txt"), "keep\n")

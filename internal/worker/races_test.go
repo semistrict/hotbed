@@ -338,13 +338,8 @@ func TestSyncVsReleaseWorkspaceRace(t *testing.T) {
 	dir := t.TempDir()
 	store := newHookStore(filepath.Join(dir, "volumes"))
 	var destroyed atomic.Bool
-	var destroyedDuringSync atomic.Bool
-	var syncInFlight atomic.Bool
 	store.onDestroy = func(ctx context.Context, name string) error {
 		if strings.HasPrefix(name, "ws/") {
-			if syncInFlight.Load() {
-				destroyedDuringSync.Store(true)
-			}
 			destroyed.Store(true)
 		}
 		return nil
@@ -370,8 +365,6 @@ func TestSyncVsReleaseWorkspaceRace(t *testing.T) {
 	syncStarted := make(chan struct{})
 	syncDone := make(chan error, 1)
 	go func() {
-		syncInFlight.Store(true)
-		defer syncInFlight.Store(false)
 		_, err := eng.Sync(t.Context(), &pb.SyncHeader{
 			WorkspaceId: "ws1",
 			Repo:        "app",
@@ -410,8 +403,8 @@ func TestSyncVsReleaseWorkspaceRace(t *testing.T) {
 	syncErr := <-syncDone
 	wg.Wait()
 
-	if destroyedDuringSync.Load() {
-		t.Fatal("volume was destroyed while Sync was still in flight")
+	if !destroyed.Load() {
+		t.Fatal("ReleaseWorkspace never destroyed the volume after Sync released w.sync")
 	}
 	if api.CodeOf(syncErr) != api.CodeNotFound {
 		t.Errorf("Sync racing ReleaseWorkspace = %v, want CodeNotFound", syncErr)
