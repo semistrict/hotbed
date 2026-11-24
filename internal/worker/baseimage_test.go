@@ -133,8 +133,17 @@ func TestWorkerClonesColdBasesFromSharedBaseImage(t *testing.T) {
 	if !spec.TraceFS || !slices.Equal(spec.Capabilities, []string{"CAP_PERFMON"}) {
 		t.Errorf("spec tracefs=%v capabilities=%v; want true and [CAP_PERFMON]", spec.TraceFS, spec.Capabilities)
 	}
-	if want := filepath.Join(wsRoot, ".tmp", cmd.Id); spec.Tmp != want {
+	if want := filepath.Join(wsRoot, ".tmp", cmd.Id, "tmp"); spec.Tmp != want {
 		t.Errorf("spec.Tmp = %q, want %q, its own on the volume", spec.Tmp, want)
+	}
+	if wantRun := filepath.Join(wsRoot, ".tmp", cmd.Id, "run"); !slices.Contains(spec.Binds, unit.Bind{Source: wantRun, Target: "/run/user/1000"}) {
+		t.Errorf("spec.Binds = %+v, want XDG_RUNTIME_DIR bind %s -> /run/user/1000", spec.Binds, wantRun)
+	}
+	if !slices.Contains(spec.Env, "XDG_RUNTIME_DIR=/run/user/1000") {
+		t.Errorf("spec.Env missing XDG_RUNTIME_DIR=/run/user/1000: %v", spec.Env)
+	}
+	if !slices.ContainsFunc(spec.ReadOnlyBinds, func(b unit.Bind) bool { return b.Target == "/etc/containers/containers.conf.d/50-hotbed.conf" }) {
+		t.Errorf("spec.ReadOnlyBinds = %+v, want /etc/containers/containers.conf.d/50-hotbed.conf", spec.ReadOnlyBinds)
 	}
 	if !slices.Contains(spec.Env, "HOME=/work/.hotbed/home") {
 		t.Errorf("spec.Env missing HOME=/work/.hotbed/home: %v", spec.Env)

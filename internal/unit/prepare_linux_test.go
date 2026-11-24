@@ -5,6 +5,7 @@ package unit
 import (
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
 )
 
@@ -59,5 +60,40 @@ func TestPrepareChrootStaysInsideTheRootfs(t *testing.T) {
 	}
 	if fi, err := os.Lstat(filepath.Join(root, "etc", "hotbed", "file.conf")); err != nil || !fi.Mode().IsRegular() {
 		t.Errorf("file target: %v %v, want a file", fi, err)
+	}
+}
+
+// Concurrent commands starting in the same workspace rootfs must not race on
+// creating a shared file bind mountpoint (such as 50-hotbed.conf).
+func TestPrepareChrootConcurrentFileMountpoint(t *testing.T) {
+	srcFile := filepath.Join(t.TempDir(), "containers.conf")
+	if err := os.WriteFile(srcFile, []byte("[engine]\ncgroup_manager = \"cgroupfs\"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	for range 20 {
+		root := t.TempDir()
+		const workers = 8
+		errs := make(chan error, workers)
+		var wg sync.WaitGroup
+		start := make(chan struct{})
+		for range workers {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				<-start
+				errs <- Spec{
+					RootDir:       root,
+					ReadOnlyBinds: []Bind{{Source: srcFile, Target: "/etc/containers/containers.conf.d/50-hotbed.conf"}},
+				}.prepareChroot()
+			}()
+		}
+		close(start)
+		wg.Wait()
+		close(errs)
+		for err := range errs {
+			if err != nil {
+				t.Fatalf("concurrent prepareChroot failed: %v", err)
+			}
+		}
 	}
 }

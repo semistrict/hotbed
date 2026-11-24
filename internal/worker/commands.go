@@ -1033,12 +1033,18 @@ func (e *Engine) spec(c *command) (unit.Spec, error) {
 	if err != nil {
 		return unit.Spec{}, err
 	}
+	runDir, err := e.runtimeDir(c)
+	if err != nil {
+		return unit.Spec{}, err
+	}
 	logPath, err := e.logPath(cmd.Id)
 	if err != nil {
 		return unit.Spec{}, err
 	}
 	volPath := e.cfg.Store.Path(c.rec.Volume)
-	env := append(cacheEnv(), c.rec.Env...)
+	runtimeTarget := e.runtimeChrootDir()
+	env := append(cacheEnv(), "XDG_RUNTIME_DIR="+runtimeTarget)
+	env = append(env, c.rec.Env...)
 	env = append(env, "HOTBED_WORKSPACE="+cmd.WorkspaceId, "HOTBED_COMMAND="+cmd.Id)
 	props := slices.Clone(e.cfg.UnitProperties)
 	if cmd.Bench {
@@ -1061,6 +1067,7 @@ func (e *Engine) spec(c *command) (unit.Spec, error) {
 		Slice:        e.sliceOf(c),
 		Argv:         cmd.Args,
 		Dir:          c.rec.Dir,
+		Binds:        []unit.Bind{{Source: runDir, Target: runtimeTarget}},
 		Tmp:          tmpDir,
 		User:         e.cfg.User,
 		Env:          env,
@@ -1079,18 +1086,32 @@ func (e *Engine) spec(c *command) (unit.Spec, error) {
 }
 
 // inRootfs makes spec run chrooted in volPath: its home there, the scratch
-// disk at its own path, and the worker's git credentials bound read-only.
+// disk at its own path, the worker's containers.conf defaults, and the worker's
+// git credentials bound read-only.
 func (e *Engine) inRootfs(spec *unit.Spec, volPath string) {
 	spec.Env = append(spec.Env, "HOME="+e.chrootHome())
 	spec.RootDir = volPath
 	if d := e.cfg.ScratchDisk; d != "" {
 		spec.Binds = append(spec.Binds, unit.Bind{Source: d, Target: d})
 	}
+	if e.containersConf != "" {
+		spec.ReadOnlyBinds = append(spec.ReadOnlyBinds, unit.Bind{Source: e.containersConf, Target: containersConfChrootPath})
+	}
 	if e.gitAuth != nil {
 		spec.ReadOnlyBinds = append(spec.ReadOnlyBinds, unit.Bind{Source: e.gitAuth.Dir(), Target: gitAuthChrootDir})
 		spec.Env = append(e.gitAuth.chrootEnv(), spec.Env...)
 		spec.PathPrefix = append([]string{gitAuthChrootDir + "/bin"}, spec.PathPrefix...)
 	}
+}
+
+func (e *Engine) runtimeChrootDir() string {
+	if e.cred != nil {
+		return fmt.Sprintf("/run/user/%d", e.cred.Uid)
+	}
+	if e.cfg.BaseImage != nil {
+		return fmt.Sprintf("/run/user/%d", e.cfg.BaseImage.Spec.Normalized().UID)
+	}
+	return "/run/user/1000"
 }
 
 func (e *Engine) chrootHome() string {

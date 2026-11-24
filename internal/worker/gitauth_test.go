@@ -506,14 +506,21 @@ func TestWorkerChrootSpecBindsGitAuthForAllCommandsAndNotHostCreds(t *testing.T)
 	if !ok {
 		t.Fatalf("missing unit spec for %s", cmd.Id)
 	}
-	// Only the worker's git-auth directory, read-only: root of the sandbox
-	// may not rewrite the helpers the worker runs on the host (board 8145).
-	if len(spec.ReadOnlyBinds) != 1 || spec.ReadOnlyBinds[0].Target != "/run/hotbed/git-auth" {
-		t.Errorf("chroot command spec read-only binds = %+v, want only /run/hotbed/git-auth", spec.ReadOnlyBinds)
+	// Only the worker's git-auth directory and containers.conf defaults are
+	// bound read-only: root of the sandbox may not rewrite helpers the worker
+	// runs on the host (board 8145).
+	if !slices.ContainsFunc(spec.ReadOnlyBinds, func(b unit.Bind) bool { return b.Target == "/run/hotbed/git-auth" }) {
+		t.Errorf("chroot command spec read-only binds = %+v, want /run/hotbed/git-auth", spec.ReadOnlyBinds)
+	}
+	if !slices.ContainsFunc(spec.ReadOnlyBinds, func(b unit.Bind) bool { return b.Target == "/etc/containers/containers.conf.d/50-hotbed.conf" }) {
+		t.Errorf("chroot command spec read-only binds = %+v, want /etc/containers/containers.conf.d/50-hotbed.conf", spec.ReadOnlyBinds)
+	}
+	if len(spec.ReadOnlyBinds) != 2 {
+		t.Errorf("chroot command spec read-only binds = %+v, want only git-auth and containers.conf", spec.ReadOnlyBinds)
 	}
 	for _, b := range spec.Binds {
-		if b.Target == "/run/hotbed/git-auth" {
-			t.Errorf("chroot command spec binds git-auth read-write: %+v", spec.Binds)
+		if b.Target == "/run/hotbed/git-auth" || b.Target == "/etc/containers/containers.conf.d/50-hotbed.conf" {
+			t.Errorf("chroot command spec binds %s read-write: %+v", b.Target, spec.Binds)
 		}
 	}
 	if len(spec.PathPrefix) == 0 || spec.PathPrefix[0] != "/run/hotbed/git-auth/bin" {

@@ -33,18 +33,35 @@ const tmpName = ".tmp"
 
 func (e *Engine) tmpRoot(vol string) string { return filepath.Join(e.cfg.Store.Path(vol), tmpName) }
 
-// tmpDir is c's temporary directory.
+// tmpDir is c's temporary directory, bound to /tmp and /var/tmp.
 func (e *Engine) tmpDir(c *command) (string, error) {
 	if err := validateID(c.cmd().Id); err != nil {
 		return "", err
 	}
-	return filepath.Join(e.tmpRoot(c.rec.Volume), c.cmd().Id), nil
+	return filepath.Join(e.tmpRoot(c.rec.Volume), c.cmd().Id, "tmp"), nil
 }
 
-// makeTmpEntry creates <volPath>/.tmp/<name> as a sticky 01777 directory
-// inside volPath without following symlinks (including in-root symlinks) at
-// .tmp or <name>.
+// runtimeDir is c's per-command XDG_RUNTIME_DIR backing directory, bound to
+// /run/user/<uid>. Keeping both tmp and run under .tmp/<id> lets removeTmp,
+// dropTmp, sweepTmp, and unmount cleanup manage them as one unit.
+func (e *Engine) runtimeDir(c *command) (string, error) {
+	if err := validateID(c.cmd().Id); err != nil {
+		return "", err
+	}
+	return filepath.Join(e.tmpRoot(c.rec.Volume), c.cmd().Id, "run"), nil
+}
+
+// makeTmpEntry creates <volPath>/.tmp/<name>/{tmp,run} without following
+// symlinks. Callers that need the build user to own run pass cred to
+// makeTmpDirs.
 func makeTmpEntry(volPath, name string) error {
+	return makeTmpDirs(volPath, name, nil)
+}
+
+// makeTmpDirs creates <volPath>/.tmp/<name> (0711) containing tmp (01777, for
+// /tmp and /var/tmp) and run (0700, owned by cred when running as root, for
+// XDG_RUNTIME_DIR) without following symlinks (including in-root symlinks).
+func makeTmpDirs(volPath, name string, cred *syscall.Credential) error {
 	if err := validateID(name); err != nil {
 		return err
 	}
@@ -73,10 +90,28 @@ func makeTmpEntry(volPath, name string) error {
 	} else if !os.SameFile(tmpFi, dotFi) {
 		return fmt.Errorf("%s in %s changed while opening", tmpName, volPath)
 	}
-	if err := tmpRoot.Mkdir(name, 0o700); err != nil && !errors.Is(err, fs.ErrExist) {
+	if err := ensureConfinedDir(tmpRoot, name, 0o711, nil); err != nil {
 		return err
 	}
-	lfi, err := tmpRoot.Lstat(name)
+	entryRoot, err := tmpRoot.OpenRoot(name)
+	if err != nil {
+		return err
+	}
+	defer entryRoot.Close()
+	if err := ensureConfinedDir(entryRoot, "tmp", fs.ModePerm|fs.ModeSticky, nil); err != nil {
+		return err
+	}
+	return ensureConfinedDir(entryRoot, "run", 0o700, cred)
+}
+
+// ensureConfinedDir creates or verifies a real directory named name inside
+// root without following symlinks or blocking on FIFOs, applies mode, and
+// chowns it to cred when non-nil and running as root.
+func ensureConfinedDir(root *os.Root, name string, mode fs.FileMode, cred *syscall.Credential) error {
+	if err := root.Mkdir(name, 0o700); err != nil && !errors.Is(err, fs.ErrExist) {
+		return err
+	}
+	lfi, err := root.Lstat(name)
 	if err != nil {
 		return err
 	}
@@ -86,7 +121,7 @@ func makeTmpEntry(volPath, name string) error {
 	if !lfi.IsDir() {
 		return fmt.Errorf("tmp entry %q is not a directory", name)
 	}
-	f, err := tmpRoot.OpenFile(name, os.O_RDONLY|syscall.O_NONBLOCK|syscall.O_NOFOLLOW, 0)
+	f, err := root.OpenFile(name, os.O_RDONLY|syscall.O_NONBLOCK|syscall.O_NOFOLLOW, 0)
 	if err != nil {
 		return err
 	}
@@ -98,13 +133,17 @@ func makeTmpEntry(volPath, name string) error {
 	if !ffi.IsDir() || !os.SameFile(lfi, ffi) {
 		return fmt.Errorf("tmp entry %q is not a directory", name)
 	}
-	return f.Chmod(fs.ModePerm | fs.ModeSticky)
+	if cred != nil && os.Geteuid() == 0 {
+		if err := f.Chown(int(cred.Uid), int(cred.Gid)); err != nil {
+			return err
+		}
+	}
+	return f.Chmod(mode)
 }
 
-// makeTmp makes c's temporary directory, anyone's to write in, as /tmp is:
-// a test may run a VM as another user that writes there too.
+// makeTmp makes c's per-command temporary and XDG runtime directories.
 func (e *Engine) makeTmp(c *command) error {
-	return makeTmpEntry(e.cfg.Store.Path(c.rec.Volume), c.cmd().Id)
+	return makeTmpDirs(e.cfg.Store.Path(c.rec.Volume), c.cmd().Id, e.cred)
 }
 
 // dropTmp removes c's temporary directory, its processes gone, in the

@@ -300,9 +300,12 @@ or tracing packages.
   from this snapshot; project-specific toolchains belong to each project's setup steps.
 - **A fixed path.** Inside its root, every project's repos sit at `/work/<repo>`
   and commands start in their repo's checkout (or `/work`). Each command gets a private `/tmp` and
-  `/var/tmp` bind-mounted from a directory of its own on its volume (`<volume>/.tmp/<command>`,
-  removed when it ends and before a base is snapshotted), with `TMPDIR=/tmp` and `/etc/resolv.conf`
-  bound read-only for DNS.
+  `/var/tmp` (`<volume>/.tmp/<command>/tmp`) and a private `0700` `XDG_RUNTIME_DIR` at
+  `/run/user/<uid>` (`<volume>/.tmp/<command>/run`), removed when it ends and before a base is
+  snapshotted, with `TMPDIR=/tmp`, `/etc/resolv.conf` bound read-only for DNS, and a read-only
+  `/etc/containers/containers.conf.d/50-hotbed.conf` setting `cgroup_manager = "cgroupfs"` and
+  `events_logger = "file"` so rootless `podman` and `buildah` run cleanly without a systemd user
+  session while keeping containers inside the command's own cgroup.
 - **Its tools and caches inside the workspace.** Everything a build would put in the home
   directory goes under `/work/.hotbed` instead, so the base carries it and every fork starts with
   it: `RUSTUP_HOME` and `CARGO_HOME` (toolchains from `rust-toolchain.toml`, the registry),

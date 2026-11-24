@@ -1083,3 +1083,242 @@ func TestSELinuxContextUnconfined(t *testing.T) {
 		}
 	})
 }
+
+// A chrooted command and shell both receive a 0700 user-owned XDG_RUNTIME_DIR
+// at /run/user/<uid> (on top of MountAPIVFS's /run) and a read-only
+// /etc/containers/containers.conf.d/50-hotbed.conf so rootless podman and crun
+// work without a systemd user session (board 10735).
+func TestChrootRuntimeDirAndContainersConf(t *testing.T) {
+	root, roBinds := minimalRoot(t)
+	user := testUser(t)
+	u, err := osuser.Lookup(user)
+	if err != nil {
+		t.Fatal(err)
+	}
+	uid, err := strconv.Atoi(u.Uid)
+	if err != nil {
+		t.Fatal(err)
+	}
+	gid, err := strconv.Atoi(u.Gid)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := chownToUser(filepath.Join(root, "work"), user); err != nil {
+		t.Fatal(err)
+	}
+	// Make host /etc/subuid, /etc/subgid, /etc/containers/policy.json, and
+	// /etc/containers/registries.conf available in minimalRoot when present so
+	// rootless podman can initialize inside the minimal test chroot.
+	for _, f := range []string{"/etc/subuid", "/etc/subgid", "/etc/containers/policy.json", "/etc/containers/registries.conf"} {
+		if b, err := os.ReadFile(f); err == nil {
+			dst := filepath.Join(root, f)
+			if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(dst, b, 0o644); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+
+	tmpHost := rootTmp(t, root)
+	runHost := filepath.Join(t.TempDir(), "run")
+	if err := os.MkdirAll(runHost, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chown(runHost, uid, gid); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(runHost, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	// Allow the non-root test user to traverse runHost's parent temp dir.
+	if err := os.Chmod(filepath.Dir(runHost), 0o711); err != nil {
+		t.Fatal(err)
+	}
+
+	confHost := filepath.Join(t.TempDir(), "containers.conf")
+	const confBody = "[engine]\ncgroup_manager = \"cgroupfs\"\nevents_logger = \"file\"\n"
+	if err := os.WriteFile(confHost, []byte(confBody), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(filepath.Dir(confHost), 0o711); err != nil {
+		t.Fatal(err)
+	}
+
+	runTarget := fmt.Sprintf("/run/user/%d", uid)
+	const confTarget = "/etc/containers/containers.conf.d/50-hotbed.conf"
+	withConfRO := append(append([]Bind(nil), roBinds...), Bind{Source: confHost, Target: confTarget})
+
+	// 1. Service unit (Start): /run/user/<uid> is 0700 owned by user, writable,
+	//    and 50-hotbed.conf is readable and read-only.
+	t.Run("service", func(t *testing.T) {
+		n := name(t)
+		log := filepath.Join(t.TempDir(), "out.log")
+		if err := Start(t.Context(), Spec{
+			Name:          n,
+			RootDir:       root,
+			Dir:           "/work",
+			User:          user,
+			Tmp:           tmpHost,
+			Binds:         []Bind{{Source: runHost, Target: runTarget}},
+			ReadOnlyBinds: withConfRO,
+			Env:           []string{"HOME=/work", "XDG_RUNTIME_DIR=" + runTarget},
+			Log:           log,
+			Argv: []string{"sh", "-c", `set -eu
+stat -c '%a %u' "$XDG_RUNTIME_DIR"
+touch "$XDG_RUNTIME_DIR/probe"
+grep -q 'cgroup_manager = "cgroupfs"' /etc/containers/containers.conf.d/50-hotbed.conf
+if sh -c 'echo x >> /etc/containers/containers.conf.d/50-hotbed.conf' 2>/dev/null; then
+  echo "ERROR: conf was writable" >&2
+  exit 1
+fi
+echo service-ok`},
+		}); err != nil {
+			t.Fatal(err)
+		}
+		s := waitExit(t, n)
+		b, _ := os.ReadFile(log)
+		wantPrefix := fmt.Sprintf("700 %d\n", uid)
+		if s.ExitCode != 0 || !strings.HasPrefix(string(b), wantPrefix) || !strings.Contains(string(b), "service-ok\n") {
+			t.Fatalf("service exit=%+v, log:\n%s", s, b)
+		}
+	})
+
+	// 2. Shell scope (StartShell): same /run/user/<uid> and read-only conf.
+	t.Run("shell", func(t *testing.T) {
+		var stdout, stderr bytes.Buffer
+		h, err := StartShell(t.Context(), Spec{
+			Name:          name(t),
+			RootDir:       root,
+			Dir:           "/work",
+			User:          user,
+			Tmp:           tmpHost,
+			Binds:         []Bind{{Source: runHost, Target: runTarget}},
+			ReadOnlyBinds: withConfRO,
+			Env:           []string{"HOME=/work", "XDG_RUNTIME_DIR=" + runTarget},
+			Argv: []string{"sh", "-c", `set -eu
+stat -c '%a %u' "$XDG_RUNTIME_DIR"
+grep -q 'cgroup_manager = "cgroupfs"' /etc/containers/containers.conf.d/50-hotbed.conf
+echo shell-ok`},
+		}, ShellIO{Stdout: &stdout, Stderr: &stderr})
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer h.Close()
+		code := h.Wait()
+		wantPrefix := fmt.Sprintf("700 %d\n", uid)
+		if code != 0 || !strings.HasPrefix(stdout.String(), wantPrefix) || !strings.Contains(stdout.String(), "shell-ok\n") {
+			t.Fatalf("shell exit=%d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
+		}
+	})
+
+	// 3. Rootless podman & crun inside the chroot: without 50-hotbed.conf,
+	//    podman warns about the missing systemd user session; with it +
+	//    XDG_RUNTIME_DIR, podman info reports "cgroupfs file" cleanly and
+	//    crun --version succeeds.
+	t.Run("podman", func(t *testing.T) {
+		if _, err := exec.LookPath("podman"); err != nil {
+			t.Skipf("podman not installed: %v", err)
+		}
+		home := filepath.Join(root, "work", "podman-home")
+		for _, sub := range []string{"", "data", "cache", "state"} {
+			p := filepath.Join(home, sub)
+			if err := os.MkdirAll(p, 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if err := chownToUser(p, user); err != nil {
+				t.Fatal(err)
+			}
+		}
+		baseEnv := []string{
+			"HOME=/work/podman-home",
+			"XDG_DATA_HOME=/work/podman-home/data",
+			"XDG_CACHE_HOME=/work/podman-home/cache",
+			"XDG_STATE_HOME=/work/podman-home/state",
+		}
+
+		// waitPodmanExit polls Status until the main podman command exits, then
+		// stops the unit so podman's rootless pause process (which stays in the
+		// unit's cgroup until KillMode=control-group teardown) does not block
+		// cgroup.events Wait.
+		waitPodmanExit := func(t *testing.T, unitName string) State {
+			t.Helper()
+			deadline := time.Now().Add(15 * time.Second)
+			for time.Now().Before(deadline) {
+				st, err := Status(t.Context(), unitName)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if st.Exited {
+					if err := Stop(t.Context(), unitName); err != nil {
+						t.Fatalf("stop %s after exit: %v", unitName, err)
+					}
+					return st
+				}
+				time.Sleep(50 * time.Millisecond)
+			}
+			st, _ := Status(t.Context(), unitName)
+			t.Fatalf("%s did not exit in 15s (state=%+v)", unitName, st)
+			return State{}
+		}
+
+		// Copy this static test binary into a scratch build context so we can
+		// execute a real `podman build` RUN step offline (no image pulls).
+		exePath, err := os.Executable()
+		if err != nil {
+			t.Fatal(err)
+		}
+		exeBytes, err := os.ReadFile(exePath)
+		if err != nil {
+			t.Fatal(err)
+		}
+		ctxDir := filepath.Join(root, "work", "buildctx")
+		if err := os.MkdirAll(ctxDir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(ctxDir, "testbin"), exeBytes, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(ctxDir, "Containerfile"), []byte("FROM scratch\nCOPY testbin /testbin\nRUN [\"/testbin\", \"-test.run=^$\"]\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		for _, p := range []string{ctxDir, filepath.Join(ctxDir, "testbin"), filepath.Join(ctxDir, "Containerfile")} {
+			if err := chownToUser(p, user); err != nil {
+				t.Fatal(err)
+			}
+		}
+
+		// With 50-hotbed.conf and XDG_RUNTIME_DIR, podman info reports exact
+		// "cgroupfs file" with zero warnings, crun (when installed) succeeds,
+		// and a real `podman build` RUN step succeeds inside the command's own
+		// cgroup without a systemd user session (board 10735).
+		nGood := name(t)
+		logGood := filepath.Join(t.TempDir(), "good.log")
+		if err := Start(t.Context(), Spec{
+			Name:          nGood,
+			RootDir:       root,
+			Dir:           "/work",
+			User:          user,
+			Tmp:           tmpHost,
+			Binds:         []Bind{{Source: runHost, Target: runTarget}},
+			ReadOnlyBinds: withConfRO,
+			TraceFS:       true,
+			Env:           append(baseEnv, "XDG_RUNTIME_DIR="+runTarget),
+			Log:           logGood,
+			Argv: []string{"sh", "-c", `set -eu
+if command -v crun >/dev/null 2>&1; then crun --version >/dev/null; fi
+info="$(podman info --format '{{.Host.CgroupManager}} {{.Host.EventLogger}}')"
+test "$info" = "cgroupfs file"
+podman build --network=none -q /work/buildctx >/dev/null 2>&1
+echo podman-build-ok`},
+		}); err != nil {
+			t.Fatal(err)
+		}
+		s := waitPodmanExit(t, nGood)
+		goodOut, _ := os.ReadFile(logGood)
+		if s.ExitCode != 0 || strings.TrimSpace(string(goodOut)) != "podman-build-ok" {
+			t.Fatalf("fixed chroot podman exit=%+v, output=%q; want exit 0 and %q", s, string(goodOut), "podman-build-ok")
+		}
+	})
+}

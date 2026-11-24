@@ -232,9 +232,12 @@ func (e *Engine) shellSpec(shellID string, w *workspace, repo string, args, extr
 	if repo != "" {
 		dir += "/" + repo
 	}
-	tmpDir := filepath.Join(e.tmpRoot(w.rec.Volume), "sh-"+shellID)
+	tmpBase := filepath.Join(e.tmpRoot(w.rec.Volume), "sh-"+shellID)
+	tmpDir := filepath.Join(tmpBase, "tmp")
+	runDir := filepath.Join(tmpBase, "run")
+	runtimeTarget := e.runtimeChrootDir()
 
-	env := shellCacheEnv(hasPTY)
+	env := append(shellCacheEnv(hasPTY), "XDG_RUNTIME_DIR="+runtimeTarget)
 	env = append(env, "HOTBED_WORKSPACE="+ws.Id)
 	if ws.SessionId != "" {
 		env = append(env, "HOTBED_SESSION="+ws.SessionId)
@@ -247,6 +250,7 @@ func (e *Engine) shellSpec(shellID string, w *workspace, repo string, args, extr
 		Slice:      e.cfg.Slice,
 		Argv:       args,
 		Dir:        dir,
+		Binds:      []unit.Bind{{Source: runDir, Target: runtimeTarget}},
 		Tmp:        tmpDir,
 		User:       e.cfg.User,
 		Env:        env,
@@ -257,7 +261,7 @@ func (e *Engine) shellSpec(shellID string, w *workspace, repo string, args, extr
 }
 
 func (e *Engine) makeShellTmp(vol, shellID string) error {
-	return makeTmpEntry(e.cfg.Store.Path(vol), "sh-"+shellID)
+	return makeTmpDirs(e.cfg.Store.Path(vol), "sh-"+shellID, e.cred)
 }
 
 func (e *Engine) beginShell(ctx context.Context, ticket *shellTicket, args, extraEnv []string, sio unit.ShellIO) (unit.ShellHandle, func(), error) {

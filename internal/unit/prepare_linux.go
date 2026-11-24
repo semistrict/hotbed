@@ -65,6 +65,11 @@ func prepareTarget(root *os.File, b Bind) error {
 	}
 	fd, err := unix.Openat(pfd, base, unix.O_CREAT|unix.O_EXCL|unix.O_RDONLY|unix.O_NOFOLLOW|unix.O_NONBLOCK|unix.O_CLOEXEC, 0o644)
 	if err != nil {
+		if errors.Is(err, unix.EEXIST) {
+			if err := unix.Fstatat(pfd, base, &st, unix.AT_SYMLINK_NOFOLLOW); err == nil && st.Mode&unix.S_IFMT == unix.S_IFREG {
+				return nil
+			}
+		}
 		return fmt.Errorf("make mountpoint %s: %w", target, err)
 	}
 	return unix.Close(fd)

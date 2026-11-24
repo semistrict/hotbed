@@ -922,18 +922,18 @@ func TestCommandsHaveTheirOwnTmp(t *testing.T) {
 	c.ok(nil, "step", "set", "-p", "app", "litter", "--every-pull", "--", `mkdir "$TMPDIR/litter" && cd "$TMPDIR/litter" && seq 1 3000 | xargs touch`)
 	c.ok(nil, "session", "start", "tidy-owl")
 	ws := c.workspace("tidy-owl", nil)
-	code, out, _ := c.hotbed("run", "-s", "tidy-owl", "-r", "app", "--", "sh", "-c", `echo "$HOTBED_COMMAND"; echo "$TMPDIR"; ls -ld "$TMPDIR" | cut -c1-10; ls "$(dirname "$TMPDIR")"; echo store > "$TMPDIR/store"`)
+	code, out, _ := c.hotbed("run", "-s", "tidy-owl", "-r", "app", "--", "sh", "-c", `echo "$HOTBED_COMMAND"; echo "$TMPDIR"; ls -ld "$TMPDIR" | cut -c1-10; ls -ld "$(dirname "$TMPDIR")/run" | cut -c1-10; ls "$(dirname "$(dirname "$TMPDIR")")"; echo store > "$TMPDIR/store"`)
 	lines := strings.Split(strings.TrimSpace(out), "\n")
-	if code != 0 || len(lines) != 4 {
+	if code != 0 || len(lines) != 5 {
 		t.Fatalf("run: exit %d, %q", code, out)
 	}
 	id := lines[0]
-	want := []string{id, filepath.Join(c.nodes[0].store.Path("ws/"+ws.Id), ".tmp", id), "drwxrwxrwt", id}
+	want := []string{id, filepath.Join(c.nodes[0].store.Path("ws/"+ws.Id), ".tmp", id, "tmp"), "drwxrwxrwt", "drwx------", id}
 	if !slices.Equal(lines, want) {
-		t.Fatalf("run printed %q, want %q: its own sticky tmp in its volume, alone there", lines, want)
+		t.Fatalf("run printed %q, want %q: its own sticky tmp and 0700 run dir in its volume, alone there", lines, want)
 	}
 	c.eventually("the command's tmp to go", func() bool {
-		_, err := os.Stat(lines[1])
+		_, err := os.Stat(filepath.Dir(lines[1]))
 		return errors.Is(err, os.ErrNotExist)
 	})
 }

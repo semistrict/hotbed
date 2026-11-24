@@ -2,7 +2,9 @@ package worker
 
 import (
 	"os"
+	"path/filepath"
 	"slices"
+	"strings"
 	"testing"
 
 	"github.com/semistrict/hotbed/internal/baseimage"
@@ -70,5 +72,126 @@ func TestNewEngineRequiresBaseImage(t *testing.T) {
 		Store: store, Units: &fake.Units{}, System: fake.NewSystem(),
 	}); err == nil {
 		t.Fatal("NewEngine accepted nil BaseImage, want error")
+	}
+}
+
+// Commands and shells get a per-command XDG_RUNTIME_DIR at /run/user/<uid>
+// (0700) and a read-only /etc/containers/containers.conf.d/50-hotbed.conf
+// configuring cgroupfs + file event logging so rootless podman and buildah
+// work without a systemd user session (board 10735).
+func TestCommandsAndShellsGetRuntimeDirAndContainersConf(t *testing.T) {
+	store := &fake.Store{Root: t.TempDir()}
+	stateDir := t.TempDir()
+	e, err := NewEngine(t.Context(), EngineConfig{
+		Dir: stateDir, NodeID: "n", Host: "ubu1",
+		Store: store, Units: &fake.Units{}, System: fake.NewSystem(),
+		BaseImage: &baseimage.Manager{Store: store, Spec: baseimage.Spec{User: "builder", UID: 1234, GID: 1234}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { e.Close() })
+
+	confBytes, err := os.ReadFile(e.containersConf)
+	if err != nil {
+		t.Fatalf("read worker containers.conf: %v", err)
+	}
+	for _, want := range []string{`cgroup_manager = "cgroupfs"`, `events_logger = "file"`} {
+		if !strings.Contains(string(confBytes), want) {
+			t.Errorf("containers.conf missing %q:\n%s", want, confBytes)
+		}
+	}
+
+	wsVol := "ws/w1"
+	if err := os.MkdirAll(store.Path(wsVol), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	checkSpec := func(t *testing.T, label string, spec unit.Spec, tmpEntry string) {
+		t.Helper()
+		wantTmp := filepath.Join(store.Path(wsVol), tmpName, tmpEntry, "tmp")
+		wantRun := filepath.Join(store.Path(wsVol), tmpName, tmpEntry, "run")
+		if spec.Tmp != wantTmp {
+			t.Errorf("%s: spec.Tmp = %q, want %q", label, spec.Tmp, wantTmp)
+		}
+		if !slices.Contains(spec.Binds, unit.Bind{Source: wantRun, Target: "/run/user/1234"}) {
+			t.Errorf("%s: spec.Binds = %+v, want runtime bind %s -> /run/user/1234", label, spec.Binds, wantRun)
+		}
+		if !slices.Contains(spec.Env, "XDG_RUNTIME_DIR=/run/user/1234") {
+			t.Errorf("%s: spec.Env missing XDG_RUNTIME_DIR=/run/user/1234: %v", label, spec.Env)
+		}
+		wantRO := unit.Bind{Source: e.containersConf, Target: containersConfChrootPath}
+		if !slices.Contains(spec.ReadOnlyBinds, wantRO) {
+			t.Errorf("%s: spec.ReadOnlyBinds = %+v, want %+v", label, spec.ReadOnlyBinds, wantRO)
+		}
+		if slices.Contains(spec.Binds, wantRO) {
+			t.Errorf("%s: containers.conf must be read-only, found in Binds: %+v", label, spec.Binds)
+		}
+	}
+
+	e.mu.Lock()
+	cmdSpec, err := e.spec(&command{rec: &pb.CommandRecord{
+		Volume: wsVol, Dir: "/work", Env: []string{"XDG_RUNTIME_DIR=/custom/run"},
+		Command: &pb.Command{Id: "cmd-1", Args: []string{"podman", "build", "."}, Limits: &pb.CommandLimits{}},
+	}})
+	e.mu.Unlock()
+	if err != nil {
+		t.Fatal(err)
+	}
+	checkSpec(t, "command", cmdSpec, "cmd-1")
+	// User --env XDG_RUNTIME_DIR must come after the default so it can override it.
+	defIdx := slices.Index(cmdSpec.Env, "XDG_RUNTIME_DIR=/run/user/1234")
+	usrIdx := slices.Index(cmdSpec.Env, "XDG_RUNTIME_DIR=/custom/run")
+	if defIdx < 0 || usrIdx <= defIdx {
+		t.Errorf("command env precedence wrong: default at %d, user at %d (%v)", defIdx, usrIdx, cmdSpec.Env)
+	}
+
+	shSpec, _ := e.shellSpec("abc", &workspace{rec: &pb.WorkspaceRecord{
+		Volume:    wsVol,
+		Workspace: &pb.Workspace{Id: "w1", SessionId: "s1"},
+	}}, "", []string{"/bin/bash"}, nil, []string{"XDG_RUNTIME_DIR=/custom/sh"}, true)
+	checkSpec(t, "shell", shSpec, "sh-abc")
+	shDefIdx := slices.Index(shSpec.Env, "XDG_RUNTIME_DIR=/run/user/1234")
+	shUsrIdx := slices.Index(shSpec.Env, "XDG_RUNTIME_DIR=/custom/sh")
+	if shDefIdx < 0 || shUsrIdx <= shDefIdx {
+		t.Errorf("shell env precedence wrong: default at %d, user at %d (%v)", shDefIdx, shUsrIdx, shSpec.Env)
+	}
+
+	// makeTmpEntry creates tmp (01777) and run (0700), rejects symlinks inside
+	// .tmp/<id>, and removeTmp cleans both up together.
+	if err := makeTmpEntry(store.Path(wsVol), "cmd-1"); err != nil {
+		t.Fatalf("makeTmpEntry: %v", err)
+	}
+	tmpFi, err := os.Stat(filepath.Join(store.Path(wsVol), tmpName, "cmd-1", "tmp"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if tmpFi.Mode()&(os.ModePerm|os.ModeSticky) != (os.ModePerm | os.ModeSticky) {
+		t.Errorf("tmp mode = %v, want 01777", tmpFi.Mode())
+	}
+	runFi, err := os.Stat(filepath.Join(store.Path(wsVol), tmpName, "cmd-1", "run"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if runFi.Mode().Perm() != 0o700 {
+		t.Errorf("run mode = %o, want 0700", runFi.Mode().Perm())
+	}
+
+	// Symlinked run subdir must be rejected rather than chmodded.
+	outside := t.TempDir()
+	evil := filepath.Join(store.Path(wsVol), tmpName, "cmd-evil")
+	if err := os.MkdirAll(evil, 0o711); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(outside, filepath.Join(evil, "run")); err != nil {
+		t.Fatal(err)
+	}
+	if err := makeTmpEntry(store.Path(wsVol), "cmd-evil"); err == nil {
+		t.Fatal("makeTmpEntry accepted symlinked run subdir, want error")
+	}
+
+	removeTmp(store.Path(wsVol), "cmd-1")
+	if _, err := os.Stat(filepath.Join(store.Path(wsVol), tmpName, "cmd-1")); !os.IsNotExist(err) {
+		t.Errorf("removeTmp left .tmp/cmd-1 behind: err=%v", err)
 	}
 }

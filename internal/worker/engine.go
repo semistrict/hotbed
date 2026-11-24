@@ -164,11 +164,12 @@ var DefaultLogLimit = cmdlog.Limit{Head: 16 << 20, Tail: 240 << 20}
 // Engine is a worker's bases, workspaces and commands. The messages it
 // holds are its own; it hands out clones.
 type Engine struct {
-	cfg     EngineConfig
-	db      *db
-	cred    *syscall.Credential
-	home    string
-	gitAuth *gitAuthServer
+	cfg            EngineConfig
+	db             *db
+	cred           *syscall.Credential
+	home           string
+	gitAuth        *gitAuthServer
+	containersConf string
 
 	mu sync.Mutex
 	// projects is what the controller's last heartbeat said this node keeps
@@ -387,6 +388,10 @@ func NewEngine(ctx context.Context, cfg EngineConfig) (*Engine, error) {
 	if err := cmdlog.CheckPunch(filepath.Join(cfg.Dir, "logs")); err != nil {
 		return nil, err
 	}
+	containersConf, err := writeContainersConf(cfg.Dir)
+	if err != nil {
+		return nil, err
+	}
 	d, err := openDB(ctx, filepath.Join(cfg.Dir, "worker.db"))
 	if err != nil {
 		return nil, err
@@ -399,6 +404,7 @@ func NewEngine(ctx context.Context, cfg EngineConfig) (*Engine, error) {
 	bgCtx, bgCancel := context.WithCancel(context.Background())
 	e := &Engine{
 		cfg: cfg, db: d, cred: cred, home: home,
+		containersConf:  containersConf,
 		bases:           map[string]*pb.Base{},
 		finalizingBases: map[string]bool{},
 		workspaces:      map[string]*workspace{},
