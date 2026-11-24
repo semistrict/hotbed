@@ -594,9 +594,11 @@ func TestOOMKillReported(t *testing.T) {
 		Log:           log,
 		NoSwap:        true,
 		Properties:    []string{"MemoryMax=32M"},
-		// Spawn a child that allocates 64 MiB while the parent shell waits on it,
-		// matching how cargo/bash hosts a child rustc/ld that gets OOM-killed.
-		Argv: []string{"sh", "-c", `python3 -c 'b = bytearray(64*1024*1024); b[0]=1; import time; time.sleep(10)'`},
+		// Spawn a child that faults 64 MiB of anonymous pages while the parent
+		// shell waits on it, matching how cargo/bash hosts a child rustc/ld
+		// that gets OOM-killed. Fill with non-zero bytes so glibc/kernel cannot
+		// leave the buffer as demand-paged zero pages under MemoryMax=32M.
+		Argv: []string{"sh", "-c", `python3 -c 'b = b"x" * (64*1024*1024); import time; time.sleep(10)'`},
 	})
 	if err != nil {
 		t.Fatal(err)
