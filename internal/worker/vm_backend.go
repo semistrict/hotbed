@@ -487,7 +487,11 @@ printf '::hotbed-head:: %s %%s\n' "$(git -C %q rev-parse HEAD)"
 
 	env := append([]string{}, cacheEnv()...)
 	env = append(env, sandboxEnv...)
-	env = append(env, "HOME="+spec.Home, "HOTBED_GIT_CRED_SOCK=/run/hotbed/git-auth/git-cred.sock")
+	env = append(env,
+		"HOME="+spec.Home,
+		"PATH="+strings.Join(cachePath, ":")+":/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+		"HOTBED_GIT_CRED_SOCK=/run/hotbed/git-auth/git-cred.sock",
+	)
 
 	out, runErr := b.runGuestCommand(ctx, vmID, "freshen-"+baseID, "/work", []string{"/bin/bash", "-c", script.String()}, env, spec.UID, spec.GID)
 	stopErr := b.mgr.Stop(ctx, vmID, true)
@@ -660,7 +664,11 @@ func (e *Engine) createVMWorkspace(ctx context.Context, req *pb.CreateWorkspaceR
 
 	finishVM := func(bgCtx context.Context) {
 		start := e.now()
-		projBase, err := e.cfg.VM.EnsureProjectBase(bgCtx, p, req.GetSharedBase(), e.cfg.BaseImage.Spec, e.sandboxEnv())
+		var baseSpec baseimage.Spec
+		if e.cfg.BaseImage != nil {
+			baseSpec = e.cfg.BaseImage.Spec
+		}
+		projBase, err := e.cfg.VM.EnsureProjectBase(bgCtx, p, req.GetSharedBase(), baseSpec, e.sandboxEnv())
 		var cell *pb.CladefsCell
 		if err == nil {
 			cell, err = e.cfg.VM.PrepareWorkspace(bgCtx, req.Id, projBase.Ref, req.GetFencingToken())
