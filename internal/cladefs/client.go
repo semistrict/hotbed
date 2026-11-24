@@ -153,6 +153,12 @@ func NewStore(ctx context.Context, cfg Config, api cladefsdv1.CladefsdClient, he
 	}, nil
 }
 
+// SetMount sets the MountClient used by MountAttach, MountDetach, and MountList
+// (used by unit tests constructing a Store via NewStore).
+func (s *Store) SetMount(m mountv1.MountClient) {
+	s.mount = m
+}
+
 // Close closes the underlying gRPC connection.
 func (s *Store) Close() error {
 	if s.closer != nil {

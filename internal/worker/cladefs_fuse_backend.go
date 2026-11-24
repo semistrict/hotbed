@@ -58,6 +58,7 @@ type fuseWSMount struct {
 	Tenant    uint64 `json:"tenant"`
 	Cell      uint64 `json:"cell"`
 	MountPath string `json:"mountPath"`
+	StorePath string `json:"storePath,omitempty"`
 }
 
 // OpenCladefsFUSEBackend connects to cladefsd, loads cached R2 base refs and
@@ -450,6 +451,28 @@ func (b *CladefsFUSEBackend) forkAndMount(ctx context.Context, from cladefs.Cell
 	return forkRef.Tenant, attachedCell, b.mountDir(forkRef.Tenant, attachedCell), b.mountStoreDir(forkRef.Tenant, attachedCell), nil
 }
 
+// forkEphemeralAndMount forks an R2 version into a host-local ephemeral cell
+// (reads come from R2 via CLADEFSD_PART_CACHE, writes stay host-local with zero
+// R2 segment uploads) and mounts it inside cladefsd's host FUSE mount.
+func (b *CladefsFUSEBackend) forkEphemeralAndMount(ctx context.Context, from cladefs.CellRef, wsRel string) (tenant, cell uint64, mountPath, storeDir string, err error) {
+	_ = b.store.DropCell(ctx, wsRel)
+	forkRef, err := b.store.ForkVersion(ctx, from, wsRel, true)
+	if err != nil {
+		return 0, 0, "", "", fmt.Errorf("fork ephemeral R2 version %d/%x: %w", from.Cell, from.Version, err)
+	}
+	attachedCell, shown, err := b.store.MountAttach(ctx, forkRef.Tenant, forkRef.Cell, 0, nil)
+	if err != nil {
+		_ = b.store.DeleteCell(context.Background(), wsRel)
+		return 0, 0, "", "", fmt.Errorf("mount attach ephemeral cell %d: %w", forkRef.Cell, err)
+	}
+	if !shown {
+		_ = b.store.MountDetach(context.Background(), forkRef.Tenant, attachedCell, true)
+		_ = b.store.DeleteCell(context.Background(), wsRel)
+		return 0, 0, "", "", fmt.Errorf("ephemeral cell %d attached with shown=false (kind missing)", attachedCell)
+	}
+	return forkRef.Tenant, attachedCell, b.mountDir(forkRef.Tenant, attachedCell), forkRef.HostPath, nil
+}
+
 // EnsureProjectBase builds or reuses a warm R2 project base for host-FUSE nodes.
 func (b *CladefsFUSEBackend) EnsureProjectBase(
 	ctx context.Context,
@@ -591,18 +614,18 @@ printf '::hotbed-head:: %s %%s\n' "$(git -C %q rev-parse HEAD)"
 	return res, nil
 }
 
-// PrepareWorkspace forks baseRef into a new cladefs cell and mounts it into
-// cladefsd's host FUSE mount at /var/lib/cladefs/mnt/<tenant>/<cell>.
+// PrepareWorkspace forks baseRef into a host-local ephemeral cladefs cell and
+// mounts it into cladefsd's host FUSE mount at /var/lib/cladefs/mnt/<tenant>/<cell>.
 func (b *CladefsFUSEBackend) PrepareWorkspace(ctx context.Context, wsID string, baseRef cladefs.CellRef, fencingToken uint64) (*pb.CladefsCell, string, error) {
 	if err := clearMountNosuid(b.mountRoot); err != nil {
 		return nil, "", fmt.Errorf("enable setuid on cladefs FUSE mount %s: %w", b.mountRoot, err)
 	}
-	tenant, cellID, mntDir, _, err := b.forkAndMount(ctx, baseRef, filepath.Join("fuse-ws", wsID), fencingToken)
+	tenant, cellID, mntDir, storeDir, err := b.forkEphemeralAndMount(ctx, baseRef, filepath.Join("fuse-ws", wsID))
 	if err != nil {
 		return nil, "", fmt.Errorf("prepare cladefs FUSE workspace %s: %w", wsID, err)
 	}
 	b.mu.Lock()
-	b.wsMounts[wsID] = fuseWSMount{Tenant: tenant, Cell: cellID, MountPath: mntDir}
+	b.wsMounts[wsID] = fuseWSMount{Tenant: tenant, Cell: cellID, MountPath: mntDir, StorePath: storeDir}
 	b.saveWSStateLocked()
 	b.mu.Unlock()
 	return &pb.CladefsCell{
@@ -628,7 +651,8 @@ func (b *CladefsFUSEBackend) DeleteWorkspace(ctx context.Context, wsID string) e
 	if err := b.store.MountDetach(ctx, m.Tenant, m.Cell, true); err != nil {
 		slog.Warn("detach cladefs FUSE workspace failed", "workspace", wsID, "cell", m.Cell, "err", err)
 	}
-	return b.store.DeleteCellAbs(ctx, b.mountStoreDir(m.Tenant, m.Cell))
+	storeDir := cmp.Or(m.StorePath, b.mountStoreDir(m.Tenant, m.Cell))
+	return b.store.DeleteCellAbs(ctx, storeDir)
 }
 
 // createCladefsFUSEWorkspace creates a cladefs host-FUSE workspace asynchronously
