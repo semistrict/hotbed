@@ -315,6 +315,7 @@ func (b *VMBackend) vmBaseKey(spec baseimage.Spec) string {
 	if _, err := io.Copy(h, f); err != nil {
 		return baseKey
 	}
+	fmt.Fprintf(h, "\ndisk=%d\n", b.cfg.DiskBytes)
 	return baseKey + "-" + hex.EncodeToString(h.Sum(nil))[:8]
 }
 
@@ -390,6 +391,9 @@ func (b *VMBackend) EnsureProvisionedBaseImage(ctx context.Context, spec baseima
 		_ = b.store.DeleteCell(ctx, rel)
 		return cladefs.CellRef{}, fmt.Errorf("version & sync VM base image %s to R2: %w", key, err)
 	}
+	// Drop the local base cell directory now that its version is durable in R2;
+	// subsequent forks read from R2 via the local SSD CLADEFSD_PART_CACHE.
+	_ = b.store.DropCell(ctx, rel)
 	rawRef.Version = ver
 	b.mu.Lock()
 	b.baseImageRef = &rawRef
@@ -533,6 +537,9 @@ printf '::hotbed-head:: %s %%s\n' "$(git -C %q rev-parse HEAD)"
 		_ = b.store.DeleteCell(ctx, rel)
 		return nil, fmt.Errorf("sync VM project base %s to R2: %w", baseID, err)
 	}
+	// Drop the local project base cell directory now that it is durable in R2;
+	// local SSD stays strictly a cache (CLADEFSD_PART_CACHE) + active workspaces.
+	_ = b.store.DropCell(ctx, rel)
 	forkRef.Version = ver
 
 	repoHeads := map[string]string{}
@@ -568,19 +575,15 @@ printf '::hotbed-head:: %s %%s\n' "$(git -C %q rev-parse HEAD)"
 	return res, nil
 }
 
-// PrepareWorkspace forks the workspace cell from baseRef, applies fencingToken
-// if non-zero, and boots the Firecracker microVM.
+// PrepareWorkspace forks an ephemeral workspace cell from baseRef (reads come
+// from R2 through the local SSD CLADEFSD_PART_CACHE; writes stay local-only on
+// the host SSD with FSYNC_LEVEL_ORDERED so fsync never waits on disk or R2 and
+// big builds never hit R2 upload lag bounds), and boots the Firecracker microVM.
 func (b *VMBackend) PrepareWorkspace(ctx context.Context, wsID string, baseRef cladefs.CellRef, fencingToken uint64) (*pb.CladefsCell, error) {
 	rel := "ws/" + wsID
-	wsRef, err := b.store.ForkVersion(ctx, baseRef, rel, false)
+	wsRef, err := b.store.ForkVersion(ctx, baseRef, rel, true)
 	if err != nil {
-		return nil, fmt.Errorf("fork cladefs workspace %s: %w", wsID, err)
-	}
-	if fencingToken > 0 {
-		if err := b.store.PlaceCell(ctx, rel, fencingToken); err != nil {
-			_ = b.store.DeleteCell(ctx, rel)
-			return nil, fmt.Errorf("place cladefs workspace %s with token %d: %w", wsID, fencingToken, err)
-		}
+		return nil, fmt.Errorf("fork ephemeral cladefs workspace %s: %w", wsID, err)
 	}
 	b.mu.Lock()
 	b.wsCells[wsID] = wsRef
