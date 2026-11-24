@@ -221,4 +221,14 @@ jobs:
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-        run: cf deploy --force --message "build-${{ github.run_number }} (${{ github.sha }})"
+        run: |
+          set -euo pipefail
+          cf deploy --force --message "build-${{ github.run_number }} (${{ github.sha }})"
+          VID=$(cf workers deployments list --worker hotbed-controller | jq -r '.deployments[0].versions[0].version_id')
+          test -n "$VID" && test "$VID" != "null"
+          cf workers deployments create \
+            --worker hotbed-controller \
+            --strategy percentage \
+            --versions "[{\"version_id\":\"${VID}\",\"percentage\":100}]" \
+            --durable-objects-code-update-mode deferred \
+            --durable-objects-code-update-max-delay 30

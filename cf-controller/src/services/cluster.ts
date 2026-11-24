@@ -55,7 +55,6 @@ import {
 import { isSupportedPlatform } from "../builds.ts";
 import { getCaller } from "../connect-adapter.ts";
 import {
-	MAX_WAIT_MS,
 	PROJECT_NAME_RE,
 	REPO_ID_RE,
 	STEP_NAME_RE,
@@ -77,6 +76,7 @@ const ADMISSION_EVENTS_SHOWN = 500;
 const ADMISSION_KINDS = ["hold", "unhold", "wait"];
 const MAX_DIAGNOSTICS_RESPONSE_BYTES = 2 * 1024 * 1024;
 const REPORT_INTERVAL_MS = 5_000;
+const STANDBY_MAX_STREAM_MS = 25_000;
 
 function checkProjectName(name: string): void {
 	if (!PROJECT_NAME_RE.test(name)) {
@@ -419,7 +419,7 @@ export function createClusterService(
 				Number(req.sleepAfterSeconds) * 1000,
 				ctrl.now(),
 			);
-			const deadline = Date.now() + MAX_WAIT_MS;
+			const deadline = Date.now() + STANDBY_MAX_STREAM_MS;
 			let lastRun: boolean | null = null;
 			try {
 				while (!ctx.signal.aborted) {
