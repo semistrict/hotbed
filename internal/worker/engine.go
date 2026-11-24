@@ -864,7 +864,7 @@ func (e *Engine) measureDisk(ctx context.Context) {
 		vols["b:"+b.Id] = baseVolume(b.Project, b.Generation)
 	}
 	for _, w := range e.workspaces {
-		if wsHasVolume(w.ws().State) {
+		if wsHasVolume(w.ws().State) && w.ws().Runtime != runtime.KindVM && w.ws().Runtime != runtime.KindCladefs {
 			vols["w:"+w.ws().Id] = w.rec.Volume
 		}
 	}

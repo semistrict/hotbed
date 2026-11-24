@@ -221,3 +221,40 @@ func TestWorkerWebSocketTunnel(t *testing.T) {
 		t.Fatal("timed out waiting for tunnel test")
 	}
 }
+
+func TestWorkerWebSocketTunnelReadTimeoutOnSilentServer(t *testing.T) {
+	wsSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		c, err := websocket.Accept(w, r, nil)
+		if err != nil {
+			return
+		}
+		defer c.CloseNow()
+		// Blackhole: read pings silently without replying "pong" to simulate a half-open socket.
+		for {
+			if _, _, err := c.Read(r.Context()); err != nil {
+				return
+			}
+		}
+	}))
+	defer wsSrv.Close()
+
+	wsURL, err := tunnelWSURL(wsSrv.URL)
+	if err != nil {
+		t.Fatalf("tunnelWSURL: %v", err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+
+	start := time.Now()
+	err = serveTunnelOnceWithTimeouts(ctx, http.NotFoundHandler(), wsURL, "tok", tailnet.Self{
+		NodeID:   "node-1",
+		Hostname: "ubu1",
+	}, "100.73.156.10:7121", wsSrv.Client(), 40*time.Millisecond, 150*time.Millisecond)
+	elapsed := time.Since(start)
+	if err == nil {
+		t.Fatal("expected read timeout error on silent server, got nil")
+	}
+	if elapsed > 2*time.Second {
+		t.Fatalf("serveTunnelOnce took %s, expected fast reconnect on missed pongs", elapsed)
+	}
+}

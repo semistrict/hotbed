@@ -157,6 +157,16 @@ func runTunnelLoop(
 	}
 }
 
+// defaultTunnelPingInterval and defaultTunnelReadTimeout control WebSocket
+// liveness detection. Cloudflare's WebSocket Auto-Response replies "pong" to
+// every "ping" without waking the Durable Object; if no frame arrives within
+// defaultTunnelReadTimeout (3 missed pongs), the socket is treated as
+// half-open (e.g. after a Wi-Fi AP roam) and closed so runTunnelLoop reconnects.
+const (
+	defaultTunnelPingInterval = 25 * time.Second
+	defaultTunnelReadTimeout  = 75 * time.Second
+)
+
 func serveTunnelOnce(
 	ctx context.Context,
 	handler http.Handler,
@@ -165,6 +175,20 @@ func serveTunnelOnce(
 	self tailnet.Self,
 	workerAddr string,
 	hc *http.Client,
+) error {
+	return serveTunnelOnceWithTimeouts(ctx, handler, wsURL, token, self, workerAddr, hc, defaultTunnelPingInterval, defaultTunnelReadTimeout)
+}
+
+func serveTunnelOnceWithTimeouts(
+	ctx context.Context,
+	handler http.Handler,
+	wsURL string,
+	token string,
+	self tailnet.Self,
+	workerAddr string,
+	hc *http.Client,
+	pingInterval time.Duration,
+	readTimeout time.Duration,
 ) error {
 	headers := http.Header{}
 	if token != "" {
@@ -220,7 +244,7 @@ func serveTunnelOnce(
 	// Keepalive "ping" frames handled by Cloudflare's WebSocket Auto-Response
 	// ("ping" -> "pong") without waking the Durable Object from hibernation.
 	go func() {
-		t := time.NewTicker(25 * time.Second)
+		t := time.NewTicker(pingInterval)
 		defer t.Stop()
 		for {
 			select {
@@ -244,8 +268,13 @@ func serveTunnelOnce(
 	}()
 
 	for {
-		_, data, err := conn.Read(connCtx)
+		readCtx, readCancel := context.WithTimeout(connCtx, readTimeout)
+		_, data, err := conn.Read(readCtx)
+		readCancel()
 		if err != nil {
+			if errors.Is(err, context.DeadlineExceeded) && connCtx.Err() == nil {
+				return fmt.Errorf("tunnel read timeout after %s (no pong/frame received): %w", readTimeout, err)
+			}
 			return err
 		}
 		if bytes.Equal(data, []byte("pong")) || bytes.Equal(data, []byte("ping")) {
