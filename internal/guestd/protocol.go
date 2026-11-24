@@ -103,6 +103,14 @@ type FreezeRequest struct {
 	ID string `json:"id"`
 }
 
+// ReclaimRequest asks hotbed-guestd to reclaim memory from a command's cgroup
+// (when ID and Bytes are set) and drop clean guest page caches so
+// virtio-balloon free-page-reporting returns unused host RAM.
+type ReclaimRequest struct {
+	ID    string `json:"id,omitempty"`
+	Bytes int64  `json:"bytes,omitempty"`
+}
+
 // SyncSubmodule describes one submodule bundle carried in POST /v1/sync.
 type SyncSubmodule struct {
 	Path   string `json:"path"`

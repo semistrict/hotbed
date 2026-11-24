@@ -298,13 +298,17 @@ func (u *runtimeUnits) pumpLogs(ctx context.Context, rc *rtCmd) {
 
 func toUnitState(wsID string, st runtime.CommandStatus) unit.State {
 	return unit.State{
-		Loaded:   true,
-		Running:  st.Running || st.Frozen,
-		Exited:   st.Exited,
-		ExitCode: st.ExitCode,
-		Memory:   st.MemoryAnon,
-		CPUNanos: uint64(max(st.CPUUsec, 0)) * 1000,
-		Cgroup:   makeVMCgroup(wsID, st.ID),
+		Loaded:    true,
+		Running:   st.Running || st.Frozen,
+		Frozen:    st.Frozen,
+		Exited:    st.Exited,
+		ExitCode:  st.ExitCode,
+		Signal:    st.Signal,
+		Result:    st.Result,
+		OOMKilled: st.OOMKilled,
+		Memory:    st.MemoryAnon,
+		CPUNanos:  uint64(max(st.CPUUsec, 0)) * 1000,
+		Cgroup:    makeVMCgroup(wsID, st.ID),
 	}
 }
 
@@ -395,10 +399,13 @@ func (u *runtimeUnits) Thaw(ctx context.Context, name string) error {
 }
 
 func (u *runtimeUnits) Reclaim(cgroup string, n int64) error {
-	if _, _, ok := parseVMCgroup(cgroup); ok {
-		// Guest cgroups cannot be reclaimed via host memory.reclaim; never touch
-		// the host Firecracker VMM cgroup directly.
-		return nil
+	if wsID, cmdID, ok := parseVMCgroup(cgroup); ok {
+		// Reclaim inside the guest (cgroup memory.reclaim + drop clean page
+		// caches) so virtio-balloon free-page-reporting returns unused host RAM
+		// without ever freezing or touching the host Firecracker VMM cgroup.
+		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		defer cancel()
+		return u.rt.Reclaim(ctx, wsID, cmdID, n)
 	}
 	return u.inner.Reclaim(cgroup, n)
 }

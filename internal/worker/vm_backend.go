@@ -53,10 +53,48 @@ type VMBackend struct {
 }
 
 type vmProjectBase struct {
-	Ref    cladefs.CellRef   `json:"ref"`
-	BaseID string            `json:"baseId"`
-	Recipe string            `json:"recipe"`
-	Repos  map[string]string `json:"repos"` // repoID -> checked-out HEAD commit
+	Ref          cladefs.CellRef   `json:"ref"`
+	BaseID       string            `json:"baseId"`
+	Recipe       string            `json:"recipe"`
+	BaseKey      string            `json:"baseKey,omitempty"`
+	ScratchEpoch int64             `json:"scratchEpoch,omitempty"`
+	Repos        map[string]string `json:"repos"`                // repoID -> checked-out HEAD commit
+	StepHashes   map[string]string `json:"stepHashes,omitempty"` // step name -> last executed script hash
+}
+
+// selectProjectBaseSteps returns the subset of p's setup steps that must run
+// when freshening from prev (nil for a cold build from the OS base image).
+// On an incremental freshen, steps whose script hash changed (or that are new)
+// always run, and --every-pull steps run whenever any repo commit moved.
+func selectProjectBaseSteps(p *pb.HostedProject, prev *vmProjectBase, heads map[string]string) []*pb.Step {
+	steps := p.GetSteps()
+	if prev == nil || prev.StepHashes == nil {
+		return steps
+	}
+	repoMoved := false
+	for _, r := range p.GetRepos() {
+		want := heads[r.GetId()]
+		if want == "" || prev.Repos[r.GetId()] != want {
+			repoMoved = true
+			break
+		}
+	}
+	var out []*pb.Step
+	for _, s := range steps {
+		prevHash, ran := prev.StepHashes[s.GetName()]
+		if !ran || prevHash != s.GetHash() || (s.GetEveryPull() && repoMoved) {
+			out = append(out, s)
+		}
+	}
+	return out
+}
+
+func projectStepHashes(p *pb.HostedProject) map[string]string {
+	out := make(map[string]string, len(p.GetSteps()))
+	for _, s := range p.GetSteps() {
+		out[s.GetName()] = s.GetHash()
+	}
+	return out
 }
 
 // OpenVMBackend connects to cladefsd, initializes the Firecracker VM manager,
@@ -617,11 +655,11 @@ func (b *VMBackend) EnsureProvisionedBaseImage(ctx context.Context, spec baseima
 	return rawRef, nil
 }
 
-func vmProjectRecipe(baseKey string, p *pb.HostedProject) string {
+func vmProjectRecipe(baseKey string, p *pb.HostedProject, heads map[string]string) string {
 	h := sha256.New()
-	fmt.Fprintf(h, "vm-v1\nbase=%s\narch=%s\nproject=%s\nepoch=%d\n", baseKey, goruntime.GOARCH, p.GetName(), p.GetScratchEpoch())
+	fmt.Fprintf(h, "vm-v2\nbase=%s\narch=%s\nproject=%s\nepoch=%d\n", baseKey, goruntime.GOARCH, p.GetName(), p.GetScratchEpoch())
 	for _, r := range p.GetRepos() {
-		fmt.Fprintf(h, "repo=%s|%s|%s\n", r.GetId(), r.GetUrl(), r.GetBranch())
+		fmt.Fprintf(h, "repo=%s|%s|%s|%s\n", r.GetId(), r.GetUrl(), r.GetBranch(), heads[r.GetId()])
 	}
 	for _, s := range p.GetSteps() {
 		fmt.Fprintf(h, "step=%s|%s|%v\n", s.GetName(), s.GetHash(), s.GetEveryPull())
@@ -635,59 +673,89 @@ func (b *VMBackend) projectLock(name string) *sync.Mutex {
 }
 
 // EnsureProjectBase builds (or reuses from local cache / R2 shared_bases) a
-// warm cladefs project base with all project repos cloned at /work/<repo> and
-// setup steps executed inside a Firecracker VM, then uploads it to R2 and
-// publishes it in sharedBases for heartbeat advertisement.
+// warm cladefs project base with all project repos checked out at heads under
+// /work/<repo> and setup steps executed inside a Firecracker VM, then uploads
+// it to R2 and publishes it in sharedBases for heartbeat advertisement.
+// When an existing project base matches baseKey and ScratchEpoch, it forks
+// incrementally from that base and runs only new/changed and --every-pull steps.
 func (b *VMBackend) EnsureProjectBase(
 	ctx context.Context,
 	p *pb.HostedProject,
+	heads map[string]string,
 	existingShared *pb.CladefsCell,
 	spec baseimage.Spec,
 	sandboxEnv []string,
 ) (*vmProjectBase, error) {
 	spec = spec.Normalized()
-	recipe := vmProjectRecipe(b.vmBaseKey(spec), p)
+	baseKey := b.vmBaseKey(spec)
+	recipe := vmProjectRecipe(baseKey, p, heads)
 
 	lock := b.projectLock(p.GetName())
 	lock.Lock()
 	defer lock.Unlock()
 
-	// Fast path 1: local cached project base matches recipe.
+	// Fast path 1: local cached project base matches recipe (including repo HEADs).
 	b.mu.Lock()
-	if cur, ok := b.projectBases[p.GetName()]; ok && cur.Recipe == recipe && cur.Ref.Cell > 0 && cur.Ref.Version > 0 {
+	cur := b.projectBases[p.GetName()]
+	if cur != nil && cur.Recipe == recipe && cur.Ref.Cell > 0 && cur.Ref.Version > 0 {
 		out := *cur
 		b.mu.Unlock()
 		return &out, nil
+	}
+	var prevBase *vmProjectBase
+	if cur != nil && cur.Ref.Cell > 0 && cur.Ref.Version > 0 &&
+		cur.BaseKey == baseKey && cur.ScratchEpoch == p.GetScratchEpoch() {
+		cp := *cur
+		prevBase = &cp
 	}
 	b.mu.Unlock()
 
 	// Fast path 2: controller advertised an up-to-date shared base in R2!
 	if existingShared != nil && existingShared.Cell > 0 && existingShared.Version > 0 && existingShared.Recipe == recipe {
+		repos := make(map[string]string, len(heads))
+		for k, v := range heads {
+			repos[k] = v
+		}
 		return &vmProjectBase{
 			Ref: cladefs.CellRef{
 				Tenant:  existingShared.Tenant,
 				Cell:    existingShared.Cell,
 				Version: existingShared.Version,
 			},
-			BaseID: cmp.Or(existingShared.BaseId, p.GetName()+"-vm-"+recipe[:8]),
-			Recipe: recipe,
-			Repos:  map[string]string{},
+			BaseID:       cmp.Or(existingShared.BaseId, p.GetName()+"-vm-"+recipe[:8]),
+			Recipe:       recipe,
+			BaseKey:      baseKey,
+			ScratchEpoch: p.GetScratchEpoch(),
+			Repos:        repos,
+			StepHashes:   projectStepHashes(p),
 		}, nil
-	}
-
-	// Build project base from provisioned VM base image (or previous project base if not scratch).
-	baseImgRef, err := b.EnsureProvisionedBaseImage(ctx, spec)
-	if err != nil {
-		return nil, err
 	}
 
 	baseID := fmt.Sprintf("%s-vm-%s", p.GetName(), recipe[:8])
 	rel := filepath.Join("bases", p.GetName(), baseID)
 	_ = b.store.DeleteCell(ctx, rel)
 
-	forkRef, err := b.store.ForkVersion(ctx, baseImgRef, rel, false)
-	if err != nil {
-		return nil, fmt.Errorf("fork VM project base %s: %w", baseID, err)
+	// Prefer incremental fork from the previous warm project base when compatible.
+	var forkRef cladefs.CellRef
+	var err error
+	if prevBase != nil {
+		forkRef, err = b.store.ForkVersion(ctx, prevBase.Ref, rel, false)
+		if err != nil {
+			slog.Warn("incremental VM project base fork failed; falling back to cold base",
+				"project", p.GetName(), "prevBase", prevBase.BaseID, "err", err)
+			_ = b.store.DeleteCell(ctx, rel)
+			prevBase = nil
+		}
+	}
+	if prevBase == nil {
+		baseImgRef, berr := b.EnsureProvisionedBaseImage(ctx, spec)
+		if berr != nil {
+			return nil, berr
+		}
+		forkRef, err = b.store.ForkVersion(ctx, baseImgRef, rel, false)
+		if err != nil {
+			return nil, fmt.Errorf("fork VM project base %s: %w", baseID, err)
+		}
 	}
 
 	vmID := "base-" + baseID
@@ -708,31 +776,49 @@ func (b *VMBackend) EnsureProjectBase(
 		"HOTBED_GIT_CRED_SOCK=/run/hotbed/git-auth/git-cred.sock",
 	)
 
-	// 1. Clone/fetch all project repos inside the Firecracker VM.
+	// 1. Clone/fetch all project repos inside the Firecracker VM, pinning each
+	// repo to its resolved target commit when known.
 	var cloneScript strings.Builder
 	cloneScript.WriteString("set -euo pipefail\nmkdir -p /work\ncd /work\n")
 	for _, r := range p.GetRepos() {
 		branch := cmp.Or(r.GetBranch(), "main")
+		commit := heads[r.GetId()]
 		fmt.Fprintf(&cloneScript, `
 if [ -d %q/.git ]; then
   git -C %q fetch --prune origin %q
-  git -C %q checkout -B %q FETCH_HEAD
 else
   git clone --quiet --filter=blob:none --branch %q --single-branch %q %q
 fi
+`, r.GetId(), r.GetId(), branch, branch, r.GetUrl(), r.GetId())
+		if commit != "" {
+			fmt.Fprintf(&cloneScript, `
+if ! git -C %q cat-file -e %q^{commit} 2>/dev/null; then
+  git -C %q fetch --quiet origin %q
+fi
+git -C %q checkout -B %q %q
+`, r.GetId(), commit, r.GetId(), commit, r.GetId(), branch, commit)
+		} else {
+			fmt.Fprintf(&cloneScript, `
+if git -C %q rev-parse --verify FETCH_HEAD >/dev/null 2>&1; then
+  git -C %q checkout -B %q FETCH_HEAD
+fi
+`, r.GetId(), r.GetId(), branch)
+		}
+		fmt.Fprintf(&cloneScript, `
 git -C %q submodule update --quiet --init --recursive --force
 if [ -f %q/Cargo.toml ] && [ ! -f %q/rust-toolchain.toml ] && [ ! -f %q/rust-toolchain ] && command -v rustup >/dev/null; then
   rustup show active-toolchain >/dev/null 2>&1 || rustup default stable
 fi
 printf '::hotbed-head:: %s %%s\n' "$(git -C %q rev-parse HEAD)"
-`, r.GetId(), r.GetId(), branch, r.GetId(), branch, branch, r.GetUrl(), r.GetId(), r.GetId(), r.GetId(), r.GetId(), r.GetId(), r.GetId(), r.GetId())
+`, r.GetId(), r.GetId(), r.GetId(), r.GetId(), r.GetId(), r.GetId())
 	}
 
 	out, runErr := b.runGuestCommand(ctx, vmID, "freshen-repos-"+baseID, "/work", []string{"/bin/bash", "-c", cloneScript.String()}, env, spec.UID, spec.GID)
-	// 2. Run each project setup step directly via bash -c (avoiding nested
+	// 2. Run selected project setup steps directly via bash -c (avoiding nested
 	// shell quoting so variables like $dest expand inside the step's shell).
+	stepsToRun := selectProjectBaseSteps(p, prevBase, heads)
 	if runErr == nil {
-		for i, s := range p.GetSteps() {
+		for i, s := range stepsToRun {
 			stepCmdID := fmt.Sprintf("freshen-step-%d-%s", i+1, baseID)
 			if _, err := b.runGuestCommand(ctx, vmID, stepCmdID, "/work", []string{"/bin/bash", "-eo", "pipefail", "-c", s.GetScript()}, env, spec.UID, spec.GID); err != nil {
 				runErr = fmt.Errorf("step %q: %w", s.GetName(), err)
@@ -771,10 +857,13 @@ printf '::hotbed-head:: %s %%s\n' "$(git -C %q rev-parse HEAD)"
 	}
 
 	res := &vmProjectBase{
-		Ref:    forkRef,
-		BaseID: baseID,
-		Recipe: recipe,
-		Repos:  repoHeads,
+		Ref:          forkRef,
+		BaseID:       baseID,
+		Recipe:       recipe,
+		BaseKey:      baseKey,
+		ScratchEpoch: p.GetScratchEpoch(),
+		Repos:        repoHeads,
+		StepHashes:   projectStepHashes(p),
 	}
 	b.mu.Lock()
 	b.projectBases[p.GetName()] = res
@@ -789,7 +878,9 @@ printf '::hotbed-head:: %s %%s\n' "$(git -C %q rev-parse HEAD)"
 	}
 	b.mu.Unlock()
 	b.saveCacheJSON("project-"+p.GetName()+".json", res)
-	slog.Info("VM project base built and published to R2", "project", p.GetName(), "baseId", baseID, "cell", forkRef.Cell, "version", forkRef.Version)
+	slog.Info("VM project base built and published to R2",
+		"project", p.GetName(), "baseId", baseID, "incremental", prevBase != nil,
+		"steps", len(stepsToRun), "cell", forkRef.Cell, "version", forkRef.Version)
 	return res, nil
 }
 
@@ -870,17 +961,24 @@ func (b *VMBackend) ClientFor(wsID string) (*guestd.Client, error) {
 
 // VMExited reports whether wsID's Firecracker process is no longer running.
 func (b *VMBackend) VMExited(ctx context.Context, wsID string) (bool, int) {
+	ex, code, _, _, _ := b.VMExitStatus(ctx, wsID)
+	return ex, code
+}
+
+// VMExitStatus reports whether wsID's Firecracker process has exited along with
+// systemd exit code, signal, result, and OOM-kill status.
+func (b *VMBackend) VMExitStatus(ctx context.Context, wsID string) (exited bool, exitCode, signal int, result string, oomKilled bool) {
 	if b.mgr.Get(wsID) == nil {
-		return true, 0
+		return true, 0, 0, "", false
 	}
 	st, err := b.mgr.Status(ctx, wsID)
 	if err != nil {
-		return false, 0
+		return false, 0, 0, "", false
 	}
 	if !st.Running {
-		return true, st.ExitCode
+		return true, st.ExitCode, st.Signal, st.Result, st.OOMKilled
 	}
-	return false, 0
+	return false, 0, 0, "", false
 }
 
 // StopVM implements runtime.GuestResolver.
@@ -934,7 +1032,11 @@ func (e *Engine) createVMWorkspace(ctx context.Context, req *pb.CreateWorkspaceR
 		if e.cfg.BaseImage != nil {
 			baseSpec = e.cfg.BaseImage.Spec
 		}
-		projBase, err := e.cfg.VM.EnsureProjectBase(bgCtx, p, req.GetSharedBase(), baseSpec, e.sandboxEnv())
+		heads, err := e.remoteHeads(bgCtx, p)
+		var projBase *vmProjectBase
+		if err == nil {
+			projBase, err = e.cfg.VM.EnsureProjectBase(bgCtx, p, heads, req.GetSharedBase(), baseSpec, e.sandboxEnv())
+		}
 		var cell *pb.CladefsCell
 		if err == nil {
 			cell, err = e.cfg.VM.PrepareWorkspace(bgCtx, req.Id, projBase.Ref, req.GetFencingToken())

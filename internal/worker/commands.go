@@ -1543,7 +1543,7 @@ func (e *Engine) limit(ctx context.Context) {
 		if c.intervening {
 			continue
 		}
-		if soft := cmd.Limits.GetSoftLimitSeconds(); soft > 0 && cmd.State != paused && !cmd.Bench && !c.deactivating &&
+		if soft := cmd.Limits.GetSoftLimitSeconds(); soft > 0 && cmd.State == running && !cmd.Bench && !c.deactivating &&
 			now-max(cmd.GetStartedAt(), c.rec.WaitedAt) >= soft*1000 {
 			pause = append(pause, c)
 		}
@@ -1598,9 +1598,10 @@ func (e *Engine) pause(ctx context.Context, c *command) {
 	_, err := e.pauseUnit(ctx, c, func(was pb.CommandState) bool {
 		cmd := c.cmd()
 		soft := cmd.Limits.GetSoftLimitSeconds()
-		// A stop that began as it froze, an intervention, or an agent that began
-		// waiting on it meanwhile (WaitOn saw it running): it is not paused after all.
-		return !c.stopping && !c.intervening && cmd.State == was && (was == running || was == parked) &&
+		// A stop that began as it froze, an intervention, a concurrent park, or
+		// an agent that began waiting on it meanwhile (WaitOn saw it running):
+		// it is not paused after all.
+		return !c.stopping && !c.intervening && cmd.State == was && was == running &&
 			e.nowMs()-max(cmd.GetStartedAt(), c.rec.WaitedAt) >= soft*1000
 	}, func() {
 		cmd := c.cmd()
@@ -1736,19 +1737,29 @@ func (e *Engine) commitPendingThawLocked(c *command) {
 	if !api.Live(cmd.State) {
 		return
 	}
+	wasState := cmd.State
+	now := e.nowMs()
 	if pt.by != nil {
 		pt.by.record(cmd)
 		cmd.Attached = false
-		c.rec.WaitedAt = e.nowMs()
+		c.rec.WaitedAt = now
 	} else if pt.clearAttached {
 		cmd.Attached = false
+	} else if wasState == parked && c.rec.ParkedAt > 0 {
+		// Exclude time spent parked by hotbed from the soft time limit budget
+		// so a command frozen for memory pressure gets its full soft-limit
+		// running time once thawed.
+		base := max(cmd.GetStartedAt(), c.rec.WaitedAt)
+		if parkedMs := now - max(c.rec.ParkedAt, base); parkedMs > 0 {
+			c.rec.WaitedAt = base + parkedMs
+		}
 	}
 	cmd.State = running
 	cmd.Reason = ""
 	c.rec.HeldFor = ""
 	c.preemptedBy = ""
 	c.reclaimed = false
-	cmd.Timeline = append(cmd.Timeline, &pb.CommandEvent{At: e.nowMs(), What: pt.ch.what, Detail: pt.ch.detail})
+	cmd.Timeline = append(cmd.Timeline, &pb.CommandEvent{At: now, What: pt.ch.what, Detail: pt.ch.detail})
 	e.saveCommand(c, pt.ch)
 }
 
@@ -1984,6 +1995,14 @@ func (e *Engine) endBy(c *command, state pb.CommandState, code *int32, why strin
 			wsWhat = "preparing"
 		}
 		e.saveWorkspace(w, change{what: wsWhat, detail: cmd.Id + " ended"})
+		if w.ws().State == idle && e.usesRuntime(w.ws().Id) {
+			wsID := w.ws().Id
+			e.startBgLocked(func(bgCtx context.Context) {
+				rctx, cancel := context.WithTimeout(bgCtx, 3*time.Second)
+				defer cancel()
+				_ = e.cfg.Runtime.Reclaim(rctx, wsID, "", 0)
+			})
+		}
 	}
 	e.stepSoon()
 }

@@ -43,6 +43,9 @@ type CommandStatus struct {
 	Frozen     bool
 	Exited     bool
 	ExitCode   int
+	Signal     int
+	Result     string
+	OOMKilled  bool
 	MainPID    int
 	Cgroup     string
 	MemoryAnon int64
@@ -98,6 +101,7 @@ type WorkspaceRuntime interface {
 	StopCommand(ctx context.Context, wsID, cmdID string, grace time.Duration) error
 	FreezeCommand(ctx context.Context, wsID, cmdID string) error
 	ThawCommand(ctx context.Context, wsID, cmdID string) error
+	Reclaim(ctx context.Context, wsID, cmdID string, bytes int64) error
 	StreamLogs(ctx context.Context, wsID, cmdID string, offset int64, follow bool, dst io.Writer) (int64, error)
 
 	// Workspace I/O.

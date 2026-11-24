@@ -450,8 +450,8 @@ func TestAttachFollowLogDoesNotSpinWhenWorkerReturnsNotFoundAndControllerRunning
 		ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
 		defer cancel()
 
-		var stdout bytes.Buffer
-		_, err := followLog(ctx, wk, "c-lost", &stdout)
+		var stdout, stderr bytes.Buffer
+		_, err := followLog(ctx, wk, "c-lost", &stdout, &stderr)
 		if err == nil {
 			t.Fatal("followLog succeeded, want NOT_FOUND")
 		}
@@ -488,8 +488,8 @@ func TestAttachFollowLogDoesNotSpinWhenWorkerReturnsNotFoundAndControllerRunning
 		ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
 		defer cancel()
 
-		var stdout bytes.Buffer
-		_, err := followLog(ctx, wk, "c-retry", &stdout)
+		var stdout, stderr bytes.Buffer
+		_, err := followLog(ctx, wk, "c-retry", &stdout, &stderr)
 		if err == nil {
 			t.Fatal("followLog succeeded, want unreachable error after followRideOut")
 		}

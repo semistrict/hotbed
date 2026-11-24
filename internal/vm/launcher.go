@@ -33,10 +33,13 @@ type ProcessSpec struct {
 
 // ProcessStatus reports whether a Firecracker VMM is currently running or exited.
 type ProcessStatus struct {
-	Loaded   bool
-	Running  bool
-	Exited   bool
-	ExitCode int
+	Loaded    bool
+	Running   bool
+	Exited    bool
+	ExitCode  int
+	Signal    int
+	Result    string
+	OOMKilled bool
 }
 
 // SystemdLauncher runs each Firecracker VM as a transient systemd service unit
@@ -100,13 +103,18 @@ func (SystemdLauncher) Stop(ctx context.Context, name string) error {
 
 func (SystemdLauncher) Status(ctx context.Context, name string) (ProcessStatus, error) {
 	out, err := exec.CommandContext(ctx, "systemctl", "show", name+".service",
-		"--property=LoadState,ActiveState,SubState,ExecMainStatus").CombinedOutput()
+		"--property=LoadState,ActiveState,SubState,Result,ExecMainCode,ExecMainStatus").CombinedOutput()
 	if err != nil {
 		return ProcessStatus{}, fmt.Errorf("systemctl show %s: %w (%s)", name, err, strings.TrimSpace(string(out)))
 	}
+	return parseSystemdProcessStatus(string(out)), nil
+}
+
+func parseSystemdProcessStatus(out string) ProcessStatus {
 	var st ProcessStatus
-	var loadState, activeState, subState string
-	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
+	var loadState, activeState, subState, execCode string
+	var execStatus int
+	for _, line := range strings.Split(strings.TrimSpace(out), "\n") {
 		k, v, ok := strings.Cut(line, "=")
 		if !ok {
 			continue
@@ -118,14 +126,27 @@ func (SystemdLauncher) Status(ctx context.Context, name string) (ProcessStatus, 
 			activeState = v
 		case "SubState":
 			subState = v
+		case "Result":
+			st.Result = v
+		case "ExecMainCode":
+			execCode = v
 		case "ExecMainStatus":
-			st.ExitCode, _ = strconv.Atoi(v)
+			execStatus, _ = strconv.Atoi(v)
 		}
 	}
 	st.Loaded = loadState != "" && loadState != "not-found"
 	st.Running = activeState == "active" || activeState == "activating"
 	st.Exited = !st.Running && (activeState == "inactive" || activeState == "failed" || subState == "dead" || subState == "exited" || subState == "failed")
-	return st, nil
+	if st.Result == "oom-kill" {
+		st.OOMKilled = true
+	}
+	// ExecMainCode is a CLD_* value: 1 exited, 2 killed, 3 dumped core.
+	if execCode == "2" || execCode == "3" {
+		st.Signal = execStatus
+	} else {
+		st.ExitCode = execStatus
+	}
+	return st
 }
 
 // DirectLauncher runs Firecracker directly as a child process of the current

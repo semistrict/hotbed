@@ -98,6 +98,25 @@ func (c *cmdCgroup) killAll() {
 	_ = os.WriteFile(filepath.Join(c.path, "cgroup.kill"), []byte("1"), 0o644)
 }
 
+func (c *cmdCgroup) reclaim(n int64) error {
+	if c == nil || n <= 0 {
+		return nil
+	}
+	err := os.WriteFile(filepath.Join(c.path, "memory.reclaim"), []byte(strconv.FormatInt(n, 10)), 0o644)
+	if errors.Is(err, os.ErrNotExist) || errors.Is(err, syscall.EAGAIN) || errors.Is(err, syscall.ENOTSUP) || errors.Is(err, syscall.EOPNOTSUPP) {
+		return nil
+	}
+	return err
+}
+
+func dropPageCaches() error {
+	err := os.WriteFile("/proc/sys/vm/drop_caches", []byte("3\n"), 0o644)
+	if errors.Is(err, os.ErrNotExist) || errors.Is(err, os.ErrPermission) || errors.Is(err, syscall.EROFS) {
+		return nil
+	}
+	return err
+}
+
 func (c *cmdCgroup) remove() {
 	if c == nil {
 		return

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"strings"
 	"time"
 
 	pb "github.com/semistrict/hotbed/internal/gen/hotbed/v1"
@@ -58,10 +59,9 @@ func (g *GuestRuntime) Teardown(ctx context.Context, wsID string) error {
 }
 
 func (g *GuestRuntime) client(ctx context.Context, wsID string) (*guestd.Client, error) {
-	c, err := g.vms.ClientFor(wsID)
-	if err == nil {
-		return c, nil
-	}
+	// Always go through EnsureVM so a tracked Firecracker VMM that exited
+	// unexpectedly (e.g. systemd-oomd kill or cladefsd exit 158) is detected,
+	// cleaned up, and rebooted cleanly instead of returning a dead vsock client.
 	return g.vms.EnsureVM(ctx, wsID)
 }
 
@@ -92,11 +92,22 @@ type vmExitChecker interface {
 	VMExited(ctx context.Context, wsID string) (exited bool, exitCode int)
 }
 
-func (g *GuestRuntime) vmExited(ctx context.Context, wsID string) (bool, int) {
-	if c, ok := g.vms.(vmExitChecker); ok {
-		return c.VMExited(ctx, wsID)
+// vmExitStatusChecker is optionally implemented by a GuestResolver that can
+// report rich systemd exit details (OOM kill, signal, result) when a
+// workspace's Firecracker VMM process exits.
+type vmExitStatusChecker interface {
+	VMExitStatus(ctx context.Context, wsID string) (exited bool, exitCode, signal int, result string, oomKilled bool)
+}
+
+func (g *GuestRuntime) vmExitStatus(ctx context.Context, wsID string) (exited bool, exitCode, signal int, result string, oomKilled bool) {
+	if c, ok := g.vms.(vmExitStatusChecker); ok {
+		return c.VMExitStatus(ctx, wsID)
 	}
-	return false, 0
+	if c, ok := g.vms.(vmExitChecker); ok {
+		ex, code := c.VMExited(ctx, wsID)
+		return ex, code, 0, "", false
+	}
+	return false, 0, 0, "", false
 }
 
 func (g *GuestRuntime) StatusMany(ctx context.Context, wsID string, ids []string) (map[string]CommandStatus, error) {
@@ -124,16 +135,19 @@ func (g *GuestRuntime) StatusMany(ctx context.Context, wsID string, ids []string
 		err = rerr
 	}
 	if len(ids) > 0 {
-		if exited, code := g.vmExited(ctx, wsID); exited {
-			if code == 0 {
+		if exited, code, sig, res, oom := g.vmExitStatus(ctx, wsID); exited {
+			if code == 0 && sig == 0 && !oom {
 				code = 137
 			}
 			out := make(map[string]CommandStatus, len(ids))
 			for _, id := range ids {
 				out[id] = CommandStatus{
-					ID:       id,
-					Exited:   true,
-					ExitCode: code,
+					ID:        id,
+					Exited:    true,
+					ExitCode:  code,
+					Signal:    sig,
+					Result:    res,
+					OOMKilled: oom,
 				}
 			}
 			return out, nil
@@ -150,7 +164,7 @@ func (g *GuestRuntime) StopCommand(ctx context.Context, wsID, cmdID string, grac
 			return nil
 		}
 	}
-	if exited, _ := g.vmExited(ctx, wsID); exited {
+	if exited, _, _, _, _ := g.vmExitStatus(ctx, wsID); exited {
 		return nil
 	}
 	return err
@@ -172,6 +186,22 @@ func (g *GuestRuntime) ThawCommand(ctx context.Context, wsID, cmdID string) erro
 	}
 	_, err = c.ThawCommand(ctx, cmdID)
 	return err
+}
+
+func (g *GuestRuntime) Reclaim(ctx context.Context, wsID, cmdID string, bytes int64) error {
+	c, err := g.vms.ClientFor(wsID)
+	if err != nil {
+		return nil
+	}
+	if err := c.Reclaim(ctx, cmdID, bytes); err != nil {
+		// Older guestd builds without /v1/reclaim return 404; treat as a
+		// best-effort no-op so rolling upgrades never log spurious errors.
+		if strings.Contains(err.Error(), "(404)") {
+			return nil
+		}
+		return err
+	}
+	return nil
 }
 
 func (g *GuestRuntime) StreamLogs(ctx context.Context, wsID, cmdID string, offset int64, follow bool, dst io.Writer) (int64, error) {

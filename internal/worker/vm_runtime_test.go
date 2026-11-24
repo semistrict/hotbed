@@ -469,3 +469,117 @@ func TestObjectStoreStatsFromCounters(t *testing.T) {
 		t.Fatalf("parsePartCacheMetrics = (%d, %d, %v)", used, capBytes, ok)
 	}
 }
+
+func TestToUnitStatePreservesFrozenAndOOM(t *testing.T) {
+	frozen := toUnitState("ws-1", runtime.CommandStatus{
+		ID:     "c-1",
+		Frozen: true,
+	})
+	if !frozen.Running || !frozen.Frozen || frozen.Exited {
+		t.Fatalf("frozen unit state = %+v, want Running=true Frozen=true Exited=false", frozen)
+	}
+	if frozen.Cgroup != "vm:ws-1:c-1" {
+		t.Fatalf("cgroup = %q, want vm:ws-1:c-1", frozen.Cgroup)
+	}
+
+	oom := toUnitState("ws-1", runtime.CommandStatus{
+		ID:        "c-2",
+		Exited:    true,
+		Signal:    9,
+		Result:    "oom-kill",
+		OOMKilled: true,
+	})
+	if !oom.Exited || !oom.OOMKilled || oom.Signal != 9 || oom.Result != "oom-kill" {
+		t.Fatalf("oom unit state = %+v, want Exited=true OOMKilled=true Signal=9 Result=oom-kill", oom)
+	}
+}
+
+func TestProjectBaseRecipesAndIncrementalStepSelection(t *testing.T) {
+	proj := &pb.HostedProject{
+		Name: "cladefs",
+		Repos: []*pb.Repo{
+			{Id: "cladefs", Url: "https://example.com/cladefs.git", Branch: "main"},
+		},
+		Steps: []*pb.Step{
+			{Name: "deps", Hash: "h-deps", EveryPull: false},
+			{Name: "build", Hash: "h-build", EveryPull: true},
+		},
+	}
+
+	r1VM := vmProjectRecipe("base-a", proj, map[string]string{"cladefs": "aaa111"})
+	r2VM := vmProjectRecipe("base-a", proj, map[string]string{"cladefs": "bbb222"})
+	if r1VM == r2VM {
+		t.Fatalf("vmProjectRecipe did not change when repo HEAD moved: %q", r1VM)
+	}
+	r1FUSE := fuseProjectRecipe("base-a", proj, map[string]string{"cladefs": "aaa111"})
+	r2FUSE := fuseProjectRecipe("base-a", proj, map[string]string{"cladefs": "bbb222"})
+	if r1FUSE == r2FUSE {
+		t.Fatalf("fuseProjectRecipe did not change when repo HEAD moved: %q", r1FUSE)
+	}
+
+	// Cold build runs all steps.
+	cold := selectProjectBaseSteps(proj, nil, map[string]string{"cladefs": "aaa111"})
+	if len(cold) != 2 {
+		t.Fatalf("cold build selected %d steps, want 2", len(cold))
+	}
+
+	// Incremental freshen when only repo HEAD moved runs only --every-pull steps.
+	prev := &vmProjectBase{
+		Repos:      map[string]string{"cladefs": "aaa111"},
+		StepHashes: map[string]string{"deps": "h-deps", "build": "h-build"},
+	}
+	pullOnly := selectProjectBaseSteps(proj, prev, map[string]string{"cladefs": "bbb222"})
+	if len(pullOnly) != 1 || pullOnly[0].GetName() != "build" {
+		t.Fatalf("repo-moved freshen selected %v, want [build]", pullOnly)
+	}
+
+	// Incremental freshen when a non-every-pull step hash changed runs that step too.
+	proj2 := &pb.HostedProject{
+		Name:  proj.Name,
+		Repos: proj.Repos,
+		Steps: []*pb.Step{
+			{Name: "deps", Hash: "h-deps-v2", EveryPull: false},
+			{Name: "build", Hash: "h-build", EveryPull: true},
+		},
+	}
+	hashChanged := selectProjectBaseSteps(proj2, prev, map[string]string{"cladefs": "aaa111"})
+	if len(hashChanged) != 1 || hashChanged[0].GetName() != "deps" {
+		t.Fatalf("step-hash-changed freshen selected %v, want [deps]", hashChanged)
+	}
+}
+
+type reclaimSpyRuntime struct {
+	runtime.WorkspaceRuntime
+	mu    sync.Mutex
+	calls []struct {
+		wsID  string
+		cmdID string
+		bytes int64
+	}
+}
+
+func (r *reclaimSpyRuntime) Reclaim(_ context.Context, wsID, cmdID string, bytes int64) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.calls = append(r.calls, struct {
+		wsID  string
+		cmdID string
+		bytes int64
+	}{wsID: wsID, cmdID: cmdID, bytes: bytes})
+	return nil
+}
+
+func TestRuntimeUnitsReclaimRoutesVMCgroupToGuestRuntime(t *testing.T) {
+	inner := &fake.Units{}
+	spy := &reclaimSpyRuntime{}
+	ru := newRuntimeUnits(inner, spy, func(string) bool { return true }, 0, 0)
+
+	if err := ru.Reclaim("vm:ws-42:cmd-9", 128<<20); err != nil {
+		t.Fatalf("Reclaim(vm cgroup): %v", err)
+	}
+	spy.mu.Lock()
+	defer spy.mu.Unlock()
+	if len(spy.calls) != 1 || spy.calls[0].wsID != "ws-42" || spy.calls[0].cmdID != "cmd-9" || spy.calls[0].bytes != 128<<20 {
+		t.Fatalf("reclaim calls = %+v, want [{ws-42 cmd-9 134217728}]", spy.calls)
+	}
+}

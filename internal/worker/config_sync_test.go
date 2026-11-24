@@ -48,14 +48,14 @@ func TestVMBaseKeyInvalidatesOnGuestdOrConfigChange(t *testing.T) {
 	proj := &pb.HostedProject{Name: "cladefs"}
 
 	key1 := b.vmBaseKey(spec)
-	recipe1 := vmProjectRecipe(key1, proj)
+	recipe1 := vmProjectRecipe(key1, proj, nil)
 
 	// Changing hotbed-guestd bytes must change both vmBaseKey and vmProjectRecipe.
 	if err := os.WriteFile(guestd, []byte("guestd-v2-with-dev-perms"), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	key2 := b.vmBaseKey(spec)
-	recipe2 := vmProjectRecipe(key2, proj)
+	recipe2 := vmProjectRecipe(key2, proj, nil)
 	if key2 == key1 {
 		t.Fatalf("vmBaseKey did not change when hotbed-guestd changed: %q", key1)
 	}

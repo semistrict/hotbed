@@ -10,6 +10,8 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"time"
 
 	"google.golang.org/protobuf/proto"
@@ -943,7 +945,7 @@ var followRideOut = 10 * time.Minute
 // One someone stopped or paused by hand says who, what they wrote, and how
 // to read the diagnostics taken of it.
 func follow(ctx context.Context, wk workerClients, id string, w, stderr io.Writer) (int, error) {
-	c, err := followLog(ctx, wk, id, w)
+	c, err := followLog(ctx, wk, id, w, stderr)
 	if err != nil {
 		return 0, err
 	}
@@ -1028,11 +1030,75 @@ func pausedHelp(c *pb.Command) string {
 		c.Id, soft, soft, c.SessionId, c.Id, stops, c.SessionId, c.Id)
 }
 
+var (
+	followWaitNoticeAfter  = 3 * time.Second
+	followWaitPollInterval = 5 * time.Second
+)
+
 // followLog waits on a command (FollowLog with wait, which resumes it if
 // paused), copying its output to w until it ends or is paused, picking up
 // where it left off if the stream drops, and returns it as it is then.
-func followLog(ctx context.Context, wk workerClients, id string, w io.Writer) (*pb.Command, error) {
+// When no output arrives for followWaitNoticeAfter and the command is queued or
+// parked, it writes a deduplicated status line to stderr so the caller sees why
+// it is waiting instead of staring at silence.
+func followLog(ctx context.Context, wk workerClients, id string, w, stderr io.Writer) (*pb.Command, error) {
 	var offset int64
+	var lastActivity atomic.Int64
+	lastActivity.Store(time.Now().UnixNano())
+
+	watchCtx, cancelWatch := context.WithCancel(ctx)
+	var watchWG sync.WaitGroup
+	if stderr != nil {
+		watchWG.Add(1)
+		go func() {
+			defer watchWG.Done()
+			delay := followWaitNoticeAfter
+			if delay <= 0 {
+				delay = 3 * time.Second
+			}
+			interval := followWaitPollInterval
+			if interval <= 0 {
+				interval = 5 * time.Second
+			}
+			timer := time.NewTimer(delay)
+			defer timer.Stop()
+			lastMsg := ""
+			for {
+				select {
+				case <-watchCtx.Done():
+					return
+				case <-timer.C:
+				}
+				if time.Since(time.Unix(0, lastActivity.Load())) >= delay {
+					qctx, qcancel := context.WithTimeout(watchCtx, 3*time.Second)
+					cmd, err := wk.command(qctx, id)
+					qcancel()
+					if err == nil && cmd != nil && watchCtx.Err() == nil {
+						switch cmd.State {
+						case pb.CommandState_COMMAND_STATE_QUEUED, pb.CommandState_COMMAND_STATE_PARKED:
+							stateWord := enumStateWord(cmd.State.String(), "COMMAND_STATE_")
+							msg := fmt.Sprintf("hotbed: %s %s\n", id, stateWord)
+							if cmd.Reason != "" {
+								msg = fmt.Sprintf("hotbed: %s %s: %s\n", id, stateWord, cmd.Reason)
+							}
+							if msg != lastMsg {
+								_, _ = io.WriteString(stderr, msg)
+								lastMsg = msg
+							}
+						case pb.CommandState_COMMAND_STATE_RUNNING:
+							lastMsg = ""
+						}
+					}
+				}
+				timer.Reset(interval)
+			}
+		}()
+	}
+	defer func() {
+		cancelWatch()
+		watchWG.Wait()
+	}()
+
 	// A worker that stops answering is waited for (riding out its restart,
 	// such as a new build's) for followRideOut, from its first failure.
 	var down time.Time
@@ -1081,6 +1147,7 @@ func followLog(ctx context.Context, wk workerClients, id string, w io.Writer) (*
 			}
 			down = time.Time{}
 			if len(chunk.Data) > 0 {
+				lastActivity.Store(time.Now().UnixNano())
 				if _, werr := w.Write(chunk.Data); werr != nil {
 					in.Close()
 					return nil, werr

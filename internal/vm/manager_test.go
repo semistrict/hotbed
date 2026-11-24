@@ -386,3 +386,40 @@ func TestInjectGuestdTarUsrmergeSymlink(t *testing.T) {
 		t.Fatalf("must not emit sbin/hotbed-guestd under symlinked sbin")
 	}
 }
+
+func TestParseSystemdProcessStatus(t *testing.T) {
+	cases := []struct {
+		name string
+		raw  string
+		want ProcessStatus
+	}{
+		{
+			name: "oom-kill by systemd-oomd",
+			raw:  "LoadState=loaded\nActiveState=failed\nSubState=failed\nResult=oom-kill\nExecMainCode=2\nExecMainStatus=9\n",
+			want: ProcessStatus{Loaded: true, Exited: true, Signal: 9, Result: "oom-kill", OOMKilled: true},
+		},
+		{
+			name: "normal exit 158",
+			raw:  "LoadState=loaded\nActiveState=failed\nSubState=failed\nResult=exit-code\nExecMainCode=1\nExecMainStatus=158\n",
+			want: ProcessStatus{Loaded: true, Exited: true, ExitCode: 158, Result: "exit-code"},
+		},
+		{
+			name: "signal kill non-oom",
+			raw:  "LoadState=loaded\nActiveState=failed\nSubState=failed\nResult=signal\nExecMainCode=2\nExecMainStatus=15\n",
+			want: ProcessStatus{Loaded: true, Exited: true, Signal: 15, Result: "signal"},
+		},
+		{
+			name: "running",
+			raw:  "LoadState=loaded\nActiveState=active\nSubState=running\nResult=success\nExecMainCode=0\nExecMainStatus=0\n",
+			want: ProcessStatus{Loaded: true, Running: true, Result: "success"},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := parseSystemdProcessStatus(tc.raw)
+			if got != tc.want {
+				t.Fatalf("parseSystemdProcessStatus = %+v, want %+v", got, tc.want)
+			}
+		})
+	}
+}

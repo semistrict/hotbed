@@ -467,3 +467,28 @@ func TestFirecrackerVsockHandshake(t *testing.T) {
 		t.Fatal("expected refusal for port 9999")
 	}
 }
+
+func TestReclaimEndpoint(t *testing.T) {
+	workDir := t.TempDir()
+	client, _ := startTestGuestd(t, workDir)
+	ctx := context.Background()
+
+	// Whole-VM reclaim (empty ID) succeeds (best-effort drop_caches).
+	if err := client.Reclaim(ctx, "", 0); err != nil {
+		t.Fatalf("Reclaim whole VM: %v", err)
+	}
+
+	// Reclaim against a live command ID succeeds.
+	if _, err := client.StartCommand(ctx, guestd.StartCommandRequest{
+		ID:   "cmd-reclaim-1",
+		Argv: []string{"/bin/sh", "-c", "sleep 30"},
+		Dir:  workDir,
+	}); err != nil {
+		t.Fatalf("StartCommand: %v", err)
+	}
+	t.Cleanup(func() { _, _ = client.StopCommand(context.Background(), "cmd-reclaim-1", 500*time.Millisecond) })
+
+	if err := client.Reclaim(ctx, "cmd-reclaim-1", 64<<20); err != nil {
+		t.Fatalf("Reclaim command: %v", err)
+	}
+}

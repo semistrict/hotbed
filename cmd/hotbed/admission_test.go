@@ -4,6 +4,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	pb "github.com/semistrict/hotbed/internal/gen/hotbed/v1"
 )
@@ -82,5 +83,57 @@ func TestNodeShowsWhyItHoldsWork(t *testing.T) {
 		if code != 0 || !strings.Contains(out, want) {
 			t.Errorf("hotbed node show: exit %d, stderr %q; want %q in:\n%s", code, stderr, want, out)
 		}
+	}
+}
+
+// An attached hotbed run whose command is held in QUEUED tells the caller why
+// on stderr rather than sitting silent with zero output.
+func TestAttachedRunReportsQueuedWaitReason(t *testing.T) {
+	origAfter, origPoll := followWaitNoticeAfter, followWaitPollInterval
+	followWaitNoticeAfter = 50 * time.Millisecond
+	followWaitPollInterval = 50 * time.Millisecond
+	t.Cleanup(func() {
+		followWaitNoticeAfter = origAfter
+		followWaitPollInterval = origPoll
+	})
+
+	c := newCluster(t)
+	c.addRepo(upstream(t))
+	c.ok(nil, "session", "start", "wait-owl")
+	c.workspace("wait-owl", nil)
+	n := c.nodes[0]
+	n.system.SetCPUPressure(75)
+	n.engine.Sample()
+
+	type runRes struct {
+		code   int
+		out    string
+		stderr string
+	}
+	done := make(chan runRes, 1)
+	go func() {
+		code, out, stderr := c.hotbed("run", "-s", "wait-owl", "-r", "app", "--", "echo", "released-ok")
+		done <- runRes{code, out, stderr}
+	}()
+
+	c.eventually("the attached run to wait in QUEUED", func() bool {
+		var ls pb.ListCommandsResponse
+		c.ok(&ls, "ps", "-s", "wait-owl")
+		return len(ls.Commands) == 1 && ls.Commands[0].State == pb.CommandState_COMMAND_STATE_QUEUED &&
+			strings.HasPrefix(ls.Commands[0].Reason, "waiting: CPU pressure 75%")
+	})
+	// Give the follow watcher a couple of ticks to emit the queued status line.
+	time.Sleep(250 * time.Millisecond)
+
+	// Release admission pressure so the command runs and finishes cleanly.
+	n.system.SetCPUPressure(0)
+	n.engine.Sample()
+
+	res := <-done
+	if res.code != 0 || !strings.Contains(res.out, "released-ok") {
+		t.Fatalf("attached run: exit %d out=%q stderr=%q", res.code, res.out, res.stderr)
+	}
+	if !strings.Contains(res.stderr, "queued: waiting: CPU pressure 75%") {
+		t.Errorf("attached run stderr missing queued wait notice: %q", res.stderr)
 	}
 }

@@ -109,6 +109,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /v1/commands/stop", s.handleStopCommand)
 	mux.HandleFunc("POST /v1/commands/freeze", s.handleFreezeCommand)
 	mux.HandleFunc("POST /v1/commands/thaw", s.handleThawCommand)
+	mux.HandleFunc("POST /v1/reclaim", s.handleReclaim)
 	mux.HandleFunc("GET /v1/commands/logs", s.handleStreamLogs)
 	mux.HandleFunc("POST /v1/sync", s.handleSync)
 	mux.HandleFunc("POST /v1/files/list", s.handleListFiles)
@@ -467,6 +468,21 @@ func (s *Server) handleThawCommand(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, mc.snapshot())
+}
+
+func (s *Server) handleReclaim(w http.ResponseWriter, r *http.Request) {
+	var req ReclaimRequest
+	if err := json.NewDecoder(io.LimitReader(r.Body, 64<<10)).Decode(&req); err != nil && !errors.Is(err, io.EOF) {
+		writeErr(w, http.StatusBadRequest, "decode reclaim request: "+err.Error())
+		return
+	}
+	if req.ID != "" && req.Bytes > 0 {
+		if mc, ok := s.getCmd(req.ID); ok && mc.cg != nil {
+			_ = mc.cg.reclaim(req.Bytes)
+		}
+	}
+	_ = dropPageCaches()
+	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
 }
 
 func (s *Server) handleStreamLogs(w http.ResponseWriter, r *http.Request) {

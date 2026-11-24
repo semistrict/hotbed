@@ -188,6 +188,13 @@ func (c *Client) ThawCommand(ctx context.Context, id string) (CommandStatus, err
 	return resp, err
 }
 
+// Reclaim asks hotbed-guestd to drop clean guest page caches (and reclaim from
+// command id's cgroup when id and bytes are set) so virtio-balloon
+// free-page-reporting returns unused host RAM.
+func (c *Client) Reclaim(ctx context.Context, id string, bytes int64) error {
+	return c.doJSON(ctx, http.MethodPost, "/v1/reclaim", ReclaimRequest{ID: id, Bytes: bytes}, nil)
+}
+
 // StreamLogs streams command output starting at offset into dst until EOF (or
 // until the command exits when follow=true).
 func (c *Client) StreamLogs(ctx context.Context, id string, offset int64, follow bool, dst io.Writer) (int64, error) {

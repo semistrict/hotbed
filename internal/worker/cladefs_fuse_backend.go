@@ -327,11 +327,11 @@ func randomUnitSuffix() string {
 	return hex.EncodeToString(buf[:])
 }
 
-func fuseProjectRecipe(baseKey string, p *pb.HostedProject) string {
+func fuseProjectRecipe(baseKey string, p *pb.HostedProject, heads map[string]string) string {
 	h := sha256.New()
-	fmt.Fprintf(h, "fuse-v1\nbase=%s\narch=%s\nproject=%s\nepoch=%d\n", baseKey, goruntime.GOARCH, p.GetName(), p.GetScratchEpoch())
+	fmt.Fprintf(h, "fuse-v2\nbase=%s\narch=%s\nproject=%s\nepoch=%d\n", baseKey, goruntime.GOARCH, p.GetName(), p.GetScratchEpoch())
 	for _, r := range p.GetRepos() {
-		fmt.Fprintf(h, "repo=%s|%s|%s\n", r.GetId(), r.GetUrl(), r.GetBranch())
+		fmt.Fprintf(h, "repo=%s|%s|%s|%s\n", r.GetId(), r.GetUrl(), r.GetBranch(), heads[r.GetId()])
 	}
 	for _, s := range p.GetSteps() {
 		fmt.Fprintf(h, "step=%s|%s|%v\n", s.GetName(), s.GetHash(), s.GetEveryPull())
@@ -474,9 +474,12 @@ func (b *CladefsFUSEBackend) forkEphemeralAndMount(ctx context.Context, from cla
 }
 
 // EnsureProjectBase builds or reuses a warm R2 project base for host-FUSE nodes.
+// When an existing project base matches baseKey and ScratchEpoch, it forks
+// incrementally from that base and runs only new/changed and --every-pull steps.
 func (b *CladefsFUSEBackend) EnsureProjectBase(
 	ctx context.Context,
 	p *pb.HostedProject,
+	heads map[string]string,
 	existingShared *pb.CladefsCell,
 	spec baseimage.Spec,
 	prov baseimage.Provisioner,
@@ -485,45 +488,71 @@ func (b *CladefsFUSEBackend) EnsureProjectBase(
 ) (*vmProjectBase, error) {
 	spec = spec.Normalized()
 	baseKey := b.fuseBaseKey(spec)
-	recipe := fuseProjectRecipe(baseKey, p)
+	recipe := fuseProjectRecipe(baseKey, p, heads)
 
 	lock := b.projectLock(p.GetName())
 	lock.Lock()
 	defer lock.Unlock()
 
 	b.mu.Lock()
-	if cur, ok := b.projectBases[p.GetName()]; ok && cur.Recipe == recipe && cur.Ref.Cell > 0 && cur.Ref.Version > 0 {
+	cur := b.projectBases[p.GetName()]
+	if cur != nil && cur.Recipe == recipe && cur.Ref.Cell > 0 && cur.Ref.Version > 0 {
 		out := *cur
 		b.mu.Unlock()
 		return &out, nil
 	}
+	var prevBase *vmProjectBase
+	if cur != nil && cur.Ref.Cell > 0 && cur.Ref.Version > 0 &&
+		cur.BaseKey == baseKey && cur.ScratchEpoch == p.GetScratchEpoch() {
+		cp := *cur
+		prevBase = &cp
+	}
 	b.mu.Unlock()
 
 	if existingShared != nil && existingShared.Cell > 0 && existingShared.Version > 0 && existingShared.Recipe == recipe {
+		repos := make(map[string]string, len(heads))
+		for k, v := range heads {
+			repos[k] = v
+		}
 		return &vmProjectBase{
 			Ref: cladefs.CellRef{
 				Tenant:  existingShared.Tenant,
 				Cell:    existingShared.Cell,
 				Version: existingShared.Version,
 			},
-			BaseID: cmp.Or(existingShared.BaseId, p.GetName()+"-fuse-"+recipe[:8]),
-			Recipe: recipe,
-			Repos:  map[string]string{},
+			BaseID:       cmp.Or(existingShared.BaseId, p.GetName()+"-fuse-"+recipe[:8]),
+			Recipe:       recipe,
+			BaseKey:      baseKey,
+			ScratchEpoch: p.GetScratchEpoch(),
+			Repos:        repos,
+			StepHashes:   projectStepHashes(p),
 		}, nil
-	}
-
-	baseImgRef, err := b.EnsureProvisionedBaseImage(ctx, spec, prov)
-	if err != nil {
-		return nil, err
 	}
 
 	if err := clearMountNosuid(b.mountRoot); err != nil {
 		return nil, fmt.Errorf("enable setuid on cladefs FUSE mount %s: %w", b.mountRoot, err)
 	}
 	baseID := fmt.Sprintf("%s-fuse-%s", p.GetName(), recipe[:8])
-	tenant, cellID, mntDir, storeDir, err := b.forkAndMount(ctx, baseImgRef, filepath.Join("fuse-bases", baseID), 0)
-	if err != nil {
-		return nil, fmt.Errorf("fork & mount cladefs FUSE project base %s: %w", baseID, err)
+	var tenant, cellID uint64
+	var mntDir, storeDir string
+	var err error
+	if prevBase != nil {
+		tenant, cellID, mntDir, storeDir, err = b.forkAndMount(ctx, prevBase.Ref, filepath.Join("fuse-bases", baseID), 0)
+		if err != nil {
+			slog.Warn("incremental cladefs FUSE project base fork failed; falling back to cold base",
+				"project", p.GetName(), "prevBase", prevBase.BaseID, "err", err)
+			prevBase = nil
+		}
+	}
+	if prevBase == nil {
+		baseImgRef, berr := b.EnsureProvisionedBaseImage(ctx, spec, prov)
+		if berr != nil {
+			return nil, berr
+		}
+		tenant, cellID, mntDir, storeDir, err = b.forkAndMount(ctx, baseImgRef, filepath.Join("fuse-bases", baseID), 0)
+		if err != nil {
+			return nil, fmt.Errorf("fork & mount cladefs FUSE project base %s: %w", baseID, err)
+		}
 	}
 	cleanupOnErr := func() {
 		_ = b.store.MountDetach(context.Background(), tenant, cellID, true)
@@ -538,21 +567,41 @@ func (b *CladefsFUSEBackend) EnsureProjectBase(
 	cloneScript.WriteString("set -euo pipefail\nmkdir -p /work\ncd /work\n")
 	for _, r := range p.GetRepos() {
 		branch := cmp.Or(r.GetBranch(), "main")
+		commit := heads[r.GetId()]
 		fmt.Fprintf(&cloneScript, `
 if [ -d %q/.git ]; then
   git -C %q fetch --prune origin %q
-  git -C %q checkout -B %q FETCH_HEAD
 else
-  git clone --branch %q --single-branch %q %q
+  git clone --quiet --filter=blob:none --branch %q --single-branch %q %q
+fi
+`, r.GetId(), r.GetId(), branch, branch, r.GetUrl(), r.GetId())
+		if commit != "" {
+			fmt.Fprintf(&cloneScript, `
+if ! git -C %q cat-file -e %q^{commit} 2>/dev/null; then
+  git -C %q fetch --quiet origin %q
+fi
+git -C %q checkout -B %q %q
+`, r.GetId(), commit, r.GetId(), commit, r.GetId(), branch, commit)
+		} else {
+			fmt.Fprintf(&cloneScript, `
+if git -C %q rev-parse --verify FETCH_HEAD >/dev/null 2>&1; then
+  git -C %q checkout -B %q FETCH_HEAD
+fi
+`, r.GetId(), r.GetId(), branch)
+		}
+		fmt.Fprintf(&cloneScript, `
+if [ -f %q/.gitmodules ]; then
+  git -C %q submodule update --quiet --init --recursive --force
 fi
 printf '::hotbed-head:: %s %%s\n' "$(git -C %q rev-parse HEAD)"
-`, r.GetId(), r.GetId(), branch, r.GetId(), branch, branch, r.GetUrl(), r.GetId(), r.GetId(), r.GetId())
+`, r.GetId(), r.GetId(), r.GetId(), r.GetId())
 	}
 
 	attempt := randomUnitSuffix()
 	out, runErr := runStep(ctx, mntDir, fmt.Sprintf("hotbed-fuse-repos-%s-%s", baseID, attempt), []string{"/bin/bash", "-c", cloneScript.String()}, env)
+	stepsToRun := selectProjectBaseSteps(p, prevBase, heads)
 	if runErr == nil {
-		for i, s := range p.GetSteps() {
+		for i, s := range stepsToRun {
 			stepUnit := fmt.Sprintf("hotbed-fuse-step-%d-%s-%s", i+1, baseID, attempt)
 			if _, err := runStep(ctx, mntDir, stepUnit, []string{"/bin/bash", "-eo", "pipefail", "-c", s.GetScript()}, env); err != nil {
 				runErr = fmt.Errorf("step %q: %w", s.GetName(), err)
@@ -592,10 +641,13 @@ printf '::hotbed-head:: %s %%s\n' "$(git -C %q rev-parse HEAD)"
 		Version: ver,
 	}
 	res := &vmProjectBase{
-		Ref:    ref,
-		BaseID: baseID,
-		Recipe: recipe,
-		Repos:  repoHeads,
+		Ref:          ref,
+		BaseID:       baseID,
+		Recipe:       recipe,
+		BaseKey:      baseKey,
+		ScratchEpoch: p.GetScratchEpoch(),
+		Repos:        repoHeads,
+		StepHashes:   projectStepHashes(p),
 	}
 	b.mu.Lock()
 	b.projectBases[p.GetName()] = res
@@ -610,7 +662,9 @@ printf '::hotbed-head:: %s %%s\n' "$(git -C %q rev-parse HEAD)"
 	}
 	b.mu.Unlock()
 	b.saveCacheJSON("project-"+p.GetName()+".json", res)
-	slog.Info("cladefs host-FUSE project base built and published to R2", "project", p.GetName(), "baseId", baseID, "cell", cellID, "version", ver)
+	slog.Info("cladefs host-FUSE project base built and published to R2",
+		"project", p.GetName(), "baseId", baseID, "incremental", prevBase != nil,
+		"steps", len(stepsToRun), "cell", cellID, "version", ver)
 	return res, nil
 }
 
@@ -746,7 +800,11 @@ func (e *Engine) createCladefsFUSEWorkspace(ctx context.Context, req *pb.CreateW
 			baseSpec = e.cfg.BaseImage.Spec
 			prov = e.cfg.BaseImage.Provision
 		}
-		projBase, err := e.cfg.CladefsFUSE.EnsureProjectBase(bgCtx, p, req.GetSharedBase(), baseSpec, prov, runInChroot, e.sandboxEnv())
+		heads, err := e.remoteHeads(bgCtx, p)
+		var projBase *vmProjectBase
+		if err == nil {
+			projBase, err = e.cfg.CladefsFUSE.EnsureProjectBase(bgCtx, p, heads, req.GetSharedBase(), baseSpec, prov, runInChroot, e.sandboxEnv())
+		}
 		var cell *pb.CladefsCell
 		var mntDir string
 		if err == nil {
