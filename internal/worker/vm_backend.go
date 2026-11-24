@@ -506,10 +506,14 @@ if [ -d %q/.git ]; then
   git -C %q fetch --prune origin %q
   git -C %q checkout -B %q FETCH_HEAD
 else
-  git clone --branch %q --single-branch %q %q
+  git clone --quiet --filter=blob:none --branch %q --single-branch %q %q
+fi
+git -C %q submodule update --quiet --init --recursive --force
+if [ -f %q/Cargo.toml ] && [ ! -f %q/rust-toolchain.toml ] && [ ! -f %q/rust-toolchain ] && command -v rustup >/dev/null; then
+  rustup show active-toolchain >/dev/null 2>&1 || rustup default stable
 fi
 printf '::hotbed-head:: %s %%s\n' "$(git -C %q rev-parse HEAD)"
-`, r.GetId(), r.GetId(), branch, r.GetId(), branch, branch, r.GetUrl(), r.GetId(), r.GetId(), r.GetId())
+`, r.GetId(), r.GetId(), branch, r.GetId(), branch, branch, r.GetUrl(), r.GetId(), r.GetId(), r.GetId(), r.GetId(), r.GetId(), r.GetId(), r.GetId())
 	}
 
 	out, runErr := b.runGuestCommand(ctx, vmID, "freshen-repos-"+baseID, "/work", []string{"/bin/bash", "-c", cloneScript.String()}, env, spec.UID, spec.GID)
