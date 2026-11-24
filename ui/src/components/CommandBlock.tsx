@@ -1,4 +1,7 @@
 import { useMemo, useState } from "react";
+import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
+import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { commandSummary, shellJoinWords, shellQuoteWord, unwrapCommand } from "../lib/command";
 
 const SHELL_VAR_RE = /^[A-Za-z_][A-Za-z0-9_]*$/;
@@ -32,14 +35,16 @@ function CopyButton({ text, label = "Copy" }: { text: string; label?: string }) 
   };
 
   return (
-    <button
+    <Button
       type="button"
+      variant="outline"
+      size="xs"
       onClick={onCopy}
-      className="rounded-md border border-border px-2 py-0.5 font-mono text-[10.5px] text-muted-foreground transition-colors hover:border-border-strong hover:text-foreground"
+      className="h-6 font-mono text-[10.5px] text-muted-foreground hover:text-foreground"
       title={`Copy ${label.toLowerCase()} to clipboard`}
     >
       {copied ? "✓ Copied" : label}
-    </button>
+    </Button>
   );
 }
 
@@ -139,7 +144,9 @@ export function CommandBlock({
           {env && env.length > 0 && <span className="truncate text-frost">{env.map(formatShellEnv).join(" ")}</span>}
           <span className="truncate text-foreground">{invocationText}</span>
         </span>
-        <span className={`rounded px-1.5 py-0.5 text-[10px] font-medium ${langTone}`}>{langLabel}</span>
+        <Badge variant="secondary" className={`h-auto rounded px-1.5 py-0.5 text-[10px] font-medium ${langTone}`}>
+          {langLabel}
+        </Badge>
         {isScript && parsed.trailingArgs.length > 0 && (
           <span className="truncate text-[10.5px] text-faint" title={`Arguments: ${shellJoinWords(parsed.trailingArgs)}`}>
             args: {shellJoinWords(parsed.trailingArgs)}
@@ -150,22 +157,16 @@ export function CommandBlock({
         </span>
         <div className="ml-auto flex shrink-0 items-center gap-1.5">
           {isScript && (
-            <div className="inline-flex rounded-md border border-border bg-background/50 p-0.5 text-[10px]">
-              <button
-                type="button"
-                onClick={() => setRawView(false)}
-                className={`rounded px-1.5 py-0.5 transition-colors ${!rawView ? "bg-muted text-foreground" : "text-muted-foreground hover:text-foreground"}`}
-              >
-                Script
-              </button>
-              <button
-                type="button"
-                onClick={() => setRawView(true)}
-                className={`rounded px-1.5 py-0.5 transition-colors ${rawView ? "bg-muted text-foreground" : "text-muted-foreground hover:text-foreground"}`}
-              >
-                Raw
-              </button>
-            </div>
+            <Tabs value={rawView ? "raw" : "script"} onValueChange={(v) => setRawView(v === "raw")}>
+              <TabsList className="h-6 border border-border bg-background/50 p-0.5">
+                <TabsTrigger value="script" className="px-1.5 py-0 font-mono text-[10px]">
+                  Script
+                </TabsTrigger>
+                <TabsTrigger value="raw" className="px-1.5 py-0 font-mono text-[10px]">
+                  Raw
+                </TabsTrigger>
+              </TabsList>
+            </Tabs>
           )}
           <CopyButton text={copyText} label={copyLabel} />
         </div>
@@ -195,14 +196,16 @@ export function CommandBlock({
       </div>
 
       {collapsible && (
-        <div className="border-t border-border bg-muted/25 px-3 py-1.5 text-center">
-          <button
+        <div className="border-t border-border bg-muted/25 px-3 py-1 text-center">
+          <Button
             type="button"
+            variant="ghost"
+            size="xs"
             onClick={() => setExpanded((e) => !e)}
-            className="font-mono text-[10.5px] text-muted-foreground transition-colors hover:text-primary"
+            className="font-mono text-[10.5px] text-muted-foreground hover:text-primary"
           >
             {expanded ? "Collapse" : `Show all ${totalLines} lines`}
-          </button>
+          </Button>
         </div>
       )}
     </div>
@@ -237,9 +240,15 @@ export function ScriptBlock({ script, maxLines = 12 }: { script: string; maxLine
       </div>
       {collapsible && (
         <div className="border-t border-border bg-muted/25 px-3 py-1 text-center">
-          <button type="button" onClick={() => setExpanded((e) => !e)} className="font-mono text-[10.5px] text-muted-foreground transition-colors hover:text-primary">
+          <Button
+            type="button"
+            variant="ghost"
+            size="xs"
+            onClick={() => setExpanded((e) => !e)}
+            className="font-mono text-[10.5px] text-muted-foreground hover:text-primary"
+          >
             {expanded ? "Collapse" : `Show all ${lines.length} lines`}
-          </button>
+          </Button>
         </div>
       )}
     </div>
@@ -256,13 +265,14 @@ export function CommandInline({ argv, args, className = "" }: { argv: string; ar
   return (
     <span className={`inline-flex max-w-full min-w-0 items-center gap-1.5 align-bottom ${className}`} title={argv}>
       {badge && (
-        <span
-          className={`shrink-0 rounded px-1 py-px font-mono text-[9.5px] leading-tight ${
+        <Badge
+          variant="secondary"
+          className={`h-auto shrink-0 rounded px-1 py-px font-mono text-[9.5px] leading-tight font-normal ${
             badge === "python" ? "bg-frost-wash text-frost" : "bg-ember-wash text-primary"
           }`}
         >
           {badge}
-        </span>
+        </Badge>
       )}
       <span className="truncate">{text}</span>
     </span>

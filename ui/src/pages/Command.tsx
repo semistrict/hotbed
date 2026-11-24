@@ -1,6 +1,7 @@
 import { useQuery } from "@tanstack/react-query";
 import { Link, useParams, useSearch } from "@tanstack/react-router";
 import { type ReactNode, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { Input } from "@/components/ui/input";
 import { api, CommandState, type Command, type CommandEvent, type CommandLimits, type FinishedCommand, type Snapshot } from "../api";
 import { Meter } from "../components/charts/Bars";
 import { SpeedBars } from "../components/charts/SpeedBars";
@@ -11,8 +12,8 @@ import { FAILURE } from "../components/CommandTable";
 import { ContinuousProfilePanel } from "../components/ContinuousProfilePanel";
 import { LiveDiagnosticsPanel } from "../components/LiveDiagnosticsPanel";
 import { ProcessSamplePanel, type SampleTrigger } from "../components/ProcessSamplePanel";
-import { Card, StatTile } from "../components/ui/Card";
-import { BenchTag, KindTag, StateBadge } from "../components/ui/State";
+import { Card, StatTile } from "../components/Panel";
+import { BenchTag, KindTag, StateBadge } from "../components/StateBadges";
 import { nodeName, useSnapshot } from "../lib/data";
 import { atEnd } from "../lib/follow";
 import { bytes, duration, hhmmss, limit, speedup } from "../lib/format";
@@ -279,13 +280,13 @@ function LogCard({ id, live }: { id: string; live: boolean }) {
         .filter(Boolean)
         .join(" · ")}
       right={
-        <input
+        <Input
           type="search"
           value={query}
           onChange={(e) => setQuery(e.target.value)}
           placeholder="search output"
           aria-label="Search output"
-          className="w-44 rounded-full border border-border bg-background/40 px-3 py-1 font-mono text-[11px] text-foreground placeholder:text-faint focus:border-primary focus:outline-none sm:w-60"
+          className="h-7 w-44 rounded-full bg-background/40 font-mono text-[11px] placeholder:text-faint sm:w-60"
         />
       }
     >

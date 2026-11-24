@@ -1,6 +1,6 @@
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
-import { OnlineBadge } from "./State";
+import { OnlineBadge } from "./StateBadges";
 
 describe("OnlineBadge", () => {
   it("names a node whose worker cannot open its storage, with the reason (board 9141)", () => {

@@ -1,8 +1,12 @@
 import { Link } from "@tanstack/react-router";
+import { ChevronRightIcon } from "lucide-react";
+import { Badge } from "@/components/ui/badge";
+import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import type { Admission, AdmissionSignal, CostPart, PlacementDecision, Sample } from "../api";
 import { ago, bytes, duration, hhmmss } from "../lib/format";
 import { SegmentedBar } from "./charts/Bars";
-import { Empty } from "./ui/Card";
+import { Empty } from "./Panel";
 
 export const SIGNAL_LABEL: Record<string, string> = {
   "cpu-pressure": "CPU pressure",
@@ -25,13 +29,17 @@ export function signalRule(s: AdmissionSignal): string {
 export function AdmissionBadge({ a, now }: { a: Admission | null | undefined; now: number | bigint }) {
   if (!a) return <span className="font-mono text-[10.5px] text-faint">admission unknown</span>;
   if (!a.holding) {
-    return <span className="rounded-full bg-good/15 px-2.5 py-0.5 font-mono text-[10.5px] whitespace-nowrap text-good-ink">starting new work</span>;
+    return (
+      <Badge variant="secondary" className="h-auto bg-good/15 px-2.5 py-0.5 font-mono text-[10.5px] font-normal text-good-ink">
+        starting new work
+      </Badge>
+    );
   }
   const held = a.since > 0n ? duration((Number(now) - Number(a.since)) / 1000) : "";
   return (
-    <span title={a.reason} className="rounded-full bg-serious/15 px-2.5 py-0.5 font-mono text-[10.5px] whitespace-nowrap text-serious">
+    <Badge variant="secondary" title={a.reason} className="h-auto bg-serious/15 px-2.5 py-0.5 font-mono text-[10.5px] font-normal text-serious">
       holding new work{held && ` · ${held}`}
-    </span>
+    </Badge>
   );
 }
 
@@ -59,34 +67,34 @@ export function AdmissionPanel({ a, now }: { a: Admission | null | undefined; no
         <span className="font-mono text-[11px] text-muted-foreground">{a.queued} queued</span>
       </div>
       {a.holding && <p className="text-[12px] text-foreground">{a.reason}</p>}
-      <table className="w-full text-left text-[12px]">
-        <thead className="eyebrow">
-          <tr className="border-b border-border">
+      <Table className="text-[12px]">
+        <TableHeader className="eyebrow">
+          <TableRow className="border-border hover:bg-transparent">
             {["signal", "", "now", "limit", "waiting", ""].map((h, i) => (
-              <th key={i} className="px-2 py-2 font-normal whitespace-nowrap">
+              <TableHead key={i} className="h-auto px-2 py-2 font-normal text-muted-foreground">
                 {h}
-              </th>
+              </TableHead>
             ))}
-          </tr>
-        </thead>
-        <tbody>
+          </TableRow>
+        </TableHeader>
+        <TableBody>
           {a.signals.map((s) => (
-            <tr key={s.name} className="border-b border-border/60 align-top">
-              <td className="px-2 py-2 whitespace-nowrap">
+            <TableRow key={s.name} className="border-border/60 align-top">
+              <TableCell className="px-2 py-2">
                 <div className="text-foreground">{SIGNAL_LABEL[s.name] ?? s.name}</div>
-                {s.detail && <div className="mt-0.5 max-w-64 text-[10.5px] text-faint">{s.detail}</div>}
-              </td>
-              <td className="w-full min-w-24 px-2 py-3">
+                {s.detail && <div className="mt-0.5 max-w-64 text-[10.5px] whitespace-normal text-faint">{s.detail}</div>}
+              </TableCell>
+              <TableCell className="w-full min-w-24 px-2 py-3">
                 <SignalBar s={s} />
-              </td>
-              <td className="num px-2 py-2 font-mono text-[11px] whitespace-nowrap text-foreground">{fmt(s, s.value)}</td>
-              <td className="px-2 py-2 font-mono text-[11px] whitespace-nowrap text-muted-foreground">{signalRule(s)}</td>
-              <td className="num px-2 py-2 font-mono text-[11px] text-muted-foreground">{s.waiting || "—"}</td>
-              <td className="px-2 py-2 font-mono text-[10.5px]">{s.holding ? <span className="text-serious">holding</span> : <span className="text-good-ink">ok</span>}</td>
-            </tr>
+              </TableCell>
+              <TableCell className="num px-2 py-2 font-mono text-[11px] text-foreground">{fmt(s, s.value)}</TableCell>
+              <TableCell className="px-2 py-2 font-mono text-[11px] text-muted-foreground">{signalRule(s)}</TableCell>
+              <TableCell className="num px-2 py-2 font-mono text-[11px] text-muted-foreground">{s.waiting || "—"}</TableCell>
+              <TableCell className="px-2 py-2 font-mono text-[10.5px]">{s.holding ? <span className="text-serious">holding</span> : <span className="text-good-ink">ok</span>}</TableCell>
+            </TableRow>
           ))}
-        </tbody>
-      </table>
+        </TableBody>
+      </Table>
     </div>
   );
 }
@@ -153,12 +161,12 @@ export function PlacementList({ placements, nodeId, limit = 20, now }: { placeme
         const role = nodeId ? roleOf(d, nodeId) : null;
         return (
           <li key={String(d.id)}>
-            <details className="group">
-              <summary className="flex cursor-pointer list-none items-center gap-2.5 py-2 font-mono text-[11px] hover:bg-muted/60">
+            <Collapsible>
+              <CollapsibleTrigger className="group flex w-full cursor-pointer items-center gap-2.5 py-2 text-left font-mono text-[11px] hover:bg-muted/60">
                 <span className="num shrink-0 text-faint" title={ago(d.at, now)}>
                   {hhmmss(d.at)}
                 </span>
-                <span className="w-3 shrink-0 text-center text-faint group-open:rotate-90">▸</span>
+                <ChevronRightIcon className="size-3 shrink-0 text-faint transition-transform group-data-panel-open:rotate-90" />
                 {d.sessionId ? (
                   <Link to="/sessions/$id" params={{ id: d.sessionId }} className="shrink-0 text-foreground hover:text-primary" onClick={(e) => e.stopPropagation()}>
                     {d.sessionId}
@@ -170,43 +178,47 @@ export function PlacementList({ placements, nodeId, limit = 20, now }: { placeme
                 <span className={`shrink-0 ${d.nodeId ? "text-foreground" : "text-critical"}`}>{d.nodeId ? `→ ${d.hostname}` : "refused"}</span>
                 <span className="truncate text-muted-foreground">{d.reason}</span>
                 {role && <span className={`ml-auto shrink-0 ${role.className}`}>{role.text}</span>}
-              </summary>
-              <table className="mb-3 ml-8 w-[calc(100%-2rem)] text-left text-[11px]">
-                <tbody>
-                  {d.candidates.map((c) => (
-                    <tr key={c.nodeId} className={`border-t border-border/50 ${c.nodeId === nodeId ? "bg-muted/50" : ""}`}>
-                      <td className="w-28 px-2 py-1.5 font-mono whitespace-nowrap text-foreground">
-                        {c.hostname}
-                        {c.mine && <span className="ml-1.5 text-[9.5px] text-faint">session's</span>}
-                      </td>
-                      {c.unfit ? (
-                        <td colSpan={2} className="px-2 py-1.5 text-faint">
-                          ruled out: {c.unfit}
-                        </td>
-                      ) : (
-                        <>
-                          <td className="num w-16 px-2 py-1.5 font-mono text-foreground">{c.cost.toFixed(2)}</td>
-                          <td className="px-2 py-1.5">
-                            <Parts parts={c.parts} />
-                            <div className="mt-1 flex flex-wrap gap-x-3 text-[10px] text-muted-foreground">
-                              {c.parts
-                                .filter((p) => p.value > 0)
-                                .map((p) => (
-                                  <span key={p.name} title={p.detail}>
-                                    <span className="mr-1 inline-block size-1.5 rounded-[2px]" style={{ background: PART_COLOR[p.name] ?? "var(--muted-foreground)" }} />
-                                    {p.name} {p.value.toFixed(2)} <span className="text-faint">({p.detail})</span>
-                                  </span>
-                                ))}
-                            </div>
-                          </td>
-                        </>
-                      )}
-                      <td className="w-14 px-2 py-1.5 text-right font-mono text-[10px]">{c.chosen && <span className="text-good-ink">chosen</span>}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </details>
+              </CollapsibleTrigger>
+              <CollapsibleContent>
+                <div className="mb-3 ml-8">
+                  <Table className="text-[11px]">
+                    <TableBody>
+                      {d.candidates.map((c) => (
+                        <TableRow key={c.nodeId} className={`border-border/50 ${c.nodeId === nodeId ? "bg-muted/50" : ""}`}>
+                          <TableCell className="w-28 px-2 py-1.5 font-mono text-foreground">
+                            {c.hostname}
+                            {c.mine && <span className="ml-1.5 text-[9.5px] text-faint">session's</span>}
+                          </TableCell>
+                          {c.unfit ? (
+                            <TableCell colSpan={2} className="px-2 py-1.5 text-faint whitespace-normal">
+                              ruled out: {c.unfit}
+                            </TableCell>
+                          ) : (
+                            <>
+                              <TableCell className="num w-16 px-2 py-1.5 font-mono text-foreground">{c.cost.toFixed(2)}</TableCell>
+                              <TableCell className="px-2 py-1.5 whitespace-normal">
+                                <Parts parts={c.parts} />
+                                <div className="mt-1 flex flex-wrap gap-x-3 text-[10px] text-muted-foreground">
+                                  {c.parts
+                                    .filter((p) => p.value > 0)
+                                    .map((p) => (
+                                      <span key={p.name} title={p.detail}>
+                                        <span className="mr-1 inline-block size-1.5 rounded-[2px]" style={{ background: PART_COLOR[p.name] ?? "var(--muted-foreground)" }} />
+                                        {p.name} {p.value.toFixed(2)} <span className="text-faint">({p.detail})</span>
+                                      </span>
+                                    ))}
+                                </div>
+                              </TableCell>
+                            </>
+                          )}
+                          <TableCell className="w-14 px-2 py-1.5 text-right font-mono text-[10px]">{c.chosen && <span className="text-good-ink">chosen</span>}</TableCell>
+                        </TableRow>
+                      ))}
+                    </TableBody>
+                  </Table>
+                </div>
+              </CollapsibleContent>
+            </Collapsible>
           </li>
         );
       })}

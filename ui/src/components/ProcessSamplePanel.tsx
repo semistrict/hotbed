@@ -1,4 +1,10 @@
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Button } from "@/components/ui/button";
+import { Checkbox } from "@/components/ui/checkbox";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import {
   api,
   type FileLock,
@@ -14,7 +20,7 @@ import {
 import { bytes, hhmmss } from "../lib/format";
 import { SegmentedBar } from "./charts/Bars";
 import { FlameGraph } from "./FlameGraph";
-import { Card, Empty } from "./ui/Card";
+import { Card, Empty } from "./Panel";
 
 type SampleTab = "stacks" | "files" | "system";
 type StackSubView = "tree" | "threads" | "flamegraph";
@@ -205,54 +211,51 @@ export function ProcessSamplePanel({
 
   const cancel = () => abortRef.current?.abort();
 
+  const samplePidItems = sample
+    ? [
+        { value: "0", label: `All PIDs (${sample.procs.length})` },
+        ...sample.procs.map((p) => ({ value: String(p.pid), label: `PID ${p.pid} (${p.comm})` })),
+      ]
+    : [];
+  const sampleDurationItems = [1, 3, 5, 10].map((s) => ({ value: String(s), label: `${s}s window` }));
+
   const headerControls = (
     <div className="flex flex-wrap items-center gap-2 font-mono text-[11px]">
       {sample && sample.procs.length > 0 && (
-        <select
-          aria-label="Sample target PID"
-          value={selectedPid}
-          disabled={running}
-          onChange={(e) => setSelectedPid(Number(e.target.value))}
-          className="rounded-md border border-border bg-background/80 px-2 py-1 text-foreground"
-        >
-          <option value={0}>All PIDs ({sample.procs.length})</option>
-          {sample.procs.map((p) => (
-            <option key={p.pid} value={p.pid}>
-              PID {p.pid} ({p.comm})
-            </option>
-          ))}
-        </select>
+        <Select items={samplePidItems} value={String(selectedPid)} disabled={running} onValueChange={(v) => v !== null && setSelectedPid(Number(v))}>
+          <SelectTrigger size="sm" aria-label="Sample target PID" className="h-7 bg-background/80 font-mono text-[11px] text-foreground">
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent className="font-mono text-[11px]">
+            {samplePidItems.map((item) => (
+              <SelectItem key={item.value} value={item.value} className="text-[11px]">
+                {item.label}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
       )}
-      <select
-        aria-label="Sample duration"
-        value={durationSec}
-        disabled={running}
-        onChange={(e) => setDurationSec(Number(e.target.value))}
-        className="rounded-md border border-border bg-background/80 px-2 py-1 text-foreground"
-      >
-        {[1, 3, 5, 10].map((s) => (
-          <option key={s} value={s}>
-            {s}s window
-          </option>
-        ))}
-      </select>
+      <Select items={sampleDurationItems} value={String(durationSec)} disabled={running} onValueChange={(v) => v !== null && setDurationSec(Number(v))}>
+        <SelectTrigger size="sm" aria-label="Sample duration" className="h-7 bg-background/80 font-mono text-[11px] text-foreground">
+          <SelectValue />
+        </SelectTrigger>
+        <SelectContent className="font-mono text-[11px]">
+          {sampleDurationItems.map((item) => (
+            <SelectItem key={item.value} value={item.value} className="text-[11px]">
+              {item.label}
+            </SelectItem>
+          ))}
+        </SelectContent>
+      </Select>
       {running ? (
-        <button
-          type="button"
-          onClick={cancel}
-          className="rounded-lg border border-critical bg-[color-mix(in_oklab,var(--critical)_15%,transparent)] px-3 py-1 font-semibold text-critical hover:brightness-110"
-        >
+        <Button type="button" variant="destructive" size="sm" onClick={cancel} className="border-critical font-mono text-[11px] font-semibold text-critical">
           Cancel
-        </button>
+        </Button>
       ) : (
-        <button
-          type="button"
-          onClick={() => void runSample()}
-          className="inline-flex items-center gap-1.5 rounded-lg bg-primary px-3.5 py-1 font-semibold text-primary-foreground shadow-sm transition-all hover:brightness-110 active:scale-[0.98]"
-        >
+        <Button type="button" size="sm" onClick={() => void runSample()} className="gap-1.5 font-mono text-[11px] font-semibold shadow-sm">
           <span aria-hidden>◎</span>
           {sample ? "Re-sample" : "Sample Process"}
-        </button>
+        </Button>
       )}
     </div>
   );
@@ -472,36 +475,31 @@ function StacksAndThreadsTab({ sample, onSamplePid }: { sample: ProcessSample; o
   return (
     <div className="space-y-4">
       <div className="flex flex-wrap items-center gap-2">
-        <div className="flex items-center rounded-lg border border-border bg-background/60 p-0.5 font-mono text-[11px]">
-          {(
-            [
-              ["tree", "Call Tree"],
-              ["threads", "Threads (User + Syscall + Kernel)"],
-              ["flamegraph", "FlameGraph"],
-            ] as const
-          ).map(([k, label]) => (
-            <button
-              key={k}
-              type="button"
-              onClick={() => setSubView(k)}
-              className={`rounded-md px-2.5 py-1 transition-colors ${subView === k ? "bg-muted text-foreground" : "text-muted-foreground hover:text-foreground"}`}
-            >
-              {label}
-            </button>
-          ))}
-        </div>
-        <input
+        <Tabs value={subView} onValueChange={(v) => setSubView(v as "tree" | "threads" | "flamegraph")}>
+          <TabsList className="h-8 border border-border bg-background/60 font-mono text-[11px]">
+            <TabsTrigger value="tree" className="px-2.5 font-mono text-[11px]">
+              Call Tree
+            </TabsTrigger>
+            <TabsTrigger value="threads" className="px-2.5 font-mono text-[11px]">
+              Threads (User + Syscall + Kernel)
+            </TabsTrigger>
+            <TabsTrigger value="flamegraph" className="px-2.5 font-mono text-[11px]">
+              FlameGraph
+            </TabsTrigger>
+          </TabsList>
+        </Tabs>
+        <Input
           type="search"
           value={filter}
           onChange={(e) => setFilter(e.target.value)}
           placeholder="Filter symbols, syscalls, wchan, threads..."
-          className="min-w-[220px] flex-1 rounded-lg border border-border bg-background/70 px-3 py-1 font-mono text-[11px] text-foreground placeholder:text-faint focus:border-primary focus:outline-none"
+          className="min-w-[220px] flex-1 bg-background/70 font-mono text-[11px] placeholder:text-faint"
         />
         {subView === "threads" && (
-          <label className="flex cursor-pointer items-center gap-1.5 rounded-md border border-border px-2.5 py-1 font-mono text-[10.5px] text-muted-foreground">
-            <input type="checkbox" checked={onlyStationary} onChange={(e) => setOnlyStationary(e.target.checked)} className="accent-primary" />
+          <Label className="flex h-8 cursor-pointer items-center gap-1.5 rounded-md border border-border px-2.5 font-mono text-[10.5px] font-normal text-muted-foreground">
+            <Checkbox checked={onlyStationary} onCheckedChange={(c) => setOnlyStationary(Boolean(c))} />
             stationary only
-          </label>
+          </Label>
         )}
       </div>
 
@@ -967,25 +965,27 @@ function FilesAndLocksTab({ files, locks }: { files: SampledOpenFile[]; locks: F
                 const n = counts[k] ?? 0;
                 if (k !== "all" && n === 0) return null;
                 return (
-                  <button
+                  <Button
                     key={k}
                     type="button"
+                    variant="outline"
+                    size="xs"
                     onClick={() => setKindFilter(k)}
-                    className={`rounded-md border px-2 py-0.5 font-mono text-[10.5px] ${
-                      kindFilter === k ? "border-primary bg-ember-wash text-primary" : "border-border text-muted-foreground hover:text-foreground"
+                    className={`font-mono text-[10.5px] ${
+                      kindFilter === k ? "border-primary bg-ember-wash text-primary hover:bg-ember-wash" : "text-muted-foreground"
                     }`}
                   >
                     {label} ({n})
-                  </button>
+                  </Button>
                 );
               })}
             </div>
-            <input
+            <Input
               type="search"
               value={search}
               onChange={(e) => setSearch(e.target.value)}
               placeholder="Filter paths, sockets, peers, locks..."
-              className="ml-auto min-w-[200px] rounded-md border border-border bg-background/80 px-2.5 py-0.5 font-mono text-[11px] text-foreground placeholder:text-faint"
+              className="ml-auto h-7 w-auto min-w-[200px] bg-background/80 font-mono text-[11px] placeholder:text-faint"
             />
           </div>
 

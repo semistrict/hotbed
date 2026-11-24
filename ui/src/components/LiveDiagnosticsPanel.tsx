@@ -1,4 +1,9 @@
 import { Fragment, useEffect, useMemo, useReducer, useRef, useState } from "react";
+import { Alert, AlertDescription } from "@/components/ui/alert";
+import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import {
   api,
   InspectSection,
@@ -16,7 +21,7 @@ import {
 import { bytes, hhmmss } from "../lib/format";
 import { SegmentedBar } from "./charts/Bars";
 import { FlameGraph } from "./FlameGraph";
-import { Card, Empty } from "./ui/Card";
+import { Card, Empty } from "./Panel";
 
 const INSPECT_BUTTONS: { id: InspectSection; label: string; desc: string }[] = [
   { id: InspectSection.PROCS, label: "Processes", desc: "Process tree, threads, CPU, IO, wchan" },
@@ -229,24 +234,33 @@ export function LiveDiagnosticsPanel({ id, onSamplePid }: { id: string; onSample
     if (tab) void runInspect(tab, nextPid);
   };
 
+  const pidItems = inspectData
+    ? [
+        { value: "0", label: `All PIDs (${inspectData.procs.length})` },
+        ...inspectData.procs.map((p) => ({ value: String(p.pid), label: `PID ${p.pid} (${p.comm})` })),
+      ]
+    : [];
+  const traceDurationItems = [3, 5, 10, 20, 30].map((s) => ({ value: String(s), label: `${s}s` }));
+
   const headerRight = (
     <div className="flex flex-wrap items-center gap-2 font-mono text-[10.5px]">
       {inspectData && inspectData.procs.length > 0 && (
-        <select
-          aria-label="Target PID"
-          value={selectedPid}
-          onChange={(e) => selectPid(Number(e.target.value))}
-          className="rounded-md border border-border bg-background/80 px-2 py-1 font-mono text-[11px] text-foreground"
-        >
-          <option value={0}>All PIDs ({inspectData.procs.length})</option>
-          {inspectData.procs.map((p) => (
-            <option key={p.pid} value={p.pid}>
-              PID {p.pid} ({p.comm})
-            </option>
-          ))}
-        </select>
+        <Select items={pidItems} value={String(selectedPid)} onValueChange={(v) => v !== null && selectPid(Number(v))}>
+          <SelectTrigger size="sm" aria-label="Target PID" className="h-7 bg-background/80 font-mono text-[11px] text-foreground">
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent className="font-mono text-[11px]">
+            {pidItems.map((item) => (
+              <SelectItem key={item.value} value={item.value} className="text-[11px]">
+                {item.label}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
       )}
-      <span className="rounded-full border border-border bg-muted/60 px-2.5 py-0.5 text-muted-foreground">opt-in · zero overhead until clicked</span>
+      <Badge variant="outline" className="bg-muted/60 font-mono text-[10.5px] font-normal text-muted-foreground">
+        opt-in · zero overhead until clicked
+      </Badge>
     </div>
   );
 
@@ -267,19 +281,21 @@ export function LiveDiagnosticsPanel({ id, onSamplePid }: { id: string; onSample
             {INSPECT_BUTTONS.map((b) => {
               const active = inspectTab === b.id;
               return (
-                <button
+                <Button
                   key={b.id}
                   type="button"
+                  variant="outline"
+                  size="sm"
                   title={b.desc}
                   onClick={() => void runInspect(b.id)}
-                  className={`rounded-lg border px-3 py-1.5 font-mono text-[11.5px] transition-colors ${
+                  className={`font-mono text-[11.5px] ${
                     active
-                      ? "border-primary bg-ember-wash text-primary"
-                      : "border-border bg-background/60 text-foreground hover:border-border-strong hover:bg-muted/60"
+                      ? "border-primary bg-ember-wash text-primary hover:bg-ember-wash"
+                      : "border-border bg-background/60 text-foreground"
                   }`}
                 >
                   {b.label}
-                </button>
+                </Button>
               );
             })}
           </div>
@@ -287,9 +303,9 @@ export function LiveDiagnosticsPanel({ id, onSamplePid }: { id: string; onSample
 
         {/* Inspect output area */}
         {inspectError && (
-          <div className="rounded-lg border border-critical/30 bg-[color-mix(in_oklab,var(--critical)_10%,transparent)] px-3 py-2 font-mono text-[11.5px] text-critical">
-            {inspectError}
-          </div>
+          <Alert variant="destructive" className="border-critical/30 bg-[color-mix(in_oklab,var(--critical)_10%,transparent)] px-3 py-2 font-mono text-[11.5px]">
+            <AlertDescription className="text-[11.5px] text-critical">{inspectError}</AlertDescription>
+          </Alert>
         )}
         {inspectLoading && <div className="font-mono text-[11.5px] text-muted-foreground">Reading /proc and cgroup v2 on worker...</div>}
         {inspectTab && inspectData && !inspectLoading && (
@@ -314,39 +330,40 @@ export function LiveDiagnosticsPanel({ id, onSamplePid }: { id: string; onSample
           <div className="flex flex-wrap items-center justify-between gap-2">
             <span className="eyebrow">Active Trace (opt-in Linux tracers · time-bounded & cancellable)</span>
             <div className="flex flex-wrap items-center gap-2">
-              <label className="flex items-center gap-1.5 font-mono text-[11px] text-muted-foreground">
+              <div className="flex items-center gap-1.5 font-mono text-[11px] text-muted-foreground">
                 <span>Duration</span>
-                <select
-                  aria-label="Trace duration"
-                  value={durationSec}
-                  onChange={(e) => setDurationSec(Number(e.target.value))}
-                  disabled={traceRunning}
-                  className="rounded-md border border-border bg-background/80 px-2 py-0.5 text-foreground"
-                >
-                  {[3, 5, 10, 20, 30].map((s) => (
-                    <option key={s} value={s}>
-                      {s}s
-                    </option>
-                  ))}
-                </select>
-              </label>
-              <input
+                <Select items={traceDurationItems} value={String(durationSec)} disabled={traceRunning} onValueChange={(v) => v !== null && setDurationSec(Number(v))}>
+                  <SelectTrigger size="sm" aria-label="Trace duration" className="h-7 bg-background/80 font-mono text-[11px] text-foreground">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent className="font-mono text-[11px]">
+                    {traceDurationItems.map((item) => (
+                      <SelectItem key={item.value} value={item.value} className="text-[11px]">
+                        {item.label}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+              <Input
                 type="text"
                 value={straceFilter}
                 onChange={(e) => setStraceFilter(e.target.value)}
                 disabled={traceRunning}
                 placeholder="strace -e (e.g. file,network)"
                 aria-label="strace syscall filter"
-                className="w-[240px] rounded-md border border-border bg-background/80 px-2.5 py-0.5 font-mono text-[11px] text-foreground placeholder:text-faint focus:border-primary focus:outline-none"
+                className="h-7 w-[240px] bg-background/80 font-mono text-[11px] placeholder:text-faint"
               />
               {traceRunning && (
-                <button
+                <Button
                   type="button"
+                  variant="destructive"
+                  size="xs"
                   onClick={stopTrace}
-                  className="rounded-md border border-critical bg-[color-mix(in_oklab,var(--critical)_15%,transparent)] px-2.5 py-0.5 font-mono text-[11px] text-critical hover:brightness-110"
+                  className="border-critical font-mono text-[11px] text-critical"
                 >
                   Stop trace
-                </button>
+                </Button>
               )}
             </div>
           </div>
@@ -717,25 +734,27 @@ function FilesView({ files, selectedPid = null }: { files: OpenFile[]; selectedP
             const n = counts[k] ?? 0;
             if (k !== "all" && n === 0) return null;
             return (
-              <button
+              <Button
                 key={k}
                 type="button"
+                variant="outline"
+                size="xs"
                 onClick={() => setKindFilter(k)}
-                className={`rounded-md border px-2 py-0.5 font-mono text-[10.5px] ${
-                  kindFilter === k ? "border-primary bg-ember-wash text-primary" : "border-border text-muted-foreground hover:text-foreground"
+                className={`font-mono text-[10.5px] ${
+                  kindFilter === k ? "border-primary bg-ember-wash text-primary hover:bg-ember-wash" : "text-muted-foreground"
                 }`}
               >
                 {k} ({n})
-              </button>
+              </Button>
             );
           })}
         </div>
-        <input
+        <Input
           type="search"
           value={search}
           onChange={(e) => setSearch(e.target.value)}
           placeholder="Filter paths, ports, sockets..."
-          className="ml-auto min-w-[180px] rounded-md border border-border bg-background/80 px-2.5 py-0.5 font-mono text-[11px] text-foreground placeholder:text-faint"
+          className="ml-auto h-7 w-auto min-w-[180px] bg-background/80 font-mono text-[11px] placeholder:text-faint"
         />
       </div>
       <div className="max-h-[380px] overflow-auto">

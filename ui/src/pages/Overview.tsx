@@ -8,7 +8,7 @@ import { SmallMultiples } from "../components/charts/SmallMultiples";
 import { SpeedBars } from "../components/charts/SpeedBars";
 import { EventFeed } from "../components/EventFeed";
 import { ClusterObjectStoreSection } from "../components/ObjectStorePanel";
-import { Card, StatTile } from "../components/ui/Card";
+import { Card, StatTile } from "../components/Panel";
 import { nodeName, useNodeColors, useSnapshot } from "../lib/data";
 import { bytes, compact, duration, durationParts, percent, speedup } from "../lib/format";
 import { clusterNow, compiled, rebuiltBuckets, savings, speedupBuckets, storage } from "../lib/stats";

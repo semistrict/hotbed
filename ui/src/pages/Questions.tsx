@@ -1,6 +1,15 @@
 import { useIsMutating, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useNavigate, useSearch } from "@tanstack/react-router";
+import { ChevronRightIcon } from "lucide-react";
 import { useMemo, useRef, useState, type DragEvent } from "react";
+import { Alert, AlertDescription } from "@/components/ui/alert";
+import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
+import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
+import { Input } from "@/components/ui/input";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { Textarea } from "@/components/ui/textarea";
 import {
   api,
   QUESTION_ORDER_FROM_SLUG,
@@ -14,7 +23,7 @@ import {
 } from "../api";
 import { InlineMarkdown, Markdown } from "../components/Markdown";
 import { SessionLink } from "../components/SessionLink";
-import { Card, Empty } from "../components/ui/Card";
+import { Card, Empty } from "../components/Panel";
 import { ProjectTag } from "../components/ProjectTag";
 import { useProject, useScopedSnapshot } from "../lib/project";
 import { remoteName } from "../lib/projects";
@@ -41,6 +50,8 @@ const SORTS: { sort: QuestionOrderSlug; label: string }[] = [
   { sort: "oldest", label: "oldest" },
   { sort: "updated", label: "recently changed" },
 ];
+
+const SORT_ITEMS = SORTS.map((o) => ({ value: o.sort, label: o.label }));
 
 export function QuestionsPage() {
   const { data: s } = useScopedSnapshot();
@@ -87,38 +98,42 @@ function Questions({ s }: { s: Snapshot }) {
         sub={`What agents asked you about ${project ?? "every project"}: each project's sessions share one list. Answer when you like; an answer waits in the outbox until an agent reads it and marks it handled. Nothing is ever removed.`}
       />
       <div className="rise flex flex-wrap items-center gap-3">
-        <div role="tablist" aria-label="Questions" className="flex rounded-lg border border-border bg-card/70 p-0.5">
-          {TABS.map((t) => (
-            <button
-              key={t.tab}
-              type="button"
-              role="tab"
-              aria-selected={tab === t.tab}
-              onClick={() => navigate({ search: { tab: t.tab } })}
-              className={`rounded-md px-3 py-1.5 text-[12.5px] transition-colors ${tab === t.tab ? "bg-muted text-foreground" : "text-muted-foreground hover:text-foreground"}`}
-            >
-              {t.label}
-              {counts[t.tab] ? <span className={`ml-1.5 font-mono text-[10.5px] ${t.tab === "inbox" ? "text-primary" : "text-muted-foreground"}`}>{counts[t.tab]}</span> : null}
-            </button>
-          ))}
-        </div>
-        <label className="ml-auto flex items-center gap-2 font-mono text-[11px] text-muted-foreground">
-          sort
-          <select
-            value={sort}
-            onChange={(e) => navigate({ search: { tab, sort: e.target.value as QuestionOrderSlug } })}
-            className="rounded-md border border-border bg-card px-2 py-1 text-[11.5px] text-foreground focus:ring-2 focus:ring-primary/40 focus:outline-none"
-          >
-            {SORTS.map((o) => (
-              <option key={o.sort} value={o.sort}>
-                {o.label}
-              </option>
+        <Tabs value={tab} onValueChange={(v) => navigate({ search: { tab: v as QuestionTab } })}>
+          <TabsList aria-label="Questions" className="border border-border bg-card/70">
+            {TABS.map((t) => (
+              <TabsTrigger key={t.tab} value={t.tab} className="px-3 text-[12.5px]">
+                {t.label}
+                {counts[t.tab] ? <span className={`ml-1 font-mono text-[10.5px] ${t.tab === "inbox" ? "text-primary" : "text-muted-foreground"}`}>{counts[t.tab]}</span> : null}
+              </TabsTrigger>
             ))}
-          </select>
-        </label>
+          </TabsList>
+        </Tabs>
+        <div className="ml-auto flex items-center gap-2 font-mono text-[11px] text-muted-foreground">
+          <span>sort</span>
+          <Select items={SORT_ITEMS} value={sort} onValueChange={(v) => v && navigate({ search: { tab, sort: v as QuestionOrderSlug } })}>
+            <SelectTrigger size="sm" aria-label="Sort questions" className="bg-card font-mono text-[11.5px] text-foreground">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent className="font-mono text-[11.5px]">
+              {SORTS.map((o) => (
+                <SelectItem key={o.sort} value={o.sort} className="text-[11.5px]">
+                  {o.label}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        </div>
       </div>
-      {list.isError && <div className="rounded-xl border border-critical/40 bg-card px-4 py-2.5 font-mono text-[11.5px] text-critical">Could not list the questions: {String(list.error)}</div>}
-      {move.error && <div className="rounded-xl border border-critical/40 bg-card px-4 py-2.5 font-mono text-[11.5px] text-critical">Could not move it: {String(move.error)}</div>}
+      {list.isError && (
+        <Alert variant="destructive" className="rounded-xl border-critical/40 bg-card px-4 py-2.5 font-mono text-[11.5px]">
+          <AlertDescription className="text-[11.5px] text-critical">Could not list the questions: {String(list.error)}</AlertDescription>
+        </Alert>
+      )}
+      {move.error && (
+        <Alert variant="destructive" className="rounded-xl border-critical/40 bg-card px-4 py-2.5 font-mono text-[11.5px]">
+          <AlertDescription className="text-[11.5px] text-critical">Could not move it: {String(move.error)}</AlertDescription>
+        </Alert>
+      )}
       {list.data && !list.isPlaceholderData && questions.length === 0 ? (
         <Card>
           <Empty>{TABS.find((t) => t.tab === tab)?.empty}</Empty>
@@ -250,7 +265,6 @@ function useSettle() {
 }
 
 const LINK = "font-mono text-[11px] text-muted-foreground underline decoration-border-strong underline-offset-2 hover:text-foreground disabled:opacity-40";
-const FIELD = "w-full rounded-lg border border-border bg-background/60 px-3 py-2 text-[12.5px] placeholder:text-faint focus:border-primary/50 focus:ring-2 focus:ring-primary/20 focus:outline-none";
 
 function QuestionCard({ s, q, now, delay, mover }: { s: Snapshot; q: Question; now: number; delay: number; mover: React.ReactNode }) {
   const tag = STATE_TAG[q.state] ?? STATE_TAG[QuestionState.OPEN];
@@ -327,25 +341,30 @@ function AskedFromLine({ q }: { q: Question }) {
   if (!f) return null;
   const repo = (f.remote || f.dir).replace(/\.git$/, "").split(/[/:]/).pop();
   return (
-    <details className="group text-[11.5px] text-muted-foreground">
-      <summary className="cursor-pointer list-none font-mono text-[11px] marker:hidden hover:text-foreground">
-        <span className="text-faint group-open:rotate-90 inline-block transition-transform">›</span> from {repo}
-        {f.branch && <> @ {f.branch}</>}
-        {f.head && <span className="text-faint"> {shortHead(f.head)}</span>}
-        {f.dirtyFiles > 0 && <span className="text-warning"> · {f.dirtyFiles} changed</span>}
-      </summary>
-      <div className="mt-2 space-y-1 rounded-lg border border-border bg-muted/50 px-3 py-2 font-mono text-[10.5px]">
-        <div>{f.dir}</div>
-        {f.remote && <div className="text-faint">{f.remote}</div>}
-        {f.head && <div className="text-faint">{f.head}</div>}
-        {f.dirty.length > 0 && (
-          <pre className="mt-1 whitespace-pre-wrap text-foreground">
-            {f.dirty.join("\n")}
-            {f.dirtyFiles > f.dirty.length && `\n… and ${f.dirtyFiles - f.dirty.length} more`}
-          </pre>
-        )}
-      </div>
-    </details>
+    <Collapsible className="text-[11.5px] text-muted-foreground">
+      <CollapsibleTrigger className="group inline-flex cursor-pointer items-center gap-1 font-mono text-[11px] hover:text-foreground">
+        <ChevronRightIcon className="size-3 text-faint transition-transform group-data-panel-open:rotate-90" />
+        <span>
+          from {repo}
+          {f.branch && <> @ {f.branch}</>}
+          {f.head && <span className="text-faint"> {shortHead(f.head)}</span>}
+          {f.dirtyFiles > 0 && <span className="text-warning"> · {f.dirtyFiles} changed</span>}
+        </span>
+      </CollapsibleTrigger>
+      <CollapsibleContent>
+        <div className="mt-2 space-y-1 rounded-lg border border-border bg-muted/50 px-3 py-2 font-mono text-[10.5px]">
+          <div>{f.dir}</div>
+          {f.remote && <div className="text-faint">{f.remote}</div>}
+          {f.head && <div className="text-faint">{f.head}</div>}
+          {f.dirty.length > 0 && (
+            <pre className="mt-1 whitespace-pre-wrap text-foreground">
+              {f.dirty.join("\n")}
+              {f.dirtyFiles > f.dirty.length && `\n… and ${f.dirtyFiles - f.dirty.length} more`}
+            </pre>
+          )}
+        </div>
+      </CollapsibleContent>
+    </Collapsible>
   );
 }
 
@@ -362,7 +381,11 @@ function markOf(o: PromptOption): keyof typeof MARKS | null {
 function MarkTag({ o }: { o: PromptOption }) {
   const mark = markOf(o);
   if (!mark) return null;
-  return <span className={`shrink-0 rounded px-1.5 py-px font-mono text-[10px] whitespace-nowrap ${MARKS[mark].tag}`}>{MARKS[mark].text}</span>;
+  return (
+    <Badge variant="secondary" className={`h-auto shrink-0 rounded px-1.5 py-px font-mono text-[10px] font-normal ${MARKS[mark].tag}`}>
+      {MARKS[mark].text}
+    </Badge>
+  );
 }
 
 const OWN_WORDS = "In my own words";
@@ -419,12 +442,12 @@ function AnswerForm({ q }: { q: Question }) {
             <span className="block text-[12px] text-muted-foreground">{multi ? "Add an answer of your own." : "None of these: write the answer yourself."}</span>
           </Choice>
           {draft.ownWords && (
-            <textarea
+            <Textarea
               rows={3}
               value={draft.other}
               onChange={(e) => setDraft({ ...draft, other: e.target.value })}
               placeholder="Your answer"
-              className={FIELD}
+              className="bg-background/60 text-[12.5px]"
               aria-label="Your own answer"
               autoFocus
             />
@@ -443,7 +466,7 @@ function AnswerForm({ q }: { q: Question }) {
         )}
       </div>
       {noting ? (
-        <input value={draft.notes} onChange={(e) => setDraft({ ...draft, notes: e.target.value })} placeholder="Note for the agent" className={FIELD} aria-label="Note" autoFocus />
+        <Input value={draft.notes} onChange={(e) => setDraft({ ...draft, notes: e.target.value })} placeholder="Note for the agent" className="bg-background/60 text-[12.5px]" aria-label="Note" autoFocus />
       ) : (
         <button type="button" onClick={() => setNoting(true)} className={LINK}>
           + add a note
@@ -451,28 +474,24 @@ function AnswerForm({ q }: { q: Question }) {
       )}
       <div className="flex flex-wrap items-start gap-2">
         {needsButton && (
-          <button
-            type="submit"
-            disabled={!draftReady(draft) || busy}
-            className="rounded-lg bg-primary px-3.5 py-1.5 text-[12.5px] font-medium text-primary-foreground transition-opacity hover:opacity-90 disabled:opacity-40"
-          >
+          <Button type="submit" size="sm" disabled={!draftReady(draft) || busy} className="text-[12.5px]">
             {send.isPending ? "Sending…" : "Answer"}
-          </button>
+          </Button>
         )}
         {q.state === QuestionState.DISMISSED ? null : dismissing ? (
           <>
-            <button type="button" disabled={busy} onClick={() => dismiss.mutate()} className={`${dismissWidth} rounded-lg border border-border-strong px-3 py-1.5 text-[12.5px] text-foreground hover:bg-muted disabled:opacity-40`}>
+            <Button type="button" variant="outline" size="sm" disabled={busy} onClick={() => dismiss.mutate()} className={`${dismissWidth} justify-start border-border-strong text-[12.5px]`}>
               Dismiss
-            </button>
-            <input value={reason} onChange={(e) => setReason(e.target.value)} placeholder="Why not (optional)" className={`${FIELD} max-w-xs py-1.5`} aria-label="Why you dismiss it" />
-            <button type="button" onClick={() => setDismissing(false)} className="px-2 py-1.5 text-[12px] text-muted-foreground hover:text-foreground">
+            </Button>
+            <Input value={reason} onChange={(e) => setReason(e.target.value)} placeholder="Why not (optional)" className="max-w-xs bg-background/60 text-[12.5px]" aria-label="Why you dismiss it" />
+            <Button type="button" variant="ghost" size="sm" onClick={() => setDismissing(false)} className="text-[12px] text-muted-foreground">
               cancel
-            </button>
+            </Button>
           </>
         ) : (
-          <button type="button" onClick={() => setDismissing(true)} className={`${dismissWidth} rounded-lg px-3 py-1.5 text-[12.5px] text-muted-foreground hover:bg-muted hover:text-foreground`}>
+          <Button type="button" variant="ghost" size="sm" onClick={() => setDismissing(true)} className={`${dismissWidth} justify-start text-[12.5px] text-muted-foreground`}>
             Dismiss…
-          </button>
+          </Button>
         )}
         {(send.error || dismiss.error) && <span className="font-mono text-[11px] text-critical">{String(send.error ?? dismiss.error)}</span>}
       </div>
@@ -536,15 +555,15 @@ function PromptEditor({ q, onDone }: { q: Question; onDone: () => void }) {
         if (question.trim() !== "" && !save.isPending) save.mutate();
       }}
     >
-      <input value={question} onChange={(e) => setQuestion(e.target.value)} className={`${FIELD} text-[14px] font-semibold`} aria-label="Question" autoFocus />
-      <textarea value={body} onChange={(e) => setBody(e.target.value)} rows={Math.min(14, Math.max(3, body.split("\n").length + 1))} placeholder="Body: what the answer needs to know (markdown, optional)" className={`${FIELD} font-mono text-[12px]`} aria-label="Body" />
+      <Input value={question} onChange={(e) => setQuestion(e.target.value)} className="bg-background/60 text-[14px] font-semibold" aria-label="Question" autoFocus />
+      <Textarea value={body} onChange={(e) => setBody(e.target.value)} rows={Math.min(14, Math.max(3, body.split("\n").length + 1))} placeholder="Body: what the answer needs to know (markdown, optional)" className="bg-background/60 font-mono text-[12px]" aria-label="Body" />
       <div className="flex flex-wrap items-center gap-2">
-        <button type="submit" disabled={question.trim() === "" || save.isPending} className="rounded-lg bg-primary px-3.5 py-1.5 text-[12.5px] font-medium text-primary-foreground transition-opacity hover:opacity-90 disabled:opacity-40">
+        <Button type="submit" size="sm" disabled={question.trim() === "" || save.isPending} className="text-[12.5px]">
           {save.isPending ? "Saving…" : "Save"}
-        </button>
-        <button type="button" onClick={onDone} className="px-2 py-1.5 text-[12px] text-muted-foreground hover:text-foreground">
+        </Button>
+        <Button type="button" variant="ghost" size="sm" onClick={onDone} className="text-[12px] text-muted-foreground">
           cancel
-        </button>
+        </Button>
         {save.error && <span className="font-mono text-[11px] text-critical">{String(save.error)}</span>}
       </div>
     </form>
@@ -627,27 +646,32 @@ function History({ s, q, now }: { s: Snapshot; q: Question; now: number }) {
   const [open, setOpen] = useState(false);
   const history = useQuery({ queryKey: ["question-history", q.id, String(q.updatedAt), String(q.rank)], queryFn: () => api.questionHistory(q.id), enabled: open });
   return (
-    <details onToggle={(e) => setOpen(e.currentTarget.open)} className="group">
-      <summary className="cursor-pointer list-none font-mono text-[11px] text-faint marker:hidden hover:text-foreground">
-        <span className="inline-block transition-transform group-open:rotate-90">›</span> history{q.edited && <span> · edited by {who(q.edited)}</span>}
-      </summary>
-      {history.isError && <div className="mt-2 font-mono text-[11px] text-critical">{String(history.error)}</div>}
-      {history.data && (
-        <ol className="mt-2 space-y-1.5 border-l border-border pl-3">
-          {history.data.map((c) => (
-            <li key={String(c.seq)} className="text-[11.5px] text-muted-foreground">
-              <span className="font-mono text-[11px] text-foreground">{c.what}</span> {c.by && <StampLine s={s} st={c.by} now={now} verb="" />}
-              {c.by?.reason && <span>: {c.by.reason}</span>}
-              {c.what === "edited" && c.question?.prompt && (
-                <div className="text-foreground">
-                  <InlineMarkdown>{c.question.prompt.question}</InlineMarkdown>
-                </div>
-              )}
-              {(c.what === "answered" || c.what === "dismissed") && c.question && <div className="text-foreground">{responseLine(c.question)}</div>}
-            </li>
-          ))}
-        </ol>
-      )}
-    </details>
+    <Collapsible open={open} onOpenChange={setOpen}>
+      <CollapsibleTrigger className="group inline-flex cursor-pointer items-center gap-1 font-mono text-[11px] text-faint hover:text-foreground">
+        <ChevronRightIcon className="size-3 transition-transform group-data-panel-open:rotate-90" />
+        <span>
+          history{q.edited && <span> · edited by {who(q.edited)}</span>}
+        </span>
+      </CollapsibleTrigger>
+      <CollapsibleContent>
+        {history.isError && <div className="mt-2 font-mono text-[11px] text-critical">{String(history.error)}</div>}
+        {history.data && (
+          <ol className="mt-2 space-y-1.5 border-l border-border pl-3">
+            {history.data.map((c) => (
+              <li key={String(c.seq)} className="text-[11.5px] text-muted-foreground">
+                <span className="font-mono text-[11px] text-foreground">{c.what}</span> {c.by && <StampLine s={s} st={c.by} now={now} verb="" />}
+                {c.by?.reason && <span>: {c.by.reason}</span>}
+                {c.what === "edited" && c.question?.prompt && (
+                  <div className="text-foreground">
+                    <InlineMarkdown>{c.question.prompt.question}</InlineMarkdown>
+                  </div>
+                )}
+                {(c.what === "answered" || c.what === "dismissed") && c.question && <div className="text-foreground">{responseLine(c.question)}</div>}
+              </li>
+            ))}
+          </ol>
+        )}
+      </CollapsibleContent>
+    </Collapsible>
   );
 }

@@ -1,9 +1,15 @@
 import { useQuery } from "@tanstack/react-query";
 import { Link } from "@tanstack/react-router";
 import { Fragment, useState } from "react";
+import { Alert, AlertDescription } from "@/components/ui/alert";
+import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
+import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { api, DAEMON_LOG_LEVEL_FROM_SLUG, DaemonLogLevel, type DaemonLogEntry, type DaemonLogLevelSlug, type DaemonLogSource } from "../api";
 import { bytes, hhmmss } from "../lib/format";
-import { Card, Empty } from "./ui/Card";
+import { Card, Empty } from "./Panel";
 
 type SinceKey = "15m" | "1h" | "24h" | "7d" | "";
 
@@ -82,27 +88,31 @@ export function DaemonLogsPanel({
   const controlsRight = (
     <div className="flex flex-wrap items-center gap-2 font-mono text-[10.5px]">
       {activeSourceInfo && (
-        <span className="num rounded-full border border-border px-2.5 py-0.5 text-muted-foreground" title="Log rotation usage on disk">
+        <Badge variant="outline" className="num font-mono text-[10.5px] font-normal text-muted-foreground" title="Log rotation usage on disk">
           {bytes(activeSourceInfo.diskBytes)} · {activeSourceInfo.files}/{activeSourceInfo.maxFiles || 5} files
-        </span>
+        </Badge>
       )}
-      <button
+      <Button
         type="button"
+        variant="outline"
+        size="xs"
         onClick={() => setLive((v) => !v)}
-        className={`inline-flex items-center gap-1.5 rounded-md border px-2 py-0.5 transition-colors ${
-          live ? "border-primary/40 bg-ember-wash text-primary" : "border-border text-muted-foreground hover:text-foreground"
+        className={`gap-1.5 font-mono text-[10.5px] ${
+          live ? "border-primary/40 bg-ember-wash text-primary hover:bg-ember-wash" : "text-muted-foreground"
         }`}
       >
         {live && <span className="live-dot inline-block size-1.5 rounded-full bg-primary" />}
         {live ? "Live 5s" : "Paused"}
-      </button>
-      <button
+      </Button>
+      <Button
         type="button"
+        variant="outline"
+        size="xs"
         onClick={() => logsQuery.refetch()}
-        className="rounded-md border border-border px-2 py-0.5 text-muted-foreground hover:border-border-strong hover:text-foreground"
+        className="font-mono text-[10.5px] text-muted-foreground hover:text-foreground"
       >
         Refresh
-      </button>
+      </Button>
       {headerRight}
     </div>
   );
@@ -134,72 +144,78 @@ export function DaemonLogsPanel({
         <div className="space-y-3">
           {/* Filters */}
           <div className="flex flex-wrap items-center gap-2">
-            <input
+            <Input
               type="search"
               value={queryText}
               onChange={(e) => setQueryText(e.target.value)}
               placeholder="Filter messages, attrs, source file..."
               aria-label="Filter daemon logs"
-              className="min-w-[220px] flex-1 rounded-lg border border-border bg-background/70 px-3 py-1.5 font-mono text-[11.5px] text-foreground placeholder:text-faint focus:border-primary focus:outline-none"
+              className="min-w-[220px] flex-1 bg-background/70 font-mono text-[11.5px] placeholder:text-faint"
             />
             {!lockedSource && sources.length > 0 && (
-              <div className="flex flex-wrap items-center rounded-lg border border-border bg-background/60 p-0.5 font-mono text-[11px]">
-                <SegButton active={source === ""} onClick={() => setSource("")}>
-                  All
-                </SegButton>
-                {sources.map((src) => (
-                  <SegButton key={`${src.role}-${src.source}`} active={source === src.source} onClick={() => setSource(src.source)}>
-                    {src.source}
-                  </SegButton>
-                ))}
-              </div>
+              <Tabs value={source || "__all__"} onValueChange={(v) => setSource(v === "__all__" ? "" : String(v))}>
+                <TabsList className="h-8 border border-border bg-background/60 font-mono text-[11px]">
+                  <TabsTrigger value="__all__" className="px-2 font-mono text-[11px]">
+                    All
+                  </TabsTrigger>
+                  {sources.map((src) => (
+                    <TabsTrigger key={`${src.role}-${src.source}`} value={src.source} className="px-2 font-mono text-[11px]">
+                      {src.source}
+                    </TabsTrigger>
+                  ))}
+                </TabsList>
+              </Tabs>
             )}
-            <div className="flex items-center rounded-lg border border-border bg-background/60 p-0.5 font-mono text-[11px]">
-              {(
-                [
-                  ["", "Warn + Error"],
-                  ["error", "Errors"],
-                  ["warn", "Warns"],
-                ] as const
-              ).map(([val, label]) => (
-                <SegButton key={val || "all"} active={level === val} onClick={() => setLevel(val)}>
-                  {label}
-                </SegButton>
-              ))}
-            </div>
-            <div className="flex items-center rounded-lg border border-border bg-background/60 p-0.5 font-mono text-[11px]">
-              {(
-                [
-                  ["15m", "15m"],
-                  ["1h", "1h"],
-                  ["24h", "24h"],
-                  ["7d", "7d"],
-                  ["", "All"],
-                ] as const
-              ).map(([val, label]) => (
-                <SegButton key={val || "all"} active={since === val} onClick={() => setSince(val)}>
-                  {label}
-                </SegButton>
-              ))}
-            </div>
+            <Tabs value={level || "__all__"} onValueChange={(v) => setLevel((v === "__all__" ? "" : v) as DaemonLogLevelSlug | "")}>
+              <TabsList className="h-8 border border-border bg-background/60 font-mono text-[11px]">
+                <TabsTrigger value="__all__" className="px-2 font-mono text-[11px]">
+                  Warn + Error
+                </TabsTrigger>
+                <TabsTrigger value="error" className="px-2 font-mono text-[11px]">
+                  Errors
+                </TabsTrigger>
+                <TabsTrigger value="warn" className="px-2 font-mono text-[11px]">
+                  Warns
+                </TabsTrigger>
+              </TabsList>
+            </Tabs>
+            <Tabs value={since || "__all__"} onValueChange={(v) => setSince((v === "__all__" ? "" : v) as SinceKey)}>
+              <TabsList className="h-8 border border-border bg-background/60 font-mono text-[11px]">
+                {(
+                  [
+                    ["15m", "15m"],
+                    ["1h", "1h"],
+                    ["24h", "24h"],
+                    ["7d", "7d"],
+                    ["__all__", "All"],
+                  ] as const
+                ).map(([val, label]) => (
+                  <TabsTrigger key={val} value={val} className="px-2 font-mono text-[11px]">
+                    {label}
+                  </TabsTrigger>
+                ))}
+              </TabsList>
+            </Tabs>
           </div>
 
           {unreachable.length > 0 && (
-            <div className="rounded-lg border border-warning/40 bg-[color-mix(in_oklab,var(--warning)_10%,transparent)] px-3 py-2 font-mono text-[11px] text-foreground">
-              {unreachable.map((u) => (
-                <div key={u.source}>
-                  <span className="font-semibold">{u.source}</span> ({u.role}): unreachable{u.error ? ` — ${u.error}` : ""}
-                </div>
-              ))}
-            </div>
+            <Alert className="border-warning/40 bg-[color-mix(in_oklab,var(--warning)_10%,transparent)] px-3 py-2 font-mono text-[11px]">
+              <AlertDescription className="text-[11px] text-foreground">
+                {unreachable.map((u) => (
+                  <div key={u.source}>
+                    <span className="font-semibold">{u.source}</span> ({u.role}): unreachable{u.error ? ` — ${u.error}` : ""}
+                  </div>
+                ))}
+              </AlertDescription>
+            </Alert>
           )}
 
           {logsQuery.isLoading ? (
             <div className="py-10 text-center font-mono text-[11.5px] text-muted-foreground">Loading daemon logs…</div>
           ) : logsQuery.error ? (
-            <div className="rounded-lg border border-critical/35 bg-[color-mix(in_oklab,var(--critical)_10%,transparent)] px-3 py-2 font-mono text-[11.5px] text-critical">
-              {String(logsQuery.error)}
-            </div>
+            <Alert variant="destructive" className="border-critical/35 bg-[color-mix(in_oklab,var(--critical)_10%,transparent)] px-3 py-2 font-mono text-[11.5px]">
+              <AlertDescription className="text-[11.5px] text-critical">{String(logsQuery.error)}</AlertDescription>
+            </Alert>
           ) : entries.length === 0 ? (
             <Empty>
               No WARN or ERROR slog entries match this filter{since ? ` in the last ${since}` : ""}.
@@ -207,39 +223,39 @@ export function DaemonLogsPanel({
           ) : (
             <>
               <div className={`${compact ? "max-h-[380px]" : "max-h-[680px]"} overflow-auto rounded-lg border border-border`}>
-                <table className="w-full border-collapse text-left font-mono text-[11.5px]">
-                  <thead className="sticky top-0 z-10 bg-card text-[10px] uppercase tracking-wider text-muted-foreground">
-                    <tr className="border-b border-border">
-                      <th className="w-[140px] px-3 py-2 font-normal">Time</th>
-                      <th className="w-[72px] px-2 py-2 font-normal">Level</th>
-                      {!lockedSource && <th className="w-[128px] px-2 py-2 font-normal">Source</th>}
-                      <th className="px-2 py-2 font-normal">Message & attributes</th>
-                      <th className="hidden w-[220px] px-3 py-2 text-right font-normal xl:table-cell">Location</th>
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y divide-border/70">
+                <Table className="font-mono text-[11.5px]">
+                  <TableHeader className="sticky top-0 z-10 bg-card text-[10px] uppercase tracking-wider text-muted-foreground">
+                    <TableRow className="border-border hover:bg-transparent">
+                      <TableHead className="h-auto w-[140px] px-3 py-2 font-normal text-muted-foreground">Time</TableHead>
+                      <TableHead className="h-auto w-[72px] px-2 py-2 font-normal text-muted-foreground">Level</TableHead>
+                      {!lockedSource && <TableHead className="h-auto w-[128px] px-2 py-2 font-normal text-muted-foreground">Source</TableHead>}
+                      <TableHead className="h-auto px-2 py-2 font-normal text-muted-foreground">Message & attributes</TableHead>
+                      <TableHead className="hidden h-auto w-[220px] px-3 py-2 text-right font-normal text-muted-foreground xl:table-cell">Location</TableHead>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody className="divide-y divide-border/70">
                     {entries.map((entry, idx) => {
                       const rowKey = `${entry.at}-${entry.source}-${idx}`;
                       const isOpen = expanded === rowKey;
                       const attrs = parseAttrs(entry.attrsJson);
                       return (
                         <Fragment key={rowKey}>
-                          <tr
+                          <TableRow
                             onClick={() => setExpanded(isOpen ? null : rowKey)}
-                            className={`cursor-pointer align-top transition-colors hover:bg-muted/50 ${isOpen ? "bg-muted/40" : ""}`}
+                            className={`cursor-pointer align-top hover:bg-muted/50 ${isOpen ? "bg-muted/40" : ""}`}
                           >
-                            <td className="num px-3 py-2 whitespace-nowrap text-faint" title={new Date(Number(entry.at)).toISOString()}>
+                            <TableCell className="num px-3 py-2 text-faint" title={new Date(Number(entry.at)).toISOString()}>
                               {formatEntryTime(entry.at)}
-                            </td>
-                            <td className="px-2 py-2 whitespace-nowrap">
+                            </TableCell>
+                            <TableCell className="px-2 py-2">
                               <LevelBadge level={entry.level} />
-                            </td>
+                            </TableCell>
                             {!lockedSource && (
-                              <td className="px-2 py-2 whitespace-nowrap">
+                              <TableCell className="px-2 py-2">
                                 <SourceBadge entry={entry} />
-                              </td>
+                              </TableCell>
                             )}
-                            <td className="px-2 py-2">
+                            <TableCell className="px-2 py-2 whitespace-normal">
                               <div className="break-words text-foreground">{entry.msg}</div>
                               {attrs.length > 0 && (
                                 <div className="mt-1 flex flex-wrap gap-1.5">
@@ -260,14 +276,14 @@ export function DaemonLogsPanel({
                                   {!isOpen && attrs.length > 5 && <span className="text-[10px] text-faint">+{attrs.length - 5} more</span>}
                                 </div>
                               )}
-                            </td>
-                            <td className="hidden px-3 py-2 text-right text-[10.5px] whitespace-nowrap text-faint xl:table-cell" title={entry.sourceLoc}>
+                            </TableCell>
+                            <TableCell className="hidden px-3 py-2 text-right text-[10.5px] text-faint xl:table-cell" title={entry.sourceLoc}>
                               {entry.sourceLoc || "—"}
-                            </td>
-                          </tr>
+                            </TableCell>
+                          </TableRow>
                           {isOpen && (
-                            <tr className="bg-background/60">
-                              <td colSpan={lockedSource ? 4 : 5} className="px-4 py-3 text-[11px]">
+                            <TableRow className="bg-background/60 hover:bg-background/60">
+                              <TableCell colSpan={lockedSource ? 4 : 5} className="px-4 py-3 text-[11px] whitespace-normal">
                                 <div className="flex flex-wrap gap-x-6 gap-y-1 text-muted-foreground">
                                   <span>
                                     <span className="text-faint">timestamp:</span> {new Date(Number(entry.at)).toISOString()}
@@ -286,14 +302,14 @@ export function DaemonLogsPanel({
                                     {prettyJson(entry.attrsJson)}
                                   </pre>
                                 )}
-                              </td>
-                            </tr>
+                              </TableCell>
+                            </TableRow>
                           )}
                         </Fragment>
                       );
                     })}
-                  </tbody>
-                </table>
+                  </TableBody>
+                </Table>
               </div>
               <div className="flex flex-wrap items-center justify-between font-mono text-[10.5px] text-faint">
                 <span>
@@ -324,9 +340,9 @@ function SourceCard({ src, selected, onClick }: { src: DaemonLogSource; selected
       <div className="flex items-center gap-2">
         <span className={`inline-block size-2 rounded-full ${src.reachable ? "bg-good" : "bg-critical"}`} />
         <span className="font-mono text-[13px] font-semibold text-foreground">{src.source}</span>
-        <span className="rounded bg-muted px-1.5 py-0.5 font-mono text-[9.5px] uppercase tracking-wider text-muted-foreground">
+        <Badge variant="secondary" className="h-auto rounded px-1.5 py-0.5 font-mono text-[9.5px] uppercase tracking-wider text-muted-foreground">
           {src.role}
-        </span>
+        </Badge>
       </div>
       <div className="mt-2.5 flex items-baseline gap-3 font-mono text-[12px]">
         <span className={src.errors24h > 0 ? "text-critical" : "text-muted-foreground"}>
@@ -352,39 +368,27 @@ function SourceCard({ src, selected, onClick }: { src: DaemonLogSource; selected
   );
 }
 
-function SegButton({ active, onClick, children }: { active: boolean; onClick: () => void; children: React.ReactNode }) {
-  return (
-    <button
-      type="button"
-      onClick={onClick}
-      className={`rounded-md px-2 py-1 transition-colors ${active ? "bg-muted text-foreground" : "text-muted-foreground hover:text-foreground"}`}
-    >
-      {children}
-    </button>
-  );
-}
-
 function LevelBadge({ level }: { level: DaemonLogLevel }) {
   if (level === DaemonLogLevel.ERROR) {
     return (
-      <span className="inline-block rounded bg-[color-mix(in_oklab,var(--critical)_16%,transparent)] px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wider text-critical">
+      <Badge variant="destructive" className="h-auto rounded bg-[color-mix(in_oklab,var(--critical)_16%,transparent)] px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wider text-critical">
         ERROR
-      </span>
+      </Badge>
     );
   }
   return (
-    <span className="inline-block rounded bg-[color-mix(in_oklab,var(--warning)_20%,transparent)] px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wider text-warning">
+    <Badge variant="secondary" className="h-auto rounded bg-[color-mix(in_oklab,var(--warning)_20%,transparent)] px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wider text-warning">
       WARN
-    </span>
+    </Badge>
   );
 }
 
 function SourceBadge({ entry }: { entry: DaemonLogEntry }) {
   if (entry.role === "controller") {
     return (
-      <span className="inline-block rounded bg-ember-wash px-1.5 py-0.5 text-[10.5px] text-primary" title={`controller on ${entry.host}`}>
+      <Badge variant="secondary" className="h-auto rounded bg-ember-wash px-1.5 py-0.5 text-[10.5px] font-normal text-primary" title={`controller on ${entry.host}`}>
         controller
-      </span>
+      </Badge>
     );
   }
   return (

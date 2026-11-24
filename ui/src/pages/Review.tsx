@@ -1,6 +1,11 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link, useParams } from "@tanstack/react-router";
+import { ChevronRightIcon } from "lucide-react";
 import { useState } from "react";
+import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
+import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
+import { Textarea } from "@/components/ui/textarea";
 import {
   api,
   FindingDecision,
@@ -18,7 +23,7 @@ import {
 import { Markdown } from "../components/Markdown";
 import { ProjectTag } from "../components/ProjectTag";
 import { SessionLink } from "../components/SessionLink";
-import { Card, Empty } from "../components/ui/Card";
+import { Card, Empty } from "../components/Panel";
 import { useSnapshot } from "../lib/data";
 import { ago } from "../lib/format";
 import { remoteName } from "../lib/projects";
@@ -145,12 +150,15 @@ function Prose({ label, text }: { label: string; text: string }) {
 /** The reviewer's whole report, which its findings came from: folded, as the findings below are what to act on. */
 function Report({ text }: { text: string }) {
   return (
-    <details className="group mt-4 border-t border-border pt-3">
-      <summary className="eyebrow cursor-pointer list-none marker:hidden hover:text-foreground">
-        <span className="inline-block transition-transform group-open:rotate-90">›</span> the reviewer's report
-      </summary>
-      <Markdown className="mt-1.5 text-[13px] leading-relaxed text-foreground">{text}</Markdown>
-    </details>
+    <Collapsible className="mt-4 border-t border-border pt-3">
+      <CollapsibleTrigger className="eyebrow group inline-flex cursor-pointer items-center gap-1 hover:text-foreground">
+        <ChevronRightIcon className="size-3 transition-transform group-data-panel-open:rotate-90" />
+        <span>the reviewer's report</span>
+      </CollapsibleTrigger>
+      <CollapsibleContent>
+        <Markdown className="mt-1.5 text-[13px] leading-relaxed text-foreground">{text}</Markdown>
+      </CollapsibleContent>
+    </Collapsible>
   );
 }
 
@@ -188,13 +196,14 @@ function FindingCard({ s, r, f, now, delay }: { s: Snapshot; r: Review; f: Findi
               {f.verdict === FindingVerdict.CONFIRMED ? "confirmed" : "plausible"}
             </span>
           )}
-          <span
-            className={`ml-auto rounded-md border px-1.5 py-0.5 font-mono text-[10.5px] ${decision.className}`}
+          <Badge
+            variant="outline"
+            className={`ml-auto h-auto rounded-md px-1.5 py-0.5 font-mono text-[10.5px] font-normal ${decision.className}`}
             title={f.decided ? `${f.decided.session || "you"}: ${f.decided.reason}` : "The agent that asked has not decided"}
           >
             {decision.text}
             {f.decided?.reason && <span className="text-muted-foreground">: {f.decided.reason}</span>}
-          </span>
+          </Badge>
         </header>
         <p className="text-[13px] leading-relaxed whitespace-pre-wrap text-foreground">{f.summary}</p>
         {f.failureScenario && (
@@ -322,37 +331,40 @@ function Respond({ reviewId, findingId, latest = QuickResponse.UNSPECIFIED }: { 
   });
   return (
     <div className="space-y-2">
-      <textarea
+      <Textarea
         rows={2}
         value={text}
         onChange={(e) => setText(e.target.value)}
         placeholder={findingId === null ? "Comment on the review" : "Comment for the agent (optional with a quick response)"}
         aria-label={findingId === null ? "Comment on the review" : `Comment on finding ${findingId}`}
-        className="w-full rounded-lg border border-border bg-background/60 px-3 py-2 text-[12.5px] placeholder:text-faint focus:border-primary/50 focus:ring-2 focus:ring-primary/20 focus:outline-none"
+        className="min-h-14 bg-background/60 text-[12.5px] placeholder:text-faint"
       />
       <div className="flex flex-wrap items-center gap-2">
         {findingId !== null &&
           QUICKS.map((q) => (
-            <button
+            <Button
               key={q.quick}
               type="button"
+              variant="outline"
+              size="sm"
               disabled={send.isPending}
               onClick={() => send.mutate(q.quick)}
               title={q.hint}
               aria-pressed={latest === q.quick}
-              className={`rounded-lg border px-3 py-1.5 text-[12px] transition-colors disabled:opacity-40 ${latest === q.quick ? "border-primary/60 bg-ember-wash text-primary" : "border-border text-foreground hover:border-border-strong hover:bg-muted"}`}
+              className={`text-[12px] ${latest === q.quick ? "border-primary/60 bg-ember-wash text-primary hover:bg-ember-wash" : "border-border text-foreground"}`}
             >
               {q.label}
-            </button>
+            </Button>
           ))}
-        <button
+        <Button
           type="button"
+          size="sm"
           disabled={text.trim() === "" || send.isPending}
           onClick={() => send.mutate(QuickResponse.UNSPECIFIED)}
-          className="rounded-lg bg-primary px-3.5 py-1.5 text-[12.5px] font-medium text-primary-foreground transition-opacity hover:opacity-90 disabled:opacity-40"
+          className="text-[12.5px]"
         >
           {send.isPending ? "Sending…" : "Comment"}
-        </button>
+        </Button>
         {send.error && <span className="font-mono text-[11px] text-critical">{String(send.error)}</span>}
       </div>
     </div>
@@ -362,20 +374,23 @@ function Respond({ reviewId, findingId, latest = QuickResponse.UNSPECIFIED }: { 
 /** Every event, oldest first. */
 function Timeline({ s, r, now }: { s: Snapshot; r: Review; now: number }) {
   return (
-    <details className="group">
-      <summary className="cursor-pointer list-none font-mono text-[11px] text-faint marker:hidden hover:text-foreground">
-        <span className="inline-block transition-transform group-open:rotate-90">›</span> history: {r.events.length} events
-      </summary>
-      <ol className="mt-2 space-y-1 border-l border-border pl-3">
-        {r.events.map((e) => (
-          <li key={String(e.seq)} className="text-[11.5px] text-muted-foreground">
-            <span className="font-mono text-[11px] text-foreground">{e.what}</span>
-            {e.findingId !== 0 && <span className="font-mono text-faint"> #{e.findingId}</span>} {e.by && <>by <StampLine s={s} st={e.by} now={now} /></>}
-            {e.quick !== QuickResponse.UNSPECIFIED && <span>: {quickLabel(e.quick)}</span>}
-            {e.text && <span className="text-foreground">: {e.text}</span>}
-          </li>
-        ))}
-      </ol>
-    </details>
+    <Collapsible>
+      <CollapsibleTrigger className="group inline-flex cursor-pointer items-center gap-1 font-mono text-[11px] text-faint hover:text-foreground">
+        <ChevronRightIcon className="size-3 transition-transform group-data-panel-open:rotate-90" />
+        <span>history: {r.events.length} events</span>
+      </CollapsibleTrigger>
+      <CollapsibleContent>
+        <ol className="mt-2 space-y-1 border-l border-border pl-3">
+          {r.events.map((e) => (
+            <li key={String(e.seq)} className="text-[11.5px] text-muted-foreground">
+              <span className="font-mono text-[11px] text-foreground">{e.what}</span>
+              {e.findingId !== 0 && <span className="font-mono text-faint"> #{e.findingId}</span>} {e.by && <>by <StampLine s={s} st={e.by} now={now} /></>}
+              {e.quick !== QuickResponse.UNSPECIFIED && <span>: {quickLabel(e.quick)}</span>}
+              {e.text && <span className="text-foreground">: {e.text}</span>}
+            </li>
+          ))}
+        </ol>
+      </CollapsibleContent>
+    </Collapsible>
   );
 }

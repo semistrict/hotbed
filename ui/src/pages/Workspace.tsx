@@ -1,10 +1,11 @@
 import { useQuery } from "@tanstack/react-query";
 import { Link, useNavigate, useParams, useSearch } from "@tanstack/react-router";
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { api, WorkspaceState, workspaceStateLabel, type FileEntry, type Snapshot, type Workspace } from "../api";
 import { SegmentedBar } from "../components/charts/Bars";
 import { HistoryTable, LiveCommandTable } from "../components/CommandTable";
 import { Crumbs } from "../components/Crumbs";
-import { Card, Empty, StatTile } from "../components/ui/Card";
+import { Card, Empty, StatTile } from "../components/Panel";
 import { nodeName, useSnapshot } from "../lib/data";
 import { ago, bytes, duration, shortSha } from "../lib/format";
 import { isLive } from "../lib/live";
@@ -17,35 +18,33 @@ import { PageTitle } from "./Nodes";
 function RepoTable({ s, w }: { s: Snapshot; w: Workspace }) {
   const base = s.bases.find((b) => b.id === w.baseId);
   return (
-    <div className="overflow-x-auto">
-      <table className="w-full text-left text-[12px]">
-        <thead className="eyebrow">
-          <tr className="border-b border-border">
-            {["repo", "base", "head", "files changed", "synced from"].map((h) => (
-              <th key={h} className="px-2 py-2 font-normal whitespace-nowrap">
-                {h}
-              </th>
-            ))}
-          </tr>
-        </thead>
-        <tbody className="num font-mono text-[11px] [&_td]:whitespace-nowrap">
-          {w.repos.map((r) => {
-            const at = base?.repos.find((b) => b.repo === r.repo);
-            return (
-              <tr key={r.repo} className="border-b border-border/60 last:border-b-0">
-                <td className="px-2 py-2 text-foreground">{r.repo}</td>
-                <td className="px-2 py-2 text-muted-foreground" title={at?.message}>
-                  {at ? shortSha(at.commit) : "—"}
-                </td>
-                <td className="px-2 py-2 text-muted-foreground">{shortSha(r.head)}</td>
-                <td className="px-2 py-2">{r.filesChanged}</td>
-                <td className="px-2 py-2 text-faint">{r.syncDir || "nothing synced"}</td>
-              </tr>
-            );
-          })}
-        </tbody>
-      </table>
-    </div>
+    <Table className="text-[12px]">
+      <TableHeader className="eyebrow">
+        <TableRow className="border-border hover:bg-transparent">
+          {["repo", "base", "head", "files changed", "synced from"].map((h) => (
+            <TableHead key={h} className="h-auto px-2 py-2 font-normal text-muted-foreground">
+              {h}
+            </TableHead>
+          ))}
+        </TableRow>
+      </TableHeader>
+      <TableBody className="num font-mono text-[11px]">
+        {w.repos.map((r) => {
+          const at = base?.repos.find((b) => b.repo === r.repo);
+          return (
+            <TableRow key={r.repo} className="border-border/60">
+              <TableCell className="px-2 py-2 text-foreground">{r.repo}</TableCell>
+              <TableCell className="px-2 py-2 text-muted-foreground" title={at?.message}>
+                {at ? shortSha(at.commit) : "—"}
+              </TableCell>
+              <TableCell className="px-2 py-2 text-muted-foreground">{shortSha(r.head)}</TableCell>
+              <TableCell className="px-2 py-2">{r.filesChanged}</TableCell>
+              <TableCell className="px-2 py-2 text-faint">{r.syncDir || "nothing synced"}</TableCell>
+            </TableRow>
+          );
+        })}
+      </TableBody>
+    </Table>
   );
 }
 

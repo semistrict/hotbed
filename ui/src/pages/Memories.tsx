@@ -1,6 +1,15 @@
 import { useIsMutating, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link, useNavigate, useParams, useSearch } from "@tanstack/react-router";
+import { ChevronRightIcon } from "lucide-react";
 import { useMemo, useRef, useState, type DragEvent } from "react";
+import { Alert, AlertDescription } from "@/components/ui/alert";
+import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
+import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
+import { Input } from "@/components/ui/input";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { Textarea } from "@/components/ui/textarea";
 import {
   api,
   MEMORY_ORDER_FROM_SLUG,
@@ -16,7 +25,7 @@ import {
 import { Markdown } from "../components/Markdown";
 import { ProjectTag } from "../components/ProjectTag";
 import { SessionLink } from "../components/SessionLink";
-import { Card, Empty } from "../components/ui/Card";
+import { Card, Empty } from "../components/Panel";
 import { ago } from "../lib/format";
 import {
   computeLineDiff,
@@ -66,7 +75,11 @@ const STATE_TAG: Record<MemoryState, { text: string; className: string }> = {
 };
 
 const LINK = "font-mono text-[11px] text-muted-foreground underline decoration-border-strong underline-offset-2 hover:text-foreground disabled:opacity-40";
-const FIELD = "w-full rounded-lg border border-border bg-background/60 px-3 py-2 text-[12.5px] placeholder:text-faint focus:border-primary/50 focus:ring-2 focus:ring-primary/20 focus:outline-none";
+const SORT_ITEMS = SORTS.map((o) => ({ value: o.sort, label: o.label }));
+const MODE_ITEMS = [
+  { value: String(MemoryMode.ALWAYS), label: "Always-on (inline rule)" },
+  { value: String(MemoryMode.ON_DEMAND), label: "On-demand (index + get)" },
+];
 
 const MOVE = ["move-memory"];
 
@@ -172,13 +185,13 @@ function MemoriesView({ s }: { s: Snapshot }) {
           title="Memories"
           sub={`Cross-agent learnings for ${project ? `global + ${project}` : "global + every project"}. Approved always-on rules and on-demand indexes are returned on every hotbed session start.`}
         />
-        <button
+        <Button
           type="button"
           onClick={() => setCreating((v) => !v)}
-          className="rounded-lg bg-primary px-3.5 py-2 text-[12.5px] font-medium text-primary-foreground transition-opacity hover:opacity-90"
+          className="text-[12.5px]"
         >
           {creating ? "Cancel" : "+ New memory"}
-        </button>
+        </Button>
       </div>
 
       <BudgetBar budget={budget} project={project} />
@@ -186,89 +199,87 @@ function MemoriesView({ s }: { s: Snapshot }) {
       {creating && <NewMemoryForm s={s} defaultProject={project} onDone={() => setCreating(false)} />}
 
       <div className="rise flex flex-wrap items-center gap-3">
-        <div role="tablist" aria-label="Memories" className="flex rounded-lg border border-border bg-card/70 p-0.5">
-          {TABS.map((t) => (
-            <button
-              key={t.tab}
-              type="button"
-              role="tab"
-              aria-selected={tab === t.tab}
-              onClick={() => navigate({ search: { ...search, tab: t.tab, sort: undefined } })}
-              className={`rounded-md px-3 py-1.5 text-[12.5px] transition-colors ${tab === t.tab ? "bg-muted text-foreground" : "text-muted-foreground hover:text-foreground"}`}
-            >
-              {t.label}
-              {counts[t.tab] ? (
-                <span className={`ml-1.5 font-mono text-[10.5px] ${t.tab === "proposals" ? "text-primary" : "text-muted-foreground"}`}>{counts[t.tab]}</span>
-              ) : null}
-            </button>
-          ))}
-        </div>
+        <Tabs value={tab} onValueChange={(v) => navigate({ search: { ...search, tab: v as MemoryTab, sort: undefined } })}>
+          <TabsList aria-label="Memories" className="border border-border bg-card/70">
+            {TABS.map((t) => (
+              <TabsTrigger key={t.tab} value={t.tab} className="px-3 text-[12.5px]">
+                {t.label}
+                {counts[t.tab] ? (
+                  <span className={`ml-1 font-mono text-[10.5px] ${t.tab === "proposals" ? "text-primary" : "text-muted-foreground"}`}>{counts[t.tab]}</span>
+                ) : null}
+              </TabsTrigger>
+            ))}
+          </TabsList>
+        </Tabs>
 
-        <div className="flex rounded-lg border border-border bg-card/70 p-0.5 font-mono text-[11px]">
-          {(
-            [
-              ["all", project ? `global + ${project}` : "all scopes"],
-              ["global", "global"],
-              ["project", project ?? "projects"],
-            ] as const
-          ).map(([val, label]) => (
-            <button
-              key={val}
-              type="button"
-              onClick={() => navigate({ search: { ...search, tab, scope: val === "all" ? undefined : val } })}
-              className={`rounded-md px-2.5 py-1 transition-colors ${scopeSlug === val ? "bg-muted text-foreground" : "text-muted-foreground hover:text-foreground"}`}
-            >
-              {label}
-            </button>
-          ))}
-        </div>
+        <Tabs value={scopeSlug} onValueChange={(v) => navigate({ search: { ...search, tab, scope: v === "all" ? undefined : (v as "global" | "project") } })}>
+          <TabsList className="border border-border bg-card/70 font-mono text-[11px]">
+            {(
+              [
+                ["all", project ? `global + ${project}` : "all scopes"],
+                ["global", "global"],
+                ["project", project ?? "projects"],
+              ] as const
+            ).map(([val, label]) => (
+              <TabsTrigger key={val} value={val} className="px-2.5 font-mono text-[11px]">
+                {label}
+              </TabsTrigger>
+            ))}
+          </TabsList>
+        </Tabs>
 
-        <div className="flex rounded-lg border border-border bg-card/70 p-0.5 font-mono text-[11px]">
-          {(
-            [
-              ["all", "all modes"],
-              ["always", "always-on"],
-              ["on-demand", "on-demand"],
-            ] as const
-          ).map(([val, label]) => (
-            <button
-              key={val}
-              type="button"
-              onClick={() => navigate({ search: { ...search, tab, mode: val === "all" ? undefined : val } })}
-              className={`rounded-md px-2.5 py-1 transition-colors ${modeSlug === val ? "bg-muted text-foreground" : "text-muted-foreground hover:text-foreground"}`}
-            >
-              {label}
-            </button>
-          ))}
-        </div>
+        <Tabs value={modeSlug} onValueChange={(v) => navigate({ search: { ...search, tab, mode: v === "all" ? undefined : (v as "always" | "on-demand") } })}>
+          <TabsList className="border border-border bg-card/70 font-mono text-[11px]">
+            {(
+              [
+                ["all", "all modes"],
+                ["always", "always-on"],
+                ["on-demand", "on-demand"],
+              ] as const
+            ).map(([val, label]) => (
+              <TabsTrigger key={val} value={val} className="px-2.5 font-mono text-[11px]">
+                {label}
+              </TabsTrigger>
+            ))}
+          </TabsList>
+        </Tabs>
 
-        <input
+        <Input
           type="search"
           value={queryText}
           onChange={(e) => navigate({ search: { ...search, tab, q: e.target.value || undefined } })}
           placeholder="Search slug, summary, body…"
           aria-label="Search memories"
-          className="w-56 rounded-lg border border-border bg-card px-2.5 py-1 text-[12px] text-foreground placeholder:text-faint focus:border-primary/50 focus:outline-none"
+          className="w-56 bg-card text-[12px] placeholder:text-faint"
         />
 
-        <label className="ml-auto flex items-center gap-2 font-mono text-[11px] text-muted-foreground">
-          sort
-          <select
-            value={sort}
-            onChange={(e) => navigate({ search: { ...search, tab, sort: e.target.value as MemoryOrderSlug } })}
-            className="rounded-md border border-border bg-card px-2 py-1 text-[11.5px] text-foreground focus:ring-2 focus:ring-primary/40 focus:outline-none"
-          >
-            {SORTS.map((o) => (
-              <option key={o.sort} value={o.sort}>
-                {o.label}
-              </option>
-            ))}
-          </select>
-        </label>
+        <div className="ml-auto flex items-center gap-2 font-mono text-[11px] text-muted-foreground">
+          <span>sort</span>
+          <Select items={SORT_ITEMS} value={sort} onValueChange={(v) => v && navigate({ search: { ...search, tab, sort: v as MemoryOrderSlug } })}>
+            <SelectTrigger size="sm" aria-label="Sort memories" className="bg-card font-mono text-[11.5px] text-foreground">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent className="font-mono text-[11.5px]">
+              {SORTS.map((o) => (
+                <SelectItem key={o.sort} value={o.sort} className="text-[11.5px]">
+                  {o.label}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        </div>
       </div>
 
-      {list.isError && <div className="rounded-xl border border-critical/40 bg-card px-4 py-2.5 font-mono text-[11.5px] text-critical">Could not list memories: {String(list.error)}</div>}
-      {move.error && <div className="rounded-xl border border-critical/40 bg-card px-4 py-2.5 font-mono text-[11.5px] text-critical">Could not reorder: {String(move.error)}</div>}
+      {list.isError && (
+        <Alert variant="destructive" className="rounded-xl border-critical/40 bg-card px-4 py-2.5 font-mono text-[11.5px]">
+          <AlertDescription className="text-[11.5px] text-critical">Could not list memories: {String(list.error)}</AlertDescription>
+        </Alert>
+      )}
+      {move.error && (
+        <Alert variant="destructive" className="rounded-xl border-critical/40 bg-card px-4 py-2.5 font-mono text-[11.5px]">
+          <AlertDescription className="text-[11.5px] text-critical">Could not reorder: {String(move.error)}</AlertDescription>
+        </Alert>
+      )}
 
       {list.data && !list.isPlaceholderData && memories.length === 0 ? (
         <Card>
@@ -534,9 +545,9 @@ function MemoryCard({
                 {(content?.tags?.length ?? 0) > 0 && (
                   <div className="flex flex-wrap gap-1.5 pt-0.5">
                     {content!.tags.map((t) => (
-                      <span key={t} className="rounded bg-muted px-1.5 py-px font-mono text-[10px] text-muted-foreground">
+                      <Badge key={t} variant="secondary" className="h-auto rounded px-1.5 py-px font-mono text-[10px] font-normal text-muted-foreground">
                         #{t}
-                      </span>
+                      </Badge>
                     ))}
                   </div>
                 )}
@@ -579,56 +590,63 @@ function MemoryCard({
             <div className="flex flex-wrap items-center gap-2 pt-1">
               {m.state === MemoryState.PROPOSED && (
                 <>
-                  <button
+                  <Button
                     type="button"
+                    size="sm"
                     disabled={busy}
                     onClick={() => approve.mutate()}
-                    className="rounded-lg bg-primary px-3.5 py-1.5 text-[12.5px] font-medium text-primary-foreground transition-opacity hover:opacity-90 disabled:opacity-40"
+                    className="text-[12.5px]"
                   >
                     {approve.isPending ? "Approving…" : m.supersedesIds.length > 0 ? "Approve & supersede" : "Approve"}
-                  </button>
-                  <button
+                  </Button>
+                  <Button
                     type="button"
+                    variant="outline"
+                    size="sm"
                     disabled={busy}
                     onClick={() => {
                       setExpanded(true);
                       setEditing("approve");
                     }}
-                    className="rounded-lg border border-border-strong px-3 py-1.5 text-[12.5px] text-foreground hover:bg-muted disabled:opacity-40"
+                    className="border-border-strong text-[12.5px]"
                   >
                     Edit & approve
-                  </button>
+                  </Button>
                   {rejecting ? (
                     <>
-                      <button
+                      <Button
                         type="button"
+                        variant="destructive"
+                        size="sm"
                         disabled={busy}
                         onClick={() => reject.mutate()}
-                        className="rounded-lg border border-critical/50 px-3 py-1.5 text-[12.5px] text-critical hover:bg-muted disabled:opacity-40"
+                        className="border-critical/50 text-[12.5px] text-critical"
                       >
                         {reject.isPending ? "Rejecting…" : "Confirm reject"}
-                      </button>
-                      <input
+                      </Button>
+                      <Input
                         value={reason}
                         onChange={(e) => setReason(e.target.value)}
                         placeholder="Why not (optional, sent via poll)"
-                        className={`${FIELD} max-w-xs py-1.5`}
+                        className="max-w-xs bg-background/60 text-[12.5px]"
                         aria-label="Rejection reason"
                         autoFocus
                       />
-                      <button type="button" onClick={() => setRejecting(false)} className="px-2 py-1.5 text-[12px] text-muted-foreground hover:text-foreground">
+                      <Button type="button" variant="ghost" size="sm" onClick={() => setRejecting(false)} className="text-[12px] text-muted-foreground">
                         cancel
-                      </button>
+                      </Button>
                     </>
                   ) : (
-                    <button
+                    <Button
                       type="button"
+                      variant="ghost"
+                      size="sm"
                       disabled={busy}
                       onClick={() => setRejecting(true)}
-                      className="rounded-lg px-3 py-1.5 text-[12.5px] text-muted-foreground hover:bg-muted hover:text-foreground"
+                      className="text-[12.5px] text-muted-foreground"
                     >
                       Reject…
-                    </button>
+                    </Button>
                   )}
                 </>
               )}
@@ -800,6 +818,11 @@ function MemoryEditor({
     onSettled: settle,
   });
 
+  const scopeItems = [
+    { value: "__global__", label: "Global (all projects)" },
+    ...s.projects.map((p) => ({ value: p.name, label: `Project: ${p.name}` })),
+  ];
+
   return (
     <form
       className="space-y-2.5 rounded-lg border border-border bg-muted/30 p-3"
@@ -809,35 +832,42 @@ function MemoryEditor({
       }}
     >
       <div className="grid gap-2 sm:grid-cols-3">
-        <input value={slug} onChange={(e) => setSlug(e.target.value)} placeholder="slug-kebab-case" className={`${FIELD} font-mono`} aria-label="Slug" required />
-        <select value={scopeVal} onChange={(e) => setScopeVal(e.target.value)} className={FIELD} aria-label="Scope">
-          <option value="__global__">Global (all projects)</option>
-          {s.projects.map((p) => (
-            <option key={p.name} value={p.name}>
-              Project: {p.name}
-            </option>
-          ))}
-        </select>
-        <select
-          value={memMode}
-          onChange={(e) => setMemMode(Number(e.target.value) as MemoryMode)}
-          className={FIELD}
-          aria-label="Delivery mode"
-        >
-          <option value={MemoryMode.ALWAYS}>Always-on (inline rule)</option>
-          <option value={MemoryMode.ON_DEMAND}>On-demand (index + get)</option>
-        </select>
+        <Input value={slug} onChange={(e) => setSlug(e.target.value)} placeholder="slug-kebab-case" className="bg-background/60 font-mono text-[12.5px]" aria-label="Slug" required />
+        <Select items={scopeItems} value={scopeVal} onValueChange={(v) => v && setScopeVal(v)}>
+          <SelectTrigger aria-label="Scope" className="w-full bg-background/60 text-[12.5px]">
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent className="text-[12.5px]">
+            {scopeItems.map((item) => (
+              <SelectItem key={item.value} value={item.value} className="text-[12.5px]">
+                {item.label}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+        <Select items={MODE_ITEMS} value={String(memMode)} onValueChange={(v) => v && setMemMode(Number(v) as MemoryMode)}>
+          <SelectTrigger aria-label="Delivery mode" className="w-full bg-background/60 text-[12.5px]">
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent className="text-[12.5px]">
+            {MODE_ITEMS.map((item) => (
+              <SelectItem key={item.value} value={item.value} className="text-[12.5px]">
+                {item.label}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
       </div>
 
-      <input value={title} onChange={(e) => setTitle(e.target.value)} placeholder="Title (optional)" className={FIELD} aria-label="Title" />
+      <Input value={title} onChange={(e) => setTitle(e.target.value)} placeholder="Title (optional)" className="bg-background/60 text-[12.5px]" aria-label="Title" />
 
       <div className="space-y-1">
-        <textarea
+        <Textarea
           rows={2}
           value={summary}
           onChange={(e) => setSummary(e.target.value)}
           placeholder={memMode === MemoryMode.ALWAYS ? "Concise rule returned on every session start" : "1-line description + when-to-read trigger"}
-          className={FIELD}
+          className="min-h-14 bg-background/60 text-[12.5px]"
           aria-label="Summary"
           required
         />
@@ -860,30 +890,31 @@ function MemoryEditor({
             {body.trim() ? <Markdown className="text-[13px]">{body}</Markdown> : <span className="font-mono text-[11px] text-faint">Empty body</span>}
           </div>
         ) : (
-          <textarea
+          <Textarea
             rows={Math.min(16, Math.max(4, body.split("\n").length + 1))}
             value={body}
             onChange={(e) => setBody(e.target.value)}
             placeholder="Full details, commands, examples…"
-            className={`${FIELD} font-mono text-[12px]`}
+            className="bg-background/60 font-mono text-[12px]"
             aria-label="Body"
           />
         )}
       </div>
 
-      <input value={tags} onChange={(e) => setTags(e.target.value)} placeholder="Tags (comma-separated, optional)" className={`${FIELD} font-mono text-[11.5px]`} aria-label="Tags" />
+      <Input value={tags} onChange={(e) => setTags(e.target.value)} placeholder="Tags (comma-separated, optional)" className="bg-background/60 font-mono text-[11.5px]" aria-label="Tags" />
 
       <div className="flex flex-wrap items-center gap-2 pt-1">
-        <button
+        <Button
           type="submit"
+          size="sm"
           disabled={save.isPending || !slug.trim() || !summary.trim()}
-          className="rounded-lg bg-primary px-3.5 py-1.5 text-[12.5px] font-medium text-primary-foreground transition-opacity hover:opacity-90 disabled:opacity-40"
+          className="text-[12.5px]"
         >
           {save.isPending ? "Saving…" : mode === "approve" ? "Save & approve" : "Save changes"}
-        </button>
-        <button type="button" onClick={onDone} className="px-2 py-1.5 text-[12px] text-muted-foreground hover:text-foreground">
+        </Button>
+        <Button type="button" variant="ghost" size="sm" onClick={onDone} className="text-[12px] text-muted-foreground">
           cancel
-        </button>
+        </Button>
         {save.error && <span className="font-mono text-[11px] text-critical">{String(save.error)}</span>}
       </div>
     </form>
@@ -901,6 +932,10 @@ function NewMemoryForm({ s, defaultProject, onDone }: { s: Snapshot; defaultProj
   const [tags, setTags] = useState("");
 
   const maxSummary = memMode === MemoryMode.ALWAYS ? 240 : 280;
+  const scopeItems = [
+    { value: "__global__", label: "Global (all projects)" },
+    ...s.projects.map((p) => ({ value: p.name, label: `Project: ${p.name}` })),
+  ];
   const createMut = useMutation({
     mutationFn: () =>
       api.proposeMemory({
@@ -934,53 +969,66 @@ function NewMemoryForm({ s, defaultProject, onDone }: { s: Snapshot; defaultProj
       >
         <div className="text-[13.5px] font-semibold text-foreground">New approved memory</div>
         <div className="grid gap-2 sm:grid-cols-3">
-          <input value={slug} onChange={(e) => setSlug(e.target.value)} placeholder="slug-kebab-case" className={`${FIELD} font-mono`} required autoFocus />
-          <select value={scopeVal} onChange={(e) => setScopeVal(e.target.value)} className={FIELD}>
-            <option value="__global__">Global (all projects)</option>
-            {s.projects.map((p) => (
-              <option key={p.name} value={p.name}>
-                Project: {p.name}
-              </option>
-            ))}
-          </select>
-          <select value={memMode} onChange={(e) => setMemMode(Number(e.target.value) as MemoryMode)} className={FIELD}>
-            <option value={MemoryMode.ALWAYS}>Always-on (inline rule)</option>
-            <option value={MemoryMode.ON_DEMAND}>On-demand (index + get)</option>
-          </select>
+          <Input value={slug} onChange={(e) => setSlug(e.target.value)} placeholder="slug-kebab-case" className="bg-background/60 font-mono text-[12.5px]" required autoFocus />
+          <Select items={scopeItems} value={scopeVal} onValueChange={(v) => v && setScopeVal(v)}>
+            <SelectTrigger aria-label="Scope" className="w-full bg-background/60 text-[12.5px]">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent className="text-[12.5px]">
+              {scopeItems.map((item) => (
+                <SelectItem key={item.value} value={item.value} className="text-[12.5px]">
+                  {item.label}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+          <Select items={MODE_ITEMS} value={String(memMode)} onValueChange={(v) => v && setMemMode(Number(v) as MemoryMode)}>
+            <SelectTrigger aria-label="Delivery mode" className="w-full bg-background/60 text-[12.5px]">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent className="text-[12.5px]">
+              {MODE_ITEMS.map((item) => (
+                <SelectItem key={item.value} value={item.value} className="text-[12.5px]">
+                  {item.label}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
         </div>
-        <input value={title} onChange={(e) => setTitle(e.target.value)} placeholder="Title (optional)" className={FIELD} />
+        <Input value={title} onChange={(e) => setTitle(e.target.value)} placeholder="Title (optional)" className="bg-background/60 text-[12.5px]" />
         <div className="space-y-1">
-          <textarea
+          <Textarea
             rows={2}
             value={summary}
             onChange={(e) => setSummary(e.target.value)}
             placeholder={memMode === MemoryMode.ALWAYS ? "Concise rule shown on every session start" : "1-line summary + when-to-read trigger"}
-            className={FIELD}
+            className="min-h-14 bg-background/60 text-[12.5px]"
             required
           />
           <div className={`text-right font-mono text-[10.5px] ${Array.from(summary).length > maxSummary ? "text-critical" : "text-faint"}`}>
             {Array.from(summary).length} / {maxSummary} chars
           </div>
         </div>
-        <textarea
+        <Textarea
           rows={4}
           value={body}
           onChange={(e) => setBody(e.target.value)}
           placeholder={memMode === MemoryMode.ON_DEMAND ? "Full markdown details (required for on-demand)" : "Optional rationale / examples (markdown)"}
-          className={`${FIELD} font-mono text-[12px]`}
+          className="bg-background/60 font-mono text-[12px]"
         />
-        <input value={tags} onChange={(e) => setTags(e.target.value)} placeholder="Tags (comma-separated, optional)" className={`${FIELD} font-mono text-[11.5px]`} />
+        <Input value={tags} onChange={(e) => setTags(e.target.value)} placeholder="Tags (comma-separated, optional)" className="bg-background/60 font-mono text-[11.5px]" />
         <div className="flex flex-wrap items-center gap-2">
-          <button
+          <Button
             type="submit"
+            size="sm"
             disabled={createMut.isPending || !slug.trim() || !summary.trim()}
-            className="rounded-lg bg-primary px-3.5 py-1.5 text-[12.5px] font-medium text-primary-foreground transition-opacity hover:opacity-90 disabled:opacity-40"
+            className="text-[12.5px]"
           >
             {createMut.isPending ? "Saving…" : "Create & approve"}
-          </button>
-          <button type="button" onClick={onDone} className="px-2 py-1.5 text-[12px] text-muted-foreground hover:text-foreground">
+          </Button>
+          <Button type="button" variant="ghost" size="sm" onClick={onDone} className="text-[12px] text-muted-foreground">
             cancel
-          </button>
+          </Button>
           {createMut.error && <span className="font-mono text-[11px] text-critical">{String(createMut.error)}</span>}
         </div>
       </form>
@@ -1030,21 +1078,26 @@ function MemoryHistory({ s, m, now }: { s: Snapshot; m: Memory; now: number }) {
   const items = m.history.length > 0 ? m.history : hist.data;
 
   return (
-    <details onToggle={(e) => setOpen(e.currentTarget.open)} className="group">
-      <summary className="cursor-pointer list-none font-mono text-[11px] text-faint marker:hidden hover:text-foreground">
-        <span className="inline-block transition-transform group-open:rotate-90">›</span> history (rev {String(m.revision)}){m.edited && <span> · edited by {who(m.edited)}</span>}
-      </summary>
-      {hist.isError && <div className="mt-2 font-mono text-[11px] text-critical">{String(hist.error)}</div>}
-      {items && (
-        <ol className="mt-2 space-y-1.5 border-l border-border pl-3">
-          {items.map((c) => (
-            <li key={String(c.seq)} className="text-[11.5px] text-muted-foreground">
-              <span className="font-mono text-[11px] text-foreground">{c.what}</span> {c.by && <StampLine s={s} st={c.by} now={now} verb="" />}
-              {c.by?.reason && <span>: {c.by.reason}</span>}
-            </li>
-          ))}
-        </ol>
-      )}
-    </details>
+    <Collapsible open={open} onOpenChange={setOpen}>
+      <CollapsibleTrigger className="group inline-flex cursor-pointer items-center gap-1 font-mono text-[11px] text-faint hover:text-foreground">
+        <ChevronRightIcon className="size-3 transition-transform group-data-panel-open:rotate-90" />
+        <span>
+          history (rev {String(m.revision)}){m.edited && <span> · edited by {who(m.edited)}</span>}
+        </span>
+      </CollapsibleTrigger>
+      <CollapsibleContent>
+        {hist.isError && <div className="mt-2 font-mono text-[11px] text-critical">{String(hist.error)}</div>}
+        {items && (
+          <ol className="mt-2 space-y-1.5 border-l border-border pl-3">
+            {items.map((c) => (
+              <li key={String(c.seq)} className="text-[11.5px] text-muted-foreground">
+                <span className="font-mono text-[11px] text-foreground">{c.what}</span> {c.by && <StampLine s={s} st={c.by} now={now} verb="" />}
+                {c.by?.reason && <span>: {c.by.reason}</span>}
+              </li>
+            ))}
+          </ol>
+        )}
+      </CollapsibleContent>
+    </Collapsible>
   );
 }

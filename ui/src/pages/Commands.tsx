@@ -3,7 +3,7 @@ import { useState, type ReactNode } from "react";
 import { COMMAND_STATE_FROM_SLUG, CommandState, type CommandStateSlug, type FinishedCommand, type Snapshot } from "../api";
 import { FAILURE, HistoryTable, LiveCommandTable } from "../components/CommandTable";
 import { Columns } from "../components/charts/Columns";
-import { Card, StatTile } from "../components/ui/Card";
+import { Card, StatTile } from "../components/Panel";
 import { bytes, cmpBig, compact, duration, percent, quantile } from "../lib/format";
 import { isLive } from "../lib/live";
 import { useScopedSnapshot } from "../lib/project";

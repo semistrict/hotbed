@@ -1,11 +1,12 @@
 import { Link } from "@tanstack/react-router";
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { BaseState, CommandState, nodeAdmission, WorkspaceState, type Node, type Snapshot } from "../api";
 import { AdmissionBadge, PlacementList } from "../components/Admission";
 import { Meter, SegmentedBar, Sparkline } from "../components/charts/Bars";
 import { Heatmap } from "../components/charts/Heatmap";
 import { EventFeed } from "../components/EventFeed";
-import { Card } from "../components/ui/Card";
-import { ArchBadge, BuildingBadge, OnlineBadge, StateBadge } from "../components/ui/State";
+import { Card } from "../components/Panel";
+import { ArchBadge, BuildingBadge, OnlineBadge, StateBadge } from "../components/StateBadges";
 import { useNodeColors, useSnapshot } from "../lib/data";
 import { ago, bytes, percent } from "../lib/format";
 import { formatHostUsageFoot, isHostStarved, nodeHostUsage } from "../lib/hostUsage";
@@ -244,54 +245,52 @@ function Row({ label, value, children }: { label: string; value: string; childre
 export function NodeTable({ s }: { s: Snapshot }) {
   const now = Number(s.now);
   return (
-    <div className="overflow-x-auto">
-      <table className="w-full text-left text-[12px]">
-        <thead className="eyebrow">
-          <tr className="border-b border-border">
-            {["node", "machine", "arch", "status", "admission", "cpus", "cpu busy", "psi cpu", "ram", "used", "guaranteed", "swap", "psi mem", "disk free", "kernel", "last seen"].map((h) => (
-              <th key={h} className="px-2 py-2 font-normal whitespace-nowrap">
-                {h}
-              </th>
-            ))}
-          </tr>
-        </thead>
-        <tbody className="num font-mono text-[11px]">
-          {s.nodes.map((n) => {
-            const admission = nodeAdmission(n);
-            return (
-              <tr key={n.id} className="border-b border-border/60 hover:bg-muted/60">
-                <td className="px-2 py-2">
-                  <Link to="/nodes/$hostname" params={{ hostname: n.hostname }} className="text-foreground hover:text-primary">
-                    {n.hostname}
-                  </Link>
-                </td>
-                <td className="px-2 py-2 font-sans text-muted-foreground">{n.resources?.machine ?? ""}</td>
-                <td className="px-2 py-2 text-muted-foreground">{n.resources?.arch || "—"}</td>
-                <td className="px-2 py-2">
-                  <OnlineBadge online={n.online} asleep={n.asleep} storageError={n.storageError} />
-                </td>
-                <td className="px-2 py-2" title={admission?.reason}>
-                  {admission ? (admission.holding ? <span className="text-serious">holding</span> : "starting") : "—"}
-                </td>
-                <td className="px-2 py-2">{n.resources?.cpus ?? 0}</td>
-                <td className="px-2 py-2 whitespace-nowrap">
-                  <NodeCpuCell n={n} />
-                </td>
-                <td className="px-2 py-2">{n.online ? `${(n.usage?.cpuPressure ?? 0).toFixed(1)}%` : "—"}</td>
-                <td className="px-2 py-2">{bytes(n.resources?.memoryBytes ?? 0n)}</td>
-                <td className="px-2 py-2">{n.online ? bytes(n.usage?.memoryUsedBytes ?? 0n) : "—"}</td>
-                <td className="px-2 py-2">{bytes(n.reservedMemoryBytes)}</td>
-                <td className="px-2 py-2">{bytes(n.usage?.swapUsedBytes ?? 0n)}</td>
-                <td className="px-2 py-2">{n.online ? `${(n.usage?.memoryPressure ?? 0).toFixed(1)}%` : "—"}</td>
-                <td className="px-2 py-2">{bytes(n.disk?.freeBytes ?? 0n)}</td>
-                <td className="px-2 py-2 text-muted-foreground">{n.resources?.kernel ?? ""}</td>
-                <td className="px-2 py-2 text-muted-foreground">{ago(n.lastSeen ?? n.joinedAt, now)}</td>
-              </tr>
-            );
-          })}
-        </tbody>
-      </table>
-    </div>
+    <Table className="text-[12px]">
+      <TableHeader className="eyebrow">
+        <TableRow className="border-border hover:bg-transparent">
+          {["node", "machine", "arch", "status", "admission", "cpus", "cpu busy", "psi cpu", "ram", "used", "guaranteed", "swap", "psi mem", "disk free", "kernel", "last seen"].map((h) => (
+            <TableHead key={h} className="h-auto px-2 py-2 font-normal text-muted-foreground">
+              {h}
+            </TableHead>
+          ))}
+        </TableRow>
+      </TableHeader>
+      <TableBody className="num font-mono text-[11px]">
+        {s.nodes.map((n) => {
+          const admission = nodeAdmission(n);
+          return (
+            <TableRow key={n.id} className="border-border/60 hover:bg-muted/60">
+              <TableCell className="px-2 py-2">
+                <Link to="/nodes/$hostname" params={{ hostname: n.hostname }} className="text-foreground hover:text-primary">
+                  {n.hostname}
+                </Link>
+              </TableCell>
+              <TableCell className="px-2 py-2 font-sans text-muted-foreground">{n.resources?.machine ?? ""}</TableCell>
+              <TableCell className="px-2 py-2 text-muted-foreground">{n.resources?.arch || "—"}</TableCell>
+              <TableCell className="px-2 py-2">
+                <OnlineBadge online={n.online} asleep={n.asleep} storageError={n.storageError} />
+              </TableCell>
+              <TableCell className="px-2 py-2" title={admission?.reason}>
+                {admission ? (admission.holding ? <span className="text-serious">holding</span> : "starting") : "—"}
+              </TableCell>
+              <TableCell className="px-2 py-2">{n.resources?.cpus ?? 0}</TableCell>
+              <TableCell className="px-2 py-2">
+                <NodeCpuCell n={n} />
+              </TableCell>
+              <TableCell className="px-2 py-2">{n.online ? `${(n.usage?.cpuPressure ?? 0).toFixed(1)}%` : "—"}</TableCell>
+              <TableCell className="px-2 py-2">{bytes(n.resources?.memoryBytes ?? 0n)}</TableCell>
+              <TableCell className="px-2 py-2">{n.online ? bytes(n.usage?.memoryUsedBytes ?? 0n) : "—"}</TableCell>
+              <TableCell className="px-2 py-2">{bytes(n.reservedMemoryBytes)}</TableCell>
+              <TableCell className="px-2 py-2">{bytes(n.usage?.swapUsedBytes ?? 0n)}</TableCell>
+              <TableCell className="px-2 py-2">{n.online ? `${(n.usage?.memoryPressure ?? 0).toFixed(1)}%` : "—"}</TableCell>
+              <TableCell className="px-2 py-2">{bytes(n.disk?.freeBytes ?? 0n)}</TableCell>
+              <TableCell className="px-2 py-2 text-muted-foreground">{n.resources?.kernel ?? ""}</TableCell>
+              <TableCell className="px-2 py-2 text-muted-foreground">{ago(n.lastSeen ?? n.joinedAt, now)}</TableCell>
+            </TableRow>
+          );
+        })}
+      </TableBody>
+    </Table>
   );
 }
 

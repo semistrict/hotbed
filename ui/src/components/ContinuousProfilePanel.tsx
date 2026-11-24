@@ -1,10 +1,14 @@
 import { useQuery } from "@tanstack/react-query";
 import { useEffect, useState } from "react";
+import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { api, type ProfileBucket, type ProfileFrame } from "../api";
 import { foldStack } from "../api/folded";
 import { duration, hhmmss } from "../lib/format";
 import { FlameGraph } from "./FlameGraph";
-import { Card, Empty } from "./ui/Card";
+import { Card, Empty } from "./Panel";
 
 type ProfileView = "flamegraph" | "top" | "folded";
 type RangeKey = "all" | "1m" | "5m" | "15m";
@@ -138,27 +142,31 @@ export function ContinuousProfilePanel({ id, node, live }: ContinuousProfileProp
   const statusBadge = p ? (
     <div className="flex flex-wrap items-center gap-2 font-mono text-[10.5px]">
       {p.active ? (
-        <span className="inline-flex items-center gap-1.5 rounded-full bg-ember-wash px-2.5 py-0.5 text-primary">
+        <Badge variant="secondary" className="gap-1.5 bg-ember-wash px-2.5 font-mono text-[10.5px] font-normal text-primary">
           {p.live && <span className="live-dot h-1.5 w-1.5 rounded-full bg-primary" />}
           {p.live ? "sampling" : "captured"} · {p.sampleHz} Hz
-        </span>
+        </Badge>
       ) : (
-        <span className="rounded-full bg-muted px-2.5 py-0.5 text-muted-foreground">inactive</span>
+        <Badge variant="secondary" className="px-2.5 font-mono text-[10.5px] font-normal text-muted-foreground">
+          inactive
+        </Badge>
       )}
       {p.totalSamples > 0n && (
-        <span className="num rounded-full border border-border px-2.5 py-0.5 text-muted-foreground">
+        <Badge variant="outline" className="num px-2.5 font-mono text-[10.5px] font-normal text-muted-foreground">
           {p.matchedSamples === p.totalSamples ? `${p.totalSamples.toLocaleString()} samples` : `${p.matchedSamples.toLocaleString()} / ${p.totalSamples.toLocaleString()} samples`}
           {" · "}
           {userPct}% user / {kernelPct}% kernel
-        </span>
+        </Badge>
       )}
-      <button
+      <Button
         type="button"
+        variant="outline"
+        size="xs"
         onClick={() => profileQuery.refetch()}
-        className="rounded-md border border-border px-2 py-0.5 text-muted-foreground hover:border-border-strong hover:text-foreground"
+        className="font-mono text-[10.5px] text-muted-foreground hover:text-foreground"
       >
         Refresh
-      </button>
+      </Button>
     </div>
   ) : null;
 
@@ -178,56 +186,53 @@ export function ContinuousProfilePanel({ id, node, live }: ContinuousProfileProp
         <div className="space-y-4">
           {/* Search, range (node mode), & view controls */}
           <div className="flex flex-wrap items-center gap-2">
-            <input
+            <Input
               type="search"
               value={queryText}
               onChange={(e) => setQueryText(e.target.value)}
               placeholder="Filter functions, symbols, modules..."
               aria-label="Filter profile functions"
-              className="min-w-[220px] flex-1 rounded-lg border border-border bg-background/70 px-3 py-1.5 font-mono text-[11.5px] text-foreground placeholder:text-faint focus:border-primary focus:outline-none"
+              className="min-w-[220px] flex-1 bg-background/70 font-mono text-[11.5px] placeholder:text-faint"
             />
             {isNode && (
-              <div className="flex items-center rounded-lg border border-border bg-background/60 p-0.5 font-mono text-[11px]">
+              <Tabs
+                value={windowBucket ? "" : range}
+                onValueChange={(v) => {
+                  setRange(v as RangeKey);
+                  setWindowBucket(null);
+                }}
+              >
+                <TabsList className="h-8 border border-border bg-background/60 font-mono text-[11px]">
+                  {(
+                    [
+                      ["1m", "1m"],
+                      ["5m", "5m"],
+                      ["15m", "15m"],
+                      ["all", "All (30m)"],
+                    ] as const
+                  ).map(([k, label]) => (
+                    <TabsTrigger key={k} value={k} className="px-2 font-mono text-[11px]">
+                      {label}
+                    </TabsTrigger>
+                  ))}
+                </TabsList>
+              </Tabs>
+            )}
+            <Tabs value={view} onValueChange={(v) => setView(v as ProfileView)}>
+              <TabsList className="h-8 border border-border bg-background/60 font-mono text-[11px]">
                 {(
                   [
-                    ["1m", "1m"],
-                    ["5m", "5m"],
-                    ["15m", "15m"],
-                    ["all", "All (30m)"],
+                    ["flamegraph", "Flamegraph"],
+                    ["top", "Top functions"],
+                    ["folded", "Folded stacks"],
                   ] as const
                 ).map(([k, label]) => (
-                  <button
-                    key={k}
-                    type="button"
-                    onClick={() => {
-                      setRange(k);
-                      setWindowBucket(null);
-                    }}
-                    className={`rounded-md px-2 py-1 transition-colors ${range === k && !windowBucket ? "bg-muted text-foreground" : "text-muted-foreground hover:text-foreground"}`}
-                  >
+                  <TabsTrigger key={k} value={k} className="px-2.5 font-mono text-[11px]">
                     {label}
-                  </button>
+                  </TabsTrigger>
                 ))}
-              </div>
-            )}
-            <div className="flex items-center rounded-lg border border-border bg-background/60 p-0.5 font-mono text-[11px]">
-              {(
-                [
-                  ["flamegraph", "Flamegraph"],
-                  ["top", "Top functions"],
-                  ["folded", "Folded stacks"],
-                ] as const
-              ).map(([k, label]) => (
-                <button
-                  key={k}
-                  type="button"
-                  onClick={() => setView(k)}
-                  className={`rounded-md px-2.5 py-1 transition-colors ${view === k ? "bg-muted text-foreground" : "text-muted-foreground hover:text-foreground"}`}
-                >
-                  {label}
-                </button>
-              ))}
-            </div>
+              </TabsList>
+            </Tabs>
           </div>
 
           {/* Runtime type & process comm filter chips */}

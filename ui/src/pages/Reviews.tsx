@@ -1,8 +1,9 @@
 import { keepPreviousData, useQuery } from "@tanstack/react-query";
 import { Link } from "@tanstack/react-router";
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { api, ReviewState, type Review, type Snapshot } from "../api";
 import { ProjectTag } from "../components/ProjectTag";
-import { Card, Empty, StatTile } from "../components/ui/Card";
+import { Card, Empty, StatTile } from "../components/Panel";
 import { ago } from "../lib/format";
 import { useProject, useScopedSnapshot } from "../lib/project";
 import { remoteName } from "../lib/projects";
@@ -59,59 +60,57 @@ export const REVIEW_STATE: Record<ReviewState, { text: string; className: string
 
 function ReviewTable({ reviews, now, showProject }: { reviews: Review[]; now: number; showProject: boolean }) {
   return (
-    <div className="overflow-x-auto">
-      <table className="w-full text-left text-[12px]">
-        <thead className="eyebrow">
-          <tr className="border-b border-border">
-            {["review", ...(showProject ? ["project"] : []), "state", "findings", "open", "responses", "asked by · reviewer"].map((h) => (
-              <th key={h} className="px-2 py-2 font-normal whitespace-nowrap">
-                {h}
-              </th>
-            ))}
-          </tr>
-        </thead>
-        <tbody className="font-mono text-[11px] [&_td]:whitespace-nowrap">
-          {reviews.map((r) => {
-            const st = REVIEW_STATE[r.state] ?? REVIEW_STATE[ReviewState.REQUESTED];
-            return (
-              <tr key={r.id} className="border-b border-border/60 align-top hover:bg-muted/60">
-                <td className="min-w-[320px] px-2 py-2.5 !whitespace-normal">
-                  <Link to="/reviews/$id" params={{ id: String(r.id) }} className="font-sans text-[14px] font-medium text-foreground hover:text-primary">
-                    {r.title}
-                  </Link>
-                  <span className="ml-2 text-faint">#{r.id}</span>
-                  <div className="mt-0.5 text-[10.5px] text-muted-foreground" title={`${r.base}..${r.head}`}>
-                    {r.repo && <span className="text-foreground">{remoteName(r.repo)} </span>}
-                    {r.branch && <span>{r.branch} · </span>}
-                    {versionLine(r)}
-                    {r.snapshotOf && <span className="text-warning"> · uncommitted</span>}
+    <Table className="text-[12px]">
+      <TableHeader className="eyebrow">
+        <TableRow className="border-border hover:bg-transparent">
+          {["review", ...(showProject ? ["project"] : []), "state", "findings", "open", "responses", "asked by · reviewer"].map((h) => (
+            <TableHead key={h} className="h-auto px-2 py-2 font-normal text-muted-foreground">
+              {h}
+            </TableHead>
+          ))}
+        </TableRow>
+      </TableHeader>
+      <TableBody className="font-mono text-[11px]">
+        {reviews.map((r) => {
+          const st = REVIEW_STATE[r.state] ?? REVIEW_STATE[ReviewState.REQUESTED];
+          return (
+            <TableRow key={r.id} className="border-border/60 align-top hover:bg-muted/60">
+              <TableCell className="min-w-[320px] px-2 py-2.5 whitespace-normal">
+                <Link to="/reviews/$id" params={{ id: String(r.id) }} className="font-sans text-[14px] font-medium text-foreground hover:text-primary">
+                  {r.title}
+                </Link>
+                <span className="ml-2 text-faint">#{r.id}</span>
+                <div className="mt-0.5 text-[10.5px] text-muted-foreground" title={`${r.base}..${r.head}`}>
+                  {r.repo && <span className="text-foreground">{remoteName(r.repo)} </span>}
+                  {r.branch && <span>{r.branch} · </span>}
+                  {versionLine(r)}
+                  {r.snapshotOf && <span className="text-warning"> · uncommitted</span>}
+                </div>
+              </TableCell>
+              {showProject && (
+                <TableCell className="px-2 py-2.5">
+                  <ProjectTag name={r.project} />
+                </TableCell>
+              )}
+              <TableCell className={`px-2 py-2.5 ${st.className}`}>{st.text}</TableCell>
+              <TableCell className="px-2 py-2.5">
+                <SeverityCounts r={r} stacked />
+              </TableCell>
+              <TableCell className={`px-2 py-2.5 ${r.open > 0 && r.state === ReviewState.DONE ? "text-primary" : "text-faint"}`}>{r.open}</TableCell>
+              <TableCell className="px-2 py-2.5 text-muted-foreground">{r.responses}</TableCell>
+              <TableCell className="px-2 py-2.5 text-muted-foreground">
+                {r.requested && (
+                  <div>
+                    {r.requested.session} <span className="text-faint">{ago(r.requested.at, now)}</span>
                   </div>
-                </td>
-                {showProject && (
-                  <td className="px-2 py-2.5">
-                    <ProjectTag name={r.project} />
-                  </td>
                 )}
-                <td className={`px-2 py-2.5 ${st.className}`}>{st.text}</td>
-                <td className="px-2 py-2.5">
-                  <SeverityCounts r={r} stacked />
-                </td>
-                <td className={`px-2 py-2.5 ${r.open > 0 && r.state === ReviewState.DONE ? "text-primary" : "text-faint"}`}>{r.open}</td>
-                <td className="px-2 py-2.5 text-muted-foreground">{r.responses}</td>
-                <td className="px-2 py-2.5 text-muted-foreground">
-                  {r.requested && (
-                    <div>
-                      {r.requested.session} <span className="text-faint">{ago(r.requested.at, now)}</span>
-                    </div>
-                  )}
-                  <div className="text-faint">{r.started ? `→ ${r.started.session} · ${r.model || "model unknown"}` : "no reviewer yet"}</div>
-                </td>
-              </tr>
-            );
-          })}
-        </tbody>
-      </table>
-    </div>
+                <div className="text-faint">{r.started ? `→ ${r.started.session} · ${r.model || "model unknown"}` : "no reviewer yet"}</div>
+              </TableCell>
+            </TableRow>
+          );
+        })}
+      </TableBody>
+    </Table>
   );
 }
 

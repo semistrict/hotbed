@@ -1,5 +1,10 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
+import { Alert, AlertDescription } from "@/components/ui/alert";
+import { Button } from "@/components/ui/button";
+import { Checkbox } from "@/components/ui/checkbox";
+import { Label } from "@/components/ui/label";
+import { Textarea } from "@/components/ui/textarea";
 import {
   api,
   CommandState,
@@ -12,9 +17,9 @@ import {
 import { hhmmss } from "../lib/format";
 import { isLive } from "../lib/live";
 import { InspectReport } from "./LiveDiagnosticsPanel";
+import { Card } from "./Panel";
 import { SampleReport } from "./ProcessSamplePanel";
 import { SessionLink } from "./SessionLink";
-import { Card } from "./ui/Card";
 
 export type ByHandAction = "stop" | "pause" | "resume";
 
@@ -66,21 +71,23 @@ export function ByHandButtons({
   return (
     <>
       {actsFor(command).map((act) => (
-        <button
+        <Button
           key={act}
           type="button"
+          variant={act === "stop" ? "destructive" : "outline"}
+          size="sm"
           aria-expanded={open === act}
           onClick={() => onOpen(open === act ? null : act)}
           title={ACTS[act].hint}
-          className={`inline-flex items-center gap-1.5 rounded-lg border px-3 py-1.5 font-mono text-[11.5px] font-semibold transition-colors ${
+          className={`gap-1.5 font-mono text-[11.5px] font-semibold ${
             act === "stop"
-              ? "border-critical/50 text-critical hover:bg-[color-mix(in_oklab,var(--critical)_12%,transparent)]"
-              : "border-border-strong text-foreground hover:bg-muted"
+              ? "border-critical/50 text-critical"
+              : "border-border-strong text-foreground"
           } ${open === act ? "bg-muted" : ""}`}
         >
           <span aria-hidden>{ACTS[act].glyph}</span>
           {ACTS[act].label}
-        </button>
+        </Button>
       ))}
     </>
   );
@@ -121,7 +128,7 @@ export function ByHandForm({ command, act, onDone }: { command: Command; act: By
       }}
     >
       <p className="text-[12px] text-muted-foreground">{a.hint}</p>
-      <textarea
+      <Textarea
         rows={2}
         value={comment}
         autoFocus
@@ -133,48 +140,43 @@ export function ByHandForm({ command, act, onDone }: { command: Command; act: By
             : "Why stop or pause? Shown to the agent waiting on this command"
         }
         aria-label={`Comment on the ${act}`}
-        className="w-full rounded-lg border border-border bg-background/60 px-3 py-2 text-[12.5px] placeholder:text-faint focus:border-primary/50 focus:ring-2 focus:ring-primary/20 focus:outline-none"
+        className="min-h-14 bg-background/60 text-[12.5px] placeholder:text-faint"
       />
       <div className="flex flex-wrap items-center gap-3">
         {takesDiagnostics && (
-          <label className="inline-flex cursor-pointer items-center gap-2 text-[12px] text-foreground">
-            <input
-              type="checkbox"
+          <Label className="inline-flex cursor-pointer items-center gap-2 text-[12px] font-normal text-foreground">
+            <Checkbox
               checked={diagnose}
               disabled={send.isPending}
-              onChange={(e) => setDiagnose(e.target.checked)}
-              className="accent-primary"
+              onCheckedChange={(checked) => setDiagnose(Boolean(checked))}
             />
-            Take diagnostics first <span className="text-faint">(activity sample & inspection, ~3s)</span>
-          </label>
+            <span>
+              Take diagnostics first <span className="text-faint">(activity sample & inspection, ~3s)</span>
+            </span>
+          </Label>
         )}
         <div className="ml-auto flex items-center gap-2">
-          <button
-            type="button"
-            onClick={onDone}
-            disabled={send.isPending}
-            className="rounded-lg px-3 py-1.5 text-[12px] text-muted-foreground hover:text-foreground disabled:opacity-40"
-          >
+          <Button type="button" variant="ghost" size="sm" onClick={onDone} disabled={send.isPending} className="text-[12px] text-muted-foreground">
             Cancel
-          </button>
-          <button
+          </Button>
+          <Button
             type="submit"
+            variant={act === "stop" ? "destructive" : "default"}
+            size="sm"
             disabled={send.isPending}
-            className={`inline-flex items-center gap-1.5 rounded-lg px-3.5 py-1.5 text-[12.5px] font-medium transition-opacity hover:opacity-90 disabled:opacity-60 ${
-              act === "stop"
-                ? "border border-critical bg-[color-mix(in_oklab,var(--critical)_18%,transparent)] text-critical"
-                : "bg-primary text-primary-foreground"
-            }`}
+            className={act === "stop" ? "border-critical text-critical" : undefined}
           >
             {send.isPending && <span className="live-dot inline-block size-2 rounded-full bg-current" aria-hidden />}
             {send.isPending ? (takesDiagnostics && diagnose ? a.diagnosing : a.doing) : a.label}
-          </button>
+          </Button>
         </div>
       </div>
       {send.error && (
-        <p role="alert" className="font-mono text-[11px] text-critical">
-          {send.error instanceof Error ? send.error.message : String(send.error)}
-        </p>
+        <Alert variant="destructive" className="border-critical/30 font-mono text-[11px]">
+          <AlertDescription className="text-[11px] text-critical">
+            {send.error instanceof Error ? send.error.message : String(send.error)}
+          </AlertDescription>
+        </Alert>
       )}
     </form>
   );
@@ -236,22 +238,24 @@ export function InterventionsCard({
         <p className="font-mono text-[11.5px] text-muted-foreground">Loading saved diagnostics…</p>
       )}
       {hasError && (
-        <div
-          role="alert"
-          className={`${shown.length > 0 ? "mt-2" : ""} flex flex-wrap items-center justify-between gap-2 rounded-lg border border-critical/30 bg-[color-mix(in_oklab,var(--critical)_10%,transparent)] px-3 py-2 font-mono text-[11px] text-critical`}
+        <Alert
+          variant="destructive"
+          className={`${shown.length > 0 ? "mt-2" : ""} flex flex-wrap items-center justify-between gap-2 border-critical/30 bg-[color-mix(in_oklab,var(--critical)_10%,transparent)] px-3 py-2 font-mono text-[11px] text-critical`}
         >
-          <span>
+          <AlertDescription className="text-[11px] text-critical">
             Could not load saved diagnostics: {taken.error instanceof Error ? taken.error.message : String(taken.error)}
-          </span>
-          <button
+          </AlertDescription>
+          <Button
             type="button"
+            variant="destructive"
+            size="xs"
             onClick={() => void taken.refetch()}
             disabled={taken.isFetching}
-            className="rounded-md border border-critical/50 px-2.5 py-0.5 text-[10.5px] font-semibold text-critical hover:bg-[color-mix(in_oklab,var(--critical)_15%,transparent)] disabled:opacity-50"
+            className="border-critical/50 font-mono text-[10.5px] font-semibold text-critical"
           >
             {taken.isFetching ? "Retrying…" : "Retry"}
-          </button>
-        </div>
+          </Button>
+        </Alert>
       )}
     </Card>
   );
@@ -317,32 +321,36 @@ export function InterventionRow({
         <div className="mt-2.5 space-y-3">
           <div className="flex flex-wrap items-center gap-1.5 font-mono text-[11px]">
             {diagnostics?.sample && (
-              <button
+              <Button
                 type="button"
+                variant="outline"
+                size="xs"
                 aria-expanded={open === "sample"}
                 onClick={() => setOpen(open === "sample" ? null : "sample")}
-                className={`rounded-lg border px-3 py-1 transition-colors ${
+                className={
                   open === "sample"
-                    ? "border-primary bg-ember-wash text-primary"
-                    : "border-border text-muted-foreground hover:text-foreground"
-                }`}
+                    ? "border-primary bg-ember-wash font-mono text-[11px] text-primary"
+                    : "font-mono text-[11px] text-muted-foreground"
+                }
               >
                 Activity sample
-              </button>
+              </Button>
             )}
             {diagnostics?.inspect && (
-              <button
+              <Button
                 type="button"
+                variant="outline"
+                size="xs"
                 aria-expanded={open === "inspect"}
                 onClick={() => setOpen(open === "inspect" ? null : "inspect")}
-                className={`rounded-lg border px-3 py-1 transition-colors ${
+                className={
                   open === "inspect"
-                    ? "border-primary bg-ember-wash text-primary"
-                    : "border-border text-muted-foreground hover:text-foreground"
-                }`}
+                    ? "border-primary bg-ember-wash font-mono text-[11px] text-primary"
+                    : "font-mono text-[11px] text-muted-foreground"
+                }
               >
                 Inspection
-              </button>
+              </Button>
             )}
             {!diagnostics && (
               <span className="text-faint">

@@ -2,6 +2,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { RouterProvider } from "@tanstack/react-router";
 import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
+import { TooltipProvider } from "@/components/ui/tooltip";
 import { ProjectProvider } from "./lib/project";
 import { router } from "./router";
 import "./styles.css";
@@ -16,9 +17,11 @@ if (!el) throw new Error("index.html has no #root");
 createRoot(el).render(
   <StrictMode>
     <QueryClientProvider client={queryClient}>
-      <ProjectProvider>
-        <RouterProvider router={router} />
-      </ProjectProvider>
+      <TooltipProvider>
+        <ProjectProvider>
+          <RouterProvider router={router} />
+        </ProjectProvider>
+      </TooltipProvider>
     </QueryClientProvider>
   </StrictMode>,
 );

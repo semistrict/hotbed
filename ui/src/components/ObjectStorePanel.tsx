@@ -3,7 +3,7 @@ import { BaseState, type Node, type ObjectStoreStats, type Snapshot } from "../a
 import { Meter, SegmentedBar } from "./charts/Bars";
 import { Columns } from "./charts/Columns";
 import { LineChart } from "./charts/LineChart";
-import { Card, StatTile } from "./ui/Card";
+import { Card, StatTile } from "./Panel";
 import { bytes, bytesPerSec, compact, duration, percent } from "../lib/format";
 
 // Published Cloudflare R2 Standard pricing (USD, gross before free tier; $0 egress).

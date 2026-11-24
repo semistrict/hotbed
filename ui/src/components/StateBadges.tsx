@@ -1,4 +1,6 @@
-import { CommandState, RunOutcome } from "../../api";
+import { Badge } from "@/components/ui/badge";
+import { cn } from "@/lib/utils";
+import { CommandState, RunOutcome } from "../api";
 
 /** Command states, each an icon and a word, never color alone. */
 const STATES: Record<CommandState, { label: string; icon: string; className: string }> = {
@@ -15,12 +17,12 @@ const STATES: Record<CommandState, { label: string; icon: string; className: str
 export function StateBadge({ state }: { state: CommandState }) {
   const s = STATES[state] ?? STATES[CommandState.UNSPECIFIED];
   return (
-    <span className={`inline-flex items-center gap-1 rounded-md px-1.5 py-0.5 font-mono text-[10.5px] ${s.className}`}>
+    <Badge variant="secondary" className={cn("h-auto rounded-md border-transparent px-1.5 py-0.5 font-mono text-[10.5px] font-normal", s.className)}>
       <span className={state === CommandState.RUNNING ? "ember-pulse" : undefined} aria-hidden>
         {s.icon}
       </span>
       {s.label}
-    </span>
+    </Badge>
   );
 }
 
@@ -31,12 +33,12 @@ export function BuildingBadge({ project, generation, progress }: { project: stri
     .filter(Boolean)
     .join(" · ");
   return (
-    <span title={title} className="inline-flex items-center gap-1 rounded-md bg-ember-wash px-1.5 py-0.5 font-mono text-[10.5px] text-primary">
+    <Badge variant="secondary" title={title} className="h-auto rounded-md border-transparent bg-ember-wash px-1.5 py-0.5 font-mono text-[10.5px] font-normal text-primary">
       <span className="ember-pulse" aria-hidden>
         ●
       </span>
       {label}
-    </span>
+    </Badge>
   );
 }
 
@@ -44,36 +46,40 @@ export function OnlineBadge({ online, asleep, storageError = "" }: { online: boo
   if (!online && storageError) {
     // Its worker heartbeats but cannot open its storage: it serves nothing.
     return (
-      <span className="inline-flex items-center gap-1.5 font-mono text-[10.5px] text-serious" title={storageError}>
+      <Badge variant="ghost" className="h-auto gap-1.5 px-0 py-0 font-mono text-[10.5px] font-normal text-serious" title={storageError}>
         <span className="inline-block size-1.5 rounded-full bg-serious" aria-hidden />
         no storage
-      </span>
+      </Badge>
     );
   }
   if (asleep) {
     return (
-      <span className="inline-flex items-center gap-1.5 font-mono text-[10.5px] text-muted-foreground" title="Powered off while idle; a run placed on it wakes it">
+      <Badge variant="ghost" className="h-auto gap-1.5 px-0 py-0 font-mono text-[10.5px] font-normal text-muted-foreground" title="Powered off while idle; a run placed on it wakes it">
         <span className="inline-block size-1.5 rounded-full bg-muted-foreground/50" aria-hidden />
         asleep
-      </span>
+      </Badge>
     );
   }
   return online ? (
-    <span className="inline-flex items-center gap-1.5 font-mono text-[10.5px] text-good-ink">
+    <Badge variant="ghost" className="h-auto gap-1.5 px-0 py-0 font-mono text-[10.5px] font-normal text-good-ink">
       <span className="live-dot inline-block size-1.5 rounded-full bg-good text-good" aria-hidden />
       online
-    </span>
+    </Badge>
   ) : (
-    <span className="inline-flex items-center gap-1.5 font-mono text-[10.5px] text-faint">
+    <Badge variant="ghost" className="h-auto gap-1.5 px-0 py-0 font-mono text-[10.5px] font-normal text-faint">
       <span className="inline-block size-1.5 rounded-full border border-faint" aria-hidden />
       offline
-    </span>
+    </Badge>
   );
 }
 
 export function ArchBadge({ arch }: { arch: string }) {
   if (!arch) return null;
-  return <span className="rounded border border-border-strong px-1 py-px font-mono text-[9.5px] tracking-wide text-muted-foreground uppercase">{arch}</span>;
+  return (
+    <Badge variant="outline" className="h-auto rounded border-border-strong px-1 py-px font-mono text-[9.5px] font-normal tracking-wide text-muted-foreground uppercase">
+      {arch}
+    </Badge>
+  );
 }
 
 export function KindTag({ kind }: { kind: string }) {
@@ -99,19 +105,23 @@ export function OutcomeBadge({ outcome }: { outcome: RunOutcome }) {
   if (st !== undefined) return <StateBadge state={st} />;
   const o = OUTCOMES[outcome] ?? { label: "unknown", icon: "?", className: "text-faint bg-muted" };
   return (
-    <span className={`inline-flex items-center gap-1 rounded-md px-1.5 py-0.5 font-mono text-[10.5px] ${o.className}`}>
+    <Badge variant="secondary" className={cn("h-auto rounded-md border-transparent px-1.5 py-0.5 font-mono text-[10.5px] font-normal", o.className)}>
       <span aria-hidden>{o.icon}</span>
       {o.label}
-    </span>
+    </Badge>
   );
 }
 
 /** Marks a measurement (hotbed run --bench), in word and icon. */
 export function BenchTag() {
   return (
-    <span className="inline-flex items-center gap-1 rounded border border-primary/40 px-1 font-mono text-[10px] tracking-wider text-primary uppercase" title="A measurement: alone on the node's measurement CPUs, isolated, never parked">
+    <Badge
+      variant="outline"
+      className="h-auto rounded border-primary/40 px-1 py-0 font-mono text-[10px] font-normal tracking-wider text-primary uppercase"
+      title="A measurement: alone on the node's measurement CPUs, isolated, never parked"
+    >
       <span aria-hidden>⏱</span>
       measurement
-    </span>
+    </Badge>
   );
 }

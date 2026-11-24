@@ -1,5 +1,10 @@
 import { useState, type FormEvent } from "react";
-import { Card, Empty } from "../components/ui/Card";
+import { Alert, AlertAction, AlertDescription, AlertTitle } from "@/components/ui/alert";
+import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { Card, Empty } from "../components/Panel";
 import {
   useApiTokens,
   useAuthMe,
@@ -26,6 +31,11 @@ function formatDate(ms: number | string | null | undefined): string {
   if (Number.isNaN(d.getTime())) return "—";
   return d.toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" });
 }
+
+const INVITE_ROLES = [
+  { value: "member", label: "member" },
+  { value: "admin", label: "admin" },
+];
 
 export function OrganizationPage() {
   const { data: auth } = useAuthMe();
@@ -141,18 +151,20 @@ export function OrganizationPage() {
                         </div>
                       </div>
                       {isCurrent ? (
-                        <span className="rounded-full bg-primary/15 px-2.5 py-0.5 font-mono text-[10.5px] text-primary">
+                        <Badge variant="secondary" className="bg-primary/15 font-mono text-[10.5px] text-primary">
                           active
-                        </span>
+                        </Badge>
                       ) : (
-                        <button
+                        <Button
                           type="button"
+                          variant="outline"
+                          size="sm"
                           disabled={switchOrg.isPending}
                           onClick={() => switchOrg.mutate(org.id)}
-                          className="rounded-lg border border-border px-2.5 py-1 font-mono text-[11px] text-foreground hover:border-primary/60 disabled:opacity-50"
+                          className="font-mono text-[11px]"
                         >
                           Switch
-                        </button>
+                        </Button>
                       )}
                     </div>
                   );
@@ -163,24 +175,26 @@ export function OrganizationPage() {
             )}
 
             <form onSubmit={onCreateOrg} className="mt-4 flex gap-2 border-t border-border pt-4">
-              <input
+              <Input
                 type="text"
                 value={newOrgName}
                 onChange={(e) => setNewOrgName(e.target.value)}
                 placeholder="New organization name…"
-                className="min-w-0 flex-1 rounded-lg border border-border bg-background px-3 py-1.5 text-[12.5px] text-foreground focus:border-primary/60 focus:outline-none"
+                className="min-w-0 flex-1 bg-background text-[12.5px]"
                 required
               />
-              <button
+              <Button
                 type="submit"
                 disabled={createOrg.isPending || !newOrgName.trim()}
-                className="rounded-lg bg-primary px-3 py-1.5 text-[12px] font-medium text-primary-foreground hover:opacity-90 disabled:opacity-50"
+                className="text-[12px]"
               >
                 {createOrg.isPending ? "Creating…" : "Create org"}
-              </button>
+              </Button>
             </form>
             {createOrg.error && (
-              <p className="mt-2 font-mono text-[11px] text-critical">{String(createOrg.error)}</p>
+              <Alert variant="destructive" className="mt-2 border-critical/40 font-mono text-[11px]">
+                <AlertDescription className="text-[11px] text-critical">{String(createOrg.error)}</AlertDescription>
+              </Alert>
             )}
           </Card>
 
@@ -189,39 +203,46 @@ export function OrganizationPage() {
             sub="Multiple users in this organization share its cluster, nodes, projects, and sessions."
           >
             <form onSubmit={onInvite} className="mb-4 flex flex-wrap gap-2">
-              <input
+              <Input
                 type="email"
                 value={inviteEmail}
                 onChange={(e) => setInviteEmail(e.target.value)}
                 placeholder="teammate@company.com"
-                className="min-w-[180px] flex-1 rounded-lg border border-border bg-background px-3 py-1.5 text-[12.5px] text-foreground focus:border-primary/60 focus:outline-none"
+                className="min-w-[180px] flex-1 bg-background text-[12.5px]"
                 required
               />
-              <select
-                aria-label="Role"
-                value={inviteRole}
-                onChange={(e) => setInviteRole(e.target.value)}
-                className="rounded-lg border border-border bg-background px-2.5 py-1.5 font-mono text-[11.5px] text-foreground focus:border-primary/60 focus:outline-none"
-              >
-                <option value="member">member</option>
-                <option value="admin">admin</option>
-              </select>
-              <button
+              <Select items={INVITE_ROLES} value={inviteRole} onValueChange={(v) => v && setInviteRole(v)}>
+                <SelectTrigger aria-label="Role" className="w-28 bg-background font-mono text-[11.5px]">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent className="font-mono text-[11.5px]">
+                  {INVITE_ROLES.map((r) => (
+                    <SelectItem key={r.value} value={r.value} className="text-[11.5px]">
+                      {r.label}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+              <Button
                 type="submit"
                 disabled={inviteMember.isPending || !inviteEmail.trim()}
-                className="rounded-lg bg-primary px-3 py-1.5 text-[12px] font-medium text-primary-foreground hover:opacity-90 disabled:opacity-50"
+                className="text-[12px]"
               >
                 {inviteMember.isPending ? "Sending…" : "Invite"}
-              </button>
+              </Button>
             </form>
             {inviteMember.error && (
-              <p className="mb-3 font-mono text-[11px] text-critical">{String(inviteMember.error)}</p>
+              <Alert variant="destructive" className="mb-3 border-critical/40 font-mono text-[11px]">
+                <AlertDescription className="text-[11px] text-critical">{String(inviteMember.error)}</AlertDescription>
+              </Alert>
             )}
 
             {loadingTeam ? (
               <div className="py-6 text-center font-mono text-[11.5px] text-muted-foreground">loading members…</div>
             ) : teamErr ? (
-              <div className="font-mono text-[11.5px] text-critical">{String(teamErr)}</div>
+              <Alert variant="destructive" className="border-critical/40 font-mono text-[11.5px]">
+                <AlertDescription className="text-[11.5px] text-critical">{String(teamErr)}</AlertDescription>
+              </Alert>
             ) : (
               <div className="space-y-4">
                 <div className="space-y-1.5">
@@ -242,13 +263,15 @@ export function OrganizationPage() {
                         </div>
                       </div>
                       {m.userId !== auth?.user.id && (
-                        <button
+                        <Button
                           type="button"
+                          variant="outline"
+                          size="xs"
                           onClick={() => removeMember.mutate(m.membershipId)}
-                          className="rounded border border-border px-2 py-0.5 font-mono text-[10.5px] text-muted-foreground hover:border-critical/60 hover:text-critical"
+                          className="font-mono text-[10.5px] text-muted-foreground hover:border-critical/60 hover:text-critical"
                         >
                           Remove
-                        </button>
+                        </Button>
                       )}
                     </div>
                   ))}
@@ -268,13 +291,15 @@ export function OrganizationPage() {
                             {inv.role} · expires {formatDate(inv.expiresAt)}
                           </div>
                         </div>
-                        <button
+                        <Button
                           type="button"
+                          variant="outline"
+                          size="xs"
                           onClick={() => revokeInv.mutate(inv.id)}
-                          className="rounded border border-border px-2 py-0.5 font-mono text-[10.5px] text-muted-foreground hover:border-critical/60 hover:text-critical"
+                          className="font-mono text-[10.5px] text-muted-foreground hover:border-critical/60 hover:text-critical"
                         >
                           Revoke
-                        </button>
+                        </Button>
                       </div>
                     ))}
                   </div>
@@ -291,54 +316,58 @@ export function OrganizationPage() {
           sub="Org-scoped tokens (hbj_...) used to join Linux or macOS workers to this cluster. Exchanged for a node-bound worker token on join."
         >
           <form onSubmit={onMintJoin} className="mb-4 flex flex-wrap gap-2">
-            <input
+            <Input
               type="text"
               value={joinLabel}
               onChange={(e) => setJoinLabel(e.target.value)}
               placeholder="Label (e.g. build-box)"
-              className="min-w-[140px] flex-1 rounded-lg border border-border bg-background px-3 py-1.5 text-[12.5px] text-foreground focus:border-primary/60 focus:outline-none"
+              className="min-w-[140px] flex-1 bg-background text-[12.5px]"
             />
-            <input
+            <Input
               type="number"
               min="1"
               value={joinHours}
               onChange={(e) => setJoinHours(e.target.value)}
               title="Expiry in hours"
-              className="w-20 rounded-lg border border-border bg-background px-2.5 py-1.5 font-mono text-[12px] text-foreground focus:border-primary/60 focus:outline-none"
+              className="w-20 bg-background font-mono text-[12px]"
             />
             <span className="self-center font-mono text-[11px] text-muted-foreground">hrs</span>
-            <button
+            <Button
               type="submit"
               disabled={createJoinToken.isPending}
-              className="rounded-lg bg-primary px-3 py-1.5 text-[12px] font-medium text-primary-foreground hover:opacity-90 disabled:opacity-50"
+              className="text-[12px]"
             >
               Mint join token
-            </button>
+            </Button>
           </form>
 
           {mintedJoin && (
-            <div className="mb-4 rounded-xl border border-primary/50 bg-primary/5 p-3">
-              <div className="mb-1 flex items-center justify-between gap-2">
-                <span className="font-mono text-[11px] font-medium text-primary">
-                  Copy now — shown once
-                </span>
-                <button
+            <Alert className="mb-4 rounded-xl border-primary/50 bg-primary/5 p-3">
+              <AlertTitle className="font-mono text-[11px] font-medium text-primary">
+                Copy now — shown once
+              </AlertTitle>
+              <AlertAction>
+                <Button
                   type="button"
+                  variant="outline"
+                  size="xs"
                   onClick={() =>
                     copy(
                       "join",
                       `sudo hotbed join ${origin} /var/lib/hotbed --user $USER --token ${mintedJoin.token}`,
                     )
                   }
-                  className="rounded border border-primary/40 px-2 py-0.5 font-mono text-[10.5px] text-primary hover:bg-primary/10"
+                  className="border-primary/40 font-mono text-[10.5px] text-primary hover:bg-primary/10"
                 >
                   {copied === "join" ? "Copied" : "Copy join command"}
-                </button>
-              </div>
-              <pre className="overflow-x-auto font-mono text-[11px] text-foreground">
-                {`sudo hotbed join ${origin} /var/lib/hotbed --user $USER --token ${mintedJoin.token}`}
-              </pre>
-            </div>
+                </Button>
+              </AlertAction>
+              <AlertDescription className="mt-1">
+                <pre className="overflow-x-auto font-mono text-[11px] text-foreground">
+                  {`sudo hotbed join ${origin} /var/lib/hotbed --user $USER --token ${mintedJoin.token}`}
+                </pre>
+              </AlertDescription>
+            </Alert>
           )}
 
           {joinTokens && joinTokens.tokens.length > 0 ? (
@@ -359,13 +388,15 @@ export function OrganizationPage() {
                     </div>
                   </div>
                   {!t.revokedAt && (
-                    <button
+                    <Button
                       type="button"
+                      variant="outline"
+                      size="xs"
                       onClick={() => revokeJoinToken.mutate(t.id)}
-                      className="rounded border border-border px-2 py-0.5 font-mono text-[10.5px] text-muted-foreground hover:border-critical/60 hover:text-critical"
+                      className="font-mono text-[10.5px] text-muted-foreground hover:border-critical/60 hover:text-critical"
                     >
                       Revoke
-                    </button>
+                    </Button>
                   )}
                 </div>
               ))}
@@ -380,48 +411,52 @@ export function OrganizationPage() {
           sub="Org-scoped bearer tokens (hbu_...) for CI, scripts, and headless agents via HOTBED_TOKEN."
         >
           <form onSubmit={onMintApi} className="mb-4 flex flex-wrap gap-2">
-            <input
+            <Input
               type="text"
               value={apiName}
               onChange={(e) => setApiName(e.target.value)}
               placeholder="Token name (e.g. github-ci)"
-              className="min-w-[140px] flex-1 rounded-lg border border-border bg-background px-3 py-1.5 text-[12.5px] text-foreground focus:border-primary/60 focus:outline-none"
+              className="min-w-[140px] flex-1 bg-background text-[12.5px]"
               required
             />
-            <input
+            <Input
               type="number"
               min="1"
               value={apiDays}
               onChange={(e) => setApiDays(e.target.value)}
               title="Expiry in days"
-              className="w-20 rounded-lg border border-border bg-background px-2.5 py-1.5 font-mono text-[12px] text-foreground focus:border-primary/60 focus:outline-none"
+              className="w-20 bg-background font-mono text-[12px]"
             />
             <span className="self-center font-mono text-[11px] text-muted-foreground">days</span>
-            <button
+            <Button
               type="submit"
               disabled={createApiToken.isPending || !apiName.trim()}
-              className="rounded-lg bg-primary px-3 py-1.5 text-[12px] font-medium text-primary-foreground hover:opacity-90 disabled:opacity-50"
+              className="text-[12px]"
             >
               Create token
-            </button>
+            </Button>
           </form>
 
           {mintedApi && (
-            <div className="mb-4 rounded-xl border border-primary/50 bg-primary/5 p-3">
-              <div className="mb-1 flex items-center justify-between gap-2">
-                <span className="font-mono text-[11px] font-medium text-primary">
-                  Copy now — shown once
-                </span>
-                <button
+            <Alert className="mb-4 rounded-xl border-primary/50 bg-primary/5 p-3">
+              <AlertTitle className="font-mono text-[11px] font-medium text-primary">
+                Copy now — shown once
+              </AlertTitle>
+              <AlertAction>
+                <Button
                   type="button"
+                  variant="outline"
+                  size="xs"
                   onClick={() => copy("api", mintedApi.token)}
-                  className="rounded border border-primary/40 px-2 py-0.5 font-mono text-[10.5px] text-primary hover:bg-primary/10"
+                  className="border-primary/40 font-mono text-[10.5px] text-primary hover:bg-primary/10"
                 >
                   {copied === "api" ? "Copied" : "Copy token"}
-                </button>
-              </div>
-              <pre className="overflow-x-auto font-mono text-[11px] text-foreground">{mintedApi.token}</pre>
-            </div>
+                </Button>
+              </AlertAction>
+              <AlertDescription className="mt-1">
+                <pre className="overflow-x-auto font-mono text-[11px] text-foreground">{mintedApi.token}</pre>
+              </AlertDescription>
+            </Alert>
           )}
 
           {apiTokens && apiTokens.tokens.length > 0 ? (
@@ -440,13 +475,15 @@ export function OrganizationPage() {
                     </div>
                   </div>
                   {!t.revokedAt && (
-                    <button
+                    <Button
                       type="button"
+                      variant="outline"
+                      size="xs"
                       onClick={() => revokeApiToken.mutate(t.id)}
-                      className="rounded border border-border px-2 py-0.5 font-mono text-[10.5px] text-muted-foreground hover:border-critical/60 hover:text-critical"
+                      className="font-mono text-[10.5px] text-muted-foreground hover:border-critical/60 hover:text-critical"
                     >
                       Revoke
-                    </button>
+                    </Button>
                   )}
                 </div>
               ))}

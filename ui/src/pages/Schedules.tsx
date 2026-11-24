@@ -1,9 +1,10 @@
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { RunOutcome, runOutcomeLabel, type ScheduledCommand, type ScheduledRun, type Snapshot } from "../api";
 import { CommandBlock } from "../components/CommandBlock";
 import { ProjectTag } from "../components/ProjectTag";
 import { SessionLink } from "../components/SessionLink";
-import { Card, Empty, StatTile } from "../components/ui/Card";
-import { OutcomeBadge } from "../components/ui/State";
+import { Card, Empty, StatTile } from "../components/Panel";
+import { OutcomeBadge } from "../components/StateBadges";
 import { shellJoinWords } from "../lib/command";
 import { nodeName, repoName } from "../lib/data";
 import { duration, hhmm } from "../lib/format";
@@ -107,45 +108,43 @@ const MARK: Record<RunOutcome, string> = {
 function RunTable({ s, runs, now }: { s: Snapshot; runs: ScheduledRun[]; now: number }) {
   const listed = new Set(s.sessions.map((x) => x.id));
   return (
-    <div className="overflow-x-auto">
-      <table className="w-full text-left text-[12px]">
-        <thead className="eyebrow">
-          <tr className="border-b border-border">
-            {["due", "outcome", "session", "node", "took", "why"].map((h) => (
-              <th key={h} className="px-2 py-2 font-normal whitespace-nowrap">
-                {h}
-              </th>
-            ))}
-          </tr>
-        </thead>
-        <tbody className="num font-mono text-[11px]">
-          {runs.map((r) => {
-            const started = Number(r.startedAt);
-            const took = ((r.endedAt !== undefined ? Number(r.endedAt) : now) - started) / 1000;
-            const ran = r.sessionId !== "" && r.outcome !== RunOutcome.NOT_STARTED;
-            return (
-              <tr key={String(r.id)} className="border-b border-border/60 align-top hover:bg-muted/60">
-                <td className="px-2 py-2 whitespace-nowrap text-muted-foreground" title={new Date(started).toISOString()}>
-                  {r.slotAt !== undefined ? dayTime(Number(r.slotAt)) : <span>{dayTime(started)} · by hand</span>}
-                </td>
-                <td className="px-2 py-2">
-                  <OutcomeBadge outcome={r.outcome} />
-                </td>
-                <td className="px-2 py-2 whitespace-nowrap">
-                  {r.sessionId === "" ? <span className="text-faint">—</span> : listed.has(r.sessionId) ? <SessionLink id={r.sessionId} /> : <span className="text-faint" title="ended over a day ago">{r.sessionId}</span>}
-                </td>
-                <td className="px-2 py-2 whitespace-nowrap text-muted-foreground">{r.nodeId ? nodeName(s, r.nodeId) : "—"}</td>
-                <td className="px-2 py-2 whitespace-nowrap">
-                  {ran ? duration(took) : "—"}
-                  {r.outcome === RunOutcome.RUNNING && <span className="text-faint"> so far</span>}
-                </td>
-                <td className="max-w-[420px] px-2 py-2 font-sans text-muted-foreground">{r.reason}</td>
-              </tr>
-            );
-          })}
-        </tbody>
-      </table>
-    </div>
+    <Table className="text-[12px]">
+      <TableHeader className="eyebrow">
+        <TableRow className="border-border hover:bg-transparent">
+          {["due", "outcome", "session", "node", "took", "why"].map((h) => (
+            <TableHead key={h} className="h-auto px-2 py-2 font-normal text-muted-foreground">
+              {h}
+            </TableHead>
+          ))}
+        </TableRow>
+      </TableHeader>
+      <TableBody className="num font-mono text-[11px]">
+        {runs.map((r) => {
+          const started = Number(r.startedAt);
+          const took = ((r.endedAt !== undefined ? Number(r.endedAt) : now) - started) / 1000;
+          const ran = r.sessionId !== "" && r.outcome !== RunOutcome.NOT_STARTED;
+          return (
+            <TableRow key={String(r.id)} className="border-border/60 align-top hover:bg-muted/60">
+              <TableCell className="px-2 py-2 text-muted-foreground" title={new Date(started).toISOString()}>
+                {r.slotAt !== undefined ? dayTime(Number(r.slotAt)) : <span>{dayTime(started)} · by hand</span>}
+              </TableCell>
+              <TableCell className="px-2 py-2">
+                <OutcomeBadge outcome={r.outcome} />
+              </TableCell>
+              <TableCell className="px-2 py-2">
+                {r.sessionId === "" ? <span className="text-faint">—</span> : listed.has(r.sessionId) ? <SessionLink id={r.sessionId} /> : <span className="text-faint" title="ended over a day ago">{r.sessionId}</span>}
+              </TableCell>
+              <TableCell className="px-2 py-2 text-muted-foreground">{r.nodeId ? nodeName(s, r.nodeId) : "—"}</TableCell>
+              <TableCell className="px-2 py-2">
+                {ran ? duration(took) : "—"}
+                {r.outcome === RunOutcome.RUNNING && <span className="text-faint"> so far</span>}
+              </TableCell>
+              <TableCell className="max-w-[420px] px-2 py-2 font-sans whitespace-normal text-muted-foreground">{r.reason}</TableCell>
+            </TableRow>
+          );
+        })}
+      </TableBody>
+    </Table>
   );
 }
 

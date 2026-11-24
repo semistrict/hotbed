@@ -1,5 +1,6 @@
 import { Link, useNavigate } from "@tanstack/react-router";
 import { Fragment } from "react";
+import { Breadcrumb, BreadcrumbItem, BreadcrumbList, BreadcrumbPage, BreadcrumbSeparator } from "@/components/ui/breadcrumb";
 import { useSnapshot } from "../lib/data";
 import { useProject } from "../lib/project";
 import { repoProject } from "../lib/projects";
@@ -14,7 +15,7 @@ export interface Trail {
   here: string;
 }
 
-const link = "text-muted-foreground hover:text-primary";
+const link = "text-muted-foreground transition-colors hover:text-primary";
 
 /** Projects › project › workspace › repo › here, each a way back up. */
 export function Crumbs({ project: named, workspaceId, repoId, here }: Trail) {
@@ -51,16 +52,18 @@ export function Crumbs({ project: named, workspaceId, repoId, here }: Trail) {
     ),
   ].filter(Boolean);
   return (
-    <nav aria-label="Breadcrumb" className="rise flex flex-wrap items-center gap-1.5 font-mono text-[11px] text-faint">
-      {steps.map((step, i) => (
-        <Fragment key={i}>
-          {step}
-          <span aria-hidden>›</span>
-        </Fragment>
-      ))}
-      <span aria-current="page" className="text-foreground">
-        {here}
-      </span>
-    </nav>
+    <Breadcrumb className="rise">
+      <BreadcrumbList className="gap-1.5 font-mono text-[11px] text-faint">
+        {steps.map((step, i) => (
+          <Fragment key={i}>
+            <BreadcrumbItem>{step}</BreadcrumbItem>
+            <BreadcrumbSeparator className="text-faint" />
+          </Fragment>
+        ))}
+        <BreadcrumbItem>
+          <BreadcrumbPage className="font-mono text-[11px] text-foreground">{here}</BreadcrumbPage>
+        </BreadcrumbItem>
+      </BreadcrumbList>
+    </Breadcrumb>
   );
 }
