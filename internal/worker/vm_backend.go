@@ -10,10 +10,12 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"net/http"
 	"os"
 	"path/filepath"
 	goruntime "runtime"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -235,7 +237,103 @@ func sampleCladefsObjectStore(ctx context.Context, store *cladefs.Store) *pb.Obj
 		slog.Warn("sample cladefsd object-store counters", "err", err)
 		return nil
 	}
-	return objectStoreStatsFromCounters(resp)
+	out := objectStoreStatsFromCounters(resp)
+	sctx, scancel := context.WithTimeout(ctx, 1500*time.Millisecond)
+	defer scancel()
+	if stats, serr := store.GetStats(sctx, &cladefsdv1.GetStatsRequest{
+		WaitMs:             500,
+		LeaveOutHistograms: true,
+	}); serr == nil {
+		applyCladefsStats(out, stats)
+	}
+	if used, capBytes, ok := scrapeLocalPartCache(sctx, "http://127.0.0.1:9184/metrics"); ok {
+		out.PartCacheBytes = used
+		out.PartCacheCapacityBytes = capBytes
+	}
+	return out
+}
+
+func applyCladefsStats(out *pb.ObjectStoreStats, stats *cladefsdv1.GetStatsResponse) {
+	if out == nil || stats == nil {
+		return
+	}
+	g := stats.GetGauges()
+	out.ExtentCacheBytes = g["memory_bytes"]
+	out.ExtentCacheCapacityBytes = g["memory_capacity_bytes"]
+	out.ExtentCachePinnedEntries = g["extent_cache_pinned_entries"]
+	out.ExtentCacheIdleEntries = g["extent_cache_idle_entries"]
+	out.WindowMappedBytes = g["window_mapped_bytes"]
+	if c := stats.GetCounters(); c != nil {
+		out.CacheTrims = c["cache_trims"]
+	}
+	vms := stats.GetVms()
+	out.ActiveVms = uint32(len(vms))
+	for _, v := range vms {
+		gc := v.GetGuest().GetCounters()
+		if len(gc) == 0 {
+			continue
+		}
+		out.DaxWindowFull += gc["window_full"]
+		out.DaxWindowReclaims += gc["window_reclaims"]
+		out.DaxRegionsFull += gc["window_regions_full"]
+		out.DaxWritesHeldBySealsNs += gc["writes_held_by_seals_ns"]
+		out.DaxDeviceReadBytes += gc["device_read_bytes"]
+		out.DaxDeviceReadsNs += gc["device_reads_ns"]
+	}
+}
+
+var cladefsMetricsHTTP = &http.Client{Timeout: 500 * time.Millisecond}
+
+func scrapeLocalPartCache(ctx context.Context, url string) (used, capacity uint64, ok bool) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return 0, 0, false
+	}
+	resp, err := cladefsMetricsHTTP.Do(req)
+	if err != nil {
+		return 0, 0, false
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return 0, 0, false
+	}
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 512<<10))
+	if err != nil {
+		return 0, 0, false
+	}
+	return parsePartCacheMetrics(string(body))
+}
+
+func parsePartCacheMetrics(text string) (used, capacity uint64, ok bool) {
+	var gotUsed, gotCap bool
+	for _, line := range strings.Split(text, "\n") {
+		if line == "" || line[0] == '#' {
+			continue
+		}
+		if rest, found := strings.CutPrefix(line, "cladefsd_part_cache_bytes "); found {
+			if v, err := parsePromUint64(strings.TrimSpace(rest)); err == nil {
+				used = v
+				gotUsed = true
+			}
+		} else if rest, found := strings.CutPrefix(line, "cladefsd_part_cache_capacity_bytes "); found {
+			if v, err := parsePromUint64(strings.TrimSpace(rest)); err == nil {
+				capacity = v
+				gotCap = true
+			}
+		}
+	}
+	return used, capacity, gotUsed || gotCap
+}
+
+func parsePromUint64(s string) (uint64, error) {
+	if v, err := strconv.ParseUint(s, 10, 64); err == nil {
+		return v, nil
+	}
+	f, err := strconv.ParseFloat(s, 64)
+	if err != nil || f < 0 {
+		return 0, fmt.Errorf("invalid metric value %q", s)
+	}
+	return uint64(f), nil
 }
 
 func objectStoreStatsFromCounters(resp interface {

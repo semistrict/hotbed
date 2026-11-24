@@ -536,6 +536,24 @@ message ObjectStoreStats {
   uint64 commit_wait_ns = 11;
   uint64 page_in_bytes = 12;
   uint64 fetched_bytes = 13;
+  // On-disk SSD part cache occupancy and capacity.
+  uint64 part_cache_bytes = 14;
+  uint64 part_cache_capacity_bytes = 15;
+  // In-memory cladefsd extent cache occupancy, entries, and trims.
+  uint64 extent_cache_bytes = 16;
+  uint64 extent_cache_capacity_bytes = 17;
+  uint64 extent_cache_pinned_entries = 18;
+  uint64 extent_cache_idle_entries = 19;
+  uint64 cache_trims = 20;
+  // DAX window health aggregated across active VMs on this node.
+  uint32 active_vms = 21;
+  uint64 window_mapped_bytes = 22;
+  uint64 dax_window_full = 23;
+  uint64 dax_window_reclaims = 24;
+  uint64 dax_regions_full = 25;
+  uint64 dax_writes_held_by_seals_ns = 26;
+  uint64 dax_device_read_bytes = 27;
+  uint64 dax_device_reads_ns = 28;
 }
 
 // Host-side view of a VM worker, reported by its host supervisor (macOS).

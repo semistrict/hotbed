@@ -449,6 +449,18 @@ func (s *Store) GetCounters(ctx context.Context) (*cladefsdv1.GetCountersRespons
 	return resp, nil
 }
 
+// GetStats returns cladefsd's daemon gauges, counters, and connected VM/guest DAX stats.
+func (s *Store) GetStats(ctx context.Context, req *cladefsdv1.GetStatsRequest) (*cladefsdv1.GetStatsResponse, error) {
+	if req == nil {
+		req = &cladefsdv1.GetStatsRequest{}
+	}
+	resp, err := s.api.GetStats(ctx, req)
+	if err != nil {
+		return nil, mapErr("get stats", err)
+	}
+	return resp, nil
+}
+
 // DeleteCell deletes a cell both locally and in the bucket. Deleting an already
 // absent cell returns nil (idempotent).
 func (s *Store) DeleteCell(ctx context.Context, relPath string) error {

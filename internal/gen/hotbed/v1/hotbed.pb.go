@@ -2345,8 +2345,26 @@ type ObjectStoreStats struct {
 	CommitWaitNs             uint64                 `protobuf:"varint,11,opt,name=commit_wait_ns,json=commitWaitNs,proto3" json:"commit_wait_ns,omitempty"`
 	PageInBytes              uint64                 `protobuf:"varint,12,opt,name=page_in_bytes,json=pageInBytes,proto3" json:"page_in_bytes,omitempty"`
 	FetchedBytes             uint64                 `protobuf:"varint,13,opt,name=fetched_bytes,json=fetchedBytes,proto3" json:"fetched_bytes,omitempty"`
-	unknownFields            protoimpl.UnknownFields
-	sizeCache                protoimpl.SizeCache
+	// On-disk SSD part cache occupancy and capacity.
+	PartCacheBytes         uint64 `protobuf:"varint,14,opt,name=part_cache_bytes,json=partCacheBytes,proto3" json:"part_cache_bytes,omitempty"`
+	PartCacheCapacityBytes uint64 `protobuf:"varint,15,opt,name=part_cache_capacity_bytes,json=partCacheCapacityBytes,proto3" json:"part_cache_capacity_bytes,omitempty"`
+	// In-memory cladefsd extent cache occupancy, entries, and trims.
+	ExtentCacheBytes         uint64 `protobuf:"varint,16,opt,name=extent_cache_bytes,json=extentCacheBytes,proto3" json:"extent_cache_bytes,omitempty"`
+	ExtentCacheCapacityBytes uint64 `protobuf:"varint,17,opt,name=extent_cache_capacity_bytes,json=extentCacheCapacityBytes,proto3" json:"extent_cache_capacity_bytes,omitempty"`
+	ExtentCachePinnedEntries uint64 `protobuf:"varint,18,opt,name=extent_cache_pinned_entries,json=extentCachePinnedEntries,proto3" json:"extent_cache_pinned_entries,omitempty"`
+	ExtentCacheIdleEntries   uint64 `protobuf:"varint,19,opt,name=extent_cache_idle_entries,json=extentCacheIdleEntries,proto3" json:"extent_cache_idle_entries,omitempty"`
+	CacheTrims               uint64 `protobuf:"varint,20,opt,name=cache_trims,json=cacheTrims,proto3" json:"cache_trims,omitempty"`
+	// DAX window health aggregated across active VMs on this node.
+	ActiveVms              uint32 `protobuf:"varint,21,opt,name=active_vms,json=activeVms,proto3" json:"active_vms,omitempty"`
+	WindowMappedBytes      uint64 `protobuf:"varint,22,opt,name=window_mapped_bytes,json=windowMappedBytes,proto3" json:"window_mapped_bytes,omitempty"`
+	DaxWindowFull          uint64 `protobuf:"varint,23,opt,name=dax_window_full,json=daxWindowFull,proto3" json:"dax_window_full,omitempty"`
+	DaxWindowReclaims      uint64 `protobuf:"varint,24,opt,name=dax_window_reclaims,json=daxWindowReclaims,proto3" json:"dax_window_reclaims,omitempty"`
+	DaxRegionsFull         uint64 `protobuf:"varint,25,opt,name=dax_regions_full,json=daxRegionsFull,proto3" json:"dax_regions_full,omitempty"`
+	DaxWritesHeldBySealsNs uint64 `protobuf:"varint,26,opt,name=dax_writes_held_by_seals_ns,json=daxWritesHeldBySealsNs,proto3" json:"dax_writes_held_by_seals_ns,omitempty"`
+	DaxDeviceReadBytes     uint64 `protobuf:"varint,27,opt,name=dax_device_read_bytes,json=daxDeviceReadBytes,proto3" json:"dax_device_read_bytes,omitempty"`
+	DaxDeviceReadsNs       uint64 `protobuf:"varint,28,opt,name=dax_device_reads_ns,json=daxDeviceReadsNs,proto3" json:"dax_device_reads_ns,omitempty"`
+	unknownFields          protoimpl.UnknownFields
+	sizeCache              protoimpl.SizeCache
 }
 
 func (x *ObjectStoreStats) Reset() {
@@ -2466,6 +2484,111 @@ func (x *ObjectStoreStats) GetPageInBytes() uint64 {
 func (x *ObjectStoreStats) GetFetchedBytes() uint64 {
 	if x != nil {
 		return x.FetchedBytes
+	}
+	return 0
+}
+
+func (x *ObjectStoreStats) GetPartCacheBytes() uint64 {
+	if x != nil {
+		return x.PartCacheBytes
+	}
+	return 0
+}
+
+func (x *ObjectStoreStats) GetPartCacheCapacityBytes() uint64 {
+	if x != nil {
+		return x.PartCacheCapacityBytes
+	}
+	return 0
+}
+
+func (x *ObjectStoreStats) GetExtentCacheBytes() uint64 {
+	if x != nil {
+		return x.ExtentCacheBytes
+	}
+	return 0
+}
+
+func (x *ObjectStoreStats) GetExtentCacheCapacityBytes() uint64 {
+	if x != nil {
+		return x.ExtentCacheCapacityBytes
+	}
+	return 0
+}
+
+func (x *ObjectStoreStats) GetExtentCachePinnedEntries() uint64 {
+	if x != nil {
+		return x.ExtentCachePinnedEntries
+	}
+	return 0
+}
+
+func (x *ObjectStoreStats) GetExtentCacheIdleEntries() uint64 {
+	if x != nil {
+		return x.ExtentCacheIdleEntries
+	}
+	return 0
+}
+
+func (x *ObjectStoreStats) GetCacheTrims() uint64 {
+	if x != nil {
+		return x.CacheTrims
+	}
+	return 0
+}
+
+func (x *ObjectStoreStats) GetActiveVms() uint32 {
+	if x != nil {
+		return x.ActiveVms
+	}
+	return 0
+}
+
+func (x *ObjectStoreStats) GetWindowMappedBytes() uint64 {
+	if x != nil {
+		return x.WindowMappedBytes
+	}
+	return 0
+}
+
+func (x *ObjectStoreStats) GetDaxWindowFull() uint64 {
+	if x != nil {
+		return x.DaxWindowFull
+	}
+	return 0
+}
+
+func (x *ObjectStoreStats) GetDaxWindowReclaims() uint64 {
+	if x != nil {
+		return x.DaxWindowReclaims
+	}
+	return 0
+}
+
+func (x *ObjectStoreStats) GetDaxRegionsFull() uint64 {
+	if x != nil {
+		return x.DaxRegionsFull
+	}
+	return 0
+}
+
+func (x *ObjectStoreStats) GetDaxWritesHeldBySealsNs() uint64 {
+	if x != nil {
+		return x.DaxWritesHeldBySealsNs
+	}
+	return 0
+}
+
+func (x *ObjectStoreStats) GetDaxDeviceReadBytes() uint64 {
+	if x != nil {
+		return x.DaxDeviceReadBytes
+	}
+	return 0
+}
+
+func (x *ObjectStoreStats) GetDaxDeviceReadsNs() uint64 {
+	if x != nil {
+		return x.DaxDeviceReadsNs
 	}
 	return 0
 }
@@ -25393,7 +25516,8 @@ const file_hotbed_v1_hotbed_proto_rawDesc = "" +
 	"\rstorage_error\x18\x13 \x01(\tR\fstorageError\x12>\n" +
 	"\fobject_store\x18\x14 \x01(\v2\x1b.hotbed.v1.ObjectStoreStatsR\vobjectStoreB\f\n" +
 	"\n" +
-	"_last_seen\"\xc7\x04\n" +
+	"_last_seen\"\xa4\n" +
+	"\n" +
 	"\x10ObjectStoreStats\x12%\n" +
 	"\x0euploaded_bytes\x18\x01 \x01(\x04R\ruploadedBytes\x126\n" +
 	"\x17uploaded_segments_bytes\x18\x02 \x01(\x04R\x15uploadedSegmentsBytes\x124\n" +
@@ -25408,7 +25532,24 @@ const file_hotbed_v1_hotbed_proto_rawDesc = "" +
 	" \x01(\x04R\x0efailedRequests\x12$\n" +
 	"\x0ecommit_wait_ns\x18\v \x01(\x04R\fcommitWaitNs\x12\"\n" +
 	"\rpage_in_bytes\x18\f \x01(\x04R\vpageInBytes\x12#\n" +
-	"\rfetched_bytes\x18\r \x01(\x04R\ffetchedBytes\"\x89\x02\n" +
+	"\rfetched_bytes\x18\r \x01(\x04R\ffetchedBytes\x12(\n" +
+	"\x10part_cache_bytes\x18\x0e \x01(\x04R\x0epartCacheBytes\x129\n" +
+	"\x19part_cache_capacity_bytes\x18\x0f \x01(\x04R\x16partCacheCapacityBytes\x12,\n" +
+	"\x12extent_cache_bytes\x18\x10 \x01(\x04R\x10extentCacheBytes\x12=\n" +
+	"\x1bextent_cache_capacity_bytes\x18\x11 \x01(\x04R\x18extentCacheCapacityBytes\x12=\n" +
+	"\x1bextent_cache_pinned_entries\x18\x12 \x01(\x04R\x18extentCachePinnedEntries\x129\n" +
+	"\x19extent_cache_idle_entries\x18\x13 \x01(\x04R\x16extentCacheIdleEntries\x12\x1f\n" +
+	"\vcache_trims\x18\x14 \x01(\x04R\n" +
+	"cacheTrims\x12\x1d\n" +
+	"\n" +
+	"active_vms\x18\x15 \x01(\rR\tactiveVms\x12.\n" +
+	"\x13window_mapped_bytes\x18\x16 \x01(\x04R\x11windowMappedBytes\x12&\n" +
+	"\x0fdax_window_full\x18\x17 \x01(\x04R\rdaxWindowFull\x12.\n" +
+	"\x13dax_window_reclaims\x18\x18 \x01(\x04R\x11daxWindowReclaims\x12(\n" +
+	"\x10dax_regions_full\x18\x19 \x01(\x04R\x0edaxRegionsFull\x12;\n" +
+	"\x1bdax_writes_held_by_seals_ns\x18\x1a \x01(\x04R\x16daxWritesHeldBySealsNs\x121\n" +
+	"\x15dax_device_read_bytes\x18\x1b \x01(\x04R\x12daxDeviceReadBytes\x12-\n" +
+	"\x13dax_device_reads_ns\x18\x1c \x01(\x04R\x10daxDeviceReadsNs\"\x89\x02\n" +
 	"\tHostUsage\x12\x1e\n" +
 	"\vvm_cpu_busy\x18\x01 \x01(\x01R\tvmCpuBusy\x12\"\n" +
 	"\rhost_cpu_busy\x18\x02 \x01(\x01R\vhostCpuBusy\x12 \n" +

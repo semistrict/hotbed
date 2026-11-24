@@ -427,4 +427,45 @@ func TestObjectStoreStatsFromCounters(t *testing.T) {
 	if got.CommitWaitNs != 1_500_000_000 || got.PageInBytes != 900 || got.FetchedBytes != 100 {
 		t.Fatalf("unexpected daemon counters: %+v", got)
 	}
+
+	applyCladefsStats(got, &cladefsdv1.GetStatsResponse{
+		Gauges: map[string]uint64{
+			"memory_bytes":                4_000_000_000,
+			"memory_capacity_bytes":       6_000_000_000,
+			"extent_cache_pinned_entries": 2451,
+			"extent_cache_idle_entries":   10943,
+			"window_mapped_bytes":         3_000_000_000,
+		},
+		Counters: map[string]uint64{
+			"cache_trims": 7,
+		},
+		Vms: []*cladefsdv1.VmStats{
+			{Guest: &cladefsdv1.GuestStats{Counters: map[string]uint64{
+				"window_full":             2,
+				"window_reclaims":         5,
+				"window_regions_full":     1,
+				"writes_held_by_seals_ns": 1_000_000_000,
+				"device_read_bytes":       100_000,
+				"device_reads_ns":         200_000,
+			}}},
+			{Guest: &cladefsdv1.GuestStats{Counters: map[string]uint64{
+				"window_full":             3,
+				"window_reclaims":         4,
+				"writes_held_by_seals_ns": 500_000_000,
+				"device_read_bytes":       50_000,
+				"device_reads_ns":         100_000,
+			}}},
+		},
+	})
+	if got.ExtentCacheBytes != 4_000_000_000 || got.ExtentCacheCapacityBytes != 6_000_000_000 || got.ExtentCachePinnedEntries != 2451 || got.ExtentCacheIdleEntries != 10943 || got.CacheTrims != 7 {
+		t.Fatalf("unexpected extent cache stats: %+v", got)
+	}
+	if got.ActiveVms != 2 || got.WindowMappedBytes != 3_000_000_000 || got.DaxWindowFull != 5 || got.DaxWindowReclaims != 9 || got.DaxRegionsFull != 1 || got.DaxWritesHeldBySealsNs != 1_500_000_000 || got.DaxDeviceReadBytes != 150_000 || got.DaxDeviceReadsNs != 300_000 {
+		t.Fatalf("unexpected DAX stats: %+v", got)
+	}
+
+	used, capBytes, ok := parsePartCacheMetrics("# HELP cladefsd_part_cache_bytes x\ncladefsd_part_cache_bytes 37995837625\ncladefsd_part_cache_capacity_bytes 593477874669\n")
+	if !ok || used != 37995837625 || capBytes != 593477874669 {
+		t.Fatalf("parsePartCacheMetrics = (%d, %d, %v)", used, capBytes, ok)
+	}
 }
