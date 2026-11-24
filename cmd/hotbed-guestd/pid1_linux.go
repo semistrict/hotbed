@@ -26,7 +26,8 @@ func runPID1Supervisor(log *slog.Logger) bool {
 		{"proc", "/proc", "proc", 0, ""},
 		{"sysfs", "/sys", "sysfs", 0, ""},
 		{"devtmpfs", "/dev", "devtmpfs", 0, ""},
-		{"devpts", "/dev/pts", "devpts", 0, "gid=5,mode=620"},
+		{"devpts", "/dev/pts", "devpts", 0, "gid=5,mode=620,ptmxmode=666"},
+		{"tmpfs", "/dev/shm", "tmpfs", 0, "mode=1777"},
 		{"tmpfs", "/run", "tmpfs", 0, "mode=755"},
 		{"tmpfs", "/tmp", "tmpfs", 0, "mode=1777"},
 		{"cgroup2", "/sys/fs/cgroup", "cgroup2", 0, ""},
@@ -38,6 +39,25 @@ func runPID1Supervisor(log *slog.Logger) bool {
 				log.Warn("mount failed", "target", m.target, "fstype", m.fstype, "err", err)
 			}
 		}
+	}
+	// Standard Linux /dev symlinks absent on bare devtmpfs (needed by bash
+	// process substitution /dev/fd/N, /dev/stdin, /dev/stdout, /dev/stderr).
+	devSymlinks := []struct{ target, link string }{
+		{"/proc/self/fd", "/dev/fd"},
+		{"/proc/self/fd/0", "/dev/stdin"},
+		{"/proc/self/fd/1", "/dev/stdout"},
+		{"/proc/self/fd/2", "/dev/stderr"},
+	}
+	for _, s := range devSymlinks {
+		if _, err := os.Lstat(s.link); os.IsNotExist(err) {
+			if err := os.Symlink(s.target, s.link); err != nil {
+				log.Warn("symlink failed", "link", s.link, "target", s.target, "err", err)
+			}
+		}
+	}
+	// Ensure loopback is up (minimal Firecracker kernels leave lo DOWN).
+	if ipBin, err := exec.LookPath("ip"); err == nil {
+		_ = exec.Command(ipBin, "link", "set", "lo", "up").Run()
 	}
 
 	args := append([]string{"--no-pid1"}, os.Args[1:]...)
