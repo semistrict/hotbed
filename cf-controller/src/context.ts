@@ -56,7 +56,7 @@ export class ControllerContext {
 	readonly store: ControllerStore;
 	readonly tunnel: WorkerTunnelHub;
 	readonly builds: BuildDistributor;
-	readonly power = new StandbyState();
+	readonly power = new StandbyState(() => this.now());
 	readonly hostUsages = new HostUsageState();
 	readonly sessionWakes = new Wakeups();
 	readonly creatingWS = new Map<string, { promise: Promise<void>; resolve: () => void }>();
@@ -65,6 +65,7 @@ export class ControllerContext {
 		{ schedule: string; scheduled: boolean; stopWhy: string; abort: AbortController }
 	>();
 	clusterId: string;
+	orgId: string;
 	readonly controllerName: string;
 	readonly allowLocalRepos: boolean;
 	nowFn: () => number = () => Date.now();
@@ -78,6 +79,7 @@ export class ControllerContext {
 		tunnel: WorkerTunnelHub;
 		builds: BuildDistributor;
 		clusterId: string;
+		orgId?: string;
 		controllerName: string;
 		allowLocalRepos?: boolean;
 	}) {
@@ -85,6 +87,7 @@ export class ControllerContext {
 		this.tunnel = opts.tunnel;
 		this.builds = opts.builds;
 		this.clusterId = opts.clusterId;
+		this.orgId = opts.orgId ?? "";
 		this.controllerName = opts.controllerName;
 		this.allowLocalRepos = opts.allowLocalRepos ?? false;
 	}
@@ -770,8 +773,15 @@ export class ControllerContext {
 
 	maybePrune(): void {
 		const nowMs = this.now();
+		if (this.lastPruneAt === 0) {
+			const stored = Number(this.store.getMeta("last_prune_at") ?? "0");
+			if (Number.isFinite(stored) && stored > 0) {
+				this.lastPruneAt = stored;
+			}
+		}
 		if (nowMs - this.lastPruneAt < 10 * 60_000) return;
 		this.lastPruneAt = nowMs;
+		this.store.setMeta("last_prune_at", String(nowMs));
 		this.store.prune(nowMs);
 	}
 }

@@ -8,14 +8,17 @@ import { defineConfig } from "vite";
 // dev-cockpit (127.0.0.1:7120 by default); pnpm dev:cluster defaults
 // HOTBED_CONTROLLER to <controller>:7120.
 export function controllerProxy(controller = process.env.HOTBED_CONTROLLER ?? "127.0.0.1:7120") {
+  const entry = {
+    target: `http://${controller}`,
+    // Preserve the browser's Host header so it matches Origin/Referer on the
+    // controller's same-origin CSRF check. Vite's string target shorthand
+    // sets changeOrigin: true, which rewrites Host to the backend port -> 403.
+    changeOrigin: false,
+  };
   return {
-    "/hotbed.v1.": {
-      target: `http://${controller}`,
-      // Preserve the browser's Host header so it matches Origin/Referer on the
-      // controller's same-origin CSRF check. Vite's string target shorthand
-      // sets changeOrigin: true, which rewrites Host to the backend port -> 403.
-      changeOrigin: false,
-    },
+    "/hotbed.v1.": entry,
+    "/auth/": entry,
+    "/admin/": entry,
   };
 }
 

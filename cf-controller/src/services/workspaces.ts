@@ -413,7 +413,7 @@ export function createWorkspaceService(ctrl: ControllerContext): {
 			}
 
 			try {
-				return await makeWorkspace(sess, node, claimed.fwd);
+				return await makeWorkspace(sess, node, claimed.fwd, signal);
 			} catch (err) {
 				if (signal?.aborted || !passOver(err)) throw err;
 				skip.add(node.view.node.id);
@@ -576,18 +576,26 @@ export function createWorkspaceService(ctrl: ControllerContext): {
 		sess: Session,
 		node: Candidate,
 		fwd: CreateWorkspaceRequest,
+		signal?: AbortSignal,
 	): Promise<Workspace> {
 		try {
 			const { host } = ensureOnlineWorker(node.view.node.id);
-			const ws = await ctrl.tunnel.callUnary(
-				node.view.node.id,
-				host,
-				"/hotbed.v1.WorkspaceService/CreateWorkspace",
-				CreateWorkspaceRequestSchema,
-				fwd,
-				WorkspaceSchema,
-				120_000,
-			);
+			let ws: Workspace;
+			try {
+				ws = await ctrl.tunnel.callUnary(
+					node.view.node.id,
+					host,
+					"/hotbed.v1.WorkspaceService/CreateWorkspace",
+					CreateWorkspaceRequestSchema,
+					fwd,
+					WorkspaceSchema,
+					120_000,
+					signal,
+				);
+			} catch (err) {
+				ctrl.store.dropWorkspace(fwd.id);
+				throw fromWorkerError(node.host, err);
+			}
 			const wRow = ctrl.store.getWorkspace(fwd.id);
 			const sessNow = ctrl.store.tryGetSession(sess.id);
 			if (wRow.released || (sessNow && sessNow.endedAt !== undefined)) {
@@ -602,7 +610,7 @@ export function createWorkspaceService(ctrl: ControllerContext): {
 						WORKER_RPC_TIMEOUT_MS,
 					);
 				} catch {
-					// best effort
+					// Worker's next heartbeat picks up the released workspace row via toRelease().
 				}
 				ctrl.store.releaseWorkspaceRow(fwd.id, ctrl.now());
 				if (sessNow && sessNow.endedAt !== undefined) {
@@ -614,9 +622,6 @@ export function createWorkspaceService(ctrl: ControllerContext): {
 			ws.node = node.host;
 			ws.project = sess.project;
 			return ws;
-		} catch (err) {
-			ctrl.store.dropWorkspace(fwd.id);
-			throw fromWorkerError(node.host, err);
 		} finally {
 			ctrl.unmarkCreatingWS(fwd.id);
 		}
@@ -857,8 +862,9 @@ export function createWorkspaceService(ctrl: ControllerContext): {
 			}
 			if (route) {
 				if (route.session) ctrl.store.touchSession(route.session, ctrl.now());
+				let host = route.node;
 				try {
-					const { host } = ensureOnlineWorker(route.node);
+					host = ensureOnlineWorker(route.node).host;
 					const cmd = await ctrl.tunnel.callUnary(
 						route.node,
 						host,
@@ -875,7 +881,7 @@ export function createWorkspaceService(ctrl: ControllerContext): {
 					}
 					return cmd;
 				} catch (e) {
-					err = fromWorkerError(route.node, e);
+					err = fromWorkerError(host, e);
 				}
 			}
 

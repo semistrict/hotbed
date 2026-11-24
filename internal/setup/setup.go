@@ -36,6 +36,7 @@ const (
 // Options configure single-command worker setup on Linux or macOS.
 type Options struct {
 	Controller     string
+	Token          string // optional bearer/join token for remote HTTPS controllers
 	Dir            string // base directory; default ~/.hotbed
 	User           string // unix user commands run as; default current/SUDO_USER
 	DiskSize       int64  // virtual sparse ZFS disk size in bytes

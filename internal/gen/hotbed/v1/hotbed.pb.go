@@ -2745,9 +2745,14 @@ func (*JoinRequest) Descriptor() ([]byte, []int) {
 }
 
 type JoinResponse struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	ClusterId     string                 `protobuf:"bytes,1,opt,name=cluster_id,json=clusterId,proto3" json:"cluster_id,omitempty"`
-	Node          *Node                  `protobuf:"bytes,2,opt,name=node,proto3" json:"node,omitempty"`
+	state     protoimpl.MessageState `protogen:"open.v1"`
+	ClusterId string                 `protobuf:"bytes,1,opt,name=cluster_id,json=clusterId,proto3" json:"cluster_id,omitempty"`
+	Node      *Node                  `protobuf:"bytes,2,opt,name=node,proto3" json:"node,omitempty"`
+	// Per-worker bearer token minted by the controller during Join. Workers
+	// persist this token in hotbed.json so Heartbeat, PushEvents, and /ws/worker
+	// use a dedicated node-bound, org-scoped worker token rather than a reusable
+	// join token or short-lived user JWT.
+	WorkerToken   string `protobuf:"bytes,3,opt,name=worker_token,json=workerToken,proto3" json:"worker_token,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -2794,6 +2799,13 @@ func (x *JoinResponse) GetNode() *Node {
 		return x.Node
 	}
 	return nil
+}
+
+func (x *JoinResponse) GetWorkerToken() string {
+	if x != nil {
+		return x.WorkerToken
+	}
+	return ""
 }
 
 type ListNodesRequest struct {
@@ -25144,11 +25156,12 @@ const file_hotbed_v1_hotbed_proto_rawDesc = "" +
 	"\tsample_hz\x18\x03 \x01(\x05R\bsampleHz\x12#\n" +
 	"\rtotal_samples\x18\x04 \x01(\x03R\ftotalSamples\x12\x14\n" +
 	"\x05error\x18\x05 \x01(\tR\x05error\"\r\n" +
-	"\vJoinRequest\"R\n" +
+	"\vJoinRequest\"u\n" +
 	"\fJoinResponse\x12\x1d\n" +
 	"\n" +
 	"cluster_id\x18\x01 \x01(\tR\tclusterId\x12#\n" +
-	"\x04node\x18\x02 \x01(\v2\x0f.hotbed.v1.NodeR\x04node\"\x12\n" +
+	"\x04node\x18\x02 \x01(\v2\x0f.hotbed.v1.NodeR\x04node\x12!\n" +
+	"\fworker_token\x18\x03 \x01(\tR\vworkerToken\"\x12\n" +
 	"\x10ListNodesRequest\"\x88\x01\n" +
 	"\x11ListNodesResponse\x12\x1d\n" +
 	"\n" +

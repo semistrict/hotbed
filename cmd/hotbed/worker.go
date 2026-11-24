@@ -27,7 +27,8 @@ type workerCmd struct {
 }
 
 type workerInitCmd struct {
-	Controller       string   `arg:"" optional:"" env:"HOTBED_CONTROLLER" help:"The controller's tailnet name or address, with :PORT unless 7120 (or set HOTBED_CONTROLLER)."`
+	Controller       string   `arg:"" optional:"" env:"HOTBED_CONTROLLER" help:"The controller's HTTPS URL or tailnet name/address, with :PORT unless 7120 (or set HOTBED_CONTROLLER)."`
+	Token            string   `env:"HOTBED_TOKEN" help:"Bearer or org join token (hbj_...) for authenticating to a remote HTTPS controller."`
 	Dir              string   `type:"path" help:"Base directory for worker state and VM files (default ~/.hotbed)."`
 	User             string   `help:"Unix user commands run as (default: invoking user)."`
 	DiskSize         string   `name:"disk-size" default:"256G" help:"Virtual size of the sparse ZFS disk image when creating one (e.g. 256G, 512G)."`
@@ -86,8 +87,13 @@ func (c *workerInitCmd) Exec(ctx context.Context, d deps) (any, error) {
 			return nil, api.Errorf(api.CodeInvalidArgs, "--swap-size: %v", err)
 		}
 	}
+	token := strings.TrimSpace(c.Token)
+	if token == "" {
+		token = controllerAuthToken(c.Controller)
+	}
 	return setup.Setup(ctx, setup.Options{
 		Controller:       c.Controller,
+		Token:            token,
 		Dir:              c.Dir,
 		User:             c.User,
 		DiskSize:         diskSize,

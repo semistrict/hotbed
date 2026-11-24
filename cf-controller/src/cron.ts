@@ -69,7 +69,10 @@ function parseField(
 			if (extra !== undefined || !sRaw || !eRaw) throw new Error(`invalid range "${rangeStr}"`);
 			start = parseVal(sRaw, min, max, names, allowSevenAsZero);
 			end = parseVal(eRaw, min, max, names, allowSevenAsZero);
-			if (allowSevenAsZero && eRaw === "7") end = 7;
+			if (allowSevenAsZero && eRaw === "7") {
+				if (sRaw === "7") start = 7;
+				end = 7;
+			}
 			if (start > end) throw new Error(`range ${start}-${end} runs backwards`);
 		} else {
 			start = parseVal(rangeStr, min, max, names, allowSevenAsZero);
@@ -249,20 +252,12 @@ export function parseCron(spec: string, nowMs = Date.now()): ParsedCron {
 		const limit = t + 5 * 366 * 24 * 60 * 60_000; // 5 years, matching robfig/cron
 		while (t < limit) {
 			const p = getZonedParts(t, fmt);
-			if (!months.has(p.month)) {
-				// Advance by 1 day (at most 31 iterations per non-matching month)
-				t += 24 * 60 * 60_000;
-				// Reset roughly to start of day if we jumped past 00:00
-				const p2 = getZonedParts(t, fmt);
-				if (p2.hour > 0 || p2.minute > 0) {
-					t -= (p2.hour * 60 + p2.minute) * 60_000;
-					if (t <= afterMs) t = Math.floor(afterMs / 60_000) * 60_000 + 60_000;
-				}
-				continue;
-			}
-			if (!matchesDay(p)) {
+			if (!months.has(p.month) || !matchesDay(p)) {
+				// Step conservatively so a 23-hour DST spring-forward day never overshoots
+				// 00:00..00:59 of the next day and t always advances monotonically.
 				const remMin = (24 - p.hour) * 60 - p.minute;
-				t += Math.max(1, remMin) * 60_000;
+				const stepMin = remMin > 60 ? remMin - 60 : Math.max(1, remMin);
+				t += stepMin * 60_000;
 				continue;
 			}
 			if (!hours.has(p.hour)) {

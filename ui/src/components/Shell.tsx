@@ -1,6 +1,7 @@
-import { Link, Outlet } from "@tanstack/react-router";
+import { Link, Outlet, useNavigate } from "@tanstack/react-router";
 import { useEffect, useState } from "react";
 import type { Snapshot } from "../api";
+import { signOut, useAuthMe, useSwitchOrganization } from "../lib/auth";
 import { useSnapshot } from "../lib/data";
 import { useProject, useScopedSnapshot } from "../lib/project";
 
@@ -17,6 +18,7 @@ const NAV = [
   { to: "/cluster", label: "Cluster", shared: true },
   { to: "/nodes", label: "Nodes", shared: true },
   { to: "/logs", label: "Logs", shared: true },
+  { to: "/org", label: "Org", shared: true },
 ] as const;
 
 type Theme = "system" | "light" | "dark";
@@ -58,6 +60,7 @@ export function Shell() {
             <span className="display text-[22px] leading-none font-semibold italic">hotbed</span>
           </Link>
           <nav className="-mb-px flex h-full items-stretch gap-1 overflow-x-auto">
+            <OrgPicker />
             <ProjectPicker />
             {NAV.map((n) => (
               <Link
@@ -84,7 +87,7 @@ export function Shell() {
               </Link>
             ))}
           </nav>
-          <div className="ml-auto flex items-center gap-4 font-mono text-[10.5px] text-muted-foreground">
+          <div className="ml-auto flex items-center gap-3 font-mono text-[10.5px] text-muted-foreground">
             {whole && (
               <span className="hidden items-center gap-2 whitespace-nowrap 2xl:flex">
                 <span className="live-dot inline-block size-1.5 rounded-full bg-primary text-primary" />
@@ -93,6 +96,7 @@ export function Shell() {
                 </span>
               </span>
             )}
+            <AccountControls />
             <button type="button" onClick={nextTheme} className="rounded-md border border-border px-2 py-1 whitespace-nowrap hover:border-border-strong hover:text-foreground" title="Theme">
               {theme === "system" ? "◐ auto" : theme === "dark" ? "● dark" : "○ light"}
             </button>
@@ -126,6 +130,72 @@ function Logo() {
       <path d="M5 26h22" stroke="var(--primary)" strokeWidth="2.6" strokeLinecap="round" />
       <path d="M8 29.5h16" stroke="var(--primary)" strokeOpacity=".45" strokeWidth="1.6" strokeLinecap="round" />
     </svg>
+  );
+}
+
+/** Which WorkOS organization the cockpit targets; switching moves to that org's ControllerDO. */
+function OrgPicker() {
+  const { data: auth } = useAuthMe();
+  const switchOrg = useSwitchOrganization();
+  const navigate = useNavigate();
+  const [, chooseProject] = useProject();
+  if (!auth?.workosEnabled || !auth.organization) return null;
+  const orgs = auth.organizations.length > 0 ? auth.organizations : [auth.organization];
+
+  return (
+    <label className="mr-1 flex items-center gap-1.5 self-center rounded-lg border border-border bg-card/70 py-1 pr-1 pl-2.5 font-mono text-[11px] text-muted-foreground focus-within:border-primary/50">
+      <span aria-hidden className="text-primary">
+        ◈
+      </span>
+      <select
+        aria-label="Organization"
+        value={auth.organization.id}
+        disabled={switchOrg.isPending}
+        onChange={(e) => {
+          const val = e.target.value;
+          if (val === "__manage__") {
+            void navigate({ to: "/org" });
+            return;
+          }
+          if (val && val !== auth.organization?.id) {
+            chooseProject(null);
+            switchOrg.mutate(val);
+          }
+        }}
+        className="max-w-40 bg-transparent py-0.5 text-[12px] text-foreground focus:outline-none"
+      >
+        {orgs.map((o) => (
+          <option key={o.id} value={o.id}>
+            {o.name}
+          </option>
+        ))}
+        <option value="__manage__">+ Manage organizations…</option>
+      </select>
+    </label>
+  );
+}
+
+function AccountControls() {
+  const { data: auth } = useAuthMe();
+  if (!auth?.authenticated || !auth.workosEnabled) return null;
+  return (
+    <span className="flex items-center gap-2 whitespace-nowrap">
+      <Link
+        to="/org"
+        className="hidden max-w-40 truncate text-muted-foreground hover:text-foreground xl:inline"
+        title={`${auth.user.name} (${auth.user.email})`}
+      >
+        {auth.user.email}
+      </Link>
+      <button
+        type="button"
+        onClick={() => void signOut()}
+        className="rounded-md border border-border px-2 py-1 whitespace-nowrap hover:border-border-strong hover:text-foreground"
+        title="Sign out"
+      >
+        sign out
+      </button>
+    </span>
   );
 }
 

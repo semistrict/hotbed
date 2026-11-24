@@ -580,6 +580,11 @@ message JoinRequest {}
 message JoinResponse {
   string cluster_id = 1;
   Node node = 2;
+  // Per-worker bearer token minted by the controller during Join. Workers
+  // persist this token in hotbed.json so Heartbeat, PushEvents, and /ws/worker
+  // use a dedicated node-bound, org-scoped worker token rather than a reusable
+  // join token or short-lived user JWT.
+  string worker_token = 3;
 }
 
 message ListNodesRequest {}

@@ -504,6 +504,12 @@ hotbed schedule run nightly                 # a run now; prints its session, for
 | `hotbed snapshot` | Everything the cockpit shows, as JSON |
 | `hotbed upgrade` | Install the controller's build over this hotbed (a CI build does it by itself) |
 | `hotbed admin upgrade` | Have the controller check CI for a newer build now and refresh its release metadata |
+| `hotbed login [CONTROLLER] [--device] [--org ORG]` | Sign in to a WorkOS-enabled controller (Google / AuthKit browser login, or `--device` for SSH/headless) |
+| `hotbed logout [CONTROLLER]` | Remove locally stored WorkOS credentials for a controller |
+| `hotbed whoami` | Show the signed-in user, active organization, role, and org memberships |
+| `hotbed org ls\|switch\|create\|members\|invite` | List, switch, or create WorkOS organizations (one isolated Controller DO per org), and view or invite org members |
+| `hotbed org join-token create\|ls\|rm` | Mint (`hbj_<org>.*`), list, or revoke org-scoped worker join tokens |
+| `hotbed org api-token create\|ls\|rm` | Mint (`hbu_<org>.*`), list, or revoke org-scoped personal API tokens for `HOTBED_TOKEN` |
 | `hotbed api ENDPOINT [-X METHOD] [-f k=v] [-F k=v] [-d DATA] [--input FILE] [-H K:V] [-i] [--jq EXPR]` | Make an authenticated HTTP or ConnectRPC request to the controller (e.g. `hotbed api /healthz`, `hotbed api ClusterService/GetSnapshot --jq '.nodes \| length'`) |
 
 ## Output

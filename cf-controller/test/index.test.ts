@@ -1,4 +1,4 @@
-import { env, runDurableObjectAlarm, SELF } from "cloudflare:test";
+import { env, runDurableObjectAlarm, runInDurableObject, SELF } from "cloudflare:test";
 import {
 	create,
 	fromBinary,
@@ -1051,5 +1051,363 @@ describe("BuildDistributor pinned controller version and placement semantics", (
 		const pickOld = chooseCandidate(cs, { node: "old-worker" } as never, [], true);
 		expect(pickOld.err).toBeDefined();
 		expect(pickOld.err?.message).toContain("build 171");
+
+		// Private repos (GITHUB_TOKEN set) omit direct downloadUrl so clients use /builds/ proxy,
+		// and force-refresh on a baked pinned build returns the baked release without calling GitHub.
+		const priv = new BuildDistributor(
+			{
+				UPDATES_REPO: "semistrict/hotbed",
+				GITHUB_TOKEN: "ghp_private_repo_token",
+				UPDATES_API_BASE: "http://127.0.0.1:1",
+				CONTROLLER_BUILD_NUMBER: "172",
+				CONTROLLER_BUILD_SHA256SUMS: `${amd64Sum}  hotbed-linux-amd64\n`,
+			},
+			kv,
+		);
+		const privBuild = priv.buildFor("linux", "amd64");
+		expect(privBuild?.downloadUrl).toBe("");
+		expect(privBuild?.path).toBe("/builds/172/hotbed-linux-amd64");
+		const refreshed = await priv.refreshIfStale(Date.now(), true);
+		expect(refreshed?.buildNumber).toBe(172);
+	});
+});
+
+describe("Security, cron, daemon logs, tunnel, and workspace regression tests", () => {
+	it("pins worker-token hostname, blocks JOIN_TOKEN on /ws/worker, and scopes worker Standby", async () => {
+		const owner = ownerClients();
+		const mintA = await SELF.fetch("https://controller.test/admin/worker-token", {
+			method: "POST",
+			headers: {
+				Authorization: `Bearer ${OWNER_TOKEN}`,
+				"Content-Type": "application/json",
+			},
+			body: JSON.stringify({ nodeId: "node-iso-a", hostname: "host-a" }),
+		});
+		expect(mintA.status).toBe(201);
+		const { token: tokenA } = (await mintA.json()) as { token: string };
+
+		const joinA = workerClients(JOIN_TOKEN, "node-iso-a", "host-a", "100.73.156.51:7121");
+		const joinB = workerClients(JOIN_TOKEN, "node-iso-b", "host-b", "100.73.156.52:7121");
+		const jA = await joinA.cluster.join({});
+		await joinB.cluster.join({});
+
+		// JOIN_TOKEN must not open /ws/worker and hijack an existing node's tunnel.
+		const hijackRes = await SELF.fetch("https://controller.test/ws/worker", {
+			headers: {
+				Upgrade: "websocket",
+				Authorization: `Bearer ${JOIN_TOKEN}`,
+				"X-Hotbed-Node-Id": "node-iso-b",
+				"X-Hotbed-Host": "host-b",
+			},
+		});
+		expect(hijackRes.status).toBe(403);
+
+		// Project restricted strictly to host-b.
+		await owner.cluster.putRepo({
+			repo: create(RepoSchema, {
+				id: "secret-b",
+				url: "https://github.com/example/secret-b.git",
+				branch: "main",
+			}),
+		});
+		await owner.cluster.setProjectHosts({ name: "secret-b", hosts: ["host-b"] });
+
+		// Worker A spoofing X-Hotbed-Host: host-b still resolves to DB-bound host-a and does not receive secret-b.
+		const spoofedA = workerClients(tokenA, "node-iso-a", "host-b", "100.73.156.51:7121");
+		const hbA = await spoofedA.cluster.heartbeat(
+			create(HeartbeatRequestSchema, {
+				clusterId: jA.clusterId,
+				resources: create(ResourcesSchema, {
+					arch: "amd64",
+					cpus: 4,
+					memoryBytes: BigInt(8 * 1024 ** 3),
+				}),
+			}),
+		);
+		expect(hbA.projects.map((p) => p.name)).not.toContain("secret-b");
+
+		// Worker A cannot supervise host-b via Standby.
+		const drainStandby = async () => {
+			for await (const _ of spoofedA.cluster.standby({
+				node: "host-b",
+				running: false,
+				sleepAfterSeconds: 60n,
+			})) {
+				// should throw before yielding
+			}
+		};
+		await expect(drainStandby()).rejects.toThrow(/may not supervise host-b/);
+	});
+
+	it("enforces CSRF on POST /auth/logout while allowing top-level GET navigations to Cockpit UI", async () => {
+		const loginRes = await SELF.fetch("https://controller.test/auth/login", {
+			method: "POST",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify({ token: OWNER_TOKEN }),
+			redirect: "manual",
+		});
+		const cookieVal = (loginRes.headers.get("Set-Cookie") ?? "").split(";")[0];
+
+		// Cross-site POST /auth/logout is rejected.
+		const badLogout = await SELF.fetch("https://controller.test/auth/logout", {
+			method: "POST",
+			headers: { Cookie: cookieVal, "Sec-Fetch-Site": "cross-site" },
+			redirect: "manual",
+		});
+		expect(badLogout.status).toBe(403);
+
+		// Top-level document navigation to Cockpit UI succeeds (e.g. post Cloudflare Access redirect).
+		const navRes = await SELF.fetch("https://controller.test/", {
+			headers: {
+				Cookie: cookieVal,
+				"Sec-Fetch-Site": "cross-site",
+				"Sec-Fetch-Mode": "navigate",
+				"Sec-Fetch-Dest": "document",
+			},
+		});
+		expect(navRes.status).toBe(200);
+
+		// Non-navigation cross-site fetch to Cockpit UI is still rejected.
+		const corsRes = await SELF.fetch("https://controller.test/", {
+			headers: {
+				Cookie: cookieVal,
+				"Sec-Fetch-Site": "cross-site",
+				"Sec-Fetch-Mode": "cors",
+			},
+		});
+		expect(corsRes.status).toBe(401);
+	});
+
+	it("handles DST spring-forward and DOW 7-7 cleanly in parseCron", async () => {
+		const { parseCron } = await import("../src/cron.ts");
+
+		// 2026-03-08 is DST spring-forward in America/New_York (23-hour day).
+		// 00:30 on March 9 must NOT be skipped to 2027.
+		const march8MidnightEst = Date.parse("2026-03-08T05:00:00Z");
+		const dstCron = parseCron("CRON_TZ=America/New_York 30 0 9 3 *", march8MidnightEst);
+		const nextMs = dstCron.next(march8MidnightEst);
+		expect(nextMs).toBe(Date.parse("2026-03-09T04:30:00Z")); // 2026-03-09 00:30 EDT
+
+		// DOW 7-7 must match Sunday only, not Monday through Saturday.
+		const sunCron = parseCron("0 9 * * 7-7", Date.parse("2026-11-23T00:00:00Z"));
+		expect([...sunCron.dow]).toEqual([0]);
+		const nextSun = sunCron.next(Date.parse("2026-11-23T00:00:00Z")); // Monday Nov 23, 2026
+		expect(nextSun).toBe(Date.parse("2026-11-29T09:00:00Z")); // Sunday Nov 29, 2026
+	});
+
+	it("filters daemon_logs by query in SQL before applying LIMIT", async () => {
+		const { DaemonLogLevel } = await import("../src/gen/hotbed/v1/hotbed_pb.ts");
+		const owner = ownerClients();
+		const stub = env.CONTROLLER.getByName("default");
+		await runInDurableObject(stub, async (_instance, state) => {
+			state.storage.sql.exec("DELETE FROM daemon_logs");
+			state.storage.sql.exec(
+				"INSERT INTO daemon_logs (at, level, msg, attrs_json) VALUES (?, ?, ?, ?)",
+				1000,
+				DaemonLogLevel.WARN,
+				"needle match older",
+				"",
+			);
+			for (let i = 1; i <= 5; i++) {
+				state.storage.sql.exec(
+					"INSERT INTO daemon_logs (at, level, msg, attrs_json) VALUES (?, ?, ?, ?)",
+					1000 + i * 1000,
+					DaemonLogLevel.WARN,
+					`noise entry ${i}`,
+					"",
+				);
+			}
+		});
+		const res = await owner.workspaces.getDaemonLogs({
+			source: "controller",
+			query: "needle",
+			limit: 2,
+		});
+		expect(res.entries.map((e) => e.msg)).toEqual(["needle match older"]);
+		expect(res.truncated).toBe(false);
+	});
+
+	it("keeps workspace row released for toRelease() when session ends during CreateWorkspace", async () => {
+		const owner = ownerClients();
+		const worker = workerClients(OWNER_TOKEN, "node-race-ws", "race-ws", "100.73.156.62:7121");
+		const joined = await worker.cluster.join({});
+		await owner.cluster.putRepo({
+			repo: create(RepoSchema, {
+				id: "race-demo",
+				url: "https://github.com/example/race-demo.git",
+				branch: "main",
+			}),
+		});
+		await worker.cluster.heartbeat(
+			create(HeartbeatRequestSchema, {
+				clusterId: joined.clusterId,
+				resources: create(ResourcesSchema, {
+					arch: "amd64",
+					cpus: 4,
+					memoryBytes: BigInt(8 * 1024 ** 3),
+				}),
+			}),
+		);
+		const sess = await owner.sessions.startSession({ project: "race-demo" });
+
+		// Intercept CreateWorkspace, end the session while it is in-flight, and fail ReleaseWorkspace.
+		const res = await SELF.fetch("https://controller.test/ws/worker", {
+			headers: {
+				Upgrade: "websocket",
+				Authorization: `Bearer ${OWNER_TOKEN}`,
+				"X-Hotbed-Node-Id": "node-race-ws",
+				"X-Hotbed-Host": "race-ws",
+				"X-Hotbed-Addr": "100.73.156.62:7121",
+			},
+		});
+		expect(res.status).toBe(101);
+		const ws = res.webSocket!;
+		ws.accept();
+		let createdWsId = "";
+		ws.addEventListener("message", (ev) => {
+			const msg = JSON.parse(String(ev.data)) as TunnelDownMessage;
+			if (msg.type !== "rpc_req") return;
+			if (msg.procedure === "/hotbed.v1.WorkspaceService/CreateWorkspace") {
+				const req = fromBinary(CreateWorkspaceRequestSchema, decodeBase64(msg.body));
+				createdWsId = req.id;
+				void owner.sessions.endSession({ id: sess.id }).then(() => {
+					const reply = encodeProto(
+						WorkspaceSchema,
+						create(WorkspaceSchema, {
+							id: req.id,
+							project: "race-demo",
+							sessionId: sess.id,
+							node: "race-ws",
+							state: WorkspaceState.ACTIVE,
+							createdAt: BigInt(Date.now()),
+						}),
+					);
+					ws.send(
+						JSON.stringify({
+							type: "rpc_msg",
+							id: msg.id,
+							body: encodeBase64(reply),
+						} satisfies TunnelUpMessage),
+					);
+				});
+				return;
+			}
+			if (msg.procedure === "/hotbed.v1.WorkspaceService/ReleaseWorkspace") {
+				ws.send(
+					JSON.stringify({
+						type: "rpc_err",
+						id: msg.id,
+						code: "WORKER_UNREACHABLE",
+						message: "simulated transient release failure",
+						retryable: true,
+					} satisfies TunnelUpMessage),
+				);
+			}
+		});
+
+		try {
+			await expect(
+				owner.workspaces.createWorkspace({
+					sessionId: sess.id,
+					placement: { node: "race-ws" },
+				}),
+			).rejects.toThrow(/ended/);
+
+			expect(createdWsId).not.toBe("");
+
+			// Worker reports the workspace in its checkpoint; heartbeat must instruct it to release createdWsId.
+			await worker.cluster.pushEvents({
+				clusterId: joined.clusterId,
+				epoch: "race-e1",
+				checkpoint: {
+					seq: 1n,
+					bases: [],
+					workspaces: [
+						create(WorkspaceSchema, {
+							id: createdWsId,
+							project: "race-demo",
+							sessionId: sess.id,
+							node: "race-ws",
+							state: WorkspaceState.ACTIVE,
+							createdAt: BigInt(Date.now()),
+						}),
+					],
+					commands: [],
+				},
+			});
+			const hb = await worker.cluster.heartbeat(
+				create(HeartbeatRequestSchema, {
+					clusterId: joined.clusterId,
+					resources: create(ResourcesSchema, {
+						arch: "amd64",
+						cpus: 4,
+						memoryBytes: BigInt(8 * 1024 ** 3),
+					}),
+				}),
+			);
+			expect(hb.release).toContain(createdWsId);
+		} finally {
+			ws.close(1000, "done");
+		}
+	});
+
+	it("rejects malformed base64 tunnel frames cleanly instead of stranding unary RPCs", async () => {
+		const owner = ownerClients();
+		const worker = workerClients(OWNER_TOKEN, "node-badb64", "badb64", "100.73.156.61:7121");
+		const joined = await worker.cluster.join({});
+		await owner.cluster.putRepo({
+			repo: create(RepoSchema, {
+				id: "badb64-demo",
+				url: "https://github.com/example/badb64-demo.git",
+				branch: "main",
+			}),
+		});
+		await worker.cluster.heartbeat(
+			create(HeartbeatRequestSchema, {
+				clusterId: joined.clusterId,
+				resources: create(ResourcesSchema, {
+					arch: "amd64",
+					cpus: 4,
+					memoryBytes: BigInt(8 * 1024 ** 3),
+				}),
+			}),
+		);
+		const sess = await owner.sessions.startSession({ project: "badb64-demo" });
+
+		// Connect a mock tunnel that replies with invalid base64 to CreateWorkspace.
+		const res = await SELF.fetch("https://controller.test/ws/worker", {
+			headers: {
+				Upgrade: "websocket",
+				Authorization: `Bearer ${OWNER_TOKEN}`,
+				"X-Hotbed-Node-Id": "node-badb64",
+				"X-Hotbed-Host": "badb64",
+				"X-Hotbed-Addr": "100.73.156.61:7121",
+			},
+		});
+		expect(res.status).toBe(101);
+		const ws = res.webSocket!;
+		ws.accept();
+		ws.addEventListener("message", (ev) => {
+			const msg = JSON.parse(String(ev.data)) as TunnelDownMessage;
+			if (msg.type === "rpc_req") {
+				ws.send(
+					JSON.stringify({
+						type: "rpc_msg",
+						id: msg.id,
+						body: "!!!not-valid-base64!!!",
+					} satisfies TunnelUpMessage),
+				);
+			}
+		});
+		try {
+			await expect(
+				owner.workspaces.createWorkspace({
+					sessionId: sess.id,
+					placement: { node: "badb64" },
+				}),
+			).rejects.toThrow(/invalid base64 payload/);
+		} finally {
+			ws.close(1000, "done");
+		}
 	});
 });

@@ -30,8 +30,40 @@ export const workerTokens = sqliteTable(
 		nodeId: text("node_id").notNull(),
 		hostname: text("hostname").notNull(),
 		createdAt: integer("created_at").notNull(),
+		revokedAt: integer("revoked_at"),
 	},
 	(t) => [index("worker_tokens_node").on(t.nodeId)],
+);
+
+export const joinTokens = sqliteTable(
+	"join_tokens",
+	{
+		id: text("id").primaryKey(),
+		tokenHash: text("token_hash").notNull().unique(),
+		label: text("label").notNull().default(""),
+		createdBy: text("created_by").notNull().default(""),
+		createdAt: integer("created_at").notNull(),
+		expiresAt: integer("expires_at"),
+		revokedAt: integer("revoked_at"),
+	},
+	(t) => [index("join_tokens_created").on(t.createdAt)],
+);
+
+export const apiTokens = sqliteTable(
+	"api_tokens",
+	{
+		id: text("id").primaryKey(),
+		tokenHash: text("token_hash").notNull().unique(),
+		name: text("name").notNull(),
+		userId: text("user_id").notNull(),
+		email: text("email").notNull(),
+		orgRole: text("org_role").notNull().default("member"),
+		createdAt: integer("created_at").notNull(),
+		lastUsedAt: integer("last_used_at"),
+		expiresAt: integer("expires_at"),
+		revokedAt: integer("revoked_at"),
+	},
+	(t) => [index("api_tokens_user").on(t.userId), index("api_tokens_created").on(t.createdAt)],
 );
 
 export const daemonLogs = sqliteTable(

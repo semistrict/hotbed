@@ -83,6 +83,7 @@ interface GitHubRelease {
 export class BuildDistributor {
 	private readonly env: BuildsEnv;
 	private readonly kv: MetaKV;
+	private readonly waitUntil?: (promise: Promise<unknown>) => void;
 	private memCache: CachedRelease | null = null;
 	private updatesRepoOverride?: string;
 	private updatesApiBaseOverride?: string;
@@ -95,9 +96,10 @@ export class BuildDistributor {
 	private inflightRefresh: Promise<CachedRelease | null> | null = null;
 	private lastFailedAt = 0;
 
-	constructor(env: BuildsEnv, kv: MetaKV) {
+	constructor(env: BuildsEnv, kv: MetaKV, waitUntil?: (promise: Promise<unknown>) => void) {
 		this.env = env;
 		this.kv = kv;
+		this.waitUntil = waitUntil;
 	}
 
 	setTestConfig(cfg: TestBuildConfig): void {
@@ -267,11 +269,13 @@ export class BuildDistributor {
 		const name = assetName(os, arch);
 		const asset = rel.assets[name];
 		if (!asset) return undefined;
+		// Private repos (configured with GITHUB_TOKEN) require authenticated /builds/ proxying.
+		const downloadUrl = this.updatesToken() ? "" : asset.downloadUrl || "";
 		return create(BuildSchema, {
 			number: BigInt(rel.buildNumber),
 			sha256: asset.sha256,
 			path: `/builds/${rel.buildNumber}/${name}`,
-			downloadUrl: asset.downloadUrl || "",
+			downloadUrl,
 		});
 	}
 
@@ -327,10 +331,10 @@ export class BuildDistributor {
 
 		if (pinned > 0) {
 			const baked = this.bakedRelease();
-			if (baked && (!force || !repo)) return baked;
+			if (baked) return baked;
 			const cached = this.getCachedRelease();
 			if (!force && cached && cached.buildNumber === pinned) return cached;
-			if (!repo) return baked ?? cached;
+			if (!repo) return cached;
 
 			const rel = await this.fetchPinnedRelease(repo, pinned, nowMs);
 			if (rel) {
@@ -338,7 +342,7 @@ export class BuildDistributor {
 				this.kv.setMeta(RELEASE_CACHE_KEY, JSON.stringify(rel));
 				return rel;
 			}
-			return baked ?? cached;
+			return cached;
 		}
 
 		if (!repo) return this.getCachedRelease();
@@ -509,7 +513,7 @@ export class BuildDistributor {
 				status: 200,
 				headers: {
 					"Content-Type": "application/octet-stream",
-					"Cache-Control": "public, max-age=31536000, immutable",
+					"Cache-Control": "private, max-age=31536000, immutable",
 					ETag: `"${asset.sha256}"`,
 				},
 			});
@@ -524,14 +528,14 @@ export class BuildDistributor {
 					status: 200,
 					headers: {
 						"Content-Type": "application/octet-stream",
-						"Cache-Control": "public, max-age=31536000, immutable",
+						"Cache-Control": "private, max-age=31536000, immutable",
 						ETag: `"${asset.sha256}"`,
 					},
 				});
 			}
 		}
 
-		// 2. Proxy stream from GitHub Releases (and populate R2 asynchronously if bound).
+		// 2. Proxy stream from GitHub Releases (and populate R2 asynchronously if bound and sized).
 		const token = this.updatesToken();
 		const useApi = Boolean(token && asset.apiUrl);
 		const headers: Record<string, string> = {
@@ -548,14 +552,24 @@ export class BuildDistributor {
 			return new Response(`upstream build asset error: HTTP ${upstream.status}`, { status: 502 });
 		}
 
-		if (this.env.BUILDS_BUCKET) {
+		const contentLength = Number(upstream.headers.get("Content-Length") ?? "");
+		if (this.env.BUILDS_BUCKET && Number.isSafeInteger(contentLength) && contentLength > 0) {
 			const [forClient, forR2] = upstream.body.tee();
-			void this.env.BUILDS_BUCKET.put(r2Key, forR2).catch(() => {});
+			const fixed = new FixedLengthStream(contentLength);
+			const putTask = Promise.all([
+				forR2.pipeTo(fixed.writable),
+				this.env.BUILDS_BUCKET.put(r2Key, fixed.readable),
+			]).catch(() => {});
+			if (this.waitUntil) {
+				this.waitUntil(putTask);
+			} else {
+				void putTask;
+			}
 			return new Response(forClient, {
 				status: 200,
 				headers: {
 					"Content-Type": "application/octet-stream",
-					"Cache-Control": "public, max-age=31536000, immutable",
+					"Cache-Control": "private, max-age=31536000, immutable",
 					ETag: `"${asset.sha256}"`,
 				},
 			});
@@ -565,7 +579,7 @@ export class BuildDistributor {
 			status: 200,
 			headers: {
 				"Content-Type": "application/octet-stream",
-				"Cache-Control": "public, max-age=31536000, immutable",
+				"Cache-Control": "private, max-age=31536000, immutable",
 				ETag: `"${asset.sha256}"`,
 			},
 		});
@@ -583,6 +597,7 @@ async function fetchFollowingRedirectWithoutAuth(
 		if (res.status >= 300 && res.status < 400) {
 			const loc = res.headers.get("Location");
 			if (!loc) return res;
+			await res.body?.cancel();
 			currentUrl = new URL(loc, currentUrl).toString();
 			const stripped: Record<string, string> = {};
 			for (const [k, v] of Object.entries(currentHeaders)) {

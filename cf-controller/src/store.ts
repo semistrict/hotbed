@@ -505,15 +505,15 @@ export class ControllerStore {
 			.run();
 	}
 
-	// ---- worker_tokens (Drizzle ORM) ------------------------------------
+	// ---- worker_tokens, join_tokens, api_tokens (Drizzle ORM) -----------
 
 	putWorkerToken(tokenHash: string, nodeId: string, hostname: string, nowMs: number): void {
 		this.db
 			.insert(dbSchema.workerTokens)
-			.values({ tokenHash, nodeId, hostname, createdAt: nowMs })
+			.values({ tokenHash, nodeId, hostname, createdAt: nowMs, revokedAt: null })
 			.onConflictDoUpdate({
 				target: dbSchema.workerTokens.tokenHash,
-				set: { nodeId, hostname },
+				set: { nodeId, hostname, revokedAt: null },
 			})
 			.run();
 	}
@@ -523,11 +523,221 @@ export class ControllerStore {
 			.select({
 				nodeId: dbSchema.workerTokens.nodeId,
 				hostname: dbSchema.workerTokens.hostname,
+				revokedAt: dbSchema.workerTokens.revokedAt,
 			})
 			.from(dbSchema.workerTokens)
 			.where(eq(dbSchema.workerTokens.tokenHash, tokenHash))
 			.get();
+		if (!row || row.revokedAt !== null) return null;
+		return { nodeId: row.nodeId, hostname: row.hostname };
+	}
+
+	revokeWorkerTokensForNode(nodeId: string, nowMs: number): void {
+		this.db
+			.update(dbSchema.workerTokens)
+			.set({ revokedAt: nowMs })
+			.where(eq(dbSchema.workerTokens.nodeId, nodeId))
+			.run();
+	}
+
+	putJoinToken(row: {
+		id: string;
+		tokenHash: string;
+		label: string;
+		createdBy: string;
+		createdAt: number;
+		expiresAt: number | null;
+	}): void {
+		this.db
+			.insert(dbSchema.joinTokens)
+			.values({
+				id: row.id,
+				tokenHash: row.tokenHash,
+				label: row.label,
+				createdBy: row.createdBy,
+				createdAt: row.createdAt,
+				expiresAt: row.expiresAt,
+				revokedAt: null,
+			})
+			.run();
+	}
+
+	findJoinToken(tokenHash: string, nowMs: number): { id: string; label: string } | null {
+		const row = this.db
+			.select({
+				id: dbSchema.joinTokens.id,
+				label: dbSchema.joinTokens.label,
+				expiresAt: dbSchema.joinTokens.expiresAt,
+				revokedAt: dbSchema.joinTokens.revokedAt,
+			})
+			.from(dbSchema.joinTokens)
+			.where(eq(dbSchema.joinTokens.tokenHash, tokenHash))
+			.get();
+		if (!row || row.revokedAt !== null) return null;
+		if (row.expiresAt !== null && row.expiresAt <= nowMs) return null;
+		return { id: row.id, label: row.label };
+	}
+
+	listJoinTokens(): Array<{
+		id: string;
+		label: string;
+		createdBy: string;
+		createdAt: number;
+		expiresAt: number | null;
+		revokedAt: number | null;
+	}> {
+		return this.db
+			.select({
+				id: dbSchema.joinTokens.id,
+				label: dbSchema.joinTokens.label,
+				createdBy: dbSchema.joinTokens.createdBy,
+				createdAt: dbSchema.joinTokens.createdAt,
+				expiresAt: dbSchema.joinTokens.expiresAt,
+				revokedAt: dbSchema.joinTokens.revokedAt,
+			})
+			.from(dbSchema.joinTokens)
+			.all()
+			.sort((a, b) => b.createdAt - a.createdAt);
+	}
+
+	revokeJoinToken(id: string, nowMs: number): boolean {
+		const existing = this.db
+			.select({ id: dbSchema.joinTokens.id, revokedAt: dbSchema.joinTokens.revokedAt })
+			.from(dbSchema.joinTokens)
+			.where(eq(dbSchema.joinTokens.id, id))
+			.get();
+		if (!existing) return false;
+		if (existing.revokedAt === null) {
+			this.db
+				.update(dbSchema.joinTokens)
+				.set({ revokedAt: nowMs })
+				.where(eq(dbSchema.joinTokens.id, id))
+				.run();
+		}
+		return true;
+	}
+
+	putApiToken(row: {
+		id: string;
+		tokenHash: string;
+		name: string;
+		userId: string;
+		email: string;
+		orgRole: string;
+		createdAt: number;
+		expiresAt: number | null;
+	}): void {
+		this.db
+			.insert(dbSchema.apiTokens)
+			.values({
+				id: row.id,
+				tokenHash: row.tokenHash,
+				name: row.name,
+				userId: row.userId,
+				email: row.email,
+				orgRole: row.orgRole,
+				createdAt: row.createdAt,
+				lastUsedAt: null,
+				expiresAt: row.expiresAt,
+				revokedAt: null,
+			})
+			.run();
+	}
+
+	findApiToken(
+		tokenHash: string,
+		nowMs: number,
+	): { id: string; name: string; userId: string; email: string; orgRole: string } | null {
+		const row = this.db
+			.select({
+				id: dbSchema.apiTokens.id,
+				name: dbSchema.apiTokens.name,
+				userId: dbSchema.apiTokens.userId,
+				email: dbSchema.apiTokens.email,
+				orgRole: dbSchema.apiTokens.orgRole,
+				expiresAt: dbSchema.apiTokens.expiresAt,
+				revokedAt: dbSchema.apiTokens.revokedAt,
+				lastUsedAt: dbSchema.apiTokens.lastUsedAt,
+			})
+			.from(dbSchema.apiTokens)
+			.where(eq(dbSchema.apiTokens.tokenHash, tokenHash))
+			.get();
+		if (!row || row.revokedAt !== null) return null;
+		if (row.expiresAt !== null && row.expiresAt <= nowMs) return null;
+		// Throttle last_used_at updates to once per minute to avoid write amplification.
+		if (row.lastUsedAt === null || nowMs - row.lastUsedAt > 60_000) {
+			this.db
+				.update(dbSchema.apiTokens)
+				.set({ lastUsedAt: nowMs })
+				.where(eq(dbSchema.apiTokens.id, row.id))
+				.run();
+		}
+		return {
+			id: row.id,
+			name: row.name,
+			userId: row.userId,
+			email: row.email,
+			orgRole: row.orgRole,
+		};
+	}
+
+	listApiTokens(filterUserId?: string): Array<{
+		id: string;
+		name: string;
+		userId: string;
+		email: string;
+		orgRole: string;
+		createdAt: number;
+		lastUsedAt: number | null;
+		expiresAt: number | null;
+		revokedAt: number | null;
+	}> {
+		const q = this.db
+			.select({
+				id: dbSchema.apiTokens.id,
+				name: dbSchema.apiTokens.name,
+				userId: dbSchema.apiTokens.userId,
+				email: dbSchema.apiTokens.email,
+				orgRole: dbSchema.apiTokens.orgRole,
+				createdAt: dbSchema.apiTokens.createdAt,
+				lastUsedAt: dbSchema.apiTokens.lastUsedAt,
+				expiresAt: dbSchema.apiTokens.expiresAt,
+				revokedAt: dbSchema.apiTokens.revokedAt,
+			})
+			.from(dbSchema.apiTokens);
+		const rows = filterUserId
+			? q.where(eq(dbSchema.apiTokens.userId, filterUserId)).all()
+			: q.all();
+		return rows.sort((a, b) => b.createdAt - a.createdAt);
+	}
+
+	getApiToken(
+		id: string,
+	): { id: string; userId: string; email: string; revokedAt: number | null } | null {
+		const row = this.db
+			.select({
+				id: dbSchema.apiTokens.id,
+				userId: dbSchema.apiTokens.userId,
+				email: dbSchema.apiTokens.email,
+				revokedAt: dbSchema.apiTokens.revokedAt,
+			})
+			.from(dbSchema.apiTokens)
+			.where(eq(dbSchema.apiTokens.id, id))
+			.get();
 		return row ?? null;
+	}
+
+	revokeApiToken(id: string, nowMs: number): boolean {
+		const existing = this.getApiToken(id);
+		if (!existing) return false;
+		if (existing.revokedAt === null) {
+			this.db
+				.update(dbSchema.apiTokens)
+				.set({ revokedAt: nowMs })
+				.where(eq(dbSchema.apiTokens.id, id))
+				.run();
+		}
+		return true;
 	}
 
 	// ---- daemon_logs ----------------------------------------------------
@@ -600,6 +810,11 @@ export class ControllerStore {
 			clauses.push("at <= ?");
 			params.push(toMs);
 		}
+		const qLower = query.trim().toLowerCase();
+		if (qLower) {
+			clauses.push("(instr(lower(msg), ?) > 0 OR instr(lower(attrs_json), ?) > 0)");
+			params.push(qLower, qLower);
+		}
 		const where = clauses.length > 0 ? `WHERE ${clauses.join(" AND ")}` : "";
 		const rows = this.sql
 			.exec(
@@ -608,19 +823,9 @@ export class ControllerStore {
 				limit + 1,
 			)
 			.toArray();
-		const qLower = query.trim().toLowerCase();
 		const entries: DaemonLogEntry[] = [];
 		let truncated = false;
 		for (const r of rows) {
-			const msg = str(r.msg);
-			const attrsJson = str(r.attrs_json);
-			if (
-				qLower &&
-				!msg.toLowerCase().includes(qLower) &&
-				!attrsJson.toLowerCase().includes(qLower)
-			) {
-				continue;
-			}
 			if (entries.length >= limit) {
 				truncated = true;
 				break;
@@ -632,8 +837,8 @@ export class ControllerStore {
 					source: "controller",
 					role: "controller",
 					host,
-					msg,
-					attrsJson,
+					msg: str(r.msg),
+					attrsJson: str(r.attrs_json),
 					sourceLoc: str(r.source_loc),
 				}),
 			);
@@ -3752,6 +3957,15 @@ export class ControllerStore {
 		);
 		this.sql.exec("DELETE FROM placements WHERE at < ?", nowMs - KEEP_PLACEMENTS_MS);
 		this.sql.exec("DELETE FROM daemon_logs WHERE at < ?", nowMs - KEEP_DAEMON_LOGS_MS);
+		this.sql.exec(
+			`DELETE FROM session_events
+			 WHERE session_id IN (SELECT id FROM sessions WHERE ended_at IS NOT NULL AND ended_at < ?)`,
+			histCutoff,
+		);
+		this.sql.exec(
+			"DELETE FROM cladefs_retired_incarnations WHERE retired_at < ?",
+			nowMs - 7 * 24 * 3600_000,
+		);
 		this.samplesGen++;
 	}
 }

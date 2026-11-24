@@ -1,16 +1,36 @@
 import { bytesToHex } from "./gitops.ts";
 import { ErrorCode, hotbedError } from "./errors.ts";
+import {
+	base64UrlDecode,
+	isWorkOSEnabled,
+	unsealPayload,
+	verifyWorkOSAccessToken,
+	WORKOS_SESSION_COOKIE,
+	type WorkOSEnv,
+	type WorkOSSessionPayload,
+} from "./workos.ts";
 
 export interface CallerIdentity {
 	role: "owner" | "worker";
 	nodeId: string;
 	hostname: string;
 	login: string;
+	userId: string;
+	orgId: string;
+	orgRole: string;
 	addr: string;
-	authMethod: "bearer" | "worker-token" | "cookie" | "cf-access";
+	authMethod:
+		| "bearer"
+		| "worker-token"
+		| "join-token"
+		| "api-token"
+		| "cookie"
+		| "cf-access"
+		| "workos-jwt"
+		| "workos-cookie";
 }
 
-export interface AuthEnv {
+export interface AuthEnv extends WorkOSEnv {
 	OWNER_TOKEN?: string;
 	JOIN_TOKEN?: string;
 	CLUSTER_OWNER?: string;
@@ -18,8 +38,38 @@ export interface AuthEnv {
 	CF_ACCESS_TEAM_DOMAIN?: string;
 }
 
-export interface WorkerTokenLookup {
+export interface TokenStoreLookup {
 	findWorkerToken(tokenHash: string): { nodeId: string; hostname: string } | null;
+	findJoinToken?(tokenHash: string, nowMs: number): { id: string; label: string } | null;
+	findApiToken?(
+		tokenHash: string,
+		nowMs: number,
+	): { id: string; name: string; userId: string; email: string; orgRole: string } | null;
+}
+
+export const NOOP_TOKEN_LOOKUP: TokenStoreLookup = {
+	findWorkerToken: () => null,
+	findJoinToken: () => null,
+	findApiToken: () => null,
+};
+
+/**
+ * Internal headers injected by the Worker edge (`index.ts`) after cryptographic
+ * WorkOS authentication and stripped from all untrusted incoming requests.
+ */
+export const INTERNAL_AUTH_HEADER = "X-Hotbed-Internal-Auth";
+export const INTERNAL_ORG_HEADER = "X-Hotbed-Internal-Org";
+
+export function stripInternalAuthHeaders(headers: Headers): void {
+	const toDelete: string[] = [];
+	for (const key of headers.keys()) {
+		if (key.toLowerCase().startsWith("x-hotbed-internal-")) {
+			toDelete.push(key);
+		}
+	}
+	for (const key of toDelete) {
+		headers.delete(key);
+	}
 }
 
 export async function sha256Hex(input: string): Promise<string> {
@@ -68,7 +118,7 @@ export function clearSessionCookie(secure: boolean): string {
 	return attrs.join("; ");
 }
 
-function getCookie(req: Request, name: string): string | null {
+export function getCookie(req: Request, name: string): string | null {
 	const header = req.headers.get("Cookie");
 	if (!header) return null;
 	for (const part of header.split(";")) {
@@ -81,6 +131,14 @@ function getCookie(req: Request, name: string): string | null {
 	return null;
 }
 
+export function getBearerToken(req: Request): string {
+	const authHeader = req.headers.get("Authorization") ?? "";
+	if (authHeader.toLowerCase().startsWith("bearer ")) {
+		return authHeader.slice(7).trim();
+	}
+	return "";
+}
+
 interface JWKSCache {
 	domain: string;
 	fetchedAt: number;
@@ -89,18 +147,20 @@ interface JWKSCache {
 
 let jwksCache: JWKSCache | null = null;
 
-function base64UrlDecode(s: string): Uint8Array {
-	const pad = "=".repeat((4 - (s.length % 4)) % 4);
-	const b64 = (s + pad).replace(/-/g, "+").replace(/_/g, "/");
-	const bin = atob(b64);
-	const out = new Uint8Array(bin.length);
-	for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
-	return out;
-}
+const JWKS_CACHE_TTL_MS = 5 * 60_000;
+const JWKS_FORCE_REFRESH_COOLDOWN_MS = 10_000;
+const JWT_CLOCK_SKEW_MS = 60_000;
 
-async function getAccessKeys(teamDomain: string): Promise<Map<string, CryptoKey>> {
+async function getAccessKeys(
+	teamDomain: string,
+	forceRefresh = false,
+): Promise<Map<string, CryptoKey>> {
 	const now = Date.now();
-	if (jwksCache && jwksCache.domain === teamDomain && now - jwksCache.fetchedAt < 5 * 60_000) {
+	const freshEnough =
+		jwksCache &&
+		jwksCache.domain === teamDomain &&
+		now - jwksCache.fetchedAt < (forceRefresh ? JWKS_FORCE_REFRESH_COOLDOWN_MS : JWKS_CACHE_TTL_MS);
+	if (freshEnough && jwksCache) {
 		return jwksCache.keys;
 	}
 	const domain = teamDomain.replace(/^https?:\/\//, "").replace(/\/+$/, "");
@@ -111,15 +171,19 @@ async function getAccessKeys(teamDomain: string): Promise<Map<string, CryptoKey>
 	const data = (await res.json()) as { keys?: Array<JsonWebKey & { kid?: string }> };
 	const keys = new Map<string, CryptoKey>();
 	for (const jwk of data.keys ?? []) {
-		if (!jwk.kid) continue;
-		const key = await crypto.subtle.importKey(
-			"jwk",
-			jwk,
-			{ name: "RSASSA-PKCS1-v1_5", hash: "SHA-256" },
-			false,
-			["verify"],
-		);
-		keys.set(jwk.kid, key);
+		if (!jwk.kid || jwk.kty !== "RSA") continue;
+		try {
+			const key = await crypto.subtle.importKey(
+				"jwk",
+				jwk,
+				{ name: "RSASSA-PKCS1-v1_5", hash: "SHA-256" },
+				false,
+				["verify"],
+			);
+			keys.set(jwk.kid, key);
+		} catch {
+			// Skip unsupported or malformed keys so one bad JWK cannot lock out all Access logins.
+		}
 	}
 	jwksCache = { domain: teamDomain, fetchedAt: now, keys };
 	return keys;
@@ -139,16 +203,28 @@ async function verifyCloudflareAccessJWT(
 		};
 		const payload = JSON.parse(new TextDecoder().decode(base64UrlDecode(parts[1]))) as {
 			aud?: string | string[];
+			iss?: string;
 			exp?: number;
+			nbf?: number;
 			email?: string;
 			sub?: string;
 		};
 		if (header.alg !== "RS256" || !header.kid) return null;
 		const auds = Array.isArray(payload.aud) ? payload.aud : payload.aud ? [payload.aud] : [];
 		if (!auds.includes(aud)) return null;
-		if (typeof payload.exp !== "number" || payload.exp * 1000 <= Date.now()) return null;
-		const keys = await getAccessKeys(teamDomain);
-		const key = keys.get(header.kid);
+		const domain = teamDomain.replace(/^https?:\/\//, "").replace(/\/+$/, "");
+		if (payload.iss && payload.iss.replace(/\/+$/, "") !== `https://${domain}`) return null;
+		const now = Date.now();
+		if (typeof payload.exp !== "number" || payload.exp * 1000 <= now) return null;
+		if (typeof payload.nbf === "number" && payload.nbf * 1000 > now + JWT_CLOCK_SKEW_MS) {
+			return null;
+		}
+		let keys = await getAccessKeys(teamDomain, false);
+		let key = keys.get(header.kid);
+		if (!key) {
+			keys = await getAccessKeys(teamDomain, true);
+			key = keys.get(header.kid);
+		}
 		if (!key) return null;
 		const sig = base64UrlDecode(parts[2]);
 		const signed = new TextEncoder().encode(`${parts[0]}.${parts[1]}`);
@@ -160,10 +236,22 @@ async function verifyCloudflareAccessJWT(
 	}
 }
 
-function checkSameOrigin(req: Request): string | null {
+export function checkSameOrigin(
+	req: Request,
+	opts?: { allowTopLevelNavigate?: boolean },
+): string | null {
 	const site = (req.headers.get("Sec-Fetch-Site") ?? "").trim().toLowerCase();
 	if (site && site !== "same-origin" && site !== "none") {
-		return `cross-site browser request (${site}) is not allowed`;
+		const mode = (req.headers.get("Sec-Fetch-Mode") ?? "").trim().toLowerCase();
+		const dest = (req.headers.get("Sec-Fetch-Dest") ?? "").trim().toLowerCase();
+		const isSafeTopLevelNav =
+			Boolean(opts?.allowTopLevelNavigate) &&
+			req.method === "GET" &&
+			mode === "navigate" &&
+			(dest === "document" || dest === "");
+		if (!isSafeTopLevelNav) {
+			return `cross-site browser request (${site}) is not allowed`;
+		}
 	}
 	const origin = (req.headers.get("Origin") ?? "").trim();
 	if (origin) {
@@ -183,44 +271,68 @@ function checkSameOrigin(req: Request): string | null {
 /**
  * Authenticates a request fail-closed.
  * Order:
- *  1. Authorization: Bearer <token> (or ?token= for WebSocket upgrade)
- *     - matches OWNER_TOKEN -> owner (or worker if X-Hotbed-Node-Id is supplied on worker routes)
- *     - matches JOIN_TOKEN on Join / /ws/worker -> worker
- *     - matches a per-worker token hash in worker_tokens -> worker
- *  2. Cloudflare Access JWT (Cf-Access-Jwt-Assertion) when CF_ACCESS_AUD + CF_ACCESS_TEAM_DOMAIN are set
- *  3. Cookie session (hotbed_session) + same-origin CSRF check
+ *  0. Edge-verified internal WorkOS identity header (only trusted inside ControllerDO after index.ts strips external headers)
+ *  1. Authorization: Bearer <token>
+ *     - matches OWNER_TOKEN -> owner
+ *     - matches per-org API token hash in api_tokens -> owner (org user)
+ *     - matches per-worker token hash in worker_tokens -> worker (nodeId + hostname DB-bound)
+ *     - matches per-org join token hash in join_tokens or JOIN_TOKEN when allowJoinToken is set -> worker
+ *     - verified WorkOS JWT when WorkOS is configured -> owner (org user)
+ *  2. WorkOS sealed session cookie (hotbed_wos_session) + same-origin CSRF check
+ *  3. Cloudflare Access JWT (Cf-Access-Jwt-Assertion) when CF_ACCESS_AUD + CF_ACCESS_TEAM_DOMAIN are set
+ *  4. Legacy session cookie (hotbed_session) + same-origin CSRF check
  */
 export async function authenticateRequest(
 	req: Request,
 	env: AuthEnv,
-	tokens: WorkerTokenLookup,
-	opts?: { allowJoinToken?: boolean },
+	tokens: TokenStoreLookup,
+	opts?: {
+		allowJoinToken?: boolean;
+		allowTopLevelNavigate?: boolean;
+		trustInternalHeader?: boolean;
+		nowMs?: number;
+		orgId?: string;
+	},
 ): Promise<CallerIdentity> {
+	const nowMs = opts?.nowMs ?? Date.now();
 	const ownerToken = (env.OWNER_TOKEN ?? "").trim();
 	const joinToken = (env.JOIN_TOKEN ?? "").trim() || ownerToken;
 	const ownerLogin = (env.CLUSTER_OWNER ?? "").trim() || "owner";
 	const accessAud = (env.CF_ACCESS_AUD ?? "").trim();
 	const accessDomain = (env.CF_ACCESS_TEAM_DOMAIN ?? "").trim();
+	const workosEnabled = isWorkOSEnabled(env);
 
-	if (!ownerToken && !(accessAud && accessDomain)) {
+	if (!ownerToken && !(accessAud && accessDomain) && !workosEnabled) {
 		throw hotbedError(
 			ErrorCode.NotAuthorized,
-			"this controller has no OWNER_TOKEN or Cloudflare Access configured: refusing all requests",
+			"this controller has no WorkOS, OWNER_TOKEN, or Cloudflare Access configured: refusing all requests",
 		).withSuggestion(
-			"configure OWNER_TOKEN secret via `npx wrangler secret put OWNER_TOKEN --name hotbed-controller` or `.dev.vars`",
+			"configure WORKOS_CLIENT_ID + WORKOS_API_KEY or OWNER_TOKEN secret on the hotbed-controller Worker",
 		);
 	}
 
 	const headerHost = (req.headers.get("X-Hotbed-Host") ?? "").trim();
 	const headerNodeId = (req.headers.get("X-Hotbed-Node-Id") ?? "").trim();
 	const headerAddr = (req.headers.get("X-Hotbed-Addr") ?? "").trim();
+	const expectedOrgId = (opts?.orgId ?? req.headers.get(INTERNAL_ORG_HEADER) ?? "").trim();
+
+	// 0. Edge-verified WorkOS identity forwarded from index.ts into ControllerDO
+	if (opts?.trustInternalHeader) {
+		const rawInternal = req.headers.get(INTERNAL_AUTH_HEADER);
+		if (rawInternal) {
+			try {
+				const parsed = JSON.parse(rawInternal) as CallerIdentity;
+				if (parsed && parsed.role === "owner" && parsed.login) {
+					return parsed;
+				}
+			} catch {
+				// Ignore malformed internal header and fail closed below.
+			}
+		}
+	}
 
 	// 1. Bearer token
-	let bearer = "";
-	const authHeader = req.headers.get("Authorization") ?? "";
-	if (authHeader.toLowerCase().startsWith("bearer ")) {
-		bearer = authHeader.slice(7).trim();
-	}
+	const bearer = getBearerToken(req);
 	if (bearer) {
 		if (ownerToken && (await timingSafeStringEqual(bearer, ownerToken))) {
 			return {
@@ -228,42 +340,156 @@ export async function authenticateRequest(
 				nodeId: headerNodeId || `owner:${headerHost || "client"}`,
 				hostname: headerHost || "client",
 				login: ownerLogin,
+				userId: "",
+				orgId: expectedOrgId,
+				orgRole: "owner",
 				addr: headerAddr,
 				authMethod: "bearer",
 			};
 		}
+
 		const hash = await sha256Hex(bearer);
+
+		if (tokens.findApiToken) {
+			const at = tokens.findApiToken(hash, nowMs);
+			if (at) {
+				return {
+					role: "owner",
+					nodeId: headerNodeId || `user:${at.userId || at.email}`,
+					hostname: headerHost || at.email,
+					login: at.email,
+					userId: at.userId,
+					orgId: expectedOrgId,
+					orgRole: at.orgRole || "member",
+					addr: headerAddr,
+					authMethod: "api-token",
+				};
+			}
+		}
+
 		const wt = tokens.findWorkerToken(hash);
 		if (wt) {
 			return {
 				role: "worker",
 				nodeId: wt.nodeId,
-				hostname: headerHost || wt.hostname,
+				hostname: wt.hostname || headerHost,
 				login: ownerLogin,
+				userId: "",
+				orgId: expectedOrgId,
+				orgRole: "worker",
 				addr: headerAddr,
 				authMethod: "worker-token",
 			};
 		}
-		if (opts?.allowJoinToken && joinToken && (await timingSafeStringEqual(bearer, joinToken))) {
-			return {
-				role: "worker",
-				nodeId: headerNodeId || `worker:${headerHost || "unknown"}`,
-				hostname: headerHost || headerNodeId || "worker",
-				login: ownerLogin,
-				addr: headerAddr,
-				authMethod: "worker-token",
-			};
+
+		if (opts?.allowJoinToken) {
+			if (tokens.findJoinToken) {
+				const jt = tokens.findJoinToken(hash, nowMs);
+				if (jt) {
+					return {
+						role: "worker",
+						nodeId: headerNodeId || `worker:${headerHost || "unknown"}`,
+						hostname: headerHost || headerNodeId || "worker",
+						login: ownerLogin,
+						userId: "",
+						orgId: expectedOrgId,
+						orgRole: "worker",
+						addr: headerAddr,
+						authMethod: "join-token",
+					};
+				}
+			}
+			if (joinToken && (await timingSafeStringEqual(bearer, joinToken))) {
+				return {
+					role: "worker",
+					nodeId: headerNodeId || `worker:${headerHost || "unknown"}`,
+					hostname: headerHost || headerNodeId || "worker",
+					login: ownerLogin,
+					userId: "",
+					orgId: expectedOrgId,
+					orgRole: "worker",
+					addr: headerAddr,
+					authMethod: "join-token",
+				};
+			}
 		}
+
+		if (workosEnabled && bearer.includes(".")) {
+			const claims = await verifyWorkOSAccessToken(bearer, env, nowMs);
+			if (claims) {
+				if (!claims.orgId) {
+					throw hotbedError(
+						ErrorCode.NotAuthorized,
+						"this WorkOS token has no active organization selected",
+					).withSuggestion(
+						"select or create an organization with `hotbed org switch` or in the Cockpit",
+					);
+				}
+				const login = claims.email || claims.sub;
+				return {
+					role: "owner",
+					nodeId: headerNodeId || `workos:${claims.sub}`,
+					hostname: headerHost || login,
+					login,
+					userId: claims.sub,
+					orgId: claims.orgId,
+					orgRole: claims.role || "member",
+					addr: headerAddr,
+					authMethod: "workos-jwt",
+				};
+			}
+		}
+
 		throw hotbedError(ErrorCode.NotAuthorized, "invalid bearer token");
 	}
 
-	// 2. Cloudflare Access JWT
+	// 2. WorkOS sealed session cookie (for Cockpit UI)
+	if (workosEnabled) {
+		const rawCookie = getCookie(req, WORKOS_SESSION_COOKIE);
+		if (rawCookie) {
+			const session = await unsealPayload<WorkOSSessionPayload>(env, rawCookie);
+			if (session && session.accessToken) {
+				const claims = await verifyWorkOSAccessToken(session.accessToken, env, nowMs);
+				if (claims) {
+					const csrfErr = checkSameOrigin(req, {
+						allowTopLevelNavigate: opts?.allowTopLevelNavigate,
+					});
+					if (csrfErr) {
+						throw hotbedError(ErrorCode.NotAuthorized, csrfErr);
+					}
+					const orgId = claims.orgId || session.organizationId;
+					if (!orgId) {
+						throw hotbedError(
+							ErrorCode.NotAuthorized,
+							"no active organization selected for this session",
+						).withSuggestion("visit /auth/orgs to choose or create an organization");
+					}
+					const login = session.email || claims.email || claims.sub;
+					return {
+						role: "owner",
+						nodeId: `workos:${claims.sub}`,
+						hostname: headerHost || login,
+						login,
+						userId: claims.sub,
+						orgId,
+						orgRole: claims.role || session.role || "member",
+						addr: "",
+						authMethod: "workos-cookie",
+					};
+				}
+			}
+		}
+	}
+
+	// 3. Cloudflare Access JWT
 	if (accessAud && accessDomain) {
 		const jwt = req.headers.get("Cf-Access-Jwt-Assertion") ?? getCookie(req, "CF_Authorization");
 		if (jwt) {
 			const verified = await verifyCloudflareAccessJWT(jwt, accessAud, accessDomain);
 			if (verified) {
-				const csrfErr = checkSameOrigin(req);
+				const csrfErr = checkSameOrigin(req, {
+					allowTopLevelNavigate: opts?.allowTopLevelNavigate,
+				});
 				if (csrfErr) {
 					throw hotbedError(ErrorCode.NotAuthorized, csrfErr);
 				}
@@ -272,6 +498,9 @@ export async function authenticateRequest(
 					nodeId: `access:${verified.email}`,
 					hostname: headerHost || verified.email,
 					login: verified.email,
+					userId: "",
+					orgId: expectedOrgId,
+					orgRole: "owner",
 					addr: "",
 					authMethod: "cf-access",
 				};
@@ -279,13 +508,15 @@ export async function authenticateRequest(
 		}
 	}
 
-	// 3. Session cookie (for Cockpit UI)
+	// 4. Legacy session cookie (for Cockpit UI with OWNER_TOKEN)
 	if (ownerToken) {
 		const cookie = getCookie(req, "hotbed_session");
 		if (cookie) {
 			const expected = await hmacCookieValue(ownerToken);
 			if (await timingSafeStringEqual(cookie, expected)) {
-				const csrfErr = checkSameOrigin(req);
+				const csrfErr = checkSameOrigin(req, {
+					allowTopLevelNavigate: opts?.allowTopLevelNavigate,
+				});
 				if (csrfErr) {
 					throw hotbedError(ErrorCode.NotAuthorized, csrfErr);
 				}
@@ -294,6 +525,9 @@ export async function authenticateRequest(
 					nodeId: "cockpit",
 					hostname: headerHost || "cockpit",
 					login: ownerLogin,
+					userId: "",
+					orgId: expectedOrgId,
+					orgRole: "owner",
 					addr: "",
 					authMethod: "cookie",
 				};
@@ -302,13 +536,18 @@ export async function authenticateRequest(
 	}
 
 	throw hotbedError(ErrorCode.NotAuthorized, "authentication required").withSuggestion(
-		"set Authorization: Bearer <OWNER_TOKEN> (or HOTBED_TOKEN in CLI) or sign in at /auth/login",
+		workosEnabled
+			? "run `hotbed login` or sign in at /auth/login"
+			: "set Authorization: Bearer <OWNER_TOKEN> (or HOTBED_TOKEN in CLI) or sign in at /auth/login",
 	);
 }
 
-export function renderLoginPage(error?: string): string {
+export function renderLoginPage(error?: string, workosEnabled = false): string {
 	const errHtml = error
 		? `<p style="color:#f87171;margin:0 0 12px;font-size:14px">${escapeHtml(error)}</p>`
+		: "";
+	const workosBtn = workosEnabled
+		? `<a href="/auth/login" style="display:block;text-align:center;text-decoration:none;width:100%;padding:10px 12px;border-radius:8px;background:#3b82f6;color:#fff;font-weight:600;font-size:14px;box-sizing:border-box;margin-bottom:14px">Sign in with Google / WorkOS</a>`
 		: "";
 	return `<!doctype html>
 <html lang="en">
@@ -331,6 +570,7 @@ export function renderLoginPage(error?: string): string {
   <h1>hotbed cockpit</h1>
   <p class="sub">Enter your controller owner token to sign in.</p>
   ${errHtml}
+  ${workosBtn}
   <input type="password" name="token" placeholder="Owner token" autocomplete="current-password" autofocus required />
   <button type="submit">Sign in</button>
 </form>

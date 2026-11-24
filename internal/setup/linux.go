@@ -172,6 +172,7 @@ func Setup(ctx context.Context, o Options, tn worker.Tailnet, hc *http.Client, c
 			Dir:            stateDir,
 			Controller:     controller,
 			User:           username,
+			Token:          o.Token,
 			Dataset:        o.ZFSDataset,
 			UnitProperties: o.UnitProperties,
 			Slice:          o.Slice,

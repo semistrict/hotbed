@@ -110,6 +110,10 @@ type cli struct {
 	Schedule  scheduleCmd  `cmd:"" help:"Scheduled commands: recurring work the cluster runs by itself, each run a session of its own (add, ls, show, rm, run, pause, resume)."`
 	Review    reviewCmd    `cmd:"" help:"Reviews of an exact version by reviewer agents: request one, read and decide its findings, send the user its link, read the user's responses (request, ls, show, link, start, findings, finish, fail, cancel, accept, dismiss, reopen, respond, responses)."`
 	UI        uiCmd        `cmd:"" help:"Open the controller's cockpit UI in the default browser."`
+	Login     loginCmd     `cmd:"" help:"Sign in to a WorkOS-enabled Hotbed controller (Google / AuthKit browser login, or --device for headless machines)."`
+	Logout    logoutCmd    `cmd:"" help:"Remove locally stored credentials for a Hotbed controller."`
+	Whoami    whoamiCmd    `cmd:"" help:"Show the signed-in user, active organization, and role."`
+	Org       orgCmd       `cmd:"" help:"Manage WorkOS organizations, members, invitations, worker join tokens, and personal API tokens (ls, switch, create, members, invite, join-token, api-token)."`
 	MCP       mcpCmd       `cmd:"" name:"mcp" help:"Serve hotbed's commands as MCP tools on stdin and stdout, for an agent to start. The server is a session: the one HOTBED_SESSION or this T3 thread or git worktree names (resumed if it ended), or a new one bound here; it ends when the server does, and the next server started here resumes it."`
 	Join      joinCmd      `cmd:"" help:"Join this machine to a cluster as a worker (as root)."`
 	Worker    workerCmd    `cmd:"" help:"Initialize and manage a worker node on this machine in ~/.hotbed (init, status, start, stop, trim, ssh, destroy)."`

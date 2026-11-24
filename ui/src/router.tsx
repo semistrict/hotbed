@@ -7,6 +7,7 @@ import { DaemonLogsPage, type DaemonLogsSearch } from "./pages/DaemonLogs";
 import { NodePage } from "./pages/Node";
 import { NodesPage } from "./pages/Nodes";
 import { NotFound } from "./pages/NotFound";
+import { OrganizationPage } from "./pages/Organization";
 import { OverviewPage } from "./pages/Overview";
 import { ProjectsPage } from "./pages/Projects";
 import { MemoriesPage, MemoryDetailPage, type MemoriesSearch } from "./pages/Memories";
@@ -62,6 +63,7 @@ const memoryDetail = createRoute({
   component: MemoryDetailPage,
 });
 const overview = createRoute({ getParentRoute: () => root, path: "/cluster", component: OverviewPage });
+const organization = createRoute({ getParentRoute: () => root, path: "/org", component: OrganizationPage });
 const nodes = createRoute({ getParentRoute: () => root, path: "/nodes", component: NodesPage });
 const node = createRoute({ getParentRoute: () => root, path: "/nodes/$hostname", component: NodePage });
 const LOG_SINCELIST = ["15m", "1h", "24h", "7d", "all"];
@@ -133,7 +135,7 @@ const history = createRoute({
   },
 });
 
-const routeTree = root.addChildren([projects, sessions, session, questions, memories, memoryDetail, reviews, review, schedules, overview, nodes, node, daemonLogs, workspaces, workspace, commands, command, history]);
+const routeTree = root.addChildren([projects, sessions, session, questions, memories, memoryDetail, reviews, review, schedules, overview, organization, nodes, node, daemonLogs, workspaces, workspace, commands, command, history]);
 
 export const router = createRouter({ routeTree, defaultPreload: "intent", scrollRestoration: true });
 

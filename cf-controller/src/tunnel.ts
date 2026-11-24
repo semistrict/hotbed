@@ -62,16 +62,20 @@ interface PendingUnary {
 	resolve: (bytes: Uint8Array) => void;
 	reject: (err: Error) => void;
 	timer: ReturnType<typeof setTimeout>;
+	cleanup?: () => void;
 }
 
 interface PendingStream {
 	kind: "stream";
 	nodeId: string;
 	queue: Uint8Array[];
+	queuedBytes: number;
 	done: boolean;
 	error: Error | null;
 	notify: (() => void) | null;
 }
+
+const MAX_STREAM_QUEUE_BYTES = 16 * 1024 * 1024;
 
 type PendingCall = PendingUnary | PendingStream;
 
@@ -129,27 +133,37 @@ export class WorkerTunnelHub {
 		server.serializeAttachment(attachment);
 	}
 
+	private openSocketsFor(nodeId: string): Array<{ ws: WebSocket; meta: WorkerSocketAttachment }> {
+		const out: Array<{ ws: WebSocket; meta: WorkerSocketAttachment }> = [];
+		for (const ws of this.ctx.getWebSockets(nodeId)) {
+			if (ws.readyState !== WebSocket.OPEN) continue;
+			const meta = (ws.deserializeAttachment() as WorkerSocketAttachment | null) ?? {
+				nodeId,
+				hostname: nodeId,
+				addr: "",
+				connectedAt: 0,
+			};
+			out.push({ ws, meta });
+		}
+		out.sort((a, b) => a.meta.connectedAt - b.meta.connectedAt);
+		return out;
+	}
+
 	/** Returns the active WebSocket for nodeId (works across hibernation via ctx.getWebSockets). */
 	private socketFor(nodeId: string): { ws: WebSocket; meta: WorkerSocketAttachment } | null {
-		const sockets = this.ctx.getWebSockets(nodeId);
+		const sockets = this.openSocketsFor(nodeId);
 		if (sockets.length === 0) return null;
-		const ws = sockets[sockets.length - 1];
-		const meta = (ws.deserializeAttachment() as WorkerSocketAttachment | null) ?? {
-			nodeId,
-			hostname: nodeId,
-			addr: "",
-			connectedAt: 0,
-		};
-		return { ws, meta };
+		return sockets[sockets.length - 1];
 	}
 
 	isConnected(nodeId: string): boolean {
-		return this.ctx.getWebSockets(nodeId).length > 0;
+		return this.openSocketsFor(nodeId).length > 0;
 	}
 
 	connectedNodeIds(): Set<string> {
 		const ids = new Set<string>();
 		for (const ws of this.ctx.getWebSockets()) {
+			if (ws.readyState !== WebSocket.OPEN) continue;
 			const meta = ws.deserializeAttachment() as WorkerSocketAttachment | null;
 			if (meta?.nodeId) ids.add(meta.nodeId);
 		}
@@ -171,15 +185,55 @@ export class WorkerTunnelHub {
 		}
 		const call = this.pending.get(msg.id);
 		if (!call) return;
+		const sender = ws.deserializeAttachment() as WorkerSocketAttachment | null;
+		if (!sender || sender.nodeId !== call.nodeId) return;
 
 		if (msg.type === "rpc_msg") {
-			const bytes = decodeBase64(msg.body);
+			let bytes: Uint8Array;
+			try {
+				bytes = decodeBase64(msg.body);
+			} catch {
+				const err = hotbedError(ErrorCode.Internal, "worker tunnel sent invalid base64 payload");
+				if (call.kind === "unary") {
+					clearTimeout(call.timer);
+					call.cleanup?.();
+					this.pending.delete(msg.id);
+					call.reject(err);
+				} else {
+					call.error = err;
+					call.done = true;
+					this.pending.delete(msg.id);
+					const notify = call.notify;
+					call.notify = null;
+					notify?.();
+				}
+				return;
+			}
 			if (call.kind === "unary") {
 				clearTimeout(call.timer);
+				call.cleanup?.();
 				this.pending.delete(msg.id);
 				call.resolve(bytes);
 			} else {
+				if (call.queuedBytes + bytes.byteLength > MAX_STREAM_QUEUE_BYTES) {
+					call.error = hotbedError(
+						ErrorCode.Internal,
+						"worker stream exceeded controller buffer limit",
+					);
+					call.done = true;
+					this.pending.delete(msg.id);
+					try {
+						ws.send(JSON.stringify({ type: "rpc_cancel", id: msg.id } satisfies TunnelDownMessage));
+					} catch {
+						// ignore
+					}
+					const notify = call.notify;
+					call.notify = null;
+					notify?.();
+					return;
+				}
 				call.queue.push(bytes);
+				call.queuedBytes += bytes.byteLength;
 				const notify = call.notify;
 				call.notify = null;
 				notify?.();
@@ -190,6 +244,7 @@ export class WorkerTunnelHub {
 		if (msg.type === "rpc_end") {
 			if (call.kind === "unary") {
 				clearTimeout(call.timer);
+				call.cleanup?.();
 				this.pending.delete(msg.id);
 				call.resolve(new Uint8Array(0));
 			} else {
@@ -210,6 +265,7 @@ export class WorkerTunnelHub {
 			);
 			if (call.kind === "unary") {
 				clearTimeout(call.timer);
+				call.cleanup?.();
 				this.pending.delete(msg.id);
 				call.reject(err);
 			} else {
@@ -226,8 +282,8 @@ export class WorkerTunnelHub {
 	handleClose(ws: WebSocket, _code: number, reason: string): void {
 		const meta = ws.deserializeAttachment() as WorkerSocketAttachment | null;
 		if (!meta) return;
-		// Only fail pending calls if no newer replacement socket is connected.
-		const remaining = this.ctx.getWebSockets(meta.nodeId).filter((s) => s !== ws);
+		// Only fail pending calls if no newer open replacement socket is connected.
+		const remaining = this.openSocketsFor(meta.nodeId).filter((s) => s.ws !== ws);
 		if (remaining.length === 0) {
 			this.failPendingForNode(
 				meta.nodeId,
@@ -246,6 +302,7 @@ export class WorkerTunnelHub {
 			this.pending.delete(id);
 			if (call.kind === "unary") {
 				clearTimeout(call.timer);
+				call.cleanup?.();
 				call.reject(err);
 			} else {
 				call.error = err;
@@ -266,7 +323,11 @@ export class WorkerTunnelHub {
 		reqMsg: MessageShape<Req>,
 		resSchema: Res,
 		timeoutMs = 30_000,
+		signal?: AbortSignal,
 	): Promise<MessageShape<Res>> {
+		if (signal?.aborted) {
+			throw hotbedError(ErrorCode.Internal, `${host}: ${procedure} canceled`);
+		}
 		const sock = this.socketFor(nodeId);
 		if (!sock) {
 			throw hotbedError(
@@ -289,24 +350,39 @@ export class WorkerTunnelHub {
 		};
 
 		const bytes = await new Promise<Uint8Array>((resolve, reject) => {
-			const timer = setTimeout(() => {
-				this.pending.delete(id);
+			const sendCancel = () => {
 				try {
 					sock.ws.send(JSON.stringify({ type: "rpc_cancel", id } satisfies TunnelDownMessage));
 				} catch {
 					// ignore
 				}
+			};
+			const onAbort = () => {
+				clearTimeout(timer);
+				this.pending.delete(id);
+				sendCancel();
+				reject(hotbedError(ErrorCode.Internal, `${host}: ${procedure} canceled`));
+			};
+			const cleanup = () => {
+				signal?.removeEventListener("abort", onAbort);
+			};
+			const timer = setTimeout(() => {
+				cleanup();
+				this.pending.delete(id);
+				sendCancel();
 				reject(
 					hotbedError(ErrorCode.WorkerUnreachable, `${host}: ${procedure} timed out`, {
 						retryable: true,
 					}),
 				);
 			}, timeoutMs);
-			this.pending.set(id, { kind: "unary", nodeId, resolve, reject, timer });
+			signal?.addEventListener("abort", onAbort, { once: true });
+			this.pending.set(id, { kind: "unary", nodeId, resolve, reject, timer, cleanup });
 			try {
 				sock.ws.send(JSON.stringify(frame));
 			} catch (err) {
 				clearTimeout(timer);
+				cleanup();
 				this.pending.delete(id);
 				reject(
 					hotbedError(
@@ -331,6 +407,9 @@ export class WorkerTunnelHub {
 		resSchema: Res,
 		signal?: AbortSignal,
 	): AsyncGenerator<MessageShape<Res>> {
+		if (signal?.aborted) {
+			return;
+		}
 		const sock = this.socketFor(nodeId);
 		if (!sock) {
 			throw hotbedError(
@@ -352,6 +431,7 @@ export class WorkerTunnelHub {
 			kind: "stream",
 			nodeId,
 			queue: [],
+			queuedBytes: 0,
 			done: false,
 			error: null,
 			notify: null,
@@ -388,6 +468,7 @@ export class WorkerTunnelHub {
 			while (true) {
 				while (state.queue.length > 0) {
 					const bytes = state.queue.shift()!;
+					state.queuedBytes = Math.max(0, state.queuedBytes - bytes.byteLength);
 					yield fromBinary(resSchema, bytes);
 				}
 				if (state.error) throw state.error;

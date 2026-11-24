@@ -172,7 +172,23 @@ export function fromWorkerError(host: string, err: unknown): HotbedError {
 
 export const hotbedErrorInterceptor: Interceptor = (next) => async (req) => {
 	try {
-		return await next(req);
+		const res = await next(req);
+		if (res.stream) {
+			const original = res.message;
+			return {
+				...res,
+				message: (async function* () {
+					try {
+						for await (const msg of original) {
+							yield msg;
+						}
+					} catch (err) {
+						throw toConnectError(err);
+					}
+				})(),
+			};
+		}
+		return res;
 	} catch (err) {
 		throw toConnectError(err);
 	}

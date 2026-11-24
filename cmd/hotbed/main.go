@@ -18,6 +18,7 @@ import (
 	"github.com/itchyny/gojq"
 
 	"github.com/semistrict/hotbed/internal/api"
+	"github.com/semistrict/hotbed/internal/cliauth"
 	"github.com/semistrict/hotbed/internal/setup"
 	"github.com/semistrict/hotbed/internal/tailnet"
 	"github.com/semistrict/hotbed/internal/version"
@@ -129,8 +130,8 @@ func cacheDir() string {
 }
 
 // localController is the controller this machine's client commands call:
-// the one `hotbed worker init` joined it to, or HOTBED_CONTROLLER on a
-// machine that is no worker.
+// HOTBED_CONTROLLER, the controller `hotbed worker init` joined it to, or the
+// default controller recorded by `hotbed login`.
 func localController() (string, error) {
 	if addr := os.Getenv("HOTBED_CONTROLLER"); addr != "" {
 		return addr, nil
@@ -139,9 +140,14 @@ func localController() (string, error) {
 	if err != nil {
 		return "", err
 	}
-	if addr == "" {
-		return "", api.Errorf(api.CodeNotInitialized, "this machine has no controller").
-			WithSuggestion("run `hotbed worker init CONTROLLER` once on this machine, or set HOTBED_CONTROLLER on one that is no worker")
+	if addr != "" {
+		return addr, nil
 	}
-	return addr, nil
+	if dir, derr := defaultHotbedDir(); derr == nil {
+		if def := cliauth.DefaultController(dir); def != "" {
+			return def, nil
+		}
+	}
+	return "", api.Errorf(api.CodeNotInitialized, "this machine has no controller").
+		WithSuggestion("run `hotbed login https://...`, `hotbed worker init CONTROLLER`, or set HOTBED_CONTROLLER")
 }

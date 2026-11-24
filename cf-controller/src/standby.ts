@@ -127,7 +127,12 @@ function supervisorKey(caller: CallerIdentity): string {
 export class StandbyState {
 	readonly changes = new Wakeups();
 	private readonly nodes = new Map<string, PowerState>();
+	private readonly nowFn: () => number;
 	wakeWaitMs = DEFAULT_WAKE_WAIT_MS;
+
+	constructor(nowFn: () => number = () => Date.now()) {
+		this.nowFn = nowFn;
+	}
 
 	holdBy(
 		host: string,
@@ -175,7 +180,7 @@ export class StandbyState {
 		this.changes.wake(host);
 		return () => {
 			p!.calls = Math.max(0, p!.calls - 1);
-			p!.endedAt = Date.now();
+			p!.endedAt = this.nowFn();
 		};
 	}
 

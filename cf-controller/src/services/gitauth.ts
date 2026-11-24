@@ -20,6 +20,60 @@ const GIT_TOKEN_LEASE_TTL_MS = 15 * 60_000;
 const OAUTH_REFRESH_LEAD_MS = 5 * 60_000;
 const GIT_HTTPS_USERNAME = "x-access-token";
 const MAX_PROXY_RESPONSE_BYTES = 16 * 1024 * 1024;
+const PENDING_LOGINS_META_KEY = "pending_github_logins";
+
+async function readJsonObject<T extends Record<string, unknown>>(
+	res: Response,
+	label: string,
+	errorCode: (typeof ErrorCode)[keyof typeof ErrorCode] = ErrorCode.Internal,
+): Promise<T> {
+	const text = await res.text();
+	try {
+		const parsed = JSON.parse(text) as unknown;
+		if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+			return parsed as T;
+		}
+	} catch {
+		// fall through to structured error
+	}
+	const snippet = text.trim().slice(0, 120);
+	throw hotbedError(
+		errorCode,
+		`${label}: unexpected non-JSON response (HTTP ${res.status})${snippet ? `: ${snippet}` : ""}`,
+	);
+}
+
+async function readBodyCapped(resp: Response, maxBytes: number): Promise<Uint8Array> {
+	if (!resp.body) return new Uint8Array(0);
+	const reader = resp.body.getReader();
+	const chunks: Uint8Array[] = [];
+	let total = 0;
+	try {
+		while (total < maxBytes) {
+			const { done, value } = await reader.read();
+			if (done) break;
+			if (!value || value.byteLength === 0) continue;
+			const remaining = maxBytes - total;
+			if (value.byteLength >= remaining) {
+				chunks.push(value.subarray(0, remaining));
+				total += remaining;
+				await reader.cancel();
+				break;
+			}
+			chunks.push(value);
+			total += value.byteLength;
+		}
+	} finally {
+		reader.releaseLock();
+	}
+	const out = new Uint8Array(total);
+	let offset = 0;
+	for (const c of chunks) {
+		out.set(c, offset);
+		offset += c.byteLength;
+	}
+	return out;
+}
 
 interface PendingGitHubLogin {
 	name: string;
@@ -157,7 +211,36 @@ function selectGitCredential(
 }
 
 export function createGitAuthService(ctrl: ControllerContext): ServiceImpl<typeof GitAuthService> {
-	const pendingLogins = new Map<string, PendingGitHubLogin>();
+	const inflightRefreshes = new Map<string, Promise<{ token: string; expiresAt: number }>>();
+
+	function loadPendingLogins(nowMs: number): Record<string, PendingGitHubLogin> {
+		const raw = ctrl.store.getMeta(PENDING_LOGINS_META_KEY);
+		if (!raw) return {};
+		try {
+			const parsed = JSON.parse(raw) as Record<string, PendingGitHubLogin>;
+			const out: Record<string, PendingGitHubLogin> = {};
+			for (const [id, p] of Object.entries(parsed)) {
+				if (p && typeof p.expiresAt === "number" && nowMs <= p.expiresAt) {
+					out[id] = p;
+				}
+			}
+			return out;
+		} catch {
+			return {};
+		}
+	}
+
+	function savePendingLogins(map: Record<string, PendingGitHubLogin>): void {
+		ctrl.store.setMeta(PENDING_LOGINS_META_KEY, JSON.stringify(map));
+	}
+
+	function deletePendingLogin(loginId: string, nowMs: number): void {
+		const map = loadPendingLogins(nowMs);
+		if (loginId in map) {
+			delete map[loginId];
+			savePendingLogins(map);
+		}
+	}
 
 	function resolveCredential(host: string, owner: string, repo: string): StoredGitCredential {
 		const candidates = ctrl.store.gitCredentialsByHost(host);
@@ -193,46 +276,66 @@ export function createGitAuthService(ctrl: ControllerContext): ServiceImpl<typeo
 		if (stored.secret.tokenExpiresAt > nowMs + OAUTH_REFRESH_LEAD_MS) {
 			return { token: stored.secret.token, expiresAt: stored.secret.tokenExpiresAt };
 		}
-		const oauthBase = githubOAuthBase(stored.cred.host, stored.cred.oauthUrl);
-		const clientId = stored.secret.clientId || DEFAULT_GITHUB_CLIENT_ID;
-		const form = new URLSearchParams({
-			client_id: clientId,
-			grant_type: "refresh_token",
-			refresh_token: stored.secret.refreshToken,
-		});
-		const res = await fetch(`${oauthBase}/login/oauth/access_token`, {
-			method: "POST",
-			headers: {
-				Accept: "application/json",
-				"Content-Type": "application/x-www-form-urlencoded",
-			},
-			body: form.toString(),
-		});
-		const data = (await res.json()) as {
-			access_token?: string;
-			refresh_token?: string;
-			expires_in?: number;
-			refresh_token_expires_in?: number;
-			error?: string;
-			error_description?: string;
-		};
-		if (!res.ok || data.error || !data.access_token) {
-			throw hotbedError(
-				ErrorCode.NotAuthorized,
-				`refresh GitHub OAuth token for ${stored.cred.name}: ${data.error_description || data.error || `HTTP ${res.status}`}`,
-			).withSuggestion("re-authenticate on the controller with: hotbed auth login");
+		const existing = inflightRefreshes.get(stored.cred.name);
+		if (existing) {
+			return existing;
 		}
-		const exp = data.expires_in ? nowMs + data.expires_in * 1000 : 0;
-		const rExp = data.refresh_token_expires_in ? nowMs + data.refresh_token_expires_in * 1000 : 0;
-		stored.secret.token = data.access_token;
-		stored.secret.refreshToken = data.refresh_token || stored.secret.refreshToken;
-		stored.secret.tokenExpiresAt = exp;
-		stored.secret.refreshExpiresAt = rExp;
-		stored.cred.expiresAt = BigInt(exp);
-		stored.cred.refreshable = Boolean(stored.secret.refreshToken);
-		stored.cred.updatedAt = BigInt(nowMs);
-		ctrl.store.putGitCredential(stored.cred, stored.secret);
-		return { token: stored.secret.token, expiresAt: exp || nowMs + GIT_TOKEN_LEASE_TTL_MS };
+		const run = (async () => {
+			const oauthBase = githubOAuthBase(stored.cred.host, stored.cred.oauthUrl);
+			const clientId = stored.secret.clientId || DEFAULT_GITHUB_CLIENT_ID;
+			const form = new URLSearchParams({
+				client_id: clientId,
+				grant_type: "refresh_token",
+				refresh_token: stored.secret.refreshToken!,
+			});
+			const res = await fetch(`${oauthBase}/login/oauth/access_token`, {
+				method: "POST",
+				headers: {
+					Accept: "application/json",
+					"Content-Type": "application/x-www-form-urlencoded",
+				},
+				body: form.toString(),
+			});
+			const data = await readJsonObject<{
+				access_token?: string;
+				refresh_token?: string;
+				expires_in?: number;
+				refresh_token_expires_in?: number;
+				error?: string;
+				error_description?: string;
+			}>(res, `refresh GitHub OAuth token for ${stored.cred.name}`, ErrorCode.NotAuthorized);
+			if (!res.ok || data.error || !data.access_token) {
+				throw hotbedError(
+					ErrorCode.NotAuthorized,
+					`refresh GitHub OAuth token for ${stored.cred.name}: ${data.error_description || data.error || `HTTP ${res.status}`}`,
+				).withSuggestion("re-authenticate on the controller with: hotbed auth login");
+			}
+			const refreshedNow = ctrl.now();
+			const exp = data.expires_in ? refreshedNow + data.expires_in * 1000 : 0;
+			const rExp = data.refresh_token_expires_in
+				? refreshedNow + data.refresh_token_expires_in * 1000
+				: 0;
+			stored.secret.token = data.access_token;
+			stored.secret.refreshToken = data.refresh_token || stored.secret.refreshToken;
+			stored.secret.tokenExpiresAt = exp;
+			stored.secret.refreshExpiresAt = rExp;
+			stored.cred.expiresAt = BigInt(exp);
+			stored.cred.refreshable = Boolean(stored.secret.refreshToken);
+			stored.cred.updatedAt = BigInt(refreshedNow);
+			ctrl.store.putGitCredential(stored.cred, stored.secret);
+			return {
+				token: stored.secret.token,
+				expiresAt: exp || refreshedNow + GIT_TOKEN_LEASE_TTL_MS,
+			};
+		})();
+		inflightRefreshes.set(stored.cred.name, run);
+		try {
+			return await run;
+		} finally {
+			if (inflightRefreshes.get(stored.cred.name) === run) {
+				inflightRefreshes.delete(stored.cred.name);
+			}
+		}
 	}
 
 	return {
@@ -261,7 +364,7 @@ export function createGitAuthService(ctrl: ControllerContext): ServiceImpl<typeo
 				},
 				body: form.toString(),
 			});
-			const data = (await res.json()) as {
+			const data = await readJsonObject<{
 				device_code?: string;
 				user_code?: string;
 				verification_uri?: string;
@@ -269,7 +372,7 @@ export function createGitAuthService(ctrl: ControllerContext): ServiceImpl<typeo
 				interval?: number;
 				error?: string;
 				error_description?: string;
-			};
+			}>(res, "start GitHub OAuth device flow");
 			if (!res.ok || data.error || !data.device_code || !data.user_code) {
 				throw hotbedError(
 					ErrorCode.Internal,
@@ -277,13 +380,11 @@ export function createGitAuthService(ctrl: ControllerContext): ServiceImpl<typeo
 				);
 			}
 			const nowMs = ctrl.now();
-			for (const [id, p] of pendingLogins) {
-				if (nowMs > p.expiresAt) pendingLogins.delete(id);
-			}
+			const pending = loadPendingLogins(nowMs);
 			const loginId = randomHex(12);
 			const expiresIn = data.expires_in ?? 900;
 			const interval = data.interval ?? 5;
-			pendingLogins.set(loginId, {
+			pending[loginId] = {
 				name,
 				host,
 				repos,
@@ -293,7 +394,8 @@ export function createGitAuthService(ctrl: ControllerContext): ServiceImpl<typeo
 				expiresAt: nowMs + expiresIn * 1000,
 				apiUrl,
 				oauthUrl,
-			});
+			};
+			savePendingLogins(pending);
 			return create(GitHubLoginChallengeSchema, {
 				loginId,
 				userCode: data.user_code,
@@ -311,14 +413,13 @@ export function createGitAuthService(ctrl: ControllerContext): ServiceImpl<typeo
 					"run `hotbed auth login` or pass --login-id from `hotbed auth login-start`",
 				);
 			}
-			const pending = pendingLogins.get(loginId);
+			const pending = loadPendingLogins(ctrl.now())[loginId];
 			if (!pending) {
 				throw hotbedError(
 					ErrorCode.NotFound,
 					`no pending GitHub login "${loginId}" (it may have expired or already completed)`,
 				).withSuggestion("run `hotbed auth login` to start a new login");
 			}
-			pendingLogins.delete(loginId);
 
 			const oauthBase = githubOAuthBase(pending.host, pending.oauthUrl);
 			let intervalMs = pending.intervalMs;
@@ -346,14 +447,14 @@ export function createGitAuthService(ctrl: ControllerContext): ServiceImpl<typeo
 					},
 					body: form.toString(),
 				});
-				const data = (await res.json()) as {
+				const data = await readJsonObject<{
 					access_token?: string;
 					refresh_token?: string;
 					expires_in?: number;
 					refresh_token_expires_in?: number;
 					error?: string;
 					error_description?: string;
-				};
+				}>(res, "poll GitHub OAuth device flow", ErrorCode.NotAuthorized);
 				if (data.access_token) {
 					tokenData = data;
 					break;
@@ -367,11 +468,14 @@ export function createGitAuthService(ctrl: ControllerContext): ServiceImpl<typeo
 					await new Promise((r) => setTimeout(r, intervalMs));
 					continue;
 				}
+				deletePendingLogin(loginId, ctrl.now());
 				throw hotbedError(
 					ErrorCode.NotAuthorized,
 					data.error_description || data.error || "GitHub OAuth device flow failed",
 				);
 			}
+
+			deletePendingLogin(loginId, ctrl.now());
 
 			if (!tokenData?.access_token) {
 				throw hotbedError(ErrorCode.NotAuthorized, "GitHub OAuth login expired");
@@ -391,7 +495,11 @@ export function createGitAuthService(ctrl: ControllerContext): ServiceImpl<typeo
 					`authenticated with GitHub, but failed to read user profile from ${apiBase}/user: HTTP ${userRes.status}`,
 				);
 			}
-			const user = (await userRes.json()) as { login?: string };
+			const user = await readJsonObject<{ login?: string }>(
+				userRes,
+				`read GitHub user profile from ${apiBase}/user`,
+				ErrorCode.NotAuthorized,
+			);
 			const nowMs = ctrl.now();
 			const exp = tokenData.expires_in ? nowMs + tokenData.expires_in * 1000 : 0;
 			const rExp = tokenData.refresh_token_expires_in
@@ -537,9 +645,7 @@ export function createGitAuthService(ctrl: ControllerContext): ServiceImpl<typeo
 				headers,
 				body: req.body && method !== "GET" && method !== "HEAD" ? req.body : undefined,
 			});
-			const buf = new Uint8Array(await resp.arrayBuffer());
-			const capped =
-				buf.byteLength > MAX_PROXY_RESPONSE_BYTES ? buf.subarray(0, MAX_PROXY_RESPONSE_BYTES) : buf;
+			const capped = await readBodyCapped(resp, MAX_PROXY_RESPONSE_BYTES);
 			const outHeaders: string[] = [];
 			resp.headers.forEach((v, k) => {
 				const low = k.toLowerCase();

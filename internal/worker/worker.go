@@ -190,10 +190,14 @@ func Join(ctx context.Context, o JoinOptions, tn Tailnet, hc *http.Client, check
 		owner = ctrl.Login
 		ctrlNodeID = ctrl.NodeID
 	}
+	workerToken := o.Token
+	if joined.WorkerToken != "" {
+		workerToken = joined.WorkerToken
+	}
 	cfg := statedir.WorkerConfig{
 		ClusterID: joined.ClusterId, Controller: controller, User: o.User, Dataset: o.Dataset,
 		UnitProperties: o.UnitProperties, Slice: o.Slice, Owner: owner, ControllerNodeID: ctrlNodeID,
-		Token: o.Token,
+		Token: workerToken,
 	}
 	if err := statedir.Commit(dir, statedir.Config{Worker: &cfg}); err != nil {
 		return JoinResult{}, err

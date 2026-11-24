@@ -28,13 +28,16 @@ import {
 } from "./gen/hotbed/v1/hotbed_pb.ts";
 import {
 	authenticateRequest,
+	checkSameOrigin,
 	clearSessionCookie,
+	INTERNAL_ORG_HEADER,
 	makeSessionCookie,
 	renderLoginPage,
 	sha256Hex,
 	timingSafeStringEqual,
 	type AuthEnv,
 } from "./auth.ts";
+import { formatOrgToken, isWorkOSEnabled } from "./workos.ts";
 import { BuildDistributor, type BuildsEnv, type TestBuildConfig } from "./builds.ts";
 import { createConnectFetchDispatcher, type ConnectFetchDispatcher } from "./connect-adapter.ts";
 import { ControllerContext } from "./context.ts";
@@ -63,6 +66,7 @@ export interface ControllerEnv extends AuthEnv, BuildsEnv {
 const ACTIVE_ALARM_MS = 15_000;
 const IDLE_ALARM_MS = 60_000;
 const CLUSTER_ID_META_KEY = "cluster_id";
+const ORG_ID_META_KEY = "org_id";
 
 function encodeBase64(bytes: Uint8Array): string {
 	let bin = "";
@@ -139,7 +143,7 @@ export class ControllerDO extends DurableObject<ControllerEnv> {
 	}
 
 	private initRuntime(): void {
-		this.builds = new BuildDistributor(this.env, this.store);
+		this.builds = new BuildDistributor(this.env, this.store, (p) => this.ctx.waitUntil(p));
 		if (this.testBuildConfig) {
 			this.builds.setTestConfig(this.testBuildConfig);
 		}
@@ -152,6 +156,7 @@ export class ControllerDO extends DurableObject<ControllerEnv> {
 				this.store.setMeta(CLUSTER_ID_META_KEY, clusterId);
 			}
 		}
+		const orgId = this.store.getMeta(ORG_ID_META_KEY) ?? "";
 		const controllerName = (this.env.CONTROLLER_NAME ?? "").trim() || "cloudflare-do";
 		const allowLocalRepos =
 			this.testAllowLocalRepos ?? (this.env.ALLOW_LOCAL_REPOS ?? "").trim() === "1";
@@ -161,6 +166,7 @@ export class ControllerDO extends DurableObject<ControllerEnv> {
 			tunnel: this.tunnel,
 			builds: this.builds,
 			clusterId,
+			orgId,
 			controllerName,
 			allowLocalRepos,
 		});
@@ -191,49 +197,75 @@ export class ControllerDO extends DurableObject<ControllerEnv> {
 		});
 	}
 
-	private async ensureAlarm(): Promise<void> {
-		const existing = await this.ctx.storage.getAlarm();
-		if (existing !== null && existing > this.ctrl.now()) {
-			return;
-		}
+	private desiredAlarmDelayMs(): number | null {
 		const hasActiveWork =
 			this.store.listSchedules("").some((s) => !s.paused) ||
 			this.store.liveSessionsByProject().size > 0;
+		if (hasActiveWork) return ACTIVE_ALARM_MS;
 		const hasIdleWork = this.store.listNodes().length > 0 || this.builds.needsBackgroundRefresh();
-		if (hasActiveWork) {
-			await this.ctx.storage.setAlarm(this.ctrl.now() + ACTIVE_ALARM_MS);
-		} else if (hasIdleWork) {
-			await this.ctx.storage.setAlarm(this.ctrl.now() + IDLE_ALARM_MS);
+		return hasIdleWork ? IDLE_ALARM_MS : null;
+	}
+
+	private async ensureAlarm(): Promise<void> {
+		const delay = this.desiredAlarmDelayMs();
+		if (delay === null) return;
+		const nowWall = Date.now();
+		const desiredAt = nowWall + delay;
+		const existing = await this.ctx.storage.getAlarm();
+		if (existing !== null && existing > nowWall && existing <= desiredAt + 1000) {
+			return;
 		}
+		await this.ctx.storage.setAlarm(desiredAt);
 	}
 
 	async runMaintenance(): Promise<void> {
-		await this.ctrl.reapIdle();
-		await this.scheduleRunner.tickSchedules();
-		await this.ctrl.settleRuns();
-		try {
-			await this.builds.refreshIfStale(this.ctrl.now());
-		} catch (err) {
-			this.store.logDaemon(
-				DaemonLogLevel.WARN,
-				"refresh GitHub builds",
-				{ err: err instanceof Error ? err.message : String(err) },
-				this.ctrl.now(),
-			);
+		const steps: Array<{ name: string; level: DaemonLogLevel; fn: () => Promise<void> | void }> = [
+			{ name: "reap idle sessions", level: DaemonLogLevel.ERROR, fn: () => this.ctrl.reapIdle() },
+			{
+				name: "tick schedules",
+				level: DaemonLogLevel.ERROR,
+				fn: () => this.scheduleRunner.tickSchedules(),
+			},
+			{
+				name: "settle scheduled runs",
+				level: DaemonLogLevel.ERROR,
+				fn: () => this.ctrl.settleRuns(),
+			},
+			{
+				name: "refresh GitHub builds",
+				level: DaemonLogLevel.WARN,
+				fn: async () => {
+					await this.builds.refreshIfStale(this.ctrl.now());
+				},
+			},
+			{
+				name: "prune controller store",
+				level: DaemonLogLevel.ERROR,
+				fn: () => this.ctrl.maybePrune(),
+			},
+		];
+		for (const step of steps) {
+			try {
+				await step.fn();
+			} catch (err) {
+				this.store.logDaemon(
+					step.level,
+					step.name,
+					{ err: err instanceof Error ? err.message : String(err) },
+					this.ctrl.now(),
+				);
+			}
 		}
-		this.ctrl.maybePrune();
 	}
 
 	override async alarm(): Promise<void> {
-		await this.runMaintenance();
-		const hasActiveWork =
-			this.store.listSchedules("").some((s) => !s.paused) ||
-			this.store.liveSessionsByProject().size > 0;
-		const hasIdleWork = this.store.listNodes().length > 0 || this.builds.needsBackgroundRefresh();
-		if (hasActiveWork) {
-			await this.ctx.storage.setAlarm(this.ctrl.now() + ACTIVE_ALARM_MS);
-		} else if (hasIdleWork) {
-			await this.ctx.storage.setAlarm(this.ctrl.now() + IDLE_ALARM_MS);
+		try {
+			await this.runMaintenance();
+		} finally {
+			const delay = this.desiredAlarmDelayMs();
+			if (delay !== null) {
+				await this.ctx.storage.setAlarm(Date.now() + delay);
+			}
 		}
 	}
 
@@ -247,6 +279,36 @@ export class ControllerDO extends DurableObject<ControllerEnv> {
 
 	override webSocketError(ws: WebSocket, error: unknown): void {
 		this.tunnel.handleClose(ws, 1011, error instanceof Error ? error.message : String(error));
+	}
+
+	private bindOrgOrRefuse(request: Request): string | Response {
+		const reqOrgId = (request.headers.get(INTERNAL_ORG_HEADER) ?? "").trim();
+		if (!reqOrgId) {
+			return this.ctrl.orgId;
+		}
+		if (this.ctrl.orgId && this.ctrl.orgId !== reqOrgId) {
+			return Response.json(
+				{
+					code: ErrorCode.NotAuthorized,
+					message: `organization mismatch: this controller DO belongs to ${this.ctrl.orgId}, not ${reqOrgId}`,
+				},
+				{ status: 403 },
+			);
+		}
+		if (!this.ctrl.orgId) {
+			this.store.setMeta(ORG_ID_META_KEY, reqOrgId);
+			this.ctrl.orgId = reqOrgId;
+		}
+		return this.ctrl.orgId;
+	}
+
+	private authRequest(request: Request, opts?: { allowJoinToken?: boolean }) {
+		return authenticateRequest(request, this.env, this.store, {
+			allowJoinToken: opts?.allowJoinToken,
+			trustInternalHeader: true,
+			nowMs: this.ctrl.now(),
+			orgId: this.ctrl.orgId,
+		});
 	}
 
 	override async fetch(request: Request): Promise<Response> {
@@ -263,11 +325,19 @@ export class ControllerDO extends DurableObject<ControllerEnv> {
 			return Response.json({
 				ok: true,
 				clusterId: this.ctrl.clusterId,
+				orgId: this.ctrl.orgId || undefined,
+				workosEnabled: isWorkOSEnabled(this.env),
 				version: this.builds.versionString(),
 				build: this.builds.currentBuildNumber(),
 				commit: this.builds.controllerCommit(),
 				connectedWorkers: this.tunnel.connectedNodeIds().size,
 			});
+		}
+
+		// Defense-in-depth: bind/verify organization ID for this DO instance.
+		const boundOrg = this.bindOrgOrRefuse(request);
+		if (boundOrg instanceof Response) {
+			return boundOrg;
 		}
 
 		// 2. Cockpit cookie auth endpoints
@@ -319,6 +389,10 @@ export class ControllerDO extends DurableObject<ControllerEnv> {
 		}
 
 		if (pathname === "/auth/logout" && request.method === "POST") {
+			const csrfErr = checkSameOrigin(request);
+			if (csrfErr) {
+				return Response.json({ code: ErrorCode.NotAuthorized, message: csrfErr }, { status: 403 });
+			}
 			const secure = url.protocol === "https:";
 			return new Response(null, {
 				status: 303,
@@ -331,21 +405,28 @@ export class ControllerDO extends DurableObject<ControllerEnv> {
 
 		if (pathname === "/auth/check" && request.method === "GET") {
 			try {
-				const caller = await authenticateRequest(request, this.env, this.store);
+				const caller = await this.authRequest(request);
 				if (caller.role !== "owner") {
 					return new Response("Forbidden", { status: 403 });
 				}
-				return Response.json({ ok: true, login: caller.login, authMethod: caller.authMethod });
+				return Response.json({
+					ok: true,
+					login: caller.login,
+					userId: caller.userId,
+					orgId: caller.orgId || this.ctrl.orgId,
+					orgRole: caller.orgRole,
+					authMethod: caller.authMethod,
+				});
 			} catch (err) {
 				const he = fromUnknownError(err);
 				return Response.json(he.toJSON(), { status: 401 });
 			}
 		}
 
-		// 3. Per-worker token minting (owner-only)
+		// 3. Per-worker token minting (owner / org user)
 		if (pathname === "/admin/worker-token" && request.method === "POST") {
 			try {
-				const caller = await authenticateRequest(request, this.env, this.store);
+				const caller = await this.authRequest(request);
 				if (caller.role !== "owner") {
 					return Response.json(
 						{ code: ErrorCode.NotAuthorized, message: "owner token required" },
@@ -364,10 +445,179 @@ export class ControllerDO extends DurableObject<ControllerEnv> {
 						{ status: 400 },
 					);
 				}
-				const token = `hbw_${randomHex(24)}`;
+				const token = formatOrgToken("hbw", this.ctrl.orgId || caller.orgId);
 				const hash = await sha256Hex(token);
 				this.store.putWorkerToken(hash, nodeId, hostname, this.ctrl.now());
-				return Response.json({ token, nodeId, hostname }, { status: 201 });
+				return Response.json(
+					{ token, nodeId, hostname, orgId: this.ctrl.orgId || undefined },
+					{ status: 201 },
+				);
+			} catch (err) {
+				const he = fromUnknownError(err);
+				return Response.json(he.toJSON(), {
+					status: he.code === ErrorCode.NotAuthorized ? 403 : 500,
+				});
+			}
+		}
+
+		// 3b. Per-organization worker join tokens (GET/POST /admin/join-tokens, DELETE /admin/join-tokens/:id)
+		if (pathname === "/admin/join-tokens" || pathname.startsWith("/admin/join-tokens/")) {
+			try {
+				const caller = await this.authRequest(request);
+				if (caller.role !== "owner") {
+					return Response.json(
+						{
+							code: ErrorCode.NotAuthorized,
+							message: "organization member authentication required",
+						},
+						{ status: 403 },
+					);
+				}
+				if (pathname === "/admin/join-tokens" && request.method === "GET") {
+					return Response.json({
+						orgId: this.ctrl.orgId || undefined,
+						tokens: this.store.listJoinTokens(),
+					});
+				}
+				if (pathname === "/admin/join-tokens" && request.method === "POST") {
+					const body = (await request.json().catch(() => ({}))) as {
+						label?: string;
+						expiresInHours?: number;
+					};
+					const label = (body.label ?? "").trim().slice(0, 100);
+					const nowMs = this.ctrl.now();
+					let expiresAt: number | null = null;
+					if (typeof body.expiresInHours === "number" && body.expiresInHours > 0) {
+						expiresAt = nowMs + Math.round(body.expiresInHours * 3600_000);
+					}
+					const id = `jt_${randomHex(8)}`;
+					const token = formatOrgToken("hbj", this.ctrl.orgId || caller.orgId);
+					const tokenHash = await sha256Hex(token);
+					this.store.putJoinToken({
+						id,
+						tokenHash,
+						label,
+						createdBy: caller.login,
+						createdAt: nowMs,
+						expiresAt,
+					});
+					return Response.json(
+						{
+							id,
+							token,
+							label,
+							createdBy: caller.login,
+							createdAt: nowMs,
+							expiresAt,
+							orgId: this.ctrl.orgId || undefined,
+						},
+						{ status: 201 },
+					);
+				}
+				if (pathname.startsWith("/admin/join-tokens/") && request.method === "DELETE") {
+					const id = decodeURIComponent(pathname.slice("/admin/join-tokens/".length)).trim();
+					if (!id || !this.store.revokeJoinToken(id, this.ctrl.now())) {
+						return Response.json(
+							{ code: ErrorCode.NotFound, message: `no join token ${id}` },
+							{ status: 404 },
+						);
+					}
+					return Response.json({ ok: true, id });
+				}
+				return new Response("Method Not Allowed", { status: 405 });
+			} catch (err) {
+				const he = fromUnknownError(err);
+				return Response.json(he.toJSON(), {
+					status: he.code === ErrorCode.NotAuthorized ? 403 : 500,
+				});
+			}
+		}
+
+		// 3c. Per-organization personal API tokens (GET/POST /admin/api-tokens, DELETE /admin/api-tokens/:id)
+		if (pathname === "/admin/api-tokens" || pathname.startsWith("/admin/api-tokens/")) {
+			try {
+				const caller = await this.authRequest(request);
+				if (caller.role !== "owner") {
+					return Response.json(
+						{
+							code: ErrorCode.NotAuthorized,
+							message: "organization member authentication required",
+						},
+						{ status: 403 },
+					);
+				}
+				const isAdmin = caller.orgRole === "admin" || caller.orgRole === "owner" || !caller.userId;
+				if (pathname === "/admin/api-tokens" && request.method === "GET") {
+					const tokens = this.store.listApiTokens(isAdmin ? undefined : caller.userId);
+					return Response.json({
+						orgId: this.ctrl.orgId || undefined,
+						tokens,
+					});
+				}
+				if (pathname === "/admin/api-tokens" && request.method === "POST") {
+					const body = (await request.json().catch(() => ({}))) as {
+						name?: string;
+						expiresInDays?: number;
+					};
+					const name = (body.name ?? "").trim().slice(0, 100);
+					if (!name) {
+						return Response.json(
+							{ code: ErrorCode.InvalidArgs, message: "token name is required" },
+							{ status: 400 },
+						);
+					}
+					const nowMs = this.ctrl.now();
+					let expiresAt: number | null = null;
+					if (typeof body.expiresInDays === "number" && body.expiresInDays > 0) {
+						expiresAt = nowMs + Math.round(body.expiresInDays * 24 * 3600_000);
+					}
+					const id = `at_${randomHex(8)}`;
+					const token = formatOrgToken("hbu", this.ctrl.orgId || caller.orgId);
+					const tokenHash = await sha256Hex(token);
+					this.store.putApiToken({
+						id,
+						tokenHash,
+						name,
+						userId: caller.userId,
+						email: caller.login,
+						orgRole: caller.orgRole || "member",
+						createdAt: nowMs,
+						expiresAt,
+					});
+					return Response.json(
+						{
+							id,
+							token,
+							name,
+							userId: caller.userId,
+							email: caller.login,
+							orgRole: caller.orgRole || "member",
+							createdAt: nowMs,
+							expiresAt,
+							orgId: this.ctrl.orgId || undefined,
+						},
+						{ status: 201 },
+					);
+				}
+				if (pathname.startsWith("/admin/api-tokens/") && request.method === "DELETE") {
+					const id = decodeURIComponent(pathname.slice("/admin/api-tokens/".length)).trim();
+					const existing = id ? this.store.getApiToken(id) : null;
+					if (!existing) {
+						return Response.json(
+							{ code: ErrorCode.NotFound, message: `no api token ${id}` },
+							{ status: 404 },
+						);
+					}
+					if (!isAdmin && existing.userId !== caller.userId) {
+						return Response.json(
+							{ code: ErrorCode.NotAuthorized, message: "cannot revoke another user's API token" },
+							{ status: 403 },
+						);
+					}
+					this.store.revokeApiToken(id, this.ctrl.now());
+					return Response.json({ ok: true, id });
+				}
+				return new Response("Method Not Allowed", { status: 405 });
 			} catch (err) {
 				const he = fromUnknownError(err);
 				return Response.json(he.toJSON(), {
@@ -384,9 +634,7 @@ export class ControllerDO extends DurableObject<ControllerEnv> {
 			}
 			let caller;
 			try {
-				caller = await authenticateRequest(request, this.env, this.store, {
-					allowJoinToken: true,
-				});
+				caller = await this.authRequest(request);
 			} catch (err) {
 				const he = fromUnknownError(err);
 				return Response.json(he.toJSON(), { status: 403 });
@@ -425,7 +673,7 @@ export class ControllerDO extends DurableObject<ControllerEnv> {
 		// 5. Binary build downloads (/builds/{build}/{asset})
 		if (pathname.startsWith("/builds/") && request.method === "GET") {
 			try {
-				await authenticateRequest(request, this.env, this.store, { allowJoinToken: true });
+				await this.authRequest(request, { allowJoinToken: true });
 			} catch (err) {
 				const he = fromUnknownError(err);
 				return Response.json(he.toJSON(), { status: 403 });
@@ -441,7 +689,7 @@ export class ControllerDO extends DurableObject<ControllerEnv> {
 		if (this.dispatcher.hasPath(pathname)) {
 			let caller;
 			try {
-				caller = await authenticateRequest(request, this.env, this.store, {
+				caller = await this.authRequest(request, {
 					allowJoinToken: pathname === "/hotbed.v1.ClusterService/Join",
 				});
 			} catch (err) {

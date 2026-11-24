@@ -54,7 +54,9 @@ import {
 	type Totals,
 } from "../gen/hotbed/v1/hotbed_pb.ts";
 import { isSupportedPlatform } from "../builds.ts";
+import { sha256Hex } from "../auth.ts";
 import { getCaller } from "../connect-adapter.ts";
+import { formatOrgToken } from "../workos.ts";
 import {
 	PROJECT_NAME_RE,
 	REPO_ID_RE,
@@ -332,18 +334,27 @@ export function createClusterService(
 	}
 
 	return {
-		join(_req, ctx) {
+		async join(_req, ctx) {
 			const caller = getCaller(ctx.values);
+			const nowMs = ctrl.now();
 			const node = ctrl.store.joinNode(
 				caller.nodeId,
 				caller.hostname,
 				caller.login,
 				caller.addr,
-				ctrl.now(),
+				nowMs,
 			);
+			let workerToken = "";
+			if (caller.authMethod !== "worker-token") {
+				const orgId = ctrl.orgId || caller.orgId;
+				workerToken = formatOrgToken("hbw", orgId);
+				const hash = await sha256Hex(workerToken);
+				ctrl.store.putWorkerToken(hash, node.id, node.hostname, nowMs);
+			}
 			return create(JoinResponseSchema, {
 				clusterId: ctrl.clusterId,
 				node: ctrl.withOnline(node),
+				workerToken,
 			});
 		},
 
@@ -425,6 +436,12 @@ export function createClusterService(
 			}
 			ctrl.findNodeByHost(req.node);
 			const caller = getCaller(ctx.values);
+			if (caller.role === "worker" && caller.hostname !== req.node) {
+				throw hotbedError(
+					ErrorCode.NotAuthorized,
+					`worker ${caller.hostname} may not supervise ${req.node}`,
+				);
+			}
 			const release = ctrl.power.holdBy(
 				req.node,
 				caller,
@@ -476,8 +493,15 @@ export function createClusterService(
 			if (!req.node) throw hotbedError(ErrorCode.InvalidArgs, "node is required");
 			if (!req.usage) throw hotbedError(ErrorCode.InvalidArgs, "usage is required");
 			ctrl.findNodeByHost(req.node);
+			const caller = getCaller(ctx.values);
+			if (caller.role === "worker" && caller.hostname !== req.node) {
+				throw hotbedError(
+					ErrorCode.NotAuthorized,
+					`worker ${caller.hostname} may not report host usage for ${req.node}`,
+				);
+			}
 			const nowMs = ctrl.now();
-			ctrl.power.authorizeHostReporter(req.node, getCaller(ctx.values), nowMs);
+			ctrl.power.authorizeHostReporter(req.node, caller, nowMs);
 			const { usage, effectiveAt, expiresAt } = prepareHostUsage(req.usage, nowMs);
 			ctrl.hostUsages.record(req.node, usage, effectiveAt, expiresAt, nowMs);
 			return create(ReportHostUsageResponseSchema);

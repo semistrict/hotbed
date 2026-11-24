@@ -1,19 +1,21 @@
-# `cf-controller` — Hotbed Controller on Cloudflare Workers + Single SQLite Durable Object
+# `cf-controller` — Hotbed Controller on Cloudflare Workers + Per-Organization SQLite Durable Objects
 
-This directory is the `hotbed` controller running on **Cloudflare Workers** backed by a **single SQLite-backed Durable Object** (`ControllerDO`).
+This directory is the `hotbed` controller running on **Cloudflare Workers** backed by **one SQLite-backed Durable Object (`ControllerDO`) per organization**.
 
 ## Architecture
 
-- **Single SQLite Durable Object (`ControllerDO`) + Drizzle ORM Auto-Migrations:**
+- **One SQLite Durable Object (`ControllerDO`) per Organization + Drizzle ORM Auto-Migrations:**
+  - When WorkOS AuthKit is configured (`WORKOS_CLIENT_ID`, `WORKOS_API_KEY`, `WORKOS_COOKIE_PASSWORD`), each WorkOS organization (`org_...`) routes to its own isolated SQLite `ControllerDO` (`org:<org_id>`, or `"default"` when `DEFAULT_ORG_ID` matches so an existing single-DO cluster migrates in place).
+  - Multiple users per organization share that organization's nodes, projects, sessions, questions, memories, reviews, and schedules, while every organization's data, git credentials, and worker tokens stay physically isolated in its own DO SQLite database.
   - Schema is declared with Drizzle ORM in `src/db/schema.ts` and managed with Drizzle Kit (`drizzle.config.ts` with `driver: "durable-sqlite"`).
   - Generated SQL migrations in `drizzle/` are bundled as native Cloudflare Worker Text modules and **auto-run at Durable Object startup** via `await migrate(this.db, migrations)` inside `ctx.blockConcurrencyWhile(...)` before any request or alarm is handled.
-  - All controller tables (including `kv_meta`, `worker_tokens`, `daemon_logs`) live in the DO's embedded SQLite database.
-- **Full ConnectRPC API parity:** Serves all 7 services (`ClusterService`, `SessionService`, `WorkspaceService`, `QuestionService`, `ReviewService`, `ScheduleService`, `GitAuthService`) using `@connectrpc/connect` + `@bufbuild/protobuf` (`protoc-gen-es`), including `hotbed.v1.ErrorInfo` details, `Hotbed-Build` headers, and `(param) = { local: true }` refusal.
+  - All controller tables (including `kv_meta`, `worker_tokens`, `join_tokens`, `api_tokens`, `daemon_logs`) live in each org DO's embedded SQLite database.
+- **Full ConnectRPC API parity:** Serves all 8 services (`ClusterService`, `SessionService`, `WorkspaceService`, `QuestionService`, `MemoryService`, `ReviewService`, `ScheduleService`, `GitAuthService`) using `@connectrpc/connect` + `@bufbuild/protobuf` (`protoc-gen-es`), including `hotbed.v1.ErrorInfo` details, `Hotbed-Build` headers, and `(param) = { local: true }` refusal.
 - **Persistent Worker WebSocket Tunnel (`/ws/worker`):** Local Go workers behind NAT/Tailscale open an outbound WebSocket to `/ws/worker` (using Cloudflare's WebSocket Hibernation API with `"ping"`/`"pong"` auto-response). The DO multiplexes controller→worker `WorkspaceService` unary and server-streaming RPCs down this tunnel; direct client↔worker data-plane traffic (`Sync`, `RunCommand`, `FollowLog`, SSH) remains over Tailscale.
 - **Background Maintenance via DO Alarms:** Replaces Go background goroutines with a Durable Object `alarm()` loop that reaps idle sessions, triggers due cron schedules, settles scheduled runs, polls GitHub Releases (`build-N` + `SHA256SUMS`), and prunes old telemetry.
 - **Fail-Closed Authentication:**
-  - `OWNER_TOKEN`: Bearer token for `hotbed` CLI (`HOTBED_TOKEN`) and Cockpit `/auth/login` (`HttpOnly; SameSite=Strict` HMAC cookie with same-origin CSRF checks).
-  - `JOIN_TOKEN` + per-worker tokens (`POST /admin/worker-token`): Scoped worker auth for `Join`, `Heartbeat`, `PushEvents`, `/ws/worker`, and `/builds/*`.
+  - **WorkOS AuthKit (multi-org, multi-user):** Browser OAuth + PKCE (`/auth/login` → `/auth/callback`, AES-256-GCM sealed `HttpOnly` cookie with transparent JWT refresh), CLI loopback PKCE & Device Flow (`hotbed login`, `/auth/cli/*`), local WorkOS JWKS JWT verification (`RS256`/`ES256`), and org-scoped tokens: worker join tokens (`hbj_<org_id>.<secret>`), node-bound worker tokens (`hbw_<org_id>.<secret>`, auto-minted on `ClusterService/Join`), and personal API tokens (`hbu_<org_id>.<secret>`). Defaults to `WORKOS_AUTH_PROVIDER=authkit` (supporting Google login and any other WorkOS-enabled providers/SSO with zero code changes).
+  - `OWNER_TOKEN` / `JOIN_TOKEN` (single-tenant / dev): Bearer token for `hotbed` CLI (`HOTBED_TOKEN`) and Cockpit `/auth/login` (`HttpOnly; SameSite=Strict` HMAC cookie with same-origin CSRF checks).
   - Optional **Cloudflare Access** JWT verification (`Cf-Access-Jwt-Assertion`) when `CF_ACCESS_AUD` and `CF_ACCESS_TEAM_DOMAIN` are configured.
 - **Self-Known Version & Direct GitHub Binary Updates:** CI stamps `HOTBED_BUILD_NUMBER`, `HOTBED_GIT_COMMIT`, and `HOTBED_BUILD_SHA256SUMS` into the Worker bundle at deploy time so the controller always knows its exact deployed version and target checksums. Heartbeats and `GetBuild` return the direct GitHub Release `download_url` + `sha256`, and workers running an older build fetch directly from GitHub, verify SHA-256, atomically replace their binary, and `execve` themselves (newer workers are never downgraded). `/builds/{build}/{asset}` remains available as a proxy fallback for older workers or private repos.
 
@@ -37,37 +39,25 @@ pnpm run dev                     # cf dev (local workerd)
    cd cf-controller
    cf deploy
    ```
-2. Configure required secrets:
+2. Configure secrets:
    ```sh
-   npx wrangler secret put OWNER_TOKEN --name hotbed-controller
-   npx wrangler secret put JOIN_TOKEN --name hotbed-controller
+   # WorkOS AuthKit (multi-org / Google login + any other WorkOS providers):
+   # In WorkOS Dashboard -> Redirects, add:
+   #   https://<your-controller-domain>/auth/callback
+   # And set Sign-out redirect URI to:
+   #   https://<your-controller-domain>/auth/login
+   cf workers secrets update --worker hotbed-controller --name WORKOS_CLIENT_ID --type secret_text
+   cf workers secrets update --worker hotbed-controller --name WORKOS_API_KEY --type secret_text
+   cf workers secrets update --worker hotbed-controller --name WORKOS_COOKIE_PASSWORD --type secret_text
+   # Optional: map an existing single-DO cluster ("default") to your WorkOS org ID:
+   #   cf workers secrets update --worker hotbed-controller --name DEFAULT_ORG_ID --type secret_text
+   # Optional legacy/single-tenant secrets:
+   cf workers secrets update --worker hotbed-controller --name OWNER_TOKEN --type secret_text
+   cf workers secrets update --worker hotbed-controller --name JOIN_TOKEN --type secret_text
    # Optional (for private GitHub release downloads):
-   npx wrangler secret put GITHUB_TOKEN --name hotbed-controller
+   cf workers secrets update --worker hotbed-controller --name GITHUB_TOKEN --type secret_text
    ```
 3. (Optional) Enable Cloudflare Access for the Cockpit UI by setting `CF_ACCESS_AUD` and `CF_ACCESS_TEAM_DOMAIN` in `cloudflare.config.ts` and protecting the Worker's custom domain with an Access Application (bypassing `/hotbed.v1.*`, `/ws/worker`, `/builds/*`, `/healthz` for Bearer-authenticated CLI/workers).
-
-## Live Migration from an Existing Controller (e.g. `ubu1`)
-
-Once workers and your CLI are upgraded to a build containing this change:
-
-1. Deploy `cf-controller` and set `OWNER_TOKEN` and `JOIN_TOKEN`.
-2. Trigger a one-command live migration against your existing Go controller:
-   ```sh
-   hotbed admin migrate "https://hotbed-controller.<your-subdomain>.workers.dev" \
-     --token "$OWNER_TOKEN"
-   ```
-   What happens automatically:
-   - The source controller exports its `clusterId` and all durable tables from `hotbed.db` and POSTs them to `POST /admin/import` on `cf-controller`.
-   - `cf-controller` imports the snapshot atomically, preserves `clusterId`, and mints a dedicated `hbw_...` per-worker bearer token for every active node.
-   - The source controller persists **migrated state** (`controller_migration` table) and refuses new mutating client RPCs with a pointer to the new URL.
-   - On each worker's next `Heartbeat` or `PushEvents` (within seconds — or whenever a sleeping worker wakes up later), the source controller replies with `migrated_to` carrying the target URL, `controller_node_id`, and that worker's minted token.
-   - Each worker atomically rewrites its own `hotbed.json` and restarts into `cf-controller` (opening `/ws/worker` and keeping all warm ZFS/btrfs bases and systemd-managed workloads intact).
-3. Point your CLI at the new controller:
-   ```sh
-   export HOTBED_CONTROLLER="https://hotbed-controller.<your-subdomain>.workers.dev"
-   export HOTBED_TOKEN="$OWNER_TOKEN"
-   hotbed nodes
-   ```
 
 ## Regenerating Protobuf Bindings
 

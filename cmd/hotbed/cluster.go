@@ -12,6 +12,7 @@ import (
 	"connectrpc.com/connect/v2"
 
 	"github.com/semistrict/hotbed/internal/api"
+	"github.com/semistrict/hotbed/internal/cliauth"
 	"github.com/semistrict/hotbed/internal/gen/hotbed/v1/hotbedv1connect"
 	"github.com/semistrict/hotbed/internal/setup"
 	"github.com/semistrict/hotbed/internal/statedir"
@@ -47,16 +48,21 @@ func (f *controllerClient) callController(addr string, d deps) {
 var defaultHotbedDir = setup.DefaultDir
 
 // controllerAuthToken returns the bearer token for controller: HOTBED_TOKEN if
-// set, otherwise ~/.hotbed/token when controller is an HTTPS URL.
+// set, otherwise WorkOS credentials from ~/.hotbed/auth.json (auto-refreshing
+// expiring JWTs and honoring HOTBED_ORG), otherwise legacy ~/.hotbed/token for
+// HTTPS controllers.
 func controllerAuthToken(controller string) string {
 	if tok := strings.TrimSpace(os.Getenv("HOTBED_TOKEN")); tok != "" {
 		return tok
 	}
-	if !strings.HasPrefix(strings.ToLower(strings.TrimSpace(controller)), "https://") {
-		return ""
-	}
 	dir, err := defaultHotbedDir()
 	if err != nil {
+		return ""
+	}
+	if tok, err := cliauth.ResolveToken(context.Background(), dir, controller, strings.TrimSpace(os.Getenv("HOTBED_ORG")), nil); err == nil && tok != "" {
+		return tok
+	}
+	if !strings.HasPrefix(strings.ToLower(strings.TrimSpace(controller)), "https://") {
 		return ""
 	}
 	b, err := os.ReadFile(filepath.Join(dir, "token"))
@@ -113,8 +119,12 @@ type joinCmd struct {
 }
 
 func (c *joinCmd) Exec(ctx context.Context, d deps) (any, error) {
+	token := strings.TrimSpace(c.Token)
+	if token == "" {
+		token = controllerAuthToken(c.Controller)
+	}
 	return worker.Join(ctx, worker.JoinOptions{
-		Dir: c.Dir, Controller: c.Controller, User: c.User, Token: c.Token, Dataset: c.ZFSDataset, UnitProperties: c.UnitProperties, Slice: c.Slice,
+		Dir: c.Dir, Controller: c.Controller, User: c.User, Token: token, Dataset: c.ZFSDataset, UnitProperties: c.UnitProperties, Slice: c.Slice,
 	}, d.tailnet, d.http, d.check)
 }
 
