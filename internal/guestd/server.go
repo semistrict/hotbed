@@ -728,13 +728,15 @@ func (s *Server) handleListFiles(w http.ResponseWriter, r *http.Request) {
 
 func listRepoFiles(ctx context.Context, repoRoot *os.Root, dir, base string) ([]*pb.FileEntry, error) {
 	g := gitops.Git{Dir: dir}
-	list, err := g.Run(ctx, "ls-files", "-z")
+	// hotbed-guestd runs as root while workspace repos are owned by the non-root
+	// build user; pass safe.directory=* so git does not reject dubious ownership.
+	list, err := g.Run(ctx, "-c", "safe.directory=*", "ls-files", "-z")
 	if err != nil {
 		return nil, err
 	}
 	changes := map[string]string{}
 	if base != "" {
-		status, err := g.Run(ctx, "diff", "--name-status", "-z", base)
+		status, err := g.Run(ctx, "-c", "safe.directory=*", "diff", "--name-status", "-z", base)
 		if err != nil {
 			return nil, err
 		}
@@ -825,7 +827,7 @@ func (s *Server) handleGetFile(w http.ResponseWriter, r *http.Request) {
 	var changed []int32
 	if req.BaseCommit != "" {
 		g := gitops.Git{Dir: filepath.Join(s.workDir, req.Repo)}
-		diff, err := g.Run(r.Context(), "diff", "-U0", req.BaseCommit, "--", req.RelPath)
+		diff, err := g.Run(r.Context(), "-c", "safe.directory=*", "diff", "-U0", req.BaseCommit, "--", req.RelPath)
 		if err != nil {
 			writeErr(w, http.StatusInternalServerError, "git diff: "+err.Error())
 			return
