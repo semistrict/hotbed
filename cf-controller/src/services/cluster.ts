@@ -836,6 +836,7 @@ export function createClusterService(
 			const sessions = ctrl.store.recentSessions(dayMs, "", "");
 			const scheds = schedules.allSchedules("");
 			const openQuestions = ctrl.store.openQuestionsCount();
+			const memCounts = ctrl.store.pendingMemoriesCounts();
 			const projects = ctrl.projects();
 
 			const nodes = [];
@@ -892,6 +893,8 @@ export function createClusterService(
 				controllerLogs: ctrl.store.daemonLogSummary(ctrl.controllerName, nowMs),
 				placements,
 				admissionEvents,
+				pendingMemories: memCounts.total,
+				globalPendingMemories: memCounts.global,
 			});
 		},
 

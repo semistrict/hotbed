@@ -58,8 +58,9 @@ type mcpServer struct {
 	alive context.Context
 
 	mu       sync.Mutex
-	session  string // empty until started, and again once it ends
-	reminder string // setup reminder from the latest StartSession
+	session  string             // empty until started, and again once it ends
+	reminder string             // setup reminder from the latest StartSession
+	memories *pb.MemoryBriefing // compact memory briefing from the latest StartSession
 	// kept counts the sessions started: a keep-alive goes on only while
 	// its session is the latest, so a session resumed is kept by one.
 	kept   int
@@ -82,16 +83,20 @@ func (s *mcpServer) serve(ctx context.Context, t mcp.Transport) error {
 	s.alive = alive
 	// Started now, before the client asks for anything; if the controller
 	// cannot be reached, each tool call tries again.
-	instructions := "hotbed's tools: builds, tests and dev servers on a hotbed cluster, and questions for the user. Read `hotbed skills get hotbed` for how hotbed works."
+	instructions := "hotbed's tools: builds, tests and dev servers on a hotbed cluster, questions for the user, and cross-agent memories. Read `hotbed skills get hotbed` for how hotbed works."
 	if id, err := s.ensure(ctx); err != nil {
 		fmt.Fprintf(s.d.stderr, "hotbed mcp: no session yet: %v\n", toAPIError(err))
 	} else {
 		instructions += fmt.Sprintf(" The tools act as session %s, which hotbed commands run here use too.", id)
 		s.mu.Lock()
 		reminder := s.reminder
+		memories := s.memories
 		s.mu.Unlock()
+		if memText := formatMemoryBriefingForInstructions(memories); memText != "" {
+			instructions += "\n\n" + memText
+		}
 		if reminder != "" {
-			instructions += " " + reminder
+			instructions += "\n\n" + reminder
 		}
 	}
 	defer s.end()
@@ -190,6 +195,7 @@ func (s *mcpServer) ensure(ctx context.Context) (string, error) {
 	}
 	s.session = sess.Id
 	s.reminder = sess.GetReminder()
+	s.memories = sess.GetMemories()
 	s.kept++
 	go s.keepAlive(s.alive, sess.Id, s.kept)
 	return s.session, nil
@@ -265,4 +271,41 @@ func (s *mcpServer) end() {
 	if err != nil && api.CodeOf(err) != api.CodeNotFound {
 		fmt.Fprintf(s.d.stderr, "hotbed mcp: could not end session %s: %v\n", id, strings.TrimSpace(toAPIError(err).Error()))
 	}
+}
+
+func formatMemoryBriefingForInstructions(b *pb.MemoryBriefing) string {
+	if b == nil || (len(b.Always) == 0 && len(b.OnDemand) == 0) {
+		return ""
+	}
+	var sb strings.Builder
+	fmt.Fprintf(&sb, "Memories (%d always-on, %d on-demand — fetch details with tool `memory_get` or `hotbed memory get SLUG`):", len(b.Always), len(b.OnDemand))
+	scopeTag := func(e *pb.MemoryIndexEntry) string {
+		s := e.Project
+		if s == "" {
+			s = "global"
+		}
+		if e.Repo != "" {
+			s += "/" + e.Repo
+		}
+		return s
+	}
+	if len(b.Always) > 0 {
+		sb.WriteString("\nAlways-on:")
+		for _, e := range b.Always {
+			fmt.Fprintf(&sb, "\n  [%s] %s: %s", scopeTag(e), e.Slug, e.Summary)
+		}
+	}
+	if b.OmittedAlways > 0 {
+		fmt.Fprintf(&sb, "\n  (+%d more always-on memories — call `memory_ls` with mode=always)", b.OmittedAlways)
+	}
+	if len(b.OnDemand) > 0 {
+		sb.WriteString("\nOn-demand (read when relevant):")
+		for _, e := range b.OnDemand {
+			fmt.Fprintf(&sb, "\n  [%s] %s — %s", scopeTag(e), e.Slug, e.Summary)
+		}
+	}
+	if b.OmittedOnDemand > 0 {
+		fmt.Fprintf(&sb, "\n  (+%d more on-demand memories — call `memory_ls`)", b.OmittedOnDemand)
+	}
+	return sb.String()
 }

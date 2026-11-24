@@ -113,6 +113,9 @@ export function createSessionService(ctrl: ControllerContext): ServiceImpl<typeo
 				const resumed = await resumeSession(req.id, req.project, t3codeThreadId);
 				const proj = ctrl.store.getProject(resumed.project);
 				resumed.reminder = setupStepsReminder(proj);
+				if (!req.omitMemories) {
+					resumed.memories = ctrl.store.memoryBriefing(resumed.project);
+				}
 				return resumed;
 			}
 
@@ -140,6 +143,9 @@ export function createSessionService(ctrl: ControllerContext): ServiceImpl<typeo
 				}
 			}
 			sess.reminder = setupStepsReminder(project);
+			if (!req.omitMemories) {
+				sess.memories = ctrl.store.memoryBriefing(project.name);
+			}
 			return sess;
 		},
 

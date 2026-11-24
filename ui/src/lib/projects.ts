@@ -55,6 +55,7 @@ export function scope(s: Snapshot, name: string | null): Snapshot {
     schedules: s.schedules.filter((sc) => sc.project === project.name),
     events: s.events.filter((e) => e.ref !== undefined && (e.ref.type === "command" ? commandIds.has(e.ref.id) : e.ref.type === "workspace" && workspaceIds.has(e.ref.id))),
     openQuestions: project.openQuestions,
+    pendingMemories: s.globalPendingMemories + project.pendingMemories,
   };
 }
 

@@ -368,11 +368,13 @@ export class ControllerContext {
 		const qps = this.store.questionProjects();
 		const qByName = new Map(qps.map((q) => [q.name, q]));
 		const { active, toDecide } = this.store.reviewCounts();
+		const memCounts = this.store.pendingMemoriesCounts();
 		for (const p of ps) {
 			p.liveSessions = live.get(p.name) ?? 0;
 			p.schedules = scheds.get(p.name) ?? 0;
 			p.activeReviews = active.get(p.name) ?? 0;
 			p.reviewsToDecide = toDecide.get(p.name) ?? 0;
+			p.pendingMemories = memCounts.byProject.get(p.name) ?? 0;
 			const qp = qByName.get(p.name);
 			if (qp) {
 				p.openQuestions = qp.open;

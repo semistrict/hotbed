@@ -268,6 +268,56 @@ func (cliHooks) ListedRemote(ctx context.Context, _ *apicmd.Call, _ *pb.ListQues
 	return checkoutRemote(ctx)
 }
 
+func (cliHooks) MemoryProposedFrom(ctx context.Context, _ *apicmd.Call, _ *pb.ProposeMemoryRequest) (*pb.AskedFrom, error) {
+	return askedFrom(ctx)
+}
+
+func (cliHooks) MemoryListedRemote(ctx context.Context, _ *apicmd.Call, _ *pb.ListMemoriesRequest) (string, error) {
+	return checkoutRemote(ctx)
+}
+
+func (cliHooks) MemoryGetRemote(ctx context.Context, _ *apicmd.Call, _ *pb.GetMemoriesRequest) (string, error) {
+	return checkoutRemote(ctx)
+}
+
+func (cliHooks) MemoryShowRemote(ctx context.Context, _ *apicmd.Call, _ *pb.ShowMemoryRequest) (string, error) {
+	return checkoutRemote(ctx)
+}
+
+func (h cliHooks) loadMemoryBody(bodyFile string, content **pb.MemoryContent) error {
+	if bodyFile == "" {
+		return nil
+	}
+	if (*content).GetBody() != "" {
+		return api.Errorf(api.CodeInvalidArgs, "give --body or --body-file, not both")
+	}
+	b, err := h.readSecretFile(bodyFile, "--body-file")
+	if err != nil {
+		return err
+	}
+	if *content == nil {
+		*content = &pb.MemoryContent{}
+	}
+	(*content).Body = string(b)
+	return nil
+}
+
+func (h cliHooks) LoadProposeMemoryBody(_ context.Context, _ *apicmd.Call, req *pb.ProposeMemoryRequest) error {
+	return h.loadMemoryBody(req.BodyFile, &req.Content)
+}
+
+func (h cliHooks) LoadEditMemoryBody(_ context.Context, _ *apicmd.Call, req *pb.EditMemoryRequest) error {
+	return h.loadMemoryBody(req.BodyFile, &req.Content)
+}
+
+func (h cliHooks) LoadApproveMemoryBody(_ context.Context, _ *apicmd.Call, req *pb.ApproveMemoryRequest) error {
+	return h.loadMemoryBody(req.BodyFile, &req.Content)
+}
+
+func (h cliHooks) LoadReviseMemoryBody(_ context.Context, _ *apicmd.Call, req *pb.ReviseMemoryRequest) error {
+	return h.loadMemoryBody(req.BodyFile, &req.Content)
+}
+
 const editExample = `hotbed question edit 12 <<'EOF'
 {"question": "Which store should sessions use?", "header": "Store",
  "options": [{"label": "SQLite", "description": "One file"}, {"label": "Postgres", "description": "A server"}]}

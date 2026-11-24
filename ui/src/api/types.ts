@@ -11,6 +11,10 @@ import {
   FindingVerdict,
   InspectSection,
   InterventionKind,
+  MemoryMode,
+  MemoryOrder,
+  MemoryScope,
+  MemoryState,
   QuestionOrder,
   QuestionState,
   QuickResponse,
@@ -52,9 +56,17 @@ import {
   type HostUsage,
   type HourBucket,
   type InspectCommandResponse,
+  type ListMemoriesResponse,
   type ListQuestionsResponse,
   type LoadSample,
   type Location,
+  type Memory,
+  type MemoryBriefing,
+  type MemoryChange,
+  type MemoryContent,
+  type MemoryContentSchema,
+  type MemoryIndexEntry,
+  type MemoryProvenance,
   type MemoryRegion,
   type Node,
   type NodeHour,
@@ -124,6 +136,10 @@ export {
   FindingVerdict,
   InspectSection,
   InterventionKind,
+  MemoryMode,
+  MemoryOrder,
+  MemoryScope,
+  MemoryState,
   QuestionOrder,
   QuestionState,
   QuickResponse,
@@ -164,9 +180,17 @@ export {
   type HostUsage,
   type HourBucket,
   type InspectCommandResponse,
+  type ListMemoriesResponse,
   type ListQuestionsResponse,
   type LoadSample,
   type Location,
+  type Memory,
+  type MemoryBriefing,
+  type MemoryChange,
+  type MemoryContent,
+  type MemoryContentSchema,
+  type MemoryIndexEntry,
+  type MemoryProvenance,
   type MemoryRegion,
   type Node,
   type NodeHour,
@@ -228,6 +252,7 @@ export {
 
 export type AnswerInput = MessageInitShape<typeof AnswerSchema>;
 export type PromptInput = MessageInitShape<typeof PromptSchema>;
+export type MemoryContentInput = MessageInitShape<typeof MemoryContentSchema>;
 
 export type CommandStateSlug = "queued" | "running" | "parked" | "paused" | "succeeded" | "failed" | "cancelled";
 export const COMMAND_STATE_FROM_SLUG: Record<CommandStateSlug, CommandState> = {
@@ -246,6 +271,15 @@ export const QUESTION_ORDER_FROM_SLUG: Record<QuestionOrderSlug, QuestionOrder> 
   oldest: QuestionOrder.OLDEST,
   updated: QuestionOrder.UPDATED,
   rank: QuestionOrder.RANK,
+};
+
+export type MemoryOrderSlug = "rank" | "newest" | "oldest" | "updated" | "slug";
+export const MEMORY_ORDER_FROM_SLUG: Record<MemoryOrderSlug, MemoryOrder> = {
+  rank: MemoryOrder.RANK,
+  newest: MemoryOrder.NEWEST,
+  oldest: MemoryOrder.OLDEST,
+  updated: MemoryOrder.UPDATED,
+  slug: MemoryOrder.SLUG,
 };
 
 export type DaemonLogLevelSlug = "warn" | "error";
@@ -372,6 +406,39 @@ export interface QuestionFilter {
   order?: QuestionOrder;
 }
 
+export interface MemoryFilter {
+  project?: string | null;
+  scope?: MemoryScope;
+  states?: MemoryState[];
+  mode?: MemoryMode;
+  query?: string;
+  order?: MemoryOrder;
+}
+
+export interface ProposeMemoryInput {
+  content: MemoryContentInput;
+  global?: boolean;
+  project?: string;
+  supersedesIds?: number[];
+  rationale?: string;
+  approve?: boolean;
+}
+
+export interface ApproveMemoryInput {
+  content?: MemoryContentInput;
+  global?: boolean;
+  project?: string;
+  note?: string;
+  ifRevision?: bigint;
+}
+
+export interface ReviseMemoryInput {
+  content: MemoryContentInput;
+  global?: boolean;
+  project?: string;
+  ifRevision?: bigint;
+}
+
 export interface Api {
   snapshot(): Promise<Snapshot>;
   steps(project: string): Promise<StepStatus[]>;
@@ -395,6 +462,15 @@ export interface Api {
   reviseQuestion(id: number, prompt: PromptInput): Promise<Question>;
   reopenQuestion(id: number): Promise<Question>;
   moveQuestion(id: number, before: number | null): Promise<Question>;
+  memories(filter: MemoryFilter): Promise<ListMemoriesResponse>;
+  memory(ref: string): Promise<Memory>;
+  proposeMemory(input: ProposeMemoryInput): Promise<Memory>;
+  approveMemory(id: number, input?: ApproveMemoryInput): Promise<Memory>;
+  rejectMemory(id: number, reason: string, ifRevision?: bigint): Promise<Memory>;
+  reviseMemory(id: number, input: ReviseMemoryInput): Promise<Memory>;
+  archiveMemory(id: number, reason?: string, ifRevision?: bigint): Promise<Memory>;
+  restoreMemory(id: number, toProposed?: boolean, ifRevision?: bigint): Promise<Memory>;
+  moveMemory(id: number, before: number | null): Promise<Memory>;
   reviews(project: string | null): Promise<Review[]>;
   review(id: number): Promise<Review>;
   respond(reviewId: number, findingId: number | null, quick: QuickResponse, text: string): Promise<ReviewEvent>;

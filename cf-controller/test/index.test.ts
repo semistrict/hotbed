@@ -25,6 +25,11 @@ import {
 	GitAuthService,
 	HeartbeatRequestSchema,
 	ListFilesResponseSchema,
+	MemoryMode,
+	MemoryScope,
+	MemoryService,
+	MemoryState,
+	MemoryUpdate_What,
 	NodeUsageSchema,
 	PromptSchema,
 	QuestionService,
@@ -92,6 +97,7 @@ function ownerClients(extraHeaders?: Record<string, string>) {
 		sessions: createClient(SessionService, transport),
 		workspaces: createClient(WorkspaceService, transport),
 		questions: createClient(QuestionService, transport),
+		memories: createClient(MemoryService, transport),
 		reviews: createClient(ReviewService, transport),
 		schedules: createClient(ScheduleService, transport),
 		gitauth: createClient(GitAuthService, transport),
@@ -834,5 +840,90 @@ describe("Cloudflare Workers single-DO hotbed controller", () => {
 			body: "{}",
 		});
 		expect(res.status).toBe(404);
+	});
+
+	it("supports MemoryService proposals, approval, superseding, session start recall, and poll events", async () => {
+		const owner = ownerClients();
+		await owner.cluster.addProject({ name: "mem-proj", repos: ["github.com/org/mem-proj"] });
+		const s1 = await owner.sessions.startSession({ project: "mem-proj" });
+
+		// Agent proposes global always-on rule + project on-demand memory
+		const m1 = await owner.memories.proposeMemory({
+			sessionId: s1.id,
+			global: true,
+			content: {
+				slug: "use-neon",
+				summary: "Use gemini-4-neon for subagents.",
+				mode: MemoryMode.ALWAYS,
+			},
+			rationale: "user preference",
+		});
+		expect(m1.state).toBe(MemoryState.PROPOSED);
+		expect(m1.scope).toBe(MemoryScope.GLOBAL);
+
+		const m2 = await owner.memories.proposeMemory({
+			sessionId: s1.id,
+			content: {
+				slug: "build-tips",
+				summary: "Build tips for mem-proj",
+				body: "Always run pnpm build first.",
+				mode: MemoryMode.ON_DEMAND,
+			},
+		});
+		expect(m2.project).toBe("mem-proj");
+
+		// Snapshot counts pending memories
+		const snap = await owner.cluster.getSnapshot({});
+		expect(snap.pendingMemories).toBe(2);
+		expect(snap.globalPendingMemories).toBe(1);
+		expect(snap.projects.find((p) => p.name === "mem-proj")?.pendingMemories).toBe(1);
+
+		// Approve both
+		await owner.memories.approveMemory({ id: m1.id });
+		await owner.memories.approveMemory({
+			id: m2.id,
+			content: { summary: "Updated build tips for mem-proj" },
+		});
+
+		// Poll delivers both approval events
+		const evs = await owner.sessions.poll({ sessionId: s1.id, after: 0n, timeoutSeconds: 1 });
+		const memEvents = evs.events.filter((e) => e.event.case === "memory");
+		expect(memEvents.length).toBe(2);
+		expect(memEvents[0].event.case === "memory" && memEvents[0].event.value.what).toBe(
+			MemoryUpdate_What.APPROVED,
+		);
+		expect(memEvents[1].event.case === "memory" && memEvents[1].event.value.what).toBe(
+			MemoryUpdate_What.APPROVED_EDITED,
+		);
+
+		// New session receives both in briefing
+		const s2 = await owner.sessions.startSession({ project: "mem-proj" });
+		expect(s2.memories?.always.map((e) => e.slug)).toEqual(["use-neon"]);
+		expect(s2.memories?.onDemand.map((e) => e.slug)).toEqual(["build-tips"]);
+		expect(s2.memories?.totalApproved).toBe(2);
+
+		// Supersede m1 with a refined version
+		const m3 = await owner.memories.proposeMemory({
+			sessionId: s2.id,
+			global: true,
+			supersedesIds: [m1.id],
+			content: {
+				slug: "use-neon",
+				summary: "Use gemini-4-neon (high) for subagents.",
+				mode: MemoryMode.ALWAYS,
+			},
+		});
+		await owner.memories.approveMemory({ id: m3.id });
+		const oldM1 = await owner.memories.showMemory({ ref: String(m1.id) });
+		expect(oldM1.state).toBe(MemoryState.SUPERSEDED);
+		expect(oldM1.supersededBy).toBe(m3.id);
+
+		// GetMemories resolves slug to m3 and fetches full body for build-tips
+		const fetched = await owner.memories.getMemories({
+			project: "mem-proj",
+			refs: ["use-neon", "build-tips"],
+		});
+		expect(fetched.memories.map((m) => m.id)).toEqual([m3.id, m2.id]);
+		expect(fetched.memories[1].content?.body).toContain("pnpm build");
 	});
 });

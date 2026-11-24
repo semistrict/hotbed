@@ -86,14 +86,21 @@ var formatFuncs = template.FuncMap{
 	"trim":  strings.TrimSpace,
 	"lower": strings.ToLower,
 	"upper": strings.ToUpper,
-	// state turns enum names like QUESTION_STATE_OPEN into "open".
+	// state turns enum names like QUESTION_STATE_OPEN or MEMORY_MODE_ON_DEMAND into "open" or "on-demand".
 	"state": func(v any) string {
 		// A field the response leaves out (an older peer's) is nil.
 		s, _ := v.(string)
-		if i := strings.LastIndex(s, "_STATE_"); i >= 0 {
-			s = s[i+len("_STATE_"):]
-		} else if i := strings.LastIndex(s, "_"); i >= 0 && s == strings.ToUpper(s) {
-			s = s[i+1:]
+		switch {
+		case strings.Contains(s, "_STATE_"):
+			s = s[strings.LastIndex(s, "_STATE_")+len("_STATE_"):]
+		case strings.Contains(s, "_MODE_"):
+			s = s[strings.LastIndex(s, "_MODE_")+len("_MODE_"):]
+		case strings.Contains(s, "_SCOPE_"):
+			s = s[strings.LastIndex(s, "_SCOPE_")+len("_SCOPE_"):]
+		default:
+			if i := strings.LastIndex(s, "_"); i >= 0 && s == strings.ToUpper(s) {
+				s = s[i+1:]
+			}
 		}
 		return strings.ToLower(strings.ReplaceAll(s, "_", "-"))
 	},

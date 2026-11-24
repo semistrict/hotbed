@@ -36,6 +36,7 @@ type sessionStartCmd struct {
 	T3CodeThreadID string `name:"t3code-thread-id" env:"T3CODE_THREAD_ID" help:"The T3 Code thread ID to associate with the session on the controller (default: T3CODE_THREAD_ID)."`
 	Replace        bool   `help:"End the live session already bound to this T3 thread or git worktree and bind the new one in its place."`
 	Resume         bool   `help:"Take up the session NAME if there is one, rather than refuse: live again if it ended (with no workspaces), as it is if not. It keeps its project."`
+	OmitMemories   bool   `name:"omit-memories" help:"Do not include the compact memory briefing in the output."`
 }
 
 func (c *sessionStartCmd) Exec(ctx context.Context, d deps) (any, error) {
@@ -82,6 +83,7 @@ func (c *sessionStartCmd) Exec(ctx context.Context, d deps) (any, error) {
 		Remote:         remote,
 		Resume:         c.Resume,
 		T3CodeThreadId: strings.TrimSpace(c.T3CodeThreadID),
+		OmitMemories:   c.OmitMemories,
 	})
 	if err != nil {
 		return nil, err
@@ -125,6 +127,9 @@ func (c *sessionStartCmd) Exec(ctx context.Context, d deps) (any, error) {
 			// live session: keep it bound, best-effort end our losing session,
 			// and return the winning session.
 			_, _ = cl.sessions.EndSession(ctx, &pb.EndSessionRequest{Id: sess.Id})
+			if res.Session.Memories == nil && res.Session.Project == sess.Project {
+				res.Session.Memories = sess.Memories
+			}
 			return res.Session, nil
 		}
 	}

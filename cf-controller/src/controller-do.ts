@@ -13,6 +13,7 @@ import {
 	ErrorInfoSchema,
 	FinishedCommandSchema,
 	GitAuthService,
+	MemoryService,
 	QuestionService,
 	ReviewService,
 	RunOutcome,
@@ -41,6 +42,7 @@ import { ErrorCode, HotbedError, fromUnknownError } from "./errors.ts";
 import { randomHex } from "./gitops.ts";
 import { createClusterService } from "./services/cluster.ts";
 import { createGitAuthService } from "./services/gitauth.ts";
+import { createMemoryService } from "./services/memories.ts";
 import { createQuestionService } from "./services/questions.ts";
 import { createReviewService } from "./services/reviews.ts";
 import { createScheduleService, type ScheduleRunner } from "./services/schedules.ts";
@@ -173,6 +175,7 @@ export class ControllerDO extends DurableObject<ControllerEnv> {
 		const clusterSvc = createClusterService(this.ctrl, schedSvc.runner);
 		const sessionSvc = createSessionService(this.ctrl);
 		const questionSvc = createQuestionService(this.ctrl);
+		const memorySvc = createMemoryService(this.ctrl);
 		const reviewSvc = createReviewService(this.ctrl);
 		const gitAuthSvc = createGitAuthService(this.ctrl);
 
@@ -181,6 +184,7 @@ export class ControllerDO extends DurableObject<ControllerEnv> {
 			router.service(SessionService, sessionSvc);
 			router.service(WorkspaceService, wsSvc.impl);
 			router.service(QuestionService, questionSvc);
+			router.service(MemoryService, memorySvc);
 			router.service(ReviewService, reviewSvc);
 			router.service(ScheduleService, schedSvc.impl);
 			router.service(GitAuthService, gitAuthSvc);

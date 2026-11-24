@@ -1,5 +1,14 @@
 import { sql } from "drizzle-orm";
-import { blob, index, integer, primaryKey, real, sqliteTable, text } from "drizzle-orm/sqlite-core";
+import {
+	blob,
+	index,
+	integer,
+	primaryKey,
+	real,
+	sqliteTable,
+	text,
+	uniqueIndex,
+} from "drizzle-orm/sqlite-core";
 
 /**
  * Drizzle SQLite schema for the single Durable Object controller (`ControllerDO`).
@@ -397,3 +406,46 @@ export const cladefsRetiredIncarnations = sqliteTable("cladefs_retired_incarnati
 	hostname: text("hostname").notNull(),
 	retiredAt: integer("retired_at").notNull(),
 });
+
+export const memories = sqliteTable(
+	"memories",
+	{
+		id: integer("id").primaryKey({ autoIncrement: true }),
+		projectId: integer("project_id").references(() => projects.id),
+		scopeKey: text("scope_key").notNull().default(""),
+		repo: text("repo").notNull().default(""),
+		slug: text("slug").notNull(),
+		mode: text("mode").notNull(),
+		state: text("state").notNull(),
+		rank: integer("rank").notNull().default(0),
+		proposedBy: text("proposed_by").notNull().default(""),
+		proposedAt: integer("proposed_at").notNull(),
+		updatedAt: integer("updated_at").notNull(),
+		searchText: text("search_text").notNull().default(""),
+		doc: text("doc").notNull(),
+	},
+	(t) => [
+		uniqueIndex("memories_approved_slug")
+			.on(t.scopeKey, t.slug)
+			.where(sql`${t.state} = 'MEMORY_STATE_APPROVED'`),
+		index("memories_scope_state").on(t.projectId, t.state, t.mode, t.rank, t.updatedAt),
+		index("memories_state_updated").on(t.state, t.updatedAt, t.id),
+	],
+);
+
+export const memoryChanges = sqliteTable(
+	"memory_changes",
+	{
+		seq: integer("seq").primaryKey({ autoIncrement: true }),
+		memoryId: integer("memory_id")
+			.notNull()
+			.references(() => memories.id),
+		what: text("what").notNull(),
+		at: integer("at").notNull(),
+		session: text("session").notNull(),
+		host: text("host").notNull(),
+		reason: text("reason").notNull(),
+		doc: text("doc").notNull(),
+	},
+	(t) => [index("memory_changes_memory").on(t.memoryId, t.seq)],
+);

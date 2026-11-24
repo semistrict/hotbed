@@ -9,6 +9,7 @@ import { NodesPage } from "./pages/Nodes";
 import { NotFound } from "./pages/NotFound";
 import { OverviewPage } from "./pages/Overview";
 import { ProjectsPage } from "./pages/Projects";
+import { MemoriesPage, MemoryDetailPage, type MemoriesSearch } from "./pages/Memories";
 import { QuestionsPage, type QuestionsSearch } from "./pages/Questions";
 import { ReviewPage } from "./pages/Review";
 import { ReviewsPage } from "./pages/Reviews";
@@ -38,6 +39,27 @@ const questions = createRoute({
     tab: typeof s.tab === "string" && TABS.includes(s.tab) ? (s.tab as QuestionsSearch["tab"]) : undefined,
     sort: typeof s.sort === "string" && SORTS.includes(s.sort) ? (s.sort as QuestionsSearch["sort"]) : undefined,
   }),
+});
+const MEMORY_TABS = ["proposals", "approved", "history", "all"];
+const MEMORY_SCOPES = ["all", "global", "project"];
+const MEMORY_MODES = ["all", "always", "on-demand"];
+const MEMORY_SORTS = ["rank", "newest", "oldest", "updated", "slug"];
+const memories = createRoute({
+  getParentRoute: () => root,
+  path: "/memories",
+  component: MemoriesPage,
+  validateSearch: (s: Record<string, unknown>): MemoriesSearch => ({
+    tab: typeof s.tab === "string" && MEMORY_TABS.includes(s.tab) ? (s.tab as MemoriesSearch["tab"]) : undefined,
+    scope: typeof s.scope === "string" && MEMORY_SCOPES.includes(s.scope) ? (s.scope as MemoriesSearch["scope"]) : undefined,
+    mode: typeof s.mode === "string" && MEMORY_MODES.includes(s.mode) ? (s.mode as MemoriesSearch["mode"]) : undefined,
+    sort: typeof s.sort === "string" && MEMORY_SORTS.includes(s.sort) ? (s.sort as MemoriesSearch["sort"]) : undefined,
+    q: typeof s.q === "string" && s.q ? s.q : undefined,
+  }),
+});
+const memoryDetail = createRoute({
+  getParentRoute: () => root,
+  path: "/memories/$id",
+  component: MemoryDetailPage,
 });
 const overview = createRoute({ getParentRoute: () => root, path: "/cluster", component: OverviewPage });
 const nodes = createRoute({ getParentRoute: () => root, path: "/nodes", component: NodesPage });
@@ -111,7 +133,7 @@ const history = createRoute({
   },
 });
 
-const routeTree = root.addChildren([projects, sessions, session, questions, reviews, review, schedules, overview, nodes, node, daemonLogs, workspaces, workspace, commands, command, history]);
+const routeTree = root.addChildren([projects, sessions, session, questions, memories, memoryDetail, reviews, review, schedules, overview, nodes, node, daemonLogs, workspaces, workspace, commands, command, history]);
 
 export const router = createRouter({ routeTree, defaultPreload: "intent", scrollRestoration: true });
 

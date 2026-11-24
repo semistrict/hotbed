@@ -36,7 +36,7 @@ func TestEveryCockpitURLHasAPage(t *testing.T) {
 	}
 	visit(pb.File_hotbed_v1_hotbed_proto.Messages())
 	slices.Sort(with)
-	if want := []string{"Command", "FinishedCommand", "Node", "Session", "SessionWorkspace", "Workspace"}; !slices.Equal(with, want) {
+	if want := []string{"Command", "FinishedCommand", "Memory", "Node", "Session", "SessionWorkspace", "Workspace"}; !slices.Equal(with, want) {
 		t.Errorf("messages with a cockpit_url = %v, want %v", with, want)
 	}
 	if got := c.node("asahi mbp"); got != "http://ubu1:7120/nodes/asahi%20mbp" {

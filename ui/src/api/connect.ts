@@ -3,6 +3,10 @@ import { createConnectTransport } from "@connectrpc/connect-web";
 import {
   ClusterService,
   DaemonLogLevel,
+  MemoryMode,
+  MemoryOrder,
+  MemoryScope,
+  MemoryService,
   QuestionOrder,
   QuestionService,
   ReviewService,
@@ -21,6 +25,7 @@ export function createConnectApi(
   const cluster = createClient(ClusterService, transport);
   const workspaces = createClient(WorkspaceService, transport);
   const questions = createClient(QuestionService, transport);
+  const memories = createClient(MemoryService, transport);
   const reviews = createClient(ReviewService, transport);
 
   return {
@@ -140,6 +145,55 @@ export function createConnectApi(
     reopenQuestion: (id) => questions.reopenQuestion({ id }),
     moveQuestion: (id, before) =>
       questions.moveQuestion({
+        id,
+        place: before === null ? { case: "last", value: true } : { case: "before", value: before },
+      }),
+    memories: ({ project, scope = MemoryScope.UNSPECIFIED, states = [], mode = MemoryMode.UNSPECIFIED, query = "", order = MemoryOrder.UNSPECIFIED }) =>
+      memories.listMemories({
+        projectScope:
+          scope === MemoryScope.GLOBAL
+            ? { case: undefined }
+            : project
+              ? { case: "project", value: project }
+              : { case: "allProjects", value: true },
+        scope,
+        states,
+        mode,
+        query,
+        order,
+      }),
+    memory: (ref) => memories.showMemory({ ref }),
+    proposeMemory: (input) =>
+      memories.proposeMemory({
+        content: input.content,
+        global: input.global ?? false,
+        project: input.global ? "" : (input.project ?? ""),
+        supersedesIds: input.supersedesIds ?? [],
+        rationale: input.rationale ?? "",
+        approve: input.approve ?? false,
+      }),
+    approveMemory: (id, input) =>
+      memories.approveMemory({
+        id,
+        content: input?.content,
+        global: input?.global ?? false,
+        project: input?.global ? "" : (input?.project ?? ""),
+        note: input?.note ?? "",
+        ifRevision: input?.ifRevision ?? 0n,
+      }),
+    rejectMemory: (id, reason, ifRevision = 0n) => memories.rejectMemory({ id, reason, ifRevision }),
+    reviseMemory: (id, input) =>
+      memories.reviseMemory({
+        id,
+        content: input.content,
+        global: input.global ?? false,
+        project: input.global ? "" : (input.project ?? ""),
+        ifRevision: input.ifRevision ?? 0n,
+      }),
+    archiveMemory: (id, reason = "", ifRevision = 0n) => memories.archiveMemory({ id, reason, ifRevision }),
+    restoreMemory: (id, toProposed = false, ifRevision = 0n) => memories.restoreMemory({ id, toProposed, ifRevision }),
+    moveMemory: (id, before) =>
+      memories.moveMemory({
         id,
         place: before === null ? { case: "last", value: true } : { case: "before", value: before },
       }),

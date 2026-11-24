@@ -266,10 +266,10 @@ service SessionService {
   // Wait, two minutes at most, for what happens in the session: its
   // commands admitted, parked, paused or ended, its workspaces ready or
   // failed, the user's answers to its questions, its reviews' ends and
-  // responses. Returns the events after the cursor at once if there are
-  // any. The client keeps where this machine's last poll of the session
-  // left off, so each event comes once. Nothing after two minutes: nothing
-  // happened yet; poll again.
+  // responses, and decisions on its proposed memories. Returns the events
+  // after the cursor at once if there are any. The client keeps where this
+  // machine's last poll of the session left off, so each event comes once.
+  // Nothing after two minutes: nothing happened yet; poll again.
   rpc Poll(PollRequest) returns (SessionEvents) {
     option idempotency_level = IDEMPOTENT;
     option (command) = {
@@ -278,7 +278,7 @@ service SessionService {
       waits: true
       read_only: true
       after: ["SavePollCursor"]
-      format: "{{range .events}}{{template \"event\" .}}\n{{else}}{{if not .ended}}nothing yet ({{.live}} live)\n{{end}}{{end}}{{if .ended}}session ended: {{.endReason}}\n{{end}}{{define \"event\"}}{{time .at}}  {{with .command}}{{.commandId}}  {{pad 14 (what .what)}}  {{short 60 .argv}}{{end}}{{with .workspace}}{{.workspaceId}}  workspace {{what .what}}{{end}}{{with .question}}question #{{.question.id}}  {{what .what}}{{end}}{{with .review}}review #{{.reviewId}}  {{what .what}}{{end}}{{with .detail}}  {{.}}{{end}}{{end}}"
+      format: "{{range .events}}{{template \"event\" .}}\n{{else}}{{if not .ended}}nothing yet ({{.live}} live)\n{{end}}{{end}}{{if .ended}}session ended: {{.endReason}}\n{{end}}{{define \"event\"}}{{time .at}}  {{with .command}}{{.commandId}}  {{pad 14 (what .what)}}  {{short 60 .argv}}{{end}}{{with .workspace}}{{.workspaceId}}  workspace {{what .what}}{{end}}{{with .question}}question #{{.question.id}}  {{what .what}}{{end}}{{with .review}}review #{{.reviewId}}  {{what .what}}{{end}}{{with .memory}}memory #{{.memory.id}}  {{what .what}}{{end}}{{with .detail}}  {{.}}{{end}}{{end}}"
     };
   }
 }
@@ -1419,6 +1419,9 @@ message Session {
   // The T3 Code thread this session is associated with (from T3CODE_THREAD_ID
   // when started inside T3 Code); empty otherwise.
   string t3code_thread_id = 14;
+  // Compact index of approved memories relevant to this session (global +
+  // its project); only set by StartSession.
+  MemoryBriefing memories = 15;
 }
 
 message SessionWorkspace {
@@ -1449,6 +1452,8 @@ message StartSessionRequest {
   // The T3 Code thread this session is associated with (from T3CODE_THREAD_ID
   // when started inside T3 Code); empty otherwise.
   string t3code_thread_id = 6;
+  // When true, do not include the compact memory briefing in the response.
+  bool omit_memories = 7;
 }
 
 message ListSessionsRequest {
@@ -1533,6 +1538,8 @@ message Project {
   optional string reminder = 15;
   reserved 16;
   reserved "root_steps";
+  // Its proposed memories waiting for the user's approval.
+  int32 pending_memories = 17;
 }
 
 // One change to a project: created, added or removed (a repo).
@@ -1681,6 +1688,7 @@ message SessionEvent {
     WorkspaceUpdate workspace = 5;
     QuestionUpdate question = 6;
     ReviewUpdate review = 7;
+    MemoryUpdate memory = 9;
   }
   // What happened, in a line: why a command was parked or paused, why a
   // workspace failed, the user's answer, a review's summary or response.
@@ -1753,6 +1761,19 @@ message ReviewUpdate {
   }
   What what = 1;
   int32 review_id = 2;
+}
+
+// The user approved or rejected a memory the session proposed.
+message MemoryUpdate {
+  enum What {
+    WHAT_UNSPECIFIED = 0;
+    WHAT_APPROVED = 1;
+    WHAT_APPROVED_EDITED = 2;
+    WHAT_REJECTED = 3;
+  }
+  What what = 1;
+  // The memory as decided, without its history.
+  Memory memory = 2;
 }
 
 message GetLogLinesRequest {
@@ -2075,6 +2096,10 @@ message Snapshot {
   // Work the nodes held or made wait, and when they started it again (hold,
   // unhold and wait events), newest first.
   repeated ClusterEvent admission_events = 23;
+  // Proposed memories waiting for the user's approval across global and every project.
+  int32 pending_memories = 24;
+  // Proposed global memories waiting for the user's approval.
+  int32 global_pending_memories = 25;
 }
 
 // Where the controller put a session's workspace, and why: every node it
@@ -4069,6 +4094,544 @@ message ProxyGitHubAPIResponse {
   // Response headers as "Key: Value".
   repeated string headers = 2;
   string body = 3;
+}
+
+// ---- memories ---------------------------------------------------------------
+
+// Cross-agent memories and learned rules curated with user approval. Agents
+// propose learnings (globally or for a project); the user approves, edits, or
+// rejects them in the cockpit. Approved memories are returned in compact form
+// on session start (always-on rules inline; on-demand memories as a 1-line
+// index fetched in full via GetMemories).
+service MemoryService {
+  // Propose a new memory or an update/consolidation of existing approved
+  // memories (--supersede ID). Defaults to the active session's project;
+  // pass --global for cross-project learnings. Use --mode always for short
+  // guardrails (<= 240 chars) or --mode on_demand (default) for detailed
+  // playbooks fetched with `hotbed memory get`.
+  rpc ProposeMemory(ProposeMemoryRequest) returns (Memory) {
+    option (command) = {
+      name: "memory propose"
+      session: true
+      before: ["LoadProposeMemoryBody"]
+      format: "#{{.id}}  {{state .state}}  rev={{.revision}}  [{{if .project}}{{.project}}{{else}}global{{end}}] {{with .content}}{{.slug}}  ({{state .mode}}){{end}}{{if .cockpitUrl}}\n{{.cockpitUrl}}{{end}}{{with .reminder}}\n{{.}}{{end}}"
+    };
+  }
+  // List memories (compact metadata without full body). Defaults to approved
+  // memories for global + active project (or global only outside a project).
+  rpc ListMemories(ListMemoriesRequest) returns (ListMemoriesResponse) {
+    option idempotency_level = IDEMPOTENT;
+    option (command) = {
+      name: "memory ls"
+      session: true
+      read_only: true
+      format: "{{range .memories}}#{{pad 4 .id}}  {{pad 10 (state .state)}}  {{pad 12 (or .project \"global\")}}  {{with .content}}{{pad 9 (state .mode)}}  {{pad 28 .slug}}  {{short 60 .summary}}{{end}}\n{{end}}{{with .reminder}}{{.}}{{end}}"
+    };
+    option (command) = {
+      name: "memory proposals"
+      help: "List proposed memories waiting for the user's approval, newest first."
+      session: true
+      read_only: true
+      format: "{{range .memories}}#{{pad 4 .id}}  {{pad 10 (state .state)}}  {{pad 12 (or .project \"global\")}}  {{with .content}}{{pad 9 (state .mode)}}  {{pad 28 .slug}}  {{short 60 .summary}}{{end}}\n{{end}}{{with .reminder}}{{.}}{{end}}"
+      fixed: [
+        {
+          field: "states"
+          value: "[MemoryState.MEMORY_STATE_PROPOSED]"
+        },
+        {
+          field: "order"
+          value: "MemoryOrder.MEMORY_ORDER_NEWEST"
+        }
+      ]
+    };
+  }
+  // Fetch the full markdown body of one or more memories by slug or ID
+  // (e.g. `subagent-model-neon`, `global/subagent-model-neon`, `hotbed/slug`, or `12`).
+  rpc GetMemories(GetMemoriesRequest) returns (GetMemoriesResponse) {
+    option idempotency_level = IDEMPOTENT;
+    option (command) = {
+      name: "memory get"
+      session: true
+      read_only: true
+      format: "{{range $i, $m := .memories}}{{if $i}}\n---\n{{end}}#{{$m.id}}  {{with $m.content}}{{.slug}}{{end}}  [{{if $m.project}}{{$m.project}}{{else}}global{{end}}{{if $m.repo}}/{{$m.repo}}{{end}} · {{with $m.content}}{{state .mode}}{{end}} · rev={{$m.revision}}]{{with $m.content}}\n{{.summary}}{{if .body}}\n\n{{.body}}{{end}}{{end}}\n{{end}}"
+    };
+  }
+  // Show one memory with its full body, provenance, supersession links, and
+  // complete revision history.
+  rpc ShowMemory(ShowMemoryRequest) returns (Memory) {
+    option idempotency_level = IDEMPOTENT;
+    option (command) = {
+      name: "memory show"
+      session: true
+      read_only: true
+      format: "#{{.id}}  {{state .state}}  rev={{.revision}}  [{{if .project}}{{.project}}{{else}}global{{end}}{{if .repo}}/{{.repo}}{{end}}]{{with .content}}  {{.slug}} ({{state .mode}})\n{{if .title}}title     {{.title}}\n{{end}}summary   {{.summary}}{{if .tags}}\ntags      {{join \", \" .tags}}{{end}}{{if .body}}\n\n{{.body}}{{end}}{{end}}{{if .supersedesIds}}\nsupersedes {{join \", \" .supersedesIds}}{{end}}{{if .supersededBy}}\nsuperseded-by #{{.supersededBy}}{{end}}{{if .cockpitUrl}}\ncockpit   {{.cockpitUrl}}{{end}}"
+    };
+  }
+  // Edit a proposed memory before user approval (agent action).
+  rpc EditMemory(EditMemoryRequest) returns (Memory) {
+    option (command) = {
+      name: "memory edit"
+      session: true
+      before: ["LoadEditMemoryBody"]
+      format: "#{{.id}}  {{state .state}}  rev={{.revision}}  [{{if .project}}{{.project}}{{else}}global{{end}}] {{with .content}}{{.slug}}{{end}}{{with .reminder}}\n{{.}}{{end}}"
+    };
+  }
+  // Withdraw a proposed memory that is no longer needed; it stays in history.
+  rpc WithdrawMemory(WithdrawMemoryRequest) returns (Memory) {
+    option (command) = {
+      name: "memory withdraw"
+      session: true
+      destructive: true
+      format: "#{{.id}}  {{state .state}}  rev={{.revision}}  [{{if .project}}{{.project}}{{else}}global{{end}}] {{with .content}}{{.slug}}{{end}}"
+    };
+  }
+  // Approve a proposed memory for the user, optionally applying edits first.
+  // Any approved memories listed in supersedes_ids are atomically superseded.
+  // The user approves in the cockpit; an agent uses this only at the user's word.
+  rpc ApproveMemory(ApproveMemoryRequest) returns (Memory) {
+    option (command) = {
+      name: "memory approve"
+      session: true
+      before: ["LoadApproveMemoryBody"]
+      format: "#{{.id}}  {{state .state}}  rev={{.revision}}  [{{if .project}}{{.project}}{{else}}global{{end}}] {{with .content}}{{.slug}}{{end}}"
+    };
+  }
+  // Reject a proposed memory for the user with an optional reason.
+  rpc RejectMemory(RejectMemoryRequest) returns (Memory) {
+    option (command) = {
+      name: "memory reject"
+      session: true
+      format: "#{{.id}}  {{state .state}}  rev={{.revision}}  [{{if .project}}{{.project}}{{else}}global{{end}}] {{with .content}}{{.slug}}{{end}}"
+    };
+  }
+  // Revise an approved or proposed memory directly for the user.
+  rpc ReviseMemory(ReviseMemoryRequest) returns (Memory) {
+    option (command) = {
+      name: "memory revise"
+      session: true
+      before: ["LoadReviseMemoryBody"]
+      format: "#{{.id}}  {{state .state}}  rev={{.revision}}  [{{if .project}}{{.project}}{{else}}global{{end}}] {{with .content}}{{.slug}}{{end}}"
+    };
+  }
+  // Archive an approved memory so it is no longer returned on session start;
+  // history is preserved and it can be restored.
+  rpc ArchiveMemory(ArchiveMemoryRequest) returns (Memory) {
+    option (command) = {
+      name: "memory archive"
+      session: true
+      destructive: true
+      format: "#{{.id}}  {{state .state}}  rev={{.revision}}  [{{if .project}}{{.project}}{{else}}global{{end}}] {{with .content}}{{.slug}}{{end}}"
+    };
+  }
+  // Restore an archived or rejected memory (to approved, or back to proposed).
+  rpc RestoreMemory(RestoreMemoryRequest) returns (Memory) {
+    option (command) = {
+      name: "memory restore"
+      session: true
+      format: "#{{.id}}  {{state .state}}  rev={{.revision}}  [{{if .project}}{{.project}}{{else}}global{{end}}] {{with .content}}{{.slug}}{{end}}"
+    };
+  }
+  // Move an approved memory in the user's startup priority order.
+  rpc MoveMemory(MoveMemoryRequest) returns (Memory) {
+    option (command) = {
+      name: "memory move"
+      session: true
+      format: "#{{.id}}  rank={{.rank}}  rev={{.revision}}"
+    };
+  }
+}
+
+enum MemoryScope {
+  MEMORY_SCOPE_UNSPECIFIED = 0;
+  // Delivered on every session start across all projects and machines.
+  MEMORY_SCOPE_GLOBAL = 1;
+  // Delivered on session start for its project.
+  MEMORY_SCOPE_PROJECT = 2;
+}
+
+enum MemoryMode {
+  MEMORY_MODE_UNSPECIFIED = 0;
+  // Short rule/guardrail returned inline on session start (summary <= 240 chars).
+  MEMORY_MODE_ALWAYS = 1;
+  // Progressive-disclosure memory: 1-line index on session start, full body via `memory get`.
+  MEMORY_MODE_ON_DEMAND = 2;
+}
+
+enum MemoryState {
+  MEMORY_STATE_UNSPECIFIED = 0;
+  // Waiting for the user's approval in the cockpit.
+  MEMORY_STATE_PROPOSED = 1;
+  // Active and included in session start recall.
+  MEMORY_STATE_APPROVED = 2;
+  // Declined by the user.
+  MEMORY_STATE_REJECTED = 3;
+  // Replaced by a newer approved memory.
+  MEMORY_STATE_SUPERSEDED = 4;
+  // Retired by the user; can be restored.
+  MEMORY_STATE_ARCHIVED = 5;
+  // Withdrawn by an agent while still proposed.
+  MEMORY_STATE_WITHDRAWN = 6;
+}
+
+enum MemoryOrder {
+  // User priority order (rank) for approved memories; newest first for proposals.
+  MEMORY_ORDER_UNSPECIFIED = 0;
+  MEMORY_ORDER_RANK = 1;
+  MEMORY_ORDER_NEWEST = 2;
+  MEMORY_ORDER_OLDEST = 3;
+  MEMORY_ORDER_UPDATED = 4;
+  MEMORY_ORDER_SLUG = 5;
+}
+
+message MemoryContent {
+  // Lowercase kebab-case identifier, e.g. "subagent-model-neon" (max 64 chars).
+  string slug = 1;
+  // Short human title (optional; max 120 chars).
+  string title = 2;
+  // Compact in-context component: the complete rule for ALWAYS mode (<= 240
+  // chars), or a 1-line description + when-to-read trigger for ON_DEMAND mode
+  // (<= 280 chars).
+  string summary = 3;
+  // Full markdown details fetched via `hotbed memory get` (required for
+  // ON_DEMAND, optional for ALWAYS; max 64 KiB).
+  string body = 4;
+  // Delivery mode: always (inline rule on session start) or on_demand (index
+  // on session start, full body fetched on demand).
+  MemoryMode mode = 5;
+  // Short lowercase tags for filtering and search (repeatable).
+  repeated string tags = 6 [(param) = {name: "tag"}];
+}
+
+message MemoryProvenance {
+  // The checkout the memory was proposed from, if any.
+  AskedFrom from = 1;
+  // T3 Code thread ID where this learning originated, if any.
+  string t3code_thread_id = 2;
+  // Model or harness that proposed this memory, if provided.
+  string model = 3;
+  // Why this learning was proposed (e.g. user correction or incident).
+  string rationale = 4;
+}
+
+message Memory {
+  int32 id = 1;
+  MemoryScope scope = 2;
+  // Empty for GLOBAL memories.
+  string project = 3;
+  // Optional canonical git remote within project; empty for the whole project.
+  string repo = 4;
+  MemoryContent content = 5;
+  MemoryState state = 6;
+  // User priority order for startup recall: lower comes first.
+  int64 rank = 7;
+  // Monotonic revision, incremented on every change.
+  int64 revision = 8;
+  // Approved memory IDs this proposal replaces/consolidates upon approval.
+  repeated int32 supersedes_ids = 9;
+  // The approved memory ID that superseded this memory, if state is SUPERSEDED.
+  int32 superseded_by = 10;
+  MemoryProvenance provenance = 11;
+  Stamp proposed = 12;
+  Stamp edited = 13;
+  Stamp decided = 14;
+  Stamp archived = 15;
+  int64 updated_at = 16;
+  // Every change to this memory, oldest first; populated only by ShowMemory.
+  repeated MemoryChange history = 17;
+  // Its page in the cockpit; filled by the CLI.
+  string cockpit_url = 18;
+  // Reminder for agents proposing memories.
+  optional string reminder = 19;
+}
+
+message MemoryChange {
+  int64 seq = 1;
+  // proposed, edited, approved, rejected, superseded, archived, restored, withdrawn, moved
+  string what = 2;
+  Stamp by = 3;
+  // Snapshot of the memory as the change left it, without history.
+  Memory memory = 4;
+}
+
+// Compact index entry embedded in StartSession response (Session.memories).
+message MemoryIndexEntry {
+  int32 id = 1;
+  string slug = 2;
+  MemoryScope scope = 3;
+  string project = 4;
+  string repo = 5;
+  MemoryMode mode = 6;
+  string summary = 7;
+  bool has_body = 8;
+  int64 revision = 9;
+  int64 updated_at = 10;
+}
+
+// Startup recall payload attached to Session by StartSession.
+message MemoryBriefing {
+  repeated MemoryIndexEntry always = 1;
+  repeated MemoryIndexEntry on_demand = 2;
+  int32 omitted_always = 3;
+  int32 omitted_on_demand = 4;
+  int32 total_approved = 5;
+  int32 pending_proposals = 6;
+}
+
+message ProposeMemoryRequest {
+  MemoryContent content = 1 [(param) = {flatten: true}];
+  // Propose as a global memory (applies across all projects and machines).
+  bool global = 2;
+  // Project to scope this memory to (default: the active session's project).
+  string project = 3 [(param) = {short: "p"}];
+  // Optional repo within the project (default: this checkout's remote if held by the project).
+  string repo = 4;
+  // Existing approved memory IDs this proposal updates or consolidates (repeatable).
+  repeated int32 supersedes_ids = 5 [(param) = {name: "supersede"}];
+  // Why this learning is being proposed (e.g. user correction or incident).
+  string rationale = 6;
+  // Exact model ID proposing this memory (optional).
+  string model = 7;
+  // Directly approve on creation (user-only: refused when called from an agent session).
+  bool approve = 8;
+  string session_id = 9 [(param) = {
+    hidden: true
+    default: "session"
+  }];
+  AskedFrom from = 10 [(param) = {
+    hidden: true
+    hook: "MemoryProposedFrom"
+  }];
+  string t3code_thread_id = 11 [(param) = {
+    hidden: true
+    default: "env:T3CODE_THREAD_ID"
+  }];
+  // Path to a markdown file for body, or "-" to read from stdin (local).
+  string body_file = 12 [(param) = {
+    name: "body-file"
+    local: true
+  }];
+}
+
+message ListMemoriesRequest {
+  // Filter by state (repeatable); default is approved.
+  repeated MemoryState states = 1 [(param) = {
+    name: "state"
+    every: "all"
+  }];
+  // Filter by scope: global or project; omit for global + active project.
+  MemoryScope scope = 2;
+  // Filter by delivery mode: always or on_demand.
+  MemoryMode mode = 3;
+  // Whose project memories to include (alongside global unless --scope project).
+  oneof project_scope {
+    // Only memories for this project (with global unless --scope project).
+    string project = 4 [(param) = {
+      short: "p"
+      default: "env:HOTBED_PROJECT"
+    }];
+    // List memories across global and every project.
+    bool all_projects = 5;
+  }
+  // Filter by tag.
+  string tag = 6;
+  // Case-insensitive substring search across slug, title, summary, tags, and body.
+  string query = 7 [(param) = {short: "q"}];
+  // Sort order: rank, newest, oldest, updated, or slug.
+  MemoryOrder order = 8 [(param) = {name: "sort"}];
+  // Maximum memories to return; 0 for all.
+  int32 limit = 9 [(param) = {short: "n"}];
+  string session_id = 10 [(param) = {
+    hidden: true
+    default: "session"
+  }];
+  string remote = 11 [(param) = {
+    hidden: true
+    hook: "MemoryListedRemote"
+  }];
+}
+
+message ListMemoriesResponse {
+  repeated Memory memories = 1;
+  int32 total = 2;
+  optional string reminder = 3;
+}
+
+message GetMemoriesRequest {
+  // Memory IDs or slugs (e.g. 12, subagent-model-neon, global/slug, hotbed/slug).
+  repeated string refs = 1 [(param) = {
+    positional: true
+    required: true
+    name: "ref"
+  }];
+  // Project to resolve bare slugs against (default: active session or checkout project).
+  string project = 2 [(param) = {
+    short: "p"
+    default: "env:HOTBED_PROJECT"
+  }];
+  string session_id = 3 [(param) = {
+    hidden: true
+    default: "named_session"
+  }];
+  string remote = 4 [(param) = {
+    hidden: true
+    hook: "MemoryGetRemote"
+  }];
+}
+
+message GetMemoriesResponse {
+  repeated Memory memories = 1;
+}
+
+message ShowMemoryRequest {
+  // Memory ID or slug (e.g. 12, subagent-model-neon, global/slug, hotbed/slug).
+  string ref = 1 [(param) = {
+    positional: true
+    required: true
+  }];
+  // Project to resolve a bare slug against.
+  string project = 2 [(param) = {
+    short: "p"
+    default: "env:HOTBED_PROJECT"
+  }];
+  string session_id = 3 [(param) = {
+    hidden: true
+    default: "named_session"
+  }];
+  string remote = 4 [(param) = {
+    hidden: true
+    hook: "MemoryShowRemote"
+  }];
+}
+
+message EditMemoryRequest {
+  // Memory ID to edit (must be in PROPOSED state).
+  int32 id = 1 [(param) = {positional: true}];
+  MemoryContent content = 2 [(param) = {flatten: true}];
+  // Optional updated rationale.
+  string rationale = 3;
+  // Updated list of superseded approved memory IDs (pass replace_supersedes to clear).
+  repeated int32 supersedes_ids = 4 [(param) = {name: "supersede"}];
+  // Replace supersedes_ids with the given list (even if empty).
+  bool replace_supersedes = 5;
+  string session_id = 6 [(param) = {
+    hidden: true
+    default: "session"
+  }];
+  // Refuse with CONFLICT unless the memory is at this revision.
+  int64 if_revision = 7 [(param) = {name: "if-revision"}];
+  // Path to a markdown file for body, or "-" to read from stdin (local).
+  string body_file = 8 [(param) = {
+    name: "body-file"
+    local: true
+  }];
+}
+
+message WithdrawMemoryRequest {
+  // Memory ID to withdraw (must be in PROPOSED state).
+  int32 id = 1 [(param) = {positional: true}];
+  // Why the proposal is being withdrawn.
+  string reason = 2;
+  string session_id = 3 [(param) = {
+    hidden: true
+    default: "session"
+  }];
+  int64 if_revision = 4 [(param) = {name: "if-revision"}];
+}
+
+message ApproveMemoryRequest {
+  // Proposed memory ID to approve.
+  int32 id = 1 [(param) = {positional: true}];
+  // Optional edits to apply atomically before approving.
+  MemoryContent content = 2 [(param) = {flatten: true}];
+  // Optionally change scope to global on approval.
+  bool global = 3;
+  // Optionally change scope to this project on approval.
+  string project = 4 [(param) = {short: "p"}];
+  // Optional note on approval.
+  string note = 5;
+  string session_id = 6 [(param) = {
+    hidden: true
+    default: "named_session"
+  }];
+  int64 if_revision = 7 [(param) = {name: "if-revision"}];
+  // Path to a markdown file for body, or "-" to read from stdin (local).
+  string body_file = 8 [(param) = {
+    name: "body-file"
+    local: true
+  }];
+}
+
+message RejectMemoryRequest {
+  // Proposed memory ID to reject.
+  int32 id = 1 [(param) = {positional: true}];
+  // Why it was rejected (delivered to the proposing session via poll).
+  string reason = 2;
+  string session_id = 3 [(param) = {
+    hidden: true
+    default: "named_session"
+  }];
+  int64 if_revision = 4 [(param) = {name: "if-revision"}];
+}
+
+message ReviseMemoryRequest {
+  // Memory ID to revise (APPROVED or PROPOSED).
+  int32 id = 1 [(param) = {positional: true}];
+  MemoryContent content = 2 [(param) = {flatten: true}];
+  // Optionally change scope to global.
+  bool global = 3;
+  // Optionally change scope to this project.
+  string project = 4 [(param) = {short: "p"}];
+  string session_id = 5 [(param) = {
+    hidden: true
+    default: "named_session"
+  }];
+  int64 if_revision = 6 [(param) = {name: "if-revision"}];
+  // Path to a markdown file for body, or "-" to read from stdin (local).
+  string body_file = 7 [(param) = {
+    name: "body-file"
+    local: true
+  }];
+}
+
+message ArchiveMemoryRequest {
+  // Approved memory ID to archive.
+  int32 id = 1 [(param) = {positional: true}];
+  // Why it was archived.
+  string reason = 2;
+  string session_id = 3 [(param) = {
+    hidden: true
+    default: "named_session"
+  }];
+  int64 if_revision = 4 [(param) = {name: "if-revision"}];
+}
+
+message RestoreMemoryRequest {
+  // Archived or rejected memory ID to restore.
+  int32 id = 1 [(param) = {positional: true}];
+  // Restore back to PROPOSED instead of APPROVED.
+  bool to_proposed = 2;
+  string session_id = 3 [(param) = {
+    hidden: true
+    default: "named_session"
+  }];
+  int64 if_revision = 4 [(param) = {name: "if-revision"}];
+}
+
+message MoveMemoryRequest {
+  // Approved memory ID to move.
+  int32 id = 1 [(param) = {positional: true}];
+  oneof place {
+    // Just before this approved memory.
+    int32 before = 2;
+    // First.
+    bool first = 4;
+    // Last.
+    bool last = 5;
+  }
+  string session_id = 3 [(param) = {
+    hidden: true
+    default: "named_session"
+  }];
 }
 
 // ---- commands and tools -----------------------------------------------------

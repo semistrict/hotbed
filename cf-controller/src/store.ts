@@ -32,6 +32,16 @@ import {
 	GitCredentialSchema,
 	HeartbeatRequestSchema,
 	InterventionKind,
+	MemoryBriefingSchema,
+	MemoryChangeSchema,
+	MemoryIndexEntrySchema,
+	MemoryMode,
+	MemoryOrder,
+	MemorySchema,
+	MemoryScope,
+	MemoryState,
+	MemoryUpdate_What,
+	MemoryUpdateSchema,
 	NodeSchema,
 	PlacementDecisionSchema,
 	ProjectChangeSchema,
@@ -76,6 +86,12 @@ import {
 	type GetDaemonLogsResponse,
 	type GitCredential,
 	type HeartbeatRequest,
+	type Memory,
+	type MemoryBriefing,
+	type MemoryChange,
+	type MemoryContent,
+	type MemoryIndexEntry,
+	type MemoryProvenance,
 	type Node,
 	type PlacementDecision,
 	type Project,
@@ -233,6 +249,59 @@ export function reviewStateName(s: ReviewState): string {
 		default:
 			return "REVIEW_STATE_UNSPECIFIED";
 	}
+}
+
+export function memoryStateName(s: MemoryState): string {
+	switch (s) {
+		case MemoryState.PROPOSED:
+			return "MEMORY_STATE_PROPOSED";
+		case MemoryState.APPROVED:
+			return "MEMORY_STATE_APPROVED";
+		case MemoryState.REJECTED:
+			return "MEMORY_STATE_REJECTED";
+		case MemoryState.SUPERSEDED:
+			return "MEMORY_STATE_SUPERSEDED";
+		case MemoryState.ARCHIVED:
+			return "MEMORY_STATE_ARCHIVED";
+		case MemoryState.WITHDRAWN:
+			return "MEMORY_STATE_WITHDRAWN";
+		default:
+			return "MEMORY_STATE_UNSPECIFIED";
+	}
+}
+
+export function memoryModeName(m: MemoryMode): string {
+	switch (m) {
+		case MemoryMode.ALWAYS:
+			return "MEMORY_MODE_ALWAYS";
+		case MemoryMode.ON_DEMAND:
+			return "MEMORY_MODE_ON_DEMAND";
+		default:
+			return "MEMORY_MODE_UNSPECIFIED";
+	}
+}
+
+function memorySearchText(c?: MemoryContent): string {
+	if (!c) return "";
+	return [c.slug, c.title, c.summary, ...c.tags, c.body].filter(Boolean).join("\n").toLowerCase();
+}
+
+function memoryDecisionLine(m: Memory, what: MemoryUpdate_What): string {
+	const scope = m.project || "global";
+	const slug = m.content?.slug ?? "";
+	const head = `memory #${m.id} ([${scope}] ${slug})`;
+	if (what === MemoryUpdate_What.REJECTED) {
+		const r = m.decided?.reason ?? "";
+		return r ? `${head} rejected: ${r}` : `${head} rejected`;
+	}
+	const sup =
+		m.supersedesIds.length > 0
+			? ` (superseded ${m.supersedesIds.map((id) => `#${id}`).join(", ")})`
+			: "";
+	if (what === MemoryUpdate_What.APPROVED_EDITED) {
+		return `${head} approved with edits${sup}`;
+	}
+	return `${head} approved${sup}`;
 }
 
 function quickResponseName(q: QuickResponse): string {
@@ -3051,6 +3120,609 @@ export class ControllerStore {
 			)
 			.toArray()
 			.map((r) => BigInt(str(r.incarnation)));
+	}
+
+	// ---- memories -------------------------------------------------------
+
+	static readonly BRIEFING_ALWAYS_MAX_COUNT = 20;
+	static readonly BRIEFING_ALWAYS_MAX_BYTES = 4096;
+	static readonly BRIEFING_ON_DEMAND_MAX_COUNT = 30;
+	static readonly BRIEFING_ON_DEMAND_MAX_BYTES = 4096;
+
+	proposeMemory(opts: {
+		scope: MemoryScope;
+		project: string;
+		repo: string;
+		content: MemoryContent;
+		supersedesIds: number[];
+		provenance?: MemoryProvenance;
+		by: Stamp;
+		approve: boolean;
+	}): Memory {
+		return this.transactionSync(() => {
+			const pid = opts.scope === MemoryScope.PROJECT ? this.projectIdByName(opts.project) : null;
+			const scopeKey = opts.scope === MemoryScope.PROJECT ? opts.project : "";
+			const top = num(
+				this.sql
+					.exec(
+						"SELECT COALESCE(MIN(rank), 0) AS m FROM memories WHERE state = ?",
+						memoryStateName(MemoryState.APPROVED),
+					)
+					.one().m,
+			);
+			const item = create(MemorySchema, {
+				scope: opts.scope,
+				project: scopeKey,
+				repo: opts.repo,
+				content: opts.content,
+				state: MemoryState.PROPOSED,
+				rank: BigInt(top - 1),
+				supersedesIds: opts.supersedesIds,
+				provenance: opts.provenance,
+				proposed: opts.by,
+				updatedAt: opts.by.at,
+			});
+
+			// Validate supersedes targets exist and are APPROVED.
+			const supersededTargets: Memory[] = [];
+			for (const tid of opts.supersedesIds) {
+				const target = this.getMemory(tid);
+				if (target.state !== MemoryState.APPROVED) {
+					throw hotbedError(
+						ErrorCode.Conflict,
+						`cannot supersede memory #${tid}: it is not approved`,
+					).withSuggestion(`hotbed memory show ${tid}`);
+				}
+				supersededTargets.push(target);
+			}
+
+			// Guard against duplicate active slugs unless that memory is being superseded.
+			const existingSlug = this.findApprovedByScopeSlug(scopeKey, opts.content.slug);
+			if (existingSlug && !opts.supersedesIds.includes(existingSlug.id)) {
+				const where = scopeKey ? `project ${scopeKey}` : "global";
+				throw hotbedError(
+					ErrorCode.Conflict,
+					`an approved memory #${existingSlug.id} already uses slug "${opts.content.slug}" in ${where}`,
+				).withSuggestion(
+					`pass --supersede ${existingSlug.id} to propose an update to it, or pick a different --slug`,
+				);
+			}
+
+			this.sql.exec(
+				`INSERT INTO memories (project_id, scope_key, repo, slug, mode, state, rank, proposed_by, proposed_at, updated_at, search_text, doc)
+				 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '')`,
+				pid,
+				scopeKey,
+				opts.repo,
+				opts.content.slug,
+				memoryModeName(opts.content.mode),
+				memoryStateName(item.state),
+				Number(item.rank),
+				opts.by.session,
+				Number(opts.by.at),
+				Number(opts.by.at),
+				memorySearchText(opts.content),
+			);
+			item.id = num(this.sql.exec("SELECT last_insert_rowid() AS id").one().id);
+			this.saveMemoryRow(item, pid, "proposed", opts.by);
+
+			if (opts.approve) {
+				if (supersededTargets.length > 0) {
+					let minRank = supersededTargets[0].rank;
+					for (const t of supersededTargets) {
+						if (t.rank < minRank) minRank = t.rank;
+						t.state = MemoryState.SUPERSEDED;
+						t.supersededBy = item.id;
+						t.updatedAt = opts.by.at;
+						const tpid = t.scope === MemoryScope.PROJECT ? this.projectIdByName(t.project) : null;
+						this.saveMemoryRow(t, tpid, "superseded", opts.by);
+					}
+					item.rank = minRank;
+				}
+				item.state = MemoryState.APPROVED;
+				item.decided = opts.by;
+				this.saveMemoryRow(item, pid, "approved", opts.by);
+			}
+			return item;
+		});
+	}
+
+	getMemory(id: number): Memory {
+		const rows = this.sql
+			.exec(
+				`SELECT m.id, m.rank, COALESCE(p.name, '') AS project, m.doc
+				 FROM memories m LEFT JOIN projects p ON p.id = m.project_id
+				 WHERE m.id = ?`,
+				id,
+			)
+			.toArray();
+		if (rows.length === 0) {
+			throw hotbedError(ErrorCode.NotFound, `no memory #${id}`).withSuggestion("hotbed memory ls");
+		}
+		return this.decodeMemoryRow(rows[0]);
+	}
+
+	findApprovedByScopeSlug(scopeKey: string, slug: string): Memory | null {
+		const rows = this.sql
+			.exec(
+				`SELECT m.id, m.rank, COALESCE(p.name, '') AS project, m.doc
+				 FROM memories m LEFT JOIN projects p ON p.id = m.project_id
+				 WHERE m.scope_key = ? AND m.slug = ? AND m.state = ?
+				 LIMIT 1`,
+				scopeKey,
+				slug,
+				memoryStateName(MemoryState.APPROVED),
+			)
+			.toArray();
+		if (rows.length === 0) return null;
+		return this.decodeMemoryRow(rows[0]);
+	}
+
+	findApprovedBySlugAnyScope(slug: string): Memory[] {
+		return this.sql
+			.exec(
+				`SELECT m.id, m.rank, COALESCE(p.name, '') AS project, m.doc
+				 FROM memories m LEFT JOIN projects p ON p.id = m.project_id
+				 WHERE m.slug = ? AND m.state = ?
+				 ORDER BY m.scope_key, m.id`,
+				slug,
+				memoryStateName(MemoryState.APPROVED),
+			)
+			.toArray()
+			.map((r) => this.decodeMemoryRow(r));
+	}
+
+	memoryHistory(id: number): MemoryChange[] {
+		return this.sql
+			.exec(
+				"SELECT seq, what, at, session, host, reason, doc FROM memory_changes WHERE memory_id = ? ORDER BY seq",
+				id,
+			)
+			.toArray()
+			.map((r) =>
+				create(MemoryChangeSchema, {
+					seq: big(r.seq),
+					what: str(r.what),
+					by: create(StampSchema, {
+						at: big(r.at),
+						session: str(r.session),
+						host: str(r.host),
+						reason: str(r.reason),
+					}),
+					memory: unmarshal(MemorySchema, str(r.doc)),
+				}),
+			);
+	}
+
+	listMemories(filter: {
+		states: MemoryState[];
+		scope: MemoryScope;
+		project: string;
+		allProjects: boolean;
+		mode: MemoryMode;
+		tag: string;
+		query: string;
+		order: MemoryOrder;
+		limit: number;
+		includeBody?: boolean;
+	}): { memories: Memory[]; total: number } {
+		if (filter.project) {
+			this.getProject(filter.project);
+		}
+		const states =
+			filter.states.length > 0
+				? filter.states.map(memoryStateName)
+				: [memoryStateName(MemoryState.APPROVED)];
+		const ph = states.map(() => "?").join(",");
+
+		const clauses: string[] = [`m.state IN (${ph})`];
+		const args: unknown[] = [...states];
+
+		if (filter.scope === MemoryScope.GLOBAL) {
+			clauses.push("m.project_id IS NULL");
+		} else if (filter.scope === MemoryScope.PROJECT) {
+			if (filter.allProjects) {
+				clauses.push("m.project_id IS NOT NULL");
+			} else {
+				clauses.push("m.scope_key = ?");
+				args.push(filter.project);
+			}
+		} else if (!filter.allProjects) {
+			if (filter.project) {
+				clauses.push("(m.scope_key = '' OR m.scope_key = ?)");
+				args.push(filter.project);
+			} else {
+				clauses.push("m.scope_key = ''");
+			}
+		}
+
+		if (filter.mode !== MemoryMode.UNSPECIFIED) {
+			clauses.push("m.mode = ?");
+			args.push(memoryModeName(filter.mode));
+		}
+
+		const q = filter.query.trim().toLowerCase();
+		if (q) {
+			clauses.push("instr(m.search_text, ?) > 0");
+			args.push(q);
+		}
+
+		const whereSql = clauses.join(" AND ");
+		const isProposalOnly = filter.states.length === 1 && filter.states[0] === MemoryState.PROPOSED;
+		const effectiveOrder =
+			filter.order !== MemoryOrder.UNSPECIFIED
+				? filter.order
+				: isProposalOnly
+					? MemoryOrder.NEWEST
+					: MemoryOrder.RANK;
+
+		const orderBy =
+			effectiveOrder === MemoryOrder.NEWEST
+				? "m.proposed_at DESC, m.id DESC"
+				: effectiveOrder === MemoryOrder.OLDEST
+					? "m.proposed_at ASC, m.id ASC"
+					: effectiveOrder === MemoryOrder.UPDATED
+						? "m.updated_at DESC, m.id DESC"
+						: effectiveOrder === MemoryOrder.SLUG
+							? "m.slug ASC, m.id ASC"
+							: "m.rank ASC, m.updated_at DESC, m.id DESC";
+
+		const rows = this.sql
+			.exec(
+				`SELECT m.id, m.rank, COALESCE(p.name, '') AS project, m.doc
+				 FROM memories m LEFT JOIN projects p ON p.id = m.project_id
+				 WHERE ${whereSql}
+				 ORDER BY ${orderBy}`,
+				...args,
+			)
+			.toArray();
+
+		const tag = filter.tag.trim().toLowerCase();
+		const matched: Memory[] = [];
+		for (const r of rows) {
+			const m = this.decodeMemoryRow(r);
+			if (tag && !(m.content?.tags ?? []).includes(tag)) continue;
+			if (!filter.includeBody && m.content) {
+				m.content.body = "";
+			}
+			matched.push(m);
+		}
+		const total = matched.length;
+		const memories = filter.limit > 0 ? matched.slice(0, filter.limit) : matched;
+		return { memories, total };
+	}
+
+	memoryBriefing(project: string): MemoryBriefing {
+		const approvedRows = this.sql
+			.exec(
+				`SELECT m.id, m.rank, COALESCE(p.name, '') AS project, m.doc
+				 FROM memories m LEFT JOIN projects p ON p.id = m.project_id
+				 WHERE m.state = ? AND (m.scope_key = '' OR m.scope_key = ?)
+				 ORDER BY m.rank ASC, m.updated_at DESC, m.id DESC`,
+				memoryStateName(MemoryState.APPROVED),
+				project,
+			)
+			.toArray();
+
+		const pendingProposals = num(
+			this.sql
+				.exec(
+					`SELECT COUNT(*) AS cnt FROM memories
+					 WHERE state = ? AND (scope_key = '' OR scope_key = ?)`,
+					memoryStateName(MemoryState.PROPOSED),
+					project,
+				)
+				.one().cnt,
+		);
+
+		const always: MemoryIndexEntry[] = [];
+		const onDemand: MemoryIndexEntry[] = [];
+		let alwaysBytes = 0;
+		let onDemandBytes = 0;
+		let omittedAlways = 0;
+		let omittedOnDemand = 0;
+		const enc = new TextEncoder();
+
+		for (const r of approvedRows) {
+			const m = this.decodeMemoryRow(r);
+			const c = m.content;
+			if (!c) continue;
+			const entry = create(MemoryIndexEntrySchema, {
+				id: m.id,
+				slug: c.slug,
+				scope: m.scope,
+				project: m.project,
+				repo: m.repo,
+				mode: c.mode,
+				summary: c.summary,
+				hasBody: c.body.trim().length > 0,
+				revision: m.revision,
+				updatedAt: m.updatedAt,
+			});
+			const entryBytes = enc.encode(`${c.slug}: ${c.summary}`).byteLength;
+			if (c.mode === MemoryMode.ALWAYS) {
+				if (
+					always.length < ControllerStore.BRIEFING_ALWAYS_MAX_COUNT &&
+					(always.length === 0 ||
+						alwaysBytes + entryBytes <= ControllerStore.BRIEFING_ALWAYS_MAX_BYTES)
+				) {
+					always.push(entry);
+					alwaysBytes += entryBytes;
+				} else {
+					omittedAlways++;
+				}
+			} else {
+				if (
+					onDemand.length < ControllerStore.BRIEFING_ON_DEMAND_MAX_COUNT &&
+					(onDemand.length === 0 ||
+						onDemandBytes + entryBytes <= ControllerStore.BRIEFING_ON_DEMAND_MAX_BYTES)
+				) {
+					onDemand.push(entry);
+					onDemandBytes += entryBytes;
+				} else {
+					omittedOnDemand++;
+				}
+			}
+		}
+
+		return create(MemoryBriefingSchema, {
+			always,
+			onDemand,
+			omittedAlways,
+			omittedOnDemand,
+			totalApproved: approvedRows.length,
+			pendingProposals,
+		});
+	}
+
+	pendingMemoriesCounts(): { total: number; global: number; byProject: Map<string, number> } {
+		const rows = this.sql
+			.exec(
+				`SELECT scope_key, COUNT(*) AS cnt FROM memories WHERE state = ? GROUP BY scope_key`,
+				memoryStateName(MemoryState.PROPOSED),
+			)
+			.toArray();
+		let total = 0;
+		let global = 0;
+		const byProject = new Map<string, number>();
+		for (const r of rows) {
+			const sk = str(r.scope_key);
+			const cnt = num(r.cnt);
+			total += cnt;
+			if (sk === "") global += cnt;
+			else byProject.set(sk, cnt);
+		}
+		return { total, global, byProject };
+	}
+
+	changeMemory(id: number, what: string, by: Stamp, edit: (m: Memory) => void): Memory {
+		return this.transactionSync(() => this.changeMemoryTx(id, what, by, edit));
+	}
+
+	approveMemory(
+		id: number,
+		by: Stamp,
+		edit: (m: Memory) => boolean,
+	): { memory: Memory; edited: boolean } {
+		return this.transactionSync(() => {
+			const item = this.getMemory(id);
+			const edited = edit(item);
+			const scopeKey = item.scope === MemoryScope.PROJECT ? item.project : "";
+			const pid = item.scope === MemoryScope.PROJECT ? this.projectIdByName(item.project) : null;
+
+			// Validate and transition superseded targets first so their slugs are released.
+			const targets: Memory[] = [];
+			for (const tid of item.supersedesIds) {
+				if (tid === item.id) {
+					throw hotbedError(ErrorCode.InvalidArgs, `memory #${item.id} cannot supersede itself`);
+				}
+				const target = this.getMemory(tid);
+				if (target.state !== MemoryState.APPROVED) {
+					throw hotbedError(
+						ErrorCode.Conflict,
+						`cannot approve memory #${item.id}: target memory #${tid} is no longer approved`,
+					).withSuggestion(`hotbed memory show ${tid}`);
+				}
+				targets.push(target);
+			}
+
+			// Ensure no other approved memory holds (scopeKey, slug).
+			const slug = item.content?.slug ?? "";
+			const conflict = this.findApprovedByScopeSlug(scopeKey, slug);
+			if (conflict && !item.supersedesIds.includes(conflict.id)) {
+				const where = scopeKey ? `project ${scopeKey}` : "global";
+				throw hotbedError(
+					ErrorCode.Conflict,
+					`an approved memory #${conflict.id} already uses slug "${slug}" in ${where}`,
+				).withSuggestion(`revise its slug or archive #${conflict.id} first`);
+			}
+
+			let nextRank: bigint;
+			if (targets.length > 0) {
+				nextRank = targets[0].rank;
+				for (const t of targets) {
+					if (t.rank < nextRank) nextRank = t.rank;
+					t.state = MemoryState.SUPERSEDED;
+					t.supersededBy = item.id;
+					t.updatedAt = by.at;
+					const tpid = t.scope === MemoryScope.PROJECT ? this.projectIdByName(t.project) : null;
+					this.saveMemoryRow(t, tpid, "superseded", by);
+				}
+			} else {
+				const top = num(
+					this.sql
+						.exec(
+							"SELECT COALESCE(MIN(rank), 0) AS m FROM memories WHERE state = ?",
+							memoryStateName(MemoryState.APPROVED),
+						)
+						.one().m,
+				);
+				nextRank = BigInt(top - 1);
+			}
+
+			item.rank = nextRank;
+			item.state = MemoryState.APPROVED;
+			item.decided = by;
+			if (edited) item.edited = by;
+			item.updatedAt = by.at;
+			this.saveMemoryRow(item, pid, "approved", by);
+
+			const what = edited ? MemoryUpdate_What.APPROVED_EDITED : MemoryUpdate_What.APPROVED;
+			const copy = clone(MemorySchema, item);
+			copy.history = [];
+			this.tellSession(
+				item.proposed?.session ?? "",
+				by.at,
+				create(SessionEventSchema, {
+					detail: memoryDecisionLine(item, what),
+					event: {
+						case: "memory",
+						value: create(MemoryUpdateSchema, { what, memory: copy }),
+					},
+				}),
+			);
+			return { memory: item, edited };
+		});
+	}
+
+	rejectMemory(id: number, by: Stamp, edit: (m: Memory) => void): Memory {
+		return this.transactionSync(() => {
+			const item = this.changeMemoryTx(id, "rejected", by, edit);
+			const copy = clone(MemorySchema, item);
+			copy.history = [];
+			this.tellSession(
+				item.proposed?.session ?? "",
+				by.at,
+				create(SessionEventSchema, {
+					detail: memoryDecisionLine(item, MemoryUpdate_What.REJECTED),
+					event: {
+						case: "memory",
+						value: create(MemoryUpdateSchema, {
+							what: MemoryUpdate_What.REJECTED,
+							memory: copy,
+						}),
+					},
+				}),
+			);
+			return item;
+		});
+	}
+
+	moveMemory(
+		id: number,
+		place: { before?: number; first?: boolean },
+		by: Stamp,
+		check: (m: Memory, before: Memory | null) => void,
+	): Memory {
+		return this.transactionSync(() => {
+			let beforeId = place.before ?? 0;
+			if (place.first) {
+				const item = this.getMemory(id);
+				const rows = this.sql
+					.exec(
+						`SELECT id FROM memories WHERE state = ? ORDER BY rank ASC, id ASC LIMIT 1`,
+						memoryStateName(MemoryState.APPROVED),
+					)
+					.toArray();
+				if (rows.length === 0 || num(rows[0].id) === id) {
+					check(item, null);
+					return item;
+				}
+				beforeId = num(rows[0].id);
+			}
+			const next = beforeId !== 0 ? this.getMemory(beforeId) : null;
+			return this.changeMemoryTx(id, "moved", by, (item) => {
+				check(item, next);
+				if (!next) {
+					const maxRank = num(
+						this.sql
+							.exec(
+								"SELECT COALESCE(MAX(rank), 0) AS m FROM memories WHERE state = ?",
+								memoryStateName(MemoryState.APPROVED),
+							)
+							.one().m,
+					);
+					item.rank = BigInt(maxRank + 1);
+				} else {
+					this.sql.exec(
+						"UPDATE memories SET rank = rank + 1 WHERE rank >= ? AND id != ? AND state = ?",
+						Number(next.rank),
+						item.id,
+						memoryStateName(MemoryState.APPROVED),
+					);
+					item.rank = next.rank;
+				}
+			});
+		});
+	}
+
+	private changeMemoryTx(id: number, what: string, by: Stamp, edit: (m: Memory) => void): Memory {
+		const item = this.getMemory(id);
+		edit(item);
+		const scopeKey = item.scope === MemoryScope.PROJECT ? item.project : "";
+		const pid = item.scope === MemoryScope.PROJECT ? this.projectIdByName(item.project) : null;
+		if (item.state === MemoryState.APPROVED) {
+			const slug = item.content?.slug ?? "";
+			const conflict = this.findApprovedByScopeSlug(scopeKey, slug);
+			if (conflict && conflict.id !== item.id) {
+				const where = scopeKey ? `project ${scopeKey}` : "global";
+				throw hotbedError(
+					ErrorCode.Conflict,
+					`an approved memory #${conflict.id} already uses slug "${slug}" in ${where}`,
+				).withSuggestion(`pick a different slug or archive #${conflict.id} first`);
+			}
+		}
+		if (what !== "moved") item.updatedAt = by.at;
+		this.saveMemoryRow(item, pid, what, by);
+		return item;
+	}
+
+	private saveMemoryRow(item: Memory, pid: number | null, what: string, by: Stamp): void {
+		item.revision += 1n;
+		const scopeKey = item.scope === MemoryScope.PROJECT ? item.project : "";
+		const stored = clone(MemorySchema, item);
+		stored.rank = 0n;
+		stored.history = [];
+		stored.project = "";
+		stored.reminder = undefined;
+		stored.cockpitUrl = "";
+		this.sql.exec(
+			`UPDATE memories
+			 SET project_id = ?, scope_key = ?, repo = ?, slug = ?, mode = ?, state = ?, rank = ?, updated_at = ?, search_text = ?, doc = ?
+			 WHERE id = ?`,
+			pid,
+			scopeKey,
+			item.repo,
+			item.content?.slug ?? "",
+			memoryModeName(item.content?.mode ?? MemoryMode.ON_DEMAND),
+			memoryStateName(item.state),
+			Number(item.rank),
+			Number(item.updatedAt),
+			memorySearchText(item.content),
+			marshal(MemorySchema, stored),
+			item.id,
+		);
+		stored.rank = item.rank;
+		stored.project = item.project;
+		this.sql.exec(
+			`INSERT INTO memory_changes (memory_id, what, at, session, host, reason, doc)
+			 VALUES (?, ?, ?, ?, ?, ?, ?)`,
+			item.id,
+			what,
+			Number(by.at),
+			by.session,
+			by.host,
+			by.reason,
+			marshal(MemorySchema, stored),
+		);
+	}
+
+	private decodeMemoryRow(r: Record<string, SqlStorageValue>): Memory {
+		const m = unmarshal(MemorySchema, str(r.doc));
+		m.id = num(r.id);
+		m.rank = big(r.rank);
+		m.project = str(r.project);
+		return m;
 	}
 
 	// ---- prune ----------------------------------------------------------

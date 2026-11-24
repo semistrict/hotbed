@@ -164,6 +164,46 @@ hotbed question ack 12           # you read it and acted on it: it is handled
   `question move ID --first|--last|--before ID` reorders the user's list within the question's
   project. `question projects` counts every project's open and outbox questions.
 
+## Memories & learning
+
+Memories are cross-agent rules and playbooks curated with user approval in the cockpit, shared
+across every agent harness and machine.
+
+```sh
+hotbed session start                             # returns approved always-on rules + on-demand index
+hotbed memory get subagent-model-neon            # fetch full markdown body of one or more memories
+hotbed memory ls [-q QUERY] [--scope global|project] [--all-projects]
+hotbed memory proposals                          # pending proposals waiting for user approval
+hotbed memory propose --global --mode always \
+  --slug subagent-model-neon \
+  --summary "Use gemini-4-neon (not GPT models) for all T3 Code delegated subagents." \
+  --rationale "User correction in thread fxdax"
+hotbed memory propose --slug zfs-base-freshen \
+  --summary "ZFS clone/snapshot base freshening internals — read before debugging base failures." \
+  --body-file - <<'EOF'
+...detailed markdown playbook...
+EOF
+hotbed memory propose --supersede 4 --slug subagent-model-neon --mode always --summary "..."
+hotbed poll                                      # approved, approved-edited, or rejected events
+```
+
+- **Two delivery modes, progressive disclosure:**
+  - `--mode always`: ultra-short guardrail or preference (≤ 240 chars) printed directly on every
+    `hotbed session start` (and in `hotbed mcp` server instructions) so you obey it immediately.
+  - `--mode on_demand` (default): 1-line summary + when-to-read trigger on `session start`; call
+    `hotbed memory get SLUG [SLUG...]` (or `global/SLUG`, `PROJECT/SLUG`, `#ID`) when relevant.
+- **Two scopes:** defaults to your session's project (and repo if held by the project); pass
+  `--global` for cross-project preferences and workflows.
+- **Update & condense, don't duplicate:** check `hotbed memory ls --state proposed,approved` before
+  proposing. Pass `--supersede ID` (repeatable) to propose an update or consolidate multiple
+  overlapping memories into one; the existing approved memories stay live until the user approves.
+- **Non-blocking approval:** agents cannot self-approve memories. Propose and keep working; when
+  the user approves (optionally with edits) or rejects in the cockpit, `hotbed poll` delivers the
+  update. `hotbed memory edit ID` and `hotbed memory withdraw ID` modify or cancel a pending
+  proposal. `hotbed memory show REF` prints provenance, supersession links, and full revision
+  history. User actions (`approve`, `reject`, `revise`, `archive`, `restore`, `move`) are for the
+  cockpit or passing on the user's explicit word.
+
 ## Reviews: asking a reviewer agent, and the user
 
 A review is of an exact version: the commits it names never move. Ask for one in the checkout to
@@ -378,6 +418,7 @@ Each event is one of:
 - `question`: `ANSWERED` or `DISMISSED`, with the question as it is now; act on it, then
   `hotbed question ack ID`.
 - `review`: `FINISHED`, `FAILED` or `RESPONDED`; `hotbed review show ID` has the rest.
+- `memory`: `APPROVED`, `APPROVED_EDITED` or `REJECTED`, with the decided memory.
 
 `detail` says what happened in a line. `live` counts commands not yet ended. An empty `events`
 after two minutes means nothing happened yet. `ended: true` means the session is over

@@ -56,6 +56,7 @@ var pages = map[protoreflect.FullName]struct{ kind, key protoreflect.Name }{
 	fullName(&pb.Command{}):          {"commands", "id"},
 	fullName(&pb.FinishedCommand{}):  {"commands", "id"},
 	fullName(&pb.Node{}):             {"nodes", "hostname"},
+	fullName(&pb.Memory{}):           {"memories", "id"},
 }
 
 func fullName(m proto.Message) protoreflect.FullName { return m.ProtoReflect().Descriptor().FullName() }
@@ -67,7 +68,18 @@ func (c cockpit) pageOf(m protoreflect.Message) (page string, ok bool) {
 	if !ok {
 		return "", false
 	}
-	return c.page(string(p.kind), m.Get(m.Descriptor().Fields().ByName(p.key)).String()), true
+	fd := m.Descriptor().Fields().ByName(p.key)
+	v := m.Get(fd)
+	var key string
+	switch fd.Kind() {
+	case protoreflect.Int32Kind, protoreflect.Int64Kind:
+		if n := v.Int(); n > 0 {
+			key = fmt.Sprint(n)
+		}
+	default:
+		key = v.String()
+	}
+	return c.page(string(p.kind), key), true
 }
 
 // fill sets cockpit_url on every message in data that has one, when data is

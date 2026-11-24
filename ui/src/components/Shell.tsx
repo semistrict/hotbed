@@ -9,6 +9,7 @@ import { useProject, useScopedSnapshot } from "../lib/project";
 const NAV = [
   { to: "/", label: "Projects" },
   { to: "/questions", label: "Questions" },
+  { to: "/memories", label: "Memories" },
   { to: "/reviews", label: "Reviews" },
   { to: "/sessions", label: "Sessions" },
   { to: "/commands", label: "Commands" },
@@ -72,6 +73,11 @@ export function Shell() {
                 {n.to === "/questions" && data && data.openQuestions > 0 && (
                   <span className="ml-1.5 rounded-full bg-primary px-1.5 font-mono text-[10px] leading-4 text-primary-foreground" aria-label={`${data.openQuestions} waiting for you`}>
                     {data.openQuestions}
+                  </span>
+                )}
+                {n.to === "/memories" && data && data.pendingMemories > 0 && (
+                  <span className="ml-1.5 rounded-full bg-primary px-1.5 font-mono text-[10px] leading-4 text-primary-foreground" aria-label={`${data.pendingMemories} pending proposals`}>
+                    {data.pendingMemories}
                   </span>
                 )}
                 {n.to === "/logs" && whole && <DaemonLogsBadge s={whole} />}
