@@ -466,12 +466,20 @@ func (b *VMBackend) EnsureProjectBase(
 		return nil, fmt.Errorf("boot project base VM %s: %w", vmID, err)
 	}
 
-	// Build clone/fetch + setup steps script to run inside the Firecracker VM.
-	var script strings.Builder
-	script.WriteString("set -euo pipefail\nmkdir -p /work\ncd /work\n")
+	env := append([]string{}, cacheEnv()...)
+	env = append(env, sandboxEnv...)
+	env = append(env,
+		"HOME="+spec.Home,
+		"PATH="+strings.Join(cachePath, ":")+":/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+		"HOTBED_GIT_CRED_SOCK=/run/hotbed/git-auth/git-cred.sock",
+	)
+
+	// 1. Clone/fetch all project repos inside the Firecracker VM.
+	var cloneScript strings.Builder
+	cloneScript.WriteString("set -euo pipefail\nmkdir -p /work\ncd /work\n")
 	for _, r := range p.GetRepos() {
 		branch := cmp.Or(r.GetBranch(), "main")
-		fmt.Fprintf(&script, `
+		fmt.Fprintf(&cloneScript, `
 if [ -d %q/.git ]; then
   git -C %q fetch --prune origin %q
   git -C %q checkout -B %q FETCH_HEAD
@@ -481,19 +489,19 @@ fi
 printf '::hotbed-head:: %s %%s\n' "$(git -C %q rev-parse HEAD)"
 `, r.GetId(), r.GetId(), branch, r.GetId(), branch, branch, r.GetUrl(), r.GetId(), r.GetId(), r.GetId())
 	}
-	for _, s := range p.GetSteps() {
-		fmt.Fprintf(&script, "\n# step: %s\n(cd /work && bash -eo pipefail -c %q)\n", s.GetName(), s.GetScript())
+
+	out, runErr := b.runGuestCommand(ctx, vmID, "freshen-repos-"+baseID, "/work", []string{"/bin/bash", "-c", cloneScript.String()}, env, spec.UID, spec.GID)
+	// 2. Run each project setup step directly via bash -c (avoiding nested
+	// shell quoting so variables like $dest expand inside the step's shell).
+	if runErr == nil {
+		for i, s := range p.GetSteps() {
+			stepCmdID := fmt.Sprintf("freshen-step-%d-%s", i+1, baseID)
+			if _, err := b.runGuestCommand(ctx, vmID, stepCmdID, "/work", []string{"/bin/bash", "-eo", "pipefail", "-c", s.GetScript()}, env, spec.UID, spec.GID); err != nil {
+				runErr = fmt.Errorf("step %q: %w", s.GetName(), err)
+				break
+			}
+		}
 	}
-
-	env := append([]string{}, cacheEnv()...)
-	env = append(env, sandboxEnv...)
-	env = append(env,
-		"HOME="+spec.Home,
-		"PATH="+strings.Join(cachePath, ":")+":/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
-		"HOTBED_GIT_CRED_SOCK=/run/hotbed/git-auth/git-cred.sock",
-	)
-
-	out, runErr := b.runGuestCommand(ctx, vmID, "freshen-"+baseID, "/work", []string{"/bin/bash", "-c", script.String()}, env, spec.UID, spec.GID)
 	stopErr := b.mgr.Stop(ctx, vmID, true)
 	if runErr != nil {
 		_ = b.store.DeleteCell(ctx, rel)
