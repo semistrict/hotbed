@@ -140,3 +140,44 @@ func TestGuestRuntimeEndToEnd(t *testing.T) {
 	}
 	_ = time.Second
 }
+
+type deadVMResolver struct {
+	*fakeResolver
+	exited map[string]int
+}
+
+func (d *deadVMResolver) VMExited(_ context.Context, wsID string) (bool, int) {
+	code, ok := d.exited[wsID]
+	return ok, code
+}
+
+func TestGuestRuntimeDeadVMStatusAndStop(t *testing.T) {
+	// Point client at a closed Unix socket so every vsock RPC fails with ECONNREFUSED.
+	closedSock := filepath.Join(t.TempDir(), "dead.sock")
+	deadClient := guestd.NewClient(guestd.UnixMapDialer(map[uint32]string{
+		guestd.ControlPort: closedSock,
+	}))
+	res := &deadVMResolver{
+		fakeResolver: &fakeResolver{
+			clients: map[string]*guestd.Client{"ws-dead": deadClient},
+			stopped: map[string]bool{},
+		},
+		exited: map[string]int{"ws-dead": 158},
+	}
+	rt := runtime.NewGuestRuntime(res)
+	ctx := context.Background()
+
+	sts, err := rt.StatusMany(ctx, "ws-dead", []string{"c1", "c2"})
+	if err != nil {
+		t.Fatalf("StatusMany on dead VM returned error: %v", err)
+	}
+	for _, id := range []string{"c1", "c2"} {
+		st := sts[id]
+		if !st.Exited || st.ExitCode != 158 {
+			t.Fatalf("status[%s] = %+v, want Exited=true ExitCode=158", id, st)
+		}
+	}
+	if err := rt.StopCommand(ctx, "ws-dead", "c1", time.Second); err != nil {
+		t.Fatalf("StopCommand on dead VM returned error: %v", err)
+	}
+}

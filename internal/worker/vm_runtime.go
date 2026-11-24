@@ -333,6 +333,7 @@ func (u *runtimeUnits) StatusMany(ctx context.Context, names []string) (map[stri
 			out[k] = v
 		}
 	}
+	var firstErr error
 	for wsID, rcs := range byWS {
 		ids := make([]string, len(rcs))
 		for i, rc := range rcs {
@@ -340,7 +341,11 @@ func (u *runtimeUnits) StatusMany(ctx context.Context, names []string) (map[stri
 		}
 		m, err := u.rt.StatusMany(ctx, wsID, ids)
 		if err != nil {
-			return nil, err
+			slog.Warn("read VM commands", "workspace", wsID, "count", len(ids), "err", err)
+			if firstErr == nil {
+				firstErr = err
+			}
+			continue
 		}
 		for name, rc := range byUnit {
 			if rc.wsID != wsID {
@@ -352,6 +357,9 @@ func (u *runtimeUnits) StatusMany(ctx context.Context, names []string) (map[stri
 				out[name] = unit.State{Loaded: false}
 			}
 		}
+	}
+	if len(out) == 0 && firstErr != nil {
+		return nil, firstErr
 	}
 	return out, nil
 }

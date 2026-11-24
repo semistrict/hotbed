@@ -85,39 +85,74 @@ func (g *GuestRuntime) StartCommand(ctx context.Context, wsID string, spec Comma
 	return err
 }
 
+// vmExitChecker is optionally implemented by a GuestResolver that can report
+// whether a workspace's Firecracker VMM process has already exited (e.g. exit
+// 158 on cladefsd restart or exit 159 on DAX fault).
+type vmExitChecker interface {
+	VMExited(ctx context.Context, wsID string) (exited bool, exitCode int)
+}
+
+func (g *GuestRuntime) vmExited(ctx context.Context, wsID string) (bool, int) {
+	if c, ok := g.vms.(vmExitChecker); ok {
+		return c.VMExited(ctx, wsID)
+	}
+	return false, 0
+}
+
 func (g *GuestRuntime) StatusMany(ctx context.Context, wsID string, ids []string) (map[string]CommandStatus, error) {
 	c, err := g.vms.ClientFor(wsID)
-	if err != nil {
-		return nil, err
+	if err == nil {
+		raw, rerr := c.StatusMany(ctx, ids)
+		if rerr == nil {
+			out := make(map[string]CommandStatus, len(raw))
+			for id, st := range raw {
+				out[id] = CommandStatus{
+					ID:         st.ID,
+					Running:    st.State == guestd.StateRunning,
+					Frozen:     st.State == guestd.StateFrozen,
+					Exited:     st.State == guestd.StateExited,
+					ExitCode:   st.ExitCode,
+					MainPID:    st.MainPID,
+					Cgroup:     st.Cgroup,
+					MemoryAnon: st.MemoryAnon,
+					MemorySwap: st.MemorySwap,
+					CPUUsec:    st.CPUUsec,
+				}
+			}
+			return out, nil
+		}
+		err = rerr
 	}
-	raw, err := c.StatusMany(ctx, ids)
-	if err != nil {
-		return nil, err
-	}
-	out := make(map[string]CommandStatus, len(raw))
-	for id, st := range raw {
-		out[id] = CommandStatus{
-			ID:         st.ID,
-			Running:    st.State == guestd.StateRunning,
-			Frozen:     st.State == guestd.StateFrozen,
-			Exited:     st.State == guestd.StateExited,
-			ExitCode:   st.ExitCode,
-			MainPID:    st.MainPID,
-			Cgroup:     st.Cgroup,
-			MemoryAnon: st.MemoryAnon,
-			MemorySwap: st.MemorySwap,
-			CPUUsec:    st.CPUUsec,
+	if len(ids) > 0 {
+		if exited, code := g.vmExited(ctx, wsID); exited {
+			if code == 0 {
+				code = 137
+			}
+			out := make(map[string]CommandStatus, len(ids))
+			for _, id := range ids {
+				out[id] = CommandStatus{
+					ID:       id,
+					Exited:   true,
+					ExitCode: code,
+				}
+			}
+			return out, nil
 		}
 	}
-	return out, nil
+	return nil, err
 }
 
 func (g *GuestRuntime) StopCommand(ctx context.Context, wsID, cmdID string, grace time.Duration) error {
 	c, err := g.vms.ClientFor(wsID)
-	if err != nil {
-		return err
+	if err == nil {
+		_, err = c.StopCommand(ctx, cmdID, grace)
+		if err == nil {
+			return nil
+		}
 	}
-	_, err = c.StopCommand(ctx, cmdID, grace)
+	if exited, _ := g.vmExited(ctx, wsID); exited {
+		return nil
+	}
 	return err
 }
 

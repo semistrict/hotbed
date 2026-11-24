@@ -17,7 +17,11 @@ const (
 	DefaultBridgeName         = "hb-vm0"
 	DefaultBridgeCIDR         = "10.199.0.1/16"
 	DefaultDiskBytes          = 32 << 30
-	DefaultDAXWindowBytes     = 2 << 30
+	// 16 GiB virtual DAX window (PROT_NONE | MAP_NORESERVE on host, lazy per-128 MiB
+	// section memremap_pages in guest): cladefs splits the window 50/50 between
+	// dax->pool and dax->region_pool, so 16 GiB gives dax->pool 8 GiB (larger than
+	// cladefsd's 6 GiB extent cache) with zero extra host RAM.
+	DefaultDAXWindowBytes     = 16 << 30
 	DefaultDAXPrivateMaxBytes = 512 << 20
 	DefaultCacheType          = "Unsafe"
 	DefaultMemMiB             = 4096

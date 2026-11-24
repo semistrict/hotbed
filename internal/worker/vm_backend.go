@@ -622,7 +622,12 @@ func (b *VMBackend) DeleteWorkspaceCell(ctx context.Context, wsID string) error 
 // EnsureVM implements runtime.GuestResolver.
 func (b *VMBackend) EnsureVM(ctx context.Context, wsID string) (*guestd.Client, error) {
 	if c, err := b.mgr.ClientFor(wsID); err == nil {
-		return c, nil
+		if st, serr := b.mgr.Status(ctx, wsID); serr != nil || st.Running {
+			return c, nil
+		}
+		// Tracked Firecracker process already exited (e.g. exit 158 after cladefsd
+		// restart): clean up its stale state and boot a fresh VM on the cell.
+		_ = b.mgr.Stop(ctx, wsID, false)
 	}
 	b.mu.Lock()
 	ref, ok := b.wsCells[wsID]
@@ -649,6 +654,21 @@ func (b *VMBackend) EnsureVM(ctx context.Context, wsID string) (*guestd.Client, 
 // ClientFor implements runtime.GuestResolver.
 func (b *VMBackend) ClientFor(wsID string) (*guestd.Client, error) {
 	return b.mgr.ClientFor(wsID)
+}
+
+// VMExited reports whether wsID's Firecracker process is no longer running.
+func (b *VMBackend) VMExited(ctx context.Context, wsID string) (bool, int) {
+	if b.mgr.Get(wsID) == nil {
+		return true, 0
+	}
+	st, err := b.mgr.Status(ctx, wsID)
+	if err != nil {
+		return false, 0
+	}
+	if !st.Running {
+		return true, st.ExitCode
+	}
+	return false, 0
 }
 
 // StopVM implements runtime.GuestResolver.
