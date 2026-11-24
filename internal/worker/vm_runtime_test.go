@@ -99,9 +99,30 @@ func TestEngineWithGuestRuntimeEndToEnd(t *testing.T) {
 	baseCommit := runGitTest(t, originRepo, "rev-parse", "HEAD")
 
 	// Start a real guestd.Server on Unix sockets (simulating one Firecracker VM's vsock).
-	guestWork := t.TempDir()
-	guestState := t.TempDir()
+	guestBase, err := os.MkdirTemp("/tmp", "hb-guest-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(guestBase) })
+	_ = os.Chmod(guestBase, 0o755)
+	guestWork := filepath.Join(guestBase, "work")
+	guestState := filepath.Join(guestBase, "state")
+	if err := os.MkdirAll(guestWork, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(guestState, 0o755); err != nil {
+		t.Fatal(err)
+	}
 	runGitTest(t, guestWork, "clone", originRepo, "app")
+	if os.Geteuid() == 0 {
+		sp := fake.BaseImage(nil).Spec.Normalized()
+		_ = filepath.Walk(guestWork, func(p string, _ os.FileInfo, err error) error {
+			if err == nil {
+				_ = os.Chown(p, sp.UID, sp.GID)
+			}
+			return nil
+		})
+	}
 
 	sockDir, err := os.MkdirTemp("/tmp", "hb-rt-")
 	if err != nil {

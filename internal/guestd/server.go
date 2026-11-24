@@ -643,6 +643,17 @@ func (s *Server) handleSync(w http.ResponseWriter, r *http.Request) {
 	repoDir := filepath.Join(s.workDir, meta.Repo)
 	g := gitops.Git{Dir: repoDir, Env: meta.Env}
 	if (meta.UID > 0 || meta.GID > 0) && os.Geteuid() == 0 {
+		// guestd runs as root (PID 1 in a Firecracker VM) and created s.syncDir /
+		// tmpDir / bundle files as root; ensure the unprivileged git user can
+		// traverse to and read the bundle files.
+		_ = os.Chmod(s.stateDir, 0o755)
+		_ = os.Chmod(s.syncDir, 0o755)
+		_ = os.Chown(tmpDir, meta.UID, meta.GID)
+		_ = os.Chmod(tmpDir, 0o755)
+		_ = os.Chown(mainBundle, meta.UID, meta.GID)
+		for _, p := range partFiles {
+			_ = os.Chown(p, meta.UID, meta.GID)
+		}
 		g.Command = func(ctx context.Context, dir string, args []string) (*exec.Cmd, error) {
 			c := exec.CommandContext(ctx, "git", args...)
 			c.Dir = dir
