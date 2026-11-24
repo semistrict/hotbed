@@ -370,3 +370,21 @@ func TestEngineWithGuestRuntimeEndToEnd(t *testing.T) {
 		t.Fatalf("Teardown count = %d, want 1", rt.torn[wsID])
 	}
 }
+
+func TestIsVMWorkspaceNoDeadlockUnderEngineLock(t *testing.T) {
+	eng := &Engine{}
+	eng.cfg.Runtime = &trackingRuntime{}
+	eng.cfg.RuntimeFor = eng.isVMWorkspace
+	eng.vmWorkspaces.Store("ws-vm", struct{}{})
+
+	// Hold e.mu just like Engine.endBy / Exec / step do, and verify usesRuntime
+	// does not re-enter e.mu.
+	eng.mu.Lock()
+	defer eng.mu.Unlock()
+	if !eng.usesRuntime("ws-vm") {
+		t.Fatal("expected ws-vm to use runtime while e.mu is held")
+	}
+	if eng.usesRuntime("ws-chroot") {
+		t.Fatal("expected ws-chroot not to use runtime while e.mu is held")
+	}
+}

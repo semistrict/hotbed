@@ -658,6 +658,7 @@ func (e *Engine) createVMWorkspace(ctx context.Context, req *pb.CreateWorkspaceR
 	w.forking = true
 	done := make(chan struct{})
 	w.forkDone = done
+	e.vmWorkspaces.Store(req.Id, struct{}{})
 	e.workspaces[req.Id] = w
 	e.saveWorkspace(w, change{what: "created", detail: "cladefs + Firecracker VM"})
 	e.mu.Unlock()

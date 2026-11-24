@@ -253,6 +253,12 @@ type Engine struct {
 	// up to date, so two requests share one freshen.
 	projectLocks sync.Map // project name -> *sync.Mutex
 
+	// vmWorkspaces records workspace IDs created with runtime="vm". A workspace's
+	// runtime is immutable for its lifetime, so reading vmWorkspaces never needs
+	// e.mu (preventing re-entrant deadlocks when callers such as endBy already
+	// hold e.mu and query usesRuntime).
+	vmWorkspaces sync.Map // workspace ID -> struct{}
+
 	// bgCtx is cancelled and closing set under e.mu when Close begins; bg
 	// tracks every Engine-owned background goroutine so Close waits for them
 	// before closing e.db.
@@ -518,6 +524,9 @@ func (e *Engine) load() error {
 	if err := e.db.all("workspace", func() proto.Message { return &pb.WorkspaceRecord{} }, func(m proto.Message) {
 		r := m.(*pb.WorkspaceRecord)
 		e.workspaces[r.Workspace.Id] = &workspace{rec: r}
+		if r.Workspace.Runtime == runtime.KindVM {
+			e.vmWorkspaces.Store(r.Workspace.Id, struct{}{})
+		}
 	}); err != nil {
 		return err
 	}

@@ -22,11 +22,11 @@ import (
 )
 
 // isVMWorkspace reports whether workspace wsID was created with runtime="vm".
+// It reads the lock-free vmWorkspaces index so it is safe to call both with and
+// without e.mu held (e.g. from endBy/step/Exec as well as runtimeUnits).
 func (e *Engine) isVMWorkspace(wsID string) bool {
-	e.mu.Lock()
-	defer e.mu.Unlock()
-	w, ok := e.workspaces[wsID]
-	return ok && w.ws().Runtime == runtime.KindVM
+	_, ok := e.vmWorkspaces.Load(wsID)
+	return ok
 }
 
 // resolveWorkspaceRuntime picks "vm" or "chroot" for a CreateWorkspaceRequest.
