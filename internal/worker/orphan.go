@@ -185,8 +185,9 @@ func (e *Engine) orphanSlices() []string {
 }
 
 // isEngineOwnedUnit reports whether name is a command/freshen unit owned by
-// Engine (as opposed to the worker daemon itself or baseimage provisioning
-// units, which baseimage.Manager owns).
+// Engine (as opposed to the worker daemon itself, baseimage provisioning
+// units owned by baseimage.Manager, or Firecracker VM / host-FUSE units owned
+// by VMBackend / CladefsFuseBackend).
 func isEngineOwnedUnit(name string) bool {
 	if !strings.HasPrefix(name, "hotbed-") {
 		return false
@@ -194,7 +195,7 @@ func isEngineOwnedUnit(name string) bool {
 	if name == "hotbed-worker" || strings.HasPrefix(name, "hotbed-worker-") {
 		return false
 	}
-	if strings.HasPrefix(name, "hotbed-baseimg-") {
+	if strings.HasPrefix(name, "hotbed-baseimg-") || strings.HasPrefix(name, "hotbed-vm-") || strings.HasPrefix(name, "hotbed-fuse-") {
 		return false
 	}
 	return true

@@ -103,10 +103,17 @@ func (b *gitAuthBridge) proxy(src net.Conn) {
 }
 
 func (b *gitAuthBridge) Close() error {
+	if b == nil {
+		return nil
+	}
 	var err error
 	b.closeOnce.Do(func() {
-		err = b.ln.Close()
-		_ = os.Remove(b.sockPath)
+		if b.ln != nil {
+			err = b.ln.Close()
+		}
+		if b.sockPath != "" {
+			_ = os.Remove(b.sockPath)
+		}
 	})
 	return err
 }
