@@ -24,6 +24,7 @@ import (
 	pb "github.com/semistrict/hotbed/internal/gen/hotbed/v1"
 	"github.com/semistrict/hotbed/internal/inspect"
 	"github.com/semistrict/hotbed/internal/profiler"
+	"github.com/semistrict/hotbed/internal/runtime"
 	"github.com/semistrict/hotbed/internal/storage"
 	"github.com/semistrict/hotbed/internal/sysinfo"
 	"github.com/semistrict/hotbed/internal/unit"
@@ -130,8 +131,16 @@ type EngineConfig struct {
 	Profiler  profiler.Profiler
 	Store     storage.Store
 	Units     Units
-	System    System
-	Now       func() time.Time
+	// Runtime, when non-nil, executes workspace commands, syncs, interactive
+	// shells, file queries, and --port forwarding through a WorkspaceRuntime
+	// (e.g. Firecracker microVM via hotbed-guestd) instead of host chroot.
+	Runtime runtime.WorkspaceRuntime
+	// RuntimeFor optionally selects which workspace IDs use Runtime (enabling
+	// mixed vm + chroot on one node). Nil when Runtime != nil means all
+	// workspaces use Runtime.
+	RuntimeFor func(wsID string) bool
+	System     System
+	Now        func() time.Time
 	// LogLimit is what a command's log keeps once past it; zero for
 	// DefaultLogLimit.
 	LogLimit cmdlog.Limit
@@ -170,6 +179,8 @@ type Engine struct {
 	home           string
 	gitAuth        *gitAuthServer
 	containersConf string
+	rtUnits        *runtimeUnits
+	portProxies    map[string]*portProxy
 
 	mu sync.Mutex
 	// projects is what the controller's last heartbeat said this node keeps
@@ -421,6 +432,7 @@ func NewEngine(ctx context.Context, cfg EngineConfig) (*Engine, error) {
 		shellHostPub:    hostPub,
 		shellTickets:    map[string]*shellTicket{},
 		shells:          map[string]*activeShell{},
+		portProxies:     map[string]*portProxy{},
 		kick:            make(chan struct{}, 1),
 		collect:         make(chan struct{}, 1),
 		stepc:           make(chan struct{}, 1),
@@ -438,10 +450,30 @@ func NewEngine(ctx context.Context, cfg EngineConfig) (*Engine, error) {
 	if cfg.Bench != nil {
 		e.resources.BenchCpus = cfg.Bench.CPUs().String()
 	}
+	if cfg.Runtime != nil {
+		var uid, gid int
+		if cred != nil {
+			uid, gid = int(cred.Uid), int(cred.Gid)
+		} else {
+			sp := cfg.BaseImage.Spec.Normalized()
+			uid, gid = sp.UID, sp.GID
+		}
+		e.rtUnits = newRuntimeUnits(cfg.Units, cfg.Runtime, e.usesRuntime, uid, gid)
+		e.cfg.Units = e.rtUnits
+	}
 	if err := e.load(); err != nil {
 		bgCancel()
 		d.close()
 		return nil, fmt.Errorf("load worker state: %w", err)
+	}
+	if e.rtUnits != nil {
+		for _, c := range e.commands {
+			if started(c.cmd().State) && e.usesRuntime(c.cmd().WorkspaceId) {
+				if lp, lerr := e.logPath(c.cmd().Id); lerr == nil {
+					e.rtUnits.RegisterExisting(e.bgCtx, c.unitName(), c.cmd().WorkspaceId, c.cmd().Id, lp)
+				}
+			}
+		}
 	}
 	e.sweepOrphans(ctx)
 	if cfg.GitAuth != nil {
@@ -543,7 +575,15 @@ func (e *Engine) Close() error {
 	for _, sh := range e.shells {
 		active = append(active, sh)
 	}
+	var proxies []*portProxy
+	for k, p := range e.portProxies {
+		proxies = append(proxies, p)
+		delete(e.portProxies, k)
+	}
 	e.mu.Unlock()
+	for _, p := range proxies {
+		_ = p.Close()
+	}
 	for _, sh := range active {
 		sh.cancel()
 	}

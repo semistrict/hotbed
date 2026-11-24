@@ -133,10 +133,13 @@ func (e *Engine) fork(ctx context.Context, w *workspace) error {
 	w.forking = true
 	done := make(chan struct{})
 	w.forkDone = done
-	snap, vol, note := w.rec.BaseSnapshot, w.rec.Volume, w.rec.Note
+	snap, vol, note, wsID := w.rec.BaseSnapshot, w.rec.Volume, w.rec.Note, w.ws().Id
 	e.mu.Unlock()
 	start := e.now()
 	err := e.cfg.Store.Clone(ctx, snap, vol)
+	if err == nil && e.usesRuntime(wsID) {
+		err = e.cfg.Runtime.EnsureReady(ctx, wsID)
+	}
 	forkMs := e.now().Sub(start).Milliseconds()
 	e.mu.Lock()
 	defer func() {
@@ -485,6 +488,12 @@ func (e *Engine) ReleaseWorkspace(ctx context.Context, id string) (retErr error)
 	vol := w.rec.Volume
 	e.mu.Unlock()
 
+	if e.usesRuntime(id) {
+		if err := e.cfg.Runtime.Teardown(ctx, id); err != nil {
+			slog.Warn("teardown workspace runtime on release", "workspace", id, "err", err)
+		}
+	}
+
 	freed := true
 	if vol != "" {
 		var err error
@@ -771,7 +780,13 @@ func (e *Engine) Sync(ctx context.Context, h *pb.SyncHeader, bundle io.Reader) (
 	e.mu.Unlock()
 	commit, changed := h.Commit, 0
 	if n > 0 {
-		c, err := e.apply(ctx, volPath, dir, f, commit, r.BaseCommit, subs)
+		var c int
+		var err error
+		if e.usesRuntime(ws.Id) {
+			c, err = e.applyViaRuntime(ctx, ws.Id, r.Repo, f, commit, r.BaseCommit, subs)
+		} else {
+			c, err = e.apply(ctx, volPath, dir, f, commit, r.BaseCommit, subs)
+		}
 		if err != nil {
 			var applyErr *gitops.ApplyError
 			if errors.As(err, &applyErr) && applyErr.Mutated {
@@ -1060,6 +1075,9 @@ func (e *Engine) Files(ctx context.Context, id string) ([]*pb.FileEntry, error) 
 	if err != nil {
 		return nil, err
 	}
+	if e.usesRuntime(id) {
+		return e.filesViaRuntime(ctx, id, repos)
+	}
 	workRoot, workDir, err := openWorkRoot(volPath)
 	if err != nil {
 		return nil, fmt.Errorf("open workspace root: %w", err)
@@ -1143,6 +1161,9 @@ func (e *Engine) File(ctx context.Context, id, path string) (*pb.FileContent, er
 	volPath, repos, err := e.checkouts(id)
 	if err != nil {
 		return nil, err
+	}
+	if e.usesRuntime(id) {
+		return e.fileViaRuntime(ctx, id, path, repos)
 	}
 	clean := strings.TrimPrefix(filepath.Clean("/"+path), "/")
 	name, rel, _ := strings.Cut(clean, "/")

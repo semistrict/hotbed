@@ -144,3 +144,17 @@ func (c *vsockConn) RemoteAddr() net.Addr               { return c.remote }
 func (c *vsockConn) SetDeadline(t time.Time) error      { return c.file.SetDeadline(t) }
 func (c *vsockConn) SetReadDeadline(t time.Time) error  { return c.file.SetReadDeadline(t) }
 func (c *vsockConn) SetWriteDeadline(t time.Time) error { return c.file.SetWriteDeadline(t) }
+
+func (c *vsockConn) CloseWrite() error {
+	raw, err := c.file.SyscallConn()
+	if err != nil {
+		return err
+	}
+	var serr error
+	if err := raw.Control(func(fd uintptr) {
+		serr = unix.Shutdown(int(fd), unix.SHUT_WR)
+	}); err != nil {
+		return err
+	}
+	return serr
+}

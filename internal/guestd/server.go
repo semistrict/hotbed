@@ -146,6 +146,24 @@ func writeErr(w http.ResponseWriter, status int, msg string) {
 	writeJSON(w, status, map[string]string{"error": msg})
 }
 
+// resolveWorkDir maps "/work" (and "/work/<subpath>") onto s.workDir when
+// running in a custom work directory (e.g. non-root host tests). Inside a VM
+// where s.workDir == "/work", this is an identity mapping.
+func (s *Server) resolveWorkDir(dir string) string {
+	if dir == "" {
+		return s.workDir
+	}
+	if s.workDir != "/work" {
+		if dir == "/work" {
+			return s.workDir
+		}
+		if rest, ok := strings.CutPrefix(dir, "/work/"); ok {
+			return filepath.Join(s.workDir, rest)
+		}
+	}
+	return dir
+}
+
 func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 	host, _ := os.Hostname()
 	writeJSON(w, http.StatusOK, HealthResponse{
@@ -189,10 +207,7 @@ func (s *Server) handleStartCommand(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	dir := req.Dir
-	if dir == "" {
-		dir = s.workDir
-	}
+	dir := s.resolveWorkDir(req.Dir)
 	cmd := exec.Command(req.Argv[0], req.Argv[1:]...)
 	cmd.Dir = dir
 	cmd.Stdout = logFile
@@ -871,10 +886,7 @@ func (s *Server) handleShellConn(ctx context.Context, conn net.Conn) {
 	if len(argv) == 0 {
 		argv = []string{"/bin/bash", "-l"}
 	}
-	dir := req.Dir
-	if dir == "" {
-		dir = s.workDir
-	}
+	dir := s.resolveWorkDir(req.Dir)
 
 	var writeMu sync.Mutex
 	send := func(typ byte, payload []byte) error {

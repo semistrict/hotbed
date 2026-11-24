@@ -136,6 +136,13 @@ func (e *Engine) Exec(_ context.Context, req *pb.RunCommandRequest) (*pb.Command
 		Dir: dir, Env: req.Env,
 	})
 	if req.Port > 0 {
+		if e.usesRuntime(req.WorkspaceId) {
+			if p, err := startPortProxy(fmt.Sprintf(":%d", req.Port), req.WorkspaceId, uint16(req.Port), e.cfg.Runtime); err != nil {
+				slog.Warn("start VM dev-server port proxy", "command", id, "port", req.Port, "err", err)
+			} else {
+				e.portProxies[id] = p
+			}
+		}
 		c.cmd().Url = fmt.Sprintf("http://%s:%d", e.cfg.Host, req.Port)
 	}
 	if isBuild(kind) {
@@ -672,6 +679,7 @@ func (e *Engine) admit(ctx context.Context) {
 		volPath := e.cfg.Store.Path(c.rec.Volume)
 		cmdID := c.cmd().Id
 		isBench := c.cmd().Bench
+		useRT := e.usesRuntime(c.cmd().WorkspaceId)
 		var admitDone chan struct{}
 		if err == nil {
 			c.admitting = true
@@ -688,7 +696,7 @@ func (e *Engine) admit(ctx context.Context) {
 			}
 		}
 		madeTmp := false
-		if err == nil {
+		if err == nil && !useRT {
 			if err = e.makeTmp(c); err != nil {
 				err = fmt.Errorf("make its tmp: %w", err)
 			} else {
@@ -1861,7 +1869,13 @@ func (e *Engine) endBy(c *command, state pb.CommandState, code *int32, why strin
 	}
 	cmd.Timeline = append(cmd.Timeline, &pb.CommandEvent{At: now, What: what, Detail: detail})
 	// Its processes are gone: the unit has exited or been stopped.
-	e.dropTmp(c)
+	if p, ok := e.portProxies[cmd.Id]; ok {
+		delete(e.portProxies, cmd.Id)
+		_ = p.Close()
+	}
+	if !e.usesRuntime(cmd.WorkspaceId) {
+		e.dropTmp(c)
+	}
 
 	started := cmd.QueuedAt
 	if cmd.StartedAt != nil {

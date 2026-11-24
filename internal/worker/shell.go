@@ -301,9 +301,12 @@ func (e *Engine) beginShell(ctx context.Context, ticket *shellTicket, args, extr
 	}
 	e.mu.Unlock()
 
+	useRT := e.usesRuntime(ticket.workspaceID)
 	cleanup := func() {
 		cancel()
-		removeTmp(volPath, "sh-"+shellID)
+		if !useRT {
+			removeTmp(volPath, "sh-"+shellID)
+		}
 		e.mu.Lock()
 		delete(e.shells, shellID)
 		if w, ok := e.workspaces[ticket.workspaceID]; ok {
@@ -317,9 +320,11 @@ func (e *Engine) beginShell(ctx context.Context, ticket *shellTicket, args, extr
 		close(as.done)
 	}
 
-	if err := e.makeShellTmp(vol, shellID); err != nil {
-		cleanup()
-		return nil, nil, fmt.Errorf("make shell tmp: %w", err)
+	if !useRT {
+		if err := e.makeShellTmp(vol, shellID); err != nil {
+			cleanup()
+			return nil, nil, fmt.Errorf("make shell tmp: %w", err)
+		}
 	}
 	handle, err := e.cfg.Units.StartShell(shellCtx, spec, sio)
 	if err != nil {

@@ -71,3 +71,10 @@ type bufferedConn struct {
 func (c *bufferedConn) Read(p []byte) (int, error) {
 	return c.r.Read(p)
 }
+
+func (c *bufferedConn) CloseWrite() error {
+	if cw, ok := c.Conn.(interface{ CloseWrite() error }); ok {
+		return cw.CloseWrite()
+	}
+	return nil
+}
