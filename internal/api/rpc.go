@@ -6,6 +6,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 	"syscall"
@@ -18,19 +19,110 @@ import (
 	"github.com/semistrict/hotbed/internal/gen/hotbed/v1/hotbedv1connect"
 )
 
-// Dial returns a Connect client for the node at addr: a tailnet host name or
-// address, with or without a port (defaultPort when it has none).
-func Dial(addr string, defaultPort int, hc *http.Client, interceptors ...connect.ClientInterceptor) (*connect.Client, error) {
+// IsRemoteURL reports whether addr is an explicit HTTP(S) base URL (such as a
+// Cloudflare Workers controller URL) rather than a tailnet host[:port].
+func IsRemoteURL(addr string) bool {
+	return strings.HasPrefix(addr, "https://") || strings.HasPrefix(addr, "http://")
+}
+
+// BaseURL normalizes a node address into a base URL without a trailing slash:
+// an explicit http:// or https:// URL stays as given; a tailnet host[:port]
+// becomes "http://<host>:<port>".
+func BaseURL(addr string, defaultPort int) (string, error) {
+	if IsRemoteURL(addr) {
+		u, err := url.Parse(addr)
+		if err != nil || u.Host == "" || (u.Scheme != "http" && u.Scheme != "https") {
+			return "", Errorf(CodeInvalidArgs, "controller URL %q is invalid", addr).
+				WithSuggestion("give a full URL such as https://hotbed-controller.example.workers.dev")
+		}
+		u.Path = strings.TrimRight(u.Path, "/")
+		u.RawQuery = ""
+		u.Fragment = ""
+		return u.String(), nil
+	}
 	hostPort, err := HostPort(addr, defaultPort)
+	if err != nil {
+		return "", err
+	}
+	return "http://" + hostPort, nil
+}
+
+// ControllerBaseURL is BaseURL with DefaultPort.
+func ControllerBaseURL(addr string) (string, error) {
+	return BaseURL(addr, DefaultPort)
+}
+
+// AuthInterceptor attaches Bearer authentication and optional worker/client
+// identity headers to outgoing Connect calls (used when calling a remote
+// Cloudflare Workers controller).
+func AuthInterceptor(token, nodeID, hostname, addr string) connect.ClientInterceptor {
+	return func(next connect.ClientFunc) connect.ClientFunc {
+		return func(ctx context.Context, spec connect.Spec) (connect.ClientStream, error) {
+			if info, ok := connect.CallInfoForClientContext(ctx); ok {
+				h := info.RequestHeader()
+				if token != "" && h.Get("Authorization") == "" {
+					h.Set("Authorization", "Bearer "+token)
+				}
+				if nodeID != "" && h.Get("X-Hotbed-Node-Id") == "" {
+					h.Set("X-Hotbed-Node-Id", nodeID)
+				}
+				if hostname != "" && h.Get("X-Hotbed-Host") == "" {
+					h.Set("X-Hotbed-Host", hostname)
+				}
+				if addr != "" && h.Get("X-Hotbed-Addr") == "" {
+					h.Set("X-Hotbed-Addr", addr)
+				}
+			}
+			return next(ctx, spec)
+		}
+	}
+}
+
+// AuthRoundTripper wraps base to attach Bearer auth and optional identity
+// headers on plain HTTP requests (such as /builds/{build}/{asset} downloads).
+func AuthRoundTripper(base http.RoundTripper, token, nodeID, hostname, addr string) http.RoundTripper {
+	if base == nil {
+		base = http.DefaultTransport
+	}
+	return authRoundTripper{base: base, token: token, nodeID: nodeID, hostname: hostname, addr: addr}
+}
+
+type authRoundTripper struct {
+	base                        http.RoundTripper
+	token, nodeID, hostname, addr string
+}
+
+func (a authRoundTripper) RoundTrip(r *http.Request) (*http.Response, error) {
+	clone := r.Clone(r.Context())
+	if a.token != "" && clone.Header.Get("Authorization") == "" {
+		clone.Header.Set("Authorization", "Bearer "+a.token)
+	}
+	if a.nodeID != "" && clone.Header.Get("X-Hotbed-Node-Id") == "" {
+		clone.Header.Set("X-Hotbed-Node-Id", a.nodeID)
+	}
+	if a.hostname != "" && clone.Header.Get("X-Hotbed-Host") == "" {
+		clone.Header.Set("X-Hotbed-Host", a.hostname)
+	}
+	if a.addr != "" && clone.Header.Get("X-Hotbed-Addr") == "" {
+		clone.Header.Set("X-Hotbed-Addr", a.addr)
+	}
+	return a.base.RoundTrip(clone)
+}
+
+// Dial returns a Connect client for the node at addr: a tailnet host name or
+// address, with or without a port (defaultPort when it has none), or an
+// explicit http(s):// base URL.
+func Dial(addr string, defaultPort int, hc *http.Client, interceptors ...connect.ClientInterceptor) (*connect.Client, error) {
+	base, err := BaseURL(addr, defaultPort)
 	if err != nil {
 		return nil, err
 	}
-	return connect.NewClient(connecthttp.NewTransport(hc, "http://"+hostPort), interceptors...), nil
+	return connect.NewClient(connecthttp.NewTransport(hc, base), interceptors...), nil
 }
 
 // Controller returns clients for the controller at addr.
-func Controller(addr string, hc *http.Client) (hotbedv1connect.ClusterServiceClient, hotbedv1connect.WorkspaceServiceClient, error) {
-	c, err := Dial(addr, DefaultPort, hc)
+func Controller(addr string, hc *http.Client, interceptors ...connect.ClientInterceptor) (hotbedv1connect.ClusterServiceClient, hotbedv1connect.WorkspaceServiceClient, error) {
+	c, err := Dial(addr, DefaultPort, hc, interceptors...)
 	if err != nil {
 		return nil, nil, err
 	}

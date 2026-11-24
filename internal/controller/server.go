@@ -262,7 +262,7 @@ func (s *Server) creatingWorkspacesSnapshot() map[string]bool {
 // Handler serves the API and the cockpit, behind the gate that admits the
 // cluster's owner alone.
 func (s *Server) Handler() http.Handler {
-	server := httpx.NewServer(remindToPoll)
+	server := httpx.NewServer(remindToPoll, s.migratedInterceptor())
 	hotbedv1connect.RegisterClusterServiceHandler(server, s)
 	hotbedv1connect.RegisterSessionServiceHandler(server, &sessions{s})
 	hotbedv1connect.RegisterWorkspaceServiceHandler(server, &workspaces{Server: s})
@@ -373,6 +373,9 @@ func (s *Server) PushEvents(ctx context.Context, req *pb.PushEventsRequest) (*pb
 	if err != nil {
 		return nil, err
 	}
+	if mig := s.migrationForWorker(ctx, peer.NodeID); mig != nil {
+		return &pb.PushEventsResponse{MigratedTo: mig}, nil
+	}
 	in, err := s.cfg.Store.Push(ctx, peer.NodeID, req, s.now(), s.creatingWorkspacesSnapshot())
 	if err != nil {
 		return nil, s.notJoined(peer, err)
@@ -398,6 +401,9 @@ func (s *Server) Heartbeat(ctx context.Context, req *pb.HeartbeatRequest) (*pb.H
 	peer, err := s.fromWorker(ctx, req.ClusterId)
 	if err != nil {
 		return nil, err
+	}
+	if mig := s.migrationForWorker(ctx, peer.NodeID); mig != nil {
+		return &pb.HeartbeatResponse{MigratedTo: mig}, nil
 	}
 	now := s.now()
 	hu := s.hostUsage(peer.Hostname, now)

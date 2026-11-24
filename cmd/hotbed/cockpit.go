@@ -22,11 +22,11 @@ type cockpit struct {
 }
 
 func newCockpit(controllerAddr string) (cockpit, error) {
-	hostPort, err := api.ControllerHostPort(controllerAddr)
+	base, err := api.ControllerBaseURL(controllerAddr)
 	if err != nil {
 		return cockpit{}, err
 	}
-	return cockpit{base: "http://" + hostPort}, nil
+	return cockpit{base: base}, nil
 }
 
 // home is the cockpit's front page.

@@ -75,7 +75,7 @@ const maxRetryWait = 2 * api.ReportInterval
 // together.
 func Connect(ctx context.Context, eng *Engine, cluster hotbedv1connect.ClusterServiceClient, clusterID string, follow *Follow) error {
 	g, ctx := errgroup.WithContext(ctx)
-	p := &pusher{eng: eng, cluster: cluster, clusterID: clusterID}
+	p := &pusher{eng: eng, cluster: cluster, clusterID: clusterID, follow: follow}
 	wakePush := make(chan struct{}, 1)
 	wakeBeat := make(chan struct{}, 1)
 	beatKick := make(chan struct{}, 1)
@@ -172,6 +172,7 @@ type pusher struct {
 	eng       *Engine
 	cluster   hotbedv1connect.ClusterServiceClient
 	clusterID string
+	follow    *Follow
 
 	known      bool  // whether applied is the controller's, as it last said
 	applied    int64 // the last event the controller applied
@@ -341,19 +342,26 @@ func (p *pusher) push(ctx context.Context, req *pb.PushEventsRequest) error {
 	if err != nil {
 		return err
 	}
+	if mig := res.GetMigratedTo(); mig != nil && mig.GetController() != "" {
+		return p.follow.migrateTo(mig)
+	}
 	p.known, p.applied, p.checkpoint = true, res.Applied, res.CheckpointNeeded
 	p.eng.applied.Store(res.Applied)
 	return nil
 }
 
 // HeartbeatOnce sends one heartbeat and applies the reply, which may hand
-// it the controller's build to install over itself (update.ErrRestart).
+// it the controller's build to install over itself (update.ErrRestart) or
+// redirect the worker to a migrated controller (also update.ErrRestart).
 func HeartbeatOnce(ctx context.Context, eng *Engine, cluster hotbedv1connect.ClusterServiceClient, clusterID string, follow *Follow) error {
 	sent := eng.now()
 	h := eng.Heartbeat(clusterID)
 	reply, err := cluster.Heartbeat(ctx, h)
 	if err != nil {
 		return err
+	}
+	if mig := reply.GetMigratedTo(); mig != nil && mig.GetController() != "" {
+		return follow.migrateTo(mig)
 	}
 	eng.delivered(h)
 	eng.setProjects(reply.Projects, sent)
@@ -413,10 +421,21 @@ type Follow struct {
 	Build    int64            // the build it runs, 0 for a dev build
 	MaxDefer time.Duration    // cap on deferring an upgrade while active work runs; 0 uses defaultMaxUpgradeDefer
 	Now      func() time.Time // clock for deferral cap; nil uses time.Now
+	// OnMigrate is invoked when the controller responds with MigratedTo,
+	// rewriting the worker's controller config and returning update.ErrRestart
+	// so the worker reconnects to the new controller.
+	OnMigrate func(*pb.ControllerMigration) error
 
 	mu            sync.Mutex
 	deferredBuild int64     // target build deferred while active work drains
 	deferredSince time.Time // first moment this worker began deferring an upgrade
+}
+
+func (f *Follow) migrateTo(m *pb.ControllerMigration) error {
+	if f == nil || f.OnMigrate == nil || m == nil || m.GetController() == "" {
+		return nil
+	}
+	return f.OnMigrate(m)
 }
 
 func (f *Follow) now() time.Time {

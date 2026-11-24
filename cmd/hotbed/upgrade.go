@@ -54,6 +54,30 @@ func (c *upgradeCmd) Exec(ctx context.Context, d deps) (any, error) {
 
 type adminCmd struct {
 	Upgrade adminUpgradeCmd `cmd:"" help:"Have the controller check CI for a newer build now and restart into it, and wait until it answers on it (workers follow within seconds)."`
+	Migrate adminMigrateCmd `cmd:"" help:"Migrate this controller's cluster state to another controller and redirect workers to reconnect there."`
+}
+
+type adminMigrateCmd struct {
+	controllerClient
+	Target      string `arg:"" help:"Target controller URL (e.g. https://hotbed-controller.example.workers.dev) or tailnet host[:port]."`
+	Token       string `help:"Owner bearer token for authenticating to the target controller's /admin/import."`
+	WorkerToken string `name:"worker-token" help:"Optional fallback worker bearer token if the target does not mint per-worker tokens."`
+	Force       bool   `help:"Overwrite existing cluster state on the target controller."`
+	SkipExport  bool   `name:"skip-export" help:"Skip exporting/importing state; only put this controller into migrated state so workers redirect."`
+}
+
+func (c *adminMigrateCmd) Exec(ctx context.Context, d deps) (any, error) {
+	cl, err := c.clients(d.stream)
+	if err != nil {
+		return nil, err
+	}
+	return cl.cluster.MigrateController(ctx, &pb.MigrateControllerRequest{
+		TargetController: c.Target,
+		TargetToken:      c.Token,
+		WorkerToken:      c.WorkerToken,
+		Force:            c.Force,
+		SkipExport:       c.SkipExport,
+	})
 }
 
 type adminUpgradeCmd struct {
@@ -144,13 +168,16 @@ func install(ctx context.Context, controllerAddr string, d deps, b *pb.Build) er
 	if exe, err = filepath.EvalSymlinks(exe); err != nil {
 		return err
 	}
-	hostPort, err := api.ControllerHostPort(controllerAddr)
+	base, err := api.ControllerBaseURL(controllerAddr)
 	if err != nil {
 		return err
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "http://"+hostPort+b.Path, nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, base+b.Path, nil)
 	if err != nil {
 		return err
+	}
+	if tok := controllerAuthToken(controllerAddr); tok != "" {
+		req.Header.Set("Authorization", "Bearer "+tok)
 	}
 	resp, err := d.stream.Do(req)
 	if err != nil {

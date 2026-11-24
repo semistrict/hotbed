@@ -54,6 +54,11 @@ func awaitStorage(
 		switch e := api.FromConnect(herr); {
 		case herr == nil:
 			beatFailing = false
+			if mig := reply.GetMigratedTo(); mig != nil && mig.GetController() != "" {
+				if err := follow.migrateTo(mig); err != nil {
+					return nil, err
+				}
+			}
 			if err := follow.toWhenIdle(ctx, nil, reply.GetBuild()); err != nil {
 				return nil, err
 			}

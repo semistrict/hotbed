@@ -7,12 +7,15 @@ import (
 	"net/http"
 	"os"
 	"os/user"
+	"path/filepath"
+	"strings"
 
 	"connectrpc.com/connect/v2"
 
 	"github.com/semistrict/hotbed/internal/api"
 	"github.com/semistrict/hotbed/internal/controller"
 	"github.com/semistrict/hotbed/internal/gen/hotbed/v1/hotbedv1connect"
+	"github.com/semistrict/hotbed/internal/setup"
 	"github.com/semistrict/hotbed/internal/statedir"
 	"github.com/semistrict/hotbed/internal/update"
 	"github.com/semistrict/hotbed/internal/worker"
@@ -43,8 +46,50 @@ func (f *controllerClient) callController(addr string, d deps) {
 	f.Controller, f.RideOut = addr, rideOut(d, "the controller at "+addr)
 }
 
+var defaultHotbedDir = setup.DefaultDir
+
+// controllerAuthToken returns the bearer token for controller: HOTBED_TOKEN if
+// set, otherwise ~/.hotbed/token when controller is an HTTPS URL.
+func controllerAuthToken(controller string) string {
+	if tok := strings.TrimSpace(os.Getenv("HOTBED_TOKEN")); tok != "" {
+		return tok
+	}
+	if !strings.HasPrefix(strings.ToLower(strings.TrimSpace(controller)), "https://") {
+		return ""
+	}
+	dir, err := defaultHotbedDir()
+	if err != nil {
+		return ""
+	}
+	b, err := os.ReadFile(filepath.Join(dir, "token"))
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(b))
+}
+
+func controllerAuthInterceptors(controller string) []connect.ClientInterceptor {
+	tok := controllerAuthToken(controller)
+	if tok == "" {
+		return nil
+	}
+	host, _ := os.Hostname()
+	return []connect.ClientInterceptor{api.AuthInterceptor(tok, "", host, "")}
+}
+
+func (f controllerClient) interceptors() []connect.ClientInterceptor {
+	auth := controllerAuthInterceptors(f.Controller)
+	if len(auth) == 0 {
+		return f.RideOut
+	}
+	out := make([]connect.ClientInterceptor, 0, len(auth)+len(f.RideOut))
+	out = append(out, auth...)
+	out = append(out, f.RideOut...)
+	return out
+}
+
 func (f controllerClient) clients(hc *http.Client) (clients, error) {
-	conn, err := api.Dial(f.Controller, api.DefaultPort, hc, f.RideOut...)
+	conn, err := api.Dial(f.Controller, api.DefaultPort, hc, f.interceptors()...)
 	if err != nil {
 		return clients{}, err
 	}
@@ -79,9 +124,10 @@ func (c *initCmd) Exec(ctx context.Context, d deps) (any, error) {
 }
 
 type joinCmd struct {
-	Controller     string   `arg:"" help:"The controller's tailnet name or address, with :PORT unless it is 7120."`
+	Controller     string   `arg:"" help:"The controller's tailnet name or address (with :PORT unless 7120), or an HTTPS controller URL."`
 	Dir            string   `arg:"" type:"path" help:"State directory to create, on btrfs or zfs; volumes live under it."`
 	User           string   `required:"" help:"User every command runs as."`
+	Token          string   `env:"HOTBED_TOKEN" help:"Bearer token for authenticating to a remote HTTPS controller."`
 	ZFSDataset     string   `name:"zfs-dataset" help:"ZFS dataset for volumes, when the directory is on zfs (default <pool>/hotbed)."`
 	UnitProperties []string `name:"unit-property" help:"systemd property every command gets, such as AmbientCapabilities=CAP_SYS_ADMIN or DeviceAllow=/dev/kvm. Repeatable."`
 	Slice          string   `help:"systemd slice commands run in (default hotbed.slice). user-hotbed.slice puts them in user.slice, sharing its memory limit; hotbed admits and parks against the fullest limit above them."`
@@ -89,7 +135,7 @@ type joinCmd struct {
 
 func (c *joinCmd) Exec(ctx context.Context, d deps) (any, error) {
 	return worker.Join(ctx, worker.JoinOptions{
-		Dir: c.Dir, Controller: c.Controller, User: c.User, Dataset: c.ZFSDataset, UnitProperties: c.UnitProperties, Slice: c.Slice,
+		Dir: c.Dir, Controller: c.Controller, User: c.User, Token: c.Token, Dataset: c.ZFSDataset, UnitProperties: c.UnitProperties, Slice: c.Slice,
 	}, d.tailnet, d.http, d.check)
 }
 

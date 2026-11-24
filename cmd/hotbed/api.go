@@ -64,11 +64,11 @@ func (c *apiCommand) Exec(ctx context.Context, d deps) (any, error) {
 
 // runner runs hotbed.proto's commands against the controller.
 func (f controllerClient) runner(d deps, sessions apicmd.Sessions) (*apicmd.Runner, error) {
-	calls, err := api.Dial(f.Controller, api.DefaultPort, d.http, f.RideOut...)
+	calls, err := api.Dial(f.Controller, api.DefaultPort, d.http, f.interceptors()...)
 	if err != nil {
 		return nil, err
 	}
-	waits, err := api.Dial(f.Controller, api.DefaultPort, d.stream, f.RideOut...)
+	waits, err := api.Dial(f.Controller, api.DefaultPort, d.stream, f.interceptors()...)
 	if err != nil {
 		return nil, err
 	}

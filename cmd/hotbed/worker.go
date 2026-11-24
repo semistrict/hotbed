@@ -191,7 +191,7 @@ func (c *workerSuperviseCmd) Exec(ctx context.Context, d deps) (any, error) {
 		setup.WatchPausedVM(ctx, c.Dir, slog.Default())
 	}()
 	err = setup.Supervise(ctx, c.Dir, func(controller string) (hotbedv1connect.ClusterServiceClient, error) {
-		cluster, _, err := api.Controller(controller, d.stream)
+		cluster, _, err := api.Controller(controller, d.stream, controllerAuthInterceptors(controller)...)
 		return cluster, err
 	}, slog.Default())
 	cancel()

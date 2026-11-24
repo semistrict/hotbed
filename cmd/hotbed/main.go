@@ -80,7 +80,7 @@ func run(ctx context.Context, args []string, d deps) int {
 			return exitError
 		}
 		d = watchProgress(d)
-		if name != "upgrade" && name != "admin upgrade" {
+		if name != "upgrade" && name != "admin upgrade" && name != "admin migrate" {
 			var seen atomic.Int64
 			d = watchBuild(d, &seen)
 			defer func() { followController(context.WithoutCancel(ctx), d, addr, seen.Load()) }()

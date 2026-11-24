@@ -18,6 +18,7 @@ import (
 	"strconv"
 	"time"
 
+	"connectrpc.com/connect/v2"
 	"connectrpc.com/connect/v2/connecthttp"
 	"golang.org/x/sync/errgroup"
 
@@ -32,9 +33,10 @@ import (
 	"github.com/semistrict/hotbed/internal/profiler"
 	"github.com/semistrict/hotbed/internal/statedir"
 	"github.com/semistrict/hotbed/internal/storage"
-	"github.com/semistrict/hotbed/internal/tailnet"
 	"github.com/semistrict/hotbed/internal/sysinfo"
+	"github.com/semistrict/hotbed/internal/tailnet"
 	"github.com/semistrict/hotbed/internal/unit"
+	"github.com/semistrict/hotbed/internal/update"
 	"github.com/semistrict/hotbed/internal/version"
 )
 
@@ -52,6 +54,7 @@ type JoinOptions struct {
 	Dataset        string
 	UnitProperties []string
 	Slice          string
+	Token          string
 }
 
 // JoinResult describes a worker that joined.
@@ -139,7 +142,13 @@ func Join(ctx context.Context, o JoinOptions, tn Tailnet, hc *http.Client, check
 		return JoinResult{}, err
 	}
 	o.Dir = dir
-	controller, err := api.ControllerHostPort(o.Controller)
+	remote := api.IsRemoteURL(o.Controller)
+	var controller string
+	if remote {
+		controller, err = api.ControllerBaseURL(o.Controller)
+	} else {
+		controller, err = api.ControllerHostPort(o.Controller)
+	}
 	if err != nil {
 		return JoinResult{}, err
 	}
@@ -153,7 +162,16 @@ func Join(ctx context.Context, o JoinOptions, tn Tailnet, hc *http.Client, check
 	if err != nil {
 		return JoinResult{}, err
 	}
-	cluster, _, err := api.Controller(controller, hc)
+	var interceptors []connect.ClientInterceptor
+	var self tailnet.Self
+	if remote || o.Token != "" {
+		self, err = tn.Self(ctx)
+		if err != nil {
+			return JoinResult{}, err
+		}
+		interceptors = append(interceptors, api.AuthInterceptor(o.Token, self.NodeID, self.Hostname, workerAdvertiseAddr(self)))
+	}
+	cluster, _, err := api.Controller(controller, hc, interceptors...)
 	if err != nil {
 		return JoinResult{}, err
 	}
@@ -161,13 +179,22 @@ func Join(ctx context.Context, o JoinOptions, tn Tailnet, hc *http.Client, check
 	if err != nil {
 		return JoinResult{}, api.FromConnect(err)
 	}
-	ctrl, err := controllerPeer(ctx, tn, controller)
-	if err != nil {
-		return JoinResult{}, err
+	var owner, ctrlNodeID string
+	if remote {
+		owner = self.Login
+		ctrlNodeID = "cf:" + joined.ClusterId
+	} else {
+		ctrl, err := controllerPeer(ctx, tn, controller)
+		if err != nil {
+			return JoinResult{}, err
+		}
+		owner = ctrl.Login
+		ctrlNodeID = ctrl.NodeID
 	}
 	cfg := statedir.WorkerConfig{
 		ClusterID: joined.ClusterId, Controller: controller, User: o.User, Dataset: o.Dataset,
-		UnitProperties: o.UnitProperties, Slice: o.Slice, Owner: ctrl.Login, ControllerNodeID: ctrl.NodeID,
+		UnitProperties: o.UnitProperties, Slice: o.Slice, Owner: owner, ControllerNodeID: ctrlNodeID,
+		Token: o.Token,
 	}
 	if err := statedir.Commit(dir, statedir.Config{Worker: &cfg}); err != nil {
 		return JoinResult{}, err
@@ -199,18 +226,32 @@ func Run(ctx context.Context, dir string, cfg statedir.WorkerConfig, tn Tailnet,
 	if err != nil {
 		return err
 	}
+	remote := api.IsRemoteURL(cfg.Controller)
+	ctrlBaseURL, err := api.ControllerBaseURL(cfg.Controller)
+	if err != nil {
+		return err
+	}
 	if cfg.Owner == "" || cfg.ControllerNodeID == "" {
-		// Joined before workers recorded whom they serve / their controller ID:
-		// record it now from the tailnet's account of the controller's address.
-		ctrl, err := controllerPeer(ctx, tn, cfg.Controller)
-		if err != nil {
-			return err
-		}
-		if cfg.Owner == "" {
-			cfg.Owner = ctrl.Login
-		}
-		if cfg.ControllerNodeID == "" {
-			cfg.ControllerNodeID = ctrl.NodeID
+		if remote {
+			if cfg.Owner == "" {
+				cfg.Owner = self.Login
+			}
+			if cfg.ControllerNodeID == "" {
+				cfg.ControllerNodeID = "cf:" + cfg.ClusterID
+			}
+		} else {
+			// Joined before workers recorded whom they serve / their controller ID:
+			// record it now from the tailnet's account of the controller's address.
+			ctrl, err := controllerPeer(ctx, tn, cfg.Controller)
+			if err != nil {
+				return err
+			}
+			if cfg.Owner == "" {
+				cfg.Owner = ctrl.Login
+			}
+			if cfg.ControllerNodeID == "" {
+				cfg.ControllerNodeID = ctrl.NodeID
+			}
 		}
 		if err := statedir.Rewrite(dir, statedir.Config{Worker: &cfg}); err != nil {
 			return err
@@ -221,7 +262,12 @@ func Run(ctx context.Context, dir string, cfg statedir.WorkerConfig, tn Tailnet,
 		return api.Errorf(api.CodeNotAuthorized, "this machine is on the tailnet as %s, but the cluster belongs to %s: refusing to serve", self.Login, cfg.Owner).
 			WithSuggestion("log this machine into the owner's tailnet account (tailscale up)")
 	}
-	cluster, _, err := api.Controller(cfg.Controller, hc)
+	workerAddr := workerAdvertiseAddr(self)
+	var ctrlInterceptors []connect.ClientInterceptor
+	if remote || cfg.Token != "" {
+		ctrlInterceptors = append(ctrlInterceptors, api.AuthInterceptor(cfg.Token, self.NodeID, self.Hostname, workerAddr))
+	}
+	cluster, _, err := api.Controller(cfg.Controller, hc, ctrlInterceptors...)
 	if err != nil {
 		return err
 	}
@@ -230,7 +276,19 @@ func Run(ctx context.Context, dir string, cfg statedir.WorkerConfig, tn Tailnet,
 		return err
 	}
 	// A binary takes longer than an API call's minute over a slow tailnet.
-	follow := &Follow{URL: "http://" + cfg.Controller, Client: &http.Client{Transport: hc.Transport, Timeout: 10 * time.Minute}, Exe: exe, Build: version.Number()}
+	followTransport := hc.Transport
+	if remote || cfg.Token != "" {
+		followTransport = api.AuthRoundTripper(followTransport, cfg.Token, self.NodeID, self.Hostname, workerAddr)
+	}
+	follow := &Follow{
+		URL:    ctrlBaseURL,
+		Client: &http.Client{Transport: followTransport, Timeout: 10 * time.Minute},
+		Exe:    exe,
+		Build:  version.Number(),
+		OnMigrate: func(m *pb.ControllerMigration) error {
+			return applyControllerMigration(dir, cfg, m)
+		},
+	}
 	store, err := awaitStorage(ctx, func(ctx context.Context) (storage.Store, error) {
 		return storage.Open(ctx, dir, cfg.Dataset)
 	}, cluster, cfg.ClusterID, follow, api.ReportInterval)
@@ -255,9 +313,10 @@ func Run(ctx context.Context, dir string, cfg statedir.WorkerConfig, tn Tailnet,
 	}
 	baseRootFn := baseImg.ReadyRootDir
 
-	ctrlConn, err := api.Dial(cfg.Controller, api.DefaultPort, hc, api.RideOut(30*time.Second, func(err error) {
+	gitInterceptors := append(append([]connect.ClientInterceptor{}, ctrlInterceptors...), api.RideOut(30*time.Second, func(err error) {
 		slog.Warn("waiting for controller to mint git token", "err", err)
 	}))
+	ctrlConn, err := api.Dial(cfg.Controller, api.DefaultPort, hc, gitInterceptors...)
 	if err != nil {
 		return err
 	}
@@ -435,6 +494,11 @@ func Run(ctx context.Context, dir string, cfg statedir.WorkerConfig, tn Tailnet,
 	}()
 	// Its update.ErrRestart ends the others, and Run with it.
 	g.Go(func() error { return Connect(gctx, eng, cluster, cfg.ClusterID, follow) })
+	if remote {
+		g.Go(func() error {
+			return Tunnel(gctx, eng, ctrlBaseURL, cfg.Token, self, workerAddr, cfg.ControllerNodeID, cfg.Owner, hc)
+		})
+	}
 	g.Go(func() error {
 		<-gctx.Done()
 		_ = shellSrv.Close()
@@ -444,6 +508,60 @@ func Run(ctx context.Context, dir string, cfg statedir.WorkerConfig, tn Tailnet,
 		return srv.Shutdown(shutdown)
 	})
 	return g.Wait()
+}
+
+// applyControllerMigration rewrites dir's hotbed.json to point at m's target
+// controller and returns update.ErrRestart so `hotbed serve` re-execs into the
+// new controller without disrupting systemd-managed workloads or warm bases.
+func applyControllerMigration(dir string, cfg statedir.WorkerConfig, m *pb.ControllerMigration) error {
+	if m == nil || m.GetController() == "" {
+		return nil
+	}
+	target := m.GetController()
+	if api.IsRemoteURL(target) {
+		norm, err := api.ControllerBaseURL(target)
+		if err != nil {
+			return fmt.Errorf("invalid migration target %q: %w", target, err)
+		}
+		target = norm
+	} else {
+		hp, err := api.ControllerHostPort(target)
+		if err != nil {
+			return fmt.Errorf("invalid migration target %q: %w", target, err)
+		}
+		target = hp
+	}
+	if cfg.Controller == target && cfg.Token == m.GetToken() && (m.GetControllerNodeId() == "" || cfg.ControllerNodeID == m.GetControllerNodeId()) {
+		return nil
+	}
+	next := cfg
+	next.Controller = target
+	next.Token = m.GetToken()
+	if m.GetControllerNodeId() != "" {
+		next.ControllerNodeID = m.GetControllerNodeId()
+	}
+	if err := statedir.Rewrite(dir, statedir.Config{Worker: &next}); err != nil {
+		return fmt.Errorf("rewrite worker config for controller migration to %s: %w", target, err)
+	}
+	slog.Info("controller migrated: updated worker config and restarting to reconnect",
+		"from", cfg.Controller, "to", target, "controllerNodeId", next.ControllerNodeID)
+	return update.ErrRestart
+}
+
+// workerAdvertiseAddr returns this worker's direct tailnet address (host:7121)
+// advertised to remote HTTPS controllers so clients can still reach the worker
+// directly over Tailscale for Sync, RunCommand, FollowLog, and SSH.
+func workerAdvertiseAddr(self tailnet.Self) string {
+	if len(self.Addrs) > 0 {
+		return net.JoinHostPort(self.Addrs[0].String(), strconv.Itoa(api.WorkerPort))
+	}
+	if self.DNSName != "" {
+		return net.JoinHostPort(self.DNSName, strconv.Itoa(api.WorkerPort))
+	}
+	if self.Hostname != "" {
+		return net.JoinHostPort(self.Hostname, strconv.Itoa(api.WorkerPort))
+	}
+	return ""
 }
 
 // localUsers is the unix user commands run as, which may call the worker

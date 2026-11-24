@@ -269,6 +269,13 @@ func Peer(ctx context.Context) tailnet.Peer {
 	return p
 }
 
+// WithPeer returns a child context carrying peer as the admitted caller.
+// Used by authenticated out-of-band transports (such as the worker's outbound
+// WebSocket tunnel to a Cloudflare Workers controller).
+func WithPeer(ctx context.Context, p tailnet.Peer) context.Context {
+	return context.WithValue(ctx, peerKey{}, p)
+}
+
 // IsLocalNonRoot reports whether the gated request arrived from a non-root
 // process on this machine itself.
 func IsLocalNonRoot(ctx context.Context) bool {

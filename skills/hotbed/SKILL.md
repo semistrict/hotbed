@@ -457,6 +457,8 @@ hotbed schedule run nightly                 # a run now; prints its session, for
 | `hotbed daemon-logs [--source controller\|HOST] [--level warn\|error] [--since 1h] [-q Q] [-n N]` | Rotating WARN/ERROR slog logs from the controller and every worker, newest first (with rotation disk stats) |
 | `hotbed snapshot` | Everything the cockpit shows, as JSON |
 | `hotbed upgrade` | Install the controller's build over this hotbed (a CI build does it by itself) |
+| `hotbed admin upgrade` | Have the controller check CI for a newer build now and restart into it |
+| `hotbed admin migrate TARGET [--token TOKEN] [--worker-token TOKEN] [--force] [--skip-export]` | Export this controller's cluster state to `TARGET/admin/import` and put this controller into migrated state so workers automatically rewrite their config and reconnect to `TARGET` |
 
 ## Output
 

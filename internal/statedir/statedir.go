@@ -71,6 +71,9 @@ type WorkerConfig struct {
 	// ControllerNodeID is the controller's stable tailnet node ID: only it may
 	// call CreateWorkspace on this worker.
 	ControllerNodeID string `json:"controllerNodeId,omitempty"`
+	// Token is the bearer token used to authenticate to a remote HTTPS
+	// controller (such as Cloudflare Workers) and its /ws/worker tunnel.
+	Token string `json:"token,omitempty"`
 }
 
 func (c Config) validate() error {

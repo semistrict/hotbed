@@ -1,0 +1,12 @@
+packages:
+  - "."
+
+# Share Vite+'s core and Vitest with plugins to avoid duplicate runtimes.
+overrides:
+  vite: "npm:@voidzero-dev/vite-plus-core@1.4.0"
+  vitest: "5.0.5"
+
+# Approve build scripts needed by the generated Worker's dependencies.
+allowBuilds:
+  esbuild: true
+  workerd: true

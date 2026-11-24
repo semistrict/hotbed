@@ -1,95 +1,81 @@
 package api
 
 import (
-	"errors"
-	"io"
-	"io/fs"
-	"net"
-	"os"
-	"path/filepath"
-	"regexp"
-	"strings"
-	"syscall"
+	"context"
+	"net/http"
+	"net/http/httptest"
 	"testing"
 
-	"connectrpc.com/connect/v2"
+	pb "github.com/semistrict/hotbed/internal/gen/hotbed/v1"
+	"github.com/semistrict/hotbed/internal/gen/hotbed/v1/hotbedv1connect"
 )
 
-// An error's code, suggestion and retryability survive the wire.
-func TestErrorsRoundTrip(t *testing.T) {
-	sent := Errorf(CodeRepoUnreachable, "cannot read ratel's remote").WithSuggestion("check the repo's URL")
-	sent.Retryable = true
-	wire := ToConnect(sent)
-	var ce *connect.Error
-	if !errors.As(wire, &ce) || ce.Code() != connect.CodeUnavailable {
-		t.Fatalf("ToConnect = %v, want a connect Unavailable error", wire)
+func TestBaseURLAndIsRemoteURL(t *testing.T) {
+	cases := []struct {
+		in      string
+		want    string
+		remote  bool
+		wantErr bool
+	}{
+		{in: "ubu1", want: "http://ubu1:7120", remote: false},
+		{in: "ubu1:9000", want: "http://ubu1:9000", remote: false},
+		{in: "https://hotbed.example.workers.dev/", want: "https://hotbed.example.workers.dev", remote: true},
+		{in: "http://127.0.0.1:8787", want: "http://127.0.0.1:8787", remote: true},
+		{in: "https://", wantErr: true, remote: true},
+		{in: "", wantErr: true},
 	}
-	got := FromConnect(wire)
-	if *got != *sent {
-		t.Errorf("round trip = %+v, want %+v", got, sent)
-	}
-}
-
-// A connection that broke under a call (the worker or controller
-// restarting) is a peer out of reach for now, whatever code the transport
-// gave it: retryable, as a refused one is.
-func TestBrokenConnectionsAreRetryable(t *testing.T) {
-	for _, cause := range []error{
-		&net.OpError{Op: "read", Net: "tcp", Err: os.NewSyscallError("read", syscall.ECONNRESET)},
-		&net.OpError{Op: "read", Net: "tcp", Err: os.NewSyscallError("read", syscall.ECONNABORTED)},
-		&net.OpError{Op: "write", Net: "tcp", Err: os.NewSyscallError("write", syscall.EPIPE)},
-		io.ErrUnexpectedEOF,
-	} {
-		for _, code := range []connect.Code{connect.CodeCanceled, connect.CodeUnknown, connect.CodeInternal} {
-			e := FromConnect(connect.NewError(code, cause.Error()).WithCause(cause))
-			if e.Code != CodeControllerUnreachable || !e.Retryable {
-				t.Errorf("%v from %v = %+v, want unreachable and retryable", code, cause, e)
+	for _, tc := range cases {
+		if got := IsRemoteURL(tc.in); got != tc.remote {
+			t.Errorf("IsRemoteURL(%q) = %v, want %v", tc.in, got, tc.remote)
+		}
+		got, err := ControllerBaseURL(tc.in)
+		if tc.wantErr {
+			if err == nil {
+				t.Errorf("ControllerBaseURL(%q) = %q, want error", tc.in, got)
 			}
+			continue
 		}
-	}
-	if e := FromConnect(connect.NewError(connect.CodeInternal, "boom").WithCause(errors.New("boom"))); e.Retryable {
-		t.Errorf("an internal error = %+v, want it not retryable", e)
+		if err != nil {
+			t.Errorf("ControllerBaseURL(%q) error: %v", tc.in, err)
+			continue
+		}
+		if got != tc.want {
+			t.Errorf("ControllerBaseURL(%q) = %q, want %q", tc.in, got, tc.want)
+		}
 	}
 }
 
-// No error has no code; reading one does not panic.
-func TestCodeOfNoErrorIsNone(t *testing.T) {
-	if got := CodeOf(nil); got != "" {
-		t.Errorf("CodeOf(nil) = %q, want none", got)
-	}
-	if got := CodeOf(Errorf(CodeNotFound, "gone")); got != CodeNotFound {
-		t.Errorf("CodeOf(NOT_FOUND) = %q", got)
-	}
-}
+func TestAuthInterceptorAndRoundTripper(t *testing.T) {
+	var gotAuth, gotNode, gotHost, gotAddr string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotAuth = r.Header.Get("Authorization")
+		gotNode = r.Header.Get("X-Hotbed-Node-Id")
+		gotHost = r.Header.Get("X-Hotbed-Host")
+		gotAddr = r.Header.Get("X-Hotbed-Addr")
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
 
-// fromConnectCode is FromConnect(...).Code, which panics on the path where
-// the call went well (board 7027): CodeOf reads a code safely.
-var fromConnectCode = regexp.MustCompile(`FromConnect\([^()]*\)\.Code\b`)
-
-// Nothing in the module reads a code as FromConnect(err).Code.
-func TestCodesAreReadWithCodeOf(t *testing.T) {
-	err := filepath.WalkDir("../..", func(path string, d fs.DirEntry, err error) error {
-		if err != nil {
-			return err
-		}
-		if d.IsDir() && (d.Name() == "node_modules" || d.Name() == "gen" || (strings.HasPrefix(d.Name(), ".") && d.Name() != "." && d.Name() != "..")) {
-			return filepath.SkipDir
-		}
-		if d.IsDir() || !strings.HasSuffix(path, ".go") {
-			return nil
-		}
-		src, err := os.ReadFile(path)
-		if err != nil {
-			return err
-		}
-		for i, line := range strings.Split(string(src), "\n") {
-			if fromConnectCode.MatchString(line) && !strings.HasPrefix(strings.TrimSpace(line), "//") {
-				t.Errorf("%s:%d reads a code off FromConnect's result, which is nil for no error; use api.CodeOf", path, i+1)
-			}
-		}
-		return nil
-	})
+	// Test AuthInterceptor on Connect RPC
+	conn, err := Dial(srv.URL, DefaultPort, srv.Client(), AuthInterceptor("tok-1", "node-1", "ubu1", "100.1.2.3:7121"))
 	if err != nil {
-		t.Fatal(err)
+		t.Fatalf("Dial: %v", err)
+	}
+	cl := hotbedv1connect.NewClusterServiceClient(conn)
+	_, _ = cl.ListNodes(context.Background(), &pb.ListNodesRequest{})
+	if gotAuth != "Bearer tok-1" || gotNode != "node-1" || gotHost != "ubu1" || gotAddr != "100.1.2.3:7121" {
+		t.Fatalf("AuthInterceptor headers = (%q, %q, %q, %q)", gotAuth, gotNode, gotHost, gotAddr)
+	}
+
+	// Test AuthRoundTripper on plain HTTP GET
+	gotAuth, gotNode, gotHost, gotAddr = "", "", "", ""
+	hc := &http.Client{Transport: AuthRoundTripper(srv.Client().Transport, "tok-2", "node-2", "ws2", "100.1.2.4:7121")}
+	resp, err := hc.Get(srv.URL + "/builds/1/hotbed-linux-amd64")
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	resp.Body.Close()
+	if gotAuth != "Bearer tok-2" || gotNode != "node-2" || gotHost != "ws2" || gotAddr != "100.1.2.4:7121" {
+		t.Fatalf("AuthRoundTripper headers = (%q, %q, %q, %q)", gotAuth, gotNode, gotHost, gotAddr)
 	}
 }

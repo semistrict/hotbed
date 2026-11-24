@@ -225,11 +225,11 @@ func (c *reviewLinkCmd) Exec(ctx context.Context, d deps) (any, error) {
 	if _, err := cl.reviews.GetReview(ctx, &pb.GetReviewRequest{Id: c.ID}); err != nil {
 		return nil, err
 	}
-	hostPort, err := api.ControllerHostPort(c.Controller)
+	base, err := api.ControllerBaseURL(c.Controller)
 	if err != nil {
 		return nil, err
 	}
-	return linkResult{URL: fmt.Sprintf("http://%s/reviews/%d", hostPort, c.ID)}, nil
+	return linkResult{URL: fmt.Sprintf("%s/reviews/%d", base, c.ID)}, nil
 }
 
 type reviewStartCmd struct {

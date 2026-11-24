@@ -31,6 +31,15 @@ type CommandProfile struct {
 	Doc     []byte
 }
 
+type ControllerMigration struct {
+	ID               int64
+	TargetController string
+	ControllerNodeID string
+	DefaultToken     string
+	WorkerTokensJson string
+	MigratedAt       int64
+}
+
 type Event struct {
 	ID      int64
 	At      int64

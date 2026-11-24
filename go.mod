@@ -6,6 +6,7 @@ require (
 	connectrpc.com/connect/v2 v2.0.2
 	github.com/alecthomas/kong v1.17.0
 	github.com/bufbuild/protocompile v0.14.2-0.20261013160345-b79bfe2f85df
+	github.com/coder/websocket v1.8.15
 	github.com/dustinkirkland/golang-petname v0.0.0-20261016130456-fdd95a3d0543
 	github.com/google/go-cmp v0.7.0
 	github.com/google/go-containerregistry v0.22.1
@@ -59,7 +60,6 @@ require (
 	github.com/cespare/xxhash/v2 v2.3.0 // indirect
 	github.com/cilium/ebpf v0.22.0 // indirect
 	github.com/cli/browser v1.3.0 // indirect
-	github.com/coder/websocket v1.8.15 // indirect
 	github.com/containerd/errdefs v1.0.0 // indirect
 	github.com/containerd/errdefs/pkg v0.3.0 // indirect
 	github.com/cpuguy83/go-md2man/v2 v2.0.7 // indirect

@@ -1,0 +1,5 @@
+# Copy to .dev.vars for local `cf dev` (never commit .dev.vars)
+OWNER_TOKEN=dev-owner-token-change-me
+JOIN_TOKEN=dev-join-token-change-me
+# Optional: GitHub token for private release asset downloads
+# GITHUB_TOKEN=ghp_...
