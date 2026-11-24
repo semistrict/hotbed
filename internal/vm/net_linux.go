@@ -149,9 +149,41 @@ table inet hotbed_vm {
 				return fmt.Errorf("configure nftables NAT for %s: %v (%s) / %v (%s)", m.bridgeName, err, strings.TrimSpace(string(out)), err2, strings.TrimSpace(string(out2)))
 			}
 		}
+		if err := m.ensureDockerUserForward(ctx); err != nil {
+			return err
+		}
 		return nil
 	}
 	return errors.New("nft binary not found on host; install nftables for Firecracker VM NAT networking")
+}
+
+// ensureDockerUserForward allows traffic to/from m.bridgeName through Docker's
+// iptables FORWARD chain when Docker is installed (Docker sets FORWARD policy
+// to DROP, which drops forwarded VM packets even when inet hotbed_vm accepts
+// them, because netfilter requires every hooked forward base chain to accept).
+func (m *NetManager) ensureDockerUserForward(ctx context.Context) error {
+	if _, err := exec.LookPath("iptables"); err != nil {
+		return nil
+	}
+	if err := runCmd(ctx, "iptables", "-n", "-L", "DOCKER-USER"); err != nil {
+		// Docker is not installed / DOCKER-USER chain does not exist.
+		return nil
+	}
+	rules := [][]string{
+		{"-i", m.bridgeName, "-j", "ACCEPT"},
+		{"-o", m.bridgeName, "-m", "conntrack", "--ctstate", "RELATED,ESTABLISHED", "-j", "ACCEPT"},
+	}
+	for _, r := range rules {
+		checkArgs := append([]string{"-C", "DOCKER-USER"}, r...)
+		if err := runCmd(ctx, "iptables", checkArgs...); err == nil {
+			continue
+		}
+		insertArgs := append([]string{"-I", "DOCKER-USER", "1"}, r...)
+		if err := runCmd(ctx, "iptables", insertArgs...); err != nil {
+			return fmt.Errorf("add DOCKER-USER rule for %s: %w", m.bridgeName, err)
+		}
+	}
+	return nil
 }
 
 // AllocTAP allocates a free IPv4 address, creates a TAP device attached to the
