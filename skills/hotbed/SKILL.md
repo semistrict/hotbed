@@ -187,6 +187,11 @@ hotbed memory propose --supersede 4 --slug subagent-model-neon --mode always --s
 hotbed poll                                      # approved, approved-edited, or rejected events
 ```
 
+- **Save lessons proactively:** whenever a command or build fails unexpectedly, you discover a
+  repo/tooling quirk, the user corrects you, or you fix a tricky bug or review defect, propose a
+  memory (`hotbed memory propose`, MCP: `memory_propose`) so future sessions don't repeat the same
+  mistake. `session start`, failed runs, `poll` failure/feedback events, `question ack`, and
+  `review fixed` / `review responses` include reminders to keep doing so.
 - **Two delivery modes, progressive disclosure:**
   - `--mode always`: ultra-short guardrail or preference (≤ 240 chars) printed directly on every
     `hotbed session start` (and in `hotbed mcp` server instructions) so you obey it immediately.

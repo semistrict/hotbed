@@ -24,7 +24,13 @@ import {
 	type Stamp,
 } from "../gen/hotbed/v1/hotbed_pb.ts";
 import { getCaller } from "../connect-adapter.ts";
-import { inProject, stamped, type ControllerContext } from "../context.ts";
+import {
+	inProject,
+	MEMORY_FEEDBACK_REMINDER,
+	MEMORY_FIX_REMINDER,
+	stamped,
+	type ControllerContext,
+} from "../context.ts";
 import { ErrorCode, hotbedError } from "../errors.ts";
 import { canonicalRemote, firstLine } from "../gitops.ts";
 
@@ -487,7 +493,10 @@ export function createReviewService(ctrl: ControllerContext): ServiceImpl<typeof
 				f.fix = req.fix;
 				f.evidence = req.evidence;
 			});
-			return create(DecideFindingsResponseSchema, { findings });
+			return create(DecideFindingsResponseSchema, {
+				findings,
+				...(req.decision === FindingDecision.FIXED ? { reminder: MEMORY_FIX_REMINDER } : {}),
+			});
 		},
 
 		respond(req, ctx) {
@@ -533,7 +542,11 @@ export function createReviewService(ctrl: ControllerContext): ServiceImpl<typeof
 				if (e.seq > cursor) cursor = e.seq;
 				if (e.what === "responded") responses.push(e);
 			}
-			return create(ListResponsesResponseSchema, { responses, cursor });
+			return create(ListResponsesResponseSchema, {
+				responses,
+				cursor,
+				...(responses.length > 0 ? { reminder: MEMORY_FEEDBACK_REMINDER } : {}),
+			});
 		},
 	};
 }

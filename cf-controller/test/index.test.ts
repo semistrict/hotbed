@@ -629,13 +629,17 @@ describe("Cloudflare Workers single-DO hotbed controller", () => {
 		});
 		expect(respEv.quick).toBe(QuickResponse.FIX_IF_VERIFIED);
 
-		await owner.reviews.decideFindings({
+		const decidedFixed = await owner.reviews.decideFindings({
 			reviewId: rev.id,
 			findingIds: [fid],
 			decision: FindingDecision.FIXED,
 			sessionId: sess.id,
 			fix: { commit: "c".repeat(40), notes: "added rate limit", locations: [] },
 		});
+		expect(decidedFixed.reminder).toContain("hotbed memory propose");
+		const revResponses = await owner.reviews.listResponses({ reviewId: rev.id, after: 0n });
+		expect(revResponses.responses.length).toBe(1);
+		expect(revResponses.reminder).toContain("hotbed memory propose");
 		const finished = await owner.reviews.finishReview({
 			id: rev.id,
 			sessionId: sess.id,
@@ -896,11 +900,12 @@ describe("Cloudflare Workers single-DO hotbed controller", () => {
 			MemoryUpdate_What.APPROVED_EDITED,
 		);
 
-		// New session receives both in briefing
+		// New session receives both in briefing + memory-saving reminder
 		const s2 = await owner.sessions.startSession({ project: "mem-proj" });
 		expect(s2.memories?.always.map((e) => e.slug)).toEqual(["use-neon"]);
 		expect(s2.memories?.onDemand.map((e) => e.slug)).toEqual(["build-tips"]);
 		expect(s2.memories?.totalApproved).toBe(2);
+		expect(s2.reminder).toContain("hotbed memory propose");
 
 		// Supersede m1 with a refined version
 		const m3 = await owner.memories.proposeMemory({

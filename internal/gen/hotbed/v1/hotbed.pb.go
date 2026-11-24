@@ -9412,8 +9412,11 @@ type SessionEvents struct {
 	// Commands in the session that have not ended.
 	Live int32 `protobuf:"varint,3,opt,name=live,proto3" json:"live,omitempty"`
 	// The session ended (by its agent, or abandoned); no more events will come.
-	Ended         bool   `protobuf:"varint,4,opt,name=ended,proto3" json:"ended,omitempty"`
-	EndReason     string `protobuf:"bytes,5,opt,name=end_reason,json=endReason,proto3" json:"end_reason,omitempty"`
+	Ended     bool   `protobuf:"varint,4,opt,name=ended,proto3" json:"ended,omitempty"`
+	EndReason string `protobuf:"bytes,5,opt,name=end_reason,json=endReason,proto3" json:"end_reason,omitempty"`
+	// Contextual reminder for the agent when events include failures, user
+	// decisions, or review feedback worth saving as a memory.
+	Reminder      *string `protobuf:"bytes,6,opt,name=reminder,proto3,oneof" json:"reminder,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -9479,6 +9482,13 @@ func (x *SessionEvents) GetEnded() bool {
 func (x *SessionEvents) GetEndReason() string {
 	if x != nil {
 		return x.EndReason
+	}
+	return ""
+}
+
+func (x *SessionEvents) GetReminder() string {
+	if x != nil && x.Reminder != nil {
+		return *x.Reminder
 	}
 	return ""
 }
@@ -21393,8 +21403,10 @@ func (x *DecideFindingsRequest) GetEvidence() string {
 }
 
 type DecideFindingsResponse struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Findings      []*Finding             `protobuf:"bytes,1,rep,name=findings,proto3" json:"findings,omitempty"`
+	state    protoimpl.MessageState `protogen:"open.v1"`
+	Findings []*Finding             `protobuf:"bytes,1,rep,name=findings,proto3" json:"findings,omitempty"`
+	// Contextual reminder when findings are marked fixed.
+	Reminder      *string `protobuf:"bytes,2,opt,name=reminder,proto3,oneof" json:"reminder,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -21434,6 +21446,13 @@ func (x *DecideFindingsResponse) GetFindings() []*Finding {
 		return x.Findings
 	}
 	return nil
+}
+
+func (x *DecideFindingsResponse) GetReminder() string {
+	if x != nil && x.Reminder != nil {
+		return *x.Reminder
+	}
+	return ""
 }
 
 type RespondRequest struct {
@@ -21580,7 +21599,9 @@ type ListResponsesResponse struct {
 	state     protoimpl.MessageState `protogen:"open.v1"`
 	Responses []*ReviewEvent         `protobuf:"bytes,1,rep,name=responses,proto3" json:"responses,omitempty"`
 	// Pass as after for what comes next.
-	Cursor        int64 `protobuf:"varint,2,opt,name=cursor,proto3" json:"cursor,omitempty"`
+	Cursor int64 `protobuf:"varint,2,opt,name=cursor,proto3" json:"cursor,omitempty"`
+	// Contextual reminder when new responses are returned.
+	Reminder      *string `protobuf:"bytes,3,opt,name=reminder,proto3,oneof" json:"reminder,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -21627,6 +21648,13 @@ func (x *ListResponsesResponse) GetCursor() int64 {
 		return x.Cursor
 	}
 	return 0
+}
+
+func (x *ListResponsesResponse) GetReminder() string {
+	if x != nil && x.Reminder != nil {
+		return *x.Reminder
+	}
+	return ""
 }
 
 // Metadata of a centralized git credential stored on the controller. Secrets
@@ -25692,14 +25720,16 @@ const file_hotbed_v1_hotbed_proto_rawDesc = "" +
 	"\x05after\x18\x02 \x01(\x03B\x10\x82\xb5\x18\f2\n" +
 	"PollCursorR\x05after\x126\n" +
 	"\x0ftimeout_seconds\x18\x03 \x01(\x05B\r\x82\xb5\x18\t\n" +
-	"\atimeoutR\x0etimeoutSeconds\"\xa1\x01\n" +
+	"\atimeoutR\x0etimeoutSeconds\"\xcf\x01\n" +
 	"\rSessionEvents\x12/\n" +
 	"\x06events\x18\x01 \x03(\v2\x17.hotbed.v1.SessionEventR\x06events\x12\x16\n" +
 	"\x06cursor\x18\x02 \x01(\x03R\x06cursor\x12\x12\n" +
 	"\x04live\x18\x03 \x01(\x05R\x04live\x12\x14\n" +
 	"\x05ended\x18\x04 \x01(\bR\x05ended\x12\x1d\n" +
 	"\n" +
-	"end_reason\x18\x05 \x01(\tR\tendReason\"\x81\x03\n" +
+	"end_reason\x18\x05 \x01(\tR\tendReason\x12\x1f\n" +
+	"\breminder\x18\x06 \x01(\tH\x00R\breminder\x88\x01\x01B\v\n" +
+	"\t_reminder\"\x81\x03\n" +
 	"\fSessionEvent\x12\x10\n" +
 	"\x03seq\x18\x01 \x01(\x03R\x03seq\x12\x0e\n" +
 	"\x02at\x18\x02 \x01(\x03R\x02at\x12\x1d\n" +
@@ -26877,9 +26907,11 @@ const file_hotbed_v1_hotbed_proto_rawDesc = "" +
 	"\n" +
 	"session_id\x18\x05 \x01(\tR\tsessionId\x12 \n" +
 	"\x03fix\x18\x06 \x01(\v2\x0e.hotbed.v1.FixR\x03fix\x12\x1a\n" +
-	"\bevidence\x18\a \x01(\tR\bevidence\"H\n" +
+	"\bevidence\x18\a \x01(\tR\bevidence\"v\n" +
 	"\x16DecideFindingsResponse\x12.\n" +
-	"\bfindings\x18\x01 \x03(\v2\x12.hotbed.v1.FindingR\bfindings\"\xc5\x01\n" +
+	"\bfindings\x18\x01 \x03(\v2\x12.hotbed.v1.FindingR\bfindings\x12\x1f\n" +
+	"\breminder\x18\x02 \x01(\tH\x00R\breminder\x88\x01\x01B\v\n" +
+	"\t_reminder\"\xc5\x01\n" +
 	"\x0eRespondRequest\x12\x1b\n" +
 	"\treview_id\x18\x01 \x01(\x05R\breviewId\x12\x1d\n" +
 	"\n" +
@@ -26891,10 +26923,12 @@ const file_hotbed_v1_hotbed_proto_rawDesc = "" +
 	"\x05after\x18\x06 \x01(\x03R\x05after\"I\n" +
 	"\x14ListResponsesRequest\x12\x1b\n" +
 	"\treview_id\x18\x01 \x01(\x05R\breviewId\x12\x14\n" +
-	"\x05after\x18\x02 \x01(\x03R\x05after\"e\n" +
+	"\x05after\x18\x02 \x01(\x03R\x05after\"\x93\x01\n" +
 	"\x15ListResponsesResponse\x124\n" +
 	"\tresponses\x18\x01 \x03(\v2\x16.hotbed.v1.ReviewEventR\tresponses\x12\x16\n" +
-	"\x06cursor\x18\x02 \x01(\x03R\x06cursor\"\x9e\x02\n" +
+	"\x06cursor\x18\x02 \x01(\x03R\x06cursor\x12\x1f\n" +
+	"\breminder\x18\x03 \x01(\tH\x00R\breminder\x88\x01\x01B\v\n" +
+	"\t_reminder\"\x9e\x02\n" +
 	"\rGitCredential\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x12\x12\n" +
 	"\x04host\x18\x02 \x01(\tR\x04host\x12\x14\n" +
@@ -27439,7 +27473,7 @@ const file_hotbed_v1_hotbed_proto_rawDesc = "" +
 	"{{end}}\x90\x02\x02\x1a\x9f\x02\x82\xb5\x18\x8c\x01\n" +
 	"\aproject\x12\x80\x01Projects: what sessions work on and questions are about, each one or more repos (add, rm-repo, ls, show, bases, rebuild, hosts).\x82\xb5\x18=\n" +
 	"\x04repo\x125Repos the cluster keeps built bases of (add, ls, rm).\x82\xb5\x18I\n" +
-	"\x04node\x12AInspect or retire individual cluster worker nodes (show, retire).2\x82\t\n" +
+	"\x04node\x12AInspect or retire individual cluster worker nodes (show, retire).2\xa1\t\n" +
 	"\x0eSessionService\x12B\n" +
 	"\fStartSession\x12\x1e.hotbed.v1.StartSessionRequest\x1a\x12.hotbed.v1.Session\x12N\n" +
 	"\n" +
@@ -27448,11 +27482,12 @@ const file_hotbed_v1_hotbed_proto_rawDesc = "" +
 	"\x0eSearchSessions\x12 .hotbed.v1.SearchSessionsRequest\x1a!.hotbed.v1.SearchSessionsResponse\"\x03\x90\x02\x02\x12>\n" +
 	"\n" +
 	"EndSession\x12\x1c.hotbed.v1.EndSessionRequest\x1a\x12.hotbed.v1.Session\x12O\n" +
-	"\fWatchSession\x12\x1e.hotbed.v1.WatchSessionRequest\x1a\x18.hotbed.v1.SessionEvents\"\x03\x90\x02\x020\x01\x12\x98\x05\n" +
-	"\x04Poll\x12\x16.hotbed.v1.PollRequest\x1a\x18.hotbed.v1.SessionEvents\"\xdd\x04\x82\xb5\x18\xd5\x04\n" +
-	"\x04poll\x18\x01B\x0eSavePollCursorH\x01P\x01b\xb6\x04{{range .events}}{{template \"event\" .}}\n" +
+	"\fWatchSession\x12\x1e.hotbed.v1.WatchSessionRequest\x1a\x18.hotbed.v1.SessionEvents\"\x03\x90\x02\x020\x01\x12\xb7\x05\n" +
+	"\x04Poll\x12\x16.hotbed.v1.PollRequest\x1a\x18.hotbed.v1.SessionEvents\"\xfc\x04\x82\xb5\x18\xf4\x04\n" +
+	"\x04poll\x18\x01B\x0eSavePollCursorH\x01P\x01b\xd5\x04{{range .events}}{{template \"event\" .}}\n" +
 	"{{else}}{{if not .ended}}nothing yet ({{.live}} live)\n" +
 	"{{end}}{{end}}{{if .ended}}session ended: {{.endReason}}\n" +
+	"{{end}}{{with .reminder}}{{.}}\n" +
 	"{{end}}{{define \"event\"}}{{time .at}}  {{with .command}}{{.commandId}}  {{pad 14 (what .what)}}  {{short 60 .argv}}{{end}}{{with .workspace}}{{.workspaceId}}  workspace {{what .what}}{{end}}{{with .question}}question #{{.question.id}}  {{what .what}}{{end}}{{with .review}}review #{{.reviewId}}  {{what .what}}{{end}}{{with .memory}}memory #{{.memory.id}}  {{what .what}}{{end}}{{with .detail}}  {{.}}{{end}}{{end}}\x90\x02\x022\xbd\x11\n" +
 	"\x10WorkspaceService\x12J\n" +
 	"\x0fCreateWorkspace\x12!.hotbed.v1.CreateWorkspaceRequest\x1a\x14.hotbed.v1.Workspace\x12I\n" +
@@ -28472,6 +28507,7 @@ func file_hotbed_v1_hotbed_proto_init() {
 	}
 	file_hotbed_v1_hotbed_proto_msgTypes[87].OneofWrappers = []any{}
 	file_hotbed_v1_hotbed_proto_msgTypes[89].OneofWrappers = []any{}
+	file_hotbed_v1_hotbed_proto_msgTypes[104].OneofWrappers = []any{}
 	file_hotbed_v1_hotbed_proto_msgTypes[105].OneofWrappers = []any{
 		(*SessionEvent_Command)(nil),
 		(*SessionEvent_Workspace)(nil),
@@ -28515,6 +28551,8 @@ func file_hotbed_v1_hotbed_proto_init() {
 		(*ListReviewsRequest_Project)(nil),
 		(*ListReviewsRequest_AllProjects)(nil),
 	}
+	file_hotbed_v1_hotbed_proto_msgTypes[237].OneofWrappers = []any{}
+	file_hotbed_v1_hotbed_proto_msgTypes[240].OneofWrappers = []any{}
 	file_hotbed_v1_hotbed_proto_msgTypes[256].OneofWrappers = []any{}
 	file_hotbed_v1_hotbed_proto_msgTypes[261].OneofWrappers = []any{
 		(*ListMemoriesRequest_Project)(nil),

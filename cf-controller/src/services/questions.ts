@@ -484,7 +484,10 @@ export function createQuestionService(
 				q.state = QuestionState.HANDLED;
 				q.handled = by;
 			});
-			return create(AckQuestionsResponseSchema, { questions: qs, reminder: POLL_REMINDER });
+			return create(AckQuestionsResponseSchema, {
+				questions: qs,
+				reminder: `${POLL_REMINDER} If the user's answer reflects a standing preference or project convention, save it as a memory (\`hotbed memory propose\`, MCP: \`memory_propose\`).`,
+			});
 		},
 	};
 }

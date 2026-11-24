@@ -278,7 +278,7 @@ service SessionService {
       waits: true
       read_only: true
       after: ["SavePollCursor"]
-      format: "{{range .events}}{{template \"event\" .}}\n{{else}}{{if not .ended}}nothing yet ({{.live}} live)\n{{end}}{{end}}{{if .ended}}session ended: {{.endReason}}\n{{end}}{{define \"event\"}}{{time .at}}  {{with .command}}{{.commandId}}  {{pad 14 (what .what)}}  {{short 60 .argv}}{{end}}{{with .workspace}}{{.workspaceId}}  workspace {{what .what}}{{end}}{{with .question}}question #{{.question.id}}  {{what .what}}{{end}}{{with .review}}review #{{.reviewId}}  {{what .what}}{{end}}{{with .memory}}memory #{{.memory.id}}  {{what .what}}{{end}}{{with .detail}}  {{.}}{{end}}{{end}}"
+      format: "{{range .events}}{{template \"event\" .}}\n{{else}}{{if not .ended}}nothing yet ({{.live}} live)\n{{end}}{{end}}{{if .ended}}session ended: {{.endReason}}\n{{end}}{{with .reminder}}{{.}}\n{{end}}{{define \"event\"}}{{time .at}}  {{with .command}}{{.commandId}}  {{pad 14 (what .what)}}  {{short 60 .argv}}{{end}}{{with .workspace}}{{.workspaceId}}  workspace {{what .what}}{{end}}{{with .question}}question #{{.question.id}}  {{what .what}}{{end}}{{with .review}}review #{{.reviewId}}  {{what .what}}{{end}}{{with .memory}}memory #{{.memory.id}}  {{what .what}}{{end}}{{with .detail}}  {{.}}{{end}}{{end}}"
     };
   }
 }
@@ -1678,6 +1678,9 @@ message SessionEvents {
   // The session ended (by its agent, or abandoned); no more events will come.
   bool ended = 4;
   string end_reason = 5;
+  // Contextual reminder for the agent when events include failures, user
+  // decisions, or review feedback worth saving as a memory.
+  optional string reminder = 6;
 }
 
 // Something that happened in a session: to one of its commands or
@@ -3814,6 +3817,8 @@ message DecideFindingsRequest {
 
 message DecideFindingsResponse {
   repeated Finding findings = 1;
+  // Contextual reminder when findings are marked fixed.
+  optional string reminder = 2;
 }
 
 message RespondRequest {
@@ -3838,6 +3843,8 @@ message ListResponsesResponse {
   repeated ReviewEvent responses = 1;
   // Pass as after for what comes next.
   int64 cursor = 2;
+  // Contextual reminder when new responses are returned.
+  optional string reminder = 3;
 }
 
 // ---- git authentication -----------------------------------------------------

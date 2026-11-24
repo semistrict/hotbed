@@ -791,6 +791,27 @@ export function setupStepsReminder(p?: Project | null): string {
 	return `Reminder: make sure project ${p.name} has setup steps (\`hotbed step ls -p ${p.name}\`, \`hotbed step add\`, \`hotbed step set\`; use \`--every-pull\` for dependency installs and builds) for common things like toolchain installs, dependencies, and pre-builds. ${standard}`;
 }
 
+export const MEMORY_FAILURE_REMINDER =
+	'Reminder: if this failure revealed a reusable fix, quirk, or gotcha, save it as a memory (`hotbed memory propose --slug SLUG --summary "..."`, MCP: `memory_propose`; check `hotbed memory ls` first).';
+
+export const MEMORY_FEEDBACK_REMINDER =
+	'Reminder: if this user answer or review feedback reflects a standing preference, convention, or pitfall, save it as a memory (`hotbed memory propose --slug SLUG --summary "..."`, MCP: `memory_propose`; check `hotbed memory ls` first).';
+
+export const MEMORY_FIX_REMINDER =
+	'Reminder: if this defect exposed a reusable pitfall or invariant, save it as a memory (`hotbed memory propose --slug SLUG --summary "..."`, MCP: `memory_propose`; check `hotbed memory ls` first).';
+
+export function memorySavingReminder(): string {
+	return (
+		'Reminder: keep saving reusable lessons as memories (`hotbed memory propose --slug SLUG --summary "..." [--body "..." | --mode always] [--global]`, MCP: `memory_propose`) ' +
+		"whenever something goes wrong (a failed command/build, tricky bug, or repo/tooling quirk) or the user corrects you. " +
+		"Check `hotbed memory ls` first and use `--supersede ID` to refine existing memories."
+	);
+}
+
+export function sessionStartReminder(p?: Project | null): string {
+	return `${setupStepsReminder(p)}\n${memorySavingReminder()}`;
+}
+
 export function inProject(
 	what: string,
 	id: number,

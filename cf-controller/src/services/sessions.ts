@@ -1,22 +1,29 @@
 import type { ServiceImpl } from "@connectrpc/connect";
 import { create } from "@bufbuild/protobuf";
 import {
+	CommandUpdate_What,
 	GetSessionResponseSchema,
 	ListSessionsResponseSchema,
+	QuestionUpdate_What,
+	ReviewUpdate_What,
 	SearchSessionsResponseSchema,
 	SessionEventsSchema,
 	SessionService,
 	WorkspaceState,
+	WorkspaceUpdate_What,
 	type Command,
 	type Session,
+	type SessionEvent,
 	type SessionEvents,
 	type Workspace,
 } from "../gen/hotbed/v1/hotbed_pb.ts";
 import { getCaller } from "../connect-adapter.ts";
 import {
 	MAX_WAIT_MS,
+	MEMORY_FAILURE_REMINDER,
+	MEMORY_FEEDBACK_REMINDER,
 	SESSION_IDLE_MS,
-	setupStepsReminder,
+	sessionStartReminder,
 	type ControllerContext,
 } from "../context.ts";
 import { ErrorCode, codeOf, hotbedError } from "../errors.ts";
@@ -42,6 +49,43 @@ function validateT3CodeThreadId(raw: string): string {
 		);
 	}
 	return tid;
+}
+
+function pollMemoryReminder(events: SessionEvent[]): string | undefined {
+	let sawFailure = false;
+	let sawFeedback = false;
+	for (const ev of events) {
+		switch (ev.event.case) {
+			case "command": {
+				const c = ev.event.value;
+				if (
+					(c.what === CommandUpdate_What.EXITED && c.exitCode !== 0) ||
+					c.what === CommandUpdate_What.CANCELLED ||
+					c.what === CommandUpdate_What.ISOLATION_LOST
+				) {
+					sawFailure = true;
+				}
+				break;
+			}
+			case "workspace":
+				if (ev.event.value.what === WorkspaceUpdate_What.FAILED) sawFailure = true;
+				break;
+			case "question":
+				if (ev.event.value.what === QuestionUpdate_What.ANSWERED) sawFeedback = true;
+				break;
+			case "review": {
+				const w = ev.event.value.what;
+				if (w === ReviewUpdate_What.FAILED) sawFailure = true;
+				else if (w === ReviewUpdate_What.FINISHED || w === ReviewUpdate_What.RESPONDED) {
+					sawFeedback = true;
+				}
+				break;
+			}
+		}
+	}
+	if (sawFailure) return MEMORY_FAILURE_REMINDER;
+	if (sawFeedback) return MEMORY_FEEDBACK_REMINDER;
+	return undefined;
 }
 
 export function createSessionService(ctrl: ControllerContext): ServiceImpl<typeof SessionService> {
@@ -112,7 +156,7 @@ export function createSessionService(ctrl: ControllerContext): ServiceImpl<typeo
 				}
 				const resumed = await resumeSession(req.id, req.project, t3codeThreadId);
 				const proj = ctrl.store.getProject(resumed.project);
-				resumed.reminder = setupStepsReminder(proj);
+				resumed.reminder = sessionStartReminder(proj);
 				if (!req.omitMemories) {
 					resumed.memories = ctrl.store.memoryBriefing(resumed.project);
 				}
@@ -142,7 +186,7 @@ export function createSessionService(ctrl: ControllerContext): ServiceImpl<typeo
 					throw hotbedError(ErrorCode.Conflict, "could not find a free session name");
 				}
 			}
-			sess.reminder = setupStepsReminder(project);
+			sess.reminder = sessionStartReminder(project);
 			if (!req.omitMemories) {
 				sess.memories = ctrl.store.memoryBriefing(project.name);
 			}
@@ -344,6 +388,7 @@ export function createSessionService(ctrl: ControllerContext): ServiceImpl<typeo
 				try {
 					const res = sessionState(req.sessionId, req.after);
 					if (res.events.length > 0 || res.ended) {
+						res.reminder = pollMemoryReminder(res.events);
 						return res;
 					}
 					const remaining = deadline - Date.now();
@@ -353,7 +398,9 @@ export function createSessionService(ctrl: ControllerContext): ServiceImpl<typeo
 					waiter.cancel();
 				}
 			}
-			return sessionState(req.sessionId, req.after);
+			const finalRes = sessionState(req.sessionId, req.after);
+			finalRes.reminder = pollMemoryReminder(finalRes.events);
+			return finalRes;
 		},
 	};
 }

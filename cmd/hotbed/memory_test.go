@@ -264,6 +264,9 @@ func TestMCPServerIncludesMemoriesInInstructionsAndTools(t *testing.T) {
 	if !strings.Contains(instr, "mcp-test-rule") || !strings.Contains(instr, "Always prefer neon over GPT.") {
 		t.Errorf("MCP server instructions missing approved memory:\n%s", instr)
 	}
+	if !strings.Contains(instr, "memory_propose") || !strings.Contains(instr, "hotbed memory propose") {
+		t.Errorf("MCP server instructions missing memory-saving reminder:\n%s", instr)
+	}
 
 	// Fetch via memory_get MCP tool.
 	got := &pb.GetMemoriesResponse{}
@@ -285,4 +288,84 @@ func TestMCPServerIncludesMemoriesInInstructionsAndTools(t *testing.T) {
 		t.Fatalf("MCP memory_propose = %+v", prop)
 	}
 	_ = filepath.Clean(dir)
+}
+
+func TestMemorySavingReminders(t *testing.T) {
+	c := newCluster(t)
+	c.addRepo(upstream(t))
+
+	// 1. Session start (plain + JSON + resume) includes the memory-saving reminder even with 0 memories.
+	code, stdout, stderr := c.hotbed("session", "start", "bright-jay")
+	if code != 0 {
+		t.Fatalf("session start failed (%d): %s", code, stderr)
+	}
+	for _, want := range []string{"hotbed memory propose", "something goes wrong", "memory_propose"} {
+		if !strings.Contains(stdout, want) {
+			t.Errorf("plain session start missing memory reminder %q:\n%s", want, stdout)
+		}
+	}
+
+	sess := &pb.Session{}
+	c.ok(sess, "session", "start", "swift-fox")
+	if !strings.Contains(sess.GetReminder(), "hotbed memory propose") {
+		t.Errorf("json session start reminder = %q, want memory propose prompt", sess.GetReminder())
+	}
+	c.ok(nil, "session", "end", "-s", "swift-fox")
+	resumed := &pb.Session{}
+	c.ok(resumed, "session", "start", "swift-fox", "--resume")
+	if !strings.Contains(resumed.GetReminder(), "hotbed memory propose") {
+		t.Errorf("resumed session reminder = %q, want memory propose prompt", resumed.GetReminder())
+	}
+
+	// 2. Attached `hotbed run` prints a memory reminder on stderr on non-zero exit, not on exit 0.
+	c.workspace("bright-jay", nil)
+	code, _, stderr = c.hotbed("run", "-s", "bright-jay", "-r", "app", "--", "true")
+	if code != 0 {
+		t.Fatalf("run true failed (%d): %s", code, stderr)
+	}
+	if strings.Contains(stderr, "hotbed memory propose") {
+		t.Errorf("exit 0 run unexpectedly printed memory reminder:\n%s", stderr)
+	}
+
+	code, _, stderr = c.hotbed("run", "-s", "bright-jay", "-r", "app", "--", "sh", "-c", "exit 7")
+	if code != 7 {
+		t.Fatalf("run exit 7 returned %d (stderr=%q)", code, stderr)
+	}
+	if !strings.Contains(stderr, "hotbed memory propose") {
+		t.Errorf("failed run stderr missing memory reminder:\n%s", stderr)
+	}
+
+	// 3. `hotbed poll` emits a reminder when events include a command failure (plain + JSON),
+	//    and omits it when events have only clean exits or are empty.
+	c.eventually("failed command event", func() bool {
+		return slices.ContainsFunc(c.events("bright-jay"), func(e *pb.SessionEvent) bool {
+			return e.GetCommand().GetWhat() == pb.CommandUpdate_WHAT_EXITED && e.GetCommand().GetExitCode() == 7
+		})
+	})
+	polled := &pb.SessionEvents{}
+	c.ok(polled, "poll", "-s", "bright-jay", "--after", "0", "--timeout", "1")
+	if !strings.Contains(polled.GetReminder(), "hotbed memory propose") {
+		t.Errorf("poll with failed command reminder = %q, want memory propose prompt", polled.GetReminder())
+	}
+	// Plain text poll also prints the reminder.
+	code, pollOut, pollErr := c.hotbed("poll", "-s", "bright-jay", "--after", "0", "--timeout", "1")
+	if code != 0 || !strings.Contains(pollOut, "hotbed memory propose") {
+		t.Errorf("plain poll with failed command = (%d, %q, %q), want memory reminder", code, pollOut, pollErr)
+	}
+	// Empty poll carries no reminder.
+	emptyPoll := &pb.SessionEvents{}
+	c.ok(emptyPoll, "poll", "-s", "bright-jay", "--timeout", "1")
+	if emptyPoll.Reminder != nil {
+		t.Errorf("empty poll unexpectedly carried reminder: %q", emptyPoll.GetReminder())
+	}
+
+	// 4. `question ack` includes the memory-saving nudge alongside the poll reminder.
+	c.okIn(`{"questions":[{"question":"Which linter?","header":"Lint","options":[{"label":"oxlint","description":"fast","implemented":true},{"label":"eslint","description":"classic"}]}]}`,
+		nil, "question", "add", "-s", "bright-jay")
+	c.ok(nil, "question", "answer", "1", "--pick", "oxlint")
+	acked := &pb.AckQuestionsResponse{}
+	c.ok(acked, "question", "ack", "1", "-s", "bright-jay")
+	if !strings.Contains(acked.GetReminder(), "hotbed memory propose") {
+		t.Errorf("question ack reminder = %q, want memory propose nudge", acked.GetReminder())
+	}
 }
