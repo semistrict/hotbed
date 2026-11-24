@@ -25,6 +25,7 @@ import {
 	GitAuthService,
 	HeartbeatRequestSchema,
 	ListFilesResponseSchema,
+	ManagedArtifactSchema,
 	MemoryMode,
 	MemoryScope,
 	MemoryService,
@@ -46,6 +47,8 @@ import {
 	SessionService,
 	StepSchema,
 	TraceCommandChunkSchema,
+	WorkerConfigSchema,
+	WorkerVMConfigSchema,
 	WorkspaceSchema,
 	WorkspaceService,
 	WorkspaceState,
@@ -1490,5 +1493,112 @@ describe("Security, cron, daemon logs, tunnel, and workspace regression tests", 
 
 		const hourSumUp = nodeHourly.n1.hours.reduce((acc, h) => acc + Number(h.uploadBytes), 0);
 		expect(hourSumUp).toBe(14_000_000);
+	});
+
+	it("manages centralized worker & VM config, merges into HeartbeatResponse, and attaches Build.guestd", async () => {
+		const owner = ownerClients();
+		const worker = workerClients(OWNER_TOKEN, "node-cfg-1", "ubu1", "100.73.156.10:7121");
+		const joined = await worker.cluster.join({});
+		const workerWithToken = workerClients(
+			joined.workerToken || OWNER_TOKEN,
+			"node-cfg-1",
+			"ubu1",
+			"100.73.156.10:7121",
+		);
+		const kernelSha = "a".repeat(64);
+		const guestdSha = "b".repeat(64);
+		const hotbedSha = "c".repeat(64);
+
+		// Set cluster-wide defaults with a managed amd64 guest kernel.
+		const defCfg = await owner.cluster.setWorkerConfig({
+			config: create(WorkerConfigSchema, {
+				defaultRuntime: "vm",
+				vm: create(WorkerVMConfigSchema, {
+					vcpus: 8,
+					memMib: 12288,
+					cacheType: "Unsafe",
+					kernels: {
+						amd64: create(ManagedArtifactSchema, {
+							url: "https://example.com/vmlinux-kvm",
+							sha256: kernelSha,
+							version: "cladefs-6.12-kvm",
+						}),
+					},
+				}),
+			}),
+		});
+		expect(defCfg.revision).toBe(1n);
+
+		// Per-node override for ubu1 overrides memMib while inheriting vcpus & kernel.
+		const nodeCfg = await owner.cluster.setWorkerConfig({
+			node: "ubu1",
+			config: create(WorkerConfigSchema, {
+				vm: create(WorkerVMConfigSchema, {
+					enabled: true,
+					memMib: 16384,
+					cladefsPeerAddr: "100.73.156.10:9185",
+				}),
+			}),
+		});
+		expect(nodeCfg.node).toBe("ubu1");
+		expect(nodeCfg.revision).toBe(1n);
+
+		// Workers cannot mutate cluster config.
+		await expect(
+			workerWithToken.cluster.setWorkerConfig({
+				node: "ubu1",
+				config: create(WorkerConfigSchema, { defaultRuntime: "chroot" }),
+			}),
+		).rejects.toThrow(/not authorized|may not modify/);
+
+		// Configure baked SHA256SUMS including hotbed-guestd-linux-amd64.
+		const id = env.CONTROLLER.idFromName("default");
+		const stub = env.CONTROLLER.get(id);
+		await runInDurableObject(stub, async (instance) => {
+			// eslint-disable-next-line @typescript-eslint/no-explicit-any
+			(instance as any).builds.setTestConfig({
+				updatesRepo: "semistrict/hotbed",
+				updatesToken: "",
+				controllerBuild: 178,
+				controllerSha256Sums: [
+					`${hotbedSha}  hotbed-linux-amd64`,
+					`${guestdSha}  hotbed-guestd-linux-amd64`,
+				].join("\n"),
+			});
+		});
+
+		// Heartbeat delivers merged effective config AND Build.guestd for linux/amd64.
+		const hb = await workerWithToken.cluster.heartbeat(
+			create(HeartbeatRequestSchema, {
+				clusterId: joined.clusterId,
+				resources: create(ResourcesSchema, {
+					arch: "amd64",
+					cpus: 16,
+					memoryBytes: BigInt(27 * 1024 ** 3),
+				}),
+			}),
+		);
+		expect(hb.workerConfig?.defaultRuntime).toBe("vm");
+		expect(hb.workerConfig?.vm?.enabled).toBe(true);
+		expect(hb.workerConfig?.vm?.vcpus).toBe(8);
+		expect(hb.workerConfig?.vm?.memMib).toBe(16384);
+		expect(hb.workerConfig?.vm?.kernels?.amd64?.sha256).toBe(kernelSha);
+		expect(hb.build?.number).toBe(178n);
+		expect(hb.build?.guestd?.sha256).toBe(guestdSha);
+		expect(hb.build?.guestd?.url).toBe(
+			"https://github.com/semistrict/hotbed/releases/download/build-178/hotbed-guestd-linux-amd64",
+		);
+		expect(hb.build?.guestd?.path).toBe("/builds/178/hotbed-guestd-linux-amd64");
+
+		// GetWorkerConfig returns defaults, node override, and merged effective view.
+		const got = await owner.cluster.getWorkerConfig({ node: "ubu1" });
+		expect(got.effective?.vm?.vcpus).toBe(8);
+		expect(got.effective?.vm?.memMib).toBe(16384);
+
+		// Delete per-node override and defaults.
+		const delNode = await owner.cluster.deleteWorkerConfig({ node: "ubu1" });
+		expect(delNode.deleted).toBe(true);
+		const delDef = await owner.cluster.deleteWorkerConfig({ defaults: true });
+		expect(delDef.deleted).toBe(true);
 	});
 });

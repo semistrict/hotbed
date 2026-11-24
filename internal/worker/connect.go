@@ -105,7 +105,7 @@ func connectWithReset(ctx context.Context, eng *Engine, cluster hotbedv1connect.
 	g.Go(func() error {
 		return keepWithFailureHook(ctx, "push events", eng.Kicked(), wakePush, func() {
 			signal(wakeBeat)
-			if follow != nil && follow.deferred() != 0 && (!eng.hasActiveUpgradeWork() || follow.deferExpired()) {
+			if follow != nil && (follow.deferred() != 0 || follow.restartPending()) && (!eng.hasActiveUpgradeWork() || follow.deferExpired()) {
 				signal(beatKick)
 			}
 		}, onFail, p.once)
@@ -388,10 +388,20 @@ func HeartbeatOnce(ctx context.Context, eng *Engine, cluster hotbedv1connect.Clu
 	cfCtx, cancelCF := context.WithTimeout(ctx, cladefsHeartbeatLimit)
 	eng.applyCladefsHeartbeat(cfCtx, reply)
 	cancelCF()
+	var configNeedsRestart bool
+	if follow != nil && follow.ConfigSync != nil {
+		configNeedsRestart = follow.ConfigSync.Reconcile(ctx, eng, reply)
+	}
 	for _, id := range reply.Release {
 		eng.ReleaseWorkspaceAsync(id)
 	}
-	return follow.toWhenIdle(ctx, eng, reply.Build)
+	if err := follow.toWhenIdle(ctx, eng, reply.Build); err != nil {
+		return err
+	}
+	if configNeedsRestart && follow != nil {
+		return follow.restartWhenIdle(eng, "controller worker config changed")
+	}
+	return nil
 }
 
 // defaultMaxUpgradeDefer caps how long a worker defers an upgrade while active
@@ -444,10 +454,12 @@ type Follow struct {
 	Build          int64            // the build it runs, 0 for a dev build
 	MaxDefer       time.Duration    // cap on deferring an upgrade while active work runs; 0 uses defaultMaxUpgradeDefer
 	Now            func() time.Time // clock for deferral cap; nil uses time.Now
+	ConfigSync     *ConfigSyncer    // reconciles controller-managed WorkerConfig & managed VM artifacts
 
 	mu            sync.Mutex
 	deferredBuild int64     // target build deferred while active work drains
-	deferredSince time.Time // first moment this worker began deferring an upgrade
+	deferredSince time.Time // first moment this worker began deferring an upgrade/restart
+	wantRestart   bool      // structural controller config change waiting for idle restart
 }
 
 func (f *Follow) now() time.Time {
@@ -470,17 +482,68 @@ func (f *Follow) deferred() int64 {
 	return f.deferredBuild
 }
 
+func (f *Follow) restartPending() bool {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.wantRestart
+}
+
 func (f *Follow) deferExpired() bool {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	return f.deferredBuild != 0 && !f.deferredSince.IsZero() && f.now().Sub(f.deferredSince) >= f.maxDefer()
+	return (f.deferredBuild != 0 || f.wantRestart) && !f.deferredSince.IsZero() && f.now().Sub(f.deferredSince) >= f.maxDefer()
 }
 
 func (f *Follow) clearDeferred() {
 	f.mu.Lock()
 	f.deferredBuild = 0
-	f.deferredSince = time.Time{}
+	if !f.wantRestart {
+		f.deferredSince = time.Time{}
+	}
 	f.mu.Unlock()
+}
+
+// restartWhenIdle returns update.ErrRestart once eng has no active non-server
+// work (or once MaxDefer has elapsed), so structural controller config changes
+// take effect cleanly via re-exec without interrupting running builds.
+func (f *Follow) restartWhenIdle(eng *Engine, reason string) error {
+	if eng == nil {
+		slog.Info("restarting worker", "reason", reason)
+		return update.ErrRestart
+	}
+	cmds, shells, bases := eng.activeUpgradeWork()
+	if cmds == 0 && shells == 0 && bases == 0 {
+		f.mu.Lock()
+		f.wantRestart = false
+		if f.deferredBuild == 0 {
+			f.deferredSince = time.Time{}
+		}
+		f.mu.Unlock()
+		slog.Info("restarting worker", "reason", reason)
+		return update.ErrRestart
+	}
+	now := f.now()
+	maxDefer := f.maxDefer()
+	f.mu.Lock()
+	if f.deferredSince.IsZero() {
+		f.deferredSince = now
+	}
+	elapsed := now.Sub(f.deferredSince)
+	if elapsed >= maxDefer {
+		f.wantRestart = false
+		f.mu.Unlock()
+		slog.Warn("config restart deferral cap reached; restarting with active work",
+			"reason", reason, "deferred_for", elapsed, "commands", cmds, "shells", shells, "bases", bases)
+		return update.ErrRestart
+	}
+	wasPending := f.wantRestart
+	f.wantRestart = true
+	f.mu.Unlock()
+	if !wasPending {
+		slog.Info("deferring worker restart until active work finishes",
+			"reason", reason, "commands", cmds, "shells", shells, "bases", bases)
+	}
+	return nil
 }
 
 // checkDefer reports whether upgrading to b should be deferred because eng has

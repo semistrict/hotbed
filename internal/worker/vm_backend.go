@@ -44,7 +44,7 @@ type VMBackend struct {
 	baseMu         sync.Mutex // serializes base image provisioning
 	projectLocks   sync.Map   // project -> *sync.Mutex
 	mu             sync.Mutex
-	baseImageRef   *cladefs.CellRef
+	baseImages     map[string]cladefs.CellRef // vmBaseKey -> cached R2 base cell ref
 	wsCells        map[string]cladefs.CellRef // wsID -> forked cell ref
 	projectBases   map[string]*vmProjectBase  // project -> warm project base in R2
 	sharedBases    map[string]*pb.CladefsCell // project -> advertised R2 shared base
@@ -108,12 +108,14 @@ func OpenVMBackend(ctx context.Context, workerDir string, cfg statedir.VMConfig,
 		slog.Info("reconnected surviving Firecracker VMs", "count", n)
 	}
 
+	_ = ensureDirTraversable(workerDir)
 	b := &VMBackend{
 		cfg:            cfg,
 		workerDir:      workerDir,
 		store:          cstore,
 		mgr:            mgr,
 		incarnation:    inc,
+		baseImages:     map[string]cladefs.CellRef{},
 		wsCells:        map[string]cladefs.CellRef{},
 		projectBases:   map[string]*vmProjectBase{},
 		sharedBases:    map[string]*pb.CladefsCell{},
@@ -122,6 +124,44 @@ func OpenVMBackend(ctx context.Context, workerDir string, cfg statedir.VMConfig,
 	b.loadCachedBases()
 	b.rt = runtime.NewGuestRuntime(b)
 	return b, nil
+}
+
+func (b *VMBackend) configSnapshot() statedir.VMConfig {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	cfg := b.cfg
+	if cfg.DNSServers != nil {
+		cfg.DNSServers = slices.Clone(cfg.DNSServers)
+	}
+	return cfg
+}
+
+// UpdateConfig hot-reloads VM tuning, kernel path, guestd binary path, DNS,
+// peer address, and default-runtime flag for all subsequent VM boots and base
+// builds without disrupting running VMs.
+func (b *VMBackend) UpdateConfig(cfg statedir.VMConfig) {
+	b.mu.Lock()
+	if cfg.DNSServers != nil {
+		cfg.DNSServers = slices.Clone(cfg.DNSServers)
+	}
+	b.cfg = cfg
+	b.mu.Unlock()
+	if b.mgr != nil {
+		b.mgr.UpdateConfig(vm.Config{
+			FirecrackerBin:     cfg.FirecrackerBin,
+			KernelPath:         cfg.KernelPath,
+			GuestdBin:          cfg.GuestdBin,
+			VMUser:             cfg.VMUser,
+			DefaultVCPUs:       cfg.VCPUs,
+			DefaultMemMiB:      cfg.MemMiB,
+			DefaultDiskBytes:   cfg.DiskBytes,
+			DAXWindowBytes:     cfg.DAXWindowBytes,
+			DAXPrivateMaxBytes: cfg.DAXPrivateMaxBytes,
+			DisableDAX:         cfg.DisableDAX,
+			CacheType:          cfg.CacheType,
+			DNSServers:         cfg.DNSServers,
+		})
+	}
 }
 
 func (b *VMBackend) cacheDir() string {
@@ -141,10 +181,14 @@ func (b *VMBackend) loadCachedBases() {
 		if err != nil {
 			continue
 		}
-		if strings.HasPrefix(ent.Name(), "baseimage-") {
+		if key, ok := strings.CutPrefix(ent.Name(), "baseimage-"); ok {
+			key = strings.TrimSuffix(key, ".json")
 			var ref cladefs.CellRef
 			if json.Unmarshal(raw, &ref) == nil && ref.Cell > 0 && ref.Version > 0 {
-				b.baseImageRef = &ref
+				if b.baseImages == nil {
+					b.baseImages = map[string]cladefs.CellRef{}
+				}
+				b.baseImages[key] = ref
 			}
 			continue
 		}
@@ -199,7 +243,7 @@ func (b *VMBackend) Runtime() runtime.WorkspaceRuntime { return b.rt }
 
 // DefaultRuntime returns "vm" if configured as default, else "chroot".
 func (b *VMBackend) DefaultRuntime() string {
-	if b.cfg.Default {
+	if b.configSnapshot().Default {
 		return runtime.KindVM
 	}
 	return runtime.KindChroot
@@ -388,7 +432,7 @@ func (b *VMBackend) ApplyHeartbeat(ctx context.Context, peers []string, decommis
 	if b.store == nil {
 		return
 	}
-	if len(peers) > 0 && b.cfg.CladefsPeerAddr != "" {
+	if len(peers) > 0 && b.configSnapshot().CladefsPeerAddr != "" {
 		sorted := slices.Clone(peers)
 		slices.Sort(sorted)
 		b.mu.Lock()
@@ -470,8 +514,9 @@ func (b *VMBackend) runGuestCommand(ctx context.Context, vmID, cmdID, dir string
 }
 
 func (b *VMBackend) vmBaseKey(spec baseimage.Spec) string {
+	cfg := b.configSnapshot()
 	baseKey := spec.Key()
-	guestdPath := cmp.Or(b.cfg.GuestdBin, vm.DefaultGuestdBin)
+	guestdPath := cmp.Or(cfg.GuestdBin, vm.DefaultGuestdBin)
 	f, err := os.Open(guestdPath)
 	if err != nil {
 		return baseKey
@@ -481,7 +526,7 @@ func (b *VMBackend) vmBaseKey(spec baseimage.Spec) string {
 	if _, err := io.Copy(h, f); err != nil {
 		return baseKey
 	}
-	fmt.Fprintf(h, "\ndisk=%d\n", b.cfg.DiskBytes)
+	fmt.Fprintf(h, "\ndisk=%d\ndns=%s\n", cfg.DiskBytes, strings.Join(cfg.DNSServers, ","))
 	return baseKey + "-" + hex.EncodeToString(h.Sum(nil))[:8]
 }
 
@@ -489,14 +534,14 @@ func (b *VMBackend) vmBaseKey(spec baseimage.Spec) string {
 // + hotbed-guestd base cell exists, is versioned, and is synced to R2.
 func (b *VMBackend) EnsureProvisionedBaseImage(ctx context.Context, spec baseimage.Spec) (cladefs.CellRef, error) {
 	spec = spec.Normalized()
+	cfg := b.configSnapshot()
 	key := b.vmBaseKey(spec)
 
 	b.baseMu.Lock()
 	defer b.baseMu.Unlock()
 
 	b.mu.Lock()
-	if b.baseImageRef != nil && strings.HasSuffix(b.baseImageRef.RelPath, key) {
-		ref := *b.baseImageRef
+	if ref, ok := b.baseImages[key]; ok && ref.Cell > 0 && ref.Version > 0 {
 		b.mu.Unlock()
 		return ref, nil
 	}
@@ -512,13 +557,13 @@ func (b *VMBackend) EnsureProvisionedBaseImage(ctx context.Context, spec baseima
 	if err := vm.BuildGuestTar(ctx, vm.GuestImageOptions{
 		ImageRef:   spec.Image,
 		Arch:       spec.Arch,
-		GuestdBin:  cmp.Or(b.cfg.GuestdBin, vm.DefaultGuestdBin),
-		DNSServers: b.cfg.DNSServers,
+		GuestdBin:  cmp.Or(cfg.GuestdBin, vm.DefaultGuestdBin),
+		DNSServers: cfg.DNSServers,
 		OutTar:     tarPath,
 	}); err != nil {
 		return cladefs.CellRef{}, fmt.Errorf("build VM guest base tar: %w", err)
 	}
-	rawRef, err := b.store.ImportImage(ctx, rel, tarPath, b.cfg.DiskBytes)
+	rawRef, err := b.store.ImportImage(ctx, rel, tarPath, cfg.DiskBytes)
 	if err != nil {
 		return cladefs.CellRef{}, fmt.Errorf("import VM base image into cladefsd: %w", err)
 	}
@@ -562,7 +607,10 @@ func (b *VMBackend) EnsureProvisionedBaseImage(ctx context.Context, spec baseima
 	_ = b.store.DropCell(ctx, rel)
 	rawRef.Version = ver
 	b.mu.Lock()
-	b.baseImageRef = &rawRef
+	if b.baseImages == nil {
+		b.baseImages = map[string]cladefs.CellRef{}
+	}
+	b.baseImages[key] = rawRef
 	b.mu.Unlock()
 	b.saveCacheJSON("baseimage-"+key+".json", rawRef)
 	slog.Info("VM base image provisioned and synced to R2", "key", key, "cell", rawRef.Cell, "version", rawRef.Version)

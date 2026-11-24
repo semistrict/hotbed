@@ -201,6 +201,43 @@ The cluster's events, newest first: what workers did (admitted, held, made wait,
 | `--kind` |  | Only these kinds (repeatable): admit, wait, hold, unhold, park, thaw, fork, release, finish, fail, base, ... |
 | `--limit` |  | At most this many (default 100). |
 
+## `config`
+
+Centrally managed cluster and per-node worker/VM configuration (show, set, rm).
+
+### `hotbed config show [NODE]`
+
+Read controller-managed cluster default and per-node worker/VM configuration.
+
+*MCP tool: `config_show`*
+
+| Argument / Flag | Env | Help |
+| --- | --- | --- |
+| `NODE` |  | Worker hostname to inspect (including its merged effective config); omit for all scopes. |
+
+### `hotbed config set [NODE]`
+
+Set (merge or replace) controller-managed cluster default or per-node worker/VM configuration. Pass WorkerConfig JSON on stdin or --file.
+
+*MCP tool: `config_set` · reads JSON from stdin or `--file`*
+
+| Argument / Flag | Env | Help |
+| --- | --- | --- |
+| `NODE` |  | Worker hostname to configure; omit to configure cluster-wide defaults. |
+| `--replace` |  | Replace the scope's entire configuration instead of merging fields. |
+| `--if-revision` |  | Refuse with CONFLICT unless the scope is at this revision (0 skips the check). |
+
+### `hotbed config rm [NODE]`
+
+Remove controller-managed worker/VM configuration for a node (or cluster defaults with --defaults).
+
+*MCP tool: `config_rm`*
+
+| Argument / Flag | Env | Help |
+| --- | --- | --- |
+| `NODE` |  | Worker hostname whose overrides to delete; omit with --defaults to clear cluster defaults. |
+| `--defaults` |  | Delete cluster-wide defaults instead of a per-node override. |
+
 ## `poll`
 
 ### `hotbed poll`

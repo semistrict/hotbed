@@ -25,6 +25,10 @@ service ClusterService {
     name: "node"
     help: "Inspect or retire individual cluster worker nodes (show, retire)."
   };
+  option (group) = {
+    name: "config"
+    help: "Centrally managed cluster and per-node worker/VM configuration (show, set, rm)."
+  };
   // Join admits the calling tailnet node as a worker.
   rpc Join(JoinRequest) returns (JoinResponse);
   // PushEvents delivers a worker's events, in order, from after what the
@@ -222,6 +226,33 @@ service ClusterService {
       name: "events"
       read_only: true
       format: "{{range .events}}{{time .at}}  {{pad 12 .hostname}}  {{pad 7 .kind}}  {{.text}}\n{{end}}"
+    };
+  }
+  // Read controller-managed cluster default and per-node worker/VM configuration.
+  rpc GetWorkerConfig(GetWorkerConfigRequest) returns (GetWorkerConfigResponse) {
+    option idempotency_level = IDEMPOTENT;
+    option (command) = {
+      name: "config show"
+      read_only: true
+      format: "{{with .defaults}}defaults  rev={{.revision}}{{with .defaultRuntime}}  runtime={{.}}{{end}}{{with .vm}}  vm(enabled={{.enabled}} vcpus={{.vcpus}} memMiB={{.memMib}}){{end}}{{with .cladefsFuse}}  fuse(enabled={{.enabled}}){{end}}\n{{end}}{{range .nodes}}{{.node}}  rev={{.revision}}{{with .defaultRuntime}}  runtime={{.}}{{end}}{{with .vm}}  vm(enabled={{.enabled}} vcpus={{.vcpus}} memMiB={{.memMib}}){{end}}{{with .cladefsFuse}}  fuse(enabled={{.enabled}}){{end}}\n{{end}}{{with .effective}}effective({{.node}})  rev={{.revision}}{{with .defaultRuntime}}  runtime={{.}}{{end}}\n{{end}}"
+    };
+  }
+  // Set (merge or replace) controller-managed cluster default or per-node
+  // worker/VM configuration. Pass WorkerConfig JSON on stdin or --file.
+  rpc SetWorkerConfig(SetWorkerConfigRequest) returns (WorkerConfig) {
+    option (command) = {
+      name: "config set"
+      input: {field: "config"}
+      format: "{{if .node}}{{.node}}{{else}}defaults{{end}}  rev={{.revision}}{{with .defaultRuntime}}  runtime={{.}}{{end}}"
+    };
+  }
+  // Remove controller-managed worker/VM configuration for a node (or cluster
+  // defaults with --defaults).
+  rpc DeleteWorkerConfig(DeleteWorkerConfigRequest) returns (DeleteWorkerConfigResponse) {
+    option (command) = {
+      name: "config rm"
+      destructive: true
+      format: "{{if .node}}{{.node}}{{else}}defaults{{end}}  removed"
     };
   }
 }
@@ -633,6 +664,20 @@ message ListNodesResponse {
   string controller_version = 3;
 }
 
+// ManagedArtifact is a versioned binary or image distributed by the controller
+// (such as hotbed-guestd or a Firecracker guest vmlinux kernel) and cached
+// locally by workers, verified by SHA-256.
+message ManagedArtifact {
+  // Direct download URL (https://...) when publicly downloadable.
+  string url = 1;
+  // Expected lowercase hex SHA-256 checksum (64 hex chars).
+  string sha256 = 2;
+  // Optional human-readable version or tag (e.g. "build-178" or "cladefs-6.12-kvm").
+  string version = 3;
+  // Optional controller-relative fallback path (/builds/N/...) used when url is unset.
+  string path = 4;
+}
+
 // A build of hotbed the controller targets for one platform, which nodes
 // install over themselves when running an older build.
 message Build {
@@ -645,6 +690,117 @@ message Build {
   // Direct GitHub release asset URL for this platform's binary
   // (e.g. https://github.com/semistrict/hotbed/releases/download/build-N/hotbed-OS-ARCH).
   string download_url = 4;
+  // Companion Linux hotbed-guestd binary for Firecracker VMs from this build.
+  ManagedArtifact guestd = 5;
+}
+
+// Controller-managed Firecracker VM runtime settings. Only explicitly set
+// fields override lower layers (local hotbed.json -> cluster defaults -> per-node).
+message WorkerVMConfig {
+  optional bool enabled = 1;
+  optional bool default_runtime = 2;
+  optional string cladefs_control_sock = 3;
+  optional string cladefs_vm_sock = 4;
+  optional string cladefs_peer_addr = 5;
+  optional string cell_root = 6;
+  optional uint64 tenant_id = 7;
+  optional string firecracker_bin = 8;
+  optional string kernel_path = 9;
+  optional string guestd_bin = 10;
+  optional string vm_user = 11;
+  optional int32 vcpus = 12;
+  optional int32 mem_mib = 13;
+  optional uint64 disk_bytes = 14;
+  optional uint64 dax_window_bytes = 15;
+  optional uint64 dax_private_max_bytes = 16;
+  optional bool disable_dax = 17;
+  optional string cache_type = 18;
+  optional string bridge_name = 19;
+  optional string bridge_cidr = 20;
+  repeated string dns_servers = 21;
+  // Managed guest vmlinux kernel artifacts keyed by GOARCH ("amd64", "arm64").
+  map<string, ManagedArtifact> kernels = 22;
+  // Optional override for managed hotbed-guestd binaries keyed by GOARCH.
+  // When unset for the worker's arch, workers follow Build.guestd automatically.
+  map<string, ManagedArtifact> guestd = 23;
+}
+
+// Controller-managed cladefs host-FUSE runtime settings.
+message WorkerCladefsFUSEConfig {
+  optional bool enabled = 1;
+  optional bool default_runtime = 2;
+  optional string cladefs_control_sock = 3;
+  optional string cladefs_peer_addr = 4;
+  optional string cell_root = 5;
+  optional string mount_root = 6;
+  optional string mount_stores_root = 7;
+  optional uint64 tenant_id = 8;
+  optional uint64 disk_bytes = 9;
+}
+
+// Controller-managed worker configuration, either cluster-wide defaults
+// (node == "") or a per-node override (node == hostname).
+message WorkerConfig {
+  // Scope: empty for cluster-wide defaults, or a worker hostname for per-node overrides.
+  string node = 1;
+  // Default runtime for non-bench workspaces: "vm", "cladefs", or "chroot".
+  optional string default_runtime = 2;
+  // systemd slice commands run in (e.g. "user-1000-hotbed.slice").
+  optional string slice = 3;
+  // systemd properties every command gets (when non-empty, replaces lower layer).
+  repeated string unit_properties = 4;
+  WorkerVMConfig vm = 5;
+  WorkerCladefsFUSEConfig cladefs_fuse = 6;
+  // Monotonic revision bumped on every controller write to this scope.
+  int64 revision = 7;
+  int64 updated_at = 8;
+  string updated_by = 9;
+}
+
+message GetWorkerConfigRequest {
+  // Worker hostname to inspect (including its merged effective config); omit for all scopes.
+  string node = 1 [(param) = {
+    positional: true
+    optional: true
+  }];
+}
+
+message GetWorkerConfigResponse {
+  // Cluster-wide default worker configuration, if set.
+  WorkerConfig defaults = 1;
+  // Per-node overrides (filtered to the requested node when node is set).
+  repeated WorkerConfig nodes = 2;
+  // Merged effective configuration (defaults + node override) when node is requested.
+  WorkerConfig effective = 3;
+}
+
+message SetWorkerConfigRequest {
+  // Worker hostname to configure; omit to configure cluster-wide defaults.
+  string node = 1 [(param) = {
+    positional: true
+    optional: true
+  }];
+  // Partial or full WorkerConfig JSON (merged into existing scope unless --replace is set).
+  WorkerConfig config = 2;
+  // Replace the scope's entire configuration instead of merging fields.
+  bool replace = 3;
+  // Refuse with CONFLICT unless the scope is at this revision (0 skips the check).
+  int64 if_revision = 4 [(param) = {name: "if-revision"}];
+}
+
+message DeleteWorkerConfigRequest {
+  // Worker hostname whose overrides to delete; omit with --defaults to clear cluster defaults.
+  string node = 1 [(param) = {
+    positional: true
+    optional: true
+  }];
+  // Delete cluster-wide defaults instead of a per-node override.
+  bool defaults = 2;
+}
+
+message DeleteWorkerConfigResponse {
+  string node = 1;
+  bool deleted = 2;
 }
 
 message GetBuildRequest {
@@ -2027,6 +2183,9 @@ message HeartbeatResponse {
   repeated string cladefs_peers = 7;
   // Retired cladefs host incarnations for cladefsd.DecommissionHost.
   repeated uint64 decommission_incarnations = 8;
+  // Effective controller-managed worker configuration for this node (cluster
+  // defaults merged with any per-node override).
+  WorkerConfig worker_config = 9;
 }
 
 // ---- the cockpit ----------------------------------------------------------

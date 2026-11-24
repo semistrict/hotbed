@@ -301,9 +301,22 @@ func Run(ctx context.Context, dir string, cfg statedir.WorkerConfig, tn Tailnet,
 		Exe:            exe,
 		Build:          version.Number(),
 	}
+	artifacts := &ArtifactStore{
+		WorkerDir:      dir,
+		ControllerURL:  ctrlBaseURL,
+		AuthClient:     follow.Client,
+		DownloadClient: follow.DownloadClient,
+	}
+	cachedRemote, cerr := LoadControllerConfig(dir)
+	if cerr != nil {
+		slog.Warn("load cached controller worker config failed; using local hotbed.json", "err", cerr)
+	}
+	effCfg := ApplyCachedArtifacts(artifacts, runtime.GOARCH, MergeWorkerConfig(cfg, cachedRemote), cachedRemote)
+	follow.ConfigSync = NewConfigSyncer(dir, cfg, cachedRemote, effCfg, artifacts)
+
 	store, err := awaitStorage(ctx, func(ctx context.Context) (storage.Store, error) {
-		return storage.Open(ctx, dir, cfg.Dataset)
-	}, cluster, cfg.ClusterID, follow, api.ReportInterval)
+		return storage.Open(ctx, dir, effCfg.Dataset)
+	}, cluster, effCfg.ClusterID, follow, api.ReportInterval)
 	if err != nil {
 		return err
 	}
@@ -313,11 +326,11 @@ func Run(ctx context.Context, dir string, cfg statedir.WorkerConfig, tn Tailnet,
 	}
 	defer prof.Stop()
 
-	workSlice := cmp.Or(cfg.Slice, unit.DefaultSlice)
+	workSlice := cmp.Or(effCfg.Slice, unit.DefaultSlice)
 	baseImg := &baseimage.Manager{
 		Store: store,
 		Spec: baseimage.Spec{
-			User: cfg.User,
+			User: effCfg.User,
 			UID:  uid,
 			GID:  gid,
 		},
@@ -328,25 +341,25 @@ func Run(ctx context.Context, dir string, cfg statedir.WorkerConfig, tn Tailnet,
 	gitInterceptors := append(append([]connect.ClientInterceptor{}, ctrlInterceptors...), api.RideOut(30*time.Second, func(err error) {
 		slog.Warn("waiting for controller to mint git token", "err", err)
 	}))
-	ctrlConn, err := api.Dial(cfg.Controller, api.DefaultPort, hc, gitInterceptors...)
+	ctrlConn, err := api.Dial(effCfg.Controller, api.DefaultPort, hc, gitInterceptors...)
 	if err != nil {
 		return err
 	}
 	gitAuth := hotbedv1connect.NewGitAuthServiceClient(ctrlConn)
 
 	ecfg := EngineConfig{
-		Dir: dir, NodeID: self.NodeID, Host: self.Hostname, User: cfg.User,
-		Slice: cfg.Slice, UnitProperties: cfg.UnitProperties, Store: store,
+		Dir: dir, NodeID: self.NodeID, Host: self.Hostname, User: effCfg.User,
+		Slice: effCfg.Slice, UnitProperties: effCfg.UnitProperties, Store: store,
 		BaseImage: baseImg, GitAuth: gitAuth,
 		Inspector: inspect.Linux{BaseRootDir: baseRootFn}, Profiler: prof,
-		Units: Systemd{}, System: &Linux{Slice: cfg.Slice},
-		DaemonLogs: dlogs, ControllerNodeID: cfg.ControllerNodeID, RequireController: true,
+		Units: Systemd{}, System: &Linux{Slice: effCfg.Slice},
+		DaemonLogs: dlogs, ControllerNodeID: effCfg.ControllerNodeID, RequireController: true,
 	}
-	if cfg.Bench != nil {
-		ecfg.ScratchDisk = cfg.Bench.Disk
+	if effCfg.Bench != nil {
+		ecfg.ScratchDisk = effCfg.Bench.Disk
 	}
-	if cfg.VM != nil && cfg.VM.Enabled {
-		vmb, err := OpenVMBackend(ctx, dir, *cfg.VM, workSlice, "")
+	if effCfg.VM != nil && effCfg.VM.Enabled {
+		vmb, err := OpenVMBackend(ctx, dir, *effCfg.VM, workSlice, "")
 		if err != nil {
 			return fmt.Errorf("start cladefs Firecracker VM backend: %w", err)
 		}
@@ -354,11 +367,11 @@ func Run(ctx context.Context, dir string, cfg statedir.WorkerConfig, tn Tailnet,
 		ecfg.VM = vmb
 		slog.Info("cladefs + Firecracker VM runtime enabled",
 			"defaultRuntime", vmb.DefaultRuntime(),
-			"peerAddr", cfg.VM.CladefsPeerAddr,
-			"cellRoot", cfg.VM.CellRoot,
+			"peerAddr", effCfg.VM.CladefsPeerAddr,
+			"cellRoot", effCfg.VM.CellRoot,
 		)
-	} else if cfg.CladefsFUSE != nil && cfg.CladefsFUSE.Enabled {
-		cfb, err := OpenCladefsFUSEBackend(ctx, dir, *cfg.CladefsFUSE)
+	} else if effCfg.CladefsFUSE != nil && effCfg.CladefsFUSE.Enabled {
+		cfb, err := OpenCladefsFUSEBackend(ctx, dir, *effCfg.CladefsFUSE)
 		if err != nil {
 			return fmt.Errorf("start cladefs host-FUSE backend: %w", err)
 		}
@@ -366,8 +379,8 @@ func Run(ctx context.Context, dir string, cfg statedir.WorkerConfig, tn Tailnet,
 		ecfg.CladefsFUSE = cfb
 		slog.Info("cladefs host-FUSE runtime enabled",
 			"defaultRuntime", cfb.DefaultRuntime(),
-			"peerAddr", cfg.CladefsFUSE.CladefsPeerAddr,
-			"mountRoot", cfg.CladefsFUSE.MountRoot,
+			"peerAddr", effCfg.CladefsFUSE.CladefsPeerAddr,
+			"mountRoot", effCfg.CladefsFUSE.MountRoot,
 		)
 	}
 	// Lower the work slice's CPU and IO priority so normal commands yield to
@@ -418,7 +431,7 @@ func Run(ctx context.Context, dir string, cfg statedir.WorkerConfig, tn Tailnet,
 	// Under /run: what an isolation saves of the host lasts as long as the
 	// kernel's settings it changed.
 	benchOpts := bench.Options{
-		State: "/run/hotbed/bench", Slice: BenchSlice(cfg.Slice),
+		State: "/run/hotbed/bench", Slice: BenchSlice(effCfg.Slice),
 		WorkSlice: workSlice, Systemd: Systemd{},
 	}
 	// Other work's writes to the volumes are kept quiet beside a

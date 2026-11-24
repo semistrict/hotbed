@@ -1,5 +1,5 @@
 import { create } from "@bufbuild/protobuf";
-import { BuildSchema, type Build } from "./gen/hotbed/v1/hotbed_pb.ts";
+import { BuildSchema, ManagedArtifactSchema, type Build } from "./gen/hotbed/v1/hotbed_pb.ts";
 import { ErrorCode, hotbedError } from "./errors.ts";
 import {
 	COMPILED_BUILD_NUMBER,
@@ -59,8 +59,14 @@ const FAILURE_COOLDOWN_MS = 15_000;
 const DEFAULT_API_BASE = "https://api.github.com";
 const DEFAULT_DOWNLOAD_BASE = "https://github.com";
 
+export const GUESTD_ARCHES = ["amd64", "arm64"] as const;
+
 export function assetName(os: string, arch: string): string {
 	return `hotbed-${os}-${arch}`;
+}
+
+export function guestdAssetName(arch: string): string {
+	return `hotbed-guestd-linux-${arch}`;
 }
 
 export function isSupportedPlatform(os: string, arch: string): boolean {
@@ -220,6 +226,16 @@ export class BuildDistributor {
 				apiUrl: "",
 			};
 		}
+		for (const arch of GUESTD_ARCHES) {
+			const name = guestdAssetName(arch);
+			const sha = sums.get(name);
+			if (!sha) continue;
+			assets[name] = {
+				sha256: sha,
+				downloadUrl: this.directAssetUrl(repo, pinned, name),
+				apiUrl: "",
+			};
+		}
 		if (Object.keys(assets).length === 0) return null;
 		return {
 			buildNumber: pinned,
@@ -271,11 +287,25 @@ export class BuildDistributor {
 		if (!asset) return undefined;
 		// Private repos (configured with GITHUB_TOKEN) require authenticated /builds/ proxying.
 		const downloadUrl = this.updatesToken() ? "" : asset.downloadUrl || "";
+		let guestd;
+		if (os === "linux" && arch) {
+			const gName = guestdAssetName(arch);
+			const gAsset = rel.assets[gName];
+			if (gAsset) {
+				guestd = create(ManagedArtifactSchema, {
+					url: this.updatesToken() ? "" : gAsset.downloadUrl || "",
+					sha256: gAsset.sha256,
+					version: `build-${rel.buildNumber}`,
+					path: `/builds/${rel.buildNumber}/${gName}`,
+				});
+			}
+		}
 		return create(BuildSchema, {
 			number: BigInt(rel.buildNumber),
 			sha256: asset.sha256,
 			path: `/builds/${rel.buildNumber}/${name}`,
 			downloadUrl,
+			guestd,
 		});
 	}
 
@@ -381,6 +411,16 @@ export class BuildDistributor {
 			const assets: CachedRelease["assets"] = {};
 			for (const p of SUPPORTED_PLATFORMS) {
 				const name = assetName(p.os, p.arch);
+				const sha = sums.get(name);
+				if (!sha) continue;
+				assets[name] = {
+					sha256: sha,
+					downloadUrl: this.directAssetUrl(repo, buildNum, name),
+					apiUrl: "",
+				};
+			}
+			for (const arch of GUESTD_ARCHES) {
+				const name = guestdAssetName(arch);
 				const sha = sums.get(name);
 				if (!sha) continue;
 				assets[name] = {

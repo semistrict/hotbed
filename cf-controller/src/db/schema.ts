@@ -487,3 +487,11 @@ export const memoryChanges = sqliteTable(
 	},
 	(t) => [index("memory_changes_memory").on(t.memoryId, t.seq)],
 );
+
+export const workerConfigs = sqliteTable("worker_configs", {
+	scope: text("scope").primaryKey(),
+	revision: integer("revision").notNull().default(1),
+	doc: text("doc").notNull(),
+	updatedAt: integer("updated_at").notNull(),
+	updatedBy: text("updated_by").notNull().default(""),
+});

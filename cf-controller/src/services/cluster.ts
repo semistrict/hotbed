@@ -7,7 +7,9 @@ import {
 	CommandState,
 	DaemonLogLevel,
 	DeleteRepoResponseSchema,
+	DeleteWorkerConfigResponseSchema,
 	GetCommandDiagnosticsResponseSchema,
+	GetWorkerConfigResponseSchema,
 	HeartbeatResponseSchema,
 	HourBucketSchema,
 	JoinResponseSchema,
@@ -39,6 +41,7 @@ import {
 	StepStatusSchema,
 	TotalsSchema,
 	UpgradeControllerResponseSchema,
+	WorkerConfigSchema,
 	type Base,
 	type ClusterEvent,
 	type Command,
@@ -513,6 +516,7 @@ export function createClusterService(
 				req.cladefsPeerAddr || req.cladefsIncarnation > 0n
 					? ctrl.store.listPendingDecommissions(nowMs - 24 * 3600_000)
 					: [];
+			const workerConfig = ctrl.store.effectiveWorkerConfig(caller.hostname, caller.nodeId);
 			return create(HeartbeatResponseSchema, {
 				projects,
 				release,
@@ -520,6 +524,7 @@ export function createClusterService(
 				hostUsage: hu,
 				cladefsPeers,
 				decommissionIncarnations,
+				workerConfig,
 			});
 		},
 
@@ -1137,6 +1142,61 @@ export function createClusterService(
 			return create(ListEventsResponseSchema, {
 				events: filteredEvents(nodeId, req.kinds, req.limit || 100),
 			});
+		},
+
+		getWorkerConfig(req) {
+			const target = req.node.trim();
+			const defaults = ctrl.store.getWorkerConfig("") ?? undefined;
+			if (!target) {
+				const nodes = ctrl.store.listWorkerConfigs().filter((c) => c.node !== "");
+				return create(GetWorkerConfigResponseSchema, { defaults, nodes });
+			}
+			const override = ctrl.store.getWorkerConfig(target);
+			const effective = ctrl.store.effectiveWorkerConfig(target);
+			return create(GetWorkerConfigResponseSchema, {
+				defaults,
+				nodes: override ? [override] : [],
+				effective,
+			});
+		},
+
+		setWorkerConfig(req, ctx) {
+			const caller = getCaller(ctx.values);
+			if (caller.role === "worker") {
+				throw hotbedError(ErrorCode.NotAuthorized, "workers may not modify cluster configuration");
+			}
+			const scope = req.node.trim();
+			const patch = req.config ?? create(WorkerConfigSchema);
+			return ctrl.store.setWorkerConfig(scope, patch, {
+				replace: req.replace,
+				ifRevision: req.ifRevision,
+				updatedBy: caller.hostname || caller.login || "unknown",
+				nowMs: ctrl.now(),
+			});
+		},
+
+		deleteWorkerConfig(req, ctx) {
+			const caller = getCaller(ctx.values);
+			if (caller.role === "worker") {
+				throw hotbedError(ErrorCode.NotAuthorized, "workers may not modify cluster configuration");
+			}
+			const target = req.node.trim();
+			if (req.defaults && target) {
+				throw hotbedError(ErrorCode.InvalidArgs, "pass a node name or --defaults, not both");
+			}
+			if (!req.defaults && !target) {
+				throw hotbedError(
+					ErrorCode.InvalidArgs,
+					"pass a node name to remove its overrides, or --defaults to remove cluster defaults",
+				);
+			}
+			const scope = req.defaults ? "" : target;
+			const deleted = ctrl.store.deleteWorkerConfig(scope);
+			if (!deleted) {
+				const label = scope || "defaults";
+				throw hotbedError(ErrorCode.NotFound, `no worker config set for ${label}`);
+			}
+			return create(DeleteWorkerConfigResponseSchema, { node: scope, deleted: true });
 		},
 	};
 }

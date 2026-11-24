@@ -3,6 +3,7 @@ package worker
 import (
 	"cmp"
 	"context"
+	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -47,8 +48,8 @@ type CladefsFUSEBackend struct {
 	mu             sync.Mutex
 	lastPeers      []string
 	decommissioned map[uint64]bool
-	baseImageRef   *cladefs.CellRef
-	projectBases   map[string]*vmProjectBase // project -> latest cached R2 base
+	baseImages     map[string]cladefs.CellRef // fuseBaseKey -> cached R2 base cell ref
+	projectBases   map[string]*vmProjectBase  // project -> latest cached R2 base
 	sharedBases    map[string]*pb.CladefsCell
 	wsMounts       map[string]fuseWSMount // wsID -> active FUSE mount
 }
@@ -82,6 +83,10 @@ func OpenCladefsFUSEBackend(ctx context.Context, workerDir string, cfg statedir.
 	if err != nil {
 		slog.Warn("read cladefsd incarnation failed; continuing", "err", err)
 	}
+	if err := clearMountNosuid(mountRoot); err != nil {
+		_ = cstore.Close()
+		return nil, fmt.Errorf("enable setuid on cladefs FUSE mount %s: %w", mountRoot, err)
+	}
 	b := &CladefsFUSEBackend{
 		cfg:             cfg,
 		workerDir:       workerDir,
@@ -90,12 +95,27 @@ func OpenCladefsFUSEBackend(ctx context.Context, workerDir string, cfg statedir.
 		store:           cstore,
 		incarnation:     inc,
 		decommissioned:  map[uint64]bool{},
+		baseImages:      map[string]cladefs.CellRef{},
 		projectBases:    map[string]*vmProjectBase{},
 		sharedBases:     map[string]*pb.CladefsCell{},
 		wsMounts:        map[string]fuseWSMount{},
 	}
 	b.loadState()
 	return b, nil
+}
+
+func (b *CladefsFUSEBackend) configSnapshot() statedir.CladefsFUSEConfig {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.cfg
+}
+
+// UpdateConfig hot-reloads non-structural cladefs host-FUSE settings (default
+// runtime, disk size, peer address) without disrupting active FUSE mounts.
+func (b *CladefsFUSEBackend) UpdateConfig(cfg statedir.CladefsFUSEConfig) {
+	b.mu.Lock()
+	b.cfg = cfg
+	b.mu.Unlock()
 }
 
 func (b *CladefsFUSEBackend) Close() error {
@@ -131,10 +151,14 @@ func (b *CladefsFUSEBackend) loadState() {
 			if err != nil {
 				continue
 			}
-			if strings.HasPrefix(ent.Name(), "baseimage-") {
+			if key, ok := strings.CutPrefix(ent.Name(), "baseimage-"); ok {
+				key = strings.TrimSuffix(key, ".json")
 				var ref cladefs.CellRef
 				if json.Unmarshal(raw, &ref) == nil && ref.Cell > 0 && ref.Version > 0 {
-					b.baseImageRef = &ref
+					if b.baseImages == nil {
+						b.baseImages = map[string]cladefs.CellRef{}
+					}
+					b.baseImages[key] = ref
 				}
 				continue
 			}
@@ -199,7 +223,7 @@ func (b *CladefsFUSEBackend) saveWSStateLocked() {
 
 // DefaultRuntime returns "cladefs" if configured as default, else "chroot".
 func (b *CladefsFUSEBackend) DefaultRuntime() string {
-	if b.cfg.Default {
+	if b.configSnapshot().Default {
 		return runtime.KindCladefs
 	}
 	return runtime.KindChroot
@@ -248,7 +272,7 @@ func (b *CladefsFUSEBackend) ApplyHeartbeat(ctx context.Context, peers []string,
 	if b.store == nil {
 		return
 	}
-	if len(peers) > 0 && b.cfg.CladefsPeerAddr != "" {
+	if len(peers) > 0 && b.configSnapshot().CladefsPeerAddr != "" {
 		sorted := slices.Clone(peers)
 		slices.Sort(sorted)
 		b.mu.Lock()
@@ -290,9 +314,16 @@ func (b *CladefsFUSEBackend) ApplyHeartbeat(ctx context.Context, peers []string,
 }
 
 func (b *CladefsFUSEBackend) fuseBaseKey(spec baseimage.Spec) string {
+	cfg := b.configSnapshot()
 	h := sha256.New()
-	fmt.Fprintf(h, "fuse-v1\nbase=%s\ndisk=%d\n", spec.Key(), cmp.Or(b.cfg.DiskBytes, uint64(64<<30)))
+	fmt.Fprintf(h, "fuse-v1\nbase=%s\ndisk=%d\n", spec.Key(), cmp.Or(cfg.DiskBytes, uint64(64<<30)))
 	return spec.Key() + "-f" + hex.EncodeToString(h.Sum(nil))[:8]
+}
+
+func randomUnitSuffix() string {
+	var buf [4]byte
+	_, _ = rand.Read(buf[:])
+	return hex.EncodeToString(buf[:])
 }
 
 func fuseProjectRecipe(baseKey string, p *pb.HostedProject) string {
@@ -316,33 +347,36 @@ func (b *CladefsFUSEBackend) projectLock(name string) *sync.Mutex {
 // exists in R2 for host-FUSE nodes, dropping the local cell dir after R2 sync.
 func (b *CladefsFUSEBackend) EnsureProvisionedBaseImage(ctx context.Context, spec baseimage.Spec, prov baseimage.Provisioner) (cladefs.CellRef, error) {
 	spec = spec.Normalized()
+	cfg := b.configSnapshot()
 	key := b.fuseBaseKey(spec)
 
 	b.baseMu.Lock()
 	defer b.baseMu.Unlock()
 
 	b.mu.Lock()
-	if b.baseImageRef != nil && strings.HasSuffix(b.baseImageRef.RelPath, key) {
-		ref := *b.baseImageRef
+	if ref, ok := b.baseImages[key]; ok && ref.Cell > 0 && ref.Version > 0 {
 		b.mu.Unlock()
 		return ref, nil
 	}
 	b.mu.Unlock()
 
-	capBytes := cmp.Or(b.cfg.DiskBytes, uint64(64<<30))
+	if err := clearMountNosuid(b.mountRoot); err != nil {
+		return cladefs.CellRef{}, fmt.Errorf("enable setuid on cladefs FUSE mount %s: %w", b.mountRoot, err)
+	}
+	capBytes := cmp.Or(cfg.DiskBytes, uint64(64<<30))
 	slog.Info("building cladefs host-FUSE base image", "key", key, "image", spec.Image)
-	cellID, shown, err := b.store.MountAttach(ctx, b.cfg.TenantID, 0, capBytes, nil)
+	cellID, shown, err := b.store.MountAttach(ctx, cfg.TenantID, 0, capBytes, nil)
 	if err != nil {
 		return cladefs.CellRef{}, fmt.Errorf("create cladefs FUSE base cell: %w", err)
 	}
 	if !shown {
-		_ = b.store.MountDetach(ctx, b.cfg.TenantID, cellID, true)
+		_ = b.store.MountDetach(ctx, cfg.TenantID, cellID, true)
 		return cladefs.CellRef{}, fmt.Errorf("cladefs FUSE base cell %d not shown", cellID)
 	}
-	mntDir := b.mountDir(b.cfg.TenantID, cellID)
-	storeDir := b.mountStoreDir(b.cfg.TenantID, cellID)
+	mntDir := b.mountDir(cfg.TenantID, cellID)
+	storeDir := b.mountStoreDir(cfg.TenantID, cellID)
 	cleanupOnErr := func() {
-		_ = b.store.MountDetach(context.Background(), b.cfg.TenantID, cellID, true)
+		_ = b.store.MountDetach(context.Background(), cfg.TenantID, cellID, true)
 		_ = b.store.DeleteCellAbs(context.Background(), storeDir)
 	}
 
@@ -356,7 +390,7 @@ func (b *CladefsFUSEBackend) EnsureProvisionedBaseImage(ctx context.Context, spe
 			return cladefs.CellRef{}, fmt.Errorf("provision cladefs FUSE base %s: %w", key, err)
 		}
 	}
-	if err := b.store.MountDetach(ctx, b.cfg.TenantID, cellID, false); err != nil {
+	if err := b.store.MountDetach(ctx, cfg.TenantID, cellID, false); err != nil {
 		cleanupOnErr()
 		return cladefs.CellRef{}, fmt.Errorf("detach cladefs FUSE base %s: %w", key, err)
 	}
@@ -369,12 +403,15 @@ func (b *CladefsFUSEBackend) EnsureProvisionedBaseImage(ctx context.Context, spe
 
 	ref := cladefs.CellRef{
 		RelPath: "baseimages/fuse-" + key,
-		Tenant:  b.cfg.TenantID,
+		Tenant:  cfg.TenantID,
 		Cell:    cellID,
 		Version: ver,
 	}
 	b.mu.Lock()
-	b.baseImageRef = &ref
+	if b.baseImages == nil {
+		b.baseImages = map[string]cladefs.CellRef{}
+	}
+	b.baseImages[key] = ref
 	b.mu.Unlock()
 	b.saveCacheJSON("baseimage-"+key+".json", ref)
 	slog.Info("cladefs host-FUSE base image synced to R2", "key", key, "cell", cellID, "version", ver)
@@ -457,6 +494,9 @@ func (b *CladefsFUSEBackend) EnsureProjectBase(
 		return nil, err
 	}
 
+	if err := clearMountNosuid(b.mountRoot); err != nil {
+		return nil, fmt.Errorf("enable setuid on cladefs FUSE mount %s: %w", b.mountRoot, err)
+	}
 	baseID := fmt.Sprintf("%s-fuse-%s", p.GetName(), recipe[:8])
 	tenant, cellID, mntDir, storeDir, err := b.forkAndMount(ctx, baseImgRef, filepath.Join("fuse-bases", baseID), 0)
 	if err != nil {
@@ -486,10 +526,11 @@ printf '::hotbed-head:: %s %%s\n' "$(git -C %q rev-parse HEAD)"
 `, r.GetId(), r.GetId(), branch, r.GetId(), branch, branch, r.GetUrl(), r.GetId(), r.GetId(), r.GetId())
 	}
 
-	out, runErr := runStep(ctx, mntDir, "hotbed-fuse-repos-"+baseID, []string{"/bin/bash", "-c", cloneScript.String()}, env)
+	attempt := randomUnitSuffix()
+	out, runErr := runStep(ctx, mntDir, fmt.Sprintf("hotbed-fuse-repos-%s-%s", baseID, attempt), []string{"/bin/bash", "-c", cloneScript.String()}, env)
 	if runErr == nil {
 		for i, s := range p.GetSteps() {
-			stepUnit := fmt.Sprintf("hotbed-fuse-step-%d-%s", i+1, baseID)
+			stepUnit := fmt.Sprintf("hotbed-fuse-step-%d-%s-%s", i+1, baseID, attempt)
 			if _, err := runStep(ctx, mntDir, stepUnit, []string{"/bin/bash", "-eo", "pipefail", "-c", s.GetScript()}, env); err != nil {
 				runErr = fmt.Errorf("step %q: %w", s.GetName(), err)
 				break
@@ -553,6 +594,9 @@ printf '::hotbed-head:: %s %%s\n' "$(git -C %q rev-parse HEAD)"
 // PrepareWorkspace forks baseRef into a new cladefs cell and mounts it into
 // cladefsd's host FUSE mount at /var/lib/cladefs/mnt/<tenant>/<cell>.
 func (b *CladefsFUSEBackend) PrepareWorkspace(ctx context.Context, wsID string, baseRef cladefs.CellRef, fencingToken uint64) (*pb.CladefsCell, string, error) {
+	if err := clearMountNosuid(b.mountRoot); err != nil {
+		return nil, "", fmt.Errorf("enable setuid on cladefs FUSE mount %s: %w", b.mountRoot, err)
+	}
 	tenant, cellID, mntDir, _, err := b.forkAndMount(ctx, baseRef, filepath.Join("fuse-ws", wsID), fencingToken)
 	if err != nil {
 		return nil, "", fmt.Errorf("prepare cladefs FUSE workspace %s: %w", wsID, err)
@@ -646,8 +690,12 @@ func (e *Engine) createCladefsFUSEWorkspace(ctx context.Context, req *pb.CreateW
 		if err := e.cfg.Units.Start(stepCtx, spec); err != nil {
 			return "", err
 		}
-		if err := e.cfg.Units.Wait(stepCtx, spec.Slice, spec.Name); err != nil {
+		// Always stop and reset-failed the transient unit once its status is
+		// read so RemainAfterExit=yes units never stay loaded in systemd.
+		defer func() {
 			_ = e.cfg.Units.Stop(context.Background(), spec.Name)
+		}()
+		if err := e.cfg.Units.Wait(stepCtx, spec.Slice, spec.Name); err != nil {
 			return "", err
 		}
 		st, err := e.cfg.Units.Status(stepCtx, spec.Name)

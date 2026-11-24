@@ -498,6 +498,9 @@ hotbed schedule run nightly                 # a run now; prints its session, for
 | `hotbed nodes` | The cluster's machines, and the build each runs; a worker that cannot open its storage (a ZFS pool not imported, its disk missing) is offline with the reason (`storageError`), waits for it, and starts once it opens |
 | `hotbed node show HOST` | Whether the node starts new work or holds it, and why: each signal (CPU pressure, memory pressure, memory reserved, disk free) against its limit, the work it held or made wait, and the placements that weighed it |
 | `hotbed node retire HOST` | Retire a node gone for good (its machine or VM deleted): it leaves `hotbed nodes`, the cockpit and placement; its history stays. Refused while it is online |
+| `hotbed config show [HOST]` | Show controller-managed cluster default and per-node worker/VM configuration (plus merged effective config when `HOST` is given) |
+| `hotbed config set [HOST] [--replace] [--if-revision N]` | Merge (or replace) controller-managed cluster defaults or per-node worker/VM configuration (VM tuning, managed guest kernels, `hotbed-guestd`, FUSE settings) from JSON on stdin or `--file` |
+| `hotbed config rm HOST \| --defaults` | Remove controller-managed per-node overrides for `HOST`, or clear cluster-wide defaults with `--defaults` |
 | `hotbed placements [--node HOST] [--session S]` | Where the controller put each workspace and why: every node's cost in parts, or why it was ruled out (kept a day) |
 | `hotbed events [--node HOST] [--kind KIND ...]` | The cluster's events, newest first; `--kind hold --kind wait --kind unhold` is every time a node held work and why |
 | `hotbed daemon-logs [--source controller\|HOST] [--level warn\|error] [--since 1h] [-q Q] [-n N]` | Rotating WARN/ERROR slog logs from the controller and every worker, newest first (with rotation disk stats) |

@@ -108,6 +108,15 @@ const (
 	ClusterServiceListPlacementsProcedure = "/hotbed.v1.ClusterService/ListPlacements"
 	// ClusterServiceListEventsProcedure is the procedure name of the ClusterService's ListEvents RPC.
 	ClusterServiceListEventsProcedure = "/hotbed.v1.ClusterService/ListEvents"
+	// ClusterServiceGetWorkerConfigProcedure is the procedure name of the ClusterService's
+	// GetWorkerConfig RPC.
+	ClusterServiceGetWorkerConfigProcedure = "/hotbed.v1.ClusterService/GetWorkerConfig"
+	// ClusterServiceSetWorkerConfigProcedure is the procedure name of the ClusterService's
+	// SetWorkerConfig RPC.
+	ClusterServiceSetWorkerConfigProcedure = "/hotbed.v1.ClusterService/SetWorkerConfig"
+	// ClusterServiceDeleteWorkerConfigProcedure is the procedure name of the ClusterService's
+	// DeleteWorkerConfig RPC.
+	ClusterServiceDeleteWorkerConfigProcedure = "/hotbed.v1.ClusterService/DeleteWorkerConfig"
 	// SessionServiceStartSessionProcedure is the procedure name of the SessionService's StartSession
 	// RPC.
 	SessionServiceStartSessionProcedure = "/hotbed.v1.SessionService/StartSession"
@@ -525,6 +534,28 @@ var (
 			IdempotencyLevel: connect.IdempotencyIdempotent,
 		}
 	})
+	clusterServiceGetWorkerConfigSpec = sync.OnceValue(func() connect.Spec {
+		return connect.Spec{
+			StreamType:       connect.StreamTypeUnary,
+			Schema:           v1.File_hotbed_v1_hotbed_proto.Services().ByName("ClusterService").Methods().ByName("GetWorkerConfig"),
+			Procedure:        ClusterServiceGetWorkerConfigProcedure,
+			IdempotencyLevel: connect.IdempotencyIdempotent,
+		}
+	})
+	clusterServiceSetWorkerConfigSpec = sync.OnceValue(func() connect.Spec {
+		return connect.Spec{
+			StreamType: connect.StreamTypeUnary,
+			Schema:     v1.File_hotbed_v1_hotbed_proto.Services().ByName("ClusterService").Methods().ByName("SetWorkerConfig"),
+			Procedure:  ClusterServiceSetWorkerConfigProcedure,
+		}
+	})
+	clusterServiceDeleteWorkerConfigSpec = sync.OnceValue(func() connect.Spec {
+		return connect.Spec{
+			StreamType: connect.StreamTypeUnary,
+			Schema:     v1.File_hotbed_v1_hotbed_proto.Services().ByName("ClusterService").Methods().ByName("DeleteWorkerConfig"),
+			Procedure:  ClusterServiceDeleteWorkerConfigProcedure,
+		}
+	})
 )
 
 // ClusterServiceClient is a client for the hotbed.v1.ClusterService service.
@@ -622,6 +653,14 @@ type ClusterServiceClient interface {
 	// The cluster's events, newest first: what workers did (admitted, held,
 	// made wait, resumed, parked, forked, ...), narrowed by node and kind.
 	ListEvents(context.Context, *v1.ListEventsRequest) (*v1.ListEventsResponse, error)
+	// Read controller-managed cluster default and per-node worker/VM configuration.
+	GetWorkerConfig(context.Context, *v1.GetWorkerConfigRequest) (*v1.GetWorkerConfigResponse, error)
+	// Set (merge or replace) controller-managed cluster default or per-node
+	// worker/VM configuration. Pass WorkerConfig JSON on stdin or --file.
+	SetWorkerConfig(context.Context, *v1.SetWorkerConfigRequest) (*v1.WorkerConfig, error)
+	// Remove controller-managed worker/VM configuration for a node (or cluster
+	// defaults with --defaults).
+	DeleteWorkerConfig(context.Context, *v1.DeleteWorkerConfigRequest) (*v1.DeleteWorkerConfigResponse, error)
 }
 
 // NewClusterServiceClient constructs a client for the hotbed.v1.ClusterService service. Multiple
@@ -745,6 +784,14 @@ type ClusterServiceHandler interface {
 	// The cluster's events, newest first: what workers did (admitted, held,
 	// made wait, resumed, parked, forked, ...), narrowed by node and kind.
 	ListEvents(context.Context, *v1.ListEventsRequest) (*v1.ListEventsResponse, error)
+	// Read controller-managed cluster default and per-node worker/VM configuration.
+	GetWorkerConfig(context.Context, *v1.GetWorkerConfigRequest) (*v1.GetWorkerConfigResponse, error)
+	// Set (merge or replace) controller-managed cluster default or per-node
+	// worker/VM configuration. Pass WorkerConfig JSON on stdin or --file.
+	SetWorkerConfig(context.Context, *v1.SetWorkerConfigRequest) (*v1.WorkerConfig, error)
+	// Remove controller-managed worker/VM configuration for a node (or cluster
+	// defaults with --defaults).
+	DeleteWorkerConfig(context.Context, *v1.DeleteWorkerConfigRequest) (*v1.DeleteWorkerConfigResponse, error)
 }
 
 // RegisterClusterServiceHandler registers svc as the hotbed.v1.ClusterService implementation on
@@ -780,6 +827,9 @@ func RegisterClusterServiceHandler(server *connect.Server, svc ClusterServiceHan
 		connect.Method{Spec: clusterServiceRetireNodeSpec(), Handler: adapter.retireNode},
 		connect.Method{Spec: clusterServiceListPlacementsSpec(), Handler: adapter.listPlacements},
 		connect.Method{Spec: clusterServiceListEventsSpec(), Handler: adapter.listEvents},
+		connect.Method{Spec: clusterServiceGetWorkerConfigSpec(), Handler: adapter.getWorkerConfig},
+		connect.Method{Spec: clusterServiceSetWorkerConfigSpec(), Handler: adapter.setWorkerConfig},
+		connect.Method{Spec: clusterServiceDeleteWorkerConfigSpec(), Handler: adapter.deleteWorkerConfig},
 	)
 }
 
@@ -911,6 +961,18 @@ func (UnimplementedClusterServiceHandler) ListPlacements(context.Context, *v1.Li
 
 func (UnimplementedClusterServiceHandler) ListEvents(context.Context, *v1.ListEventsRequest) (*v1.ListEventsResponse, error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, "hotbed.v1.ClusterService.ListEvents is not implemented")
+}
+
+func (UnimplementedClusterServiceHandler) GetWorkerConfig(context.Context, *v1.GetWorkerConfigRequest) (*v1.GetWorkerConfigResponse, error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, "hotbed.v1.ClusterService.GetWorkerConfig is not implemented")
+}
+
+func (UnimplementedClusterServiceHandler) SetWorkerConfig(context.Context, *v1.SetWorkerConfigRequest) (*v1.WorkerConfig, error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, "hotbed.v1.ClusterService.SetWorkerConfig is not implemented")
+}
+
+func (UnimplementedClusterServiceHandler) DeleteWorkerConfig(context.Context, *v1.DeleteWorkerConfigRequest) (*v1.DeleteWorkerConfigResponse, error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, "hotbed.v1.ClusterService.DeleteWorkerConfig is not implemented")
 }
 
 type clusterServiceClient struct {
@@ -1136,6 +1198,30 @@ func (c *clusterServiceClient) ListPlacements(ctx context.Context, req *v1.ListP
 func (c *clusterServiceClient) ListEvents(ctx context.Context, req *v1.ListEventsRequest) (*v1.ListEventsResponse, error) {
 	var res v1.ListEventsResponse
 	if err := c.client.CallUnary(ctx, clusterServiceListEventsSpec(), req, &res); err != nil {
+		return nil, err
+	}
+	return &res, nil
+}
+
+func (c *clusterServiceClient) GetWorkerConfig(ctx context.Context, req *v1.GetWorkerConfigRequest) (*v1.GetWorkerConfigResponse, error) {
+	var res v1.GetWorkerConfigResponse
+	if err := c.client.CallUnary(ctx, clusterServiceGetWorkerConfigSpec(), req, &res); err != nil {
+		return nil, err
+	}
+	return &res, nil
+}
+
+func (c *clusterServiceClient) SetWorkerConfig(ctx context.Context, req *v1.SetWorkerConfigRequest) (*v1.WorkerConfig, error) {
+	var res v1.WorkerConfig
+	if err := c.client.CallUnary(ctx, clusterServiceSetWorkerConfigSpec(), req, &res); err != nil {
+		return nil, err
+	}
+	return &res, nil
+}
+
+func (c *clusterServiceClient) DeleteWorkerConfig(ctx context.Context, req *v1.DeleteWorkerConfigRequest) (*v1.DeleteWorkerConfigResponse, error) {
+	var res v1.DeleteWorkerConfigResponse
+	if err := c.client.CallUnary(ctx, clusterServiceDeleteWorkerConfigSpec(), req, &res); err != nil {
 		return nil, err
 	}
 	return &res, nil
@@ -1469,6 +1555,42 @@ func (h clusterServiceHandler) listEvents(ctx context.Context, _ connect.Spec, s
 		return err
 	}
 	res, err := h.svc.ListEvents(ctx, &req)
+	if err != nil {
+		return err
+	}
+	return stream.Send(res)
+}
+
+func (h clusterServiceHandler) getWorkerConfig(ctx context.Context, _ connect.Spec, stream connect.ServerStream) error {
+	var req v1.GetWorkerConfigRequest
+	if err := stream.Receive(&req); err != nil {
+		return err
+	}
+	res, err := h.svc.GetWorkerConfig(ctx, &req)
+	if err != nil {
+		return err
+	}
+	return stream.Send(res)
+}
+
+func (h clusterServiceHandler) setWorkerConfig(ctx context.Context, _ connect.Spec, stream connect.ServerStream) error {
+	var req v1.SetWorkerConfigRequest
+	if err := stream.Receive(&req); err != nil {
+		return err
+	}
+	res, err := h.svc.SetWorkerConfig(ctx, &req)
+	if err != nil {
+		return err
+	}
+	return stream.Send(res)
+}
+
+func (h clusterServiceHandler) deleteWorkerConfig(ctx context.Context, _ connect.Spec, stream connect.ServerStream) error {
+	var req v1.DeleteWorkerConfigRequest
+	if err := stream.Receive(&req); err != nil {
+		return err
+	}
+	res, err := h.svc.DeleteWorkerConfig(ctx, &req)
 	if err != nil {
 		return err
 	}

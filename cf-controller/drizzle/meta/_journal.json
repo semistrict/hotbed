@@ -43,6 +43,13 @@
 			"when": 1795553876792,
 			"tag": "0005_nice_lilandra",
 			"breakpoints": true
+		},
+		{
+			"idx": 6,
+			"version": "6",
+			"when": 1795559102579,
+			"tag": "0006_brown_magus",
+			"breakpoints": true
 		}
 	]
 }

@@ -18,6 +18,7 @@ import (
 	pb "github.com/semistrict/hotbed/internal/gen/hotbed/v1"
 	"github.com/semistrict/hotbed/internal/gitops"
 	"github.com/semistrict/hotbed/internal/runtime"
+	"github.com/semistrict/hotbed/internal/statedir"
 	"github.com/semistrict/hotbed/internal/unit"
 )
 
@@ -81,6 +82,18 @@ func (e *Engine) applyCladefsHeartbeat(ctx context.Context, reply *pb.HeartbeatR
 		e.cfg.VM.ApplyHeartbeat(ctx, reply.GetCladefsPeers(), reply.GetDecommissionIncarnations())
 	} else if e.cfg.CladefsFUSE != nil {
 		e.cfg.CladefsFUSE.ApplyHeartbeat(ctx, reply.GetCladefsPeers(), reply.GetDecommissionIncarnations())
+	}
+}
+
+// ApplyWorkerConfig hot-reloads non-structural controller-managed worker
+// configuration (VM tuning, managed kernel/guestd paths, DNS, default runtime,
+// FUSE disk/peer settings) onto active backends without restarting the worker.
+func (e *Engine) ApplyWorkerConfig(cfg statedir.WorkerConfig) {
+	if e.cfg.VM != nil && cfg.VM != nil {
+		e.cfg.VM.UpdateConfig(*cfg.VM)
+	}
+	if e.cfg.CladefsFUSE != nil && cfg.CladefsFUSE != nil {
+		e.cfg.CladefsFUSE.UpdateConfig(*cfg.CladefsFUSE)
 	}
 }
 

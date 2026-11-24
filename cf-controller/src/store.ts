@@ -66,6 +66,7 @@ import {
 	SessionSchema,
 	SessionWorkspaceSchema,
 	StampSchema,
+	WorkerConfigSchema,
 	WorkspaceSchema,
 	WorkspaceState,
 	WorkspaceUpdate_What,
@@ -108,6 +109,7 @@ import {
 	type Session,
 	type SessionEvent,
 	type Stamp,
+	type WorkerConfig,
 	type Workspace,
 	type Answer,
 	type AskedFrom,
@@ -118,6 +120,7 @@ import { ErrorCode, hotbedError } from "./errors.ts";
 import { firstLine } from "./gitops.ts";
 import type { NodeRow } from "./placement.ts";
 import { isCommandLive } from "./standby.ts";
+import { mergeWorkerConfig, validateWorkerConfig } from "./worker-config.ts";
 
 export const KEEP_SAMPLES_MS = 25 * 3600_000;
 export const KEEP_PLACEMENTS_MS = 24 * 3600_000;
@@ -3948,6 +3951,112 @@ export class ControllerStore {
 		m.rank = big(r.rank);
 		m.project = str(r.project);
 		return m;
+	}
+
+	// ---- worker configs -------------------------------------------------
+
+	private decodeWorkerConfigRow(r: Record<string, SqlStorageValue>): WorkerConfig {
+		const cfg = unmarshal(WorkerConfigSchema, str(r.doc));
+		cfg.node = str(r.scope);
+		cfg.revision = big(r.revision);
+		cfg.updatedAt = big(r.updated_at);
+		cfg.updatedBy = str(r.updated_by);
+		return cfg;
+	}
+
+	getWorkerConfig(scope: string): WorkerConfig | null {
+		const rows = this.sql
+			.exec(
+				"SELECT scope, revision, doc, updated_at, updated_by FROM worker_configs WHERE scope = ?",
+				scope,
+			)
+			.toArray();
+		if (rows.length === 0) return null;
+		return this.decodeWorkerConfigRow(rows[0]);
+	}
+
+	listWorkerConfigs(): WorkerConfig[] {
+		return this.sql
+			.exec(
+				"SELECT scope, revision, doc, updated_at, updated_by FROM worker_configs ORDER BY scope ASC",
+			)
+			.toArray()
+			.map((r) => this.decodeWorkerConfigRow(r));
+	}
+
+	setWorkerConfig(
+		scope: string,
+		patch: WorkerConfig,
+		opts: { replace: boolean; ifRevision: bigint; updatedBy: string; nowMs: number },
+	): WorkerConfig {
+		validateWorkerConfig(patch);
+		return this.storage.transactionSync(() => {
+			const existing = this.getWorkerConfig(scope);
+			const curRev = existing?.revision ?? 0n;
+			if (opts.ifRevision > 0n && curRev !== opts.ifRevision) {
+				const label = scope || "defaults";
+				throw hotbedError(
+					ErrorCode.Conflict,
+					`worker config ${label} is at revision ${curRev}, not ${opts.ifRevision}`,
+				).withSuggestion(scope ? `hotbed config show ${scope}` : "hotbed config show");
+			}
+			const next = mergeWorkerConfig(opts.replace ? null : existing, patch);
+			validateWorkerConfig(next);
+			const nextRev = curRev + 1n;
+			next.node = scope;
+			next.revision = nextRev;
+			next.updatedAt = BigInt(opts.nowMs);
+			next.updatedBy = opts.updatedBy;
+			const stored = clone(WorkerConfigSchema, next);
+			stored.node = "";
+			stored.revision = 0n;
+			stored.updatedAt = 0n;
+			stored.updatedBy = "";
+			this.sql.exec(
+				`INSERT INTO worker_configs (scope, revision, doc, updated_at, updated_by)
+				 VALUES (?, ?, ?, ?, ?)
+				 ON CONFLICT(scope) DO UPDATE SET
+				   revision = excluded.revision,
+				   doc = excluded.doc,
+				   updated_at = excluded.updated_at,
+				   updated_by = excluded.updated_by`,
+				scope,
+				Number(nextRev),
+				marshal(WorkerConfigSchema, stored),
+				opts.nowMs,
+				opts.updatedBy,
+			);
+			return next;
+		});
+	}
+
+	deleteWorkerConfig(scope: string): boolean {
+		const existing = this.getWorkerConfig(scope);
+		if (!existing) return false;
+		this.sql.exec("DELETE FROM worker_configs WHERE scope = ?", scope);
+		return true;
+	}
+
+	effectiveWorkerConfig(hostname: string, nodeId?: string): WorkerConfig | undefined {
+		const defaults = this.getWorkerConfig("");
+		const nodeOverride =
+			(hostname ? this.getWorkerConfig(hostname) : null) ??
+			(nodeId && nodeId !== hostname ? this.getWorkerConfig(nodeId) : null);
+		if (!defaults && !nodeOverride) return undefined;
+		let merged: WorkerConfig;
+		if (defaults && nodeOverride) {
+			merged = mergeWorkerConfig(defaults, nodeOverride);
+		} else {
+			merged = clone(WorkerConfigSchema, (nodeOverride ?? defaults)!);
+		}
+		merged.node = hostname || nodeId || "";
+		merged.revision = (defaults?.revision ?? 0n) + (nodeOverride?.revision ?? 0n);
+		const defAt = defaults?.updatedAt ?? 0n;
+		const nodeAt = nodeOverride?.updatedAt ?? 0n;
+		merged.updatedAt = nodeAt >= defAt ? nodeAt : defAt;
+		merged.updatedBy =
+			nodeAt >= defAt ? (nodeOverride?.updatedBy ?? "") : (defaults?.updatedBy ?? "");
+		return merged;
 	}
 
 	// ---- prune ----------------------------------------------------------

@@ -55,6 +55,9 @@ func runPID1Supervisor(log *slog.Logger) bool {
 			}
 		}
 	}
+	// Bare devtmpfs creates /dev/fuse, /dev/userfaultfd, /dev/kvm, and
+	// /dev/net/tun as 0600 root:root (no udev); open them to workspace users.
+	fixDevPermissions(log, "/dev")
 	// Ensure loopback is up (minimal Firecracker kernels leave lo DOWN).
 	if ipBin, err := exec.LookPath("ip"); err == nil {
 		_ = exec.Command(ipBin, "link", "set", "lo", "up").Run()

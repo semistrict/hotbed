@@ -1,0 +1,217 @@
+package worker
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"strings"
+	"sync"
+	"testing"
+
+	"github.com/semistrict/hotbed/internal/baseimage"
+	"github.com/semistrict/hotbed/internal/cladefs"
+	pb "github.com/semistrict/hotbed/internal/gen/hotbed/v1"
+	"github.com/semistrict/hotbed/internal/unit"
+)
+
+// strictUnits mimics systemd's RemainAfterExit=yes behavior: once a unit is
+// started, it stays loaded until Stop() is called, and starting a unit with an
+// already-loaded name fails with systemd's exact collision error.
+type strictUnits struct {
+	mu      sync.Mutex
+	loaded  map[string]bool
+	started []string
+	stopped []string
+	// failUnit, when matching unit name, simulates a non-zero exit code.
+	failSubstr string
+}
+
+func newStrictUnits() *strictUnits {
+	return &strictUnits{loaded: map[string]bool{}}
+}
+
+func (u *strictUnits) Start(_ context.Context, s unit.Spec) error {
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	if u.loaded[s.Name] {
+		return fmt.Errorf("start unit %s: systemd-run --unit=%s: exit status 1: Failed to start transient service unit: Unit %s.service was already loaded or has a fragment file.", s.Name, s.Name, s.Name)
+	}
+	u.loaded[s.Name] = true
+	u.started = append(u.started, s.Name)
+	if s.Log != "" {
+		_ = os.MkdirAll(filepath.Dir(s.Log), 0o755)
+		_ = os.WriteFile(s.Log, []byte("ok\n"), 0o644)
+	}
+	return nil
+}
+
+func (u *strictUnits) Wait(context.Context, string, string) error { return nil }
+
+func (u *strictUnits) Status(_ context.Context, name string) (unit.State, error) {
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	exitCode := 0
+	if u.failSubstr != "" && strings.Contains(name, u.failSubstr) {
+		exitCode = 1
+	}
+	return unit.State{Loaded: u.loaded[name], Exited: true, ExitCode: exitCode}, nil
+}
+
+func (u *strictUnits) StatusMany(context.Context, []string) (map[string]unit.State, error) {
+	return map[string]unit.State{}, nil
+}
+func (u *strictUnits) Freeze(context.Context, string) error        { return nil }
+func (u *strictUnits) Thaw(context.Context, string) error          { return nil }
+func (u *strictUnits) Reclaim(string, int64) error                 { return nil }
+func (u *strictUnits) Memory(string) (unit.MemoryUse, error)       { return unit.MemoryUse{}, nil }
+func (u *strictUnits) List(context.Context, string) ([]string, error) { return nil, nil }
+func (u *strictUnits) StartShell(context.Context, unit.Spec, unit.ShellIO) (unit.ShellHandle, error) {
+	return nil, errors.New("not implemented")
+}
+func (u *strictUnits) Exec(context.Context, string, string, unit.ExecSpec) (*exec.Cmd, error) {
+	return nil, errors.New("not implemented")
+}
+
+func (u *strictUnits) Stop(_ context.Context, name string) error {
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	delete(u.loaded, name)
+	u.stopped = append(u.stopped, name)
+	return nil
+}
+
+func TestCladefsFUSERunInChrootStopsUnitsOnSuccessAndFailure(t *testing.T) {
+	dir := t.TempDir()
+	rootDir := filepath.Join(dir, "rootfs")
+	if err := os.MkdirAll(rootDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	su := newStrictUnits()
+	e := &Engine{
+		cfg: EngineConfig{
+			Dir:   dir,
+			User:  "ramon",
+			Units: su,
+		},
+	}
+
+	runInChroot := func(stepCtx context.Context, rootDir, unitName string, argv, env []string) (string, error) {
+		if err := makeTmpDirs(rootDir, unitName, e.cred); err != nil {
+			return "", err
+		}
+		tmpBase := filepath.Join(rootDir, tmpName, unitName)
+		defer os.RemoveAll(tmpBase)
+		tmpDir := filepath.Join(tmpBase, "tmp")
+		runDir := filepath.Join(tmpBase, "run")
+		runtimeTarget := e.runtimeChrootDir()
+		logPath := filepath.Join(e.cfg.Dir, "logs", unitName+".log")
+		_ = os.MkdirAll(filepath.Dir(logPath), 0o755)
+		stepEnv := append(append([]string(nil), env...), "XDG_RUNTIME_DIR="+runtimeTarget)
+		spec := unit.Spec{
+			Name:       unitName,
+			Slice:      unit.DefaultSlice,
+			Argv:       argv,
+			Dir:        WorkPath,
+			Binds:      []unit.Bind{{Source: runDir, Target: runtimeTarget}},
+			Tmp:        tmpDir,
+			User:       e.cfg.User,
+			Env:        stepEnv,
+			PathPrefix: cachePath,
+			Log:        logPath,
+		}
+		e.inRootfs(&spec, rootDir)
+		if err := e.cfg.Units.Start(stepCtx, spec); err != nil {
+			return "", err
+		}
+		defer func() {
+			_ = e.cfg.Units.Stop(context.Background(), spec.Name)
+		}()
+		if err := e.cfg.Units.Wait(stepCtx, spec.Slice, spec.Name); err != nil {
+			return "", err
+		}
+		st, err := e.cfg.Units.Status(stepCtx, spec.Name)
+		outBytes, _ := os.ReadFile(logPath)
+		out := string(outBytes)
+		if err != nil {
+			return out, err
+		}
+		if st.ExitCode != 0 {
+			return out, fmt.Errorf("chroot step %s exited %d", unitName, st.ExitCode)
+		}
+		return out, nil
+	}
+
+	// 1. Successful step must be stopped so it does not stay loaded in systemd.
+	if _, err := runInChroot(context.Background(), rootDir, "hotbed-fuse-repos-test", []string{"/bin/true"}, nil); err != nil {
+		t.Fatalf("first runInChroot failed: %v", err)
+	}
+	if len(su.loaded) != 0 {
+		t.Fatalf("expected all units unloaded after success, still loaded: %v", su.loaded)
+	}
+
+	// 2. Failed step must also be stopped so retries never collide.
+	su.failSubstr = "step-1"
+	if _, err := runInChroot(context.Background(), rootDir, "hotbed-fuse-step-1-test", []string{"/bin/false"}, nil); err == nil {
+		t.Fatal("expected failure on step-1")
+	}
+	if len(su.loaded) != 0 {
+		t.Fatalf("expected all units unloaded after failure, still loaded: %v", su.loaded)
+	}
+
+	// 3. Re-running with the same unit name succeeds because Stop() unloaded it.
+	su.failSubstr = ""
+	if _, err := runInChroot(context.Background(), rootDir, "hotbed-fuse-step-1-test", []string{"/bin/true"}, nil); err != nil {
+		t.Fatalf("retry runInChroot failed: %v", err)
+	}
+}
+
+func TestRandomUnitSuffixProducesDistinctNames(t *testing.T) {
+	seen := map[string]bool{}
+	for range 32 {
+		s := randomUnitSuffix()
+		if len(s) != 8 {
+			t.Fatalf("suffix len = %d (%q), want 8", len(s), s)
+		}
+		if seen[s] {
+			t.Fatalf("duplicate randomUnitSuffix %q", s)
+		}
+		seen[s] = true
+	}
+}
+
+func TestCladefsFUSELoadStateIndexesMultipleBaseImagesByKey(t *testing.T) {
+	dir := t.TempDir()
+	cacheDir := filepath.Join(dir, "cladefs-fuse-bases")
+	if err := os.MkdirAll(cacheDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	spec := baseimage.Spec{User: "ramon", UID: 1000, GID: 1000}.Normalized()
+	b := &CladefsFUSEBackend{
+		workerDir:      dir,
+		decommissioned: map[uint64]bool{},
+		baseImages:     map[string]cladefs.CellRef{},
+		projectBases:   map[string]*vmProjectBase{},
+		sharedBases:    map[string]*pb.CladefsCell{},
+		wsMounts:       map[string]fuseWSMount{},
+	}
+	wantKey := b.fuseBaseKey(spec)
+	// Write both the wanted key and a lexicographically later stale key.
+	for key, cell := range map[string]uint64{
+		wantKey:        101,
+		"zzzz-old-key": 999,
+	} {
+		raw, _ := json.Marshal(cladefs.CellRef{RelPath: "baseimages/fuse-" + key, Tenant: 1, Cell: cell, Version: 2})
+		if err := os.WriteFile(filepath.Join(cacheDir, "baseimage-"+key+".json"), raw, 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	b.loadState()
+	got, ok := b.baseImages[wantKey]
+	if !ok || got.Cell != 101 {
+		t.Fatalf("baseImages[%q] = %+v (ok=%v), want cell 101", wantKey, got, ok)
+	}
+}

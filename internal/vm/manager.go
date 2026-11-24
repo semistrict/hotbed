@@ -162,19 +162,58 @@ type fcCladefs struct {
 	CacheType          string `json:"cache_type,omitempty"`
 }
 
+// configSnapshot returns a copy of the manager's current Config under lock.
+func (m *Manager) configSnapshot() Config {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.cfg
+}
+
+// UpdateConfig hot-reloads VM launch settings (kernel, guestd, firecracker
+// binary, vCPUs, memory, disk, DAX window, cache type, DNS) for all subsequent
+// VM boots without disrupting running Firecracker instances. Structural manager
+// fields (RunDir, Slice, BridgeName, BridgeCIDR, DisableNetwork, GitAuthHostSock)
+// are preserved when unset in cfg.
+func (m *Manager) UpdateConfig(cfg Config) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	cfg.RunDir = m.cfg.RunDir
+	if cfg.Slice == "" {
+		cfg.Slice = m.cfg.Slice
+	}
+	if cfg.BridgeName == "" {
+		cfg.BridgeName = m.cfg.BridgeName
+	}
+	if cfg.BridgeCIDR == "" {
+		cfg.BridgeCIDR = m.cfg.BridgeCIDR
+	}
+	if cfg.GitAuthHostSock == "" {
+		cfg.GitAuthHostSock = m.cfg.GitAuthHostSock
+	}
+	cfg.DisableNetwork = m.cfg.DisableNetwork
+	if cfg.BootTimeout <= 0 {
+		cfg.BootTimeout = m.cfg.BootTimeout
+	}
+	if cfg.ShutdownTimeout <= 0 {
+		cfg.ShutdownTimeout = m.cfg.ShutdownTimeout
+	}
+	m.cfg = cfg.Normalized()
+}
+
 // BuildFirecrackerConfig constructs the Firecracker JSON config for spec.
 func (m *Manager) BuildFirecrackerConfig(spec LaunchSpec, cid uint32, vsockUDS string, netAlloc NetAlloc) FirecrackerConfig {
+	cfg := m.configSnapshot()
 	vcpus := spec.VCPUs
 	if vcpus <= 0 {
-		vcpus = m.cfg.DefaultVCPUs
+		vcpus = cfg.DefaultVCPUs
 	}
 	memMiB := spec.MemMiB
 	if memMiB <= 0 {
-		memMiB = m.cfg.DefaultMemMiB
+		memMiB = cfg.DefaultMemMiB
 	}
 	diskBytes := spec.DiskBytes
 	if diskBytes == 0 {
-		diskBytes = m.cfg.DefaultDiskBytes
+		diskBytes = cfg.DefaultDiskBytes
 	}
 	bootParts := []string{
 		"root=rootfs",
@@ -194,7 +233,7 @@ func (m *Manager) BuildFirecrackerConfig(spec LaunchSpec, cid uint32, vsockUDS s
 
 	fc := FirecrackerConfig{
 		BootSource: fcBootSource{
-			KernelImagePath: m.cfg.KernelPath,
+			KernelImagePath: cfg.KernelPath,
 			BootArgs:        strings.Join(bootParts, " "),
 		},
 		Drives: []any{},
@@ -207,7 +246,7 @@ func (m *Manager) BuildFirecrackerConfig(spec LaunchSpec, cid uint32, vsockUDS s
 			UDSPath:  vsockUDS,
 		},
 		Balloon: &fcBalloon{
-			AmountMiB:            m.cfg.BalloonTargetMiB,
+			AmountMiB:            cfg.BalloonTargetMiB,
 			DeflateOnOOM:         true,
 			StatsPollingInterval: 5,
 			FreePageReporting:    true,
@@ -218,9 +257,9 @@ func (m *Manager) BuildFirecrackerConfig(spec LaunchSpec, cid uint32, vsockUDS s
 			PathOnHost:         spec.CellHostPath,
 			Capacity:           diskBytes,
 			CladefsdSocket:     spec.CladefsVMSock,
-			DAXWindowSize:      m.cfg.DAXWindowBytes,
-			DAXPrivateMaxBytes: m.cfg.DAXPrivateMaxBytes,
-			CacheType:          m.cfg.CacheType,
+			DAXWindowSize:      cfg.DAXWindowBytes,
+			DAXPrivateMaxBytes: cfg.DAXPrivateMaxBytes,
+			CacheType:          cfg.CacheType,
 		}},
 	}
 	if netAlloc.TAPName != "" {
@@ -252,15 +291,16 @@ func (m *Manager) Start(ctx context.Context, spec LaunchSpec) (*Instance, error)
 		return existing, nil
 	}
 	cid := m.allocCIDLocked(spec.ID)
+	cfg := m.cfg
 	m.mu.Unlock()
 
-	vmDir := filepath.Join(m.cfg.RunDir, spec.ID)
+	vmDir := filepath.Join(cfg.RunDir, spec.ID)
 	if err := os.MkdirAll(vmDir, 0o755); err != nil {
 		m.releaseCID(cid)
 		return nil, fmt.Errorf("vm: create dir %s: %w", vmDir, err)
 	}
 	// Firecracker runs as VMUser and creates/removes vsock sockets in vmDir.
-	_ = chownSockForUser(vmDir, m.cfg.VMUser)
+	_ = chownSockForUser(vmDir, cfg.VMUser)
 	_ = os.Chmod(vmDir, 0o755)
 
 	vsockUDS := filepath.Join(vmDir, "vsock.sock")
@@ -271,7 +311,7 @@ func (m *Manager) Start(ctx context.Context, spec LaunchSpec) (*Instance, error)
 	_ = os.Remove(vsockUDS)
 
 	var netAlloc NetAlloc
-	if !m.cfg.DisableNetwork && !spec.DisableNet && m.net != nil {
+	if !cfg.DisableNetwork && !spec.DisableNet && m.net != nil {
 		var err error
 		netAlloc, err = m.net.AllocTAP(ctx, spec.ID)
 		if err != nil {
@@ -281,9 +321,9 @@ func (m *Manager) Start(ctx context.Context, spec LaunchSpec) (*Instance, error)
 	}
 
 	var gaBridge *gitAuthBridge
-	if m.cfg.GitAuthHostSock != "" {
+	if cfg.GitAuthHostSock != "" {
 		var err error
-		gaBridge, err = startGitAuthBridge(vsockUDS, m.cfg.GitAuthHostSock, m.cfg.VMUser)
+		gaBridge, err = startGitAuthBridge(vsockUDS, cfg.GitAuthHostSock, cfg.VMUser)
 		if err != nil {
 			if m.net != nil {
 				m.net.ReleaseTAP(ctx, netAlloc)
@@ -333,14 +373,14 @@ func (m *Manager) Start(ctx context.Context, spec LaunchSpec) (*Instance, error)
 	// Ensure Firecracker can write console.log when running as VMUser.
 	if f, err := os.OpenFile(consoleLog, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644); err == nil {
 		_ = f.Close()
-		_ = chownSockForUser(consoleLog, m.cfg.VMUser)
+		_ = chownSockForUser(consoleLog, cfg.VMUser)
 	}
 
 	procSpec := ProcessSpec{
 		Name:       unitName,
-		Slice:      m.cfg.Slice,
-		User:       m.cfg.VMUser,
-		Binary:     m.cfg.FirecrackerBin,
+		Slice:      cfg.Slice,
+		User:       cfg.VMUser,
+		Binary:     cfg.FirecrackerBin,
 		Args:       []string{"--enable-pci", "--no-api", "--config-file", configPath},
 		ConsoleLog: consoleLog,
 	}
