@@ -120,6 +120,7 @@ type cli struct {
 	Version   versionCmd   `cmd:"" help:"Show hotbed's version, OS and architecture."`
 	Upgrade   upgradeCmd   `cmd:"" help:"Install the controller's build over this hotbed (a client on a CI build does it by itself)."`
 	Admin     adminCmd     `cmd:"" help:"Cluster administration (upgrade, migrate)."`
+	API       rawAPICmd    `cmd:"" name:"api" help:"Make an authenticated HTTP or ConnectRPC request to the controller (like gh api)."`
 }
 
 // exited is how parse learns that kong finished the run itself, as it does
