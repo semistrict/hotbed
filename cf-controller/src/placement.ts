@@ -192,7 +192,7 @@ export function buildCandidates(
 		const asleep = nv.node.asleep;
 		const want = follows(res?.arch ?? "");
 		const on = parseBuildNumber(res?.version ?? "");
-		const upgrading = want !== 0 && on !== want && !asleep ? on || -1 : 0;
+		const upgrading = want !== 0 && on < want && !asleep ? on || -1 : 0;
 
 		let warm = false;
 		let newest: Base | undefined;

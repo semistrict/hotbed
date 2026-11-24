@@ -15,7 +15,7 @@ This directory is the `hotbed` controller running on **Cloudflare Workers** back
   - `OWNER_TOKEN`: Bearer token for `hotbed` CLI (`HOTBED_TOKEN`) and Cockpit `/auth/login` (`HttpOnly; SameSite=Strict` HMAC cookie with same-origin CSRF checks).
   - `JOIN_TOKEN` + per-worker tokens (`POST /admin/worker-token`): Scoped worker auth for `Join`, `Heartbeat`, `PushEvents`, `/ws/worker`, and `/builds/*`.
   - Optional **Cloudflare Access** JWT verification (`Cf-Access-Jwt-Assertion`) when `CF_ACCESS_AUD` and `CF_ACCESS_TEAM_DOMAIN` are configured.
-- **Binary Distribution (`/builds/{build}/{asset}`):** Streams release binaries from GitHub Releases with an optional R2 cache (`BUILDS_BUCKET`, separate from `hotbed-cladefs`).
+- **Self-Known Version & Direct GitHub Binary Updates:** CI stamps `HOTBED_BUILD_NUMBER`, `HOTBED_GIT_COMMIT`, and `HOTBED_BUILD_SHA256SUMS` into the Worker bundle at deploy time so the controller always knows its exact deployed version and target checksums. Heartbeats and `GetBuild` return the direct GitHub Release `download_url` + `sha256`, and workers running an older build fetch directly from GitHub, verify SHA-256, atomically replace their binary, and `execve` themselves (newer workers are never downgraded). `/builds/{build}/{asset}` remains available as a proxy fallback for older workers or private repos.
 
 ## Local Development & Testing
 

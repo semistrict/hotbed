@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"slices"
@@ -433,15 +434,18 @@ func (e *Engine) hasActiveUpgradeWork() bool {
 	return cmds > 0 || shells > 0 || bases > 0
 }
 
-// Follow installs the controller's build over the worker, from the
-// controller, which keeps it: a worker never reaches GitHub.
+// Follow updates the worker to at least the controller's build, fetching
+// directly from GitHub when the controller supplies a download URL (and
+// otherwise from the controller's /builds/ endpoint), verifying sha256 before
+// atomically replacing Exe and returning update.ErrRestart so serve re-execs.
 type Follow struct {
-	URL      string // the controller's, http://host:port
-	Client   *http.Client
-	Exe      string           // the worker's binary
-	Build    int64            // the build it runs, 0 for a dev build
-	MaxDefer time.Duration    // cap on deferring an upgrade while active work runs; 0 uses defaultMaxUpgradeDefer
-	Now      func() time.Time // clock for deferral cap; nil uses time.Now
+	URL            string           // the controller's base URL (used when Build.DownloadUrl is empty)
+	Client         *http.Client     // controller-authenticated client for Build.Path fallback
+	DownloadClient *http.Client     // clean client (no controller auth) for Build.DownloadUrl (GitHub)
+	Exe            string           // the worker's binary
+	Build          int64            // the build it runs, 0 for a dev build
+	MaxDefer       time.Duration    // cap on deferring an upgrade while active work runs; 0 uses defaultMaxUpgradeDefer
+	Now            func() time.Time // clock for deferral cap; nil uses time.Now
 
 	mu            sync.Mutex
 	deferredBuild int64     // target build deferred while active work drains
@@ -523,9 +527,10 @@ func (f *Follow) checkDefer(eng *Engine, b *pb.Build) (deferNow, capReached bool
 
 // toWhenIdle defers both replacing f.Exe and returning update.ErrRestart until
 // the engine has no active commands, interactive shells, or in-flight base/fork
-// builds, up to f.maxDefer().
+// builds, up to f.maxDefer(). Workers update whenever their build is older than
+// the controller's target build, and never downgrade when already on a newer build.
 func (f *Follow) toWhenIdle(ctx context.Context, eng *Engine, b *pb.Build) error {
-	if f == nil || b == nil || b.Number == f.Build {
+	if f == nil || b == nil || b.Number <= 0 || f.Build >= b.Number {
 		if f != nil {
 			f.clearDeferred()
 		}
@@ -535,7 +540,7 @@ func (f *Follow) toWhenIdle(ctx context.Context, eng *Engine, b *pb.Build) error
 	if deferNow {
 		return nil
 	}
-	tmp, err := f.downloadStaged(ctx, b)
+	tmp, source, err := f.downloadStaged(ctx, b)
 	if err != nil {
 		slog.Error("install the controller's build", "build", b.Number, "err", err)
 		return nil
@@ -561,37 +566,67 @@ func (f *Follow) toWhenIdle(ctx context.Context, eng *Engine, b *pb.Build) error
 	}
 	cleanup = false
 	f.clearDeferred()
-	slog.Info("installed the controller's build: restarting as it", "build", b.Number, "was", version.String())
+	slog.Info("installed the controller's build: restarting as it", "build", b.Number, "was", version.String(), "source", source)
 	return update.ErrRestart
 }
 
-// To installs b unless the worker runs it, returning update.ErrRestart once
-// it did. A failure to is logged, and tried again at the next report.
+// To installs b when the worker runs an older build, returning update.ErrRestart
+// once it did. A failure to is logged, and tried again at the next report.
 func (f *Follow) To(ctx context.Context, b *pb.Build) error {
 	return f.toWhenIdle(ctx, nil, b)
 }
 
-func (f *Follow) downloadStaged(ctx context.Context, b *pb.Build) (path string, err error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, f.URL+b.Path, nil)
-	if err != nil {
-		return "", err
+func (f *Follow) downloadClient() *http.Client {
+	if f.DownloadClient != nil {
+		return f.DownloadClient
 	}
-	resp, err := f.Client.Do(req)
+	return &http.Client{Timeout: 10 * time.Minute}
+}
+
+func (f *Follow) downloadStaged(ctx context.Context, b *pb.Build) (path, source string, err error) {
+	if b.Sha256 == "" {
+		return "", "", fmt.Errorf("build %d has no sha256 checksum", b.Number)
+	}
+	var downloadURL string
+	var client *http.Client
+	if b.DownloadUrl != "" {
+		u, uerr := url.Parse(b.DownloadUrl)
+		if uerr != nil || (u.Scheme != "https" && u.Scheme != "http") || u.Host == "" {
+			return "", "", fmt.Errorf("build %d has invalid download URL %q", b.Number, b.DownloadUrl)
+		}
+		downloadURL = b.DownloadUrl
+		client = f.downloadClient()
+	} else {
+		if b.Path == "" {
+			return "", "", fmt.Errorf("build %d has neither download_url nor path", b.Number)
+		}
+		downloadURL = f.URL + b.Path
+		client = f.Client
+		if client == nil {
+			client = f.downloadClient()
+		}
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, downloadURL, nil)
 	if err != nil {
-		return "", err
+		return "", "", err
+	}
+	req.Header.Set("User-Agent", "hotbed-worker")
+	resp, err := client.Do(req)
+	if err != nil {
+		return "", "", err
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("GET %s: %s", req.URL, resp.Status)
+		return "", "", fmt.Errorf("GET %s: %s", req.URL, resp.Status)
 	}
 	tmp, err := os.CreateTemp(filepath.Dir(f.Exe), "."+filepath.Base(f.Exe)+".staged-")
 	if err != nil {
-		return "", err
+		return "", "", err
 	}
 	tmpPath := tmp.Name()
 	if err := tmp.Close(); err != nil {
 		os.Remove(tmpPath)
-		return "", err
+		return "", "", err
 	}
 	defer func() {
 		if err != nil {
@@ -599,7 +634,7 @@ func (f *Follow) downloadStaged(ctx context.Context, b *pb.Build) (path string, 
 		}
 	}()
 	if err = update.Install(resp.Body, b.Sha256, tmpPath); err != nil {
-		return "", err
+		return "", "", err
 	}
-	return tmpPath, nil
+	return tmpPath, downloadURL, nil
 }

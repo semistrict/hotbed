@@ -17,6 +17,11 @@ function sqlRawPlugin() {
 }
 
 export default defineConfig({
+	define: {
+		__HOTBED_BUILD_NUMBER__: JSON.stringify(0),
+		__HOTBED_GIT_COMMIT__: JSON.stringify(""),
+		__HOTBED_BUILD_SHA256SUMS__: JSON.stringify(""),
+	},
 	plugins: [
 		sqlRawPlugin(),
 		cloudflareTest({

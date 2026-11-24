@@ -11,6 +11,7 @@ import (
 	"net/http/httptest"
 	"slices"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	"github.com/semistrict/hotbed/internal/update"
@@ -18,12 +19,15 @@ import (
 
 // GitHub serves releases as GitHub's API does: a release's assets by
 // API URL, each fetched with Accept: application/octet-stream, by a
-// redirect to storage that must not see the token.
+// redirect to storage that must not see the token, and public direct
+// downloads at /<repo>/releases/download/build-N/<name>.
 type GitHub struct {
-	srv      *httptest.Server
-	token    string
-	Releases map[int64]map[string][]byte // build -> asset name -> content
-	latest   int64
+	srv             *httptest.Server
+	token           string
+	Releases        map[int64]map[string][]byte // build -> asset name -> content
+	latest          int64
+	PublicDownloads bool         // when true, release JSON includes browser_download_url
+	DirectDownloads atomic.Int32 // count of direct /releases/download/ requests served
 }
 
 func NewGitHub(t *testing.T) *GitHub {
@@ -70,13 +74,28 @@ func NewGitHub(t *testing.T) *GitHub {
 		}
 		http.Redirect(w, r, "/storage/"+r.PathValue("build")+"/"+r.PathValue("name"), http.StatusFound)
 	})
+	mux.HandleFunc("GET /semistrict/hotbed/releases/download/{tag}/{name}", func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Authorization") != "" {
+			http.Error(w, "public release download must not receive Authorization header", http.StatusBadRequest)
+			return
+		}
+		var n int64
+		fmt.Sscanf(r.PathValue("tag"), "build-%d", &n)
+		b, ok := g.Releases[n][r.PathValue("name")]
+		if !ok {
+			http.NotFound(w, r)
+			return
+		}
+		g.DirectDownloads.Add(1)
+		w.Write(b)
+	})
 	mux.HandleFunc("GET /storage/{build}/{name}", func(w http.ResponseWriter, r *http.Request) {
 		if r.Header.Get("Authorization") != "" {
 			http.Error(w, "storage takes no token", http.StatusBadRequest)
 			return
 		}
 		var n int64
-		fmt.Sscan(r.PathValue("build"), &n)
+		fmt.Sscanf(r.PathValue("build"), "%d", &n)
 		b, ok := g.Releases[n][r.PathValue("name")]
 		if !ok {
 			http.NotFound(w, r)
@@ -88,6 +107,9 @@ func NewGitHub(t *testing.T) *GitHub {
 	t.Cleanup(g.srv.Close)
 	return g
 }
+
+// URL is the test GitHub server's base URL (also usable as UPDATES_DOWNLOAD_BASE).
+func (g *GitHub) URL() string { return g.srv.URL }
 
 func (g *GitHub) authorized(w http.ResponseWriter, r *http.Request) bool {
 	if r.Header.Get("Authorization") != "Bearer "+g.token {
@@ -101,7 +123,11 @@ func (g *GitHub) releaseJSON(n int64) string {
 	assets := g.Releases[n]
 	var list []string
 	for name := range assets {
-		list = append(list, fmt.Sprintf(`{"name":%q,"url":"%s/repos/semistrict/hotbed/releases/assets/%d/%s"}`, name, g.srv.URL, n, name))
+		if g.PublicDownloads {
+			list = append(list, fmt.Sprintf(`{"name":%q,"url":"%s/repos/semistrict/hotbed/releases/assets/%d/%s","browser_download_url":"%s/semistrict/hotbed/releases/download/build-%d/%s"}`, name, g.srv.URL, n, name, g.srv.URL, n, name))
+		} else {
+			list = append(list, fmt.Sprintf(`{"name":%q,"url":"%s/repos/semistrict/hotbed/releases/assets/%d/%s"}`, name, g.srv.URL, n, name))
+		}
 	}
 	return fmt.Sprintf(`{"tag_name":"build-%d","assets":[%s]}`, n, strings.Join(list, ","))
 }

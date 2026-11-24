@@ -696,7 +696,7 @@ func resolveLinuxBinary(ctx context.Context, explicit, controller, cacheDir, arc
 		return "", api.Errorf(ae.Code, "fetch Linux %s binary from controller %s: %s", arch, hostPort, ae.Message).
 			WithSuggestion(suggest)
 	}
-	if b.Path == "" || !strings.HasPrefix(b.Path, "/builds/") || b.Sha256 == "" {
+	if b.Sha256 == "" || (b.DownloadUrl == "" && (b.Path == "" || !strings.HasPrefix(b.Path, "/builds/"))) {
 		return "", api.Errorf(api.CodeInternal, "controller %s returned incomplete build metadata for linux/%s", hostPort, arch).
 			WithSuggestion(suggest)
 	}
@@ -710,7 +710,14 @@ func resolveLinuxBinary(ctx context.Context, explicit, controller, cacheDir, arc
 		return outPath, nil
 	}
 
-	downloadURL := "http://" + hostPort + b.Path
+	downloadURL := b.DownloadUrl
+	if downloadURL == "" {
+		base, err := api.ControllerBaseURL(controller)
+		if err != nil {
+			return "", err
+		}
+		downloadURL = base + b.Path
+	}
 	progressf(progress, "downloading Linux %s hotbed binary (build %d) from %s", arch, b.Number, downloadURL)
 	dlCtx, dlCancel := context.WithTimeout(ctx, 10*time.Minute)
 	defer dlCancel()

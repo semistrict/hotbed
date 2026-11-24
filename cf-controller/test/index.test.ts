@@ -927,3 +927,124 @@ describe("Cloudflare Workers single-DO hotbed controller", () => {
 		expect(fetched.memories[1].content?.body).toContain("pnpm build");
 	});
 });
+
+describe("BuildDistributor pinned controller version and placement semantics", () => {
+	it("knows its own compiled/configured version, emits direct GitHub downloadUrl, and ignores stale SQLite cache", async () => {
+		const { BuildDistributor } = await import("../src/builds.ts");
+		const { buildCandidates, chooseCandidate } = await import("../src/placement.ts");
+		const kvData = new Map<string, string>();
+		const kv = {
+			getMeta: (k: string) => kvData.get(k) ?? null,
+			setMeta: (k: string, v: string) => {
+				kvData.set(k, v);
+			},
+		};
+		// Seed a stale SQLite cache from an older build 170.
+		kv.setMeta(
+			"github_latest_release",
+			JSON.stringify({
+				buildNumber: 170,
+				tag: "build-170",
+				fetchedAt: Date.now(),
+				assets: {
+					"hotbed-linux-amd64": { sha256: "oldsum", downloadUrl: "", apiUrl: "" },
+				},
+			}),
+		);
+
+		const amd64Sum = "a".repeat(64);
+		const arm64Sum = "b".repeat(64);
+		const darwinSum = "c".repeat(64);
+		const dist = new BuildDistributor(
+			{
+				UPDATES_REPO: "semistrict/hotbed",
+				CONTROLLER_BUILD_NUMBER: "172",
+				CONTROLLER_GIT_COMMIT: "749b28361a430fa6f386ce3b838dfa0c92769954",
+				CONTROLLER_BUILD_SHA256SUMS: [
+					`${amd64Sum}  hotbed-linux-amd64`,
+					`${arm64Sum}  hotbed-linux-arm64`,
+					`${darwinSum}  hotbed-darwin-arm64`,
+				].join("\n"),
+			},
+			kv,
+		);
+
+		expect(dist.pinnedBuildNumber()).toBe(172);
+		expect(dist.currentBuildNumber()).toBe(172);
+		expect(dist.controllerCommit()).toBe("749b28361a430fa6f386ce3b838dfa0c92769954");
+		expect(dist.versionString()).toBe("build 172 (749b28361a43)");
+		expect(dist.needsImmediateRefresh(Date.now())).toBe(false);
+		expect(dist.needsBackgroundRefresh()).toBe(false);
+
+		const b = dist.buildFor("linux", "amd64");
+		expect(b).toBeDefined();
+		expect(b!.number).toBe(172n);
+		expect(b!.sha256).toBe(amd64Sum);
+		expect(b!.path).toBe("/builds/172/hotbed-linux-amd64");
+		expect(b!.downloadUrl).toBe(
+			"https://github.com/semistrict/hotbed/releases/download/build-172/hotbed-linux-amd64",
+		);
+
+		// Without baked sums, stale cache (build 170) is ignored for pinned build 172 and triggers immediate refresh.
+		const unbaked = new BuildDistributor(
+			{
+				UPDATES_REPO: "semistrict/hotbed",
+				CONTROLLER_BUILD_NUMBER: "172",
+				CONTROLLER_GIT_COMMIT: "749b28361a430fa6f386ce3b838dfa0c92769954",
+			},
+			kv,
+		);
+		expect(unbaked.currentBuildNumber()).toBe(172);
+		expect(unbaked.versionString()).toBe("build 172 (749b28361a43)");
+		expect(unbaked.buildFor("linux", "amd64")).toBeUndefined();
+		expect(unbaked.needsImmediateRefresh(Date.now())).toBe(true);
+		expect(unbaked.needsBackgroundRefresh()).toBe(true);
+
+		// Placement requires worker build >= controller build (accepts equal and newer, rejects older).
+		const makeView = (id: string, hostname: string, version: string) => ({
+			node: {
+				id,
+				hostname,
+				asleep: false,
+				online: true,
+				storageError: "",
+			} as never,
+			addr: "100.0.0.1:7121",
+			online: true,
+			wakeFailed: false,
+			bases: [],
+			workspaces: [],
+			commands: [],
+			hb: create(HeartbeatRequestSchema, {
+				resources: create(ResourcesSchema, {
+					arch: "amd64",
+					cpus: 8,
+					memoryBytes: BigInt(16 * 1024 ** 3),
+					version,
+				}),
+			}),
+		});
+
+		const cs = buildCandidates(
+			[
+				makeView("n-old", "old-worker", "build 171 (deadbeef1234)"),
+				makeView("n-same", "same-worker", "build 172 (749b28361a43)"),
+				makeView("n-newer", "newer-worker", "build 173 (cafebabe5678)"),
+			],
+			"app",
+			new Map(),
+			() => 172,
+		);
+		expect(cs.find((c) => c.host === "old-worker")!.upgrading).toBe(171);
+		expect(cs.find((c) => c.host === "same-worker")!.upgrading).toBe(0);
+		expect(cs.find((c) => c.host === "newer-worker")!.upgrading).toBe(0);
+
+		const pickNewer = chooseCandidate(cs, { node: "newer-worker" } as never, [], true);
+		expect(pickNewer.err).toBeUndefined();
+		expect(pickNewer.chosen?.host).toBe("newer-worker");
+
+		const pickOld = chooseCandidate(cs, { node: "old-worker" } as never, [], true);
+		expect(pickOld.err).toBeDefined();
+		expect(pickOld.err?.message).toContain("build 171");
+	});
+});

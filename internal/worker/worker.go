@@ -281,16 +281,21 @@ func Run(ctx context.Context, dir string, cfg statedir.WorkerConfig, tn Tailnet,
 	if err != nil {
 		return err
 	}
-	// A binary takes longer than an API call's minute over a slow tailnet.
+	if resolved, rerr := filepath.EvalSymlinks(exe); rerr == nil {
+		exe = resolved
+	}
+	// A binary takes longer than an API call's minute over a slow network.
+	// Direct GitHub downloads use a clean client with no controller auth headers.
 	followTransport := hc.Transport
 	if remote || cfg.Token != "" {
 		followTransport = api.AuthRoundTripper(followTransport, cfg.Token, self.NodeID, self.Hostname, workerAddr)
 	}
 	follow := &Follow{
-		URL:    ctrlBaseURL,
-		Client: &http.Client{Transport: followTransport, Timeout: 10 * time.Minute},
-		Exe:    exe,
-		Build:  version.Number(),
+		URL:            ctrlBaseURL,
+		Client:         &http.Client{Transport: followTransport, Timeout: 10 * time.Minute},
+		DownloadClient: &http.Client{Timeout: 10 * time.Minute},
+		Exe:            exe,
+		Build:          version.Number(),
 	}
 	store, err := awaitStorage(ctx, func(ctx context.Context) (storage.Store, error) {
 		return storage.Open(ctx, dir, cfg.Dataset)

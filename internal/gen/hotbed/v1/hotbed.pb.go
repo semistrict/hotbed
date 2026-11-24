@@ -2893,15 +2893,19 @@ func (x *ListNodesResponse) GetControllerVersion() string {
 	return ""
 }
 
-// A build of hotbed the controller keeps for one platform, which nodes
-// install over themselves.
+// A build of hotbed the controller targets for one platform, which nodes
+// install over themselves when running an older build.
 type Build struct {
 	state  protoimpl.MessageState `protogen:"open.v1"`
 	Number int64                  `protobuf:"varint,1,opt,name=number,proto3" json:"number,omitempty"`
 	// Its binary's sha256, hex.
 	Sha256 string `protobuf:"bytes,2,opt,name=sha256,proto3" json:"sha256,omitempty"`
-	// Where the controller serves its binary: /builds/N/hotbed-OS-ARCH.
-	Path          string `protobuf:"bytes,3,opt,name=path,proto3" json:"path,omitempty"`
+	// Where the controller serves its binary: /builds/N/hotbed-OS-ARCH
+	// (used when download_url is unset).
+	Path string `protobuf:"bytes,3,opt,name=path,proto3" json:"path,omitempty"`
+	// Direct GitHub release asset URL for this platform's binary
+	// (e.g. https://github.com/semistrict/hotbed/releases/download/build-N/hotbed-OS-ARCH).
+	DownloadUrl   string `protobuf:"bytes,4,opt,name=download_url,json=downloadUrl,proto3" json:"download_url,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -2953,6 +2957,13 @@ func (x *Build) GetSha256() string {
 func (x *Build) GetPath() string {
 	if x != nil {
 		return x.Path
+	}
+	return ""
+}
+
+func (x *Build) GetDownloadUrl() string {
+	if x != nil {
+		return x.DownloadUrl
 	}
 	return ""
 }
@@ -11150,8 +11161,8 @@ type HeartbeatResponse struct {
 	// Workspaces to release: their sessions ended.
 	Release []string `protobuf:"bytes,2,rep,name=release,proto3" json:"release,omitempty"`
 	// The controller's build, for the worker's platform, which the worker
-	// installs over itself unless it runs it; unset while the controller runs
-	// a build it doesn't keep (a dev build).
+	// installs over itself when running an older build; unset while the
+	// controller runs a dev build with no release configured.
 	Build *Build `protobuf:"bytes,3,opt,name=build,proto3" json:"build,omitempty"`
 	// Latest fresh host-side view of this VM worker, when its host supervisor
 	// reports it; used by worker admission to hold work during host starvation.
@@ -25115,11 +25126,12 @@ const file_hotbed_v1_hotbed_proto_rawDesc = "" +
 	"\n" +
 	"cluster_id\x18\x01 \x01(\tR\tclusterId\x12%\n" +
 	"\x05nodes\x18\x02 \x03(\v2\x0f.hotbed.v1.NodeR\x05nodes\x12-\n" +
-	"\x12controller_version\x18\x03 \x01(\tR\x11controllerVersion\"K\n" +
+	"\x12controller_version\x18\x03 \x01(\tR\x11controllerVersion\"n\n" +
 	"\x05Build\x12\x16\n" +
 	"\x06number\x18\x01 \x01(\x03R\x06number\x12\x16\n" +
 	"\x06sha256\x18\x02 \x01(\tR\x06sha256\x12\x12\n" +
-	"\x04path\x18\x03 \x01(\tR\x04path\"5\n" +
+	"\x04path\x18\x03 \x01(\tR\x04path\x12!\n" +
+	"\fdownload_url\x18\x04 \x01(\tR\vdownloadUrl\"5\n" +
 	"\x0fGetBuildRequest\x12\x0e\n" +
 	"\x02os\x18\x01 \x01(\tR\x02os\x12\x12\n" +
 	"\x04arch\x18\x02 \x01(\tR\x04arch\"\x1a\n" +

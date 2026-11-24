@@ -681,6 +681,47 @@ func TestResolveLinuxBinary(t *testing.T) {
 		}
 	})
 
+	t.Run("prefers direct download_url over controller /builds/ proxy", func(t *testing.T) {
+		var githubHits, ctrlHits atomic.Int32
+		ghSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			githubHits.Add(1)
+			_, _ = w.Write(arm64Payload)
+		}))
+		defer ghSrv.Close()
+
+		srv := connect.NewServer()
+		hotbedv1connect.RegisterClusterServiceHandler(srv, &fakeBuildCluster{
+			getBuild: func(_ context.Context, _ *pb.GetBuildRequest) (*pb.Build, error) {
+				return &pb.Build{
+					Number:      43,
+					Sha256:      arm64Sum,
+					Path:        "/builds/43/hotbed-linux-arm64",
+					DownloadUrl: ghSrv.URL + "/releases/download/build-43/hotbed-linux-arm64",
+				}, nil
+			},
+		})
+		mux := http.NewServeMux()
+		connecthttp.Mount(mux, srv)
+		mux.HandleFunc("GET /builds/43/hotbed-linux-arm64", func(w http.ResponseWriter, _ *http.Request) {
+			ctrlHits.Add(1)
+			http.Error(w, "should not hit controller proxy", http.StatusInternalServerError)
+		})
+		ts := httptest.NewServer(mux)
+		defer ts.Close()
+
+		got, err := resolveLinuxBinary(t.Context(), "", ts.Listener.Addr().String(), t.TempDir(), "arm64", ts.Client(), nil)
+		if err != nil {
+			t.Fatalf("resolveLinuxBinary with download_url: %v", err)
+		}
+		gotBytes, err := os.ReadFile(got)
+		if err != nil || !bytes.Equal(gotBytes, arm64Payload) {
+			t.Fatalf("downloaded binary mismatch (err=%v)", err)
+		}
+		if githubHits.Load() != 1 || ctrlHits.Load() != 0 {
+			t.Fatalf("hits: github=%d ctrl=%d, want 1/0", githubHits.Load(), ctrlHits.Load())
+		}
+	})
+
 	t.Run("explicit --binary override validates ELF without calling controller", func(t *testing.T) {
 		dir := t.TempDir()
 		good := filepath.Join(dir, "hotbed-linux-arm64")

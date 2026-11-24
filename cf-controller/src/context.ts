@@ -218,7 +218,7 @@ export class ControllerContext {
 		if (want === 0) return true;
 		const v = row.hb?.resources?.version ?? "";
 		const m = /^build\s+(\d+)\b/.exec(v.trim());
-		return (m ? Number(m[1]) : 0) === want;
+		return (m ? Number(m[1]) : 0) >= want;
 	}
 
 	views(): NodeView[] {

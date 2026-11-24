@@ -204,13 +204,17 @@ func (h *cfHarness) doJSON(ctx context.Context, doName, method, path string, req
 
 // testServerConfig replaces controller.ServerConfig in clusterOpts.server.
 type testServerConfig struct {
-	WakeWait        time.Duration
-	AllowLocalRepos *bool
-	Builds          *update.Cache
-	Build           int64
-	UpdatesRepo     string
-	UpdatesAPIBase  string
-	UpdatesToken    string
+	WakeWait             time.Duration
+	AllowLocalRepos      *bool
+	Builds               *update.Cache
+	Build                int64
+	UpdatesRepo          string
+	UpdatesAPIBase       string
+	UpdatesDownloadBase  string
+	UpdatesToken         string
+	ControllerBuild      int64
+	ControllerCommit     string
+	ControllerSha256Sums string
 }
 
 type mockBuildPayload struct {

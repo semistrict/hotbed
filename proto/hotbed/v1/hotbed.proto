@@ -591,14 +591,18 @@ message ListNodesResponse {
   string controller_version = 3;
 }
 
-// A build of hotbed the controller keeps for one platform, which nodes
-// install over themselves.
+// A build of hotbed the controller targets for one platform, which nodes
+// install over themselves when running an older build.
 message Build {
   int64 number = 1;
   // Its binary's sha256, hex.
   string sha256 = 2;
-  // Where the controller serves its binary: /builds/N/hotbed-OS-ARCH.
+  // Where the controller serves its binary: /builds/N/hotbed-OS-ARCH
+  // (used when download_url is unset).
   string path = 3;
+  // Direct GitHub release asset URL for this platform's binary
+  // (e.g. https://github.com/semistrict/hotbed/releases/download/build-N/hotbed-OS-ARCH).
+  string download_url = 4;
 }
 
 message GetBuildRequest {
@@ -1965,8 +1969,8 @@ message HeartbeatResponse {
   // Workspaces to release: their sessions ended.
   repeated string release = 2;
   // The controller's build, for the worker's platform, which the worker
-  // installs over itself unless it runs it; unset while the controller runs
-  // a build it doesn't keep (a dev build).
+  // installs over itself when running an older build; unset while the
+  // controller runs a dev build with no release configured.
   Build build = 3;
   // Latest fresh host-side view of this VM worker, when its host supervisor
   // reports it; used by worker admission to hold work during host starvation.

@@ -199,8 +199,7 @@ export class ControllerDO extends DurableObject<ControllerEnv> {
 		const hasActiveWork =
 			this.store.listSchedules("").some((s) => !s.paused) ||
 			this.store.liveSessionsByProject().size > 0;
-		const hasIdleWork =
-			this.store.listNodes().length > 0 || Boolean((this.env.UPDATES_REPO ?? "").trim());
+		const hasIdleWork = this.store.listNodes().length > 0 || this.builds.needsBackgroundRefresh();
 		if (hasActiveWork) {
 			await this.ctx.storage.setAlarm(this.ctrl.now() + ACTIVE_ALARM_MS);
 		} else if (hasIdleWork) {
@@ -230,8 +229,7 @@ export class ControllerDO extends DurableObject<ControllerEnv> {
 		const hasActiveWork =
 			this.store.listSchedules("").some((s) => !s.paused) ||
 			this.store.liveSessionsByProject().size > 0;
-		const hasIdleWork =
-			this.store.listNodes().length > 0 || Boolean((this.env.UPDATES_REPO ?? "").trim());
+		const hasIdleWork = this.store.listNodes().length > 0 || this.builds.needsBackgroundRefresh();
 		if (hasActiveWork) {
 			await this.ctx.storage.setAlarm(this.ctrl.now() + ACTIVE_ALARM_MS);
 		} else if (hasIdleWork) {
@@ -267,6 +265,7 @@ export class ControllerDO extends DurableObject<ControllerEnv> {
 				clusterId: this.ctrl.clusterId,
 				version: this.builds.versionString(),
 				build: this.builds.currentBuildNumber(),
+				commit: this.builds.controllerCommit(),
 				connectedWorkers: this.tunnel.connectedNodeIds().size,
 			});
 		}
@@ -481,7 +480,11 @@ export class ControllerDO extends DurableObject<ControllerEnv> {
 				allowLocalRepos?: boolean;
 				updatesRepo?: string;
 				updatesApiBase?: string;
+				updatesDownloadBase?: string;
 				updatesToken?: string;
+				controllerBuild?: number;
+				controllerCommit?: string;
+				controllerSha256Sums?: string;
 				mockBuild?: TestBuildConfig["mockBuild"];
 				clearBuild?: boolean;
 			};
@@ -496,7 +499,11 @@ export class ControllerDO extends DurableObject<ControllerEnv> {
 			if (
 				body.updatesRepo !== undefined ||
 				body.updatesApiBase !== undefined ||
+				body.updatesDownloadBase !== undefined ||
 				body.updatesToken !== undefined ||
+				body.controllerBuild !== undefined ||
+				body.controllerCommit !== undefined ||
+				body.controllerSha256Sums !== undefined ||
 				body.mockBuild !== undefined ||
 				body.clearBuild
 			) {
@@ -504,7 +511,17 @@ export class ControllerDO extends DurableObject<ControllerEnv> {
 					...this.testBuildConfig,
 					...(body.updatesRepo !== undefined ? { updatesRepo: body.updatesRepo } : {}),
 					...(body.updatesApiBase !== undefined ? { updatesApiBase: body.updatesApiBase } : {}),
+					...(body.updatesDownloadBase !== undefined
+						? { updatesDownloadBase: body.updatesDownloadBase }
+						: {}),
 					...(body.updatesToken !== undefined ? { updatesToken: body.updatesToken } : {}),
+					...(body.controllerBuild !== undefined ? { controllerBuild: body.controllerBuild } : {}),
+					...(body.controllerCommit !== undefined
+						? { controllerCommit: body.controllerCommit }
+						: {}),
+					...(body.controllerSha256Sums !== undefined
+						? { controllerSha256Sums: body.controllerSha256Sums }
+						: {}),
 					...(body.mockBuild !== undefined ? { mockBuild: body.mockBuild } : {}),
 					...(body.clearBuild ? { clearBuild: true, mockBuild: undefined } : {}),
 				};

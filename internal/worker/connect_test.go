@@ -960,3 +960,143 @@ func TestKeepWithFailureHookResetsTransportOnTimeout(t *testing.T) {
 		t.Fatalf("transport resets = %d, want 1", got)
 	}
 }
+
+func TestFollowDownloadsDirectlyFromGitHubAndNeverDowngrades(t *testing.T) {
+	payload := []byte("hotbed build 172 direct from github")
+	sumBytes := sha256.Sum256(payload)
+	sum := hex.EncodeToString(sumBytes[:])
+
+	var githubHits, controllerHits atomic.Int32
+	githubSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Authorization") != "" {
+			t.Errorf("GitHub download leaked Authorization header: %q", r.Header.Get("Authorization"))
+			http.Error(w, "unexpected auth", http.StatusBadRequest)
+			return
+		}
+		if r.Header.Get("X-Hotbed-Node-Id") != "" {
+			t.Errorf("GitHub download leaked X-Hotbed-Node-Id header")
+		}
+		githubHits.Add(1)
+		w.Write(payload)
+	}))
+	defer githubSrv.Close()
+
+	ctrlSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		controllerHits.Add(1)
+		http.Error(w, "controller proxy should not be used when download_url is set", http.StatusInternalServerError)
+	}))
+	defer ctrlSrv.Close()
+
+	// Wrap controller client with an auth header to prove DownloadClient never uses it.
+	authClient := &http.Client{
+		Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+			r = r.Clone(r.Context())
+			r.Header.Set("Authorization", "Bearer hbw_secret_worker_token")
+			r.Header.Set("X-Hotbed-Node-Id", "node-1")
+			return http.DefaultTransport.RoundTrip(r)
+		}),
+	}
+
+	t.Run("older worker downloads from download_url without controller auth and requests restart", func(t *testing.T) {
+		exe := filepath.Join(t.TempDir(), "hotbed")
+		if err := os.WriteFile(exe, []byte("old build 171"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		follow := &Follow{
+			URL:            ctrlSrv.URL,
+			Client:         authClient,
+			DownloadClient: githubSrv.Client(),
+			Exe:            exe,
+			Build:          171,
+		}
+		err := follow.To(t.Context(), &pb.Build{
+			Number:      172,
+			Sha256:      sum,
+			Path:        "/builds/172/hotbed-linux-amd64",
+			DownloadUrl: githubSrv.URL + "/semistrict/hotbed/releases/download/build-172/hotbed-linux-amd64",
+		})
+		if !errors.Is(err, update.ErrRestart) {
+			t.Fatalf("Follow.To = %v, want update.ErrRestart", err)
+		}
+		got, err := os.ReadFile(exe)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if string(got) != string(payload) {
+			t.Fatalf("exe = %q, want %q", got, payload)
+		}
+		if githubHits.Load() != 1 || controllerHits.Load() != 0 {
+			t.Fatalf("hits: github=%d controller=%d, want 1/0", githubHits.Load(), controllerHits.Load())
+		}
+	})
+
+	t.Run("newer worker never downgrades to older controller build", func(t *testing.T) {
+		exe := filepath.Join(t.TempDir(), "hotbed")
+		if err := os.WriteFile(exe, []byte("newer build 173"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		before := githubHits.Load()
+		follow := &Follow{
+			URL:            ctrlSrv.URL,
+			Client:         authClient,
+			DownloadClient: githubSrv.Client(),
+			Exe:            exe,
+			Build:          173,
+		}
+		if err := follow.To(t.Context(), &pb.Build{
+			Number:      172,
+			Sha256:      sum,
+			Path:        "/builds/172/hotbed-linux-amd64",
+			DownloadUrl: githubSrv.URL + "/semistrict/hotbed/releases/download/build-172/hotbed-linux-amd64",
+		}); err != nil {
+			t.Fatalf("Follow.To on newer worker = %v, want nil", err)
+		}
+		got, err := os.ReadFile(exe)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if string(got) != "newer build 173" {
+			t.Fatalf("newer worker exe overwritten: %q", got)
+		}
+		if githubHits.Load() != before {
+			t.Fatalf("newer worker downloaded older build")
+		}
+	})
+
+	t.Run("rejects tampered binary from download_url without touching exe or falling back to controller", func(t *testing.T) {
+		exe := filepath.Join(t.TempDir(), "hotbed")
+		if err := os.WriteFile(exe, []byte("old build 171"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		follow := &Follow{
+			URL:            ctrlSrv.URL,
+			Client:         authClient,
+			DownloadClient: githubSrv.Client(),
+			Exe:            exe,
+			Build:          171,
+		}
+		err := follow.To(t.Context(), &pb.Build{
+			Number:      172,
+			Sha256:      strings.Repeat("0", 64),
+			Path:        "/builds/172/hotbed-linux-amd64",
+			DownloadUrl: githubSrv.URL + "/semistrict/hotbed/releases/download/build-172/hotbed-linux-amd64",
+		})
+		if err != nil {
+			t.Fatalf("Follow.To on checksum mismatch = %v, want nil (logged and retried later)", err)
+		}
+		got, err := os.ReadFile(exe)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if string(got) != "old build 171" {
+			t.Fatalf("exe overwritten despite bad checksum: %q", got)
+		}
+		if controllerHits.Load() != 0 {
+			t.Fatalf("fell back to controller proxy on checksum mismatch")
+		}
+	})
+}
+
+type roundTripFunc func(*http.Request) (*http.Response, error)
+
+func (f roundTripFunc) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }

@@ -42,8 +42,8 @@ func (c *upgradeCmd) Exec(ctx context.Context, d deps) (any, error) {
 	if err != nil {
 		return nil, err
 	}
-	if b.Number == d.build {
-		return upgradeResult{Build: b.Number}, nil
+	if d.build > 0 && d.build >= b.Number {
+		return upgradeResult{Build: d.build}, nil
 	}
 	if err := install(ctx, c.Controller, d, b); err != nil {
 		return nil, err
@@ -144,16 +144,24 @@ func install(ctx context.Context, controllerAddr string, d deps, b *pb.Build) er
 	if exe, err = filepath.EvalSymlinks(exe); err != nil {
 		return err
 	}
-	base, err := api.ControllerBaseURL(controllerAddr)
+	downloadURL := b.DownloadUrl
+	attachAuth := false
+	if downloadURL == "" {
+		base, err := api.ControllerBaseURL(controllerAddr)
+		if err != nil {
+			return err
+		}
+		downloadURL = base + b.Path
+		attachAuth = true
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, downloadURL, nil)
 	if err != nil {
 		return err
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, base+b.Path, nil)
-	if err != nil {
-		return err
-	}
-	if tok := controllerAuthToken(controllerAddr); tok != "" {
-		req.Header.Set("Authorization", "Bearer "+tok)
+	if attachAuth {
+		if tok := controllerAuthToken(controllerAddr); tok != "" {
+			req.Header.Set("Authorization", "Bearer "+tok)
+		}
 	}
 	resp, err := d.stream.Do(req)
 	if err != nil {
@@ -213,9 +221,9 @@ func watchBuild(d deps, seen *atomic.Int64) deps {
 }
 
 // followController installs the controller's build at addr after a command, when this
-// client runs another CI build. Its failure is said, never the command's.
+// client runs an older CI build. Its failure is said, never the command's.
 func followController(ctx context.Context, d deps, addr string, seen int64) {
-	if d.build == 0 || seen == 0 || seen == d.build {
+	if d.build == 0 || seen == 0 || seen <= d.build {
 		return
 	}
 	cl, err := controllerClient{Controller: addr}.clients(d.http)

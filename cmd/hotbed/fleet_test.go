@@ -303,8 +303,20 @@ func (c *cluster) applyServerConfig() {
 	if c.serverCfg.UpdatesAPIBase != "" {
 		payload["updatesApiBase"] = c.serverCfg.UpdatesAPIBase
 	}
+	if c.serverCfg.UpdatesDownloadBase != "" {
+		payload["updatesDownloadBase"] = c.serverCfg.UpdatesDownloadBase
+	}
 	if c.serverCfg.UpdatesToken != "" {
 		payload["updatesToken"] = c.serverCfg.UpdatesToken
+	}
+	if c.serverCfg.ControllerBuild > 0 {
+		payload["controllerBuild"] = c.serverCfg.ControllerBuild
+	}
+	if c.serverCfg.ControllerCommit != "" {
+		payload["controllerCommit"] = c.serverCfg.ControllerCommit
+	}
+	if c.serverCfg.ControllerSha256Sums != "" {
+		payload["controllerSha256Sums"] = c.serverCfg.ControllerSha256Sums
 	}
 	if c.serverCfg.Build > 0 && c.serverCfg.Builds != nil {
 		mb, err := buildMockPayload(c.serverCfg.Builds, c.serverCfg.Build)

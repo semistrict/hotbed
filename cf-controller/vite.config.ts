@@ -1,5 +1,6 @@
 import { cloudflare } from "@cloudflare/vite-plugin";
 import { defineConfig } from "vite-plus";
+import { readBuildNumber, readBuildSha256Sums, readGitCommit } from "./scripts/build-meta.mjs";
 
 function sqlRawPlugin() {
 	return {
@@ -18,6 +19,11 @@ function sqlRawPlugin() {
 
 export default defineConfig({
 	publicDir: "../ui/dist",
+	define: {
+		__HOTBED_BUILD_NUMBER__: JSON.stringify(readBuildNumber()),
+		__HOTBED_GIT_COMMIT__: JSON.stringify(readGitCommit()),
+		__HOTBED_BUILD_SHA256SUMS__: JSON.stringify(readBuildSha256Sums()),
+	},
 	plugins: [sqlRawPlugin(), cloudflare()],
 	fmt: { useTabs: true },
 	lint: {

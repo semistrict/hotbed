@@ -73,9 +73,9 @@ func TestNodesFollowTheControllersBuild(t *testing.T) {
 
 	var ls pb.ListNodesResponse
 	c.ok(&ls, "nodes")
-	if ls.ControllerVersion != "build 7 (cloudflare-do)" || ls.Nodes[0].Resources.Version != version.String() {
-		t.Errorf("nodes says the controller runs %q, the worker %q; want %q / %q",
-			ls.ControllerVersion, ls.Nodes[0].Resources.Version, "build 7 (cloudflare-do)", version.String())
+	if version.Of(ls.ControllerVersion) != 7 || ls.Nodes[0].Resources.Version != version.String() {
+		t.Errorf("nodes says the controller runs %q, the worker %q; want build 7 / %q",
+			ls.ControllerVersion, ls.Nodes[0].Resources.Version, version.String())
 	}
 
 	// A client on a dev build is left alone.
@@ -127,7 +127,7 @@ func TestADevControllerHandsOutNoBuild(t *testing.T) {
 		t.Errorf("the worker's binary is %q", got)
 	}
 	code, e := c.fails("upgrade")
-	if code != exitError || e.Code != "NOT_FOUND" || e.Message != "the controller runs dev (cloudflare-do), a build it doesn't keep: nothing to upgrade to" {
+	if code != exitError || e.Code != "NOT_FOUND" || !strings.HasPrefix(e.Message, "the controller runs dev (") || !strings.HasSuffix(e.Message, "), a build it doesn't keep: nothing to upgrade to") {
 		t.Errorf("upgrade from a dev controller: exit %d, %+v", code, e)
 	}
 	// Without updates configured on the controller, admin upgrade says why.
@@ -330,5 +330,76 @@ func TestWorkerDefersUpgradeUntilRunningCommandFinishes(t *testing.T) {
 	}
 	if got := read(t, workerExe); got != "hotbed build 8 for linux/arm64" {
 		t.Errorf("worker binary after drain = %q, want build 8 for linux/arm64", got)
+	}
+}
+
+// When cf-controller knows its own build number, git commit, and release
+// SHA256SUMS (as stamped by CI at deploy time), it reports that exact version
+// immediately, sends workers a direct GitHub release download URL, and workers
+// fetch directly from GitHub without controller auth and restart into it.
+func TestPinnedControllerVersionUpdatesWorkerDirectlyFromGitHub(t *testing.T) {
+	g := updatetest.NewGitHub(t)
+	g.PublicDownloads = true
+	g.Publish(12)
+	const wantCommit = "0123456789abcdef0123456789abcdef01234567"
+
+	workerExe := writeExe(t, "old worker")
+	c := newClusterWith(t, clusterOpts{
+		server: func(s *testServerConfig) {
+			s.UpdatesRepo = "semistrict/hotbed"
+			s.UpdatesDownloadBase = g.URL()
+			s.ControllerBuild = 12
+			s.ControllerCommit = wantCommit
+			s.ControllerSha256Sums = string(g.Releases[12][update.SumsName])
+		},
+		follow: func(ctrl string, hc *http.Client) *worker.Follow {
+			return &worker.Follow{
+				URL:            "http://" + ctrl,
+				Client:         hc,
+				DownloadClient: g.Client().Client,
+				Exe:            workerExe,
+				Build:          11,
+			}
+		},
+	})
+
+	select {
+	case err := <-c.reported:
+		if !errors.Is(err, update.ErrRestart) {
+			t.Fatalf("the worker's reports ended with %v, want update.ErrRestart", err)
+		}
+	case <-time.After(30 * time.Second):
+		t.Fatal("the worker never installed the controller's pinned build from GitHub")
+	}
+	if got := read(t, workerExe); got != "hotbed build 12 for linux/arm64" {
+		t.Errorf("worker binary = %q, want build 12 for linux/arm64", got)
+	}
+	if got := g.DirectDownloads.Load(); got == 0 {
+		t.Errorf("DirectDownloads = %d, want >= 1 (worker should download directly from GitHub)", got)
+	}
+
+	var ls pb.ListNodesResponse
+	c.ok(&ls, "nodes")
+	if ls.ControllerVersion != "build 12 (0123456789ab)" {
+		t.Errorf("ControllerVersion = %q, want %q", ls.ControllerVersion, "build 12 (0123456789ab)")
+	}
+
+	b, err := c.asWorker.GetBuild(t.Context(), &pb.GetBuildRequest{Os: runtime.GOOS, Arch: runtime.GOARCH})
+	if err != nil {
+		t.Fatalf("GetBuild: %v", err)
+	}
+	wantURL := g.URL() + "/semistrict/hotbed/releases/download/build-12/hotbed-" + runtime.GOOS + "-" + runtime.GOARCH
+	if b.Number != 12 || b.DownloadUrl != wantURL {
+		t.Errorf("GetBuild = {Number:%d DownloadUrl:%q}, want {12 %q}", b.Number, b.DownloadUrl, wantURL)
+	}
+
+	// A CLI already on a newer build (13 > 12) is not downgraded by `hotbed upgrade`.
+	cliExe := writeExe(t, "newer client")
+	c.cli.build = 13
+	c.cli.exe = func() (string, error) { return cliExe, nil }
+	var upRes upgradeResult
+	c.ok(&upRes, "upgrade")
+	if upRes != (upgradeResult{Build: 13}) || read(t, cliExe) != "newer client" {
+		t.Errorf("upgrade on newer CLI = %+v, binary=%q; want no downgrade", upRes, read(t, cliExe))
 	}
 }

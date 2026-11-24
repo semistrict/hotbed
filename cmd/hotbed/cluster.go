@@ -141,6 +141,9 @@ func (c *serveCmd) Exec(ctx context.Context, d deps) (any, error) {
 	if err != nil {
 		return nil, err
 	}
+	if resolved, rerr := filepath.EvalSymlinks(exe); rerr == nil {
+		exe = resolved
+	}
 	res := serveResult{Role: "worker"}
 	err = worker.Run(ctx, c.Dir, *cfg.Worker, d.tailnet, d.http)
 	return afterServe(res, err, exe, os.Args, d.execve)

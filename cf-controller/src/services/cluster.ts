@@ -5,6 +5,7 @@ import {
 	ClusterService,
 	CommandDiagnosticsSchema,
 	CommandState,
+	DaemonLogLevel,
 	DeleteRepoResponseSchema,
 	GetCommandDiagnosticsResponseSchema,
 	HeartbeatResponseSchema,
@@ -364,7 +365,7 @@ export function createClusterService(
 			});
 		},
 
-		heartbeat(req, ctx) {
+		async heartbeat(req, ctx) {
 			const caller = getCaller(ctx.values);
 			checkClusterId(caller.hostname, req.clusterId);
 			const nowMs = ctrl.now();
@@ -380,6 +381,18 @@ export function createClusterService(
 			}
 			ctrl.power.changes.wake(caller.hostname);
 			const { projects, release } = ctrl.hostingFor(caller.nodeId, caller.hostname);
+			if (ctrl.builds.needsImmediateRefresh(nowMs)) {
+				try {
+					await ctrl.builds.ensureLoaded(nowMs);
+				} catch (err) {
+					ctrl.store.logDaemon(
+						DaemonLogLevel.WARN,
+						"load controller build release metadata",
+						{ err: err instanceof Error ? err.message : String(err) },
+						nowMs,
+					);
+				}
+			}
 			const build = ctrl.builds.buildFor("linux", req.resources?.arch ?? "");
 			const peerSet = new Set<string>();
 			for (const nr of ctrl.store.listNodes()) {
@@ -479,7 +492,20 @@ export function createClusterService(
 			});
 		},
 
-		getBuild(req) {
+		async getBuild(req) {
+			const nowMs = ctrl.now();
+			if (ctrl.builds.needsImmediateRefresh(nowMs)) {
+				try {
+					await ctrl.builds.ensureLoaded(nowMs);
+				} catch (err) {
+					ctrl.store.logDaemon(
+						DaemonLogLevel.WARN,
+						"load controller build release metadata",
+						{ err: err instanceof Error ? err.message : String(err) },
+						nowMs,
+					);
+				}
+			}
 			const b = ctrl.builds.buildFor(req.os, req.arch);
 			if (b) return b;
 			const cur = ctrl.builds.currentBuildNumber();
