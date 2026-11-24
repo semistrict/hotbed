@@ -128,7 +128,7 @@ func TestQueryCountsAreConstant(t *testing.T) {
 			t.Fatal(err)
 		}
 		sid := "sess-" + pname
-		if _, err := s.StartSession(ctx, sid, "laptop", pname, now.Add(time.Duration(i)*time.Second)); err != nil {
+		if _, err := s.StartSession(ctx, sid, "laptop", pname, "", now.Add(time.Duration(i)*time.Second)); err != nil {
 			t.Fatal(err)
 		}
 		if err := s.AddWorkspace(ctx, "ws-"+pname, sid, node.NodeID, "laptop", now); err != nil {
@@ -159,7 +159,7 @@ func TestQueryCountsAreConstant(t *testing.T) {
 	oldTime := now.Add(-48 * time.Hour)
 	for i := range 100 {
 		sid := "old-sess-" + string(rune('a'+i%26)) + "-" + string(rune('0'+i/26))
-		if _, err := s.StartSession(ctx, sid, "laptop", "proj-a", oldTime); err != nil {
+		if _, err := s.StartSession(ctx, sid, "laptop", "proj-a", "", oldTime); err != nil {
 			t.Fatal(err)
 		}
 		if err := s.EndSession(ctx, sid, "done", oldTime.Add(time.Minute)); err != nil {
@@ -202,7 +202,7 @@ func TestQueryCountsAreConstant(t *testing.T) {
 
 	// 1. RecentSessions: O(1) queries (3: sessions, schedule_status, workspaces).
 	counter.reset()
-	recent, err := s.RecentSessions(ctx, now.Add(-24*time.Hour), "")
+	recent, err := s.RecentSessions(ctx, now.Add(-24*time.Hour), "", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -765,7 +765,7 @@ func TestStopCommandForwardsInternalTrue(t *testing.T) {
 	if _, err := s.AddProject(ctx, "app", nil, &pb.Stamp{At: now.UnixMilli()}); err != nil {
 		t.Fatal(err)
 	}
-	sess, err := s.StartSession(ctx, "sess-int", "claude", "app", now)
+	sess, err := s.StartSession(ctx, "sess-int", "claude", "app", "", now)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -846,7 +846,7 @@ func TestPlacementOfflineFailedWorkspaceAndLockRelease(t *testing.T) {
 	if _, err := s.AddProject(ctx, "app", []string{"github.com/acme/app"}, &pb.Stamp{At: now.UnixMilli()}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.StartSession(ctx, "sess-offline-fail", "laptop", "app", now); err != nil {
+	if _, err := s.StartSession(ctx, "sess-offline-fail", "laptop", "app", "", now); err != nil {
 		t.Fatal(err)
 	}
 	if err := s.AddWorkspace(ctx, "ws-failed-off", "sess-offline-fail", nOffline.NodeID, "laptop", now); err != nil {
@@ -894,10 +894,10 @@ func TestPlacementOfflineFailedWorkspaceAndLockRelease(t *testing.T) {
 	}
 
 	// 2. Slow ReleaseWorkspace RPC must NOT hold s.placing and stall another session.
-	if _, err := s.StartSession(ctx, "sess-slow", "laptop", "app", now); err != nil {
+	if _, err := s.StartSession(ctx, "sess-slow", "laptop", "app", "", now); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.StartSession(ctx, "sess-fast", "laptop", "app", now); err != nil {
+	if _, err := s.StartSession(ctx, "sess-fast", "laptop", "app", "", now); err != nil {
 		t.Fatal(err)
 	}
 	if err := s.AddWorkspace(ctx, "ws-failed-slow", "sess-slow", nSlow.NodeID, "laptop", now); err != nil {
@@ -963,7 +963,7 @@ func TestEndSessionAndReapIdleRaces(t *testing.T) {
 
 	// 1. ListWorkspacesToRelease includes workspaces with released_at IS NULL
 	// whose session ended (e.g. created concurrently during endSession).
-	if _, err := s.StartSession(ctx, "race-sess", "laptop", "app", now); err != nil {
+	if _, err := s.StartSession(ctx, "race-sess", "laptop", "app", "", now); err != nil {
 		t.Fatal(err)
 	}
 	if err := s.EndSession(ctx, "race-sess", "ended", now); err != nil {
@@ -995,7 +995,7 @@ func TestEndSessionAndReapIdleRaces(t *testing.T) {
 	// 2. EndSessionIfIdle refuses to kill a session touched concurrently.
 	idleStart := now.Add(-2 * time.Hour)
 	cutoff := now.Add(-sessionIdle)
-	if _, err := s.StartSession(ctx, "touched-sess", "laptop", "app", idleStart); err != nil {
+	if _, err := s.StartSession(ctx, "touched-sess", "laptop", "app", "", idleStart); err != nil {
 		t.Fatal(err)
 	}
 	if err := s.Touch(ctx, "touched-sess", now.Add(-time.Minute)); err != nil {
@@ -1014,7 +1014,7 @@ func TestEndSessionAndReapIdleRaces(t *testing.T) {
 	}
 
 	// A session still idle before cutoff IS ended by ReapIdle.
-	if _, err := s.StartSession(ctx, "truly-idle", "laptop", "app", idleStart); err != nil {
+	if _, err := s.StartSession(ctx, "truly-idle", "laptop", "app", "", idleStart); err != nil {
 		t.Fatal(err)
 	}
 	srv := NewServer(ServerConfig{Store: s, Now: func() time.Time { return now }})
@@ -1042,7 +1042,7 @@ func TestListWorkspacesFiltersReleasedAndGetSessionSetsProject(t *testing.T) {
 	if _, err := s.AddProject(ctx, "myproj", nil, &pb.Stamp{At: now.UnixMilli()}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.StartSession(ctx, "live-fox", "laptop", "myproj", now); err != nil {
+	if _, err := s.StartSession(ctx, "live-fox", "laptop", "myproj", "", now); err != nil {
 		t.Fatal(err)
 	}
 	if err := s.AddWorkspace(ctx, "ws-released", "live-fox", node.NodeID, "laptop", now); err != nil {
@@ -1412,7 +1412,7 @@ func TestSessionEndResumeAndLiveSessionRaces(t *testing.T) {
 		if _, err := s.AddProject(ctx, "app", []string{"github.com/acme/app"}, &pb.Stamp{At: now.UnixMilli()}); err != nil {
 			t.Fatal(err)
 		}
-		if _, err := s.StartSession(ctx, "race-resume", "laptop", "app", now); err != nil {
+		if _, err := s.StartSession(ctx, "race-resume", "laptop", "app", "", now); err != nil {
 			t.Fatal(err)
 		}
 		if err := s.AddWorkspace(ctx, "ws-old", "race-resume", node.NodeID, "laptop", now); err != nil {
@@ -1489,7 +1489,7 @@ func TestSessionEndResumeAndLiveSessionRaces(t *testing.T) {
 		if _, err := s.AddProject(ctx, "app", nil, &pb.Stamp{At: now.UnixMilli()}); err != nil {
 			t.Fatal(err)
 		}
-		if _, err := s.StartSession(ctx, "ended-sess", "laptop", "app", now); err != nil {
+		if _, err := s.StartSession(ctx, "ended-sess", "laptop", "app", "", now); err != nil {
 			t.Fatal(err)
 		}
 		if err := s.EndSession(ctx, "ended-sess", "done", now); err != nil {
@@ -1511,7 +1511,7 @@ func TestSessionEndResumeAndLiveSessionRaces(t *testing.T) {
 		if _, err := s.AddProject(ctx, "app", nil, &pb.Stamp{At: idleStart.UnixMilli()}); err != nil {
 			t.Fatal(err)
 		}
-		if _, err := s.StartSession(ctx, "race-live", "laptop", "app", idleStart); err != nil {
+		if _, err := s.StartSession(ctx, "race-live", "laptop", "app", "", idleStart); err != nil {
 			t.Fatal(err)
 		}
 
@@ -1599,7 +1599,7 @@ func TestRelayedStreamDelayedFirstMessageAndUnaryDeadlines(t *testing.T) {
 	if _, err := s.AddProject(ctx, "app", nil, &pb.Stamp{At: now.UnixMilli()}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.StartSession(ctx, "quiet-fox", "laptop", "app", now); err != nil {
+	if _, err := s.StartSession(ctx, "quiet-fox", "laptop", "app", "", now); err != nil {
 		t.Fatal(err)
 	}
 	if err := s.AddWorkspace(ctx, "ws1", "quiet-fox", node.NodeID, "laptop", now); err != nil {
@@ -1727,10 +1727,10 @@ func TestTickSchedulesEndsAccumulatedSessionsOnLaterError(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.StartSession(ctx, "sched-sess-a", "schedule:job-a", "app", now); err != nil {
+	if _, err := s.StartSession(ctx, "sched-sess-a", "schedule:job-a", "app", "", now); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.StartSession(ctx, "sched-sess-b", "schedule:job-b", "app", now); err != nil {
+	if _, err := s.StartSession(ctx, "sched-sess-b", "schedule:job-b", "app", "", now); err != nil {
 		t.Fatal(err)
 	}
 	if err := s.AddRun(ctx, &pb.ScheduledRun{
@@ -2216,7 +2216,7 @@ func TestCreateWorkspaceCancelOrphanReleaseAndFailedReplacement(t *testing.T) {
 		if _, err := s.AddProject(ctx, "app", []string{"github.com/acme/app"}, &pb.Stamp{At: now.UnixMilli()}); err != nil {
 			t.Fatal(err)
 		}
-		if _, err := s.StartSession(ctx, "cancel-fox", "laptop", "app", now); err != nil {
+		if _, err := s.StartSession(ctx, "cancel-fox", "laptop", "app", "", now); err != nil {
 			t.Fatal(err)
 		}
 
@@ -2309,7 +2309,7 @@ func TestCreateWorkspaceCancelOrphanReleaseAndFailedReplacement(t *testing.T) {
 		if _, err := s.AddProject(ctx, "app", []string{"github.com/acme/app"}, &pb.Stamp{At: now.UnixMilli()}); err != nil {
 			t.Fatal(err)
 		}
-		if _, err := s.StartSession(ctx, "cancel-notfound", "laptop", "app", now); err != nil {
+		if _, err := s.StartSession(ctx, "cancel-notfound", "laptop", "app", "", now); err != nil {
 			t.Fatal(err)
 		}
 
@@ -2390,7 +2390,7 @@ func TestCreateWorkspaceCancelOrphanReleaseAndFailedReplacement(t *testing.T) {
 				if _, err := s.AddProject(ctx, "app", []string{"github.com/acme/app"}, &pb.Stamp{At: now.UnixMilli()}); err != nil {
 					t.Fatal(err)
 				}
-				if _, err := s.StartSession(ctx, "fail-fox", "laptop", "app", now); err != nil {
+				if _, err := s.StartSession(ctx, "fail-fox", "laptop", "app", "", now); err != nil {
 					t.Fatal(err)
 				}
 				cp := &pb.Checkpoint{Seq: 1}
@@ -2887,10 +2887,10 @@ func TestCreateWorkspaceWaitsForUpgradingNode(t *testing.T) {
 		if err := s.Beat(ctx, nArm.NodeID, &pb.HeartbeatRequest{Resources: &pb.Resources{Arch: "arm64", Cpus: 4, MemoryBytes: 16 << 30, Version: "build 42 (bbbbbbbbbbbb)"}}, now); err != nil {
 			t.Fatal(err)
 		}
-		if _, err := s.StartSession(ctx, "sess-amd", "laptop", "app", now); err != nil {
+		if _, err := s.StartSession(ctx, "sess-amd", "laptop", "app", "", now); err != nil {
 			t.Fatal(err)
 		}
-		if _, err := s.StartSession(ctx, "sess-arm", "laptop", "app", now); err != nil {
+		if _, err := s.StartSession(ctx, "sess-arm", "laptop", "app", "", now); err != nil {
 			t.Fatal(err)
 		}
 
@@ -2963,7 +2963,7 @@ func TestCreateWorkspaceWaitsForUpgradingNode(t *testing.T) {
 		if err := s.Beat(ctx, n1.NodeID, &pb.HeartbeatRequest{Resources: &pb.Resources{Arch: "amd64", Cpus: 4, MemoryBytes: 16 << 30, Version: "build 41 (aaaaaaaaaaaa)"}}, now); err != nil {
 			t.Fatal(err)
 		}
-		if _, err := s.StartSession(ctx, "sess-timeout", "laptop", "app", now); err != nil {
+		if _, err := s.StartSession(ctx, "sess-timeout", "laptop", "app", "", now); err != nil {
 			t.Fatal(err)
 		}
 
@@ -3001,7 +3001,7 @@ func TestCreateWorkspaceWaitsForUpgradingNode(t *testing.T) {
 		if err := s.Beat(ctx, nNew.NodeID, &pb.HeartbeatRequest{Resources: &pb.Resources{Arch: "amd64", Cpus: 4, MemoryBytes: 16 << 30, Version: "build 42 (bbbbbbbbbbbb)"}}, now); err != nil {
 			t.Fatal(err)
 		}
-		if _, err := s.StartSession(ctx, "sess-new", "laptop", "app", now); err != nil {
+		if _, err := s.StartSession(ctx, "sess-new", "laptop", "app", "", now); err != nil {
 			t.Fatal(err)
 		}
 

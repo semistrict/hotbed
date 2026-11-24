@@ -33,10 +33,11 @@ type formatSpec struct {
 
 var defaultFormatSpecs = map[string]formatSpec{
 	"version":         {versionResult{}, `{{.version}}{{if .commit}} ({{short 12 .commit}}){{end}}  {{.os}}/{{.arch}}`},
-	"session start":   {&pb.Session{}, "{{.id}}{{if .project}}  project={{.project}}{{end}}{{if .reminder}}\n{{.reminder}}{{end}}"},
+	"session start":   {&pb.Session{}, "{{.id}}{{if .project}}  project={{.project}}{{end}}{{if .t3codeThreadId}}  t3={{.t3codeThreadId}}{{end}}{{if .reminder}}\n{{.reminder}}{{end}}"},
 	"session current": {sessionBinding{}, `{{.id}}  ({{.source}})`},
 	"session end":     {&pb.Session{}, `{{.id}}  ended`},
-	"session ls":      {&pb.ListSessionsResponse{}, "{{range .sessions}}{{pad 20 .id}}  {{pad 12 .project}}  {{if .endedAt}}ended{{else}}live{{end}}\n{{end}}"},
+	"session ls":      {&pb.ListSessionsResponse{}, "{{range .sessions}}{{pad 20 .id}}  {{pad 12 .project}}  {{if .endedAt}}ended{{else}}live {{end}}{{if .t3codeThreadId}}  t3={{.t3codeThreadId}}{{end}}\n{{end}}"},
+	"session search":  {&pb.SearchSessionsResponse{}, "{{range .sessions}}{{pad 20 .id}}  {{pad 12 .project}}  {{if .endedAt}}ended{{else}}live {{end}}{{if .t3codeThreadId}}  t3={{.t3codeThreadId}}{{end}}\n{{end}}{{if .more}}(+{{.more}} older matching, not shown: --limit 0 for every one)\n{{end}}"},
 	"stop":            {&pb.Command{}, `{{.id}}  {{state .state}}{{if .reason}}  {{.reason}}{{end}}`},
 	"pause":           {&pb.Command{}, `{{.id}}  {{state .state}}{{if .reason}}  {{.reason}}{{end}}`},
 	"resume":          {&pb.Command{}, `{{.id}}  {{state .state}}{{if .reason}}  {{.reason}}{{end}}`},

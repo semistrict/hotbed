@@ -245,6 +245,13 @@ service SessionService {
   rpc ListSessions(ListSessionsRequest) returns (ListSessionsResponse) {
     option idempotency_level = IDEMPOTENT;
   }
+  // SearchSessions searches persistently for sessions associated with a T3 Code
+  // thread ID across every project (or one named), including ended sessions of
+  // any age unless live_only is set; live sessions come first, then the most
+  // recently active.
+  rpc SearchSessions(SearchSessionsRequest) returns (SearchSessionsResponse) {
+    option idempotency_level = IDEMPOTENT;
+  }
   // EndSession stops the session's commands and releases its workspaces.
   // A session nothing touches for an hour ends the same way; WatchSession
   // keeps it alive.
@@ -1380,6 +1387,9 @@ message Session {
   // Reminder for the agent starting the session (e.g. to configure setup
   // steps on the project); only set by StartSession.
   optional string reminder = 13;
+  // The T3 Code thread this session is associated with (from T3CODE_THREAD_ID
+  // when started inside T3 Code); empty otherwise.
+  string t3code_thread_id = 14;
 }
 
 message SessionWorkspace {
@@ -1407,6 +1417,9 @@ message StartSessionRequest {
   // than refuse: a live one as it is, an ended one live again (with no
   // workspaces, its commands long stopped). It keeps its project.
   bool resume = 5;
+  // The T3 Code thread this session is associated with (from T3CODE_THREAD_ID
+  // when started inside T3 Code); empty otherwise.
+  string t3code_thread_id = 6;
 }
 
 message ListSessionsRequest {
@@ -1424,10 +1437,30 @@ message ListSessionsRequest {
   // when neither scope nor session_id says whose, the project that holds it,
   // if just one does.
   string remote = 5;
+  // Only sessions associated with this T3 Code thread ID; empty for any.
+  string t3code_thread_id = 6;
 }
 
 message ListSessionsResponse {
   repeated Session sessions = 1;
+}
+
+message SearchSessionsRequest {
+  // The T3 Code thread ID to search for (required).
+  string t3code_thread_id = 1;
+  // Only sessions in this project; empty searches across every project.
+  string project = 2;
+  // Return only live (not yet ended) sessions.
+  bool live_only = 3;
+  // At most this many matching sessions (default 50; 0 for every one).
+  optional int32 limit = 4;
+}
+
+message SearchSessionsResponse {
+  // Matching sessions, live ones first, then most recently active first.
+  repeated Session sessions = 1;
+  // How many older matching sessions the limit left out.
+  int32 more = 2;
 }
 
 // ---- projects ---------------------------------------------------------------
@@ -1552,6 +1585,9 @@ message NodeBase {
 
 message GetSessionRequest {
   string id = 1;
+  // Look up the most relevant session for this T3 Code thread ID (live first,
+  // then most recently active) when id is empty.
+  string t3code_thread_id = 2;
 }
 
 message GetSessionResponse {

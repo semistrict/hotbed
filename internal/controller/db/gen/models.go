@@ -197,13 +197,14 @@ type ScheduleRun struct {
 }
 
 type Session struct {
-	ID           string
-	Agent        string
-	ProjectID    int64
-	StartedAt    int64
-	LastActiveAt int64
-	EndedAt      sql.NullInt64
-	EndReason    string
+	ID             string
+	Agent          string
+	ProjectID      int64
+	StartedAt      int64
+	LastActiveAt   int64
+	EndedAt        sql.NullInt64
+	EndReason      string
+	T3codeThreadID string
 }
 
 type SessionEvent struct {

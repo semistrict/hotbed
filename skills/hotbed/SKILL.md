@@ -32,11 +32,16 @@ hotbed session end
   `hotbed project rm-repo NAME --repo REMOTE` takes one out; `hotbed project show NAME` has every
   change, with who made it.
 - **Everything happens in a session.** Session and repo are never positional arguments: override them with `-s`/`HOTBED_SESSION` and `-r`/`HOTBED_REPO`, or let hotbed default the session from `T3CODE_THREAD_ID` → current git worktree (stored in `~/.hotbed/sessions.json`) and infer the repo from the current git checkout. `hotbed session current` prints the active session.
-  `session start` picks a free adjective-noun name, or takes one you give it. In a thread or
+  `session start` picks a free adjective-noun name, or takes one you give it. When `T3CODE_THREAD_ID`
+  is set (or `--t3code-thread-id ID` is passed), the controller also persists that T3 Code thread ID
+  on the session so `hotbed session search [THREAD_ID]`, `hotbed session ls --t3code-thread-id ID`,
+  and `hotbed session status --t3code-thread-id ID` can find live and ended sessions by thread from
+  any machine. In a thread or
   worktree already bound to a live session it fails with `CONFLICT` naming that session: keep
   using it, end it first, or pass `--replace` to end it and bind the new one.
   `session start NAME --resume` takes up session NAME again: live again if it ended (with no
-  workspaces), as it is if not.
+  workspaces), as it is if not. It keeps its project (and associates `T3CODE_THREAD_ID` if none was
+  set yet).
 - **The controller places every run.** Each `hotbed run` goes to the node it picks by load: it
   keeps a session where it already has a workspace of the repo unless that node is clearly busier
   than another, and otherwise prefers a node with a warm base. Leave the choice to it, so work
@@ -406,9 +411,10 @@ hotbed schedule run nightly                 # a run now; prints its session, for
 
 | Command | Does |
 |---|---|
-| `hotbed session status` | Active session state, idle time, workspaces, and commands |
+| `hotbed session status [--t3code-thread-id ID]` | Active session state, idle time, workspaces, and commands (`--t3code-thread-id`: look up the live or latest session for a T3 Code thread on the controller) |
 | `hotbed session current` | Active session and where it came from (`flag`, `env`, `thread`, `worktree`) |
-| `hotbed session ls` | The project's live sessions (`--ended`, `--all-projects`) |
+| `hotbed session ls [--ended] [--all-projects] [--t3code-thread-id ID]` | The project's live sessions (`--ended`, `--all-projects`, `--t3code-thread-id`) |
+| `hotbed session search [THREAD_ID] [--t3code-thread-id ID] [--live] [-p PROJECT] [-n N]` | Search persistently across every project (and ended sessions of any age) for sessions associated with a T3 Code thread ID (default: `T3CODE_THREAD_ID`), live ones first then most recently active |
 | `hotbed shell [--node HOST] [--arch ARCH] [--sync] [--env K=V] [-- CMD...]` | Open an interactive shell (over SSH) in the session's workspace (reuses an existing workspace when it has one; `--sync` pushes local checkout edits first) |
 | `hotbed project ls` | Projects, their repos, live sessions, schedules, reviews and questions |
 | `hotbed project show NAME` | A project and every change to it |

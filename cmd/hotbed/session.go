@@ -20,20 +20,22 @@ import (
 )
 
 type sessionCmd struct {
-	Start   sessionStartCmd   `cmd:"" help:"Start a session in a project (-p, or the one holding this checkout's repo) and bind it to this T3 thread or git worktree in ~/.hotbed/sessions.json. It is abandoned after an hour in which no call names it and no attached run or logs -f streams from it."`
-	Status  sessionStatusCmd  `cmd:"" help:"Show the active session's state, idle time, workspaces, and commands."`
+	Start   sessionStartCmd   `cmd:"" help:"Start a session in a project (-p, or the one holding this checkout's repo), associate it with T3CODE_THREAD_ID when set, and bind it to this T3 thread or git worktree in ~/.hotbed/sessions.json. It is abandoned after an hour in which no call names it and no attached run or logs -f streams from it."`
+	Status  sessionStatusCmd  `cmd:"" help:"Show the active session's state, idle time, workspaces, and commands (or look up by --t3code-thread-id)."`
 	Current sessionCurrentCmd `cmd:"" help:"Print the active session resolved from -s, HOTBED_SESSION, T3CODE_THREAD_ID, or the current git worktree."`
 	Ls      sessionLsCmd      `cmd:"" help:"A project's live sessions (default: this session's project, or the one holding this checkout's repo), the most recently active first."`
+	Search  sessionSearchCmd  `cmd:"" help:"Search sessions by T3 Code thread ID across every project, live and ended (including sessions that ended more than a day ago), live ones first then most recently active."`
 	End     sessionEndCmd     `cmd:"" help:"End a session: stop its commands, release its workspaces, and clear its local mapping."`
 }
 
 type sessionStartCmd struct {
 	controllerClient
 	projectFlag
-	Name    string `arg:"" optional:"" help:"adjective-noun, such as brave-otter (default: a random free one)."`
-	Agent   string `env:"HOTBED_AGENT" help:"Who you are, for the cockpit (default: this machine)."`
-	Replace bool   `help:"End the live session already bound to this T3 thread or git worktree and bind the new one in its place."`
-	Resume  bool   `help:"Take up the session NAME if there is one, rather than refuse: live again if it ended (with no workspaces), as it is if not. It keeps its project."`
+	Name           string `arg:"" optional:"" help:"adjective-noun, such as brave-otter (default: a random free one)."`
+	Agent          string `env:"HOTBED_AGENT" help:"Who you are, for the cockpit (default: this machine)."`
+	T3CodeThreadID string `name:"t3code-thread-id" env:"T3CODE_THREAD_ID" help:"The T3 Code thread ID to associate with the session on the controller (default: T3CODE_THREAD_ID)."`
+	Replace        bool   `help:"End the live session already bound to this T3 thread or git worktree and bind the new one in its place."`
+	Resume         bool   `help:"Take up the session NAME if there is one, rather than refuse: live again if it ended (with no workspaces), as it is if not. It keeps its project."`
 }
 
 func (c *sessionStartCmd) Exec(ctx context.Context, d deps) (any, error) {
@@ -73,7 +75,14 @@ func (c *sessionStartCmd) Exec(ctx context.Context, d deps) (any, error) {
 			}
 		}
 	}
-	sess, err := cl.sessions.StartSession(ctx, &pb.StartSessionRequest{Id: c.Name, Agent: c.Agent, Project: c.Project, Remote: remote, Resume: c.Resume})
+	sess, err := cl.sessions.StartSession(ctx, &pb.StartSessionRequest{
+		Id:             c.Name,
+		Agent:          c.Agent,
+		Project:        c.Project,
+		Remote:         remote,
+		Resume:         c.Resume,
+		T3CodeThreadId: strings.TrimSpace(c.T3CodeThreadID),
+	})
 	if err != nil {
 		return nil, err
 	}
@@ -144,6 +153,7 @@ func sessionLive(ctx context.Context, cl clients, id string) (bool, error) {
 type sessionStatusCmd struct {
 	controllerClient
 	sessionFlag
+	T3CodeThreadID string `name:"t3code-thread-id" help:"Look up the most relevant session for this T3 Code thread ID on the controller (live first, then most recently active)."`
 }
 
 type sessionStatusResult struct {
@@ -153,6 +163,7 @@ type sessionStatusResult struct {
 	Source             string                   `json:"source,omitempty"`
 	Key                string                   `json:"key,omitempty"`
 	Agent              string                   `json:"agent,omitempty"`
+	T3CodeThreadID     string                   `json:"t3codeThreadId,omitempty"`
 	StartedAt          int64                    `json:"startedAt,omitempty"`
 	LastActiveAt       int64                    `json:"lastActiveAt,omitempty"`
 	EndedAt            *int64                   `json:"endedAt,omitempty"`
@@ -200,23 +211,38 @@ type sessionCommandStatus struct {
 }
 
 func (c *sessionStatusCmd) Exec(ctx context.Context, d deps) (any, error) {
-	binding, found, err := c.sessionFlag.lookupBinding(ctx, d)
-	if err != nil {
-		return nil, err
-	}
-	if !found {
-		return sessionStatusResult{
-			Active:     false,
-			State:      "none",
-			Workspaces: []sessionWorkspaceStatus{},
-			Commands:   []sessionCommandStatus{},
-		}, nil
+	var (
+		binding sessionBinding
+		req     *pb.GetSessionRequest
+	)
+	if tid := strings.TrimSpace(c.T3CodeThreadID); tid != "" {
+		if s := strings.TrimSpace(c.Session); s != "" && s != strings.TrimSpace(os.Getenv("HOTBED_SESSION")) {
+			return nil, api.Errorf(api.CodeInvalidArgs, "--session and --t3code-thread-id can't be used together")
+		}
+		binding = sessionBinding{Source: "t3code-thread", Key: tid}
+		req = &pb.GetSessionRequest{T3CodeThreadId: tid}
+	} else {
+		var found bool
+		var err error
+		binding, found, err = c.sessionFlag.lookupBinding(ctx, d)
+		if err != nil {
+			return nil, err
+		}
+		if !found {
+			return sessionStatusResult{
+				Active:     false,
+				State:      "none",
+				Workspaces: []sessionWorkspaceStatus{},
+				Commands:   []sessionCommandStatus{},
+			}, nil
+		}
+		req = &pb.GetSessionRequest{Id: binding.ID}
 	}
 	cl, err := c.clients(d.http)
 	if err != nil {
 		return nil, err
 	}
-	res, err := cl.sessions.GetSession(ctx, &pb.GetSessionRequest{Id: binding.ID})
+	res, err := cl.sessions.GetSession(ctx, req)
 	if err != nil {
 		if api.CodeOf(err) == api.CodeNotFound && (binding.Source == "thread" || binding.Source == "worktree") {
 			return sessionStatusResult{
@@ -239,6 +265,7 @@ func (c *sessionStatusCmd) Exec(ctx context.Context, d deps) (any, error) {
 		Source:             binding.Source,
 		Key:                binding.Key,
 		Agent:              sess.Agent,
+		T3CodeThreadID:     sess.T3CodeThreadId,
 		StartedAt:          sess.StartedAt,
 		LastActiveAt:       sess.LastActiveAt,
 		EndedAt:            sess.EndedAt,
@@ -353,8 +380,9 @@ type sessionLsCmd struct {
 	controllerClient
 	sessionFlag
 	projectFlag
-	AllProjects bool `help:"Every project's sessions."`
-	Ended       bool `help:"Those that ended in the last day too."`
+	AllProjects    bool   `help:"Every project's sessions."`
+	Ended          bool   `help:"Those that ended in the last day too."`
+	T3CodeThreadID string `name:"t3code-thread-id" help:"Only sessions associated with this T3 Code thread ID."`
 }
 
 func (c *sessionLsCmd) Exec(ctx context.Context, d deps) (any, error) {
@@ -366,7 +394,12 @@ func (c *sessionLsCmd) Exec(ctx context.Context, d deps) (any, error) {
 	if err != nil {
 		return nil, err
 	}
-	req := &pb.ListSessionsRequest{SessionId: sc.session, Remote: sc.remote, Ended: c.Ended}
+	req := &pb.ListSessionsRequest{
+		SessionId:      sc.session,
+		Remote:         sc.remote,
+		Ended:          c.Ended,
+		T3CodeThreadId: strings.TrimSpace(c.T3CodeThreadID),
+	}
 	switch {
 	case sc.all:
 		req.Scope = &pb.ListSessionsRequest_AllProjects{AllProjects: true}
@@ -374,6 +407,43 @@ func (c *sessionLsCmd) Exec(ctx context.Context, d deps) (any, error) {
 		req.Scope = &pb.ListSessionsRequest_Project{Project: sc.project}
 	}
 	return cl.sessions.ListSessions(ctx, req)
+}
+
+type sessionSearchCmd struct {
+	controllerClient
+	ThreadID       string `arg:"" optional:"" name:"thread-id" help:"The T3 Code thread ID to search for (default: --t3code-thread-id or T3CODE_THREAD_ID)."`
+	T3CodeThreadID string `name:"t3code-thread-id" help:"The T3 Code thread ID to search for (default: T3CODE_THREAD_ID)."`
+	Project        string `short:"p" help:"Only sessions in this project (default: every project)."`
+	Live           bool   `help:"Only live (not yet ended) sessions."`
+	Limit          *int32 `short:"n" help:"At most this many matching sessions (default 50; 0 for every one)."`
+}
+
+func (c *sessionSearchCmd) Exec(ctx context.Context, d deps) (any, error) {
+	tid := strings.TrimSpace(c.ThreadID)
+	flagTID := strings.TrimSpace(c.T3CodeThreadID)
+	if tid != "" && flagTID != "" {
+		return nil, api.Errorf(api.CodeInvalidArgs, "give the T3 Code thread ID either as an argument or with --t3code-thread-id, not both")
+	}
+	if tid == "" {
+		tid = flagTID
+	}
+	if tid == "" {
+		tid = strings.TrimSpace(os.Getenv("T3CODE_THREAD_ID"))
+	}
+	if tid == "" {
+		return nil, api.Errorf(api.CodeInvalidArgs, "no T3 Code thread ID specified and T3CODE_THREAD_ID is not set").
+			WithSuggestion("pass a T3 Code thread ID: hotbed session search THREAD_ID")
+	}
+	cl, err := c.clients(d.http)
+	if err != nil {
+		return nil, err
+	}
+	return cl.sessions.SearchSessions(ctx, &pb.SearchSessionsRequest{
+		T3CodeThreadId: tid,
+		Project:        strings.TrimSpace(c.Project),
+		LiveOnly:       c.Live,
+		Limit:          c.Limit,
+	})
 }
 
 type sessionEndCmd struct {

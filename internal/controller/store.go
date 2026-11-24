@@ -232,13 +232,13 @@ func (s *Store) Repos(ctx context.Context) ([]*pb.Repo, error) {
 }
 
 // StartSession records a new session in a project; its name must be free.
-func (s *Store) StartSession(ctx context.Context, id, agent, project string, now time.Time) (*pb.Session, error) {
+func (s *Store) StartSession(ctx context.Context, id, agent, project, t3codeThreadID string, now time.Time) (*pb.Session, error) {
 	pid, err := projectID(ctx, s.q, project)
 	if err != nil {
 		return nil, err
 	}
 	err = s.q.InsertSession(ctx, controllerdb.InsertSessionParams{
-		ID: id, Agent: agent, ProjectID: pid, StartedAt: now.UnixMilli(), LastActiveAt: now.UnixMilli(),
+		ID: id, Agent: agent, ProjectID: pid, T3codeThreadID: t3codeThreadID, StartedAt: now.UnixMilli(), LastActiveAt: now.UnixMilli(),
 	})
 	if err != nil {
 		if _, gerr := s.Session(ctx, id); gerr == nil {
@@ -247,6 +247,17 @@ func (s *Store) StartSession(ctx context.Context, id, agent, project string, now
 		return nil, err
 	}
 	return s.Session(ctx, id)
+}
+
+func sessionFromRow(id, agent, project, t3codeThreadID string, startedAt, lastActiveAt int64, endedAt sql.NullInt64, endReason string) *pb.Session {
+	out := &pb.Session{
+		Id: id, Agent: agent, Project: project, T3CodeThreadId: t3codeThreadID,
+		StartedAt: startedAt, LastActiveAt: lastActiveAt, EndReason: endReason,
+	}
+	if endedAt.Valid {
+		out.EndedAt = &endedAt.Int64
+	}
+	return out
 }
 
 // Session returns a session with its workspaces.
@@ -258,13 +269,7 @@ func (s *Store) Session(ctx context.Context, id string) (*pb.Session, error) {
 	if err != nil {
 		return nil, err
 	}
-	out := &pb.Session{
-		Id: row.ID, Agent: row.Agent, Project: row.Project,
-		StartedAt: row.StartedAt, LastActiveAt: row.LastActiveAt, EndReason: row.EndReason,
-	}
-	if row.EndedAt.Valid {
-		out.EndedAt = &row.EndedAt.Int64
-	}
+	out := sessionFromRow(row.ID, row.Agent, row.Project, row.T3codeThreadID, row.StartedAt, row.LastActiveAt, row.EndedAt, row.EndReason)
 	if st, err := s.q.GetSessionScheduleStatus(ctx, id); err == nil {
 		out.Schedule = st.Schedule
 		out.ScheduleRunning = st.Running != 0
@@ -321,26 +326,63 @@ func (s *Store) SessionProjectsFor(ctx context.Context, ids []string) (map[strin
 }
 
 // RecentSessions are the live sessions and those that ended since, of
-// project or, empty, of every project, the most recently active first.
-func (s *Store) RecentSessions(ctx context.Context, since time.Time, project string) ([]*pb.Session, error) {
+// project (or empty for every project) and optionally matching t3codeThreadID,
+// the most recently active first.
+func (s *Store) RecentSessions(ctx context.Context, since time.Time, project, t3codeThreadID string) ([]*pb.Session, error) {
 	rows, err := s.q.ListRecentSessions(ctx, controllerdb.ListRecentSessionsParams{
-		Since: since.UnixMilli(), Project: project,
+		Since: since.UnixMilli(), Project: project, T3codeThreadID: t3codeThreadID,
 	})
 	if err != nil {
 		return nil, err
 	}
 	out := make([]*pb.Session, 0, len(rows))
 	for _, r := range rows {
-		sess := &pb.Session{
-			Id: r.ID, Agent: r.Agent, Project: r.Project,
-			StartedAt: r.StartedAt, LastActiveAt: r.LastActiveAt, EndReason: r.EndReason,
-		}
-		if r.EndedAt.Valid {
-			sess.EndedAt = &r.EndedAt.Int64
-		}
-		out = append(out, sess)
+		out = append(out, sessionFromRow(r.ID, r.Agent, r.Project, r.T3codeThreadID, r.StartedAt, r.LastActiveAt, r.EndedAt, r.EndReason))
 	}
 	return out, s.hydrateSessions(ctx, out)
+}
+
+// SearchSessionsByT3CodeThread returns sessions persistently associated with
+// t3codeThreadID (live ones first, then most recently active), optionally
+// filtered by project and liveOnly, up to limit (0 for all), plus the total
+// matching count.
+func (s *Store) SearchSessionsByT3CodeThread(ctx context.Context, t3codeThreadID, project string, liveOnly bool, limit int) ([]*pb.Session, int, error) {
+	lim := int64(limit)
+	if limit == 0 {
+		lim = -1 // SQLite's LIMIT for none
+	}
+	var liveFlag int64
+	if liveOnly {
+		liveFlag = 1
+	}
+	rows, err := s.q.SearchSessionsByT3CodeThread(ctx, controllerdb.SearchSessionsByT3CodeThreadParams{
+		T3codeThreadID: t3codeThreadID, LiveOnly: liveFlag, Project: project, Lim: lim,
+	})
+	if err != nil {
+		return nil, 0, err
+	}
+	total, err := s.q.CountSessionsByT3CodeThread(ctx, controllerdb.CountSessionsByT3CodeThreadParams{
+		T3codeThreadID: t3codeThreadID, LiveOnly: liveFlag, Project: project,
+	})
+	if err != nil {
+		return nil, 0, err
+	}
+	out := make([]*pb.Session, 0, len(rows))
+	for _, r := range rows {
+		out = append(out, sessionFromRow(r.ID, r.Agent, r.Project, r.T3codeThreadID, r.StartedAt, r.LastActiveAt, r.EndedAt, r.EndReason))
+	}
+	if err := s.hydrateSessions(ctx, out); err != nil {
+		return nil, 0, err
+	}
+	return out, int(total), nil
+}
+
+// SetSessionT3CodeThreadIDIfEmpty associates a T3 Code thread ID with a
+// session only if it does not already have one.
+func (s *Store) SetSessionT3CodeThreadIDIfEmpty(ctx context.Context, id, t3codeThreadID string) error {
+	return s.q.SetSessionT3CodeThreadIDIfEmpty(ctx, controllerdb.SetSessionT3CodeThreadIDIfEmptyParams{
+		T3codeThreadID: t3codeThreadID, ID: id,
+	})
 }
 
 func (s *Store) hydrateSessions(ctx context.Context, sessions []*pb.Session) error {
@@ -540,14 +582,7 @@ func (s *Store) LiveSessions(ctx context.Context) ([]*pb.Session, error) {
 	}
 	out := make([]*pb.Session, 0, len(rows))
 	for _, r := range rows {
-		sess := &pb.Session{
-			Id: r.ID, Agent: r.Agent, Project: r.Project,
-			StartedAt: r.StartedAt, LastActiveAt: r.LastActiveAt, EndReason: r.EndReason,
-		}
-		if r.EndedAt.Valid {
-			sess.EndedAt = &r.EndedAt.Int64
-		}
-		out = append(out, sess)
+		out = append(out, sessionFromRow(r.ID, r.Agent, r.Project, r.T3codeThreadID, r.StartedAt, r.LastActiveAt, r.EndedAt, r.EndReason))
 	}
 	return out, s.hydrateSessions(ctx, out)
 }

@@ -11,6 +11,29 @@ import (
 	"strings"
 )
 
+const countSessionsByT3CodeThread = `-- name: CountSessionsByT3CodeThread :one
+SELECT COUNT(*)
+FROM sessions s
+JOIN projects p ON p.id = s.project_id
+WHERE s.t3code_thread_id = CAST(?1 AS TEXT)
+  AND s.t3code_thread_id != ''
+  AND (CAST(?2 AS INTEGER) = 0 OR s.ended_at IS NULL)
+  AND p.name = COALESCE(NULLIF(CAST(?3 AS TEXT), ''), p.name)
+`
+
+type CountSessionsByT3CodeThreadParams struct {
+	T3codeThreadID string
+	LiveOnly       int64
+	Project        string
+}
+
+func (q *Queries) CountSessionsByT3CodeThread(ctx context.Context, arg CountSessionsByT3CodeThreadParams) (int64, error) {
+	row := q.db.QueryRowContext(ctx, countSessionsByT3CodeThread, arg.T3codeThreadID, arg.LiveOnly, arg.Project)
+	var count int64
+	err := row.Scan(&count)
+	return count, err
+}
+
 const endSession = `-- name: EndSession :exec
 UPDATE sessions SET ended_at = ?, end_reason = ? WHERE id = ? AND ended_at IS NULL
 `
@@ -56,20 +79,21 @@ func (q *Queries) EndSessionIfIdle(ctx context.Context, arg EndSessionIfIdlePara
 }
 
 const getSession = `-- name: GetSession :one
-SELECT s.id, s.agent, p.name AS project, s.started_at, s.last_active_at, s.ended_at, s.end_reason
+SELECT s.id, s.agent, p.name AS project, s.t3code_thread_id, s.started_at, s.last_active_at, s.ended_at, s.end_reason
 FROM sessions s
 JOIN projects p ON p.id = s.project_id
 WHERE s.id = ?
 `
 
 type GetSessionRow struct {
-	ID           string
-	Agent        string
-	Project      string
-	StartedAt    int64
-	LastActiveAt int64
-	EndedAt      sql.NullInt64
-	EndReason    string
+	ID             string
+	Agent          string
+	Project        string
+	T3codeThreadID string
+	StartedAt      int64
+	LastActiveAt   int64
+	EndedAt        sql.NullInt64
+	EndReason      string
 }
 
 func (q *Queries) GetSession(ctx context.Context, id string) (GetSessionRow, error) {
@@ -79,6 +103,7 @@ func (q *Queries) GetSession(ctx context.Context, id string) (GetSessionRow, err
 		&i.ID,
 		&i.Agent,
 		&i.Project,
+		&i.T3codeThreadID,
 		&i.StartedAt,
 		&i.LastActiveAt,
 		&i.EndedAt,
@@ -99,16 +124,17 @@ func (q *Queries) GetSessionProjectID(ctx context.Context, id string) (int64, er
 }
 
 const insertSession = `-- name: InsertSession :exec
-INSERT INTO sessions (id, agent, project_id, started_at, last_active_at)
-VALUES (?, ?, ?, ?, ?)
+INSERT INTO sessions (id, agent, project_id, t3code_thread_id, started_at, last_active_at)
+VALUES (?, ?, ?, ?, ?, ?)
 `
 
 type InsertSessionParams struct {
-	ID           string
-	Agent        string
-	ProjectID    int64
-	StartedAt    int64
-	LastActiveAt int64
+	ID             string
+	Agent          string
+	ProjectID      int64
+	T3codeThreadID string
+	StartedAt      int64
+	LastActiveAt   int64
 }
 
 func (q *Queries) InsertSession(ctx context.Context, arg InsertSessionParams) error {
@@ -116,6 +142,7 @@ func (q *Queries) InsertSession(ctx context.Context, arg InsertSessionParams) er
 		arg.ID,
 		arg.Agent,
 		arg.ProjectID,
+		arg.T3codeThreadID,
 		arg.StartedAt,
 		arg.LastActiveAt,
 	)
@@ -179,7 +206,7 @@ func (q *Queries) ListIdleSessionIDs(ctx context.Context, lastActiveAt int64) ([
 }
 
 const listLiveSessions = `-- name: ListLiveSessions :many
-SELECT s.id, s.agent, p.name AS project, s.started_at, s.last_active_at, s.ended_at, s.end_reason
+SELECT s.id, s.agent, p.name AS project, s.t3code_thread_id, s.started_at, s.last_active_at, s.ended_at, s.end_reason
 FROM sessions s
 JOIN projects p ON p.id = s.project_id
 WHERE s.ended_at IS NULL
@@ -187,13 +214,14 @@ ORDER BY s.started_at
 `
 
 type ListLiveSessionsRow struct {
-	ID           string
-	Agent        string
-	Project      string
-	StartedAt    int64
-	LastActiveAt int64
-	EndedAt      sql.NullInt64
-	EndReason    string
+	ID             string
+	Agent          string
+	Project        string
+	T3codeThreadID string
+	StartedAt      int64
+	LastActiveAt   int64
+	EndedAt        sql.NullInt64
+	EndReason      string
 }
 
 func (q *Queries) ListLiveSessions(ctx context.Context) ([]ListLiveSessionsRow, error) {
@@ -209,6 +237,7 @@ func (q *Queries) ListLiveSessions(ctx context.Context) ([]ListLiveSessionsRow, 
 			&i.ID,
 			&i.Agent,
 			&i.Project,
+			&i.T3codeThreadID,
 			&i.StartedAt,
 			&i.LastActiveAt,
 			&i.EndedAt,
@@ -228,32 +257,35 @@ func (q *Queries) ListLiveSessions(ctx context.Context) ([]ListLiveSessionsRow, 
 }
 
 const listRecentSessions = `-- name: ListRecentSessions :many
-SELECT s.id, s.agent, p.name AS project, s.started_at, s.last_active_at, s.ended_at, s.end_reason
+SELECT s.id, s.agent, p.name AS project, s.t3code_thread_id, s.started_at, s.last_active_at, s.ended_at, s.end_reason
 FROM sessions s
 JOIN projects p ON p.id = s.project_id
 WHERE (s.ended_at IS NULL OR s.ended_at >= CAST(?1 AS INTEGER))
   AND p.name = COALESCE(NULLIF(CAST(?2 AS TEXT), ''), p.name)
+  AND s.t3code_thread_id = COALESCE(NULLIF(CAST(?3 AS TEXT), ''), s.t3code_thread_id)
 ORDER BY s.last_active_at DESC
 LIMIT 500
 `
 
 type ListRecentSessionsParams struct {
-	Since   int64
-	Project string
+	Since          int64
+	Project        string
+	T3codeThreadID string
 }
 
 type ListRecentSessionsRow struct {
-	ID           string
-	Agent        string
-	Project      string
-	StartedAt    int64
-	LastActiveAt int64
-	EndedAt      sql.NullInt64
-	EndReason    string
+	ID             string
+	Agent          string
+	Project        string
+	T3codeThreadID string
+	StartedAt      int64
+	LastActiveAt   int64
+	EndedAt        sql.NullInt64
+	EndReason      string
 }
 
 func (q *Queries) ListRecentSessions(ctx context.Context, arg ListRecentSessionsParams) ([]ListRecentSessionsRow, error) {
-	rows, err := q.db.QueryContext(ctx, listRecentSessions, arg.Since, arg.Project)
+	rows, err := q.db.QueryContext(ctx, listRecentSessions, arg.Since, arg.Project, arg.T3codeThreadID)
 	if err != nil {
 		return nil, err
 	}
@@ -265,6 +297,7 @@ func (q *Queries) ListRecentSessions(ctx context.Context, arg ListRecentSessions
 			&i.ID,
 			&i.Agent,
 			&i.Project,
+			&i.T3codeThreadID,
 			&i.StartedAt,
 			&i.LastActiveAt,
 			&i.EndedAt,
@@ -421,6 +454,87 @@ type ResumeSessionParams struct {
 
 func (q *Queries) ResumeSession(ctx context.Context, arg ResumeSessionParams) error {
 	_, err := q.db.ExecContext(ctx, resumeSession, arg.LastActiveAt, arg.ID)
+	return err
+}
+
+const searchSessionsByT3CodeThread = `-- name: SearchSessionsByT3CodeThread :many
+SELECT s.id, s.agent, p.name AS project, s.t3code_thread_id, s.started_at, s.last_active_at, s.ended_at, s.end_reason
+FROM sessions s
+JOIN projects p ON p.id = s.project_id
+WHERE s.t3code_thread_id = CAST(?1 AS TEXT)
+  AND s.t3code_thread_id != ''
+  AND (CAST(?2 AS INTEGER) = 0 OR s.ended_at IS NULL)
+  AND p.name = COALESCE(NULLIF(CAST(?3 AS TEXT), ''), p.name)
+ORDER BY (s.ended_at IS NOT NULL) ASC, s.last_active_at DESC, s.started_at DESC, s.id ASC
+LIMIT CAST(?4 AS INTEGER)
+`
+
+type SearchSessionsByT3CodeThreadParams struct {
+	T3codeThreadID string
+	LiveOnly       int64
+	Project        string
+	Lim            int64
+}
+
+type SearchSessionsByT3CodeThreadRow struct {
+	ID             string
+	Agent          string
+	Project        string
+	T3codeThreadID string
+	StartedAt      int64
+	LastActiveAt   int64
+	EndedAt        sql.NullInt64
+	EndReason      string
+}
+
+func (q *Queries) SearchSessionsByT3CodeThread(ctx context.Context, arg SearchSessionsByT3CodeThreadParams) ([]SearchSessionsByT3CodeThreadRow, error) {
+	rows, err := q.db.QueryContext(ctx, searchSessionsByT3CodeThread,
+		arg.T3codeThreadID,
+		arg.LiveOnly,
+		arg.Project,
+		arg.Lim,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []SearchSessionsByT3CodeThreadRow
+	for rows.Next() {
+		var i SearchSessionsByT3CodeThreadRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.Agent,
+			&i.Project,
+			&i.T3codeThreadID,
+			&i.StartedAt,
+			&i.LastActiveAt,
+			&i.EndedAt,
+			&i.EndReason,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const setSessionT3CodeThreadIDIfEmpty = `-- name: SetSessionT3CodeThreadIDIfEmpty :exec
+UPDATE sessions SET t3code_thread_id = ? WHERE id = ? AND t3code_thread_id = ''
+`
+
+type SetSessionT3CodeThreadIDIfEmptyParams struct {
+	T3codeThreadID string
+	ID             string
+}
+
+func (q *Queries) SetSessionT3CodeThreadIDIfEmpty(ctx context.Context, arg SetSessionT3CodeThreadIDIfEmptyParams) error {
+	_, err := q.db.ExecContext(ctx, setSessionT3CodeThreadIDIfEmpty, arg.T3codeThreadID, arg.ID)
 	return err
 }
 

@@ -114,6 +114,9 @@ const (
 	// SessionServiceListSessionsProcedure is the procedure name of the SessionService's ListSessions
 	// RPC.
 	SessionServiceListSessionsProcedure = "/hotbed.v1.SessionService/ListSessions"
+	// SessionServiceSearchSessionsProcedure is the procedure name of the SessionService's
+	// SearchSessions RPC.
+	SessionServiceSearchSessionsProcedure = "/hotbed.v1.SessionService/SearchSessions"
 	// SessionServiceEndSessionProcedure is the procedure name of the SessionService's EndSession RPC.
 	SessionServiceEndSessionProcedure = "/hotbed.v1.SessionService/EndSession"
 	// SessionServiceWatchSessionProcedure is the procedure name of the SessionService's WatchSession
@@ -1465,6 +1468,14 @@ var (
 			IdempotencyLevel: connect.IdempotencyIdempotent,
 		}
 	})
+	sessionServiceSearchSessionsSpec = sync.OnceValue(func() connect.Spec {
+		return connect.Spec{
+			StreamType:       connect.StreamTypeUnary,
+			Schema:           v1.File_hotbed_v1_hotbed_proto.Services().ByName("SessionService").Methods().ByName("SearchSessions"),
+			Procedure:        SessionServiceSearchSessionsProcedure,
+			IdempotencyLevel: connect.IdempotencyIdempotent,
+		}
+	})
 	sessionServiceEndSessionSpec = sync.OnceValue(func() connect.Spec {
 		return connect.Spec{
 			StreamType: connect.StreamTypeUnary,
@@ -1503,6 +1514,11 @@ type SessionServiceClient interface {
 	// live, and with ended, those that ended in the last day too; the most
 	// recently active first.
 	ListSessions(context.Context, *v1.ListSessionsRequest) (*v1.ListSessionsResponse, error)
+	// SearchSessions searches persistently for sessions associated with a T3 Code
+	// thread ID across every project (or one named), including ended sessions of
+	// any age unless live_only is set; live sessions come first, then the most
+	// recently active.
+	SearchSessions(context.Context, *v1.SearchSessionsRequest) (*v1.SearchSessionsResponse, error)
 	// EndSession stops the session's commands and releases its workspaces.
 	// A session nothing touches for an hour ends the same way; WatchSession
 	// keeps it alive.
@@ -1562,6 +1578,11 @@ type SessionServiceHandler interface {
 	// live, and with ended, those that ended in the last day too; the most
 	// recently active first.
 	ListSessions(context.Context, *v1.ListSessionsRequest) (*v1.ListSessionsResponse, error)
+	// SearchSessions searches persistently for sessions associated with a T3 Code
+	// thread ID across every project (or one named), including ended sessions of
+	// any age unless live_only is set; live sessions come first, then the most
+	// recently active.
+	SearchSessions(context.Context, *v1.SearchSessionsRequest) (*v1.SearchSessionsResponse, error)
 	// EndSession stops the session's commands and releases its workspaces.
 	// A session nothing touches for an hour ends the same way; WatchSession
 	// keeps it alive.
@@ -1589,6 +1610,7 @@ func RegisterSessionServiceHandler(server *connect.Server, svc SessionServiceHan
 		connect.Method{Spec: sessionServiceStartSessionSpec(), Handler: adapter.startSession},
 		connect.Method{Spec: sessionServiceGetSessionSpec(), Handler: adapter.getSession},
 		connect.Method{Spec: sessionServiceListSessionsSpec(), Handler: adapter.listSessions},
+		connect.Method{Spec: sessionServiceSearchSessionsSpec(), Handler: adapter.searchSessions},
 		connect.Method{Spec: sessionServiceEndSessionSpec(), Handler: adapter.endSession},
 		connect.Method{Spec: sessionServiceWatchSessionSpec(), Handler: adapter.watchSession},
 		connect.Method{Spec: sessionServicePollSpec(), Handler: adapter.poll},
@@ -1626,6 +1648,10 @@ func (UnimplementedSessionServiceHandler) ListSessions(context.Context, *v1.List
 	return nil, connect.NewError(connect.CodeUnimplemented, "hotbed.v1.SessionService.ListSessions is not implemented")
 }
 
+func (UnimplementedSessionServiceHandler) SearchSessions(context.Context, *v1.SearchSessionsRequest) (*v1.SearchSessionsResponse, error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, "hotbed.v1.SessionService.SearchSessions is not implemented")
+}
+
 func (UnimplementedSessionServiceHandler) EndSession(context.Context, *v1.EndSessionRequest) (*v1.Session, error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, "hotbed.v1.SessionService.EndSession is not implemented")
 }
@@ -1661,6 +1687,14 @@ func (c *sessionServiceClient) GetSession(ctx context.Context, req *v1.GetSessio
 func (c *sessionServiceClient) ListSessions(ctx context.Context, req *v1.ListSessionsRequest) (*v1.ListSessionsResponse, error) {
 	var res v1.ListSessionsResponse
 	if err := c.client.CallUnary(ctx, sessionServiceListSessionsSpec(), req, &res); err != nil {
+		return nil, err
+	}
+	return &res, nil
+}
+
+func (c *sessionServiceClient) SearchSessions(ctx context.Context, req *v1.SearchSessionsRequest) (*v1.SearchSessionsResponse, error) {
+	var res v1.SearchSessionsResponse
+	if err := c.client.CallUnary(ctx, sessionServiceSearchSessionsSpec(), req, &res); err != nil {
 		return nil, err
 	}
 	return &res, nil
@@ -1722,6 +1756,18 @@ func (h sessionServiceHandler) listSessions(ctx context.Context, _ connect.Spec,
 		return err
 	}
 	res, err := h.svc.ListSessions(ctx, &req)
+	if err != nil {
+		return err
+	}
+	return stream.Send(res)
+}
+
+func (h sessionServiceHandler) searchSessions(ctx context.Context, _ connect.Spec, stream connect.ServerStream) error {
+	var req v1.SearchSessionsRequest
+	if err := stream.Receive(&req); err != nil {
+		return err
+	}
+	res, err := h.svc.SearchSessions(ctx, &req)
 	if err != nil {
 		return err
 	}

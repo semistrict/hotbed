@@ -101,6 +101,11 @@ export function SessionTable({ s, sessions, now }: { s: Snapshot; sessions: Sess
                       ⟳ {x.schedule}
                     </Link>
                   )}
+                  {x.t3codeThreadId && (
+                    <span className="ml-2 text-[10.5px] text-muted-foreground" title={`T3 Code thread ${x.t3codeThreadId}`}>
+                      t3:{x.t3codeThreadId}
+                    </span>
+                  )}
                 </td>
                 {!project && (
                   <td className="px-2 py-2.5">

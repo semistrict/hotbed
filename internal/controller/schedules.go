@@ -469,7 +469,7 @@ func (s *Server) runSession(ctx context.Context, name, agent, project string) (s
 		if n > 1 {
 			id = fmt.Sprintf("%s-%d", name, n)
 		}
-		_, err := s.cfg.Store.StartSession(ctx, id, agent, project, s.now())
+		_, err := s.cfg.Store.StartSession(ctx, id, agent, project, "", s.now())
 		if err == nil {
 			return id, nil
 		}

@@ -362,7 +362,7 @@ func TestInterruptedStartIsNotStarted(t *testing.T) {
 	if _, err := store.AddProject(t.Context(), "app", nil, &pb.Stamp{At: now.UnixMilli()}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := store.StartSession(t.Context(), "half-20261122-0200", "schedule:half", "app", now); err != nil {
+	if _, err := store.StartSession(t.Context(), "half-20261122-0200", "schedule:half", "app", "", now); err != nil {
 		t.Fatal(err)
 	}
 	if err := store.AddRun(t.Context(), &pb.ScheduledRun{

@@ -168,7 +168,11 @@ func (s *mcpServer) ensure(ctx context.Context) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	req := &pb.StartSessionRequest{Agent: os.Getenv("HOTBED_AGENT"), Project: s.project}
+	req := &pb.StartSessionRequest{
+		Agent:          os.Getenv("HOTBED_AGENT"),
+		Project:        s.project,
+		T3CodeThreadId: strings.TrimSpace(os.Getenv("T3CODE_THREAD_ID")),
+	}
 	if found {
 		req.Id, req.Resume = named.ID, true
 	}

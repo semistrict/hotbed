@@ -23,6 +23,22 @@ type sessions struct{ *Server }
 
 var sessionName = regexp.MustCompile(`^[a-z][a-z0-9]*(-[a-z0-9]+)+$`)
 
+const (
+	maxT3CodeThreadIDLen      = 256
+	defaultSessionSearchLimit = 50
+)
+
+func validateT3CodeThreadID(raw string) (string, error) {
+	tid := strings.TrimSpace(raw)
+	if len(tid) > maxT3CodeThreadIDLen {
+		return "", api.Errorf(api.CodeInvalidArgs, "t3code_thread_id is too long (max %d bytes)", maxT3CodeThreadIDLen)
+	}
+	if strings.ContainsAny(tid, "\r\n\x00") {
+		return "", api.Errorf(api.CodeInvalidArgs, "t3code_thread_id must not contain control characters")
+	}
+	return tid, nil
+}
+
 // StartSession starts a session called req.Id, or a free adjective-noun
 // name when it has none, in its project; with req.Resume, it takes up the
 // session of that name if there is one.
@@ -30,6 +46,10 @@ func (s *sessions) StartSession(ctx context.Context, req *pb.StartSessionRequest
 	agent := req.Agent
 	if agent == "" {
 		agent = httpx.Peer(ctx).Hostname
+	}
+	t3codeThreadID, err := validateT3CodeThreadID(req.T3CodeThreadId)
+	if err != nil {
+		return nil, err
 	}
 	if req.Id != "" && (!sessionName.MatchString(req.Id) || len(req.Id) > 48) {
 		return nil, api.Errorf(api.CodeInvalidArgs, "session name %q must look like adjective-noun: lowercase words joined by dashes", req.Id)
@@ -44,7 +64,7 @@ func (s *sessions) StartSession(ctx context.Context, req *pb.StartSessionRequest
 			if !req.Resume {
 				return nil, api.Errorf(api.CodeConflict, "a session called %s exists", req.Id).WithSuggestion("pick another name, or leave it out for a random one")
 			}
-			resumed, err := s.resume(ctx, req.Id, req.Project)
+			resumed, err := s.resume(ctx, req.Id, req.Project, t3codeThreadID)
 			if err != nil {
 				return nil, err
 			}
@@ -63,11 +83,11 @@ func (s *sessions) StartSession(ctx context.Context, req *pb.StartSessionRequest
 	}
 	var sess *pb.Session
 	if req.Id != "" {
-		sess, err = s.cfg.Store.StartSession(ctx, req.Id, agent, project.Name, s.now())
+		sess, err = s.cfg.Store.StartSession(ctx, req.Id, agent, project.Name, t3codeThreadID, s.now())
 	} else {
 		err = api.Errorf(api.CodeConflict, "could not find a free session name")
 		for range 20 {
-			candidate, serr := s.cfg.Store.StartSession(ctx, petname.Generate(2, "-"), agent, project.Name, s.now())
+			candidate, serr := s.cfg.Store.StartSession(ctx, petname.Generate(2, "-"), agent, project.Name, t3codeThreadID, s.now())
 			if serr == nil {
 				sess, err = candidate, nil
 				break
@@ -88,7 +108,7 @@ func (s *sessions) StartSession(ctx context.Context, req *pb.StartSessionRequest
 
 // resume takes up a session again: live again if it ended, active now.
 // Serializes against concurrent endSession/ReapIdle on the same session ID.
-func (s *sessions) resume(ctx context.Context, id, project string) (*pb.Session, error) {
+func (s *sessions) resume(ctx context.Context, id, project, t3codeThreadID string) (*pb.Session, error) {
 	unlock := s.lockSession(id)
 	defer unlock()
 	sess, err := s.cfg.Store.Session(ctx, id)
@@ -98,6 +118,11 @@ func (s *sessions) resume(ctx context.Context, id, project string) (*pb.Session,
 	if project != "" && project != sess.Project {
 		return nil, api.Errorf(api.CodeConflict, "session %s works on project %s, not %s", sess.Id, sess.Project, project).
 			WithSuggestion("resume it without naming a project, or start another session")
+	}
+	if t3codeThreadID != "" && sess.T3CodeThreadId == "" {
+		if err := s.cfg.Store.SetSessionT3CodeThreadIDIfEmpty(ctx, sess.Id, t3codeThreadID); err != nil {
+			return nil, err
+		}
 	}
 	if sess.EndedAt != nil {
 		if err := s.cfg.Store.ResumeSession(ctx, sess.Id, s.now()); err != nil {
@@ -109,9 +134,33 @@ func (s *sessions) resume(ctx context.Context, id, project string) (*pb.Session,
 }
 
 func (s *sessions) GetSession(ctx context.Context, req *pb.GetSessionRequest) (*pb.GetSessionResponse, error) {
-	sess, err := s.cfg.Store.Session(ctx, req.Id)
+	id := strings.TrimSpace(req.Id)
+	tid, err := validateT3CodeThreadID(req.T3CodeThreadId)
 	if err != nil {
 		return nil, err
+	}
+	if id != "" && tid != "" {
+		return nil, api.Errorf(api.CodeInvalidArgs, "give either id or t3code_thread_id, not both")
+	}
+	if id == "" && tid == "" {
+		return nil, api.Errorf(api.CodeInvalidArgs, "session id or t3code_thread_id is required")
+	}
+	var sess *pb.Session
+	if tid != "" {
+		matches, _, err := s.cfg.Store.SearchSessionsByT3CodeThread(ctx, tid, "", false, 1)
+		if err != nil {
+			return nil, err
+		}
+		if len(matches) == 0 {
+			return nil, api.Errorf(api.CodeNotFound, "no session for T3 Code thread %s", tid).WithSuggestion("start one with hotbed session start")
+		}
+		sess = matches[0]
+		id = sess.Id
+	} else {
+		sess, err = s.cfg.Store.Session(ctx, id)
+		if err != nil {
+			return nil, err
+		}
 	}
 	nvs, err := s.views(ctx)
 	if err != nil {
@@ -125,12 +174,12 @@ func (s *sessions) GetSession(ctx context.Context, req *pb.GetSessionRequest) (*
 	for _, nv := range nvs {
 		nodeHosts[nv.node.Id] = nv.node.Hostname
 		for _, ws := range nv.workspaces {
-			if ws.SessionId == req.Id {
+			if ws.SessionId == id {
 				targetNodes[nv.node.Id] = true
 			}
 		}
 		for _, c := range nv.commands {
-			if c.SessionId == req.Id {
+			if c.SessionId == id {
 				targetNodes[nv.node.Id] = true
 			}
 		}
@@ -138,7 +187,7 @@ func (s *sessions) GetSession(ctx context.Context, req *pb.GetSessionRequest) (*
 	// Query reachable nodes for live commands and workspaces without touching
 	// the session's idle timer so ps / session status agree with each node
 	// right after a stop or release, falling back to views for offline nodes.
-	liveCmds := s.liveNodeCommands(ctx, nvs, targetNodes, req.Id)
+	liveCmds := s.liveNodeCommands(ctx, nvs, targetNodes, id)
 	liveWSByNode := s.liveNodeWorkspaces(ctx, nvs, targetNodes)
 
 	// Reconcile unreleased workspace rows against authoritative live answers.
@@ -174,7 +223,7 @@ func (s *sessions) GetSession(ctx context.Context, req *pb.GetSessionRequest) (*
 		}
 	}
 	if reconciled {
-		if fresh, ferr := s.cfg.Store.Session(ctx, req.Id); ferr == nil {
+		if fresh, ferr := s.cfg.Store.Session(ctx, id); ferr == nil {
 			sess = fresh
 		}
 	}
@@ -193,7 +242,7 @@ func (s *sessions) GetSession(ctx context.Context, req *pb.GetSessionRequest) (*
 			workspaces = lws
 		}
 		for _, ws := range workspaces {
-			if ws.State != pb.WorkspaceState_WORKSPACE_STATE_RELEASED && !releasedWS[ws.Id] && ws.SessionId == req.Id {
+			if ws.State != pb.WorkspaceState_WORKSPACE_STATE_RELEASED && !releasedWS[ws.Id] && ws.SessionId == id {
 				if ws.Project == "" {
 					ws.Project = sess.Project
 				}
@@ -205,7 +254,7 @@ func (s *sessions) GetSession(ctx context.Context, req *pb.GetSessionRequest) (*
 			cmds = lc
 		}
 		for _, c := range cmds {
-			if c.Kind != "freshen" && c.SessionId == req.Id {
+			if c.Kind != "freshen" && c.SessionId == id {
 				cmdList = append(cmdList, c)
 			}
 		}
@@ -224,16 +273,53 @@ func (s *sessions) GetSession(ctx context.Context, req *pb.GetSessionRequest) (*
 }
 
 func (s *sessions) ListSessions(ctx context.Context, req *pb.ListSessionsRequest) (*pb.ListSessionsResponse, error) {
-	project, err := s.listedProject(ctx, req)
+	tid, err := validateT3CodeThreadID(req.T3CodeThreadId)
 	if err != nil {
 		return nil, err
+	}
+	var project string
+	if tid == "" || req.GetAllProjects() || req.GetProject() != "" || req.GetSessionId() != "" || req.GetRemote() != "" {
+		project, err = s.listedProject(ctx, req)
+		if err != nil {
+			return nil, err
+		}
 	}
 	since := s.now().Add(time.Millisecond) // only live ones
 	if req.Ended {
 		since = s.now().Add(-24 * time.Hour)
 	}
-	sessions, err := s.cfg.Store.RecentSessions(ctx, since, project)
+	sessions, err := s.cfg.Store.RecentSessions(ctx, since, project, tid)
 	return &pb.ListSessionsResponse{Sessions: sessions}, err
+}
+
+func (s *sessions) SearchSessions(ctx context.Context, req *pb.SearchSessionsRequest) (*pb.SearchSessionsResponse, error) {
+	tid, err := validateT3CodeThreadID(req.T3CodeThreadId)
+	if err != nil {
+		return nil, err
+	}
+	if tid == "" {
+		return nil, api.Errorf(api.CodeInvalidArgs, "t3code_thread_id is required").
+			WithSuggestion("pass a T3 Code thread ID: hotbed session search THREAD_ID")
+	}
+	project := strings.TrimSpace(req.Project)
+	if project != "" {
+		if _, err := s.cfg.Store.Project(ctx, project); err != nil {
+			return nil, err
+		}
+	}
+	limit := defaultSessionSearchLimit
+	if req.Limit != nil {
+		if *req.Limit < 0 {
+			return nil, api.Errorf(api.CodeInvalidArgs, "limit must be non-negative")
+		}
+		limit = int(*req.Limit)
+	}
+	matches, total, err := s.cfg.Store.SearchSessionsByT3CodeThread(ctx, tid, project, req.LiveOnly, limit)
+	if err != nil {
+		return nil, err
+	}
+	more := int32(max(0, total-len(matches)))
+	return &pb.SearchSessionsResponse{Sessions: matches, More: more}, nil
 }
 
 func (s *sessions) EndSession(ctx context.Context, req *pb.EndSessionRequest) (*pb.Session, error) {
