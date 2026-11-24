@@ -14,6 +14,7 @@ import (
 	"syscall"
 
 	cladefsdv1 "github.com/semistrict/cladefs/go/cladefsd/v1"
+	mountv1 "github.com/semistrict/cladefs/go/mount/v1"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	healthpb "google.golang.org/grpc/health/grpc_health_v1"
@@ -67,6 +68,7 @@ type CellRef struct {
 type Store struct {
 	cfg    Config
 	api    cladefsdv1.CladefsdClient
+	mount  mountv1.MountClient
 	health healthpb.HealthClient
 	closer io.Closer
 	vmSock string
@@ -96,6 +98,7 @@ func Open(ctx context.Context, cfg Config, dialOpts ...grpc.DialOption) (*Store,
 		_ = client.Close()
 		return nil, err
 	}
+	s.mount = client.Mount
 	return s, nil
 }
 
@@ -469,6 +472,115 @@ func (s *Store) DropCell(ctx context.Context, relPath string) error {
 		return mapErr("drop cell "+relPath, err)
 	}
 	return nil
+}
+
+// Base32ID formats a cladefs u64 tenant/cell ID as 13-character zero-padded
+// lowercase Crockford base32, matching cladefs's base32_id::Padded layout used
+// in CLADEFSD_MOUNT and CLADEFSD_MOUNT_STORES directory names.
+func Base32ID(id uint64) string {
+	const digits = "0123456789abcdefghjkmnpqrstvwxyz"
+	var out [13]byte
+	for i := len(out) - 1; i >= 0; i-- {
+		out[i] = digits[id%32]
+		id /= 32
+	}
+	return string(out[:])
+}
+
+// MountAttach attaches a bucket cell (or creates a new empty Fxfs cell when
+// cell == 0) in cladefsd's host FUSE mount (CLADEFSD_MOUNT).
+func (s *Store) MountAttach(ctx context.Context, tenant, cell, capBytes uint64, token *uint64) (cellID uint64, shown bool, err error) {
+	if s.mount == nil {
+		return 0, false, errors.New("cladefs: mount client not available")
+	}
+	req := &mountv1.AttachRequest{
+		Tenant:   tenant,
+		Cell:     cell,
+		Token:    token,
+		Capacity: capBytes,
+	}
+	if cell == 0 && req.Capacity == 0 {
+		req.Capacity = s.cfg.DefaultCap
+	}
+	resp, err := s.mount.Attach(ctx, req)
+	if err != nil {
+		return 0, false, mapErr("mount attach", err)
+	}
+	return resp.GetCell(), resp.GetShown(), nil
+}
+
+// MountDetach detaches an attached cell from cladefsd's host FUSE mount.
+// When force is false, cladefsd flushes dirty Fxfs state before returning.
+func (s *Store) MountDetach(ctx context.Context, tenant, cell uint64, force bool) error {
+	if s.mount == nil {
+		return errors.New("cladefs: mount client not available")
+	}
+	_, err := s.mount.Detach(ctx, &mountv1.DetachRequest{
+		Tenant: tenant,
+		Cell:   cell,
+		Force:  force,
+	})
+	if err != nil && isNotFound(err) {
+		return nil
+	}
+	return mapErr("mount detach", err)
+}
+
+// MountList returns all cells currently attached in cladefsd's host FUSE mount.
+func (s *Store) MountList(ctx context.Context) ([]*mountv1.AttachedCell, error) {
+	if s.mount == nil {
+		return nil, errors.New("cladefs: mount client not available")
+	}
+	resp, err := s.mount.List(ctx, &mountv1.ListRequest{})
+	if err != nil {
+		return nil, mapErr("mount list", err)
+	}
+	return resp.GetCells(), nil
+}
+
+// SyncCellAbs syncs a cell directory given by absolute host path (such as one
+// inside CLADEFSD_MOUNT_STORES).
+func (s *Store) SyncCellAbs(ctx context.Context, absPath string) error {
+	_, err := s.api.SyncCell(ctx, &cladefsdv1.SyncCellRequest{Path: absPath})
+	return mapErr("sync cell "+absPath, err)
+}
+
+// MakeVersionAndSyncAbs versions and syncs a cell directory given by absolute
+// host path (such as one inside CLADEFSD_MOUNT_STORES).
+func (s *Store) MakeVersionAndSyncAbs(ctx context.Context, absPath string, keepLast uint32) (uint64, error) {
+	if err := s.SyncCellAbs(ctx, absPath); err != nil {
+		return 0, err
+	}
+	resp, err := s.api.MakeVersion(ctx, &cladefsdv1.MakeVersionRequest{
+		Path:     absPath,
+		KeepLast: keepLast,
+	})
+	if err != nil {
+		return 0, mapErr("make version "+absPath, err)
+	}
+	if err := s.SyncCellAbs(ctx, absPath); err != nil {
+		return 0, err
+	}
+	return resp.GetVersion(), nil
+}
+
+// DropCellAbs drops only the local directory at absPath while keeping its
+// bucket state intact.
+func (s *Store) DropCellAbs(ctx context.Context, absPath string) error {
+	_, err := s.api.DropCell(ctx, &cladefsdv1.DropCellRequest{Path: absPath})
+	if err != nil && isNotFound(err) {
+		return nil
+	}
+	return mapErr("drop cell "+absPath, err)
+}
+
+// DeleteCellAbs deletes a cell both locally and in the bucket at absPath.
+func (s *Store) DeleteCellAbs(ctx context.Context, absPath string) error {
+	_, err := s.api.DeleteCell(ctx, &cladefsdv1.DeleteCellRequest{Path: absPath})
+	if err != nil && isNotFound(err) {
+		return nil
+	}
+	return mapErr("delete cell "+absPath, err)
 }
 
 // ShrinkMemory asks cladefsd to evict clean extent cache pages down to

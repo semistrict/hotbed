@@ -65,6 +65,9 @@ func (e *Engine) CreateWorkspace(ctx context.Context, req *pb.CreateWorkspaceReq
 	if wsRuntime == "vm" && e.cfg.VM != nil {
 		return e.createVMWorkspace(ctx, req)
 	}
+	if wsRuntime == "cladefs" && e.cfg.CladefsFUSE != nil {
+		return e.createCladefsFUSEWorkspace(ctx, req)
+	}
 	lock := e.projectLock(p.Name)
 	lock.Lock()
 	base, note, err := e.baseFor(ctx, p)
@@ -493,6 +496,7 @@ func (e *Engine) ReleaseWorkspace(ctx context.Context, id string) (retErr error)
 		return api.Errorf(api.CodeNotFound, "no workspace %s on this node", id)
 	}
 	vol := w.rec.Volume
+	wsRT := w.ws().Runtime
 	e.mu.Unlock()
 
 	if e.usesRuntime(id) {
@@ -505,6 +509,11 @@ func (e *Engine) ReleaseWorkspace(ctx context.Context, id string) (retErr error)
 			}
 			vol = "" // cladefs cell deleted directly; no ZFS/btrfs volume
 		}
+	} else if wsRT == "cladefs" && e.cfg.CladefsFUSE != nil {
+		if err := e.cfg.CladefsFUSE.DeleteWorkspace(ctx, id); err != nil {
+			slog.Warn("delete cladefs FUSE workspace on release", "workspace", id, "err", err)
+		}
+		vol = "" // cladefs FUSE cell deleted directly; no ZFS/btrfs volume
 	}
 
 	freed := true
@@ -763,7 +772,7 @@ func (e *Engine) Sync(ctx context.Context, h *pb.SyncHeader, bundle io.Reader) (
 		return nil, api.Errorf(api.CodeWorkspaceFailed, "workspace %s failed: %s", h.WorkspaceId, reason)
 	}
 	dir := filepath.Join(e.workRoot(w.rec.Volume), r.Repo)
-	volPath := e.cfg.Store.Path(w.rec.Volume)
+	volPath := e.volPath(w.rec.Volume)
 	var prevTree, prevReason string
 	if n > 0 {
 		// Re-check under e.mu before setting sync-in-progress and mutating disk,
@@ -1293,7 +1302,7 @@ func (e *Engine) checkouts(id string) (string, []*pb.WorkspaceRepo, error) {
 	if !ok || w.ws().State == released || w.releasing {
 		return "", nil, api.Errorf(api.CodeNotFound, "no workspace %s on this node", id)
 	}
-	return e.cfg.Store.Path(w.rec.Volume), clone(w.ws()).Repos, nil
+	return e.volPath(w.rec.Volume), clone(w.ws()).Repos, nil
 }
 
 // forgetReleased drops workspaces released a while ago, once their volume is

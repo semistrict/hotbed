@@ -341,6 +341,18 @@ func Run(ctx context.Context, dir string, cfg statedir.WorkerConfig, tn Tailnet,
 			"peerAddr", cfg.VM.CladefsPeerAddr,
 			"cellRoot", cfg.VM.CellRoot,
 		)
+	} else if cfg.CladefsFUSE != nil && cfg.CladefsFUSE.Enabled {
+		cfb, err := OpenCladefsFUSEBackend(ctx, dir, *cfg.CladefsFUSE)
+		if err != nil {
+			return fmt.Errorf("start cladefs host-FUSE backend: %w", err)
+		}
+		defer cfb.Close()
+		ecfg.CladefsFUSE = cfb
+		slog.Info("cladefs host-FUSE runtime enabled",
+			"defaultRuntime", cfb.DefaultRuntime(),
+			"peerAddr", cfg.CladefsFUSE.CladefsPeerAddr,
+			"mountRoot", cfg.CladefsFUSE.MountRoot,
+		)
 	}
 	// Lower the work slice's CPU and IO priority so normal commands yield to
 	// desktop and system processes while still sharing spare CPU among

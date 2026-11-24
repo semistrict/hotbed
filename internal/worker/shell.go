@@ -227,7 +227,7 @@ func shellCacheEnv(hasPTY bool) []string {
 
 func (e *Engine) shellSpec(shellID string, w *workspace, repo string, args, extraEnv, userEnv []string, hasPTY bool) (unit.Spec, string) {
 	ws := w.ws()
-	volPath := e.cfg.Store.Path(w.rec.Volume)
+	volPath := e.volPath(w.rec.Volume)
 	dir := WorkPath
 	if repo != "" {
 		dir += "/" + repo
@@ -261,7 +261,7 @@ func (e *Engine) shellSpec(shellID string, w *workspace, repo string, args, extr
 }
 
 func (e *Engine) makeShellTmp(vol, shellID string) error {
-	return makeTmpDirs(e.cfg.Store.Path(vol), "sh-"+shellID, e.cred)
+	return makeTmpDirs(e.volPath(vol), "sh-"+shellID, e.cred)
 }
 
 func (e *Engine) beginShell(ctx context.Context, ticket *shellTicket, args, extraEnv []string, sio unit.ShellIO) (unit.ShellHandle, func(), error) {
@@ -279,7 +279,7 @@ func (e *Engine) beginShell(ctx context.Context, ticket *shellTicket, args, extr
 	}
 	spec, _ := e.shellSpec(shellID, w, ticket.repo, args, extraEnv, ticket.env, sio.PTY)
 	vol := w.rec.Volume
-	volPath := e.cfg.Store.Path(vol)
+	volPath := e.volPath(vol)
 	sessionID := w.ws().SessionId
 	shellCtx, cancel := context.WithCancel(ctx)
 	as := &activeShell{

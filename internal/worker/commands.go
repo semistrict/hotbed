@@ -676,7 +676,7 @@ func (e *Engine) admit(ctx context.Context) {
 		}
 		c.cmd().Reason = ""
 		spec, err := e.spec(c)
-		volPath := e.cfg.Store.Path(c.rec.Volume)
+		volPath := e.volPath(c.rec.Volume)
 		cmdID := c.cmd().Id
 		isBench := c.cmd().Bench
 		useRT := e.usesRuntime(c.cmd().WorkspaceId)
@@ -1062,7 +1062,7 @@ func (e *Engine) spec(c *command) (unit.Spec, error) {
 	if err != nil {
 		return unit.Spec{}, err
 	}
-	volPath := e.cfg.Store.Path(c.rec.Volume)
+	volPath := e.volPath(c.rec.Volume)
 	runtimeTarget := e.runtimeChrootDir()
 	env := append(cacheEnv(), "XDG_RUNTIME_DIR="+runtimeTarget)
 	env = append(env, c.rec.Env...)

@@ -76,6 +76,23 @@ type WorkerConfig struct {
 	Token string `json:"token,omitempty"`
 	// VM enables the cladefsd + Firecracker microVM runtime alongside chroot.
 	VM *VMConfig `json:"vm,omitempty"`
+	// CladefsFUSE enables the cladefsd host-FUSE runtime alongside chroot
+	// (used on arm64 / non-KVM hosts such as 16 KiB Apple Silicon or QEMU VMs).
+	CladefsFUSE *CladefsFUSEConfig `json:"cladefsFuse,omitempty"`
+}
+
+// CladefsFUSEConfig configures a worker's cladefsd host-FUSE runtime
+// (R2-backed cells mounted via CLADEFSD_MOUNT, local SSD strictly as cache).
+type CladefsFUSEConfig struct {
+	Enabled            bool   `json:"enabled,omitempty"`
+	Default            bool   `json:"default,omitempty"` // default non-bench workspaces to "cladefs"
+	CladefsControlSock string `json:"cladefsControlSock,omitempty"`
+	CladefsPeerAddr    string `json:"cladefsPeerAddr,omitempty"`
+	CellRoot           string `json:"cellRoot,omitempty"`
+	MountRoot          string `json:"mountRoot,omitempty"`
+	MountStoresRoot    string `json:"mountStoresRoot,omitempty"`
+	TenantID           uint64 `json:"tenantId,omitempty"`
+	DiskBytes          uint64 `json:"diskBytes,omitempty"`
 }
 
 // VMConfig configures a worker's cladefsd + Firecracker microVM runtime.

@@ -29,7 +29,7 @@ func (e *Engine) isVMWorkspace(wsID string) bool {
 	return ok
 }
 
-// resolveWorkspaceRuntime picks "vm" or "chroot" for a CreateWorkspaceRequest.
+// resolveWorkspaceRuntime picks "vm", "cladefs", or "chroot" for a CreateWorkspaceRequest.
 func (e *Engine) resolveWorkspaceRuntime(req *pb.CreateWorkspaceRequest) (string, error) {
 	rt := req.GetRuntime()
 	if rt == "" && req.GetPlacement() != nil {
@@ -45,6 +45,9 @@ func (e *Engine) resolveWorkspaceRuntime(req *pb.CreateWorkspaceRequest) (string
 		if e.cfg.VM != nil {
 			return e.cfg.VM.DefaultRuntime(), nil
 		}
+		if e.cfg.CladefsFUSE != nil {
+			return e.cfg.CladefsFUSE.DefaultRuntime(), nil
+		}
 		if e.cfg.Runtime != nil && e.cfg.RuntimeFor == nil {
 			return e.cfg.Runtime.Kind(), nil
 		}
@@ -58,18 +61,27 @@ func (e *Engine) resolveWorkspaceRuntime(req *pb.CreateWorkspaceRequest) (string
 			return "", api.Errorf(api.CodePlatformNotSupported, "vm runtime is not enabled on this worker")
 		}
 		return runtime.KindVM, nil
+	case runtime.KindCladefs:
+		if e.cfg.CladefsFUSE == nil {
+			return "", api.Errorf(api.CodePlatformNotSupported, "cladefs host-FUSE runtime is not enabled on this worker")
+		}
+		return runtime.KindCladefs, nil
 	default:
-		return "", api.Errorf(api.CodeInvalidArgs, "unknown runtime %q (want vm or chroot)", rt)
+		return "", api.Errorf(api.CodeInvalidArgs, "unknown runtime %q (want vm, cladefs, or chroot)", rt)
 	}
 }
 
 // applyCladefsHeartbeat forwards controller-provided cladefs peer addresses
 // and retired host incarnations to the local cladefsd backend.
 func (e *Engine) applyCladefsHeartbeat(ctx context.Context, reply *pb.HeartbeatResponse) {
-	if e.cfg.VM == nil || reply == nil {
+	if reply == nil {
 		return
 	}
-	e.cfg.VM.ApplyHeartbeat(ctx, reply.GetCladefsPeers(), reply.GetDecommissionIncarnations())
+	if e.cfg.VM != nil {
+		e.cfg.VM.ApplyHeartbeat(ctx, reply.GetCladefsPeers(), reply.GetDecommissionIncarnations())
+	} else if e.cfg.CladefsFUSE != nil {
+		e.cfg.CladefsFUSE.ApplyHeartbeat(ctx, reply.GetCladefsPeers(), reply.GetDecommissionIncarnations())
+	}
 }
 
 // usesRuntime reports whether workspace wsID is executed via cfg.Runtime

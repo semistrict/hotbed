@@ -142,8 +142,12 @@ type EngineConfig struct {
 	// VM, when non-nil, enables the cladefsd + Firecracker microVM backend
 	// alongside chroot for workspaces requesting runtime="vm" (or by default
 	// when VMConfig.Default is true).
-	VM     *VMBackend
-	System System
+	VM *VMBackend
+	// CladefsFUSE, when non-nil, enables the cladefsd host-FUSE backend
+	// alongside chroot for workspaces requesting runtime="cladefs" (or by
+	// default when CladefsFUSEConfig.Default is true).
+	CladefsFUSE *CladefsFUSEBackend
+	System      System
 	Now    func() time.Time
 	// LogLimit is what a command's log keeps once past it; zero for
 	// DefaultLogLimit.
@@ -274,9 +278,20 @@ type Engine struct {
 	streamsDone chan struct{}
 }
 
+// volPath returns the host rootfs path for volume vol, checking CladefsFUSE
+// mounts first before falling back to the host ZFS/btrfs Store.
+func (e *Engine) volPath(vol string) string {
+	if e.cfg.CladefsFUSE != nil {
+		if p, ok := e.cfg.CladefsFUSE.MountPath(vol); ok {
+			return p
+		}
+	}
+	return e.cfg.Store.Path(vol)
+}
+
 // workRoot returns the host path corresponding to /work inside volume vol.
 func (e *Engine) workRoot(vol string) string {
-	return filepath.Join(e.cfg.Store.Path(vol), "work")
+	return filepath.Join(e.volPath(vol), "work")
 }
 
 // baseImageKey returns the configured shared base image key.
@@ -465,6 +480,8 @@ func NewEngine(ctx context.Context, cfg EngineConfig) (*Engine, error) {
 		if cfg.RuntimeFor == nil {
 			e.cfg.RuntimeFor = e.isVMWorkspace
 		}
+	} else if cfg.CladefsFUSE != nil {
+		e.resources.Runtimes = cfg.CladefsFUSE.Runtimes()
 	} else if cfg.Runtime != nil {
 		e.resources.Runtimes = []string{runtime.KindVM, runtime.KindChroot}
 	} else {

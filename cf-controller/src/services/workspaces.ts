@@ -499,9 +499,15 @@ export function createWorkspaceService(ctrl: ControllerContext): {
 				const chosenArch = chosen.view.hb?.resources?.arch ?? "";
 				const chosenRuntimes = chosen.view.hb?.resources?.runtimes ?? [];
 				const reqRuntime = req.placement?.bench ? "chroot" : (req.placement?.runtime ?? "");
-				const usesVM = reqRuntime === "vm" || (reqRuntime === "" && chosenRuntimes.includes("vm"));
-				const sharedBase = usesVM ? ctrl.store.latestSharedBase(p.name, chosenArch) : undefined;
-				const fencingToken = usesVM ? ctrl.store.nextFencingToken() : 0n;
+				const usesCladefs =
+					reqRuntime === "vm" ||
+					reqRuntime === "cladefs" ||
+					(reqRuntime === "" &&
+						(chosenRuntimes.includes("vm") || chosenRuntimes.includes("cladefs")));
+				const sharedBase = usesCladefs
+					? ctrl.store.latestSharedBase(p.name, chosenArch)
+					: undefined;
+				const fencingToken = usesCladefs ? ctrl.store.nextFencingToken() : 0n;
 				const fwd = create(CreateWorkspaceRequestSchema, {
 					repo: req.repo,
 					agent: sess.agent,

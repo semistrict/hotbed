@@ -204,7 +204,7 @@ export function buildCandidates(
 		if (
 			!warm &&
 			sharedWarm &&
-			(res?.runtimes ?? []).includes("vm") &&
+			((res?.runtimes ?? []).includes("vm") || (res?.runtimes ?? []).includes("cladefs")) &&
 			sharedWarm(res?.arch ?? "")
 		) {
 			warm = true;

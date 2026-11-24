@@ -31,7 +31,7 @@ import (
 // beside its checkouts: no repo id begins with a dot.
 const tmpName = ".tmp"
 
-func (e *Engine) tmpRoot(vol string) string { return filepath.Join(e.cfg.Store.Path(vol), tmpName) }
+func (e *Engine) tmpRoot(vol string) string { return filepath.Join(e.volPath(vol), tmpName) }
 
 // tmpDir is c's temporary directory, bound to /tmp and /var/tmp.
 func (e *Engine) tmpDir(c *command) (string, error) {
@@ -143,7 +143,7 @@ func ensureConfinedDir(root *os.Root, name string, mode fs.FileMode, cred *sysca
 
 // makeTmp makes c's per-command temporary and XDG runtime directories.
 func (e *Engine) makeTmp(c *command) error {
-	return makeTmpDirs(e.cfg.Store.Path(c.rec.Volume), c.cmd().Id, e.cred)
+	return makeTmpDirs(e.volPath(c.rec.Volume), c.cmd().Id, e.cred)
 }
 
 // dropTmp removes c's temporary directory, its processes gone, in the
@@ -159,7 +159,7 @@ func (e *Engine) dropTmp(c *command) {
 		close(gone)
 		return
 	}
-	volPath := e.cfg.Store.Path(c.rec.Volume)
+	volPath := e.volPath(c.rec.Volume)
 	id := c.cmd().Id
 	admitDone := c.admitDone
 	if !e.startBgLocked(func(context.Context) {

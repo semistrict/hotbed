@@ -31,6 +31,11 @@ func (e *Engine) Heartbeat(clusterID string) *pb.HeartbeatRequest {
 		h.CladefsPeerAddr = peerAddr
 		h.CladefsIncarnation = inc
 		h.SharedBases = shared
+	} else if e.cfg.CladefsFUSE != nil {
+		peerAddr, inc, shared := e.cfg.CladefsFUSE.HeartbeatMeta()
+		h.CladefsPeerAddr = peerAddr
+		h.CladefsIncarnation = inc
+		h.SharedBases = shared
 	}
 	if e.cfg.Profiler != nil {
 		h.Profiler = e.cfg.Profiler.Status()

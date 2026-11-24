@@ -16,8 +16,9 @@ import (
 
 // Kind identifies an execution backend.
 const (
-	KindChroot = "chroot"
-	KindVM     = "vm"
+	KindChroot  = "chroot"
+	KindVM      = "vm"
+	KindCladefs = "cladefs"
 )
 
 // CommandSpec describes a command to run inside a workspace.
