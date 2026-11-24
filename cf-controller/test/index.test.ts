@@ -596,7 +596,7 @@ describe("Cloudflare Workers single-DO hotbed controller", () => {
 			sessionId: sess.id,
 			report: [
 				"Looks solid overall.",
-				"```hotbed-findings",
+				"```json hotbed-findings",
 				JSON.stringify({
 					findings: [
 						{

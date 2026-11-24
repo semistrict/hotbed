@@ -17,8 +17,20 @@ export interface CachedRelease {
 
 export interface BuildsEnv {
 	UPDATES_REPO?: string;
+	UPDATES_API_BASE?: string;
 	GITHUB_TOKEN?: string;
 	BUILDS_BUCKET?: R2Bucket;
+}
+
+export interface TestBuildConfig {
+	updatesRepo?: string;
+	updatesApiBase?: string;
+	updatesToken?: string;
+	mockBuild?: {
+		number: number;
+		assets: Record<string, { sha256: string; contentBase64: string }>;
+	};
+	clearBuild?: boolean;
 }
 
 export interface MetaKV {
@@ -41,10 +53,44 @@ export class BuildDistributor {
 	private readonly env: BuildsEnv;
 	private readonly kv: MetaKV;
 	private memCache: CachedRelease | null = null;
+	private updatesRepoOverride?: string;
+	private updatesApiBaseOverride?: string;
+	private updatesTokenOverride?: string;
+	private mockAssets = new Map<string, Uint8Array>();
 
 	constructor(env: BuildsEnv, kv: MetaKV) {
 		this.env = env;
 		this.kv = kv;
+	}
+
+	setTestConfig(cfg: TestBuildConfig): void {
+		if (cfg.updatesRepo !== undefined) this.updatesRepoOverride = cfg.updatesRepo;
+		if (cfg.updatesApiBase !== undefined) this.updatesApiBaseOverride = cfg.updatesApiBase;
+		if (cfg.updatesToken !== undefined) this.updatesTokenOverride = cfg.updatesToken;
+		if (cfg.clearBuild) {
+			this.memCache = null;
+			this.mockAssets.clear();
+			this.kv.setMeta(RELEASE_CACHE_KEY, "");
+		}
+		if (cfg.mockBuild) {
+			this.mockAssets.clear();
+			const assets: CachedRelease["assets"] = {};
+			for (const [name, a] of Object.entries(cfg.mockBuild.assets)) {
+				const bin = atob(a.contentBase64);
+				const bytes = new Uint8Array(bin.length);
+				for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+				this.mockAssets.set(`${cfg.mockBuild.number}/${name}`, bytes);
+				assets[name] = { sha256: a.sha256, downloadUrl: "", apiUrl: "" };
+			}
+			const rel: CachedRelease = {
+				buildNumber: cfg.mockBuild.number,
+				tag: `build-${cfg.mockBuild.number}`,
+				fetchedAt: Date.now(),
+				assets,
+			};
+			this.memCache = rel;
+			this.kv.setMeta(RELEASE_CACHE_KEY, JSON.stringify(rel));
+		}
 	}
 
 	getCachedRelease(): CachedRelease | null {
@@ -82,7 +128,7 @@ export class BuildDistributor {
 	}
 
 	async refreshIfStale(nowMs: number, force = false): Promise<CachedRelease | null> {
-		const repo = (this.env.UPDATES_REPO ?? "").trim();
+		const repo = (this.updatesRepoOverride ?? this.env.UPDATES_REPO ?? "").trim();
 		if (!repo) return this.getCachedRelease();
 		const cached = this.getCachedRelease();
 		if (!force && cached && nowMs - cached.fetchedAt < REFRESH_TTL_MS) {
@@ -93,10 +139,17 @@ export class BuildDistributor {
 			"User-Agent": "hotbed-cf-controller",
 			"X-GitHub-Api-Version": "2022-11-28",
 		};
-		const token = (this.env.GITHUB_TOKEN ?? "").trim();
+		const token = (this.updatesTokenOverride ?? this.env.GITHUB_TOKEN ?? "").trim();
 		if (token) headers.Authorization = `Bearer ${token}`;
 
-		const res = await fetch(`https://api.github.com/repos/${repo}/releases?per_page=10`, {
+		const apiBase = (
+			this.updatesApiBaseOverride ??
+			this.env.UPDATES_API_BASE ??
+			"https://api.github.com"
+		)
+			.trim()
+			.replace(/\/+$/, "");
+		const res = await fetch(`${apiBase}/repos/${repo}/releases?per_page=10`, {
 			headers,
 		});
 		if (!res.ok) {
@@ -134,7 +187,7 @@ export class BuildDistributor {
 		};
 		if (token) sumsHeaders.Authorization = `Bearer ${token}`;
 		const sumsUrl = token && sumsAsset.url ? sumsAsset.url : (sumsAsset.browser_download_url ?? "");
-		const sumsRes = await fetch(sumsUrl, { headers: sumsHeaders });
+		const sumsRes = await fetchFollowingRedirectWithoutAuth(sumsUrl, sumsHeaders);
 		if (!sumsRes.ok) {
 			throw hotbedError(
 				ErrorCode.Internal,
@@ -184,6 +237,17 @@ export class BuildDistributor {
 			);
 		}
 		const asset = rel.assets[name];
+		const mockBytes = this.mockAssets.get(`${buildNum}/${name}`);
+		if (mockBytes) {
+			return new Response(mockBytes, {
+				status: 200,
+				headers: {
+					"Content-Type": "application/octet-stream",
+					"Cache-Control": "public, max-age=31536000, immutable",
+					ETag: `"${asset.sha256}"`,
+				},
+			});
+		}
 		const r2Key = `builds/${buildNum}/${name}`;
 
 		// 1. Serve from R2 cache if configured.
@@ -202,14 +266,14 @@ export class BuildDistributor {
 		}
 
 		// 2. Proxy stream from GitHub Releases (and populate R2 asynchronously if bound).
-		const token = (this.env.GITHUB_TOKEN ?? "").trim();
+		const token = (this.updatesTokenOverride ?? this.env.GITHUB_TOKEN ?? "").trim();
 		const headers: Record<string, string> = {
 			Accept: "application/octet-stream",
 			"User-Agent": "hotbed-cf-controller",
 		};
 		if (token) headers.Authorization = `Bearer ${token}`;
 		const url = token && asset.apiUrl ? asset.apiUrl : asset.downloadUrl;
-		const upstream = await fetch(url, { headers, redirect: "follow" });
+		const upstream = await fetchFollowingRedirectWithoutAuth(url, headers);
 		if (!upstream.ok || !upstream.body) {
 			return new Response(`upstream build asset error: HTTP ${upstream.status}`, { status: 502 });
 		}
@@ -236,4 +300,28 @@ export class BuildDistributor {
 			},
 		});
 	}
+}
+
+async function fetchFollowingRedirectWithoutAuth(
+	url: string,
+	headers: Record<string, string>,
+): Promise<Response> {
+	let currentUrl = url;
+	let currentHeaders = headers;
+	for (let hops = 0; hops < 5; hops++) {
+		const res = await fetch(currentUrl, { headers: currentHeaders, redirect: "manual" });
+		if (res.status >= 300 && res.status < 400) {
+			const loc = res.headers.get("Location");
+			if (!loc) return res;
+			currentUrl = new URL(loc, currentUrl).toString();
+			const stripped: Record<string, string> = {};
+			for (const [k, v] of Object.entries(currentHeaders)) {
+				if (k.toLowerCase() !== "authorization") stripped[k] = v;
+			}
+			currentHeaders = stripped;
+			continue;
+		}
+		return res;
+	}
+	return fetch(currentUrl, { headers: currentHeaders, redirect: "follow" });
 }

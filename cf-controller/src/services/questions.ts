@@ -25,6 +25,17 @@ const MIN_OPTIONS = 2;
 const MAX_OPTIONS = 4;
 const DIRTY_KEPT = 20;
 
+const POLL_REMINDER =
+	"Reminder: the user answers questions in the cockpit whenever they like, and answers reach you only through `hotbed poll` (MCP: `poll`). " +
+	"Before you end your turn, commit, or conclude the user has not answered, run `hotbed poll`; " +
+	"act on each answer it returns, then `hotbed question ack ID`.";
+
+function withReminder(q: Question): Question {
+	const out = clone(QuestionSchema, q);
+	out.reminder = POLL_REMINDER;
+	return out;
+}
+
 function inOutbox(st: QuestionState): boolean {
 	return st === QuestionState.ANSWERED || st === QuestionState.DISMISSED;
 }
@@ -262,36 +273,40 @@ export function createQuestionService(
 				by,
 				req.askedFrom,
 			);
-			return create(AddQuestionsResponseSchema, { questions: qs });
+			return create(AddQuestionsResponseSchema, { questions: qs, reminder: POLL_REMINDER });
 		},
 
 		editQuestion(req, ctx) {
 			const err = checkPrompt(req.prompt);
 			if (err) throw err;
 			const { by, project } = ctrl.agentStamp(getCaller(ctx.values), req.sessionId, "");
-			return ctrl.store.changeQuestion(req.id, "edited", by, (q) => {
-				inProject("question", q.id, q.project, project, by);
-				checkRevision(q, req.ifRevision);
-				mustBeOpen(q, "edited");
-				q.prompt = req.prompt;
-				q.edited = by;
-			});
+			return withReminder(
+				ctrl.store.changeQuestion(req.id, "edited", by, (q) => {
+					inProject("question", q.id, q.project, project, by);
+					checkRevision(q, req.ifRevision);
+					mustBeOpen(q, "edited");
+					q.prompt = req.prompt;
+					q.edited = by;
+				}),
+			);
 		},
 
 		deleteQuestion(req, ctx) {
 			const { by, project } = ctrl.agentStamp(getCaller(ctx.values), req.sessionId, req.reason);
-			return ctrl.store.changeQuestion(req.id, "deleted", by, (q) => {
-				inProject("question", q.id, q.project, project, by);
-				checkRevision(q, req.ifRevision);
-				if (q.state === QuestionState.DELETED) {
-					throw hotbedError(
-						ErrorCode.Conflict,
-						`question ${q.id} was deleted already, ${stamped(q.deleted)}`,
-					);
-				}
-				q.state = QuestionState.DELETED;
-				q.deleted = by;
-			});
+			return withReminder(
+				ctrl.store.changeQuestion(req.id, "deleted", by, (q) => {
+					inProject("question", q.id, q.project, project, by);
+					checkRevision(q, req.ifRevision);
+					if (q.state === QuestionState.DELETED) {
+						throw hotbedError(
+							ErrorCode.Conflict,
+							`question ${q.id} was deleted already, ${stamped(q.deleted)}`,
+						);
+					}
+					q.state = QuestionState.DELETED;
+					q.deleted = by;
+				}),
+			);
 		},
 
 		listQuestions(req) {
@@ -306,19 +321,24 @@ export function createQuestionService(
 				askedBy: req.askedBy,
 				limit: req.limit,
 			});
-			return create(ListQuestionsResponseSchema, { questions, total });
+			return create(ListQuestionsResponseSchema, {
+				questions,
+				total,
+				reminder: POLL_REMINDER,
+			});
 		},
 
 		listQuestionProjects() {
 			return create(ListQuestionProjectsResponseSchema, {
 				projects: ctrl.store.questionProjects(),
+				reminder: POLL_REMINDER,
 			});
 		},
 
 		getQuestion(req) {
 			const q = ctrl.store.getQuestion(req.id);
 			q.history = ctrl.store.questionHistory(req.id);
-			return q;
+			return withReminder(q);
 		},
 
 		answerQuestion(req, ctx) {
@@ -335,7 +355,7 @@ export function createQuestionService(
 				item.dismissed = undefined;
 			});
 			if (q.asked?.session) ctrl.sessionWakes.wake(q.asked.session);
-			return q;
+			return withReminder(q);
 		},
 
 		dismissQuestion(req, ctx) {
@@ -350,59 +370,63 @@ export function createQuestionService(
 				item.answered = undefined;
 			});
 			if (q.asked?.session) ctrl.sessionWakes.wake(q.asked.session);
-			return q;
+			return withReminder(q);
 		},
 
 		reviseQuestion(req, ctx) {
 			const err = checkPrompt(req.prompt);
 			if (err) throw err;
 			const { by, project } = ctrl.userStamp(getCaller(ctx.values), req.sessionId, "");
-			return ctrl.store.changeQuestion(req.id, "edited", by, (item) => {
-				inProject("question", item.id, item.project, project, by);
-				checkRevision(item, req.ifRevision);
-				if (item.state === QuestionState.DELETED) {
-					throw hotbedError(
-						ErrorCode.Conflict,
-						`question ${item.id} was deleted ${stamped(item.deleted)}; ask it again if it still needs asking`,
-					);
-				}
-				const revised = clone(QuestionSchema, item);
-				revised.prompt = req.prompt;
-				if (item.answer) {
-					const aerr = checkAnswer(revised, item.answer);
-					if (aerr) {
+			return withReminder(
+				ctrl.store.changeQuestion(req.id, "edited", by, (item) => {
+					inProject("question", item.id, item.project, project, by);
+					checkRevision(item, req.ifRevision);
+					if (item.state === QuestionState.DELETED) {
 						throw hotbedError(
 							ErrorCode.Conflict,
-							`question ${item.id}'s answer no longer fits it: ${aerr.message}`,
-						).withSuggestion(
-							`keep the options it picks, or reopen it first: hotbed question reopen ${item.id}`,
+							`question ${item.id} was deleted ${stamped(item.deleted)}; ask it again if it still needs asking`,
 						);
 					}
-				}
-				item.prompt = req.prompt;
-				item.edited = by;
-			});
+					const revised = clone(QuestionSchema, item);
+					revised.prompt = req.prompt;
+					if (item.answer) {
+						const aerr = checkAnswer(revised, item.answer);
+						if (aerr) {
+							throw hotbedError(
+								ErrorCode.Conflict,
+								`question ${item.id}'s answer no longer fits it: ${aerr.message}`,
+							).withSuggestion(
+								`keep the options it picks, or reopen it first: hotbed question reopen ${item.id}`,
+							);
+						}
+					}
+					item.prompt = req.prompt;
+					item.edited = by;
+				}),
+			);
 		},
 
 		reopenQuestion(req, ctx) {
 			const { by, project } = ctrl.userStamp(getCaller(ctx.values), req.sessionId, "");
-			return ctrl.store.reopenQuestion(req.id, by, (item) => {
-				inProject("question", item.id, item.project, project, by);
-				if (item.state === QuestionState.OPEN) {
-					throw hotbedError(ErrorCode.Conflict, `question ${item.id} is open already`);
-				}
-				if (item.state === QuestionState.DELETED) {
-					throw hotbedError(
-						ErrorCode.Conflict,
-						`question ${item.id} was deleted ${stamped(item.deleted)}; ask it again if it still needs asking`,
-					);
-				}
-				item.state = QuestionState.OPEN;
-				item.answer = undefined;
-				item.answered = undefined;
-				item.dismissed = undefined;
-				item.handled = undefined;
-			});
+			return withReminder(
+				ctrl.store.reopenQuestion(req.id, by, (item) => {
+					inProject("question", item.id, item.project, project, by);
+					if (item.state === QuestionState.OPEN) {
+						throw hotbedError(ErrorCode.Conflict, `question ${item.id} is open already`);
+					}
+					if (item.state === QuestionState.DELETED) {
+						throw hotbedError(
+							ErrorCode.Conflict,
+							`question ${item.id} was deleted ${stamped(item.deleted)}; ask it again if it still needs asking`,
+						);
+					}
+					item.state = QuestionState.OPEN;
+					item.answer = undefined;
+					item.answered = undefined;
+					item.dismissed = undefined;
+					item.handled = undefined;
+				}),
+			);
 		},
 
 		moveQuestion(req, ctx) {
@@ -421,22 +445,24 @@ export function createQuestionService(
 					`say where question ${req.id} goes: before another, first or last`,
 				);
 			}
-			return ctrl.store.moveQuestion(req.id, place, by, (q, before) => {
-				inProject("question", q.id, q.project, project, by);
-				mustBeOpen(q, "moved");
-				if (before && before.project !== q.project) {
-					throw hotbedError(
-						ErrorCode.InvalidArgs,
-						`question ${before.id} is in project ${before.project}, not ${q.project}: move questions within their own project`,
-					);
-				}
-				if (before && before.state !== QuestionState.OPEN) {
-					throw hotbedError(
-						ErrorCode.Conflict,
-						`question ${before.id} is ${stateWord(before.state)}: only open questions have a place in the order`,
-					);
-				}
-			});
+			return withReminder(
+				ctrl.store.moveQuestion(req.id, place, by, (q, before) => {
+					inProject("question", q.id, q.project, project, by);
+					mustBeOpen(q, "moved");
+					if (before && before.project !== q.project) {
+						throw hotbedError(
+							ErrorCode.InvalidArgs,
+							`question ${before.id} is in project ${before.project}, not ${q.project}: move questions within their own project`,
+						);
+					}
+					if (before && before.state !== QuestionState.OPEN) {
+						throw hotbedError(
+							ErrorCode.Conflict,
+							`question ${before.id} is ${stateWord(before.state)}: only open questions have a place in the order`,
+						);
+					}
+				}),
+			);
 		},
 
 		ackQuestions(req, ctx) {
@@ -458,7 +484,7 @@ export function createQuestionService(
 				q.state = QuestionState.HANDLED;
 				q.handled = by;
 			});
-			return create(AckQuestionsResponseSchema, { questions: qs });
+			return create(AckQuestionsResponseSchema, { questions: qs, reminder: POLL_REMINDER });
 		},
 	};
 }

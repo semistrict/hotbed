@@ -1,13 +1,13 @@
 # `cf-controller` — Hotbed Controller on Cloudflare Workers + Single SQLite Durable Object
 
-This directory ports the `hotbed` controller (`internal/controller/`) to run on **Cloudflare Workers** backed by a **single SQLite-backed Durable Object** (`ControllerDO`), alongside the existing Go controller so you can deploy and cut over safely.
+This directory is the `hotbed` controller running on **Cloudflare Workers** backed by a **single SQLite-backed Durable Object** (`ControllerDO`).
 
 ## Architecture
 
 - **Single SQLite Durable Object (`ControllerDO`) + Drizzle ORM Auto-Migrations:**
   - Schema is declared with Drizzle ORM in `src/db/schema.ts` and managed with Drizzle Kit (`drizzle.config.ts` with `driver: "durable-sqlite"`).
   - Generated SQL migrations in `drizzle/` are bundled as native Cloudflare Worker Text modules and **auto-run at Durable Object startup** via `await migrate(this.db, migrations)` inside `ctx.blockConcurrencyWhile(...)` before any request or alarm is handled.
-  - All 20 `hotbed.db` tables (plus `kv_meta`, `worker_tokens`, `daemon_logs`, `controller_migration`) match the Go controller's schema and protojson documents 1-for-1.
+  - All controller tables (including `kv_meta`, `worker_tokens`, `daemon_logs`) live in the DO's embedded SQLite database.
 - **Full ConnectRPC API parity:** Serves all 7 services (`ClusterService`, `SessionService`, `WorkspaceService`, `QuestionService`, `ReviewService`, `ScheduleService`, `GitAuthService`) using `@connectrpc/connect` + `@bufbuild/protobuf` (`protoc-gen-es`), including `hotbed.v1.ErrorInfo` details, `Hotbed-Build` headers, and `(param) = { local: true }` refusal.
 - **Persistent Worker WebSocket Tunnel (`/ws/worker`):** Local Go workers behind NAT/Tailscale open an outbound WebSocket to `/ws/worker` (using Cloudflare's WebSocket Hibernation API with `"ping"`/`"pong"` auto-response). The DO multiplexes controller→worker `WorkspaceService` unary and server-streaming RPCs down this tunnel; direct client↔worker data-plane traffic (`Sync`, `RunCommand`, `FollowLog`, SSH) remains over Tailscale.
 - **Background Maintenance via DO Alarms:** Replaces Go background goroutines with a Durable Object `alarm()` loop that reaps idle sessions, triggers due cron schedules, settles scheduled runs, polls GitHub Releases (`build-N` + `SHA256SUMS`), and prunes old telemetry.

@@ -161,6 +161,12 @@ export function fromWorkerError(host: string, err: unknown): HotbedError {
 			retryable: true,
 		});
 	}
+	if (he.code === ErrorCode.WorkerUnreachable && !he.retryable) {
+		return new HotbedError(ErrorCode.WorkerUnreachable, he.message, {
+			suggestion: he.suggestion,
+			retryable: true,
+		});
+	}
 	return he;
 }
 

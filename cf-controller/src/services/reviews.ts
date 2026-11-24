@@ -31,8 +31,10 @@ import { canonicalRemote, firstLine } from "../gitops.ts";
 const MAX_TITLE = 60;
 const COMMIT_RE = /^[0-9a-f]{7,64}$/;
 const FULL_COMMIT_RE = /^([0-9a-f]{40}|[0-9a-f]{64})$/;
-const FINDINGS_INFO = "hotbed-findings";
-const REPORT_EXAMPLE = `end the report with a \`\`\`${FINDINGS_INFO} block holding {"findings": [...]}`;
+const FINDINGS_INFO = "json hotbed-findings";
+const FENCE_OPEN = /^ {0,3}(`{3,}|~{3,})(.*)$/;
+const FENCE_CLOSE = /^ {0,3}(`{3,}|~{3,})[ \t]*$/;
+const REPORT_EXAMPLE = `end the report with\n\`\`\`${FINDINGS_INFO}\n{"findings": [{"summary": "...", "failure_scenario": "...", "severity": "important", "short_summary": "...", "file": "a.go", "line": 12}]}\n\`\`\`\n({"findings": []} when none survive)`;
 
 function isReviewEnded(st: ReviewState): boolean {
 	return st === ReviewState.DONE || st === ReviewState.FAILED || st === ReviewState.CANCELLED;
@@ -96,41 +98,38 @@ function reviewerOf(r: Review, by: Stamp, doing: string): void {
 }
 
 function parseReportFindings(report: string): ReportedFinding[] {
-	const lines = report.split(/\r?\n/);
-	let fence = "";
-	let opened = 0;
+	const lines = report.split("\n");
+	let body: string[] = [];
 	let found = false;
-	const body: string[] = [];
+	let fence = "";
+	let findings = false;
+	let opened = 0;
+	let inside: string[] = [];
 	for (let i = 0; i < lines.length; i++) {
-		const trimmed = lines[i].trimStart();
+		const line = lines[i].replace(/\r$/, "");
 		if (!fence) {
-			const m = /^(`{3,}|~{3,})\s*(\S*)\s*$/.exec(trimmed);
-			if (m && m[2] === FINDINGS_INFO) {
-				if (found) {
-					throw hotbedError(
-						ErrorCode.InvalidArgs,
-						`the report has more than one \`\`\`${FINDINGS_INFO} block`,
-					).withSuggestion(REPORT_EXAMPLE);
-				}
-				fence = m[1];
-				opened = i + 1;
-				found = true;
+			const m = FENCE_OPEN.exec(line);
+			if (!m || (m[1][0] === "`" && m[2].includes("`"))) {
+				continue;
 			}
+			fence = m[1];
+			opened = i + 1;
+			inside = [];
+			findings = m[2].trim().split(/\s+/).filter(Boolean).join(" ") === FINDINGS_INFO;
 			continue;
 		}
-		if (
-			trimmed.startsWith(fence) &&
-			trimmed
-				.slice(fence.length)
-				.replace(new RegExp(`^${fence[0]}+`), "")
-				.trim() === ""
-		) {
+		const cm = FENCE_CLOSE.exec(line);
+		if (cm && cm[1][0] === fence[0] && cm[1].length >= fence.length) {
+			if (findings) {
+				body = inside;
+				found = true;
+			}
 			fence = "";
 			continue;
 		}
-		body.push(lines[i]);
+		inside.push(line);
 	}
-	if (fence) {
+	if (fence && findings) {
 		throw hotbedError(
 			ErrorCode.InvalidArgs,
 			`the report's \`\`\`${FINDINGS_INFO} block at line ${opened} is never closed`,
@@ -155,7 +154,7 @@ function parseReportFindings(report: string): ReportedFinding[] {
 		throw hotbedError(
 			ErrorCode.InvalidArgs,
 			`the report's \`\`\`${FINDINGS_INFO} block holds findings alone`,
-		);
+		).withSuggestion(REPORT_EXAMPLE);
 	}
 	return payload.findings;
 }

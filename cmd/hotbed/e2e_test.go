@@ -84,8 +84,9 @@ func (s *switchboard) record() func() []string {
 }
 
 type clock struct {
-	mu     sync.Mutex
-	offset time.Duration
+	mu       sync.Mutex
+	offset   time.Duration
+	onChange func(offset time.Duration)
 }
 
 func (c *clock) Now() time.Time {
@@ -97,14 +98,24 @@ func (c *clock) Now() time.Time {
 // set makes the clock read t.
 func (c *clock) set(t time.Time) {
 	c.mu.Lock()
-	defer c.mu.Unlock()
 	c.offset = time.Until(t)
+	off := c.offset
+	fn := c.onChange
+	c.mu.Unlock()
+	if fn != nil {
+		fn(off)
+	}
 }
 
 func (c *clock) advance(d time.Duration) {
 	c.mu.Lock()
-	defer c.mu.Unlock()
 	c.offset += d
+	off := c.offset
+	fn := c.onChange
+	c.mu.Unlock()
+	if fn != nil {
+		fn(off)
+	}
 }
 
 // newCluster starts a cluster; each of with changes the worker's engine

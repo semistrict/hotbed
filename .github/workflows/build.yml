@@ -35,6 +35,10 @@ jobs:
           go generate ./ui
           pnpm -C ui test
           pnpm -C ui typecheck
+      - name: Build cf-controller
+        run: |
+          pnpm -C cf-controller install --frozen-lockfile
+          pnpm -C cf-controller run build
       - name: Vet
         run: go vet ./...
       - name: Test
@@ -136,6 +140,16 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.34.0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - name: Build cf-controller
+        run: |
+          pnpm -C cf-controller install --frozen-lockfile
+          pnpm -C cf-controller run build
       - name: Vet
         run: go vet ./...
       - name: Test

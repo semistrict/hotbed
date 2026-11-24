@@ -3,11 +3,15 @@ package main
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/http/httputil"
+	"net/url"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -15,46 +19,44 @@ import (
 	"time"
 
 	"github.com/semistrict/hotbed/internal/api"
-	"github.com/semistrict/hotbed/internal/controller"
 	"github.com/semistrict/hotbed/internal/fake"
 	pb "github.com/semistrict/hotbed/internal/gen/hotbed/v1"
 	"github.com/semistrict/hotbed/internal/gen/hotbed/v1/hotbedv1connect"
 	"github.com/semistrict/hotbed/internal/httpx"
-	"github.com/semistrict/hotbed/internal/statedir"
 	"github.com/semistrict/hotbed/internal/tailnet"
 	"github.com/semistrict/hotbed/internal/tailnet/tailnettest"
 	"github.com/semistrict/hotbed/internal/worker"
 )
 
-// cluster is a controller and its workers in this process: the real
-// controller, engines and CLI over Connect, with fakes only where Linux and
-// root would be needed (volumes are copied, commands are local processes).
-// Tests take the controller down or restart it, restart workers, wipe their
-// databases, and cut them off from the controller.
+// cluster is a real cf-controller Durable Object (running locally in workerd
+// via Miniflare) and its Go workers in this process, with fakes only where
+// Linux and root would be needed (volumes are copied, commands are local
+// processes). Tests take the controller down or restart it, restart workers,
+// wipe their databases, and cut them off from the controller.
 type cluster struct {
 	t        *testing.T
 	id       string
+	doName   string
+	harness  *cfHarness
 	tn       *tailnettest.Fake
-	server   *controller.Server
-	store    *controller.Store // the controller's database
+	server   *testServer
+	store    *testStore
 	asWorker hotbedv1connect.ClusterServiceClient
 	cli      deps
 	clock    *clock
 	ctrlSrv  *httptest.Server
 	ctrl     *switchboard // in front of the controller; tests take it down
 	// ctrlBack serves the controller once bounce brought it back.
-	ctrlBack *http.Server
-	nodes    []*node
-	// reported is how the first worker's connection to the controller
-	// ended.
-	reported chan error
-	// restart swaps in a new controller on the same database.
-	serverCfg controller.ServerConfig
+	ctrlBack  *http.Server
+	nodes     []*node
+	reported  chan error
+	serverCfg testServerConfig
 	handler   atomic.Pointer[http.Handler]
 }
 
-// node is a worker: its engine, its server, and what outlives a restart of
-// it (its state directory, its volumes, its commands' units).
+// node is a worker: its engine, its server, its controller WebSocket tunnel,
+// and what outlives a restart of it (its state directory, its volumes, its
+// commands' units).
 type node struct {
 	c      *cluster
 	peer   tailnet.Peer
@@ -84,7 +86,7 @@ type node struct {
 
 	mu     sync.Mutex
 	engine *worker.Engine
-	stop   func() // stops the engine and its connection, and waits
+	stop   func() // stops the engine and its connections, and waits
 }
 
 var fleetPeers = []tailnet.Peer{
@@ -114,31 +116,44 @@ func newFleet(t *testing.T, n int) *cluster {
 // clusterOpts change a cluster before it starts.
 type clusterOpts struct {
 	engine []func(*worker.EngineConfig)
-	server func(*controller.ServerConfig)
+	server func(*testServerConfig)
 	// follow is how a worker follows the controller's build at ctrl.
 	follow func(ctrl string, hc *http.Client) *worker.Follow
 }
 
 func newFleetWith(t *testing.T, n int, opts clusterOpts) *cluster {
 	t.Helper()
+	h, err := getCFHarness()
+	if err != nil {
+		t.Fatal(err)
+	}
+	doName := fmt.Sprintf("test-%d-%d", os.Getpid(), harnessSeq.Add(1))
 	tn := tailnettest.New(ubu1)
-	dir := t.TempDir()
-	init, err := controller.Init(t.Context(), dir, api.DefaultPort, "", tn)
-	if err != nil {
-		t.Fatal(err)
-	}
-	cfg, err := statedir.Load(dir)
-	if err != nil {
-		t.Fatal(err)
-	}
-	store, err := controller.OpenStore(t.Context(), filepath.Join(dir, "hotbed.db"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { store.Close() })
 
-	c := &cluster{t: t, id: init.ClusterID, tn: tn, store: store, clock: &clock{}}
-	addrs := map[string]string{} // worker host name -> its server's address
+	c := &cluster{
+		t:       t,
+		doName:  doName,
+		harness: h,
+		tn:      tn,
+		server:  &testServer{h: h, doName: doName},
+		store:   &testStore{h: h, doName: doName},
+	}
+	c.clock = &clock{
+		onChange: func(offset time.Duration) {
+			if err := h.doJSON(context.Background(), doName, http.MethodPost, "/__test/clock", map[string]any{
+				"offsetMs": offset.Milliseconds(),
+			}, nil); err != nil {
+				t.Errorf("sync controller test clock: %v", err)
+			}
+		},
+	}
+
+	if opts.server != nil {
+		opts.server(&c.serverCfg)
+	}
+	c.applyServerConfig()
+
+	addrs := map[string]string{} // worker host name -> its direct HTTP server address
 	for i := range n {
 		nd := &node{c: c, peer: fleetPeers[i], store: &fake.Store{Root: t.TempDir()}, units: &fake.Units{}, system: fake.NewSystem(), reported: make(chan error, 1)}
 		nd.dir = filepath.Join(t.TempDir(), "worker")
@@ -173,18 +188,42 @@ func newFleetWith(t *testing.T, n int, opts clusterOpts) *cluster {
 		addrs[nd.peer.Hostname] = strings.TrimPrefix(nd.srv.URL, "http://")
 		c.nodes = append(c.nodes, nd)
 	}
-	c.serverCfg = controller.ServerConfig{
-		Store: store, Identifier: tn, Cluster: *cfg.Controller, Controller: "ubu1", Now: c.clock.Now, Self: loopback,
-		AllowLocalRepos: true,
-		// The controller's calls to a worker that is cut off fail.
-		Workers:    &http.Client{Transport: partition{next: tn.Client(ubu1.Peer).Transport, cut: c.cutAt}},
-		WorkerAddr: func(host string) string { return addrs[host] },
+
+	target, err := url.Parse(h.url)
+	if err != nil {
+		t.Fatal(err)
 	}
-	if opts.server != nil {
-		opts.server(&c.serverCfg)
+	proxy := httputil.NewSingleHostReverseProxy(target)
+	proxy.FlushInterval = -1
+	origDirector := proxy.Director
+	proxy.Director = func(r *http.Request) {
+		origDirector(r)
+		r.Host = target.Host
 	}
-	c.restart()
-	c.ctrl = &switchboard{next: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { (*c.handler.Load()).ServeHTTP(w, r) })}
+	var baseHandler http.Handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		peer, err := tn.WhoIs(r.Context(), r.RemoteAddr)
+		if err != nil {
+			http.Error(w, "unknown test peer", http.StatusForbidden)
+			return
+		}
+		r2 := r.Clone(r.Context())
+		r2.Header.Set("X-Hotbed-Test-DO", doName)
+		if r2.Header.Get("Authorization") == "" {
+			r2.Header.Set("Authorization", "Bearer "+h.token)
+		}
+		r2.Header.Set("X-Hotbed-Node-Id", peer.NodeID)
+		r2.Header.Set("X-Hotbed-Host", peer.Hostname)
+		if addr := addrs[peer.Hostname]; addr != "" {
+			r2.Header.Set("X-Hotbed-Addr", addr)
+		}
+		proxy.ServeHTTP(w, r2)
+	})
+	c.handler.Store(&baseHandler)
+	c.ctrl = &switchboard{
+		next: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			(*c.handler.Load()).ServeHTTP(w, r)
+		}),
+	}
 	c.ctrlSrv = httptest.NewServer(c.ctrl)
 	t.Cleanup(c.ctrlSrv.Close)
 	ctrl := strings.TrimPrefix(c.ctrlSrv.URL, "http://")
@@ -225,7 +264,7 @@ func newFleetWith(t *testing.T, n int, opts clusterOpts) *cluster {
 	}
 
 	// Sessions start in the tests' project unless a test names another.
-	if _, err := store.AddProject(t.Context(), "test", nil, &pb.Stamp{At: time.Now().UnixMilli(), Reason: "the tests' project"}); err != nil {
+	if _, err := c.store.AddProject(t.Context(), "test", nil, &pb.Stamp{At: time.Now().UnixMilli(), Reason: "the tests' project"}); err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv("HOTBED_PROJECT", "test")
@@ -249,14 +288,41 @@ func newFleetWith(t *testing.T, n int, opts clusterOpts) *cluster {
 	return c
 }
 
-// cutAt says whether the worker serving at addr is cut off.
-func (c *cluster) cutAt(addr string) bool {
-	for _, nd := range c.nodes {
-		if strings.TrimPrefix(nd.srv.URL, "http://") == addr {
-			return nd.cut.Load()
-		}
+func (c *cluster) applyServerConfig() {
+	c.t.Helper()
+	payload := map[string]any{}
+	if c.serverCfg.WakeWait > 0 {
+		payload["wakeWaitMs"] = c.serverCfg.WakeWait.Milliseconds()
 	}
-	return false
+	if c.serverCfg.AllowLocalRepos != nil {
+		payload["allowLocalRepos"] = *c.serverCfg.AllowLocalRepos
+	}
+	if c.serverCfg.UpdatesRepo != "" {
+		payload["updatesRepo"] = c.serverCfg.UpdatesRepo
+	}
+	if c.serverCfg.UpdatesAPIBase != "" {
+		payload["updatesApiBase"] = c.serverCfg.UpdatesAPIBase
+	}
+	if c.serverCfg.UpdatesToken != "" {
+		payload["updatesToken"] = c.serverCfg.UpdatesToken
+	}
+	if c.serverCfg.Build > 0 && c.serverCfg.Builds != nil {
+		mb, err := buildMockPayload(c.serverCfg.Builds, c.serverCfg.Build)
+		if err != nil {
+			c.t.Fatal(err)
+		}
+		payload["mockBuild"] = mb
+	}
+	var res struct {
+		OK        bool   `json:"ok"`
+		ClusterID string `json:"clusterId"`
+	}
+	if err := c.harness.doJSON(c.t.Context(), c.doName, http.MethodPost, "/__test/config", payload, &res); err != nil {
+		c.t.Fatal(err)
+	}
+	if res.ClusterID != "" {
+		c.id = res.ClusterID
+	}
 }
 
 // partition fails the calls of a client while cut says the destination is
@@ -273,12 +339,14 @@ func (p partition) RoundTrip(r *http.Request) (*http.Response, error) {
 	return p.next.RoundTrip(r)
 }
 
-// restart replaces the controller with a new one on the same database, as a
-// deploy does: whatever it knows must come from there.
+// restart rebuilds the controller DO's in-memory runtime from its SQLite
+// database, as a deploy/eviction does: whatever it knows must come from there.
 func (c *cluster) restart() {
-	c.server = controller.NewServer(c.serverCfg)
-	h := c.server.Handler()
-	c.handler.Store(&h)
+	c.t.Helper()
+	if err := c.harness.doJSON(c.t.Context(), c.doName, http.MethodPost, "/__test/restart", map[string]any{}, nil); err != nil {
+		c.t.Fatal(err)
+	}
+	c.applyServerConfig()
 }
 
 // engine is the first worker's engine as it is now.
@@ -304,8 +372,9 @@ func (s sshTestID) WhoIs(ctx context.Context, remote string) (tailnet.Peer, erro
 	return laptop, nil
 }
 
-// start opens the worker's engine on its state directory and runs it and
-// its connection to the controller.
+// start opens the worker's engine on its state directory and runs it, its
+// heartbeat/event connection, and its reverse-RPC WebSocket tunnel to the
+// controller.
 func (nd *node) start() {
 	t := nd.c.t
 	eng, err := worker.NewEngine(t.Context(), nd.cfg)
@@ -323,9 +392,30 @@ func (nd *node) start() {
 	h := workerHandler(nd.c.tn, eng)
 	nd.handler.Store(&h)
 	nd.halted.Store(false)
+
+	ctrlURL := nd.c.ctrlSrv.URL
+	workerAddr := strings.TrimPrefix(nd.srv.URL, "http://")
+	tunnelWrap := func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if nd.halted.Load() || nd.cut.Load() {
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusServiceUnavailable)
+				_, _ = w.Write([]byte(`{"code":"unavailable","message":"network is unreachable"}`))
+				return
+			}
+			if strings.HasSuffix(r.URL.Path, "/FollowLog") {
+				nd.follows.Add(1)
+			}
+			if gate := nd.createGate.Load(); gate != nil && strings.HasSuffix(r.URL.Path, "/CreateWorkspace") {
+				<-*gate
+			}
+			next.ServeHTTP(w, r)
+		})
+	}
+
 	ctx, cancel := context.WithCancel(t.Context())
 	var wg sync.WaitGroup
-	wg.Add(3)
+	wg.Add(4)
 	go func() { defer wg.Done(); _ = shellSrv.Serve(sshLn) }()
 	go func() { defer wg.Done(); eng.Run(ctx) }()
 	go func() {
@@ -336,6 +426,21 @@ func (nd *node) start() {
 		default: // an earlier end not read yet
 		}
 	}()
+	go func() {
+		defer wg.Done()
+		_ = worker.TunnelWithMiddleware(
+			ctx,
+			eng,
+			ctrlURL,
+			nd.c.harness.token,
+			tailnet.Self{Peer: nd.peer},
+			workerAddr,
+			ubu1.Peer.NodeID,
+			"ramon@",
+			nd.c.tn.Client(nd.peer),
+			tunnelWrap,
+		)
+	}()
 	nd.mu.Lock()
 	nd.engine = eng
 	nd.stop = func() {
@@ -345,6 +450,23 @@ func (nd *node) start() {
 		eng.Close()
 	}
 	nd.mu.Unlock()
+
+	// Wait for the worker's reverse-RPC WebSocket tunnel to register with the
+	// controller DO before returning so controller->worker RPCs never race boot.
+	nd.c.ctrl.mu.Lock()
+	ctrlDown := nd.c.ctrl.down
+	nd.c.ctrl.mu.Unlock()
+	if !ctrlDown && !nd.cut.Load() {
+		deadline := time.Now().Add(10 * time.Second)
+		for time.Now().Before(deadline) {
+			ids, err := nd.c.store.ConnectedWorkers(t.Context())
+			if err == nil && slices.Contains(ids, nd.peer.NodeID) {
+				return
+			}
+			time.Sleep(10 * time.Millisecond)
+		}
+		t.Fatalf("worker %s (%s) never registered its controller WebSocket tunnel", nd.peer.Hostname, nd.peer.NodeID)
+	}
 }
 
 // halt stops the worker; its commands run on, as systemd units do.

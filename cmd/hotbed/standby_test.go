@@ -13,7 +13,6 @@ import (
 	"time"
 
 	"github.com/semistrict/hotbed/internal/api"
-	"github.com/semistrict/hotbed/internal/controller"
 	"github.com/semistrict/hotbed/internal/setup"
 )
 
@@ -178,7 +177,7 @@ func TestIdleNodeSleepsAndARunWakesIt(t *testing.T) {
 // A node that takes longer to boot than the controller waits in one call
 // has hotbed run call again (NODE_WAKING), saying so, until it is up.
 func TestRunWaitsForANodeSlowToWake(t *testing.T) {
-	c := newClusterWith(t, clusterOpts{server: func(cfg *controller.ServerConfig) { cfg.WakeWait = time.Second }})
+	c := newClusterWith(t, clusterOpts{server: func(cfg *testServerConfig) { cfg.WakeWait = time.Second }})
 	origin := upstream(t)
 	c.addRepo(origin)
 	const S = "slow-sloth"

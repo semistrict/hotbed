@@ -4,8 +4,9 @@ export { ControllerDO };
 
 const DO_PREFIXES = ["/hotbed.v1.", "/ws/", "/builds/", "/auth/", "/admin/"];
 
-function isControllerRoute(pathname: string): boolean {
+function isControllerRoute(pathname: string, testHarness: boolean): boolean {
 	if (pathname === "/healthz") return true;
+	if (testHarness && pathname.startsWith("/__test/")) return true;
 	return DO_PREFIXES.some((p) => pathname.startsWith(p));
 }
 
@@ -38,9 +39,14 @@ function buildAuthCheckRequest(req: Request): Request {
 export default {
 	async fetch(request: Request, env: ControllerEnv): Promise<Response> {
 		const url = new URL(request.url);
-		const stub = env.CONTROLLER.getByName("default");
+		const testHarness = env.TEST_HARNESS === "1";
+		const doName = testHarness
+			? (request.headers.get("X-Hotbed-Test-DO") ?? url.searchParams.get("__do") ?? "").trim() ||
+				"default"
+			: "default";
+		const stub = env.CONTROLLER.getByName(doName);
 
-		if (isControllerRoute(url.pathname)) {
+		if (isControllerRoute(url.pathname, testHarness)) {
 			return stub.fetch(request);
 		}
 

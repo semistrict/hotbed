@@ -7,14 +7,12 @@ require (
 	github.com/alecthomas/kong v1.17.0
 	github.com/bufbuild/protocompile v0.14.2-0.20261013160345-b79bfe2f85df
 	github.com/coder/websocket v1.8.15
-	github.com/dustinkirkland/golang-petname v0.0.0-20261016130456-fdd95a3d0543
 	github.com/google/go-cmp v0.7.0
 	github.com/google/go-containerregistry v0.22.1
 	github.com/ianlancetaylor/demangle v0.0.0-20261012173340-cbb8aaea4290
 	github.com/itchyny/gojq v0.12.20
 	github.com/modelcontextprotocol/go-sdk v1.8.0
 	github.com/pressly/goose/v3 v3.30.1
-	github.com/robfig/cron/v3 v3.0.1
 	github.com/semistrict/cladefs/go v0.0.0-20261124093933-66cf525d29ce
 	go.opentelemetry.io/collector/component v1.71.0
 	go.opentelemetry.io/collector/consumer/xconsumer v0.165.0

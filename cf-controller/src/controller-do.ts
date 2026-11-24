@@ -1,18 +1,28 @@
 import { DurableObject } from "cloudflare:workers";
-import { create, toBinary } from "@bufbuild/protobuf";
+import { create, toBinary, toJson } from "@bufbuild/protobuf";
 import { drizzle, type DrizzleSqliteDODatabase } from "drizzle-orm/durable-sqlite";
 import { migrate } from "drizzle-orm/durable-sqlite/migrator";
 import migrations from "../drizzle/migrations.js";
 import * as dbSchema from "./db/schema.ts";
 import {
+	BaseSchema,
 	ClusterService,
+	CommandProfileSchema,
+	CommandSchema,
 	DaemonLogLevel,
 	ErrorInfoSchema,
+	FinishedCommandSchema,
 	GitAuthService,
 	QuestionService,
 	ReviewService,
+	RunOutcome,
+	ScheduledRunSchema,
 	ScheduleService,
+	SessionEventSchema,
+	SessionSchema,
 	SessionService,
+	StampSchema,
+	WorkspaceSchema,
 	WorkspaceService,
 } from "./gen/hotbed/v1/hotbed_pb.ts";
 import {
@@ -24,7 +34,7 @@ import {
 	timingSafeStringEqual,
 	type AuthEnv,
 } from "./auth.ts";
-import { BuildDistributor, type BuildsEnv } from "./builds.ts";
+import { BuildDistributor, type BuildsEnv, type TestBuildConfig } from "./builds.ts";
 import { createConnectFetchDispatcher, type ConnectFetchDispatcher } from "./connect-adapter.ts";
 import { ControllerContext } from "./context.ts";
 import { ErrorCode, HotbedError, fromUnknownError } from "./errors.ts";
@@ -44,6 +54,7 @@ export interface ControllerEnv extends AuthEnv, BuildsEnv {
 	CLUSTER_ID?: string;
 	CONTROLLER_NAME?: string;
 	ALLOW_LOCAL_REPOS?: string;
+	TEST_HARNESS?: string;
 	ASSETS?: Fetcher;
 }
 
@@ -107,6 +118,10 @@ export class ControllerDO extends DurableObject<ControllerEnv> {
 	private ctrl!: ControllerContext;
 	private scheduleRunner!: ScheduleRunner;
 	private dispatcher!: ConnectFetchDispatcher;
+	private nowOffsetMs = 0;
+	private testWakeWaitMs?: number;
+	private testAllowLocalRepos?: boolean;
+	private testBuildConfig?: TestBuildConfig;
 
 	constructor(ctx: DurableObjectState, env: ControllerEnv) {
 		super(ctx, env);
@@ -117,46 +132,58 @@ export class ControllerDO extends DurableObject<ControllerEnv> {
 
 			this.store = new ControllerStore(this.ctx.storage, this.db);
 			this.tunnel = new WorkerTunnelHub(this.ctx);
-			this.builds = new BuildDistributor(this.env, this.store);
+			this.initRuntime();
+		});
+	}
 
-			let clusterId = (this.env.CLUSTER_ID ?? "").trim();
+	private initRuntime(): void {
+		this.builds = new BuildDistributor(this.env, this.store);
+		if (this.testBuildConfig) {
+			this.builds.setTestConfig(this.testBuildConfig);
+		}
+
+		let clusterId = (this.env.CLUSTER_ID ?? "").trim();
+		if (!clusterId) {
+			clusterId = this.store.getMeta(CLUSTER_ID_META_KEY) ?? "";
 			if (!clusterId) {
-				clusterId = this.store.getMeta(CLUSTER_ID_META_KEY) ?? "";
-				if (!clusterId) {
-					clusterId = randomHex(8);
-					this.store.setMeta(CLUSTER_ID_META_KEY, clusterId);
-				}
+				clusterId = randomHex(8);
+				this.store.setMeta(CLUSTER_ID_META_KEY, clusterId);
 			}
-			const controllerName = (this.env.CONTROLLER_NAME ?? "").trim() || "cloudflare-do";
-			const allowLocalRepos = (this.env.ALLOW_LOCAL_REPOS ?? "").trim() === "1";
+		}
+		const controllerName = (this.env.CONTROLLER_NAME ?? "").trim() || "cloudflare-do";
+		const allowLocalRepos =
+			this.testAllowLocalRepos ?? (this.env.ALLOW_LOCAL_REPOS ?? "").trim() === "1";
 
-			this.ctrl = new ControllerContext({
-				store: this.store,
-				tunnel: this.tunnel,
-				builds: this.builds,
-				clusterId,
-				controllerName,
-				allowLocalRepos,
-			});
+		this.ctrl = new ControllerContext({
+			store: this.store,
+			tunnel: this.tunnel,
+			builds: this.builds,
+			clusterId,
+			controllerName,
+			allowLocalRepos,
+		});
+		this.ctrl.nowFn = () => Date.now() + this.nowOffsetMs;
+		if (this.testWakeWaitMs !== undefined) {
+			this.ctrl.power.wakeWaitMs = this.testWakeWaitMs;
+		}
 
-			const wsSvc = createWorkspaceService(this.ctrl);
-			const schedSvc = createScheduleService(this.ctrl, wsSvc.helpers);
-			this.scheduleRunner = schedSvc.runner;
-			const clusterSvc = createClusterService(this.ctrl, schedSvc.runner);
-			const sessionSvc = createSessionService(this.ctrl);
-			const questionSvc = createQuestionService(this.ctrl);
-			const reviewSvc = createReviewService(this.ctrl);
-			const gitAuthSvc = createGitAuthService(this.ctrl);
+		const wsSvc = createWorkspaceService(this.ctrl);
+		const schedSvc = createScheduleService(this.ctrl, wsSvc.helpers);
+		this.scheduleRunner = schedSvc.runner;
+		const clusterSvc = createClusterService(this.ctrl, schedSvc.runner);
+		const sessionSvc = createSessionService(this.ctrl);
+		const questionSvc = createQuestionService(this.ctrl);
+		const reviewSvc = createReviewService(this.ctrl);
+		const gitAuthSvc = createGitAuthService(this.ctrl);
 
-			this.dispatcher = createConnectFetchDispatcher((router) => {
-				router.service(ClusterService, clusterSvc);
-				router.service(SessionService, sessionSvc);
-				router.service(WorkspaceService, wsSvc.impl);
-				router.service(QuestionService, questionSvc);
-				router.service(ReviewService, reviewSvc);
-				router.service(ScheduleService, schedSvc.impl);
-				router.service(GitAuthService, gitAuthSvc);
-			});
+		this.dispatcher = createConnectFetchDispatcher((router) => {
+			router.service(ClusterService, clusterSvc);
+			router.service(SessionService, sessionSvc);
+			router.service(WorkspaceService, wsSvc.impl);
+			router.service(QuestionService, questionSvc);
+			router.service(ReviewService, reviewSvc);
+			router.service(ScheduleService, schedSvc.impl);
+			router.service(GitAuthService, gitAuthSvc);
 		});
 	}
 
@@ -223,6 +250,11 @@ export class ControllerDO extends DurableObject<ControllerEnv> {
 	override async fetch(request: Request): Promise<Response> {
 		const url = new URL(request.url);
 		const pathname = url.pathname;
+
+		// 0. Local test harness control endpoints (never active in production)
+		if (this.env.TEST_HARNESS === "1" && pathname.startsWith("/__test/")) {
+			return this.handleTestHarness(request, url);
+		}
 
 		// 1. Health check (unauthenticated)
 		if (pathname === "/healthz" && request.method === "GET") {
@@ -419,6 +451,207 @@ export class ControllerDO extends DurableObject<ControllerEnv> {
 			return res;
 		}
 
+		return new Response("Not Found", { status: 404 });
+	}
+
+	private async handleTestHarness(request: Request, url: URL): Promise<Response> {
+		const sub = url.pathname.slice("/__test/".length);
+		if (sub === "clock" && request.method === "POST") {
+			const body = (await request.json().catch(() => ({}))) as {
+				offsetMs?: number;
+				advanceMs?: number;
+				setNowMs?: number;
+			};
+			if (typeof body.offsetMs === "number") {
+				this.nowOffsetMs = body.offsetMs;
+			} else if (typeof body.advanceMs === "number") {
+				this.nowOffsetMs += body.advanceMs;
+			} else if (typeof body.setNowMs === "number") {
+				this.nowOffsetMs = body.setNowMs - Date.now();
+			}
+			return Response.json({ nowMs: this.ctrl.now(), offsetMs: this.nowOffsetMs });
+		}
+		if (sub === "config" && request.method === "POST") {
+			const body = (await request.json().catch(() => ({}))) as {
+				wakeWaitMs?: number;
+				allowLocalRepos?: boolean;
+				updatesRepo?: string;
+				updatesApiBase?: string;
+				updatesToken?: string;
+				mockBuild?: TestBuildConfig["mockBuild"];
+				clearBuild?: boolean;
+			};
+			if (typeof body.wakeWaitMs === "number") {
+				this.testWakeWaitMs = body.wakeWaitMs;
+				this.ctrl.power.wakeWaitMs = body.wakeWaitMs;
+			}
+			if (typeof body.allowLocalRepos === "boolean") {
+				this.testAllowLocalRepos = body.allowLocalRepos;
+				this.initRuntime();
+			}
+			if (
+				body.updatesRepo !== undefined ||
+				body.updatesApiBase !== undefined ||
+				body.updatesToken !== undefined ||
+				body.mockBuild !== undefined ||
+				body.clearBuild
+			) {
+				const nextCfg: TestBuildConfig = {
+					...this.testBuildConfig,
+					...(body.updatesRepo !== undefined ? { updatesRepo: body.updatesRepo } : {}),
+					...(body.updatesApiBase !== undefined ? { updatesApiBase: body.updatesApiBase } : {}),
+					...(body.updatesToken !== undefined ? { updatesToken: body.updatesToken } : {}),
+					...(body.mockBuild !== undefined ? { mockBuild: body.mockBuild } : {}),
+					...(body.clearBuild ? { clearBuild: true, mockBuild: undefined } : {}),
+				};
+				this.testBuildConfig = nextCfg;
+				this.builds.setTestConfig(nextCfg);
+			}
+			return Response.json({ ok: true, clusterId: this.ctrl.clusterId });
+		}
+		if (sub === "reap-idle" && request.method === "POST") {
+			await this.ctrl.reapIdle();
+			return Response.json({ ok: true });
+		}
+		if (sub === "tick-schedules" && request.method === "POST") {
+			await this.scheduleRunner.tickSchedules();
+			await this.ctrl.settleRuns();
+			return Response.json({ ok: true });
+		}
+		if (sub === "restart" && request.method === "POST") {
+			this.initRuntime();
+			return Response.json({ ok: true, clusterId: this.ctrl.clusterId });
+		}
+		if (sub === "daemon-log" && request.method === "POST") {
+			const body = (await request.json().catch(() => ({}))) as {
+				level?: string;
+				msg?: string;
+				attrs?: Record<string, unknown>;
+				at?: number;
+			};
+			const lvl =
+				(body.level ?? "").toLowerCase() === "error" ? DaemonLogLevel.ERROR : DaemonLogLevel.WARN;
+			this.store.logDaemon(lvl, body.msg ?? "", body.attrs, body.at ?? this.ctrl.now());
+			return Response.json({ ok: true });
+		}
+		if (sub === "seed" && request.method === "POST") {
+			const body = (await request.json().catch(() => ({}))) as {
+				project?: { name: string; remotes?: string[]; at?: number; reason?: string };
+				session?: {
+					id: string;
+					agent: string;
+					project: string;
+					t3codeThreadId?: string;
+					at?: number;
+				};
+				workspace?: { id: string; sessionId: string; nodeId: string; agent: string; at?: number };
+				run?: { schedule: string; sessionId: string; startedAt?: number; outcome?: number };
+			};
+			if (body.project) {
+				this.store.addProject(
+					body.project.name,
+					body.project.remotes ?? [],
+					create(StampSchema, {
+						at: BigInt(body.project.at ?? this.ctrl.now()),
+						reason: body.project.reason ?? "",
+					}),
+				);
+			}
+			if (body.session) {
+				this.store.startSession(
+					body.session.id,
+					body.session.agent,
+					body.session.project,
+					body.session.t3codeThreadId ?? "",
+					body.session.at ?? this.ctrl.now(),
+				);
+			}
+			if (body.workspace) {
+				this.store.addLiveWorkspace(
+					body.workspace.id,
+					body.workspace.sessionId,
+					body.workspace.nodeId,
+					body.workspace.agent,
+					body.workspace.at ?? this.ctrl.now(),
+				);
+			}
+			if (body.run) {
+				this.store.addScheduleRun(
+					create(ScheduledRunSchema, {
+						schedule: body.run.schedule,
+						sessionId: body.run.sessionId,
+						startedAt: BigInt(body.run.startedAt ?? this.ctrl.now()),
+						outcome: (body.run.outcome ?? RunOutcome.RUNNING) as RunOutcome,
+					}),
+				);
+			}
+			return Response.json({ ok: true });
+		}
+		if (sub === "inspect" && request.method === "GET") {
+			const kind = url.searchParams.get("kind") ?? "";
+			const id = url.searchParams.get("id") ?? "";
+			switch (kind) {
+				case "connectedWorkers":
+					return Response.json({ nodeIds: [...this.tunnel.connectedNodeIds()] });
+				case "session": {
+					const s = this.store.tryGetSession(id);
+					return Response.json({ found: Boolean(s), data: s ? toJson(SessionSchema, s) : null });
+				}
+				case "sessionEvents": {
+					const evs = this.store.sessionEventsAfter(id, 0n);
+					return Response.json({
+						data: evs.map((e) => toJson(SessionEventSchema, e)),
+					});
+				}
+				case "nodeView": {
+					const cp = this.store.nodeCheckpoint(id);
+					return Response.json({
+						seq: Number(cp.seq),
+						bases: cp.bases.map((b) => toJson(BaseSchema, b)),
+						workspaces: cp.workspaces.map((w) => toJson(WorkspaceSchema, w)),
+						commands: cp.commands.map((c) => toJson(CommandSchema, c)),
+					});
+				}
+				case "finished": {
+					const f = this.store.finishedCommand(id);
+					return Response.json({
+						found: Boolean(f),
+						data: f ? toJson(FinishedCommandSchema, f) : null,
+					});
+				}
+				case "history": {
+					const hist = this.store.historySince(0);
+					return Response.json({
+						data: hist.map((h) => toJson(FinishedCommandSchema, h)),
+					});
+				}
+				case "commandProfile": {
+					const p = this.store.getCommandProfile(id);
+					return Response.json({
+						found: Boolean(p),
+						data: p ? toJson(CommandProfileSchema, p) : null,
+					});
+				}
+				case "baseByCommand": {
+					const b = this.store.baseByCommand(id);
+					return Response.json({
+						found: Boolean(b),
+						nodeId: b?.nodeId ?? "",
+						base: b ? toJson(BaseSchema, b.base) : null,
+					});
+				}
+				case "command": {
+					try {
+						const route = this.store.lookupCommand(id);
+						return Response.json({ found: true, session: route.session, node: route.node });
+					} catch {
+						return Response.json({ found: false });
+					}
+				}
+				default:
+					return Response.json({ error: `unknown inspect kind ${kind}` }, { status: 400 });
+			}
+		}
 		return new Response("Not Found", { status: 404 });
 	}
 }

@@ -1,34 +1,39 @@
-// Command dev-cockpit runs a self-contained in-process hotbed controller and
-// two fake workers populated with realistic sample data, so UI work against
-// the real ConnectRPC API needs no live cluster (board 7862).
+// Command dev-cockpit runs a self-contained local cf-controller (in workerd
+// via Miniflare) and two fake workers populated with realistic sample data, so
+// UI work against the real ConnectRPC API needs no live cluster (board 7862).
 package main
 
 import (
+	"bufio"
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"log/slog"
 	"net"
 	"net/http"
+	"net/http/httputil"
 	"net/netip"
+	"net/url"
 	"os"
 	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"syscall"
 	"time"
 
 	"github.com/semistrict/hotbed/internal/api"
-	"github.com/semistrict/hotbed/internal/controller"
 	"github.com/semistrict/hotbed/internal/fake"
 	pb "github.com/semistrict/hotbed/internal/gen/hotbed/v1"
 	"github.com/semistrict/hotbed/internal/gen/hotbed/v1/hotbedv1connect"
 	"github.com/semistrict/hotbed/internal/httpx"
 	"github.com/semistrict/hotbed/internal/profiler"
-	"github.com/semistrict/hotbed/internal/statedir"
 	"github.com/semistrict/hotbed/internal/sysinfo"
 	"github.com/semistrict/hotbed/internal/tailnet"
 	"github.com/semistrict/hotbed/internal/tailnet/tailnettest"
@@ -79,8 +84,8 @@ func (d *devTailnet) setLocalUID(fn uidLookupFunc) {
 }
 
 // workerTailnet restricts worker listeners strictly to sockets dialed by the
-// in-process controller client (no loopback fallback) and still verifies real
-// OS peer credentials so another local user cannot spoof a closed port.
+// in-process controller/seed client (no loopback fallback) and still verifies
+// real OS peer credentials so another local user cannot spoof a closed port.
 type workerTailnet struct {
 	*tailnettest.Fake
 	ownerUID uint32
@@ -95,10 +100,151 @@ func (w *workerTailnet) LocalUID(client, server netip.AddrPort) (uint32, error) 
 	if uid != w.ownerUID && uid != 0 {
 		return uid, nil
 	}
-	// The in-process controller acts as the privileged controller daemon
-	// toward its workers (worker.Service.CreateWorkspace checks
-	// !httpx.IsLocalNonRoot).
 	return 0, nil
+}
+
+type devHarness struct {
+	cmd   *exec.Cmd
+	stdin io.WriteCloser
+	url   string
+	token string
+}
+
+func findRepoRoot() (string, error) {
+	dir, err := os.Getwd()
+	if err != nil {
+		return "", err
+	}
+	for {
+		if _, err := os.Stat(filepath.Join(dir, "cf-controller", "scripts", "harness.mjs")); err == nil {
+			return dir, nil
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			return "", errors.New("could not locate cf-controller/scripts/harness.mjs from working directory")
+		}
+		dir = parent
+	}
+}
+
+func startDevHarness() (*devHarness, error) {
+	root, err := findRepoRoot()
+	if err != nil {
+		return nil, err
+	}
+	bundleDir := filepath.Join(root, "cf-controller", ".cloudflare", "output", "v1", "workers", "default", "bundle")
+	if _, err := os.Stat(filepath.Join(bundleDir, "index.js")); err != nil {
+		build := exec.Command("pnpm", "-C", filepath.Join(root, "cf-controller"), "run", "build")
+		if out, berr := build.CombinedOutput(); berr != nil {
+			return nil, fmt.Errorf("build cf-controller bundle: %w\n%s", berr, out)
+		}
+	}
+	script := filepath.Join(root, "cf-controller", "scripts", "harness.mjs")
+	cmd := exec.Command("node", script, "--bundle", bundleDir)
+	cmd.Dir = filepath.Join(root, "cf-controller")
+	stdin, err := cmd.StdinPipe()
+	if err != nil {
+		return nil, err
+	}
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		return nil, err
+	}
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	if err := cmd.Start(); err != nil {
+		return nil, fmt.Errorf("start cf-controller harness: %w", err)
+	}
+	lineCh := make(chan string, 1)
+	errCh := make(chan error, 1)
+	go func() {
+		sc := bufio.NewScanner(stdout)
+		sc.Buffer(make([]byte, 0, 64*1024), 1024*1024)
+		if sc.Scan() {
+			lineCh <- sc.Text()
+			for sc.Scan() {
+			}
+			return
+		}
+		if err := sc.Err(); err != nil {
+			errCh <- err
+		} else {
+			errCh <- io.EOF
+		}
+	}()
+	select {
+	case line := <-lineCh:
+		var ready struct {
+			URL   string `json:"url"`
+			Token string `json:"token"`
+		}
+		if err := json.Unmarshal([]byte(line), &ready); err != nil || ready.URL == "" {
+			_ = cmd.Process.Kill()
+			_ = cmd.Wait()
+			return nil, fmt.Errorf("parse cf-controller harness output %q: %w (stderr: %s)", line, err, stderr.String())
+		}
+		return &devHarness{cmd: cmd, stdin: stdin, url: ready.URL, token: ready.Token}, nil
+	case err := <-errCh:
+		_ = cmd.Wait()
+		return nil, fmt.Errorf("cf-controller harness exited early (%w): %s", err, stderr.String())
+	case <-time.After(30 * time.Second):
+		_ = cmd.Process.Kill()
+		_ = cmd.Wait()
+		return nil, fmt.Errorf("timed out waiting for cf-controller harness: %s", stderr.String())
+	}
+}
+
+func (h *devHarness) Close() {
+	if h == nil {
+		return
+	}
+	_ = h.stdin.Close()
+	done := make(chan struct{})
+	go func() {
+		_ = h.cmd.Wait()
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		_ = h.cmd.Process.Kill()
+		<-done
+	}
+}
+
+func (h *devHarness) doJSON(ctx context.Context, doName, method, path string, reqBody any, out any) error {
+	var body io.Reader
+	if reqBody != nil {
+		b, err := json.Marshal(reqBody)
+		if err != nil {
+			return err
+		}
+		body = bytes.NewReader(b)
+	}
+	req, err := http.NewRequestWithContext(ctx, method, h.url+path, body)
+	if err != nil {
+		return err
+	}
+	req.Header.Set("X-Hotbed-Test-DO", doName)
+	if reqBody != nil {
+		req.Header.Set("Content-Type", "application/json")
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	raw, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return err
+	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return fmt.Errorf("%s %s: HTTP %d: %s", method, path, resp.StatusCode, strings.TrimSpace(string(raw)))
+	}
+	if out != nil {
+		return json.Unmarshal(raw, out)
+	}
+	return nil
 }
 
 type devWorker struct {
@@ -115,7 +261,8 @@ type devWorker struct {
 type devCluster struct {
 	addr    string
 	root    string
-	store   *controller.Store
+	doName  string
+	harness *devHarness
 	tn      *devTailnet
 	ctrlSrv *http.Server
 	ctrlLn  net.Listener
@@ -149,13 +296,33 @@ func startDevCluster(parent context.Context, addr string) (*devCluster, error) {
 		return nil, err
 	}
 	ctx, cancel := context.WithCancel(parent)
-	dc := &devCluster{root: root, cancel: cancel}
+	dc := &devCluster{
+		root:   root,
+		doName: fmt.Sprintf("dev-cockpit-%d-%d", os.Getpid(), time.Now().UnixNano()),
+		cancel: cancel,
+	}
 	ok := false
 	defer func() {
 		if !ok {
 			dc.Close()
 		}
 	}()
+
+	harness, err := startDevHarness()
+	if err != nil {
+		return nil, err
+	}
+	dc.harness = harness
+
+	var cfgRes struct {
+		ClusterID string `json:"clusterId"`
+	}
+	if err := harness.doJSON(ctx, dc.doName, http.MethodPost, "/__test/config", map[string]any{
+		"allowLocalRepos": true,
+	}, &cfgRes); err != nil {
+		return nil, fmt.Errorf("configure dev controller DO: %w", err)
+	}
+	clusterID := cfgRes.ClusterID
 
 	ownerUID := uint32(os.Getuid())
 	ubu1Peer := tailnet.Peer{NodeID: "nUbu1", Hostname: "ubu1", Login: devOwner}
@@ -169,12 +336,6 @@ func startDevCluster(parent context.Context, addr string) (*devCluster, error) {
 	}
 	dc.tn = tn
 	workerID := &workerTailnet{Fake: tn.Fake, ownerUID: ownerUID, ctrlTN: tn}
-
-	store, err := controller.OpenStore(ctx, filepath.Join(root, "controller.db"))
-	if err != nil {
-		return nil, fmt.Errorf("open controller store: %w", err)
-	}
-	dc.store = store
 
 	workerAddrs := map[string]string{}
 	specs := []struct {
@@ -254,20 +415,45 @@ func startDevCluster(parent context.Context, addr string) (*devCluster, error) {
 		dc.workers = append(dc.workers, dw)
 	}
 
-	clusterCfg := statedir.ControllerConfig{ClusterID: "dev-cockpit", Owner: devOwner, Port: api.DefaultPort}
-	ctrl := controller.NewServer(controller.ServerConfig{
-		Store:           store,
-		Identifier:      tn,
-		Cluster:         clusterCfg,
-		Controller:      "ubu1",
-		Hosts:           []string{"ubu1", "localhost"},
-		Self:            loopbackAddrs,
-		LocalUsers:      []uint32{ownerUID},
-		UI:              ui.Handler(),
-		Workers:         tn.Client(ubu1Peer),
-		WorkerAddr:      func(host string) string { return workerAddrs[host] },
-		AllowLocalRepos: true,
+	target, err := url.Parse(harness.url)
+	if err != nil {
+		return nil, err
+	}
+	proxy := httputil.NewSingleHostReverseProxy(target)
+	proxy.FlushInterval = -1
+	origDirector := proxy.Director
+	proxy.Director = func(r *http.Request) {
+		origDirector(r)
+		r.Host = target.Host
+	}
+	uiHandler := ui.Handler()
+	inner := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		p := r.URL.Path
+		if strings.HasPrefix(p, "/hotbed.v1.") || p == "/ws/worker" || p == "/healthz" ||
+			strings.HasPrefix(p, "/builds/") || strings.HasPrefix(p, "/admin/") || strings.HasPrefix(p, "/auth/") {
+			peer := httpx.Peer(r.Context())
+			r2 := r.Clone(r.Context())
+			r2.Header.Set("X-Hotbed-Test-DO", dc.doName)
+			if r2.Header.Get("Authorization") == "" {
+				r2.Header.Set("Authorization", "Bearer "+harness.token)
+			}
+			r2.Header.Set("X-Hotbed-Node-Id", peer.NodeID)
+			r2.Header.Set("X-Hotbed-Host", peer.Hostname)
+			if wa := workerAddrs[peer.Hostname]; wa != "" {
+				r2.Header.Set("X-Hotbed-Addr", wa)
+			}
+			proxy.ServeHTTP(w, r2)
+			return
+		}
+		uiHandler.ServeHTTP(w, r)
 	})
+	gated := httpx.Gate(tn, httpx.Policy{
+		Owner:      devOwner,
+		Self:       loopbackAddrs,
+		Hosts:      []string{"ubu1", "localhost"},
+		LocalUsers: []uint32{ownerUID},
+	}, inner)
+
 	ctrlLn, err := net.Listen("tcp", addr)
 	if err != nil {
 		return nil, fmt.Errorf("listen controller %s: %w", addr, err)
@@ -275,27 +461,19 @@ func startDevCluster(parent context.Context, addr string) (*devCluster, error) {
 	dc.ctrlLn = ctrlLn
 	dc.addr = ctrlLn.Addr().String()
 	dc.ctrlSrv = &http.Server{
-		Handler:           ctrl.Handler(),
+		Handler:           gated,
 		Protocols:         httpx.Protocols(),
 		ReadHeaderTimeout: 10 * time.Second,
 	}
-	dc.wg.Add(3)
+	dc.wg.Add(1)
 	go func() {
 		defer dc.wg.Done()
 		if err := dc.ctrlSrv.Serve(ctrlLn); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			slog.Warn("dev controller server exited", "err", err)
 		}
 	}()
-	go func() {
-		defer dc.wg.Done()
-		ctrl.Reap(ctx)
-	}()
-	go func() {
-		defer dc.wg.Done()
-		ctrl.RunSchedules(ctx)
-	}()
 
-	// Join and connect each worker to the controller.
+	// Join, connect, and open the reverse-RPC tunnel for each worker.
 	for _, dw := range dc.workers {
 		cl, _, err := api.Controller(dc.addr, tn.Client(dw.peer))
 		if err != nil {
@@ -304,11 +482,42 @@ func startDevCluster(parent context.Context, addr string) (*devCluster, error) {
 		if _, err := cl.Join(ctx, &pb.JoinRequest{}); err != nil {
 			return nil, fmt.Errorf("join %s: %w", dw.peer.Hostname, err)
 		}
-		dw.wg.Add(1)
+		dw.wg.Add(2)
 		go func(dw *devWorker, cl hotbedv1connect.ClusterServiceClient) {
 			defer dw.wg.Done()
-			_ = worker.Connect(ctx, dw.eng, cl, clusterCfg.ClusterID, nil)
+			_ = worker.Connect(ctx, dw.eng, cl, clusterID, nil)
 		}(dw, cl)
+		go func(dw *devWorker) {
+			defer dw.wg.Done()
+			_ = worker.Tunnel(
+				ctx,
+				dw.eng,
+				"http://"+dc.addr,
+				harness.token,
+				tailnet.Self{Peer: dw.peer},
+				workerAddrs[dw.peer.Hostname],
+				ubu1Peer.NodeID,
+				devOwner,
+				tn.Client(dw.peer),
+			)
+		}(dw)
+	}
+
+	if err := waitUntil(ctx, 15*time.Second, func() (bool, error) {
+		var res struct {
+			NodeIDs []string `json:"nodeIds"`
+		}
+		if err := harness.doJSON(ctx, dc.doName, http.MethodGet, "/__test/inspect?kind=connectedWorkers", nil, &res); err != nil {
+			return false, err
+		}
+		for _, dw := range dc.workers {
+			if !slices.Contains(res.NodeIDs, dw.peer.NodeID) {
+				return false, nil
+			}
+		}
+		return true, nil
+	}); err != nil {
+		return nil, fmt.Errorf("wait for worker tunnels: %w", err)
 	}
 
 	if err := dc.seed(ctx, tn.Client(browserPeer), tn.Client(ubu1Peer)); err != nil {
@@ -337,8 +546,8 @@ func (dc *devCluster) Close() {
 		_ = dc.ctrlSrv.Close()
 	}
 	dc.wg.Wait()
-	if dc.store != nil {
-		_ = dc.store.Close()
+	if dc.harness != nil {
+		dc.harness.Close()
 	}
 	if dc.root != "" {
 		_ = os.RemoveAll(dc.root)

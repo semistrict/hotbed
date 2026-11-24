@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"testing"
 
@@ -28,6 +29,29 @@ type GitHub struct {
 func NewGitHub(t *testing.T) *GitHub {
 	g := &GitHub{token: "secret", Releases: map[int64]map[string][]byte{}}
 	mux := http.NewServeMux()
+	mux.HandleFunc("GET /repos/semistrict/hotbed/releases", func(w http.ResponseWriter, r *http.Request) {
+		if !g.authorized(w, r) {
+			return
+		}
+		var nums []int64
+		for n := range g.Releases {
+			nums = append(nums, n)
+		}
+		slices.SortFunc(nums, func(a, b int64) int {
+			if a > b {
+				return -1
+			}
+			if a < b {
+				return 1
+			}
+			return 0
+		})
+		var items []string
+		for _, n := range nums {
+			items = append(items, g.releaseJSON(n))
+		}
+		fmt.Fprintf(w, "[%s]", strings.Join(items, ","))
+	})
 	mux.HandleFunc("GET /repos/semistrict/hotbed/releases/latest", func(w http.ResponseWriter, r *http.Request) {
 		g.release(w, r, g.latest)
 	})
@@ -73,20 +97,24 @@ func (g *GitHub) authorized(w http.ResponseWriter, r *http.Request) bool {
 	return true
 }
 
-func (g *GitHub) release(w http.ResponseWriter, r *http.Request, n int64) {
-	if !g.authorized(w, r) {
-		return
-	}
-	assets, ok := g.Releases[n]
-	if !ok {
-		http.Error(w, `{"message":"Not Found"}`, http.StatusNotFound)
-		return
-	}
+func (g *GitHub) releaseJSON(n int64) string {
+	assets := g.Releases[n]
 	var list []string
 	for name := range assets {
 		list = append(list, fmt.Sprintf(`{"name":%q,"url":"%s/repos/semistrict/hotbed/releases/assets/%d/%s"}`, name, g.srv.URL, n, name))
 	}
-	fmt.Fprintf(w, `{"tag_name":"build-%d","assets":[%s]}`, n, strings.Join(list, ","))
+	return fmt.Sprintf(`{"tag_name":"build-%d","assets":[%s]}`, n, strings.Join(list, ","))
+}
+
+func (g *GitHub) release(w http.ResponseWriter, r *http.Request, n int64) {
+	if !g.authorized(w, r) {
+		return
+	}
+	if _, ok := g.Releases[n]; !ok {
+		http.Error(w, `{"message":"Not Found"}`, http.StatusNotFound)
+		return
+	}
+	fmt.Fprint(w, g.releaseJSON(n))
 }
 
 // Publish adds build n, as CI publishes it: a binary per platform and their

@@ -89,6 +89,7 @@ func wholeSuite() bool {
 func TestMain(m *testing.M) {
 	worker.Main(os.Args[1:])
 	code := m.Run()
+	stopCFHarness()
 	if code == 0 && wholeSuite() {
 		if missing := uncalled(); len(missing) > 0 {
 			fmt.Fprintf(os.Stderr, "FAIL: the CLI never made these API calls; give each a command and test it (AGENTS.md):\n  %s\n", strings.Join(missing, "\n  "))

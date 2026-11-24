@@ -20,6 +20,9 @@ skills:
 	go generate ./skills
 
 test:
+	pnpm -C cf-controller run build
 	go test -race ./...
+	pnpm -C cf-controller run check
+	pnpm -C cf-controller test
 	pnpm -C ui test
 	pnpm -C ui typecheck

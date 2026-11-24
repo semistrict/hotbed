@@ -8,7 +8,6 @@ import (
 	"time"
 
 	"github.com/semistrict/hotbed/internal/api"
-	"github.com/semistrict/hotbed/internal/controller"
 	"github.com/semistrict/hotbed/internal/daemonlog"
 	pb "github.com/semistrict/hotbed/internal/gen/hotbed/v1"
 	"github.com/semistrict/hotbed/internal/worker"
@@ -16,15 +15,6 @@ import (
 
 func TestDaemonLogsCLIAndMultiNodeAggregation(t *testing.T) {
 	now := time.Now().UTC()
-	ctrlLogs, err := daemonlog.Open(filepath.Join(t.TempDir(), "ctrl-logs"), daemonlog.Config{
-		MaxFileBytes: 4096,
-		MaxBackups:   2,
-		Now:          func() time.Time { return now },
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = ctrlLogs.Close() })
 
 	workerLogs := map[string]*daemonlog.Store{}
 	for _, host := range []string{"asahimbp", "mini"} {
@@ -41,9 +31,6 @@ func TestDaemonLogsCLIAndMultiNodeAggregation(t *testing.T) {
 	}
 
 	c := newFleetWith(t, 2, clusterOpts{
-		server: func(cfg *controller.ServerConfig) {
-			cfg.DaemonLogs = ctrlLogs
-		},
 		engine: []func(*worker.EngineConfig){
 			func(cfg *worker.EngineConfig) {
 				cfg.DaemonLogs = workerLogs[cfg.Host]
@@ -52,10 +39,10 @@ func TestDaemonLogsCLIAndMultiNodeAggregation(t *testing.T) {
 	})
 	c.online()
 
-	// Emit INFO (ignored by daemon logs), WARN, and ERROR on controller and each worker.
-	ctrlLogger := slog.New(ctrlLogs.Handler(nil))
-	ctrlLogger.Info("controller info ignored")
-	ctrlLogger.Warn("controller warn sample", "component", "reaper")
+	// Emit WARN and ERROR on controller (DO SQLite) and each worker (rotating files).
+	if err := c.store.LogDaemon(t.Context(), "warn", "controller warn sample", map[string]any{"component": "reaper"}, now); err != nil {
+		t.Fatal(err)
+	}
 	time.Sleep(5 * time.Millisecond)
 	slog.New(workerLogs["asahimbp"].Handler(nil)).Error("asahi error sample", "err", "zfs busy")
 	time.Sleep(5 * time.Millisecond)
@@ -78,7 +65,7 @@ func TestDaemonLogsCLIAndMultiNodeAggregation(t *testing.T) {
 		if !src.Reachable {
 			t.Errorf("source %s unexpectedly unreachable: %s", src.Source, src.Error)
 		}
-		if src.MaxFiles != 3 || src.MaxFileBytes != 4096 {
+		if src.Role == "worker" && (src.MaxFiles != 3 || src.MaxFileBytes != 4096) {
 			t.Errorf("source %s rotation stats = %+v", src.Source, src)
 		}
 	}

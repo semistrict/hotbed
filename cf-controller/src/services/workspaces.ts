@@ -64,6 +64,7 @@ import {
 	type NodeView,
 } from "../placement.ts";
 import { BOOT_TIMEOUT_MS, isCommandLive } from "../standby.ts";
+import { queryProfile } from "../profile-query.ts";
 import { sessionEndedError, type CommandRoute, type WorkspaceRow } from "../store.ts";
 
 const DEFAULT_COMMAND_LIMIT = 50;
@@ -1162,7 +1163,7 @@ export function createWorkspaceService(ctrl: ControllerContext): {
 				const stored = ctrl.store.getCommandProfile(id);
 				if (stored) {
 					stored.live = false;
-					return stored;
+					return queryProfile(stored, req);
 				}
 				try {
 					const { host, nodeId } = commandOf(id);

@@ -64,11 +64,32 @@ func Tunnel(
 	owner string,
 	hc *http.Client,
 ) error {
+	return TunnelWithMiddleware(ctx, eng, controllerBaseURL, token, self, workerAddr, controllerNodeID, owner, hc, nil)
+}
+
+// TunnelWithMiddleware is Tunnel with an optional HTTP middleware around the
+// incoming controller->worker WorkspaceService handler (used by tests for fault
+// injection such as network partitions and workspace creation gates).
+func TunnelWithMiddleware(
+	ctx context.Context,
+	eng *Engine,
+	controllerBaseURL string,
+	token string,
+	self tailnet.Self,
+	workerAddr string,
+	controllerNodeID string,
+	owner string,
+	hc *http.Client,
+	wrap func(http.Handler) http.Handler,
+) error {
 	handler := newTunnelHandler(eng, tailnet.Peer{
 		NodeID:   controllerNodeID,
 		Hostname: "controller",
 		Login:    owner,
 	})
+	if wrap != nil {
+		handler = wrap(handler)
+	}
 	return runTunnelLoop(ctx, handler, controllerBaseURL, token, self, workerAddr, hc)
 }
 

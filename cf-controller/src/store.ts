@@ -2301,10 +2301,18 @@ export class ControllerStore {
 		askedBy: string;
 		limit: number;
 	}): { questions: Question[]; total: number } {
+		if (filter.project) {
+			this.getProject(filter.project);
+		}
 		const states =
 			filter.states.length > 0
 				? filter.states.map(questionStateName)
-				: [questionStateName(QuestionState.OPEN)];
+				: [
+						questionStateName(QuestionState.OPEN),
+						questionStateName(QuestionState.ANSWERED),
+						questionStateName(QuestionState.DISMISSED),
+						questionStateName(QuestionState.HANDLED),
+					];
 		const ph = states.map(() => "?").join(",");
 		const total = num(
 			this.sql
@@ -2576,6 +2584,7 @@ export class ControllerStore {
 			const r = unmarshal(ReviewSchema, str(row.doc));
 			r.id = num(row.id);
 			r.project = str(row.project);
+			r.report = "";
 			this.attachReviewCountsAndDetails(r, false);
 			return r;
 		});
@@ -3077,7 +3086,7 @@ export class ControllerStore {
 
 export function sessionEndedError(id: string, reason: string): Error {
 	const msg = reason ? `session ${id} ended (${reason})` : `session ${id} ended`;
-	return hotbedError(ErrorCode.Conflict, msg).withSuggestion(
+	return hotbedError(ErrorCode.NotFound, msg).withSuggestion(
 		`start a new session (hotbed session start), or resume this one (hotbed session start --resume ${id})`,
 	);
 }

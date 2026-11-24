@@ -358,7 +358,7 @@ func TestInterruptedStartIsNotStarted(t *testing.T) {
 	c := newCluster(t)
 	c.addRepo(upstream(t))
 	c.ok(nil, "schedule", "add", "half", "-r", "app", "--cron", nightly, "--", "true")
-	store, now := c.serverCfg.Store, c.clock.Now()
+	store, now := c.store, c.clock.Now()
 	if _, err := store.AddProject(t.Context(), "app", nil, &pb.Stamp{At: now.UnixMilli()}); err != nil {
 		t.Fatal(err)
 	}

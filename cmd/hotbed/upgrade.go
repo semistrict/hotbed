@@ -18,7 +18,7 @@ import (
 
 // A client follows the controller's build as workers do: from the
 // controller, which keeps it. One on a CI build notices the controller's
-// build on every answer (controller.BuildHeader) and, after the command it
+// build on every answer (api.BuildHeader) and, after the command it
 // ran, installs it over itself; a dev build is left alone, as someone
 // building hotbed runs it. `hotbed upgrade` installs it whatever the client
 // runs.
@@ -78,17 +78,18 @@ func (c *adminUpgradeCmd) Exec(ctx context.Context, d deps) (any, error) {
 	if err != nil {
 		return nil, err
 	}
+	upgraded := res.Restarting || res.Build > res.From
 	out := adminUpgradeResult{
 		Build:      res.Build,
-		Upgraded:   res.Restarting,
+		Upgraded:   upgraded,
 		Restarting: res.Restarting,
 	}
-	if res.Restarting {
+	if upgraded {
 		out.From = res.From
-		if c.Wait > 0 {
-			if err := awaitControllerBuild(ctx, cl, res.Build, c.Wait); err != nil {
-				return nil, err
-			}
+	}
+	if res.Restarting && c.Wait > 0 {
+		if err := awaitControllerBuild(ctx, cl, res.Build, c.Wait); err != nil {
+			return nil, err
 		}
 	}
 	return out, nil
