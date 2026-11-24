@@ -152,6 +152,9 @@ table inet hotbed_vm {
 		if err := m.ensureDockerUserForward(ctx); err != nil {
 			return err
 		}
+		if err := m.ensureFirewalldForward(ctx); err != nil {
+			return err
+		}
 		return nil
 	}
 	return errors.New("nft binary not found on host; install nftables for Firecracker VM NAT networking")
@@ -182,6 +185,25 @@ func (m *NetManager) ensureDockerUserForward(ctx context.Context) error {
 		if err := runCmd(ctx, "iptables", insertArgs...); err != nil {
 			return fmt.Errorf("add DOCKER-USER rule for %s: %w", m.bridgeName, err)
 		}
+	}
+	return nil
+}
+
+// ensureFirewalldForward adds m.bridgeName to firewalld's trusted zone when
+// firewalld is active (e.g. Fedora / RHEL), because firewalld's filter_FORWARD
+// chain rejects packets from unassigned interfaces with icmpx admin-prohibited.
+func (m *NetManager) ensureFirewalldForward(ctx context.Context) error {
+	if _, err := exec.LookPath("firewall-cmd"); err != nil {
+		return nil
+	}
+	if err := runCmd(ctx, "firewall-cmd", "--state"); err != nil {
+		return nil
+	}
+	if err := runCmd(ctx, "firewall-cmd", "--zone=trusted", "--query-interface="+m.bridgeName); err == nil {
+		return nil
+	}
+	if err := runCmd(ctx, "firewall-cmd", "--zone=trusted", "--change-interface="+m.bridgeName); err != nil {
+		return fmt.Errorf("add %s to firewalld trusted zone: %w", m.bridgeName, err)
 	}
 	return nil
 }

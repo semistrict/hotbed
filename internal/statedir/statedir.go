@@ -113,6 +113,8 @@ type VMConfig struct {
 	DiskBytes          uint64   `json:"diskBytes,omitempty"`
 	DAXWindowBytes     uint64   `json:"daxWindowBytes,omitempty"`
 	DAXPrivateMaxBytes uint64   `json:"daxPrivateMaxBytes,omitempty"`
+	DisableDAX         bool     `json:"disableDax,omitempty"` // omit virtio-extent DAX window (e.g. 16 KiB arm64 hosts)
+	CacheType          string   `json:"cacheType,omitempty"`  // virtio-extent cache_type: "Unsafe" (default, non-blocking fsync) or "Writeback"
 	BridgeName         string   `json:"bridgeName,omitempty"`
 	BridgeCIDR         string   `json:"bridgeCIDR,omitempty"`
 	DNSServers         []string `json:"dnsServers,omitempty"`

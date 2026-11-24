@@ -148,6 +148,7 @@ type fcBalloon struct {
 	AmountMiB            int  `json:"amount_mib"`
 	DeflateOnOOM         bool `json:"deflate_on_oom"`
 	StatsPollingInterval int  `json:"stats_polling_interval_s,omitempty"`
+	FreePageReporting    bool `json:"free_page_reporting,omitempty"`
 }
 
 type fcCladefs struct {
@@ -156,8 +157,9 @@ type fcCladefs struct {
 	PathOnHost         string `json:"path_on_host"`
 	Capacity           uint64 `json:"capacity"`
 	CladefsdSocket     string `json:"cladefsd_socket"`
-	DAXWindowSize      uint64 `json:"dax_window_size"`
-	DAXPrivateMaxBytes uint64 `json:"dax_private_max_bytes"`
+	DAXWindowSize      uint64 `json:"dax_window_size,omitempty"`
+	DAXPrivateMaxBytes uint64 `json:"dax_private_max_bytes,omitempty"`
+	CacheType          string `json:"cache_type,omitempty"`
 }
 
 // BuildFirecrackerConfig constructs the Firecracker JSON config for spec.
@@ -208,6 +210,7 @@ func (m *Manager) BuildFirecrackerConfig(spec LaunchSpec, cid uint32, vsockUDS s
 			AmountMiB:            m.cfg.BalloonTargetMiB,
 			DeflateOnOOM:         true,
 			StatsPollingInterval: 5,
+			FreePageReporting:    true,
 		},
 		Cladefs: []fcCladefs{{
 			ID:                 "rootfs",
@@ -217,6 +220,7 @@ func (m *Manager) BuildFirecrackerConfig(spec LaunchSpec, cid uint32, vsockUDS s
 			CladefsdSocket:     spec.CladefsVMSock,
 			DAXWindowSize:      m.cfg.DAXWindowBytes,
 			DAXPrivateMaxBytes: m.cfg.DAXPrivateMaxBytes,
+			CacheType:          m.cfg.CacheType,
 		}},
 	}
 	if netAlloc.TAPName != "" {

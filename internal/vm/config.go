@@ -19,6 +19,7 @@ const (
 	DefaultDiskBytes          = 32 << 30
 	DefaultDAXWindowBytes     = 2 << 30
 	DefaultDAXPrivateMaxBytes = 512 << 20
+	DefaultCacheType          = "Unsafe"
 	DefaultMemMiB             = 4096
 	DefaultBootTimeout        = 30 * time.Second
 	DefaultShutdownTimeout    = 5 * time.Second
@@ -41,6 +42,8 @@ type Config struct {
 	DefaultDiskBytes   uint64        // Fxfs rootfs capacity in bytes
 	DAXWindowBytes     uint64        // virtio-extent DAX window size in bytes
 	DAXPrivateMaxBytes uint64        // per-VM private DAX page budget in bytes
+	DisableDAX         bool          // omit DAX window (required on 16 KiB host pages until upstream DAX support)
+	CacheType          string        // virtio-extent cache_type: "Unsafe" (default, fsync returns once ordered) or "Writeback"
 	BalloonTargetMiB   int           // optional initial balloon target (0 = deflate on OOM only)
 	BridgeName         string        // host bridge for VM TAPs (default hb-vm0)
 	BridgeCIDR         string        // gateway IP/mask on BridgeName (default 10.199.0.1/16)
@@ -77,11 +80,19 @@ func (c Config) Normalized() Config {
 	if c.DefaultDiskBytes == 0 {
 		c.DefaultDiskBytes = DefaultDiskBytes
 	}
-	if c.DAXWindowBytes == 0 {
-		c.DAXWindowBytes = DefaultDAXWindowBytes
+	if c.DisableDAX {
+		c.DAXWindowBytes = 0
+		c.DAXPrivateMaxBytes = 0
+	} else {
+		if c.DAXWindowBytes == 0 {
+			c.DAXWindowBytes = DefaultDAXWindowBytes
+		}
+		if c.DAXPrivateMaxBytes == 0 {
+			c.DAXPrivateMaxBytes = DefaultDAXPrivateMaxBytes
+		}
 	}
-	if c.DAXPrivateMaxBytes == 0 {
-		c.DAXPrivateMaxBytes = DefaultDAXPrivateMaxBytes
+	if c.CacheType == "" {
+		c.CacheType = DefaultCacheType
 	}
 	if c.BridgeName == "" {
 		c.BridgeName = DefaultBridgeName

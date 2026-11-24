@@ -114,6 +114,31 @@ func TestBuildFirecrackerConfig(t *testing.T) {
 	if !strings.Contains(string(b), `"drives":[]`) {
 		t.Fatalf("Firecracker JSON must include empty drives array: %s", string(b))
 	}
+	if !strings.Contains(string(b), `"cache_type":"Unsafe"`) {
+		t.Fatalf("Firecracker JSON must default cache_type to Unsafe: %s", string(b))
+	}
+
+	noDAXMgr, err := NewManager(Config{
+		RunDir:         t.TempDir(),
+		KernelPath:     "/var/lib/cladefs/Image",
+		DisableDAX:     true,
+		DisableNetwork: true,
+	})
+	if err != nil {
+		t.Fatalf("NewManager(DisableDAX): %v", err)
+	}
+	noDAXFC := noDAXMgr.BuildFirecrackerConfig(LaunchSpec{
+		ID:            "ws-arm64",
+		CellHostPath:  "/mnt/cells/ws-arm64",
+		CladefsVMSock: "/run/cladefsd/vm.sock",
+	}, 4, "/run/hotbed/vms/ws-arm64/vsock.sock", NetAlloc{})
+	noDAXBytes, err := json.Marshal(noDAXFC)
+	if err != nil {
+		t.Fatalf("marshal noDAX: %v", err)
+	}
+	if strings.Contains(string(noDAXBytes), "dax_window_size") || strings.Contains(string(noDAXBytes), "dax_private_max_bytes") {
+		t.Fatalf("DisableDAX must omit dax_window_size and dax_private_max_bytes: %s", string(noDAXBytes))
+	}
 }
 
 func shortSockDir(t *testing.T) string {
