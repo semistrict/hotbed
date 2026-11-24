@@ -5,11 +5,19 @@ package main
 import (
 	"log/slog"
 	"os"
+	"os/exec"
 	"os/signal"
 	"syscall"
 )
 
-func initPID1(log *slog.Logger) error {
+// runPID1Supervisor mounts Linux API filesystems, forks hotbed-guestd as a
+// child process (PID 2) with --no-pid1, and stays as PID 1 solely to reap
+// orphaned grandchildren. Separating PID 1 reaping from PID 2's exec.Cmd.Wait
+// calls prevents wait4(-1) from stealing direct child exit statuses (ECHILD).
+//
+// Returns true if the supervisor ran to completion (caller should exit), or
+// false if spawning the child failed and caller should fall back in-process.
+func runPID1Supervisor(log *slog.Logger) bool {
 	mounts := []struct {
 		src, target, fstype string
 		flags               uintptr
@@ -31,19 +39,41 @@ func initPID1(log *slog.Logger) error {
 			}
 		}
 	}
-	// Reap orphaned children when running as PID 1.
-	ch := make(chan os.Signal, 16)
-	signal.Notify(ch, syscall.SIGCHLD)
+
+	args := append([]string{"--no-pid1"}, os.Args[1:]...)
+	cmd := exec.Command("/proc/self/exe", args...)
+	cmd.Stdin = os.Stdin
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	if err := cmd.Start(); err != nil {
+		log.Error("pid1 supervisor failed to spawn guestd child; falling back in-process", "err", err)
+		return false
+	}
+	childPID := cmd.Process.Pid
+
+	sigCh := make(chan os.Signal, 8)
+	signal.Notify(sigCh, syscall.SIGTERM, syscall.SIGINT)
 	go func() {
-		for range ch {
-			for {
-				var ws syscall.WaitStatus
-				pid, err := syscall.Wait4(-1, &ws, syscall.WNOHANG, nil)
-				if pid <= 0 || err != nil {
-					break
-				}
-			}
+		for sig := range sigCh {
+			_ = syscall.Kill(childPID, sig.(syscall.Signal))
 		}
 	}()
-	return nil
+
+	// Reap all exiting processes (orphaned grandchildren AND our child PID 2).
+	for {
+		var ws syscall.WaitStatus
+		pid, err := syscall.Wait4(-1, &ws, 0, nil)
+		if err == syscall.EINTR {
+			continue
+		}
+		if pid == childPID || err == syscall.ECHILD {
+			// Sync filesystems and cleanly restart/halt the Firecracker VM
+			// instead of returning from PID 1 (which would kernel panic).
+			syscall.Sync()
+			if os.Getpid() == 1 {
+				_ = syscall.Reboot(syscall.LINUX_REBOOT_CMD_RESTART)
+			}
+			return true
+		}
+	}
 }

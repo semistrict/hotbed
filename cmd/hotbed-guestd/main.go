@@ -25,14 +25,15 @@ func main() {
 		stateDir    = flag.String("state-dir", "/run/hotbed-guestd", "runtime state directory for logs and sync bundles")
 		listenDir   = flag.String("listen-dir", "", "if set, listen on Unix sockets in this directory instead of AF_VSOCK (for tests)")
 		gitAuthSock = flag.String("git-auth-sock", "/run/hotbed/git-auth/git-cred.sock", "guest Unix socket path bridged to host git-auth over vsock (empty disables)")
-		pid1        = flag.Bool("pid1", false, "mount Linux API filesystems and reap zombies when running as PID 1")
+		pid1        = flag.Bool("pid1", false, "mount Linux API filesystems and supervise child when running as PID 1")
+		noPID1      = flag.Bool("no-pid1", false, "run server directly without PID 1 supervisor wrapper")
 	)
 	flag.Parse()
 
 	log := slog.New(slog.NewJSONHandler(os.Stderr, nil))
-	if *pid1 || os.Getpid() == 1 {
-		if err := initPID1(log); err != nil {
-			log.Warn("pid1 init incomplete", "err", err)
+	if !*noPID1 && (*pid1 || os.Getpid() == 1) {
+		if runPID1Supervisor(log) {
+			return
 		}
 	}
 

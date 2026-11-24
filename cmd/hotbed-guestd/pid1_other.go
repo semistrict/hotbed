@@ -4,4 +4,4 @@ package main
 
 import "log/slog"
 
-func initPID1(*slog.Logger) error { return nil }
+func runPID1Supervisor(*slog.Logger) bool { return false }
