@@ -187,6 +187,10 @@ type Engine struct {
 	workspaces      map[string]*workspace
 	commands        map[string]*command
 	usage           *pb.NodeUsage
+	// lastMem is the most recent sysinfo.Mem reading from Sample, kept so
+	// fallback memory checks pair total and used from the same domain (host
+	// or enclosing cgroup slice) instead of mixing slice limit with host use.
+	lastMem sysinfo.Mem
 	// cpu holds new work while the CPUs are saturated; held is what holds
 	// new work on the node now, if anything, and since when.
 	cpu  cpuGate
@@ -730,6 +734,9 @@ func (e *Engine) Sample() {
 	}
 	e.mu.Lock()
 	e.oomKills = oom
+	if mem.Total > 0 {
+		e.lastMem = mem
+	}
 	e.usage = &pb.NodeUsage{
 		CpuBusy:         busy,
 		MemoryUsedBytes: mem.Used(),

@@ -136,6 +136,169 @@ func TestABaseBuildIsGuaranteedWhatTheLastOneHeld(t *testing.T) {
 	}
 }
 
+// A base freshen's guarantee comes from an earlier build's peak held memory
+// (anon + swap), capped at admitLimit (86% of RAM), so other hotbed work
+// leaves it room. Even on a completely idle node, OS/kernel/ZFS ARC overhead
+// or a shared host's desktop routinely keeps MemAvailable below 86% of RAM
+// (and fake.NewSystem itself has 12 GiB available of 16 GiB, below its
+// 13.76 GiB admitLimit). The freshen must wait while other commands hold
+// reservations, admit once the node drains despite want > MemAvailable, and
+// still hold when the node is genuinely past parkAt (93%) or admitPressure
+// (board 11078).
+func TestFreshenAdmitsWhenIdleEvenIfGuaranteeExceedsMemAvailable(t *testing.T) {
+	t.Run("freshen capped at admitLimit admits on idle node with lower MemAvailable", func(t *testing.T) {
+		e, units, sys, now := parkEngine(t)
+		// Default fake.NewSystem: 16 GiB total, 12 GiB available (25% used),
+		// admitLimit = 13.76 GiB. Previous freshen peaked at 18 GiB (anon + swap).
+		project := &pb.HostedProject{Name: "cladefs", Repos: []*pb.Repo{{Id: "cladefs", Url: "https://example.com/cladefs.git"}}}
+		h := heads{"cladefs": strings.Repeat("b", 40)}
+
+		g1 := &pb.Base{Id: baseSnapshot("cladefs", 1), Project: "cladefs", NodeId: "n", Generation: 1, State: warm, Command: "f-cladefs-g1", PeakMemoryBytes: 18 << 30}
+		e.mu.Lock()
+		e.bases[g1.Id] = g1
+		e.mu.Unlock()
+
+		// While other work holds memory, the freshen waits for the node to drain.
+		e.start(t, units, now, "work-1", "a", "build")
+		units.SetAnon("hotbed-work-1", 4<<30)
+		e.step(t.Context())
+
+		g2, err := e.startFreshen(t.Context(), project, 2, nil, h, "r2")
+		if err != nil {
+			t.Fatal(err)
+		}
+		f := e.commands[g2.Command]
+		f.cmd().Args = []string{"sleep", "60"}
+		t.Cleanup(func() { units.Stop(context.WithoutCancel(t.Context()), "hotbed-"+g2.Command) })
+
+		e.step(t.Context())
+		if s := f.cmd().State; s != queued {
+			t.Fatalf("freshen beside 4 GiB work is %v, want queued", s)
+		}
+
+		// Once work-1 ends, the node is idle (0 reserved, 12 GiB physically
+		// available < 13.76 GiB guarantee): the freshen MUST admit.
+		if _, err := e.Stop(t.Context(), "work-1", "done"); err != nil {
+			t.Fatal(err)
+		}
+		e.step(t.Context())
+		if s := f.cmd().State; s != running {
+			t.Fatalf("freshen on drained node (needs %s, %s MemAvailable) is %v: %q, want running",
+				gib(f.cmd().Limits.MemoryLowBytes), gib(sys.Mem.Available), s, f.cmd().Reason)
+		}
+	})
+
+	t.Run("freshen below admitLimit but above MemAvailable admits on shared host", func(t *testing.T) {
+		e, units, sys, _ := parkEngine(t)
+		// Simulate a shared desktop host (e.g. asahimbp): 65% used (5.6 GiB
+		// available of 16 GiB), 0% PSI, previous freshen held 9 GiB.
+		sys.SetUsed(sys.Mem.Total * 65 / 100)
+		project := &pb.HostedProject{Name: "app", Repos: []*pb.Repo{{Id: "app", Url: "https://example.com/app.git"}}}
+		h := heads{"app": strings.Repeat("c", 40)}
+
+		g1 := &pb.Base{Id: baseSnapshot("app", 1), Project: "app", NodeId: "n", Generation: 1, State: warm, Command: "f-app-g1", PeakMemoryBytes: 9 << 30}
+		e.mu.Lock()
+		e.bases[g1.Id] = g1
+		e.mu.Unlock()
+
+		g2, err := e.startFreshen(t.Context(), project, 2, nil, h, "r2")
+		if err != nil {
+			t.Fatal(err)
+		}
+		f := e.commands[g2.Command]
+		f.cmd().Args = []string{"sleep", "60"}
+		t.Cleanup(func() { units.Stop(context.WithoutCancel(t.Context()), "hotbed-"+g2.Command) })
+
+		e.step(t.Context())
+		if s := f.cmd().State; s != running {
+			t.Fatalf("9 GiB freshen on idle 65%%-used node is %v: %q, want running", s, f.cmd().Reason)
+		}
+	})
+
+	t.Run("freshen still waits when node is past parkAt or under memory pressure", func(t *testing.T) {
+		e, units, sys, _ := parkEngine(t)
+		project := &pb.HostedProject{Name: "app", Repos: []*pb.Repo{{Id: "app", Url: "https://example.com/app.git"}}}
+		h := heads{"app": strings.Repeat("d", 40)}
+
+		g1 := &pb.Base{Id: baseSnapshot("app", 1), Project: "app", NodeId: "n", Generation: 1, State: warm, Command: "f-app-g1", PeakMemoryBytes: 18 << 30}
+		e.mu.Lock()
+		e.bases[g1.Id] = g1
+		e.mu.Unlock()
+
+		sys.SetUsed(sys.Mem.Total * 95 / 100)
+		g2, err := e.startFreshen(t.Context(), project, 2, nil, h, "r2")
+		if err != nil {
+			t.Fatal(err)
+		}
+		f := e.commands[g2.Command]
+		f.cmd().Args = []string{"sleep", "60"}
+		t.Cleanup(func() { units.Stop(context.WithoutCancel(t.Context()), "hotbed-"+g2.Command) })
+
+		e.step(t.Context())
+		if s := f.cmd().State; s != queued || !strings.HasPrefix(f.cmd().Reason, "waiting for memory") {
+			t.Fatalf("freshen at 95%% memory used is %v: %q, want queued waiting for memory", s, f.cmd().Reason)
+		}
+
+		// Memory use drops under parkAt, but PSI is still past admitPressure: waits.
+		sys.SetUsed(sys.Mem.Total * 30 / 100)
+		sys.Psi = 30
+		e.Sample()
+		e.step(t.Context())
+		if s := f.cmd().State; s != queued || !strings.Contains(f.cmd().Reason, "memory pressure") {
+			t.Fatalf("freshen at 30%% memory PSI is %v: %q, want queued waiting for memory pressure", s, f.cmd().Reason)
+		}
+
+		// Pressure clears: freshen admits.
+		sys.Psi = 0
+		e.Sample()
+		e.step(t.Context())
+		if s := f.cmd().State; s != running {
+			t.Fatalf("freshen once memory and pressure cleared is %v: %q, want running", s, f.cmd().Reason)
+		}
+	})
+
+	t.Run("explicit --mem-low command still enforces physical headroom", func(t *testing.T) {
+		e, units, sys, _ := parkEngine(t)
+		// 10 GiB used of 16 GiB (62.5%, under parkAt) -> 6 GiB physically available.
+		sys.SetUsed(10 << 30)
+		if _, err := e.Exec(t.Context(), &pb.RunCommandRequest{
+			Id: "explicit-8g", WorkspaceId: "a", Args: []string{"sleep", "60"},
+			Limits: &pb.CommandLimits{MemoryLowBytes: 8 << 30},
+		}); err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { units.Stop(context.WithoutCancel(t.Context()), "hotbed-explicit-8g") })
+
+		e.step(t.Context())
+		cmd := e.commands["explicit-8g"].cmd()
+		if cmd.State != queued || !strings.Contains(cmd.Reason, "physically available") {
+			t.Fatalf("explicit 8 GiB command with 6 GiB available is %v: %q, want queued waiting for physically available memory", cmd.State, cmd.Reason)
+		}
+	})
+
+	t.Run("cached sample keeps memory total and used from the same domain", func(t *testing.T) {
+		e, _, sys, _ := parkEngine(t)
+		// Simulate a cgroup-capped worker (10 GiB slice) whose fuller sampled
+		// domain is the 18 GiB host with 12 GiB used (67% full, 6 GiB available).
+		e.mu.Lock()
+		e.resources.MemoryBytes = 10 << 30
+		e.mu.Unlock()
+		sys.Mem.Total = 18 << 30
+		sys.Mem.Available = 6 << 30
+		e.Sample()
+
+		c := e.newCommand(&pb.CommandRecord{
+			Command: &pb.Command{Id: "c-dom", Kind: "build", Limits: &pb.CommandLimits{MemoryLowBytes: 2 << 30}},
+		})
+		e.mu.Lock()
+		kind, reason := e.room(c)
+		e.mu.Unlock()
+		if kind != "" {
+			t.Fatalf("room() with 10 GiB slice and 12/18 GiB host sample = %q (%q), want admitted", kind, reason)
+		}
+	})
+}
+
 // Memory pressure parks the newest work although memory in use looks
 // fine: the kernel counts as available the file pages a thrashing build
 // faults straight back in, and ubu1 froze at 73% "in use" (board 9128).

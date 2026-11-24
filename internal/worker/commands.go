@@ -1008,12 +1008,25 @@ func (e *Engine) roomFor(c *command, cpuPreempted bool, mem sysinfo.Mem, hasMem 
 	var memTotal, memUsed int64
 	if hasMem {
 		memTotal, memUsed = mem.Total, mem.Used()
+	} else if e.lastMem.Total > 0 {
+		memTotal, memUsed = e.lastMem.Total, e.lastMem.Used()
 	} else if t := e.resources.GetMemoryBytes(); t > 0 && e.usage.GetMemoryUsedBytes() > 0 {
 		memTotal, memUsed = t, e.usage.GetMemoryUsedBytes()
 	}
 	if memTotal > 0 {
 		physRoom := memTotal - memUsed
-		if want > physRoom || float64(memUsed) > float64(memTotal)*parkAt {
+		if float64(memUsed) > float64(memTotal)*parkAt {
+			return "memory", fmt.Sprintf("waiting for memory: %.0f%% in use (%s physically available on the node)", 100*float64(memUsed)/float64(memTotal), gib(max(0, physRoom)))
+		}
+		// A freshen's MemoryLowBytes is an intra-hotbed concurrency reservation
+		// sized from an earlier build's PeakHeldBytes (anon + swap, capped at
+		// admitLimit), not a requirement that all of it sit free in physical
+		// RAM before starting: OS/kernel/ZFS ARC overhead or a shared host
+		// routinely keeps idle MemAvailable below admitMemory of RAM, so
+		// requiring want <= physRoom would deadlock base builds on idle nodes
+		// (board 11078). Explicit caller --mem-low guarantees still verify
+		// physical headroom.
+		if !c.isFreshen() && want > physRoom {
 			return "memory", fmt.Sprintf("waiting for memory: needs %s, %s physically available on the node", gib(want), gib(max(0, physRoom)))
 		}
 	}
