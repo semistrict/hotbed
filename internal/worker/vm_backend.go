@@ -8,6 +8,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -302,11 +303,26 @@ func (b *VMBackend) runGuestCommand(ctx context.Context, vmID, cmdID, dir string
 	}
 }
 
+func (b *VMBackend) vmBaseKey(spec baseimage.Spec) string {
+	baseKey := spec.Key()
+	guestdPath := cmp.Or(b.cfg.GuestdBin, vm.DefaultGuestdBin)
+	f, err := os.Open(guestdPath)
+	if err != nil {
+		return baseKey
+	}
+	defer f.Close()
+	h := sha256.New()
+	if _, err := io.Copy(h, f); err != nil {
+		return baseKey
+	}
+	return baseKey + "-" + hex.EncodeToString(h.Sum(nil))[:8]
+}
+
 // EnsureProvisionedBaseImage ensures the shared provisioned Debian + toolchains
 // + hotbed-guestd base cell exists, is versioned, and is synced to R2.
 func (b *VMBackend) EnsureProvisionedBaseImage(ctx context.Context, spec baseimage.Spec) (cladefs.CellRef, error) {
 	spec = spec.Normalized()
-	key := spec.Key()
+	key := b.vmBaseKey(spec)
 
 	b.baseMu.Lock()
 	defer b.baseMu.Unlock()
@@ -412,7 +428,7 @@ func (b *VMBackend) EnsureProjectBase(
 	sandboxEnv []string,
 ) (*vmProjectBase, error) {
 	spec = spec.Normalized()
-	recipe := vmProjectRecipe(spec.Key(), p)
+	recipe := vmProjectRecipe(b.vmBaseKey(spec), p)
 
 	lock := b.projectLock(p.GetName())
 	lock.Lock()

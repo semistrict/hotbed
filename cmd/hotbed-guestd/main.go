@@ -12,6 +12,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strings"
 	"syscall"
 
 	"golang.org/x/sync/errgroup"
@@ -29,6 +30,12 @@ func main() {
 		noPID1      = flag.Bool("no-pid1", false, "run server directly without PID 1 supervisor wrapper")
 	)
 	flag.Parse()
+
+	// The Linux kernel boots PID 1 with a minimal PATH (often missing /usr/bin),
+	// which breaks exec.Command("git", ...) in /v1/sync and /v1/files/*.
+	if p := os.Getenv("PATH"); p == "" || !strings.Contains(p, "/usr/bin") {
+		_ = os.Setenv("PATH", "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin")
+	}
 
 	log := slog.New(slog.NewJSONHandler(os.Stderr, nil))
 	if !*noPID1 && (*pid1 || os.Getpid() == 1) {
