@@ -389,9 +389,7 @@ func HeartbeatOnce(ctx context.Context, eng *Engine, cluster hotbedv1connect.Clu
 	eng.applyCladefsHeartbeat(cfCtx, reply)
 	cancelCF()
 	for _, id := range reply.Release {
-		if err := eng.ReleaseWorkspace(ctx, id); err != nil && api.CodeOf(err) != api.CodeNotFound {
-			slog.Error("release workspace of an ended session", "workspace", id, "err", err)
-		}
+		eng.ReleaseWorkspaceAsync(id)
 	}
 	return follow.toWhenIdle(ctx, eng, reply.Build)
 }

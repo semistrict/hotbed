@@ -1021,7 +1021,14 @@ func (e *Engine) roomFor(c *command, cpuPreempted bool, mem sysinfo.Mem, hasMem 
 	} else if t := e.resources.GetMemoryBytes(); t > 0 && e.usage.GetMemoryUsedBytes() > 0 {
 		memTotal, memUsed = t, e.usage.GetMemoryUsedBytes()
 	}
-	if memTotal > 0 {
+	// Commands targeting a VM workspace run inside an already-allocated guest
+	// whose RAM is bounded by its Firecracker memMiB. Once the guest faults in
+	// its RAM, its own resident pages can hold host memory above parkAt even
+	// when the node is idle with zero memory pressure; blocking new commands in
+	// that VM on host parkAt/physRoom would permanently self-deadlock the VM.
+	// Host memory starvation (hostMemoryStarved), real memory pressure
+	// (admitPressure), and intra-hotbed reservations (want > room) still apply.
+	if memTotal > 0 && !e.usesRuntime(c.cmd().WorkspaceId) {
 		physRoom := memTotal - memUsed
 		if float64(memUsed) > float64(memTotal)*parkAt {
 			return "memory", fmt.Sprintf("waiting for memory: %.0f%% in use (%s physically available on the node)", 100*float64(memUsed)/float64(memTotal), gib(max(0, physRoom)))

@@ -297,6 +297,38 @@ func TestFreshenAdmitsWhenIdleEvenIfGuaranteeExceedsMemAvailable(t *testing.T) {
 			t.Fatalf("room() with 10 GiB slice and 12/18 GiB host sample = %q (%q), want admitted", kind, reason)
 		}
 	})
+
+	t.Run("VM workspace commands are not deadlocked by host parkAt when PSI is low", func(t *testing.T) {
+		e, _, sys, _ := parkEngine(t)
+		e.cfg.Runtime = &trackingRuntime{}
+		e.cfg.RuntimeFor = e.isVMWorkspace
+		e.vmWorkspaces.Store("vm-ws", struct{}{})
+		// Host at 96% used (past parkAt=93%) because the VM's own guest RAM is
+		// resident, but zero memory pressure.
+		sys.SetUsed(sys.Mem.Total * 96 / 100)
+		sys.Psi = 0
+		e.Sample()
+
+		c := e.newCommand(&pb.CommandRecord{
+			Command: &pb.Command{Id: "c-vm", WorkspaceId: "vm-ws", Kind: "shell"},
+		})
+		e.mu.Lock()
+		kind, reason := e.room(c)
+		e.mu.Unlock()
+		if kind != "" {
+			t.Fatalf("VM command at 96%% host memory and 0%% PSI = %q (%q), want admitted", kind, reason)
+		}
+
+		// Real memory pressure (PSI >= admitPressure) still holds VM commands.
+		sys.Psi = 30
+		e.Sample()
+		e.mu.Lock()
+		kind, reason = e.room(c)
+		e.mu.Unlock()
+		if kind != "pressure" {
+			t.Fatalf("VM command at 30%% PSI = %q (%q), want pressure hold", kind, reason)
+		}
+	})
 }
 
 // Memory pressure parks the newest work although memory in use looks

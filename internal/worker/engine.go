@@ -313,9 +313,10 @@ type workspace struct {
 	forking     bool          // guarded by e.mu: Store.Clone is in flight
 	forkDone    chan struct{} // guarded by e.mu: closed when in-flight fork finishes
 	pendingFork *forkOutcome  // guarded by e.mu: fork outcome deferred while releasing
-	releasing   bool          // guarded by e.mu: ReleaseWorkspace is in progress
-	releaseDone chan struct{} // guarded by e.mu: closed when in-flight ReleaseWorkspace finishes
-	releaseErr  error         // guarded by e.mu: error from the last ReleaseWorkspace attempt
+	releasing     bool          // guarded by e.mu: ReleaseWorkspace is in progress
+	releaseQueued bool          // guarded by e.mu: background release goroutine is queued
+	releaseDone   chan struct{} // guarded by e.mu: closed when in-flight ReleaseWorkspace finishes
+	releaseErr    error         // guarded by e.mu: error from the last ReleaseWorkspace attempt
 }
 
 func (w *workspace) ws() *pb.Workspace { return w.rec.Workspace }

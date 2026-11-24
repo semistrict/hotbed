@@ -923,6 +923,58 @@ func TestHeartbeatDefersUpgradeDuringActiveWork(t *testing.T) {
 	})
 }
 
+type releaseHeartbeatCluster struct {
+	hotbedv1connect.ClusterServiceClient
+	release []string
+}
+
+func (c *releaseHeartbeatCluster) Heartbeat(_ context.Context, _ *pb.HeartbeatRequest) (*pb.HeartbeatResponse, error) {
+	return &pb.HeartbeatResponse{Release: c.release}, nil
+}
+
+func TestHeartbeatOnceDoesNotBlockOnPreparingWorkspaceRelease(t *testing.T) {
+	dir := t.TempDir()
+	store := &fake.Store{Root: filepath.Join(dir, "volumes")}
+	eng, err := NewEngine(t.Context(), EngineConfig{
+		Dir: dir, NodeID: "n1", Host: "asahimbp",
+		Store: store, BaseImage: fake.BaseImage(store), Units: &fake.Units{}, System: fake.NewSystem(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	forkDone := make(chan struct{})
+	t.Cleanup(func() {
+		close(forkDone)
+		eng.Close()
+	})
+
+	eng.mu.Lock()
+	eng.workspaces["ws-prep"] = &workspace{
+		rec: &pb.WorkspaceRecord{
+			Workspace: &pb.Workspace{Id: "ws-prep", State: preparing},
+			Volume:    "ws/ws-prep",
+		},
+		forking:  true,
+		forkDone: forkDone,
+	}
+	eng.mu.Unlock()
+
+	cl := &releaseHeartbeatCluster{release: []string{"ws-prep"}}
+
+	done := make(chan error, 1)
+	go func() {
+		done <- HeartbeatOnce(t.Context(), eng, cl, "cl", nil)
+	}()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("HeartbeatOnce = %v, want nil", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("HeartbeatOnce blocked waiting for preparing workspace release")
+	}
+}
+
 func TestKeepWithFailureHookResetsTransportOnTimeout(t *testing.T) {
 	ctx, cancel := context.WithCancel(t.Context())
 	defer cancel()

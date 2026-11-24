@@ -353,6 +353,36 @@ func (e *Engine) Workspaces() []*pb.Workspace {
 }
 
 // ReleaseWorkspace stops the workspace's commands and deletes its volume.
+// ReleaseWorkspaceAsync schedules ReleaseWorkspace in a tracked background
+// goroutine so heartbeat replies never block on a workspace that is still
+// waiting on an in-flight fork/base build or slow storage teardown.
+func (e *Engine) ReleaseWorkspaceAsync(id string) {
+	if err := validateID(id); err != nil {
+		return
+	}
+	e.mu.Lock()
+	w, ok := e.workspaces[id]
+	if !ok || w.ws().State == released || w.releasing || w.releaseQueued {
+		e.mu.Unlock()
+		return
+	}
+	w.releaseQueued = true
+	started := e.startBgLocked(func(bgCtx context.Context) {
+		defer func() {
+			e.mu.Lock()
+			w.releaseQueued = false
+			e.mu.Unlock()
+		}()
+		if err := e.ReleaseWorkspace(bgCtx, id); err != nil && api.CodeOf(err) != api.CodeNotFound && bgCtx.Err() == nil {
+			slog.Error("release workspace of an ended session", "workspace", id, "err", err)
+		}
+	})
+	if !started {
+		w.releaseQueued = false
+	}
+	e.mu.Unlock()
+}
+
 func (e *Engine) ReleaseWorkspace(ctx context.Context, id string) (retErr error) {
 	if err := validateID(id); err != nil {
 		return err
