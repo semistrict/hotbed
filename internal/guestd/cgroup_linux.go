@@ -3,7 +3,6 @@
 package guestd
 
 import (
-	"bufio"
 	"errors"
 	"fmt"
 	"os"
@@ -177,36 +176,21 @@ func (c *cmdCgroup) remove() {
 	_ = os.Remove(c.path)
 }
 
-func (c *cmdCgroup) stats() (memAnon, memSwap, cpuUsec int64) {
+func (c *cmdCgroup) stats() cmdCgroupStats {
 	if c == nil {
-		return 0, 0, 0
+		return cmdCgroupStats{}
 	}
-	if f, err := os.Open(filepath.Join(c.path, "memory.stat")); err == nil {
-		sc := bufio.NewScanner(f)
-		for sc.Scan() {
-			k, v, ok := strings.Cut(sc.Text(), " ")
-			if ok && k == "anon" {
-				memAnon, _ = strconv.ParseInt(strings.TrimSpace(v), 10, 64)
-				break
-			}
-		}
-		_ = f.Close()
+	return readCgroupStats(c.path)
+}
+
+// setCmdOOMScoreAdj marks a spawned command process as the preferred OOM victim
+// inside the guest VM (matching host systemd OOMScoreAdjust=1000) so the guest
+// OOM killer targets user commands before hotbed-guestd.
+func setCmdOOMScoreAdj(pid, score int) {
+	if pid <= 0 {
+		return
 	}
-	if b, err := os.ReadFile(filepath.Join(c.path, "memory.swap.current")); err == nil {
-		memSwap, _ = strconv.ParseInt(strings.TrimSpace(string(b)), 10, 64)
-	}
-	if f, err := os.Open(filepath.Join(c.path, "cpu.stat")); err == nil {
-		sc := bufio.NewScanner(f)
-		for sc.Scan() {
-			k, v, ok := strings.Cut(sc.Text(), " ")
-			if ok && k == "usage_usec" {
-				cpuUsec, _ = strconv.ParseInt(strings.TrimSpace(v), 10, 64)
-				break
-			}
-		}
-		_ = f.Close()
-	}
-	return memAnon, memSwap, cpuUsec
+	_ = os.WriteFile(filepath.Join("/proc", strconv.Itoa(pid), "oom_score_adj"), []byte(strconv.Itoa(score)), 0o644)
 }
 
 func signalProcessGroup(pid int, sig syscall.Signal) error {

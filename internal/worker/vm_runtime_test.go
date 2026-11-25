@@ -1024,3 +1024,87 @@ func TestVMCommandInspectTraceSampleDiagnoseAndProfile(t *testing.T) {
 		t.Fatalf("ended VM inspect should suggest hotbed profile, got suggestion=%q", ae.Suggestion)
 	}
 }
+
+func TestVMCommandGuestOOMAndPeakMemoryTelemetry(t *testing.T) {
+	ctx := t.Context()
+	e, _, _, now := parkEngine(t)
+
+	for _, tc := range []struct {
+		name         string
+		id           string
+		status       runtime.CommandStatus
+		wantReason   string
+		wantExitCode *int32
+	}{
+		{
+			name: "main process OOM killed in guest",
+			id:   "guest-oom-main",
+			status: runtime.CommandStatus{
+				ID:         "guest-oom-main",
+				Exited:     true,
+				ExitCode:   137,
+				Signal:     9,
+				OOMKilled:  true,
+				Result:     "oom-kill",
+				MemoryAnon: 0,
+				MemoryPeak: 7 << 30,
+				CPUUsec:    120000,
+			},
+			wantReason:   "killed by the OOM killer (signal 9; peak 7.0 GiB)",
+			wantExitCode: nil,
+		},
+		{
+			name: "child process OOM killed under shell",
+			id:   "guest-oom-child",
+			status: runtime.CommandStatus{
+				ID:         "guest-oom-child",
+				Exited:     true,
+				ExitCode:   137,
+				Signal:     0,
+				OOMKilled:  true,
+				Result:     "oom-kill",
+				MemoryAnon: 0,
+				MemoryPeak: 6 << 30,
+			},
+			wantReason:   "killed by the OOM killer (exit 137; peak 6.0 GiB)",
+			wantExitCode: func() *int32 { v := int32(137); return &v }(),
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			c := e.newCommand(&pb.CommandRecord{
+				Command: &pb.Command{
+					Id:          tc.id,
+					WorkspaceId: "a",
+					State:       running,
+					Kind:        "run",
+				},
+			})
+			e.mu.Lock()
+			e.commands[tc.id] = c
+			e.mu.Unlock()
+
+			st := toUnitState("a", tc.status)
+			e.observe(ctx, c, st, *now)
+
+			got := c.cmd()
+			if got.State != failed {
+				t.Fatalf("state = %v, want failed", got.State)
+			}
+			if got.Reason != tc.wantReason {
+				t.Fatalf("reason = %q, want %q", got.Reason, tc.wantReason)
+			}
+			if got.MemoryBytes != tc.status.MemoryPeak {
+				t.Fatalf("MemoryBytes = %d, want %d", got.MemoryBytes, tc.status.MemoryPeak)
+			}
+			if c.rec.PeakMemoryBytes != tc.status.MemoryPeak {
+				t.Fatalf("PeakMemoryBytes = %d, want %d", c.rec.PeakMemoryBytes, tc.status.MemoryPeak)
+			}
+			if tc.wantExitCode == nil && got.ExitCode != nil {
+				t.Fatalf("ExitCode = %d, want nil", *got.ExitCode)
+			}
+			if tc.wantExitCode != nil && (got.ExitCode == nil || *got.ExitCode != *tc.wantExitCode) {
+				t.Fatalf("ExitCode = %v, want %d", got.ExitCode, *tc.wantExitCode)
+			}
+		})
+	}
+}

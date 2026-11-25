@@ -76,19 +76,25 @@ type Server struct {
 }
 
 type managedCmd struct {
-	mu      sync.Mutex
-	id      string
-	cmd     *exec.Cmd
-	cg      *cmdCgroup
-	logPath string
-	logFile *os.File
-	state   guestdv1.CommandState
-	exit    int
-	mainPID int
-	started int64
-	exited  int64
-	errMsg  string
-	done    chan struct{}
+	mu           sync.Mutex
+	id           string
+	cmd          *exec.Cmd
+	cg           *cmdCgroup
+	logPath      string
+	logFile      *os.File
+	state        guestdv1.CommandState
+	exit         int
+	signal       int
+	oomKilled    bool
+	result       string
+	peakMem      int64
+	peakSwap     int64
+	finalCPUUsec int64
+	mainPID      int
+	started      int64
+	exited       int64
+	errMsg       string
+	done         chan struct{}
 }
 
 // NewServer constructs a guestd Server and prepares its state directories.
@@ -327,6 +333,7 @@ func (s *Server) StartCommand(_ context.Context, req *guestdv1.StartCommandReque
 	if cg != nil && !usedCgroupFD {
 		_ = cg.addPID(pid)
 	}
+	setCmdOOMScoreAdj(pid, 1000)
 
 	mc := &managedCmd{
 		id:      req.Id,
@@ -349,19 +356,29 @@ func (s *Server) StartCommand(_ context.Context, req *guestdv1.StartCommandReque
 
 func (s *Server) waitCommand(mc *managedCmd) {
 	err := mc.cmd.Wait()
-	code := exitCodeOf(err)
+	code, sig := exitStatusOf(err)
 	mc.mu.Lock()
-	mc.state = guestdv1.CommandState_COMMAND_STATE_EXITED
-	mc.exit = code
-	mc.exited = time.Now().UnixMilli()
-	if err != nil && code == 0 {
-		mc.errMsg = err.Error()
-	}
-	_ = mc.logFile.Close()
+	var finalStats cmdCgroupStats
 	if mc.cg != nil {
+		// Read final memory.events (oom_kill), memory.peak, memory.swap.peak,
+		// and cpu.stat BEFORE killing/removing the cgroup directory.
+		finalStats = mc.cg.stats()
 		mc.cg.killAll()
 		mc.cg.remove()
 	}
+	mc.state = guestdv1.CommandState_COMMAND_STATE_EXITED
+	mc.exit = code
+	mc.signal = sig
+	mc.oomKilled = finalStats.oomKilled
+	mc.result = classifyExitResult(code, sig, finalStats.oomKilled)
+	mc.peakMem = max(mc.peakMem, finalStats.memPeak, finalStats.memAnon)
+	mc.peakSwap = max(mc.peakSwap, finalStats.swapPeak, finalStats.memSwap)
+	mc.finalCPUUsec = max(mc.finalCPUUsec, finalStats.cpuUsec)
+	mc.exited = time.Now().UnixMilli()
+	if err != nil && code == 0 && sig == 0 {
+		mc.errMsg = err.Error()
+	}
+	_ = mc.logFile.Close()
 	close(mc.done)
 	mc.mu.Unlock()
 }
@@ -374,26 +391,40 @@ func (mc *managedCmd) snapshot() *guestdv1.CommandStatus {
 		logBytes = st.Size()
 	}
 	var cgPath string
-	var memAnon, memSwap, cpuUsec int64
+	var memAnon, memSwap, memPeak, swapPeak, cpuUsec int64
 	if mc.cg != nil {
 		cgPath = mc.cg.path
 		if mc.state != guestdv1.CommandState_COMMAND_STATE_EXITED {
-			memAnon, memSwap, cpuUsec = mc.cg.stats()
+			st := mc.cg.stats()
+			memAnon, memSwap, cpuUsec = st.memAnon, st.memSwap, st.cpuUsec
+			mc.peakMem = max(mc.peakMem, st.memPeak, st.memAnon)
+			mc.peakSwap = max(mc.peakSwap, st.swapPeak, st.memSwap)
+			mc.finalCPUUsec = max(mc.finalCPUUsec, st.cpuUsec)
+			memPeak, swapPeak = mc.peakMem, mc.peakSwap
+		} else {
+			memPeak = mc.peakMem
+			swapPeak = mc.peakSwap
+			cpuUsec = mc.finalCPUUsec
 		}
 	}
 	return &guestdv1.CommandStatus{
-		Id:         mc.id,
-		State:      mc.state,
-		ExitCode:   int32(mc.exit),
-		MainPid:    int32(mc.mainPID),
-		Cgroup:     cgPath,
-		MemoryAnon: memAnon,
-		MemorySwap: memSwap,
-		CpuUsec:    cpuUsec,
-		LogBytes:   logBytes,
-		StartedMs:  mc.started,
-		ExitedMs:   mc.exited,
-		Error:      mc.errMsg,
+		Id:             mc.id,
+		State:          mc.state,
+		ExitCode:       int32(mc.exit),
+		Signal:         int32(mc.signal),
+		OomKilled:      mc.oomKilled,
+		Result:         mc.result,
+		MainPid:        int32(mc.mainPID),
+		Cgroup:         cgPath,
+		MemoryAnon:     memAnon,
+		MemorySwap:     memSwap,
+		MemoryPeak:     memPeak,
+		MemorySwapPeak: swapPeak,
+		CpuUsec:        cpuUsec,
+		LogBytes:       logBytes,
+		StartedMs:      mc.started,
+		ExitedMs:       mc.exited,
+		Error:          mc.errMsg,
 	}
 }
 
@@ -1358,20 +1389,8 @@ func bridgeConns(a, b net.Conn) {
 }
 
 func exitCodeOf(err error) int {
-	if err == nil {
-		return 0
-	}
-	var ee *exec.ExitError
-	if errors.As(err, &ee) {
-		if ws, ok := ee.Sys().(syscall.WaitStatus); ok {
-			if ws.Signaled() {
-				return 128 + int(ws.Signal())
-			}
-			return ws.ExitStatus()
-		}
-		return ee.ExitCode()
-	}
-	return 1
+	code, _ := exitStatusOf(err)
+	return code
 }
 
 var diffHunkRe = regexp.MustCompile(`^@@ -\S+ \+(\d+)(?:,(\d+))? @@`)

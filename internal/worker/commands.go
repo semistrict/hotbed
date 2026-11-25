@@ -504,6 +504,12 @@ func (e *Engine) observe(ctx context.Context, c *command, st unit.State, sampled
 		cmd.MemoryBytes = st.Memory
 		c.rec.PeakMemoryBytes = max(c.rec.PeakMemoryBytes, st.Memory)
 	}
+	if st.MemoryPeak > 0 {
+		c.rec.PeakMemoryBytes = max(c.rec.PeakMemoryBytes, st.MemoryPeak)
+		if st.Exited && cmd.MemoryBytes == 0 {
+			cmd.MemoryBytes = st.MemoryPeak
+		}
+	}
 	if c.rec.Cgroup != "" {
 		if m, err := e.cfg.Units.Memory(c.rec.Cgroup); err == nil {
 			cmd.SwapBytes = m.Swap
@@ -1050,9 +1056,17 @@ func (e *Engine) roomFor(c *command, cpuPreempted bool, mem sysinfo.Mem, hasMem 
 		return "disk", fmt.Sprintf("waiting for disk: %s free", gib(e.disk.FreeBytes))
 	}
 	want := c.reservation()
-	room := e.admitLimit() - e.reservedFor(c.priority())
+	limit := e.admitLimit()
+	reserved := e.reservedFor(c.priority())
+	room := limit - reserved
 	if want > room {
-		return "memory", fmt.Sprintf("waiting for memory: needs %s, %s left of what running and parked commands hold or are guaranteed", gib(want), gib(max(0, room)))
+		if room < 0 {
+			if want > 0 {
+				return "memory", fmt.Sprintf("waiting for memory: needs %s, but running and parked commands hold or are guaranteed %s (limit %s)", gib(want), gib(reserved), gib(limit))
+			}
+			return "memory", fmt.Sprintf("waiting for memory: running and parked commands hold or are guaranteed %s (limit %s)", gib(reserved), gib(limit))
+		}
+		return "memory", fmt.Sprintf("waiting for memory: needs %s, %s left of what running and parked commands hold or are guaranteed", gib(want), gib(room))
 	}
 	var memTotal, memUsed int64
 	if hasMem {

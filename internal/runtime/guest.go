@@ -122,16 +122,21 @@ func (g *GuestRuntime) StatusMany(ctx context.Context, wsID string, ids []string
 			out := make(map[string]CommandStatus, len(raw))
 			for id, st := range raw {
 				out[id] = CommandStatus{
-					ID:         st.Id,
-					Running:    st.State == guestdv1.CommandState_COMMAND_STATE_RUNNING,
-					Frozen:     st.State == guestdv1.CommandState_COMMAND_STATE_FROZEN,
-					Exited:     st.State == guestdv1.CommandState_COMMAND_STATE_EXITED,
-					ExitCode:   int(st.ExitCode),
-					MainPID:    int(st.MainPid),
-					Cgroup:     st.Cgroup,
-					MemoryAnon: st.MemoryAnon,
-					MemorySwap: st.MemorySwap,
-					CPUUsec:    st.CpuUsec,
+					ID:             st.Id,
+					Running:        st.State == guestdv1.CommandState_COMMAND_STATE_RUNNING,
+					Frozen:         st.State == guestdv1.CommandState_COMMAND_STATE_FROZEN,
+					Exited:         st.State == guestdv1.CommandState_COMMAND_STATE_EXITED,
+					ExitCode:       int(st.ExitCode),
+					Signal:         int(st.Signal),
+					Result:         st.Result,
+					OOMKilled:      st.OomKilled,
+					MainPID:        int(st.MainPid),
+					Cgroup:         st.Cgroup,
+					MemoryAnon:     st.MemoryAnon,
+					MemorySwap:     st.MemorySwap,
+					MemoryPeak:     st.MemoryPeak,
+					MemorySwapPeak: st.MemorySwapPeak,
+					CPUUsec:        st.CpuUsec,
 				}
 			}
 			return out, nil
