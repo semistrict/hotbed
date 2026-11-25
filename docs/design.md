@@ -304,7 +304,8 @@ or tracing packages.
   disk. Two VMs cannot share a disk, so a command waits while another runs in its workspace, and
   until the VM an earlier command ran in has stopped. A VM booted before any command ran in it (to
   prepare the workspace, sync a checkout, list files or open a shell) is fresh: the next command
-  may run in it, and it stops after 30s unused when no command waits for it. `--vm-cpus` and
+  may run in it, and it stops after 30s unused, even for a command still queued for room, which
+  boots its own once admitted. `--vm-cpus` and
   `--vm-mem` size a command's VM (else the node's defaults); they size the VM only, and admission
   keeps going by measured use. A workspace's disk is an ephemeral cell, which cladefs never forks
   (its doc-25), so a VM cannot run on a copy of it.

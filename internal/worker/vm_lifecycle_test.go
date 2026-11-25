@@ -648,3 +648,28 @@ func TestFailedWorkspaceVMStops(t *testing.T) {
 		t.Fatalf("failed workspace's VM stopped %d times, want 1", stops)
 	}
 }
+
+// A fresh VM does not idle for a command still queued, waiting for room, past
+// freshVMGrace: holding its RAM would keep that room from coming. The
+// command boots its own VM once admitted.
+func TestFreshVMDoesNotIdleForAQueuedCommand(t *testing.T) {
+	eng, resolver, _, now := newLifecycleTestEngine(t)
+	seedTestVMWorkspace(t, eng, resolver, "ws-q", *now)
+	eng.mu.Lock()
+	eng.workspaces["ws-q"].ws().LastActiveAt = now.UnixMilli()
+	eng.commands["waits"] = eng.newCommand(&pb.CommandRecord{Command: &pb.Command{Id: "waits", WorkspaceId: "ws-q", State: queued, Limits: &pb.CommandLimits{}}})
+	eng.mu.Unlock()
+	t.Cleanup(func() {
+		eng.mu.Lock()
+		delete(eng.commands, "waits")
+		eng.mu.Unlock()
+	})
+
+	*now = now.Add(freshVMGrace + time.Second)
+	eng.mu.Lock()
+	why := eng.retireReasonLocked(eng.workspaces["ws-q"])
+	eng.mu.Unlock()
+	if why != "no command ran in it" {
+		t.Fatalf("fresh VM past its grace with a command queued for it: retire reason %q, want %q", why, "no command ran in it")
+	}
+}

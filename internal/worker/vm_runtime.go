@@ -90,17 +90,6 @@ func (e *Engine) commandInVMLocked(wsID string, except *command) *command {
 	return nil
 }
 
-// queuedForVMLocked reports whether a command waits to start in VM wsID.
-// Call with e.mu held.
-func (e *Engine) queuedForVMLocked(wsID string) bool {
-	for _, c := range e.commands {
-		if c.runtimeTarget() == wsID && c.cmd().State == queued && !c.stopping {
-			return true
-		}
-	}
-	return false
-}
-
 // vmBlockerLocked says why command c cannot start in its workspace's VM yet,
 // or "": every command runs in a VM of its own, booted for it on the
 // workspace's disk, and two VMs cannot share a disk, so c waits while another
@@ -127,14 +116,15 @@ func (e *Engine) vmBlockerLocked(c *command, w *workspace) string {
 
 // freshVMGrace is how long a VM no command has run in yet (booted to prepare
 // its workspace, sync a checkout or list its files) waits for the command it
-// was booted ahead of before it is stopped too.
+// was booted ahead of before it is stopped too: long enough for hotbed run's
+// command to follow its sync. A command still queued then, waiting for room,
+// boots its own VM once admitted rather than keep this one idle meanwhile.
 const freshVMGrace = 30 * time.Second
 
 // retireReasonLocked says why w's VM should stop now, or "" if it should not:
 // at once when a command has run in it and nothing holds it any more (a VM
 // is never reused for another command), or its workspace failed, and after
-// freshVMGrace unused when no command has and none waits for it. Call with
-// e.mu held.
+// freshVMGrace unused when no command has run in it. Call with e.mu held.
 func (e *Engine) retireReasonLocked(w *workspace) string {
 	ws := w.ws()
 	if !e.usesRuntime(ws.Id) || (!vmWorkspaceSettled(w) && ws.State != failedWS) || w.releasing || w.forking {
@@ -151,9 +141,6 @@ func (e *Engine) retireReasonLocked(w *workspace) string {
 	}
 	if w.vmUsed {
 		return "the command that ran in it ended"
-	}
-	if e.queuedForVMLocked(ws.Id) {
-		return ""
 	}
 	if ws.LastActiveAt > 0 && e.now().Sub(time.UnixMilli(ws.LastActiveAt)) < freshVMGrace {
 		return ""
