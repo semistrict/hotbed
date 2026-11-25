@@ -57,6 +57,13 @@
 			"when": 1795579721061,
 			"tag": "0007_chubby_wolverine",
 			"breakpoints": true
+		},
+		{
+			"idx": 8,
+			"version": "6",
+			"when": 1795586739264,
+			"tag": "0008_daffy_shocker",
+			"breakpoints": true
 		}
 	]
 }

@@ -30,6 +30,7 @@ import {
 	authenticateRequest,
 	checkSameOrigin,
 	clearSessionCookie,
+	INTERNAL_GLOBAL_ADMIN_HEADER,
 	INTERNAL_ORG_HEADER,
 	makeSessionCookie,
 	renderLoginPage,
@@ -179,6 +180,10 @@ export class ControllerDO extends DurableObject<ControllerEnv> {
 			allowLocalRepos,
 		});
 		this.ctrl.nowFn = () => Date.now() + this.nowOffsetMs;
+		const initialSignupCode = (this.env.INITIAL_SIGNUP_CODE ?? "").trim();
+		if (initialSignupCode) {
+			this.store.seedInitialSignupCode(initialSignupCode, this.ctrl.now());
+		}
 		if (this.testWakeWaitMs !== undefined) {
 			this.ctrl.power.wakeWaitMs = this.testWakeWaitMs;
 		}
@@ -399,6 +404,59 @@ export class ControllerDO extends DurableObject<ControllerEnv> {
 				);
 			}
 			this.store.setMeta(key, String(Math.max(exp, this.ctrl.now() + 120_000)));
+			return Response.json({ ok: true });
+		}
+
+		if (pathname === "/internal/signup/check" && request.method === "POST") {
+			const body = (await request.json().catch(() => ({}))) as { userId?: string };
+			const userId = (body.userId ?? "").trim();
+			if (!userId) {
+				return Response.json(
+					{ code: ErrorCode.InvalidArgs, message: "userId is required" },
+					{ status: 400 },
+				);
+			}
+			return Response.json({ approved: this.store.isUserSignupApproved(userId) });
+		}
+
+		if (pathname === "/internal/signup/redeem" && request.method === "POST") {
+			const body = (await request.json().catch(() => ({}))) as {
+				userId?: string;
+				email?: string;
+				code?: string;
+			};
+			const userId = (body.userId ?? "").trim();
+			const email = (body.email ?? "").trim();
+			const submitted = (body.code ?? "").trim().toUpperCase();
+			if (!userId) {
+				return Response.json(
+					{ code: ErrorCode.InvalidArgs, message: "userId is required" },
+					{ status: 400 },
+				);
+			}
+			if (this.store.isUserSignupApproved(userId)) {
+				return Response.json({ ok: true, alreadyApproved: true });
+			}
+			if (!submitted) {
+				return Response.json(
+					{ code: ErrorCode.NotAuthorized, message: "Sign-up code is required." },
+					{ status: 403 },
+				);
+			}
+			const active = this.store.listActiveSignupCodes();
+			let matchedCode = "";
+			for (const candidate of active) {
+				if (await timingSafeStringEqual(submitted, candidate.code)) {
+					matchedCode = candidate.code;
+				}
+			}
+			if (!matchedCode) {
+				return Response.json(
+					{ code: ErrorCode.NotAuthorized, message: "Invalid sign-up code." },
+					{ status: 403 },
+				);
+			}
+			this.store.recordSignupRedemption(userId, email, matchedCode, this.ctrl.now());
 			return Response.json({ ok: true });
 		}
 
@@ -714,6 +772,94 @@ export class ControllerDO extends DurableObject<ControllerEnv> {
 					}
 					this.store.revokeApiToken(id, this.ctrl.now());
 					return Response.json({ ok: true, id });
+				}
+				return new Response("Method Not Allowed", { status: 405 });
+			} catch (err) {
+				const he = fromUnknownError(err);
+				return Response.json(he.toJSON(), {
+					status: he.code === ErrorCode.NotAuthorized ? 403 : 500,
+				});
+			}
+		}
+
+		// 3d. Global sign-up codes management (GET/POST /admin/signup-codes, DELETE /admin/signup-codes/:code)
+		if (pathname === "/admin/signup-codes" || pathname.startsWith("/admin/signup-codes/")) {
+			try {
+				const caller = await this.authRequest(request);
+				const defaultOrgId = (this.env.DEFAULT_ORG_ID ?? "").trim();
+				const edgeGlobalAdmin = request.headers.get(INTERNAL_GLOBAL_ADMIN_HEADER) === "1";
+				const isGlobalAdmin =
+					caller.role === "owner" &&
+					(edgeGlobalAdmin ||
+						caller.authMethod === "bearer" ||
+						(Boolean(defaultOrgId) &&
+							caller.orgId === defaultOrgId &&
+							(caller.orgRole === "admin" || caller.orgRole === "owner")));
+				if (!isGlobalAdmin) {
+					return Response.json(
+						{
+							code: ErrorCode.NotAuthorized,
+							message: "cluster owner or default-organization admin required",
+						},
+						{ status: 403 },
+					);
+				}
+				if (pathname === "/admin/signup-codes" && request.method === "GET") {
+					return Response.json({
+						codes: this.store.listSignupCodes(),
+						approvedUsersCount: this.store.countApprovedUsers(),
+					});
+				}
+				if (pathname === "/admin/signup-codes" && request.method === "POST") {
+					const body = (await request.json().catch(() => ({}))) as {
+						code?: string;
+						label?: string;
+						maxUses?: number | null;
+					};
+					const code = (body.code ?? "").trim().toUpperCase();
+					if (code.length < 3 || code.length > 64 || /\s/.test(code)) {
+						return Response.json(
+							{
+								code: ErrorCode.InvalidArgs,
+								message: "sign-up code must be 3-64 non-whitespace characters",
+							},
+							{ status: 400 },
+						);
+					}
+					const label = (body.label ?? "").trim().slice(0, 100);
+					let maxUses: number | null = null;
+					if (body.maxUses !== undefined && body.maxUses !== null) {
+						if (
+							typeof body.maxUses !== "number" ||
+							!Number.isInteger(body.maxUses) ||
+							body.maxUses < 1
+						) {
+							return Response.json(
+								{ code: ErrorCode.InvalidArgs, message: "maxUses must be a positive integer" },
+								{ status: 400 },
+							);
+						}
+						maxUses = body.maxUses;
+					}
+					const nowMs = this.ctrl.now();
+					this.store.putSignupCode({ code, label, maxUses, createdAt: nowMs });
+					return Response.json({ code, label, maxUses, createdAt: nowMs }, { status: 201 });
+				}
+				if (pathname.startsWith("/admin/signup-codes/") && request.method === "DELETE") {
+					const code = decodePathSegment(pathname.slice("/admin/signup-codes/".length));
+					if (code === null || !code) {
+						return Response.json(
+							{ code: ErrorCode.InvalidArgs, message: "valid sign-up code is required" },
+							{ status: 400 },
+						);
+					}
+					if (!this.store.revokeSignupCode(code, this.ctrl.now())) {
+						return Response.json(
+							{ code: ErrorCode.NotFound, message: `no sign-up code ${code}` },
+							{ status: 404 },
+						);
+					}
+					return Response.json({ ok: true, code: code.toUpperCase() });
 				}
 				return new Response("Method Not Allowed", { status: 405 });
 			} catch (err) {

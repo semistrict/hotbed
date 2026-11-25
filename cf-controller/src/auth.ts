@@ -59,6 +59,7 @@ export const NOOP_TOKEN_LOOKUP: TokenStoreLookup = {
  */
 export const INTERNAL_AUTH_HEADER = "X-Hotbed-Internal-Auth";
 export const INTERNAL_ORG_HEADER = "X-Hotbed-Internal-Org";
+export const INTERNAL_GLOBAL_ADMIN_HEADER = "X-Hotbed-Internal-Global-Admin";
 
 export function stripInternalAuthHeaders(headers: Headers): void {
 	const toDelete: string[] = [];
@@ -557,13 +558,36 @@ export function renderLoginPage(error?: string, workosEnabled = false, returnTo 
 	const errHtml = error
 		? `<p style="color:#f87171;margin:0 0 12px;font-size:14px">${escapeHtml(error)}</p>`
 		: "";
-	const workosHref =
-		returnTo && returnTo !== "/"
-			? `/auth/login?return_to=${encodeURIComponent(returnTo)}`
-			: "/auth/login";
-	const workosBtn = workosEnabled
-		? `<a href="${escapeHtml(workosHref)}" style="display:block;text-align:center;text-decoration:none;width:100%;padding:10px 12px;border-radius:8px;background:#3b82f6;color:#fff;font-weight:600;font-size:14px;box-sizing:border-box;margin-bottom:14px">Sign in with Google / WorkOS</a>`
-		: "";
+	if (workosEnabled) {
+		const googleHref =
+			returnTo && returnTo !== "/"
+				? `/auth/login?return_to=${encodeURIComponent(returnTo)}`
+				: "/auth/login";
+		return `<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>hotbed cockpit — sign in</title>
+<style>
+  body{margin:0;min-height:100vh;display:grid;place-items:center;background:#0b0d12;color:#e5e7eb;font-family:system-ui,-apple-system,sans-serif;padding:16px;box-sizing:border-box}
+  .card{width:100%;max-width:360px;padding:28px;border:1px solid #1f2430;border-radius:12px;background:#121620;box-sizing:border-box}
+  h1{margin:0 0 8px;font-size:18px;font-weight:600}
+  p.sub{margin:0 0 18px;color:#9ca3af;font-size:13px}
+  a.btn{display:block;text-align:center;text-decoration:none;width:100%;padding:10px 12px;border-radius:8px;background:#3b82f6;color:#fff;font-weight:600;font-size:14px;box-sizing:border-box}
+  a.btn:hover{background:#2563eb}
+</style>
+</head>
+<body>
+<div class="card">
+  <h1>hotbed cockpit</h1>
+  <p class="sub">Sign in with your Google account to continue.</p>
+  ${errHtml}
+  <a href="${escapeHtml(googleHref)}" class="btn">Sign in with Google</a>
+</div>
+</body>
+</html>`;
+	}
 	return `<!doctype html>
 <html lang="en">
 <head>
@@ -585,7 +609,6 @@ export function renderLoginPage(error?: string, workosEnabled = false, returnTo 
   <h1>hotbed cockpit</h1>
   <p class="sub">Enter your controller owner token to sign in.</p>
   ${errHtml}
-  ${workosBtn}
   <input type="hidden" name="return_to" value="${escapeHtml(returnTo || "/")}" />
   <input type="password" name="token" placeholder="Owner token" autocomplete="current-password" autofocus required />
   <button type="submit">Sign in</button>
