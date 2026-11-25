@@ -19,10 +19,10 @@ func TestMemoryLifecycleAndSessionRecall(t *testing.T) {
 	c.ok(nil, "session", "start", "calm-heron")
 	c.ok(nil, "session", "start", "other-fox", "-p", "other")
 
-	// Saving a global always-on rule from an agent session is automatically approved immediately.
+	// Saving a global always-on rule via `memory add` without --mode or --body defaults to ALWAYS and auto-approves.
 	mem1 := &pb.Memory{}
-	c.ok(mem1, "memory", "propose", "-s", "brave-otter",
-		"--global", "--mode", "always",
+	c.ok(mem1, "memory", "add", "-s", "brave-otter",
+		"--global",
 		"--slug", "subagent-model-neon",
 		"--title", "Subagent model",
 		"--summary", "Use gemini-4-neon (not GPT models) for all T3 Code delegated subagents.",
@@ -30,8 +30,8 @@ func TestMemoryLifecycleAndSessionRecall(t *testing.T) {
 		"--model", "gemini-4-neon",
 		"--tag", "subagents", "--tag", "models",
 	)
-	if mem1.Id != 1 || mem1.State != pb.MemoryState_MEMORY_STATE_APPROVED || mem1.Scope != pb.MemoryScope_MEMORY_SCOPE_GLOBAL {
-		t.Fatalf("mem1 = %v, want APPROVED GLOBAL", mem1)
+	if mem1.Id != 1 || mem1.State != pb.MemoryState_MEMORY_STATE_APPROVED || mem1.Scope != pb.MemoryScope_MEMORY_SCOPE_GLOBAL || mem1.Content.Mode != pb.MemoryMode_MEMORY_MODE_ALWAYS {
+		t.Fatalf("mem1 = %v, want APPROVED GLOBAL ALWAYS", mem1)
 	}
 	if mem1.CockpitUrl == "" || !strings.HasSuffix(mem1.CockpitUrl, "/memories/1") {
 		t.Errorf("mem1 cockpitUrl = %q, want suffix /memories/1", mem1.CockpitUrl)
@@ -40,7 +40,7 @@ func TestMemoryLifecycleAndSessionRecall(t *testing.T) {
 		t.Errorf("auto-approved memory should carry no approval poll reminder, got %q", mem1.GetReminder())
 	}
 
-	// Saving a project-scoped on-demand memory with --body-file - (stdin) is also auto-approved.
+	// Saving a project-scoped memory with --body-file - (stdin) without --mode defaults to ON_DEMAND.
 	mem2 := &pb.Memory{}
 	c.okIn("# Debugging ZFS flakes\n\nRun `zpool status` first.\n", mem2,
 		"memory", "propose", "-s", "brave-otter",
@@ -51,8 +51,13 @@ func TestMemoryLifecycleAndSessionRecall(t *testing.T) {
 		"--tag", "zfs", "--tag", "bases",
 		"--body-file", "-",
 	)
-	if mem2.Id != 2 || mem2.State != pb.MemoryState_MEMORY_STATE_APPROVED || mem2.Scope != pb.MemoryScope_MEMORY_SCOPE_PROJECT || mem2.Project != "test" {
-		t.Fatalf("mem2 = %v, want APPROVED PROJECT test", mem2)
+	if mem2.Id != 2 || mem2.State != pb.MemoryState_MEMORY_STATE_APPROVED || mem2.Scope != pb.MemoryScope_MEMORY_SCOPE_PROJECT || mem2.Project != "test" || mem2.Content.Mode != pb.MemoryMode_MEMORY_MODE_ON_DEMAND {
+		t.Fatalf("mem2 = %v, want APPROVED PROJECT test ON_DEMAND", mem2)
+	}
+
+	// Explicit --mode on_demand without --body is still rejected.
+	if _, e := c.fails("memory", "add", "-s", "brave-otter", "--mode", "on_demand", "--slug", "no-body", "--summary", "needs body"); e.Code != api.CodeInvalidArgs {
+		t.Fatalf("explicit on_demand without body = %v, want INVALID_ARGS", e)
 	}
 
 	// Default `memory ls` immediately shows both active memories (no approval step).
@@ -259,7 +264,7 @@ func TestMCPServerIncludesMemoriesInInstructionsAndTools(t *testing.T) {
 	if !strings.Contains(instr, "mcp-test-rule") || !strings.Contains(instr, "Always prefer neon over GPT.") {
 		t.Errorf("MCP server instructions missing active memory:\n%s", instr)
 	}
-	if !strings.Contains(instr, "memory_propose") || !strings.Contains(instr, "hotbed memory propose") {
+	if !strings.Contains(instr, "memory_add") || !strings.Contains(instr, "hotbed memory add") {
 		t.Errorf("MCP server instructions missing memory-saving reminder:\n%s", instr)
 	}
 
@@ -270,9 +275,9 @@ func TestMCPServerIncludesMemoriesInInstructionsAndTools(t *testing.T) {
 		t.Fatalf("MCP memory_get = %+v", got)
 	}
 
-	// Save via memory_propose MCP tool (inherits MCP session automatically and auto-approves).
+	// Save via memory_add MCP tool (inherits MCP session automatically and auto-approves).
 	prop := &pb.Memory{}
-	m.call(prop, "memory_propose", map[string]any{
+	m.call(prop, "memory_add", map[string]any{
 		"global":  true,
 		"mode":    "on_demand",
 		"slug":    "mcp-playbook",
@@ -280,7 +285,7 @@ func TestMCPServerIncludesMemoriesInInstructionsAndTools(t *testing.T) {
 		"body":    "Step 1: verify MCP.\n",
 	})
 	if prop.State != pb.MemoryState_MEMORY_STATE_APPROVED || prop.Proposed.Session == "" {
-		t.Fatalf("MCP memory_propose = %+v, want APPROVED with session", prop)
+		t.Fatalf("MCP memory_add = %+v, want APPROVED with session", prop)
 	}
 	_ = filepath.Clean(dir)
 }
@@ -294,7 +299,7 @@ func TestMemorySavingReminders(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("session start failed (%d): %s", code, stderr)
 	}
-	for _, want := range []string{"hotbed memory propose", "something goes wrong", "memory_propose"} {
+	for _, want := range []string{"hotbed memory add", "memory_add"} {
 		if !strings.Contains(stdout, want) {
 			t.Errorf("plain session start missing memory reminder %q:\n%s", want, stdout)
 		}
@@ -302,23 +307,32 @@ func TestMemorySavingReminders(t *testing.T) {
 
 	sess := &pb.Session{}
 	c.ok(sess, "session", "start", "swift-fox")
-	if !strings.Contains(sess.GetReminder(), "hotbed memory propose") {
-		t.Errorf("json session start reminder = %q, want memory propose prompt", sess.GetReminder())
+	if !strings.Contains(sess.GetReminder(), "hotbed memory add") {
+		t.Errorf("json session start reminder = %q, want memory add prompt", sess.GetReminder())
 	}
-	c.ok(nil, "session", "end", "-s", "swift-fox")
+	// Session end emits the wrap-up memory reminder (plain + JSON).
+	code, endOut, endErr := c.hotbed("session", "end", "-s", "swift-fox")
+	if code != 0 || !strings.Contains(endOut, "hotbed memory add") {
+		t.Errorf("plain session end = (%d, %q, %q), want wrap-up memory reminder", code, endOut, endErr)
+	}
 	resumed := &pb.Session{}
 	c.ok(resumed, "session", "start", "swift-fox", "--resume")
-	if !strings.Contains(resumed.GetReminder(), "hotbed memory propose") {
-		t.Errorf("resumed session reminder = %q, want memory propose prompt", resumed.GetReminder())
+	if !strings.Contains(resumed.GetReminder(), "hotbed memory add") {
+		t.Errorf("resumed session reminder = %q, want memory add prompt", resumed.GetReminder())
+	}
+	endedJSON := &pb.Session{}
+	c.ok(endedJSON, "session", "end", "-s", "swift-fox")
+	if !strings.Contains(endedJSON.GetReminder(), "hotbed memory add") {
+		t.Errorf("json session end reminder = %q, want wrap-up memory reminder", endedJSON.GetReminder())
 	}
 
-	// 2. Attached `hotbed run` prints a memory reminder on stderr on non-zero exit, not on exit 0.
+	// 2. Attached `hotbed run` does NOT spam memory reminders on stderr for routine exits (0 or non-zero).
 	c.workspace("bright-jay", nil)
 	code, _, stderr = c.hotbed("run", "-s", "bright-jay", "-r", "app", "--", "true")
 	if code != 0 {
 		t.Fatalf("run true failed (%d): %s", code, stderr)
 	}
-	if strings.Contains(stderr, "hotbed memory propose") {
+	if strings.Contains(stderr, "hotbed memory") {
 		t.Errorf("exit 0 run unexpectedly printed memory reminder:\n%s", stderr)
 	}
 
@@ -326,8 +340,8 @@ func TestMemorySavingReminders(t *testing.T) {
 	if code != 7 {
 		t.Fatalf("run exit 7 returned %d (stderr=%q)", code, stderr)
 	}
-	if !strings.Contains(stderr, "hotbed memory propose") {
-		t.Errorf("failed run stderr missing memory reminder:\n%s", stderr)
+	if strings.Contains(stderr, "hotbed memory") {
+		t.Errorf("failed run stderr unexpectedly spammed memory reminder:\n%s", stderr)
 	}
 
 	// 3. `hotbed poll` emits a reminder when events include a command failure (plain + JSON),
@@ -339,12 +353,12 @@ func TestMemorySavingReminders(t *testing.T) {
 	})
 	polled := &pb.SessionEvents{}
 	c.ok(polled, "poll", "-s", "bright-jay", "--after", "0", "--timeout", "1")
-	if !strings.Contains(polled.GetReminder(), "hotbed memory propose") {
-		t.Errorf("poll with failed command reminder = %q, want memory propose prompt", polled.GetReminder())
+	if !strings.Contains(polled.GetReminder(), "hotbed memory add") {
+		t.Errorf("poll with failed command reminder = %q, want memory add prompt", polled.GetReminder())
 	}
 	// Plain text poll also prints the reminder.
 	code, pollOut, pollErr := c.hotbed("poll", "-s", "bright-jay", "--after", "0", "--timeout", "1")
-	if code != 0 || !strings.Contains(pollOut, "hotbed memory propose") {
+	if code != 0 || !strings.Contains(pollOut, "hotbed memory add") {
 		t.Errorf("plain poll with failed command = (%d, %q, %q), want memory reminder", code, pollOut, pollErr)
 	}
 	// Empty poll carries no reminder.
@@ -360,7 +374,7 @@ func TestMemorySavingReminders(t *testing.T) {
 	c.ok(nil, "question", "answer", "1", "--pick", "oxlint")
 	acked := &pb.AckQuestionsResponse{}
 	c.ok(acked, "question", "ack", "1", "-s", "bright-jay")
-	if !strings.Contains(acked.GetReminder(), "hotbed memory propose") {
-		t.Errorf("question ack reminder = %q, want memory propose nudge", acked.GetReminder())
+	if !strings.Contains(acked.GetReminder(), "hotbed memory add") {
+		t.Errorf("question ack reminder = %q, want memory add nudge", acked.GetReminder())
 	}
 }

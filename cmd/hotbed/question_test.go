@@ -848,6 +848,7 @@ func TestCommandsActingAsNoSessionAreRefused(t *testing.T) {
 		"question ack":    {"", []string{"1"}, "name the session making the change"},
 		"question ls":     {"", nil, "say which project"},
 		"question outbox": {"", nil, "say which project"},
+		"memory add":      {"", []string{"--slug", "s", "--summary", "sum"}, "specify --global or -p PROJECT"},
 		"memory propose":  {"", []string{"--slug", "s", "--summary", "sum"}, "specify --global or -p PROJECT"},
 		"memory ls":       {"", nil, "say which project"},
 		"poll":            {"", []string{"--timeout", "1"}, "name the session"},

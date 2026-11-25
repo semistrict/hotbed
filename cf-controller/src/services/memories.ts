@@ -101,7 +101,9 @@ function validateContent(c?: MemoryContent): MemoryContent {
 	if (Array.from(title).length > MAX_TITLE_RUNES) {
 		throw hotbedError(ErrorCode.InvalidArgs, `title is longer than ${MAX_TITLE_RUNES} characters`);
 	}
-	const mode = c.mode === MemoryMode.UNSPECIFIED ? MemoryMode.ON_DEMAND : c.mode;
+	const body = c.body.trim();
+	const mode =
+		c.mode === MemoryMode.UNSPECIFIED ? (body ? MemoryMode.ON_DEMAND : MemoryMode.ALWAYS) : c.mode;
 	if (mode !== MemoryMode.ALWAYS && mode !== MemoryMode.ON_DEMAND) {
 		throw hotbedError(
 			ErrorCode.InvalidArgs,
@@ -124,17 +126,16 @@ function validateContent(c?: MemoryContent): MemoryContent {
 			`summary is ${summaryRunes} characters (max ${maxSummary} for ${mode === MemoryMode.ALWAYS ? "always" : "on-demand"} mode)`,
 		).withSuggestion(
 			mode === MemoryMode.ALWAYS
-				? "keep always-on rules crisp (<= 240 chars), or use --mode on_demand and put details in --body"
+				? "keep always-on rules crisp (<= 240 chars), or pass --body for an on-demand memory"
 				: "keep the index summary to one concise line and put full details in --body",
 		);
 	}
-	const body = c.body.trim();
 	if (mode === MemoryMode.ON_DEMAND && !body) {
 		throw hotbedError(
 			ErrorCode.InvalidArgs,
 			"on-demand memories require --body (or --body-file) with the full details",
 		).withSuggestion(
-			"pass --body TEXT, --body-file PATH, or use --mode always for a short inline rule",
+			"pass --body TEXT, --body-file PATH, or omit --mode / use --mode always for a short inline rule",
 		);
 	}
 	const bodyBytes = new TextEncoder().encode(body).byteLength;

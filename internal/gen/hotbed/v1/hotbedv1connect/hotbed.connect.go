@@ -4685,11 +4685,12 @@ var (
 
 // MemoryServiceClient is a client for the hotbed.v1.MemoryService service.
 type MemoryServiceClient interface {
-	// Create a new memory or supersede/consolidate existing memories
+	// Save a new memory or supersede/consolidate existing memories
 	// (--supersede ID). Automatically approved and active immediately. Defaults
 	// to the active session's project; pass --global for cross-project learnings.
-	// Use --mode always for short guardrails (<= 240 chars) or --mode on_demand
-	// (default) for detailed playbooks fetched with `hotbed memory get`.
+	// When --mode is omitted, omitting --body saves a short always-on rule
+	// (<= 240 chars) and passing --body/--body-file saves an on-demand playbook
+	// fetched with `hotbed memory get`.
 	ProposeMemory(context.Context, *v1.ProposeMemoryRequest) (*v1.Memory, error)
 	// List memories (compact metadata without full body). Defaults to approved
 	// memories for global + active project (or global only outside a project).
@@ -4723,11 +4724,12 @@ func NewMemoryServiceClient(client *connect.Client) MemoryServiceClient {
 
 // MemoryServiceHandler is an implementation of the hotbed.v1.MemoryService service.
 type MemoryServiceHandler interface {
-	// Create a new memory or supersede/consolidate existing memories
+	// Save a new memory or supersede/consolidate existing memories
 	// (--supersede ID). Automatically approved and active immediately. Defaults
 	// to the active session's project; pass --global for cross-project learnings.
-	// Use --mode always for short guardrails (<= 240 chars) or --mode on_demand
-	// (default) for detailed playbooks fetched with `hotbed memory get`.
+	// When --mode is omitted, omitting --body saves a short always-on rule
+	// (<= 240 chars) and passing --body/--body-file saves an on-demand playbook
+	// fetched with `hotbed memory get`.
 	ProposeMemory(context.Context, *v1.ProposeMemoryRequest) (*v1.Memory, error)
 	// List memories (compact metadata without full body). Defaults to approved
 	// memories for global + active project (or global only outside a project).

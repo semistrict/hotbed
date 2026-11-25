@@ -22,6 +22,7 @@ import {
 	MAX_WAIT_MS,
 	MEMORY_FAILURE_REMINDER,
 	MEMORY_FEEDBACK_REMINDER,
+	MEMORY_SESSION_END_REMINDER,
 	SESSION_IDLE_MS,
 	sessionStartReminder,
 	validateT3CodeThreadId,
@@ -333,7 +334,9 @@ export function createSessionService(ctrl: ControllerContext): ServiceImpl<typeo
 		},
 
 		async endSession(req) {
-			return ctrl.endSession(req.id, "ended by its agent", true);
+			const sess = await ctrl.endSession(req.id, "ended by its agent", true);
+			sess.reminder = MEMORY_SESSION_END_REMINDER;
+			return sess;
 		},
 
 		async *watchSession(req, ctx) {
