@@ -1149,8 +1149,15 @@ func (b *VMBackend) ReconcileOrphans(ctx context.Context, liveWorkspaces map[str
 		if cellPath == "" {
 			continue
 		}
-		rel, err := filepath.Rel(st.CellRoot(), cellPath)
-		if err != nil || strings.HasPrefix(rel, "..") {
+		var rel string
+		for _, root := range st.CellRoots() {
+			r, err := filepath.Rel(root, cellPath)
+			if err == nil && !strings.HasPrefix(r, "..") {
+				rel = r
+				break
+			}
+		}
+		if rel == "" {
 			continue
 		}
 		if strings.HasPrefix(rel, "bases"+string(filepath.Separator)) || strings.HasPrefix(rel, "baseimages"+string(filepath.Separator)) {
@@ -1161,69 +1168,71 @@ func (b *VMBackend) ReconcileOrphans(ctx context.Context, liveWorkspaces map[str
 	}
 
 	if startup {
-		// Sweep orphaned local ws/<id> cells not belonging to any live workspace
-		// (and not held by any still-alive VM).
-		wsRoot := filepath.Join(st.CellRoot(), "ws")
-		if ents, err := os.ReadDir(wsRoot); err == nil {
-			for _, ent := range ents {
-				if !ent.IsDir() {
-					continue
-				}
-				id := ent.Name()
-				if owned[id] {
-					continue
-				}
-				if err := b.mgr.EnsureNotRunning(ctx, id); err != nil {
-					continue
-				}
-				if err := st.DeleteCell(ctx, "ws/"+id); err != nil {
-					slog.Warn("sweep orphan cladefs workspace cell failed", "workspace", id, "err", err)
-				} else {
-					slog.Info("swept orphan cladefs workspace cell", "workspace", id)
+		for _, root := range st.CellRoots() {
+			// Sweep orphaned local ws/<id> cells not belonging to any live workspace
+			// (and not held by any still-alive VM).
+			wsRoot := filepath.Join(root, "ws")
+			if ents, err := os.ReadDir(wsRoot); err == nil {
+				for _, ent := range ents {
+					if !ent.IsDir() {
+						continue
+					}
+					id := ent.Name()
+					if owned[id] {
+						continue
+					}
+					if err := b.mgr.EnsureNotRunning(ctx, id); err != nil {
+						continue
+					}
+					if err := st.DeleteCell(ctx, "ws/"+id); err != nil {
+						slog.Warn("sweep orphan cladefs workspace cell failed", "workspace", id, "err", err)
+					} else {
+						slog.Info("swept orphan cladefs workspace cell", "workspace", id)
+					}
 				}
 			}
-		}
-		// Drop leftover local staging dirs under bases/<project>/<baseID> and
-		// baseimages/vm-* from interrupted builds (published bases are already
-		// dropped locally after R2 sync; DropCell never deletes from R2).
-		basesRoot := filepath.Join(st.CellRoot(), "bases")
-		if projEnts, err := os.ReadDir(basesRoot); err == nil {
-			for _, proj := range projEnts {
-				if !proj.IsDir() {
-					continue
-				}
-				if baseEnts, err := os.ReadDir(filepath.Join(basesRoot, proj.Name())); err == nil {
-					for _, be := range baseEnts {
-						if !be.IsDir() {
-							continue
-						}
-						if err := b.mgr.EnsureNotRunning(ctx, "base-"+be.Name()); err != nil {
-							continue
-						}
-						rel := filepath.Join("bases", proj.Name(), be.Name())
-						if err := st.DropCell(ctx, rel); err == nil {
-							slog.Info("dropped leftover local cladefs base cell", "cell", rel)
+			// Drop leftover local staging dirs under bases/<project>/<baseID> and
+			// baseimages/vm-* from interrupted builds (published bases are already
+			// dropped locally after R2 sync; DropCell never deletes from R2).
+			basesRoot := filepath.Join(root, "bases")
+			if projEnts, err := os.ReadDir(basesRoot); err == nil {
+				for _, proj := range projEnts {
+					if !proj.IsDir() {
+						continue
+					}
+					if baseEnts, err := os.ReadDir(filepath.Join(basesRoot, proj.Name())); err == nil {
+						for _, be := range baseEnts {
+							if !be.IsDir() {
+								continue
+							}
+							if err := b.mgr.EnsureNotRunning(ctx, "base-"+be.Name()); err != nil {
+								continue
+							}
+							rel := filepath.Join("bases", proj.Name(), be.Name())
+							if err := st.DropCell(ctx, rel); err == nil {
+								slog.Info("dropped leftover local cladefs base cell", "cell", rel)
+							}
 						}
 					}
 				}
 			}
-		}
-		baseImgRoot := filepath.Join(st.CellRoot(), "baseimages")
-		if ents, err := os.ReadDir(baseImgRoot); err == nil {
-			for _, ent := range ents {
-				if !ent.IsDir() {
-					continue
-				}
-				key, ok := strings.CutPrefix(ent.Name(), "vm-")
-				if !ok {
-					continue
-				}
-				if err := b.mgr.EnsureNotRunning(ctx, "prov-"+key); err != nil {
-					continue
-				}
-				rel := filepath.Join("baseimages", ent.Name())
-				if err := st.DropCell(ctx, rel); err == nil {
-					slog.Info("dropped leftover local cladefs baseimage cell", "cell", rel)
+			baseImgRoot := filepath.Join(root, "baseimages")
+			if ents, err := os.ReadDir(baseImgRoot); err == nil {
+				for _, ent := range ents {
+					if !ent.IsDir() {
+						continue
+					}
+					key, ok := strings.CutPrefix(ent.Name(), "vm-")
+					if !ok {
+						continue
+					}
+					if err := b.mgr.EnsureNotRunning(ctx, "prov-"+key); err != nil {
+						continue
+					}
+					rel := filepath.Join("baseimages", ent.Name())
+					if err := st.DropCell(ctx, rel); err == nil {
+						slog.Info("dropped leftover local cladefs baseimage cell", "cell", rel)
+					}
 				}
 			}
 		}
