@@ -12,6 +12,7 @@ import {
 } from "@bufbuild/protobuf";
 import * as dbSchema from "./db/schema.ts";
 import {
+	ActorKind,
 	BaseSchema,
 	CladefsCellSchema,
 	ClusterEventSchema,
@@ -57,6 +58,8 @@ import {
 	QuickResponse,
 	RepoSchema,
 	ReviewEventSchema,
+	ReviewerSchema,
+	ReviewerState,
 	ReviewSchema,
 	ReviewState,
 	ReviewUpdate_What,
@@ -442,8 +445,15 @@ function questionResponseLine(q: Question): string {
 	return `${head} answered: ${parts.join("; ")}`;
 }
 
+function isUserStamp(by?: Stamp): boolean {
+	if (!by) return true;
+	if (by.actorKind === ActorKind.USER) return true;
+	if (by.actorKind === ActorKind.AGENT) return false;
+	return !by.session;
+}
+
 function reviewResponseOn(about: string, e: ReviewEvent): string {
-	const who = e.by?.session || "the user";
+	const who = isUserStamp(e.by) ? "the user" : e.by?.session || "an agent";
 	const parts: string[] = [];
 	if (e.quick !== QuickResponse.UNSPECIFIED) {
 		const word =
@@ -1338,15 +1348,17 @@ export class ControllerStore {
 		project: string,
 		t3codeThreadId: string,
 		nowMs: number,
+		model = "",
 	): Session {
 		const pid = this.projectIdByName(project);
 		try {
 			this.sql.exec(
-				"INSERT INTO sessions (id, agent, project_id, t3code_thread_id, started_at, last_active_at) VALUES (?, ?, ?, ?, ?, ?)",
+				"INSERT INTO sessions (id, agent, project_id, t3code_thread_id, model, started_at, last_active_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
 				id,
 				agent,
 				pid,
 				t3codeThreadId,
+				model,
 				nowMs,
 				nowMs,
 			);
@@ -1364,7 +1376,7 @@ export class ControllerStore {
 	tryGetSession(id: string): Session | null {
 		const rows = this.sql
 			.exec(
-				`SELECT s.id, s.agent, p.name AS project, s.t3code_thread_id, s.started_at, s.last_active_at, s.ended_at, s.end_reason
+				`SELECT s.id, s.agent, p.name AS project, s.t3code_thread_id, s.model, s.started_at, s.last_active_at, s.ended_at, s.end_reason
 				 FROM sessions s JOIN projects p ON p.id = s.project_id WHERE s.id = ?`,
 				id,
 			)
@@ -1408,6 +1420,10 @@ export class ControllerStore {
 			threadId,
 			id,
 		);
+	}
+
+	setSessionModelIfEmpty(id: string, model: string): void {
+		this.sql.exec("UPDATE sessions SET model = ? WHERE id = ? AND model = ''", model, id);
 	}
 
 	resumeSession(id: string, nowMs: number): void {
@@ -1467,7 +1483,7 @@ export class ControllerStore {
 	recentSessions(sinceMs: number, project: string, t3codeThreadId: string): Session[] {
 		const rows = this.sql
 			.exec(
-				`SELECT s.id, s.agent, p.name AS project, s.t3code_thread_id, s.started_at, s.last_active_at, s.ended_at, s.end_reason
+				`SELECT s.id, s.agent, p.name AS project, s.t3code_thread_id, s.model, s.started_at, s.last_active_at, s.ended_at, s.end_reason
 				 FROM sessions s
 				 JOIN projects p ON p.id = s.project_id
 				 WHERE (s.ended_at IS NULL OR s.ended_at >= ?)
@@ -1507,7 +1523,7 @@ export class ControllerStore {
 		const lim = limit > 0 ? limit : -1;
 		const rows = this.sql
 			.exec(
-				`SELECT s.id, s.agent, p.name AS project, s.t3code_thread_id, s.started_at, s.last_active_at, s.ended_at, s.end_reason
+				`SELECT s.id, s.agent, p.name AS project, s.t3code_thread_id, s.model, s.started_at, s.last_active_at, s.ended_at, s.end_reason
 				 FROM sessions s JOIN projects p ON p.id = s.project_id
 				 WHERE s.t3code_thread_id = ? AND s.t3code_thread_id != ''
 				   AND (? = 0 OR s.ended_at IS NULL)
@@ -1551,6 +1567,7 @@ export class ControllerStore {
 			agent: str(r.agent),
 			project: str(r.project),
 			t3codeThreadId: str(r.t3code_thread_id),
+			model: str(r.model),
 			startedAt: big(r.started_at),
 			lastActiveAt: big(r.last_active_at),
 			endedAt: optBig(r.ended_at),
@@ -2881,6 +2898,33 @@ export class ControllerStore {
 		return { questions, total, sessions };
 	}
 
+	listT3OutboxQuestions(): Question[] {
+		return this.sql
+			.exec(
+				`SELECT q.id, q.rank, p.name AS project, q.doc,
+				        q.t3code_thread_id AS q_t3code_thread_id,
+				        COALESCE(s.t3code_thread_id, '') AS s_t3code_thread_id
+				 FROM questions q
+				 JOIN projects p ON p.id = q.project_id
+				 LEFT JOIN sessions s ON s.id = q.asked_by
+				 WHERE q.state IN (?, ?)
+				   AND COALESCE(NULLIF(q.t3code_thread_id, ''), COALESCE(s.t3code_thread_id, '')) != ''
+				 ORDER BY q.updated_at ASC, q.id ASC`,
+				questionStateName(QuestionState.ANSWERED),
+				questionStateName(QuestionState.DISMISSED),
+			)
+			.toArray()
+			.map((r) => {
+				const q = unmarshal(QuestionSchema, str(r.doc));
+				q.id = num(r.id);
+				q.rank = big(r.rank);
+				q.project = str(r.project);
+				q.t3codeThreadId =
+					str(r.q_t3code_thread_id) || str(r.s_t3code_thread_id) || q.t3codeThreadId;
+				return q;
+			});
+	}
+
 	questionProjects(): QuestionProject[] {
 		return this.sql
 			.exec(
@@ -3058,6 +3102,30 @@ export class ControllerStore {
 		});
 	}
 
+	private normalizeLegacyReview(r: Review): void {
+		if (r.reviewers.length === 0 && r.started) {
+			const state =
+				r.state === ReviewState.DONE
+					? ReviewerState.DONE
+					: r.state === ReviewState.FAILED
+						? ReviewerState.FAILED
+						: ReviewerState.IN_PROGRESS;
+			r.reviewers.push(
+				create(ReviewerSchema, {
+					id: 1,
+					model: r.model,
+					session: r.started.session,
+					t3codeThreadId: r.started.t3codeThreadId,
+					state,
+					started: r.started,
+					ended: r.ended,
+					summary: r.summary,
+					report: r.report,
+				}),
+			);
+		}
+	}
+
 	getReview(id: number, withDetail: boolean): Review {
 		const rows = this.sql
 			.exec(
@@ -3069,6 +3137,7 @@ export class ControllerStore {
 		const r = unmarshal(ReviewSchema, str(rows[0].doc));
 		r.id = num(rows[0].id);
 		r.project = str(rows[0].project);
+		this.normalizeLegacyReview(r);
 		this.attachReviewCountsAndDetails(r, withDetail);
 		return r;
 	}
@@ -3106,7 +3175,9 @@ export class ControllerStore {
 			const r = unmarshal(ReviewSchema, str(row.doc));
 			r.id = num(row.id);
 			r.project = str(row.project);
+			this.normalizeLegacyReview(r);
 			r.report = "";
+			for (const rv of r.reviewers) rv.report = "";
 			this.attachReviewCountsAndDetails(r, false);
 			return r;
 		});
@@ -3142,20 +3213,45 @@ export class ControllerStore {
 		return { active, toDecide };
 	}
 
-	changeReview(id: number, what: string, by: Stamp, edit: (r: Review) => void): Review {
+	changeReview(
+		id: number,
+		what: string,
+		by: Stamp,
+		edit: (r: Review) => {
+			reviewerId?: number;
+			stamp?: Stamp;
+			notify?: { what: ReviewUpdate_What; detail: string } | null;
+		} | void,
+	): Review {
 		return this.transactionSync(() => {
 			const r = this.getReview(id, false);
-			edit(r);
-			r.updatedAt = by.at;
-			this.saveReview(r, what, by);
-			if (what === "finished" || what === "failed") {
+			const res = edit(r) ?? {};
+			const stamp = res.stamp ?? by;
+			const reviewerId = res.reviewerId ?? 0;
+			r.updatedAt = stamp.at;
+			this.saveReview(r, what, stamp, reviewerId);
+			if (res.notify !== undefined) {
+				if (res.notify) {
+					this.tellSession(
+						r.requested?.session ?? "",
+						stamp.at,
+						create(SessionEventSchema, {
+							detail: res.notify.detail,
+							event: {
+								case: "review",
+								value: create(ReviewUpdateSchema, { what: res.notify.what, reviewId: r.id }),
+							},
+						}),
+					);
+				}
+			} else if (what === "finished" || what === "failed") {
 				const word = what === "finished" ? "is done" : "failed";
 				let line = `review ${r.id} (${r.title}) ${word}`;
 				if (r.summary) line += `: ${firstLine(r.summary)}`;
 				const w = what === "finished" ? ReviewUpdate_What.FINISHED : ReviewUpdate_What.FAILED;
 				this.tellSession(
 					r.requested?.session ?? "",
-					by.at,
+					stamp.at,
 					create(SessionEventSchema, {
 						detail: line,
 						event: {
@@ -3172,32 +3268,38 @@ export class ControllerStore {
 	addFindings(
 		reviewId: number,
 		by: Stamp,
-		check: (r: Review) => void,
+		check: (r: Review) => { reviewerId: number; stamp: Stamp },
 		findings: Finding[],
 		report: string,
 	): Finding[] {
 		return this.transactionSync(() => {
 			const r = this.getReview(reviewId, false);
-			check(r);
+			const { reviewerId, stamp } = check(r);
 			if (report) {
 				r.report = report;
-				r.updatedAt = by.at;
-				this.saveReview(r, "reported", by);
+				const rv = r.reviewers.find((x) => x.id === reviewerId);
+				if (rv) rv.report = report;
+				r.updatedAt = stamp.at;
+				this.saveReview(r, "reported", stamp, reviewerId);
 			}
 			if (findings.length === 0) {
-				this.insertReviewEvent(create(ReviewEventSchema, { reviewId, what: "found none", by }), "");
+				this.insertReviewEvent(
+					create(ReviewEventSchema, { reviewId, what: "found none", by: stamp, reviewerId }),
+					"",
+				);
 			}
 			for (const f of findings) {
 				this.sql.exec("INSERT INTO review_findings (review_id, doc) VALUES (?, '')", reviewId);
 				f.id = num(this.sql.exec("SELECT last_insert_rowid() AS id").one().id);
 				f.reviewId = reviewId;
-				f.found = by;
+				f.reviewerId = reviewerId;
+				f.found = stamp;
 				f.decision = FindingDecision.OPEN;
-				this.saveFinding(f, "found", by);
+				this.saveFinding(f, "found", stamp, reviewerId);
 			}
 			this.sql.exec(
 				"UPDATE reviews SET updated_at = MAX(updated_at, ?) WHERE id = ?",
-				Number(by.at),
+				Number(stamp.at),
 				reviewId,
 			);
 			return findings;
@@ -3209,20 +3311,22 @@ export class ControllerStore {
 		findingIds: number[],
 		what: string,
 		by: Stamp,
-		edit: (r: Review, f: Finding) => void,
+		edit: (r: Review, f: Finding) => Stamp | void,
 	): Finding[] {
 		return this.transactionSync(() => {
 			const r = this.getReview(reviewId, false);
 			const out: Finding[] = [];
+			let lastAt = by.at;
 			for (const fid of findingIds) {
 				const f = this.getFinding(reviewId, fid);
-				edit(r, f);
-				this.saveFinding(f, what, by);
+				const stamp = edit(r, f) ?? by;
+				lastAt = stamp.at;
+				this.saveFinding(f, what, stamp, 0);
 				out.push(f);
 			}
 			this.sql.exec(
 				"UPDATE reviews SET updated_at = MAX(updated_at, ?) WHERE id = ?",
-				Number(by.at),
+				Number(lastAt),
 				reviewId,
 			);
 			return out;
@@ -3286,26 +3390,36 @@ export class ControllerStore {
 	reviewEventsAfter(reviewId: number, afterSeq: bigint): ReviewEvent[] {
 		return this.sql
 			.exec(
-				"SELECT seq, finding_id, what, at, session, host, quick, text FROM review_events WHERE review_id = ? AND seq > ? ORDER BY seq",
+				"SELECT seq, finding_id, what, at, session, host, quick, text, by_doc, reviewer_id FROM review_events WHERE review_id = ? AND seq > ? ORDER BY seq",
 				reviewId,
 				Number(afterSeq),
 			)
 			.toArray()
-			.map((row) =>
-				create(ReviewEventSchema, {
+			.map((row) => {
+				const byDoc = str(row.by_doc);
+				let by: Stamp;
+				if (byDoc) {
+					by = unmarshal(StampSchema, byDoc);
+				} else {
+					const session = str(row.session);
+					by = create(StampSchema, {
+						at: big(row.at),
+						session,
+						host: str(row.host),
+						actorKind: session ? ActorKind.AGENT : ActorKind.USER,
+					});
+				}
+				return create(ReviewEventSchema, {
 					seq: big(row.seq),
 					reviewId,
 					findingId: num(row.finding_id),
 					what: str(row.what),
-					by: create(StampSchema, {
-						at: big(row.at),
-						session: str(row.session),
-						host: str(row.host),
-					}),
+					by,
 					quick: quickResponseFromName(str(row.quick)),
 					text: str(row.text),
-				}),
-			);
+					reviewerId: num(row.reviewer_id),
+				});
+			});
 	}
 
 	private getFinding(reviewId: number, fid: number): Finding {
@@ -3330,6 +3444,7 @@ export class ControllerStore {
 		let preExisting = 0;
 		let nits = 0;
 		let open = 0;
+		const byReviewer = new Map<number, number>();
 		for (const fr of fRows) {
 			const f = unmarshal(FindingSchema, str(fr.doc));
 			f.id = num(fr.id);
@@ -3338,7 +3453,14 @@ export class ControllerStore {
 			else if (f.severity === 2) preExisting++;
 			else if (f.severity === 3) nits++;
 			if (f.decision === FindingDecision.OPEN || f.decision === FindingDecision.UNSPECIFIED) open++;
+			const rvid = f.reviewerId || (r.reviewers.length === 1 ? r.reviewers[0].id : 0);
+			if (rvid > 0) {
+				byReviewer.set(rvid, (byReviewer.get(rvid) ?? 0) + 1);
+			}
 			findings.push(f);
+		}
+		for (const rv of r.reviewers) {
+			rv.findingsCount = byReviewer.get(rv.id) ?? 0;
 		}
 		const events = this.reviewEventsAfter(r.id, 0n);
 		let responses = 0;
@@ -3368,6 +3490,7 @@ export class ControllerStore {
 				for (const ev of fResps) {
 					if (ev.quick !== QuickResponse.UNSPECIFIED) {
 						f.quick = ev.quick;
+						f.quickBy = ev.by;
 					}
 				}
 			}
@@ -3376,7 +3499,7 @@ export class ControllerStore {
 		}
 	}
 
-	private saveReview(r: Review, what: string, by: Stamp): void {
+	private saveReview(r: Review, what: string, by: Stamp, reviewerId = 0): void {
 		const stored = clone(ReviewSchema, r);
 		stored.project = "";
 		stored.findings = [];
@@ -3386,6 +3509,7 @@ export class ControllerStore {
 		stored.nits = 0;
 		stored.open = 0;
 		stored.responses = 0;
+		for (const rv of stored.reviewers) rv.findingsCount = 0;
 		const doc = marshal(ReviewSchema, stored);
 		this.sql.exec(
 			"UPDATE reviews SET state = ?, updated_at = ?, doc = ? WHERE id = ?",
@@ -3395,14 +3519,15 @@ export class ControllerStore {
 			r.id,
 		);
 		this.insertReviewEvent(
-			create(ReviewEventSchema, { reviewId: r.id, what, by, text: by.reason }),
+			create(ReviewEventSchema, { reviewId: r.id, what, by, text: by.reason, reviewerId }),
 			doc,
 		);
 	}
 
-	private saveFinding(f: Finding, what: string, by: Stamp): void {
+	private saveFinding(f: Finding, what: string, by: Stamp, reviewerId = 0): void {
 		const stored = clone(FindingSchema, f);
 		stored.responses = 0;
+		stored.quickBy = undefined;
 		const doc = marshal(FindingSchema, stored);
 		this.sql.exec("UPDATE review_findings SET doc = ? WHERE id = ?", doc, f.id);
 		this.insertReviewEvent(
@@ -3412,14 +3537,16 @@ export class ControllerStore {
 				what,
 				by,
 				text: by.reason,
+				reviewerId,
 			}),
 			doc,
 		);
 	}
 
 	private insertReviewEvent(e: ReviewEvent, doc: string): bigint {
+		const byDoc = e.by ? marshal(StampSchema, e.by) : "";
 		this.sql.exec(
-			"INSERT INTO review_events (review_id, finding_id, what, at, session, host, quick, text, doc) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+			"INSERT INTO review_events (review_id, finding_id, what, at, session, host, quick, text, doc, by_doc, reviewer_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
 			e.reviewId,
 			e.findingId,
 			e.what,
@@ -3429,6 +3556,8 @@ export class ControllerStore {
 			quickResponseName(e.quick),
 			e.text,
 			doc,
+			byDoc,
+			e.reviewerId,
 		);
 		return big(this.sql.exec("SELECT last_insert_rowid() AS id").one().id);
 	}

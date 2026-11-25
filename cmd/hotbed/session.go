@@ -35,6 +35,7 @@ type sessionStartCmd struct {
 	projectFlag
 	Name           string `arg:"" optional:"" help:"adjective-noun, such as brave-otter (default: a random free one)."`
 	Agent          string `env:"HOTBED_AGENT" help:"Who you are, for the cockpit (default: this machine)."`
+	Model          string `env:"HOTBED_MODEL" help:"Exact model ID running this session (e.g. gemini-4-neon, claude-opus-4-6)."`
 	T3CodeThreadID string `name:"t3code-thread-id" env:"T3CODE_THREAD_ID" help:"The T3 Code thread ID to associate with the session on the controller (default: T3CODE_THREAD_ID)."`
 	Replace        bool   `help:"End the live session already bound to this T3 thread or git worktree and bind the new one in its place."`
 	Resume         bool   `help:"Take up the session NAME if there is one, rather than refuse: live again if it ended (with no workspaces), as it is if not. It keeps its project."`
@@ -81,6 +82,7 @@ func (c *sessionStartCmd) Exec(ctx context.Context, d deps) (any, error) {
 	sess, err := cl.sessions.StartSession(ctx, &pb.StartSessionRequest{
 		Id:             c.Name,
 		Agent:          c.Agent,
+		Model:          strings.TrimSpace(c.Model),
 		Project:        c.Project,
 		Remote:         remote,
 		Resume:         c.Resume,

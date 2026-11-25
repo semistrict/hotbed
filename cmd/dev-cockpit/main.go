@@ -429,7 +429,7 @@ func startDevCluster(parent context.Context, addr string) (*devCluster, error) {
 	uiHandler := ui.Handler()
 	inner := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		p := r.URL.Path
-		if strings.HasPrefix(p, "/hotbed.v1.") || p == "/ws/worker" || p == "/healthz" ||
+		if strings.HasPrefix(p, "/hotbed.v1.") || strings.HasPrefix(p, "/ws/") || p == "/healthz" ||
 			strings.HasPrefix(p, "/builds/") || strings.HasPrefix(p, "/admin/") || strings.HasPrefix(p, "/auth/") {
 			peer := httpx.Peer(r.Context())
 			r2 := r.Clone(r.Context())
@@ -744,9 +744,10 @@ func (dc *devCluster) seed(ctx context.Context, hc, workerHC *http.Client) error
 		return fmt.Errorf("add question 2: %w", err)
 	}
 
-	// Seed one finished review with two findings.
+	// Seed one finished review with two reviewers and two findings.
 	rev, err := reviews.RequestReview(ctx, &pb.RequestReviewRequest{
 		SessionId:    "brave-otter",
+		Model:        "gemini-4-neon",
 		Repo:         originDir,
 		Title:        "Lock-free page cache eviction",
 		Branch:       "main",

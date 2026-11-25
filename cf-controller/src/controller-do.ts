@@ -53,6 +53,7 @@ import { createScheduleService, type ScheduleRunner } from "./services/schedules
 import { createSessionService } from "./services/sessions.ts";
 import { createWorkspaceService } from "./services/workspaces.ts";
 import { ControllerStore } from "./store.ts";
+import { QuestionBridgeHub } from "./question-bridge.ts";
 import { WorkerTunnelHub } from "./tunnel.ts";
 
 export interface ControllerEnv extends AuthEnv, BuildsEnv {
@@ -129,6 +130,7 @@ export class ControllerDO extends DurableObject<ControllerEnv> {
 	private db!: DrizzleSqliteDODatabase<typeof dbSchema>;
 	private store!: ControllerStore;
 	private tunnel!: WorkerTunnelHub;
+	private questionBridge!: QuestionBridgeHub;
 	private builds!: BuildDistributor;
 	private ctrl!: ControllerContext;
 	private scheduleRunner!: ScheduleRunner;
@@ -147,6 +149,7 @@ export class ControllerDO extends DurableObject<ControllerEnv> {
 
 			this.store = new ControllerStore(this.ctx.storage, this.db);
 			this.tunnel = new WorkerTunnelHub(this.ctx);
+			this.questionBridge = new QuestionBridgeHub(this.ctx);
 			this.initRuntime();
 		});
 	}
@@ -173,6 +176,7 @@ export class ControllerDO extends DurableObject<ControllerEnv> {
 		this.ctrl = new ControllerContext({
 			store: this.store,
 			tunnel: this.tunnel,
+			questionBridge: this.questionBridge,
 			builds: this.builds,
 			clusterId,
 			orgId,
@@ -283,15 +287,28 @@ export class ControllerDO extends DurableObject<ControllerEnv> {
 	}
 
 	override webSocketMessage(ws: WebSocket, message: string | ArrayBuffer): void {
+		if (this.questionBridge.isBridgeSocket(ws)) {
+			this.questionBridge.handleMessage(ws, message, () => this.store.listT3OutboxQuestions());
+			return;
+		}
 		this.tunnel.handleMessage(ws, message);
 	}
 
 	override webSocketClose(ws: WebSocket, code: number, reason: string, _wasClean: boolean): void {
+		if (this.questionBridge.isBridgeSocket(ws)) {
+			this.questionBridge.handleClose(ws, code, reason);
+			return;
+		}
 		this.tunnel.handleClose(ws, code, reason);
 	}
 
 	override webSocketError(ws: WebSocket, error: unknown): void {
-		this.tunnel.handleClose(ws, 1011, error instanceof Error ? error.message : String(error));
+		const msg = error instanceof Error ? error.message : String(error);
+		if (this.questionBridge.isBridgeSocket(ws)) {
+			this.questionBridge.handleClose(ws, 1011, msg);
+			return;
+		}
+		this.tunnel.handleClose(ws, 1011, msg);
 	}
 
 	private checkOrgMismatch(request: Request): Response | null {
@@ -914,6 +931,45 @@ export class ControllerDO extends DurableObject<ControllerEnv> {
 			return new Response(null, { status: 101, webSocket: client });
 		}
 
+		// 4b. Question outbox push WebSocket for outbound T3 Code bridges (/ws/questions)
+		if (pathname === "/ws/questions") {
+			const upgrade = (request.headers.get("Upgrade") ?? "").toLowerCase();
+			if (upgrade !== "websocket") {
+				return new Response("Expected Upgrade: websocket", { status: 426 });
+			}
+			let caller;
+			try {
+				caller = await this.authRequest(request);
+			} catch (err) {
+				const he = fromUnknownError(err);
+				return Response.json(he.toJSON(), { status: 403 });
+			}
+			if (caller.role !== "owner") {
+				return Response.json(
+					{
+						code: ErrorCode.NotAuthorized,
+						message: "owner or user authentication required for /ws/questions",
+					},
+					{ status: 403 },
+				);
+			}
+
+			const pair = new WebSocketPair();
+			const client = pair[0];
+			const server = pair[1];
+			this.questionBridge.accept(
+				server,
+				{
+					kind: "question-bridge",
+					hostname: caller.hostname,
+					login: caller.login,
+					connectedAt: this.ctrl.now(),
+				},
+				this.store.listT3OutboxQuestions(),
+			);
+			return new Response(null, { status: 101, webSocket: client });
+		}
+
 		// 5. Binary build downloads (/builds/{build}/{asset})
 		if (pathname.startsWith("/builds/") && request.method === "GET") {
 			try {
@@ -1106,6 +1162,8 @@ export class ControllerDO extends DurableObject<ControllerEnv> {
 			switch (kind) {
 				case "connectedWorkers":
 					return Response.json({ nodeIds: [...this.tunnel.connectedNodeIds()] });
+				case "connectedQuestionBridges":
+					return Response.json({ count: this.questionBridge.connectedCount() });
 				case "session": {
 					const s = this.store.tryGetSession(id);
 					return Response.json({ found: Boolean(s), data: s ? toJson(SessionSchema, s) : null });

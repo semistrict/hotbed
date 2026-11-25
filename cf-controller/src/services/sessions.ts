@@ -76,6 +76,7 @@ export function createSessionService(ctrl: ControllerContext): ServiceImpl<typeo
 		id: string,
 		project: string,
 		t3codeThreadId: string,
+		model: string,
 	): Promise<Session> {
 		return ctrl.withSessionLock(id, () => {
 			const sess = ctrl.store.getSession(id);
@@ -87,6 +88,9 @@ export function createSessionService(ctrl: ControllerContext): ServiceImpl<typeo
 			}
 			if (t3codeThreadId && !sess.t3codeThreadId) {
 				ctrl.store.setSessionT3CodeThreadIdIfEmpty(sess.id, t3codeThreadId);
+			}
+			if (model && !sess.model) {
+				ctrl.store.setSessionModelIfEmpty(sess.id, model);
 			}
 			if (sess.endedAt !== undefined) {
 				ctrl.store.resumeSession(sess.id, ctrl.now());
@@ -121,6 +125,7 @@ export function createSessionService(ctrl: ControllerContext): ServiceImpl<typeo
 			const caller = getCaller(ctx.values);
 			const agent = req.agent || caller.hostname;
 			const t3codeThreadId = validateT3CodeThreadId(req.t3codeThreadId);
+			const model = req.model.trim();
 
 			if (req.id && (!SESSION_NAME_RE.test(req.id) || req.id.length > 48)) {
 				throw hotbedError(
@@ -137,7 +142,7 @@ export function createSessionService(ctrl: ControllerContext): ServiceImpl<typeo
 						"pick another name, or leave it out for a random one",
 					);
 				}
-				const resumed = await resumeSession(req.id, req.project, t3codeThreadId);
+				const resumed = await resumeSession(req.id, req.project, t3codeThreadId, model);
 				const proj = ctrl.store.getProject(resumed.project);
 				resumed.reminder = sessionStartReminder(proj);
 				if (!req.omitMemories) {
@@ -149,7 +154,14 @@ export function createSessionService(ctrl: ControllerContext): ServiceImpl<typeo
 			const { project } = ctrl.sessionProject(caller, req.project, canonicalRemote(req.remote));
 			let sess: Session | null = null;
 			if (req.id) {
-				sess = ctrl.store.startSession(req.id, agent, project.name, t3codeThreadId, ctrl.now());
+				sess = ctrl.store.startSession(
+					req.id,
+					agent,
+					project.name,
+					t3codeThreadId,
+					ctrl.now(),
+					model,
+				);
 			} else {
 				for (let i = 0; i < 20; i++) {
 					try {
@@ -159,6 +171,7 @@ export function createSessionService(ctrl: ControllerContext): ServiceImpl<typeo
 							project.name,
 							t3codeThreadId,
 							ctrl.now(),
+							model,
 						);
 						break;
 					} catch (err) {

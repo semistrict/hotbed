@@ -12,6 +12,7 @@ import (
 	"github.com/semistrict/hotbed/internal/api"
 	"github.com/semistrict/hotbed/internal/apicmd"
 	pb "github.com/semistrict/hotbed/internal/gen/hotbed/v1"
+	"github.com/semistrict/hotbed/internal/t3bridge"
 )
 
 // outputOpts controls how a command's result or failure is printed.
@@ -33,19 +34,22 @@ type formatSpec struct {
 
 var defaultFormatSpecs = map[string]formatSpec{
 	"version":         {versionResult{}, `{{.version}}{{if .commit}} ({{short 12 .commit}}){{end}}  {{.os}}/{{.arch}}`},
-	"session start":   {&pb.Session{}, "{{.id}}{{if .project}}  project={{.project}}{{end}}{{if .t3codeThreadId}}  t3={{.t3codeThreadId}}{{end}}{{with .memories}}{{if or .always .onDemand}}\n\nMemories ({{len .always}} always-on, {{len .onDemand}} on-demand — fetch details with `hotbed memory get SLUG`):{{if .always}}\nAlways-on:{{range .always}}\n  [{{if .project}}{{.project}}{{else}}global{{end}}{{if .repo}}/{{.repo}}{{end}}] {{.slug}}: {{.summary}}{{end}}{{end}}{{if .omittedAlways}}\n  (+{{.omittedAlways}} more always-on memories — run `hotbed memory ls --mode always`){{end}}{{if .onDemand}}\nOn-demand (read when relevant):{{range .onDemand}}\n  [{{if .project}}{{.project}}{{else}}global{{end}}{{if .repo}}/{{.repo}}{{end}}] {{.slug}} — {{.summary}}{{end}}{{end}}{{if .omittedOnDemand}}\n  (+{{.omittedOnDemand}} more on-demand memories — run `hotbed memory ls`){{end}}{{end}}{{end}}{{if .reminder}}\n{{.reminder}}{{end}}"},
+	"session start":   {&pb.Session{}, "{{.id}}{{if .project}}  project={{.project}}{{end}}{{if .model}}  model={{.model}}{{end}}{{if .t3codeThreadId}}  t3={{.t3codeThreadId}}{{end}}{{with .memories}}{{if or .always .onDemand}}\n\nMemories ({{len .always}} always-on, {{len .onDemand}} on-demand — fetch details with `hotbed memory get SLUG`):{{if .always}}\nAlways-on:{{range .always}}\n  [{{if .project}}{{.project}}{{else}}global{{end}}{{if .repo}}/{{.repo}}{{end}}] {{.slug}}: {{.summary}}{{end}}{{end}}{{if .omittedAlways}}\n  (+{{.omittedAlways}} more always-on memories — run `hotbed memory ls --mode always`){{end}}{{if .onDemand}}\nOn-demand (read when relevant):{{range .onDemand}}\n  [{{if .project}}{{.project}}{{else}}global{{end}}{{if .repo}}/{{.repo}}{{end}}] {{.slug}} — {{.summary}}{{end}}{{end}}{{if .omittedOnDemand}}\n  (+{{.omittedOnDemand}} more on-demand memories — run `hotbed memory ls`){{end}}{{end}}{{end}}{{if .reminder}}\n{{.reminder}}{{end}}"},
 	"session current": {sessionBinding{}, `{{.id}}  ({{.source}})`},
 	"session end":     {&pb.Session{}, `{{.id}}  ended`},
-	"session ls":      {&pb.ListSessionsResponse{}, "{{range .sessions}}{{pad 20 .id}}  {{pad 12 .project}}  {{if .endedAt}}ended{{else}}live {{end}}{{if .t3codeThreadId}}  t3={{.t3codeThreadId}}{{end}}\n{{end}}"},
-	"session search":  {&pb.SearchSessionsResponse{}, "{{range .sessions}}{{pad 20 .id}}  {{pad 12 .project}}  {{if .endedAt}}ended{{else}}live {{end}}{{if .t3codeThreadId}}  t3={{.t3codeThreadId}}{{end}}\n{{end}}{{if .more}}(+{{.more}} older matching, not shown: --limit 0 for every one)\n{{end}}"},
+	"session ls":      {&pb.ListSessionsResponse{}, "{{range .sessions}}{{pad 20 .id}}  {{pad 12 .project}}  {{if .endedAt}}ended{{else}}live {{end}}{{if .model}}  model={{.model}}{{end}}{{if .t3codeThreadId}}  t3={{.t3codeThreadId}}{{end}}\n{{end}}"},
+	"session search":  {&pb.SearchSessionsResponse{}, "{{range .sessions}}{{pad 20 .id}}  {{pad 12 .project}}  {{if .endedAt}}ended{{else}}live {{end}}{{if .model}}  model={{.model}}{{end}}{{if .t3codeThreadId}}  t3={{.t3codeThreadId}}{{end}}\n{{end}}{{if .more}}(+{{.more}} older matching, not shown: --limit 0 for every one)\n{{end}}"},
 	"stop":            {&pb.Command{}, `{{.id}}  {{state .state}}{{if .reason}}  {{.reason}}{{end}}`},
 	"pause":           {&pb.Command{}, `{{.id}}  {{state .state}}{{if .reason}}  {{.reason}}{{end}}`},
 	"resume":          {&pb.Command{}, `{{.id}}  {{state .state}}{{if .reason}}  {{.reason}}{{end}}`},
 	"step ls":         {&pb.ListStepsResponse{}, "{{range .steps}}{{with .step}}{{pad 20 .name}}  {{if .everyPull}}every-pull{{else}}once      {{end}}  {{short 50 .script}}{{end}}\n{{end}}"},
-	"review ls":       {&pb.ListReviewsResponse{}, "{{range .reviews}}#{{pad 4 .id}}  {{pad 12 (state .state)}}  {{pad 18 (or .model \"-\")}}  {{short 60 .title}}\n{{end}}"},
+	"review ls":       {&pb.ListReviewsResponse{}, "{{range .reviews}}#{{pad 4 .id}}  {{pad 12 (state .state)}}  impl={{pad 18 (or .implementerModel \"-\")}}  rev={{pad 24 (or .model \"-\")}}  {{short 60 .title}}\n{{end}}"},
 	"skills list":     {map[string][]string{"skills": nil}, "{{range .skills}}{{.}}\n{{end}}"},
 	"skills get":      {map[string]string{"name": "", "content": ""}, `{{.content}}`},
-	"skills install":  {map[string]any{"dir": "", "files": []string{}}, `installed {{len .files}} files in {{.dir}}`},
+	"skills install":      {map[string]any{"dir": "", "files": []string{}}, `installed {{len .files}} files in {{.dir}}`},
+	"t3-bridge status":    {t3bridge.ServiceStatus{}, "installed={{.installed}}  running={{.running}}{{if .controller}}  controller={{.controller}}{{end}}{{if .t3Binary}}  t3={{.t3Binary}}{{end}}{{if .unitPath}}\nunit:  {{.unitPath}}{{end}}{{if .logPath}}\nlog:   {{.logPath}}{{end}}{{if .stateFile}}\nstate: {{.stateFile}} ({{.trackedQuestions}} tracked){{end}}"},
+	"t3-bridge install":   {t3bridge.ServiceStatus{}, "installed={{.installed}}  running={{.running}}{{if .unitPath}}\nunit:  {{.unitPath}}{{end}}{{if .logPath}}\nlog:   {{.logPath}}{{end}}"},
+	"t3-bridge uninstall": {t3bridge.ServiceStatus{}, "installed={{.installed}}  running={{.running}}{{if .unitPath}}\nunit:  {{.unitPath}}{{end}}"},
 }
 
 var compiledFormats = sync.OnceValue(func() map[string]*template.Template {

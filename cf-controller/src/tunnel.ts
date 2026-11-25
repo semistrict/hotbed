@@ -164,7 +164,10 @@ export class WorkerTunnelHub {
 		const ids = new Set<string>();
 		for (const ws of this.ctx.getWebSockets()) {
 			if (ws.readyState !== WebSocket.OPEN) continue;
-			const meta = ws.deserializeAttachment() as WorkerSocketAttachment | null;
+			const meta = ws.deserializeAttachment() as
+				| (Partial<WorkerSocketAttachment> & { kind?: string })
+				| null;
+			if (meta?.kind === "question-bridge") continue;
 			if (meta?.nodeId) ids.add(meta.nodeId);
 		}
 		return ids;

@@ -3,6 +3,7 @@
 
 import type { MessageInitShape } from "@bufbuild/protobuf";
 import {
+  ActorKind,
   BaseState,
   CommandState,
   DaemonLogLevel,
@@ -18,6 +19,7 @@ import {
   QuestionOrder,
   QuestionState,
   QuickResponse,
+  ReviewerState,
   ReviewState,
   RunOutcome,
   StepState,
@@ -96,6 +98,7 @@ import {
   type ResourceLimit,
   type Resources,
   type Review,
+  type Reviewer,
   type ReviewEvent,
   type RunCommandRequest,
   type Sample,
@@ -129,6 +132,7 @@ import {
 } from "../gen/hotbed/v1/hotbed_pb";
 
 export {
+  ActorKind,
   BaseState,
   CommandState,
   DaemonLogLevel,
@@ -144,6 +148,7 @@ export {
   QuestionOrder,
   QuestionState,
   QuickResponse,
+  ReviewerState,
   ReviewState,
   RunOutcome,
   StepState,
@@ -220,6 +225,7 @@ export {
   type ResourceLimit,
   type Resources,
   type Review,
+  type Reviewer,
   type ReviewEvent,
   type RunCommandRequest,
   type Sample,

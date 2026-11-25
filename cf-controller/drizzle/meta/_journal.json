@@ -64,6 +64,13 @@
 			"when": 1795586739264,
 			"tag": "0008_daffy_shocker",
 			"breakpoints": true
+		},
+		{
+			"idx": 9,
+			"version": "6",
+			"when": 1795588085248,
+			"tag": "0009_parallel_electro",
+			"breakpoints": true
 		}
 	]
 }

@@ -1,5 +1,6 @@
 import { create } from "@bufbuild/protobuf";
 import {
+	ActorKind,
 	BaseState,
 	CommandState,
 	DaemonLogLevel,
@@ -29,6 +30,7 @@ import { ErrorCode, codeOf, hotbedError } from "./errors.ts";
 import { canonicalRemote, projectNameFor } from "./gitops.ts";
 import { HostUsageState, mergeHostAdmission } from "./hostusage.ts";
 import type { NodeRow, NodeView } from "./placement.ts";
+import type { QuestionBridgeHub } from "./question-bridge.ts";
 import { ONLINE_WINDOW_MS, StandbyState, Wakeups, isCommandLive } from "./standby.ts";
 import { ControllerStore, LOST_DETAIL, sessionEndedError, type WorkspaceRow } from "./store.ts";
 import type { WorkerTunnelHub } from "./tunnel.ts";
@@ -73,6 +75,7 @@ export interface ScopedRequest {
 export class ControllerContext {
 	readonly store: ControllerStore;
 	readonly tunnel: WorkerTunnelHub;
+	readonly questionBridge?: QuestionBridgeHub;
 	readonly builds: BuildDistributor;
 	readonly power = new StandbyState(() => this.now());
 	readonly hostUsages = new HostUsageState();
@@ -95,6 +98,7 @@ export class ControllerContext {
 	constructor(opts: {
 		store: ControllerStore;
 		tunnel: WorkerTunnelHub;
+		questionBridge?: QuestionBridgeHub;
 		builds: BuildDistributor;
 		clusterId: string;
 		orgId?: string;
@@ -103,6 +107,7 @@ export class ControllerContext {
 	}) {
 		this.store = opts.store;
 		this.tunnel = opts.tunnel;
+		this.questionBridge = opts.questionBridge;
 		this.builds = opts.builds;
 		this.clusterId = opts.clusterId;
 		this.orgId = opts.orgId ?? "";
@@ -469,20 +474,69 @@ export class ControllerContext {
 		});
 	}
 
+	makeStamp(
+		caller: CallerIdentity,
+		opts: {
+			sessionId?: string;
+			actorKind?: ActorKind;
+			reason?: string;
+			model?: string;
+			subagent?: string;
+			t3codeThreadId?: string;
+			fallbackModel?: string;
+		},
+	): { by: Stamp; project: Project | null; session: Session | null } {
+		const sessionId = (opts.sessionId ?? "").trim();
+		const reason = opts.reason ?? "";
+		const reqKind = opts.actorKind ?? ActorKind.UNSPECIFIED;
+		if (reqKind === ActorKind.USER && sessionId) {
+			throw hotbedError(
+				ErrorCode.InvalidArgs,
+				"a user action cannot also name an agent session",
+			).withSuggestion("omit -s/--session when passing --as-user");
+		}
+		if (reqKind === ActorKind.AGENT && !sessionId) {
+			throw hotbedError(
+				ErrorCode.InvalidArgs,
+				"name the session making the change: questions and reviews record which session did what",
+			).withSuggestion("pass -s SESSION, set HOTBED_SESSION, or run `hotbed session start`");
+		}
+		if (!sessionId) {
+			const by = create(StampSchema, {
+				at: BigInt(this.now()),
+				actorKind: ActorKind.USER,
+				session: "",
+				host: caller.hostname,
+				reason,
+				user: caller.login || caller.userId || "",
+			});
+			return { by, project: null, session: null };
+		}
+		const sess = this.store.liveSession(sessionId, this.now());
+		const project = this.store.getProject(sess.project);
+		const model = (opts.model ?? "").trim() || sess.model || (opts.fallbackModel ?? "").trim();
+		const subagent = (opts.subagent ?? "").trim();
+		const t3codeThreadId =
+			validateT3CodeThreadId(opts.t3codeThreadId ?? "") || sess.t3codeThreadId || "";
+		const by = create(StampSchema, {
+			at: BigInt(this.now()),
+			actorKind: ActorKind.AGENT,
+			session: sessionId,
+			host: caller.hostname,
+			reason,
+			model,
+			subagent,
+			t3codeThreadId,
+		});
+		return { by, project, session: sess };
+	}
+
 	userStamp(
 		caller: CallerIdentity,
 		sessionId: string,
 		reason: string,
 	): { by: Stamp; project: Project | null } {
-		const by = create(StampSchema, {
-			at: BigInt(this.now()),
-			session: sessionId,
-			host: caller.hostname,
-			reason,
-		});
-		if (!sessionId) return { by, project: null };
-		const sess = this.store.liveSession(sessionId, this.now());
-		const project = this.store.getProject(sess.project);
+		const { by, project } = this.makeStamp(caller, { sessionId, reason });
 		return { by, project };
 	}
 
@@ -490,15 +544,15 @@ export class ControllerContext {
 		caller: CallerIdentity,
 		sessionId: string,
 		reason: string,
-	): { by: Stamp; project: Project } {
-		if (!sessionId) {
-			throw hotbedError(
-				ErrorCode.InvalidArgs,
-				"name the session making the change: questions and reviews record which session did what",
-			).withSuggestion("pass -s SESSION, set HOTBED_SESSION, or run `hotbed session start`");
-		}
-		const res = this.userStamp(caller, sessionId, reason);
-		return { by: res.by, project: res.project! };
+		extra?: { model?: string; subagent?: string; t3codeThreadId?: string; fallbackModel?: string },
+	): { by: Stamp; project: Project; session: Session } {
+		const res = this.makeStamp(caller, {
+			sessionId,
+			actorKind: ActorKind.AGENT,
+			reason,
+			...extra,
+		});
+		return { by: res.by, project: res.project!, session: res.session! };
 	}
 
 	listedProject(req: ScopedRequest): string {

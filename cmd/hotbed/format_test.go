@@ -177,18 +177,18 @@ func TestDefaultFormatsUseRealNewlines(t *testing.T) {
 	}
 }
 
-// review ls names each review's model, and says so when a review has none
-// yet (requested, or started before reviews kept it) (board 7788).
+// review ls names each review's implementer and reviewer model(s), and says
+// so when a review has none yet (requested, or legacy) (board 7788).
 func TestReviewLsShowsTheModel(t *testing.T) {
 	var out bytes.Buffer
 	err := apicmd.FormatPlain(&out, compiledFormats()["review ls"], &pb.ListReviewsResponse{Reviews: []*pb.Review{
 		{Id: 2, State: pb.ReviewState_REVIEW_STATE_REQUESTED, Title: "Add B"},
-		{Id: 1, State: pb.ReviewState_REVIEW_STATE_DONE, Title: "Add A", Model: "claude-opus-5-5"},
+		{Id: 1, State: pb.ReviewState_REVIEW_STATE_DONE, Title: "Add A", ImplementerModel: "gemini-4-neon", Model: "claude-opus-5-5"},
 	}})
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := "#2     requested     -                   Add B\n#1     done          claude-opus-5-5     Add A\n"
+	want := "#2     requested     impl=-                   rev=-                         Add B\n#1     done          impl=gemini-4-neon       rev=claude-opus-5-5           Add A\n"
 	if got := out.String(); got != want {
 		t.Errorf("review ls =\n%q\nwant\n%q", got, want)
 	}

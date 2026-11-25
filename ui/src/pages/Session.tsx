@@ -36,7 +36,7 @@ function SessionView({ s, session }: { s: Snapshot; session: Session }) {
     <div className="space-y-6">
       <PageTitle
         title={session.id}
-        sub={`${session.schedule ? `a run of the scheduled command ${session.schedule}` : session.agent}${session.t3codeThreadId ? ` · T3 ${session.t3codeThreadId}` : ""} · started ${ago(session.startedAt, now)} · last active ${ago(session.lastActiveAt, now)}${session.endedAt !== undefined ? ` · ended ${ago(session.endedAt, now)}: ${session.endReason}` : ""}`}
+        sub={`${session.schedule ? `a run of the scheduled command ${session.schedule}` : session.agent}${session.model ? ` · model ${session.model}` : ""}${session.t3codeThreadId ? ` · T3 ${session.t3codeThreadId}` : ""} · started ${ago(session.startedAt, now)} · last active ${ago(session.lastActiveAt, now)}${session.endedAt !== undefined ? ` · ended ${ago(session.endedAt, now)}: ${session.endReason}` : ""}`}
         right={<SessionStateLabel s={s} session={session} />}
       />
       {session.endedAt === undefined &&

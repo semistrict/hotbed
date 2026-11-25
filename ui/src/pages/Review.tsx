@@ -12,10 +12,12 @@ import {
   FindingSeverity,
   FindingVerdict,
   QuickResponse,
+  ReviewerState,
   ReviewState,
   type Finding,
   type Location,
   type Review,
+  type Reviewer,
   type ReviewEvent,
   type Snapshot,
   type Stamp,
@@ -27,7 +29,22 @@ import { Card, Empty } from "../components/Panel";
 import { useSnapshot } from "../lib/data";
 import { ago } from "../lib/format";
 import { remoteName } from "../lib/projects";
-import { bySeverity, commitUrl, ended, handled, numbered, QUICKS, quickLabel, SEVERITIES, short, thread, where } from "../lib/reviews";
+import {
+  actorSummary,
+  bySeverity,
+  commitUrl,
+  ended,
+  findingReviewer,
+  handled,
+  isUserActor,
+  numbered,
+  QUICKS,
+  quickLabel,
+  SEVERITIES,
+  short,
+  thread,
+  where,
+} from "../lib/reviews";
 import { REVIEW_STATE, SeverityCounts } from "./Reviews";
 
 export function ReviewPage() {
@@ -40,10 +57,21 @@ export function ReviewPage() {
   return <ReviewView s={s} r={review.data} />;
 }
 
+const REVIEWER_STATE: Record<ReviewerState, { text: string; className: string }> = {
+  [ReviewerState.UNSPECIFIED]: { text: "◌ unknown", className: "text-muted-foreground" },
+  [ReviewerState.IN_PROGRESS]: { text: "● reviewing", className: "text-primary" },
+  [ReviewerState.DONE]: { text: "✓ done", className: "text-good-ink" },
+  [ReviewerState.FAILED]: { text: "✕ failed", className: "text-critical" },
+};
+
 function ReviewView({ s, r }: { s: Snapshot; r: Review }) {
   const now = Number(s.now);
   const groups = bySeverity(r.findings);
   const state = REVIEW_STATE[r.state] ?? REVIEW_STATE[ReviewState.REQUESTED];
+  const implStamp = r.implementer ?? r.requested;
+  const implModel = r.implementerModel || implStamp?.model || "";
+  const separateRequester = r.implementer && r.requested && r.implementer.session !== r.requested.session;
+
   return (
     <div className="space-y-6">
       <nav className="rise font-mono text-[11px] text-muted-foreground">
@@ -76,18 +104,49 @@ function ReviewView({ s, r }: { s: Snapshot; r: Review }) {
             </span>
             {r.snapshotOf && <div className="mt-0.5 text-[11px] text-warning">uncommitted changes on {short(r.snapshotOf)}, as a snapshot commit</div>}
           </Fact>
-          <Fact label="asked by">
-            {r.requested ? <StampLine s={s} st={r.requested} now={now} /> : <span className="text-faint">—</span>}
+          <Fact label="implementer">
+            {implStamp ? (
+              <div className="space-y-1">
+                {implModel ? (
+                  <div>
+                    <ModelPill model={implModel} />
+                  </div>
+                ) : null}
+                <StampLine s={s} st={implStamp} now={now} hideModel={implModel !== ""} />
+              </div>
+            ) : (
+              <span className="text-faint">—</span>
+            )}
           </Fact>
-          <Fact label="reviewer">{r.started ? <StampLine s={s} st={r.started} now={now} /> : <span className="text-faint">none yet</span>}</Fact>
-          <Fact label="model">{r.model ? <span className="font-mono">{r.model}</span> : <span className="text-faint">{r.started ? "unknown" : "none yet"}</span>}</Fact>
+          {separateRequester && r.requested && (
+            <Fact label="asked by">
+              <StampLine s={s} st={r.requested} now={now} />
+            </Fact>
+          )}
           <Fact label={r.state === ReviewState.DONE ? "finished" : r.state === ReviewState.FAILED ? "failed" : r.state === ReviewState.CANCELLED ? "cancelled" : "ended"}>
             {r.ended ? <StampLine s={s} st={r.ended} now={now} /> : <span className="text-faint">not yet</span>}
           </Fact>
         </dl>
+
+        <div className="mt-4 border-t border-border pt-3">
+          <div className="eyebrow">reviewers ({r.reviewers.length})</div>
+          {r.reviewers.length === 0 ? (
+            <div className="mt-1.5 text-[12px] text-faint">No reviewers have started yet.</div>
+          ) : (
+            <div className="mt-2 space-y-2.5">
+              {r.reviewers.map((rv) => (
+                <ReviewerRow key={rv.id} s={s} rv={rv} now={now} />
+              ))}
+            </div>
+          )}
+        </div>
+
         {r.instructions && <Prose label="asked to look at" text={r.instructions} />}
-        {r.summary && <Prose label={r.state === ReviewState.DONE ? "the reviewer's summary" : `why it ${r.state === ReviewState.FAILED ? "failed" : "was cancelled"}`} text={r.summary} />}
-        {r.report && <Report text={r.report} />}
+        {r.reviewers.length === 0 && r.summary && (
+          <Prose label={r.state === ReviewState.DONE ? "the reviewer's summary" : `why it ${r.state === ReviewState.FAILED ? "failed" : "was cancelled"}`} text={r.summary} />
+        )}
+        {r.state === ReviewState.CANCELLED && r.summary && <Prose label="why it was cancelled" text={r.summary} />}
+        {r.reviewers.length === 0 && r.report && <Report text={r.report} />}
       </Card>
 
       {r.findings.length === 0 ? (
@@ -113,13 +172,51 @@ function ReviewView({ s, r }: { s: Snapshot; r: Review }) {
         })
       )}
 
-      <Card title="On the review as a whole" sub="Comments for the agent that asked for it">
+      <Card title="On the review as a whole" sub="Comments for the implementer">
         <Thread s={s} events={thread(r.events, null)} now={now} />
         <Respond reviewId={r.id} findingId={null} />
       </Card>
       <Timeline s={s} r={r} now={now} />
     </div>
   );
+}
+
+function ReviewerRow({ s, rv, now }: { s: Snapshot; rv: Reviewer; now: number }) {
+  const st = REVIEWER_STATE[rv.state] ?? REVIEWER_STATE[ReviewerState.IN_PROGRESS];
+  const listed = rv.session !== "" && s.sessions.some((x) => x.id === rv.session);
+  return (
+    <div className="rounded-lg border border-border/70 bg-background/40 px-3 py-2 text-[12px]">
+      <div className="flex flex-wrap items-center gap-x-2.5 gap-y-1">
+        <span className="font-mono text-[10.5px] text-faint">#{rv.id}</span>
+        <ModelPill model={rv.model || "unknown"} />
+        {rv.subagent && (
+          <span className="rounded border border-border px-1.5 py-0.5 font-mono text-[10px] text-muted-foreground" title="sub-agent">
+            {rv.subagent}
+          </span>
+        )}
+        <span className={`font-mono text-[11px] ${st.className}`}>{st.text}</span>
+        <span className="font-mono text-[10.5px] text-muted-foreground">
+          {rv.findingsCount} finding{rv.findingsCount === 1 ? "" : "s"}
+        </span>
+        <span className="font-mono text-[10.5px] text-muted-foreground sm:ml-auto">
+          {rv.session ? listed ? <SessionLink id={rv.session} /> : rv.session : ""}
+          {rv.t3codeThreadId && (
+            <span className="ml-1.5 text-faint" title={`T3 Code thread ${rv.t3codeThreadId}`}>
+              t3:{rv.t3codeThreadId.slice(0, 8)}
+            </span>
+          )}
+          {rv.started && <span className="ml-1.5 text-faint">started {ago(rv.started.at, now)}</span>}
+          {rv.ended && <span className="ml-1.5 text-faint">· ended {ago(rv.ended.at, now)}</span>}
+        </span>
+      </div>
+      {rv.summary && <p className="mt-1.5 text-[12.5px] leading-relaxed whitespace-pre-wrap text-foreground">{rv.summary}</p>}
+      {rv.report && <Report text={rv.report} label={`reviewer #${rv.id} report (${rv.model || "unknown"})`} />}
+    </div>
+  );
+}
+
+function ModelPill({ model }: { model: string }) {
+  return <span className="rounded-md border border-border-strong bg-muted/60 px-1.5 py-0.5 font-mono text-[11px] text-foreground">{model}</span>;
 }
 
 const SEVERITY_TONE: Record<FindingSeverity, string> = {
@@ -148,12 +245,12 @@ function Prose({ label, text }: { label: string; text: string }) {
 }
 
 /** The reviewer's whole report, which its findings came from: folded, as the findings below are what to act on. */
-function Report({ text }: { text: string }) {
+function Report({ text, label = "the reviewer's report" }: { text: string; label?: string }) {
   return (
-    <Collapsible className="mt-4 border-t border-border pt-3">
+    <Collapsible className="mt-2.5 border-t border-border/60 pt-2">
       <CollapsibleTrigger className="eyebrow group inline-flex cursor-pointer items-center gap-1 hover:text-foreground">
         <ChevronRightIcon className="size-3 transition-transform group-data-panel-open:rotate-90" />
-        <span>the reviewer's report</span>
+        <span>{label}</span>
       </CollapsibleTrigger>
       <CollapsibleContent>
         <Markdown className="mt-1.5 text-[13px] leading-relaxed text-foreground">{text}</Markdown>
@@ -162,13 +259,31 @@ function Report({ text }: { text: string }) {
   );
 }
 
-/** "brave-otter on asahimbp, 5m ago", or "you". */
-function StampLine({ s, st, now }: { s: Snapshot; st: Stamp; now: number }) {
-  const listed = st.session !== "" && s.sessions.some((x) => x.id === st.session);
+/** Clearly distinguishes human user vs AI agent (+ model, subagent, session, T3 thread). */
+function StampLine({ s, st, now, hideModel = false }: { s: Snapshot; st: Stamp; now: number; hideModel?: boolean }) {
+  const user = isUserActor(st);
+  const listed = !user && st.session !== "" && s.sessions.some((x) => x.id === st.session);
+  const titleParts = [new Date(Number(st.at)).toLocaleString()];
+  if (st.t3codeThreadId) titleParts.push(`T3 thread: ${st.t3codeThreadId}`);
+  if (st.subagent) titleParts.push(`subagent: ${st.subagent}`);
+  if (st.model) titleParts.push(`model: ${st.model}`);
   return (
-    <span title={new Date(Number(st.at)).toLocaleString()}>
-      {st.session === "" ? <span className="text-foreground">you</span> : listed ? <SessionLink id={st.session} /> : <span className="font-mono text-[11px]">{st.session}</span>}
-      {st.host && <span className="text-faint"> on {st.host}</span>}, {ago(st.at, now)}
+    <span className="inline-flex flex-wrap items-center gap-1" title={titleParts.join(" · ")}>
+      {user ? (
+        <>
+          <span className="rounded bg-ember-wash px-1 py-0.2 font-mono text-[10px] font-medium text-primary">user</span>
+          <span className="text-foreground">{st.user || "you"}</span>
+        </>
+      ) : (
+        <>
+          <span className="rounded border border-border px-1 py-0.2 font-mono text-[10px] text-muted-foreground">agent</span>
+          {listed ? <SessionLink id={st.session} /> : <span className="font-mono text-[11px]">{st.session}</span>}
+          {!hideModel && st.model && <span className="rounded bg-muted px-1 py-0.2 font-mono text-[10.5px] text-foreground">{st.model}</span>}
+          {st.subagent && <span className="font-mono text-[10.5px] text-muted-foreground">({st.subagent})</span>}
+        </>
+      )}
+      {st.host && <span className="text-faint">on {st.host}</span>}
+      <span className="text-faint">· {ago(st.at, now)}</span>
     </span>
   );
 }
@@ -178,16 +293,21 @@ const DECISION: Record<FindingDecision, { text: string; className: string }> = {
   [FindingDecision.OPEN]: { text: "undecided", className: "text-muted-foreground border-border" },
   [FindingDecision.ACCEPTED]: { text: "✓ accepted", className: "text-good-ink border-good/40" },
   [FindingDecision.DISMISSED]: { text: "⊘ dismissed", className: "text-faint border-border" },
+  [FindingDecision.WONT_FIX]: { text: "⊘ won't fix", className: "text-warning border-warning/40" },
   [FindingDecision.FIXED]: { text: "✓ fixed", className: "text-good-ink border-good/40 bg-good/10" },
   [FindingDecision.INVALID]: { text: "✗ invalid", className: "text-faint border-border" },
 };
 
 function FindingCard({ s, r, f, now, delay }: { s: Snapshot; r: Review; f: Finding; now: number; delay: number }) {
   const decision = DECISION[f.decision] ?? DECISION[FindingDecision.OPEN];
+  const reviewer = findingReviewer(r, f);
+  const foundModel = f.found?.model || reviewer?.model || "";
+  const foundSubagent = f.found?.subagent || reviewer?.subagent || "";
+
   return (
-    <Card delay={delay} className={f.decision === FindingDecision.DISMISSED || f.decision === FindingDecision.INVALID ? "opacity-75" : ""}>
+    <Card delay={delay} className={f.decision === FindingDecision.DISMISSED || f.decision === FindingDecision.INVALID || f.decision === FindingDecision.WONT_FIX ? "opacity-80" : ""}>
       <div className="space-y-3" id={`finding-${f.id}`}>
-        <header className="flex flex-wrap items-baseline gap-x-3 gap-y-1">
+        <header className="flex flex-wrap items-baseline gap-x-2.5 gap-y-1">
           <span className="font-mono text-[10.5px] text-faint">#{f.id}</span>
           <h3 className="text-[15px] font-semibold text-foreground">{f.title}</h3>
           {f.category && <span className="font-mono text-[10px] tracking-wider text-faint uppercase">{f.category}</span>}
@@ -196,12 +316,22 @@ function FindingCard({ s, r, f, now, delay }: { s: Snapshot; r: Review; f: Findi
               {f.verdict === FindingVerdict.CONFIRMED ? "confirmed" : "plausible"}
             </span>
           )}
+          {foundModel && (
+            <span
+              className="rounded border border-border bg-muted/40 px-1.5 py-0.5 font-mono text-[10px] text-muted-foreground"
+              title={`reported by ${actorSummary(f.found)}`}
+            >
+              by {foundModel}
+              {foundSubagent ? ` (${foundSubagent})` : ""}
+            </span>
+          )}
           <Badge
             variant="outline"
             className={`h-auto max-w-full rounded-md px-1.5 py-0.5 text-left font-mono text-[10.5px] font-normal whitespace-normal sm:ml-auto ${decision.className}`}
-            title={f.decided ? `${f.decided.session || "you"}: ${f.decided.reason}` : "The agent that asked has not decided"}
+            title={f.decided ? `${actorSummary(f.decided)}: ${f.decided.reason}` : "The implementer has not decided"}
           >
             {decision.text}
+            {f.decided && <span className="ml-1 text-faint">({isUserActor(f.decided) ? "user" : f.decided.model || f.decided.session || "agent"})</span>}
             {f.decided?.reason && <span className="text-muted-foreground">: {f.decided.reason}</span>}
           </Badge>
         </header>
@@ -217,6 +347,14 @@ function FindingCard({ s, r, f, now, delay }: { s: Snapshot; r: Review; f: Findi
         ))}
         {f.fix && <FixNote s={s} r={r} f={f} now={now} />}
         {f.evidence && <Evidence s={s} f={f} now={now} />}
+        {f.quick !== QuickResponse.UNSPECIFIED && (
+          <div className="flex flex-wrap items-center gap-2 rounded-lg border border-border/70 bg-muted/30 px-2.5 py-1.5 text-[11.5px]">
+            <span className="rounded-md bg-ember-wash px-1.5 py-0.5 font-mono text-[10.5px] text-primary">{quickLabel(f.quick)}</span>
+            <span className="text-muted-foreground">
+              selected by {f.quickBy ? <StampLine s={s} st={f.quickBy} now={now} /> : <span className="font-mono text-faint">unknown</span>}
+            </span>
+          </div>
+        )}
         <Thread s={s} events={thread(r.events, f.id)} now={now} />
         {handled(f) ? null : <Respond reviewId={r.id} findingId={f.id} latest={f.quick} />}
       </div>
@@ -248,27 +386,28 @@ function FixNote({ s, r, f, now }: { s: Snapshot; r: Review; f: Finding; now: nu
         )}
       </div>
       {f.fix.locations.length > 0 && (
-        <ul className="flex flex-wrap gap-x-3 font-mono text-[11px] text-foreground">
+        <div className="flex flex-wrap gap-1.5 font-mono text-[11px] text-muted-foreground">
           {f.fix.locations.map((l, i) => (
-            <li key={i}>{where(l)}</li>
+            <span key={i} className="rounded bg-muted/60 px-1.5 py-0.5">
+              {where(l)}
+            </span>
           ))}
-        </ul>
+        </div>
       )}
       {f.fix.notes && <Markdown className="text-[12.5px] leading-relaxed text-foreground">{f.fix.notes}</Markdown>}
-      <div className="font-mono text-[11px] text-faint">Handled: it takes no more responses.</div>
     </div>
   );
 }
 
-/** Why a finding is not real, as the agent that marked it invalid shows. The user may still dispute it. */
+/** Why a finding is not a real defect. The user can still respond below to dispute it. */
 function Evidence({ s, f, now }: { s: Snapshot; f: Finding; now: number }) {
   return (
-    <div className="space-y-1.5 rounded-lg border border-border bg-muted/40 px-3 py-2 text-[12.5px]">
+    <div className="space-y-1.5 rounded-lg border border-border bg-muted/30 px-3 py-2 text-[12.5px]">
       <div className="flex flex-wrap items-baseline gap-x-2">
-        <span className="eyebrow">why it is not real</span>
+        <span className="eyebrow">invalid — evidence</span>
         {f.decided && (
           <span className="text-muted-foreground">
-            <StampLine s={s} st={f.decided} now={now} />
+            by <StampLine s={s} st={f.decided} now={now} />
           </span>
         )}
       </div>
@@ -281,7 +420,7 @@ function Excerpt({ l }: { l: Location }) {
   const lines = numbered(l);
   return (
     <figure className="overflow-hidden rounded-lg border border-border">
-      <figcaption className="break-all border-b border-border bg-muted/60 px-3 py-1 font-mono text-[11px] text-foreground">{where(l)}</figcaption>
+      <figcaption className="border-b border-border bg-muted/50 px-3 py-1 font-mono text-[11px] text-muted-foreground">{where(l)}</figcaption>
       {lines.length > 0 && (
         <pre className="overflow-x-auto bg-background/50 py-1.5 font-mono text-[11.5px] leading-relaxed">
           {lines.map((line, i) => (
@@ -384,7 +523,13 @@ function Timeline({ s, r, now }: { s: Snapshot; r: Review; now: number }) {
           {r.events.map((e) => (
             <li key={String(e.seq)} className="text-[11.5px] text-muted-foreground">
               <span className="font-mono text-[11px] text-foreground">{e.what}</span>
-              {e.findingId !== 0 && <span className="font-mono text-faint"> #{e.findingId}</span>} {e.by && <>by <StampLine s={s} st={e.by} now={now} /></>}
+              {e.reviewerId !== 0 && <span className="font-mono text-faint"> rev#{e.reviewerId}</span>}
+              {e.findingId !== 0 && <span className="font-mono text-faint"> #{e.findingId}</span>}{" "}
+              {e.by && (
+                <>
+                  by <StampLine s={s} st={e.by} now={now} />
+                </>
+              )}
               {e.quick !== QuickResponse.UNSPECIFIED && <span>: {quickLabel(e.quick)}</span>}
               {e.text && <span className="text-foreground">: {e.text}</span>}
             </li>
