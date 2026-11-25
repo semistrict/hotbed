@@ -158,15 +158,21 @@ export function candidateUnfit(c: Candidate, p: Placement | undefined, hosts: st
 		return `${c.host} has no measurement CPUs`;
 	}
 	const reqRuntime = p?.runtime ?? "";
-	if (p?.bench && reqRuntime === "vm") {
-		return `${c.host} cannot run --bench inside vm runtime (requires chroot)`;
+	if (reqRuntime && reqRuntime !== "vm" && reqRuntime !== "cladefs") {
+		return `unknown runtime "${reqRuntime}" (want vm or cladefs)`;
 	}
-	if (reqRuntime) {
-		const runtimes = c.view.hb.resources?.runtimes ?? [];
-		const supports = runtimes.length > 0 ? runtimes.includes(reqRuntime) : reqRuntime === "chroot";
-		if (!supports) {
-			return `${c.host} does not support ${reqRuntime} runtime`;
-		}
+	if (p?.bench && reqRuntime === "vm") {
+		return `${c.host} cannot run --bench inside vm runtime (requires cladefs)`;
+	}
+	const runtimes: string[] = (c.view.hb.resources?.runtimes ?? []).filter(
+		(r) => r === "vm" || r === "cladefs",
+	);
+	if (runtimes.length === 0) {
+		return `${c.host} has no available runtimes`;
+	}
+	const effRuntime = p?.bench ? "cladefs" : reqRuntime;
+	if (effRuntime && !runtimes.includes(effRuntime)) {
+		return `${c.host} does not support ${effRuntime} runtime`;
 	}
 	const memLow = p?.memoryLowBytes ?? 0n;
 	if (memLow > c.ram) {

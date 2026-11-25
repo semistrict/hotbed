@@ -401,6 +401,7 @@ describe("Cloudflare Workers single-DO hotbed controller", () => {
 					arch: "amd64",
 					cpus: 8,
 					memoryBytes: BigInt(16 * 1024 ** 3),
+					runtimes: ["vm"],
 				}),
 				usage: create(NodeUsageSchema, {
 					cpuBusy: 0.02,
@@ -755,7 +756,7 @@ describe("Cloudflare Workers single-DO hotbed controller", () => {
 			}),
 		});
 
-		// clade1 advertises vm+chroot, cladefs peer addr, incarnation 111, and a warm shared R2 base
+		// clade1 advertises vm, cladefs peer addr, incarnation 111, and a warm shared R2 base
 		const hb1 = await ubu1.cluster.heartbeat(
 			create(HeartbeatRequestSchema, {
 				clusterId: j1.clusterId,
@@ -764,7 +765,7 @@ describe("Cloudflare Workers single-DO hotbed controller", () => {
 					cpus: 16,
 					memoryBytes: BigInt(32 * 1024 ** 3),
 					benchCpus: "4-7",
-					runtimes: ["vm", "chroot"],
+					runtimes: ["vm"],
 				}),
 				usage: create(NodeUsageSchema, { cpuBusy: 0.1, memoryUsedBytes: BigInt(4 * 1024 ** 3) }),
 				cladefsPeerAddr: "100.73.156.10:9185",
@@ -784,7 +785,7 @@ describe("Cloudflare Workers single-DO hotbed controller", () => {
 		);
 		expect(hb1.cladefsPeers).toEqual(["100.73.156.10:9185"]);
 
-		// clade2 joins peer mesh without a local base; asahimbp is chroot-only
+		// clade2 joins peer mesh without a local base; asahimbp is cladefs-only
 		const hb2 = await node2.cluster.heartbeat(
 			create(HeartbeatRequestSchema, {
 				clusterId: j1.clusterId,
@@ -792,7 +793,7 @@ describe("Cloudflare Workers single-DO hotbed controller", () => {
 					arch: "amd64",
 					cpus: 16,
 					memoryBytes: BigInt(32 * 1024 ** 3),
-					runtimes: ["vm", "chroot"],
+					runtimes: ["vm"],
 				}),
 				usage: create(NodeUsageSchema, { cpuBusy: 0.05, memoryUsedBytes: BigInt(2 * 1024 ** 3) }),
 				cladefsPeerAddr: "100.73.156.20:9185",
@@ -808,7 +809,7 @@ describe("Cloudflare Workers single-DO hotbed controller", () => {
 					arch: "arm64",
 					cpus: 14,
 					memoryBytes: BigInt(36 * 1024 ** 3),
-					runtimes: ["chroot"],
+					runtimes: ["cladefs"],
 				}),
 				usage: create(NodeUsageSchema, { cpuBusy: 0.01, memoryUsedBytes: BigInt(4 * 1024 ** 3) }),
 			}),
@@ -816,7 +817,7 @@ describe("Cloudflare Workers single-DO hotbed controller", () => {
 
 		const sess = await owner.sessions.startSession({ project: "clade-demo" });
 
-		// vm runtime rejected on chroot-only asahimbp
+		// vm runtime rejected on cladefs-only asahimbp
 		await expect(
 			owner.workspaces.createWorkspace({
 				sessionId: sess.id,
@@ -824,6 +825,15 @@ describe("Cloudflare Workers single-DO hotbed controller", () => {
 				placement: { node: "asahimbp", runtime: "vm" },
 			}),
 		).rejects.toThrow(/does not support vm runtime/);
+
+		// removed chroot runtime rejected upfront
+		await expect(
+			owner.workspaces.createWorkspace({
+				sessionId: sess.id,
+				repo: "clade-demo",
+				placement: { node: "asahimbp", runtime: "chroot" },
+			}),
+		).rejects.toThrow(/unknown runtime "chroot"/);
 
 		// --bench + runtime=vm rejected
 		await expect(
@@ -833,6 +843,15 @@ describe("Cloudflare Workers single-DO hotbed controller", () => {
 				placement: { node: "clade1", runtime: "vm", bench: true },
 			}),
 		).rejects.toThrow(/cannot run --bench inside vm runtime/);
+
+		// --bench rejected on vm-only clade1 even without explicit runtime
+		await expect(
+			owner.workspaces.createWorkspace({
+				sessionId: sess.id,
+				repo: "clade-demo",
+				placement: { node: "clade1", bench: true },
+			}),
+		).rejects.toThrow(/does not support cladefs runtime/);
 
 		// Connect /ws/worker tunnel for clade2 to capture forwarded CreateWorkspaceRequest
 		const captured: Array<MessageShape<typeof CreateWorkspaceRequestSchema>> = [];
@@ -862,28 +881,31 @@ describe("Cloudflare Workers single-DO hotbed controller", () => {
 			},
 		);
 
-		const created = await owner.workspaces.createWorkspace({
-			sessionId: sess.id,
-			repo: "clade-demo",
-			placement: { node: "clade2", runtime: "vm" },
-		});
-		expect(created.runtime).toBe("vm");
-		expect(captured.length).toBe(1);
-		expect(captured[0].runtime).toBe("vm");
-		expect(captured[0].sharedBase?.cell).toBe(42n);
-		expect(captured[0].sharedBase?.version).toBe(7n);
-		expect(captured[0].fencingToken).toBe(1n);
+		try {
+			const created = await owner.workspaces.createWorkspace({
+				sessionId: sess.id,
+				repo: "clade-demo",
+				placement: { node: "clade2", runtime: "vm" },
+			});
+			expect(created.runtime).toBe("vm");
+			expect(captured.length).toBe(1);
+			expect(captured[0].runtime).toBe("vm");
+			expect(captured[0].sharedBase?.cell).toBe(42n);
+			expect(captured[0].sharedBase?.version).toBe(7n);
+			expect(captured[0].fencingToken).toBeGreaterThan(0n);
 
-		// Second session gets strictly higher monotonic fencing token (2n)
-		const sess2 = await owner.sessions.startSession({ project: "clade-demo" });
-		await owner.workspaces.createWorkspace({
-			sessionId: sess2.id,
-			repo: "clade-demo",
-			placement: { node: "clade2", runtime: "vm" },
-		});
-		expect(captured.length).toBe(2);
-		expect(captured[1].fencingToken).toBe(2n);
-		tunnel.close();
+			// Second session gets strictly higher monotonic fencing token
+			const sess2 = await owner.sessions.startSession({ project: "clade-demo" });
+			await owner.workspaces.createWorkspace({
+				sessionId: sess2.id,
+				repo: "clade-demo",
+				placement: { node: "clade2", runtime: "vm" },
+			});
+			expect(captured.length).toBe(2);
+			expect(captured[1].fencingToken).toBe(captured[0].fencingToken + 1n);
+		} finally {
+			tunnel.close();
+		}
 
 		// Online cladefs node cannot be retired yet
 		await expect(owner.cluster.retireNode({ node: "clade1" })).rejects.toThrow(/is online/);
@@ -1150,7 +1172,7 @@ describe("BuildDistributor pinned controller version and placement semantics", (
 		expect(unbaked.needsBackgroundRefresh()).toBe(true);
 
 		// Placement requires worker build >= controller build (accepts equal and newer, rejects older).
-		const makeView = (id: string, hostname: string, version: string) => ({
+		const makeView = (id: string, hostname: string, version: string, runtimes = ["vm"]) => ({
 			node: {
 				id,
 				hostname,
@@ -1170,6 +1192,7 @@ describe("BuildDistributor pinned controller version and placement semantics", (
 					cpus: 8,
 					memoryBytes: BigInt(16 * 1024 ** 3),
 					version,
+					runtimes,
 				}),
 			}),
 		});
@@ -1179,6 +1202,7 @@ describe("BuildDistributor pinned controller version and placement semantics", (
 				makeView("n-old", "old-worker", "build 171 (deadbeef1234)"),
 				makeView("n-same", "same-worker", "build 172 (749b28361a43)"),
 				makeView("n-newer", "newer-worker", "build 173 (cafebabe5678)"),
+				makeView("n-unhealthy", "unhealthy-worker", "build 173 (cafebabe5678)", []),
 			],
 			"app",
 			new Map(),
@@ -1191,6 +1215,10 @@ describe("BuildDistributor pinned controller version and placement semantics", (
 		const pickNewer = chooseCandidate(cs, { node: "newer-worker" } as never, [], true);
 		expect(pickNewer.err).toBeUndefined();
 		expect(pickNewer.chosen?.host).toBe("newer-worker");
+
+		const pickUnhealthy = chooseCandidate(cs, { node: "unhealthy-worker" } as never, [], true);
+		expect(pickUnhealthy.err).toBeDefined();
+		expect(pickUnhealthy.err?.message).toContain("has no available runtimes");
 
 		const pickOld = chooseCandidate(cs, { node: "old-worker" } as never, [], true);
 		expect(pickOld.err).toBeDefined();
@@ -1389,6 +1417,7 @@ describe("Security, cron, daemon logs, tunnel, and workspace regression tests", 
 					arch: "amd64",
 					cpus: 4,
 					memoryBytes: BigInt(8 * 1024 ** 3),
+					runtimes: ["vm"],
 				}),
 			}),
 		);
@@ -1513,6 +1542,7 @@ describe("Security, cron, daemon logs, tunnel, and workspace regression tests", 
 					arch: "amd64",
 					cpus: 4,
 					memoryBytes: BigInt(8 * 1024 ** 3),
+					runtimes: ["vm"],
 				}),
 			}),
 		);
@@ -1689,9 +1719,17 @@ describe("Security, cron, daemon logs, tunnel, and workspace regression tests", 
 		await expect(
 			workerWithToken.cluster.setWorkerConfig({
 				node: "ubu1",
-				config: create(WorkerConfigSchema, { defaultRuntime: "chroot" }),
+				config: create(WorkerConfigSchema, { defaultRuntime: "cladefs" }),
 			}),
 		).rejects.toThrow(/not authorized|may not modify/);
+
+		// Removed chroot default_runtime is rejected.
+		await expect(
+			owner.cluster.setWorkerConfig({
+				node: "ubu1",
+				config: create(WorkerConfigSchema, { defaultRuntime: "chroot" }),
+			}),
+		).rejects.toThrow(/invalid default_runtime "chroot"/);
 
 		// Configure baked SHA256SUMS including hotbed-guestd-linux-amd64.
 		const id = env.CONTROLLER.idFromName("default");
@@ -2196,6 +2234,7 @@ describe("Security, cron, daemon logs, tunnel, and workspace regression tests", 
 					cpus: 16,
 					memoryBytes: BigInt(32 * 1024 ** 3),
 					version: "build 195",
+					runtimes: ["vm"],
 				}),
 			}),
 		);
@@ -2263,6 +2302,7 @@ describe("Security, cron, daemon logs, tunnel, and workspace regression tests", 
 					cpus: 32,
 					memoryBytes: BigInt(64 * 1024 ** 3),
 					version: "build 195",
+					runtimes: ["vm"],
 				}),
 			}),
 		);
@@ -2278,6 +2318,7 @@ describe("Security, cron, daemon logs, tunnel, and workspace regression tests", 
 					cpus: 4,
 					memoryBytes: BigInt(8 * 1024 ** 3),
 					version: "build 195",
+					runtimes: ["cladefs"],
 				}),
 			}),
 		);
@@ -2352,7 +2393,7 @@ describe("Security, cron, daemon logs, tunnel, and workspace regression tests", 
 			project: "proj-freshen-obs",
 			nodeId: "node-fobs-1",
 			generation: 1,
-			runtime: "chroot",
+			runtime: "cladefs",
 			state: BaseState.WARM,
 			cold: true,
 			coldReason: "base_image_changed",
@@ -2399,7 +2440,7 @@ describe("Security, cron, daemon logs, tunnel, and workspace regression tests", 
 			project: "proj-freshen-obs",
 			nodeId: "node-fobs-1",
 			generation: 2,
-			runtime: "chroot",
+			runtime: "cladefs",
 			state: BaseState.BUILDING,
 			cold: false,
 			fromBaseId: "proj-freshen-obs-g1",

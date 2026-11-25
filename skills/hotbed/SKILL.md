@@ -483,7 +483,7 @@ hotbed schedule run nightly                 # a run now; prints its session, for
 | `hotbed project ls` | Projects, their repos, live sessions, schedules, reviews and questions |
 | `hotbed project show NAME` | A project and every change to it |
 | `hotbed project bases [PROJECT] [--node HOST] [--state STATE]` | Every node's bases for a project (or every project), newest generation first per node, with commits, freshen command ID, and failed step |
-| `hotbed freshen ls [PROJECT] [--node HOST] [--state STATE] [--active] [--runtime RT] [--cold] [--since 24h] [-n N]` | Active and historical (30-day) base freshens across all runtimes (`chroot`, `vm`, `cladefs`), with cluster-wide timing breakdowns (prep, queue, git, steps, parked, finalize/R2-sync), slowest steps ranking, per-node/project cold & failure streaks, and waiting workspaces |
+| `hotbed freshen ls [PROJECT] [--node HOST] [--state STATE] [--active] [--runtime RT] [--cold] [--since 24h] [-n N]` | Active and historical (30-day) base freshens across all runtimes (`vm`, `cladefs`), with cluster-wide timing breakdowns (prep, queue, git, steps, parked, finalize/R2-sync), slowest steps ranking, per-node/project cold & failure streaks, and waiting workspaces |
 | `hotbed freshen show ID [--node HOST]` | Deep autopsy of one base freshen (by freshen command ID or base ID): cold reason, phase & step timings, memory guarantee vs peak, waiting workspaces, command timeline, live node admission snapshot, and related events |
 | `hotbed project rm-repo NAME --repo REMOTE` | Take a repo out of a project |
 | `hotbed schedule add ... -p PROJECT` | A schedule's runs work on its project (default: the one holding its repo) |

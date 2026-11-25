@@ -64,14 +64,14 @@ export function isFreshenActive(s: FreshenState): boolean {
 }
 
 export function runtimeOfBase(b?: Base): string {
-	if (!b) return "chroot";
+	if (!b) return "";
 	if (b.runtime) return b.runtime;
 	if (b.cladefsCell) {
 		if (b.id.includes("-vm-")) return "vm";
 		if (b.id.includes("-fuse-")) return "cladefs";
 		return "cladefs";
 	}
-	return "chroot";
+	return "";
 }
 
 function failedStepOf(steps: AppliedStep[]): string {
@@ -310,11 +310,13 @@ export function mergeCommandIntoFreshen(
 				nodeId,
 				project: c.project || parsed.project,
 				generation: parsed.generation,
-				runtime: parsed.baseId.includes("-vm-")
-					? "vm"
-					: parsed.baseId.includes("-fuse-")
-						? "cladefs"
-						: "chroot",
+				runtime:
+					c.runtime ||
+					(parsed.baseId.includes("-vm-")
+						? "vm"
+						: parsed.baseId.includes("-fuse-")
+							? "cladefs"
+							: ""),
 				createdAt: c.queuedAt > 0n ? c.queuedAt : BigInt(eventAtMs),
 			});
 
@@ -599,7 +601,7 @@ export function synthesizeLegacyFreshens(
 						nodeId: ev.nodeId,
 						project,
 						generation: gen,
-						runtime: "chroot",
+						runtime: "",
 						state: FreshenState.QUEUED,
 						cold: from === "from nothing",
 						fromBaseId: from.startsWith("from g") ? `${project}-${from.slice("from ".length)}` : "",
@@ -631,11 +633,7 @@ export function synthesizeLegacyFreshens(
 						baseId,
 						nodeId: ev.nodeId,
 						project,
-						runtime: baseId.includes("-vm-")
-							? "vm"
-							: baseId.includes("-fuse-")
-								? "cladefs"
-								: "chroot",
+						runtime: baseId.includes("-vm-") ? "vm" : baseId.includes("-fuse-") ? "cladefs" : "",
 						state: FreshenState.QUEUED,
 						cold: from === "from nothing",
 						fromBaseId: from !== "from nothing" ? from.slice("from ".length) : "",
@@ -662,7 +660,7 @@ export function synthesizeLegacyFreshens(
 						nodeId: ev.nodeId,
 						project,
 						generation: gen,
-						runtime: "chroot",
+						runtime: "",
 						createdAt: BigInt(Math.max(0, atMs - Math.round(durSec * 1000))),
 					});
 					byId.set(id, f);
@@ -906,13 +904,13 @@ export function buildFreshenSummary(
 			}
 		}
 
-		const npKey = `${f.node || f.nodeId}\0${f.project}\0${f.runtime || "chroot"}`;
+		const npKey = `${f.node || f.nodeId}\0${f.project}\0${f.runtime || ""}`;
 		let np = npAcc.get(npKey);
 		if (!np) {
 			np = {
 				node: f.node || f.nodeId,
 				project: f.project,
-				runtime: f.runtime || "chroot",
+				runtime: f.runtime || "",
 				items: [],
 			};
 			npAcc.set(npKey, np);

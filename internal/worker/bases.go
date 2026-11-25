@@ -355,7 +355,7 @@ func (e *Engine) startFreshen(ctx context.Context, p *pb.HostedProject, gen int3
 	b := &pb.Base{
 		Id: snap, Project: p.Name, NodeId: e.cfg.NodeID, Generation: gen,
 		State: building, Cold: cold, ColdReason: coldReason, FromBaseId: fromBaseID,
-		Runtime: "chroot", CreatedAt: createdAt, PrepSeconds: prepSeconds,
+		Runtime: hotbedruntime.KindCladefs, CreatedAt: createdAt, PrepSeconds: prepSeconds,
 		TotalSteps: int32(len(run)), Phases: phases,
 		Command: id, ScratchEpoch: p.ScratchEpoch, Steps: plannedSteps(p, prev, run), Recipe: recipe,
 	}
@@ -366,7 +366,7 @@ func (e *Engine) startFreshen(ctx context.Context, p *pb.HostedProject, gen int3
 		Command: &pb.Command{
 			Id: id, NodeId: e.cfg.NodeID, Argv: fmt.Sprintf("freshen %s g%d", p.Name, gen), Project: p.Name,
 			Args: []string{"/bin/bash", "-c", freshenScript(p, h, prev, run)}, Kind: "freshen",
-			Runtime: hotbedruntime.KindChroot,
+			Runtime: hotbedruntime.KindCladefs,
 			State:   queued, QueuedAt: now, Limits: &pb.CommandLimits{CpuWeight: 100},
 			Timeline: []*pb.CommandEvent{{At: now, What: "queued", Detail: "base " + b.Id}},
 		},

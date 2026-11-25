@@ -519,9 +519,9 @@ func NewEngine(ctx context.Context, cfg EngineConfig) (*Engine, error) {
 	} else if cfg.CladefsFUSE != nil {
 		e.resources.Runtimes = cfg.CladefsFUSE.Runtimes()
 	} else if cfg.Runtime != nil {
-		e.resources.Runtimes = []string{runtime.KindVM, runtime.KindChroot}
+		e.resources.Runtimes = []string{cfg.Runtime.Kind()}
 	} else {
-		e.resources.Runtimes = []string{runtime.KindChroot}
+		e.resources.Runtimes = []string{runtime.KindCladefs}
 	}
 	if cfg.Bench != nil {
 		e.resources.BenchCpus = cfg.Bench.CPUs().String()

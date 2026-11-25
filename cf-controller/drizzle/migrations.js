@@ -10,6 +10,7 @@ import m0007 from "./0007_chubby_wolverine.sql";
 import m0008 from "./0008_daffy_shocker.sql";
 import m0009 from "./0009_parallel_electro.sql";
 import m0010 from "./0010_motionless_ben_grimm.sql";
+import m0011 from "./0011_panoramic_caretaker.sql";
 
 export default {
 	journal,
@@ -25,5 +26,6 @@ export default {
 		m0008,
 		m0009,
 		m0010,
+		m0011,
 	},
 };

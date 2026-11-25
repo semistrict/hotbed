@@ -182,7 +182,7 @@ func (e *Engine) workspaceRuntime(w *workspace) string {
 			return e.cfg.Runtime.Kind()
 		}
 	}
-	return runtime.KindChroot
+	return ""
 }
 
 func (e *Engine) commandRuntime(c *command) string {
@@ -199,7 +199,7 @@ func (e *Engine) commandRuntime(c *command) string {
 		return runtime.KindCladefs
 	}
 	if c.cmd().Kind == "freshen" {
-		return runtime.KindChroot
+		return runtime.KindCladefs
 	}
 	return e.workspaceRuntime(e.workspaces[c.cmd().WorkspaceId])
 }

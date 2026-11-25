@@ -236,13 +236,8 @@ export function createWorkspaceService(ctrl: ControllerContext): {
 		}
 		if (!b) return null;
 		const nid = b.nodeId || nodeId;
-		const baseRuntime = b.cladefsCell
-			? b.id.includes("-vm-")
-				? "vm"
-				: b.id.includes("-fuse-")
-					? "cladefs"
-					: ""
-			: "chroot";
+		const baseRuntime =
+			b.runtime || (b.cladefsCell ? (b.id.includes("-vm-") ? "vm" : "cladefs") : "");
 		const cmd = create(CommandSchema, {
 			id,
 			nodeId: nid,
@@ -372,6 +367,13 @@ export function createWorkspaceService(ctrl: ControllerContext): {
 		syncHost: string,
 		signal?: AbortSignal,
 	): Promise<Workspace> {
+		const requestedRt = req.placement?.runtime ?? req.runtime ?? "";
+		if (requestedRt && requestedRt !== "vm" && requestedRt !== "cladefs") {
+			throw hotbedError(
+				ErrorCode.InvalidArgs,
+				`unknown runtime "${requestedRt}" (want vm or cladefs)`,
+			).withSuggestion("use --runtime vm or --runtime cladefs");
+		}
 		const sess = ctrl.store.liveSession(req.sessionId, ctrl.now());
 		const skip = new Set<string>();
 		let lastErr: unknown = null;
@@ -507,17 +509,9 @@ export function createWorkspaceService(ctrl: ControllerContext): {
 					return { kind: "done" as const, node: chosen, upgrading: [] };
 				}
 				const chosenArch = chosen.view.hb?.resources?.arch ?? "";
-				const chosenRuntimes = chosen.view.hb?.resources?.runtimes ?? [];
-				const reqRuntime = req.placement?.bench ? "chroot" : (req.placement?.runtime ?? "");
-				const usesCladefs =
-					reqRuntime === "vm" ||
-					reqRuntime === "cladefs" ||
-					(reqRuntime === "" &&
-						(chosenRuntimes.includes("vm") || chosenRuntimes.includes("cladefs")));
-				const sharedBase = usesCladefs
-					? ctrl.store.latestSharedBase(p.name, chosenArch, ctrl.cladefsTenantId)
-					: undefined;
-				const fencingToken = usesCladefs ? ctrl.store.nextFencingToken() : 0n;
+				const reqRuntime = req.placement?.bench ? "cladefs" : (req.placement?.runtime ?? "");
+				const sharedBase = ctrl.store.latestSharedBase(p.name, chosenArch, ctrl.cladefsTenantId);
+				const fencingToken = ctrl.store.nextFencingToken();
 				const fwd = create(CreateWorkspaceRequestSchema, {
 					repo: req.repo,
 					agent: sess.agent,

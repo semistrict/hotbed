@@ -426,7 +426,6 @@ func TestCommandRuntimeSetForWorkspacesAndFreshens(t *testing.T) {
 	}{
 		{id: "ws-rt-vm", rt: runtime.KindVM},
 		{id: "ws-rt-cladefs", rt: runtime.KindCladefs},
-		{id: "ws-rt-chroot", rt: runtime.KindChroot},
 		{id: "ws-rt-legacy", rt: ""},
 	} {
 		e.workspaces[tc.id] = &workspace{rec: &pb.WorkspaceRecord{
@@ -445,8 +444,7 @@ func TestCommandRuntimeSetForWorkspacesAndFreshens(t *testing.T) {
 	}{
 		{wsID: "ws-rt-vm", want: runtime.KindVM},
 		{wsID: "ws-rt-cladefs", want: runtime.KindCladefs},
-		{wsID: "ws-rt-chroot", want: runtime.KindChroot},
-		{wsID: "ws-rt-legacy", want: runtime.KindChroot},
+		{wsID: "ws-rt-legacy", want: ""},
 	} {
 		cmd, err := e.Exec(t.Context(), &pb.RunCommandRequest{
 			WorkspaceId: tc.wsID,
@@ -478,8 +476,7 @@ func TestCommandRuntimeSetForWorkspacesAndFreshens(t *testing.T) {
 	for wsID, want := range map[string]string{
 		"ws-rt-vm":      runtime.KindVM,
 		"ws-rt-cladefs": runtime.KindCladefs,
-		"ws-rt-chroot":  runtime.KindChroot,
-		"ws-rt-legacy":  runtime.KindChroot,
+		"ws-rt-legacy":  "",
 	} {
 		if gotFinished[wsID] != want {
 			t.Fatalf("finished command for %s: Runtime = %q, want %q", wsID, gotFinished[wsID], want)

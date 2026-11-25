@@ -24,7 +24,7 @@ vi.mock("../lib/project", () => ({
 import { commandRuntime, HistoryTable, LiveCommandTable } from "./CommandTable";
 
 describe("CommandTable runtime column", () => {
-  it("resolves command runtime directly, falling back to workspace runtime and chroot for legacy workspaces", () => {
+  it("resolves command runtime directly, falling back to workspace runtime", () => {
     const s = create(SnapshotSchema, {
       workspaces: [
         create(WorkspaceSchema, { id: "ws-vm", runtime: "vm" }),
@@ -33,7 +33,7 @@ describe("CommandTable runtime column", () => {
     });
     expect(commandRuntime(s, { runtime: "cladefs", workspaceId: "" })).toBe("cladefs");
     expect(commandRuntime(s, { runtime: "", workspaceId: "ws-vm" })).toBe("vm");
-    expect(commandRuntime(s, { runtime: "", workspaceId: "ws-legacy" })).toBe("chroot");
+    expect(commandRuntime(s, { runtime: "", workspaceId: "ws-legacy" })).toBe("");
     expect(commandRuntime(s, { runtime: "", workspaceId: "ws-gone" })).toBe("");
     expect(commandRuntime(s, { runtime: "", workspaceId: "" })).toBe("");
   });
@@ -107,14 +107,14 @@ describe("CommandTable runtime column", () => {
         seconds: 12.3,
       }),
       create(FinishedCommandSchema, {
-        id: "c-done-chroot",
+        id: "c-done-cladefs",
         nodeId: "n1",
         workspaceId: "ws-bench",
         sessionId: "fast-owl",
         repoId: "cladefs",
         argv: "cargo bench",
         kind: "test",
-        runtime: "chroot",
+        runtime: "cladefs",
         bench: true,
         state: CommandState.SUCCEEDED,
         endedAt: 185_000n,
@@ -125,6 +125,6 @@ describe("CommandTable runtime column", () => {
     const html = renderToStaticMarkup(<HistoryTable s={s} rows={rows} />);
     expect(html).toContain(">runtime<");
     expect(html).toContain("Firecracker microVM runtime");
-    expect(html).toContain("Local chroot runtime");
+    expect(html).toContain("cladefs host-FUSE runtime");
   });
 });

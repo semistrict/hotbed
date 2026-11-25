@@ -341,10 +341,10 @@ func TestCladefsFUSEHeartbeatWithdrawsUnhealthyRuntimeAndRecoversENOTCONN(t *tes
 	}
 
 	// While mountRoot returns ENOTCONN, heartbeats must withdraw "cladefs"
-	// so the controller stops placing cladefs workspaces here and only advertises "chroot".
+	// so the controller stops placing workspaces here.
 	got := b.RuntimesForHeartbeat()
-	if !slices.Equal(got, []string{runtime.KindChroot}) {
-		t.Fatalf("unhealthy RuntimesForHeartbeat = %v, want [%s]", got, runtime.KindChroot)
+	if len(got) != 0 {
+		t.Fatalf("unhealthy RuntimesForHeartbeat = %v, want []", got)
 	}
 
 	select {
@@ -356,10 +356,10 @@ func TestCladefsFUSEHeartbeatWithdrawsUnhealthyRuntimeAndRecoversENOTCONN(t *tes
 		t.Fatalf("detachDead calls = %d, want 1", detached.Load())
 	}
 
-	// Once recovered, heartbeats re-advertise both "cladefs" and "chroot".
+	// Once recovered, heartbeats re-advertise "cladefs".
 	got = b.RuntimesForHeartbeat()
-	if !slices.Equal(got, []string{runtime.KindCladefs, runtime.KindChroot}) {
-		t.Fatalf("recovered RuntimesForHeartbeat = %v, want [%s %s]", got, runtime.KindCladefs, runtime.KindChroot)
+	if !slices.Equal(got, []string{runtime.KindCladefs}) {
+		t.Fatalf("recovered RuntimesForHeartbeat = %v, want [%s]", got, runtime.KindCladefs)
 	}
 }
 

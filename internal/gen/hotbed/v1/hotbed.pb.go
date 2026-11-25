@@ -1749,7 +1749,7 @@ type Resources struct {
 	BenchCpus string `protobuf:"bytes,7,opt,name=bench_cpus,json=benchCpus,proto3" json:"bench_cpus,omitempty"`
 	// The hotbed build it runs: "build 42 (0123456789ab)", or "dev (...)".
 	Version string `protobuf:"bytes,8,opt,name=version,proto3" json:"version,omitempty"`
-	// Execution runtimes supported on this worker (e.g. "vm", "chroot").
+	// Execution runtimes supported on this worker (e.g. "vm", "cladefs").
 	Runtimes      []string `protobuf:"bytes,9,rep,name=runtimes,proto3" json:"runtimes,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
@@ -4077,7 +4077,7 @@ type WorkerConfig struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// Scope: empty for cluster-wide defaults, or a worker hostname for per-node overrides.
 	Node string `protobuf:"bytes,1,opt,name=node,proto3" json:"node,omitempty"`
-	// Default runtime for non-bench workspaces: "vm", "cladefs", or "chroot".
+	// Default runtime for non-bench workspaces: "vm" or "cladefs".
 	DefaultRuntime *string `protobuf:"bytes,2,opt,name=default_runtime,json=defaultRuntime,proto3,oneof" json:"default_runtime,omitempty"`
 	// systemd slice commands run in (e.g. "user-1000-hotbed.slice").
 	Slice *string `protobuf:"bytes,3,opt,name=slice,proto3,oneof" json:"slice,omitempty"`
@@ -5977,7 +5977,7 @@ type Base struct {
 	PeakMemoryBytes int64 `protobuf:"varint,22,opt,name=peak_memory_bytes,json=peakMemoryBytes,proto3" json:"peak_memory_bytes,omitempty"`
 	// Shared cladefsd cell version in R2 when this base is published to cladefs.
 	CladefsCell *CladefsCell `protobuf:"bytes,23,opt,name=cladefs_cell,json=cladefsCell,proto3" json:"cladefs_cell,omitempty"`
-	// Runtime this base was built for: "chroot", "vm", or "cladefs".
+	// Runtime this base was built for: "vm" or "cladefs".
 	Runtime string `protobuf:"bytes,24,opt,name=runtime,proto3" json:"runtime,omitempty"`
 	// Why this base built from nothing when cold is true:
 	// "no_previous_base", "scratch_epoch", "base_image_changed", "incremental_fork_failed".
@@ -6443,7 +6443,7 @@ type Workspace struct {
 	Node string `protobuf:"bytes,25,opt,name=node,proto3" json:"node,omitempty"`
 	// Each repo checked out, by ID.
 	Repos []*WorkspaceRepo `protobuf:"bytes,26,rep,name=repos,proto3" json:"repos,omitempty"`
-	// Execution runtime backing this workspace ("vm", "cladefs", or "chroot").
+	// Execution runtime backing this workspace ("vm" or "cladefs").
 	Runtime string `protobuf:"bytes,27,opt,name=runtime,proto3" json:"runtime,omitempty"`
 	// Cladefs cell coordinates when backed by cladefsd + Firecracker.
 	CladefsCell   *CladefsCell `protobuf:"bytes,28,opt,name=cladefs_cell,json=cladefsCell,proto3" json:"cladefs_cell,omitempty"`
@@ -6733,7 +6733,7 @@ type CreateWorkspaceRequest struct {
 	SyncHost string `protobuf:"bytes,8,opt,name=sync_host,json=syncHost,proto3" json:"sync_host,omitempty"`
 	// Set by the controller: the session's project, for its freshen.
 	Project *HostedProject `protobuf:"bytes,11,opt,name=project,proto3" json:"project,omitempty"`
-	// Execution runtime requested/assigned ("vm", "chroot", or empty for worker default).
+	// Execution runtime requested/assigned ("vm", "cladefs", or empty for worker default).
 	Runtime string `protobuf:"bytes,12,opt,name=runtime,proto3" json:"runtime,omitempty"`
 	// Set by the controller: shared cladefs base version in R2 to fork O(1).
 	SharedBase *CladefsCell `protobuf:"bytes,13,opt,name=shared_base,json=sharedBase,proto3" json:"shared_base,omitempty"`
@@ -6864,7 +6864,7 @@ type Placement struct {
 	// The memory the run is guaranteed (memory.low): nodes with less RAM are
 	// left out, and those it fits on now preferred.
 	MemoryLowBytes int64 `protobuf:"varint,4,opt,name=memory_low_bytes,json=memoryLowBytes,proto3" json:"memory_low_bytes,omitempty"`
-	// Execution runtime required ("vm", "chroot", or empty for auto/default).
+	// Execution runtime required ("vm", "cladefs", or empty for auto/default).
 	Runtime       string `protobuf:"bytes,5,opt,name=runtime,proto3" json:"runtime,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
@@ -8416,7 +8416,7 @@ type Command struct {
 	DroppedOutputBytes int64 `protobuf:"varint,28,opt,name=dropped_output_bytes,json=droppedOutputBytes,proto3" json:"dropped_output_bytes,omitempty"`
 	// Its stops, pauses and resumes by hand, oldest first.
 	Interventions []*CommandIntervention `protobuf:"bytes,29,rep,name=interventions,proto3" json:"interventions,omitempty"`
-	// Execution runtime backing this command ("vm", "cladefs", or "chroot").
+	// Execution runtime backing this command ("vm" or "cladefs").
 	Runtime       string `protobuf:"bytes,30,opt,name=runtime,proto3" json:"runtime,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
@@ -8697,7 +8697,7 @@ type FinishedCommand struct {
 	Project string `protobuf:"bytes,23,opt,name=project,proto3" json:"project,omitempty"`
 	// Its stops, pauses and resumes by hand, oldest first.
 	Interventions []*CommandIntervention `protobuf:"bytes,24,rep,name=interventions,proto3" json:"interventions,omitempty"`
-	// Execution runtime that ran this command ("vm", "cladefs", or "chroot").
+	// Execution runtime that ran this command ("vm" or "cladefs").
 	Runtime       string `protobuf:"bytes,25,opt,name=runtime,proto3" json:"runtime,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
@@ -11136,7 +11136,7 @@ type ListFreshensRequest struct {
 	State FreshenState `protobuf:"varint,3,opt,name=state,proto3,enum=hotbed.v1.FreshenState" json:"state,omitempty"`
 	// Only currently active (in-flight) freshens.
 	Active bool `protobuf:"varint,4,opt,name=active,proto3" json:"active,omitempty"`
-	// Filter by runtime ("chroot", "vm", "cladefs").
+	// Filter by runtime ("vm" or "cladefs").
 	Runtime string `protobuf:"bytes,5,opt,name=runtime,proto3" json:"runtime,omitempty"`
 	// Only cold builds from nothing.
 	Cold bool `protobuf:"varint,6,opt,name=cold,proto3" json:"cold,omitempty"`
@@ -11431,7 +11431,7 @@ type BaseFreshen struct {
 	Node       string `protobuf:"bytes,4,opt,name=node,proto3" json:"node,omitempty"`
 	Project    string `protobuf:"bytes,5,opt,name=project,proto3" json:"project,omitempty"`
 	Generation int32  `protobuf:"varint,6,opt,name=generation,proto3" json:"generation,omitempty"`
-	// "chroot", "vm", or "cladefs".
+	// "vm" or "cladefs".
 	Runtime    string       `protobuf:"bytes,7,opt,name=runtime,proto3" json:"runtime,omitempty"`
 	State      FreshenState `protobuf:"varint,8,opt,name=state,proto3,enum=hotbed.v1.FreshenState" json:"state,omitempty"`
 	Cold       bool         `protobuf:"varint,9,opt,name=cold,proto3" json:"cold,omitempty"`

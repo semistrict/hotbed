@@ -102,7 +102,7 @@ export type Resources = Message<"hotbed.v1.Resources"> & {
   version: string;
 
   /**
-   * Execution runtimes supported on this worker (e.g. "vm", "chroot").
+   * Execution runtimes supported on this worker (e.g. "vm", "cladefs").
    *
    * @generated from field: repeated string runtimes = 9;
    */
@@ -1409,7 +1409,7 @@ export type WorkerConfig = Message<"hotbed.v1.WorkerConfig"> & {
   node: string;
 
   /**
-   * Default runtime for non-bench workspaces: "vm", "cladefs", or "chroot".
+   * Default runtime for non-bench workspaces: "vm" or "cladefs".
    *
    * @generated from field: optional string default_runtime = 2;
    */
@@ -2470,7 +2470,7 @@ export type Base = Message<"hotbed.v1.Base"> & {
   cladefsCell?: CladefsCell | undefined;
 
   /**
-   * Runtime this base was built for: "chroot", "vm", or "cladefs".
+   * Runtime this base was built for: "vm" or "cladefs".
    *
    * @generated from field: string runtime = 24;
    */
@@ -2762,7 +2762,7 @@ export type Workspace = Message<"hotbed.v1.Workspace"> & {
   repos: WorkspaceRepo[];
 
   /**
-   * Execution runtime backing this workspace ("vm", "cladefs", or "chroot").
+   * Execution runtime backing this workspace ("vm" or "cladefs").
    *
    * @generated from field: string runtime = 27;
    */
@@ -2899,7 +2899,7 @@ export type CreateWorkspaceRequest = Message<"hotbed.v1.CreateWorkspaceRequest">
   project?: HostedProject | undefined;
 
   /**
-   * Execution runtime requested/assigned ("vm", "chroot", or empty for worker default).
+   * Execution runtime requested/assigned ("vm", "cladefs", or empty for worker default).
    *
    * @generated from field: string runtime = 12;
    */
@@ -2965,7 +2965,7 @@ export type Placement = Message<"hotbed.v1.Placement"> & {
   memoryLowBytes: bigint;
 
   /**
-   * Execution runtime required ("vm", "chroot", or empty for auto/default).
+   * Execution runtime required ("vm", "cladefs", or empty for auto/default).
    *
    * @generated from field: string runtime = 5;
    */
@@ -3846,7 +3846,7 @@ export type Command = Message<"hotbed.v1.Command"> & {
   interventions: CommandIntervention[];
 
   /**
-   * Execution runtime backing this command ("vm", "cladefs", or "chroot").
+   * Execution runtime backing this command ("vm" or "cladefs").
    *
    * @generated from field: string runtime = 30;
    */
@@ -4001,7 +4001,7 @@ export type FinishedCommand = Message<"hotbed.v1.FinishedCommand"> & {
   interventions: CommandIntervention[];
 
   /**
-   * Execution runtime that ran this command ("vm", "cladefs", or "chroot").
+   * Execution runtime that ran this command ("vm" or "cladefs").
    *
    * @generated from field: string runtime = 25;
    */
@@ -5276,7 +5276,7 @@ export type ListFreshensRequest = Message<"hotbed.v1.ListFreshensRequest"> & {
   active: boolean;
 
   /**
-   * Filter by runtime ("chroot", "vm", "cladefs").
+   * Filter by runtime ("vm" or "cladefs").
    *
    * @generated from field: string runtime = 5;
    */
@@ -5445,7 +5445,7 @@ export type BaseFreshen = Message<"hotbed.v1.BaseFreshen"> & {
   generation: number;
 
   /**
-   * "chroot", "vm", or "cladefs".
+   * "vm" or "cladefs".
    *
    * @generated from field: string runtime = 7;
    */

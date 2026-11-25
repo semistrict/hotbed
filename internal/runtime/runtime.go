@@ -17,7 +17,6 @@ import (
 
 // Kind identifies an execution backend.
 const (
-	KindChroot  = "chroot"
 	KindVM      = "vm"
 	KindCladefs = "cladefs"
 )
@@ -88,7 +87,7 @@ type ShellSpec struct {
 // and port forwarding inside a workspace without assuming the host can mount
 // or directly read the workspace filesystem.
 type WorkspaceRuntime interface {
-	// Kind returns "chroot" or "vm".
+	// Kind returns "vm" or "cladefs".
 	Kind() string
 
 	// EnsureReady makes sure the workspace execution environment (e.g. VM) is

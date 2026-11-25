@@ -1027,9 +1027,9 @@ export function createClusterService(
 				);
 			}
 			const rt = req.runtime.trim().toLowerCase();
-			if (rt && rt !== "chroot" && rt !== "vm" && rt !== "cladefs") {
+			if (rt && rt !== "vm" && rt !== "cladefs") {
 				throw hotbedError(ErrorCode.InvalidArgs, `unknown runtime "${req.runtime}"`).withSuggestion(
-					"use one of: chroot, vm, cladefs",
+					"use one of: vm, cladefs",
 				);
 			}
 
@@ -1088,7 +1088,7 @@ export function createClusterService(
 				if (nodeId && f.nodeId !== nodeId) return false;
 				if (req.state !== FreshenState.UNSPECIFIED && f.state !== req.state) return false;
 				if (req.active && !isFreshenActive(f.state)) return false;
-				if (rt && (f.runtime || "chroot") !== rt) return false;
+				if (rt && f.runtime !== rt) return false;
 				if (req.cold && !f.cold) return false;
 				return true;
 			});

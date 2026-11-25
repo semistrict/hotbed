@@ -25,7 +25,7 @@ export function commandRuntime(
   if (!c.workspaceId) return "";
   const w = workspacesById ? workspacesById.get(c.workspaceId) : s.workspaces.find((x) => x.id === c.workspaceId);
   if (!w) return "";
-  return w.runtime || "chroot";
+  return w.runtime || "";
 }
 
 function WorkspaceCell({ id, known }: { id: string; known: boolean }) {

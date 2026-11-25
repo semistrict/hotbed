@@ -383,6 +383,9 @@ func Run(ctx context.Context, dir string, cfg statedir.WorkerConfig, tn Tailnet,
 			"peerAddr", effCfg.CladefsFUSE.CladefsPeerAddr,
 			"mountRoot", effCfg.CladefsFUSE.MountRoot,
 		)
+	} else {
+		return api.Errorf(api.CodePlatformNotSupported, "worker requires either vm or cladefs_fuse runtime to be enabled").
+			WithSuggestion("enable vm or cladefs_fuse in hotbed.json or via hotbed config set")
 	}
 	// Ensure workspace commands (via the command user's kvm supplementary group)
 	// can open /dev/userfaultfd read-write on Linux hosts, matching Firecracker

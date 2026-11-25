@@ -343,17 +343,14 @@ func (b *VMBackend) Close() error {
 // Runtime returns the GuestRuntime implementing runtime.WorkspaceRuntime.
 func (b *VMBackend) Runtime() runtime.WorkspaceRuntime { return b.rt }
 
-// DefaultRuntime returns "vm" if configured as default, else "chroot".
+// DefaultRuntime returns "vm".
 func (b *VMBackend) DefaultRuntime() string {
-	if b.configSnapshot().Default {
-		return runtime.KindVM
-	}
-	return runtime.KindChroot
+	return runtime.KindVM
 }
 
 // Runtimes returns the runtimes supported by this worker.
 func (b *VMBackend) Runtimes() []string {
-	return []string{runtime.KindVM, runtime.KindChroot}
+	return []string{runtime.KindVM}
 }
 
 // HeartbeatMeta returns cladefs peer address, incarnation, and advertised R2

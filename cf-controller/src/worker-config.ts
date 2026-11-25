@@ -13,7 +13,7 @@ import {
 } from "./gen/hotbed/v1/hotbed_pb.ts";
 import { ErrorCode, hotbedError } from "./errors.ts";
 
-const VALID_RUNTIMES = new Set(["", "vm", "cladefs", "chroot"]);
+const VALID_RUNTIMES = new Set(["", "vm", "cladefs"]);
 const VALID_CACHE_TYPES = new Set(["", "Unsafe", "Writeback"]);
 const VALID_ARCHES = new Set(["amd64", "arm64"]);
 const SHA256_RE = /^[0-9a-f]{64}$/;
@@ -65,7 +65,7 @@ export function validateWorkerConfig(cfg: WorkerConfig): void {
 	if (cfg.defaultRuntime !== undefined && !VALID_RUNTIMES.has(cfg.defaultRuntime)) {
 		throw hotbedError(
 			ErrorCode.InvalidArgs,
-			`invalid default_runtime "${cfg.defaultRuntime}" (want vm, cladefs, chroot, or empty)`,
+			`invalid default_runtime "${cfg.defaultRuntime}" (want vm, cladefs, or empty)`,
 		);
 	}
 	if (cfg.slice !== undefined && cfg.slice !== "") {

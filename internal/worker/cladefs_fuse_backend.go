@@ -376,17 +376,14 @@ func (b *CladefsFUSEBackend) saveWSStateLocked() {
 	}
 }
 
-// DefaultRuntime returns "cladefs" if configured as default, else "chroot".
+// DefaultRuntime returns "cladefs".
 func (b *CladefsFUSEBackend) DefaultRuntime() string {
-	if b.configSnapshot().Default {
-		return runtime.KindCladefs
-	}
-	return runtime.KindChroot
+	return runtime.KindCladefs
 }
 
 // Runtimes returns the runtimes supported by this host-FUSE cladefs worker.
 func (b *CladefsFUSEBackend) Runtimes() []string {
-	return []string{runtime.KindCladefs, runtime.KindChroot}
+	return []string{runtime.KindCladefs}
 }
 
 func (b *CladefsFUSEBackend) checkHealth() error {
@@ -457,7 +454,7 @@ func (b *CladefsFUSEBackend) RuntimesForHeartbeat() []string {
 	if b.isNotConnected(err) {
 		b.triggerDeadMountRecovery()
 	}
-	return []string{runtime.KindChroot}
+	return []string{}
 }
 
 func (b *CladefsFUSEBackend) triggerDeadMountRecovery() {

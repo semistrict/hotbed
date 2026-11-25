@@ -721,7 +721,7 @@ const (
 type placementFlags struct {
 	Node    string `help:"Run only on this node (host name); hotbed nodes lists them."`
 	Arch    string `enum:",amd64,arm64" default:"" help:"Run only on nodes of this architecture: amd64 or arm64."`
-	Runtime string `enum:",vm,cladefs,chroot" default:"" help:"Execution runtime: vm (Firecracker + cladefs), cladefs (host FUSE + cladefs), or chroot (local ZFS/btrfs)."`
+	Runtime string `enum:",vm,cladefs" default:"" help:"Execution runtime: vm (Firecracker + cladefs) or cladefs (host FUSE + cladefs)."`
 }
 
 // placement is where a run of req may go, and what it needs there.

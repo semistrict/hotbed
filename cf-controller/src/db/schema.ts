@@ -536,7 +536,7 @@ export const baseFreshens = sqliteTable(
 		nodeId: text("node_id").notNull(),
 		baseId: text("base_id").notNull(),
 		project: text("project").notNull(),
-		runtime: text("runtime").notNull().default("chroot"),
+		runtime: text("runtime").notNull().default(""),
 		state: text("state").notNull(),
 		cold: integer("cold").notNull().default(0),
 		createdAt: integer("created_at").notNull(),

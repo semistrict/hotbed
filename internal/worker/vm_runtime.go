@@ -30,7 +30,7 @@ func (e *Engine) isVMWorkspace(wsID string) bool {
 	return ok
 }
 
-// resolveWorkspaceRuntime picks "vm", "cladefs", or "chroot" for a CreateWorkspaceRequest.
+// resolveWorkspaceRuntime picks "vm" or "cladefs" for a CreateWorkspaceRequest.
 func (e *Engine) resolveWorkspaceRuntime(req *pb.CreateWorkspaceRequest) (string, error) {
 	rt := req.GetRuntime()
 	if rt == "" && req.GetPlacement() != nil {
@@ -38,9 +38,18 @@ func (e *Engine) resolveWorkspaceRuntime(req *pb.CreateWorkspaceRequest) (string
 	}
 	if req.GetPlacement().GetBench() {
 		if rt == runtime.KindVM {
-			return "", api.Errorf(api.CodeInvalidArgs, "--bench requires chroot runtime, not vm")
+			return "", api.Errorf(api.CodeInvalidArgs, "--bench requires cladefs runtime, not vm")
 		}
-		return runtime.KindChroot, nil
+		if rt != "" && rt != runtime.KindCladefs {
+			return "", api.Errorf(api.CodeInvalidArgs, "unknown runtime %q (want vm or cladefs)", rt)
+		}
+		if e.cfg.CladefsFUSE != nil {
+			return runtime.KindCladefs, nil
+		}
+		if e.cfg.VM != nil || e.cfg.Runtime != nil {
+			return "", api.Errorf(api.CodePlatformNotSupported, "--bench requires cladefs runtime, which is not enabled on this worker")
+		}
+		return runtime.KindCladefs, nil
 	}
 	if rt == "" {
 		if e.cfg.VM != nil {
@@ -52,23 +61,21 @@ func (e *Engine) resolveWorkspaceRuntime(req *pb.CreateWorkspaceRequest) (string
 		if e.cfg.Runtime != nil && e.cfg.RuntimeFor == nil {
 			return e.cfg.Runtime.Kind(), nil
 		}
-		return runtime.KindChroot, nil
+		return runtime.KindCladefs, nil
 	}
 	switch rt {
-	case runtime.KindChroot:
-		return runtime.KindChroot, nil
 	case runtime.KindVM:
 		if e.cfg.VM == nil && e.cfg.Runtime == nil {
 			return "", api.Errorf(api.CodePlatformNotSupported, "vm runtime is not enabled on this worker")
 		}
 		return runtime.KindVM, nil
 	case runtime.KindCladefs:
-		if e.cfg.CladefsFUSE == nil {
+		if e.cfg.CladefsFUSE == nil && (e.cfg.VM != nil || e.cfg.Runtime != nil) {
 			return "", api.Errorf(api.CodePlatformNotSupported, "cladefs host-FUSE runtime is not enabled on this worker")
 		}
 		return runtime.KindCladefs, nil
 	default:
-		return "", api.Errorf(api.CodeInvalidArgs, "unknown runtime %q (want vm, cladefs, or chroot)", rt)
+		return "", api.Errorf(api.CodeInvalidArgs, "unknown runtime %q (want vm or cladefs)", rt)
 	}
 }
 

@@ -97,11 +97,6 @@ const RUNTIMES: Record<string, { label: string; title: string; className: string
     title: "cladefs host-FUSE runtime",
     className: "border-good/35 bg-good/10 text-good-ink",
   },
-  chroot: {
-    label: "chroot",
-    title: "Local chroot runtime",
-    className: "border-border-strong text-muted-foreground",
-  },
 };
 
 export function RuntimeBadge({ runtime }: { runtime?: string }) {

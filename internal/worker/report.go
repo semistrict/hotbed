@@ -40,7 +40,7 @@ func (e *Engine) Heartbeat(clusterID string) *pb.HeartbeatRequest {
 		h.CladefsPeerAddr = peerAddr
 		h.CladefsIncarnation = inc
 		h.SharedBases = shared
-		if h.Resources != nil && len(fuseRuntimes) > 0 {
+		if h.Resources != nil {
 			h.Resources.Runtimes = fuseRuntimes
 		}
 	}

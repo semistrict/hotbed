@@ -387,8 +387,42 @@ func TestIsVMWorkspaceNoDeadlockUnderEngineLock(t *testing.T) {
 	if !eng.usesRuntime("ws-vm") {
 		t.Fatal("expected ws-vm to use runtime while e.mu is held")
 	}
-	if eng.usesRuntime("ws-chroot") {
-		t.Fatal("expected ws-chroot not to use runtime while e.mu is held")
+	if eng.usesRuntime("ws-cladefs") {
+		t.Fatal("expected ws-cladefs not to use runtime while e.mu is held")
+	}
+}
+
+func TestResolveWorkspaceRuntimeOnlyAllowsVMAndCladefs(t *testing.T) {
+	vmEng := &Engine{cfg: EngineConfig{VM: &VMBackend{}}}
+	fuseEng := &Engine{cfg: EngineConfig{CladefsFUSE: &CladefsFUSEBackend{}}}
+
+	if got, err := vmEng.resolveWorkspaceRuntime(&pb.CreateWorkspaceRequest{}); err != nil || got != runtime.KindVM {
+		t.Fatalf("vm default = %q, %v; want %q, nil", got, err, runtime.KindVM)
+	}
+	if _, err := vmEng.resolveWorkspaceRuntime(&pb.CreateWorkspaceRequest{Runtime: "chroot"}); err == nil {
+		t.Fatal("vm engine must reject chroot runtime")
+	}
+	if _, err := vmEng.resolveWorkspaceRuntime(&pb.CreateWorkspaceRequest{Runtime: runtime.KindCladefs}); err == nil {
+		t.Fatal("vm-only engine must reject cladefs runtime")
+	}
+	if _, err := vmEng.resolveWorkspaceRuntime(&pb.CreateWorkspaceRequest{Placement: &pb.Placement{Bench: true}}); err == nil {
+		t.Fatal("vm-only engine must reject --bench")
+	}
+
+	if got, err := fuseEng.resolveWorkspaceRuntime(&pb.CreateWorkspaceRequest{}); err != nil || got != runtime.KindCladefs {
+		t.Fatalf("cladefs default = %q, %v; want %q, nil", got, err, runtime.KindCladefs)
+	}
+	if got, err := fuseEng.resolveWorkspaceRuntime(&pb.CreateWorkspaceRequest{Placement: &pb.Placement{Bench: true}}); err != nil || got != runtime.KindCladefs {
+		t.Fatalf("cladefs --bench = %q, %v; want %q, nil", got, err, runtime.KindCladefs)
+	}
+	if _, err := fuseEng.resolveWorkspaceRuntime(&pb.CreateWorkspaceRequest{Runtime: "chroot"}); err == nil {
+		t.Fatal("cladefs engine must reject chroot runtime")
+	}
+	if _, err := fuseEng.resolveWorkspaceRuntime(&pb.CreateWorkspaceRequest{Runtime: runtime.KindVM}); err == nil {
+		t.Fatal("cladefs-only engine must reject vm runtime")
+	}
+	if _, err := fuseEng.resolveWorkspaceRuntime(&pb.CreateWorkspaceRequest{Placement: &pb.Placement{Bench: true, Runtime: runtime.KindVM}}); err == nil {
+		t.Fatal("cladefs engine must reject --bench with vm runtime")
 	}
 }
 

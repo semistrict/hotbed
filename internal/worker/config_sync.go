@@ -237,13 +237,6 @@ func MergeWorkerConfig(local statedir.WorkerConfig, remote *pb.WorkerConfig) sta
 			if out.CladefsFUSE != nil {
 				out.CladefsFUSE.Default = true
 			}
-		case runtime.KindChroot:
-			if out.VM != nil {
-				out.VM.Default = false
-			}
-			if out.CladefsFUSE != nil {
-				out.CladefsFUSE.Default = false
-			}
 		}
 	}
 	return out

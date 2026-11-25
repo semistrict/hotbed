@@ -142,7 +142,7 @@ List active and historical base freshens with phase/step timing summaries, cold-
 | `--node` |  | Filter to freshens on this node (host name or ID). |
 | `--state` |  | Filter by freshen state (queued, running, parked, paused, finalizing, succeeded, failed, cancelled, dropped). |
 | `--active` |  | Only currently active (in-flight) freshens. |
-| `--runtime` |  | Filter by runtime ("chroot", "vm", "cladefs"). |
+| `--runtime` |  | Filter by runtime ("vm" or "cladefs"). |
 | `--cold` |  | Only cold builds from nothing. |
 | `--since` |  | Lookback window (e.g. "1h", "24h", "7d", or "all" for full retention; default "24h"). |
 | `-n`, `--limit` |  | Maximum freshens to list (default 30; 0 for all). Summary covers all matched freshens in the window. |

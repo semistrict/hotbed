@@ -4462,7 +4462,7 @@ export class ControllerStore {
 			f.nodeId,
 			f.baseId,
 			f.project,
-			f.runtime || "chroot",
+			f.runtime || "",
 			freshenStateName(f.state),
 			f.cold ? 1 : 0,
 			Number(f.createdAt),
