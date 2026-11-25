@@ -14,11 +14,16 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
+	"syscall"
 	"testing"
 	"time"
 
+	"connectrpc.com/connect/v2"
+
 	"github.com/semistrict/hotbed/internal/api"
 	"github.com/semistrict/hotbed/internal/fake"
+	guestdv1 "github.com/semistrict/hotbed/internal/gen/guestd/v1"
 	pb "github.com/semistrict/hotbed/internal/gen/hotbed/v1"
 	"github.com/semistrict/hotbed/internal/gitops"
 	"github.com/semistrict/hotbed/internal/guestd"
@@ -89,24 +94,24 @@ func TestHealthAndCommandLifecycle(t *testing.T) {
 	}
 
 	// Start a short command and verify idempotency on the same ID.
-	st1, err := client.StartCommand(ctx, guestd.StartCommandRequest{
-		ID:   "cmd-echo-1",
+	st1, err := client.StartCommand(ctx, &guestdv1.StartCommandRequest{
+		Id:   "cmd-echo-1",
 		Argv: []string{"/bin/sh", "-c", "echo hello-guestd; echo err-line >&2; exit 7"},
 		Dir:  workDir,
 	})
 	if err != nil {
 		t.Fatalf("StartCommand: %v", err)
 	}
-	st2, err := client.StartCommand(ctx, guestd.StartCommandRequest{
-		ID:   "cmd-echo-1",
+	st2, err := client.StartCommand(ctx, &guestdv1.StartCommandRequest{
+		Id:   "cmd-echo-1",
 		Argv: []string{"/bin/sh", "-c", "echo should-not-run"},
 		Dir:  workDir,
 	})
 	if err != nil {
 		t.Fatalf("idempotent StartCommand: %v", err)
 	}
-	if st2.MainPID != st1.MainPID {
-		t.Fatalf("idempotent start spawned new pid: %d vs %d", st2.MainPID, st1.MainPID)
+	if st2.MainPid != st1.MainPid {
+		t.Fatalf("idempotent start spawned new pid: %d vs %d", st2.MainPid, st1.MainPid)
 	}
 
 	var buf bytes.Buffer
@@ -131,8 +136,13 @@ func TestHealthAndCommandLifecycle(t *testing.T) {
 		t.Fatalf("StatusMany: %v", err)
 	}
 	got := sts["cmd-echo-1"]
-	if got.State != guestd.StateExited || got.ExitCode != 7 {
+	if got.State != guestdv1.CommandState_COMMAND_STATE_EXITED || got.ExitCode != 7 {
 		t.Fatalf("expected exited/7, got %+v", got)
+	}
+
+	// Unknown command returns Connect CodeNotFound.
+	if _, err := client.StopCommand(ctx, "does-not-exist", time.Second); connect.CodeOf(err) != connect.CodeNotFound {
+		t.Fatalf("expected CodeNotFound for unknown command, got %v", err)
 	}
 }
 
@@ -141,8 +151,8 @@ func TestFreezeThawAndStopCommand(t *testing.T) {
 	client, _ := startTestGuestd(t, workDir)
 	ctx := context.Background()
 
-	_, err := client.StartCommand(ctx, guestd.StartCommandRequest{
-		ID:   "cmd-sleep-1",
+	_, err := client.StartCommand(ctx, &guestdv1.StartCommandRequest{
+		Id:   "cmd-sleep-1",
 		Argv: []string{"/bin/sh", "-c", "while true; do sleep 0.1; done"},
 		Dir:  workDir,
 	})
@@ -154,7 +164,7 @@ func TestFreezeThawAndStopCommand(t *testing.T) {
 	if err != nil {
 		t.Fatalf("FreezeCommand: %v", err)
 	}
-	if st.State != guestd.StateFrozen {
+	if st.State != guestdv1.CommandState_COMMAND_STATE_FROZEN {
 		t.Fatalf("expected frozen, got %s", st.State)
 	}
 
@@ -162,7 +172,7 @@ func TestFreezeThawAndStopCommand(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ThawCommand: %v", err)
 	}
-	if st.State != guestd.StateRunning {
+	if st.State != guestdv1.CommandState_COMMAND_STATE_RUNNING {
 		t.Fatalf("expected running after thaw, got %s", st.State)
 	}
 
@@ -174,7 +184,7 @@ func TestFreezeThawAndStopCommand(t *testing.T) {
 	if err != nil {
 		t.Fatalf("StopCommand: %v", err)
 	}
-	if st.State != guestd.StateExited {
+	if st.State != guestdv1.CommandState_COMMAND_STATE_EXITED {
 		t.Fatalf("expected exited after stop, got %+v", st)
 	}
 }
@@ -247,7 +257,7 @@ func TestSyncAndFiles(t *testing.T) {
 		t.Fatalf("expected >= 2 changed files, got %d", changed)
 	}
 
-	files, err := client.ListFiles(ctx, []guestd.RepoBase{{Repo: "demo", BaseCommit: baseCommit}})
+	files, err := client.ListFiles(ctx, []*guestdv1.RepoBase{{Repo: "demo", BaseCommit: baseCommit}})
 	if err != nil {
 		t.Fatalf("ListFiles: %v", err)
 	}
@@ -270,9 +280,9 @@ func TestSyncAndFiles(t *testing.T) {
 		t.Fatalf("unexpected changed lines: %v", fc.ChangedLines)
 	}
 
-	// Path traversal outside repo must be refused.
-	if _, err := client.GetFile(ctx, "demo", baseCommit, "../etc/passwd"); err == nil {
-		t.Fatal("expected traversal error, got nil")
+	// Path traversal outside repo must be refused with InvalidArgument.
+	if _, err := client.GetFile(ctx, "demo", baseCommit, "../etc/passwd"); connect.CodeOf(err) != connect.CodeInvalidArgument {
+		t.Fatalf("expected CodeInvalidArgument for traversal, got %v", err)
 	}
 }
 
@@ -485,8 +495,8 @@ func TestReclaimEndpoint(t *testing.T) {
 	}
 
 	// Reclaim against a live command ID succeeds.
-	if _, err := client.StartCommand(ctx, guestd.StartCommandRequest{
-		ID:   "cmd-reclaim-1",
+	if _, err := client.StartCommand(ctx, &guestdv1.StartCommandRequest{
+		Id:   "cmd-reclaim-1",
 		Argv: []string{"/bin/sh", "-c", "sleep 30"},
 		Dir:  workDir,
 	}); err != nil {
@@ -560,8 +570,8 @@ func TestInspectTraceAndSampleEndpoints(t *testing.T) {
 	}
 
 	// Start a live command and inspect, trace, and sample it through guestd.
-	if _, err := client.StartCommand(ctx, guestd.StartCommandRequest{
-		ID:   "cmd-diag-1",
+	if _, err := client.StartCommand(ctx, &guestdv1.StartCommandRequest{
+		Id:   "cmd-diag-1",
 		Argv: []string{"/bin/sh", "-c", "sleep 30"},
 		Dir:  workDir,
 	}); err != nil {
@@ -623,8 +633,8 @@ func TestInspectTraceAndSampleEndpoints(t *testing.T) {
 		Inspector: fake.Inspector{},
 		traceErr:  wantErr,
 	})
-	if _, err := errClient.StartCommand(ctx, guestd.StartCommandRequest{
-		ID:   "cmd-err-1",
+	if _, err := errClient.StartCommand(ctx, &guestdv1.StartCommandRequest{
+		Id:   "cmd-err-1",
 		Argv: []string{"/bin/sh", "-c", "sleep 30"},
 		Dir:  workDir,
 	}); err != nil {
@@ -716,8 +726,8 @@ func TestGuestdCommandProfileEndpoints(t *testing.T) {
 		t.Fatalf("WaitReady: %v", err)
 	}
 
-	if _, err := client.StartCommand(ctx, guestd.StartCommandRequest{
-		ID:   "cmd-prof-1",
+	if _, err := client.StartCommand(ctx, &guestdv1.StartCommandRequest{
+		Id:   "cmd-prof-1",
 		Argv: []string{"/bin/sh", "-c", "sleep 30"},
 		Dir:  workDir,
 	}); err != nil {
@@ -756,5 +766,153 @@ func TestGuestdCommandProfileEndpoints(t *testing.T) {
 	}
 	if afterForget.TotalSamples != 0 {
 		t.Fatalf("expected 0 samples after forget, got %d", afterForget.TotalSamples)
+	}
+}
+
+func TestConnectRetriesTransientVsockReset(t *testing.T) {
+	workDir := t.TempDir()
+	sockDir, err := os.MkdirTemp("", "gd-retry-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(sockDir) })
+
+	srv, err := guestd.NewServer(guestd.ServerConfig{
+		WorkDir:  workDir,
+		StateDir: t.TempDir(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+
+	ctrlSock := filepath.Join(sockDir, "ctrl.sock")
+	ln, err := net.Listen("unix", ctrlSock)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = ln.Close() })
+	go func() { _ = srv.ServeControl(ctx, ln) }()
+
+	var attempts atomic.Int32
+	client := guestd.NewClient(func(ctx context.Context, port uint32) (net.Conn, error) {
+		if attempts.Add(1) <= 2 {
+			return nil, syscall.ECONNRESET
+		}
+		var d net.Dialer
+		return d.DialContext(ctx, "unix", ctrlSock)
+	})
+
+	h, err := client.Health(ctx)
+	if err != nil {
+		t.Fatalf("Health after transient resets: %v", err)
+	}
+	if h.WorkDir != workDir {
+		t.Fatalf("WorkDir = %q, want %q", h.WorkDir, workDir)
+	}
+	if got := attempts.Load(); got != 3 {
+		t.Fatalf("attempts = %d, want 3", got)
+	}
+}
+
+func TestSyncSubmoduleStreamingAndValidation(t *testing.T) {
+	workDir := t.TempDir()
+	client, _ := startTestGuestd(t, workDir)
+	ctx := context.Background()
+
+	// Create a submodule repo and a parent repo referencing it.
+	subOrigin := filepath.Join(t.TempDir(), "sub")
+	if err := os.MkdirAll(subOrigin, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	runGit(t, subOrigin, "init", "-b", "main")
+	if err := os.WriteFile(filepath.Join(subOrigin, "s.txt"), []byte("sub-v1\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runGit(t, subOrigin, "add", "s.txt")
+	runGit(t, subOrigin, "commit", "-m", "sub init")
+
+	srcRepo := filepath.Join(t.TempDir(), "parent")
+	if err := os.MkdirAll(srcRepo, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	runGit(t, srcRepo, "init", "-b", "main")
+	runGit(t, srcRepo, "-c", "protocol.file.allow=always", "submodule", "add", subOrigin, "libs/sub")
+	if err := os.WriteFile(filepath.Join(srcRepo, "main.txt"), []byte("main-v1\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runGit(t, srcRepo, "add", "-A")
+	runGit(t, srcRepo, "commit", "-m", "parent init")
+	baseCommit := runGit(t, srcRepo, "rev-parse", "HEAD")
+
+	wsRepo := filepath.Join(workDir, "parent")
+	runGit(t, workDir, "-c", "protocol.file.allow=always", "clone", "--recurse-submodules", srcRepo, wsRepo)
+
+	// Edit both the submodule and the parent repo, then snapshot + bundle.
+	if err := os.WriteFile(filepath.Join(srcRepo, "libs", "sub", "s.txt"), []byte("sub-v2\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(srcRepo, "main.txt"), []byte("main-v2\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	snap, err := gitops.Snapshot(ctx, srcRepo)
+	if err != nil {
+		t.Fatalf("Snapshot: %v", err)
+	}
+	tmpBundles := t.TempDir()
+	mainBundlePath := filepath.Join(tmpBundles, "main.bundle")
+	bf, err := os.Create(mainBundlePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	subBundles, err := gitops.Bundle(ctx, snap, baseCommit, bf)
+	_ = bf.Close()
+	if err != nil {
+		t.Fatalf("Bundle: %v", err)
+	}
+	if len(subBundles) != 1 || len(subBundles[0].Data) == 0 {
+		t.Fatalf("expected 1 non-empty submodule bundle, got %+v", subBundles)
+	}
+	subBundlePath := filepath.Join(tmpBundles, "sub-0.bundle")
+	if err := os.WriteFile(subBundlePath, subBundles[0].Data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	subs := []gitops.SubCheckout{{
+		Path:   subBundles[0].Path,
+		Commit: subBundles[0].Commit,
+		Bundle: subBundlePath,
+	}}
+	changed, err := client.ApplySync(ctx, "parent", mainBundlePath, snap.Commit, baseCommit, subs, nil, 0, 0)
+	if err != nil {
+		t.Fatalf("ApplySync with submodule: %v", err)
+	}
+	if changed == 0 {
+		t.Fatalf("expected changed files > 0, got %d", changed)
+	}
+	gotSub, err := os.ReadFile(filepath.Join(wsRepo, "libs", "sub", "s.txt"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(gotSub) != "sub-v2\n" {
+		t.Fatalf("submodule file = %q, want %q", string(gotSub), "sub-v2\n")
+	}
+	gotMain, err := os.ReadFile(filepath.Join(wsRepo, "main.txt"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(gotMain) != "main-v2\n" {
+		t.Fatalf("main file = %q, want %q", string(gotMain), "main-v2\n")
+	}
+
+	// Missing header on raw Connect Sync stream returns CodeInvalidArgument.
+	stream, err := client.RPC().Sync(ctx)
+	if err != nil {
+		t.Fatalf("open Sync stream: %v", err)
+	}
+	_ = stream.Send(&guestdv1.SyncRequest{Msg: &guestdv1.SyncRequest_Chunk{Chunk: []byte("no-header")}})
+	if _, err := stream.CloseAndReceive(); connect.CodeOf(err) != connect.CodeInvalidArgument {
+		t.Fatalf("expected CodeInvalidArgument without header, got %v", err)
 	}
 }

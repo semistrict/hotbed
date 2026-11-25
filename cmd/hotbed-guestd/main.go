@@ -34,7 +34,7 @@ func main() {
 	flag.Parse()
 
 	// The Linux kernel boots PID 1 with a minimal PATH (often missing /usr/bin),
-	// which breaks exec.Command("git", ...) in /v1/sync and /v1/files/*.
+	// which breaks exec.Command("git", ...) in GuestService.Sync and ListFiles/GetFile.
 	if p := os.Getenv("PATH"); p == "" || !strings.Contains(p, "/usr/bin") {
 		_ = os.Setenv("PATH", "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin")
 	}

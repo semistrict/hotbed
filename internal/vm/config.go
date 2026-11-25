@@ -55,8 +55,8 @@ type Config struct {
 	DNSServers         []string      // nameservers written to guest /etc/resolv.conf
 	Nofile             uint64        // RLIMIT_NOFILE soft/hard limit inside guest VMs (0 = guestd default 65536)
 	GitAuthHostSock    string        // host path to hotbed gitAuthServer Unix socket (bridged via vsock port 5002)
-	BootTimeout        time.Duration // max wait for hotbed-guestd /v1/health after VM launch
-	ShutdownTimeout    time.Duration // max wait for clean Firecracker exit after /v1/shutdown
+	BootTimeout        time.Duration // max wait for hotbed-guestd Health RPC after VM launch
+	ShutdownTimeout    time.Duration // max wait for clean Firecracker exit after Shutdown RPC
 	DisableNetwork     bool          // skip TAP/bridge setup (for isolated tests)
 }
 

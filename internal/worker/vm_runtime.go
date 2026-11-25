@@ -497,7 +497,7 @@ func (u *runtimeUnits) Exec(ctx context.Context, name, slice string, c unit.Exec
 }
 
 // applyViaRuntime delegates git bundle application inside a VM workspace to
-// hotbed-guestd over AF_VSOCK (multipart /v1/sync), without touching host paths.
+// hotbed-guestd over AF_VSOCK (Connect Sync stream), without touching host paths.
 func (e *Engine) applyViaRuntime(ctx context.Context, wsID, repo, bundlePath, commit, baseCommit string, subs []gitops.SubCheckout) (int, error) {
 	var uid, gid int
 	if e.cred != nil {

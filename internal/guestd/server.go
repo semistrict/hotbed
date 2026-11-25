@@ -24,9 +24,12 @@ import (
 	"syscall"
 	"time"
 
-	"google.golang.org/protobuf/proto"
+	"connectrpc.com/connect/v2"
+	"connectrpc.com/connect/v2/connecthttp"
 
 	"github.com/semistrict/hotbed/internal/api"
+	guestdv1 "github.com/semistrict/hotbed/internal/gen/guestd/v1"
+	"github.com/semistrict/hotbed/internal/gen/guestd/v1/guestdv1connect"
 	pb "github.com/semistrict/hotbed/internal/gen/hotbed/v1"
 	"github.com/semistrict/hotbed/internal/gitops"
 	"github.com/semistrict/hotbed/internal/inspect"
@@ -37,9 +40,15 @@ import (
 const (
 	maxFileBytes       = 1 << 20
 	maxSyncBundleBytes = 2 << 30
+	maxControlMsgBytes = 16 << 20
 )
 
-var validCmdID = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9._-]{0,127}$`)
+var (
+	validCmdID      = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9._-]{0,127}$`)
+	errSyncTooLarge = errors.New("sync bundle exceeds size limit")
+)
+
+var _ guestdv1connect.GuestServiceHandler = (*Server)(nil)
 
 // ServerConfig configures a guestd.Server.
 type ServerConfig struct {
@@ -73,7 +82,7 @@ type managedCmd struct {
 	cg      *cmdCgroup
 	logPath string
 	logFile *os.File
-	state   string
+	state   guestdv1.CommandState
 	exit    int
 	mainPID int
 	started int64
@@ -121,33 +130,44 @@ func NewServer(cfg ServerConfig) (*Server, error) {
 	}, nil
 }
 
-// Handler returns the HTTP handler for ControlPort.
+// guestErrorInterceptor converts *api.Error values into Connect errors carrying
+// hotbed.v1.ErrorInfo details so structured error codes and suggestions survive
+// unary and streaming RPC boundaries.
+func guestErrorInterceptor(next connect.ServerFunc) connect.ServerFunc {
+	return func(ctx context.Context, spec connect.Spec, stream connect.ServerStream) error {
+		err := next(ctx, spec, stream)
+		if err == nil {
+			return nil
+		}
+		var ce *connect.Error
+		if errors.As(err, &ce) {
+			return ce
+		}
+		var ae *api.Error
+		if errors.As(err, &ae) {
+			return api.ToConnect(ae)
+		}
+		return err
+	}
+}
+
+// Handler returns the Connect HTTP handler for ControlPort.
 func (s *Server) Handler() http.Handler {
+	cs := connect.NewServer(guestErrorInterceptor)
+	guestdv1connect.RegisterGuestServiceHandler(cs, s)
 	mux := http.NewServeMux()
-	mux.HandleFunc("GET /v1/health", s.handleHealth)
-	mux.HandleFunc("POST /v1/commands/start", s.handleStartCommand)
-	mux.HandleFunc("POST /v1/commands/status", s.handleStatus)
-	mux.HandleFunc("POST /v1/commands/stop", s.handleStopCommand)
-	mux.HandleFunc("POST /v1/commands/freeze", s.handleFreezeCommand)
-	mux.HandleFunc("POST /v1/commands/thaw", s.handleThawCommand)
-	mux.HandleFunc("POST /v1/commands/inspect", s.handleInspectCommand)
-	mux.HandleFunc("POST /v1/commands/trace", s.handleTraceCommand)
-	mux.HandleFunc("POST /v1/commands/sample", s.handleSampleCommand)
-	mux.HandleFunc("POST /v1/commands/profile", s.handleCommandProfile)
-	mux.HandleFunc("POST /v1/commands/profile/forget", s.handleForgetCommandProfile)
-	mux.HandleFunc("POST /v1/reclaim", s.handleReclaim)
-	mux.HandleFunc("GET /v1/commands/logs", s.handleStreamLogs)
-	mux.HandleFunc("POST /v1/sync", s.handleSync)
-	mux.HandleFunc("POST /v1/files/list", s.handleListFiles)
-	mux.HandleFunc("POST /v1/files/get", s.handleGetFile)
-	mux.HandleFunc("POST /v1/shutdown", s.handleShutdown)
+	connecthttp.Mount(mux, cs, connecthttp.WithReadMaxBytes(maxControlMsgBytes))
 	return mux
 }
 
-// ServeControl serves the HTTP control API on ln until ctx is cancelled.
+// ServeControl serves the Connect control API on ln until ctx is cancelled.
 func (s *Server) ServeControl(ctx context.Context, ln net.Listener) error {
+	protocols := new(http.Protocols)
+	protocols.SetHTTP1(true)
+	protocols.SetUnencryptedHTTP2(true)
 	srv := &http.Server{
 		Handler:           s.Handler(),
+		Protocols:         protocols,
 		ReadHeaderTimeout: 30 * time.Second,
 	}
 	go func() {
@@ -161,16 +181,6 @@ func (s *Server) ServeControl(ctx context.Context, ln net.Listener) error {
 		return nil
 	}
 	return err
-}
-
-func writeJSON(w http.ResponseWriter, status int, v any) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(status)
-	_ = json.NewEncoder(w).Encode(v)
-}
-
-func writeErr(w http.ResponseWriter, status int, msg string) {
-	writeJSON(w, status, map[string]string{"error": msg})
 }
 
 // resolveWorkDir maps "/work" (and "/work/<subpath>") onto s.workDir when
@@ -191,16 +201,16 @@ func (s *Server) resolveWorkDir(dir string) string {
 	return dir
 }
 
-func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
+func (s *Server) Health(_ context.Context, _ *guestdv1.HealthRequest) (*guestdv1.HealthResponse, error) {
 	host, _ := os.Hostname()
-	writeJSON(w, http.StatusOK, HealthResponse{
+	return &guestdv1.HealthResponse{
 		Hostname: host,
 		Kernel:   kernelRelease(),
 		Arch:     runtime.GOARCH,
-		PID1:     os.Getpid() == 1,
+		Pid1:     os.Getpid() == 1,
 		CgroupV2: hasCgroupV2(),
 		WorkDir:  s.workDir,
-	})
+	}, nil
 }
 
 // ensureRuntimeDir creates <runDir>/user/<uid> (0700, owned by uid:gid when
@@ -259,39 +269,30 @@ func withDefaultRuntimeEnv(env []string, runtimeDir string) []string {
 	return append(out, "XDG_RUNTIME_DIR="+runtimeDir)
 }
 
-func (s *Server) handleStartCommand(w http.ResponseWriter, r *http.Request) {
-	var req StartCommandRequest
-	if err := json.NewDecoder(io.LimitReader(r.Body, 4<<20)).Decode(&req); err != nil {
-		writeErr(w, http.StatusBadRequest, "decode start request: "+err.Error())
-		return
+func (s *Server) StartCommand(_ context.Context, req *guestdv1.StartCommandRequest) (*guestdv1.CommandStatus, error) {
+	if !validCmdID.MatchString(req.GetId()) {
+		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Sprintf("invalid command id %q", req.GetId()))
 	}
-	if !validCmdID.MatchString(req.ID) {
-		writeErr(w, http.StatusBadRequest, fmt.Sprintf("invalid command id %q", req.ID))
-		return
-	}
-	if len(req.Argv) == 0 {
-		writeErr(w, http.StatusBadRequest, "argv is required")
-		return
+	if len(req.GetArgv()) == 0 {
+		return nil, connect.NewError(connect.CodeInvalidArgument, "argv is required")
 	}
 
 	// Idempotent start: if ID already exists, return its current status.
 	s.mu.Lock()
-	if existing, ok := s.cmds[req.ID]; ok {
+	if existing, ok := s.cmds[req.Id]; ok {
 		s.mu.Unlock()
-		writeJSON(w, http.StatusOK, existing.snapshot())
-		return
+		return existing.snapshot(), nil
 	}
 
-	logPath := filepath.Join(s.logDir, req.ID+".log")
+	logPath := filepath.Join(s.logDir, req.Id+".log")
 	logFile, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
 	if err != nil {
 		s.mu.Unlock()
-		writeErr(w, http.StatusInternalServerError, "open log file: "+err.Error())
-		return
+		return nil, connect.NewError(connect.CodeInternal, "open log file: "+err.Error())
 	}
 
 	dir := s.resolveWorkDir(req.Dir)
-	runtimeDir := s.ensureRuntimeDir(req.UID, req.GID)
+	runtimeDir := s.ensureRuntimeDir(int(req.Uid), int(req.Gid))
 	cmd := exec.Command(req.Argv[0], req.Argv[1:]...)
 	cmd.Dir = dir
 	cmd.Stdout = logFile
@@ -300,17 +301,17 @@ func (s *Server) handleStartCommand(w http.ResponseWriter, r *http.Request) {
 		cmd.Env = env
 	}
 	attr := &syscall.SysProcAttr{Setpgid: true}
-	if req.UID > 0 || req.GID > 0 {
+	if req.Uid > 0 || req.Gid > 0 {
 		if os.Geteuid() == 0 {
 			attr.Credential = &syscall.Credential{
-				Uid: uint32(req.UID),
-				Gid: uint32(req.GID),
+				Uid: uint32(req.Uid),
+				Gid: uint32(req.Gid),
 			}
 		}
 	}
 	cmd.SysProcAttr = attr
 
-	cg := createCmdCgroup(req.ID, req)
+	cg := createCmdCgroup(req.Id, req)
 	usedCgroupFD, closeCgroupFD := attachCgroupAttr(attr, cg)
 	err = cmd.Start()
 	closeCgroupFD()
@@ -320,8 +321,7 @@ func (s *Server) handleStartCommand(w http.ResponseWriter, r *http.Request) {
 			cg.remove()
 		}
 		s.mu.Unlock()
-		writeErr(w, http.StatusInternalServerError, "start command: "+err.Error())
-		return
+		return nil, connect.NewError(connect.CodeInternal, "start command: "+err.Error())
 	}
 	pid := cmd.Process.Pid
 	if cg != nil && !usedCgroupFD {
@@ -329,29 +329,29 @@ func (s *Server) handleStartCommand(w http.ResponseWriter, r *http.Request) {
 	}
 
 	mc := &managedCmd{
-		id:      req.ID,
+		id:      req.Id,
 		cmd:     cmd,
 		cg:      cg,
 		logPath: logPath,
 		logFile: logFile,
-		state:   StateRunning,
+		state:   guestdv1.CommandState_COMMAND_STATE_RUNNING,
 		mainPID: pid,
 		started: time.Now().UnixMilli(),
 		done:    make(chan struct{}),
 	}
-	s.cmds[req.ID] = mc
+	s.cmds[req.Id] = mc
 	s.mu.Unlock()
 
 	go s.waitCommand(mc)
 
-	writeJSON(w, http.StatusOK, mc.snapshot())
+	return mc.snapshot(), nil
 }
 
 func (s *Server) waitCommand(mc *managedCmd) {
 	err := mc.cmd.Wait()
 	code := exitCodeOf(err)
 	mc.mu.Lock()
-	mc.state = StateExited
+	mc.state = guestdv1.CommandState_COMMAND_STATE_EXITED
 	mc.exit = code
 	mc.exited = time.Now().UnixMilli()
 	if err != nil && code == 0 {
@@ -366,7 +366,7 @@ func (s *Server) waitCommand(mc *managedCmd) {
 	mc.mu.Unlock()
 }
 
-func (mc *managedCmd) snapshot() CommandStatus {
+func (mc *managedCmd) snapshot() *guestdv1.CommandStatus {
 	mc.mu.Lock()
 	defer mc.mu.Unlock()
 	var logBytes int64
@@ -377,19 +377,19 @@ func (mc *managedCmd) snapshot() CommandStatus {
 	var memAnon, memSwap, cpuUsec int64
 	if mc.cg != nil {
 		cgPath = mc.cg.path
-		if mc.state != StateExited {
+		if mc.state != guestdv1.CommandState_COMMAND_STATE_EXITED {
 			memAnon, memSwap, cpuUsec = mc.cg.stats()
 		}
 	}
-	return CommandStatus{
-		ID:         mc.id,
+	return &guestdv1.CommandStatus{
+		Id:         mc.id,
 		State:      mc.state,
-		ExitCode:   mc.exit,
-		MainPID:    mc.mainPID,
+		ExitCode:   int32(mc.exit),
+		MainPid:    int32(mc.mainPID),
 		Cgroup:     cgPath,
 		MemoryAnon: memAnon,
 		MemorySwap: memSwap,
-		CPUUsec:    cpuUsec,
+		CpuUsec:    cpuUsec,
 		LogBytes:   logBytes,
 		StartedMs:  mc.started,
 		ExitedMs:   mc.exited,
@@ -397,20 +397,15 @@ func (mc *managedCmd) snapshot() CommandStatus {
 	}
 }
 
-func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
-	var req StatusRequest
-	if err := json.NewDecoder(io.LimitReader(r.Body, 1<<20)).Decode(&req); err != nil && !errors.Is(err, io.EOF) {
-		writeErr(w, http.StatusBadRequest, "decode status request: "+err.Error())
-		return
-	}
+func (s *Server) Status(_ context.Context, req *guestdv1.StatusRequest) (*guestdv1.StatusResponse, error) {
 	s.mu.Lock()
 	var list []*managedCmd
-	if len(req.IDs) == 0 {
+	if len(req.GetIds()) == 0 {
 		for _, mc := range s.cmds {
 			list = append(list, mc)
 		}
 	} else {
-		for _, id := range req.IDs {
+		for _, id := range req.GetIds() {
 			if mc, ok := s.cmds[id]; ok {
 				list = append(list, mc)
 			}
@@ -418,11 +413,11 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 	}
 	s.mu.Unlock()
 
-	out := make(map[string]CommandStatus, len(list))
+	out := make(map[string]*guestdv1.CommandStatus, len(list))
 	for _, mc := range list {
 		out[mc.id] = mc.snapshot()
 	}
-	writeJSON(w, http.StatusOK, StatusResponse{Commands: out})
+	return &guestdv1.StatusResponse{Commands: out}, nil
 }
 
 func (s *Server) getCmd(id string) (*managedCmd, bool) {
@@ -432,34 +427,28 @@ func (s *Server) getCmd(id string) (*managedCmd, bool) {
 	return mc, ok
 }
 
-func (s *Server) handleStopCommand(w http.ResponseWriter, r *http.Request) {
-	var req StopCommandRequest
-	if err := json.NewDecoder(io.LimitReader(r.Body, 64<<10)).Decode(&req); err != nil {
-		writeErr(w, http.StatusBadRequest, "decode stop request: "+err.Error())
-		return
-	}
-	mc, ok := s.getCmd(req.ID)
+func (s *Server) StopCommand(_ context.Context, req *guestdv1.StopCommandRequest) (*guestdv1.CommandStatus, error) {
+	mc, ok := s.getCmd(req.GetId())
 	if !ok {
-		writeErr(w, http.StatusNotFound, "unknown command "+req.ID)
-		return
+		return nil, connect.NewError(connect.CodeNotFound, "unknown command "+req.GetId())
 	}
-	grace := time.Duration(req.GraceMs) * time.Millisecond
+	grace := time.Duration(req.GetGraceMs()) * time.Millisecond
 	if grace <= 0 {
 		grace = 3 * time.Second
 	}
 	s.stopManagedCmd(mc, grace)
-	writeJSON(w, http.StatusOK, mc.snapshot())
+	return mc.snapshot(), nil
 }
 
 func (s *Server) stopManagedCmd(mc *managedCmd, grace time.Duration) {
 	mc.mu.Lock()
-	if mc.state == StateExited {
+	if mc.state == guestdv1.CommandState_COMMAND_STATE_EXITED {
 		mc.mu.Unlock()
 		return
 	}
 	pid := mc.mainPID
 	cg := mc.cg
-	wasFrozen := mc.state == StateFrozen
+	wasFrozen := mc.state == guestdv1.CommandState_COMMAND_STATE_FROZEN
 	mc.mu.Unlock()
 
 	if wasFrozen {
@@ -485,22 +474,15 @@ func (s *Server) stopManagedCmd(mc *managedCmd, grace time.Duration) {
 	}
 }
 
-func (s *Server) handleFreezeCommand(w http.ResponseWriter, r *http.Request) {
-	var req FreezeRequest
-	if err := json.NewDecoder(io.LimitReader(r.Body, 64<<10)).Decode(&req); err != nil {
-		writeErr(w, http.StatusBadRequest, "decode freeze request: "+err.Error())
-		return
-	}
-	mc, ok := s.getCmd(req.ID)
+func (s *Server) FreezeCommand(_ context.Context, req *guestdv1.FreezeCommandRequest) (*guestdv1.CommandStatus, error) {
+	mc, ok := s.getCmd(req.GetId())
 	if !ok {
-		writeErr(w, http.StatusNotFound, "unknown command "+req.ID)
-		return
+		return nil, connect.NewError(connect.CodeNotFound, "unknown command "+req.GetId())
 	}
 	mc.mu.Lock()
-	if mc.state == StateExited {
+	if mc.state == guestdv1.CommandState_COMMAND_STATE_EXITED {
 		mc.mu.Unlock()
-		writeJSON(w, http.StatusOK, mc.snapshot())
-		return
+		return mc.snapshot(), nil
 	}
 	var err error
 	if mc.cg != nil {
@@ -509,32 +491,24 @@ func (s *Server) handleFreezeCommand(w http.ResponseWriter, r *http.Request) {
 		err = signalProcessGroup(mc.mainPID, syscall.SIGSTOP)
 	}
 	if err == nil {
-		mc.state = StateFrozen
+		mc.state = guestdv1.CommandState_COMMAND_STATE_FROZEN
 	}
 	mc.mu.Unlock()
 	if err != nil {
-		writeErr(w, http.StatusInternalServerError, "freeze command: "+err.Error())
-		return
+		return nil, connect.NewError(connect.CodeInternal, "freeze command: "+err.Error())
 	}
-	writeJSON(w, http.StatusOK, mc.snapshot())
+	return mc.snapshot(), nil
 }
 
-func (s *Server) handleThawCommand(w http.ResponseWriter, r *http.Request) {
-	var req FreezeRequest
-	if err := json.NewDecoder(io.LimitReader(r.Body, 64<<10)).Decode(&req); err != nil {
-		writeErr(w, http.StatusBadRequest, "decode thaw request: "+err.Error())
-		return
-	}
-	mc, ok := s.getCmd(req.ID)
+func (s *Server) ThawCommand(_ context.Context, req *guestdv1.ThawCommandRequest) (*guestdv1.CommandStatus, error) {
+	mc, ok := s.getCmd(req.GetId())
 	if !ok {
-		writeErr(w, http.StatusNotFound, "unknown command "+req.ID)
-		return
+		return nil, connect.NewError(connect.CodeNotFound, "unknown command "+req.GetId())
 	}
 	mc.mu.Lock()
-	if mc.state == StateExited {
+	if mc.state == guestdv1.CommandState_COMMAND_STATE_EXITED {
 		mc.mu.Unlock()
-		writeJSON(w, http.StatusOK, mc.snapshot())
-		return
+		return mc.snapshot(), nil
 	}
 	var err error
 	if mc.cg != nil {
@@ -543,54 +517,23 @@ func (s *Server) handleThawCommand(w http.ResponseWriter, r *http.Request) {
 		err = signalProcessGroup(mc.mainPID, syscall.SIGCONT)
 	}
 	if err == nil {
-		mc.state = StateRunning
+		mc.state = guestdv1.CommandState_COMMAND_STATE_RUNNING
 	}
 	mc.mu.Unlock()
 	if err != nil {
-		writeErr(w, http.StatusInternalServerError, "thaw command: "+err.Error())
-		return
+		return nil, connect.NewError(connect.CodeInternal, "thaw command: "+err.Error())
 	}
-	writeJSON(w, http.StatusOK, mc.snapshot())
+	return mc.snapshot(), nil
 }
 
-func (s *Server) handleReclaim(w http.ResponseWriter, r *http.Request) {
-	var req ReclaimRequest
-	if err := json.NewDecoder(io.LimitReader(r.Body, 64<<10)).Decode(&req); err != nil && !errors.Is(err, io.EOF) {
-		writeErr(w, http.StatusBadRequest, "decode reclaim request: "+err.Error())
-		return
-	}
-	if req.ID != "" && req.Bytes > 0 {
-		if mc, ok := s.getCmd(req.ID); ok && mc.cg != nil {
-			_ = mc.cg.reclaim(req.Bytes)
+func (s *Server) Reclaim(_ context.Context, req *guestdv1.ReclaimRequest) (*guestdv1.ReclaimResponse, error) {
+	if req.GetId() != "" && req.GetBytes() > 0 {
+		if mc, ok := s.getCmd(req.GetId()); ok && mc.cg != nil {
+			_ = mc.cg.reclaim(req.GetBytes())
 		}
 	}
 	_ = dropPageCaches()
-	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
-}
-
-func apiErrorFrom(err error) *api.Error {
-	var ae *api.Error
-	if errors.As(err, &ae) {
-		return ae
-	}
-	return api.Errorf(api.CodeInternal, "%v", err)
-}
-
-func writeAPIError(w http.ResponseWriter, err error) {
-	ae := apiErrorFrom(err)
-	status := http.StatusInternalServerError
-	switch ae.Code {
-	case api.CodeNotFound:
-		status = http.StatusNotFound
-	case api.CodeInvalidArgs:
-		status = http.StatusBadRequest
-	case api.CodeConflict:
-		status = http.StatusConflict
-	case api.CodePlatformNotSupported:
-		status = http.StatusNotImplemented
-	}
-	w.Header().Set(apiErrorHeader, "1")
-	writeJSON(w, status, ae)
+	return &guestdv1.ReclaimResponse{}, nil
 }
 
 func (s *Server) inspectTarget(id string) (inspect.Target, error) {
@@ -610,7 +553,7 @@ func (s *Server) inspectTarget(id string) (inspect.Target, error) {
 	}
 	mc.mu.Unlock()
 
-	if state == StateExited {
+	if state == guestdv1.CommandState_COMMAND_STATE_EXITED {
 		return inspect.Target{}, api.Errorf(api.CodeConflict, "command %s has already ended; live inspection only applies while running", id)
 	}
 	host, _ := os.Hostname()
@@ -636,232 +579,105 @@ func (s *Server) inspectTarget(id string) (inspect.Target, error) {
 	return t, nil
 }
 
-func (s *Server) handleInspectCommand(w http.ResponseWriter, r *http.Request) {
-	body, err := io.ReadAll(io.LimitReader(r.Body, 1<<20))
-	if err != nil {
-		writeAPIError(w, api.Errorf(api.CodeInvalidArgs, "read inspect request: %v", err))
-		return
-	}
-	var req pb.InspectCommandRequest
-	if err := proto.Unmarshal(body, &req); err != nil {
-		writeAPIError(w, api.Errorf(api.CodeInvalidArgs, "decode inspect request: %v", err))
-		return
-	}
+func (s *Server) InspectCommand(ctx context.Context, req *pb.InspectCommandRequest) (*pb.InspectCommandResponse, error) {
 	target, err := s.inspectTarget(req.GetId())
 	if err != nil {
-		writeAPIError(w, err)
-		return
+		return nil, err
 	}
-	res, err := s.inspector.Inspect(r.Context(), target, &req)
-	if err != nil {
-		writeAPIError(w, err)
-		return
-	}
-	out, err := proto.Marshal(res)
-	if err != nil {
-		writeAPIError(w, api.Errorf(api.CodeInternal, "encode inspect response: %v", err))
-		return
-	}
-	w.Header().Set("Content-Type", "application/x-protobuf")
-	w.WriteHeader(http.StatusOK)
-	_, _ = w.Write(out)
+	return s.inspector.Inspect(ctx, target, req)
 }
 
-type protoStreamWriter struct {
-	mu      sync.Mutex
-	w       http.ResponseWriter
-	flusher http.Flusher
-}
-
-func newProtoStreamWriter(w http.ResponseWriter) *protoStreamWriter {
-	flusher, _ := w.(http.Flusher)
-	w.Header().Set("Content-Type", "application/x-hotbed-stream")
-	w.WriteHeader(http.StatusOK)
-	if flusher != nil {
-		flusher.Flush()
-	}
-	return &protoStreamWriter{w: w, flusher: flusher}
-}
-
-func (sw *protoStreamWriter) sendProto(msg proto.Message) error {
-	raw, err := proto.Marshal(msg)
+func (s *Server) TraceCommand(ctx context.Context, req *pb.TraceCommandRequest, stream guestdv1connect.GuestServiceTraceCommandServerStream) error {
+	target, err := s.inspectTarget(req.GetId())
 	if err != nil {
 		return err
 	}
-	sw.mu.Lock()
-	defer sw.mu.Unlock()
-	if err := writeStreamFrame(sw.w, streamFrameProto, raw); err != nil {
+	var sendMu sync.Mutex
+	return s.inspector.Trace(ctx, target, req, func(ch *pb.TraceCommandChunk) error {
+		sendMu.Lock()
+		defer sendMu.Unlock()
+		return stream.Send(ch)
+	})
+}
+
+func (s *Server) SampleCommand(ctx context.Context, req *pb.SampleCommandRequest, stream guestdv1connect.GuestServiceSampleCommandServerStream) error {
+	target, err := s.inspectTarget(req.GetId())
+	if err != nil {
 		return err
 	}
-	if sw.flusher != nil {
-		sw.flusher.Flush()
-	}
-	return nil
-}
-
-func (sw *protoStreamWriter) finish(err error) {
-	sw.mu.Lock()
-	defer sw.mu.Unlock()
-	if err != nil {
-		raw, _ := json.Marshal(apiErrorFrom(err))
-		_ = writeStreamFrame(sw.w, streamFrameError, raw)
-	} else {
-		_ = writeStreamFrame(sw.w, streamFrameEOF, nil)
-	}
-	if sw.flusher != nil {
-		sw.flusher.Flush()
-	}
-}
-
-func (s *Server) handleTraceCommand(w http.ResponseWriter, r *http.Request) {
-	body, err := io.ReadAll(io.LimitReader(r.Body, 1<<20))
-	if err != nil {
-		writeAPIError(w, api.Errorf(api.CodeInvalidArgs, "read trace request: %v", err))
-		return
-	}
-	var req pb.TraceCommandRequest
-	if err := proto.Unmarshal(body, &req); err != nil {
-		writeAPIError(w, api.Errorf(api.CodeInvalidArgs, "decode trace request: %v", err))
-		return
-	}
-	target, err := s.inspectTarget(req.GetId())
-	if err != nil {
-		writeAPIError(w, err)
-		return
-	}
-	sw := newProtoStreamWriter(w)
-	err = s.inspector.Trace(r.Context(), target, &req, func(ch *pb.TraceCommandChunk) error {
-		return sw.sendProto(ch)
+	var sendMu sync.Mutex
+	return s.inspector.Sample(ctx, target, req, func(ch *pb.SampleCommandChunk) error {
+		sendMu.Lock()
+		defer sendMu.Unlock()
+		return stream.Send(ch)
 	})
-	sw.finish(err)
 }
 
-func (s *Server) handleSampleCommand(w http.ResponseWriter, r *http.Request) {
-	body, err := io.ReadAll(io.LimitReader(r.Body, 1<<20))
-	if err != nil {
-		writeAPIError(w, api.Errorf(api.CodeInvalidArgs, "read sample request: %v", err))
-		return
-	}
-	var req pb.SampleCommandRequest
-	if err := proto.Unmarshal(body, &req); err != nil {
-		writeAPIError(w, api.Errorf(api.CodeInvalidArgs, "decode sample request: %v", err))
-		return
-	}
-	target, err := s.inspectTarget(req.GetId())
-	if err != nil {
-		writeAPIError(w, err)
-		return
-	}
-	sw := newProtoStreamWriter(w)
-	err = s.inspector.Sample(r.Context(), target, &req, func(ch *pb.SampleCommandChunk) error {
-		return sw.sendProto(ch)
-	})
-	sw.finish(err)
-}
-
-func (s *Server) handleCommandProfile(w http.ResponseWriter, r *http.Request) {
-	body, err := io.ReadAll(io.LimitReader(r.Body, 1<<20))
-	if err != nil {
-		writeAPIError(w, api.Errorf(api.CodeInvalidArgs, "read profile request: %v", err))
-		return
-	}
-	var req pb.GetProfileRequest
-	if err := proto.Unmarshal(body, &req); err != nil {
-		writeAPIError(w, api.Errorf(api.CodeInvalidArgs, "decode profile request: %v", err))
-		return
-	}
+func (s *Server) GetProfile(_ context.Context, req *pb.GetProfileRequest) (*pb.CommandProfile, error) {
 	cmdID := req.GetCommandId()
 	if cmdID == "" {
-		writeAPIError(w, api.Errorf(api.CodeInvalidArgs, "command_id is required"))
-		return
+		return nil, api.Errorf(api.CodeInvalidArgs, "command_id is required")
 	}
 	mc, ok := s.getCmd(cmdID)
 	if !ok {
-		writeAPIError(w, api.Errorf(api.CodeNotFound, "command %s not found in guest VM", cmdID))
-		return
+		return nil, api.Errorf(api.CodeNotFound, "command %s not found in guest VM", cmdID)
 	}
 	mc.mu.Lock()
-	isLive := mc.state != StateExited
+	isLive := mc.state != guestdv1.CommandState_COMMAND_STATE_EXITED
 	mc.mu.Unlock()
 
-	var prof *pb.CommandProfile
 	if s.profiler == nil {
-		prof = &pb.CommandProfile{
+		return &pb.CommandProfile{
 			CommandId:  cmdID,
 			Profiler:   profiler.EngineName,
 			Live:       isLive,
 			Active:     false,
 			StatusNote: "continuous profiler not configured in guest VM",
-		}
-	} else {
-		prof = s.profiler.Query(cmdID, &req, isLive)
+		}, nil
 	}
-	out, err := proto.Marshal(prof)
-	if err != nil {
-		writeAPIError(w, api.Errorf(api.CodeInternal, "encode profile response: %v", err))
-		return
-	}
-	w.Header().Set("Content-Type", "application/x-protobuf")
-	w.WriteHeader(http.StatusOK)
-	_, _ = w.Write(out)
+	return s.profiler.Query(cmdID, req, isLive), nil
 }
 
-func (s *Server) handleForgetCommandProfile(w http.ResponseWriter, r *http.Request) {
-	var req FreezeRequest
-	if err := json.NewDecoder(io.LimitReader(r.Body, 64<<10)).Decode(&req); err != nil {
-		writeErr(w, http.StatusBadRequest, "decode forget profile request: "+err.Error())
-		return
+func (s *Server) ForgetCommandProfile(_ context.Context, req *guestdv1.ForgetCommandProfileRequest) (*guestdv1.ForgetCommandProfileResponse, error) {
+	if s.profiler != nil && req.GetId() != "" {
+		s.profiler.Forget(req.GetId())
 	}
-	if s.profiler != nil && req.ID != "" {
-		s.profiler.Forget(req.ID)
-	}
-	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+	return &guestdv1.ForgetCommandProfileResponse{}, nil
 }
 
-func (s *Server) handleStreamLogs(w http.ResponseWriter, r *http.Request) {
-	id := r.URL.Query().Get("id")
-	mc, ok := s.getCmd(id)
+func (s *Server) StreamLogs(ctx context.Context, req *guestdv1.StreamLogsRequest, stream guestdv1connect.GuestServiceStreamLogsServerStream) error {
+	mc, ok := s.getCmd(req.GetId())
 	if !ok {
-		writeErr(w, http.StatusNotFound, "unknown command "+id)
-		return
+		return connect.NewError(connect.CodeNotFound, "unknown command "+req.GetId())
 	}
-	offset, _ := strconv.ParseInt(r.URL.Query().Get("offset"), 10, 64)
+	offset := req.GetOffset()
 	if offset < 0 {
 		offset = 0
 	}
-	follow := r.URL.Query().Get("follow") == "1"
+	follow := req.GetFollow()
 
 	f, err := os.Open(mc.logPath)
 	if err != nil {
-		writeErr(w, http.StatusInternalServerError, "open log: "+err.Error())
-		return
+		return connect.NewError(connect.CodeInternal, "open log: "+err.Error())
 	}
 	defer f.Close()
 	if offset > 0 {
 		if _, err := f.Seek(offset, io.SeekStart); err != nil {
-			writeErr(w, http.StatusBadRequest, "seek log: "+err.Error())
-			return
+			return connect.NewError(connect.CodeInvalidArgument, "seek log: "+err.Error())
 		}
 	}
-
-	w.Header().Set("Content-Type", "application/octet-stream")
-	w.WriteHeader(http.StatusOK)
-	flusher, _ := w.(http.Flusher)
 
 	buf := make([]byte, 32<<10)
 	for {
 		n, rerr := f.Read(buf)
 		if n > 0 {
-			if _, werr := w.Write(buf[:n]); werr != nil {
-				return
-			}
-			if flusher != nil {
-				flusher.Flush()
+			if err := stream.Send(&guestdv1.StreamLogsResponse{Data: bytes.Clone(buf[:n])}); err != nil {
+				return err
 			}
 		}
 		if rerr == io.EOF {
 			if !follow {
-				return
+				return nil
 			}
 			select {
 			case <-mc.done:
@@ -869,201 +685,203 @@ func (s *Server) handleStreamLogs(w http.ResponseWriter, r *http.Request) {
 				for {
 					n, err := f.Read(buf)
 					if n > 0 {
-						_, _ = w.Write(buf[:n])
-						if flusher != nil {
-							flusher.Flush()
+						if serr := stream.Send(&guestdv1.StreamLogsResponse{Data: bytes.Clone(buf[:n])}); serr != nil {
+							return serr
 						}
 					}
 					if err != nil {
-						return
+						return nil
 					}
 				}
-			case <-r.Context().Done():
-				return
+			case <-ctx.Done():
+				return nil
 			case <-time.After(50 * time.Millisecond):
 			}
 			continue
 		}
 		if rerr != nil {
-			return
+			return connect.NewError(connect.CodeInternal, "read log: "+rerr.Error())
 		}
 	}
 }
 
-func (s *Server) handleSync(w http.ResponseWriter, r *http.Request) {
-	mr, err := r.MultipartReader()
-	if err != nil {
-		writeErr(w, http.StatusBadRequest, "expected multipart sync body: "+err.Error())
-		return
+type syncChunkReader struct {
+	stream guestdv1connect.GuestServiceSyncServerStream
+	buf    []byte
+	total  int64
+	limit  int64
+}
+
+func (r *syncChunkReader) Read(p []byte) (int, error) {
+	for len(r.buf) == 0 {
+		msg, err := r.stream.Receive()
+		if errors.Is(err, io.EOF) {
+			return 0, io.EOF
+		}
+		if err != nil {
+			return 0, err
+		}
+		if msg.GetHeader() != nil {
+			return 0, connect.NewError(connect.CodeInvalidArgument, "unexpected second sync header")
+		}
+		chunk := msg.GetChunk()
+		if len(chunk) == 0 {
+			continue
+		}
+		r.total += int64(len(chunk))
+		if r.total > r.limit {
+			return 0, errSyncTooLarge
+		}
+		r.buf = chunk
 	}
+	n := copy(p, r.buf)
+	r.buf = r.buf[n:]
+	return n, nil
+}
+
+func (s *Server) Sync(ctx context.Context, stream guestdv1connect.GuestServiceSyncServerStream) (*guestdv1.SyncResponse, error) {
+	first, err := stream.Receive()
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInvalidArgument, "read sync header: "+err.Error())
+	}
+	meta := first.GetHeader()
+	if meta == nil {
+		return nil, connect.NewError(connect.CodeInvalidArgument, "sync must start with a header")
+	}
+	if meta.Repo == "" || strings.ContainsAny(meta.Repo, "/\\") || meta.Repo == "." || meta.Repo == ".." {
+		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Sprintf("invalid repo name %q", meta.Repo))
+	}
+
+	var declaredSubBytes int64
+	for _, sm := range meta.Subs {
+		if sm.BundleBytes < 0 {
+			return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Sprintf("invalid submodule bundle size %d", sm.BundleBytes))
+		}
+		if sm.BundleBytes > maxSyncBundleBytes-declaredSubBytes {
+			return nil, connect.NewError(connect.CodeResourceExhausted, errSyncTooLarge.Error())
+		}
+		declaredSubBytes += sm.BundleBytes
+	}
+
 	tmpDir, err := os.MkdirTemp(s.syncDir, "apply-*")
 	if err != nil {
-		writeErr(w, http.StatusInternalServerError, "create sync tmp dir: "+err.Error())
-		return
+		return nil, connect.NewError(connect.CodeInternal, "create sync tmp dir: "+err.Error())
 	}
 	defer os.RemoveAll(tmpDir)
 
-	var (
-		meta       SyncRequest
-		haveMeta   bool
-		mainBundle string
-		partFiles  = map[string]string{}
-		totalBytes int64
-	)
+	reader := &syncChunkReader{stream: stream, limit: maxSyncBundleBytes}
+	subs := make([]gitops.SubCheckout, 0, len(meta.Subs))
+	var subFiles []string
 
-	for {
-		part, err := mr.NextPart()
-		if errors.Is(err, io.EOF) {
-			break
-		}
-		if err != nil {
-			writeErr(w, http.StatusBadRequest, "read multipart sync: "+err.Error())
-			return
-		}
-		name := part.FormName()
-		switch name {
-		case "meta":
-			if err := json.NewDecoder(io.LimitReader(part, 1<<20)).Decode(&meta); err != nil {
-				_ = part.Close()
-				writeErr(w, http.StatusBadRequest, "decode sync meta: "+err.Error())
-				return
-			}
-			haveMeta = true
-		default:
-			if name == "" || strings.ContainsAny(name, "/\\") {
-				_ = part.Close()
-				writeErr(w, http.StatusBadRequest, fmt.Sprintf("invalid sync part name %q", name))
-				return
-			}
-			dstPath := filepath.Join(tmpDir, name+".bundle")
+	for i, sm := range meta.Subs {
+		sub := gitops.SubCheckout{Path: sm.Path, Commit: sm.Commit}
+		if sm.BundleBytes > 0 {
+			dstPath := filepath.Join(tmpDir, fmt.Sprintf("sub-%d.bundle", i))
 			f, err := os.Create(dstPath)
 			if err != nil {
-				_ = part.Close()
-				writeErr(w, http.StatusInternalServerError, "create bundle file: "+err.Error())
-				return
+				return nil, connect.NewError(connect.CodeInternal, "create submodule bundle file: "+err.Error())
 			}
-			n, copyErr := io.Copy(f, io.LimitReader(part, maxSyncBundleBytes-totalBytes+1))
+			_, copyErr := io.CopyN(f, reader, sm.BundleBytes)
 			closeErr := f.Close()
-			_ = part.Close()
 			if copyErr != nil || closeErr != nil {
-				writeErr(w, http.StatusInternalServerError, fmt.Sprintf("write bundle %s: %v", name, errors.Join(copyErr, closeErr)))
-				return
+				if errors.Is(copyErr, errSyncTooLarge) {
+					return nil, connect.NewError(connect.CodeResourceExhausted, errSyncTooLarge.Error())
+				}
+				if errors.Is(copyErr, io.EOF) || errors.Is(copyErr, io.ErrUnexpectedEOF) {
+					return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Sprintf("truncated submodule bundle %q", sm.Path))
+				}
+				return nil, connect.NewError(connect.CodeInternal, fmt.Sprintf("write submodule bundle %s: %v", sm.Path, errors.Join(copyErr, closeErr)))
 			}
-			totalBytes += n
-			if totalBytes > maxSyncBundleBytes {
-				writeErr(w, http.StatusRequestEntityTooLarge, "sync bundle exceeds size limit")
-				return
-			}
-			if name == "bundle" {
-				mainBundle = dstPath
-			} else {
-				partFiles[name] = dstPath
-			}
-		}
-		_ = part.Close()
-	}
-	if !haveMeta {
-		writeErr(w, http.StatusBadRequest, "missing sync meta part")
-		return
-	}
-	if meta.Repo == "" || strings.ContainsAny(meta.Repo, "/\\") || meta.Repo == "." || meta.Repo == ".." {
-		writeErr(w, http.StatusBadRequest, fmt.Sprintf("invalid repo name %q", meta.Repo))
-		return
-	}
-	if mainBundle == "" {
-		writeErr(w, http.StatusBadRequest, "missing main bundle part")
-		return
-	}
-
-	subs := make([]gitops.SubCheckout, 0, len(meta.Subs))
-	for _, sm := range meta.Subs {
-		sub := gitops.SubCheckout{Path: sm.Path, Commit: sm.Commit}
-		if sm.Part != "" {
-			p, ok := partFiles[sm.Part]
-			if !ok {
-				writeErr(w, http.StatusBadRequest, fmt.Sprintf("missing submodule bundle part %q", sm.Part))
-				return
-			}
-			sub.Bundle = p
+			sub.Bundle = dstPath
+			subFiles = append(subFiles, dstPath)
 		}
 		subs = append(subs, sub)
 	}
 
+	mainBundle := filepath.Join(tmpDir, "bundle.bundle")
+	bf, err := os.Create(mainBundle)
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInternal, "create main bundle file: "+err.Error())
+	}
+	_, copyErr := io.Copy(bf, reader)
+	closeErr := bf.Close()
+	if copyErr != nil || closeErr != nil {
+		if errors.Is(copyErr, errSyncTooLarge) {
+			return nil, connect.NewError(connect.CodeResourceExhausted, errSyncTooLarge.Error())
+		}
+		var ce *connect.Error
+		if errors.As(copyErr, &ce) {
+			return nil, ce
+		}
+		return nil, connect.NewError(connect.CodeInternal, fmt.Sprintf("write main bundle: %v", errors.Join(copyErr, closeErr)))
+	}
+
 	repoDir := filepath.Join(s.workDir, meta.Repo)
 	g := gitops.Git{Dir: repoDir, Env: meta.Env}
-	if (meta.UID > 0 || meta.GID > 0) && os.Geteuid() == 0 {
+	if (meta.Uid > 0 || meta.Gid > 0) && os.Geteuid() == 0 {
 		// guestd runs as root (PID 1 in a Firecracker VM) and created s.syncDir /
 		// tmpDir / bundle files as root; ensure the unprivileged git user can
 		// traverse to and read the bundle files.
 		_ = os.Chmod(s.stateDir, 0o755)
 		_ = os.Chmod(s.syncDir, 0o755)
-		_ = os.Chown(tmpDir, meta.UID, meta.GID)
+		_ = os.Chown(tmpDir, int(meta.Uid), int(meta.Gid))
 		_ = os.Chmod(tmpDir, 0o755)
-		_ = os.Chown(mainBundle, meta.UID, meta.GID)
-		for _, p := range partFiles {
-			_ = os.Chown(p, meta.UID, meta.GID)
+		_ = os.Chown(mainBundle, int(meta.Uid), int(meta.Gid))
+		for _, p := range subFiles {
+			_ = os.Chown(p, int(meta.Uid), int(meta.Gid))
 		}
 		g.Command = func(ctx context.Context, dir string, args []string) (*exec.Cmd, error) {
 			c := exec.CommandContext(ctx, "git", args...)
 			c.Dir = dir
 			c.SysProcAttr = &syscall.SysProcAttr{
 				Credential: &syscall.Credential{
-					Uid: uint32(meta.UID),
-					Gid: uint32(meta.GID),
+					Uid: uint32(meta.Uid),
+					Gid: uint32(meta.Gid),
 				},
 			}
 			return c, nil
 		}
 	}
 
-	changed, applyErr := gitops.Apply(r.Context(), g, mainBundle, meta.Commit, meta.Base, subs)
-	resp := SyncResponse{FilesChanged: changed}
+	changed, applyErr := gitops.Apply(ctx, g, mainBundle, meta.Commit, meta.Base, subs)
+	resp := &guestdv1.SyncResponse{FilesChanged: int32(changed)}
 	if applyErr != nil {
 		var ae *gitops.ApplyError
 		if errors.As(applyErr, &ae) {
-			resp.Err = ae.Err.Error()
+			resp.Error = ae.Err.Error()
 			resp.Mutated = ae.Mutated
 			resp.RolledBack = ae.RolledBack
 			if ae.RollbackErr != nil {
-				resp.RollbackErr = ae.RollbackErr.Error()
+				resp.RollbackError = ae.RollbackErr.Error()
 			}
 		} else {
-			resp.Err = applyErr.Error()
+			resp.Error = applyErr.Error()
 		}
 	}
-	writeJSON(w, http.StatusOK, resp)
+	return resp, nil
 }
 
-func (s *Server) handleListFiles(w http.ResponseWriter, r *http.Request) {
-	var req ListFilesRequest
-	if err := json.NewDecoder(io.LimitReader(r.Body, 1<<20)).Decode(&req); err != nil {
-		writeErr(w, http.StatusBadRequest, "decode list files request: "+err.Error())
-		return
-	}
+func (s *Server) ListFiles(ctx context.Context, req *guestdv1.ListFilesRequest) (*guestdv1.ListFilesResponse, error) {
 	workRoot, err := os.OpenRoot(s.workDir)
 	if err != nil {
-		writeErr(w, http.StatusInternalServerError, "open workDir: "+err.Error())
-		return
+		return nil, connect.NewError(connect.CodeInternal, "open workDir: "+err.Error())
 	}
 	defer workRoot.Close()
 
 	var out []*pb.FileEntry
-	for _, repo := range req.Repos {
+	for _, repo := range req.GetRepos() {
 		if repo.Repo == "" || strings.ContainsAny(repo.Repo, "/\\") || repo.Repo == "." || repo.Repo == ".." {
-			writeErr(w, http.StatusBadRequest, fmt.Sprintf("invalid repo %q", repo.Repo))
-			return
+			return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Sprintf("invalid repo %q", repo.Repo))
 		}
 		repoRoot, err := workRoot.OpenRoot(repo.Repo)
 		if err != nil {
-			writeErr(w, http.StatusNotFound, fmt.Sprintf("open repo %s: %v", repo.Repo, err))
-			return
+			return nil, connect.NewError(connect.CodeNotFound, fmt.Sprintf("open repo %s: %v", repo.Repo, err))
 		}
 		dir := filepath.Join(s.workDir, repo.Repo)
-		entries, err := listRepoFiles(r.Context(), repoRoot, dir, repo.BaseCommit)
+		entries, err := listRepoFiles(ctx, repoRoot, dir, repo.BaseCommit)
 		_ = repoRoot.Close()
 		if err != nil {
-			writeErr(w, http.StatusInternalServerError, fmt.Sprintf("list %s: %v", repo.Repo, err))
-			return
+			return nil, connect.NewError(connect.CodeInternal, fmt.Sprintf("list %s: %v", repo.Repo, err))
 		}
 		out = append(out, &pb.FileEntry{Path: repo.Repo, Kind: "dir"})
 		for _, f := range entries {
@@ -1072,7 +890,7 @@ func (s *Server) handleListFiles(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Path < out[j].Path })
-	writeJSON(w, http.StatusOK, ListFilesResponse{Files: out})
+	return &guestdv1.ListFilesResponse{Files: out}, nil
 }
 
 func listRepoFiles(ctx context.Context, repoRoot *os.Root, dir, base string) ([]*pb.FileEntry, error) {
@@ -1120,83 +938,63 @@ func listRepoFiles(ctx context.Context, repoRoot *os.Root, dir, base string) ([]
 	return out, nil
 }
 
-func (s *Server) handleGetFile(w http.ResponseWriter, r *http.Request) {
-	var req GetFileRequest
-	if err := json.NewDecoder(io.LimitReader(r.Body, 64<<10)).Decode(&req); err != nil {
-		writeErr(w, http.StatusBadRequest, "decode get file request: "+err.Error())
-		return
-	}
+func (s *Server) GetFile(ctx context.Context, req *guestdv1.GetFileRequest) (*pb.FileContent, error) {
 	if req.Repo == "" || strings.ContainsAny(req.Repo, "/\\") || req.Repo == "." || req.Repo == ".." || req.RelPath == "" {
-		writeErr(w, http.StatusBadRequest, "invalid repo or relPath")
-		return
+		return nil, connect.NewError(connect.CodeInvalidArgument, "invalid repo or relPath")
 	}
 	workRoot, err := os.OpenRoot(s.workDir)
 	if err != nil {
-		writeErr(w, http.StatusInternalServerError, "open workDir: "+err.Error())
-		return
+		return nil, connect.NewError(connect.CodeInternal, "open workDir: "+err.Error())
 	}
 	defer workRoot.Close()
 
 	repoRoot, err := workRoot.OpenRoot(req.Repo)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
-			writeErr(w, http.StatusNotFound, err.Error())
-			return
+			return nil, connect.NewError(connect.CodeNotFound, err.Error())
 		}
-		writeErr(w, http.StatusBadRequest, err.Error())
-		return
+		return nil, connect.NewError(connect.CodeInvalidArgument, err.Error())
 	}
 	defer repoRoot.Close()
 
 	st, err := repoRoot.Lstat(req.RelPath)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
-			writeErr(w, http.StatusNotFound, err.Error())
-			return
+			return nil, connect.NewError(connect.CodeNotFound, err.Error())
 		}
-		writeErr(w, http.StatusBadRequest, err.Error())
-		return
+		return nil, connect.NewError(connect.CodeInvalidArgument, err.Error())
 	}
 	if !st.Mode().IsRegular() {
-		writeErr(w, http.StatusBadRequest, fmt.Sprintf("%s is not a regular file", req.RelPath))
-		return
+		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Sprintf("%s is not a regular file", req.RelPath))
 	}
 	f, err := repoRoot.Open(req.RelPath)
 	if err != nil {
-		writeErr(w, http.StatusInternalServerError, err.Error())
-		return
+		return nil, connect.NewError(connect.CodeInternal, err.Error())
 	}
 	defer f.Close()
 	data, err := io.ReadAll(io.LimitReader(f, maxFileBytes))
 	if err != nil {
-		writeErr(w, http.StatusInternalServerError, err.Error())
-		return
+		return nil, connect.NewError(connect.CodeInternal, err.Error())
 	}
 
 	var changed []int32
 	if req.BaseCommit != "" {
 		g := gitops.Git{Dir: filepath.Join(s.workDir, req.Repo)}
-		diff, err := g.Run(r.Context(), "-c", "safe.directory=*", "diff", "-U0", req.BaseCommit, "--", req.RelPath)
+		diff, err := g.Run(ctx, "-c", "safe.directory=*", "diff", "-U0", req.BaseCommit, "--", req.RelPath)
 		if err != nil {
-			writeErr(w, http.StatusInternalServerError, "git diff: "+err.Error())
-			return
+			return nil, connect.NewError(connect.CodeInternal, "git diff: "+err.Error())
 		}
 		changed = parseChangedLines(diff, countLines(data))
 	}
-	writeJSON(w, http.StatusOK, GetFileResponse{
+	return &pb.FileContent{
 		Path:         req.Repo + "/" + req.RelPath,
 		Text:         string(data),
 		ChangedLines: changed,
-	})
+	}, nil
 }
 
-func (s *Server) handleShutdown(w http.ResponseWriter, r *http.Request) {
-	var req ShutdownRequest
-	if err := json.NewDecoder(io.LimitReader(r.Body, 64<<10)).Decode(&req); err != nil && !errors.Is(err, io.EOF) {
-		writeErr(w, http.StatusBadRequest, "decode shutdown request: "+err.Error())
-		return
-	}
-	if req.StopCommands {
+func (s *Server) Shutdown(_ context.Context, req *guestdv1.ShutdownRequest) (*guestdv1.ShutdownResponse, error) {
+	if req.GetStopCommands() {
 		s.mu.Lock()
 		all := make([]*managedCmd, 0, len(s.cmds))
 		for _, mc := range s.cmds {
@@ -1207,16 +1005,16 @@ func (s *Server) handleShutdown(w http.ResponseWriter, r *http.Request) {
 			s.stopManagedCmd(mc, 2*time.Second)
 		}
 	}
-	if req.SyncFS {
+	if req.GetSyncFs() {
 		syncFilesystems()
 	}
-	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
-	if req.PowerOff {
+	if req.GetPowerOff() {
 		go func() {
 			time.Sleep(50 * time.Millisecond)
 			_ = powerOffGuest()
 		}()
 	}
+	return &guestdv1.ShutdownResponse{}, nil
 }
 
 // ServeShell accepts interactive shell connections on ln (ShellPort) until ctx ends.

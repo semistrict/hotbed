@@ -2,55 +2,66 @@ package guestd
 
 import (
 	"bufio"
-	"bytes"
 	"context"
 	"encoding/binary"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
-	"mime/multipart"
 	"net"
 	"net/http"
-	"net/url"
 	"os"
-	"strconv"
-	"strings"
 	"sync"
 	"syscall"
 	"time"
 
-	"google.golang.org/protobuf/proto"
+	"connectrpc.com/connect/v2"
+	"connectrpc.com/connect/v2/connecthttp"
+	"connectrpc.com/connect/v2/connectproto"
 
 	"github.com/semistrict/hotbed/internal/api"
+	guestdv1 "github.com/semistrict/hotbed/internal/gen/guestd/v1"
+	"github.com/semistrict/hotbed/internal/gen/guestd/v1/guestdv1connect"
 	pb "github.com/semistrict/hotbed/internal/gen/hotbed/v1"
 	"github.com/semistrict/hotbed/internal/gitops"
 	"github.com/semistrict/hotbed/internal/inspect"
 	"github.com/semistrict/hotbed/internal/unit"
 )
 
+const syncChunkBytes = 256 << 10
+
 // Client is the host worker's RPC client to a single workspace VM's hotbed-guestd.
-// Control calls use fresh short-lived connections and retry on vsock resets
-// (ECONNRESET / EPIPE / EOF) per cladefs's integrator-guide vsock rules.
+// Control calls use Buf Connect over fresh short-lived connections and retry on
+// vsock resets (ECONNRESET / EPIPE / EOF) per cladefs's integrator-guide rules.
 type Client struct {
 	dial DialFunc
-	http *http.Client
+	rpc  guestdv1connect.GuestServiceClient
 }
 
 // NewClient constructs a Client over dial (FirecrackerVsockDialer in production,
 // UnixMapDialer in tests).
 func NewClient(dial DialFunc) *Client {
-	tr := &http.Transport{
-		DisableKeepAlives: true,
-		DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
-			return dial(ctx, ControlPort)
+	hc := &http.Client{
+		Transport: &http.Transport{
+			DisableKeepAlives: true,
+			DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
+				return dial(ctx, ControlPort)
+			},
 		},
 	}
+	cc := connect.NewClient(connecthttp.NewTransport(
+		hc,
+		"http://guestd",
+		connecthttp.WithReadMaxBytes(maxControlMsgBytes),
+	))
 	return &Client{
 		dial: dial,
-		http: &http.Client{Transport: tr},
+		rpc:  guestdv1connect.NewGuestServiceClient(cc),
 	}
 }
+
+// RPC returns the underlying Connect GuestServiceClient.
+func (c *Client) RPC() guestdv1connect.GuestServiceClient { return c.rpc }
 
 func isTransientReset(err error) bool {
 	if err == nil {
@@ -64,84 +75,68 @@ func isTransientReset(err error) bool {
 		errors.Is(err, io.ErrUnexpectedEOF)
 }
 
-func (c *Client) doJSON(ctx context.Context, method, path string, reqBody, respDst any) error {
-	var raw []byte
-	if reqBody != nil {
-		var err error
-		raw, err = json.Marshal(reqBody)
-		if err != nil {
-			return err
-		}
-	}
+func retryUnary[T any](ctx context.Context, fn func() (T, error)) (T, error) {
 	const maxAttempts = 5
+	var zero T
 	var lastErr error
 	for attempt := range maxAttempts {
-		var body io.Reader
-		if raw != nil {
-			body = bytes.NewReader(raw)
+		res, err := fn()
+		if err == nil {
+			return res, nil
 		}
-		req, err := http.NewRequestWithContext(ctx, method, "http://guestd"+path, body)
-		if err != nil {
-			return err
+		lastErr = err
+		if !isTransientReset(err) || attempt+1 >= maxAttempts || ctx.Err() != nil {
+			return zero, err
 		}
-		if raw != nil {
-			req.Header.Set("Content-Type", "application/json")
+		select {
+		case <-time.After(time.Duration(attempt+1) * 50 * time.Millisecond):
+		case <-ctx.Done():
+			return zero, ctx.Err()
 		}
-		resp, err := c.http.Do(req)
-		if err != nil {
-			lastErr = err
-			if isTransientReset(err) && attempt+1 < maxAttempts && ctx.Err() == nil {
-				select {
-				case <-time.After(time.Duration(attempt+1) * 50 * time.Millisecond):
-					continue
-				case <-ctx.Done():
-					return ctx.Err()
-				}
-			}
-			return err
-		}
-		data, rerr := io.ReadAll(io.LimitReader(resp.Body, 16<<20))
-		_ = resp.Body.Close()
-		if rerr != nil {
-			lastErr = rerr
-			if isTransientReset(rerr) && attempt+1 < maxAttempts && ctx.Err() == nil {
-				select {
-				case <-time.After(time.Duration(attempt+1) * 50 * time.Millisecond):
-					continue
-				case <-ctx.Done():
-					return ctx.Err()
-				}
-			}
-			return rerr
-		}
-		if resp.StatusCode >= 400 {
-			var e struct {
-				Error string `json:"error"`
-			}
-			if json.Unmarshal(data, &e) == nil && e.Error != "" {
-				return fmt.Errorf("guestd %s %s (%d): %s", method, path, resp.StatusCode, e.Error)
-			}
-			return fmt.Errorf("guestd %s %s (%d): %s", method, path, resp.StatusCode, string(data))
-		}
-		if respDst != nil && len(data) > 0 {
-			if err := json.Unmarshal(data, respDst); err != nil {
-				return fmt.Errorf("decode guestd %s response: %w", path, err)
-			}
-		}
+	}
+	return zero, lastErr
+}
+
+// decodeGuestError extracts structured hotbed.v1.ErrorInfo details into an
+// *api.Error, and maps bare Connect CodeUnimplemented (e.g. older guestd
+// binaries returning 404) to CodePlatformNotSupported.
+func decodeGuestError(err error, op string) error {
+	if err == nil {
 		return nil
 	}
-	return lastErr
+	var ce *connect.Error
+	if errors.As(err, &ce) {
+		for _, d := range ce.Details() {
+			msg, derr := connectproto.UnmarshalErrorDetail(d)
+			if derr != nil {
+				continue
+			}
+			if info, ok := msg.(*pb.ErrorInfo); ok {
+				return &api.Error{
+					Code:       api.Code(info.Code),
+					Message:    ce.Message(),
+					Suggestion: info.Suggestion,
+					Retryable:  info.Retryable,
+				}
+			}
+		}
+		if ce.Code() == connect.CodeUnimplemented {
+			return api.Errorf(api.CodePlatformNotSupported, "VM guest agent (hotbed-guestd) does not support %s", op).
+				WithSuggestion("recreate the workspace after upgrading hotbed-guestd")
+		}
+	}
+	return err
 }
 
 // Health pings hotbed-guestd and returns guest runtime info.
-func (c *Client) Health(ctx context.Context) (HealthResponse, error) {
-	var resp HealthResponse
-	err := c.doJSON(ctx, http.MethodGet, "/v1/health", nil, &resp)
-	return resp, err
+func (c *Client) Health(ctx context.Context) (*guestdv1.HealthResponse, error) {
+	return retryUnary(ctx, func() (*guestdv1.HealthResponse, error) {
+		return c.rpc.Health(ctx, &guestdv1.HealthRequest{})
+	})
 }
 
 // WaitReady polls Health until the guest agent answers or ctx expires.
-func (c *Client) WaitReady(ctx context.Context) (HealthResponse, error) {
+func (c *Client) WaitReady(ctx context.Context) (*guestdv1.HealthResponse, error) {
 	for {
 		h, err := c.Health(ctx)
 		if err == nil {
@@ -149,435 +144,333 @@ func (c *Client) WaitReady(ctx context.Context) (HealthResponse, error) {
 		}
 		select {
 		case <-ctx.Done():
-			return HealthResponse{}, fmt.Errorf("wait for hotbed-guestd: %w (last: %v)", ctx.Err(), err)
+			return nil, fmt.Errorf("wait for hotbed-guestd: %w (last: %v)", ctx.Err(), err)
 		case <-time.After(50 * time.Millisecond):
 		}
 	}
 }
 
 // StartCommand idempotently starts a command inside the guest.
-func (c *Client) StartCommand(ctx context.Context, req StartCommandRequest) (CommandStatus, error) {
-	var resp CommandStatus
-	err := c.doJSON(ctx, http.MethodPost, "/v1/commands/start", req, &resp)
-	return resp, err
+func (c *Client) StartCommand(ctx context.Context, req *guestdv1.StartCommandRequest) (*guestdv1.CommandStatus, error) {
+	return retryUnary(ctx, func() (*guestdv1.CommandStatus, error) {
+		return c.rpc.StartCommand(ctx, req)
+	})
 }
 
 // StatusMany queries the state of ids (or all commands if ids is empty).
-func (c *Client) StatusMany(ctx context.Context, ids []string) (map[string]CommandStatus, error) {
-	var resp StatusResponse
-	err := c.doJSON(ctx, http.MethodPost, "/v1/commands/status", StatusRequest{IDs: ids}, &resp)
-	return resp.Commands, err
+func (c *Client) StatusMany(ctx context.Context, ids []string) (map[string]*guestdv1.CommandStatus, error) {
+	resp, err := retryUnary(ctx, func() (*guestdv1.StatusResponse, error) {
+		return c.rpc.Status(ctx, &guestdv1.StatusRequest{Ids: ids})
+	})
+	if err != nil {
+		return nil, err
+	}
+	return resp.GetCommands(), nil
 }
 
 // StopCommand terminates a running or frozen command.
-func (c *Client) StopCommand(ctx context.Context, id string, grace time.Duration) (CommandStatus, error) {
-	var resp CommandStatus
-	err := c.doJSON(ctx, http.MethodPost, "/v1/commands/stop", StopCommandRequest{
-		ID:      id,
-		GraceMs: int(grace / time.Millisecond),
-	}, &resp)
-	return resp, err
+func (c *Client) StopCommand(ctx context.Context, id string, grace time.Duration) (*guestdv1.CommandStatus, error) {
+	return retryUnary(ctx, func() (*guestdv1.CommandStatus, error) {
+		return c.rpc.StopCommand(ctx, &guestdv1.StopCommandRequest{
+			Id:      id,
+			GraceMs: int32(grace / time.Millisecond),
+		})
+	})
 }
 
 // FreezeCommand freezes a command's guest cgroup without freezing the VM.
-func (c *Client) FreezeCommand(ctx context.Context, id string) (CommandStatus, error) {
-	var resp CommandStatus
-	err := c.doJSON(ctx, http.MethodPost, "/v1/commands/freeze", FreezeRequest{ID: id}, &resp)
-	return resp, err
+func (c *Client) FreezeCommand(ctx context.Context, id string) (*guestdv1.CommandStatus, error) {
+	return retryUnary(ctx, func() (*guestdv1.CommandStatus, error) {
+		return c.rpc.FreezeCommand(ctx, &guestdv1.FreezeCommandRequest{Id: id})
+	})
 }
 
 // ThawCommand unfreezes a frozen command inside the guest.
-func (c *Client) ThawCommand(ctx context.Context, id string) (CommandStatus, error) {
-	var resp CommandStatus
-	err := c.doJSON(ctx, http.MethodPost, "/v1/commands/thaw", FreezeRequest{ID: id}, &resp)
-	return resp, err
+func (c *Client) ThawCommand(ctx context.Context, id string) (*guestdv1.CommandStatus, error) {
+	return retryUnary(ctx, func() (*guestdv1.CommandStatus, error) {
+		return c.rpc.ThawCommand(ctx, &guestdv1.ThawCommandRequest{Id: id})
+	})
 }
 
 // Reclaim asks hotbed-guestd to drop clean guest page caches (and reclaim from
 // command id's cgroup when id and bytes are set) so virtio-balloon
 // free-page-reporting returns unused host RAM.
 func (c *Client) Reclaim(ctx context.Context, id string, bytes int64) error {
-	return c.doJSON(ctx, http.MethodPost, "/v1/reclaim", ReclaimRequest{ID: id, Bytes: bytes}, nil)
-}
-
-func decodeAPIError(resp *http.Response, body []byte, op string) error {
-	if resp.Header.Get(apiErrorHeader) == "1" {
-		var ae api.Error
-		if json.Unmarshal(body, &ae) == nil && ae.Code != "" {
-			return &ae
-		}
-	}
-	if resp.StatusCode == http.StatusNotFound {
-		return api.Errorf(api.CodePlatformNotSupported, "VM guest agent (hotbed-guestd) does not support %s", op).
-			WithSuggestion("recreate the workspace after upgrading hotbed-guestd")
-	}
-	return fmt.Errorf("guestd %s (%d): %s", op, resp.StatusCode, strings.TrimSpace(string(body)))
+	_, err := retryUnary(ctx, func() (*guestdv1.ReclaimResponse, error) {
+		return c.rpc.Reclaim(ctx, &guestdv1.ReclaimRequest{Id: id, Bytes: bytes})
+	})
+	return err
 }
 
 // InspectCommand runs an opt-in Linux inspection of a live command inside the guest VM.
 func (c *Client) InspectCommand(ctx context.Context, req *pb.InspectCommandRequest) (*pb.InspectCommandResponse, error) {
-	raw, err := proto.Marshal(req)
+	resp, err := retryUnary(ctx, func() (*pb.InspectCommandResponse, error) {
+		return c.rpc.InspectCommand(ctx, req)
+	})
 	if err != nil {
-		return nil, err
+		return nil, decodeGuestError(err, "in-guest inspection")
 	}
-	const maxAttempts = 5
-	var lastErr error
-	for attempt := range maxAttempts {
-		httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, "http://guestd/v1/commands/inspect", bytes.NewReader(raw))
-		if err != nil {
-			return nil, err
-		}
-		httpReq.Header.Set("Content-Type", "application/x-protobuf")
-		resp, err := c.http.Do(httpReq)
-		if err != nil {
-			lastErr = err
-			if isTransientReset(err) && attempt+1 < maxAttempts && ctx.Err() == nil {
-				select {
-				case <-time.After(time.Duration(attempt+1) * 50 * time.Millisecond):
-					continue
-				case <-ctx.Done():
-					return nil, ctx.Err()
-				}
-			}
-			return nil, err
-		}
-		data, rerr := io.ReadAll(io.LimitReader(resp.Body, maxStreamFrameLen))
-		_ = resp.Body.Close()
-		if rerr != nil {
-			lastErr = rerr
-			if isTransientReset(rerr) && attempt+1 < maxAttempts && ctx.Err() == nil {
-				select {
-				case <-time.After(time.Duration(attempt+1) * 50 * time.Millisecond):
-					continue
-				case <-ctx.Done():
-					return nil, ctx.Err()
-				}
-			}
-			return nil, rerr
-		}
-		if resp.StatusCode >= 400 {
-			return nil, decodeAPIError(resp, data, "in-guest inspection")
-		}
-		out := &pb.InspectCommandResponse{}
-		if err := proto.Unmarshal(data, out); err != nil {
-			return nil, fmt.Errorf("decode guestd inspect response: %w", err)
-		}
-		return out, nil
-	}
-	return nil, lastErr
-}
-
-func (c *Client) streamProto(ctx context.Context, path, op string, req proto.Message, onChunk func([]byte) error) error {
-	raw, err := proto.Marshal(req)
-	if err != nil {
-		return err
-	}
-	const maxAttempts = 5
-	var resp *http.Response
-	var lastErr error
-	for attempt := range maxAttempts {
-		httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, "http://guestd"+path, bytes.NewReader(raw))
-		if err != nil {
-			return err
-		}
-		httpReq.Header.Set("Content-Type", "application/x-protobuf")
-		resp, err = c.http.Do(httpReq)
-		if err == nil {
-			break
-		}
-		lastErr = err
-		if isTransientReset(err) && attempt+1 < maxAttempts && ctx.Err() == nil {
-			select {
-			case <-time.After(time.Duration(attempt+1) * 50 * time.Millisecond):
-				continue
-			case <-ctx.Done():
-				return ctx.Err()
-			}
-		}
-		return err
-	}
-	if resp == nil {
-		return lastErr
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode >= 400 {
-		body, _ := io.ReadAll(io.LimitReader(resp.Body, 64<<10))
-		return decodeAPIError(resp, body, op)
-	}
-	for {
-		typ, payload, err := readStreamFrame(resp.Body)
-		if err != nil {
-			if ctx.Err() != nil {
-				return ctx.Err()
-			}
-			return fmt.Errorf("guestd %s stream interrupted: %w", op, err)
-		}
-		switch typ {
-		case streamFrameProto:
-			if err := onChunk(payload); err != nil {
-				return err
-			}
-		case streamFrameError:
-			var ae api.Error
-			if json.Unmarshal(payload, &ae) == nil && ae.Code != "" {
-				return &ae
-			}
-			return fmt.Errorf("guestd %s: %s", op, string(payload))
-		case streamFrameEOF:
-			return nil
-		default:
-			return fmt.Errorf("guestd %s: unexpected frame type %d", op, typ)
-		}
-	}
+	return resp, nil
 }
 
 // TraceCommand runs an opt-in active Linux trace on a live command inside the guest VM.
 func (c *Client) TraceCommand(ctx context.Context, req *pb.TraceCommandRequest, emit inspect.Emit) error {
-	return c.streamProto(ctx, "/v1/commands/trace", "in-guest tracing", req, func(payload []byte) error {
-		ch := &pb.TraceCommandChunk{}
-		if err := proto.Unmarshal(payload, ch); err != nil {
-			return fmt.Errorf("decode guestd trace chunk: %w", err)
-		}
-		return emit(ch)
+	stream, err := retryUnary(ctx, func() (guestdv1connect.GuestServiceTraceCommandClientStream, error) {
+		return c.rpc.TraceCommand(ctx, req)
 	})
+	if err != nil {
+		return decodeGuestError(err, "in-guest tracing")
+	}
+	defer stream.Close()
+
+	for {
+		ch, err := stream.Receive()
+		if errors.Is(err, io.EOF) {
+			return nil
+		}
+		if err != nil {
+			if ctx.Err() != nil {
+				return ctx.Err()
+			}
+			return decodeGuestError(err, "in-guest tracing")
+		}
+		if err := emit(ch); err != nil {
+			return err
+		}
+	}
 }
 
 // SampleCommand runs an Activity Monitor-style Linux sample of a live command inside the guest VM.
 func (c *Client) SampleCommand(ctx context.Context, req *pb.SampleCommandRequest, emit inspect.SampleEmit) error {
-	return c.streamProto(ctx, "/v1/commands/sample", "in-guest sampling", req, func(payload []byte) error {
-		ch := &pb.SampleCommandChunk{}
-		if err := proto.Unmarshal(payload, ch); err != nil {
-			return fmt.Errorf("decode guestd sample chunk: %w", err)
-		}
-		return emit(ch)
+	stream, err := retryUnary(ctx, func() (guestdv1connect.GuestServiceSampleCommandClientStream, error) {
+		return c.rpc.SampleCommand(ctx, req)
 	})
+	if err != nil {
+		return decodeGuestError(err, "in-guest sampling")
+	}
+	defer stream.Close()
+
+	for {
+		ch, err := stream.Receive()
+		if errors.Is(err, io.EOF) {
+			return nil
+		}
+		if err != nil {
+			if ctx.Err() != nil {
+				return ctx.Err()
+			}
+			return decodeGuestError(err, "in-guest sampling")
+		}
+		if err := emit(ch); err != nil {
+			return err
+		}
+	}
 }
 
 // CommandProfile queries the in-guest always-on OpenTelemetry eBPF continuous
 // profile for a live or recently exited command inside the guest VM.
 func (c *Client) CommandProfile(ctx context.Context, req *pb.GetProfileRequest) (*pb.CommandProfile, error) {
-	raw, err := proto.Marshal(req)
+	resp, err := retryUnary(ctx, func() (*pb.CommandProfile, error) {
+		return c.rpc.GetProfile(ctx, req)
+	})
 	if err != nil {
-		return nil, err
+		return nil, decodeGuestError(err, "in-guest continuous profiling")
 	}
-	const maxAttempts = 5
-	var lastErr error
-	for attempt := range maxAttempts {
-		httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, "http://guestd/v1/commands/profile", bytes.NewReader(raw))
-		if err != nil {
-			return nil, err
-		}
-		httpReq.Header.Set("Content-Type", "application/x-protobuf")
-		resp, err := c.http.Do(httpReq)
-		if err != nil {
-			lastErr = err
-			if isTransientReset(err) && attempt+1 < maxAttempts && ctx.Err() == nil {
-				select {
-				case <-time.After(time.Duration(attempt+1) * 50 * time.Millisecond):
-					continue
-				case <-ctx.Done():
-					return nil, ctx.Err()
-				}
-			}
-			return nil, err
-		}
-		data, rerr := io.ReadAll(io.LimitReader(resp.Body, maxStreamFrameLen))
-		_ = resp.Body.Close()
-		if rerr != nil {
-			lastErr = rerr
-			if isTransientReset(rerr) && attempt+1 < maxAttempts && ctx.Err() == nil {
-				select {
-				case <-time.After(time.Duration(attempt+1) * 50 * time.Millisecond):
-					continue
-				case <-ctx.Done():
-					return nil, ctx.Err()
-				}
-			}
-			return nil, rerr
-		}
-		if resp.StatusCode >= 400 {
-			return nil, decodeAPIError(resp, data, "in-guest continuous profiling")
-		}
-		out := &pb.CommandProfile{}
-		if err := proto.Unmarshal(data, out); err != nil {
-			return nil, fmt.Errorf("decode guestd profile response: %w", err)
-		}
-		return out, nil
-	}
-	return nil, lastErr
+	return resp, nil
 }
 
 // ForgetCommandProfile drops in-memory eBPF profile samples for cmdID inside
 // the guest VM after the host worker has persisted a snapshot.
 func (c *Client) ForgetCommandProfile(ctx context.Context, cmdID string) error {
-	if err := c.doJSON(ctx, http.MethodPost, "/v1/commands/profile/forget", FreezeRequest{ID: cmdID}, nil); err != nil {
-		if strings.Contains(err.Error(), "(404)") {
-			return nil
-		}
-		return err
+	_, err := retryUnary(ctx, func() (*guestdv1.ForgetCommandProfileResponse, error) {
+		return c.rpc.ForgetCommandProfile(ctx, &guestdv1.ForgetCommandProfileRequest{Id: cmdID})
+	})
+	if err != nil && connect.CodeOf(err) == connect.CodeUnimplemented {
+		return nil
 	}
-	return nil
+	return err
 }
 
 // StreamLogs streams command output starting at offset into dst until EOF (or
 // until the command exits when follow=true).
 func (c *Client) StreamLogs(ctx context.Context, id string, offset int64, follow bool, dst io.Writer) (int64, error) {
-	q := url.Values{}
-	q.Set("id", id)
-	q.Set("offset", strconv.FormatInt(offset, 10))
-	if follow {
-		q.Set("follow", "1")
-	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "http://guestd/v1/commands/logs?"+q.Encode(), nil)
+	stream, err := c.rpc.StreamLogs(ctx, &guestdv1.StreamLogsRequest{
+		Id:     id,
+		Offset: offset,
+		Follow: follow,
+	})
 	if err != nil {
 		return 0, err
 	}
-	resp, err := c.http.Do(req)
-	if err != nil {
-		return 0, err
+	defer stream.Close()
+
+	var written int64
+	for {
+		chunk, err := stream.Receive()
+		if errors.Is(err, io.EOF) {
+			return written, nil
+		}
+		if err != nil {
+			return written, err
+		}
+		if len(chunk.Data) == 0 {
+			continue
+		}
+		n, werr := dst.Write(chunk.Data)
+		written += int64(n)
+		if werr != nil {
+			return written, werr
+		}
 	}
-	defer resp.Body.Close()
-	if resp.StatusCode >= 400 {
-		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
-		return 0, fmt.Errorf("guestd stream logs (%d): %s", resp.StatusCode, string(body))
-	}
-	return io.Copy(dst, resp.Body)
 }
 
 // ApplySync streams mainBundlePath and submodule bundles to the guest and runs
 // gitops.Apply inside /work/<repo>.
 func (c *Client) ApplySync(ctx context.Context, repo, mainBundlePath, commit, base string, subs []gitops.SubCheckout, env []string, uid, gid int) (int, error) {
-	pr, pw := io.Pipe()
-	mw := multipart.NewWriter(pw)
-
-	meta := SyncRequest{
+	header := &guestdv1.SyncHeader{
 		Repo:   repo,
 		Commit: commit,
 		Base:   base,
-		UID:    uid,
-		GID:    gid,
+		Uid:    int32(uid),
+		Gid:    int32(gid),
 		Env:    env,
 	}
-	for i, s := range subs {
-		sm := SyncSubmodule{Path: s.Path, Commit: s.Commit}
+	type subFile struct {
+		path string
+		size int64
+	}
+	var subFiles []subFile
+	for _, s := range subs {
+		sm := &guestdv1.SyncSubmodule{Path: s.Path, Commit: s.Commit}
 		if s.Bundle != "" {
-			sm.Part = fmt.Sprintf("sub-%d", i)
+			st, err := os.Stat(s.Bundle)
+			if err != nil {
+				return 0, err
+			}
+			sm.BundleBytes = st.Size()
+			subFiles = append(subFiles, subFile{path: s.Bundle, size: st.Size()})
 		}
-		meta.Subs = append(meta.Subs, sm)
+		header.Subs = append(header.Subs, sm)
 	}
 
-	writeErr := make(chan error, 1)
-	go func() {
-		defer pw.Close()
-		defer mw.Close()
-		metaW, err := mw.CreateFormField("meta")
+	mainFile, err := os.Open(mainBundlePath)
+	if err != nil {
+		return 0, err
+	}
+	defer mainFile.Close()
+
+	stream, err := c.rpc.Sync(ctx)
+	if err != nil {
+		return 0, err
+	}
+	if err := stream.Send(&guestdv1.SyncRequest{
+		Msg: &guestdv1.SyncRequest_Header{Header: header},
+	}); err != nil {
+		_, cerr := stream.CloseAndReceive()
+		return 0, errors.Join(err, cerr)
+	}
+
+	buf := make([]byte, syncChunkBytes)
+	sendReader := func(r io.Reader) (total int64, readErr, sendErr error) {
+		for {
+			n, rerr := r.Read(buf)
+			if n > 0 {
+				total += int64(n)
+				chunk := make([]byte, n)
+				copy(chunk, buf[:n])
+				if serr := stream.Send(&guestdv1.SyncRequest{
+					Msg: &guestdv1.SyncRequest_Chunk{Chunk: chunk},
+				}); serr != nil {
+					return total, nil, serr
+				}
+			}
+			if errors.Is(rerr, io.EOF) {
+				return total, nil, nil
+			}
+			if rerr != nil {
+				return total, rerr, nil
+			}
+		}
+	}
+
+	var localErr error
+sendLoop:
+	for _, sf := range subFiles {
+		f, err := os.Open(sf.path)
 		if err != nil {
-			writeErr <- err
-			return
+			localErr = err
+			break sendLoop
 		}
-		if err := json.NewEncoder(metaW).Encode(meta); err != nil {
-			writeErr <- err
-			return
+		n, rerr, serr := sendReader(io.LimitReader(f, sf.size))
+		_ = f.Close()
+		if rerr != nil {
+			localErr = rerr
+			break sendLoop
 		}
-		if err := writeFilePart(mw, "bundle", mainBundlePath); err != nil {
-			writeErr <- err
-			return
+		if serr != nil {
+			break sendLoop
 		}
-		for i, s := range subs {
-			if s.Bundle == "" {
-				continue
-			}
-			if err := writeFilePart(mw, fmt.Sprintf("sub-%d", i), s.Bundle); err != nil {
-				writeErr <- err
-				return
-			}
+		if n != sf.size {
+			localErr = fmt.Errorf("submodule bundle %s shrank (%d < %d bytes)", sf.path, n, sf.size)
+			break sendLoop
 		}
-		writeErr <- nil
-	}()
+	}
+	if localErr == nil {
+		_, rerr, _ := sendReader(mainFile)
+		if rerr != nil {
+			localErr = rerr
+		}
+	}
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, "http://guestd/v1/sync", pr)
-	if err != nil {
-		_ = pr.Close()
-		return 0, err
-	}
-	req.Header.Set("Content-Type", mw.FormDataContentType())
-	resp, err := c.http.Do(req)
-	_ = pr.Close()
-	if werr := <-writeErr; werr != nil && err == nil {
-		err = werr
+	sr, err := stream.CloseAndReceive()
+	if localErr != nil {
+		return 0, localErr
 	}
 	if err != nil {
 		return 0, err
 	}
-	defer resp.Body.Close()
-	data, err := io.ReadAll(io.LimitReader(resp.Body, 4<<20))
-	if err != nil {
-		return 0, err
-	}
-	if resp.StatusCode >= 400 {
-		return 0, fmt.Errorf("guestd sync (%d): %s", resp.StatusCode, string(data))
-	}
-	var sr SyncResponse
-	if err := json.Unmarshal(data, &sr); err != nil {
-		return 0, fmt.Errorf("decode sync response: %w", err)
-	}
-	if sr.Err == "" {
-		return sr.FilesChanged, nil
+	if sr.Error == "" {
+		return int(sr.FilesChanged), nil
 	}
 	if !sr.Mutated {
-		return 0, errors.New(sr.Err)
+		return 0, errors.New(sr.Error)
 	}
-	ae := &gitops.ApplyError{Err: errors.New(sr.Err), Mutated: true, RolledBack: sr.RolledBack}
-	if sr.RollbackErr != "" {
-		ae.RollbackErr = errors.New(sr.RollbackErr)
+	ae := &gitops.ApplyError{Err: errors.New(sr.Error), Mutated: true, RolledBack: sr.RolledBack}
+	if sr.RollbackError != "" {
+		ae.RollbackErr = errors.New(sr.RollbackError)
 	}
 	return 0, ae
 }
 
-func writeFilePart(mw *multipart.Writer, field, path string) error {
-	f, err := os.Open(path)
-	if err != nil {
-		return err
-	}
-	defer f.Close()
-	pw, err := mw.CreateFormFile(field, field+".bundle")
-	if err != nil {
-		return err
-	}
-	_, err = io.Copy(pw, f)
-	return err
-}
-
 // ListFiles lists tracked files across the given repos in the guest.
-func (c *Client) ListFiles(ctx context.Context, repos []RepoBase) ([]*pb.FileEntry, error) {
-	var resp ListFilesResponse
-	if err := c.doJSON(ctx, http.MethodPost, "/v1/files/list", ListFilesRequest{Repos: repos}, &resp); err != nil {
+func (c *Client) ListFiles(ctx context.Context, repos []*guestdv1.RepoBase) ([]*pb.FileEntry, error) {
+	resp, err := retryUnary(ctx, func() (*guestdv1.ListFilesResponse, error) {
+		return c.rpc.ListFiles(ctx, &guestdv1.ListFilesRequest{Repos: repos})
+	})
+	if err != nil {
 		return nil, err
 	}
-	return resp.Files, nil
+	return resp.GetFiles(), nil
 }
 
 // GetFile reads one regular file and its diff-changed lines from the guest.
 func (c *Client) GetFile(ctx context.Context, repo, baseCommit, relPath string) (*pb.FileContent, error) {
-	var resp GetFileResponse
-	if err := c.doJSON(ctx, http.MethodPost, "/v1/files/get", GetFileRequest{
-		Repo:       repo,
-		BaseCommit: baseCommit,
-		RelPath:    relPath,
-	}, &resp); err != nil {
-		return nil, err
-	}
-	return &pb.FileContent{
-		Path:         resp.Path,
-		Text:         resp.Text,
-		ChangedLines: resp.ChangedLines,
-	}, nil
+	return retryUnary(ctx, func() (*pb.FileContent, error) {
+		return c.rpc.GetFile(ctx, &guestdv1.GetFileRequest{
+			Repo:       repo,
+			BaseCommit: baseCommit,
+			RelPath:    relPath,
+		})
+	})
 }
 
 // Shutdown asks the guest agent to flush filesystems and optionally stop
 // commands / power off the VM.
-func (c *Client) Shutdown(ctx context.Context, req ShutdownRequest) error {
-	return c.doJSON(ctx, http.MethodPost, "/v1/shutdown", req, nil)
+func (c *Client) Shutdown(ctx context.Context, req *guestdv1.ShutdownRequest) error {
+	_, err := retryUnary(ctx, func() (*guestdv1.ShutdownResponse, error) {
+		return c.rpc.Shutdown(ctx, req)
+	})
+	return err
 }
 
 // DialTCP opens a tunneled TCP connection to 127.0.0.1:<port> inside the guest.

@@ -11,6 +11,8 @@ import (
 	"strconv"
 	"strings"
 	"syscall"
+
+	guestdv1 "github.com/semistrict/hotbed/internal/gen/guestd/v1"
 )
 
 const guestCgroupRoot = "/sys/fs/cgroup/hotbed"
@@ -35,7 +37,7 @@ func hasCgroupV2() bool {
 	return true
 }
 
-func createCmdCgroup(id string, req StartCommandRequest) *cmdCgroup {
+func createCmdCgroup(id string, req *guestdv1.StartCommandRequest) *cmdCgroup {
 	if !hasCgroupV2() {
 		return nil
 	}
@@ -43,15 +45,15 @@ func createCmdCgroup(id string, req StartCommandRequest) *cmdCgroup {
 	if err := os.MkdirAll(p, 0o755); err != nil {
 		return nil
 	}
-	if req.CPUWeight > 0 {
-		w := min(max(req.CPUWeight, 1), 10000)
+	if w := int(req.GetCpuWeight()); w > 0 {
+		w = min(max(w, 1), 10000)
 		_ = os.WriteFile(filepath.Join(p, "cpu.weight"), []byte(strconv.Itoa(w)), 0o644)
 	}
-	if req.MemoryLow > 0 {
-		_ = os.WriteFile(filepath.Join(p, "memory.low"), []byte(strconv.FormatInt(req.MemoryLow, 10)), 0o644)
+	if req.GetMemoryLow() > 0 {
+		_ = os.WriteFile(filepath.Join(p, "memory.low"), []byte(strconv.FormatInt(req.GetMemoryLow(), 10)), 0o644)
 	}
-	if req.MemoryHigh > 0 {
-		_ = os.WriteFile(filepath.Join(p, "memory.high"), []byte(strconv.FormatInt(req.MemoryHigh, 10)), 0o644)
+	if req.GetMemoryHigh() > 0 {
+		_ = os.WriteFile(filepath.Join(p, "memory.high"), []byte(strconv.FormatInt(req.GetMemoryHigh(), 10)), 0o644)
 	}
 	return &cmdCgroup{path: p}
 }

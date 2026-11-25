@@ -10,6 +10,7 @@ import (
 	"strings"
 	"testing"
 
+	guestdv1 "github.com/semistrict/hotbed/internal/gen/guestd/v1"
 	"github.com/semistrict/hotbed/internal/guestd"
 	"github.com/semistrict/hotbed/internal/unit"
 )
@@ -74,13 +75,13 @@ func TestGuestdCreatesRuntimeDirAndExportsXDGRuntimeDir(t *testing.T) {
 
 	// 1. Command without XDG_RUNTIME_DIR in req.Env gets <runDir>/user/<uid>
 	//    created (0700) and exported in XDG_RUNTIME_DIR.
-	if _, err := client.StartCommand(ctx, guestd.StartCommandRequest{
-		ID:   "cmd-xdg-default",
+	if _, err := client.StartCommand(ctx, &guestdv1.StartCommandRequest{
+		Id:   "cmd-xdg-default",
 		Argv: []string{"/bin/sh", "-c", `printf '%s' "$XDG_RUNTIME_DIR"`},
 		Dir:  workDir,
 		Env:  []string{"PATH=/usr/bin:/bin"},
-		UID:  uid,
-		GID:  gid,
+		Uid:  int32(uid),
+		Gid:  int32(gid),
 	}); err != nil {
 		t.Fatalf("StartCommand: %v", err)
 	}
@@ -100,13 +101,13 @@ func TestGuestdCreatesRuntimeDirAndExportsXDGRuntimeDir(t *testing.T) {
 	}
 
 	// 2. Explicit XDG_RUNTIME_DIR in req.Env is preserved.
-	if _, err := client.StartCommand(ctx, guestd.StartCommandRequest{
-		ID:   "cmd-xdg-override",
+	if _, err := client.StartCommand(ctx, &guestdv1.StartCommandRequest{
+		Id:   "cmd-xdg-override",
 		Argv: []string{"/bin/sh", "-c", `printf '%s' "$XDG_RUNTIME_DIR"`},
 		Dir:  workDir,
 		Env:  []string{"PATH=/usr/bin:/bin", "XDG_RUNTIME_DIR=/custom/run"},
-		UID:  uid,
-		GID:  gid,
+		Uid:  int32(uid),
+		Gid:  int32(gid),
 	}); err != nil {
 		t.Fatalf("StartCommand override: %v", err)
 	}
