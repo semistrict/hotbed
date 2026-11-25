@@ -8,14 +8,19 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/semistrict/hotbed/internal/baseimage"
 	"github.com/semistrict/hotbed/internal/cladefs"
 	pb "github.com/semistrict/hotbed/internal/gen/hotbed/v1"
+	"github.com/semistrict/hotbed/internal/runtime"
 	"github.com/semistrict/hotbed/internal/statedir"
+	"github.com/semistrict/hotbed/internal/storage"
 	"github.com/semistrict/hotbed/internal/unit"
 )
 
@@ -306,5 +311,115 @@ func TestTenantCellRootAndCacheIsolation(t *testing.T) {
 	}
 	if got, ok := fuse4.baseImages["right"]; !ok || got.Cell != 40 || got.Tenant != 4 {
 		t.Fatalf("fuse4.baseImages[right] = %+v (ok=%v), want tenant 4 cell 40", got, ok)
+	}
+}
+
+func TestCladefsFUSEHeartbeatWithdrawsUnhealthyRuntimeAndRecoversENOTCONN(t *testing.T) {
+	errNotConn := errors.New("transport endpoint is not connected")
+	var healthy atomic.Bool
+	var detached atomic.Int32
+	reconnected := make(chan struct{}, 4)
+
+	b := &CladefsFUSEBackend{
+		mountRoot: "/var/lib/cladefs/mnt",
+		mountHealthFn: func(string) error {
+			if healthy.Load() {
+				return nil
+			}
+			return errNotConn
+		},
+		isNotConnFn: func(err error) bool { return errors.Is(err, errNotConn) },
+		detachDeadFn: func(string) error {
+			detached.Add(1)
+			return nil
+		},
+		reconnectFn: func(context.Context) (uint64, error) {
+			healthy.Store(true)
+			reconnected <- struct{}{}
+			return 42, nil
+		},
+	}
+
+	// While mountRoot returns ENOTCONN, heartbeats must withdraw "cladefs"
+	// so the controller stops placing cladefs workspaces here and only advertises "chroot".
+	got := b.RuntimesForHeartbeat()
+	if !slices.Equal(got, []string{runtime.KindChroot}) {
+		t.Fatalf("unhealthy RuntimesForHeartbeat = %v, want [%s]", got, runtime.KindChroot)
+	}
+
+	select {
+	case <-reconnected:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for background ENOTCONN recovery")
+	}
+	if detached.Load() != 1 {
+		t.Fatalf("detachDead calls = %d, want 1", detached.Load())
+	}
+
+	// Once recovered, heartbeats re-advertise both "cladefs" and "chroot".
+	got = b.RuntimesForHeartbeat()
+	if !slices.Equal(got, []string{runtime.KindCladefs, runtime.KindChroot}) {
+		t.Fatalf("recovered RuntimesForHeartbeat = %v, want [%s %s]", got, runtime.KindCladefs, runtime.KindChroot)
+	}
+}
+
+func TestCladefsFUSEEnsureMountReadyRecoversFromENOTCONN(t *testing.T) {
+	errNotConn := errors.New("transport endpoint is not connected")
+	var attempts atomic.Int32
+	var detached, reconnected atomic.Int32
+
+	b := &CladefsFUSEBackend{
+		mountRoot: "/var/lib/cladefs/mnt",
+		clearNosuidFn: func(string) error {
+			if attempts.Add(1) == 1 {
+				return errNotConn
+			}
+			return nil
+		},
+		isNotConnFn: func(err error) bool { return errors.Is(err, errNotConn) },
+		detachDeadFn: func(string) error {
+			detached.Add(1)
+			return nil
+		},
+		reconnectFn: func(context.Context) (uint64, error) {
+			reconnected.Add(1)
+			return 7, nil
+		},
+	}
+
+	if err := b.ensureMountReady(context.Background()); err != nil {
+		t.Fatalf("ensureMountReady failed after ENOTCONN recovery: %v", err)
+	}
+	if attempts.Load() != 2 || detached.Load() != 1 || reconnected.Load() != 1 {
+		t.Fatalf("attempts=%d detached=%d reconnected=%d, want 2/1/1", attempts.Load(), detached.Load(), reconnected.Load())
+	}
+}
+
+func TestMakeVersionAndSyncAfterStopRetriesTransientBusy(t *testing.T) {
+	var attempts atomic.Int32
+	ver, err := makeVersionAndSyncAfterStop(context.Background(), func(context.Context) (uint64, error) {
+		if attempts.Add(1) < 3 {
+			return 0, fmt.Errorf("cladefs make version: %w", storage.ErrBusy)
+		}
+		return 99, nil
+	}, 2*time.Second, 5*time.Millisecond)
+	if err != nil {
+		t.Fatalf("makeVersionAndSyncAfterStop failed on transient ErrBusy: %v", err)
+	}
+	if ver != 99 || attempts.Load() != 3 {
+		t.Fatalf("ver=%d attempts=%d, want 99/3", ver, attempts.Load())
+	}
+
+	// Non-busy errors must fail immediately without retrying.
+	attempts.Store(0)
+	boom := errors.New("boom")
+	if _, err := makeVersionAndSyncAfterStop(context.Background(), func(context.Context) (uint64, error) {
+		attempts.Add(1)
+		return 0, boom
+	}, 2*time.Second, 5*time.Millisecond); !errors.Is(err, boom) {
+		t.Fatalf("err = %v, want boom", err)
+	}
+	if attempts.Load() != 1 {
+		t.Fatalf("non-busy attempts = %d, want 1", attempts.Load())
 	}
 }

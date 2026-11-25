@@ -7,6 +7,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -727,20 +728,14 @@ func (b *VMBackend) runGuestCommand(ctx context.Context, vmID, cmdID, dir string
 	}
 }
 
+// vmBaseKey identifies the OS-level VM rootfs base cell. hotbed-guestd is
+// attached at VM boot time via a separate read-only virtio-blk tools disk, so
+// guestd upgrades never invalidate OS or project VM bases.
 func (b *VMBackend) vmBaseKey(spec baseimage.Spec) string {
 	cfg := b.configSnapshot()
 	baseKey := spec.Key()
-	guestdPath := cmp.Or(cfg.GuestdBin, vm.DefaultGuestdBin)
-	f, err := os.Open(guestdPath)
-	if err != nil {
-		return baseKey
-	}
-	defer f.Close()
 	h := sha256.New()
-	if _, err := io.Copy(h, f); err != nil {
-		return baseKey
-	}
-	fmt.Fprintf(h, "\ndisk=%d\ndns=%s\n", cfg.DiskBytes, strings.Join(cfg.DNSServers, ","))
+	fmt.Fprintf(h, "disk=%d\ndns=%s\n", cfg.DiskBytes, strings.Join(cfg.DNSServers, ","))
 	return baseKey + "-" + hex.EncodeToString(h.Sum(nil))[:8]
 }
 
@@ -770,8 +765,41 @@ func (b *VMBackend) stopBuildVM(ctx context.Context, vmID string, syncFS bool) e
 	return b.mgr.Stop(sctx, vmID, syncFS)
 }
 
+// makeVersionAndSyncAfterStop versions and syncs rel after a build VM exits.
+// cladefsd tears down the VM's virtio-extent session asynchronously on socket
+// EOF, so an immediate MakeVersion can transiently fail with EBUSY (storage.ErrBusy)
+// even after Firecracker has exited. Retrying EBUSY avoids discarding a finished
+// multi-minute VM base build.
+func makeVersionAndSyncAfterStop(
+	ctx context.Context,
+	makeAndSync func(context.Context) (uint64, error),
+	maxWait time.Duration,
+	initialBackoff time.Duration,
+) (uint64, error) {
+	deadline := time.Now().Add(maxWait)
+	delay := initialBackoff
+	for {
+		ver, err := makeAndSync(ctx)
+		if err == nil || !errors.Is(err, storage.ErrBusy) {
+			return ver, err
+		}
+		if ctx.Err() != nil || time.Now().After(deadline) {
+			return 0, err
+		}
+		slog.Warn("cladefsd cell still busy right after build VM exit; retrying MakeVersion", "retryIn", delay, "err", err)
+		t := time.NewTimer(delay)
+		select {
+		case <-ctx.Done():
+			t.Stop()
+			return 0, ctx.Err()
+		case <-t.C:
+		}
+		delay = min(delay*2, time.Second)
+	}
+}
+
 // EnsureProvisionedBaseImage ensures the shared provisioned Debian + toolchains
-// + hotbed-guestd base cell exists, is versioned, and is synced to R2.
+// VM rootfs base cell exists, is versioned, and is synced to R2.
 func (b *VMBackend) EnsureProvisionedBaseImage(ctx context.Context, spec baseimage.Spec) (cladefs.CellRef, error) {
 	spec = spec.Normalized()
 	cfg := b.configSnapshot()
@@ -806,7 +834,6 @@ func (b *VMBackend) EnsureProvisionedBaseImage(ctx context.Context, spec baseima
 	if err := vm.BuildGuestTar(ctx, vm.GuestImageOptions{
 		ImageRef:   spec.Image,
 		Arch:       spec.Arch,
-		GuestdBin:  cmp.Or(cfg.GuestdBin, vm.DefaultGuestdBin),
 		DNSServers: cfg.DNSServers,
 		OutTar:     tarPath,
 	}); err != nil {
@@ -865,7 +892,9 @@ func (b *VMBackend) EnsureProvisionedBaseImage(ctx context.Context, spec baseima
 		}
 	}
 
-	ver, err := b.currentStore().MakeVersionAndSync(ctx, rel, 2)
+	ver, err := makeVersionAndSyncAfterStop(ctx, func(ctx context.Context) (uint64, error) {
+		return b.currentStore().MakeVersionAndSync(ctx, rel, 2)
+	}, 15*time.Second, 100*time.Millisecond)
 	if err != nil {
 		b.cleanupCell(ctx, rel)
 		return cladefs.CellRef{}, fmt.Errorf("version & sync VM base image %s to R2: %w", key, err)
@@ -1029,6 +1058,9 @@ func (b *VMBackend) EnsureProjectBase(
 		forkStartMs := forkStart.UnixMilli()
 		forkRef, err = b.currentStore().ForkVersion(ctx, prevBase.Ref, rel, false)
 		if err != nil {
+			if ctx.Err() != nil {
+				return nil, err
+			}
 			slog.Warn("incremental VM project base fork failed; falling back to cold base",
 				"project", p.GetName(), "prevBase", prevBase.BaseID, "err", err)
 			b.cleanupCell(ctx, rel)
@@ -1276,7 +1308,9 @@ func (b *VMBackend) EnsureProjectBase(
 	handle.SetFinalizing("r2_sync")
 	syncStart := time.Now()
 	syncStartMs := syncStart.UnixMilli()
-	ver, err := b.currentStore().MakeVersionAndSync(ctx, rel, 2)
+	ver, err := makeVersionAndSyncAfterStop(ctx, func(ctx context.Context) (uint64, error) {
+		return b.currentStore().MakeVersionAndSync(ctx, rel, 2)
+	}, 15*time.Second, 100*time.Millisecond)
 	syncSecs := time.Since(syncStart).Seconds()
 	finalizeSeconds += syncSecs
 	handle.RecordPhase("r2_sync", syncStartMs, time.Now().UnixMilli(), syncSecs, "")

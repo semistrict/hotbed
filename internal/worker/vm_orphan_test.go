@@ -173,7 +173,9 @@ func newTestVMBackend(t *testing.T, api *strictVMCladefsClient, fl *fakeVMLaunch
 		DisableNetwork:  true,
 		BootTimeout:     5 * time.Second,
 		ShutdownTimeout: 200 * time.Millisecond,
-	}, vm.WithLauncher(fl), vm.WithDialerFactory(startFakeGuestdDialer(t)))
+	}, vm.WithLauncher(fl), vm.WithDialerFactory(startFakeGuestdDialer(t)), vm.WithToolsDiskBuilder(func(cacheDir, _ string) (string, error) {
+		return filepath.Join(cacheDir, "guestd-test.ext4"), nil
+	}))
 	if err != nil {
 		t.Fatalf("vm.NewManager: %v", err)
 	}

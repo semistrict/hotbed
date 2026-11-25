@@ -57,13 +57,12 @@ func TestLiveFirecrackerCladefsEndToEnd(t *testing.T) {
 		_ = store.DeleteCell(cctx, "base-live")
 	})
 
-	// 1. Build bootable rootfs tar directly from OCI registry (no Docker!) with /sbin/hotbed-guestd.
+	// 1. Build clean rootfs tar directly from OCI registry (no Docker, no baked-in hotbed-guestd).
 	tarPath := filepath.Join(cellRoot, "debian-guestd-live.tar")
 	t.Cleanup(func() { _ = os.Remove(tarPath) })
 	if err := vm.BuildGuestTar(ctx, vm.GuestImageOptions{
 		ImageRef:   "public.ecr.aws/debian/debian:trixie-slim",
 		Arch:       "amd64",
-		GuestdBin:  vm.DefaultGuestdBin,
 		DNSServers: []string{"1.1.1.1", "8.8.8.8"},
 		OutTar:     tarPath,
 	}); err != nil {
@@ -109,6 +108,7 @@ func TestLiveFirecrackerCladefsEndToEnd(t *testing.T) {
 
 	// 3. Boot Firecracker in a transient hotbed.slice systemd unit with TAP/NAT networking.
 	vmCfg := vm.Config{
+		GuestdBin:          os.Getenv("HOTBED_LIVE_GUESTD_BIN"),
 		RunDir:             runDir,
 		Slice:              vm.DefaultSlice,
 		VMUser:             vm.DefaultVMUser,
@@ -141,11 +141,11 @@ func TestLiveFirecrackerCladefsEndToEnd(t *testing.T) {
 	}
 	t.Logf("VM booted: unit=%s cid=%d tap=%s ip=%s", inst.UnitName, inst.GuestCID, inst.Net.TAPName, inst.Net.GuestIP)
 
-	// 4. Verify health, cgroup placement, network interface, and freeze/thaw via GuestRuntime.
+	// 4. Verify health, tools-disk pivot, cgroup placement, network interface, and freeze/thaw via GuestRuntime.
 	rt := runtime.NewGuestRuntime(&liveResolver{mgr: mgr})
 	if err := rt.StartCommand(ctx, "ws-live-1", runtime.CommandSpec{
 		ID:   "live-check",
-		Argv: []string{"/bin/sh", "-c", "cat /proc/self/cgroup && grep -F '" + inst.Net.GuestIP + "' /proc/net/fib_trie && echo LIVE_STEP3_OK"},
+		Argv: []string{"/bin/sh", "-c", "cat /proc/self/cgroup && test -x /run/hotbed-tools/hotbed-guestd && test ! -e /sbin/hotbed-guestd && grep -F '" + inst.Net.GuestIP + "' /proc/net/fib_trie && echo LIVE_STEP3_OK"},
 		Dir:  "/work",
 	}); err != nil {
 		t.Fatalf("StartCommand: %v", err)

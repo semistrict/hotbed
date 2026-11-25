@@ -56,9 +56,18 @@ type CladefsFUSEBackend struct {
 	sharedBases    map[string]*pb.CladefsCell
 	wsMounts       map[string]fuseWSMount // wsID -> active FUSE mount
 	retirer        baseRetirer
+	unhealthy      bool
+	recovering     bool
 
 	detachTimeout time.Duration      // optional MountDetach deadline override (tests; default 30s)
 	cleanupMount  func(string, bool) // optional cleanupFUSEMountDir override (tests)
+
+	// Testable hooks for FUSE mount health checks and ENOTCONN recovery.
+	mountHealthFn func(string) error
+	clearNosuidFn func(string) error
+	isNotConnFn   func(error) bool
+	detachDeadFn  func(string) error
+	reconnectFn   func(context.Context) (uint64, error)
 }
 
 const defaultFUSEDetachTimeout = 30 * time.Second
@@ -107,22 +116,29 @@ func OpenCladefsFUSEBackend(ctx context.Context, workerDir string, cfg statedir.
 	cellRoot := tenantCellRoot(cmp.Or(cfg.CellRoot, "/mnt/fxdax-scratch/cladefsd/cells/hotbed"), cfg.TenantID)
 	mountRoot := cmp.Or(cfg.MountRoot, "/var/lib/cladefs/mnt")
 	mountStoresRoot := cmp.Or(cfg.MountStoresRoot, "/mnt/fxdax-scratch/cladefsd/mount-stores")
-	cstore, err := cladefs.Open(ctx, cladefs.Config{
+	// If a previous cladefsd died and left mountRoot stuck at ENOTCONN, detach
+	// it lazily so systemd-managed cladefsd can remount cleanly on startup.
+	if err := detachDeadMount(mountRoot); err != nil {
+		slog.Warn("detach dead cladefs FUSE mount on startup", "mountRoot", mountRoot, "err", err)
+	}
+	ccfg := cladefs.Config{
 		ControlSock: cfg.CladefsControlSock,
 		CellRoot:    cellRoot,
 		TenantID:    cfg.TenantID,
 		DefaultCap:  cmp.Or(cfg.DiskBytes, uint64(64<<30)),
+	}
+	cstore, inc, err := waitForCladefsReconnect(ctx, ccfg, 15*time.Second, func(ctx context.Context, s *cladefs.Store) (uint64, error) {
+		if _, err := s.MountList(ctx); err != nil {
+			return 0, fmt.Errorf("cladefsd Mount service unavailable (set CLADEFSD_MOUNT and CLADEFSD_MOUNT_STORES): %w", err)
+		}
+		inc, err := s.Incarnation(ctx)
+		if err != nil {
+			slog.Warn("read cladefsd incarnation failed; continuing", "err", err)
+		}
+		return inc, nil
 	})
 	if err != nil {
 		return nil, fmt.Errorf("open cladefs store: %w", err)
-	}
-	if _, err := cstore.MountList(ctx); err != nil {
-		_ = cstore.Close()
-		return nil, fmt.Errorf("cladefsd Mount service unavailable (set CLADEFSD_MOUNT and CLADEFSD_MOUNT_STORES): %w", err)
-	}
-	inc, err := cstore.Incarnation(ctx)
-	if err != nil {
-		slog.Warn("read cladefsd incarnation failed; continuing", "err", err)
 	}
 	if err := clearMountNosuid(mountRoot); err != nil {
 		_ = cstore.Close()
@@ -373,6 +389,126 @@ func (b *CladefsFUSEBackend) Runtimes() []string {
 	return []string{runtime.KindCladefs, runtime.KindChroot}
 }
 
+func (b *CladefsFUSEBackend) checkHealth() error {
+	if b.mountHealthFn != nil {
+		return b.mountHealthFn(b.mountRoot)
+	}
+	return checkMountHealth(b.mountRoot)
+}
+
+func (b *CladefsFUSEBackend) clearNosuid() error {
+	if b.clearNosuidFn != nil {
+		return b.clearNosuidFn(b.mountRoot)
+	}
+	return clearMountNosuid(b.mountRoot)
+}
+
+func (b *CladefsFUSEBackend) isNotConnected(err error) bool {
+	if b.isNotConnFn != nil {
+		return b.isNotConnFn(err)
+	}
+	return isMountNotConnected(err)
+}
+
+func (b *CladefsFUSEBackend) detachDead() error {
+	if b.detachDeadFn != nil {
+		return b.detachDeadFn(b.mountRoot)
+	}
+	return detachDeadMount(b.mountRoot)
+}
+
+func (b *CladefsFUSEBackend) reconnect(ctx context.Context) (uint64, error) {
+	if b.reconnectFn != nil {
+		return b.reconnectFn(ctx)
+	}
+	return b.ReconnectCladefs(ctx)
+}
+
+// Healthy reports whether the host FUSE mount at mountRoot responds to statfs(2).
+func (b *CladefsFUSEBackend) Healthy() (bool, error) {
+	err := b.checkHealth()
+	return err == nil, err
+}
+
+// RuntimesForHeartbeat returns the runtimes to advertise in heartbeats. When
+// mountRoot is disconnected (e.g. ENOTCONN after a cladefsd OOM/crash), it
+// drops "cladefs" from advertised runtimes so the controller stops placing new
+// cladefs workspaces here and kicks off background ENOTCONN recovery.
+func (b *CladefsFUSEBackend) RuntimesForHeartbeat() []string {
+	ok, err := b.Healthy()
+	if ok {
+		b.mu.Lock()
+		wasUnhealthy := b.unhealthy
+		b.unhealthy = false
+		b.mu.Unlock()
+		if wasUnhealthy {
+			slog.Info("cladefs host-FUSE mount recovered; re-advertising cladefs runtime", "mountRoot", b.mountRoot)
+		}
+		return b.Runtimes()
+	}
+	b.mu.Lock()
+	wasUnhealthy := b.unhealthy
+	b.unhealthy = true
+	b.mu.Unlock()
+	if !wasUnhealthy {
+		slog.Warn("cladefs host-FUSE mount unhealthy; withdrawing cladefs runtime from heartbeats",
+			"mountRoot", b.mountRoot, "err", err)
+	}
+	if b.isNotConnected(err) {
+		b.triggerDeadMountRecovery()
+	}
+	return []string{runtime.KindChroot}
+}
+
+func (b *CladefsFUSEBackend) triggerDeadMountRecovery() {
+	b.mu.Lock()
+	if b.recovering {
+		b.mu.Unlock()
+		return
+	}
+	b.recovering = true
+	b.mu.Unlock()
+	go func() {
+		defer func() {
+			b.mu.Lock()
+			b.recovering = false
+			b.mu.Unlock()
+		}()
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		if err := b.recoverDeadMount(ctx); err != nil {
+			slog.Warn("background cladefs FUSE mount recovery failed", "mountRoot", b.mountRoot, "err", err)
+		}
+	}()
+}
+
+// recoverDeadMount lazily detaches an ENOTCONN FUSE mount so systemd-managed
+// cladefsd can remount cleanly, then reconnects the cladefsd gRPC client.
+func (b *CladefsFUSEBackend) recoverDeadMount(ctx context.Context) error {
+	if err := b.detachDead(); err != nil {
+		return err
+	}
+	_, err := b.reconnect(ctx)
+	return err
+}
+
+func (b *CladefsFUSEBackend) ensureMountReady(ctx context.Context) error {
+	err := b.clearNosuid()
+	if err == nil {
+		return nil
+	}
+	if !b.isNotConnected(err) {
+		return err
+	}
+	slog.Warn("cladefs host-FUSE mount returned ENOTCONN; attempting lazy detach and reconnect",
+		"mountRoot", b.mountRoot, "err", err)
+	if rerr := b.recoverDeadMount(ctx); rerr != nil {
+		slog.Warn("cladefs host-FUSE ENOTCONN recovery failed", "mountRoot", b.mountRoot, "err", rerr)
+		return err
+	}
+	return b.clearNosuid()
+}
+
 // MountPath returns the mounted host FUSE rootfs path for a workspace volume
 // ("ws/<id>") if it belongs to CladefsFUSEBackend.
 func (b *CladefsFUSEBackend) MountPath(vol string) (string, bool) {
@@ -502,7 +638,7 @@ func (b *CladefsFUSEBackend) EnsureProvisionedBaseImage(ctx context.Context, spe
 	}
 	b.mu.Unlock()
 
-	if err := clearMountNosuid(b.mountRoot); err != nil {
+	if err := b.ensureMountReady(ctx); err != nil {
 		return cladefs.CellRef{}, fmt.Errorf("enable setuid on cladefs FUSE mount %s: %w", b.mountRoot, err)
 	}
 	capBytes := cmp.Or(cfg.DiskBytes, uint64(64<<30))
@@ -749,7 +885,7 @@ func (b *CladefsFUSEBackend) EnsureProjectBase(
 		return adopted, nil
 	}
 
-	if err := clearMountNosuid(b.mountRoot); err != nil {
+	if err := b.ensureMountReady(ctx); err != nil {
 		return nil, fmt.Errorf("enable setuid on cladefs FUSE mount %s: %w", b.mountRoot, err)
 	}
 	if runFreshen == nil {
@@ -767,6 +903,9 @@ func (b *CladefsFUSEBackend) EnsureProjectBase(
 		forkStartMs := forkStart.UnixMilli()
 		tenant, cellID, mntDir, storeDir, err = b.forkAndMount(ctx, prevBase.Ref, filepath.Join("fuse-bases", baseID), 0, baseBuildUploadInterval)
 		if err != nil {
+			if ctx.Err() != nil {
+				return nil, err
+			}
 			slog.Warn("incremental cladefs FUSE project base fork failed; falling back to cold base",
 				"project", p.GetName(), "prevBase", prevBase.BaseID, "err", err)
 			prevBase = nil
@@ -948,7 +1087,7 @@ func (b *CladefsFUSEBackend) PrepareWorkspace(ctx context.Context, wsID string, 
 	if active {
 		return nil, "", fmt.Errorf("prepare cladefs FUSE workspace %s: active mount already exists: %w", wsID, storage.ErrBusy)
 	}
-	if err := clearMountNosuid(b.mountRoot); err != nil {
+	if err := b.ensureMountReady(ctx); err != nil {
 		return nil, "", fmt.Errorf("enable setuid on cladefs FUSE mount %s: %w", b.mountRoot, err)
 	}
 	tenant, cellID, mntDir, storeDir, err := b.forkEphemeralAndMount(ctx, baseRef, filepath.Join("fuse-ws", wsID))

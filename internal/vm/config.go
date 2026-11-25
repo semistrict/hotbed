@@ -38,7 +38,7 @@ const (
 type Config struct {
 	FirecrackerBin     string        // path to cladefs-enabled firecracker binary
 	KernelPath         string        // path to cladefs guest vmlinux kernel
-	GuestdBin          string        // path to static Linux hotbed-guestd binary (for base image builds)
+	GuestdBin          string        // path to static Linux hotbed-guestd binary (attached via read-only tools disk)
 	RunDir             string        // directory for per-VM state (vm.json, meta.json, vsock UDS, console.log)
 	Slice              string        // systemd slice for VM units (default hotbed.slice)
 	VMUser             string        // non-root host user running Firecracker (default cladefsd)
@@ -123,6 +123,7 @@ type LaunchSpec struct {
 	ID            string // workspace or build ID (e.g. ws-3f2a01)
 	CellHostPath  string // host path to the cladefsd cell directory
 	CladefsVMSock string // host path to cladefsd VM socket (tenant or default)
+	ToolsDiskPath string // host path to read-only ext4 tools disk (populated from Config.GuestdBin by Start if empty)
 	VCPUs         int    // 0 -> Config.DefaultVCPUs
 	MemMiB        int    // 0 -> Config.DefaultMemMiB
 	DiskBytes     uint64 // 0 -> Config.DefaultDiskBytes

@@ -4,6 +4,7 @@ package main
 
 import (
 	"bufio"
+	"fmt"
 	"log/slog"
 	"os"
 	"os/exec"
@@ -121,18 +122,110 @@ func ensureBootRuntimeDirs(log *slog.Logger, passwdPath, runRoot string) {
 	}
 }
 
-// runPID1Supervisor mounts Linux API filesystems, forks hotbed-guestd as a
-// child process (PID 2) with --no-pid1, and stays as PID 1 solely to reap
-// orphaned grandchildren. Separating PID 1 reaping from PID 2's exec.Cmd.Wait
-// calls prevents wait4(-1) from stealing direct child exit statuses (ECHILD).
+type pivotRootOps struct {
+	mount     func(source, target, fstype string, flags uintptr, data string) error
+	mkdirAll  func(path string, perm os.FileMode) error
+	pivotRoot func(newroot, putold string) error
+	chdir     func(dir string) error
+	unsetenv  func(key string) error
+}
+
+var defaultPivotRootOps = pivotRootOps{
+	mount:     syscall.Mount,
+	mkdirAll:  os.MkdirAll,
+	pivotRoot: syscall.PivotRoot,
+	chdir:     os.Chdir,
+	unsetenv:  os.Unsetenv,
+}
+
+// pivotToWorkspaceRoot switches from the read-only host tools disk (/dev/vda)
+// to the cladefs workspace rootfs specified by HOTBED_ROOT (<fstype>:<source>,
+// e.g. "cladefs:rootfs"), leaving the tools disk mounted read-only at
+// /run/hotbed-tools so hotbed-guestd executes directly off it without baking
+// binaries into workspace base images.
+func pivotToWorkspaceRoot(log *slog.Logger) (pivoted, devMoved bool, err error) {
+	return pivotToWorkspaceRootWithOps(log, os.Getenv("HOTBED_ROOT"), defaultPivotRootOps)
+}
+
+func pivotToWorkspaceRootWithOps(log *slog.Logger, spec string, ops pivotRootOps) (pivoted, devMoved bool, err error) {
+	spec = strings.TrimSpace(spec)
+	if spec == "" {
+		return false, false, nil
+	}
+	fstype, source, ok := strings.Cut(spec, ":")
+	if !ok || fstype == "" || source == "" {
+		return false, false, fmt.Errorf("invalid HOTBED_ROOT %q (expected fstype:source)", spec)
+	}
+
+	// Ensure mount propagation is private so pivot_root never fails with EINVAL.
+	_ = ops.mount("", "/", "", syscall.MS_PRIVATE|syscall.MS_REC, "")
+
+	const newRoot = "/newroot"
+	if err := ops.mount(source, newRoot, fstype, 0, ""); err != nil {
+		return false, false, fmt.Errorf("mount workspace root %s (%s) on %s: %w", source, fstype, newRoot, err)
+	}
+
+	// Move kernel-mounted devtmpfs into the workspace rootfs so /dev/console
+	// stays attached seamlessly across pivot_root.
+	_ = ops.mkdirAll(filepath.Join(newRoot, "dev"), 0o755)
+	if err := ops.mount("/dev", filepath.Join(newRoot, "dev"), "", syscall.MS_MOVE, ""); err == nil {
+		devMoved = true
+	} else if log != nil {
+		log.Warn("move /dev into workspace root failed; will mount fresh devtmpfs", "err", err)
+	}
+
+	// Mount /run tmpfs on the workspace rootfs and pivot the old read-only tools
+	// disk onto /run/hotbed-tools so it never writes to or pollutes /.
+	newRun := filepath.Join(newRoot, "run")
+	_ = ops.mkdirAll(newRun, 0o755)
+	if err := ops.mount("tmpfs", newRun, "tmpfs", syscall.MS_NOSUID|syscall.MS_NODEV, "mode=755"); err != nil {
+		return false, devMoved, fmt.Errorf("mount tmpfs on %s: %w", newRun, err)
+	}
+	putOld := filepath.Join(newRun, "hotbed-tools")
+	if err := ops.mkdirAll(putOld, 0o555); err != nil {
+		return false, devMoved, fmt.Errorf("mkdir %s: %w", putOld, err)
+	}
+	if err := ops.pivotRoot(newRoot, putOld); err != nil {
+		return false, devMoved, fmt.Errorf("pivot_root(%s, %s): %w", newRoot, putOld, err)
+	}
+	if err := ops.chdir("/"); err != nil {
+		return false, devMoved, fmt.Errorf("chdir / after pivot_root: %w", err)
+	}
+	_ = ops.unsetenv("HOTBED_ROOT")
+	return true, devMoved, nil
+}
+
+// runPID1Supervisor pivots onto the workspace rootfs (when booted from the
+// separate read-only tools disk), mounts Linux API filesystems, forks
+// hotbed-guestd as a child process (PID 2) with --no-pid1, and stays as PID 1
+// solely to reap orphaned grandchildren. Separating PID 1 reaping from PID 2's
+// exec.Cmd.Wait calls prevents wait4(-1) from stealing direct child exit
+// statuses (ECHILD).
 //
 // Returns true if the supervisor ran to completion (caller should exit), or
 // false if spawning the child failed and caller should fall back in-process.
 func runPID1Supervisor(log *slog.Logger, nofile uint64) bool {
+	pivoted, devMoved, err := pivotToWorkspaceRoot(log)
+	if err != nil {
+		log.Error("pid1 pivot to workspace root failed", "err", err)
+		syscall.Sync()
+		if os.Getpid() == 1 {
+			_ = syscall.Reboot(syscall.LINUX_REBOOT_CMD_RESTART)
+		}
+		return true
+	}
 	if _, err := applyNofileLimit(log, nofile); err != nil {
 		log.Warn("pid1 set RLIMIT_NOFILE failed", "limit", nofile, "err", err)
 	}
 	for _, m := range pid1Mounts {
+		if m.target == "/dev" && devMoved {
+			continue
+		}
+		if m.target == "/run" && pivoted {
+			// /run tmpfs already hosts the pivoted /run/hotbed-tools mount;
+			// overmounting it would hide the running hotbed-guestd binary.
+			continue
+		}
 		_ = os.MkdirAll(m.target, 0o755)
 		if err := syscall.Mount(m.src, m.target, m.fstype, m.flags, m.data); err != nil {
 			if err != syscall.EBUSY {

@@ -299,13 +299,16 @@ func (s *Server) StartCommand(_ context.Context, req *guestdv1.StartCommandReque
 
 	dir := s.resolveWorkDir(req.Dir)
 	runtimeDir := s.ensureRuntimeDir(int(req.Uid), int(req.Gid))
-	cmd := exec.Command(req.Argv[0], req.Argv[1:]...)
+	env := withDefaultRuntimeEnv(req.Env, runtimeDir)
+	cmd, err := commandWithEnv(req.Argv, env)
+	if err != nil {
+		_ = logFile.Close()
+		s.mu.Unlock()
+		return nil, connect.NewError(connect.CodeInternal, "start command: "+err.Error())
+	}
 	cmd.Dir = dir
 	cmd.Stdout = logFile
 	cmd.Stderr = logFile
-	if env := withDefaultRuntimeEnv(req.Env, runtimeDir); len(env) > 0 {
-		cmd.Env = env
-	}
 	attr := &syscall.SysProcAttr{Setpgid: true}
 	if req.Uid > 0 || req.Gid > 0 {
 		if os.Geteuid() == 0 {
@@ -1090,15 +1093,17 @@ func (s *Server) handleShellConn(ctx context.Context, conn net.Conn) {
 	}
 
 	runtimeDir := s.ensureRuntimeDir(req.UID, req.GID)
-	cmd := exec.Command(argv[0], argv[1:]...)
-	cmd.Dir = dir
 	env := append([]string(nil), req.Env...)
 	if req.Term != "" {
 		env = append(env, "TERM="+req.Term)
 	}
-	if env = withDefaultRuntimeEnv(env, runtimeDir); len(env) > 0 {
-		cmd.Env = env
+	env = withDefaultRuntimeEnv(env, runtimeDir)
+	cmd, err := commandWithEnv(argv, env)
+	if err != nil {
+		_ = send(frameError, []byte("start shell: "+err.Error()))
+		return
 	}
+	cmd.Dir = dir
 	attr := &syscall.SysProcAttr{}
 	if (req.UID > 0 || req.GID > 0) && os.Geteuid() == 0 {
 		attr.Credential = &syscall.Credential{
@@ -1436,4 +1441,51 @@ func countLines(text []byte) int {
 		n++
 	}
 	return n
+}
+
+// commandWithEnv constructs an *exec.Cmd resolving a bare argv[0] against the
+// PATH in env rather than guestd's own PID-1 PATH (which lacks workspace tool
+// directories such as /work/.hotbed/bin).
+func commandWithEnv(argv, env []string) (*exec.Cmd, error) {
+	name := argv[0]
+	path := name
+	if !strings.Contains(name, "/") {
+		resolved, err := lookPathInEnv(name, env)
+		if err != nil {
+			return nil, err
+		}
+		path = resolved
+	}
+	cmd := &exec.Cmd{
+		Path: path,
+		Args: append([]string(nil), argv...),
+	}
+	if len(env) > 0 {
+		cmd.Env = env
+	}
+	return cmd, nil
+}
+
+func lookPathInEnv(file string, env []string) (string, error) {
+	pathVal, hasPath := "", false
+	for _, kv := range env {
+		if v, ok := strings.CutPrefix(kv, "PATH="); ok {
+			pathVal = v
+			hasPath = true
+		}
+	}
+	if !hasPath {
+		return exec.LookPath(file)
+	}
+	for _, dir := range filepath.SplitList(pathVal) {
+		if dir == "" {
+			dir = "."
+		}
+		candidate := filepath.Join(dir, file)
+		fi, err := os.Stat(candidate)
+		if err == nil && !fi.IsDir() && fi.Mode()&0o111 != 0 {
+			return candidate, nil
+		}
+	}
+	return "", &exec.Error{Name: file, Err: exec.ErrNotFound}
 }
