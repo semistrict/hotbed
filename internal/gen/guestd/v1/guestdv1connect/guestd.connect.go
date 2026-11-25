@@ -53,10 +53,6 @@ const (
 	GuestServiceForgetCommandProfileProcedure = "/guestd.v1.GuestService/ForgetCommandProfile"
 	// GuestServiceReclaimProcedure is the procedure name of the GuestService's Reclaim RPC.
 	GuestServiceReclaimProcedure = "/guestd.v1.GuestService/Reclaim"
-	// GuestServiceFreezeFSProcedure is the procedure name of the GuestService's FreezeFS RPC.
-	GuestServiceFreezeFSProcedure = "/guestd.v1.GuestService/FreezeFS"
-	// GuestServiceThawFSProcedure is the procedure name of the GuestService's ThawFS RPC.
-	GuestServiceThawFSProcedure = "/guestd.v1.GuestService/ThawFS"
 	// GuestServiceStreamLogsProcedure is the procedure name of the GuestService's StreamLogs RPC.
 	GuestServiceStreamLogsProcedure = "/guestd.v1.GuestService/StreamLogs"
 	// GuestServiceSyncProcedure is the procedure name of the GuestService's Sync RPC.
@@ -164,22 +160,6 @@ var (
 			IdempotencyLevel: connect.IdempotencyIdempotent,
 		}
 	})
-	guestServiceFreezeFSSpec = sync.OnceValue(func() connect.Spec {
-		return connect.Spec{
-			StreamType:       connect.StreamTypeUnary,
-			Schema:           v1.File_guestd_v1_guestd_proto.Services().ByName("GuestService").Methods().ByName("FreezeFS"),
-			Procedure:        GuestServiceFreezeFSProcedure,
-			IdempotencyLevel: connect.IdempotencyIdempotent,
-		}
-	})
-	guestServiceThawFSSpec = sync.OnceValue(func() connect.Spec {
-		return connect.Spec{
-			StreamType:       connect.StreamTypeUnary,
-			Schema:           v1.File_guestd_v1_guestd_proto.Services().ByName("GuestService").Methods().ByName("ThawFS"),
-			Procedure:        GuestServiceThawFSProcedure,
-			IdempotencyLevel: connect.IdempotencyIdempotent,
-		}
-	})
 	guestServiceStreamLogsSpec = sync.OnceValue(func() connect.Spec {
 		return connect.Spec{
 			StreamType: connect.StreamTypeServer,
@@ -247,12 +227,6 @@ type GuestServiceClient interface {
 	ForgetCommandProfile(context.Context, *v1.ForgetCommandProfileRequest) (*v1.ForgetCommandProfileResponse, error)
 	// Reclaim reclaims memory from a command cgroup and drops clean guest page caches.
 	Reclaim(context.Context, *v1.ReclaimRequest) (*v1.ReclaimResponse, error)
-	// FreezeFS flushes and freezes the guest workspace filesystem (FIFREEZE) prior
-	// to taking a consistent Firecracker + cladefs VM snapshot.
-	FreezeFS(context.Context, *v1.FreezeFSRequest) (*v1.FreezeFSResponse, error)
-	// ThawFS unfreezes a previously frozen guest filesystem (FITHAW) after a VM
-	// snapshot restores or is aborted.
-	ThawFS(context.Context, *v1.ThawFSRequest) (*v1.ThawFSResponse, error)
 	// StreamLogs streams combined command stdout/stderr starting at offset.
 	StreamLogs(context.Context, *v1.StreamLogsRequest) (GuestServiceStreamLogsClientStream, error)
 	// Sync streams a repo's git bundle (and optional submodule bundles) and
@@ -390,12 +364,6 @@ type GuestServiceHandler interface {
 	ForgetCommandProfile(context.Context, *v1.ForgetCommandProfileRequest) (*v1.ForgetCommandProfileResponse, error)
 	// Reclaim reclaims memory from a command cgroup and drops clean guest page caches.
 	Reclaim(context.Context, *v1.ReclaimRequest) (*v1.ReclaimResponse, error)
-	// FreezeFS flushes and freezes the guest workspace filesystem (FIFREEZE) prior
-	// to taking a consistent Firecracker + cladefs VM snapshot.
-	FreezeFS(context.Context, *v1.FreezeFSRequest) (*v1.FreezeFSResponse, error)
-	// ThawFS unfreezes a previously frozen guest filesystem (FITHAW) after a VM
-	// snapshot restores or is aborted.
-	ThawFS(context.Context, *v1.ThawFSRequest) (*v1.ThawFSResponse, error)
 	// StreamLogs streams combined command stdout/stderr starting at offset.
 	StreamLogs(context.Context, *v1.StreamLogsRequest, GuestServiceStreamLogsServerStream) error
 	// Sync streams a repo's git bundle (and optional submodule bundles) and
@@ -425,8 +393,6 @@ func RegisterGuestServiceHandler(server *connect.Server, svc GuestServiceHandler
 		connect.Method{Spec: guestServiceGetProfileSpec(), Handler: adapter.getProfile},
 		connect.Method{Spec: guestServiceForgetCommandProfileSpec(), Handler: adapter.forgetCommandProfile},
 		connect.Method{Spec: guestServiceReclaimSpec(), Handler: adapter.reclaim},
-		connect.Method{Spec: guestServiceFreezeFSSpec(), Handler: adapter.freezeFS},
-		connect.Method{Spec: guestServiceThawFSSpec(), Handler: adapter.thawFS},
 		connect.Method{Spec: guestServiceStreamLogsSpec(), Handler: adapter.streamLogs},
 		connect.Method{Spec: guestServiceSyncSpec(), Handler: adapter.sync},
 		connect.Method{Spec: guestServiceListFilesSpec(), Handler: adapter.listFiles},
@@ -547,14 +513,6 @@ func (UnimplementedGuestServiceHandler) Reclaim(context.Context, *v1.ReclaimRequ
 	return nil, connect.NewError(connect.CodeUnimplemented, "guestd.v1.GuestService.Reclaim is not implemented")
 }
 
-func (UnimplementedGuestServiceHandler) FreezeFS(context.Context, *v1.FreezeFSRequest) (*v1.FreezeFSResponse, error) {
-	return nil, connect.NewError(connect.CodeUnimplemented, "guestd.v1.GuestService.FreezeFS is not implemented")
-}
-
-func (UnimplementedGuestServiceHandler) ThawFS(context.Context, *v1.ThawFSRequest) (*v1.ThawFSResponse, error) {
-	return nil, connect.NewError(connect.CodeUnimplemented, "guestd.v1.GuestService.ThawFS is not implemented")
-}
-
 func (UnimplementedGuestServiceHandler) StreamLogs(context.Context, *v1.StreamLogsRequest, GuestServiceStreamLogsServerStream) error {
 	return connect.NewError(connect.CodeUnimplemented, "guestd.v1.GuestService.StreamLogs is not implemented")
 }
@@ -670,22 +628,6 @@ func (c *guestServiceClient) ForgetCommandProfile(ctx context.Context, req *v1.F
 func (c *guestServiceClient) Reclaim(ctx context.Context, req *v1.ReclaimRequest) (*v1.ReclaimResponse, error) {
 	var res v1.ReclaimResponse
 	if err := c.client.CallUnary(ctx, guestServiceReclaimSpec(), req, &res); err != nil {
-		return nil, err
-	}
-	return &res, nil
-}
-
-func (c *guestServiceClient) FreezeFS(ctx context.Context, req *v1.FreezeFSRequest) (*v1.FreezeFSResponse, error) {
-	var res v1.FreezeFSResponse
-	if err := c.client.CallUnary(ctx, guestServiceFreezeFSSpec(), req, &res); err != nil {
-		return nil, err
-	}
-	return &res, nil
-}
-
-func (c *guestServiceClient) ThawFS(ctx context.Context, req *v1.ThawFSRequest) (*v1.ThawFSResponse, error) {
-	var res v1.ThawFSResponse
-	if err := c.client.CallUnary(ctx, guestServiceThawFSSpec(), req, &res); err != nil {
 		return nil, err
 	}
 	return &res, nil
@@ -863,30 +805,6 @@ func (h guestServiceHandler) reclaim(ctx context.Context, _ connect.Spec, stream
 		return err
 	}
 	res, err := h.svc.Reclaim(ctx, &req)
-	if err != nil {
-		return err
-	}
-	return stream.Send(res)
-}
-
-func (h guestServiceHandler) freezeFS(ctx context.Context, _ connect.Spec, stream connect.ServerStream) error {
-	var req v1.FreezeFSRequest
-	if err := stream.Receive(&req); err != nil {
-		return err
-	}
-	res, err := h.svc.FreezeFS(ctx, &req)
-	if err != nil {
-		return err
-	}
-	return stream.Send(res)
-}
-
-func (h guestServiceHandler) thawFS(ctx context.Context, _ connect.Spec, stream connect.ServerStream) error {
-	var req v1.ThawFSRequest
-	if err := stream.Receive(&req); err != nil {
-		return err
-	}
-	res, err := h.svc.ThawFS(ctx, &req)
 	if err != nil {
 		return err
 	}

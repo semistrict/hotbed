@@ -831,7 +831,7 @@ func TestRuntimeUnitsMemoryAndReclaimAccountForHostVMRam(t *testing.T) {
 		},
 	}
 	ru := newRuntimeUnits(inner, spy, func(string) bool { return true }, 0, 0)
-	ru.canSuspend = func(string) bool { return true }
+	ru.isVMQuiescent = func(string) bool { return true }
 
 	mem, err := ru.Memory("vm:ws-zram:cmd-1")
 	if err != nil {

@@ -202,24 +202,6 @@ func (c *Client) Reclaim(ctx context.Context, id string, bytes int64) error {
 	return err
 }
 
-// FreezeFS flushes and freezes the guest workspace filesystem (FIFREEZE) prior
-// to a Firecracker VM snapshot.
-func (c *Client) FreezeFS(ctx context.Context, dropCaches bool) error {
-	_, err := retryUnary(ctx, func() (*guestdv1.FreezeFSResponse, error) {
-		return c.rpc.FreezeFS(ctx, &guestdv1.FreezeFSRequest{DropCaches: dropCaches})
-	})
-	return err
-}
-
-// ThawFS unfreezes the guest workspace filesystem (FITHAW) after a Firecracker
-// VM restore or aborted snapshot.
-func (c *Client) ThawFS(ctx context.Context) error {
-	_, err := retryUnary(ctx, func() (*guestdv1.ThawFSResponse, error) {
-		return c.rpc.ThawFS(ctx, &guestdv1.ThawFSRequest{})
-	})
-	return err
-}
-
 // InspectCommand runs an opt-in Linux inspection of a live command inside the guest VM.
 func (c *Client) InspectCommand(ctx context.Context, req *pb.InspectCommandRequest) (*pb.InspectCommandResponse, error) {
 	resp, err := retryUnary(ctx, func() (*pb.InspectCommandResponse, error) {

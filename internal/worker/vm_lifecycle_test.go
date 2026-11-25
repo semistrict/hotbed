@@ -19,16 +19,13 @@ import (
 	"github.com/semistrict/hotbed/internal/unit"
 )
 
-type suspendableTestResolver struct {
-	mu           sync.Mutex
-	clients      map[string]*guestd.Client
-	suspended    map[string]int64
-	stopped      map[string]bool
-	suspendCount map[string]int
-	resumeCount  map[string]int
-	stopCount    map[string]int
-	suspendErr   error
-	stopErr      error
+type lifecycleTestResolver struct {
+	mu        sync.Mutex
+	clients   map[string]*guestd.Client
+	stopped   map[string]bool
+	bootCount map[string]int
+	stopCount map[string]int
+	stopErr   error
 	// stoppedErr is what StopVM says after stopping the VM all the same, as
 	// a stop whose guest sync failed does.
 	stoppedErr error
@@ -36,29 +33,23 @@ type suspendableTestResolver struct {
 	sizes map[string]unit.VMSize
 }
 
-func newSuspendableTestResolver() *suspendableTestResolver {
-	return &suspendableTestResolver{
-		clients:      map[string]*guestd.Client{},
-		suspended:    map[string]int64{},
-		stopped:      map[string]bool{},
-		suspendCount: map[string]int{},
-		resumeCount:  map[string]int{},
-		stopCount:    map[string]int{},
-		sizes:        map[string]unit.VMSize{},
+func newLifecycleTestResolver() *lifecycleTestResolver {
+	return &lifecycleTestResolver{
+		clients:   map[string]*guestd.Client{},
+		stopped:   map[string]bool{},
+		bootCount: map[string]int{},
+		stopCount: map[string]int{},
+		sizes:     map[string]unit.VMSize{},
 	}
 }
 
-func (r *suspendableTestResolver) EnsureVM(_ context.Context, wsID string, size unit.VMSize) (*guestd.Client, error) {
+func (r *lifecycleTestResolver) EnsureVM(_ context.Context, wsID string, size unit.VMSize) (*guestd.Client, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.sizes[wsID] = size
-	if _, susp := r.suspended[wsID]; susp {
-		delete(r.suspended, wsID)
-		r.resumeCount[wsID]++
-	}
 	if r.stopped[wsID] {
 		delete(r.stopped, wsID)
-		r.resumeCount[wsID]++
+		r.bootCount[wsID]++
 	}
 	c, ok := r.clients[wsID]
 	if !ok {
@@ -67,12 +58,9 @@ func (r *suspendableTestResolver) EnsureVM(_ context.Context, wsID string, size 
 	return c, nil
 }
 
-func (r *suspendableTestResolver) ClientFor(wsID string) (*guestd.Client, error) {
+func (r *lifecycleTestResolver) ClientFor(wsID string) (*guestd.Client, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	if _, susp := r.suspended[wsID]; susp {
-		return nil, fmt.Errorf("vm %s is suspended", wsID)
-	}
 	if r.stopped[wsID] {
 		return nil, fmt.Errorf("vm %s is stopped", wsID)
 	}
@@ -83,42 +71,18 @@ func (r *suspendableTestResolver) ClientFor(wsID string) (*guestd.Client, error)
 	return c, nil
 }
 
-func (r *suspendableTestResolver) StopVM(_ context.Context, wsID string) error {
+func (r *lifecycleTestResolver) StopVM(_ context.Context, wsID string) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if r.stopErr != nil {
 		return r.stopErr
 	}
-	delete(r.suspended, wsID)
 	r.stopped[wsID] = true
 	r.stopCount[wsID]++
 	return r.stoppedErr
 }
 
-func (r *suspendableTestResolver) SuspendVM(_ context.Context, wsID string, workingSetBytes int64) error {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	if r.suspendErr != nil {
-		return r.suspendErr
-	}
-	r.suspended[wsID] = workingSetBytes
-	r.suspendCount[wsID]++
-	return nil
-}
-
-func (r *suspendableTestResolver) IsVMSuspended(wsID string) (bool, int64) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	ws, ok := r.suspended[wsID]
-	return ok, ws
-}
-
-func (r *suspendableTestResolver) VMExitStatus(_ context.Context, wsID string) (bool, int, int, string, bool) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	if _, susp := r.suspended[wsID]; susp {
-		return false, 0, 0, "", false
-	}
+func (r *lifecycleTestResolver) VMExitStatus(_ context.Context, _ string) (bool, int, int, string, bool) {
 	return false, 0, 0, "", false
 }
 
@@ -161,8 +125,6 @@ func startLocalTestGuestd(t *testing.T) *guestd.Client {
 		WorkDir:  guestWork,
 		StateDir: guestState,
 		RunDir:   guestRun,
-		FreezeFS: func(string) error { return nil },
-		ThawFS:   func(string) error { return nil },
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -177,7 +139,7 @@ func startLocalTestGuestd(t *testing.T) *guestd.Client {
 	return c
 }
 
-func newSuspendTestEngine(t *testing.T) (*Engine, *suspendableTestResolver, *fake.System, *time.Time) {
+func newLifecycleTestEngine(t *testing.T) (*Engine, *lifecycleTestResolver, *fake.System, *time.Time) {
 	t.Helper()
 	ctx := t.Context()
 	now := time.Date(2026, 11, 25, 12, 0, 0, 0, time.UTC)
@@ -185,7 +147,7 @@ func newSuspendTestEngine(t *testing.T) (*Engine, *suspendableTestResolver, *fak
 	store := &fake.Store{Root: filepath.Join(dir, "volumes")}
 	sys := fake.NewSystem()
 	sys.Mem = sysinfo.Mem{Total: 16 << 30, Available: 12 << 30}
-	resolver := newSuspendableTestResolver()
+	resolver := newLifecycleTestResolver()
 	rt := runtime.NewGuestRuntime(resolver)
 	eng, err := NewEngine(ctx, EngineConfig{
 		Dir:        dir,
@@ -206,7 +168,7 @@ func newSuspendTestEngine(t *testing.T) (*Engine, *suspendableTestResolver, *fak
 	return eng, resolver, sys, &now
 }
 
-func seedTestVMWorkspace(t *testing.T, eng *Engine, resolver *suspendableTestResolver, wsID string, now time.Time) {
+func seedTestVMWorkspace(t *testing.T, eng *Engine, resolver *lifecycleTestResolver, wsID string, now time.Time) {
 	t.Helper()
 	resolver.mu.Lock()
 	resolver.clients[wsID] = startLocalTestGuestd(t)
@@ -230,7 +192,7 @@ func seedTestVMWorkspace(t *testing.T, eng *Engine, resolver *suspendableTestRes
 // its own: a second command in a workspace waits while the first runs, the
 // first's VM stops as soon as it ends, and the second boots a new one.
 func TestSecondCommandInWorkspaceWaitsAndGetsAVMOfItsOwn(t *testing.T) {
-	eng, resolver, _, now := newSuspendTestEngine(t)
+	eng, resolver, _, now := newLifecycleTestEngine(t)
 	seedTestVMWorkspace(t, eng, resolver, "ws-shared", *now)
 	ctx := t.Context()
 
@@ -263,7 +225,7 @@ func TestSecondCommandInWorkspaceWaitsAndGetsAVMOfItsOwn(t *testing.T) {
 	waitForCommandState(t, eng, c2.Id, succeeded)
 
 	resolver.mu.Lock()
-	stops, boots := resolver.stopCount["ws-shared"], resolver.resumeCount["ws-shared"]
+	stops, boots := resolver.stopCount["ws-shared"], resolver.bootCount["ws-shared"]
 	resolver.mu.Unlock()
 	// cmd-1's VM stopped as it ended, cmd-2 booted a new one, and that
 	// stopped as cmd-2 ended.
@@ -293,58 +255,12 @@ func waitForCommandState(t *testing.T, eng *Engine, id string, want pb.CommandSt
 	}
 }
 
-func TestVMPauseSuspendsAndReleaseDiscardsWithoutResume(t *testing.T) {
-	eng, resolver, _, now := newSuspendTestEngine(t)
-	seedTestVMWorkspace(t, eng, resolver, "ws-pause", *now)
-	ctx := t.Context()
-
-	c, err := eng.Exec(ctx, &pb.RunCommandRequest{
-		Id:          "cmd-pause",
-		WorkspaceId: "ws-pause",
-		Args:        []string{"/bin/sh", "-c", "sleep 60"},
-	})
-	if err != nil {
-		t.Fatalf("Exec: %v", err)
-	}
-	eng.step(ctx)
-
-	pausedCmd, err := eng.Pause(ctx, c.Id, Intervention{Comment: "take a break"})
-	if err != nil {
-		t.Fatalf("Pause: %v", err)
-	}
-	if pausedCmd.State != paused {
-		t.Fatalf("state = %v, want paused", pausedCmd.State)
-	}
-	if susp, _ := resolver.IsVMSuspended("ws-pause"); !susp {
-		t.Fatal("expected ws-pause to be suspended after Pause")
-	}
-
-	// Releasing the workspace while suspended must NOT resume the VM just to kill the paused command.
-	if err := eng.ReleaseWorkspace(ctx, "ws-pause"); err != nil {
-		t.Fatalf("ReleaseWorkspace: %v", err)
-	}
-	resolver.mu.Lock()
-	resumes := resolver.resumeCount["ws-pause"]
-	stops := resolver.stopCount["ws-pause"]
-	resolver.mu.Unlock()
-	if resumes != 0 {
-		t.Fatalf("ReleaseWorkspace unexpectedly resumed suspended VM (%d times)", resumes)
-	}
-	if stops != 1 {
-		t.Fatalf("ReleaseWorkspace StopVM count = %d, want 1", stops)
-	}
-	ended, _ := eng.Command(c.Id)
-	if ended.State != cancelled {
-		t.Fatalf("cmd-pause after release = %v, want cancelled", ended.State)
-	}
-}
-
 // A VM booted ahead of any command (to prepare the workspace or sync a
 // checkout) waits freshVMGrace for its command, then stops too. A command
 // boots a new one on the workspace's disk, and that one stops as soon as the
 // command ends: no VM idles between commands.
 func TestFreshVMStopsAfterGraceAndEachCommandStopsItsVM(t *testing.T) {
-	eng, resolver, _, now := newSuspendTestEngine(t)
+	eng, resolver, _, now := newLifecycleTestEngine(t)
 	seedTestVMWorkspace(t, eng, resolver, "ws-idle", *now)
 	ctx := t.Context()
 	stops := func() int {
@@ -378,7 +294,7 @@ func TestFreshVMStopsAfterGraceAndEachCommandStopsItsVM(t *testing.T) {
 	}
 	waitForCommandState(t, eng, cmd.Id, succeeded)
 	resolver.mu.Lock()
-	boots := resolver.resumeCount["ws-idle"]
+	boots := resolver.bootCount["ws-idle"]
 	resolver.mu.Unlock()
 	if boots != 1 {
 		t.Fatalf("ws-idle boots = %d, want 1 for cmd-wake", boots)
@@ -389,19 +305,6 @@ func TestFreshVMStopsAfterGraceAndEachCommandStopsItsVM(t *testing.T) {
 	logPath, _ := eng.logPath(cmd.Id)
 	if got, _ := os.ReadFile(logPath); !strings.Contains(string(got), "BOOTED_FOR_ME") {
 		t.Fatalf("log missing BOOTED_FOR_ME: %q", got)
-	}
-}
-
-func TestRuntimeUnitsMemoryReturnsZeroAnonWhileSuspended(t *testing.T) {
-	resolver := newSuspendableTestResolver()
-	resolver.suspended["ws-1"] = 768 << 20
-	ru := newRuntimeUnits(&fake.Units{}, runtime.NewGuestRuntime(resolver), func(string) bool { return true }, 0, 0)
-	mem, err := ru.Memory(makeVMCgroup("ws-1", "cmd-1"))
-	if err != nil {
-		t.Fatalf("Memory: %v", err)
-	}
-	if mem != (unit.MemoryUse{Anon: 0, Swap: 768 << 20}) {
-		t.Fatalf("Memory = %+v, want {Anon:0 Swap:%d}", mem, int64(768<<20))
 	}
 }
 
@@ -423,7 +326,7 @@ func TestVMStopFailureReclaimsHostRAMAndRetries(t *testing.T) {
 			vmCG: {Anon: 1024 << 20, Swap: 0},
 		},
 	}
-	resolver := newSuspendableTestResolver()
+	resolver := newLifecycleTestResolver()
 	resolver.stopErr = fmt.Errorf("simulated stop failure")
 	rt := runtime.NewGuestRuntime(resolver)
 	eng, err := NewEngine(ctx, EngineConfig{
@@ -553,7 +456,7 @@ func TestStepReadsMemoryOutsideEngineLock(t *testing.T) {
 // --vm-cpus and --vm-mem size the VM a command boots, and only that: the
 // node reserves for it only what it reserves for any command.
 func TestCommandVMSizeSizesItsVMOnly(t *testing.T) {
-	eng, resolver, _, now := newSuspendTestEngine(t)
+	eng, resolver, _, now := newLifecycleTestEngine(t)
 	seedTestVMWorkspace(t, eng, resolver, "ws-sz", *now)
 	ctx := t.Context()
 
@@ -588,7 +491,7 @@ func TestExecRefusesVMRequestsItCannotMeet(t *testing.T) {
 		t.Fatalf("--vm-cpus on a host workspace: err = %v", err)
 	}
 
-	eng, resolver, _, now := newSuspendTestEngine(t)
+	eng, resolver, _, now := newLifecycleTestEngine(t)
 	seedTestVMWorkspace(t, eng, resolver, "ws-big", *now)
 	eng.mu.Lock()
 	eng.resources.Cpus, eng.resources.MemoryBytes = 8, 16<<30
@@ -606,7 +509,7 @@ func TestExecRefusesVMRequestsItCannotMeet(t *testing.T) {
 // A VM a sync, file read or shell is using is not stopped under it, even one
 // whose command ended: it stops once they let it go.
 func TestVMInUseIsNotStopped(t *testing.T) {
-	eng, resolver, _, now := newSuspendTestEngine(t)
+	eng, resolver, _, now := newLifecycleTestEngine(t)
 	seedTestVMWorkspace(t, eng, resolver, "ws-use", *now)
 	eng.mu.Lock()
 	eng.workspaces["ws-use"].vmUsed = true // a command ran in it and ended
@@ -633,7 +536,7 @@ func TestVMInUseIsNotStopped(t *testing.T) {
 // and one asking a size of its own waits rather than reboot it under the
 // shell.
 func TestSizedCommandWaitsForAShellsVM(t *testing.T) {
-	eng, resolver, _, now := newSuspendTestEngine(t)
+	eng, resolver, _, now := newLifecycleTestEngine(t)
 	seedTestVMWorkspace(t, eng, resolver, "ws-sh", *now)
 	eng.mu.Lock()
 	eng.shells["sh-1"] = &activeShell{id: "sh-1", workspaceID: "ws-sh", done: make(chan struct{})}
@@ -668,7 +571,7 @@ func TestSizedCommandWaitsForAShellsVM(t *testing.T) {
 // A node profile reads the profiles of VMs that are up, and boots none: most
 // workspaces' VMs are down between commands.
 func TestNodeProfileBootsNoVM(t *testing.T) {
-	eng, resolver, _, now := newSuspendTestEngine(t)
+	eng, resolver, _, now := newLifecycleTestEngine(t)
 	seedTestVMWorkspace(t, eng, resolver, "ws-down", *now)
 	if err := resolver.StopVM(t.Context(), "ws-down"); err != nil {
 		t.Fatal(err)
@@ -678,7 +581,7 @@ func TestNodeProfileBootsNoVM(t *testing.T) {
 	}
 	resolver.mu.Lock()
 	_, asked := resolver.sizes["ws-down"]
-	boots := resolver.resumeCount["ws-down"]
+	boots := resolver.bootCount["ws-down"]
 	resolver.mu.Unlock()
 	if asked || boots != 0 {
 		t.Fatalf("NodeProfile asked ws-down's VM up (asked=%v boots=%d), want it left down", asked, boots)
@@ -688,7 +591,7 @@ func TestNodeProfileBootsNoVM(t *testing.T) {
 // A stop that errs but leaves the VM gone (its guest's sync failed) counts
 // as a stop: the workspace's next command does not wait a minute for it.
 func TestVMGoneDespiteStopErrorCountsAsStopped(t *testing.T) {
-	eng, resolver, _, now := newSuspendTestEngine(t)
+	eng, resolver, _, now := newLifecycleTestEngine(t)
 	seedTestVMWorkspace(t, eng, resolver, "ws-err", *now)
 	resolver.mu.Lock()
 	resolver.stoppedErr = fmt.Errorf("guest shutdown/sync failed: connection reset")
@@ -710,7 +613,7 @@ func TestVMGoneDespiteStopErrorCountsAsStopped(t *testing.T) {
 // waits while a sync, file read or shell uses the VM, and starts once it is
 // let go.
 func TestSizedCommandWaitsWhileItsVMIsInUse(t *testing.T) {
-	eng, resolver, _, now := newSuspendTestEngine(t)
+	eng, resolver, _, now := newLifecycleTestEngine(t)
 	seedTestVMWorkspace(t, eng, resolver, "ws-busy", *now)
 	ctx := t.Context()
 	release := eng.useVM("ws-busy")
@@ -732,7 +635,7 @@ func TestSizedCommandWaitsWhileItsVMIsInUse(t *testing.T) {
 
 // The VM of a failed workspace, in which nothing will run, stops.
 func TestFailedWorkspaceVMStops(t *testing.T) {
-	eng, resolver, _, now := newSuspendTestEngine(t)
+	eng, resolver, _, now := newLifecycleTestEngine(t)
 	seedTestVMWorkspace(t, eng, resolver, "ws-failed", *now)
 	eng.mu.Lock()
 	eng.workspaces["ws-failed"].ws().State = failedWS

@@ -30,22 +30,18 @@ func IsEphemeralBuildID(id string) bool {
 
 // Instance represents one live Firecracker microVM backing a workspace.
 type Instance struct {
-	ID               string
-	UnitName         string
-	Dir              string
-	CellPath         string
-	CladefsVMSock    string
-	APISock          string
-	VsockUDS         string
-	ConsoleLog       string
-	GuestCID         uint32
-	Net              NetAlloc
-	Client           *guestd.Client
-	StartedAt        time.Time
-	FromMemoryCell   bool
-	MemoryCellPath   string
-	PrevMemCellPaths []string
-	ToolsDiskPath    string
+	ID            string
+	UnitName      string
+	Dir           string
+	CellPath      string
+	CladefsVMSock string
+	VsockUDS      string
+	ConsoleLog    string
+	GuestCID      uint32
+	Net           NetAlloc
+	Client        *guestd.Client
+	StartedAt     time.Time
+	ToolsDiskPath string
 	// VCPUs and MemMiB are the size it booted at, as its guest sees it.
 	VCPUs  int
 	MemMiB int
@@ -54,30 +50,24 @@ type Instance struct {
 }
 
 // vmMeta is persisted to <RunDir>/<id>/meta.json so hotbed-worker can reconnect
-// to surviving or suspended Firecracker VMs across worker restarts without
-// disrupting them.
+// to surviving Firecracker VMs across worker restarts without disrupting them.
 type vmMeta struct {
-	ID               string          `json:"id"`
-	UnitName         string          `json:"unitName"`
-	CellPath         string          `json:"cellPath"`
-	CladefsVMSock    string          `json:"cladefsVMSock,omitempty"`
-	APISock          string          `json:"apiSock,omitempty"`
-	VsockUDS         string          `json:"vsockUDS"`
-	ConsoleLog       string          `json:"consoleLog"`
-	GuestCID         uint32          `json:"guestCID"`
-	Net              NetAlloc        `json:"net"`
-	StartedAt        time.Time       `json:"startedAt"`
-	FromMemoryCell   bool            `json:"fromMemoryCell,omitempty"`
-	MemoryCellPath   string          `json:"memoryCellPath,omitempty"`
-	PrevMemCellPaths []string        `json:"prevMemCellPaths,omitempty"`
-	ToolsDiskPath    string          `json:"toolsDiskPath,omitempty"`
-	VCPUs            int             `json:"vcpus,omitempty"`
-	MemMiB           int             `json:"memMiB,omitempty"`
-	Suspended        *SuspendedState `json:"suspended,omitempty"`
+	ID            string    `json:"id"`
+	UnitName      string    `json:"unitName"`
+	CellPath      string    `json:"cellPath"`
+	CladefsVMSock string    `json:"cladefsVMSock,omitempty"`
+	VsockUDS      string    `json:"vsockUDS"`
+	ConsoleLog    string    `json:"consoleLog"`
+	GuestCID      uint32    `json:"guestCID"`
+	Net           NetAlloc  `json:"net"`
+	StartedAt     time.Time `json:"startedAt"`
+	ToolsDiskPath string    `json:"toolsDiskPath,omitempty"`
+	VCPUs         int       `json:"vcpus,omitempty"`
+	MemMiB        int       `json:"memMiB,omitempty"`
 }
 
-// Manager launches, tracks, reconnects, suspends, resumes, and tears down
-// Firecracker microVMs. It implements runtime.GuestResolver via ClientFor.
+// Manager launches, tracks, reconnects, and tears down Firecracker microVMs.
+// It implements runtime.GuestResolver via ClientFor.
 type Manager struct {
 	cfg         Config
 	launcher    Launcher
@@ -93,9 +83,7 @@ type Manager struct {
 
 	mu        sync.Mutex
 	instances map[string]*Instance
-	suspended map[string]*SuspendedState
 	starting  map[string]struct{}
-	vmLocks   map[string]*sync.Mutex
 	usedCIDs  map[uint32]string
 	nextCID   uint32
 }
@@ -150,9 +138,7 @@ func NewManager(cfg Config, opts ...ManagerOption) (*Manager, error) {
 			return guestd.FirecrackerVsockDialer(uds)
 		},
 		instances: map[string]*Instance{},
-		suspended: map[string]*SuspendedState{},
 		starting:  map[string]struct{}{},
-		vmLocks:   map[string]*sync.Mutex{},
 		usedCIDs:  map[uint32]string{},
 		nextCID:   3, // CID 0,1,2 are reserved (hypervisor, local, host)
 	}
@@ -413,10 +399,6 @@ func (m *Manager) Start(ctx context.Context, spec LaunchSpec) (*Instance, error)
 		m.mu.Unlock()
 		return existing, nil
 	}
-	if m.suspended[spec.ID] != nil {
-		m.mu.Unlock()
-		return nil, fmt.Errorf("vm %s: already suspended (call Resume or Stop first): %w", spec.ID, ErrVMRunning)
-	}
 	if _, busy := m.starting[spec.ID]; busy {
 		m.mu.Unlock()
 		return nil, fmt.Errorf("vm %s: already starting: %w", spec.ID, ErrVMRunning)
@@ -444,13 +426,11 @@ func (m *Manager) Start(ctx context.Context, spec LaunchSpec) (*Instance, error)
 	_ = chownSockForUser(vmDir, cfg.VMUser)
 	_ = os.Chmod(vmDir, 0o755)
 
-	apiSock := filepath.Join(vmDir, "fc.sock")
 	vsockUDS := filepath.Join(vmDir, "vsock.sock")
 	consoleLog := filepath.Join(vmDir, "console.log")
 	configPath := filepath.Join(vmDir, "vm.json")
 	unitName := "hotbed-vm-" + spec.ID
 
-	_ = os.Remove(apiSock)
 	_ = os.Remove(vsockUDS)
 
 	var netAlloc NetAlloc
@@ -518,7 +498,6 @@ func (m *Manager) Start(ctx context.Context, spec LaunchSpec) (*Instance, error)
 		UnitName:      unitName,
 		CellPath:      spec.CellHostPath,
 		CladefsVMSock: spec.CladefsVMSock,
-		APISock:       apiSock,
 		VsockUDS:      vsockUDS,
 		ConsoleLog:    consoleLog,
 		GuestCID:      cid,
@@ -544,7 +523,7 @@ func (m *Manager) Start(ctx context.Context, spec LaunchSpec) (*Instance, error)
 		Slice:      cfg.Slice,
 		User:       cfg.VMUser,
 		Binary:     cfg.FirecrackerBin,
-		Args:       []string{"--enable-pci", "--api-sock", apiSock, "--config-file", configPath},
+		Args:       []string{"--enable-pci", "--no-api", "--config-file", configPath},
 		ConsoleLog: consoleLog,
 	}
 	if err := m.launcher.Start(ctx, procSpec); err != nil {
@@ -577,7 +556,6 @@ func (m *Manager) Start(ctx context.Context, spec LaunchSpec) (*Instance, error)
 		Dir:           vmDir,
 		CellPath:      spec.CellHostPath,
 		CladefsVMSock: spec.CladefsVMSock,
-		APISock:       apiSock,
 		VsockUDS:      vsockUDS,
 		ConsoleLog:    consoleLog,
 		GuestCID:      cid,
@@ -694,46 +672,6 @@ func (m *Manager) Reconnect(ctx context.Context) (int, error) {
 			slog.Info("vm reconnect: reaped leftover build VM", "vm", meta.ID, "unit", meta.UnitName)
 			continue
 		}
-		if meta.Suspended != nil {
-			// Suspended VM persisted before worker restart. If the paused
-			// Firecracker unit is still alive (worker crashed mid-suspend before
-			// forceStopUnit completed), stop it now without touching the cell.
-			if err == nil && st.Alive() {
-				stopCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), m.stopTimeout())
-				stopErr := m.forceStopUnit(stopCtx, meta.UnitName)
-				cancel()
-				if stopErr != nil {
-					slog.Warn("vm reconnect: stop mid-suspend VM failed; preserving dir", "vm", meta.ID, "err", stopErr)
-					continue
-				}
-				if m.net != nil && meta.Net.TAPName != "" {
-					rctx, rcancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
-					m.net.ReleaseTAPKeepIP(rctx, meta.Net)
-					rcancel()
-				}
-			}
-			susp := meta.Suspended.clone()
-			if susp.Dir == "" {
-				susp.Dir = vmDir
-			}
-			if susp.ID == "" {
-				susp.ID = meta.ID
-			}
-			m.mu.Lock()
-			m.suspended[meta.ID] = susp
-			if meta.GuestCID >= 3 {
-				m.usedCIDs[meta.GuestCID] = meta.ID
-				if meta.GuestCID >= m.nextCID {
-					m.nextCID = meta.GuestCID + 1
-				}
-			}
-			m.mu.Unlock()
-			if m.net != nil && meta.Net.GuestIP != "" {
-				m.net.ReserveIP(meta.ID, meta.Net.GuestIP)
-			}
-			reconnected++
-			continue
-		}
 		if err != nil {
 			slog.Warn("vm reconnect: status check failed; preserving dir", "vm", meta.ID, "unit", meta.UnitName, "err", err)
 			continue
@@ -778,25 +716,21 @@ func (m *Manager) Reconnect(ctx context.Context) (int, error) {
 		}
 
 		inst := &Instance{
-			ID:               meta.ID,
-			UnitName:         meta.UnitName,
-			Dir:              vmDir,
-			CellPath:         meta.CellPath,
-			CladefsVMSock:    meta.CladefsVMSock,
-			APISock:          meta.APISock,
-			VsockUDS:         meta.VsockUDS,
-			ConsoleLog:       meta.ConsoleLog,
-			GuestCID:         meta.GuestCID,
-			Net:              meta.Net,
-			Client:           client,
-			StartedAt:        meta.StartedAt,
-			FromMemoryCell:   meta.FromMemoryCell,
-			MemoryCellPath:   meta.MemoryCellPath,
-			PrevMemCellPaths: slices.Clone(meta.PrevMemCellPaths),
-			ToolsDiskPath:    meta.ToolsDiskPath,
-			VCPUs:            meta.VCPUs,
-			MemMiB:           meta.MemMiB,
-			gitAuth:          gaBridge,
+			ID:            meta.ID,
+			UnitName:      meta.UnitName,
+			Dir:           vmDir,
+			CellPath:      meta.CellPath,
+			CladefsVMSock: meta.CladefsVMSock,
+			VsockUDS:      meta.VsockUDS,
+			ConsoleLog:    meta.ConsoleLog,
+			GuestCID:      meta.GuestCID,
+			Net:           meta.Net,
+			Client:        client,
+			StartedAt:     meta.StartedAt,
+			ToolsDiskPath: meta.ToolsDiskPath,
+			VCPUs:         meta.VCPUs,
+			MemMiB:        meta.MemMiB,
+			gitAuth:       gaBridge,
 		}
 		m.mu.Lock()
 		m.instances[meta.ID] = inst
@@ -875,36 +809,10 @@ func (m *Manager) forceStopUnit(ctx context.Context, unitName string) error {
 // cleaning up Firecracker) if the guest sync could not complete — preventing
 // callers from snapshotting a half-flushed cell to R2. Idempotent if not tracked.
 func (m *Manager) Stop(ctx context.Context, id string, syncFS bool) error {
-	lock := m.vmLock(id)
-	lock.Lock()
-	defer lock.Unlock()
-
 	m.mu.Lock()
 	inst, ok := m.instances[id]
-	susp := m.suspended[id]
 	m.mu.Unlock()
 	if !ok {
-		if susp == nil {
-			return nil
-		}
-		// Discarding a suspended VM requires no Firecracker resume or guest
-		// sync: release its reserved IP/CID and remove its snapshot dir.
-		stopCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), m.stopTimeout())
-		defer cancel()
-		if m.net != nil {
-			if susp.Net.TAPName != "" {
-				m.net.ReleaseTAP(stopCtx, susp.Net)
-			} else {
-				m.net.ReleaseTAPByVMID(stopCtx, id)
-			}
-		}
-		m.releaseCID(susp.GuestCID)
-		_ = os.RemoveAll(susp.Dir)
-		m.mu.Lock()
-		if cur := m.suspended[id]; cur == susp {
-			delete(m.suspended, id)
-		}
-		m.mu.Unlock()
 		return nil
 	}
 
@@ -996,7 +904,7 @@ func (m *Manager) Stop(ctx context.Context, id string, syncFS bool) error {
 func (m *Manager) EnsureNotRunning(ctx context.Context, id string) error {
 	m.mu.Lock()
 	_, starting := m.starting[id]
-	tracked := m.instances[id] != nil || m.suspended[id] != nil
+	tracked := m.instances[id] != nil
 	m.mu.Unlock()
 	if starting {
 		return fmt.Errorf("vm %s is currently starting: %w", id, ErrVMRunning)
@@ -1034,9 +942,6 @@ func (m *Manager) ReconcileOrphans(ctx context.Context, ownedIDs map[string]bool
 	for id := range m.instances {
 		candidates[id] = struct{}{}
 	}
-	for id := range m.suspended {
-		candidates[id] = struct{}{}
-	}
 	m.mu.Unlock()
 
 	if entries, err := os.ReadDir(cfg.RunDir); err == nil {
@@ -1064,7 +969,6 @@ func (m *Manager) ReconcileOrphans(ctx context.Context, ownedIDs map[string]bool
 			continue
 		}
 		inst := m.instances[id]
-		susp := m.suspended[id]
 		m.mu.Unlock()
 
 		vmDir := filepath.Join(cfg.RunDir, id)
@@ -1072,13 +976,11 @@ func (m *Manager) ReconcileOrphans(ctx context.Context, ownedIDs map[string]bool
 		cellPath := ""
 		if inst != nil && inst.CellPath != "" {
 			cellPath = inst.CellPath
-		} else if susp != nil && susp.CellPath != "" {
-			cellPath = susp.CellPath
 		} else if metaErr == nil && meta.CellPath != "" {
 			cellPath = meta.CellPath
 		}
 
-		if inst != nil || susp != nil {
+		if inst != nil {
 			if err := m.Stop(ctx, id, false); err != nil {
 				slog.Warn("reap tracked orphan Firecracker VM failed", "vm", id, "err", err)
 				stillAlive[id] = true
@@ -1120,9 +1022,6 @@ func (m *Manager) ReconcileOrphans(ctx context.Context, ownedIDs map[string]bool
 		}
 		m.mu.Lock()
 		for id := range m.instances {
-			liveIDs[id] = true
-		}
-		for id := range m.suspended {
 			liveIDs[id] = true
 		}
 		for id := range m.starting {
@@ -1185,20 +1084,6 @@ func (m *Manager) List() []string {
 		ids = append(ids, id)
 	}
 	return ids
-}
-
-func (m *Manager) vmLock(id string) *sync.Mutex {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	if m.vmLocks == nil {
-		m.vmLocks = map[string]*sync.Mutex{}
-	}
-	l, ok := m.vmLocks[id]
-	if !ok {
-		l = &sync.Mutex{}
-		m.vmLocks[id] = l
-	}
-	return l
 }
 
 func (m *Manager) allocCIDLocked(id string) uint32 {

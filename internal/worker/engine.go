@@ -554,7 +554,7 @@ func NewEngine(ctx context.Context, cfg EngineConfig) (*Engine, error) {
 			uid, gid = sp.UID, sp.GID
 		}
 		e.rtUnits = newRuntimeUnits(cfg.Units, e.cfg.Runtime, e.usesRuntime, uid, gid)
-		e.rtUnits.canSuspend = e.canSuspendVM
+		e.rtUnits.isVMQuiescent = e.isVMQuiescent
 		e.cfg.Units = e.rtUnits
 	}
 	if err := e.load(); err != nil {

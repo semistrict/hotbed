@@ -58,8 +58,6 @@ type ServerConfig struct {
 	Logger    *slog.Logger
 	Inspector inspect.Inspector // defaults to inspect.Linux{}
 	Profiler  profiler.Profiler // optional always-on in-guest eBPF continuous profiler
-	FreezeFS      func(path string) error // optional override for FIFREEZE (tests)
-	ThawFS        func(path string) error // optional override for FITHAW (tests)
 	// AllowPowerOff permits Shutdown(PowerOff=true) to reboot/power off the VM.
 	// Must only be enabled by the in-VM hotbed-guestd daemon (never in-process
 	// host tests running as root, which would otherwise reboot the host).
@@ -77,8 +75,6 @@ type Server struct {
 	log           *slog.Logger
 	inspector     inspect.Inspector
 	profiler      profiler.Profiler
-	freezeFS      func(path string) error
-	thawFS        func(path string) error
 	allowPowerOff bool
 	powerOff      func() error
 
@@ -134,14 +130,6 @@ func NewServer(cfg ServerConfig) (*Server, error) {
 	if err := os.MkdirAll(syncDir, 0o755); err != nil {
 		return nil, fmt.Errorf("create guestd sync dir: %w", err)
 	}
-	freezeFn := cfg.FreezeFS
-	if freezeFn == nil {
-		freezeFn = freezeFilesystem
-	}
-	thawFn := cfg.ThawFS
-	if thawFn == nil {
-		thawFn = thawFilesystem
-	}
 	powerOffFn := cfg.PowerOff
 	if powerOffFn == nil {
 		powerOffFn = powerOffGuest
@@ -155,8 +143,6 @@ func NewServer(cfg ServerConfig) (*Server, error) {
 		log:           cfg.Logger,
 		inspector:     insp,
 		profiler:      cfg.Profiler,
-		freezeFS:      freezeFn,
-		thawFS:        thawFn,
 		allowPowerOff: cfg.AllowPowerOff,
 		powerOff:      powerOffFn,
 		cmds:          map[string]*managedCmd{},
@@ -598,31 +584,6 @@ func (s *Server) Reclaim(_ context.Context, req *guestdv1.ReclaimRequest) (*gues
 		}
 	}
 	return &guestdv1.ReclaimResponse{}, nil
-}
-
-func (s *Server) FreezeFS(_ context.Context, req *guestdv1.FreezeFSRequest) (*guestdv1.FreezeFSResponse, error) {
-	if req.GetDropCaches() {
-		_ = dropPageCaches()
-	}
-	path := req.GetPath()
-	if path == "" {
-		path = "/"
-	}
-	if err := s.freezeFS(path); err != nil {
-		return nil, connect.NewError(connect.CodeInternal, "freeze fs: "+err.Error())
-	}
-	return &guestdv1.FreezeFSResponse{}, nil
-}
-
-func (s *Server) ThawFS(_ context.Context, req *guestdv1.ThawFSRequest) (*guestdv1.ThawFSResponse, error) {
-	path := req.GetPath()
-	if path == "" {
-		path = "/"
-	}
-	if err := s.thawFS(path); err != nil {
-		return nil, connect.NewError(connect.CodeInternal, "thaw fs: "+err.Error())
-	}
-	return &guestdv1.ThawFSResponse{}, nil
 }
 
 func (s *Server) inspectTarget(id string) (inspect.Target, error) {

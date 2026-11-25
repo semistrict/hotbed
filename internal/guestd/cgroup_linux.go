@@ -208,44 +208,6 @@ func syncFilesystems() {
 	syscall.Sync()
 }
 
-const (
-	// Linux VFS freeze/thaw ioctls: _IOWR('X', 119, int) and _IOWR('X', 120, int).
-	ioctlFIFREEZE = 0xc0045877
-	ioctlFITHAW   = 0xc0045878
-)
-
-func freezeFilesystem(path string) error {
-	if path == "" {
-		path = "/"
-	}
-	fd, err := syscall.Open(path, syscall.O_RDONLY|syscall.O_DIRECTORY|syscall.O_CLOEXEC, 0)
-	if err != nil {
-		return fmt.Errorf("open %s for FIFREEZE: %w", path, err)
-	}
-	defer syscall.Close(fd)
-	_, _, errno := syscall.Syscall(syscall.SYS_IOCTL, uintptr(fd), uintptr(ioctlFIFREEZE), 0)
-	if errno != 0 && errno != syscall.EBUSY {
-		return fmt.Errorf("FIFREEZE %s: %w", path, errno)
-	}
-	return nil
-}
-
-func thawFilesystem(path string) error {
-	if path == "" {
-		path = "/"
-	}
-	fd, err := syscall.Open(path, syscall.O_RDONLY|syscall.O_DIRECTORY|syscall.O_CLOEXEC, 0)
-	if err != nil {
-		return fmt.Errorf("open %s for FITHAW: %w", path, err)
-	}
-	defer syscall.Close(fd)
-	_, _, errno := syscall.Syscall(syscall.SYS_IOCTL, uintptr(fd), uintptr(ioctlFITHAW), 0)
-	if errno != 0 && errno != syscall.EINVAL {
-		return fmt.Errorf("FITHAW %s: %w", path, errno)
-	}
-	return nil
-}
-
 func powerOffGuest() error {
 	syscall.Sync()
 	// Firecracker x86_64 exits cleanly with status 0 on keyboard-controller

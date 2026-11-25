@@ -934,65 +934,6 @@ func TestSyncSubmoduleStreamingAndValidation(t *testing.T) {
 	}
 }
 
-func TestFreezeFSAndThawFS(t *testing.T) {
-	sockDir, err := os.MkdirTemp("/tmp", "gdfs-")
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = os.RemoveAll(sockDir) })
-	ctrlSock := filepath.Join(sockDir, "ctrl.sock")
-	ln, err := net.Listen("unix", ctrlSock)
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = ln.Close() })
-
-	var frozenPaths, thawedPaths []string
-	failFreeze := false
-	srv, err := guestd.NewServer(guestd.ServerConfig{
-		WorkDir:  t.TempDir(),
-		StateDir: t.TempDir(),
-		FreezeFS: func(p string) error {
-			if failFreeze {
-				return errors.New("busy mount")
-			}
-			frozenPaths = append(frozenPaths, p)
-			return nil
-		},
-		ThawFS: func(p string) error {
-			thawedPaths = append(thawedPaths, p)
-			return nil
-		},
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	ctx, cancel := context.WithCancel(context.Background())
-	t.Cleanup(cancel)
-	go func() { _ = srv.ServeControl(ctx, ln) }()
-
-	client := guestd.NewClient(guestd.UnixMapDialer(map[uint32]string{guestd.ControlPort: ctrlSock}))
-	if _, err := client.WaitReady(ctx); err != nil {
-		t.Fatalf("WaitReady: %v", err)
-	}
-	if err := client.FreezeFS(ctx, true); err != nil {
-		t.Fatalf("FreezeFS: %v", err)
-	}
-	if err := client.ThawFS(ctx); err != nil {
-		t.Fatalf("ThawFS: %v", err)
-	}
-	if len(frozenPaths) != 1 || frozenPaths[0] != "/" {
-		t.Fatalf("frozenPaths = %v, want [/]", frozenPaths)
-	}
-	if len(thawedPaths) != 1 || thawedPaths[0] != "/" {
-		t.Fatalf("thawedPaths = %v, want [/]", thawedPaths)
-	}
-	failFreeze = true
-	if err := client.FreezeFS(ctx, false); err == nil {
-		t.Fatal("expected FreezeFS error when hook fails")
-	}
-}
-
 func TestShutdownPowerOffRequiresAllowPowerOff(t *testing.T) {
 	// Default ServerConfig (AllowPowerOff=false) must never invoke PowerOff,
 	// preventing in-process root host tests from calling syscall.Reboot.

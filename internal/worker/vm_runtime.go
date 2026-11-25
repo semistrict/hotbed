@@ -20,7 +20,6 @@ import (
 	"github.com/semistrict/hotbed/internal/runtime"
 	"github.com/semistrict/hotbed/internal/statedir"
 	"github.com/semistrict/hotbed/internal/unit"
-	"github.com/semistrict/hotbed/internal/vm"
 )
 
 // isVMWorkspace reports whether workspace wsID was created with runtime="vm".
@@ -31,11 +30,11 @@ func (e *Engine) isVMWorkspace(wsID string) bool {
 	return ok
 }
 
-// canSuspendVM reports whether wsID's VM is quiescent and safe to suspend to
-// a CladeFS memory cell while its command is parked or paused: no command
-// running in it, no live server command, no interactive shell, no in-flight
-// sync, and not preparing/releasing.
-func (e *Engine) canSuspendVM(wsID string) bool {
+// isVMQuiescent reports whether wsID's VM has no active workload running in
+// it (no running command, no live server command, no interactive shell, no
+// in-flight sync, and not preparing/releasing) so host cgroup reclaim can push
+// cold VM RAM down to vmHostMinResidentBytes.
+func (e *Engine) isVMQuiescent(wsID string) bool {
 	if wsID == "" || !e.usesRuntime(wsID) {
 		return false
 	}
@@ -58,8 +57,8 @@ func (e *Engine) canSuspendVM(wsID string) bool {
 	return true
 }
 
-// vmWorkspaceSettled reports whether w is in a state its VM may be suspended
-// or stopped in: not preparing, forking, syncing, failed or being released
+// vmWorkspaceSettled reports whether w is in a state its VM may be stopped or
+// reclaimed in: not preparing, forking, syncing, failed or being released
 // (release stops the VM itself). Call with e.mu held.
 func vmWorkspaceSettled(w *workspace) bool {
 	ws := w.ws()
@@ -163,8 +162,7 @@ func (e *Engine) retireReasonLocked(w *workspace) string {
 }
 
 // retireVMs stops every workspace VM retireReasonLocked says to, keeping the
-// workspace's disk: the next command boots a new VM on it. A VM parked or
-// paused into a memory cell is discarded the same way.
+// workspace's disk: the next command boots a new VM on it.
 func (e *Engine) retireVMs(ctx context.Context) {
 	if e.cfg.Runtime == nil {
 		return
@@ -172,10 +170,6 @@ func (e *Engine) retireVMs(ctx context.Context) {
 	vmUp := func(wsID string) bool {
 		if r, ok := e.cfg.Runtime.(interface{ IsVMRunning(string) bool }); ok && r.IsVMRunning(wsID) {
 			return true
-		}
-		if sr, ok := e.cfg.Runtime.(runtime.SuspendableRuntime); ok {
-			susp, _ := sr.IsSuspended(wsID)
-			return susp
 		}
 		return false
 	}
@@ -358,17 +352,16 @@ const vmHostMinResidentBytes int64 = 64 << 20
 // runtime.WorkspaceRuntime (hotbed-guestd over AF_VSOCK), while leaving chroot
 // workspaces, base freshens, and --bench commands on the inner host Units.
 type runtimeUnits struct {
-	inner      Units
-	rt         runtime.WorkspaceRuntime
-	useRT      func(wsID string) bool
-	canSuspend func(wsID string) bool
-	uid        int
-	gid        int
+	inner         Units
+	rt            runtime.WorkspaceRuntime
+	useRT         func(wsID string) bool
+	isVMQuiescent func(wsID string) bool
+	uid           int
+	gid           int
 
 	mu        sync.Mutex
-	cmds      map[string]*rtCmd        // unitName -> active/tracked guest command
-	vmCgroups map[string]string        // wsID -> host Firecracker unit cgroup path
-	wakeCh    map[string]chan struct{} // wsID -> closed & replaced whenever VM resumes
+	cmds      map[string]*rtCmd // unitName -> active/tracked guest command
+	vmCgroups map[string]string // wsID -> host Firecracker unit cgroup path
 }
 
 type rtCmd struct {
@@ -388,48 +381,6 @@ func newRuntimeUnits(inner Units, rt runtime.WorkspaceRuntime, useRT func(string
 		gid:       gid,
 		cmds:      map[string]*rtCmd{},
 		vmCgroups: map[string]string{},
-		wakeCh:    map[string]chan struct{}{},
-	}
-}
-
-func (u *runtimeUnits) isSuspended(wsID string) (bool, int64) {
-	if sr, ok := u.rt.(runtime.SuspendableRuntime); ok {
-		return sr.IsSuspended(wsID)
-	}
-	return false, 0
-}
-
-func (u *runtimeUnits) wakeWaiter(wsID string) <-chan struct{} {
-	u.mu.Lock()
-	defer u.mu.Unlock()
-	ch, ok := u.wakeCh[wsID]
-	if !ok {
-		ch = make(chan struct{})
-		u.wakeCh[wsID] = ch
-	}
-	return ch
-}
-
-func (u *runtimeUnits) notifyResumed(wsID string) {
-	u.mu.Lock()
-	if ch, ok := u.wakeCh[wsID]; ok {
-		close(ch)
-		delete(u.wakeCh, wsID)
-	}
-	u.mu.Unlock()
-}
-
-// Drop cancels the log pump and forgets tracking for unitName without calling
-// StopCommand inside the guest (used when releasing a workspace whose VM is
-// already suspended and being discarded without resuming).
-func (u *runtimeUnits) Drop(name string) {
-	u.mu.Lock()
-	rc := u.cmds[name]
-	delete(u.cmds, name)
-	u.mu.Unlock()
-	if rc != nil {
-		rc.cancel()
-		<-rc.done
 	}
 }
 
@@ -559,19 +510,6 @@ func (u *runtimeUnits) pumpLogs(ctx context.Context, rc *rtCmd) {
 		if err == nil || ctx.Err() != nil {
 			return
 		}
-		// While the workspace VM is intentionally suspended in a CladeFS memory
-		// cell, keep the log pump alive without waking Firecracker and resume
-		// streaming from the exact same offset once the VM wakes.
-		if susp, _ := u.isSuspended(rc.wsID); susp {
-			wake := u.wakeWaiter(rc.wsID)
-			select {
-			case <-ctx.Done():
-				return
-			case <-wake:
-			case <-time.After(500 * time.Millisecond):
-			}
-			continue
-		}
 		// Check whether the command already exited before retrying.
 		sctx, cancel := context.WithTimeout(ctx, 2*time.Second)
 		stMap, serr := u.rt.StatusMany(sctx, rc.wsID, []string{rc.cmdID})
@@ -604,9 +542,6 @@ func (u *runtimeUnits) liveCountInVM(wsID string) int {
 }
 
 func (u *runtimeUnits) vmAdjustedMemory(ctx context.Context, wsID string, guestAnon, guestSwap int64, hostMem unit.MemoryUse, hasHost bool) unit.MemoryUse {
-	if susp, wsBytes := u.isSuspended(wsID); susp {
-		return unit.MemoryUse{Anon: 0, Swap: wsBytes}
-	}
 	anon, swap := guestAnon, guestSwap
 	if hasHost {
 		hostAnon := max(hostMem.Anon, 0)
@@ -758,11 +693,7 @@ func (u *runtimeUnits) Freeze(ctx context.Context, name string) error {
 
 func (u *runtimeUnits) Thaw(ctx context.Context, name string) error {
 	if rc := u.lookup(name); rc != nil {
-		if err := u.rt.ThawCommand(ctx, rc.wsID, rc.cmdID); err != nil {
-			return err
-		}
-		u.notifyResumed(rc.wsID)
-		return nil
+		return u.rt.ThawCommand(ctx, rc.wsID, rc.cmdID)
 	}
 	return u.inner.Thaw(ctx, name)
 }
@@ -833,39 +764,8 @@ func (u *runtimeUnits) reclaimIdleVM(ctx context.Context, wsID string) {
 
 func (u *runtimeUnits) Reclaim(cgroup string, n int64) error {
 	if wsID, cmdID, ok := parseVMCgroup(cgroup); ok {
-		quiescent := u.canSuspend != nil && u.canSuspend(wsID)
-		// Preferred path: when the entire workspace VM is quiescent (all live
-		// commands parked/paused, no active shell or dev server), snapshot the
-		// VM straight into a CladeFS memory cell and stop Firecracker so it
-		// holds zero host RAM and zero swap.
-		if sr, ok := u.rt.(runtime.SuspendableRuntime); ok && quiescent {
-			if susp, _ := sr.IsSuspended(wsID); susp {
-				return nil
-			}
-			workingSet := n
-			hctx, hcancel := context.WithTimeout(context.Background(), 2*time.Second)
-			if _, hostMem, hasHost := u.vmHostMemory(hctx, wsID); hasHost {
-				workingSet = max(workingSet, hostMem.Anon)
-			}
-			hcancel()
-			sctx, scancel := context.WithTimeout(context.Background(), 30*time.Second)
-			err := sr.SuspendWorkspace(sctx, wsID, workingSet)
-			scancel()
-			if err == nil {
-				u.forgetVMCgroup(wsID)
-				return nil
-			}
-			if errors.Is(err, vm.ErrSuspendUnsupported) {
-				slog.Warn("VM memory-cell suspend unsupported; falling back to cgroup reclaim",
-					"workspace", wsID, "command", cmdID, "err", err)
-			} else {
-				slog.Error("VM memory-cell suspend failed; falling back to cgroup reclaim",
-					"workspace", wsID, "command", cmdID, "err", err)
-			}
-		}
+		quiescent := u.isVMQuiescent != nil && u.isVMQuiescent(wsID)
 
-		// Fallback path (another command/shell/server is still running in the
-		// same VM, or pre-upgrade VMM/cladefsd does not support suspend):
 		// 1. Reclaim clean page cache inside the guest so virtio-balloon
 		// free-page-reporting returns it directly to the host without swap.
 		gctx, gcancel := context.WithTimeout(context.Background(), 3*time.Second)
@@ -916,12 +816,6 @@ func (u *runtimeUnits) Reclaim(cgroup string, n int64) error {
 
 func (u *runtimeUnits) Memory(cgroup string) (unit.MemoryUse, error) {
 	if wsID, cmdID, ok := parseVMCgroup(cgroup); ok {
-		if susp, wsBytes := u.isSuspended(wsID); susp {
-			// A VM suspended to a CladeFS memory cell holds 0 bytes of host
-			// RAM and 0 bytes of host swap; report its pre-suspend working set
-			// in Swap so PeakHeldBytes stays accurate.
-			return unit.MemoryUse{Anon: 0, Swap: wsBytes}, nil
-		}
 		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 		defer cancel()
 		m, err := u.rt.StatusMany(ctx, wsID, []string{cmdID})

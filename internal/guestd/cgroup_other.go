@@ -44,8 +44,6 @@ func signalProcessGroup(pid int, sig syscall.Signal) error {
 	return err
 }
 
-func syncFilesystems()              {}
-func freezeFilesystem(string) error { return errors.New("FIFREEZE requires Linux") }
-func thawFilesystem(string) error   { return errors.New("FITHAW requires Linux") }
-func powerOffGuest() error          { return errors.New("poweroff requires Linux") }
+func syncFilesystems()      {}
+func powerOffGuest() error  { return errors.New("poweroff requires Linux") }
 func kernelRelease() string { return "" }

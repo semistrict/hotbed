@@ -44,12 +44,6 @@ func (m *NetManager) AllocTAP(context.Context, string) (NetAlloc, error) {
 
 func (m *NetManager) ReleaseTAP(context.Context, NetAlloc) {}
 
-func (m *NetManager) ReleaseTAPKeepIP(context.Context, NetAlloc) {}
-
-func (m *NetManager) RecreateTAP(context.Context, string, NetAlloc) error {
-	return errors.New("vm networking requires Linux")
-}
-
 func (m *NetManager) ReleaseTAPByVMID(context.Context, string) {}
 
 func (m *NetManager) SweepOrphanTAPs(context.Context, map[string]bool) int { return 0 }

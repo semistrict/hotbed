@@ -45,7 +45,6 @@ type VMBackend struct {
 	mgr         *vm.Manager
 	rt          *runtime.GuestRuntime
 	incarnation uint64
-	memSeq      atomic.Uint64
 
 	baseMu         sync.Mutex // serializes base image provisioning
 	projectLocks   sync.Map   // project -> *sync.Mutex
@@ -773,12 +772,7 @@ func (b *VMBackend) stopBuildVM(ctx context.Context, vmID string, syncFS bool) e
 	}
 	sctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), timeout)
 	defer cancel()
-	memPaths := b.mgr.MemoryCellPaths(vmID)
-	err := b.mgr.Stop(sctx, vmID, syncFS)
-	if err == nil {
-		b.deleteWorkspaceMemoryCells(sctx, vmID, memPaths)
-	}
-	return err
+	return b.mgr.Stop(sctx, vmID, syncFS)
 }
 
 // makeVersionAndSyncAfterStop versions and syncs rel after a build VM exits.
@@ -1587,7 +1581,6 @@ func (b *VMBackend) ReconcileOrphans(ctx context.Context, liveWorkspaces map[str
 			if err := st.DeleteCell(ctx, "ws/"+id); err != nil {
 				slog.Warn("delete cladefs cell for reaped orphan VM failed", "vm", id, "err", err)
 			}
-			b.deleteWorkspaceMemoryCells(ctx, id, nil)
 		}
 	}
 	for _, cellPath := range reapedCellPaths {
@@ -1639,24 +1632,6 @@ func (b *VMBackend) ReconcileOrphans(ctx context.Context, liveWorkspaces map[str
 					}
 				}
 			}
-			// Sweep orphaned local mem/<id> memory cell directories not belonging to
-			// any live workspace (and not held by any still-alive VM).
-			memRoot := filepath.Join(root, "mem")
-			if ents, err := os.ReadDir(memRoot); err == nil {
-				for _, ent := range ents {
-					if !ent.IsDir() {
-						continue
-					}
-					id := ent.Name()
-					if owned[id] {
-						continue
-					}
-					if err := b.mgr.EnsureNotRunning(ctx, id); err != nil {
-						continue
-					}
-					b.deleteWorkspaceMemoryCells(ctx, id, nil)
-				}
-			}
 			// Drop leftover local staging dirs under bases/<project>/<baseID> and
 			// baseimages/vm-* from interrupted builds (published bases are already
 			// dropped locally after R2 sync; DropCell never deletes from R2).
@@ -1705,137 +1680,20 @@ func (b *VMBackend) ReconcileOrphans(ctx context.Context, liveWorkspaces map[str
 	}
 }
 
-func (b *VMBackend) allocMemCellPath(wsID string) (string, error) {
-	st := b.currentStore()
-	if st == nil {
-		return "", errors.New("cladefs store is not open")
-	}
-	rel := filepath.Join("mem", wsID, fmt.Sprintf("g%d-%d", time.Now().UnixMilli(), b.memSeq.Add(1)))
-	hostPath, err := st.NewCellPath(rel)
-	if err != nil {
-		return "", err
-	}
-	if err := st.EnsureCellParentDir(hostPath); err != nil {
-		return "", fmt.Errorf("prepare memory cell parent for %s: %w", wsID, err)
-	}
-	return hostPath, nil
-}
-
-func (b *VMBackend) deleteWorkspaceMemoryCells(ctx context.Context, wsID string, extra []string) {
-	st := b.currentStore()
-	if st == nil {
-		return
-	}
-	seen := map[string]struct{}{}
-	del := func(p string) {
-		if p == "" {
-			return
-		}
-		if _, ok := seen[p]; ok {
-			return
-		}
-		seen[p] = struct{}{}
-		if err := st.DeleteCellAbs(ctx, p); err != nil {
-			slog.Warn("delete cladefs memory cell failed", "workspace", wsID, "path", p, "err", err)
-		}
-	}
-	for _, p := range extra {
-		del(p)
-	}
-	if b.mgr != nil {
-		for _, p := range b.mgr.MemoryCellPaths(wsID) {
-			del(p)
-		}
-	}
-	for _, root := range st.CellRoots() {
-		dir := filepath.Join(root, "mem", wsID)
-		ents, err := os.ReadDir(dir)
-		if err != nil {
-			continue
-		}
-		for _, ent := range ents {
-			if !ent.IsDir() {
-				continue
-			}
-			del(filepath.Join(dir, ent.Name()))
-		}
-		_ = os.Remove(dir)
-	}
-}
-
-// DeleteWorkspaceCell deletes the cladefsd rootfs cell and any memory cells
-// backing wsID after its VM stops.
+// DeleteWorkspaceCell deletes the cladefsd rootfs cell backing wsID after its
+// VM stops.
 func (b *VMBackend) DeleteWorkspaceCell(ctx context.Context, wsID string) error {
 	b.mu.Lock()
 	delete(b.wsCells, wsID)
 	b.mu.Unlock()
-	b.deleteWorkspaceMemoryCells(ctx, wsID, nil)
 	return b.currentStore().DeleteCell(ctx, "ws/"+wsID)
 }
 
-// SuspendVM implements runtime.SuspendableGuestResolver by snapshotting wsID's
-// Firecracker VM straight into a CladeFS memory cell and stopping the VMM.
-func (b *VMBackend) SuspendVM(ctx context.Context, wsID string, workingSetBytes int64) error {
-	if b.mgr == nil {
-		return vm.ErrSuspendUnsupported
-	}
-	if b.mgr.IsSuspended(wsID) {
-		return nil
-	}
-	var memPath string
-	if inst := b.mgr.Get(wsID); inst != nil && !inst.FromMemoryCell {
-		var err error
-		memPath, err = b.allocMemCellPath(wsID)
-		if err != nil {
-			return err
-		}
-	}
-	_, err := b.mgr.Suspend(ctx, wsID, memPath, workingSetBytes)
-	if err != nil && memPath != "" {
-		if st := b.currentStore(); st != nil {
-			_ = st.DeleteCellAbs(context.WithoutCancel(ctx), memPath)
-		}
-	}
-	return err
-}
-
-// IsVMSuspended implements runtime.SuspendableGuestResolver.
-func (b *VMBackend) IsVMSuspended(wsID string) (bool, int64) {
-	if b.mgr == nil {
-		return false, 0
-	}
-	if s := b.mgr.Suspended(wsID); s != nil {
-		return true, s.WorkingSetBytes
-	}
-	return false, 0
-}
-
-// EnsureVM implements runtime.GuestResolver. If wsID is currently suspended in
-// a CladeFS memory cell, EnsureVM resumes it lazily via PUT /snapshot/load.
+// EnsureVM implements runtime.GuestResolver.
 func (b *VMBackend) EnsureVM(ctx context.Context, wsID string, size unit.VMSize) (*guestd.Client, error) {
 	boot, _ := b.boots.LoadOrStore(wsID, &sync.Mutex{})
 	boot.(*sync.Mutex).Lock()
 	defer boot.(*sync.Mutex).Unlock()
-	if susp := b.mgr.Suspended(wsID); susp != nil {
-		var nextMemPath string
-		if !susp.MemoryCell.Ephemeral {
-			var err error
-			nextMemPath, err = b.allocMemCellPath(wsID)
-			if err != nil {
-				return nil, err
-			}
-		}
-		inst, err := b.mgr.Resume(ctx, wsID, nextMemPath)
-		if err != nil {
-			if nextMemPath != "" {
-				if st := b.currentStore(); st != nil {
-					_ = st.DeleteCellAbs(context.WithoutCancel(ctx), nextMemPath)
-				}
-			}
-			return nil, err
-		}
-		return inst.Client, nil
-	}
 	if c, err := b.mgr.ClientFor(wsID); err == nil {
 		st, serr := b.mgr.Status(ctx, wsID)
 		switch {
@@ -1900,12 +1758,8 @@ func (b *VMBackend) VMExited(ctx context.Context, wsID string) (bool, int) {
 }
 
 // VMExitStatus reports whether wsID's Firecracker process has exited along with
-// systemd exit code, signal, result, and OOM-kill status. Suspended VMs are not
-// considered exited.
+// systemd exit code, signal, result, and OOM-kill status.
 func (b *VMBackend) VMExitStatus(ctx context.Context, wsID string) (exited bool, exitCode, signal int, result string, oomKilled bool) {
-	if b.mgr.IsSuspended(wsID) {
-		return false, 0, 0, "", false
-	}
 	if b.mgr.Get(wsID) == nil {
 		return true, 0, 0, "", false
 	}
@@ -1921,12 +1775,7 @@ func (b *VMBackend) VMExitStatus(ctx context.Context, wsID string) (exited bool,
 
 // StopVM implements runtime.GuestResolver.
 func (b *VMBackend) StopVM(ctx context.Context, wsID string) error {
-	memPaths := b.mgr.MemoryCellPaths(wsID)
-	err := b.mgr.StopVM(ctx, wsID)
-	if err == nil {
-		b.deleteWorkspaceMemoryCells(ctx, wsID, memPaths)
-	}
-	return err
+	return b.mgr.StopVM(ctx, wsID)
 }
 
 // CurrentKernelPath returns the active guest kernel path for new VM boots.
@@ -1948,26 +1797,13 @@ func (b *VMBackend) SetKernelPath(p string) {
 func (b *VMBackend) StopAllForUpgrade(ctx context.Context) error {
 	var firstErr error
 	if b.mgr != nil {
-		var memCleanupIDs []string
-		memPathsByID := map[string][]string{}
 		for _, id := range b.mgr.List() {
-			memPathsByID[id] = b.mgr.MemoryCellPaths(id)
-			memCleanupIDs = append(memCleanupIDs, id)
 			if err := b.mgr.Stop(ctx, id, true); err != nil && firstErr == nil {
 				firstErr = err
 			}
 		}
-		for _, id := range b.mgr.ListSuspended() {
-			memPathsByID[id] = b.mgr.MemoryCellPaths(id)
-			memCleanupIDs = append(memCleanupIDs, id)
-		}
-		// Also reap any untracked zombie Firecracker units (and suspended VMs
-		// whose snapshots cannot safely cross a cladefsd wire upgrade) so
-		// cladefsd restarts cleanly.
+		// Also reap any untracked zombie Firecracker units so cladefsd restarts cleanly.
 		b.mgr.ReconcileOrphans(ctx, nil)
-		for _, id := range memCleanupIDs {
-			b.deleteWorkspaceMemoryCells(ctx, id, memPathsByID[id])
-		}
 	}
 	b.mu.Lock()
 	b.wsCells = map[string]cladefs.CellRef{}
