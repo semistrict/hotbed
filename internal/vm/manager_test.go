@@ -5,11 +5,13 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -19,16 +21,24 @@ import (
 )
 
 type fakeLauncher struct {
-	mu      sync.Mutex
-	running map[string]bool
-	exited  map[string]int
-	onStart func(ProcessSpec) error
+	mu           sync.Mutex
+	running      map[string]bool
+	deactivating map[string]bool
+	exited       map[string]int
+	slices       map[string]string
+	onStart      func(ProcessSpec) error
+	onStop       func(ctx context.Context, name string) error
+	onKill       func(ctx context.Context, name string) error
+	stopCalls    []string
+	killCalls    []string
 }
 
 func newFakeLauncher() *fakeLauncher {
 	return &fakeLauncher{
-		running: map[string]bool{},
-		exited:  map[string]int{},
+		running:      map[string]bool{},
+		deactivating: map[string]bool{},
+		exited:       map[string]int{},
+		slices:       map[string]string{},
 	}
 }
 
@@ -41,14 +51,24 @@ func (f *fakeLauncher) Start(_ context.Context, s ProcessSpec) error {
 		}
 	}
 	f.running[s.Name] = true
+	delete(f.deactivating, s.Name)
 	delete(f.exited, s.Name)
+	f.slices[s.Name] = s.Slice
 	return nil
 }
 
-func (f *fakeLauncher) Stop(_ context.Context, name string) error {
+func (f *fakeLauncher) Stop(ctx context.Context, name string) error {
+	f.mu.Lock()
+	f.stopCalls = append(f.stopCalls, name)
+	onStop := f.onStop
+	f.mu.Unlock()
+	if onStop != nil {
+		return onStop(ctx, name)
+	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	delete(f.running, name)
+	delete(f.deactivating, name)
 	f.exited[name] = 0
 	return nil
 }
@@ -59,10 +79,60 @@ func (f *fakeLauncher) Status(_ context.Context, name string) (ProcessStatus, er
 	if f.running[name] {
 		return ProcessStatus{Loaded: true, Running: true}, nil
 	}
+	if f.deactivating[name] {
+		return ProcessStatus{Loaded: true, Deactivating: true}, nil
+	}
 	if code, ok := f.exited[name]; ok {
 		return ProcessStatus{Loaded: true, Exited: true, ExitCode: code}, nil
 	}
 	return ProcessStatus{}, nil
+}
+
+func (f *fakeLauncher) List(_ context.Context, slice string) ([]string, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	seen := map[string]bool{}
+	var out []string
+	for name := range f.running {
+		if slice != "" && f.slices[name] != "" && f.slices[name] != slice {
+			continue
+		}
+		if strings.HasPrefix(name, "hotbed-vm-") && !seen[name] {
+			seen[name] = true
+			out = append(out, name)
+		}
+	}
+	for name := range f.deactivating {
+		if slice != "" && f.slices[name] != "" && f.slices[name] != slice {
+			continue
+		}
+		if strings.HasPrefix(name, "hotbed-vm-") && !seen[name] {
+			seen[name] = true
+			out = append(out, name)
+		}
+	}
+	slices.Sort(out)
+	return out, nil
+}
+
+type fakeKillerLauncher struct {
+	*fakeLauncher
+}
+
+func (f *fakeKillerLauncher) Kill(ctx context.Context, name string) error {
+	f.mu.Lock()
+	f.killCalls = append(f.killCalls, name)
+	onKill := f.onKill
+	f.mu.Unlock()
+	if onKill != nil {
+		return onKill(ctx, name)
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	delete(f.running, name)
+	delete(f.deactivating, name)
+	f.exited[name] = 137
+	return nil
 }
 
 func TestBuildFirecrackerConfig(t *testing.T) {
@@ -320,6 +390,7 @@ func (e *exitingLauncher) Stop(context.Context, string) error { return nil }
 func (e *exitingLauncher) Status(context.Context, string) (ProcessStatus, error) {
 	return ProcessStatus{Loaded: true, Exited: true, ExitCode: e.exitCode}, nil
 }
+func (e *exitingLauncher) List(context.Context, string) ([]string, error) { return nil, nil }
 
 func TestInjectGuestdTar(t *testing.T) {
 	var baseBuf bytes.Buffer
@@ -436,6 +507,11 @@ func TestParseSystemdProcessStatus(t *testing.T) {
 			raw:  "LoadState=loaded\nActiveState=active\nSubState=running\nResult=success\nExecMainCode=0\nExecMainStatus=0\n",
 			want: ProcessStatus{Loaded: true, Running: true, Result: "success"},
 		},
+		{
+			name: "deactivating",
+			raw:  "LoadState=loaded\nActiveState=deactivating\nSubState=stop-sigterm\nResult=success\nExecMainCode=0\nExecMainStatus=0\n",
+			want: ProcessStatus{Loaded: true, Deactivating: true, Result: "success"},
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -444,5 +520,300 @@ func TestParseSystemdProcessStatus(t *testing.T) {
 				t.Fatalf("parseSystemdProcessStatus = %+v, want %+v", got, tc.want)
 			}
 		})
+	}
+	if !(ProcessStatus{Deactivating: true}).Alive() {
+		t.Fatal("Deactivating status must report Alive() == true")
+	}
+}
+
+func TestParseVMListAndSliceUnits(t *testing.T) {
+	listOut := strings.Join([]string{
+		"hotbed-vm-2x6xdsk5.service loaded active running Firecracker",
+		"hotbed-vm-base-cladefs-vm-b470a516.service loaded active running Firecracker",
+		"hotbed-vm-failed.service loaded failed failed Firecracker",
+		"other.service loaded active running Other",
+	}, "\n")
+	cands := parseVMListUnits(listOut)
+	wantCands := []string{
+		"hotbed-vm-2x6xdsk5.service",
+		"hotbed-vm-base-cladefs-vm-b470a516.service",
+		"hotbed-vm-failed.service",
+	}
+	if !slices.Equal(cands, wantCands) {
+		t.Fatalf("parseVMListUnits = %q, want %q", cands, wantCands)
+	}
+
+	showOut := strings.Join([]string{
+		"Id=hotbed-vm-2x6xdsk5.service",
+		"Slice=user-1000-hotbed.slice",
+		"LoadState=loaded",
+		"ActiveState=active",
+		"",
+		"Id=hotbed-vm-base-cladefs-vm-b470a516.service",
+		"Slice=user-1000-hotbed.slice",
+		"LoadState=loaded",
+		"ActiveState=deactivating",
+		"",
+		"Id=hotbed-vm-other-slice.service",
+		"Slice=hotbed.slice",
+		"LoadState=loaded",
+		"ActiveState=active",
+		"",
+		"Id=hotbed-vm-inactive.service",
+		"Slice=user-1000-hotbed.slice",
+		"LoadState=loaded",
+		"ActiveState=inactive",
+	}, "\n")
+	got := parseVMSliceUnits(showOut, "user-1000-hotbed.slice")
+	want := []string{"hotbed-vm-2x6xdsk5", "hotbed-vm-base-cladefs-vm-b470a516"}
+	if !slices.Equal(got, want) {
+		t.Fatalf("parseVMSliceUnits = %q, want %q", got, want)
+	}
+}
+
+func startTestGuestd(t *testing.T) func(string) guestd.DialFunc {
+	t.Helper()
+	sockDir := shortSockDir(t)
+	ctrlSock := filepath.Join(sockDir, "ctrl.sock")
+	ln, err := net.Listen("unix", ctrlSock)
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	t.Cleanup(func() { _ = ln.Close() })
+	srv, err := guestd.NewServer(guestd.ServerConfig{WorkDir: t.TempDir(), StateDir: t.TempDir()})
+	if err != nil {
+		t.Fatalf("NewServer: %v", err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	go func() { _ = srv.ServeControl(ctx, ln) }()
+	return func(_ string) guestd.DialFunc {
+		return guestd.UnixMapDialer(map[uint32]string{guestd.ControlPort: ctrlSock})
+	}
+}
+
+func TestManagerStopPreservesMetadataWhenUnitStaysAlive(t *testing.T) {
+	ctx := context.Background()
+	runDir := shortSockDir(t)
+	fl := newFakeLauncher()
+	fl.onStop = func(_ context.Context, _ string) error {
+		// Simulate systemctl stop failing while Firecracker stays alive.
+		return errors.New("systemctl stop timed out")
+	}
+	mgr, err := NewManager(Config{
+		RunDir:          runDir,
+		DisableNetwork:  true,
+		BootTimeout:     5 * time.Second,
+		ShutdownTimeout: 100 * time.Millisecond,
+	}, WithLauncher(fl), WithDialerFactory(startTestGuestd(t)))
+	if err != nil {
+		t.Fatalf("NewManager: %v", err)
+	}
+
+	inst, err := mgr.Start(ctx, LaunchSpec{
+		ID:            "ws-stubborn",
+		CellHostPath:  "/mnt/cells/ws-stubborn",
+		CladefsVMSock: "/run/cladefsd/vm.sock",
+	})
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+
+	if err := mgr.Stop(ctx, "ws-stubborn", true); err == nil {
+		t.Fatal("expected Stop to fail while unit remains alive")
+	}
+	if _, err := os.Stat(filepath.Join(inst.Dir, "meta.json")); err != nil {
+		t.Fatalf("expected meta.json preserved when Stop fails, got: %v", err)
+	}
+	if mgr.Get("ws-stubborn") == nil {
+		t.Fatal("expected instance to remain tracked in Manager when Stop fails")
+	}
+	mgr.mu.Lock()
+	cidOwner := mgr.usedCIDs[inst.GuestCID]
+	mgr.mu.Unlock()
+	if cidOwner != "ws-stubborn" {
+		t.Fatalf("CID %d owner = %q, want ws-stubborn preserved while VM still alive", inst.GuestCID, cidOwner)
+	}
+
+	// Once Stop actually kills the unit, retry cleans up dir, instance, and CID.
+	fl.mu.Lock()
+	fl.onStop = nil
+	fl.mu.Unlock()
+	if err := mgr.Stop(ctx, "ws-stubborn", false); err != nil {
+		t.Fatalf("retry Stop: %v", err)
+	}
+	if _, err := os.Stat(inst.Dir); !os.IsNotExist(err) {
+		t.Fatalf("expected %s removed after verified Stop", inst.Dir)
+	}
+	if mgr.Get("ws-stubborn") != nil {
+		t.Fatal("expected instance removed after verified Stop")
+	}
+}
+
+func TestManagerStopEscalatesToKillAndHonorsCancelledContext(t *testing.T) {
+	ctx := context.Background()
+	runDir := shortSockDir(t)
+	fl := &fakeKillerLauncher{fakeLauncher: newFakeLauncher()}
+	fl.onStop = func(stopCtx context.Context, name string) error {
+		if stopCtx.Err() != nil {
+			t.Errorf("Stop received cancelled context for %s: %v", name, stopCtx.Err())
+			return stopCtx.Err()
+		}
+		// Leave unit alive so Manager must escalate to Killer.Kill.
+		return errors.New("graceful stop hung")
+	}
+	mgr, err := NewManager(Config{
+		RunDir:          runDir,
+		DisableNetwork:  true,
+		BootTimeout:     5 * time.Second,
+		ShutdownTimeout: 100 * time.Millisecond,
+	}, WithLauncher(fl), WithDialerFactory(startTestGuestd(t)))
+	if err != nil {
+		t.Fatalf("NewManager: %v", err)
+	}
+
+	inst, err := mgr.Start(ctx, LaunchSpec{
+		ID:            "base-cladefs-vm-deadbeef",
+		CellHostPath:  "/mnt/cells/bases/cladefs/cladefs-vm-deadbeef",
+		CladefsVMSock: "/run/cladefsd/vm.sock",
+	})
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+
+	// Pass an ALREADY-CANCELLED caller context (the exact base-build abort bug):
+	// Manager.Stop must still stop/kill Firecracker instead of deleting meta.json
+	// while leaving the unit running.
+	cancelledCtx, cancel := context.WithCancel(ctx)
+	cancel()
+	if err := mgr.Stop(cancelledCtx, "base-cladefs-vm-deadbeef", true); err != nil {
+		t.Fatalf("Stop with cancelled ctx should escalate to Kill and succeed: %v", err)
+	}
+	fl.mu.Lock()
+	kills := slices.Clone(fl.killCalls)
+	alive := fl.running[inst.UnitName]
+	fl.mu.Unlock()
+	if len(kills) != 1 || kills[0] != inst.UnitName {
+		t.Fatalf("killCalls = %q, want [%s]", kills, inst.UnitName)
+	}
+	if alive {
+		t.Fatalf("unit %s must not remain running", inst.UnitName)
+	}
+	if _, err := os.Stat(inst.Dir); !os.IsNotExist(err) {
+		t.Fatalf("expected %s removed after Kill confirmed dead", inst.Dir)
+	}
+}
+
+func TestManagerReconnectReapsEphemeralBuildVMs(t *testing.T) {
+	ctx := context.Background()
+	runDir := shortSockDir(t)
+	fl := newFakeLauncher()
+	dialer := startTestGuestd(t)
+
+	mgr1, err := NewManager(Config{
+		RunDir:          runDir,
+		DisableNetwork:  true,
+		BootTimeout:     5 * time.Second,
+		ShutdownTimeout: 200 * time.Millisecond,
+	}, WithLauncher(fl), WithDialerFactory(dialer))
+	if err != nil {
+		t.Fatalf("NewManager 1: %v", err)
+	}
+
+	for _, id := range []string{"ws-keep", "base-proj-vm-11111111", "prov-baseimg-22222222"} {
+		if _, err := mgr1.Start(ctx, LaunchSpec{
+			ID:            id,
+			CellHostPath:  "/mnt/cells/" + id,
+			CladefsVMSock: "/run/cladefsd/vm.sock",
+		}); err != nil {
+			t.Fatalf("Start %s: %v", id, err)
+		}
+	}
+
+	// Worker restarts: Reconnect must adopt ws-keep and reap base-* and prov-*.
+	mgr2, err := NewManager(Config{
+		RunDir:          runDir,
+		DisableNetwork:  true,
+		BootTimeout:     5 * time.Second,
+		ShutdownTimeout: 200 * time.Millisecond,
+	}, WithLauncher(fl), WithDialerFactory(dialer))
+	if err != nil {
+		t.Fatalf("NewManager 2: %v", err)
+	}
+	n, err := mgr2.Reconnect(ctx)
+	if err != nil || n != 1 {
+		t.Fatalf("Reconnect = (%d, %v), want (1, nil)", n, err)
+	}
+	if mgr2.Get("ws-keep") == nil {
+		t.Fatal("expected ws-keep reconnected")
+	}
+	for _, id := range []string{"base-proj-vm-11111111", "prov-baseimg-22222222"} {
+		if mgr2.Get(id) != nil {
+			t.Fatalf("ephemeral build VM %s must not be reconnected", id)
+		}
+		if st, _ := fl.Status(ctx, "hotbed-vm-"+id); st.Alive() {
+			t.Fatalf("ephemeral build VM %s must be stopped during Reconnect", id)
+		}
+		if _, err := os.Stat(filepath.Join(runDir, id)); !os.IsNotExist(err) {
+			t.Fatalf("expected dir for %s removed", id)
+		}
+	}
+}
+
+func TestManagerReconcileOrphansReapsDirlessZombiesAndPreservesOwnedAndStarting(t *testing.T) {
+	ctx := context.Background()
+	runDir := shortSockDir(t)
+	fl := newFakeLauncher()
+	mgr, err := NewManager(Config{
+		RunDir:          runDir,
+		Slice:           "user-1000-hotbed.slice",
+		DisableNetwork:  true,
+		BootTimeout:     5 * time.Second,
+		ShutdownTimeout: 200 * time.Millisecond,
+	}, WithLauncher(fl), WithDialerFactory(startTestGuestd(t)))
+	if err != nil {
+		t.Fatalf("NewManager: %v", err)
+	}
+
+	// Start a legitimately owned workspace VM.
+	if _, err := mgr.Start(ctx, LaunchSpec{
+		ID:            "ws-owned",
+		CellHostPath:  "/mnt/cells/ws/ws-owned",
+		CladefsVMSock: "/run/cladefsd/vm.sock",
+	}); err != nil {
+		t.Fatalf("Start ws-owned: %v", err)
+	}
+
+	// Simulate two dir-less zombie units in systemd (exact ubu1 incident) plus
+	// an untracked released workspace zombie and an in-flight starting VM.
+	fl.mu.Lock()
+	fl.running["hotbed-vm-base-cladefs-vm-b470a516"] = true
+	fl.slices["hotbed-vm-base-cladefs-vm-b470a516"] = "user-1000-hotbed.slice"
+	fl.running["hotbed-vm-base-cladefs-vm-cba75ac3"] = true
+	fl.slices["hotbed-vm-base-cladefs-vm-cba75ac3"] = "user-1000-hotbed.slice"
+	fl.running["hotbed-vm-ws-zombie"] = true
+	fl.slices["hotbed-vm-ws-zombie"] = "user-1000-hotbed.slice"
+	fl.running["hotbed-vm-ws-booting"] = true
+	fl.slices["hotbed-vm-ws-booting"] = "user-1000-hotbed.slice"
+	fl.mu.Unlock()
+
+	mgr.mu.Lock()
+	mgr.starting["ws-booting"] = struct{}{}
+	mgr.mu.Unlock()
+
+	reaped, _ := mgr.ReconcileOrphans(ctx, map[string]bool{"ws-owned": true})
+	wantReaped := []string{"base-cladefs-vm-b470a516", "base-cladefs-vm-cba75ac3", "ws-zombie"}
+	if !slices.Equal(reaped, wantReaped) {
+		t.Fatalf("reaped = %q, want %q", reaped, wantReaped)
+	}
+	for _, id := range wantReaped {
+		if st, _ := fl.Status(ctx, "hotbed-vm-"+id); st.Alive() {
+			t.Fatalf("zombie %s still alive after ReconcileOrphans", id)
+		}
+	}
+	for _, keep := range []string{"ws-owned", "ws-booting"} {
+		if st, _ := fl.Status(ctx, "hotbed-vm-"+keep); !st.Alive() {
+			t.Fatalf("owned/starting VM %s was erroneously killed", keep)
+		}
 	}
 }

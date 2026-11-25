@@ -92,6 +92,11 @@ func (e *Engine) sweepOrphans(ctx context.Context) {
 		_ = g.Wait()
 	}
 
+	// 1b. Reconcile orphaned Firecracker VM units, TAPs, and cladefs cells
+	// (including prior worker incarnations' base/prov build VMs and any zombie
+	// units whose RunDir metadata was lost).
+	e.reconcileVMOrphans(ctx, true)
+
 	if e.cfg.Store == nil {
 		return
 	}
@@ -171,6 +176,21 @@ func (e *Engine) sweepOrphans(ctx context.Context) {
 		}
 		slog.Info("swept orphan base snapshot", "snapshot", snap)
 	}
+}
+
+func (e *Engine) reconcileVMOrphans(ctx context.Context, startup bool) {
+	if e.cfg.VM == nil {
+		return
+	}
+	liveWorkspaces := make(map[string]bool)
+	e.mu.Lock()
+	for id, w := range e.workspaces {
+		if w.ws().State != released || w.releasing {
+			liveWorkspaces[id] = true
+		}
+	}
+	e.mu.Unlock()
+	e.cfg.VM.ReconcileOrphans(ctx, liveWorkspaces, startup)
 }
 
 func (e *Engine) orphanSlices() []string {

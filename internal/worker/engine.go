@@ -696,6 +696,7 @@ func (e *Engine) Run(ctx context.Context) {
 			e.collectWorkspaces(ctx)
 			e.collectBases(ctx)
 			e.collectBaseImages(ctx)
+			e.reconcileVMOrphans(ctx, false)
 			e.measureDisk(ctx)
 			e.pruneEvents()
 			e.pruneLogs()

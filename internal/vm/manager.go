@@ -9,12 +9,23 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/semistrict/hotbed/internal/guestd"
 )
+
+// ErrVMRunning is returned when an operation requires a VM unit to be stopped
+// (e.g. preparing or deleting its backing cell) while the VM is still alive.
+var ErrVMRunning = errors.New("vm is still running")
+
+// IsEphemeralBuildID reports whether id belongs to a single-incarnation base
+// image or project base build VM (never adopted across worker restarts).
+func IsEphemeralBuildID(id string) bool {
+	return strings.HasPrefix(id, "base-") || strings.HasPrefix(id, "prov-")
+}
 
 // Instance represents one live Firecracker microVM backing a workspace.
 type Instance struct {
@@ -55,6 +66,7 @@ type Manager struct {
 
 	mu        sync.Mutex
 	instances map[string]*Instance
+	starting  map[string]struct{}
 	usedCIDs  map[uint32]string
 	nextCID   uint32
 }
@@ -102,6 +114,7 @@ func NewManager(cfg Config, opts ...ManagerOption) (*Manager, error) {
 			return guestd.FirecrackerVsockDialer(uds)
 		},
 		instances: map[string]*Instance{},
+		starting:  map[string]struct{}{},
 		usedCIDs:  map[uint32]string{},
 		nextCID:   3, // CID 0,1,2 are reserved (hypervisor, local, host)
 	}
@@ -294,9 +307,23 @@ func (m *Manager) Start(ctx context.Context, spec LaunchSpec) (*Instance, error)
 		m.mu.Unlock()
 		return existing, nil
 	}
+	if _, busy := m.starting[spec.ID]; busy {
+		m.mu.Unlock()
+		return nil, fmt.Errorf("vm %s: already starting: %w", spec.ID, ErrVMRunning)
+	}
+	m.starting[spec.ID] = struct{}{}
 	cid := m.allocCIDLocked(spec.ID)
 	cfg := m.cfg
 	m.mu.Unlock()
+
+	startedOK := false
+	defer func() {
+		if !startedOK {
+			m.mu.Lock()
+			delete(m.starting, spec.ID)
+			m.mu.Unlock()
+		}
+	}()
 
 	vmDir := filepath.Join(cfg.RunDir, spec.ID)
 	if err := os.MkdirAll(vmDir, 0o755); err != nil {
@@ -337,24 +364,29 @@ func (m *Manager) Start(ctx context.Context, spec LaunchSpec) (*Instance, error)
 		}
 	}
 
-	cleanupOnErr := func() {
+	cleanupOnErr := func(removeDir bool) {
 		if gaBridge != nil {
 			_ = gaBridge.Close()
 		}
 		if m.net != nil && netAlloc.TAPName != "" {
-			m.net.ReleaseTAP(context.Background(), netAlloc)
+			cctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			m.net.ReleaseTAP(cctx, netAlloc)
+			cancel()
 		}
 		m.releaseCID(cid)
+		if removeDir {
+			_ = os.RemoveAll(vmDir)
+		}
 	}
 
 	fcCfg := m.BuildFirecrackerConfig(spec, cid, vsockUDS, netAlloc)
 	cfgBytes, err := json.MarshalIndent(fcCfg, "", "  ")
 	if err != nil {
-		cleanupOnErr()
+		cleanupOnErr(true)
 		return nil, fmt.Errorf("vm %s: encode firecracker config: %w", spec.ID, err)
 	}
 	if err := os.WriteFile(configPath, cfgBytes, 0o644); err != nil {
-		cleanupOnErr()
+		cleanupOnErr(true)
 		return nil, fmt.Errorf("vm %s: write %s: %w", spec.ID, configPath, err)
 	}
 
@@ -370,7 +402,7 @@ func (m *Manager) Start(ctx context.Context, spec LaunchSpec) (*Instance, error)
 		StartedAt:  now,
 	}
 	if err := writeMeta(vmDir, meta); err != nil {
-		cleanupOnErr()
+		cleanupOnErr(true)
 		return nil, fmt.Errorf("vm %s: persist metadata: %w", spec.ID, err)
 	}
 
@@ -389,14 +421,26 @@ func (m *Manager) Start(ctx context.Context, spec LaunchSpec) (*Instance, error)
 		ConsoleLog: consoleLog,
 	}
 	if err := m.launcher.Start(ctx, procSpec); err != nil {
-		cleanupOnErr()
+		cleanupOnErr(true)
 		return nil, fmt.Errorf("vm %s: launch firecracker: %w", spec.ID, err)
 	}
 
 	client := guestd.NewClient(m.dialerFn(vsockUDS))
 	if err := m.waitHealthy(ctx, unitName, consoleLog, client); err != nil {
-		_ = m.launcher.Stop(context.Background(), unitName)
-		cleanupOnErr()
+		stopCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), m.stopTimeout())
+		stopErr := m.forceStopUnit(stopCtx, unitName)
+		cancel()
+		if stopErr != nil {
+			// Unit may still be alive: preserve vmDir, CID, and TAP/IP so
+			// orphan reconciliation can stop it cleanly without leaking metadata.
+			if gaBridge != nil {
+				_ = gaBridge.Close()
+			}
+			slog.Error("vm start failed and unit failed to stop; preserving metadata for orphan reaper",
+				"vm", spec.ID, "unit", unitName, "startErr", err, "stopErr", stopErr)
+			return nil, fmt.Errorf("vm %s: %w (cleanup stop failed: %v)", spec.ID, err, stopErr)
+		}
+		cleanupOnErr(true)
 		return nil, fmt.Errorf("vm %s: %w", spec.ID, err)
 	}
 
@@ -415,6 +459,8 @@ func (m *Manager) Start(ctx context.Context, spec LaunchSpec) (*Instance, error)
 	}
 	m.mu.Lock()
 	m.instances[spec.ID] = inst
+	delete(m.starting, spec.ID)
+	startedOK = true
 	m.mu.Unlock()
 	return inst, nil
 }
@@ -459,8 +505,9 @@ func (m *Manager) waitHealthy(ctx context.Context, unitName, consoleLog string, 
 }
 
 // Reconnect scans cfg.RunDir for Firecracker VMs that survived a hotbed-worker
-// restart, re-attaches their git-auth vsock bridges and guestd clients, and
-// cleans up stale directories whose VMs have already exited.
+// restart, re-attaches their git-auth vsock bridges and guestd clients, stops
+// any ephemeral base/prov build VMs from a prior worker incarnation, and cleans
+// up stale directories whose VMs are verified dead.
 func (m *Manager) Reconnect(ctx context.Context) (int, error) {
 	entries, err := os.ReadDir(m.cfg.RunDir)
 	if err != nil {
@@ -474,13 +521,63 @@ func (m *Manager) Reconnect(ctx context.Context) (int, error) {
 		if !ent.IsDir() {
 			continue
 		}
-		vmDir := filepath.Join(m.cfg.RunDir, ent.Name())
+		id := ent.Name()
+		vmDir := filepath.Join(m.cfg.RunDir, id)
 		meta, err := readMeta(vmDir)
 		if err != nil {
+			// Only remove a corrupt/incomplete dir if its unit is confirmed dead.
+			if st, serr := m.launcher.Status(ctx, "hotbed-vm-"+id); serr == nil && !st.Alive() {
+				if m.net != nil {
+					m.net.ReleaseTAPByVMID(ctx, id)
+				}
+				_ = os.RemoveAll(vmDir)
+			}
 			continue
 		}
 		st, err := m.launcher.Status(ctx, meta.UnitName)
-		if err != nil || !st.Running {
+		if IsEphemeralBuildID(meta.ID) {
+			// Ephemeral base-build / provisioning VMs belong to a single worker
+			// incarnation; never adopt them across restarts.
+			if err != nil || st.Alive() {
+				stopCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), m.stopTimeout())
+				stopErr := m.forceStopUnit(stopCtx, meta.UnitName)
+				cancel()
+				if stopErr != nil {
+					slog.Warn("vm reconnect: stop leftover build VM failed; preserving dir for reaper",
+						"vm", meta.ID, "unit", meta.UnitName, "err", stopErr)
+					continue
+				}
+			}
+			if m.net != nil {
+				if meta.Net.TAPName != "" {
+					m.net.ReleaseTAP(ctx, meta.Net)
+				} else {
+					m.net.ReleaseTAPByVMID(ctx, meta.ID)
+				}
+			}
+			_ = os.RemoveAll(vmDir)
+			slog.Info("vm reconnect: reaped leftover build VM", "vm", meta.ID, "unit", meta.UnitName)
+			continue
+		}
+		if err != nil {
+			slog.Warn("vm reconnect: status check failed; preserving dir", "vm", meta.ID, "unit", meta.UnitName, "err", err)
+			continue
+		}
+		if st.Deactivating {
+			stopCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), m.stopTimeout())
+			stopErr := m.forceStopUnit(stopCtx, meta.UnitName)
+			cancel()
+			if stopErr != nil {
+				slog.Warn("vm reconnect: finish stopping deactivating VM failed", "vm", meta.ID, "err", stopErr)
+				continue
+			}
+			if m.net != nil && meta.Net.TAPName != "" {
+				m.net.ReleaseTAP(ctx, meta.Net)
+			}
+			_ = os.RemoveAll(vmDir)
+			continue
+		}
+		if !st.Running {
 			if m.net != nil && meta.Net.TAPName != "" {
 				m.net.ReleaseTAP(ctx, meta.Net)
 			}
@@ -535,21 +632,71 @@ func (m *Manager) Reconnect(ctx context.Context) (int, error) {
 	return reconnected, nil
 }
 
+func (m *Manager) stopTimeout() time.Duration {
+	cfg := m.configSnapshot()
+	return max(cfg.ShutdownTimeout*3, 15*time.Second)
+}
+
+func (m *Manager) killWaitTimeout() time.Duration {
+	cfg := m.configSnapshot()
+	return min(max(cfg.ShutdownTimeout, time.Second), 5*time.Second)
+}
+
+// forceStopUnit stops unitName, escalates to Killer.Kill (SIGKILL) if it stays
+// alive or Stop errors, and only returns nil once launcher.Status confirms the
+// unit is no longer alive.
+func (m *Manager) forceStopUnit(ctx context.Context, unitName string) error {
+	stopErr := m.launcher.Stop(ctx, unitName)
+	st, stErr := m.launcher.Status(ctx, unitName)
+	if stErr == nil && !st.Alive() {
+		return nil
+	}
+
+	var killErr error
+	if killer, ok := m.launcher.(Killer); ok {
+		killErr = killer.Kill(ctx, unitName)
+		deadline := time.Now().Add(m.killWaitTimeout())
+	waitDead:
+		for time.Now().Before(deadline) {
+			st, stErr = m.launcher.Status(ctx, unitName)
+			if stErr == nil && !st.Alive() {
+				_ = m.launcher.Stop(ctx, unitName)
+				return nil
+			}
+			select {
+			case <-ctx.Done():
+				break waitDead
+			case <-time.After(25 * time.Millisecond):
+			}
+		}
+		st, stErr = m.launcher.Status(ctx, unitName)
+		if stErr == nil && !st.Alive() {
+			_ = m.launcher.Stop(ctx, unitName)
+			return nil
+		}
+	}
+
+	if stErr != nil {
+		return fmt.Errorf("verify unit %s stopped: %w (stop=%v, kill=%v)", unitName, stErr, stopErr, killErr)
+	}
+	return fmt.Errorf("unit %s is still alive after stop/kill (stop=%v, kill=%v)", unitName, stopErr, killErr)
+}
+
 // Stop gracefully shuts down the Firecracker VM for id (syncing Fxfs inside the
-// guest if syncFS is true), waits for clean Firecracker exit, stops the unit,
-// and cleans up TAP/bridge/socket/state files. Idempotent if not running.
+// guest if syncFS is true), verifies the Firecracker unit actually exited
+// (escalating to SIGKILL on failure/timeout), and ONLY THEN cleans up
+// tracking, TAP, CID, and inst.Dir. If the unit cannot be confirmed dead,
+// metadata and tracking are preserved for retry/reconciliation and an error is
+// returned. Idempotent if not tracked.
 func (m *Manager) Stop(ctx context.Context, id string, syncFS bool) error {
 	m.mu.Lock()
 	inst, ok := m.instances[id]
-	if ok {
-		delete(m.instances, id)
-	}
 	m.mu.Unlock()
 	if !ok {
 		return nil
 	}
 
-	if inst.Client != nil {
+	if inst.Client != nil && ctx.Err() == nil {
 		sctx, cancel := context.WithTimeout(ctx, m.cfg.ShutdownTimeout)
 		_ = inst.Client.Shutdown(sctx, guestd.ShutdownRequest{
 			SyncFS:       syncFS,
@@ -560,29 +707,185 @@ func (m *Manager) Stop(ctx context.Context, id string, syncFS bool) error {
 
 		// Wait briefly for Firecracker to exit cleanly on its own.
 		deadline := time.Now().Add(m.cfg.ShutdownTimeout)
+	waitLoop:
 		for time.Now().Before(deadline) {
 			st, err := m.launcher.Status(ctx, inst.UnitName)
-			if err != nil || !st.Running {
+			if err != nil || !st.Alive() {
 				break
 			}
 			select {
 			case <-ctx.Done():
-				break
+				break waitLoop
 			case <-time.After(50 * time.Millisecond):
 			}
 		}
 	}
 
-	stopErr := m.launcher.Stop(ctx, inst.UnitName)
+	// Always execute the stop/kill verification on a bounded non-cancelled
+	// context so a cancelled caller context never skips stopping Firecracker or
+	// strands a zombie VM without metadata.
+	stopCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), m.stopTimeout())
+	defer cancel()
+
+	if err := m.forceStopUnit(stopCtx, inst.UnitName); err != nil {
+		slog.Error("vm stop failed; preserving instance tracking and metadata",
+			"vm", id, "unit", inst.UnitName, "dir", inst.Dir, "err", err)
+		return fmt.Errorf("vm %s: stop failed: %w", id, err)
+	}
+
+	m.mu.Lock()
+	if cur := m.instances[id]; cur == inst {
+		delete(m.instances, id)
+	}
+	m.mu.Unlock()
+
 	if inst.gitAuth != nil {
 		_ = inst.gitAuth.Close()
 	}
-	if m.net != nil && inst.Net.TAPName != "" {
-		m.net.ReleaseTAP(ctx, inst.Net)
+	if m.net != nil {
+		if inst.Net.TAPName != "" {
+			m.net.ReleaseTAP(stopCtx, inst.Net)
+		} else {
+			m.net.ReleaseTAPByVMID(stopCtx, id)
+		}
 	}
 	m.releaseCID(inst.GuestCID)
 	_ = os.RemoveAll(inst.Dir)
-	return stopErr
+	return nil
+}
+
+// EnsureNotRunning verifies no live Firecracker unit or in-flight launch holds
+// id. If a tracked instance already exited, its stale state is cleaned up.
+func (m *Manager) EnsureNotRunning(ctx context.Context, id string) error {
+	m.mu.Lock()
+	_, starting := m.starting[id]
+	tracked := m.instances[id] != nil
+	m.mu.Unlock()
+	if starting {
+		return fmt.Errorf("vm %s is currently starting: %w", id, ErrVMRunning)
+	}
+	unitName := "hotbed-vm-" + id
+	if st, err := m.launcher.Status(ctx, unitName); err == nil && st.Alive() {
+		return fmt.Errorf("vm %s (%s): %w", id, unitName, ErrVMRunning)
+	}
+	if tracked {
+		return m.Stop(ctx, id, false)
+	}
+	return nil
+}
+
+// ReconcileOrphans discovers every active hotbed-vm-* unit in systemd, every
+// tracked instance, and every RunDir entry not in ownedIDs (or currently
+// starting), force-stops it, releases its TAP (even when RunDir/meta.json was
+// already deleted), removes its RunDir, and sweeps orphaned TAPs on the bridge.
+// Returns the reaped VM IDs and any recovered backing cell paths.
+func (m *Manager) ReconcileOrphans(ctx context.Context, ownedIDs map[string]bool) (reapedIDs []string, reapedCellPaths []string) {
+	cfg := m.configSnapshot()
+	candidates := map[string]struct{}{}
+
+	if units, err := m.launcher.List(ctx, cfg.Slice); err != nil {
+		slog.Warn("vm reconcile orphans: list units failed", "slice", cfg.Slice, "err", err)
+	} else {
+		for _, u := range units {
+			if id, ok := strings.CutPrefix(u, "hotbed-vm-"); ok && id != "" {
+				candidates[id] = struct{}{}
+			}
+		}
+	}
+
+	m.mu.Lock()
+	for id := range m.instances {
+		candidates[id] = struct{}{}
+	}
+	m.mu.Unlock()
+
+	if entries, err := os.ReadDir(cfg.RunDir); err == nil {
+		for _, ent := range entries {
+			if ent.IsDir() && ent.Name() != "" {
+				candidates[ent.Name()] = struct{}{}
+			}
+		}
+	}
+
+	ids := make([]string, 0, len(candidates))
+	for id := range candidates {
+		ids = append(ids, id)
+	}
+	slices.Sort(ids)
+
+	stillAlive := map[string]bool{}
+	for _, id := range ids {
+		if ownedIDs[id] {
+			continue
+		}
+		m.mu.Lock()
+		if _, starting := m.starting[id]; starting {
+			m.mu.Unlock()
+			continue
+		}
+		inst := m.instances[id]
+		m.mu.Unlock()
+
+		vmDir := filepath.Join(cfg.RunDir, id)
+		meta, metaErr := readMeta(vmDir)
+		cellPath := ""
+		if inst != nil && inst.CellPath != "" {
+			cellPath = inst.CellPath
+		} else if metaErr == nil && meta.CellPath != "" {
+			cellPath = meta.CellPath
+		}
+
+		if inst != nil {
+			if err := m.Stop(ctx, id, false); err != nil {
+				slog.Warn("reap tracked orphan Firecracker VM failed", "vm", id, "err", err)
+				stillAlive[id] = true
+				continue
+			}
+		} else {
+			stopCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), m.stopTimeout())
+			err := m.forceStopUnit(stopCtx, "hotbed-vm-"+id)
+			if err != nil {
+				cancel()
+				slog.Warn("reap untracked orphan Firecracker VM failed", "vm", id, "unit", "hotbed-vm-"+id, "err", err)
+				stillAlive[id] = true
+				continue
+			}
+			if m.net != nil {
+				if metaErr == nil && meta.Net.TAPName != "" {
+					m.net.ReleaseTAP(stopCtx, meta.Net)
+				}
+				m.net.ReleaseTAPByVMID(stopCtx, id)
+			}
+			cancel()
+			_ = os.RemoveAll(vmDir)
+		}
+
+		reapedIDs = append(reapedIDs, id)
+		if cellPath != "" {
+			reapedCellPaths = append(reapedCellPaths, cellPath)
+		}
+		slog.Info("reaped orphan Firecracker VM", "vm", id, "unit", "hotbed-vm-"+id)
+	}
+
+	if m.net != nil {
+		liveIDs := make(map[string]bool, len(ownedIDs)+len(stillAlive))
+		for id := range ownedIDs {
+			liveIDs[id] = true
+		}
+		for id := range stillAlive {
+			liveIDs[id] = true
+		}
+		m.mu.Lock()
+		for id := range m.instances {
+			liveIDs[id] = true
+		}
+		for id := range m.starting {
+			liveIDs[id] = true
+		}
+		m.mu.Unlock()
+		m.net.SweepOrphanTAPs(ctx, liveIDs)
+	}
+	return reapedIDs, reapedCellPaths
 }
 
 // SetGitAuthHostSock sets the host Unix socket path for git-auth vsock

@@ -7,9 +7,11 @@ import (
 	"crypto/sha256"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/netip"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"sync"
 )
@@ -257,6 +259,59 @@ func (m *NetManager) ReleaseTAP(ctx context.Context, alloc NetAlloc) {
 	if addr, err := netip.ParseAddr(alloc.GuestIP); err == nil {
 		m.releaseIP(addr)
 	}
+}
+
+// ReleaseTAPByVMID removes the deterministic TAP device derived from vmID and
+// releases any IP reservation for vmID, even when persisted meta.json was lost.
+func (m *NetManager) ReleaseTAPByVMID(ctx context.Context, vmID string) {
+	if vmID == "" {
+		return
+	}
+	_ = runCmd(ctx, "ip", "link", "del", tapNameFor(vmID))
+	m.mu.Lock()
+	for addr, owner := range m.usedIPs {
+		if owner == vmID {
+			delete(m.usedIPs, addr)
+		}
+	}
+	m.mu.Unlock()
+}
+
+// SweepOrphanTAPs removes any hbt-* TAP interfaces attached to m.bridgeName
+// whose deterministic VM ID is not in liveVMIDs, and clears stale IP leases.
+func (m *NetManager) SweepOrphanTAPs(ctx context.Context, liveVMIDs map[string]bool) int {
+	liveTAPs := make(map[string]bool, len(liveVMIDs))
+	for id := range liveVMIDs {
+		liveTAPs[tapNameFor(id)] = true
+	}
+	entries, err := os.ReadDir("/sys/class/net")
+	swept := 0
+	if err == nil {
+		for _, ent := range entries {
+			name := ent.Name()
+			if !strings.HasPrefix(name, "hbt-") || liveTAPs[name] {
+				continue
+			}
+			masterLink, err := os.Readlink(filepath.Join("/sys/class/net", name, "master"))
+			if err != nil || filepath.Base(masterLink) != m.bridgeName {
+				continue
+			}
+			if err := runCmd(ctx, "ip", "link", "del", name); err != nil {
+				slog.Warn("sweep orphan VM TAP failed", "tap", name, "bridge", m.bridgeName, "err", err)
+				continue
+			}
+			slog.Info("swept orphan VM TAP", "tap", name, "bridge", m.bridgeName)
+			swept++
+		}
+	}
+	m.mu.Lock()
+	for addr, owner := range m.usedIPs {
+		if owner != "_bridge" && !liveVMIDs[owner] {
+			delete(m.usedIPs, addr)
+		}
+	}
+	m.mu.Unlock()
+	return swept
 }
 
 func (m *NetManager) allocIP(vmID string) (netip.Addr, error) {

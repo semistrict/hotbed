@@ -24,6 +24,7 @@ import (
 	pb "github.com/semistrict/hotbed/internal/gen/hotbed/v1"
 	"github.com/semistrict/hotbed/internal/runtime"
 	"github.com/semistrict/hotbed/internal/statedir"
+	"github.com/semistrict/hotbed/internal/storage"
 	"github.com/semistrict/hotbed/internal/unit"
 )
 
@@ -495,13 +496,19 @@ func (b *CladefsFUSEBackend) EnsureProvisionedBaseImage(ctx context.Context, spe
 // Kind::Fxfs is visible to Mount.Attach, drops the staging dir, and mounts it
 // inside cladefsd's host FUSE mount.
 func (b *CladefsFUSEBackend) forkAndMount(ctx context.Context, from cladefs.CellRef, stageRel string, fencingToken uint64) (tenant, cell uint64, mountPath, storeDir string, err error) {
-	_ = b.currentStore().DropCell(ctx, stageRel)
+	if err := b.currentStore().DropCell(ctx, stageRel); err != nil {
+		if derr := b.currentStore().DeleteCell(ctx, stageRel); derr != nil {
+			return 0, 0, "", "", fmt.Errorf("clear stale staging cell %s: %w", stageRel, derr)
+		}
+	}
 	forkRef, err := b.currentStore().ForkVersion(ctx, from, stageRel, false)
 	if err != nil {
 		return 0, 0, "", "", fmt.Errorf("fork R2 version %d/%x: %w", from.Cell, from.Version, err)
 	}
 	if err := b.currentStore().SyncCell(ctx, stageRel); err != nil {
-		_ = b.currentStore().DeleteCell(context.Background(), stageRel)
+		cctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 15*time.Second)
+		_ = b.currentStore().DeleteCell(cctx, stageRel)
+		cancel()
 		return 0, 0, "", "", fmt.Errorf("sync forked cell %d head: %w", forkRef.Cell, err)
 	}
 	if err := b.currentStore().DropCell(ctx, stageRel); err != nil {
@@ -517,7 +524,9 @@ func (b *CladefsFUSEBackend) forkAndMount(ctx context.Context, from cladefs.Cell
 		return 0, 0, "", "", fmt.Errorf("mount attach forked cell %d: %w", forkRef.Cell, err)
 	}
 	if !shown {
-		_ = b.currentStore().MountDetach(context.Background(), forkRef.Tenant, attachedCell, true)
+		cctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 15*time.Second)
+		_ = b.currentStore().MountDetach(cctx, forkRef.Tenant, attachedCell, true)
+		cancel()
 		return 0, 0, "", "", fmt.Errorf("forked cell %d attached with shown=false (head kind missing)", attachedCell)
 	}
 	return forkRef.Tenant, attachedCell, b.mountDir(forkRef.Tenant, attachedCell), b.mountStoreDir(forkRef.Tenant, attachedCell), nil
@@ -527,19 +536,27 @@ func (b *CladefsFUSEBackend) forkAndMount(ctx context.Context, from cladefs.Cell
 // (reads come from R2 via CLADEFSD_PART_CACHE, writes stay host-local with zero
 // R2 segment uploads) and mounts it inside cladefsd's host FUSE mount.
 func (b *CladefsFUSEBackend) forkEphemeralAndMount(ctx context.Context, from cladefs.CellRef, wsRel string) (tenant, cell uint64, mountPath, storeDir string, err error) {
-	_ = b.currentStore().DropCell(ctx, wsRel)
+	// Clear any stale unmounted ephemeral cell left by an earlier crash or
+	// interrupted creation so ForkVersion is idempotent and never fails EEXIST.
+	if err := b.currentStore().DeleteCell(ctx, wsRel); err != nil {
+		return 0, 0, "", "", fmt.Errorf("clear stale ephemeral cell %s: %w", wsRel, err)
+	}
 	forkRef, err := b.currentStore().ForkVersion(ctx, from, wsRel, true)
 	if err != nil {
 		return 0, 0, "", "", fmt.Errorf("fork ephemeral R2 version %d/%x: %w", from.Cell, from.Version, err)
 	}
 	attachedCell, shown, err := b.currentStore().MountAttach(ctx, forkRef.Tenant, forkRef.Cell, 0, nil)
 	if err != nil {
-		_ = b.currentStore().DeleteCell(context.Background(), wsRel)
+		cctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 15*time.Second)
+		_ = b.currentStore().DeleteCell(cctx, wsRel)
+		cancel()
 		return 0, 0, "", "", fmt.Errorf("mount attach ephemeral cell %d: %w", forkRef.Cell, err)
 	}
 	if !shown {
-		_ = b.currentStore().MountDetach(context.Background(), forkRef.Tenant, attachedCell, true)
-		_ = b.currentStore().DeleteCell(context.Background(), wsRel)
+		cctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 15*time.Second)
+		_ = b.currentStore().MountDetach(cctx, forkRef.Tenant, attachedCell, true)
+		_ = b.currentStore().DeleteCell(cctx, wsRel)
+		cancel()
 		return 0, 0, "", "", fmt.Errorf("ephemeral cell %d attached with shown=false (kind missing)", attachedCell)
 	}
 	return forkRef.Tenant, attachedCell, b.mountDir(forkRef.Tenant, attachedCell), forkRef.HostPath, nil
@@ -767,6 +784,12 @@ printf '::hotbed-head:: %s %%s\n' "$(git -C %q rev-parse HEAD)"
 // PrepareWorkspace forks baseRef into a host-local ephemeral cladefs cell and
 // mounts it into cladefsd's host FUSE mount at /var/lib/cladefs/mnt/<tenant>/<cell>.
 func (b *CladefsFUSEBackend) PrepareWorkspace(ctx context.Context, wsID string, baseRef cladefs.CellRef, fencingToken uint64) (*pb.CladefsCell, string, error) {
+	b.mu.Lock()
+	_, active := b.wsMounts[wsID]
+	b.mu.Unlock()
+	if active {
+		return nil, "", fmt.Errorf("prepare cladefs FUSE workspace %s: active mount already exists: %w", wsID, storage.ErrBusy)
+	}
 	if err := clearMountNosuid(b.mountRoot); err != nil {
 		return nil, "", fmt.Errorf("enable setuid on cladefs FUSE mount %s: %w", b.mountRoot, err)
 	}

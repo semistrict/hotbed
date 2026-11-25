@@ -6,19 +6,28 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
 	"syscall"
+	"time"
 )
 
-// Launcher starts, inspects, and stops Firecracker VMM processes.
+// Launcher starts, inspects, lists, and stops Firecracker VMM processes.
 // Production Linux uses SystemdLauncher (transient units in hotbed.slice that
 // survive hotbed-worker restarts). Tests and non-systemd hosts use DirectLauncher.
 type Launcher interface {
 	Start(ctx context.Context, spec ProcessSpec) error
 	Stop(ctx context.Context, name string) error
 	Status(ctx context.Context, name string) (ProcessStatus, error)
+	List(ctx context.Context, slice string) ([]string, error)
+}
+
+// Killer is an optional Launcher extension that escalates a stubborn VMM
+// process or systemd unit to SIGKILL when graceful Stop fails or leaves it alive.
+type Killer interface {
+	Kill(ctx context.Context, name string) error
 }
 
 // ProcessSpec describes one Firecracker VMM process to launch.
@@ -33,13 +42,20 @@ type ProcessSpec struct {
 
 // ProcessStatus reports whether a Firecracker VMM is currently running or exited.
 type ProcessStatus struct {
-	Loaded    bool
-	Running   bool
-	Exited    bool
-	ExitCode  int
-	Signal    int
-	Result    string
-	OOMKilled bool
+	Loaded       bool
+	Running      bool
+	Deactivating bool
+	Exited       bool
+	ExitCode     int
+	Signal       int
+	Result       string
+	OOMKilled    bool
+}
+
+// Alive reports whether the VMM process may still be executing (active,
+// activating, or still tearing down in systemd's deactivating state).
+func (s ProcessStatus) Alive() bool {
+	return s.Running || s.Deactivating
 }
 
 // SystemdLauncher runs each Firecracker VM as a transient systemd service unit
@@ -88,15 +104,67 @@ func (SystemdLauncher) Start(ctx context.Context, s ProcessSpec) error {
 	return nil
 }
 
-func (SystemdLauncher) Stop(ctx context.Context, name string) error {
-	out, err := exec.CommandContext(ctx, "systemctl", "stop", name+".service").CombinedOutput()
-	_ = exec.CommandContext(ctx, "systemctl", "reset-failed", name+".service").Run()
+func (l SystemdLauncher) Stop(ctx context.Context, name string) error {
+	stopCtx := ctx
+	if _, hasDeadline := ctx.Deadline(); !hasDeadline {
+		var cancel context.CancelFunc
+		stopCtx, cancel = context.WithTimeout(ctx, 10*time.Second)
+		defer cancel()
+	}
+	out, err := exec.CommandContext(stopCtx, "systemctl", "stop", name+".service").CombinedOutput()
 	if err != nil {
 		msg := strings.TrimSpace(string(out))
 		if strings.Contains(msg, "not loaded") {
+			err = nil
+		} else {
+			err = fmt.Errorf("systemctl stop %s: %w (%s)", name, err, msg)
+		}
+	}
+
+	// Verify the unit actually stopped; escalate to SIGKILL if still alive or
+	// if systemctl stop timed out / failed.
+	checkCtx, checkCancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
+	defer checkCancel()
+	st, stErr := l.Status(checkCtx, name)
+	if stErr == nil && !st.Alive() {
+		_ = exec.CommandContext(checkCtx, "systemctl", "reset-failed", name+".service").Run()
+		return nil
+	}
+
+	killErr := l.Kill(checkCtx, name)
+	deadline := time.Now().Add(5 * time.Second)
+killWait:
+	for time.Now().Before(deadline) {
+		st, stErr = l.Status(checkCtx, name)
+		if stErr == nil && !st.Alive() {
+			_ = exec.CommandContext(checkCtx, "systemctl", "reset-failed", name+".service").Run()
 			return nil
 		}
-		return fmt.Errorf("systemctl stop %s: %w (%s)", name, err, msg)
+		select {
+		case <-checkCtx.Done():
+			break killWait
+		case <-time.After(50 * time.Millisecond):
+		}
+	}
+	st, stErr = l.Status(checkCtx, name)
+	if stErr == nil && !st.Alive() {
+		_ = exec.CommandContext(checkCtx, "systemctl", "reset-failed", name+".service").Run()
+		return nil
+	}
+	if stErr != nil {
+		return fmt.Errorf("verify unit %s stopped: %w (stop=%v, kill=%v)", name, stErr, err, killErr)
+	}
+	return fmt.Errorf("unit %s still alive after SIGKILL (stop=%v, kill=%v)", name, err, killErr)
+}
+
+func (SystemdLauncher) Kill(ctx context.Context, name string) error {
+	out, err := exec.CommandContext(ctx, "systemctl", "kill", "--kill-who=all", "--signal=SIGKILL", name+".service").CombinedOutput()
+	if err != nil {
+		msg := strings.TrimSpace(string(out))
+		if strings.Contains(msg, "not loaded") || strings.Contains(msg, "not active") {
+			return nil
+		}
+		return fmt.Errorf("systemctl kill %s: %w (%s)", name, err, msg)
 	}
 	return nil
 }
@@ -108,6 +176,90 @@ func (SystemdLauncher) Status(ctx context.Context, name string) (ProcessStatus, 
 		return ProcessStatus{}, fmt.Errorf("systemctl show %s: %w (%s)", name, err, strings.TrimSpace(string(out)))
 	}
 	return parseSystemdProcessStatus(string(out)), nil
+}
+
+// List returns the names (without ".service") of all loaded, non-inactive
+// hotbed-vm-* service units belonging to slice (or all slices when slice == "").
+func (SystemdLauncher) List(ctx context.Context, slice string) ([]string, error) {
+	out, err := exec.CommandContext(ctx, "systemctl", "list-units",
+		"--type=service", "--all", "--no-legend", "--plain", "--full", "--", "hotbed-vm-*.service").CombinedOutput()
+	if err != nil {
+		return nil, fmt.Errorf("systemctl list-units hotbed-vm-*.service: %w (%s)", err, strings.TrimSpace(string(out)))
+	}
+	candidates := parseVMListUnits(string(out))
+	if len(candidates) == 0 {
+		return nil, nil
+	}
+	args := make([]string, 0, len(candidates)+3)
+	args = append(args, "show", "--property=Id,Slice,LoadState,ActiveState", "--")
+	args = append(args, candidates...)
+	showOut, err := exec.CommandContext(ctx, "systemctl", args...).CombinedOutput()
+	if err != nil {
+		return nil, fmt.Errorf("systemctl show hotbed-vm units: %w (%s)", err, strings.TrimSpace(string(showOut)))
+	}
+	return parseVMSliceUnits(string(showOut), slice), nil
+}
+
+func parseVMListUnits(out string) []string {
+	var names []string
+	seen := make(map[string]bool)
+	for _, raw := range strings.Split(out, "\n") {
+		for _, f := range strings.Fields(raw) {
+			if !strings.HasSuffix(f, ".service") {
+				continue
+			}
+			if strings.HasPrefix(f, "hotbed-vm-") && !seen[f] {
+				seen[f] = true
+				names = append(names, f)
+			}
+			break
+		}
+	}
+	return names
+}
+
+func parseVMSliceUnits(out, slice string) []string {
+	var res []string
+	seen := make(map[string]bool)
+	var block []string
+	flush := func() {
+		if len(block) == 0 {
+			return
+		}
+		kv := make(map[string]string, len(block))
+		for _, line := range block {
+			if k, v, ok := strings.Cut(line, "="); ok {
+				kv[k] = v
+			}
+		}
+		block = block[:0]
+		if kv["LoadState"] != "loaded" || kv["ActiveState"] == "inactive" {
+			return
+		}
+		if slice != "" && kv["Slice"] != slice {
+			return
+		}
+		id := kv["Id"]
+		if !strings.HasPrefix(id, "hotbed-vm-") || !strings.HasSuffix(id, ".service") {
+			return
+		}
+		name := strings.TrimSuffix(id, ".service")
+		if !seen[name] {
+			seen[name] = true
+			res = append(res, name)
+		}
+	}
+	for _, raw := range strings.Split(out, "\n") {
+		line := strings.TrimSuffix(raw, "\r")
+		if strings.TrimSpace(line) == "" {
+			flush()
+			continue
+		}
+		block = append(block, line)
+	}
+	flush()
+	slices.Sort(res)
+	return res
 }
 
 func parseSystemdProcessStatus(out string) ProcessStatus {
@@ -136,7 +288,8 @@ func parseSystemdProcessStatus(out string) ProcessStatus {
 	}
 	st.Loaded = loadState != "" && loadState != "not-found"
 	st.Running = activeState == "active" || activeState == "activating"
-	st.Exited = !st.Running && (activeState == "inactive" || activeState == "failed" || subState == "dead" || subState == "exited" || subState == "failed")
+	st.Deactivating = activeState == "deactivating"
+	st.Exited = !st.Running && !st.Deactivating && (activeState == "inactive" || activeState == "failed" || subState == "dead" || subState == "exited" || subState == "failed")
 	if st.Result == "oom-kill" {
 		st.OOMKilled = true
 	}
@@ -157,6 +310,7 @@ type DirectLauncher struct {
 }
 
 type directProc struct {
+	slice    string
 	cmd      *exec.Cmd
 	logFile  *os.File
 	done     chan struct{}
@@ -195,7 +349,7 @@ func (l *DirectLauncher) Start(_ context.Context, s ProcessSpec) error {
 		return fmt.Errorf("start %s: %w", s.Binary, err)
 	}
 
-	p := &directProc{cmd: cmd, logFile: logFile, done: make(chan struct{})}
+	p := &directProc{slice: s.Slice, cmd: cmd, logFile: logFile, done: make(chan struct{})}
 	l.mu.Lock()
 	l.procs[s.Name] = p
 	l.mu.Unlock()
@@ -223,7 +377,7 @@ func (l *DirectLauncher) Start(_ context.Context, s ProcessSpec) error {
 	return nil
 }
 
-func (l *DirectLauncher) Stop(_ context.Context, name string) error {
+func (l *DirectLauncher) Stop(ctx context.Context, name string) error {
 	l.mu.Lock()
 	p, ok := l.procs[name]
 	l.mu.Unlock()
@@ -233,7 +387,35 @@ func (l *DirectLauncher) Stop(_ context.Context, name string) error {
 	if p.cmd.Process != nil {
 		_ = p.cmd.Process.Signal(syscall.SIGTERM)
 	}
-	<-p.done
+	timer := time.NewTimer(2 * time.Second)
+	defer timer.Stop()
+	select {
+	case <-p.done:
+		return nil
+	case <-ctx.Done():
+	case <-timer.C:
+	}
+	if p.cmd.Process != nil {
+		_ = p.cmd.Process.Signal(syscall.SIGKILL)
+	}
+	killTimer := time.NewTimer(2 * time.Second)
+	defer killTimer.Stop()
+	select {
+	case <-p.done:
+		return nil
+	case <-killTimer.C:
+		return fmt.Errorf("vm process %s did not exit after SIGKILL", name)
+	}
+}
+
+func (l *DirectLauncher) Kill(_ context.Context, name string) error {
+	l.mu.Lock()
+	p, ok := l.procs[name]
+	l.mu.Unlock()
+	if !ok || p.cmd.Process == nil {
+		return nil
+	}
+	_ = p.cmd.Process.Signal(syscall.SIGKILL)
 	return nil
 }
 
@@ -250,4 +432,21 @@ func (l *DirectLauncher) Status(_ context.Context, name string) (ProcessStatus, 
 		Exited:   p.exited,
 		ExitCode: p.exitCode,
 	}, nil
+}
+
+func (l *DirectLauncher) List(_ context.Context, slice string) ([]string, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	var out []string
+	for name, p := range l.procs {
+		if p.exited || !strings.HasPrefix(name, "hotbed-vm-") {
+			continue
+		}
+		if slice != "" && p.slice != slice {
+			continue
+		}
+		out = append(out, name)
+	}
+	slices.Sort(out)
+	return out, nil
 }
