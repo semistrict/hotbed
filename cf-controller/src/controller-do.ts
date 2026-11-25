@@ -30,6 +30,7 @@ import {
 	authenticateRequest,
 	checkSameOrigin,
 	clearSessionCookie,
+	INTERNAL_DEFAULT_DO_HEADER,
 	INTERNAL_GLOBAL_ADMIN_HEADER,
 	INTERNAL_ORG_HEADER,
 	makeSessionCookie,
@@ -54,10 +55,12 @@ import { createSessionService } from "./services/sessions.ts";
 import { createWorkspaceService } from "./services/workspaces.ts";
 import { ControllerStore } from "./store.ts";
 import { QuestionBridgeHub } from "./question-bridge.ts";
+import type { TenantRegistryDO } from "./tenant-registry-do.ts";
 import { WorkerTunnelHub } from "./tunnel.ts";
 
 export interface ControllerEnv extends AuthEnv, BuildsEnv {
 	CONTROLLER: DurableObjectNamespace<ControllerDO>;
+	TENANT_REGISTRY?: DurableObjectNamespace<TenantRegistryDO>;
 	CLUSTER_ID?: string;
 	CONTROLLER_NAME?: string;
 	ALLOW_LOCAL_REPOS?: string;
@@ -69,6 +72,9 @@ const ACTIVE_ALARM_MS = 15_000;
 const IDLE_ALARM_MS = 60_000;
 const CLUSTER_ID_META_KEY = "cluster_id";
 const ORG_ID_META_KEY = "org_id";
+const CLADEFS_TENANT_ID_META_KEY = "cladefs_tenant_id";
+const CLADEFS_TENANT_ORG_KEY_META_KEY = "cladefs_tenant_org_key";
+const TENANT_REGISTRY_DO_NAME = "global";
 
 function encodeBase64(bytes: Uint8Array): string {
 	let bin = "";
@@ -169,6 +175,9 @@ export class ControllerDO extends DurableObject<ControllerEnv> {
 			}
 		}
 		const orgId = this.store.getMeta(ORG_ID_META_KEY) ?? "";
+		const rawTenant = this.store.getMeta(CLADEFS_TENANT_ID_META_KEY);
+		const cladefsTenantId =
+			rawTenant !== null && /^\d+$/.test(rawTenant) ? BigInt(rawTenant) : null;
 		const controllerName = (this.env.CONTROLLER_NAME ?? "").trim() || "cloudflare-do";
 		const allowLocalRepos =
 			this.testAllowLocalRepos ?? (this.env.ALLOW_LOCAL_REPOS ?? "").trim() === "1";
@@ -180,6 +189,7 @@ export class ControllerDO extends DurableObject<ControllerEnv> {
 			builds: this.builds,
 			clusterId,
 			orgId,
+			cladefsTenantId,
 			controllerName,
 			allowLocalRepos,
 		});
@@ -325,8 +335,47 @@ export class ControllerDO extends DurableObject<ControllerEnv> {
 		return null;
 	}
 
+	private async ensureCladefsTenantId(isDefaultHint: boolean): Promise<bigint | null> {
+		const defaultOrgId = (this.env.DEFAULT_ORG_ID ?? "").trim();
+		const isDefault =
+			isDefaultHint ||
+			(Boolean(defaultOrgId) && this.ctrl.orgId === defaultOrgId) ||
+			(!this.ctrl.orgId && !defaultOrgId) ||
+			this.store.hasLegacyTenantZeroData();
+		const orgKey = this.ctrl.orgId || (isDefault ? "default" : "");
+		if (!orgKey) {
+			return this.ctrl.cladefsTenantId;
+		}
+		const recordedOrgKey = this.store.getMeta(CLADEFS_TENANT_ORG_KEY_META_KEY) ?? "";
+		if (this.ctrl.cladefsTenantId !== null) {
+			if (recordedOrgKey === orgKey || !this.env.TENANT_REGISTRY) {
+				return this.ctrl.cladefsTenantId;
+			}
+			// If we initially claimed tenant 0 under the legacy "default" placeholder
+			// before org_id was bound, promote the global registry row to orgId now.
+			if (!(recordedOrgKey === "default" && this.ctrl.cladefsTenantId === 0n && isDefault)) {
+				return this.ctrl.cladefsTenantId;
+			}
+		}
+		if (!this.env.TENANT_REGISTRY) {
+			return this.ctrl.cladefsTenantId;
+		}
+		// Never share an in-flight DO RPC promise across requests: workerd rejects
+		// awaiting I/O created in another request's context. TenantRegistryDO.assignTenant
+		// is transactional and idempotent, and once persisted to SQLite meta all
+		// subsequent requests return synchronously from memory.
+		const registry = this.env.TENANT_REGISTRY.getByName(TENANT_REGISTRY_DO_NAME);
+		const assignedStr = await registry.assignTenant(orgKey, { isDefault });
+		const assigned = BigInt(assignedStr);
+		this.store.setMeta(CLADEFS_TENANT_ID_META_KEY, assignedStr);
+		this.store.setMeta(CLADEFS_TENANT_ORG_KEY_META_KEY, orgKey);
+		this.ctrl.cladefsTenantId = assigned;
+		return assigned;
+	}
+
 	private async authRequest(request: Request, opts?: { allowJoinToken?: boolean }) {
 		const reqOrgId = (request.headers.get(INTERNAL_ORG_HEADER) ?? "").trim();
+		const isDefaultDo = request.headers.get(INTERNAL_DEFAULT_DO_HEADER) === "1";
 		const caller = await authenticateRequest(request, this.env, this.store, {
 			allowJoinToken: opts?.allowJoinToken,
 			trustInternalHeader: true,
@@ -340,6 +389,7 @@ export class ControllerDO extends DurableObject<ControllerEnv> {
 			this.store.setMeta(ORG_ID_META_KEY, effectiveOrgId);
 			this.ctrl.orgId = effectiveOrgId;
 		}
+		await this.ensureCladefsTenantId(isDefaultDo);
 		return caller;
 	}
 
@@ -358,6 +408,8 @@ export class ControllerDO extends DurableObject<ControllerEnv> {
 				ok: true,
 				clusterId: this.ctrl.clusterId,
 				orgId: this.ctrl.orgId || undefined,
+				cladefsTenantId:
+					this.ctrl.cladefsTenantId !== null ? Number(this.ctrl.cladefsTenantId) : undefined,
 				workosEnabled: isWorkOSEnabled(this.env),
 				version: this.builds.versionString(),
 				build: this.builds.currentBuildNumber(),
@@ -567,6 +619,8 @@ export class ControllerDO extends DurableObject<ControllerEnv> {
 					login: caller.login,
 					userId: caller.userId,
 					orgId: caller.orgId || this.ctrl.orgId,
+					cladefsTenantId:
+						this.ctrl.cladefsTenantId !== null ? Number(this.ctrl.cladefsTenantId) : undefined,
 					orgRole: caller.orgRole,
 					authMethod: caller.authMethod,
 				});

@@ -235,3 +235,55 @@ export function mergeWorkerConfig(base: WorkerConfig | null, patch: WorkerConfig
 	out.system = mergeWorkerSystemConfig(out.system, patch.system);
 	return out;
 }
+
+/**
+ * Rejects attempts to override the organization's assigned cladefs tenant ID
+ * via SetWorkerConfig so tenants remain strictly isolated per org.
+ */
+export function assertNoTenantOverride(patch: WorkerConfig, assignedTenant: bigint | null): void {
+	if (assignedTenant === null) return;
+	if (patch.vm?.tenantId !== undefined && patch.vm.tenantId !== assignedTenant) {
+		throw hotbedError(
+			ErrorCode.InvalidArgs,
+			`vm.tenant_id is managed per organization (assigned tenant ${assignedTenant}) and cannot be overridden`,
+		);
+	}
+	if (patch.cladefsFuse?.tenantId !== undefined && patch.cladefsFuse.tenantId !== assignedTenant) {
+		throw hotbedError(
+			ErrorCode.InvalidArgs,
+			`cladefs_fuse.tenant_id is managed per organization (assigned tenant ${assignedTenant}) and cannot be overridden`,
+		);
+	}
+}
+
+/**
+ * Stamps the organization's assigned cladefs tenant ID onto a WorkerConfig.
+ *
+ * - For non-zero org tenants (> 0n), always ensures `vm.tenantId` and
+ *   `cladefsFuse.tenantId` carry the org's tenant ID even when no controller-side
+ *   WorkerConfig has been saved yet (without setting `enabled`).
+ * - For tenant `0` (the legacy/default org), stamps `tenantId = 0n` only on
+ *   sections already present, preserving undefined effective config when unconfigured.
+ */
+export function applyOrgCladefsTenant(
+	cfg: WorkerConfig | undefined,
+	assignedTenant: bigint | null,
+	targetNode = "",
+): WorkerConfig | undefined {
+	if (assignedTenant === null) return cfg;
+	if (assignedTenant === 0n) {
+		if (!cfg) return undefined;
+		const out = clone(WorkerConfigSchema, cfg);
+		if (out.vm) out.vm.tenantId = 0n;
+		if (out.cladefsFuse) out.cladefsFuse.tenantId = 0n;
+		return out;
+	}
+	const out = cfg
+		? clone(WorkerConfigSchema, cfg)
+		: create(WorkerConfigSchema, { node: targetNode });
+	if (!out.vm) out.vm = create(WorkerVMConfigSchema);
+	out.vm.tenantId = assignedTenant;
+	if (!out.cladefsFuse) out.cladefsFuse = create(WorkerCladefsFUSEConfigSchema);
+	out.cladefsFuse.tenantId = assignedTenant;
+	return out;
+}

@@ -12,6 +12,7 @@ import (
 	"log/slog"
 	"net/http"
 	"os"
+	"os/user"
 	"path/filepath"
 	goruntime "runtime"
 	"slices"
@@ -101,15 +102,53 @@ func projectStepHashes(p *pb.HostedProject) map[string]string {
 	return out
 }
 
+// tenantCellRoot returns the cell root directory for a cladefs tenant.
+// Tenant 0 (default/legacy org) uses baseRoot directly to preserve existing
+// on-disk cell paths; non-zero org tenants each get an isolated subdirectory
+// under the primary root so cladefsd.Grant binds a distinct directory per tenant.
+func tenantCellRoot(baseRoot string, tenantID uint64) string {
+	if tenantID == 0 {
+		return baseRoot
+	}
+	primary := baseRoot
+	for _, r := range filepath.SplitList(baseRoot) {
+		if r != "" {
+			primary = r
+			break
+		}
+	}
+	return filepath.Join(primary, fmt.Sprintf("tenant-%d", tenantID))
+}
+
+func resolveVMUserIDs(vmUser string) (uid, gid uint32) {
+	name := cmp.Or(vmUser, vm.DefaultVMUser)
+	if name == "" {
+		return 0, 0
+	}
+	u, err := user.Lookup(name)
+	if err != nil {
+		return 0, 0
+	}
+	uid64, uerr := strconv.ParseUint(u.Uid, 10, 32)
+	gid64, gerr := strconv.ParseUint(u.Gid, 10, 32)
+	if uerr != nil || gerr != nil {
+		return 0, 0
+	}
+	return uint32(uid64), uint32(gid64)
+}
+
 // OpenVMBackend connects to cladefsd, initializes the Firecracker VM manager,
 // and reconnects to any surviving Firecracker VMs from a prior worker process.
 func OpenVMBackend(ctx context.Context, workerDir string, cfg statedir.VMConfig, slice, gitAuthHostSock string) (*VMBackend, error) {
-	cellRoot := cmp.Or(cfg.CellRoot, "/mnt/fxdax-scratch/cladefsd/cells/hotbed")
+	cellRoot := tenantCellRoot(cmp.Or(cfg.CellRoot, "/mnt/fxdax-scratch/cladefsd/cells/hotbed"), cfg.TenantID)
+	vmUID, vmGID := resolveVMUserIDs(cfg.VMUser)
 	cstore, err := cladefs.Open(ctx, cladefs.Config{
 		ControlSock: cfg.CladefsControlSock,
 		VMSock:      cfg.CladefsVMSock,
 		CellRoot:    cellRoot,
 		TenantID:    cfg.TenantID,
+		VMUID:       vmUID,
+		VMGID:       vmGID,
 		DefaultCap:  cfg.DiskBytes,
 	})
 	if err != nil {
@@ -214,6 +253,9 @@ func (b *VMBackend) UpdateConfig(cfg statedir.VMConfig) {
 }
 
 func (b *VMBackend) cacheDir() string {
+	if b.cfg.TenantID > 0 {
+		return filepath.Join(b.workerDir, fmt.Sprintf("vm-bases-t%d", b.cfg.TenantID))
+	}
 	return filepath.Join(b.workerDir, "vm-bases")
 }
 
@@ -223,6 +265,7 @@ func (b *VMBackend) loadCachedBases() {
 	if err != nil {
 		return
 	}
+	wantTenant := b.cfg.TenantID
 	for _, ent := range ents {
 		if !strings.HasSuffix(ent.Name(), ".json") {
 			continue
@@ -234,7 +277,7 @@ func (b *VMBackend) loadCachedBases() {
 		if key, ok := strings.CutPrefix(ent.Name(), "baseimage-"); ok {
 			key = strings.TrimSuffix(key, ".json")
 			var ref cladefs.CellRef
-			if json.Unmarshal(raw, &ref) == nil && ref.Cell > 0 && ref.Version > 0 {
+			if json.Unmarshal(raw, &ref) == nil && ref.Cell > 0 && ref.Version > 0 && ref.Tenant == wantTenant {
 				if b.baseImages == nil {
 					b.baseImages = map[string]cladefs.CellRef{}
 				}
@@ -245,7 +288,7 @@ func (b *VMBackend) loadCachedBases() {
 		if proj, ok := strings.CutPrefix(ent.Name(), "project-"); ok {
 			proj = strings.TrimSuffix(proj, ".json")
 			var pbBase vmProjectBase
-			if json.Unmarshal(raw, &pbBase) == nil && pbBase.Ref.Cell > 0 && pbBase.Ref.Version > 0 {
+			if json.Unmarshal(raw, &pbBase) == nil && pbBase.Ref.Cell > 0 && pbBase.Ref.Version > 0 && pbBase.Ref.Tenant == wantTenant {
 				b.projectBases[proj] = &pbBase
 				b.sharedBases[proj] = &pb.CladefsCell{
 					Project: proj,
@@ -796,7 +839,11 @@ func (b *VMBackend) EnsureProjectBase(
 	b.mu.Unlock()
 
 	// Fast path 2: controller advertised an up-to-date shared base in R2!
-	if existingShared != nil && existingShared.Cell > 0 && existingShared.Version > 0 && existingShared.Recipe == recipe {
+	wantTenant := b.configSnapshot().TenantID
+	if st := b.currentStore(); st != nil {
+		wantTenant = st.TenantID()
+	}
+	if existingShared != nil && existingShared.Cell > 0 && existingShared.Version > 0 && existingShared.Recipe == recipe && existingShared.Tenant == wantTenant {
 		repos := make(map[string]string, len(heads))
 		for k, v := range heads {
 			repos[k] = v
@@ -1344,12 +1391,15 @@ func (b *VMBackend) StopAllForUpgrade(ctx context.Context) error {
 // refreshes the gRPC client and incarnation, and re-applies the peer mesh.
 func (b *VMBackend) ReconnectCladefs(ctx context.Context) (uint64, error) {
 	cfg := b.configSnapshot()
-	cellRoot := cmp.Or(cfg.CellRoot, "/mnt/fxdax-scratch/cladefsd/cells/hotbed")
+	cellRoot := tenantCellRoot(cmp.Or(cfg.CellRoot, "/mnt/fxdax-scratch/cladefsd/cells/hotbed"), cfg.TenantID)
+	vmUID, vmGID := resolveVMUserIDs(cfg.VMUser)
 	ccfg := cladefs.Config{
 		ControlSock: cfg.CladefsControlSock,
 		VMSock:      cfg.CladefsVMSock,
 		CellRoot:    cellRoot,
 		TenantID:    cfg.TenantID,
+		VMUID:       vmUID,
+		VMGID:       vmGID,
 		DefaultCap:  cfg.DiskBytes,
 	}
 	st, inc, err := waitForCladefsReconnect(ctx, ccfg, 30*time.Second, func(ctx context.Context, s *cladefs.Store) (uint64, error) {

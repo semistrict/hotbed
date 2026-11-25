@@ -87,6 +87,7 @@ export class ControllerContext {
 	>();
 	clusterId: string;
 	orgId: string;
+	cladefsTenantId: bigint | null;
 	readonly controllerName: string;
 	readonly allowLocalRepos: boolean;
 	nowFn: () => number = () => Date.now();
@@ -102,6 +103,7 @@ export class ControllerContext {
 		builds: BuildDistributor;
 		clusterId: string;
 		orgId?: string;
+		cladefsTenantId?: bigint | null;
 		controllerName: string;
 		allowLocalRepos?: boolean;
 	}) {
@@ -111,6 +113,7 @@ export class ControllerContext {
 		this.builds = opts.builds;
 		this.clusterId = opts.clusterId;
 		this.orgId = opts.orgId ?? "";
+		this.cladefsTenantId = opts.cladefsTenantId ?? null;
 		this.controllerName = opts.controllerName;
 		this.allowLocalRepos = opts.allowLocalRepos ?? false;
 	}

@@ -75,6 +75,7 @@ import { canonicalRemote, stepHash, validateRepoURL } from "../gitops.ts";
 import { overlayHostSamples, prepareHostUsage } from "../hostusage.ts";
 import { isCommandLive, workOf } from "../standby.ts";
 import { KEEP_EVENTS, KEEP_PLACEMENTS_MS, type ForkRow, type SampleRow } from "../store.ts";
+import { applyOrgCladefsTenant, assertNoTenantOverride } from "../worker-config.ts";
 import type { ScheduleRunner } from "./schedules.ts";
 
 const LIVE_WINDOW_MS = 15 * 60_000;
@@ -490,6 +491,7 @@ export function createClusterService(
 					req.resources?.arch ?? "",
 					req.sharedBases,
 					nowMs,
+					ctrl.cladefsTenantId,
 				);
 			}
 			ctrl.power.changes.wake(caller.hostname);
@@ -519,7 +521,11 @@ export function createClusterService(
 				req.cladefsPeerAddr || req.cladefsIncarnation > 0n
 					? ctrl.store.listPendingDecommissions(nowMs - 24 * 3600_000)
 					: [];
-			const workerConfig = ctrl.store.effectiveWorkerConfig(caller.hostname, caller.nodeId);
+			const workerConfig = applyOrgCladefsTenant(
+				ctrl.store.effectiveWorkerConfig(caller.hostname, caller.nodeId),
+				ctrl.cladefsTenantId,
+				caller.hostname,
+			);
 			return create(HeartbeatResponseSchema, {
 				projects,
 				release,
@@ -1131,13 +1137,21 @@ export function createClusterService(
 
 		getWorkerConfig(req) {
 			const target = req.node.trim();
-			const defaults = ctrl.store.getWorkerConfig("") ?? undefined;
+			const defaults = applyOrgCladefsTenant(
+				ctrl.store.getWorkerConfig("") ?? undefined,
+				ctrl.cladefsTenantId,
+				"",
+			);
 			if (!target) {
 				const nodes = ctrl.store.listWorkerConfigs().filter((c) => c.node !== "");
 				return create(GetWorkerConfigResponseSchema, { defaults, nodes });
 			}
 			const override = ctrl.store.getWorkerConfig(target);
-			const effective = ctrl.store.effectiveWorkerConfig(target);
+			const effective = applyOrgCladefsTenant(
+				ctrl.store.effectiveWorkerConfig(target),
+				ctrl.cladefsTenantId,
+				target,
+			);
 			return create(GetWorkerConfigResponseSchema, {
 				defaults,
 				nodes: override ? [override] : [],
@@ -1152,6 +1166,7 @@ export function createClusterService(
 			}
 			const scope = req.node.trim();
 			const patch = req.config ?? create(WorkerConfigSchema);
+			assertNoTenantOverride(patch, ctrl.cladefsTenantId);
 			return ctrl.store.setWorkerConfig(scope, patch, {
 				replace: req.replace,
 				ifRevision: req.ifRevision,

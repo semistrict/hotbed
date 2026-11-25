@@ -67,7 +67,7 @@ type fuseWSMount struct {
 // OpenCladefsFUSEBackend connects to cladefsd, loads cached R2 base refs and
 // surviving workspace FUSE mounts, and verifies the Mount service is serving.
 func OpenCladefsFUSEBackend(ctx context.Context, workerDir string, cfg statedir.CladefsFUSEConfig) (*CladefsFUSEBackend, error) {
-	cellRoot := cmp.Or(cfg.CellRoot, "/mnt/fxdax-scratch/cladefsd/cells/hotbed")
+	cellRoot := tenantCellRoot(cmp.Or(cfg.CellRoot, "/mnt/fxdax-scratch/cladefsd/cells/hotbed"), cfg.TenantID)
 	mountRoot := cmp.Or(cfg.MountRoot, "/var/lib/cladefs/mnt")
 	mountStoresRoot := cmp.Or(cfg.MountStoresRoot, "/mnt/fxdax-scratch/cladefsd/mount-stores")
 	cstore, err := cladefs.Open(ctx, cladefs.Config{
@@ -160,7 +160,7 @@ func (b *CladefsFUSEBackend) StopAllForUpgrade(ctx context.Context) error {
 // client and incarnation, and re-applies the peer mesh.
 func (b *CladefsFUSEBackend) ReconnectCladefs(ctx context.Context) (uint64, error) {
 	cfg := b.configSnapshot()
-	cellRoot := cmp.Or(cfg.CellRoot, "/mnt/fxdax-scratch/cladefsd/cells/hotbed")
+	cellRoot := tenantCellRoot(cmp.Or(cfg.CellRoot, "/mnt/fxdax-scratch/cladefsd/cells/hotbed"), cfg.TenantID)
 	ccfg := cladefs.Config{
 		ControlSock: cfg.CladefsControlSock,
 		CellRoot:    cellRoot,
@@ -197,10 +197,16 @@ func (b *CladefsFUSEBackend) ReconnectCladefs(ctx context.Context) (uint64, erro
 }
 
 func (b *CladefsFUSEBackend) cacheDir() string {
+	if b.cfg.TenantID > 0 {
+		return filepath.Join(b.workerDir, fmt.Sprintf("cladefs-fuse-bases-t%d", b.cfg.TenantID))
+	}
 	return filepath.Join(b.workerDir, "cladefs-fuse-bases")
 }
 
 func (b *CladefsFUSEBackend) wsStatePath() string {
+	if b.cfg.TenantID > 0 {
+		return filepath.Join(b.workerDir, fmt.Sprintf("cladefs-fuse-ws-t%d.json", b.cfg.TenantID))
+	}
 	return filepath.Join(b.workerDir, "cladefs-fuse-ws.json")
 }
 
@@ -227,6 +233,7 @@ func (b *CladefsFUSEBackend) mountStoreDir(tenant, cell uint64) string {
 }
 
 func (b *CladefsFUSEBackend) loadState() {
+	wantTenant := b.cfg.TenantID
 	if ents, err := os.ReadDir(b.cacheDir()); err == nil {
 		for _, ent := range ents {
 			if !strings.HasSuffix(ent.Name(), ".json") {
@@ -239,7 +246,7 @@ func (b *CladefsFUSEBackend) loadState() {
 			if key, ok := strings.CutPrefix(ent.Name(), "baseimage-"); ok {
 				key = strings.TrimSuffix(key, ".json")
 				var ref cladefs.CellRef
-				if json.Unmarshal(raw, &ref) == nil && ref.Cell > 0 && ref.Version > 0 {
+				if json.Unmarshal(raw, &ref) == nil && ref.Cell > 0 && ref.Version > 0 && ref.Tenant == wantTenant {
 					if b.baseImages == nil {
 						b.baseImages = map[string]cladefs.CellRef{}
 					}
@@ -250,7 +257,7 @@ func (b *CladefsFUSEBackend) loadState() {
 			if proj, ok := strings.CutPrefix(ent.Name(), "project-"); ok {
 				proj = strings.TrimSuffix(proj, ".json")
 				var pbBase vmProjectBase
-				if json.Unmarshal(raw, &pbBase) == nil && pbBase.Ref.Cell > 0 && pbBase.Ref.Version > 0 {
+				if json.Unmarshal(raw, &pbBase) == nil && pbBase.Ref.Cell > 0 && pbBase.Ref.Version > 0 && pbBase.Ref.Tenant == wantTenant {
 					b.projectBases[proj] = &pbBase
 					b.sharedBases[proj] = &pb.CladefsCell{
 						Project: proj,
@@ -634,7 +641,11 @@ func (b *CladefsFUSEBackend) EnsureProjectBase(
 	}
 	b.mu.Unlock()
 
-	if existingShared != nil && existingShared.Cell > 0 && existingShared.Version > 0 && existingShared.Recipe == recipe {
+	wantTenant := b.configSnapshot().TenantID
+	if st := b.currentStore(); st != nil {
+		wantTenant = st.TenantID()
+	}
+	if existingShared != nil && existingShared.Cell > 0 && existingShared.Version > 0 && existingShared.Recipe == recipe && existingShared.Tenant == wantTenant {
 		repos := make(map[string]string, len(heads))
 		for k, v := range heads {
 			repos[k] = v

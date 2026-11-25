@@ -6,6 +6,7 @@ import {
 	getBearerToken,
 	getCookie,
 	INTERNAL_AUTH_HEADER,
+	INTERNAL_DEFAULT_DO_HEADER,
 	INTERNAL_GLOBAL_ADMIN_HEADER,
 	INTERNAL_ORG_HEADER,
 	makeSessionCookie,
@@ -397,6 +398,9 @@ export function attachInternalAuth(request: Request, routing: EdgeAuthResult): R
 	const headers = new Headers(request.headers);
 	if (routing.orgId) {
 		headers.set(INTERNAL_ORG_HEADER, routing.orgId);
+	}
+	if (routing.doName === "default") {
+		headers.set(INTERNAL_DEFAULT_DO_HEADER, "1");
 	}
 	if (routing.caller) {
 		headers.set(INTERNAL_AUTH_HEADER, JSON.stringify(routing.caller));
@@ -1594,6 +1598,7 @@ export async function handleAuthRoute(
 			const headers = new Headers();
 			headers.set("Authorization", `Bearer ${bearer}`);
 			if (orgId) headers.set(INTERNAL_ORG_HEADER, orgId);
+			if (doName === "default") headers.set(INTERNAL_DEFAULT_DO_HEADER, "1");
 			const doRes = await env.CONTROLLER.getByName(doName).fetch(
 				new Request(checkUrl.toString(), { method: "GET", headers }),
 			);

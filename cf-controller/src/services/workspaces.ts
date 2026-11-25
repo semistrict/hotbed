@@ -473,7 +473,7 @@ export function createWorkspaceService(ctrl: ControllerContext): {
 					p.name,
 					mine,
 					(arch) => ctrl.follows(arch),
-					(arch) => ctrl.store.hasSharedBase(p.name, arch),
+					(arch) => ctrl.store.hasSharedBase(p.name, arch, ctrl.cladefsTenantId),
 				);
 				const { chosen, why, err } = chooseCandidate(
 					cs,
@@ -506,7 +506,7 @@ export function createWorkspaceService(ctrl: ControllerContext): {
 					(reqRuntime === "" &&
 						(chosenRuntimes.includes("vm") || chosenRuntimes.includes("cladefs")));
 				const sharedBase = usesCladefs
-					? ctrl.store.latestSharedBase(p.name, chosenArch)
+					? ctrl.store.latestSharedBase(p.name, chosenArch, ctrl.cladefsTenantId)
 					: undefined;
 				const fencingToken = usesCladefs ? ctrl.store.nextFencingToken() : 0n;
 				const fwd = create(CreateWorkspaceRequestSchema, {

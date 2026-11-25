@@ -124,7 +124,7 @@ func Open(ctx context.Context, cfg Config, dialOpts ...grpc.DialOption) (*Store,
 	cfg.CellRoot = roots[0]
 	cfg.CellRoots = roots
 	for _, root := range roots {
-		if err := os.MkdirAll(root, 0o755); err != nil {
+		if err := ensureCellRoot(root); err != nil {
 			return nil, fmt.Errorf("cladefs: create CellRoot %s: %w", root, err)
 		}
 	}
@@ -367,6 +367,42 @@ func (s *Store) capacityOrDefault(capBytes uint64) uint64 {
 		return capBytes
 	}
 	return s.cfg.DefaultCap
+}
+
+// ensureCellRoot creates root and, when running as root beneath a non-root
+// ancestor directory (e.g. creating <cellRoot>/tenant-<id> inside a
+// cladefsd-owned cellRoot), aligns ownership of newly created directories to
+// that ancestor so cladefsd can create cells inside them.
+func ensureCellRoot(root string) error {
+	ancestor := root
+	for {
+		if _, err := os.Stat(ancestor); err == nil {
+			break
+		}
+		parent := filepath.Dir(ancestor)
+		if parent == ancestor {
+			break
+		}
+		ancestor = parent
+	}
+	if err := os.MkdirAll(root, 0o755); err != nil {
+		return err
+	}
+	if os.Geteuid() != 0 || ancestor == root {
+		return nil
+	}
+	ancFi, err := os.Stat(ancestor)
+	if err != nil {
+		return nil
+	}
+	st, ok := ancFi.Sys().(*syscall.Stat_t)
+	if !ok || (st.Uid == 0 && st.Gid == 0) {
+		return nil
+	}
+	for cur := root; cur != ancestor && strings.HasPrefix(cur, ancestor+string(filepath.Separator)); cur = filepath.Dir(cur) {
+		_ = os.Chown(cur, int(st.Uid), int(st.Gid))
+	}
+	return nil
 }
 
 // ensureParentDir creates parent directories of hostPath inside its JBOD root

@@ -15,6 +15,7 @@ import (
 	"github.com/semistrict/hotbed/internal/baseimage"
 	"github.com/semistrict/hotbed/internal/cladefs"
 	pb "github.com/semistrict/hotbed/internal/gen/hotbed/v1"
+	"github.com/semistrict/hotbed/internal/statedir"
 	"github.com/semistrict/hotbed/internal/unit"
 )
 
@@ -204,7 +205,7 @@ func TestCladefsFUSELoadStateIndexesMultipleBaseImagesByKey(t *testing.T) {
 		wantKey:        101,
 		"zzzz-old-key": 999,
 	} {
-		raw, _ := json.Marshal(cladefs.CellRef{RelPath: "baseimages/fuse-" + key, Tenant: 1, Cell: cell, Version: 2})
+		raw, _ := json.Marshal(cladefs.CellRef{RelPath: "baseimages/fuse-" + key, Tenant: 0, Cell: cell, Version: 2})
 		if err := os.WriteFile(filepath.Join(cacheDir, "baseimage-"+key+".json"), raw, 0o644); err != nil {
 			t.Fatal(err)
 		}
@@ -213,5 +214,93 @@ func TestCladefsFUSELoadStateIndexesMultipleBaseImagesByKey(t *testing.T) {
 	got, ok := b.baseImages[wantKey]
 	if !ok || got.Cell != 101 {
 		t.Fatalf("baseImages[%q] = %+v (ok=%v), want cell 101", wantKey, got, ok)
+	}
+}
+
+func TestTenantCellRootAndCacheIsolation(t *testing.T) {
+	// Tenant 0 preserves legacy paths verbatim.
+	if got := tenantCellRoot("/mnt/cells/hotbed", 0); got != "/mnt/cells/hotbed" {
+		t.Fatalf("tenantCellRoot(0) = %q, want legacy path unchanged", got)
+	}
+	// Non-zero tenants get isolated subdirectories under the primary root.
+	if got := tenantCellRoot("/mnt/a/hotbed:/mnt/b/hotbed", 3); got != filepath.Join("/mnt/a/hotbed", "tenant-3") {
+		t.Fatalf("tenantCellRoot(3) = %q, want /mnt/a/hotbed/tenant-3", got)
+	}
+
+	dir := t.TempDir()
+	vm0 := &VMBackend{
+		workerDir:    dir,
+		baseImages:   map[string]cladefs.CellRef{},
+		projectBases: map[string]*vmProjectBase{},
+		sharedBases:  map[string]*pb.CladefsCell{},
+	}
+	vm2 := &VMBackend{
+		cfg:          statedir.VMConfig{TenantID: 2},
+		workerDir:    dir,
+		baseImages:   map[string]cladefs.CellRef{},
+		projectBases: map[string]*vmProjectBase{},
+		sharedBases:  map[string]*pb.CladefsCell{},
+	}
+	if vm0.cacheDir() != filepath.Join(dir, "vm-bases") {
+		t.Fatalf("vm0.cacheDir() = %q, want legacy vm-bases", vm0.cacheDir())
+	}
+	if vm2.cacheDir() != filepath.Join(dir, "vm-bases-t2") {
+		t.Fatalf("vm2.cacheDir() = %q, want vm-bases-t2", vm2.cacheDir())
+	}
+
+	// Mismatched-tenant cache entries on disk are ignored rather than causing cross-tenant EACCES.
+	if err := os.MkdirAll(vm2.cacheDir(), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	wrongRef, _ := json.Marshal(cladefs.CellRef{RelPath: "baseimages/vm-k", Tenant: 0, Cell: 10, Version: 1})
+	rightRef, _ := json.Marshal(cladefs.CellRef{RelPath: "baseimages/vm-k2", Tenant: 2, Cell: 20, Version: 2})
+	if err := os.WriteFile(filepath.Join(vm2.cacheDir(), "baseimage-wrong.json"), wrongRef, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(vm2.cacheDir(), "baseimage-right.json"), rightRef, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	vm2.loadCachedBases()
+	if _, ok := vm2.baseImages["wrong"]; ok {
+		t.Fatalf("vm2 loaded mismatched tenant-0 base image from cache")
+	}
+	if got, ok := vm2.baseImages["right"]; !ok || got.Cell != 20 || got.Tenant != 2 {
+		t.Fatalf("vm2.baseImages[right] = %+v (ok=%v), want tenant 2 cell 20", got, ok)
+	}
+
+	// Same isolation for CladefsFUSEBackend.
+	fuse0 := &CladefsFUSEBackend{workerDir: dir}
+	fuse4 := &CladefsFUSEBackend{
+		cfg:            statedir.CladefsFUSEConfig{TenantID: 4},
+		workerDir:      dir,
+		baseImages:     map[string]cladefs.CellRef{},
+		projectBases:   map[string]*vmProjectBase{},
+		sharedBases:    map[string]*pb.CladefsCell{},
+		wsMounts:       map[string]fuseWSMount{},
+		decommissioned: map[uint64]bool{},
+	}
+	if fuse0.cacheDir() != filepath.Join(dir, "cladefs-fuse-bases") || fuse0.wsStatePath() != filepath.Join(dir, "cladefs-fuse-ws.json") {
+		t.Fatalf("fuse0 paths changed unexpectedly: cache=%q ws=%q", fuse0.cacheDir(), fuse0.wsStatePath())
+	}
+	if fuse4.cacheDir() != filepath.Join(dir, "cladefs-fuse-bases-t4") || fuse4.wsStatePath() != filepath.Join(dir, "cladefs-fuse-ws-t4.json") {
+		t.Fatalf("fuse4 paths = cache=%q ws=%q", fuse4.cacheDir(), fuse4.wsStatePath())
+	}
+	if err := os.MkdirAll(fuse4.cacheDir(), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	fuseWrong, _ := json.Marshal(cladefs.CellRef{RelPath: "baseimages/fuse-w", Tenant: 0, Cell: 30, Version: 1})
+	fuseRight, _ := json.Marshal(cladefs.CellRef{RelPath: "baseimages/fuse-r", Tenant: 4, Cell: 40, Version: 2})
+	if err := os.WriteFile(filepath.Join(fuse4.cacheDir(), "baseimage-wrong.json"), fuseWrong, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(fuse4.cacheDir(), "baseimage-right.json"), fuseRight, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	fuse4.loadState()
+	if _, ok := fuse4.baseImages["wrong"]; ok {
+		t.Fatalf("fuse4 loaded mismatched tenant-0 base image from cache")
+	}
+	if got, ok := fuse4.baseImages["right"]; !ok || got.Cell != 40 || got.Tenant != 4 {
+		t.Fatalf("fuse4.baseImages[right] = %+v (ok=%v), want tenant 4 cell 40", got, ok)
 	}
 }

@@ -3610,11 +3610,20 @@ export class ControllerStore {
 		return next;
 	}
 
-	upsertSharedBases(nodeId: string, arch: string, cells: CladefsCell[], nowMs: number): void {
+	upsertSharedBases(
+		nodeId: string,
+		arch: string,
+		cells: CladefsCell[],
+		nowMs: number,
+		allowedTenant?: bigint | null,
+	): void {
 		if (cells.length === 0) return;
 		this.transactionSync(() => {
 			for (const c of cells) {
 				if (!c.project || c.cell === 0n || c.version === 0n) continue;
+				if (allowedTenant !== undefined && allowedTenant !== null && c.tenant !== allowedTenant) {
+					continue;
+				}
 				const cellArch = c.arch || arch;
 				if (!cellArch) continue;
 				this.sql.exec(
@@ -3641,18 +3650,35 @@ export class ControllerStore {
 		});
 	}
 
-	latestSharedBase(project: string, arch: string): CladefsCell | undefined {
+	latestSharedBase(
+		project: string,
+		arch: string,
+		allowedTenant?: bigint | null,
+	): CladefsCell | undefined {
 		if (!project || !arch) return undefined;
-		const rows = this.sql
-			.exec(
-				`SELECT project, arch, recipe, base_id, tenant, cell, version
-				 FROM shared_bases
-				 WHERE project = ? AND arch = ?
-				 ORDER BY updated_at DESC LIMIT 1`,
-				project,
-				arch,
-			)
-			.toArray();
+		const rows =
+			allowedTenant !== undefined && allowedTenant !== null
+				? this.sql
+						.exec(
+							`SELECT project, arch, recipe, base_id, tenant, cell, version
+							 FROM shared_bases
+							 WHERE project = ? AND arch = ? AND tenant = ?
+							 ORDER BY updated_at DESC LIMIT 1`,
+							project,
+							arch,
+							allowedTenant.toString(),
+						)
+						.toArray()
+				: this.sql
+						.exec(
+							`SELECT project, arch, recipe, base_id, tenant, cell, version
+							 FROM shared_bases
+							 WHERE project = ? AND arch = ?
+							 ORDER BY updated_at DESC LIMIT 1`,
+							project,
+							arch,
+						)
+						.toArray();
 		if (rows.length === 0) return undefined;
 		const r = rows[0];
 		return create(CladefsCellSchema, {
@@ -3666,12 +3692,30 @@ export class ControllerStore {
 		});
 	}
 
-	hasSharedBase(project: string, arch: string): boolean {
+	hasSharedBase(project: string, arch: string, allowedTenant?: bigint | null): boolean {
 		if (!project || !arch) return false;
+		if (allowedTenant !== undefined && allowedTenant !== null) {
+			return (
+				this.sql
+					.exec(
+						"SELECT 1 FROM shared_bases WHERE project = ? AND arch = ? AND tenant = ? LIMIT 1",
+						project,
+						arch,
+						allowedTenant.toString(),
+					)
+					.toArray().length > 0
+			);
+		}
 		return (
 			this.sql
 				.exec("SELECT 1 FROM shared_bases WHERE project = ? AND arch = ? LIMIT 1", project, arch)
 				.toArray().length > 0
+		);
+	}
+
+	hasLegacyTenantZeroData(): boolean {
+		return (
+			this.sql.exec("SELECT 1 FROM shared_bases WHERE tenant = '0' LIMIT 1").toArray().length > 0
 		);
 	}
 

@@ -81,7 +81,7 @@ func TestVMBaseKeyInvalidatesOnGuestdOrConfigChange(t *testing.T) {
 		key2:           42,
 		"zzzz-old-key": 99,
 	} {
-		raw, _ := json.Marshal(cladefs.CellRef{RelPath: "baseimages/vm-" + k, Tenant: 1, Cell: cell, Version: 1})
+		raw, _ := json.Marshal(cladefs.CellRef{RelPath: "baseimages/vm-" + k, Tenant: 0, Cell: cell, Version: 1})
 		if err := os.WriteFile(filepath.Join(cacheDir, "baseimage-"+k+".json"), raw, 0o644); err != nil {
 			t.Fatal(err)
 		}
