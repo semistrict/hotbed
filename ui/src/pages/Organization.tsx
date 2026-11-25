@@ -1,3 +1,4 @@
+import { Link } from "@tanstack/react-router";
 import { useState, type FormEvent } from "react";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
@@ -169,6 +170,14 @@ export function OrganizationPage() {
           activeOrg
             ? `Isolated Controller DO · ${activeOrg.id} · cluster ${snap?.clusterId ?? "…"} · signed in as ${auth?.user.email ?? ""}`
             : `Cluster ${snap?.clusterId ?? "…"} · manage worker join tokens and API tokens`
+        }
+        right={
+          <Link
+            to="/settings"
+            className="inline-flex h-8 items-center rounded-lg border border-border bg-card/70 px-3 font-mono text-[11.5px] text-foreground transition-colors hover:border-primary/50 hover:text-primary"
+          >
+            Org settings →
+          </Link>
         }
       />
 

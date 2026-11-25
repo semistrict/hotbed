@@ -7,12 +7,16 @@ import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vite
 import {
 	CladefsCellSchema,
 	ClusterService,
+	GitAuthService,
 	HeartbeatRequestSchema,
 	NodeUsageSchema,
+	OrgControllerConfigSchema,
 	RepoSchema,
 	ResourcesSchema,
+	SessionService,
 	WorkerCladefsFUSEConfigSchema,
 	WorkerConfigSchema,
+	WorkerFreshenConfigSchema,
 	WorkerVMConfigSchema,
 } from "../src/gen/hotbed/v1/hotbed_pb.ts";
 import worker from "../src/index.ts";
@@ -94,7 +98,7 @@ function callWorker(testEnv: ControllerEnv, input: string, init?: RequestInit): 
 	return worker.fetch(new Request(input, init), testEnv);
 }
 
-function makeRpcClient(
+function makeTransport(
 	testEnv: ControllerEnv,
 	token?: string,
 	extraHeaders?: Record<string, string>,
@@ -106,7 +110,7 @@ function makeRpcClient(
 		}
 		return next(req);
 	};
-	const transport = createTransport({
+	return createTransport({
 		httpClient: createFetchClient((input, init) => worker.fetch(new Request(input, init), testEnv)),
 		baseUrl: "https://controller.test",
 		useBinaryFormat: true,
@@ -117,7 +121,14 @@ function makeRpcClient(
 		readMaxBytes: 0xffffffff,
 		writeMaxBytes: 0xffffffff,
 	});
-	return createClient(ClusterService, transport);
+}
+
+function makeRpcClient(
+	testEnv: ControllerEnv,
+	token?: string,
+	extraHeaders?: Record<string, string>,
+) {
+	return createClient(ClusterService, makeTransport(testEnv, token, extraHeaders));
 }
 
 function extractCookies(res: Response): string[] {
@@ -1705,5 +1716,142 @@ describe("WorkOS multi-organization, multi-user, per-org ControllerDO integratio
 		expect(BigInt(thirdDefault) > 0n).toBe(true);
 		expect(thirdDefault).not.toBe(String(tenantA));
 		expect(thirdDefault).not.toBe(String(tenantB));
+	});
+
+	it("isolates all worker/freshen/controller config and git credentials per org and enforces org-admin RBAC", async () => {
+		const testEnv = makeWorkOSEnv({ DEFAULT_ORG_ID: "org_settings_default" });
+		const nowSec = Math.floor(Date.now() / 1000);
+		const mkJwt = (orgId: string, sub: string, role: string) =>
+			signJwt({
+				sub,
+				org_id: orgId,
+				role,
+				iss: `https://api.workos.com/user_management/${WORKOS_CLIENT_ID}`,
+				exp: nowSec + 3600,
+			});
+
+		const adminA = await mkJwt("org_settings_a", "user_admin_a", "admin");
+		const memberA = await mkJwt("org_settings_a", "user_member_a", "member");
+		const adminB = await mkJwt("org_settings_b", "user_admin_b", "admin");
+
+		const tAdminA = makeTransport(testEnv, adminA, { "X-Hotbed-Host": "mac-a" });
+		const tMemberA = makeTransport(testEnv, memberA, { "X-Hotbed-Host": "mac-a-mem" });
+		const tAdminB = makeTransport(testEnv, adminB, { "X-Hotbed-Host": "mac-b" });
+
+		const clusterAdminA = createClient(ClusterService, tAdminA);
+		const gitAdminA = createClient(GitAuthService, tAdminA);
+		const sessAdminA = createClient(SessionService, tAdminA);
+
+		const clusterMemberA = createClient(ClusterService, tMemberA);
+		const gitMemberA = createClient(GitAuthService, tMemberA);
+
+		const clusterAdminB = createClient(ClusterService, tAdminB);
+		const gitAdminB = createClient(GitAuthService, tAdminB);
+		const sessAdminB = createClient(SessionService, tAdminB);
+
+		// Non-admin org member cannot mutate org config, upgrade system, or manage git credentials.
+		await expect(
+			clusterMemberA.setWorkerConfig({
+				config: create(WorkerConfigSchema, {
+					freshen: create(WorkerFreshenConfigSchema, { disableOptional: true }),
+				}),
+			}),
+		).rejects.toThrow(/only organization admins/);
+		await expect(clusterMemberA.deleteWorkerConfig({ defaults: true })).rejects.toThrow(
+			/only organization admins/,
+		);
+		await expect(clusterMemberA.upgradeSystem({})).rejects.toThrow(/only organization admins/);
+		await expect(
+			gitMemberA.putGitCredential({ name: "gh", host: "github.com", token: "ghp_secret" }),
+		).rejects.toThrow(/only organization admins/);
+		await expect(gitMemberA.deleteGitCredential({ name: "gh" })).rejects.toThrow(
+			/only organization admins/,
+		);
+
+		// Org A admin configures org-wide defaults (freshen + vm idle suspend + controller session timeout) and a node override.
+		const savedA = await clusterAdminA.setWorkerConfig({
+			config: create(WorkerConfigSchema, {
+				defaultRuntime: "vm",
+				freshen: create(WorkerFreshenConfigSchema, {
+					maxDutyCycle: 0.02,
+					minIntervalSeconds: 3600,
+					disableOptional: true,
+				}),
+				vm: create(WorkerVMConfigSchema, {
+					enabled: true,
+					vcpus: 6,
+					memMib: 8192,
+					idleSuspendSeconds: 300,
+				}),
+				controller: create(OrgControllerConfigSchema, {
+					sessionIdleTimeoutSeconds: 1800,
+					offlineGraceSeconds: 43200,
+				}),
+			}),
+		});
+		expect(savedA.freshen?.maxDutyCycle).toBe(0.02);
+		expect(savedA.freshen?.disableOptional).toBe(true);
+		expect(savedA.vm?.idleSuspendSeconds).toBe(300);
+		expect(savedA.controller?.sessionIdleTimeoutSeconds).toBe(1800);
+
+		// Org-level controller policy is rejected on per-node overrides.
+		await expect(
+			clusterAdminA.setWorkerConfig({
+				node: "ubu1",
+				config: create(WorkerConfigSchema, {
+					controller: create(OrgControllerConfigSchema, { sessionIdleTimeoutSeconds: 900 }),
+				}),
+			}),
+		).rejects.toThrow(/organization defaults only/);
+
+		// Per-node override in Org A succeeds.
+		await clusterAdminA.setWorkerConfig({
+			node: "ubu1",
+			config: create(WorkerConfigSchema, {
+				vm: create(WorkerVMConfigSchema, { memMib: 12288 }),
+			}),
+		});
+
+		// Org A admin adds an org-scoped git credential.
+		await gitAdminA.putGitCredential({
+			name: "github-a",
+			host: "github.com",
+			username: "org-a-bot",
+			repos: ["org-a/*"],
+			token: "ghp_org_a_secret",
+		});
+
+		// Non-admin member in Org A CAN read org config and list git credentials.
+		const memberView = await clusterMemberA.getWorkerConfig({ node: "ubu1" });
+		expect(memberView.defaults?.freshen?.maxDutyCycle).toBe(0.02);
+		expect(memberView.effective?.vm?.memMib).toBe(12288);
+		expect(memberView.effective?.vm?.idleSuspendSeconds).toBe(300);
+		const memberCreds = await gitMemberA.listGitCredentials({});
+		expect(memberCreds.credentials.map((c) => c.name)).toEqual(["github-a"]);
+
+		// Org B is completely isolated: sees none of Org A's config, node overrides, or git credentials.
+		const viewB = await clusterAdminB.getWorkerConfig({ node: "ubu1" });
+		expect(viewB.defaults?.freshen).toBeUndefined();
+		expect(viewB.defaults?.controller).toBeUndefined();
+		expect(viewB.nodes).toHaveLength(0);
+		const credsB = await gitAdminB.listGitCredentials({});
+		expect(credsB.credentials).toHaveLength(0);
+
+		// Per-org session idle timeout is honored per org (1800s in Org A, default 3600s in Org B).
+		await clusterAdminA.putRepo({
+			repo: create(RepoSchema, { id: "app-a", url: "https://github.com/org-a/app-a.git" }),
+		});
+		await clusterAdminA.addProject({ name: "proj-a", repos: ["app-a"] });
+		const sessA = await sessAdminA.startSession({ agent: "agent-a", project: "proj-a" });
+		const gotA = await sessAdminA.getSession({ id: sessA.id });
+		expect(gotA.idleTimeoutSeconds).toBe(1800n);
+
+		await clusterAdminB.putRepo({
+			repo: create(RepoSchema, { id: "app-b", url: "https://github.com/org-b/app-b.git" }),
+		});
+		await clusterAdminB.addProject({ name: "proj-b", repos: ["app-b"] });
+		const sessB = await sessAdminB.startSession({ agent: "agent-b", project: "proj-b" });
+		const gotB = await sessAdminB.getSession({ id: sessB.id });
+		expect(gotB.idleTimeoutSeconds).toBe(3600n);
 	});
 });

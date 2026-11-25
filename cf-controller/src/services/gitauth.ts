@@ -9,6 +9,7 @@ import {
 	ListGitCredentialsResponseSchema,
 	ProxyGitHubAPIResponseSchema,
 } from "../gen/hotbed/v1/hotbed_pb.ts";
+import { isOrgAdminCaller } from "../auth.ts";
 import { getCaller } from "../connect-adapter.ts";
 import { REPO_ID_RE, type ControllerContext } from "../context.ts";
 import { ErrorCode, hotbedError } from "../errors.ts";
@@ -339,7 +340,14 @@ export function createGitAuthService(ctrl: ControllerContext): ServiceImpl<typeo
 	}
 
 	return {
-		async startGitHubLogin(req) {
+		async startGitHubLogin(req, ctx) {
+			const caller = getCaller(ctx.values);
+			if (!isOrgAdminCaller(caller)) {
+				throw hotbedError(
+					ErrorCode.NotAuthorized,
+					"only organization admins may manage organization git credentials",
+				);
+			}
 			const name = req.name.trim() || "github";
 			if (!REPO_ID_RE.test(name)) {
 				throw hotbedError(
@@ -407,6 +415,12 @@ export function createGitAuthService(ctrl: ControllerContext): ServiceImpl<typeo
 
 		async completeGitHubLogin(req, ctx) {
 			const caller = getCaller(ctx.values);
+			if (!isOrgAdminCaller(caller)) {
+				throw hotbedError(
+					ErrorCode.NotAuthorized,
+					"only organization admins may manage organization git credentials",
+				);
+			}
 			const loginId = req.loginId.trim();
 			if (!loginId) {
 				throw hotbedError(ErrorCode.InvalidArgs, "login_id is required").withSuggestion(
@@ -529,6 +543,12 @@ export function createGitAuthService(ctrl: ControllerContext): ServiceImpl<typeo
 
 		putGitCredential(req, ctx) {
 			const caller = getCaller(ctx.values);
+			if (!isOrgAdminCaller(caller)) {
+				throw hotbedError(
+					ErrorCode.NotAuthorized,
+					"only organization admins may manage organization git credentials",
+				);
+			}
 			const name = req.name.trim();
 			if (!REPO_ID_RE.test(name)) {
 				throw hotbedError(
@@ -573,7 +593,14 @@ export function createGitAuthService(ctrl: ControllerContext): ServiceImpl<typeo
 			return create(ListGitCredentialsResponseSchema, { credentials: creds });
 		},
 
-		deleteGitCredential(req) {
+		deleteGitCredential(req, ctx) {
+			const caller = getCaller(ctx.values);
+			if (!isOrgAdminCaller(caller)) {
+				throw hotbedError(
+					ErrorCode.NotAuthorized,
+					"only organization admins may manage organization git credentials",
+				);
+			}
 			const name = req.name.trim();
 			if (!name) throw hotbedError(ErrorCode.InvalidArgs, "credential name is required");
 			if (!ctrl.store.deleteGitCredential(name)) {

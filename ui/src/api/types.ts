@@ -45,6 +45,8 @@ import {
   type CostPart,
   type DaemonLogEntry,
   type DaemonLogSource,
+  type DeleteGitCredentialResponse,
+  type DeleteWorkerConfigResponse,
   type DiskUsage,
   type EventRef,
   type FileContent,
@@ -55,6 +57,9 @@ import {
   type Fix,
   type FoldedStack,
   type GetDaemonLogsResponse,
+  type GetWorkerConfigResponse,
+  type GitCredential,
+  type GitHubLoginChallenge,
   type HostUsage,
   type HourBucket,
   type InspectCommandResponse,
@@ -62,6 +67,7 @@ import {
   type ListQuestionsResponse,
   type LoadSample,
   type Location,
+  type ManagedArtifact,
   type Memory,
   type MemoryBriefing,
   type MemoryChange,
@@ -73,9 +79,11 @@ import {
   type Node,
   type NodeHour,
   type NodeHours,
+  type NodeSystemUpgrade,
   type NodeUsage,
   type ObjectStoreStats,
   type OpenFile,
+  type OrgControllerConfig,
   type PerfCounter,
   type PlacementCandidate,
   type PlacementDecision,
@@ -127,6 +135,13 @@ import {
   type Totals,
   type TraceCommandChunk,
   type TraceSummary,
+  type UpgradeSystemResponse,
+  type WorkerCladefsFUSEConfig,
+  type WorkerConfig,
+  type WorkerConfigSchema,
+  type WorkerFreshenConfig,
+  type WorkerSystemConfig,
+  type WorkerVMConfig,
   type Workspace,
   type WorkspaceRepo,
 } from "../gen/hotbed/v1/hotbed_pb";
@@ -173,6 +188,8 @@ export {
   type CostPart,
   type DaemonLogEntry,
   type DaemonLogSource,
+  type DeleteGitCredentialResponse,
+  type DeleteWorkerConfigResponse,
   type DiskUsage,
   type EventRef,
   type FileContent,
@@ -183,6 +200,9 @@ export {
   type Fix,
   type FoldedStack,
   type GetDaemonLogsResponse,
+  type GetWorkerConfigResponse,
+  type GitCredential,
+  type GitHubLoginChallenge,
   type HostUsage,
   type HourBucket,
   type InspectCommandResponse,
@@ -190,6 +210,7 @@ export {
   type ListQuestionsResponse,
   type LoadSample,
   type Location,
+  type ManagedArtifact,
   type Memory,
   type MemoryBriefing,
   type MemoryChange,
@@ -201,9 +222,11 @@ export {
   type Node,
   type NodeHour,
   type NodeHours,
+  type NodeSystemUpgrade,
   type NodeUsage,
   type ObjectStoreStats,
   type OpenFile,
+  type OrgControllerConfig,
   type PerfCounter,
   type PlacementCandidate,
   type PlacementDecision,
@@ -254,6 +277,12 @@ export {
   type Totals,
   type TraceCommandChunk,
   type TraceSummary,
+  type UpgradeSystemResponse,
+  type WorkerCladefsFUSEConfig,
+  type WorkerConfig,
+  type WorkerFreshenConfig,
+  type WorkerSystemConfig,
+  type WorkerVMConfig,
   type Workspace,
   type WorkspaceRepo,
 };
@@ -261,6 +290,7 @@ export {
 export type AnswerInput = MessageInitShape<typeof AnswerSchema>;
 export type PromptInput = MessageInitShape<typeof PromptSchema>;
 export type MemoryContentInput = MessageInitShape<typeof MemoryContentSchema>;
+export type WorkerConfigInput = MessageInitShape<typeof WorkerConfigSchema>;
 
 export type CommandStateSlug = "queued" | "running" | "parked" | "paused" | "succeeded" | "failed" | "cancelled";
 export const COMMAND_STATE_FROM_SLUG: Record<CommandStateSlug, CommandState> = {
@@ -445,9 +475,44 @@ export interface ReviseMemoryInput {
   ifRevision?: bigint;
 }
 
+export interface SetWorkerConfigInput {
+  node?: string;
+  config: WorkerConfigInput;
+  replace?: boolean;
+  ifRevision?: bigint;
+}
+
+export interface PutGitCredentialInput {
+  name: string;
+  host?: string;
+  repos?: string[];
+  token: string;
+  username?: string;
+  apiUrl?: string;
+}
+
+export interface StartGitHubLoginInput {
+  name?: string;
+  host?: string;
+  repos?: string[];
+  scopes?: string[];
+  clientId?: string;
+  apiUrl?: string;
+  oauthUrl?: string;
+}
+
 export interface Api {
   snapshot(): Promise<Snapshot>;
   steps(project: string): Promise<StepStatus[]>;
+  getWorkerConfig(node?: string): Promise<GetWorkerConfigResponse>;
+  setWorkerConfig(input: SetWorkerConfigInput): Promise<WorkerConfig>;
+  deleteWorkerConfig(input: { node?: string; defaults?: boolean }): Promise<DeleteWorkerConfigResponse>;
+  upgradeSystem(node?: string): Promise<UpgradeSystemResponse>;
+  listGitCredentials(host?: string): Promise<GitCredential[]>;
+  putGitCredential(input: PutGitCredentialInput): Promise<GitCredential>;
+  deleteGitCredential(name: string): Promise<DeleteGitCredentialResponse>;
+  startGitHubLogin(input?: StartGitHubLoginInput): Promise<GitHubLoginChallenge>;
+  completeGitHubLogin(loginId: string): Promise<GitCredential>;
   commandLog(id: string): Promise<CommandLog>;
   files(workspaceId: string): Promise<FileEntry[]>;
   file(workspaceId: string, path: string): Promise<FileContent>;

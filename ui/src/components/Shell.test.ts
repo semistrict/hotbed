@@ -18,6 +18,7 @@ describe("Shell navigation helpers", () => {
     expect(isNavActive("/commands/cmd-9", "/commands")).toBe(true);
     expect(isNavActive("/nodes/ubu1.local", "/nodes")).toBe(true);
     expect(isNavActive("/logs", "/logs")).toBe(true);
+    expect(isNavActive("/settings", "/settings")).toBe(true);
     expect(isNavActive("/org", "/org")).toBe(true);
     expect(isNavActive("/cluster", "/cluster")).toBe(true);
   });
@@ -35,6 +36,7 @@ describe("Shell navigation helpers", () => {
     expect(routeTitle("/nodes/ubu1")).toBe("Nodes");
     expect(routeTitle("/commands/abc")).toBe("Commands");
     expect(routeTitle("/sessions/warm-fox")).toBe("Sessions");
+    expect(routeTitle("/settings")).toBe("Settings");
     expect(routeTitle("/org")).toBe("Organization");
     expect(routeTitle("/org", false)).toBe("Access & Tokens");
   });

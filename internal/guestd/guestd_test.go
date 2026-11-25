@@ -860,12 +860,19 @@ func TestSyncSubmoduleStreamingAndValidation(t *testing.T) {
 	runGit(t, workDir, "-c", "protocol.file.allow=always", "clone", "--recurse-submodules", srcRepo, wsRepo)
 
 	// Edit both the submodule and the parent repo, then snapshot + bundle.
-	if err := os.WriteFile(filepath.Join(srcRepo, "libs", "sub", "s.txt"), []byte("sub-v2\n"), 0o644); err != nil {
+	// Advance mtime by 2s so same-length edits within the same second never hit
+	// git's racy-index stat cache on coarse filesystems.
+	subFile := filepath.Join(srcRepo, "libs", "sub", "s.txt")
+	mainFile := filepath.Join(srcRepo, "main.txt")
+	if err := os.WriteFile(subFile, []byte("sub-v2\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(srcRepo, "main.txt"), []byte("main-v2\n"), 0o644); err != nil {
+	if err := os.WriteFile(mainFile, []byte("main-v2\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
+	future := time.Now().Add(2 * time.Second)
+	_ = os.Chtimes(subFile, future, future)
+	_ = os.Chtimes(mainFile, future, future)
 	snap, err := gitops.Snapshot(ctx, srcRepo)
 	if err != nil {
 		t.Fatalf("Snapshot: %v", err)

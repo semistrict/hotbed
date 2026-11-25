@@ -122,6 +122,24 @@ export class ControllerContext {
 		return this.nowFn();
 	}
 
+	/** Per-org session idle timeout in milliseconds (default 1h). */
+	sessionIdleMs(): number {
+		const secs = this.store.getWorkerConfig("")?.controller?.sessionIdleTimeoutSeconds;
+		if (secs !== undefined && secs >= 60) {
+			return secs * 1000;
+		}
+		return SESSION_IDLE_MS;
+	}
+
+	/** Per-org offline node grace period in milliseconds (default 24h). */
+	offlineGraceMs(): number {
+		const secs = this.store.getWorkerConfig("")?.controller?.offlineGraceSeconds;
+		if (secs !== undefined && secs >= 0) {
+			return secs * 1000;
+		}
+		return OFFLINE_GRACE_MS;
+	}
+
 	/** Async mutex for placement operations. */
 	async withPlacementLock<T>(fn: () => Promise<T> | T): Promise<T> {
 		let release!: () => void;
@@ -816,17 +834,24 @@ export class ControllerContext {
 	async reapIdle(): Promise<void> {
 		const nowMs = this.now();
 		this.hostUsages.prune(nowMs);
-		const cutoff = nowMs - SESSION_IDLE_MS;
+		const idleMs = this.sessionIdleMs();
+		const graceMs = this.offlineGraceMs();
+		const cutoff = nowMs - idleMs;
 		const ids = this.store.idleSessions(cutoff);
 		if (ids.length === 0) return;
 		const rows = this.store.listNodes();
 		const offline = new Set<string>();
 		for (const r of rows) {
-			const recent =
-				r.node.lastSeen !== undefined && nowMs - Number(r.node.lastSeen) < OFFLINE_GRACE_MS;
+			const recent = r.node.lastSeen !== undefined && nowMs - Number(r.node.lastSeen) < graceMs;
 			const node = this.withOnline(r.node);
 			if (!node.online && !node.asleep && recent) offline.add(node.id);
 		}
+		const idleSec = Math.round(idleMs / 1000);
+		const hrs = Math.floor(idleSec / 3600);
+		const mins = Math.floor((idleSec % 3600) / 60);
+		const secs = idleSec % 60;
+		const idleLabel =
+			hrs > 0 ? `${hrs}h${mins}m${secs}s` : mins > 0 ? `${mins}m${secs}s` : `${secs}s`;
 		for (const id of ids) {
 			await this.withSessionLock(id, async () => {
 				const sess = this.store.tryGetSession(id);
@@ -834,7 +859,7 @@ export class ControllerContext {
 				if (sess.workspaces.some((w) => w.releasedAt === undefined && offline.has(w.nodeId))) {
 					return;
 				}
-				const reason = "abandoned: nothing called it for 1h0m0s";
+				const reason = `abandoned: nothing called it for ${idleLabel}`;
 				const { ended, workspaces } = this.store.endSessionIfIdleAndWorkspaces(
 					id,
 					reason,

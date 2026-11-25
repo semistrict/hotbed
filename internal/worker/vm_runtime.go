@@ -31,12 +31,23 @@ func (e *Engine) isVMWorkspace(wsID string) bool {
 	return ok
 }
 
-func (e *Engine) vmIdleSuspendAfter() time.Duration {
-	if e.cfg.VMIdleSuspendAfter < 0 {
+func vmIdleSuspendDuration(vmCfg *statedir.VMConfig) time.Duration {
+	if vmCfg == nil || vmCfg.IdleSuspendSeconds == nil {
 		return 0
 	}
-	if e.cfg.VMIdleSuspendAfter > 0 {
-		return e.cfg.VMIdleSuspendAfter
+	if *vmCfg.IdleSuspendSeconds <= 0 {
+		return -1
+	}
+	return time.Duration(*vmCfg.IdleSuspendSeconds) * time.Second
+}
+
+func (e *Engine) vmIdleSuspendAfter() time.Duration {
+	d := time.Duration(e.vmIdleSuspendNs.Load())
+	if d < 0 {
+		return 0
+	}
+	if d > 0 {
+		return d
 	}
 	return defaultVMIdleSuspendAfter
 }
@@ -299,6 +310,9 @@ func (e *Engine) applyCladefsHeartbeat(ctx context.Context, reply *pb.HeartbeatR
 func (e *Engine) ApplyWorkerConfig(cfg statedir.WorkerConfig) {
 	if e.cfg.VM != nil && cfg.VM != nil {
 		e.cfg.VM.UpdateConfig(*cfg.VM)
+	}
+	if cfg.VM != nil {
+		e.vmIdleSuspendNs.Store(int64(vmIdleSuspendDuration(cfg.VM)))
 	}
 	if e.cfg.CladefsFUSE != nil && cfg.CladefsFUSE != nil {
 		e.cfg.CladefsFUSE.UpdateConfig(*cfg.CladefsFUSE)

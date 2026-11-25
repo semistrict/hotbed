@@ -355,6 +355,7 @@ func Run(ctx context.Context, dir string, cfg statedir.WorkerConfig, tn Tailnet,
 		Units: Systemd{}, System: &Linux{Slice: effCfg.Slice},
 		DaemonLogs: dlogs, ControllerNodeID: effCfg.ControllerNodeID, RequireController: true,
 		Artifacts: artifacts, Freshen: effCfg.Freshen,
+		VMIdleSuspendAfter: vmIdleSuspendDuration(effCfg.VM),
 	}
 	if effCfg.Bench != nil {
 		ecfg.ScratchDisk = effCfg.Bench.Disk

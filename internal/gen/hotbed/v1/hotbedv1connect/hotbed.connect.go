@@ -672,13 +672,13 @@ type ClusterServiceClient interface {
 	// The cluster's events, newest first: what workers did (admitted, held,
 	// made wait, resumed, parked, forked, ...), narrowed by node and kind.
 	ListEvents(context.Context, *v1.ListEventsRequest) (*v1.ListEventsResponse, error)
-	// Read controller-managed cluster default and per-node worker/VM configuration.
+	// Read organization-scoped default and per-node worker/VM/freshen configuration.
 	GetWorkerConfig(context.Context, *v1.GetWorkerConfigRequest) (*v1.GetWorkerConfigResponse, error)
-	// Set (merge or replace) controller-managed cluster default or per-node
-	// worker/VM configuration. Pass WorkerConfig JSON on stdin or --file.
+	// Set (merge or replace) organization default or per-node configuration
+	// (org admins only). Pass WorkerConfig JSON on stdin or --file.
 	SetWorkerConfig(context.Context, *v1.SetWorkerConfigRequest) (*v1.WorkerConfig, error)
-	// Remove controller-managed worker/VM configuration for a node (or cluster
-	// defaults with --defaults).
+	// Remove organization-scoped configuration overrides for a node (or
+	// organization defaults with --defaults). Org admins only.
 	DeleteWorkerConfig(context.Context, *v1.DeleteWorkerConfigRequest) (*v1.DeleteWorkerConfigResponse, error)
 	// Explicitly upgrade host cladefs components (cladefsd, firecracker, guest
 	// kernel) on one node or rolling across all online nodes one at a time.
@@ -812,13 +812,13 @@ type ClusterServiceHandler interface {
 	// The cluster's events, newest first: what workers did (admitted, held,
 	// made wait, resumed, parked, forked, ...), narrowed by node and kind.
 	ListEvents(context.Context, *v1.ListEventsRequest) (*v1.ListEventsResponse, error)
-	// Read controller-managed cluster default and per-node worker/VM configuration.
+	// Read organization-scoped default and per-node worker/VM/freshen configuration.
 	GetWorkerConfig(context.Context, *v1.GetWorkerConfigRequest) (*v1.GetWorkerConfigResponse, error)
-	// Set (merge or replace) controller-managed cluster default or per-node
-	// worker/VM configuration. Pass WorkerConfig JSON on stdin or --file.
+	// Set (merge or replace) organization default or per-node configuration
+	// (org admins only). Pass WorkerConfig JSON on stdin or --file.
 	SetWorkerConfig(context.Context, *v1.SetWorkerConfigRequest) (*v1.WorkerConfig, error)
-	// Remove controller-managed worker/VM configuration for a node (or cluster
-	// defaults with --defaults).
+	// Remove organization-scoped configuration overrides for a node (or
+	// organization defaults with --defaults). Org admins only.
 	DeleteWorkerConfig(context.Context, *v1.DeleteWorkerConfigRequest) (*v1.DeleteWorkerConfigResponse, error)
 	// Explicitly upgrade host cladefs components (cladefsd, firecracker, guest
 	// kernel) on one node or rolling across all online nodes one at a time.

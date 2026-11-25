@@ -169,7 +169,10 @@ export class ControllerDO extends DurableObject<ControllerEnv> {
 			this.builds.setTestConfig(this.testBuildConfig);
 		}
 
-		let clusterId = (this.env.CLUSTER_ID ?? "").trim();
+		const orgId = this.store.getMeta(ORG_ID_META_KEY) ?? "";
+		const defaultOrgId = (this.env.DEFAULT_ORG_ID ?? "").trim();
+		const allowEnvClusterId = !orgId || (defaultOrgId !== "" && orgId === defaultOrgId);
+		let clusterId = allowEnvClusterId ? (this.env.CLUSTER_ID ?? "").trim() : "";
 		if (!clusterId) {
 			clusterId = this.store.getMeta(CLUSTER_ID_META_KEY) ?? "";
 			if (!clusterId) {
@@ -177,7 +180,6 @@ export class ControllerDO extends DurableObject<ControllerEnv> {
 				this.store.setMeta(CLUSTER_ID_META_KEY, clusterId);
 			}
 		}
-		const orgId = this.store.getMeta(ORG_ID_META_KEY) ?? "";
 		const rawTenant = this.store.getMeta(CLADEFS_TENANT_ID_META_KEY);
 		const cladefsTenantId =
 			rawTenant !== null && /^\d+$/.test(rawTenant) ? BigInt(rawTenant) : null;

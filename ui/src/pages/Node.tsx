@@ -94,6 +94,13 @@ export function NodePage() {
             <AdmissionBadge a={admission} now={now} />
             <ArchBadge arch={res?.arch ?? ""} />
             <OnlineBadge online={n.online} asleep={n.asleep} storageError={n.storageError} />
+            <Link
+              to="/settings"
+              search={{ scope: n.hostname }}
+              className="rounded-full border border-border bg-card/70 px-2.5 py-0.5 font-mono text-[10.5px] text-muted-foreground transition-colors hover:border-primary/50 hover:text-primary"
+            >
+              configure →
+            </Link>
           </div>
         }
       />

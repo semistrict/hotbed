@@ -210,9 +210,10 @@ type Engine struct {
 	home           string
 	gitAuth        *gitAuthServer
 	containersConf string
-	rtUnits        *runtimeUnits
-	portProxies    map[string]*portProxy
-	freshenBudget  *freshenBudget
+	rtUnits         *runtimeUnits
+	portProxies     map[string]*portProxy
+	freshenBudget   *freshenBudget
+	vmIdleSuspendNs atomic.Int64
 
 	mu              sync.Mutex
 	upgradeMu       sync.Mutex
@@ -550,6 +551,7 @@ func NewEngine(ctx context.Context, cfg EngineConfig) (*Engine, error) {
 		bgCancel:        bgCancel,
 		streamsDone:     make(chan struct{}),
 	}
+	e.vmIdleSuspendNs.Store(int64(cfg.VMIdleSuspendAfter))
 	if e.resources, err = cfg.System.Resources(); err != nil {
 		bgCancel()
 		d.close()

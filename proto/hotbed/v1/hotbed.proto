@@ -251,7 +251,7 @@ service ClusterService {
       format: "{{range .events}}{{time .at}}  {{pad 12 .hostname}}  {{pad 7 .kind}}  {{.text}}\n{{end}}"
     };
   }
-  // Read controller-managed cluster default and per-node worker/VM configuration.
+  // Read organization-scoped default and per-node worker/VM/freshen configuration.
   rpc GetWorkerConfig(GetWorkerConfigRequest) returns (GetWorkerConfigResponse) {
     option idempotency_level = IDEMPOTENT;
     option (command) = {
@@ -260,8 +260,8 @@ service ClusterService {
       format: "{{with .defaults}}defaults  rev={{.revision}}{{with .defaultRuntime}}  runtime={{.}}{{end}}{{with .vm}}  vm(enabled={{.enabled}} vcpus={{.vcpus}} memMiB={{.memMib}}){{end}}{{with .cladefsFuse}}  fuse(enabled={{.enabled}}){{end}}\n{{end}}{{range .nodes}}{{.node}}  rev={{.revision}}{{with .defaultRuntime}}  runtime={{.}}{{end}}{{with .vm}}  vm(enabled={{.enabled}} vcpus={{.vcpus}} memMiB={{.memMib}}){{end}}{{with .cladefsFuse}}  fuse(enabled={{.enabled}}){{end}}\n{{end}}{{with .effective}}effective({{.node}})  rev={{.revision}}{{with .defaultRuntime}}  runtime={{.}}{{end}}\n{{end}}"
     };
   }
-  // Set (merge or replace) controller-managed cluster default or per-node
-  // worker/VM configuration. Pass WorkerConfig JSON on stdin or --file.
+  // Set (merge or replace) organization default or per-node configuration
+  // (org admins only). Pass WorkerConfig JSON on stdin or --file.
   rpc SetWorkerConfig(SetWorkerConfigRequest) returns (WorkerConfig) {
     option (command) = {
       name: "config set"
@@ -269,8 +269,8 @@ service ClusterService {
       format: "{{if .node}}{{.node}}{{else}}defaults{{end}}  rev={{.revision}}{{with .defaultRuntime}}  runtime={{.}}{{end}}"
     };
   }
-  // Remove controller-managed worker/VM configuration for a node (or cluster
-  // defaults with --defaults).
+  // Remove organization-scoped configuration overrides for a node (or
+  // organization defaults with --defaults). Org admins only.
   rpc DeleteWorkerConfig(DeleteWorkerConfigRequest) returns (DeleteWorkerConfigResponse) {
     option (command) = {
       name: "config rm"
@@ -788,6 +788,9 @@ message WorkerVMConfig {
   map<string, ManagedArtifact> guestd = 23;
   // Default RLIMIT_NOFILE soft and hard limit inside guest VMs (0 = hotbed-guestd default 65536).
   optional uint64 nofile = 24;
+  // Seconds an idle VM sits before suspending to a CladeFS memory cell
+  // (0 disables idle suspend; unset uses default 120s).
+  optional int32 idle_suspend_seconds = 25;
 }
 
 // Controller-managed cladefs host-FUSE runtime settings.
@@ -851,10 +854,22 @@ message WorkerFreshenConfig {
   optional bool disable_optional = 8;
 }
 
-// Controller-managed worker configuration, either cluster-wide defaults
-// (node == "") or a per-node override (node == hostname).
+// Organization-scoped controller lifecycle policy (applies to organization
+// defaults only, never per-node overrides).
+message OrgControllerConfig {
+  // Seconds a live session with no active commands may sit idle before the
+  // controller ends it automatically. Default: 3600 (60m). Must be >= 60.
+  optional int32 session_idle_timeout_seconds = 1;
+  // Seconds an offline node is waited on before its idle sessions are reaped.
+  // Default: 86400 (24h). Must be >= 0.
+  optional int32 offline_grace_seconds = 2;
+}
+
+// Organization-scoped worker and controller configuration: either organization
+// defaults (node == "") inherited by every node in the org, or a per-node
+// override (node == hostname). Stored per organization DO, never global.
 message WorkerConfig {
-  // Scope: empty for cluster-wide defaults, or a worker hostname for per-node overrides.
+  // Scope: empty for organization defaults, or a worker hostname for per-node overrides.
   string node = 1;
   // Default runtime for non-bench workspaces: "vm" or "cladefs".
   optional string default_runtime = 2;
@@ -870,6 +885,8 @@ message WorkerConfig {
   string updated_by = 9;
   WorkerSystemConfig system = 10;
   WorkerFreshenConfig freshen = 11;
+  // Organization-level controller lifecycle settings (valid on organization defaults only).
+  OrgControllerConfig controller = 12;
 }
 
 message GetWorkerConfigRequest {
@@ -881,16 +898,16 @@ message GetWorkerConfigRequest {
 }
 
 message GetWorkerConfigResponse {
-  // Cluster-wide default worker configuration, if set.
+  // Organization default configuration, if set.
   WorkerConfig defaults = 1;
-  // Per-node overrides (filtered to the requested node when node is set).
+  // Per-node overrides within this organization (filtered to node when set).
   repeated WorkerConfig nodes = 2;
-  // Merged effective configuration (defaults + node override) when node is requested.
+  // Merged effective configuration (organization defaults + node override) when node is requested.
   WorkerConfig effective = 3;
 }
 
 message SetWorkerConfigRequest {
-  // Worker hostname to configure; omit to configure cluster-wide defaults.
+  // Worker hostname to configure; omit to configure organization defaults.
   string node = 1 [(param) = {
     positional: true
     optional: true
@@ -904,12 +921,12 @@ message SetWorkerConfigRequest {
 }
 
 message DeleteWorkerConfigRequest {
-  // Worker hostname whose overrides to delete; omit with --defaults to clear cluster defaults.
+  // Worker hostname whose overrides to delete; omit with --defaults to clear organization defaults.
   string node = 1 [(param) = {
     positional: true
     optional: true
   }];
-  // Delete cluster-wide defaults instead of a per-node override.
+  // Delete organization defaults instead of a per-node override.
   bool defaults = 2;
 }
 

@@ -15,6 +15,7 @@ import {
   Moon,
   ScrollText,
   Server,
+  SlidersHorizontal,
   Sun,
   Terminal,
   type LucideIcon,
@@ -72,6 +73,7 @@ interface NavItem {
     | "/cluster"
     | "/nodes"
     | "/logs"
+    | "/settings"
     | "/org";
   readonly label: string;
   readonly icon: LucideIcon;
@@ -94,6 +96,7 @@ const INFRA_NAV: readonly NavItem[] = [
   { to: "/cluster", label: "Cluster", icon: Activity, shared: true },
   { to: "/nodes", label: "Nodes", icon: Server, shared: true },
   { to: "/logs", label: "Logs", icon: ScrollText, shared: true },
+  { to: "/settings", label: "Settings", icon: SlidersHorizontal, shared: true },
   { to: "/org", label: "Organization", icon: Building2, shared: true },
 ];
 
@@ -647,6 +650,15 @@ function AccountMenu({ theme, setTheme }: { theme: Theme; setTheme: (next: Theme
               </DropdownMenuLabel>
             </DropdownMenuGroup>
             <DropdownMenuSeparator />
+            <DropdownMenuItem
+              onClick={() => {
+                setOpenMobile(false);
+                void navigate({ to: "/settings" });
+              }}
+            >
+              <SlidersHorizontal className="size-4" />
+              Organization Settings
+            </DropdownMenuItem>
             <DropdownMenuItem
               onClick={() => {
                 setOpenMobile(false);

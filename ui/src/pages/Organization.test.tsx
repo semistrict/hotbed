@@ -2,6 +2,10 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { renderToStaticMarkup } from "react-dom/server";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
+vi.mock("@tanstack/react-router", () => ({
+  Link: ({ children, to }: { children: unknown; to: string }) => <a href={to}>{children as never}</a>,
+}));
+
 let mockRole = "member";
 let mockJoinTokensState: { data?: { tokens: unknown[] }; isLoading: boolean; error: Error | null } = {
   data: { tokens: [] },

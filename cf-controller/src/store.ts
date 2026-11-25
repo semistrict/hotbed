@@ -4387,7 +4387,7 @@ export class ControllerStore {
 		patch: WorkerConfig,
 		opts: { replace: boolean; ifRevision: bigint; updatedBy: string; nowMs: number },
 	): WorkerConfig {
-		validateWorkerConfig(patch);
+		validateWorkerConfig(patch, scope);
 		return this.storage.transactionSync(() => {
 			const existing = this.getWorkerConfig(scope);
 			const curRev = existing?.revision ?? 0n;
@@ -4399,7 +4399,7 @@ export class ControllerStore {
 				).withSuggestion(scope ? `hotbed config show ${scope}` : "hotbed config show");
 			}
 			const next = mergeWorkerConfig(opts.replace ? null : existing, patch);
-			validateWorkerConfig(next);
+			validateWorkerConfig(next, scope);
 			const nextRev = curRev + 1n;
 			next.node = scope;
 			next.revision = nextRev;

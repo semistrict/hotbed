@@ -4,6 +4,7 @@ import {
   ActorKind,
   ClusterService,
   DaemonLogLevel,
+  GitAuthService,
   MemoryMode,
   MemoryOrder,
   MemoryScope,
@@ -28,10 +29,47 @@ export function createConnectApi(
   const questions = createClient(QuestionService, transport);
   const memories = createClient(MemoryService, transport);
   const reviews = createClient(ReviewService, transport);
+  const gitauth = createClient(GitAuthService, transport);
 
   return {
     snapshot: () => cluster.getSnapshot({}),
     steps: async (project) => (await cluster.listSteps({ project })).steps,
+    getWorkerConfig: (node = "") => cluster.getWorkerConfig({ node }),
+    setWorkerConfig: (input) =>
+      cluster.setWorkerConfig({
+        node: input.node ?? "",
+        config: input.config,
+        replace: input.replace ?? false,
+        ifRevision: input.ifRevision ?? 0n,
+      }),
+    deleteWorkerConfig: (input) =>
+      cluster.deleteWorkerConfig({
+        node: input.node ?? "",
+        defaults: input.defaults ?? false,
+      }),
+    upgradeSystem: (node = "") => cluster.upgradeSystem({ node }),
+    listGitCredentials: async (host = "") => (await gitauth.listGitCredentials({ host })).credentials,
+    putGitCredential: (input) =>
+      gitauth.putGitCredential({
+        name: input.name,
+        host: input.host ?? "github.com",
+        repos: input.repos ?? [],
+        token: input.token,
+        username: input.username ?? "",
+        apiUrl: input.apiUrl ?? "",
+      }),
+    deleteGitCredential: (name) => gitauth.deleteGitCredential({ name }),
+    startGitHubLogin: (input) =>
+      gitauth.startGitHubLogin({
+        name: input?.name ?? "github",
+        host: input?.host ?? "github.com",
+        repos: input?.repos ?? [],
+        scopes: input?.scopes ?? [],
+        clientId: input?.clientId ?? "",
+        apiUrl: input?.apiUrl ?? "",
+        oauthUrl: input?.oauthUrl ?? "",
+      }),
+    completeGitHubLogin: (loginId) => gitauth.completeGitHubLogin({ loginId }),
     commandLog: (id) => workspaces.getLogLines({ id, tail: 2000 }),
     files: async (workspaceId) => (await workspaces.listFiles({ workspaceId })).files,
     file: (workspaceId, path) => workspaces.getFile({ workspaceId, path }),

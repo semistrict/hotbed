@@ -30,6 +30,18 @@ export interface CallerIdentity {
 		| "workos-cookie";
 }
 
+/**
+ * Reports whether caller is authorized to mutate organization-level settings,
+ * worker configuration, host upgrades, and git credentials.
+ *
+ * Workers and non-admin WorkOS org members (`orgRole === "member"`) are denied;
+ * org admins/owners and single-tenant owner callers are permitted.
+ */
+export function isOrgAdminCaller(caller: CallerIdentity): boolean {
+	if (caller.role !== "owner") return false;
+	return !caller.orgRole || caller.orgRole === "admin" || caller.orgRole === "owner";
+}
+
 export interface AuthEnv extends WorkOSEnv {
 	OWNER_TOKEN?: string;
 	JOIN_TOKEN?: string;

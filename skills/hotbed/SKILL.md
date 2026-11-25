@@ -57,10 +57,10 @@ Do not pipe `hotbed session start` into `jq` or swallow its stdout: it prints ac
   freshen immediately. Commit-only branch movement on an existing warm base is an optimization
   capped by duty cycle (default 5% of wall time, 30m minimum interval per project, 6h cooldown cap,
   15m exponential failure backoff) and deferred to an idle, low-priority (`-10`) background slot
-  for syncing checkouts so your workspace forks immediately without waiting. Tune caps live with
-  `hotbed config set` (`freshen.*`). A run starts in `/work/REPO` of the repo it is for, or in
-  `/work` when it is for none (outside any checkout, no `-r`). Each workspace keeps its state
-  between the commands run in it.
+  for syncing checkouts so your workspace forks immediately without waiting. Tune org-scoped caps
+  and settings live from the Cockpit (`/settings`) or via `hotbed config set` (`freshen.*`). A run
+  starts in `/work/REPO` of the repo it is for, or in `/work` when it is for none (outside any
+  checkout, no `-r`). Each workspace keeps its state between the commands run in it.
 - **Your checkout is the truth.** Run from a checkout of the repo and each run first sends its
   state to the workspace it runs in, uncommitted and untracked files included, ignored files not.
   Only files that differ are rewritten, so builds stay incremental. Anything a command writes

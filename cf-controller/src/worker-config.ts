@@ -1,12 +1,14 @@
 import { clone, create } from "@bufbuild/protobuf";
 import {
 	ManagedArtifactSchema,
+	OrgControllerConfigSchema,
 	WorkerCladefsFUSEConfigSchema,
 	WorkerConfigSchema,
 	WorkerFreshenConfigSchema,
 	WorkerSystemConfigSchema,
 	WorkerVMConfigSchema,
 	type ManagedArtifact,
+	type OrgControllerConfig,
 	type WorkerCladefsFUSEConfig,
 	type WorkerConfig,
 	type WorkerFreshenConfig,
@@ -63,7 +65,7 @@ function validateArtifact(kind: string, arch: string, art: ManagedArtifact): voi
 	}
 }
 
-export function validateWorkerConfig(cfg: WorkerConfig): void {
+export function validateWorkerConfig(cfg: WorkerConfig, scope = ""): void {
 	if (cfg.defaultRuntime !== undefined && !VALID_RUNTIMES.has(cfg.defaultRuntime)) {
 		throw hotbedError(
 			ErrorCode.InvalidArgs,
@@ -88,6 +90,12 @@ export function validateWorkerConfig(cfg: WorkerConfig): void {
 		}
 		if (vm.nofile !== undefined && vm.nofile < 0n) {
 			throw hotbedError(ErrorCode.InvalidArgs, `vm.nofile must be >= 0 (got ${vm.nofile})`);
+		}
+		if (vm.idleSuspendSeconds !== undefined && vm.idleSuspendSeconds < 0) {
+			throw hotbedError(
+				ErrorCode.InvalidArgs,
+				`vm.idle_suspend_seconds must be >= 0 (got ${vm.idleSuspendSeconds})`,
+			);
 		}
 		if (vm.cacheType !== undefined && !VALID_CACHE_TYPES.has(vm.cacheType)) {
 			throw hotbedError(
@@ -154,6 +162,27 @@ export function validateWorkerConfig(cfg: WorkerConfig): void {
 			}
 		}
 	}
+	if (cfg.controller) {
+		if (scope !== "") {
+			throw hotbedError(
+				ErrorCode.InvalidArgs,
+				"controller settings apply to organization defaults only, not per-node overrides",
+			);
+		}
+		const c = cfg.controller;
+		if (c.sessionIdleTimeoutSeconds !== undefined && c.sessionIdleTimeoutSeconds < 60) {
+			throw hotbedError(
+				ErrorCode.InvalidArgs,
+				`controller.session_idle_timeout_seconds must be >= 60 (got ${c.sessionIdleTimeoutSeconds})`,
+			);
+		}
+		if (c.offlineGraceSeconds !== undefined && c.offlineGraceSeconds < 0) {
+			throw hotbedError(
+				ErrorCode.InvalidArgs,
+				`controller.offline_grace_seconds must be >= 0 (got ${c.offlineGraceSeconds})`,
+			);
+		}
+	}
 }
 
 function normalizeArtifactMap(
@@ -211,6 +240,7 @@ export function mergeWorkerVMConfig(
 	if (patch.bridgeCidr !== undefined) out.bridgeCidr = patch.bridgeCidr;
 	if (patch.dnsServers.length > 0) out.dnsServers = [...patch.dnsServers];
 	if (patch.nofile !== undefined) out.nofile = patch.nofile;
+	if (patch.idleSuspendSeconds !== undefined) out.idleSuspendSeconds = patch.idleSuspendSeconds;
 	out.kernels = normalizeArtifactMap(out.kernels, patch.kernels);
 	out.guestd = normalizeArtifactMap(out.guestd, patch.guestd);
 	return out;
@@ -276,6 +306,22 @@ export function mergeWorkerFreshenConfig(
 	return out;
 }
 
+export function mergeOrgControllerConfig(
+	base?: OrgControllerConfig,
+	patch?: OrgControllerConfig,
+): OrgControllerConfig | undefined {
+	if (!base && !patch) return undefined;
+	const out = base ? clone(OrgControllerConfigSchema, base) : create(OrgControllerConfigSchema);
+	if (!patch) return out;
+	if (patch.sessionIdleTimeoutSeconds !== undefined) {
+		out.sessionIdleTimeoutSeconds = patch.sessionIdleTimeoutSeconds;
+	}
+	if (patch.offlineGraceSeconds !== undefined) {
+		out.offlineGraceSeconds = patch.offlineGraceSeconds;
+	}
+	return out;
+}
+
 export function mergeWorkerConfig(base: WorkerConfig | null, patch: WorkerConfig): WorkerConfig {
 	const out = base ? clone(WorkerConfigSchema, base) : create(WorkerConfigSchema);
 	if (patch.defaultRuntime !== undefined) out.defaultRuntime = patch.defaultRuntime;
@@ -285,6 +331,7 @@ export function mergeWorkerConfig(base: WorkerConfig | null, patch: WorkerConfig
 	out.cladefsFuse = mergeWorkerCladefsFUSEConfig(out.cladefsFuse, patch.cladefsFuse);
 	out.system = mergeWorkerSystemConfig(out.system, patch.system);
 	out.freshen = mergeWorkerFreshenConfig(out.freshen, patch.freshen);
+	out.controller = mergeOrgControllerConfig(out.controller, patch.controller);
 	return out;
 }
 

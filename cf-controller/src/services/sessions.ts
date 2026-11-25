@@ -23,7 +23,6 @@ import {
 	MEMORY_FAILURE_REMINDER,
 	MEMORY_FEEDBACK_REMINDER,
 	MEMORY_SESSION_END_REMINDER,
-	SESSION_IDLE_MS,
 	sessionStartReminder,
 	validateT3CodeThreadId,
 	type ControllerContext,
@@ -282,7 +281,7 @@ export function createSessionService(ctrl: ControllerContext): ServiceImpl<typeo
 				workspaces: wsList,
 				commands: cmdList,
 				now: BigInt(ctrl.now()),
-				idleTimeoutSeconds: BigInt(SESSION_IDLE_MS / 1000),
+				idleTimeoutSeconds: BigInt(Math.round(ctrl.sessionIdleMs() / 1000)),
 				nodeHosts,
 			});
 		},

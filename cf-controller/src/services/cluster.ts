@@ -63,7 +63,7 @@ import {
 	type Totals,
 } from "../gen/hotbed/v1/hotbed_pb.ts";
 import { isSupportedPlatform } from "../builds.ts";
-import { sha256Hex } from "../auth.ts";
+import { isOrgAdminCaller, sha256Hex } from "../auth.ts";
 import { getCaller } from "../connect-adapter.ts";
 import { formatOrgToken } from "../workos.ts";
 import {
@@ -1387,24 +1387,35 @@ export function createClusterService(
 
 		setWorkerConfig(req, ctx) {
 			const caller = getCaller(ctx.values);
-			if (caller.role === "worker") {
-				throw hotbedError(ErrorCode.NotAuthorized, "workers may not modify cluster configuration");
+			if (!isOrgAdminCaller(caller)) {
+				throw hotbedError(
+					ErrorCode.NotAuthorized,
+					caller.role === "worker"
+						? "workers may not modify organization configuration"
+						: "only organization admins may modify organization configuration",
+				);
 			}
 			const scope = req.node.trim();
 			const patch = req.config ?? create(WorkerConfigSchema);
 			assertNoTenantOverride(patch, ctrl.cladefsTenantId);
-			return ctrl.store.setWorkerConfig(scope, patch, {
+			const saved = ctrl.store.setWorkerConfig(scope, patch, {
 				replace: req.replace,
 				ifRevision: req.ifRevision,
 				updatedBy: caller.hostname || caller.login || "unknown",
 				nowMs: ctrl.now(),
 			});
+			return applyOrgCladefsTenant(saved, ctrl.cladefsTenantId, scope) ?? saved;
 		},
 
 		deleteWorkerConfig(req, ctx) {
 			const caller = getCaller(ctx.values);
-			if (caller.role === "worker") {
-				throw hotbedError(ErrorCode.NotAuthorized, "workers may not modify cluster configuration");
+			if (!isOrgAdminCaller(caller)) {
+				throw hotbedError(
+					ErrorCode.NotAuthorized,
+					caller.role === "worker"
+						? "workers may not modify organization configuration"
+						: "only organization admins may modify organization configuration",
+				);
 			}
 			const target = req.node.trim();
 			if (req.defaults && target) {
@@ -1413,7 +1424,7 @@ export function createClusterService(
 			if (!req.defaults && !target) {
 				throw hotbedError(
 					ErrorCode.InvalidArgs,
-					"pass a node name to remove its overrides, or --defaults to remove cluster defaults",
+					"pass a node name to remove its overrides, or --defaults to remove organization defaults",
 				);
 			}
 			const scope = req.defaults ? "" : target;
@@ -1427,8 +1438,13 @@ export function createClusterService(
 
 		async upgradeSystem(req, ctx) {
 			const caller = getCaller(ctx.values);
-			if (caller.role === "worker") {
-				throw hotbedError(ErrorCode.NotAuthorized, "workers may not trigger system upgrades");
+			if (!isOrgAdminCaller(caller)) {
+				throw hotbedError(
+					ErrorCode.NotAuthorized,
+					caller.role === "worker"
+						? "workers may not trigger system upgrades"
+						: "only organization admins may trigger system upgrades",
+				);
 			}
 			const target = req.node.trim();
 			const targets = [];

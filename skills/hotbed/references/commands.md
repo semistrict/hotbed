@@ -239,7 +239,7 @@ Centrally managed cluster and per-node worker/VM configuration (show, set, rm).
 
 ### `hotbed config show [NODE]`
 
-Read controller-managed cluster default and per-node worker/VM configuration.
+Read organization-scoped default and per-node worker/VM/freshen configuration.
 
 *MCP tool: `config_show`*
 
@@ -249,26 +249,26 @@ Read controller-managed cluster default and per-node worker/VM configuration.
 
 ### `hotbed config set [NODE]`
 
-Set (merge or replace) controller-managed cluster default or per-node worker/VM configuration. Pass WorkerConfig JSON on stdin or --file.
+Set (merge or replace) organization default or per-node configuration (org admins only). Pass WorkerConfig JSON on stdin or --file.
 
 *MCP tool: `config_set` · reads JSON from stdin or `--file`*
 
 | Argument / Flag | Env | Help |
 | --- | --- | --- |
-| `NODE` |  | Worker hostname to configure; omit to configure cluster-wide defaults. |
+| `NODE` |  | Worker hostname to configure; omit to configure organization defaults. |
 | `--replace` |  | Replace the scope's entire configuration instead of merging fields. |
 | `--if-revision` |  | Refuse with CONFLICT unless the scope is at this revision (0 skips the check). |
 
 ### `hotbed config rm [NODE]`
 
-Remove controller-managed worker/VM configuration for a node (or cluster defaults with --defaults).
+Remove organization-scoped configuration overrides for a node (or organization defaults with --defaults). Org admins only.
 
 *MCP tool: `config_rm`*
 
 | Argument / Flag | Env | Help |
 | --- | --- | --- |
-| `NODE` |  | Worker hostname whose overrides to delete; omit with --defaults to clear cluster defaults. |
-| `--defaults` |  | Delete cluster-wide defaults instead of a per-node override. |
+| `NODE` |  | Worker hostname whose overrides to delete; omit with --defaults to clear organization defaults. |
+| `--defaults` |  | Delete organization defaults instead of a per-node override. |
 
 ## `system`
 
