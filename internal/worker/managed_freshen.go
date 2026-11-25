@@ -61,6 +61,7 @@ type managedFreshenSpec struct {
 	Cold        bool
 	ColdReason  string
 	FromBaseID  string
+	Optional    bool
 	CreatedAt   int64
 	PrepSeconds float64
 	PrepPhases  []*pb.FreshenPhase
@@ -78,18 +79,21 @@ type managedFreshenSpec struct {
 
 // managedFreshenResult summarizes the completed managed freshen command.
 type managedFreshenResult struct {
-	BaseID          string
-	CommandID       string
-	RepoHeads       map[string]string
-	Steps           []*pb.AppliedStep
-	Baked           []string
-	Units           int
-	PeakMemory      int64
-	Seconds         float64
-	GitSeconds      float64
-	FinalizeSeconds float64
-	State           pb.CommandState
-	Reason          string
+	BaseID           string
+	CommandID        string
+	RepoHeads        map[string]string
+	Steps            []*pb.AppliedStep
+	Baked            []string
+	Units            int
+	PeakMemory       int64
+	Seconds          float64
+	ActiveRunSeconds float64
+	Started          bool
+	StepFailed       bool
+	GitSeconds       float64
+	FinalizeSeconds  float64
+	State            pb.CommandState
+	Reason           string
 }
 
 type managedFreshenRunner func(ctx context.Context, spec managedFreshenSpec) (*managedFreshenHandle, error)
@@ -257,6 +261,7 @@ func (e *Engine) recordWarmCladefsBase(p *pb.HostedProject, pbBase *vmProjectBas
 			Project: p.Name,
 			Arch:    arch,
 			Recipe:  pbBase.Recipe,
+			Runtime: cladefsBaseRuntimeKind(pbBase.BaseID),
 		},
 	}
 	for _, r := range p.GetRepos() {
@@ -340,6 +345,7 @@ func (e *Engine) startManagedFreshen(_ context.Context, spec managedFreshenSpec)
 			Project: spec.Project.Name,
 			Arch:    spec.Arch,
 			Recipe:  spec.Recipe,
+			Runtime: rtKind,
 		},
 	}
 	for _, r := range spec.Project.GetRepos() {
@@ -348,6 +354,14 @@ func (e *Engine) startManagedFreshen(_ context.Context, spec managedFreshenSpec)
 	cmdRuntime := runtime.KindCladefs
 	if spec.VMID != "" {
 		cmdRuntime = runtime.KindVM
+	}
+	limits := &pb.CommandLimits{
+		CpuWeight:        100,
+		HardLimitSeconds: e.freshenBudget.hardLimitSeconds(spec.Optional),
+	}
+	if spec.Optional {
+		limits.Priority = optionalFreshenPriority
+		limits.CpuWeight = optionalFreshenCPUWeight
 	}
 	c := e.newCommand(&pb.CommandRecord{
 		Command: &pb.Command{
@@ -360,7 +374,7 @@ func (e *Engine) startManagedFreshen(_ context.Context, spec managedFreshenSpec)
 			Runtime:  cmdRuntime,
 			State:    queued,
 			QueuedAt: now,
-			Limits:   &pb.CommandLimits{CpuWeight: 100},
+			Limits:   limits,
 			Timeline: []*pb.CommandEvent{{At: now, What: "queued", Detail: "base " + b.Id}},
 		},
 		Project: spec.Project.Name,
@@ -448,12 +462,16 @@ func (h *managedFreshenHandle) collectResult() managedFreshenResult {
 	startedAt := cmd.QueuedAt
 	if cmd.StartedAt != nil {
 		startedAt = *cmd.StartedAt
+		res.Started = true
 	}
 	endedAt := h.e.nowMs()
 	if cmd.EndedAt != nil {
 		endedAt = *cmd.EndedAt
 	}
 	res.Seconds = max(0, float64(endedAt-startedAt)/1000)
+	if res.Started {
+		res.ActiveRunSeconds = commandActiveSeconds(cmd, endedAt)
+	}
 	res.Units, _ = c.out.result(cmd.State, cmd.ExitCode, cmd.Kind)
 	res.GitSeconds = c.out.gitSeconds()
 	res.RepoHeads = c.out.repoHeads()
@@ -462,6 +480,8 @@ func (h *managedFreshenHandle) collectResult() managedFreshenResult {
 		for _, s := range res.Steps {
 			if s.Ok {
 				res.Baked = append(res.Baked, s.Name)
+			} else if s.Ran {
+				res.StepFailed = true
 			}
 		}
 	}

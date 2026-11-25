@@ -6,17 +6,20 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	pb "github.com/semistrict/hotbed/internal/gen/hotbed/v1"
+	"github.com/semistrict/hotbed/internal/worker"
 )
 
 // A project's workspace has every repo it holds checked out side by side
 // at /work/<repo>, built by the project's steps, which run in /work. A run
 // syncs the checkout it is run in into its repo's directory and starts
 // there; one run outside any checkout starts in /work. Any repo's branch
-// moving freshens the next base.
+// moving freshens the next base once the optional freshen cooldown passes.
 func TestProjectWorkspaceHasEveryRepo(t *testing.T) {
-	c := newCluster(t)
+	wclock := &clock{}
+	c := newCluster(t, func(cfg *worker.EngineConfig) { cfg.Now = wclock.Now })
 	app, lib := upstream(t), upstream(t)
 	write(t, filepath.Join(lib, "src/lib.txt"), "lib\n")
 	gitIn(t, lib, "commit", "--quiet", "-am", "Lib's own")
@@ -81,10 +84,11 @@ func TestProjectWorkspaceHasEveryRepo(t *testing.T) {
 		t.Errorf("changed files = %v, want lib's edit alone", changed)
 	}
 
-	// Either repo moving freshens the next base, which runs the every-pull
-	// step over both.
+	// Either repo moving freshens the next base once cooldown elapses, running
+	// the every-pull step over both.
 	write(t, filepath.Join(app, "src/lib.txt"), "app moved\n")
 	gitIn(t, app, "commit", "--quiet", "-am", "Move app")
+	wclock.advance(31 * time.Minute)
 	c.ok(nil, "session", "start", "next-owl")
 	next := c.workspace("next-owl", nil)
 	g2 := c.base(next.BaseId)

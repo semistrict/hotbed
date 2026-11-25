@@ -20,8 +20,10 @@ import (
 )
 
 const (
-	preemptionRecordKind  = "preemption"
-	pendingDiagRecordKind = "pending_diag"
+	preemptionRecordKind    = "preemption"
+	pendingDiagRecordKind   = "pending_diag"
+	freshenBudgetRecordKind = "freshen_budget"
+	freshenBudgetRecordID   = "state"
 )
 
 func pendingDiagKey(cmdID string, seq int32) string {
@@ -223,6 +225,24 @@ func (d *db) loadPreemptions() (map[string]string, error) {
 // deletePreemption removes any persisted preemptedBy mapping for command id.
 func (d *db) deletePreemption(id string) error {
 	return d.q.DeleteRecord(context.Background(), workerdb.DeleteRecordParams{Kind: preemptionRecordKind, ID: id})
+}
+
+// loadFreshenBudget reads the persisted freshen budget JSON state, or nil if absent.
+func (d *db) loadFreshenBudget() ([]byte, error) {
+	docs, err := d.q.ListRecordsByKind(context.Background(), freshenBudgetRecordKind)
+	if err != nil || len(docs) == 0 {
+		return nil, err
+	}
+	return []byte(docs[0]), nil
+}
+
+// saveFreshenBudget atomically persists the freshen budget JSON state.
+func (d *db) saveFreshenBudget(doc []byte) error {
+	return d.q.UpsertRecord(context.Background(), workerdb.UpsertRecordParams{
+		Kind: freshenBudgetRecordKind,
+		ID:   freshenBudgetRecordID,
+		Doc:  string(doc),
+	})
 }
 
 // commitEvent writes an event that changes no record, and numbers it.

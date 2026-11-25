@@ -208,7 +208,7 @@ export function buildCandidates(
 	project: string,
 	mine: Map<string, string>,
 	follows: (arch: string) => number,
-	sharedWarm?: (arch: string) => boolean,
+	sharedWarm?: (arch: string, runtimes: string[]) => boolean,
 ): Candidate[] {
 	const out: Candidate[] = [];
 	for (const nv of nvs) {
@@ -225,11 +225,12 @@ export function buildCandidates(
 			if (b.state === BaseState.WARM) warm = true;
 			if (!newest || b.generation > newest.generation) newest = b;
 		}
+		const nodeRuntimes = (res?.runtimes ?? []).filter((r) => r === "vm" || r === "cladefs");
 		if (
 			!warm &&
 			sharedWarm &&
-			((res?.runtimes ?? []).includes("vm") || (res?.runtimes ?? []).includes("cladefs")) &&
-			sharedWarm(res?.arch ?? "")
+			nodeRuntimes.length > 0 &&
+			sharedWarm(res?.arch ?? "", nodeRuntimes)
 		) {
 			warm = true;
 		}

@@ -62,6 +62,7 @@ import {
 	StepSchema,
 	TraceCommandChunkSchema,
 	WorkerConfigSchema,
+	WorkerFreshenConfigSchema,
 	WorkerSystemConfigSchema,
 	WorkerUpgradeSystemRequestSchema,
 	WorkerVMConfigSchema,
@@ -1865,6 +1866,178 @@ describe("Security, cron, daemon logs, tunnel, and workspace regression tests", 
 		expect(delNode.deleted).toBe(true);
 		const delDef = await owner.cluster.deleteWorkerConfig({ defaults: true });
 		expect(delDef.deleted).toBe(true);
+	});
+
+	it("validates and merges WorkerFreshenConfig and isolates shared_bases by runtime", async () => {
+		const owner = ownerClients();
+
+		// 1. WorkerFreshenConfig validation rejects invalid duty cycle and negative seconds.
+		await expect(
+			owner.cluster.setWorkerConfig({
+				config: create(WorkerConfigSchema, {
+					freshen: create(WorkerFreshenConfigSchema, { maxDutyCycle: 0 }),
+				}),
+			}),
+		).rejects.toThrow(/max_duty_cycle/);
+		await expect(
+			owner.cluster.setWorkerConfig({
+				config: create(WorkerConfigSchema, {
+					freshen: create(WorkerFreshenConfigSchema, { maxDutyCycle: 1.5 }),
+				}),
+			}),
+		).rejects.toThrow(/max_duty_cycle/);
+		await expect(
+			owner.cluster.setWorkerConfig({
+				config: create(WorkerConfigSchema, {
+					freshen: create(WorkerFreshenConfigSchema, { minIntervalSeconds: -1 }),
+				}),
+			}),
+		).rejects.toThrow(/min_interval_seconds/);
+
+		// Valid defaults + per-node override merge cleanly.
+		await owner.cluster.setWorkerConfig({
+			config: create(WorkerConfigSchema, {
+				freshen: create(WorkerFreshenConfigSchema, {
+					maxDutyCycle: 0.05,
+					minIntervalSeconds: 1800,
+					maxCooldownSeconds: 21600,
+					idleDelaySeconds: 15,
+				}),
+			}),
+		});
+		await owner.cluster.setWorkerConfig({
+			node: "arm-vm",
+			config: create(WorkerConfigSchema, {
+				freshen: create(WorkerFreshenConfigSchema, {
+					maxDutyCycle: 0.08,
+					disableOptional: false,
+				}),
+			}),
+		});
+		const cfgView = await owner.cluster.getWorkerConfig({ node: "arm-vm" });
+		expect(cfgView.effective?.freshen?.maxDutyCycle).toBe(0.08);
+		expect(cfgView.effective?.freshen?.minIntervalSeconds).toBe(1800);
+		expect(cfgView.effective?.freshen?.idleDelaySeconds).toBe(15);
+
+		// 2. shared_bases are scoped by runtime so arm64 vm and arm64 cladefs never shadow each other.
+		await owner.cluster.putRepo({
+			repo: create(RepoSchema, {
+				id: "iso-proj",
+				url: "https://github.com/semistrict/iso-proj.git",
+			}),
+		});
+		await owner.cluster.addProject({
+			name: "iso-proj",
+			repos: ["github.com/semistrict/iso-proj"],
+		});
+		const vmNode = workerClients(OWNER_TOKEN, "node-arm-vm", "arm-vm", "100.73.156.51:7121");
+		const fuseNode = workerClients(OWNER_TOKEN, "node-arm-fuse", "arm-fuse", "100.73.156.52:7121");
+		const vm2Node = workerClients(OWNER_TOKEN, "node-arm-vm2", "arm-vm2", "100.73.156.53:7121");
+		const j = await vmNode.cluster.join({});
+		await fuseNode.cluster.join({});
+		await vm2Node.cluster.join({});
+
+		// arm-vm advertises a VM shared base at t=1.
+		await vmNode.cluster.heartbeat(
+			create(HeartbeatRequestSchema, {
+				clusterId: j.clusterId,
+				resources: create(ResourcesSchema, {
+					arch: "arm64",
+					cpus: 8,
+					memoryBytes: BigInt(16 * 1024 ** 3),
+					runtimes: ["vm"],
+				}),
+				sharedBases: [
+					create(CladefsCellSchema, {
+						project: "iso-proj",
+						arch: "arm64",
+						baseId: "iso-proj-vm-11111111",
+						recipe: "vm-recipe-1",
+						runtime: "vm",
+						tenant: 0n,
+						cell: 101n,
+						version: 11n,
+					}),
+				],
+			}),
+		);
+		// arm-fuse advertises a NEWER cladefs shared base on the same arch (arm64).
+		await fuseNode.cluster.heartbeat(
+			create(HeartbeatRequestSchema, {
+				clusterId: j.clusterId,
+				resources: create(ResourcesSchema, {
+					arch: "arm64",
+					cpus: 8,
+					memoryBytes: BigInt(16 * 1024 ** 3),
+					runtimes: ["cladefs"],
+				}),
+				sharedBases: [
+					create(CladefsCellSchema, {
+						project: "iso-proj",
+						arch: "arm64",
+						baseId: "iso-proj-fuse-22222222",
+						recipe: "fuse-recipe-1",
+						runtime: "cladefs",
+						tenant: 0n,
+						cell: 202n,
+						version: 22n,
+					}),
+				],
+			}),
+		);
+		// Second arm64 vm node joins with no local base.
+		await vm2Node.cluster.heartbeat(
+			create(HeartbeatRequestSchema, {
+				clusterId: j.clusterId,
+				resources: create(ResourcesSchema, {
+					arch: "arm64",
+					cpus: 8,
+					memoryBytes: BigInt(16 * 1024 ** 3),
+					runtimes: ["vm"],
+				}),
+			}),
+		);
+
+		const capturedVM: Array<MessageShape<typeof CreateWorkspaceRequestSchema>> = [];
+		const vmTunnel = await openMockWorkerTunnel(
+			OWNER_TOKEN,
+			"node-arm-vm2",
+			"arm-vm2",
+			"100.73.156.53:7121",
+			{
+				unary: {
+					"/hotbed.v1.WorkspaceService/CreateWorkspace": (reqBytes) => {
+						const req = fromBinary(CreateWorkspaceRequestSchema, reqBytes);
+						capturedVM.push(req);
+						return encodeProto(
+							WorkspaceSchema,
+							create(WorkspaceSchema, {
+								id: req.id,
+								sessionId: req.sessionId,
+								nodeId: "node-arm-vm2",
+								project: "iso-proj",
+								runtime: "vm",
+								state: WorkspaceState.IDLE,
+							}),
+						);
+					},
+				},
+			},
+		);
+		try {
+			const sess = await owner.sessions.startSession({ project: "iso-proj" });
+			await owner.workspaces.createWorkspace({
+				sessionId: sess.id,
+				repo: "iso-proj",
+				placement: { node: "arm-vm2", runtime: "vm" },
+			});
+			expect(capturedVM).toHaveLength(1);
+			// Must receive the arm64 VM shared base (cell 101), NOT the newer cladefs cell (202)!
+			expect(capturedVM[0].sharedBase?.cell).toBe(101n);
+			expect(capturedVM[0].sharedBase?.runtime).toBe("vm");
+		} finally {
+			vmTunnel.close();
+		}
 	});
 
 	it("validates WorkerSystemConfig and orchestrates explicit system upgrade over worker tunnel", async () => {

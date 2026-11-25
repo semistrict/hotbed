@@ -3617,12 +3617,22 @@ export class ControllerStore {
 		return next;
 	}
 
+	private inferSharedBaseRuntime(explicit: string, baseId: string, nodeRuntimes: string[]): string {
+		if (explicit === "vm" || explicit === "cladefs") return explicit;
+		if (baseId.includes("-vm-")) return "vm";
+		if (baseId.includes("-fuse-")) return "cladefs";
+		const valid = nodeRuntimes.filter((r) => r === "vm" || r === "cladefs");
+		if (valid.length === 1) return valid[0];
+		return "";
+	}
+
 	upsertSharedBases(
 		nodeId: string,
 		arch: string,
 		cells: CladefsCell[],
 		nowMs: number,
 		allowedTenant?: bigint | null,
+		nodeRuntimes: string[] = [],
 	): void {
 		if (cells.length === 0) return;
 		this.transactionSync(() => {
@@ -3633,11 +3643,13 @@ export class ControllerStore {
 				}
 				const cellArch = c.arch || arch;
 				if (!cellArch) continue;
+				const cellRuntime = this.inferSharedBaseRuntime(c.runtime, c.baseId ?? "", nodeRuntimes);
 				this.sql.exec(
-					`INSERT INTO shared_bases (project, arch, recipe, base_id, tenant, cell, version, node_id, updated_at)
-					 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+					`INSERT INTO shared_bases (project, arch, recipe, base_id, runtime, tenant, cell, version, node_id, updated_at)
+					 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 					 ON CONFLICT (project, arch, recipe) DO UPDATE SET
 						base_id = excluded.base_id,
+						runtime = CASE WHEN excluded.runtime != '' THEN excluded.runtime ELSE shared_bases.runtime END,
 						tenant = excluded.tenant,
 						cell = excluded.cell,
 						version = excluded.version,
@@ -3647,6 +3659,7 @@ export class ControllerStore {
 					cellArch,
 					c.recipe ?? "",
 					c.baseId ?? "",
+					cellRuntime,
 					c.tenant.toString(),
 					c.cell.toString(),
 					c.version.toString(),
@@ -3661,31 +3674,29 @@ export class ControllerStore {
 		project: string,
 		arch: string,
 		allowedTenant?: bigint | null,
+		runtime?: string,
 	): CladefsCell | undefined {
 		if (!project || !arch) return undefined;
-		const rows =
-			allowedTenant !== undefined && allowedTenant !== null
-				? this.sql
-						.exec(
-							`SELECT project, arch, recipe, base_id, tenant, cell, version
-							 FROM shared_bases
-							 WHERE project = ? AND arch = ? AND tenant = ?
-							 ORDER BY updated_at DESC LIMIT 1`,
-							project,
-							arch,
-							allowedTenant.toString(),
-						)
-						.toArray()
-				: this.sql
-						.exec(
-							`SELECT project, arch, recipe, base_id, tenant, cell, version
-							 FROM shared_bases
-							 WHERE project = ? AND arch = ?
-							 ORDER BY updated_at DESC LIMIT 1`,
-							project,
-							arch,
-						)
-						.toArray();
+		const conds = ["project = ?", "arch = ?"];
+		const params: SqlStorageValue[] = [project, arch];
+		if (allowedTenant !== undefined && allowedTenant !== null) {
+			conds.push("tenant = ?");
+			params.push(allowedTenant.toString());
+		}
+		if (runtime === "vm") {
+			conds.push("(runtime = 'vm' OR (runtime = '' AND base_id LIKE '%-vm-%'))");
+		} else if (runtime === "cladefs") {
+			conds.push("(runtime = 'cladefs' OR (runtime = '' AND base_id LIKE '%-fuse-%'))");
+		}
+		const rows = this.sql
+			.exec(
+				`SELECT project, arch, recipe, base_id, runtime, tenant, cell, version
+				 FROM shared_bases
+				 WHERE ${conds.join(" AND ")}
+				 ORDER BY updated_at DESC LIMIT 1`,
+				...params,
+			)
+			.toArray();
 		if (rows.length === 0) return undefined;
 		const r = rows[0];
 		return create(CladefsCellSchema, {
@@ -3693,29 +3704,34 @@ export class ControllerStore {
 			arch: str(r.arch),
 			recipe: str(r.recipe),
 			baseId: str(r.base_id),
+			runtime: str(r.runtime),
 			tenant: BigInt(str(r.tenant)),
 			cell: BigInt(str(r.cell)),
 			version: BigInt(str(r.version)),
 		});
 	}
 
-	hasSharedBase(project: string, arch: string, allowedTenant?: bigint | null): boolean {
+	hasSharedBase(
+		project: string,
+		arch: string,
+		allowedTenant?: bigint | null,
+		runtime?: string,
+	): boolean {
 		if (!project || !arch) return false;
+		const conds = ["project = ?", "arch = ?"];
+		const params: SqlStorageValue[] = [project, arch];
 		if (allowedTenant !== undefined && allowedTenant !== null) {
-			return (
-				this.sql
-					.exec(
-						"SELECT 1 FROM shared_bases WHERE project = ? AND arch = ? AND tenant = ? LIMIT 1",
-						project,
-						arch,
-						allowedTenant.toString(),
-					)
-					.toArray().length > 0
-			);
+			conds.push("tenant = ?");
+			params.push(allowedTenant.toString());
+		}
+		if (runtime === "vm") {
+			conds.push("(runtime = 'vm' OR (runtime = '' AND base_id LIKE '%-vm-%'))");
+		} else if (runtime === "cladefs") {
+			conds.push("(runtime = 'cladefs' OR (runtime = '' AND base_id LIKE '%-fuse-%'))");
 		}
 		return (
 			this.sql
-				.exec("SELECT 1 FROM shared_bases WHERE project = ? AND arch = ? LIMIT 1", project, arch)
+				.exec(`SELECT 1 FROM shared_bases WHERE ${conds.join(" AND ")} LIMIT 1`, ...params)
 				.toArray().length > 0
 		);
 	}

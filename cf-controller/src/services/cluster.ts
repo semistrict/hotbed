@@ -531,6 +531,7 @@ export function createClusterService(
 					req.sharedBases,
 					nowMs,
 					ctrl.cladefsTenantId,
+					req.resources?.runtimes ?? [],
 				);
 			}
 			ctrl.power.changes.wake(caller.hostname);

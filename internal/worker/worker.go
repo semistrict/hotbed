@@ -354,7 +354,7 @@ func Run(ctx context.Context, dir string, cfg statedir.WorkerConfig, tn Tailnet,
 		Inspector: inspect.Linux{BaseRootDir: baseRootFn}, Profiler: prof,
 		Units: Systemd{}, System: &Linux{Slice: effCfg.Slice},
 		DaemonLogs: dlogs, ControllerNodeID: effCfg.ControllerNodeID, RequireController: true,
-		Artifacts: artifacts,
+		Artifacts: artifacts, Freshen: effCfg.Freshen,
 	}
 	if effCfg.Bench != nil {
 		ecfg.ScratchDisk = effCfg.Bench.Disk

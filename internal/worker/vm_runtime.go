@@ -303,6 +303,9 @@ func (e *Engine) ApplyWorkerConfig(cfg statedir.WorkerConfig) {
 	if e.cfg.CladefsFUSE != nil && cfg.CladefsFUSE != nil {
 		e.cfg.CladefsFUSE.UpdateConfig(*cfg.CladefsFUSE)
 	}
+	if e.freshenBudget != nil {
+		e.freshenBudget.updateConfig(cfg.Freshen)
+	}
 }
 
 // usesRuntime reports whether workspace wsID is executed via cfg.Runtime

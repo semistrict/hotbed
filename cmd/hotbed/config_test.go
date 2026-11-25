@@ -36,13 +36,24 @@ func TestWorkerConfigCLI(t *testing.T) {
 				Version string `json:"version"`
 			} `json:"kernels"`
 		} `json:"vm"`
+		Freshen struct {
+			MaxDutyCycle               float64 `json:"maxDutyCycle"`
+			MinIntervalSeconds         int32   `json:"minIntervalSeconds"`
+			MaxCooldownSeconds         int32   `json:"maxCooldownSeconds"`
+			FailureCooldownSeconds     int32   `json:"failureCooldownSeconds"`
+			MaxOptionalDurationSeconds int32   `json:"maxOptionalDurationSeconds"`
+			IdleDelaySeconds           int32   `json:"idleDelaySeconds"`
+		} `json:"freshen"`
 	}
 	c.okIn(
-		`{"defaultRuntime":"vm","vm":{"vcpus":8,"memMib":12288,"daxWindowBytes":"17179869184","cacheType":"Unsafe","kernels":{"amd64":{"url":"https://example.com/vmlinux","sha256":"`+kernelSHAHex+`","version":"cladefs-6.12-kvm"}}}}`,
+		`{"defaultRuntime":"vm","vm":{"vcpus":8,"memMib":12288,"daxWindowBytes":"17179869184","cacheType":"Unsafe","kernels":{"amd64":{"url":"https://example.com/vmlinux","sha256":"`+kernelSHAHex+`","version":"cladefs-6.12-kvm"}}},"freshen":{"maxDutyCycle":0.05,"minIntervalSeconds":1800,"maxCooldownSeconds":21600,"failureCooldownSeconds":900,"maxOptionalDurationSeconds":1800,"idleDelaySeconds":15}}`,
 		&defOut, "config", "set",
 	)
 	if defOut.Revision != 1 || defOut.DefaultRuntime != "vm" || defOut.VM.VCPUs != 8 || defOut.VM.MemMiB != 12288 {
 		t.Fatalf("config set defaults = %+v", defOut)
+	}
+	if defOut.Freshen.MaxDutyCycle != 0.05 || defOut.Freshen.MinIntervalSeconds != 1800 || defOut.Freshen.IdleDelaySeconds != 15 {
+		t.Fatalf("config set defaults freshen = %+v", defOut.Freshen)
 	}
 	if defOut.VM.Kernels["amd64"].SHA256 != kernelSHAHex {
 		t.Fatalf("kernel sha = %q, want %q", defOut.VM.Kernels["amd64"].SHA256, kernelSHAHex)
@@ -60,7 +71,7 @@ func TestWorkerConfigCLI(t *testing.T) {
 	}
 
 	// 4. Per-node override for ubu1 merges over cluster defaults in `config show ubu1`.
-	c.okIn(`{"vm":{"enabled":true,"memMib":16384,"cladefsPeerAddr":"100.73.156.10:9185"}}`, nil, "config", "set", "ubu1")
+	c.okIn(`{"vm":{"enabled":true,"memMib":16384,"cladefsPeerAddr":"100.73.156.10:9185"},"freshen":{"maxDutyCycle":0.08}}`, nil, "config", "set", "ubu1")
 
 	var showOut struct {
 		Defaults struct {
@@ -81,6 +92,10 @@ func TestWorkerConfigCLI(t *testing.T) {
 					SHA256 string `json:"sha256"`
 				} `json:"kernels"`
 			} `json:"vm"`
+			Freshen struct {
+				MaxDutyCycle       float64 `json:"maxDutyCycle"`
+				MinIntervalSeconds int32   `json:"minIntervalSeconds"`
+			} `json:"freshen"`
 		} `json:"effective"`
 	}
 	c.ok(&showOut, "config", "show", "ubu1")
@@ -90,7 +105,9 @@ func TestWorkerConfigCLI(t *testing.T) {
 		showOut.Effective.VM.VCPUs != 12 ||
 		showOut.Effective.VM.MemMiB != 16384 ||
 		showOut.Effective.VM.CladefsPeerAddr != "100.73.156.10:9185" ||
-		showOut.Effective.VM.Kernels["amd64"].SHA256 != kernelSHAHex {
+		showOut.Effective.VM.Kernels["amd64"].SHA256 != kernelSHAHex ||
+		showOut.Effective.Freshen.MaxDutyCycle != 0.08 ||
+		showOut.Effective.Freshen.MinIntervalSeconds != 1800 {
 		t.Fatalf("config show ubu1 effective = %+v", showOut.Effective)
 	}
 

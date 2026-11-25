@@ -479,12 +479,22 @@ export function createWorkspaceService(ctrl: ControllerContext): {
 					return { kind: "reconcile" as const, needRelease, needProbe };
 				}
 				const filtered = nvs.filter((nv) => !skip.has(nv.node.id));
+				const reqRuntimeForWarm = req.placement?.bench ? "cladefs" : (req.placement?.runtime ?? "");
 				const cs = buildCandidates(
 					filtered,
 					p.name,
 					mine,
 					(arch) => ctrl.follows(arch),
-					(arch) => ctrl.store.hasSharedBase(p.name, arch, ctrl.cladefsTenantId),
+					(arch, runtimes) => {
+						const targetRuntimes = reqRuntimeForWarm
+							? runtimes.includes(reqRuntimeForWarm)
+								? [reqRuntimeForWarm]
+								: []
+							: runtimes;
+						return targetRuntimes.some((rt) =>
+							ctrl.store.hasSharedBase(p.name, arch, ctrl.cladefsTenantId, rt),
+						);
+					},
 				);
 				const { chosen, why, err } = chooseCandidate(
 					cs,
@@ -510,7 +520,16 @@ export function createWorkspaceService(ctrl: ControllerContext): {
 				}
 				const chosenArch = chosen.view.hb?.resources?.arch ?? "";
 				const reqRuntime = req.placement?.bench ? "cladefs" : (req.placement?.runtime ?? "");
-				const sharedBase = ctrl.store.latestSharedBase(p.name, chosenArch, ctrl.cladefsTenantId);
+				const chosenRuntimes = (chosen.view.hb?.resources?.runtimes ?? []).filter(
+					(r) => r === "vm" || r === "cladefs",
+				);
+				const sharedBaseRuntime = reqRuntime || chosenRuntimes[0] || "";
+				const sharedBase = ctrl.store.latestSharedBase(
+					p.name,
+					chosenArch,
+					ctrl.cladefsTenantId,
+					sharedBaseRuntime,
+				);
 				const fencingToken = ctrl.store.nextFencingToken();
 				const fwd = create(CreateWorkspaceRequestSchema, {
 					repo: req.repo,

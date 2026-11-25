@@ -269,12 +269,15 @@ func TestConfigSyncerHotReloadsManagedArtifactsAndRestartsOnStructuralChange(t *
 		mgr:        mgr,
 		baseImages: map[string]cladefs.CellRef{},
 	}
-	eng := &Engine{cfg: EngineConfig{VM: vmb}}
+	eng := &Engine{
+		cfg:           EngineConfig{VM: vmb},
+		freshenBudget: newFreshenBudget(nil, nil),
+	}
 	artifacts := &ArtifactStore{WorkerDir: workerDir, DownloadClient: srv.Client()}
 	syncer := NewConfigSyncer(workerDir, local, nil, local, artifacts)
 	syncer.Arch = "amd64"
 
-	// 1. Hot-reloadable update: new vCPUs, managed kernel, and Build.guestd.
+	// 1. Hot-reloadable update: new vCPUs, managed kernel, Build.guestd, and freshen caps.
 	reply := &pb.HeartbeatResponse{
 		Build: &pb.Build{
 			Number: 178,
@@ -297,10 +300,18 @@ func TestConfigSyncerHotReloadsManagedArtifactsAndRestartsOnStructuralChange(t *
 					},
 				},
 			},
+			Freshen: &pb.WorkerFreshenConfig{
+				MaxDutyCycle:       proto.Float64(0.10),
+				MinIntervalSeconds: proto.Int32(600),
+				DisableOptional:    proto.Bool(true),
+			},
 		},
 	}
 	if needsRestart := syncer.Reconcile(context.Background(), eng, reply); needsRestart {
 		t.Fatal("hot-reloadable config + artifacts should not require restart")
+	}
+	if gotPol := eng.freshenBudget.currentPolicy(); gotPol.MaxDutyCycle != 0.10 || gotPol.MinInterval != 600*1e9 || !gotPol.DisableOptional {
+		t.Fatalf("hot-reloaded freshen policy = %+v, want duty=0.10 minInterval=600s disableOptional=true", gotPol)
 	}
 
 	// Verify VMBackend and vm.Manager received the new kernel, guestd, and vCPUs live.

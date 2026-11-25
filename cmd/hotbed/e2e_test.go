@@ -635,10 +635,11 @@ func (c *cluster) base(id string) *pb.Base {
 }
 
 // Bases are freshened when a workspace asks for one and the branch has moved
-// since the newest: incrementally, from the newest, unless a rebuild asked
-// for one from nothing.
+// since the newest: commit-only freshens respect the node's min-interval /
+// duty-cycle cap, while an explicit rebuild runs at once from nothing.
 func TestBasesFreshenOnDemand(t *testing.T) {
-	c := newCluster(t)
+	wclock := &clock{}
+	c := newCluster(t, func(cfg *worker.EngineConfig) { cfg.Now = wclock.Now })
 	origin := upstream(t)
 	c.addRepo(origin)
 	add := func(session string) *pb.Workspace {
@@ -663,6 +664,11 @@ func TestBasesFreshenOnDemand(t *testing.T) {
 
 	write(t, filepath.Join(origin, "src/lib.txt"), "moved\n")
 	gitIn(t, origin, "commit", "--quiet", "-am", "Move the branch")
+	// Within the optional freshen min-interval, commit-only drift reuses g1 cleanly.
+	if throttled := add("throttled-cat"); throttled.BaseId != first.BaseId || throttled.Reason != "" {
+		t.Fatalf("immediate commit-only workspace = %s (reason=%q), want throttled reuse of %s", throttled.BaseId, throttled.Reason, first.BaseId)
+	}
+	wclock.advance(31 * time.Minute)
 	moved := add("third-cat")
 	g2 := c.base(moved.BaseId)
 	if g2.Generation != 2 || g2.Cold || len(g2.Repos) != 1 || g2.Repos[0].Commit != gitIn(t, origin, "rev-parse", "HEAD") {
@@ -673,6 +679,7 @@ func TestBasesFreshenOnDemand(t *testing.T) {
 		t.Errorf("the new base's checkout: exit %d, %q", code, out)
 	}
 
+	// Explicit rebuild is structural/required and runs immediately without waiting on cooldown.
 	c.ok(nil, "project", "rebuild", "app")
 	rebuilt := add("fourth-dog")
 	g3 := c.base(rebuilt.BaseId)
@@ -782,7 +789,8 @@ func (c *cluster) runs(session, file string) int {
 // script changes, while an every-pull step also runs whenever the branch
 // moved.
 func TestStepsRunLikeMigrations(t *testing.T) {
-	c := newCluster(t)
+	wclock := &clock{}
+	c := newCluster(t, func(cfg *worker.EngineConfig) { cfg.Now = wclock.Now })
 	origin := upstream(t)
 	c.addProject(origin)
 	c.ok(nil, "step", "set", "-p", "app", "tool", "--", `mkdir -p "$XDG_CACHE_HOME" && echo run >> "$XDG_CACHE_HOME/tool"`)
@@ -802,6 +810,7 @@ func TestStepsRunLikeMigrations(t *testing.T) {
 
 	write(t, filepath.Join(origin, "src/lib.txt"), "moved\n")
 	gitIn(t, origin, "commit", "--quiet", "-am", "Move the branch")
+	wclock.advance(31 * time.Minute)
 	if ws := add("two-bee"); ws.BaseId != "app-g2" {
 		t.Fatalf("after a pull the workspace forked %s, want app-g2", ws.BaseId)
 	}
@@ -809,6 +818,7 @@ func TestStepsRunLikeMigrations(t *testing.T) {
 		t.Errorf("after a pull tool, build ran %v times, want only build again", got)
 	}
 
+	// Changing a setup step is structural/required and bypasses optional cooldown immediately.
 	c.ok(nil, "step", "set", "-p", "app", "tool", "--", `mkdir -p "$XDG_CACHE_HOME" && echo run v2 >> "$XDG_CACHE_HOME/tool"`)
 	if ws := add("three-cat"); ws.BaseId != "app-g3" {
 		t.Fatalf("after a step changed the workspace forked %s, want app-g3", ws.BaseId)

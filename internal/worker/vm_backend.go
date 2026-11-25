@@ -64,6 +64,7 @@ type vmProjectBase struct {
 	BaseID       string            `json:"baseId"`
 	Recipe       string            `json:"recipe"`
 	BaseKey      string            `json:"baseKey,omitempty"`
+	SetupHash    string            `json:"setupHash,omitempty"`
 	ScratchEpoch int64             `json:"scratchEpoch,omitempty"`
 	Repos        map[string]string `json:"repos"`                // repoID -> checked-out HEAD commit
 	StepHashes   map[string]string `json:"stepHashes,omitempty"` // step name -> last executed script hash
@@ -303,6 +304,7 @@ func (b *VMBackend) loadCachedBases() {
 					Arch:    goruntime.GOARCH,
 					BaseId:  pbBase.BaseID,
 					Recipe:  pbBase.Recipe,
+					Runtime: runtime.KindVM,
 					Tenant:  pbBase.Ref.Tenant,
 					Cell:    pbBase.Ref.Cell,
 					Version: pbBase.Ref.Version,
@@ -766,7 +768,12 @@ func (b *VMBackend) stopBuildVM(ctx context.Context, vmID string, syncFS bool) e
 	}
 	sctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), timeout)
 	defer cancel()
-	return b.mgr.Stop(sctx, vmID, syncFS)
+	memPaths := b.mgr.MemoryCellPaths(vmID)
+	err := b.mgr.Stop(sctx, vmID, syncFS)
+	if err == nil {
+		b.deleteWorkspaceMemoryCells(sctx, vmID, memPaths)
+	}
+	return err
 }
 
 // makeVersionAndSyncAfterStop versions and syncs rel after a build VM exits.
@@ -959,12 +966,78 @@ func (b *VMBackend) EnsureProjectBase(
 	onBaseTarget func(baseID string),
 	runFreshen managedFreshenRunner,
 ) (*vmProjectBase, error) {
+	res, err := b.ensureProjectBase(ctx, p, heads, existingShared, spec, sandboxEnv, onBaseTarget, runFreshen, ensureBaseOpts{})
+	return res.Base, err
+}
+
+func (b *VMBackend) ensureProjectBase(
+	ctx context.Context,
+	p *pb.HostedProject,
+	heads map[string]string,
+	existingShared *pb.CladefsCell,
+	spec baseimage.Spec,
+	sandboxEnv []string,
+	onBaseTarget func(baseID string),
+	runFreshen managedFreshenRunner,
+	opts ensureBaseOpts,
+) (ensureBaseResult, error) {
+	nowFn := opts.Now
+	if nowFn == nil {
+		nowFn = time.Now
+	}
 	spec = spec.Normalized()
 	baseKey := b.vmBaseKey(spec)
 	recipe := vmProjectRecipe(baseKey, p, heads)
+	setupHash := projectSetupHash(p)
 	baseID := fmt.Sprintf("%s-vm-%s", p.GetName(), recipe[:8])
-	if onBaseTarget != nil {
-		onBaseTarget(baseID)
+
+	wantTenant := b.configSnapshot().TenantID
+	if st := b.currentStore(); st != nil {
+		wantTenant = st.TenantID()
+	}
+	canAdoptShared := existingShared != nil &&
+		existingShared.Cell > 0 &&
+		existingShared.Version > 0 &&
+		existingShared.Recipe == recipe &&
+		existingShared.Tenant == wantTenant
+
+	// Lock-free fast check BEFORE acquiring projectLock: if an up-to-date base
+	// exists, or if this is commit-only drift on a structurally valid warm base
+	// that should be skipped or deferred to the background, return immediately
+	// without blocking behind an in-flight background freshen.
+	b.mu.Lock()
+	var fastCur *vmProjectBase
+	if cur := b.projectBases[p.GetName()]; cur != nil && cur.Ref.Cell > 0 && cur.Ref.Version > 0 {
+		cp := *cur
+		fastCur = &cp
+	}
+	b.mu.Unlock()
+	if fastCur != nil && fastCur.Recipe == recipe {
+		b.retirer.sweep(ctx, b.currentStore(), "vm-retire", time.Now())
+		return ensureBaseResult{Base: fastCur}, nil
+	}
+	if opts.Budget != nil {
+		fastDrift, fastCold := vmBaseHasStructuralDrift(p, fastCur, baseKey)
+		fastRequired := fastCur == nil || fastCold != "" || fastDrift
+		if !fastRequired && fastCur != nil && !canAdoptShared {
+			dec := opts.Budget.decide(
+				nowFn(), p.GetName(), runtime.KindVM, recipe, setupHash,
+				p.GetScratchEpoch(), fastCur.BaseID, true, false, opts.AllowBackground, opts.Background,
+			)
+			switch dec.action {
+			case freshenActionSkip:
+				if dec.throttledUntilMs > 0 {
+					slog.Info("skipping optional VM base freshen (throttled)",
+						"project", p.GetName(), "warmBase", fastCur.BaseID,
+						"nextAllowedAt", time.UnixMilli(dec.throttledUntilMs).Format(time.RFC3339))
+				}
+				return ensureBaseResult{Base: fastCur, Note: dec.note}, nil
+			case freshenActionDeferBackground:
+				return ensureBaseResult{Base: fastCur, DeferBackground: true}, nil
+			}
+		} else if fastRequired && opts.OnRequireBuild != nil {
+			opts.OnRequireBuild()
+		}
 	}
 
 	lock := b.projectLock(p.GetName())
@@ -978,29 +1051,23 @@ func (b *VMBackend) EnsureProjectBase(
 		out := *cur
 		b.mu.Unlock()
 		b.retirer.sweep(ctx, b.currentStore(), "vm-retire", time.Now())
-		return &out, nil
+		return ensureBaseResult{Base: &out}, nil
 	}
-	var prevBase *vmProjectBase
-	coldReason := ""
-	switch {
-	case cur == nil || cur.Ref.Cell == 0 || cur.Ref.Version == 0:
-		coldReason = "no_previous_base"
-	case cur.ScratchEpoch != p.GetScratchEpoch():
-		coldReason = "scratch_epoch"
-	case cur.BaseKey != baseKey:
-		coldReason = "base_image_changed"
-	default:
+	var fallbackBase *vmProjectBase
+	if cur != nil && cur.Ref.Cell > 0 && cur.Ref.Version > 0 {
 		cp := *cur
+		fallbackBase = &cp
+	}
+	structuralDrift, coldReason := vmBaseHasStructuralDrift(p, fallbackBase, baseKey)
+	var prevBase *vmProjectBase
+	if fallbackBase != nil && coldReason == "" {
+		cp := *fallbackBase
 		prevBase = &cp
 	}
 	b.mu.Unlock()
 
 	// Fast path 2: controller advertised an up-to-date shared base in R2!
-	wantTenant := b.configSnapshot().TenantID
-	if st := b.currentStore(); st != nil {
-		wantTenant = st.TenantID()
-	}
-	if existingShared != nil && existingShared.Cell > 0 && existingShared.Version > 0 && existingShared.Recipe == recipe && existingShared.Tenant == wantTenant {
+	if canAdoptShared {
 		repos := make(map[string]string, len(heads))
 		for k, v := range heads {
 			repos[k] = v
@@ -1014,12 +1081,13 @@ func (b *VMBackend) EnsureProjectBase(
 			BaseID:       cmp.Or(existingShared.BaseId, p.GetName()+"-vm-"+recipe[:8]),
 			Recipe:       recipe,
 			BaseKey:      baseKey,
+			SetupHash:    setupHash,
 			ScratchEpoch: p.GetScratchEpoch(),
 			Repos:        repos,
 			StepHashes:   projectStepHashes(p),
 		}
-		if cur != nil && cur.Ref.Cell > 0 && cur.Ref.Cell != adopted.Ref.Cell {
-			b.retirer.enqueue(cur.Ref.Tenant, cur.Ref.Cell, cur.BaseID, time.Now())
+		if fallbackBase != nil && fallbackBase.Ref.Cell > 0 && fallbackBase.Ref.Cell != adopted.Ref.Cell {
+			b.retirer.enqueue(fallbackBase.Ref.Tenant, fallbackBase.Ref.Cell, fallbackBase.BaseID, time.Now())
 		}
 		b.mu.Lock()
 		b.projectBases[p.GetName()] = adopted
@@ -1028,25 +1096,75 @@ func (b *VMBackend) EnsureProjectBase(
 			Arch:    goruntime.GOARCH,
 			BaseId:  adopted.BaseID,
 			Recipe:  recipe,
+			Runtime: runtime.KindVM,
 			Tenant:  adopted.Ref.Tenant,
 			Cell:    adopted.Ref.Cell,
 			Version: adopted.Ref.Version,
 		}
 		b.mu.Unlock()
 		b.saveCacheJSON("project-"+p.GetName()+".json", adopted)
+		opts.Budget.recordAdopted(p.GetName(), runtime.KindVM)
 		b.retirer.sweep(ctx, b.currentStore(), "vm-retire", time.Now())
-		return adopted, nil
+		return ensureBaseResult{Base: adopted}, nil
+	}
+
+	required := fallbackBase == nil || coldReason != "" || structuralDrift
+	if opts.Budget != nil {
+		prevID := ""
+		if fallbackBase != nil {
+			prevID = fallbackBase.BaseID
+		}
+		dec := opts.Budget.decide(
+			nowFn(), p.GetName(), runtime.KindVM, recipe, setupHash,
+			p.GetScratchEpoch(), prevID, fallbackBase != nil, required, opts.AllowBackground, opts.Background,
+		)
+		switch dec.action {
+		case freshenActionSkip:
+			if fallbackBase != nil {
+				if dec.throttledUntilMs > 0 {
+					slog.Info("skipping optional VM base freshen (throttled)",
+						"project", p.GetName(), "warmBase", fallbackBase.BaseID,
+						"nextAllowedAt", time.UnixMilli(dec.throttledUntilMs).Format(time.RFC3339))
+				}
+				return ensureBaseResult{Base: fallbackBase, Note: dec.note}, nil
+			}
+			return ensureBaseResult{}, dec.err
+		case freshenActionDeferBackground:
+			return ensureBaseResult{Base: fallbackBase, DeferBackground: true}, nil
+		}
+	}
+
+	if onBaseTarget != nil {
+		onBaseTarget(baseID)
+	}
+
+	failBuild := func(cmdID, summary string, stepFailed bool, activeDur time.Duration, origErr error) (ensureBaseResult, error) {
+		shutdown := ctx.Err() != nil
+		opts.Budget.recordFailure(
+			nowFn(), p.GetName(), runtime.KindVM, recipe, setupHash,
+			p.GetScratchEpoch(), baseID, cmdID, summary,
+			stepFailed, fallbackBase != nil, shutdown, activeDur,
+		)
+		if fallbackBase != nil && !opts.Background && !shutdown {
+			slog.Warn("VM project base freshen failed; falling back to existing warm base",
+				"project", p.GetName(), "failedBase", baseID, "fallbackBase", fallbackBase.BaseID, "err", origErr)
+			return ensureBaseResult{
+				Base: fallbackBase,
+				Note: freshenFallbackNote(fallbackBase.BaseID, summary),
+			}, nil
+		}
+		return ensureBaseResult{}, origErr
 	}
 
 	rel := filepath.Join("bases", p.GetName(), baseID)
 	vmID := "base-" + baseID
 	if b.mgr != nil {
 		if err := b.mgr.EnsureNotRunning(ctx, vmID); err != nil {
-			return nil, fmt.Errorf("prepare VM project base %s: %w", baseID, err)
+			return failBuild("", fmt.Sprintf("base %s failed: %v", baseID, err), false, 0, fmt.Errorf("prepare VM project base %s: %w", baseID, err))
 		}
 	}
 	if err := b.currentStore().DeleteCell(ctx, rel); err != nil {
-		return nil, fmt.Errorf("clear stale VM project base cell %s: %w", baseID, err)
+		return failBuild("", fmt.Sprintf("base %s failed: %v", baseID, err), false, 0, fmt.Errorf("clear stale VM project base cell %s: %w", baseID, err))
 	}
 
 	createdAt := time.Now().UnixMilli()
@@ -1063,12 +1181,13 @@ func (b *VMBackend) EnsureProjectBase(
 		forkRef, err = b.currentStore().ForkVersion(ctx, prevBase.Ref, rel, false)
 		if err != nil {
 			if ctx.Err() != nil {
-				return nil, err
+				return failBuild("", fmt.Sprintf("base %s cancelled: %v", baseID, err), false, time.Since(prepStart), err)
 			}
 			slog.Warn("incremental VM project base fork failed; falling back to cold base",
 				"project", p.GetName(), "prevBase", prevBase.BaseID, "err", err)
 			b.cleanupCell(ctx, rel)
 			prevBase = nil
+			fallbackBase = nil
 			coldReason = "incremental_fork_failed"
 		} else {
 			forkEndMs := time.Now().UnixMilli()
@@ -1087,7 +1206,7 @@ func (b *VMBackend) EnsureProjectBase(
 		imgStartMs := imgStart.UnixMilli()
 		baseImgRef, berr := b.EnsureProvisionedBaseImage(ctx, spec)
 		if berr != nil {
-			return nil, berr
+			return failBuild("", fmt.Sprintf("base %s failed: %v", baseID, berr), false, time.Since(prepStart), berr)
 		}
 		imgEndMs := time.Now().UnixMilli()
 		prepPhases = append(prepPhases, &pb.FreshenPhase{
@@ -1101,7 +1220,7 @@ func (b *VMBackend) EnsureProjectBase(
 		forkStartMs := forkStart.UnixMilli()
 		forkRef, err = b.currentStore().ForkVersion(ctx, baseImgRef, rel, false)
 		if err != nil {
-			return nil, fmt.Errorf("fork VM project base %s: %w", baseID, err)
+			return failBuild("", fmt.Sprintf("base %s failed: %v", baseID, err), false, time.Since(prepStart), fmt.Errorf("fork VM project base %s: %w", baseID, err))
 		}
 		forkEndMs := time.Now().UnixMilli()
 		prepPhases = append(prepPhases, &pb.FreshenPhase{
@@ -1121,18 +1240,18 @@ func (b *VMBackend) EnsureProjectBase(
 	takeStartMs := takeStart.UnixMilli()
 	if err := b.currentStore().SyncCell(ctx, rel); err != nil {
 		b.cleanupCell(ctx, rel)
-		return nil, fmt.Errorf("sync forked VM project base %s: %w", baseID, err)
+		return failBuild("", fmt.Sprintf("base %s failed: %v", baseID, err), false, time.Since(prepStart), fmt.Errorf("sync forked VM project base %s: %w", baseID, err))
 	}
 	if err := b.currentStore().DropCell(ctx, rel); err != nil {
 		b.cleanupCell(ctx, rel)
-		return nil, fmt.Errorf("drop forked VM project base %s before take: %w", baseID, err)
+		return failBuild("", fmt.Sprintf("base %s failed: %v", baseID, err), false, time.Since(prepStart), fmt.Errorf("drop forked VM project base %s before take: %w", baseID, err))
 	}
 	takenRef, err := b.currentStore().TakeCell(ctx, rel, forkRef.Tenant, forkRef.Cell, cfg.DiskBytes, nil, baseBuildUploadInterval)
 	if err != nil {
 		cctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
 		_ = b.currentStore().DeleteBucketCell(cctx, filepath.Join("vm-retire", fmt.Sprintf("fail-%d-%d", forkRef.Tenant, forkRef.Cell)), forkRef.Tenant, forkRef.Cell)
 		cancel()
-		return nil, fmt.Errorf("re-open VM project base %s with upload interval: %w", baseID, err)
+		return failBuild("", fmt.Sprintf("base %s failed: %v", baseID, err), false, time.Since(prepStart), fmt.Errorf("re-open VM project base %s with upload interval: %w", baseID, err))
 	}
 	forkRef = takenRef
 	takeEndMs := time.Now().UnixMilli()
@@ -1153,6 +1272,13 @@ func (b *VMBackend) EnsureProjectBase(
 		freshenRes managedFreshenResult
 	)
 	var finalizeSeconds float64
+	activeDuration := func() time.Duration {
+		secs := prepSeconds + freshenRes.ActiveRunSeconds + finalizeSeconds
+		if secs < 0 {
+			secs = 0
+		}
+		return time.Duration(secs * float64(time.Second))
+	}
 	if runFreshen != nil {
 		env := append(slices.Clone(sandboxEnv),
 			"HOME="+spec.Home,
@@ -1177,6 +1303,7 @@ func (b *VMBackend) EnsureProjectBase(
 			Cold:        prevBase == nil,
 			ColdReason:  coldReason,
 			FromBaseID:  fromBaseID,
+			Optional:    !required,
 			CreatedAt:   createdAt,
 			PrepSeconds: prepSeconds,
 			PrepPhases:  prepPhases,
@@ -1216,7 +1343,7 @@ func (b *VMBackend) EnsureProjectBase(
 		if err != nil {
 			untrack()
 			b.cleanupCell(ctx, rel)
-			return nil, fmt.Errorf("queue VM project base %s: %w", baseID, err)
+			return failBuild("", fmt.Sprintf("base %s failed: %v", baseID, err), false, activeDuration(), fmt.Errorf("queue VM project base %s: %w", baseID, err))
 		}
 		var waitErr error
 		freshenRes, waitErr = handle.Wait(ctx)
@@ -1250,7 +1377,8 @@ func (b *VMBackend) EnsureProjectBase(
 			}
 			freshenRes.FinalizeSeconds = finalizeSeconds
 			handle.Finish(false, freshenRes, cladefs.CellRef{}, waitErr.Error())
-			return nil, fmt.Errorf("freshen VM project base %s (command %s): %w", baseID, handle.CommandID(), waitErr)
+			summary := managedFreshenFailureSummary(baseID, handle.CommandID(), freshenRes, waitErr.Error())
+			return failBuild(handle.CommandID(), summary, freshenRes.StepFailed, activeDuration(), fmt.Errorf("freshen VM project base %s (command %s): %w", baseID, handle.CommandID(), waitErr))
 		}
 		if freshenRes.State != succeeded {
 			if stopErr == nil {
@@ -1259,16 +1387,20 @@ func (b *VMBackend) EnsureProjectBase(
 			detail := cmp.Or(freshenRes.Reason, "freshen "+stateName(freshenRes.State))
 			freshenRes.FinalizeSeconds = finalizeSeconds
 			handle.Finish(false, freshenRes, cladefs.CellRef{}, detail)
-			return nil, fmt.Errorf("freshen VM project base %s failed (command %s): %s", baseID, handle.CommandID(), detail)
+			summary := managedFreshenFailureSummary(baseID, handle.CommandID(), freshenRes, detail)
+			return failBuild(handle.CommandID(), summary, freshenRes.StepFailed, activeDuration(), fmt.Errorf("freshen VM project base %s failed (command %s): %s", baseID, handle.CommandID(), detail))
 		}
 		if stopErr != nil {
 			freshenRes.FinalizeSeconds = finalizeSeconds
-			handle.Finish(false, freshenRes, cladefs.CellRef{}, fmt.Sprintf("stop project base VM %s: %v", vmID, stopErr))
-			return nil, fmt.Errorf("stop project base VM %s: %w", vmID, stopErr)
+			detail := fmt.Sprintf("stop project base VM %s: %v", vmID, stopErr)
+			handle.Finish(false, freshenRes, cladefs.CellRef{}, detail)
+			summary := managedFreshenFailureSummary(baseID, handle.CommandID(), freshenRes, detail)
+			return failBuild(handle.CommandID(), summary, false, activeDuration(), fmt.Errorf("stop project base VM %s: %w", vmID, stopErr))
 		}
 		repoHeads = freshenRes.RepoHeads
 	} else {
 		untrack := b.trackBuild(vmID)
+		runStart := time.Now()
 		if _, err := b.mgr.Start(ctx, vm.LaunchSpec{
 			ID:            vmID,
 			CellHostPath:  forkRef.HostPath,
@@ -1276,7 +1408,7 @@ func (b *VMBackend) EnsureProjectBase(
 		}); err != nil {
 			untrack()
 			b.cleanupCell(ctx, rel)
-			return nil, fmt.Errorf("boot project base VM %s: %w", vmID, err)
+			return failBuild("", fmt.Sprintf("base %s failed: %v", baseID, err), false, activeDuration(), fmt.Errorf("boot project base VM %s: %w", vmID, err))
 		}
 		env := append([]string{}, cacheEnv()...)
 		env = append(env, sandboxEnv...)
@@ -1287,16 +1419,17 @@ func (b *VMBackend) EnsureProjectBase(
 			"HOTBED_GIT_CRED_SOCK=/run/hotbed/git-auth/git-cred.sock",
 		)
 		out, runErr := b.runGuestCommand(ctx, vmID, "freshen-"+baseID, "/work", []string{"/bin/bash", "-c", script}, env, spec.UID, spec.GID)
+		freshenRes.ActiveRunSeconds = time.Since(runStart).Seconds()
 		stopErr := b.stopBuildVM(ctx, vmID, runErr == nil)
 		untrack()
 		if runErr != nil {
 			if stopErr == nil {
 				b.cleanupCell(ctx, rel)
 			}
-			return nil, fmt.Errorf("freshen VM project base %s: %w", baseID, runErr)
+			return failBuild("", fmt.Sprintf("base %s failed: %v", baseID, runErr), false, activeDuration(), fmt.Errorf("freshen VM project base %s: %w", baseID, runErr))
 		}
 		if stopErr != nil {
-			return nil, fmt.Errorf("stop project base VM %s: %w", vmID, stopErr)
+			return failBuild("", fmt.Sprintf("base %s failed: %v", baseID, stopErr), false, activeDuration(), fmt.Errorf("stop project base VM %s: %w", vmID, stopErr))
 		}
 		repoHeads = map[string]string{}
 		for _, line := range strings.Split(out, "\n") {
@@ -1321,14 +1454,17 @@ func (b *VMBackend) EnsureProjectBase(
 	freshenRes.FinalizeSeconds = finalizeSeconds
 	if err != nil {
 		b.cleanupCell(ctx, rel)
-		handle.Finish(false, freshenRes, cladefs.CellRef{}, fmt.Sprintf("sync to R2: %v", err))
-		return nil, fmt.Errorf("sync VM project base %s to R2: %w", baseID, err)
+		detail := fmt.Sprintf("sync to R2: %v", err)
+		handle.Finish(false, freshenRes, cladefs.CellRef{}, detail)
+		summary := managedFreshenFailureSummary(baseID, handle.CommandID(), freshenRes, detail)
+		return failBuild(handle.CommandID(), summary, false, activeDuration(), fmt.Errorf("sync VM project base %s to R2: %w", baseID, err))
 	}
 	// Drop the local project base cell directory now that it is durable in R2;
 	// local SSD stays strictly a cache (CLADEFSD_PART_CACHE) + active workspaces.
 	_ = b.currentStore().DropCell(ctx, rel)
 	forkRef.Version = ver
 	handle.Finish(true, freshenRes, forkRef, "")
+	opts.Budget.recordSuccess(nowFn(), p.GetName(), runtime.KindVM, activeDuration())
 
 	if len(repoHeads) == 0 && len(heads) > 0 {
 		repoHeads = make(map[string]string, len(heads))
@@ -1342,6 +1478,7 @@ func (b *VMBackend) EnsureProjectBase(
 		BaseID:       baseID,
 		Recipe:       recipe,
 		BaseKey:      baseKey,
+		SetupHash:    setupHash,
 		ScratchEpoch: p.GetScratchEpoch(),
 		Repos:        repoHeads,
 		StepHashes:   projectStepHashes(p),
@@ -1354,6 +1491,7 @@ func (b *VMBackend) EnsureProjectBase(
 		Arch:    goruntime.GOARCH,
 		BaseId:  baseID,
 		Recipe:  recipe,
+		Runtime: runtime.KindVM,
 		Tenant:  forkRef.Tenant,
 		Cell:    forkRef.Cell,
 		Version: forkRef.Version,
@@ -1366,8 +1504,8 @@ func (b *VMBackend) EnsureProjectBase(
 	b.retirer.sweep(ctx, b.currentStore(), "vm-retire", time.Now())
 	slog.Info("VM project base built and published to R2",
 		"project", p.GetName(), "baseId", baseID, "incremental", prevBase != nil,
-		"steps", len(stepsToRun), "cell", forkRef.Cell, "version", forkRef.Version)
-	return res, nil
+		"optional", !required, "steps", len(stepsToRun), "cell", forkRef.Cell, "version", forkRef.Version)
+	return ensureBaseResult{Base: res}, nil
 }
 
 // PrepareWorkspace forks an ephemeral workspace cell from baseRef (reads come
@@ -1896,16 +2034,26 @@ func (e *Engine) createVMWorkspace(ctx context.Context, req *pb.CreateWorkspaceR
 			baseSpec = e.cfg.BaseImage.Spec
 		}
 		heads, err := e.remoteHeads(bgCtx, p)
-		var projBase *vmProjectBase
+		var baseRes ensureBaseResult
 		if err == nil {
-			projBase, err = e.cfg.VM.EnsureProjectBase(
+			baseRes, err = e.cfg.VM.ensureProjectBase(
 				bgCtx, p, heads, req.GetSharedBase(), baseSpec, e.sandboxEnv(),
 				func(baseID string) { e.setPreparingWorkspaceBase(req.Id, baseID) },
 				e.startManagedFreshen,
+				ensureBaseOpts{
+					Budget:          e.freshenBudget,
+					Now:             e.now,
+					AllowBackground: req.GetSyncDir() != "",
+					OnRequireBuild:  func() { e.cancelBgFreshen(p.Name) },
+				},
 			)
 		}
+		projBase := baseRes.Base
 		if err == nil {
 			e.recordWarmCladefsBase(p, projBase, goruntime.GOARCH)
+			if baseRes.DeferBackground {
+				e.scheduleOptionalFreshen(p, runtime.KindVM, req.GetSharedBase())
+			}
 		}
 		var cell *pb.CladefsCell
 		if err == nil {
@@ -1939,6 +2087,7 @@ func (e *Engine) createVMWorkspace(ctx context.Context, req *pb.CreateWorkspaceR
 		}
 		w.ws().BaseId = projBase.BaseID
 		w.rec.BaseSnapshot = projBase.BaseID
+		w.rec.Note = baseRes.Note
 		for _, r := range w.ws().Repos {
 			if head, ok := projBase.Repos[r.Repo]; ok && head != "" {
 				r.Head = head
@@ -1949,7 +2098,7 @@ func (e *Engine) createVMWorkspace(ctx context.Context, req *pb.CreateWorkspaceR
 		if e.workspaceBusy(w.ws().Id) {
 			w.ws().State = activeWS
 		}
-		w.ws().Reason = ""
+		w.ws().Reason = baseRes.Note
 		w.ws().ForkMillis = forkMs
 		w.ws().CladefsCell = cell
 		w.ws().LastActiveAt = e.nowMs()

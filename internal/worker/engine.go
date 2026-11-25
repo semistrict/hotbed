@@ -25,6 +25,7 @@ import (
 	"github.com/semistrict/hotbed/internal/inspect"
 	"github.com/semistrict/hotbed/internal/profiler"
 	"github.com/semistrict/hotbed/internal/runtime"
+	"github.com/semistrict/hotbed/internal/statedir"
 	"github.com/semistrict/hotbed/internal/storage"
 	"github.com/semistrict/hotbed/internal/sysinfo"
 	"github.com/semistrict/hotbed/internal/unit"
@@ -187,6 +188,8 @@ type EngineConfig struct {
 	// being suspended to a CladeFS memory cell (0 = defaultVMIdleSuspendAfter;
 	// negative disables idle VM hibernation).
 	VMIdleSuspendAfter time.Duration
+	// Freshen configures base freshen duty-cycle caps, cooldowns, and time limits.
+	Freshen *statedir.FreshenConfig
 }
 
 // DefaultMaxSyncBundleBytes caps the total bundle bytes accepted by a single
@@ -209,10 +212,17 @@ type Engine struct {
 	containersConf string
 	rtUnits        *runtimeUnits
 	portProxies    map[string]*portProxy
+	freshenBudget  *freshenBudget
 
 	mu              sync.Mutex
 	upgradeMu       sync.Mutex
 	systemUpgrading bool
+	// pendingFreshens holds deferred low-priority optional base freshens waiting
+	// for the node to be quiet (no active user work) before running in the
+	// background. Keyed by "<runtime>:<project>".
+	pendingFreshens  map[string]*pendingOptionalFreshen
+	bgFreshenCancels map[string]*bgFreshenHandle
+	lastUserWorkAt   time.Time
 	// projects is what the controller's last heartbeat said this node keeps
 	// bases of; nil until one has.
 	projects map[string]*pb.HostedProject
@@ -444,7 +454,9 @@ type command struct {
 	// managedFreshen is non-nil for VM / cladefs-FUSE base builds scheduled
 	// through Engine admission control and finalized by EnsureProjectBase.
 	managedFreshen *managedFreshen
-	out            *output
+	// freshenSetupHash is projectSetupHash(p) when this freshen command started.
+	freshenSetupHash string
+	out              *output
 }
 
 // newCommand makes the engine's command for rec.
@@ -513,8 +525,11 @@ func NewEngine(ctx context.Context, cfg EngineConfig) (*Engine, error) {
 	bgCtx, bgCancel := context.WithCancel(context.Background())
 	e := &Engine{
 		cfg: cfg, db: d, cred: cred, home: home,
-		containersConf:  containersConf,
-		bases:           map[string]*pb.Base{},
+		containersConf:   containersConf,
+		freshenBudget:    newFreshenBudget(cfg.Freshen, d.saveFreshenBudget),
+		pendingFreshens:  map[string]*pendingOptionalFreshen{},
+		bgFreshenCancels: map[string]*bgFreshenHandle{},
+		bases:            map[string]*pb.Base{},
 		finalizingBases: map[string]bool{},
 		workspaces:      map[string]*workspace{},
 		commands:        map[string]*command{},
@@ -634,6 +649,13 @@ func (e *Engine) load() error {
 			c.preemptedBy = by
 		} else if err := e.db.deletePreemption(id); err != nil {
 			slog.Warn("clean up orphan preemption record", "command", id, "err", err)
+		}
+	}
+	if raw, err := e.db.loadFreshenBudget(); err != nil {
+		slog.Warn("load persisted freshen budget", "err", err)
+	} else if len(raw) > 0 {
+		if err := e.freshenBudget.load(raw); err != nil {
+			slog.Warn("decode persisted freshen budget", "err", err)
 		}
 	}
 	e.reconcileLoaded()

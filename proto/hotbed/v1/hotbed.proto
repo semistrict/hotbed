@@ -496,6 +496,8 @@ message CladefsCell {
   string project = 6;
   string arch = 7;
   string recipe = 8;
+  // Runtime that built this shared base cell ("vm" or "cladefs").
+  string runtime = 9;
 }
 
 message NodeUsage {
@@ -817,6 +819,38 @@ message WorkerSystemConfig {
   optional string firecracker_bin = 5;
 }
 
+// Controller-managed base freshen throttling and safety caps.
+// Only explicitly set fields override defaults (and lower config layers).
+message WorkerFreshenConfig {
+  // Maximum fraction of wall-clock time spent actively freshening bases
+  // (per project and node-wide) before optional commit-only freshens wait
+  // out their duty-cycle debt. Valid range: (0, 1]. Default: 0.05 (5%).
+  optional double max_duty_cycle = 1;
+  // Minimum interval in seconds between optional commit-only freshens of
+  // the same project on a node. Default: 1800 (30m).
+  optional int32 min_interval_seconds = 2;
+  // Maximum cooldown in seconds imposed by duty-cycle debt or repeated
+  // failure backoff. Default: 21600 (6h).
+  optional int32 max_cooldown_seconds = 3;
+  // Base cooldown in seconds after a failed freshen before retrying
+  // (doubles on consecutive failures up to max_cooldown_seconds).
+  // Default: 900 (15m).
+  optional int32 failure_cooldown_seconds = 4;
+  // Hard wall-clock limit in seconds for optional (commit-only) freshen
+  // commands. 0 disables the limit. Default: 1800 (30m).
+  optional int32 max_optional_duration_seconds = 5;
+  // Hard wall-clock limit in seconds for required (cold, setup-change, or
+  // project rebuild) freshen commands. 0 disables the limit. Default: 3600 (60m).
+  optional int32 max_required_duration_seconds = 6;
+  // Seconds the node must be free of active user commands/syncs before
+  // starting a deferred low-priority background optional freshen.
+  // Default: 15 (15s).
+  optional int32 idle_delay_seconds = 7;
+  // Disable optional commit-only freshens completely (required cold/setup/
+  // rebuild freshens still run). Default: false.
+  optional bool disable_optional = 8;
+}
+
 // Controller-managed worker configuration, either cluster-wide defaults
 // (node == "") or a per-node override (node == hostname).
 message WorkerConfig {
@@ -835,6 +869,7 @@ message WorkerConfig {
   int64 updated_at = 8;
   string updated_by = 9;
   WorkerSystemConfig system = 10;
+  WorkerFreshenConfig freshen = 11;
 }
 
 message GetWorkerConfigRequest {

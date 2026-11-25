@@ -13,6 +13,7 @@ import (
 	"strings"
 	"sync"
 	"syscall"
+	"time"
 	"weak"
 
 	"github.com/semistrict/hotbed/internal/api"
@@ -96,22 +97,26 @@ func baseSnapshot(project string, gen int32) string { return fmt.Sprintf("%s-g%d
 // steps, nothing is built again: the workspace gets the newest warm base,
 // and note says why it is not up to date.
 func (e *Engine) baseFor(ctx context.Context, p *pb.HostedProject) (b *pb.Base, note string, err error) {
+	b, note, _, err = e.baseForWithOpts(ctx, p, false, false)
+	return b, note, err
+}
+
+func (e *Engine) baseForWithOpts(ctx context.Context, p *pb.HostedProject, allowBackground, background bool) (b *pb.Base, note string, deferBG bool, err error) {
 	h, err := e.remoteHeads(ctx, p)
 	if err != nil {
-		return nil, "", err
+		return nil, "", false, err
 	}
 	baseImgKey := e.baseImageKey()
 	want := recipe(p, h, baseImgKey)
+	setupHash := projectSetupHash(p)
 	e.mu.Lock()
-	var newest, newestWarm *pb.Base
+	var newest, newestWarm, buildingWant *pb.Base
 	for _, b := range e.bases {
 		if b.Project != p.Name || isCladefsBase(b) {
 			continue
 		}
 		if b.State == building && b.Recipe == want {
-			out := clone(b)
-			e.mu.Unlock()
-			return out, "", nil // already on its way
+			buildingWant = b
 		}
 		if newest == nil || b.Generation > newest.Generation {
 			newest = b
@@ -141,16 +146,46 @@ func (e *Engine) baseFor(ctx context.Context, p *pb.HostedProject) (b *pb.Base, 
 	}
 	if !scratch && h.at(newestWarm) && len(toRun(p, newestWarm, h)) == 0 {
 		defer e.mu.Unlock()
-		return clone(newestWarm), "", nil
+		return clone(newestWarm), "", false, nil
+	}
+	required := localBaseHasStructuralDrift(p, newestWarm, scratch)
+	if buildingWant != nil && (required || !allowBackground || newestWarm == nil) {
+		out := clone(buildingWant)
+		e.mu.Unlock()
+		return out, "", false, nil // already on its way
 	}
 	if newest != nil && newest.State == broken && newest.Recipe == want {
 		defer e.mu.Unlock()
 		why := baseFailure(newest)
 		if newestWarm == nil {
-			return nil, "", api.Errorf(api.CodeWorkspaceFailed, "%s", why).
+			return nil, "", false, api.Errorf(api.CodeWorkspaceFailed, "%s", why).
 				WithSuggestion("fix the step with hotbed step add (hotbed step ls shows them), then run again")
 		}
-		return clone(newestWarm), fmt.Sprintf("on %s, not up to date: %s", newestWarm.Id, why), nil
+		return clone(newestWarm), fmt.Sprintf("on %s, not up to date: %s", newestWarm.Id, why), false, nil
+	}
+	prevID := ""
+	if newestWarm != nil {
+		prevID = newestWarm.Id
+	}
+	dec := e.freshenBudget.decide(
+		e.now(), p.Name, hotbedruntime.KindCladefs, want, setupHash, p.ScratchEpoch,
+		prevID, newestWarm != nil, required, allowBackground, background,
+	)
+	switch dec.action {
+	case freshenActionSkip:
+		defer e.mu.Unlock()
+		if newestWarm != nil {
+			if dec.throttledUntilMs > 0 {
+				slog.Info("skipping optional base freshen (throttled)",
+					"project", p.Name, "warmBase", newestWarm.Id,
+					"nextAllowedAt", time.UnixMilli(dec.throttledUntilMs).Format(time.RFC3339))
+			}
+			return clone(newestWarm), dec.note, false, nil
+		}
+		return nil, "", false, dec.err
+	case freshenActionDeferBackground:
+		defer e.mu.Unlock()
+		return clone(newestWarm), "", true, nil
 	}
 	gen := int32(1)
 	if newest != nil {
@@ -162,8 +197,11 @@ func (e *Engine) baseFor(ctx context.Context, p *pb.HostedProject) (b *pb.Base, 
 		coldReason = ""
 	}
 	e.mu.Unlock()
-	b, err = e.startFreshen(ctx, p, gen, from, coldReason, h, want)
-	return b, "", err
+	if required {
+		e.cancelBgFreshen(p.Name)
+	}
+	b, err = e.startFreshenWithOpts(ctx, p, gen, from, coldReason, h, want, !required)
+	return b, "", false, err
 }
 
 // baseFailure says why a broken base broke.
@@ -281,6 +319,10 @@ func (e *Engine) remoteHead(ctx context.Context, r *pb.Repo) (string, error) {
 // repo at its head and builds it: incrementally, unless there is nothing to
 // fork.
 func (e *Engine) startFreshen(ctx context.Context, p *pb.HostedProject, gen int32, prev *pb.Base, coldReason string, h heads, recipe string) (*pb.Base, error) {
+	return e.startFreshenWithOpts(ctx, p, gen, prev, coldReason, h, recipe, false)
+}
+
+func (e *Engine) startFreshenWithOpts(ctx context.Context, p *pb.HostedProject, gen int32, prev *pb.Base, coldReason string, h heads, recipe string, optional bool) (*pb.Base, error) {
 	createdAt := e.nowMs()
 	prepStart := e.now()
 	var phases []*pb.FreshenPhase
@@ -362,16 +404,25 @@ func (e *Engine) startFreshen(ctx context.Context, p *pb.HostedProject, gen int3
 	for _, r := range p.Repos {
 		b.Repos = append(b.Repos, &pb.BaseRepo{Repo: r.Id, Commit: h[r.Id]})
 	}
+	limits := &pb.CommandLimits{
+		CpuWeight:        100,
+		HardLimitSeconds: e.freshenBudget.hardLimitSeconds(optional),
+	}
+	if optional {
+		limits.Priority = optionalFreshenPriority
+		limits.CpuWeight = optionalFreshenCPUWeight
+	}
 	c := e.newCommand(&pb.CommandRecord{
 		Command: &pb.Command{
 			Id: id, NodeId: e.cfg.NodeID, Argv: fmt.Sprintf("freshen %s g%d", p.Name, gen), Project: p.Name,
 			Args: []string{"/bin/bash", "-c", freshenScript(p, h, prev, run)}, Kind: "freshen",
 			Runtime: hotbedruntime.KindCladefs,
-			State:   queued, QueuedAt: now, Limits: &pb.CommandLimits{CpuWeight: 100},
+			State:   queued, QueuedAt: now, Limits: limits,
 			Timeline: []*pb.CommandEvent{{At: now, What: "queued", Detail: "base " + b.Id}},
 		},
 		Project: p.Name, Agent: "hotbed", Volume: vol, Dir: WorkPath, BaseId: b.Id,
 	})
+	c.freshenSetupHash = projectSetupHash(p)
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	c.cmd().Limits.MemoryLowBytes = e.freshenGuarantee(p.Name)
@@ -485,6 +536,27 @@ func (e *Engine) freshened(ctx context.Context, c *command, ok bool, seconds flo
 			b.Baked = append(b.Baked, s.Name)
 		}
 	}
+	var activeRunSecs float64
+	if c.cmd().StartedAt != nil {
+		endedAt := e.nowMs()
+		if c.cmd().EndedAt != nil {
+			endedAt = *c.cmd().EndedAt
+		}
+		activeRunSecs = commandActiveSeconds(c.cmd(), endedAt)
+	}
+	hasWarmLocal := false
+	for _, o := range e.bases {
+		if o.Project == b.Project && !isCladefsBase(o) && o.State == warm {
+			hasWarmLocal = true
+			break
+		}
+	}
+	setupHash := c.freshenSetupHash
+	if setupHash == "" {
+		if proj := e.projects[b.Project]; proj != nil {
+			setupHash = projectSetupHash(proj)
+		}
+	}
 	if !ok {
 		now := e.nowMs()
 		b.State = broken
@@ -492,6 +564,14 @@ func (e *Engine) freshened(ctx context.Context, c *command, ok bool, seconds flo
 		b.BuildSeconds = seconds
 		why := baseFailure(b)
 		b.FailureReason = cmp.Or(c.cmd().Reason, why)
+		stepFailed := failedStep(b) != ""
+		activeDur := time.Duration((b.PrepSeconds + activeRunSecs) * float64(time.Second))
+		shutdown := e.closing || (c.cmd().State == cancelled && c.cmd().Reason == "interrupted by worker restart")
+		e.freshenBudget.recordFailure(
+			e.now(), b.Project, hotbedruntime.KindCladefs, b.Recipe, setupHash,
+			b.ScratchEpoch, b.Id, c.cmd().Id, why,
+			stepFailed, hasWarmLocal, shutdown, activeDur,
+		)
 		e.saveBase(b, change{what: "failed", detail: why, feed: feed(feedFail, why, ref("command", c.cmd().Id))})
 		e.baseFailed(b, why)
 		e.mu.Unlock()
@@ -575,6 +655,12 @@ func (e *Engine) freshened(ctx context.Context, c *command, ok bool, seconds flo
 		b.State = broken
 		why := fmt.Sprintf("base %s could not be snapshotted: %v", b.Id, snapErr)
 		b.FailureReason = why
+		activeDur := time.Duration((b.PrepSeconds + activeRunSecs + snapSecs) * float64(time.Second))
+		e.freshenBudget.recordFailure(
+			e.now(), b.Project, hotbedruntime.KindCladefs, b.Recipe, setupHash,
+			b.ScratchEpoch, b.Id, c.cmd().Id, why,
+			false, hasWarmLocal, e.closing, activeDur,
+		)
 		e.saveBase(b, change{what: "failed", detail: why, feed: feed(feedFail, why, nil)})
 		e.baseFailed(b, why)
 		e.mu.Unlock()
@@ -585,6 +671,8 @@ func (e *Engine) freshened(ctx context.Context, c *command, ok bool, seconds flo
 	b.BuiltAt = &now
 	b.BuildSeconds = seconds
 	b.Progress = 1
+	activeDur := time.Duration((b.PrepSeconds + activeRunSecs + snapSecs) * float64(time.Second))
+	e.freshenBudget.recordSuccess(e.now(), b.Project, hotbedruntime.KindCladefs, activeDur)
 	if b.Cold {
 		b.Units = int32(units)
 	} else if prev := e.previousBase(b); prev != nil {

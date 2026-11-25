@@ -79,6 +79,21 @@ type WorkerConfig struct {
 	// CladefsFUSE enables the cladefsd host-FUSE runtime alongside chroot
 	// (used on arm64 / non-KVM hosts such as 16 KiB Apple Silicon or QEMU VMs).
 	CladefsFUSE *CladefsFUSEConfig `json:"cladefsFuse,omitempty"`
+	// Freshen configures base freshen duty-cycle caps, cooldowns, and time limits.
+	Freshen *FreshenConfig `json:"freshen,omitempty"`
+}
+
+// FreshenConfig configures worker base freshen throttling and safety limits.
+// Pointer fields distinguish explicitly set zeros from unset defaults.
+type FreshenConfig struct {
+	MaxDutyCycle               *float64 `json:"maxDutyCycle,omitempty"`
+	MinIntervalSeconds         *int     `json:"minIntervalSeconds,omitempty"`
+	MaxCooldownSeconds         *int     `json:"maxCooldownSeconds,omitempty"`
+	FailureCooldownSeconds     *int     `json:"failureCooldownSeconds,omitempty"`
+	MaxOptionalDurationSeconds *int     `json:"maxOptionalDurationSeconds,omitempty"`
+	MaxRequiredDurationSeconds *int     `json:"maxRequiredDurationSeconds,omitempty"`
+	IdleDelaySeconds           *int     `json:"idleDelaySeconds,omitempty"`
+	DisableOptional            *bool    `json:"disableOptional,omitempty"`
 }
 
 // CladefsFUSEConfig configures a worker's cladefsd host-FUSE runtime

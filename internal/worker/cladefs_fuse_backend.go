@@ -326,6 +326,7 @@ func (b *CladefsFUSEBackend) loadState() {
 						Arch:    goruntime.GOARCH,
 						BaseId:  pbBase.BaseID,
 						Recipe:  pbBase.Recipe,
+						Runtime: runtime.KindCladefs,
 						Tenant:  pbBase.Ref.Tenant,
 						Cell:    pbBase.Ref.Cell,
 						Version: pbBase.Ref.Version,
@@ -805,12 +806,77 @@ func (b *CladefsFUSEBackend) EnsureProjectBase(
 	onBaseTarget func(baseID string),
 	sandboxEnv []string,
 ) (*vmProjectBase, error) {
+	res, err := b.ensureProjectBase(ctx, p, heads, existingShared, spec, prov, runFreshen, onBaseTarget, sandboxEnv, ensureBaseOpts{})
+	return res.Base, err
+}
+
+func (b *CladefsFUSEBackend) ensureProjectBase(
+	ctx context.Context,
+	p *pb.HostedProject,
+	heads map[string]string,
+	existingShared *pb.CladefsCell,
+	spec baseimage.Spec,
+	prov baseimage.Provisioner,
+	runFreshen managedFreshenRunner,
+	onBaseTarget func(baseID string),
+	sandboxEnv []string,
+	opts ensureBaseOpts,
+) (ensureBaseResult, error) {
+	nowFn := opts.Now
+	if nowFn == nil {
+		nowFn = time.Now
+	}
 	spec = spec.Normalized()
 	baseKey := b.fuseBaseKey(spec)
 	recipe := fuseProjectRecipe(baseKey, p, heads)
+	setupHash := projectSetupHash(p)
 	baseID := fmt.Sprintf("%s-fuse-%s", p.GetName(), recipe[:8])
-	if onBaseTarget != nil {
-		onBaseTarget(baseID)
+
+	wantTenant := b.configSnapshot().TenantID
+	if st := b.currentStore(); st != nil {
+		wantTenant = st.TenantID()
+	}
+	canAdoptShared := existingShared != nil &&
+		existingShared.Cell > 0 &&
+		existingShared.Version > 0 &&
+		existingShared.Recipe == recipe &&
+		existingShared.Tenant == wantTenant
+
+	// Lock-free fast check BEFORE acquiring projectLock: return immediately if
+	// up to date or if commit-only drift should be skipped / deferred.
+	b.mu.Lock()
+	var fastCur *vmProjectBase
+	if cur := b.projectBases[p.GetName()]; cur != nil && cur.Ref.Cell > 0 && cur.Ref.Version > 0 {
+		cp := *cur
+		fastCur = &cp
+	}
+	b.mu.Unlock()
+	if fastCur != nil && fastCur.Recipe == recipe {
+		b.retirer.sweep(ctx, b.currentStore(), "fuse-retire", time.Now())
+		return ensureBaseResult{Base: fastCur}, nil
+	}
+	if opts.Budget != nil {
+		fastDrift, fastCold := vmBaseHasStructuralDrift(p, fastCur, baseKey)
+		fastRequired := fastCur == nil || fastCold != "" || fastDrift
+		if !fastRequired && fastCur != nil && !canAdoptShared {
+			dec := opts.Budget.decide(
+				nowFn(), p.GetName(), runtime.KindCladefs, recipe, setupHash,
+				p.GetScratchEpoch(), fastCur.BaseID, true, false, opts.AllowBackground, opts.Background,
+			)
+			switch dec.action {
+			case freshenActionSkip:
+				if dec.throttledUntilMs > 0 {
+					slog.Info("skipping optional cladefs base freshen (throttled)",
+						"project", p.GetName(), "warmBase", fastCur.BaseID,
+						"nextAllowedAt", time.UnixMilli(dec.throttledUntilMs).Format(time.RFC3339))
+				}
+				return ensureBaseResult{Base: fastCur, Note: dec.note}, nil
+			case freshenActionDeferBackground:
+				return ensureBaseResult{Base: fastCur, DeferBackground: true}, nil
+			}
+		} else if fastRequired && opts.OnRequireBuild != nil {
+			opts.OnRequireBuild()
+		}
 	}
 
 	lock := b.projectLock(p.GetName())
@@ -823,28 +889,22 @@ func (b *CladefsFUSEBackend) EnsureProjectBase(
 		out := *cur
 		b.mu.Unlock()
 		b.retirer.sweep(ctx, b.currentStore(), "fuse-retire", time.Now())
-		return &out, nil
+		return ensureBaseResult{Base: &out}, nil
 	}
-	var prevBase *vmProjectBase
-	coldReason := ""
-	switch {
-	case cur == nil || cur.Ref.Cell == 0 || cur.Ref.Version == 0:
-		coldReason = "no_previous_base"
-	case cur.ScratchEpoch != p.GetScratchEpoch():
-		coldReason = "scratch_epoch"
-	case cur.BaseKey != baseKey:
-		coldReason = "base_image_changed"
-	default:
+	var fallbackBase *vmProjectBase
+	if cur != nil && cur.Ref.Cell > 0 && cur.Ref.Version > 0 {
 		cp := *cur
+		fallbackBase = &cp
+	}
+	structuralDrift, coldReason := vmBaseHasStructuralDrift(p, fallbackBase, baseKey)
+	var prevBase *vmProjectBase
+	if fallbackBase != nil && coldReason == "" {
+		cp := *fallbackBase
 		prevBase = &cp
 	}
 	b.mu.Unlock()
 
-	wantTenant := b.configSnapshot().TenantID
-	if st := b.currentStore(); st != nil {
-		wantTenant = st.TenantID()
-	}
-	if existingShared != nil && existingShared.Cell > 0 && existingShared.Version > 0 && existingShared.Recipe == recipe && existingShared.Tenant == wantTenant {
+	if canAdoptShared {
 		repos := make(map[string]string, len(heads))
 		for k, v := range heads {
 			repos[k] = v
@@ -858,12 +918,13 @@ func (b *CladefsFUSEBackend) EnsureProjectBase(
 			BaseID:       cmp.Or(existingShared.BaseId, p.GetName()+"-fuse-"+recipe[:8]),
 			Recipe:       recipe,
 			BaseKey:      baseKey,
+			SetupHash:    setupHash,
 			ScratchEpoch: p.GetScratchEpoch(),
 			Repos:        repos,
 			StepHashes:   projectStepHashes(p),
 		}
-		if cur != nil && cur.Ref.Cell > 0 && cur.Ref.Cell != adopted.Ref.Cell {
-			b.retirer.enqueue(cur.Ref.Tenant, cur.Ref.Cell, cur.BaseID, time.Now())
+		if fallbackBase != nil && fallbackBase.Ref.Cell > 0 && fallbackBase.Ref.Cell != adopted.Ref.Cell {
+			b.retirer.enqueue(fallbackBase.Ref.Tenant, fallbackBase.Ref.Cell, fallbackBase.BaseID, time.Now())
 		}
 		b.mu.Lock()
 		b.projectBases[p.GetName()] = adopted
@@ -872,21 +933,71 @@ func (b *CladefsFUSEBackend) EnsureProjectBase(
 			Arch:    goruntime.GOARCH,
 			BaseId:  adopted.BaseID,
 			Recipe:  recipe,
+			Runtime: runtime.KindCladefs,
 			Tenant:  adopted.Ref.Tenant,
 			Cell:    adopted.Ref.Cell,
 			Version: adopted.Ref.Version,
 		}
 		b.mu.Unlock()
 		b.saveCacheJSON("project-"+p.GetName()+".json", adopted)
+		opts.Budget.recordAdopted(p.GetName(), runtime.KindCladefs)
 		b.retirer.sweep(ctx, b.currentStore(), "fuse-retire", time.Now())
-		return adopted, nil
+		return ensureBaseResult{Base: adopted}, nil
+	}
+
+	required := fallbackBase == nil || coldReason != "" || structuralDrift
+	if opts.Budget != nil {
+		prevID := ""
+		if fallbackBase != nil {
+			prevID = fallbackBase.BaseID
+		}
+		dec := opts.Budget.decide(
+			nowFn(), p.GetName(), runtime.KindCladefs, recipe, setupHash,
+			p.GetScratchEpoch(), prevID, fallbackBase != nil, required, opts.AllowBackground, opts.Background,
+		)
+		switch dec.action {
+		case freshenActionSkip:
+			if fallbackBase != nil {
+				if dec.throttledUntilMs > 0 {
+					slog.Info("skipping optional cladefs base freshen (throttled)",
+						"project", p.GetName(), "warmBase", fallbackBase.BaseID,
+						"nextAllowedAt", time.UnixMilli(dec.throttledUntilMs).Format(time.RFC3339))
+				}
+				return ensureBaseResult{Base: fallbackBase, Note: dec.note}, nil
+			}
+			return ensureBaseResult{}, dec.err
+		case freshenActionDeferBackground:
+			return ensureBaseResult{Base: fallbackBase, DeferBackground: true}, nil
+		}
+	}
+
+	if onBaseTarget != nil {
+		onBaseTarget(baseID)
+	}
+
+	failBuild := func(cmdID, summary string, stepFailed bool, activeDur time.Duration, origErr error) (ensureBaseResult, error) {
+		shutdown := ctx.Err() != nil
+		opts.Budget.recordFailure(
+			nowFn(), p.GetName(), runtime.KindCladefs, recipe, setupHash,
+			p.GetScratchEpoch(), baseID, cmdID, summary,
+			stepFailed, fallbackBase != nil, shutdown, activeDur,
+		)
+		if fallbackBase != nil && !opts.Background && !shutdown {
+			slog.Warn("cladefs FUSE project base freshen failed; falling back to existing warm base",
+				"project", p.GetName(), "failedBase", baseID, "fallbackBase", fallbackBase.BaseID, "err", origErr)
+			return ensureBaseResult{
+				Base: fallbackBase,
+				Note: freshenFallbackNote(fallbackBase.BaseID, summary),
+			}, nil
+		}
+		return ensureBaseResult{}, origErr
 	}
 
 	if err := b.ensureMountReady(ctx); err != nil {
-		return nil, fmt.Errorf("enable setuid on cladefs FUSE mount %s: %w", b.mountRoot, err)
+		return failBuild("", fmt.Sprintf("base %s failed: %v", baseID, err), false, 0, fmt.Errorf("enable setuid on cladefs FUSE mount %s: %w", b.mountRoot, err))
 	}
 	if runFreshen == nil {
-		return nil, fmt.Errorf("freshen cladefs FUSE project base %s: no freshen runner configured", baseID)
+		return failBuild("", fmt.Sprintf("base %s failed: no freshen runner configured", baseID), false, 0, fmt.Errorf("freshen cladefs FUSE project base %s: no freshen runner configured", baseID))
 	}
 	createdAt := time.Now().UnixMilli()
 	prepStart := time.Now()
@@ -901,11 +1012,12 @@ func (b *CladefsFUSEBackend) EnsureProjectBase(
 		tenant, cellID, mntDir, storeDir, err = b.forkAndMount(ctx, prevBase.Ref, filepath.Join("fuse-bases", baseID), 0, baseBuildUploadInterval)
 		if err != nil {
 			if ctx.Err() != nil {
-				return nil, err
+				return failBuild("", fmt.Sprintf("base %s cancelled: %v", baseID, err), false, time.Since(prepStart), err)
 			}
 			slog.Warn("incremental cladefs FUSE project base fork failed; falling back to cold base",
 				"project", p.GetName(), "prevBase", prevBase.BaseID, "err", err)
 			prevBase = nil
+			fallbackBase = nil
 			coldReason = "incremental_fork_failed"
 		} else {
 			forkEndMs := time.Now().UnixMilli()
@@ -924,7 +1036,7 @@ func (b *CladefsFUSEBackend) EnsureProjectBase(
 		imgStartMs := imgStart.UnixMilli()
 		baseImgRef, berr := b.EnsureProvisionedBaseImage(ctx, spec, prov)
 		if berr != nil {
-			return nil, berr
+			return failBuild("", fmt.Sprintf("base %s failed: %v", baseID, berr), false, time.Since(prepStart), berr)
 		}
 		imgEndMs := time.Now().UnixMilli()
 		prepPhases = append(prepPhases, &pb.FreshenPhase{
@@ -938,7 +1050,7 @@ func (b *CladefsFUSEBackend) EnsureProjectBase(
 		forkStartMs := forkStart.UnixMilli()
 		tenant, cellID, mntDir, storeDir, err = b.forkAndMount(ctx, baseImgRef, filepath.Join("fuse-bases", baseID), 0, baseBuildUploadInterval)
 		if err != nil {
-			return nil, fmt.Errorf("fork & mount cladefs FUSE project base %s: %w", baseID, err)
+			return failBuild("", fmt.Sprintf("base %s failed: %v", baseID, err), false, time.Since(prepStart), fmt.Errorf("fork & mount cladefs FUSE project base %s: %w", baseID, err))
 		}
 		forkEndMs := time.Now().UnixMilli()
 		prepPhases = append(prepPhases, &pb.FreshenPhase{
@@ -968,6 +1080,7 @@ func (b *CladefsFUSEBackend) EnsureProjectBase(
 		Cold:        prevBase == nil,
 		ColdReason:  coldReason,
 		FromBaseID:  fromBaseID,
+		Optional:    !required,
 		CreatedAt:   createdAt,
 		PrepSeconds: prepSeconds,
 		PrepPhases:  prepPhases,
@@ -980,32 +1093,44 @@ func (b *CladefsFUSEBackend) EnsureProjectBase(
 	})
 	if err != nil {
 		cleanupOnErr()
-		return nil, fmt.Errorf("queue cladefs FUSE project base %s: %w", baseID, err)
+		return failBuild("", fmt.Sprintf("base %s failed: %v", baseID, err), false, time.Duration(prepSeconds*float64(time.Second)), fmt.Errorf("queue cladefs FUSE project base %s: %w", baseID, err))
 	}
 	freshenRes, waitErr := handle.Wait(ctx)
+	var finalizeSeconds float64
+	activeDuration := func() time.Duration {
+		secs := prepSeconds + freshenRes.ActiveRunSeconds + finalizeSeconds
+		if secs < 0 {
+			secs = 0
+		}
+		return time.Duration(secs * float64(time.Second))
+	}
 	if waitErr != nil {
 		cleanupOnErr()
 		handle.Finish(false, freshenRes, cladefs.CellRef{}, waitErr.Error())
-		return nil, fmt.Errorf("freshen cladefs FUSE project base %s (command %s): %w", baseID, handle.CommandID(), waitErr)
+		summary := managedFreshenFailureSummary(baseID, handle.CommandID(), freshenRes, waitErr.Error())
+		return failBuild(handle.CommandID(), summary, freshenRes.StepFailed, activeDuration(), fmt.Errorf("freshen cladefs FUSE project base %s (command %s): %w", baseID, handle.CommandID(), waitErr))
 	}
 	if freshenRes.State != succeeded {
 		cleanupOnErr()
 		detail := cmp.Or(freshenRes.Reason, "freshen "+stateName(freshenRes.State))
 		handle.Finish(false, freshenRes, cladefs.CellRef{}, detail)
-		return nil, fmt.Errorf("freshen cladefs FUSE project base %s failed (command %s): %s", baseID, handle.CommandID(), detail)
+		summary := managedFreshenFailureSummary(baseID, handle.CommandID(), freshenRes, detail)
+		return failBuild(handle.CommandID(), summary, freshenRes.StepFailed, activeDuration(), fmt.Errorf("freshen cladefs FUSE project base %s failed (command %s): %s", baseID, handle.CommandID(), detail))
 	}
 
-	var finalizeSeconds float64
 	handle.SetFinalizing("mount_detach")
 	detachStart := time.Now()
 	detachStartMs := detachStart.UnixMilli()
 	if err := b.detachMount(ctx, tenant, cellID, mntDir, true, false); err != nil {
 		detachSecs := time.Since(detachStart).Seconds()
+		finalizeSeconds += detachSecs
 		handle.RecordPhase("mount_detach", detachStartMs, time.Now().UnixMilli(), detachSecs, "")
 		freshenRes.FinalizeSeconds = detachSecs
 		cleanupOnErr()
-		handle.Finish(false, freshenRes, cladefs.CellRef{}, fmt.Sprintf("detach mount: %v", err))
-		return nil, fmt.Errorf("detach cladefs FUSE project base %s: %w", baseID, err)
+		detail := fmt.Sprintf("detach mount: %v", err)
+		handle.Finish(false, freshenRes, cladefs.CellRef{}, detail)
+		summary := managedFreshenFailureSummary(baseID, handle.CommandID(), freshenRes, detail)
+		return failBuild(handle.CommandID(), summary, false, activeDuration(), fmt.Errorf("detach cladefs FUSE project base %s: %w", baseID, err))
 	}
 	detachSecs := time.Since(detachStart).Seconds()
 	finalizeSeconds += detachSecs
@@ -1023,8 +1148,10 @@ func (b *CladefsFUSEBackend) EnsureProjectBase(
 		cctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		_ = b.currentStore().DeleteCellAbs(cctx, storeDir)
 		cancel()
-		handle.Finish(false, freshenRes, cladefs.CellRef{}, fmt.Sprintf("sync to R2: %v", err))
-		return nil, fmt.Errorf("sync cladefs FUSE project base %s to R2: %w", baseID, err)
+		detail := fmt.Sprintf("sync to R2: %v", err)
+		handle.Finish(false, freshenRes, cladefs.CellRef{}, detail)
+		summary := managedFreshenFailureSummary(baseID, handle.CommandID(), freshenRes, detail)
+		return failBuild(handle.CommandID(), summary, false, activeDuration(), fmt.Errorf("sync cladefs FUSE project base %s to R2: %w", baseID, err))
 	}
 	_ = b.currentStore().DropCellAbs(ctx, storeDir)
 
@@ -1042,11 +1169,13 @@ func (b *CladefsFUSEBackend) EnsureProjectBase(
 		Version: ver,
 	}
 	handle.Finish(true, freshenRes, ref, "")
+	opts.Budget.recordSuccess(nowFn(), p.GetName(), runtime.KindCladefs, activeDuration())
 	res := &vmProjectBase{
 		Ref:          ref,
 		BaseID:       baseID,
 		Recipe:       recipe,
 		BaseKey:      baseKey,
+		SetupHash:    setupHash,
 		ScratchEpoch: p.GetScratchEpoch(),
 		Repos:        repoHeads,
 		StepHashes:   projectStepHashes(p),
@@ -1059,6 +1188,7 @@ func (b *CladefsFUSEBackend) EnsureProjectBase(
 		Arch:    goruntime.GOARCH,
 		BaseId:  baseID,
 		Recipe:  recipe,
+		Runtime: runtime.KindCladefs,
 		Tenant:  tenant,
 		Cell:    cellID,
 		Version: ver,
@@ -1071,8 +1201,8 @@ func (b *CladefsFUSEBackend) EnsureProjectBase(
 	b.retirer.sweep(ctx, b.currentStore(), "fuse-retire", time.Now())
 	slog.Info("cladefs host-FUSE project base built and published to R2",
 		"project", p.GetName(), "baseId", baseID, "incremental", prevBase != nil,
-		"steps", len(stepsToRun), "cell", cellID, "version", ver)
-	return res, nil
+		"optional", !required, "steps", len(stepsToRun), "cell", cellID, "version", ver)
+	return ensureBaseResult{Base: res}, nil
 }
 
 // PrepareWorkspace forks baseRef into a host-local ephemeral cladefs cell and
@@ -1170,17 +1300,27 @@ func (e *Engine) createCladefsFUSEWorkspace(ctx context.Context, req *pb.CreateW
 			prov = e.cfg.BaseImage.Provision
 		}
 		heads, err := e.remoteHeads(bgCtx, p)
-		var projBase *vmProjectBase
+		var baseRes ensureBaseResult
 		if err == nil {
-			projBase, err = e.cfg.CladefsFUSE.EnsureProjectBase(
+			baseRes, err = e.cfg.CladefsFUSE.ensureProjectBase(
 				bgCtx, p, heads, req.GetSharedBase(), baseSpec, prov,
 				e.startManagedFreshen,
 				func(baseID string) { e.setPreparingWorkspaceBase(req.Id, baseID) },
 				e.sandboxEnv(),
+				ensureBaseOpts{
+					Budget:          e.freshenBudget,
+					Now:             e.now,
+					AllowBackground: req.GetSyncDir() != "",
+					OnRequireBuild:  func() { e.cancelBgFreshen(p.Name) },
+				},
 			)
 		}
+		projBase := baseRes.Base
 		if err == nil {
 			e.recordWarmCladefsBase(p, projBase, goruntime.GOARCH)
+			if baseRes.DeferBackground {
+				e.scheduleOptionalFreshen(p, runtime.KindCladefs, req.GetSharedBase())
+			}
 		}
 		var cell *pb.CladefsCell
 		var mntDir string
@@ -1225,6 +1365,7 @@ func (e *Engine) createCladefsFUSEWorkspace(ctx context.Context, req *pb.CreateW
 		}
 		w.ws().BaseId = projBase.BaseID
 		w.rec.BaseSnapshot = projBase.BaseID
+		w.rec.Note = baseRes.Note
 		for _, r := range w.ws().Repos {
 			if head, ok := projBase.Repos[r.Repo]; ok && head != "" {
 				r.Head = head
@@ -1235,7 +1376,7 @@ func (e *Engine) createCladefsFUSEWorkspace(ctx context.Context, req *pb.CreateW
 		if e.workspaceBusy(w.ws().Id) {
 			w.ws().State = activeWS
 		}
-		w.ws().Reason = ""
+		w.ws().Reason = baseRes.Note
 		w.ws().ForkMillis = forkMs
 		w.ws().CladefsCell = cell
 		w.ws().LastActiveAt = e.nowMs()

@@ -58,6 +58,7 @@ func (e *Engine) CreateWorkspace(ctx context.Context, req *pb.CreateWorkspaceReq
 	// The controller's word that this node keeps the project, newer than its
 	// last heartbeat's.
 	e.vouched[p.Name] = e.now()
+	e.recordUserActivityLocked(e.now())
 	_, dup := e.workspaces[req.Id]
 	e.mu.Unlock()
 	if dup {
@@ -75,10 +76,13 @@ func (e *Engine) CreateWorkspace(ctx context.Context, req *pb.CreateWorkspaceReq
 	}
 	lock := e.projectLock(p.Name)
 	lock.Lock()
-	base, note, err := e.baseFor(ctx, p)
+	base, note, deferBG, err := e.baseForWithOpts(ctx, p, req.GetSyncDir() != "", false)
 	lock.Unlock()
 	if err != nil {
 		return nil, err
+	}
+	if deferBG {
+		e.scheduleOptionalFreshen(p, wsRuntime, nil)
 	}
 	now := e.nowMs()
 	w := &workspace{rec: &pb.WorkspaceRecord{
@@ -775,6 +779,7 @@ func (e *Engine) Sync(ctx context.Context, h *pb.SyncHeader, bundle io.Reader) (
 		e.mu.Unlock()
 		return nil, api.Errorf(api.CodeNotFound, "no workspace %s on this node", h.WorkspaceId)
 	}
+	e.recordUserActivityLocked(e.now())
 	e.mu.Unlock()
 	w.sync.Lock()
 	defer w.sync.Unlock()

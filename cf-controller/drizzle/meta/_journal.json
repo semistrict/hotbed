@@ -85,6 +85,13 @@
 			"when": 1795608443246,
 			"tag": "0011_panoramic_caretaker",
 			"breakpoints": true
+		},
+		{
+			"idx": 12,
+			"version": "6",
+			"when": 1795626116873,
+			"tag": "0012_talented_silverclaw",
+			"breakpoints": true
 		}
 	]
 }

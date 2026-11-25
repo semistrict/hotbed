@@ -107,6 +107,9 @@ func MergeWorkerConfig(local statedir.WorkerConfig, remote *pb.WorkerConfig) sta
 		f := *local.CladefsFUSE
 		out.CladefsFUSE = &f
 	}
+	if local.Freshen != nil {
+		out.Freshen = cloneFreshenConfig(local.Freshen)
+	}
 	if remote == nil {
 		return out
 	}
@@ -218,6 +221,43 @@ func MergeWorkerConfig(local statedir.WorkerConfig, remote *pb.WorkerConfig) sta
 		}
 		if rfuse.DiskBytes != nil {
 			out.CladefsFUSE.DiskBytes = rfuse.GetDiskBytes()
+		}
+	}
+	if rf := remote.GetFreshen(); rf != nil {
+		if out.Freshen == nil {
+			out.Freshen = &statedir.FreshenConfig{}
+		}
+		if rf.MaxDutyCycle != nil {
+			v := rf.GetMaxDutyCycle()
+			out.Freshen.MaxDutyCycle = &v
+		}
+		if rf.MinIntervalSeconds != nil {
+			v := int(rf.GetMinIntervalSeconds())
+			out.Freshen.MinIntervalSeconds = &v
+		}
+		if rf.MaxCooldownSeconds != nil {
+			v := int(rf.GetMaxCooldownSeconds())
+			out.Freshen.MaxCooldownSeconds = &v
+		}
+		if rf.FailureCooldownSeconds != nil {
+			v := int(rf.GetFailureCooldownSeconds())
+			out.Freshen.FailureCooldownSeconds = &v
+		}
+		if rf.MaxOptionalDurationSeconds != nil {
+			v := int(rf.GetMaxOptionalDurationSeconds())
+			out.Freshen.MaxOptionalDurationSeconds = &v
+		}
+		if rf.MaxRequiredDurationSeconds != nil {
+			v := int(rf.GetMaxRequiredDurationSeconds())
+			out.Freshen.MaxRequiredDurationSeconds = &v
+		}
+		if rf.IdleDelaySeconds != nil {
+			v := int(rf.GetIdleDelaySeconds())
+			out.Freshen.IdleDelaySeconds = &v
+		}
+		if rf.DisableOptional != nil {
+			v := rf.GetDisableOptional()
+			out.Freshen.DisableOptional = &v
 		}
 	}
 	// Top-level default_runtime overrides backend-specific default flags.
@@ -455,5 +495,72 @@ func workerConfigEqual(a, b statedir.WorkerConfig) bool {
 	if a.CladefsFUSE != nil && *a.CladefsFUSE != *b.CladefsFUSE {
 		return false
 	}
+	if !freshenConfigEqual(a.Freshen, b.Freshen) {
+		return false
+	}
 	return true
+}
+
+func cloneFreshenConfig(in *statedir.FreshenConfig) *statedir.FreshenConfig {
+	if in == nil {
+		return nil
+	}
+	out := &statedir.FreshenConfig{}
+	if in.MaxDutyCycle != nil {
+		v := *in.MaxDutyCycle
+		out.MaxDutyCycle = &v
+	}
+	if in.MinIntervalSeconds != nil {
+		v := *in.MinIntervalSeconds
+		out.MinIntervalSeconds = &v
+	}
+	if in.MaxCooldownSeconds != nil {
+		v := *in.MaxCooldownSeconds
+		out.MaxCooldownSeconds = &v
+	}
+	if in.FailureCooldownSeconds != nil {
+		v := *in.FailureCooldownSeconds
+		out.FailureCooldownSeconds = &v
+	}
+	if in.MaxOptionalDurationSeconds != nil {
+		v := *in.MaxOptionalDurationSeconds
+		out.MaxOptionalDurationSeconds = &v
+	}
+	if in.MaxRequiredDurationSeconds != nil {
+		v := *in.MaxRequiredDurationSeconds
+		out.MaxRequiredDurationSeconds = &v
+	}
+	if in.IdleDelaySeconds != nil {
+		v := *in.IdleDelaySeconds
+		out.IdleDelaySeconds = &v
+	}
+	if in.DisableOptional != nil {
+		v := *in.DisableOptional
+		out.DisableOptional = &v
+	}
+	return out
+}
+
+func ptrEqual[T comparable](a, b *T) bool {
+	if (a == nil) != (b == nil) {
+		return false
+	}
+	return a == nil || *a == *b
+}
+
+func freshenConfigEqual(a, b *statedir.FreshenConfig) bool {
+	if (a == nil) != (b == nil) {
+		return false
+	}
+	if a == nil {
+		return true
+	}
+	return ptrEqual(a.MaxDutyCycle, b.MaxDutyCycle) &&
+		ptrEqual(a.MinIntervalSeconds, b.MinIntervalSeconds) &&
+		ptrEqual(a.MaxCooldownSeconds, b.MaxCooldownSeconds) &&
+		ptrEqual(a.FailureCooldownSeconds, b.FailureCooldownSeconds) &&
+		ptrEqual(a.MaxOptionalDurationSeconds, b.MaxOptionalDurationSeconds) &&
+		ptrEqual(a.MaxRequiredDurationSeconds, b.MaxRequiredDurationSeconds) &&
+		ptrEqual(a.IdleDelaySeconds, b.IdleDelaySeconds) &&
+		ptrEqual(a.DisableOptional, b.DisableOptional)
 }

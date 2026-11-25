@@ -152,6 +152,9 @@ func (e *Engine) Exec(_ context.Context, req *pb.RunCommandRequest) (*pb.Command
 			c.cmd().Rebuilt = &pb.Rebuilt{Of: int32(units)}
 		}
 	}
+	if kind != "server" {
+		e.recordUserActivityLocked(e.now())
+	}
 	w.ws().LastActiveAt = now
 	if w.ws().State != preparing {
 		w.ws().State = activeWS
@@ -415,6 +418,7 @@ func (e *Engine) step(ctx context.Context) {
 	e.limit(ctx)
 	e.park(ctx)
 	e.hibernateIdleVMs(ctx)
+	e.maybeStartPendingFreshens(ctx)
 	e.reap(ctx)
 	e.forget()
 }
@@ -1586,8 +1590,9 @@ func (e *Engine) park(ctx context.Context) {
 				victim := runningCmds[0]
 				// Never rotate out same-priority regular work: let the running
 				// command finish instead of thrashing swap. Only preempt for a
-				// strictly higher-priority parked command or a base build
-				// (which unblocks every workspace waiting on it).
+				// strictly higher-priority parked command or a required/normal-
+				// priority base build (which unblocks every workspace waiting
+				// on it; optional low-priority freshens never preempt work).
 				if victim.priority() < first.priority() {
 					parkVictim = victim
 					thawTarget = first
@@ -1595,7 +1600,7 @@ func (e *Engine) park(ctx context.Context) {
 					parkReason = fmt.Sprintf("preempted by higher-priority command %s (priority %d > %d)", first.cmd().Id, first.priority(), victim.priority())
 					parkFeed = fmt.Sprintf("park %s · preempted by %s (priority %d > %d)", parkVictim.cmd().Argv, first.cmd().Id, first.priority(), victim.priority())
 					thawWhy = fmt.Sprintf(", preempted %s", parkVictim.cmd().Id)
-				} else if victim.priority() == first.priority() && first.isFreshen() && !victim.isFreshen() {
+				} else if victim.priority() == first.priority() && first.isFreshen() && first.priority() >= 0 && !victim.isFreshen() {
 					parkVictim = victim
 					thawTarget = first
 					parkReason = fmt.Sprintf("frozen for base build %s; its memory goes to swap until there is room", first.cmd().Id)
@@ -2474,6 +2479,9 @@ func (e *Engine) endBy(c *command, state pb.CommandState, code *int32, why strin
 	}
 	if w, ok := e.workspaces[cmd.WorkspaceId]; ok {
 		w.ws().LastActiveAt = now
+		if cmd.Kind != "server" {
+			e.recordUserActivityLocked(e.now())
+		}
 		if w.ws().State == activeWS && !e.workspaceBusy(w.ws().Id) {
 			w.ws().State = idle
 		}

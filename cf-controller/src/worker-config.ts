@@ -3,11 +3,13 @@ import {
 	ManagedArtifactSchema,
 	WorkerCladefsFUSEConfigSchema,
 	WorkerConfigSchema,
+	WorkerFreshenConfigSchema,
 	WorkerSystemConfigSchema,
 	WorkerVMConfigSchema,
 	type ManagedArtifact,
 	type WorkerCladefsFUSEConfig,
 	type WorkerConfig,
+	type WorkerFreshenConfig,
 	type WorkerSystemConfig,
 	type WorkerVMConfig,
 } from "./gen/hotbed/v1/hotbed_pb.ts";
@@ -127,6 +129,31 @@ export function validateWorkerConfig(cfg: WorkerConfig): void {
 			);
 		}
 	}
+	if (cfg.freshen) {
+		const fr = cfg.freshen;
+		if (
+			fr.maxDutyCycle !== undefined &&
+			(!Number.isFinite(fr.maxDutyCycle) || fr.maxDutyCycle <= 0 || fr.maxDutyCycle > 1)
+		) {
+			throw hotbedError(
+				ErrorCode.InvalidArgs,
+				`freshen.max_duty_cycle must be in (0, 1] (got ${fr.maxDutyCycle})`,
+			);
+		}
+		const nonNegFields: Array<[string, number | undefined]> = [
+			["freshen.min_interval_seconds", fr.minIntervalSeconds],
+			["freshen.max_cooldown_seconds", fr.maxCooldownSeconds],
+			["freshen.failure_cooldown_seconds", fr.failureCooldownSeconds],
+			["freshen.max_optional_duration_seconds", fr.maxOptionalDurationSeconds],
+			["freshen.max_required_duration_seconds", fr.maxRequiredDurationSeconds],
+			["freshen.idle_delay_seconds", fr.idleDelaySeconds],
+		];
+		for (const [name, val] of nonNegFields) {
+			if (val !== undefined && val < 0) {
+				throw hotbedError(ErrorCode.InvalidArgs, `${name} must be >= 0 (got ${val})`);
+			}
+		}
+	}
 }
 
 function normalizeArtifactMap(
@@ -225,6 +252,30 @@ export function mergeWorkerSystemConfig(
 	return out;
 }
 
+export function mergeWorkerFreshenConfig(
+	base?: WorkerFreshenConfig,
+	patch?: WorkerFreshenConfig,
+): WorkerFreshenConfig | undefined {
+	if (!base && !patch) return undefined;
+	const out = base ? clone(WorkerFreshenConfigSchema, base) : create(WorkerFreshenConfigSchema);
+	if (!patch) return out;
+	if (patch.maxDutyCycle !== undefined) out.maxDutyCycle = patch.maxDutyCycle;
+	if (patch.minIntervalSeconds !== undefined) out.minIntervalSeconds = patch.minIntervalSeconds;
+	if (patch.maxCooldownSeconds !== undefined) out.maxCooldownSeconds = patch.maxCooldownSeconds;
+	if (patch.failureCooldownSeconds !== undefined) {
+		out.failureCooldownSeconds = patch.failureCooldownSeconds;
+	}
+	if (patch.maxOptionalDurationSeconds !== undefined) {
+		out.maxOptionalDurationSeconds = patch.maxOptionalDurationSeconds;
+	}
+	if (patch.maxRequiredDurationSeconds !== undefined) {
+		out.maxRequiredDurationSeconds = patch.maxRequiredDurationSeconds;
+	}
+	if (patch.idleDelaySeconds !== undefined) out.idleDelaySeconds = patch.idleDelaySeconds;
+	if (patch.disableOptional !== undefined) out.disableOptional = patch.disableOptional;
+	return out;
+}
+
 export function mergeWorkerConfig(base: WorkerConfig | null, patch: WorkerConfig): WorkerConfig {
 	const out = base ? clone(WorkerConfigSchema, base) : create(WorkerConfigSchema);
 	if (patch.defaultRuntime !== undefined) out.defaultRuntime = patch.defaultRuntime;
@@ -233,6 +284,7 @@ export function mergeWorkerConfig(base: WorkerConfig | null, patch: WorkerConfig
 	out.vm = mergeWorkerVMConfig(out.vm, patch.vm);
 	out.cladefsFuse = mergeWorkerCladefsFUSEConfig(out.cladefsFuse, patch.cladefsFuse);
 	out.system = mergeWorkerSystemConfig(out.system, patch.system);
+	out.freshen = mergeWorkerFreshenConfig(out.freshen, patch.freshen);
 	return out;
 }
 

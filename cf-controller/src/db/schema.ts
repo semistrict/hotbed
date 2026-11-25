@@ -435,6 +435,7 @@ export const sharedBases = sqliteTable(
 		arch: text("arch").notNull(),
 		recipe: text("recipe").notNull().default(""),
 		baseId: text("base_id").notNull(),
+		runtime: text("runtime").notNull().default(""),
 		tenant: text("tenant").notNull(),
 		cell: text("cell").notNull(),
 		version: text("version").notNull(),
@@ -443,7 +444,7 @@ export const sharedBases = sqliteTable(
 	},
 	(t) => [
 		primaryKey({ columns: [t.project, t.arch, t.recipe] }),
-		index("shared_bases_project_arch").on(t.project, t.arch, t.updatedAt),
+		index("shared_bases_project_arch").on(t.project, t.arch, t.runtime, t.updatedAt),
 	],
 );
 

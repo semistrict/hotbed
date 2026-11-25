@@ -52,13 +52,15 @@ Do not pipe `hotbed session start` into `jq` or swallow its stdout: it prints ac
   from). `--bench` and `--mem-low` narrow it by themselves. stderr says where it ran.
 - **A workspace per node, of the whole project, made as needed.** A workspace holds every repo
   of the session's project, each checked out at `/work/REPO`, side by side. The first run of a
-  session on a node forks the project's base there, with each repo at its branch's head. When a
-  repo's branch has moved or the project's setup steps changed since that node's newest base, it
-  first freshens a new base from the previous one: a pull and the steps that need to run (usually
-  seconds to a minute; a node's very first base builds from nothing). The run waits for that,
-  saying so on stderr. A run starts in `/work/REPO` of the repo it is for, or in `/work` when it
-  is for none (outside any checkout, no `-r`). Each workspace keeps its state between the
-  commands run in it.
+  session on a node forks the project's base there, with each repo at its branch's head. Structural
+  changes (first base on a node, setup step edits, repo list changes, or `hotbed project rebuild`)
+  freshen immediately. Commit-only branch movement on an existing warm base is an optimization
+  capped by duty cycle (default 5% of wall time, 30m minimum interval per project, 6h cooldown cap,
+  15m exponential failure backoff) and deferred to an idle, low-priority (`-10`) background slot
+  for syncing checkouts so your workspace forks immediately without waiting. Tune caps live with
+  `hotbed config set` (`freshen.*`). A run starts in `/work/REPO` of the repo it is for, or in
+  `/work` when it is for none (outside any checkout, no `-r`). Each workspace keeps its state
+  between the commands run in it.
 - **Your checkout is the truth.** Run from a checkout of the repo and each run first sends its
   state to the workspace it runs in, uncommitted and untracked files included, ignored files not.
   Only files that differ are rewritten, so builds stay incremental. Anything a command writes
