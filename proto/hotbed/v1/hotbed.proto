@@ -602,6 +602,28 @@ message ObjectStoreStats {
   uint64 dax_writes_held_by_seals_ns = 26;
   uint64 dax_device_read_bytes = 27;
   uint64 dax_device_reads_ns = 28;
+  // Host disk breakdown as cladefsd's disk governor sees it (summed across
+  // backing filesystems): cells, SSD part cache, other, free, and total size.
+  uint64 host_disk_size_bytes = 29;
+  uint64 host_disk_free_bytes = 30;
+  uint64 host_disk_cells_bytes = 31;
+  uint64 host_disk_cache_bytes = 32;
+  uint64 host_disk_other_bytes = 33;
+  bool host_disk_pressure = 34;
+  // Open cells served by cladefsd and cells attached in host-FUSE mount.
+  uint32 open_cells = 35;
+  uint32 mount_cells_attached = 36;
+  // Local cells' page cache (used by host-FUSE and local cell I/O).
+  uint64 page_cache_bytes = 37;
+  uint64 page_cache_dirty_bytes = 38;
+  uint64 page_cache_limit_bytes = 39;
+  // LAN peer mesh part transfers (fetched from peers / served to peers).
+  uint64 peer_parts_given = 40;
+  uint64 peer_parts_served = 41;
+  // Bytes of cell commits pending upload to R2 across open cells.
+  uint64 upload_pending_bytes = 42;
+  // Daemon memory governor pressure state.
+  bool memory_pressure = 43;
 }
 
 // Host-side view of a VM worker, reported by its host supervisor (macOS).

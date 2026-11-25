@@ -2473,8 +2473,30 @@ type ObjectStoreStats struct {
 	DaxWritesHeldBySealsNs uint64 `protobuf:"varint,26,opt,name=dax_writes_held_by_seals_ns,json=daxWritesHeldBySealsNs,proto3" json:"dax_writes_held_by_seals_ns,omitempty"`
 	DaxDeviceReadBytes     uint64 `protobuf:"varint,27,opt,name=dax_device_read_bytes,json=daxDeviceReadBytes,proto3" json:"dax_device_read_bytes,omitempty"`
 	DaxDeviceReadsNs       uint64 `protobuf:"varint,28,opt,name=dax_device_reads_ns,json=daxDeviceReadsNs,proto3" json:"dax_device_reads_ns,omitempty"`
-	unknownFields          protoimpl.UnknownFields
-	sizeCache              protoimpl.SizeCache
+	// Host disk breakdown as cladefsd's disk governor sees it (summed across
+	// backing filesystems): cells, SSD part cache, other, free, and total size.
+	HostDiskSizeBytes  uint64 `protobuf:"varint,29,opt,name=host_disk_size_bytes,json=hostDiskSizeBytes,proto3" json:"host_disk_size_bytes,omitempty"`
+	HostDiskFreeBytes  uint64 `protobuf:"varint,30,opt,name=host_disk_free_bytes,json=hostDiskFreeBytes,proto3" json:"host_disk_free_bytes,omitempty"`
+	HostDiskCellsBytes uint64 `protobuf:"varint,31,opt,name=host_disk_cells_bytes,json=hostDiskCellsBytes,proto3" json:"host_disk_cells_bytes,omitempty"`
+	HostDiskCacheBytes uint64 `protobuf:"varint,32,opt,name=host_disk_cache_bytes,json=hostDiskCacheBytes,proto3" json:"host_disk_cache_bytes,omitempty"`
+	HostDiskOtherBytes uint64 `protobuf:"varint,33,opt,name=host_disk_other_bytes,json=hostDiskOtherBytes,proto3" json:"host_disk_other_bytes,omitempty"`
+	HostDiskPressure   bool   `protobuf:"varint,34,opt,name=host_disk_pressure,json=hostDiskPressure,proto3" json:"host_disk_pressure,omitempty"`
+	// Open cells served by cladefsd and cells attached in host-FUSE mount.
+	OpenCells          uint32 `protobuf:"varint,35,opt,name=open_cells,json=openCells,proto3" json:"open_cells,omitempty"`
+	MountCellsAttached uint32 `protobuf:"varint,36,opt,name=mount_cells_attached,json=mountCellsAttached,proto3" json:"mount_cells_attached,omitempty"`
+	// Local cells' page cache (used by host-FUSE and local cell I/O).
+	PageCacheBytes      uint64 `protobuf:"varint,37,opt,name=page_cache_bytes,json=pageCacheBytes,proto3" json:"page_cache_bytes,omitempty"`
+	PageCacheDirtyBytes uint64 `protobuf:"varint,38,opt,name=page_cache_dirty_bytes,json=pageCacheDirtyBytes,proto3" json:"page_cache_dirty_bytes,omitempty"`
+	PageCacheLimitBytes uint64 `protobuf:"varint,39,opt,name=page_cache_limit_bytes,json=pageCacheLimitBytes,proto3" json:"page_cache_limit_bytes,omitempty"`
+	// LAN peer mesh part transfers (fetched from peers / served to peers).
+	PeerPartsGiven  uint64 `protobuf:"varint,40,opt,name=peer_parts_given,json=peerPartsGiven,proto3" json:"peer_parts_given,omitempty"`
+	PeerPartsServed uint64 `protobuf:"varint,41,opt,name=peer_parts_served,json=peerPartsServed,proto3" json:"peer_parts_served,omitempty"`
+	// Bytes of cell commits pending upload to R2 across open cells.
+	UploadPendingBytes uint64 `protobuf:"varint,42,opt,name=upload_pending_bytes,json=uploadPendingBytes,proto3" json:"upload_pending_bytes,omitempty"`
+	// Daemon memory governor pressure state.
+	MemoryPressure bool `protobuf:"varint,43,opt,name=memory_pressure,json=memoryPressure,proto3" json:"memory_pressure,omitempty"`
+	unknownFields  protoimpl.UnknownFields
+	sizeCache      protoimpl.SizeCache
 }
 
 func (x *ObjectStoreStats) Reset() {
@@ -2701,6 +2723,111 @@ func (x *ObjectStoreStats) GetDaxDeviceReadsNs() uint64 {
 		return x.DaxDeviceReadsNs
 	}
 	return 0
+}
+
+func (x *ObjectStoreStats) GetHostDiskSizeBytes() uint64 {
+	if x != nil {
+		return x.HostDiskSizeBytes
+	}
+	return 0
+}
+
+func (x *ObjectStoreStats) GetHostDiskFreeBytes() uint64 {
+	if x != nil {
+		return x.HostDiskFreeBytes
+	}
+	return 0
+}
+
+func (x *ObjectStoreStats) GetHostDiskCellsBytes() uint64 {
+	if x != nil {
+		return x.HostDiskCellsBytes
+	}
+	return 0
+}
+
+func (x *ObjectStoreStats) GetHostDiskCacheBytes() uint64 {
+	if x != nil {
+		return x.HostDiskCacheBytes
+	}
+	return 0
+}
+
+func (x *ObjectStoreStats) GetHostDiskOtherBytes() uint64 {
+	if x != nil {
+		return x.HostDiskOtherBytes
+	}
+	return 0
+}
+
+func (x *ObjectStoreStats) GetHostDiskPressure() bool {
+	if x != nil {
+		return x.HostDiskPressure
+	}
+	return false
+}
+
+func (x *ObjectStoreStats) GetOpenCells() uint32 {
+	if x != nil {
+		return x.OpenCells
+	}
+	return 0
+}
+
+func (x *ObjectStoreStats) GetMountCellsAttached() uint32 {
+	if x != nil {
+		return x.MountCellsAttached
+	}
+	return 0
+}
+
+func (x *ObjectStoreStats) GetPageCacheBytes() uint64 {
+	if x != nil {
+		return x.PageCacheBytes
+	}
+	return 0
+}
+
+func (x *ObjectStoreStats) GetPageCacheDirtyBytes() uint64 {
+	if x != nil {
+		return x.PageCacheDirtyBytes
+	}
+	return 0
+}
+
+func (x *ObjectStoreStats) GetPageCacheLimitBytes() uint64 {
+	if x != nil {
+		return x.PageCacheLimitBytes
+	}
+	return 0
+}
+
+func (x *ObjectStoreStats) GetPeerPartsGiven() uint64 {
+	if x != nil {
+		return x.PeerPartsGiven
+	}
+	return 0
+}
+
+func (x *ObjectStoreStats) GetPeerPartsServed() uint64 {
+	if x != nil {
+		return x.PeerPartsServed
+	}
+	return 0
+}
+
+func (x *ObjectStoreStats) GetUploadPendingBytes() uint64 {
+	if x != nil {
+		return x.UploadPendingBytes
+	}
+	return 0
+}
+
+func (x *ObjectStoreStats) GetMemoryPressure() bool {
+	if x != nil {
+		return x.MemoryPressure
+	}
+	return false
 }
 
 // Host-side view of a VM worker, reported by its host supervisor (macOS).
@@ -27492,8 +27619,7 @@ const file_hotbed_v1_hotbed_proto_rawDesc = "" +
 	"\rstorage_error\x18\x13 \x01(\tR\fstorageError\x12>\n" +
 	"\fobject_store\x18\x14 \x01(\v2\x1b.hotbed.v1.ObjectStoreStatsR\vobjectStoreB\f\n" +
 	"\n" +
-	"_last_seen\"\xa4\n" +
-	"\n" +
+	"_last_seen\"\xe3\x0f\n" +
 	"\x10ObjectStoreStats\x12%\n" +
 	"\x0euploaded_bytes\x18\x01 \x01(\x04R\ruploadedBytes\x126\n" +
 	"\x17uploaded_segments_bytes\x18\x02 \x01(\x04R\x15uploadedSegmentsBytes\x124\n" +
@@ -27525,7 +27651,23 @@ const file_hotbed_v1_hotbed_proto_rawDesc = "" +
 	"\x10dax_regions_full\x18\x19 \x01(\x04R\x0edaxRegionsFull\x12;\n" +
 	"\x1bdax_writes_held_by_seals_ns\x18\x1a \x01(\x04R\x16daxWritesHeldBySealsNs\x121\n" +
 	"\x15dax_device_read_bytes\x18\x1b \x01(\x04R\x12daxDeviceReadBytes\x12-\n" +
-	"\x13dax_device_reads_ns\x18\x1c \x01(\x04R\x10daxDeviceReadsNs\"\x89\x02\n" +
+	"\x13dax_device_reads_ns\x18\x1c \x01(\x04R\x10daxDeviceReadsNs\x12/\n" +
+	"\x14host_disk_size_bytes\x18\x1d \x01(\x04R\x11hostDiskSizeBytes\x12/\n" +
+	"\x14host_disk_free_bytes\x18\x1e \x01(\x04R\x11hostDiskFreeBytes\x121\n" +
+	"\x15host_disk_cells_bytes\x18\x1f \x01(\x04R\x12hostDiskCellsBytes\x121\n" +
+	"\x15host_disk_cache_bytes\x18  \x01(\x04R\x12hostDiskCacheBytes\x121\n" +
+	"\x15host_disk_other_bytes\x18! \x01(\x04R\x12hostDiskOtherBytes\x12,\n" +
+	"\x12host_disk_pressure\x18\" \x01(\bR\x10hostDiskPressure\x12\x1d\n" +
+	"\n" +
+	"open_cells\x18# \x01(\rR\topenCells\x120\n" +
+	"\x14mount_cells_attached\x18$ \x01(\rR\x12mountCellsAttached\x12(\n" +
+	"\x10page_cache_bytes\x18% \x01(\x04R\x0epageCacheBytes\x123\n" +
+	"\x16page_cache_dirty_bytes\x18& \x01(\x04R\x13pageCacheDirtyBytes\x123\n" +
+	"\x16page_cache_limit_bytes\x18' \x01(\x04R\x13pageCacheLimitBytes\x12(\n" +
+	"\x10peer_parts_given\x18( \x01(\x04R\x0epeerPartsGiven\x12*\n" +
+	"\x11peer_parts_served\x18) \x01(\x04R\x0fpeerPartsServed\x120\n" +
+	"\x14upload_pending_bytes\x18* \x01(\x04R\x12uploadPendingBytes\x12'\n" +
+	"\x0fmemory_pressure\x18+ \x01(\bR\x0ememoryPressure\"\x89\x02\n" +
 	"\tHostUsage\x12\x1e\n" +
 	"\vvm_cpu_busy\x18\x01 \x01(\x01R\tvmCpuBusy\x12\"\n" +
 	"\rhost_cpu_busy\x18\x02 \x01(\x01R\vhostCpuBusy\x12 \n" +

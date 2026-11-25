@@ -437,6 +437,8 @@ func TestObjectStoreStatsFromCounters(t *testing.T) {
 			"extent_cache_pinned_entries": 2451,
 			"extent_cache_idle_entries":   10943,
 			"window_mapped_bytes":         3_000_000_000,
+			"stores_open":                 4,
+			"disk_bytes":                  12_000_000_000,
 		},
 		Counters: map[string]uint64{
 			"cache_trims": 7,
@@ -459,16 +461,49 @@ func TestObjectStoreStatsFromCounters(t *testing.T) {
 			}}},
 		},
 	})
-	if got.ExtentCacheBytes != 4_000_000_000 || got.ExtentCacheCapacityBytes != 6_000_000_000 || got.ExtentCachePinnedEntries != 2451 || got.ExtentCacheIdleEntries != 10943 || got.CacheTrims != 7 {
-		t.Fatalf("unexpected extent cache stats: %+v", got)
+	if got.ExtentCacheBytes != 4_000_000_000 || got.ExtentCacheCapacityBytes != 6_000_000_000 || got.ExtentCachePinnedEntries != 2451 || got.ExtentCacheIdleEntries != 10943 || got.CacheTrims != 7 || got.OpenCells != 4 || got.HostDiskCellsBytes != 12_000_000_000 {
+		t.Fatalf("unexpected extent cache / daemon stats: %+v", got)
 	}
 	if got.ActiveVms != 2 || got.WindowMappedBytes != 3_000_000_000 || got.DaxWindowFull != 5 || got.DaxWindowReclaims != 9 || got.DaxRegionsFull != 1 || got.DaxWritesHeldBySealsNs != 1_500_000_000 || got.DaxDeviceReadBytes != 150_000 || got.DaxDeviceReadsNs != 300_000 {
 		t.Fatalf("unexpected DAX stats: %+v", got)
 	}
 
-	used, capBytes, ok := parsePartCacheMetrics("# HELP cladefsd_part_cache_bytes x\ncladefsd_part_cache_bytes 37995837625\ncladefsd_part_cache_capacity_bytes 593477874669\n")
-	if !ok || used != 37995837625 || capBytes != 593477874669 {
-		t.Fatalf("parsePartCacheMetrics = (%d, %d, %v)", used, capBytes, ok)
+	prom := strings.Join([]string{
+		"# HELP cladefsd_part_cache_bytes x",
+		"cladefsd_part_cache_bytes 37995837625",
+		"cladefsd_part_cache_capacity_bytes 593477874669",
+		`cladefsd_host_disk_size_bytes{device="259:2"} 1000000000000`,
+		`cladefsd_host_disk_free_bytes{device="259:2"} 700000000000`,
+		`cladefsd_host_disk_stores_bytes{device="259:2"} 20000000000`,
+		`cladefsd_host_disk_cache_bytes{device="259:2"} 180000000000`,
+		`cladefsd_host_disk_other_bytes{device="259:2"} 100000000000`,
+		`cladefsd_host_disk_pressure{device="259:2"} 1`,
+		`cladefsd_mount_cells{state="attached"} 3`,
+		`cladefsd_mount_cells{state="detaching"} 1`,
+		"cladefsd_page_cache_bytes 268435456",
+		"cladefsd_page_cache_dirty_bytes 8388608",
+		"cladefsd_page_cache_limit_bytes 536870912",
+		`cladefsd_peer_parts_total{outcome="given"} 42`,
+		`cladefsd_peer_parts_total{outcome="missing"} 5`,
+		`cladefsd_peer_served_parts_total{outcome="served"} 19`,
+		`cladefsd_upload_pending_bytes{cell="0/abc"} 1000`,
+		`cladefsd_upload_pending_bytes{cell="0/def"} 2500`,
+		"cladefsd_memory_pressure 1",
+	}, "\n")
+	if ok := applyCladefsPrometheusMetrics(got, prom); !ok {
+		t.Fatal("applyCladefsPrometheusMetrics returned false")
+	}
+	if got.PartCacheBytes != 37995837625 || got.PartCacheCapacityBytes != 593477874669 {
+		t.Fatalf("unexpected part cache: %+v", got)
+	}
+	if got.HostDiskSizeBytes != 1000000000000 || got.HostDiskFreeBytes != 700000000000 || got.HostDiskCellsBytes != 20000000000 || got.HostDiskCacheBytes != 180000000000 || got.HostDiskOtherBytes != 100000000000 || !got.HostDiskPressure {
+		t.Fatalf("unexpected host disk stats: %+v", got)
+	}
+	if got.MountCellsAttached != 3 || got.PageCacheBytes != 268435456 || got.PageCacheDirtyBytes != 8388608 || got.PageCacheLimitBytes != 536870912 {
+		t.Fatalf("unexpected mount/page cache stats: %+v", got)
+	}
+	if got.PeerPartsGiven != 42 || got.PeerPartsServed != 19 || got.UploadPendingBytes != 3500 || !got.MemoryPressure {
+		t.Fatalf("unexpected peer/upload/memory pressure stats: %+v", got)
 	}
 }
 

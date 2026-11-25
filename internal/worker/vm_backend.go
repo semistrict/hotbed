@@ -342,10 +342,7 @@ func sampleCladefsObjectStore(ctx context.Context, store *cladefs.Store) *pb.Obj
 	}); serr == nil {
 		applyCladefsStats(out, stats)
 	}
-	if used, capBytes, ok := scrapeLocalPartCache(sctx, "http://127.0.0.1:9184/metrics"); ok {
-		out.PartCacheBytes = used
-		out.PartCacheCapacityBytes = capBytes
-	}
+	scrapeLocalCladefsMetrics(sctx, "http://127.0.0.1:9184/metrics", out)
 	return out
 }
 
@@ -359,6 +356,8 @@ func applyCladefsStats(out *pb.ObjectStoreStats, stats *cladefsdv1.GetStatsRespo
 	out.ExtentCachePinnedEntries = g["extent_cache_pinned_entries"]
 	out.ExtentCacheIdleEntries = g["extent_cache_idle_entries"]
 	out.WindowMappedBytes = g["window_mapped_bytes"]
+	out.OpenCells = uint32(g["stores_open"])
+	out.HostDiskCellsBytes = g["disk_bytes"]
 	if c := stats.GetCounters(); c != nil {
 		out.CacheTrims = c["cache_trims"]
 	}
@@ -380,45 +379,157 @@ func applyCladefsStats(out *pb.ObjectStoreStats, stats *cladefsdv1.GetStatsRespo
 
 var cladefsMetricsHTTP = &http.Client{Timeout: 500 * time.Millisecond}
 
-func scrapeLocalPartCache(ctx context.Context, url string) (used, capacity uint64, ok bool) {
+func scrapeLocalCladefsMetrics(ctx context.Context, url string, out *pb.ObjectStoreStats) bool {
+	if out == nil {
+		return false
+	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
-		return 0, 0, false
+		return false
 	}
 	resp, err := cladefsMetricsHTTP.Do(req)
 	if err != nil {
-		return 0, 0, false
+		return false
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		return 0, 0, false
+		return false
 	}
-	body, err := io.ReadAll(io.LimitReader(resp.Body, 512<<10))
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 2<<20))
 	if err != nil {
-		return 0, 0, false
+		return false
 	}
-	return parsePartCacheMetrics(string(body))
+	return applyCladefsPrometheusMetrics(out, string(body))
 }
 
-func parsePartCacheMetrics(text string) (used, capacity uint64, ok bool) {
-	var gotUsed, gotCap bool
+func applyCladefsPrometheusMetrics(out *pb.ObjectStoreStats, text string) bool {
+	if out == nil {
+		return false
+	}
+	var (
+		matched          bool
+		hostDiskSize     uint64
+		hostDiskFree     uint64
+		hostDiskCells    uint64
+		hostDiskCache    uint64
+		hostDiskOther    uint64
+		uploadPending    uint64
+		sawHostDiskCells bool
+	)
 	for _, line := range strings.Split(text, "\n") {
-		if line == "" || line[0] == '#' {
+		name, labels, val, ok := parsePromLine(line)
+		if !ok {
 			continue
 		}
-		if rest, found := strings.CutPrefix(line, "cladefsd_part_cache_bytes "); found {
-			if v, err := parsePromUint64(strings.TrimSpace(rest)); err == nil {
-				used = v
-				gotUsed = true
+		switch name {
+		case "cladefsd_part_cache_bytes":
+			out.PartCacheBytes = val
+			matched = true
+		case "cladefsd_part_cache_capacity_bytes":
+			out.PartCacheCapacityBytes = val
+			matched = true
+		case "cladefsd_host_disk_size_bytes":
+			hostDiskSize += val
+			matched = true
+		case "cladefsd_host_disk_free_bytes":
+			hostDiskFree += val
+			matched = true
+		case "cladefsd_host_disk_stores_bytes":
+			hostDiskCells += val
+			sawHostDiskCells = true
+			matched = true
+		case "cladefsd_host_disk_cache_bytes":
+			hostDiskCache += val
+			matched = true
+		case "cladefsd_host_disk_other_bytes":
+			hostDiskOther += val
+			matched = true
+		case "cladefsd_host_disk_pressure":
+			if val > 0 {
+				out.HostDiskPressure = true
 			}
-		} else if rest, found := strings.CutPrefix(line, "cladefsd_part_cache_capacity_bytes "); found {
-			if v, err := parsePromUint64(strings.TrimSpace(rest)); err == nil {
-				capacity = v
-				gotCap = true
+			matched = true
+		case "cladefsd_mount_cells":
+			if labels == `state="attached"` {
+				out.MountCellsAttached = uint32(val)
+				matched = true
 			}
+		case "cladefsd_page_cache_bytes":
+			out.PageCacheBytes = val
+			matched = true
+		case "cladefsd_page_cache_dirty_bytes":
+			out.PageCacheDirtyBytes = val
+			matched = true
+		case "cladefsd_page_cache_limit_bytes":
+			out.PageCacheLimitBytes = val
+			matched = true
+		case "cladefsd_peer_parts_total":
+			if labels == `outcome="given"` {
+				out.PeerPartsGiven = val
+				matched = true
+			}
+		case "cladefsd_peer_served_parts_total":
+			if labels == `outcome="served"` {
+				out.PeerPartsServed = val
+				matched = true
+			}
+		case "cladefsd_upload_pending_bytes":
+			uploadPending += val
+			matched = true
+		case "cladefsd_memory_pressure":
+			if val > 0 {
+				out.MemoryPressure = true
+			}
+			matched = true
 		}
 	}
-	return used, capacity, gotUsed || gotCap
+	if hostDiskSize > 0 {
+		out.HostDiskSizeBytes = hostDiskSize
+		out.HostDiskFreeBytes = hostDiskFree
+		out.HostDiskCacheBytes = hostDiskCache
+		out.HostDiskOtherBytes = hostDiskOther
+	}
+	if sawHostDiskCells {
+		out.HostDiskCellsBytes = hostDiskCells
+	}
+	if uploadPending > 0 {
+		out.UploadPendingBytes = uploadPending
+	}
+	return matched
+}
+
+// parsePromLine splits a Prometheus text exposition sample line into its metric
+// name, raw label block (without braces), and integer value.
+func parsePromLine(line string) (name, labels string, val uint64, ok bool) {
+	line = strings.TrimSpace(line)
+	if line == "" || line[0] == '#' {
+		return "", "", 0, false
+	}
+	var rest string
+	if i := strings.IndexByte(line, '{'); i >= 0 {
+		j := strings.IndexByte(line[i+1:], '}')
+		if j < 0 {
+			return "", "", 0, false
+		}
+		name = line[:i]
+		labels = line[i+1 : i+1+j]
+		rest = strings.TrimSpace(line[i+1+j+1:])
+	} else {
+		var found bool
+		name, rest, found = strings.Cut(line, " ")
+		if !found {
+			return "", "", 0, false
+		}
+		rest = strings.TrimSpace(rest)
+	}
+	if sp := strings.IndexByte(rest, ' '); sp >= 0 {
+		rest = rest[:sp]
+	}
+	v, err := parsePromUint64(rest)
+	if err != nil {
+		return "", "", 0, false
+	}
+	return name, labels, v, true
 }
 
 func parsePromUint64(s string) (uint64, error) {
