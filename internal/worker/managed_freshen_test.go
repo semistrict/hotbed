@@ -23,8 +23,8 @@ func TestManagedFreshenAdmissionHoldProgressAndCompletion(t *testing.T) {
 	now := time.Unix(1795300000, 0)
 	e := limited(t, &now)
 
-	// Hold admission via host memory pressure (same condition as vm1 at 50%).
-	e.SetHostUsage(&pb.HostUsage{HostMemoryPressure: 50, RemainingTtlMs: 30_000})
+	// Hold admission via critical host memory pressure.
+	e.SetHostUsage(&pb.HostUsage{HostMemoryPressure: 100, RemainingTtlMs: 30_000})
 	e.Sample()
 
 	fuseRoot := t.TempDir()
@@ -245,7 +245,7 @@ func TestManagedFreshenCancelWhileQueuedSkipsBeforeStartAndRollsBackOnStartFail(
 	proj := &pb.HostedProject{Name: "hotbed"}
 
 	// Case 1: Stop while queued -> BeforeStart never runs, Wait unblocks with CANCELLED.
-	e.SetHostUsage(&pb.HostUsage{HostMemoryPressure: 50, RemainingTtlMs: 30_000})
+	e.SetHostUsage(&pb.HostUsage{HostMemoryPressure: 100, RemainingTtlMs: 30_000})
 	e.Sample()
 	var beforeCalls atomic.Int32
 	h1, err := e.startManagedFreshen(t.Context(), managedFreshenSpec{

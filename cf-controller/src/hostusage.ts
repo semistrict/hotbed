@@ -17,7 +17,11 @@ export const HOST_USAGE_TTL_MS = 45_000;
 const MAX_HOST_CLOCK_SKEW_MS = 10_000;
 const LIVE_WINDOW_MS = 15 * 60_000;
 
-const HOST_MEM_PRESSURE_HOLD_AT = 50.0;
+// Hard-hold on macOS critical memory pressure (100%); warn (50%) applies a
+// soft placement penalty in hostStarvationCost instead of taking vm1 offline.
+const HOST_MEM_PRESSURE_HOLD_AT = 100.0;
+const HOST_MEM_PRESSURE_WARN_AT = 50.0;
+const HOST_MEM_WARN_COST = 0.35;
 const HOST_CPU_BUSY_HOLD_AT = 0.85;
 const HOST_LOAD_FACTOR_HOLD_AT = 1.25;
 const HOST_STEAL_GUEST_MIN = 0.5;
@@ -209,8 +213,9 @@ export function hostStarvation(
 
 	const memHolding = memPressure >= HOST_MEM_PRESSURE_HOLD_AT;
 	let memDetail = "macOS memory pressure normal";
-	if (memPressure >= 100) memDetail = "macOS memory pressure critical";
-	else if (memPressure >= HOST_MEM_PRESSURE_HOLD_AT) memDetail = "macOS memory pressure warn";
+	if (memPressure >= HOST_MEM_PRESSURE_HOLD_AT) memDetail = "macOS memory pressure critical";
+	else if (memPressure >= HOST_MEM_PRESSURE_WARN_AT)
+		memDetail = "macOS memory pressure warn (soft placement penalty only)";
 
 	const memSig = create(AdmissionSignalSchema, {
 		name: "host-memory-pressure",
@@ -276,6 +281,7 @@ export function hostStarvationCost(
 	let stealPenalty = 0;
 	let hostPenalty = 0;
 	let loadPenalty = 0;
+	let memPenalty = 0;
 	const steal = Math.max(0, gb - vmBusy);
 	if (gb >= HOST_STEAL_COST_GUEST_MIN && steal > HOST_STEAL_COST_DIFF_MIN) {
 		stealPenalty = steal;
@@ -289,12 +295,20 @@ export function hostStarvationCost(
 			loadPenalty = Math.min(1, (loadFrac - HOST_LOAD_COST_START) / 0.5);
 		}
 	}
-	const value = Math.max(stealPenalty, hostPenalty, loadPenalty);
+	const memPressure = clampFinite(hu.hostMemoryPressure, 0, 100);
+	if (memPressure >= HOST_MEM_PRESSURE_HOLD_AT) {
+		memPenalty = 1;
+	} else if (memPressure >= HOST_MEM_PRESSURE_WARN_AT) {
+		memPenalty = HOST_MEM_WARN_COST;
+	}
+	const value = Math.max(stealPenalty, hostPenalty, loadPenalty, memPenalty);
 	if (value <= 0) return { value: 0, detail: "" };
-	const detail =
+	const baseDetail =
 		hostCPUs > 0
 			? `VM ${Math.round(vmBusy * 100)}% vs guest ${Math.round(gb * 100)}%, host ${Math.round(hostBusy * 100)}% busy, load ${load1m.toFixed(1)}/${hostCPUs}`
 			: `VM ${Math.round(vmBusy * 100)}% vs guest ${Math.round(gb * 100)}%, host ${Math.round(hostBusy * 100)}% busy`;
+	const detail =
+		memPenalty > 0 ? `${baseDetail}, host memory pressure ${Math.round(memPressure)}%` : baseDetail;
 	return { value, detail };
 }
 

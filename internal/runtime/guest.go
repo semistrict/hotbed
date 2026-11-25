@@ -92,6 +92,16 @@ func (g *GuestRuntime) IsSuspended(wsID string) (bool, int64) {
 	return false, 0
 }
 
+// IsVMRunning reports whether wsID currently has a live, non-suspended
+// Firecracker VM process attached.
+func (g *GuestRuntime) IsVMRunning(wsID string) bool {
+	if susp, _ := g.IsSuspended(wsID); susp {
+		return false
+	}
+	_, err := g.vms.ClientFor(wsID)
+	return err == nil
+}
+
 func (g *GuestRuntime) client(ctx context.Context, wsID string) (*guestd.Client, error) {
 	// Always go through EnsureVM so a tracked Firecracker VMM that exited
 	// unexpectedly (e.g. systemd-oomd kill or cladefsd exit 158) is detected,

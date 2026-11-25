@@ -15,6 +15,7 @@ import (
 
 	"github.com/semistrict/hotbed/internal/fake"
 	pb "github.com/semistrict/hotbed/internal/gen/hotbed/v1"
+	"github.com/semistrict/hotbed/internal/sysinfo"
 	"github.com/semistrict/hotbed/internal/unit"
 )
 
@@ -616,5 +617,50 @@ func TestStepBatchesStatusMany(t *testing.T) {
 	}
 	if c1.rec.Cgroup == "" || c2.rec.Cgroup == "" || c3.rec.Cgroup == "" {
 		t.Errorf("commands were not reconciled from batched status: c1=%q c2=%q c3=%q", c1.rec.Cgroup, c2.rec.Cgroup, c3.rec.Cgroup)
+	}
+}
+
+// When a slice's finite swap budget (MemorySwapMax) is exhausted (>= 95% full)
+// while RAM is already above admitMemory and work is running, new non-bench
+// work must stay queued rather than admitting and forcing an impossible park
+// into a full swap cap. Once swap headroom returns (or the node goes idle),
+// queued work admits immediately.
+func TestSwapFullHoldsNewWorkWhenRAMAboveAdmitLimit(t *testing.T) {
+	e, units, sys, clk := parkEngine(t)
+	e.start(t, units, clk, "c-run", "a", "build")
+	// 88% RAM used (>= admitMemory 86%, < parkAt 93%) and 98% slice swap full.
+	const giB = int64(1 << 30)
+	sys.SetMem(sysinfo.Mem{
+		Total:     16 * giB,
+		Available: 16*giB - 14*giB - 100<<20, // ~88.1% used
+		SwapTotal: 4 * giB,
+		SwapFree:  80 << 20, // ~98% swap used
+	})
+	e.Sample()
+
+	if _, err := e.Exec(t.Context(), &pb.RunCommandRequest{
+		Id: "c-wait", WorkspaceId: "b", Args: []string{"sleep", "60"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { units.Stop(context.WithoutCancel(t.Context()), "hotbed-c-wait") })
+
+	e.admit(t.Context())
+	cWait, _ := e.Command("c-wait")
+	if cWait.State != queued || !strings.Contains(cWait.Reason, "swap") {
+		t.Fatalf("c-wait with full slice swap = %v (%q), want queued for swap", cWait.State, cWait.Reason)
+	}
+
+	// Once swap headroom returns (e.g. an idle VM stopped or swap drained), c-wait admits.
+	sys.SetMem(sysinfo.Mem{
+		Total:     16 * giB,
+		Available: 16*giB - 14*giB - 100<<20,
+		SwapTotal: 4 * giB,
+		SwapFree:  2 * giB,
+	})
+	e.Sample()
+	e.admit(t.Context())
+	if st := e.state("c-wait"); st != running {
+		t.Fatalf("c-wait after swap headroom returned = %v, want running", st)
 	}
 }

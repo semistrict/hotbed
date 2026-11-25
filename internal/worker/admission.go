@@ -24,7 +24,11 @@ const (
 
 	// Host-side starvation thresholds from the VM host supervisor (board 9281).
 	// On macOS, memory pressure is discrete: normal=0, warn=50, critical=100.
-	hostMemPressureHoldAt  = 50.0
+	// macOS routinely sits at warn (level 2) with ample free RAM; hard-holding
+	// at 50% blacks out vm1 for 45-50m stretches and dumps all load onto other
+	// arm64 nodes. Hard-hold only on critical (100%); warn is handled as a soft
+	// placement penalty in the controller.
+	hostMemPressureHoldAt  = 100.0
 	hostCPUBusyHoldAt      = 0.85 // host CPU utilization >= 85%
 	hostCPUBusyResumeAt    = 0.70 // resume once host CPU drops under 70%
 	hostLoadPerCPUHoldAt   = 1.25 // host 1m load >= 1.25 * host_cpus
@@ -343,6 +347,12 @@ func (e *Engine) admission() *pb.Admission {
 	if hu != nil {
 		cpuHeld, cpuVal, cpuLim, cpuResume, _, cpuDetail := e.hostCPUStatus(hu)
 		memHeld, _ := hostMemoryStarved(hu)
+		memDetail := "macOS memory pressure normal"
+		if hu.GetHostMemoryPressure() >= hostMemPressureHoldAt {
+			memDetail = "macOS memory pressure critical"
+		} else if hu.GetHostMemoryPressure() >= 50 {
+			memDetail = "macOS memory pressure warn (soft placement penalty only)"
+		}
 		a.Signals = append(a.Signals,
 			&pb.AdmissionSignal{
 				Name: "host-cpu-starvation", Value: cpuVal, Limit: cpuLim, Resume: cpuResume, Unit: "%",
@@ -350,7 +360,7 @@ func (e *Engine) admission() *pb.Admission {
 			},
 			&pb.AdmissionSignal{
 				Name: "host-memory-pressure", Value: hu.GetHostMemoryPressure(), Limit: hostMemPressureHoldAt, Unit: "%",
-				Holding: memHeld, Waiting: waiting["host-memory"],
+				Holding: memHeld, Waiting: waiting["host-memory"], Detail: memDetail,
 			},
 		)
 	}

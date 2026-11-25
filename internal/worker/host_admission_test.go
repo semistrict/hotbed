@@ -91,8 +91,8 @@ func TestHostCPUStarvationHoldsWork(t *testing.T) {
 	if hcpu == nil || !hcpu.Holding || hcpu.Unit != "%" || hcpu.Waiting != 2 {
 		t.Errorf("host-cpu-starvation signal = %+v, want holding with waiting=2", hcpu)
 	}
-	if hmem == nil || hmem.Holding || hmem.Limit != 50 || hmem.Unit != "%" {
-		t.Errorf("host-memory-pressure signal = %+v, want present, not holding, limit 50%%", hmem)
+	if hmem == nil || hmem.Holding || hmem.Limit != 100 || hmem.Unit != "%" {
+		t.Errorf("host-memory-pressure signal = %+v, want present, not holding, limit 100%%", hmem)
 	}
 
 	// Hysteresis: still above resume threshold (host CPU 78% > 70%), stays held.
@@ -145,20 +145,37 @@ func TestHostCPUStarvationHoldsWork(t *testing.T) {
 	}
 }
 
-// TestHostMemoryPressureHoldsWork verifies that host_memory_pressure >= 50
-// holds new work with signal "host-memory-pressure" (limit 50, unit "%"), and
-// recovers when host memory pressure drops back to normal (0).
+// TestHostMemoryPressureHoldsWork verifies that macOS warn (50%) does NOT
+// hard-hold new work (leaving soft placement preference to the controller),
+// while critical host_memory_pressure (100%) holds new work with signal
+// "host-memory-pressure" (limit 100, unit "%") and recovers when pressure drops.
 func TestHostMemoryPressureHoldsWork(t *testing.T) {
 	now := time.Unix(1795500000, 0)
 	e, units, _, clk := parkEngine(t)
 	*clk = now
 
+	// macOS warn (50%) must NOT hard-hold new work.
 	e.SetHostUsage(&pb.HostUsage{
 		VmCpuBusy:          0.10,
 		HostCpuBusy:        0.20,
 		HostLoad_1M:        2.0,
 		HostCpus:           8,
 		HostMemoryPressure: 50, // macOS warn
+		SampledAt:          clk.UnixMilli(),
+	})
+	if a := e.Heartbeat("c").Admission; a.Holding {
+		t.Fatalf("macOS warn (50%%) must not hard-hold admission: %+v", a)
+	} else if hmem := signal(a, "host-memory-pressure"); hmem == nil || hmem.Holding || hmem.Value != 50 || hmem.Limit != 100 {
+		t.Fatalf("warn host-memory-pressure signal = %+v, want value=50 limit=100 holding=false", hmem)
+	}
+
+	// macOS critical (100%) MUST hard-hold new work.
+	e.SetHostUsage(&pb.HostUsage{
+		VmCpuBusy:          0.10,
+		HostCpuBusy:        0.20,
+		HostLoad_1M:        2.0,
+		HostCpus:           8,
+		HostMemoryPressure: 100, // macOS critical
 		SampledAt:          clk.UnixMilli(),
 	})
 
@@ -172,27 +189,27 @@ func TestHostMemoryPressureHoldsWork(t *testing.T) {
 	e.admit(t.Context())
 	c, _ := e.Command("mem-1")
 	if c.State != queued || !strings.Contains(c.Reason, "host memory pressure") {
-		t.Fatalf("mem-1 under host memory pressure 50%% = %v (%q), want queued", c.State, c.Reason)
+		t.Fatalf("mem-1 under host memory pressure 100%% = %v (%q), want queued", c.State, c.Reason)
 	}
 	a := e.Heartbeat("c").Admission
 	hmem := signal(a, "host-memory-pressure")
-	if !a.Holding || hmem == nil || !hmem.Holding || hmem.Value != 50 || hmem.Limit != 50 || hmem.Unit != "%" || hmem.Waiting != 1 {
+	if !a.Holding || hmem == nil || !hmem.Holding || hmem.Value != 100 || hmem.Limit != 100 || hmem.Unit != "%" || hmem.Waiting != 1 {
 		t.Fatalf("admission under host memory pressure = %+v (signal=%+v)", a, hmem)
 	}
 
-	// Host memory pressure returns to normal -> hold clears and command starts.
+	// Host memory pressure drops back to warn (50%) -> hold clears and command starts.
 	*clk = clk.Add(10 * time.Second)
 	e.SetHostUsage(&pb.HostUsage{
 		VmCpuBusy:          0.10,
 		HostCpuBusy:        0.20,
 		HostLoad_1M:        2.0,
 		HostCpus:           8,
-		HostMemoryPressure: 0,
+		HostMemoryPressure: 50,
 		SampledAt:          clk.UnixMilli(),
 	})
 	e.admit(t.Context())
 	if s := e.state("mem-1"); s != running {
-		t.Fatalf("after host memory pressure cleared, mem-1 is %v, want running", s)
+		t.Fatalf("after host memory pressure cleared from critical, mem-1 is %v, want running", s)
 	}
 }
 
@@ -290,7 +307,7 @@ func TestHeartbeatOnceAppliesHostUsage(t *testing.T) {
 		reply: &pb.HeartbeatResponse{
 			HostUsage: &pb.HostUsage{
 				HostCpuBusy:        0.92,
-				HostMemoryPressure: 50,
+				HostMemoryPressure: 100,
 				SampledAt:          clk.UnixMilli(),
 			},
 		},

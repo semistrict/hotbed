@@ -764,6 +764,13 @@ func (s *System) SetUsed(used int64) {
 	s.Mem.Available = s.Mem.Total - used
 }
 
+// SetMem replaces the fake system's memory and swap readings.
+func (s *System) SetMem(m sysinfo.Mem) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.Mem = m
+}
+
 // Isolation stands in for a node's measurement isolation: it records what
 // the engine asks of it, and loses its hold when a test says so.
 type Isolation struct {

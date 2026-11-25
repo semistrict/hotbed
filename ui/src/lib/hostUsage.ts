@@ -6,7 +6,8 @@ export const HOST_CPU_BUSY_HOLD_AT = 0.85;
 export const HOST_LOAD_FACTOR_HOLD_AT = 1.25;
 export const HOST_STEAL_GUEST_MIN = 0.5;
 export const HOST_STEAL_DIFF_HOLD_AT = 0.35;
-export const HOST_MEM_PRESSURE_HOLD_AT = 50;
+export const HOST_MEM_PRESSURE_WARN_AT = 50;
+export const HOST_MEM_PRESSURE_HOLD_AT = 100;
 
 /** Host-side usage for an online VM node, or undefined for bare-metal/offline nodes. */
 export function nodeHostUsage(n: Node): HostUsage | undefined {
@@ -30,8 +31,8 @@ export function isHostStarved(guestBusy: number, host?: HostUsage): boolean {
 
 /** Human-readable macOS memory pressure state for 0/50/100 levels. */
 export function hostMemoryPressureLabel(pressure: number): string {
-  if (pressure >= 100) return "critical";
-  if (pressure >= HOST_MEM_PRESSURE_HOLD_AT) return "warn";
+  if (pressure >= HOST_MEM_PRESSURE_HOLD_AT) return "critical";
+  if (pressure >= HOST_MEM_PRESSURE_WARN_AT) return "warn";
   return "normal";
 }
 

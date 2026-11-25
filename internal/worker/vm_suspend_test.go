@@ -24,16 +24,19 @@ type suspendableTestResolver struct {
 	mu           sync.Mutex
 	clients      map[string]*guestd.Client
 	suspended    map[string]int64
+	stopped      map[string]bool
 	suspendCount map[string]int
 	resumeCount  map[string]int
 	stopCount    map[string]int
 	suspendErr   error
+	stopErr      error
 }
 
 func newSuspendableTestResolver() *suspendableTestResolver {
 	return &suspendableTestResolver{
 		clients:      map[string]*guestd.Client{},
 		suspended:    map[string]int64{},
+		stopped:      map[string]bool{},
 		suspendCount: map[string]int{},
 		resumeCount:  map[string]int{},
 		stopCount:    map[string]int{},
@@ -45,6 +48,10 @@ func (r *suspendableTestResolver) EnsureVM(_ context.Context, wsID string) (*gue
 	defer r.mu.Unlock()
 	if _, susp := r.suspended[wsID]; susp {
 		delete(r.suspended, wsID)
+		r.resumeCount[wsID]++
+	}
+	if r.stopped[wsID] {
+		delete(r.stopped, wsID)
 		r.resumeCount[wsID]++
 	}
 	c, ok := r.clients[wsID]
@@ -60,6 +67,9 @@ func (r *suspendableTestResolver) ClientFor(wsID string) (*guestd.Client, error)
 	if _, susp := r.suspended[wsID]; susp {
 		return nil, fmt.Errorf("vm %s is suspended", wsID)
 	}
+	if r.stopped[wsID] {
+		return nil, fmt.Errorf("vm %s is stopped", wsID)
+	}
 	c, ok := r.clients[wsID]
 	if !ok {
 		return nil, fmt.Errorf("no guestd client for %s", wsID)
@@ -70,7 +80,11 @@ func (r *suspendableTestResolver) ClientFor(wsID string) (*guestd.Client, error)
 func (r *suspendableTestResolver) StopVM(_ context.Context, wsID string) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	if r.stopErr != nil {
+		return r.stopErr
+	}
 	delete(r.suspended, wsID)
+	r.stopped[wsID] = true
 	r.stopCount[wsID]++
 	return nil
 }
@@ -458,11 +472,97 @@ func TestRuntimeUnitsMemoryReturnsZeroAnonWhileSuspended(t *testing.T) {
 	}
 }
 
-// When memory-cell suspend returns ErrSuspendUnsupported on an idle VM (e.g. a
-// pre-upgrade VM launched with --no-api or pre-upgrade Firecracker),
-// hibernateIdleVMs must still reclaim the idle VM's host Firecracker RAM so it
-// does not squat on gigabytes of RAM inside the work slice.
-func TestIdleVMFallbackReclaimsHostRAMWhenSuspendUnsupported(t *testing.T) {
+// When memory-cell suspend returns ErrSuspendUnsupported on a completely idle
+// VM (e.g. a pre-upgrade VM launched with --no-api or pre-upgrade Firecracker),
+// hibernateIdleVMs cleanly stops the idle VM via Teardown so it holds 0 host
+// RAM and 0 swap, keeps its CladeFS rootfs cell intact, does not loop on the
+// already-stopped VM, and transparently boots it again on the next command.
+// Under memory tightness, idle shutdown triggers after 15s instead of 2m.
+func TestIdleVMStopsWhenSuspendUnsupportedAndRebootsOnNextCommand(t *testing.T) {
+	ctx := t.Context()
+	now := time.Date(2026, 11, 25, 12, 0, 0, 0, time.UTC)
+	dir := t.TempDir()
+	store := &fake.Store{Root: filepath.Join(dir, "volumes")}
+	sys := fake.NewSystem()
+	sys.SetMem(sysinfo.Mem{Total: 16 << 30, Available: 1 << 30}) // 93.75% used -> tight memory
+	resolver := newSuspendableTestResolver()
+	resolver.suspendErr = fmt.Errorf("no api sock: %w", vm.ErrSuspendUnsupported)
+	rt := runtime.NewGuestRuntime(resolver)
+	eng, err := NewEngine(ctx, EngineConfig{
+		Dir:                dir,
+		NodeID:             "n1",
+		Host:               "worker1",
+		Store:              store,
+		BaseImage:          fake.BaseImage(store),
+		Units:              &fake.Units{},
+		Runtime:            rt,
+		RuntimeFor:         func(string) bool { return true },
+		System:             sys,
+		Now:                func() time.Time { return now },
+		VMIdleSuspendAfter: 2 * time.Minute,
+	})
+	if err != nil {
+		t.Fatalf("NewEngine: %v", err)
+	}
+	t.Cleanup(func() { _ = eng.Close() })
+	seedTestVMWorkspace(t, eng, resolver, "ws-old-noapi", now)
+	eng.Sample()
+
+	// Tight memory tightens idle threshold to 15s: at +20s the idle VM stops.
+	now = now.Add(20 * time.Second)
+	eng.step(ctx)
+
+	resolver.mu.Lock()
+	stops := resolver.stopCount["ws-old-noapi"]
+	stopped := resolver.stopped["ws-old-noapi"]
+	resolver.mu.Unlock()
+	if stops != 1 || !stopped {
+		t.Fatalf("after 20s idle under tight memory: stopCount=%d stopped=%v, want 1/true", stops, stopped)
+	}
+
+	// Subsequent steps must skip the already-stopped VM (no repeated StopVM).
+	now = now.Add(time.Minute)
+	eng.step(ctx)
+	resolver.mu.Lock()
+	stopsAfter := resolver.stopCount["ws-old-noapi"]
+	resolver.mu.Unlock()
+	if stopsAfter != 1 {
+		t.Fatalf("already-stopped VM should not call StopVM again: got %d", stopsAfter)
+	}
+
+	// Running a new command transparently wakes the VM via EnsureVM.
+	sys.SetMem(sysinfo.Mem{Total: 16 << 30, Available: 12 << 30})
+	eng.Sample()
+	cmd, err := eng.Exec(ctx, &pb.RunCommandRequest{
+		Id: "cmd-reboot", WorkspaceId: "ws-old-noapi", Args: []string{"sh", "-c", "echo REBOOTED_OK"},
+	})
+	if err != nil {
+		t.Fatalf("Exec after idle stop: %v", err)
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		eng.step(ctx)
+		cur, ok := eng.Command(cmd.Id)
+		if ok && cur.State == succeeded {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("timed out waiting for cmd-reboot (state=%v)", cur.GetState())
+		}
+		time.Sleep(25 * time.Millisecond)
+	}
+	resolver.mu.Lock()
+	resumes := resolver.resumeCount["ws-old-noapi"]
+	resolver.mu.Unlock()
+	if resumes != 1 {
+		t.Fatalf("ws-old-noapi resumeCount = %d, want 1", resumes)
+	}
+}
+
+// If both SuspendWorkspace (ErrSuspendUnsupported) and Teardown fail on an idle
+// VM, hibernateIdleVMs falls back to host cgroup memory.reclaim so the VM still
+// sheds cold host RAM.
+func TestIdleVMFallbackReclaimsHostRAMWhenStopFails(t *testing.T) {
 	ctx := t.Context()
 	now := time.Date(2026, 11, 25, 12, 0, 0, 0, time.UTC)
 	dir := t.TempDir()
@@ -480,6 +580,7 @@ func TestIdleVMFallbackReclaimsHostRAMWhenSuspendUnsupported(t *testing.T) {
 	}
 	resolver := newSuspendableTestResolver()
 	resolver.suspendErr = fmt.Errorf("no api sock: %w", vm.ErrSuspendUnsupported)
+	resolver.stopErr = fmt.Errorf("simulated stop failure")
 	rt := runtime.NewGuestRuntime(resolver)
 	eng, err := NewEngine(ctx, EngineConfig{
 		Dir:                dir,

@@ -86,10 +86,35 @@ func (e *Engine) canSuspendVMLocked(wsID string, requireNoLiveCommands bool) boo
 	return true
 }
 
+// vmPressureIdleSuspendAfter tightens idle VM hibernation/shutdown when the
+// node is already under memory tightness or has commands parked waiting for
+// room, so completely idle VMs vacate RAM/swap promptly instead of squatting
+// for two minutes while active work stalls.
+const vmPressureIdleSuspendAfter = 15 * time.Second
+
+func (e *Engine) vmMemoryTightLocked() bool {
+	for _, c := range e.commands {
+		if !c.stopping && !c.deactivating && c.cmd().State == parked && c.rec.HeldFor == "" {
+			return true
+		}
+	}
+	if e.usage.GetMemoryPressure() >= admitPressure {
+		return true
+	}
+	if e.lastMem.Total > 0 && float64(e.lastMem.Used()) >= float64(e.lastMem.Total)*admitMemory {
+		return true
+	}
+	return false
+}
+
 // hibernateIdleVMs suspends VM workspaces that have remained completely idle
 // (no live commands, shells, or syncs) for vmIdleSuspendAfter into CladeFS
 // memory cells so idle workspaces hold zero host RAM and zero swap while
 // staying fast to wake on the next sync, command, file query, or shell.
+// When memory-cell suspend is unsupported for an idle VM (e.g. pre-upgrade
+// Firecracker or --no-api VMs), it cleanly shuts down the idle VM via Teardown
+// (preserving the CladeFS rootfs cell so EnsureVM reboots it transparently on
+// the next command or sync) instead of letting idle VMs pin host RAM and swap.
 func (e *Engine) hibernateIdleVMs(ctx context.Context) {
 	sr, ok := e.cfg.Runtime.(runtime.SuspendableRuntime)
 	if !ok {
@@ -99,8 +124,12 @@ func (e *Engine) hibernateIdleVMs(ctx context.Context) {
 	if idleAfter <= 0 {
 		return
 	}
+	runningCheck, hasRunningCheck := e.cfg.Runtime.(interface{ IsVMRunning(string) bool })
 	now := e.now()
 	e.mu.Lock()
+	if e.vmMemoryTightLocked() {
+		idleAfter = min(idleAfter, vmPressureIdleSuspendAfter)
+	}
 	var cands []*workspace
 	for _, w := range e.workspaces {
 		ws := w.ws()
@@ -119,6 +148,9 @@ func (e *Engine) hibernateIdleVMs(ctx context.Context) {
 		if susp, _ := sr.IsSuspended(ws.Id); susp {
 			continue
 		}
+		if hasRunningCheck && !runningCheck.IsVMRunning(ws.Id) {
+			continue
+		}
 		cands = append(cands, w)
 	}
 	e.mu.Unlock()
@@ -132,9 +164,13 @@ func (e *Engine) hibernateIdleVMs(ctx context.Context) {
 		}
 		wsID := w.ws().Id
 		e.mu.Lock()
-		stillIdle := e.canSuspendVMLocked(wsID, true) &&
+		curIdleAfter := e.vmIdleSuspendAfter()
+		if e.vmMemoryTightLocked() {
+			curIdleAfter = min(curIdleAfter, vmPressureIdleSuspendAfter)
+		}
+		stillIdle := curIdleAfter > 0 && e.canSuspendVMLocked(wsID, true) &&
 			(w.suspendRetryAt.IsZero() || !e.now().Before(w.suspendRetryAt)) &&
-			e.now().Sub(time.UnixMilli(w.ws().LastActiveAt)) >= idleAfter
+			e.now().Sub(time.UnixMilli(w.ws().LastActiveAt)) >= curIdleAfter
 		e.mu.Unlock()
 		if !stillIdle {
 			w.sync.Unlock()
@@ -144,28 +180,50 @@ func (e *Engine) hibernateIdleVMs(ctx context.Context) {
 			w.sync.Unlock()
 			continue
 		}
+		if hasRunningCheck && !runningCheck.IsVMRunning(wsID) {
+			w.sync.Unlock()
+			continue
+		}
 		sctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 		err := sr.SuspendWorkspace(sctx, wsID, 0)
 		cancel()
-		w.sync.Unlock()
 		if err != nil {
-			backoff := time.Minute
 			if errors.Is(err, vm.ErrSuspendUnsupported) {
-				backoff = 5 * time.Minute
-				// Fallback for pre-upgrade VMs (--no-api) or pre-upgrade
-				// Firecracker: drop guest page caches and push the idle VM's
-				// cold host Firecracker RAM out of the work slice so idle VMs
-				// do not squat on gigabytes of RAM.
+				// No live commands, shells, or syncs remain: stop the idle
+				// Firecracker VM cleanly (SyncFs + PowerOff + StopVM) while
+				// keeping its CladeFS rootfs cell intact. EnsureVM boots a
+				// fresh VM on that cell transparently on the next use.
+				tctx, tcancel := context.WithTimeout(ctx, 15*time.Second)
+				terr := e.cfg.Runtime.Teardown(tctx, wsID)
+				tcancel()
+				w.sync.Unlock()
+				if terr == nil {
+					if e.rtUnits != nil {
+						e.rtUnits.forgetVMCgroup(wsID)
+					}
+					e.mu.Lock()
+					w.suspendRetryAt = time.Time{}
+					e.mu.Unlock()
+					slog.Info("stopped idle VM workspace to free host RAM (memory-cell suspend unsupported)", "workspace", wsID)
+					continue
+				}
 				if e.rtUnits != nil {
 					e.rtUnits.reclaimIdleVM(ctx, wsID)
 				}
+				e.mu.Lock()
+				w.suspendRetryAt = e.now().Add(5 * time.Minute)
+				e.mu.Unlock()
+				slog.Warn("stop idle VM workspace failed; fell back to host reclaim", "workspace", wsID, "suspendErr", err, "stopErr", terr)
+				continue
 			}
+			w.sync.Unlock()
 			e.mu.Lock()
-			w.suspendRetryAt = e.now().Add(backoff)
+			w.suspendRetryAt = e.now().Add(time.Minute)
 			e.mu.Unlock()
-			slog.Warn("hibernate idle VM workspace failed", "workspace", wsID, "retryIn", backoff, "err", err)
+			slog.Warn("hibernate idle VM workspace failed", "workspace", wsID, "retryIn", time.Minute, "err", err)
 			continue
 		}
+		w.sync.Unlock()
 		if e.rtUnits != nil {
 			e.rtUnits.forgetVMCgroup(wsID)
 		}

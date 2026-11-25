@@ -33,6 +33,8 @@ describe("hostUsage helpers and VM node rendering", () => {
     expect(isHostStarved(0.85, starvedHost)).toBe(true);
     expect(hasCpuStealWarning(0.40, healthyHost)).toBe(false);
     expect(isHostStarved(0.40, healthyHost)).toBe(false);
+    expect(isHostStarved(0.40, create(HostUsageSchema, { ...healthyHost, hostMemoryPressure: 50 }))).toBe(false);
+    expect(isHostStarved(0.40, create(HostUsageSchema, { ...healthyHost, hostMemoryPressure: 100 }))).toBe(true);
     expect(hostMemoryPressureLabel(0)).toBe("normal");
     expect(hostMemoryPressureLabel(50)).toBe("warn");
     expect(hostMemoryPressureLabel(100)).toBe("critical");

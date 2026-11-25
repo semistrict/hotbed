@@ -132,6 +132,81 @@ func TestMemoryUsesTighterMemoryHigh(t *testing.T) {
 	}
 }
 
+// A cgroup's finite memory.swap.max caps how much swap commands in the slice
+// can use (e.g. BackstopFor's zram cap on ubu1 and asahimbp). Memory must
+// report the tightest enclosing swap ceiling rather than raw host /proc/meminfo
+// swap so admission sees when slice swap is exhausted.
+func TestMemoryUsesTighterCgroupSwapMax(t *testing.T) {
+	tmp := t.TempDir()
+	if err := os.MkdirAll(tmp+"/proc", 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// Host has 32 GiB RAM (24 GiB available) and 16 GiB swap (12 GiB free).
+	meminfo := "MemTotal:       33554432 kB\nMemAvailable:   25165824 kB\nSwapTotal:      16777216 kB\nSwapFree:       12582912 kB\n"
+	if err := os.WriteFile(tmp+"/proc/meminfo", []byte(meminfo), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	sliceDir := tmp + "/sys/fs/cgroup/user.slice/user-1000-hotbed.slice"
+	if err := os.MkdirAll(sliceDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	const giB = 1 << 30
+	write := func(name, val string) {
+		t.Helper()
+		if err := os.WriteFile(sliceDir+"/"+name, []byte(val+"\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write("memory.high", strconv.FormatInt(16*giB, 10))
+	write("memory.max", strconv.FormatInt(18*giB, 10))
+	write("memory.current", strconv.FormatInt(14*giB, 10))
+	write("memory.stat", "inactive_file 0\n")
+	write("memory.swap.max", strconv.FormatInt(3*giB, 10))
+	write("memory.swap.current", strconv.FormatInt(3*giB, 10))
+
+	prev := Root
+	Root = tmp
+	t.Cleanup(func() { Root = prev })
+
+	m, err := Memory("/user.slice/user-1000-hotbed.slice")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if m.SwapTotal != 3*giB || m.SwapFree != 0 {
+		t.Fatalf("Memory with full 3G swap cap = %+v, want SwapTotal=3G SwapFree=0", m)
+	}
+
+	// Partially used swap cap reports exact remaining slice headroom.
+	write("memory.swap.current", strconv.FormatInt(1*giB, 10))
+	m2, err := Memory("/user.slice/user-1000-hotbed.slice")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if m2.SwapTotal != 3*giB || m2.SwapFree != 2*giB {
+		t.Fatalf("Memory with 1G/3G swap cap = %+v, want SwapTotal=3G SwapFree=2G", m2)
+	}
+
+	// memory.swap.max=0 disables swap inside the slice.
+	write("memory.swap.max", "0")
+	m3, err := Memory("/user.slice/user-1000-hotbed.slice")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if m3.SwapTotal != 0 || m3.SwapFree != 0 {
+		t.Fatalf("Memory with swap.max=0 = %+v, want SwapTotal=0 SwapFree=0", m3)
+	}
+
+	// memory.swap.max=max falls back to host swap.
+	write("memory.swap.max", "max")
+	m4, err := Memory("/user.slice/user-1000-hotbed.slice")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if m4.SwapTotal != 16*giB || m4.SwapFree != 12*giB {
+		t.Fatalf("Memory with swap.max=max = %+v, want SwapTotal=16G SwapFree=12G", m4)
+	}
+}
+
 func TestParseSwaps(t *testing.T) {
 	for _, tc := range []struct {
 		name    string

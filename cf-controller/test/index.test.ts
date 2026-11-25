@@ -36,6 +36,7 @@ import {
 	FreshenState,
 	GitAuthService,
 	HeartbeatRequestSchema,
+	HostUsageSchema,
 	ListFilesResponseSchema,
 	ManagedArtifactSchema,
 	MemoryMode,
@@ -68,6 +69,7 @@ import {
 	WorkspaceService,
 	WorkspaceState,
 } from "../src/gen/hotbed/v1/hotbed_pb.ts";
+import { hostStarvation, hostStarvationCost } from "../src/hostusage.ts";
 import type { TunnelDownMessage, TunnelUpMessage } from "../src/tunnel.ts";
 
 const OWNER_TOKEN = "test-owner-secret";
@@ -2625,5 +2627,39 @@ describe("Security, cron, daemon logs, tunnel, and workspace regression tests", 
 		const detail = await owner.cluster.getFreshen({ id: "f-proj-freshen-obs-g2-bbb222" });
 		expect(detail.freshen?.baseId).toBe("proj-freshen-obs-g2");
 		expect(detail.nodeAdmission?.holding).toBe(true);
+	});
+
+	it("treats macOS warn (50%) host memory pressure as soft placement penalty and holds only on critical (100%)", () => {
+		const warnUsage = create(HostUsageSchema, {
+			vmCpuBusy: 0.1,
+			hostCpuBusy: 0.25,
+			hostLoad1m: 2.0,
+			hostCpus: 10,
+			hostMemoryPressure: 50,
+		});
+		const warnStarv = hostStarvation(undefined, warnUsage);
+		expect(warnStarv.holding).toBe(false);
+		const warnSig = warnStarv.signals.find((s) => s.name === "host-memory-pressure");
+		expect(warnSig?.holding).toBe(false);
+		expect(warnSig?.limit).toBe(100);
+		expect(warnSig?.detail).toContain("warn");
+
+		const warnCost = hostStarvationCost(0.1, warnUsage);
+		expect(warnCost.value).toBeGreaterThan(0);
+		expect(warnCost.value).toBeLessThan(1);
+		expect(warnCost.detail).toContain("50%");
+
+		const critUsage = create(HostUsageSchema, {
+			vmCpuBusy: 0.1,
+			hostCpuBusy: 0.25,
+			hostLoad1m: 2.0,
+			hostCpus: 10,
+			hostMemoryPressure: 100,
+		});
+		const critStarv = hostStarvation(undefined, critUsage);
+		expect(critStarv.holding).toBe(true);
+		const critSig = critStarv.signals.find((s) => s.name === "host-memory-pressure");
+		expect(critSig?.holding).toBe(true);
+		expect(critSig?.detail).toContain("critical");
 	});
 });

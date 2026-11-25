@@ -232,27 +232,38 @@ func Memory(sliceDir string) (Mem, error) {
 }
 
 // domains is the host's memory, then that of each cgroup enclosing (or at)
-// sliceDir that has a limit, outermost first, each with the host's swap.
+// sliceDir that has a limit, outermost first, each clamped to the tightest
+// enclosing cgroup swap limit (memory.swap.max / memory.swap.current).
 func domains(sliceDir string) ([]Mem, error) {
 	host, err := Meminfo()
 	if err != nil {
 		return nil, err
 	}
 	out := []Mem{host}
+	swapTotal, swapFree := host.SwapTotal, host.SwapFree
 	dir := ""
 	for _, part := range strings.Split(strings.Trim(sliceDir, "/"), "/") {
 		if part == "" {
 			continue
 		}
 		dir += "/" + part
+		if st, sf, ok, err := cgroupSwap(dir); err != nil {
+			return nil, err
+		} else if ok {
+			swapTotal = min(swapTotal, st)
+			swapFree = min(swapFree, sf)
+		}
 		m, ok, err := cgroupMemory(dir)
 		if err != nil {
 			return nil, err
 		}
 		if ok {
-			m.SwapTotal, m.SwapFree = host.SwapTotal, host.SwapFree
 			out = append(out, m)
 		}
+	}
+	for i := range out {
+		out[i].SwapTotal = swapTotal
+		out[i].SwapFree = min(swapFree, swapTotal)
 	}
 	return out, nil
 }
@@ -284,6 +295,46 @@ func readCgroupLimit(p string) (int64, bool, error) {
 		return 0, false, nil
 	}
 	return n, true, nil
+}
+
+// cgroupSwap reads a cgroup v2 directory's finite memory.swap.max and
+// memory.swap.current (including 0, which disables swap for the cgroup).
+// Returns ok=false when memory.swap.max is missing or "max".
+func cgroupSwap(dir string) (total, free int64, ok bool, err error) {
+	base := path("/sys/fs/cgroup" + dir)
+	b, err := os.ReadFile(base + "/memory.swap.max")
+	if os.IsNotExist(err) {
+		return 0, 0, false, nil
+	}
+	if err != nil {
+		return 0, 0, false, err
+	}
+	s := strings.TrimSpace(string(b))
+	if s == "" || s == "max" {
+		return 0, 0, false, nil
+	}
+	limit, err := strconv.ParseInt(s, 10, 64)
+	if err != nil {
+		return 0, 0, false, fmt.Errorf("%s/memory.swap.max: %w", dir, err)
+	}
+	if limit < 0 {
+		return 0, 0, false, nil
+	}
+	if limit == 0 {
+		return 0, 0, true, nil
+	}
+	curB, err := os.ReadFile(base + "/memory.swap.current")
+	if os.IsNotExist(err) {
+		return limit, limit, true, nil
+	}
+	if err != nil {
+		return 0, 0, false, err
+	}
+	current, err := strconv.ParseInt(strings.TrimSpace(string(curB)), 10, 64)
+	if err != nil {
+		return 0, 0, false, fmt.Errorf("%s/memory.swap.current: %w", dir, err)
+	}
+	return limit, max(0, limit-current), true, nil
 }
 
 // cgroupMemory reads a cgroup's effective memory limit and use; ok is false

@@ -1197,11 +1197,13 @@ func (e *Engine) roomFor(c *command, cpuPreempted bool, mem sysinfo.Mem, hasMem 
 		}
 		return "memory", fmt.Sprintf("waiting for memory: needs %s, %s left of what running and parked commands hold or are guaranteed", gib(want), gib(room))
 	}
-	var memTotal, memUsed int64
+	var memTotal, memUsed, swapTotal, swapFree int64
 	if hasMem {
 		memTotal, memUsed = mem.Total, mem.Used()
+		swapTotal, swapFree = mem.SwapTotal, mem.SwapFree
 	} else if e.lastMem.Total > 0 {
 		memTotal, memUsed = e.lastMem.Total, e.lastMem.Used()
+		swapTotal, swapFree = e.lastMem.SwapTotal, e.lastMem.SwapFree
 	} else if t := e.resources.GetMemoryBytes(); t > 0 && e.usage.GetMemoryUsedBytes() > 0 {
 		memTotal, memUsed = t, e.usage.GetMemoryUsedBytes()
 	}
@@ -1215,6 +1217,15 @@ func (e *Engine) roomFor(c *command, cpuPreempted bool, mem sysinfo.Mem, hasMem 
 		physRoom := memTotal - memUsed
 		if float64(memUsed) > float64(memTotal)*parkAt {
 			return "memory", fmt.Sprintf("waiting for memory: %.0f%% in use (%s physically available on the node)", 100*float64(memUsed)/float64(memTotal), gib(max(0, physRoom)))
+		}
+		// When the work slice's swap budget is saturated (>= 95% used) and RAM
+		// is already above admitMemory with work running, parking cannot evict
+		// anonymous pages to swap (memory.reclaim returns EAGAIN) — queue new
+		// work instead of piling into a permanent memory.high PSI livelock.
+		if !c.cmd().Bench && swapTotal > 0 && float64(swapTotal-swapFree) >= float64(swapTotal)*0.95 &&
+			float64(memUsed) >= float64(memTotal)*admitMemory && e.hasRunningWorkLocked() {
+			return "memory", fmt.Sprintf("waiting for memory: swap %.0f%% full (%s free) while RAM is %.0f%% in use",
+				100*float64(swapTotal-swapFree)/float64(swapTotal), gib(max(0, swapFree)), 100*float64(memUsed)/float64(memTotal))
 		}
 		// A freshen's MemoryLowBytes is an intra-hotbed concurrency reservation
 		// sized from an earlier build's PeakHeldBytes (anon + swap, capped at
@@ -1588,6 +1599,17 @@ func (e *Engine) hasOtherStartedCommandLocked(wsID string) bool {
 			continue
 		}
 		if wsID == "" || other.runtimeTarget() != wsID {
+			return true
+		}
+	}
+	return false
+}
+
+// hasRunningWorkLocked reports whether any non-stopping command is currently
+// running on the node. Call with e.mu held.
+func (e *Engine) hasRunningWorkLocked() bool {
+	for _, c := range e.commands {
+		if !c.stopping && !c.deactivating && c.cmd().State == running {
 			return true
 		}
 	}
