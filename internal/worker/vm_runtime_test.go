@@ -437,6 +437,8 @@ func TestObjectStoreStatsFromCounters(t *testing.T) {
 			"extent_cache_pinned_entries": 2451,
 			"extent_cache_idle_entries":   10943,
 			"window_mapped_bytes":         3_000_000_000,
+			"stores_open":                 4,
+			"disk_bytes":                  12_000_000_000,
 		},
 		Counters: map[string]uint64{
 			"cache_trims": 7,
@@ -459,16 +461,49 @@ func TestObjectStoreStatsFromCounters(t *testing.T) {
 			}}},
 		},
 	})
-	if got.ExtentCacheBytes != 4_000_000_000 || got.ExtentCacheCapacityBytes != 6_000_000_000 || got.ExtentCachePinnedEntries != 2451 || got.ExtentCacheIdleEntries != 10943 || got.CacheTrims != 7 {
-		t.Fatalf("unexpected extent cache stats: %+v", got)
+	if got.ExtentCacheBytes != 4_000_000_000 || got.ExtentCacheCapacityBytes != 6_000_000_000 || got.ExtentCachePinnedEntries != 2451 || got.ExtentCacheIdleEntries != 10943 || got.CacheTrims != 7 || got.OpenCells != 4 || got.HostDiskCellsBytes != 12_000_000_000 {
+		t.Fatalf("unexpected extent cache / daemon stats: %+v", got)
 	}
 	if got.ActiveVms != 2 || got.WindowMappedBytes != 3_000_000_000 || got.DaxWindowFull != 5 || got.DaxWindowReclaims != 9 || got.DaxRegionsFull != 1 || got.DaxWritesHeldBySealsNs != 1_500_000_000 || got.DaxDeviceReadBytes != 150_000 || got.DaxDeviceReadsNs != 300_000 {
 		t.Fatalf("unexpected DAX stats: %+v", got)
 	}
 
-	used, capBytes, ok := parsePartCacheMetrics("# HELP cladefsd_part_cache_bytes x\ncladefsd_part_cache_bytes 37995837625\ncladefsd_part_cache_capacity_bytes 593477874669\n")
-	if !ok || used != 37995837625 || capBytes != 593477874669 {
-		t.Fatalf("parsePartCacheMetrics = (%d, %d, %v)", used, capBytes, ok)
+	prom := strings.Join([]string{
+		"# HELP cladefsd_part_cache_bytes x",
+		"cladefsd_part_cache_bytes 37995837625",
+		"cladefsd_part_cache_capacity_bytes 593477874669",
+		`cladefsd_host_disk_size_bytes{device="259:2"} 1000000000000`,
+		`cladefsd_host_disk_free_bytes{device="259:2"} 700000000000`,
+		`cladefsd_host_disk_stores_bytes{device="259:2"} 20000000000`,
+		`cladefsd_host_disk_cache_bytes{device="259:2"} 180000000000`,
+		`cladefsd_host_disk_other_bytes{device="259:2"} 100000000000`,
+		`cladefsd_host_disk_pressure{device="259:2"} 1`,
+		`cladefsd_mount_cells{state="attached"} 3`,
+		`cladefsd_mount_cells{state="detaching"} 1`,
+		"cladefsd_page_cache_bytes 268435456",
+		"cladefsd_page_cache_dirty_bytes 8388608",
+		"cladefsd_page_cache_limit_bytes 536870912",
+		`cladefsd_peer_parts_total{outcome="given"} 42`,
+		`cladefsd_peer_parts_total{outcome="missing"} 5`,
+		`cladefsd_peer_served_parts_total{outcome="served"} 19`,
+		`cladefsd_upload_pending_bytes{cell="0/abc"} 1000`,
+		`cladefsd_upload_pending_bytes{cell="0/def"} 2500`,
+		"cladefsd_memory_pressure 1",
+	}, "\n")
+	if ok := applyCladefsPrometheusMetrics(got, prom); !ok {
+		t.Fatal("applyCladefsPrometheusMetrics returned false")
+	}
+	if got.PartCacheBytes != 37995837625 || got.PartCacheCapacityBytes != 593477874669 {
+		t.Fatalf("unexpected part cache: %+v", got)
+	}
+	if got.HostDiskSizeBytes != 1000000000000 || got.HostDiskFreeBytes != 700000000000 || got.HostDiskCellsBytes != 20000000000 || got.HostDiskCacheBytes != 180000000000 || got.HostDiskOtherBytes != 100000000000 || !got.HostDiskPressure {
+		t.Fatalf("unexpected host disk stats: %+v", got)
+	}
+	if got.MountCellsAttached != 3 || got.PageCacheBytes != 268435456 || got.PageCacheDirtyBytes != 8388608 || got.PageCacheLimitBytes != 536870912 {
+		t.Fatalf("unexpected mount/page cache stats: %+v", got)
+	}
+	if got.PeerPartsGiven != 42 || got.PeerPartsServed != 19 || got.UploadPendingBytes != 3500 || !got.MemoryPressure {
+		t.Fatalf("unexpected peer/upload/memory pressure stats: %+v", got)
 	}
 }
 
@@ -987,5 +1022,89 @@ func TestVMCommandInspectTraceSampleDiagnoseAndProfile(t *testing.T) {
 	}
 	if !strings.Contains(ae.Suggestion, "hotbed profile") {
 		t.Fatalf("ended VM inspect should suggest hotbed profile, got suggestion=%q", ae.Suggestion)
+	}
+}
+
+func TestVMCommandGuestOOMAndPeakMemoryTelemetry(t *testing.T) {
+	ctx := t.Context()
+	e, _, _, now := parkEngine(t)
+
+	for _, tc := range []struct {
+		name         string
+		id           string
+		status       runtime.CommandStatus
+		wantReason   string
+		wantExitCode *int32
+	}{
+		{
+			name: "main process OOM killed in guest",
+			id:   "guest-oom-main",
+			status: runtime.CommandStatus{
+				ID:         "guest-oom-main",
+				Exited:     true,
+				ExitCode:   137,
+				Signal:     9,
+				OOMKilled:  true,
+				Result:     "oom-kill",
+				MemoryAnon: 0,
+				MemoryPeak: 7 << 30,
+				CPUUsec:    120000,
+			},
+			wantReason:   "killed by the OOM killer (signal 9; peak 7.0 GiB)",
+			wantExitCode: nil,
+		},
+		{
+			name: "child process OOM killed under shell",
+			id:   "guest-oom-child",
+			status: runtime.CommandStatus{
+				ID:         "guest-oom-child",
+				Exited:     true,
+				ExitCode:   137,
+				Signal:     0,
+				OOMKilled:  true,
+				Result:     "oom-kill",
+				MemoryAnon: 0,
+				MemoryPeak: 6 << 30,
+			},
+			wantReason:   "killed by the OOM killer (exit 137; peak 6.0 GiB)",
+			wantExitCode: func() *int32 { v := int32(137); return &v }(),
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			c := e.newCommand(&pb.CommandRecord{
+				Command: &pb.Command{
+					Id:          tc.id,
+					WorkspaceId: "a",
+					State:       running,
+					Kind:        "run",
+				},
+			})
+			e.mu.Lock()
+			e.commands[tc.id] = c
+			e.mu.Unlock()
+
+			st := toUnitState("a", tc.status)
+			e.observe(ctx, c, st, *now)
+
+			got := c.cmd()
+			if got.State != failed {
+				t.Fatalf("state = %v, want failed", got.State)
+			}
+			if got.Reason != tc.wantReason {
+				t.Fatalf("reason = %q, want %q", got.Reason, tc.wantReason)
+			}
+			if got.MemoryBytes != tc.status.MemoryPeak {
+				t.Fatalf("MemoryBytes = %d, want %d", got.MemoryBytes, tc.status.MemoryPeak)
+			}
+			if c.rec.PeakMemoryBytes != tc.status.MemoryPeak {
+				t.Fatalf("PeakMemoryBytes = %d, want %d", c.rec.PeakMemoryBytes, tc.status.MemoryPeak)
+			}
+			if tc.wantExitCode == nil && got.ExitCode != nil {
+				t.Fatalf("ExitCode = %d, want nil", *got.ExitCode)
+			}
+			if tc.wantExitCode != nil && (got.ExitCode == nil || *got.ExitCode != *tc.wantExitCode) {
+				t.Fatalf("ExitCode = %v, want %d", got.ExitCode, *tc.wantExitCode)
+			}
+		})
 	}
 }

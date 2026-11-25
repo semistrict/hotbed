@@ -35,6 +35,17 @@ type Event struct {
 	Questions []*pb.Question
 }
 
+// Status summarizes live bridge state for observers such as hotbed daemon / menubar.
+type Status struct {
+	Connected        bool      `json:"connected"`
+	PendingQuestions int       `json:"pendingQuestions"`
+	TrackedQuestions int       `json:"trackedQuestions"`
+	LastWakeAt       time.Time `json:"lastWakeAt,omitempty"`
+	LastWakeThread   string    `json:"lastWakeThread,omitempty"`
+	LastWakeIDs      []int32   `json:"lastWakeIds,omitempty"`
+	LastError        string    `json:"lastError,omitempty"`
+}
+
 // Config configures a Bridge instance.
 type Config struct {
 	ControllerURL   string
@@ -49,6 +60,7 @@ type Config struct {
 	ReadTimeout     time.Duration
 	Logger          *slog.Logger
 	Now             func() time.Time
+	OnStatus        func(Status)
 }
 
 type threadWork struct {
@@ -94,11 +106,15 @@ type Bridge struct {
 	doneOnce   sync.Once
 
 	// Actor-owned state (accessed only inside RunLoop).
-	connected bool
-	outbox    map[int32]*pb.Question
-	notified  map[int32]int64
-	threads   map[string]*threadWork
-	workerWG  sync.WaitGroup
+	connected      bool
+	outbox         map[int32]*pb.Question
+	notified       map[int32]int64
+	threads        map[string]*threadWork
+	lastWakeAt     time.Time
+	lastWakeThread string
+	lastWakeIDs    []int32
+	lastError      string
+	workerWG       sync.WaitGroup
 }
 
 // New constructs a Bridge and loads persisted notified revisions from cfg.State.
@@ -198,6 +214,7 @@ func (b *Bridge) Run(ctx context.Context) error {
 // RunLoop executes the single-goroutine state machine until ctx is cancelled.
 func (b *Bridge) RunLoop(ctx context.Context) error {
 	defer b.shutdown()
+	b.reportStatus()
 	for {
 		select {
 		case <-ctx.Done():
@@ -210,6 +227,32 @@ func (b *Bridge) RunLoop(ctx context.Context) error {
 			b.handleWorkerResult(ctx, res)
 		}
 	}
+}
+
+func (b *Bridge) reportStatus() {
+	if b.cfg.OnStatus == nil {
+		return
+	}
+	pending := 0
+	for _, q := range b.outbox {
+		if q.GetT3CodeThreadId() != "" && isOutboxState(q.GetState()) && q.GetRevision() > b.notified[q.GetId()] {
+			tw := b.threads[q.GetT3CodeThreadId()]
+			if tw == nil || !tw.ignored {
+				pending++
+			}
+		}
+	}
+	ids := make([]int32, len(b.lastWakeIDs))
+	copy(ids, b.lastWakeIDs)
+	b.cfg.OnStatus(Status{
+		Connected:        b.connected,
+		PendingQuestions: pending,
+		TrackedQuestions: len(b.notified),
+		LastWakeAt:       b.lastWakeAt,
+		LastWakeThread:   b.lastWakeThread,
+		LastWakeIDs:      ids,
+		LastError:        b.lastError,
+	})
 }
 
 func (b *Bridge) shutdown() {
@@ -296,6 +339,7 @@ func (b *Bridge) handleEvent(ctx context.Context, ev Event) {
 			b.onThreadOutboxChanged(tid, newOrRevisedThreads[tid])
 		}
 	}
+	b.reportStatus()
 	_ = ctx
 }
 
@@ -419,46 +463,56 @@ func (b *Bridge) handleWorkerResult(ctx context.Context, res workerResult) {
 	switch res.kind {
 	case workerResStatus:
 		if res.err != nil {
+			b.lastError = res.err.Error()
 			b.log.Warn("t3-bridge thread status check failed; will retry", "threadId", res.threadID, "err", res.err)
 			if len(b.pendingForThread(res.threadID)) == 0 {
 				delete(b.threads, res.threadID)
+				b.reportStatus()
 				return
 			}
 			if b.connected {
 				b.armErrorBackoff(res.threadID, tw)
 			}
+			b.reportStatus()
 			return
 		}
+		b.lastError = ""
 		tw.errBackoff = 0
 		if !res.status.Exists {
 			b.log.Debug("t3-bridge skipping thread not present on this machine", "threadId", res.threadID)
 			tw.ignored = true
+			b.reportStatus()
 			return
 		}
 		if res.status.IsBusy() {
 			pending := b.pendingForThread(res.threadID)
 			if len(pending) == 0 {
 				delete(b.threads, res.threadID)
+				b.reportStatus()
 				return
 			}
 			if b.connected {
 				b.log.Debug("t3-bridge thread busy; waiting for idle", "threadId", res.threadID, "status", res.status.Status, "pendingRequests", res.status.PendingRequestCount)
 				b.armTimer(res.threadID, tw, b.cfg.PollInterval)
 			}
+			b.reportStatus()
 			return
 		}
 
 		// Thread is idle. Re-check live outbox state & debounce window before sending.
 		if !b.connected {
+			b.reportStatus()
 			return
 		}
 		pending := b.pendingForThread(res.threadID)
 		if len(pending) == 0 {
 			delete(b.threads, res.threadID)
+			b.reportStatus()
 			return
 		}
 		if rem := tw.debounceUntil.Sub(b.now()); rem > 0 {
 			b.armTimer(res.threadID, tw, rem)
+			b.reportStatus()
 			return
 		}
 
@@ -476,16 +530,20 @@ func (b *Bridge) handleWorkerResult(ctx context.Context, res workerResult) {
 
 	case workerResSent:
 		if res.err != nil {
+			b.lastError = res.err.Error()
 			b.log.Warn("t3-bridge send wake message failed; will retry", "threadId", res.threadID, "err", res.err)
 			if len(b.pendingForThread(res.threadID)) == 0 {
 				delete(b.threads, res.threadID)
+				b.reportStatus()
 				return
 			}
 			if b.connected {
 				b.armErrorBackoff(res.threadID, tw)
 			}
+			b.reportStatus()
 			return
 		}
+		b.lastError = ""
 		tw.errBackoff = 0
 		ids := make([]int32, 0, len(res.batch))
 		for _, q := range res.batch {
@@ -494,6 +552,9 @@ func (b *Bridge) handleWorkerResult(ctx context.Context, res workerResult) {
 				b.notified[q.GetId()] = q.GetRevision()
 			}
 		}
+		b.lastWakeAt = b.now()
+		b.lastWakeThread = res.threadID
+		b.lastWakeIDs = ids
 		if b.cfg.State != nil {
 			if err := b.cfg.State.Save(b.notified); err != nil {
 				b.log.Warn("t3-bridge persist notified state failed", "path", b.cfg.State.Path, "err", err)
@@ -508,9 +569,11 @@ func (b *Bridge) handleWorkerResult(ctx context.Context, res workerResult) {
 				wait := max(b.cfg.PollInterval, tw.debounceUntil.Sub(b.now()))
 				b.armTimer(res.threadID, tw, wait)
 			}
+			b.reportStatus()
 			return
 		}
 		delete(b.threads, res.threadID)
+		b.reportStatus()
 	}
 }
 

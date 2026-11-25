@@ -398,10 +398,11 @@ type command struct {
 	// tmpGone closes once its temporary directory is removed; nil until it
 	// ends in this worker's life.
 	tmpGone chan struct{}
-	// lastFreshenStep and lastFreshenDone track the last step progress
-	// broadcast to WatchWorkspace watchers for a freshen command.
-	lastFreshenStep int
-	lastFreshenDone bool
+	// lastFreshenStep, lastFreshenDone, and lastFreshenGitDone track the last
+	// step/phase progress broadcast for a freshen command.
+	lastFreshenStep    int
+	lastFreshenDone    bool
+	lastFreshenGitDone bool
 	// managedFreshen is non-nil for VM / cladefs-FUSE base builds scheduled
 	// through Engine admission control and finalized by EnsureProjectBase.
 	managedFreshen *managedFreshen

@@ -1,14 +1,15 @@
 import { Link } from "@tanstack/react-router";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
-import { BaseState, CommandState, nodeAdmission, WorkspaceState, type Node, type Snapshot } from "../api";
+import { BaseState, CommandState, nodeAdmission, WorkspaceState, type Node, type ObjectStoreStats, type Snapshot } from "../api";
 import { AdmissionBadge, PlacementList } from "../components/Admission";
 import { Meter, SegmentedBar, Sparkline } from "../components/charts/Bars";
 import { Heatmap } from "../components/charts/Heatmap";
 import { EventFeed } from "../components/EventFeed";
+import { nodeCacheHit } from "../components/ObjectStorePanel";
 import { Card } from "../components/Panel";
 import { ArchBadge, BuildingBadge, OnlineBadge, StateBadge } from "../components/StateBadges";
 import { useNodeColors, useSnapshot } from "../lib/data";
-import { ago, bytes, percent } from "../lib/format";
+import { ago, bytes, compact, percent } from "../lib/format";
 import { formatHostUsageFoot, isHostStarved, nodeHostUsage } from "../lib/hostUsage";
 
 export function NodesPage() {
@@ -76,7 +77,7 @@ export function PageTitle({ title, sub, right }: { title: string; sub?: string; 
   );
 }
 
-function NodeCard({ n, s, color, now, delay }: { n: Node; s: Snapshot; color: string; now: number; delay: number }) {
+export function NodeCard({ n, s, color, now, delay }: { n: Node; s: Snapshot; color: string; now: number; delay: number }) {
   const buildingBases = s.bases.filter((b) => b.nodeId === n.id && b.state === BaseState.BUILDING);
   const buildingCmdIds = new Set(buildingBases.map((b) => b.command).filter(Boolean));
   const cmds = s.commands.filter(
@@ -175,30 +176,26 @@ function NodeCard({ n, s, color, now, delay }: { n: Node; s: Snapshot; color: st
             <Row label="PSI mem" value={`${(usage?.memoryPressure ?? 0).toFixed(1)}%`}>
               <Meter value={(usage?.memoryPressure ?? 0) / 50} warn={0.44} danger={0.7} />
             </Row>
-            <div>
-              <div className="mb-1.5 flex justify-between text-[10.5px] text-muted-foreground">
-                <span className="eyebrow">{n.storage}</span>
-                <span className="font-mono">
-                  {bytes(disk?.freeBytes ?? 0n)} free of {bytes(n.diskBytes)}
-                </span>
-              </div>
-              <SegmentedBar
-                legend={false}
-                format={bytes}
-                parts={[
-                  { id: "bases", label: "warm bases", value: Number(disk?.basesBytes ?? 0n), color: "var(--series-1)" },
-                  { id: "forks", label: "fork-owned", value: Number(disk?.forksExclusiveBytes ?? 0n), color: "var(--series-2)" },
-                  { id: "other", label: "other", value: Number(disk?.otherBytes ?? 0n), color: "var(--faint)" },
-                  { id: "free", label: "free", value: Number(disk?.freeBytes ?? 0n), color: "var(--muted)" },
-                ]}
-              />
-            </div>
-            {n.objectStore && (
-              <div className="flex items-baseline justify-between text-[10.5px] text-muted-foreground">
-                <span className="eyebrow">R2</span>
-                <span className="num font-mono">
-                  ↑ {bytes(n.objectStore.uploadedBytes)} · ↓ {bytes(n.objectStore.downloadedBytes)}
-                </span>
+            {n.objectStore ? (
+              <NodeCladefsRows os={n.objectStore} />
+            ) : (
+              <div>
+                <div className="mb-1.5 flex justify-between text-[10.5px] text-muted-foreground">
+                  <span className="eyebrow">{n.storage}</span>
+                  <span className="font-mono">
+                    {bytes(disk?.freeBytes ?? 0n)} free of {bytes(n.diskBytes)}
+                  </span>
+                </div>
+                <SegmentedBar
+                  legend={false}
+                  format={bytes}
+                  parts={[
+                    { id: "bases", label: "warm bases", value: Number(disk?.basesBytes ?? 0n), color: "var(--series-1)" },
+                    { id: "forks", label: "fork-owned", value: Number(disk?.forksExclusiveBytes ?? 0n), color: "var(--series-2)" },
+                    { id: "other", label: "other", value: Number(disk?.otherBytes ?? 0n), color: "var(--faint)" },
+                    { id: "free", label: "free", value: Number(disk?.freeBytes ?? 0n), color: "var(--muted)" },
+                  ]}
+                />
               </div>
             )}
           </div>
@@ -232,6 +229,103 @@ function NodeCard({ n, s, color, now, delay }: { n: Node; s: Snapshot; color: st
   );
 }
 
+function usesPageCachePrimary(os: ObjectStoreStats): boolean {
+  return os.pageCacheLimitBytes > 0n && os.extentCacheBytes === 0n && os.activeVms === 0;
+}
+
+function formatCladefsActivity(os: ObjectStoreStats): { parts: string[]; thrashing: boolean } {
+  const thrashing = os.daxWindowFull > 0n || os.daxRegionsFull > 0n;
+  const parts: string[] = [];
+  if (os.activeVms > 0 || os.windowMappedBytes > 0n) {
+    parts.push(
+      `${os.activeVms} ${os.activeVms === 1 ? "VM" : "VMs"} · ${bytes(os.windowMappedBytes)} DAX${thrashing ? ` · ${compact(os.daxWindowFull)} full` : ""}`,
+    );
+  }
+  if (os.mountCellsAttached > 0) {
+    parts.push(`${os.mountCellsAttached} FUSE ${os.mountCellsAttached === 1 ? "cell" : "cells"}`);
+  }
+  if (os.peerPartsGiven > 0n || os.peerPartsServed > 0n) {
+    parts.push(`peers ↓${compact(os.peerPartsGiven)} ↑${compact(os.peerPartsServed)}`);
+  }
+  return { parts, thrashing };
+}
+
+function NodeCladefsRows({ os }: { os: ObjectStoreStats }) {
+  const hit = nodeCacheHit(os);
+  const partUsed = Number(os.partCacheBytes);
+  const partCap = Number(os.partCacheCapacityBytes);
+  const extUsed = Number(os.extentCacheBytes);
+  const extCap = Number(os.extentCacheCapacityBytes);
+  const pageUsed = Number(os.pageCacheBytes);
+  const pageCap = Number(os.pageCacheLimitBytes);
+  const showPageCache = usesPageCachePrimary(os);
+  const activity = formatCladefsActivity(os);
+
+  return (
+    <>
+      {os.hostDiskSizeBytes > 0n && (
+        <div>
+          <div className="mb-1.5 flex flex-wrap items-baseline justify-between gap-x-2 text-[10.5px] text-muted-foreground">
+            <span className="eyebrow">
+              cladefs{os.hostDiskPressure ? <span className="ml-1.5 text-serious">· pressure</span> : null}
+            </span>
+            <span className="num font-mono">
+              {bytes(os.hostDiskFreeBytes)} free of {bytes(os.hostDiskSizeBytes)}
+            </span>
+          </div>
+          <SegmentedBar
+            legend={false}
+            format={bytes}
+            parts={[
+              { id: "cache", label: "part cache", value: Number(os.hostDiskCacheBytes), color: "var(--series-1)" },
+              { id: "cells", label: "cells", value: Number(os.hostDiskCellsBytes), color: "var(--series-2)" },
+              { id: "other", label: "other", value: Number(os.hostDiskOtherBytes), color: "var(--faint)" },
+              { id: "free", label: "free", value: Number(os.hostDiskFreeBytes), color: "var(--muted)" },
+            ]}
+          />
+        </div>
+      )}
+      <Row
+        label="part cache"
+        value={`${bytes(partUsed)}${partCap > 0 ? ` / ${bytes(partCap)}` : ""}`}
+      >
+        <Meter value={partCap > 0 ? partUsed / partCap : 0} warn={0.85} danger={0.95} />
+      </Row>
+      {showPageCache ? (
+        <Row
+          label="page cache"
+          value={`${bytes(pageUsed)} / ${bytes(pageCap)}${os.pageCacheDirtyBytes > 0n ? ` · ${bytes(os.pageCacheDirtyBytes)} dirty` : ""}`}
+        >
+          <Meter value={pageCap > 0 ? pageUsed / pageCap : 0} warn={0.85} danger={0.95} />
+        </Row>
+      ) : (
+        <Row
+          label="extent cache"
+          value={`${bytes(extUsed)}${extCap > 0 ? ` / ${bytes(extCap)}` : ""}${os.memoryPressure ? " · pressure" : ""}`}
+        >
+          <Meter value={extCap > 0 ? extUsed / extCap : 0} warn={0.9} danger={0.98} />
+        </Row>
+      )}
+      <div className="flex flex-wrap items-baseline justify-between gap-x-2 text-[10.5px] text-muted-foreground">
+        <span className="eyebrow">{os.hostDiskSizeBytes > 0n ? "R2" : "cladefs R2"}</span>
+        <span className="num font-mono">
+          ↑ {bytes(os.uploadedBytes)} · ↓ {bytes(os.downloadedBytes)}
+          {hit !== null ? ` · ${percent(hit)} local` : ""}
+          {os.uploadPendingBytes > 0n ? ` · ${bytes(os.uploadPendingBytes)} pending` : ""}
+        </span>
+      </div>
+      {activity.parts.length > 0 && (
+        <div className="flex flex-wrap items-baseline justify-between gap-x-2 text-[10.5px] text-muted-foreground">
+          <span className="eyebrow">{os.activeVms > 0 || os.windowMappedBytes > 0n ? "DAX" : "cladefs"}</span>
+          <span className={`num font-mono ${activity.thrashing ? "text-serious" : ""}`}>
+            {activity.parts.join(" · ")}
+          </span>
+        </div>
+      )}
+    </>
+  );
+}
+
 function Row({ label, value, children }: { label: string; value: string; children: React.ReactNode }) {
   return (
     <div>
@@ -246,11 +340,15 @@ function Row({ label, value, children }: { label: string; value: string; childre
 
 export function NodeTable({ s }: { s: Snapshot }) {
   const now = Number(s.now);
+  const hasCladefs = s.nodes.some((n) => n.objectStore != null);
+  const headers = hasCladefs
+    ? ["node", "machine", "arch", "status", "admission", "cpus", "cpu busy", "psi cpu", "ram", "used", "guaranteed", "swap", "psi mem", "part cache", "cache mem", "R2 ↑ / ↓", "local hit", "cladefs", "disk free", "kernel", "last seen"]
+    : ["node", "machine", "arch", "status", "admission", "cpus", "cpu busy", "psi cpu", "ram", "used", "guaranteed", "swap", "psi mem", "disk free", "kernel", "last seen"];
   return (
     <Table className="text-[12px]">
       <TableHeader className="eyebrow">
         <TableRow className="border-border hover:bg-transparent">
-          {["node", "machine", "arch", "status", "admission", "cpus", "cpu busy", "psi cpu", "ram", "used", "guaranteed", "swap", "psi mem", "disk free", "kernel", "last seen"].map((h) => (
+          {headers.map((h) => (
             <TableHead key={h} className="h-auto px-2 py-2 font-normal text-muted-foreground">
               {h}
             </TableHead>
@@ -260,6 +358,13 @@ export function NodeTable({ s }: { s: Snapshot }) {
       <TableBody className="num font-mono text-[11px]">
         {s.nodes.map((n) => {
           const admission = nodeAdmission(n);
+          const os = n.objectStore;
+          const hit = nodeCacheHit(os);
+          const activity = os ? formatCladefsActivity(os) : null;
+          const freeBytes = os && os.hostDiskSizeBytes > 0n ? os.hostDiskFreeBytes : (n.disk?.freeBytes ?? 0n);
+          const diskTitle = os && os.hostDiskSizeBytes > 0n
+            ? `cladefs host disk · ${bytes(os.hostDiskCacheBytes)} cache · ${bytes(os.hostDiskCellsBytes)} cells · ${bytes(os.hostDiskOtherBytes)} other · ${bytes(os.hostDiskSizeBytes)} total`
+            : `${n.storage} · ${bytes(n.diskBytes)} total`;
           return (
             <TableRow key={n.id} className="border-border/60 hover:bg-muted/60">
               <TableCell className="px-2 py-2">
@@ -285,7 +390,39 @@ export function NodeTable({ s }: { s: Snapshot }) {
               <TableCell className="px-2 py-2">{bytes(n.reservedMemoryBytes)}</TableCell>
               <TableCell className="px-2 py-2">{bytes(n.usage?.swapUsedBytes ?? 0n)}</TableCell>
               <TableCell className="px-2 py-2">{n.online ? `${(n.usage?.memoryPressure ?? 0).toFixed(1)}%` : "—"}</TableCell>
-              <TableCell className="px-2 py-2">{bytes(n.disk?.freeBytes ?? 0n)}</TableCell>
+              {hasCladefs && (
+                <>
+                  <TableCell
+                    className="px-2 py-2"
+                    title={os && os.partCacheCapacityBytes > 0n ? `${bytes(os.partCacheBytes)} of ${bytes(os.partCacheCapacityBytes)} SSD part cache` : undefined}
+                  >
+                    {os ? `${bytes(os.partCacheBytes)}${os.partCacheCapacityBytes > 0n ? ` / ${bytes(os.partCacheCapacityBytes)}` : ""}` : "—"}
+                  </TableCell>
+                  <TableCell className="px-2 py-2">
+                    {!os
+                      ? "—"
+                      : usesPageCachePrimary(os)
+                        ? `${bytes(os.pageCacheBytes)} / ${bytes(os.pageCacheLimitBytes)}`
+                        : `${bytes(os.extentCacheBytes)}${os.extentCacheCapacityBytes > 0n ? ` / ${bytes(os.extentCacheCapacityBytes)}` : ""}`}
+                  </TableCell>
+                  <TableCell className="px-2 py-2">
+                    {os ? `↑ ${bytes(os.uploadedBytes)} · ↓ ${bytes(os.downloadedBytes)}` : "—"}
+                  </TableCell>
+                  <TableCell className="px-2 py-2">{hit !== null ? percent(hit) : "—"}</TableCell>
+                  <TableCell className={`px-2 py-2 ${activity?.thrashing ? "text-serious" : "text-muted-foreground"}`}>
+                    {!os
+                      ? "—"
+                      : activity && activity.parts.length > 0
+                        ? activity.parts.join(" · ")
+                        : os.openCells > 0
+                          ? `${os.openCells} open`
+                          : "—"}
+                  </TableCell>
+                </>
+              )}
+              <TableCell className={`px-2 py-2 ${os?.hostDiskPressure ? "text-serious" : ""}`} title={diskTitle}>
+                {bytes(freeBytes)}
+              </TableCell>
               <TableCell className="px-2 py-2 text-muted-foreground">{n.resources?.kernel ?? ""}</TableCell>
               <TableCell className="px-2 py-2 text-muted-foreground">{ago(n.lastSeen ?? n.joinedAt, now)}</TableCell>
             </TableRow>

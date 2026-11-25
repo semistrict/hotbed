@@ -51,3 +51,20 @@ func SSH(context.Context, string, []string) (int, error) {
 func Supervise(context.Context, string, func(string) (hotbedv1connect.ClusterServiceClient, error), *slog.Logger) error {
 	return unsupported()
 }
+
+func DaemonVMStatus(context.Context, string) DaemonVMState {
+	return DaemonVMState{Configured: false, State: "unconfigured"}
+}
+
+func SuperviseVMForDaemon(ctx context.Context, _ string, _ func(string) (hotbedv1connect.ClusterServiceClient, error), _ *slog.Logger, onState func(DaemonVMState)) {
+	if onState != nil {
+		onState(DaemonVMState{Configured: false, State: "unconfigured"})
+	}
+	<-ctx.Done()
+}
+
+func StartDaemonVM(context.Context, string) error { return unsupported() }
+
+func StopDaemonVM(context.Context, string) error { return unsupported() }
+
+func DisableLegacyWorkerLaunchAgent(context.Context, string) error { return nil }

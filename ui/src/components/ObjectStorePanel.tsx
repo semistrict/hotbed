@@ -687,6 +687,23 @@ export function NodeObjectStoreSection({ n, s }: { n: Node; s: Snapshot }) {
                 </div>
                 <Meter value={extCap > 0 ? extUsed / extCap : 0} warn={0.9} danger={0.98} />
               </div>
+              {(os.pageCacheLimitBytes > 0n || os.pageCacheBytes > 0n) && (
+                <div>
+                  <div className="mb-1 flex justify-between text-muted-foreground">
+                    <span>Cell page cache</span>
+                    <span className="num text-foreground">
+                      {bytes(os.pageCacheBytes)}
+                      {os.pageCacheLimitBytes > 0n ? ` / ${bytes(os.pageCacheLimitBytes)}` : ""}
+                      {os.pageCacheDirtyBytes > 0n ? ` (${bytes(os.pageCacheDirtyBytes)} dirty)` : ""}
+                    </span>
+                  </div>
+                  <Meter
+                    value={os.pageCacheLimitBytes > 0n ? Number(os.pageCacheBytes) / Number(os.pageCacheLimitBytes) : 0}
+                    warn={0.85}
+                    danger={0.95}
+                  />
+                </div>
+              )}
               <div className="flex flex-wrap gap-4 pt-1 text-[10.5px] text-faint">
                 <span>
                   <span className="num text-foreground">{compact(os.extentCachePinnedEntries)}</span> pinned entries
@@ -697,6 +714,21 @@ export function NodeObjectStoreSection({ n, s }: { n: Node; s: Snapshot }) {
                 <span>
                   <span className="num text-foreground">{compact(os.cacheTrims)}</span> cache trims
                 </span>
+                {os.mountCellsAttached > 0 && (
+                  <span>
+                    <span className="num text-foreground">{compact(os.mountCellsAttached)}</span> FUSE {os.mountCellsAttached === 1 ? "cell" : "cells"}
+                  </span>
+                )}
+                {(os.peerPartsGiven > 0n || os.peerPartsServed > 0n) && (
+                  <span>
+                    peers <span className="num text-foreground">↓{compact(os.peerPartsGiven)} ↑{compact(os.peerPartsServed)}</span>
+                  </span>
+                )}
+                {os.uploadPendingBytes > 0n && (
+                  <span>
+                    <span className="num text-foreground">{bytes(os.uploadPendingBytes)}</span> upload pending
+                  </span>
+                )}
               </div>
             </div>
           </Card>

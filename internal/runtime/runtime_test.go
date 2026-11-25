@@ -212,6 +212,7 @@ type fakeGuestHandler struct {
 	guestdv1connect.UnimplementedGuestServiceHandler
 	reclaimUnimplemented bool
 	reclaimSeen          int
+	statuses             map[string]*guestdv1.CommandStatus
 }
 
 func (f *fakeGuestHandler) StartCommand(_ context.Context, req *guestdv1.StartCommandRequest) (*guestdv1.CommandStatus, error) {
@@ -220,6 +221,16 @@ func (f *fakeGuestHandler) StartCommand(_ context.Context, req *guestdv1.StartCo
 		State:   guestdv1.CommandState_COMMAND_STATE_RUNNING,
 		MainPid: 42,
 	}, nil
+}
+
+func (f *fakeGuestHandler) Status(_ context.Context, req *guestdv1.StatusRequest) (*guestdv1.StatusResponse, error) {
+	out := make(map[string]*guestdv1.CommandStatus, len(req.Ids))
+	for _, id := range req.Ids {
+		if st, ok := f.statuses[id]; ok {
+			out[id] = st
+		}
+	}
+	return &guestdv1.StatusResponse{Commands: out}, nil
 }
 
 func (f *fakeGuestHandler) Reclaim(_ context.Context, _ *guestdv1.ReclaimRequest) (*guestdv1.ReclaimResponse, error) {
@@ -308,5 +319,29 @@ func TestGuestRuntimeOOMStatusEnsureVMAndReclaim(t *testing.T) {
 	}
 	if fakeHandler.reclaimSeen != 2 {
 		t.Fatalf("reclaimSeen = %d, want 2", fakeHandler.reclaimSeen)
+	}
+
+	// 4. StatusMany forwards in-guest OOM, signal, result, and peak memory fields.
+	fakeHandler.statuses = map[string]*guestdv1.CommandStatus{
+		"c-guest-oom": {
+			Id:             "c-guest-oom",
+			State:          guestdv1.CommandState_COMMAND_STATE_EXITED,
+			ExitCode:       137,
+			Signal:         9,
+			OomKilled:      true,
+			Result:         "oom-kill",
+			MemoryAnon:     0,
+			MemoryPeak:     7 << 30,
+			MemorySwapPeak: 1 << 30,
+			CpuUsec:        250000,
+		},
+	}
+	guestSts, err := rt.StatusMany(ctx, "ws-live", []string{"c-guest-oom"})
+	if err != nil {
+		t.Fatalf("StatusMany(ws-live): %v", err)
+	}
+	gst := guestSts["c-guest-oom"]
+	if !gst.Exited || !gst.OOMKilled || gst.Signal != 9 || gst.Result != "oom-kill" || gst.MemoryPeak != 7<<30 || gst.MemorySwapPeak != 1<<30 {
+		t.Fatalf("guest OOM status = %+v", gst)
 	}
 }

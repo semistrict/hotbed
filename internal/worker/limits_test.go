@@ -408,3 +408,47 @@ func TestSoftLimitExcludesParkedTime(t *testing.T) {
 		t.Fatalf("parked past hard limit: state=%v reason=%q", got.State, got.Reason)
 	}
 }
+
+// Soft-limit pause reasons and sync-conflict suggestions include -s <session>
+// whenever the command/workspace belongs to a session so the hinted CLI command
+// works verbatim from another session or thread context, while omitting -s when
+// SessionId is empty.
+func TestSessionScopedHintsIncludeSessionFlag(t *testing.T) {
+	t.Run("paused with session", func(t *testing.T) {
+		now := time.Unix(1795300000, 0)
+		e := limited(t, &now)
+		e.mu.Lock()
+		e.commands["c-1"].cmd().SessionId = "swift-fox"
+		e.mu.Unlock()
+		now = now.Add(11 * time.Minute)
+		e.limit(t.Context())
+		got, _ := e.Command("c-1")
+		want := "paused: it ran 10m0s, its soft time limit, without ending; waiting on it again (hotbed logs -f -s swift-fox c-1) resumes it"
+		if got.State != paused || got.Reason != want {
+			t.Fatalf("paused reason = %q, want %q", got.Reason, want)
+		}
+	})
+
+	t.Run("paused without session", func(t *testing.T) {
+		now := time.Unix(1795300000, 0)
+		e := limited(t, &now)
+		now = now.Add(11 * time.Minute)
+		e.limit(t.Context())
+		got, _ := e.Command("c-1")
+		want := "paused: it ran 10m0s, its soft time limit, without ending; waiting on it again (hotbed logs -f c-1) resumes it"
+		if got.State != paused || got.Reason != want {
+			t.Fatalf("paused reason without session = %q, want %q", got.Reason, want)
+		}
+	})
+
+	t.Run("syncConflictError with and without session", func(t *testing.T) {
+		withSess := syncConflictError("ws-1", "swift-fox", []string{"c-9"})
+		if !strings.Contains(withSess.Suggestion, "`hotbed stop -s swift-fox c-9`") {
+			t.Fatalf("syncConflictError with session suggestion = %q, want -s swift-fox", withSess.Suggestion)
+		}
+		withoutSess := syncConflictError("ws-1", "", []string{"c-9"})
+		if !strings.Contains(withoutSess.Suggestion, "`hotbed stop c-9`") {
+			t.Fatalf("syncConflictError without session suggestion = %q, want no -s flag", withoutSess.Suggestion)
+		}
+	})
+}

@@ -161,6 +161,8 @@ func runPID1Supervisor(log *slog.Logger, nofile uint64) bool {
 	// Bare devtmpfs creates /dev/fuse, /dev/userfaultfd, /dev/kvm, and
 	// /dev/net/tun as 0600 root:root (no udev); open them to workspace users.
 	fixDevPermissions(log, "/dev")
+	// Enable compressed in-RAM swap (/dev/zram0) when the guest kernel provides it.
+	setupGuestZram(log)
 	// Ensure loopback is up (minimal Firecracker kernels leave lo DOWN).
 	if ipBin, err := exec.LookPath("ip"); err == nil {
 		_ = exec.Command(ipBin, "link", "set", "lo", "up").Run()

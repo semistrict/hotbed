@@ -528,3 +528,26 @@ export const approvedUsers = sqliteTable(
 	},
 	(t) => [index("approved_users_at").on(t.approvedAt)],
 );
+
+export const baseFreshens = sqliteTable(
+	"base_freshens",
+	{
+		id: text("id").primaryKey(),
+		nodeId: text("node_id").notNull(),
+		baseId: text("base_id").notNull(),
+		project: text("project").notNull(),
+		runtime: text("runtime").notNull().default("chroot"),
+		state: text("state").notNull(),
+		cold: integer("cold").notNull().default(0),
+		createdAt: integer("created_at").notNull(),
+		startedAt: integer("started_at"),
+		endedAt: integer("ended_at"),
+		doc: text("doc").notNull(),
+	},
+	(t) => [
+		index("base_freshens_created").on(t.createdAt),
+		index("base_freshens_project_created").on(t.project, t.createdAt),
+		index("base_freshens_node_created").on(t.nodeId, t.createdAt),
+		index("base_freshens_base").on(t.baseId, t.nodeId),
+	],
+);

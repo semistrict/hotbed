@@ -15,7 +15,10 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
+
+	"golang.org/x/sys/unix"
 
 	"github.com/semistrict/hotbed/internal/api"
 	"github.com/semistrict/hotbed/internal/gen/hotbed/v1/hotbedv1connect"
@@ -266,4 +269,310 @@ func launchctl(ctx context.Context, args ...string) error {
 		return fmt.Errorf("launchctl %s: %w: %s", strings.Join(args, " "), err, strings.TrimSpace(string(out)))
 	}
 	return nil
+}
+
+func isDaemonLoaded(ctx context.Context) bool {
+	if ctx.Err() != nil {
+		return false
+	}
+	target := launchDomain() + "/" + DaemonLaunchAgentLabel
+	_, err := runLaunchctl(ctx, "print", target)
+	return err == nil
+}
+
+// DisableLegacyWorkerLaunchAgent stops and removes the standalone
+// com.semistrict.hotbed.worker LaunchAgent (without shutting down any running
+// VM) when migrating to the unified `hotbed daemon` LaunchAgent.
+func DisableLegacyWorkerLaunchAgent(ctx context.Context, dir string) error {
+	baseDir, err := ResolveDir(dir)
+	if err != nil {
+		return err
+	}
+	p := NewVMPaths(baseDir)
+	var cfg VMConfig
+	_ = readJSON(p.Config, &cfg)
+	return disableSupervisor(ctx, cfg, p)
+}
+
+func setVMMarker(path string, on bool) error {
+	if path == "" {
+		return nil
+	}
+	if !on {
+		if err := os.Remove(path); err != nil && !errors.Is(err, fs.ErrNotExist) {
+			return err
+		}
+		return nil
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return err
+	}
+	return os.WriteFile(path, []byte(time.Now().UTC().Format(time.RFC3339)+"\n"), 0o600)
+}
+
+func isVMStoppedByUser(p VMPaths) bool {
+	if p.StoppedMarker == "" {
+		return false
+	}
+	_, err := os.Stat(p.StoppedMarker)
+	return err == nil
+}
+
+// isVMAsleepSinceBoot reports whether Standby intentionally put the VM to sleep
+// during the current macOS boot session. Stale asleep markers from before a
+// host reboot return false so the daemon boots the VM fresh after reboot.
+func isVMAsleepSinceBoot(p VMPaths) bool {
+	if p.AsleepMarker == "" {
+		return false
+	}
+	fi, err := os.Stat(p.AsleepMarker)
+	if err != nil {
+		return false
+	}
+	tv, err := unix.SysctlTimeval("kern.boottime")
+	if err != nil {
+		return true
+	}
+	bootTime := time.Unix(tv.Sec, int64(tv.Usec)*1000)
+	return !fi.ModTime().Before(bootTime)
+}
+
+func vmStateBase(cfg VMConfig) DaemonVMState {
+	return DaemonVMState{
+		Configured: true,
+		Hostname:   cfg.Hostname,
+		Arch:       cfg.Arch,
+		CPUs:       cfg.CPUs,
+		MemoryMB:   cfg.MemoryBytes / (1 << 20),
+		Autostart:  cfg.Autostart,
+	}
+}
+
+// DaemonVMStatus returns a fast, non-SSH summary of the local macOS worker VM.
+func DaemonVMStatus(ctx context.Context, dir string) DaemonVMState {
+	_, cfg, p, err := loadVM(dir)
+	if err != nil {
+		return DaemonVMState{Configured: false, State: "unconfigured"}
+	}
+	st := vmStateBase(cfg)
+	_, procState, qmp, err := vmDetailedState(ctx, p)
+	if err != nil {
+		st.State = "error"
+		st.Detail = err.Error()
+		return st
+	}
+	switch procState {
+	case vmProcRunning:
+		st.State = "running"
+	case vmProcPaused:
+		st.State = "paused"
+		if len(qmp.IOErrors) > 0 {
+			st.Detail = strings.Join(qmp.IOErrors, "; ")
+		} else if qmp.QMPStatus != "" {
+			st.Detail = qmp.QMPStatus
+		}
+	default:
+		switch {
+		case isVMStoppedByUser(p):
+			st.State = "stopped"
+			st.Detail = "stopped by user"
+		case isVMAsleepSinceBoot(p):
+			st.State = "asleep"
+			st.Detail = "sleeping while idle (wakes on demand)"
+		default:
+			st.State = "stopped"
+		}
+	}
+	return st
+}
+
+// StartDaemonVM clears any user-stop marker and boots the configured macOS
+// worker VM (used by the menubar app).
+func StartDaemonVM(ctx context.Context, dir string) error {
+	_, cfg, p, err := loadVM(dir)
+	if err != nil {
+		return err
+	}
+	_ = setVMMarker(p.StoppedMarker, false)
+	_ = setVMMarker(p.AsleepMarker, false)
+	if err := ensureVMRunning(context.WithoutCancel(ctx), cfg, p, os.Stderr); err != nil {
+		return err
+	}
+	if signer, err := loadSSHSigner(p.KeyPriv); err == nil {
+		if cl, err := waitForSSH(ctx, cfg, p, signer, os.Stderr); err == nil {
+			defer cl.Close()
+			_, _ = sshRun(ctx, cl, "sudo systemctl start hotbed-worker.service")
+		}
+	}
+	return nil
+}
+
+// StopDaemonVM marks the VM stopped by the user and shuts it down cleanly
+// without stopping the unified daemon itself (used by the menubar app).
+func StopDaemonVM(ctx context.Context, dir string) error {
+	_, cfg, p, err := loadVM(dir)
+	if err != nil {
+		return err
+	}
+	_ = setVMMarker(p.StoppedMarker, true)
+	_ = setVMMarker(p.AsleepMarker, false)
+	return stopVM(context.WithoutCancel(ctx), cfg, p, os.Stderr)
+}
+
+type daemonSupervisedVM struct {
+	qemuVM
+	onState func(DaemonVMState)
+}
+
+func (vm daemonSupervisedVM) emit(state, detail string) {
+	if vm.onState == nil {
+		return
+	}
+	st := vmStateBase(vm.cfg)
+	st.State = state
+	st.Detail = detail
+	vm.onState(st)
+}
+
+func (vm daemonSupervisedVM) Start(ctx context.Context) error {
+	_ = setVMMarker(vm.p.AsleepMarker, false)
+	vm.emit("starting", "booting worker VM")
+	if err := vm.qemuVM.Start(ctx); err != nil {
+		vm.emit("error", err.Error())
+		return err
+	}
+	vm.emit("running", "")
+	return nil
+}
+
+func (vm daemonSupervisedVM) Stop(ctx context.Context) error {
+	vm.emit("stopping", "powering off idle VM")
+	if err := vm.qemuVM.Stop(ctx); err != nil {
+		vm.emit("error", err.Error())
+		return err
+	}
+	_ = setVMMarker(vm.p.AsleepMarker, true)
+	vm.emit("asleep", "sleeping while idle (wakes on demand)")
+	return nil
+}
+
+// SuperviseVMForDaemon watches the local macOS worker VM configuration under
+// dir, auto-starts the VM on boot/daemon startup (unless explicitly stopped or
+// sleeping since this boot), runs Standby + host-usage reporting + paused-VM
+// watching, and reports state transitions to onState until ctx is cancelled.
+func SuperviseVMForDaemon(
+	ctx context.Context,
+	dir string,
+	cluster func(controller string) (hotbedv1connect.ClusterServiceClient, error),
+	log *slog.Logger,
+	onState func(DaemonVMState),
+) {
+	if log == nil {
+		log = slog.Default()
+	}
+	emit := func(st DaemonVMState) {
+		if onState != nil {
+			onState(st)
+		}
+	}
+
+	var (
+		subCancel context.CancelFunc
+		subWG     sync.WaitGroup
+		activeKey string
+	)
+	stopSub := func() {
+		if subCancel != nil {
+			subCancel()
+			subWG.Wait()
+			subCancel = nil
+			activeKey = ""
+		}
+	}
+	defer stopSub()
+
+	reconcile := func() {
+		_, cfg, p, err := loadVM(dir)
+		if err != nil {
+			stopSub()
+			emit(DaemonVMState{Configured: false, State: "unconfigured"})
+			return
+		}
+		if !cfg.Autostart || isVMStoppedByUser(p) {
+			stopSub()
+			emit(DaemonVMStatus(ctx, dir))
+			return
+		}
+
+		key := fmt.Sprintf("%s|%s|%s", cfg.Hostname, cfg.Controller, cfg.SleepAfter)
+		if subCancel != nil && activeKey == key {
+			emit(DaemonVMStatus(ctx, dir))
+			return
+		}
+		stopSub()
+
+		sleepAfter, err := cfg.SleepAfterDuration()
+		if err != nil {
+			st := vmStateBase(cfg)
+			st.State = "error"
+			st.Detail = err.Error()
+			emit(st)
+			return
+		}
+		cl, err := cluster(cfg.Controller)
+		if err != nil {
+			st := vmStateBase(cfg)
+			st.State = "error"
+			st.Detail = err.Error()
+			emit(st)
+			return
+		}
+
+		subCtx, cancel := context.WithCancel(ctx)
+		subCancel = cancel
+		activeKey = key
+
+		vm := daemonSupervisedVM{
+			qemuVM:  qemuVM{cfg: cfg, p: p, sampler: newDarwinHostUsageSampler()},
+			onState: emit,
+		}
+		cleanStaleVMFiles(subCtx, p)
+
+		subWG.Add(2)
+		go func() {
+			defer subWG.Done()
+			WatchPausedVM(subCtx, dir, log)
+		}()
+		go func() {
+			defer subWG.Done()
+			// Auto-start the VM on Mac boot / daemon startup unless Standby
+			// intentionally put it to sleep during this boot session.
+			if !vm.Running(subCtx) && !isVMAsleepSinceBoot(p) {
+				log.Info("daemon: starting configured macOS worker VM", "node", cfg.Hostname)
+				if err := vm.Start(subCtx); err != nil {
+					log.Warn("daemon: auto-start worker VM failed; continuing in standby", "node", cfg.Hostname, "err", err)
+				} else if signer, err := loadSSHSigner(p.KeyPriv); err == nil {
+					if sshCl, err := waitForSSH(subCtx, cfg, p, signer, os.Stderr); err == nil {
+						_, _ = sshRun(subCtx, sshCl, "sudo systemctl start hotbed-worker.service")
+						_ = sshCl.Close()
+					}
+				}
+			}
+			emit(DaemonVMStatus(subCtx, dir))
+			log.Info("daemon: supervising macOS worker VM", "node", cfg.Hostname, "controller", cfg.Controller, "sleepAfter", sleepAfter)
+			Standby(subCtx, cl, cfg.Hostname, sleepAfter, vm, log)
+		}()
+	}
+
+	reconcile()
+	t := time.NewTicker(3 * time.Second)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+			reconcile()
+		}
+	}
 }

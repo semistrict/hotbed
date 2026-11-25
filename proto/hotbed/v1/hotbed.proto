@@ -33,6 +33,10 @@ service ClusterService {
     name: "system"
     help: "Explicit host system runtime operations such as upgrading cladefsd, firecracker, and guest kernels (upgrade)."
   };
+  option (group) = {
+    name: "freshen"
+    help: "Inspect active and historical base freshens, phase/step timings, and latency bottlenecks (ls, show)."
+  };
   // Join admits the calling tailnet node as a worker.
   rpc Join(JoinRequest) returns (JoinResponse);
   // PushEvents delivers a worker's events, in order, from after what the
@@ -161,6 +165,24 @@ service ClusterService {
       name: "project bases"
       read_only: true
       format: "{{range .bases}}{{pad 14 .node}}{{with .base}}  {{pad 16 .project}}  {{pad 20 .id}}  {{pad 8 (state .state)}}{{if .repos}}  {{range $i, $r := .repos}}{{if $i}},{{end}}{{$r.repo}}@{{printf \"%.7s\" $r.commit}}{{end}}{{end}}{{if .command}}  cmd={{.command}}{{end}}{{end}}{{if .failedStep}}  failed={{.failedStep}}{{end}}\n{{end}}"
+    };
+  }
+  // List active and historical base freshens with phase/step timing summaries,
+  // cold-build reasons, queue waits, and waiting workspaces.
+  rpc ListFreshens(ListFreshensRequest) returns (ListFreshensResponse) {
+    option idempotency_level = IDEMPOTENT;
+    option (command) = {
+      name: "freshen ls"
+      read_only: true
+    };
+  }
+  // Inspect one base freshen in detail: phase and step breakdown, cold reason,
+  // memory guarantee vs peak, waiting workspaces, timeline, and node admission.
+  rpc GetFreshen(GetFreshenRequest) returns (GetFreshenResponse) {
+    option idempotency_level = IDEMPOTENT;
+    option (command) = {
+      name: "freshen show"
+      read_only: true
     };
   }
   // Everything the cockpit shows: nodes, repos, bases, workspaces, commands,
@@ -602,6 +624,28 @@ message ObjectStoreStats {
   uint64 dax_writes_held_by_seals_ns = 26;
   uint64 dax_device_read_bytes = 27;
   uint64 dax_device_reads_ns = 28;
+  // Host disk breakdown as cladefsd's disk governor sees it (summed across
+  // backing filesystems): cells, SSD part cache, other, free, and total size.
+  uint64 host_disk_size_bytes = 29;
+  uint64 host_disk_free_bytes = 30;
+  uint64 host_disk_cells_bytes = 31;
+  uint64 host_disk_cache_bytes = 32;
+  uint64 host_disk_other_bytes = 33;
+  bool host_disk_pressure = 34;
+  // Open cells served by cladefsd and cells attached in host-FUSE mount.
+  uint32 open_cells = 35;
+  uint32 mount_cells_attached = 36;
+  // Local cells' page cache (used by host-FUSE and local cell I/O).
+  uint64 page_cache_bytes = 37;
+  uint64 page_cache_dirty_bytes = 38;
+  uint64 page_cache_limit_bytes = 39;
+  // LAN peer mesh part transfers (fetched from peers / served to peers).
+  uint64 peer_parts_given = 40;
+  uint64 peer_parts_served = 41;
+  // Bytes of cell commits pending upload to R2 across open cells.
+  uint64 upload_pending_bytes = 42;
+  // Daemon memory governor pressure state.
+  bool memory_pressure = 43;
 }
 
 // Host-side view of a VM worker, reported by its host supervisor (macOS).
@@ -1107,6 +1151,43 @@ message Base {
   int64 peak_memory_bytes = 22;
   // Shared cladefsd cell version in R2 when this base is published to cladefs.
   CladefsCell cladefs_cell = 23;
+  // Runtime this base was built for: "chroot", "vm", or "cladefs".
+  string runtime = 24;
+  // Why this base built from nothing when cold is true:
+  // "no_previous_base", "scratch_epoch", "base_image_changed", "incremental_fork_failed".
+  string cold_reason = 25;
+  // Previous warm base forked from when cold is false.
+  string from_base_id = 26;
+  // Unix ms when this freshen began preparing.
+  int64 created_at = 27;
+  // Pre-queue preparation time (base image ensure, volume clone / R2 fork, mount/take).
+  double prep_seconds = 28;
+  // Time spent in git clone/fetch/checkout/submodule inside the freshen script.
+  double git_seconds = 29;
+  // Post-script finalization time (VM stop, FUSE detach, ZFS snapshot, R2 sync).
+  double finalize_seconds = 30;
+  // Currently running setup step name while building.
+  string current_step = 31;
+  // 1-based index of the currently running step while building.
+  int32 current_step_index = 32;
+  // Total steps scheduled to run in this freshen.
+  int32 total_steps = 33;
+  // Unix ms when current_step started running.
+  int64 current_step_started_at = 34;
+  // Ordered timing phases of this base freshen.
+  repeated FreshenPhase phases = 35;
+  // Failure, cancel, or drop reason recorded when the freshen did not warm.
+  string failure_reason = 36;
+}
+
+// One timed phase of a base freshen (prep, base_image, fork, queue, vm_boot,
+// git, steps, vm_stop, mount_detach, snapshot, r2_sync).
+message FreshenPhase {
+  string name = 1;
+  int64 started_at = 2;
+  optional int64 ended_at = 3;
+  double seconds = 4;
+  string detail = 5;
 }
 
 // One repo of a base, as its generation checked it out.
@@ -1166,7 +1247,7 @@ message Workspace {
   string node = 25;
   // Each repo checked out, by ID.
   repeated WorkspaceRepo repos = 26;
-  // Execution runtime backing this workspace ("vm" or "chroot").
+  // Execution runtime backing this workspace ("vm", "cladefs", or "chroot").
   string runtime = 27;
   // Cladefs cell coordinates when backed by cladefsd + Firecracker.
   CladefsCell cladefs_cell = 28;
@@ -1486,6 +1567,8 @@ message Command {
   int64 dropped_output_bytes = 28;
   // Its stops, pauses and resumes by hand, oldest first.
   repeated CommandIntervention interventions = 29;
+  // Execution runtime backing this command ("vm", "cladefs", or "chroot").
+  string runtime = 30;
 }
 
 // A command that ended, as history keeps it.
@@ -1522,6 +1605,8 @@ message FinishedCommand {
   string project = 23;
   // Its stops, pauses and resumes by hand, oldest first.
   repeated CommandIntervention interventions = 24;
+  // Execution runtime that ran this command ("vm", "cladefs", or "chroot").
+  string runtime = 25;
 }
 
 message RunCommandRequest {
@@ -1899,6 +1984,189 @@ message NodeBase {
   Base base = 2;
   // Setup step that failed, when base.state is failed and a step broke it.
   string failed_step = 3;
+}
+
+enum FreshenState {
+  FRESHEN_STATE_UNSPECIFIED = 0;
+  FRESHEN_STATE_QUEUED = 1;
+  FRESHEN_STATE_RUNNING = 2;
+  FRESHEN_STATE_PARKED = 3;
+  FRESHEN_STATE_PAUSED = 4;
+  FRESHEN_STATE_FINALIZING = 5;
+  FRESHEN_STATE_SUCCEEDED = 6;
+  FRESHEN_STATE_FAILED = 7;
+  FRESHEN_STATE_CANCELLED = 8;
+  FRESHEN_STATE_DROPPED = 9;
+}
+
+message ListFreshensRequest {
+  // Project name (or a repo ID held by a project); empty lists every project's freshens.
+  string project = 1 [(param) = {
+    positional: true
+    optional: true
+  }];
+  // Filter to freshens on this node (host name or ID).
+  string node = 2;
+  // Filter by freshen state (queued, running, parked, paused, finalizing, succeeded, failed, cancelled, dropped).
+  FreshenState state = 3;
+  // Only currently active (in-flight) freshens.
+  bool active = 4;
+  // Filter by runtime ("chroot", "vm", "cladefs").
+  string runtime = 5;
+  // Only cold builds from nothing.
+  bool cold = 6;
+  // Lookback window (e.g. "1h", "24h", "7d", or "all" for full retention; default "24h").
+  string since = 7;
+  // Maximum freshens to list (default 30; 0 for all). Summary covers all matched freshens in the window.
+  optional int32 limit = 8 [(param) = {short: "n"}];
+}
+
+message ListFreshensResponse {
+  FreshenSummary summary = 1;
+  // Active freshens first, then newest started/ended first.
+  repeated BaseFreshen freshens = 2;
+  // Number of older matching freshens omitted by limit.
+  int32 more = 3;
+  // Controller clock unix ms used to compute live elapsed durations.
+  int64 now = 4;
+}
+
+message GetFreshenRequest {
+  // Freshen command ID (e.g. f-cladefs-g75-831696) or base ID (e.g. cladefs-g75).
+  string id = 1 [(param) = {
+    positional: true
+    required: true
+  }];
+  // Disambiguate when looking up by base ID across multiple nodes.
+  string node = 2;
+}
+
+message GetFreshenResponse {
+  BaseFreshen freshen = 1;
+  // Live node admission snapshot when the freshen is active on an online node.
+  Admission node_admission = 2;
+  // Recent cluster events referencing this freshen's command or base.
+  repeated ClusterEvent related_events = 3;
+}
+
+// A single base freshen run, live or historical (retained 30 days on the controller).
+message BaseFreshen {
+  // Freshen command ID (e.g. f-cladefs-g75-831696).
+  string id = 1;
+  string base_id = 2;
+  string node_id = 3;
+  string node = 4;
+  string project = 5;
+  int32 generation = 6;
+  // "chroot", "vm", or "cladefs".
+  string runtime = 7;
+  FreshenState state = 8;
+  bool cold = 9;
+  string cold_reason = 10;
+  string from_base_id = 11;
+  int64 created_at = 12;
+  optional int64 started_at = 13;
+  optional int64 ended_at = 14;
+  // End-to-end wall seconds (ended_at or now minus created_at).
+  double total_seconds = 15;
+  double prep_seconds = 16;
+  double queue_seconds = 17;
+  double run_seconds = 18;
+  double git_seconds = 19;
+  double steps_seconds = 20;
+  double parked_seconds = 21;
+  double finalize_seconds = 22;
+  int32 parks = 23;
+  int64 memory_low_bytes = 24;
+  int64 peak_memory_bytes = 25;
+  int32 units = 26;
+  double progress = 27;
+  string current_phase = 28;
+  string current_step = 29;
+  int32 current_step_index = 30;
+  int32 total_steps = 31;
+  double current_step_seconds = 32;
+  string failed_step = 33;
+  // Current queue/park wait reason while active, or failure/cancel/drop reason when ended.
+  string reason = 34;
+  // Workspace IDs currently PREPARING and waiting on this base.
+  repeated string waiting_workspaces = 35;
+  repeated BaseRepo repos = 36;
+  repeated AppliedStep steps = 37;
+  repeated FreshenPhase phases = 38;
+  repeated CommandEvent timeline = 39;
+  optional int32 exit_code = 40;
+  int64 size_bytes = 41;
+  string recipe = 42;
+}
+
+message DurationStats {
+  int32 count = 1;
+  double total_seconds = 2;
+  double p50_seconds = 3;
+  double p95_seconds = 4;
+  double max_seconds = 5;
+}
+
+message StepTimingSummary {
+  string project = 1;
+  string step = 2;
+  int32 runs = 3;
+  int32 failures = 4;
+  double total_seconds = 5;
+  double p50_seconds = 6;
+  double max_seconds = 7;
+}
+
+message NodeProjectFreshenSummary {
+  string node = 1;
+  string project = 2;
+  string runtime = 3;
+  int32 runs = 4;
+  int32 cold_runs = 5;
+  int32 succeeded = 6;
+  int32 failed = 7;
+  int32 cancelled = 8;
+  int32 consecutive_failures = 9;
+  int32 consecutive_cold = 10;
+  double p50_total_seconds = 11;
+  double max_total_seconds = 12;
+  double total_queue_seconds = 13;
+  double total_parked_seconds = 14;
+  double total_finalize_seconds = 15;
+  FreshenState active_state = 16;
+  string active_id = 17;
+  string active_step = 18;
+  double active_elapsed_seconds = 19;
+  string active_reason = 20;
+  int32 waiting_workspaces = 21;
+  map<string, int32> cold_reasons = 22;
+}
+
+message FreshenSummary {
+  int32 total = 1;
+  int32 active = 2;
+  int32 queued = 3;
+  int32 running = 4;
+  int32 parked = 5;
+  int32 finalizing = 6;
+  int32 succeeded = 7;
+  int32 failed = 8;
+  int32 cancelled = 9;
+  int32 cold = 10;
+  int32 incremental = 11;
+  int32 waiting_workspaces = 12;
+  DurationStats total_duration = 13;
+  DurationStats queue_duration = 14;
+  DurationStats prep_duration = 15;
+  DurationStats git_duration = 16;
+  DurationStats steps_duration = 17;
+  DurationStats parked_duration = 18;
+  DurationStats finalize_duration = 19;
+  int32 total_parks = 20;
+  repeated StepTimingSummary slowest_steps = 21;
+  repeated NodeProjectFreshenSummary by_node_project = 22;
+  int64 window_since = 23;
 }
 
 message GetSessionRequest {

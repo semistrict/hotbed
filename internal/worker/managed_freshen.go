@@ -11,6 +11,7 @@ import (
 	"github.com/semistrict/hotbed/internal/api"
 	"github.com/semistrict/hotbed/internal/cladefs"
 	pb "github.com/semistrict/hotbed/internal/gen/hotbed/v1"
+	"github.com/semistrict/hotbed/internal/runtime"
 )
 
 // isCladefsBase reports whether b is an R2-backed cladefs base (Firecracker VM
@@ -52,16 +53,22 @@ type managedFreshen struct {
 // managedFreshenSpec describes a VM or cladefs-FUSE project base build to be
 // tracked in e.bases + e.commands and scheduled through Engine admission control.
 type managedFreshenSpec struct {
-	Project    *pb.HostedProject
-	BaseID     string
-	Recipe     string
-	Arch       string
-	Cold       bool
-	PrevBase   *vmProjectBase
-	StepsToRun []*pb.Step
-	Heads      map[string]string
-	Script     string
-	Env        []string
+	Project     *pb.HostedProject
+	BaseID      string
+	Recipe      string
+	Arch        string
+	Runtime     string
+	Cold        bool
+	ColdReason  string
+	FromBaseID  string
+	CreatedAt   int64
+	PrepSeconds float64
+	PrepPhases  []*pb.FreshenPhase
+	PrevBase    *vmProjectBase
+	StepsToRun  []*pb.Step
+	Heads       map[string]string
+	Script      string
+	Env         []string
 	// Exactly one of RootDir (cladefs-FUSE chroot) or VMID (Firecracker VM) is set.
 	RootDir     string
 	VMID        string
@@ -71,16 +78,18 @@ type managedFreshenSpec struct {
 
 // managedFreshenResult summarizes the completed managed freshen command.
 type managedFreshenResult struct {
-	BaseID     string
-	CommandID  string
-	RepoHeads  map[string]string
-	Steps      []*pb.AppliedStep
-	Baked      []string
-	Units      int
-	PeakMemory int64
-	Seconds    float64
-	State      pb.CommandState
-	Reason     string
+	BaseID          string
+	CommandID       string
+	RepoHeads       map[string]string
+	Steps           []*pb.AppliedStep
+	Baked           []string
+	Units           int
+	PeakMemory      int64
+	Seconds         float64
+	GitSeconds      float64
+	FinalizeSeconds float64
+	State           pb.CommandState
+	Reason          string
 }
 
 type managedFreshenRunner func(ctx context.Context, spec managedFreshenSpec) (*managedFreshenHandle, error)
@@ -107,7 +116,7 @@ func (h *managedFreshenHandle) CommandID() string {
 // step progress, timings, and compiled unit counts.
 func buildCladefsFreshenScript(p *pb.HostedProject, heads map[string]string, stepsToRun []*pb.Step, checkGitmodules bool) string {
 	var b strings.Builder
-	b.WriteString("set -euo pipefail\nmkdir -p /work\ncd /work\n")
+	b.WriteString("set -euo pipefail\nmkdir -p /work\ncd /work\nt_git=${EPOCHREALTIME//[!0-9]/}\n")
 	for _, r := range p.GetRepos() {
 		branch := cmp.Or(r.GetBranch(), "main")
 		commit := heads[r.GetId()]
@@ -150,7 +159,7 @@ fi
 printf '::hotbed-head:: %s %%s\n' "$(git -C %q rev-parse HEAD)"
 `, r.GetId(), r.GetId(), r.GetId(), r.GetId(), r.GetId())
 	}
-	b.WriteString("cd /work\n")
+	b.WriteString("printf '::hotbed:: phase-done git %d\\n' \"$(( ${EPOCHREALTIME//[!0-9]/} - t_git ))\"\ncd /work\n")
 	b.WriteString(stepsScript(stepsToRun))
 	return b.String()
 }
@@ -233,9 +242,11 @@ func (e *Engine) recordWarmCladefsBase(p *pb.HostedProject, pbBase *vmProjectBas
 		Project:      p.Name,
 		NodeId:       e.cfg.NodeID,
 		Generation:   gen,
+		Runtime:      cladefsBaseRuntimeKind(pbBase.BaseID),
 		State:        warm,
 		Progress:     1,
 		BuiltAt:      &now,
+		CreatedAt:    now,
 		ScratchEpoch: pbBase.ScratchEpoch,
 		Recipe:       pbBase.Recipe,
 		CladefsCell: &pb.CladefsCell{
@@ -297,13 +308,29 @@ func (e *Engine) startManagedFreshen(_ context.Context, spec managedFreshenSpec)
 		return nil, fmt.Errorf("worker is shutting down")
 	}
 	gen := e.nextCladefsBaseGenLocked(spec.Project.Name)
+	createdAt := spec.CreatedAt
+	if createdAt <= 0 {
+		createdAt = now
+	}
+	rtKind := cmp.Or(spec.Runtime, cladefsBaseRuntimeKind(spec.BaseID))
+	fromBaseID := spec.FromBaseID
+	if fromBaseID == "" && !spec.Cold && spec.PrevBase != nil {
+		fromBaseID = spec.PrevBase.BaseID
+	}
 	b := &pb.Base{
 		Id:           spec.BaseID,
 		Project:      spec.Project.Name,
 		NodeId:       e.cfg.NodeID,
 		Generation:   gen,
+		Runtime:      rtKind,
 		State:        building,
 		Cold:         spec.Cold,
+		ColdReason:   spec.ColdReason,
+		FromBaseId:   fromBaseID,
+		CreatedAt:    createdAt,
+		PrepSeconds:  spec.PrepSeconds,
+		TotalSteps:   int32(len(spec.StepsToRun)),
+		Phases:       spec.PrepPhases,
 		Command:      cmdID,
 		ScratchEpoch: spec.Project.ScratchEpoch,
 		Steps:        plannedManagedSteps(spec.Project, spec.PrevBase, spec.StepsToRun),
@@ -318,6 +345,10 @@ func (e *Engine) startManagedFreshen(_ context.Context, spec managedFreshenSpec)
 	for _, r := range spec.Project.GetRepos() {
 		b.Repos = append(b.Repos, &pb.BaseRepo{Repo: r.GetId(), Commit: spec.Heads[r.GetId()]})
 	}
+	cmdRuntime := runtime.KindCladefs
+	if spec.VMID != "" {
+		cmdRuntime = runtime.KindVM
+	}
 	c := e.newCommand(&pb.CommandRecord{
 		Command: &pb.Command{
 			Id:       cmdID,
@@ -326,6 +357,7 @@ func (e *Engine) startManagedFreshen(_ context.Context, spec managedFreshenSpec)
 			Project:  spec.Project.Name,
 			Args:     []string{"/bin/bash", "-c", spec.Script},
 			Kind:     "freshen",
+			Runtime:  cmdRuntime,
 			State:    queued,
 			QueuedAt: now,
 			Limits:   &pb.CommandLimits{CpuWeight: 100},
@@ -423,6 +455,7 @@ func (h *managedFreshenHandle) collectResult() managedFreshenResult {
 	}
 	res.Seconds = max(0, float64(endedAt-startedAt)/1000)
 	res.Units, _ = c.out.result(cmd.State, cmd.ExitCode, cmd.Kind)
+	res.GitSeconds = c.out.gitSeconds()
 	res.RepoHeads = c.out.repoHeads()
 	if b, ok := h.e.bases[h.baseID]; ok && b.Command == h.cmdID {
 		res.Steps = c.out.settle(b.Steps)
@@ -433,6 +466,46 @@ func (h *managedFreshenHandle) collectResult() managedFreshenResult {
 		}
 	}
 	return res
+}
+
+// RecordPhase appends a completed phase timing (e.g. vm_boot, vm_stop,
+// mount_detach, r2_sync) to the managed freshen's Base record.
+func (h *managedFreshenHandle) RecordPhase(name string, startedAt, endedAt int64, seconds float64, detail string) {
+	if h == nil || h.e == nil || name == "" {
+		return
+	}
+	h.e.mu.Lock()
+	defer h.e.mu.Unlock()
+	b, found := h.e.bases[h.baseID]
+	if !found || b.Command != h.cmdID {
+		return
+	}
+	b.Phases = append(b.Phases, &pb.FreshenPhase{
+		Name:      name,
+		StartedAt: startedAt,
+		EndedAt:   &endedAt,
+		Seconds:   seconds,
+		Detail:    detail,
+	})
+}
+
+// SetFinalizing marks the managed base as entering a post-script finalization
+// phase (such as vm_stop, mount_detach, or r2_sync) and notifies the controller.
+func (h *managedFreshenHandle) SetFinalizing(phase string) {
+	if h == nil || h.e == nil {
+		return
+	}
+	h.e.mu.Lock()
+	defer h.e.mu.Unlock()
+	b, found := h.e.bases[h.baseID]
+	if !found || b.Command != h.cmdID || b.State != building {
+		return
+	}
+	b.Progress = 1
+	b.CurrentStep = ""
+	b.CurrentStepIndex = 0
+	b.CurrentStepStartedAt = 0
+	h.e.saveBase(b, change{what: "finalizing", detail: phase})
 }
 
 // Finish records the final warm or failed state of the managed R2 base after
@@ -453,6 +526,11 @@ func (h *managedFreshenHandle) Finish(ok bool, res managedFreshenResult, cell cl
 	}
 	now := h.e.nowMs()
 	b.PeakMemoryBytes = max(b.PeakMemoryBytes, res.PeakMemory)
+	b.GitSeconds = max(b.GitSeconds, res.GitSeconds)
+	b.FinalizeSeconds = max(b.FinalizeSeconds, res.FinalizeSeconds)
+	b.CurrentStep = ""
+	b.CurrentStepIndex = 0
+	b.CurrentStepStartedAt = 0
 	if len(res.Steps) > 0 {
 		b.Steps = res.Steps
 	}
@@ -460,10 +538,12 @@ func (h *managedFreshenHandle) Finish(ok bool, res managedFreshenResult, cell cl
 	if !ok {
 		b.State = broken
 		b.BuiltAt = &now
+		b.BuildSeconds = res.Seconds
 		why := baseFailure(b)
 		if failDetail != "" && failedStep(b) == "" {
 			why = fmt.Sprintf("base %s failed: %s (its log is command %s)", b.Id, failDetail, h.cmdID)
 		}
+		b.FailureReason = cmp.Or(failDetail, res.Reason, why)
 		h.e.saveBase(b, change{what: "failed", detail: why, feed: feed(feedFail, why, ref("command", h.cmdID))})
 		return
 	}

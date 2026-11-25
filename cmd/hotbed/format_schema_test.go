@@ -216,6 +216,10 @@ func filledGo(t reflect.Type) reflect.Value {
 		}
 	case reflect.Slice:
 		v.Set(reflect.Append(v, filledGo(t.Elem())))
+	case reflect.Pointer:
+		p := reflect.New(t.Elem())
+		p.Elem().Set(filledGo(t.Elem()))
+		v.Set(p)
 	}
 	return v
 }

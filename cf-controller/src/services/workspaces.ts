@@ -105,6 +105,7 @@ function commandOfHistory(f: FinishedCommand): Command {
 		bench: f.bench,
 		project: f.project,
 		repo: f.repoId,
+		runtime: f.runtime,
 		rebuilt:
 			f.rebuilt !== undefined && f.of !== undefined
 				? create(RebuiltSchema, { units: f.rebuilt, of: f.of })
@@ -235,12 +236,20 @@ export function createWorkspaceService(ctrl: ControllerContext): {
 		}
 		if (!b) return null;
 		const nid = b.nodeId || nodeId;
+		const baseRuntime = b.cladefsCell
+			? b.id.includes("-vm-")
+				? "vm"
+				: b.id.includes("-fuse-")
+					? "cladefs"
+					: ""
+			: "chroot";
 		const cmd = create(CommandSchema, {
 			id,
 			nodeId: nid,
 			nodeAddr: ctrl.nodeAddr(nid),
 			project: b.project,
 			kind: "freshen",
+			runtime: baseRuntime,
 			argv: b.cladefsCell ? `freshen ${b.id}` : `freshen ${b.project} g${b.generation}`,
 			endedAt: b.builtAt,
 		});

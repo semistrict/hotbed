@@ -8,13 +8,16 @@ import {
 	DaemonLogLevel,
 	DeleteRepoResponseSchema,
 	DeleteWorkerConfigResponseSchema,
+	FreshenState,
 	GetCommandDiagnosticsResponseSchema,
+	GetFreshenResponseSchema,
 	GetWorkerConfigResponseSchema,
 	HeartbeatResponseSchema,
 	HourBucketSchema,
 	JoinResponseSchema,
 	ListBasesResponseSchema,
 	ListEventsResponseSchema,
+	ListFreshensResponseSchema,
 	ListNodesResponseSchema,
 	ListPlacementsResponseSchema,
 	ListProjectsResponseSchema,
@@ -71,6 +74,7 @@ import {
 	type ControllerContext,
 } from "../context.ts";
 import { ErrorCode, codeOf, hotbedError } from "../errors.ts";
+import { buildFreshenSummary, isFreshenActive, synthesizeLegacyFreshens } from "../freshens.ts";
 import { canonicalRemote, stepHash, validateRepoURL } from "../gitops.ts";
 import { overlayHostSamples, prepareHostUsage } from "../hostusage.ts";
 import { isCommandLive, workOf } from "../standby.ts";
@@ -87,6 +91,41 @@ const ADMISSION_KINDS = ["hold", "unhold", "wait"];
 const MAX_DIAGNOSTICS_RESPONSE_BYTES = 2 * 1024 * 1024;
 const REPORT_INTERVAL_MS = 5_000;
 const STANDBY_MAX_STREAM_MS = 25_000;
+
+const DEFAULT_FRESHEN_WINDOW_MS = 24 * 3600_000;
+const DEFAULT_FRESHEN_LIMIT = 30;
+
+function parseFreshenSinceMs(raw: string, nowMs: number): number {
+	const s = raw.trim().toLowerCase();
+	if (!s) return nowMs - DEFAULT_FRESHEN_WINDOW_MS;
+	if (s === "all" || s === "0") return 0;
+	const m = /^(\d+)(ms|s|m|h|d)$/.exec(s);
+	if (!m) {
+		throw hotbedError(ErrorCode.InvalidArgs, `invalid --since duration "${raw}"`).withSuggestion(
+			'use e.g. "1h", "24h", "7d", or "all"',
+		);
+	}
+	const n = Number(m[1]);
+	let ms = 0;
+	switch (m[2]) {
+		case "ms":
+			ms = n;
+			break;
+		case "s":
+			ms = n * 1000;
+			break;
+		case "m":
+			ms = n * 60_000;
+			break;
+		case "h":
+			ms = n * 3600_000;
+			break;
+		case "d":
+			ms = n * 86_400_000;
+			break;
+	}
+	return Math.max(0, nowMs - ms);
+}
 
 function checkProjectName(name: string): void {
 	if (!PROJECT_NAME_RE.test(name)) {
@@ -962,6 +1001,192 @@ export function createClusterService(
 				return ai < bi ? -1 : ai > bi ? 1 : 0;
 			});
 			return create(ListBasesResponseSchema, { bases });
+		},
+
+		listFreshens(req) {
+			const nowMs = ctrl.now();
+			const sinceMs = parseFreshenSinceMs(req.since, nowMs);
+			const validStates = new Set<FreshenState>([
+				FreshenState.UNSPECIFIED,
+				FreshenState.QUEUED,
+				FreshenState.RUNNING,
+				FreshenState.PARKED,
+				FreshenState.PAUSED,
+				FreshenState.FINALIZING,
+				FreshenState.SUCCEEDED,
+				FreshenState.FAILED,
+				FreshenState.CANCELLED,
+				FreshenState.DROPPED,
+			]);
+			if (!validStates.has(req.state)) {
+				throw hotbedError(
+					ErrorCode.InvalidArgs,
+					`unknown freshen state ${String(req.state)}`,
+				).withSuggestion(
+					"use one of: queued, running, parked, paused, finalizing, succeeded, failed, cancelled, dropped",
+				);
+			}
+			const rt = req.runtime.trim().toLowerCase();
+			if (rt && rt !== "chroot" && rt !== "vm" && rt !== "cladefs") {
+				throw hotbedError(ErrorCode.InvalidArgs, `unknown runtime "${req.runtime}"`).withSuggestion(
+					"use one of: chroot, vm, cladefs",
+				);
+			}
+
+			const nvs = ctrl.views();
+			const target = req.project.trim();
+			let matchProjects: Set<string> | null = null;
+			if (target) {
+				matchProjects = new Set<string>();
+				try {
+					const p = ctrl.store.getProject(target);
+					matchProjects.add(p.name);
+				} catch (err) {
+					if (codeOf(err) !== ErrorCode.NotFound) throw err;
+					try {
+						const r = ctrl.repoById(target);
+						for (const hp of ctrl.store.projectsHolding(canonicalRemote(r.url))) {
+							matchProjects.add(hp.name);
+						}
+					} catch (rerr) {
+						if (codeOf(rerr) !== ErrorCode.NotFound) throw rerr;
+					}
+				}
+			}
+
+			let nodeId = "";
+			if (req.node) {
+				const found = nvs.find((nv) => nv.node.hostname === req.node || nv.node.id === req.node);
+				if (!found) {
+					throw hotbedError(ErrorCode.NotFound, `no node is called ${req.node}`).withSuggestion(
+						"hotbed nodes lists the nodes",
+					);
+				}
+				nodeId = found.node.id;
+			}
+
+			const stored = ctrl.store.listBaseFreshens(sinceMs);
+			const recentEvs = ctrl.store.recentEvents(KEEP_EVENTS);
+			const all = synthesizeLegacyFreshens(stored, nvs, recentEvs, nowMs);
+
+			if (target && matchProjects && matchProjects.size === 0) {
+				if (all.some((f) => f.project === target)) {
+					matchProjects.add(target);
+				} else {
+					throw hotbedError(ErrorCode.NotFound, `no project ${target}`).withSuggestion(
+						"hotbed project ls",
+					);
+				}
+			}
+
+			const matched = all.filter((f) => {
+				if (sinceMs > 0 && !isFreshenActive(f.state)) {
+					const ts = Number(f.endedAt ?? f.createdAt);
+					if (ts > 0 && ts < sinceMs) return false;
+				}
+				if (matchProjects && !matchProjects.has(f.project)) return false;
+				if (nodeId && f.nodeId !== nodeId) return false;
+				if (req.state !== FreshenState.UNSPECIFIED && f.state !== req.state) return false;
+				if (req.active && !isFreshenActive(f.state)) return false;
+				if (rt && (f.runtime || "chroot") !== rt) return false;
+				if (req.cold && !f.cold) return false;
+				return true;
+			});
+
+			// Active freshens first (longest running/waiting first), then ended newest-first.
+			matched.sort((a, b) => {
+				const aAct = isFreshenActive(a.state) ? 1 : 0;
+				const bAct = isFreshenActive(b.state) ? 1 : 0;
+				if (bAct !== aAct) return bAct - aAct;
+				if (aAct && bAct) {
+					if (b.totalSeconds !== a.totalSeconds) return b.totalSeconds - a.totalSeconds;
+				}
+				if (b.createdAt !== a.createdAt) return b.createdAt > a.createdAt ? 1 : -1;
+				return a.id < b.id ? -1 : a.id > b.id ? 1 : 0;
+			});
+
+			const summary = buildFreshenSummary(matched, sinceMs);
+			const lim = req.limit === undefined ? DEFAULT_FRESHEN_LIMIT : req.limit;
+			let items = matched;
+			let more = 0;
+			if (lim > 0 && matched.length > lim) {
+				items = matched.slice(0, lim);
+				more = matched.length - lim;
+			}
+			return create(ListFreshensResponseSchema, {
+				summary,
+				freshens: items,
+				more,
+				now: BigInt(nowMs),
+			});
+		},
+
+		getFreshen(req) {
+			const id = req.id.trim();
+			if (!id) {
+				throw hotbedError(ErrorCode.InvalidArgs, "freshen command ID or base ID is required");
+			}
+			const nowMs = ctrl.now();
+			const nvs = ctrl.views();
+			let nodeId = "";
+			if (req.node) {
+				const found = nvs.find((nv) => nv.node.hostname === req.node || nv.node.id === req.node);
+				if (!found) {
+					throw hotbedError(ErrorCode.NotFound, `no node is called ${req.node}`).withSuggestion(
+						"hotbed nodes lists the nodes",
+					);
+				}
+				nodeId = found.node.id;
+			}
+			const stored = ctrl.store.listBaseFreshens(0);
+			const recentEvs = ctrl.store.recentEvents(KEEP_EVENTS);
+			const all = synthesizeLegacyFreshens(stored, nvs, recentEvs, nowMs);
+
+			let hits = all.filter((f) => f.id === id && (!nodeId || f.nodeId === nodeId));
+			if (hits.length === 0) {
+				hits = all.filter((f) => f.baseId === id && (!nodeId || f.nodeId === nodeId));
+			}
+			if (hits.length === 0) {
+				throw hotbedError(ErrorCode.NotFound, `no base freshen ${id}`).withSuggestion(
+					"hotbed freshen ls lists recent and active base freshens",
+				);
+			}
+			if (hits.length > 1) {
+				const nodes = [...new Set(hits.map((h) => h.node || h.nodeId))].sort();
+				if (nodes.length > 1) {
+					throw hotbedError(
+						ErrorCode.Conflict,
+						`base ${id} has freshens on multiple nodes (${nodes.join(", ")})`,
+					).withSuggestion(`pass --node HOST, or use the freshen command ID (e.g. ${hits[0].id})`);
+				}
+				hits.sort((a, b) => (b.createdAt > a.createdAt ? 1 : b.createdAt < a.createdAt ? -1 : 0));
+			}
+			const freshen = hits[0];
+			const nv = nvs.find((v) => v.node.id === freshen.nodeId);
+			const nodeAdmission =
+				nv && nv.online && isFreshenActive(freshen.state) ? nv.node.admission : undefined;
+
+			const hostById = new Map(nvs.map((v) => [v.node.id, v.node.hostname]));
+			const genPhrase =
+				freshen.generation > 0 ? `base ${freshen.project} g${freshen.generation} ` : "";
+			const related: ClusterEvent[] = [];
+			for (const ev of recentEvs) {
+				if (ev.nodeId !== freshen.nodeId) continue;
+				const matches =
+					(ev.ref?.id && (ev.ref.id === freshen.id || ev.ref.id === freshen.baseId)) ||
+					(freshen.baseId && ev.text.includes(freshen.baseId)) ||
+					(genPhrase && ev.text.includes(genPhrase));
+				if (!matches) continue;
+				ev.hostname = hostById.get(ev.nodeId) ?? freshen.node;
+				related.push(ev);
+				if (related.length >= 40) break;
+			}
+
+			return create(GetFreshenResponseSchema, {
+				freshen,
+				nodeAdmission,
+				relatedEvents: related,
+			});
 		},
 
 		getSnapshot() {

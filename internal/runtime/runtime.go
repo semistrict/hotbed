@@ -49,9 +49,11 @@ type CommandStatus struct {
 	OOMKilled  bool
 	MainPID    int
 	Cgroup     string
-	MemoryAnon int64
-	MemorySwap int64
-	CPUUsec    int64
+	MemoryAnon     int64
+	MemorySwap     int64
+	MemoryPeak     int64
+	MemorySwapPeak int64
+	CPUUsec        int64
 }
 
 // SyncSpec carries local bundle files to apply inside a workspace repo.

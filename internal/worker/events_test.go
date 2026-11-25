@@ -121,6 +121,9 @@ func TestEveryChangeIsAnEvent(t *testing.T) {
 		}
 		switch c := ev.Change.(type) {
 		case *pb.Event_Base:
+			if c.Base.What == "progress" {
+				continue // timing-dependent mid-run progress updates
+			}
 			whats["base "+c.Base.Base.Id] = append(whats["base "+c.Base.Base.Id], c.Base.What)
 		case *pb.Event_Workspace:
 			whats["workspace "+c.Workspace.Workspace.Id] = append(whats["workspace "+c.Workspace.Workspace.Id], c.Workspace.What)
@@ -139,7 +142,7 @@ func TestEveryChangeIsAnEvent(t *testing.T) {
 		}
 	}
 	want := map[string][]string{
-		"base app-g1":       {"building", "warm"},
+		"base app-g1":       {"building", "finalizing", "warm"},
 		"command freshen":   {"queued", "admitted", "exited"},
 		"workspace ws1":     {"created", "ready", "active", "idle", "released"},
 		"command " + cmd.Id: {"queued", "admitted", "exited"},

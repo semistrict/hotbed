@@ -9,12 +9,12 @@ import { SpeedBars } from "../components/charts/SpeedBars";
 import { actsFor, ByHandButtons, ByHandForm, InterventionsCard, type ByHandAction } from "../components/ByHand";
 import { CommandBlock } from "../components/CommandBlock";
 import { Crumbs } from "../components/Crumbs";
-import { FAILURE } from "../components/CommandTable";
+import { commandRuntime, FAILURE } from "../components/CommandTable";
 import { ContinuousProfilePanel } from "../components/ContinuousProfilePanel";
 import { LiveDiagnosticsPanel } from "../components/LiveDiagnosticsPanel";
 import { ProcessSamplePanel, type SampleTrigger } from "../components/ProcessSamplePanel";
 import { Card, StatTile } from "../components/Panel";
-import { BenchTag, KindTag, StateBadge } from "../components/StateBadges";
+import { BenchTag, KindTag, RuntimeBadge, StateBadge } from "../components/StateBadges";
 import { nodeName, useSnapshot } from "../lib/data";
 import { atEnd } from "../lib/follow";
 import { bytes, duration, hhmmss, limit, speedup } from "../lib/format";
@@ -78,6 +78,7 @@ function CommandView({
   const activeAct = live && act && actsFor(live).includes(act) ? act : null;
 
   const kind = live?.kind ?? done?.kind ?? "build";
+  const runtime = commandRuntime(s, { runtime: live?.runtime || done?.runtime || "", workspaceId });
   const timeLimit = formatTimeLimit(kind, live?.limits);
 
   return (
@@ -87,6 +88,7 @@ function CommandView({
         <div className="flex flex-wrap items-center gap-3">
           <StateBadge state={state} />
           <KindTag kind={kind} />
+          {runtime && <RuntimeBadge runtime={runtime} />}
           {(live?.bench ?? done?.bench) && <BenchTag />}
           {live && isLive(live) && (
             <div className="flex flex-wrap items-center gap-2 sm:ml-auto">

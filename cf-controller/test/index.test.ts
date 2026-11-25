@@ -11,18 +11,29 @@ import { createFetchClient } from "@connectrpc/connect/protocol";
 import { createTransport } from "@connectrpc/connect/protocol-connect";
 import { describe, expect, it } from "vite-plus/test";
 import {
+	AdmissionSchema,
+	AdmissionSignalSchema,
+	AppliedStepSchema,
+	BaseChangeSchema,
 	BaseSchema,
 	BaseState,
 	CheckpointSchema,
 	CladefsCellSchema,
 	ClusterService,
+	CommandChangeSchema,
+	CommandEventSchema,
+	CommandLimitsSchema,
 	CommandLogSchema,
 	CommandSchema,
 	CommandState,
+	CommandUsageSchema,
 	CreateWorkspaceRequestSchema,
+	EventSchema,
 	FindingDecision,
 	FindingSeverity,
 	FindingVerdict,
+	FreshenPhaseSchema,
+	FreshenState,
 	GitAuthService,
 	HeartbeatRequestSchema,
 	ListFilesResponseSchema,
@@ -35,6 +46,7 @@ import {
 	NodeSystemUpgradeSchema,
 	NodeUsageSchema,
 	PromptSchema,
+	PushEventsRequestSchema,
 	QuestionService,
 	QuestionState,
 	QuickResponse,
@@ -2046,6 +2058,7 @@ describe("Security, cron, daemon logs, tunnel, and workspace regression tests", 
 						nodeId: "node-freshen-snap",
 						project: "cladefs",
 						kind: "freshen",
+						runtime: "vm",
 						argv: "freshen cladefs-vm-12345678",
 						state: CommandState.RUNNING,
 						queuedAt: nowMs,
@@ -2056,6 +2069,7 @@ describe("Security, cron, daemon logs, tunnel, and workspace regression tests", 
 						nodeId: "node-freshen-snap",
 						project: "cladefs",
 						kind: "freshen",
+						runtime: "vm",
 						argv: "freshen cladefs-vm-00000000",
 						state: CommandState.SUCCEEDED,
 						queuedAt: nowMs - 1000n,
@@ -2067,6 +2081,8 @@ describe("Security, cron, daemon logs, tunnel, and workspace regression tests", 
 		});
 
 		const snap = await owner.cluster.getSnapshot({});
+		const liveFreshen = snap.commands.find((c) => c.id === "f-cladefs-vm-live");
+		expect(liveFreshen?.runtime).toBe("vm");
 		const ids = snap.commands.map((c) => c.id);
 		expect(ids).toContain("f-cladefs-vm-live");
 		expect(ids).not.toContain("f-cladefs-vm-done");
@@ -2219,5 +2235,248 @@ describe("Security, cron, daemon logs, tunnel, and workspace regression tests", 
 		} finally {
 			tunnel2.close();
 		}
+	});
+
+	it("persists base freshens across collection, aggregates phase/step latency, and enriches live queued freshens", async () => {
+		const owner = ownerClients();
+		await owner.cluster.putRepo({
+			repo: create(RepoSchema, {
+				id: "proj-freshen-obs",
+				url: "https://example.com/proj-freshen-obs.git",
+				branch: "main",
+			}),
+		});
+		const j = workerClients(JOIN_TOKEN, "node-fobs-1", "ubu-fobs", "100.73.156.90:7121");
+		const joined = await j.cluster.join({});
+		const w = workerClients(OWNER_TOKEN, "node-fobs-1", "ubu-fobs", "100.73.156.90:7121");
+
+		const now = Date.now();
+		const t0 = BigInt(now - 600_000);
+		const tAdmit = BigInt(now - 540_000); // 60s queued
+		const tPark = BigInt(now - 400_000);
+		const tThaw = BigInt(now - 340_000); // 60s parked
+		const tDone = BigInt(now - 100_000);
+
+		// Push a cold build g1 that succeeds, then gets collected from node_state,
+		// plus a live queued g2 with a waiting workspace and node admission hold.
+		const baseG1 = create(BaseSchema, {
+			id: "proj-freshen-obs-g1",
+			project: "proj-freshen-obs",
+			nodeId: "node-fobs-1",
+			generation: 1,
+			runtime: "chroot",
+			state: BaseState.WARM,
+			cold: true,
+			coldReason: "base_image_changed",
+			createdAt: t0,
+			builtAt: tDone,
+			buildSeconds: 440,
+			prepSeconds: 12,
+			gitSeconds: 18,
+			finalizeSeconds: 4,
+			peakMemoryBytes: BigInt(6 * 1024 ** 3),
+			command: "f-proj-freshen-obs-g1-aaa111",
+			steps: [
+				create(AppliedStepSchema, { name: "deps", hash: "h1", ran: true, ok: true, seconds: 45 }),
+				create(AppliedStepSchema, { name: "build", hash: "h2", ran: true, ok: true, seconds: 310 }),
+			],
+			phases: [
+				create(FreshenPhaseSchema, { name: "clone", startedAt: t0, seconds: 12 }),
+				create(FreshenPhaseSchema, { name: "snapshot", startedAt: tDone - 4000n, seconds: 4 }),
+			],
+		});
+		const cmdG1 = create(CommandSchema, {
+			id: "f-proj-freshen-obs-g1-aaa111",
+			nodeId: "node-fobs-1",
+			project: "proj-freshen-obs",
+			argv: "freshen proj-freshen-obs g1",
+			kind: "freshen",
+			state: CommandState.SUCCEEDED,
+			queuedAt: t0,
+			startedAt: tAdmit,
+			endedAt: tDone - 4000n,
+			limits: create(CommandLimitsSchema, { memoryLowBytes: BigInt(5 * 1024 ** 3) }),
+			timeline: [
+				create(CommandEventSchema, { at: t0, what: "queued", detail: "base proj-freshen-obs-g1" }),
+				create(CommandEventSchema, { at: tAdmit, what: "admitted" }),
+				create(CommandEventSchema, { at: tPark, what: "parked", detail: "memory pressure" }),
+				create(CommandEventSchema, { at: tThaw, what: "thawed" }),
+				create(CommandEventSchema, { at: tDone - 4000n, what: "exited", detail: "exit 0" }),
+			],
+		});
+
+		const tQ = BigInt(now - 120_000);
+		const baseG2 = create(BaseSchema, {
+			id: "proj-freshen-obs-g2",
+			project: "proj-freshen-obs",
+			nodeId: "node-fobs-1",
+			generation: 2,
+			runtime: "chroot",
+			state: BaseState.BUILDING,
+			cold: false,
+			fromBaseId: "proj-freshen-obs-g1",
+			createdAt: tQ,
+			command: "f-proj-freshen-obs-g2-bbb222",
+		});
+		const cmdG2 = create(CommandSchema, {
+			id: "f-proj-freshen-obs-g2-bbb222",
+			nodeId: "node-fobs-1",
+			project: "proj-freshen-obs",
+			argv: "freshen proj-freshen-obs g2",
+			kind: "freshen",
+			state: CommandState.QUEUED,
+			queuedAt: tQ,
+			reason: "waiting for memory: needs 6.0 GiB, 2.0 GiB left",
+			limits: create(CommandLimitsSchema, { memoryLowBytes: BigInt(6 * 1024 ** 3) }),
+			timeline: [
+				create(CommandEventSchema, { at: tQ, what: "queued", detail: "base proj-freshen-obs-g2" }),
+			],
+		});
+		const wsWaiting = create(WorkspaceSchema, {
+			id: "ws-wait-g2",
+			nodeId: "node-fobs-1",
+			project: "proj-freshen-obs",
+			baseId: "proj-freshen-obs-g2",
+			state: WorkspaceState.PREPARING,
+			createdAt: tQ,
+		});
+
+		await w.cluster.pushEvents(
+			create(PushEventsRequestSchema, {
+				clusterId: joined.clusterId,
+				epoch: "ep-fobs-1",
+				checkpoint: create(CheckpointSchema, { seq: 0n }),
+			}),
+		);
+		await w.cluster.pushEvents(
+			create(PushEventsRequestSchema, {
+				clusterId: joined.clusterId,
+				epoch: "ep-fobs-1",
+				events: [
+					create(EventSchema, {
+						seq: 1n,
+						at: tDone,
+						change: {
+							case: "command",
+							value: create(CommandChangeSchema, { what: "exited", command: cmdG1 }),
+						},
+					}),
+					create(EventSchema, {
+						seq: 2n,
+						at: tDone,
+						change: {
+							case: "base",
+							value: create(BaseChangeSchema, { what: "warm", base: baseG1 }),
+						},
+					}),
+					// Collect g1 and forget its command: base_freshens MUST retain it!
+					create(EventSchema, {
+						seq: 3n,
+						at: tDone + 1000n,
+						change: {
+							case: "base",
+							value: create(BaseChangeSchema, { what: "collected", base: baseG1 }),
+						},
+					}),
+					create(EventSchema, {
+						seq: 4n,
+						at: tDone + 1000n,
+						change: {
+							case: "command",
+							value: create(CommandChangeSchema, { what: "forgotten", command: cmdG1 }),
+						},
+					}),
+					create(EventSchema, {
+						seq: 5n,
+						at: tQ,
+						change: {
+							case: "base",
+							value: create(BaseChangeSchema, { what: "building", base: baseG2 }),
+						},
+					}),
+					create(EventSchema, {
+						seq: 6n,
+						at: tQ,
+						change: {
+							case: "command",
+							value: create(CommandChangeSchema, { what: "queued", command: cmdG2 }),
+						},
+					}),
+					create(EventSchema, {
+						seq: 7n,
+						at: tQ,
+						change: {
+							case: "workspace",
+							value: { what: "created", workspace: wsWaiting },
+						},
+					}),
+				],
+			}),
+		);
+
+		await w.cluster.heartbeat(
+			create(HeartbeatRequestSchema, {
+				clusterId: joined.clusterId,
+				resources: create(ResourcesSchema, {
+					arch: "amd64",
+					cpus: 16,
+					memoryBytes: BigInt(16 * 1024 ** 3),
+				}),
+				admission: create(AdmissionSchema, {
+					holding: true,
+					reason: "memory reserved 14.0 GiB",
+					signals: [
+						create(AdmissionSignalSchema, {
+							name: "memory-reserved",
+							value: 14 * 1024 ** 3,
+							limit: 13.8 * 1024 ** 3,
+							unit: "bytes",
+							holding: true,
+							waiting: 1,
+						}),
+					],
+					queued: 1,
+				}),
+				commands: [
+					create(CommandUsageSchema, {
+						id: "f-proj-freshen-obs-g2-bbb222",
+						reason: "waiting for memory: needs 6.0 GiB, 1.5 GiB left",
+					}),
+				],
+			}),
+		);
+
+		const list = await owner.cluster.listFreshens({ project: "proj-freshen-obs" });
+		expect(list.freshens).toHaveLength(2);
+		// Active queued freshen g2 sorts first.
+		expect(list.freshens[0].id).toBe("f-proj-freshen-obs-g2-bbb222");
+		expect(list.freshens[0].state).toBe(FreshenState.QUEUED);
+		expect(list.freshens[0].waitingWorkspaces).toEqual(["ws-wait-g2"]);
+		expect(list.freshens[0].reason).toContain("needs 6.0 GiB, 1.5 GiB left");
+		expect(list.freshens[0].queueSeconds).toBeGreaterThanOrEqual(100);
+
+		// Collected g1 is still preserved with full phase, step, queue, and parked telemetry.
+		expect(list.freshens[1].id).toBe("f-proj-freshen-obs-g1-aaa111");
+		expect(list.freshens[1].state).toBe(FreshenState.SUCCEEDED);
+		expect(list.freshens[1].coldReason).toBe("base_image_changed");
+		expect(list.freshens[1].queueSeconds).toBe(60);
+		expect(list.freshens[1].parks).toBe(1);
+		expect(list.freshens[1].parkedSeconds).toBe(60);
+		expect(list.freshens[1].gitSeconds).toBe(18);
+		expect(list.freshens[1].finalizeSeconds).toBe(4);
+
+		// Summary aggregates slowest steps and node/project rollup.
+		expect(list.summary?.active).toBe(1);
+		expect(list.summary?.queued).toBe(1);
+		expect(list.summary?.succeeded).toBe(1);
+		expect(list.summary?.waitingWorkspaces).toBe(1);
+		expect(list.summary?.slowestSteps[0].step).toBe("build");
+		expect(list.summary?.slowestSteps[0].maxSeconds).toBe(310);
+		expect(list.summary?.byNodeProject[0].coldReasons.base_image_changed).toBe(1);
+
+		// GetFreshen returns live admission snapshot for active g2.
+		const detail = await owner.cluster.getFreshen({ id: "f-proj-freshen-obs-g2-bbb222" });
+		expect(detail.freshen?.baseId).toBe("proj-freshen-obs-g2");
+		expect(detail.nodeAdmission?.holding).toBe(true);
 	});
 });

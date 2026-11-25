@@ -163,3 +163,36 @@ func TestCladefsFUSEBackendPrepareAndDeleteWorkspaceEphemeral(t *testing.T) {
 		t.Fatalf("cleanup DeleteCell = %+v, want 4th path %q", api.deleteReqs, wantStorePath2)
 	}
 }
+
+func TestCladefsFUSEMountStoreDirJBOD(t *testing.T) {
+	rootA := t.TempDir()
+	rootB := t.TempDir()
+	b := &CladefsFUSEBackend{
+		mountStoresRoot: string(filepath.ListSeparator) + rootA + string(filepath.ListSeparator) + rootB,
+	}
+	rel := filepath.Join(cladefs.Base32ID(0), cladefs.Base32ID(42))
+	// Leading empty entry must be skipped, falling back to rootA (not raw ":A:B").
+	got, err := b.mountStoreDir(0, 42)
+	if err != nil || got != filepath.Join(rootA, rel) {
+		t.Fatalf("mountStoreDir fallback = (%q, %v), want %q", got, err, filepath.Join(rootA, rel))
+	}
+	// Existing directory on rootB is found.
+	wantB := filepath.Join(rootB, rel)
+	if err := os.MkdirAll(wantB, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	got, err = b.mountStoreDir(0, 42)
+	if err != nil || got != wantB {
+		t.Fatalf("mountStoreDir on rootB = (%q, %v), want %q", got, err, wantB)
+	}
+	// Unreadable secondary root must error instead of falling back to rootA.
+	if os.Geteuid() != 0 {
+		if err := os.Chmod(filepath.Join(rootB, cladefs.Base32ID(0)), 0o000); err != nil {
+			t.Fatal(err)
+		}
+		defer os.Chmod(filepath.Join(rootB, cladefs.Base32ID(0)), 0o755)
+		if _, err := b.mountStoreDir(0, 42); err == nil {
+			t.Fatalf("expected error when secondary mount store is unreadable, got nil")
+		}
+	}
+}

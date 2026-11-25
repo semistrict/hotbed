@@ -385,10 +385,7 @@ func sampleCladefsObjectStore(ctx context.Context, store *cladefs.Store) *pb.Obj
 	}); serr == nil {
 		applyCladefsStats(out, stats)
 	}
-	if used, capBytes, ok := scrapeLocalPartCache(sctx, "http://127.0.0.1:9184/metrics"); ok {
-		out.PartCacheBytes = used
-		out.PartCacheCapacityBytes = capBytes
-	}
+	scrapeLocalCladefsMetrics(sctx, "http://127.0.0.1:9184/metrics", out)
 	return out
 }
 
@@ -402,6 +399,8 @@ func applyCladefsStats(out *pb.ObjectStoreStats, stats *cladefsdv1.GetStatsRespo
 	out.ExtentCachePinnedEntries = g["extent_cache_pinned_entries"]
 	out.ExtentCacheIdleEntries = g["extent_cache_idle_entries"]
 	out.WindowMappedBytes = g["window_mapped_bytes"]
+	out.OpenCells = uint32(g["stores_open"])
+	out.HostDiskCellsBytes = g["disk_bytes"]
 	if c := stats.GetCounters(); c != nil {
 		out.CacheTrims = c["cache_trims"]
 	}
@@ -423,45 +422,157 @@ func applyCladefsStats(out *pb.ObjectStoreStats, stats *cladefsdv1.GetStatsRespo
 
 var cladefsMetricsHTTP = &http.Client{Timeout: 500 * time.Millisecond}
 
-func scrapeLocalPartCache(ctx context.Context, url string) (used, capacity uint64, ok bool) {
+func scrapeLocalCladefsMetrics(ctx context.Context, url string, out *pb.ObjectStoreStats) bool {
+	if out == nil {
+		return false
+	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
-		return 0, 0, false
+		return false
 	}
 	resp, err := cladefsMetricsHTTP.Do(req)
 	if err != nil {
-		return 0, 0, false
+		return false
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		return 0, 0, false
+		return false
 	}
-	body, err := io.ReadAll(io.LimitReader(resp.Body, 512<<10))
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 2<<20))
 	if err != nil {
-		return 0, 0, false
+		return false
 	}
-	return parsePartCacheMetrics(string(body))
+	return applyCladefsPrometheusMetrics(out, string(body))
 }
 
-func parsePartCacheMetrics(text string) (used, capacity uint64, ok bool) {
-	var gotUsed, gotCap bool
+func applyCladefsPrometheusMetrics(out *pb.ObjectStoreStats, text string) bool {
+	if out == nil {
+		return false
+	}
+	var (
+		matched          bool
+		hostDiskSize     uint64
+		hostDiskFree     uint64
+		hostDiskCells    uint64
+		hostDiskCache    uint64
+		hostDiskOther    uint64
+		uploadPending    uint64
+		sawHostDiskCells bool
+	)
 	for _, line := range strings.Split(text, "\n") {
-		if line == "" || line[0] == '#' {
+		name, labels, val, ok := parsePromLine(line)
+		if !ok {
 			continue
 		}
-		if rest, found := strings.CutPrefix(line, "cladefsd_part_cache_bytes "); found {
-			if v, err := parsePromUint64(strings.TrimSpace(rest)); err == nil {
-				used = v
-				gotUsed = true
+		switch name {
+		case "cladefsd_part_cache_bytes":
+			out.PartCacheBytes = val
+			matched = true
+		case "cladefsd_part_cache_capacity_bytes":
+			out.PartCacheCapacityBytes = val
+			matched = true
+		case "cladefsd_host_disk_size_bytes":
+			hostDiskSize += val
+			matched = true
+		case "cladefsd_host_disk_free_bytes":
+			hostDiskFree += val
+			matched = true
+		case "cladefsd_host_disk_stores_bytes":
+			hostDiskCells += val
+			sawHostDiskCells = true
+			matched = true
+		case "cladefsd_host_disk_cache_bytes":
+			hostDiskCache += val
+			matched = true
+		case "cladefsd_host_disk_other_bytes":
+			hostDiskOther += val
+			matched = true
+		case "cladefsd_host_disk_pressure":
+			if val > 0 {
+				out.HostDiskPressure = true
 			}
-		} else if rest, found := strings.CutPrefix(line, "cladefsd_part_cache_capacity_bytes "); found {
-			if v, err := parsePromUint64(strings.TrimSpace(rest)); err == nil {
-				capacity = v
-				gotCap = true
+			matched = true
+		case "cladefsd_mount_cells":
+			if labels == `state="attached"` {
+				out.MountCellsAttached = uint32(val)
+				matched = true
 			}
+		case "cladefsd_page_cache_bytes":
+			out.PageCacheBytes = val
+			matched = true
+		case "cladefsd_page_cache_dirty_bytes":
+			out.PageCacheDirtyBytes = val
+			matched = true
+		case "cladefsd_page_cache_limit_bytes":
+			out.PageCacheLimitBytes = val
+			matched = true
+		case "cladefsd_peer_parts_total":
+			if labels == `outcome="given"` {
+				out.PeerPartsGiven = val
+				matched = true
+			}
+		case "cladefsd_peer_served_parts_total":
+			if labels == `outcome="served"` {
+				out.PeerPartsServed = val
+				matched = true
+			}
+		case "cladefsd_upload_pending_bytes":
+			uploadPending += val
+			matched = true
+		case "cladefsd_memory_pressure":
+			if val > 0 {
+				out.MemoryPressure = true
+			}
+			matched = true
 		}
 	}
-	return used, capacity, gotUsed || gotCap
+	if hostDiskSize > 0 {
+		out.HostDiskSizeBytes = hostDiskSize
+		out.HostDiskFreeBytes = hostDiskFree
+		out.HostDiskCacheBytes = hostDiskCache
+		out.HostDiskOtherBytes = hostDiskOther
+	}
+	if sawHostDiskCells {
+		out.HostDiskCellsBytes = hostDiskCells
+	}
+	if uploadPending > 0 {
+		out.UploadPendingBytes = uploadPending
+	}
+	return matched
+}
+
+// parsePromLine splits a Prometheus text exposition sample line into its metric
+// name, raw label block (without braces), and integer value.
+func parsePromLine(line string) (name, labels string, val uint64, ok bool) {
+	line = strings.TrimSpace(line)
+	if line == "" || line[0] == '#' {
+		return "", "", 0, false
+	}
+	var rest string
+	if i := strings.IndexByte(line, '{'); i >= 0 {
+		j := strings.IndexByte(line[i+1:], '}')
+		if j < 0 {
+			return "", "", 0, false
+		}
+		name = line[:i]
+		labels = line[i+1 : i+1+j]
+		rest = strings.TrimSpace(line[i+1+j+1:])
+	} else {
+		var found bool
+		name, rest, found = strings.Cut(line, " ")
+		if !found {
+			return "", "", 0, false
+		}
+		rest = strings.TrimSpace(rest)
+	}
+	if sp := strings.IndexByte(rest, ' '); sp >= 0 {
+		rest = rest[:sp]
+	}
+	v, err := parsePromUint64(rest)
+	if err != nil {
+		return "", "", 0, false
+	}
+	return name, labels, v, true
 }
 
 func parsePromUint64(s string) (uint64, error) {
@@ -683,7 +794,7 @@ func (b *VMBackend) EnsureProvisionedBaseImage(ctx context.Context, spec baseima
 		return cladefs.CellRef{}, fmt.Errorf("clear stale VM base image cell %s: %w", key, err)
 	}
 
-	tarPath := filepath.Join(b.currentStore().CellRoot(), "vm-"+key+".tar")
+	tarPath := filepath.Join(b.currentStore().PickRoot(), "vm-"+key+".tar")
 	defer os.Remove(tarPath)
 	slog.Info("building Firecracker VM base image", "key", key, "image", spec.Image)
 	if err := vm.BuildGuestTar(ctx, vm.GuestImageOptions{
@@ -831,8 +942,15 @@ func (b *VMBackend) EnsureProjectBase(
 		return &out, nil
 	}
 	var prevBase *vmProjectBase
-	if cur != nil && cur.Ref.Cell > 0 && cur.Ref.Version > 0 &&
-		cur.BaseKey == baseKey && cur.ScratchEpoch == p.GetScratchEpoch() {
+	coldReason := ""
+	switch {
+	case cur == nil || cur.Ref.Cell == 0 || cur.Ref.Version == 0:
+		coldReason = "no_previous_base"
+	case cur.ScratchEpoch != p.GetScratchEpoch():
+		coldReason = "scratch_epoch"
+	case cur.BaseKey != baseKey:
+		coldReason = "base_image_changed"
+	default:
 		cp := *cur
 		prevBase = &cp
 	}
@@ -892,33 +1010,73 @@ func (b *VMBackend) EnsureProjectBase(
 		return nil, fmt.Errorf("clear stale VM project base cell %s: %w", baseID, err)
 	}
 
+	createdAt := time.Now().UnixMilli()
+	prepStart := time.Now()
+	var prepPhases []*pb.FreshenPhase
+	fromBaseID := ""
+
 	// Prefer incremental fork from the previous warm project base when compatible.
 	var forkRef cladefs.CellRef
 	var err error
 	if prevBase != nil {
+		forkStart := time.Now()
+		forkStartMs := forkStart.UnixMilli()
 		forkRef, err = b.currentStore().ForkVersion(ctx, prevBase.Ref, rel, false)
 		if err != nil {
 			slog.Warn("incremental VM project base fork failed; falling back to cold base",
 				"project", p.GetName(), "prevBase", prevBase.BaseID, "err", err)
 			b.cleanupCell(ctx, rel)
 			prevBase = nil
+			coldReason = "incremental_fork_failed"
+		} else {
+			forkEndMs := time.Now().UnixMilli()
+			fromBaseID = prevBase.BaseID
+			prepPhases = append(prepPhases, &pb.FreshenPhase{
+				Name:      "fork",
+				StartedAt: forkStartMs,
+				EndedAt:   &forkEndMs,
+				Seconds:   time.Since(forkStart).Seconds(),
+				Detail:    "from " + prevBase.BaseID,
+			})
 		}
 	}
 	if prevBase == nil {
+		imgStart := time.Now()
+		imgStartMs := imgStart.UnixMilli()
 		baseImgRef, berr := b.EnsureProvisionedBaseImage(ctx, spec)
 		if berr != nil {
 			return nil, berr
 		}
+		imgEndMs := time.Now().UnixMilli()
+		prepPhases = append(prepPhases, &pb.FreshenPhase{
+			Name:      "base_image",
+			StartedAt: imgStartMs,
+			EndedAt:   &imgEndMs,
+			Seconds:   time.Since(imgStart).Seconds(),
+			Detail:    baseKey,
+		})
+		forkStart := time.Now()
+		forkStartMs := forkStart.UnixMilli()
 		forkRef, err = b.currentStore().ForkVersion(ctx, baseImgRef, rel, false)
 		if err != nil {
 			return nil, fmt.Errorf("fork VM project base %s: %w", baseID, err)
 		}
+		forkEndMs := time.Now().UnixMilli()
+		prepPhases = append(prepPhases, &pb.FreshenPhase{
+			Name:      "fork",
+			StartedAt: forkStartMs,
+			EndedAt:   &forkEndMs,
+			Seconds:   time.Since(forkStart).Seconds(),
+			Detail:    "from " + baseKey,
+		})
 	}
 
 	// Re-open the forked base cell via TakeCell with baseBuildUploadInterval so
 	// cladefsd coalesces segment uploads while the VM clones repos and runs
 	// setup steps; MakeVersionAndSync flushes everything at the end (question 534).
 	cfg := b.configSnapshot()
+	takeStart := time.Now()
+	takeStartMs := takeStart.UnixMilli()
 	if err := b.currentStore().SyncCell(ctx, rel); err != nil {
 		b.cleanupCell(ctx, rel)
 		return nil, fmt.Errorf("sync forked VM project base %s: %w", baseID, err)
@@ -935,6 +1093,14 @@ func (b *VMBackend) EnsureProjectBase(
 		return nil, fmt.Errorf("re-open VM project base %s with upload interval: %w", baseID, err)
 	}
 	forkRef = takenRef
+	takeEndMs := time.Now().UnixMilli()
+	prepPhases = append(prepPhases, &pb.FreshenPhase{
+		Name:      "take_cell",
+		StartedAt: takeStartMs,
+		EndedAt:   &takeEndMs,
+		Seconds:   time.Since(takeStart).Seconds(),
+	})
+	prepSeconds := time.Since(prepStart).Seconds()
 
 	stepsToRun := selectProjectBaseSteps(p, prevBase, heads)
 	script := buildCladefsFreshenScript(p, heads, stepsToRun, false)
@@ -944,6 +1110,7 @@ func (b *VMBackend) EnsureProjectBase(
 		handle     *managedFreshenHandle
 		freshenRes managedFreshenResult
 	)
+	var finalizeSeconds float64
 	if runFreshen != nil {
 		env := append(slices.Clone(sandboxEnv),
 			"HOME="+spec.Home,
@@ -953,21 +1120,33 @@ func (b *VMBackend) EnsureProjectBase(
 			vmStarted        atomic.Bool
 			stopMu           sync.Mutex
 			startFailStopErr error
+			bootPhaseMu      sync.Mutex
+			bootStartMs      int64
+			bootEndMs        int64
+			bootSecs         float64
 		)
 		untrack := b.trackBuild(vmID)
 		handle, err = runFreshen(ctx, managedFreshenSpec{
-			Project:    p,
-			BaseID:     baseID,
-			Recipe:     recipe,
-			Arch:       goruntime.GOARCH,
-			Cold:       prevBase == nil,
-			PrevBase:   prevBase,
-			StepsToRun: stepsToRun,
-			Heads:      heads,
-			Script:     script,
-			Env:        env,
-			VMID:       vmID,
+			Project:     p,
+			BaseID:      baseID,
+			Recipe:      recipe,
+			Arch:        goruntime.GOARCH,
+			Runtime:     runtime.KindVM,
+			Cold:        prevBase == nil,
+			ColdReason:  coldReason,
+			FromBaseID:  fromBaseID,
+			CreatedAt:   createdAt,
+			PrepSeconds: prepSeconds,
+			PrepPhases:  prepPhases,
+			PrevBase:    prevBase,
+			StepsToRun:  stepsToRun,
+			Heads:       heads,
+			Script:      script,
+			Env:         env,
+			VMID:        vmID,
 			BeforeStart: func(startCtx context.Context) error {
+				t0 := time.Now()
+				s0 := t0.UnixMilli()
 				if _, err := b.mgr.Start(startCtx, vm.LaunchSpec{
 					ID:            vmID,
 					CellHostPath:  forkRef.HostPath,
@@ -975,6 +1154,11 @@ func (b *VMBackend) EnsureProjectBase(
 				}); err != nil {
 					return fmt.Errorf("boot project base VM %s: %w", vmID, err)
 				}
+				bootPhaseMu.Lock()
+				bootStartMs = s0
+				bootEndMs = time.Now().UnixMilli()
+				bootSecs = time.Since(t0).Seconds()
+				bootPhaseMu.Unlock()
 				vmStarted.Store(true)
 				return nil
 			},
@@ -994,18 +1178,35 @@ func (b *VMBackend) EnsureProjectBase(
 		}
 		var waitErr error
 		freshenRes, waitErr = handle.Wait(ctx)
+		bootPhaseMu.Lock()
+		bs0, bs1, bsecs := bootStartMs, bootEndMs, bootSecs
+		bootPhaseMu.Unlock()
+		if bs0 > 0 {
+			handle.RecordPhase("vm_boot", bs0, bs1, bsecs, vmID)
+		}
 		runOK := waitErr == nil && freshenRes.State == succeeded
 		stopMu.Lock()
 		stopErr := startFailStopErr
 		stopMu.Unlock()
 		if vmStarted.Swap(false) {
+			if runOK {
+				handle.SetFinalizing("vm_stop")
+			}
+			stopStart := time.Now()
+			stopStartMs := stopStart.UnixMilli()
 			stopErr = b.stopBuildVM(ctx, vmID, runOK)
+			stopSecs := time.Since(stopStart).Seconds()
+			handle.RecordPhase("vm_stop", stopStartMs, time.Now().UnixMilli(), stopSecs, "")
+			if runOK {
+				finalizeSeconds += stopSecs
+			}
 		}
 		untrack()
 		if waitErr != nil {
 			if stopErr == nil {
 				b.cleanupCell(ctx, rel)
 			}
+			freshenRes.FinalizeSeconds = finalizeSeconds
 			handle.Finish(false, freshenRes, cladefs.CellRef{}, waitErr.Error())
 			return nil, fmt.Errorf("freshen VM project base %s (command %s): %w", baseID, handle.CommandID(), waitErr)
 		}
@@ -1014,10 +1215,12 @@ func (b *VMBackend) EnsureProjectBase(
 				b.cleanupCell(ctx, rel)
 			}
 			detail := cmp.Or(freshenRes.Reason, "freshen "+stateName(freshenRes.State))
+			freshenRes.FinalizeSeconds = finalizeSeconds
 			handle.Finish(false, freshenRes, cladefs.CellRef{}, detail)
 			return nil, fmt.Errorf("freshen VM project base %s failed (command %s): %s", baseID, handle.CommandID(), detail)
 		}
 		if stopErr != nil {
+			freshenRes.FinalizeSeconds = finalizeSeconds
 			handle.Finish(false, freshenRes, cladefs.CellRef{}, fmt.Sprintf("stop project base VM %s: %v", vmID, stopErr))
 			return nil, fmt.Errorf("stop project base VM %s: %w", vmID, stopErr)
 		}
@@ -1064,7 +1267,14 @@ func (b *VMBackend) EnsureProjectBase(
 		}
 	}
 
+	handle.SetFinalizing("r2_sync")
+	syncStart := time.Now()
+	syncStartMs := syncStart.UnixMilli()
 	ver, err := b.currentStore().MakeVersionAndSync(ctx, rel, 2)
+	syncSecs := time.Since(syncStart).Seconds()
+	finalizeSeconds += syncSecs
+	handle.RecordPhase("r2_sync", syncStartMs, time.Now().UnixMilli(), syncSecs, "")
+	freshenRes.FinalizeSeconds = finalizeSeconds
 	if err != nil {
 		b.cleanupCell(ctx, rel)
 		handle.Finish(false, freshenRes, cladefs.CellRef{}, fmt.Sprintf("sync to R2: %v", err))
@@ -1196,8 +1406,15 @@ func (b *VMBackend) ReconcileOrphans(ctx context.Context, liveWorkspaces map[str
 		if cellPath == "" {
 			continue
 		}
-		rel, err := filepath.Rel(st.CellRoot(), cellPath)
-		if err != nil || strings.HasPrefix(rel, "..") {
+		var rel string
+		for _, root := range st.CellRoots() {
+			r, err := filepath.Rel(root, cellPath)
+			if err == nil && !strings.HasPrefix(r, "..") {
+				rel = r
+				break
+			}
+		}
+		if rel == "" {
 			continue
 		}
 		if strings.HasPrefix(rel, "bases"+string(filepath.Separator)) || strings.HasPrefix(rel, "baseimages"+string(filepath.Separator)) {
@@ -1208,69 +1425,74 @@ func (b *VMBackend) ReconcileOrphans(ctx context.Context, liveWorkspaces map[str
 	}
 
 	if startup {
-		// Sweep orphaned local ws/<id> cells not belonging to any live workspace
-		// (and not held by any still-alive VM).
-		wsRoot := filepath.Join(st.CellRoot(), "ws")
-		if ents, err := os.ReadDir(wsRoot); err == nil {
-			for _, ent := range ents {
-				if !ent.IsDir() {
-					continue
-				}
-				id := ent.Name()
-				if owned[id] {
-					continue
-				}
-				if err := b.mgr.EnsureNotRunning(ctx, id); err != nil {
-					continue
-				}
-				if err := st.DeleteCell(ctx, "ws/"+id); err != nil {
-					slog.Warn("sweep orphan cladefs workspace cell failed", "workspace", id, "err", err)
-				} else {
-					slog.Info("swept orphan cladefs workspace cell", "workspace", id)
+		for _, root := range st.CellRoots() {
+			// Sweep orphaned local ws/<id> cells not belonging to any live workspace
+			// (and not held by any still-alive VM). Use DeleteCellAbs/DropCellAbs
+			// with the exact enumerated path so a stray entry in an earlier root
+			// cannot redirect deletion away from this root.
+			wsRoot := filepath.Join(root, "ws")
+			if ents, err := os.ReadDir(wsRoot); err == nil {
+				for _, ent := range ents {
+					if !ent.IsDir() {
+						continue
+					}
+					id := ent.Name()
+					if owned[id] {
+						continue
+					}
+					if err := b.mgr.EnsureNotRunning(ctx, id); err != nil {
+						continue
+					}
+					full := filepath.Join(wsRoot, id)
+					if err := st.DeleteCellAbs(ctx, full); err != nil {
+						slog.Warn("sweep orphan cladefs workspace cell failed", "workspace", id, "path", full, "err", err)
+					} else {
+						slog.Info("swept orphan cladefs workspace cell", "workspace", id, "path", full)
+					}
 				}
 			}
-		}
-		// Drop leftover local staging dirs under bases/<project>/<baseID> and
-		// baseimages/vm-* from interrupted builds (published bases are already
-		// dropped locally after R2 sync; DropCell never deletes from R2).
-		basesRoot := filepath.Join(st.CellRoot(), "bases")
-		if projEnts, err := os.ReadDir(basesRoot); err == nil {
-			for _, proj := range projEnts {
-				if !proj.IsDir() {
-					continue
-				}
-				if baseEnts, err := os.ReadDir(filepath.Join(basesRoot, proj.Name())); err == nil {
-					for _, be := range baseEnts {
-						if !be.IsDir() {
-							continue
-						}
-						if err := b.mgr.EnsureNotRunning(ctx, "base-"+be.Name()); err != nil {
-							continue
-						}
-						rel := filepath.Join("bases", proj.Name(), be.Name())
-						if err := st.DropCell(ctx, rel); err == nil {
-							slog.Info("dropped leftover local cladefs base cell", "cell", rel)
+			// Drop leftover local staging dirs under bases/<project>/<baseID> and
+			// baseimages/vm-* from interrupted builds (published bases are already
+			// dropped locally after R2 sync; DropCell never deletes from R2).
+			basesRoot := filepath.Join(root, "bases")
+			if projEnts, err := os.ReadDir(basesRoot); err == nil {
+				for _, proj := range projEnts {
+					if !proj.IsDir() {
+						continue
+					}
+					if baseEnts, err := os.ReadDir(filepath.Join(basesRoot, proj.Name())); err == nil {
+						for _, be := range baseEnts {
+							if !be.IsDir() {
+								continue
+							}
+							if err := b.mgr.EnsureNotRunning(ctx, "base-"+be.Name()); err != nil {
+								continue
+							}
+							full := filepath.Join(basesRoot, proj.Name(), be.Name())
+							if err := st.DropCellAbs(ctx, full); err == nil {
+								slog.Info("dropped leftover local cladefs base cell", "path", full)
+							}
 						}
 					}
 				}
 			}
-		}
-		baseImgRoot := filepath.Join(st.CellRoot(), "baseimages")
-		if ents, err := os.ReadDir(baseImgRoot); err == nil {
-			for _, ent := range ents {
-				if !ent.IsDir() {
-					continue
-				}
-				key, ok := strings.CutPrefix(ent.Name(), "vm-")
-				if !ok {
-					continue
-				}
-				if err := b.mgr.EnsureNotRunning(ctx, "prov-"+key); err != nil {
-					continue
-				}
-				rel := filepath.Join("baseimages", ent.Name())
-				if err := st.DropCell(ctx, rel); err == nil {
-					slog.Info("dropped leftover local cladefs baseimage cell", "cell", rel)
+			baseImgRoot := filepath.Join(root, "baseimages")
+			if ents, err := os.ReadDir(baseImgRoot); err == nil {
+				for _, ent := range ents {
+					if !ent.IsDir() {
+						continue
+					}
+					key, ok := strings.CutPrefix(ent.Name(), "vm-")
+					if !ok {
+						continue
+					}
+					if err := b.mgr.EnsureNotRunning(ctx, "prov-"+key); err != nil {
+						continue
+					}
+					full := filepath.Join(baseImgRoot, ent.Name())
+					if err := st.DropCellAbs(ctx, full); err == nil {
+						slog.Info("dropped leftover local cladefs baseimage cell", "path", full)
+					}
 				}
 			}
 		}

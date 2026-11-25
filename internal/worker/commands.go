@@ -21,6 +21,7 @@ import (
 	"github.com/semistrict/hotbed/internal/api"
 	pb "github.com/semistrict/hotbed/internal/gen/hotbed/v1"
 	"github.com/semistrict/hotbed/internal/profiler"
+	"github.com/semistrict/hotbed/internal/runtime"
 	"github.com/semistrict/hotbed/internal/shell"
 	"github.com/semistrict/hotbed/internal/sysinfo"
 	"github.com/semistrict/hotbed/internal/unit"
@@ -130,6 +131,7 @@ func (e *Engine) Exec(_ context.Context, req *pb.RunCommandRequest) (*pb.Command
 			Argv: shell.Join(req.Args), Args: req.Args, Kind: kind,
 			State: queued, QueuedAt: now, Limits: limits, Attached: req.Attached,
 			SessionId: w.ws().SessionId, Bench: req.Bench, Repo: req.Repo,
+			Runtime:  e.workspaceRuntime(w),
 			Timeline: []*pb.CommandEvent{{At: now, What: "queued", Detail: "by " + w.ws().Agent}},
 		},
 		RepoId: req.Repo, Project: w.ws().Project, Agent: w.ws().Agent, Volume: w.rec.Volume,
@@ -170,6 +172,37 @@ func newID() string {
 }
 
 func isBuild(kind string) bool { return kind == "build" || kind == "test" || kind == "check" }
+
+func (e *Engine) workspaceRuntime(w *workspace) string {
+	if w != nil {
+		if rt := w.ws().Runtime; rt != "" {
+			return rt
+		}
+		if e.usesRuntime(w.ws().Id) && e.cfg.Runtime != nil {
+			return e.cfg.Runtime.Kind()
+		}
+	}
+	return runtime.KindChroot
+}
+
+func (e *Engine) commandRuntime(c *command) string {
+	if c == nil {
+		return ""
+	}
+	if rt := c.cmd().Runtime; rt != "" {
+		return rt
+	}
+	if c.isVMFreshen() {
+		return runtime.KindVM
+	}
+	if c.isManagedFreshen() {
+		return runtime.KindCladefs
+	}
+	if c.cmd().Kind == "freshen" {
+		return runtime.KindChroot
+	}
+	return e.workspaceRuntime(e.workspaces[c.cmd().WorkspaceId])
+}
 
 // Stop ends a command: a queued one never starts, a running or parked one is
 // stopped. It returns the command as it ended.
@@ -338,11 +371,39 @@ func (e *Engine) step(ctx context.Context) {
 	for i, c := range active {
 		if st := states[i]; st != nil {
 			if c.isFreshen() {
-				step, _, _, done := c.out.freshenStep()
+				step, steps, stepName, startMs, done, gitSec, gitDone := c.out.freshenLive()
 				e.mu.Lock()
-				if step != c.lastFreshenStep || done != c.lastFreshenDone {
-					c.lastFreshenStep, c.lastFreshenDone = step, done
-					e.notify()
+				if step != c.lastFreshenStep || done != c.lastFreshenDone || gitDone != c.lastFreshenGitDone {
+					c.lastFreshenStep, c.lastFreshenDone, c.lastFreshenGitDone = step, done, gitDone
+					if b, ok := e.bases[c.rec.BaseId]; ok && b.State == building && b.Command == c.cmd().Id {
+						b.Steps = c.out.snapshotLive(b.Steps)
+						if steps > 0 {
+							b.TotalSteps = int32(steps)
+							if done {
+								b.Progress = 1
+								b.CurrentStep = ""
+								b.CurrentStepIndex = 0
+								b.CurrentStepStartedAt = 0
+							} else {
+								b.Progress = float64(step-1) / float64(steps)
+								b.CurrentStep = stepName
+								b.CurrentStepIndex = int32(step)
+								b.CurrentStepStartedAt = startMs
+							}
+						}
+						if gitDone {
+							b.GitSeconds = gitSec
+						}
+						detail := "git done"
+						if done {
+							detail = "steps done"
+						} else if step > 0 {
+							detail = fmt.Sprintf("step %d/%d %s", step, steps, stepName)
+						}
+						e.saveBase(b, change{what: "progress", detail: detail})
+					} else {
+						e.notify()
+					}
 				}
 				e.mu.Unlock()
 			}
@@ -503,6 +564,12 @@ func (e *Engine) observe(ctx context.Context, c *command, st unit.State, sampled
 	if st.Memory > 0 {
 		cmd.MemoryBytes = st.Memory
 		c.rec.PeakMemoryBytes = max(c.rec.PeakMemoryBytes, st.Memory)
+	}
+	if st.MemoryPeak > 0 {
+		c.rec.PeakMemoryBytes = max(c.rec.PeakMemoryBytes, st.MemoryPeak)
+		if st.Exited && cmd.MemoryBytes == 0 {
+			cmd.MemoryBytes = st.MemoryPeak
+		}
 	}
 	if c.rec.Cgroup != "" {
 		if m, err := e.cfg.Units.Memory(c.rec.Cgroup); err == nil {
@@ -1050,9 +1117,17 @@ func (e *Engine) roomFor(c *command, cpuPreempted bool, mem sysinfo.Mem, hasMem 
 		return "disk", fmt.Sprintf("waiting for disk: %s free", gib(e.disk.FreeBytes))
 	}
 	want := c.reservation()
-	room := e.admitLimit() - e.reservedFor(c.priority())
+	limit := e.admitLimit()
+	reserved := e.reservedFor(c.priority())
+	room := limit - reserved
 	if want > room {
-		return "memory", fmt.Sprintf("waiting for memory: needs %s, %s left of what running and parked commands hold or are guaranteed", gib(want), gib(max(0, room)))
+		if room < 0 {
+			if want > 0 {
+				return "memory", fmt.Sprintf("waiting for memory: needs %s, but running and parked commands hold or are guaranteed %s (limit %s)", gib(want), gib(reserved), gib(limit))
+			}
+			return "memory", fmt.Sprintf("waiting for memory: running and parked commands hold or are guaranteed %s (limit %s)", gib(reserved), gib(limit))
+		}
+		return "memory", fmt.Sprintf("waiting for memory: needs %s, %s left of what running and parked commands hold or are guaranteed", gib(want), gib(room))
 	}
 	var memTotal, memUsed int64
 	if hasMem {
@@ -1639,6 +1714,16 @@ func (e *Engine) thawStrays(ctx context.Context) {
 	}
 }
 
+// sessionScopedCmd formats a session-scoped hotbed CLI command (such as
+// "logs -f" or "stop"), including "-s <session>" whenever the command belongs
+// to a session so the hint works verbatim from any thread or checkout.
+func sessionScopedCmd(subcmd, sessionID, cmdID string) string {
+	if sessionID != "" {
+		return fmt.Sprintf("hotbed %s -s %s %s", subcmd, sessionID, cmdID)
+	}
+	return fmt.Sprintf("hotbed %s %s", subcmd, cmdID)
+}
+
 // pause freezes c, which ran its soft time limit without ending (one
 // parked for memory is frozen already), and then pushes its memory to swap:
 // no one may come back for it.
@@ -1656,7 +1741,8 @@ func (e *Engine) pause(ctx context.Context, c *command) {
 		limit := time.Duration(cmd.Limits.GetSoftLimitSeconds()) * time.Second
 		cmd.State = paused
 		cmd.CpuCores = 0
-		cmd.Reason = fmt.Sprintf("paused: it ran %s, its soft time limit, without ending; waiting on it again (hotbed logs -f %s) resumes it", limit, cmd.Id)
+		cmd.Reason = fmt.Sprintf("paused: it ran %s, its soft time limit, without ending; waiting on it again (%s) resumes it",
+			limit, sessionScopedCmd("logs -f", cmd.SessionId, cmd.Id))
 		cmd.Timeline = append(cmd.Timeline, &pb.CommandEvent{At: e.nowMs(), What: "paused", Detail: "after its soft time limit of " + limit.String()})
 		c.rec.HeldFor = ""
 		c.preemptedBy = ""
@@ -2020,7 +2106,7 @@ func (e *Engine) endBy(c *command, state pb.CommandState, code *int32, why strin
 		Argv: cmd.Argv, Kind: cmd.Kind, State: state, ExitCode: code, Failure: failure,
 		EndedAt: now, QueuedSeconds: float64(started-cmd.QueuedAt) / 1000, Seconds: seconds,
 		ColdSeconds: cmd.ColdSeconds, PeakMemoryBytes: c.rec.PeakMemoryBytes, Parks: c.rec.Parks,
-		SessionId: cmd.SessionId, Reason: why, Bench: cmd.Bench,
+		SessionId: cmd.SessionId, Reason: why, Bench: cmd.Bench, Runtime: e.commandRuntime(c),
 	}
 	if len(cmd.Interventions) > 0 {
 		f.Interventions = make([]*pb.CommandIntervention, len(cmd.Interventions))

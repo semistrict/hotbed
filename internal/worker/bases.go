@@ -1,6 +1,7 @@
 package worker
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -18,6 +19,7 @@ import (
 	"github.com/semistrict/hotbed/internal/baseimage"
 	pb "github.com/semistrict/hotbed/internal/gen/hotbed/v1"
 	"github.com/semistrict/hotbed/internal/gitops"
+	hotbedruntime "github.com/semistrict/hotbed/internal/runtime"
 	"github.com/semistrict/hotbed/internal/shell"
 	"github.com/semistrict/hotbed/internal/storage"
 )
@@ -118,14 +120,23 @@ func (e *Engine) baseFor(ctx context.Context, p *pb.HostedProject) (b *pb.Base, 
 			newestWarm = b
 		}
 	}
-	scratch := newestWarm != nil && p.ScratchEpoch > newestWarm.ScratchEpoch
-	if !scratch && newestWarm != nil {
+	scratch := false
+	coldReason := ""
+	switch {
+	case newestWarm == nil:
+		coldReason = "no_previous_base"
+	case p.ScratchEpoch > newestWarm.ScratchEpoch:
+		scratch = true
+		coldReason = "scratch_epoch"
+	default:
 		if got, ok := e.baseImageOf(newestWarm.Id); ok {
 			if got != baseImgKey {
 				scratch = true
+				coldReason = "base_image_changed"
 			}
 		} else if !baseimage.MatchesKey(e.cfg.Store.Path(baseVolume(p.Name, newestWarm.Generation)), baseImgKey) {
 			scratch = true
+			coldReason = "base_image_changed"
 		}
 	}
 	if !scratch && h.at(newestWarm) && len(toRun(p, newestWarm, h)) == 0 {
@@ -148,9 +159,10 @@ func (e *Engine) baseFor(ctx context.Context, p *pb.HostedProject) (b *pb.Base, 
 	var from *pb.Base
 	if !scratch && newestWarm != nil {
 		from = clone(newestWarm)
+		coldReason = ""
 	}
 	e.mu.Unlock()
-	b, err = e.startFreshen(ctx, p, gen, from, h, want)
+	b, err = e.startFreshen(ctx, p, gen, from, coldReason, h, want)
 	return b, "", err
 }
 
@@ -268,7 +280,10 @@ func (e *Engine) remoteHead(ctx context.Context, r *pb.Repo) (string, error) {
 // warm base) when there is one, and queues the freshen that checks out each
 // repo at its head and builds it: incrementally, unless there is nothing to
 // fork.
-func (e *Engine) startFreshen(ctx context.Context, p *pb.HostedProject, gen int32, prev *pb.Base, h heads, recipe string) (*pb.Base, error) {
+func (e *Engine) startFreshen(ctx context.Context, p *pb.HostedProject, gen int32, prev *pb.Base, coldReason string, h heads, recipe string) (*pb.Base, error) {
+	createdAt := e.nowMs()
+	prepStart := e.now()
+	var phases []*pb.FreshenPhase
 	cold := true
 	vol := baseVolume(p.Name, gen)
 	// No record names generation gen, but its snapshot and volume may be
@@ -281,34 +296,68 @@ func (e *Engine) startFreshen(ctx context.Context, p *pb.HostedProject, gen int3
 	if err := e.cfg.Store.Destroy(ctx, vol); err != nil && !errors.Is(err, storage.ErrNotFound) {
 		return nil, fmt.Errorf("clear leftover %s: %w", vol, err)
 	}
-	var baseImgKey string
+	var baseImgKey, fromBaseID string
 	if prev != nil {
+		cloneStartMs := e.nowMs()
+		cloneStart := e.now()
 		if err := e.cfg.Store.Clone(ctx, prev.Id, vol); err != nil {
 			return nil, err
 		}
+		cloneEndMs := e.nowMs()
+		phases = append(phases, &pb.FreshenPhase{
+			Name:      "clone",
+			StartedAt: cloneStartMs,
+			EndedAt:   &cloneEndMs,
+			Seconds:   e.now().Sub(cloneStart).Seconds(),
+			Detail:    "from " + prev.Id,
+		})
 		cold = false
+		fromBaseID = prev.Id
 		if k, ok := e.baseImageOf(prev.Id); ok {
 			baseImgKey = k
 		} else if k, ok := readBaseImageMarkerSafe(e.cfg.Store.Path(baseVolume(prev.Project, prev.Generation))); ok {
 			baseImgKey = k
 		}
 	} else {
+		imgStartMs := e.nowMs()
+		imgStart := e.now()
 		baseSnap, _, err := e.cfg.BaseImage.Ensure(ctx)
 		if err != nil {
 			return nil, fmt.Errorf("ensure shared base image: %w", err)
 		}
+		imgEndMs := e.nowMs()
+		phases = append(phases, &pb.FreshenPhase{
+			Name:      "base_image",
+			StartedAt: imgStartMs,
+			EndedAt:   &imgEndMs,
+			Seconds:   e.now().Sub(imgStart).Seconds(),
+			Detail:    baseSnap,
+		})
+		cloneStartMs := e.nowMs()
+		cloneStart := e.now()
 		if err := e.cfg.Store.Clone(ctx, baseSnap, vol); err != nil {
 			return nil, fmt.Errorf("clone base image %s into %s: %w", baseSnap, vol, err)
 		}
+		cloneEndMs := e.nowMs()
+		phases = append(phases, &pb.FreshenPhase{
+			Name:      "clone",
+			StartedAt: cloneStartMs,
+			EndedAt:   &cloneEndMs,
+			Seconds:   e.now().Sub(cloneStart).Seconds(),
+			Detail:    "from " + baseSnap,
+		})
 		baseImgKey = baseSnap
 	}
+	prepSeconds := e.now().Sub(prepStart).Seconds()
 	id := fmt.Sprintf("f-%s-g%d-%s", p.Name, gen, randomHex(3))
 	now := e.nowMs()
 	run := toRun(p, prev, h)
 	b := &pb.Base{
 		Id: snap, Project: p.Name, NodeId: e.cfg.NodeID, Generation: gen,
-		State: building, Cold: cold, Command: id,
-		ScratchEpoch: p.ScratchEpoch, Steps: plannedSteps(p, prev, run), Recipe: recipe,
+		State: building, Cold: cold, ColdReason: coldReason, FromBaseId: fromBaseID,
+		Runtime: "chroot", CreatedAt: createdAt, PrepSeconds: prepSeconds,
+		TotalSteps: int32(len(run)), Phases: phases,
+		Command: id, ScratchEpoch: p.ScratchEpoch, Steps: plannedSteps(p, prev, run), Recipe: recipe,
 	}
 	for _, r := range p.Repos {
 		b.Repos = append(b.Repos, &pb.BaseRepo{Repo: r.Id, Commit: h[r.Id]})
@@ -317,7 +366,8 @@ func (e *Engine) startFreshen(ctx context.Context, p *pb.HostedProject, gen int3
 		Command: &pb.Command{
 			Id: id, NodeId: e.cfg.NodeID, Argv: fmt.Sprintf("freshen %s g%d", p.Name, gen), Project: p.Name,
 			Args: []string{"/bin/bash", "-c", freshenScript(p, h, prev, run)}, Kind: "freshen",
-			State: queued, QueuedAt: now, Limits: &pb.CommandLimits{CpuWeight: 100},
+			Runtime: hotbedruntime.KindChroot,
+			State:   queued, QueuedAt: now, Limits: &pb.CommandLimits{CpuWeight: 100},
 			Timeline: []*pb.CommandEvent{{At: now, What: "queued", Detail: "base " + b.Id}},
 		},
 		Project: p.Name, Agent: "hotbed", Volume: vol, Dir: WorkPath, BaseId: b.Id,
@@ -391,6 +441,7 @@ func freshenScript(p *pb.HostedProject, h heads, prev *pb.Base, run []*pb.Step) 
 			fmt.Fprintf(&b, "rm -rf %s\n", q(WorkPath+"/"+r.Repo))
 		}
 	}
+	b.WriteString("t_git=${EPOCHREALTIME//[!0-9]/}\n")
 	for _, r := range p.Repos {
 		commit := h[r.Id]
 		fmt.Fprintf(&b, "cd %s\n", WorkPath)
@@ -405,6 +456,7 @@ func freshenScript(p *pb.HostedProject, h heads, prev *pb.Base, run []*pb.Step) 
 		// when the repo does not pin one.
 		b.WriteString(`if [ -f Cargo.toml ] && [ ! -f rust-toolchain.toml ] && [ ! -f rust-toolchain ] && command -v rustup >/dev/null; then rustup show active-toolchain >/dev/null 2>&1 || rustup default stable; fi` + "\n")
 	}
+	b.WriteString("printf '::hotbed:: phase-done git %d\\n' \"$(( ${EPOCHREALTIME//[!0-9]/} - t_git ))\"\n")
 	fmt.Fprintf(&b, "cd %s\n", WorkPath)
 	b.WriteString(stepsScript(run))
 	return b.String()
@@ -423,6 +475,10 @@ func (e *Engine) freshened(ctx context.Context, c *command, ok bool, seconds flo
 	}
 	b.PeakMemoryBytes = c.rec.PeakHeldBytes
 	b.Steps = c.out.settle(b.Steps)
+	b.GitSeconds = c.out.gitSeconds()
+	b.CurrentStep = ""
+	b.CurrentStepIndex = 0
+	b.CurrentStepStartedAt = 0
 	b.Baked = nil
 	for _, s := range b.Steps {
 		if s.Ok {
@@ -433,7 +489,9 @@ func (e *Engine) freshened(ctx context.Context, c *command, ok bool, seconds flo
 		now := e.nowMs()
 		b.State = broken
 		b.BuiltAt = &now
+		b.BuildSeconds = seconds
 		why := baseFailure(b)
+		b.FailureReason = cmp.Or(c.cmd().Reason, why)
 		e.saveBase(b, change{what: "failed", detail: why, feed: feed(feedFail, why, ref("command", c.cmd().Id))})
 		e.baseFailed(b, why)
 		e.mu.Unlock()
@@ -447,6 +505,10 @@ func (e *Engine) freshened(ctx context.Context, c *command, ok bool, seconds flo
 		repoNames[i] = r.Repo
 	}
 	e.finalizingBases[baseID] = true
+	snapStartMs := e.nowMs()
+	snapStart := e.now()
+	b.Progress = 1
+	e.saveBase(b, change{what: "finalizing", detail: "snapshot"})
 	e.mu.Unlock()
 
 	snapErr := e.cfg.Store.Snapshot(ctx, vol, baseID)
@@ -483,6 +545,8 @@ func (e *Engine) freshened(ctx context.Context, c *command, ok bool, seconds flo
 
 	e.mu.Lock()
 	delete(e.finalizingBases, baseID)
+	snapEndMs := e.nowMs()
+	snapSecs := e.now().Sub(snapStart).Seconds()
 	b, found = e.bases[baseID]
 	if !found || b.State != building {
 		e.mu.Unlock()
@@ -495,6 +559,13 @@ func (e *Engine) freshened(ctx context.Context, c *command, ok bool, seconds flo
 		}
 		return
 	}
+	b.FinalizeSeconds = snapSecs
+	b.Phases = append(b.Phases, &pb.FreshenPhase{
+		Name:      "snapshot",
+		StartedAt: snapStartMs,
+		EndedAt:   &snapEndMs,
+		Seconds:   snapSecs,
+	})
 	if snapErr != nil {
 		if e.closing && errors.Is(snapErr, context.Canceled) {
 			e.mu.Unlock()
@@ -503,6 +574,7 @@ func (e *Engine) freshened(ctx context.Context, c *command, ok bool, seconds flo
 		slog.Error("snapshot base", "base", b.Id, "err", snapErr)
 		b.State = broken
 		why := fmt.Sprintf("base %s could not be snapshotted: %v", b.Id, snapErr)
+		b.FailureReason = why
 		e.saveBase(b, change{what: "failed", detail: why, feed: feed(feedFail, why, nil)})
 		e.baseFailed(b, why)
 		e.mu.Unlock()
@@ -844,6 +916,7 @@ func (e *Engine) dropSuperseded(project string) {
 			continue
 		}
 		b.State = stale
+		b.FailureReason = "superseded, and no workspace waits for it"
 		e.saveBase(b, change{
 			what: "dropped", detail: "superseded, and no workspace waits for it",
 			feed: feed(feedBase, fmt.Sprintf("base %s g%d dropped: superseded, and no workspace waits for it", b.Project, b.Generation), ref("command", b.Command)),

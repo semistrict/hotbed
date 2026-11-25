@@ -1,6 +1,6 @@
 import { Link, useParams } from "@tanstack/react-router";
 import { BaseState, baseStateLabel, CommandState, nodeAdmission, WorkspaceState, type HostUsage } from "../api";
-import { SegmentedBar } from "../components/charts/Bars";
+import { Meter, SegmentedBar } from "../components/charts/Bars";
 import { Columns } from "../components/charts/Columns";
 import { LineChart } from "../components/charts/LineChart";
 import { HistoryTable, LiveCommandTable } from "../components/CommandTable";
@@ -178,34 +178,80 @@ export function NodePage() {
             height={150}
           />
         </Card>
-        <Card title="Disk" sub={`${n.storage}, ${bytes(n.diskBytes)}`}>
-          <SegmentedBar
-            tall
-            format={bytes}
-            parts={[
-              { id: "bases", label: "warm bases", value: Number(disk?.basesBytes ?? 0n), color: "var(--series-1)" },
-              { id: "forks", label: "fork-owned", value: Number(disk?.forksExclusiveBytes ?? 0n), color: "var(--series-2)" },
-              { id: "other", label: "other", value: Number(disk?.otherBytes ?? 0n), color: "var(--faint)" },
-              { id: "free", label: "free", value: Number(disk?.freeBytes ?? 0n), color: "var(--muted)" },
-            ]}
-          />
-          <ul className="mt-4 divide-y divide-border text-[11.5px]">
-            {bases.map((b) => (
-              <li key={b.id} className="flex items-center gap-2 py-1.5 font-mono">
-                <span className="text-foreground">{b.project}</span>
-                <span className="text-faint">g{b.generation}</span>
-                <span
-                  className={`text-[10px] ${
-                    b.state === BaseState.WARM || b.state === BaseState.BUILDING ? "text-primary" : b.state === BaseState.FAILED ? "text-critical" : "text-faint"
-                  }`}
-                >
-                  {b.state === BaseState.BUILDING ? `building ${percent(b.progress)}` : baseStateLabel(b.state)}
-                </span>
-                <span className="num ml-auto text-muted-foreground">{bytes(b.sizeBytes)}</span>
-              </li>
-            ))}
-          </ul>
-        </Card>
+        {n.objectStore ? (
+          <Card
+            title={n.objectStore.hostDiskSizeBytes > 0n ? "cladefs disk" : "cladefs storage"}
+            sub={
+              n.objectStore.hostDiskSizeBytes > 0n
+                ? `cladefs · ${bytes(n.objectStore.hostDiskSizeBytes)}${n.objectStore.hostDiskPressure ? " · pressure" : ""}`
+                : `SSD part cache · ${bytes(n.objectStore.partCacheBytes)}${n.objectStore.partCacheCapacityBytes > 0n ? ` / ${bytes(n.objectStore.partCacheCapacityBytes)}` : ""}`
+            }
+          >
+            {n.objectStore.hostDiskSizeBytes > 0n ? (
+              <SegmentedBar
+                tall
+                format={bytes}
+                parts={[
+                  { id: "cache", label: "part cache", value: Number(n.objectStore.hostDiskCacheBytes), color: "var(--series-1)" },
+                  { id: "cells", label: "cells", value: Number(n.objectStore.hostDiskCellsBytes), color: "var(--series-2)" },
+                  { id: "other", label: "other", value: Number(n.objectStore.hostDiskOtherBytes), color: "var(--faint)" },
+                  { id: "free", label: "free", value: Number(n.objectStore.hostDiskFreeBytes), color: "var(--muted)" },
+                ]}
+              />
+            ) : (
+              <Meter
+                value={n.objectStore.partCacheCapacityBytes > 0n ? Number(n.objectStore.partCacheBytes) / Number(n.objectStore.partCacheCapacityBytes) : 0}
+                warn={0.85}
+                danger={0.95}
+              />
+            )}
+            <ul className="mt-4 divide-y divide-border text-[11.5px]">
+              {bases.map((b) => (
+                <li key={b.id} className="flex items-center gap-2 py-1.5 font-mono">
+                  <span className="text-foreground">{b.project}</span>
+                  <span className="text-faint">g{b.generation}</span>
+                  <span
+                    className={`text-[10px] ${
+                      b.state === BaseState.WARM || b.state === BaseState.BUILDING ? "text-primary" : b.state === BaseState.FAILED ? "text-critical" : "text-faint"
+                    }`}
+                  >
+                    {b.state === BaseState.BUILDING ? `building ${percent(b.progress)}` : baseStateLabel(b.state)}
+                  </span>
+                  <span className="num ml-auto text-muted-foreground">{bytes(b.sizeBytes)}</span>
+                </li>
+              ))}
+            </ul>
+          </Card>
+        ) : (
+          <Card title="Disk" sub={`${n.storage}, ${bytes(n.diskBytes)}`}>
+            <SegmentedBar
+              tall
+              format={bytes}
+              parts={[
+                { id: "bases", label: "warm bases", value: Number(disk?.basesBytes ?? 0n), color: "var(--series-1)" },
+                { id: "forks", label: "fork-owned", value: Number(disk?.forksExclusiveBytes ?? 0n), color: "var(--series-2)" },
+                { id: "other", label: "other", value: Number(disk?.otherBytes ?? 0n), color: "var(--faint)" },
+                { id: "free", label: "free", value: Number(disk?.freeBytes ?? 0n), color: "var(--muted)" },
+              ]}
+            />
+            <ul className="mt-4 divide-y divide-border text-[11.5px]">
+              {bases.map((b) => (
+                <li key={b.id} className="flex items-center gap-2 py-1.5 font-mono">
+                  <span className="text-foreground">{b.project}</span>
+                  <span className="text-faint">g{b.generation}</span>
+                  <span
+                    className={`text-[10px] ${
+                      b.state === BaseState.WARM || b.state === BaseState.BUILDING ? "text-primary" : b.state === BaseState.FAILED ? "text-critical" : "text-faint"
+                    }`}
+                  >
+                    {b.state === BaseState.BUILDING ? `building ${percent(b.progress)}` : baseStateLabel(b.state)}
+                  </span>
+                  <span className="num ml-auto text-muted-foreground">{bytes(b.sizeBytes)}</span>
+                </li>
+              ))}
+            </ul>
+          </Card>
+        )}
       </div>
 
       <NodeObjectStoreSection n={n} s={s} />

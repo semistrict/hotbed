@@ -88,6 +88,11 @@ const (
 	ClusterServiceGetProjectProcedure = "/hotbed.v1.ClusterService/GetProject"
 	// ClusterServiceListBasesProcedure is the procedure name of the ClusterService's ListBases RPC.
 	ClusterServiceListBasesProcedure = "/hotbed.v1.ClusterService/ListBases"
+	// ClusterServiceListFreshensProcedure is the procedure name of the ClusterService's ListFreshens
+	// RPC.
+	ClusterServiceListFreshensProcedure = "/hotbed.v1.ClusterService/ListFreshens"
+	// ClusterServiceGetFreshenProcedure is the procedure name of the ClusterService's GetFreshen RPC.
+	ClusterServiceGetFreshenProcedure = "/hotbed.v1.ClusterService/GetFreshen"
 	// ClusterServiceGetSnapshotProcedure is the procedure name of the ClusterService's GetSnapshot RPC.
 	ClusterServiceGetSnapshotProcedure = "/hotbed.v1.ClusterService/GetSnapshot"
 	// ClusterServiceGetCommandDiagnosticsProcedure is the procedure name of the ClusterService's
@@ -476,6 +481,22 @@ var (
 			IdempotencyLevel: connect.IdempotencyIdempotent,
 		}
 	})
+	clusterServiceListFreshensSpec = sync.OnceValue(func() connect.Spec {
+		return connect.Spec{
+			StreamType:       connect.StreamTypeUnary,
+			Schema:           v1.File_hotbed_v1_hotbed_proto.Services().ByName("ClusterService").Methods().ByName("ListFreshens"),
+			Procedure:        ClusterServiceListFreshensProcedure,
+			IdempotencyLevel: connect.IdempotencyIdempotent,
+		}
+	})
+	clusterServiceGetFreshenSpec = sync.OnceValue(func() connect.Spec {
+		return connect.Spec{
+			StreamType:       connect.StreamTypeUnary,
+			Schema:           v1.File_hotbed_v1_hotbed_proto.Services().ByName("ClusterService").Methods().ByName("GetFreshen"),
+			Procedure:        ClusterServiceGetFreshenProcedure,
+			IdempotencyLevel: connect.IdempotencyIdempotent,
+		}
+	})
 	clusterServiceGetSnapshotSpec = sync.OnceValue(func() connect.Spec {
 		return connect.Spec{
 			StreamType:       connect.StreamTypeUnary,
@@ -625,6 +646,12 @@ type ClusterServiceClient interface {
 	// List every node's bases for a project (or every project when none is
 	// named), newest generation first per node.
 	ListBases(context.Context, *v1.ListBasesRequest) (*v1.ListBasesResponse, error)
+	// List active and historical base freshens with phase/step timing summaries,
+	// cold-build reasons, queue waits, and waiting workspaces.
+	ListFreshens(context.Context, *v1.ListFreshensRequest) (*v1.ListFreshensResponse, error)
+	// Inspect one base freshen in detail: phase and step breakdown, cold reason,
+	// memory guarantee vs peak, waiting workspaces, timeline, and node admission.
+	GetFreshen(context.Context, *v1.GetFreshenRequest) (*v1.GetFreshenResponse, error)
 	// Everything the cockpit shows: nodes, repos, bases, workspaces, commands,
 	// sessions, schedules, events and history.
 	GetSnapshot(context.Context, *v1.GetSnapshotRequest) (*v1.Snapshot, error)
@@ -759,6 +786,12 @@ type ClusterServiceHandler interface {
 	// List every node's bases for a project (or every project when none is
 	// named), newest generation first per node.
 	ListBases(context.Context, *v1.ListBasesRequest) (*v1.ListBasesResponse, error)
+	// List active and historical base freshens with phase/step timing summaries,
+	// cold-build reasons, queue waits, and waiting workspaces.
+	ListFreshens(context.Context, *v1.ListFreshensRequest) (*v1.ListFreshensResponse, error)
+	// Inspect one base freshen in detail: phase and step breakdown, cold reason,
+	// memory guarantee vs peak, waiting workspaces, timeline, and node admission.
+	GetFreshen(context.Context, *v1.GetFreshenRequest) (*v1.GetFreshenResponse, error)
 	// Everything the cockpit shows: nodes, repos, bases, workspaces, commands,
 	// sessions, schedules, events and history.
 	GetSnapshot(context.Context, *v1.GetSnapshotRequest) (*v1.Snapshot, error)
@@ -828,6 +861,8 @@ func RegisterClusterServiceHandler(server *connect.Server, svc ClusterServiceHan
 		connect.Method{Spec: clusterServiceListProjectsSpec(), Handler: adapter.listProjects},
 		connect.Method{Spec: clusterServiceGetProjectSpec(), Handler: adapter.getProject},
 		connect.Method{Spec: clusterServiceListBasesSpec(), Handler: adapter.listBases},
+		connect.Method{Spec: clusterServiceListFreshensSpec(), Handler: adapter.listFreshens},
+		connect.Method{Spec: clusterServiceGetFreshenSpec(), Handler: adapter.getFreshen},
 		connect.Method{Spec: clusterServiceGetSnapshotSpec(), Handler: adapter.getSnapshot},
 		connect.Method{Spec: clusterServiceGetCommandDiagnosticsSpec(), Handler: adapter.getCommandDiagnostics},
 		connect.Method{Spec: clusterServiceSaveCommandDiagnosticsSpec(), Handler: adapter.saveCommandDiagnostics},
@@ -938,6 +973,14 @@ func (UnimplementedClusterServiceHandler) GetProject(context.Context, *v1.GetPro
 
 func (UnimplementedClusterServiceHandler) ListBases(context.Context, *v1.ListBasesRequest) (*v1.ListBasesResponse, error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, "hotbed.v1.ClusterService.ListBases is not implemented")
+}
+
+func (UnimplementedClusterServiceHandler) ListFreshens(context.Context, *v1.ListFreshensRequest) (*v1.ListFreshensResponse, error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, "hotbed.v1.ClusterService.ListFreshens is not implemented")
+}
+
+func (UnimplementedClusterServiceHandler) GetFreshen(context.Context, *v1.GetFreshenRequest) (*v1.GetFreshenResponse, error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, "hotbed.v1.ClusterService.GetFreshen is not implemented")
 }
 
 func (UnimplementedClusterServiceHandler) GetSnapshot(context.Context, *v1.GetSnapshotRequest) (*v1.Snapshot, error) {
@@ -1143,6 +1186,22 @@ func (c *clusterServiceClient) GetProject(ctx context.Context, req *v1.GetProjec
 func (c *clusterServiceClient) ListBases(ctx context.Context, req *v1.ListBasesRequest) (*v1.ListBasesResponse, error) {
 	var res v1.ListBasesResponse
 	if err := c.client.CallUnary(ctx, clusterServiceListBasesSpec(), req, &res); err != nil {
+		return nil, err
+	}
+	return &res, nil
+}
+
+func (c *clusterServiceClient) ListFreshens(ctx context.Context, req *v1.ListFreshensRequest) (*v1.ListFreshensResponse, error) {
+	var res v1.ListFreshensResponse
+	if err := c.client.CallUnary(ctx, clusterServiceListFreshensSpec(), req, &res); err != nil {
+		return nil, err
+	}
+	return &res, nil
+}
+
+func (c *clusterServiceClient) GetFreshen(ctx context.Context, req *v1.GetFreshenRequest) (*v1.GetFreshenResponse, error) {
+	var res v1.GetFreshenResponse
+	if err := c.client.CallUnary(ctx, clusterServiceGetFreshenSpec(), req, &res); err != nil {
 		return nil, err
 	}
 	return &res, nil
@@ -1468,6 +1527,30 @@ func (h clusterServiceHandler) listBases(ctx context.Context, _ connect.Spec, st
 		return err
 	}
 	res, err := h.svc.ListBases(ctx, &req)
+	if err != nil {
+		return err
+	}
+	return stream.Send(res)
+}
+
+func (h clusterServiceHandler) listFreshens(ctx context.Context, _ connect.Spec, stream connect.ServerStream) error {
+	var req v1.ListFreshensRequest
+	if err := stream.Receive(&req); err != nil {
+		return err
+	}
+	res, err := h.svc.ListFreshens(ctx, &req)
+	if err != nil {
+		return err
+	}
+	return stream.Send(res)
+}
+
+func (h clusterServiceHandler) getFreshen(ctx context.Context, _ connect.Spec, stream connect.ServerStream) error {
+	var req v1.GetFreshenRequest
+	if err := stream.Receive(&req); err != nil {
+		return err
+	}
+	res, err := h.svc.GetFreshen(ctx, &req)
 	if err != nil {
 		return err
 	}

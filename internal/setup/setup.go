@@ -31,6 +31,8 @@ const (
 	DefaultPoolName = "hotbed"
 	// DefaultVMStateDir is the worker state directory inside a macOS QEMU VM.
 	DefaultVMStateDir = "/var/lib/hotbed"
+	// DaemonLaunchAgentLabel is the unified macOS LaunchAgent label for `hotbed daemon`.
+	DaemonLaunchAgentLabel = "com.semistrict.hotbed.daemon"
 )
 
 // Options configure single-command worker setup on Linux or macOS.
@@ -114,6 +116,19 @@ type VMStatus struct {
 	Autostart  bool     `json:"autostart"`
 	Supervised bool     `json:"supervised"` // its supervisor (LaunchAgent) runs
 	ConsoleLog string   `json:"consoleLog,omitempty"`
+}
+
+// DaemonVMState summarizes the local worker VM state for `hotbed daemon` and
+// the macOS menubar app without incurring SSH overhead.
+type DaemonVMState struct {
+	Configured bool   `json:"configured"`
+	Hostname   string `json:"hostname,omitempty"`
+	Arch       string `json:"arch,omitempty"`
+	CPUs       int    `json:"cpus,omitempty"`
+	MemoryMB   int64  `json:"memoryMB,omitempty"`
+	Autostart  bool   `json:"autostart"`
+	State      string `json:"state"` // "running", "starting", "stopping", "asleep", "stopped", "paused", "error", "unconfigured"
+	Detail     string `json:"detail,omitempty"`
 }
 
 var watchPausedVM func(ctx context.Context, dir string, log *slog.Logger)

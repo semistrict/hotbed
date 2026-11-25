@@ -7,6 +7,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
@@ -55,6 +56,42 @@ type CladefsFUSEBackend struct {
 	sharedBases    map[string]*pb.CladefsCell
 	wsMounts       map[string]fuseWSMount // wsID -> active FUSE mount
 	retirer        baseRetirer
+
+	detachTimeout time.Duration      // optional MountDetach deadline override (tests; default 30s)
+	cleanupMount  func(string, bool) // optional cleanupFUSEMountDir override (tests)
+}
+
+const defaultFUSEDetachTimeout = 30 * time.Second
+
+// detachMount prepares mntDir (killing lingering processes referencing it,
+// detaching leftover submounts, and optionally calling syncfs) and detaches the
+// cell from cladefsd with a bounded timeout.
+//
+// It always passes force=true to MountDetach: in cladefsd, force=true still
+// invalidates cached names and runs fs.unmount().await (writing back all dirty
+// Fxfs state cleanly), whereas force=false transitions the cell to
+// Attaching::Detaching and blocks indefinitely in forgotten_all(slot) if any
+// kernel FUSE lookup lingers — causing any subsequent Detach(force=true) to
+// fail EBUSY.
+func (b *CladefsFUSEBackend) detachMount(ctx context.Context, tenant, cellID uint64, mntDir string, syncFS, ignoreCancel bool) error {
+	if mntDir != "" {
+		cleanup := b.cleanupMount
+		if cleanup == nil {
+			cleanup = cleanupFUSEMountDir
+		}
+		cleanup(mntDir, syncFS)
+	}
+	timeout := b.detachTimeout
+	if timeout <= 0 {
+		timeout = defaultFUSEDetachTimeout
+	}
+	baseCtx := ctx
+	if ignoreCancel {
+		baseCtx = context.WithoutCancel(ctx)
+	}
+	dctx, cancel := context.WithTimeout(baseCtx, timeout)
+	defer cancel()
+	return b.currentStore().MountDetach(dctx, tenant, cellID, true)
 }
 
 type fuseWSMount struct {
@@ -214,22 +251,31 @@ func (b *CladefsFUSEBackend) mountDir(tenant, cell uint64) string {
 	return filepath.Join(b.mountRoot, cladefs.Base32ID(tenant), cladefs.Base32ID(cell))
 }
 
-func (b *CladefsFUSEBackend) mountStoreDir(tenant, cell uint64) string {
+func (b *CladefsFUSEBackend) mountStoreDir(tenant, cell uint64) (string, error) {
 	rel := filepath.Join(cladefs.Base32ID(tenant), cladefs.Base32ID(cell))
-	roots := filepath.SplitList(b.mountStoresRoot)
+	var roots []string
+	for _, r := range filepath.SplitList(b.mountStoresRoot) {
+		if r != "" {
+			roots = append(roots, r)
+		}
+	}
+	if len(roots) == 0 {
+		return "", fmt.Errorf("cladefs FUSE mount stores root is empty")
+	}
 	for _, root := range roots {
-		if root == "" {
+		cand := filepath.Join(root, rel)
+		fi, err := os.Stat(cand)
+		if err == nil {
+			if fi.IsDir() {
+				return cand, nil
+			}
 			continue
 		}
-		cand := filepath.Join(root, rel)
-		if _, err := os.Stat(cand); err == nil {
-			return cand
+		if !errors.Is(err, os.ErrNotExist) {
+			return "", fmt.Errorf("stat mount store %s: %w", cand, err)
 		}
 	}
-	if len(roots) > 0 && roots[0] != "" {
-		return filepath.Join(roots[0], rel)
-	}
-	return filepath.Join(b.mountStoresRoot, rel)
+	return filepath.Join(roots[0], rel), nil
 }
 
 func (b *CladefsFUSEBackend) loadState() {
@@ -466,11 +512,15 @@ func (b *CladefsFUSEBackend) EnsureProvisionedBaseImage(ctx context.Context, spe
 		return cladefs.CellRef{}, fmt.Errorf("create cladefs FUSE base cell: %w", err)
 	}
 	mntDir := b.mountDir(cfg.TenantID, cellID)
-	storeDir := b.mountStoreDir(cfg.TenantID, cellID)
+	storeDir, err := b.mountStoreDir(cfg.TenantID, cellID)
+	if err != nil {
+		_ = b.detachMount(ctx, cfg.TenantID, cellID, mntDir, false, true)
+		return cladefs.CellRef{}, fmt.Errorf("resolve cladefs FUSE base store dir: %w", err)
+	}
 	cleanupOnErr := func() {
+		_ = b.detachMount(ctx, cfg.TenantID, cellID, mntDir, false, true)
 		cctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
-		_ = b.currentStore().MountDetach(cctx, cfg.TenantID, cellID, true)
 		_ = b.currentStore().DeleteCellAbs(cctx, storeDir)
 	}
 	if !shown {
@@ -488,13 +538,15 @@ func (b *CladefsFUSEBackend) EnsureProvisionedBaseImage(ctx context.Context, spe
 			return cladefs.CellRef{}, fmt.Errorf("provision cladefs FUSE base %s: %w", key, err)
 		}
 	}
-	if err := b.currentStore().MountDetach(ctx, cfg.TenantID, cellID, false); err != nil {
+	if err := b.detachMount(ctx, cfg.TenantID, cellID, mntDir, true, false); err != nil {
 		cleanupOnErr()
 		return cladefs.CellRef{}, fmt.Errorf("detach cladefs FUSE base %s: %w", key, err)
 	}
 	ver, err := b.currentStore().MakeVersionAndSyncAbs(ctx, storeDir, 2)
 	if err != nil {
-		_ = b.currentStore().DeleteCellAbs(context.Background(), storeDir)
+		cctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		_ = b.currentStore().DeleteCellAbs(cctx, storeDir)
+		cancel()
 		return cladefs.CellRef{}, fmt.Errorf("version & sync cladefs FUSE base %s to R2: %w", key, err)
 	}
 	_ = b.currentStore().DropCellAbs(ctx, storeDir)
@@ -544,7 +596,9 @@ func (b *CladefsFUSEBackend) forkAndMount(ctx context.Context, from cladefs.Cell
 		return 0, 0, "", "", fmt.Errorf("sync forked cell %d head: %w", forkRef.Cell, err)
 	}
 	if err := b.currentStore().DropCell(ctx, stageRel); err != nil {
-		_ = b.currentStore().DeleteCell(context.Background(), stageRel)
+		cctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 15*time.Second)
+		_ = b.currentStore().DeleteCell(cctx, stageRel)
+		cancel()
 		return 0, 0, "", "", fmt.Errorf("drop staging dir %s: %w", stageRel, err)
 	}
 	var tok *uint64
@@ -560,13 +614,18 @@ func (b *CladefsFUSEBackend) forkAndMount(ctx context.Context, from cladefs.Cell
 		return 0, 0, "", "", fmt.Errorf("mount attach forked cell %d: %w", forkRef.Cell, err)
 	}
 	if !shown {
+		_ = b.detachMount(ctx, forkRef.Tenant, attachedCell, "", false, true)
 		cctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
-		_ = b.currentStore().MountDetach(cctx, forkRef.Tenant, attachedCell, true)
 		_ = b.currentStore().DeleteBucketCell(cctx, filepath.Join("fuse-retire", fmt.Sprintf("fail-%d-%d", forkRef.Tenant, attachedCell)), forkRef.Tenant, attachedCell)
 		cancel()
 		return 0, 0, "", "", fmt.Errorf("forked cell %d attached with shown=false (head kind missing)", attachedCell)
 	}
-	return forkRef.Tenant, attachedCell, b.mountDir(forkRef.Tenant, attachedCell), b.mountStoreDir(forkRef.Tenant, attachedCell), nil
+	storeDir, err = b.mountStoreDir(forkRef.Tenant, attachedCell)
+	if err != nil {
+		_ = b.detachMount(ctx, forkRef.Tenant, attachedCell, "", false, true)
+		return 0, 0, "", "", fmt.Errorf("resolve cladefs FUSE mount store dir: %w", err)
+	}
+	return forkRef.Tenant, attachedCell, b.mountDir(forkRef.Tenant, attachedCell), storeDir, nil
 }
 
 // forkEphemeralAndMount forks an R2 version into a host-local ephemeral cell
@@ -590,8 +649,8 @@ func (b *CladefsFUSEBackend) forkEphemeralAndMount(ctx context.Context, from cla
 		return 0, 0, "", "", fmt.Errorf("mount attach ephemeral cell %d: %w", forkRef.Cell, err)
 	}
 	if !shown {
+		_ = b.detachMount(ctx, forkRef.Tenant, attachedCell, "", false, true)
 		cctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 15*time.Second)
-		_ = b.currentStore().MountDetach(cctx, forkRef.Tenant, attachedCell, true)
 		_ = b.currentStore().DeleteCell(cctx, wsRel)
 		cancel()
 		return 0, 0, "", "", fmt.Errorf("ephemeral cell %d attached with shown=false (kind missing)", attachedCell)
@@ -634,8 +693,15 @@ func (b *CladefsFUSEBackend) EnsureProjectBase(
 		return &out, nil
 	}
 	var prevBase *vmProjectBase
-	if cur != nil && cur.Ref.Cell > 0 && cur.Ref.Version > 0 &&
-		cur.BaseKey == baseKey && cur.ScratchEpoch == p.GetScratchEpoch() {
+	coldReason := ""
+	switch {
+	case cur == nil || cur.Ref.Cell == 0 || cur.Ref.Version == 0:
+		coldReason = "no_previous_base"
+	case cur.ScratchEpoch != p.GetScratchEpoch():
+		coldReason = "scratch_epoch"
+	case cur.BaseKey != baseKey:
+		coldReason = "base_image_changed"
+	default:
 		cp := *cur
 		prevBase = &cp
 	}
@@ -689,46 +755,92 @@ func (b *CladefsFUSEBackend) EnsureProjectBase(
 	if runFreshen == nil {
 		return nil, fmt.Errorf("freshen cladefs FUSE project base %s: no freshen runner configured", baseID)
 	}
+	createdAt := time.Now().UnixMilli()
+	prepStart := time.Now()
+	var prepPhases []*pb.FreshenPhase
+	fromBaseID := ""
 	var tenant, cellID uint64
 	var mntDir, storeDir string
 	var err error
 	if prevBase != nil {
+		forkStart := time.Now()
+		forkStartMs := forkStart.UnixMilli()
 		tenant, cellID, mntDir, storeDir, err = b.forkAndMount(ctx, prevBase.Ref, filepath.Join("fuse-bases", baseID), 0, baseBuildUploadInterval)
 		if err != nil {
 			slog.Warn("incremental cladefs FUSE project base fork failed; falling back to cold base",
 				"project", p.GetName(), "prevBase", prevBase.BaseID, "err", err)
 			prevBase = nil
+			coldReason = "incremental_fork_failed"
+		} else {
+			forkEndMs := time.Now().UnixMilli()
+			fromBaseID = prevBase.BaseID
+			prepPhases = append(prepPhases, &pb.FreshenPhase{
+				Name:      "fork_mount",
+				StartedAt: forkStartMs,
+				EndedAt:   &forkEndMs,
+				Seconds:   time.Since(forkStart).Seconds(),
+				Detail:    "from " + prevBase.BaseID,
+			})
 		}
 	}
 	if prevBase == nil {
+		imgStart := time.Now()
+		imgStartMs := imgStart.UnixMilli()
 		baseImgRef, berr := b.EnsureProvisionedBaseImage(ctx, spec, prov)
 		if berr != nil {
 			return nil, berr
 		}
+		imgEndMs := time.Now().UnixMilli()
+		prepPhases = append(prepPhases, &pb.FreshenPhase{
+			Name:      "base_image",
+			StartedAt: imgStartMs,
+			EndedAt:   &imgEndMs,
+			Seconds:   time.Since(imgStart).Seconds(),
+			Detail:    baseKey,
+		})
+		forkStart := time.Now()
+		forkStartMs := forkStart.UnixMilli()
 		tenant, cellID, mntDir, storeDir, err = b.forkAndMount(ctx, baseImgRef, filepath.Join("fuse-bases", baseID), 0, baseBuildUploadInterval)
 		if err != nil {
 			return nil, fmt.Errorf("fork & mount cladefs FUSE project base %s: %w", baseID, err)
 		}
+		forkEndMs := time.Now().UnixMilli()
+		prepPhases = append(prepPhases, &pb.FreshenPhase{
+			Name:      "fork_mount",
+			StartedAt: forkStartMs,
+			EndedAt:   &forkEndMs,
+			Seconds:   time.Since(forkStart).Seconds(),
+			Detail:    "from " + baseKey,
+		})
 	}
+	prepSeconds := time.Since(prepStart).Seconds()
 	cleanupOnErr := func() {
-		_ = b.currentStore().MountDetach(context.Background(), tenant, cellID, true)
-		_ = b.currentStore().DeleteCellAbs(context.Background(), storeDir)
+		_ = b.detachMount(ctx, tenant, cellID, mntDir, false, true)
+		cctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		_ = b.currentStore().DeleteCellAbs(cctx, storeDir)
 	}
 
 	stepsToRun := selectProjectBaseSteps(p, prevBase, heads)
 	script := buildCladefsFreshenScript(p, heads, stepsToRun, true)
 	handle, err := runFreshen(ctx, managedFreshenSpec{
-		Project:    p,
-		BaseID:     baseID,
-		Recipe:     recipe,
-		Arch:       goruntime.GOARCH,
-		Cold:       prevBase == nil,
-		PrevBase:   prevBase,
-		StepsToRun: stepsToRun,
-		Heads:      heads,
-		Script:     script,
-		Env:        slices.Clone(sandboxEnv),
-		RootDir:    mntDir,
+		Project:     p,
+		BaseID:      baseID,
+		Recipe:      recipe,
+		Arch:        goruntime.GOARCH,
+		Runtime:     runtime.KindCladefs,
+		Cold:        prevBase == nil,
+		ColdReason:  coldReason,
+		FromBaseID:  fromBaseID,
+		CreatedAt:   createdAt,
+		PrepSeconds: prepSeconds,
+		PrepPhases:  prepPhases,
+		PrevBase:    prevBase,
+		StepsToRun:  stepsToRun,
+		Heads:       heads,
+		Script:      script,
+		Env:         slices.Clone(sandboxEnv),
+		RootDir:     mntDir,
 	})
 	if err != nil {
 		cleanupOnErr()
@@ -747,14 +859,34 @@ func (b *CladefsFUSEBackend) EnsureProjectBase(
 		return nil, fmt.Errorf("freshen cladefs FUSE project base %s failed (command %s): %s", baseID, handle.CommandID(), detail)
 	}
 
-	if err := b.currentStore().MountDetach(ctx, tenant, cellID, false); err != nil {
+	var finalizeSeconds float64
+	handle.SetFinalizing("mount_detach")
+	detachStart := time.Now()
+	detachStartMs := detachStart.UnixMilli()
+	if err := b.detachMount(ctx, tenant, cellID, mntDir, true, false); err != nil {
+		detachSecs := time.Since(detachStart).Seconds()
+		handle.RecordPhase("mount_detach", detachStartMs, time.Now().UnixMilli(), detachSecs, "")
+		freshenRes.FinalizeSeconds = detachSecs
 		cleanupOnErr()
 		handle.Finish(false, freshenRes, cladefs.CellRef{}, fmt.Sprintf("detach mount: %v", err))
 		return nil, fmt.Errorf("detach cladefs FUSE project base %s: %w", baseID, err)
 	}
+	detachSecs := time.Since(detachStart).Seconds()
+	finalizeSeconds += detachSecs
+	handle.RecordPhase("mount_detach", detachStartMs, time.Now().UnixMilli(), detachSecs, "")
+
+	handle.SetFinalizing("r2_sync")
+	syncStart := time.Now()
+	syncStartMs := syncStart.UnixMilli()
 	ver, err := b.currentStore().MakeVersionAndSyncAbs(ctx, storeDir, 2)
+	syncSecs := time.Since(syncStart).Seconds()
+	finalizeSeconds += syncSecs
+	handle.RecordPhase("r2_sync", syncStartMs, time.Now().UnixMilli(), syncSecs, "")
+	freshenRes.FinalizeSeconds = finalizeSeconds
 	if err != nil {
-		_ = b.currentStore().DeleteCellAbs(context.Background(), storeDir)
+		cctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		_ = b.currentStore().DeleteCellAbs(cctx, storeDir)
+		cancel()
 		handle.Finish(false, freshenRes, cladefs.CellRef{}, fmt.Sprintf("sync to R2: %v", err))
 		return nil, fmt.Errorf("sync cladefs FUSE project base %s to R2: %w", baseID, err)
 	}
@@ -847,11 +979,20 @@ func (b *CladefsFUSEBackend) DeleteWorkspace(ctx context.Context, wsID string) e
 	if !ok {
 		return nil
 	}
-	if err := b.currentStore().MountDetach(ctx, m.Tenant, m.Cell, true); err != nil {
+	if err := b.detachMount(ctx, m.Tenant, m.Cell, m.MountPath, false, true); err != nil {
 		slog.Warn("detach cladefs FUSE workspace failed", "workspace", wsID, "cell", m.Cell, "err", err)
 	}
-	storeDir := cmp.Or(m.StorePath, b.mountStoreDir(m.Tenant, m.Cell))
-	return b.currentStore().DeleteCellAbs(ctx, storeDir)
+	storeDir := m.StorePath
+	if storeDir == "" {
+		var err error
+		storeDir, err = b.mountStoreDir(m.Tenant, m.Cell)
+		if err != nil {
+			return err
+		}
+	}
+	cctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
+	defer cancel()
+	return b.currentStore().DeleteCellAbs(cctx, storeDir)
 }
 
 // createCladefsFUSEWorkspace creates a cladefs host-FUSE workspace asynchronously
