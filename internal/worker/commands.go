@@ -490,11 +490,19 @@ func (c *command) priority() int32 {
 func reserves(s pb.CommandState) bool { return s == running || s == parked }
 
 // reservation is the memory the node keeps for c while it reserves: its
-// guarantee, or as much as it has held of its own, if more. A build's
-// need recurs (each link wants its memory again), so what it has held is
-// what it may hold again, whatever it asked for.
-func (c *command) reservation() int64 {
-	return max(c.cmd().Limits.GetMemoryLowBytes(), c.rec.PeakHeldBytes)
+// guarantee, or as much as it has held of its own, if more. One that asked
+// for no guarantee is assumed to need defaultReservation (at most admitLimit,
+// so it can always run alone): a build grows to gigabytes well after it
+// starts, by when admission would have let others in beside it. From there
+// it only grows: a build's need recurs (each link wants its memory again), so
+// what it has held is what it may hold again, whatever it asked for. Call
+// with e.mu held.
+func (e *Engine) reservation(c *command) int64 {
+	base := c.cmd().Limits.GetMemoryLowBytes()
+	if base == 0 {
+		base = min(defaultReservation, e.admitLimit())
+	}
+	return max(base, c.rec.PeakHeldBytes)
 }
 
 // reserved is the memory the node keeps for the commands that reserve it,
@@ -503,7 +511,7 @@ func (e *Engine) reserved() int64 {
 	var n int64
 	for _, c := range e.commands {
 		if reserves(c.cmd().State) {
-			n += c.reservation()
+			n += e.reservation(c)
 		}
 	}
 	return n
@@ -1133,7 +1141,7 @@ func (e *Engine) roomFor(c *command, mem sysinfo.Mem, hasMem bool) (kind, reason
 	if e.diskLow() {
 		return "disk", fmt.Sprintf("waiting for disk: %s free", gib(e.disk.FreeBytes))
 	}
-	want := c.reservation()
+	want := e.reservation(c)
 	limit := e.admitLimit()
 	reserved := e.reserved()
 	room := limit - reserved
@@ -1189,10 +1197,11 @@ func (e *Engine) roomFor(c *command, mem sysinfo.Mem, hasMem bool) (kind, reason
 		// RAM before starting: OS/kernel/ZFS ARC overhead or a shared host
 		// routinely keeps idle MemAvailable below admitMemory of RAM, so
 		// requiring want <= physRoom would deadlock base builds on idle nodes
-		// (board 11078). Explicit caller --mem-low guarantees still verify
-		// physical headroom.
-		if !c.isFreshen() && want > physRoom {
-			return "memory", fmt.Sprintf("waiting for memory: needs %s, %s physically available on the node", gib(want), gib(max(0, physRoom)))
+		// (board 11078). Explicit caller --mem-low guarantees, and what a
+		// command has already held, still verify physical headroom; the
+		// default reservation does not: it is an estimate for admission.
+		if held := max(c.cmd().Limits.GetMemoryLowBytes(), c.rec.PeakHeldBytes); !c.isFreshen() && held > physRoom {
+			return "memory", fmt.Sprintf("waiting for memory: needs %s, %s physically available on the node", gib(held), gib(max(0, physRoom)))
 		}
 	}
 	switch {

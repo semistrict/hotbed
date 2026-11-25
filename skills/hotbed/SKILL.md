@@ -362,8 +362,10 @@ down, not restarting. What happened meanwhile reaches `poll` once it is back.
 - `--priority low|normal|high|urgent|N`: sets scheduling priority (default `normal` / `0`; `low` =
   `-10`, `high` = `10`, `urgent` = `20`, or any integer in `-100..100`). Higher-priority queued
   commands admit ahead of lower-priority ones; nothing running is preempted for them.
-- `--mem-low 2G` guarantees memory: the command queues until that fits. `--mem-high 8G` throttles
-  and swaps past that. Nothing is frozen or killed for memory: what is admitted runs, swapping if
+- `--mem-low 2G` guarantees memory: the command queues until that fits. Without it, admission
+  counts a command as needing 4 GiB, or the most it has held if more, so a node takes only as many
+  as fit; pass a smaller `--mem-low` for light commands. `--mem-high 8G` throttles and swaps past
+  that. Nothing is frozen or killed for memory: what is admitted runs, swapping if
   it must, and a full node holds new work until it has room. Stop a command by hand
   (`hotbed stop CMD`) if a node is truly overloaded.
 - A saturated node holds new work: once its CPU pressure reaches 60%, commands queue until it is

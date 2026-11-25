@@ -48,11 +48,14 @@ const (
 	fullAt = 0.93
 	// swapFullRAM is the share of RAM in use past which a full swap budget
 	// (95%) holds new work: what runs could no longer spill to swap.
-	swapFullRAM  = 0.70
-	minFreeDisk  = 0.05 // keep this share of the disk free before admitting
-	orphanAfter  = 30 * time.Second
-	keepEnded    = 2 * time.Minute
-	keepReleased = 10 * time.Minute
+	swapFullRAM = 0.70
+	// defaultReservation is the memory admission assumes a command that
+	// asked for no guarantee (--mem-low) will hold, until it holds more.
+	defaultReservation int64 = 4 << 30
+	minFreeDisk              = 0.05 // keep this share of the disk free before admitting
+	orphanAfter              = 30 * time.Second
+	keepEnded                = 2 * time.Minute
+	keepReleased             = 10 * time.Minute
 	// keepProfiles is how long a command's profile file stays when the
 	// controller may lack it: as long as the controller keeps history.
 	keepProfiles = 30 * 24 * time.Hour

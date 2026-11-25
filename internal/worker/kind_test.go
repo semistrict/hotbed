@@ -88,6 +88,7 @@ func TestNonServerRunCommandsCountInBenchAndKeepRunningWhenMemoryIsFull(t *testi
 		now = now.Add(time.Second)
 		if _, err := e.Exec(t.Context(), &pb.RunCommandRequest{
 			Id: id, WorkspaceId: ws, Args: args, Port: port, Kind: kind,
+			Limits: &pb.CommandLimits{MemoryLowBytes: 1 << 30},
 		}); err != nil {
 			t.Fatalf("Exec %s: %v", id, err)
 		}

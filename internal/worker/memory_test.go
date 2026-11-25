@@ -2,6 +2,8 @@ package worker
 
 import (
 	"context"
+	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"testing"
@@ -33,7 +35,7 @@ func TestAdmissionReservesWhatCommandsHeld(t *testing.T) {
 	t.Cleanup(func() { units.Stop(context.WithoutCancel(t.Context()), "hotbed-next-1") })
 	e.step(t.Context())
 	next := e.commands["next-1"].cmd()
-	if want := "waiting for memory: running commands hold or are guaranteed 14.0 GiB (limit 13.8 GiB)"; next.State != queued || next.Reason != want {
+	if want := "waiting for memory: needs 4.0 GiB, but running commands hold or are guaranteed 14.0 GiB (limit 13.8 GiB)"; next.State != queued || next.Reason != want {
 		t.Fatalf("next-1 beside 14 GiB held is %v: %q, want queued: %q", next.State, next.Reason, want)
 	}
 	if s := signal(e.Heartbeat("cl").Admission, "memory-reserved"); s.Value != float64(14<<30) || !s.Holding || s.Waiting != 1 {
@@ -523,7 +525,7 @@ func TestFullAdmitLimitReservationBlocksZeroReservationWork(t *testing.T) {
 		t.Cleanup(func() { units.Stop(context.WithoutCancel(t.Context()), "hotbed-work-zero") })
 		e.step(t.Context())
 		w := e.commands["work-zero"].cmd()
-		wantReason := "waiting for memory: running commands hold or are guaranteed " + gib(limit) + " (limit " + gib(limit) + ")"
+		wantReason := "waiting for memory: needs 4.0 GiB, but running commands hold or are guaranteed " + gib(limit) + " (limit " + gib(limit) + ")"
 		if w.State != queued || w.Reason != wantReason {
 			t.Fatalf("work-zero beside full-admitLimit freshen = (%v, %q), want (queued, %q)", w.State, w.Reason, wantReason)
 		}
@@ -574,4 +576,50 @@ func TestFullAdmitLimitReservationBlocksZeroReservationWork(t *testing.T) {
 			t.Fatalf("urgent-zero state = %v (%q), want queued", urgent.State, urgent.Reason)
 		}
 	})
+}
+
+// A command that asked for no guarantee is charged defaultReservation until
+// it holds more, so builds that start small are not all let in at once only
+// to grow past the node together; what it holds beyond that is charged.
+func TestAdmissionAssumesADefaultReservationThatOnlyGrows(t *testing.T) {
+	e, units, sys, now := parkEngine(t)
+	sys.SetUsed(0)
+	// 13.76 GiB may be reserved: three default 4 GiB reservations fit, not four.
+	for _, id := range []string{"b-1", "b-2", "b-3"} {
+		ws := map[string]string{"b-1": "a", "b-2": "b", "b-3": "c"}[id]
+		e.start(t, units, now, id, ws, "build")
+	}
+	e.mu.Lock()
+	if got := e.reserved(); got != 3*defaultReservation {
+		t.Fatalf("reserved = %s, want %s", gib(got), gib(3*defaultReservation))
+	}
+	e.mu.Unlock()
+	if err := os.MkdirAll(filepath.Join(e.cfg.Store.Path("ws/d"), "work", "app"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	e.workspaces["d"] = &workspace{rec: &pb.WorkspaceRecord{Workspace: &pb.Workspace{Id: "d", Project: "app", Repos: []*pb.WorkspaceRepo{{Repo: "app"}}, State: idle}, Volume: "ws/d"}}
+	*now = now.Add(time.Second)
+	if _, err := e.Exec(t.Context(), &pb.RunCommandRequest{Id: "b-4", WorkspaceId: "d", Args: []string{"sleep", "60"}}); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { units.Stop(context.WithoutCancel(t.Context()), "hotbed-b-4") })
+	e.step(t.Context())
+	if w := e.commands["b-4"].cmd(); w.State != queued || w.Reason != "waiting for memory: needs 4.0 GiB, 1.8 GiB left of what running commands hold or are guaranteed" {
+		t.Fatalf("b-4 = (%v, %q), want queued for memory", w.State, w.Reason)
+	}
+
+	// b-1 holds 6 GiB: its reservation grows to that, and stays there when it
+	// holds less again.
+	units.SetAnon("hotbed-b-1", 6<<30)
+	e.step(t.Context())
+	units.SetAnon("hotbed-b-1", 1<<30)
+	e.step(t.Context())
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if got := e.reservation(e.commands["b-1"]); got != 6<<30 {
+		t.Fatalf("b-1 reservation = %s, want 6.0 GiB", gib(got))
+	}
+	if got := e.reservation(e.commands["b-2"]); got != defaultReservation {
+		t.Fatalf("b-2 reservation = %s, want the default %s", gib(got), gib(defaultReservation))
+	}
 }
