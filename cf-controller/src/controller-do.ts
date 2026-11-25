@@ -66,6 +66,8 @@ export interface ControllerEnv extends AuthEnv, BuildsEnv {
 	ALLOW_LOCAL_REPOS?: string;
 	TEST_HARNESS?: string;
 	ASSETS?: Fetcher;
+	GC_WORKER_URL?: string;
+	GC_TOKEN?: string;
 }
 
 const ACTIVE_ALARM_MS = 15_000;

@@ -7,6 +7,7 @@ import { LineChart } from "../components/charts/LineChart";
 import { SmallMultiples } from "../components/charts/SmallMultiples";
 import { SpeedBars } from "../components/charts/SpeedBars";
 import { EventFeed } from "../components/EventFeed";
+import { ClusterGcSection } from "../components/GcPanel";
 import { ClusterObjectStoreSection } from "../components/ObjectStorePanel";
 import { Card, StatTile } from "../components/Panel";
 import { nodeName, useNodeColors, useSnapshot } from "../lib/data";
@@ -163,6 +164,7 @@ function Overview({ s, colors }: { s: Snapshot; colors: Map<string, string> }) {
       </Card>
 
       <ClusterObjectStoreSection s={s} colors={colors} />
+      <ClusterGcSection now={Number(s.now)} />
 
       <Card className="col-span-12 lg:col-span-7" title="Live" sub="Everything the cluster did, newest first" delay={400}>
         <EventFeed events={s.events} limit={20} />

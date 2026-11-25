@@ -1,6 +1,7 @@
 import { authenticateRequest, NOOP_TOKEN_LOOKUP, stripInternalAuthHeaders } from "./auth.ts";
 import { ControllerDO, type ControllerEnv } from "./controller-do.ts";
 import { fromUnknownError } from "./errors.ts";
+import { handleGcRoute } from "./gc.ts";
 import { TenantRegistryDO } from "./tenant-registry-do.ts";
 import { clearWorkOSSessionCookie } from "./workos.ts";
 import {
@@ -92,6 +93,12 @@ export default {
 		if (url.pathname.startsWith("/auth/")) {
 			const authRes = await handleAuthRoute(request, url, env);
 			if (authRes) return authRes;
+		}
+
+		// 2.5. CladeFS garbage-collector proxy routes for the Cockpit Cluster page.
+		if (url.pathname.startsWith("/api/gc/")) {
+			const gcRes = await handleGcRoute(request, url, env);
+			if (gcRes) return gcRes;
 		}
 
 		// 3. Controller API, worker WebSocket tunnel, build downloads, admin endpoints, /healthz.

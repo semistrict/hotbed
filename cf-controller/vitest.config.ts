@@ -31,6 +31,8 @@ export default defineConfig({
 					OWNER_TOKEN: "test-owner-secret",
 					JOIN_TOKEN: "test-join-secret",
 					GITHUB_TOKEN: "",
+					GC_TOKEN: "",
+					GC_WORKER_URL: "",
 					WORKOS_CLIENT_ID: "",
 					WORKOS_API_KEY: "",
 					WORKOS_COOKIE_PASSWORD: "",
