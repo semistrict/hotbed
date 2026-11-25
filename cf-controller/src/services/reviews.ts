@@ -1,6 +1,7 @@
 import type { ServiceImpl } from "@connectrpc/connect";
-import { create, fromJsonString } from "@bufbuild/protobuf";
+import { clone, create, fromJsonString } from "@bufbuild/protobuf";
 import {
+	ActorKind,
 	AddFindingsRequestSchema,
 	AddFindingsResponseSchema,
 	DecideFindingsResponseSchema,
@@ -12,15 +13,20 @@ import {
 	ListReviewsResponseSchema,
 	LocationSchema,
 	QuickResponse,
+	ReviewerSchema,
+	ReviewerState,
 	ReviewEventSchema,
 	ReviewSchema,
 	ReviewService,
 	ReviewState,
+	ReviewUpdate_What,
+	StampSchema,
 	type AddFindingsRequest,
 	type DecideFindingsRequest,
 	type Finding,
 	type ReportedFinding,
 	type Review,
+	type Reviewer,
 	type Stamp,
 } from "../gen/hotbed/v1/hotbed_pb.ts";
 import { getCaller } from "../connect-adapter.ts";
@@ -63,6 +69,19 @@ function reviewStateWord(st: ReviewState): string {
 	}
 }
 
+function reviewerStateWord(st: ReviewerState): string {
+	switch (st) {
+		case ReviewerState.IN_PROGRESS:
+			return "in progress";
+		case ReviewerState.DONE:
+			return "done";
+		case ReviewerState.FAILED:
+			return "failed";
+		default:
+			return "unspecified";
+	}
+}
+
 function decisionWord(d: FindingDecision): string {
 	switch (d) {
 		case FindingDecision.OPEN:
@@ -75,32 +94,135 @@ function decisionWord(d: FindingDecision): string {
 			return "fixed";
 		case FindingDecision.INVALID:
 			return "invalid";
+		case FindingDecision.WONT_FIX:
+			return "won't fix";
 		default:
 			return "unspecified";
 	}
 }
 
-function reviewerOf(r: Review, by: Stamp, doing: string): void {
-	if (r.state === ReviewState.REQUESTED) {
+function reviewerLabel(rv: Reviewer): string {
+	const parts = [`#${rv.id}`, rv.model || "unknown"];
+	if (rv.subagent) parts.push(`(${rv.subagent})`);
+	return parts.join(" ");
+}
+
+function joinReviewerModels(reviewers: Reviewer[]): string {
+	const seen = new Set<string>();
+	const out: string[] = [];
+	for (const rv of reviewers) {
+		const m = rv.model.trim();
+		if (m && !seen.has(m)) {
+			seen.add(m);
+			out.push(m);
+		}
+	}
+	return out.join(", ");
+}
+
+function resolveActiveReviewer(
+	r: Review,
+	by: Stamp,
+	sel: { reviewerId: number; model: string; subagent: string },
+	doing: string,
+): Reviewer {
+	if (r.state === ReviewState.CANCELLED) {
+		throw hotbedError(ErrorCode.Conflict, `review ${r.id} is cancelled, ${stamped(r.ended)}`);
+	}
+	if (r.reviewers.length === 0) {
 		throw hotbedError(
 			ErrorCode.Conflict,
 			`review ${r.id} is not started: start it before you ${doing}`,
 		).withSuggestion(
-			`hotbed review start ${r.id} --model MODEL (your exact model ID, such as claude-opus-5-5)`,
+			`hotbed review start ${r.id} --model MODEL (your exact model ID, such as claude-opus-4-6)`,
 		);
 	}
-	if (r.state !== ReviewState.IN_PROGRESS) {
+	if (sel.reviewerId > 0) {
+		const rv = r.reviewers.find((x) => x.id === sel.reviewerId);
+		if (!rv) {
+			throw hotbedError(ErrorCode.NotFound, `review ${r.id} has no reviewer #${sel.reviewerId}`);
+		}
+		if (rv.session !== by.session) {
+			throw hotbedError(
+				ErrorCode.Conflict,
+				`reviewer #${rv.id} of review ${r.id} is ${rv.session}'s; session ${by.session} may not ${doing}`,
+			);
+		}
+		if (rv.state !== ReviewerState.IN_PROGRESS) {
+			throw hotbedError(
+				ErrorCode.Conflict,
+				`reviewer #${rv.id} (${rv.model || "unknown"}) of review ${r.id} is ${reviewerStateWord(rv.state)}, ${stamped(rv.ended)}`,
+			);
+		}
+		return rv;
+	}
+	const inProgress = r.reviewers.filter((x) => x.state === ReviewerState.IN_PROGRESS);
+	if (inProgress.length === 0) {
 		throw hotbedError(
 			ErrorCode.Conflict,
 			`review ${r.id} is ${reviewStateWord(r.state)}, ${stamped(r.ended)}`,
 		);
 	}
-	if (r.started?.session !== by.session) {
+	let mine = inProgress.filter((x) => x.session === by.session);
+	const model = sel.model.trim();
+	const subagent = sel.subagent.trim();
+	if (model) mine = mine.filter((x) => x.model === model);
+	if (subagent) mine = mine.filter((x) => x.subagent === subagent);
+	if (mine.length === 1) return mine[0];
+	if (mine.length > 1) {
+		const labels = mine.map(reviewerLabel).join(", ");
 		throw hotbedError(
 			ErrorCode.Conflict,
-			`review ${r.id} is ${r.started?.session ?? ""}'s to review; session ${by.session} may not ${doing}`,
+			`session ${by.session} has ${mine.length} active reviewers on review ${r.id} (${labels}): name which one`,
+		).withSuggestion(`pass --reviewer ${mine[0].id} (or --model / --subagent) to pick one`);
+	}
+	const owners = [...new Set(inProgress.map((x) => x.session))];
+	if (owners.length === 1 && owners[0] !== by.session) {
+		throw hotbedError(
+			ErrorCode.Conflict,
+			`review ${r.id} is ${owners[0]}'s to review; session ${by.session} may not ${doing}`,
 		);
 	}
+	if (model || subagent) {
+		throw hotbedError(
+			ErrorCode.Conflict,
+			`no active reviewer matching ${[model, subagent].filter(Boolean).join(" / ")} for session ${by.session} on review ${r.id}`,
+		).withSuggestion(`active reviewers: ${inProgress.map(reviewerLabel).join(", ")}`);
+	}
+	throw hotbedError(
+		ErrorCode.Conflict,
+		`review ${r.id} is ${owners.join(", ")}'s to review; session ${by.session} may not ${doing}`,
+	);
+}
+
+function stampForReviewer(by: Stamp, rv: Reviewer): Stamp {
+	const out = clone(StampSchema, by);
+	out.actorKind = ActorKind.AGENT;
+	out.model = rv.model || out.model;
+	out.subagent = rv.subagent || out.subagent;
+	if (!out.t3codeThreadId) out.t3codeThreadId = rv.t3codeThreadId;
+	return out;
+}
+
+function enrichImplementerStamp(r: Review, by: Stamp): Stamp {
+	if (by.actorKind !== ActorKind.AGENT) return by;
+	const out = clone(StampSchema, by);
+	if (
+		!out.model &&
+		out.session &&
+		(out.session === r.implementer?.session || out.session === r.requested?.session)
+	) {
+		out.model = r.implementerModel || r.implementer?.model || "";
+	}
+	if (
+		!out.subagent &&
+		out.session &&
+		out.session === r.implementer?.session &&
+		r.implementer?.subagent
+	) {
+		out.subagent = r.implementer.subagent;
+	}
+	return out;
 }
 
 function parseReportFindings(report: string): ReportedFinding[] {
@@ -295,7 +417,48 @@ export function createReviewService(ctrl: ControllerContext): ServiceImpl<typeof
 					throw hotbedError(ErrorCode.InvalidArgs, `"${c}" is not a commit`);
 				}
 			}
-			const { by, project } = ctrl.agentStamp(getCaller(ctx.values), req.sessionId, "");
+			const caller = getCaller(ctx.values);
+			const { by, project, session } = ctrl.agentStamp(caller, req.sessionId, "", {
+				model: req.model,
+				subagent: req.subagent,
+				t3codeThreadId: req.t3codeThreadId,
+			});
+
+			let implementer = clone(StampSchema, by);
+			const implSessionId = req.implementerSession.trim();
+			if (implSessionId && implSessionId !== req.sessionId) {
+				const implSess = ctrl.store.getSession(implSessionId);
+				if (implSess.project !== project.name) {
+					throw hotbedError(
+						ErrorCode.Conflict,
+						`implementer session ${implSess.id} works on project ${implSess.project}, not ${project.name}`,
+					);
+				}
+				implementer = create(StampSchema, {
+					at: by.at,
+					actorKind: ActorKind.AGENT,
+					session: implSess.id,
+					host: caller.hostname,
+					model: req.model.trim() || implSess.model,
+					subagent: req.subagent.trim(),
+					t3codeThreadId: implSess.t3codeThreadId || by.t3codeThreadId,
+				});
+			} else if (!implementer.model) {
+				implementer.model = session.model;
+			}
+
+			const implementerModel = implementer.model.trim();
+			if (!implementerModel) {
+				throw hotbedError(
+					ErrorCode.InvalidArgs,
+					"requesting a review names no implementer model",
+				).withSuggestion(
+					"pass the implementer's exact model ID: hotbed review request --model MODEL (or start the session with --model MODEL)",
+				);
+			}
+			implementer.model = implementerModel;
+			if (!by.model) by.model = implementerModel;
+
 			const title = req.title.trim() || `${req.branch || "detached"} at ${req.head.slice(0, 8)}`;
 			const review = create(ReviewSchema, {
 				repo: canonicalRemote(req.repo),
@@ -307,6 +470,8 @@ export function createReviewService(ctrl: ControllerContext): ServiceImpl<typeof
 				snapshotOf: req.snapshotOf,
 				state: ReviewState.REQUESTED,
 				requested: by,
+				implementer,
+				implementerModel,
 			});
 			return ctrl.store.addReview(project.name, review);
 		},
@@ -332,41 +497,62 @@ export function createReviewService(ctrl: ControllerContext): ServiceImpl<typeof
 					ErrorCode.InvalidArgs,
 					`starting review ${req.id} names no model`,
 				).withSuggestion(
-					`pass the reviewer's exact model ID, as its provider names it: hotbed review start ${req.id} --model claude-opus-5-5`,
+					`pass the reviewer's exact model ID, as its provider names it: hotbed review start ${req.id} --model claude-opus-4-6`,
 				);
 			}
-			const { by, project } = ctrl.agentStamp(getCaller(ctx.values), req.sessionId, "");
-			try {
-				const existing = ctrl.store.getReview(req.id, false);
-				if (
-					existing.state === ReviewState.IN_PROGRESS &&
-					existing.started?.session === by.session
-				) {
-					if (existing.model !== model) {
-						throw hotbedError(
-							ErrorCode.Conflict,
-							`review ${existing.id} was started by model ${existing.model || "unknown"}, not ${model}`,
-						).withSuggestion(
-							"a review is one model's: cancel it and request another for a different reviewer",
+			const caller = getCaller(ctx.values);
+			const { by, project } = ctrl.agentStamp(caller, req.sessionId, "", {
+				model,
+				subagent: req.subagent,
+				t3codeThreadId: req.t3codeThreadId,
+			});
+			const subagent = by.subagent.trim();
+
+			// Idempotent retry: same session, same model, same subagent already in progress (unless --new).
+			if (!req.newReviewer) {
+				try {
+					const existing = ctrl.store.getReview(req.id, false);
+					if (existing.state !== ReviewState.CANCELLED) {
+						const same = existing.reviewers.find(
+							(rv) =>
+								rv.state === ReviewerState.IN_PROGRESS &&
+								rv.session === by.session &&
+								rv.model === model &&
+								rv.subagent === subagent,
 						);
+						if (same) {
+							return ctrl.store.getReview(req.id, true);
+						}
 					}
-					return ctrl.store.getReview(req.id, true);
+				} catch (err) {
+					if (err instanceof Error && "code" in err && err.code !== ErrorCode.NotFound) throw err;
 				}
-			} catch (err) {
-				if (err instanceof Error && "code" in err && err.code !== ErrorCode.NotFound) throw err;
 			}
+
 			ctrl.store.changeReview(req.id, "started", by, (r) => {
 				inProject("review", r.id, r.project, project, by);
-				if (r.state !== ReviewState.REQUESTED) {
-					const byStr = r.started?.session ? ` by ${r.started.session}` : "";
+				if (r.state === ReviewState.CANCELLED) {
 					throw hotbedError(
 						ErrorCode.Conflict,
-						`review ${r.id} is ${reviewStateWord(r.state)}${byStr}; only a requested review can be started`,
+						`review ${r.id} is cancelled, ${stamped(r.ended)}; a cancelled review cannot be started`,
 					);
 				}
+				const nextId = r.reviewers.reduce((max, x) => Math.max(max, x.id), 0) + 1;
+				const rv = create(ReviewerSchema, {
+					id: nextId,
+					model,
+					subagent,
+					session: by.session,
+					t3codeThreadId: by.t3codeThreadId,
+					state: ReviewerState.IN_PROGRESS,
+					started: by,
+				});
+				r.reviewers.push(rv);
 				r.state = ReviewState.IN_PROGRESS;
-				r.started = by;
-				r.model = model;
+				if (!r.started) r.started = by;
+				r.ended = undefined;
+				r.model = joinReviewerModels(r.reviewers);
+				return { reviewerId: rv.id, stamp: by };
 			});
 			return ctrl.store.getReview(req.id, true);
 		},
@@ -394,11 +580,23 @@ export function createReviewService(ctrl: ControllerContext): ServiceImpl<typeof
 					);
 				}
 			});
-			const { by } = ctrl.agentStamp(getCaller(ctx.values), req.sessionId, "");
+			const { by } = ctrl.agentStamp(getCaller(ctx.values), req.sessionId, "", {
+				model: req.model,
+				subagent: req.subagent,
+				t3codeThreadId: req.t3codeThreadId,
+			});
 			const out = ctrl.store.addFindings(
 				req.reviewId,
 				by,
-				(r) => reviewerOf(r, by, "report findings"),
+				(r) => {
+					const rv = resolveActiveReviewer(
+						r,
+						by,
+						{ reviewerId: req.reviewerId, model: req.model, subagent: req.subagent },
+						"report findings",
+					);
+					return { reviewerId: rv.id, stamp: stampForReviewer(by, rv) };
+				},
 				findings,
 				req.report.trim(),
 			);
@@ -407,25 +605,73 @@ export function createReviewService(ctrl: ControllerContext): ServiceImpl<typeof
 
 		finishReview(req, ctx) {
 			const what = req.failed ? "failed" : "finished";
-			const state = req.failed ? ReviewState.FAILED : ReviewState.DONE;
 			if (req.failed && !req.summary.trim()) {
 				throw hotbedError(ErrorCode.InvalidArgs, "say why the review failed").withSuggestion(
 					"hotbed review fail ID --reason WHY",
 				);
 			}
-			const { by } = ctrl.agentStamp(getCaller(ctx.values), req.sessionId, "");
+			const { by } = ctrl.agentStamp(getCaller(ctx.values), req.sessionId, "", {
+				model: req.model,
+				subagent: req.subagent,
+				t3codeThreadId: req.t3codeThreadId,
+			});
 			const r = ctrl.store.changeReview(req.id, what, by, (rev) => {
-				reviewerOf(rev, by, "end it");
-				rev.state = state;
+				const rv = resolveActiveReviewer(
+					rev,
+					by,
+					{ reviewerId: req.reviewerId, model: req.model, subagent: req.subagent },
+					"end it",
+				);
+				const stamp = stampForReviewer(by, rv);
+				rv.state = req.failed ? ReviewerState.FAILED : ReviewerState.DONE;
+				rv.summary = req.summary;
+				rv.ended = stamp;
+
+				const stillRunning = rev.reviewers.filter((x) => x.state === ReviewerState.IN_PROGRESS);
+				const anyDone = rev.reviewers.some((x) => x.state === ReviewerState.DONE);
+				if (stillRunning.length > 0) {
+					rev.state = ReviewState.IN_PROGRESS;
+					rev.ended = undefined;
+					const verb = req.failed ? "failed" : "finished";
+					let line = `review ${rev.id} (${rev.title}): ${rv.model || rv.session} ${verb} (${stillRunning.length} still in progress)`;
+					if (req.summary) line += `: ${firstLine(req.summary)}`;
+					return {
+						reviewerId: rv.id,
+						stamp,
+						notify: {
+							what: req.failed ? ReviewUpdate_What.FAILED : ReviewUpdate_What.FINISHED,
+							detail: line,
+						},
+					};
+				}
+				rev.state = anyDone ? ReviewState.DONE : ReviewState.FAILED;
 				rev.summary = req.summary;
-				rev.ended = by;
+				rev.ended = stamp;
+				const word = rev.state === ReviewState.DONE ? "is done" : "failed";
+				let line = `review ${rev.id} (${rev.title}) ${word}`;
+				if (rev.summary) line += `: ${firstLine(rev.summary)}`;
+				return {
+					reviewerId: rv.id,
+					stamp,
+					notify: {
+						what:
+							rev.state === ReviewState.DONE
+								? ReviewUpdate_What.FINISHED
+								: ReviewUpdate_What.FAILED,
+						detail: line,
+					},
+				};
 			});
 			if (r.requested?.session) ctrl.sessionWakes.wake(r.requested.session);
 			return ctrl.store.getReview(req.id, true);
 		},
 
 		cancelReview(req, ctx) {
-			const { by, project } = ctrl.agentStamp(getCaller(ctx.values), req.sessionId, req.reason);
+			const { by, project } = ctrl.agentStamp(getCaller(ctx.values), req.sessionId, req.reason, {
+				model: req.model,
+				subagent: req.subagent,
+				t3codeThreadId: req.t3codeThreadId,
+			});
 			ctrl.store.changeReview(req.id, "cancelled", by, (r) => {
 				inProject("review", r.id, r.project, project, by);
 				if (isReviewEnded(r.state)) {
@@ -434,9 +680,11 @@ export function createReviewService(ctrl: ControllerContext): ServiceImpl<typeof
 						`review ${r.id} is ${reviewStateWord(r.state)} already, ${stamped(r.ended)}`,
 					);
 				}
+				const stamp = enrichImplementerStamp(r, by);
 				r.state = ReviewState.CANCELLED;
 				r.summary = req.reason;
-				r.ended = by;
+				r.ended = stamp;
+				return { stamp };
 			});
 			return ctrl.store.getReview(req.id, true);
 		},
@@ -445,6 +693,7 @@ export function createReviewService(ctrl: ControllerContext): ServiceImpl<typeof
 			const whatMap: Partial<Record<FindingDecision, string>> = {
 				[FindingDecision.ACCEPTED]: "accepted",
 				[FindingDecision.DISMISSED]: "dismissed",
+				[FindingDecision.WONT_FIX]: "wont_fix",
 				[FindingDecision.FIXED]: "fixed",
 				[FindingDecision.INVALID]: "invalid",
 				[FindingDecision.OPEN]: "reopened",
@@ -453,7 +702,7 @@ export function createReviewService(ctrl: ControllerContext): ServiceImpl<typeof
 			if (!what) {
 				throw hotbedError(
 					ErrorCode.InvalidArgs,
-					"decide a finding accepted, dismissed, fixed, invalid or open",
+					"decide a finding accepted, dismissed, wont_fix, fixed, invalid or open",
 				);
 			}
 			if (req.findingIds.length === 0) {
@@ -462,9 +711,22 @@ export function createReviewService(ctrl: ControllerContext): ServiceImpl<typeof
 				);
 			}
 			checkDecision(req);
-			const { by, project } = ctrl.agentStamp(getCaller(ctx.values), req.sessionId, req.reason);
+			const caller = getCaller(ctx.values);
+			const { by, project } =
+				req.actorKind === ActorKind.USER
+					? ctrl.makeStamp(caller, {
+							sessionId: req.sessionId,
+							actorKind: ActorKind.USER,
+							reason: req.reason,
+						})
+					: ctrl.agentStamp(caller, req.sessionId, req.reason, {
+							model: req.model,
+							subagent: req.subagent,
+							t3codeThreadId: req.t3codeThreadId,
+						});
 			const findings = ctrl.store.changeFindings(req.reviewId, req.findingIds, what, by, (r, f) => {
 				inProject("review", r.id, r.project, project, by);
+				const stamp = enrichImplementerStamp(r, by);
 				if (f.decision === req.decision) {
 					throw hotbedError(
 						ErrorCode.Conflict,
@@ -481,7 +743,9 @@ export function createReviewService(ctrl: ControllerContext): ServiceImpl<typeof
 				}
 				if (
 					req.decision === FindingDecision.FIXED &&
-					(f.decision === FindingDecision.DISMISSED || f.decision === FindingDecision.INVALID)
+					(f.decision === FindingDecision.DISMISSED ||
+						f.decision === FindingDecision.INVALID ||
+						f.decision === FindingDecision.WONT_FIX)
 				) {
 					throw hotbedError(
 						ErrorCode.Conflict,
@@ -489,9 +753,10 @@ export function createReviewService(ctrl: ControllerContext): ServiceImpl<typeof
 					).withSuggestion(`hotbed review reopen ${r.id} ${f.id}`);
 				}
 				f.decision = req.decision;
-				f.decided = req.decision === FindingDecision.OPEN ? undefined : by;
+				f.decided = req.decision === FindingDecision.OPEN ? undefined : stamp;
 				f.fix = req.fix;
 				f.evidence = req.evidence;
+				return stamp;
 			});
 			return create(DecideFindingsResponseSchema, {
 				findings,
@@ -509,7 +774,14 @@ export function createReviewService(ctrl: ControllerContext): ServiceImpl<typeof
 			if (req.quick !== QuickResponse.UNSPECIFIED && req.findingId === 0) {
 				throw hotbedError(ErrorCode.InvalidArgs, "a quick response is to a finding: name it");
 			}
-			const { by, project } = ctrl.userStamp(getCaller(ctx.values), req.sessionId, "");
+			const { by, project } = ctrl.makeStamp(getCaller(ctx.values), {
+				sessionId: req.sessionId,
+				actorKind: req.actorKind,
+				reason: "",
+				model: req.model,
+				subagent: req.subagent,
+				t3codeThreadId: req.t3codeThreadId,
+			});
 			const ev = create(ReviewEventSchema, {
 				reviewId: req.reviewId,
 				findingId: req.findingId,
@@ -527,6 +799,7 @@ export function createReviewService(ctrl: ControllerContext): ServiceImpl<typeof
 						`hotbed review reopen ${r.id} ${f.id}, if the fix did not hold; or respond to the review as a whole`,
 					);
 				}
+				ev.by = enrichImplementerStamp(r, by);
 			});
 			const r = ctrl.store.getReview(req.reviewId, false);
 			if (r.requested?.session) ctrl.sessionWakes.wake(r.requested.session);

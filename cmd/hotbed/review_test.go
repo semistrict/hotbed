@@ -103,13 +103,19 @@ func (c *cluster) hotbedAsync(m proto.Message, args ...string) <-chan error {
 }
 
 // A review goes from request to findings to decisions and the user's
-// responses, each step kept with the session that took it.
+// responses, each step kept with the session and exact model that took it.
 func TestReviewRoundTrip(t *testing.T) {
 	c, user, v := reviewCluster(t)
+	// Requesting a review without an implementer model (and on a session with none) is refused.
+	if _, e := c.fails("review", "request", "-s", "brave-otter", "--title", "No model"); e.Code != api.CodeInvalidArgs || !strings.Contains(e.Message, "no implementer model") {
+		t.Errorf("request without model = %v, want INVALID_ARGS naming no implementer model", e)
+	}
 	r := &pb.Review{}
-	c.ok(r, "review", "request", "-s", "brave-otter", "--title", "Add A", "--instructions", "look for dropped errors")
+	c.ok(r, "review", "request", "-s", "brave-otter", "--model", "gemini-4-neon", "--title", "Add A", "--instructions", "look for dropped errors")
 	if r.Id != 1 || r.State != pb.ReviewState_REVIEW_STATE_REQUESTED || r.Project != "test" || r.Repo != "example.invalid/o/app" ||
-		r.Base != v.main || r.Head != v.head || r.Branch != "work" || r.SnapshotOf != "" || r.Requested.Session != "brave-otter" || r.Instructions != "look for dropped errors" {
+		r.Base != v.main || r.Head != v.head || r.Branch != "work" || r.SnapshotOf != "" ||
+		r.Requested.Session != "brave-otter" || r.ImplementerModel != "gemini-4-neon" || r.Implementer.GetModel() != "gemini-4-neon" ||
+		r.Implementer.GetActorKind() != pb.ActorKind_ACTOR_KIND_AGENT || r.Instructions != "look for dropped errors" {
 		t.Fatalf("requested review = %v", r)
 	}
 	if pinned := gitIn(t, v.dir, "rev-parse", "refs/hotbed/reviews/"+v.head); pinned != v.head {
@@ -134,21 +140,15 @@ func TestReviewRoundTrip(t *testing.T) {
 	}
 	c.ok(r, "review", "start", "1", "-s", "calm-heron", "--model", "claude-opus-5-5")
 	c.ok(r, "review", "start", "1", "-s", "calm-heron", "--model", "claude-opus-5-5") // again: a no-op
-	if r.State != pb.ReviewState_REVIEW_STATE_IN_PROGRESS || r.Started.Session != "calm-heron" || r.Model != "claude-opus-5-5" {
+	if r.State != pb.ReviewState_REVIEW_STATE_IN_PROGRESS || r.Started.Session != "calm-heron" || r.Model != "claude-opus-5-5" || len(r.Reviewers) != 1 {
 		t.Fatalf("started review = %v", r)
 	}
-	if _, e := c.fails("review", "start", "1", "-s", "calm-heron", "--model", "gpt-5.5-codex"); e.Code != api.CodeConflict || !strings.Contains(e.Message, "started by model claude-opus-5-5, not gpt-5.5-codex") {
-		t.Errorf("start again with another model = %v, want CONFLICT naming both", e)
-	}
 	c.ok(r, "review", "show", "1")
-	if r.Model != "claude-opus-5-5" {
-		t.Errorf("review show 1: model %q, want claude-opus-5-5", r.Model)
+	if r.Model != "claude-opus-5-5" || r.ImplementerModel != "gemini-4-neon" {
+		t.Errorf("review show 1: model=%q impl=%q", r.Model, r.ImplementerModel)
 	}
-	if code, stdout, stderr := c.hotbed("review", "ls", "-s", "brave-otter"); code != 0 || !strings.Contains(stdout, "claude-opus-5-5") {
-		t.Errorf("review ls: exit %d, stdout %q (stderr %q); want the reviewer's model", code, stdout, stderr)
-	}
-	if _, e := c.fails("review", "start", "1", "-s", "brave-otter", "--model", "claude-opus-5-5"); e.Code != api.CodeConflict || !strings.Contains(e.Message, "in progress by calm-heron") {
-		t.Errorf("start a review in progress = %v, want CONFLICT", e)
+	if code, stdout, stderr := c.hotbed("review", "ls", "-s", "brave-otter"); code != 0 || !strings.Contains(stdout, "claude-opus-5-5") || !strings.Contains(stdout, "gemini-4-neon") {
+		t.Errorf("review ls: exit %d, stdout %q (stderr %q); want both implementer and reviewer models", code, stdout, stderr)
 	}
 	if _, e := c.failsIn(twoFindings, "review", "findings", "1", "-s", "brave-otter"); e.Code != api.CodeConflict || !strings.Contains(e.Message, "calm-heron's to review") {
 		t.Errorf("findings from another session = %v, want CONFLICT", e)
@@ -160,9 +160,9 @@ func TestReviewRoundTrip(t *testing.T) {
 		t.Fatalf("findings = %v", found)
 	}
 	f := found.Findings[0]
-	if f.Id != 1 || f.Title != "A ignores its error" || f.Severity != pb.FindingSeverity_FINDING_SEVERITY_IMPORTANT || f.Verdict != pb.FindingVerdict_FINDING_VERDICT_CONFIRMED ||
+	if f.Id != 1 || f.ReviewerId != 1 || f.Title != "A ignores its error" || f.Severity != pb.FindingSeverity_FINDING_SEVERITY_IMPORTANT || f.Verdict != pb.FindingVerdict_FINDING_VERDICT_CONFIRMED ||
 		len(f.Locations) != 2 || f.Locations[0].Path != "a.go" || f.Locations[0].StartLine != 3 || f.Locations[1].Path != "b.go" || f.Locations[1].EndLine != 12 ||
-		f.Decision != pb.FindingDecision_FINDING_DECISION_OPEN || f.Found.Session != "calm-heron" {
+		f.Decision != pb.FindingDecision_FINDING_DECISION_OPEN || f.Found.Session != "calm-heron" || f.Found.Model != "claude-opus-5-5" {
 		t.Errorf("finding 1 = %v", f)
 	}
 	if n := found.Findings[1]; n.Title != "The package has no doc comment." || len(n.Locations) != 0 || n.Severity != pb.FindingSeverity_FINDING_SEVERITY_NIT {
@@ -187,6 +187,9 @@ func TestReviewRoundTrip(t *testing.T) {
 
 	decided := &pb.DecideFindingsResponse{}
 	c.ok(decided, "review", "accept", "1", "1", "-s", "brave-otter", "--reason", "will fix")
+	if d := decided.Findings[0]; d.Decided.GetModel() != "gemini-4-neon" || d.Decided.GetActorKind() != pb.ActorKind_ACTOR_KIND_AGENT {
+		t.Errorf("accepted finding stamp = %v, want implementer model gemini-4-neon + AGENT", d.Decided)
+	}
 	c.ok(decided, "review", "dismiss", "1", "2", "-s", "brave-otter", "--reason", "not worth it")
 	if d := decided.Findings[0]; d.Decision != pb.FindingDecision_FINDING_DECISION_DISMISSED || d.Decided.Reason != "not worth it" || d.Decided.Session != "brave-otter" {
 		t.Errorf("dismissed = %v", d)
@@ -207,16 +210,17 @@ func TestReviewRoundTrip(t *testing.T) {
 	}
 
 	// The user responds in the cockpit; the requester reads it.
-	if _, err := user.Respond(t.Context(), &pb.RespondRequest{ReviewId: 1, FindingId: 1, Quick: pb.QuickResponse_QUICK_RESPONSE_FIX_IF_VERIFIED, Text: "and add a test"}); err != nil {
+	if _, err := user.Respond(t.Context(), &pb.RespondRequest{ReviewId: 1, FindingId: 1, Quick: pb.QuickResponse_QUICK_RESPONSE_FIX_IF_VERIFIED, Text: "and add a test", ActorKind: pb.ActorKind_ACTOR_KIND_USER}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := user.Respond(t.Context(), &pb.RespondRequest{ReviewId: 1, Text: "thanks"}); err != nil {
+	if _, err := user.Respond(t.Context(), &pb.RespondRequest{ReviewId: 1, Text: "thanks", ActorKind: pb.ActorKind_ACTOR_KIND_USER}); err != nil {
 		t.Fatal(err)
 	}
 	responses := &pb.ListResponsesResponse{}
 	c.ok(responses, "review", "responses", "1")
 	if len(responses.Responses) != 2 || responses.Responses[0].Quick != pb.QuickResponse_QUICK_RESPONSE_FIX_IF_VERIFIED ||
-		responses.Responses[0].FindingId != 1 || responses.Responses[0].By.Session != "" || responses.Responses[1].Text != "thanks" {
+		responses.Responses[0].FindingId != 1 || responses.Responses[0].By.Session != "" ||
+		responses.Responses[0].By.ActorKind != pb.ActorKind_ACTOR_KIND_USER || responses.Responses[1].Text != "thanks" {
 		t.Fatalf("responses = %v", responses.Responses)
 	}
 	c.ok(responses, "review", "responses", "1")
@@ -238,7 +242,9 @@ func TestReviewRoundTrip(t *testing.T) {
 	}
 
 	r = c.review(1)
-	if got := r.Findings[0]; got.Quick != pb.QuickResponse_QUICK_RESPONSE_FIX_IF_VERIFIED || got.Responses != 2 || got.Decision != pb.FindingDecision_FINDING_DECISION_ACCEPTED {
+	if got := r.Findings[0]; got.Quick != pb.QuickResponse_QUICK_RESPONSE_FIX_IF_VERIFIED ||
+		got.QuickBy.GetActorKind() != pb.ActorKind_ACTOR_KIND_USER ||
+		got.Responses != 2 || got.Decision != pb.FindingDecision_FINDING_DECISION_ACCEPTED {
 		t.Errorf("finding 1 = %v", got)
 	}
 	want := []string{
@@ -268,7 +274,7 @@ func TestReviewSnapshotsUncommittedWork(t *testing.T) {
 	write(t, filepath.Join(v.dir, "a.go"), "package a\n\nfunc A() { panic(1) }\n")
 	write(t, filepath.Join(v.dir, "new.go"), "package a\n")
 	r := &pb.Review{}
-	c.ok(r, "review", "request", "-s", "brave-otter")
+	c.ok(r, "review", "request", "-s", "brave-otter", "--model", "gemini-4-neon")
 	if r.SnapshotOf != v.head || r.Head == v.head || r.Base != v.main || r.Title != "work at "+r.Head[:8] {
 		t.Fatalf("review of uncommitted work = %v", r)
 	}
@@ -282,7 +288,7 @@ func TestReviewSnapshotsUncommittedWork(t *testing.T) {
 		t.Errorf("the request changed the checkout: %q", status)
 	}
 
-	c.ok(r, "review", "request", "-s", "brave-otter", "--whole", "--head", "HEAD")
+	c.ok(r, "review", "request", "-s", "brave-otter", "--model", "gemini-4-neon", "--whole", "--head", "HEAD")
 	if r.Base != "" || r.Head != v.head || r.SnapshotOf != "" {
 		t.Errorf("--whole --head HEAD = %v", r)
 	}
@@ -292,7 +298,7 @@ func TestReviewSnapshotsUncommittedWork(t *testing.T) {
 // failure; ends are final.
 func TestReviewEnds(t *testing.T) {
 	c, _, _ := reviewCluster(t)
-	c.ok(nil, "review", "request", "-s", "brave-otter")
+	c.ok(nil, "review", "request", "-s", "brave-otter", "--model", "gemini-4-neon")
 	c.ok(nil, "review", "start", "1", "-s", "calm-heron", "--model", "claude-opus-5-5")
 	if _, e := c.fails("review", "fail", "1", "-s", "calm-heron", "--reason", " "); e.Code != api.CodeInvalidArgs {
 		t.Errorf("fail without a reason = %v, want INVALID_ARGS", e)
@@ -313,7 +319,7 @@ func TestReviewEnds(t *testing.T) {
 		t.Errorf("finish a failed review = %v, want CONFLICT", e)
 	}
 
-	c.ok(nil, "review", "request", "-s", "brave-otter")
+	c.ok(nil, "review", "request", "-s", "brave-otter", "--model", "gemini-4-neon")
 	if _, e := c.failsIn(twoFindings, "review", "findings", "2", "-s", "calm-heron"); e.Code != api.CodeConflict || !strings.Contains(e.Message, "not started") {
 		t.Errorf("findings before start = %v, want CONFLICT", e)
 	}
@@ -323,6 +329,9 @@ func TestReviewEnds(t *testing.T) {
 	}
 	if _, e := c.fails("review", "cancel", "2", "-s", "brave-otter"); e.Code != api.CodeConflict {
 		t.Errorf("cancel twice = %v, want CONFLICT", e)
+	}
+	if _, e := c.fails("review", "start", "2", "-s", "calm-heron", "--model", "claude-opus-5-5"); e.Code != api.CodeConflict {
+		t.Errorf("start a cancelled review = %v, want CONFLICT", e)
 	}
 	ls := &pb.ListReviewsResponse{}
 	c.ok(ls, "review", "ls", "--state", "failed")
@@ -334,12 +343,12 @@ func TestReviewEnds(t *testing.T) {
 // Reviews stay in their project and require a real version to review.
 func TestReviewRefusals(t *testing.T) {
 	c, _, v := reviewCluster(t)
-	c.ok(nil, "review", "request", "-s", "brave-otter")
+	c.ok(nil, "review", "request", "-s", "brave-otter", "--model", "gemini-4-neon")
 	c.ok(nil, "review", "start", "1", "-s", "calm-heron", "--model", "claude-opus-5-5")
 
 	c.ok(nil, "project", "add", "other")
 	c.ok(nil, "session", "start", "far-fox", "-p", "other")
-	c.ok(nil, "review", "request", "-s", "brave-otter")
+	c.ok(nil, "review", "request", "-s", "brave-otter", "--model", "gemini-4-neon")
 	if _, e := c.fails("review", "start", "2", "-s", "far-fox", "--model", "claude-opus-5-5"); e.Code != api.CodeConflict || !strings.Contains(e.Message, "is project test's") {
 		t.Errorf("start another project's review = %v, want CONFLICT", e)
 	}
@@ -356,18 +365,18 @@ func TestReviewRefusals(t *testing.T) {
 		t.Errorf("ls --all-projects --limit 1 = %v", ls.Reviews)
 	}
 
-	if _, e := c.fails("review", "request", "-s", "brave-otter", "--whole", "--base", "HEAD"); e.Code != api.CodeInvalidArgs {
+	if _, e := c.fails("review", "request", "-s", "brave-otter", "--model", "gemini-4-neon", "--whole", "--base", "HEAD"); e.Code != api.CodeInvalidArgs {
 		t.Errorf("--whole --base = %v, want INVALID_ARGS", e)
 	}
-	if _, e := c.fails("review", "request", "-s", "brave-otter", "--base", v.head, "--head", v.head); e.Code != api.CodeInvalidArgs || !strings.Contains(e.Message, "no changes") {
+	if _, e := c.fails("review", "request", "-s", "brave-otter", "--model", "gemini-4-neon", "--base", v.head, "--head", v.head); e.Code != api.CodeInvalidArgs || !strings.Contains(e.Message, "no changes") {
 		t.Errorf("head at base = %v, want INVALID_ARGS", e)
 	}
 	gitIn(t, v.dir, "symbolic-ref", "--delete", "refs/remotes/origin/HEAD")
-	if _, e := c.fails("review", "request", "-s", "brave-otter"); e.Code != api.CodeInvalidArgs || !strings.Contains(e.Message, "no origin/HEAD") {
+	if _, e := c.fails("review", "request", "-s", "brave-otter", "--model", "gemini-4-neon"); e.Code != api.CodeInvalidArgs || !strings.Contains(e.Message, "no origin/HEAD") {
 		t.Errorf("no origin/HEAD = %v, want INVALID_ARGS", e)
 	}
 	t.Chdir(t.TempDir())
-	if _, e := c.fails("review", "request", "-s", "brave-otter"); e.Code != api.CodeInvalidArgs || !strings.Contains(e.Message, "not in one") {
+	if _, e := c.fails("review", "request", "-s", "brave-otter", "--model", "gemini-4-neon"); e.Code != api.CodeInvalidArgs || !strings.Contains(e.Message, "not in one") {
 		t.Errorf("request outside a checkout = %v, want INVALID_ARGS", e)
 	}
 }
@@ -376,7 +385,7 @@ func TestReviewRefusals(t *testing.T) {
 // says it reported none.
 func TestReviewFindingsNoneFound(t *testing.T) {
 	c, _, _ := reviewCluster(t)
-	c.ok(nil, "review", "request", "-s", "brave-otter")
+	c.ok(nil, "review", "request", "-s", "brave-otter", "--model", "gemini-4-neon")
 	c.ok(nil, "review", "start", "1", "-s", "calm-heron", "--model", "claude-opus-5-5")
 	found := &pb.AddFindingsResponse{}
 	c.okIn(`{"findings": []}`, found, "review", "findings", "1", "-s", "calm-heron")
@@ -409,7 +418,7 @@ const reviewerReport = "# Review of work\n\nA drops an error; the package lacks 
 // keeps the whole report.
 func TestReviewFindingsFromReport(t *testing.T) {
 	c, _, v := reviewCluster(t)
-	c.ok(nil, "review", "request", "-s", "brave-otter")
+	c.ok(nil, "review", "request", "-s", "brave-otter", "--model", "gemini-4-neon")
 	c.ok(nil, "review", "start", "1", "-s", "calm-heron", "--model", "claude-opus-5-5")
 	file := func(name, text string) string {
 		p := filepath.Join(t.TempDir(), name)
@@ -459,7 +468,7 @@ func TestReviewFindingsFromReport(t *testing.T) {
 	}
 
 	// A report of nothing found: kept, and none found.
-	c.ok(nil, "review", "request", "-s", "brave-otter", "--base", v.main)
+	c.ok(nil, "review", "request", "-s", "brave-otter", "--model", "gemini-4-neon", "--base", v.main)
 	c.ok(nil, "review", "start", "2", "-s", "calm-heron", "--model", "claude-opus-5-5")
 	none := "No findings survived.\n\n```json hotbed-findings\n{\"findings\": []}\n```\n"
 	c.ok(found, "review", "findings", "2", "-s", "calm-heron", "--from-report", file("none.md", none))
@@ -474,7 +483,7 @@ func TestReviewFindingsFromReport(t *testing.T) {
 // evidence, and may still be disputed.
 func TestReviewFindingsFixedAndInvalid(t *testing.T) {
 	c, user, v := reviewCluster(t)
-	c.ok(nil, "review", "request", "-s", "brave-otter")
+	c.ok(nil, "review", "request", "-s", "brave-otter", "--model", "gemini-4-neon")
 	c.ok(nil, "review", "start", "1", "-s", "calm-heron", "--model", "claude-opus-5-5")
 	c.okIn(twoFindings, nil, "review", "findings", "1", "-s", "calm-heron")
 	c.ok(nil, "review", "accept", "1", "1", "-s", "brave-otter", "--reason", "fixing")
@@ -547,5 +556,128 @@ func TestReviewFindingsFixedAndInvalid(t *testing.T) {
 	}
 	if got := reviewWhats(r); !slices.Equal(got, wantEvents) {
 		t.Errorf("events = %v\nwant %v", got, wantEvents)
+	}
+}
+
+// Multiple reviewers (including sub-agents sharing one parent session and
+// inheriting the same T3CODE_THREAD_ID) can review the same review with
+// distinct models; each finding keeps its reviewer's exact model, and
+// implementer decisions (including won't fix, reject alias) and user vs agent
+// quick responses are attributed unambiguously.
+func TestReviewMultiReviewerSubagentsAndAttribution(t *testing.T) {
+	c, user, _ := reviewCluster(t)
+	t.Setenv("T3CODE_THREAD_ID", "thread-parent-123")
+
+	// Start a session with a model and T3 thread ID; review request inherits its model.
+	sess := &pb.Session{}
+	c.ok(sess, "session", "start", "impl-owl", "-p", "test", "--model", "gemini-4-neon")
+	if sess.Model != "gemini-4-neon" || sess.T3CodeThreadId != "thread-parent-123" {
+		t.Fatalf("started session = %v", sess)
+	}
+	search := &pb.SearchSessionsResponse{}
+	c.ok(search, "session", "search", "thread-parent-123")
+	if len(search.Sessions) != 1 || search.Sessions[0].Model != "gemini-4-neon" {
+		t.Fatalf("session search = %v", search.Sessions)
+	}
+
+	// Request inherits implementer model from the bound session (impl-owl).
+	r := &pb.Review{}
+	c.ok(r, "review", "request", "--title", "Multi-reviewer test")
+	if r.ImplementerModel != "gemini-4-neon" || r.Implementer.GetSession() != "impl-owl" ||
+		r.Implementer.GetT3CodeThreadId() != "thread-parent-123" {
+		t.Fatalf("requested review = %v", r)
+	}
+
+	// Two sub-agents inside the SAME parent session (impl-owl) start reviewing with different models.
+	c.ok(r, "review", "start", "1", "--model", "claude-opus-4-6", "--subagent", "claude-adv")
+	c.ok(r, "review", "start", "1", "--model", "gpt-5.5-codex", "--subagent", "codex-adv")
+	if len(r.Reviewers) != 2 || r.Model != "claude-opus-4-6, gpt-5.5-codex" {
+		t.Fatalf("reviewers = %v, model=%q", r.Reviewers, r.Model)
+	}
+
+	// Ambiguous findings call in the shared session without --reviewer/--model/--subagent fails hard.
+	if _, e := c.failsIn(`{"findings": [{"summary": "ambiguous", "severity": "nit"}]}`, "review", "findings", "1"); e.Code != api.CodeConflict || !strings.Contains(e.Message, "2 active reviewers") {
+		t.Errorf("ambiguous findings = %v, want CONFLICT naming 2 active reviewers", e)
+	}
+
+	// Each sub-agent submits findings attributed to its exact reviewer and model.
+	f1 := &pb.AddFindingsResponse{}
+	c.okIn(`{"findings": [{"summary": "Race on lock", "severity": "important", "verdict": "CONFIRMED", "file": "a.go", "line": 3}]}`, f1,
+		"review", "findings", "1", "--reviewer", "1")
+	if f1.Findings[0].ReviewerId != 1 || f1.Findings[0].Found.GetModel() != "claude-opus-4-6" || f1.Findings[0].Found.GetSubagent() != "claude-adv" {
+		t.Fatalf("finding from reviewer 1 = %v", f1.Findings[0])
+	}
+	f2 := &pb.AddFindingsResponse{}
+	c.okIn(`{"findings": [{"summary": "Unbounded buffer", "severity": "pre_existing", "file": "a.go", "line": 4}]}`, f2,
+		"review", "findings", "1", "--model", "gpt-5.5-codex")
+	if f2.Findings[0].ReviewerId != 2 || f2.Findings[0].Found.GetModel() != "gpt-5.5-codex" || f2.Findings[0].Found.GetSubagent() != "codex-adv" {
+		t.Fatalf("finding from reviewer 2 = %v", f2.Findings[0])
+	}
+
+	// Reviewer 1 finishes while reviewer 2 is still running: overall review stays IN_PROGRESS.
+	c.ok(r, "review", "finish", "1", "--reviewer", "1", "--summary", "Found one race")
+	if r.State != pb.ReviewState_REVIEW_STATE_IN_PROGRESS || r.Reviewers[0].State != pb.ReviewerState_REVIEWER_STATE_DONE || r.Reviewers[1].State != pb.ReviewerState_REVIEWER_STATE_IN_PROGRESS {
+		t.Fatalf("after reviewer 1 finish = %v", r)
+	}
+
+	// Reviewer 2 finishes (only remaining active reviewer in this session, so no selector needed): review becomes DONE.
+	c.ok(r, "review", "finish", "1", "--summary", "Found one pre-existing issue")
+	if r.State != pb.ReviewState_REVIEW_STATE_DONE || r.Reviewers[1].State != pb.ReviewerState_REVIEWER_STATE_DONE ||
+		r.Reviewers[0].FindingsCount != 1 || r.Reviewers[1].FindingsCount != 1 {
+		t.Fatalf("after reviewer 2 finish = %v", r)
+	}
+
+	// A third reviewer in a separate session can still join a DONE review and finish.
+	c.ok(r, "review", "start", "1", "-s", "calm-heron", "--model", "o4-mini")
+	if r.State != pb.ReviewState_REVIEW_STATE_IN_PROGRESS || len(r.Reviewers) != 3 {
+		t.Fatalf("after 3rd reviewer start = %v", r)
+	}
+	c.ok(r, "review", "finish", "1", "-s", "calm-heron", "--summary", "Looks clean")
+	if r.State != pb.ReviewState_REVIEW_STATE_DONE || r.Model != "claude-opus-4-6, gpt-5.5-codex, o4-mini" {
+		t.Fatalf("after 3rd reviewer finish = %v", r)
+	}
+
+	// Implementer marks finding 1 won't fix and finding 2 rejected (alias for dismiss).
+	dec := &pb.DecideFindingsResponse{}
+	c.ok(dec, "review", "wont-fix", "1", "1", "--reason", "accepted tradeoff")
+	if d := dec.Findings[0]; d.Decision != pb.FindingDecision_FINDING_DECISION_WONT_FIX ||
+		d.Decided.GetActorKind() != pb.ActorKind_ACTOR_KIND_AGENT ||
+		d.Decided.GetModel() != "gemini-4-neon" || d.Decided.GetReason() != "accepted tradeoff" {
+		t.Fatalf("wont-fix finding = %v", d)
+	}
+	c.ok(dec, "review", "reject", "1", "2", "--reason", "out of scope")
+	if d := dec.Findings[0]; d.Decision != pb.FindingDecision_FINDING_DECISION_DISMISSED ||
+		d.Decided.GetActorKind() != pb.ActorKind_ACTOR_KIND_AGENT || d.Decided.GetModel() != "gemini-4-neon" {
+		t.Fatalf("rejected finding = %v", d)
+	}
+
+	// Agent calling `review respond` WITHOUT -s uses its bound session (ACTOR_KIND_AGENT), NEVER user!
+	c.ok(nil, "review", "respond", "1", "--finding", "1", "--quick", "wont-fix", "--comment", "agent proposing wont-fix")
+	r = c.review(1)
+	if r.Findings[0].Quick != pb.QuickResponse_QUICK_RESPONSE_WONT_FIX ||
+		r.Findings[0].QuickBy.GetActorKind() != pb.ActorKind_ACTOR_KIND_AGENT ||
+		r.Findings[0].QuickBy.GetSession() != "impl-owl" ||
+		r.Findings[0].QuickBy.GetModel() != "gemini-4-neon" {
+		t.Fatalf("agent quick response attribution = %v", r.Findings[0].QuickBy)
+	}
+
+	// User clicking "Verify" in the cockpit (or CLI --as-user) clearly overrides quick_by with ACTOR_KIND_USER.
+	if _, err := user.Respond(t.Context(), &pb.RespondRequest{ReviewId: 1, FindingId: 1, Quick: pb.QuickResponse_QUICK_RESPONSE_VERIFY, Text: "please double check", ActorKind: pb.ActorKind_ACTOR_KIND_USER}); err != nil {
+		t.Fatal(err)
+	}
+	r = c.review(1)
+	if r.Findings[0].Quick != pb.QuickResponse_QUICK_RESPONSE_VERIFY ||
+		r.Findings[0].QuickBy.GetActorKind() != pb.ActorKind_ACTOR_KIND_USER ||
+		r.Findings[0].QuickBy.GetSession() != "" {
+		t.Fatalf("user quick response attribution = %v", r.Findings[0].QuickBy)
+	}
+
+	// CLI --as-user also stamps ACTOR_KIND_USER even when a session is bound.
+	c.ok(nil, "review", "respond", "1", "--finding", "2", "--quick", "wont-fix", "--as-user")
+	r = c.review(1)
+	if r.Findings[1].Quick != pb.QuickResponse_QUICK_RESPONSE_WONT_FIX ||
+		r.Findings[1].QuickBy.GetActorKind() != pb.ActorKind_ACTOR_KIND_USER ||
+		r.Findings[1].QuickBy.GetSession() != "" {
+		t.Fatalf("--as-user quick response attribution = %v", r.Findings[1].QuickBy)
 	}
 }

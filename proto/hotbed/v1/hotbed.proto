@@ -1712,6 +1712,10 @@ message Session {
   // Compact index of approved memories relevant to this session (global +
   // its project); only set by StartSession.
   MemoryBriefing memories = 15;
+  // Exact model ID for this session, if declared on session start (e.g.
+  // gemini-4-neon, claude-opus-4-6, gpt-5.5-codex). Sub-agents sharing a
+  // session may override this per action.
+  string model = 16;
 }
 
 message SessionWorkspace {
@@ -1744,6 +1748,8 @@ message StartSessionRequest {
   string t3code_thread_id = 6;
   // When true, do not include the compact memory briefing in the response.
   bool omit_memories = 7;
+  // Exact model ID running this session, if known (e.g. gemini-4-neon).
+  string model = 8;
 }
 
 message ListSessionsRequest {
@@ -3484,14 +3490,36 @@ message Answer {
   string notes = 3;
 }
 
-// Who changed a question, and when: an agent's session, or the user (no
-// session), and the machine either called from.
+// Whether a recorded action came from a human user or an AI agent.
+enum ActorKind {
+  ACTOR_KIND_UNSPECIFIED = 0;
+  // A human user (in the cockpit, or via CLI with --as-user / no session).
+  ACTOR_KIND_USER = 1;
+  // An AI agent (a session, or a sub-agent running inside a session).
+  ACTOR_KIND_AGENT = 2;
+}
+
+// Who changed a question or review, and when: an agent's session (with its
+// exact model and optional sub-agent identity), or the user (no session), and
+// the machine either called from.
 message Stamp {
   int64 at = 1;
   string session = 2;
   string host = 3;
   // Why, when it says: a dismissal's or a deletion's reason.
   string reason = 4;
+  // Explicitly records whether a human user or an AI agent took this action.
+  ActorKind actor_kind = 5;
+  // Exact model ID of the agent acting (e.g. claude-opus-4-6, gpt-5.5-codex,
+  // gemini-4-neon); empty for human users or legacy records.
+  string model = 6;
+  // Optional sub-agent identifier/role when running inside a shared session
+  // (e.g. "verifying-reviewer", "codex-exec", "security-pass").
+  string subagent = 7;
+  // T3 Code thread ID of the caller, if any.
+  string t3code_thread_id = 8;
+  // Human user login/email when actor_kind is USER and known from auth.
+  string user = 9;
 }
 
 // Where the asking agent was: its checkout, when it was in one, so an answer
@@ -3909,14 +3937,14 @@ enum FindingVerdict {
   FINDING_VERDICT_PLAUSIBLE = 2;
 }
 
-// What the parent made of a finding.
+// What the implementer (or user) made of a finding.
 enum FindingDecision {
   FINDING_DECISION_UNSPECIFIED = 0;
   // Not decided yet.
   FINDING_DECISION_OPEN = 1;
   // To act on.
   FINDING_DECISION_ACCEPTED = 2;
-  // Not to act on.
+  // Rejected / not to act on.
   FINDING_DECISION_DISMISSED = 3;
   // Acted on: fixed, as Finding.fix says. Handled: it takes no more
   // responses.
@@ -3924,6 +3952,41 @@ enum FindingDecision {
   // Not a real defect, as Finding.evidence shows. The user may still
   // respond, to dispute it.
   FINDING_DECISION_INVALID = 5;
+  // Real or noted issue, intentionally left unfixed with a reason. The user
+  // may still respond to dispute it.
+  FINDING_DECISION_WONT_FIX = 6;
+}
+
+// The life of one reviewer pass on a review.
+enum ReviewerState {
+  REVIEWER_STATE_UNSPECIFIED = 0;
+  REVIEWER_STATE_IN_PROGRESS = 1;
+  REVIEWER_STATE_DONE = 2;
+  REVIEWER_STATE_FAILED = 3;
+}
+
+// One reviewer's pass on a review. A review may have multiple reviewers,
+// either in separate sessions or as sub-agents sharing a single parent session.
+message Reviewer {
+  // 1-based within this review.
+  int32 id = 1;
+  // Exact model ID doing this review, as its provider names it.
+  string model = 2;
+  // Optional sub-agent label/role when spawned inside a shared session.
+  string subagent = 3;
+  // The hotbed session running this reviewer (may be shared with the
+  // implementer or other reviewers).
+  string session = 4;
+  // T3 Code thread ID of this reviewer, if any.
+  string t3code_thread_id = 5;
+  ReviewerState state = 6;
+  Stamp started = 7;
+  Stamp ended = 8;
+  string summary = 9;
+  // This reviewer's full Markdown report (when submitted via --from-report).
+  string report = 10;
+  // Number of findings reported by this reviewer.
+  int32 findings_count = 11;
 }
 
 // A response the user can give a finding with one click.
@@ -3995,6 +4058,10 @@ message Finding {
   // Why it is not a real defect, when invalid: Markdown, which may cite
   // commits, files and lines of the repo.
   string evidence = 16;
+  // Who selected the latest quick response (user vs agent, with model/session).
+  Stamp quick_by = 17;
+  // 1-based Reviewer.id within this review that reported this finding (0 for legacy).
+  int32 reviewer_id = 18;
 }
 
 // How a finding was fixed.
@@ -4045,10 +4112,16 @@ message Review {
   // The reviewer's whole report, Markdown, when it gave its findings as one
   // (AddFindingsRequest.report); the latest, if it gave several.
   string report = 23;
-  // The exact model that did the review, as its provider names it
-  // (claude-opus-5-5, gpt-5.5-codex), from StartReviewRequest; empty for a
-  // review started before reviews kept it.
+  // The exact model(s) that did the review, comma-separated when multiple
+  // reviewers participated; empty for a review not yet started or legacy.
   string model = 24;
+  // The implementer agent whose code is being reviewed (exact model, session,
+  // optional sub-agent, and T3 Code thread ID).
+  Stamp implementer = 25;
+  // Exact model ID of the implementer (convenience copy of implementer.model).
+  string implementer_model = 26;
+  // All reviewers that have started on this review, in start order.
+  repeated Reviewer reviewers = 27;
 }
 
 // Something that happened to a review: a change, or a response.
@@ -4059,13 +4132,16 @@ message ReviewEvent {
   // The finding it is about; 0 for the review as a whole.
   int32 finding_id = 3;
   // requested, started, found, found none, reported, finished, failed,
-  // cancelled, accepted, dismissed, fixed, invalid, reopened, responded
+  // cancelled, accepted, dismissed, wont_fix, fixed, invalid, reopened, responded
   string what = 4;
   Stamp by = 5;
   // A response's quick response, if it gave one.
   QuickResponse quick = 6;
   // A response's comment, a decision's or an end's reason.
   string text = 7;
+  // 1-based Reviewer.id within this review when the event belongs to a
+  // specific reviewer (started, reported, found, found none, finished, failed).
+  int32 reviewer_id = 8;
 }
 
 message RequestReviewRequest {
@@ -4078,6 +4154,16 @@ message RequestReviewRequest {
   string head = 6;
   string branch = 7;
   string snapshot_of = 8;
+  // Exact model ID of the implementer (e.g. gemini-4-neon, claude-opus-4-6).
+  // Falls back to the implementer session's model if set; required if neither is set.
+  string model = 9;
+  // Optional sub-agent label/role of the implementer when spawned inside a session.
+  string subagent = 10;
+  // T3 Code thread ID of the caller/implementer, if any.
+  string t3code_thread_id = 11;
+  // Optional implementer session ID if a different session requested the review
+  // on the implementer's behalf (defaults to session_id).
+  string implementer_session = 12;
 }
 
 message ListReviewsRequest {
@@ -4112,8 +4198,16 @@ message StartReviewRequest {
   int32 id = 1;
   string session_id = 2;
   // The exact model doing the review, as its provider names it
-  // (claude-opus-5-5, gpt-5.5-codex), not its family; required.
+  // (claude-opus-5-5, gpt-5.5-codex), not its family; required (or inherited
+  // from the session's model).
   string model = 3;
+  // Optional sub-agent label/role when running as a sub-agent inside a session.
+  string subagent = 4;
+  // T3 Code thread ID of this reviewer, if any.
+  string t3code_thread_id = 5;
+  // When true, always start a new reviewer pass even if an identical
+  // (session, model, subagent) reviewer is already in progress.
+  bool new_reviewer = 6;
 }
 
 message AddFindingsRequest {
@@ -4127,6 +4221,15 @@ message AddFindingsRequest {
   // For a reviewer that cannot call hotbed itself, such as one in a
   // network-isolated sandbox, whose caller passes its report on.
   string report = 4;
+  // Which reviewer pass (1-based Reviewer.id) is reporting; optional when
+  // unambiguous for this session.
+  int32 reviewer_id = 5;
+  // Optional model filter to disambiguate multiple active reviewers in one session.
+  string model = 6;
+  // Optional sub-agent filter to disambiguate multiple active reviewers in one session.
+  string subagent = 7;
+  // T3 Code thread ID of this reviewer, if any.
+  string t3code_thread_id = 8;
 }
 
 message AddFindingsResponse {
@@ -4139,12 +4242,24 @@ message FinishReviewRequest {
   // The summary when done; why, when failed.
   string summary = 3;
   bool failed = 4;
+  // Which reviewer pass (1-based Reviewer.id) is ending; optional when
+  // unambiguous for this session.
+  int32 reviewer_id = 5;
+  // Optional model filter to disambiguate multiple active reviewers in one session.
+  string model = 6;
+  // Optional sub-agent filter to disambiguate multiple active reviewers in one session.
+  string subagent = 7;
+  // T3 Code thread ID of this reviewer, if any.
+  string t3code_thread_id = 8;
 }
 
 message CancelReviewRequest {
   int32 id = 1;
   string session_id = 2;
   string reason = 3;
+  string model = 4;
+  string subagent = 5;
+  string t3code_thread_id = 6;
 }
 
 message DecideFindingsRequest {
@@ -4157,6 +4272,14 @@ message DecideFindingsRequest {
   Fix fix = 6;
   // Invalid: why it is not a real defect (Markdown); given only then.
   string evidence = 7;
+  // Exact model ID of the deciding agent (falls back to session/implementer model).
+  string model = 8;
+  // Optional sub-agent label/role of the deciding agent.
+  string subagent = 9;
+  // T3 Code thread ID of the deciding agent, if any.
+  string t3code_thread_id = 10;
+  // Explicitly mark USER vs AGENT when deciding from cockpit or CLI --as-user.
+  ActorKind actor_kind = 11;
 }
 
 message DecideFindingsResponse {
@@ -4175,6 +4298,14 @@ message RespondRequest {
   string session_id = 5;
   // When > 0, refuse with CONFLICT if the review already has events after this seq.
   int64 after = 6;
+  // Explicitly mark USER vs AGENT; if unspecified, inferred from session_id.
+  ActorKind actor_kind = 7;
+  // Exact model ID of the responding agent (falls back to session/implementer model).
+  string model = 8;
+  // Optional sub-agent label/role of the responding agent.
+  string subagent = 9;
+  // T3 Code thread ID of the responding agent, if any.
+  string t3code_thread_id = 10;
 }
 
 message ListResponsesRequest {

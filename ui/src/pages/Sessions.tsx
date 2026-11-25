@@ -109,6 +109,7 @@ export function SessionTable({ s, sessions, now }: { s: Snapshot; sessions: Sess
 
               <div className="num mt-2 flex flex-wrap items-center gap-x-3 gap-y-1 text-[10.5px] text-muted-foreground">
                 <span>{x.agent}</span>
+                {x.model && <span className="rounded bg-muted px-1 py-0.2 text-foreground">{x.model}</span>}
                 <span>
                   {running > 0 && <span className="text-primary">{running} live · </span>}
                   {finished.length} cmds
@@ -189,7 +190,10 @@ export function SessionTable({ s, sessions, now }: { s: Snapshot; sessions: Sess
                   <TableCell className="px-2 py-2.5">
                     <SessionStateLabel s={s} session={x} />
                   </TableCell>
-                  <TableCell className="px-2 py-2.5 text-muted-foreground">{x.agent}</TableCell>
+                  <TableCell className="px-2 py-2.5 text-muted-foreground">
+                    {x.agent}
+                    {x.model && <span className="ml-1.5 rounded bg-muted px-1 py-0.2 text-[10.5px] text-foreground">{x.model}</span>}
+                  </TableCell>
                   <TableCell className="px-2 py-2.5">
                     <div className="flex flex-wrap gap-1.5">
                       {x.workspaces.map((w) => (

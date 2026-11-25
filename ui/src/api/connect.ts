@@ -1,6 +1,7 @@
 import { createClient, type Transport } from "@connectrpc/connect";
 import { createConnectTransport } from "@connectrpc/connect-web";
 import {
+  ActorKind,
   ClusterService,
   DaemonLogLevel,
   MemoryMode,
@@ -201,6 +202,6 @@ export function createConnectApi(
       (await reviews.listReviews({ scope: project ? { case: "project", value: project } : { case: "allProjects", value: true } })).reviews,
     review: (id) => reviews.getReview({ id }),
     respond: (reviewId, findingId, quick, text) =>
-      reviews.respond({ reviewId, findingId: findingId ?? 0, quick, text }),
+      reviews.respond({ reviewId, findingId: findingId ?? 0, quick, text, actorKind: ActorKind.USER }),
   };
 }

@@ -7,7 +7,7 @@ import { Card, Empty, StatTile } from "../components/Panel";
 import { ago } from "../lib/format";
 import { useProject, useScopedSnapshot } from "../lib/project";
 import { remoteName } from "../lib/projects";
-import { versionLine } from "../lib/reviews";
+import { reviewerModels, versionLine } from "../lib/reviews";
 import { PageTitle } from "./Nodes";
 
 export function ReviewsPage() {
@@ -88,10 +88,16 @@ function ReviewTable({ reviews, now, showProject }: { reviews: Review[]; now: nu
               <div className="mt-1.5 text-[10.5px] text-muted-foreground">
                 {r.requested && (
                   <span>
-                    {r.requested.session} <span className="text-faint">{ago(r.requested.at, now)}</span>
+                    impl: {r.implementerModel || r.implementer?.model || "unknown"} ({r.implementer?.session || r.requested.session}){" "}
+                    <span className="text-faint">{ago(r.requested.at, now)}</span>
                   </span>
                 )}
-                <span className="text-faint"> · {r.started ? `→ ${r.started.session} (${r.model || "unknown"})` : "no reviewer yet"}</span>
+                <div className="text-faint">
+                  {(() => {
+                    const models = reviewerModels(r);
+                    return models.length > 0 ? `rev: ${models.join(", ")}` : "no reviewer yet";
+                  })()}
+                </div>
               </div>
             </div>
           );
@@ -102,7 +108,7 @@ function ReviewTable({ reviews, now, showProject }: { reviews: Review[]; now: nu
         <Table className="text-[12px]">
           <TableHeader className="eyebrow">
             <TableRow className="border-border hover:bg-transparent">
-              {["review", ...(showProject ? ["project"] : []), "state", "findings", "open", "responses", "asked by · reviewer"].map((h) => (
+              {["review", ...(showProject ? ["project"] : []), "state", "findings", "open", "responses", "implementer · reviewers"].map((h) => (
                 <TableHead key={h} className="h-auto px-2 py-2 font-normal text-muted-foreground">
                   {h}
                 </TableHead>
@@ -112,6 +118,7 @@ function ReviewTable({ reviews, now, showProject }: { reviews: Review[]; now: nu
           <TableBody className="font-mono text-[11px]">
             {reviews.map((r) => {
               const st = REVIEW_STATE[r.state] ?? REVIEW_STATE[ReviewState.REQUESTED];
+              const models = reviewerModels(r);
               return (
                 <TableRow key={r.id} className="border-border/60 align-top hover:bg-muted/60">
                   <TableCell className="min-w-[320px] px-2 py-2.5 whitespace-normal">
@@ -140,10 +147,15 @@ function ReviewTable({ reviews, now, showProject }: { reviews: Review[]; now: nu
                   <TableCell className="px-2 py-2.5 text-muted-foreground">
                     {r.requested && (
                       <div>
-                        {r.requested.session} <span className="text-faint">{ago(r.requested.at, now)}</span>
+                        <span className="text-foreground">{r.implementerModel || r.implementer?.model || "unknown"}</span>{" "}
+                        <span className="text-faint">
+                          ({r.implementer?.session || r.requested.session}) {ago(r.requested.at, now)}
+                        </span>
                       </div>
                     )}
-                    <div className="text-faint">{r.started ? `→ ${r.started.session} · ${r.model || "model unknown"}` : "no reviewer yet"}</div>
+                    <div className="text-faint">
+                      {models.length > 0 ? `→ ${models.join(", ")}${r.reviewers.length > 1 ? ` (${r.reviewers.length})` : ""}` : "no reviewer yet"}
+                    </div>
                   </TableCell>
                 </TableRow>
               );

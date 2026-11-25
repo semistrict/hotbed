@@ -8,6 +8,7 @@ import m0005 from "./0005_nice_lilandra.sql";
 import m0006 from "./0006_brown_magus.sql";
 import m0007 from "./0007_chubby_wolverine.sql";
 import m0008 from "./0008_daffy_shocker.sql";
+import m0009 from "./0009_parallel_electro.sql";
 
 export default {
 	journal,
@@ -21,5 +22,6 @@ export default {
 		m0006,
 		m0007,
 		m0008,
+		m0009,
 	},
 };

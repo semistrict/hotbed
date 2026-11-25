@@ -1,4 +1,5 @@
 import {
+  ActorKind,
   FindingDecision,
   FindingSeverity,
   QuickResponse,
@@ -6,7 +7,9 @@ import {
   type Finding,
   type Location,
   type Review,
+  type Reviewer,
   type ReviewEvent,
+  type Stamp,
 } from "../api";
 
 export const SEVERITIES: { severity: FindingSeverity; label: string; hint: string }[] = [
@@ -82,4 +85,59 @@ export const QUICKS: { quick: QuickResponse; label: string; hint: string }[] = [
 
 export function quickLabel(q: QuickResponse): string {
   return QUICKS.find((x) => x.quick === q)?.label ?? "";
+}
+
+/** True when a stamp represents a human user (explicit USER or legacy empty session). */
+export function isUserActor(st?: Stamp | null): boolean {
+  if (!st) return false;
+  if (st.actorKind === ActorKind.USER) return true;
+  if (st.actorKind === ActorKind.AGENT) return false;
+  return st.session === "";
+}
+
+/** Short human-readable actor summary, distinguishing User vs Agent (model). */
+export function actorSummary(st?: Stamp | null): string {
+  if (!st) return "unknown";
+  if (isUserActor(st)) {
+    return st.user ? `User (${st.user})` : "User";
+  }
+  const parts: string[] = [];
+  if (st.model) parts.push(st.model);
+  if (st.subagent) parts.push(st.subagent);
+  if (st.session) parts.push(st.session);
+  return parts.length > 0 ? `Agent (${parts.join(" · ")})` : "Agent";
+}
+
+/** Distinct reviewer models recorded on a review, in start order. */
+export function reviewerModels(r: Review): string[] {
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const rv of r.reviewers) {
+    const m = rv.model.trim();
+    if (m && !seen.has(m)) {
+      seen.add(m);
+      out.push(m);
+    }
+  }
+  if (out.length === 0 && r.model.trim()) {
+    for (const part of r.model.split(",")) {
+      const m = part.trim();
+      if (m && !seen.has(m)) {
+        seen.add(m);
+        out.push(m);
+      }
+    }
+  }
+  return out;
+}
+
+/** The Reviewer entry that reported a finding, if known. */
+export function findingReviewer(r: Review, f: Finding): Reviewer | undefined {
+  if (f.reviewerId > 0) {
+    return r.reviewers.find((x) => x.id === f.reviewerId);
+  }
+  if (r.reviewers.length === 1) {
+    return r.reviewers[0];
+  }
+  return undefined;
 }

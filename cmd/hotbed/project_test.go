@@ -360,7 +360,7 @@ func TestListingsFallBackToTheCheckoutsProject(t *testing.T) {
 	write(t, filepath.Join(dir, "a.go"), "package a\n")
 	gitIn(t, dir, "add", ".")
 	gitIn(t, dir, "commit", "-qm", "a")
-	c.ok(nil, "review", "request", "-s", "app-one", "--whole")
+	c.ok(nil, "review", "request", "-s", "app-one", "--model", "gemini-4-neon", "--whole")
 
 	reviews := &pb.ListReviewsResponse{}
 	c.ok(reviews, "review", "ls")

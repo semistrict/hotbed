@@ -744,9 +744,10 @@ func (dc *devCluster) seed(ctx context.Context, hc, workerHC *http.Client) error
 		return fmt.Errorf("add question 2: %w", err)
 	}
 
-	// Seed one finished review with two findings.
+	// Seed one finished review with two reviewers and two findings.
 	rev, err := reviews.RequestReview(ctx, &pb.RequestReviewRequest{
 		SessionId:    "brave-otter",
+		Model:        "gemini-4-neon",
 		Repo:         originDir,
 		Title:        "Lock-free page cache eviction",
 		Branch:       "main",

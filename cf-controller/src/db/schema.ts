@@ -156,6 +156,7 @@ export const sessions = sqliteTable(
 			.notNull()
 			.references(() => projects.id),
 		t3codeThreadId: text("t3code_thread_id").notNull().default(""),
+		model: text("model").notNull().default(""),
 		startedAt: integer("started_at").notNull(),
 		lastActiveAt: integer("last_active_at").notNull(),
 		endedAt: integer("ended_at"),
@@ -410,6 +411,8 @@ export const reviewEvents = sqliteTable(
 		quick: text("quick").notNull(),
 		text: text("text").notNull(),
 		doc: text("doc").notNull(),
+		byDoc: text("by_doc").notNull().default(""),
+		reviewerId: integer("reviewer_id").notNull().default(0),
 	},
 	(t) => [index("review_events_review").on(t.reviewId, t.seq)],
 );

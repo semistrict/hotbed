@@ -608,9 +608,10 @@ describe("Cloudflare Workers single-DO hotbed controller", () => {
 		});
 		expect(acked.questions[0].state).toBe(QuestionState.HANDLED);
 
-		// Reviews lifecycle (including markdown hotbed-findings block)
+		// Reviews lifecycle (including markdown hotbed-findings block, implementer & multi-reviewer tracking)
 		const rev = await owner.reviews.requestReview({
 			sessionId: sess.id,
+			model: "claude-opus-4-6",
 			title: "Check auth gate",
 			instructions: "Verify fail-closed auth",
 			repo: "https://github.com/example/proj-q.git",
@@ -618,13 +619,19 @@ describe("Cloudflare Workers single-DO hotbed controller", () => {
 			head: "b".repeat(40),
 		});
 		expect(rev.state).toBe(ReviewState.REQUESTED);
+		expect(rev.implementerModel).toBe("claude-opus-4-6");
+		expect(rev.implementer?.model).toBe("claude-opus-4-6");
 
 		const started = await owner.reviews.startReview({
 			id: rev.id,
 			sessionId: sess.id,
 			model: "gemini-4-neon",
+			subagent: "primary-reviewer",
 		});
 		expect(started.state).toBe(ReviewState.IN_PROGRESS);
+		expect(started.reviewers.length).toBe(1);
+		expect(started.reviewers[0].model).toBe("gemini-4-neon");
+		expect(started.reviewers[0].subagent).toBe("primary-reviewer");
 
 		const addedFindings = await owner.reviews.addFindings({
 			reviewId: rev.id,
@@ -649,6 +656,8 @@ describe("Cloudflare Workers single-DO hotbed controller", () => {
 		const fid = addedFindings.findings[0].id;
 		expect(addedFindings.findings[0].severity).toBe(FindingSeverity.IMPORTANT);
 		expect(addedFindings.findings[0].verdict).toBe(FindingVerdict.CONFIRMED);
+		expect(addedFindings.findings[0].reviewerId).toBe(1);
+		expect(addedFindings.findings[0].found?.model).toBe("gemini-4-neon");
 
 		const respEv = await owner.reviews.respond({
 			reviewId: rev.id,
@@ -658,6 +667,10 @@ describe("Cloudflare Workers single-DO hotbed controller", () => {
 		});
 		expect(respEv.quick).toBe(QuickResponse.FIX_IF_VERIFIED);
 
+		const beforeFix = await owner.reviews.getReview({ id: rev.id });
+		expect(beforeFix.findings[0].quick).toBe(QuickResponse.FIX_IF_VERIFIED);
+		expect(beforeFix.findings[0].quickBy?.session).toBe("");
+
 		const decidedFixed = await owner.reviews.decideFindings({
 			reviewId: rev.id,
 			findingIds: [fid],
@@ -666,6 +679,7 @@ describe("Cloudflare Workers single-DO hotbed controller", () => {
 			fix: { commit: "c".repeat(40), notes: "added rate limit", locations: [] },
 		});
 		expect(decidedFixed.reminder).toContain("hotbed memory propose");
+		expect(decidedFixed.findings[0].decided?.model).toBe("claude-opus-4-6");
 		const revResponses = await owner.reviews.listResponses({ reviewId: rev.id, after: 0n });
 		expect(revResponses.responses.length).toBe(1);
 		expect(revResponses.reminder).toContain("hotbed memory propose");
