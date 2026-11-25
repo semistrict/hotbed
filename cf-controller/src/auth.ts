@@ -60,6 +60,7 @@ export const NOOP_TOKEN_LOOKUP: TokenStoreLookup = {
 export const INTERNAL_AUTH_HEADER = "X-Hotbed-Internal-Auth";
 export const INTERNAL_ORG_HEADER = "X-Hotbed-Internal-Org";
 export const INTERNAL_GLOBAL_ADMIN_HEADER = "X-Hotbed-Internal-Global-Admin";
+export const INTERNAL_DEFAULT_DO_HEADER = "X-Hotbed-Internal-Default-DO";
 
 export function stripInternalAuthHeaders(headers: Headers): void {
 	const toDelete: string[] = [];

@@ -839,6 +839,7 @@ func TestVMCommandInspectTraceSampleDiagnoseAndProfile(t *testing.T) {
 
 	dir := t.TempDir()
 	store := &fake.Store{Root: filepath.Join(dir, "volumes")}
+	hostProf := fake.NewProfiler()
 	// Deliberately leave host Inspector nil to prove VM diagnostics route through
 	// guestd via WorkspaceRuntime rather than host inspect.Linux.
 	eng, err := NewEngine(ctx, EngineConfig{
@@ -849,7 +850,7 @@ func TestVMCommandInspectTraceSampleDiagnoseAndProfile(t *testing.T) {
 		BaseImage:       fake.BaseImage(store),
 		Units:           &fake.Units{},
 		Runtime:         rt,
-		Profiler:        fake.NewProfiler(),
+		Profiler:        hostProf,
 		System:          fake.NewSystem(),
 		AllowLocalRepos: true,
 	})
@@ -978,8 +979,37 @@ func TestVMCommandInspectTraceSampleDiagnoseAndProfile(t *testing.T) {
 		t.Fatalf("unexpected live VM CommandProfile: active=%v live=%v samples=%d note=%q", prof.Active, prof.Live, prof.TotalSamples, prof.StatusNote)
 	}
 
+	// 4b. NodeProfile merges host samples with live in-guest VM profiles.
+	hostProf.Store.Record(profiler.Sample{
+		Timestamp: time.Now(),
+		Comm:      "firecracker",
+		Frames: []profiler.ResolvedFrame{
+			{Name: "vcpu_run", FrameType: "native"},
+		},
+	})
+	nodeProf, err := eng.NodeProfile("worker1", &pb.GetProfileRequest{
+		Target: &pb.GetProfileRequest_Node{Node: "worker1"},
+	})
+	if err != nil {
+		t.Fatalf("Engine.NodeProfile: %v", err)
+	}
+	if !nodeProf.Active || nodeProf.TotalSamples != 2 || nodeProf.MatchedSamples != 2 {
+		t.Fatalf("unexpected merged NodeProfile: active=%v total=%d matched=%d", nodeProf.Active, nodeProf.TotalSamples, nodeProf.MatchedSamples)
+	}
+	vmFiltered, err := eng.NodeProfile("worker1", &pb.GetProfileRequest{
+		Target: &pb.GetProfileRequest_Node{Node: "worker1"},
+		Query:  "hot_loop",
+	})
+	if err != nil {
+		t.Fatalf("Engine.NodeProfile(query): %v", err)
+	}
+	if vmFiltered.MatchedSamples != 1 {
+		t.Fatalf("NodeProfile(query=hot_loop) matched=%d, want 1", vmFiltered.MatchedSamples)
+	}
+
 	// 5. StopWith --diagnose collects guest sample + inspection before stopping,
-	//    and command exit persists the guest eBPF profile to worker disk + events.
+	//    and synchronously snapshots + persists the guest eBPF profile BEFORE
+	//    returning so immediate VM teardown cannot race persistence.
 	stopped, err := eng.StopWith(ctx, cmd.Id, Intervention{
 		Comment:  "checking VM diagnostics on stop",
 		Diagnose: true,
@@ -992,17 +1022,12 @@ func TestVMCommandInspectTraceSampleDiagnoseAndProfile(t *testing.T) {
 		t.Fatalf("unexpected VM intervention diagnostics: %+v", stopped.Interventions)
 	}
 
-	// Wait for the background guest-profile snapshot to persist to worker disk.
+	// Immediately tear down guestd (simulating instant `hotbed session end`):
+	// the profile must ALREADY be persisted on disk with no polling delay.
+	_ = ctrlLn.Close()
 	profPath, _ := eng.profilePath(cmd.Id)
-	saveDeadline := time.Now().Add(5 * time.Second)
-	for {
-		if _, statErr := os.Stat(profPath); statErr == nil {
-			break
-		}
-		if time.Now().After(saveDeadline) {
-			t.Fatalf("timed out waiting for guest command profile to persist at %s", profPath)
-		}
-		time.Sleep(25 * time.Millisecond)
+	if _, statErr := os.Stat(profPath); statErr != nil {
+		t.Fatalf("guest command profile not persisted synchronously on stop at %s: %v", profPath, statErr)
 	}
 	persisted, err := eng.CommandProfile(cmd.Id, &pb.GetProfileRequest{
 		Target: &pb.GetProfileRequest_CommandId{CommandId: cmd.Id},
@@ -1022,5 +1047,89 @@ func TestVMCommandInspectTraceSampleDiagnoseAndProfile(t *testing.T) {
 	}
 	if !strings.Contains(ae.Suggestion, "hotbed profile") {
 		t.Fatalf("ended VM inspect should suggest hotbed profile, got suggestion=%q", ae.Suggestion)
+	}
+}
+
+func TestVMCommandGuestOOMAndPeakMemoryTelemetry(t *testing.T) {
+	ctx := t.Context()
+	e, _, _, now := parkEngine(t)
+
+	for _, tc := range []struct {
+		name         string
+		id           string
+		status       runtime.CommandStatus
+		wantReason   string
+		wantExitCode *int32
+	}{
+		{
+			name: "main process OOM killed in guest",
+			id:   "guest-oom-main",
+			status: runtime.CommandStatus{
+				ID:         "guest-oom-main",
+				Exited:     true,
+				ExitCode:   137,
+				Signal:     9,
+				OOMKilled:  true,
+				Result:     "oom-kill",
+				MemoryAnon: 0,
+				MemoryPeak: 7 << 30,
+				CPUUsec:    120000,
+			},
+			wantReason:   "killed by the OOM killer (signal 9; peak 7.0 GiB)",
+			wantExitCode: nil,
+		},
+		{
+			name: "child process OOM killed under shell",
+			id:   "guest-oom-child",
+			status: runtime.CommandStatus{
+				ID:         "guest-oom-child",
+				Exited:     true,
+				ExitCode:   137,
+				Signal:     0,
+				OOMKilled:  true,
+				Result:     "oom-kill",
+				MemoryAnon: 0,
+				MemoryPeak: 6 << 30,
+			},
+			wantReason:   "killed by the OOM killer (exit 137; peak 6.0 GiB)",
+			wantExitCode: func() *int32 { v := int32(137); return &v }(),
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			c := e.newCommand(&pb.CommandRecord{
+				Command: &pb.Command{
+					Id:          tc.id,
+					WorkspaceId: "a",
+					State:       running,
+					Kind:        "run",
+				},
+			})
+			e.mu.Lock()
+			e.commands[tc.id] = c
+			e.mu.Unlock()
+
+			st := toUnitState("a", tc.status)
+			e.observe(ctx, c, st, *now)
+
+			got := c.cmd()
+			if got.State != failed {
+				t.Fatalf("state = %v, want failed", got.State)
+			}
+			if got.Reason != tc.wantReason {
+				t.Fatalf("reason = %q, want %q", got.Reason, tc.wantReason)
+			}
+			if got.MemoryBytes != tc.status.MemoryPeak {
+				t.Fatalf("MemoryBytes = %d, want %d", got.MemoryBytes, tc.status.MemoryPeak)
+			}
+			if c.rec.PeakMemoryBytes != tc.status.MemoryPeak {
+				t.Fatalf("PeakMemoryBytes = %d, want %d", c.rec.PeakMemoryBytes, tc.status.MemoryPeak)
+			}
+			if tc.wantExitCode == nil && got.ExitCode != nil {
+				t.Fatalf("ExitCode = %d, want nil", *got.ExitCode)
+			}
+			if tc.wantExitCode != nil && (got.ExitCode == nil || *got.ExitCode != *tc.wantExitCode) {
+				t.Fatalf("ExitCode = %v, want %d", got.ExitCode, *tc.wantExitCode)
+			}
+		})
 	}
 }

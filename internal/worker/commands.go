@@ -21,6 +21,7 @@ import (
 	"github.com/semistrict/hotbed/internal/api"
 	pb "github.com/semistrict/hotbed/internal/gen/hotbed/v1"
 	"github.com/semistrict/hotbed/internal/profiler"
+	"github.com/semistrict/hotbed/internal/runtime"
 	"github.com/semistrict/hotbed/internal/shell"
 	"github.com/semistrict/hotbed/internal/sysinfo"
 	"github.com/semistrict/hotbed/internal/unit"
@@ -130,6 +131,7 @@ func (e *Engine) Exec(_ context.Context, req *pb.RunCommandRequest) (*pb.Command
 			Argv: shell.Join(req.Args), Args: req.Args, Kind: kind,
 			State: queued, QueuedAt: now, Limits: limits, Attached: req.Attached,
 			SessionId: w.ws().SessionId, Bench: req.Bench, Repo: req.Repo,
+			Runtime:  e.workspaceRuntime(w),
 			Timeline: []*pb.CommandEvent{{At: now, What: "queued", Detail: "by " + w.ws().Agent}},
 		},
 		RepoId: req.Repo, Project: w.ws().Project, Agent: w.ws().Agent, Volume: w.rec.Volume,
@@ -170,6 +172,37 @@ func newID() string {
 }
 
 func isBuild(kind string) bool { return kind == "build" || kind == "test" || kind == "check" }
+
+func (e *Engine) workspaceRuntime(w *workspace) string {
+	if w != nil {
+		if rt := w.ws().Runtime; rt != "" {
+			return rt
+		}
+		if e.usesRuntime(w.ws().Id) && e.cfg.Runtime != nil {
+			return e.cfg.Runtime.Kind()
+		}
+	}
+	return runtime.KindChroot
+}
+
+func (e *Engine) commandRuntime(c *command) string {
+	if c == nil {
+		return ""
+	}
+	if rt := c.cmd().Runtime; rt != "" {
+		return rt
+	}
+	if c.isVMFreshen() {
+		return runtime.KindVM
+	}
+	if c.isManagedFreshen() {
+		return runtime.KindCladefs
+	}
+	if c.cmd().Kind == "freshen" {
+		return runtime.KindChroot
+	}
+	return e.workspaceRuntime(e.workspaces[c.cmd().WorkspaceId])
+}
 
 // Stop ends a command: a queued one never starts, a running or parked one is
 // stopped. It returns the command as it ended.
@@ -338,11 +371,39 @@ func (e *Engine) step(ctx context.Context) {
 	for i, c := range active {
 		if st := states[i]; st != nil {
 			if c.isFreshen() {
-				step, _, _, done := c.out.freshenStep()
+				step, steps, stepName, startMs, done, gitSec, gitDone := c.out.freshenLive()
 				e.mu.Lock()
-				if step != c.lastFreshenStep || done != c.lastFreshenDone {
-					c.lastFreshenStep, c.lastFreshenDone = step, done
-					e.notify()
+				if step != c.lastFreshenStep || done != c.lastFreshenDone || gitDone != c.lastFreshenGitDone {
+					c.lastFreshenStep, c.lastFreshenDone, c.lastFreshenGitDone = step, done, gitDone
+					if b, ok := e.bases[c.rec.BaseId]; ok && b.State == building && b.Command == c.cmd().Id {
+						b.Steps = c.out.snapshotLive(b.Steps)
+						if steps > 0 {
+							b.TotalSteps = int32(steps)
+							if done {
+								b.Progress = 1
+								b.CurrentStep = ""
+								b.CurrentStepIndex = 0
+								b.CurrentStepStartedAt = 0
+							} else {
+								b.Progress = float64(step-1) / float64(steps)
+								b.CurrentStep = stepName
+								b.CurrentStepIndex = int32(step)
+								b.CurrentStepStartedAt = startMs
+							}
+						}
+						if gitDone {
+							b.GitSeconds = gitSec
+						}
+						detail := "git done"
+						if done {
+							detail = "steps done"
+						} else if step > 0 {
+							detail = fmt.Sprintf("step %d/%d %s", step, steps, stepName)
+						}
+						e.saveBase(b, change{what: "progress", detail: detail})
+					} else {
+						e.notify()
+					}
 				}
 				e.mu.Unlock()
 			}
@@ -392,10 +453,12 @@ func (e *Engine) removeUnit(ctx context.Context, c *command, st unit.State) {
 
 // finishOutput reads the rest of the output of c, whose processes are gone:
 // compacted first, so what is left to read is at most the log's limit
-// however much it wrote at the end.
+// however much it wrote at the end. For VM commands it also synchronously
+// snapshots the guest's eBPF profile before endBy marks the command ended.
 func (e *Engine) finishOutput(c *command) {
 	e.compactLog(c)
 	c.out.finish()
+	e.snapshotVMProfile(c)
 }
 
 // started says whether a command in state s has a unit: it runs, or is
@@ -503,6 +566,12 @@ func (e *Engine) observe(ctx context.Context, c *command, st unit.State, sampled
 	if st.Memory > 0 {
 		cmd.MemoryBytes = st.Memory
 		c.rec.PeakMemoryBytes = max(c.rec.PeakMemoryBytes, st.Memory)
+	}
+	if st.MemoryPeak > 0 {
+		c.rec.PeakMemoryBytes = max(c.rec.PeakMemoryBytes, st.MemoryPeak)
+		if st.Exited && cmd.MemoryBytes == 0 {
+			cmd.MemoryBytes = st.MemoryPeak
+		}
 	}
 	if c.rec.Cgroup != "" {
 		if m, err := e.cfg.Units.Memory(c.rec.Cgroup); err == nil {
@@ -1050,9 +1119,17 @@ func (e *Engine) roomFor(c *command, cpuPreempted bool, mem sysinfo.Mem, hasMem 
 		return "disk", fmt.Sprintf("waiting for disk: %s free", gib(e.disk.FreeBytes))
 	}
 	want := c.reservation()
-	room := e.admitLimit() - e.reservedFor(c.priority())
+	limit := e.admitLimit()
+	reserved := e.reservedFor(c.priority())
+	room := limit - reserved
 	if want > room {
-		return "memory", fmt.Sprintf("waiting for memory: needs %s, %s left of what running and parked commands hold or are guaranteed", gib(want), gib(max(0, room)))
+		if room < 0 {
+			if want > 0 {
+				return "memory", fmt.Sprintf("waiting for memory: needs %s, but running and parked commands hold or are guaranteed %s (limit %s)", gib(want), gib(reserved), gib(limit))
+			}
+			return "memory", fmt.Sprintf("waiting for memory: running and parked commands hold or are guaranteed %s (limit %s)", gib(reserved), gib(limit))
+		}
+		return "memory", fmt.Sprintf("waiting for memory: needs %s, %s left of what running and parked commands hold or are guaranteed", gib(want), gib(room))
 	}
 	var memTotal, memUsed int64
 	if hasMem {
@@ -2031,7 +2108,7 @@ func (e *Engine) endBy(c *command, state pb.CommandState, code *int32, why strin
 		Argv: cmd.Argv, Kind: cmd.Kind, State: state, ExitCode: code, Failure: failure,
 		EndedAt: now, QueuedSeconds: float64(started-cmd.QueuedAt) / 1000, Seconds: seconds,
 		ColdSeconds: cmd.ColdSeconds, PeakMemoryBytes: c.rec.PeakMemoryBytes, Parks: c.rec.Parks,
-		SessionId: cmd.SessionId, Reason: why, Bench: cmd.Bench,
+		SessionId: cmd.SessionId, Reason: why, Bench: cmd.Bench, Runtime: e.commandRuntime(c),
 	}
 	if len(cmd.Interventions) > 0 {
 		f.Interventions = make([]*pb.CommandIntervention, len(cmd.Interventions))
@@ -2059,15 +2136,20 @@ func (e *Engine) endBy(c *command, state pb.CommandState, code *int32, why strin
 	}
 	var prof *pb.CommandProfile
 	isVM := cmd.WorkspaceId != "" && e.usesRuntime(cmd.WorkspaceId)
-	if !isVM && e.cfg.Profiler != nil {
-		if snap := e.cfg.Profiler.Snapshot(cmd.Id); snap != nil && snap.TotalSamples > 0 {
-			if path, err := e.profilePath(cmd.Id); err != nil {
-				slog.Warn("save command profile", "command", cmd.Id, "err", err)
-			} else if err := profiler.SaveProfile(path, snap); err != nil {
-				slog.Warn("save command profile", "command", cmd.Id, "err", err)
-			}
-			prof = snap
+	var snap *pb.CommandProfile
+	if isVM {
+		snap = c.vmProfile
+		c.vmProfile = nil
+	} else if e.cfg.Profiler != nil {
+		snap = e.cfg.Profiler.Snapshot(cmd.Id)
+	}
+	if snap != nil && snap.TotalSamples > 0 {
+		if path, err := e.profilePath(cmd.Id); err != nil {
+			slog.Warn("save command profile", "command", cmd.Id, "err", err)
+		} else if err := profiler.SaveProfile(path, snap); err != nil {
+			slog.Warn("save command profile", "command", cmd.Id, "err", err)
 		}
+		prof = snap
 	}
 	e.saveCommand(c, change{what: what, detail: detail, finished: f, feed: line, profile: prof, diagnostics: by.diagnostics()})
 	if prof != nil && !e.isDirty() {
@@ -2077,39 +2159,6 @@ func (e *Engine) endBy(c *command, state pb.CommandState, code *int32, why strin
 		} else {
 			c.profileSeq = newest
 		}
-	}
-	if isVM {
-		wsID, cmdID := cmd.WorkspaceId, cmd.Id
-		e.startBgLocked(func(bgCtx context.Context) {
-			pctx, cancel := context.WithTimeout(bgCtx, 5*time.Second)
-			snap, err := e.cfg.Runtime.CommandProfile(pctx, wsID, &pb.GetProfileRequest{
-				Target: &pb.GetProfileRequest_CommandId{CommandId: cmdID},
-				Limit:  500,
-			})
-			cancel()
-			if err != nil || snap == nil || snap.TotalSamples == 0 {
-				return
-			}
-			snap.Live = false
-			if path, perr := e.profilePath(cmdID); perr != nil {
-				slog.Warn("save guest command profile", "command", cmdID, "err", perr)
-			} else if perr := profiler.SaveProfile(path, snap); perr != nil {
-				slog.Warn("save guest command profile", "command", cmdID, "err", perr)
-			}
-			e.mu.Lock()
-			if cur, still := e.commands[cmdID]; still {
-				e.saveCommand(cur, change{what: "profile", detail: "guest eBPF profile", profile: snap})
-				if !e.isDirty() {
-					if _, newest, rerr := e.db.eventRange(); rerr == nil {
-						cur.profileSeq = newest
-					}
-				}
-			}
-			e.mu.Unlock()
-			fctx, fcancel := context.WithTimeout(bgCtx, 2*time.Second)
-			_ = e.cfg.Runtime.ForgetCommandProfile(fctx, wsID, cmdID)
-			fcancel()
-		})
 	}
 	if w, ok := e.workspaces[cmd.WorkspaceId]; ok {
 		w.ws().LastActiveAt = now

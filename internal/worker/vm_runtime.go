@@ -314,17 +314,18 @@ func (u *runtimeUnits) pumpLogs(ctx context.Context, rc *rtCmd) {
 
 func toUnitState(wsID string, st runtime.CommandStatus) unit.State {
 	return unit.State{
-		Loaded:    true,
-		Running:   st.Running || st.Frozen,
-		Frozen:    st.Frozen,
-		Exited:    st.Exited,
-		ExitCode:  st.ExitCode,
-		Signal:    st.Signal,
-		Result:    st.Result,
-		OOMKilled: st.OOMKilled,
-		Memory:    st.MemoryAnon,
-		CPUNanos:  uint64(max(st.CPUUsec, 0)) * 1000,
-		Cgroup:    makeVMCgroup(wsID, st.ID),
+		Loaded:     true,
+		Running:    st.Running || st.Frozen,
+		Frozen:     st.Frozen,
+		Exited:     st.Exited,
+		ExitCode:   st.ExitCode,
+		Signal:     st.Signal,
+		Result:     st.Result,
+		OOMKilled:  st.OOMKilled,
+		Memory:     st.MemoryAnon,
+		MemoryPeak: st.MemoryPeak,
+		CPUNanos:   uint64(max(st.CPUUsec, 0)) * 1000,
+		Cgroup:     makeVMCgroup(wsID, st.ID),
 	}
 }
 

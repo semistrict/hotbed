@@ -3,6 +3,7 @@
 package worker
 
 import (
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
@@ -202,4 +203,40 @@ func unmountSubmountsUnder(mountinfoPath, mntDir string) {
 			slog.Warn("detach leftover submount failed", "submount", mp, "err", err)
 		}
 	}
+}
+
+// fuseSuperMagic is Linux's FUSE_SUPER_MAGIC (include/uapi/linux/magic.h).
+const fuseSuperMagic uint64 = 0x65735546
+
+// checkMountHealth verifies that dir is an active, responsive FUSE mount via
+// an uncached statfs(2) syscall, catching both dead FUSE mounts (ENOTCONN) and
+// unmounted mountpoints while cladefsd is down or restarting.
+func checkMountHealth(dir string) error {
+	var st unix.Statfs_t
+	if err := unix.Statfs(dir, &st); err != nil {
+		return fmt.Errorf("statfs %s: %w", dir, err)
+	}
+	if uint64(st.Type) != fuseSuperMagic {
+		return fmt.Errorf("%s is not a FUSE mount (fs type 0x%x)", dir, uint64(st.Type))
+	}
+	return nil
+}
+
+func isMountNotConnected(err error) bool {
+	return errors.Is(err, unix.ENOTCONN)
+}
+
+// detachDeadMount lazily unmounts dir if and only if statfs(2) reports
+// ENOTCONN (a dead FUSE mount whose daemon exited or was OOM-killed), allowing
+// cladefsd to remount cleanly instead of crash-looping on fusermount3.
+func detachDeadMount(dir string) error {
+	var st unix.Statfs_t
+	err := unix.Statfs(dir, &st)
+	if !errors.Is(err, unix.ENOTCONN) {
+		return nil
+	}
+	if uerr := unix.Unmount(dir, unix.MNT_DETACH); uerr != nil && !errors.Is(uerr, unix.EINVAL) && !errors.Is(uerr, unix.ENOENT) {
+		return fmt.Errorf("lazy unmount dead FUSE mount %s: %w", dir, uerr)
+	}
+	return nil
 }

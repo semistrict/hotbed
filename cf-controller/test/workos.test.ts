@@ -5,11 +5,15 @@ import { createFetchClient } from "@connectrpc/connect/protocol";
 import { createTransport } from "@connectrpc/connect/protocol-connect";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vite-plus/test";
 import {
+	CladefsCellSchema,
 	ClusterService,
 	HeartbeatRequestSchema,
 	NodeUsageSchema,
 	RepoSchema,
 	ResourcesSchema,
+	WorkerCladefsFUSEConfigSchema,
+	WorkerConfigSchema,
+	WorkerVMConfigSchema,
 } from "../src/gen/hotbed/v1/hotbed_pb.ts";
 import worker from "../src/index.ts";
 import type { ControllerEnv } from "../src/controller-do.ts";
@@ -1541,5 +1545,165 @@ describe("WorkOS multi-organization, multi-user, per-org ControllerDO integratio
 			body: JSON.stringify({ name: "Allowed With New Code", signupCode: "NEXTCODE2026" }),
 		});
 		expect(newCodeOk.status).toBe(201);
+	});
+
+	it("assigns unique cladefs tenants per org via global TenantRegistryDO while keeping default org on tenant 0", async () => {
+		const testEnv = makeWorkOSEnv({
+			DEFAULT_ORG_ID: "org_default_mapped",
+		});
+		const nowSec = Math.floor(Date.now() / 1000);
+		const mkJwt = (orgId: string, sub: string) =>
+			signJwt({
+				sub,
+				org_id: orgId,
+				role: "admin",
+				iss: `https://api.workos.com/user_management/${WORKOS_CLIENT_ID}`,
+				exp: nowSec + 3600,
+			});
+
+		const jwtOrgA = await mkJwt("org_cladefs_a", "user_cladefs_a");
+		const jwtOrgB = await mkJwt("org_cladefs_b", "user_cladefs_b");
+		const jwtDefault = await mkJwt("org_default_mapped", "user_cladefs_def");
+
+		// 1. Even if a caller tries to spoof X-Hotbed-Internal-Default-DO,
+		//    a non-default org gets a positive tenant ID (>= 1), never tenant 0.
+		const rpcOrgA = makeRpcClient(testEnv, jwtOrgA, {
+			"X-Hotbed-Host": "mac-a",
+			"X-Hotbed-Internal-Default-DO": "1",
+		});
+		const cfgA0 = await rpcOrgA.getWorkerConfig({ node: "node-a1" });
+		const tenantA = cfgA0.effective?.vm?.tenantId;
+		expect(tenantA).toBeDefined();
+		expect(tenantA! > 0n).toBe(true);
+		expect(cfgA0.effective?.cladefsFuse?.tenantId).toBe(tenantA);
+		expect(cfgA0.defaults?.vm?.tenantId).toBe(tenantA);
+
+		// 2. A second non-default org receiving concurrent cold-start requests must not hit
+		//    workerd's cross-request I/O restriction and all requests see the same positive tenant.
+		const rpcOrgB = makeRpcClient(testEnv, jwtOrgB, { "X-Hotbed-Host": "mac-b" });
+		const [cfgB0, cfgB1, cfgB2] = await Promise.all([
+			rpcOrgB.getWorkerConfig({ node: "node-b1" }),
+			rpcOrgB.getWorkerConfig({ node: "node-b2" }),
+			rpcOrgB.getWorkerConfig({ node: "node-b3" }),
+		]);
+		const tenantB = cfgB0.effective?.vm?.tenantId;
+		expect(tenantB).toBeDefined();
+		expect(tenantB! > 0n).toBe(true);
+		expect(tenantB).not.toBe(tenantA);
+		expect(cfgB0.effective?.cladefsFuse?.tenantId).toBe(tenantB);
+		expect(cfgB1.effective?.vm?.tenantId).toBe(tenantB);
+		expect(cfgB2.effective?.vm?.tenantId).toBe(tenantB);
+
+		// 3. The existing/default org stays on tenant 0 (preserving existing R2 cells/data).
+		const rpcDefault = makeRpcClient(testEnv, jwtDefault, { "X-Hotbed-Host": "mac-def" });
+		await rpcDefault.listNodes({});
+
+		const defHealth = await callWorker(testEnv, "https://controller.test/healthz");
+		expect(defHealth.status).toBe(200);
+		const defHealthJson = (await defHealth.json()) as { orgId?: string; cladefsTenantId?: number };
+		expect(defHealthJson.orgId).toBe("org_default_mapped");
+		expect(defHealthJson.cladefsTenantId).toBe(0);
+
+		// Default org with a VM config receives tenant 0.
+		await rpcDefault.setWorkerConfig({
+			config: create(WorkerConfigSchema, {
+				vm: create(WorkerVMConfigSchema, { vcpus: 4 }),
+			}),
+		});
+		const defCfg = await rpcDefault.getWorkerConfig({ node: "ubu-def" });
+		expect(defCfg.effective?.vm?.tenantId).toBe(0n);
+
+		// 4. Attempting to override tenant_id via SetWorkerConfig is rejected for both VM and FUSE.
+		await expect(
+			rpcOrgA.setWorkerConfig({
+				config: create(WorkerConfigSchema, {
+					vm: create(WorkerVMConfigSchema, { tenantId: 0n }),
+				}),
+			}),
+		).rejects.toThrow(/managed per organization/);
+		await expect(
+			rpcOrgA.setWorkerConfig({
+				config: create(WorkerConfigSchema, {
+					cladefsFuse: create(WorkerCladefsFUSEConfigSchema, { tenantId: tenantB }),
+				}),
+			}),
+		).rejects.toThrow(/managed per organization/);
+		// Setting other fields succeeds and keeps the assigned tenant.
+		await rpcOrgA.setWorkerConfig({
+			config: create(WorkerConfigSchema, {
+				vm: create(WorkerVMConfigSchema, { enabled: true, vcpus: 6 }),
+			}),
+		});
+		const cfgA1 = await rpcOrgA.getWorkerConfig({ node: "node-a1" });
+		expect(cfgA1.effective?.vm?.vcpus).toBe(6);
+		expect(cfgA1.effective?.vm?.tenantId).toBe(tenantA);
+
+		// 5. Worker joining Org A automatically receives Org A's tenant in HeartbeatResponse,
+		//    and mismatched-tenant sharedBases advertised in Heartbeat are ignored.
+		const jtRes = await callWorker(testEnv, "https://controller.test/admin/join-tokens", {
+			method: "POST",
+			headers: {
+				Authorization: `Bearer ${jwtOrgA}`,
+				"Content-Type": "application/json",
+			},
+			body: JSON.stringify({ label: "org-a-worker" }),
+		});
+		expect(jtRes.status).toBe(201);
+		const jt = (await jtRes.json()) as { token: string };
+		const workerJoinRpc = makeRpcClient(testEnv, jt.token, {
+			"X-Hotbed-Node-Id": "node-a1",
+			"X-Hotbed-Host": "node-a1",
+			"X-Hotbed-Addr": "100.70.0.10:7121",
+		});
+		const joined = await workerJoinRpc.join({});
+		const workerRpc = makeRpcClient(testEnv, joined.workerToken, {
+			"X-Hotbed-Node-Id": "node-a1",
+			"X-Hotbed-Host": "node-a1",
+			"X-Hotbed-Addr": "100.70.0.10:7121",
+		});
+		const hb = await workerRpc.heartbeat(
+			create(HeartbeatRequestSchema, {
+				clusterId: joined.clusterId,
+				resources: create(ResourcesSchema, { arch: "amd64", cpus: 8 }),
+				usage: create(NodeUsageSchema),
+				sharedBases: [
+					create(CladefsCellSchema, {
+						project: "wrong-tenant-proj",
+						arch: "amd64",
+						recipe: "r-wrong",
+						baseId: "wrong-1",
+						tenant: 0n,
+						cell: 11n,
+						version: 1n,
+					}),
+					create(CladefsCellSchema, {
+						project: "right-tenant-proj",
+						arch: "amd64",
+						recipe: "r-right",
+						baseId: "right-1",
+						tenant: tenantA!,
+						cell: 22n,
+						version: 2n,
+					}),
+				],
+			}),
+		);
+		expect(hb.workerConfig?.vm?.tenantId).toBe(tenantA);
+		expect(hb.workerConfig?.cladefsFuse?.tenantId).toBe(tenantA);
+
+		// 6. Verify global TenantRegistryDO state directly:
+		//    - assignments are persistent and idempotent
+		//    - reassigning DEFAULT_ORG_ID to another real org cannot collide on tenant 0
+		const registry = testEnv.TENANT_REGISTRY!.getByName("global");
+		expect(await registry.getTenant("org_default_mapped")).toBe("0");
+		expect(await registry.getTenant("org_cladefs_a")).toBe(String(tenantA));
+		expect(await registry.getTenant("org_cladefs_b")).toBe(String(tenantB));
+		expect(await registry.assignTenant("org_cladefs_a", { isDefault: false })).toBe(
+			String(tenantA),
+		);
+		const thirdDefault = await registry.assignTenant("org_some_other_default", { isDefault: true });
+		expect(BigInt(thirdDefault) > 0n).toBe(true);
+		expect(thirdDefault).not.toBe(String(tenantA));
+		expect(thirdDefault).not.toBe(String(tenantB));
 	});
 });

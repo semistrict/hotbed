@@ -980,3 +980,66 @@ func TestSaturatedBucketDoesNotReportUnrelatedTopFrame(t *testing.T) {
 		t.Fatalf("persisted saturated bucket 1 leaked stacks: %q", folded(win1))
 	}
 }
+
+func TestMergeProfiles(t *testing.T) {
+	t0 := time.UnixMilli(1_795_300_000_000 / bucketDurationMs * bucketDurationMs)
+	status := &pb.ProfilerStatus{Active: true, Engine: EngineName, SampleHz: 20}
+
+	hostStore := NewStore(20)
+	for range 3 {
+		hostStore.Record(Sample{
+			Timestamp: t0.Add(100 * time.Millisecond),
+			Comm:      "firecracker",
+			Frames: []ResolvedFrame{
+				{Name: "vcpu_run", FrameType: "native"},
+				{Name: "kvm_arch_vcpu_ioctl_run", FrameType: "kernel"},
+			},
+		})
+	}
+	vmStore := NewStore(20)
+	for range 4 {
+		vmStore.Record(Sample{
+			CommandID: "cmd1",
+			Timestamp: t0.Add(200 * time.Millisecond),
+			Comm:      "python3",
+			Frames: []ResolvedFrame{
+				{Name: "_PyEval_EvalFrameDefault", FrameType: "native"},
+				{Name: "hot_loop", FrameType: "cpython"},
+			},
+		})
+	}
+
+	hostProf := hostStore.QueryNode("ubu1", &pb.GetProfileRequest{Target: &pb.GetProfileRequest_Node{Node: "ubu1"}, Limit: 200}, status)
+	vmProf := vmStore.QueryNode("vm:ws1", &pb.GetProfileRequest{Target: &pb.GetProfileRequest_Node{Node: "vm:ws1"}, Limit: 200}, status)
+
+	merged := MergeProfiles("ubu1", hostProf, []*pb.CommandProfile{vmProf}, &pb.GetProfileRequest{
+		Target: &pb.GetProfileRequest_Node{Node: "ubu1"},
+		Limit:  200,
+	})
+	if err := Admit(merged); err != nil {
+		t.Fatalf("Admit(merged): %v", err)
+	}
+	if !merged.Active || merged.TotalSamples != 7 || merged.MatchedSamples != 7 || merged.KernelSamples != 3 || merged.UserSamples != 4 {
+		t.Fatalf("merged totals = active:%v total:%d matched:%d k:%d u:%d, want true/7/7/3/4",
+			merged.Active, merged.TotalSamples, merged.MatchedSamples, merged.KernelSamples, merged.UserSamples)
+	}
+	wantStacks := []string{
+		"vm:ws1;python3;_PyEval_EvalFrameDefault;hot_loop 4",
+		"firecracker;vcpu_run;kvm_arch_vcpu_ioctl_run_[k] 3",
+	}
+	if got := folded(merged); !slices.Equal(got, wantStacks) {
+		t.Fatalf("merged stacks = %q, want %q", got, wantStacks)
+	}
+	if len(merged.Buckets) != 1 || merged.Buckets[0].Samples != 7 {
+		t.Fatalf("merged buckets = %+v, want 1 bucket with 7 samples", merged.Buckets)
+	}
+
+	filtered := MergeProfiles("ubu1", hostProf, []*pb.CommandProfile{vmProf}, &pb.GetProfileRequest{
+		Target: &pb.GetProfileRequest_Node{Node: "ubu1"},
+		Query:  "hot_loop",
+		Limit:  200,
+	})
+	if filtered.MatchedSamples != 4 || len(filtered.Stacks) != 1 {
+		t.Fatalf("filtered merged profile = matched:%d stacks:%d, want 4/1", filtered.MatchedSamples, len(filtered.Stacks))
+	}
+}

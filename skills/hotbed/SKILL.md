@@ -483,6 +483,8 @@ hotbed schedule run nightly                 # a run now; prints its session, for
 | `hotbed project ls` | Projects, their repos, live sessions, schedules, reviews and questions |
 | `hotbed project show NAME` | A project and every change to it |
 | `hotbed project bases [PROJECT] [--node HOST] [--state STATE]` | Every node's bases for a project (or every project), newest generation first per node, with commits, freshen command ID, and failed step |
+| `hotbed freshen ls [PROJECT] [--node HOST] [--state STATE] [--active] [--runtime RT] [--cold] [--since 24h] [-n N]` | Active and historical (30-day) base freshens across all runtimes (`chroot`, `vm`, `cladefs`), with cluster-wide timing breakdowns (prep, queue, git, steps, parked, finalize/R2-sync), slowest steps ranking, per-node/project cold & failure streaks, and waiting workspaces |
+| `hotbed freshen show ID [--node HOST]` | Deep autopsy of one base freshen (by freshen command ID or base ID): cold reason, phase & step timings, memory guarantee vs peak, waiting workspaces, command timeline, live node admission snapshot, and related events |
 | `hotbed project rm-repo NAME --repo REMOTE` | Take a repo out of a project |
 | `hotbed schedule add ... -p PROJECT` | A schedule's runs work on its project (default: the one holding its repo) |
 | `hotbed schedule ls [-p PROJECT \| --all-projects]` | The project's schedules (`--all-projects`: every project's) |
@@ -532,7 +534,7 @@ hotbed schedule run nightly                 # a run now; prints its session, for
 | `hotbed org join-token create\|ls\|rm` | Mint (`hbj_<org>.*`), list, or revoke org-scoped worker join tokens |
 | `hotbed org api-token create\|ls\|rm` | Mint (`hbu_<org>.*`), list, or revoke org-scoped personal API tokens for `HOTBED_TOKEN` |
 | `hotbed api ENDPOINT [-X METHOD] [-f k=v] [-F k=v] [-d DATA] [--input FILE] [-H K:V] [-i] [--jq EXPR]` | Make an authenticated HTTP or ConnectRPC request to the controller (e.g. `hotbed api /healthz`, `hotbed api ClusterService/GetSnapshot --jq '.nodes \| length'`) |
-| `hotbed t3-bridge [run\|install\|uninstall\|status]` | Outbound bridge that listens on the controller's `/ws/questions` stream and automatically notifies idle local T3 Code threads (via `t3 thread show` / `t3 thread send`) when their Hotbed questions are answered or dismissed, with debouncing, ack-while-busy suppression, and local revision tracking (`install` sets up a LaunchAgent on macOS or systemd user service on Linux) |
+| `hotbed daemon [run\|install\|uninstall\|status]` | Unified local Hotbed host service: keeps an outbound `/ws/questions` stream open to wake idle local T3 Code threads when questions are answered or dismissed, auto-starts and supervises local macOS worker VMs (Standby + host metrics), and shows a native macOS menubar status app (`install` sets up one LaunchAgent on macOS or systemd user service on Linux, migrating away from legacy separate services) |
 
 ## Output
 

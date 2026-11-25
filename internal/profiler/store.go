@@ -702,6 +702,165 @@ func QueryProfile(raw *pb.CommandProfile, req *pb.GetProfileRequest) *pb.Command
 	return summarize(raw, req)
 }
 
+// MergeProfiles combines a host node profile with zero or more active guest VM
+// profiles (each tagged by its Node label, e.g. "vm:<wsID>") into a single
+// node-wide profile, then applies req's filters and ranking. Each guest stack
+// is rooted under a synthetic process frame carrying the guest's Node label so
+// flamegraphs and top-function views distinguish guest work from host processes.
+func MergeProfiles(node string, host *pb.CommandProfile, guests []*pb.CommandProfile, req *pb.GetProfileRequest) *pb.CommandProfile {
+	if len(guests) == 0 {
+		if host == nil {
+			return &pb.CommandProfile{Node: node, Profiler: EngineName, Live: true}
+		}
+		return summarize(host, req)
+	}
+
+	var frames flame.Table
+	merged := &pb.CommandProfile{
+		Node:     node,
+		Profiler: EngineName,
+		Live:     true,
+	}
+	if host != nil {
+		merged.Active = host.Active
+		merged.StatusNote = host.StatusNote
+		merged.SampleHz = host.SampleHz
+	}
+
+	type mergedBucket struct {
+		t, durationMs int64
+		samples       int64
+		kernel        int64
+		user          int64
+		topFrame      uint32
+		topSamples    int64
+	}
+	buckets := map[int64]*mergedBucket{}
+	stacks := map[stackKey]int64{}
+	comms := map[string]bool{}
+	types := map[string]bool{}
+
+	absorb := func(src *pb.CommandProfile, vmRootLabel string) {
+		if src == nil {
+			return
+		}
+		if src.Active {
+			merged.Active = true
+			if merged.StatusNote != "" && host != nil && !host.Active {
+				merged.StatusNote = ""
+			}
+		}
+		if merged.SampleHz == 0 && src.SampleHz > 0 {
+			merged.SampleHz = src.SampleHz
+		}
+		if src.StartedAt > 0 && (merged.StartedAt == 0 || src.StartedAt < merged.StartedAt) {
+			merged.StartedAt = src.StartedAt
+		}
+		merged.UpdatedAt = max(merged.UpdatedAt, src.UpdatedAt)
+		merged.TotalSamples += src.TotalSamples
+		merged.KernelSamples += src.KernelSamples
+		merged.UserSamples += src.UserSamples
+		for _, c := range src.Comms {
+			if c != "" {
+				comms[c] = true
+			}
+		}
+		for _, ft := range src.FrameTypes {
+			if ft != "" {
+				types[ft] = true
+			}
+		}
+
+		// Remap src's frame indices into the unified table.
+		remap := make([]uint32, len(src.Frames))
+		for i, f := range src.Frames {
+			remap[i] = frames.ID(f)
+		}
+		var rootID uint32
+		hasRoot := vmRootLabel != ""
+		if hasRoot {
+			rootID = frames.ID(&pb.ProfileFrame{Name: vmRootLabel, FrameType: "process"})
+			types["process"] = true
+		}
+
+		for _, st := range src.Stacks {
+			if st.Samples <= 0 || len(st.Frames) == 0 {
+				continue
+			}
+			ids := make([]byte, 0, 4*(len(st.Frames)+1))
+			if hasRoot {
+				ids = flame.AppendID(ids, rootID)
+			}
+			for _, oldID := range st.Frames {
+				if int(oldID) < len(remap) {
+					ids = flame.AppendID(ids, remap[oldID])
+				}
+			}
+			if len(ids) == 0 {
+				continue
+			}
+			sk := stackKey{frames: string(ids), leafType: st.LeafType, comm: st.Comm}
+			stacks[sk] += st.Samples
+		}
+
+		for _, b := range src.Buckets {
+			mb := buckets[b.T]
+			if mb == nil {
+				dur := b.DurationMs
+				if dur <= 0 {
+					dur = bucketDurationMs
+				}
+				mb = &mergedBucket{t: b.T, durationMs: dur, topFrame: noTopFrame}
+				buckets[b.T] = mb
+			}
+			mb.samples += b.Samples
+			mb.kernel += b.KernelSamples
+			mb.user += b.UserSamples
+			if b.TopFrame != noTopFrame && int(b.TopFrame) < len(remap) && b.Samples > mb.topSamples {
+				mb.topFrame = remap[b.TopFrame]
+				mb.topSamples = b.Samples
+			}
+		}
+	}
+
+	absorb(host, "")
+	for _, gp := range guests {
+		if gp == nil || gp.TotalSamples == 0 {
+			continue
+		}
+		label := gp.Node
+		if label == "" {
+			label = "vm"
+		}
+		absorb(gp, label)
+	}
+
+	merged.Frames = frames.Frames()
+	merged.Comms = sortedKeys(comms)
+	merged.FrameTypes = sortedKeys(types)
+	for k, cnt := range stacks {
+		merged.Stacks = append(merged.Stacks, &pb.FoldedStack{
+			Frames:   flame.IDs(k.frames),
+			Samples:  cnt,
+			LeafType: k.leafType,
+			Comm:     k.comm,
+		})
+	}
+	merged.Buckets = make([]*pb.ProfileBucket, 0, len(buckets))
+	for _, mb := range buckets {
+		merged.Buckets = append(merged.Buckets, &pb.ProfileBucket{
+			T:             mb.t,
+			Samples:       mb.samples,
+			KernelSamples: mb.kernel,
+			UserSamples:   mb.user,
+			TopFrame:      mb.topFrame,
+			DurationMs:    mb.durationMs,
+		})
+	}
+	sort.Slice(merged.Buckets, func(i, j int) bool { return merged.Buckets[i].T < merged.Buckets[j].T })
+	return summarize(merged, req)
+}
+
 // summarize filters raw's stacks and buckets as req asks, ranks the stacks
 // that match and the functions in them, and returns the top ones, with a
 // frames table of only the frames they name. Stacks give way, the least

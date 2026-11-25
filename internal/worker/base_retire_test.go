@@ -415,7 +415,9 @@ func TestVMBackendSetsUploadIntervalOnProjectBaseBuild(t *testing.T) {
 	mgr, err := vm.NewManager(vm.Config{
 		RunDir:         filepath.Join(tmp, "vms"),
 		DisableNetwork: true,
-	}, vm.WithLauncher(failingVMLauncher{}))
+	}, vm.WithLauncher(failingVMLauncher{}), vm.WithToolsDiskBuilder(func(string, string) (string, error) {
+		return filepath.Join(tmp, "tools.ext4"), nil
+	}))
 	if err != nil {
 		t.Fatalf("vm.NewManager: %v", err)
 	}

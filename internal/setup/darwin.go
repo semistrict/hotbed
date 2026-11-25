@@ -212,6 +212,8 @@ func Setup(ctx context.Context, o Options, _ worker.Tailnet, hc *http.Client, _ 
 
 	switch {
 	case o.NoStart:
+		_ = setVMMarker(p.StoppedMarker, true)
+		_ = setVMMarker(p.AsleepMarker, false)
 		if err := disableSupervisor(ctx, cfg, p); err != nil {
 			return Result{}, err
 		}
@@ -219,11 +221,17 @@ func Setup(ctx context.Context, o Options, _ worker.Tailnet, hc *http.Client, _ 
 			return Result{}, err
 		}
 	case cfg.Autostart:
-		progressf(o.Progress, "starting the VM's supervisor, which powers it off after %s without work and on when a run needs it", sleepAfter)
-		if err := startSupervisor(ctx, p); err != nil {
-			return Result{}, err
+		_ = setVMMarker(p.StoppedMarker, false)
+		_ = setVMMarker(p.AsleepMarker, false)
+		if !isDaemonLoaded(ctx) {
+			progressf(o.Progress, "starting the VM's supervisor, which powers it off after %s without work and on when a run needs it", sleepAfter)
+			if err := startSupervisor(ctx, p); err != nil {
+				return Result{}, err
+			}
 		}
 	default:
+		_ = setVMMarker(p.StoppedMarker, false)
+		_ = setVMMarker(p.AsleepMarker, false)
 		if err := disableSupervisor(ctx, cfg, p); err != nil {
 			return Result{}, err
 		}
@@ -261,7 +269,7 @@ func Setup(ctx context.Context, o Options, _ worker.Tailnet, hc *http.Client, _ 
 			IOErrors:   qmp.IOErrors,
 			Tailscale:  tsState,
 			Autostart:  cfg.Autostart,
-			Supervised: supervised(ctx, p),
+			Supervised: supervised(ctx, p) || (cfg.Autostart && !isVMStoppedByUser(p) && isDaemonLoaded(ctx)),
 			ConsoleLog: p.ConsoleLog,
 		},
 		Disks: disks,
@@ -363,7 +371,7 @@ func GetStatus(ctx context.Context, dir string) (Status, error) {
 			IOErrors:   qmp.IOErrors,
 			Tailscale:  tsState,
 			Autostart:  cfg.Autostart,
-			Supervised: supervised(ctx, p),
+			Supervised: supervised(ctx, p) || (cfg.Autostart && !isVMStoppedByUser(p) && isDaemonLoaded(ctx)),
 			ConsoleLog: p.ConsoleLog,
 		},
 		Disks: collectVMDisks(cfg, p),
@@ -379,6 +387,8 @@ func Start(ctx context.Context, dir string) (Status, error) {
 	if err != nil {
 		return Status{}, err
 	}
+	_ = setVMMarker(p.StoppedMarker, false)
+	_ = setVMMarker(p.AsleepMarker, false)
 	if err := stopSupervisor(ctx, cfg, p); err != nil {
 		return Status{}, err
 	}
@@ -391,7 +401,7 @@ func Start(ctx context.Context, dir string) (Status, error) {
 			_, _ = sshRun(ctx, cl, "sudo systemctl start hotbed-worker.service")
 		}
 	}
-	if cfg.Autostart {
+	if cfg.Autostart && !isDaemonLoaded(ctx) {
 		if err := startSupervisor(ctx, p); err != nil {
 			return Status{}, err
 		}
@@ -407,6 +417,8 @@ func Stop(ctx context.Context, dir string) (Status, error) {
 	if err != nil {
 		return Status{}, err
 	}
+	_ = setVMMarker(p.StoppedMarker, true)
+	_ = setVMMarker(p.AsleepMarker, false)
 	if err := disableSupervisor(ctx, cfg, p); err != nil {
 		return Status{}, err
 	}

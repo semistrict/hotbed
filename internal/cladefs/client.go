@@ -110,7 +110,8 @@ type Store struct {
 	vmSock   string
 	nextRoot atomic.Uint64
 	mu       sync.RWMutex
-	paths    map[string]string // clean relPath -> chosen hostPath (helps tests without on-disk dirs)
+	paths    map[string]string        // clean relPath -> chosen hostPath (helps tests without on-disk dirs)
+	inflight map[string]chan struct{} // per-clean-relPath creation serialization
 }
 
 // Open connects to cladefsd at cfg.ControlSock, checks health, ensures all
@@ -121,10 +122,12 @@ func Open(ctx context.Context, cfg Config, dialOpts ...grpc.DialOption) (*Store,
 	if err != nil {
 		return nil, err
 	}
-	cfg.CellRoot = roots[0]
+	// Clear CellRoot before calling NewStore so literal entries in CellRoots
+	// containing filepath.ListSeparator are not split a second time.
+	cfg.CellRoot = ""
 	cfg.CellRoots = roots
 	for _, root := range roots {
-		if err := os.MkdirAll(root, 0o755); err != nil {
+		if err := ensureCellRoot(root); err != nil {
 			return nil, fmt.Errorf("cladefs: create CellRoot %s: %w", root, err)
 		}
 	}
@@ -169,6 +172,9 @@ func NewStore(ctx context.Context, cfg Config, api cladefsdv1.CladefsdClient, he
 			Tenant: cfg.TenantID,
 			Dir:    roots[0],
 		}
+		if len(roots) > 1 {
+			req.Dirs = append([]string(nil), roots[1:]...)
+		}
 		if cfg.VMUID > 0 {
 			u := cfg.VMUID
 			req.Uid = &u
@@ -179,7 +185,7 @@ func NewStore(ctx context.Context, cfg Config, api cladefsdv1.CladefsdClient, he
 		}
 		resp, err := api.Grant(ctx, req)
 		if err != nil {
-			return nil, fmt.Errorf("cladefs: grant tenant %d on %s: %w", cfg.TenantID, roots[0], err)
+			return nil, fmt.Errorf("cladefs: grant tenant %d on %v: %w", cfg.TenantID, roots, err)
 		}
 		if resp.GetSocket() == "" {
 			return nil, fmt.Errorf("cladefs: grant tenant %d returned empty socket", cfg.TenantID)
@@ -187,13 +193,14 @@ func NewStore(ctx context.Context, cfg Config, api cladefsdv1.CladefsdClient, he
 		vmSock = resp.GetSocket()
 	}
 	return &Store{
-		cfg:    cfg,
-		roots:  roots,
-		api:    api,
-		health: health,
-		closer: closer,
-		vmSock: vmSock,
-		paths:  make(map[string]string),
+		cfg:      cfg,
+		roots:    roots,
+		api:      api,
+		health:   health,
+		closer:   closer,
+		vmSock:   vmSock,
+		paths:    make(map[string]string),
+		inflight: make(map[string]chan struct{}),
 	}, nil
 }
 
@@ -262,8 +269,15 @@ func (s *Store) CellPath(relPath string) (string, error) {
 		if err != nil {
 			return "", err
 		}
-		if _, err := os.Stat(full); err == nil {
-			return full, nil
+		fi, err := os.Stat(full)
+		if err == nil {
+			if fi.IsDir() {
+				return full, nil
+			}
+			continue
+		}
+		if !errors.Is(err, os.ErrNotExist) {
+			return "", fmt.Errorf("cladefs: stat cell %s: %w", full, err)
 		}
 	}
 	s.mu.RLock()
@@ -292,12 +306,61 @@ func (s *Store) NewCellPath(relPath string) (string, error) {
 		if err != nil {
 			return "", err
 		}
-		if _, err := os.Stat(full); err == nil {
-			return full, nil
+		fi, err := os.Stat(full)
+		if err == nil {
+			if fi.IsDir() {
+				return full, nil
+			}
+			continue
 		}
+		if !errors.Is(err, os.ErrNotExist) {
+			return "", fmt.Errorf("cladefs: stat cell %s: %w", full, err)
+		}
+	}
+	s.mu.RLock()
+	known, ok := s.paths[clean]
+	s.mu.RUnlock()
+	if ok {
+		return known, nil
 	}
 	root := s.pickRootForNewCell()
 	return joinInsideRoot(root, clean)
+}
+
+// PickRoot selects the JBOD cell root with the most available space (breaking
+// near-ties via round-robin) for temporary staging files such as guest base tars.
+func (s *Store) PickRoot() string {
+	return s.pickRootForNewCell()
+}
+
+// lockCreate serializes cell-creating operations targeting the same clean
+// relPath so concurrent callers cannot split one relPath across two JBOD roots.
+func (s *Store) lockCreate(ctx context.Context, relPath string) (func(), error) {
+	clean, err := cleanRelCellPath(relPath)
+	if err != nil {
+		return nil, err
+	}
+	for {
+		s.mu.Lock()
+		if ch, busy := s.inflight[clean]; busy {
+			s.mu.Unlock()
+			select {
+			case <-ch:
+				continue
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			}
+		}
+		ch := make(chan struct{})
+		s.inflight[clean] = ch
+		s.mu.Unlock()
+		return func() {
+			s.mu.Lock()
+			delete(s.inflight, clean)
+			close(ch)
+			s.mu.Unlock()
+		}, nil
+	}
 }
 
 func (s *Store) pickRootForNewCell() string {
@@ -353,11 +416,27 @@ func (s *Store) forgetPath(relPath string) {
 	}
 }
 
+func (s *Store) forgetHostPath(absPath string) {
+	s.mu.Lock()
+	for k, v := range s.paths {
+		if v == absPath {
+			delete(s.paths, k)
+		}
+	}
+	s.mu.Unlock()
+}
+
 func (s *Store) rootForHostPath(hostPath string) string {
+	best := ""
 	for _, root := range s.roots {
 		if hostPath == root || strings.HasPrefix(hostPath, root+string(filepath.Separator)) {
-			return root
+			if len(root) > len(best) {
+				best = root
+			}
 		}
+	}
+	if best != "" {
+		return best
 	}
 	return s.roots[0]
 }
@@ -367,6 +446,42 @@ func (s *Store) capacityOrDefault(capBytes uint64) uint64 {
 		return capBytes
 	}
 	return s.cfg.DefaultCap
+}
+
+// ensureCellRoot creates root and, when running as root beneath a non-root
+// ancestor directory (e.g. creating <cellRoot>/tenant-<id> inside a
+// cladefsd-owned cellRoot), aligns ownership of newly created directories to
+// that ancestor so cladefsd can create cells inside them.
+func ensureCellRoot(root string) error {
+	ancestor := root
+	for {
+		if _, err := os.Stat(ancestor); err == nil {
+			break
+		}
+		parent := filepath.Dir(ancestor)
+		if parent == ancestor {
+			break
+		}
+		ancestor = parent
+	}
+	if err := os.MkdirAll(root, 0o755); err != nil {
+		return err
+	}
+	if os.Geteuid() != 0 || ancestor == root {
+		return nil
+	}
+	ancFi, err := os.Stat(ancestor)
+	if err != nil {
+		return nil
+	}
+	st, ok := ancFi.Sys().(*syscall.Stat_t)
+	if !ok || (st.Uid == 0 && st.Gid == 0) {
+		return nil
+	}
+	for cur := root; cur != ancestor && strings.HasPrefix(cur, ancestor+string(filepath.Separator)); cur = filepath.Dir(cur) {
+		_ = os.Chown(cur, int(st.Uid), int(st.Gid))
+	}
+	return nil
 }
 
 // ensureParentDir creates parent directories of hostPath inside its JBOD root
@@ -400,11 +515,17 @@ func (s *Store) ensureParentDir(hostPath string) error {
 // at relPath, creates a version, and syncs it to the shared bucket so any host
 // can fork it.
 func (s *Store) ImportImage(ctx context.Context, relPath, imagePath string, capBytes uint64) (CellRef, error) {
-	hostPath, err := s.NewCellPath(relPath)
+	unlock, err := s.lockCreate(ctx, relPath)
 	if err != nil {
 		return CellRef{}, err
 	}
+	hostPath, err := s.NewCellPath(relPath)
+	if err != nil {
+		unlock()
+		return CellRef{}, err
+	}
 	if err := s.ensureParentDir(hostPath); err != nil {
+		unlock()
 		return CellRef{}, fmt.Errorf("cladefs: mkdir parent for %s: %w", relPath, err)
 	}
 	imp, err := s.api.ImportImage(ctx, &cladefsdv1.ImportImageRequest{
@@ -414,9 +535,11 @@ func (s *Store) ImportImage(ctx context.Context, relPath, imagePath string, capB
 		Tenant:   s.cfg.TenantID,
 	})
 	if err != nil {
+		unlock()
 		return CellRef{}, mapErr("import image "+relPath, err)
 	}
 	s.rememberPath(relPath, hostPath)
+	unlock()
 	ver, err := s.MakeVersionAndSync(ctx, relPath, 0)
 	if err != nil {
 		return CellRef{}, err
@@ -444,6 +567,11 @@ func uploadIntervalMsPtr(d time.Duration) *uint64 {
 // CreateCell creates a new empty Fxfs cell at relPath. When uploadInterval > 0,
 // cladefsd uses it as the per-cell background upload interval (question 534).
 func (s *Store) CreateCell(ctx context.Context, relPath string, capBytes uint64, token *uint64, uploadInterval time.Duration) (CellRef, error) {
+	unlock, err := s.lockCreate(ctx, relPath)
+	if err != nil {
+		return CellRef{}, err
+	}
+	defer unlock()
 	hostPath, err := s.NewCellPath(relPath)
 	if err != nil {
 		return CellRef{}, err
@@ -479,6 +607,11 @@ func (s *Store) TakeCell(ctx context.Context, relPath string, tenant, cellID, ca
 	if cellID == 0 {
 		return CellRef{}, errors.New("cladefs: TakeCell requires non-zero cellID")
 	}
+	unlock, err := s.lockCreate(ctx, relPath)
+	if err != nil {
+		return CellRef{}, err
+	}
+	defer unlock()
 	hostPath, err := s.NewCellPath(relPath)
 	if err != nil {
 		return CellRef{}, err
@@ -513,6 +646,11 @@ func (s *Store) ForkVersion(ctx context.Context, from CellRef, toRelPath string,
 	if from.Cell == 0 || from.Version == 0 {
 		return CellRef{}, fmt.Errorf("cladefs: ForkVersion requires cell (%d) and version (%d)", from.Cell, from.Version)
 	}
+	unlock, err := s.lockCreate(ctx, toRelPath)
+	if err != nil {
+		return CellRef{}, err
+	}
+	defer unlock()
 	toHost, err := s.NewCellPath(toRelPath)
 	if err != nil {
 		return CellRef{}, err
@@ -545,6 +683,11 @@ func (s *Store) ForkCell(ctx context.Context, fromRelPath, toRelPath string) (Ce
 	if err != nil {
 		return CellRef{}, err
 	}
+	unlock, err := s.lockCreate(ctx, toRelPath)
+	if err != nil {
+		return CellRef{}, err
+	}
+	defer unlock()
 	toHost, err := s.NewCellPath(toRelPath)
 	if err != nil {
 		return CellRef{}, err
@@ -813,19 +956,21 @@ func (s *Store) MakeVersionAndSyncAbs(ctx context.Context, absPath string, keepL
 // bucket state intact.
 func (s *Store) DropCellAbs(ctx context.Context, absPath string) error {
 	_, err := s.api.DropCell(ctx, &cladefsdv1.DropCellRequest{Path: absPath})
-	if err != nil && isNotFound(err) {
-		return nil
+	if err != nil && !isNotFound(err) {
+		return mapErr("drop cell "+absPath, err)
 	}
-	return mapErr("drop cell "+absPath, err)
+	s.forgetHostPath(absPath)
+	return nil
 }
 
 // DeleteCellAbs deletes a cell both locally and in the bucket at absPath.
 func (s *Store) DeleteCellAbs(ctx context.Context, absPath string) error {
 	_, err := s.api.DeleteCell(ctx, &cladefsdv1.DeleteCellRequest{Path: absPath})
-	if err != nil && isNotFound(err) {
-		return nil
+	if err != nil && !isNotFound(err) {
+		return mapErr("delete cell "+absPath, err)
 	}
-	return mapErr("delete cell "+absPath, err)
+	s.forgetHostPath(absPath)
+	return nil
 }
 
 // ShrinkMemory asks cladefsd to evict clean extent cache pages down to

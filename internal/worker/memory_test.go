@@ -31,11 +31,27 @@ func TestAdmissionReservesWhatCommandsHeld(t *testing.T) {
 	t.Cleanup(func() { units.Stop(context.WithoutCancel(t.Context()), "hotbed-next-1") })
 	e.step(t.Context())
 	next := e.commands["next-1"].cmd()
-	if want := "waiting for memory: needs 0.0 GiB, 0.0 GiB left of what running and parked commands hold or are guaranteed"; next.State != queued || next.Reason != want {
+	if want := "waiting for memory: running and parked commands hold or are guaranteed 14.0 GiB (limit 13.8 GiB)"; next.State != queued || next.Reason != want {
 		t.Fatalf("next-1 beside 14 GiB held is %v: %q, want queued: %q", next.State, next.Reason, want)
 	}
 	if s := signal(e.Heartbeat("cl").Admission, "memory-reserved"); s.Value != float64(14<<30) || !s.Holding || s.Waiting != 1 {
 		t.Errorf("memory-reserved signal = %v", s)
+	}
+
+	// A command with an explicit memory guarantee waiting while reservations
+	// already exceed admitLimit also reports the over-budget state cleanly.
+	withGuarantee := e.newCommand(&pb.CommandRecord{
+		Command: &pb.Command{
+			Id:          "next-guaranteed",
+			WorkspaceId: "c",
+			Limits:      &pb.CommandLimits{MemoryLowBytes: 2 << 30},
+		},
+	})
+	e.mu.Lock()
+	kind, reason := e.room(withGuarantee)
+	e.mu.Unlock()
+	if want := "waiting for memory: needs 2.0 GiB, but running and parked commands hold or are guaranteed 14.0 GiB (limit 13.8 GiB)"; kind != "memory" || reason != want {
+		t.Fatalf("guaranteed command beside 14 GiB held = (%q, %q), want (memory, %q)", kind, reason, want)
 	}
 
 	// Between links a build holds little, but needs it all again at the next.
@@ -83,7 +99,7 @@ func TestABaseBuildIsGuaranteedWhatTheLastOneHeld(t *testing.T) {
 	e.start(t, units, now, "work-1", "a", "build")
 	units.SetAnon("hotbed-work-1", 5<<30)
 	e.step(t.Context())
-	g2, err := e.startFreshen(t.Context(), project, 2, nil, h, "r2")
+	g2, err := e.startFreshen(t.Context(), project, 2, nil, "no_previous_base", h, "r2")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -163,7 +179,7 @@ func TestFreshenAdmitsWhenIdleEvenIfGuaranteeExceedsMemAvailable(t *testing.T) {
 		units.SetAnon("hotbed-work-1", 4<<30)
 		e.step(t.Context())
 
-		g2, err := e.startFreshen(t.Context(), project, 2, nil, h, "r2")
+		g2, err := e.startFreshen(t.Context(), project, 2, nil, "no_previous_base", h, "r2")
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -201,7 +217,7 @@ func TestFreshenAdmitsWhenIdleEvenIfGuaranteeExceedsMemAvailable(t *testing.T) {
 		e.bases[g1.Id] = g1
 		e.mu.Unlock()
 
-		g2, err := e.startFreshen(t.Context(), project, 2, nil, h, "r2")
+		g2, err := e.startFreshen(t.Context(), project, 2, nil, "no_previous_base", h, "r2")
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -226,7 +242,7 @@ func TestFreshenAdmitsWhenIdleEvenIfGuaranteeExceedsMemAvailable(t *testing.T) {
 		e.mu.Unlock()
 
 		sys.SetUsed(sys.Mem.Total * 95 / 100)
-		g2, err := e.startFreshen(t.Context(), project, 2, nil, h, "r2")
+		g2, err := e.startFreshen(t.Context(), project, 2, nil, "no_previous_base", h, "r2")
 		if err != nil {
 			t.Fatal(err)
 		}

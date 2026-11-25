@@ -1,18 +1,28 @@
 //go:build linux
 
-package t3bridge
+package daemon
 
 import (
 	"context"
 	"errors"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
 
-func TestLinuxServiceLifecycle(t *testing.T) {
+func TestLinuxDaemonServiceLifecycleAndLegacyMigration(t *testing.T) {
 	cfgHome := t.TempDir()
 	t.Setenv("XDG_CONFIG_HOME", cfgHome)
+	baseDir := t.TempDir()
+
+	legacyUnit := filepath.Join(cfgHome, "systemd", "user", LegacyT3BridgeUnitName)
+	if err := os.MkdirAll(filepath.Dir(legacyUnit), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(legacyUnit, []byte("[Unit]\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
 
 	origSystemctl := runSystemctl
 	t.Cleanup(func() { runSystemctl = origSystemctl })
@@ -25,7 +35,9 @@ func TestLinuxServiceLifecycle(t *testing.T) {
 				active = true
 				return nil, nil
 			case "disable":
-				active = false
+				if len(args) >= 4 && args[3] == SystemdUnitName {
+					active = false
+				}
 				return nil, nil
 			case "is-active":
 				if active {
@@ -39,32 +51,32 @@ func TestLinuxServiceLifecycle(t *testing.T) {
 
 	ctx := context.Background()
 	st, err := InstallService(ctx, ServiceConfig{
-		Binary: "/usr/local/bin/hotbed",
-		Args:   []string{"t3-bridge", "run", "--exit-on-upgrade"},
+		BaseDir: baseDir,
+		Binary:  "/usr/local/bin/hotbed",
+		Args:    []string{"daemon", "run", "--exit-on-upgrade"},
 	})
 	if err != nil {
 		t.Fatalf("InstallService: %v", err)
 	}
-	if !st.Installed || !st.Running {
+	if !st.Installed || !st.Running || st.Label != SystemdUnitName {
 		t.Fatalf("expected installed+running, got %+v", st)
+	}
+	if _, err := os.Stat(legacyUnit); !os.IsNotExist(err) {
+		t.Fatalf("expected legacy unit removed, stat err = %v", err)
 	}
 	unitBytes, err := os.ReadFile(st.UnitPath)
 	if err != nil {
 		t.Fatalf("read systemd unit: %v", err)
 	}
-	unit := string(unitBytes)
-	if !strings.Contains(unit, `ExecStart="/usr/local/bin/hotbed" "t3-bridge" "run" "--exit-on-upgrade"`) {
-		t.Errorf("unexpected systemd unit:\n%s", unit)
+	if !strings.Contains(string(unitBytes), `ExecStart="/usr/local/bin/hotbed" "daemon" "run" "--exit-on-upgrade"`) {
+		t.Errorf("unexpected systemd unit:\n%s", string(unitBytes))
 	}
 
-	st2, err := UninstallService(ctx)
+	st2, err := UninstallService(ctx, baseDir)
 	if err != nil {
 		t.Fatalf("UninstallService: %v", err)
 	}
 	if st2.Installed || st2.Running {
 		t.Fatalf("expected uninstalled+stopped, got %+v", st2)
-	}
-	if _, err := os.Stat(st.UnitPath); !os.IsNotExist(err) {
-		t.Fatalf("expected unit removed, stat err = %v", err)
 	}
 }

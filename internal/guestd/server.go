@@ -76,19 +76,25 @@ type Server struct {
 }
 
 type managedCmd struct {
-	mu      sync.Mutex
-	id      string
-	cmd     *exec.Cmd
-	cg      *cmdCgroup
-	logPath string
-	logFile *os.File
-	state   guestdv1.CommandState
-	exit    int
-	mainPID int
-	started int64
-	exited  int64
-	errMsg  string
-	done    chan struct{}
+	mu           sync.Mutex
+	id           string
+	cmd          *exec.Cmd
+	cg           *cmdCgroup
+	logPath      string
+	logFile      *os.File
+	state        guestdv1.CommandState
+	exit         int
+	signal       int
+	oomKilled    bool
+	result       string
+	peakMem      int64
+	peakSwap     int64
+	finalCPUUsec int64
+	mainPID      int
+	started      int64
+	exited       int64
+	errMsg       string
+	done         chan struct{}
 }
 
 // NewServer constructs a guestd Server and prepares its state directories.
@@ -293,13 +299,16 @@ func (s *Server) StartCommand(_ context.Context, req *guestdv1.StartCommandReque
 
 	dir := s.resolveWorkDir(req.Dir)
 	runtimeDir := s.ensureRuntimeDir(int(req.Uid), int(req.Gid))
-	cmd := exec.Command(req.Argv[0], req.Argv[1:]...)
+	env := withDefaultRuntimeEnv(req.Env, runtimeDir)
+	cmd, err := commandWithEnv(req.Argv, env)
+	if err != nil {
+		_ = logFile.Close()
+		s.mu.Unlock()
+		return nil, connect.NewError(connect.CodeInternal, "start command: "+err.Error())
+	}
 	cmd.Dir = dir
 	cmd.Stdout = logFile
 	cmd.Stderr = logFile
-	if env := withDefaultRuntimeEnv(req.Env, runtimeDir); len(env) > 0 {
-		cmd.Env = env
-	}
 	attr := &syscall.SysProcAttr{Setpgid: true}
 	if req.Uid > 0 || req.Gid > 0 {
 		if os.Geteuid() == 0 {
@@ -327,6 +336,7 @@ func (s *Server) StartCommand(_ context.Context, req *guestdv1.StartCommandReque
 	if cg != nil && !usedCgroupFD {
 		_ = cg.addPID(pid)
 	}
+	setCmdOOMScoreAdj(pid, 1000)
 
 	mc := &managedCmd{
 		id:      req.Id,
@@ -349,19 +359,29 @@ func (s *Server) StartCommand(_ context.Context, req *guestdv1.StartCommandReque
 
 func (s *Server) waitCommand(mc *managedCmd) {
 	err := mc.cmd.Wait()
-	code := exitCodeOf(err)
+	code, sig := exitStatusOf(err)
 	mc.mu.Lock()
-	mc.state = guestdv1.CommandState_COMMAND_STATE_EXITED
-	mc.exit = code
-	mc.exited = time.Now().UnixMilli()
-	if err != nil && code == 0 {
-		mc.errMsg = err.Error()
-	}
-	_ = mc.logFile.Close()
+	var finalStats cmdCgroupStats
 	if mc.cg != nil {
+		// Read final memory.events (oom_kill), memory.peak, memory.swap.peak,
+		// and cpu.stat BEFORE killing/removing the cgroup directory.
+		finalStats = mc.cg.stats()
 		mc.cg.killAll()
 		mc.cg.remove()
 	}
+	mc.state = guestdv1.CommandState_COMMAND_STATE_EXITED
+	mc.exit = code
+	mc.signal = sig
+	mc.oomKilled = finalStats.oomKilled
+	mc.result = classifyExitResult(code, sig, finalStats.oomKilled)
+	mc.peakMem = max(mc.peakMem, finalStats.memPeak, finalStats.memAnon)
+	mc.peakSwap = max(mc.peakSwap, finalStats.swapPeak, finalStats.memSwap)
+	mc.finalCPUUsec = max(mc.finalCPUUsec, finalStats.cpuUsec)
+	mc.exited = time.Now().UnixMilli()
+	if err != nil && code == 0 && sig == 0 {
+		mc.errMsg = err.Error()
+	}
+	_ = mc.logFile.Close()
 	close(mc.done)
 	mc.mu.Unlock()
 }
@@ -374,26 +394,40 @@ func (mc *managedCmd) snapshot() *guestdv1.CommandStatus {
 		logBytes = st.Size()
 	}
 	var cgPath string
-	var memAnon, memSwap, cpuUsec int64
+	var memAnon, memSwap, memPeak, swapPeak, cpuUsec int64
 	if mc.cg != nil {
 		cgPath = mc.cg.path
 		if mc.state != guestdv1.CommandState_COMMAND_STATE_EXITED {
-			memAnon, memSwap, cpuUsec = mc.cg.stats()
+			st := mc.cg.stats()
+			memAnon, memSwap, cpuUsec = st.memAnon, st.memSwap, st.cpuUsec
+			mc.peakMem = max(mc.peakMem, st.memPeak, st.memAnon)
+			mc.peakSwap = max(mc.peakSwap, st.swapPeak, st.memSwap)
+			mc.finalCPUUsec = max(mc.finalCPUUsec, st.cpuUsec)
+			memPeak, swapPeak = mc.peakMem, mc.peakSwap
+		} else {
+			memPeak = mc.peakMem
+			swapPeak = mc.peakSwap
+			cpuUsec = mc.finalCPUUsec
 		}
 	}
 	return &guestdv1.CommandStatus{
-		Id:         mc.id,
-		State:      mc.state,
-		ExitCode:   int32(mc.exit),
-		MainPid:    int32(mc.mainPID),
-		Cgroup:     cgPath,
-		MemoryAnon: memAnon,
-		MemorySwap: memSwap,
-		CpuUsec:    cpuUsec,
-		LogBytes:   logBytes,
-		StartedMs:  mc.started,
-		ExitedMs:   mc.exited,
-		Error:      mc.errMsg,
+		Id:             mc.id,
+		State:          mc.state,
+		ExitCode:       int32(mc.exit),
+		Signal:         int32(mc.signal),
+		OomKilled:      mc.oomKilled,
+		Result:         mc.result,
+		MainPid:        int32(mc.mainPID),
+		Cgroup:         cgPath,
+		MemoryAnon:     memAnon,
+		MemorySwap:     memSwap,
+		MemoryPeak:     memPeak,
+		MemorySwapPeak: swapPeak,
+		CpuUsec:        cpuUsec,
+		LogBytes:       logBytes,
+		StartedMs:      mc.started,
+		ExitedMs:       mc.exited,
+		Error:          mc.errMsg,
 	}
 }
 
@@ -617,9 +651,21 @@ func (s *Server) SampleCommand(ctx context.Context, req *pb.SampleCommandRequest
 }
 
 func (s *Server) GetProfile(_ context.Context, req *pb.GetProfileRequest) (*pb.CommandProfile, error) {
+	if node := req.GetNode(); node != "" {
+		if s.profiler == nil {
+			return &pb.CommandProfile{
+				Node:       node,
+				Profiler:   profiler.EngineName,
+				Live:       true,
+				Active:     false,
+				StatusNote: "continuous profiler not configured in guest VM",
+			}, nil
+		}
+		return s.profiler.QueryNode(node, req), nil
+	}
 	cmdID := req.GetCommandId()
 	if cmdID == "" {
-		return nil, api.Errorf(api.CodeInvalidArgs, "command_id is required")
+		return nil, api.Errorf(api.CodeInvalidArgs, "command_id or node is required")
 	}
 	mc, ok := s.getCmd(cmdID)
 	if !ok {
@@ -1059,15 +1105,17 @@ func (s *Server) handleShellConn(ctx context.Context, conn net.Conn) {
 	}
 
 	runtimeDir := s.ensureRuntimeDir(req.UID, req.GID)
-	cmd := exec.Command(argv[0], argv[1:]...)
-	cmd.Dir = dir
 	env := append([]string(nil), req.Env...)
 	if req.Term != "" {
 		env = append(env, "TERM="+req.Term)
 	}
-	if env = withDefaultRuntimeEnv(env, runtimeDir); len(env) > 0 {
-		cmd.Env = env
+	env = withDefaultRuntimeEnv(env, runtimeDir)
+	cmd, err := commandWithEnv(argv, env)
+	if err != nil {
+		_ = send(frameError, []byte("start shell: "+err.Error()))
+		return
 	}
+	cmd.Dir = dir
 	attr := &syscall.SysProcAttr{}
 	if (req.UID > 0 || req.GID > 0) && os.Geteuid() == 0 {
 		attr.Credential = &syscall.Credential{
@@ -1358,20 +1406,8 @@ func bridgeConns(a, b net.Conn) {
 }
 
 func exitCodeOf(err error) int {
-	if err == nil {
-		return 0
-	}
-	var ee *exec.ExitError
-	if errors.As(err, &ee) {
-		if ws, ok := ee.Sys().(syscall.WaitStatus); ok {
-			if ws.Signaled() {
-				return 128 + int(ws.Signal())
-			}
-			return ws.ExitStatus()
-		}
-		return ee.ExitCode()
-	}
-	return 1
+	code, _ := exitStatusOf(err)
+	return code
 }
 
 var diffHunkRe = regexp.MustCompile(`^@@ -\S+ \+(\d+)(?:,(\d+))? @@`)
@@ -1417,4 +1453,51 @@ func countLines(text []byte) int {
 		n++
 	}
 	return n
+}
+
+// commandWithEnv constructs an *exec.Cmd resolving a bare argv[0] against the
+// PATH in env rather than guestd's own PID-1 PATH (which lacks workspace tool
+// directories such as /work/.hotbed/bin).
+func commandWithEnv(argv, env []string) (*exec.Cmd, error) {
+	name := argv[0]
+	path := name
+	if !strings.Contains(name, "/") {
+		resolved, err := lookPathInEnv(name, env)
+		if err != nil {
+			return nil, err
+		}
+		path = resolved
+	}
+	cmd := &exec.Cmd{
+		Path: path,
+		Args: append([]string(nil), argv...),
+	}
+	if len(env) > 0 {
+		cmd.Env = env
+	}
+	return cmd, nil
+}
+
+func lookPathInEnv(file string, env []string) (string, error) {
+	pathVal, hasPath := "", false
+	for _, kv := range env {
+		if v, ok := strings.CutPrefix(kv, "PATH="); ok {
+			pathVal = v
+			hasPath = true
+		}
+	}
+	if !hasPath {
+		return exec.LookPath(file)
+	}
+	for _, dir := range filepath.SplitList(pathVal) {
+		if dir == "" {
+			dir = "."
+		}
+		candidate := filepath.Join(dir, file)
+		fi, err := os.Stat(candidate)
+		if err == nil && !fi.IsDir() && fi.Mode()&0o111 != 0 {
+			return candidate, nil
+		}
+	}
+	return "", &exec.Error{Name: file, Err: exec.ErrNotFound}
 }

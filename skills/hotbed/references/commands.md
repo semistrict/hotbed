@@ -126,6 +126,38 @@ List every node's bases for a project (or every project when none is named), new
 | `--node` |  | Filter to bases on this node (host name or ID). |
 | `--state` |  | Filter by base state (building, warm, stale, failed). |
 
+## `freshen`
+
+Inspect active and historical base freshens, phase/step timings, and latency bottlenecks (ls, show).
+
+### `hotbed freshen ls [PROJECT]`
+
+List active and historical base freshens with phase/step timing summaries, cold-build reasons, queue waits, and waiting workspaces.
+
+*MCP tool: `freshen_ls`*
+
+| Argument / Flag | Env | Help |
+| --- | --- | --- |
+| `PROJECT` |  | Project name (or a repo ID held by a project); empty lists every project's freshens. |
+| `--node` |  | Filter to freshens on this node (host name or ID). |
+| `--state` |  | Filter by freshen state (queued, running, parked, paused, finalizing, succeeded, failed, cancelled, dropped). |
+| `--active` |  | Only currently active (in-flight) freshens. |
+| `--runtime` |  | Filter by runtime ("chroot", "vm", "cladefs"). |
+| `--cold` |  | Only cold builds from nothing. |
+| `--since` |  | Lookback window (e.g. "1h", "24h", "7d", or "all" for full retention; default "24h"). |
+| `-n`, `--limit` |  | Maximum freshens to list (default 30; 0 for all). Summary covers all matched freshens in the window. |
+
+### `hotbed freshen show ID`
+
+Inspect one base freshen in detail: phase and step breakdown, cold reason, memory guarantee vs peak, waiting workspaces, timeline, and node admission.
+
+*MCP tool: `freshen_show`*
+
+| Argument / Flag | Env | Help |
+| --- | --- | --- |
+| `ID` |  | Freshen command ID (e.g. f-cladefs-g75-831696) or base ID (e.g. cladefs-g75). |
+| `--node` |  | Disambiguate when looking up by base ID across multiple nodes. |
+
 ## `snapshot`
 
 ### `hotbed snapshot`

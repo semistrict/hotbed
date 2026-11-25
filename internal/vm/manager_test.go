@@ -135,6 +135,20 @@ func (f *fakeKillerLauncher) Kill(ctx context.Context, name string) error {
 	return nil
 }
 
+func fakeToolsDiskOpt(t *testing.T) ManagerOption {
+	t.Helper()
+	return WithToolsDiskBuilder(func(cacheDir, _ string) (string, error) {
+		if err := os.MkdirAll(cacheDir, 0o755); err != nil {
+			return "", err
+		}
+		p := filepath.Join(cacheDir, "guestd-test.ext4")
+		if err := os.WriteFile(p, []byte("fake-ext4"), 0o644); err != nil {
+			return "", err
+		}
+		return p, nil
+	})
+}
+
 func TestBuildFirecrackerConfig(t *testing.T) {
 	mgr, err := NewManager(Config{
 		RunDir:             t.TempDir(),
@@ -232,6 +246,24 @@ func TestBuildFirecrackerConfig(t *testing.T) {
 	if strings.Contains(string(noDAXBytes), "dax_window_size") || strings.Contains(string(noDAXBytes), "dax_private_max_bytes") {
 		t.Fatalf("DisableDAX must omit dax_window_size and dax_private_max_bytes: %s", string(noDAXBytes))
 	}
+
+	// When ToolsDiskPath is set, Firecracker attaches it as the read-only root
+	// virtio-blk drive and boots /hotbed-guestd with HOTBED_ROOT=cladefs:rootfs.
+	toolsFC := mgr.BuildFirecrackerConfig(LaunchSpec{
+		ID:            "ws-tools",
+		CellHostPath:  "/mnt/cells/ws-tools",
+		CladefsVMSock: "/run/cladefsd/vm.sock",
+		ToolsDiskPath: "/var/lib/hotbed/vms/_tools/guestd-abc123.ext4",
+	}, 6, "/run/hotbed/vms/ws-tools/vsock.sock", netAlloc)
+	if !strings.Contains(toolsFC.BootSource.BootArgs, "init=/hotbed-guestd") || !strings.Contains(toolsFC.BootSource.BootArgs, "HOTBED_ROOT=cladefs:rootfs") {
+		t.Fatalf("tools-disk boot_args missing init or HOTBED_ROOT: %q", toolsFC.BootSource.BootArgs)
+	}
+	if strings.Contains(toolsFC.BootSource.BootArgs, "root=rootfs") || strings.Contains(toolsFC.BootSource.BootArgs, "rootfstype=cladefs") {
+		t.Fatalf("tools-disk boot_args must not override root=/dev/vda: %q", toolsFC.BootSource.BootArgs)
+	}
+	if len(toolsFC.Drives) != 1 || toolsFC.Drives[0].DriveID != "hotbed-tools" || !toolsFC.Drives[0].IsRootDevice || !toolsFC.Drives[0].IsReadOnly || toolsFC.Drives[0].PathOnHost != "/var/lib/hotbed/vms/_tools/guestd-abc123.ext4" {
+		t.Fatalf("unexpected tools disk drives: %+v", toolsFC.Drives)
+	}
 }
 
 func shortSockDir(t *testing.T) string {
@@ -293,7 +325,7 @@ func TestManagerStartReconnectAndStop(t *testing.T) {
 		DisableNetwork:  true,
 		BootTimeout:     5 * time.Second,
 		ShutdownTimeout: 2 * time.Second,
-	}, WithLauncher(fl), WithDialerFactory(dialerFactory))
+	}, WithLauncher(fl), WithDialerFactory(dialerFactory), fakeToolsDiskOpt(t))
 	if err != nil {
 		t.Fatalf("NewManager: %v", err)
 	}
@@ -329,13 +361,16 @@ func TestManagerStartReconnectAndStop(t *testing.T) {
 		DisableNetwork:  true,
 		BootTimeout:     5 * time.Second,
 		ShutdownTimeout: 2 * time.Second,
-	}, WithLauncher(fl), WithDialerFactory(dialerFactory))
+	}, WithLauncher(fl), WithDialerFactory(dialerFactory), fakeToolsDiskOpt(t))
 	if err != nil {
 		t.Fatalf("NewManager 2: %v", err)
 	}
 	n, err := mgr2.Reconnect(ctx)
 	if err != nil || n != 1 {
 		t.Fatalf("Reconnect = (%d, %v), want (1, nil)", n, err)
+	}
+	if _, err := os.Stat(filepath.Join(runDir, toolsDirName, "guestd-test.ext4")); err != nil {
+		t.Fatalf("Reconnect must preserve %s cache dir: %v", toolsDirName, err)
 	}
 	client, err := mgr2.ClientFor("ws-abc")
 	if err != nil {
@@ -367,7 +402,7 @@ func TestManagerStartFailsFastOnExit158(t *testing.T) {
 		RunDir:         t.TempDir(),
 		DisableNetwork: true,
 		BootTimeout:    5 * time.Second,
-	}, WithLauncher(fl2))
+	}, WithLauncher(fl2), fakeToolsDiskOpt(t))
 	if err != nil {
 		t.Fatalf("NewManager: %v", err)
 	}
@@ -478,6 +513,48 @@ func TestInjectGuestdTarUsrmergeSymlink(t *testing.T) {
 	}
 	if _, bad := seen["sbin/hotbed-guestd"]; bad {
 		t.Fatalf("must not emit sbin/hotbed-guestd under symlinked sbin")
+	}
+}
+
+func TestInjectGuestdTarWithoutGuestdOmitsBinary(t *testing.T) {
+	var baseBuf bytes.Buffer
+	tw := tar.NewWriter(&baseBuf)
+	_ = tw.WriteHeader(&tar.Header{Name: "sbin/hotbed-guestd", Typeflag: tar.TypeReg, Mode: 0o755, Size: 5})
+	_, _ = tw.Write([]byte("stale"))
+	_ = tw.WriteHeader(&tar.Header{Name: "etc/hostname", Typeflag: tar.TypeReg, Mode: 0o644, Size: 4})
+	_, _ = tw.Write([]byte("deb\n"))
+	_ = tw.Close()
+
+	outTar := filepath.Join(t.TempDir(), "out.tar")
+	if err := InjectGuestdTar(&baseBuf, "", []string{"1.1.1.1"}, outTar); err != nil {
+		t.Fatalf("InjectGuestdTar(empty guestd): %v", err)
+	}
+	f, err := os.Open(outTar)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+	tr := tar.NewReader(f)
+	seen := map[string]string{}
+	for {
+		hdr, err := tr.Next()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+		b, _ := io.ReadAll(tr)
+		seen[hdr.Name] = string(b)
+	}
+	if _, ok := seen["sbin/hotbed-guestd"]; ok {
+		t.Fatalf("empty guestdBin must omit sbin/hotbed-guestd")
+	}
+	if !strings.Contains(seen["etc/resolv.conf"], "nameserver 1.1.1.1") {
+		t.Fatalf("resolv.conf = %q", seen["etc/resolv.conf"])
+	}
+	if _, ok := seen["work/"]; !ok {
+		t.Fatalf("missing work/ directory in tar")
 	}
 }
 
@@ -605,7 +682,7 @@ func TestManagerStopPreservesMetadataWhenUnitStaysAlive(t *testing.T) {
 		DisableNetwork:  true,
 		BootTimeout:     5 * time.Second,
 		ShutdownTimeout: 100 * time.Millisecond,
-	}, WithLauncher(fl), WithDialerFactory(startTestGuestd(t)))
+	}, WithLauncher(fl), WithDialerFactory(startTestGuestd(t)), fakeToolsDiskOpt(t))
 	if err != nil {
 		t.Fatalf("NewManager: %v", err)
 	}
@@ -667,7 +744,7 @@ func TestManagerStopEscalatesToKillAndHonorsCancelledContext(t *testing.T) {
 		DisableNetwork:  true,
 		BootTimeout:     5 * time.Second,
 		ShutdownTimeout: 100 * time.Millisecond,
-	}, WithLauncher(fl), WithDialerFactory(startTestGuestd(t)))
+	}, WithLauncher(fl), WithDialerFactory(startTestGuestd(t)), fakeToolsDiskOpt(t))
 	if err != nil {
 		t.Fatalf("NewManager: %v", err)
 	}
@@ -715,7 +792,7 @@ func TestManagerReconnectReapsEphemeralBuildVMs(t *testing.T) {
 		DisableNetwork:  true,
 		BootTimeout:     5 * time.Second,
 		ShutdownTimeout: 200 * time.Millisecond,
-	}, WithLauncher(fl), WithDialerFactory(dialer))
+	}, WithLauncher(fl), WithDialerFactory(dialer), fakeToolsDiskOpt(t))
 	if err != nil {
 		t.Fatalf("NewManager 1: %v", err)
 	}
@@ -770,7 +847,7 @@ func TestManagerReconcileOrphansReapsDirlessZombiesAndPreservesOwnedAndStarting(
 		DisableNetwork:  true,
 		BootTimeout:     5 * time.Second,
 		ShutdownTimeout: 200 * time.Millisecond,
-	}, WithLauncher(fl), WithDialerFactory(startTestGuestd(t)))
+	}, WithLauncher(fl), WithDialerFactory(startTestGuestd(t)), fakeToolsDiskOpt(t))
 	if err != nil {
 		t.Fatalf("NewManager: %v", err)
 	}
@@ -815,5 +892,8 @@ func TestManagerReconcileOrphansReapsDirlessZombiesAndPreservesOwnedAndStarting(
 		if st, _ := fl.Status(ctx, "hotbed-vm-"+keep); !st.Alive() {
 			t.Fatalf("owned/starting VM %s was erroneously killed", keep)
 		}
+	}
+	if _, err := os.Stat(filepath.Join(runDir, toolsDirName, "guestd-test.ext4")); err != nil {
+		t.Fatalf("ReconcileOrphans must preserve %s cache dir: %v", toolsDirName, err)
 	}
 }

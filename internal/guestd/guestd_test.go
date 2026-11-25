@@ -755,6 +755,16 @@ func TestGuestdCommandProfileEndpoints(t *testing.T) {
 		t.Fatalf("unexpected guest CommandProfile: active=%v live=%v samples=%d", got.Active, got.Live, got.TotalSamples)
 	}
 
+	gotNode, err := client.CommandProfile(ctx, &pb.GetProfileRequest{
+		Target: &pb.GetProfileRequest_Node{Node: "vm:ws-prof"},
+	})
+	if err != nil {
+		t.Fatalf("CommandProfile(node): %v", err)
+	}
+	if !gotNode.Active || gotNode.Node != "vm:ws-prof" || gotNode.TotalSamples != 1 {
+		t.Fatalf("unexpected guest NodeProfile: active=%v node=%q samples=%d", gotNode.Active, gotNode.Node, gotNode.TotalSamples)
+	}
+
 	if err := client.ForgetCommandProfile(ctx, "cmd-prof-1"); err != nil {
 		t.Fatalf("ForgetCommandProfile: %v", err)
 	}

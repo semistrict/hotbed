@@ -77,6 +77,11 @@ const workerEnv = {
 		worker: "hotbed-controller",
 		exportName: "ControllerDO",
 	},
+	TENANT_REGISTRY: {
+		type: "durable-object",
+		worker: "hotbed-controller",
+		exportName: "TenantRegistryDO",
+	},
 	OWNER_TOKEN: { type: "text", value: opts.token },
 	JOIN_TOKEN: { type: "text", value: opts.joinToken },
 	CLUSTER_OWNER: { type: "text", value: opts.owner },
@@ -96,6 +101,10 @@ const workerConfig = {
 	},
 	exports: {
 		ControllerDO: {
+			type: "durable-object",
+			storage: "sqlite",
+		},
+		TenantRegistryDO: {
 			type: "durable-object",
 			storage: "sqlite",
 		},

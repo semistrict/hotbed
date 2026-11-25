@@ -134,6 +134,11 @@ message CommandStatus {
   int64 started_ms = 10;
   int64 exited_ms = 11;
   string error = 12;
+  int32 signal = 13;
+  bool oom_killed = 14;
+  string result = 15;
+  int64 memory_peak = 16;
+  int64 memory_swap_peak = 17;
 }
 
 message StatusRequest {

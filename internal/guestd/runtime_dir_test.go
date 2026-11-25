@@ -155,3 +155,66 @@ func TestGuestdCreatesRuntimeDirAndExportsXDGRuntimeDir(t *testing.T) {
 		t.Errorf("%s perm after shell = %04o, want 0700", wantDir, got)
 	}
 }
+
+func TestGuestdResolvesCommandAndShellUsingRequestEnvPATH(t *testing.T) {
+	workDir := t.TempDir()
+	runDir := t.TempDir()
+	binDir := t.TempDir()
+	toolPath := filepath.Join(binDir, "hotbed-env-path-probe")
+	if err := os.WriteFile(toolPath, []byte("#!/bin/sh\nprintf 'from-req-path:%s' \"$1\"\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	client := startTestGuestdWithRunDir(t, workDir, runDir)
+	ctx := context.Background()
+	uid, gid := os.Getuid(), os.Getgid()
+	if uid == 0 {
+		uid, gid = 1000, 1000
+	}
+	reqEnv := []string{"PATH=" + binDir + ":/usr/bin:/bin"}
+
+	// 1. StartCommand resolves bare argv[0] from req.Env's PATH even though
+	//    binDir is absent from guestd's own process PATH.
+	if _, err := client.StartCommand(ctx, &guestdv1.StartCommandRequest{
+		Id:   "cmd-env-path",
+		Argv: []string{"hotbed-env-path-probe", "cmd-ok"},
+		Dir:  workDir,
+		Env:  reqEnv,
+		Uid:  int32(uid),
+		Gid:  int32(gid),
+	}); err != nil {
+		t.Fatalf("StartCommand with bare argv[0] in req.Env PATH: %v", err)
+	}
+	var out bytes.Buffer
+	if _, err := client.StreamLogs(ctx, "cmd-env-path", 0, true, &out); err != nil {
+		t.Fatalf("StreamLogs: %v", err)
+	}
+	if got := out.String(); got != "from-req-path:cmd-ok" {
+		t.Fatalf("StartCommand output = %q, want %q", got, "from-req-path:cmd-ok")
+	}
+
+	// 2. StartShell resolves bare argv[0] from req.Env's PATH as well.
+	var shOut, shErr bytes.Buffer
+	h, err := client.StartShell(ctx, guestd.ShellOpenRequest{
+		Argv: []string{"hotbed-env-path-probe", "shell-ok"},
+		Dir:  workDir,
+		Env:  reqEnv,
+		UID:  uid,
+		GID:  gid,
+	}, unit.ShellIO{
+		Stdin:  bytes.NewReader(nil),
+		Stdout: &shOut,
+		Stderr: &shErr,
+	})
+	if err != nil {
+		t.Fatalf("StartShell with bare argv[0] in req.Env PATH: %v", err)
+	}
+	code := h.Wait()
+	_ = h.Close()
+	if code != 0 {
+		t.Fatalf("shell exit=%d stderr=%q", code, shErr.String())
+	}
+	if got := shOut.String(); got != "from-req-path:shell-ok" {
+		t.Fatalf("StartShell output = %q, want %q", got, "from-req-path:shell-ok")
+	}
+}

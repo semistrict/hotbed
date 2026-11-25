@@ -1670,6 +1670,27 @@ func Supervise(context.Context, string, func(string) (hotbedv1connect.ClusterSer
 	return api.Errorf(api.CodePlatformNotSupported, "worker supervise is for macOS QEMU VMs; this worker runs directly on Linux")
 }
 
+func DaemonVMStatus(context.Context, string) DaemonVMState {
+	return DaemonVMState{Configured: false, State: "unconfigured"}
+}
+
+func SuperviseVMForDaemon(ctx context.Context, _ string, _ func(string) (hotbedv1connect.ClusterServiceClient, error), _ *slog.Logger, onState func(DaemonVMState)) {
+	if onState != nil {
+		onState(DaemonVMState{Configured: false, State: "unconfigured"})
+	}
+	<-ctx.Done()
+}
+
+func StartDaemonVM(context.Context, string) error {
+	return api.Errorf(api.CodePlatformNotSupported, "local VM workers are only supported on macOS")
+}
+
+func StopDaemonVM(context.Context, string) error {
+	return api.Errorf(api.CodePlatformNotSupported, "local VM workers are only supported on macOS")
+}
+
+func DisableLegacyWorkerLaunchAgent(context.Context, string) error { return nil }
+
 func zpoolExists(ctx context.Context, name string) bool {
 	return zpoolExistsWith(ctx, runCmd, name)
 }

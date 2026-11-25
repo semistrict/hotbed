@@ -301,9 +301,10 @@ type State struct {
 	Result    string
 	OOMKilled bool
 	PID       int
-	Cgroup    string // path under /sys/fs/cgroup
-	CPUNanos  uint64
-	Memory    int64
+	Cgroup     string // path under /sys/fs/cgroup
+	CPUNanos   uint64
+	Memory     int64
+	MemoryPeak int64
 }
 
 const statusProperties = "Id,LoadState,ActiveState,SubState,Result,ExecMainStatus,ExecMainCode,MainPID,ControlGroup,CPUUsageNSec,MemoryCurrent,FreezerState"

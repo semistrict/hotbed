@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/semistrict/hotbed/internal/daemon"
 	"github.com/semistrict/hotbed/internal/t3bridge"
 )
 
@@ -215,24 +216,24 @@ func TestT3BridgeEndToEndWithControllerDO(t *testing.T) {
 	}
 }
 
-func TestT3BridgeCLICommands(t *testing.T) {
+func TestDaemonCLICommands(t *testing.T) {
 	c := newCluster(t)
-	statePath := filepath.Join(t.TempDir(), "state.json")
+	dir := t.TempDir()
 
 	// Status works in JSON and plain text modes.
-	var st t3bridge.ServiceStatus
-	c.ok(&st, "t3-bridge", "status", "--state-file", statePath)
-	if st.StateFile != statePath {
-		t.Fatalf("status stateFile = %q, want %q", st.StateFile, statePath)
+	var st daemon.ServiceStatus
+	c.ok(&st, "daemon", "status", "--dir", dir)
+	if want := filepath.Join(dir, "daemon-status.json"); st.StatusFile != want {
+		t.Fatalf("status statusFile = %q, want %q", st.StatusFile, want)
 	}
 
-	code, plain, stderr := c.hotbed("t3-bridge", "status", "--state-file", statePath)
+	code, plain, stderr := c.hotbed("daemon", "status", "--dir", dir)
 	if code != exitOK || !strings.Contains(plain, "installed=") {
-		t.Fatalf("plain t3-bridge status: code=%d stdout=%q stderr=%q", code, plain, stderr)
+		t.Fatalf("plain daemon status: code=%d stdout=%q stderr=%q", code, plain, stderr)
 	}
 
-	// Default subcommand ("run") parses flags directly on `hotbed t3-bridge`.
-	code, _, stderr = c.hotbed("t3-bridge", "--debounce", "0s")
+	// Default subcommand ("run") parses flags directly on `hotbed daemon`.
+	code, _, stderr = c.hotbed("daemon", "--debounce", "0s")
 	if code == exitOK || !strings.Contains(stderr, "--debounce must be positive") {
 		t.Fatalf("expected --debounce validation error, got code=%d stderr=%q", code, stderr)
 	}

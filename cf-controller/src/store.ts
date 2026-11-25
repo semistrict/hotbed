@@ -13,6 +13,7 @@ import {
 import * as dbSchema from "./db/schema.ts";
 import {
 	ActorKind,
+	BaseFreshenSchema,
 	BaseSchema,
 	CladefsCellSchema,
 	ClusterEventSchema,
@@ -74,6 +75,7 @@ import {
 	WorkspaceUpdate_What,
 	WorkspaceUpdateSchema,
 	type Base,
+	type BaseFreshen,
 	type CladefsCell,
 	type Checkpoint,
 	type ClusterEvent,
@@ -120,6 +122,12 @@ import {
 	CheckpointSchema,
 } from "./gen/hotbed/v1/hotbed_pb.ts";
 import { ErrorCode, hotbedError } from "./errors.ts";
+import {
+	freshenIdForBase,
+	freshenStateName,
+	mergeBaseIntoFreshen,
+	mergeCommandIntoFreshen,
+} from "./freshens.ts";
 import { firstLine } from "./gitops.ts";
 import type { NodeRow } from "./placement.ts";
 import { isCommandLive } from "./standby.ts";
@@ -1775,6 +1783,15 @@ export class ControllerStore {
 				base: b.base,
 			};
 		}
+		const bf = this.getBaseFreshen(id);
+		if (bf) {
+			return {
+				session: "",
+				node: bf.nodeId,
+				histChecked: true,
+				baseChecked: true,
+			};
+		}
 		throw hotbedError(ErrorCode.NotFound, `no command ${id}`);
 	}
 
@@ -1895,6 +1912,7 @@ export class ControllerStore {
 							this.dropState(nodeId, "base", bc.base.id);
 						} else {
 							this.putState(nodeId, "base", bc.base.id, marshal(BaseSchema, bc.base));
+							this.upsertBaseFreshenFromBase(nodeId, bc.base, bc.what, bc.detail, Number(ev.at));
 						}
 					}
 					break;
@@ -1933,6 +1951,9 @@ export class ControllerStore {
 							this.dropState(nodeId, "command", cmd.id);
 						} else {
 							this.putState(nodeId, "command", cmd.id, marshal(CommandSchema, cmd));
+							if (cmd.kind === "freshen") {
+								this.upsertBaseFreshenFromCommand(nodeId, cmd, cc.what, cc.detail, Number(ev.at));
+							}
 							this.sql.exec(
 								"INSERT OR IGNORE INTO commands (id, session_id, node_id, workspace_id, created_at) VALUES (?, ?, ?, ?, ?)",
 								cmd.id,
@@ -2036,13 +2057,19 @@ export class ControllerStore {
 		}
 
 		this.sql.exec("DELETE FROM node_state WHERE node_id = ?", nodeId);
-		for (const b of cp.bases) this.putState(nodeId, "base", b.id, marshal(BaseSchema, b));
+		for (const b of cp.bases) {
+			this.putState(nodeId, "base", b.id, marshal(BaseSchema, b));
+			this.upsertBaseFreshenFromBase(nodeId, b, "", "", nowMs);
+		}
 		for (const w of cp.workspaces) {
 			this.putState(nodeId, "workspace", w.id, marshal(WorkspaceSchema, w));
 			this.noteWorkspace(nodeId, w);
 		}
 		for (const c of cp.commands) {
 			this.putState(nodeId, "command", c.id, marshal(CommandSchema, c));
+			if (c.kind === "freshen") {
+				this.upsertBaseFreshenFromCommand(nodeId, c, "", "", nowMs);
+			}
 			this.sql.exec(
 				"INSERT OR IGNORE INTO commands (id, session_id, node_id, workspace_id, created_at) VALUES (?, ?, ?, ?, ?)",
 				c.id,
@@ -3590,11 +3617,20 @@ export class ControllerStore {
 		return next;
 	}
 
-	upsertSharedBases(nodeId: string, arch: string, cells: CladefsCell[], nowMs: number): void {
+	upsertSharedBases(
+		nodeId: string,
+		arch: string,
+		cells: CladefsCell[],
+		nowMs: number,
+		allowedTenant?: bigint | null,
+	): void {
 		if (cells.length === 0) return;
 		this.transactionSync(() => {
 			for (const c of cells) {
 				if (!c.project || c.cell === 0n || c.version === 0n) continue;
+				if (allowedTenant !== undefined && allowedTenant !== null && c.tenant !== allowedTenant) {
+					continue;
+				}
 				const cellArch = c.arch || arch;
 				if (!cellArch) continue;
 				this.sql.exec(
@@ -3621,18 +3657,35 @@ export class ControllerStore {
 		});
 	}
 
-	latestSharedBase(project: string, arch: string): CladefsCell | undefined {
+	latestSharedBase(
+		project: string,
+		arch: string,
+		allowedTenant?: bigint | null,
+	): CladefsCell | undefined {
 		if (!project || !arch) return undefined;
-		const rows = this.sql
-			.exec(
-				`SELECT project, arch, recipe, base_id, tenant, cell, version
-				 FROM shared_bases
-				 WHERE project = ? AND arch = ?
-				 ORDER BY updated_at DESC LIMIT 1`,
-				project,
-				arch,
-			)
-			.toArray();
+		const rows =
+			allowedTenant !== undefined && allowedTenant !== null
+				? this.sql
+						.exec(
+							`SELECT project, arch, recipe, base_id, tenant, cell, version
+							 FROM shared_bases
+							 WHERE project = ? AND arch = ? AND tenant = ?
+							 ORDER BY updated_at DESC LIMIT 1`,
+							project,
+							arch,
+							allowedTenant.toString(),
+						)
+						.toArray()
+				: this.sql
+						.exec(
+							`SELECT project, arch, recipe, base_id, tenant, cell, version
+							 FROM shared_bases
+							 WHERE project = ? AND arch = ?
+							 ORDER BY updated_at DESC LIMIT 1`,
+							project,
+							arch,
+						)
+						.toArray();
 		if (rows.length === 0) return undefined;
 		const r = rows[0];
 		return create(CladefsCellSchema, {
@@ -3646,12 +3699,30 @@ export class ControllerStore {
 		});
 	}
 
-	hasSharedBase(project: string, arch: string): boolean {
+	hasSharedBase(project: string, arch: string, allowedTenant?: bigint | null): boolean {
 		if (!project || !arch) return false;
+		if (allowedTenant !== undefined && allowedTenant !== null) {
+			return (
+				this.sql
+					.exec(
+						"SELECT 1 FROM shared_bases WHERE project = ? AND arch = ? AND tenant = ? LIMIT 1",
+						project,
+						arch,
+						allowedTenant.toString(),
+					)
+					.toArray().length > 0
+			);
+		}
 		return (
 			this.sql
 				.exec("SELECT 1 FROM shared_bases WHERE project = ? AND arch = ? LIMIT 1", project, arch)
 				.toArray().length > 0
+		);
+	}
+
+	hasLegacyTenantZeroData(): boolean {
+		return (
+			this.sql.exec("SELECT 1 FROM shared_bases WHERE tenant = '0' LIMIT 1").toArray().length > 0
 		);
 	}
 
@@ -4370,12 +4441,94 @@ export class ControllerStore {
 		return merged;
 	}
 
+	// ---- base_freshens --------------------------------------------------
+
+	private saveBaseFreshen(f: BaseFreshen): void {
+		this.sql.exec(
+			`INSERT INTO base_freshens (id, node_id, base_id, project, runtime, state, cold, created_at, started_at, ended_at, doc)
+			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+			 ON CONFLICT (id) DO UPDATE SET
+			   node_id = excluded.node_id,
+			   base_id = excluded.base_id,
+			   project = excluded.project,
+			   runtime = excluded.runtime,
+			   state = excluded.state,
+			   cold = excluded.cold,
+			   created_at = CASE WHEN base_freshens.created_at > 0 AND base_freshens.created_at < excluded.created_at THEN base_freshens.created_at ELSE excluded.created_at END,
+			   started_at = COALESCE(excluded.started_at, base_freshens.started_at),
+			   ended_at = COALESCE(excluded.ended_at, base_freshens.ended_at),
+			   doc = excluded.doc`,
+			f.id,
+			f.nodeId,
+			f.baseId,
+			f.project,
+			f.runtime || "chroot",
+			freshenStateName(f.state),
+			f.cold ? 1 : 0,
+			Number(f.createdAt),
+			f.startedAt !== undefined ? Number(f.startedAt) : null,
+			f.endedAt !== undefined ? Number(f.endedAt) : null,
+			marshal(BaseFreshenSchema, f),
+		);
+	}
+
+	private upsertBaseFreshenFromBase(
+		nodeId: string,
+		b: Base,
+		what: string,
+		detail: string,
+		eventAtMs: number,
+	): void {
+		const id = freshenIdForBase(nodeId, b);
+		const existing = this.getBaseFreshen(id);
+		const merged = mergeBaseIntoFreshen(existing, nodeId, b, what, detail, eventAtMs);
+		this.saveBaseFreshen(merged);
+	}
+
+	private upsertBaseFreshenFromCommand(
+		nodeId: string,
+		c: Command,
+		what: string,
+		detail: string,
+		eventAtMs: number,
+	): void {
+		const existing = this.getBaseFreshen(c.id);
+		const merged = mergeCommandIntoFreshen(existing, nodeId, c, what, detail, eventAtMs);
+		this.saveBaseFreshen(merged);
+	}
+
+	getBaseFreshen(id: string): BaseFreshen | null {
+		const rows = this.sql.exec("SELECT doc FROM base_freshens WHERE id = ?", id).toArray();
+		if (rows.length === 0) return null;
+		return unmarshal(BaseFreshenSchema, str(rows[0].doc));
+	}
+
+	listBaseFreshens(sinceMs: number): BaseFreshen[] {
+		const rows =
+			sinceMs > 0
+				? this.sql
+						.exec(
+							`SELECT doc FROM base_freshens
+							 WHERE ended_at IS NULL OR created_at >= ? OR ended_at >= ?
+							 ORDER BY created_at DESC`,
+							sinceMs,
+							sinceMs,
+						)
+						.toArray()
+				: this.sql.exec("SELECT doc FROM base_freshens ORDER BY created_at DESC").toArray();
+		return rows.map((r) => unmarshal(BaseFreshenSchema, str(r.doc)));
+	}
+
 	// ---- prune ----------------------------------------------------------
 
 	prune(nowMs: number): void {
 		const histCutoff = nowMs - KEEP_HISTORY_MS;
 		this.sql.exec("DELETE FROM samples WHERE t < ?", nowMs - KEEP_SAMPLES_MS);
 		this.sql.exec("DELETE FROM history WHERE ended_at < ?", histCutoff);
+		this.sql.exec(
+			"DELETE FROM base_freshens WHERE ended_at IS NOT NULL AND ended_at < ?",
+			histCutoff,
+		);
 		this.sql.exec("DELETE FROM command_profiles WHERE ended_at < ?", histCutoff);
 		this.sql.exec("DELETE FROM command_diagnostics WHERE created_at < ?", histCutoff);
 		this.sql.exec(
@@ -4385,7 +4538,8 @@ export class ControllerStore {
 		this.sql.exec(
 			`DELETE FROM commands WHERE created_at < ?
 			 AND id NOT IN (SELECT id FROM node_state WHERE kind = 'command')
-			 AND id NOT IN (SELECT id FROM history)`,
+			 AND id NOT IN (SELECT id FROM history)
+			 AND id NOT IN (SELECT id FROM base_freshens)`,
 			histCutoff,
 		);
 		this.sql.exec(

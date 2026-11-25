@@ -349,6 +349,11 @@ type command struct {
 	// profileSeq is the event that carries the command's profile to the
 	// controller, once it ended with one (0 if not known).
 	profileSeq int64
+	// vmProfile holds the guest VM's final eBPF profile captured synchronously
+	// in finishOutput (outside e.mu) before endBy marks the command ended, so
+	// fast session teardown cannot race the vsock snapshot.
+	vmProfile     *pb.CommandProfile
+	vmProfileDone bool
 	// freezeMu serializes freeze/thaw transitions on this command so a losing
 	// soft-limit freeze or park cannot thaw a unit that another transition
 	// paused or parked. Always acquire freezeMu before e.mu.
@@ -398,10 +403,11 @@ type command struct {
 	// tmpGone closes once its temporary directory is removed; nil until it
 	// ends in this worker's life.
 	tmpGone chan struct{}
-	// lastFreshenStep and lastFreshenDone track the last step progress
-	// broadcast to WatchWorkspace watchers for a freshen command.
-	lastFreshenStep int
-	lastFreshenDone bool
+	// lastFreshenStep, lastFreshenDone, and lastFreshenGitDone track the last
+	// step/phase progress broadcast for a freshen command.
+	lastFreshenStep    int
+	lastFreshenDone    bool
+	lastFreshenGitDone bool
 	// managedFreshen is non-nil for VM / cladefs-FUSE base builds scheduled
 	// through Engine admission control and finalized by EnsureProjectBase.
 	managedFreshen *managedFreshen

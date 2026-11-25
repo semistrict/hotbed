@@ -201,8 +201,10 @@ jobs:
               -o "out/hotbed-${p%/*}-${p#*/}" ./cmd/hotbed
           done
           for p in linux/amd64 linux/arm64; do
-            CGO_ENABLED=0 GOOS=${p%/*} GOARCH=${p#*/} go build -trimpath \
-              -ldflags "-X github.com/semistrict/hotbed/internal/version.build=${{ github.run_number }}" \
+            # Omit VCS commit metadata so unrelated hotbed commits produce a
+            # byte-identical hotbed-guestd and do not invalidate VM base images
+            # (which otherwise force cold Debian + project base rebuilds).
+            CGO_ENABLED=0 GOOS=${p%/*} GOARCH=${p#*/} go build -trimpath -buildvcs=false \
               -o "out/hotbed-guestd-${p%/*}-${p#*/}" ./cmd/hotbed-guestd
           done
           (cd out && sha256sum hotbed-* > SHA256SUMS)

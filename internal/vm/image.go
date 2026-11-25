@@ -20,20 +20,18 @@ import (
 type GuestImageOptions struct {
 	ImageRef   string   // OCI image reference (e.g. baseimage.DefaultImage)
 	Arch       string   // Linux GOARCH ("amd64" or "arm64")
-	GuestdBin  string   // host path to static Linux hotbed-guestd binary
+	GuestdBin  string   // optional host path to inject /sbin/hotbed-guestd (empty when booting from the read-only tools disk)
 	DNSServers []string // nameservers written to /etc/resolv.conf
 	OutTar     string   // destination tar path (must be outside PrivateTmp if cladefsd reads it)
 }
 
 // BuildGuestTar pulls ImageRef via go-containerregistry, flattens its layers,
-// injects /sbin/hotbed-guestd, /work, and /etc/resolv.conf, and writes a single
-// uncompressed tar file suitable for cladefsd.ImportImage without requiring Docker.
+// ensures /work and /etc/resolv.conf (plus /sbin/hotbed-guestd when GuestdBin
+// is set), and writes a single uncompressed tar file suitable for
+// cladefsd.ImportImage without requiring Docker.
 func BuildGuestTar(ctx context.Context, opts GuestImageOptions) error {
 	if opts.ImageRef == "" {
 		return fmt.Errorf("vm image: ImageRef is required")
-	}
-	if opts.GuestdBin == "" {
-		return fmt.Errorf("vm image: GuestdBin is required")
 	}
 	if opts.OutTar == "" {
 		return fmt.Errorf("vm image: OutTar is required")
@@ -59,13 +57,18 @@ func BuildGuestTar(ctx context.Context, opts GuestImageOptions) error {
 	return InjectGuestdTar(rc, opts.GuestdBin, opts.DNSServers, opts.OutTar)
 }
 
-// InjectGuestdTar copies all entries from baseTar into outTar while injecting
-// /sbin/hotbed-guestd (0755), /work (0755), and /etc/resolv.conf (0644).
-// Any pre-existing entry at those exact paths in baseTar is replaced cleanly.
+// InjectGuestdTar copies all entries from baseTar into outTar while ensuring
+// /work (0755) and /etc/resolv.conf (0644), and optionally injecting
+// /sbin/hotbed-guestd (0755) when guestdBin is non-empty. Any pre-existing
+// entry at those exact paths in baseTar is replaced cleanly.
 func InjectGuestdTar(baseTar io.Reader, guestdBin string, dnsServers []string, outTar string) error {
-	guestdBytes, err := os.ReadFile(guestdBin)
-	if err != nil {
-		return fmt.Errorf("vm image: read guestd binary %s: %w", guestdBin, err)
+	var guestdBytes []byte
+	if guestdBin != "" {
+		var err error
+		guestdBytes, err = os.ReadFile(guestdBin)
+		if err != nil {
+			return fmt.Errorf("vm image: read guestd binary %s: %w", guestdBin, err)
+		}
 	}
 	if err := os.MkdirAll(filepath.Dir(outTar), 0o755); err != nil {
 		return fmt.Errorf("vm image: mkdir %s: %w", filepath.Dir(outTar), err)
@@ -129,7 +132,7 @@ func InjectGuestdTar(baseTar io.Reader, guestdBin string, dnsServers []string, o
 		}
 	}
 
-	if !hasSbin {
+	if len(guestdBytes) > 0 && !hasSbin {
 		if err := tw.WriteHeader(&tar.Header{Name: "sbin/", Typeflag: tar.TypeDir, Mode: 0o755}); err != nil {
 			return err
 		}
@@ -145,17 +148,20 @@ func InjectGuestdTar(baseTar io.Reader, guestdBin string, dnsServers []string, o
 		}
 	}
 
-	// Inject /sbin/hotbed-guestd (or resolved usrmerge target e.g. usr/sbin/hotbed-guestd).
-	if err := tw.WriteHeader(&tar.Header{
-		Name:     sbinDir + "/hotbed-guestd",
-		Typeflag: tar.TypeReg,
-		Mode:     0o755,
-		Size:     int64(len(guestdBytes)),
-	}); err != nil {
-		return fmt.Errorf("vm image: write guestd header: %w", err)
-	}
-	if _, err := tw.Write(guestdBytes); err != nil {
-		return fmt.Errorf("vm image: write guestd body: %w", err)
+	// Inject /sbin/hotbed-guestd only when explicitly requested (normal VMs load
+	// hotbed-guestd from a separate read-only virtio-blk tools disk).
+	if len(guestdBytes) > 0 {
+		if err := tw.WriteHeader(&tar.Header{
+			Name:     sbinDir + "/hotbed-guestd",
+			Typeflag: tar.TypeReg,
+			Mode:     0o755,
+			Size:     int64(len(guestdBytes)),
+		}); err != nil {
+			return fmt.Errorf("vm image: write guestd header: %w", err)
+		}
+		if _, err := tw.Write(guestdBytes); err != nil {
+			return fmt.Errorf("vm image: write guestd body: %w", err)
+		}
 	}
 
 	// Inject /etc/resolv.conf

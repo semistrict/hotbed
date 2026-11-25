@@ -161,3 +161,139 @@ func TestProjectBasesCLIAndMCP(t *testing.T) {
 		t.Fatalf("MCP project_bases(filtered) = %+v", mcpFiltered.Bases)
 	}
 }
+
+func TestFreshenCLIAndMCP(t *testing.T) {
+	c := newFleet(t, 2)
+	origin := upstream(t)
+	c.addRepo(origin)
+	c.ok(nil, "step", "set", "-p", "app", "prep-step", "--", "echo ok")
+
+	// 1. Cold build on asahimbp (g1) and mini (g1).
+	c.ok(nil, "session", "start", "fresh-fox")
+	ws1 := c.workspace("fresh-fox", &pb.Placement{Node: "asahimbp"})
+	ws2 := c.workspace("fresh-fox", &pb.Placement{Node: "mini"})
+	if ws1.BaseId != "app-g1" || ws2.BaseId != "app-g1" {
+		t.Fatalf("workspaces = %s / %s, want app-g1", ws1.BaseId, ws2.BaseId)
+	}
+
+	// 2. Failing incremental freshen on asahimbp (g2), then scratch rebuild (g3).
+	c.ok(nil, "step", "set", "-p", "app", "broken-step", "--", "exit 7")
+	c.ok(nil, "session", "start", "fresh-owl")
+	_ = c.workspace("fresh-owl", &pb.Placement{Node: "asahimbp"})
+
+	c.eventually("freshen ls reports cold g1 and failed g2 on asahimbp", func() bool {
+		var res pb.ListFreshensResponse
+		c.ok(&res, "freshen", "ls", "app", "--node", "asahimbp")
+		var gotG1, gotG2 bool
+		for _, f := range res.Freshens {
+			if f.BaseId == "app-g1" && f.State == pb.FreshenState_FRESHEN_STATE_SUCCEEDED {
+				gotG1 = true
+			}
+			if f.BaseId == "app-g2" && f.State == pb.FreshenState_FRESHEN_STATE_FAILED {
+				gotG2 = true
+			}
+		}
+		return gotG1 && gotG2
+	})
+
+	// Remove the broken step, trigger a scratch rebuild, and warm g3 on asahimbp.
+	c.ok(nil, "step", "rm", "-p", "app", "broken-step")
+	c.ok(nil, "project", "rebuild", "app")
+	c.ok(nil, "session", "start", "fresh-elk")
+	ws3 := c.workspace("fresh-elk", &pb.Placement{Node: "asahimbp"})
+	if ws3.BaseId != "app-g3" {
+		t.Fatalf("rebuilt workspace base = %s, want app-g3", ws3.BaseId)
+	}
+
+	c.eventually("freshen ls reports cold g3 with scratch_epoch and preserves g2", func() bool {
+		var res pb.ListFreshensResponse
+		c.ok(&res, "freshen", "ls", "app", "--node", "asahimbp")
+		var gotG3, gotG2 bool
+		for _, f := range res.Freshens {
+			if f.BaseId == "app-g3" && f.State == pb.FreshenState_FRESHEN_STATE_SUCCEEDED && f.Cold && f.ColdReason == "scratch_epoch" {
+				gotG3 = true
+			}
+			if f.BaseId == "app-g2" && f.State == pb.FreshenState_FRESHEN_STATE_FAILED && f.FailedStep == "broken-step" {
+				gotG2 = true
+			}
+		}
+		return gotG3 && gotG2
+	})
+
+	// 3. Check ListFreshens summary, filters, and plain-text report.
+	var ls pb.ListFreshensResponse
+	c.ok(&ls, "freshen", "ls", "app")
+	if ls.Summary == nil || ls.Summary.Total < 4 {
+		t.Fatalf("freshen ls summary = %+v, want >= 4 total", ls.Summary)
+	}
+	if ls.Summary.Succeeded < 3 || ls.Summary.Failed < 1 || ls.Summary.Cold < 3 {
+		t.Fatalf("unexpected summary counts: %+v", ls.Summary)
+	}
+	if len(ls.Summary.ByNodeProject) < 2 {
+		t.Fatalf("byNodeProject = %+v, want >= 2", ls.Summary.ByNodeProject)
+	}
+
+	code, plain, stderr := c.hotbed("freshen", "ls", "app")
+	if code != exitOK {
+		t.Fatalf("freshen ls plain exited %d: %s", code, stderr)
+	}
+	for _, want := range []string{"Base freshens", "By node & project:", "Slowest steps:", "scratch_epoch", "failed=broken-step"} {
+		if !strings.Contains(plain, want) {
+			t.Errorf("freshen ls plain missing %q:\n%s", want, plain)
+		}
+	}
+
+	// 4. Filter --cold and --state failed.
+	var onlyFailed pb.ListFreshensResponse
+	c.ok(&onlyFailed, "freshen", "ls", "--state", "failed")
+	if len(onlyFailed.Freshens) != 1 || onlyFailed.Freshens[0].BaseId != "app-g2" {
+		t.Fatalf("freshen ls --state failed = %+v", onlyFailed.Freshens)
+	}
+	g2CmdID := onlyFailed.Freshens[0].Id
+
+	// 5. `hotbed freshen show` by command ID and by base ID + --node.
+	var shown pb.GetFreshenResponse
+	c.ok(&shown, "freshen", "show", g2CmdID)
+	if shown.Freshen == nil || shown.Freshen.Id != g2CmdID || shown.Freshen.FailedStep != "broken-step" {
+		t.Fatalf("freshen show %s = %+v", g2CmdID, &shown)
+	}
+	if shown.Freshen.FromBaseId != "app-g1" {
+		t.Errorf("freshen g2 FromBaseId = %q, want app-g1", shown.Freshen.FromBaseId)
+	}
+
+	// Base ID app-g1 exists on both nodes -> conflict without --node, succeeds with --node.
+	if _, e := c.fails("freshen", "show", "app-g1"); e.Code != api.CodeConflict {
+		t.Fatalf("freshen show ambiguous app-g1 = %+v, want CONFLICT", e)
+	}
+	var shownG1 pb.GetFreshenResponse
+	c.ok(&shownG1, "freshen", "show", "app-g1", "--node", "asahimbp")
+	if shownG1.Freshen == nil || shownG1.Freshen.ColdReason != "no_previous_base" {
+		t.Fatalf("freshen show app-g1 --node asahimbp = %+v, want cold_reason=no_previous_base", shownG1.Freshen)
+	}
+
+	code, showPlain, stderr := c.hotbed("freshen", "show", g2CmdID)
+	if code != exitOK {
+		t.Fatalf("freshen show plain exited %d: %s", code, stderr)
+	}
+	for _, want := range []string{"Freshen " + g2CmdID, "Timings & resources:", "Steps:", "broken-step"} {
+		if !strings.Contains(showPlain, want) {
+			t.Errorf("freshen show plain missing %q:\n%s", want, showPlain)
+		}
+	}
+
+	// 6. MCP tools `freshen_ls` and `freshen_show`.
+	t.Setenv("T3CODE_THREAD_ID", "thread-freshen-mcp")
+	m := c.mcp()
+	defer m.stop()
+
+	mcpLs := &pb.ListFreshensResponse{}
+	m.call(mcpLs, "freshen_ls", map[string]any{"project": "app", "cold": true})
+	if len(mcpLs.Freshens) < 3 {
+		t.Fatalf("MCP freshen_ls(cold=true) = %d, want >= 3", len(mcpLs.Freshens))
+	}
+	mcpShow := &pb.GetFreshenResponse{}
+	m.call(mcpShow, "freshen_show", map[string]any{"id": g2CmdID})
+	if mcpShow.Freshen == nil || mcpShow.Freshen.BaseId != "app-g2" {
+		t.Fatalf("MCP freshen_show = %+v", mcpShow)
+	}
+}

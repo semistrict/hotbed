@@ -8,13 +8,19 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/semistrict/hotbed/internal/baseimage"
 	"github.com/semistrict/hotbed/internal/cladefs"
 	pb "github.com/semistrict/hotbed/internal/gen/hotbed/v1"
+	"github.com/semistrict/hotbed/internal/runtime"
+	"github.com/semistrict/hotbed/internal/statedir"
+	"github.com/semistrict/hotbed/internal/storage"
 	"github.com/semistrict/hotbed/internal/unit"
 )
 
@@ -204,7 +210,7 @@ func TestCladefsFUSELoadStateIndexesMultipleBaseImagesByKey(t *testing.T) {
 		wantKey:        101,
 		"zzzz-old-key": 999,
 	} {
-		raw, _ := json.Marshal(cladefs.CellRef{RelPath: "baseimages/fuse-" + key, Tenant: 1, Cell: cell, Version: 2})
+		raw, _ := json.Marshal(cladefs.CellRef{RelPath: "baseimages/fuse-" + key, Tenant: 0, Cell: cell, Version: 2})
 		if err := os.WriteFile(filepath.Join(cacheDir, "baseimage-"+key+".json"), raw, 0o644); err != nil {
 			t.Fatal(err)
 		}
@@ -213,5 +219,207 @@ func TestCladefsFUSELoadStateIndexesMultipleBaseImagesByKey(t *testing.T) {
 	got, ok := b.baseImages[wantKey]
 	if !ok || got.Cell != 101 {
 		t.Fatalf("baseImages[%q] = %+v (ok=%v), want cell 101", wantKey, got, ok)
+	}
+}
+
+func TestTenantCellRootAndCacheIsolation(t *testing.T) {
+	// Tenant 0 preserves legacy paths verbatim.
+	if got := tenantCellRoot("/mnt/cells/hotbed", 0); got != "/mnt/cells/hotbed" {
+		t.Fatalf("tenantCellRoot(0) = %q, want legacy path unchanged", got)
+	}
+	// Non-zero tenants get isolated subdirectories under every configured JBOD root.
+	wantJBOD := strings.Join([]string{
+		filepath.Join("/mnt/a/hotbed", "tenant-3"),
+		filepath.Join("/mnt/b/hotbed", "tenant-3"),
+	}, string(filepath.ListSeparator))
+	if got := tenantCellRoot("/mnt/a/hotbed:/mnt/b/hotbed", 3); got != wantJBOD {
+		t.Fatalf("tenantCellRoot(3) = %q, want %q", got, wantJBOD)
+	}
+
+	dir := t.TempDir()
+	vm0 := &VMBackend{
+		workerDir:    dir,
+		baseImages:   map[string]cladefs.CellRef{},
+		projectBases: map[string]*vmProjectBase{},
+		sharedBases:  map[string]*pb.CladefsCell{},
+	}
+	vm2 := &VMBackend{
+		cfg:          statedir.VMConfig{TenantID: 2},
+		workerDir:    dir,
+		baseImages:   map[string]cladefs.CellRef{},
+		projectBases: map[string]*vmProjectBase{},
+		sharedBases:  map[string]*pb.CladefsCell{},
+	}
+	if vm0.cacheDir() != filepath.Join(dir, "vm-bases") {
+		t.Fatalf("vm0.cacheDir() = %q, want legacy vm-bases", vm0.cacheDir())
+	}
+	if vm2.cacheDir() != filepath.Join(dir, "vm-bases-t2") {
+		t.Fatalf("vm2.cacheDir() = %q, want vm-bases-t2", vm2.cacheDir())
+	}
+
+	// Mismatched-tenant cache entries on disk are ignored rather than causing cross-tenant EACCES.
+	if err := os.MkdirAll(vm2.cacheDir(), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	wrongRef, _ := json.Marshal(cladefs.CellRef{RelPath: "baseimages/vm-k", Tenant: 0, Cell: 10, Version: 1})
+	rightRef, _ := json.Marshal(cladefs.CellRef{RelPath: "baseimages/vm-k2", Tenant: 2, Cell: 20, Version: 2})
+	if err := os.WriteFile(filepath.Join(vm2.cacheDir(), "baseimage-wrong.json"), wrongRef, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(vm2.cacheDir(), "baseimage-right.json"), rightRef, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	vm2.loadCachedBases()
+	if _, ok := vm2.baseImages["wrong"]; ok {
+		t.Fatalf("vm2 loaded mismatched tenant-0 base image from cache")
+	}
+	if got, ok := vm2.baseImages["right"]; !ok || got.Cell != 20 || got.Tenant != 2 {
+		t.Fatalf("vm2.baseImages[right] = %+v (ok=%v), want tenant 2 cell 20", got, ok)
+	}
+
+	// Same isolation for CladefsFUSEBackend.
+	fuse0 := &CladefsFUSEBackend{workerDir: dir}
+	fuse4 := &CladefsFUSEBackend{
+		cfg:            statedir.CladefsFUSEConfig{TenantID: 4},
+		workerDir:      dir,
+		baseImages:     map[string]cladefs.CellRef{},
+		projectBases:   map[string]*vmProjectBase{},
+		sharedBases:    map[string]*pb.CladefsCell{},
+		wsMounts:       map[string]fuseWSMount{},
+		decommissioned: map[uint64]bool{},
+	}
+	if fuse0.cacheDir() != filepath.Join(dir, "cladefs-fuse-bases") || fuse0.wsStatePath() != filepath.Join(dir, "cladefs-fuse-ws.json") {
+		t.Fatalf("fuse0 paths changed unexpectedly: cache=%q ws=%q", fuse0.cacheDir(), fuse0.wsStatePath())
+	}
+	if fuse4.cacheDir() != filepath.Join(dir, "cladefs-fuse-bases-t4") || fuse4.wsStatePath() != filepath.Join(dir, "cladefs-fuse-ws-t4.json") {
+		t.Fatalf("fuse4 paths = cache=%q ws=%q", fuse4.cacheDir(), fuse4.wsStatePath())
+	}
+	if err := os.MkdirAll(fuse4.cacheDir(), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	fuseWrong, _ := json.Marshal(cladefs.CellRef{RelPath: "baseimages/fuse-w", Tenant: 0, Cell: 30, Version: 1})
+	fuseRight, _ := json.Marshal(cladefs.CellRef{RelPath: "baseimages/fuse-r", Tenant: 4, Cell: 40, Version: 2})
+	if err := os.WriteFile(filepath.Join(fuse4.cacheDir(), "baseimage-wrong.json"), fuseWrong, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(fuse4.cacheDir(), "baseimage-right.json"), fuseRight, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	fuse4.loadState()
+	if _, ok := fuse4.baseImages["wrong"]; ok {
+		t.Fatalf("fuse4 loaded mismatched tenant-0 base image from cache")
+	}
+	if got, ok := fuse4.baseImages["right"]; !ok || got.Cell != 40 || got.Tenant != 4 {
+		t.Fatalf("fuse4.baseImages[right] = %+v (ok=%v), want tenant 4 cell 40", got, ok)
+	}
+}
+
+func TestCladefsFUSEHeartbeatWithdrawsUnhealthyRuntimeAndRecoversENOTCONN(t *testing.T) {
+	errNotConn := errors.New("transport endpoint is not connected")
+	var healthy atomic.Bool
+	var detached atomic.Int32
+	reconnected := make(chan struct{}, 4)
+
+	b := &CladefsFUSEBackend{
+		mountRoot: "/var/lib/cladefs/mnt",
+		mountHealthFn: func(string) error {
+			if healthy.Load() {
+				return nil
+			}
+			return errNotConn
+		},
+		isNotConnFn: func(err error) bool { return errors.Is(err, errNotConn) },
+		detachDeadFn: func(string) error {
+			detached.Add(1)
+			return nil
+		},
+		reconnectFn: func(context.Context) (uint64, error) {
+			healthy.Store(true)
+			reconnected <- struct{}{}
+			return 42, nil
+		},
+	}
+
+	// While mountRoot returns ENOTCONN, heartbeats must withdraw "cladefs"
+	// so the controller stops placing cladefs workspaces here and only advertises "chroot".
+	got := b.RuntimesForHeartbeat()
+	if !slices.Equal(got, []string{runtime.KindChroot}) {
+		t.Fatalf("unhealthy RuntimesForHeartbeat = %v, want [%s]", got, runtime.KindChroot)
+	}
+
+	select {
+	case <-reconnected:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for background ENOTCONN recovery")
+	}
+	if detached.Load() != 1 {
+		t.Fatalf("detachDead calls = %d, want 1", detached.Load())
+	}
+
+	// Once recovered, heartbeats re-advertise both "cladefs" and "chroot".
+	got = b.RuntimesForHeartbeat()
+	if !slices.Equal(got, []string{runtime.KindCladefs, runtime.KindChroot}) {
+		t.Fatalf("recovered RuntimesForHeartbeat = %v, want [%s %s]", got, runtime.KindCladefs, runtime.KindChroot)
+	}
+}
+
+func TestCladefsFUSEEnsureMountReadyRecoversFromENOTCONN(t *testing.T) {
+	errNotConn := errors.New("transport endpoint is not connected")
+	var attempts atomic.Int32
+	var detached, reconnected atomic.Int32
+
+	b := &CladefsFUSEBackend{
+		mountRoot: "/var/lib/cladefs/mnt",
+		clearNosuidFn: func(string) error {
+			if attempts.Add(1) == 1 {
+				return errNotConn
+			}
+			return nil
+		},
+		isNotConnFn: func(err error) bool { return errors.Is(err, errNotConn) },
+		detachDeadFn: func(string) error {
+			detached.Add(1)
+			return nil
+		},
+		reconnectFn: func(context.Context) (uint64, error) {
+			reconnected.Add(1)
+			return 7, nil
+		},
+	}
+
+	if err := b.ensureMountReady(context.Background()); err != nil {
+		t.Fatalf("ensureMountReady failed after ENOTCONN recovery: %v", err)
+	}
+	if attempts.Load() != 2 || detached.Load() != 1 || reconnected.Load() != 1 {
+		t.Fatalf("attempts=%d detached=%d reconnected=%d, want 2/1/1", attempts.Load(), detached.Load(), reconnected.Load())
+	}
+}
+
+func TestMakeVersionAndSyncAfterStopRetriesTransientBusy(t *testing.T) {
+	var attempts atomic.Int32
+	ver, err := makeVersionAndSyncAfterStop(context.Background(), func(context.Context) (uint64, error) {
+		if attempts.Add(1) < 3 {
+			return 0, fmt.Errorf("cladefs make version: %w", storage.ErrBusy)
+		}
+		return 99, nil
+	}, 2*time.Second, 5*time.Millisecond)
+	if err != nil {
+		t.Fatalf("makeVersionAndSyncAfterStop failed on transient ErrBusy: %v", err)
+	}
+	if ver != 99 || attempts.Load() != 3 {
+		t.Fatalf("ver=%d attempts=%d, want 99/3", ver, attempts.Load())
+	}
+
+	// Non-busy errors must fail immediately without retrying.
+	attempts.Store(0)
+	boom := errors.New("boom")
+	if _, err := makeVersionAndSyncAfterStop(context.Background(), func(context.Context) (uint64, error) {
+		attempts.Add(1)
+		return 0, boom
+	}, 2*time.Second, 5*time.Millisecond); !errors.Is(err, boom) {
+		t.Fatalf("err = %v, want boom", err)
+	}
+	if attempts.Load() != 1 {
+		t.Fatalf("non-busy attempts = %d, want 1", attempts.Load())
 	}
 }

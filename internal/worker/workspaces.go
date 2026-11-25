@@ -85,7 +85,7 @@ func (e *Engine) CreateWorkspace(ctx context.Context, req *pb.CreateWorkspaceReq
 		Workspace: &pb.Workspace{
 			Id: req.Id, Project: p.Name, BaseId: base.Id, NodeId: e.cfg.NodeID, Agent: req.Agent,
 			Repos: reposOf(base), State: preparing, CreatedAt: now, LastActiveAt: now,
-			SessionId: req.SessionId, SyncHost: req.SyncHost,
+			SessionId: req.SessionId, SyncHost: req.SyncHost, Runtime: wsRuntime,
 			Reason: fmt.Sprintf("waiting for base %s to freshen", base.Id),
 		},
 		Volume: "ws/" + req.Id, BaseSnapshot: base.Id, Note: note,

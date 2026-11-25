@@ -105,6 +105,7 @@ function commandOfHistory(f: FinishedCommand): Command {
 		bench: f.bench,
 		project: f.project,
 		repo: f.repoId,
+		runtime: f.runtime,
 		rebuilt:
 			f.rebuilt !== undefined && f.of !== undefined
 				? create(RebuiltSchema, { units: f.rebuilt, of: f.of })
@@ -235,12 +236,20 @@ export function createWorkspaceService(ctrl: ControllerContext): {
 		}
 		if (!b) return null;
 		const nid = b.nodeId || nodeId;
+		const baseRuntime = b.cladefsCell
+			? b.id.includes("-vm-")
+				? "vm"
+				: b.id.includes("-fuse-")
+					? "cladefs"
+					: ""
+			: "chroot";
 		const cmd = create(CommandSchema, {
 			id,
 			nodeId: nid,
 			nodeAddr: ctrl.nodeAddr(nid),
 			project: b.project,
 			kind: "freshen",
+			runtime: baseRuntime,
 			argv: b.cladefsCell ? `freshen ${b.id}` : `freshen ${b.project} g${b.generation}`,
 			endedAt: b.builtAt,
 		});
@@ -473,7 +482,7 @@ export function createWorkspaceService(ctrl: ControllerContext): {
 					p.name,
 					mine,
 					(arch) => ctrl.follows(arch),
-					(arch) => ctrl.store.hasSharedBase(p.name, arch),
+					(arch) => ctrl.store.hasSharedBase(p.name, arch, ctrl.cladefsTenantId),
 				);
 				const { chosen, why, err } = chooseCandidate(
 					cs,
@@ -506,7 +515,7 @@ export function createWorkspaceService(ctrl: ControllerContext): {
 					(reqRuntime === "" &&
 						(chosenRuntimes.includes("vm") || chosenRuntimes.includes("cladefs")));
 				const sharedBase = usesCladefs
-					? ctrl.store.latestSharedBase(p.name, chosenArch)
+					? ctrl.store.latestSharedBase(p.name, chosenArch, ctrl.cladefsTenantId)
 					: undefined;
 				const fencingToken = usesCladefs ? ctrl.store.nextFencingToken() : 0n;
 				const fwd = create(CreateWorkspaceRequestSchema, {

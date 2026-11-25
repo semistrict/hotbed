@@ -20,6 +20,10 @@ import (
 // latest wins. It names the sessions clients used here since the last one,
 // which keeps them alive.
 func (e *Engine) Heartbeat(clusterID string) *pb.HeartbeatRequest {
+	var fuseRuntimes []string
+	if e.cfg.CladefsFUSE != nil {
+		fuseRuntimes = e.cfg.CladefsFUSE.RuntimesForHeartbeat()
+	}
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	h := &pb.HeartbeatRequest{
@@ -36,6 +40,9 @@ func (e *Engine) Heartbeat(clusterID string) *pb.HeartbeatRequest {
 		h.CladefsPeerAddr = peerAddr
 		h.CladefsIncarnation = inc
 		h.SharedBases = shared
+		if h.Resources != nil && len(fuseRuntimes) > 0 {
+			h.Resources.Runtimes = fuseRuntimes
+		}
 	}
 	if e.objectStore != nil {
 		h.ObjectStore = clone(e.objectStore)

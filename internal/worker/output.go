@@ -6,6 +6,7 @@ import (
 	"regexp"
 	"strconv"
 	"sync"
+	"time"
 
 	"github.com/semistrict/hotbed/internal/cmdlog"
 	pb "github.com/semistrict/hotbed/internal/gen/hotbed/v1"
@@ -31,9 +32,11 @@ type found struct {
 	// The freshen step started last: step of steps, and its name.
 	step, steps int
 	stepName    string
+	stepStartMs int64              // unix ms when stepName was observed starting
 	allDone     bool               // the freshen said its steps are done
 	started     map[string]bool    // freshen steps started
 	done        map[string]float64 // seconds each finished freshen step took
+	phaseDone   map[string]float64 // seconds each finished freshen phase took (e.g. "git")
 	repoHeads   map[string]string  // repo -> commit SHA from ::hotbed-head:: lines
 }
 
@@ -45,6 +48,7 @@ var (
 	testFailure = regexp.MustCompile(`(^test result: FAILED|^\s+FAIL \[|^--- FAIL:|^FAIL\s|Tests:\s+\d+ failed)`)
 	stepStart   = regexp.MustCompile(`^::hotbed:: step (\d+)/(\d+) (\S+)$`)
 	stepDone    = regexp.MustCompile(`^::hotbed:: step-done (\S+) (\d+)$`)
+	phaseDone   = regexp.MustCompile(`^::hotbed:: phase-done (\S+) (\d+)$`)
 	stepsDone   = []byte("::hotbed:: steps done")
 )
 
@@ -125,6 +129,52 @@ func (o *output) freshenStep() (step, steps int, name string, allDone bool) {
 	return o.found.step, o.found.steps, o.found.stepName, o.found.allDone
 }
 
+// freshenLive reports live step progress, step start timestamp, and git phase
+// duration parsed from the freshen log so far.
+func (o *output) freshenLive() (step, steps int, name string, startMs int64, allDone bool, gitSec float64, gitDone bool) {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	gitSec, gitDone = o.found.phaseDone["git"]
+	return o.found.step, o.found.steps, o.found.stepName, o.found.stepStartMs, o.found.allDone, gitSec, gitDone
+}
+
+// gitSeconds returns the elapsed seconds reported by ::hotbed:: phase-done git.
+func (o *output) gitSeconds() float64 {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	return o.found.phaseDone["git"]
+}
+
+// snapshotLive returns a copy of steps enriched with completed step timings
+// while a freshen is still running, keeping not-yet-reached steps intact.
+func (o *output) snapshotLive(steps []*pb.AppliedStep) []*pb.AppliedStep {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	f := o.found
+	out := make([]*pb.AppliedStep, len(steps))
+	k := 0
+	for i, s := range steps {
+		cp := &pb.AppliedStep{
+			Name:    s.Name,
+			Hash:    s.Hash,
+			Ran:     s.Ran,
+			Ok:      s.Ok,
+			Seconds: s.Seconds,
+		}
+		if cp.Ran {
+			k++
+			if secs, ok := f.done[cp.Name]; ok {
+				cp.Ok = true
+				cp.Seconds = secs
+			} else if f.allDone || k < f.step {
+				cp.Ok = true
+			}
+		}
+		out[i] = cp
+	}
+	return out
+}
+
 // repoHeads returns a copy of repo -> HEAD SHA markers emitted during a freshen.
 func (o *output) repoHeads() map[string]string {
 	o.mu.Lock()
@@ -184,6 +234,16 @@ func (f *found) line(l []byte) {
 		}
 		return
 	}
+	if bytes.HasPrefix(l, []byte("::hotbed:: phase-done ")) {
+		if m := phaseDone.FindSubmatch(l); m != nil {
+			us, _ := strconv.ParseInt(string(m[2]), 10, 64)
+			if f.phaseDone == nil {
+				f.phaseDone = map[string]float64{}
+			}
+			f.phaseDone[string(m[1])] = float64(us) / 1e6
+		}
+		return
+	}
 	if !bytes.HasPrefix(l, []byte("::hotbed:: step")) {
 		return
 	}
@@ -195,6 +255,7 @@ func (f *found) line(l []byte) {
 		f.step, _ = strconv.Atoi(string(m[1]))
 		f.steps, _ = strconv.Atoi(string(m[2]))
 		f.stepName = string(m[3])
+		f.stepStartMs = time.Now().UnixMilli()
 		if f.started == nil {
 			f.started = map[string]bool{}
 		}

@@ -29,7 +29,7 @@ func sha256Hex(b []byte) string {
 	return hex.EncodeToString(sum[:])
 }
 
-func TestVMBaseKeyInvalidatesOnGuestdOrConfigChange(t *testing.T) {
+func TestVMBaseKeyDecoupledFromGuestdAndInvalidatesOnConfigChange(t *testing.T) {
 	dir := t.TempDir()
 	guestd := filepath.Join(dir, "hotbed-guestd")
 	if err := os.WriteFile(guestd, []byte("guestd-v1"), 0o755); err != nil {
@@ -50,20 +50,21 @@ func TestVMBaseKeyInvalidatesOnGuestdOrConfigChange(t *testing.T) {
 	key1 := b.vmBaseKey(spec)
 	recipe1 := vmProjectRecipe(key1, proj, nil)
 
-	// Changing hotbed-guestd bytes must change both vmBaseKey and vmProjectRecipe.
+	// hotbed-guestd lives on a separate read-only tools disk attached at VM boot,
+	// so changing hotbed-guestd bytes must NOT invalidate vmBaseKey or vmProjectRecipe.
 	if err := os.WriteFile(guestd, []byte("guestd-v2-with-dev-perms"), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	key2 := b.vmBaseKey(spec)
 	recipe2 := vmProjectRecipe(key2, proj, nil)
-	if key2 == key1 {
-		t.Fatalf("vmBaseKey did not change when hotbed-guestd changed: %q", key1)
+	if key2 != key1 {
+		t.Fatalf("vmBaseKey changed when hotbed-guestd changed: %q -> %q", key1, key2)
 	}
-	if recipe2 == recipe1 {
-		t.Fatalf("vmProjectRecipe did not change when hotbed-guestd changed: %q", recipe1)
+	if recipe2 != recipe1 {
+		t.Fatalf("vmProjectRecipe changed when hotbed-guestd changed: %q -> %q", recipe1, recipe2)
 	}
 
-	// Changing DNSServers via UpdateConfig must also change vmBaseKey.
+	// Changing DNSServers via UpdateConfig must still change vmBaseKey.
 	cfg2 := b.configSnapshot()
 	cfg2.DNSServers = []string{"8.8.8.8"}
 	b.UpdateConfig(cfg2)
@@ -81,7 +82,7 @@ func TestVMBaseKeyInvalidatesOnGuestdOrConfigChange(t *testing.T) {
 		key2:           42,
 		"zzzz-old-key": 99,
 	} {
-		raw, _ := json.Marshal(cladefs.CellRef{RelPath: "baseimages/vm-" + k, Tenant: 1, Cell: cell, Version: 1})
+		raw, _ := json.Marshal(cladefs.CellRef{RelPath: "baseimages/vm-" + k, Tenant: 0, Cell: cell, Version: 1})
 		if err := os.WriteFile(filepath.Join(cacheDir, "baseimage-"+k+".json"), raw, 0o644); err != nil {
 			t.Fatal(err)
 		}

@@ -322,21 +322,26 @@ func (x *StartCommandRequest) GetTmpDir() string {
 }
 
 type CommandStatus struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Id            string                 `protobuf:"bytes,1,opt,name=id,proto3" json:"id,omitempty"`
-	State         CommandState           `protobuf:"varint,2,opt,name=state,proto3,enum=guestd.v1.CommandState" json:"state,omitempty"`
-	ExitCode      int32                  `protobuf:"varint,3,opt,name=exit_code,json=exitCode,proto3" json:"exit_code,omitempty"`
-	MainPid       int32                  `protobuf:"varint,4,opt,name=main_pid,json=mainPid,proto3" json:"main_pid,omitempty"`
-	Cgroup        string                 `protobuf:"bytes,5,opt,name=cgroup,proto3" json:"cgroup,omitempty"`
-	MemoryAnon    int64                  `protobuf:"varint,6,opt,name=memory_anon,json=memoryAnon,proto3" json:"memory_anon,omitempty"`
-	MemorySwap    int64                  `protobuf:"varint,7,opt,name=memory_swap,json=memorySwap,proto3" json:"memory_swap,omitempty"`
-	CpuUsec       int64                  `protobuf:"varint,8,opt,name=cpu_usec,json=cpuUsec,proto3" json:"cpu_usec,omitempty"`
-	LogBytes      int64                  `protobuf:"varint,9,opt,name=log_bytes,json=logBytes,proto3" json:"log_bytes,omitempty"`
-	StartedMs     int64                  `protobuf:"varint,10,opt,name=started_ms,json=startedMs,proto3" json:"started_ms,omitempty"`
-	ExitedMs      int64                  `protobuf:"varint,11,opt,name=exited_ms,json=exitedMs,proto3" json:"exited_ms,omitempty"`
-	Error         string                 `protobuf:"bytes,12,opt,name=error,proto3" json:"error,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	state          protoimpl.MessageState `protogen:"open.v1"`
+	Id             string                 `protobuf:"bytes,1,opt,name=id,proto3" json:"id,omitempty"`
+	State          CommandState           `protobuf:"varint,2,opt,name=state,proto3,enum=guestd.v1.CommandState" json:"state,omitempty"`
+	ExitCode       int32                  `protobuf:"varint,3,opt,name=exit_code,json=exitCode,proto3" json:"exit_code,omitempty"`
+	MainPid        int32                  `protobuf:"varint,4,opt,name=main_pid,json=mainPid,proto3" json:"main_pid,omitempty"`
+	Cgroup         string                 `protobuf:"bytes,5,opt,name=cgroup,proto3" json:"cgroup,omitempty"`
+	MemoryAnon     int64                  `protobuf:"varint,6,opt,name=memory_anon,json=memoryAnon,proto3" json:"memory_anon,omitempty"`
+	MemorySwap     int64                  `protobuf:"varint,7,opt,name=memory_swap,json=memorySwap,proto3" json:"memory_swap,omitempty"`
+	CpuUsec        int64                  `protobuf:"varint,8,opt,name=cpu_usec,json=cpuUsec,proto3" json:"cpu_usec,omitempty"`
+	LogBytes       int64                  `protobuf:"varint,9,opt,name=log_bytes,json=logBytes,proto3" json:"log_bytes,omitempty"`
+	StartedMs      int64                  `protobuf:"varint,10,opt,name=started_ms,json=startedMs,proto3" json:"started_ms,omitempty"`
+	ExitedMs       int64                  `protobuf:"varint,11,opt,name=exited_ms,json=exitedMs,proto3" json:"exited_ms,omitempty"`
+	Error          string                 `protobuf:"bytes,12,opt,name=error,proto3" json:"error,omitempty"`
+	Signal         int32                  `protobuf:"varint,13,opt,name=signal,proto3" json:"signal,omitempty"`
+	OomKilled      bool                   `protobuf:"varint,14,opt,name=oom_killed,json=oomKilled,proto3" json:"oom_killed,omitempty"`
+	Result         string                 `protobuf:"bytes,15,opt,name=result,proto3" json:"result,omitempty"`
+	MemoryPeak     int64                  `protobuf:"varint,16,opt,name=memory_peak,json=memoryPeak,proto3" json:"memory_peak,omitempty"`
+	MemorySwapPeak int64                  `protobuf:"varint,17,opt,name=memory_swap_peak,json=memorySwapPeak,proto3" json:"memory_swap_peak,omitempty"`
+	unknownFields  protoimpl.UnknownFields
+	sizeCache      protoimpl.SizeCache
 }
 
 func (x *CommandStatus) Reset() {
@@ -451,6 +456,41 @@ func (x *CommandStatus) GetError() string {
 		return x.Error
 	}
 	return ""
+}
+
+func (x *CommandStatus) GetSignal() int32 {
+	if x != nil {
+		return x.Signal
+	}
+	return 0
+}
+
+func (x *CommandStatus) GetOomKilled() bool {
+	if x != nil {
+		return x.OomKilled
+	}
+	return false
+}
+
+func (x *CommandStatus) GetResult() string {
+	if x != nil {
+		return x.Result
+	}
+	return ""
+}
+
+func (x *CommandStatus) GetMemoryPeak() int64 {
+	if x != nil {
+		return x.MemoryPeak
+	}
+	return 0
+}
+
+func (x *CommandStatus) GetMemorySwapPeak() int64 {
+	if x != nil {
+		return x.MemorySwapPeak
+	}
+	return 0
 }
 
 type StatusRequest struct {
@@ -1598,7 +1638,7 @@ const file_guestd_v1_guestd_proto_rawDesc = "" +
 	"\vmemory_high\x18\n" +
 	" \x01(\x03R\n" +
 	"memoryHigh\x12\x17\n" +
-	"\atmp_dir\x18\v \x01(\tR\x06tmpDir\"\xea\x02\n" +
+	"\atmp_dir\x18\v \x01(\tR\x06tmpDir\"\x84\x04\n" +
 	"\rCommandStatus\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12-\n" +
 	"\x05state\x18\x02 \x01(\x0e2\x17.guestd.v1.CommandStateR\x05state\x12\x1b\n" +
@@ -1615,7 +1655,14 @@ const file_guestd_v1_guestd_proto_rawDesc = "" +
 	"started_ms\x18\n" +
 	" \x01(\x03R\tstartedMs\x12\x1b\n" +
 	"\texited_ms\x18\v \x01(\x03R\bexitedMs\x12\x14\n" +
-	"\x05error\x18\f \x01(\tR\x05error\"!\n" +
+	"\x05error\x18\f \x01(\tR\x05error\x12\x16\n" +
+	"\x06signal\x18\r \x01(\x05R\x06signal\x12\x1d\n" +
+	"\n" +
+	"oom_killed\x18\x0e \x01(\bR\toomKilled\x12\x16\n" +
+	"\x06result\x18\x0f \x01(\tR\x06result\x12\x1f\n" +
+	"\vmemory_peak\x18\x10 \x01(\x03R\n" +
+	"memoryPeak\x12(\n" +
+	"\x10memory_swap_peak\x18\x11 \x01(\x03R\x0ememorySwapPeak\"!\n" +
 	"\rStatusRequest\x12\x10\n" +
 	"\x03ids\x18\x01 \x03(\tR\x03ids\"\xac\x01\n" +
 	"\x0eStatusResponse\x12C\n" +

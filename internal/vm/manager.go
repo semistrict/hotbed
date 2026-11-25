@@ -60,10 +60,17 @@ type vmMeta struct {
 // Manager launches, tracks, reconnects, and tears down Firecracker microVMs.
 // It implements runtime.GuestResolver via ClientFor.
 type Manager struct {
-	cfg      Config
-	launcher Launcher
-	net      *NetManager
-	dialerFn func(vsockUDS string) guestd.DialFunc
+	cfg        Config
+	launcher   Launcher
+	net        *NetManager
+	dialerFn   func(vsockUDS string) guestd.DialFunc
+	toolsDiskFn func(cacheDir, guestdBin string) (string, error)
+
+	toolsMu        sync.Mutex
+	toolsCacheBin  string
+	toolsCacheSize int64
+	toolsCacheMod  int64
+	toolsCachePath string
 
 	mu        sync.Mutex
 	instances map[string]*Instance
@@ -84,6 +91,12 @@ func WithLauncher(l Launcher) ManagerOption {
 // vsock UDS path (default: guestd.FirecrackerVsockDialer).
 func WithDialerFactory(fn func(vsockUDS string) guestd.DialFunc) ManagerOption {
 	return func(m *Manager) { m.dialerFn = fn }
+}
+
+// WithToolsDiskBuilder overrides how the read-only hotbed-tools disk image is
+// built from cfg.GuestdBin (default: EnsureToolsDisk).
+func WithToolsDiskBuilder(fn func(cacheDir, guestdBin string) (string, error)) ManagerOption {
+	return func(m *Manager) { m.toolsDiskFn = fn }
 }
 
 // NewManager creates a Firecracker VM manager rooted at cfg.RunDir.
@@ -108,9 +121,10 @@ func NewManager(cfg Config, opts ...ManagerOption) (*Manager, error) {
 		}
 	}
 	m := &Manager{
-		cfg:      cfg,
-		launcher: SystemdLauncher{},
-		net:      nm,
+		cfg:         cfg,
+		launcher:    SystemdLauncher{},
+		net:         nm,
+		toolsDiskFn: EnsureToolsDisk,
 		dialerFn: func(uds string) guestd.DialFunc {
 			return guestd.FirecrackerVsockDialer(uds)
 		},
@@ -129,12 +143,19 @@ func NewManager(cfg Config, opts ...ManagerOption) (*Manager, error) {
 // cladefs's virtio-extent "cladefs" device array).
 type FirecrackerConfig struct {
 	BootSource    fcBootSource     `json:"boot-source"`
-	Drives        []any            `json:"drives"`
+	Drives        []fcDrive        `json:"drives"`
 	MachineConfig fcMachineConfig  `json:"machine-config"`
 	Vsock         fcVsock          `json:"vsock"`
 	NetInterfaces []fcNetInterface `json:"network-interfaces,omitempty"`
 	Balloon       *fcBalloon       `json:"balloon,omitempty"`
 	Cladefs       []fcCladefs      `json:"cladefs"`
+}
+
+type fcDrive struct {
+	DriveID      string `json:"drive_id"`
+	PathOnHost   string `json:"path_on_host"`
+	IsRootDevice bool   `json:"is_root_device"`
+	IsReadOnly   bool   `json:"is_read_only"`
 }
 
 type fcBootSource struct {
@@ -229,15 +250,37 @@ func (m *Manager) BuildFirecrackerConfig(spec LaunchSpec, cid uint32, vsockUDS s
 	if diskBytes == 0 {
 		diskBytes = cfg.DefaultDiskBytes
 	}
-	bootParts := []string{
-		"root=rootfs",
-		"rootfstype=cladefs",
-		"rw",
-		"console=ttyS0",
-		"reboot=k",
-		"panic=1",
-		"psi=1",
-		"init=/sbin/hotbed-guestd",
+	var bootParts []string
+	drives := []fcDrive{}
+	if spec.ToolsDiskPath != "" {
+		// Boot from the read-only host tools disk (/dev/vda, appended by
+		// Firecracker because is_root_device=true & is_read_only=true), then
+		// hotbed-guestd PID 1 mounts cladefs:rootfs and pivot_roots onto it.
+		bootParts = []string{
+			"console=ttyS0",
+			"reboot=k",
+			"panic=1",
+			"psi=1",
+			"init=/hotbed-guestd",
+			"HOTBED_ROOT=cladefs:rootfs",
+		}
+		drives = []fcDrive{{
+			DriveID:      "hotbed-tools",
+			PathOnHost:   spec.ToolsDiskPath,
+			IsRootDevice: true,
+			IsReadOnly:   true,
+		}}
+	} else {
+		bootParts = []string{
+			"root=rootfs",
+			"rootfstype=cladefs",
+			"rw",
+			"console=ttyS0",
+			"reboot=k",
+			"panic=1",
+			"psi=1",
+			"init=/sbin/hotbed-guestd",
+		}
 	}
 	if ipArg := netAlloc.KernelIPArg(); ipArg != "" {
 		bootParts = append(bootParts, ipArg)
@@ -254,7 +297,7 @@ func (m *Manager) BuildFirecrackerConfig(spec LaunchSpec, cid uint32, vsockUDS s
 			KernelImagePath: cfg.KernelPath,
 			BootArgs:        strings.Join(bootParts, " "),
 		},
-		Drives: []any{},
+		Drives: drives,
 		MachineConfig: fcMachineConfig{
 			VCPUCount:  vcpus,
 			MemSizeMiB: memMiB,
@@ -288,6 +331,36 @@ func (m *Manager) BuildFirecrackerConfig(spec LaunchSpec, cid uint32, vsockUDS s
 		}}
 	}
 	return fc
+}
+
+// ensureToolsDisk builds or returns the cached read-only ext4 disk image for
+// guestdBin. Stat metadata is cached in memory so repeated VM boots avoid
+// re-hashing the binary while still rebuilding whenever guestdBin changes.
+func (m *Manager) ensureToolsDisk(runDir, guestdBin string) (string, error) {
+	m.toolsMu.Lock()
+	defer m.toolsMu.Unlock()
+
+	cacheDir := filepath.Join(runDir, toolsDirName)
+	if info, err := os.Stat(guestdBin); err == nil {
+		if m.toolsCachePath != "" &&
+			m.toolsCacheBin == guestdBin &&
+			m.toolsCacheSize == info.Size() &&
+			m.toolsCacheMod == info.ModTime().UnixNano() {
+			if st, serr := os.Stat(m.toolsCachePath); serr == nil && st.Size() > 0 {
+				return m.toolsCachePath, nil
+			}
+		}
+		p, err := m.toolsDiskFn(cacheDir, guestdBin)
+		if err != nil {
+			return "", err
+		}
+		m.toolsCacheBin = guestdBin
+		m.toolsCacheSize = info.Size()
+		m.toolsCacheMod = info.ModTime().UnixNano()
+		m.toolsCachePath = p
+		return p, nil
+	}
+	return m.toolsDiskFn(cacheDir, guestdBin)
 }
 
 // Start boots a Firecracker microVM for spec, waits for hotbed-guestd to report
@@ -378,6 +451,15 @@ func (m *Manager) Start(ctx context.Context, spec LaunchSpec) (*Instance, error)
 		if removeDir {
 			_ = os.RemoveAll(vmDir)
 		}
+	}
+
+	if spec.ToolsDiskPath == "" {
+		toolsPath, err := m.ensureToolsDisk(cfg.RunDir, cfg.GuestdBin)
+		if err != nil {
+			cleanupOnErr(true)
+			return nil, fmt.Errorf("vm %s: prepare tools disk: %w", spec.ID, err)
+		}
+		spec.ToolsDiskPath = toolsPath
 	}
 
 	fcCfg := m.BuildFirecrackerConfig(spec, cid, vsockUDS, netAlloc)
@@ -523,6 +605,9 @@ func (m *Manager) Reconnect(ctx context.Context) (int, error) {
 			continue
 		}
 		id := ent.Name()
+		if id == toolsDirName {
+			continue
+		}
 		vmDir := filepath.Join(m.cfg.RunDir, id)
 		meta, err := readMeta(vmDir)
 		if err != nil {
@@ -802,7 +887,7 @@ func (m *Manager) ReconcileOrphans(ctx context.Context, ownedIDs map[string]bool
 
 	if entries, err := os.ReadDir(cfg.RunDir); err == nil {
 		for _, ent := range entries {
-			if ent.IsDir() && ent.Name() != "" {
+			if ent.IsDir() && ent.Name() != "" && ent.Name() != toolsDirName {
 				candidates[ent.Name()] = struct{}{}
 			}
 		}

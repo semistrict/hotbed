@@ -86,6 +86,42 @@ export function KindTag({ kind }: { kind: string }) {
   return <span className="font-mono text-[10px] tracking-wider text-faint uppercase">{kind}</span>;
 }
 
+const RUNTIMES: Record<string, { label: string; title: string; className: string }> = {
+  vm: {
+    label: "vm",
+    title: "Firecracker microVM runtime",
+    className: "border-frost/40 bg-frost-wash text-frost",
+  },
+  cladefs: {
+    label: "cladefs",
+    title: "cladefs host-FUSE runtime",
+    className: "border-good/35 bg-good/10 text-good-ink",
+  },
+  chroot: {
+    label: "chroot",
+    title: "Local chroot runtime",
+    className: "border-border-strong text-muted-foreground",
+  },
+};
+
+export function RuntimeBadge({ runtime }: { runtime?: string }) {
+  if (!runtime) return <span className="font-mono text-[11px] text-faint">—</span>;
+  const r = RUNTIMES[runtime] ?? {
+    label: runtime,
+    title: `${runtime} runtime`,
+    className: "border-border-strong text-muted-foreground",
+  };
+  return (
+    <Badge
+      variant="outline"
+      title={r.title}
+      className={cn("h-auto rounded px-1.5 py-0.5 font-mono text-[10px] font-normal tracking-wide", r.className)}
+    >
+      {r.label}
+    </Badge>
+  );
+}
+
 /** A scheduled run's outcome: a command's state while it ran, or why it never did. */
 const OUTCOMES: Partial<Record<RunOutcome, { label: string; icon: string; className: string }>> = {
   [RunOutcome.NOT_STARTED]: { label: "not started", icon: "⚠", className: "text-critical bg-[color-mix(in_oklab,var(--critical)_12%,transparent)]" },

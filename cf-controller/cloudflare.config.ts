@@ -11,11 +11,16 @@ export default defineConfig({
 		entrypoint,
 		exports: {
 			ControllerDO: exports.durableObject({ storage: "sqlite" }),
+			TenantRegistryDO: exports.durableObject({ storage: "sqlite" }),
 		},
 		env: {
 			CONTROLLER: bindings.durableObject({
 				worker: "hotbed-controller",
 				exportName: "ControllerDO",
+			}),
+			TENANT_REGISTRY: bindings.durableObject({
+				worker: "hotbed-controller",
+				exportName: "TenantRegistryDO",
 			}),
 			ASSETS: bindings.assets(),
 			OWNER_TOKEN: bindings.secret(),

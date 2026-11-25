@@ -24,8 +24,14 @@ func (c *cmdCgroup) thaw() error                  { return errors.New("cgroup v2
 func (c *cmdCgroup) killAll()                     {}
 func (c *cmdCgroup) reclaim(int64) error          { return nil }
 func dropPageCaches() error                       { return nil }
-func (c *cmdCgroup) remove()                      {}
-func (c *cmdCgroup) stats() (int64, int64, int64) { return 0, 0, 0 }
+func (c *cmdCgroup) remove() {}
+func (c *cmdCgroup) stats() cmdCgroupStats {
+	if c == nil {
+		return cmdCgroupStats{}
+	}
+	return readCgroupStats(c.path)
+}
+func setCmdOOMScoreAdj(int, int) {}
 
 func signalProcessGroup(pid int, sig syscall.Signal) error {
 	if pid <= 0 {

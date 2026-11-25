@@ -1,6 +1,7 @@
 import { authenticateRequest, NOOP_TOKEN_LOOKUP, stripInternalAuthHeaders } from "./auth.ts";
 import { ControllerDO, type ControllerEnv } from "./controller-do.ts";
 import { fromUnknownError } from "./errors.ts";
+import { TenantRegistryDO } from "./tenant-registry-do.ts";
 import { clearWorkOSSessionCookie } from "./workos.ts";
 import {
 	attachInternalAuth,
@@ -10,7 +11,7 @@ import {
 	withSetCookie,
 } from "./workos-routes.ts";
 
-export { ControllerDO };
+export { ControllerDO, TenantRegistryDO };
 
 const DO_PREFIXES = ["/hotbed.v1.", "/ws/", "/builds/", "/admin/"];
 

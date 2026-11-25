@@ -93,6 +93,11 @@ echo "::hotbed:: steps done"
 	if !strings.HasPrefix(cmdID, "f-cladefs-fuse-12345678-") {
 		t.Fatalf("cmdID = %q, want f-cladefs-fuse-12345678-*", cmdID)
 	}
+	if cmd, ok := e.Command(cmdID); !ok {
+		t.Fatalf("Command(%s) not found", cmdID)
+	} else if cmd.Runtime != runtime.KindCladefs {
+		t.Fatalf("managed FUSE freshen Runtime = %q, want %q", cmd.Runtime, runtime.KindCladefs)
+	}
 
 	// Step while host memory pressure is holding: command MUST remain queued and
 	// BeforeStart must NOT be invoked yet.
@@ -411,6 +416,96 @@ func TestRuntimeUnitsRoutesManagedVMFreshenViaRuntimeTarget(t *testing.T) {
 	}
 }
 
+func TestCommandRuntimeSetForWorkspacesAndFreshens(t *testing.T) {
+	now := time.Unix(1795300000, 0)
+	e := limited(t, &now)
+	e.mu.Lock()
+	for _, tc := range []struct {
+		id string
+		rt string
+	}{
+		{id: "ws-rt-vm", rt: runtime.KindVM},
+		{id: "ws-rt-cladefs", rt: runtime.KindCladefs},
+		{id: "ws-rt-chroot", rt: runtime.KindChroot},
+		{id: "ws-rt-legacy", rt: ""},
+	} {
+		e.workspaces[tc.id] = &workspace{rec: &pb.WorkspaceRecord{
+			Workspace: &pb.Workspace{
+				Id: tc.id, Project: "cladefs", NodeId: e.cfg.NodeID,
+				State: idle, Runtime: tc.rt,
+			},
+			Volume: "ws/" + tc.id,
+		}}
+	}
+	e.mu.Unlock()
+
+	for _, tc := range []struct {
+		wsID string
+		want string
+	}{
+		{wsID: "ws-rt-vm", want: runtime.KindVM},
+		{wsID: "ws-rt-cladefs", want: runtime.KindCladefs},
+		{wsID: "ws-rt-chroot", want: runtime.KindChroot},
+		{wsID: "ws-rt-legacy", want: runtime.KindChroot},
+	} {
+		cmd, err := e.Exec(t.Context(), &pb.RunCommandRequest{
+			WorkspaceId: tc.wsID,
+			Args:        []string{"true"},
+			Kind:        "shell",
+		})
+		if err != nil {
+			t.Fatalf("Exec(%s): %v", tc.wsID, err)
+		}
+		if cmd.Runtime != tc.want {
+			t.Fatalf("live command for %s: Runtime = %q, want %q", tc.wsID, cmd.Runtime, tc.want)
+		}
+		e.mu.Lock()
+		c := e.commands[cmd.Id]
+		e.endBy(c, succeeded, int32Ptr(0), "", nil)
+		e.mu.Unlock()
+	}
+
+	evs, err := e.db.events(0, 100)
+	if err != nil {
+		t.Fatalf("events: %v", err)
+	}
+	gotFinished := map[string]string{}
+	for _, ev := range evs {
+		if fc := ev.GetCommand().GetFinished(); fc != nil {
+			gotFinished[fc.WorkspaceId] = fc.Runtime
+		}
+	}
+	for wsID, want := range map[string]string{
+		"ws-rt-vm":      runtime.KindVM,
+		"ws-rt-cladefs": runtime.KindCladefs,
+		"ws-rt-chroot":  runtime.KindChroot,
+		"ws-rt-legacy":  runtime.KindChroot,
+	} {
+		if gotFinished[wsID] != want {
+			t.Fatalf("finished command for %s: Runtime = %q, want %q", wsID, gotFinished[wsID], want)
+		}
+	}
+
+	vmHandle, err := e.startManagedFreshen(t.Context(), managedFreshenSpec{
+		Project: &pb.HostedProject{Name: "cladefs"},
+		BaseID:  "cladefs-vm-99999999",
+		VMID:    "base-cladefs-vm-99999999",
+		Script:  "true",
+	})
+	if err != nil {
+		t.Fatalf("startManagedFreshen(vm): %v", err)
+	}
+	vmCmd, ok := e.Command(vmHandle.CommandID())
+	if !ok {
+		t.Fatalf("Command(%s) not found", vmHandle.CommandID())
+	}
+	if vmCmd.Runtime != runtime.KindVM {
+		t.Fatalf("managed VM freshen Runtime = %q, want %q", vmCmd.Runtime, runtime.KindVM)
+	}
+}
+
+func int32Ptr(v int32) *int32 { return &v }
+
 type stubWorkspaceRuntime struct {
 	runtime.WorkspaceRuntime
 	onStart func(wsID string, spec runtime.CommandSpec) error
@@ -425,4 +520,39 @@ func (s *stubWorkspaceRuntime) StartCommand(_ context.Context, wsID string, spec
 
 func (s *stubWorkspaceRuntime) StreamLogs(_ context.Context, _, _ string, _ int64, _ bool, _ io.Writer) (int64, error) {
 	return 0, nil
+}
+
+func TestOutputParsesGitPhaseAndLiveStepSnapshot(t *testing.T) {
+	out := newOutput("")
+	out.add([]byte("::hotbed:: phase-done git 1250000"))
+	out.add([]byte("::hotbed:: step 1/2 deps"))
+	out.add([]byte("::hotbed:: step-done deps 4500000"))
+	out.add([]byte("::hotbed:: step 2/2 build"))
+
+	step, steps, name, startMs, done, gitSec, gitDone := out.freshenLive()
+	if !gitDone || gitSec != 1.25 {
+		t.Fatalf("git = (%v, %v), want (true, 1.25)", gitDone, gitSec)
+	}
+	if step != 2 || steps != 2 || name != "build" || startMs == 0 || done {
+		t.Fatalf("freshenLive = (%d/%d %q start=%d done=%v)", step, steps, name, startMs, done)
+	}
+
+	planned := []*pb.AppliedStep{
+		{Name: "deps", Hash: "aaa", Ran: true},
+		{Name: "build", Hash: "bbb", Ran: true},
+		{Name: "cached", Hash: "ccc", Ran: false, Ok: true, Seconds: 3.0},
+	}
+	live := out.snapshotLive(planned)
+	if len(live) != 3 {
+		t.Fatalf("snapshotLive len = %d, want 3", len(live))
+	}
+	if !live[0].Ok || live[0].Seconds != 4.5 {
+		t.Fatalf("live[0] (deps) = %+v, want ok=true seconds=4.5", live[0])
+	}
+	if live[1].Ok || live[1].Seconds != 0 {
+		t.Fatalf("live[1] (build) = %+v, want ok=false seconds=0 while running", live[1])
+	}
+	if !live[2].Ok || live[2].Seconds != 3.0 {
+		t.Fatalf("live[2] (cached) = %+v, want inherited ok=true seconds=3.0", live[2])
+	}
 }
