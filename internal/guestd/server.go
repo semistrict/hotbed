@@ -58,22 +58,29 @@ type ServerConfig struct {
 	Logger    *slog.Logger
 	Inspector inspect.Inspector // defaults to inspect.Linux{}
 	Profiler  profiler.Profiler // optional always-on in-guest eBPF continuous profiler
-	FreezeFS  func(path string) error // optional override for FIFREEZE (tests)
-	ThawFS    func(path string) error // optional override for FITHAW (tests)
+	FreezeFS      func(path string) error // optional override for FIFREEZE (tests)
+	ThawFS        func(path string) error // optional override for FITHAW (tests)
+	// AllowPowerOff permits Shutdown(PowerOff=true) to reboot/power off the VM.
+	// Must only be enabled by the in-VM hotbed-guestd daemon (never in-process
+	// host tests running as root, which would otherwise reboot the host).
+	AllowPowerOff bool
+	PowerOff      func() error // optional override for powerOffGuest (tests)
 }
 
 // Server runs inside a workspace VM and handles requests from hotbed-worker.
 type Server struct {
-	workDir   string
-	stateDir  string
-	runDir    string
-	logDir    string
-	syncDir   string
-	log       *slog.Logger
-	inspector inspect.Inspector
-	profiler  profiler.Profiler
-	freezeFS  func(path string) error
-	thawFS    func(path string) error
+	workDir       string
+	stateDir      string
+	runDir        string
+	logDir        string
+	syncDir       string
+	log           *slog.Logger
+	inspector     inspect.Inspector
+	profiler      profiler.Profiler
+	freezeFS      func(path string) error
+	thawFS        func(path string) error
+	allowPowerOff bool
+	powerOff      func() error
 
 	mu   sync.Mutex
 	cmds map[string]*managedCmd
@@ -135,18 +142,24 @@ func NewServer(cfg ServerConfig) (*Server, error) {
 	if thawFn == nil {
 		thawFn = thawFilesystem
 	}
+	powerOffFn := cfg.PowerOff
+	if powerOffFn == nil {
+		powerOffFn = powerOffGuest
+	}
 	return &Server{
-		workDir:   cfg.WorkDir,
-		stateDir:  cfg.StateDir,
-		runDir:    cfg.RunDir,
-		logDir:    logDir,
-		syncDir:   syncDir,
-		log:       cfg.Logger,
-		inspector: insp,
-		profiler:  cfg.Profiler,
-		freezeFS:  freezeFn,
-		thawFS:    thawFn,
-		cmds:      map[string]*managedCmd{},
+		workDir:       cfg.WorkDir,
+		stateDir:      cfg.StateDir,
+		runDir:        cfg.RunDir,
+		logDir:        logDir,
+		syncDir:       syncDir,
+		log:           cfg.Logger,
+		inspector:     insp,
+		profiler:      cfg.Profiler,
+		freezeFS:      freezeFn,
+		thawFS:        thawFn,
+		allowPowerOff: cfg.AllowPowerOff,
+		powerOff:      powerOffFn,
+		cmds:          map[string]*managedCmd{},
 	}, nil
 }
 
@@ -1096,10 +1109,10 @@ func (s *Server) Shutdown(_ context.Context, req *guestdv1.ShutdownRequest) (*gu
 	if req.GetSyncFs() {
 		syncFilesystems()
 	}
-	if req.GetPowerOff() {
+	if req.GetPowerOff() && s.allowPowerOff {
 		go func() {
 			time.Sleep(50 * time.Millisecond)
-			_ = powerOffGuest()
+			_ = s.powerOff()
 		}()
 	}
 	return &guestdv1.ShutdownResponse{}, nil

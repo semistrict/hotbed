@@ -64,10 +64,11 @@ func main() {
 	}
 
 	srv, err := guestd.NewServer(guestd.ServerConfig{
-		WorkDir:  *workDir,
-		StateDir: *stateDir,
-		Logger:   log,
-		Profiler: prof,
+		WorkDir:       *workDir,
+		StateDir:      *stateDir,
+		Logger:        log,
+		Profiler:      prof,
+		AllowPowerOff: *listenDir == "",
 	})
 	if err != nil {
 		log.Error("init guestd server failed", "err", err)

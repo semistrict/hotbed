@@ -985,3 +985,53 @@ func TestFreezeFSAndThawFS(t *testing.T) {
 		t.Fatal("expected FreezeFS error when hook fails")
 	}
 }
+
+func TestShutdownPowerOffRequiresAllowPowerOff(t *testing.T) {
+	// Default ServerConfig (AllowPowerOff=false) must never invoke PowerOff,
+	// preventing in-process root host tests from calling syscall.Reboot.
+	var deniedCalls atomic.Int32
+	srvDenied, err := guestd.NewServer(guestd.ServerConfig{
+		WorkDir:  t.TempDir(),
+		StateDir: t.TempDir(),
+		PowerOff: func() error {
+			deniedCalls.Add(1)
+			return nil
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := srvDenied.Shutdown(t.Context(), &guestdv1.ShutdownRequest{PowerOff: true}); err != nil {
+		t.Fatalf("Shutdown (denied): %v", err)
+	}
+	time.Sleep(120 * time.Millisecond)
+	if deniedCalls.Load() != 0 {
+		t.Fatalf("PowerOff invoked %d times with AllowPowerOff=false, want 0", deniedCalls.Load())
+	}
+
+	// AllowPowerOff=true (used by in-VM hotbed-guestd) invokes PowerOff.
+	called := make(chan struct{}, 1)
+	srvAllowed, err := guestd.NewServer(guestd.ServerConfig{
+		WorkDir:       t.TempDir(),
+		StateDir:      t.TempDir(),
+		AllowPowerOff: true,
+		PowerOff: func() error {
+			select {
+			case called <- struct{}{}:
+			default:
+			}
+			return nil
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := srvAllowed.Shutdown(t.Context(), &guestdv1.ShutdownRequest{PowerOff: true}); err != nil {
+		t.Fatalf("Shutdown (allowed): %v", err)
+	}
+	select {
+	case <-called:
+	case <-time.After(2 * time.Second):
+		t.Fatal("PowerOff was not invoked with AllowPowerOff=true")
+	}
+}
