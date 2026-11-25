@@ -12,6 +12,7 @@ import (
 	"github.com/semistrict/hotbed/internal/api"
 	"github.com/semistrict/hotbed/internal/apicmd"
 	pb "github.com/semistrict/hotbed/internal/gen/hotbed/v1"
+	"github.com/semistrict/hotbed/internal/t3bridge"
 )
 
 // outputOpts controls how a command's result or failure is printed.
@@ -45,7 +46,10 @@ var defaultFormatSpecs = map[string]formatSpec{
 	"review ls":       {&pb.ListReviewsResponse{}, "{{range .reviews}}#{{pad 4 .id}}  {{pad 12 (state .state)}}  {{pad 18 (or .model \"-\")}}  {{short 60 .title}}\n{{end}}"},
 	"skills list":     {map[string][]string{"skills": nil}, "{{range .skills}}{{.}}\n{{end}}"},
 	"skills get":      {map[string]string{"name": "", "content": ""}, `{{.content}}`},
-	"skills install":  {map[string]any{"dir": "", "files": []string{}}, `installed {{len .files}} files in {{.dir}}`},
+	"skills install":      {map[string]any{"dir": "", "files": []string{}}, `installed {{len .files}} files in {{.dir}}`},
+	"t3-bridge status":    {t3bridge.ServiceStatus{}, "installed={{.installed}}  running={{.running}}{{if .controller}}  controller={{.controller}}{{end}}{{if .t3Binary}}  t3={{.t3Binary}}{{end}}{{if .unitPath}}\nunit:  {{.unitPath}}{{end}}{{if .logPath}}\nlog:   {{.logPath}}{{end}}{{if .stateFile}}\nstate: {{.stateFile}} ({{.trackedQuestions}} tracked){{end}}"},
+	"t3-bridge install":   {t3bridge.ServiceStatus{}, "installed={{.installed}}  running={{.running}}{{if .unitPath}}\nunit:  {{.unitPath}}{{end}}{{if .logPath}}\nlog:   {{.logPath}}{{end}}"},
+	"t3-bridge uninstall": {t3bridge.ServiceStatus{}, "installed={{.installed}}  running={{.running}}{{if .unitPath}}\nunit:  {{.unitPath}}{{end}}"},
 }
 
 var compiledFormats = sync.OnceValue(func() map[string]*template.Template {

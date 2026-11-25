@@ -1742,4 +1742,252 @@ describe("Security, cron, daemon logs, tunnel, and workspace regression tests", 
 			tunnel.close();
 		}
 	});
+
+	it("streams T3-linked question outbox snapshots and live updates over /ws/questions", async () => {
+		const owner = ownerClients();
+
+		// 1. Auth & upgrade enforcement on /ws/questions
+		const noUpgrade = await SELF.fetch("https://controller.test/ws/questions", {
+			headers: { Authorization: `Bearer ${OWNER_TOKEN}` },
+		});
+		expect(noUpgrade.status).toBe(426);
+
+		const unauth = await SELF.fetch("https://controller.test/ws/questions", {
+			headers: { Upgrade: "websocket" },
+		});
+		expect(unauth.status).toBe(403);
+
+		// Worker token is rejected on /ws/questions
+		const joined = await createClient(
+			ClusterService,
+			makeTransport(JOIN_TOKEN, {
+				"X-Hotbed-Node-Id": "node-qbridge-worker",
+				"X-Hotbed-Host": "qbridge-worker",
+				"X-Hotbed-Addr": "100.73.156.77:7121",
+			}),
+		).join({});
+		const workerWs = await SELF.fetch("https://controller.test/ws/questions", {
+			headers: {
+				Upgrade: "websocket",
+				Authorization: `Bearer ${joined.workerToken}`,
+			},
+		});
+		expect(workerWs.status).toBe(403);
+
+		// 2. Seed a project and two sessions: one with t3codeThreadId, one without.
+		await owner.cluster.addProject({
+			name: "qbridge",
+			repos: ["github.com/semistrict/qbridge"],
+		});
+		const t3Sess = await owner.sessions.startSession({
+			id: "qbridge-t3",
+			project: "qbridge",
+			t3codeThreadId: "thread-bridge-1",
+		});
+		const plainSess = await owner.sessions.startSession({
+			id: "qbridge-plain",
+			project: "qbridge",
+		});
+
+		const promptA = create(PromptSchema, {
+			question: "Which transport should we use?",
+			header: "Transport",
+			options: [
+				{ label: "WebSocket", description: "Hibernating DO socket", implemented: true },
+				{ label: "SSE", description: "Server-sent events" },
+			],
+		});
+		const promptB = create(PromptSchema, {
+			question: "Enable retries?",
+			header: "Retries",
+			options: [
+				{ label: "Yes", description: "Retry on error", implemented: true },
+				{ label: "No", description: "Fail fast" },
+			],
+		});
+
+		// Add questions before connecting: q1 (T3, answered -> in initial snapshot),
+		// q2 (T3, open -> NOT in snapshot), q3 (no T3 thread, answered -> NOT in snapshot).
+		const addedT3 = await owner.questions.addQuestions({
+			sessionId: t3Sess.id,
+			questions: [promptA, promptB],
+		});
+		const q1 = addedT3.questions[0].id;
+		const q2 = addedT3.questions[1].id;
+
+		const addedPlain = await owner.questions.addQuestions({
+			sessionId: plainSess.id,
+			questions: [promptB],
+		});
+		const q3 = addedPlain.questions[0].id;
+
+		await owner.questions.answerQuestion({
+			id: q1,
+			answer: { picked: ["WebSocket"], notes: "Keep it cheap while idle" },
+		});
+		await owner.questions.answerQuestion({
+			id: q3,
+			answer: { picked: ["Yes"] },
+		});
+
+		type BridgeMsg = {
+			type: "snapshot" | "update";
+			event?: string;
+			questions?: Array<{
+				id: number;
+				state: string;
+				revision?: string;
+				t3codeThreadId?: string;
+				answer?: { picked?: string[]; other?: string; notes?: string };
+				dismissed?: { reason?: string };
+			}>;
+		};
+
+		async function openBridge(): Promise<{
+			ws: WebSocket;
+			next: () => Promise<BridgeMsg | string>;
+			close: () => void;
+		}> {
+			const res = await SELF.fetch("https://controller.test/ws/questions", {
+				headers: {
+					Upgrade: "websocket",
+					Authorization: `Bearer ${OWNER_TOKEN}`,
+					"X-Hotbed-Host": "macbook-bridge",
+				},
+			});
+			expect(res.status).toBe(101);
+			const ws = res.webSocket!;
+			expect(ws).toBeTruthy();
+			const queue: Array<BridgeMsg | string> = [];
+			const waiters: Array<(v: BridgeMsg | string) => void> = [];
+			ws.addEventListener("message", (ev) => {
+				const raw = typeof ev.data === "string" ? ev.data : new TextDecoder().decode(ev.data);
+				const item: BridgeMsg | string = raw === "pong" ? "pong" : (JSON.parse(raw) as BridgeMsg);
+				const w = waiters.shift();
+				if (w) w(item);
+				else queue.push(item);
+			});
+			ws.accept();
+			return {
+				ws,
+				next: () =>
+					new Promise((resolve, reject) => {
+						if (queue.length > 0) {
+							resolve(queue.shift()!);
+							return;
+						}
+						const timer = setTimeout(
+							() => reject(new Error("timed out waiting for bridge frame")),
+							5000,
+						);
+						waiters.push((item) => {
+							clearTimeout(timer);
+							resolve(item);
+						});
+					}),
+				close: () => {
+					try {
+						ws.close(1000, "test done");
+					} catch {
+						// ignore
+					}
+				},
+			};
+		}
+
+		const bridge = await openBridge();
+		try {
+			// Initial snapshot contains only q1 (answered + has t3codeThreadId).
+			const snap = (await bridge.next()) as BridgeMsg;
+			expect(snap.type).toBe("snapshot");
+			expect(snap.questions?.map((q) => q.id)).toEqual([q1]);
+			expect(snap.questions?.[0].t3codeThreadId).toBe("thread-bridge-1");
+			expect(snap.questions?.[0].state).toBe("QUESTION_STATE_ANSWERED");
+			expect(snap.questions?.[0].answer?.picked).toEqual(["WebSocket"]);
+
+			// Bridge socket must not inflate connectedWorkers in /healthz.
+			const health = (await (await SELF.fetch("https://controller.test/healthz")).json()) as {
+				connectedWorkers: number;
+			};
+			expect(health.connectedWorkers).toBe(0);
+
+			// Keepalive ping -> pong
+			bridge.ws.send("ping");
+			expect(await bridge.next()).toBe("pong");
+
+			// Mutating non-T3 question q3 produces no bridge update; follow with T3 q2 answer to verify ordering.
+			await owner.questions.dismissQuestion({ id: q3, reason: "no t3 thread" });
+			await owner.questions.answerQuestion({
+				id: q2,
+				answer: { picked: ["Yes"], other: "with jitter" },
+			});
+			const ansEv = (await bridge.next()) as BridgeMsg;
+			expect(ansEv.type).toBe("update");
+			expect(ansEv.event).toBe("answered");
+			expect(ansEv.questions?.map((q) => q.id)).toEqual([q2]);
+			expect(ansEv.questions?.[0].answer?.other).toBe("with jitter");
+
+			// reviseQuestion pushes "revised" with incremented revision.
+			const prevRev = Number(ansEv.questions?.[0].revision ?? "0");
+			await owner.questions.reviseQuestion({
+				id: q2,
+				prompt: create(PromptSchema, {
+					question: "Enable retries with exponential backoff?",
+					header: "Retries",
+					options: [
+						{ label: "Yes", description: "Retry on error", implemented: true },
+						{ label: "No", description: "Fail fast" },
+					],
+				}),
+			});
+			const revEv = (await bridge.next()) as BridgeMsg;
+			expect(revEv.type).toBe("update");
+			expect(revEv.event).toBe("revised");
+			expect(revEv.questions?.[0].id).toBe(q2);
+			expect(Number(revEv.questions?.[0].revision ?? "0")).toBeGreaterThan(prevRev);
+
+			// dismissQuestion pushes "dismissed".
+			await owner.questions.dismissQuestion({ id: q2, reason: "not needed anymore" });
+			const disEv = (await bridge.next()) as BridgeMsg;
+			expect(disEv.type).toBe("update");
+			expect(disEv.event).toBe("dismissed");
+			expect(disEv.questions?.[0].state).toBe("QUESTION_STATE_DISMISSED");
+			expect(disEv.questions?.[0].dismissed?.reason).toBe("not needed anymore");
+
+			// reopenQuestion pushes "reopened" with OPEN state.
+			await owner.questions.reopenQuestion({ id: q2 });
+			const reopenEv = (await bridge.next()) as BridgeMsg;
+			expect(reopenEv.type).toBe("update");
+			expect(reopenEv.event).toBe("reopened");
+			expect(reopenEv.questions?.[0].state).toBe("QUESTION_STATE_OPEN");
+
+			// ackQuestions pushes "handled" with HANDLED state.
+			await owner.questions.ackQuestions({ sessionId: t3Sess.id, ids: [q1] });
+			const ackEv = (await bridge.next()) as BridgeMsg;
+			expect(ackEv.type).toBe("update");
+			expect(ackEv.event).toBe("handled");
+			expect(ackEv.questions?.[0].id).toBe(q1);
+			expect(ackEv.questions?.[0].state).toBe("QUESTION_STATE_HANDLED");
+
+			// deleteQuestion pushes "deleted".
+			await owner.questions.deleteQuestion({
+				sessionId: t3Sess.id,
+				id: q2,
+				reason: "obsolete",
+			});
+			const delEv = (await bridge.next()) as BridgeMsg;
+			expect(delEv.type).toBe("update");
+			expect(delEv.event).toBe("deleted");
+			expect(delEv.questions?.[0].id).toBe(q2);
+			expect(delEv.questions?.[0].state).toBe("QUESTION_STATE_DELETED");
+
+			// Explicit resync returns an empty snapshot now that q1 is handled and q2 is deleted.
+			bridge.ws.send(JSON.stringify({ type: "resync" }));
+			const resyncSnap = (await bridge.next()) as BridgeMsg;
+			expect(resyncSnap.type).toBe("snapshot");
+			expect(resyncSnap.questions).toEqual([]);
+		} finally {
+			bridge.close();
+		}
+	});
 });

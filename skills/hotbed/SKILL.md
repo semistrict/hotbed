@@ -522,6 +522,7 @@ hotbed schedule run nightly                 # a run now; prints its session, for
 | `hotbed org join-token create\|ls\|rm` | Mint (`hbj_<org>.*`), list, or revoke org-scoped worker join tokens |
 | `hotbed org api-token create\|ls\|rm` | Mint (`hbu_<org>.*`), list, or revoke org-scoped personal API tokens for `HOTBED_TOKEN` |
 | `hotbed api ENDPOINT [-X METHOD] [-f k=v] [-F k=v] [-d DATA] [--input FILE] [-H K:V] [-i] [--jq EXPR]` | Make an authenticated HTTP or ConnectRPC request to the controller (e.g. `hotbed api /healthz`, `hotbed api ClusterService/GetSnapshot --jq '.nodes \| length'`) |
+| `hotbed t3-bridge [run\|install\|uninstall\|status]` | Outbound bridge that listens on the controller's `/ws/questions` stream and automatically notifies idle local T3 Code threads (via `t3 thread show` / `t3 thread send`) when their Hotbed questions are answered or dismissed, with debouncing, ack-while-busy suppression, and local revision tracking (`install` sets up a LaunchAgent on macOS or systemd user service on Linux) |
 
 ## Output
 

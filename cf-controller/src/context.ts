@@ -29,6 +29,7 @@ import { ErrorCode, codeOf, hotbedError } from "./errors.ts";
 import { canonicalRemote, projectNameFor } from "./gitops.ts";
 import { HostUsageState, mergeHostAdmission } from "./hostusage.ts";
 import type { NodeRow, NodeView } from "./placement.ts";
+import type { QuestionBridgeHub } from "./question-bridge.ts";
 import { ONLINE_WINDOW_MS, StandbyState, Wakeups, isCommandLive } from "./standby.ts";
 import { ControllerStore, LOST_DETAIL, sessionEndedError, type WorkspaceRow } from "./store.ts";
 import type { WorkerTunnelHub } from "./tunnel.ts";
@@ -73,6 +74,7 @@ export interface ScopedRequest {
 export class ControllerContext {
 	readonly store: ControllerStore;
 	readonly tunnel: WorkerTunnelHub;
+	readonly questionBridge?: QuestionBridgeHub;
 	readonly builds: BuildDistributor;
 	readonly power = new StandbyState(() => this.now());
 	readonly hostUsages = new HostUsageState();
@@ -95,6 +97,7 @@ export class ControllerContext {
 	constructor(opts: {
 		store: ControllerStore;
 		tunnel: WorkerTunnelHub;
+		questionBridge?: QuestionBridgeHub;
 		builds: BuildDistributor;
 		clusterId: string;
 		orgId?: string;
@@ -103,6 +106,7 @@ export class ControllerContext {
 	}) {
 		this.store = opts.store;
 		this.tunnel = opts.tunnel;
+		this.questionBridge = opts.questionBridge;
 		this.builds = opts.builds;
 		this.clusterId = opts.clusterId;
 		this.orgId = opts.orgId ?? "";

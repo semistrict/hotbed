@@ -429,7 +429,7 @@ func startDevCluster(parent context.Context, addr string) (*devCluster, error) {
 	uiHandler := ui.Handler()
 	inner := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		p := r.URL.Path
-		if strings.HasPrefix(p, "/hotbed.v1.") || p == "/ws/worker" || p == "/healthz" ||
+		if strings.HasPrefix(p, "/hotbed.v1.") || strings.HasPrefix(p, "/ws/") || p == "/healthz" ||
 			strings.HasPrefix(p, "/builds/") || strings.HasPrefix(p, "/admin/") || strings.HasPrefix(p, "/auth/") {
 			peer := httpx.Peer(r.Context())
 			r2 := r.Clone(r.Context())

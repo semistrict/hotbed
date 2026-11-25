@@ -2881,6 +2881,33 @@ export class ControllerStore {
 		return { questions, total, sessions };
 	}
 
+	listT3OutboxQuestions(): Question[] {
+		return this.sql
+			.exec(
+				`SELECT q.id, q.rank, p.name AS project, q.doc,
+				        q.t3code_thread_id AS q_t3code_thread_id,
+				        COALESCE(s.t3code_thread_id, '') AS s_t3code_thread_id
+				 FROM questions q
+				 JOIN projects p ON p.id = q.project_id
+				 LEFT JOIN sessions s ON s.id = q.asked_by
+				 WHERE q.state IN (?, ?)
+				   AND COALESCE(NULLIF(q.t3code_thread_id, ''), COALESCE(s.t3code_thread_id, '')) != ''
+				 ORDER BY q.updated_at ASC, q.id ASC`,
+				questionStateName(QuestionState.ANSWERED),
+				questionStateName(QuestionState.DISMISSED),
+			)
+			.toArray()
+			.map((r) => {
+				const q = unmarshal(QuestionSchema, str(r.doc));
+				q.id = num(r.id);
+				q.rank = big(r.rank);
+				q.project = str(r.project);
+				q.t3codeThreadId =
+					str(r.q_t3code_thread_id) || str(r.s_t3code_thread_id) || q.t3codeThreadId;
+				return q;
+			});
+	}
+
 	questionProjects(): QuestionProject[] {
 		return this.sql
 			.exec(
