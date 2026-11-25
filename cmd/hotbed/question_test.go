@@ -966,3 +966,163 @@ func TestQuestionOnePromptRejectsAnsweredAndExtraFields(t *testing.T) {
 		}
 	}
 }
+
+// Questions map back to their asking sessions and T3 Code threads across
+// question add, ls, outbox, and show — both from T3CODE_THREAD_ID captured
+// when asked and from the asking session's persisted t3code_thread_id.
+func TestQuestionT3CodeThreadMappingAndOutboxSessions(t *testing.T) {
+	c, user := questionCluster(t)
+	c.ok(nil, "project", "add", "other")
+
+	// 1. Session started with T3CODE_THREAD_ID; asks questions later with env unset.
+	t.Setenv("T3CODE_THREAD_ID", "thread-alpha")
+	c.ok(nil, "session", "start", "alpha-one")
+	t.Setenv("T3CODE_THREAD_ID", "")
+	qAlpha1 := c.ask("alpha-one", twoQuestions) // #1, #2
+	if qAlpha1[0].T3CodeThreadId != "thread-alpha" || qAlpha1[1].T3CodeThreadId != "thread-alpha" {
+		t.Fatalf("alpha-one questions t3 = [%q %q], want thread-alpha", qAlpha1[0].T3CodeThreadId, qAlpha1[1].T3CodeThreadId)
+	}
+
+	// 2. Second session for the same T3 thread in another project.
+	c.ok(nil, "session", "start", "alpha-two", "-p", "other", "--t3code-thread-id", "thread-alpha")
+	t.Setenv("T3CODE_THREAD_ID", "thread-alpha")
+	qAlpha2 := c.ask("alpha-two", storeQuestion) // #3
+	if qAlpha2[0].T3CodeThreadId != "thread-alpha" {
+		t.Fatalf("alpha-two question t3 = %q, want thread-alpha", qAlpha2[0].T3CodeThreadId)
+	}
+
+	// 3. Session started without a T3 thread; asking with T3CODE_THREAD_ID records
+	//    it on the question AND backfills the session.
+	t.Setenv("T3CODE_THREAD_ID", "")
+	c.ok(nil, "session", "start", "beta-one")
+	t.Setenv("T3CODE_THREAD_ID", "thread-beta")
+	qBeta := c.ask("beta-one", storeQuestion) // #4
+	if qBeta[0].T3CodeThreadId != "thread-beta" {
+		t.Fatalf("beta-one question t3 = %q, want thread-beta", qBeta[0].T3CodeThreadId)
+	}
+	var betaStatus sessionStatusResult
+	c.ok(&betaStatus, "session", "status", "-s", "beta-one")
+	if betaStatus.T3CodeThreadID != "thread-beta" {
+		t.Fatalf("beta-one session T3CodeThreadID = %q, want backfilled thread-beta", betaStatus.T3CodeThreadID)
+	}
+
+	// 4. Session started and asked without any T3 thread, then later resumed with one:
+	//    previously-asked questions inherit the session's t3code_thread_id via JOIN.
+	t.Setenv("T3CODE_THREAD_ID", "")
+	c.ok(nil, "session", "start", "gamma-one")
+	qGamma := c.ask("gamma-one", storeQuestion) // #5
+	if qGamma[0].T3CodeThreadId != "" {
+		t.Fatalf("gamma-one question t3 = %q, want empty", qGamma[0].T3CodeThreadId)
+	}
+	c.ok(nil, "session", "end", "-s", "gamma-one")
+	c.ok(nil, "session", "start", "gamma-one", "--resume", "--t3code-thread-id", "thread-gamma")
+	if got := c.question("5").T3CodeThreadId; got != "thread-gamma" {
+		t.Fatalf("question 5 after session resume t3 = %q, want thread-gamma", got)
+	}
+
+	// End alpha-one so outbox covers both ended and live sessions.
+	c.ok(nil, "session", "end", "-s", "alpha-one")
+
+	// Open questions across all projects include t3codeThreadId and session summaries.
+	openRes := &pb.ListQuestionsResponse{}
+	c.ok(openRes, "question", "ls", "--state", "open", "--all-projects")
+	if len(openRes.Questions) != 5 {
+		t.Fatalf("open questions = %d, want 5", len(openRes.Questions))
+	}
+	openSess := map[string]*pb.QuestionSession{}
+	for _, s := range openRes.Sessions {
+		openSess[s.SessionId] = s
+	}
+	if len(openSess) != 4 || openSess["gamma-one"].GetT3CodeThreadId() != "thread-gamma" || !openSess["gamma-one"].GetLive() || openSess["gamma-one"].GetOpen() != 1 {
+		t.Fatalf("open sessions = %+v, want 4 sessions with gamma-one live & thread-gamma", openRes.Sessions)
+	}
+	if openSess["alpha-one"].GetLive() || openSess["alpha-one"].GetOpen() != 2 || openSess["alpha-one"].GetT3CodeThreadId() != "thread-alpha" {
+		t.Fatalf("open alpha-one session = %+v", openSess["alpha-one"])
+	}
+
+	// Answer/dismiss #1, #2 (alpha-one), #3 (alpha-two), #4 (beta-one); leave #5 open.
+	c.clock.advance(time.Second)
+	if _, err := user.AnswerQuestion(t.Context(), &pb.AnswerQuestionRequest{Id: 1, Answer: &pb.Answer{Picked: []string{"linux"}}}); err != nil {
+		t.Fatal(err)
+	}
+	c.clock.advance(time.Second)
+	if _, err := user.DismissQuestion(t.Context(), &pb.DismissQuestionRequest{Id: 2, Reason: "skip"}); err != nil {
+		t.Fatal(err)
+	}
+	c.clock.advance(time.Second)
+	if _, err := user.AnswerQuestion(t.Context(), &pb.AnswerQuestionRequest{Id: 3, Answer: &pb.Answer{Picked: []string{"SQLite"}}}); err != nil {
+		t.Fatal(err)
+	}
+	c.clock.advance(time.Second)
+	if _, err := user.AnswerQuestion(t.Context(), &pb.AnswerQuestionRequest{Id: 4, Answer: &pb.Answer{Picked: []string{"Postgres"}}}); err != nil {
+		t.Fatal(err)
+	}
+
+	// Survive controller restart.
+	c.restart()
+
+	// Peek at the outbox across all projects.
+	outbox := &pb.ListQuestionsResponse{}
+	c.ok(outbox, "question", "outbox", "--all-projects")
+	if got := ids(outbox.Questions); !slices.Equal(got, []int32{4, 3, 2, 1}) {
+		t.Fatalf("outbox ids = %v, want [4 3 2 1]", got)
+	}
+	if len(outbox.Sessions) != 3 {
+		t.Fatalf("outbox sessions = %+v, want 3 sessions", outbox.Sessions)
+	}
+	// Ordered by most recently answered first: beta-one (#4), alpha-two (#3), alpha-one (#2, #1).
+	if s := outbox.Sessions[0]; s.SessionId != "beta-one" || s.Project != "test" || s.T3CodeThreadId != "thread-beta" || !s.Live || !slices.Equal(s.QuestionIds, []int32{4}) || s.Answered != 1 || s.Dismissed != 0 || s.Open != 0 {
+		t.Errorf("outbox sessions[0] = %+v", s)
+	}
+	if s := outbox.Sessions[1]; s.SessionId != "alpha-two" || s.Project != "other" || s.T3CodeThreadId != "thread-alpha" || !s.Live || !slices.Equal(s.QuestionIds, []int32{3}) || s.Answered != 1 || s.Dismissed != 0 {
+		t.Errorf("outbox sessions[1] = %+v", s)
+	}
+	if s := outbox.Sessions[2]; s.SessionId != "alpha-one" || s.Project != "test" || s.T3CodeThreadId != "thread-alpha" || s.Live || !slices.Equal(s.QuestionIds, []int32{2, 1}) || s.Answered != 1 || s.Dismissed != 1 {
+		t.Errorf("outbox sessions[2] = %+v", s)
+	}
+
+	// Plain-text outbox shows t3=... and the Sessions: summary block.
+	code, plainOutbox, stderr := c.hotbed("question", "outbox", "--all-projects")
+	if code != exitOK {
+		t.Fatalf("plain question outbox: exit %d, stderr %q", code, stderr)
+	}
+	for _, want := range []string{"t3=thread-beta", "t3=thread-alpha", "Sessions:", "beta-one", "alpha-two", "alpha-one", "ended", "live", "questions=2,1"} {
+		if !strings.Contains(plainOutbox, want) {
+			t.Errorf("plain question outbox missing %q:\n%s", want, plainOutbox)
+		}
+	}
+
+	// Plain-text show displays session and thread.
+	code, plainShow, stderr := c.hotbed("question", "show", "1")
+	if code != exitOK {
+		t.Fatalf("plain question show: exit %d, stderr %q", code, stderr)
+	}
+	for _, want := range []string{"session  alpha-one", "thread   thread-alpha"} {
+		if !strings.Contains(plainShow, want) {
+			t.Errorf("plain question show missing %q:\n%s", want, plainShow)
+		}
+	}
+
+	// Filtering by --t3code-thread-id works across projects when no project/session is named.
+	t.Setenv("HOTBED_PROJECT", "")
+	t.Setenv("HOTBED_SESSION", "")
+	t.Setenv("T3CODE_THREAD_ID", "")
+	byAlpha := &pb.ListQuestionsResponse{}
+	c.ok(byAlpha, "question", "outbox", "--t3code-thread-id", "thread-alpha")
+	if got := ids(byAlpha.Questions); !slices.Equal(got, []int32{3, 2, 1}) || len(byAlpha.Sessions) != 2 {
+		t.Fatalf("outbox --t3code-thread-id thread-alpha = ids %v sessions %+v, want [3 2 1] and 2 sessions", got, byAlpha.Sessions)
+	}
+	byGamma := &pb.ListQuestionsResponse{}
+	c.ok(byGamma, "question", "ls", "--t3code-thread-id", "thread-gamma")
+	if got := ids(byGamma.Questions); !slices.Equal(got, []int32{5}) {
+		t.Fatalf("ls --t3code-thread-id thread-gamma = %v, want [5]", got)
+	}
+
+	// Invalid t3code-thread-id is rejected cleanly.
+	if _, e := c.fails("question", "outbox", "--t3code-thread-id", "bad\nthread"); e.Code != api.CodeInvalidArgs {
+		t.Errorf("outbox with newline in t3code-thread-id = %+v, want INVALID_ARGS", e)
+	}
+	if _, e := c.fails("question", "ls", "--t3code-thread-id", strings.Repeat("a", 257)); e.Code != api.CodeInvalidArgs {
+		t.Errorf("ls with overly long t3code-thread-id = %+v, want INVALID_ARGS", e)
+	}
+}

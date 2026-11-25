@@ -143,7 +143,14 @@ hotbed question ack 12           # you read it and acted on it: it is handled
   `body`. Title, body, labels and descriptions are markdown; `preview` is shown as it is.
 - **One list per project, every session's.** `question ls` lists your project's questions, newest
   first (`--sort oldest|updated|rank`, `--state open|answered|dismissed|handled|deleted|all`,
-  `-p PROJECT`, `--all-projects`). Read it before asking: another session may have asked already.
+  `--asked-by SESSION`, `--t3code-thread-id ID`, `-p PROJECT`, `--all-projects`). Read it before
+  asking: another session may have asked already.
+- **Sessions and T3 Code threads are mapped on every question.** Each question carries its
+  `t3codeThreadId` (captured from `T3CODE_THREAD_ID` when asked or resolved from its asking
+  session), and `question outbox` / `question ls` also return a `sessions` summary (session ID,
+  project, liveness, `t3codeThreadId`, matched `questionIds`, and state counts) so you can peek at
+  the outbox (`hotbed question outbox --all-projects`) and immediately see which sessions and T3
+  Code threads have answers waiting.
 - **The user answers in the cockpit**, or dismisses (no answer will come). An answer waits in the
   outbox until an agent acknowledges it; any agent of the project may act on and ack an answer.
   An answer or dismissal is also an event of the asking session: its `hotbed poll` returns it,

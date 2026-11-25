@@ -6,6 +6,7 @@ import m0003 from "./0003_sleepy_psylocke.sql";
 import m0004 from "./0004_bumpy_thena.sql";
 import m0005 from "./0005_nice_lilandra.sql";
 import m0006 from "./0006_brown_magus.sql";
+import m0007 from "./0007_chubby_wolverine.sql";
 
 export default {
 	journal,
@@ -17,5 +18,6 @@ export default {
 		m0004,
 		m0005,
 		m0006,
+		m0007,
 	},
 };

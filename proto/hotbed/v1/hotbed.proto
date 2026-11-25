@@ -3227,14 +3227,14 @@ service QuestionService {
       name: "question ls"
       session: true
       read_only: true
-      format: "{{range .questions}}#{{pad 4 .id}}  {{pad 9 (state .state)}}  {{with .prompt}}{{short 72 .question}}{{end}}\n{{end}}{{with .reminder}}{{.}}{{end}}"
+      format: "{{range .questions}}#{{pad 4 .id}}  {{pad 9 (state .state)}}  {{with .asked}}{{if .session}}{{pad 18 .session}}  {{end}}{{end}}{{if .t3codeThreadId}}t3={{.t3codeThreadId}}  {{end}}{{with .prompt}}{{short 72 .question}}{{end}}\n{{end}}{{with .reminder}}{{.}}{{end}}"
     };
     option (command) = {
       name: "question outbox"
-      help: "A project's questions the user answered or dismissed that no agent has acknowledged yet, the newest answer first."
+      help: "A project's questions the user answered or dismissed that no agent has acknowledged yet, the newest answer first, along with the asking sessions and their T3 Code threads."
       session: true
       read_only: true
-      format: "{{range .questions}}#{{pad 4 .id}}  {{pad 9 (state .state)}}  {{with .prompt}}{{short 72 .question}}{{end}}\n{{end}}{{with .reminder}}{{.}}{{end}}"
+      format: "{{range .questions}}#{{pad 4 .id}}  {{pad 9 (state .state)}}  {{with .asked}}{{if .session}}{{pad 18 .session}}  {{end}}{{end}}{{if .t3codeThreadId}}t3={{.t3codeThreadId}}  {{end}}{{with .prompt}}{{short 72 .question}}{{end}}\n{{end}}{{if .sessions}}\nSessions:\n{{range .sessions}}  {{pad 18 .sessionId}}  {{pad 12 .project}}  {{if .live}}live {{else}}ended{{end}}{{if .t3codeThreadId}}  t3={{.t3codeThreadId}}{{end}}  questions={{join \",\" .questionIds}}\n{{end}}{{end}}{{with .reminder}}{{.}}{{end}}"
       fixed: [
         {
           field: "states"
@@ -3268,7 +3268,7 @@ service QuestionService {
     option (command) = {
       name: "question show"
       read_only: true
-      format: "#{{.id}}  {{state .state}}  rev={{.revision}}  {{with .prompt}}{{.question}}{{end}}{{if .project}}\nproject  {{.project}}{{end}}{{if .answer}}\nanswer   {{join \", \" .answer.picked}}{{if .answer.other}} ({{.answer.other}}){{end}}{{end}}{{with .reminder}}\n{{.}}{{end}}"
+      format: "#{{.id}}  {{state .state}}  rev={{.revision}}  {{with .prompt}}{{.question}}{{end}}{{if .project}}\nproject  {{.project}}{{end}}{{with .asked}}{{if .session}}\nsession  {{.session}}{{end}}{{end}}{{if .t3codeThreadId}}\nthread   {{.t3codeThreadId}}{{end}}{{if .answer}}\nanswer   {{join \", \" .answer.picked}}{{if .answer.other}} ({{.answer.other}}){{end}}{{end}}{{with .reminder}}\n{{.}}{{end}}"
     };
   }
   // Answer a question for the user, which puts it in the outbox; or change
@@ -3457,6 +3457,10 @@ message Question {
   // controller sets it on every QuestionService response, never on a
   // question inside another message.
   optional string reminder = 18;
+  // The T3 Code thread associated with this question (captured from
+  // T3CODE_THREAD_ID when asked, or resolved from the asking session's
+  // t3code_thread_id).
+  string t3code_thread_id = 19;
 }
 
 // One change to a question, as its history keeps it.
@@ -3490,6 +3494,13 @@ message AddQuestionsRequest {
   // options, by the asking session, and handled, never waiting in the
   // outbox. The user reopens one to overturn it.
   bool answered = 5;
+  // The T3 Code thread asking these questions (default: T3CODE_THREAD_ID).
+  // Stored on each question and backfilled onto the asking session if it has
+  // none yet.
+  string t3code_thread_id = 6 [(param) = {
+    hidden: true
+    default: "env:T3CODE_THREAD_ID"
+  }];
 }
 
 message AddQuestionsResponse {
@@ -3574,6 +3585,31 @@ message ListQuestionsRequest {
     hidden: true
     hook: "ListedRemote"
   }];
+  // Only questions associated with this T3 Code thread ID (across every session
+  // of that thread). When set without -p/--project, --all-projects, -s, or a
+  // checkout remote, lists across every project.
+  string t3code_thread_id = 9 [(param) = {name: "t3code-thread-id"}];
+}
+
+// A session that asked one or more of the returned questions, with its
+// associated T3 Code thread (if any) and the matched question IDs.
+message QuestionSession {
+  // The asking session's ID (e.g. "brave-otter").
+  string session_id = 1;
+  // The project the session belongs to.
+  string project = 2;
+  // The T3 Code thread ID associated with this session (or its questions), if known.
+  string t3code_thread_id = 3;
+  // Whether the session is currently live (not ended).
+  bool live = 4;
+  // IDs of the matched questions in this response asked by this session, in response order.
+  repeated int32 question_ids = 5;
+  // Matched questions asked by this session in state OPEN.
+  int32 open = 6;
+  // Matched questions asked by this session in state ANSWERED.
+  int32 answered = 7;
+  // Matched questions asked by this session in state DISMISSED.
+  int32 dismissed = 8;
 }
 
 message ListQuestionsResponse {
@@ -3584,6 +3620,9 @@ message ListQuestionsResponse {
   // controller sets it on every QuestionService response, never on a
   // question inside another message.
   optional string reminder = 3;
+  // Distinct asking sessions across the returned questions, in order of first
+  // appearance, each with its T3 Code thread ID, liveness, and matched question IDs.
+  repeated QuestionSession sessions = 4;
 }
 
 message ListQuestionProjectsRequest {}

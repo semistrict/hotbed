@@ -340,7 +340,14 @@ function StampLine({ s, st, now, verb }: { s: Snapshot; st: Stamp; now: number; 
 
 function AskedFromLine({ q }: { q: Question }) {
   const f = q.askedFrom;
-  if (!f) return null;
+  if (!f && !q.t3codeThreadId) return null;
+  if (!f) {
+    return (
+      <div className="font-mono text-[11px] text-muted-foreground">
+        t3:{q.t3codeThreadId}
+      </div>
+    );
+  }
   const repo = (f.remote || f.dir).replace(/\.git$/, "").split(/[/:]/).pop();
   return (
     <Collapsible className="text-[11.5px] text-muted-foreground">
@@ -351,6 +358,7 @@ function AskedFromLine({ q }: { q: Question }) {
           {f.branch && <> @ {f.branch}</>}
           {f.head && <span className="text-faint"> {shortHead(f.head)}</span>}
           {f.dirtyFiles > 0 && <span className="text-warning"> · {f.dirtyFiles} changed</span>}
+          {q.t3codeThreadId && <span className="text-faint"> · t3:{q.t3codeThreadId}</span>}
         </span>
       </CollapsibleTrigger>
       <CollapsibleContent>
@@ -358,6 +366,7 @@ function AskedFromLine({ q }: { q: Question }) {
           <div>{f.dir}</div>
           {f.remote && <div className="text-faint">{f.remote}</div>}
           {f.head && <div className="text-faint">{f.head}</div>}
+          {q.t3codeThreadId && <div className="text-faint">thread {q.t3codeThreadId}</div>}
           {f.dirty.length > 0 && (
             <pre className="mt-1 whitespace-pre-wrap text-foreground">
               {f.dirty.join("\n")}

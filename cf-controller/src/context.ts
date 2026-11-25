@@ -42,6 +42,24 @@ export const WORKER_PORT = 7121;
 export const PROJECT_NAME_RE = /^[a-z0-9][a-z0-9-]{0,39}$/;
 export const REPO_ID_RE = /^[a-z0-9][a-z0-9-]{0,39}$/;
 export const STEP_NAME_RE = /^[a-z0-9]+(-[a-z0-9]+)*$/;
+export const MAX_T3CODE_THREAD_ID_LEN = 256;
+
+export function validateT3CodeThreadId(raw: string): string {
+	const tid = raw.trim();
+	if (tid.length > MAX_T3CODE_THREAD_ID_LEN) {
+		throw hotbedError(
+			ErrorCode.InvalidArgs,
+			`t3code_thread_id is too long (max ${MAX_T3CODE_THREAD_ID_LEN} bytes)`,
+		);
+	}
+	if (/[\r\n\0]/.test(tid)) {
+		throw hotbedError(
+			ErrorCode.InvalidArgs,
+			"t3code_thread_id must not contain control characters",
+		);
+	}
+	return tid;
+}
 
 export interface ScopedRequest {
 	scope:

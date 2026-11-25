@@ -1,0 +1,2 @@
+ALTER TABLE `questions` ADD `t3code_thread_id` text DEFAULT '' NOT NULL;--> statement-breakpoint
+CREATE INDEX `questions_t3code_thread_id` ON `questions` (`t3code_thread_id`) WHERE "questions"."t3code_thread_id" != '';

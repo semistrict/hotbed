@@ -50,6 +50,7 @@ import {
 	QuestionOrder,
 	QuestionProjectSchema,
 	QuestionSchema,
+	QuestionSessionSchema,
 	QuestionState,
 	QuestionUpdate_What,
 	QuestionUpdateSchema,
@@ -101,6 +102,7 @@ import {
 	type Question,
 	type QuestionChange,
 	type QuestionProject,
+	type QuestionSession,
 	type Repo,
 	type Review,
 	type ReviewEvent,
@@ -2520,6 +2522,7 @@ export class ControllerStore {
 		decided: Answer[] | null,
 		by: Stamp,
 		from?: AskedFrom,
+		t3codeThreadId = "",
 	): Question[] {
 		return this.transactionSync(() => {
 			const pid = this.projectIdByName(project);
@@ -2536,14 +2539,16 @@ export class ControllerStore {
 					updatedAt: by.at,
 					project,
 					repo,
+					t3codeThreadId,
 				});
 				this.sql.exec(
-					"INSERT INTO questions (project_id, repo, state, rank, asked_by, asked_at, updated_at, doc) VALUES (?, ?, ?, ?, ?, ?, ?, '')",
+					"INSERT INTO questions (project_id, repo, state, rank, asked_by, t3code_thread_id, asked_at, updated_at, doc) VALUES (?, ?, ?, ?, ?, ?, ?, ?, '')",
 					pid,
 					repo,
 					questionStateName(item.state),
 					Number(rank),
 					by.session,
+					t3codeThreadId,
 					Number(by.at),
 					Number(by.at),
 				);
@@ -2567,7 +2572,13 @@ export class ControllerStore {
 	getQuestion(id: number): Question {
 		const rows = this.sql
 			.exec(
-				"SELECT q.id, q.rank, p.name AS project, q.doc FROM questions q JOIN projects p ON p.id = q.project_id WHERE q.id = ?",
+				`SELECT q.id, q.rank, p.name AS project, q.doc,
+				        q.t3code_thread_id AS q_t3code_thread_id,
+				        COALESCE(s.t3code_thread_id, '') AS s_t3code_thread_id
+				 FROM questions q
+				 JOIN projects p ON p.id = q.project_id
+				 LEFT JOIN sessions s ON s.id = q.asked_by
+				 WHERE q.id = ?`,
 				id,
 			)
 			.toArray();
@@ -2576,6 +2587,8 @@ export class ControllerStore {
 		q.id = num(rows[0].id);
 		q.rank = big(rows[0].rank);
 		q.project = str(rows[0].project);
+		q.t3codeThreadId =
+			str(rows[0].q_t3code_thread_id) || str(rows[0].s_t3code_thread_id) || q.t3codeThreadId;
 		return q;
 	}
 
@@ -2606,8 +2619,9 @@ export class ControllerStore {
 		order: QuestionOrder;
 		project: string;
 		askedBy: string;
+		t3codeThreadId: string;
 		limit: number;
-	}): { questions: Question[]; total: number } {
+	}): { questions: Question[]; total: number; sessions: QuestionSession[] } {
 		if (filter.project) {
 			this.getProject(filter.project);
 		}
@@ -2624,13 +2638,21 @@ export class ControllerStore {
 		const total = num(
 			this.sql
 				.exec(
-					`SELECT COUNT(*) AS total FROM questions q JOIN projects p ON p.id = q.project_id
-					 WHERE q.state IN (${ph}) AND (? = '' OR p.name = ?) AND (? = '' OR q.asked_by = ?)`,
+					`SELECT COUNT(*) AS total
+					 FROM questions q
+					 JOIN projects p ON p.id = q.project_id
+					 LEFT JOIN sessions s ON s.id = q.asked_by
+					 WHERE q.state IN (${ph})
+					   AND (? = '' OR p.name = ?)
+					   AND (? = '' OR q.asked_by = ?)
+					   AND (? = '' OR COALESCE(NULLIF(q.t3code_thread_id, ''), COALESCE(s.t3code_thread_id, '')) = ?)`,
 					...states,
 					filter.project,
 					filter.project,
 					filter.askedBy,
 					filter.askedBy,
+					filter.t3codeThreadId,
+					filter.t3codeThreadId,
 				)
 				.one().total,
 		);
@@ -2643,16 +2665,29 @@ export class ControllerStore {
 						? "q.rank ASC, q.id ASC"
 						: "q.asked_at DESC, q.id DESC";
 		const lim = filter.limit > 0 ? filter.limit : -1;
+		const sessionsById = new Map<string, QuestionSession>();
+		const sessions: QuestionSession[] = [];
 		const questions = this.sql
 			.exec(
-				`SELECT q.id, q.rank, p.name AS project, q.doc FROM questions q JOIN projects p ON p.id = q.project_id
-				 WHERE q.state IN (${ph}) AND (? = '' OR p.name = ?) AND (? = '' OR q.asked_by = ?)
+				`SELECT q.id, q.rank, p.name AS project, q.doc,
+				        q.t3code_thread_id AS q_t3code_thread_id,
+				        COALESCE(s.t3code_thread_id, '') AS s_t3code_thread_id,
+				        (s.id IS NOT NULL AND s.ended_at IS NULL) AS s_live
+				 FROM questions q
+				 JOIN projects p ON p.id = q.project_id
+				 LEFT JOIN sessions s ON s.id = q.asked_by
+				 WHERE q.state IN (${ph})
+				   AND (? = '' OR p.name = ?)
+				   AND (? = '' OR q.asked_by = ?)
+				   AND (? = '' OR COALESCE(NULLIF(q.t3code_thread_id, ''), COALESCE(s.t3code_thread_id, '')) = ?)
 				 ORDER BY ${orderBy} LIMIT ?`,
 				...states,
 				filter.project,
 				filter.project,
 				filter.askedBy,
 				filter.askedBy,
+				filter.t3codeThreadId,
+				filter.t3codeThreadId,
 				lim,
 			)
 			.toArray()
@@ -2661,9 +2696,32 @@ export class ControllerStore {
 				q.id = num(r.id);
 				q.rank = big(r.rank);
 				q.project = str(r.project);
+				q.t3codeThreadId =
+					str(r.q_t3code_thread_id) || str(r.s_t3code_thread_id) || q.t3codeThreadId;
+				const sid = q.asked?.session ?? "";
+				if (sid) {
+					let entry = sessionsById.get(sid);
+					if (!entry) {
+						entry = create(QuestionSessionSchema, {
+							sessionId: sid,
+							project: q.project,
+							t3codeThreadId: q.t3codeThreadId,
+							live: num(r.s_live) !== 0,
+							questionIds: [],
+						});
+						sessionsById.set(sid, entry);
+						sessions.push(entry);
+					} else if (!entry.t3codeThreadId && q.t3codeThreadId) {
+						entry.t3codeThreadId = q.t3codeThreadId;
+					}
+					entry.questionIds.push(q.id);
+					if (q.state === QuestionState.OPEN) entry.open += 1;
+					else if (q.state === QuestionState.ANSWERED) entry.answered += 1;
+					else if (q.state === QuestionState.DISMISSED) entry.dismissed += 1;
+				}
 				return q;
 			});
-		return { questions, total };
+		return { questions, total, sessions };
 	}
 
 	questionProjects(): QuestionProject[] {

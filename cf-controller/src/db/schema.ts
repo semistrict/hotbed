@@ -337,11 +337,17 @@ export const questions = sqliteTable(
 		state: text("state").notNull(),
 		rank: integer("rank").notNull(),
 		askedBy: text("asked_by").notNull(),
+		t3codeThreadId: text("t3code_thread_id").notNull().default(""),
 		askedAt: integer("asked_at").notNull(),
 		updatedAt: integer("updated_at").notNull(),
 		doc: text("doc").notNull(),
 	},
-	(t) => [index("questions_project").on(t.projectId, t.state)],
+	(t) => [
+		index("questions_project").on(t.projectId, t.state),
+		index("questions_t3code_thread_id")
+			.on(t.t3codeThreadId)
+			.where(sql`${t.t3codeThreadId} != ''`),
+	],
 );
 
 export const questionChanges = sqliteTable(

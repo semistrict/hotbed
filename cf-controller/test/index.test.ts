@@ -551,7 +551,10 @@ describe("Cloudflare Workers single-DO hotbed controller", () => {
 				branch: "main",
 			}),
 		});
-		const sess = await owner.sessions.startSession({ project: "proj-q" });
+		const sess = await owner.sessions.startSession({
+			project: "proj-q",
+			t3codeThreadId: "thread-proj-q",
+		});
 
 		// Questions lifecycle
 		const added = await owner.questions.addQuestions({
@@ -568,6 +571,7 @@ describe("Cloudflare Workers single-DO hotbed controller", () => {
 			],
 		});
 		expect(added.questions.length).toBe(1);
+		expect(added.questions[0].t3codeThreadId).toBe("thread-proj-q");
 		const qid = added.questions[0].id;
 
 		const answered = await owner.questions.answerQuestion({
@@ -575,6 +579,25 @@ describe("Cloudflare Workers single-DO hotbed controller", () => {
 			answer: { picked: ["R2"], notes: "sounds good" },
 		});
 		expect(answered.state).toBe(QuestionState.ANSWERED);
+		expect(answered.t3codeThreadId).toBe("thread-proj-q");
+
+		const outbox = await owner.questions.listQuestions({
+			states: [QuestionState.ANSWERED, QuestionState.DISMISSED],
+			t3codeThreadId: "thread-proj-q",
+		});
+		expect(outbox.questions.map((q) => q.id)).toEqual([qid]);
+		expect(outbox.sessions).toEqual([
+			expect.objectContaining({
+				sessionId: sess.id,
+				project: "proj-q",
+				t3codeThreadId: "thread-proj-q",
+				live: true,
+				questionIds: [qid],
+				answered: 1,
+				dismissed: 0,
+				open: 0,
+			}),
+		]);
 
 		const acked = await owner.questions.ackQuestions({
 			sessionId: sess.id,

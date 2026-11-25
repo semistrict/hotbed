@@ -24,6 +24,7 @@ import {
 	MEMORY_FEEDBACK_REMINDER,
 	SESSION_IDLE_MS,
 	sessionStartReminder,
+	validateT3CodeThreadId,
 	type ControllerContext,
 } from "../context.ts";
 import { ErrorCode, codeOf, hotbedError } from "../errors.ts";
@@ -31,25 +32,7 @@ import { canonicalRemote, generatePetname } from "../gitops.ts";
 import { isCommandLive } from "../standby.ts";
 
 const SESSION_NAME_RE = /^[a-z][a-z0-9]*(-[a-z0-9]+)+$/;
-const MAX_T3CODE_THREAD_ID_LEN = 256;
 const DEFAULT_SESSION_SEARCH_LIMIT = 50;
-
-function validateT3CodeThreadId(raw: string): string {
-	const tid = raw.trim();
-	if (tid.length > MAX_T3CODE_THREAD_ID_LEN) {
-		throw hotbedError(
-			ErrorCode.InvalidArgs,
-			`t3code_thread_id is too long (max ${MAX_T3CODE_THREAD_ID_LEN} bytes)`,
-		);
-	}
-	if (/[\r\n\0]/.test(tid)) {
-		throw hotbedError(
-			ErrorCode.InvalidArgs,
-			"t3code_thread_id must not contain control characters",
-		);
-	}
-	return tid;
-}
 
 function pollMemoryReminder(events: SessionEvent[]): string | undefined {
 	let sawFailure = false;

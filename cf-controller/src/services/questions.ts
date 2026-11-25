@@ -15,7 +15,7 @@ import {
 	type Question,
 } from "../gen/hotbed/v1/hotbed_pb.ts";
 import { getCaller } from "../connect-adapter.ts";
-import { inProject, stamped, type ControllerContext } from "../context.ts";
+import { inProject, stamped, validateT3CodeThreadId, type ControllerContext } from "../context.ts";
 import { ErrorCode, hotbedError, type HotbedError } from "../errors.ts";
 import { canonicalRemote } from "../gitops.ts";
 
@@ -260,7 +260,13 @@ export function createQuestionService(
 					);
 				}
 			}
+			const t3Thread = validateT3CodeThreadId(req.t3codeThreadId);
 			const { by, project } = ctrl.agentStamp(caller, req.sessionId, "");
+			const sess = ctrl.store.tryGetSession(by.session);
+			if (t3Thread && sess && !sess.t3codeThreadId) {
+				ctrl.store.setSessionT3CodeThreadIdIfEmpty(sess.id, t3Thread);
+			}
+			const effectiveT3 = t3Thread || sess?.t3codeThreadId || "";
 			const repo = questionRepo(project, req.repo, req.askedFrom?.remote ?? "");
 			if (req.askedFrom && req.askedFrom.dirty.length > DIRTY_KEPT) {
 				req.askedFrom.dirty = req.askedFrom.dirty.slice(0, DIRTY_KEPT);
@@ -272,6 +278,7 @@ export function createQuestionService(
 				req.answered ? decided : null,
 				by,
 				req.askedFrom,
+				effectiveT3,
 			);
 			return create(AddQuestionsResponseSchema, { questions: qs, reminder: POLL_REMINDER });
 		},
@@ -313,17 +320,29 @@ export function createQuestionService(
 			if (req.limit < 0) {
 				throw hotbedError(ErrorCode.InvalidArgs, `limit ${req.limit}: give 0 for all, or how many`);
 			}
-			const project = ctrl.listedProject(req);
-			const { questions, total } = ctrl.store.listQuestions({
+			const tid = validateT3CodeThreadId(req.t3codeThreadId);
+			let project = "";
+			if (
+				!tid ||
+				req.scope.case === "allProjects" ||
+				req.scope.case === "project" ||
+				req.sessionId ||
+				req.remote
+			) {
+				project = ctrl.listedProject(req);
+			}
+			const { questions, total, sessions } = ctrl.store.listQuestions({
 				states: req.states,
 				order: req.order,
 				project,
 				askedBy: req.askedBy,
+				t3codeThreadId: tid,
 				limit: req.limit,
 			});
 			return create(ListQuestionsResponseSchema, {
 				questions,
 				total,
+				sessions,
 				reminder: POLL_REMINDER,
 			});
 		},

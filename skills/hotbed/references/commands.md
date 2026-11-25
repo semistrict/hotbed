@@ -337,10 +337,11 @@ A project's questions, every session's (every state but deleted), newest first u
 | `--limit` |  | At most this many; 0 for all. |
 | `-p`, `--project` | `HOTBED_PROJECT` | Only this project's questions (default: HOTBED_PROJECT, else the session's project, else the one holding this checkout's repo). |
 | `--all-projects` |  | Every project's questions. |
+| `--t3code-thread-id` |  | Only questions associated with this T3 Code thread ID (across every session of that thread). When set without -p/--project, --all-projects, -s, or a checkout remote, lists across every project. |
 
 ### `hotbed question outbox`
 
-A project's questions the user answered or dismissed that no agent has acknowledged yet, the newest answer first.
+A project's questions the user answered or dismissed that no agent has acknowledged yet, the newest answer first, along with the asking sessions and their T3 Code threads.
 
 *MCP tool: `question_outbox` · uses `-s/--session`*
 
@@ -349,6 +350,7 @@ A project's questions the user answered or dismissed that no agent has acknowled
 | `--asked-by` |  | Only the questions this session asked. |
 | `-p`, `--project` | `HOTBED_PROJECT` | Only this project's questions (default: HOTBED_PROJECT, else the session's project, else the one holding this checkout's repo). |
 | `--all-projects` |  | Every project's questions. |
+| `--t3code-thread-id` |  | Only questions associated with this T3 Code thread ID (across every session of that thread). When set without -p/--project, --all-projects, -s, or a checkout remote, lists across every project. |
 
 ### `hotbed question projects`
 
