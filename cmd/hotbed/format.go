@@ -11,8 +11,8 @@ import (
 
 	"github.com/semistrict/hotbed/internal/api"
 	"github.com/semistrict/hotbed/internal/apicmd"
+	"github.com/semistrict/hotbed/internal/daemon"
 	pb "github.com/semistrict/hotbed/internal/gen/hotbed/v1"
-	"github.com/semistrict/hotbed/internal/t3bridge"
 )
 
 // outputOpts controls how a command's result or failure is printed.
@@ -46,10 +46,10 @@ var defaultFormatSpecs = map[string]formatSpec{
 	"review ls":       {&pb.ListReviewsResponse{}, "{{range .reviews}}#{{pad 4 .id}}  {{pad 12 (state .state)}}  impl={{pad 18 (or .implementerModel \"-\")}}  rev={{pad 24 (or .model \"-\")}}  {{short 60 .title}}\n{{end}}"},
 	"skills list":     {map[string][]string{"skills": nil}, "{{range .skills}}{{.}}\n{{end}}"},
 	"skills get":      {map[string]string{"name": "", "content": ""}, `{{.content}}`},
-	"skills install":      {map[string]any{"dir": "", "files": []string{}}, `installed {{len .files}} files in {{.dir}}`},
-	"t3-bridge status":    {t3bridge.ServiceStatus{}, "installed={{.installed}}  running={{.running}}{{if .controller}}  controller={{.controller}}{{end}}{{if .t3Binary}}  t3={{.t3Binary}}{{end}}{{if .unitPath}}\nunit:  {{.unitPath}}{{end}}{{if .logPath}}\nlog:   {{.logPath}}{{end}}{{if .stateFile}}\nstate: {{.stateFile}} ({{.trackedQuestions}} tracked){{end}}"},
-	"t3-bridge install":   {t3bridge.ServiceStatus{}, "installed={{.installed}}  running={{.running}}{{if .unitPath}}\nunit:  {{.unitPath}}{{end}}{{if .logPath}}\nlog:   {{.logPath}}{{end}}"},
-	"t3-bridge uninstall": {t3bridge.ServiceStatus{}, "installed={{.installed}}  running={{.running}}{{if .unitPath}}\nunit:  {{.unitPath}}{{end}}"},
+	"skills install":   {map[string]any{"dir": "", "files": []string{}}, `installed {{len .files}} files in {{.dir}}`},
+	"daemon status":    {daemon.ServiceStatus{Live: &daemon.Snapshot{}}, "installed={{.installed}}  running={{.running}}{{if .unitPath}}\nunit:  {{.unitPath}}{{end}}{{if .logPath}}\nlog:   {{.logPath}}{{end}}{{with .live}}\ncontroller: {{or .controller \"-\"}}{{with .t3Bridge}}\nt3-bridge:  {{.state}}{{if .trackedQuestions}} ({{.trackedQuestions}} tracked){{end}}{{if .pendingQuestions}} ({{.pendingQuestions}} pending){{end}}{{end}}{{with .workerVm}}\nworker-vm:  {{if .configured}}{{.hostname}} {{.state}}{{else}}unconfigured{{end}}{{end}}{{end}}"},
+	"daemon install":   {daemon.ServiceStatus{}, "installed={{.installed}}  running={{.running}}{{if .unitPath}}\nunit:  {{.unitPath}}{{end}}{{if .logPath}}\nlog:   {{.logPath}}{{end}}"},
+	"daemon uninstall": {daemon.ServiceStatus{}, "installed={{.installed}}  running={{.running}}{{if .unitPath}}\nunit:  {{.unitPath}}{{end}}"},
 }
 
 var compiledFormats = sync.OnceValue(func() map[string]*template.Template {

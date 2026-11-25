@@ -1,6 +1,6 @@
 //go:build darwin
 
-package t3bridge
+package daemon
 
 import (
 	"context"
@@ -24,22 +24,24 @@ var runLaunchctl = func(ctx context.Context, args ...string) ([]byte, error) {
 
 func launchDomain() string { return "gui/" + strconv.Itoa(os.Getuid()) }
 
-func launchAgentPath() (string, error) {
+func launchAgentPathFor(label string) (string, error) {
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return "", err
 	}
-	return filepath.Join(home, "Library", "LaunchAgents", LaunchAgentLabel+".plist"), nil
+	return filepath.Join(home, "Library", "LaunchAgents", label+".plist"), nil
 }
 
-// InstallService writes and bootstraps the macOS LaunchAgent for hotbed t3-bridge.
+// InstallService writes and bootstraps the unified macOS LaunchAgent
+// (`com.semistrict.hotbed.daemon`), migrating away from any legacy separate
+// `t3-bridge` or `worker` LaunchAgents so only one Hotbed service runs.
 func InstallService(ctx context.Context, cfg ServiceConfig) (ServiceStatus, error) {
-	plist, err := launchAgentPath()
+	plist, err := launchAgentPathFor(LaunchAgentLabel)
 	if err != nil {
 		return ServiceStatus{}, err
 	}
 	if cfg.LogPath == "" {
-		cfg.LogPath, err = DefaultLogPath()
+		cfg.LogPath, err = DefaultLogPath(cfg.BaseDir)
 		if err != nil {
 			return ServiceStatus{}, err
 		}
@@ -51,8 +53,12 @@ func InstallService(ctx context.Context, cfg ServiceConfig) (ServiceStatus, erro
 		return ServiceStatus{}, err
 	}
 
+	// Cleanly migrate away from legacy standalone LaunchAgents.
+	_ = removeLaunchAgent(ctx, LegacyT3BridgeLabel)
+	_ = setup.DisableLegacyWorkerLaunchAgent(ctx, cfg.BaseDir)
+
 	// Boot out any existing instance before bootstrapping the updated plist.
-	_ = bootoutIfLoaded(ctx)
+	_ = bootoutIfLoaded(ctx, LaunchAgentLabel)
 
 	content := setup.LaunchAgentPlist(LaunchAgentLabel, cfg.Binary, cfg.Args, cfg.LogPath)
 	if err := os.WriteFile(plist, []byte(content), 0o644); err != nil {
@@ -61,49 +67,62 @@ func InstallService(ctx context.Context, cfg ServiceConfig) (ServiceStatus, erro
 	if out, err := runLaunchctl(ctx, "bootstrap", launchDomain(), plist); err != nil {
 		return ServiceStatus{}, fmt.Errorf("launchctl bootstrap %s: %w: %s", plist, err, strings.TrimSpace(string(out)))
 	}
-	return GetServiceStatus(ctx)
+	return GetServiceStatus(ctx, cfg.BaseDir)
 }
 
-// UninstallService stops and removes the macOS LaunchAgent for hotbed t3-bridge.
-func UninstallService(ctx context.Context) (ServiceStatus, error) {
-	plist, err := launchAgentPath()
+// UninstallService stops and removes the unified macOS LaunchAgent (and any
+// legacy t3-bridge LaunchAgent).
+func UninstallService(ctx context.Context, baseDir string) (ServiceStatus, error) {
+	_ = removeLaunchAgent(ctx, LegacyT3BridgeLabel)
+	if err := removeLaunchAgent(ctx, LaunchAgentLabel); err != nil {
+		return ServiceStatus{}, err
+	}
+	return GetServiceStatus(ctx, baseDir)
+}
+
+// GetServiceStatus inspects the unified macOS LaunchAgent state and loads the
+// live daemon snapshot when running.
+func GetServiceStatus(ctx context.Context, baseDir string) (ServiceStatus, error) {
+	plist, err := launchAgentPathFor(LaunchAgentLabel)
 	if err != nil {
 		return ServiceStatus{}, err
 	}
-	if err := bootoutIfLoaded(ctx); err != nil {
-		return ServiceStatus{}, err
-	}
-	if err := os.Remove(plist); err != nil && !errors.Is(err, fs.ErrNotExist) {
-		return ServiceStatus{}, err
-	}
-	return GetServiceStatus(ctx)
-}
-
-// GetServiceStatus inspects the macOS LaunchAgent state.
-func GetServiceStatus(ctx context.Context) (ServiceStatus, error) {
-	plist, err := launchAgentPath()
-	if err != nil {
-		return ServiceStatus{}, err
-	}
-	logPath, _ := DefaultLogPath()
+	logPath, _ := DefaultLogPath(baseDir)
+	statusPath, _ := StatusFilePath(baseDir)
 	_, statErr := os.Stat(plist)
 	installed := statErr == nil
-	running, err := isLaunchAgentLoaded(ctx)
+	running, err := isLaunchAgentLoaded(ctx, LaunchAgentLabel)
 	if err != nil {
 		return ServiceStatus{}, err
 	}
 	return ServiceStatus{
-		Platform:  runtime.GOOS,
-		Installed: installed,
-		Running:   running,
-		Label:     LaunchAgentLabel,
-		UnitPath:  plist,
-		LogPath:   logPath,
+		Platform:   runtime.GOOS,
+		Installed:  installed,
+		Running:    running,
+		Label:      LaunchAgentLabel,
+		UnitPath:   plist,
+		LogPath:    logPath,
+		StatusFile: statusPath,
+		Live:       LoadLiveSnapshot(statusPath),
 	}, nil
 }
 
-func isLaunchAgentLoaded(ctx context.Context) (bool, error) {
-	target := launchDomain() + "/" + LaunchAgentLabel
+func removeLaunchAgent(ctx context.Context, label string) error {
+	if err := bootoutIfLoaded(ctx, label); err != nil {
+		return err
+	}
+	plist, err := launchAgentPathFor(label)
+	if err != nil {
+		return err
+	}
+	if err := os.Remove(plist); err != nil && !errors.Is(err, fs.ErrNotExist) {
+		return err
+	}
+	return nil
+}
+
+func isLaunchAgentLoaded(ctx context.Context, label string) (bool, error) {
+	target := launchDomain() + "/" + label
 	out, err := runLaunchctl(ctx, "print", target)
 	if err == nil {
 		return true, nil
@@ -117,21 +136,21 @@ func isLaunchAgentLoaded(ctx context.Context) (bool, error) {
 	return false, fmt.Errorf("launchctl print %s: %w: %s", target, err, strings.TrimSpace(string(out)))
 }
 
-func bootoutIfLoaded(ctx context.Context) error {
-	loaded, err := isLaunchAgentLoaded(ctx)
+func bootoutIfLoaded(ctx context.Context, label string) error {
+	loaded, err := isLaunchAgentLoaded(ctx, label)
 	if err != nil || !loaded {
 		return err
 	}
-	target := launchDomain() + "/" + LaunchAgentLabel
+	target := launchDomain() + "/" + label
 	if out, err := runLaunchctl(ctx, "bootout", target); err != nil && !isLaunchctlMissing(out, err) {
-		stillLoaded, checkErr := isLaunchAgentLoaded(ctx)
+		stillLoaded, checkErr := isLaunchAgentLoaded(ctx, label)
 		if checkErr == nil && !stillLoaded {
 			return nil
 		}
 		return fmt.Errorf("launchctl bootout %s: %w: %s", target, err, strings.TrimSpace(string(out)))
 	}
 	for range 50 {
-		stillLoaded, err := isLaunchAgentLoaded(ctx)
+		stillLoaded, err := isLaunchAgentLoaded(ctx, label)
 		if err != nil || !stillLoaded {
 			return err
 		}

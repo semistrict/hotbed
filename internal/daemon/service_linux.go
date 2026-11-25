@@ -1,6 +1,6 @@
 //go:build linux
 
-package t3bridge
+package daemon
 
 import (
 	"context"
@@ -18,12 +18,12 @@ var runSystemctl = func(ctx context.Context, args ...string) ([]byte, error) {
 	return exec.CommandContext(ctx, "systemctl", args...).CombinedOutput()
 }
 
-func systemdUnitPath() (string, error) {
+func systemdUnitPathFor(name string) (string, error) {
 	cfgDir, err := os.UserConfigDir()
 	if err != nil {
 		return "", err
 	}
-	return filepath.Join(cfgDir, "systemd", "user", SystemdUnitName), nil
+	return filepath.Join(cfgDir, "systemd", "user", name), nil
 }
 
 func renderSystemdUnit(binary string, args []string) string {
@@ -33,7 +33,7 @@ func renderSystemdUnit(binary string, args []string) string {
 		quoted = append(quoted, quoteSystemdArg(a))
 	}
 	return fmt.Sprintf(`[Unit]
-Description=Hotbed T3 Code question notification bridge
+Description=Hotbed host daemon
 After=network-online.target
 
 [Service]
@@ -52,15 +52,23 @@ func quoteSystemdArg(s string) string {
 	return `"` + escaped + `"`
 }
 
-// InstallService writes and enables a systemd user unit for hotbed t3-bridge.
+// InstallService writes and enables the unified systemd user unit
+// (`hotbed-daemon.service`), migrating away from any legacy `hotbed-t3-bridge.service`.
 func InstallService(ctx context.Context, cfg ServiceConfig) (ServiceStatus, error) {
-	unitPath, err := systemdUnitPath()
+	unitPath, err := systemdUnitPathFor(SystemdUnitName)
 	if err != nil {
 		return ServiceStatus{}, err
 	}
 	if err := os.MkdirAll(filepath.Dir(unitPath), 0o755); err != nil {
 		return ServiceStatus{}, err
 	}
+
+	// Clean up legacy unit if present.
+	_, _ = runSystemctl(ctx, "--user", "disable", "--now", LegacyT3BridgeUnitName)
+	if oldPath, err := systemdUnitPathFor(LegacyT3BridgeUnitName); err == nil {
+		_ = os.Remove(oldPath)
+	}
+
 	if err := os.WriteFile(unitPath, []byte(renderSystemdUnit(cfg.Binary, cfg.Args)), 0o644); err != nil {
 		return ServiceStatus{}, err
 	}
@@ -70,12 +78,16 @@ func InstallService(ctx context.Context, cfg ServiceConfig) (ServiceStatus, erro
 	if out, err := runSystemctl(ctx, "--user", "enable", "--now", SystemdUnitName); err != nil {
 		return ServiceStatus{}, fmt.Errorf("systemctl --user enable --now %s: %w: %s", SystemdUnitName, err, strings.TrimSpace(string(out)))
 	}
-	return GetServiceStatus(ctx)
+	return GetServiceStatus(ctx, cfg.BaseDir)
 }
 
-// UninstallService disables, stops, and removes the systemd user unit.
-func UninstallService(ctx context.Context) (ServiceStatus, error) {
-	unitPath, err := systemdUnitPath()
+// UninstallService disables, stops, and removes the unified systemd user unit.
+func UninstallService(ctx context.Context, baseDir string) (ServiceStatus, error) {
+	_, _ = runSystemctl(ctx, "--user", "disable", "--now", LegacyT3BridgeUnitName)
+	if oldPath, err := systemdUnitPathFor(LegacyT3BridgeUnitName); err == nil {
+		_ = os.Remove(oldPath)
+	}
+	unitPath, err := systemdUnitPathFor(SystemdUnitName)
 	if err != nil {
 		return ServiceStatus{}, err
 	}
@@ -84,15 +96,16 @@ func UninstallService(ctx context.Context) (ServiceStatus, error) {
 		return ServiceStatus{}, err
 	}
 	_, _ = runSystemctl(ctx, "--user", "daemon-reload")
-	return GetServiceStatus(ctx)
+	return GetServiceStatus(ctx, baseDir)
 }
 
-// GetServiceStatus inspects the systemd user unit state.
-func GetServiceStatus(ctx context.Context) (ServiceStatus, error) {
-	unitPath, err := systemdUnitPath()
+// GetServiceStatus inspects the unified systemd user unit state.
+func GetServiceStatus(ctx context.Context, baseDir string) (ServiceStatus, error) {
+	unitPath, err := systemdUnitPathFor(SystemdUnitName)
 	if err != nil {
 		return ServiceStatus{}, err
 	}
+	statusPath, _ := StatusFilePath(baseDir)
 	_, statErr := os.Stat(unitPath)
 	installed := statErr == nil
 	running := false
@@ -100,10 +113,12 @@ func GetServiceStatus(ctx context.Context) (ServiceStatus, error) {
 		running = true
 	}
 	return ServiceStatus{
-		Platform:  runtime.GOOS,
-		Installed: installed,
-		Running:   running,
-		Label:     SystemdUnitName,
-		UnitPath:  unitPath,
+		Platform:   runtime.GOOS,
+		Installed:  installed,
+		Running:    running,
+		Label:      SystemdUnitName,
+		UnitPath:   unitPath,
+		StatusFile: statusPath,
+		Live:       LoadLiveSnapshot(statusPath),
 	}, nil
 }

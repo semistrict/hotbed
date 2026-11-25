@@ -67,31 +67,35 @@ type VMPaths struct {
 	ConsoleLog  string
 	QEMULog     string
 	// StandbyLog is the VM's supervisor's log (hotbed worker supervise).
-	StandbyLog string
+	StandbyLog    string
+	StoppedMarker string
+	AsleepMarker  string
 }
 
 // NewVMPaths computes the standard layout under baseDir (typically ~/.hotbed).
 func NewVMPaths(baseDir string) VMPaths {
 	vmDir := filepath.Join(baseDir, "vm")
 	return VMPaths{
-		BaseDir:     baseDir,
-		CacheDir:    filepath.Join(baseDir, "cache"),
-		VMDir:       vmDir,
-		Config:      filepath.Join(vmDir, "config.json"),
-		KeyPriv:     filepath.Join(vmDir, "id_ed25519"),
-		KeyPub:      filepath.Join(vmDir, "id_ed25519.pub"),
-		HostKeyPriv: filepath.Join(vmDir, "vm-ssh-host-ed25519"),
-		HostKeyPub:  filepath.Join(vmDir, "vm-ssh-host-ed25519.pub"),
-		RootDisk:    filepath.Join(vmDir, "root.qcow2"),
-		ZFSDisk:     filepath.Join(vmDir, "zfs.qcow2"),
-		SwapDisk:    filepath.Join(vmDir, "swap.qcow2"),
-		EFIVars:     filepath.Join(vmDir, "efivars.fd"),
-		SeedISO:     filepath.Join(vmDir, "seed.iso"),
-		QMPSock:     filepath.Join(vmDir, "qmp.sock"),
-		PIDFile:     filepath.Join(vmDir, "qemu.pid"),
-		ConsoleLog:  filepath.Join(vmDir, "console.log"),
-		QEMULog:     filepath.Join(vmDir, "qemu.log"),
-		StandbyLog:  filepath.Join(vmDir, "supervise.log"),
+		BaseDir:       baseDir,
+		CacheDir:      filepath.Join(baseDir, "cache"),
+		VMDir:         vmDir,
+		Config:        filepath.Join(vmDir, "config.json"),
+		KeyPriv:       filepath.Join(vmDir, "id_ed25519"),
+		KeyPub:        filepath.Join(vmDir, "id_ed25519.pub"),
+		HostKeyPriv:   filepath.Join(vmDir, "vm-ssh-host-ed25519"),
+		HostKeyPub:    filepath.Join(vmDir, "vm-ssh-host-ed25519.pub"),
+		RootDisk:      filepath.Join(vmDir, "root.qcow2"),
+		ZFSDisk:       filepath.Join(vmDir, "zfs.qcow2"),
+		SwapDisk:      filepath.Join(vmDir, "swap.qcow2"),
+		EFIVars:       filepath.Join(vmDir, "efivars.fd"),
+		SeedISO:       filepath.Join(vmDir, "seed.iso"),
+		QMPSock:       filepath.Join(vmDir, "qmp.sock"),
+		PIDFile:       filepath.Join(vmDir, "qemu.pid"),
+		ConsoleLog:    filepath.Join(vmDir, "console.log"),
+		QEMULog:       filepath.Join(vmDir, "qemu.log"),
+		StandbyLog:    filepath.Join(vmDir, "supervise.log"),
+		StoppedMarker: filepath.Join(vmDir, "stopped"),
+		AsleepMarker:  filepath.Join(vmDir, "asleep"),
 	}
 }
 
