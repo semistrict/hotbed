@@ -16,6 +16,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/semistrict/hotbed/internal/baseimage"
 	"github.com/semistrict/hotbed/internal/cladefs"
@@ -52,6 +53,7 @@ type CladefsFUSEBackend struct {
 	projectBases   map[string]*vmProjectBase  // project -> latest cached R2 base
 	sharedBases    map[string]*pb.CladefsCell
 	wsMounts       map[string]fuseWSMount // wsID -> active FUSE mount
+	retirer        baseRetirer
 }
 
 type fuseWSMount struct {
@@ -187,6 +189,7 @@ func (b *CladefsFUSEBackend) loadState() {
 			b.wsMounts = saved
 		}
 	}
+	b.retirer.load(b.cacheDir())
 }
 
 func (b *CladefsFUSEBackend) saveCacheJSON(name string, v any) {
@@ -499,6 +502,7 @@ func (b *CladefsFUSEBackend) EnsureProjectBase(
 	if cur != nil && cur.Recipe == recipe && cur.Ref.Cell > 0 && cur.Ref.Version > 0 {
 		out := *cur
 		b.mu.Unlock()
+		b.retirer.sweep(ctx, b.store, "fuse-retire", time.Now())
 		return &out, nil
 	}
 	var prevBase *vmProjectBase
@@ -514,7 +518,7 @@ func (b *CladefsFUSEBackend) EnsureProjectBase(
 		for k, v := range heads {
 			repos[k] = v
 		}
-		return &vmProjectBase{
+		adopted := &vmProjectBase{
 			Ref: cladefs.CellRef{
 				Tenant:  existingShared.Tenant,
 				Cell:    existingShared.Cell,
@@ -526,7 +530,25 @@ func (b *CladefsFUSEBackend) EnsureProjectBase(
 			ScratchEpoch: p.GetScratchEpoch(),
 			Repos:        repos,
 			StepHashes:   projectStepHashes(p),
-		}, nil
+		}
+		if cur != nil && cur.Ref.Cell > 0 && cur.Ref.Cell != adopted.Ref.Cell {
+			b.retirer.enqueue(cur.Ref.Tenant, cur.Ref.Cell, cur.BaseID, time.Now())
+		}
+		b.mu.Lock()
+		b.projectBases[p.GetName()] = adopted
+		b.sharedBases[p.GetName()] = &pb.CladefsCell{
+			Project: p.GetName(),
+			Arch:    goruntime.GOARCH,
+			BaseId:  adopted.BaseID,
+			Recipe:  recipe,
+			Tenant:  adopted.Ref.Tenant,
+			Cell:    adopted.Ref.Cell,
+			Version: adopted.Ref.Version,
+		}
+		b.mu.Unlock()
+		b.saveCacheJSON("project-"+p.GetName()+".json", adopted)
+		b.retirer.sweep(ctx, b.store, "fuse-retire", time.Now())
+		return adopted, nil
 	}
 
 	if err := clearMountNosuid(b.mountRoot); err != nil {
@@ -650,6 +672,7 @@ printf '::hotbed-head:: %s %%s\n' "$(git -C %q rev-parse HEAD)"
 		StepHashes:   projectStepHashes(p),
 	}
 	b.mu.Lock()
+	superseded := b.projectBases[p.GetName()]
 	b.projectBases[p.GetName()] = res
 	b.sharedBases[p.GetName()] = &pb.CladefsCell{
 		Project: p.GetName(),
@@ -662,6 +685,10 @@ printf '::hotbed-head:: %s %%s\n' "$(git -C %q rev-parse HEAD)"
 	}
 	b.mu.Unlock()
 	b.saveCacheJSON("project-"+p.GetName()+".json", res)
+	if superseded != nil && superseded.Ref.Cell > 0 && superseded.Ref.Cell != cellID {
+		b.retirer.enqueue(superseded.Ref.Tenant, superseded.Ref.Cell, superseded.BaseID, time.Now())
+	}
+	b.retirer.sweep(ctx, b.store, "fuse-retire", time.Now())
 	slog.Info("cladefs host-FUSE project base built and published to R2",
 		"project", p.GetName(), "baseId", baseID, "incremental", prevBase != nil,
 		"steps", len(stepsToRun), "cell", cellID, "version", ver)

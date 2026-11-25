@@ -484,6 +484,25 @@ func (s *Store) DeleteCell(ctx context.Context, relPath string) error {
 	return nil
 }
 
+// DeleteBucketCell deletes a cell in the shared bucket by (tenant, cellID) when
+// its local directory has already been dropped: it takes the cell into a
+// temporary staging directory at relPath and calls DeleteCell. Deleting an
+// already-absent or already-deleted cell returns nil (idempotent).
+func (s *Store) DeleteBucketCell(ctx context.Context, relPath string, tenant, cellID uint64) error {
+	if cellID == 0 {
+		return nil
+	}
+	_ = s.DropCell(ctx, relPath)
+	if _, err := s.TakeCell(ctx, relPath, tenant, cellID, 0, nil); err != nil {
+		_ = s.DropCell(ctx, relPath)
+		if errors.Is(err, storage.ErrNotFound) || isNotFound(err) || isDeleted(err) {
+			return nil
+		}
+		return fmt.Errorf("take cell %d/%d for deletion: %w", tenant, cellID, err)
+	}
+	return s.DeleteCell(ctx, relPath)
+}
+
 // DropCell deletes only this host's local copy of relPath while keeping its
 // branch in the shared bucket (call SyncCell first).
 func (s *Store) DropCell(ctx context.Context, relPath string) error {
@@ -672,6 +691,16 @@ func isNotFound(err error) bool {
 		return true
 	}
 	return status.Code(err) == codes.NotFound
+}
+
+func isDeleted(err error) bool {
+	if errors.Is(err, syscall.EROFS) {
+		return true
+	}
+	if errno, ok := cladefsdv1.ErrnoOf(err); ok && errno == cladefsdv1.EROFS {
+		return true
+	}
+	return false
 }
 
 func mapErr(op string, err error) error {

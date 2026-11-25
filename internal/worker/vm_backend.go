@@ -50,6 +50,7 @@ type VMBackend struct {
 	sharedBases    map[string]*pb.CladefsCell // project -> advertised R2 shared base
 	lastPeers      []string
 	decommissioned map[uint64]bool
+	retirer        baseRetirer
 }
 
 type vmProjectBase struct {
@@ -209,6 +210,7 @@ func (b *VMBackend) cacheDir() string {
 }
 
 func (b *VMBackend) loadCachedBases() {
+	b.retirer.load(b.cacheDir())
 	ents, err := os.ReadDir(b.cacheDir())
 	if err != nil {
 		return
@@ -702,6 +704,7 @@ func (b *VMBackend) EnsureProjectBase(
 	if cur != nil && cur.Recipe == recipe && cur.Ref.Cell > 0 && cur.Ref.Version > 0 {
 		out := *cur
 		b.mu.Unlock()
+		b.retirer.sweep(ctx, b.store, "vm-retire", time.Now())
 		return &out, nil
 	}
 	var prevBase *vmProjectBase
@@ -718,7 +721,7 @@ func (b *VMBackend) EnsureProjectBase(
 		for k, v := range heads {
 			repos[k] = v
 		}
-		return &vmProjectBase{
+		adopted := &vmProjectBase{
 			Ref: cladefs.CellRef{
 				Tenant:  existingShared.Tenant,
 				Cell:    existingShared.Cell,
@@ -730,7 +733,25 @@ func (b *VMBackend) EnsureProjectBase(
 			ScratchEpoch: p.GetScratchEpoch(),
 			Repos:        repos,
 			StepHashes:   projectStepHashes(p),
-		}, nil
+		}
+		if cur != nil && cur.Ref.Cell > 0 && cur.Ref.Cell != adopted.Ref.Cell {
+			b.retirer.enqueue(cur.Ref.Tenant, cur.Ref.Cell, cur.BaseID, time.Now())
+		}
+		b.mu.Lock()
+		b.projectBases[p.GetName()] = adopted
+		b.sharedBases[p.GetName()] = &pb.CladefsCell{
+			Project: p.GetName(),
+			Arch:    goruntime.GOARCH,
+			BaseId:  adopted.BaseID,
+			Recipe:  recipe,
+			Tenant:  adopted.Ref.Tenant,
+			Cell:    adopted.Ref.Cell,
+			Version: adopted.Ref.Version,
+		}
+		b.mu.Unlock()
+		b.saveCacheJSON("project-"+p.GetName()+".json", adopted)
+		b.retirer.sweep(ctx, b.store, "vm-retire", time.Now())
+		return adopted, nil
 	}
 
 	baseID := fmt.Sprintf("%s-vm-%s", p.GetName(), recipe[:8])
@@ -869,6 +890,7 @@ printf '::hotbed-head:: %s %%s\n' "$(git -C %q rev-parse HEAD)"
 		StepHashes:   projectStepHashes(p),
 	}
 	b.mu.Lock()
+	superseded := b.projectBases[p.GetName()]
 	b.projectBases[p.GetName()] = res
 	b.sharedBases[p.GetName()] = &pb.CladefsCell{
 		Project: p.GetName(),
@@ -881,6 +903,10 @@ printf '::hotbed-head:: %s %%s\n' "$(git -C %q rev-parse HEAD)"
 	}
 	b.mu.Unlock()
 	b.saveCacheJSON("project-"+p.GetName()+".json", res)
+	if superseded != nil && superseded.Ref.Cell > 0 && superseded.Ref.Cell != forkRef.Cell {
+		b.retirer.enqueue(superseded.Ref.Tenant, superseded.Ref.Cell, superseded.BaseID, time.Now())
+	}
+	b.retirer.sweep(ctx, b.store, "vm-retire", time.Now())
 	slog.Info("VM project base built and published to R2",
 		"project", p.GetName(), "baseId", baseID, "incremental", prevBase != nil,
 		"steps", len(stepsToRun), "cell", forkRef.Cell, "version", forkRef.Version)
