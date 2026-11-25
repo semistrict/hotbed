@@ -91,12 +91,6 @@ export function validateWorkerConfig(cfg: WorkerConfig, scope = ""): void {
 		if (vm.nofile !== undefined && vm.nofile < 0n) {
 			throw hotbedError(ErrorCode.InvalidArgs, `vm.nofile must be >= 0 (got ${vm.nofile})`);
 		}
-		if (vm.idleSuspendSeconds !== undefined && vm.idleSuspendSeconds < 0) {
-			throw hotbedError(
-				ErrorCode.InvalidArgs,
-				`vm.idle_suspend_seconds must be >= 0 (got ${vm.idleSuspendSeconds})`,
-			);
-		}
 		if (vm.cacheType !== undefined && !VALID_CACHE_TYPES.has(vm.cacheType)) {
 			throw hotbedError(
 				ErrorCode.InvalidArgs,
@@ -240,7 +234,6 @@ export function mergeWorkerVMConfig(
 	if (patch.bridgeCidr !== undefined) out.bridgeCidr = patch.bridgeCidr;
 	if (patch.dnsServers.length > 0) out.dnsServers = [...patch.dnsServers];
 	if (patch.nofile !== undefined) out.nofile = patch.nofile;
-	if (patch.idleSuspendSeconds !== undefined) out.idleSuspendSeconds = patch.idleSuspendSeconds;
 	out.kernels = normalizeArtifactMap(out.kernels, patch.kernels);
 	out.guestd = normalizeArtifactMap(out.guestd, patch.guestd);
 	return out;

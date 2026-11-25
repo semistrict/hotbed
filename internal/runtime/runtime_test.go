@@ -21,6 +21,7 @@ import (
 	"github.com/semistrict/hotbed/internal/gen/guestd/v1/guestdv1connect"
 	"github.com/semistrict/hotbed/internal/guestd"
 	"github.com/semistrict/hotbed/internal/runtime"
+	"github.com/semistrict/hotbed/internal/unit"
 )
 
 type fakeResolver struct {
@@ -30,7 +31,7 @@ type fakeResolver struct {
 	makeFn  func(wsID string) (*guestd.Client, error)
 }
 
-func (f *fakeResolver) EnsureVM(ctx context.Context, wsID string) (*guestd.Client, error) {
+func (f *fakeResolver) EnsureVM(ctx context.Context, wsID string, _ unit.VMSize) (*guestd.Client, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if c, ok := f.clients[wsID]; ok {
@@ -194,11 +195,11 @@ type oomVMResolver struct {
 	reclaimHits int
 }
 
-func (o *oomVMResolver) EnsureVM(ctx context.Context, wsID string) (*guestd.Client, error) {
+func (o *oomVMResolver) EnsureVM(ctx context.Context, wsID string, _ unit.VMSize) (*guestd.Client, error) {
 	o.mu.Lock()
 	o.ensureCalls++
 	o.mu.Unlock()
-	return o.fakeResolver.EnsureVM(ctx, wsID)
+	return o.fakeResolver.EnsureVM(ctx, wsID, unit.VMSize{})
 }
 
 func (o *oomVMResolver) VMExitStatus(_ context.Context, wsID string) (bool, int, int, string, bool) {

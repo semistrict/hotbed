@@ -122,6 +122,15 @@ type Spec struct {
 	// Properties are more systemd properties (KEY=VALUE), such as
 	// AmbientCapabilities=CAP_SYS_ADMIN, for what a build needs.
 	Properties []string
+	// VM sizes the VM it runs in, where it runs in one booted for it.
+	VM VMSize
+}
+
+// VMSize is how many vCPUs and how much memory (MiB) a VM's guest sees; a
+// zero field is the node's default.
+type VMSize struct {
+	VCPUs  int
+	MemMiB int
 }
 
 // tmpBinds are the binds that show s.Tmp at TmpPaths.

@@ -21,7 +21,11 @@ import (
 // VM boot/teardown lifecycle (implemented by the Firecracker + cladefsd VM
 // manager in Step 3, or a test harness).
 type GuestResolver interface {
-	EnsureVM(ctx context.Context, wsID string) (*guestd.Client, error)
+	// EnsureVM boots wsID's VM unless it is up, resumes it if suspended, and
+	// returns its client. A VM up at another size than a non-zero field of
+	// size asks is stopped and booted again at that size: callers ask a size
+	// only of a VM nothing runs in yet.
+	EnsureVM(ctx context.Context, wsID string, size unit.VMSize) (*guestd.Client, error)
 	ClientFor(wsID string) (*guestd.Client, error)
 	StopVM(ctx context.Context, wsID string) error
 }
@@ -48,7 +52,7 @@ func NewGuestRuntime(vms GuestResolver) *GuestRuntime {
 func (g *GuestRuntime) Kind() string { return KindVM }
 
 func (g *GuestRuntime) EnsureReady(ctx context.Context, wsID string) error {
-	c, err := g.vms.EnsureVM(ctx, wsID)
+	c, err := g.vms.EnsureVM(ctx, wsID, unit.VMSize{})
 	if err != nil {
 		return err
 	}
@@ -56,21 +60,11 @@ func (g *GuestRuntime) EnsureReady(ctx context.Context, wsID string) error {
 	return err
 }
 
+// Teardown stops wsID's VM, its guest's filesystem synced and its commands
+// stopped first: StopVM does both, in one Shutdown (a second would find the
+// guest powering off and fail), and discards a suspended VM without waking
+// it.
 func (g *GuestRuntime) Teardown(ctx context.Context, wsID string) error {
-	if susp, _ := g.IsSuspended(wsID); susp {
-		// Discarding a suspended VM never needs to wake Firecracker.
-		return g.vms.StopVM(ctx, wsID)
-	}
-	if c, err := g.vms.ClientFor(wsID); err == nil {
-		// Best-effort clean flush & command stop before stopping the VM.
-		shutCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
-		_ = c.Shutdown(shutCtx, &guestdv1.ShutdownRequest{
-			SyncFs:       true,
-			StopCommands: true,
-			PowerOff:     true,
-		})
-		cancel()
-	}
 	return g.vms.StopVM(ctx, wsID)
 }
 
@@ -106,11 +100,11 @@ func (g *GuestRuntime) client(ctx context.Context, wsID string) (*guestd.Client,
 	// Always go through EnsureVM so a tracked Firecracker VMM that exited
 	// unexpectedly (e.g. systemd-oomd kill or cladefsd exit 158) is detected,
 	// cleaned up, and rebooted cleanly instead of returning a dead vsock client.
-	return g.vms.EnsureVM(ctx, wsID)
+	return g.vms.EnsureVM(ctx, wsID, unit.VMSize{})
 }
 
 func (g *GuestRuntime) StartCommand(ctx context.Context, wsID string, spec CommandSpec) error {
-	c, err := g.client(ctx, wsID)
+	c, err := g.vms.EnsureVM(ctx, wsID, spec.VM)
 	if err != nil {
 		return err
 	}

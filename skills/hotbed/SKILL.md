@@ -60,7 +60,9 @@ Do not pipe `hotbed session start` into `jq` or swallow its stdout: it prints ac
   for syncing checkouts so your workspace forks immediately without waiting. Tune org-scoped caps
   and settings live from the Cockpit (`/settings`) or via `hotbed config set` (`freshen.*`). A run
   starts in `/work/REPO` of the repo it is for, or in `/work` when it is for none (outside any
-  checkout, no `-r`). Each workspace keeps its state between the commands run in it.
+  checkout, no `-r`). Each workspace keeps its state between the commands run in it. On the vm
+  runtime each command runs in a fresh VM booted on the workspace's disk and stopped when it ends,
+  so a second command of the session on that node waits until the first ends.
 - **Your checkout is the truth.** Run from a checkout of the repo and each run first sends its
   state to the workspace it runs in, uncommitted and untracked files included, ignored files not.
   Only files that differ are rewritten, so builds stay incremental. Anything a command writes
@@ -366,6 +368,9 @@ down, not restarting. What happened meanwhile reaches `poll` once it is back.
   and swaps past that. Nothing is frozen or killed for memory: what is admitted runs, swapping if
   it must, and a full node holds new work until it has room. Stop a command by hand
   (`hotbed stop CMD`) if a node is truly overloaded.
+- On the vm runtime each command gets a VM of its own on the workspace's disk. `--vm-cpus 4` and
+  `--vm-mem 16G` size its VM (default: the node's); they size the VM only, and the node reserves
+  nothing for them. These flags send the run to a vm-runtime node.
 - A saturated node holds new work: once its CPU pressure reaches 60%, commands queue until it is
   under 30% and has not reached 60% for 30 seconds (measurements, on CPUs of their own, are not
   held). The controller sends new workspaces to less loaded nodes. `hotbed ps` says why a command

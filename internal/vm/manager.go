@@ -46,6 +46,9 @@ type Instance struct {
 	MemoryCellPath   string
 	PrevMemCellPaths []string
 	ToolsDiskPath    string
+	// VCPUs and MemMiB are the size it booted at, as its guest sees it.
+	VCPUs  int
+	MemMiB int
 
 	gitAuth io.Closer
 }
@@ -68,6 +71,8 @@ type vmMeta struct {
 	MemoryCellPath   string          `json:"memoryCellPath,omitempty"`
 	PrevMemCellPaths []string        `json:"prevMemCellPaths,omitempty"`
 	ToolsDiskPath    string          `json:"toolsDiskPath,omitempty"`
+	VCPUs            int             `json:"vcpus,omitempty"`
+	MemMiB           int             `json:"memMiB,omitempty"`
 	Suspended        *SuspendedState `json:"suspended,omitempty"`
 }
 
@@ -267,14 +272,7 @@ func (m *Manager) UpdateConfig(cfg Config) {
 // BuildFirecrackerConfig constructs the Firecracker JSON config for spec.
 func (m *Manager) BuildFirecrackerConfig(spec LaunchSpec, cid uint32, vsockUDS string, netAlloc NetAlloc) FirecrackerConfig {
 	cfg := m.configSnapshot()
-	vcpus := spec.VCPUs
-	if vcpus <= 0 {
-		vcpus = cfg.DefaultVCPUs
-	}
-	memMiB := spec.MemMiB
-	if memMiB <= 0 {
-		memMiB = cfg.DefaultMemMiB
-	}
+	vcpus, memMiB := cfg.size(spec)
 	diskBytes := spec.DiskBytes
 	if diskBytes == 0 {
 		diskBytes = cfg.DefaultDiskBytes
@@ -503,6 +501,7 @@ func (m *Manager) Start(ctx context.Context, spec LaunchSpec) (*Instance, error)
 	}
 
 	fcCfg := m.BuildFirecrackerConfig(spec, cid, vsockUDS, netAlloc)
+	vcpus, memMiB := fcCfg.MachineConfig.VCPUCount, fcCfg.MachineConfig.MemSizeMiB
 	cfgBytes, err := json.MarshalIndent(fcCfg, "", "  ")
 	if err != nil {
 		cleanupOnErr(true)
@@ -526,6 +525,8 @@ func (m *Manager) Start(ctx context.Context, spec LaunchSpec) (*Instance, error)
 		Net:           netAlloc,
 		StartedAt:     now,
 		ToolsDiskPath: spec.ToolsDiskPath,
+		VCPUs:         vcpus,
+		MemMiB:        memMiB,
 	}
 	if err := writeMeta(vmDir, meta); err != nil {
 		cleanupOnErr(true)
@@ -584,6 +585,8 @@ func (m *Manager) Start(ctx context.Context, spec LaunchSpec) (*Instance, error)
 		Client:        client,
 		StartedAt:     now,
 		ToolsDiskPath: spec.ToolsDiskPath,
+		VCPUs:         vcpus,
+		MemMiB:        memMiB,
 		gitAuth:       gaBridge,
 	}
 	m.mu.Lock()
@@ -791,6 +794,8 @@ func (m *Manager) Reconnect(ctx context.Context) (int, error) {
 			MemoryCellPath:   meta.MemoryCellPath,
 			PrevMemCellPaths: slices.Clone(meta.PrevMemCellPaths),
 			ToolsDiskPath:    meta.ToolsDiskPath,
+			VCPUs:            meta.VCPUs,
+			MemMiB:           meta.MemMiB,
 			gitAuth:          gaBridge,
 		}
 		m.mu.Lock()

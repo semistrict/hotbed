@@ -56,9 +56,6 @@ const (
 	// keepProfiles is how long a command's profile file stays when the
 	// controller may lack it: as long as the controller keeps history.
 	keepProfiles = 30 * 24 * time.Hour
-	// defaultVMIdleSuspendAfter is how long an idle VM workspace sits with no
-	// live commands or shells before being suspended to a CladeFS memory cell.
-	defaultVMIdleSuspendAfter = 2 * time.Minute
 )
 
 // Units starts and controls commands; Systemd is the real one.
@@ -178,10 +175,6 @@ type EngineConfig struct {
 	Artifacts *ArtifactStore
 	// SystemUpgradeOps overrides host OS actions in Engine.UpgradeSystem (for tests).
 	SystemUpgradeOps *SystemUpgradeOps
-	// VMIdleSuspendAfter controls how long an idle VM workspace waits before
-	// being suspended to a CladeFS memory cell (0 = defaultVMIdleSuspendAfter;
-	// negative disables idle VM hibernation).
-	VMIdleSuspendAfter time.Duration
 	// Freshen configures base freshen duty-cycle caps, cooldowns, and time limits.
 	Freshen *statedir.FreshenConfig
 }
@@ -198,16 +191,15 @@ var DefaultLogLimit = cmdlog.Limit{Head: 16 << 20, Tail: 240 << 20}
 // Engine is a worker's bases, workspaces and commands. The messages it
 // holds are its own; it hands out clones.
 type Engine struct {
-	cfg             EngineConfig
-	db              *db
-	cred            *syscall.Credential
-	home            string
-	gitAuth         *gitAuthServer
-	containersConf  string
-	rtUnits         *runtimeUnits
-	portProxies     map[string]*portProxy
-	freshenBudget   *freshenBudget
-	vmIdleSuspendNs atomic.Int64
+	cfg            EngineConfig
+	db             *db
+	cred           *syscall.Credential
+	home           string
+	gitAuth        *gitAuthServer
+	containersConf string
+	rtUnits        *runtimeUnits
+	portProxies    map[string]*portProxy
+	freshenBudget  *freshenBudget
 
 	mu              sync.Mutex
 	upgradeMu       sync.Mutex
@@ -347,16 +339,25 @@ type forkOutcome struct {
 
 // workspace is a workspace and what only the worker needs about it.
 type workspace struct {
-	rec            *pb.WorkspaceRecord
-	sync           sync.Mutex    // serializes Sync and ReleaseWorkspace volume access
-	forking        bool          // guarded by e.mu: Store.Clone is in flight
-	forkDone       chan struct{} // guarded by e.mu: closed when in-flight fork finishes
-	pendingFork    *forkOutcome  // guarded by e.mu: fork outcome deferred while releasing
-	releasing      bool          // guarded by e.mu: ReleaseWorkspace is in progress
-	releaseQueued  bool          // guarded by e.mu: background release goroutine is queued
-	releaseDone    chan struct{} // guarded by e.mu: closed when in-flight ReleaseWorkspace finishes
-	releaseErr     error         // guarded by e.mu: error from the last ReleaseWorkspace attempt
-	suspendRetryAt time.Time     // guarded by e.mu: backoff deadline after a failed idle VM suspend
+	rec  *pb.WorkspaceRecord
+	sync sync.Mutex // serializes Sync and ReleaseWorkspace volume access
+	// vm is held shared while something other than a command uses the
+	// workspace's VM (a sync, a file read, a shell): retireVMs stops the VM
+	// only while it holds it exclusively.
+	vm            sync.RWMutex
+	forking       bool          // guarded by e.mu: Store.Clone is in flight
+	forkDone      chan struct{} // guarded by e.mu: closed when in-flight fork finishes
+	pendingFork   *forkOutcome  // guarded by e.mu: fork outcome deferred while releasing
+	releasing     bool          // guarded by e.mu: ReleaseWorkspace is in progress
+	releaseQueued bool          // guarded by e.mu: background release goroutine is queued
+	releaseDone   chan struct{} // guarded by e.mu: closed when in-flight ReleaseWorkspace finishes
+	releaseErr    error         // guarded by e.mu: error from the last ReleaseWorkspace attempt
+	// vmUsed says a command has started in the workspace's current VM, so
+	// the next command needs a new one. Guarded by e.mu.
+	vmUsed bool
+	// vmRetryAt is when to try again to stop its VM after stopping failed.
+	// Guarded by e.mu.
+	vmRetryAt time.Time
 }
 
 func (w *workspace) ws() *pb.Workspace { return w.rec.Workspace }
@@ -517,7 +518,6 @@ func NewEngine(ctx context.Context, cfg EngineConfig) (*Engine, error) {
 		bgCancel:         bgCancel,
 		streamsDone:      make(chan struct{}),
 	}
-	e.vmIdleSuspendNs.Store(int64(cfg.VMIdleSuspendAfter))
 	if e.resources, err = cfg.System.Resources(); err != nil {
 		bgCancel()
 		d.close()
@@ -561,9 +561,9 @@ func NewEngine(ctx context.Context, cfg EngineConfig) (*Engine, error) {
 	}
 	if e.rtUnits != nil {
 		for _, c := range e.commands {
-			if started(c.cmd().State) && e.usesRuntime(c.cmd().WorkspaceId) {
+			if started(c.cmd().State) && e.usesRuntime(c.runtimeTarget()) {
 				if lp, lerr := e.logPath(c.cmd().Id); lerr == nil {
-					e.rtUnits.RegisterExisting(e.bgCtx, c.unitName(), c.cmd().WorkspaceId, c.cmd().Id, lp)
+					e.rtUnits.RegisterExisting(e.bgCtx, c.unitName(), c.runtimeTarget(), c.cmd().Id, lp)
 				}
 			}
 		}
@@ -593,7 +593,9 @@ func (e *Engine) load() error {
 	}
 	if err := e.db.all("workspace", func() proto.Message { return &pb.WorkspaceRecord{} }, func(m proto.Message) {
 		r := m.(*pb.WorkspaceRecord)
-		e.workspaces[r.Workspace.Id] = &workspace{rec: r}
+		// A VM that outlived the worker may have run a command already, so
+		// none is taken for fresh: the next command boots its own.
+		e.workspaces[r.Workspace.Id] = &workspace{rec: r, vmUsed: r.Workspace.Runtime == runtime.KindVM}
 		if r.Workspace.Runtime == runtime.KindVM {
 			e.vmWorkspaces.Store(r.Workspace.Id, struct{}{})
 		}

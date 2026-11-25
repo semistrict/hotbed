@@ -124,6 +124,9 @@ func (e *Engine) Exec(_ context.Context, req *pb.RunCommandRequest) (*pb.Command
 	if limits.CpuWeight == 0 {
 		limits.CpuWeight = 100
 	}
+	if err := e.checkVMRequestLocked(req); err != nil {
+		return nil, err
+	}
 	now := e.nowMs()
 	c := e.newCommand(&pb.CommandRecord{
 		Command: &pb.Command{
@@ -131,6 +134,7 @@ func (e *Engine) Exec(_ context.Context, req *pb.RunCommandRequest) (*pb.Command
 			Argv: shell.Join(req.Args), Args: req.Args, Kind: kind,
 			State: queued, QueuedAt: now, Limits: limits, Attached: req.Attached,
 			SessionId: w.ws().SessionId, Bench: req.Bench, Repo: req.Repo,
+			VmCpus: req.VmCpus, VmMemoryBytes: req.VmMemoryBytes,
 			Runtime:  e.workspaceRuntime(w),
 			Timeline: []*pb.CommandEvent{{At: now, What: "queued", Detail: "by " + w.ws().Agent}},
 		},
@@ -138,8 +142,8 @@ func (e *Engine) Exec(_ context.Context, req *pb.RunCommandRequest) (*pb.Command
 		Dir: dir, Env: req.Env,
 	})
 	if req.Port > 0 {
-		if e.usesRuntime(req.WorkspaceId) {
-			if p, err := startPortProxy(fmt.Sprintf(":%d", req.Port), req.WorkspaceId, uint16(req.Port), e.cfg.Runtime); err != nil {
+		if e.usesRuntime(c.runtimeTarget()) {
+			if p, err := startPortProxy(fmt.Sprintf(":%d", req.Port), c.runtimeTarget(), uint16(req.Port), e.cfg.Runtime); err != nil {
 				slog.Warn("start VM dev-server port proxy", "command", id, "port", req.Port, "err", err)
 			} else {
 				e.portProxies[id] = p
@@ -164,6 +168,37 @@ func (e *Engine) Exec(_ context.Context, req *pb.RunCommandRequest) (*pb.Command
 	e.saveCommand(c, change{what: "queued", detail: "by " + w.ws().Agent})
 	e.stepSoon()
 	return clone(c.cmd()), nil
+}
+
+// minVMMemory is the least memory a command may ask its VM's guest to see:
+// less does not boot the guest and its tools.
+const minVMMemory = 512 << 20
+
+// checkVMRequestLocked refuses a VM size its workspace or this node cannot
+// give: one outside the vm runtime, or larger than the node. Call with e.mu
+// held.
+func (e *Engine) checkVMRequestLocked(req *pb.RunCommandRequest) error {
+	if req.VmCpus == 0 && req.VmMemoryBytes == 0 {
+		return nil
+	}
+	if !e.usesRuntime(req.WorkspaceId) {
+		return api.Errorf(api.CodeInvalidArgs, "workspace %s runs commands on the host: --vm-cpus and --vm-mem need the vm runtime", req.WorkspaceId).
+			WithSuggestion("run with --runtime vm")
+	}
+	if cpus := e.resources.GetCpus(); req.VmCpus < 0 || req.VmCpus > cpus {
+		return api.Errorf(api.CodeInvalidArgs, "--vm-cpus %d: %s has %d CPUs", req.VmCpus, e.cfg.Host, cpus).
+			WithSuggestion(fmt.Sprintf("ask for 1 to %d, or pick a bigger node with --node (hotbed nodes lists them)", cpus))
+	}
+	if mem := e.resources.GetMemoryBytes(); req.VmMemoryBytes != 0 && (req.VmMemoryBytes < minVMMemory || req.VmMemoryBytes > mem) {
+		return api.Errorf(api.CodeInvalidArgs, "--vm-mem %s: a VM on %s takes %s to %s", gib(req.VmMemoryBytes), e.cfg.Host, gib(minVMMemory), gib(mem)).
+			WithSuggestion("ask for memory in that range, or pick a bigger node with --node (hotbed nodes lists them)")
+	}
+	return nil
+}
+
+// vmSize is the size of the VM c runs in, as its unit asks it.
+func vmSize(c *command) unit.VMSize {
+	return unit.VMSize{VCPUs: int(c.cmd().VmCpus), MemMiB: int((c.cmd().VmMemoryBytes + 1<<20 - 1) >> 20)}
 }
 
 // newID is ten random base32 characters, lowercase: 50 bits, so commands
@@ -421,7 +456,7 @@ func (e *Engine) step(ctx context.Context) {
 	e.settleBench(ctx)
 	e.admit(ctx)
 	e.limit(ctx)
-	e.hibernateIdleVMs(ctx)
+	e.retireVMs(ctx)
 	e.maybeStartPendingFreshens(ctx)
 	e.reap(ctx)
 	e.forget()
@@ -534,18 +569,19 @@ func fitsReservation(want, reserved, limit int64) bool {
 
 // memoryBudgetBytes returns the effective memory ceiling in bytes for a
 // command or shell running in this worker: Firecracker guest RAM for VM
-// runtimes (bounded by the host slice), or the work slice's memory limit
+// runtimes (vmMemory when the command sized its VM, else the node's default;
+// bounded by the host slice), or the work slice's memory limit
 // (e.resources.MemoryBytes) for host runtimes, further capped by any explicit
 // per-command MemoryHigh limit. Call with e.mu held.
-func (e *Engine) memoryBudgetBytes(isVM bool, memHigh int64) int64 {
+func (e *Engine) memoryBudgetBytes(isVM bool, vmMemory, memHigh int64) int64 {
 	budget := e.resources.GetMemoryBytes()
-	if isVM && e.cfg.VM != nil {
+	if isVM && vmMemory <= 0 && e.cfg.VM != nil {
 		if mib := e.cfg.VM.configSnapshot().MemMiB; mib > 0 {
-			vmBytes := int64(mib) << 20
-			if budget <= 0 || vmBytes < budget {
-				budget = vmBytes
-			}
+			vmMemory = int64(mib) << 20
 		}
+	}
+	if isVM && vmMemory > 0 && (budget <= 0 || vmMemory < budget) {
+		budget = vmMemory
 	}
 	if memHigh > 0 && (budget <= 0 || memHigh < budget) {
 		budget = memHigh
@@ -729,6 +765,24 @@ func (e *Engine) admit(ctx context.Context) {
 			continue
 		}
 		kind, reason, holds := e.admissionBlockerFor(c, ahead, holder, mem, hasMem)
+		// A command sizing its VM may boot it again at its size: nothing else
+		// may use the VM meanwhile, until its unit has started.
+		var heldVM *sync.RWMutex
+		if kind == "" {
+			if w, ok := e.workspaces[c.runtimeTarget()]; ok && e.usesRuntime(w.ws().Id) && vmSize(c) != (unit.VMSize{}) {
+				if w.vm.TryLock() {
+					heldVM = &w.vm
+				} else {
+					kind, reason = "workspace-busy", "waiting for its workspace: a sync, file read or shell is using its VM"
+				}
+			}
+		}
+		releaseVM := func() {
+			if heldVM != nil {
+				heldVM.Unlock()
+				heldVM = nil
+			}
+		}
 		if kind != "" {
 			// The numbers change every step and go in heartbeats; the kind of
 			// wait is an event.
@@ -756,6 +810,9 @@ func (e *Engine) admit(ctx context.Context) {
 		cmdID := c.cmd().Id
 		isBench := c.cmd().Bench
 		useRT := e.usesRuntime(c.runtimeTarget()) || c.isVMFreshen()
+		if w, ok := e.workspaces[c.runtimeTarget()]; ok && e.usesRuntime(w.ws().Id) {
+			w.vmUsed = true // the next command needs a VM of its own
+		}
 		var beforeStart func(context.Context) error
 		var onStartFail func()
 		if c.managedFreshen != nil {
@@ -794,6 +851,7 @@ func (e *Engine) admit(ctx context.Context) {
 			cancelledEarly := c.cmd().State != queued || c.stopping || termWS
 			e.mu.Unlock()
 			if cancelledEarly {
+				releaseVM()
 				if madeTmp {
 					removeTmp(volPath, cmdID)
 				}
@@ -820,6 +878,7 @@ func (e *Engine) admit(ctx context.Context) {
 				cancelledAfterBefore := c.cmd().State != queued || c.stopping
 				e.mu.Unlock()
 				if cancelledAfterBefore {
+					releaseVM()
 					if onStartFail != nil {
 						onStartFail()
 					}
@@ -850,6 +909,7 @@ func (e *Engine) admit(ctx context.Context) {
 		if err == nil {
 			err = e.cfg.Units.Start(ctx, spec)
 		}
+		releaseVM()
 		if err != nil && ranBeforeStart && onStartFail != nil {
 			onStartFail()
 		}
@@ -1085,6 +1145,11 @@ func (e *Engine) admissionBlockerFor(c, ahead, holder *command, mem sysinfo.Mem,
 		if isSyncInProgress(w.ws().Reason) {
 			return "syncing", "workspace is syncing", false
 		}
+		if e.usesRuntime(c.runtimeTarget()) {
+			if r := e.vmBlockerLocked(c, w); r != "" {
+				return "workspace-busy", r, false
+			}
+		}
 	}
 	switch {
 	case c.cmd().Bench:
@@ -1161,7 +1226,7 @@ func (e *Engine) roomFor(c *command, mem sysinfo.Mem, hasMem bool) (kind, reason
 	// low; bypass fullAt/physRoom ONLY when no other started command exists on
 	// the node so a single VM never self-deadlocks, without letting new VMs
 	// pile onto an already-full multi-command node.
-	vmSoloBypass := e.usesRuntime(c.cmd().WorkspaceId) && !e.hasOtherStartedCommandLocked(c.cmd().WorkspaceId)
+	vmSoloBypass := e.usesRuntime(c.runtimeTarget()) && !e.hasOtherStartedCommandLocked(c.runtimeTarget())
 	if memTotal > 0 && !vmSoloBypass {
 		physRoom := memTotal - memUsed
 		if float64(memUsed) > float64(memTotal)*fullAt {
@@ -1226,11 +1291,11 @@ func (e *Engine) spec(c *command) (unit.Spec, error) {
 	env := append(cacheEnv(), "XDG_RUNTIME_DIR="+runtimeTarget)
 	env = append(env, c.rec.Env...)
 	env = append(env, "HOTBED_WORKSPACE="+cmd.WorkspaceId, "HOTBED_COMMAND="+cmd.Id)
-	if mem := e.memoryBudgetBytes(vmFreshen || e.usesRuntime(c.runtimeTarget()), cmd.Limits.GetMemoryHighBytes()); mem > 0 {
+	if mem := e.memoryBudgetBytes(vmFreshen || e.usesRuntime(c.runtimeTarget()), cmd.VmMemoryBytes, cmd.Limits.GetMemoryHighBytes()); mem > 0 {
 		env = append(env, "HOTBED_MEMORY_BYTES="+strconv.FormatInt(mem, 10))
 	}
-	if vmFreshen {
-		env = append(env, "HOTBED_RUNTIME_TARGET="+c.managedFreshen.vmID)
+	if t := c.runtimeTarget(); t != cmd.WorkspaceId {
+		env = append(env, "HOTBED_RUNTIME_TARGET="+t)
 	}
 	props := slices.Clone(e.cfg.UnitProperties)
 	if cmd.Bench {
@@ -1265,6 +1330,7 @@ func (e *Engine) spec(c *command) (unit.Spec, error) {
 		Capabilities: []string{"CAP_PERFMON"},
 		TraceFS:      true,
 		Properties:   props,
+		VM:           vmSize(c),
 	}
 	if !vmFreshen {
 		spec.Binds = []unit.Bind{{Source: runDir, Target: runtimeTarget}}
@@ -1893,7 +1959,7 @@ func (e *Engine) endBy(c *command, state pb.CommandState, code *int32, why strin
 		line = feed(feedFinish, fmt.Sprintf("cancelled %s · %s", cmd.Argv, why), r)
 	}
 	var prof *pb.CommandProfile
-	isVM := cmd.WorkspaceId != "" && e.usesRuntime(cmd.WorkspaceId)
+	isVM := cmd.WorkspaceId != "" && e.usesRuntime(c.runtimeTarget())
 	var snap *pb.CommandProfile
 	if isVM {
 		snap = c.vmProfile
@@ -1938,14 +2004,6 @@ func (e *Engine) endBy(c *command, state pb.CommandState, code *int32, why strin
 			wsWhat = "preparing"
 		}
 		e.saveWorkspace(w, change{what: wsWhat, detail: cmd.Id + " ended"})
-		if w.ws().State == idle && e.usesRuntime(w.ws().Id) {
-			wsID := w.ws().Id
-			e.startBgLocked(func(bgCtx context.Context) {
-				rctx, cancel := context.WithTimeout(bgCtx, 3*time.Second)
-				defer cancel()
-				_ = e.cfg.Runtime.Reclaim(rctx, wsID, "", 0)
-			})
-		}
 	}
 	e.stepSoon()
 }

@@ -50,7 +50,6 @@ describe("settings draft conversion & helpers", () => {
         vcpus: 8,
         memMib: 8192,
         diskBytes: 68719476736n,
-        idleSuspendSeconds: 0,
         nofile: 131072n,
         cacheType: "Unsafe",
         disableDax: false,
@@ -86,7 +85,6 @@ describe("settings draft conversion & helpers", () => {
     expect(draft.freshen.maxDutyCyclePercent).toBe("2.5");
     expect(draft.freshen.disableOptional).toBe("true");
     expect(draft.freshen.maxOptionalDurationSeconds).toBe("0");
-    expect(draft.vm.idleSuspendSeconds).toBe("0");
     expect(draft.vm.disableDax).toBe("false");
     expect(draft.cladefsFuse.enabled).toBe("false");
     expect(draft.controller.sessionIdleTimeoutSeconds).toBe("1800");
@@ -100,7 +98,6 @@ describe("settings draft conversion & helpers", () => {
     expect(input.freshen?.disableOptional).toBe(true);
     expect(input.controller?.sessionIdleTimeoutSeconds).toBe(1800);
     expect(input.controller?.offlineGraceSeconds).toBe(43200);
-    expect(input.vm?.idleSuspendSeconds).toBe(0);
     expect(input.vm?.tenantId).toBeUndefined();
     expect(input.cladefsFuse?.tenantId).toBeUndefined();
     expect(input.cladefsFuse?.enabled).toBe(false);
@@ -122,7 +119,7 @@ describe("settings draft conversion & helpers", () => {
     const freshenChanged = structuredClone(base);
     freshenChanged.freshen.maxDutyCyclePercent = "2";
     freshenChanged.vm.memMib = "12288";
-    freshenChanged.vm.idleSuspendSeconds = "300";
+    freshenChanged.vm.nofile = "131072";
     expect(draftRequiresRestart(base, freshenChanged)).toBe(false);
 
     const sliceChanged = structuredClone(base);

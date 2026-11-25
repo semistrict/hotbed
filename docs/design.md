@@ -298,6 +298,16 @@ or tracing packages.
   wrapper-free `linux-perf`, `bpftrace`, `elfutils`/`eu-stack`, `gdb`), and caches it as a
   read-only CoW snapshot (`baseimg-<hash>`). Cold project bases and `hotbed project rebuild` clone
   from this snapshot; project-specific toolchains belong to each project's setup steps.
+- **A VM per command (vm runtime).** A workspace's disk is a CladeFS cell, and each command boots
+  a Firecracker VM of its own on it, which stops as the command ends: no VM idles between
+  commands or is reused by another, so the next command starts from a clean guest on the same
+  disk. Two VMs cannot share a disk, so a command waits while another runs in its workspace, and
+  until the VM an earlier command ran in has stopped. A VM booted before any command ran in it (to
+  prepare the workspace, sync a checkout, list files or open a shell) is fresh: the next command
+  may run in it, and it stops after 30s unused when no command waits for it. `--vm-cpus` and
+  `--vm-mem` size a command's VM (else the node's defaults); they size the VM only, and admission
+  keeps going by measured use. A workspace's disk is an ephemeral cell, which cladefs never forks
+  (its doc-25), so a VM cannot run on a copy of it.
 - **A fixed path.** Inside its root, every project's repos sit at `/work/<repo>`
   and commands start in their repo's checkout (or `/work`). Each command gets a private `/tmp` and
   `/var/tmp` (`<volume>/.tmp/<command>/tmp`) and a private `0700` `XDG_RUNTIME_DIR` at

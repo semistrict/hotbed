@@ -22,7 +22,7 @@ import (
 	"github.com/semistrict/hotbed/internal/vm"
 )
 
-func intPtr(v int) *int          { return &v }
+func intPtr(v int) *int           { return &v }
 func floatPtr(v float64) *float64 { return &v }
 func boolPtr(v bool) *bool        { return &v }
 

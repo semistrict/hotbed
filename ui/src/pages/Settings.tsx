@@ -1353,32 +1353,6 @@ export function SettingsPage() {
                 </Field>
 
                 <Field
-                  id="vm-idle-suspend"
-                  label="Idle VM suspend timeout (s)"
-                  hint={`${formatSecondsHint(
-                    draft.vm.idleSuspendSeconds,
-                    !isOrgDefaults && orgDefaultsCfg?.vm?.idleSuspendSeconds !== undefined
-                      ? orgDefaultsCfg.vm.idleSuspendSeconds
-                      : BUILTIN_DEFAULTS.vm.idleSuspendSeconds,
-                  )} · 0 disables suspend`}
-                >
-                  <Input
-                    id="vm-idle-suspend"
-                    type="number"
-                    min="0"
-                    value={draft.vm.idleSuspendSeconds}
-                    disabled={!isOrgAdmin}
-                    placeholder={
-                      !isOrgDefaults && orgDefaultsDraft.vm.idleSuspendSeconds
-                        ? `Inherit (${orgDefaultsDraft.vm.idleSuspendSeconds}s)`
-                        : String(BUILTIN_DEFAULTS.vm.idleSuspendSeconds)
-                    }
-                    onChange={(e) => setDraft((d) => ({ ...d, vm: { ...d.vm, idleSuspendSeconds: e.target.value } }))}
-                    className="bg-background font-mono text-[12px]"
-                  />
-                </Field>
-
-                <Field
                   id="vm-nofile"
                   label="Guest RLIMIT_NOFILE"
                   hint={`default: ${BUILTIN_DEFAULTS.vm.nofile}`}

@@ -31,209 +31,213 @@ func (e *Engine) isVMWorkspace(wsID string) bool {
 	return ok
 }
 
-func vmIdleSuspendDuration(vmCfg *statedir.VMConfig) time.Duration {
-	if vmCfg == nil || vmCfg.IdleSuspendSeconds == nil {
-		return 0
-	}
-	if *vmCfg.IdleSuspendSeconds <= 0 {
-		return -1
-	}
-	return time.Duration(*vmCfg.IdleSuspendSeconds) * time.Second
-}
-
-func (e *Engine) vmIdleSuspendAfter() time.Duration {
-	d := time.Duration(e.vmIdleSuspendNs.Load())
-	if d < 0 {
-		return 0
-	}
-	if d > 0 {
-		return d
-	}
-	return defaultVMIdleSuspendAfter
-}
-
-// canSuspendVM reports whether wsID's VM is completely quiescent and safe to
-// suspend to a CladeFS memory cell: no running command, no live server command,
-// no active interactive shell, no in-flight sync, and not preparing/releasing.
+// canSuspendVM reports whether wsID's VM is quiescent and safe to suspend to
+// a CladeFS memory cell while its command is parked or paused: no command
+// running in it, no live server command, no interactive shell, no in-flight
+// sync, and not preparing/releasing.
 func (e *Engine) canSuspendVM(wsID string) bool {
 	if wsID == "" || !e.usesRuntime(wsID) {
 		return false
 	}
 	e.mu.Lock()
 	defer e.mu.Unlock()
-	return e.canSuspendVMLocked(wsID, false)
-}
-
-func (e *Engine) canSuspendVMLocked(wsID string, requireNoLiveCommands bool) bool {
-	if w, ok := e.workspaces[wsID]; ok {
-		ws := w.ws()
-		if w.releasing || w.forking || ws.State == preparing || ws.State == failedWS || ws.State == released || isSyncInProgress(ws.Reason) {
-			return false
-		}
-		if requireNoLiveCommands && ws.State != idle {
-			return false
-		}
+	if w, ok := e.workspaces[wsID]; ok && !vmWorkspaceSettled(w) {
+		return false
 	}
-	for _, sh := range e.shells {
-		if sh.workspaceID == wsID {
-			return false
-		}
+	if e.shellOpenLocked(wsID) {
+		return false
 	}
 	for _, c := range e.commands {
-		if c.runtimeTarget() != wsID {
+		if c.runtimeTarget() != wsID || !api.Live(c.cmd().State) {
 			continue
 		}
-		st := c.cmd().State
-		if !api.Live(st) {
-			continue
-		}
-		if requireNoLiveCommands {
-			return false
-		}
-		if st == running || c.cmd().Kind == "server" || c.admitting || c.stopping {
+		if c.cmd().State == running || c.cmd().Kind == "server" || c.admitting || c.stopping {
 			return false
 		}
 	}
 	return true
 }
 
-// vmPressureIdleSuspendAfter tightens idle VM hibernation/shutdown when the
-// node is already under memory tightness, so completely idle VMs vacate
-// RAM/swap promptly instead of squatting for two minutes while active work
-// stalls.
-const vmPressureIdleSuspendAfter = 15 * time.Second
+// vmWorkspaceSettled reports whether w is in a state its VM may be suspended
+// or stopped in: not preparing, forking, syncing, failed or being released
+// (release stops the VM itself). Call with e.mu held.
+func vmWorkspaceSettled(w *workspace) bool {
+	ws := w.ws()
+	return !w.releasing && !w.forking && ws.State != preparing && ws.State != failedWS && ws.State != released && !isSyncInProgress(ws.Reason)
+}
 
-func (e *Engine) vmMemoryTightLocked() bool {
-	if e.memPressureHolding || e.usage.GetMemoryPressure() >= admitPressure {
-		return true
-	}
-	if e.lastMem.Total > 0 && float64(e.lastMem.Used()) >= float64(e.lastMem.Total)*admitMemory {
-		return true
+// shellOpenLocked reports whether an interactive shell is open in wsID.
+// Call with e.mu held.
+func (e *Engine) shellOpenLocked(wsID string) bool {
+	for _, sh := range e.shells {
+		if sh.workspaceID == wsID {
+			return true
+		}
 	}
 	return false
 }
 
-// hibernateIdleVMs suspends VM workspaces that have remained completely idle
-// (no live commands, shells, or syncs) for vmIdleSuspendAfter into CladeFS
-// memory cells so idle workspaces hold zero host RAM and zero swap while
-// staying fast to wake on the next sync, command, file query, or shell.
-// When memory-cell suspend is unsupported for an idle VM (e.g. pre-upgrade
-// Firecracker or --no-api VMs), it cleanly shuts down the idle VM via Teardown
-// (preserving the CladeFS rootfs cell so EnsureVM reboots it transparently on
-// the next command or sync) instead of letting idle VMs pin host RAM and swap.
-func (e *Engine) hibernateIdleVMs(ctx context.Context) {
-	sr, ok := e.cfg.Runtime.(runtime.SuspendableRuntime)
-	if !ok {
+// commandInVMLocked is a command other than except that runs, is parked or
+// paused, or is starting or stopping in VM wsID, or nil. Call with e.mu held.
+func (e *Engine) commandInVMLocked(wsID string, except *command) *command {
+	for _, c := range e.commands {
+		if c == except || c.runtimeTarget() != wsID {
+			continue
+		}
+		if started(c.cmd().State) || c.admitting || c.stopping {
+			return c
+		}
+	}
+	return nil
+}
+
+// queuedForVMLocked reports whether a command waits to start in VM wsID.
+// Call with e.mu held.
+func (e *Engine) queuedForVMLocked(wsID string) bool {
+	for _, c := range e.commands {
+		if c.runtimeTarget() == wsID && c.cmd().State == queued && !c.stopping {
+			return true
+		}
+	}
+	return false
+}
+
+// vmBlockerLocked says why command c cannot start in its workspace's VM yet,
+// or "": every command runs in a VM of its own, booted for it on the
+// workspace's disk, and two VMs cannot share a disk, so c waits while another
+// command holds the VM, and until the VM an earlier command ran in has
+// stopped. A VM no command has run in yet (booted to prepare the workspace,
+// sync a checkout or open a shell) is fresh, and c may start in it. Call with
+// e.mu held.
+func (e *Engine) vmBlockerLocked(c *command, w *workspace) string {
+	if other := e.commandInVMLocked(w.ws().Id, c); other != nil {
+		return fmt.Sprintf("waiting for its workspace: command %s runs in its VM", other.cmd().Id)
+	}
+	if !w.vmUsed {
+		if e.shellOpenLocked(w.ws().Id) && vmSize(c) != (unit.VMSize{}) {
+			// Booting it at c's size would take the shell's VM from under it.
+			return "waiting for its workspace: a shell is open in its VM, and it asks a VM of its own size"
+		}
+		return ""
+	}
+	if e.shellOpenLocked(w.ws().Id) {
+		return "waiting for its workspace: a shell is open in the VM an earlier command ran in"
+	}
+	return "waiting for its workspace: the VM an earlier command ran in is stopping"
+}
+
+// freshVMGrace is how long a VM no command has run in yet (booted to prepare
+// its workspace, sync a checkout or list its files) waits for the command it
+// was booted ahead of before it is stopped too.
+const freshVMGrace = 30 * time.Second
+
+// retireReasonLocked says why w's VM should stop now, or "" if it should not:
+// at once when a command has run in it and nothing holds it any more (a VM
+// is never reused for another command), or its workspace failed, and after
+// freshVMGrace unused when no command has and none waits for it. Call with
+// e.mu held.
+func (e *Engine) retireReasonLocked(w *workspace) string {
+	ws := w.ws()
+	if !e.usesRuntime(ws.Id) || (!vmWorkspaceSettled(w) && ws.State != failedWS) || w.releasing || w.forking {
+		return ""
+	}
+	if !w.vmRetryAt.IsZero() && e.now().Before(w.vmRetryAt) {
+		return ""
+	}
+	if e.commandInVMLocked(ws.Id, nil) != nil || e.shellOpenLocked(ws.Id) {
+		return ""
+	}
+	if ws.State == failedWS {
+		return "its workspace failed"
+	}
+	if w.vmUsed {
+		return "the command that ran in it ended"
+	}
+	if e.queuedForVMLocked(ws.Id) {
+		return ""
+	}
+	if ws.LastActiveAt > 0 && e.now().Sub(time.UnixMilli(ws.LastActiveAt)) < freshVMGrace {
+		return ""
+	}
+	return "no command ran in it"
+}
+
+// retireVMs stops every workspace VM retireReasonLocked says to, keeping the
+// workspace's disk: the next command boots a new VM on it. A VM parked or
+// paused into a memory cell is discarded the same way.
+func (e *Engine) retireVMs(ctx context.Context) {
+	if e.cfg.Runtime == nil {
 		return
 	}
-	idleAfter := e.vmIdleSuspendAfter()
-	if idleAfter <= 0 {
-		return
+	vmUp := func(wsID string) bool {
+		if r, ok := e.cfg.Runtime.(interface{ IsVMRunning(string) bool }); ok && r.IsVMRunning(wsID) {
+			return true
+		}
+		if sr, ok := e.cfg.Runtime.(runtime.SuspendableRuntime); ok {
+			susp, _ := sr.IsSuspended(wsID)
+			return susp
+		}
+		return false
 	}
-	runningCheck, hasRunningCheck := e.cfg.Runtime.(interface{ IsVMRunning(string) bool })
-	now := e.now()
 	e.mu.Lock()
-	if e.vmMemoryTightLocked() {
-		idleAfter = min(idleAfter, vmPressureIdleSuspendAfter)
-	}
 	var cands []*workspace
 	for _, w := range e.workspaces {
-		ws := w.ws()
-		if !e.usesRuntime(ws.Id) {
-			continue
+		if e.retireReasonLocked(w) != "" {
+			cands = append(cands, w)
 		}
-		if !e.canSuspendVMLocked(ws.Id, true) {
-			continue
-		}
-		if !w.suspendRetryAt.IsZero() && now.Before(w.suspendRetryAt) {
-			continue
-		}
-		if ws.LastActiveAt <= 0 || now.Sub(time.UnixMilli(ws.LastActiveAt)) < idleAfter {
-			continue
-		}
-		if susp, _ := sr.IsSuspended(ws.Id); susp {
-			continue
-		}
-		if hasRunningCheck && !runningCheck.IsVMRunning(ws.Id) {
-			continue
-		}
-		cands = append(cands, w)
 	}
 	e.mu.Unlock()
-
 	for _, w := range cands {
 		if ctx.Err() != nil {
 			return
 		}
-		if !w.sync.TryLock() {
-			continue
-		}
 		wsID := w.ws().Id
-		e.mu.Lock()
-		curIdleAfter := e.vmIdleSuspendAfter()
-		if e.vmMemoryTightLocked() {
-			curIdleAfter = min(curIdleAfter, vmPressureIdleSuspendAfter)
-		}
-		stillIdle := curIdleAfter > 0 && e.canSuspendVMLocked(wsID, true) &&
-			(w.suspendRetryAt.IsZero() || !e.now().Before(w.suspendRetryAt)) &&
-			e.now().Sub(time.UnixMilli(w.ws().LastActiveAt)) >= curIdleAfter
-		e.mu.Unlock()
-		if !stillIdle {
-			w.sync.Unlock()
-			continue
-		}
-		if susp, _ := sr.IsSuspended(wsID); susp {
-			w.sync.Unlock()
-			continue
-		}
-		if hasRunningCheck && !runningCheck.IsVMRunning(wsID) {
-			w.sync.Unlock()
-			continue
-		}
-		sctx, cancel := context.WithTimeout(ctx, 30*time.Second)
-		err := sr.SuspendWorkspace(sctx, wsID, 0)
-		cancel()
-		if err != nil {
-			if errors.Is(err, vm.ErrSuspendUnsupported) {
-				// No live commands, shells, or syncs remain: stop the idle
-				// Firecracker VM cleanly (SyncFs + PowerOff + StopVM) while
-				// keeping its CladeFS rootfs cell intact. EnsureVM boots a
-				// fresh VM on that cell transparently on the next use.
-				tctx, tcancel := context.WithTimeout(ctx, 15*time.Second)
-				terr := e.cfg.Runtime.Teardown(tctx, wsID)
-				tcancel()
-				w.sync.Unlock()
-				if terr == nil {
-					if e.rtUnits != nil {
-						e.rtUnits.forgetVMCgroup(wsID)
-					}
-					e.mu.Lock()
-					w.suspendRetryAt = time.Time{}
-					e.mu.Unlock()
-					slog.Info("stopped idle VM workspace to free host RAM (memory-cell suspend unsupported)", "workspace", wsID)
-					continue
-				}
-				if e.rtUnits != nil {
-					e.rtUnits.reclaimIdleVM(ctx, wsID)
-				}
-				e.mu.Lock()
-				w.suspendRetryAt = e.now().Add(5 * time.Minute)
-				e.mu.Unlock()
-				slog.Warn("stop idle VM workspace failed; fell back to host reclaim", "workspace", wsID, "suspendErr", err, "stopErr", terr)
-				continue
-			}
-			w.sync.Unlock()
+		if !vmUp(wsID) {
 			e.mu.Lock()
-			w.suspendRetryAt = e.now().Add(time.Minute)
+			w.vmUsed = false // it is gone already: the next VM is new
 			e.mu.Unlock()
-			slog.Warn("hibernate idle VM workspace failed", "workspace", wsID, "retryIn", time.Minute, "err", err)
 			continue
 		}
-		w.sync.Unlock()
+		if !w.vm.TryLock() {
+			continue // a sync, file read or shell is using it: next step
+		}
+		e.mu.Lock()
+		why := e.retireReasonLocked(w)
+		e.mu.Unlock()
+		if why == "" {
+			w.vm.Unlock()
+			continue
+		}
+		tctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+		err := e.cfg.Runtime.Teardown(tctx, wsID)
+		cancel()
+		if err != nil && !vmUp(wsID) {
+			// It is gone all the same (only its guest's sync failed): the
+			// next command boots a new one.
+			slog.Warn("workspace VM stopped with an error", "workspace", wsID, "why", why, "err", err)
+			err = nil
+		}
+		w.vm.Unlock()
+		if err != nil {
+			slog.Error("stop workspace VM", "workspace", wsID, "why", why, "err", err, "retryIn", time.Minute)
+			if e.rtUnits != nil {
+				// Until it stops, at least give back the RAM it holds.
+				e.rtUnits.reclaimIdleVM(ctx, wsID)
+			}
+			e.mu.Lock()
+			w.vmRetryAt = e.now().Add(time.Minute)
+			e.mu.Unlock()
+			continue
+		}
 		if e.rtUnits != nil {
 			e.rtUnits.forgetVMCgroup(wsID)
 		}
-		slog.Info("hibernated idle VM workspace to cladefs memory cell", "workspace", wsID)
+		e.mu.Lock()
+		w.vmUsed = false
+		w.vmRetryAt = time.Time{}
+		e.mu.Unlock()
+		slog.Info("stopped workspace VM", "workspace", wsID, "why", why)
+		e.stepSoon()
 	}
 }
 
@@ -306,9 +310,6 @@ func (e *Engine) ApplyWorkerConfig(cfg statedir.WorkerConfig) {
 	if e.cfg.VM != nil && cfg.VM != nil {
 		e.cfg.VM.UpdateConfig(*cfg.VM)
 	}
-	if cfg.VM != nil {
-		e.vmIdleSuspendNs.Store(int64(vmIdleSuspendDuration(cfg.VM)))
-	}
 	if e.cfg.CladefsFUSE != nil && cfg.CladefsFUSE != nil {
 		e.cfg.CladefsFUSE.UpdateConfig(*cfg.CladefsFUSE)
 	}
@@ -365,9 +366,9 @@ type runtimeUnits struct {
 	gid        int
 
 	mu        sync.Mutex
-	cmds      map[string]*rtCmd         // unitName -> active/tracked guest command
-	vmCgroups map[string]string         // wsID -> host Firecracker unit cgroup path
-	wakeCh    map[string]chan struct{}  // wsID -> closed & replaced whenever VM resumes
+	cmds      map[string]*rtCmd        // unitName -> active/tracked guest command
+	vmCgroups map[string]string        // wsID -> host Firecracker unit cgroup path
+	wakeCh    map[string]chan struct{} // wsID -> closed & replaced whenever VM resumes
 }
 
 type rtCmd struct {
@@ -513,6 +514,7 @@ func (u *runtimeUnits) Start(ctx context.Context, s unit.Spec) error {
 		MemoryLow:  s.MemoryLow,
 		MemoryHigh: s.MemoryHigh,
 		LogPath:    s.Log,
+		VM:         s.VM,
 	})
 	if err != nil {
 		return err
@@ -1008,6 +1010,7 @@ func (u *runtimeUnits) Exec(ctx context.Context, name, slice string, c unit.Exec
 // applyViaRuntime delegates git bundle application inside a VM workspace to
 // hotbed-guestd over AF_VSOCK (Connect Sync stream), without touching host paths.
 func (e *Engine) applyViaRuntime(ctx context.Context, wsID, repo, bundlePath, commit, baseCommit string, subs []gitops.SubCheckout) (int, error) {
+	defer e.useVM(wsID)()
 	var uid, gid int
 	if e.cred != nil {
 		uid, gid = int(e.cred.Uid), int(e.cred.Gid)
@@ -1027,6 +1030,20 @@ func (e *Engine) applyViaRuntime(ctx context.Context, wsID, repo, bundlePath, co
 	})
 }
 
+// useVM holds wsID's VM up, booting it if need be, while something other
+// than a command uses it, until the returned release: retireVMs stops no VM
+// held so.
+func (e *Engine) useVM(wsID string) (release func()) {
+	e.mu.Lock()
+	w, ok := e.workspaces[wsID]
+	e.mu.Unlock()
+	if !ok {
+		return func() {}
+	}
+	w.vm.RLock()
+	return w.vm.RUnlock
+}
+
 func (e *Engine) touchWorkspaceActive(wsID string) {
 	e.mu.Lock()
 	if w, ok := e.workspaces[wsID]; ok {
@@ -1036,6 +1053,7 @@ func (e *Engine) touchWorkspaceActive(wsID string) {
 }
 
 func (e *Engine) filesViaRuntime(ctx context.Context, wsID string, repos []*pb.WorkspaceRepo) ([]*pb.FileEntry, error) {
+	defer e.useVM(wsID)()
 	e.touchWorkspaceActive(wsID)
 	refs := make([]runtime.RepoRef, len(repos))
 	for i, r := range repos {
@@ -1045,6 +1063,7 @@ func (e *Engine) filesViaRuntime(ctx context.Context, wsID string, repos []*pb.W
 }
 
 func (e *Engine) fileViaRuntime(ctx context.Context, wsID, path string, repos []*pb.WorkspaceRepo) (*pb.FileContent, error) {
+	defer e.useVM(wsID)()
 	e.touchWorkspaceActive(wsID)
 	clean := strings.TrimPrefix(filepath.Clean("/"+path), "/")
 	name, rel, _ := strings.Cut(clean, "/")

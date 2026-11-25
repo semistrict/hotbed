@@ -35,6 +35,8 @@ type SuspendedState struct {
 	WorkingSetBytes   int64              `json:"workingSetBytes,omitempty"`
 	SuspendedAt       time.Time          `json:"suspendedAt"`
 	ToolsDiskPath     string             `json:"toolsDiskPath,omitempty"`
+	VCPUs             int                `json:"vcpus,omitempty"`
+	MemMiB            int                `json:"memMiB,omitempty"`
 }
 
 func (s *SuspendedState) clone() *SuspendedState {
@@ -256,6 +258,8 @@ func (m *Manager) Suspend(ctx context.Context, id, memCellHostPath string, worki
 		WorkingSetBytes:   workingSetBytes,
 		SuspendedAt:       time.Now().UTC(),
 		ToolsDiskPath:     inst.ToolsDiskPath,
+		VCPUs:             inst.VCPUs,
+		MemMiB:            inst.MemMiB,
 	}
 
 	// 4. Persist suspended metadata BEFORE stopping Firecracker so a worker crash
@@ -275,6 +279,8 @@ func (m *Manager) Suspend(ctx context.Context, id, memCellHostPath string, worki
 		MemoryCellPath:   activeMemCellPath,
 		PrevMemCellPaths: slices.Clone(inst.PrevMemCellPaths),
 		ToolsDiskPath:    inst.ToolsDiskPath,
+		VCPUs:            inst.VCPUs,
+		MemMiB:           inst.MemMiB,
 		Suspended:        susp,
 	}
 	if err := writeMeta(inst.Dir, meta); err != nil {
@@ -499,6 +505,8 @@ func (m *Manager) Resume(ctx context.Context, id, nextMemCellHostPath string) (*
 		MemoryCellPath:   backendPath,
 		PrevMemCellPaths: prevMem,
 		ToolsDiskPath:    susp.ToolsDiskPath,
+		VCPUs:            susp.VCPUs,
+		MemMiB:           susp.MemMiB,
 		gitAuth:          gaBridge,
 	}
 
@@ -517,6 +525,8 @@ func (m *Manager) Resume(ctx context.Context, id, nextMemCellHostPath string) (*
 		MemoryCellPath:   inst.MemoryCellPath,
 		PrevMemCellPaths: slices.Clone(inst.PrevMemCellPaths),
 		ToolsDiskPath:    inst.ToolsDiskPath,
+		VCPUs:            inst.VCPUs,
+		MemMiB:           inst.MemMiB,
 	}
 	if err := writeMeta(inst.Dir, meta); err != nil {
 		slog.Warn("vm resume: update metadata failed", "vm", id, "err", err)

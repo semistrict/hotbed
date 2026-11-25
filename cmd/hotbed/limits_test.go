@@ -540,3 +540,23 @@ func TestPsShowsBaseBuilds(t *testing.T) {
 		t.Errorf("ps -s deft-owl lists %d base builds, want none", len(got))
 	}
 }
+
+// --vm-cpus and --vm-mem ask for a VM, so such a run goes only to a node with
+// the vm runtime, and a size no VM can have is refused at once.
+func TestVMFlagsNeedAVMNode(t *testing.T) {
+	c := newCluster(t)
+	c.addRepo(upstream(t))
+	c.ok(nil, "session", "start", "keen-elk")
+	c.workspace("keen-elk", nil)
+
+	code, e := c.fails("run", "-s", "keen-elk", "-r", "app", "--vm-cpus=-1", "--", "true")
+	if code != exitError || e.Code != api.CodeInvalidArgs || e.Message != "--vm-cpus -1: a VM needs at least 1" {
+		t.Errorf("run --vm-cpus -1: exit %d, %+v; want INVALID_ARGS", code, e)
+	}
+	for _, flags := range [][]string{{"--vm-cpus", "2"}, {"--vm-mem", "2G"}} {
+		code, e := c.fails(append(append([]string{"run", "-s", "keen-elk", "-r", "app"}, flags...), "--", "true")...)
+		if code != exitError || e.Code != api.CodeInvalidArgs || e.Message != "no node can take the run: asahimbp does not support vm runtime" {
+			t.Errorf("run %v on host-runtime nodes: exit %d, %+v; want it refused for want of a vm node", flags, code, e)
+		}
+	}
+}
