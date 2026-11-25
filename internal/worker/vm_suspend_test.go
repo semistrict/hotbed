@@ -551,7 +551,7 @@ func TestStepReadsMemoryOutsideEngineLock(t *testing.T) {
 }
 
 // --vm-cpus and --vm-mem size the VM a command boots, and only that: the
-// node reserves nothing for them.
+// node reserves for it only what it reserves for any command.
 func TestCommandVMSizeSizesItsVMOnly(t *testing.T) {
 	eng, resolver, _, now := newSuspendTestEngine(t)
 	seedTestVMWorkspace(t, eng, resolver, "ws-sz", *now)
@@ -574,8 +574,8 @@ func TestCommandVMSizeSizesItsVMOnly(t *testing.T) {
 	if got != (unit.VMSize{VCPUs: 2, MemMiB: 3073}) {
 		t.Fatalf("VM size asked = %+v, want 2 vCPUs, 3073 MiB (rounded up)", got)
 	}
-	if r := eng.Heartbeat("cl").ReservedMemoryBytes; r != 0 {
-		t.Fatalf("reserved = %d, want 0: a VM's size is not a reservation", r)
+	if r := eng.Heartbeat("cl").ReservedMemoryBytes; r != defaultReservation {
+		t.Fatalf("reserved = %d, want the default %d: a VM's size is not a reservation", r, defaultReservation)
 	}
 	_, _ = eng.Stop(ctx, c.Id, "done")
 }
