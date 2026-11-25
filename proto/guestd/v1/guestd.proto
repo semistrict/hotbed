@@ -1,0 +1,243 @@
+syntax = "proto3";
+
+// Internal control API spoken over virtio-vsock (port 5000) between
+// hotbed-worker on the host and hotbed-guestd inside each Firecracker microVM.
+package guestd.v1;
+
+import "hotbed/v1/hotbed.proto";
+
+option go_package = "github.com/semistrict/hotbed/internal/gen/guestd/v1;guestdv1";
+
+service GuestService {
+  // Health returns guest kernel, architecture, and runtime metadata.
+  rpc Health(HealthRequest) returns (HealthResponse) {
+    option idempotency_level = NO_SIDE_EFFECTS;
+  }
+
+  // StartCommand idempotently starts a command inside the guest. Starting an
+  // already-known ID returns its current status without spawning a duplicate.
+  rpc StartCommand(StartCommandRequest) returns (CommandStatus) {
+    option idempotency_level = IDEMPOTENT;
+  }
+
+  // Status queries the state of specific command IDs, or all commands when ids is empty.
+  rpc Status(StatusRequest) returns (StatusResponse) {
+    option idempotency_level = NO_SIDE_EFFECTS;
+  }
+
+  // StopCommand terminates a running or frozen command.
+  rpc StopCommand(StopCommandRequest) returns (CommandStatus) {
+    option idempotency_level = IDEMPOTENT;
+  }
+
+  // FreezeCommand freezes a command's guest cgroup (or process group).
+  rpc FreezeCommand(FreezeCommandRequest) returns (CommandStatus) {
+    option idempotency_level = IDEMPOTENT;
+  }
+
+  // ThawCommand unfreezes a frozen command inside the guest.
+  rpc ThawCommand(ThawCommandRequest) returns (CommandStatus) {
+    option idempotency_level = IDEMPOTENT;
+  }
+
+  // InspectCommand runs an opt-in Linux inspection of a live command inside the guest VM.
+  rpc InspectCommand(hotbed.v1.InspectCommandRequest) returns (hotbed.v1.InspectCommandResponse) {
+    option idempotency_level = NO_SIDE_EFFECTS;
+  }
+
+  // TraceCommand runs an opt-in active Linux trace on a live command inside the guest VM.
+  rpc TraceCommand(hotbed.v1.TraceCommandRequest) returns (stream hotbed.v1.TraceCommandChunk);
+
+  // SampleCommand runs a process sample of a live command inside the guest VM.
+  rpc SampleCommand(hotbed.v1.SampleCommandRequest) returns (stream hotbed.v1.SampleCommandChunk);
+
+  // GetProfile queries the in-guest always-on OpenTelemetry eBPF continuous profile.
+  rpc GetProfile(hotbed.v1.GetProfileRequest) returns (hotbed.v1.CommandProfile) {
+    option idempotency_level = NO_SIDE_EFFECTS;
+  }
+
+  // ForgetCommandProfile drops in-memory eBPF profile samples for a command inside the guest VM.
+  rpc ForgetCommandProfile(ForgetCommandProfileRequest) returns (ForgetCommandProfileResponse) {
+    option idempotency_level = IDEMPOTENT;
+  }
+
+  // Reclaim reclaims memory from a command cgroup and drops clean guest page caches.
+  rpc Reclaim(ReclaimRequest) returns (ReclaimResponse) {
+    option idempotency_level = IDEMPOTENT;
+  }
+
+  // StreamLogs streams combined command stdout/stderr starting at offset.
+  rpc StreamLogs(StreamLogsRequest) returns (stream StreamLogsResponse);
+
+  // Sync streams a repo's git bundle (and optional submodule bundles) and
+  // applies them in /work/<repo>.
+  rpc Sync(stream SyncRequest) returns (SyncResponse);
+
+  // ListFiles lists tracked files across repos relative to /work.
+  rpc ListFiles(ListFilesRequest) returns (ListFilesResponse) {
+    option idempotency_level = NO_SIDE_EFFECTS;
+  }
+
+  // GetFile reads one regular file and its diff-changed lines against base_commit.
+  rpc GetFile(GetFileRequest) returns (hotbed.v1.FileContent) {
+    option idempotency_level = NO_SIDE_EFFECTS;
+  }
+
+  // Shutdown flushes filesystems and optionally stops commands and powers off the VM.
+  rpc Shutdown(ShutdownRequest) returns (ShutdownResponse) {
+    option idempotency_level = IDEMPOTENT;
+  }
+}
+
+enum CommandState {
+  COMMAND_STATE_UNSPECIFIED = 0;
+  COMMAND_STATE_RUNNING = 1;
+  COMMAND_STATE_FROZEN = 2;
+  COMMAND_STATE_EXITED = 3;
+}
+
+message HealthRequest {}
+
+message HealthResponse {
+  string hostname = 1;
+  string kernel = 2;
+  string arch = 3;
+  bool pid1 = 4;
+  bool cgroup_v2 = 5;
+  string work_dir = 6;
+}
+
+message StartCommandRequest {
+  string id = 1;
+  repeated string argv = 2;
+  string dir = 3;
+  repeated string env = 4;
+  string user = 5;
+  int32 uid = 6;
+  int32 gid = 7;
+  int32 cpu_weight = 8;
+  int64 memory_low = 9;
+  int64 memory_high = 10;
+  string tmp_dir = 11;
+}
+
+message CommandStatus {
+  string id = 1;
+  CommandState state = 2;
+  int32 exit_code = 3;
+  int32 main_pid = 4;
+  string cgroup = 5;
+  int64 memory_anon = 6;
+  int64 memory_swap = 7;
+  int64 cpu_usec = 8;
+  int64 log_bytes = 9;
+  int64 started_ms = 10;
+  int64 exited_ms = 11;
+  string error = 12;
+}
+
+message StatusRequest {
+  repeated string ids = 1;
+}
+
+message StatusResponse {
+  map<string, CommandStatus> commands = 1;
+}
+
+message StopCommandRequest {
+  string id = 1;
+  int32 grace_ms = 2;
+}
+
+message FreezeCommandRequest {
+  string id = 1;
+}
+
+message ThawCommandRequest {
+  string id = 1;
+}
+
+message ForgetCommandProfileRequest {
+  string id = 1;
+}
+
+message ForgetCommandProfileResponse {}
+
+message ReclaimRequest {
+  string id = 1;
+  int64 bytes = 2;
+}
+
+message ReclaimResponse {}
+
+message StreamLogsRequest {
+  string id = 1;
+  int64 offset = 2;
+  bool follow = 3;
+}
+
+message StreamLogsResponse {
+  bytes data = 1;
+}
+
+message SyncSubmodule {
+  string path = 1;
+  string commit = 2;
+  // Byte length of this submodule's bundle in the chunk stream (0 when no bundle).
+  int64 bundle_bytes = 3;
+}
+
+message SyncHeader {
+  string repo = 1;
+  string commit = 2;
+  string base = 3;
+  string user = 4;
+  int32 uid = 5;
+  int32 gid = 6;
+  repeated string env = 7;
+  // Submodule bundles precede the main repo bundle in the chunk stream, each
+  // exactly bundle_bytes long, followed by the main repo bundle until EOF.
+  repeated SyncSubmodule subs = 8;
+}
+
+message SyncRequest {
+  oneof msg {
+    SyncHeader header = 1;
+    bytes chunk = 2;
+  }
+}
+
+message SyncResponse {
+  int32 files_changed = 1;
+  string error = 2;
+  bool mutated = 3;
+  bool rolled_back = 4;
+  string rollback_error = 5;
+}
+
+message RepoBase {
+  string repo = 1;
+  string base_commit = 2;
+}
+
+message ListFilesRequest {
+  repeated RepoBase repos = 1;
+}
+
+message ListFilesResponse {
+  repeated hotbed.v1.FileEntry files = 1;
+}
+
+message GetFileRequest {
+  string repo = 1;
+  string base_commit = 2;
+  string rel_path = 3;
+}
+
+message ShutdownRequest {
+  bool sync_fs = 1;
+  bool stop_commands = 2;
+  bool power_off = 3;
+}
+
+message ShutdownResponse {}

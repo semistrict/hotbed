@@ -14,6 +14,7 @@ import (
 	"sync"
 	"time"
 
+	guestdv1 "github.com/semistrict/hotbed/internal/gen/guestd/v1"
 	"github.com/semistrict/hotbed/internal/guestd"
 )
 
@@ -698,8 +699,8 @@ func (m *Manager) Stop(ctx context.Context, id string, syncFS bool) error {
 
 	if inst.Client != nil && ctx.Err() == nil {
 		sctx, cancel := context.WithTimeout(ctx, m.cfg.ShutdownTimeout)
-		_ = inst.Client.Shutdown(sctx, guestd.ShutdownRequest{
-			SyncFS:       syncFS,
+		_ = inst.Client.Shutdown(sctx, &guestdv1.ShutdownRequest{
+			SyncFs:       syncFS,
 			StopCommands: true,
 			PowerOff:     true,
 		})

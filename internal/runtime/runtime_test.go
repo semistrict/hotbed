@@ -14,6 +14,11 @@ import (
 	"testing"
 	"time"
 
+	"connectrpc.com/connect/v2"
+	"connectrpc.com/connect/v2/connecthttp"
+
+	guestdv1 "github.com/semistrict/hotbed/internal/gen/guestd/v1"
+	"github.com/semistrict/hotbed/internal/gen/guestd/v1/guestdv1connect"
 	"github.com/semistrict/hotbed/internal/guestd"
 	"github.com/semistrict/hotbed/internal/runtime"
 )
@@ -203,6 +208,28 @@ func (o *oomVMResolver) VMExitStatus(_ context.Context, wsID string) (bool, int,
 	return false, 0, 0, "", false
 }
 
+type fakeGuestHandler struct {
+	guestdv1connect.UnimplementedGuestServiceHandler
+	reclaimUnimplemented bool
+	reclaimSeen          int
+}
+
+func (f *fakeGuestHandler) StartCommand(_ context.Context, req *guestdv1.StartCommandRequest) (*guestdv1.CommandStatus, error) {
+	return &guestdv1.CommandStatus{
+		Id:      req.Id,
+		State:   guestdv1.CommandState_COMMAND_STATE_RUNNING,
+		MainPid: 42,
+	}, nil
+}
+
+func (f *fakeGuestHandler) Reclaim(_ context.Context, _ *guestdv1.ReclaimRequest) (*guestdv1.ReclaimResponse, error) {
+	f.reclaimSeen++
+	if f.reclaimUnimplemented {
+		return nil, connect.NewError(connect.CodeUnimplemented, "reclaim not implemented")
+	}
+	return &guestdv1.ReclaimResponse{}, nil
+}
+
 func TestGuestRuntimeOOMStatusEnsureVMAndReclaim(t *testing.T) {
 	ctx := context.Background()
 	closedSock := filepath.Join(t.TempDir(), "dead.sock")
@@ -210,8 +237,8 @@ func TestGuestRuntimeOOMStatusEnsureVMAndReclaim(t *testing.T) {
 		guestd.ControlPort: closedSock,
 	}))
 
-	// Start a minimal HTTP server on a unix socket to test StartCommand -> EnsureVM
-	// recovery and Reclaim (including 404 compatibility with older guestd).
+	// Start a minimal Connect server on a unix socket to test StartCommand -> EnsureVM
+	// recovery and Reclaim (including CodeUnimplemented compatibility with older guestd).
 	sockDir, err := os.MkdirTemp("", "rt-rec-")
 	if err != nil {
 		t.Fatal(err)
@@ -224,22 +251,11 @@ func TestGuestRuntimeOOMStatusEnsureVMAndReclaim(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = ln.Close() })
 
-	var reclaimStatus int = http.StatusOK
-	var reclaimSeen int
+	fakeHandler := &fakeGuestHandler{}
+	cs := connect.NewServer()
+	guestdv1connect.RegisterGuestServiceHandler(cs, fakeHandler)
 	mux := http.NewServeMux()
-	mux.HandleFunc("/v1/commands/start", func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"id":"c-new","state":"running","main_pid":42}`))
-	})
-	mux.HandleFunc("/v1/reclaim", func(w http.ResponseWriter, r *http.Request) {
-		reclaimSeen++
-		if reclaimStatus == http.StatusNotFound {
-			http.NotFound(w, r)
-			return
-		}
-		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write([]byte(`{"ok":true}`))
-	})
+	connecthttp.Mount(mux, cs)
 	srv := &http.Server{Handler: mux}
 	go func() { _ = srv.Serve(ln) }()
 	t.Cleanup(func() { _ = srv.Close() })
@@ -282,15 +298,15 @@ func TestGuestRuntimeOOMStatusEnsureVMAndReclaim(t *testing.T) {
 		t.Fatalf("StartCommand called EnsureVM %d times, want 1", res.ensureCalls)
 	}
 
-	// 3. Reclaim calls /v1/reclaim and ignores 404 from older guestd binaries.
+	// 3. Reclaim calls GuestService.Reclaim and ignores Unimplemented from older guestd binaries.
 	if err := rt.Reclaim(ctx, "ws-live", "c-new", 1<<20); err != nil {
-		t.Fatalf("Reclaim (200): %v", err)
+		t.Fatalf("Reclaim (OK): %v", err)
 	}
-	reclaimStatus = http.StatusNotFound
+	fakeHandler.reclaimUnimplemented = true
 	if err := rt.Reclaim(ctx, "ws-live", "", 0); err != nil {
-		t.Fatalf("Reclaim (404 compat): %v", err)
+		t.Fatalf("Reclaim (Unimplemented compat): %v", err)
 	}
-	if reclaimSeen != 2 {
-		t.Fatalf("reclaimSeen = %d, want 2", reclaimSeen)
+	if fakeHandler.reclaimSeen != 2 {
+		t.Fatalf("reclaimSeen = %d, want 2", fakeHandler.reclaimSeen)
 	}
 }

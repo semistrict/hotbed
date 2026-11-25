@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"strings"
 	"syscall"
+	"time"
 
 	cladefsdv1 "github.com/semistrict/cladefs/go/cladefsd/v1"
 	mountv1 "github.com/semistrict/cladefs/go/mount/v1"
@@ -263,8 +264,20 @@ func (s *Store) ImportImage(ctx context.Context, relPath, imagePath string, capB
 	}, nil
 }
 
-// CreateCell creates a new empty Fxfs cell at relPath.
-func (s *Store) CreateCell(ctx context.Context, relPath string, capBytes uint64, token *uint64) (CellRef, error) {
+func uploadIntervalMsPtr(d time.Duration) *uint64 {
+	if d <= 0 {
+		return nil
+	}
+	ms := uint64(d / time.Millisecond)
+	if ms == 0 {
+		ms = 1
+	}
+	return &ms
+}
+
+// CreateCell creates a new empty Fxfs cell at relPath. When uploadInterval > 0,
+// cladefsd uses it as the per-cell background upload interval (question 534).
+func (s *Store) CreateCell(ctx context.Context, relPath string, capBytes uint64, token *uint64, uploadInterval time.Duration) (CellRef, error) {
 	hostPath, err := s.CellPath(relPath)
 	if err != nil {
 		return CellRef{}, err
@@ -273,11 +286,12 @@ func (s *Store) CreateCell(ctx context.Context, relPath string, capBytes uint64,
 		return CellRef{}, fmt.Errorf("cladefs: mkdir parent for %s: %w", relPath, err)
 	}
 	resp, err := s.api.CreateCell(ctx, &cladefsdv1.CreateCellRequest{
-		Path:     hostPath,
-		Capacity: s.capacityOrDefault(capBytes),
-		Token:    token,
-		Tenant:   s.cfg.TenantID,
-		Kind:     cladefsdv1.CellKind_CELL_KIND_FXFS,
+		Path:             hostPath,
+		Capacity:         s.capacityOrDefault(capBytes),
+		Token:            token,
+		Tenant:           s.cfg.TenantID,
+		Kind:             cladefsdv1.CellKind_CELL_KIND_FXFS,
+		UploadIntervalMs: uploadIntervalMsPtr(uploadInterval),
 	})
 	if err != nil {
 		return CellRef{}, mapErr("create cell "+relPath, err)
@@ -291,8 +305,10 @@ func (s *Store) CreateCell(ctx context.Context, relPath string, capBytes uint64,
 }
 
 // TakeCell opens an existing bucket-backed cell (tenant, cellID) on this host
-// with fencing token, for cross-node workspace moves.
-func (s *Store) TakeCell(ctx context.Context, relPath string, tenant, cellID, capBytes uint64, token *uint64) (CellRef, error) {
+// with fencing token, for cross-node workspace moves or base-build upload tuning.
+// When uploadInterval > 0, cladefsd remembers it for subsequent opens of relPath
+// until the cell is dropped or deleted.
+func (s *Store) TakeCell(ctx context.Context, relPath string, tenant, cellID, capBytes uint64, token *uint64, uploadInterval time.Duration) (CellRef, error) {
 	if cellID == 0 {
 		return CellRef{}, errors.New("cladefs: TakeCell requires non-zero cellID")
 	}
@@ -304,12 +320,13 @@ func (s *Store) TakeCell(ctx context.Context, relPath string, tenant, cellID, ca
 		return CellRef{}, fmt.Errorf("cladefs: mkdir parent for %s: %w", relPath, err)
 	}
 	resp, err := s.api.CreateCell(ctx, &cladefsdv1.CreateCellRequest{
-		Path:     hostPath,
-		Capacity: s.capacityOrDefault(capBytes),
-		Token:    token,
-		Tenant:   tenant,
-		Cell:     cellID,
-		Kind:     cladefsdv1.CellKind_CELL_KIND_FXFS,
+		Path:             hostPath,
+		Capacity:         s.capacityOrDefault(capBytes),
+		Token:            token,
+		Tenant:           tenant,
+		Cell:             cellID,
+		Kind:             cladefsdv1.CellKind_CELL_KIND_FXFS,
+		UploadIntervalMs: uploadIntervalMsPtr(uploadInterval),
 	})
 	if err != nil {
 		return CellRef{}, mapErr("take cell "+relPath, err)
@@ -493,7 +510,7 @@ func (s *Store) DeleteBucketCell(ctx context.Context, relPath string, tenant, ce
 		return nil
 	}
 	_ = s.DropCell(ctx, relPath)
-	if _, err := s.TakeCell(ctx, relPath, tenant, cellID, 0, nil); err != nil {
+	if _, err := s.TakeCell(ctx, relPath, tenant, cellID, 0, nil, 0); err != nil {
 		_ = s.DropCell(ctx, relPath)
 		if errors.Is(err, storage.ErrNotFound) || isNotFound(err) || isDeleted(err) {
 			return nil
@@ -534,16 +551,19 @@ func Base32ID(id uint64) string {
 }
 
 // MountAttach attaches a bucket cell (or creates a new empty Fxfs cell when
-// cell == 0) in cladefsd's host FUSE mount (CLADEFSD_MOUNT).
-func (s *Store) MountAttach(ctx context.Context, tenant, cell, capBytes uint64, token *uint64) (cellID uint64, shown bool, err error) {
+// cell == 0) in cladefsd's host FUSE mount (CLADEFSD_MOUNT). When
+// uploadInterval > 0, cladefsd uses it as the per-cell background upload
+// interval (question 534).
+func (s *Store) MountAttach(ctx context.Context, tenant, cell, capBytes uint64, token *uint64, uploadInterval time.Duration) (cellID uint64, shown bool, err error) {
 	if s.mount == nil {
 		return 0, false, errors.New("cladefs: mount client not available")
 	}
 	req := &mountv1.AttachRequest{
-		Tenant:   tenant,
-		Cell:     cell,
-		Token:    token,
-		Capacity: capBytes,
+		Tenant:           tenant,
+		Cell:             cell,
+		Token:            token,
+		Capacity:         capBytes,
+		UploadIntervalMs: uploadIntervalMsPtr(uploadInterval),
 	}
 	if cell == 0 && req.Capacity == 0 {
 		req.Capacity = s.cfg.DefaultCap

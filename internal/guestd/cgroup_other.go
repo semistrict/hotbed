@@ -5,14 +5,16 @@ package guestd
 import (
 	"errors"
 	"syscall"
+
+	guestdv1 "github.com/semistrict/hotbed/internal/gen/guestd/v1"
 )
 
 type cmdCgroup struct {
 	path string
 }
 
-func hasCgroupV2() bool                                      { return false }
-func createCmdCgroup(string, StartCommandRequest) *cmdCgroup { return nil }
+func hasCgroupV2() bool                                                { return false }
+func createCmdCgroup(string, *guestdv1.StartCommandRequest) *cmdCgroup { return nil }
 func (c *cmdCgroup) addPID(int) error                        { return nil }
 func attachCgroupAttr(*syscall.SysProcAttr, *cmdCgroup) (bool, func()) {
 	return false, func() {}

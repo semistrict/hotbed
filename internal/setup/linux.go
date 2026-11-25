@@ -144,6 +144,9 @@ func Setup(ctx context.Context, o Options, tn worker.Tailnet, hc *http.Client, c
 		return Result{}, api.Errorf(api.CodeInvalidArgs, "--zfs-arc-max applies only to a ZFS pool hotbed makes (a sparse image or --zfs-device); this worker uses %s storage", storageMode).
 			WithSuggestion("drop --zfs-arc-max and tune the ARC of your own pool yourself")
 	}
+	if err := worker.EnsureUserfaultfdAccess(ctx, username); err != nil {
+		return Result{}, fmt.Errorf("configure /dev/userfaultfd access for %s: %w", username, err)
+	}
 
 	// Join cluster (idempotent when already joined to the same controller).
 	var joinRes worker.JoinResult

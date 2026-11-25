@@ -384,6 +384,12 @@ func Run(ctx context.Context, dir string, cfg statedir.WorkerConfig, tn Tailnet,
 			"mountRoot", effCfg.CladefsFUSE.MountRoot,
 		)
 	}
+	// Ensure workspace commands (via the command user's kvm supplementary group)
+	// can open /dev/userfaultfd read-write on Linux hosts, matching Firecracker
+	// guests (cmd/hotbed-guestd/devperms.go) and persisting across reboots.
+	if err := EnsureUserfaultfdAccess(ctx, effCfg.User); err != nil {
+		return fmt.Errorf("configure /dev/userfaultfd access for %s: %w", effCfg.User, err)
+	}
 	// Lower the work slice's CPU and IO priority so normal commands yield to
 	// desktop and system processes while still sharing spare CPU among
 	// themselves by their per-command CPUWeight=. Measurements run in a

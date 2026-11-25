@@ -13,7 +13,7 @@ require (
 	github.com/itchyny/gojq v0.12.20
 	github.com/modelcontextprotocol/go-sdk v1.8.0
 	github.com/pressly/goose/v3 v3.30.1
-	github.com/semistrict/cladefs/go v0.0.0-20261124093933-66cf525d29ce
+	github.com/semistrict/cladefs/go v0.0.0-20261125051847-cb80367e0dda
 	go.opentelemetry.io/collector/component v1.71.0
 	go.opentelemetry.io/collector/consumer/xconsumer v0.165.0
 	go.opentelemetry.io/collector/pdata/pprofile v0.165.0

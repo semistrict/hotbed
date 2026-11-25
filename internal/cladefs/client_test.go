@@ -6,8 +6,10 @@ import (
 	"path/filepath"
 	"syscall"
 	"testing"
+	"time"
 
 	cladefsdv1 "github.com/semistrict/cladefs/go/cladefsd/v1"
+	mountv1 "github.com/semistrict/cladefs/go/mount/v1"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	healthpb "google.golang.org/grpc/health/grpc_health_v1"
@@ -33,12 +35,29 @@ type fakeCladefs struct {
 	cladefsdv1.CladefsdClient
 	grantReq   *cladefsdv1.GrantRequest
 	grantSock  string
+	createReqs []*cladefsdv1.CreateCellRequest
 	cells      map[string]uint64
 	synced     map[string]bool
 	peers      []string
 	nextCell   uint64
 	nextVer    uint64
 	deleteBusy map[string]bool
+}
+
+type fakeMount struct {
+	mountv1.MountClient
+	attachReqs []*mountv1.AttachRequest
+	nextCell   uint64
+}
+
+func (f *fakeMount) Attach(_ context.Context, req *mountv1.AttachRequest, _ ...grpc.CallOption) (*mountv1.AttachResponse, error) {
+	f.attachReqs = append(f.attachReqs, req)
+	id := req.GetCell()
+	if id == 0 {
+		f.nextCell++
+		id = f.nextCell
+	}
+	return &mountv1.AttachResponse{Cell: id, Shown: true}, nil
 }
 
 func newFakeCladefs() *fakeCladefs {
@@ -63,6 +82,7 @@ func (f *fakeCladefs) ImportImage(_ context.Context, req *cladefsdv1.ImportImage
 }
 
 func (f *fakeCladefs) CreateCell(_ context.Context, req *cladefsdv1.CreateCellRequest, _ ...grpc.CallOption) (*cladefsdv1.CreateCellResponse, error) {
+	f.createReqs = append(f.createReqs, req)
 	id := req.Cell
 	if id == 0 {
 		f.nextCell++
@@ -190,5 +210,72 @@ func TestStoreRefusesUnhealthyDaemon(t *testing.T) {
 		&fakeHealth{status: healthpb.HealthCheckResponse_NOT_SERVING}, nil)
 	if err == nil {
 		t.Fatal("expected error when cladefsd is NOT_SERVING")
+	}
+}
+
+func TestStoreUploadIntervalMsPlumbing(t *testing.T) {
+	ctx := context.Background()
+	api := newFakeCladefs()
+	mnt := &fakeMount{nextCell: 500}
+	st, err := NewStore(ctx, Config{CellRoot: t.TempDir()}, api, nil, nil)
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	st.SetMount(mnt)
+
+	// Zero duration leaves UploadIntervalMs nil (daemon default).
+	if _, err := st.CreateCell(ctx, "normal/c1", 1<<30, nil, 0); err != nil {
+		t.Fatalf("CreateCell(0): %v", err)
+	}
+	if _, err := st.TakeCell(ctx, "normal/t1", 0, 101, 1<<30, nil, 0); err != nil {
+		t.Fatalf("TakeCell(0): %v", err)
+	}
+	if _, _, err := st.MountAttach(ctx, 0, 0, 1<<30, nil, 0); err != nil {
+		t.Fatalf("MountAttach(0): %v", err)
+	}
+
+	// Explicit duration sets UploadIntervalMs in milliseconds.
+	if _, err := st.CreateCell(ctx, "base/c2", 1<<30, nil, 15*time.Second); err != nil {
+		t.Fatalf("CreateCell(15s): %v", err)
+	}
+	if _, err := st.TakeCell(ctx, "base/t2", 0, 102, 1<<30, nil, 15*time.Second); err != nil {
+		t.Fatalf("TakeCell(15s): %v", err)
+	}
+	if _, _, err := st.MountAttach(ctx, 0, 102, 0, nil, 15*time.Second); err != nil {
+		t.Fatalf("MountAttach(15s): %v", err)
+	}
+
+	// Sub-millisecond positive duration clamps up to 1 ms (cladefsd rejects 0).
+	if _, err := st.CreateCell(ctx, "base/c3", 1<<30, nil, 500*time.Microsecond); err != nil {
+		t.Fatalf("CreateCell(500us): %v", err)
+	}
+
+	if len(api.createReqs) != 5 {
+		t.Fatalf("createReqs = %d, want 5", len(api.createReqs))
+	}
+	if api.createReqs[0].UploadIntervalMs != nil {
+		t.Fatalf("CreateCell(0) UploadIntervalMs = %v, want nil", *api.createReqs[0].UploadIntervalMs)
+	}
+	if api.createReqs[1].UploadIntervalMs != nil {
+		t.Fatalf("TakeCell(0) UploadIntervalMs = %v, want nil", *api.createReqs[1].UploadIntervalMs)
+	}
+	if api.createReqs[2].UploadIntervalMs == nil || api.createReqs[2].GetUploadIntervalMs() != 15000 {
+		t.Fatalf("CreateCell(15s) UploadIntervalMs = %v, want 15000", api.createReqs[2].UploadIntervalMs)
+	}
+	if api.createReqs[3].UploadIntervalMs == nil || api.createReqs[3].GetUploadIntervalMs() != 15000 {
+		t.Fatalf("TakeCell(15s) UploadIntervalMs = %v, want 15000", api.createReqs[3].UploadIntervalMs)
+	}
+	if api.createReqs[4].UploadIntervalMs == nil || api.createReqs[4].GetUploadIntervalMs() != 1 {
+		t.Fatalf("CreateCell(500us) UploadIntervalMs = %v, want 1", api.createReqs[4].UploadIntervalMs)
+	}
+
+	if len(mnt.attachReqs) != 2 {
+		t.Fatalf("attachReqs = %d, want 2", len(mnt.attachReqs))
+	}
+	if mnt.attachReqs[0].UploadIntervalMs != nil {
+		t.Fatalf("MountAttach(0) UploadIntervalMs = %v, want nil", *mnt.attachReqs[0].UploadIntervalMs)
+	}
+	if mnt.attachReqs[1].UploadIntervalMs == nil || mnt.attachReqs[1].GetUploadIntervalMs() != 15000 {
+		t.Fatalf("MountAttach(15s) UploadIntervalMs = %v, want 15000", mnt.attachReqs[1].UploadIntervalMs)
 	}
 }

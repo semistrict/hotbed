@@ -524,6 +524,7 @@ func (b *VMBackend) ApplyHeartbeat(ctx context.Context, peers []string, decommis
 			b.mu.Unlock()
 		}
 	}
+	b.retirer.sweep(ctx, st, "vm-retire", time.Now())
 }
 
 // runGuestCommand runs a command inside a booted VM, streams its output, and
@@ -622,6 +623,7 @@ func (b *VMBackend) EnsureProvisionedBaseImage(ctx context.Context, spec baseima
 	b.mu.Lock()
 	if ref, ok := b.baseImages[key]; ok && ref.Cell > 0 && ref.Version > 0 {
 		b.mu.Unlock()
+		b.retirer.sweep(ctx, b.currentStore(), "vm-retire", time.Now())
 		return ref, nil
 	}
 	b.mu.Unlock()
@@ -658,6 +660,22 @@ func (b *VMBackend) EnsureProvisionedBaseImage(ctx context.Context, spec baseima
 	// Boot a temporary Firecracker VM on rawRef to run DefaultProvisionScript
 	// (installs git, gh, build-essential, rustup/cargo, tracers, non-root user).
 	if spec.Script != "" {
+		// Re-open the already-synced imported cell with baseBuildUploadInterval
+		// so cladefsd coalesces provisioning writes into fuller R2 segments;
+		// MakeVersionAndSync flushes everything at the end (question 534).
+		if err := b.currentStore().DropCell(ctx, rel); err != nil {
+			b.cleanupCell(ctx, rel)
+			return cladefs.CellRef{}, fmt.Errorf("drop VM base image %s before take: %w", key, err)
+		}
+		takenRef, err := b.currentStore().TakeCell(ctx, rel, rawRef.Tenant, rawRef.Cell, cfg.DiskBytes, nil, baseBuildUploadInterval)
+		if err != nil {
+			cctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
+			_ = b.currentStore().DeleteBucketCell(cctx, filepath.Join("vm-retire", fmt.Sprintf("fail-%d-%d", rawRef.Tenant, rawRef.Cell)), rawRef.Tenant, rawRef.Cell)
+			cancel()
+			return cladefs.CellRef{}, fmt.Errorf("re-open VM base image %s with upload interval: %w", key, err)
+		}
+		rawRef = takenRef
+
 		untrack := b.trackBuild(provID)
 		inst, err := b.mgr.Start(ctx, vm.LaunchSpec{
 			ID:            provID,
@@ -700,9 +718,17 @@ func (b *VMBackend) EnsureProvisionedBaseImage(ctx context.Context, spec baseima
 	if b.baseImages == nil {
 		b.baseImages = map[string]cladefs.CellRef{}
 	}
+	superseded := collectSupersededBaseImages(b.baseImages, key, rawRef.Cell)
 	b.baseImages[key] = rawRef
 	b.mu.Unlock()
 	b.saveCacheJSON("baseimage-"+key+".json", rawRef)
+	now := time.Now()
+	if b.workerDir != "" {
+		retireSupersededBaseImages(b.cacheDir(), superseded, &b.retirer, now)
+	} else {
+		retireSupersededBaseImages("", superseded, &b.retirer, now)
+	}
+	b.retirer.sweep(ctx, b.currentStore(), "vm-retire", now)
 	slog.Info("VM base image provisioned and synced to R2", "key", key, "cell", rawRef.Cell, "version", rawRef.Version)
 	return rawRef, nil
 }
@@ -836,6 +862,27 @@ func (b *VMBackend) EnsureProjectBase(
 			return nil, fmt.Errorf("fork VM project base %s: %w", baseID, err)
 		}
 	}
+
+	// Re-open the forked base cell via TakeCell with baseBuildUploadInterval so
+	// cladefsd coalesces segment uploads while the VM clones repos and runs
+	// setup steps; MakeVersionAndSync flushes everything at the end (question 534).
+	cfg := b.configSnapshot()
+	if err := b.currentStore().SyncCell(ctx, rel); err != nil {
+		b.cleanupCell(ctx, rel)
+		return nil, fmt.Errorf("sync forked VM project base %s: %w", baseID, err)
+	}
+	if err := b.currentStore().DropCell(ctx, rel); err != nil {
+		b.cleanupCell(ctx, rel)
+		return nil, fmt.Errorf("drop forked VM project base %s before take: %w", baseID, err)
+	}
+	takenRef, err := b.currentStore().TakeCell(ctx, rel, forkRef.Tenant, forkRef.Cell, cfg.DiskBytes, nil, baseBuildUploadInterval)
+	if err != nil {
+		cctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
+		_ = b.currentStore().DeleteBucketCell(cctx, filepath.Join("vm-retire", fmt.Sprintf("fail-%d-%d", forkRef.Tenant, forkRef.Cell)), forkRef.Tenant, forkRef.Cell)
+		cancel()
+		return nil, fmt.Errorf("re-open VM project base %s with upload interval: %w", baseID, err)
+	}
+	forkRef = takenRef
 
 	untrack := b.trackBuild(vmID)
 	if _, err := b.mgr.Start(ctx, vm.LaunchSpec{

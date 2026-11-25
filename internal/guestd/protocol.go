@@ -1,6 +1,6 @@
-// Package guestd implements the in-VM agent (`hotbed-guestd`), its wire
-// protocol over virtio-vsock (or Unix sockets in tests), and the host-side
-// client used by the hotbed VM runtime.
+// Package guestd implements the in-VM agent (`hotbed-guestd`), its Buf Connect
+// control API and stream protocols over virtio-vsock (or Unix sockets in tests),
+// and the host-side client used by the hotbed VM runtime.
 package guestd
 
 import (
@@ -8,15 +8,13 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-
-	pb "github.com/semistrict/hotbed/internal/gen/hotbed/v1"
 )
 
 // Well-known virtio-vsock ports shared between hotbed-worker (host, CID 2)
 // and hotbed-guestd (inside each workspace Firecracker microVM).
 const (
-	// ControlPort serves the HTTP/1.1 JSON control API (commands, sync, files,
-	// shutdown, health).
+	// ControlPort serves the guestd.v1.GuestService Connect RPC API (commands,
+	// logs, inspect/trace/sample/profile, sync, files, reclaim, shutdown, health).
 	ControlPort uint32 = 5000
 	// ShellPort serves framed interactive PTY and piped shell streams.
 	ShellPort uint32 = 5001
@@ -30,151 +28,6 @@ const (
 	// HostCID is the standard virtio-vsock context ID of the host.
 	HostCID uint32 = 2
 )
-
-// CommandState values reported by hotbed-guestd.
-const (
-	StateRunning = "running"
-	StateFrozen  = "frozen"
-	StateExited  = "exited"
-)
-
-// HealthResponse is returned by GET /v1/health.
-type HealthResponse struct {
-	Hostname string `json:"hostname"`
-	Kernel   string `json:"kernel"`
-	Arch     string `json:"arch"`
-	PID1     bool   `json:"pid1"`
-	CgroupV2 bool   `json:"cgroupV2"`
-	WorkDir  string `json:"workDir"`
-}
-
-// StartCommandRequest starts a command inside the guest. Calls are idempotent
-// on ID: starting an already-known ID returns its current status without
-// spawning a duplicate process (required across vsock resets).
-type StartCommandRequest struct {
-	ID         string   `json:"id"`
-	Argv       []string `json:"argv"`
-	Dir        string   `json:"dir"`
-	Env        []string `json:"env,omitempty"`
-	User       string   `json:"user,omitempty"`
-	UID        int      `json:"uid,omitempty"`
-	GID        int      `json:"gid,omitempty"`
-	CPUWeight  int      `json:"cpuWeight,omitempty"`
-	MemoryLow  int64    `json:"memoryLow,omitempty"`
-	MemoryHigh int64    `json:"memoryHigh,omitempty"`
-	TmpDir     string   `json:"tmpDir,omitempty"`
-}
-
-// CommandStatus describes one command managed by hotbed-guestd.
-type CommandStatus struct {
-	ID         string `json:"id"`
-	State      string `json:"state"`
-	ExitCode   int    `json:"exitCode"`
-	MainPID    int    `json:"mainPid"`
-	Cgroup     string `json:"cgroup,omitempty"`
-	MemoryAnon int64  `json:"memoryAnon"`
-	MemorySwap int64  `json:"memorySwap"`
-	CPUUsec    int64  `json:"cpuUsec"`
-	LogBytes   int64  `json:"logBytes"`
-	StartedMs  int64  `json:"startedMs"`
-	ExitedMs   int64  `json:"exitedMs,omitempty"`
-	Error      string `json:"error,omitempty"`
-}
-
-// StatusRequest queries status for specific command IDs, or all commands when
-// IDs is empty.
-type StatusRequest struct {
-	IDs []string `json:"ids,omitempty"`
-}
-
-// StatusResponse maps command ID -> status.
-type StatusResponse struct {
-	Commands map[string]CommandStatus `json:"commands"`
-}
-
-// StopCommandRequest terminates a running or frozen command.
-type StopCommandRequest struct {
-	ID      string `json:"id"`
-	GraceMs int    `json:"graceMs,omitempty"`
-}
-
-// FreezeRequest freezes or thaws a command's guest cgroup (or process group).
-type FreezeRequest struct {
-	ID string `json:"id"`
-}
-
-// ReclaimRequest asks hotbed-guestd to reclaim memory from a command's cgroup
-// (when ID and Bytes are set) and drop clean guest page caches so
-// virtio-balloon free-page-reporting returns unused host RAM.
-type ReclaimRequest struct {
-	ID    string `json:"id,omitempty"`
-	Bytes int64  `json:"bytes,omitempty"`
-}
-
-// SyncSubmodule describes one submodule bundle carried in POST /v1/sync.
-type SyncSubmodule struct {
-	Path   string `json:"path"`
-	Commit string `json:"commit"`
-	Part   string `json:"part"` // multipart form field name, e.g. "sub-0"
-}
-
-// SyncRequest is the JSON metadata field ("meta") of POST /v1/sync.
-type SyncRequest struct {
-	Repo   string          `json:"repo"`
-	Commit string          `json:"commit"`
-	Base   string          `json:"base"`
-	User   string          `json:"user,omitempty"`
-	UID    int             `json:"uid,omitempty"`
-	GID    int             `json:"gid,omitempty"`
-	Env    []string        `json:"env,omitempty"`
-	Subs   []SyncSubmodule `json:"subs,omitempty"`
-}
-
-// SyncResponse reports the result of gitops.Apply inside the guest.
-type SyncResponse struct {
-	FilesChanged int    `json:"filesChanged"`
-	Err          string `json:"err,omitempty"`
-	Mutated      bool   `json:"mutated,omitempty"`
-	RolledBack   bool   `json:"rolledBack,omitempty"`
-	RollbackErr  string `json:"rollbackErr,omitempty"`
-}
-
-// RepoBase identifies one checkout in /work for file listing.
-type RepoBase struct {
-	Repo       string `json:"repo"`
-	BaseCommit string `json:"baseCommit"`
-}
-
-// ListFilesRequest lists tracked files across repos relative to /work.
-type ListFilesRequest struct {
-	Repos []RepoBase `json:"repos"`
-}
-
-// ListFilesResponse returns workspace file entries.
-type ListFilesResponse struct {
-	Files []*pb.FileEntry `json:"files"`
-}
-
-// GetFileRequest reads one regular file and its changed lines against base.
-type GetFileRequest struct {
-	Repo       string `json:"repo"`
-	BaseCommit string `json:"baseCommit"`
-	RelPath    string `json:"relPath"`
-}
-
-// GetFileResponse returns the file's content and changed line numbers.
-type GetFileResponse struct {
-	Path         string  `json:"path"`
-	Text         string  `json:"text"`
-	ChangedLines []int32 `json:"changedLines,omitempty"`
-}
-
-// ShutdownRequest flushes filesystems and optionally stops commands / powers off.
-type ShutdownRequest struct {
-	SyncFS       bool `json:"syncFs"`
-	StopCommands bool `json:"stopCommands"`
-	PowerOff     bool `json:"powerOff"`
-}
 
 // ShellOpenRequest is the initial JSON header sent on ShellPort.
 type ShellOpenRequest struct {
@@ -213,42 +66,10 @@ const (
 	frameError      byte = 7 // UTF-8 error message (guest->host)
 )
 
-// Binary frame types used by streaming protobuf endpoints (/v1/commands/trace,
-// /v1/commands/sample) over ControlPort.
-const (
-	streamFrameProto byte = 1 // raw proto.Marshal payload of a chunk message
-	streamFrameError byte = 2 // JSON-encoded api.Error payload
-	streamFrameEOF   byte = 3 // empty payload marking clean end of stream
-)
-
-// apiErrorHeader marks HTTP error responses whose body is a JSON-encoded
-// api.Error, distinguishing structured guestd errors (e.g. command not found)
-// from plain-text 404s returned by older guestd binaries.
-const apiErrorHeader = "X-Hotbed-API-Error"
-
-const (
-	maxFrameLen       = 4 << 20
-	maxStreamFrameLen = 16 << 20
-)
+const maxFrameLen = 4 << 20
 
 func writeFrame(w io.Writer, typ byte, payload []byte) error {
-	return writeFramed(w, typ, payload, maxFrameLen)
-}
-
-func readFrame(r io.Reader) (byte, []byte, error) {
-	return readFramed(r, maxFrameLen)
-}
-
-func writeStreamFrame(w io.Writer, typ byte, payload []byte) error {
-	return writeFramed(w, typ, payload, maxStreamFrameLen)
-}
-
-func readStreamFrame(r io.Reader) (byte, []byte, error) {
-	return readFramed(r, maxStreamFrameLen)
-}
-
-func writeFramed(w io.Writer, typ byte, payload []byte, limit int) error {
-	if len(payload) > limit {
+	if len(payload) > maxFrameLen {
 		return fmt.Errorf("guestd frame too large: %d bytes", len(payload))
 	}
 	var hdr [5]byte
@@ -265,13 +86,13 @@ func writeFramed(w io.Writer, typ byte, payload []byte, limit int) error {
 	return nil
 }
 
-func readFramed(r io.Reader, limit int) (byte, []byte, error) {
+func readFrame(r io.Reader) (byte, []byte, error) {
 	var hdr [5]byte
 	if _, err := io.ReadFull(r, hdr[:]); err != nil {
 		return 0, nil, err
 	}
 	n := binary.BigEndian.Uint32(hdr[1:])
-	if int(n) > limit {
+	if n > maxFrameLen {
 		return 0, nil, fmt.Errorf("guestd frame exceeds limit: %d bytes", n)
 	}
 	var payload []byte

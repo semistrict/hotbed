@@ -5,10 +5,12 @@ import (
 	"fmt"
 	"io"
 	"net"
-	"strings"
 	"time"
 
+	"connectrpc.com/connect/v2"
+
 	"github.com/semistrict/hotbed/internal/api"
+	guestdv1 "github.com/semistrict/hotbed/internal/gen/guestd/v1"
 	pb "github.com/semistrict/hotbed/internal/gen/hotbed/v1"
 	"github.com/semistrict/hotbed/internal/guestd"
 	"github.com/semistrict/hotbed/internal/inspect"
@@ -50,8 +52,8 @@ func (g *GuestRuntime) Teardown(ctx context.Context, wsID string) error {
 	if c, err := g.vms.ClientFor(wsID); err == nil {
 		// Best-effort clean flush & command stop before stopping the VM.
 		shutCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
-		_ = c.Shutdown(shutCtx, guestd.ShutdownRequest{
-			SyncFS:       true,
+		_ = c.Shutdown(shutCtx, &guestdv1.ShutdownRequest{
+			SyncFs:       true,
 			StopCommands: true,
 			PowerOff:     true,
 		})
@@ -72,15 +74,15 @@ func (g *GuestRuntime) StartCommand(ctx context.Context, wsID string, spec Comma
 	if err != nil {
 		return err
 	}
-	_, err = c.StartCommand(ctx, guestd.StartCommandRequest{
-		ID:         spec.ID,
+	_, err = c.StartCommand(ctx, &guestdv1.StartCommandRequest{
+		Id:         spec.ID,
 		Argv:       spec.Argv,
 		Dir:        spec.Dir,
 		Env:        spec.Env,
 		User:       spec.User,
-		UID:        spec.UID,
-		GID:        spec.GID,
-		CPUWeight:  spec.CPUWeight,
+		Uid:        int32(spec.UID),
+		Gid:        int32(spec.GID),
+		CpuWeight:  int32(spec.CPUWeight),
 		MemoryLow:  spec.MemoryLow,
 		MemoryHigh: spec.MemoryHigh,
 	})
@@ -120,16 +122,16 @@ func (g *GuestRuntime) StatusMany(ctx context.Context, wsID string, ids []string
 			out := make(map[string]CommandStatus, len(raw))
 			for id, st := range raw {
 				out[id] = CommandStatus{
-					ID:         st.ID,
-					Running:    st.State == guestd.StateRunning,
-					Frozen:     st.State == guestd.StateFrozen,
-					Exited:     st.State == guestd.StateExited,
-					ExitCode:   st.ExitCode,
-					MainPID:    st.MainPID,
+					ID:         st.Id,
+					Running:    st.State == guestdv1.CommandState_COMMAND_STATE_RUNNING,
+					Frozen:     st.State == guestdv1.CommandState_COMMAND_STATE_FROZEN,
+					Exited:     st.State == guestdv1.CommandState_COMMAND_STATE_EXITED,
+					ExitCode:   int(st.ExitCode),
+					MainPID:    int(st.MainPid),
 					Cgroup:     st.Cgroup,
 					MemoryAnon: st.MemoryAnon,
 					MemorySwap: st.MemorySwap,
-					CPUUsec:    st.CPUUsec,
+					CPUUsec:    st.CpuUsec,
 				}
 			}
 			return out, nil
@@ -196,9 +198,9 @@ func (g *GuestRuntime) Reclaim(ctx context.Context, wsID, cmdID string, bytes in
 		return nil
 	}
 	if err := c.Reclaim(ctx, cmdID, bytes); err != nil {
-		// Older guestd builds without /v1/reclaim return 404; treat as a
+		// Older guestd builds without Reclaim return Unimplemented; treat as a
 		// best-effort no-op so rolling upgrades never log spurious errors.
-		if strings.Contains(err.Error(), "(404)") {
+		if connect.CodeOf(err) == connect.CodeUnimplemented {
 			return nil
 		}
 		return err
@@ -282,9 +284,9 @@ func (g *GuestRuntime) ListFiles(ctx context.Context, wsID string, repos []RepoR
 	if err != nil {
 		return nil, err
 	}
-	req := make([]guestd.RepoBase, len(repos))
+	req := make([]*guestdv1.RepoBase, len(repos))
 	for i, r := range repos {
-		req[i] = guestd.RepoBase{Repo: r.Repo, BaseCommit: r.BaseCommit}
+		req[i] = &guestdv1.RepoBase{Repo: r.Repo, BaseCommit: r.BaseCommit}
 	}
 	return c.ListFiles(ctx, req)
 }

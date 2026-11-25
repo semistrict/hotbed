@@ -230,7 +230,7 @@ func TestEngineWithGuestRuntimeEndToEnd(t *testing.T) {
 		t.Fatalf("EnsureReady count = %d, want 1", rt.ready[wsID])
 	}
 
-	// 1. Sync a real modified file via gitops.Snapshot -> git bundle -> Engine.Sync -> guestd /v1/sync!
+	// 1. Sync a real modified file via gitops.Snapshot -> git bundle -> Engine.Sync -> guestd Sync RPC!
 	clientRepo := t.TempDir()
 	runGitTest(t, clientRepo, "clone", originRepo, ".")
 	if err := os.WriteFile(filepath.Join(clientRepo, "hello.txt"), []byte("line1\nline2-edited\nline3\n"), 0o644); err != nil {

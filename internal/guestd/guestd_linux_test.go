@@ -7,8 +7,8 @@ import (
 	"testing"
 	"time"
 
+	guestdv1 "github.com/semistrict/hotbed/internal/gen/guestd/v1"
 	pb "github.com/semistrict/hotbed/internal/gen/hotbed/v1"
-	"github.com/semistrict/hotbed/internal/guestd"
 )
 
 func TestLinuxRealInspectAndSampleInGuestd(t *testing.T) {
@@ -17,8 +17,8 @@ func TestLinuxRealInspectAndSampleInGuestd(t *testing.T) {
 	client, _ := startTestGuestd(t, workDir)
 	ctx := context.Background()
 
-	st, err := client.StartCommand(ctx, guestd.StartCommandRequest{
-		ID:   "cmd-linux-real",
+	st, err := client.StartCommand(ctx, &guestdv1.StartCommandRequest{
+		Id:   "cmd-linux-real",
 		Argv: []string{"/bin/sh", "-c", "sleep 30"},
 		Dir:  workDir,
 	})
@@ -40,17 +40,17 @@ func TestLinuxRealInspectAndSampleInGuestd(t *testing.T) {
 		t.Fatalf("InspectCommand(real Linux): %v", err)
 	}
 	if len(ins.Procs) == 0 {
-		t.Fatalf("expected live Linux processes in inspect response (mainPID=%d), got 0", st.MainPID)
+		t.Fatalf("expected live Linux processes in inspect response (mainPID=%d), got 0", st.MainPid)
 	}
 	foundMain := false
 	for _, p := range ins.Procs {
-		if int(p.Pid) == st.MainPID {
+		if p.Pid == st.MainPid {
 			foundMain = true
 			break
 		}
 	}
 	if !foundMain {
-		t.Fatalf("expected main PID %d in inspected procs %+v", st.MainPID, ins.Procs)
+		t.Fatalf("expected main PID %d in inspected procs %+v", st.MainPid, ins.Procs)
 	}
 
 	var sample *pb.ProcessSample
