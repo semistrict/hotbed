@@ -99,7 +99,7 @@ func TestABaseBuildIsGuaranteedWhatTheLastOneHeld(t *testing.T) {
 	e.start(t, units, now, "work-1", "a", "build")
 	units.SetAnon("hotbed-work-1", 5<<30)
 	e.step(t.Context())
-	g2, err := e.startFreshen(t.Context(), project, 2, nil, h, "r2")
+	g2, err := e.startFreshen(t.Context(), project, 2, nil, "no_previous_base", h, "r2")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -179,7 +179,7 @@ func TestFreshenAdmitsWhenIdleEvenIfGuaranteeExceedsMemAvailable(t *testing.T) {
 		units.SetAnon("hotbed-work-1", 4<<30)
 		e.step(t.Context())
 
-		g2, err := e.startFreshen(t.Context(), project, 2, nil, h, "r2")
+		g2, err := e.startFreshen(t.Context(), project, 2, nil, "no_previous_base", h, "r2")
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -217,7 +217,7 @@ func TestFreshenAdmitsWhenIdleEvenIfGuaranteeExceedsMemAvailable(t *testing.T) {
 		e.bases[g1.Id] = g1
 		e.mu.Unlock()
 
-		g2, err := e.startFreshen(t.Context(), project, 2, nil, h, "r2")
+		g2, err := e.startFreshen(t.Context(), project, 2, nil, "no_previous_base", h, "r2")
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -242,7 +242,7 @@ func TestFreshenAdmitsWhenIdleEvenIfGuaranteeExceedsMemAvailable(t *testing.T) {
 		e.mu.Unlock()
 
 		sys.SetUsed(sys.Mem.Total * 95 / 100)
-		g2, err := e.startFreshen(t.Context(), project, 2, nil, h, "r2")
+		g2, err := e.startFreshen(t.Context(), project, 2, nil, "no_previous_base", h, "r2")
 		if err != nil {
 			t.Fatal(err)
 		}

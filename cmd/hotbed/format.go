@@ -87,30 +87,50 @@ func writeOutput(w io.Writer, name string, cmd command, data any, opts outputOpt
 		_, err := io.WriteString(w, formatCommandDiagnosticsReport(res))
 		return err
 	}
+	if res, ok := asListFreshensResponse(data); ok {
+		_, err := io.WriteString(w, formatFreshenListReport(res))
+		return err
+	}
+	if res, ok := asGetFreshenResponse(data); ok {
+		_, err := io.WriteString(w, formatFreshenShowReport(res))
+		return err
+	}
 	return apicmd.FormatPlain(w, formatTemplate(name, cmd), data)
 }
 
-func asDiagnosticsResponse(data any) (*pb.GetCommandDiagnosticsResponse, bool) {
-	if res, ok := data.(*pb.GetCommandDiagnosticsResponse); ok {
+func asProtoResponse[T proto.Message](data any, newEmpty func() T) (T, bool) {
+	if res, ok := data.(T); ok {
 		return res, true
 	}
+	var zero T
 	msg, ok := data.(proto.Message)
 	if !ok {
-		return nil, false
+		return zero, false
 	}
-	want := (&pb.GetCommandDiagnosticsResponse{}).ProtoReflect().Descriptor().FullName()
-	if msg.ProtoReflect().Descriptor().FullName() != want {
-		return nil, false
+	res := newEmpty()
+	if msg.ProtoReflect().Descriptor().FullName() != res.ProtoReflect().Descriptor().FullName() {
+		return zero, false
 	}
 	b, err := proto.Marshal(msg)
 	if err != nil {
-		return nil, false
+		return zero, false
 	}
-	res := &pb.GetCommandDiagnosticsResponse{}
 	if err := proto.Unmarshal(b, res); err != nil {
-		return nil, false
+		return zero, false
 	}
 	return res, true
+}
+
+func asDiagnosticsResponse(data any) (*pb.GetCommandDiagnosticsResponse, bool) {
+	return asProtoResponse(data, func() *pb.GetCommandDiagnosticsResponse { return &pb.GetCommandDiagnosticsResponse{} })
+}
+
+func asListFreshensResponse(data any) (*pb.ListFreshensResponse, bool) {
+	return asProtoResponse(data, func() *pb.ListFreshensResponse { return &pb.ListFreshensResponse{} })
+}
+
+func asGetFreshenResponse(data any) (*pb.GetFreshenResponse, bool) {
+	return asProtoResponse(data, func() *pb.GetFreshenResponse { return &pb.GetFreshenResponse{} })
 }
 
 func writeFailure(stdout, stderr io.Writer, name string, e *api.Error, opts outputOpts) {

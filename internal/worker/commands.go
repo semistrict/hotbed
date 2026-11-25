@@ -338,11 +338,39 @@ func (e *Engine) step(ctx context.Context) {
 	for i, c := range active {
 		if st := states[i]; st != nil {
 			if c.isFreshen() {
-				step, _, _, done := c.out.freshenStep()
+				step, steps, stepName, startMs, done, gitSec, gitDone := c.out.freshenLive()
 				e.mu.Lock()
-				if step != c.lastFreshenStep || done != c.lastFreshenDone {
-					c.lastFreshenStep, c.lastFreshenDone = step, done
-					e.notify()
+				if step != c.lastFreshenStep || done != c.lastFreshenDone || gitDone != c.lastFreshenGitDone {
+					c.lastFreshenStep, c.lastFreshenDone, c.lastFreshenGitDone = step, done, gitDone
+					if b, ok := e.bases[c.rec.BaseId]; ok && b.State == building && b.Command == c.cmd().Id {
+						b.Steps = c.out.snapshotLive(b.Steps)
+						if steps > 0 {
+							b.TotalSteps = int32(steps)
+							if done {
+								b.Progress = 1
+								b.CurrentStep = ""
+								b.CurrentStepIndex = 0
+								b.CurrentStepStartedAt = 0
+							} else {
+								b.Progress = float64(step-1) / float64(steps)
+								b.CurrentStep = stepName
+								b.CurrentStepIndex = int32(step)
+								b.CurrentStepStartedAt = startMs
+							}
+						}
+						if gitDone {
+							b.GitSeconds = gitSec
+						}
+						detail := "git done"
+						if done {
+							detail = "steps done"
+						} else if step > 0 {
+							detail = fmt.Sprintf("step %d/%d %s", step, steps, stepName)
+						}
+						e.saveBase(b, change{what: "progress", detail: detail})
+					} else {
+						e.notify()
+					}
 				}
 				e.mu.Unlock()
 			}

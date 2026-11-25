@@ -426,3 +426,38 @@ func (s *stubWorkspaceRuntime) StartCommand(_ context.Context, wsID string, spec
 func (s *stubWorkspaceRuntime) StreamLogs(_ context.Context, _, _ string, _ int64, _ bool, _ io.Writer) (int64, error) {
 	return 0, nil
 }
+
+func TestOutputParsesGitPhaseAndLiveStepSnapshot(t *testing.T) {
+	out := newOutput("")
+	out.add([]byte("::hotbed:: phase-done git 1250000"))
+	out.add([]byte("::hotbed:: step 1/2 deps"))
+	out.add([]byte("::hotbed:: step-done deps 4500000"))
+	out.add([]byte("::hotbed:: step 2/2 build"))
+
+	step, steps, name, startMs, done, gitSec, gitDone := out.freshenLive()
+	if !gitDone || gitSec != 1.25 {
+		t.Fatalf("git = (%v, %v), want (true, 1.25)", gitDone, gitSec)
+	}
+	if step != 2 || steps != 2 || name != "build" || startMs == 0 || done {
+		t.Fatalf("freshenLive = (%d/%d %q start=%d done=%v)", step, steps, name, startMs, done)
+	}
+
+	planned := []*pb.AppliedStep{
+		{Name: "deps", Hash: "aaa", Ran: true},
+		{Name: "build", Hash: "bbb", Ran: true},
+		{Name: "cached", Hash: "ccc", Ran: false, Ok: true, Seconds: 3.0},
+	}
+	live := out.snapshotLive(planned)
+	if len(live) != 3 {
+		t.Fatalf("snapshotLive len = %d, want 3", len(live))
+	}
+	if !live[0].Ok || live[0].Seconds != 4.5 {
+		t.Fatalf("live[0] (deps) = %+v, want ok=true seconds=4.5", live[0])
+	}
+	if live[1].Ok || live[1].Seconds != 0 {
+		t.Fatalf("live[1] (build) = %+v, want ok=false seconds=0 while running", live[1])
+	}
+	if !live[2].Ok || live[2].Seconds != 3.0 {
+		t.Fatalf("live[2] (cached) = %+v, want inherited ok=true seconds=3.0", live[2])
+	}
+}

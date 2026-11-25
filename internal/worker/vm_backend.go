@@ -899,8 +899,15 @@ func (b *VMBackend) EnsureProjectBase(
 		return &out, nil
 	}
 	var prevBase *vmProjectBase
-	if cur != nil && cur.Ref.Cell > 0 && cur.Ref.Version > 0 &&
-		cur.BaseKey == baseKey && cur.ScratchEpoch == p.GetScratchEpoch() {
+	coldReason := ""
+	switch {
+	case cur == nil || cur.Ref.Cell == 0 || cur.Ref.Version == 0:
+		coldReason = "no_previous_base"
+	case cur.ScratchEpoch != p.GetScratchEpoch():
+		coldReason = "scratch_epoch"
+	case cur.BaseKey != baseKey:
+		coldReason = "base_image_changed"
+	default:
 		cp := *cur
 		prevBase = &cp
 	}
@@ -956,33 +963,73 @@ func (b *VMBackend) EnsureProjectBase(
 		return nil, fmt.Errorf("clear stale VM project base cell %s: %w", baseID, err)
 	}
 
+	createdAt := time.Now().UnixMilli()
+	prepStart := time.Now()
+	var prepPhases []*pb.FreshenPhase
+	fromBaseID := ""
+
 	// Prefer incremental fork from the previous warm project base when compatible.
 	var forkRef cladefs.CellRef
 	var err error
 	if prevBase != nil {
+		forkStart := time.Now()
+		forkStartMs := forkStart.UnixMilli()
 		forkRef, err = b.currentStore().ForkVersion(ctx, prevBase.Ref, rel, false)
 		if err != nil {
 			slog.Warn("incremental VM project base fork failed; falling back to cold base",
 				"project", p.GetName(), "prevBase", prevBase.BaseID, "err", err)
 			b.cleanupCell(ctx, rel)
 			prevBase = nil
+			coldReason = "incremental_fork_failed"
+		} else {
+			forkEndMs := time.Now().UnixMilli()
+			fromBaseID = prevBase.BaseID
+			prepPhases = append(prepPhases, &pb.FreshenPhase{
+				Name:      "fork",
+				StartedAt: forkStartMs,
+				EndedAt:   &forkEndMs,
+				Seconds:   time.Since(forkStart).Seconds(),
+				Detail:    "from " + prevBase.BaseID,
+			})
 		}
 	}
 	if prevBase == nil {
+		imgStart := time.Now()
+		imgStartMs := imgStart.UnixMilli()
 		baseImgRef, berr := b.EnsureProvisionedBaseImage(ctx, spec)
 		if berr != nil {
 			return nil, berr
 		}
+		imgEndMs := time.Now().UnixMilli()
+		prepPhases = append(prepPhases, &pb.FreshenPhase{
+			Name:      "base_image",
+			StartedAt: imgStartMs,
+			EndedAt:   &imgEndMs,
+			Seconds:   time.Since(imgStart).Seconds(),
+			Detail:    baseKey,
+		})
+		forkStart := time.Now()
+		forkStartMs := forkStart.UnixMilli()
 		forkRef, err = b.currentStore().ForkVersion(ctx, baseImgRef, rel, false)
 		if err != nil {
 			return nil, fmt.Errorf("fork VM project base %s: %w", baseID, err)
 		}
+		forkEndMs := time.Now().UnixMilli()
+		prepPhases = append(prepPhases, &pb.FreshenPhase{
+			Name:      "fork",
+			StartedAt: forkStartMs,
+			EndedAt:   &forkEndMs,
+			Seconds:   time.Since(forkStart).Seconds(),
+			Detail:    "from " + baseKey,
+		})
 	}
 
 	// Re-open the forked base cell via TakeCell with baseBuildUploadInterval so
 	// cladefsd coalesces segment uploads while the VM clones repos and runs
 	// setup steps; MakeVersionAndSync flushes everything at the end (question 534).
 	cfg := b.configSnapshot()
+	takeStart := time.Now()
+	takeStartMs := takeStart.UnixMilli()
 	if err := b.currentStore().SyncCell(ctx, rel); err != nil {
 		b.cleanupCell(ctx, rel)
 		return nil, fmt.Errorf("sync forked VM project base %s: %w", baseID, err)
@@ -999,6 +1046,14 @@ func (b *VMBackend) EnsureProjectBase(
 		return nil, fmt.Errorf("re-open VM project base %s with upload interval: %w", baseID, err)
 	}
 	forkRef = takenRef
+	takeEndMs := time.Now().UnixMilli()
+	prepPhases = append(prepPhases, &pb.FreshenPhase{
+		Name:      "take_cell",
+		StartedAt: takeStartMs,
+		EndedAt:   &takeEndMs,
+		Seconds:   time.Since(takeStart).Seconds(),
+	})
+	prepSeconds := time.Since(prepStart).Seconds()
 
 	stepsToRun := selectProjectBaseSteps(p, prevBase, heads)
 	script := buildCladefsFreshenScript(p, heads, stepsToRun, false)
@@ -1008,6 +1063,7 @@ func (b *VMBackend) EnsureProjectBase(
 		handle     *managedFreshenHandle
 		freshenRes managedFreshenResult
 	)
+	var finalizeSeconds float64
 	if runFreshen != nil {
 		env := append(slices.Clone(sandboxEnv),
 			"HOME="+spec.Home,
@@ -1017,21 +1073,33 @@ func (b *VMBackend) EnsureProjectBase(
 			vmStarted        atomic.Bool
 			stopMu           sync.Mutex
 			startFailStopErr error
+			bootPhaseMu      sync.Mutex
+			bootStartMs      int64
+			bootEndMs        int64
+			bootSecs         float64
 		)
 		untrack := b.trackBuild(vmID)
 		handle, err = runFreshen(ctx, managedFreshenSpec{
-			Project:    p,
-			BaseID:     baseID,
-			Recipe:     recipe,
-			Arch:       goruntime.GOARCH,
-			Cold:       prevBase == nil,
-			PrevBase:   prevBase,
-			StepsToRun: stepsToRun,
-			Heads:      heads,
-			Script:     script,
-			Env:        env,
-			VMID:       vmID,
+			Project:     p,
+			BaseID:      baseID,
+			Recipe:      recipe,
+			Arch:        goruntime.GOARCH,
+			Runtime:     runtime.KindVM,
+			Cold:        prevBase == nil,
+			ColdReason:  coldReason,
+			FromBaseID:  fromBaseID,
+			CreatedAt:   createdAt,
+			PrepSeconds: prepSeconds,
+			PrepPhases:  prepPhases,
+			PrevBase:    prevBase,
+			StepsToRun:  stepsToRun,
+			Heads:       heads,
+			Script:      script,
+			Env:         env,
+			VMID:        vmID,
 			BeforeStart: func(startCtx context.Context) error {
+				t0 := time.Now()
+				s0 := t0.UnixMilli()
 				if _, err := b.mgr.Start(startCtx, vm.LaunchSpec{
 					ID:            vmID,
 					CellHostPath:  forkRef.HostPath,
@@ -1039,6 +1107,11 @@ func (b *VMBackend) EnsureProjectBase(
 				}); err != nil {
 					return fmt.Errorf("boot project base VM %s: %w", vmID, err)
 				}
+				bootPhaseMu.Lock()
+				bootStartMs = s0
+				bootEndMs = time.Now().UnixMilli()
+				bootSecs = time.Since(t0).Seconds()
+				bootPhaseMu.Unlock()
 				vmStarted.Store(true)
 				return nil
 			},
@@ -1058,18 +1131,35 @@ func (b *VMBackend) EnsureProjectBase(
 		}
 		var waitErr error
 		freshenRes, waitErr = handle.Wait(ctx)
+		bootPhaseMu.Lock()
+		bs0, bs1, bsecs := bootStartMs, bootEndMs, bootSecs
+		bootPhaseMu.Unlock()
+		if bs0 > 0 {
+			handle.RecordPhase("vm_boot", bs0, bs1, bsecs, vmID)
+		}
 		runOK := waitErr == nil && freshenRes.State == succeeded
 		stopMu.Lock()
 		stopErr := startFailStopErr
 		stopMu.Unlock()
 		if vmStarted.Swap(false) {
+			if runOK {
+				handle.SetFinalizing("vm_stop")
+			}
+			stopStart := time.Now()
+			stopStartMs := stopStart.UnixMilli()
 			stopErr = b.stopBuildVM(ctx, vmID, runOK)
+			stopSecs := time.Since(stopStart).Seconds()
+			handle.RecordPhase("vm_stop", stopStartMs, time.Now().UnixMilli(), stopSecs, "")
+			if runOK {
+				finalizeSeconds += stopSecs
+			}
 		}
 		untrack()
 		if waitErr != nil {
 			if stopErr == nil {
 				b.cleanupCell(ctx, rel)
 			}
+			freshenRes.FinalizeSeconds = finalizeSeconds
 			handle.Finish(false, freshenRes, cladefs.CellRef{}, waitErr.Error())
 			return nil, fmt.Errorf("freshen VM project base %s (command %s): %w", baseID, handle.CommandID(), waitErr)
 		}
@@ -1078,10 +1168,12 @@ func (b *VMBackend) EnsureProjectBase(
 				b.cleanupCell(ctx, rel)
 			}
 			detail := cmp.Or(freshenRes.Reason, "freshen "+stateName(freshenRes.State))
+			freshenRes.FinalizeSeconds = finalizeSeconds
 			handle.Finish(false, freshenRes, cladefs.CellRef{}, detail)
 			return nil, fmt.Errorf("freshen VM project base %s failed (command %s): %s", baseID, handle.CommandID(), detail)
 		}
 		if stopErr != nil {
+			freshenRes.FinalizeSeconds = finalizeSeconds
 			handle.Finish(false, freshenRes, cladefs.CellRef{}, fmt.Sprintf("stop project base VM %s: %v", vmID, stopErr))
 			return nil, fmt.Errorf("stop project base VM %s: %w", vmID, stopErr)
 		}
@@ -1128,7 +1220,14 @@ func (b *VMBackend) EnsureProjectBase(
 		}
 	}
 
+	handle.SetFinalizing("r2_sync")
+	syncStart := time.Now()
+	syncStartMs := syncStart.UnixMilli()
 	ver, err := b.currentStore().MakeVersionAndSync(ctx, rel, 2)
+	syncSecs := time.Since(syncStart).Seconds()
+	finalizeSeconds += syncSecs
+	handle.RecordPhase("r2_sync", syncStartMs, time.Now().UnixMilli(), syncSecs, "")
+	freshenRes.FinalizeSeconds = finalizeSeconds
 	if err != nil {
 		b.cleanupCell(ctx, rel)
 		handle.Finish(false, freshenRes, cladefs.CellRef{}, fmt.Sprintf("sync to R2: %v", err))

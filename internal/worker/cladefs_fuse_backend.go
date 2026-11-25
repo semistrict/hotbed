@@ -686,8 +686,15 @@ func (b *CladefsFUSEBackend) EnsureProjectBase(
 		return &out, nil
 	}
 	var prevBase *vmProjectBase
-	if cur != nil && cur.Ref.Cell > 0 && cur.Ref.Version > 0 &&
-		cur.BaseKey == baseKey && cur.ScratchEpoch == p.GetScratchEpoch() {
+	coldReason := ""
+	switch {
+	case cur == nil || cur.Ref.Cell == 0 || cur.Ref.Version == 0:
+		coldReason = "no_previous_base"
+	case cur.ScratchEpoch != p.GetScratchEpoch():
+		coldReason = "scratch_epoch"
+	case cur.BaseKey != baseKey:
+		coldReason = "base_image_changed"
+	default:
 		cp := *cur
 		prevBase = &cp
 	}
@@ -737,27 +744,65 @@ func (b *CladefsFUSEBackend) EnsureProjectBase(
 	if runFreshen == nil {
 		return nil, fmt.Errorf("freshen cladefs FUSE project base %s: no freshen runner configured", baseID)
 	}
+	createdAt := time.Now().UnixMilli()
+	prepStart := time.Now()
+	var prepPhases []*pb.FreshenPhase
+	fromBaseID := ""
 	var tenant, cellID uint64
 	var mntDir, storeDir string
 	var err error
 	if prevBase != nil {
+		forkStart := time.Now()
+		forkStartMs := forkStart.UnixMilli()
 		tenant, cellID, mntDir, storeDir, err = b.forkAndMount(ctx, prevBase.Ref, filepath.Join("fuse-bases", baseID), 0, baseBuildUploadInterval)
 		if err != nil {
 			slog.Warn("incremental cladefs FUSE project base fork failed; falling back to cold base",
 				"project", p.GetName(), "prevBase", prevBase.BaseID, "err", err)
 			prevBase = nil
+			coldReason = "incremental_fork_failed"
+		} else {
+			forkEndMs := time.Now().UnixMilli()
+			fromBaseID = prevBase.BaseID
+			prepPhases = append(prepPhases, &pb.FreshenPhase{
+				Name:      "fork_mount",
+				StartedAt: forkStartMs,
+				EndedAt:   &forkEndMs,
+				Seconds:   time.Since(forkStart).Seconds(),
+				Detail:    "from " + prevBase.BaseID,
+			})
 		}
 	}
 	if prevBase == nil {
+		imgStart := time.Now()
+		imgStartMs := imgStart.UnixMilli()
 		baseImgRef, berr := b.EnsureProvisionedBaseImage(ctx, spec, prov)
 		if berr != nil {
 			return nil, berr
 		}
+		imgEndMs := time.Now().UnixMilli()
+		prepPhases = append(prepPhases, &pb.FreshenPhase{
+			Name:      "base_image",
+			StartedAt: imgStartMs,
+			EndedAt:   &imgEndMs,
+			Seconds:   time.Since(imgStart).Seconds(),
+			Detail:    baseKey,
+		})
+		forkStart := time.Now()
+		forkStartMs := forkStart.UnixMilli()
 		tenant, cellID, mntDir, storeDir, err = b.forkAndMount(ctx, baseImgRef, filepath.Join("fuse-bases", baseID), 0, baseBuildUploadInterval)
 		if err != nil {
 			return nil, fmt.Errorf("fork & mount cladefs FUSE project base %s: %w", baseID, err)
 		}
+		forkEndMs := time.Now().UnixMilli()
+		prepPhases = append(prepPhases, &pb.FreshenPhase{
+			Name:      "fork_mount",
+			StartedAt: forkStartMs,
+			EndedAt:   &forkEndMs,
+			Seconds:   time.Since(forkStart).Seconds(),
+			Detail:    "from " + baseKey,
+		})
 	}
+	prepSeconds := time.Since(prepStart).Seconds()
 	cleanupOnErr := func() {
 		_ = b.detachMount(ctx, tenant, cellID, mntDir, false, true)
 		cctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
@@ -768,17 +813,23 @@ func (b *CladefsFUSEBackend) EnsureProjectBase(
 	stepsToRun := selectProjectBaseSteps(p, prevBase, heads)
 	script := buildCladefsFreshenScript(p, heads, stepsToRun, true)
 	handle, err := runFreshen(ctx, managedFreshenSpec{
-		Project:    p,
-		BaseID:     baseID,
-		Recipe:     recipe,
-		Arch:       goruntime.GOARCH,
-		Cold:       prevBase == nil,
-		PrevBase:   prevBase,
-		StepsToRun: stepsToRun,
-		Heads:      heads,
-		Script:     script,
-		Env:        slices.Clone(sandboxEnv),
-		RootDir:    mntDir,
+		Project:     p,
+		BaseID:      baseID,
+		Recipe:      recipe,
+		Arch:        goruntime.GOARCH,
+		Runtime:     runtime.KindCladefs,
+		Cold:        prevBase == nil,
+		ColdReason:  coldReason,
+		FromBaseID:  fromBaseID,
+		CreatedAt:   createdAt,
+		PrepSeconds: prepSeconds,
+		PrepPhases:  prepPhases,
+		PrevBase:    prevBase,
+		StepsToRun:  stepsToRun,
+		Heads:       heads,
+		Script:      script,
+		Env:         slices.Clone(sandboxEnv),
+		RootDir:     mntDir,
 	})
 	if err != nil {
 		cleanupOnErr()
@@ -797,12 +848,30 @@ func (b *CladefsFUSEBackend) EnsureProjectBase(
 		return nil, fmt.Errorf("freshen cladefs FUSE project base %s failed (command %s): %s", baseID, handle.CommandID(), detail)
 	}
 
+	var finalizeSeconds float64
+	handle.SetFinalizing("mount_detach")
+	detachStart := time.Now()
+	detachStartMs := detachStart.UnixMilli()
 	if err := b.detachMount(ctx, tenant, cellID, mntDir, true, false); err != nil {
+		detachSecs := time.Since(detachStart).Seconds()
+		handle.RecordPhase("mount_detach", detachStartMs, time.Now().UnixMilli(), detachSecs, "")
+		freshenRes.FinalizeSeconds = detachSecs
 		cleanupOnErr()
 		handle.Finish(false, freshenRes, cladefs.CellRef{}, fmt.Sprintf("detach mount: %v", err))
 		return nil, fmt.Errorf("detach cladefs FUSE project base %s: %w", baseID, err)
 	}
+	detachSecs := time.Since(detachStart).Seconds()
+	finalizeSeconds += detachSecs
+	handle.RecordPhase("mount_detach", detachStartMs, time.Now().UnixMilli(), detachSecs, "")
+
+	handle.SetFinalizing("r2_sync")
+	syncStart := time.Now()
+	syncStartMs := syncStart.UnixMilli()
 	ver, err := b.currentStore().MakeVersionAndSyncAbs(ctx, storeDir, 2)
+	syncSecs := time.Since(syncStart).Seconds()
+	finalizeSeconds += syncSecs
+	handle.RecordPhase("r2_sync", syncStartMs, time.Now().UnixMilli(), syncSecs, "")
+	freshenRes.FinalizeSeconds = finalizeSeconds
 	if err != nil {
 		cctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		_ = b.currentStore().DeleteCellAbs(cctx, storeDir)

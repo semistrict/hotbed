@@ -436,7 +436,7 @@ func TestStartFreshenWakesStepSoon(t *testing.T) {
 	}
 
 	p := &pb.HostedProject{Name: "app"}
-	if _, err := eng.startFreshen(t.Context(), p, 1, nil, heads{}, "r1"); err != nil {
+	if _, err := eng.startFreshen(t.Context(), p, 1, nil, "no_previous_base", heads{}, "r1"); err != nil {
 		t.Fatal(err)
 	}
 
