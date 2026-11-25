@@ -98,3 +98,83 @@ func TestCPUPressureHoldsNewWork(t *testing.T) {
 		t.Error("50% CPU pressure, never at 60% since resuming, holds new work")
 	}
 }
+
+// cladefsd reporting host memory full (or evicting at/near its floor) holds
+// new work even when the work slice itself reports 0% memory PSI — preventing
+// new VMs from piling onto a node whose DAX cache is already starved.
+func TestCladefsMemoryStarvationHoldsNewWork(t *testing.T) {
+	const GiB = 1 << 30
+	now := time.Unix(1795300000, 0)
+	e := limited(t, &now)
+
+	// 1. cladefsd host memory full -> holds new work despite 0% slice PSI.
+	e.mu.Lock()
+	e.objectStore = &pb.ObjectStoreStats{
+		ExtentCacheBytes:      4 * GiB,
+		ExtentCacheLimitBytes: 4 * GiB,
+		ExtentCacheFloorBytes: 4 * GiB,
+		MemoryPressure:        true,
+		MemoryFull:            true,
+	}
+	e.mu.Unlock()
+	e.Sample()
+
+	if _, err := e.Exec(t.Context(), &pb.RunCommandRequest{Id: "c-cladefs", WorkspaceId: "w", Args: []string{"sleep", "300"}}); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { e.cfg.Units.Stop(context.WithoutCancel(t.Context()), "hotbed-c-cladefs") })
+	e.admit(t.Context())
+
+	c := e.commands["c-cladefs"].cmd()
+	if c.State != queued || !strings.Contains(c.Reason, "cladefsd host memory full") {
+		t.Fatalf("c-cladefs while cladefsd full = %v: %q, want queued for cladefsd host memory full", c.State, c.Reason)
+	}
+	a := e.Heartbeat("c").Admission
+	sig := signal(a, "cladefs-memory")
+	if !a.Holding || sig == nil || !sig.Holding || !sig.Floor || sig.Waiting != 1 || sig.Limit != float64(4*GiB) || sig.Resume != float64(5*GiB) {
+		t.Fatalf("admission while cladefsd full = %+v (signal=%+v)", a, sig)
+	}
+	if holds := feedOf(t, e, "hold"); len(holds) != 1 || !strings.Contains(holds[0], "cladefsd host memory full") {
+		t.Errorf("hold events = %q, want cladefsd full hold", holds)
+	}
+
+	// 2. No longer full, but still evicting within the 25% hysteresis band near floor -> still holds.
+	now = now.Add(10 * time.Second)
+	e.mu.Lock()
+	e.objectStore = &pb.ObjectStoreStats{
+		ExtentCacheBytes:      4 * GiB,
+		ExtentCacheLimitBytes: 4*GiB + 512<<20,
+		ExtentCacheFloorBytes: 4 * GiB,
+		MemoryPressure:        true,
+		MemoryFull:            false,
+	}
+	e.mu.Unlock()
+	e.Sample()
+	e.admit(t.Context())
+	if s := e.state("c-cladefs"); s != queued {
+		t.Fatalf("c-cladefs while pressured near floor = %v, want queued", s)
+	}
+
+	// 3. Routine cold-cache trimming well above the floor -> NOT starved; resumes and admits!
+	now = now.Add(10 * time.Second)
+	e.mu.Lock()
+	e.objectStore = &pb.ObjectStoreStats{
+		ExtentCacheBytes:      6 * GiB,
+		ExtentCacheLimitBytes: 6 * GiB,
+		ExtentCacheFloorBytes: 4 * GiB,
+		MemoryPressure:        true,
+		MemoryFull:            false,
+	}
+	e.mu.Unlock()
+	e.Sample()
+	e.admit(t.Context())
+	if s := e.state("c-cladefs"); s != running {
+		t.Fatalf("c-cladefs with warm cache above floor = %v, want running", s)
+	}
+	if unholds := feedOf(t, e, "unhold"); len(unholds) != 1 || !strings.Contains(unholds[0], "cladefs-memory") {
+		t.Errorf("unhold events = %q, want cladefs-memory unhold", unholds)
+	}
+	if a := e.Heartbeat("c").Admission; a.Holding || signal(a, "cladefs-memory").Holding {
+		t.Errorf("admission after cladefsd recovery = %+v", a)
+	}
+}

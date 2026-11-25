@@ -250,9 +250,33 @@ func (e *Engine) weighMemPressure(p float64) bool {
 	return e.memPressureHolding
 }
 
+// cladefsMemoryStarved reports whether cladefsd's memory governor says the
+// host is full (cache squeezed to its floor, refusing new cells) or actively
+// evicting at/near its floor (within cladefsd's 25% hysteresis band).
+// Call with e.mu held.
+func (e *Engine) cladefsMemoryStarved() (bool, string) {
+	os := e.objectStore
+	if os == nil {
+		return false, ""
+	}
+	floor := os.GetExtentCacheFloorBytes()
+	limit := os.GetExtentCacheLimitBytes()
+	used := os.GetExtentCacheBytes()
+	if os.GetMemoryFull() {
+		if floor > 0 {
+			return true, fmt.Sprintf("cladefsd host memory full (DAX cache %s at %s floor); new work waits for cache headroom", gib(int64(used)), gib(int64(floor)))
+		}
+		return true, "cladefsd host memory full (DAX cache at floor); new work waits for cache headroom"
+	}
+	if os.GetMemoryPressure() && floor > 0 && limit > 0 && limit <= floor+floor/4 {
+		return true, fmt.Sprintf("cladefsd memory pressure near floor (DAX cache limit %s, floor %s); new work waits for cache headroom", gib(int64(limit)), gib(int64(floor)))
+	}
+	return false, ""
+}
+
 // nodeHold is what holds every new command on the node now, whatever it
-// would need, or "": host starvation, saturated CPUs, memory pressure or a
-// full disk. Call with e.mu held.
+// would need, or "": host starvation, cladefsd memory starvation, saturated
+// CPUs, memory pressure or a full disk. Call with e.mu held.
 func (e *Engine) nodeHold(now time.Time) (kind, reason string) {
 	hu := e.freshHostUsage(now)
 	if memHeld, memReason := hostMemoryStarved(hu); memHeld {
@@ -260,6 +284,9 @@ func (e *Engine) nodeHold(now time.Time) (kind, reason string) {
 	}
 	if cpuHeld, _, _, _, cpuReason, _ := e.hostCPUStatus(hu); cpuHeld {
 		return "host-cpu", cpuReason
+	}
+	if cladefsHeld, cladefsReason := e.cladefsMemoryStarved(); cladefsHeld {
+		return "cladefs-memory", cladefsReason
 	}
 	switch u := e.usage; {
 	case e.cpu.holding:
@@ -356,6 +383,25 @@ func (e *Engine) admission() *pb.Admission {
 	}
 	if e.diskBytes == 0 {
 		a.Signals[3].Detail = "not measured yet"
+	}
+	if os := e.objectStore; os != nil && (os.GetMemoryFull() || os.GetExtentCacheFloorBytes() > 0) {
+		cladefsHeld, _ := e.cladefsMemoryStarved()
+		val := float64(os.GetExtentCacheLimitBytes())
+		if val == 0 {
+			val = float64(os.GetExtentCacheBytes())
+		}
+		floor := os.GetExtentCacheFloorBytes()
+		resume := floor + floor/4
+		detail := fmt.Sprintf("DAX cache holding %s", gib(int64(os.GetExtentCacheBytes())))
+		if os.GetMemoryFull() {
+			detail += " (host memory full)"
+		} else if os.GetMemoryPressure() {
+			detail += " (evicting)"
+		}
+		a.Signals = append(a.Signals, &pb.AdmissionSignal{
+			Name: "cladefs-memory", Value: val, Limit: float64(floor), Resume: float64(resume), Unit: "bytes",
+			Floor: true, Holding: cladefsHeld, Waiting: waiting["cladefs-memory"], Detail: detail,
+		})
 	}
 	if hu != nil {
 		cpuHeld, cpuVal, cpuLim, cpuResume, _, cpuDetail := e.hostCPUStatus(hu)

@@ -407,6 +407,7 @@ func applyCladefsStats(out *pb.ObjectStoreStats, stats *cladefsdv1.GetStatsRespo
 	g := stats.GetGauges()
 	out.ExtentCacheBytes = g["memory_bytes"]
 	out.ExtentCacheCapacityBytes = g["memory_capacity_bytes"]
+	out.ExtentCacheLimitBytes = g["memory_limit_bytes"]
 	out.ExtentCachePinnedEntries = g["extent_cache_pinned_entries"]
 	out.ExtentCacheIdleEntries = g["extent_cache_idle_entries"]
 	out.WindowMappedBytes = g["window_mapped_bytes"]
@@ -534,6 +535,17 @@ func applyCladefsPrometheusMetrics(out *pb.ObjectStoreStats, text string) bool {
 			if val > 0 {
 				out.MemoryPressure = true
 			}
+			matched = true
+		case "cladefsd_memory_full":
+			if val > 0 {
+				out.MemoryFull = true
+			}
+			matched = true
+		case "cladefsd_memory_limit_bytes":
+			out.ExtentCacheLimitBytes = val
+			matched = true
+		case "cladefsd_memory_floor_bytes":
+			out.ExtentCacheFloorBytes = val
 			matched = true
 		}
 	}

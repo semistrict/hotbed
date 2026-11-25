@@ -763,17 +763,39 @@ const SwapMaxUnbounded int64 = 0
 // full Headroom at High and Headroom/2 hard reserve at Max.
 type Backstop struct {
 	Headroom int64
-	High     int64
-	Max      int64
+	// Reserve is extra host RAM held outside the work slice at both High and
+	// Max for shared storage daemons (e.g. cladefsd's DAX extent cache) so VM
+	// workloads throttle before starving the daemon's cache to its floor.
+	Reserve int64
+	High    int64
+	Max     int64
 	// SwapMax caps MemorySwapMax on the work slice when > 0; SwapMaxUnbounded
 	// (0) emits MemorySwapMax=infinity so swap is unbounded and any stale
 	// finite runtime cap on the slice is cleared.
 	SwapMax int64
 }
 
+// CladefsReserve returns the host RAM reserved outside the work slice for
+// cladefsd's shared DAX extent cache: at least a sixth of total RAM, or
+// daemonFloor when cladefsd's configured governor floor is larger.
+func CladefsReserve(total, daemonFloor int64) int64 {
+	if total <= 0 {
+		return 0
+	}
+	return max(total/6, daemonFloor)
+}
+
 // BackstopFor is the backstop of a host with total bytes of RAM and swap
-// backing swap.
+// backing swap, with no extra daemon reserve.
 func BackstopFor(total int64, swap Swap) Backstop {
+	return BackstopForWithReserve(total, swap, 0)
+}
+
+// BackstopForWithReserve is the backstop of a host with total bytes of RAM,
+// swap backing swap, and reserve bytes held outside the work slice (e.g. for
+// cladefsd's shared DAX extent cache). Reserve is clamped so Headroom+Reserve
+// never exceeds half of total RAM.
+func BackstopForWithReserve(total int64, swap Swap, reserve int64) Backstop {
 	if total <= 0 {
 		return Backstop{}
 	}
@@ -781,20 +803,24 @@ func BackstopFor(total int64, swap Swap) Backstop {
 	if room > total/2 {
 		room = total / 2
 	}
-	high := total - room
-	maxMem := total - room/2
+	res := max(reserve, 0)
+	if maxRes := total/2 - room; res > maxRes {
+		res = maxRes
+	}
+	high := total - room - res
+	maxMem := total - room/2 - res
 
 	zram := max(swap.Zram, 0)
 	disk := max(swap.Disk, 0)
 	if zram == 0 {
-		return Backstop{Headroom: room, High: high, Max: maxMem, SwapMax: SwapMaxUnbounded}
+		return Backstop{Headroom: room, Reserve: res, High: high, Max: maxMem, SwapMax: SwapMaxUnbounded}
 	}
 
 	// Bound zram usage to one headroom slice (and at most a quarter of
-	// total-room on small hosts so High remains well above zero). Deduct
-	// the full zramBound (1:1 incompressible worst case) from resident High
-	// and Max so even incompressible pages swapped into zram leave the host
-	// its full Headroom at High and Headroom/2 hard reserve at Max.
+	// total-room-reserve on small hosts so High remains well above zero).
+	// Deduct the full zramBound (1:1 incompressible worst case) from resident
+	// High and Max so even incompressible pages swapped into zram leave the
+	// host its full Headroom+Reserve at High and Headroom/2+Reserve at Max.
 	swapBudget := min(room, high/4)
 	zramBound := min(zram, swapBudget)
 
@@ -812,6 +838,7 @@ func BackstopFor(total int64, swap Swap) Backstop {
 
 	return Backstop{
 		Headroom: room,
+		Reserve:  res,
 		High:     high - zramBound,
 		Max:      maxMem - zramBound,
 		SwapMax:  swapMax,

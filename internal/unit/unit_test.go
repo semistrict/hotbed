@@ -684,3 +684,105 @@ func TestParseMemoryLimitFiles(t *testing.T) {
 		t.Fatalf("parseMemoryLimitFiles = %+v, want %+v", got, want)
 	}
 }
+
+func TestBackstopForWithReserve(t *testing.T) {
+	const (
+		MiB = 1 << 20
+		GiB = 1 << 30
+	)
+	for _, c := range []struct {
+		name    string
+		total   int64
+		swap    Swap
+		reserve int64
+	}{
+		{
+			name:    "ubu1-like 28 GiB with default cladefs reserve (1/6)",
+			total:   28 * GiB,
+			swap:    Swap{Zram: 14 * GiB, Disk: 8 * GiB},
+			reserve: CladefsReserve(28*GiB, 0),
+		},
+		{
+			name:    "ubu1-like 28 GiB with larger daemon floor (6 GiB)",
+			total:   28 * GiB,
+			swap:    Swap{Zram: 14 * GiB, Disk: 8 * GiB},
+			reserve: CladefsReserve(28*GiB, 6*GiB),
+		},
+		{
+			name:    "asahimbp 17 GiB zram with cladefs reserve",
+			total:   17 * GiB,
+			swap:    Swap{Zram: 8 * GiB},
+			reserve: CladefsReserve(17*GiB, 0),
+		},
+		{
+			name:    "vm1 24 GiB disk-only swap with cladefs reserve",
+			total:   24 * GiB,
+			swap:    Swap{Disk: 24 * GiB},
+			reserve: CladefsReserve(24*GiB, 0),
+		},
+		{
+			name:    "small 4 GiB VM clamps reserve cleanly",
+			total:   4 * GiB,
+			swap:    Swap{Zram: 4 * GiB},
+			reserve: CladefsReserve(4*GiB, 0),
+		},
+		{
+			name:    "huge misconfigured daemon floor clamped to half RAM minus headroom",
+			total:   28 * GiB,
+			swap:    Swap{Zram: 14 * GiB, Disk: 8 * GiB},
+			reserve: CladefsReserve(28*GiB, 24*GiB),
+		},
+		{
+			name:    "tiny 2 GiB VM leaves headroom intact and High positive",
+			total:   2 * GiB,
+			swap:    Swap{Zram: 2 * GiB},
+			reserve: CladefsReserve(2*GiB, 1*GiB),
+		},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			got := BackstopForWithReserve(c.total, c.swap, c.reserve)
+			if !(0 < got.High && got.High < got.Max && got.Max < c.total) {
+				t.Fatalf("broken ordering: %+v for total=%d", got, c.total)
+			}
+			if got.Headroom+got.Reserve > c.total/2 {
+				t.Fatalf("Headroom+Reserve = %d exceeds total/2 (%d)", got.Headroom+got.Reserve, c.total/2)
+			}
+			zramBound := int64(0)
+			if c.swap.Zram > 0 {
+				zramBound = c.swap.Zram
+				if got.SwapMax > 0 {
+					zramBound = min(zramBound, got.SwapMax)
+				}
+			}
+			if freeAtHigh := c.total - (got.High + zramBound); freeAtHigh < got.Headroom+got.Reserve {
+				t.Errorf("free at High + zram = %d, want >= Headroom+Reserve (%d)", freeAtHigh, got.Headroom+got.Reserve)
+			}
+			if freeAtMax := c.total - (got.Max + zramBound); freeAtMax < got.Headroom/2+got.Reserve {
+				t.Errorf("free at Max + zram = %d, want >= Headroom/2+Reserve (%d)", freeAtMax, got.Headroom/2+got.Reserve)
+			}
+		})
+	}
+
+	// Concrete check for ubu1-like 28 GiB host: High drops to ~16.3 GiB so VMs
+	// hit memory.high before starving cladefsd's ~4.67 GiB DAX cache.
+	ubu := BackstopForWithReserve(28*GiB, Swap{Zram: 14 * GiB, Disk: 8 * GiB}, CladefsReserve(28*GiB, 0))
+	if ubu.High > 17*GiB || ubu.High < 15*GiB {
+		t.Fatalf("ubu1 High = %d MiB, want within [15 GiB, 17 GiB]", ubu.High/MiB)
+	}
+	if ubu.Reserve != (28*GiB)/6 {
+		t.Fatalf("ubu1 Reserve = %d, want %d", ubu.Reserve, (28*GiB)/6)
+	}
+	// Higher daemon floor (6 GiB) overrides the 1/6 default.
+	ubu6 := BackstopForWithReserve(28*GiB, Swap{Zram: 14 * GiB, Disk: 8 * GiB}, CladefsReserve(28*GiB, 6*GiB))
+	if ubu6.Reserve != 6*GiB {
+		t.Fatalf("ubu6 Reserve = %d, want 6 GiB", ubu6.Reserve)
+	}
+	if ubu6.High >= ubu.High {
+		t.Fatalf("larger daemon floor should tighten High: got %d >= %d", ubu6.High, ubu.High)
+	}
+	// Static desktop clamp on asahimbp (MemoryMax=10G) still wins cleanly.
+	asahi := BackstopForWithReserve(17*GiB, Swap{Zram: 8 * GiB}, CladefsReserve(17*GiB, 0)).Clamp(MemoryLimits{Max: 10 * GiB})
+	if asahi.Max != 10*GiB || asahi.High >= 10*GiB || asahi.High < 8*GiB {
+		t.Fatalf("asahimbp clamped = %+v, want Max=10G High in [8G,10G)", asahi)
+	}
+}

@@ -2575,8 +2575,13 @@ type ObjectStoreStats struct {
 	UploadPendingBytes uint64 `protobuf:"varint,42,opt,name=upload_pending_bytes,json=uploadPendingBytes,proto3" json:"upload_pending_bytes,omitempty"`
 	// Daemon memory governor pressure state.
 	MemoryPressure bool `protobuf:"varint,43,opt,name=memory_pressure,json=memoryPressure,proto3" json:"memory_pressure,omitempty"`
-	unknownFields  protoimpl.UnknownFields
-	sizeCache      protoimpl.SizeCache
+	// Daemon memory governor host-full state (refusing new cells, cache at floor),
+	// current governor cache limit, and configured floor.
+	MemoryFull            bool   `protobuf:"varint,44,opt,name=memory_full,json=memoryFull,proto3" json:"memory_full,omitempty"`
+	ExtentCacheLimitBytes uint64 `protobuf:"varint,45,opt,name=extent_cache_limit_bytes,json=extentCacheLimitBytes,proto3" json:"extent_cache_limit_bytes,omitempty"`
+	ExtentCacheFloorBytes uint64 `protobuf:"varint,46,opt,name=extent_cache_floor_bytes,json=extentCacheFloorBytes,proto3" json:"extent_cache_floor_bytes,omitempty"`
+	unknownFields         protoimpl.UnknownFields
+	sizeCache             protoimpl.SizeCache
 }
 
 func (x *ObjectStoreStats) Reset() {
@@ -2908,6 +2913,27 @@ func (x *ObjectStoreStats) GetMemoryPressure() bool {
 		return x.MemoryPressure
 	}
 	return false
+}
+
+func (x *ObjectStoreStats) GetMemoryFull() bool {
+	if x != nil {
+		return x.MemoryFull
+	}
+	return false
+}
+
+func (x *ObjectStoreStats) GetExtentCacheLimitBytes() uint64 {
+	if x != nil {
+		return x.ExtentCacheLimitBytes
+	}
+	return 0
+}
+
+func (x *ObjectStoreStats) GetExtentCacheFloorBytes() uint64 {
+	if x != nil {
+		return x.ExtentCacheFloorBytes
+	}
+	return 0
 }
 
 // Host-side view of a VM worker, reported by its host supervisor (macOS).
@@ -29189,7 +29215,7 @@ const file_hotbed_v1_hotbed_proto_rawDesc = "" +
 	"\rstorage_error\x18\x13 \x01(\tR\fstorageError\x12>\n" +
 	"\fobject_store\x18\x14 \x01(\v2\x1b.hotbed.v1.ObjectStoreStatsR\vobjectStoreB\f\n" +
 	"\n" +
-	"_last_seen\"\xe3\x0f\n" +
+	"_last_seen\"\xf6\x10\n" +
 	"\x10ObjectStoreStats\x12%\n" +
 	"\x0euploaded_bytes\x18\x01 \x01(\x04R\ruploadedBytes\x126\n" +
 	"\x17uploaded_segments_bytes\x18\x02 \x01(\x04R\x15uploadedSegmentsBytes\x124\n" +
@@ -29237,7 +29263,11 @@ const file_hotbed_v1_hotbed_proto_rawDesc = "" +
 	"\x10peer_parts_given\x18( \x01(\x04R\x0epeerPartsGiven\x12*\n" +
 	"\x11peer_parts_served\x18) \x01(\x04R\x0fpeerPartsServed\x120\n" +
 	"\x14upload_pending_bytes\x18* \x01(\x04R\x12uploadPendingBytes\x12'\n" +
-	"\x0fmemory_pressure\x18+ \x01(\bR\x0ememoryPressure\"\x89\x02\n" +
+	"\x0fmemory_pressure\x18+ \x01(\bR\x0ememoryPressure\x12\x1f\n" +
+	"\vmemory_full\x18, \x01(\bR\n" +
+	"memoryFull\x127\n" +
+	"\x18extent_cache_limit_bytes\x18- \x01(\x04R\x15extentCacheLimitBytes\x127\n" +
+	"\x18extent_cache_floor_bytes\x18. \x01(\x04R\x15extentCacheFloorBytes\"\x89\x02\n" +
 	"\tHostUsage\x12\x1e\n" +
 	"\vvm_cpu_busy\x18\x01 \x01(\x01R\tvmCpuBusy\x12\"\n" +
 	"\rhost_cpu_busy\x18\x02 \x01(\x01R\vhostCpuBusy\x12 \n" +

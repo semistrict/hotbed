@@ -648,6 +648,11 @@ message ObjectStoreStats {
   uint64 upload_pending_bytes = 42;
   // Daemon memory governor pressure state.
   bool memory_pressure = 43;
+  // Daemon memory governor host-full state (refusing new cells, cache at floor),
+  // current governor cache limit, and configured floor.
+  bool memory_full = 44;
+  uint64 extent_cache_limit_bytes = 45;
+  uint64 extent_cache_floor_bytes = 46;
 }
 
 // Host-side view of a VM worker, reported by its host supervisor (macOS).

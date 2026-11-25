@@ -527,6 +527,9 @@ func TestObjectStoreStatsFromCounters(t *testing.T) {
 		`cladefsd_upload_pending_bytes{cell="0/abc"} 1000`,
 		`cladefsd_upload_pending_bytes{cell="0/def"} 2500`,
 		"cladefsd_memory_pressure 1",
+		"cladefsd_memory_full 1",
+		"cladefsd_memory_limit_bytes 464519168",
+		"cladefsd_memory_floor_bytes 464519168",
 	}, "\n")
 	if ok := applyCladefsPrometheusMetrics(got, prom); !ok {
 		t.Fatal("applyCladefsPrometheusMetrics returned false")
@@ -540,8 +543,8 @@ func TestObjectStoreStatsFromCounters(t *testing.T) {
 	if got.MountCellsAttached != 3 || got.PageCacheBytes != 268435456 || got.PageCacheDirtyBytes != 8388608 || got.PageCacheLimitBytes != 536870912 {
 		t.Fatalf("unexpected mount/page cache stats: %+v", got)
 	}
-	if got.PeerPartsGiven != 42 || got.PeerPartsServed != 19 || got.UploadPendingBytes != 3500 || !got.MemoryPressure {
-		t.Fatalf("unexpected peer/upload/memory pressure stats: %+v", got)
+	if got.PeerPartsGiven != 42 || got.PeerPartsServed != 19 || got.UploadPendingBytes != 3500 || !got.MemoryPressure || !got.MemoryFull || got.ExtentCacheLimitBytes != 464519168 || got.ExtentCacheFloorBytes != 464519168 {
+		t.Fatalf("unexpected peer/upload/memory governor stats: %+v", got)
 	}
 }
 

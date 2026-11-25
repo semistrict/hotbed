@@ -420,7 +420,18 @@ func Run(ctx context.Context, dir string, cfg statedir.WorkerConfig, tn Tailnet,
 	if err != nil {
 		return fmt.Errorf("read the host's swap: %w", err)
 	}
-	backstop := unit.BackstopFor(host.Total, unit.Swap{Zram: swaps.ZramBytes, Disk: swaps.DiskBytes})
+	var cladefsFloor int64
+	if ecfg.VM != nil {
+		if osStats := ecfg.VM.SampleObjectStore(ctx); osStats != nil {
+			cladefsFloor = int64(osStats.GetExtentCacheFloorBytes())
+		}
+	} else if ecfg.CladefsFUSE != nil {
+		if osStats := ecfg.CladefsFUSE.SampleObjectStore(ctx); osStats != nil {
+			cladefsFloor = int64(osStats.GetExtentCacheFloorBytes())
+		}
+	}
+	cladefsReserve := unit.CladefsReserve(host.Total, cladefsFloor)
+	backstop := unit.BackstopForWithReserve(host.Total, unit.Swap{Zram: swaps.ZramBytes, Disk: swaps.DiskBytes}, cladefsReserve)
 	if static, err := unit.StaticMemoryLimits(ctx, workSlice, host.Total); err != nil {
 		slog.Warn("read static work slice memory limits", "slice", workSlice, "err", err)
 	} else {
@@ -435,6 +446,8 @@ func Run(ctx context.Context, dir string, cfg statedir.WorkerConfig, tn Tailnet,
 		"max", backstop.Max,
 		"swapMax", backstop.SwapMax,
 		"headroom", backstop.Headroom,
+		"reserve", backstop.Reserve,
+		"cladefsFloor", cladefsFloor,
 		"zram", swaps.ZramBytes,
 		"diskSwap", swaps.DiskBytes,
 	)

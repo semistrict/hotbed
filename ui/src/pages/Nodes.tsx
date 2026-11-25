@@ -303,7 +303,7 @@ function NodeCladefsRows({ os }: { os: ObjectStoreStats }) {
       ) : (
         <Row
           label="extent cache"
-          value={`${bytes(extUsed)}${extCap > 0 ? ` / ${bytes(extCap)}` : ""}${os.memoryPressure ? " · pressure" : ""}`}
+          value={`${bytes(extUsed)}${extCap > 0 ? ` / ${bytes(extCap)}` : ""}${os.memoryFull ? " · full" : os.memoryPressure ? " · pressure" : ""}`}
         >
           <Meter value={extCap > 0 ? extUsed / extCap : 0} warn={0.9} danger={0.98} />
         </Row>

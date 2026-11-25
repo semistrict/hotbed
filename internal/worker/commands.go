@@ -1203,6 +1203,9 @@ func (e *Engine) roomFor(c *command, mem sysinfo.Mem, hasMem bool) (kind, reason
 	if cpuHeld, _, _, _, cpuReason, _ := e.hostCPUStatus(hu); cpuHeld {
 		return "host-cpu", "waiting: " + cpuReason
 	}
+	if cladefsHeld, cladefsReason := e.cladefsMemoryStarved(); cladefsHeld {
+		return "cladefs-memory", "waiting: " + cladefsReason
+	}
 	if e.diskLow() {
 		return "disk", fmt.Sprintf("waiting for disk: %s free", gib(e.disk.FreeBytes))
 	}
