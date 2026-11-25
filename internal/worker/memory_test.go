@@ -563,3 +563,146 @@ func TestCommandAndShellMemoryBudgetEnv(t *testing.T) {
 		t.Fatalf("VM shell HOTBED_MEMORY_BYTES = %q, want %q", got, want)
 	}
 }
+
+// When running or parked reservations already equal admitLimit (room == 0),
+// such as a base freshen whose guarantee was capped at admitLimit, a new
+// command with no explicit --mem-low (want == 0) must NOT sneak onto the node:
+// same-priority work waits, higher-priority work preempts (parks) the
+// lower-priority holder instead of piling on top of it, preemption does not
+// disturb lower-priority work when non-reclaimable reservations already fill
+// admitLimit, and a parked want == 0 command cannot thaw alongside a full-node
+// reservation.
+func TestFullAdmitLimitReservationBlocksZeroReservationWork(t *testing.T) {
+	t.Run("same-priority want==0 waits behind reservation == admitLimit", func(t *testing.T) {
+		e, units, _, now := parkEngine(t)
+		project := &pb.HostedProject{Name: "cladefs", Repos: []*pb.Repo{{Id: "cladefs", Url: "https://example.com/cladefs.git"}}}
+		h := heads{"cladefs": strings.Repeat("d", 40)}
+
+		// Previous freshen peaked past admitLimit (13.76 GiB on 16 GiB node),
+		// so the next freshen reserves exactly admitLimit (room == 0).
+		g1 := &pb.Base{Id: baseSnapshot("cladefs", 1), Project: "cladefs", NodeId: "n", Generation: 1, State: warm, Command: "f-cladefs-g1", PeakMemoryBytes: 18 << 30}
+		e.mu.Lock()
+		e.bases[g1.Id] = g1
+		limit := e.admitLimit()
+		e.mu.Unlock()
+
+		g2, err := e.startFreshen(t.Context(), project, 2, nil, "no_previous_base", h, "r2")
+		if err != nil {
+			t.Fatal(err)
+		}
+		f := e.commands[g2.Command]
+		f.cmd().Args = []string{"sleep", "60"}
+		t.Cleanup(func() { units.Stop(context.WithoutCancel(t.Context()), "hotbed-"+g2.Command) })
+		e.step(t.Context())
+		if f.cmd().State != running {
+			t.Fatalf("freshen state = %v (%q), want running", f.cmd().State, f.cmd().Reason)
+		}
+		if got := f.cmd().Limits.MemoryLowBytes; got != limit {
+			t.Fatalf("freshen MemoryLowBytes = %s, want admitLimit %s", gib(got), gib(limit))
+		}
+
+		// Queue a same-priority command with want == 0 (no --mem-low).
+		*now = now.Add(time.Second)
+		if _, err := e.Exec(t.Context(), &pb.RunCommandRequest{Id: "work-zero", WorkspaceId: "a", Args: []string{"sleep", "60"}}); err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { units.Stop(context.WithoutCancel(t.Context()), "hotbed-work-zero") })
+		e.step(t.Context())
+		w := e.commands["work-zero"].cmd()
+		wantReason := "waiting for memory: running and parked commands hold or are guaranteed " + gib(limit) + " (limit " + gib(limit) + ")"
+		if w.State != queued || w.Reason != wantReason {
+			t.Fatalf("work-zero beside full-admitLimit freshen = (%v, %q), want (queued, %q)", w.State, w.Reason, wantReason)
+		}
+
+		// Once the freshen ends, work-zero admits cleanly.
+		if _, err := e.Stop(t.Context(), g2.Command, "done"); err != nil {
+			t.Fatal(err)
+		}
+		e.step(t.Context())
+		if w.State != running {
+			t.Fatalf("work-zero after freshen ended = %v (%q), want running", w.State, w.Reason)
+		}
+	})
+
+	t.Run("higher-priority want==0 preempts lower-priority reservation == admitLimit", func(t *testing.T) {
+		e, units, sys, now := parkEngine(t)
+		sys.SetUsed(0)
+		e.mu.Lock()
+		limit := e.admitLimit()
+		e.mu.Unlock()
+
+		// Low-priority command reserves exactly admitLimit (room == 0).
+		if _, err := e.Exec(t.Context(), &pb.RunCommandRequest{
+			Id: "low-full", WorkspaceId: "a", Args: []string{"sleep", "60"},
+			Limits: &pb.CommandLimits{Priority: 0, MemoryLowBytes: limit},
+		}); err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { units.Stop(context.WithoutCancel(t.Context()), "hotbed-low-full") })
+		e.step(t.Context())
+		low := e.commands["low-full"]
+		if low.cmd().State != running {
+			t.Fatalf("low-full state = %v (%q), want running", low.cmd().State, low.cmd().Reason)
+		}
+
+		// Urgent command with want == 0 must park low-full rather than piling
+		// onto the node concurrently with it.
+		*now = now.Add(time.Second)
+		if _, err := e.Exec(t.Context(), &pb.RunCommandRequest{
+			Id: "urgent-zero", WorkspaceId: "b", Args: []string{"sleep", "60"},
+			Limits: &pb.CommandLimits{Priority: 20},
+		}); err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { units.Stop(context.WithoutCancel(t.Context()), "hotbed-urgent-zero") })
+		e.step(t.Context())
+		if low.cmd().State != parked {
+			t.Fatalf("low-full state = %v, want parked by urgent-zero", low.cmd().State)
+		}
+		if urgent := e.commands["urgent-zero"].cmd(); urgent.State != running {
+			t.Fatalf("urgent-zero state = %v (%q), want running", urgent.State, urgent.Reason)
+		}
+	})
+
+	t.Run("preemptCandidatesLocked skips victims when non-reclaimable reservation == admitLimit", func(t *testing.T) {
+		e, _, _, _ := parkEngine(t)
+		e.mu.Lock()
+		defer e.mu.Unlock()
+		limit := e.admitLimit()
+
+		// Non-reclaimable server holds exactly admitLimit; a low-priority build
+		// holds 0; a high-priority want == 0 command must not preempt the build
+		// since it still cannot fit beside the server.
+		e.commands["srv-full"] = e.newCommand(&pb.CommandRecord{
+			Command: &pb.Command{Id: "srv-full", Kind: "server", State: running, Limits: &pb.CommandLimits{Priority: 0, MemoryLowBytes: limit}},
+		})
+		e.commands["low-build"] = e.newCommand(&pb.CommandRecord{
+			Command: &pb.Command{Id: "low-build", Kind: "build", State: running, Limits: &pb.CommandLimits{Priority: 0}},
+		})
+		high := e.newCommand(&pb.CommandRecord{
+			Command: &pb.Command{Id: "high-zero", Kind: "build", State: queued, Limits: &pb.CommandLimits{Priority: 10}},
+		})
+		if victims := e.preemptCandidatesLocked(high); len(victims) != 0 {
+			t.Fatalf("preemptCandidatesLocked returned %d victim(s), want 0 when non-reclaimable reservation == admitLimit", len(victims))
+		}
+	})
+
+	t.Run("canThawAlongsideLocked blocks want==0 parked command beside reservation == admitLimit", func(t *testing.T) {
+		e, _, sys, _ := parkEngine(t)
+		e.mu.Lock()
+		defer e.mu.Unlock()
+		limit := e.admitLimit()
+
+		runner := e.newCommand(&pb.CommandRecord{
+			Command: &pb.Command{Id: "run-full", Kind: "freshen", State: running, Limits: &pb.CommandLimits{Priority: 0, MemoryLowBytes: limit}},
+		})
+		parkedCmd := e.newCommand(&pb.CommandRecord{
+			Command: &pb.Command{Id: "parked-zero", Kind: "build", State: parked, Limits: &pb.CommandLimits{Priority: 0}},
+		})
+		e.commands["run-full"] = runner
+		e.commands["parked-zero"] = parkedCmd
+		if e.canThawAlongsideLocked(parkedCmd, []*command{runner}, sys.Mem) {
+			t.Fatal("canThawAlongsideLocked = true, want false when running command already reserves admitLimit")
+		}
+	})
+}

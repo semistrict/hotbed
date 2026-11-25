@@ -545,6 +545,23 @@ func (e *Engine) admitLimit() int64 {
 	return int64(float64(e.resources.GetMemoryBytes()) * admitMemory)
 }
 
+// fitsReservation reports whether a command reserving want bytes fits alongside
+// reserved bytes already held against a node admitLimit of limit. When existing
+// reservations already fill or exceed limit (reserved > 0 && room <= 0), even a
+// want == 0 command cannot start: every real command consumes memory, and a
+// reservation equal to limit (such as a base freshen capped at admitLimit) claims
+// the whole node until it finishes or is preempted.
+func fitsReservation(want, reserved, limit int64) bool {
+	room := limit - reserved
+	if want > room {
+		return false
+	}
+	if reserved > 0 && room <= 0 {
+		return false
+	}
+	return true
+}
+
 // memoryBudgetBytes returns the effective memory ceiling in bytes for a
 // command or shell running in this worker: Firecracker guest RAM for VM
 // runtimes (bounded by the host slice), or the work slice's memory limit
@@ -1080,7 +1097,7 @@ func (e *Engine) preemptCandidatesLocked(c *command) []*command {
 	}
 	// Do not disturb running work if c could not fit even after parking every
 	// lower-priority victim (e.g. a bench or higher-priority command holds RAM).
-	if c.reservation() > e.admitLimit()-(e.reservedFor(cPrio)-reclaimable) {
+	if !fitsReservation(c.reservation(), e.reservedFor(cPrio)-reclaimable, e.admitLimit()) {
 		return nil
 	}
 	focus := e.focusSessionLocked()
@@ -1300,8 +1317,8 @@ func (e *Engine) roomFor(c *command, cpuPreempted bool, mem sysinfo.Mem, hasMem 
 	limit := e.admitLimit()
 	reserved := e.reservedFor(c.priority())
 	room := limit - reserved
-	if want > room {
-		if room < 0 {
+	if !fitsReservation(want, reserved, limit) {
+		if room <= 0 {
 			if want > 0 {
 				return "memory", fmt.Sprintf("waiting for memory: needs %s, but running and parked commands hold or are guaranteed %s (limit %s)", gib(want), gib(reserved), gib(limit))
 			}
@@ -1640,7 +1657,7 @@ func (e *Engine) canThawAlongsideLocked(first *command, runningCmds []*command, 
 	if mem.Total <= 0 {
 		return false
 	}
-	if e.reservedFor(first.priority()) > e.admitLimit() {
+	if !fitsReservation(first.reservation(), e.reservedFor(first.priority())-first.reservation(), e.admitLimit()) {
 		return false
 	}
 	projectedUsed := mem.Used() + first.thawNeedBytes()
