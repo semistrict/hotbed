@@ -21,16 +21,22 @@ const (
 	// inode tables, block bitmaps, directory blocks) around hotbed-guestd.
 	toolsDiskHeadroomBytes = 8 << 20
 
+	// toolsDiskAlignBytes aligns the tools disk image size to 2 MiB so
+	// Firecracker can map it as a read-only virtio-pmem KVM memslot on both
+	// 4 KiB (x86_64) and 16 KiB (arm64 Asahi) hosts.
+	toolsDiskAlignBytes = 2 << 20
+
 	// maxCachedToolsDisks bounds old guestd-*.ext4 images kept on disk.
 	// Linux keeps unlinked files open for already-running Firecracker VMs.
 	maxCachedToolsDisks = 4
 )
 
-// EnsureToolsDisk builds (or reuses by content SHA-256) a read-only ext4 disk
-// image containing /hotbed-guestd, /dev/, and /newroot/. Firecracker attaches
-// this image as the read-only virtio-blk root device (/dev/vda) so every VM
-// runs the host's current hotbed-guestd without baking it into cladefs OS or
-// project base images.
+// EnsureToolsDisk builds (or reuses by content SHA-256) a 2 MiB-aligned
+// read-only ext4 disk image containing /hotbed-guestd, /dev/, and /newroot/.
+// Firecracker attaches this image as a read-only virtio-pmem root device
+// (/dev/pmem0) so every VM runs the host's current hotbed-guestd directly from
+// the shared host page cache without baking it into cladefs OS or project base
+// images (and avoiding arm64 Firecracker PCI virtio-blk boot hangs).
 func EnsureToolsDisk(cacheDir, guestdBin string) (string, error) {
 	if cacheDir == "" {
 		return "", fmt.Errorf("vm tools disk: cacheDir is required")
@@ -48,7 +54,7 @@ func EnsureToolsDisk(cacheDir, guestdBin string) (string, error) {
 	_ = os.Chmod(cacheDir, 0o755)
 
 	dstPath := filepath.Join(cacheDir, "guestd-"+shaHex[:16]+".ext4")
-	if info, err := os.Stat(dstPath); err == nil && info.Mode().IsRegular() && info.Size() > 0 {
+	if info, err := os.Stat(dstPath); err == nil && info.Mode().IsRegular() && info.Size() > 0 && info.Size()%toolsDiskAlignBytes == 0 {
 		return dstPath, nil
 	}
 
@@ -86,8 +92,9 @@ func EnsureToolsDisk(cacheDir, guestdBin string) (string, error) {
 	}()
 
 	const blockSize = int64(4096)
-	totalBytes := size + toolsDiskHeadroomBytes
-	blocks := (totalBytes + blockSize - 1) / blockSize
+	rawBytes := size + toolsDiskHeadroomBytes
+	totalBytes := ((rawBytes + toolsDiskAlignBytes - 1) / toolsDiskAlignBytes) * toolsDiskAlignBytes
+	blocks := totalBytes / blockSize
 	cmd := exec.Command(mke2fsBin,
 		"-t", "ext4",
 		"-d", stageDir,

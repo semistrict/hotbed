@@ -162,6 +162,7 @@ func NewManager(cfg Config, opts ...ManagerOption) (*Manager, error) {
 type FirecrackerConfig struct {
 	BootSource    fcBootSource     `json:"boot-source"`
 	Drives        []fcDrive        `json:"drives"`
+	Pmem          []fcPmem         `json:"pmem,omitempty"`
 	MachineConfig fcMachineConfig  `json:"machine-config"`
 	Vsock         fcVsock          `json:"vsock"`
 	NetInterfaces []fcNetInterface `json:"network-interfaces,omitempty"`
@@ -174,6 +175,13 @@ type fcDrive struct {
 	PathOnHost   string `json:"path_on_host"`
 	IsRootDevice bool   `json:"is_root_device"`
 	IsReadOnly   bool   `json:"is_read_only"`
+}
+
+type fcPmem struct {
+	ID         string `json:"id"`
+	PathOnHost string `json:"path_on_host"`
+	RootDevice bool   `json:"root_device"`
+	ReadOnly   bool   `json:"read_only"`
 }
 
 type fcBootSource struct {
@@ -273,10 +281,14 @@ func (m *Manager) BuildFirecrackerConfig(spec LaunchSpec, cid uint32, vsockUDS s
 	}
 	var bootParts []string
 	drives := []fcDrive{}
+	var pmems []fcPmem
 	if spec.ToolsDiskPath != "" {
-		// Boot from the read-only host tools disk (/dev/vda, appended by
-		// Firecracker because is_root_device=true & is_read_only=true), then
-		// hotbed-guestd PID 1 mounts cladefs:rootfs and pivot_roots onto it.
+		// Boot from the read-only host tools disk mapped via virtio-pmem
+		// (/dev/pmem0, appended by Firecracker because root_device=true &
+		// read_only=true), then hotbed-guestd PID 1 mounts cladefs:rootfs and
+		// pivot_roots onto it. Using virtio-pmem shares the host page cache
+		// across VMs with zero block-queue I/O and avoids arm64 PCI virtio-blk
+		// boot hangs.
 		bootParts = []string{
 			"console=ttyS0",
 			"reboot=k",
@@ -285,11 +297,11 @@ func (m *Manager) BuildFirecrackerConfig(spec LaunchSpec, cid uint32, vsockUDS s
 			"init=/hotbed-guestd",
 			"HOTBED_ROOT=cladefs:rootfs",
 		}
-		drives = []fcDrive{{
-			DriveID:      "hotbed-tools",
-			PathOnHost:   spec.ToolsDiskPath,
-			IsRootDevice: true,
-			IsReadOnly:   true,
+		pmems = []fcPmem{{
+			ID:         "hotbed-tools",
+			PathOnHost: spec.ToolsDiskPath,
+			RootDevice: true,
+			ReadOnly:   true,
 		}}
 	} else {
 		bootParts = []string{
@@ -319,6 +331,7 @@ func (m *Manager) BuildFirecrackerConfig(spec LaunchSpec, cid uint32, vsockUDS s
 			BootArgs:        strings.Join(bootParts, " "),
 		},
 		Drives: drives,
+		Pmem:   pmems,
 		MachineConfig: fcMachineConfig{
 			VCPUCount:  vcpus,
 			MemSizeMiB: memMiB,

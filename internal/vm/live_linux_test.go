@@ -8,6 +8,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	goruntime "runtime"
 	"strings"
 	"testing"
 	"time"
@@ -62,7 +63,7 @@ func TestLiveFirecrackerCladefsEndToEnd(t *testing.T) {
 	t.Cleanup(func() { _ = os.Remove(tarPath) })
 	if err := vm.BuildGuestTar(ctx, vm.GuestImageOptions{
 		ImageRef:   "public.ecr.aws/debian/debian:trixie-slim",
-		Arch:       "amd64",
+		Arch:       goruntime.GOARCH,
 		DNSServers: []string{"1.1.1.1", "8.8.8.8"},
 		OutTar:     tarPath,
 	}); err != nil {
@@ -108,6 +109,7 @@ func TestLiveFirecrackerCladefsEndToEnd(t *testing.T) {
 
 	// 3. Boot Firecracker in a transient hotbed.slice systemd unit with TAP/NAT networking.
 	vmCfg := vm.Config{
+		KernelPath:         os.Getenv("HOTBED_LIVE_KERNEL_PATH"),
 		GuestdBin:          os.Getenv("HOTBED_LIVE_GUESTD_BIN"),
 		RunDir:             runDir,
 		Slice:              vm.DefaultSlice,

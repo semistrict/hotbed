@@ -249,8 +249,8 @@ func TestBuildFirecrackerConfig(t *testing.T) {
 		t.Fatalf("DisableDAX must omit dax_window_size and dax_private_max_bytes: %s", string(noDAXBytes))
 	}
 
-	// When ToolsDiskPath is set, Firecracker attaches it as the read-only root
-	// virtio-blk drive and boots /hotbed-guestd with HOTBED_ROOT=cladefs:rootfs.
+	// When ToolsDiskPath is set, Firecracker attaches it as a read-only root
+	// virtio-pmem device and boots /hotbed-guestd with HOTBED_ROOT=cladefs:rootfs.
 	toolsFC := mgr.BuildFirecrackerConfig(LaunchSpec{
 		ID:            "ws-tools",
 		CellHostPath:  "/mnt/cells/ws-tools",
@@ -261,10 +261,13 @@ func TestBuildFirecrackerConfig(t *testing.T) {
 		t.Fatalf("tools-disk boot_args missing init or HOTBED_ROOT: %q", toolsFC.BootSource.BootArgs)
 	}
 	if strings.Contains(toolsFC.BootSource.BootArgs, "root=rootfs") || strings.Contains(toolsFC.BootSource.BootArgs, "rootfstype=cladefs") {
-		t.Fatalf("tools-disk boot_args must not override root=/dev/vda: %q", toolsFC.BootSource.BootArgs)
+		t.Fatalf("tools-disk boot_args must not override root=/dev/pmem0: %q", toolsFC.BootSource.BootArgs)
 	}
-	if len(toolsFC.Drives) != 1 || toolsFC.Drives[0].DriveID != "hotbed-tools" || !toolsFC.Drives[0].IsRootDevice || !toolsFC.Drives[0].IsReadOnly || toolsFC.Drives[0].PathOnHost != "/var/lib/hotbed/vms/_tools/guestd-abc123.ext4" {
-		t.Fatalf("unexpected tools disk drives: %+v", toolsFC.Drives)
+	if len(toolsFC.Drives) != 0 {
+		t.Fatalf("tools-disk config must leave drives empty, got: %+v", toolsFC.Drives)
+	}
+	if len(toolsFC.Pmem) != 1 || toolsFC.Pmem[0].ID != "hotbed-tools" || !toolsFC.Pmem[0].RootDevice || !toolsFC.Pmem[0].ReadOnly || toolsFC.Pmem[0].PathOnHost != "/var/lib/hotbed/vms/_tools/guestd-abc123.ext4" {
+		t.Fatalf("unexpected tools disk pmem: %+v", toolsFC.Pmem)
 	}
 }
 

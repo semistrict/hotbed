@@ -25,6 +25,9 @@ func TestEnsureToolsDiskBuildsCachesAndPrunes(t *testing.T) {
 	if err != nil || info1.Size() == 0 {
 		t.Fatalf("stat %s: info=%v err=%v", p1, info1, err)
 	}
+	if info1.Size()%toolsDiskAlignBytes != 0 {
+		t.Fatalf("tools disk size %d must be aligned to %d bytes for virtio-pmem", info1.Size(), toolsDiskAlignBytes)
+	}
 	if info1.Mode().Perm()&0o444 != 0o444 {
 		t.Fatalf("tools disk mode %o must be world-readable for VMUser", info1.Mode().Perm())
 	}
