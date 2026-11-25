@@ -36,6 +36,8 @@ var pid1Mounts = []pid1Mount{
 	{"tmpfs", "/dev/shm", "tmpfs", syscall.MS_NOSUID | syscall.MS_NODEV, "mode=1777"},
 	{"tmpfs", "/run", "tmpfs", syscall.MS_NOSUID | syscall.MS_NODEV, "mode=755"},
 	{"cgroup2", "/sys/fs/cgroup", "cgroup2", 0, ""},
+	{"tracefs", "/sys/kernel/tracing", "tracefs", 0, ""},
+	{"bpf", "/sys/fs/bpf", "bpf", 0, ""},
 }
 
 // prepareGuestTmpDirs ensures /tmp and /var/tmp under root exist with mode

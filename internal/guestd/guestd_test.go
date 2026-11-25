@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -16,8 +17,12 @@ import (
 	"testing"
 	"time"
 
+	"github.com/semistrict/hotbed/internal/api"
+	"github.com/semistrict/hotbed/internal/fake"
+	pb "github.com/semistrict/hotbed/internal/gen/hotbed/v1"
 	"github.com/semistrict/hotbed/internal/gitops"
 	"github.com/semistrict/hotbed/internal/guestd"
+	"github.com/semistrict/hotbed/internal/inspect"
 	"github.com/semistrict/hotbed/internal/unit"
 )
 
@@ -490,5 +495,177 @@ func TestReclaimEndpoint(t *testing.T) {
 
 	if err := client.Reclaim(ctx, "cmd-reclaim-1", 64<<20); err != nil {
 		t.Fatalf("Reclaim command: %v", err)
+	}
+}
+
+type failingStreamInspector struct {
+	inspect.Inspector
+	traceErr error
+}
+
+func (f failingStreamInspector) Trace(_ context.Context, _ inspect.Target, _ *pb.TraceCommandRequest, emit inspect.Emit) error {
+	if err := emit(&pb.TraceCommandChunk{Status: "starting"}); err != nil {
+		return err
+	}
+	return f.traceErr
+}
+
+func startTestGuestdWithInspector(t *testing.T, workDir string, insp inspect.Inspector) *guestd.Client {
+	t.Helper()
+	sockDir, err := os.MkdirTemp("", "gdi-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(sockDir) })
+
+	srv, err := guestd.NewServer(guestd.ServerConfig{
+		WorkDir:   workDir,
+		StateDir:  t.TempDir(),
+		Inspector: insp,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+
+	ctrlSock := filepath.Join(sockDir, "ctrl.sock")
+	ctrlLn, err := net.Listen("unix", ctrlSock)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = ctrlLn.Close() })
+	go func() { _ = srv.ServeControl(ctx, ctrlLn) }()
+
+	client := guestd.NewClient(guestd.UnixMapDialer(map[uint32]string{
+		guestd.ControlPort: ctrlSock,
+	}))
+	if _, err := client.WaitReady(ctx); err != nil {
+		t.Fatalf("WaitReady: %v", err)
+	}
+	return client
+}
+
+func TestInspectTraceAndSampleEndpoints(t *testing.T) {
+	ctx := context.Background()
+	workDir := t.TempDir()
+	client := startTestGuestdWithInspector(t, workDir, fake.Inspector{})
+
+	// Unknown command returns structured NOT_FOUND api.Error (not older-guestd 404).
+	_, err := client.InspectCommand(ctx, &pb.InspectCommandRequest{Id: "cmd-missing"})
+	var ae *api.Error
+	if !errors.As(err, &ae) || ae.Code != api.CodeNotFound {
+		t.Fatalf("InspectCommand(missing) err = %v, want api.Error NOT_FOUND", err)
+	}
+
+	// Start a live command and inspect, trace, and sample it through guestd.
+	if _, err := client.StartCommand(ctx, guestd.StartCommandRequest{
+		ID:   "cmd-diag-1",
+		Argv: []string{"/bin/sh", "-c", "sleep 30"},
+		Dir:  workDir,
+	}); err != nil {
+		t.Fatalf("StartCommand: %v", err)
+	}
+	t.Cleanup(func() { _, _ = client.StopCommand(context.Background(), "cmd-diag-1", 500*time.Millisecond) })
+
+	ins, err := client.InspectCommand(ctx, &pb.InspectCommandRequest{Id: "cmd-diag-1"})
+	if err != nil {
+		t.Fatalf("InspectCommand: %v", err)
+	}
+	if ins.CommandId != "cmd-diag-1" || ins.UnitName != "hotbed-cmd-diag-1" || len(ins.Procs) == 0 {
+		t.Fatalf("unexpected InspectCommandResponse: id=%q unit=%q procs=%d", ins.CommandId, ins.UnitName, len(ins.Procs))
+	}
+
+	var traceChunks []*pb.TraceCommandChunk
+	if err := client.TraceCommand(ctx, &pb.TraceCommandRequest{
+		Id:   "cmd-diag-1",
+		Kind: pb.TraceKind_TRACE_KIND_STACKS,
+	}, func(ch *pb.TraceCommandChunk) error {
+		traceChunks = append(traceChunks, ch)
+		return nil
+	}); err != nil {
+		t.Fatalf("TraceCommand: %v", err)
+	}
+	if len(traceChunks) == 0 || !traceChunks[len(traceChunks)-1].Done || traceChunks[len(traceChunks)-1].Summary == nil {
+		t.Fatalf("unexpected trace chunks: %+v", traceChunks)
+	}
+
+	var sample *pb.ProcessSample
+	if err := client.SampleCommand(ctx, &pb.SampleCommandRequest{
+		Id:              "cmd-diag-1",
+		DurationSeconds: 1,
+	}, func(ch *pb.SampleCommandChunk) error {
+		if ch.Sample != nil {
+			sample = ch.Sample
+		}
+		return nil
+	}); err != nil {
+		t.Fatalf("SampleCommand: %v", err)
+	}
+	if sample == nil || sample.CommandId != "cmd-diag-1" || len(sample.Procs) == 0 {
+		t.Fatalf("unexpected ProcessSample: %+v", sample)
+	}
+
+	// Stop the command and verify ended commands fail with CONFLICT.
+	if _, err := client.StopCommand(ctx, "cmd-diag-1", 500*time.Millisecond); err != nil {
+		t.Fatalf("StopCommand: %v", err)
+	}
+	_, err = client.InspectCommand(ctx, &pb.InspectCommandRequest{Id: "cmd-diag-1"})
+	ae = nil
+	if !errors.As(err, &ae) || ae.Code != api.CodeConflict {
+		t.Fatalf("InspectCommand(exited) err = %v, want api.Error CONFLICT", err)
+	}
+
+	// Mid-stream api.Error preserves code and suggestion across stream framing.
+	wantErr := api.Errorf(api.CodePlatformNotSupported, "bpftrace not installed").WithSuggestion("rebuild image")
+	errClient := startTestGuestdWithInspector(t, workDir, failingStreamInspector{
+		Inspector: fake.Inspector{},
+		traceErr:  wantErr,
+	})
+	if _, err := errClient.StartCommand(ctx, guestd.StartCommandRequest{
+		ID:   "cmd-err-1",
+		Argv: []string{"/bin/sh", "-c", "sleep 30"},
+		Dir:  workDir,
+	}); err != nil {
+		t.Fatalf("StartCommand(errClient): %v", err)
+	}
+	t.Cleanup(func() { _, _ = errClient.StopCommand(context.Background(), "cmd-err-1", 500*time.Millisecond) })
+
+	var sawStatus bool
+	err = errClient.TraceCommand(ctx, &pb.TraceCommandRequest{
+		Id:   "cmd-err-1",
+		Kind: pb.TraceKind_TRACE_KIND_BPF_EXECSNOOP,
+	}, func(ch *pb.TraceCommandChunk) error {
+		if ch.Status == "starting" {
+			sawStatus = true
+		}
+		return nil
+	})
+	ae = nil
+	if !sawStatus || !errors.As(err, &ae) || ae.Code != api.CodePlatformNotSupported || ae.Suggestion != "rebuild image" {
+		t.Fatalf("mid-stream error: sawStatus=%v err=%v", sawStatus, err)
+	}
+
+	// Plain-text 404 (older guestd without inspect endpoints) maps to PLATFORM_NOT_SUPPORTED.
+	sockDir, err := os.MkdirTemp("", "gd404-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(sockDir) })
+	oldSock := filepath.Join(sockDir, "old.sock")
+	oldLn, err := net.Listen("unix", oldSock)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = oldLn.Close() })
+	oldSrv := &http.Server{Handler: http.NotFoundHandler()}
+	go func() { _ = oldSrv.Serve(oldLn) }()
+	t.Cleanup(func() { _ = oldSrv.Close() })
+
+	oldClient := guestd.NewClient(guestd.UnixMapDialer(map[uint32]string{guestd.ControlPort: oldSock}))
+	_, err = oldClient.InspectCommand(ctx, &pb.InspectCommandRequest{Id: "cmd-old"})
+	ae = nil
+	if !errors.As(err, &ae) || ae.Code != api.CodePlatformNotSupported {
+		t.Fatalf("older guestd 404 err = %v, want PLATFORM_NOT_SUPPORTED", err)
 	}
 }

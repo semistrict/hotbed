@@ -27,9 +27,11 @@ func hasCgroupV2() bool {
 	if err := os.MkdirAll(guestCgroupRoot, 0o755); err != nil {
 		return false
 	}
-	// Enable memory and cpu controllers for child cgroups if available.
+	// Enable memory, cpu, pids, and (best-effort) io controllers for child cgroups.
 	_ = os.WriteFile("/sys/fs/cgroup/cgroup.subtree_control", []byte("+cpu +memory +pids"), 0o644)
+	_ = os.WriteFile("/sys/fs/cgroup/cgroup.subtree_control", []byte("+io"), 0o644)
 	_ = os.WriteFile(filepath.Join(guestCgroupRoot, "cgroup.subtree_control"), []byte("+cpu +memory +pids"), 0o644)
+	_ = os.WriteFile(filepath.Join(guestCgroupRoot, "cgroup.subtree_control"), []byte("+io"), 0o644)
 	return true
 }
 

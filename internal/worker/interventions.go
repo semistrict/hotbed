@@ -383,34 +383,49 @@ func canTake(cmd *pb.Command, kind pb.InterventionKind) error {
 // returns nil when nothing could be taken or the bounded payload still exceeds
 // maxDiagnosticsBytes.
 func (e *Engine) diagnose(ctx context.Context, cmd *pb.Command, iv *pb.CommandIntervention) *pb.CommandDiagnostics {
+	isVM := cmd.WorkspaceId != "" && e.usesRuntime(cmd.WorkspaceId)
 	switch {
-	case e.cfg.Inspector == nil:
+	case !isVM && e.cfg.Inspector == nil:
 		iv.DiagnosticsError = "this worker takes no diagnostics: process inspection is not configured on it"
 		return nil
 	case cmd.State == queued:
 		iv.DiagnosticsError = "it had not started: it had no processes to diagnose"
 		return nil
 	}
-	target, err := e.commandTarget(ctx, cmd.Id)
+	route, err := e.resolveLiveCommand(cmd.Id)
 	if err != nil {
 		iv.DiagnosticsError = message(err)
 		return nil
 	}
 	d := &pb.CommandDiagnostics{CommandId: cmd.Id, Intervention: iv}
 	var failed []string
-	err = e.cfg.Inspector.Sample(ctx, target, &pb.SampleCommandRequest{Id: cmd.Id, DurationSeconds: diagnoseSampleSeconds}, func(ch *pb.SampleCommandChunk) error {
+	sampleReq := &pb.SampleCommandRequest{Id: cmd.Id, DurationSeconds: diagnoseSampleSeconds}
+	inspectReq := &pb.InspectCommandRequest{Id: cmd.Id}
+	onSample := func(ch *pb.SampleCommandChunk) error {
 		if ch.Sample != nil {
 			d.Sample = ch.Sample
 		}
 		return nil
-	})
-	if err != nil {
-		failed = append(failed, "its activity sample: "+message(err))
 	}
-	if ctx.Err() != nil {
-		failed = append(failed, "its inspection: "+message(ctx.Err()))
-	} else if d.Inspect, err = e.cfg.Inspector.Inspect(ctx, target, &pb.InspectCommandRequest{Id: cmd.Id}); err != nil {
-		failed = append(failed, "its inspection: "+message(err))
+	if route.isVM {
+		if err := e.cfg.Runtime.SampleCommand(ctx, route.wsID, sampleReq, e.wrapVMSampleEmit(route.wsID, onSample)); err != nil {
+			failed = append(failed, "its activity sample: "+message(err))
+		}
+		if ctx.Err() != nil {
+			failed = append(failed, "its inspection: "+message(ctx.Err()))
+		} else if d.Inspect, err = e.cfg.Runtime.InspectCommand(ctx, route.wsID, inspectReq); err != nil {
+			failed = append(failed, "its inspection: "+message(err))
+		}
+	} else {
+		target := e.hostInspectTarget(ctx, cmd.Id, route)
+		if err := e.cfg.Inspector.Sample(ctx, target, sampleReq, onSample); err != nil {
+			failed = append(failed, "its activity sample: "+message(err))
+		}
+		if ctx.Err() != nil {
+			failed = append(failed, "its inspection: "+message(ctx.Err()))
+		} else if d.Inspect, err = e.cfg.Inspector.Inspect(ctx, target, inspectReq); err != nil {
+			failed = append(failed, "its inspection: "+message(err))
+		}
 	}
 	iv.DiagnosticsError = strings.Join(failed, "; ")
 	if d.Sample == nil && d.Inspect == nil {

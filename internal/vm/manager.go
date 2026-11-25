@@ -222,6 +222,7 @@ func (m *Manager) BuildFirecrackerConfig(spec LaunchSpec, cid uint32, vsockUDS s
 		"console=ttyS0",
 		"reboot=k",
 		"panic=1",
+		"psi=1",
 		"init=/sbin/hotbed-guestd",
 	}
 	if ipArg := netAlloc.KernelIPArg(); ipArg != "" {

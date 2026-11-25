@@ -3,6 +3,7 @@ package worker
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -581,5 +582,203 @@ func TestRuntimeUnitsReclaimRoutesVMCgroupToGuestRuntime(t *testing.T) {
 	defer spy.mu.Unlock()
 	if len(spy.calls) != 1 || spy.calls[0].wsID != "ws-42" || spy.calls[0].cmdID != "cmd-9" || spy.calls[0].bytes != 128<<20 {
 		t.Fatalf("reclaim calls = %+v, want [{ws-42 cmd-9 134217728}]", spy.calls)
+	}
+}
+
+func TestVMCommandInspectTraceSampleDiagnoseAndProfile(t *testing.T) {
+	ctx := t.Context()
+
+	originRepo := t.TempDir()
+	runGitTest(t, originRepo, "init", "-b", "main")
+	if err := os.WriteFile(filepath.Join(originRepo, "a.txt"), []byte("hello\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runGitTest(t, originRepo, "add", ".")
+	runGitTest(t, originRepo, "commit", "-m", "init")
+	baseCommit := runGitTest(t, originRepo, "rev-parse", "HEAD")
+
+	guestWork := filepath.Join(t.TempDir(), "work")
+	if err := os.MkdirAll(guestWork, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	runGitTest(t, guestWork, "clone", originRepo, "app")
+
+	sockDir, err := os.MkdirTemp("/tmp", "hb-vmdiag-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(sockDir) })
+	ctrlSock := filepath.Join(sockDir, "ctrl.sock")
+	ctrlLn, err := net.Listen("unix", ctrlSock)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ctrlLn.Close()
+
+	srv, err := guestd.NewServer(guestd.ServerConfig{
+		WorkDir:   guestWork,
+		StateDir:  t.TempDir(),
+		Inspector: fake.Inspector{},
+	})
+	if err != nil {
+		t.Fatalf("guestd.NewServer: %v", err)
+	}
+	go func() { _ = srv.ServeControl(ctx, ctrlLn) }()
+
+	guestClient := guestd.NewClient(guestd.UnixMapDialer(map[uint32]string{
+		guestd.ControlPort: ctrlSock,
+	}))
+	wsID := "ws-vm-diag"
+	resolver := &testGuestResolver{clients: map[string]*guestd.Client{wsID: guestClient}}
+	rt := runtime.NewGuestRuntime(resolver)
+
+	dir := t.TempDir()
+	store := &fake.Store{Root: filepath.Join(dir, "volumes")}
+	// Deliberately leave host Inspector nil to prove VM diagnostics route through
+	// guestd via WorkspaceRuntime rather than host inspect.Linux.
+	eng, err := NewEngine(ctx, EngineConfig{
+		Dir:             dir,
+		NodeID:          "n1",
+		Host:            "worker1",
+		Store:           store,
+		BaseImage:       fake.BaseImage(store),
+		Units:           &fake.Units{},
+		Runtime:         rt,
+		Profiler:        fake.NewProfiler(),
+		System:          fake.NewSystem(),
+		AllowLocalRepos: true,
+	})
+	if err != nil {
+		t.Fatalf("NewEngine: %v", err)
+	}
+	defer eng.Close()
+
+	baseSnap := "demo-g1"
+	if err := store.Create(ctx, "bases/demo/g1"); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Snapshot(ctx, "bases/demo/g1", baseSnap); err != nil {
+		t.Fatal(err)
+	}
+	eng.mu.Lock()
+	eng.bases[baseSnap] = &pb.Base{
+		Id:         baseSnap,
+		Project:    "demo",
+		Generation: 1,
+		State:      warm,
+		Repos:      []*pb.BaseRepo{{Repo: "app", Commit: baseCommit}},
+	}
+	eng.setBaseImage(baseSnap, eng.baseImageKey())
+	eng.mu.Unlock()
+
+	if _, err := eng.CreateWorkspace(ctx, &pb.CreateWorkspaceRequest{
+		Id:    wsID,
+		Agent: "test-agent",
+		Project: &pb.HostedProject{
+			Name:  "demo",
+			Repos: []*pb.Repo{{Id: "app", Url: originRepo, Branch: "main"}},
+		},
+	}); err != nil {
+		t.Fatalf("CreateWorkspace: %v", err)
+	}
+
+	cmd, err := eng.Exec(ctx, &pb.RunCommandRequest{
+		WorkspaceId: wsID,
+		Repo:        "app",
+		Args:        []string{"/bin/sh", "-c", "sleep 30"},
+	})
+	if err != nil {
+		t.Fatalf("Engine.Exec: %v", err)
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		eng.step(ctx)
+		if cur, ok := eng.Command(cmd.Id); ok && cur.State == running {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("timed out waiting for command %s to start running", cmd.Id)
+		}
+		time.Sleep(25 * time.Millisecond)
+	}
+
+	// 1. Inspect routes through guestd and returns live guest processes.
+	ins, err := eng.Inspect(ctx, &pb.InspectCommandRequest{Id: cmd.Id})
+	if err != nil {
+		t.Fatalf("Engine.Inspect(vm): %v", err)
+	}
+	if ins.CommandId != cmd.Id || len(ins.Procs) == 0 {
+		t.Fatalf("unexpected VM inspect result: %+v", ins)
+	}
+
+	// 2. Trace routes through guestd and streams chunks.
+	var gotTraceSummary *pb.TraceSummary
+	if err := eng.Trace(ctx, &pb.TraceCommandRequest{
+		Id:   cmd.Id,
+		Kind: pb.TraceKind_TRACE_KIND_STACKS,
+	}, func(ch *pb.TraceCommandChunk) error {
+		if ch.Summary != nil {
+			gotTraceSummary = ch.Summary
+		}
+		return nil
+	}); err != nil {
+		t.Fatalf("Engine.Trace(vm): %v", err)
+	}
+	if gotTraceSummary == nil || gotTraceSummary.Raw == "" {
+		t.Fatalf("expected trace summary from guestd, got %+v", gotTraceSummary)
+	}
+
+	// 3. Sample routes through guestd and annotates Hostname with worker + VM workspace.
+	var gotSample *pb.ProcessSample
+	if err := eng.SampleCommand(ctx, &pb.SampleCommandRequest{
+		Id:              cmd.Id,
+		DurationSeconds: 1,
+	}, func(ch *pb.SampleCommandChunk) error {
+		if ch.Sample != nil {
+			gotSample = ch.Sample
+		}
+		return nil
+	}); err != nil {
+		t.Fatalf("Engine.SampleCommand(vm): %v", err)
+	}
+	if gotSample == nil || len(gotSample.Procs) == 0 {
+		t.Fatalf("expected ProcessSample from guestd, got %+v", gotSample)
+	}
+	if wantHost := "worker1 (vm:" + wsID + ")"; gotSample.Hostname != wantHost {
+		t.Fatalf("sample Hostname = %q, want %q", gotSample.Hostname, wantHost)
+	}
+
+	// 4. CommandProfile clearly reports continuous eBPF profiling is unavailable inside VMs.
+	prof, err := eng.CommandProfile(cmd.Id, &pb.GetProfileRequest{
+		Target: &pb.GetProfileRequest_CommandId{CommandId: cmd.Id},
+	})
+	if err != nil {
+		t.Fatalf("Engine.CommandProfile(vm): %v", err)
+	}
+	if prof.Active || !strings.Contains(prof.StatusNote, "Firecracker VMs") {
+		t.Fatalf("unexpected VM CommandProfile: active=%v note=%q", prof.Active, prof.StatusNote)
+	}
+
+	// 5. StopWith --diagnose collects guest sample + inspection before stopping.
+	stopped, err := eng.StopWith(ctx, cmd.Id, Intervention{
+		Comment:  "checking VM diagnostics on stop",
+		Diagnose: true,
+		Host:     "laptop",
+	})
+	if err != nil {
+		t.Fatalf("StopWith(diagnose): %v", err)
+	}
+	if len(stopped.Interventions) != 1 || !stopped.Interventions[0].Diagnosed || stopped.Interventions[0].DiagnosticsError != "" {
+		t.Fatalf("unexpected VM intervention diagnostics: %+v", stopped.Interventions)
+	}
+
+	// 6. Ended VM command returns CONFLICT without a broken "use hotbed profile" hint.
+	_, err = eng.Inspect(ctx, &pb.InspectCommandRequest{Id: cmd.Id})
+	var ae *api.Error
+	if !errors.As(err, &ae) || ae.Code != api.CodeConflict {
+		t.Fatalf("Inspect(ended vm) err = %v, want CONFLICT", err)
+	}
+	if strings.Contains(ae.Suggestion, "hotbed profile") {
+		t.Fatalf("ended VM inspect should not suggest host eBPF profile, got suggestion=%q", ae.Suggestion)
 	}
 }

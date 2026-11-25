@@ -213,10 +213,42 @@ const (
 	frameError      byte = 7 // UTF-8 error message (guest->host)
 )
 
-const maxFrameLen = 4 << 20
+// Binary frame types used by streaming protobuf endpoints (/v1/commands/trace,
+// /v1/commands/sample) over ControlPort.
+const (
+	streamFrameProto byte = 1 // raw proto.Marshal payload of a chunk message
+	streamFrameError byte = 2 // JSON-encoded api.Error payload
+	streamFrameEOF   byte = 3 // empty payload marking clean end of stream
+)
+
+// apiErrorHeader marks HTTP error responses whose body is a JSON-encoded
+// api.Error, distinguishing structured guestd errors (e.g. command not found)
+// from plain-text 404s returned by older guestd binaries.
+const apiErrorHeader = "X-Hotbed-API-Error"
+
+const (
+	maxFrameLen       = 4 << 20
+	maxStreamFrameLen = 16 << 20
+)
 
 func writeFrame(w io.Writer, typ byte, payload []byte) error {
-	if len(payload) > maxFrameLen {
+	return writeFramed(w, typ, payload, maxFrameLen)
+}
+
+func readFrame(r io.Reader) (byte, []byte, error) {
+	return readFramed(r, maxFrameLen)
+}
+
+func writeStreamFrame(w io.Writer, typ byte, payload []byte) error {
+	return writeFramed(w, typ, payload, maxStreamFrameLen)
+}
+
+func readStreamFrame(r io.Reader) (byte, []byte, error) {
+	return readFramed(r, maxStreamFrameLen)
+}
+
+func writeFramed(w io.Writer, typ byte, payload []byte, limit int) error {
+	if len(payload) > limit {
 		return fmt.Errorf("guestd frame too large: %d bytes", len(payload))
 	}
 	var hdr [5]byte
@@ -233,13 +265,13 @@ func writeFrame(w io.Writer, typ byte, payload []byte) error {
 	return nil
 }
 
-func readFrame(r io.Reader) (byte, []byte, error) {
+func readFramed(r io.Reader, limit int) (byte, []byte, error) {
 	var hdr [5]byte
 	if _, err := io.ReadFull(r, hdr[:]); err != nil {
 		return 0, nil, err
 	}
 	n := binary.BigEndian.Uint32(hdr[1:])
-	if n > maxFrameLen {
+	if int(n) > limit {
 		return 0, nil, fmt.Errorf("guestd frame exceeds limit: %d bytes", n)
 	}
 	var payload []byte

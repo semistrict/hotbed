@@ -24,8 +24,12 @@ import (
 	"syscall"
 	"time"
 
+	"google.golang.org/protobuf/proto"
+
+	"github.com/semistrict/hotbed/internal/api"
 	pb "github.com/semistrict/hotbed/internal/gen/hotbed/v1"
 	"github.com/semistrict/hotbed/internal/gitops"
+	"github.com/semistrict/hotbed/internal/inspect"
 	"github.com/semistrict/hotbed/internal/pty"
 )
 
@@ -38,20 +42,22 @@ var validCmdID = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9._-]{0,127}$`)
 
 // ServerConfig configures a guestd.Server.
 type ServerConfig struct {
-	WorkDir  string // workspace root containing repo checkouts (default /work)
-	StateDir string // runtime dir for logs and temp sync bundles (default /run/hotbed-guestd)
-	RunDir   string // base directory for per-user XDG_RUNTIME_DIR (<RunDir>/user/<uid>, default /run)
-	Logger   *slog.Logger
+	WorkDir   string            // workspace root containing repo checkouts (default /work)
+	StateDir  string            // runtime dir for logs and temp sync bundles (default /run/hotbed-guestd)
+	RunDir    string            // base directory for per-user XDG_RUNTIME_DIR (<RunDir>/user/<uid>, default /run)
+	Logger    *slog.Logger
+	Inspector inspect.Inspector // defaults to inspect.Linux{}
 }
 
 // Server runs inside a workspace VM and handles requests from hotbed-worker.
 type Server struct {
-	workDir  string
-	stateDir string
-	runDir   string
-	logDir   string
-	syncDir  string
-	log      *slog.Logger
+	workDir   string
+	stateDir  string
+	runDir    string
+	logDir    string
+	syncDir   string
+	log       *slog.Logger
+	inspector inspect.Inspector
 
 	mu   sync.Mutex
 	cmds map[string]*managedCmd
@@ -87,6 +93,10 @@ func NewServer(cfg ServerConfig) (*Server, error) {
 	if cfg.Logger == nil {
 		cfg.Logger = slog.Default()
 	}
+	insp := cfg.Inspector
+	if insp == nil {
+		insp = inspect.Linux{}
+	}
 	logDir := filepath.Join(cfg.StateDir, "logs")
 	syncDir := filepath.Join(cfg.StateDir, "sync")
 	if err := os.MkdirAll(logDir, 0o755); err != nil {
@@ -96,13 +106,14 @@ func NewServer(cfg ServerConfig) (*Server, error) {
 		return nil, fmt.Errorf("create guestd sync dir: %w", err)
 	}
 	return &Server{
-		workDir:  cfg.WorkDir,
-		stateDir: cfg.StateDir,
-		runDir:   cfg.RunDir,
-		logDir:   logDir,
-		syncDir:  syncDir,
-		log:      cfg.Logger,
-		cmds:     map[string]*managedCmd{},
+		workDir:   cfg.WorkDir,
+		stateDir:  cfg.StateDir,
+		runDir:    cfg.RunDir,
+		logDir:    logDir,
+		syncDir:   syncDir,
+		log:       cfg.Logger,
+		inspector: insp,
+		cmds:      map[string]*managedCmd{},
 	}, nil
 }
 
@@ -115,6 +126,9 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /v1/commands/stop", s.handleStopCommand)
 	mux.HandleFunc("POST /v1/commands/freeze", s.handleFreezeCommand)
 	mux.HandleFunc("POST /v1/commands/thaw", s.handleThawCommand)
+	mux.HandleFunc("POST /v1/commands/inspect", s.handleInspectCommand)
+	mux.HandleFunc("POST /v1/commands/trace", s.handleTraceCommand)
+	mux.HandleFunc("POST /v1/commands/sample", s.handleSampleCommand)
 	mux.HandleFunc("POST /v1/reclaim", s.handleReclaim)
 	mux.HandleFunc("GET /v1/commands/logs", s.handleStreamLogs)
 	mux.HandleFunc("POST /v1/sync", s.handleSync)
@@ -546,6 +560,186 @@ func (s *Server) handleReclaim(w http.ResponseWriter, r *http.Request) {
 	}
 	_ = dropPageCaches()
 	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+}
+
+func apiErrorFrom(err error) *api.Error {
+	var ae *api.Error
+	if errors.As(err, &ae) {
+		return ae
+	}
+	return api.Errorf(api.CodeInternal, "%v", err)
+}
+
+func writeAPIError(w http.ResponseWriter, err error) {
+	ae := apiErrorFrom(err)
+	status := http.StatusInternalServerError
+	switch ae.Code {
+	case api.CodeNotFound:
+		status = http.StatusNotFound
+	case api.CodeInvalidArgs:
+		status = http.StatusBadRequest
+	case api.CodeConflict:
+		status = http.StatusConflict
+	case api.CodePlatformNotSupported:
+		status = http.StatusNotImplemented
+	}
+	w.Header().Set(apiErrorHeader, "1")
+	writeJSON(w, status, ae)
+}
+
+func (s *Server) inspectTarget(id string) (inspect.Target, error) {
+	if id == "" {
+		return inspect.Target{}, api.Errorf(api.CodeInvalidArgs, "command id is required")
+	}
+	mc, ok := s.getCmd(id)
+	if !ok {
+		return inspect.Target{}, api.Errorf(api.CodeNotFound, "command %s not found in guest VM", id)
+	}
+	mc.mu.Lock()
+	state := mc.state
+	mainPID := mc.mainPID
+	var cgPath string
+	if mc.cg != nil {
+		cgPath = strings.TrimPrefix(mc.cg.path, "/sys/fs/cgroup")
+	}
+	mc.mu.Unlock()
+
+	if state == StateExited {
+		return inspect.Target{}, api.Errorf(api.CodeConflict, "command %s has already ended; live inspection only applies while running", id)
+	}
+	host, _ := os.Hostname()
+	return inspect.Target{
+		CommandID: id,
+		UnitName:  "hotbed-" + id,
+		Cgroup:    cgPath,
+		MainPID:   mainPID,
+		Hostname:  host,
+		Kernel:    kernelRelease(),
+		Arch:      runtime.GOARCH,
+	}, nil
+}
+
+func (s *Server) handleInspectCommand(w http.ResponseWriter, r *http.Request) {
+	body, err := io.ReadAll(io.LimitReader(r.Body, 1<<20))
+	if err != nil {
+		writeAPIError(w, api.Errorf(api.CodeInvalidArgs, "read inspect request: %v", err))
+		return
+	}
+	var req pb.InspectCommandRequest
+	if err := proto.Unmarshal(body, &req); err != nil {
+		writeAPIError(w, api.Errorf(api.CodeInvalidArgs, "decode inspect request: %v", err))
+		return
+	}
+	target, err := s.inspectTarget(req.GetId())
+	if err != nil {
+		writeAPIError(w, err)
+		return
+	}
+	res, err := s.inspector.Inspect(r.Context(), target, &req)
+	if err != nil {
+		writeAPIError(w, err)
+		return
+	}
+	out, err := proto.Marshal(res)
+	if err != nil {
+		writeAPIError(w, api.Errorf(api.CodeInternal, "encode inspect response: %v", err))
+		return
+	}
+	w.Header().Set("Content-Type", "application/x-protobuf")
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write(out)
+}
+
+type protoStreamWriter struct {
+	mu      sync.Mutex
+	w       http.ResponseWriter
+	flusher http.Flusher
+}
+
+func newProtoStreamWriter(w http.ResponseWriter) *protoStreamWriter {
+	flusher, _ := w.(http.Flusher)
+	w.Header().Set("Content-Type", "application/x-hotbed-stream")
+	w.WriteHeader(http.StatusOK)
+	if flusher != nil {
+		flusher.Flush()
+	}
+	return &protoStreamWriter{w: w, flusher: flusher}
+}
+
+func (sw *protoStreamWriter) sendProto(msg proto.Message) error {
+	raw, err := proto.Marshal(msg)
+	if err != nil {
+		return err
+	}
+	sw.mu.Lock()
+	defer sw.mu.Unlock()
+	if err := writeStreamFrame(sw.w, streamFrameProto, raw); err != nil {
+		return err
+	}
+	if sw.flusher != nil {
+		sw.flusher.Flush()
+	}
+	return nil
+}
+
+func (sw *protoStreamWriter) finish(err error) {
+	sw.mu.Lock()
+	defer sw.mu.Unlock()
+	if err != nil {
+		raw, _ := json.Marshal(apiErrorFrom(err))
+		_ = writeStreamFrame(sw.w, streamFrameError, raw)
+	} else {
+		_ = writeStreamFrame(sw.w, streamFrameEOF, nil)
+	}
+	if sw.flusher != nil {
+		sw.flusher.Flush()
+	}
+}
+
+func (s *Server) handleTraceCommand(w http.ResponseWriter, r *http.Request) {
+	body, err := io.ReadAll(io.LimitReader(r.Body, 1<<20))
+	if err != nil {
+		writeAPIError(w, api.Errorf(api.CodeInvalidArgs, "read trace request: %v", err))
+		return
+	}
+	var req pb.TraceCommandRequest
+	if err := proto.Unmarshal(body, &req); err != nil {
+		writeAPIError(w, api.Errorf(api.CodeInvalidArgs, "decode trace request: %v", err))
+		return
+	}
+	target, err := s.inspectTarget(req.GetId())
+	if err != nil {
+		writeAPIError(w, err)
+		return
+	}
+	sw := newProtoStreamWriter(w)
+	err = s.inspector.Trace(r.Context(), target, &req, func(ch *pb.TraceCommandChunk) error {
+		return sw.sendProto(ch)
+	})
+	sw.finish(err)
+}
+
+func (s *Server) handleSampleCommand(w http.ResponseWriter, r *http.Request) {
+	body, err := io.ReadAll(io.LimitReader(r.Body, 1<<20))
+	if err != nil {
+		writeAPIError(w, api.Errorf(api.CodeInvalidArgs, "read sample request: %v", err))
+		return
+	}
+	var req pb.SampleCommandRequest
+	if err := proto.Unmarshal(body, &req); err != nil {
+		writeAPIError(w, api.Errorf(api.CodeInvalidArgs, "decode sample request: %v", err))
+		return
+	}
+	target, err := s.inspectTarget(req.GetId())
+	if err != nil {
+		writeAPIError(w, err)
+		return
+	}
+	sw := newProtoStreamWriter(w)
+	err = s.inspector.Sample(r.Context(), target, &req, func(ch *pb.SampleCommandChunk) error {
+		return sw.sendProto(ch)
+	})
+	sw.finish(err)
 }
 
 func (s *Server) handleStreamLogs(w http.ResponseWriter, r *http.Request) {

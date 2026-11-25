@@ -3,6 +3,7 @@ package worker
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -66,33 +67,56 @@ func removeStaleProfiles(dir string, before time.Time, known map[string]bool) er
 	return errors.Join(errs...)
 }
 
-// commandTarget resolves a live command's systemd unit, cgroup, and main PID
-// for on-demand Linux inspection or active tracing.
-func (e *Engine) commandTarget(ctx context.Context, id string) (inspect.Target, error) {
+type liveCommandRoute struct {
+	wsID     string
+	isVM     bool
+	unitName string
+	cgroup   string
+}
+
+// resolveLiveCommand validates that id refers to a live (started, non-ended)
+// command and reports whether it runs inside a guest VM workspace.
+func (e *Engine) resolveLiveCommand(id string) (liveCommandRoute, error) {
 	if err := validateID(id); err != nil {
-		return inspect.Target{}, err
+		return liveCommandRoute{}, err
 	}
 	e.mu.Lock()
 	c, ok := e.commands[id]
 	if !ok {
 		e.mu.Unlock()
-		return inspect.Target{}, notFound("command", id)
+		return liveCommandRoute{}, notFound("command", id)
 	}
-	state := c.cmd().State
+	cmd := c.cmd()
+	state := cmd.State
+	wsID := cmd.WorkspaceId
 	unitName := c.unitName()
 	cgroup := c.rec.Cgroup
 	e.mu.Unlock()
 
+	isVM := wsID != "" && e.usesRuntime(wsID)
 	if state == queued {
-		return inspect.Target{}, api.Errorf(api.CodeConflict, "command %s is still queued and has not started yet", id)
+		return liveCommandRoute{}, api.Errorf(api.CodeConflict, "command %s is still queued and has not started yet", id)
 	}
 	if !api.Live(state) {
-		return inspect.Target{}, api.Errorf(api.CodeConflict, "command %s has already ended (%s); live inspection only applies while running", id, state).
-			WithSuggestion("use `hotbed profile " + id + "` to query its always-on OpenTelemetry eBPF profile")
+		err := api.Errorf(api.CodeConflict, "command %s has already ended (%s); live inspection only applies while running", id, state)
+		if !isVM {
+			err = err.WithSuggestion("use `hotbed profile " + id + "` to query its always-on OpenTelemetry eBPF profile")
+		}
+		return liveCommandRoute{}, err
 	}
+	return liveCommandRoute{
+		wsID:     wsID,
+		isVM:     isVM,
+		unitName: unitName,
+		cgroup:   cgroup,
+	}, nil
+}
 
+// hostInspectTarget builds an inspect.Target for a live host/chroot command.
+func (e *Engine) hostInspectTarget(ctx context.Context, id string, route liveCommandRoute) inspect.Target {
+	cgroup := route.cgroup
 	var mainPID int
-	if st, err := e.cfg.Units.Status(ctx, unitName); err == nil && st.Loaded {
+	if st, err := e.cfg.Units.Status(ctx, route.unitName); err == nil && st.Loaded {
 		mainPID = st.PID
 		if st.Cgroup != "" {
 			cgroup = st.Cgroup
@@ -100,7 +124,7 @@ func (e *Engine) commandTarget(ctx context.Context, id string) (inspect.Target, 
 	}
 	t := inspect.Target{
 		CommandID: id,
-		UnitName:  unitName,
+		UnitName:  route.unitName,
 		Cgroup:    cgroup,
 		MainPID:   mainPID,
 		Hostname:  e.cfg.Host,
@@ -116,46 +140,77 @@ func (e *Engine) commandTarget(ctx context.Context, id string) (inspect.Target, 
 			}, true)
 		}
 	}
-	return t, nil
+	return t
+}
+
+func (e *Engine) wrapVMSampleEmit(wsID string, emit inspect.SampleEmit) inspect.SampleEmit {
+	if e.cfg.Host == "" {
+		return emit
+	}
+	label := fmt.Sprintf("%s (vm:%s)", e.cfg.Host, wsID)
+	return func(ch *pb.SampleCommandChunk) error {
+		if ch != nil && ch.Sample != nil {
+			ch.Sample.Hostname = label
+		}
+		return emit(ch)
+	}
 }
 
 // Inspect takes an opt-in snapshot of a live command's processes, open files,
 // cgroup metrics, kernel stacks, memory maps, and limits.
 func (e *Engine) Inspect(ctx context.Context, req *pb.InspectCommandRequest) (*pb.InspectCommandResponse, error) {
+	route, err := e.resolveLiveCommand(req.Id)
+	if err != nil {
+		if e.cfg.Inspector == nil && e.cfg.Runtime == nil {
+			return nil, api.Errorf(api.CodePlatformNotSupported, "process inspection is not configured on this worker")
+		}
+		return nil, err
+	}
+	if route.isVM {
+		return e.cfg.Runtime.InspectCommand(ctx, route.wsID, req)
+	}
 	if e.cfg.Inspector == nil {
 		return nil, api.Errorf(api.CodePlatformNotSupported, "process inspection is not configured on this worker")
 	}
-	target, err := e.commandTarget(ctx, req.Id)
-	if err != nil {
-		return nil, err
-	}
-	return e.cfg.Inspector.Inspect(ctx, target, req)
+	return e.cfg.Inspector.Inspect(ctx, e.hostInspectTarget(ctx, req.Id, route), req)
 }
 
 // Trace runs an opt-in active Linux trace (strace, perf, stacks, bpftrace) on
 // a live command and streams progress/results via emit.
 func (e *Engine) Trace(ctx context.Context, req *pb.TraceCommandRequest, emit inspect.Emit) error {
+	route, err := e.resolveLiveCommand(req.Id)
+	if err != nil {
+		if e.cfg.Inspector == nil && e.cfg.Runtime == nil {
+			return api.Errorf(api.CodePlatformNotSupported, "process tracing is not configured on this worker")
+		}
+		return err
+	}
+	if route.isVM {
+		return e.cfg.Runtime.TraceCommand(ctx, route.wsID, req, emit)
+	}
 	if e.cfg.Inspector == nil {
 		return api.Errorf(api.CodePlatformNotSupported, "process tracing is not configured on this worker")
 	}
-	target, err := e.commandTarget(ctx, req.Id)
-	if err != nil {
-		return err
-	}
-	return e.cfg.Inspector.Trace(ctx, target, req, emit)
+	return e.cfg.Inspector.Trace(ctx, e.hostInspectTarget(ctx, req.Id, route), req, emit)
 }
 
 // SampleCommand takes a comprehensive Activity Monitor-style Linux activity sample of
 // a live command and streams progress plus the final report via emit.
 func (e *Engine) SampleCommand(ctx context.Context, req *pb.SampleCommandRequest, emit inspect.SampleEmit) error {
+	route, err := e.resolveLiveCommand(req.Id)
+	if err != nil {
+		if e.cfg.Inspector == nil && e.cfg.Runtime == nil {
+			return api.Errorf(api.CodePlatformNotSupported, "process sampling is not configured on this worker")
+		}
+		return err
+	}
+	if route.isVM {
+		return e.cfg.Runtime.SampleCommand(ctx, route.wsID, req, e.wrapVMSampleEmit(route.wsID, emit))
+	}
 	if e.cfg.Inspector == nil {
 		return api.Errorf(api.CodePlatformNotSupported, "process sampling is not configured on this worker")
 	}
-	target, err := e.commandTarget(ctx, req.Id)
-	if err != nil {
-		return err
-	}
-	return e.cfg.Inspector.Sample(ctx, target, req, emit)
+	return e.cfg.Inspector.Sample(ctx, e.hostInspectTarget(ctx, req.Id, route), req, emit)
 }
 
 // CommandProfile queries the always-on OpenTelemetry eBPF continuous profile
@@ -168,9 +223,23 @@ func (e *Engine) CommandProfile(id string, req *pb.GetProfileRequest) (*pb.Comma
 	e.mu.Lock()
 	c, ok := e.commands[id]
 	isLive := ok && api.Live(c.cmd().State)
+	wsID := ""
+	if ok {
+		wsID = c.cmd().WorkspaceId
+	}
 	e.mu.Unlock()
+	isVM := wsID != "" && e.usesRuntime(wsID)
 
 	if isLive {
+		if isVM {
+			return &pb.CommandProfile{
+				CommandId:  id,
+				Profiler:   profiler.EngineName,
+				Live:       true,
+				Active:     false,
+				StatusNote: fmt.Sprintf("always-on eBPF continuous profiling is not yet available inside Firecracker VMs; use `hotbed trace perf %s` or `hotbed sample %s` for live stacks", id, id),
+			}, nil
+		}
 		if e.cfg.Profiler == nil {
 			return &pb.CommandProfile{
 				CommandId:  id,
@@ -191,6 +260,15 @@ func (e *Engine) CommandProfile(id string, req *pb.GetProfileRequest) (*pb.Comma
 		return nil, err
 	}
 
+	if ok && isVM {
+		return &pb.CommandProfile{
+			CommandId:  id,
+			Profiler:   profiler.EngineName,
+			Live:       false,
+			Active:     false,
+			StatusNote: "always-on eBPF continuous profiling is not yet available inside Firecracker VMs",
+		}, nil
+	}
 	// Command recently ended and may still have samples in memory.
 	if ok && e.cfg.Profiler != nil {
 		return e.cfg.Profiler.Query(id, req, false), nil

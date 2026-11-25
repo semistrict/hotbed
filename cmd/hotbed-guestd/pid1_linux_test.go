@@ -46,6 +46,12 @@ func TestPID1MountFlags(t *testing.T) {
 	if _, hasTmp := byTarget["/tmp"]; hasTmp {
 		t.Errorf("/tmp must stay on cladefs rootfs (not tmpfs) for O_DIRECT and disk capacity")
 	}
+	if m, ok := byTarget["/sys/kernel/tracing"]; !ok || m.fstype != "tracefs" {
+		t.Errorf("pid1Mounts missing tracefs at /sys/kernel/tracing: %+v", m)
+	}
+	if m, ok := byTarget["/sys/fs/bpf"]; !ok || m.fstype != "bpf" {
+		t.Errorf("pid1Mounts missing bpf at /sys/fs/bpf: %+v", m)
+	}
 }
 
 func TestPrepareGuestTmpDirs(t *testing.T) {

@@ -8,8 +8,10 @@ import (
 	"strings"
 	"time"
 
+	"github.com/semistrict/hotbed/internal/api"
 	pb "github.com/semistrict/hotbed/internal/gen/hotbed/v1"
 	"github.com/semistrict/hotbed/internal/guestd"
+	"github.com/semistrict/hotbed/internal/inspect"
 	"github.com/semistrict/hotbed/internal/unit"
 )
 
@@ -210,6 +212,30 @@ func (g *GuestRuntime) StreamLogs(ctx context.Context, wsID, cmdID string, offse
 		return 0, err
 	}
 	return c.StreamLogs(ctx, cmdID, offset, follow, dst)
+}
+
+func (g *GuestRuntime) InspectCommand(ctx context.Context, wsID string, req *pb.InspectCommandRequest) (*pb.InspectCommandResponse, error) {
+	c, err := g.vms.ClientFor(wsID)
+	if err != nil {
+		return nil, api.Errorf(api.CodeConflict, "workspace %s VM is not running: %v", wsID, err)
+	}
+	return c.InspectCommand(ctx, req)
+}
+
+func (g *GuestRuntime) TraceCommand(ctx context.Context, wsID string, req *pb.TraceCommandRequest, emit inspect.Emit) error {
+	c, err := g.vms.ClientFor(wsID)
+	if err != nil {
+		return api.Errorf(api.CodeConflict, "workspace %s VM is not running: %v", wsID, err)
+	}
+	return c.TraceCommand(ctx, req, emit)
+}
+
+func (g *GuestRuntime) SampleCommand(ctx context.Context, wsID string, req *pb.SampleCommandRequest, emit inspect.SampleEmit) error {
+	c, err := g.vms.ClientFor(wsID)
+	if err != nil {
+		return api.Errorf(api.CodeConflict, "workspace %s VM is not running: %v", wsID, err)
+	}
+	return c.SampleCommand(ctx, req, emit)
 }
 
 func (g *GuestRuntime) ApplySync(ctx context.Context, wsID string, spec SyncSpec) (int, error) {

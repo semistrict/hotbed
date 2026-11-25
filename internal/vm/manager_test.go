@@ -95,6 +95,9 @@ func TestBuildFirecrackerConfig(t *testing.T) {
 	if !strings.Contains(fc.BootSource.BootArgs, "init=/sbin/hotbed-guestd") {
 		t.Fatalf("boot_args missing init: %q", fc.BootSource.BootArgs)
 	}
+	if !strings.Contains(fc.BootSource.BootArgs, "psi=1") {
+		t.Fatalf("boot_args missing psi=1: %q", fc.BootSource.BootArgs)
+	}
 	if !strings.Contains(fc.BootSource.BootArgs, "ip=10.199.0.2::10.199.0.1:255.255.0.0::eth0:off") {
 		t.Fatalf("boot_args missing ip=: %q", fc.BootSource.BootArgs)
 	}

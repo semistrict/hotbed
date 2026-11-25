@@ -15,12 +15,17 @@ import (
 	"net/url"
 	"os"
 	"strconv"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
 
+	"google.golang.org/protobuf/proto"
+
+	"github.com/semistrict/hotbed/internal/api"
 	pb "github.com/semistrict/hotbed/internal/gen/hotbed/v1"
 	"github.com/semistrict/hotbed/internal/gitops"
+	"github.com/semistrict/hotbed/internal/inspect"
 	"github.com/semistrict/hotbed/internal/unit"
 )
 
@@ -193,6 +198,159 @@ func (c *Client) ThawCommand(ctx context.Context, id string) (CommandStatus, err
 // free-page-reporting returns unused host RAM.
 func (c *Client) Reclaim(ctx context.Context, id string, bytes int64) error {
 	return c.doJSON(ctx, http.MethodPost, "/v1/reclaim", ReclaimRequest{ID: id, Bytes: bytes}, nil)
+}
+
+func decodeAPIError(resp *http.Response, body []byte, op string) error {
+	if resp.Header.Get(apiErrorHeader) == "1" {
+		var ae api.Error
+		if json.Unmarshal(body, &ae) == nil && ae.Code != "" {
+			return &ae
+		}
+	}
+	if resp.StatusCode == http.StatusNotFound {
+		return api.Errorf(api.CodePlatformNotSupported, "VM guest agent (hotbed-guestd) does not support %s", op).
+			WithSuggestion("recreate the workspace after upgrading hotbed-guestd")
+	}
+	return fmt.Errorf("guestd %s (%d): %s", op, resp.StatusCode, strings.TrimSpace(string(body)))
+}
+
+// InspectCommand runs an opt-in Linux inspection of a live command inside the guest VM.
+func (c *Client) InspectCommand(ctx context.Context, req *pb.InspectCommandRequest) (*pb.InspectCommandResponse, error) {
+	raw, err := proto.Marshal(req)
+	if err != nil {
+		return nil, err
+	}
+	const maxAttempts = 5
+	var lastErr error
+	for attempt := range maxAttempts {
+		httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, "http://guestd/v1/commands/inspect", bytes.NewReader(raw))
+		if err != nil {
+			return nil, err
+		}
+		httpReq.Header.Set("Content-Type", "application/x-protobuf")
+		resp, err := c.http.Do(httpReq)
+		if err != nil {
+			lastErr = err
+			if isTransientReset(err) && attempt+1 < maxAttempts && ctx.Err() == nil {
+				select {
+				case <-time.After(time.Duration(attempt+1) * 50 * time.Millisecond):
+					continue
+				case <-ctx.Done():
+					return nil, ctx.Err()
+				}
+			}
+			return nil, err
+		}
+		data, rerr := io.ReadAll(io.LimitReader(resp.Body, maxStreamFrameLen))
+		_ = resp.Body.Close()
+		if rerr != nil {
+			lastErr = rerr
+			if isTransientReset(rerr) && attempt+1 < maxAttempts && ctx.Err() == nil {
+				select {
+				case <-time.After(time.Duration(attempt+1) * 50 * time.Millisecond):
+					continue
+				case <-ctx.Done():
+					return nil, ctx.Err()
+				}
+			}
+			return nil, rerr
+		}
+		if resp.StatusCode >= 400 {
+			return nil, decodeAPIError(resp, data, "in-guest inspection")
+		}
+		out := &pb.InspectCommandResponse{}
+		if err := proto.Unmarshal(data, out); err != nil {
+			return nil, fmt.Errorf("decode guestd inspect response: %w", err)
+		}
+		return out, nil
+	}
+	return nil, lastErr
+}
+
+func (c *Client) streamProto(ctx context.Context, path, op string, req proto.Message, onChunk func([]byte) error) error {
+	raw, err := proto.Marshal(req)
+	if err != nil {
+		return err
+	}
+	const maxAttempts = 5
+	var resp *http.Response
+	var lastErr error
+	for attempt := range maxAttempts {
+		httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, "http://guestd"+path, bytes.NewReader(raw))
+		if err != nil {
+			return err
+		}
+		httpReq.Header.Set("Content-Type", "application/x-protobuf")
+		resp, err = c.http.Do(httpReq)
+		if err == nil {
+			break
+		}
+		lastErr = err
+		if isTransientReset(err) && attempt+1 < maxAttempts && ctx.Err() == nil {
+			select {
+			case <-time.After(time.Duration(attempt+1) * 50 * time.Millisecond):
+				continue
+			case <-ctx.Done():
+				return ctx.Err()
+			}
+		}
+		return err
+	}
+	if resp == nil {
+		return lastErr
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= 400 {
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 64<<10))
+		return decodeAPIError(resp, body, op)
+	}
+	for {
+		typ, payload, err := readStreamFrame(resp.Body)
+		if err != nil {
+			if ctx.Err() != nil {
+				return ctx.Err()
+			}
+			return fmt.Errorf("guestd %s stream interrupted: %w", op, err)
+		}
+		switch typ {
+		case streamFrameProto:
+			if err := onChunk(payload); err != nil {
+				return err
+			}
+		case streamFrameError:
+			var ae api.Error
+			if json.Unmarshal(payload, &ae) == nil && ae.Code != "" {
+				return &ae
+			}
+			return fmt.Errorf("guestd %s: %s", op, string(payload))
+		case streamFrameEOF:
+			return nil
+		default:
+			return fmt.Errorf("guestd %s: unexpected frame type %d", op, typ)
+		}
+	}
+}
+
+// TraceCommand runs an opt-in active Linux trace on a live command inside the guest VM.
+func (c *Client) TraceCommand(ctx context.Context, req *pb.TraceCommandRequest, emit inspect.Emit) error {
+	return c.streamProto(ctx, "/v1/commands/trace", "in-guest tracing", req, func(payload []byte) error {
+		ch := &pb.TraceCommandChunk{}
+		if err := proto.Unmarshal(payload, ch); err != nil {
+			return fmt.Errorf("decode guestd trace chunk: %w", err)
+		}
+		return emit(ch)
+	})
+}
+
+// SampleCommand runs an Activity Monitor-style Linux sample of a live command inside the guest VM.
+func (c *Client) SampleCommand(ctx context.Context, req *pb.SampleCommandRequest, emit inspect.SampleEmit) error {
+	return c.streamProto(ctx, "/v1/commands/sample", "in-guest sampling", req, func(payload []byte) error {
+		ch := &pb.SampleCommandChunk{}
+		if err := proto.Unmarshal(payload, ch); err != nil {
+			return fmt.Errorf("decode guestd sample chunk: %w", err)
+		}
+		return emit(ch)
+	})
 }
 
 // StreamLogs streams command output starting at offset into dst until EOF (or

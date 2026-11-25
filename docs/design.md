@@ -315,11 +315,13 @@ or tracing packages.
   (no host login shell or host `PathSuffix`). Only `freshen` units receive ephemeral read-only bind
   mounts of the worker user's host git/gh/ssh credentials so private repos clone without baking
   host credentials into the base snapshot.
-- **In-rootfs active tracing (`internal/inspect`).** The worker resolves and runs `strace`, `perf`,
-  `bpftrace`, `eu-stack`, and `gdb` as the host's root inside the command's (or shared base
-  image's) rootfs via a private mount namespace with host `/proc`, `/sys`, and `/dev`
-  rbind-mounted, so zero host tracer packages are required and DWARF/library paths match the
-  traced processes directly. It finds a command's processes in every cgroup below its unit's.
+- **In-rootfs and in-VM active tracing (`internal/inspect`).** For chroot workspaces, the worker
+  resolves and runs `strace`, `perf`, `bpftrace`, `eu-stack`, and `gdb` as the host's root inside
+  the shared base image's rootfs via a private mount namespace with host `/proc`, `/sys`, and `/dev`
+  rbind-mounted, so zero host tracer packages are required and DWARF/library paths match the traced
+  processes directly. For Firecracker VM workspaces, `hotbed-guestd` runs `internal/inspect`
+  directly inside the guest against `/sys/fs/cgroup/hotbed/<id>` and streams results back over
+  vsock. In both modes it finds a command's processes in every cgroup below its unit's.
 
 ## Getting code in
 
