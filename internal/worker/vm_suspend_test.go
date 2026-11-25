@@ -103,20 +103,43 @@ func (r *suspendableTestResolver) VMExitStatus(_ context.Context, wsID string) (
 
 func startLocalTestGuestd(t *testing.T) *guestd.Client {
 	t.Helper()
-	sockDir, err := os.MkdirTemp("/tmp", "hb-susp-gd-")
+	// Use a 0755 base under /tmp (and chown workDir when running as root) so
+	// guestd's unprivileged command user can chdir into WorkDir under sudo
+	// test runs (test-linux-root), while keeping socket paths <104 bytes.
+	guestBase, err := os.MkdirTemp("/tmp", "hb-susp-gd-")
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { _ = os.RemoveAll(sockDir) })
-	ctrlSock := filepath.Join(sockDir, "ctrl.sock")
+	t.Cleanup(func() { _ = os.RemoveAll(guestBase) })
+	if err := os.Chmod(guestBase, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	guestWork := filepath.Join(guestBase, "work")
+	guestState := filepath.Join(guestBase, "state")
+	guestRun := filepath.Join(guestBase, "run")
+	if err := os.MkdirAll(guestWork, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(guestState, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(guestRun, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if os.Geteuid() == 0 {
+		sp := fake.BaseImage(nil).Spec.Normalized()
+		_ = os.Chown(guestWork, sp.UID, sp.GID)
+	}
+	ctrlSock := filepath.Join(guestBase, "ctrl.sock")
 	ln, err := net.Listen("unix", ctrlSock)
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = ln.Close() })
 	srv, err := guestd.NewServer(guestd.ServerConfig{
-		WorkDir:  t.TempDir(),
-		StateDir: t.TempDir(),
+		WorkDir:  guestWork,
+		StateDir: guestState,
+		RunDir:   guestRun,
 		FreezeFS: func(string) error { return nil },
 		ThawFS:   func(string) error { return nil },
 	})
