@@ -113,7 +113,7 @@ export async function handleGcRoute(
 	request: Request,
 	url: URL,
 	env: ControllerEnv,
-	fetchImpl: GcFetch = (input, init) => fetch(input, init),
+	fetchImpl?: GcFetch,
 ): Promise<Response | null> {
 	if (!url.pathname.startsWith("/api/gc/")) {
 		return null;
@@ -129,7 +129,16 @@ export async function handleGcRoute(
 
 	const workerUrl = (env.GC_WORKER_URL ?? "").trim();
 	const token = (env.GC_TOKEN ?? "").trim();
-	const configured = workerUrl.length > 0 && token.length > 0;
+	const hasBinding = Boolean(env.GC_WORKER && typeof env.GC_WORKER.fetch === "function");
+	const configured = (hasBinding || workerUrl.length > 0) && token.length > 0;
+	// Prefer Cloudflare Service Binding (`env.GC_WORKER`) to avoid same-account `workers.dev`
+	// Worker-to-Worker fetch rejection (Cloudflare error 1042).
+	const baseUrl = hasBinding ? "https://cladefs-gc.internal" : workerUrl;
+	const doFetch: GcFetch =
+		fetchImpl ??
+		(hasBinding
+			? (input, init) => env.GC_WORKER!.fetch(input, init)
+			: (input, init) => fetch(input, init));
 
 	const sub = url.pathname.slice("/api/gc".length);
 
@@ -152,8 +161,8 @@ export async function handleGcRoute(
 
 		try {
 			const [health, usage] = await Promise.all([
-				callGcWorker(workerUrl, token, "/healthz", "GET", fetchImpl),
-				callGcWorker(workerUrl, token, "/usage", "GET", fetchImpl),
+				callGcWorker(baseUrl, token, "/healthz", "GET", doFetch),
+				callGcWorker(baseUrl, token, "/usage", "GET", doFetch),
 			]);
 			if (!usage.ok) {
 				const errMsg =
@@ -218,7 +227,7 @@ export async function handleGcRoute(
 	}
 
 	if (request.method === "POST" && sub === "/sweep") {
-		const res = await callGcWorker(workerUrl, token, "/sweep", "POST", fetchImpl);
+		const res = await callGcWorker(baseUrl, token, "/sweep", "POST", doFetch);
 		return reply(res.body, res.ok ? 200 : res.status || 502);
 	}
 
@@ -228,7 +237,7 @@ export async function handleGcRoute(
 		if (!isValidCellSegments(tenant, cell)) {
 			return reply({ message: "invalid cell id" }, 400);
 		}
-		const res = await callGcWorker(workerUrl, token, `/cell/${tenant}/${cell}`, "POST", fetchImpl);
+		const res = await callGcWorker(baseUrl, token, `/cell/${tenant}/${cell}`, "POST", doFetch);
 		return reply(res.body, res.ok ? 200 : res.status || 502);
 	}
 
@@ -238,13 +247,7 @@ export async function handleGcRoute(
 		if (!isValidCellSegments(tenant, cell)) {
 			return reply({ message: "invalid cell id" }, 400);
 		}
-		const res = await callGcWorker(
-			workerUrl,
-			token,
-			`/dry-run/${tenant}/${cell}`,
-			"GET",
-			fetchImpl,
-		);
+		const res = await callGcWorker(baseUrl, token, `/dry-run/${tenant}/${cell}`, "GET", doFetch);
 		return reply(res.body, res.ok ? 200 : res.status || 502);
 	}
 
@@ -254,7 +257,7 @@ export async function handleGcRoute(
 		if (!isValidCellSegments(tenant, cell)) {
 			return reply({ message: "invalid cell id" }, 400);
 		}
-		const res = await callGcWorker(workerUrl, token, `/live/${tenant}/${cell}`, "GET", fetchImpl);
+		const res = await callGcWorker(baseUrl, token, `/live/${tenant}/${cell}`, "GET", doFetch);
 		return reply(res.body, res.ok ? 200 : res.status || 502);
 	}
 

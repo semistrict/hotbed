@@ -139,7 +139,10 @@ export function ClusterGcSection({ now }: { now: number }) {
             type="button"
             variant="outline"
             size="xs"
-            onClick={() => void refetch()}
+            onClick={() => {
+              setActionError(null);
+              void refetch();
+            }}
             disabled={isFetching}
             title="Refresh GC usage from R2 collector leases"
           >

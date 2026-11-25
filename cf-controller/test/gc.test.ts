@@ -8,6 +8,7 @@ const OWNER_AUTH = { Authorization: "Bearer test-owner-secret" };
 function baseEnv(overrides?: Partial<ControllerEnv>): ControllerEnv {
 	return {
 		...(env as unknown as ControllerEnv),
+		GC_WORKER: undefined,
 		GC_WORKER_URL: "https://gc.example.test",
 		GC_TOKEN: "gc-secret-token",
 		...overrides,
@@ -139,5 +140,37 @@ describe("handleGcRoute", () => {
 		// Verify GC_TOKEN was sent to every authenticated upstream endpoint (and omitted on /healthz).
 		const authCalls = seen.filter((c) => !c.url.endsWith("/healthz"));
 		expect(authCalls.every((c) => c.auth === "Bearer gc-secret-token")).toBe(true);
+	});
+
+	it("prefers env.GC_WORKER service binding over public fetch when bound", async () => {
+		const boundUrls: string[] = [];
+		const fakeBinding = {
+			async fetch(input: RequestInfo | URL): Promise<Response> {
+				const u =
+					typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
+				boundUrls.push(u);
+				if (u.endsWith("/healthz")) return Response.json({ ok: true });
+				return Response.json({
+					cells: 3,
+					measuredCells: 3,
+					totalObjects: 12,
+					totalBytes: 4096,
+					usage: [],
+				});
+			},
+		} as unknown as Fetcher;
+
+		const req = new Request("https://hotbed.test/api/gc/status", { headers: OWNER_AUTH });
+		const res = await handleGcRoute(
+			req,
+			new URL(req.url),
+			baseEnv({ GC_WORKER: fakeBinding, GC_WORKER_URL: "" }),
+		);
+		expect(res?.status).toBe(200);
+		expect(await res!.json()).toMatchObject({ configured: true, healthy: true, cells: 3 });
+		expect(boundUrls).toEqual([
+			"https://cladefs-gc.internal/healthz",
+			"https://cladefs-gc.internal/usage",
+		]);
 	});
 });
