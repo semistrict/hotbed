@@ -24,23 +24,23 @@ export function HostStealBadge({ guestBusy, host }: { guestBusy: number; host?: 
   return (
     <span
       title={`Guest reports ${percent(guestBusy)} CPU busy, but QEMU only receives ${percent(host.vmCpuBusy)} on the host (${formatHostUsageFoot(host)})`}
-      className="rounded-full bg-serious/15 px-2.5 py-0.5 font-mono text-[10.5px] whitespace-nowrap text-serious"
+      className="rounded-full bg-serious/15 px-2.5 py-0.5 font-mono text-[10.5px] whitespace-nowrap text-serious-ink"
     >
       host CPU steal · VM {percent(host.vmCpuBusy)} vs guest {percent(guestBusy)}
     </span>
   );
 }
 
-export function HostCpuTile({ guestBusy, vcpus, host }: { guestBusy: number; vcpus: number; host?: HostUsage }) {
+export function HostCpuTile({ guestBusy, vcpus, host, online = true }: { guestBusy: number; vcpus: number; host?: HostUsage; online?: boolean }) {
   if (!host) return null;
-  const starved = isHostStarved(guestBusy, host);
+  const starved = online && isHostStarved(guestBusy, host);
   return (
     <StatTile
       label="VM CPU (host)"
-      value={percent(host.vmCpuBusy)}
+      value={online ? percent(host.vmCpuBusy) : "—"}
       unit={`of ${vcpus} vCPUs`}
       tone={starved ? "ember" : "frost"}
-      foot={formatHostUsageFoot(host)}
+      foot={online ? formatHostUsageFoot(host) : "offline"}
     />
   );
 }
@@ -90,7 +90,7 @@ export function NodePage() {
                 {n.profiler.active ? `OTel eBPF · ${n.profiler.sampleHz} Hz` : "OTel eBPF off"}
               </span>
             )}
-            <HostStealBadge guestBusy={usage?.cpuBusy ?? 0} host={host} />
+            {n.online && <HostStealBadge guestBusy={usage?.cpuBusy ?? 0} host={host} />}
             <AdmissionBadge a={admission} now={now} />
             <ArchBadge arch={res?.arch ?? ""} />
             <OnlineBadge online={n.online} asleep={n.asleep} storageError={n.storageError} />
@@ -98,15 +98,15 @@ export function NodePage() {
         }
       />
       {!n.online && n.storageError && (
-        <div className="rounded-2xl border border-border bg-card/80 p-4 font-mono text-[12px] break-words text-serious">
+        <div className="rounded-2xl border border-border bg-card/80 p-4 font-mono text-[12px] break-words text-serious-ink">
           Its worker cannot open its storage, and serves nothing until it can: {n.storageError}
         </div>
       )}
       <div className={`grid grid-cols-2 gap-3 ${host ? "sm:grid-cols-4 xl:grid-cols-7" : "sm:grid-cols-3 xl:grid-cols-6"}`}>
-        <StatTile label={host ? "Guest CPU" : "CPU busy"} value={percent(usage?.cpuBusy ?? 0)} unit={`of ${res?.cpus ?? 0}`} />
-        <HostCpuTile guestBusy={usage?.cpuBusy ?? 0} vcpus={res?.cpus ?? 0} host={host} />
-        <StatTile label="Memory" value={bytes(usage?.memoryUsedBytes ?? 0n)} unit={`/ ${bytes(res?.memoryBytes ?? 0n)}`} foot={`${bytes(n.reservedMemoryBytes)} guaranteed`} />
-        <StatTile label="Swap" value={bytes(usage?.swapUsedBytes ?? 0n)} unit={`/ ${bytes(res?.swapBytes ?? 0n)}`} tone={(usage?.swapUsedBytes ?? 0n) > 0n ? "frost" : "default"} />
+        <StatTile label={host ? "Guest CPU" : "CPU busy"} value={n.online ? percent(usage?.cpuBusy ?? 0) : "—"} unit={`of ${res?.cpus ?? 0}`} />
+        <HostCpuTile guestBusy={usage?.cpuBusy ?? 0} vcpus={res?.cpus ?? 0} host={host} online={n.online} />
+        <StatTile label="Memory" value={n.online ? bytes(usage?.memoryUsedBytes ?? 0n) : "—"} unit={`/ ${bytes(res?.memoryBytes ?? 0n)}`} foot={`${bytes(n.reservedMemoryBytes)} guaranteed`} />
+        <StatTile label="Swap" value={n.online ? bytes(usage?.swapUsedBytes ?? 0n) : "—"} unit={`/ ${bytes(res?.swapBytes ?? 0n)}`} tone={n.online && (usage?.swapUsedBytes ?? 0n) > 0n ? "frost" : "default"} />
         <StatTile label="Saved today" value={duration(day.saved)} tone="ember" foot={`${compact(day.builds)} builds`} />
         <StatTile label="Failure rate" value={percent(failureRate(history))} foot={`${history.filter((h) => h.state === CommandState.FAILED).length} failed today`} />
         <StatTile
@@ -169,7 +169,7 @@ export function NodePage() {
       </section>
 
       <div className="grid gap-4 lg:grid-cols-3">
-        <Card className="lg:col-span-2" title="24 hours" sub="Mean CPU and memory per hour">
+        <Card className="lg:col-span-2" title="24 hours" sub="Mean CPU busy per hour">
           <Columns
             columns={hours.map((h) => ({ key: String(h.hour), label: String(new Date(Number(h.hour)).getHours()).padStart(2, "0"), values: [h.cpuBusy * 100] }))}
             series={[{ id: "cpu", label: "cpu", color }]}
@@ -298,7 +298,7 @@ export function NodePage() {
           ) : (
             <ul className="divide-y divide-border text-[12px]">
               {ws.map((w) => (
-                <li key={w.id} className="flex items-center gap-3 py-2">
+                <li key={w.id} className="flex flex-wrap items-center gap-x-3 gap-y-1 py-2">
                   <Link to="/workspaces/$id" params={{ id: w.id }} className="font-mono text-foreground hover:text-primary">
                     {w.id}
                   </Link>

@@ -1,5 +1,6 @@
-import { useState } from "react";
+import { useId, useState } from "react";
 import { hhmm, hhmmss } from "../../lib/format";
+import { Empty } from "../Panel";
 import { buildLinePath, matchWindowMs, resolveSeriesPoint, splitLineRuns, type LineSeries } from "./LineChart";
 import { useWidth } from "./useWidth";
 
@@ -16,9 +17,15 @@ const GAP = 6;
 export function SmallMultiples({ series, yMax, format }: { series: LineSeries[]; yMax: number; format: (v: number) => string }) {
   const [ref, width] = useWidth<HTMLDivElement>();
   const [hover, setHover] = useState<number | null>(null);
+  const clipId = useId();
   const times = Array.from(new Set(series.flatMap((s) => s.points.map((p) => p.t)))).sort((a, b) => a - b);
-  const t0 = times[0] ?? 0;
-  const t1 = times[times.length - 1] ?? 1;
+
+  if (times.length === 0) {
+    return <Empty>No telemetry samples yet.</Empty>;
+  }
+
+  const t0 = times[0]!;
+  const t1 = times[times.length - 1]!;
   const w = Math.max(0, width - LABEL_W - VALUE_W);
   const x = (t: number) => LABEL_W + (t1 > t0 ? ((t - t0) / (t1 - t0)) * w : 0);
   const height = series.length * (ROW_H + GAP) + 16;
@@ -26,14 +33,27 @@ export function SmallMultiples({ series, yMax, format }: { series: LineSeries[];
   const onMove = (e: React.PointerEvent<SVGSVGElement>) => {
     const px = e.clientX - e.currentTarget.getBoundingClientRect().left;
     if (px < LABEL_W || px > LABEL_W + w || !times.length) return setHover(null);
-    const f = (px - LABEL_W) / Math.max(1, w);
-    setHover(Math.round(f * (times.length - 1)));
+    let bestIdx = 0;
+    let bestDist = Math.abs(x(times[0]!) - px);
+    for (let i = 1; i < times.length; i++) {
+      const dist = Math.abs(x(times[i]!) - px);
+      if (dist < bestDist) {
+        bestIdx = i;
+        bestDist = dist;
+      }
+    }
+    setHover(bestIdx);
   };
 
   return (
     <div ref={ref}>
       {width > 0 && (
         <svg width={width} height={height} className="block touch-none" onPointerMove={onMove} onPointerLeave={() => setHover(null)}>
+          <defs>
+            <clipPath id={clipId}>
+              <rect x={16} y={0} width={LABEL_W - 22} height={height} />
+            </clipPath>
+          </defs>
           {series.map((s, i) => {
             const top = i * (ROW_H + GAP);
             const y = (v: number) => top + ROW_H - (Math.min(v, yMax) / yMax) * ROW_H;
@@ -53,11 +73,13 @@ export function SmallMultiples({ series, yMax, format }: { series: LineSeries[];
               hoverT !== undefined
                 ? resolveSeriesPoint(s.points, hoverT, matchWindowMs(series, s))
                 : s.points[s.points.length - 1];
+            const shortLabel = s.label.length > 11 ? `${s.label.slice(0, 10)}…` : s.label;
             return (
               <g key={s.id}>
                 <line x1={0} x2={10} y1={top + ROW_H / 2} y2={top + ROW_H / 2} stroke={s.color} strokeWidth={2} strokeLinecap="round" />
-                <text x={16} y={top + ROW_H / 2} dy="0.32em" className="fill-muted-foreground font-mono text-[10.5px]">
-                  {s.label}
+                <text x={16} y={top + ROW_H / 2} dy="0.32em" clipPath={`url(#${clipId})`} className="fill-muted-foreground font-mono text-[10.5px]">
+                  <title>{s.label}</title>
+                  {shortLabel}
                 </text>
                 <line x1={LABEL_W} x2={LABEL_W + w} y1={top + ROW_H} y2={top + ROW_H} stroke="var(--axis)" strokeWidth={1} />
                 <line x1={LABEL_W} x2={LABEL_W + w} y1={top} y2={top} stroke="var(--grid)" strokeWidth={1} />
@@ -78,7 +100,7 @@ export function SmallMultiples({ series, yMax, format }: { series: LineSeries[];
             </g>
           )}
           {hover === null &&
-            [0, 0.5, 1].map((f) => (
+            (t1 > t0 ? [0, 0.5, 1] : [0]).map((f) => (
               <text key={f} x={LABEL_W + f * w} y={height - 3} textAnchor={f === 0 ? "start" : f === 1 ? "end" : "middle"} className="num fill-faint font-mono text-[9.5px]">
                 {hhmm(t0 + f * (t1 - t0))}
               </text>

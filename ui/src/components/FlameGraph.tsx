@@ -166,7 +166,8 @@ export function FlameGraph({ stacks, frames: frameTable, highlight = "" }: { sta
             <button
               type="button"
               onClick={() => setZoomPath(null)}
-              className="rounded-md border border-border-strong bg-muted px-2 py-0.5 font-mono text-[10.5px] text-foreground hover:border-primary hover:text-primary"
+              title={`Reset zoom (${zoomNode.name})`}
+              className="max-w-[260px] truncate rounded-md border border-border-strong bg-muted px-2 py-0.5 font-mono text-[10.5px] text-foreground hover:border-primary hover:text-primary"
             >
               Reset zoom ({zoomNode.name})
             </button>
@@ -175,7 +176,7 @@ export function FlameGraph({ stacks, frames: frameTable, highlight = "" }: { sta
         </div>
       </div>
 
-      <div className="overflow-x-auto rounded-lg border border-border bg-background/60 p-2">
+      <div className="max-h-[480px] overflow-auto rounded-lg border border-border bg-background/60 p-2">
         <div className="relative w-full min-w-[520px]" style={{ height: `${totalH}px` }}>
           {frames.map((fr) => {
             // Flamegraph grows upward from root at bottom.
@@ -189,6 +190,8 @@ export function FlameGraph({ stacks, frames: frameTable, highlight = "" }: { sta
                 onClick={() => setZoomPath(fr.path.length === 0 ? null : fr.path)}
                 onMouseEnter={() => setHoverKey(fr.key)}
                 onMouseLeave={() => setHoverKey((cur) => (cur === fr.key ? null : cur))}
+                onFocus={() => setHoverKey(fr.key)}
+                onBlur={() => setHoverKey((cur) => (cur === fr.key ? null : cur))}
                 title={`${fr.name} (${fr.total} samples, ${pctOfAll.toFixed(1)}%)`}
                 style={{
                   left: `${fr.xPct}%`,
@@ -198,7 +201,7 @@ export function FlameGraph({ stacks, frames: frameTable, highlight = "" }: { sta
                   background: frameFill(fr, q),
                 }}
                 className={`absolute overflow-hidden rounded-[3px] border px-1.5 text-left font-mono text-[10.5px] leading-[20px] whitespace-nowrap text-ellipsis transition-opacity hover:brightness-115 ${
-                  matched ? "border-warning font-semibold text-background" : "border-background/50 text-foreground"
+                  matched ? "border-warning font-semibold text-[#1c1713]" : "border-background/50 text-foreground"
                 }`}
               >
                 {fr.wPct > 4.5 ? fr.name : ""}

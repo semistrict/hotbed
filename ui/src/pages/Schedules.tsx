@@ -21,6 +21,7 @@ export function SchedulesPage() {
 const DAY = 24 * 3600_000;
 
 function Schedules({ s }: { s: Snapshot }) {
+  const [project] = useProject();
   const now = Number(s.now);
   const runs = s.schedules.flatMap((sc) => sc.runs);
   const running = s.sessions.filter((x) => x.scheduleRunning).length;
@@ -29,12 +30,13 @@ function Schedules({ s }: { s: Snapshot }) {
   const unrun = lastDay.filter((r) => r.outcome === RunOutcome.MISSED || r.outcome === RunOutcome.SKIPPED).length;
   const next = nextRun(s);
   const paused = s.schedules.filter((sc) => sc.paused).length;
+  const scopeLabel = project ?? "every project";
 
   return (
     <div className="space-y-6">
       <PageTitle
         title="Schedules"
-        sub="Recurring work the controller starts by itself. Each run is a session of its own, with a fresh workspace of the repo at its branch's head. A run that succeeds ends its session; one that fails keeps it for the idle hour, for an agent to look inside."
+        sub={`Recurring work the controller starts by itself in ${scopeLabel}. Each run is a session of its own, with a fresh workspace of the repo at its branch's head. A run that succeeds ends its session; one that fails keeps it for the idle hour, for an agent to look inside.`}
       />
       <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
         <StatTile label="Scheduled" value={s.schedules.length} foot={paused ? `${paused} paused` : "none paused"} />
@@ -44,10 +46,10 @@ function Schedules({ s }: { s: Snapshot }) {
       </div>
       {s.schedules.length === 0 ? (
         <Card>
-          <Empty>Nothing scheduled. Add a command with hotbed schedule add NAME REPO --cron '0 2 * * *' -- CMD.</Empty>
+          <Empty>Nothing scheduled in {scopeLabel}. Add a command with hotbed schedule add NAME REPO --cron '0 2 * * *' -- CMD.</Empty>
         </Card>
       ) : (
-        s.schedules.map((sc, i) => <ScheduleCard key={sc.name} s={s} sc={sc} now={now} delay={60 * (i + 1)} />)
+        s.schedules.map((sc, i) => <ScheduleCard key={sc.name} s={s} sc={sc} now={now} delay={Math.min(i, 8) * 40} />)
       )}
     </div>
   );
@@ -67,10 +69,15 @@ function ScheduleCard({ s, sc, now, delay }: { s: Snapshot; sc: ScheduledCommand
       }
       sub={
         <>
-          <span className="font-mono text-foreground">{sc.cron}</span> · {where} · <span className={sc.paused ? "text-warning" : ""}>{when}</span>
+          <span className="font-mono text-foreground">{sc.cron}</span> · {where}
+          {when && (
+            <>
+              {" "}· <span className={sc.paused ? "text-warning-ink" : ""}>{when}</span>
+            </>
+          )}
         </>
       }
-      right={<RunStrip runs={sc.runs} />}
+      right={sc.runs.length > 0 ? <RunStrip runs={sc.runs} /> : undefined}
       delay={delay}
     >
       <CommandBlock argv={shellJoinWords(sc.command?.args ?? [])} args={sc.command?.args} env={sc.command?.env} variant="compact" maxLines={8} />
@@ -79,11 +86,14 @@ function ScheduleCard({ s, sc, now, delay }: { s: Snapshot; sc: ScheduledCommand
   );
 }
 
+const MAX_STRIP_RUNS = 30;
+
 /** The recent runs, oldest left, one mark each, so a streak of failures stands out. */
 function RunStrip({ runs }: { runs: ScheduledRun[] }) {
+  if (runs.length === 0) return null;
   return (
-    <div className="flex items-center gap-0.5" aria-label="recent runs, oldest first">
-      {[...runs].reverse().map((r) => (
+    <div className="flex flex-wrap items-center gap-0.5" aria-label="recent runs, oldest first">
+      {[...runs.slice(0, MAX_STRIP_RUNS)].reverse().map((r) => (
         <span
           key={String(r.id)}
           title={`${r.slotAt !== undefined ? dayTime(Number(r.slotAt)) : "by hand"}: ${runOutcomeLabel(r.outcome)}`}
@@ -109,7 +119,7 @@ function RunTable({ s, runs, now }: { s: Snapshot; runs: ScheduledRun[]; now: nu
   const listed = new Set(s.sessions.map((x) => x.id));
   return (
     <>
-      <div className="space-y-2 md:hidden">
+      <div className="space-y-2 lg:hidden">
         {runs.map((r) => {
           const started = Number(r.startedAt);
           const took = ((r.endedAt !== undefined ? Number(r.endedAt) : now) - started) / 1000;
@@ -141,7 +151,7 @@ function RunTable({ s, runs, now }: { s: Snapshot; runs: ScheduledRun[]; now: nu
         })}
       </div>
 
-      <div className="hidden md:block">
+      <div className="hidden lg:block">
         <Table className="text-[12px]">
           <TableHeader className="eyebrow">
             <TableRow className="border-border hover:bg-transparent">

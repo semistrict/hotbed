@@ -30,10 +30,14 @@ export function Columns({ columns, series, height = 170, format, labelEvery = 1,
   const totals = columns.map((c) => c.values.reduce((a, b) => a + b, 0));
   const ticks = niceTicks(Math.max(1, ...totals) * 1.05);
   const top = ticks[ticks.length - 1] ?? 1;
-  const w = Math.max(0, width - PAD.left - PAD.right);
+  const maxTickChars = Math.max(0, ...ticks.map((v) => format(v).length));
+  const padLeft = Math.max(PAD.left, Math.ceil(maxTickChars * 6.5 + 14));
+  const w = Math.max(0, width - padLeft - PAD.right);
   const h = height - PAD.top - PAD.bottom;
   const band = columns.length ? w / columns.length : 0;
   const barW = Math.min(24, Math.max(3, band - 4));
+  const maxLabelChars = Math.max(1, ...columns.map((c) => c.label.length));
+  const effectiveLabelEvery = band > 0 ? Math.max(labelEvery, Math.ceil((maxLabelChars * 6.5 + 8) / band)) : labelEvery;
   const y = (v: number) => PAD.top + h - (v / top) * h;
   const hovered = hover === null ? null : columns[hover];
 
@@ -53,26 +57,32 @@ export function Columns({ columns, series, height = 170, format, labelEvery = 1,
         <svg width={width} height={height} className="block overflow-visible" onPointerLeave={() => setHover(null)}>
           {ticks.map((v) => (
             <g key={v}>
-              <line x1={PAD.left} x2={PAD.left + w} y1={y(v)} y2={y(v)} stroke="var(--grid)" strokeWidth={1} />
-              <text x={PAD.left - 8} y={y(v)} dy="0.32em" textAnchor="end" className="num fill-faint font-mono text-[9.5px]">
+              <line x1={padLeft} x2={padLeft + w} y1={y(v)} y2={y(v)} stroke="var(--grid)" strokeWidth={1} />
+              <text x={padLeft - 8} y={y(v)} dy="0.32em" textAnchor="end" className="num fill-faint font-mono text-[9.5px]">
                 {format(v)}
               </text>
             </g>
           ))}
           {columns.map((c, i) => {
-            const cx = PAD.left + band * i + band / 2;
+            const cx = padLeft + band * i + band / 2;
             let acc = 0;
             const segs = c.values.map((v, si) => {
               const y0 = y(acc);
               acc += v;
               const y1 = y(acc);
-              return { si, y0, y1, isTop: c.values.slice(si + 1).every((n) => n === 0) };
+              return {
+                si,
+                y0,
+                y1,
+                hasBelow: c.values.slice(0, si).some((x) => x > 0),
+                isTop: c.values.slice(si + 1).every((n) => n === 0),
+              };
             });
             return (
               <g key={c.key} onPointerEnter={() => setHover(i)} opacity={hover === null || hover === i ? 1 : 0.55}>
-                <rect x={PAD.left + band * i} y={PAD.top} width={band} height={h} fill="transparent" />
-                {segs.map(({ si, y0, y1, isTop }) => {
-                  const segH = y0 - y1 - (si > 0 ? GAP : 0);
+                <rect x={padLeft + band * i} y={PAD.top} width={band} height={h} fill="transparent" />
+                {segs.map(({ si, y0, y1, hasBelow, isTop }) => {
+                  const segH = y0 - y1 - (hasBelow ? GAP : 0);
                   if (segH <= 0.5) return null;
                   return (
                     <path
@@ -83,7 +93,7 @@ export function Columns({ columns, series, height = 170, format, labelEvery = 1,
                   );
                 })}
                 {c.key === current && <circle cx={cx} cy={height - 17} r={2} fill="var(--primary)" />}
-                {i % labelEvery === 0 && (
+                {i % effectiveLabelEvery === 0 && (
                   <text x={cx} y={height - 6} textAnchor="middle" className="num fill-faint font-mono text-[9.5px]">
                     {c.label}
                   </text>
@@ -91,11 +101,11 @@ export function Columns({ columns, series, height = 170, format, labelEvery = 1,
               </g>
             );
           })}
-          <line x1={PAD.left} x2={PAD.left + w} y1={y(0)} y2={y(0)} stroke="var(--axis)" strokeWidth={1} />
+          <line x1={padLeft} x2={padLeft + w} y1={y(0)} y2={y(0)} stroke="var(--axis)" strokeWidth={1} />
         </svg>
       )}
       {hovered && hover !== null && (
-        <Tooltip x={PAD.left + band * hover + band / 2} width={width} title={hovered.label}>
+        <Tooltip x={padLeft + band * hover + band / 2} width={width} title={hovered.label}>
           {series.map((s, si) => (
             <div key={s.id} className="flex items-center gap-2">
               <span className="inline-block h-[2px] w-2.5 rounded-full" style={{ background: s.color }} />

@@ -6,8 +6,8 @@ const KIND: Record<ClusterEvent["kind"], { glyph: string; className: string }> =
   fork: { glyph: "⑂", className: "text-sprout" },
   release: { glyph: "↺", className: "text-faint" },
   admit: { glyph: "▸", className: "text-muted-foreground" },
-  wait: { glyph: "…", className: "text-warning" },
-  hold: { glyph: "‖", className: "text-serious" },
+  wait: { glyph: "…", className: "text-warning-ink" },
+  hold: { glyph: "‖", className: "text-serious-ink" },
   unhold: { glyph: "▶", className: "text-good-ink" },
   pause: { glyph: "⏸", className: "text-frost" },
   resume: { glyph: "↻", className: "text-primary" },
@@ -33,22 +33,25 @@ export function EventFeed({ events, limit = 18, hosts }: { events: ClusterEvent[
               {k.glyph}
             </span>
             {hosts && <span className="w-20 shrink-0 truncate text-faint">{hosts.get(e.nodeId) ?? ""}</span>}
-            <span className="truncate text-muted-foreground group-hover:text-foreground">{e.text}</span>
+            <span className="truncate text-muted-foreground group-hover:text-foreground" title={e.text}>
+              {e.text}
+            </span>
           </>
         );
-        const cls = "group flex gap-2.5 rounded px-1.5 hover:bg-muted";
+        const baseCls = "flex gap-2.5 rounded px-1.5";
+        const linkCls = `group ${baseCls} hover:bg-muted`;
         return (
           <li key={String(e.id)} className="slide-in">
             {e.ref?.type === "command" ? (
-              <Link to="/commands/$id" params={{ id: e.ref.id }} className={cls}>
+              <Link to="/commands/$id" params={{ id: e.ref.id }} className={linkCls}>
                 {body}
               </Link>
             ) : e.ref?.type === "workspace" ? (
-              <Link to="/workspaces/$id" params={{ id: e.ref.id }} className={cls}>
+              <Link to="/workspaces/$id" params={{ id: e.ref.id }} className={linkCls}>
                 {body}
               </Link>
             ) : (
-              <div className={cls}>{body}</div>
+              <div className={baseCls}>{body}</div>
             )}
           </li>
         );

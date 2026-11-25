@@ -9,7 +9,7 @@ import { SpeedBars } from "../components/charts/SpeedBars";
 import { EventFeed } from "../components/EventFeed";
 import { ClusterGcSection } from "../components/GcPanel";
 import { ClusterObjectStoreSection } from "../components/ObjectStorePanel";
-import { Card, StatTile } from "../components/Panel";
+import { Card, Empty, StatTile } from "../components/Panel";
 import { nodeName, useNodeColors, useSnapshot } from "../lib/data";
 import { bytes, compact, duration, durationParts, percent, speedup } from "../lib/format";
 import { clusterNow, compiled, rebuiltBuckets, savings, speedupBuckets, storage } from "../lib/stats";
@@ -54,10 +54,21 @@ function Overview({ s, colors }: { s: Snapshot; colors: Map<string, string> }) {
             ))}
           </div>
           <p className="relative mt-4 max-w-xl text-[13.5px] leading-relaxed text-muted-foreground sm:mt-5 sm:text-[14px]">
-            <span className="num font-mono text-foreground">{compact(day.builds)}</span> builds and tests started from a warm, forked base and ran in{" "}
-            <span className="num font-mono text-foreground">{duration(day.spent)}</span>. From nothing they would have taken{" "}
-            <span className="num font-mono text-foreground">{duration(day.cold)}</span> —{" "}
-            <span className="display text-[18px] font-semibold text-primary italic">{speedup(day.cold, day.spent)} faster</span>.
+            {day.builds === 0 ? (
+              "No warm-forked builds or tests in the last 24 hours yet."
+            ) : (
+              <>
+                <span className="num font-mono text-foreground">{compact(day.builds)}</span> builds and tests started from a warm, forked base and ran in{" "}
+                <span className="num font-mono text-foreground">{duration(day.spent)}</span>. From nothing they would have taken{" "}
+                <span className="num font-mono text-foreground">{duration(day.cold)}</span>
+                {day.spent > 0 && (
+                  <>
+                    {" "}— <span className="display text-[18px] font-semibold text-primary italic">{speedup(day.cold, day.spent)} faster</span>
+                  </>
+                )}
+                .
+              </>
+            )}
           </p>
           <div className="relative mt-6">
             <Sparkline values={s.hourly.map((h) => h.savedSeconds)} height={46} />
@@ -85,11 +96,11 @@ function Overview({ s, colors }: { s: Snapshot; colors: Map<string, string> }) {
 
       <div className="col-span-12 grid grid-cols-2 gap-3 sm:grid-cols-4 xl:grid-cols-8">
         <StatTile label="Nodes" value={now.online} unit={`/ ${now.nodes}`} foot={`${s.nodes.filter((n) => n.resources?.arch === "arm64").length} Apple Silicon · ${s.nodes.filter((n) => n.resources?.arch === "amd64").length} x86`} delay={80} />
-        <StatTile label="Cores busy" value={now.coresBusy.toFixed(0)} unit={`/ ${now.cores}`} trend={<Meter value={now.coresBusy / now.cores} />} delay={100} />
-        <StatTile label="Memory" value={(now.memoryUsed / 1024 ** 3).toFixed(0)} unit="GiB" trend={<Meter value={now.memoryUsed / now.memory} />} foot={`of ${bytes(now.memory)}`} delay={120} />
+        <StatTile label="Cores busy" value={now.coresBusy.toFixed(0)} unit={`/ ${now.cores}`} trend={<Meter value={now.cores > 0 ? now.coresBusy / now.cores : 0} />} delay={100} />
+        <StatTile label="Memory" value={(now.memoryUsed / 1024 ** 3).toFixed(0)} unit="GiB" trend={<Meter value={now.memory > 0 ? now.memoryUsed / now.memory : 0} />} foot={`of ${bytes(now.memory)}`} delay={120} />
         <StatTile label="Running" value={now.running} tone="ember" foot={`${now.servers} dev servers`} delay={140} />
         <StatTile label="Queued" value={now.queued} foot="waiting for room" delay={160} />
-        <StatTile label="Parked ❄" value={now.parked} tone="frost" foot={`${bytes(now.swapUsed)} in swap · ${s.totals24h?.parks ?? 0} today`} delay={180} />
+        <StatTile label="Parked" value={now.parked} tone="frost" foot={`${bytes(now.swapUsed)} in swap · ${s.totals24h?.parks ?? 0} today`} delay={180} />
         <StatTile label="OOM kills" value={s.totals24h?.oomKills ?? 0} tone="good" foot="frozen instead of killed" delay={200} />
         <StatTile label="Median fork" value={Number(s.totals24h?.medianForkMillis ?? 0n)} unit="ms" foot={`${compact(s.totals24h?.forks ?? 0)} forks today`} delay={220} />
       </div>
@@ -126,7 +137,7 @@ function Overview({ s, colors }: { s: Snapshot; colors: Map<string, string> }) {
           current={String(s.hourly[s.hourly.length - 1]?.hour)}
         />
       </Card>
-      <Card className="col-span-12 sm:col-span-6 lg:col-span-4" title="Speedup" sub="Builds and tests by cold time over actual, 24 h" delay={340}>
+      <Card className="col-span-12 lg:col-span-4" title="Speedup" sub="Builds and tests by cold time over actual, 24 h" delay={340}>
         <Columns columns={speed.map((b) => ({ key: b.label, label: b.label, values: [b.count] }))} series={[{ id: "n", label: "builds", color: "var(--series-1)" }]} format={(v) => compact(v)} />
       </Card>
 
@@ -140,14 +151,29 @@ function Overview({ s, colors }: { s: Snapshot; colors: Map<string, string> }) {
           format={(v) => `${percent(v)} busy`}
         />
       </Card>
-      <Card className="col-span-12 sm:col-span-6 lg:col-span-4" title="Storage" sub="Forks share their base's blocks; they own only what their builds rewrote" delay={380}>
+      <Card className="col-span-12 lg:col-span-4" title="Storage" sub="Forks share their base's blocks; they own only what their builds rewrote" delay={380}>
         <div className="flex items-baseline gap-2">
           <span className="display text-[44px] leading-none font-semibold">{bytes(store.forks)}</span>
           <span className="font-mono text-[11px] text-muted-foreground">added by {store.workspaces} workspaces</span>
         </div>
         <p className="mt-2 text-[12px] leading-relaxed text-muted-foreground">
-          As full copies they would take <span className="num font-mono text-foreground">{bytes(store.asCopies)}</span>. As forks they add only the blocks their builds rewrote:{" "}
-          <span className="display text-[15px] font-semibold text-primary italic">{(store.asCopies / Math.max(1, store.forks)).toFixed(0)}× less</span>.
+          {store.workspaces === 0 || store.asCopies <= 0 ? (
+            "No active workspaces yet — forks share their base's blocks and own only what their builds rewrite."
+          ) : store.forks <= 0 ? (
+            <>
+              As full copies they would take <span className="num font-mono text-foreground">{bytes(store.asCopies)}</span>. As forks they share all base blocks with no exclusive writes yet.
+            </>
+          ) : store.asCopies >= store.forks ? (
+            <>
+              As full copies they would take <span className="num font-mono text-foreground">{bytes(store.asCopies)}</span>. As forks they add only the blocks their builds rewrote:{" "}
+              <span className="display text-[15px] font-semibold text-primary italic">{speedup(store.asCopies, store.forks)} less</span>.
+            </>
+          ) : (
+            <>
+              As full copies they would take <span className="num font-mono text-foreground">{bytes(store.asCopies)}</span>. Forks currently own{" "}
+              <span className="num font-mono text-foreground">{bytes(store.forks)}</span> of rewritten blocks.
+            </>
+          )}
         </p>
         <div className="mt-5">
           <SegmentedBar
@@ -194,6 +220,7 @@ function BaseList({ s }: { s: Snapshot }) {
       };
     })
     .filter((row) => row.gen > 0);
+  if (rows.length === 0) return <Empty>No warm bases yet.</Empty>;
   return (
     <ul className="divide-y divide-border text-[12px]">
       {rows.map(({ p, warm, building, failed, gen }) => (

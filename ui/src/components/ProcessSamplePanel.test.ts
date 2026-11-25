@@ -1,6 +1,7 @@
 import { create } from "@bufbuild/protobuf";
 import { describe, expect, it } from "vitest";
 import { FoldedStackSchema, ProfileFrameSchema, SampledProcessSchema } from "../gen/hotbed/v1/hotbed_pb";
+import { signedBytes } from "../lib/format";
 import { buildCallTreeFromStacks, buildCallTreesByComm } from "./ProcessSamplePanel";
 
 describe("ProcessSamplePanel call tree helpers", () => {
@@ -94,5 +95,12 @@ describe("ProcessSamplePanel call tree helpers", () => {
     expect(leaf.symbol).toBe("vfs_write");
     expect(leaf.samples).toBe(10);
     expect(leaf.pct).toBeCloseTo((100 * 10) / 15);
+  });
+
+  it("formats signed byte deltas for negative and positive values without returning an em-dash", () => {
+    expect(signedBytes(2048n)).toBe("+2 KiB");
+    expect(signedBytes(-4096n)).toBe("-4 KiB");
+    expect(signedBytes(0n)).toBe("+0 B");
+    expect(signedBytes(Number.NaN)).toBe("—");
   });
 });

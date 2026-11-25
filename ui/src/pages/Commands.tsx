@@ -3,7 +3,7 @@ import { useState, type ReactNode } from "react";
 import { COMMAND_STATE_FROM_SLUG, CommandState, type CommandStateSlug, type FinishedCommand, type Snapshot } from "../api";
 import { FAILURE, HistoryTable, LiveCommandTable } from "../components/CommandTable";
 import { Columns } from "../components/charts/Columns";
-import { Card, StatTile } from "../components/Panel";
+import { Card, Empty, StatTile } from "../components/Panel";
 import { bytes, cmpBig, compact, duration, percent, quantile } from "../lib/format";
 import { isLive } from "../lib/live";
 import { useScopedSnapshot } from "../lib/project";
@@ -20,6 +20,7 @@ const STATES: { id: CommandStateSlug | "live"; label: string }[] = [
 ];
 
 const INITIAL_HISTORY = 20;
+const MAX_HISTORY = 200;
 
 export function CommandsPage() {
   const { state = "live", node, repo, outcome } = useSearch({ from: "/commands" });
@@ -43,7 +44,16 @@ export function CommandsPage() {
   const waiting = s.commands.filter((c) => c.state === CommandState.QUEUED);
   const reserved = s.nodes.reduce((n, x) => n + Number(x.reservedMemoryBytes), 0);
   const baseSearch: CommandsSearch = { state: state === "live" ? undefined : state, node, repo, outcome };
-  const limit = showAll ? 200 : INITIAL_HISTORY;
+  const limit = showAll ? MAX_HISTORY : INITIAL_HISTORY;
+  const oomKills = s.totals24h?.oomKills ?? 0;
+  const repoFailureCols = s.repos
+    .filter((r) => s.history.some((c) => c.repoId === r.id))
+    .map((r) => ({ key: r.id, label: r.id, values: [failureRate(s.history.filter((c) => c.repoId === r.id)) * 100] }));
+  const historyToggleLabel = showAll
+    ? `show latest ${INITIAL_HISTORY}`
+    : ended.length > MAX_HISTORY
+      ? `show latest ${MAX_HISTORY}`
+      : `show all ${ended.length}`;
 
   return (
     <div className="space-y-6">
@@ -75,12 +85,18 @@ export function CommandsPage() {
             every node
           </Chip>
           {s.nodes
-            .filter((n) => n.online)
+            .filter((n) => n.online || n.id === node)
             .map((n) => (
-              <Chip key={n.id} active={node === n.id} search={{ ...baseSearch, node: n.id }}>
+              <Chip key={n.id} active={node === n.id} search={{ ...baseSearch, node: !n.online && node === n.id ? undefined : n.id }}>
                 {n.hostname}
+                {!n.online && " (offline)"}
               </Chip>
             ))}
+          {node && !s.nodes.some((n) => n.id === node) && (
+            <Chip active search={{ ...baseSearch, node: undefined }}>
+              {node} ×
+            </Chip>
+          )}
         </div>
         {s.repos.length > 1 && (
           <>
@@ -129,27 +145,16 @@ export function CommandsPage() {
                 onClick={() => setShowAll((v) => !v)}
                 className="font-mono text-[11px] text-muted-foreground hover:text-primary"
               >
-                {showAll ? `show latest ${INITIAL_HISTORY}` : `show all ${Math.min(ended.length, 200)}`}
+                {historyToggleLabel}
               </button>
             ) : undefined
           }
         >
           <HistoryTable s={s} rows={ended} limit={limit} />
-          {!showAll && ended.length > INITIAL_HISTORY && (
-            <div className="mt-3 text-center">
-              <button
-                type="button"
-                onClick={() => setShowAll(true)}
-                className="rounded-full border border-border px-3 py-1 font-mono text-[11px] text-muted-foreground hover:border-border-strong hover:text-foreground"
-              >
-                show all {Math.min(ended.length, 200)} commands
-              </button>
-            </div>
-          )}
         </Card>
       </div>
 
-      <section id="command-stats" className="space-y-4 pt-2">
+      <section id="command-stats" className="scroll-mt-16 space-y-4 pt-2">
         <header className="rise">
           <h2 className="display text-[22px] leading-none font-medium">Last 24 hours</h2>
           <p className="mt-1 text-[12.5px] text-muted-foreground">Outcomes, compile time saved, failure breakdown and build times across ended commands.</p>
@@ -161,7 +166,12 @@ export function CommandsPage() {
           <StatTile label="Saved" value={duration(day.saved)} tone="ember" foot={`${day.ratio.toFixed(0)}× less compile time`} />
           <StatTile label="Build p50" value={duration(quantile(times, 0.5))} foot={`p95 ${duration(quantile(times, 0.95))}`} />
           <StatTile label="Parked" value={scopedHistory.reduce((n, c) => n + c.parks, 0)} unit="times" tone="frost" foot="frozen, swapped, resumed" />
-          <StatTile label="OOM kills" value={s.totals24h?.oomKills ?? 0} tone="good" foot="none, ever" />
+          <StatTile
+            label="OOM kills"
+            value={oomKills > 0 ? <span className="text-critical">{oomKills}</span> : 0}
+            tone={oomKills > 0 ? "default" : "good"}
+            foot={oomKills > 0 ? "in last 24h" : "none in 24h"}
+          />
         </div>
 
         <div className="grid gap-4 lg:grid-cols-3">
@@ -183,12 +193,16 @@ export function CommandsPage() {
 
         <div className="grid gap-4 lg:grid-cols-2">
           <Card title="Failure rate by repo">
-            <Columns
-              columns={s.repos.map((r) => ({ key: r.id, label: r.id, values: [failureRate(s.history.filter((c) => c.repoId === r.id)) * 100] }))}
-              series={[{ id: "rate", label: "failed", color: "var(--series-8)" }]}
-              format={(v) => `${v.toFixed(0)}%`}
-              height={150}
-            />
+            {repoFailureCols.length === 0 ? (
+              <Empty>No repo commands in the last 24 hours.</Empty>
+            ) : (
+              <Columns
+                columns={repoFailureCols}
+                series={[{ id: "rate", label: "failed", color: "var(--series-8)" }]}
+                format={(v) => `${v.toFixed(0)}%`}
+                height={150}
+              />
+            )}
           </Card>
           <Card title="Build time by repo, p50" sub="Warm forks; the cold build is the faint mark">
             <RepoTimes s={s} />
@@ -249,6 +263,7 @@ function perHour(s: Snapshot, rows: FinishedCommand[]) {
 
 function FailureBars({ rows }: { rows: FinishedCommand[] }) {
   const failed = rows.filter((c) => c.failure);
+  if (failed.length === 0) return <Empty>No failures in the last 24 hours.</Empty>;
   const kinds = (Object.keys(FAILURE) as (keyof typeof FAILURE)[]).map((k) => ({ k, n: failed.filter((c) => c.failure === k).length })).sort((a, b) => b.n - a.n);
   const max = Math.max(1, ...kinds.map((x) => x.n));
   return (
@@ -267,10 +282,13 @@ function FailureBars({ rows }: { rows: FinishedCommand[] }) {
 }
 
 function RepoTimes({ s }: { s: Snapshot }) {
-  const rows = s.repos.map((r) => {
-    const c = compiled(s.history.filter((x) => x.repoId === r.id));
-    return { r, p50: quantile(c.map((x) => x.seconds), 0.5), cold: quantile(c.map((x) => x.coldSeconds), 0.5) };
-  });
+  const rows = s.repos
+    .map((r) => {
+      const c = compiled(s.history.filter((x) => x.repoId === r.id));
+      return { r, count: c.length, p50: quantile(c.map((x) => x.seconds), 0.5), cold: quantile(c.map((x) => x.coldSeconds), 0.5) };
+    })
+    .filter((x) => x.count > 0);
+  if (rows.length === 0) return <Empty>No compiled builds in the last 24 hours.</Empty>;
   const max = Math.max(1, ...rows.map((x) => x.cold));
   return (
     <ul className="space-y-3">

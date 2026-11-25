@@ -1,7 +1,9 @@
 import { create } from "@bufbuild/protobuf";
+import { createElement } from "react";
+import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 import { FoldedStackSchema, ProfileFrameSchema } from "../gen/hotbed/v1/hotbed_pb";
-import { buildTree, findNodeByPath } from "./FlameGraph";
+import { buildTree, findNodeByPath, FlameGraph } from "./FlameGraph";
 
 describe("FlameGraph findNodeByPath", () => {
   const frames = [
@@ -49,5 +51,18 @@ describe("FlameGraph findNodeByPath", () => {
     expect(findNodeByPath(tree2, zoomPath)).toBeNull();
     expect(findNodeByPath(tree2, null)).toBeNull();
     expect(findNodeByPath(tree2, [])).toBeNull();
+  });
+
+  it("renders search highlights with dark ink and caps vertical scroll height", () => {
+    const html = renderToStaticMarkup(
+      createElement(FlameGraph, {
+        stacks: [create(FoldedStackSchema, { frames: [0, 1, 2], samples: 10n })],
+        frames,
+        highlight: "vfs_write",
+      }),
+    );
+    expect(html).toContain("text-[#1c1713]");
+    expect(html).not.toContain("text-background");
+    expect(html).toContain("max-h-[480px]");
   });
 });

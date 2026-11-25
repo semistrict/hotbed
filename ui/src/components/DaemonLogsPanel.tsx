@@ -1,11 +1,11 @@
 import { useQuery } from "@tanstack/react-query";
 import { Link } from "@tanstack/react-router";
-import { Fragment, useState } from "react";
+import { Fragment, useEffect, useMemo, useState } from "react";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
+import { TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { api, DAEMON_LOG_LEVEL_FROM_SLUG, DaemonLogLevel, type DaemonLogEntry, type DaemonLogLevelSlug, type DaemonLogSource } from "../api";
 import { bytes, hhmmss } from "../lib/format";
@@ -46,8 +46,14 @@ export function DaemonLogsPanel({
   const [localLevel, setLocalLevel] = useState<DaemonLogLevelSlug | "">(controlledLevel ?? "");
   const [localSince, setLocalSince] = useState<SinceKey>(controlledSince ?? "24h");
   const [queryText, setQueryText] = useState("");
+  const [debouncedQuery, setDebouncedQuery] = useState("");
   const [live, setLive] = useState(true);
   const [expanded, setExpanded] = useState<string | null>(null);
+
+  useEffect(() => {
+    const timer = setTimeout(() => setDebouncedQuery(queryText), 250);
+    return () => clearTimeout(timer);
+  }, [queryText]);
 
   const source = lockedSource ?? (controlledSource !== undefined ? controlledSource : localSource);
   const level = controlledLevel !== undefined ? controlledLevel : localLevel;
@@ -67,13 +73,13 @@ export function DaemonLogsPanel({
   };
 
   const logsQuery = useQuery({
-    queryKey: ["daemon-logs", source, level, since, queryText, compact ? 100 : 300],
+    queryKey: ["daemon-logs", source, level, since, debouncedQuery, compact ? 100 : 300],
     queryFn: () =>
       api.daemonLogs({
         source: source || undefined,
         level: level ? DAEMON_LOG_LEVEL_FROM_SLUG[level] : undefined,
         since: since || undefined,
-        query: queryText.trim() || undefined,
+        query: debouncedQuery.trim() || undefined,
         limit: compact ? 100 : 300,
       }),
     refetchInterval: live ? 5000 : false,
@@ -82,6 +88,15 @@ export function DaemonLogsPanel({
   const data = logsQuery.data;
   const sources = data?.sources ?? [];
   const entries = data?.entries ?? [];
+  const keyedEntries = useMemo(() => {
+    const seen = new Map<string, number>();
+    return entries.map((entry) => {
+      const base = `${entry.at}-${entry.source}-${entry.msg}`;
+      const n = seen.get(base) ?? 0;
+      seen.set(base, n + 1);
+      return { entry, rowKey: n === 0 ? base : `${base}#${n}` };
+    });
+  }, [entries]);
   const unreachable = sources.filter((s) => !s.reachable);
   const activeSourceInfo = lockedSource ? sources[0] : sources.find((s) => s.source === source);
 
@@ -133,11 +148,13 @@ export function DaemonLogsPanel({
       )}
 
       <Card
-        title={lockedSource ? "Daemon logs (WARN / ERROR)" : source ? `${source} logs` : "All daemon logs"}
+        title={lockedSource ? "Daemon logs (WARN / ERROR)" : source ? `${source} logs` : "Log stream"}
         sub={
           lockedSource
             ? "Rotating WARN and ERROR slog records on this worker"
-            : "WARN and ERROR slog records from the controller and every worker, newest first · rotated by size and age"
+            : source
+              ? "Filtered to this daemon · click its card above to show all"
+              : "Newest first · click a daemon card above to filter"
         }
         right={controlsRight}
       >
@@ -152,25 +169,9 @@ export function DaemonLogsPanel({
               aria-label="Filter daemon logs"
               className="w-full bg-background/70 font-mono text-[11.5px] placeholder:text-faint sm:min-w-[220px] sm:flex-1"
             />
-            {!lockedSource && sources.length > 0 && (
-              <div className="max-w-full overflow-x-auto no-scrollbar">
-                <Tabs value={source || "__all__"} onValueChange={(v) => setSource(v === "__all__" ? "" : String(v))}>
-                  <TabsList className="h-8 border border-border bg-background/60 font-mono text-[11px]">
-                    <TabsTrigger value="__all__" className="px-2 font-mono text-[11px]">
-                      All
-                    </TabsTrigger>
-                    {sources.map((src) => (
-                      <TabsTrigger key={`${src.role}-${src.source}`} value={src.source} className="px-2 font-mono text-[11px]">
-                        {src.source}
-                      </TabsTrigger>
-                    ))}
-                  </TabsList>
-                </Tabs>
-              </div>
-            )}
             <div className="max-w-full overflow-x-auto no-scrollbar">
               <Tabs value={level || "__all__"} onValueChange={(v) => setLevel((v === "__all__" ? "" : v) as DaemonLogLevelSlug | "")}>
-                <TabsList className="h-8 border border-border bg-background/60 font-mono text-[11px]">
+                <TabsList className="h-8 border border-border font-mono text-[11px]">
                   <TabsTrigger value="__all__" className="px-2 font-mono text-[11px]">
                     Warn + Error
                   </TabsTrigger>
@@ -185,7 +186,7 @@ export function DaemonLogsPanel({
             </div>
             <div className="max-w-full overflow-x-auto no-scrollbar">
               <Tabs value={since || "__all__"} onValueChange={(v) => setSince((v === "__all__" ? "" : v) as SinceKey)}>
-                <TabsList className="h-8 border border-border bg-background/60 font-mono text-[11px]">
+                <TabsList className="h-8 border border-border font-mono text-[11px]">
                   {(
                     [
                       ["15m", "15m"],
@@ -229,8 +230,7 @@ export function DaemonLogsPanel({
           ) : (
             <>
               <div className={`${compact ? "max-h-[420px]" : "max-h-[680px]"} space-y-2 overflow-y-auto md:hidden`}>
-                {entries.map((entry, idx) => {
-                  const rowKey = `${entry.at}-${entry.source}-${idx}`;
+                {keyedEntries.map(({ entry, rowKey }) => {
                   const isOpen = expanded === rowKey;
                   const attrs = parseAttrs(entry.attrsJson);
                   return (
@@ -286,7 +286,7 @@ export function DaemonLogsPanel({
               </div>
 
               <div className={`hidden md:block ${compact ? "max-h-[380px]" : "max-h-[680px]"} overflow-auto rounded-lg border border-border`}>
-                <Table className="font-mono text-[11.5px]">
+                <table className="w-full caption-bottom font-mono text-[11.5px]">
                   <TableHeader className="sticky top-0 z-10 bg-card text-[10px] uppercase tracking-wider text-muted-foreground">
                     <TableRow className="border-border hover:bg-transparent">
                       <TableHead className="h-auto w-[140px] px-3 py-2 font-normal text-muted-foreground">Time</TableHead>
@@ -297,8 +297,7 @@ export function DaemonLogsPanel({
                     </TableRow>
                   </TableHeader>
                   <TableBody className="divide-y divide-border/70">
-                    {entries.map((entry, idx) => {
-                      const rowKey = `${entry.at}-${entry.source}-${idx}`;
+                    {keyedEntries.map(({ entry, rowKey }) => {
                       const isOpen = expanded === rowKey;
                       const attrs = parseAttrs(entry.attrsJson);
                       return (
@@ -372,7 +371,7 @@ export function DaemonLogsPanel({
                       );
                     })}
                   </TableBody>
-                </Table>
+                </table>
               </div>
               <div className="flex flex-wrap items-center justify-between font-mono text-[10.5px] text-faint">
                 <span>
@@ -411,7 +410,7 @@ function SourceCard({ src, selected, onClick }: { src: DaemonLogSource; selected
         <span className={src.errors24h > 0 ? "text-critical" : "text-muted-foreground"}>
           <span className="num font-semibold">{src.errors24h}</span> err
         </span>
-        <span className={src.warns24h > 0 ? "text-warning" : "text-muted-foreground"}>
+        <span className={src.warns24h > 0 ? "text-warning-ink" : "text-muted-foreground"}>
           <span className="num font-semibold">{src.warns24h}</span> warn
         </span>
         <span className="ml-auto text-[10px] text-faint">24h</span>
@@ -440,7 +439,7 @@ function LevelBadge({ level }: { level: DaemonLogLevel }) {
     );
   }
   return (
-    <Badge variant="secondary" className="h-auto rounded bg-[color-mix(in_oklab,var(--warning)_20%,transparent)] px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wider text-warning">
+    <Badge variant="secondary" className="h-auto rounded bg-[color-mix(in_oklab,var(--warning)_20%,transparent)] px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wider text-warning-ink">
       WARN
     </Badge>
   );

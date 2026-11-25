@@ -81,9 +81,9 @@ export function ByHandButtons({
           title={ACTS[act].hint}
           className={`gap-1.5 font-mono text-[11.5px] font-semibold ${
             act === "stop"
-              ? "border-critical/50 text-critical"
-              : "border-border-strong text-foreground"
-          } ${open === act ? "bg-muted" : ""}`}
+              ? `border-critical/50 text-critical ${open === act ? "bg-destructive/20 ring-1 ring-critical/40" : ""}`
+              : `border-border-strong text-foreground ${open === act ? "bg-muted" : ""}`
+          }`}
         >
           <span aria-hidden>{ACTS[act].glyph}</span>
           {ACTS[act].label}
@@ -93,12 +93,19 @@ export function ByHandButtons({
   );
 }
 
+/** Effective diagnostics toggle: follows command state until the user explicitly overrides it. */
+export function effectiveDiagnose(act: ByHandAction, state: CommandState, override: boolean | null): boolean {
+  const takesDiagnostics = act !== "resume" && state !== CommandState.QUEUED;
+  return takesDiagnostics && (override ?? true);
+}
+
 /** The form a stop, pause or resume button opens: a comment, and diagnostics first. */
 export function ByHandForm({ command, act, onDone }: { command: Command; act: ByHandAction; onDone: () => void }) {
   const qc = useQueryClient();
   const [comment, setComment] = useState("");
   const takesDiagnostics = act !== "resume" && command.state !== CommandState.QUEUED;
-  const [diagnose, setDiagnose] = useState(command.state !== CommandState.QUEUED);
+  const [diagnoseOverride, setDiagnoseOverride] = useState<boolean | null>(null);
+  const diagnose = effectiveDiagnose(act, command.state, diagnoseOverride);
   const send = useMutation({
     mutationFn: () => {
       const trimmed = comment.trim();
@@ -148,7 +155,7 @@ export function ByHandForm({ command, act, onDone }: { command: Command; act: By
             <Checkbox
               checked={diagnose}
               disabled={send.isPending}
-              onCheckedChange={(checked) => setDiagnose(Boolean(checked))}
+              onCheckedChange={(checked) => setDiagnoseOverride(Boolean(checked))}
             />
             <span>
               Take diagnostics first <span className="text-faint">(activity sample & inspection, ~3s)</span>
@@ -164,7 +171,7 @@ export function ByHandForm({ command, act, onDone }: { command: Command; act: By
             variant={act === "stop" ? "destructive" : "default"}
             size="sm"
             disabled={send.isPending}
-            className={act === "stop" ? "border-critical text-critical" : undefined}
+            className={act === "stop" ? "bg-destructive text-destructive-foreground hover:bg-destructive/90 dark:bg-destructive dark:hover:bg-destructive/90" : undefined}
           >
             {send.isPending && <span className="live-dot inline-block size-2 rounded-full bg-current" aria-hidden />}
             {send.isPending ? (takesDiagnostics && diagnose ? a.diagnosing : a.doing) : a.label}
@@ -247,11 +254,11 @@ export function InterventionsCard({
           </AlertDescription>
           <Button
             type="button"
-            variant="destructive"
+            variant="outline"
             size="xs"
             onClick={() => void taken.refetch()}
             disabled={taken.isFetching}
-            className="border-critical/50 font-mono text-[10.5px] font-semibold text-critical"
+            className="border-critical/50 font-mono text-[10.5px] font-semibold text-foreground"
           >
             {taken.isFetching ? "Retrying…" : "Retry"}
           </Button>
@@ -305,7 +312,11 @@ export function InterventionRow({
             <span className="text-foreground">cockpit</span>
           )}
         </span>
-        {at > 0n && <span className="ml-auto font-mono text-[10.5px] text-faint">{hhmmss(at)}</span>}
+        {at > 0n && (
+          <span className="ml-auto font-mono text-[10.5px] text-faint" title={new Date(Number(at)).toLocaleString()}>
+            {hhmmss(at)}
+          </span>
+        )}
       </div>
       {iv.comment && (
         <blockquote className="mt-2 border-l-2 border-primary/50 pl-3 text-[12.5px] whitespace-pre-wrap text-foreground">
@@ -313,7 +324,7 @@ export function InterventionRow({
         </blockquote>
       )}
       {iv.diagnosticsError && (
-        <p className="mt-1.5 font-mono text-[11px] text-warning">
+        <p className="mt-1.5 font-mono text-[11px] text-warning-ink">
           {iv.diagnosed ? `Not all diagnostics taken: ${iv.diagnosticsError}` : `No diagnostics: ${iv.diagnosticsError}`}
         </p>
       )}

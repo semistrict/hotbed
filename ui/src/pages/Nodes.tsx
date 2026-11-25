@@ -128,27 +128,29 @@ export function NodeCard({ n, s, color, now, delay }: { n: Node; s: Snapshot; co
           </div>
         </div>
       </div>
-      {!n.online && n.storageError && <div className="mt-3 font-mono text-[11px] break-words text-serious">{n.storageError}</div>}
+      {!n.online && n.storageError && <div className="mt-3 font-mono text-[11px] break-words text-serious-ink">{n.storageError}</div>}
 
       {n.online ? (
         <>
           <div className="mt-5 grid grid-cols-2 gap-5">
-            <div>
-              <div className="flex items-baseline justify-between">
-                <span className="eyebrow">{host ? "guest cpu" : "cpu"}</span>
-                <span className="num font-mono text-[13px] text-foreground">{percent(usage?.cpuBusy ?? 0)}</span>
-              </div>
-              {host && (
-                <div className={`mt-0.5 flex items-baseline justify-between font-mono text-[10.5px] ${hostStarved ? "text-serious" : "text-muted-foreground"}`}>
-                  <span>VM {percent(host.vmCpuBusy)}</span>
-                  <span>host {percent(host.hostCpuBusy)}</span>
+            <div className="flex flex-col justify-between">
+              <div>
+                <div className="flex items-baseline justify-between">
+                  <span className="eyebrow">{host ? "guest cpu" : "cpu"}</span>
+                  <span className="num font-mono text-[13px] text-foreground">{percent(usage?.cpuBusy ?? 0)}</span>
                 </div>
-              )}
+                {host && (
+                  <div className={`mt-0.5 flex items-baseline justify-between font-mono text-[10.5px] ${hostStarved ? "text-serious-ink" : "text-muted-foreground"}`}>
+                    <span>VM {percent(host.vmCpuBusy)}</span>
+                    <span>host {percent(host.hostCpuBusy)}</span>
+                  </div>
+                )}
+              </div>
               <div className="mt-2">
                 <Sparkline values={series.map((p) => p.cpuBusy)} max={1} color={color} height={34} />
               </div>
             </div>
-            <div>
+            <div className="flex flex-col justify-between">
               <div className="flex items-baseline justify-between">
                 <span className="eyebrow">memory</span>
                 <span className="num font-mono text-[13px] text-foreground">{percent(mem)}</span>
@@ -208,7 +210,7 @@ export function NodeCard({ n, s, color, now, delay }: { n: Node; s: Snapshot; co
             </span>
             {n.daemonLogs && (n.daemonLogs.errors24h > 0 || n.daemonLogs.warns24h > 0) && (
               <span
-                className={n.daemonLogs.errors24h > 0 ? "text-critical" : "text-warning"}
+                className={n.daemonLogs.errors24h > 0 ? "text-critical" : "text-warning-ink"}
                 title={`${n.daemonLogs.errors24h} errors, ${n.daemonLogs.warns24h} warnings in 24h`}
               >
                 {n.daemonLogs.errors24h > 0 ? `${n.daemonLogs.errors24h} err` : `${n.daemonLogs.warns24h} warn`}
@@ -267,7 +269,7 @@ function NodeCladefsRows({ os }: { os: ObjectStoreStats }) {
         <div>
           <div className="mb-1.5 flex flex-wrap items-baseline justify-between gap-x-2 text-[10.5px] text-muted-foreground">
             <span className="eyebrow">
-              cladefs{os.hostDiskPressure ? <span className="ml-1.5 text-serious">· pressure</span> : null}
+              cladefs{os.hostDiskPressure ? <span className="ml-1.5 text-serious-ink">· pressure</span> : null}
             </span>
             <span className="num font-mono">
               {bytes(os.hostDiskFreeBytes)} free of {bytes(os.hostDiskSizeBytes)}
@@ -317,7 +319,7 @@ function NodeCladefsRows({ os }: { os: ObjectStoreStats }) {
       {activity.parts.length > 0 && (
         <div className="flex flex-wrap items-baseline justify-between gap-x-2 text-[10.5px] text-muted-foreground">
           <span className="eyebrow">{os.activeVms > 0 || os.windowMappedBytes > 0n ? "DAX" : "cladefs"}</span>
-          <span className={`num font-mono ${activity.thrashing ? "text-serious" : ""}`}>
+          <span className={`num font-mono ${activity.thrashing ? "text-serious-ink" : ""}`}>
             {activity.parts.join(" · ")}
           </span>
         </div>
@@ -348,8 +350,11 @@ export function NodeTable({ s }: { s: Snapshot }) {
     <Table className="text-[12px]">
       <TableHeader className="eyebrow">
         <TableRow className="border-border hover:bg-transparent">
-          {headers.map((h) => (
-            <TableHead key={h} className="h-auto px-2 py-2 font-normal text-muted-foreground">
+          {headers.map((h, i) => (
+            <TableHead
+              key={h}
+              className={`h-auto px-2 py-2 font-normal text-muted-foreground ${i === 0 ? "sticky left-0 z-10 bg-card" : ""}`}
+            >
               {h}
             </TableHead>
           ))}
@@ -367,7 +372,7 @@ export function NodeTable({ s }: { s: Snapshot }) {
             : `${n.storage} · ${bytes(n.diskBytes)} total`;
           return (
             <TableRow key={n.id} className="border-border/60 hover:bg-muted/60">
-              <TableCell className="px-2 py-2">
+              <TableCell className="sticky left-0 z-10 bg-card px-2 py-2">
                 <Link to="/nodes/$hostname" params={{ hostname: n.hostname }} className="text-foreground hover:text-primary">
                   {n.hostname}
                 </Link>
@@ -378,7 +383,7 @@ export function NodeTable({ s }: { s: Snapshot }) {
                 <OnlineBadge online={n.online} asleep={n.asleep} storageError={n.storageError} />
               </TableCell>
               <TableCell className="px-2 py-2" title={admission?.reason}>
-                {admission ? (admission.holding ? <span className="text-serious">holding</span> : "starting") : "—"}
+                {admission ? (admission.holding ? <span className="text-serious-ink">holding</span> : "starting") : "—"}
               </TableCell>
               <TableCell className="px-2 py-2">{n.resources?.cpus ?? 0}</TableCell>
               <TableCell className="px-2 py-2">
@@ -409,7 +414,7 @@ export function NodeTable({ s }: { s: Snapshot }) {
                     {os ? `↑ ${bytes(os.uploadedBytes)} · ↓ ${bytes(os.downloadedBytes)}` : "—"}
                   </TableCell>
                   <TableCell className="px-2 py-2">{hit !== null ? percent(hit) : "—"}</TableCell>
-                  <TableCell className={`px-2 py-2 ${activity?.thrashing ? "text-serious" : "text-muted-foreground"}`}>
+                  <TableCell className={`px-2 py-2 ${activity?.thrashing ? "text-serious-ink" : "text-muted-foreground"}`}>
                     {!os
                       ? "—"
                       : activity && activity.parts.length > 0
@@ -420,7 +425,7 @@ export function NodeTable({ s }: { s: Snapshot }) {
                   </TableCell>
                 </>
               )}
-              <TableCell className={`px-2 py-2 ${os?.hostDiskPressure ? "text-serious" : ""}`} title={diskTitle}>
+              <TableCell className={`px-2 py-2 ${os?.hostDiskPressure ? "text-serious-ink" : ""}`} title={diskTitle}>
                 {bytes(freeBytes)}
               </TableCell>
               <TableCell className="px-2 py-2 text-muted-foreground">{n.resources?.kernel ?? ""}</TableCell>
@@ -442,7 +447,7 @@ export function NodeCpuCell({ n }: { n: Node }) {
   return (
     <span title={`Guest ${percent(guestBusy)} · VM ${percent(host.vmCpuBusy)} · ${formatHostUsageFoot(host)}`}>
       {percent(guestBusy)}{" "}
-      <span className={starved ? "text-serious" : "text-muted-foreground"}>
+      <span className={starved ? "text-serious-ink" : "text-muted-foreground"}>
         (VM {percent(host.vmCpuBusy)} · host {percent(host.hostCpuBusy)})
       </span>
     </span>

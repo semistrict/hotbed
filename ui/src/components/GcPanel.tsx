@@ -334,7 +334,7 @@ export function ClusterGcSection({ now }: { now: number }) {
                       {dryResult.retired.length} refs to retire
                     </span>
                   )}
-                  {dryResult.fenced && <span className="ml-2 text-serious">fenced</span>}
+                  {dryResult.fenced && <span className="ml-2 text-serious-ink">fenced</span>}
                 </div>
               </div>
               <div className="flex items-center gap-1.5">

@@ -14,12 +14,17 @@ interface Props {
 const LABEL_W = 78;
 const CELL_H = 22;
 const STEPS = ["var(--heat-1)", "var(--heat-2)", "var(--heat-3)", "var(--heat-4)", "var(--heat-5)"];
+const LEGEND_STEPS = ["var(--heat-0)", ...STEPS];
 
 /** Rows over time, each cell one step of a single-hue ramp; empty cells are missing data. */
 export function Heatmap({ rows, format, labelEvery = 3, scale = { low: "0%", high: "100% busy" } }: Props) {
   const [ref, width] = useWidth<HTMLDivElement>();
   const [hover, setHover] = useState<{ r: number; c: number } | null>(null);
-  const cols = rows[0]?.cells.length ?? 0;
+  const axisRow = rows.reduce<(typeof rows)[number] | undefined>(
+    (best, r) => (!best || r.cells.length > best.cells.length ? r : best),
+    undefined,
+  );
+  const cols = axisRow?.cells.length ?? 0;
   const labelW = width > 0 && width < 420 ? 58 : LABEL_W;
   const step = width > 0 && width < 420 ? Math.max(labelEvery, 6) : labelEvery;
   const cellW = cols ? Math.max(0, width - labelW) / cols : 0;
@@ -52,7 +57,7 @@ export function Heatmap({ rows, format, labelEvery = 3, scale = { low: "0%", hig
               ))}
             </g>
           ))}
-          {rows[0]?.cells.map((c, ci) =>
+          {axisRow?.cells.map((c, ci) =>
             ci % step === 0 ? (
               <text key={c.key} x={labelW + ci * cellW + cellW / 2} y={height - 5} textAnchor="middle" className="num fill-faint font-mono text-[9.5px]">
                 {c.label}
@@ -61,9 +66,12 @@ export function Heatmap({ rows, format, labelEvery = 3, scale = { low: "0%", hig
           )}
         </svg>
       )}
-      <div className="mt-1.5 flex flex-wrap items-center gap-x-1.5 gap-y-1 text-[10px] text-faint sm:pl-[78px]">
+      <div
+        className="mt-1.5 flex flex-wrap items-center gap-x-1.5 gap-y-1 text-[10px] text-faint"
+        style={{ paddingLeft: width > 0 ? labelW : undefined }}
+      >
         <span>{scale.low}</span>
-        {STEPS.map((s) => (
+        {LEGEND_STEPS.map((s) => (
           <span key={s} className="inline-block h-2 w-4 rounded-[2px] sm:w-5" style={{ background: s }} />
         ))}
         <span>{scale.high}</span>

@@ -13,7 +13,7 @@ import {
   SnapshotSchema,
 } from "../gen/hotbed/v1/hotbed_pb";
 import { hhmmss } from "../lib/format";
-import { actsFor, ByHandButtons, ByHandForm, InterventionRow, InterventionsCard } from "./ByHand";
+import { actsFor, ByHandButtons, ByHandForm, effectiveDiagnose, InterventionRow, InterventionsCard } from "./ByHand";
 
 function renderWithQuery(node: React.ReactNode, qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })) {
   return renderToStaticMarkup(<QueryClientProvider client={qc}>{node}</QueryClientProvider>);
@@ -70,6 +70,33 @@ describe("ByHand controls", () => {
     const resumeHtml = renderWithQuery(<ByHandForm command={paused} act="resume" onDone={() => {}} />);
     expect(resumeHtml).not.toContain("Take diagnostics first");
     expect(resumeHtml).toContain("Resume");
+  });
+
+  it("uses solid destructive styling for Stop confirmation and keeps active Stop trigger non-muted", () => {
+    const running = create(CommandSchema, { id: "cmd-run", state: CommandState.RUNNING });
+    const stopFormHtml = renderWithQuery(<ByHandForm command={running} act="stop" onDone={() => {}} />);
+    expect(stopFormHtml).toContain("bg-destructive");
+    expect(stopFormHtml).toContain("text-destructive-foreground");
+
+    const openStopButtonsHtml = renderToStaticMarkup(<ByHandButtons command={running} open="stop" onOpen={() => {}} />);
+    const stopBtnMatch = openStopButtonsHtml.match(/<button[^>]*aria-expanded="true"[^>]*>/);
+    expect(stopBtnMatch?.[0]).toBeTruthy();
+    expect(stopBtnMatch?.[0]).not.toContain("bg-muted");
+    expect(stopBtnMatch?.[0]).toContain("bg-destructive/20");
+
+    const openPauseButtonsHtml = renderToStaticMarkup(<ByHandButtons command={running} open="pause" onOpen={() => {}} />);
+    const pauseBtnMatch = openPauseButtonsHtml.match(/<button[^>]*aria-expanded="true"[^>]*>/);
+    expect(pauseBtnMatch?.[0]).toContain("bg-muted");
+  });
+
+  it("syncs diagnostics default when command transitions from QUEUED to RUNNING unless user explicitly overrode it", () => {
+    expect(effectiveDiagnose("stop", CommandState.QUEUED, null)).toBe(false);
+    expect(effectiveDiagnose("stop", CommandState.RUNNING, null)).toBe(true);
+    expect(effectiveDiagnose("pause", CommandState.RUNNING, null)).toBe(true);
+    expect(effectiveDiagnose("stop", CommandState.RUNNING, false)).toBe(false);
+    expect(effectiveDiagnose("stop", CommandState.QUEUED, true)).toBe(false);
+    expect(effectiveDiagnose("resume", CommandState.RUNNING, null)).toBe(false);
+    expect(effectiveDiagnose("resume", CommandState.RUNNING, true)).toBe(false);
   });
 });
 
@@ -158,8 +185,10 @@ describe("InterventionsCard & saved diagnostics", () => {
     expect(sampleOpenHtml).not.toContain(">you<");
     expect(sampleOpenHtml).not.toContain("on ramon-mbp");
     expect(sampleOpenHtml).toContain(hhmmss(atMs));
+    expect(sampleOpenHtml).toContain(`title="${new Date(Number(atMs)).toLocaleString()}"`);
     expect(sampleOpenHtml).toContain("Hung for 20 minutes on eviction test");
     expect(sampleOpenHtml).toContain("Not all diagnostics taken: perf unavailable");
+    expect(sampleOpenHtml).toContain("text-warning-ink");
     expect(sampleOpenHtml).toContain("Activity sample");
     expect(sampleOpenHtml).toContain("Inspection");
     expect(sampleOpenHtml).toContain("cargo-nextest");
@@ -276,6 +305,10 @@ describe("InterventionsCard & saved diagnostics", () => {
     expect(failedArchivedHtml).toContain('role="alert"');
     expect(failedArchivedHtml).toContain("controller unavailable");
     expect(failedArchivedHtml).toContain("Retry");
+    const retryBtnMatch = failedArchivedHtml.match(/<button[^>]*>Retry<\/button>/);
+    expect(retryBtnMatch?.[0]).toBeTruthy();
+    expect(retryBtnMatch?.[0]).not.toContain("bg-destructive");
+    expect(retryBtnMatch?.[0]).toContain("bg-background");
 
     // Empty interventions array with a failed diagnostics query also surfaces the error instead of returning null.
     const failedEmptyListQc = new QueryClient({ defaultOptions: { queries: { retry: false, retryOnMount: false } } });

@@ -1,7 +1,7 @@
 import { useIsMutating, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useNavigate, useSearch } from "@tanstack/react-router";
 import { ChevronRightIcon } from "lucide-react";
-import { useMemo, useRef, useState, type DragEvent } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type DragEvent } from "react";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -51,8 +51,6 @@ const SORTS: { sort: QuestionOrderSlug; label: string }[] = [
   { sort: "updated", label: "recently changed" },
 ];
 
-const SORT_ITEMS = SORTS.map((o) => ({ value: o.sort, label: o.label }));
-
 export function QuestionsPage() {
   const { data: s } = useScopedSnapshot();
   if (!s) return null;
@@ -63,8 +61,16 @@ function Questions({ s }: { s: Snapshot }) {
   const search = useSearch({ from: "/questions" });
   const navigate = useNavigate({ from: "/questions" });
   const tab = search.tab ?? "inbox";
+  const canRank = tab === "inbox";
+  const availableSorts = useMemo(() => (canRank ? SORTS : SORTS.filter((o) => o.sort !== "rank")), [canRank]);
+  const sortItems = useMemo(() => availableSorts.map((o) => ({ value: o.sort, label: o.label })), [availableSorts]);
   // The inbox is in the user's order, which puts new questions on top: newest first until reordered.
-  const sort = search.sort ?? (tab === "inbox" ? "rank" : "newest");
+  const sort: QuestionOrderSlug =
+    search.sort && (canRank || search.sort !== "rank")
+      ? search.sort
+      : canRank
+        ? "rank"
+        : "newest";
   const [project] = useProject();
   const key = ["questions", project, tab, sort] as const;
   // No refresh while a move is on its way: one landing first would show the old order again.
@@ -79,7 +85,7 @@ function Questions({ s }: { s: Snapshot }) {
   });
   const outbox = useQuery({ queryKey: ["questions", project, "outbox", "count"], queryFn: () => api.questions({ project, states: TAB_STATES.outbox }), refetchInterval: 2000 });
   const now = Number(s.now);
-  const movable = tab === "inbox" && sort === "rank";
+  const movable = canRank && sort === "rank";
   const seenRef = useRef<{ project: string | null; map: Map<number, Question> }>({ project, map: new Map() });
   const rawQuestions = list.data?.questions;
   const questions = useMemo(() => {
@@ -112,12 +118,12 @@ function Questions({ s }: { s: Snapshot }) {
         </div>
         <div className="flex items-center gap-2 font-mono text-[11px] text-muted-foreground sm:ml-auto">
           <span>sort</span>
-          <Select items={SORT_ITEMS} value={sort} onValueChange={(v) => v && navigate({ search: { tab, sort: v as QuestionOrderSlug } })}>
+          <Select items={sortItems} value={sort} onValueChange={(v) => v && navigate({ search: { tab, sort: v as QuestionOrderSlug } })}>
             <SelectTrigger size="sm" aria-label="Sort questions" className="bg-card font-mono text-[11.5px] text-foreground">
               <SelectValue />
             </SelectTrigger>
             <SelectContent className="font-mono text-[11.5px]">
-              {SORTS.map((o) => (
+              {availableSorts.map((o) => (
                 <SelectItem key={o.sort} value={o.sort} className="text-[11.5px]">
                   {o.label}
                 </SelectItem>
@@ -172,8 +178,34 @@ function useMove(key: readonly unknown[]) {
 /** The questions as cards; in the user's order, each can be dragged, or stepped up and down, to a new place. */
 function QuestionList({ s, questions, now, movable, onMove }: { s: Snapshot; questions: Question[]; now: number; movable: boolean; onMove: (id: number, before: number | null) => void }) {
   const [dragged, setDragged] = useState<number | null>(null);
+  const [armedId, setArmedId] = useState<number | null>(null);
+  const [editingIds, setEditingIds] = useState<Set<number>>(() => new Set());
   const [drop, setDrop] = useState<{ id: number; after: boolean } | null>(null);
   const order = questions.map((q) => q.id);
+
+  useEffect(() => {
+    if (armedId === null) return;
+    const clear = () => setArmedId(null);
+    window.addEventListener("pointerup", clear);
+    window.addEventListener("pointercancel", clear);
+    return () => {
+      window.removeEventListener("pointerup", clear);
+      window.removeEventListener("pointercancel", clear);
+    };
+  }, [armedId]);
+
+  const setCardEditing = useCallback((id: number, isEditing: boolean) => {
+    setEditingIds((prev) => {
+      const has = prev.has(id);
+      if (has === isEditing) return prev;
+      const next = new Set(prev);
+      if (isEditing) next.add(id);
+      else next.delete(id);
+      return next;
+    });
+    if (isEditing) setArmedId((cur) => (cur === id ? null : cur));
+  }, []);
+
   const moveTo = (id: number, to: number) => {
     const p = placement(order, id, to);
     if (p) onMove(id, p.before);
@@ -191,57 +223,89 @@ function QuestionList({ s, questions, now, movable, onMove }: { s: Snapshot; que
     if (dragged !== null && to !== undefined) moveTo(dragged, to);
     setDragged(null);
     setDrop(null);
+    setArmedId(null);
   };
 
   return (
     <ol className="space-y-4">
-      {questions.map((q, i) => (
-        <li
-          key={q.id}
-          draggable={movable}
-          onDragStart={(e) => {
-            setDragged(q.id);
-            e.dataTransfer.effectAllowed = "move";
-          }}
-          onDragEnd={() => {
-            setDragged(null);
-            setDrop(null);
-          }}
-          onDragOver={(e) => over(e, q.id)}
-          onDrop={dropped}
-          className={`relative ${dragged === q.id ? "opacity-40" : ""}`}
-        >
-          {drop?.id === q.id && dragged !== q.id && <span aria-hidden className={`absolute right-2 left-2 h-0.5 rounded-full bg-primary ${drop.after ? "-bottom-2.5" : "-top-2.5"}`} />}
-          <QuestionCard
-            s={s}
-            q={q}
-            now={now}
-            delay={Math.min(i, 8) * 40}
-            mover={
-              movable ? (
-                <Mover
-                  first={i === 0}
-                  last={i === questions.length - 1}
-                  onUp={() => moveTo(q.id, i - 1)}
-                  onDown={() => moveTo(q.id, i + 1)}
-                />
-              ) : null
-            }
-          />
-        </li>
-      ))}
+      {questions.map((q, i) => {
+        const isEditing = editingIds.has(q.id);
+        const canDrag = movable && !isEditing;
+        return (
+          <li
+            key={q.id}
+            draggable={canDrag && armedId === q.id}
+            onDragStart={(e) => {
+              if (!canDrag || armedId !== q.id) {
+                e.preventDefault();
+                return;
+              }
+              setDragged(q.id);
+              e.dataTransfer.effectAllowed = "move";
+            }}
+            onDragEnd={() => {
+              setDragged(null);
+              setDrop(null);
+              setArmedId(null);
+            }}
+            onDragOver={(e) => over(e, q.id)}
+            onDrop={dropped}
+            className={`relative ${dragged === q.id ? "opacity-40" : ""}`}
+          >
+            {drop?.id === q.id && dragged !== q.id && <span aria-hidden className={`absolute right-2 left-2 h-0.5 rounded-full bg-primary ${drop.after ? "-bottom-2.5" : "-top-2.5"}`} />}
+            <QuestionCard
+              s={s}
+              q={q}
+              now={now}
+              delay={Math.min(i, 8) * 40}
+              onEditingChange={setCardEditing}
+              mover={
+                movable ? (
+                  <Mover
+                    first={i === 0}
+                    last={i === questions.length - 1}
+                    dragDisabled={isEditing}
+                    onArmDrag={() => setArmedId(q.id)}
+                    onUp={() => moveTo(q.id, i - 1)}
+                    onDown={() => moveTo(q.id, i + 1)}
+                  />
+                ) : null
+              }
+            />
+          </li>
+        );
+      })}
     </ol>
   );
 }
 
-function Mover({ first, last, onUp, onDown }: { first: boolean; last: boolean; onUp: () => void; onDown: () => void }) {
+function Mover({
+  first,
+  last,
+  dragDisabled = false,
+  onArmDrag,
+  onUp,
+  onDown,
+}: {
+  first: boolean;
+  last: boolean;
+  dragDisabled?: boolean;
+  onArmDrag?: () => void;
+  onUp: () => void;
+  onDown: () => void;
+}) {
   const btn = "rounded p-1.5 leading-none text-muted-foreground hover:bg-muted hover:text-foreground disabled:opacity-30 disabled:hover:bg-transparent sm:px-1 sm:py-0.5";
   return (
     <div className="flex shrink-0 flex-col items-center gap-0.5 font-mono text-[11px]">
       <button type="button" className={btn} disabled={first} onClick={onUp} aria-label="Move up" title="Move up">
         ▲
       </button>
-      <span className="cursor-grab text-faint select-none active:cursor-grabbing" title="Drag to reorder" aria-hidden>
+      <span
+        onPointerDown={dragDisabled ? undefined : onArmDrag}
+        className={`select-none text-faint ${dragDisabled ? "cursor-default opacity-30" : "cursor-grab active:cursor-grabbing"}`}
+        title={dragDisabled ? "Finish editing to reorder" : "Drag to reorder"}
+        aria-hidden
+      >
         ⋮⋮
       </span>
       <button type="button" className={btn} disabled={last} onClick={onDown} aria-label="Move down" title="Move down">
@@ -268,10 +332,28 @@ function useSettle() {
 
 const LINK = "font-mono text-[11px] text-muted-foreground underline decoration-border-strong underline-offset-2 hover:text-foreground disabled:opacity-40";
 
-function QuestionCard({ s, q, now, delay, mover }: { s: Snapshot; q: Question; now: number; delay: number; mover: React.ReactNode }) {
+function QuestionCard({
+  s,
+  q,
+  now,
+  delay,
+  mover,
+  onEditingChange,
+}: {
+  s: Snapshot;
+  q: Question;
+  now: number;
+  delay: number;
+  mover: React.ReactNode;
+  onEditingChange?: (id: number, editing: boolean) => void;
+}) {
   const tag = STATE_TAG[q.state] ?? STATE_TAG[QuestionState.OPEN];
   const [project] = useProject();
   const [editing, setEditing] = useState(false);
+  useEffect(() => {
+    onEditingChange?.(q.id, editing);
+    return () => onEditingChange?.(q.id, false);
+  }, [q.id, editing, onEditingChange]);
   const showProject = project === null;
   const prompt = q.prompt;
   // The user still responds while no agent has acted on the response: open, or in the outbox.
@@ -314,8 +396,7 @@ function QuestionCard({ s, q, now, delay, mover }: { s: Snapshot; q: Question; n
           {answerable ? (
             <>
               {q.state !== QuestionState.OPEN && <OutboxLine s={s} q={q} now={now} />}
-              {/* Starts from the response as it now is, and again whenever it changes. */}
-              <AnswerForm key={String(q.updatedAt)} q={q} />
+              <AnswerForm q={q} />
             </>
           ) : (
             <Response s={s} q={q} now={now} />
@@ -332,7 +413,8 @@ function StampLine({ s, st, now, verb }: { s: Snapshot; st: Stamp; now: number; 
   const listed = st.session !== "" && s.sessions.some((x) => x.id === st.session);
   return (
     <span title={new Date(Number(st.at)).toLocaleString()}>
-      {verb} by {st.session === "" ? <span className="text-foreground">you</span> : listed ? <SessionLink id={st.session} /> : <span className="font-mono text-[11px]">{st.session}</span>}
+      {verb ? `${verb} by ` : "by "}
+      {st.session === "" ? <span className="text-foreground">you</span> : listed ? <SessionLink id={st.session} /> : <span className="font-mono text-[11px]">{st.session}</span>}
       {st.host && <span className="text-faint"> on {st.host}</span>}, {ago(st.at, now)}
     </span>
   );
@@ -343,8 +425,8 @@ function AskedFromLine({ q }: { q: Question }) {
   if (!f && !q.t3codeThreadId) return null;
   if (!f) {
     return (
-      <div className="font-mono text-[11px] text-muted-foreground">
-        t3:{q.t3codeThreadId}
+      <div className="font-mono text-[11px] text-muted-foreground" title={`T3 Code thread ${q.t3codeThreadId}`}>
+        t3:{q.t3codeThreadId.slice(0, 8)}
       </div>
     );
   }
@@ -357,8 +439,12 @@ function AskedFromLine({ q }: { q: Question }) {
           from {repo}
           {f.branch && <> @ {f.branch}</>}
           {f.head && <span className="text-faint"> {shortHead(f.head)}</span>}
-          {f.dirtyFiles > 0 && <span className="text-warning"> · {f.dirtyFiles} changed</span>}
-          {q.t3codeThreadId && <span className="text-faint"> · t3:{q.t3codeThreadId}</span>}
+          {f.dirtyFiles > 0 && <span className="text-warning-ink"> · {f.dirtyFiles} changed</span>}
+          {q.t3codeThreadId && (
+            <span className="text-faint" title={`T3 Code thread ${q.t3codeThreadId}`}>
+              {" "}· t3:{q.t3codeThreadId.slice(0, 8)}
+            </span>
+          )}
         </span>
       </CollapsibleTrigger>
       <CollapsibleContent>
@@ -401,18 +487,61 @@ function MarkTag({ o }: { o: PromptOption }) {
 
 const OWN_WORDS = "In my own words";
 
+function draftsEqual(a: Draft, b: Draft): boolean {
+  return (
+    a.ownWords === b.ownWords &&
+    a.other === b.other &&
+    a.notes === b.notes &&
+    a.picked.length === b.picked.length &&
+    a.picked.every((p, i) => p === b.picked[i])
+  );
+}
+
 /** Answering an open question: its options, words of the user's own, a note; or dismissing it. */
 function AnswerForm({ q }: { q: Question }) {
   const settle = useSettle();
   const multi = q.prompt?.multiSelect ?? false;
   const options = q.prompt?.options ?? [];
-  const [draft, setDraft] = useState<Draft>(() => (q.answer ? draftOf(q.answer) : EMPTY_DRAFT));
+  const serverDraft = useMemo(() => (q.answer ? draftOf(q.answer) : EMPTY_DRAFT), [q.answer]);
+  const [baseline, setBaseline] = useState<Draft>(serverDraft);
+  const [draft, setDraft] = useState<Draft>(serverDraft);
   const [focused, setFocused] = useState<string | null>(null);
-  const [noting, setNoting] = useState(draft.notes !== "");
+  const [noting, setNoting] = useState(serverDraft.notes !== "");
   const [dismissing, setDismissing] = useState(false);
   const [reason, setReason] = useState("");
-  const send = useMutation({ mutationFn: (d: Draft) => api.answerQuestion(q.id, draftAnswer(d)), onSettled: settle });
-  const dismiss = useMutation({ mutationFn: () => api.dismissQuestion(q.id, reason), onSettled: settle });
+  const dirty = !draftsEqual(draft, baseline);
+
+  useEffect(() => {
+    if (draftsEqual(serverDraft, baseline)) return;
+    setBaseline(serverDraft);
+    if (!dirty) {
+      setDraft(serverDraft);
+      if (serverDraft.notes !== "") setNoting(true);
+    }
+  }, [serverDraft, baseline, dirty]);
+
+  const send = useMutation({
+    mutationFn: (d: Draft) => api.answerQuestion(q.id, draftAnswer(d)),
+    onSuccess: (_data, d) => {
+      const saved: Draft = {
+        picked: d.picked,
+        ownWords: d.ownWords,
+        other: d.ownWords ? d.other : "",
+        notes: d.notes,
+      };
+      setBaseline(saved);
+      setDraft(saved);
+    },
+    onSettled: settle,
+  });
+  const dismiss = useMutation({
+    mutationFn: () => api.dismissQuestion(q.id, reason),
+    onSuccess: () => {
+      setDismissing(false);
+      setReason("");
+    },
+    onSettled: settle,
+  });
   const busy = send.isPending || dismiss.isPending;
   const choose = (label: string) => {
     if (busy) return;
@@ -422,8 +551,8 @@ function AnswerForm({ q }: { q: Question }) {
   };
   const withPreview = options.filter((o) => o.preview);
   const shown = options.find((o) => o.label === focused && o.preview) ?? options.find((o) => draft.picked.includes(o.label) && o.preview) ?? withPreview[0];
-  // A single choice is sent by clicking it; only words of one's own, or several picks, need the button.
-  const needsButton = multi || draft.ownWords;
+  // A single choice is sent by clicking it; show the button for multi-select, own words, or any unsaved edits (e.g. a note on an answered question).
+  const needsButton = multi || draft.ownWords || dirty;
   // Dismiss… and the Dismiss it becomes are one width, so the second click lands where the first did.
   const dismissWidth = "min-w-[5.75rem] text-left";
 
@@ -486,7 +615,7 @@ function AnswerForm({ q }: { q: Question }) {
       <div className="flex flex-wrap items-start gap-2">
         {needsButton && (
           <Button type="submit" size="sm" disabled={!draftReady(draft) || busy} className="text-[12.5px]">
-            {send.isPending ? "Sending…" : "Answer"}
+            {q.answer ? (send.isPending ? "Saving…" : "Save") : send.isPending ? "Sending…" : "Answer"}
           </Button>
         )}
         {q.state === QuestionState.DISMISSED ? null : dismissing ? (
@@ -522,7 +651,10 @@ function Choice({ multi, on, busy, mark, onChoose, onFocus, children }: { multi:
       aria-checked={on}
       aria-disabled={busy}
       tabIndex={0}
-      onClick={onChoose}
+      onClick={() => {
+        if (window.getSelection()?.toString()) return;
+        onChoose();
+      }}
       onKeyDown={(e) => {
         if (e.key === " " || e.key === "Enter") {
           e.preventDefault();
@@ -665,6 +797,7 @@ function History({ s, q, now }: { s: Snapshot; q: Question; now: number }) {
         </span>
       </CollapsibleTrigger>
       <CollapsibleContent>
+        {history.isPending && <div className="mt-2 font-mono text-[11px] text-faint">loading history…</div>}
         {history.isError && <div className="mt-2 font-mono text-[11px] text-critical">{String(history.error)}</div>}
         {history.data && (
           <ol className="mt-2 space-y-1.5 border-l border-border pl-3">

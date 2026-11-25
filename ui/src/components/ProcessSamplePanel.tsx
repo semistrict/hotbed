@@ -17,7 +17,7 @@ import {
   type SampledProcess,
   type SampledThread,
 } from "../api";
-import { bytes, hhmmss } from "../lib/format";
+import { bytes, hhmmss, signedBytes } from "../lib/format";
 import { SegmentedBar } from "./charts/Bars";
 import { FlameGraph } from "./FlameGraph";
 import { Card, Empty } from "./Panel";
@@ -291,21 +291,13 @@ export function ProcessSamplePanel({
           )}
 
           {!sample && !running && !error && (
-            <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-dashed border-border-strong bg-background/40 px-4 py-5">
+            <div className="rounded-xl border border-dashed border-border-strong bg-background/40 px-4 py-5">
               <div className="space-y-1">
                 <div className="text-[12.5px] font-medium text-foreground">See everything this command is doing right now</div>
                 <div className="text-[11.5px] text-muted-foreground">
                   Samples user & kernel thread stacks, active syscalls, open files, TCP/UDP queues, pipe peers, epoll targets, file locks, cgroup PSI stalls, and hardware counters over a short window to diagnose hangs or bottlenecks.
                 </div>
               </div>
-              <button
-                type="button"
-                onClick={() => void runSample()}
-                className="inline-flex shrink-0 items-center gap-1.5 rounded-lg bg-primary px-4 py-2 font-mono text-[12px] font-semibold text-primary-foreground shadow-sm transition-all hover:brightness-110"
-              >
-                <span aria-hidden>◎</span>
-                Sample now ({durationSec}s)
-              </button>
             </div>
           )}
 
@@ -477,7 +469,7 @@ function StacksAndThreadsTab({ sample, onSamplePid }: { sample: ProcessSample; o
       <div className="flex flex-wrap items-center gap-2">
         <div className="max-w-full overflow-x-auto no-scrollbar">
           <Tabs value={subView} onValueChange={(v) => setSubView(v as "tree" | "threads" | "flamegraph")}>
-            <TabsList className="h-8 border border-border bg-background/60 font-mono text-[11px]">
+            <TabsList className="h-8 border border-border font-mono text-[11px]">
               <TabsTrigger value="tree" className="px-2.5 font-mono text-[11px]">
                 Call Tree
               </TabsTrigger>
@@ -509,7 +501,7 @@ function StacksAndThreadsTab({ sample, onSamplePid }: { sample: ProcessSample; o
       {subView === "flamegraph" ? (
         <div className="space-y-4">
           <div className="rounded-xl border border-border bg-background/40 p-3">
-            <div className="mb-2 flex items-center justify-between font-mono text-[10.5px] text-muted-foreground">
+            <div className="mb-2 flex flex-wrap items-center justify-between gap-2 font-mono text-[10.5px] text-muted-foreground">
               <span className="uppercase tracking-wider">Sampled All-Thread Stacks (On-CPU + Blocked User & Kernel)</span>
               <span>{sample.sampledStacks.length} unique stack paths</span>
             </div>
@@ -517,7 +509,7 @@ function StacksAndThreadsTab({ sample, onSamplePid }: { sample: ProcessSample; o
           </div>
           {sample.onCpuStacks.length > 0 && (
             <div className="rounded-xl border border-border bg-background/40 p-3">
-              <div className="mb-2 flex items-center justify-between font-mono text-[10.5px] text-muted-foreground">
+              <div className="mb-2 flex flex-wrap items-center justify-between gap-2 font-mono text-[10.5px] text-muted-foreground">
                 <span className="uppercase tracking-wider">On-CPU Continuous eBPF Profile (OTel eBPF · Sample Window)</span>
                 <span>{sample.onCpuStacks.reduce((a, b) => a + Number(b.samples), 0)} samples</span>
               </div>
@@ -753,14 +745,14 @@ function CallTreeRow({ node, depth, filter }: { node: LocalCallTreeNode; depth: 
     node.frameType === "kernel"
       ? "bg-frost-wash text-frost"
       : node.frameType === "syscall"
-        ? "bg-[color-mix(in_oklab,var(--warning)_16%,transparent)] text-warning"
+        ? "bg-[color-mix(in_oklab,var(--warning)_16%,transparent)] text-warning-ink"
         : "bg-ember-wash text-primary";
 
   return (
     <div>
       <div
-        className={`flex items-center gap-2 rounded px-1.5 py-0.5 hover:bg-muted/50 ${matched ? "bg-[color-mix(in_oklab,var(--warning)_18%,transparent)]" : ""}`}
-        style={{ paddingLeft: `${depth * 16 + 4}px` }}
+        className={`flex min-w-max items-center gap-2 rounded px-1.5 py-0.5 hover:bg-muted/50 ${matched ? "bg-[color-mix(in_oklab,var(--warning)_18%,transparent)]" : ""}`}
+        style={{ paddingLeft: `${Math.min(depth, 18) * 16 + 4}px` }}
       >
         {hasChildren ? (
           <button type="button" onClick={() => setOpen((v) => !v)} className="w-3 shrink-0 text-faint hover:text-foreground">
@@ -773,10 +765,10 @@ function CallTreeRow({ node, depth, filter }: { node: LocalCallTreeNode; depth: 
           {node.samples} <span className="text-[10px] text-faint">({node.pct.toFixed(0)}%)</span>
         </span>
         <span className={`shrink-0 rounded px-1 py-px text-[9.5px] ${badgeCls}`}>{node.frameType || "user"}</span>
-        <span className="min-w-0 truncate text-foreground" title={node.symbol}>
+        <span className="whitespace-nowrap text-foreground" title={node.symbol}>
           {node.symbol}
         </span>
-        {node.module && <span className="ml-auto shrink-0 text-[10px] text-faint">{node.module}</span>}
+        {node.module && <span className="ml-auto shrink-0 pl-2 text-[10px] text-faint">{node.module}</span>}
       </div>
       {open &&
         hasChildren &&
@@ -810,7 +802,7 @@ function ThreadRow({ thread }: { thread: SampledThread }) {
           TID {thread.tid} <span className="font-normal text-muted-foreground">({thread.name})</span>
         </span>
         {thread.stationary && (
-          <span className="rounded-full border border-warning/40 bg-[color-mix(in_oklab,var(--warning)_14%,transparent)] px-2 py-px text-[9.5px] text-warning">
+          <span className="rounded-full border border-warning/40 bg-[color-mix(in_oklab,var(--warning)_14%,transparent)] px-2 py-px text-[9.5px] text-warning-ink">
             STATIONARY {thread.pollsSameStack}/{thread.totalPolls}
           </span>
         )}
@@ -818,14 +810,14 @@ function ThreadRow({ thread }: { thread: SampledThread }) {
         {thread.wchan && thread.wchan !== "0" && <span className="text-frost">wchan: {thread.wchan}</span>}
         <span className="num ml-auto text-[10.5px] text-muted-foreground">
           cpu +{(thread.cpuUserDeltaMs + thread.cpuSysDeltaMs).toFixed(1)}ms
-          {thread.schedWaitDeltaMs > 0.5 && <span className="text-warning"> · rq-wait +{thread.schedWaitDeltaMs.toFixed(1)}ms</span>}
+          {thread.schedWaitDeltaMs > 0.5 && <span className="text-warning-ink"> · rq-wait +{thread.schedWaitDeltaMs.toFixed(1)}ms</span>}
           {" · "}ctx +{String(thread.voluntaryCtxtDelta)}/{String(thread.nonvoluntaryCtxtDelta)}
         </span>
       </div>
 
       {thread.syscall && thread.syscall.name && (
         <div className="mt-1.5 flex flex-wrap items-center gap-2 pl-5 text-[10.5px]">
-          <span className="rounded bg-[color-mix(in_oklab,var(--warning)_14%,transparent)] px-1.5 py-px text-warning">
+          <span className="rounded bg-[color-mix(in_oklab,var(--warning)_14%,transparent)] px-1.5 py-px text-warning-ink">
             syscall: {thread.syscall.name}()
           </span>
           {thread.syscall.fdTarget && <span className="text-foreground">{thread.syscall.fdTarget}</span>}
@@ -988,88 +980,87 @@ function FilesAndLocksTab({ files, locks }: { files: SampledOpenFile[]; locks: F
               value={search}
               onChange={(e) => setSearch(e.target.value)}
               placeholder="Filter paths, sockets, peers, locks..."
-              className="ml-auto h-7 w-auto min-w-[200px] bg-background/80 font-mono text-[11px] placeholder:text-faint"
+              className="h-7 w-full bg-background/80 font-mono text-[11px] placeholder:text-faint sm:ml-auto sm:w-56"
             />
           </div>
 
-          <div className="max-h-[420px] overflow-auto rounded-lg border border-border">
-            <table className="w-full border-collapse font-mono text-[11px]">
-              <thead className="sticky top-0 bg-card text-left text-[10px] uppercase tracking-wider text-muted-foreground">
-                <tr className="border-b border-border">
-                  <th className="px-2 py-1.5">PID</th>
-                  <th className="px-2 py-1.5">FD</th>
-                  <th className="px-2 py-1.5">Kind</th>
-                  <th className="px-2 py-1.5">Mode</th>
-                  <th className="px-2 py-1.5">Target / Peer / Watched FDs</th>
-                  <th className="px-2 py-1.5 text-right">State / Queues / ΔOffset</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-border">
-                {shown.map((f, i) => (
-                  <tr key={`${f.pid}-${f.fd}-${i}`} className="hover:bg-muted/40">
-                    <td className="num px-2 py-1.5 text-muted-foreground whitespace-nowrap">
-                      {f.pid} <span className="text-faint">{f.comm}</span>
-                    </td>
-                    <td className="num px-2 py-1.5 text-foreground">{f.fd}</td>
-                    <td className="px-2 py-1.5">
-                      <span
-                        className={`rounded px-1.5 py-0.5 text-[10px] ${
-                          f.kind === "socket"
-                            ? "bg-frost-wash text-frost"
-                            : f.kind === "deleted"
-                              ? "bg-[color-mix(in_oklab,var(--critical)_15%,transparent)] text-critical"
-                              : f.kind === "pipe"
-                                ? "bg-ember-wash text-primary"
-                                : "bg-muted text-muted-foreground"
-                        }`}
-                      >
-                        {f.socketProto || f.kind}
-                      </span>
-                    </td>
-                    <td className="px-2 py-1.5 text-faint">{f.mode || "—"}</td>
-                    <td className="max-w-[460px] px-2 py-1.5">
-                      <div className="truncate text-foreground" title={f.target}>
-                        {f.localAddr ? `${f.localAddr}${f.remoteAddr && !f.remoteAddr.endsWith(":0") ? ` → ${f.remoteAddr}` : ""}` : f.target}
-                      </div>
-                      {(f.peer || f.epollTfds.length > 0 || f.lockInfo) && (
-                        <div className="mt-0.5 flex flex-wrap gap-2 text-[10px]">
-                          {f.peer && <span className="text-primary">↔ {f.peer}</span>}
-                          {f.epollTfds.length > 0 && <span className="text-frost">watching fds: {f.epollTfds.join(", ")}</span>}
-                          {f.lockInfo && <span className="text-warning">lock: {f.lockInfo}</span>}
-                        </div>
-                      )}
-                    </td>
-                    <td className="num px-2 py-1.5 text-right whitespace-nowrap">
-                      {f.socketState ? (
-                        <div>
-                          <span className={f.socketState === "LISTEN" ? "text-good-ink" : f.socketState === "ESTABLISHED" ? "text-frost" : "text-warning"}>
-                            {f.socketState}
-                          </span>
-                          {(f.txQueueBytes > 0n || f.rxQueueBytes > 0n) && (
-                            <div className="text-[10px] text-warning">
-                              tx {bytes(f.txQueueBytes)} · rx {bytes(f.rxQueueBytes)}
-                            </div>
-                          )}
-                        </div>
-                      ) : f.pos > 0n || f.posDelta !== 0n ? (
-                        <div>
-                          <span className="text-muted-foreground">{bytes(f.pos)}</span>
-                          {f.posDelta !== 0n && (
-                            <span className="ml-1.5 text-good-ink">
-                              ({f.posDelta > 0n ? "+" : ""}
-                              {bytes(f.posDelta)})
-                            </span>
-                          )}
-                        </div>
-                      ) : (
-                        <span className="text-faint">—</span>
-                      )}
-                    </td>
+          {shown.length === 0 ? (
+            <Empty>No open file descriptors match the current filter.</Empty>
+          ) : (
+            <div className="max-h-[420px] overflow-auto rounded-lg border border-border">
+              <table className="w-full border-collapse font-mono text-[11px]">
+                <thead className="sticky top-0 bg-card text-left text-[10px] uppercase tracking-wider text-muted-foreground">
+                  <tr className="border-b border-border">
+                    <th className="px-2 py-1.5">PID</th>
+                    <th className="px-2 py-1.5">FD</th>
+                    <th className="px-2 py-1.5">Kind</th>
+                    <th className="px-2 py-1.5">Mode</th>
+                    <th className="px-2 py-1.5">Target / Peer / Watched FDs</th>
+                    <th className="px-2 py-1.5 text-right">State / Queues / ΔOffset</th>
                   </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
+                </thead>
+                <tbody className="divide-y divide-border">
+                  {shown.map((f, i) => (
+                    <tr key={`${f.pid}-${f.fd}-${i}`} className="hover:bg-muted/40">
+                      <td className="num px-2 py-1.5 text-muted-foreground whitespace-nowrap">
+                        {f.pid} <span className="text-faint">{f.comm}</span>
+                      </td>
+                      <td className="num px-2 py-1.5 text-foreground">{f.fd}</td>
+                      <td className="px-2 py-1.5">
+                        <span
+                          className={`rounded px-1.5 py-0.5 text-[10px] ${
+                            f.kind === "socket"
+                              ? "bg-frost-wash text-frost"
+                              : f.kind === "deleted"
+                                ? "bg-[color-mix(in_oklab,var(--critical)_15%,transparent)] text-critical"
+                                : f.kind === "pipe"
+                                  ? "bg-ember-wash text-primary"
+                                  : "bg-muted text-muted-foreground"
+                          }`}
+                        >
+                          {f.socketProto || f.kind}
+                        </span>
+                      </td>
+                      <td className="px-2 py-1.5 text-faint">{f.mode || "—"}</td>
+                      <td className="max-w-[460px] px-2 py-1.5">
+                        <div className="truncate text-foreground" title={f.target}>
+                          {f.localAddr ? `${f.localAddr}${f.remoteAddr && !f.remoteAddr.endsWith(":0") ? ` → ${f.remoteAddr}` : ""}` : f.target}
+                        </div>
+                        {(f.peer || f.epollTfds.length > 0 || f.lockInfo) && (
+                          <div className="mt-0.5 flex flex-wrap gap-2 text-[10px]">
+                            {f.peer && <span className="text-primary">↔ {f.peer}</span>}
+                            {f.epollTfds.length > 0 && <span className="text-frost">watching fds: {f.epollTfds.join(", ")}</span>}
+                            {f.lockInfo && <span className="text-warning-ink">lock: {f.lockInfo}</span>}
+                          </div>
+                        )}
+                      </td>
+                      <td className="num px-2 py-1.5 text-right whitespace-nowrap">
+                        {f.socketState ? (
+                          <div>
+                            <span className={f.socketState === "LISTEN" ? "text-good-ink" : f.socketState === "ESTABLISHED" ? "text-frost" : "text-warning-ink"}>
+                              {f.socketState}
+                            </span>
+                            {(f.txQueueBytes > 0n || f.rxQueueBytes > 0n) && (
+                              <div className="text-[10px] text-warning-ink">
+                                tx {bytes(f.txQueueBytes)} · rx {bytes(f.rxQueueBytes)}
+                              </div>
+                            )}
+                          </div>
+                        ) : f.pos > 0n || f.posDelta !== 0n ? (
+                          <div>
+                            <span className="text-muted-foreground">{bytes(f.pos)}</span>
+                            {f.posDelta !== 0n && <span className="ml-1.5 text-good-ink">({signedBytes(f.posDelta)})</span>}
+                          </div>
+                        ) : (
+                          <span className="text-faint">—</span>
+                        )}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
         </div>
       )}
     </div>
@@ -1099,7 +1090,7 @@ function SystemAndPmuTab({ cg, counters, procs }: { cg: SampledCgroup | null; co
             <SampleMetric
               label="Memory / Peak"
               value={bytes(cg.end.memoryCurrentBytes)}
-              sub={`Δ${cg.memoryDeltaBytes >= 0n ? "+" : ""}${bytes(cg.memoryDeltaBytes)} · peak ${bytes(cg.end.memoryPeakBytes)} · swap ${bytes(cg.end.memorySwapBytes)}`}
+              sub={`Δ${signedBytes(cg.memoryDeltaBytes)} · peak ${bytes(cg.end.memoryPeakBytes)} · swap ${bytes(cg.end.memorySwapBytes)}`}
             />
             <SampleMetric
               label="Page Faults (Δ)"
@@ -1108,7 +1099,7 @@ function SystemAndPmuTab({ cg, counters, procs }: { cg: SampledCgroup | null; co
             />
           </div>
 
-          <div className="grid grid-cols-3 gap-2.5">
+          <div className="grid grid-cols-1 gap-2.5 sm:grid-cols-3">
             <SampleMetric
               label="PSI CPU stall (Δ)"
               value={`+${(Number(cg.psiCpuSomeDeltaUsec) / 1000).toFixed(1)} ms`}

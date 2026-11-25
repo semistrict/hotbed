@@ -3,6 +3,7 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 import { CommandState, type Session, type Snapshot } from "../api";
 import { CommandInline } from "../components/CommandBlock";
 import { FAILURE } from "../components/CommandTable";
+import { Crumbs } from "../components/Crumbs";
 import { Card, Empty, StatTile } from "../components/Panel";
 import { BenchTag, KindTag, StateBadge } from "../components/StateBadges";
 import { nodeName, repoName, useSnapshot } from "../lib/data";
@@ -34,20 +35,53 @@ function SessionView({ s, session }: { s: Snapshot; session: Session }) {
 
   return (
     <div className="space-y-6">
-      <PageTitle
-        title={session.id}
-        sub={`${session.schedule ? `a run of the scheduled command ${session.schedule}` : session.agent}${session.model ? ` · model ${session.model}` : ""}${session.t3codeThreadId ? ` · T3 ${session.t3codeThreadId}` : ""} · started ${ago(session.startedAt, now)} · last active ${ago(session.lastActiveAt, now)}${session.endedAt !== undefined ? ` · ended ${ago(session.endedAt, now)}: ${session.endReason}` : ""}`}
-        right={<SessionStateLabel s={s} session={session} />}
-      />
+      <Crumbs section={{ label: "sessions", to: "/sessions" }} project={session.project || null} here={session.id} />
+      <PageTitle title={session.id} right={<SessionStateLabel s={s} session={session} />} />
+      <p className="rise -mt-3 flex flex-wrap items-center gap-x-1.5 gap-y-0.5 text-[13px] text-muted-foreground">
+        <span>{session.schedule ? `a run of the scheduled command ${session.schedule}` : session.agent}</span>
+        {session.model && (
+          <>
+            <span>·</span>
+            <span>
+              model <span className="font-mono text-foreground/85">{session.model}</span>
+            </span>
+          </>
+        )}
+        {session.t3codeThreadId && (
+          <>
+            <span>·</span>
+            <span className="font-mono" title={session.t3codeThreadId}>
+              t3:{session.t3codeThreadId.slice(0, 8)}
+            </span>
+          </>
+        )}
+        <span>·</span>
+        <span>started {ago(session.startedAt, now)}</span>
+        <span>·</span>
+        <span>last active {ago(session.lastActiveAt, now)}</span>
+        {session.endedAt !== undefined && (
+          <>
+            <span>·</span>
+            <span>
+              ended {ago(session.endedAt, now)}: {session.endReason}
+            </span>
+          </>
+        )}
+      </p>
       {session.endedAt === undefined &&
         (session.scheduleRunning ? (
-          <p className="rise text-[12px] text-muted-foreground">
-            A scheduled run: its session is not abandoned while the run lasts. It ends when the run succeeds; a failed run keeps it for an hour, for a look inside. <Link to="/schedules" className="text-primary hover:underline">Schedules</Link>
+          <p className="rise rounded-xl border border-border bg-card/70 px-3.5 py-2.5 text-[12px] text-muted-foreground">
+            A scheduled run: its session is not abandoned while the run lasts. It ends when the run succeeds; a failed run keeps it for an hour, for a look inside.{" "}
+            <Link to="/schedules" className="text-primary hover:underline">
+              Schedules
+            </Link>
           </p>
         ) : (
-          <div className="rise max-w-md">
-            <div className="eyebrow mb-1">abandoned in</div>
-            <IdleLeft left={idleLeftMs(session, now)} />
+          <div className="rise flex flex-col gap-1.5 rounded-xl border border-border bg-card/70 px-3.5 py-2.5 sm:flex-row sm:items-center sm:gap-4">
+            <span className="eyebrow shrink-0">abandoned in</span>
+            <div className="min-w-0 flex-1 sm:max-w-sm">
+              <IdleLeft left={idleLeftMs(session, now)} />
+            </div>
           </div>
         ))}
       <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 xl:grid-cols-6">
@@ -60,68 +94,74 @@ function SessionView({ s, session }: { s: Snapshot; session: Session }) {
       </div>
 
       <Card title="Workspaces" sub="One per node; each a fork of its project's built base, with every repo at /work/<repo>">
-        <div className="space-y-2 md:hidden">
-          {session.workspaces.map((sw) => {
-            const w = s.workspaces.find((x) => x.id === sw.id);
-            return (
-              <div key={sw.id} className="rounded-lg border border-border/70 bg-background/40 p-2.5 font-mono text-[11px]">
-                <div className="flex flex-wrap items-baseline justify-between gap-2">
-                  {w ? (
-                    <Link to="/workspaces/$id" params={{ id: sw.id }} className="font-medium text-foreground hover:text-primary">
-                      {sw.id}
-                    </Link>
-                  ) : (
-                    <span className="text-faint">{sw.id}</span>
-                  )}
-                  {w ? <WorkspaceStateLabel w={w} now={now} /> : <span className="text-faint">released {sw.releasedAt !== undefined ? ago(sw.releasedAt, now) : ""}</span>}
-                </div>
-                <div className="num mt-1.5 flex flex-wrap gap-x-3 gap-y-0.5 text-[10.5px] text-muted-foreground">
-                  <span>{nodeName(s, sw.nodeId)}</span>
-                  {w && <span>{w.repos.map((r) => r.repo).join(", ")}</span>}
-                  <span>made {ago(sw.createdAt, now)}</span>
-                  {w && <span>{filesChanged(w)} changed</span>}
-                </div>
-              </div>
-            );
-          })}
-        </div>
-
-        <div className="hidden md:block">
-          <Table className="text-[12px]">
-            <TableHeader className="eyebrow">
-              <TableRow className="border-border hover:bg-transparent">
-                {["workspace", "repos", "node", "state", "made", "files changed"].map((h) => (
-                  <TableHead key={h} className="h-auto px-2 py-2 font-normal text-muted-foreground">
-                    {h}
-                  </TableHead>
-                ))}
-              </TableRow>
-            </TableHeader>
-            <TableBody className="num font-mono text-[11px]">
+        {session.workspaces.length === 0 ? (
+          <Empty>No workspaces created in this session yet.</Empty>
+        ) : (
+          <>
+            <div className="space-y-2 md:hidden">
               {session.workspaces.map((sw) => {
                 const w = s.workspaces.find((x) => x.id === sw.id);
                 return (
-                  <TableRow key={sw.id} className="border-border/60 hover:bg-muted/60">
-                    <TableCell className="px-2 py-2">
+                  <div key={sw.id} className="rounded-lg border border-border/70 bg-background/40 p-2.5 font-mono text-[11px]">
+                    <div className="flex flex-wrap items-baseline justify-between gap-2">
                       {w ? (
-                        <Link to="/workspaces/$id" params={{ id: sw.id }} className="text-foreground hover:text-primary">
+                        <Link to="/workspaces/$id" params={{ id: sw.id }} className="font-medium text-foreground hover:text-primary">
                           {sw.id}
                         </Link>
                       ) : (
                         <span className="text-faint">{sw.id}</span>
                       )}
-                    </TableCell>
-                    <TableCell className="px-2 py-2">{w ? w.repos.map((r) => r.repo).join(", ") : <span className="text-faint">—</span>}</TableCell>
-                    <TableCell className="px-2 py-2 text-muted-foreground">{nodeName(s, sw.nodeId)}</TableCell>
-                    <TableCell className="px-2 py-2">{w ? <WorkspaceStateLabel w={w} now={now} /> : <span className="text-faint">released {sw.releasedAt !== undefined ? ago(sw.releasedAt, now) : ""}</span>}</TableCell>
-                    <TableCell className="px-2 py-2 text-muted-foreground">{ago(sw.createdAt, now)}</TableCell>
-                    <TableCell className="px-2 py-2">{w ? filesChanged(w) : "—"}</TableCell>
-                  </TableRow>
+                      {w ? <WorkspaceStateLabel w={w} now={now} /> : <span className="text-faint">released {sw.releasedAt !== undefined ? ago(sw.releasedAt, now) : ""}</span>}
+                    </div>
+                    <div className="num mt-1.5 flex flex-wrap gap-x-3 gap-y-0.5 text-[10.5px] text-muted-foreground">
+                      <span>{nodeName(s, sw.nodeId)}</span>
+                      {w && <span>{w.repos.map((r) => r.repo).join(", ")}</span>}
+                      <span>made {ago(sw.createdAt, now)}</span>
+                      {w && <span>{filesChanged(w)} changed</span>}
+                    </div>
+                  </div>
                 );
               })}
-            </TableBody>
-          </Table>
-        </div>
+            </div>
+
+            <div className="hidden md:block">
+              <Table className="text-[12px]">
+                <TableHeader className="eyebrow">
+                  <TableRow className="border-border hover:bg-transparent">
+                    {["workspace", "repos", "node", "state", "made", "files changed"].map((h) => (
+                      <TableHead key={h} className="h-auto px-2 py-2 font-normal text-muted-foreground">
+                        {h}
+                      </TableHead>
+                    ))}
+                  </TableRow>
+                </TableHeader>
+                <TableBody className="num font-mono text-[11px]">
+                  {session.workspaces.map((sw) => {
+                    const w = s.workspaces.find((x) => x.id === sw.id);
+                    return (
+                      <TableRow key={sw.id} className="border-border/60 hover:bg-muted/60">
+                        <TableCell className="px-2 py-2">
+                          {w ? (
+                            <Link to="/workspaces/$id" params={{ id: sw.id }} className="text-foreground hover:text-primary">
+                              {sw.id}
+                            </Link>
+                          ) : (
+                            <span className="text-faint">{sw.id}</span>
+                          )}
+                        </TableCell>
+                        <TableCell className="px-2 py-2">{w ? w.repos.map((r) => r.repo).join(", ") : <span className="text-faint">—</span>}</TableCell>
+                        <TableCell className="px-2 py-2 text-muted-foreground">{nodeName(s, sw.nodeId)}</TableCell>
+                        <TableCell className="px-2 py-2">{w ? <WorkspaceStateLabel w={w} now={now} /> : <span className="text-faint">released {sw.releasedAt !== undefined ? ago(sw.releasedAt, now) : ""}</span>}</TableCell>
+                        <TableCell className="px-2 py-2 text-muted-foreground">{ago(sw.createdAt, now)}</TableCell>
+                        <TableCell className="px-2 py-2">{w ? filesChanged(w) : "—"}</TableCell>
+                      </TableRow>
+                    );
+                  })}
+                </TableBody>
+              </Table>
+            </div>
+          </>
+        )}
       </Card>
 
       <Card title="Commands" sub="Every command the session ran, newest first: live ones, and those that ended in the last day" delay={60}>

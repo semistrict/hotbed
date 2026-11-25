@@ -1,12 +1,19 @@
-import { Link, useNavigate } from "@tanstack/react-router";
+import { Link } from "@tanstack/react-router";
 import { Fragment } from "react";
 import { Breadcrumb, BreadcrumbItem, BreadcrumbList, BreadcrumbPage, BreadcrumbSeparator } from "@/components/ui/breadcrumb";
 import { useSnapshot } from "../lib/data";
 import { useProject } from "../lib/project";
 import { repoProject } from "../lib/projects";
 
-/** Where a page sits under Projects: its project, workspace, and repo in it. */
+export type CrumbSection = {
+  label: string;
+  to: "/" | "/commands" | "/sessions" | "/reviews" | "/schedules" | "/questions" | "/nodes";
+};
+
+/** Where a page sits in the cockpit: its section, project, workspace, and repo. */
 export interface Trail {
+  /** Top-level section crumb; defaults to Projects (/). */
+  section?: CrumbSection;
   /** Its project; else the one holding repoId. */
   project?: string | null;
   workspaceId?: string;
@@ -17,38 +24,35 @@ export interface Trail {
 
 const link = "text-muted-foreground transition-colors hover:text-primary";
 
-/** Projects › project › workspace › repo › here, each a way back up. */
-export function Crumbs({ project: named, workspaceId, repoId, here }: Trail) {
+/** section › project › workspace › repo › here, navigating cleanly without overwriting project scope. */
+export function Crumbs({ section, project: named, workspaceId, repoId, here }: Trail) {
   const { data: s } = useSnapshot();
-  const [, choose] = useProject();
-  const navigate = useNavigate();
+  const [chosen] = useProject();
   const project = named || (s && repoId ? repoProject(s, repoId) : null);
+  const root: CrumbSection = section ?? { label: "projects", to: "/" };
   const steps = [
-    <Link key="all" to="/" onClick={() => choose(null)} className={link}>
-      projects
+    <Link key="section" to={root.to} className={link}>
+      {root.label}
     </Link>,
-    project && (
-      <button
-        key="project"
-        type="button"
-        onClick={() => {
-          choose(project);
-          void navigate({ to: "/" });
-        }}
-        className={link}
-      >
-        {project}
-      </button>
-    ),
+    project &&
+      (chosen === project ? (
+        <Link key="project" to="/" className={link}>
+          {project}
+        </Link>
+      ) : (
+        <span key="project" className="text-faint">
+          {project}
+        </span>
+      )),
     workspaceId && (
       <Link key="ws" to="/workspaces/$id" params={{ id: workspaceId }} className={link}>
         {workspaceId}
       </Link>
     ),
     repoId && (
-      <span key="repo" className="text-muted-foreground">
+      <Link key="repo" to="/commands" search={{ repo: repoId }} className={link}>
         {repoId}
-      </span>
+      </Link>
     ),
   ].filter(Boolean);
   return (

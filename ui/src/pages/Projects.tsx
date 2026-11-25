@@ -1,6 +1,5 @@
 import { Link, useNavigate } from "@tanstack/react-router";
 import { useState } from "react";
-import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { BaseState, CommandState, WorkspaceState, workspaceStateLabel, type Project, type RepoSummary, type Snapshot, type Workspace } from "../api";
@@ -60,7 +59,7 @@ function urgency(a: Activity): number {
 }
 
 function Projects({ s }: { s: Snapshot }) {
-  const [chosen, choose] = useProject();
+  const [chosen] = useProject();
   const [q, setQ] = useState("");
   const now = Number(s.now);
   const visibleProjects = chosen ? s.projects.filter((p) => p.name === chosen) : s.projects;
@@ -70,6 +69,7 @@ function Projects({ s }: { s: Snapshot }) {
 
   const scoped = chosen ? scope(s, chosen) : s;
   const liveWs = scoped.workspaces.filter((w) => w.state !== WorkspaceState.RELEASED);
+  const releasedWs = scoped.workspaces.length - liveWs.length;
   const forkMs = liveWs.map((w) => Number(w.forkMillis));
   const owned = liveWs.reduce((n, w) => n + Number(w.exclusiveBytes), 0);
   const liveSessions = all.reduce((n, a) => n + a.working + a.idle, 0);
@@ -95,28 +95,23 @@ function Projects({ s }: { s: Snapshot }) {
             ? "Repos, warm bases and worker workspaces for this project. Choose every project in the picker to see the whole cluster."
             : "Every project, its repos, and the workspaces workers keep for them. Registering a repo makes a project for it automatically."
         }
-        right={
-          chosen ? (
-            <Button
-              type="button"
-              variant="outline"
-              size="sm"
-              onClick={() => choose(null)}
-              className="rounded-full font-mono text-[11px] text-muted-foreground hover:text-foreground"
-            >
-              show every project
-            </Button>
-          ) : undefined
-        }
       />
 
-      <div className="grid grid-cols-2 gap-2.5 sm:grid-cols-3 sm:gap-3 xl:grid-cols-6">
-        <StatTile label="Projects" value={visibleProjects.length} foot={`${workingProjects} working now`} />
+      <div className={`grid grid-cols-2 gap-2.5 sm:grid-cols-3 sm:gap-3 ${chosen ? "xl:grid-cols-5" : "xl:grid-cols-6"}`}>
+        {!chosen && <StatTile label="Projects" value={visibleProjects.length} foot={`${workingProjects} working now`} />}
         <StatTile label="Repos" value={scoped.repos.length} foot={`${scoped.bases.filter((b) => b.state === BaseState.WARM).length} warm bases`} />
         <StatTile
           label="Workspaces"
           value={liveWs.length}
-          foot={liveWs.length > 0 ? `${bytes(owned)} owned · p50 ${quantile(forkMs, 0.5)} ms fork` : `${compact(s.totals24h?.forks ?? 0)} forks today`}
+          foot={
+            liveWs.length > 0
+              ? `${bytes(owned)} owned · p50 ${quantile(forkMs, 0.5)} ms fork`
+              : chosen
+                ? releasedWs > 0
+                  ? `${releasedWs} released`
+                  : "none live right now"
+                : `${compact(s.totals24h?.forks ?? 0)} forks today`
+          }
         />
         <StatTile label="Live sessions" value={liveSessions} tone="ember" foot={chosen ? `in ${chosen}` : "across every project"} />
         <StatTile label="Questions" value={scoped.openQuestions} tone={scoped.openQuestions > 0 ? "ember" : "default"} foot={`${outbox} in outbox`} />
@@ -133,11 +128,11 @@ function Projects({ s }: { s: Snapshot }) {
             type="search"
             value={q}
             onChange={(e) => setQ(e.target.value)}
-            placeholder="filter projects, repos, workspaces, sessions or nodes"
-            aria-label="Filter projects and workspaces"
+            placeholder={chosen ? "filter repos, workspaces, sessions or nodes" : "filter projects, repos, workspaces, sessions or nodes"}
+            aria-label={chosen ? `Filter ${chosen} repos and workspaces` : "Filter projects and workspaces"}
             className="w-full rounded-full bg-background/40 font-mono text-[11px] placeholder:text-faint sm:w-96"
           />
-          {q && (
+          {q && !chosen && (
             <span className="font-mono text-[11px] text-faint">
               {filtered.length} of {all.length} projects
             </span>
@@ -188,7 +183,6 @@ function ProjectSection({ s, a, now, q, delay }: { s: Snapshot; a: Activity; now
             >
               {p.name}
             </button>
-            {here && <span className="font-mono text-[10.5px] text-primary">◆ scoped</span>}
             <span className="font-mono text-[11px] text-faint">{a.lastActive > 0 ? `active ${ago(a.lastActive, now)}` : "no sessions today"}</span>
           </div>
 

@@ -1,7 +1,9 @@
 import { create } from "@bufbuild/protobuf";
+import { createElement } from "react";
+import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 import { ProfileBucketSchema, ProfileFrameSchema } from "../gen/hotbed/v1/hotbed_pb";
-import { resolveBucketTopFrame, selectDisplayTimeline } from "./ContinuousProfilePanel";
+import { aggregateTimelineBuckets, resolveBucketTopFrame, selectDisplayTimeline, TimelineBuckets } from "./ContinuousProfilePanel";
 
 describe("ContinuousProfilePanel timeline frame resolution", () => {
   it("resolves retained bucket topFrame IDs against the unfiltered frame table after zooming into a bucket", () => {
@@ -42,5 +44,36 @@ describe("ContinuousProfilePanel timeline frame resolution", () => {
     const display = selectDisplayTimeline(null, { buckets: [bOld, bNew], frames: oldFrames }, { buckets: [bNew], frames: newFrames });
     expect(display.buckets).toEqual([bNew]);
     expect(resolveBucketTopFrame(display.buckets[0]!, display.frames)).toBe("newFn");
+  });
+
+  it("downsamples 360 5s buckets to <= 60 merged buckets and renders 0-sample buckets as muted baselines", () => {
+    const frames = [
+      create(ProfileFrameSchema, { name: "idle", frameType: "kernel" }),
+      create(ProfileFrameSchema, { name: "hotFn", frameType: "native" }),
+    ];
+    const buckets = Array.from({ length: 360 }, (_, i) =>
+      create(ProfileBucketSchema, {
+        t: BigInt(i * 5_000),
+        durationMs: 5_000n,
+        samples: i < 6 ? 0n : i === 10 ? 50n : BigInt((i % 10) + 1),
+        userSamples: i < 6 ? 0n : i === 10 ? 50n : BigInt((i % 10) + 1),
+        kernelSamples: 0n,
+        topFrame: i === 10 ? 1 : 0,
+      }),
+    );
+
+    const merged = aggregateTimelineBuckets(buckets, 60);
+    expect(merged).toHaveLength(60);
+    expect(merged[0]?.samples).toBe(0n);
+    expect(merged[0]?.durationMs).toBe(30_000n);
+    expect(merged[1]?.topFrame).toBe(1);
+    const totalRaw = buckets.reduce((a, b) => a + b.samples, 0n);
+    const totalMerged = merged.reduce((a, b) => a + b.samples, 0n);
+    expect(totalMerged).toBe(totalRaw);
+
+    const html = renderToStaticMarkup(
+      createElement(TimelineBuckets, { buckets: merged, frames, selected: null, onSelect: () => {} }),
+    );
+    expect(html).toContain("bg-muted-foreground/25");
   });
 });

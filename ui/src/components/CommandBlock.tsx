@@ -23,12 +23,43 @@ export function formatRawWithEnv(raw: string, env?: readonly string[]): string {
   return raw ? `${prefix} ${raw}` : prefix;
 }
 
+/** Copy text to the clipboard, falling back to `document.execCommand("copy")` over non-HTTPS hosts. */
+export async function copyToClipboard(text: string): Promise<boolean> {
+  if (typeof navigator !== "undefined" && navigator.clipboard?.writeText) {
+    try {
+      await navigator.clipboard.writeText(text);
+      return true;
+    } catch {
+      // Fall through to execCommand fallback (e.g. insecure LAN/tailnet HTTP or denied permission).
+    }
+  }
+  if (typeof document === "undefined" || typeof document.execCommand !== "function") return false;
+  const ta = document.createElement("textarea");
+  ta.value = text;
+  ta.setAttribute("readonly", "");
+  ta.style.position = "fixed";
+  ta.style.opacity = "0";
+  ta.style.pointerEvents = "none";
+  document.body.appendChild(ta);
+  ta.select();
+  ta.setSelectionRange(0, text.length);
+  let ok = false;
+  try {
+    ok = document.execCommand("copy");
+  } catch {
+    ok = false;
+  } finally {
+    document.body.removeChild(ta);
+  }
+  return ok;
+}
+
 function CopyButton({ text, label = "Copy" }: { text: string; label?: string }) {
   const [copied, setCopied] = useState(false);
 
   const onCopy = () => {
-    if (typeof navigator === "undefined" || !navigator.clipboard) return;
-    void navigator.clipboard.writeText(text).then(() => {
+    void copyToClipboard(text).then((ok) => {
+      if (!ok) return;
       setCopied(true);
       window.setTimeout(() => setCopied(false), 1500);
     });
@@ -94,8 +125,8 @@ export function CommandBlock({
   // Short plain commands inside Schedule cards stay in a slim single-row box.
   if (variant === "compact" && parsed.kind === "command" && parsed.compact) {
     return (
-      <div className="mb-4 flex items-center gap-2 overflow-x-auto rounded-lg border border-border bg-muted/50 px-3 py-2 font-mono text-[11.5px]">
-        <code className="min-w-0 flex-1 whitespace-pre text-foreground">
+      <div className="mb-4 flex items-center gap-2 rounded-lg border border-border bg-muted/50 px-3 py-2 font-mono text-[11.5px]">
+        <code className="min-w-0 flex-1 overflow-x-auto whitespace-pre text-foreground">
           {env?.map((e, idx) => (
             <span key={`${idx}-${e}`} className="mr-1.5 text-frost">
               {formatShellEnv(e)}
@@ -139,11 +170,19 @@ export function CommandBlock({
       }
     >
       <div className="flex flex-wrap items-center gap-x-2.5 gap-y-1.5 border-b border-border bg-muted/45 px-3 py-2 font-mono text-[11px]">
-        <span className="flex min-w-0 items-center gap-1.5 text-muted-foreground">
-          <span className="select-none text-primary">$</span>
-          {env && env.length > 0 && <span className="truncate text-frost">{env.map(formatShellEnv).join(" ")}</span>}
-          <span className="truncate text-foreground">{invocationText}</span>
-        </span>
+        {variant === "hero" ? (
+          <h1 className="flex min-w-0 items-center gap-1.5 text-[12px] font-medium text-muted-foreground">
+            <span className="select-none text-primary">$</span>
+            {env && env.length > 0 && <span className="truncate text-frost">{env.map(formatShellEnv).join(" ")}</span>}
+            <span className="truncate text-foreground">{invocationText}</span>
+          </h1>
+        ) : (
+          <span className="flex min-w-0 items-center gap-1.5 text-muted-foreground">
+            <span className="select-none text-primary">$</span>
+            {env && env.length > 0 && <span className="truncate text-frost">{env.map(formatShellEnv).join(" ")}</span>}
+            <span className="truncate text-foreground">{invocationText}</span>
+          </span>
+        )}
         <Badge variant="secondary" className={`h-auto rounded px-1.5 py-0.5 text-[10px] font-medium ${langTone}`}>
           {langLabel}
         </Badge>
@@ -191,7 +230,11 @@ export function CommandBlock({
         </pre>
 
         {collapsible && !expanded && (
-          <div className="pointer-events-none absolute inset-x-0 bottom-0 h-10 bg-gradient-to-t from-card/95 to-transparent" />
+          <div
+            className={`pointer-events-none absolute inset-x-0 bottom-0 h-10 bg-gradient-to-t to-transparent ${
+              variant === "hero" ? "from-card/95" : "from-muted/95"
+            }`}
+          />
         )}
       </div>
 

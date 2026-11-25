@@ -173,13 +173,16 @@ export function LineChart({ series, width: fixedWidth, height = 180, yMax, forma
   const dataMax = Math.max(0, ...numericValues, ...thresholds.map((th) => th.v));
   const ticks = niceTicks(yMax ?? dataMax * 1.1);
   const top = ticks[ticks.length - 1] ?? 1;
-  const w = Math.max(0, width - PAD.left - PAD.right);
+  const maxTickChars = Math.max(0, ...ticks.map((v) => format(v).length));
+  const padLeft = Math.max(PAD.left, Math.ceil(maxTickChars * 6.5 + 14));
+  const w = Math.max(0, width - padLeft - PAD.right);
   const h = height - PAD.top - PAD.bottom;
-  const x = (t: number) => PAD.left + (t1 > t0 ? ((t - t0) / (t1 - t0)) * w : 0);
+  const x = (t: number) => padLeft + (t1 > t0 ? ((t - t0) / (t1 - t0)) * w : 0);
   const y = (v: number) => PAD.top + h - (Math.min(v, top) / top) * h;
   const activeHoverT = hoverT !== null && times.length > 0 && hoverT >= t0 && hoverT <= t1 ? hoverT : null;
   const hovered = activeHoverT !== null ? resolveHoverPoints(series, activeHoverT) : [];
-  const xTicks = times.length ? [0, 0.25, 0.5, 0.75, 1].map((f) => t0 + f * (t1 - t0)) : [];
+  const xTicks =
+    times.length === 0 ? [] : t1 > t0 ? [0, 0.25, 0.5, 0.75, 1].map((f) => t0 + f * (t1 - t0)) : [t0];
 
   const onMove = (e: React.PointerEvent<SVGSVGElement>) => {
     if (!times.length) return;
@@ -214,14 +217,20 @@ export function LineChart({ series, width: fixedWidth, height = 180, yMax, forma
         <svg width={width} height={height} onPointerMove={onMove} onPointerLeave={() => setHoverT(null)} className="block touch-none overflow-visible">
           {ticks.map((v) => (
             <g key={v}>
-              <line x1={PAD.left} x2={PAD.left + w} y1={y(v)} y2={y(v)} stroke="var(--grid)" strokeWidth={1} />
-              <text x={PAD.left - 8} y={y(v)} dy="0.32em" textAnchor="end" className="num fill-faint font-mono text-[9.5px]">
+              <line x1={padLeft} x2={padLeft + w} y1={y(v)} y2={y(v)} stroke="var(--grid)" strokeWidth={1} />
+              <text x={padLeft - 8} y={y(v)} dy="0.32em" textAnchor="end" className="num fill-faint font-mono text-[9.5px]">
                 {format(v)}
               </text>
             </g>
           ))}
           {xTicks.map((t, i) => (
-            <text key={i} x={x(t)} y={height - 6} textAnchor={i === 0 ? "start" : i === 4 ? "end" : "middle"} className="num fill-faint font-mono text-[9.5px]">
+            <text
+              key={i}
+              x={x(t)}
+              y={height - 6}
+              textAnchor={xTicks.length === 1 ? "start" : i === 0 ? "start" : i === xTicks.length - 1 ? "end" : "middle"}
+              className="num fill-faint font-mono text-[9.5px]"
+            >
               {hhmm(t)}
             </text>
           ))}
@@ -233,8 +242,8 @@ export function LineChart({ series, width: fixedWidth, height = 180, yMax, forma
           {thresholds.map((th, i) => (
             <g key={th.label}>
               <line
-                x1={PAD.left}
-                x2={PAD.left + w}
+                x1={padLeft}
+                x2={padLeft + w}
                 y1={y(th.v)}
                 y2={y(th.v)}
                 stroke="var(--warning)"
@@ -242,7 +251,7 @@ export function LineChart({ series, width: fixedWidth, height = 180, yMax, forma
                 strokeWidth={1}
                 strokeDasharray={i > 0 ? "4 3" : undefined}
               />
-              <text x={PAD.left + w} y={y(th.v) - 5} textAnchor="end" className="fill-muted-foreground font-mono text-[9.5px]">
+              <text x={padLeft + w} y={y(th.v) - 5} textAnchor="end" className="fill-muted-foreground font-mono text-[9.5px]">
                 {th.label}
               </text>
             </g>
@@ -304,11 +313,14 @@ export function LineChart({ series, width: fixedWidth, height = 180, yMax, forma
 }
 
 export function Tooltip({ x, width, title, children }: { x: number; width: number; title: string; children: React.ReactNode }) {
-  const left = x > width * 0.6 ? undefined : x + 14;
-  const right = x > width * 0.6 ? width - x + 14 : undefined;
+  const clampedX = Math.max(0, Math.min(width, x));
+  const flip = clampedX > width * 0.55;
+  const maxOffset = Math.max(0, width - 160);
+  const left = flip ? undefined : Math.max(0, Math.min(maxOffset, clampedX + 14));
+  const right = flip ? Math.max(0, Math.min(maxOffset, width - clampedX + 14)) : undefined;
   return (
     <div
-      className="pointer-events-none absolute top-6 z-10 min-w-36 rounded-lg border border-border-strong bg-card/95 px-3 py-2 text-[11px] shadow-xl backdrop-blur"
+      className="pointer-events-none absolute top-6 z-10 max-w-[calc(100%-8px)] min-w-36 rounded-lg border border-border-strong bg-card/95 px-3 py-2 text-[11px] shadow-xl backdrop-blur"
       style={{ left, right }}
     >
       <div className="mb-1 font-mono text-[10px] text-faint">{title}</div>

@@ -3,7 +3,7 @@ import { BaseState, type Node, type ObjectStoreStats, type Snapshot } from "../a
 import { Meter, SegmentedBar } from "./charts/Bars";
 import { Columns } from "./charts/Columns";
 import { LineChart } from "./charts/LineChart";
-import { Card, StatTile } from "./Panel";
+import { Card, Empty, StatTile } from "./Panel";
 import { bytes, bytesPerSec, compact, duration, percent } from "../lib/format";
 
 // Published Cloudflare R2 Standard pricing (USD, gross before free tier; $0 egress).
@@ -238,6 +238,7 @@ export function ClusterObjectStoreSection({ s, colors }: { s: Snapshot; colors: 
   if (!sum.hasData) return null;
 
   const cladefsNodes = s.nodes.filter((n) => n.objectStore || (s.nodeHourly[n.id]?.hours ?? []).some((h) => h.uploadBytes > 0n || h.downloadBytes > 0n));
+  const liveStoreNodes = cladefsNodes.filter((n) => n.objectStore != null);
   const liveNodes = cladefsNodes.filter((n) => n.online && colors.has(n.id));
   const vmNodes = cladefsNodes.filter((n) => (n.objectStore?.activeVms ?? 0) > 0 || (n.objectStore?.windowMappedBytes ?? 0n) > 0n);
   const rateLines = (pick: (p: { uploadBytesPerSec: number; downloadBytesPerSec: number }) => number) =>
@@ -379,59 +380,62 @@ export function ClusterObjectStoreSection({ s, colors }: { s: Snapshot; colors: 
         </Card>
 
         <Card
-          className="col-span-12 lg:col-span-5"
+          className="col-span-12 xl:col-span-5"
           title="Part cache & extent cache"
           sub={`SSD part cache ${bytes(sum.partCacheBytes)} / ${bytes(sum.partCacheCapacityBytes)} · RAM extent cache ${bytes(sum.extentCacheBytes)} / ${bytes(sum.extentCacheCapacityBytes)}`}
         >
-          <div className="space-y-4">
-            {cladefsNodes.map((n) => {
-              const os = n.objectStore;
-              if (!os) return null;
-              const partUsed = Number(os.partCacheBytes);
-              const partCap = Number(os.partCacheCapacityBytes);
-              const extUsed = Number(os.extentCacheBytes);
-              const extCap = Number(os.extentCacheCapacityBytes);
-              return (
-                <div key={n.id} className="space-y-1.5 border-b border-border/60 pb-3 last:border-b-0 last:pb-0">
-                  <div className="flex flex-wrap items-center justify-between gap-1 font-mono text-[11px]">
-                    <Link to="/nodes/$hostname" params={{ hostname: n.hostname }} className="flex items-center gap-1.5 text-foreground hover:text-primary">
-                      <span className="inline-block size-1.5 rounded-full" style={{ background: colors.get(n.id) ?? "var(--faint)" }} />
-                      <span>{n.hostname}</span>
-                    </Link>
-                    <span className="text-[10px] text-faint">
-                      {compact(os.extentCachePinnedEntries)} pinned · {compact(os.extentCacheIdleEntries)} idle · {compact(os.cacheTrims)} trims
-                    </span>
-                  </div>
-                  <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-                    <div>
-                      <div className="mb-1 flex justify-between font-mono text-[10px] text-muted-foreground">
-                        <span>SSD part cache</span>
-                        <span className="num text-foreground">
-                          {bytes(partUsed)}
-                          {partCap > 0 ? ` / ${bytes(partCap)}` : ""}
-                        </span>
-                      </div>
-                      <Meter value={partCap > 0 ? partUsed / partCap : 0} warn={0.85} danger={0.95} />
+          {liveStoreNodes.length === 0 ? (
+            <Empty>No nodes are currently reporting live cache telemetry.</Empty>
+          ) : (
+            <div className="space-y-4">
+              {liveStoreNodes.map((n) => {
+                const os = n.objectStore!;
+                const partUsed = Number(os.partCacheBytes);
+                const partCap = Number(os.partCacheCapacityBytes);
+                const extUsed = Number(os.extentCacheBytes);
+                const extCap = Number(os.extentCacheCapacityBytes);
+                return (
+                  <div key={n.id} className="space-y-1.5 border-b border-border/60 pb-3 last:border-b-0 last:pb-0">
+                    <div className="flex flex-wrap items-center justify-between gap-1 font-mono text-[11px]">
+                      <Link to="/nodes/$hostname" params={{ hostname: n.hostname }} className="flex items-center gap-1.5 text-foreground hover:text-primary">
+                        <span className="inline-block size-1.5 rounded-full" style={{ background: colors.get(n.id) ?? "var(--faint)" }} />
+                        <span>{n.hostname}</span>
+                      </Link>
+                      <span className="text-[10px] text-faint">
+                        {compact(os.extentCachePinnedEntries)} pinned · {compact(os.extentCacheIdleEntries)} idle · {compact(os.cacheTrims)} trims
+                      </span>
                     </div>
-                    <div>
-                      <div className="mb-1 flex justify-between font-mono text-[10px] text-muted-foreground">
-                        <span>RAM extent cache</span>
-                        <span className="num text-foreground">
-                          {bytes(extUsed)}
-                          {extCap > 0 ? ` / ${bytes(extCap)}` : ""}
-                        </span>
+                    <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                      <div>
+                        <div className="mb-1 flex justify-between font-mono text-[10px] text-muted-foreground">
+                          <span>SSD part cache</span>
+                          <span className="num text-foreground">
+                            {bytes(partUsed)}
+                            {partCap > 0 ? ` / ${bytes(partCap)}` : ""}
+                          </span>
+                        </div>
+                        <Meter value={partCap > 0 ? partUsed / partCap : 0} warn={0.85} danger={0.95} />
                       </div>
-                      <Meter value={extCap > 0 ? extUsed / extCap : 0} warn={0.9} danger={0.98} />
+                      <div>
+                        <div className="mb-1 flex justify-between font-mono text-[10px] text-muted-foreground">
+                          <span>RAM extent cache</span>
+                          <span className="num text-foreground">
+                            {bytes(extUsed)}
+                            {extCap > 0 ? ` / ${bytes(extCap)}` : ""}
+                          </span>
+                        </div>
+                        <Meter value={extCap > 0 ? extUsed / extCap : 0} warn={0.9} danger={0.98} />
+                      </div>
                     </div>
                   </div>
-                </div>
-              );
-            })}
-          </div>
+                );
+              })}
+            </div>
+          )}
         </Card>
 
         <Card
-          className="col-span-12 lg:col-span-4"
+          className="col-span-12 lg:col-span-6 xl:col-span-4"
           title="DAX window health"
           sub={
             sum.activeVms > 0
@@ -442,7 +446,7 @@ export function ClusterObjectStoreSection({ s, colors }: { s: Snapshot; colors: 
             sum.activeVms > 0 && (
               <span
                 className={`rounded-full px-2 py-0.5 font-mono text-[10px] ${
-                  daxThrashing ? "bg-serious/15 text-serious" : "bg-sprout/15 text-sprout"
+                  daxThrashing ? "bg-serious/15 text-serious-ink" : "bg-sprout/15 text-sprout"
                 }`}
               >
                 {daxThrashing ? `${compact(sum.daxWindowFull)} full` : "healthy"}
@@ -453,7 +457,7 @@ export function ClusterObjectStoreSection({ s, colors }: { s: Snapshot; colors: 
           <div className="grid grid-cols-1 gap-3 font-mono text-[11px] sm:grid-cols-2">
             <div className="rounded-xl border border-border/70 bg-muted/25 p-2.5">
               <div className="eyebrow">window full / reclaims</div>
-              <div className={`num mt-1 text-[16px] font-semibold ${daxThrashing ? "text-serious" : "text-foreground"}`}>
+              <div className={`num mt-1 text-[16px] font-semibold ${daxThrashing ? "text-serious-ink" : "text-foreground"}`}>
                 {compact(sum.daxWindowFull)} <span className="text-[11px] font-normal text-muted-foreground">/ {compact(sum.daxWindowReclaims)}</span>
               </div>
               <div className="mt-0.5 text-[10px] text-faint">{compact(sum.daxRegionsFull)} region pool full</div>
@@ -494,7 +498,7 @@ export function ClusterObjectStoreSection({ s, colors }: { s: Snapshot; colors: 
         </Card>
 
         <Card
-          className="col-span-12 lg:col-span-3"
+          className="col-span-12 lg:col-span-6 xl:col-span-3"
           title="Estimated R2 monthly cost"
           sub="Gross projection from 24h op rates + warm base size · $0 egress"
         >
@@ -614,8 +618,8 @@ export function NodeObjectStoreSection({ n, s }: { n: Node; s: Snapshot }) {
         </Card>
       </div>
 
-      <div className="grid gap-4 lg:grid-cols-3">
-        <Card className="lg:col-span-2" title="R2 transfer, 24 hours" sub="Uploaded and downloaded per hour">
+      <div className={`grid gap-4 ${os ? "lg:grid-cols-3" : "lg:grid-cols-1"}`}>
+        <Card className={os ? "lg:col-span-2" : ""} title="R2 transfer, 24 hours" sub="Uploaded and downloaded per hour">
           <Columns
             columns={hours.map((h) => ({
               key: String(h.hour),
@@ -740,7 +744,7 @@ export function NodeObjectStoreSection({ n, s }: { n: Node; s: Snapshot }) {
               right={
                 <span
                   className={`rounded-full px-2 py-0.5 font-mono text-[10px] ${
-                    daxThrashing ? "bg-serious/15 text-serious" : "bg-sprout/15 text-sprout"
+                    daxThrashing ? "bg-serious/15 text-serious-ink" : "bg-sprout/15 text-sprout"
                   }`}
                 >
                   {daxThrashing ? `${compact(os.daxWindowFull)} full` : "healthy"}
@@ -750,7 +754,7 @@ export function NodeObjectStoreSection({ n, s }: { n: Node; s: Snapshot }) {
               <div className="grid grid-cols-2 gap-3 font-mono text-[11px]">
                 <div>
                   <div className="eyebrow">window full / reclaims</div>
-                  <div className={`num mt-0.5 text-[15px] font-semibold ${daxThrashing ? "text-serious" : "text-foreground"}`}>
+                  <div className={`num mt-0.5 text-[15px] font-semibold ${daxThrashing ? "text-serious-ink" : "text-foreground"}`}>
                     {compact(os.daxWindowFull)} / {compact(os.daxWindowReclaims)}
                   </div>
                   <div className="text-[10px] text-faint">{compact(os.daxRegionsFull)} region pool full</div>

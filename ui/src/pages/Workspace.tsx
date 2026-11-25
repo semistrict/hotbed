@@ -14,43 +14,71 @@ import { filesChanged } from "../lib/workspaces";
 import { NotFound } from "./NotFound";
 import { PageTitle } from "./Nodes";
 
+const WORKSPACE_HIDDEN_COLS = ["workspace", "node", "project"] as const;
+
 /** Each of a workspace's checkouts: where it stands against its base, and what was synced into it. */
 function RepoTable({ s, w }: { s: Snapshot; w: Workspace }) {
   const base = s.bases.find((b) => b.id === w.baseId);
+  if (w.repos.length === 0) return <Empty>No repos recorded for this workspace.</Empty>;
   return (
-    <Table className="text-[12px]">
-      <TableHeader className="eyebrow">
-        <TableRow className="border-border hover:bg-transparent">
-          {["repo", "base", "head", "files changed", "synced from"].map((h) => (
-            <TableHead key={h} className="h-auto px-2 py-2 font-normal text-muted-foreground">
-              {h}
-            </TableHead>
-          ))}
-        </TableRow>
-      </TableHeader>
-      <TableBody className="num font-mono text-[11px]">
+    <>
+      <div className="space-y-2 md:hidden">
         {w.repos.map((r) => {
           const at = base?.repos.find((b) => b.repo === r.repo);
           return (
-            <TableRow key={r.repo} className="border-border/60">
-              <TableCell className="px-2 py-2 text-foreground">{r.repo}</TableCell>
-              <TableCell className="px-2 py-2 text-muted-foreground" title={at?.message}>
-                {at ? shortSha(at.commit) : "—"}
-              </TableCell>
-              <TableCell className="px-2 py-2 text-muted-foreground">{shortSha(r.head)}</TableCell>
-              <TableCell className="px-2 py-2">{r.filesChanged}</TableCell>
-              <TableCell className="px-2 py-2 text-faint">{r.syncDir || "nothing synced"}</TableCell>
-            </TableRow>
+            <div key={r.repo} className="rounded-lg border border-border/70 bg-background/40 p-2.5 font-mono text-[11px]">
+              <div className="flex flex-wrap items-baseline justify-between gap-2">
+                <span className="font-medium text-foreground">{r.repo}</span>
+                <span className="num text-[10.5px] text-muted-foreground">{r.filesChanged} changed</span>
+              </div>
+              <div className="num mt-1.5 flex flex-wrap gap-x-3 gap-y-0.5 text-[10.5px] text-muted-foreground">
+                <span title={at?.message}>base {at ? shortSha(at.commit) : "—"}</span>
+                <span>head {shortSha(r.head)}</span>
+              </div>
+              <div className="mt-1 break-all text-[10.5px] text-faint">
+                {r.syncDir ? `synced from ${r.syncDir}` : "nothing synced"}
+              </div>
+            </div>
           );
         })}
-      </TableBody>
-    </Table>
+      </div>
+
+      <div className="hidden md:block">
+        <Table className="text-[12px]">
+          <TableHeader className="eyebrow">
+            <TableRow className="border-border hover:bg-transparent">
+              {["repo", "base", "head", "files changed", "synced from"].map((h) => (
+                <TableHead key={h} className="h-auto px-2 py-2 font-normal text-muted-foreground">
+                  {h}
+                </TableHead>
+              ))}
+            </TableRow>
+          </TableHeader>
+          <TableBody className="num font-mono text-[11px]">
+            {w.repos.map((r) => {
+              const at = base?.repos.find((b) => b.repo === r.repo);
+              return (
+                <TableRow key={r.repo} className="border-border/60 align-top">
+                  <TableCell className="px-2 py-2 text-foreground">{r.repo}</TableCell>
+                  <TableCell className="px-2 py-2 text-muted-foreground" title={at?.message}>
+                    {at ? shortSha(at.commit) : "—"}
+                  </TableCell>
+                  <TableCell className="px-2 py-2 text-muted-foreground">{shortSha(r.head)}</TableCell>
+                  <TableCell className="px-2 py-2">{r.filesChanged}</TableCell>
+                  <TableCell className="px-2 py-2 break-all whitespace-normal text-faint">{r.syncDir || "nothing synced"}</TableCell>
+                </TableRow>
+              );
+            })}
+          </TableBody>
+        </Table>
+      </div>
+    </>
   );
 }
 
 export const stateTone: Record<WorkspaceState, string> = {
   [WorkspaceState.UNSPECIFIED]: "text-faint",
-  [WorkspaceState.PREPARING]: "text-warning",
+  [WorkspaceState.PREPARING]: "text-warning-ink",
   [WorkspaceState.ACTIVE]: "text-sprout",
   [WorkspaceState.IDLE]: "text-sprout",
   [WorkspaceState.RELEASED]: "text-faint",
@@ -96,7 +124,13 @@ export function WorkspacePage() {
         </p>
       )}
       {w.reason && (w.state === WorkspaceState.PREPARING || w.state === WorkspaceState.FAILED) && (
-        <p className={`font-mono text-[11px] ${w.state === WorkspaceState.FAILED ? "text-critical" : "text-warning"}`}>
+        <p
+          className={`inline-block rounded-lg px-3 py-1.5 font-mono text-[11.5px] ${
+            w.state === WorkspaceState.FAILED
+              ? "bg-[color-mix(in_oklab,var(--critical)_12%,transparent)] text-critical"
+              : "bg-[color-mix(in_oklab,var(--warning)_14%,transparent)] text-warning-ink"
+          }`}
+        >
           {w.state === WorkspaceState.FAILED ? "✕ failed: " : "◌ "}
           {w.reason}
         </p>
@@ -138,8 +172,13 @@ export function WorkspacePage() {
           <Empty>No commands have run here.</Empty>
         ) : (
           <div className="space-y-5">
-            {live.length > 0 && <LiveCommandTable s={s} commands={live} />}
-            {history.length > 0 && <HistoryTable s={s} rows={history} />}
+            {live.length > 0 && <LiveCommandTable s={s} commands={live} hideColumns={WORKSPACE_HIDDEN_COLS} />}
+            <HistoryTable
+              s={s}
+              rows={history}
+              hideColumns={WORKSPACE_HIDDEN_COLS}
+              empty="No finished commands in this workspace yet."
+            />
           </div>
         )}
       </Card>
@@ -167,6 +206,7 @@ function FileBrowser({ workspaceId, selected }: { workspaceId: string; selected?
 
   if (files.isError) return <Empty>Cannot list files: {String(files.error)}</Empty>;
   if (!files.data) return <div className="font-mono text-[11px] text-faint">listing…</div>;
+  if (files.data.length === 0) return <Empty>No files in this workspace yet.</Empty>;
   const changed = new Set(content.data?.changedLines ?? []);
 
   return (
@@ -178,17 +218,27 @@ function FileBrowser({ workspaceId, selected }: { workspaceId: string; selected?
       </ul>
       <div className="min-w-0 overflow-hidden rounded-lg border border-border bg-background/40">
         <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5 border-b border-border px-3 py-2 font-mono text-[11px] text-muted-foreground">
-          <span className="min-w-0 break-all text-foreground">{path}</span>
+          <span className="min-w-0 break-all text-foreground">{path ?? "—"}</span>
           {changed.size > 0 && <span className="shrink-0 text-primary">{changed.size} changed lines</span>}
         </div>
-        <pre className="max-h-[440px] overflow-auto py-2 font-mono text-[11.5px] leading-[1.65]">
-          {content.data?.text.split("\n").map((line, i) => (
-            <div key={i} className={`flex ${changed.has(i + 1) ? "bg-ember-wash" : ""}`}>
-              <span className={`w-11 shrink-0 pr-3 text-right select-none ${changed.has(i + 1) ? "text-primary" : "text-faint"}`}>{i + 1}</span>
-              <span className={`border-l-2 pl-3 ${changed.has(i + 1) ? "border-primary text-foreground" : "border-transparent text-muted-foreground"}`}>{line || " "}</span>
+        {!path ? (
+          <div className="p-3 font-mono text-[11.5px] text-faint">No file selected.</div>
+        ) : content.isLoading ? (
+          <div className="p-3 font-mono text-[11.5px] text-faint">loading file…</div>
+        ) : content.isError ? (
+          <div className="p-3 font-mono text-[11.5px] text-critical">Cannot read file: {String(content.error)}</div>
+        ) : (
+          <pre className="max-h-[440px] overflow-auto py-2 font-mono text-[11.5px] leading-[1.65]">
+            <div className="w-max min-w-full">
+              {(content.data?.text ?? "").split("\n").map((line, i) => (
+                <div key={i} className={`flex ${changed.has(i + 1) ? "bg-ember-wash" : ""}`}>
+                  <span className={`w-11 shrink-0 pr-3 text-right select-none ${changed.has(i + 1) ? "text-primary" : "text-faint"}`}>{i + 1}</span>
+                  <span className={`border-l-2 pr-3 pl-3 ${changed.has(i + 1) ? "border-primary text-foreground" : "border-transparent text-muted-foreground"}`}>{line || " "}</span>
+                </div>
+              ))}
             </div>
-          ))}
-        </pre>
+          </pre>
+        )}
       </div>
     </div>
   );
@@ -199,7 +249,7 @@ function TreeRow({ f, active, onPick }: { f: FileEntry; active: boolean; onPick:
   const name = f.path.split("/").pop();
   if (f.kind === "dir") {
     return (
-      <li className="truncate py-0.5 text-faint" style={{ paddingLeft: depth * 12 + 4 }}>
+      <li className="truncate py-0.5 text-faint" style={{ paddingLeft: depth * 12 + 4 }} title={f.path}>
         {name}/
       </li>
     );
@@ -209,6 +259,7 @@ function TreeRow({ f, active, onPick }: { f: FileEntry; active: boolean; onPick:
       <button
         type="button"
         onClick={onPick}
+        title={f.path}
         className={`flex w-full items-center gap-2 rounded px-1 py-0.5 text-left hover:bg-muted ${active ? "bg-muted text-foreground" : "text-muted-foreground"}`}
         style={{ paddingLeft: depth * 12 + 4 }}
       >
