@@ -18,6 +18,7 @@ import (
 	"golang.org/x/sync/errgroup"
 
 	"github.com/semistrict/hotbed/internal/guestd"
+	"github.com/semistrict/hotbed/internal/profiler"
 )
 
 func main() {
@@ -52,10 +53,21 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
+	var prof profiler.Profiler
+	if *listenDir == "" {
+		otelProf := profiler.NewOTel(profiler.DefaultSampleHz)
+		if err := otelProf.Start(ctx); err != nil {
+			log.Warn("always-on OpenTelemetry eBPF profiler could not start in guest; continuing without continuous profiling", "err", err)
+		}
+		defer otelProf.Stop()
+		prof = otelProf
+	}
+
 	srv, err := guestd.NewServer(guestd.ServerConfig{
 		WorkDir:  *workDir,
 		StateDir: *stateDir,
 		Logger:   log,
+		Profiler: prof,
 	})
 	if err != nil {
 		log.Error("init guestd server failed", "err", err)

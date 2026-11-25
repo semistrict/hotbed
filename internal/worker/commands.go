@@ -1962,7 +1962,8 @@ func (e *Engine) endBy(c *command, state pb.CommandState, code *int32, why strin
 		line = feed(feedFinish, fmt.Sprintf("cancelled %s · %s", cmd.Argv, why), r)
 	}
 	var prof *pb.CommandProfile
-	if e.cfg.Profiler != nil {
+	isVM := cmd.WorkspaceId != "" && e.usesRuntime(cmd.WorkspaceId)
+	if !isVM && e.cfg.Profiler != nil {
 		if snap := e.cfg.Profiler.Snapshot(cmd.Id); snap != nil && snap.TotalSamples > 0 {
 			if path, err := e.profilePath(cmd.Id); err != nil {
 				slog.Warn("save command profile", "command", cmd.Id, "err", err)
@@ -1980,6 +1981,39 @@ func (e *Engine) endBy(c *command, state pb.CommandState, code *int32, why strin
 		} else {
 			c.profileSeq = newest
 		}
+	}
+	if isVM {
+		wsID, cmdID := cmd.WorkspaceId, cmd.Id
+		e.startBgLocked(func(bgCtx context.Context) {
+			pctx, cancel := context.WithTimeout(bgCtx, 5*time.Second)
+			snap, err := e.cfg.Runtime.CommandProfile(pctx, wsID, &pb.GetProfileRequest{
+				Target: &pb.GetProfileRequest_CommandId{CommandId: cmdID},
+				Limit:  500,
+			})
+			cancel()
+			if err != nil || snap == nil || snap.TotalSamples == 0 {
+				return
+			}
+			snap.Live = false
+			if path, perr := e.profilePath(cmdID); perr != nil {
+				slog.Warn("save guest command profile", "command", cmdID, "err", perr)
+			} else if perr := profiler.SaveProfile(path, snap); perr != nil {
+				slog.Warn("save guest command profile", "command", cmdID, "err", perr)
+			}
+			e.mu.Lock()
+			if cur, still := e.commands[cmdID]; still {
+				e.saveCommand(cur, change{what: "profile", detail: "guest eBPF profile", profile: snap})
+				if !e.isDirty() {
+					if _, newest, rerr := e.db.eventRange(); rerr == nil {
+						cur.profileSeq = newest
+					}
+				}
+			}
+			e.mu.Unlock()
+			fctx, fcancel := context.WithTimeout(bgCtx, 2*time.Second)
+			_ = e.cfg.Runtime.ForgetCommandProfile(fctx, wsID, cmdID)
+			fcancel()
+		})
 	}
 	if w, ok := e.workspaces[cmd.WorkspaceId]; ok {
 		w.ws().LastActiveAt = now

@@ -20,6 +20,7 @@ import (
 	pb "github.com/semistrict/hotbed/internal/gen/hotbed/v1"
 	"github.com/semistrict/hotbed/internal/gitops"
 	"github.com/semistrict/hotbed/internal/guestd"
+	"github.com/semistrict/hotbed/internal/profiler"
 	"github.com/semistrict/hotbed/internal/runtime"
 	"github.com/semistrict/hotbed/internal/unit"
 	cladefsdv1 "github.com/semistrict/cladefs/go/cladefsd/v1"
@@ -636,10 +637,12 @@ func TestVMCommandInspectTraceSampleDiagnoseAndProfile(t *testing.T) {
 	}
 	defer ctrlLn.Close()
 
+	guestProf := fake.NewProfiler()
 	srv, err := guestd.NewServer(guestd.ServerConfig{
 		WorkDir:   guestWork,
 		StateDir:  guestState,
 		Inspector: fake.Inspector{},
+		Profiler:  guestProf,
 	})
 	if err != nil {
 		t.Fatalf("guestd.NewServer: %v", err)
@@ -774,18 +777,28 @@ func TestVMCommandInspectTraceSampleDiagnoseAndProfile(t *testing.T) {
 		t.Fatalf("sample Hostname = %q, want %q", gotSample.Hostname, wantHost)
 	}
 
-	// 4. CommandProfile clearly reports continuous eBPF profiling is unavailable inside VMs.
+	// 4. CommandProfile queries the guest's always-on eBPF profiler live over vsock.
+	guestProf.Store.Record(profiler.Sample{
+		CommandID: cmd.Id,
+		Timestamp: time.Now(),
+		Comm:      "python3",
+		Frames: []profiler.ResolvedFrame{
+			{Name: "_PyEval_EvalFrameDefault", FrameType: "native"},
+			{Name: "hot_loop", FrameType: "python"},
+		},
+	})
 	prof, err := eng.CommandProfile(cmd.Id, &pb.GetProfileRequest{
 		Target: &pb.GetProfileRequest_CommandId{CommandId: cmd.Id},
 	})
 	if err != nil {
 		t.Fatalf("Engine.CommandProfile(vm): %v", err)
 	}
-	if prof.Active || !strings.Contains(prof.StatusNote, "Firecracker VMs") {
-		t.Fatalf("unexpected VM CommandProfile: active=%v note=%q", prof.Active, prof.StatusNote)
+	if !prof.Active || !prof.Live || prof.TotalSamples != 1 {
+		t.Fatalf("unexpected live VM CommandProfile: active=%v live=%v samples=%d note=%q", prof.Active, prof.Live, prof.TotalSamples, prof.StatusNote)
 	}
 
-	// 5. StopWith --diagnose collects guest sample + inspection before stopping.
+	// 5. StopWith --diagnose collects guest sample + inspection before stopping,
+	//    and command exit persists the guest eBPF profile to worker disk + events.
 	stopped, err := eng.StopWith(ctx, cmd.Id, Intervention{
 		Comment:  "checking VM diagnostics on stop",
 		Diagnose: true,
@@ -798,13 +811,35 @@ func TestVMCommandInspectTraceSampleDiagnoseAndProfile(t *testing.T) {
 		t.Fatalf("unexpected VM intervention diagnostics: %+v", stopped.Interventions)
 	}
 
-	// 6. Ended VM command returns CONFLICT without a broken "use hotbed profile" hint.
+	// Wait for the background guest-profile snapshot to persist to worker disk.
+	profPath, _ := eng.profilePath(cmd.Id)
+	saveDeadline := time.Now().Add(5 * time.Second)
+	for {
+		if _, statErr := os.Stat(profPath); statErr == nil {
+			break
+		}
+		if time.Now().After(saveDeadline) {
+			t.Fatalf("timed out waiting for guest command profile to persist at %s", profPath)
+		}
+		time.Sleep(25 * time.Millisecond)
+	}
+	persisted, err := eng.CommandProfile(cmd.Id, &pb.GetProfileRequest{
+		Target: &pb.GetProfileRequest_CommandId{CommandId: cmd.Id},
+	})
+	if err != nil {
+		t.Fatalf("Engine.CommandProfile(persisted vm): %v", err)
+	}
+	if persisted.Live || persisted.TotalSamples != 1 {
+		t.Fatalf("unexpected persisted VM CommandProfile: live=%v samples=%d", persisted.Live, persisted.TotalSamples)
+	}
+
+	// 6. Ended VM command returns CONFLICT suggesting `hotbed profile`.
 	_, err = eng.Inspect(ctx, &pb.InspectCommandRequest{Id: cmd.Id})
 	var ae *api.Error
 	if !errors.As(err, &ae) || ae.Code != api.CodeConflict {
 		t.Fatalf("Inspect(ended vm) err = %v, want CONFLICT", err)
 	}
-	if strings.Contains(ae.Suggestion, "hotbed profile") {
-		t.Fatalf("ended VM inspect should not suggest host eBPF profile, got suggestion=%q", ae.Suggestion)
+	if !strings.Contains(ae.Suggestion, "hotbed profile") {
+		t.Fatalf("ended VM inspect should suggest hotbed profile, got suggestion=%q", ae.Suggestion)
 	}
 }

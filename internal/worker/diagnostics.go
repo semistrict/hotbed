@@ -98,11 +98,8 @@ func (e *Engine) resolveLiveCommand(id string) (liveCommandRoute, error) {
 		return liveCommandRoute{}, api.Errorf(api.CodeConflict, "command %s is still queued and has not started yet", id)
 	}
 	if !api.Live(state) {
-		err := api.Errorf(api.CodeConflict, "command %s has already ended (%s); live inspection only applies while running", id, state)
-		if !isVM {
-			err = err.WithSuggestion("use `hotbed profile " + id + "` to query its always-on OpenTelemetry eBPF profile")
-		}
-		return liveCommandRoute{}, err
+		return liveCommandRoute{}, api.Errorf(api.CodeConflict, "command %s has already ended (%s); live inspection only applies while running", id, state).
+			WithSuggestion("use `hotbed profile " + id + "` to query its always-on OpenTelemetry eBPF profile")
 	}
 	return liveCommandRoute{
 		wsID:     wsID,
@@ -232,12 +229,18 @@ func (e *Engine) CommandProfile(id string, req *pb.GetProfileRequest) (*pb.Comma
 
 	if isLive {
 		if isVM {
+			pctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			prof, err := e.cfg.Runtime.CommandProfile(pctx, wsID, req)
+			if err == nil {
+				return prof, nil
+			}
 			return &pb.CommandProfile{
 				CommandId:  id,
 				Profiler:   profiler.EngineName,
 				Live:       true,
 				Active:     false,
-				StatusNote: fmt.Sprintf("always-on eBPF continuous profiling is not yet available inside Firecracker VMs; use `hotbed trace perf %s` or `hotbed sample %s` for live stacks", id, id),
+				StatusNote: err.Error(),
 			}, nil
 		}
 		if e.cfg.Profiler == nil {
@@ -261,13 +264,20 @@ func (e *Engine) CommandProfile(id string, req *pb.GetProfileRequest) (*pb.Comma
 	}
 
 	if ok && isVM {
-		return &pb.CommandProfile{
-			CommandId:  id,
-			Profiler:   profiler.EngineName,
-			Live:       false,
-			Active:     false,
-			StatusNote: "always-on eBPF continuous profiling is not yet available inside Firecracker VMs",
-		}, nil
+		pctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		defer cancel()
+		if prof, err := e.cfg.Runtime.CommandProfile(pctx, wsID, req); err == nil {
+			prof.Live = false
+			return prof, nil
+		} else {
+			return &pb.CommandProfile{
+				CommandId:  id,
+				Profiler:   profiler.EngineName,
+				Live:       false,
+				Active:     false,
+				StatusNote: err.Error(),
+			}, nil
+		}
 	}
 	// Command recently ended and may still have samples in memory.
 	if ok && e.cfg.Profiler != nil {

@@ -23,6 +23,7 @@ import (
 	"github.com/semistrict/hotbed/internal/gitops"
 	"github.com/semistrict/hotbed/internal/guestd"
 	"github.com/semistrict/hotbed/internal/inspect"
+	"github.com/semistrict/hotbed/internal/profiler"
 	"github.com/semistrict/hotbed/internal/unit"
 )
 
@@ -667,5 +668,93 @@ func TestInspectTraceAndSampleEndpoints(t *testing.T) {
 	ae = nil
 	if !errors.As(err, &ae) || ae.Code != api.CodePlatformNotSupported {
 		t.Fatalf("older guestd 404 err = %v, want PLATFORM_NOT_SUPPORTED", err)
+	}
+	_, err = oldClient.CommandProfile(ctx, &pb.GetProfileRequest{
+		Target: &pb.GetProfileRequest_CommandId{CommandId: "cmd-old"},
+	})
+	ae = nil
+	if !errors.As(err, &ae) || ae.Code != api.CodePlatformNotSupported {
+		t.Fatalf("older guestd profile 404 err = %v, want PLATFORM_NOT_SUPPORTED", err)
+	}
+	if err := oldClient.ForgetCommandProfile(ctx, "cmd-old"); err != nil {
+		t.Fatalf("older guestd forget 404 should be no-op, got %v", err)
+	}
+}
+
+func TestGuestdCommandProfileEndpoints(t *testing.T) {
+	ctx := context.Background()
+	workDir := t.TempDir()
+	prof := fake.NewProfiler()
+
+	sockDir, err := os.MkdirTemp("", "gdp-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(sockDir) })
+
+	srv, err := guestd.NewServer(guestd.ServerConfig{
+		WorkDir:   workDir,
+		StateDir:  t.TempDir(),
+		Inspector: fake.Inspector{},
+		Profiler:  prof,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	sctx, cancel := context.WithCancel(ctx)
+	t.Cleanup(cancel)
+	ctrlSock := filepath.Join(sockDir, "ctrl.sock")
+	ctrlLn, err := net.Listen("unix", ctrlSock)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = ctrlLn.Close() })
+	go func() { _ = srv.ServeControl(sctx, ctrlLn) }()
+
+	client := guestd.NewClient(guestd.UnixMapDialer(map[uint32]string{guestd.ControlPort: ctrlSock}))
+	if _, err := client.WaitReady(ctx); err != nil {
+		t.Fatalf("WaitReady: %v", err)
+	}
+
+	if _, err := client.StartCommand(ctx, guestd.StartCommandRequest{
+		ID:   "cmd-prof-1",
+		Argv: []string{"/bin/sh", "-c", "sleep 30"},
+		Dir:  workDir,
+	}); err != nil {
+		t.Fatalf("StartCommand: %v", err)
+	}
+	t.Cleanup(func() { _, _ = client.StopCommand(context.Background(), "cmd-prof-1", 500*time.Millisecond) })
+
+	prof.Store.Record(profiler.Sample{
+		CommandID: "cmd-prof-1",
+		Timestamp: time.Now(),
+		Comm:      "rustc",
+		Frames: []profiler.ResolvedFrame{
+			{Name: "main", FrameType: "native"},
+			{Name: "compile_crate", FrameType: "native"},
+		},
+	})
+
+	got, err := client.CommandProfile(ctx, &pb.GetProfileRequest{
+		Target: &pb.GetProfileRequest_CommandId{CommandId: "cmd-prof-1"},
+	})
+	if err != nil {
+		t.Fatalf("CommandProfile: %v", err)
+	}
+	if !got.Active || !got.Live || got.TotalSamples != 1 {
+		t.Fatalf("unexpected guest CommandProfile: active=%v live=%v samples=%d", got.Active, got.Live, got.TotalSamples)
+	}
+
+	if err := client.ForgetCommandProfile(ctx, "cmd-prof-1"); err != nil {
+		t.Fatalf("ForgetCommandProfile: %v", err)
+	}
+	afterForget, err := client.CommandProfile(ctx, &pb.GetProfileRequest{
+		Target: &pb.GetProfileRequest_CommandId{CommandId: "cmd-prof-1"},
+	})
+	if err != nil {
+		t.Fatalf("CommandProfile after forget: %v", err)
+	}
+	if afterForget.TotalSamples != 0 {
+		t.Fatalf("expected 0 samples after forget, got %d", afterForget.TotalSamples)
 	}
 }

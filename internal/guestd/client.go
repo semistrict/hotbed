@@ -353,6 +353,72 @@ func (c *Client) SampleCommand(ctx context.Context, req *pb.SampleCommandRequest
 	})
 }
 
+// CommandProfile queries the in-guest always-on OpenTelemetry eBPF continuous
+// profile for a live or recently exited command inside the guest VM.
+func (c *Client) CommandProfile(ctx context.Context, req *pb.GetProfileRequest) (*pb.CommandProfile, error) {
+	raw, err := proto.Marshal(req)
+	if err != nil {
+		return nil, err
+	}
+	const maxAttempts = 5
+	var lastErr error
+	for attempt := range maxAttempts {
+		httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, "http://guestd/v1/commands/profile", bytes.NewReader(raw))
+		if err != nil {
+			return nil, err
+		}
+		httpReq.Header.Set("Content-Type", "application/x-protobuf")
+		resp, err := c.http.Do(httpReq)
+		if err != nil {
+			lastErr = err
+			if isTransientReset(err) && attempt+1 < maxAttempts && ctx.Err() == nil {
+				select {
+				case <-time.After(time.Duration(attempt+1) * 50 * time.Millisecond):
+					continue
+				case <-ctx.Done():
+					return nil, ctx.Err()
+				}
+			}
+			return nil, err
+		}
+		data, rerr := io.ReadAll(io.LimitReader(resp.Body, maxStreamFrameLen))
+		_ = resp.Body.Close()
+		if rerr != nil {
+			lastErr = rerr
+			if isTransientReset(rerr) && attempt+1 < maxAttempts && ctx.Err() == nil {
+				select {
+				case <-time.After(time.Duration(attempt+1) * 50 * time.Millisecond):
+					continue
+				case <-ctx.Done():
+					return nil, ctx.Err()
+				}
+			}
+			return nil, rerr
+		}
+		if resp.StatusCode >= 400 {
+			return nil, decodeAPIError(resp, data, "in-guest continuous profiling")
+		}
+		out := &pb.CommandProfile{}
+		if err := proto.Unmarshal(data, out); err != nil {
+			return nil, fmt.Errorf("decode guestd profile response: %w", err)
+		}
+		return out, nil
+	}
+	return nil, lastErr
+}
+
+// ForgetCommandProfile drops in-memory eBPF profile samples for cmdID inside
+// the guest VM after the host worker has persisted a snapshot.
+func (c *Client) ForgetCommandProfile(ctx context.Context, cmdID string) error {
+	if err := c.doJSON(ctx, http.MethodPost, "/v1/commands/profile/forget", FreezeRequest{ID: cmdID}, nil); err != nil {
+		if strings.Contains(err.Error(), "(404)") {
+			return nil
+		}
+		return err
+	}
+	return nil
+}
+
 // StreamLogs streams command output starting at offset into dst until EOF (or
 // until the command exits when follow=true).
 func (c *Client) StreamLogs(ctx context.Context, id string, offset int64, follow bool, dst io.Writer) (int64, error) {

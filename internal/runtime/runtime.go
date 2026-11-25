@@ -105,10 +105,12 @@ type WorkspaceRuntime interface {
 	Reclaim(ctx context.Context, wsID, cmdID string, bytes int64) error
 	StreamLogs(ctx context.Context, wsID, cmdID string, offset int64, follow bool, dst io.Writer) (int64, error)
 
-	// In-guest live command diagnostics (inspect, trace, sample).
+	// In-guest live command diagnostics (inspect, trace, sample, continuous eBPF profile).
 	InspectCommand(ctx context.Context, wsID string, req *pb.InspectCommandRequest) (*pb.InspectCommandResponse, error)
 	TraceCommand(ctx context.Context, wsID string, req *pb.TraceCommandRequest, emit inspect.Emit) error
 	SampleCommand(ctx context.Context, wsID string, req *pb.SampleCommandRequest, emit inspect.SampleEmit) error
+	CommandProfile(ctx context.Context, wsID string, req *pb.GetProfileRequest) (*pb.CommandProfile, error)
+	ForgetCommandProfile(ctx context.Context, wsID, cmdID string) error
 
 	// Workspace I/O.
 	ApplySync(ctx context.Context, wsID string, spec SyncSpec) (int, error)

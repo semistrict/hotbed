@@ -83,12 +83,18 @@ type Sample struct {
 	Frames []ResolvedFrame
 }
 
-var cgroupCmdRe = regexp.MustCompile(`/hotbed-([a-z0-9]+)\.service(?:/|$)`)
+var (
+	cgroupCmdRe      = regexp.MustCompile(`/hotbed-([a-z0-9]+)\.service(?:/|$)`)
+	guestCgroupCmdRe = regexp.MustCompile(`/hotbed/([a-zA-Z0-9][a-zA-Z0-9._-]*)(?:/|$)`)
+)
 
 // ExtractCommandIDFromCgroup extracts the hotbed command ID from /proc/<pid>/cgroup content.
 func ExtractCommandIDFromCgroup(cgroupContent string) string {
 	for _, line := range strings.Split(cgroupContent, "\n") {
 		if m := cgroupCmdRe.FindStringSubmatch(line); len(m) == 2 {
+			return m[1]
+		}
+		if m := guestCgroupCmdRe.FindStringSubmatch(line); len(m) == 2 {
 			return m[1]
 		}
 	}

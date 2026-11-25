@@ -57,6 +57,8 @@ func TestExtractCommandID(t *testing.T) {
 		{"0::/hotbed.slice/hotbed-2plyu4zxok.service\n", "2plyu4zxok"},
 		{"0::/user.slice/user-hotbed.slice/hotbed-abc1234567.service\n", "abc1234567"},
 		{"0::/hotbed_bench.slice/hotbed-xyz9876543.service/sub\n", "xyz9876543"},
+		{"0::/hotbed/2plyu4zxok\n", "2plyu4zxok"},
+		{"0::/hotbed/cmd-vm-1/sub\n", "cmd-vm-1"},
 		{"0::/system.slice/sshd.service\n", ""},
 	}
 	for _, tc := range cases {

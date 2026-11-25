@@ -30,6 +30,7 @@ import (
 	pb "github.com/semistrict/hotbed/internal/gen/hotbed/v1"
 	"github.com/semistrict/hotbed/internal/gitops"
 	"github.com/semistrict/hotbed/internal/inspect"
+	"github.com/semistrict/hotbed/internal/profiler"
 	"github.com/semistrict/hotbed/internal/pty"
 )
 
@@ -47,6 +48,7 @@ type ServerConfig struct {
 	RunDir    string            // base directory for per-user XDG_RUNTIME_DIR (<RunDir>/user/<uid>, default /run)
 	Logger    *slog.Logger
 	Inspector inspect.Inspector // defaults to inspect.Linux{}
+	Profiler  profiler.Profiler // optional always-on in-guest eBPF continuous profiler
 }
 
 // Server runs inside a workspace VM and handles requests from hotbed-worker.
@@ -58,6 +60,7 @@ type Server struct {
 	syncDir   string
 	log       *slog.Logger
 	inspector inspect.Inspector
+	profiler  profiler.Profiler
 
 	mu   sync.Mutex
 	cmds map[string]*managedCmd
@@ -113,6 +116,7 @@ func NewServer(cfg ServerConfig) (*Server, error) {
 		syncDir:   syncDir,
 		log:       cfg.Logger,
 		inspector: insp,
+		profiler:  cfg.Profiler,
 		cmds:      map[string]*managedCmd{},
 	}, nil
 }
@@ -129,6 +133,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /v1/commands/inspect", s.handleInspectCommand)
 	mux.HandleFunc("POST /v1/commands/trace", s.handleTraceCommand)
 	mux.HandleFunc("POST /v1/commands/sample", s.handleSampleCommand)
+	mux.HandleFunc("POST /v1/commands/profile", s.handleCommandProfile)
+	mux.HandleFunc("POST /v1/commands/profile/forget", s.handleForgetCommandProfile)
 	mux.HandleFunc("POST /v1/reclaim", s.handleReclaim)
 	mux.HandleFunc("GET /v1/commands/logs", s.handleStreamLogs)
 	mux.HandleFunc("POST /v1/sync", s.handleSync)
@@ -608,7 +614,7 @@ func (s *Server) inspectTarget(id string) (inspect.Target, error) {
 		return inspect.Target{}, api.Errorf(api.CodeConflict, "command %s has already ended; live inspection only applies while running", id)
 	}
 	host, _ := os.Hostname()
-	return inspect.Target{
+	t := inspect.Target{
 		CommandID: id,
 		UnitName:  "hotbed-" + id,
 		Cgroup:    cgPath,
@@ -616,7 +622,18 @@ func (s *Server) inspectTarget(id string) (inspect.Target, error) {
 		Hostname:  host,
 		Kernel:    kernelRelease(),
 		Arch:      runtime.GOARCH,
-	}, nil
+	}
+	if s.profiler != nil {
+		t.ProfileWindow = func(fromMs, toMs int64) *pb.CommandProfile {
+			return s.profiler.Query(id, &pb.GetProfileRequest{
+				Target: &pb.GetProfileRequest_CommandId{CommandId: id},
+				FromMs: fromMs,
+				ToMs:   toMs,
+				Limit:  100,
+			}, true)
+		}
+	}
+	return t, nil
 }
 
 func (s *Server) handleInspectCommand(w http.ResponseWriter, r *http.Request) {
@@ -740,6 +757,65 @@ func (s *Server) handleSampleCommand(w http.ResponseWriter, r *http.Request) {
 		return sw.sendProto(ch)
 	})
 	sw.finish(err)
+}
+
+func (s *Server) handleCommandProfile(w http.ResponseWriter, r *http.Request) {
+	body, err := io.ReadAll(io.LimitReader(r.Body, 1<<20))
+	if err != nil {
+		writeAPIError(w, api.Errorf(api.CodeInvalidArgs, "read profile request: %v", err))
+		return
+	}
+	var req pb.GetProfileRequest
+	if err := proto.Unmarshal(body, &req); err != nil {
+		writeAPIError(w, api.Errorf(api.CodeInvalidArgs, "decode profile request: %v", err))
+		return
+	}
+	cmdID := req.GetCommandId()
+	if cmdID == "" {
+		writeAPIError(w, api.Errorf(api.CodeInvalidArgs, "command_id is required"))
+		return
+	}
+	mc, ok := s.getCmd(cmdID)
+	if !ok {
+		writeAPIError(w, api.Errorf(api.CodeNotFound, "command %s not found in guest VM", cmdID))
+		return
+	}
+	mc.mu.Lock()
+	isLive := mc.state != StateExited
+	mc.mu.Unlock()
+
+	var prof *pb.CommandProfile
+	if s.profiler == nil {
+		prof = &pb.CommandProfile{
+			CommandId:  cmdID,
+			Profiler:   profiler.EngineName,
+			Live:       isLive,
+			Active:     false,
+			StatusNote: "continuous profiler not configured in guest VM",
+		}
+	} else {
+		prof = s.profiler.Query(cmdID, &req, isLive)
+	}
+	out, err := proto.Marshal(prof)
+	if err != nil {
+		writeAPIError(w, api.Errorf(api.CodeInternal, "encode profile response: %v", err))
+		return
+	}
+	w.Header().Set("Content-Type", "application/x-protobuf")
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write(out)
+}
+
+func (s *Server) handleForgetCommandProfile(w http.ResponseWriter, r *http.Request) {
+	var req FreezeRequest
+	if err := json.NewDecoder(io.LimitReader(r.Body, 64<<10)).Decode(&req); err != nil {
+		writeErr(w, http.StatusBadRequest, "decode forget profile request: "+err.Error())
+		return
+	}
+	if s.profiler != nil && req.ID != "" {
+		s.profiler.Forget(req.ID)
+	}
+	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
 }
 
 func (s *Server) handleStreamLogs(w http.ResponseWriter, r *http.Request) {

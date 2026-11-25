@@ -238,6 +238,22 @@ func (g *GuestRuntime) SampleCommand(ctx context.Context, wsID string, req *pb.S
 	return c.SampleCommand(ctx, req, emit)
 }
 
+func (g *GuestRuntime) CommandProfile(ctx context.Context, wsID string, req *pb.GetProfileRequest) (*pb.CommandProfile, error) {
+	c, err := g.vms.ClientFor(wsID)
+	if err != nil {
+		return nil, api.Errorf(api.CodeConflict, "workspace %s VM is not running: %v", wsID, err)
+	}
+	return c.CommandProfile(ctx, req)
+}
+
+func (g *GuestRuntime) ForgetCommandProfile(ctx context.Context, wsID, cmdID string) error {
+	c, err := g.vms.ClientFor(wsID)
+	if err != nil {
+		return nil
+	}
+	return c.ForgetCommandProfile(ctx, cmdID)
+}
+
 func (g *GuestRuntime) ApplySync(ctx context.Context, wsID string, spec SyncSpec) (int, error) {
 	c, err := g.client(ctx, wsID)
 	if err != nil {
