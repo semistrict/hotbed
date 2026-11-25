@@ -308,7 +308,7 @@ export async function authenticateRequest(
 	const headerHost = (req.headers.get("X-Hotbed-Host") ?? "").trim();
 	const headerNodeId = (req.headers.get("X-Hotbed-Node-Id") ?? "").trim();
 	const headerAddr = (req.headers.get("X-Hotbed-Addr") ?? "").trim();
-	const expectedOrgId = (opts?.orgId ?? req.headers.get(INTERNAL_ORG_HEADER) ?? "").trim();
+	const expectedOrgId = (opts?.orgId || req.headers.get(INTERNAL_ORG_HEADER) || "").trim();
 
 	// 0. Edge-verified WorkOS identity forwarded from index.ts into ControllerDO
 	if (opts?.trustInternalHeader) {
@@ -316,7 +316,12 @@ export async function authenticateRequest(
 		if (rawInternal) {
 			try {
 				const parsed = JSON.parse(rawInternal) as CallerIdentity;
-				if (parsed && parsed.role === "owner" && parsed.login) {
+				if (
+					parsed &&
+					parsed.role === "owner" &&
+					parsed.login &&
+					(!expectedOrgId || !parsed.orgId || parsed.orgId === expectedOrgId)
+				) {
 					return parsed;
 				}
 			} catch {
@@ -419,6 +424,12 @@ export async function authenticateRequest(
 						"select or create an organization with `hotbed org switch` or in the Cockpit",
 					);
 				}
+				if (expectedOrgId && claims.orgId !== expectedOrgId) {
+					throw hotbedError(
+						ErrorCode.NotAuthorized,
+						`organization mismatch: token belongs to ${claims.orgId}, not ${expectedOrgId}`,
+					);
+				}
 				const login = claims.email || claims.sub;
 				return {
 					role: "owner",
@@ -441,7 +452,7 @@ export async function authenticateRequest(
 	if (workosEnabled) {
 		const rawCookie = getCookie(req, WORKOS_SESSION_COOKIE);
 		if (rawCookie) {
-			const session = await unsealPayload<WorkOSSessionPayload>(env, rawCookie);
+			const session = await unsealPayload<WorkOSSessionPayload>(env, "session", rawCookie);
 			if (session && session.accessToken) {
 				const claims = await verifyWorkOSAccessToken(session.accessToken, env, nowMs);
 				if (claims) {
@@ -451,12 +462,18 @@ export async function authenticateRequest(
 					if (csrfErr) {
 						throw hotbedError(ErrorCode.NotAuthorized, csrfErr);
 					}
-					const orgId = claims.orgId || session.organizationId;
+					const orgId = claims.orgId;
 					if (!orgId) {
 						throw hotbedError(
 							ErrorCode.NotAuthorized,
 							"no active organization selected for this session",
 						).withSuggestion("visit /auth/orgs to choose or create an organization");
+					}
+					if (expectedOrgId && orgId !== expectedOrgId) {
+						throw hotbedError(
+							ErrorCode.NotAuthorized,
+							`organization mismatch: session belongs to ${orgId}, not ${expectedOrgId}`,
+						);
 					}
 					const login = session.email || claims.email || claims.sub;
 					return {
@@ -466,7 +483,7 @@ export async function authenticateRequest(
 						login,
 						userId: claims.sub,
 						orgId,
-						orgRole: claims.role || session.role || "member",
+						orgRole: claims.role || "member",
 						addr: "",
 						authMethod: "workos-cookie",
 					};

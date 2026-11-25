@@ -42,6 +42,7 @@ export function OrganizationPage() {
   const { data: snap } = useSnapshot();
   const workosEnabled = Boolean(auth?.workosEnabled);
   const activeOrg = auth?.organization ?? null;
+  const isOrgAdmin = !workosEnabled || activeOrg?.role === "admin" || activeOrg?.role === "owner";
 
   const { data: team, isLoading: loadingTeam, error: teamErr } = useOrgMembers(Boolean(workosEnabled && activeOrg));
   const { data: joinTokens } = useJoinTokens();
@@ -202,38 +203,42 @@ export function OrganizationPage() {
             title="Members & Invitations"
             sub="Multiple users in this organization share its cluster, nodes, projects, and sessions."
           >
-            <form onSubmit={onInvite} className="mb-4 flex flex-wrap gap-2">
-              <Input
-                type="email"
-                value={inviteEmail}
-                onChange={(e) => setInviteEmail(e.target.value)}
-                placeholder="teammate@company.com"
-                className="min-w-[180px] flex-1 bg-background text-[12.5px]"
-                required
-              />
-              <Select items={INVITE_ROLES} value={inviteRole} onValueChange={(v) => v && setInviteRole(v)}>
-                <SelectTrigger aria-label="Role" className="w-28 bg-background font-mono text-[11.5px]">
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent className="font-mono text-[11.5px]">
-                  {INVITE_ROLES.map((r) => (
-                    <SelectItem key={r.value} value={r.value} className="text-[11.5px]">
-                      {r.label}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-              <Button
-                type="submit"
-                disabled={inviteMember.isPending || !inviteEmail.trim()}
-                className="text-[12px]"
-              >
-                {inviteMember.isPending ? "Sending…" : "Invite"}
-              </Button>
-            </form>
-            {inviteMember.error && (
+            {isOrgAdmin && (
+              <form onSubmit={onInvite} className="mb-4 flex flex-wrap gap-2">
+                <Input
+                  type="email"
+                  value={inviteEmail}
+                  onChange={(e) => setInviteEmail(e.target.value)}
+                  placeholder="teammate@company.com"
+                  className="min-w-[180px] flex-1 bg-background text-[12.5px]"
+                  required
+                />
+                <Select items={INVITE_ROLES} value={inviteRole} onValueChange={(v) => v && setInviteRole(v)}>
+                  <SelectTrigger aria-label="Role" className="w-28 bg-background font-mono text-[11.5px]">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent className="font-mono text-[11.5px]">
+                    {INVITE_ROLES.map((r) => (
+                      <SelectItem key={r.value} value={r.value} className="text-[11.5px]">
+                        {r.label}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+                <Button
+                  type="submit"
+                  disabled={inviteMember.isPending || !inviteEmail.trim()}
+                  className="text-[12px]"
+                >
+                  {inviteMember.isPending ? "Sending…" : "Invite"}
+                </Button>
+              </form>
+            )}
+            {(inviteMember.error || removeMember.error || revokeInv.error) && (
               <Alert variant="destructive" className="mb-3 border-critical/40 font-mono text-[11px]">
-                <AlertDescription className="text-[11px] text-critical">{String(inviteMember.error)}</AlertDescription>
+                <AlertDescription className="text-[11px] text-critical">
+                  {String(inviteMember.error ?? removeMember.error ?? revokeInv.error)}
+                </AlertDescription>
               </Alert>
             )}
 
@@ -262,7 +267,7 @@ export function OrganizationPage() {
                           {m.email} · {m.role}
                         </div>
                       </div>
-                      {m.userId !== auth?.user.id && (
+                      {isOrgAdmin && m.userId !== auth?.user.id && (
                         <Button
                           type="button"
                           variant="outline"
@@ -291,15 +296,17 @@ export function OrganizationPage() {
                             {inv.role} · expires {formatDate(inv.expiresAt)}
                           </div>
                         </div>
-                        <Button
-                          type="button"
-                          variant="outline"
-                          size="xs"
-                          onClick={() => revokeInv.mutate(inv.id)}
-                          className="font-mono text-[10.5px] text-muted-foreground hover:border-critical/60 hover:text-critical"
-                        >
-                          Revoke
-                        </Button>
+                        {isOrgAdmin && (
+                          <Button
+                            type="button"
+                            variant="outline"
+                            size="xs"
+                            onClick={() => revokeInv.mutate(inv.id)}
+                            className="font-mono text-[10.5px] text-muted-foreground hover:border-critical/60 hover:text-critical"
+                          >
+                            Revoke
+                          </Button>
+                        )}
                       </div>
                     ))}
                   </div>

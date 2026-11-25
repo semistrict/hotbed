@@ -47,53 +47,84 @@ func (f *controllerClient) callController(addr string, d deps) {
 
 var defaultHotbedDir = setup.DefaultDir
 
-// controllerAuthToken returns the bearer token for controller: HOTBED_TOKEN if
-// set, otherwise WorkOS credentials from ~/.hotbed/auth.json (auto-refreshing
-// expiring JWTs and honoring HOTBED_ORG), otherwise legacy ~/.hotbed/token for
-// HTTPS controllers.
-func controllerAuthToken(controller string) string {
+// resolveControllerAuthToken returns the bearer token for controller:
+// HOTBED_TOKEN if set, otherwise WorkOS credentials from ~/.hotbed/auth.json
+// (auto-refreshing expiring JWTs and honoring HOTBED_ORG), otherwise legacy
+// ~/.hotbed/token for HTTPS controllers when no WorkOS credentials or
+// HOTBED_ORG override are active. Refresh failures fail closed and never
+// silently fall back to legacy ~/.hotbed/token.
+func resolveControllerAuthToken(ctx context.Context, controller string, hc *http.Client) (string, error) {
 	if tok := strings.TrimSpace(os.Getenv("HOTBED_TOKEN")); tok != "" {
-		return tok
+		return tok, nil
 	}
 	dir, err := defaultHotbedDir()
 	if err != nil {
-		return ""
+		return "", nil
 	}
-	if tok, err := cliauth.ResolveToken(context.Background(), dir, controller, strings.TrimSpace(os.Getenv("HOTBED_ORG")), nil); err == nil && tok != "" {
-		return tok
+	targetOrg := strings.TrimSpace(os.Getenv("HOTBED_ORG"))
+	tok, err := cliauth.ResolveToken(ctx, dir, controller, targetOrg, hc)
+	if err != nil {
+		return "", err
+	}
+	if tok != "" {
+		return tok, nil
+	}
+	if targetOrg != "" {
+		return "", nil
 	}
 	if !strings.HasPrefix(strings.ToLower(strings.TrimSpace(controller)), "https://") {
-		return ""
+		return "", nil
 	}
 	b, err := os.ReadFile(filepath.Join(dir, "token"))
 	if err != nil {
+		return "", nil
+	}
+	return strings.TrimSpace(string(b)), nil
+}
+
+// controllerAuthToken returns the bearer token for controller, failing closed
+// (returning "") if WorkOS token refresh fails rather than falling back to
+// legacy ~/.hotbed/token.
+func controllerAuthToken(controller string) string {
+	tok, err := resolveControllerAuthToken(context.Background(), controller, nil)
+	if err != nil {
 		return ""
 	}
-	return strings.TrimSpace(string(b))
+	return tok
 }
 
-func controllerAuthInterceptors(controller string) []connect.ClientInterceptor {
-	tok := controllerAuthToken(controller)
+func controllerAuthInterceptors(controller string, hc *http.Client) ([]connect.ClientInterceptor, error) {
+	tok, err := resolveControllerAuthToken(context.Background(), controller, hc)
+	if err != nil {
+		return nil, err
+	}
 	if tok == "" {
-		return nil
+		return nil, nil
 	}
 	host, _ := os.Hostname()
-	return []connect.ClientInterceptor{api.AuthInterceptor(tok, "", host, "")}
+	return []connect.ClientInterceptor{api.AuthInterceptor(tok, "", host, "")}, nil
 }
 
-func (f controllerClient) interceptors() []connect.ClientInterceptor {
-	auth := controllerAuthInterceptors(f.Controller)
+func (f controllerClient) interceptors(hc *http.Client) ([]connect.ClientInterceptor, error) {
+	auth, err := controllerAuthInterceptors(f.Controller, hc)
+	if err != nil {
+		return nil, err
+	}
 	if len(auth) == 0 {
-		return f.RideOut
+		return f.RideOut, nil
 	}
 	out := make([]connect.ClientInterceptor, 0, len(auth)+len(f.RideOut))
 	out = append(out, auth...)
 	out = append(out, f.RideOut...)
-	return out
+	return out, nil
 }
 
 func (f controllerClient) clients(hc *http.Client) (clients, error) {
-	conn, err := api.Dial(f.Controller, api.DefaultPort, hc, f.interceptors()...)
+	ic, err := f.interceptors(hc)
+	if err != nil {
+		return clients{}, err
+	}
+	conn, err := api.Dial(f.Controller, api.DefaultPort, hc, ic...)
 	if err != nil {
 		return clients{}, err
 	}

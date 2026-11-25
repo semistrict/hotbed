@@ -8,6 +8,9 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"os"
+	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 
@@ -171,5 +174,206 @@ func TestLoginWhoamiOrgAndLogoutCommands(t *testing.T) {
 	}
 	if len(st.Controllers) != 0 {
 		t.Fatalf("expected empty auth store after logout, got %+v", st.Controllers)
+	}
+}
+
+func TestOrgSwitchAndCreateUnderRefreshTokenRotationAndConcurrency(t *testing.T) {
+	hotbedDir := t.TempDir()
+	origDir := defaultHotbedDir
+	defaultHotbedDir = func() (string, error) { return hotbedDir, nil }
+	t.Cleanup(func() { defaultHotbedDir = origDir })
+	t.Setenv("HOTBED_TOKEN", "")
+	t.Setenv("HOTBED_ORG", "")
+
+	var mu sync.Mutex
+	activeRT := map[string]bool{"rt_1": true}
+	rtSeq := 1
+	orgs := []cliauth.OrganizationSummary{
+		{ID: "org_alpha", Name: "Alpha", Role: "admin"},
+		{ID: "org_beta", Name: "Beta", Role: "member"},
+	}
+
+	rotateRT := func(incoming string) (string, bool) {
+		mu.Lock()
+		defer mu.Unlock()
+		if !activeRT[incoming] {
+			return "", false
+		}
+		delete(activeRT, incoming)
+		rtSeq++
+		next := "rt_" + string(rune('0'+rtSeq))
+		activeRT[next] = true
+		return next, true
+	}
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.URL.Path == "/auth/cli/refresh" && r.Method == http.MethodPost:
+			var body struct {
+				RefreshToken   string `json:"refreshToken"`
+				OrganizationID string `json:"organizationId"`
+			}
+			_ = json.NewDecoder(r.Body).Decode(&body)
+			nextRT, ok := rotateRT(body.RefreshToken)
+			if !ok {
+				w.WriteHeader(http.StatusUnauthorized)
+				_ = json.NewEncoder(w).Encode(map[string]string{
+					"code":    "NOT_AUTHORIZED",
+					"message": "invalid_grant: refresh token " + body.RefreshToken + " already used",
+				})
+				return
+			}
+			org := orgs[0]
+			for _, o := range orgs {
+				if o.ID == body.OrganizationID {
+					org = o
+					break
+				}
+			}
+			_ = json.NewEncoder(w).Encode(cliauth.TokenResponse{
+				AccessToken:   "jwt_fresh_" + org.ID,
+				RefreshToken:  nextRT,
+				ExpiresAt:     time.Now().Add(10 * time.Minute).UnixMilli(),
+				User:          cliauth.UserInfo{ID: "user_1", Email: "ramon@alpha.test", Name: "Ramon"},
+				Organization:  &org,
+				Organizations: orgs,
+			})
+		case r.URL.Path == "/auth/me" && r.Method == http.MethodGet:
+			_ = json.NewEncoder(w).Encode(whoamiResponse{
+				Authenticated: true,
+				AuthMethod:    "workos-jwt",
+				WorkOSEnabled: true,
+				User:          cliauth.UserInfo{ID: "user_1", Email: "ramon@alpha.test", Name: "Ramon"},
+				Organization:  &orgs[0],
+				Organizations: orgs,
+			})
+		case r.URL.Path == "/auth/org/create" && r.Method == http.MethodPost:
+			var body struct {
+				Name         string `json:"name"`
+				RefreshToken string `json:"refreshToken"`
+			}
+			_ = json.NewDecoder(r.Body).Decode(&body)
+			nextRT, ok := rotateRT(body.RefreshToken)
+			if !ok {
+				w.WriteHeader(http.StatusUnauthorized)
+				_ = json.NewEncoder(w).Encode(map[string]string{
+					"code":    "NOT_AUTHORIZED",
+					"message": "invalid_grant: refresh token " + body.RefreshToken + " already used",
+				})
+				return
+			}
+			newOrg := cliauth.OrganizationSummary{ID: "org_gamma", Name: body.Name, Role: "admin"}
+			w.WriteHeader(http.StatusCreated)
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"organization": newOrg,
+				"accessToken":  "jwt_gamma",
+				"refreshToken": nextRT,
+				"expiresAt":    time.Now().Add(10 * time.Minute).UnixMilli(),
+			})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+
+	runCmd := func(args ...string) (int, string, string) {
+		var stdout, stderr bytes.Buffer
+		d := deps{
+			http:       srv.Client(),
+			stream:     srv.Client(),
+			controller: at(srv.URL),
+			stdout:     &stdout,
+			stderr:     &stderr,
+		}
+		code := run(t.Context(), append([]string{"--json"}, args...), d)
+		return code, stdout.String(), stderr.String()
+	}
+
+	// 1. org switch by name with near-expiry JWT uses post-refresh token
+	if err := cliauth.SaveCredentials(hotbedDir, srv.URL, cliauth.Credentials{
+		AccessToken:    "jwt_expiring",
+		RefreshToken:   "rt_1",
+		ExpiresAt:      time.Now().Add(10 * time.Second).UnixMilli(),
+		OrganizationID: "org_alpha",
+	}, true); err != nil {
+		t.Fatalf("SaveCredentials: %v", err)
+	}
+	if code, stdout, stderr := runCmd("org", "switch", "Beta"); code != exitOK {
+		t.Fatalf("org switch Beta failed (code=%d): stdout=%s stderr=%s", code, stdout, stderr)
+	}
+
+	// 2. org create with near-expiry JWT uses post-refresh token under lock
+	mu.Lock()
+	activeRT = map[string]bool{"rt_create_1": true}
+	mu.Unlock()
+	if err := cliauth.SaveCredentials(hotbedDir, srv.URL, cliauth.Credentials{
+		AccessToken:    "jwt_expiring",
+		RefreshToken:   "rt_create_1",
+		ExpiresAt:      time.Now().Add(10 * time.Second).UnixMilli(),
+		OrganizationID: "org_alpha",
+	}, true); err != nil {
+		t.Fatalf("SaveCredentials: %v", err)
+	}
+	if code, stdout, stderr := runCmd("org", "create", "Gamma"); code != exitOK {
+		t.Fatalf("org create Gamma failed (code=%d): stdout=%s stderr=%s", code, stdout, stderr)
+	}
+
+	// 3. concurrent org switch + ResolveToken serialize on auth.lock without double-spending refresh token
+	mu.Lock()
+	activeRT = map[string]bool{"rt_conc_1": true}
+	mu.Unlock()
+	if err := cliauth.SaveCredentials(hotbedDir, srv.URL, cliauth.Credentials{
+		AccessToken:    "jwt_expiring",
+		RefreshToken:   "rt_conc_1",
+		ExpiresAt:      time.Now().Add(10 * time.Second).UnixMilli(),
+		OrganizationID: "org_alpha",
+	}, true); err != nil {
+		t.Fatalf("SaveCredentials: %v", err)
+	}
+	var wg sync.WaitGroup
+	var switchCode int
+	var switchOut string
+	var resolveErr error
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		switchCode, switchOut, _ = runCmd("org", "switch", "org_beta")
+	}()
+	go func() {
+		defer wg.Done()
+		_, resolveErr = cliauth.ResolveToken(t.Context(), hotbedDir, srv.URL, "", srv.Client())
+	}()
+	wg.Wait()
+	if switchCode != exitOK || resolveErr != nil {
+		t.Fatalf("concurrent org switch + ResolveToken failed: switchCode=%d switchOut=%s resolveErr=%v", switchCode, switchOut, resolveErr)
+	}
+}
+
+func TestControllerAuthTokenFailsClosedOnHotbedOrgError(t *testing.T) {
+	hotbedDir := t.TempDir()
+	origDir := defaultHotbedDir
+	defaultHotbedDir = func() (string, error) { return hotbedDir, nil }
+	t.Cleanup(func() { defaultHotbedDir = origDir })
+	t.Setenv("HOTBED_TOKEN", "")
+	t.Setenv("HOTBED_ORG", "org_unauthorized")
+
+	controllerURL := "https://127.0.0.1:1"
+	if err := os.WriteFile(filepath.Join(hotbedDir, "token"), []byte("legacy_owner_token_wrong_org\n"), 0o600); err != nil {
+		t.Fatalf("write legacy token: %v", err)
+	}
+	if err := cliauth.SaveCredentials(hotbedDir, controllerURL, cliauth.Credentials{
+		AccessToken:    "jwt_acme",
+		RefreshToken:   "rt_acme",
+		ExpiresAt:      time.Now().Add(10 * time.Minute).UnixMilli(),
+		OrganizationID: "org_acme",
+	}, true); err != nil {
+		t.Fatalf("SaveCredentials: %v", err)
+	}
+
+	if got := controllerAuthToken(controllerURL); got != "" {
+		t.Fatalf("controllerAuthToken fell back to %q on HOTBED_ORG refresh failure; want empty", got)
+	}
+	if _, err := resolveControllerAuthToken(t.Context(), controllerURL, nil); err == nil {
+		t.Fatalf("resolveControllerAuthToken returned nil error on failed HOTBED_ORG refresh; want error")
 	}
 }

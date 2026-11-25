@@ -13,7 +13,13 @@ import {
 } from "../src/gen/hotbed/v1/hotbed_pb.ts";
 import worker from "../src/index.ts";
 import type { ControllerEnv } from "../src/controller-do.ts";
-import { base64UrlEncode, pkceS256, resetWorkOSJwksCache, type WorkOSEnv } from "../src/workos.ts";
+import {
+	base64UrlEncode,
+	pkceS256,
+	resetWorkOSJwksCache,
+	resetWorkOSRefreshCache,
+	type WorkOSEnv,
+} from "../src/workos.ts";
 
 const WORKOS_ORIGIN = "https://mock-workos.test";
 const WORKOS_CLIENT_ID = "client_test_01";
@@ -133,6 +139,7 @@ describe("WorkOS multi-organization, multi-user, per-org ControllerDO integratio
 
 	beforeEach(() => {
 		resetWorkOSJwksCache();
+		resetWorkOSRefreshCache();
 		mockHandlers = [
 			(url) => {
 				if (url.origin === WORKOS_ORIGIN && url.pathname === `/sso/jwks/${WORKOS_CLIENT_ID}`) {
@@ -705,5 +712,444 @@ describe("WorkOS multi-organization, multi-user, per-org ControllerDO integratio
 		expect(cliTokens.accessToken).toBe(freshJwt);
 		expect(cliTokens.refreshToken).toBe("rt_cli_1");
 		expect(cliTokens.organization.id).toBe("org_echo");
+
+		// CLI callback must NOT set a browser session cookie sharing the CLI's single-use refresh token
+		expect(extractCookies(cliCb).some((c) => c.startsWith("hotbed_wos_session="))).toBe(false);
+
+		// Replaying the same CLI handoff code fails (one-time redemption)
+		const replayExch = await callWorker(testEnv, "https://controller.test/auth/cli/exchange", {
+			method: "POST",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify({
+				code: handoffCode,
+				codeVerifier: cliVerifier,
+				redirectUri: cliRedirect,
+			}),
+		});
+		expect(replayExch.status).toBe(401);
+
+		// Cross-context token confusion: presenting the CLI handoff code as hotbed_wos_session cookie fails (PKCE intact)
+		const forgedCookieRes = await callWorker(testEnv, "https://controller.test/admin/api-tokens", {
+			method: "POST",
+			headers: {
+				Cookie: `hotbed_wos_session=${handoffCode}`,
+				"Content-Type": "application/json",
+				Origin: "https://controller.test",
+			},
+			body: JSON.stringify({ name: "pkce-bypass-attempt" }),
+		});
+		expect(forgedCookieRes.status).toBe(403);
+	});
+
+	it("enforces org-admin RBAC on invites/members, redacts acceptInvitationUrl for non-admins, and revokes removed members' API tokens", async () => {
+		const testEnv = makeWorkOSEnv();
+		const nowSec = Math.floor(Date.now() / 1000);
+		const orgId = "org_rbac_revoke";
+
+		const aliceAdminJwt = await signJwt({
+			sub: "user_alice",
+			email: "alice@acme.test",
+			org_id: orgId,
+			role: "admin",
+			sid: "sess_alice",
+			exp: nowSec + 3600,
+		});
+		const bobMemberJwt = await signJwt({
+			sub: "user_bob",
+			email: "bob@acme.test",
+			org_id: orgId,
+			role: "member",
+			sid: "sess_bob",
+			exp: nowSec + 3600,
+		});
+
+		const mutations: string[] = [];
+		mockHandlers.push((url, init) => {
+			const method = (init?.method ?? "GET").toUpperCase();
+			if (url.pathname === "/user_management/users/user_alice" && method === "GET") {
+				return Response.json({ id: "user_alice", email: "alice@acme.test" });
+			}
+			if (url.pathname === "/user_management/users/user_bob" && method === "GET") {
+				return Response.json({ id: "user_bob", email: "bob@acme.test" });
+			}
+			if (url.pathname === `/organizations/${orgId}` && method === "GET") {
+				return Response.json({ id: orgId, name: "RBAC Org" });
+			}
+			if (url.pathname === "/user_management/organization_memberships" && method === "GET") {
+				return Response.json({
+					data: [
+						{
+							id: "om_alice",
+							user_id: "user_alice",
+							organization_id: orgId,
+							status: "active",
+							role: { slug: "admin" },
+						},
+						{
+							id: "om_bob",
+							user_id: "user_bob",
+							organization_id: orgId,
+							status: "active",
+							role: { slug: "member" },
+						},
+					],
+				});
+			}
+			if (url.pathname === "/user_management/users" && method === "GET") {
+				return Response.json({
+					data: [
+						{ id: "user_alice", email: "alice@acme.test" },
+						{ id: "user_bob", email: "bob@acme.test" },
+					],
+				});
+			}
+			if (url.pathname === "/user_management/invitations" && method === "GET") {
+				return Response.json({
+					data: [
+						{
+							id: "inv_secret_1",
+							email: "cfo@acme.test",
+							state: "pending",
+							organization_id: orgId,
+							role_slug: "admin",
+							accept_invitation_url: "https://auth.workos.test/accept/secret_token",
+						},
+					],
+				});
+			}
+			if (url.pathname === "/user_management/invitations" && method === "POST") {
+				mutations.push("INVITE");
+				return Response.json(
+					{ id: "inv_bad", email: "x@y.test", state: "pending" },
+					{ status: 201 },
+				);
+			}
+			if (url.pathname === "/user_management/invitations/inv_secret_1" && method === "GET") {
+				return Response.json({
+					id: "inv_secret_1",
+					email: "cfo@acme.test",
+					state: "pending",
+					organization_id: orgId,
+					role_slug: "admin",
+				});
+			}
+			if (
+				url.pathname === "/user_management/invitations/inv_secret_1/revoke" &&
+				method === "POST"
+			) {
+				mutations.push("REVOKE");
+				return new Response(null, { status: 204 });
+			}
+			if (
+				url.pathname === "/user_management/organization_memberships/om_alice" &&
+				method === "GET"
+			) {
+				return Response.json({
+					id: "om_alice",
+					user_id: "user_alice",
+					organization_id: orgId,
+					status: "active",
+					role: { slug: "admin" },
+				});
+			}
+			if (url.pathname === "/user_management/organization_memberships/om_bob" && method === "GET") {
+				return Response.json({
+					id: "om_bob",
+					user_id: "user_bob",
+					organization_id: orgId,
+					status: "active",
+					role: { slug: "member" },
+				});
+			}
+			if (
+				url.pathname.startsWith("/user_management/organization_memberships/") &&
+				method === "DELETE"
+			) {
+				mutations.push(`DELETE:${url.pathname.split("/").pop()}`);
+				return new Response(null, { status: 204 });
+			}
+			return null;
+		});
+
+		// Non-admin Bob cannot invite, revoke invitations, or remove Alice
+		const bobInvite = await callWorker(testEnv, "https://controller.test/auth/org/invite", {
+			method: "POST",
+			headers: { Authorization: `Bearer ${bobMemberJwt}`, "Content-Type": "application/json" },
+			body: JSON.stringify({ email: "attacker@evil.test", role: "admin" }),
+		});
+		expect(bobInvite.status).toBe(403);
+
+		const bobRevokeInv = await callWorker(
+			testEnv,
+			"https://controller.test/auth/org/invitations/inv_secret_1",
+			{ method: "DELETE", headers: { Authorization: `Bearer ${bobMemberJwt}` } },
+		);
+		expect(bobRevokeInv.status).toBe(403);
+
+		const bobRemoveAlice = await callWorker(
+			testEnv,
+			"https://controller.test/auth/org/members/om_alice",
+			{ method: "DELETE", headers: { Authorization: `Bearer ${bobMemberJwt}` } },
+		);
+		expect(bobRemoveAlice.status).toBe(403);
+		expect(mutations).toEqual([]);
+
+		// Non-admin Bob cannot read secret acceptInvitationUrl, while admin Alice can
+		const bobMembersRes = await callWorker(testEnv, "https://controller.test/auth/org/members", {
+			headers: { Authorization: `Bearer ${bobMemberJwt}` },
+		});
+		expect(bobMembersRes.status).toBe(200);
+		const bobMembers = (await bobMembersRes.json()) as {
+			invitations: Array<{ acceptInvitationUrl?: string }>;
+		};
+		expect(bobMembers.invitations[0]?.acceptInvitationUrl).toBeUndefined();
+
+		const aliceMembersRes = await callWorker(testEnv, "https://controller.test/auth/org/members", {
+			headers: { Authorization: `Bearer ${aliceAdminJwt}` },
+		});
+		const aliceMembers = (await aliceMembersRes.json()) as {
+			invitations: Array<{ acceptInvitationUrl?: string }>;
+		};
+		expect(aliceMembers.invitations[0]?.acceptInvitationUrl).toBe(
+			"https://auth.workos.test/accept/secret_token",
+		);
+
+		// Bob mints a personal API token, then Alice removes Bob from the org -> API token immediately revoked
+		const mintRes = await callWorker(testEnv, "https://controller.test/admin/api-tokens", {
+			method: "POST",
+			headers: { Authorization: `Bearer ${bobMemberJwt}`, "Content-Type": "application/json" },
+			body: JSON.stringify({ name: "bob-ci" }),
+		});
+		expect(mintRes.status).toBe(201);
+		const bobApiToken = ((await mintRes.json()) as { token: string }).token;
+
+		const bobApiClient = makeRpcClient(testEnv, bobApiToken);
+		await expect(bobApiClient.listNodes({})).resolves.toBeTruthy();
+
+		const removeBob = await callWorker(testEnv, "https://controller.test/auth/org/members/om_bob", {
+			method: "DELETE",
+			headers: { Authorization: `Bearer ${aliceAdminJwt}` },
+		});
+		expect(removeBob.status).toBe(200);
+		expect(mutations).toEqual(["DELETE:om_bob"]);
+
+		await expect(bobApiClient.listNodes({})).rejects.toThrow(/invalid bearer token/);
+		const bobMeAfter = await callWorker(testEnv, "https://controller.test/auth/me", {
+			headers: { Authorization: `Bearer ${bobApiToken}` },
+		});
+		expect(bobMeAfter.status).toBe(401);
+	});
+
+	it("prevents /healthz org-metadata leaks, pre-auth org_id pinning, overlapping refresh logouts, stale role/org retention, and dot OWNER_TOKEN rejection", async () => {
+		const testEnv = makeWorkOSEnv({ OWNER_TOKEN: "owner.token.with.dots" });
+		const nowSec = Math.floor(Date.now() / 1000);
+
+		// 1. Forged org-scoped token must not leak private org's clusterId on /healthz or pin org_id pre-auth
+		const secretOrgJwt = await signJwt({
+			sub: "user_secret",
+			email: "ceo@secret.test",
+			org_id: "org_secret_corp",
+			role: "admin",
+			exp: nowSec + 3600,
+		});
+		const secretNodes = await makeRpcClient(testEnv, secretOrgJwt).listNodes({});
+
+		const forgedHealth = await callWorker(testEnv, "https://controller.test/healthz", {
+			headers: { Authorization: "Bearer hbu_org_secret_corp.0000000000000000deadbeef" },
+		});
+		const forgedHealthBody = (await forgedHealth.json()) as { clusterId: string; orgId?: string };
+		expect(forgedHealthBody.clusterId).not.toBe(secretNodes.clusterId);
+		expect(forgedHealthBody.orgId).not.toBe("org_secret_corp");
+
+		const unauthedRpc = await callWorker(
+			testEnv,
+			"https://controller.test/hotbed.v1.ClusterService/ListNodes",
+			{
+				method: "POST",
+				headers: {
+					Authorization: "Bearer hbu_org_unauthed_spawn.0000000000000000deadbeef",
+					"Content-Type": "application/json",
+				},
+				body: "{}",
+			},
+		);
+		expect(unauthedRpc.status).toBe(403);
+		const spawnedDoHealth = await testEnv.CONTROLLER.getByName("org:org_unauthed_spawn").fetch(
+			new Request("https://controller.test/healthz"),
+		);
+		expect(((await spawnedDoHealth.json()) as { orgId?: string }).orgId).toBeUndefined();
+
+		// 2. OWNER_TOKEN containing a dot works on GET /auth/me when WorkOS is enabled
+		const ownerMe = await callWorker(testEnv, "https://controller.test/auth/me", {
+			headers: { Authorization: "Bearer owner.token.with.dots" },
+		});
+		expect(ownerMe.status).toBe(200);
+
+		// 3. Staggered overlapping browser requests, demoted role refresh, failed switch preserving rotated cookie,
+		// and rejecting org-less JWT on switch
+		const expiredAdminJwt = await signJwt({
+			sub: "user_pat",
+			email: "pat@acme.test",
+			org_id: "org_refresh_test",
+			role: "admin",
+			sid: "sess_pat",
+			exp: nowSec - 10, // already expired
+		});
+		const demotedJwt = await signJwt({
+			sub: "user_pat",
+			email: "pat@acme.test",
+			org_id: "org_refresh_test",
+			// role omitted -> demoted to member!
+			sid: "sess_pat",
+			exp: nowSec + 3600,
+		});
+		const orgLessJwt = await signJwt({
+			sub: "user_pat",
+			email: "pat@acme.test",
+			sid: "sess_pat",
+			exp: nowSec + 3600,
+		});
+		const activeRts = new Set(["rt_overlap_1", "rt_switch_1"]);
+		mockHandlers.push((url, init) => {
+			const method = (init?.method ?? "GET").toUpperCase();
+			if (url.pathname === "/user_management/authenticate" && method === "POST") {
+				const body = JSON.parse(typeof init?.body === "string" ? init.body : "{}") as {
+					grant_type?: string;
+					refresh_token?: string;
+					organization_id?: string;
+				};
+				if (body.grant_type === "authorization_code") {
+					return Response.json({
+						user: { id: "user_pat", email: "pat@acme.test" },
+						organization_id: "org_refresh_test",
+						access_token: expiredAdminJwt,
+						refresh_token: "rt_overlap_1",
+					});
+				}
+				if (body.grant_type === "refresh_token") {
+					if (body.refresh_token === "rt_overlap_1" && activeRts.has("rt_overlap_1")) {
+						activeRts.delete("rt_overlap_1");
+						activeRts.add("rt_overlap_2");
+						return Response.json({
+							user: { id: "user_pat", email: "pat@acme.test" },
+							organization_id: "org_refresh_test",
+							access_token: demotedJwt,
+							refresh_token: "rt_overlap_2",
+						});
+					}
+					if (body.refresh_token === "rt_overlap_2" && body.organization_id === "org_forbidden") {
+						return Response.json({ message: "not a member" }, { status: 403 });
+					}
+					if (body.refresh_token === "rt_switch_1" && activeRts.has("rt_switch_1")) {
+						activeRts.delete("rt_switch_1");
+						return Response.json({
+							user: { id: "user_pat", email: "pat@acme.test" },
+							access_token: orgLessJwt,
+							refresh_token: "rt_switch_2",
+						});
+					}
+					return Response.json({ message: "refresh token already used" }, { status: 401 });
+				}
+			}
+			if (url.pathname === "/user_management/organization_memberships" && method === "GET") {
+				return Response.json({ data: [] });
+			}
+			if (url.pathname === "/organizations/org_refresh_test" && method === "GET") {
+				return Response.json({ id: "org_refresh_test", name: "Refresh Org" });
+			}
+			return null;
+		});
+
+		// Obtain initial session cookie via OAuth callback (with expired admin JWT + rt_overlap_1)
+		const loginRes = await callWorker(testEnv, "https://controller.test/auth/login", {
+			redirect: "manual",
+		});
+		const state = new URL(loginRes.headers.get("Location")!).searchParams.get("state")!;
+		const stateCookie = cookiePair(extractCookies(loginRes)[0]);
+		const cbRes = await callWorker(
+			testEnv,
+			`https://controller.test/auth/callback?code=c1&state=${encodeURIComponent(state)}`,
+			{ headers: { Cookie: stateCookie }, redirect: "manual" },
+		);
+		const staleCookie = cookiePair(
+			extractCookies(cbRes).find((c) => c.startsWith("hotbed_wos_session="))!,
+		);
+
+		// First request rotates rt_overlap_1 -> rt_overlap_2 (and demotes role from admin to member)
+		const req1 = await callWorker(testEnv, "https://controller.test/auth/check", {
+			headers: { Cookie: staleCookie },
+		});
+		expect(req1.status).toBe(200);
+		const req1Body = (await req1.json()) as { orgRole: string };
+		expect(req1Body.orgRole).toBe("member");
+		const rotatedCookie = extractCookies(req1).find((c) => c.startsWith("hotbed_wos_session="));
+		expect(rotatedCookie).toBeTruthy();
+
+		// Staggered second request still carrying staleCookie succeeds via short recent-refresh cache and does NOT clear cookie
+		const req2 = await callWorker(testEnv, "https://controller.test/", {
+			headers: { Cookie: staleCookie },
+		});
+		expect(req2.status).toBe(200);
+		expect(extractCookies(req2).some((c) => c.includes("Max-Age=0"))).toBe(false);
+
+		// Failed POST /auth/org/switch after a fresh rotation still returns rotated Set-Cookie
+		resetWorkOSRefreshCache();
+		activeRts.add("rt_overlap_1");
+		const failedSwitch = await callWorker(testEnv, "https://controller.test/auth/org/switch", {
+			method: "POST",
+			headers: {
+				Cookie: staleCookie,
+				"Content-Type": "application/json",
+				Accept: "application/json",
+				Origin: "https://controller.test",
+			},
+			body: JSON.stringify({ organizationId: "org_forbidden" }),
+		});
+		expect(failedSwitch.status).toBe(401);
+		expect(extractCookies(failedSwitch).some((c) => c.startsWith("hotbed_wos_session="))).toBe(
+			true,
+		);
+
+		// POST /auth/org/switch rejects an org-less JWT returned by WorkOS
+		const orgLessSwitch = await callWorker(testEnv, "https://controller.test/auth/org/switch", {
+			method: "POST",
+			headers: {
+				Authorization: `Bearer ${demotedJwt}`,
+				"Content-Type": "application/json",
+				Accept: "application/json",
+			},
+			body: JSON.stringify({
+				organizationId: "org_victim_secret",
+				refreshToken: "rt_switch_1",
+			}),
+		});
+		expect(orgLessSwitch.status).toBe(401);
+
+		// 4. GET /auth/callback?error=... forwards error to CLI loopback redirect_uri instead of hanging CLI
+		const cliChallenge = await pkceS256("verifier_err_test_1234567890123456");
+		const cliErrStart = await callWorker(
+			testEnv,
+			`https://controller.test/auth/cli/authorize?redirect_uri=${encodeURIComponent("http://127.0.0.1:45679/callback")}&state=cli_err_s1&code_challenge=${encodeURIComponent(cliChallenge)}`,
+			{ redirect: "manual" },
+		);
+		const cliErrCookie = cookiePair(extractCookies(cliErrStart)[0]);
+		const cliErrCb = await callWorker(
+			testEnv,
+			"https://controller.test/auth/callback?error=access_denied&error_description=user_cancelled",
+			{ headers: { Cookie: cliErrCookie }, redirect: "manual" },
+		);
+		expect(cliErrCb.status).toBe(303);
+		const cliErrLoc = new URL(cliErrCb.headers.get("Location")!);
+		expect(cliErrLoc.origin).toBe("http://127.0.0.1:45679");
+		expect(cliErrLoc.searchParams.get("error")).toBe("access_denied");
+		expect(cliErrLoc.searchParams.get("state")).toBe("cli_err_s1");
+
+		// 5. Malformed percent-encoding in DELETE paths returns 400 rather than uncaught 500
+		const badPercent = await callWorker(
+			testEnv,
+			"https://controller.test/auth/org/invitations/%E0%A4%A",
+			{ method: "DELETE", headers: { Authorization: `Bearer ${demotedJwt}` } },
+		);
+		expect(badPercent.status).toBe(400);
 	});
 });

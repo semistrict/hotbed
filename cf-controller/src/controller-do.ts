@@ -116,6 +116,14 @@ function connectErrorResponse(err: HotbedError, buildNumber: number): Response {
 	);
 }
 
+function decodePathSegment(raw: string): string | null {
+	try {
+		return decodeURIComponent(raw).trim();
+	} catch {
+		return null;
+	}
+}
+
 export class ControllerDO extends DurableObject<ControllerEnv> {
 	private db!: DrizzleSqliteDODatabase<typeof dbSchema>;
 	private store!: ControllerStore;
@@ -281,12 +289,9 @@ export class ControllerDO extends DurableObject<ControllerEnv> {
 		this.tunnel.handleClose(ws, 1011, error instanceof Error ? error.message : String(error));
 	}
 
-	private bindOrgOrRefuse(request: Request): string | Response {
+	private checkOrgMismatch(request: Request): Response | null {
 		const reqOrgId = (request.headers.get(INTERNAL_ORG_HEADER) ?? "").trim();
-		if (!reqOrgId) {
-			return this.ctrl.orgId;
-		}
-		if (this.ctrl.orgId && this.ctrl.orgId !== reqOrgId) {
+		if (reqOrgId && this.ctrl.orgId && this.ctrl.orgId !== reqOrgId) {
 			return Response.json(
 				{
 					code: ErrorCode.NotAuthorized,
@@ -295,20 +300,25 @@ export class ControllerDO extends DurableObject<ControllerEnv> {
 				{ status: 403 },
 			);
 		}
-		if (!this.ctrl.orgId) {
-			this.store.setMeta(ORG_ID_META_KEY, reqOrgId);
-			this.ctrl.orgId = reqOrgId;
-		}
-		return this.ctrl.orgId;
+		return null;
 	}
 
-	private authRequest(request: Request, opts?: { allowJoinToken?: boolean }) {
-		return authenticateRequest(request, this.env, this.store, {
+	private async authRequest(request: Request, opts?: { allowJoinToken?: boolean }) {
+		const reqOrgId = (request.headers.get(INTERNAL_ORG_HEADER) ?? "").trim();
+		const caller = await authenticateRequest(request, this.env, this.store, {
 			allowJoinToken: opts?.allowJoinToken,
 			trustInternalHeader: true,
 			nowMs: this.ctrl.now(),
-			orgId: this.ctrl.orgId,
+			orgId: this.ctrl.orgId || reqOrgId,
 		});
+		// Only persist org_id after authentication succeeds so unauthenticated
+		// requests with forged org-scoped tokens cannot poison an unbound DO.
+		const effectiveOrgId = reqOrgId || caller.orgId;
+		if (effectiveOrgId && !this.ctrl.orgId) {
+			this.store.setMeta(ORG_ID_META_KEY, effectiveOrgId);
+			this.ctrl.orgId = effectiveOrgId;
+		}
+		return caller;
 	}
 
 	override async fetch(request: Request): Promise<Response> {
@@ -334,10 +344,62 @@ export class ControllerDO extends DurableObject<ControllerEnv> {
 			});
 		}
 
-		// Defense-in-depth: bind/verify organization ID for this DO instance.
-		const boundOrg = this.bindOrgOrRefuse(request);
-		if (boundOrg instanceof Response) {
-			return boundOrg;
+		// Defense-in-depth: refuse organization mismatches before handling any route
+		// (without mutating SQLite; org_id is only persisted after authRequest succeeds).
+		const mismatch = this.checkOrgMismatch(request);
+		if (mismatch) {
+			return mismatch;
+		}
+
+		// 1b. Internal Worker-to-DO control routes (never exposed by index.ts DO_PREFIXES)
+		if (pathname === "/internal/revoke-user-tokens" && request.method === "POST") {
+			try {
+				const caller = await this.authRequest(request);
+				const isAdmin =
+					caller.role === "owner" && (caller.orgRole === "admin" || caller.orgRole === "owner");
+				if (!isAdmin) {
+					return Response.json(
+						{ code: ErrorCode.NotAuthorized, message: "organization admin required" },
+						{ status: 403 },
+					);
+				}
+				const body = (await request.json().catch(() => ({}))) as { userId?: string };
+				const userId = (body.userId ?? "").trim();
+				if (!userId) {
+					return Response.json(
+						{ code: ErrorCode.InvalidArgs, message: "userId is required" },
+						{ status: 400 },
+					);
+				}
+				const revoked = this.store.revokeApiTokensForUser(userId, this.ctrl.now());
+				return Response.json({ ok: true, revoked });
+			} catch (err) {
+				const he = fromUnknownError(err);
+				return Response.json(he.toJSON(), {
+					status: he.code === ErrorCode.NotAuthorized ? 403 : 500,
+				});
+			}
+		}
+
+		if (pathname === "/internal/consume-handoff" && request.method === "POST") {
+			const body = (await request.json().catch(() => ({}))) as { jti?: string; exp?: number };
+			const jti = (body.jti ?? "").trim();
+			const exp = typeof body.exp === "number" && Number.isFinite(body.exp) ? body.exp : 0;
+			if (!jti || jti.length > 128) {
+				return Response.json(
+					{ code: ErrorCode.InvalidArgs, message: "jti is required" },
+					{ status: 400 },
+				);
+			}
+			const key = `cli_handoff:${jti}`;
+			if (this.store.getMeta(key) !== null) {
+				return Response.json(
+					{ code: ErrorCode.Conflict, message: "CLI handoff code already used" },
+					{ status: 409 },
+				);
+			}
+			this.store.setMeta(key, String(Math.max(exp, this.ctrl.now() + 120_000)));
+			return Response.json({ ok: true });
 		}
 
 		// 2. Cockpit cookie auth endpoints
@@ -350,6 +412,13 @@ export class ControllerDO extends DurableObject<ControllerEnv> {
 				});
 			}
 			if (request.method === "POST") {
+				const csrfErr = checkSameOrigin(request);
+				if (csrfErr) {
+					return Response.json(
+						{ code: ErrorCode.NotAuthorized, message: csrfErr },
+						{ status: 403 },
+					);
+				}
 				let submitted = "";
 				let rawReturnTo: string | null = url.searchParams.get("return_to");
 				const ct = (request.headers.get("Content-Type") ?? "").toLowerCase();
@@ -496,7 +565,11 @@ export class ControllerDO extends DurableObject<ControllerEnv> {
 					const label = (body.label ?? "").trim().slice(0, 100);
 					const nowMs = this.ctrl.now();
 					let expiresAt: number | null = null;
-					if (typeof body.expiresInHours === "number" && body.expiresInHours > 0) {
+					if (
+						typeof body.expiresInHours === "number" &&
+						Number.isFinite(body.expiresInHours) &&
+						body.expiresInHours > 0
+					) {
 						expiresAt = nowMs + Math.round(body.expiresInHours * 3600_000);
 					}
 					const id = `jt_${randomHex(8)}`;
@@ -524,7 +597,13 @@ export class ControllerDO extends DurableObject<ControllerEnv> {
 					);
 				}
 				if (pathname.startsWith("/admin/join-tokens/") && request.method === "DELETE") {
-					const id = decodeURIComponent(pathname.slice("/admin/join-tokens/".length)).trim();
+					const id = decodePathSegment(pathname.slice("/admin/join-tokens/".length));
+					if (id === null) {
+						return Response.json(
+							{ code: ErrorCode.InvalidArgs, message: "invalid join token id encoding" },
+							{ status: 400 },
+						);
+					}
 					if (!id || !this.store.revokeJoinToken(id, this.ctrl.now())) {
 						return Response.json(
 							{ code: ErrorCode.NotFound, message: `no join token ${id}` },
@@ -577,7 +656,11 @@ export class ControllerDO extends DurableObject<ControllerEnv> {
 					}
 					const nowMs = this.ctrl.now();
 					let expiresAt: number | null = null;
-					if (typeof body.expiresInDays === "number" && body.expiresInDays > 0) {
+					if (
+						typeof body.expiresInDays === "number" &&
+						Number.isFinite(body.expiresInDays) &&
+						body.expiresInDays > 0
+					) {
 						expiresAt = nowMs + Math.round(body.expiresInDays * 24 * 3600_000);
 					}
 					const id = `at_${randomHex(8)}`;
@@ -609,7 +692,13 @@ export class ControllerDO extends DurableObject<ControllerEnv> {
 					);
 				}
 				if (pathname.startsWith("/admin/api-tokens/") && request.method === "DELETE") {
-					const id = decodeURIComponent(pathname.slice("/admin/api-tokens/".length)).trim();
+					const id = decodePathSegment(pathname.slice("/admin/api-tokens/".length));
+					if (id === null) {
+						return Response.json(
+							{ code: ErrorCode.InvalidArgs, message: "invalid api token id encoding" },
+							{ status: 400 },
+						);
+					}
 					const existing = id ? this.store.getApiToken(id) : null;
 					if (!existing) {
 						return Response.json(

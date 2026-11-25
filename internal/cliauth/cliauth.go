@@ -235,6 +235,10 @@ func ResolveToken(ctx context.Context, dir, controller, targetOrg string, hc *ht
 		return creds.AccessToken, nil
 	}
 	if creds.RefreshToken == "" {
+		if targetOrg != "" && targetOrg != creds.OrganizationID {
+			return "", api.Errorf(api.CodeNotAuthorized, "cannot switch to organization %s without a refresh token", targetOrg).
+				WithSuggestion("run `hotbed login` to sign in again")
+		}
 		return creds.AccessToken, nil
 	}
 	var refreshedToken string
@@ -253,6 +257,10 @@ func ResolveToken(ctx context.Context, dir, controller, targetOrg string, hc *ht
 			return nil
 		}
 		if c2.RefreshToken == "" {
+			if targetOrg != "" && targetOrg != c2.OrganizationID {
+				return api.Errorf(api.CodeNotAuthorized, "cannot switch to organization %s without a refresh token", targetOrg).
+					WithSuggestion("run `hotbed login` to sign in again")
+			}
 			refreshedToken = c2.AccessToken
 			return nil
 		}
@@ -269,7 +277,7 @@ func ResolveToken(ctx context.Context, dir, controller, targetOrg string, hc *ht
 		if next.RefreshToken == "" {
 			next.RefreshToken = c2.RefreshToken
 		}
-		if targetOrg == "" {
+		if targetOrg == "" || targetOrg == c2.OrganizationID {
 			s2.Controllers[key] = next
 			if err := Save(dir, s2); err != nil {
 				return err
@@ -279,7 +287,9 @@ func ResolveToken(ctx context.Context, dir, controller, targetOrg string, hc *ht
 			// refresh token so the old one is not reused and rejected by WorkOS.
 			c2.RefreshToken = next.RefreshToken
 			s2.Controllers[key] = c2
-			_ = Save(dir, s2)
+			if err := Save(dir, s2); err != nil {
+				return err
+			}
 		}
 		refreshedToken = next.AccessToken
 		return nil
@@ -288,6 +298,93 @@ func ResolveToken(ctx context.Context, dir, controller, targetOrg string, hc *ht
 		return "", err
 	}
 	return refreshedToken, nil
+}
+
+// SwitchOrg atomically refreshes into targetOrg under the auth.json file lock
+// and persists the resulting credentials, preventing concurrent refresh-token
+// reuse races with sibling CLI commands.
+func SwitchOrg(ctx context.Context, dir, controller, targetOrg string, hc *http.Client) (TokenResponse, error) {
+	key := NormalizeController(controller)
+	if key == "" {
+		return TokenResponse{}, errors.New("empty controller address")
+	}
+	var resp TokenResponse
+	err := withFileLock(dir, func() error {
+		s, err := Load(dir)
+		if err != nil {
+			return err
+		}
+		creds, ok := s.Controllers[key]
+		if !ok || creds.RefreshToken == "" {
+			return api.Errorf(api.CodeNotAuthorized, "no WorkOS refresh token stored for %s", key).
+				WithSuggestion("run `hotbed login` first")
+		}
+		r, err := Refresh(ctx, key, creds.RefreshToken, targetOrg, hc)
+		if err != nil {
+			return err
+		}
+		next := CredentialsFromResponse(r)
+		if next.RefreshToken == "" {
+			next.RefreshToken = creds.RefreshToken
+		}
+		s.Controllers[key] = next
+		if err := Save(dir, s); err != nil {
+			return err
+		}
+		resp = r
+		return nil
+	})
+	if err != nil {
+		return TokenResponse{}, err
+	}
+	return resp, nil
+}
+
+// WithFreshCredentials acquires the auth.json file lock, refreshes any
+// near-expiry stored WorkOS credentials for controller (persisting the rotated
+// refresh token immediately), and invokes fn with the fresh credentials. If fn
+// returns updated=true, the mutated credentials are saved before releasing the lock.
+func WithFreshCredentials(
+	ctx context.Context,
+	dir, controller string,
+	hc *http.Client,
+	fn func(creds *Credentials) (updated bool, err error),
+) error {
+	key := NormalizeController(controller)
+	if key == "" {
+		return errors.New("empty controller address")
+	}
+	return withFileLock(dir, func() error {
+		s, err := Load(dir)
+		if err != nil {
+			return err
+		}
+		creds, ok := s.Controllers[key]
+		if ok && creds.AccessToken != "" && creds.RefreshToken != "" && needsRefresh(creds, "", time.Now()) {
+			resp, err := Refresh(ctx, key, creds.RefreshToken, creds.OrganizationID, hc)
+			if err != nil {
+				return err
+			}
+			next := CredentialsFromResponse(resp)
+			if next.RefreshToken == "" {
+				next.RefreshToken = creds.RefreshToken
+			}
+			s.Controllers[key] = next
+			if err := Save(dir, s); err != nil {
+				return err
+			}
+			creds = next
+		}
+		updated, err := fn(&creds)
+		if err != nil {
+			return err
+		}
+		if updated {
+			s.Controllers[key] = creds
+			return Save(dir, s)
+		}
+		return nil
+	})
 }
 
 func needsRefresh(c Credentials, targetOrg string, now time.Time) bool {

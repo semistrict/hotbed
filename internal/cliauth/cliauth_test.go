@@ -160,3 +160,56 @@ func TestLoginBrowserPKCEFlow(t *testing.T) {
 		t.Fatalf("unexpected response: %+v", resp)
 	}
 }
+
+func TestResolveTokenRejectsWrongOrgWithoutRefreshToken(t *testing.T) {
+	dir := t.TempDir()
+	controller := "https://controller.test"
+	if err := SaveCredentials(dir, controller, Credentials{
+		AccessToken:    "jwt_for_org_acme",
+		RefreshToken:   "",
+		ExpiresAt:      time.Now().Add(10 * time.Minute).UnixMilli(),
+		OrganizationID: "org_acme",
+	}, true); err != nil {
+		t.Fatalf("SaveCredentials: %v", err)
+	}
+
+	tok, err := ResolveToken(t.Context(), dir, controller, "org_beta", nil)
+	if err == nil {
+		t.Fatalf("ResolveToken(targetOrg=org_beta) without refresh token returned err=nil tok=%q; want error", tok)
+	}
+}
+
+func TestResolveTokenCachesRefreshWhenTargetOrgMatchesStoredOrg(t *testing.T) {
+	dir := t.TempDir()
+	var calls atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		n := calls.Add(1)
+		_ = json.NewEncoder(w).Encode(TokenResponse{
+			AccessToken:  "jwt_fresh",
+			RefreshToken: "rt_" + string(rune('0'+n+1)),
+			ExpiresAt:    time.Now().Add(10 * time.Minute).UnixMilli(),
+			User:         UserInfo{ID: "user_1", Email: "alice@acme.test"},
+			Organization: &OrganizationSummary{ID: "org_acme", Name: "Acme", Role: "admin"},
+		})
+	}))
+	defer srv.Close()
+
+	if err := SaveCredentials(dir, srv.URL, Credentials{
+		AccessToken:    "jwt_expiring",
+		RefreshToken:   "rt_1",
+		ExpiresAt:      time.Now().Add(10 * time.Second).UnixMilli(),
+		OrganizationID: "org_acme",
+	}, true); err != nil {
+		t.Fatalf("SaveCredentials: %v", err)
+	}
+
+	if _, err := ResolveToken(t.Context(), dir, srv.URL, "org_acme", srv.Client()); err != nil {
+		t.Fatalf("ResolveToken(1): %v", err)
+	}
+	if _, err := ResolveToken(t.Context(), dir, srv.URL, "org_acme", srv.Client()); err != nil {
+		t.Fatalf("ResolveToken(2): %v", err)
+	}
+	if got := calls.Load(); got != 1 {
+		t.Fatalf("ResolveToken with matching targetOrg refreshed %d times; want 1", got)
+	}
+}

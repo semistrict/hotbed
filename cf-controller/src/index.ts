@@ -95,9 +95,14 @@ export default {
 
 		// 3. Controller API, worker WebSocket tunnel, build downloads, admin endpoints, /healthz.
 		if (isControllerRoute(url.pathname, testHarness)) {
+			// /healthz is unauthenticated: never route it to an arbitrary org DO based on an
+			// unverified Bearer hbu_<org>.* prefix (which would leak that org's clusterId/orgId).
+			const allowUnverifiedScopedRouting = url.pathname !== "/healthz";
 			let routing;
 			try {
-				routing = await resolveEdgeRouting(request, url, env);
+				routing = await resolveEdgeRouting(request, url, env, {
+					allowUnverifiedScopedRouting,
+				});
 			} catch (err) {
 				const he = fromUnknownError(err);
 				if (url.pathname.startsWith("/hotbed.v1.")) {
@@ -109,10 +114,10 @@ export default {
 				const he = fromUnknownError(
 					new Error("no active organization selected; choose or create an organization first"),
 				);
-				if (url.pathname.startsWith("/hotbed.v1.")) {
-					return edgeConnectErrorResponse(he);
-				}
-				return Response.json(he.toJSON(), { status: 403 });
+				const res = url.pathname.startsWith("/hotbed.v1.")
+					? edgeConnectErrorResponse(he)
+					: Response.json(he.toJSON(), { status: 403 });
+				return withSetCookie(res, routing.setCookie);
 			}
 			const stub = env.CONTROLLER.getByName(routing.doName);
 			const fwd = attachInternalAuth(request, routing);

@@ -179,22 +179,13 @@ func (c *orgSwitchCmd) Exec(ctx context.Context, d deps) (any, error) {
 	if err != nil {
 		return nil, err
 	}
-	store, err := cliauth.Load(dir)
-	if err != nil {
-		return nil, err
-	}
 	key := cliauth.NormalizeController(base)
-	creds, ok := store.Controllers[key]
-	if !ok || creds.RefreshToken == "" {
-		return nil, api.Errorf(api.CodeNotAuthorized, "no WorkOS refresh token stored for %s", key).
-			WithSuggestion("run `hotbed login` first")
-	}
 
 	target := strings.TrimSpace(c.Org)
 	if target == "" {
 		return nil, api.Errorf(api.CodeInvalidArgs, "organization ID or name is required")
 	}
-	// Resolve by name if the caller didn't pass an org_ ID.
+	// Resolve by name first (this may auto-refresh and rotate auth.json under lock).
 	if !strings.HasPrefix(target, "org_") {
 		var me whoamiResponse
 		if err := c.controllerJSON(ctx, d, http.MethodGet, "/auth/me", nil, &me); err == nil {
@@ -207,15 +198,10 @@ func (c *orgSwitchCmd) Exec(ctx context.Context, d deps) (any, error) {
 		}
 	}
 
-	resp, err := cliauth.Refresh(ctx, key, creds.RefreshToken, target, d.http)
+	// Acquire auth.lock and load the current (post-/auth/me) refresh token so we
+	// never reuse a rotated token or race with concurrent CLI refreshes.
+	resp, err := cliauth.SwitchOrg(ctx, dir, key, target, d.http)
 	if err != nil {
-		return nil, err
-	}
-	next := cliauth.CredentialsFromResponse(resp)
-	if next.RefreshToken == "" {
-		next.RefreshToken = creds.RefreshToken
-	}
-	if err := cliauth.SaveCredentials(dir, key, next, false); err != nil {
 		return nil, err
 	}
 	if resp.Organization == nil {
@@ -239,35 +225,52 @@ func (c *orgCreateCmd) Exec(ctx context.Context, d deps) (any, error) {
 		return nil, err
 	}
 	key := cliauth.NormalizeController(base)
-	payload := map[string]string{"name": strings.TrimSpace(c.Name)}
-	if store, err := cliauth.Load(dir); err == nil {
-		if creds, ok := store.Controllers[key]; ok && creds.RefreshToken != "" {
-			payload["refreshToken"] = creds.RefreshToken
-		}
-	}
+	name := strings.TrimSpace(c.Name)
+
 	var out struct {
 		Organization cliauth.OrganizationSummary `json:"organization"`
 		AccessToken  string                      `json:"accessToken,omitempty"`
 		RefreshToken string                      `json:"refreshToken,omitempty"`
 		ExpiresAt    int64                       `json:"expiresAt,omitempty"`
 	}
-	if err := c.controllerJSON(ctx, d, http.MethodPost, "/auth/org/create", payload, &out); err != nil {
+
+	// Coordinate token refresh, /auth/org/create, and saving the newly rotated
+	// tokens under auth.lock so we never submit a stale pre-refresh token.
+	usedLockedCreds := false
+	if err := cliauth.WithFreshCredentials(ctx, dir, key, d.http, func(creds *cliauth.Credentials) (bool, error) {
+		if creds.AccessToken == "" {
+			return false, nil
+		}
+		usedLockedCreds = true
+		payload := map[string]string{"name": name}
+		if creds.RefreshToken != "" {
+			payload["refreshToken"] = creds.RefreshToken
+		}
+		if err := c.controllerJSONWithToken(ctx, d, http.MethodPost, "/auth/org/create", creds.AccessToken, payload, &out); err != nil {
+			return false, err
+		}
+		if out.AccessToken == "" {
+			return false, nil
+		}
+		creds.AccessToken = out.AccessToken
+		if out.RefreshToken != "" {
+			creds.RefreshToken = out.RefreshToken
+		}
+		if out.ExpiresAt > 0 {
+			creds.ExpiresAt = out.ExpiresAt
+		}
+		creds.OrganizationID = out.Organization.ID
+		creds.OrganizationName = out.Organization.Name
+		creds.Role = out.Organization.Role
+		return true, nil
+	}); err != nil {
 		return nil, err
 	}
-	if out.AccessToken != "" {
-		if store, err := cliauth.Load(dir); err == nil {
-			creds := store.Controllers[key]
-			creds.AccessToken = out.AccessToken
-			if out.RefreshToken != "" {
-				creds.RefreshToken = out.RefreshToken
-			}
-			if out.ExpiresAt > 0 {
-				creds.ExpiresAt = out.ExpiresAt
-			}
-			creds.OrganizationID = out.Organization.ID
-			creds.OrganizationName = out.Organization.Name
-			creds.Role = out.Organization.Role
-			_ = cliauth.SaveCredentials(dir, key, creds, false)
+
+	if !usedLockedCreds {
+		payload := map[string]string{"name": name}
+		if err := c.controllerJSON(ctx, d, http.MethodPost, "/auth/org/create", payload, &out); err != nil {
+			return nil, err
 		}
 	}
 	return orgSwitchResult{Organization: out.Organization}, nil
@@ -401,6 +404,14 @@ func (c *orgAPITokenRmCmd) Exec(ctx context.Context, d deps) (any, error) {
 }
 
 func (f controllerClient) controllerJSON(ctx context.Context, d deps, method, path string, reqBody any, out any) error {
+	tok, err := resolveControllerAuthToken(ctx, f.Controller, d.http)
+	if err != nil {
+		return err
+	}
+	return f.controllerJSONWithToken(ctx, d, method, path, tok, reqBody, out)
+}
+
+func (f controllerClient) controllerJSONWithToken(ctx context.Context, d deps, method, path, tok string, reqBody any, out any) error {
 	base, err := api.ControllerBaseURL(f.Controller)
 	if err != nil {
 		return err
@@ -421,7 +432,7 @@ func (f controllerClient) controllerJSON(ctx context.Context, d deps, method, pa
 	if reqBody != nil {
 		req.Header.Set("Content-Type", "application/json")
 	}
-	if tok := controllerAuthToken(f.Controller); tok != "" {
+	if tok != "" {
 		req.Header.Set("Authorization", "Bearer "+tok)
 	}
 	hc := d.http

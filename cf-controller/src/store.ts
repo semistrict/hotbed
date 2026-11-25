@@ -749,6 +749,16 @@ export class ControllerStore {
 		return true;
 	}
 
+	revokeApiTokensForUser(userId: string, nowMs: number): number {
+		if (!userId) return 0;
+		const res = this.sql.exec(
+			"UPDATE api_tokens SET revoked_at = ? WHERE user_id = ? AND revoked_at IS NULL",
+			nowMs,
+			userId,
+		);
+		return res.rowsWritten;
+	}
+
 	// ---- daemon_logs ----------------------------------------------------
 
 	logDaemon(
@@ -4094,6 +4104,10 @@ export class ControllerStore {
 		this.sql.exec(
 			"DELETE FROM cladefs_retired_incarnations WHERE retired_at < ?",
 			nowMs - 7 * 24 * 3600_000,
+		);
+		this.sql.exec(
+			"DELETE FROM kv_meta WHERE key LIKE 'cli_handoff:%' AND CAST(value AS INTEGER) < ?",
+			nowMs,
 		);
 		this.samplesGen++;
 	}

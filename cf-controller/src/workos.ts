@@ -83,6 +83,7 @@ export interface PendingOrgSelectionPayload {
 }
 
 export interface CliHandoffPayload {
+	jti: string;
 	accessToken: string;
 	refreshToken: string;
 	expiresAt: number;
@@ -94,6 +95,8 @@ export interface CliHandoffPayload {
 	redirectUri: string;
 	exp: number;
 }
+
+export type SealPurpose = "session" | "oauth-state" | "pending-org" | "cli-handoff";
 
 export interface VerifiedWorkOSClaims {
 	sub: string;
@@ -195,7 +198,7 @@ export function parseOrgScopedToken(
 	}
 	const orgId = rest.slice(0, dot);
 	const secret = rest.slice(dot + 1);
-	if (!orgId || !secret || !isValidOrgId(orgId)) {
+	if (!orgId || secret.length < 16 || !isValidOrgId(orgId)) {
 		return null;
 	}
 	return { kind, orgId };
@@ -259,13 +262,25 @@ async function deriveSealKey(env: WorkOSEnv): Promise<CryptoKey> {
 	);
 }
 
-export async function sealPayload<T>(env: WorkOSEnv, payload: T): Promise<string> {
+function sealAad(purpose: SealPurpose): Uint8Array {
+	return new TextEncoder().encode(`hotbed-workos:${purpose}:v1`);
+}
+
+export async function sealPayload<T>(
+	env: WorkOSEnv,
+	purpose: SealPurpose,
+	payload: T,
+): Promise<string> {
 	const key = await deriveSealKey(env);
 	const iv = new Uint8Array(12);
 	crypto.getRandomValues(iv);
 	const plaintext = new TextEncoder().encode(JSON.stringify(payload));
 	const ciphertext = new Uint8Array(
-		await crypto.subtle.encrypt({ name: "AES-GCM", iv }, key, plaintext),
+		await crypto.subtle.encrypt(
+			{ name: "AES-GCM", iv, additionalData: sealAad(purpose) },
+			key,
+			plaintext,
+		),
 	);
 	const combined = new Uint8Array(iv.length + ciphertext.length);
 	combined.set(iv, 0);
@@ -273,7 +288,11 @@ export async function sealPayload<T>(env: WorkOSEnv, payload: T): Promise<string
 	return `v1.${base64UrlEncode(combined)}`;
 }
 
-export async function unsealPayload<T>(env: WorkOSEnv, sealed: string): Promise<T | null> {
+export async function unsealPayload<T>(
+	env: WorkOSEnv,
+	purpose: SealPurpose,
+	sealed: string,
+): Promise<T | null> {
 	if (!sealed || !sealed.startsWith("v1.")) return null;
 	try {
 		const raw = base64UrlDecode(sealed.slice(3));
@@ -281,7 +300,11 @@ export async function unsealPayload<T>(env: WorkOSEnv, sealed: string): Promise<
 		const iv = raw.subarray(0, 12);
 		const ciphertext = raw.subarray(12);
 		const key = await deriveSealKey(env);
-		const plaintext = await crypto.subtle.decrypt({ name: "AES-GCM", iv }, key, ciphertext);
+		const plaintext = await crypto.subtle.decrypt(
+			{ name: "AES-GCM", iv, additionalData: sealAad(purpose) },
+			key,
+			ciphertext,
+		);
 		return JSON.parse(new TextDecoder().decode(plaintext)) as T;
 	} catch {
 		return null;
@@ -364,10 +387,12 @@ export function resetWorkOSJwksCache(): void {
 }
 
 async function importJwkForVerify(
-	jwk: JsonWebKey & { kid?: string; alg?: string; kty?: string; crv?: string },
+	jwk: JsonWebKey & { kid?: string; alg?: string; kty?: string; crv?: string; use?: string },
 ): Promise<{ key: CryptoKey; alg: string } | null> {
 	try {
+		if (jwk.use && jwk.use !== "sig") return null;
 		if (jwk.kty === "RSA") {
+			if (jwk.alg && jwk.alg !== "RS256") return null;
 			const key = await crypto.subtle.importKey(
 				"jwk",
 				jwk,
@@ -375,9 +400,10 @@ async function importJwkForVerify(
 				false,
 				["verify"],
 			);
-			return { key, alg: jwk.alg || "RS256" };
+			return { key, alg: "RS256" };
 		}
 		if (jwk.kty === "EC" && jwk.crv === "P-256") {
+			if (jwk.alg && jwk.alg !== "ES256") return null;
 			const key = await crypto.subtle.importKey(
 				"jwk",
 				jwk,
@@ -385,7 +411,7 @@ async function importJwkForVerify(
 				false,
 				["verify"],
 			);
-			return { key, alg: jwk.alg || "ES256" };
+			return { key, alg: "ES256" };
 		}
 	} catch {
 		// Skip unsupported or malformed JWKs so one bad key cannot lock out logins.
@@ -471,7 +497,9 @@ export async function verifyWorkOSAccessToken(
 			keys = await fetchWorkOSJwks(env, true);
 			entry = keys.get(header.kid);
 		}
-		if (!entry) return null;
+		if (!entry || entry.alg !== header.alg) return null;
+		const orgId = typeof payload.org_id === "string" ? payload.org_id : "";
+		if (orgId && !isValidOrgId(orgId)) return null;
 
 		const sig = base64UrlDecode(parts[2]);
 		const signed = new TextEncoder().encode(`${parts[0]}.${parts[1]}`);
@@ -484,7 +512,7 @@ export async function verifyWorkOSAccessToken(
 
 		return {
 			sub: payload.sub,
-			orgId: typeof payload.org_id === "string" ? payload.org_id : "",
+			orgId,
 			role: typeof payload.role === "string" ? payload.role : "",
 			sid: typeof payload.sid === "string" ? payload.sid : "",
 			email: typeof payload.email === "string" ? payload.email : "",
@@ -684,10 +712,36 @@ export async function authenticateWithOrgSelection(
 	);
 }
 
+const RECENT_REFRESH_TTL_MS = 15_000;
+const MAX_RECENT_REFRESHES = 256;
+
 const inFlightRefreshes = new Map<
 	string,
 	Promise<Extract<AuthenticateResult, { kind: "authenticated" }>>
 >();
+
+const recentRefreshes = new Map<
+	string,
+	{ result: Extract<AuthenticateResult, { kind: "authenticated" }>; expiresAt: number }
+>();
+
+export function resetWorkOSRefreshCache(): void {
+	inFlightRefreshes.clear();
+	recentRefreshes.clear();
+}
+
+function pruneRecentRefreshes(now: number): void {
+	for (const [k, v] of recentRefreshes) {
+		if (v.expiresAt <= now) {
+			recentRefreshes.delete(k);
+		}
+	}
+	while (recentRefreshes.size > MAX_RECENT_REFRESHES) {
+		const oldest = recentRefreshes.keys().next().value;
+		if (oldest === undefined) break;
+		recentRefreshes.delete(oldest);
+	}
+}
 
 async function refreshDedupKey(refreshToken: string, organizationId: string): Promise<string> {
 	const digest = await crypto.subtle.digest(
@@ -707,6 +761,14 @@ export async function authenticateWithRefreshToken(
 	},
 ): Promise<Extract<AuthenticateResult, { kind: "authenticated" }>> {
 	const key = await refreshDedupKey(params.refreshToken, params.organizationId ?? "");
+	const now = Date.now();
+	const cached = recentRefreshes.get(key);
+	if (cached && cached.expiresAt > now) {
+		return cached.result;
+	}
+	if (cached) {
+		recentRefreshes.delete(key);
+	}
 	const existing = inFlightRefreshes.get(key);
 	if (existing) return existing;
 
@@ -734,7 +796,7 @@ export async function authenticateWithRefreshToken(
 				`WorkOS token refresh failed (HTTP ${res.status})`;
 			throw hotbedError(ErrorCode.NotAuthorized, msg);
 		}
-		return parseAuthSuccess(
+		const result = parseAuthSuccess(
 			data as {
 				user: RawWorkOSUser;
 				organization_id?: string | null;
@@ -742,6 +804,10 @@ export async function authenticateWithRefreshToken(
 				refresh_token: string;
 			},
 		);
+		const doneAt = Date.now();
+		pruneRecentRefreshes(doneAt);
+		recentRefreshes.set(key, { result, expiresAt: doneAt + RECENT_REFRESH_TTL_MS });
+		return result;
 	})();
 
 	inFlightRefreshes.set(key, promise);

@@ -69,6 +69,18 @@ import {
 
 const REFRESH_MARGIN_MS = 60_000;
 
+function isOrgAdmin(role: string): boolean {
+	return role === "admin" || role === "owner";
+}
+
+function decodePathSegment(raw: string): string | null {
+	try {
+		return decodeURIComponent(raw).trim();
+	} catch {
+		return null;
+	}
+}
+
 function encodeBase64(bytes: Uint8Array): string {
 	let bin = "";
 	const chunk = 0x8000;
@@ -151,7 +163,7 @@ async function resolveSessionCookie(
 	if (!isWorkOSEnabled(env)) return null;
 	const raw = getCookie(request, WORKOS_SESSION_COOKIE);
 	if (!raw) return null;
-	let session = await unsealPayload<WorkOSSessionPayload>(env, raw);
+	let session = await unsealPayload<WorkOSSessionPayload>(env, "session", raw);
 	if (!session || !session.accessToken) return null;
 
 	const csrfErr = checkSameOrigin(request, {
@@ -174,31 +186,38 @@ async function resolveSessionCookie(
 				ipAddress: clientIp(request),
 				userAgent: clientUa(request),
 			});
-			let orgName = session.organizationName;
-			if (refreshed.organizationId && refreshed.organizationId !== session.organizationId) {
-				try {
-					orgName = (await getOrganization(env, refreshed.organizationId)).name;
-				} catch {
-					orgName = refreshed.organizationId;
+			const refreshedClaims = await verifyWorkOSAccessToken(refreshed.accessToken, env, Date.now());
+			if (!refreshedClaims) {
+				if (!claims) return null;
+			} else {
+				let orgName = session.organizationName;
+				if (refreshedClaims.orgId && refreshedClaims.orgId !== session.organizationId) {
+					try {
+						orgName = (await getOrganization(env, refreshedClaims.orgId)).name;
+					} catch {
+						orgName = refreshedClaims.orgId;
+					}
+				} else if (!refreshedClaims.orgId) {
+					orgName = "";
 				}
+				session = {
+					userId: refreshed.user.id,
+					email: refreshed.user.email,
+					firstName: refreshed.user.firstName,
+					lastName: refreshed.user.lastName,
+					organizationId: refreshedClaims.orgId,
+					organizationName: orgName,
+					role: refreshedClaims.role || "member",
+					sessionId: refreshed.sessionId || session.sessionId,
+					accessToken: refreshed.accessToken,
+					refreshToken: refreshed.refreshToken,
+					expiresAt: refreshed.expiresAt,
+				};
+				claims = refreshedClaims;
+				const sealed = await sealPayload(env, "session", session);
+				const secure = new URL(request.url).protocol === "https:";
+				setCookie = makeWorkOSSessionCookie(sealed, secure);
 			}
-			session = {
-				userId: refreshed.user.id,
-				email: refreshed.user.email,
-				firstName: refreshed.user.firstName,
-				lastName: refreshed.user.lastName,
-				organizationId: refreshed.organizationId,
-				organizationName: orgName,
-				role: refreshed.role || session.role || "member",
-				sessionId: refreshed.sessionId || session.sessionId,
-				accessToken: refreshed.accessToken,
-				refreshToken: refreshed.refreshToken,
-				expiresAt: refreshed.expiresAt,
-			};
-			claims = await verifyWorkOSAccessToken(session.accessToken, env, Date.now());
-			const sealed = await sealPayload(env, session);
-			const secure = new URL(request.url).protocol === "https:";
-			setCookie = makeWorkOSSessionCookie(sealed, secure);
 		} catch {
 			if (!claims) {
 				return null;
@@ -208,16 +227,19 @@ async function resolveSessionCookie(
 
 	if (!claims) return null;
 
-	const orgId = claims.orgId || session.organizationId;
+	const orgId = claims.orgId;
 	if (!orgId) {
-		if (opts?.allowNoOrg) {
-			return { session, caller: null, setCookie, needsOrgSelection: true };
-		}
-		return { session, caller: null, setCookie, needsOrgSelection: true };
+		return {
+			session: { ...session, organizationId: "" },
+			caller: null,
+			setCookie,
+			needsOrgSelection: true,
+		};
 	}
 
 	const headerHost = (request.headers.get("X-Hotbed-Host") ?? "").trim();
 	const login = session.email || claims.email || claims.sub;
+	const effectiveRole = claims.role || "member";
 	const caller: CallerIdentity = {
 		role: "owner",
 		nodeId: `workos:${claims.sub}`,
@@ -225,11 +247,11 @@ async function resolveSessionCookie(
 		login,
 		userId: claims.sub,
 		orgId,
-		orgRole: claims.role || session.role || "member",
+		orgRole: effectiveRole,
 		addr: "",
 		authMethod: "workos-cookie",
 	};
-	return { session: { ...session, organizationId: orgId }, caller, setCookie };
+	return { session: { ...session, organizationId: orgId, role: effectiveRole }, caller, setCookie };
 }
 
 /**
@@ -240,7 +262,7 @@ export async function resolveEdgeRouting(
 	request: Request,
 	url: URL,
 	env: ControllerEnv,
-	opts?: { allowTopLevelNavigate?: boolean },
+	opts?: { allowTopLevelNavigate?: boolean; allowUnverifiedScopedRouting?: boolean },
 ): Promise<EdgeAuthResult> {
 	const fallbackDo = defaultDoName(request, url, env);
 	const bearer = getBearerToken(request);
@@ -268,7 +290,7 @@ export async function resolveEdgeRouting(
 		// 1b. Org-scoped worker / join / API tokens (hbw_<org>.<sec>, hbj_<org>.<sec>, hbu_<org>.<sec>)
 		const scoped = parseOrgScopedToken(bearer);
 		if (scoped) {
-			if (scoped.orgId) {
+			if (scoped.orgId && opts?.allowUnverifiedScopedRouting !== false) {
 				return {
 					doName: doNameForOrg(scoped.orgId, env),
 					orgId: scoped.orgId,
@@ -476,14 +498,15 @@ async function finalizeWorkOSLogin(
 		refreshToken: active.refreshToken,
 		expiresAt: active.expiresAt,
 	};
-	const sealed = await sealPayload(env, session);
 	const headers = new Headers();
-	headers.append("Set-Cookie", makeWorkOSSessionCookie(sealed, secure));
 	for (const c of clearCookies) headers.append("Set-Cookie", c);
 
-	// CLI loopback handoff (if initiated by `hotbed login` via /auth/cli/authorize)
+	// CLI loopback handoff (if initiated by `hotbed login` via /auth/cli/authorize).
+	// Do NOT also set hotbed_wos_session on the browser with the same single-use refresh token,
+	// or the first refresh from either client invalidates the other.
 	if (flow.cliRedirectUri && isAllowedCliRedirectUri(flow.cliRedirectUri)) {
 		const handoff: CliHandoffPayload = {
+			jti: randomHex(16),
 			accessToken: session.accessToken,
 			refreshToken: session.refreshToken,
 			expiresAt: session.expiresAt,
@@ -495,13 +518,16 @@ async function finalizeWorkOSLogin(
 			redirectUri: flow.cliRedirectUri,
 			exp: Date.now() + 120_000,
 		};
-		const code = await sealPayload(env, handoff);
+		const code = await sealPayload(env, "cli-handoff", handoff);
 		const dest = new URL(flow.cliRedirectUri);
 		dest.searchParams.set("code", code);
 		if (flow.cliState) dest.searchParams.set("state", flow.cliState);
 		headers.set("Location", dest.toString());
 		return new Response(null, { status: 303, headers });
 	}
+
+	const sealed = await sealPayload(env, "session", session);
+	headers.append("Set-Cookie", makeWorkOSSessionCookie(sealed, secure));
 
 	if (!session.organizationId) {
 		const orgsUrl = new URL("/auth/orgs", url);
@@ -636,7 +662,7 @@ export async function handleAuthRoute(
 					returnTo,
 					exp: Date.now() + 10 * 60_000,
 				};
-				const sealedState = await sealPayload(env, statePayload);
+				const sealedState = await sealPayload(env, "oauth-state", statePayload);
 				const authorizeUrl = buildAuthorizeUrl(env, {
 					redirectUri: `${url.origin}/auth/callback`,
 					state,
@@ -660,6 +686,10 @@ export async function handleAuthRoute(
 		}
 
 		if (request.method === "POST") {
+			const csrfErr = checkSameOrigin(request);
+			if (csrfErr) {
+				return Response.json({ code: ErrorCode.NotAuthorized, message: csrfErr }, { status: 403 });
+			}
 			const body = await readBodyParams(request);
 			const returnTo = isSafeReturnTo(body.return_to ?? url.searchParams.get("return_to"));
 			if (!ownerToken) {
@@ -740,7 +770,7 @@ export async function handleAuthRoute(
 			cliCodeChallenge,
 			exp: Date.now() + 10 * 60_000,
 		};
-		const sealedState = await sealPayload(env, statePayload);
+		const sealedState = await sealPayload(env, "oauth-state", statePayload);
 		const authorizeUrl = buildAuthorizeUrl(env, {
 			redirectUri: `${url.origin}/auth/callback`,
 			state,
@@ -762,9 +792,32 @@ export async function handleAuthRoute(
 		if (!workosEnabled) {
 			return new Response("WorkOS is not configured", { status: 404 });
 		}
+		const rawStateCookie = getCookie(request, WORKOS_OAUTH_STATE_COOKIE);
+		const savedState = rawStateCookie
+			? await unsealPayload<OAuthStatePayload>(env, "oauth-state", rawStateCookie)
+			: null;
+
 		const oauthError = url.searchParams.get("error");
 		if (oauthError) {
 			const desc = url.searchParams.get("error_description") || oauthError;
+			if (
+				savedState &&
+				savedState.exp >= Date.now() &&
+				savedState.cliRedirectUri &&
+				isAllowedCliRedirectUri(savedState.cliRedirectUri)
+			) {
+				const dest = new URL(savedState.cliRedirectUri);
+				dest.searchParams.set("error", oauthError);
+				dest.searchParams.set("error_description", desc);
+				if (savedState.cliState) dest.searchParams.set("state", savedState.cliState);
+				return new Response(null, {
+					status: 303,
+					headers: {
+						Location: dest.toString(),
+						"Set-Cookie": clearShortAuthCookie(WORKOS_OAUTH_STATE_COOKIE, secure),
+					},
+				});
+			}
 			return new Response(renderLoginPage(`Sign-in failed: ${desc}`, true), {
 				status: 401,
 				headers: {
@@ -776,10 +829,6 @@ export async function handleAuthRoute(
 
 		const code = (url.searchParams.get("code") ?? "").trim();
 		const state = (url.searchParams.get("state") ?? "").trim();
-		const rawStateCookie = getCookie(request, WORKOS_OAUTH_STATE_COOKIE);
-		const savedState = rawStateCookie
-			? await unsealPayload<OAuthStatePayload>(env, rawStateCookie)
-			: null;
 
 		if (
 			!code ||
@@ -818,7 +867,7 @@ export async function handleAuthRoute(
 					cliCodeChallenge: savedState.cliCodeChallenge,
 					exp: Date.now() + 10 * 60_000,
 				};
-				const sealedPending = await sealPayload(env, pending);
+				const sealedPending = await sealPayload(env, "pending-org", pending);
 				const headers = new Headers({ "Content-Type": "text/html; charset=utf-8" });
 				headers.append("Set-Cookie", clearStateCookie);
 				headers.append(
@@ -869,7 +918,7 @@ export async function handleAuthRoute(
 		}
 		const rawPending = getCookie(request, WORKOS_PENDING_ORG_COOKIE);
 		const pending = rawPending
-			? await unsealPayload<PendingOrgSelectionPayload>(env, rawPending)
+			? await unsealPayload<PendingOrgSelectionPayload>(env, "pending-org", rawPending)
 			: null;
 		if (!pending || pending.exp < Date.now()) {
 			return Response.redirect(new URL("/auth/login", url).toString(), 303);
@@ -964,8 +1013,8 @@ export async function handleAuthRoute(
 		const code = (body.code ?? "").trim();
 		const codeVerifier = (body.codeVerifier || body.code_verifier || "").trim();
 		const redirectUri = (body.redirectUri || body.redirect_uri || "").trim();
-		const handoff = await unsealPayload<CliHandoffPayload>(env, code);
-		if (!handoff || handoff.exp < Date.now()) {
+		const handoff = await unsealPayload<CliHandoffPayload>(env, "cli-handoff", code);
+		if (!handoff || !handoff.jti || handoff.exp < Date.now()) {
 			return Response.json(
 				{ code: ErrorCode.NotAuthorized, message: "invalid or expired CLI login code" },
 				{ status: 401 },
@@ -981,6 +1030,20 @@ export async function handleAuthRoute(
 		if (!(await timingSafeStringEqual(expectedChallenge, handoff.codeChallenge))) {
 			return Response.json(
 				{ code: ErrorCode.NotAuthorized, message: "invalid PKCE code_verifier" },
+				{ status: 401 },
+			);
+		}
+		// Enforce single-use redemption across isolates via the default ControllerDO.
+		const consumeRes = await env.CONTROLLER.getByName(defaultDoName(request, url, env)).fetch(
+			new Request(new URL("/internal/consume-handoff", url).toString(), {
+				method: "POST",
+				headers: { "Content-Type": "application/json" },
+				body: JSON.stringify({ jti: handoff.jti, exp: handoff.exp }),
+			}),
+		);
+		if (!consumeRes.ok) {
+			return Response.json(
+				{ code: ErrorCode.NotAuthorized, message: "CLI login code has already been used" },
 				{ status: 401 },
 			);
 		}
@@ -1178,7 +1241,7 @@ export async function handleAuthRoute(
 		if (workosEnabled) {
 			const rawCookie = getCookie(request, WORKOS_SESSION_COOKIE);
 			if (rawCookie) {
-				const session = await unsealPayload<WorkOSSessionPayload>(env, rawCookie);
+				const session = await unsealPayload<WorkOSSessionPayload>(env, "session", rawCookie);
 				if (session?.sessionId) {
 					logoutUrl = buildLogoutUrl(env, session.sessionId, `${url.origin}/auth/login`);
 				}
@@ -1198,16 +1261,21 @@ export async function handleAuthRoute(
 
 	// 11. GET /auth/me — Current user, active org, and org memberships
 	if (pathname === "/auth/me" && request.method === "GET") {
-		// Check WorkOS cookie / JWT first
-		if (workosEnabled) {
-			const bearer = getBearerToken(request);
+		const bearer = getBearerToken(request);
+		const isOwnerBearer = Boolean(
+			bearer && ownerToken && (await timingSafeStringEqual(bearer, ownerToken)),
+		);
+		// Check WorkOS cookie / JWT first (unless bearer matches OWNER_TOKEN)
+		if (workosEnabled && !isOwnerBearer) {
 			const hasWosCookie = Boolean(getCookie(request, WORKOS_SESSION_COOKIE));
 			if (
 				(bearer && !parseOrgScopedToken(bearer) && bearer.includes(".")) ||
 				(!bearer && hasWosCookie)
 			) {
+				let rotatedCookie: string | undefined;
 				try {
 					const ctx = await resolveWorkOSCallerForOrgRoute(request, env, { allowNoOrg: true });
+					rotatedCookie = ctx.setCookie;
 					let organizations: WorkOSOrganizationSummary[] = [];
 					try {
 						organizations = await listUserOrganizations(env, ctx.userId);
@@ -1234,17 +1302,16 @@ export async function handleAuthRoute(
 							: null,
 						organizations,
 					});
-					return withSetCookie(res, ctx.setCookie);
+					return withSetCookie(res, rotatedCookie);
 				} catch (err) {
 					const he = fromUnknownError(err);
-					return Response.json(he.toJSON(), { status: 401 });
+					return withSetCookie(Response.json(he.toJSON(), { status: 401 }), rotatedCookie);
 				}
 			}
 		}
 
 		// Org-scoped API token (`hbu_<org>.<secret>`) — validate inside its target DO
-		const bearer = getBearerToken(request);
-		const scoped = bearer ? parseOrgScopedToken(bearer) : null;
+		const scoped = bearer && !isOwnerBearer ? parseOrgScopedToken(bearer) : null;
 		if (scoped && scoped.kind === "api") {
 			const orgId = scoped.orgId ?? "";
 			const doName = orgId ? doNameForOrg(orgId, env) : defaultDoName(request, url, env);
@@ -1344,13 +1411,17 @@ export async function handleAuthRoute(
 				return withSetCookie(res, routing.setCookie);
 			}
 			if (routing.needsOrgSelection) {
-				return Response.json(
-					{ code: ErrorCode.NotAuthorized, message: "no active organization selected" },
-					{ status: 401 },
+				return withSetCookie(
+					Response.json(
+						{ code: ErrorCode.NotAuthorized, message: "no active organization selected" },
+						{ status: 401 },
+					),
+					routing.setCookie,
 				);
 			}
 			const fwd = attachInternalAuth(request, routing);
-			return env.CONTROLLER.getByName(routing.doName).fetch(fwd);
+			const doRes = await env.CONTROLLER.getByName(routing.doName).fetch(fwd);
+			return withSetCookie(doRes, routing.setCookie);
 		} catch (err) {
 			const he = fromUnknownError(err);
 			return Response.json(he.toJSON(), { status: 401 });
@@ -1365,6 +1436,7 @@ export async function handleAuthRoute(
 				{ status: 400 },
 			);
 		}
+		let rotatedCookie: string | undefined;
 		try {
 			const body = await readBodyParams(request);
 			const targetOrgId = (body.organizationId || body.organization_id || "").trim();
@@ -1377,19 +1449,22 @@ export async function handleAuthRoute(
 			}
 
 			const ctx = await resolveWorkOSCallerForOrgRoute(request, env, { allowNoOrg: true });
+			rotatedCookie = ctx.setCookie;
 			const refreshToken = (
-				body.refreshToken ||
-				body.refresh_token ||
-				ctx.session?.refreshToken ||
-				""
+				ctx.authMethod === "workos-cookie"
+					? ctx.session?.refreshToken || ""
+					: body.refreshToken || body.refresh_token || ""
 			).trim();
 			if (!refreshToken) {
-				return Response.json(
-					{
-						code: ErrorCode.InvalidArgs,
-						message: "refreshToken is required to switch organizations",
-					},
-					{ status: 400 },
+				return withSetCookie(
+					Response.json(
+						{
+							code: ErrorCode.InvalidArgs,
+							message: "refreshToken is required to switch organizations",
+						},
+						{ status: 400 },
+					),
+					rotatedCookie,
 				);
 			}
 
@@ -1399,6 +1474,23 @@ export async function handleAuthRoute(
 				ipAddress: clientIp(request),
 				userAgent: clientUa(request),
 			});
+			const verifiedClaims = await verifyWorkOSAccessToken(refreshed.accessToken, env);
+			if (
+				!verifiedClaims ||
+				verifiedClaims.orgId !== targetOrgId ||
+				verifiedClaims.sub !== ctx.userId
+			) {
+				return withSetCookie(
+					Response.json(
+						{
+							code: ErrorCode.NotAuthorized,
+							message: `WorkOS did not issue a valid access token for organization ${targetOrgId}`,
+						},
+						{ status: 401 },
+					),
+					rotatedCookie,
+				);
+			}
 			let orgName = targetOrgId;
 			try {
 				orgName = (await getOrganization(env, targetOrgId)).name;
@@ -1411,9 +1503,9 @@ export async function handleAuthRoute(
 				email: refreshed.user.email,
 				firstName: refreshed.user.firstName,
 				lastName: refreshed.user.lastName,
-				organizationId: refreshed.organizationId || targetOrgId,
+				organizationId: verifiedClaims.orgId,
 				organizationName: orgName,
-				role: refreshed.role || "member",
+				role: verifiedClaims.role || "member",
 				sessionId: refreshed.sessionId || ctx.session?.sessionId || "",
 				accessToken: refreshed.accessToken,
 				refreshToken: refreshed.refreshToken,
@@ -1422,7 +1514,7 @@ export async function handleAuthRoute(
 
 			const headers = new Headers();
 			if (ctx.authMethod === "workos-cookie") {
-				const sealed = await sealPayload(env, nextSession);
+				const sealed = await sealPayload(env, "session", nextSession);
 				headers.append("Set-Cookie", makeWorkOSSessionCookie(sealed, secure));
 			}
 
@@ -1445,9 +1537,12 @@ export async function handleAuthRoute(
 			return new Response(null, { status: 303, headers });
 		} catch (err) {
 			const he = fromUnknownError(err);
-			return Response.json(he.toJSON(), {
-				status: he.code === ErrorCode.NotAuthorized ? 401 : 400,
-			});
+			return withSetCookie(
+				Response.json(he.toJSON(), {
+					status: he.code === ErrorCode.NotAuthorized ? 401 : 400,
+				}),
+				rotatedCookie,
+			);
 		}
 	}
 
@@ -1459,15 +1554,20 @@ export async function handleAuthRoute(
 				{ status: 400 },
 			);
 		}
+		let rotatedCookie: string | undefined;
 		try {
 			const ctx = await resolveWorkOSCallerForOrgRoute(request, env, { allowNoOrg: true });
+			rotatedCookie = ctx.setCookie;
 			const body = await readBodyParams(request);
 			const name = (body.name ?? "").trim();
 			const returnTo = isSafeReturnTo(body.return_to ?? null);
 			if (!name) {
-				return Response.json(
-					{ code: ErrorCode.InvalidArgs, message: "organization name is required" },
-					{ status: 400 },
+				return withSetCookie(
+					Response.json(
+						{ code: ErrorCode.InvalidArgs, message: "organization name is required" },
+						{ status: 400 },
+					),
+					rotatedCookie,
 				);
 			}
 
@@ -1475,10 +1575,9 @@ export async function handleAuthRoute(
 			const membership = await createOrganizationMembership(env, org.id, ctx.userId, "admin");
 
 			const refreshToken = (
-				body.refreshToken ||
-				body.refresh_token ||
-				ctx.session?.refreshToken ||
-				""
+				ctx.authMethod === "workos-cookie"
+					? ctx.session?.refreshToken || ""
+					: body.refreshToken || body.refresh_token || ""
 			).trim();
 			const headers = new Headers();
 			let refreshedTokens:
@@ -1493,14 +1592,31 @@ export async function handleAuthRoute(
 					ipAddress: clientIp(request),
 					userAgent: clientUa(request),
 				});
-				activeRole = refreshed.role || membership.role;
+				const verifiedClaims = await verifyWorkOSAccessToken(refreshed.accessToken, env);
+				if (
+					!verifiedClaims ||
+					verifiedClaims.orgId !== org.id ||
+					verifiedClaims.sub !== ctx.userId
+				) {
+					return withSetCookie(
+						Response.json(
+							{
+								code: ErrorCode.NotAuthorized,
+								message: `WorkOS did not issue a valid access token for created organization ${org.id}`,
+							},
+							{ status: 401 },
+						),
+						rotatedCookie,
+					);
+				}
+				activeRole = verifiedClaims.role || membership.role || "member";
 				if (ctx.authMethod === "workos-cookie") {
 					const nextSession: WorkOSSessionPayload = {
 						userId: refreshed.user.id,
 						email: refreshed.user.email,
 						firstName: refreshed.user.firstName,
 						lastName: refreshed.user.lastName,
-						organizationId: org.id,
+						organizationId: verifiedClaims.orgId,
 						organizationName: org.name,
 						role: activeRole,
 						sessionId: refreshed.sessionId || ctx.session?.sessionId || "",
@@ -1508,7 +1624,7 @@ export async function handleAuthRoute(
 						refreshToken: refreshed.refreshToken,
 						expiresAt: refreshed.expiresAt,
 					};
-					const sealed = await sealPayload(env, nextSession);
+					const sealed = await sealPayload(env, "session", nextSession);
 					headers.append("Set-Cookie", makeWorkOSSessionCookie(sealed, secure));
 				} else {
 					refreshedTokens = {
@@ -1517,8 +1633,8 @@ export async function handleAuthRoute(
 						expiresAt: refreshed.expiresAt,
 					};
 				}
-			} else if (ctx.setCookie) {
-				headers.append("Set-Cookie", ctx.setCookie);
+			} else if (rotatedCookie) {
+				headers.append("Set-Cookie", rotatedCookie);
 			}
 
 			if (wantsJson(request)) {
@@ -1534,10 +1650,17 @@ export async function handleAuthRoute(
 			return new Response(null, { status: 303, headers });
 		} catch (err) {
 			const he = fromUnknownError(err);
-			return Response.json(he.toJSON(), {
-				status:
-					he.code === ErrorCode.NotAuthorized ? 401 : he.code === ErrorCode.InvalidArgs ? 400 : 500,
-			});
+			return withSetCookie(
+				Response.json(he.toJSON(), {
+					status:
+						he.code === ErrorCode.NotAuthorized
+							? 401
+							: he.code === ErrorCode.InvalidArgs
+								? 400
+								: 500,
+				}),
+				rotatedCookie,
+			);
 		}
 	}
 
@@ -1549,12 +1672,19 @@ export async function handleAuthRoute(
 				{ status: 400 },
 			);
 		}
+		let rotatedCookie: string | undefined;
 		try {
 			const ctx = await resolveWorkOSCallerForOrgRoute(request, env);
-			const [members, invitations] = await Promise.all([
+			rotatedCookie = ctx.setCookie;
+			const admin = isOrgAdmin(ctx.role);
+			const [members, rawInvitations] = await Promise.all([
 				listOrganizationMembers(env, ctx.organizationId),
 				listOrganizationInvitations(env, ctx.organizationId),
 			]);
+			// Never expose secret acceptInvitationUrl tokens to non-admin members.
+			const invitations = admin
+				? rawInvitations
+				: rawInvitations.map(({ acceptInvitationUrl: _url, ...rest }) => rest);
 			const res = Response.json({
 				organization: {
 					id: ctx.organizationId,
@@ -1564,16 +1694,19 @@ export async function handleAuthRoute(
 				members,
 				invitations,
 			});
-			return withSetCookie(res, ctx.setCookie);
+			return withSetCookie(res, rotatedCookie);
 		} catch (err) {
 			const he = fromUnknownError(err);
-			return Response.json(he.toJSON(), {
-				status: he.code === ErrorCode.NotAuthorized ? 401 : 500,
-			});
+			return withSetCookie(
+				Response.json(he.toJSON(), {
+					status: he.code === ErrorCode.NotAuthorized ? 401 : 500,
+				}),
+				rotatedCookie,
+			);
 		}
 	}
 
-	// 16. POST /auth/org/invite — Invite a user to the active organization
+	// 16. POST /auth/org/invite — Invite a user to the active organization (org admin only)
 	if (pathname === "/auth/org/invite" && request.method === "POST") {
 		if (!workosEnabled) {
 			return Response.json(
@@ -1581,8 +1714,21 @@ export async function handleAuthRoute(
 				{ status: 400 },
 			);
 		}
+		let rotatedCookie: string | undefined;
 		try {
 			const ctx = await resolveWorkOSCallerForOrgRoute(request, env);
+			rotatedCookie = ctx.setCookie;
+			if (!isOrgAdmin(ctx.role)) {
+				return withSetCookie(
+					Response.json(
+						hotbedError(ErrorCode.NotAuthorized, "only organization admins can invite members")
+							.withSuggestion("ask an organization admin to send this invitation")
+							.toJSON(),
+						{ status: 403 },
+					),
+					rotatedCookie,
+				);
+			}
 			const body = await readBodyParams(request);
 			const email = (body.email ?? "").trim();
 			const roleSlug = (body.roleSlug || body.role || "").trim() || undefined;
@@ -1592,17 +1738,24 @@ export async function handleAuthRoute(
 				roleSlug,
 				inviterUserId: ctx.userId,
 			});
-			return withSetCookie(Response.json({ invitation }, { status: 201 }), ctx.setCookie);
+			return withSetCookie(Response.json({ invitation }, { status: 201 }), rotatedCookie);
 		} catch (err) {
 			const he = fromUnknownError(err);
-			return Response.json(he.toJSON(), {
-				status:
-					he.code === ErrorCode.NotAuthorized ? 401 : he.code === ErrorCode.InvalidArgs ? 400 : 500,
-			});
+			return withSetCookie(
+				Response.json(he.toJSON(), {
+					status:
+						he.code === ErrorCode.NotAuthorized
+							? 401
+							: he.code === ErrorCode.InvalidArgs
+								? 400
+								: 500,
+				}),
+				rotatedCookie,
+			);
 		}
 	}
 
-	// 17. DELETE /auth/org/invitations/:id — Revoke a pending invitation in the active org
+	// 17. DELETE /auth/org/invitations/:id — Revoke a pending invitation in the active org (org admin only)
 	if (pathname.startsWith("/auth/org/invitations/") && request.method === "DELETE") {
 		if (!workosEnabled) {
 			return Response.json(
@@ -1610,34 +1763,54 @@ export async function handleAuthRoute(
 				{ status: 400 },
 			);
 		}
-		const invitationId = decodeURIComponent(pathname.slice("/auth/org/invitations/".length)).trim();
+		const invitationId = decodePathSegment(pathname.slice("/auth/org/invitations/".length));
 		if (!invitationId) {
 			return Response.json(
-				{ code: ErrorCode.InvalidArgs, message: "invitation id is required" },
+				{ code: ErrorCode.InvalidArgs, message: "valid invitation id is required" },
 				{ status: 400 },
 			);
 		}
+		let rotatedCookie: string | undefined;
 		try {
 			const ctx = await resolveWorkOSCallerForOrgRoute(request, env);
+			rotatedCookie = ctx.setCookie;
+			if (!isOrgAdmin(ctx.role)) {
+				return withSetCookie(
+					Response.json(
+						hotbedError(
+							ErrorCode.NotAuthorized,
+							"only organization admins can revoke invitations",
+						).toJSON(),
+						{ status: 403 },
+					),
+					rotatedCookie,
+				);
+			}
 			const inv = await getInvitation(env, invitationId);
 			if (inv.organizationId !== ctx.organizationId) {
-				return Response.json(
-					{ code: ErrorCode.NotFound, message: "invitation not found in this organization" },
-					{ status: 404 },
+				return withSetCookie(
+					Response.json(
+						{ code: ErrorCode.NotFound, message: "invitation not found in this organization" },
+						{ status: 404 },
+					),
+					rotatedCookie,
 				);
 			}
 			await revokeOrganizationInvitation(env, invitationId);
-			return withSetCookie(Response.json({ ok: true, id: invitationId }), ctx.setCookie);
+			return withSetCookie(Response.json({ ok: true, id: invitationId }), rotatedCookie);
 		} catch (err) {
 			const he = fromUnknownError(err);
-			return Response.json(he.toJSON(), {
-				status:
-					he.code === ErrorCode.NotAuthorized ? 401 : he.code === ErrorCode.NotFound ? 404 : 500,
-			});
+			return withSetCookie(
+				Response.json(he.toJSON(), {
+					status:
+						he.code === ErrorCode.NotAuthorized ? 401 : he.code === ErrorCode.NotFound ? 404 : 500,
+				}),
+				rotatedCookie,
+			);
 		}
 	}
 
-	// 18. DELETE /auth/org/members/:membershipId — Remove a member from the active org
+	// 18. DELETE /auth/org/members/:membershipId — Remove a member from the active org (org admin only)
 	if (pathname.startsWith("/auth/org/members/") && request.method === "DELETE") {
 		if (!workosEnabled) {
 			return Response.json(
@@ -1645,36 +1818,88 @@ export async function handleAuthRoute(
 				{ status: 400 },
 			);
 		}
-		const membershipId = decodeURIComponent(pathname.slice("/auth/org/members/".length)).trim();
+		const membershipId = decodePathSegment(pathname.slice("/auth/org/members/".length));
 		if (!membershipId) {
 			return Response.json(
-				{ code: ErrorCode.InvalidArgs, message: "membership id is required" },
+				{ code: ErrorCode.InvalidArgs, message: "valid membership id is required" },
 				{ status: 400 },
 			);
 		}
+		let rotatedCookie: string | undefined;
 		try {
 			const ctx = await resolveWorkOSCallerForOrgRoute(request, env);
+			rotatedCookie = ctx.setCookie;
+			if (!isOrgAdmin(ctx.role)) {
+				return withSetCookie(
+					Response.json(
+						hotbedError(
+							ErrorCode.NotAuthorized,
+							"only organization admins can remove members",
+						).toJSON(),
+						{ status: 403 },
+					),
+					rotatedCookie,
+				);
+			}
 			const mem = await getOrganizationMembership(env, membershipId);
 			if (mem.organizationId !== ctx.organizationId) {
-				return Response.json(
-					{ code: ErrorCode.NotFound, message: "member not found in this organization" },
-					{ status: 404 },
+				return withSetCookie(
+					Response.json(
+						{ code: ErrorCode.NotFound, message: "member not found in this organization" },
+						{ status: 404 },
+					),
+					rotatedCookie,
 				);
 			}
 			if (mem.userId === ctx.userId) {
-				return Response.json(
-					{ code: ErrorCode.InvalidArgs, message: "cannot remove your own active membership" },
-					{ status: 400 },
+				return withSetCookie(
+					Response.json(
+						{ code: ErrorCode.InvalidArgs, message: "cannot remove your own active membership" },
+						{ status: 400 },
+					),
+					rotatedCookie,
 				);
 			}
 			await removeOrganizationMembership(env, membershipId);
-			return withSetCookie(Response.json({ ok: true, membershipId }), ctx.setCookie);
+			// Immediately revoke all personal API tokens (hbu_...) held by the removed member in this org's DO.
+			const adminCaller: CallerIdentity = {
+				role: "owner",
+				nodeId: `workos:${ctx.userId}`,
+				hostname: ctx.email || ctx.userId,
+				login: ctx.email || ctx.userId,
+				userId: ctx.userId,
+				orgId: ctx.organizationId,
+				orgRole: ctx.role,
+				addr: "",
+				authMethod: ctx.authMethod,
+			};
+			const revokeRes = await env.CONTROLLER.getByName(doNameForOrg(ctx.organizationId, env)).fetch(
+				new Request(new URL("/internal/revoke-user-tokens", url).toString(), {
+					method: "POST",
+					headers: {
+						"Content-Type": "application/json",
+						[INTERNAL_ORG_HEADER]: ctx.organizationId,
+						[INTERNAL_AUTH_HEADER]: JSON.stringify(adminCaller),
+					},
+					body: JSON.stringify({ userId: mem.userId }),
+				}),
+			);
+			if (!revokeRes.ok) {
+				throw hotbedError(
+					ErrorCode.Internal,
+					`member removed from WorkOS, but failed to revoke API tokens (HTTP ${revokeRes.status})`,
+				);
+			}
+			return withSetCookie(Response.json({ ok: true, membershipId }), rotatedCookie);
 		} catch (err) {
 			const he = fromUnknownError(err);
-			return Response.json(he.toJSON(), {
-				status:
-					he.code === ErrorCode.NotAuthorized ? 401 : he.code === ErrorCode.NotFound ? 404 : 500,
-			});
+			return withSetCookie(
+				Response.json(he.toJSON(), {
+					status:
+						he.code === ErrorCode.NotAuthorized ? 401 : he.code === ErrorCode.NotFound ? 404 : 500,
+				}),
+				rotatedCookie,
+			);
 		}
 	}
 
