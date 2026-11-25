@@ -2637,7 +2637,7 @@ func initVMWorkerWith(ctx context.Context, run func(ctx context.Context, cmd str
 	helpCmd := shell.Join([]string{"sudo", vmBinPath, "worker", "init", "--help"})
 	helpOut, helpErr := run(ctx, helpCmd)
 	arch := cmp.Or(cfg.Arch, runtime.GOARCH)
-	skewSuggest := fmt.Sprintf("upgrade the controller with `hotbed admin upgrade` or pass `--binary /path/to/hotbed-linux-%s`", arch)
+	skewSuggest := fmt.Sprintf("wait for CI to deploy the controller or pass `--binary /path/to/hotbed-linux-%s`", arch)
 	if helpErr != nil {
 		return Result{}, api.Errorf(api.CodeInvalidArgs, "probe guest hotbed binary (%s): %v", helpCmd, helpErr).
 			WithSuggestion(skewSuggest)

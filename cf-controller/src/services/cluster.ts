@@ -41,7 +41,6 @@ import {
 	StepState,
 	StepStatusSchema,
 	TotalsSchema,
-	UpgradeControllerResponseSchema,
 	UpgradeSystemResponseSchema,
 	WorkerConfigSchema,
 	WorkerUpgradeSystemRequestSchema,
@@ -651,24 +650,6 @@ export function createClusterService(
 				ErrorCode.NotFound,
 				`the controller runs ${ctrl.builds.versionString()}, a build it doesn't keep: nothing to upgrade to`,
 			).withSuggestion("configure UPDATES_REPO on the Cloudflare Worker to follow GitHub releases");
-		},
-
-		async upgradeController() {
-			const from = ctrl.builds.currentBuildNumber();
-			const rel = await ctrl.builds.refreshIfStale(ctrl.now(), true);
-			if (!rel) {
-				throw hotbedError(
-					ErrorCode.NotFound,
-					"this controller does not follow CI builds: nothing to upgrade from",
-				).withSuggestion(
-					"configure UPDATES_REPO (and GITHUB_TOKEN for private repos) on the Worker",
-				);
-			}
-			return create(UpgradeControllerResponseSchema, {
-				build: BigInt(rel.buildNumber),
-				from: BigInt(from),
-				restarting: false,
-			});
 		},
 
 		listRepos(req) {
