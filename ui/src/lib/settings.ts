@@ -32,7 +32,6 @@ export const BUILTIN_DEFAULTS = {
     offlineGraceSeconds: 86400,
   },
   vm: {
-    idleSuspendSeconds: 120,
     cacheType: "Unsafe",
     nofile: 65536,
   },
@@ -83,7 +82,6 @@ export interface SettingsDraft {
     vcpus: string;
     memMib: string;
     diskBytes: string;
-    idleSuspendSeconds: string;
     nofile: string;
     cacheType: "" | "Unsafe" | "Writeback";
     disableDax: TriState;
@@ -206,7 +204,6 @@ export function workerConfigToDraft(cfg?: WorkerConfig): SettingsDraft {
       vcpus: numStr(vm?.vcpus),
       memMib: numStr(vm?.memMib),
       diskBytes: numStr(vm?.diskBytes),
-      idleSuspendSeconds: numStr(vm?.idleSuspendSeconds),
       nofile: numStr(vm?.nofile),
       cacheType: ct,
       disableDax: triFromBool(vm?.disableDax),
@@ -364,7 +361,6 @@ export function draftToWorkerConfigInput(draft: SettingsDraft, opts: { isOrgDefa
     vcpus: parseOptionalInt(draft.vm.vcpus, "VM vCPUs"),
     memMib: parseOptionalInt(draft.vm.memMib, "VM memory (MiB)"),
     diskBytes: parseOptionalBigInt(draft.vm.diskBytes, "VM disk bytes"),
-    idleSuspendSeconds: parseOptionalInt(draft.vm.idleSuspendSeconds, "VM idle suspend seconds"),
     nofile: parseOptionalBigInt(draft.vm.nofile, "VM RLIMIT_NOFILE"),
     cacheType: draft.vm.cacheType || undefined,
     disableDax: boolFromTri(draft.vm.disableDax),

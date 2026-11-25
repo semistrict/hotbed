@@ -50,7 +50,7 @@ const (
 	// optionalFreshenPriority runs optional commit-only freshens at low priority
 	// so normal user commands (priority 0) automatically preempt/park them and
 	// never wait behind them.
-	optionalFreshenPriority int32 = -10
+	optionalFreshenPriority  int32 = -10
 	optionalFreshenCPUWeight int32 = 20
 )
 

@@ -678,6 +678,8 @@ export function createWorkspaceService(ctrl: ControllerContext): {
 			bench: req.bench,
 			id: newId(),
 			repo: req.repo,
+			vmCpus: req.vmCpus,
+			vmMemoryBytes: req.vmMemoryBytes,
 		});
 		ctrl.store.addCommand(fwd.id, row.session, row.node, row.id, ctrl.now());
 		try {

@@ -70,10 +70,10 @@ func (u *strictUnits) Status(_ context.Context, name string) (unit.State, error)
 func (u *strictUnits) StatusMany(context.Context, []string) (map[string]unit.State, error) {
 	return map[string]unit.State{}, nil
 }
-func (u *strictUnits) Freeze(context.Context, string) error        { return nil }
-func (u *strictUnits) Thaw(context.Context, string) error          { return nil }
-func (u *strictUnits) Reclaim(string, int64) error                 { return nil }
-func (u *strictUnits) Memory(string) (unit.MemoryUse, error)       { return unit.MemoryUse{}, nil }
+func (u *strictUnits) Freeze(context.Context, string) error           { return nil }
+func (u *strictUnits) Thaw(context.Context, string) error             { return nil }
+func (u *strictUnits) Reclaim(string, int64) error                    { return nil }
+func (u *strictUnits) Memory(string) (unit.MemoryUse, error)          { return unit.MemoryUse{}, nil }
 func (u *strictUnits) List(context.Context, string) ([]string, error) { return nil, nil }
 func (u *strictUnits) StartShell(context.Context, unit.Spec, unit.ShellIO) (unit.ShellHandle, error) {
 	return nil, errors.New("not implemented")

@@ -1781,7 +1781,7 @@ describe("WorkOS multi-organization, multi-user, per-org ControllerDO integratio
 					enabled: true,
 					vcpus: 6,
 					memMib: 8192,
-					idleSuspendSeconds: 300,
+					nofile: 131072n,
 				}),
 				controller: create(OrgControllerConfigSchema, {
 					sessionIdleTimeoutSeconds: 1800,
@@ -1791,7 +1791,7 @@ describe("WorkOS multi-organization, multi-user, per-org ControllerDO integratio
 		});
 		expect(savedA.freshen?.maxDutyCycle).toBe(0.02);
 		expect(savedA.freshen?.disableOptional).toBe(true);
-		expect(savedA.vm?.idleSuspendSeconds).toBe(300);
+		expect(savedA.vm?.nofile).toBe(131072n);
 		expect(savedA.controller?.sessionIdleTimeoutSeconds).toBe(1800);
 
 		// Org-level controller policy is rejected on per-node overrides.
@@ -1825,7 +1825,7 @@ describe("WorkOS multi-organization, multi-user, per-org ControllerDO integratio
 		const memberView = await clusterMemberA.getWorkerConfig({ node: "ubu1" });
 		expect(memberView.defaults?.freshen?.maxDutyCycle).toBe(0.02);
 		expect(memberView.effective?.vm?.memMib).toBe(12288);
-		expect(memberView.effective?.vm?.idleSuspendSeconds).toBe(300);
+		expect(memberView.effective?.vm?.nofile).toBe(131072n);
 		const memberCreds = await gitMemberA.listGitCredentials({});
 		expect(memberCreds.credentials.map((c) => c.name)).toEqual(["github-a"]);
 

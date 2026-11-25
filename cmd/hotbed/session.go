@@ -705,6 +705,8 @@ type commandFlags struct {
 	Bench     bool     `help:"Run it as a measurement: alone among measurements on the node, once running work leaves it room, on the node's measurement CPUs, which no other command uses meanwhile, isolated for its whole run (cache, memory bandwidth, IRQs, others' clocks and disk IO where the node has them), never swapped or parked. It fails if the isolation was lost."`
 	SoftLimit string   `help:"Pause the command (freeze it, its memory to swap) once it has run this long without ending, such as 10m: counted from its start and again each time you wait on it (attached run, hotbed logs -f), which resumes it. 0 for none (default: 10m attached, none detached, scheduled or --bench)."`
 	HardLimit string   `help:"Stop the command this long after it started, paused or not, such as 2h; 0 for none, unless it has a soft limit (default: 2h attached or with a soft limit, else none)."`
+	VMCPUs    int      `name:"vm-cpus" help:"vCPUs its VM's guest sees (default: the node's). It sizes the VM only: admission goes by what commands are measured to use. vm runtime only."`
+	VMMem     string   `name:"vm-mem" default:"0" help:"Memory its VM's guest sees, such as 16G (default: the node's). It sizes the VM only, as --vm-cpus does. vm runtime only."`
 }
 
 // The time limits of an attached hotbed run, unless it says otherwise: the
@@ -726,7 +728,14 @@ type placementFlags struct {
 
 // placement is where a run of req may go, and what it needs there.
 func (p placementFlags) placement(req *pb.RunCommandRequest) *pb.Placement {
-	return &pb.Placement{Node: p.Node, Arch: p.Arch, Bench: req.Bench, MemoryLowBytes: req.GetLimits().GetMemoryLowBytes(), Runtime: p.Runtime}
+	runtime := p.Runtime
+	if runtime == "" && (req.VmCpus != 0 || req.VmMemoryBytes != 0) {
+		runtime = "vm" // only a VM is sized
+	}
+	return &pb.Placement{
+		Node: p.Node, Arch: p.Arch, Bench: req.Bench, MemoryLowBytes: req.GetLimits().GetMemoryLowBytes(), Runtime: runtime,
+		VmCpus: req.VmCpus, VmMemoryBytes: req.VmMemoryBytes,
+	}
 }
 
 // request is the command args (kong's passthrough, with or without its
@@ -746,6 +755,13 @@ func (f commandFlags) request(args []string, example string, attached bool) (*pb
 	high, err := parseSize(f.MemHigh)
 	if err != nil {
 		return nil, err
+	}
+	vmMem, err := parseSize(f.VMMem)
+	if err != nil {
+		return nil, err
+	}
+	if f.VMCPUs < 0 {
+		return nil, api.Errorf(api.CodeInvalidArgs, "--vm-cpus %d: a VM needs at least 1", f.VMCPUs)
 	}
 	priority, err := parsePriority(f.Priority)
 	if err != nil {
@@ -779,6 +795,7 @@ func (f commandFlags) request(args []string, example string, attached bool) (*pb
 	}
 	return &pb.RunCommandRequest{
 		Args: args, Env: f.Env, Kind: f.Kind, Bench: f.Bench,
+		VmCpus: int32(f.VMCPUs), VmMemoryBytes: vmMem,
 		Limits: &pb.CommandLimits{
 			CpuWeight: int32(f.CPUWeight), MemoryLowBytes: low, MemoryHighBytes: high,
 			SoftLimitSeconds: int64(soft / time.Second), HardLimitSeconds: int64(hard / time.Second),

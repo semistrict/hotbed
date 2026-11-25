@@ -307,7 +307,7 @@ func (e *Engine) snapshotVMProfile(c *command) {
 	}
 	c.vmProfileDone = true
 	cmd := c.cmd()
-	wsID, cmdID, isFreshen := cmd.WorkspaceId, cmd.Id, c.isFreshen()
+	wsID, cmdID, isFreshen := c.runtimeTarget(), cmd.Id, c.isFreshen()
 	e.mu.Unlock()
 
 	if isFreshen || wsID == "" || !e.usesRuntime(wsID) {

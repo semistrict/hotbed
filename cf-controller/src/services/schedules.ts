@@ -160,6 +160,10 @@ export function createScheduleService(
 						arch: sc.arch,
 						bench: sc.command?.bench ?? false,
 						memoryLowBytes: sc.command?.limits?.memoryLowBytes ?? 0n,
+						// Only a VM is sized.
+						runtime: sc.command?.vmCpus || sc.command?.vmMemoryBytes ? "vm" : "",
+						vmCpus: sc.command?.vmCpus ?? 0,
+						vmMemoryBytes: sc.command?.vmMemoryBytes ?? 0n,
 					}),
 				}),
 				abort.signal,

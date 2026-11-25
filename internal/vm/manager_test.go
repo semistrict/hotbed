@@ -339,12 +339,27 @@ func TestManagerStartReconnectAndStop(t *testing.T) {
 		ID:            "ws-abc",
 		CellHostPath:  "/mnt/cells/ws-abc",
 		CladefsVMSock: "/run/cladefsd/vm.sock",
+		VCPUs:         3,
+		MemMiB:        1536,
 	})
 	if err != nil {
 		t.Fatalf("Start: %v", err)
 	}
 	if inst.GuestCID != 3 {
 		t.Fatalf("GuestCID = %d, want 3", inst.GuestCID)
+	}
+	// It boots at the size asked, and says so.
+	if inst.VCPUs != 3 || inst.MemMiB != 1536 {
+		t.Fatalf("instance size = %d vCPUs, %d MiB, want 3, 1536", inst.VCPUs, inst.MemMiB)
+	}
+	var fcCfg FirecrackerConfig
+	if b, err := os.ReadFile(filepath.Join(inst.Dir, "vm.json")); err != nil {
+		t.Fatalf("read vm.json: %v", err)
+	} else if err := json.Unmarshal(b, &fcCfg); err != nil {
+		t.Fatalf("decode vm.json: %v", err)
+	}
+	if fcCfg.MachineConfig.VCPUCount != 3 || fcCfg.MachineConfig.MemSizeMiB != 1536 {
+		t.Fatalf("vm.json machine config = %+v, want 3 vCPUs, 1536 MiB", fcCfg.MachineConfig)
 	}
 
 	// Verify git-auth vsock bridge socket (<vsock>_5002) forwards to gaTarget.
@@ -380,6 +395,9 @@ func TestManagerStartReconnectAndStop(t *testing.T) {
 	client, err := mgr2.ClientFor("ws-abc")
 	if err != nil {
 		t.Fatalf("ClientFor after reconnect: %v", err)
+	}
+	if got := mgr2.Get("ws-abc"); got.VCPUs != 3 || got.MemMiB != 1536 {
+		t.Fatalf("reconnected size = %d vCPUs, %d MiB, want 3, 1536", got.VCPUs, got.MemMiB)
 	}
 	if _, err := client.Health(ctx); err != nil {
 		t.Fatalf("Health after reconnect: %v", err)

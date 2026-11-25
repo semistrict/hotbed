@@ -34,6 +34,9 @@ type CommandSpec struct {
 	MemoryLow  int64
 	MemoryHigh int64
 	LogPath    string
+	// VM is the size of the VM it runs in, on a runtime that boots one for
+	// it; zero fields for the node's defaults.
+	VM unit.VMSize
 }
 
 // CommandStatus is the runtime's observed state of a single command.

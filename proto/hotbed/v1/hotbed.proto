@@ -788,9 +788,10 @@ message WorkerVMConfig {
   map<string, ManagedArtifact> guestd = 23;
   // Default RLIMIT_NOFILE soft and hard limit inside guest VMs (0 = hotbed-guestd default 65536).
   optional uint64 nofile = 24;
-  // Seconds an idle VM sits before suspending to a CladeFS memory cell
-  // (0 disables idle suspend; unset uses default 120s).
-  optional int32 idle_suspend_seconds = 25;
+  // A VM no longer idles between commands: each command boots its own and
+  // it stops as the command ends.
+  reserved 25;
+  reserved "idle_suspend_seconds";
 }
 
 // Controller-managed cladefs host-FUSE runtime settings.
@@ -1366,6 +1367,10 @@ message Placement {
   int64 memory_low_bytes = 4;
   // Execution runtime required ("vm", "cladefs", or empty for auto/default).
   string runtime = 5;
+  // The vCPUs the run's VM is to have: nodes with fewer CPUs are left out.
+  int32 vm_cpus = 6;
+  // The memory the run's VM is to have: nodes with less RAM are left out.
+  int64 vm_memory_bytes = 7;
 }
 
 message GetWorkspaceRequest {
@@ -1622,6 +1627,10 @@ message Command {
   repeated CommandIntervention interventions = 29;
   // Execution runtime backing this command ("vm" or "cladefs").
   string runtime = 30;
+  // vCPUs its VM's guest sees, as asked; 0 for the node's default.
+  int32 vm_cpus = 31;
+  // Memory its VM's guest sees, as asked; 0 for the node's default.
+  int64 vm_memory_bytes = 32;
 }
 
 // A command that ended, as history keeps it.
@@ -1681,6 +1690,13 @@ message RunCommandRequest {
   bool bench = 9;
   // The project's repo it starts in, at /work/<repo>; empty for /work.
   string repo = 10;
+  // vCPUs its VM's guest sees; 0 for the node's default. It sizes the VM
+  // only: admission goes by what commands are measured to use. vm runtime
+  // only.
+  int32 vm_cpus = 11;
+  // Memory its VM's guest sees; 0 for the node's default. It sizes the VM
+  // only, as vm_cpus does. vm runtime only.
+  int64 vm_memory_bytes = 12;
 }
 
 message OpenShellRequest {

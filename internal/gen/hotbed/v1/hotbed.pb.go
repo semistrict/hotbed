@@ -3685,12 +3685,9 @@ type WorkerVMConfig struct {
 	// When unset for the worker's arch, workers follow Build.guestd automatically.
 	Guestd map[string]*ManagedArtifact `protobuf:"bytes,23,rep,name=guestd,proto3" json:"guestd,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
 	// Default RLIMIT_NOFILE soft and hard limit inside guest VMs (0 = hotbed-guestd default 65536).
-	Nofile *uint64 `protobuf:"varint,24,opt,name=nofile,proto3,oneof" json:"nofile,omitempty"`
-	// Seconds an idle VM sits before suspending to a CladeFS memory cell
-	// (0 disables idle suspend; unset uses default 120s).
-	IdleSuspendSeconds *int32 `protobuf:"varint,25,opt,name=idle_suspend_seconds,json=idleSuspendSeconds,proto3,oneof" json:"idle_suspend_seconds,omitempty"`
-	unknownFields      protoimpl.UnknownFields
-	sizeCache          protoimpl.SizeCache
+	Nofile        *uint64 `protobuf:"varint,24,opt,name=nofile,proto3,oneof" json:"nofile,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *WorkerVMConfig) Reset() {
@@ -3887,13 +3884,6 @@ func (x *WorkerVMConfig) GetGuestd() map[string]*ManagedArtifact {
 func (x *WorkerVMConfig) GetNofile() uint64 {
 	if x != nil && x.Nofile != nil {
 		return *x.Nofile
-	}
-	return 0
-}
-
-func (x *WorkerVMConfig) GetIdleSuspendSeconds() int32 {
-	if x != nil && x.IdleSuspendSeconds != nil {
-		return *x.IdleSuspendSeconds
 	}
 	return 0
 }
@@ -7082,7 +7072,11 @@ type Placement struct {
 	// left out, and those it fits on now preferred.
 	MemoryLowBytes int64 `protobuf:"varint,4,opt,name=memory_low_bytes,json=memoryLowBytes,proto3" json:"memory_low_bytes,omitempty"`
 	// Execution runtime required ("vm", "cladefs", or empty for auto/default).
-	Runtime       string `protobuf:"bytes,5,opt,name=runtime,proto3" json:"runtime,omitempty"`
+	Runtime string `protobuf:"bytes,5,opt,name=runtime,proto3" json:"runtime,omitempty"`
+	// The vCPUs the run's VM is to have: nodes with fewer CPUs are left out.
+	VmCpus int32 `protobuf:"varint,6,opt,name=vm_cpus,json=vmCpus,proto3" json:"vm_cpus,omitempty"`
+	// The memory the run's VM is to have: nodes with less RAM are left out.
+	VmMemoryBytes int64 `protobuf:"varint,7,opt,name=vm_memory_bytes,json=vmMemoryBytes,proto3" json:"vm_memory_bytes,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -7150,6 +7144,20 @@ func (x *Placement) GetRuntime() string {
 		return x.Runtime
 	}
 	return ""
+}
+
+func (x *Placement) GetVmCpus() int32 {
+	if x != nil {
+		return x.VmCpus
+	}
+	return 0
+}
+
+func (x *Placement) GetVmMemoryBytes() int64 {
+	if x != nil {
+		return x.VmMemoryBytes
+	}
+	return 0
 }
 
 type GetWorkspaceRequest struct {
@@ -8634,7 +8642,11 @@ type Command struct {
 	// Its stops, pauses and resumes by hand, oldest first.
 	Interventions []*CommandIntervention `protobuf:"bytes,29,rep,name=interventions,proto3" json:"interventions,omitempty"`
 	// Execution runtime backing this command ("vm" or "cladefs").
-	Runtime       string `protobuf:"bytes,30,opt,name=runtime,proto3" json:"runtime,omitempty"`
+	Runtime string `protobuf:"bytes,30,opt,name=runtime,proto3" json:"runtime,omitempty"`
+	// vCPUs its VM's guest sees, as asked; 0 for the node's default.
+	VmCpus int32 `protobuf:"varint,31,opt,name=vm_cpus,json=vmCpus,proto3" json:"vm_cpus,omitempty"`
+	// Memory its VM's guest sees, as asked; 0 for the node's default.
+	VmMemoryBytes int64 `protobuf:"varint,32,opt,name=vm_memory_bytes,json=vmMemoryBytes,proto3" json:"vm_memory_bytes,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -8877,6 +8889,20 @@ func (x *Command) GetRuntime() string {
 		return x.Runtime
 	}
 	return ""
+}
+
+func (x *Command) GetVmCpus() int32 {
+	if x != nil {
+		return x.VmCpus
+	}
+	return 0
+}
+
+func (x *Command) GetVmMemoryBytes() int64 {
+	if x != nil {
+		return x.VmMemoryBytes
+	}
+	return 0
 }
 
 // A command that ended, as history keeps it.
@@ -9144,7 +9170,14 @@ type RunCommandRequest struct {
 	// for its whole run, never swapped or parked.
 	Bench bool `protobuf:"varint,9,opt,name=bench,proto3" json:"bench,omitempty"`
 	// The project's repo it starts in, at /work/<repo>; empty for /work.
-	Repo          string `protobuf:"bytes,10,opt,name=repo,proto3" json:"repo,omitempty"`
+	Repo string `protobuf:"bytes,10,opt,name=repo,proto3" json:"repo,omitempty"`
+	// vCPUs its VM's guest sees; 0 for the node's default. It sizes the VM
+	// only: admission goes by what commands are measured to use. vm runtime
+	// only.
+	VmCpus int32 `protobuf:"varint,11,opt,name=vm_cpus,json=vmCpus,proto3" json:"vm_cpus,omitempty"`
+	// Memory its VM's guest sees; 0 for the node's default. It sizes the VM
+	// only, as vm_cpus does. vm runtime only.
+	VmMemoryBytes int64 `protobuf:"varint,12,opt,name=vm_memory_bytes,json=vmMemoryBytes,proto3" json:"vm_memory_bytes,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -9247,6 +9280,20 @@ func (x *RunCommandRequest) GetRepo() string {
 		return x.Repo
 	}
 	return ""
+}
+
+func (x *RunCommandRequest) GetVmCpus() int32 {
+	if x != nil {
+		return x.VmCpus
+	}
+	return 0
+}
+
+func (x *RunCommandRequest) GetVmMemoryBytes() int64 {
+	if x != nil {
+		return x.VmMemoryBytes
+	}
+	return 0
 }
 
 type OpenShellRequest struct {
@@ -29240,7 +29287,7 @@ const file_hotbed_v1_hotbed_proto_rawDesc = "" +
 	"\x06sha256\x18\x02 \x01(\tR\x06sha256\x12\x12\n" +
 	"\x04path\x18\x03 \x01(\tR\x04path\x12!\n" +
 	"\fdownload_url\x18\x04 \x01(\tR\vdownloadUrl\x122\n" +
-	"\x06guestd\x18\x05 \x01(\v2\x1a.hotbed.v1.ManagedArtifactR\x06guestd\"\xc0\f\n" +
+	"\x06guestd\x18\x05 \x01(\v2\x1a.hotbed.v1.ManagedArtifactR\x06guestd\"\x8c\f\n" +
 	"\x0eWorkerVMConfig\x12\x1d\n" +
 	"\aenabled\x18\x01 \x01(\bH\x00R\aenabled\x88\x01\x01\x12,\n" +
 	"\x0fdefault_runtime\x18\x02 \x01(\bH\x01R\x0edefaultRuntime\x88\x01\x01\x125\n" +
@@ -29275,8 +29322,7 @@ const file_hotbed_v1_hotbed_proto_rawDesc = "" +
 	"dnsServers\x12@\n" +
 	"\akernels\x18\x16 \x03(\v2&.hotbed.v1.WorkerVMConfig.KernelsEntryR\akernels\x12=\n" +
 	"\x06guestd\x18\x17 \x03(\v2%.hotbed.v1.WorkerVMConfig.GuestdEntryR\x06guestd\x12\x1b\n" +
-	"\x06nofile\x18\x18 \x01(\x04H\x14R\x06nofile\x88\x01\x01\x125\n" +
-	"\x14idle_suspend_seconds\x18\x19 \x01(\x05H\x15R\x12idleSuspendSeconds\x88\x01\x01\x1aV\n" +
+	"\x06nofile\x18\x18 \x01(\x04H\x14R\x06nofile\x88\x01\x01\x1aV\n" +
 	"\fKernelsEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x120\n" +
 	"\x05value\x18\x02 \x01(\v2\x1a.hotbed.v1.ManagedArtifactR\x05value:\x028\x01\x1aU\n" +
@@ -29308,8 +29354,7 @@ const file_hotbed_v1_hotbed_proto_rawDesc = "" +
 	"\v_cache_typeB\x0e\n" +
 	"\f_bridge_nameB\x0e\n" +
 	"\f_bridge_cidrB\t\n" +
-	"\a_nofileB\x17\n" +
-	"\x15_idle_suspend_seconds\"\xaa\x04\n" +
+	"\a_nofileJ\x04\b\x19\x10\x1aR\x14idle_suspend_seconds\"\xaa\x04\n" +
 	"\x17WorkerCladefsFUSEConfig\x12\x1d\n" +
 	"\aenabled\x18\x01 \x01(\bH\x00R\aenabled\x88\x01\x01\x12,\n" +
 	"\x0fdefault_runtime\x18\x02 \x01(\bH\x01R\x0edefaultRuntime\x88\x01\x01\x125\n" +
@@ -29629,13 +29674,15 @@ const file_hotbed_v1_hotbed_proto_rawDesc = "" +
 	"\vshared_base\x18\r \x01(\v2\x16.hotbed.v1.CladefsCellR\n" +
 	"sharedBase\x12#\n" +
 	"\rfencing_token\x18\x0e \x01(\x04R\ffencingTokenJ\x04\b\x03\x10\x04J\x04\b\x04\x10\x05J\x04\b\t\x10\n" +
-	"R\x06branchR\x04nodeR\vrepo_config\"\x8d\x01\n" +
+	"R\x06branchR\x04nodeR\vrepo_config\"\xce\x01\n" +
 	"\tPlacement\x12\x12\n" +
 	"\x04node\x18\x01 \x01(\tR\x04node\x12\x12\n" +
 	"\x04arch\x18\x02 \x01(\tR\x04arch\x12\x14\n" +
 	"\x05bench\x18\x03 \x01(\bR\x05bench\x12(\n" +
 	"\x10memory_low_bytes\x18\x04 \x01(\x03R\x0ememoryLowBytes\x12\x18\n" +
-	"\aruntime\x18\x05 \x01(\tR\aruntime\"%\n" +
+	"\aruntime\x18\x05 \x01(\tR\aruntime\x12\x17\n" +
+	"\avm_cpus\x18\x06 \x01(\x05R\x06vmCpus\x12&\n" +
+	"\x0fvm_memory_bytes\x18\a \x01(\x03R\rvmMemoryBytes\"%\n" +
 	"\x13GetWorkspaceRequest\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\"'\n" +
 	"\x15WatchWorkspaceRequest\x12\x0e\n" +
@@ -29731,7 +29778,7 @@ const file_hotbed_v1_hotbed_proto_rawDesc = "" +
 	"\fCommandEvent\x12\x0e\n" +
 	"\x02at\x18\x01 \x01(\x03R\x02at\x12\x12\n" +
 	"\x04what\x18\x02 \x01(\tR\x04what\x12\x16\n" +
-	"\x06detail\x18\x03 \x01(\tR\x06detail\"\x93\b\n" +
+	"\x06detail\x18\x03 \x01(\tR\x06detail\"\xd4\b\n" +
 	"\aCommand\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12!\n" +
 	"\fworkspace_id\x18\x02 \x01(\tR\vworkspaceId\x12\x17\n" +
@@ -29767,7 +29814,9 @@ const file_hotbed_v1_hotbed_proto_rawDesc = "" +
 	"\x04repo\x18\x1b \x01(\tR\x04repo\x120\n" +
 	"\x14dropped_output_bytes\x18\x1c \x01(\x03R\x12droppedOutputBytes\x12D\n" +
 	"\rinterventions\x18\x1d \x03(\v2\x1e.hotbed.v1.CommandInterventionR\rinterventions\x12\x18\n" +
-	"\aruntime\x18\x1e \x01(\tR\aruntimeB\r\n" +
+	"\aruntime\x18\x1e \x01(\tR\aruntime\x12\x17\n" +
+	"\avm_cpus\x18\x1f \x01(\x05R\x06vmCpus\x12&\n" +
+	"\x0fvm_memory_bytes\x18  \x01(\x03R\rvmMemoryBytesB\r\n" +
 	"\v_started_atB\v\n" +
 	"\t_ended_atB\f\n" +
 	"\n" +
@@ -29807,7 +29856,7 @@ const file_hotbed_v1_hotbed_proto_rawDesc = "" +
 	"\r_cold_secondsB\n" +
 	"\n" +
 	"\b_rebuiltB\x05\n" +
-	"\x03_of\"\x8c\x02\n" +
+	"\x03_of\"\xcd\x02\n" +
 	"\x11RunCommandRequest\x12!\n" +
 	"\fworkspace_id\x18\x01 \x01(\tR\vworkspaceId\x12\x12\n" +
 	"\x04args\x18\x02 \x03(\tR\x04args\x12\x10\n" +
@@ -29819,7 +29868,9 @@ const file_hotbed_v1_hotbed_proto_rawDesc = "" +
 	"\x02id\x18\b \x01(\tR\x02id\x12\x14\n" +
 	"\x05bench\x18\t \x01(\bR\x05bench\x12\x12\n" +
 	"\x04repo\x18\n" +
-	" \x01(\tR\x04repo\"\x8e\x01\n" +
+	" \x01(\tR\x04repo\x12\x17\n" +
+	"\avm_cpus\x18\v \x01(\x05R\x06vmCpus\x12&\n" +
+	"\x0fvm_memory_bytes\x18\f \x01(\x03R\rvmMemoryBytes\"\x8e\x01\n" +
 	"\x10OpenShellRequest\x12!\n" +
 	"\fworkspace_id\x18\x01 \x01(\tR\vworkspaceId\x12\x12\n" +
 	"\x04repo\x18\x02 \x01(\tR\x04repo\x12\x12\n" +

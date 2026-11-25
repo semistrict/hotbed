@@ -15,6 +15,7 @@ import (
 	"testing"
 	"time"
 
+	cladefsdv1 "github.com/semistrict/cladefs/go/cladefsd/v1"
 	"github.com/semistrict/hotbed/internal/api"
 	"github.com/semistrict/hotbed/internal/fake"
 	pb "github.com/semistrict/hotbed/internal/gen/hotbed/v1"
@@ -23,7 +24,6 @@ import (
 	"github.com/semistrict/hotbed/internal/profiler"
 	"github.com/semistrict/hotbed/internal/runtime"
 	"github.com/semistrict/hotbed/internal/unit"
-	cladefsdv1 "github.com/semistrict/cladefs/go/cladefsd/v1"
 )
 
 type testGuestResolver struct {
@@ -31,7 +31,7 @@ type testGuestResolver struct {
 	clients map[string]*guestd.Client
 }
 
-func (r *testGuestResolver) EnsureVM(_ context.Context, wsID string) (*guestd.Client, error) {
+func (r *testGuestResolver) EnsureVM(_ context.Context, wsID string, _ unit.VMSize) (*guestd.Client, error) {
 	return r.ClientFor(wsID)
 }
 
@@ -312,6 +312,10 @@ func TestEngineWithGuestRuntimeEndToEnd(t *testing.T) {
 	if !strings.Contains(string(logBytes), "line2-edited") || !strings.Contains(string(logBytes), "VM_CMD_DONE") {
 		t.Fatalf("host log missing guest output: %q", string(logBytes))
 	}
+	// Its VM stopped as it ended: the next command boots a new one.
+	if rt.torn[wsID] != 1 {
+		t.Fatalf("Teardown count after the command ended = %d, want 1", rt.torn[wsID])
+	}
 
 	// 4. Interactive piped shell routed through guestd!
 	var shOut bytes.Buffer
@@ -369,8 +373,8 @@ func TestEngineWithGuestRuntimeEndToEnd(t *testing.T) {
 	if err := eng.ReleaseWorkspace(ctx, wsID); err != nil {
 		t.Fatalf("ReleaseWorkspace: %v", err)
 	}
-	if rt.torn[wsID] != 1 {
-		t.Fatalf("Teardown count = %d, want 1", rt.torn[wsID])
+	if rt.torn[wsID] != 2 {
+		t.Fatalf("Teardown count after release = %d, want 2", rt.torn[wsID])
 	}
 }
 

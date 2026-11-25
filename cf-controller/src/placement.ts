@@ -186,6 +186,14 @@ export function candidateUnfit(c: Candidate, p: Placement | undefined, hosts: st
 	if (memLow > c.ram) {
 		return `${c.host} has ${c.ram} bytes of RAM, less than the ${memLow} guaranteed`;
 	}
+	const vmCpus = p?.vmCpus ?? 0;
+	if (vmCpus > c.cpus) {
+		return `${c.host} has ${c.cpus} CPUs, fewer than the ${vmCpus} its VM asks`;
+	}
+	const vmMem = p?.vmMemoryBytes ?? 0n;
+	if (vmMem > c.ram) {
+		return `${c.host} has ${c.ram} bytes of RAM, less than the ${vmMem} its VM asks`;
+	}
 	return "";
 }
 

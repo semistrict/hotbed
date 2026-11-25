@@ -23,6 +23,7 @@ import (
 	"github.com/semistrict/hotbed/internal/guestd"
 	"github.com/semistrict/hotbed/internal/runtime"
 	"github.com/semistrict/hotbed/internal/storage"
+	"github.com/semistrict/hotbed/internal/unit"
 	"github.com/semistrict/hotbed/internal/vm"
 )
 
@@ -76,6 +77,9 @@ type fakeVMLauncher struct {
 	mu      sync.Mutex
 	running map[string]bool
 	stopped []string
+	// starting, when set, is told of each Start, which then waits for gate.
+	starting chan string
+	gate     chan struct{}
 }
 
 func newFakeVMLauncher() *fakeVMLauncher {
@@ -83,6 +87,10 @@ func newFakeVMLauncher() *fakeVMLauncher {
 }
 
 func (l *fakeVMLauncher) Start(_ context.Context, s vm.ProcessSpec) error {
+	if l.starting != nil {
+		l.starting <- s.Name
+		<-l.gate
+	}
 	l.mu.Lock()
 	l.running[s.Name] = true
 	l.mu.Unlock()
@@ -350,5 +358,83 @@ func TestEngineSweepOrphansAndPeriodicReconcileVMZombies(t *testing.T) {
 	}
 	if st, _ := fl.Status(ctx, "hotbed-vm-base-cladefs-vm-escaped1"); st.Alive() {
 		t.Fatal("untracked zombie base VM escaped periodic reconcile")
+	}
+}
+
+// A VM up at another size than a command asks (booted for a sync, say) boots
+// again at that size; one asking no size takes the VM as it is.
+func TestVMBackendEnsureVMBootsAgainAtTheSizeAsked(t *testing.T) {
+	ctx := context.Background()
+	api := newStrictVMCladefsClient()
+	fl := newFakeVMLauncher()
+	b, _ := newTestVMBackend(t, api, fl)
+	if _, err := b.PrepareWorkspace(ctx, "sizews", cladefs.CellRef{Tenant: 1, Cell: 100, Version: 5}, 1); err != nil {
+		t.Fatalf("PrepareWorkspace: %v", err)
+	}
+	t.Cleanup(func() { _ = b.mgr.Stop(context.Background(), "sizews", true) })
+	stops := func() int {
+		fl.mu.Lock()
+		defer fl.mu.Unlock()
+		return len(fl.stopped)
+	}
+
+	if _, err := b.EnsureVM(ctx, "sizews", unit.VMSize{}); err != nil {
+		t.Fatalf("EnsureVM at no size: %v", err)
+	}
+	if n := stops(); n != 0 {
+		t.Fatalf("EnsureVM at no size stopped %d VMs, want 0", n)
+	}
+
+	if _, err := b.EnsureVM(ctx, "sizews", unit.VMSize{VCPUs: 3, MemMiB: 1536}); err != nil {
+		t.Fatalf("EnsureVM at 3 vCPUs, 1536 MiB: %v", err)
+	}
+	if inst := b.mgr.Get("sizews"); inst == nil || inst.VCPUs != 3 || inst.MemMiB != 1536 {
+		t.Fatalf("VM after EnsureVM at 3 vCPUs, 1536 MiB = %+v", inst)
+	}
+	if n := stops(); n != 1 {
+		t.Fatalf("EnsureVM at another size stopped %d VMs, want 1", n)
+	}
+
+	// At the size it has, it stays.
+	if _, err := b.EnsureVM(ctx, "sizews", unit.VMSize{VCPUs: 3}); err != nil {
+		t.Fatalf("EnsureVM at 3 vCPUs again: %v", err)
+	}
+	if n := stops(); n != 1 {
+		t.Fatalf("EnsureVM at its own size stopped %d VMs, want still 1", n)
+	}
+}
+
+// Callers that find a VM down at once (a file list and a file read, say)
+// wait for one boot rather than fail on the boot in flight.
+func TestVMBackendEnsureVMBootsOnceForConcurrentCallers(t *testing.T) {
+	ctx := context.Background()
+	api := newStrictVMCladefsClient()
+	fl := newFakeVMLauncher()
+	b, _ := newTestVMBackend(t, api, fl)
+	if _, err := b.PrepareWorkspace(ctx, "twows", cladefs.CellRef{Tenant: 1, Cell: 100, Version: 5}, 1); err != nil {
+		t.Fatalf("PrepareWorkspace: %v", err)
+	}
+	t.Cleanup(func() { _ = b.mgr.Stop(context.Background(), "twows", true) })
+	if err := b.mgr.Stop(ctx, "twows", true); err != nil {
+		t.Fatalf("stop: %v", err)
+	}
+
+	fl.mu.Lock()
+	fl.starting, fl.gate = make(chan string, 2), make(chan struct{})
+	fl.mu.Unlock()
+	errs := make(chan error, 2)
+	go func() { _, err := b.EnsureVM(ctx, "twows", unit.VMSize{}); errs <- err }()
+	<-fl.starting // the first boot is in flight
+	go func() { _, err := b.EnsureVM(ctx, "twows", unit.VMSize{}); errs <- err }()
+	close(fl.gate)
+	for range 2 {
+		if err := <-errs; err != nil {
+			t.Fatalf("EnsureVM beside a boot in flight: %v", err)
+		}
+	}
+	select {
+	case name := <-fl.starting:
+		t.Fatalf("second boot %s, want one", name)
+	default:
 	}
 }

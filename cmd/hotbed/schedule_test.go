@@ -287,6 +287,23 @@ func TestScheduledRunKeepsToItsArchitecture(t *testing.T) {
 	}
 }
 
+// A schedule that sizes its runs' VM keeps the size, and its runs go only to
+// nodes with the vm runtime.
+func TestScheduledSizedRunNeedsAVMNode(t *testing.T) {
+	c := newCluster(t)
+	c.addRepo(upstream(t))
+	sc := &pb.ScheduledCommand{}
+	c.ok(sc, "schedule", "add", "big", "-r", "app", "--cron", nightly, "--vm-cpus", "2", "--vm-mem", "2G", "--", "true")
+	if sc.Command.VmCpus != 2 || sc.Command.VmMemoryBytes != 2<<30 {
+		t.Fatalf("schedule add --vm-cpus 2 --vm-mem 2G = %v", sc.Command)
+	}
+	run := &pb.ScheduledRun{}
+	c.ok(run, "schedule", "run", "big")
+	if run.Outcome != pb.RunOutcome_RUN_OUTCOME_NOT_STARTED || run.Reason != "no node can take the run: asahimbp does not support vm runtime" {
+		t.Errorf("sized run with no vm node = %v", run)
+	}
+}
+
 // A paused schedule starts nothing until resumed, and then not the slots it
 // slept through.
 func TestPausedScheduleRunsNothing(t *testing.T) {

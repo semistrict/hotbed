@@ -31,6 +31,7 @@ import (
 	"github.com/semistrict/hotbed/internal/runtime"
 	"github.com/semistrict/hotbed/internal/statedir"
 	"github.com/semistrict/hotbed/internal/storage"
+	"github.com/semistrict/hotbed/internal/unit"
 	"github.com/semistrict/hotbed/internal/vm"
 )
 
@@ -57,6 +58,10 @@ type VMBackend struct {
 	lastPeers      []string
 	decommissioned map[uint64]bool
 	retirer        baseRetirer
+	// boots serializes EnsureVM per VM (ID -> *sync.Mutex): a VM is down
+	// between commands, and callers that find it so at once wait for one
+	// boot rather than race it.
+	boots sync.Map
 }
 
 type vmProjectBase struct {
@@ -1533,7 +1538,7 @@ func (b *VMBackend) PrepareWorkspace(ctx context.Context, wsID string, baseRef c
 	b.wsCells[wsID] = wsRef
 	b.mu.Unlock()
 
-	if _, err := b.EnsureVM(ctx, wsID); err != nil {
+	if _, err := b.EnsureVM(ctx, wsID, unit.VMSize{}); err != nil {
 		b.cleanupCell(ctx, rel)
 		b.mu.Lock()
 		delete(b.wsCells, wsID)
@@ -1807,7 +1812,10 @@ func (b *VMBackend) IsVMSuspended(wsID string) (bool, int64) {
 
 // EnsureVM implements runtime.GuestResolver. If wsID is currently suspended in
 // a CladeFS memory cell, EnsureVM resumes it lazily via PUT /snapshot/load.
-func (b *VMBackend) EnsureVM(ctx context.Context, wsID string) (*guestd.Client, error) {
+func (b *VMBackend) EnsureVM(ctx context.Context, wsID string, size unit.VMSize) (*guestd.Client, error) {
+	boot, _ := b.boots.LoadOrStore(wsID, &sync.Mutex{})
+	boot.(*sync.Mutex).Lock()
+	defer boot.(*sync.Mutex).Unlock()
 	if susp := b.mgr.Suspended(wsID); susp != nil {
 		var nextMemPath string
 		if !susp.MemoryCell.Ephemeral {
@@ -1829,12 +1837,22 @@ func (b *VMBackend) EnsureVM(ctx context.Context, wsID string) (*guestd.Client, 
 		return inst.Client, nil
 	}
 	if c, err := b.mgr.ClientFor(wsID); err == nil {
-		if st, serr := b.mgr.Status(ctx, wsID); serr != nil || st.Running {
+		st, serr := b.mgr.Status(ctx, wsID)
+		switch {
+		case serr == nil && !st.Running:
+			// Tracked Firecracker process already exited (e.g. exit 158 after
+			// cladefsd restart): clean up its stale state and boot a fresh VM
+			// on the cell.
+			_ = b.mgr.Stop(ctx, wsID, false)
+		case b.sizeDiffers(wsID, size):
+			// Booted at another size before anything ran in it (to sync a
+			// checkout, say): boot it again at the size asked.
+			if err := b.mgr.Stop(ctx, wsID, true); err != nil {
+				return nil, fmt.Errorf("stop VM %s to boot it at %d vCPUs, %d MiB: %w", wsID, size.VCPUs, size.MemMiB, err)
+			}
+		default:
 			return c, nil
 		}
-		// Tracked Firecracker process already exited (e.g. exit 158 after cladefsd
-		// restart): clean up its stale state and boot a fresh VM on the cell.
-		_ = b.mgr.Stop(ctx, wsID, false)
 	}
 	b.mu.Lock()
 	ref, ok := b.wsCells[wsID]
@@ -1851,11 +1869,23 @@ func (b *VMBackend) EnsureVM(ctx context.Context, wsID string) (*guestd.Client, 
 		ID:            wsID,
 		CellHostPath:  cellPath,
 		CladefsVMSock: b.currentStore().VMSock(),
+		VCPUs:         size.VCPUs,
+		MemMiB:        size.MemMiB,
 	})
 	if err != nil {
 		return nil, err
 	}
 	return inst.Client, nil
+}
+
+// sizeDiffers reports whether wsID's running VM has another size than a
+// non-zero field of size asks.
+func (b *VMBackend) sizeDiffers(wsID string, size unit.VMSize) bool {
+	inst := b.mgr.Get(wsID)
+	if inst == nil {
+		return false
+	}
+	return (size.VCPUs > 0 && inst.VCPUs != size.VCPUs) || (size.MemMiB > 0 && inst.MemMiB != size.MemMiB)
 }
 
 // ClientFor implements runtime.GuestResolver.
