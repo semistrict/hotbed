@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/semistrict/hotbed/internal/api"
@@ -295,21 +296,118 @@ func (e *Engine) CommandProfile(id string, req *pb.GetProfileRequest) (*pb.Comma
 	return nil, notFound("command", id)
 }
 
+// snapshotVMProfile synchronously fetches and forgets a finished VM command's
+// in-guest eBPF profile outside e.mu before endBy marks the command ended, so
+// fast session teardown cannot race the vsock snapshot.
+func (e *Engine) snapshotVMProfile(c *command) {
+	e.mu.Lock()
+	if c.vmProfileDone {
+		e.mu.Unlock()
+		return
+	}
+	c.vmProfileDone = true
+	cmd := c.cmd()
+	wsID, cmdID, isFreshen := cmd.WorkspaceId, cmd.Id, c.isFreshen()
+	e.mu.Unlock()
+
+	if isFreshen || wsID == "" || !e.usesRuntime(wsID) {
+		return
+	}
+	pctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	snap, err := e.cfg.Runtime.CommandProfile(pctx, wsID, &pb.GetProfileRequest{
+		Target: &pb.GetProfileRequest_CommandId{CommandId: cmdID},
+		Limit:  500,
+	})
+	cancel()
+	if err != nil || snap == nil || snap.TotalSamples == 0 {
+		return
+	}
+	snap.Live = false
+	e.mu.Lock()
+	c.vmProfile = snap
+	e.mu.Unlock()
+
+	fctx, fcancel := context.WithTimeout(context.Background(), 2*time.Second)
+	_ = e.cfg.Runtime.ForgetCommandProfile(fctx, wsID, cmdID)
+	fcancel()
+}
+
 // NodeProfile queries the always-on OpenTelemetry eBPF continuous profile ring
-// buffer collected across all processes on this worker node.
+// buffer collected across all processes on this worker node, merging in live
+// in-guest eBPF profiles from any active Firecracker VM workspaces.
 func (e *Engine) NodeProfile(node string, req *pb.GetProfileRequest) (*pb.CommandProfile, error) {
 	host := e.cfg.Host
 	if host == "" {
 		host = node
 	}
+
+	// Collect active VM workspaces so their in-guest OTel eBPF profiles can be
+	// merged alongside host processes (firecracker, cladefsd, etc.).
+	var vmWorkspaces []string
+	if e.cfg.Runtime != nil {
+		e.mu.Lock()
+		for wsID, w := range e.workspaces {
+			st := w.ws().State
+			if st == released || st == failedWS || st == preparing {
+				continue
+			}
+			if e.usesRuntime(wsID) {
+				vmWorkspaces = append(vmWorkspaces, wsID)
+			}
+		}
+		e.mu.Unlock()
+	}
+
+	var hostProf *pb.CommandProfile
 	if e.cfg.Profiler == nil {
-		return &pb.CommandProfile{
+		hostProf = &pb.CommandProfile{
 			Node:       host,
 			Profiler:   profiler.EngineName,
 			Live:       true,
 			Active:     false,
 			StatusNote: "continuous profiler not configured on this worker",
-		}, nil
+		}
+	} else if len(vmWorkspaces) == 0 {
+		return e.cfg.Profiler.QueryNode(host, req), nil
+	} else {
+		// Query unfiltered stacks for the requested time window so MergeProfiles
+		// applies query/comm/frame-type/limit filters uniformly across host + VMs.
+		hostProf = e.cfg.Profiler.QueryNode(host, &pb.GetProfileRequest{
+			Target: &pb.GetProfileRequest_Node{Node: host},
+			FromMs: req.GetFromMs(),
+			ToMs:   req.GetToMs(),
+			Limit:  500,
+		})
 	}
-	return e.cfg.Profiler.QueryNode(host, req), nil
+
+	if len(vmWorkspaces) == 0 {
+		return hostProf, nil
+	}
+
+	guestProfs := make([]*pb.CommandProfile, len(vmWorkspaces))
+	var wg sync.WaitGroup
+	for i, wsID := range vmWorkspaces {
+		wg.Go(func() {
+			pctx, cancel := context.WithTimeout(context.Background(), 1500*time.Millisecond)
+			defer cancel()
+			gp, err := e.cfg.Runtime.CommandProfile(pctx, wsID, &pb.GetProfileRequest{
+				Target: &pb.GetProfileRequest_Node{Node: "vm:" + wsID},
+				FromMs: req.GetFromMs(),
+				ToMs:   req.GetToMs(),
+				Limit:  500,
+			})
+			if err == nil && gp != nil && gp.TotalSamples > 0 {
+				guestProfs[i] = gp
+			}
+		})
+	}
+	wg.Wait()
+
+	var nonNil []*pb.CommandProfile
+	for _, gp := range guestProfs {
+		if gp != nil {
+			nonNil = append(nonNil, gp)
+		}
+	}
+	return profiler.MergeProfiles(host, hostProf, nonNil, req), nil
 }

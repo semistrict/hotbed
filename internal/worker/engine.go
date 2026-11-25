@@ -349,6 +349,11 @@ type command struct {
 	// profileSeq is the event that carries the command's profile to the
 	// controller, once it ended with one (0 if not known).
 	profileSeq int64
+	// vmProfile holds the guest VM's final eBPF profile captured synchronously
+	// in finishOutput (outside e.mu) before endBy marks the command ended, so
+	// fast session teardown cannot race the vsock snapshot.
+	vmProfile     *pb.CommandProfile
+	vmProfileDone bool
 	// freezeMu serializes freeze/thaw transitions on this command so a losing
 	// soft-limit freeze or park cannot thaw a unit that another transition
 	// paused or parked. Always acquire freezeMu before e.mu.

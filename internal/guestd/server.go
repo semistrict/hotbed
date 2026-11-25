@@ -651,9 +651,21 @@ func (s *Server) SampleCommand(ctx context.Context, req *pb.SampleCommandRequest
 }
 
 func (s *Server) GetProfile(_ context.Context, req *pb.GetProfileRequest) (*pb.CommandProfile, error) {
+	if node := req.GetNode(); node != "" {
+		if s.profiler == nil {
+			return &pb.CommandProfile{
+				Node:       node,
+				Profiler:   profiler.EngineName,
+				Live:       true,
+				Active:     false,
+				StatusNote: "continuous profiler not configured in guest VM",
+			}, nil
+		}
+		return s.profiler.QueryNode(node, req), nil
+	}
 	cmdID := req.GetCommandId()
 	if cmdID == "" {
-		return nil, api.Errorf(api.CodeInvalidArgs, "command_id is required")
+		return nil, api.Errorf(api.CodeInvalidArgs, "command_id or node is required")
 	}
 	mc, ok := s.getCmd(cmdID)
 	if !ok {

@@ -453,10 +453,12 @@ func (e *Engine) removeUnit(ctx context.Context, c *command, st unit.State) {
 
 // finishOutput reads the rest of the output of c, whose processes are gone:
 // compacted first, so what is left to read is at most the log's limit
-// however much it wrote at the end.
+// however much it wrote at the end. For VM commands it also synchronously
+// snapshots the guest's eBPF profile before endBy marks the command ended.
 func (e *Engine) finishOutput(c *command) {
 	e.compactLog(c)
 	c.out.finish()
+	e.snapshotVMProfile(c)
 }
 
 // started says whether a command in state s has a unit: it runs, or is
@@ -2134,15 +2136,20 @@ func (e *Engine) endBy(c *command, state pb.CommandState, code *int32, why strin
 	}
 	var prof *pb.CommandProfile
 	isVM := cmd.WorkspaceId != "" && e.usesRuntime(cmd.WorkspaceId)
-	if !isVM && e.cfg.Profiler != nil {
-		if snap := e.cfg.Profiler.Snapshot(cmd.Id); snap != nil && snap.TotalSamples > 0 {
-			if path, err := e.profilePath(cmd.Id); err != nil {
-				slog.Warn("save command profile", "command", cmd.Id, "err", err)
-			} else if err := profiler.SaveProfile(path, snap); err != nil {
-				slog.Warn("save command profile", "command", cmd.Id, "err", err)
-			}
-			prof = snap
+	var snap *pb.CommandProfile
+	if isVM {
+		snap = c.vmProfile
+		c.vmProfile = nil
+	} else if e.cfg.Profiler != nil {
+		snap = e.cfg.Profiler.Snapshot(cmd.Id)
+	}
+	if snap != nil && snap.TotalSamples > 0 {
+		if path, err := e.profilePath(cmd.Id); err != nil {
+			slog.Warn("save command profile", "command", cmd.Id, "err", err)
+		} else if err := profiler.SaveProfile(path, snap); err != nil {
+			slog.Warn("save command profile", "command", cmd.Id, "err", err)
 		}
+		prof = snap
 	}
 	e.saveCommand(c, change{what: what, detail: detail, finished: f, feed: line, profile: prof, diagnostics: by.diagnostics()})
 	if prof != nil && !e.isDirty() {
@@ -2152,39 +2159,6 @@ func (e *Engine) endBy(c *command, state pb.CommandState, code *int32, why strin
 		} else {
 			c.profileSeq = newest
 		}
-	}
-	if isVM {
-		wsID, cmdID := cmd.WorkspaceId, cmd.Id
-		e.startBgLocked(func(bgCtx context.Context) {
-			pctx, cancel := context.WithTimeout(bgCtx, 5*time.Second)
-			snap, err := e.cfg.Runtime.CommandProfile(pctx, wsID, &pb.GetProfileRequest{
-				Target: &pb.GetProfileRequest_CommandId{CommandId: cmdID},
-				Limit:  500,
-			})
-			cancel()
-			if err != nil || snap == nil || snap.TotalSamples == 0 {
-				return
-			}
-			snap.Live = false
-			if path, perr := e.profilePath(cmdID); perr != nil {
-				slog.Warn("save guest command profile", "command", cmdID, "err", perr)
-			} else if perr := profiler.SaveProfile(path, snap); perr != nil {
-				slog.Warn("save guest command profile", "command", cmdID, "err", perr)
-			}
-			e.mu.Lock()
-			if cur, still := e.commands[cmdID]; still {
-				e.saveCommand(cur, change{what: "profile", detail: "guest eBPF profile", profile: snap})
-				if !e.isDirty() {
-					if _, newest, rerr := e.db.eventRange(); rerr == nil {
-						cur.profileSeq = newest
-					}
-				}
-			}
-			e.mu.Unlock()
-			fctx, fcancel := context.WithTimeout(bgCtx, 2*time.Second)
-			_ = e.cfg.Runtime.ForgetCommandProfile(fctx, wsID, cmdID)
-			fcancel()
-		})
 	}
 	if w, ok := e.workspaces[cmd.WorkspaceId]; ok {
 		w.ws().LastActiveAt = now
