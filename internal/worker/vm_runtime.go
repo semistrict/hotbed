@@ -20,6 +20,7 @@ import (
 	"github.com/semistrict/hotbed/internal/runtime"
 	"github.com/semistrict/hotbed/internal/statedir"
 	"github.com/semistrict/hotbed/internal/unit"
+	"github.com/semistrict/hotbed/internal/vm"
 )
 
 // isVMWorkspace reports whether workspace wsID was created with runtime="vm".
@@ -28,6 +29,141 @@ import (
 func (e *Engine) isVMWorkspace(wsID string) bool {
 	_, ok := e.vmWorkspaces.Load(wsID)
 	return ok
+}
+
+func (e *Engine) vmIdleSuspendAfter() time.Duration {
+	if e.cfg.VMIdleSuspendAfter < 0 {
+		return 0
+	}
+	if e.cfg.VMIdleSuspendAfter > 0 {
+		return e.cfg.VMIdleSuspendAfter
+	}
+	return defaultVMIdleSuspendAfter
+}
+
+// canSuspendVM reports whether wsID's VM is completely quiescent and safe to
+// suspend to a CladeFS memory cell: no running command, no live server command,
+// no active interactive shell, no in-flight sync, and not preparing/releasing.
+func (e *Engine) canSuspendVM(wsID string) bool {
+	if wsID == "" || !e.usesRuntime(wsID) {
+		return false
+	}
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return e.canSuspendVMLocked(wsID, false)
+}
+
+func (e *Engine) canSuspendVMLocked(wsID string, requireNoLiveCommands bool) bool {
+	if w, ok := e.workspaces[wsID]; ok {
+		ws := w.ws()
+		if w.releasing || w.forking || ws.State == preparing || ws.State == failedWS || ws.State == released || isSyncInProgress(ws.Reason) {
+			return false
+		}
+		if requireNoLiveCommands && ws.State != idle {
+			return false
+		}
+	}
+	for _, sh := range e.shells {
+		if sh.workspaceID == wsID {
+			return false
+		}
+	}
+	for _, c := range e.commands {
+		if c.runtimeTarget() != wsID {
+			continue
+		}
+		st := c.cmd().State
+		if !api.Live(st) {
+			continue
+		}
+		if requireNoLiveCommands {
+			return false
+		}
+		if st == running || c.cmd().Kind == "server" || c.admitting || c.stopping {
+			return false
+		}
+	}
+	return true
+}
+
+// hibernateIdleVMs suspends VM workspaces that have remained completely idle
+// (no live commands, shells, or syncs) for vmIdleSuspendAfter into CladeFS
+// memory cells so idle workspaces hold zero host RAM and zero swap while
+// staying fast to wake on the next sync, command, file query, or shell.
+func (e *Engine) hibernateIdleVMs(ctx context.Context) {
+	sr, ok := e.cfg.Runtime.(runtime.SuspendableRuntime)
+	if !ok {
+		return
+	}
+	idleAfter := e.vmIdleSuspendAfter()
+	if idleAfter <= 0 {
+		return
+	}
+	now := e.now()
+	e.mu.Lock()
+	var cands []*workspace
+	for _, w := range e.workspaces {
+		ws := w.ws()
+		if !e.usesRuntime(ws.Id) {
+			continue
+		}
+		if !e.canSuspendVMLocked(ws.Id, true) {
+			continue
+		}
+		if !w.suspendRetryAt.IsZero() && now.Before(w.suspendRetryAt) {
+			continue
+		}
+		if ws.LastActiveAt <= 0 || now.Sub(time.UnixMilli(ws.LastActiveAt)) < idleAfter {
+			continue
+		}
+		if susp, _ := sr.IsSuspended(ws.Id); susp {
+			continue
+		}
+		cands = append(cands, w)
+	}
+	e.mu.Unlock()
+
+	for _, w := range cands {
+		if ctx.Err() != nil {
+			return
+		}
+		if !w.sync.TryLock() {
+			continue
+		}
+		wsID := w.ws().Id
+		e.mu.Lock()
+		stillIdle := e.canSuspendVMLocked(wsID, true) &&
+			(w.suspendRetryAt.IsZero() || !e.now().Before(w.suspendRetryAt)) &&
+			e.now().Sub(time.UnixMilli(w.ws().LastActiveAt)) >= idleAfter
+		e.mu.Unlock()
+		if !stillIdle {
+			w.sync.Unlock()
+			continue
+		}
+		if susp, _ := sr.IsSuspended(wsID); susp {
+			w.sync.Unlock()
+			continue
+		}
+		sctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+		err := sr.SuspendWorkspace(sctx, wsID, 0)
+		cancel()
+		w.sync.Unlock()
+		if err != nil {
+			backoff := time.Minute
+			if errors.Is(err, vm.ErrSuspendUnsupported) {
+				backoff = 5 * time.Minute
+			}
+			e.mu.Lock()
+			w.suspendRetryAt = e.now().Add(backoff)
+			e.mu.Unlock()
+			slog.Warn("hibernate idle VM workspace failed", "workspace", wsID, "retryIn", backoff, "err", err)
+			continue
+		}
+		if e.rtUnits != nil {
+			e.rtUnits.forgetVMCgroup(wsID)
+		}
+		slog.Info("hibernated idle VM workspace to cladefs memory cell", "workspace", wsID)
+	}
 }
 
 // resolveWorkspaceRuntime picks "vm" or "cladefs" for a CreateWorkspaceRequest.
@@ -144,15 +280,17 @@ const vmHostMinResidentBytes int64 = 64 << 20
 // runtime.WorkspaceRuntime (hotbed-guestd over AF_VSOCK), while leaving chroot
 // workspaces, base freshens, and --bench commands on the inner host Units.
 type runtimeUnits struct {
-	inner Units
-	rt    runtime.WorkspaceRuntime
-	useRT func(wsID string) bool
-	uid   int
-	gid   int
+	inner      Units
+	rt         runtime.WorkspaceRuntime
+	useRT      func(wsID string) bool
+	canSuspend func(wsID string) bool
+	uid        int
+	gid        int
 
 	mu        sync.Mutex
-	cmds      map[string]*rtCmd // unitName -> active/tracked guest command
-	vmCgroups map[string]string // wsID -> host Firecracker unit cgroup path
+	cmds      map[string]*rtCmd         // unitName -> active/tracked guest command
+	vmCgroups map[string]string         // wsID -> host Firecracker unit cgroup path
+	wakeCh    map[string]chan struct{}  // wsID -> closed & replaced whenever VM resumes
 }
 
 type rtCmd struct {
@@ -172,6 +310,48 @@ func newRuntimeUnits(inner Units, rt runtime.WorkspaceRuntime, useRT func(string
 		gid:       gid,
 		cmds:      map[string]*rtCmd{},
 		vmCgroups: map[string]string{},
+		wakeCh:    map[string]chan struct{}{},
+	}
+}
+
+func (u *runtimeUnits) isSuspended(wsID string) (bool, int64) {
+	if sr, ok := u.rt.(runtime.SuspendableRuntime); ok {
+		return sr.IsSuspended(wsID)
+	}
+	return false, 0
+}
+
+func (u *runtimeUnits) wakeWaiter(wsID string) <-chan struct{} {
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	ch, ok := u.wakeCh[wsID]
+	if !ok {
+		ch = make(chan struct{})
+		u.wakeCh[wsID] = ch
+	}
+	return ch
+}
+
+func (u *runtimeUnits) notifyResumed(wsID string) {
+	u.mu.Lock()
+	if ch, ok := u.wakeCh[wsID]; ok {
+		close(ch)
+		delete(u.wakeCh, wsID)
+	}
+	u.mu.Unlock()
+}
+
+// Drop cancels the log pump and forgets tracking for unitName without calling
+// StopCommand inside the guest (used when releasing a workspace whose VM is
+// already suspended and being discarded without resuming).
+func (u *runtimeUnits) Drop(name string) {
+	u.mu.Lock()
+	rc := u.cmds[name]
+	delete(u.cmds, name)
+	u.mu.Unlock()
+	if rc != nil {
+		rc.cancel()
+		<-rc.done
 	}
 }
 
@@ -300,6 +480,19 @@ func (u *runtimeUnits) pumpLogs(ctx context.Context, rc *rtCmd) {
 		if err == nil || ctx.Err() != nil {
 			return
 		}
+		// While the workspace VM is intentionally suspended in a CladeFS memory
+		// cell, keep the log pump alive without waking Firecracker and resume
+		// streaming from the exact same offset once the VM wakes.
+		if susp, _ := u.isSuspended(rc.wsID); susp {
+			wake := u.wakeWaiter(rc.wsID)
+			select {
+			case <-ctx.Done():
+				return
+			case <-wake:
+			case <-time.After(500 * time.Millisecond):
+			}
+			continue
+		}
 		// Check whether the command already exited before retrying.
 		sctx, cancel := context.WithTimeout(ctx, 2*time.Second)
 		stMap, serr := u.rt.StatusMany(sctx, rc.wsID, []string{rc.cmdID})
@@ -417,7 +610,11 @@ func (u *runtimeUnits) Freeze(ctx context.Context, name string) error {
 
 func (u *runtimeUnits) Thaw(ctx context.Context, name string) error {
 	if rc := u.lookup(name); rc != nil {
-		return u.rt.ThawCommand(ctx, rc.wsID, rc.cmdID)
+		if err := u.rt.ThawCommand(ctx, rc.wsID, rc.cmdID); err != nil {
+			return err
+		}
+		u.notifyResumed(rc.wsID)
+		return nil
 	}
 	return u.inner.Thaw(ctx, name)
 }
@@ -472,6 +669,40 @@ func (u *runtimeUnits) vmHostMemory(ctx context.Context, wsID string) (cg string
 
 func (u *runtimeUnits) Reclaim(cgroup string, n int64) error {
 	if wsID, cmdID, ok := parseVMCgroup(cgroup); ok {
+		// Preferred path: when the entire workspace VM is quiescent (all live
+		// commands parked/paused, no active shell or dev server), snapshot the
+		// VM straight into a CladeFS memory cell and stop Firecracker so it
+		// holds zero host RAM and zero swap.
+		if sr, ok := u.rt.(runtime.SuspendableRuntime); ok && u.canSuspend != nil && u.canSuspend(wsID) {
+			if susp, _ := sr.IsSuspended(wsID); susp {
+				return nil
+			}
+			workingSet := n
+			if workingSet <= 0 {
+				hctx, hcancel := context.WithTimeout(context.Background(), 2*time.Second)
+				if _, hostMem, hasHost := u.vmHostMemory(hctx, wsID); hasHost {
+					workingSet = hostMem.Anon
+				}
+				hcancel()
+			}
+			sctx, scancel := context.WithTimeout(context.Background(), 30*time.Second)
+			err := sr.SuspendWorkspace(sctx, wsID, workingSet)
+			scancel()
+			if err == nil {
+				u.forgetVMCgroup(wsID)
+				return nil
+			}
+			if errors.Is(err, vm.ErrSuspendUnsupported) {
+				slog.Warn("VM memory-cell suspend unsupported; falling back to cgroup reclaim",
+					"workspace", wsID, "command", cmdID, "err", err)
+			} else {
+				slog.Error("VM memory-cell suspend failed; falling back to cgroup reclaim",
+					"workspace", wsID, "command", cmdID, "err", err)
+			}
+		}
+
+		// Fallback path (another command/shell/server is still running in the
+		// same VM, or pre-upgrade VMM/cladefsd does not support suspend):
 		// 1. Reclaim clean page cache inside the guest so virtio-balloon
 		// free-page-reporting returns it directly to the host without swap.
 		gctx, gcancel := context.WithTimeout(context.Background(), 3*time.Second)
@@ -511,6 +742,13 @@ func (u *runtimeUnits) Reclaim(cgroup string, n int64) error {
 
 func (u *runtimeUnits) Memory(cgroup string) (unit.MemoryUse, error) {
 	if wsID, cmdID, ok := parseVMCgroup(cgroup); ok {
+		if susp, wsBytes := u.isSuspended(wsID); susp {
+			// A VM suspended to a CladeFS memory cell holds 0 bytes of host
+			// RAM and 0 bytes of host swap; report its pre-suspend working set
+			// in Swap so thaw estimation and PeakHeldBytes stay accurate while
+			// parkedReservationForHigherPriority charges 0 resident RAM.
+			return unit.MemoryUse{Anon: 0, Swap: wsBytes}, nil
+		}
 		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 		defer cancel()
 		m, err := u.rt.StatusMany(ctx, wsID, []string{cmdID})
@@ -626,7 +864,16 @@ func (e *Engine) applyViaRuntime(ctx context.Context, wsID, repo, bundlePath, co
 	})
 }
 
+func (e *Engine) touchWorkspaceActive(wsID string) {
+	e.mu.Lock()
+	if w, ok := e.workspaces[wsID]; ok {
+		w.ws().LastActiveAt = e.nowMs()
+	}
+	e.mu.Unlock()
+}
+
 func (e *Engine) filesViaRuntime(ctx context.Context, wsID string, repos []*pb.WorkspaceRepo) ([]*pb.FileEntry, error) {
+	e.touchWorkspaceActive(wsID)
 	refs := make([]runtime.RepoRef, len(repos))
 	for i, r := range repos {
 		refs[i] = runtime.RepoRef{Repo: r.Repo, BaseCommit: r.BaseCommit}
@@ -635,6 +882,7 @@ func (e *Engine) filesViaRuntime(ctx context.Context, wsID string, repos []*pb.W
 }
 
 func (e *Engine) fileViaRuntime(ctx context.Context, wsID, path string, repos []*pb.WorkspaceRepo) (*pb.FileContent, error) {
+	e.touchWorkspaceActive(wsID)
 	clean := strings.TrimPrefix(filepath.Clean("/"+path), "/")
 	name, rel, _ := strings.Cut(clean, "/")
 	var r *pb.WorkspaceRepo

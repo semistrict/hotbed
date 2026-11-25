@@ -414,6 +414,7 @@ func (e *Engine) step(ctx context.Context) {
 	e.admit(ctx)
 	e.limit(ctx)
 	e.park(ctx)
+	e.hibernateIdleVMs(ctx)
 	e.reap(ctx)
 	e.forget()
 }
@@ -578,6 +579,11 @@ func (e *Engine) observe(ctx context.Context, c *command, st unit.State, sampled
 			cmd.SwapBytes = m.Swap
 			c.residentBytes = m.Anon
 			c.residentKnown = true
+			if cmd.State == parked && m.Anon == 0 && e.rtUnits != nil {
+				if susp, _ := e.rtUnits.isSuspended(c.runtimeTarget()); susp {
+					c.reclaimed = true
+				}
+			}
 			c.rec.PeakHeldBytes = max(c.rec.PeakHeldBytes, m.Held())
 		} else if !st.Exited {
 			slog.Warn("read a command's memory", "command", cmd.Id, "err", err)

@@ -484,6 +484,14 @@ func ensureCellRoot(root string) error {
 	return nil
 }
 
+// EnsureCellParentDir creates parent directories of hostPath inside its JBOD
+// root and aligns their ownership to that root so a non-root cladefsd daemon
+// or Firecracker VMM can create cell directories (such as memory cells) beneath
+// them when hotbed-worker runs as root.
+func (s *Store) EnsureCellParentDir(hostPath string) error {
+	return s.ensureParentDir(hostPath)
+}
+
 // ensureParentDir creates parent directories of hostPath inside its JBOD root
 // and matches their ownership to that root so a non-root cladefsd daemon can
 // create cell directories beneath them when hotbed-worker runs as root.

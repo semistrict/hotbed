@@ -122,3 +122,11 @@ type WorkspaceRuntime interface {
 	// DialPort connects to a TCP port served inside the workspace (--port).
 	DialPort(ctx context.Context, wsID string, port uint16) (net.Conn, error)
 }
+
+// SuspendableRuntime is an optional WorkspaceRuntime extension for VM runtimes
+// that can suspend a workspace VM to a CladeFS memory cell (freeing 100% of
+// host RAM and swap) and resume it lazily on demand.
+type SuspendableRuntime interface {
+	SuspendWorkspace(ctx context.Context, wsID string, workingSetBytes int64) error
+	IsSuspended(wsID string) (suspended bool, workingSetBytes int64)
+}

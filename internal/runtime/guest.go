@@ -26,6 +26,14 @@ type GuestResolver interface {
 	StopVM(ctx context.Context, wsID string) error
 }
 
+// SuspendableGuestResolver is optionally implemented by a GuestResolver that
+// supports suspending a Firecracker VM to a CladeFS memory cell and resuming
+// it via EnsureVM.
+type SuspendableGuestResolver interface {
+	SuspendVM(ctx context.Context, wsID string, workingSetBytes int64) error
+	IsVMSuspended(wsID string) (suspended bool, workingSetBytes int64)
+}
+
 // GuestRuntime implements WorkspaceRuntime by delegating every workspace
 // operation to hotbed-guestd inside the workspace's Firecracker microVM.
 type GuestRuntime struct {
@@ -49,6 +57,10 @@ func (g *GuestRuntime) EnsureReady(ctx context.Context, wsID string) error {
 }
 
 func (g *GuestRuntime) Teardown(ctx context.Context, wsID string) error {
+	if susp, _ := g.IsSuspended(wsID); susp {
+		// Discarding a suspended VM never needs to wake Firecracker.
+		return g.vms.StopVM(ctx, wsID)
+	}
 	if c, err := g.vms.ClientFor(wsID); err == nil {
 		// Best-effort clean flush & command stop before stopping the VM.
 		shutCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
@@ -60,6 +72,24 @@ func (g *GuestRuntime) Teardown(ctx context.Context, wsID string) error {
 		cancel()
 	}
 	return g.vms.StopVM(ctx, wsID)
+}
+
+// SuspendWorkspace snapshots wsID's VM to a CladeFS memory cell and stops its
+// VMM process so it consumes zero host RAM and swap while parked or idle.
+func (g *GuestRuntime) SuspendWorkspace(ctx context.Context, wsID string, workingSetBytes int64) error {
+	if sr, ok := g.vms.(SuspendableGuestResolver); ok {
+		return sr.SuspendVM(ctx, wsID, workingSetBytes)
+	}
+	return fmt.Errorf("workspace %s: VM memory-cell suspend is not supported by resolver", wsID)
+}
+
+// IsSuspended reports whether wsID's VM is currently suspended in a CladeFS
+// memory cell along with its pre-suspend working set size in bytes.
+func (g *GuestRuntime) IsSuspended(wsID string) (bool, int64) {
+	if sr, ok := g.vms.(SuspendableGuestResolver); ok {
+		return sr.IsVMSuspended(wsID)
+	}
+	return false, 0
 }
 
 func (g *GuestRuntime) client(ctx context.Context, wsID string) (*guestd.Client, error) {
@@ -115,6 +145,18 @@ func (g *GuestRuntime) vmExitStatus(ctx context.Context, wsID string) (exited bo
 }
 
 func (g *GuestRuntime) StatusMany(ctx context.Context, wsID string, ids []string) (map[string]CommandStatus, error) {
+	if susp, wsBytes := g.IsSuspended(wsID); susp {
+		out := make(map[string]CommandStatus, len(ids))
+		for _, id := range ids {
+			out[id] = CommandStatus{
+				ID:         id,
+				Frozen:     true,
+				MemoryAnon: 0,
+				MemorySwap: wsBytes,
+			}
+		}
+		return out, nil
+	}
 	c, err := g.vms.ClientFor(wsID)
 	if err == nil {
 		raw, rerr := c.StatusMany(ctx, ids)
@@ -166,7 +208,15 @@ func (g *GuestRuntime) StatusMany(ctx context.Context, wsID string, ids []string
 }
 
 func (g *GuestRuntime) StopCommand(ctx context.Context, wsID, cmdID string, grace time.Duration) error {
-	c, err := g.vms.ClientFor(wsID)
+	var (
+		c   *guestd.Client
+		err error
+	)
+	if susp, _ := g.IsSuspended(wsID); susp {
+		c, err = g.client(ctx, wsID)
+	} else {
+		c, err = g.vms.ClientFor(wsID)
+	}
 	if err == nil {
 		_, err = c.StopCommand(ctx, cmdID, grace)
 		if err == nil {
@@ -180,6 +230,9 @@ func (g *GuestRuntime) StopCommand(ctx context.Context, wsID, cmdID string, grac
 }
 
 func (g *GuestRuntime) FreezeCommand(ctx context.Context, wsID, cmdID string) error {
+	if susp, _ := g.IsSuspended(wsID); susp {
+		return nil
+	}
 	c, err := g.vms.ClientFor(wsID)
 	if err != nil {
 		return err
@@ -189,7 +242,9 @@ func (g *GuestRuntime) FreezeCommand(ctx context.Context, wsID, cmdID string) er
 }
 
 func (g *GuestRuntime) ThawCommand(ctx context.Context, wsID, cmdID string) error {
-	c, err := g.vms.ClientFor(wsID)
+	// Route through g.client (EnsureVM) so thawing a command in a suspended VM
+	// transparently restores the VM from its CladeFS memory cell first.
+	c, err := g.client(ctx, wsID)
 	if err != nil {
 		return err
 	}

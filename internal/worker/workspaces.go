@@ -505,9 +505,30 @@ func (e *Engine) ReleaseWorkspace(ctx context.Context, id string) (retErr error)
 			return ctx.Err()
 		}
 	}
-	for _, cid := range running {
-		if _, err := e.Stop(ctx, cid, "workspace released"); err != nil {
-			return err
+	vmSuspendedOnRelease := false
+	if e.usesRuntime(id) {
+		if sr, ok := e.cfg.Runtime.(runtime.SuspendableRuntime); ok {
+			vmSuspendedOnRelease, _ = sr.IsSuspended(id)
+		}
+	}
+	if vmSuspendedOnRelease && len(running) > 0 {
+		// The workspace VM is already suspended in a CladeFS memory cell;
+		// cancel its parked/paused commands without waking Firecracker.
+		for _, cid := range running {
+			if e.rtUnits != nil {
+				e.rtUnits.Drop("hotbed-" + cid)
+			}
+			e.mu.Lock()
+			if c, ok := e.commands[cid]; ok && api.Live(c.cmd().State) {
+				e.endBy(c, cancelled, nil, "workspace released", nil)
+			}
+			e.mu.Unlock()
+		}
+	} else {
+		for _, cid := range running {
+			if _, err := e.Stop(ctx, cid, "workspace released"); err != nil {
+				return err
+			}
 		}
 	}
 	for _, sh := range shells {

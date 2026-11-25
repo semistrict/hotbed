@@ -53,6 +53,9 @@ const (
 	// keepProfiles is how long a command's profile file stays when the
 	// controller may lack it: as long as the controller keeps history.
 	keepProfiles = 30 * 24 * time.Hour
+	// defaultVMIdleSuspendAfter is how long an idle VM workspace sits with no
+	// live commands or shells before being suspended to a CladeFS memory cell.
+	defaultVMIdleSuspendAfter = 2 * time.Minute
 )
 
 // Units starts and controls commands; Systemd is the real one.
@@ -172,6 +175,10 @@ type EngineConfig struct {
 	Artifacts *ArtifactStore
 	// SystemUpgradeOps overrides host OS actions in Engine.UpgradeSystem (for tests).
 	SystemUpgradeOps *SystemUpgradeOps
+	// VMIdleSuspendAfter controls how long an idle VM workspace waits before
+	// being suspended to a CladeFS memory cell (0 = defaultVMIdleSuspendAfter;
+	// negative disables idle VM hibernation).
+	VMIdleSuspendAfter time.Duration
 }
 
 // DefaultMaxSyncBundleBytes caps the total bundle bytes accepted by a single
@@ -334,6 +341,7 @@ type workspace struct {
 	releaseQueued bool          // guarded by e.mu: background release goroutine is queued
 	releaseDone   chan struct{} // guarded by e.mu: closed when in-flight ReleaseWorkspace finishes
 	releaseErr    error         // guarded by e.mu: error from the last ReleaseWorkspace attempt
+	suspendRetryAt time.Time    // guarded by e.mu: backoff deadline after a failed idle VM suspend
 }
 
 func (w *workspace) ws() *pb.Workspace { return w.rec.Workspace }
@@ -535,6 +543,7 @@ func NewEngine(ctx context.Context, cfg EngineConfig) (*Engine, error) {
 			uid, gid = sp.UID, sp.GID
 		}
 		e.rtUnits = newRuntimeUnits(cfg.Units, e.cfg.Runtime, e.usesRuntime, uid, gid)
+		e.rtUnits.canSuspend = e.canSuspendVM
 		e.cfg.Units = e.rtUnits
 	}
 	if err := e.load(); err != nil {

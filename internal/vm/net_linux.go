@@ -261,6 +261,45 @@ func (m *NetManager) ReleaseTAP(ctx context.Context, alloc NetAlloc) {
 	}
 }
 
+// ReleaseTAPKeepIP removes the host TAP kernel interface while keeping the
+// VM's IPv4 address reserved for a suspended VM so no other VM steals it.
+func (m *NetManager) ReleaseTAPKeepIP(ctx context.Context, alloc NetAlloc) {
+	if alloc.TAPName != "" {
+		_ = runCmd(ctx, "ip", "link", "del", alloc.TAPName)
+	}
+}
+
+// RecreateTAP recreates the host TAP interface for a resuming VM using its
+// previously allocated NetAlloc and keeps its IP reserved.
+func (m *NetManager) RecreateTAP(ctx context.Context, vmID string, alloc NetAlloc) error {
+	if alloc.TAPName == "" {
+		return nil
+	}
+	if err := m.EnsureBridge(ctx); err != nil {
+		return err
+	}
+	if alloc.GuestIP != "" {
+		m.ReserveIP(vmID, alloc.GuestIP)
+	}
+	_ = runCmd(ctx, "ip", "link", "del", alloc.TAPName)
+	args := []string{"tuntap", "add", "dev", alloc.TAPName, "mode", "tap"}
+	if m.vmUser != "" {
+		args = append(args, "user", m.vmUser)
+	}
+	if err := runCmd(ctx, "ip", args...); err != nil {
+		return fmt.Errorf("recreate tap %s: %w", alloc.TAPName, err)
+	}
+	if err := runCmd(ctx, "ip", "link", "set", alloc.TAPName, "master", m.bridgeName); err != nil {
+		_ = runCmd(ctx, "ip", "link", "del", alloc.TAPName)
+		return fmt.Errorf("attach tap %s to %s: %w", alloc.TAPName, m.bridgeName, err)
+	}
+	if err := runCmd(ctx, "ip", "link", "set", alloc.TAPName, "up"); err != nil {
+		_ = runCmd(ctx, "ip", "link", "del", alloc.TAPName)
+		return fmt.Errorf("bring up tap %s: %w", alloc.TAPName, err)
+	}
+	return nil
+}
+
 // ReleaseTAPByVMID removes the deterministic TAP device derived from vmID and
 // releases any IP reservation for vmID, even when persisted meta.json was lost.
 func (m *NetManager) ReleaseTAPByVMID(ctx context.Context, vmID string) {

@@ -66,6 +66,18 @@ service GuestService {
     option idempotency_level = IDEMPOTENT;
   }
 
+  // FreezeFS flushes and freezes the guest workspace filesystem (FIFREEZE) prior
+  // to taking a consistent Firecracker + cladefs VM snapshot.
+  rpc FreezeFS(FreezeFSRequest) returns (FreezeFSResponse) {
+    option idempotency_level = IDEMPOTENT;
+  }
+
+  // ThawFS unfreezes a previously frozen guest filesystem (FITHAW) after a VM
+  // snapshot restores or is aborted.
+  rpc ThawFS(ThawFSRequest) returns (ThawFSResponse) {
+    option idempotency_level = IDEMPOTENT;
+  }
+
   // StreamLogs streams combined command stdout/stderr starting at offset.
   rpc StreamLogs(StreamLogsRequest) returns (stream StreamLogsResponse);
 
@@ -174,6 +186,22 @@ message ReclaimRequest {
 }
 
 message ReclaimResponse {}
+
+message FreezeFSRequest {
+  // Mountpoint to freeze (defaults to "/" when empty).
+  string path = 1;
+  // Drop clean guest page caches before freezing so snapshots skip clean cache.
+  bool drop_caches = 2;
+}
+
+message FreezeFSResponse {}
+
+message ThawFSRequest {
+  // Mountpoint to thaw (defaults to "/" when empty).
+  string path = 1;
+}
+
+message ThawFSResponse {}
 
 message StreamLogsRequest {
   string id = 1;
