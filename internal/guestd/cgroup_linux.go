@@ -100,13 +100,62 @@ func (c *cmdCgroup) killAll() {
 	_ = os.WriteFile(filepath.Join(c.path, "cgroup.kill"), []byte("1"), 0o644)
 }
 
+func guestSwapTotalBytes() int64 {
+	b, err := os.ReadFile("/proc/meminfo")
+	if err != nil {
+		return 0
+	}
+	return parseMeminfoSwapTotal(string(b))
+}
+
+// writeCgroupReclaim writes payload to a cgroup v2 memory.reclaim file using raw
+// syscalls. Never use os.WriteFile: kernfs cgroup files are pollable, so Go's
+// runtime netpoller interprets memory.reclaim's EAGAIN (reclaimed less than
+// asked) as "wait for EPOLLOUT and retry", spinning forever until client timeout.
+func writeCgroupReclaim(path, payload string) error {
+	fd, err := syscall.Open(path, syscall.O_WRONLY|syscall.O_CLOEXEC, 0)
+	if err != nil {
+		if errors.Is(err, syscall.ENOENT) || errors.Is(err, syscall.ENOTSUP) || errors.Is(err, syscall.EOPNOTSUPP) {
+			return nil
+		}
+		return err
+	}
+	defer syscall.Close(fd)
+	return writeCgroupReclaimFD(fd, payload)
+}
+
+func writeCgroupReclaimFD(fd int, payload string) error {
+	buf := []byte(payload)
+	var err error
+	for {
+		_, err = syscall.Write(fd, buf)
+		if err != syscall.EINTR {
+			break
+		}
+	}
+	if err == nil || errors.Is(err, syscall.EAGAIN) || errors.Is(err, syscall.ENOENT) || errors.Is(err, syscall.ENOTSUP) || errors.Is(err, syscall.EOPNOTSUPP) {
+		return nil
+	}
+	return err
+}
+
 func (c *cmdCgroup) reclaim(n int64) error {
 	if c == nil || n <= 0 {
 		return nil
 	}
-	err := os.WriteFile(filepath.Join(c.path, "memory.reclaim"), []byte(strconv.FormatInt(n, 10)), 0o644)
-	if errors.Is(err, os.ErrNotExist) || errors.Is(err, syscall.EAGAIN) || errors.Is(err, syscall.ENOTSUP) || errors.Is(err, syscall.EOPNOTSUPP) {
+	payload, ok := planReclaim(c.path, n, guestSwapTotalBytes())
+	if !ok {
 		return nil
+	}
+	reclaimPath := filepath.Join(c.path, "memory.reclaim")
+	err := writeCgroupReclaim(reclaimPath, payload)
+	// Older kernels may reject "swappiness=0" on memory.reclaim with EINVAL;
+	// fall back once to the plain byte count (still capped to reclaimable file
+	// bytes and written via raw syscall so EAGAIN returns immediately).
+	if errors.Is(err, syscall.EINVAL) {
+		if fields := strings.Fields(payload); len(fields) > 1 {
+			return writeCgroupReclaim(reclaimPath, fields[0])
+		}
 	}
 	return err
 }

@@ -1666,11 +1666,37 @@ func (e *Engine) pauseUnit(ctx context.Context, c *command, still func(was pb.Co
 		return false, nil
 	}
 	record()
-	cgroup, memory := c.rec.Cgroup, c.cmd().MemoryBytes
+	cgroup, memory := c.rec.Cgroup, max(c.cmd().MemoryBytes, c.residentBytes)
 	e.mu.Unlock()
+	if cgroup == "" {
+		if st, err := e.cfg.Units.Status(ctx, unitName); err == nil && st.Cgroup != "" {
+			cgroup = st.Cgroup
+			memory = max(memory, st.Memory)
+			e.mu.Lock()
+			if c.rec.Cgroup == "" {
+				c.rec.Cgroup = cgroup
+			}
+			e.mu.Unlock()
+		}
+	}
 	if cgroup != "" {
+		if memory <= 0 {
+			if m, err := e.cfg.Units.Memory(cgroup); err == nil {
+				memory = max(memory, m.Anon)
+			}
+		}
 		if err := e.cfg.Units.Reclaim(cgroup, memory); err != nil {
 			slog.Warn("reclaim paused command", "command", id, "err", err)
+		} else if m, err := e.cfg.Units.Memory(cgroup); err == nil {
+			e.mu.Lock()
+			if c.cmd().State == paused {
+				c.cmd().SwapBytes = m.Swap
+				c.residentBytes = m.Anon
+				c.residentKnown = true
+				c.reclaimed = true
+				c.rec.PeakHeldBytes = max(c.rec.PeakHeldBytes, m.Held())
+			}
+			e.mu.Unlock()
 		}
 	}
 	return true, nil

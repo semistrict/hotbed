@@ -127,6 +127,11 @@ func parseVMCgroup(cg string) (wsID, cmdID string, ok bool) {
 	return wsID, cmdID, ok && wsID != "" && cmdID != ""
 }
 
+// vmHostMinResidentBytes keeps Firecracker VMM, guest kernel, hotbed-guestd,
+// and cladefsd DAX queues warm in host RAM when host-side cgroup memory.reclaim
+// pushes a parked/paused VM command's cold anonymous heap out to host swap.
+const vmHostMinResidentBytes int64 = 64 << 20
+
 // runtimeUnits wraps a host Units implementation (Systemd) and routes commands
 // and interactive shells belonging to VM-backed workspaces through
 // runtime.WorkspaceRuntime (hotbed-guestd over AF_VSOCK), while leaving chroot
@@ -138,8 +143,9 @@ type runtimeUnits struct {
 	uid   int
 	gid   int
 
-	mu   sync.Mutex
-	cmds map[string]*rtCmd // unitName -> active/tracked guest command
+	mu        sync.Mutex
+	cmds      map[string]*rtCmd // unitName -> active/tracked guest command
+	vmCgroups map[string]string // wsID -> host Firecracker unit cgroup path
 }
 
 type rtCmd struct {
@@ -152,12 +158,13 @@ type rtCmd struct {
 
 func newRuntimeUnits(inner Units, rt runtime.WorkspaceRuntime, useRT func(string) bool, uid, gid int) *runtimeUnits {
 	return &runtimeUnits{
-		inner: inner,
-		rt:    rt,
-		useRT: useRT,
-		uid:   uid,
-		gid:   gid,
-		cmds:  map[string]*rtCmd{},
+		inner:     inner,
+		rt:        rt,
+		useRT:     useRT,
+		uid:       uid,
+		gid:       gid,
+		cmds:      map[string]*rtCmd{},
+		vmCgroups: map[string]string{},
 	}
 }
 
@@ -398,14 +405,89 @@ func (u *runtimeUnits) Thaw(ctx context.Context, name string) error {
 	return u.inner.Thaw(ctx, name)
 }
 
+func (u *runtimeUnits) vmCgroup(ctx context.Context, wsID string) string {
+	if u.inner == nil || wsID == "" {
+		return ""
+	}
+	u.mu.Lock()
+	cg := u.vmCgroups[wsID]
+	u.mu.Unlock()
+	if cg != "" {
+		return cg
+	}
+	st, err := u.inner.Status(ctx, "hotbed-vm-"+wsID)
+	if err != nil || !st.Loaded || st.Cgroup == "" {
+		return ""
+	}
+	u.mu.Lock()
+	if u.vmCgroups == nil {
+		u.vmCgroups = map[string]string{}
+	}
+	u.vmCgroups[wsID] = st.Cgroup
+	u.mu.Unlock()
+	return st.Cgroup
+}
+
+func (u *runtimeUnits) forgetVMCgroup(wsID string) {
+	u.mu.Lock()
+	delete(u.vmCgroups, wsID)
+	u.mu.Unlock()
+}
+
+func (u *runtimeUnits) vmHostMemory(ctx context.Context, wsID string) (cg string, mem unit.MemoryUse, ok bool) {
+	for attempt := range 2 {
+		cg = u.vmCgroup(ctx, wsID)
+		if cg == "" {
+			return "", unit.MemoryUse{}, false
+		}
+		m, err := u.inner.Memory(cg)
+		if err == nil {
+			return cg, m, true
+		}
+		if attempt == 0 && errors.Is(err, os.ErrNotExist) {
+			u.forgetVMCgroup(wsID)
+			continue
+		}
+		return cg, unit.MemoryUse{}, false
+	}
+	return "", unit.MemoryUse{}, false
+}
+
 func (u *runtimeUnits) Reclaim(cgroup string, n int64) error {
 	if wsID, cmdID, ok := parseVMCgroup(cgroup); ok {
-		// Reclaim inside the guest (cgroup memory.reclaim + drop clean page
-		// caches) so virtio-balloon free-page-reporting returns unused host RAM
-		// without ever freezing or touching the host Firecracker VMM cgroup.
-		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-		defer cancel()
-		return u.rt.Reclaim(ctx, wsID, cmdID, n)
+		// 1. Reclaim clean page cache inside the guest so virtio-balloon
+		// free-page-reporting returns it directly to the host without swap.
+		gctx, gcancel := context.WithTimeout(context.Background(), 3*time.Second)
+		guestErr := u.rt.Reclaim(gctx, wsID, cmdID, n)
+		gcancel()
+
+		// 2. Push the frozen guest command's cold anonymous RAM out of the host
+		// Firecracker unit's cgroup into host zram/swap WITHOUT ever freezing
+		// Firecracker (keeping cladefsd DAX unmaps and guestd responsive).
+		hctx, hcancel := context.WithTimeout(context.Background(), 2*time.Second)
+		vmCG, hostMem, hasHostMem := u.vmHostMemory(hctx, wsID)
+		if vmCG == "" {
+			vmCG = u.vmCgroup(hctx, wsID)
+		}
+		hcancel()
+		if vmCG != "" && n > 0 {
+			hostTarget := n
+			if hasHostMem {
+				reclaimable := max(hostMem.Anon-vmHostMinResidentBytes, 0)
+				hostTarget = min(hostTarget, reclaimable)
+			}
+			if hostTarget > 0 {
+				if err := u.inner.Reclaim(vmCG, hostTarget); err != nil {
+					return err
+				}
+			}
+			if guestErr != nil {
+				slog.Warn("in-guest VM reclaim failed; host Firecracker cgroup reclaim succeeded",
+					"workspace", wsID, "command", cmdID, "hostTarget", hostTarget, "err", guestErr)
+			}
+			return nil
+		}
+		return guestErr
 	}
 	return u.inner.Reclaim(cgroup, n)
 }
@@ -422,7 +504,16 @@ func (u *runtimeUnits) Memory(cgroup string) (unit.MemoryUse, error) {
 		if !found {
 			return unit.MemoryUse{}, os.ErrNotExist
 		}
-		return unit.MemoryUse{Anon: st.MemoryAnon, Swap: st.MemorySwap}, nil
+		anon, swap := st.MemoryAnon, st.MemorySwap
+		if _, hostMem, ok := u.vmHostMemory(ctx, wsID); ok && anon > 0 {
+			// A command inside the VM cannot have more host-resident anonymous
+			// RAM than the entire Firecracker host unit; the difference sits in
+			// host swap/zram (preserving Held() = Anon + Swap).
+			hostResident := min(anon, max(hostMem.Anon, 0))
+			swap += anon - hostResident
+			anon = hostResident
+		}
+		return unit.MemoryUse{Anon: anon, Swap: swap}, nil
 	}
 	return u.inner.Memory(cgroup)
 }

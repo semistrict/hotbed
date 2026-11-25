@@ -558,6 +558,8 @@ type reclaimSpyRuntime struct {
 		cmdID string
 		bytes int64
 	}
+	reclaimErr error
+	statuses   map[string]map[string]runtime.CommandStatus
 }
 
 func (r *reclaimSpyRuntime) Reclaim(_ context.Context, wsID, cmdID string, bytes int64) error {
@@ -568,21 +570,165 @@ func (r *reclaimSpyRuntime) Reclaim(_ context.Context, wsID, cmdID string, bytes
 		cmdID string
 		bytes int64
 	}{wsID: wsID, cmdID: cmdID, bytes: bytes})
+	return r.reclaimErr
+}
+
+func (r *reclaimSpyRuntime) StatusMany(_ context.Context, wsID string, ids []string) (map[string]runtime.CommandStatus, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	out := map[string]runtime.CommandStatus{}
+	for _, id := range ids {
+		if st, ok := r.statuses[wsID][id]; ok {
+			out[id] = st
+		}
+	}
+	return out, nil
+}
+
+type hostVMReclaimUnits struct {
+	*fake.Units
+	mu           sync.Mutex
+	vmUnits      map[string]unit.State
+	vmMem        map[string]unit.MemoryUse
+	reclaimCalls []struct {
+		cg string
+		n  int64
+	}
+	freezeCalls []string
+	reclaimErr  error
+}
+
+func (h *hostVMReclaimUnits) Status(ctx context.Context, name string) (unit.State, error) {
+	h.mu.Lock()
+	st, ok := h.vmUnits[name]
+	h.mu.Unlock()
+	if ok {
+		return st, nil
+	}
+	return h.Units.Status(ctx, name)
+}
+
+func (h *hostVMReclaimUnits) Freeze(ctx context.Context, name string) error {
+	h.mu.Lock()
+	h.freezeCalls = append(h.freezeCalls, name)
+	h.mu.Unlock()
+	return h.Units.Freeze(ctx, name)
+}
+
+func (h *hostVMReclaimUnits) Memory(cg string) (unit.MemoryUse, error) {
+	h.mu.Lock()
+	m, ok := h.vmMem[cg]
+	h.mu.Unlock()
+	if ok {
+		return m, nil
+	}
+	return h.Units.Memory(cg)
+}
+
+func (h *hostVMReclaimUnits) Reclaim(cg string, n int64) error {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.reclaimCalls = append(h.reclaimCalls, struct {
+		cg string
+		n  int64
+	}{cg: cg, n: n})
+	if h.reclaimErr != nil {
+		return h.reclaimErr
+	}
+	if m, ok := h.vmMem[cg]; ok {
+		moved := min(n, m.Anon)
+		m.Anon -= moved
+		m.Swap += moved
+		h.vmMem[cg] = m
+	}
 	return nil
 }
 
-func TestRuntimeUnitsReclaimRoutesVMCgroupToGuestRuntime(t *testing.T) {
-	inner := &fake.Units{}
-	spy := &reclaimSpyRuntime{}
+func TestRuntimeUnitsReclaimRoutesVMCgroupToGuestAndHostFirecrackerUnit(t *testing.T) {
+	vmCG := "/user.slice/user-1000.slice/user-1000-hotbed.slice/hotbed-vm-ws-42.service"
+	inner := &hostVMReclaimUnits{
+		Units: &fake.Units{},
+		vmUnits: map[string]unit.State{
+			"hotbed-vm-ws-42": {Loaded: true, Running: true, Cgroup: vmCG},
+		},
+		vmMem: map[string]unit.MemoryUse{
+			// 1024 MiB anon on host Firecracker unit (960 MiB workload + 64 MiB VMM/guestd).
+			vmCG: {Anon: 1024 << 20, Swap: 0},
+		},
+	}
+	spy := &reclaimSpyRuntime{
+		statuses: map[string]map[string]runtime.CommandStatus{
+			"ws-42": {
+				"cmd-9": {ID: "cmd-9", Frozen: true, MemoryAnon: 960 << 20, MemorySwap: 0},
+			},
+		},
+	}
 	ru := newRuntimeUnits(inner, spy, func(string) bool { return true }, 0, 0)
 
-	if err := ru.Reclaim("vm:ws-42:cmd-9", 128<<20); err != nil {
+	// Reclaim pushes 960 MiB out of the host Firecracker unit while preserving the
+	// 64 MiB hot floor (never freezing the host Firecracker unit!).
+	if err := ru.Reclaim("vm:ws-42:cmd-9", 1024<<20); err != nil {
 		t.Fatalf("Reclaim(vm cgroup): %v", err)
 	}
 	spy.mu.Lock()
-	defer spy.mu.Unlock()
-	if len(spy.calls) != 1 || spy.calls[0].wsID != "ws-42" || spy.calls[0].cmdID != "cmd-9" || spy.calls[0].bytes != 128<<20 {
-		t.Fatalf("reclaim calls = %+v, want [{ws-42 cmd-9 134217728}]", spy.calls)
+	if len(spy.calls) != 1 || spy.calls[0].wsID != "ws-42" || spy.calls[0].cmdID != "cmd-9" || spy.calls[0].bytes != 1024<<20 {
+		spy.mu.Unlock()
+		t.Fatalf("guest reclaim calls = %+v", spy.calls)
+	}
+	spy.mu.Unlock()
+
+	inner.mu.Lock()
+	if len(inner.freezeCalls) != 0 {
+		inner.mu.Unlock()
+		t.Fatalf("host Firecracker unit must NEVER be frozen, got freezeCalls=%v", inner.freezeCalls)
+	}
+	if len(inner.reclaimCalls) != 1 || inner.reclaimCalls[0].cg != vmCG || inner.reclaimCalls[0].n != 960<<20 {
+		inner.mu.Unlock()
+		t.Fatalf("host reclaim calls = %+v, want 960 MiB (clamped by 64 MiB floor)", inner.reclaimCalls)
+	}
+	inner.mu.Unlock()
+
+	// Memory() now reflects host-swapped anonymous RAM while preserving Held().
+	mem, err := ru.Memory("vm:ws-42:cmd-9")
+	if err != nil {
+		t.Fatalf("Memory after reclaim: %v", err)
+	}
+	if mem.Anon != 64<<20 || mem.Swap != 896<<20 || mem.Held() != 960<<20 {
+		t.Fatalf("Memory after host reclaim = %+v (held=%d), want Anon=64MiB Swap=896MiB Held=960MiB", mem, mem.Held())
+	}
+
+	// Tiny VM below the 64 MiB floor does not needlessly reclaim host VMM RAM.
+	if err := ru.Reclaim("vm:ws-42:cmd-9", 64<<20); err != nil {
+		t.Fatalf("Reclaim below floor: %v", err)
+	}
+	inner.mu.Lock()
+	if len(inner.reclaimCalls) != 1 {
+		inner.mu.Unlock()
+		t.Fatalf("expected no host reclaim when host anon <= 64 MiB floor, got %+v", inner.reclaimCalls)
+	}
+	inner.mu.Unlock()
+
+	// Even when in-guest reclaim fails (older guestd timeout), host reclaim still runs.
+	inner.mu.Lock()
+	inner.vmMem[vmCG] = unit.MemoryUse{Anon: 576 << 20, Swap: 0}
+	inner.mu.Unlock()
+	spy.mu.Lock()
+	spy.reclaimErr = context.DeadlineExceeded
+	spy.mu.Unlock()
+	if err := ru.Reclaim("vm:ws-42:cmd-9", 512<<20); err != nil {
+		t.Fatalf("Reclaim when guestd fails but host succeeds should succeed, got: %v", err)
+	}
+	inner.mu.Lock()
+	if len(inner.reclaimCalls) != 2 || inner.reclaimCalls[1].n != 512<<20 {
+		inner.mu.Unlock()
+		t.Fatalf("expected host reclaim fallback call of 512 MiB, got %+v", inner.reclaimCalls)
+	}
+	// Host reclaim error MUST propagate so scheduler does not mark reclaimed=true.
+	inner.vmMem[vmCG] = unit.MemoryUse{Anon: 576 << 20, Swap: 0}
+	inner.reclaimErr = errors.New("memory.reclaim: EPERM")
+	inner.mu.Unlock()
+	if err := ru.Reclaim("vm:ws-42:cmd-9", 512<<20); err == nil {
+		t.Fatal("expected error when host memory.reclaim fails")
 	}
 }
 

@@ -559,12 +559,15 @@ func (s *Server) handleReclaim(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, "decode reclaim request: "+err.Error())
 		return
 	}
+	// Drop clean guest page caches first so virtio-balloon free-page-reporting
+	// returns clean file cache immediately and swapless cgroup reclaim sees only
+	// remaining reclaimable file/slab bytes instead of spinning on anon RAM.
+	_ = dropPageCaches()
 	if req.ID != "" && req.Bytes > 0 {
 		if mc, ok := s.getCmd(req.ID); ok && mc.cg != nil {
 			_ = mc.cg.reclaim(req.Bytes)
 		}
 	}
-	_ = dropPageCaches()
 	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
 }
 
