@@ -269,7 +269,6 @@ func (e *Engine) holdOneLoud(ctx context.Context, c *command, pool, benchID stri
 	cmd.Timeline = append(cmd.Timeline, &pb.CommandEvent{At: e.nowMs(), What: "held", Detail: cmd.Reason})
 	c.rec.HeldFor = benchID
 	c.rec.ParkedAt = e.nowMs()
-	c.reclaimed = false
 	e.saveCommand(c, change{
 		what: "held", detail: cmd.Reason,
 		feed: feed(feedPark, fmt.Sprintf("hold %s · %.1f MB/s to %s beside measurement %s", cmd.Argv, rate, pool, benchID), ref("command", cmd.Id)),
@@ -278,12 +277,14 @@ func (e *Engine) holdOneLoud(ctx context.Context, c *command, pool, benchID stri
 }
 
 // releaseHeld thaws the commands held beside a measurement, once none
-// runs. One paused meanwhile (its soft time limit) stays so.
+// runs. One paused meanwhile (its soft time limit) stays so. Holding beside
+// a measurement is the only thing that freezes a command in parked, so any
+// command found parked is thawed too.
 func (e *Engine) releaseHeld(ctx context.Context) {
 	e.mu.Lock()
 	var held []*command
 	for _, c := range e.commands {
-		if c.rec.HeldFor != "" {
+		if c.rec.HeldFor != "" || c.cmd().State == parked {
 			held = append(held, c)
 		}
 	}
@@ -306,12 +307,15 @@ func (e *Engine) releaseOneHeld(ctx context.Context, c *command) {
 		e.mu.Unlock()
 		return
 	}
-	if c.rec.HeldFor == "" || c.deactivating || c.stopping {
+	if c.deactivating || c.stopping || c.intervening {
 		e.mu.Unlock()
 		return
 	}
 	slept := (time.Duration(e.nowMs()-c.rec.ParkedAt) * time.Millisecond).Round(time.Second)
-	detail := fmt.Sprintf("after %s, measurement %s over", slept, c.rec.HeldFor)
+	detail := "after " + slept.String()
+	if c.rec.HeldFor != "" {
+		detail += fmt.Sprintf(", measurement %s over", c.rec.HeldFor)
+	}
 	if err := e.thawLocked(ctx, c, change{
 		what: "thawed", detail: detail,
 		feed: feed(feedThaw, fmt.Sprintf("thaw %s %s", cmd.Argv, detail), ref("command", cmd.Id)),

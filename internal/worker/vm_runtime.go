@@ -98,17 +98,12 @@ func (e *Engine) canSuspendVMLocked(wsID string, requireNoLiveCommands bool) boo
 }
 
 // vmPressureIdleSuspendAfter tightens idle VM hibernation/shutdown when the
-// node is already under memory tightness or has commands parked waiting for
-// room, so completely idle VMs vacate RAM/swap promptly instead of squatting
-// for two minutes while active work stalls.
+// node is already under memory tightness, so completely idle VMs vacate
+// RAM/swap promptly instead of squatting for two minutes while active work
+// stalls.
 const vmPressureIdleSuspendAfter = 15 * time.Second
 
 func (e *Engine) vmMemoryTightLocked() bool {
-	for _, c := range e.commands {
-		if !c.stopping && !c.deactivating && c.cmd().State == parked && c.rec.HeldFor == "" {
-			return true
-		}
-	}
 	if e.memPressureHolding || e.usage.GetMemoryPressure() >= admitPressure {
 		return true
 	}
@@ -922,8 +917,7 @@ func (u *runtimeUnits) Memory(cgroup string) (unit.MemoryUse, error) {
 		if susp, wsBytes := u.isSuspended(wsID); susp {
 			// A VM suspended to a CladeFS memory cell holds 0 bytes of host
 			// RAM and 0 bytes of host swap; report its pre-suspend working set
-			// in Swap so thaw estimation and PeakHeldBytes stay accurate while
-			// parkedReservationForHigherPriority charges 0 resident RAM.
+			// in Swap so PeakHeldBytes stays accurate.
 			return unit.MemoryUse{Anon: 0, Swap: wsBytes}, nil
 		}
 		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)

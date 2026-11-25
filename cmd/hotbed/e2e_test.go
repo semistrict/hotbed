@@ -1083,39 +1083,6 @@ func (c *cluster) commandStates(session string) map[string]pb.CommandState {
 	return out
 }
 
-// Parking frees memory for other work; it never stops all of it. With
-// memory short and staying short, one of two commands is frozen, never
-// both, and the frozen one runs again once nothing else does.
-func TestParkingNeverStopsAllWork(t *testing.T) {
-	c := newCluster(t)
-	c.addRepo(upstream(t))
-	c.ok(nil, "session", "start", "full-yak")
-	c.workspace("full-yak", nil)
-	first, second := &pb.Command{}, &pb.Command{}
-	c.ok(first, "run", "-s", "full-yak", "-r", "app", "--detach", "--kind", "build", "--", "sleep", "300")
-	c.ok(second, "run", "-s", "full-yak", "-r", "app", "--detach", "--kind", "build", "--", "sleep", "300")
-	c.eventually("both to run", func() bool {
-		st := c.commandStates("full-yak")
-		return st[first.Id] == pb.CommandState_COMMAND_STATE_RUNNING && st[second.Id] == pb.CommandState_COMMAND_STATE_RUNNING
-	})
-
-	c.nodes[0].system.SetUsed(c.nodes[0].system.Mem.Total * 95 / 100)
-	c.eventually("the newest to be parked", func() bool {
-		return c.commandStates("full-yak")[second.Id] == pb.CommandState_COMMAND_STATE_PARKED
-	})
-	// The engine steps every second: three steps at 95% leave the other running.
-	for deadline := time.Now().Add(3 * time.Second); time.Now().Before(deadline); time.Sleep(200 * time.Millisecond) {
-		if st := c.commandStates("full-yak")[first.Id]; st != pb.CommandState_COMMAND_STATE_RUNNING {
-			t.Fatalf("the last running command went %s", st)
-		}
-	}
-
-	c.ok(nil, "stop", "-s", "full-yak", first.Id)
-	c.eventually("the parked one to run again, memory still short", func() bool {
-		return c.commandStates("full-yak")[second.Id] == pb.CommandState_COMMAND_STATE_RUNNING
-	})
-}
-
 // A base build no workspace waits for any more, with a newer generation of
 // its repo after it, is dropped: it would only hold memory and CPUs, and
 // on a full machine be parked forever.

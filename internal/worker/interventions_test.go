@@ -762,7 +762,7 @@ func TestHardLimitExpiryCancelsInFlightDiagnosticsAndStops(t *testing.T) {
 // board 9786: Manual Resume must respect active benchmarks and admission/host
 // holds, transitioning PAUSED -> PARKED (unit stays frozen) and letting the
 // scheduler thaw automatically once the hold clears.
-func TestManualResumeHonorsBenchmarkAndSchedulerHolds(t *testing.T) {
+func TestManualResumeHonorsOnlyTheMeasurementHold(t *testing.T) {
 	t.Run("active bench on ZFS pool keeps resumed command parked until bench ends", func(t *testing.T) {
 		iso := fake.NewIsolation("4-7", 4)
 		e, units := quietEngine(t, iso)
@@ -817,7 +817,7 @@ func TestManualResumeHonorsBenchmarkAndSchedulerHolds(t *testing.T) {
 		}
 	})
 
-	t.Run("memory reservation limit keeps resumed command parked until room frees", func(t *testing.T) {
+	t.Run("resume past the reservation limit runs at once: it swaps", func(t *testing.T) {
 		now := time.Unix(1795300000, 0)
 		units, store := &fake.Units{}, &fake.Store{Root: t.TempDir()}
 		e := newInterventionEngine(t, t.TempDir(), store, units, nil, &now)
@@ -836,22 +836,16 @@ func TestManualResumeHonorsBenchmarkAndSchedulerHolds(t *testing.T) {
 			t.Fatalf("c-big2 state = %v, want running", s)
 		}
 
-		// Resuming c-big1 cannot fit beside c-big2 -> stays PARKED & frozen.
 		resumed, err := e.Resume(t.Context(), "c-big1", Intervention{Host: "laptop"})
 		if err != nil {
 			t.Fatalf("Resume: %v", err)
 		}
-		if resumed.State != parked || !e.frozen(t, "hotbed-c-big1") {
-			t.Fatalf("Resume over admitLimit: state=%v frozen=%v, want parked and frozen", resumed.State, e.frozen(t, "hotbed-c-big1"))
-		}
-
-		// Stop c-big2 and step -> c-big1 thaws into running.
-		if _, err := e.Stop(t.Context(), "c-big2", "done"); err != nil {
-			t.Fatal(err)
+		if resumed.State != running || e.frozen(t, "hotbed-c-big1") {
+			t.Fatalf("Resume over admitLimit: state=%v frozen=%v, want running and thawed", resumed.State, e.frozen(t, "hotbed-c-big1"))
 		}
 		e.step(t.Context())
-		if s := e.state("c-big1"); s != running || e.frozen(t, "hotbed-c-big1") {
-			t.Fatalf("after c-big2 ended: state=%v frozen=%v, want running and thawed", s, e.frozen(t, "hotbed-c-big1"))
+		if s1, s2 := e.state("c-big1"), e.state("c-big2"); s1 != running || s2 != running {
+			t.Fatalf("after step: c-big1=%v c-big2=%v, want both running", s1, s2)
 		}
 	})
 }

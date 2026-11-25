@@ -6,7 +6,6 @@ import (
 	"crypto/rand"
 	"database/sql"
 	"encoding/hex"
-	"encoding/json"
 	"fmt"
 	"slices"
 
@@ -20,7 +19,6 @@ import (
 )
 
 const (
-	preemptionRecordKind    = "preemption"
 	pendingDiagRecordKind   = "pending_diag"
 	freshenBudgetRecordKind = "freshen_budget"
 	freshenBudgetRecordID   = "state"
@@ -28,11 +26,6 @@ const (
 
 func pendingDiagKey(cmdID string, seq int32) string {
 	return fmt.Sprintf("%s:%d", cmdID, seq)
-}
-
-type preemptionRecord struct {
-	CommandID   string `json:"command_id"`
-	PreemptedBy string `json:"preempted_by"`
 }
 
 // db is the worker's own state, the truth about its bases, workspaces and
@@ -114,10 +107,9 @@ func (d *db) commit(kind, id string, rec proto.Message, ev *pb.Event) error {
 }
 
 // commitCommand writes a command record (or deletes it when rec is nil),
-// updates its persisted preemptedBy mapping, persists any pending intervention
-// diagnostics for independent delivery via SaveCommandDiagnostics, and appends
-// the event, all in one transaction.
-func (d *db) commitCommand(id string, rec *pb.CommandRecord, preemptedBy string, diag *pb.CommandDiagnostics, ev *pb.Event) error {
+// persists any pending intervention diagnostics for independent delivery via
+// SaveCommandDiagnostics, and appends the event, all in one transaction.
+func (d *db) commitCommand(id string, rec *pb.CommandRecord, diag *pb.CommandDiagnostics, ev *pb.Event) error {
 	ctx := context.Background()
 	evDoc, err := protojson.Marshal(ev)
 	if err != nil {
@@ -137,18 +129,6 @@ func (d *db) commitCommand(id string, rec *pb.CommandRecord, preemptedBy string,
 			return err
 		}
 		err = q.UpsertRecord(ctx, workerdb.UpsertRecordParams{Kind: "command", ID: id, Doc: string(doc)})
-	}
-	if err != nil {
-		return err
-	}
-	if rec == nil || preemptedBy == "" {
-		err = q.DeleteRecord(ctx, workerdb.DeleteRecordParams{Kind: preemptionRecordKind, ID: id})
-	} else {
-		var pdoc []byte
-		if pdoc, err = json.Marshal(preemptionRecord{CommandID: id, PreemptedBy: preemptedBy}); err != nil {
-			return err
-		}
-		err = q.UpsertRecord(ctx, workerdb.UpsertRecordParams{Kind: preemptionRecordKind, ID: id, Doc: string(pdoc)})
 	}
 	if err != nil {
 		return err
@@ -201,30 +181,6 @@ func (d *db) deletePendingDiagnostics(cmdID string, seq int32) error {
 		Kind: pendingDiagRecordKind,
 		ID:   pendingDiagKey(cmdID, seq),
 	})
-}
-
-// loadPreemptions returns persisted commandID -> preemptedBy mappings.
-func (d *db) loadPreemptions() (map[string]string, error) {
-	docs, err := d.q.ListRecordsByKind(context.Background(), preemptionRecordKind)
-	if err != nil {
-		return nil, err
-	}
-	out := make(map[string]string, len(docs))
-	for _, doc := range docs {
-		var rec preemptionRecord
-		if err := json.Unmarshal([]byte(doc), &rec); err != nil {
-			return nil, fmt.Errorf("decode %s record: %w", preemptionRecordKind, err)
-		}
-		if rec.CommandID != "" && rec.PreemptedBy != "" {
-			out[rec.CommandID] = rec.PreemptedBy
-		}
-	}
-	return out, nil
-}
-
-// deletePreemption removes any persisted preemptedBy mapping for command id.
-func (d *db) deletePreemption(id string) error {
-	return d.q.DeleteRecord(context.Background(), workerdb.DeleteRecordParams{Kind: preemptionRecordKind, ID: id})
 }
 
 // loadFreshenBudget reads the persisted freshen budget JSON state, or nil if absent.

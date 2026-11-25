@@ -41,24 +41,18 @@ const WorkPath = "/work"
 const (
 	admitMemory         = 0.86 // admit while reservations and (when busy) used RAM fit in this share of RAM
 	admitPressure       = 22.0 // hold new work once memory pressure (PSI some avg10, %) reaches this
-	memPressureResumeAt = 12.0 // resume admitting/thawing once memory pressure drops under this
-	parkAt              = 0.93 // park the lowest-priority/newest command when memory in use passes this
-	parkPressure        = 40.0 // or memory pressure (PSI some avg10, %) reaches this
-	// pressureSettle is how long a park for pressure waits on the one
-	// before to show in pressure, an average over 10 s.
-	pressureSettle = 20 * time.Second
-	// thawBelow is the projected RAM ceiling for thawing a parked command
-	// alongside already-running work once a command has completed (or when
-	// parked by preemption rather than memory pressure).
-	thawBelow = 0.70
-	// thawSameWorkloadBelow is the stricter projected RAM ceiling for thawing
-	// a memory-parked command back alongside the exact same running workload
-	// when nothing has finished since it was parked.
-	thawSameWorkloadBelow = 0.50
-	minFreeDisk           = 0.05 // keep this share of the disk free before admitting
-	orphanAfter    = 30 * time.Second
-	keepEnded      = 2 * time.Minute
-	keepReleased   = 10 * time.Minute
+	memPressureResumeAt = 12.0 // resume admitting once memory pressure drops under this
+	// fullAt is the share of RAM in use past which no new work starts. What
+	// already runs goes on, swapping if it must; nothing is frozen or killed
+	// for memory.
+	fullAt = 0.93
+	// swapFullRAM is the share of RAM in use past which a full swap budget
+	// (95%) holds new work: what runs could no longer spill to swap.
+	swapFullRAM  = 0.70
+	minFreeDisk  = 0.05 // keep this share of the disk free before admitting
+	orphanAfter  = 30 * time.Second
+	keepEnded    = 2 * time.Minute
+	keepReleased = 10 * time.Minute
 	// keepProfiles is how long a command's profile file stays when the
 	// controller may lack it: as long as the controller keeps history.
 	keepProfiles = 30 * 24 * time.Hour
@@ -160,7 +154,7 @@ type EngineConfig struct {
 	// default when CladefsFUSEConfig.Default is true).
 	CladefsFUSE *CladefsFUSEBackend
 	System      System
-	Now    func() time.Time
+	Now         func() time.Time
 	// LogLimit is what a command's log keeps once past it; zero for
 	// DefaultLogLimit.
 	LogLimit cmdlog.Limit
@@ -204,12 +198,12 @@ var DefaultLogLimit = cmdlog.Limit{Head: 16 << 20, Tail: 240 << 20}
 // Engine is a worker's bases, workspaces and commands. The messages it
 // holds are its own; it hands out clones.
 type Engine struct {
-	cfg            EngineConfig
-	db             *db
-	cred           *syscall.Credential
-	home           string
-	gitAuth        *gitAuthServer
-	containersConf string
+	cfg             EngineConfig
+	db              *db
+	cred            *syscall.Credential
+	home            string
+	gitAuth         *gitAuthServer
+	containersConf  string
 	rtUnits         *runtimeUnits
 	portProxies     map[string]*portProxy
 	freshenBudget   *freshenBudget
@@ -248,12 +242,9 @@ type Engine struct {
 	cpu                cpuGate
 	memPressureHolding bool
 	held               hold
-	// completions counts started non-bench, non-server commands that have ended
-	// on this worker, so park() knows whether anything actually finished since
-	// a command was parked for memory. lastFocusSession remembers the session
-	// whose work was most recently making progress on this node so it can drain
-	// already-queued/parked work in its warm workspace before switching.
-	completions      uint64
+	// lastFocusSession remembers the session whose work was most recently
+	// making progress on this node so admission drains its already-queued
+	// work in its warm workspace before switching.
 	lastFocusSession string
 	// hostUsage is the latest host-side view of this VM worker from the
 	// controller's heartbeat reply, and hostUsageUntil is the engine clock
@@ -262,16 +253,13 @@ type Engine struct {
 	hostUsage      *pb.HostUsage
 	hostUsageUntil time.Time
 	hostCPUHolding bool
-	// pressureParkedAt is when park last froze a command for memory
-	// pressure.
-	pressureParkedAt time.Time
-	disk             *pb.DiskUsage
-	diskBytes        int64
-	oomKills         int64
-	objectStore      *pb.ObjectStoreStats
-	resources        *pb.Resources
-	offErr           string    // the last failure to give back a measurement's isolation, logged once
-	offRetry         time.Time // when to try to give it back again, after a failure
+	disk           *pb.DiskUsage
+	diskBytes      int64
+	oomKills       int64
+	objectStore    *pb.ObjectStoreStats
+	resources      *pb.Resources
+	offErr         string    // the last failure to give back a measurement's isolation, logged once
+	offRetry       time.Time // when to try to give it back again, after a failure
 	// active is the sessions clients used here since the last heartbeat.
 	active map[string]bool
 	// SSH shell state: ephemeral host key, one-time tickets, and active shells.
@@ -359,16 +347,16 @@ type forkOutcome struct {
 
 // workspace is a workspace and what only the worker needs about it.
 type workspace struct {
-	rec         *pb.WorkspaceRecord
-	sync        sync.Mutex    // serializes Sync and ReleaseWorkspace volume access
-	forking     bool          // guarded by e.mu: Store.Clone is in flight
-	forkDone    chan struct{} // guarded by e.mu: closed when in-flight fork finishes
-	pendingFork *forkOutcome  // guarded by e.mu: fork outcome deferred while releasing
-	releasing     bool          // guarded by e.mu: ReleaseWorkspace is in progress
-	releaseQueued bool          // guarded by e.mu: background release goroutine is queued
-	releaseDone   chan struct{} // guarded by e.mu: closed when in-flight ReleaseWorkspace finishes
-	releaseErr    error         // guarded by e.mu: error from the last ReleaseWorkspace attempt
-	suspendRetryAt time.Time    // guarded by e.mu: backoff deadline after a failed idle VM suspend
+	rec            *pb.WorkspaceRecord
+	sync           sync.Mutex    // serializes Sync and ReleaseWorkspace volume access
+	forking        bool          // guarded by e.mu: Store.Clone is in flight
+	forkDone       chan struct{} // guarded by e.mu: closed when in-flight fork finishes
+	pendingFork    *forkOutcome  // guarded by e.mu: fork outcome deferred while releasing
+	releasing      bool          // guarded by e.mu: ReleaseWorkspace is in progress
+	releaseQueued  bool          // guarded by e.mu: background release goroutine is queued
+	releaseDone    chan struct{} // guarded by e.mu: closed when in-flight ReleaseWorkspace finishes
+	releaseErr     error         // guarded by e.mu: error from the last ReleaseWorkspace attempt
+	suspendRetryAt time.Time     // guarded by e.mu: backoff deadline after a failed idle VM suspend
 }
 
 func (w *workspace) ws() *pb.Workspace { return w.rec.Workspace }
@@ -390,8 +378,8 @@ type command struct {
 	vmProfile     *pb.CommandProfile
 	vmProfileDone bool
 	// freezeMu serializes freeze/thaw transitions on this command so a losing
-	// soft-limit freeze or park cannot thaw a unit that another transition
-	// paused or parked. Always acquire freezeMu before e.mu.
+	// soft-limit freeze or measurement hold cannot thaw a unit that another
+	// transition paused or held. Always acquire freezeMu before e.mu.
 	freezeMu sync.Mutex
 	// stopping is set while Stop ends the command, which then owns its
 	// ending: its unit exiting meanwhile is the stop, not a failure.
@@ -422,28 +410,6 @@ type command struct {
 	deactivating bool
 	// waiting is the kind of wait a queued command last said it had.
 	waiting string
-	// preemptedBy is the ID of the strictly higher-priority command that parked
-	// this command to make room; while that command is queued or running, this
-	// command stays parked (board 7907). Persisted in worker.db across restarts.
-	preemptedBy string
-	// parkedForMemory records that the current parked state was triggered by
-	// memory exhaustion or memory PSI (not priority preemption or --bench).
-	// lastMemoryParkCompletions and memoryParksSameWorkload track how many
-	// times this command has been parked for memory without any running
-	// command completing in between, preventing park/thaw oscillation against
-	// the exact same running workload.
-	parkedForMemory           bool
-	lastMemoryParkCompletions uint64
-	memoryParksSameWorkload   int
-	// residentBytes is the most recent anonymous RAM (memory.stat anon) read
-	// from the unit's cgroup, and residentKnown reports whether it has been
-	// measured. reclaimed reports whether Reclaim succeeded and residentBytes
-	// was re-measured for the current parked state, so parked lower-priority
-	// commands keep charging their full reservation when reclaim failed or was
-	// skipped, and keep charging remaining resident pages on partial reclaim.
-	residentBytes int64
-	residentKnown bool
-	reclaimed     bool
 	// tmpGone closes once its temporary directory is removed; nil until it
 	// ends in this worker's life.
 	tmpGone chan struct{}
@@ -531,25 +497,25 @@ func NewEngine(ctx context.Context, cfg EngineConfig) (*Engine, error) {
 		pendingFreshens:  map[string]*pendingOptionalFreshen{},
 		bgFreshenCancels: map[string]*bgFreshenHandle{},
 		bases:            map[string]*pb.Base{},
-		finalizingBases: map[string]bool{},
-		workspaces:      map[string]*workspace{},
-		commands:        map[string]*command{},
-		usage:           &pb.NodeUsage{},
-		disk:            &pb.DiskUsage{},
-		active:          map[string]bool{},
-		vouched:         map[string]time.Time{},
-		shellHostKey:    hostKey,
-		shellHostPub:    hostPub,
-		shellTickets:    map[string]*shellTicket{},
-		shells:          map[string]*activeShell{},
-		portProxies:     map[string]*portProxy{},
-		kick:            make(chan struct{}, 1),
-		collect:         make(chan struct{}, 1),
-		stepc:           make(chan struct{}, 1),
-		updated:         make(chan struct{}),
-		bgCtx:           bgCtx,
-		bgCancel:        bgCancel,
-		streamsDone:     make(chan struct{}),
+		finalizingBases:  map[string]bool{},
+		workspaces:       map[string]*workspace{},
+		commands:         map[string]*command{},
+		usage:            &pb.NodeUsage{},
+		disk:             &pb.DiskUsage{},
+		active:           map[string]bool{},
+		vouched:          map[string]time.Time{},
+		shellHostKey:     hostKey,
+		shellHostPub:     hostPub,
+		shellTickets:     map[string]*shellTicket{},
+		shells:           map[string]*activeShell{},
+		portProxies:      map[string]*portProxy{},
+		kick:             make(chan struct{}, 1),
+		collect:          make(chan struct{}, 1),
+		stepc:            make(chan struct{}, 1),
+		updated:          make(chan struct{}),
+		bgCtx:            bgCtx,
+		bgCancel:         bgCancel,
+		streamsDone:      make(chan struct{}),
 	}
 	e.vmIdleSuspendNs.Store(int64(cfg.VMIdleSuspendAfter))
 	if e.resources, err = cfg.System.Resources(); err != nil {
@@ -641,17 +607,6 @@ func (e *Engine) load() error {
 		e.commands[r.Command.Id] = e.newCommand(r)
 	}); err != nil {
 		return err
-	}
-	preemptions, err := e.db.loadPreemptions()
-	if err != nil {
-		return err
-	}
-	for id, by := range preemptions {
-		if c, ok := e.commands[id]; ok {
-			c.preemptedBy = by
-		} else if err := e.db.deletePreemption(id); err != nil {
-			slog.Warn("clean up orphan preemption record", "command", id, "err", err)
-		}
 	}
 	if raw, err := e.db.loadFreshenBudget(); err != nil {
 		slog.Warn("load persisted freshen budget", "err", err)

@@ -12,7 +12,6 @@ import (
 
 	"github.com/semistrict/hotbed/internal/api"
 	pb "github.com/semistrict/hotbed/internal/gen/hotbed/v1"
-	"github.com/semistrict/hotbed/internal/sysinfo"
 )
 
 // Intervention is someone's stop, pause or resume of a command by hand, as
@@ -148,8 +147,6 @@ func (e *Engine) Pause(ctx context.Context, id string, in Intervention) (*pb.Com
 		cmd.CpuCores = 0
 		cmd.Reason = note
 		c.rec.HeldFor = ""
-		c.preemptedBy = ""
-		c.reclaimed = false
 		cmd.Timeline = append(cmd.Timeline, &pb.CommandEvent{At: e.nowMs(), What: "paused", Detail: tlNote})
 		e.saveCommand(c, change{
 			what: "paused", detail: tlNote, diagnostics: h.diag,
@@ -170,10 +167,9 @@ func (e *Engine) Pause(ctx context.Context, id string, in Intervention) (*pb.Com
 
 // Resume is someone's resume of command id, paused by hand or by its soft
 // time limit. It resets its soft limit timer from now and leaves it to its
-// limits, as a detached command is. When a benchmark, memory/host hold, or
-// higher-priority command forbids running it immediately, it transitions from
-// paused to parked (keeping its cgroup frozen) so the scheduler thaws it
-// automatically once the hold clears.
+// limits, as a detached command is. It runs again at once, swapping back in
+// what it must, unless a measurement keeps its volume quiet: then it stays
+// frozen, held beside the measurement, and is thawed once that ends.
 func (e *Engine) Resume(ctx context.Context, id string, in Intervention) (*pb.Command, error) {
 	ctx = context.WithoutCancel(ctx)
 	in.Diagnose = false
@@ -185,11 +181,6 @@ func (e *Engine) Resume(ctx context.Context, id string, in Intervention) (*pb.Co
 		return nil, api.Errorf(api.CodeConflict, "command %s has ended: there is nothing to resume", id)
 	}
 	defer done()
-	var mem sysinfo.Mem
-	var hasMem bool
-	if m, err := e.cfg.System.Meminfo(); err == nil && m.Total > 0 {
-		mem, hasMem = m, true
-	}
 	tlNote := conciseInterventionNote(h.cmd, h.iv)
 	h.c.freezeMu.Lock()
 	defer h.c.freezeMu.Unlock()
@@ -200,7 +191,7 @@ func (e *Engine) Resume(ctx context.Context, id string, in Intervention) (*pb.Co
 		e.mu.Unlock()
 		return nil, api.Errorf(api.CodeConflict, "command %s became %s as it was resumed", id, stateName(st))
 	}
-	if blockReason, heldFor := e.canThawForResume(h.c, mem, hasMem); blockReason != "" {
+	if blockReason, heldFor := e.resumeHold(h.c); heldFor != "" {
 		now := e.nowMs()
 		h.byHand.record(cmd)
 		cmd.Attached = false
@@ -209,17 +200,15 @@ func (e *Engine) Resume(ctx context.Context, id string, in Intervention) (*pb.Co
 		cmd.CpuCores = 0
 		h.c.rec.ParkedAt = now
 		h.c.rec.HeldFor = heldFor
-		h.c.preemptedBy = ""
-		h.c.reclaimed = false
-		cmd.Reason = fmt.Sprintf("resumed; parked: %s", blockReason)
+		cmd.Reason = fmt.Sprintf("resumed; held: %s", blockReason)
 		detail := cmd.Reason
 		if tlNote != "" {
-			detail = tlNote + " (parked: " + blockReason + ")"
+			detail = tlNote + " (held: " + blockReason + ")"
 		}
-		cmd.Timeline = append(cmd.Timeline, &pb.CommandEvent{At: now, What: "parked", Detail: detail})
+		cmd.Timeline = append(cmd.Timeline, &pb.CommandEvent{At: now, What: "held", Detail: detail})
 		e.saveCommand(h.c, change{
-			what: "parked", detail: detail,
-			feed: feed(feedResume, fmt.Sprintf("resume %s (parked) · by %s", cmd.Argv, api.Who(h.iv.By)), ref("command", cmd.Id)),
+			what: "held", detail: detail,
+			feed: feed(feedResume, fmt.Sprintf("resume %s (held) · by %s", cmd.Argv, api.Who(h.iv.By)), ref("command", cmd.Id)),
 		})
 		e.stepSoon()
 		out := clone(cmd)
@@ -235,39 +224,16 @@ func (e *Engine) Resume(ctx context.Context, id string, in Intervention) (*pb.Co
 	return e.current(id)
 }
 
-// canThawForResume reports whether paused command c must remain frozen in
-// parked rather than thawing immediately into running under the scheduler's
-// benchmark, admission, memory, and priority rules. Call with e.mu held.
-func (e *Engine) canThawForResume(c *command, mem sysinfo.Mem, hasMem bool) (reason, heldFor string) {
-	now := e.now()
-	e.weighHold(now)
-	if wsID := c.cmd().WorkspaceId; wsID != "" {
-		if w, ok := e.workspaces[wsID]; ok {
-			if isSyncInProgress(w.ws().Reason) {
-				return "workspace is syncing", ""
-			}
-		}
+// resumeHold says why paused command c must stay frozen as it is resumed,
+// and the measurement it is held beside: one whose volume a running
+// measurement keeps quiet. It returns "" for both when c may run now. Call
+// with e.mu held.
+func (e *Engine) resumeHold(c *command) (reason, heldFor string) {
+	if c.cmd().Bench {
+		return "", ""
 	}
-	if !c.cmd().Bench {
-		if r := e.quietBlocker(c); r != "" {
-			var mID string
-			if m := e.measuring(); m != nil {
-				mID = m.cmd().Id
-			}
-			return r, mID
-		}
-	}
-	if _, r := e.roomFor(c, false, mem, hasMem); r != "" {
-		return r, ""
-	}
-	runningCount := 0
-	for _, other := range e.commands {
-		if other.cmd().State == running && (other.cmd().Bench || other.cmd().Kind != "server") {
-			runningCount++
-		}
-	}
-	if e.thawBlockedByPriority(c, runningCount == 0, mem) {
-		return "waiting for higher-priority work", ""
+	if r := e.quietBlocker(c); r != "" {
+		return r, e.measuring().cmd().Id
 	}
 	return "", ""
 }

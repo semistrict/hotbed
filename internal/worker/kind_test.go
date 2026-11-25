@@ -59,7 +59,7 @@ func TestCommandKindDefaultsWithoutArgvInference(t *testing.T) {
 // Port > 0 or Kind: "server" are not treated as servers: they can be parked
 // under memory pressure and count toward bench CPU accounting, while Port > 0
 // and explicit Kind: "server" commands remain excluded from both (board 7876).
-func TestNonServerRunCommandsAreParkableAndCountedInBench(t *testing.T) {
+func TestNonServerRunCommandsCountInBenchAndKeepRunningWhenMemoryIsFull(t *testing.T) {
 	units, sys := &fake.Units{}, fake.NewSystem()
 	store := &fake.Store{Root: t.TempDir()}
 	now := time.Unix(1795400000, 0)
@@ -129,17 +129,13 @@ func TestNonServerRunCommandsAreParkableAndCountedInBench(t *testing.T) {
 		t.Errorf("workCores = %v, want 4.0 (nextest + goRun only, excluding servers)", gotCores)
 	}
 
-	// Under high memory pressure, park freezes the newest non-server command (goRun),
-	// leaving both servers untouched.
+	// With memory full, nothing already running is frozen: it swaps.
 	sys.SetUsed(sys.Mem.Total * 95 / 100)
-	e.park(t.Context())
-	if goRun.cmd().State != parked {
-		t.Errorf("goRun state = %v, want parked", goRun.cmd().State)
-	}
-	if nextest.cmd().State != running {
-		t.Errorf("nextest state = %v, want running (only one non-server left)", nextest.cmd().State)
-	}
-	if portSrv.cmd().State != running || explicitSrv.cmd().State != running {
-		t.Errorf("servers were parked: portSrv=%v explicitSrv=%v", portSrv.cmd().State, explicitSrv.cmd().State)
+	sys.Psi = 60
+	e.step(t.Context())
+	for _, c := range []*command{nextest, goRun, portSrv, explicitSrv} {
+		if s := c.cmd().State; s != running {
+			t.Errorf("%s state = %v at 95%% memory and 60%% pressure, want running", c.cmd().Id, s)
+		}
 	}
 }

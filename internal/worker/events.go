@@ -34,8 +34,8 @@ const (
 	feedUnhold  feedKind = "unhold"  // the node started new work again
 	feedFinish  feedKind = "finish"  // a command ended (or was cancelled)
 	feedFail    feedKind = "fail"    // a command or base failed
-	feedPark    feedKind = "park"    // a command was frozen for memory or a measurement
-	feedThaw    feedKind = "thaw"    // a parked command went on
+	feedPark    feedKind = "park"    // a command was held beside a measurement
+	feedThaw    feedKind = "thaw"    // a held command went on
 	feedPause   feedKind = "pause"   // a command was frozen at its soft time limit
 	feedResume  feedKind = "resume"  // a paused command went on, waited on again
 	feedFork    feedKind = "fork"    // a workspace was forked from a base
@@ -82,7 +82,7 @@ func (e *Engine) saveWorkspace(w *workspace, ch change) {
 func (e *Engine) saveCommand(c *command, ch change) {
 	ev := e.newEvent(ch)
 	ev.Change = &pb.Event_Command{Command: &pb.CommandChange{What: ch.what, Command: clone(c.cmd()), Detail: ch.detail, Finished: ch.finished, Profile: ch.profile}}
-	e.writeCommand(c.cmd().Id, c.rec, c.preemptedBy, ch.diagnostics, ev)
+	e.writeCommand(c.cmd().Id, c.rec, ch.diagnostics, ev)
 }
 
 // note records an event that changes no record: what the node itself did,
@@ -112,14 +112,14 @@ func (e *Engine) deleteWorkspace(w *workspace) {
 func (e *Engine) deleteCommand(c *command) {
 	ev := e.newEvent(change{})
 	ev.Change = &pb.Event_Command{Command: &pb.CommandChange{What: "forgotten", Command: clone(c.cmd())}}
-	e.writeCommand(c.cmd().Id, nil, "", nil, ev)
+	e.writeCommand(c.cmd().Id, nil, nil, ev)
 }
 
-// writeCommand commits a command record (nil deletes it), its preemptedBy
-// mapping, and any pending intervention diagnostics with its event in one
-// transaction. Call with e.mu held.
-func (e *Engine) writeCommand(id string, rec *pb.CommandRecord, preemptedBy string, diag *pb.CommandDiagnostics, ev *pb.Event) {
-	if err := e.db.commitCommand(id, rec, preemptedBy, diag, ev); err != nil {
+// writeCommand commits a command record (nil deletes it) and any pending
+// intervention diagnostics with its event in one transaction. Call with e.mu
+// held.
+func (e *Engine) writeCommand(id string, rec *pb.CommandRecord, diag *pb.CommandDiagnostics, ev *pb.Event) {
+	if err := e.db.commitCommand(id, rec, diag, ev); err != nil {
 		slog.Error("save command", "command", id, "err", err)
 		e.dirtyGen++
 	}

@@ -174,40 +174,6 @@ func TestSyncGuardWhileCommandRunning(t *testing.T) {
 		t.Fatalf("main.txt after sync = %q (%v), want v2", data, err)
 	}
 
-	// (c) Parked build also blocks changed-tree Sync until stopped (board 9782).
-	if _, err := e.Exec(t.Context(), &pb.RunCommandRequest{
-		Id:          "cmd-parked",
-		WorkspaceId: "ws-guard",
-		Repo:        "app",
-		Kind:        "build",
-		Args:        []string{"sleep", "300"},
-	}); err != nil {
-		t.Fatal(err)
-	}
-	e.admit(t.Context())
-	t.Cleanup(func() { _ = units.Stop(context.WithoutCancel(t.Context()), "hotbed-cmd-parked") })
-	e.mu.Lock()
-	parkedCmd := e.commands["cmd-parked"]
-	e.mu.Unlock()
-	if !e.parkOne(t.Context(), parkedCmd, "memory pressure", "park cmd-parked", "", true) {
-		t.Fatal("parkOne(cmd-parked) = false, want true")
-	}
-	if s := e.state("cmd-parked"); s != parked {
-		t.Fatalf("cmd-parked state = %v, want parked", s)
-	}
-	_, err = e.Sync(t.Context(), hdr1, bytes.NewReader(stream1))
-	ae = api.FromConnect(err)
-	if ae == nil || ae.Code != api.CodeConflict || !ae.Retryable || !strings.Contains(ae.Message, "cmd-parked") {
-		t.Fatalf("Sync(snap1) while build parked = %v (%+v), want retryable CodeConflict naming cmd-parked", err, ae)
-	}
-	// Unchanged tree (snap2) is still skipped while parked.
-	if res, err = e.Sync(t.Context(), hdr2, bytes.NewReader(stream2)); err != nil || !res.Skipped {
-		t.Fatalf("Sync(snap2 unchanged) while build parked = (%+v, %v), want skipped", res, err)
-	}
-	if _, err := e.Stop(t.Context(), "cmd-parked", "done"); err != nil {
-		t.Fatal(err)
-	}
-
 	// (d) Paused build also blocks changed-tree Sync until stopped (board 9782).
 	if _, err := e.Exec(t.Context(), &pb.RunCommandRequest{
 		Id:          "cmd-paused",

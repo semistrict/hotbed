@@ -257,8 +257,8 @@ func TestMigrateFreshDatabase(t *testing.T) {
 	if err := db.QueryRowContext(ctx, `SELECT MAX(version_id) FROM `+goose.DefaultTablename+` WHERE is_applied = 1`).Scan(&ver); err != nil {
 		t.Fatal(err)
 	}
-	if ver != 3 {
-		t.Fatalf("schema version = %d, want 3", ver)
+	if ver != 4 {
+		t.Fatalf("schema version = %d, want 4", ver)
 	}
 
 	schema := inspectSchema(t, db)
@@ -383,8 +383,8 @@ func TestMigratePreExistingV2DatabaseAndSchemaParity(t *testing.T) {
 	if err := live.QueryRowContext(ctx, `SELECT MAX(version_id) FROM `+goose.DefaultTablename+` WHERE is_applied = 1`).Scan(&ver); err != nil {
 		t.Fatal(err)
 	}
-	if ver != 3 {
-		t.Fatalf("version after Migrate from v2 = %d, want 3", ver)
+	if ver != 4 {
+		t.Fatalf("version after Migrate from v2 = %d, want 4", ver)
 	}
 
 	// Re-running Migrate is idempotent.

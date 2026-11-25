@@ -499,7 +499,7 @@ func TestCladefsFUSEBackendFreshenCapFallbackAndDedupe(t *testing.T) {
 	}
 }
 
-func TestBackgroundOptionalFreshenIdleGatedAndPreemptedByUserWork(t *testing.T) {
+func TestBackgroundOptionalFreshenIdleGated(t *testing.T) {
 	var nowMu sync.Mutex
 	curNow := time.Unix(1795600000, 0)
 	nowFn := func() time.Time {
@@ -635,39 +635,11 @@ func TestBackgroundOptionalFreshenIdleGatedAndPreemptedByUserWork(t *testing.T) 
 			optCmd.Limits, optionalFreshenPriority, optionalFreshenCPUWeight)
 	}
 
-	// 5. Simulate memory tightness: a normal user command (priority 0) MUST immediately
-	// preempt/park the -10 optional freshen and start running!
-	e.mu.Lock()
-	e.commands[optCmdID].rec.PeakHeldBytes = 6 << 30
-	e.mu.Unlock()
-	userCmd, err := e.Exec(t.Context(), &pb.RunCommandRequest{
-		WorkspaceId: ws2.Id,
-		Args:        []string{"/bin/sh", "-c", "while [ ! -f " + gateFile + ".user ]; do sleep 0.02; done"},
-		Limits:      &pb.CommandLimits{MemoryLowBytes: 4 << 30},
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	waitUntil("user command running and optional freshen parked", func() bool {
-		return e.state(userCmd.Id) == running && e.state(optCmdID) == parked
-	})
-
-	// Even after advancing past rotateAfter (10m), park() MUST NOT rotate out the
-	// priority-0 user command in favor of the priority -10 optional freshen!
-	advance(15 * time.Minute)
-	e.step(t.Context())
-	if e.state(userCmd.Id) != running || e.state(optCmdID) != parked {
-		t.Fatalf("after 15m: user=%v opt=%v, want user still RUNNING and opt still PARKED", e.state(userCmd.Id), e.state(optCmdID))
-	}
-
-	// 6. Finish user command -> optional freshen thaws -> release gate -> app-g2 warms!
-	if err := os.WriteFile(gateFile+".user", []byte("done"), 0o644); err != nil {
-		t.Fatal(err)
-	}
+	// 5. Release gate -> app-g2 warms!
 	if err := os.WriteFile(gateFile, []byte("go"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	waitUntil("app-g2 warm after user command finishes", func() bool {
+	waitUntil("app-g2 warm", func() bool {
 		e.mu.Lock()
 		defer e.mu.Unlock()
 		b := e.bases["app-g2"]

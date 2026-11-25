@@ -697,7 +697,7 @@ send:
 // scheduled command alike.
 type commandFlags struct {
 	CPUWeight int      `default:"100" help:"Share of contended CPU (cgroup cpu.weight, 1-10000)."`
-	Priority  string   `default:"normal" help:"Scheduling priority: low (-10), normal (0), high (10), urgent (20), or an integer from -100 to 100. Higher priority preempts lower by parking lower-priority running commands until this command fits."`
+	Priority  string   `default:"normal" help:"Scheduling priority: low (-10), normal (0), high (10), urgent (20), or an integer from -100 to 100. Higher priority is admitted first; nothing running is preempted for it."`
 	MemLow    string   `default:"0" help:"Memory guaranteed to the command (memory.low), such as 2G; it waits until that fits."`
 	MemHigh   string   `default:"0" help:"Memory past which it is throttled and swapped (memory.high), such as 8G; 0 for none."`
 	Env       []string `help:"KEY=VALUE for the command. Repeatable."`

@@ -33,7 +33,7 @@ func TestAdmissionReservesWhatCommandsHeld(t *testing.T) {
 	t.Cleanup(func() { units.Stop(context.WithoutCancel(t.Context()), "hotbed-next-1") })
 	e.step(t.Context())
 	next := e.commands["next-1"].cmd()
-	if want := "waiting for memory: running and parked commands hold or are guaranteed 14.0 GiB (limit 13.8 GiB)"; next.State != queued || next.Reason != want {
+	if want := "waiting for memory: running commands hold or are guaranteed 14.0 GiB (limit 13.8 GiB)"; next.State != queued || next.Reason != want {
 		t.Fatalf("next-1 beside 14 GiB held is %v: %q, want queued: %q", next.State, next.Reason, want)
 	}
 	if s := signal(e.Heartbeat("cl").Admission, "memory-reserved"); s.Value != float64(14<<30) || !s.Holding || s.Waiting != 1 {
@@ -52,7 +52,7 @@ func TestAdmissionReservesWhatCommandsHeld(t *testing.T) {
 	e.mu.Lock()
 	kind, reason := e.room(withGuarantee)
 	e.mu.Unlock()
-	if want := "waiting for memory: needs 2.0 GiB, but running and parked commands hold or are guaranteed 14.0 GiB (limit 13.8 GiB)"; kind != "memory" || reason != want {
+	if want := "waiting for memory: needs 2.0 GiB, but running commands hold or are guaranteed 14.0 GiB (limit 13.8 GiB)"; kind != "memory" || reason != want {
 		t.Fatalf("guaranteed command beside 14 GiB held = (%q, %q), want (memory, %q)", kind, reason, want)
 	}
 
@@ -114,7 +114,7 @@ func TestABaseBuildIsGuaranteedWhatTheLastOneHeld(t *testing.T) {
 	e.mu.Lock()
 	kind, reason := e.room(f)
 	e.mu.Unlock()
-	if want := "waiting for memory: needs 9.0 GiB, 8.8 GiB left of what running and parked commands hold or are guaranteed"; kind != "memory" || reason != want {
+	if want := "waiting for memory: needs 9.0 GiB, 8.8 GiB left of what running commands hold or are guaranteed"; kind != "memory" || reason != want {
 		t.Fatalf("g2 beside 5 GiB of work: %s %q, want memory %q", kind, reason, want)
 	}
 
@@ -362,117 +362,35 @@ func TestFreshenAdmitsWhenIdleEvenIfGuaranteeExceedsMemAvailable(t *testing.T) {
 		}
 	})
 
-	t.Run("queued same-or-lower priority work waits while work is already parked for memory", func(t *testing.T) {
-		e, units, sys, now := parkEngine(t)
-		_ = e.start(t, units, now, "run-1", "a", "build")
-		p := e.start(t, units, now, "parked-1", "b", "build")
-
-		// Park parked-1 due to memory pressure.
-		sys.SetUsed(sys.Mem.Total * 95 / 100)
-		e.step(t.Context())
-		if p.cmd().State != parked {
-			t.Fatalf("parked-1 = %v, want parked", p.cmd().State)
-		}
-
-		// Memory usage sits at 85% (above thawBelow=78%, below parkAt=93%) with 0% PSI:
-		// parked-1 cannot thaw yet, so a brand-new same-priority command with 0 reservation
-		// must wait in queued rather than piling on and getting immediately parked.
-		sys.SetUsed(sys.Mem.Total * 85 / 100)
-		sys.Psi = 0
-		e.Sample()
-		*now = now.Add(time.Second)
-		if _, err := e.Exec(t.Context(), &pb.RunCommandRequest{
-			Id: "new-same", WorkspaceId: "c", Args: []string{"sleep", "60"}, Kind: "build",
-		}); err != nil {
-			t.Fatal(err)
-		}
-		t.Cleanup(func() { units.Stop(context.WithoutCancel(t.Context()), "hotbed-new-same") })
-		e.step(t.Context())
-
-		if got := e.commands["new-same"].cmd(); got.State != queued || !strings.Contains(got.Reason, "parked") {
-			t.Fatalf("new-same while parked-1 is parked = %v (%q), want queued waiting behind parked work", got.State, got.Reason)
-		}
-
-		// A strictly higher-priority command or a base freshen is NOT blocked by parked normal work.
-		e.mu.Lock()
-		high := e.newCommand(&pb.CommandRecord{
-			Command: &pb.Command{Id: "high-q", WorkspaceId: "c", Kind: "build", Limits: &pb.CommandLimits{Priority: 10}},
-		})
-		highKind, highReason := e.room(high)
-		freshen := e.newCommand(&pb.CommandRecord{
-			Command: &pb.Command{Id: "f-q", Kind: "freshen"},
-		})
-		freshenKind, freshenReason := e.room(freshen)
-		e.mu.Unlock()
-		if highKind != "" {
-			t.Errorf("high-priority command blocked by parked normal work: %q (%q)", highKind, highReason)
-		}
-		if freshenKind != "" {
-			t.Errorf("base freshen blocked by parked normal work: %q (%q)", freshenKind, freshenReason)
-		}
-	})
 }
 
-// Memory pressure parks the newest work although memory in use looks
-// fine: the kernel counts as available the file pages a thrashing build
-// faults straight back in, and ubu1 froze at 73% "in use" (board 9128).
-// One park waits on the one before to show in pressure, and nothing is
-// thawed while tasks still stall.
-func TestMemoryPressureParks(t *testing.T) {
+// Memory full or tasks stalling for it freezes nothing already running: it
+// swaps, and new work waits until the pressure falls.
+func TestMemoryPressureFreezesNothing(t *testing.T) {
 	e, units, sys, now := parkEngine(t)
-	old := e.start(t, units, now, "old-1", "a", "build")
-	mid := e.start(t, units, now, "mid-1", "b", "build")
-	young := e.start(t, units, now, "young-1", "c", "build")
-	sys.SetUsed(sys.Mem.Total * 70 / 100)
+	cmds := []*command{
+		e.start(t, units, now, "old-1", "a", "build"),
+		e.start(t, units, now, "mid-1", "b", "build"),
+	}
+	sys.SetUsed(sys.Mem.Total * 95 / 100)
 	sys.Psi = 45
-	e.step(t.Context())
-	if s := young.cmd().State; s != parked {
-		t.Fatalf("the newest is %v at 45%% memory pressure, want parked", s)
+	for range 5 {
+		*now = now.Add(30 * time.Second)
+		e.step(t.Context())
 	}
-	if want := "frozen at memory pressure 45% (70% memory in use); its memory goes to swap until there is room"; young.cmd().Reason != want {
-		t.Errorf("reason = %q, want %q", young.cmd().Reason, want)
-	}
-
-	*now = now.Add(pressureSettle - time.Second)
-	e.step(t.Context())
-	if s := mid.cmd().State; s != running {
-		t.Fatalf("the next is %v before the park could show in pressure, want running", s)
+	for _, c := range cmds {
+		if s := c.cmd().State; s != running {
+			t.Fatalf("%s is %v at 95%% memory and 45%% pressure, want running", c.cmd().Id, s)
+		}
 	}
 	*now = now.Add(time.Second)
-	e.step(t.Context())
-	if s := mid.cmd().State; s != parked {
-		t.Fatalf("the next is %v once pressure stayed at 45%% for %s, want parked", s, pressureSettle)
+	if _, err := e.Exec(t.Context(), &pb.RunCommandRequest{Id: "new-1", WorkspaceId: "c", Args: []string{"sleep", "60"}}); err != nil {
+		t.Fatal(err)
 	}
-	// The last one running is never parked.
-	*now = now.Add(pressureSettle)
+	t.Cleanup(func() { units.Stop(context.WithoutCancel(t.Context()), "hotbed-new-1") })
 	e.step(t.Context())
-	if s := old.cmd().State; s != running {
-		t.Fatalf("the last one running is %v, want running", s)
-	}
-
-	// Memory fits, but tasks still stall: no thaw.
-	sys.SetUsed(sys.Mem.Total * 30 / 100)
-	sys.Psi = 30
-	*now = now.Add(time.Second)
-	e.step(t.Context())
-	if s := mid.cmd().State; s != parked {
-		t.Fatalf("a parked one is %v at 30%% memory pressure, want still parked", s)
-	}
-	// Hysteresis: dipping to 18% (above 12% resume threshold) still holds.
-	sys.Psi = 18
-	*now = now.Add(time.Second)
-	e.step(t.Context())
-	if s := mid.cmd().State; s != parked {
-		t.Fatalf("a parked one is %v at 18%% memory pressure (hysteresis), want still parked", s)
-	}
-	sys.Psi = 5
-	*now = now.Add(time.Second)
-	e.step(t.Context())
-	if s := mid.cmd().State; s != running {
-		t.Fatalf("the oldest-started parked command (mid) is %v once pressure fell, want thawed", s)
-	}
-	if s := young.cmd().State; s != parked {
-		t.Fatalf("young is %v, want still parked behind older-started mid", s)
+	if w := e.commands["new-1"].cmd(); w.State != queued || w.Reason != "waiting for memory: 95% in use (0.8 GiB physically available on the node)" {
+		t.Fatalf("new-1 = (%v, %q), want queued waiting for memory", w.State, w.Reason)
 	}
 }
 
@@ -564,14 +482,10 @@ func TestCommandAndShellMemoryBudgetEnv(t *testing.T) {
 	}
 }
 
-// When running or parked reservations already equal admitLimit (room == 0),
-// such as a base freshen whose guarantee was capped at admitLimit, a new
-// command with no explicit --mem-low (want == 0) must NOT sneak onto the node:
-// same-priority work waits, higher-priority work preempts (parks) the
-// lower-priority holder instead of piling on top of it, preemption does not
-// disturb lower-priority work when non-reclaimable reservations already fill
-// admitLimit, and a parked want == 0 command cannot thaw alongside a full-node
-// reservation.
+// When running reservations already equal admitLimit (room == 0), such as a
+// base freshen whose guarantee was capped at admitLimit, a new command with no
+// explicit --mem-low (want == 0) must NOT sneak onto the node, whatever its
+// priority: it waits, and nothing running is preempted for it.
 func TestFullAdmitLimitReservationBlocksZeroReservationWork(t *testing.T) {
 	t.Run("same-priority want==0 waits behind reservation == admitLimit", func(t *testing.T) {
 		e, units, _, now := parkEngine(t)
@@ -609,7 +523,7 @@ func TestFullAdmitLimitReservationBlocksZeroReservationWork(t *testing.T) {
 		t.Cleanup(func() { units.Stop(context.WithoutCancel(t.Context()), "hotbed-work-zero") })
 		e.step(t.Context())
 		w := e.commands["work-zero"].cmd()
-		wantReason := "waiting for memory: running and parked commands hold or are guaranteed " + gib(limit) + " (limit " + gib(limit) + ")"
+		wantReason := "waiting for memory: running commands hold or are guaranteed " + gib(limit) + " (limit " + gib(limit) + ")"
 		if w.State != queued || w.Reason != wantReason {
 			t.Fatalf("work-zero beside full-admitLimit freshen = (%v, %q), want (queued, %q)", w.State, w.Reason, wantReason)
 		}
@@ -624,14 +538,13 @@ func TestFullAdmitLimitReservationBlocksZeroReservationWork(t *testing.T) {
 		}
 	})
 
-	t.Run("higher-priority want==0 preempts lower-priority reservation == admitLimit", func(t *testing.T) {
+	t.Run("higher-priority want==0 waits too: nothing is preempted", func(t *testing.T) {
 		e, units, sys, now := parkEngine(t)
 		sys.SetUsed(0)
 		e.mu.Lock()
 		limit := e.admitLimit()
 		e.mu.Unlock()
 
-		// Low-priority command reserves exactly admitLimit (room == 0).
 		if _, err := e.Exec(t.Context(), &pb.RunCommandRequest{
 			Id: "low-full", WorkspaceId: "a", Args: []string{"sleep", "60"},
 			Limits: &pb.CommandLimits{Priority: 0, MemoryLowBytes: limit},
@@ -645,8 +558,6 @@ func TestFullAdmitLimitReservationBlocksZeroReservationWork(t *testing.T) {
 			t.Fatalf("low-full state = %v (%q), want running", low.cmd().State, low.cmd().Reason)
 		}
 
-		// Urgent command with want == 0 must park low-full rather than piling
-		// onto the node concurrently with it.
 		*now = now.Add(time.Second)
 		if _, err := e.Exec(t.Context(), &pb.RunCommandRequest{
 			Id: "urgent-zero", WorkspaceId: "b", Args: []string{"sleep", "60"},
@@ -656,53 +567,11 @@ func TestFullAdmitLimitReservationBlocksZeroReservationWork(t *testing.T) {
 		}
 		t.Cleanup(func() { units.Stop(context.WithoutCancel(t.Context()), "hotbed-urgent-zero") })
 		e.step(t.Context())
-		if low.cmd().State != parked {
-			t.Fatalf("low-full state = %v, want parked by urgent-zero", low.cmd().State)
+		if low.cmd().State != running {
+			t.Fatalf("low-full state = %v, want still running", low.cmd().State)
 		}
-		if urgent := e.commands["urgent-zero"].cmd(); urgent.State != running {
-			t.Fatalf("urgent-zero state = %v (%q), want running", urgent.State, urgent.Reason)
-		}
-	})
-
-	t.Run("preemptCandidatesLocked skips victims when non-reclaimable reservation == admitLimit", func(t *testing.T) {
-		e, _, _, _ := parkEngine(t)
-		e.mu.Lock()
-		defer e.mu.Unlock()
-		limit := e.admitLimit()
-
-		// Non-reclaimable server holds exactly admitLimit; a low-priority build
-		// holds 0; a high-priority want == 0 command must not preempt the build
-		// since it still cannot fit beside the server.
-		e.commands["srv-full"] = e.newCommand(&pb.CommandRecord{
-			Command: &pb.Command{Id: "srv-full", Kind: "server", State: running, Limits: &pb.CommandLimits{Priority: 0, MemoryLowBytes: limit}},
-		})
-		e.commands["low-build"] = e.newCommand(&pb.CommandRecord{
-			Command: &pb.Command{Id: "low-build", Kind: "build", State: running, Limits: &pb.CommandLimits{Priority: 0}},
-		})
-		high := e.newCommand(&pb.CommandRecord{
-			Command: &pb.Command{Id: "high-zero", Kind: "build", State: queued, Limits: &pb.CommandLimits{Priority: 10}},
-		})
-		if victims := e.preemptCandidatesLocked(high); len(victims) != 0 {
-			t.Fatalf("preemptCandidatesLocked returned %d victim(s), want 0 when non-reclaimable reservation == admitLimit", len(victims))
-		}
-	})
-
-	t.Run("canThawAlongsideLocked blocks want==0 parked command beside reservation == admitLimit", func(t *testing.T) {
-		e, _, sys, _ := parkEngine(t)
-		e.mu.Lock()
-		defer e.mu.Unlock()
-		limit := e.admitLimit()
-
-		runner := e.newCommand(&pb.CommandRecord{
-			Command: &pb.Command{Id: "run-full", Kind: "freshen", State: running, Limits: &pb.CommandLimits{Priority: 0, MemoryLowBytes: limit}},
-		})
-		parkedCmd := e.newCommand(&pb.CommandRecord{
-			Command: &pb.Command{Id: "parked-zero", Kind: "build", State: parked, Limits: &pb.CommandLimits{Priority: 0}},
-		})
-		e.commands["run-full"] = runner
-		e.commands["parked-zero"] = parkedCmd
-		if e.canThawAlongsideLocked(parkedCmd, []*command{runner}, sys.Mem) {
-			t.Fatal("canThawAlongsideLocked = true, want false when running command already reserves admitLimit")
+		if urgent := e.commands["urgent-zero"].cmd(); urgent.State != queued {
+			t.Fatalf("urgent-zero state = %v (%q), want queued", urgent.State, urgent.Reason)
 		}
 	})
 }

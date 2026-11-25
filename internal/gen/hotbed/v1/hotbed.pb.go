@@ -205,7 +205,8 @@ const (
 	CommandState_COMMAND_STATE_UNSPECIFIED CommandState = 0
 	CommandState_COMMAND_STATE_QUEUED      CommandState = 1
 	CommandState_COMMAND_STATE_RUNNING     CommandState = 2
-	// Frozen under memory pressure, its memory in swap, until there is room.
+	// Frozen beside a measurement, whose disk its volume would disturb, until
+	// the measurement ends.
 	CommandState_COMMAND_STATE_PARKED    CommandState = 3
 	CommandState_COMMAND_STATE_SUCCEEDED CommandState = 4
 	CommandState_COMMAND_STATE_FAILED    CommandState = 5
@@ -8022,8 +8023,8 @@ type CommandLimits struct {
 	SoftLimitSeconds int64 `protobuf:"varint,4,opt,name=soft_limit_seconds,json=softLimitSeconds,proto3" json:"soft_limit_seconds,omitempty"`
 	// How long after its start it is stopped, paused or not; 0 for none.
 	HardLimitSeconds int64 `protobuf:"varint,5,opt,name=hard_limit_seconds,json=hardLimitSeconds,proto3" json:"hard_limit_seconds,omitempty"`
-	// Scheduling priority (default 0 = normal; higher preempts lower by parking
-	// lower-priority running commands until this command fits).
+	// Scheduling priority (default 0 = normal): higher is admitted first.
+	// Nothing running is preempted for it.
 	Priority      int32 `protobuf:"varint,6,opt,name=priority,proto3" json:"priority,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache

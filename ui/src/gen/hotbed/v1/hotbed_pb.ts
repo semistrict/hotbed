@@ -3548,8 +3548,8 @@ export type CommandLimits = Message<"hotbed.v1.CommandLimits"> & {
   hardLimitSeconds: bigint;
 
   /**
-   * Scheduling priority (default 0 = normal; higher preempts lower by parking
-   * lower-priority running commands until this command fits).
+   * Scheduling priority (default 0 = normal): higher is admitted first.
+   * Nothing running is preempted for it.
    *
    * @generated from field: int32 priority = 6;
    */
@@ -15461,7 +15461,8 @@ export enum CommandState {
   RUNNING = 2,
 
   /**
-   * Frozen under memory pressure, its memory in swap, until there is room.
+   * Frozen beside a measurement, whose disk its volume would disturb, until
+   * the measurement ends.
    *
    * @generated from enum value: COMMAND_STATE_PARKED = 3;
    */

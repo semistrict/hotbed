@@ -1469,7 +1469,8 @@ enum CommandState {
   COMMAND_STATE_UNSPECIFIED = 0;
   COMMAND_STATE_QUEUED = 1;
   COMMAND_STATE_RUNNING = 2;
-  // Frozen under memory pressure, its memory in swap, until there is room.
+  // Frozen beside a measurement, whose disk its volume would disturb, until
+  // the measurement ends.
   COMMAND_STATE_PARKED = 3;
   COMMAND_STATE_SUCCEEDED = 4;
   COMMAND_STATE_FAILED = 5;
@@ -1492,8 +1493,8 @@ message CommandLimits {
   int64 soft_limit_seconds = 4;
   // How long after its start it is stopped, paused or not; 0 for none.
   int64 hard_limit_seconds = 5;
-  // Scheduling priority (default 0 = normal; higher preempts lower by parking
-  // lower-priority running commands until this command fits).
+  // Scheduling priority (default 0 = normal): higher is admitted first.
+  // Nothing running is preempted for it.
   int32 priority = 6;
 }
 

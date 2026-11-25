@@ -104,7 +104,7 @@ export function candidateParts(c: Candidate, p?: Placement): CostPart[] {
 		add(
 			"parked",
 			HOLDING_COST + c.parked / Math.max(c.cpus, 1),
-			`${c.parked} command(s) parked waiting for memory`,
+			`${c.parked} command(s) held beside a measurement`,
 		);
 	}
 	const hs = hostStarvationCost(c.cpuBusy, c.hostUsage);

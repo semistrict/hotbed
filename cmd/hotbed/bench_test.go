@@ -175,25 +175,6 @@ func TestBenchThatLostItsIsolationFails(t *testing.T) {
 	c.eventually("the isolation to be given back", func() bool { return !iso.Active() })
 }
 
-// Memory runs short with a measurement and other work running: the work
-// is parked, the measurement never, though it is the newest.
-func TestBenchIsNeverParked(t *testing.T) {
-	c, _ := benchCluster(t)
-	g := newGate(t)
-	w := c.detach(nil, g.until("w")...)
-	c.eventually("the work to run", func() bool { return c.inPs(w.Id).GetState() == runningState })
-	b := c.detach([]string{"--bench"}, g.until("b")...)
-	c.eventually("the measurement to run", func() bool { return c.inPs(b.Id).GetState() == runningState })
-	c.nodes[0].system.SetUsed(c.nodes[0].system.Mem.Total / 100 * 97)
-	c.eventually("the work to be parked", func() bool { return c.inPs(w.Id).GetState() == parkedState })
-	if got := c.command(b.Id); got.State != runningState {
-		t.Errorf("the measurement is %v: %s", got.State, got.Reason)
-	}
-	c.nodes[0].system.SetUsed(0)
-	g.open(t, "w")
-	g.open(t, "b")
-}
-
 // Measurements take turns: the second waits for the first to end, without
 // holding up work queued behind it.
 func TestMeasurementsTakeTurns(t *testing.T) {

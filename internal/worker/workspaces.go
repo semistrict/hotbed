@@ -711,21 +711,6 @@ func (e *Engine) reconcileLoaded() {
 			e.end(c, state, nil, why)
 		}
 	}
-	// Clear persisted preemption links whose victim is no longer parked or
-	// whose preemptor is no longer live (queued or running).
-	for _, id := range cmdIDs {
-		c := e.commands[id]
-		if c.preemptedBy == "" {
-			continue
-		}
-		p, ok := e.commands[c.preemptedBy]
-		if c.cmd().State != parked || !ok || (p.cmd().State != queued && p.cmd().State != running) {
-			c.preemptedBy = ""
-			if err := e.db.deletePreemption(id); err != nil {
-				slog.Warn("clear stale preemption record", "command", id, "err", err)
-			}
-		}
-	}
 }
 
 func (e *Engine) maxSyncBundleBytes() int64 {
@@ -736,7 +721,7 @@ func (e *Engine) maxSyncBundleBytes() int64 {
 }
 
 // activeSyncBlockersLocked returns the sorted IDs of non-server, non-shell
-// commands currently running, parked, paused, or mid-admit in workspace wsID.
+// commands currently running, held, paused, or mid-admit in workspace wsID.
 // Call with e.mu held.
 func (e *Engine) activeSyncBlockersLocked(wsID string) []string {
 	var ids []string
@@ -817,7 +802,7 @@ func (e *Engine) Sync(ctx context.Context, h *pb.SyncHeader, bundle io.Reader) (
 		return &pb.SyncResponse{WorkspaceId: ws.Id, Head: r.Head, Tree: r.Tree, FilesChanged: r.FilesChanged, Skipped: true}, nil
 	}
 	// Reject a sync whose tree differs while a non-server, non-shell command
-	// is running, parked, paused, or mid-admit in the workspace, so git
+	// is running, held, paused, or mid-admit in the workspace, so git
 	// checkout --force cannot pull files out from under an active or frozen
 	// build or test (board 7919, board 9782).
 	e.mu.Lock()

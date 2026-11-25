@@ -361,13 +361,11 @@ down, not restarting. What happened meanwhile reaches `poll` once it is back.
   want a run recorded as `build`, `test`, `check`, or `server`.
 - `--priority low|normal|high|urgent|N`: sets scheduling priority (default `normal` / `0`; `low` =
   `-10`, `high` = `10`, `urgent` = `20`, or any integer in `-100..100`). Higher-priority queued
-  commands admit ahead of lower-priority ones and preempt strictly lower-priority running commands
-  (parking them until the higher-priority command finishes and room returns); `--bench`
-  measurements are never preempted.
+  commands admit ahead of lower-priority ones; nothing running is preempted for them.
 - `--mem-low 2G` guarantees memory: the command queues until that fits. `--mem-high 8G` throttles
-  and swaps past that. Nothing is killed for memory: when a node runs short, its newest command is
-  **parked** (frozen, its memory swapped out) and resumes later. `poll` reports `parked` and
-  `thawed`.
+  and swaps past that. Nothing is frozen or killed for memory: what is admitted runs, swapping if
+  it must, and a full node holds new work until it has room. Stop a command by hand
+  (`hotbed stop CMD`) if a node is truly overloaded.
 - A saturated node holds new work: once its CPU pressure reaches 60%, commands queue until it is
   under 30% and has not reached 60% for 30 seconds (measurements, on CPUs of their own, are not
   held). The controller sends new workspaces to less loaded nodes. `hotbed ps` says why a command
@@ -399,8 +397,8 @@ A command that hangs (a deadlocked test) must not hold you, or the node, for hou
 - `0` turns either off, but a soft limit always comes with a hard one (default 2h): a paused command
   no one comes back for must end. `--detach`ed and scheduled commands have no limits unless given;
   a measurement (`--bench`) is never paused, so takes only `--hard-limit`.
-- A paused command gives back its guaranteed memory (`--mem-low`); resumed, it may be parked if
-  the node is short.
+- A paused command gives back its guaranteed memory (`--mem-low`); resumed, it runs at once,
+  swapping back in what it must.
 - A long build or test suite you expect to take 25 minutes: `--soft-limit 30m`, or just
   `hotbed logs -f` it again when it pauses.
 
