@@ -279,3 +279,39 @@ func TestStoreUploadIntervalMsPlumbing(t *testing.T) {
 		t.Fatalf("MountAttach(15s) UploadIntervalMs = %v, want 15000", mnt.attachReqs[1].UploadIntervalMs)
 	}
 }
+
+func TestStoreJBODSpreadsAndResolvesAcrossMultipleRoots(t *testing.T) {
+	ctx := context.Background()
+	rootA := t.TempDir()
+	rootB := t.TempDir()
+	api := newFakeCladefs()
+
+	st, err := NewStore(ctx, Config{
+		CellRoot: rootA + string(filepath.ListSeparator) + rootB,
+	}, api, &fakeHealth{status: healthpb.HealthCheckResponse_SERVING}, nil)
+	if err != nil {
+		t.Fatalf("NewStore JBOD: %v", err)
+	}
+	if len(st.CellRoots()) != 2 {
+		t.Fatalf("CellRoots = %v, want 2", st.CellRoots())
+	}
+
+	c1, err := st.CreateCell(ctx, "ws/ws-1", 1<<30, nil, 0)
+	if err != nil {
+		t.Fatalf("CreateCell 1: %v", err)
+	}
+	c2, err := st.CreateCell(ctx, "ws/ws-2", 1<<30, nil, 0)
+	if err != nil {
+		t.Fatalf("CreateCell 2: %v", err)
+	}
+	if filepath.Dir(filepath.Dir(c1.HostPath)) == filepath.Dir(filepath.Dir(c2.HostPath)) {
+		t.Fatalf("expected balanced roots to spread cells: c1=%s c2=%s", c1.HostPath, c2.HostPath)
+	}
+	got2, err := st.CellPath("ws/ws-2")
+	if err != nil || got2 != c2.HostPath {
+		t.Fatalf("CellPath(ws/ws-2) = (%q, %v), want %q", got2, err, c2.HostPath)
+	}
+	if err := st.DeleteCell(ctx, "ws/ws-2"); err != nil {
+		t.Fatalf("DeleteCell ws/ws-2: %v", err)
+	}
+}

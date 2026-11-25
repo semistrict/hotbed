@@ -210,7 +210,21 @@ func (b *CladefsFUSEBackend) mountDir(tenant, cell uint64) string {
 }
 
 func (b *CladefsFUSEBackend) mountStoreDir(tenant, cell uint64) string {
-	return filepath.Join(b.mountStoresRoot, cladefs.Base32ID(tenant), cladefs.Base32ID(cell))
+	rel := filepath.Join(cladefs.Base32ID(tenant), cladefs.Base32ID(cell))
+	roots := filepath.SplitList(b.mountStoresRoot)
+	for _, root := range roots {
+		if root == "" {
+			continue
+		}
+		cand := filepath.Join(root, rel)
+		if _, err := os.Stat(cand); err == nil {
+			return cand
+		}
+	}
+	if len(roots) > 0 && roots[0] != "" {
+		return filepath.Join(roots[0], rel)
+	}
+	return filepath.Join(b.mountStoresRoot, rel)
 }
 
 func (b *CladefsFUSEBackend) loadState() {
