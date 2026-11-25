@@ -37,7 +37,7 @@ export function ProjectProvider({ children }: { children: ReactNode }) {
 export function useProject(): Choice {
   const [project, choose] = useContext(ProjectContext);
   const { data } = useSnapshot();
-  const known = project !== null && (data === undefined || data.projects.some((p) => p.name === project));
+  const known = project !== null && (data === undefined || (data.projects?.some((p) => p.name === project) ?? false));
   return [known ? project : null, choose];
 }
 

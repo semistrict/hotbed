@@ -12,6 +12,13 @@ export function bytes(n: number | bigint): string {
   return `${Math.round(v)} B`;
 }
 
+/** +1.4 GiB, -812 MiB, +0 B. */
+export function signedBytes(n: number | bigint): string {
+  const v = Number(n);
+  if (!Number.isFinite(v)) return "—";
+  return `${v < 0 ? "-" : "+"}${bytes(Math.abs(v))}`;
+}
+
 /** 14.2 MiB/s, 420 KiB/s, 0 B/s. */
 export function bytesPerSec(n: number): string {
   if (!Number.isFinite(n) || n < 0) return "—";

@@ -1,9 +1,13 @@
 import { create } from "@bufbuild/protobuf";
-import { describe, expect, it } from "vitest";
+import { createElement, type ReactNode } from "react";
+import { renderToStaticMarkup } from "react-dom/server";
+import { describe, expect, it, vi } from "vitest";
 import {
   BaseSchema,
   BaseState,
   CladefsCellSchema,
+  NodeHourSchema,
+  NodeHoursSchema,
   NodeSchema,
   ObjectStoreStatsSchema,
   SampleSchema,
@@ -11,7 +15,19 @@ import {
   SnapshotSchema,
   TotalsSchema,
 } from "../gen/hotbed/v1/hotbed_pb";
-import { estimateR2MonthlyCost, formatUsd, nodeCacheHit, summarizeClusterObjectStore } from "./ObjectStorePanel";
+
+vi.mock("@tanstack/react-router", () => ({
+  Link: ({ children, className }: { children: ReactNode; className?: string }) => createElement("a", { className }, children),
+}));
+
+import {
+  ClusterObjectStoreSection,
+  estimateR2MonthlyCost,
+  formatUsd,
+  nodeCacheHit,
+  NodeObjectStoreSection,
+  summarizeClusterObjectStore,
+} from "./ObjectStorePanel";
 
 describe("summarizeClusterObjectStore", () => {
   it("reports hasData=false when no node has object store counters or 24h transfer", () => {
@@ -141,5 +157,26 @@ describe("summarizeClusterObjectStore", () => {
     expect(cost.totalMonthly).toBeCloseTo(3.39, 5);
     expect(formatUsd(cost.totalMonthly)).toBe("$3.39");
     expect(formatUsd(0.002)).toBe("<$0.01");
+  });
+
+  it("shows empty cache state and uses full-width 24h transfer grid when no live objectStore exists", () => {
+    const n = create(NodeSchema, { id: "n1", hostname: "offline-box", online: false });
+    const s = create(SnapshotSchema, {
+      nodes: [n],
+      totals24h: create(TotalsSchema, { r2UploadBytes: 1_000_000n }),
+      nodeHourly: {
+        n1: create(NodeHoursSchema, {
+          hours: [create(NodeHourSchema, { hour: 1000n, uploadBytes: 1_000_000n })],
+        }),
+      },
+    });
+    const clusterHtml = renderToStaticMarkup(
+      createElement(ClusterObjectStoreSection, { s, colors: new Map([["n1", "#fff"]]) }),
+    );
+    expect(clusterHtml).toContain("No nodes are currently reporting live cache telemetry.");
+    expect(clusterHtml).toContain("lg:col-span-6 xl:col-span-3");
+
+    const nodeHtml = renderToStaticMarkup(createElement(NodeObjectStoreSection, { n, s }));
+    expect(nodeHtml).toContain("lg:grid-cols-1");
   });
 });

@@ -7,9 +7,9 @@ import { ago, duration } from "../lib/format";
 import { ScriptBlock } from "./CommandBlock";
 
 const STATE_TONE: Record<StepState, string> = {
-  [StepState.UNSPECIFIED]: "border-warning/50 text-warning",
-  [StepState.APPLIED]: "border-sprout/40 text-sprout",
-  [StepState.PENDING]: "border-warning/50 text-warning",
+  [StepState.UNSPECIFIED]: "border-warning/50 text-warning-ink",
+  [StepState.APPLIED]: "border-good/40 text-good-ink",
+  [StepState.PENDING]: "border-warning/50 text-warning-ink",
   [StepState.FAILED]: "border-critical/50 text-critical",
 };
 
@@ -23,29 +23,50 @@ const STATE_MARK: Record<StepState, string> = {
 /**
  * A project's setup steps: the bash scripts every base of it runs, in order,
  * in /work beside its repos, with how each node's newest base stands with
- * each. The steps come with the snapshot; where each node stands is asked for
- * while they are shown.
+ * each. Defaults collapsed and auto-opens only when a step is FAILED or PENDING
+ * (or when `defaultOpen` is requested).
  */
-export function SetupSteps({ project, now }: { project: Project; now: number | bigint }) {
-  const [open, setOpen] = useState(true);
+export function SetupSteps({
+  project,
+  now,
+  defaultOpen = false,
+}: {
+  project: Project;
+  now: number | bigint;
+  defaultOpen?: boolean;
+}) {
+  const [userOpen, setUserOpen] = useState<boolean | null>(defaultOpen ? true : null);
+  const hasSteps = project.steps.length > 0;
   const status = useQuery({
     queryKey: ["steps", project.name],
     queryFn: () => api.steps(project.name),
-    enabled: open && project.steps.length > 0,
+    enabled: hasSteps,
     refetchInterval: 5000,
   });
   const nodes = new Map<string, StepStatus["nodes"]>((status.data ?? []).filter((s) => s.step).map((s) => [s.step!.name, s.nodes]));
-  const pending = (status.data ?? []).reduce((n, s) => n + s.nodes.filter((x) => x.state !== StepState.APPLIED).length, 0);
+  const failed = (status.data ?? []).reduce((n, s) => n + s.nodes.filter((x) => x.state === StepState.FAILED).length, 0);
+  const pending = (status.data ?? []).reduce((n, s) => n + s.nodes.filter((x) => x.state === StepState.PENDING).length, 0);
+  const open = userOpen ?? (hasSteps && (failed > 0 || pending > 0));
 
   return (
-    <Collapsible open={open} onOpenChange={setOpen} aria-label={`${project.name} setup steps`} className="rounded-xl border border-border/80 bg-background/35">
-      <CollapsibleTrigger className="group flex w-full cursor-pointer flex-wrap items-center gap-x-2.5 gap-y-1 px-3 py-2.5 text-left sm:px-4 sm:py-3">
+    <Collapsible
+      open={open}
+      onOpenChange={setUserOpen}
+      aria-label={`${project.name} setup steps`}
+      className={hasSteps ? "rounded-xl border border-border/80 bg-background/35" : "rounded-lg border border-border/50 bg-background/20"}
+    >
+      <CollapsibleTrigger
+        className={`group flex w-full cursor-pointer flex-wrap items-center gap-x-2.5 gap-y-1 text-left ${
+          hasSteps ? "px-3 py-2.5 sm:px-4 sm:py-3" : "px-3 py-1.5 sm:px-3.5 sm:py-2"
+        }`}
+      >
         <ChevronRightIcon className="size-3.5 shrink-0 text-faint transition-transform group-data-panel-open:rotate-90" />
-        <span className="text-[12.5px] font-semibold text-foreground">Setup steps</span>
+        <span className={`font-semibold ${hasSteps ? "text-[12.5px] text-foreground" : "text-[11.5px] text-muted-foreground"}`}>Setup steps</span>
         <span className="font-mono text-[11px] text-muted-foreground">
-          {project.steps.length === 0 ? "none" : `${project.steps.length} · run in order in /work`}
+          {!hasSteps ? "none" : `${project.steps.length} · run in order in /work`}
         </span>
-        {pending > 0 && <span className="font-mono text-[11px] text-warning">{pending} pending</span>}
+        {failed > 0 && <span className="font-mono text-[11px] text-critical">{failed} failed</span>}
+        {pending > 0 && <span className="font-mono text-[11px] text-warning-ink">{pending} pending</span>}
         {project.hosts.length > 0 && <span className="font-mono text-[11px] text-faint sm:ml-auto">bases on {project.hosts.join(", ")}</span>}
       </CollapsibleTrigger>
       <CollapsibleContent>

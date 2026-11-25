@@ -829,8 +829,21 @@ func (b Backstop) Clamp(limits MemoryLimits) Backstop {
 	}
 	if limits.Max > 0 && (b.Max == 0 || limits.Max < b.Max) {
 		b.Max = limits.Max
-		if b.High > b.Max {
-			b.High = b.Max
+		wantHigh := b.Max
+		// When a static drop-in sets MemoryMax without MemoryHigh (e.g. a
+		// desktop-sharing slice cap), preserve a reclaim/throttle cushion below
+		// Max so workloads hit memory.high before slamming into hard OOM.
+		if limits.High == 0 {
+			cushion := b.Max / 8
+			if b.Headroom > 0 && b.Headroom/2 < cushion {
+				cushion = b.Headroom / 2
+			}
+			if b.Max > cushion {
+				wantHigh = b.Max - cushion
+			}
+		}
+		if b.High == 0 || b.High > wantHigh {
+			b.High = wantHigh
 		}
 	}
 	if limits.SwapMax > 0 && (b.SwapMax == SwapMaxUnbounded || limits.SwapMax < b.SwapMax) {

@@ -26,6 +26,8 @@ export default defineConfig({
 			OWNER_TOKEN: bindings.secret(),
 			JOIN_TOKEN: bindings.secret(),
 			GITHUB_TOKEN: bindings.secret(),
+			GC_TOKEN: bindings.secret(),
+			GC_WORKER_URL: bindings.text("https://cladefs-gc.ramon3525.workers.dev"),
 			// WorkOS Google-only auth (multi-organization, multi-user auth; one ControllerDO per org):
 			//   Configure Worker secrets (injected onto env automatically):
 			//     WORKOS_CLIENT_ID, WORKOS_API_KEY, WORKOS_COOKIE_PASSWORD (optional), DEFAULT_ORG_ID (optional)

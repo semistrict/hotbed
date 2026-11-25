@@ -1,4 +1,4 @@
-import { keepPreviousData, useQuery } from "@tanstack/react-query";
+import { useQuery } from "@tanstack/react-query";
 import { Link } from "@tanstack/react-router";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { api, ReviewState, type Review, type Snapshot } from "../api";
@@ -18,7 +18,12 @@ export function ReviewsPage() {
 
 function Reviews({ s }: { s: Snapshot }) {
   const [project] = useProject();
-  const list = useQuery({ queryKey: ["reviews", project], queryFn: () => api.reviews(project), refetchInterval: 2000, placeholderData: keepPreviousData });
+  const list = useQuery({
+    queryKey: ["reviews", project],
+    queryFn: () => api.reviews(project),
+    refetchInterval: 2000,
+    placeholderData: (prev, prevQuery) => (prevQuery?.queryKey[1] === project ? prev : undefined),
+  });
   const now = Number(s.now);
   const reviews = list.data ?? [];
   const active = reviews.filter((r) => r.state === ReviewState.REQUESTED || r.state === ReviewState.IN_PROGRESS);
@@ -39,7 +44,9 @@ function Reviews({ s }: { s: Snapshot }) {
       </div>
       {list.isError && <div className="rounded-xl border border-critical/40 bg-card px-4 py-2.5 font-mono text-[11.5px] text-critical">Could not list the reviews: {String(list.error)}</div>}
       <Card>
-        {list.data && reviews.length === 0 ? (
+        {!list.data && list.isPending ? (
+          <div className="py-12 text-center font-mono text-[12px] text-muted-foreground">loading reviews…</div>
+        ) : list.data && reviews.length === 0 ? (
           <Empty>No reviews yet. An agent asks for one with hotbed review request.</Empty>
         ) : (
           <ReviewTable reviews={reviews} now={now} showProject={project === null} />
@@ -61,7 +68,7 @@ export const REVIEW_STATE: Record<ReviewState, { text: string; className: string
 function ReviewTable({ reviews, now, showProject }: { reviews: Review[]; now: number; showProject: boolean }) {
   return (
     <>
-      <div className="space-y-3 md:hidden">
+      <div className="space-y-3 lg:hidden">
         {reviews.map((r) => {
           const st = REVIEW_STATE[r.state] ?? REVIEW_STATE[ReviewState.REQUESTED];
           return (
@@ -79,7 +86,7 @@ function ReviewTable({ reviews, now, showProject }: { reviews: Review[]; now: nu
                 {r.repo && <span className="text-foreground">{remoteName(r.repo)} </span>}
                 {r.branch && <span>{r.branch} · </span>}
                 {versionLine(r)}
-                {r.snapshotOf && <span className="text-warning"> · uncommitted</span>}
+                {r.snapshotOf && <span className="text-warning-ink"> · uncommitted</span>}
               </div>
               <div className="mt-2 flex flex-wrap items-center justify-between gap-2 border-t border-border/60 pt-2 text-[10.5px]">
                 <SeverityCounts r={r} />
@@ -104,7 +111,7 @@ function ReviewTable({ reviews, now, showProject }: { reviews: Review[]; now: nu
         })}
       </div>
 
-      <div className="hidden md:block">
+      <div className="hidden lg:block">
         <Table className="text-[12px]">
           <TableHeader className="eyebrow">
             <TableRow className="border-border hover:bg-transparent">
@@ -121,7 +128,7 @@ function ReviewTable({ reviews, now, showProject }: { reviews: Review[]; now: nu
               const models = reviewerModels(r);
               return (
                 <TableRow key={r.id} className="border-border/60 align-top hover:bg-muted/60">
-                  <TableCell className="min-w-[320px] px-2 py-2.5 whitespace-normal">
+                  <TableCell className="px-2 py-2.5 whitespace-normal">
                     <Link to="/reviews/$id" params={{ id: String(r.id) }} className="font-sans text-[14px] font-medium text-foreground hover:text-primary">
                       {r.title}
                     </Link>
@@ -130,7 +137,7 @@ function ReviewTable({ reviews, now, showProject }: { reviews: Review[]; now: nu
                       {r.repo && <span className="text-foreground">{remoteName(r.repo)} </span>}
                       {r.branch && <span>{r.branch} · </span>}
                       {versionLine(r)}
-                      {r.snapshotOf && <span className="text-warning"> · uncommitted</span>}
+                      {r.snapshotOf && <span className="text-warning-ink"> · uncommitted</span>}
                     </div>
                   </TableCell>
                   {showProject && (
@@ -173,7 +180,7 @@ export function SeverityCounts({ r, stacked = false }: { r: Review; stacked?: bo
   return (
     <span className={stacked ? "flex flex-col" : "flex gap-2 font-mono text-[11px]"}>
       {important > 0 && <span className="text-critical">{important} important</span>}
-      {preExisting > 0 && <span className="text-warning">{preExisting} pre-existing</span>}
+      {preExisting > 0 && <span className="text-warning-ink">{preExisting} pre-existing</span>}
       {nits > 0 && <span className="text-muted-foreground">{nits} nit{nits > 1 ? "s" : ""}</span>}
     </span>
   );

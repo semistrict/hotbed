@@ -46,6 +46,47 @@ export function resolveBucketTopFrame(bucket: ProfileBucket, frames: readonly Pr
   return frames[bucket.topFrame]?.name ?? "";
 }
 
+const MAX_TIMELINE_BARS = 60;
+
+/**
+ * Downsample long timelines (e.g. 15m/30m profiles with 180–360 5s buckets)
+ * into at most `maxBars` merged buckets so bars stay readable and never overflow.
+ */
+export function aggregateTimelineBuckets(
+  buckets: readonly ProfileBucket[],
+  maxBars = MAX_TIMELINE_BARS,
+): ProfileBucket[] {
+  if (buckets.length <= maxBars || maxBars < 1) return [...buckets];
+  const groupSize = Math.ceil(buckets.length / maxBars);
+  const out: ProfileBucket[] = [];
+  for (let i = 0; i < buckets.length; i += groupSize) {
+    const chunk = buckets.slice(i, i + groupSize);
+    const first = chunk[0]!;
+    const last = chunk[chunk.length - 1]!;
+    let samples = 0n;
+    let userSamples = 0n;
+    let kernelSamples = 0n;
+    let bestBucket = first;
+    for (const b of chunk) {
+      samples += b.samples;
+      userSamples += b.userSamples;
+      kernelSamples += b.kernelSamples;
+      if (b.samples > bestBucket.samples) bestBucket = b;
+    }
+    const spanMs = last.t + last.durationMs - first.t;
+    out.push({
+      ...first,
+      t: first.t,
+      durationMs: spanMs > 0n ? spanMs : first.durationMs * BigInt(chunk.length),
+      samples,
+      userSamples,
+      kernelSamples,
+      topFrame: bestBucket.topFrame,
+    });
+  }
+  return out;
+}
+
 type ContinuousProfileProps =
   | { id: string; node?: undefined; live: boolean }
   | { node: string; id?: undefined; live: boolean };
@@ -111,7 +152,9 @@ export function ContinuousProfilePanel({ id, node, live }: ContinuousProfileProp
     rangeTimeline,
     p ? { buckets: p.buckets, frames: p.frames } : null,
   );
-  const displayBuckets = displayTimeline.buckets;
+  const displayBuckets = aggregateTimelineBuckets(displayTimeline.buckets);
+  const hasActiveFilter = Boolean(debouncedQuery.trim() || frameType || comm || windowBucket);
+  const sampleHz = p?.sampleHz || 20;
   const userPct = p && p.matchedSamples > 0n ? Math.round((100 * Number(p.userSamples)) / Number(p.matchedSamples)) : 0;
   const kernelPct = p && p.matchedSamples > 0n ? 100 - userPct : 0;
 
@@ -203,7 +246,7 @@ export function ContinuousProfilePanel({ id, node, live }: ContinuousProfileProp
                     setWindowBucket(null);
                   }}
                 >
-                  <TabsList className="h-8 border border-border bg-background/60 font-mono text-[11px]">
+                  <TabsList className="h-8 border border-border font-mono text-[11px]">
                     {(
                       [
                         ["1m", "1m"],
@@ -222,7 +265,7 @@ export function ContinuousProfilePanel({ id, node, live }: ContinuousProfileProp
             )}
             <div className="max-w-full overflow-x-auto no-scrollbar">
               <Tabs value={view} onValueChange={(v) => setView(v as ProfileView)}>
-                <TabsList className="h-8 border border-border bg-background/60 font-mono text-[11px]">
+                <TabsList className="h-8 border border-border font-mono text-[11px]">
                   {(
                     [
                       ["flamegraph", "Flamegraph"],
@@ -240,9 +283,9 @@ export function ContinuousProfilePanel({ id, node, live }: ContinuousProfileProp
           </div>
 
           {/* Runtime type & process comm filter chips */}
-          {p && (p.frameTypes.length > 0 || p.comms.length > 0) && (
-            <div className="flex flex-wrap items-center gap-2 text-[11px]">
-              {p.frameTypes.length > 0 && (
+          {((p && (p.frameTypes.length > 0 || p.comms.length > 0)) || windowBucket) && (
+            <div className="flex flex-wrap items-center gap-x-3 gap-y-2 text-[11px]">
+              {p && p.frameTypes.length > 0 && (
                 <div className="flex flex-wrap items-center gap-1">
                   <span className="font-mono text-[10px] uppercase tracking-wider text-faint">Runtime:</span>
                   <FilterChip active={frameType === ""} onClick={() => setFrameType("")}>
@@ -255,9 +298,9 @@ export function ContinuousProfilePanel({ id, node, live }: ContinuousProfileProp
                   ))}
                 </div>
               )}
-              {p.comms.length > 0 && (
+              {p && p.comms.length > 0 && (
                 <div className="flex flex-wrap items-center gap-1">
-                  <span className="ml-2 font-mono text-[10px] uppercase tracking-wider text-faint">Process:</span>
+                  <span className="font-mono text-[10px] uppercase tracking-wider text-faint">Process:</span>
                   <FilterChip active={comm === ""} onClick={() => setComm("")}>
                     all
                   </FilterChip>
@@ -283,13 +326,13 @@ export function ContinuousProfilePanel({ id, node, live }: ContinuousProfileProp
           {/* Timeline buckets: 5 s, longer for a long command */}
           {displayBuckets.length > 1 && (
             <div>
-              <div className="mb-1 flex items-center justify-between font-mono text-[10px] text-faint">
+              <div className="mb-1 flex flex-wrap items-center justify-between gap-2 font-mono text-[10px] text-faint">
                 <span>SAMPLES OVER TIME ({duration(Number(displayBuckets[0]!.durationMs) / 1000)} buckets · click to filter)</span>
                 <span>
                   {hhmmss(displayBuckets[0]!.t)} — {hhmmss(displayBuckets[displayBuckets.length - 1]!.t)}
                 </span>
               </div>
-              <TimelineBuckets buckets={displayTimeline.buckets} frames={displayTimeline.frames} selected={windowBucket} onSelect={(b) => setWindowBucket(windowBucket?.t === b.t ? null : b)} />
+              <TimelineBuckets buckets={displayBuckets} frames={displayTimeline.frames} selected={windowBucket} onSelect={(b) => setWindowBucket(windowBucket?.t === b.t ? null : b)} />
             </div>
           )}
 
@@ -302,14 +345,18 @@ export function ContinuousProfilePanel({ id, node, live }: ContinuousProfileProp
             </div>
           ) : !p || p.totalSamples === 0n ? (
             <Empty>
-              {p?.statusNote
-                ? `Continuous profiler: ${p.statusNote}`
-                : isNode
-                  ? "Waiting for host-wide eBPF stack samples (collected continuously at 20 Hz while processes execute on CPU)..."
-                  : live
-                    ? "Waiting for eBPF stack samples (collected continuously at 20 Hz while processes execute on CPU)..."
-                    : "No continuous eBPF samples were recorded for this command."}
+              {hasActiveFilter
+                ? "No profile samples match the active filter or selected time window."
+                : p?.statusNote
+                  ? `Continuous profiler: ${p.statusNote}`
+                  : isNode
+                    ? `Waiting for host-wide eBPF stack samples (collected continuously at ${sampleHz} Hz while processes execute on CPU)...`
+                    : live
+                      ? `Waiting for eBPF stack samples (collected continuously at ${sampleHz} Hz while processes execute on CPU)...`
+                      : "No continuous eBPF samples were recorded for this command."}
             </Empty>
+          ) : hasActiveFilter && p.matchedSamples === 0n ? (
+            <Empty>No profile samples match the active filter ({p.totalSamples.toLocaleString()} total samples in range).</Empty>
           ) : view === "flamegraph" ? (
             <FlameGraph stacks={p.stacks} frames={p.frames} highlight={queryText} />
           ) : view === "top" ? (
@@ -408,7 +455,7 @@ function RuntimePill({ type }: { type: string }) {
   return <span className={`inline-block rounded px-1.5 py-0.5 font-mono text-[10px] ${cls}`}>{type || "native"}</span>;
 }
 
-function TimelineBuckets({
+export function TimelineBuckets({
   buckets,
   frames,
   selected,
@@ -419,12 +466,14 @@ function TimelineBuckets({
   selected: ProfileBucket | null;
   onSelect: (b: ProfileBucket) => void;
 }) {
-  const maxS = Math.max(1, ...buckets.map((b) => Number(b.samples)));
+  const shown = aggregateTimelineBuckets(buckets);
+  const maxS = Math.max(1, ...shown.map((b) => Number(b.samples)));
+  const gapCls = shown.length > 30 ? "gap-px" : "gap-1";
   return (
-    <div className="flex h-12 items-end gap-1 rounded-lg border border-border bg-background/50 px-2 py-1.5">
-      {buckets.map((b) => {
+    <div className={`flex h-12 items-end overflow-hidden rounded-lg border border-border bg-background/50 px-2 py-1.5 ${gapCls}`}>
+      {shown.map((b) => {
         const samples = Number(b.samples);
-        const totalPct = Math.max(8, (samples / maxS) * 100);
+        const totalPct = samples > 0 ? Math.max(8, (samples / maxS) * 100) : 0;
         const kernelShare = samples > 0 ? (Number(b.kernelSamples) / samples) * 100 : 0;
         const isSel = selected?.t === b.t;
         const topFunction = resolveBucketTopFrame(b, frames);
@@ -434,12 +483,16 @@ function TimelineBuckets({
             type="button"
             onClick={() => onSelect(b)}
             title={`${hhmmss(b.t)} · ${samples} samples (${b.userSamples} user, ${b.kernelSamples} kernel)${topFunction ? ` · top: ${topFunction}` : ""}`}
-            className={`group flex h-full flex-1 flex-col justify-end rounded-xs transition-opacity ${isSel ? "ring-1 ring-primary" : "opacity-85 hover:opacity-100"}`}
+            className={`group flex h-full min-w-0 flex-1 flex-col justify-end rounded-xs transition-opacity ${isSel ? "ring-1 ring-primary" : "opacity-85 hover:opacity-100"}`}
           >
-            <div className="flex w-full flex-col overflow-hidden rounded-t-[2px]" style={{ height: `${totalPct}%` }}>
-              {kernelShare > 0 && <div style={{ height: `${kernelShare}%`, background: "var(--frost)" }} />}
-              <div className="flex-1" style={{ background: "var(--primary)" }} />
-            </div>
+            {samples === 0 ? (
+              <div className="h-[2px] w-full rounded-full bg-muted-foreground/25" />
+            ) : (
+              <div className="flex w-full flex-col overflow-hidden rounded-t-[2px]" style={{ height: `${totalPct}%` }}>
+                {kernelShare > 0 && <div style={{ height: `${kernelShare}%`, background: "var(--frost)" }} />}
+                <div className="flex-1" style={{ background: "var(--primary)" }} />
+              </div>
+            )}
           </button>
         );
       })}

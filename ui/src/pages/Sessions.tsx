@@ -54,11 +54,11 @@ function Sessions({ s }: { s: Snapshot }) {
         {live.length === 0 ? (
           <Empty>No live sessions. An agent starts one with hotbed session start.</Empty>
         ) : (
-          <SessionTable s={s} sessions={[...live].sort((a, b) => rank(s, a) - rank(s, b) || cmpBig(a.lastActiveAt, b.lastActiveAt))} now={now} />
+          <SessionTable s={s} sessions={[...live].sort((a, b) => rank(s, a) - rank(s, b) || cmpBig(a.lastActiveAt, b.lastActiveAt))} now={now} mode="live" />
         )}
       </Card>
       <Card title="Ended in the last day" sub="By their agent, abandoned, or at the end of their scheduled run" delay={60}>
-        {ended.length === 0 ? <Empty>None yet.</Empty> : <SessionTable s={s} sessions={ended} now={now} />}
+        {ended.length === 0 ? <Empty>None yet.</Empty> : <SessionTable s={s} sessions={ended} now={now} mode="ended" />}
       </Card>
     </div>
   );
@@ -69,10 +69,22 @@ function rank(s: Snapshot, x: Session): number {
   return sessionState(s, x) === "working" ? 0 : 1;
 }
 
-export function SessionTable({ s, sessions, now }: { s: Snapshot; sessions: Session[]; now: number }) {
+export function SessionTable({
+  s,
+  sessions,
+  now,
+  mode,
+}: {
+  s: Snapshot;
+  sessions: Session[];
+  now: number;
+  mode?: "live" | "ended";
+}) {
   // Every project's sessions say whose they are.
   const [project] = useProject();
-  const columns = ["session", ...(project ? [] : ["project"]), "state", "agent", "workspaces", "commands", "failed", "started", "last active", "abandoned in · ended"];
+  const workspaceIds = new Set(s.workspaces.map((w) => w.id));
+  const lastColumn = mode === "live" ? "abandoned in" : mode === "ended" ? "ended" : "abandoned in · ended";
+  const columns = ["session", ...(project ? [] : ["project"]), "state", "agent", "workspaces", "commands", "failed", "started", "last active", lastColumn];
   return (
     <>
       <div className="space-y-2.5 md:hidden">
@@ -103,13 +115,15 @@ export function SessionTable({ s, sessions, now }: { s: Snapshot; sessions: Sess
                       ⟳ {x.schedule}
                     </Link>
                   )}
-                  {x.t3codeThreadId && <span className="break-all">t3:{x.t3codeThreadId}</span>}
+                  {x.t3codeThreadId && (
+                    <span title={x.t3codeThreadId}>t3:{x.t3codeThreadId.slice(0, 8)}</span>
+                  )}
                 </div>
               )}
 
               <div className="num mt-2 flex flex-wrap items-center gap-x-3 gap-y-1 text-[10.5px] text-muted-foreground">
                 <span>{x.agent}</span>
-                {x.model && <span className="rounded bg-muted px-1 py-0.2 text-foreground">{x.model}</span>}
+                {x.model && <span className="rounded bg-muted px-1 py-0.5 text-foreground">{x.model}</span>}
                 <span>
                   {running > 0 && <span className="text-primary">{running} live · </span>}
                   {finished.length} cmds
@@ -120,21 +134,24 @@ export function SessionTable({ s, sessions, now }: { s: Snapshot; sessions: Sess
 
               {x.workspaces.length > 0 && (
                 <div className="mt-2 flex flex-wrap gap-1.5">
-                  {x.workspaces.map((w) => (
-                    <span
-                      key={w.id}
-                      className={`rounded border px-1.5 py-0.5 text-[10px] ${w.releasedAt !== undefined ? "border-border text-faint" : "border-border-strong text-foreground"}`}
-                      title={w.id}
-                    >
-                      {nodeName(s, w.nodeId)}
-                    </span>
-                  ))}
+                  {x.workspaces.map((w) => {
+                    const cls = `rounded border px-1.5 py-0.5 text-[10px] ${w.releasedAt !== undefined ? "border-border text-faint" : "border-border-strong text-foreground"}`;
+                    return workspaceIds.has(w.id) ? (
+                      <Link key={w.id} to="/workspaces/$id" params={{ id: w.id }} className={`${cls} hover:border-primary/50 hover:text-primary`} title={w.id}>
+                        {nodeName(s, w.nodeId)}
+                      </Link>
+                    ) : (
+                      <span key={w.id} className={cls} title={w.id}>
+                        {nodeName(s, w.nodeId)}
+                      </span>
+                    );
+                  })}
                 </div>
               )}
 
               <div className="mt-2.5 border-t border-border/60 pt-2">
                 {x.endedAt !== undefined ? (
-                  <span className={`text-[10.5px] ${x.endReason.startsWith("abandoned") ? "text-warning" : "text-faint"}`}>
+                  <span className={`text-[10.5px] ${x.endReason.startsWith("abandoned") ? "text-warning-ink" : "text-faint"}`}>
                     ended {ago(x.endedAt, now)} · {endedHow(x)}
                   </span>
                 ) : x.scheduleRunning ? (
@@ -166,21 +183,23 @@ export function SessionTable({ s, sessions, now }: { s: Snapshot; sessions: Sess
               const failed = finished.filter((c) => c.state === CommandState.FAILED).length;
               const left = idleLeftMs(x, now);
               return (
-                <TableRow key={x.id} className={`border-border/60 hover:bg-muted/60 ${x.endedAt !== undefined ? "text-muted-foreground" : ""}`}>
-                  <TableCell className="px-2 py-2.5">
-                    <Link to="/sessions/$id" params={{ id: x.id }} className="display text-[16px] font-medium text-foreground hover:text-primary">
-                      {x.id}
-                    </Link>
-                    {x.schedule && (
-                      <Link to="/schedules" className="ml-2 text-[10.5px] text-muted-foreground hover:text-primary" title="a run of this scheduled command">
-                        ⟳ {x.schedule}
+                <TableRow key={x.id} className={`border-border/60 align-top hover:bg-muted/60 ${x.endedAt !== undefined ? "text-muted-foreground" : ""}`}>
+                  <TableCell className="max-w-[260px] px-2 py-2.5 whitespace-normal">
+                    <div className="flex flex-wrap items-baseline gap-x-2 gap-y-0.5">
+                      <Link to="/sessions/$id" params={{ id: x.id }} className="display text-[16px] font-medium text-foreground hover:text-primary">
+                        {x.id}
                       </Link>
-                    )}
-                    {x.t3codeThreadId && (
-                      <span className="ml-2 text-[10.5px] text-muted-foreground" title={`T3 Code thread ${x.t3codeThreadId}`}>
-                        t3:{x.t3codeThreadId}
-                      </span>
-                    )}
+                      {x.schedule && (
+                        <Link to="/schedules" className="text-[10.5px] text-muted-foreground hover:text-primary" title="a run of this scheduled command">
+                          ⟳ {x.schedule}
+                        </Link>
+                      )}
+                      {x.t3codeThreadId && (
+                        <span className="text-[10.5px] text-muted-foreground" title={x.t3codeThreadId}>
+                          t3:{x.t3codeThreadId.slice(0, 8)}
+                        </span>
+                      )}
+                    </div>
                   </TableCell>
                   {!project && (
                     <TableCell className="px-2 py-2.5">
@@ -192,15 +211,22 @@ export function SessionTable({ s, sessions, now }: { s: Snapshot; sessions: Sess
                   </TableCell>
                   <TableCell className="px-2 py-2.5 text-muted-foreground">
                     {x.agent}
-                    {x.model && <span className="ml-1.5 rounded bg-muted px-1 py-0.2 text-[10.5px] text-foreground">{x.model}</span>}
+                    {x.model && <span className="ml-1.5 rounded bg-muted px-1 py-0.5 text-[10.5px] text-foreground">{x.model}</span>}
                   </TableCell>
                   <TableCell className="px-2 py-2.5">
                     <div className="flex flex-wrap gap-1.5">
-                      {x.workspaces.map((w) => (
-                        <span key={w.id} className={`rounded border px-1.5 py-0.5 ${w.releasedAt !== undefined ? "border-border text-faint" : "border-border-strong text-foreground"}`} title={w.id}>
-                          {nodeName(s, w.nodeId)}
-                        </span>
-                      ))}
+                      {x.workspaces.map((w) => {
+                        const cls = `rounded border px-1.5 py-0.5 ${w.releasedAt !== undefined ? "border-border text-faint" : "border-border-strong text-foreground"}`;
+                        return workspaceIds.has(w.id) ? (
+                          <Link key={w.id} to="/workspaces/$id" params={{ id: w.id }} className={`${cls} hover:border-primary/50 hover:text-primary`} title={w.id}>
+                            {nodeName(s, w.nodeId)}
+                          </Link>
+                        ) : (
+                          <span key={w.id} className={cls} title={w.id}>
+                            {nodeName(s, w.nodeId)}
+                          </span>
+                        );
+                      })}
                     </div>
                   </TableCell>
                   <TableCell className="px-2 py-2.5">
@@ -212,7 +238,7 @@ export function SessionTable({ s, sessions, now }: { s: Snapshot; sessions: Sess
                   <TableCell className="px-2 py-2.5 text-muted-foreground">{ago(x.lastActiveAt, now)}</TableCell>
                   <TableCell className="w-44 px-2 py-2.5">
                     {x.endedAt !== undefined ? (
-                      <span className={x.endReason.startsWith("abandoned") ? "text-warning" : "text-faint"}>
+                      <span className={x.endReason.startsWith("abandoned") ? "text-warning-ink" : "text-faint"}>
                         {ago(x.endedAt, now)} · {endedHow(x)}
                       </span>
                     ) : x.scheduleRunning ? (
@@ -245,7 +271,7 @@ function endedHow(x: Session): string {
 export function IdleLeft({ left }: { left: number }) {
   return (
     <div>
-      <div className={`mb-1 text-[10.5px] ${left < 10 * 60_000 ? "text-warning" : "text-muted-foreground"}`}>{duration(left / 1000)} unless touched</div>
+      <div className={`mb-1 text-[10.5px] ${left < 10 * 60_000 ? "text-warning-ink" : "text-muted-foreground"}`}>{duration(left / 1000)} unless touched</div>
       <Meter value={1 - left / SESSION_IDLE_MS} />
     </div>
   );

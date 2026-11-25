@@ -65,6 +65,7 @@ describe("Nodes cladefs stats rendering", () => {
     expect(tableHtml).toContain("local hit");
     expect(tableHtml).toContain("90%");
     expect(tableHtml).toContain("700 GiB");
+    expect(tableHtml).toContain("sticky left-0 z-10 bg-card");
   });
 
   it("shows page cache and FUSE cells on host-FUSE cladefs nodes instead of btrfs", () => {

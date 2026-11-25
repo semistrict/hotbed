@@ -1,5 +1,5 @@
 import { useState, type FormEvent } from "react";
-import { Alert, AlertAction, AlertDescription, AlertTitle } from "@/components/ui/alert";
+import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -23,6 +23,7 @@ import {
   type MintedJoinToken,
 } from "../lib/auth";
 import { useSnapshot } from "../lib/data";
+import { useProject } from "../lib/project";
 import { PageTitle } from "./Nodes";
 
 function formatDate(ms: number | string | null | undefined): string {
@@ -40,13 +41,14 @@ const INVITE_ROLES = [
 export function OrganizationPage() {
   const { data: auth } = useAuthMe();
   const { data: snap } = useSnapshot();
+  const [, chooseProject] = useProject();
   const workosEnabled = Boolean(auth?.workosEnabled);
   const activeOrg = auth?.organization ?? null;
   const isOrgAdmin = !workosEnabled || activeOrg?.role === "admin" || activeOrg?.role === "owner";
 
   const { data: team, isLoading: loadingTeam, error: teamErr } = useOrgMembers(Boolean(workosEnabled && activeOrg));
-  const { data: joinTokens } = useJoinTokens();
-  const { data: apiTokens } = useApiTokens();
+  const { data: joinTokens, isLoading: loadingJoinTokens, error: joinTokensErr } = useJoinTokens();
+  const { data: apiTokens, isLoading: loadingApiTokens, error: apiTokensErr } = useApiTokens();
 
   const switchOrg = useSwitchOrganization();
   const createOrg = useCreateOrganization();
@@ -71,37 +73,75 @@ export function OrganizationPage() {
 
   const origin = typeof window !== "undefined" ? window.location.origin : "https://hotbed-controller";
 
-  function copy(key: string, value: string) {
-    void navigator.clipboard?.writeText(value);
-    setCopied(key);
-    setTimeout(() => setCopied((c) => (c === key ? null : c)), 1800);
+  async function copy(key: string, value: string) {
+    let ok = false;
+    if (typeof navigator !== "undefined" && navigator.clipboard?.writeText) {
+      try {
+        await navigator.clipboard.writeText(value);
+        ok = true;
+      } catch {
+        ok = false;
+      }
+    }
+    if (!ok && typeof document !== "undefined") {
+      try {
+        const ta = document.createElement("textarea");
+        ta.value = value;
+        ta.setAttribute("readonly", "");
+        ta.style.position = "fixed";
+        ta.style.opacity = "0";
+        document.body.appendChild(ta);
+        ta.select();
+        ok = document.execCommand("copy");
+        document.body.removeChild(ta);
+      } catch {
+        ok = false;
+      }
+    }
+    if (ok) {
+      setCopied(key);
+      setTimeout(() => setCopied((c) => (c === key ? null : c)), 1800);
+    }
   }
 
   async function onCreateOrg(e: FormEvent) {
     e.preventDefault();
     const name = newOrgName.trim();
     if (!name) return;
-    await createOrg.mutateAsync(name);
-    setNewOrgName("");
+    try {
+      await createOrg.mutateAsync(name);
+      chooseProject(null);
+      setNewOrgName("");
+    } catch {
+      // Error is exposed on createOrg.error and rendered in the card.
+    }
   }
 
   async function onInvite(e: FormEvent) {
     e.preventDefault();
     const email = inviteEmail.trim();
     if (!email) return;
-    await inviteMember.mutateAsync({ email, role: inviteRole });
-    setInviteEmail("");
+    try {
+      await inviteMember.mutateAsync({ email, role: inviteRole });
+      setInviteEmail("");
+    } catch {
+      // Error is exposed on inviteMember.error and rendered in the card.
+    }
   }
 
   async function onMintJoin(e: FormEvent) {
     e.preventDefault();
     const hrs = Number(joinHours);
-    const tok = await createJoinToken.mutateAsync({
-      label: joinLabel.trim() || undefined,
-      expiresInHours: Number.isFinite(hrs) && hrs > 0 ? hrs : undefined,
-    });
-    setMintedJoin(tok);
-    setJoinLabel("");
+    try {
+      const tok = await createJoinToken.mutateAsync({
+        label: joinLabel.trim() || undefined,
+        expiresInHours: Number.isFinite(hrs) && hrs > 0 ? hrs : undefined,
+      });
+      setMintedJoin(tok);
+      setJoinLabel("");
+    } catch {
+      // Error is exposed on createJoinToken.error and rendered in the card.
+    }
   }
 
   async function onMintApi(e: FormEvent) {
@@ -109,12 +149,16 @@ export function OrganizationPage() {
     const name = apiName.trim();
     if (!name) return;
     const days = Number(apiDays);
-    const tok = await createApiToken.mutateAsync({
-      name,
-      expiresInDays: Number.isFinite(days) && days > 0 ? days : undefined,
-    });
-    setMintedApi(tok);
-    setApiName("");
+    try {
+      const tok = await createApiToken.mutateAsync({
+        name,
+        expiresInDays: Number.isFinite(days) && days > 0 ? days : undefined,
+      });
+      setMintedApi(tok);
+      setApiName("");
+    } catch {
+      // Error is exposed on createApiToken.error and rendered in the card.
+    }
   }
 
   return (
@@ -161,7 +205,10 @@ export function OrganizationPage() {
                           variant="outline"
                           size="sm"
                           disabled={switchOrg.isPending}
-                          onClick={() => switchOrg.mutate(org.id)}
+                          onClick={() => {
+                            chooseProject(null);
+                            switchOrg.mutate(org.id);
+                          }}
                           className="font-mono text-[11px]"
                         >
                           Switch
@@ -192,9 +239,11 @@ export function OrganizationPage() {
                 {createOrg.isPending ? "Creating…" : "Create org"}
               </Button>
             </form>
-            {createOrg.error && (
+            {(switchOrg.error || createOrg.error) && (
               <Alert variant="destructive" className="mt-2 border-critical/40 font-mono text-[11px]">
-                <AlertDescription className="text-[11px] text-critical">{String(createOrg.error)}</AlertDescription>
+                <AlertDescription className="text-[11px] text-critical">
+                  {String(switchOrg.error ?? createOrg.error)}
+                </AlertDescription>
               </Alert>
             )}
           </Card>
@@ -344,40 +393,54 @@ export function OrganizationPage() {
               disabled={createJoinToken.isPending}
               className="text-[12px]"
             >
-              Mint join token
+              {createJoinToken.isPending ? "Minting…" : "Mint join token"}
             </Button>
           </form>
 
+          {(createJoinToken.error || revokeJoinToken.error) && (
+            <Alert variant="destructive" className="mb-3 border-critical/40 font-mono text-[11px]">
+              <AlertDescription className="text-[11px] text-critical">
+                {String(createJoinToken.error ?? revokeJoinToken.error)}
+              </AlertDescription>
+            </Alert>
+          )}
+
           {mintedJoin && (
             <Alert className="mb-4 rounded-xl border-primary/50 bg-primary/5 p-3">
-              <AlertTitle className="font-mono text-[11px] font-medium text-primary">
-                Copy now — shown once
-              </AlertTitle>
-              <AlertAction>
+              <div className="flex min-w-0 flex-wrap items-center justify-between gap-2">
+                <AlertTitle className="font-mono text-[11px] font-medium text-primary">
+                  Copy now — shown once
+                </AlertTitle>
                 <Button
                   type="button"
                   variant="outline"
                   size="xs"
                   onClick={() =>
-                    copy(
+                    void copy(
                       "join",
                       `sudo hotbed join ${origin} /var/lib/hotbed --user $USER --token ${mintedJoin.token}`,
                     )
                   }
-                  className="border-primary/40 font-mono text-[10.5px] text-primary hover:bg-primary/10"
+                  className="shrink-0 border-primary/40 font-mono text-[10.5px] text-primary hover:bg-primary/10"
                 >
                   {copied === "join" ? "Copied" : "Copy join command"}
                 </Button>
-              </AlertAction>
-              <AlertDescription className="mt-1">
-                <pre className="overflow-x-auto font-mono text-[11px] text-foreground">
+              </div>
+              <AlertDescription className="mt-1.5 min-w-0">
+                <pre className="max-w-full overflow-x-auto font-mono text-[11px] text-foreground">
                   {`sudo hotbed join ${origin} /var/lib/hotbed --user $USER --token ${mintedJoin.token}`}
                 </pre>
               </AlertDescription>
             </Alert>
           )}
 
-          {joinTokens && joinTokens.tokens.length > 0 ? (
+          {loadingJoinTokens ? (
+            <div className="py-6 text-center font-mono text-[11.5px] text-muted-foreground">loading join tokens…</div>
+          ) : joinTokensErr ? (
+            <Alert variant="destructive" className="border-critical/40 font-mono text-[11px]">
+              <AlertDescription className="text-[11px] text-critical">{String(joinTokensErr)}</AlertDescription>
+            </Alert>
+          ) : joinTokens && joinTokens.tokens.length > 0 ? (
             <div className="space-y-1.5">
               {joinTokens.tokens.map((t) => (
                 <div
@@ -399,6 +462,7 @@ export function OrganizationPage() {
                       type="button"
                       variant="outline"
                       size="xs"
+                      disabled={revokeJoinToken.isPending}
                       onClick={() => revokeJoinToken.mutate(t.id)}
                       className="font-mono text-[10.5px] text-muted-foreground hover:border-critical/60 hover:text-critical"
                     >
@@ -440,33 +504,47 @@ export function OrganizationPage() {
               disabled={createApiToken.isPending || !apiName.trim()}
               className="text-[12px]"
             >
-              Create token
+              {createApiToken.isPending ? "Creating…" : "Create token"}
             </Button>
           </form>
 
-          {mintedApi && (
-            <Alert className="mb-4 rounded-xl border-primary/50 bg-primary/5 p-3">
-              <AlertTitle className="font-mono text-[11px] font-medium text-primary">
-                Copy now — shown once
-              </AlertTitle>
-              <AlertAction>
-                <Button
-                  type="button"
-                  variant="outline"
-                  size="xs"
-                  onClick={() => copy("api", mintedApi.token)}
-                  className="border-primary/40 font-mono text-[10.5px] text-primary hover:bg-primary/10"
-                >
-                  {copied === "api" ? "Copied" : "Copy token"}
-                </Button>
-              </AlertAction>
-              <AlertDescription className="mt-1">
-                <pre className="overflow-x-auto font-mono text-[11px] text-foreground">{mintedApi.token}</pre>
+          {(createApiToken.error || revokeApiToken.error) && (
+            <Alert variant="destructive" className="mb-3 border-critical/40 font-mono text-[11px]">
+              <AlertDescription className="text-[11px] text-critical">
+                {String(createApiToken.error ?? revokeApiToken.error)}
               </AlertDescription>
             </Alert>
           )}
 
-          {apiTokens && apiTokens.tokens.length > 0 ? (
+          {mintedApi && (
+            <Alert className="mb-4 rounded-xl border-primary/50 bg-primary/5 p-3">
+              <div className="flex min-w-0 flex-wrap items-center justify-between gap-2">
+                <AlertTitle className="font-mono text-[11px] font-medium text-primary">
+                  Copy now — shown once
+                </AlertTitle>
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="xs"
+                  onClick={() => void copy("api", mintedApi.token)}
+                  className="shrink-0 border-primary/40 font-mono text-[10.5px] text-primary hover:bg-primary/10"
+                >
+                  {copied === "api" ? "Copied" : "Copy token"}
+                </Button>
+              </div>
+              <AlertDescription className="mt-1.5 min-w-0">
+                <pre className="max-w-full overflow-x-auto font-mono text-[11px] text-foreground">{mintedApi.token}</pre>
+              </AlertDescription>
+            </Alert>
+          )}
+
+          {loadingApiTokens ? (
+            <div className="py-6 text-center font-mono text-[11.5px] text-muted-foreground">loading API tokens…</div>
+          ) : apiTokensErr ? (
+            <Alert variant="destructive" className="border-critical/40 font-mono text-[11px]">
+              <AlertDescription className="text-[11px] text-critical">{String(apiTokensErr)}</AlertDescription>
+            </Alert>
+          ) : apiTokens && apiTokens.tokens.length > 0 ? (
             <div className="space-y-1.5">
               {apiTokens.tokens.map((t) => (
                 <div
@@ -486,6 +564,7 @@ export function OrganizationPage() {
                       type="button"
                       variant="outline"
                       size="xs"
+                      disabled={revokeApiToken.isPending}
                       onClick={() => revokeApiToken.mutate(t.id)}
                       className="font-mono text-[10.5px] text-muted-foreground hover:border-critical/60 hover:text-critical"
                     >

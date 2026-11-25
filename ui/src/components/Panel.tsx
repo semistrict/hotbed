@@ -66,7 +66,7 @@ export function StatTile({
     >
       <div className="eyebrow truncate">{label}</div>
       <div className={cn("mt-1.5 flex flex-wrap items-baseline gap-x-1 gap-y-0.5", color)}>
-        <span className="display text-[22px] leading-none font-medium sm:text-[26px] md:text-[28px]">{value}</span>
+        <span className="display num text-[22px] leading-none font-medium sm:text-[26px] md:text-[28px]">{value}</span>
         {unit && <span className="font-mono text-[10.5px] text-muted-foreground sm:text-[11px]">{unit}</span>}
       </div>
       {trend && <div className="mt-2">{trend}</div>}

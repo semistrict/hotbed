@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { isNavActive, routeTitle } from "./Shell";
+import { isNavActive, routeParent, routeTitle } from "./Shell";
 
 describe("Shell navigation helpers", () => {
   it("marks Projects active for root and workspace detail routes", () => {
@@ -36,5 +36,25 @@ describe("Shell navigation helpers", () => {
     expect(routeTitle("/commands/abc")).toBe("Commands");
     expect(routeTitle("/sessions/warm-fox")).toBe("Sessions");
     expect(routeTitle("/org")).toBe("Organization");
+    expect(routeTitle("/org", false)).toBe("Access & Tokens");
+  });
+
+  it("resolves section root links for detail routes and null for section roots", () => {
+    expect(routeParent("/nodes/ubu1")).toBe("/nodes");
+    expect(routeParent("/sessions/warm-fox")).toBe("/sessions");
+    expect(routeParent("/commands/abc")).toBe("/commands");
+    expect(routeParent("/reviews/42")).toBe("/reviews");
+    expect(routeParent("/memories/11")).toBe("/memories");
+    expect(routeParent("/workspaces/ws-1")).toBe("/");
+
+    expect(routeParent("/")).toBeNull();
+    expect(routeParent("/nodes")).toBeNull();
+    expect(routeParent("/sessions")).toBeNull();
+    expect(routeParent("/commands")).toBeNull();
+    expect(routeParent("/reviews")).toBeNull();
+    expect(routeParent("/memories")).toBeNull();
+    expect(routeParent("/org")).toBeNull();
+    expect(routeParent("/cluster")).toBeNull();
+    expect(routeParent("/logs")).toBeNull();
   });
 });

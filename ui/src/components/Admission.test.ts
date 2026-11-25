@@ -20,5 +20,8 @@ describe("signalRule", () => {
     const cpu = create(AdmissionSignalSchema, { name: "cpu-pressure", value: 72, limit: 60, resume: 30, unit: "%", floor: false, holding: true });
     expect(signalRule(cpu)).toBe("holds at 60% · resumes under 30%");
     expect(signalRule(create(AdmissionSignalSchema, { ...cpu, name: "disk-free", unit: "bytes", floor: true, limit: 5 * 1024 ** 3, resume: 0 }))).toBe("holds under 5 GiB");
+    expect(
+      signalRule(create(AdmissionSignalSchema, { ...cpu, name: "disk-free", unit: "bytes", floor: true, limit: 5 * 1024 ** 3, resume: 10 * 1024 ** 3 })),
+    ).toBe("holds under 5 GiB · resumes above 10 GiB");
   });
 });

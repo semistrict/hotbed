@@ -1,6 +1,7 @@
 import { Link } from "@tanstack/react-router";
 import { duration, speedup } from "../../lib/format";
 import { CommandInline } from "../CommandBlock";
+import { Empty } from "../Panel";
 
 export interface SpeedRow {
   id: string;
@@ -17,7 +18,8 @@ export interface SpeedRow {
  * nothing, the ember sliver is what it cost forked from a warm base.
  */
 export function SpeedBars({ rows }: { rows: SpeedRow[] }) {
-  const max = Math.max(1, ...rows.map((r) => r.coldSeconds));
+  if (rows.length === 0) return <Empty>No builds recorded yet.</Empty>;
+  const max = Math.max(1, ...rows.flatMap((r) => [r.coldSeconds, r.seconds]));
   return (
     <ul className="space-y-3">
       {rows.map((r, i) => (

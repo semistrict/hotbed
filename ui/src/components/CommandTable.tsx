@@ -12,8 +12,19 @@ import { ProjectTag } from "./ProjectTag";
 import { SessionLink } from "./SessionLink";
 import { BenchTag, KindTag, RuntimeBadge, StateBadge } from "./StateBadges";
 
-function identityColumns(project: string | null): string[] {
-  return ["state", "command", "session", ...(project ? [] : ["project"]), "repo", "workspace", "runtime", "node"];
+export type CommandTableColumn = "workspace" | "node" | "project";
+
+function identityColumns(showProject: boolean, showWorkspace: boolean, showNode: boolean): string[] {
+  return [
+    "state",
+    "command",
+    "session",
+    ...(showProject ? ["project"] : []),
+    "repo",
+    ...(showWorkspace ? ["workspace"] : []),
+    "runtime",
+    ...(showNode ? ["node"] : []),
+  ];
 }
 
 export function commandRuntime(
@@ -39,14 +50,28 @@ function WorkspaceCell({ id, known }: { id: string; known: boolean }) {
 }
 
 /** Live commands: what each is doing now, against its limits. */
-export function LiveCommandTable({ s, commands }: { s: Snapshot; commands: Command[] }) {
+export function LiveCommandTable({
+  s,
+  commands,
+  hideColumns,
+  empty = "No commands here right now.",
+}: {
+  s: Snapshot;
+  commands: Command[];
+  hideColumns?: readonly CommandTableColumn[];
+  empty?: string;
+}) {
   const now = Number(s.now);
   const [project] = useProject();
-  if (commands.length === 0) return <Empty>No commands here right now.</Empty>;
+  if (commands.length === 0) return <Empty>{empty}</Empty>;
+  const hidden = new Set(hideColumns);
+  const showProject = !project && !hidden.has("project");
+  const showWorkspace = !hidden.has("workspace");
+  const showNode = !hidden.has("node");
   const workspacesById = new Map(s.workspaces.map((w) => [w.id, w]));
   return (
     <>
-      <div className="space-y-2.5 md:hidden">
+      <div className="space-y-2.5 lg:hidden">
         {commands.map((c) => {
           const since = Number(c.startedAt ?? c.queuedAt);
           const repoId = c.repo;
@@ -65,7 +90,7 @@ export function LiveCommandTable({ s, commands }: { s: Snapshot; commands: Comma
                     to="/commands/$id"
                     params={{ id: c.id }}
                     search={{ sample: true }}
-                    className="rounded border border-primary/35 bg-ember-wash px-1.5 py-px text-[9.5px] text-primary"
+                    className="rounded border border-primary/35 bg-ember-wash px-2 py-0.5 text-[9.5px] text-primary"
                   >
                     ◎ Sample
                   </Link>
@@ -79,11 +104,11 @@ export function LiveCommandTable({ s, commands }: { s: Snapshot; commands: Comma
 
               <div className="mt-2 flex flex-wrap items-center gap-x-2.5 gap-y-1 text-[10.5px] text-muted-foreground">
                 <SessionLink id={c.sessionId} />
-                {!project && <ProjectTag name={c.project || commandProject(s, c.sessionId, repoId || null)} />}
+                {showProject && <ProjectTag name={c.project || commandProject(s, c.sessionId, repoId || null)} />}
                 {repoId && <span>{repoId}</span>}
-                <span>{nodeName(s, c.nodeId)}</span>
+                {showNode && <span>{nodeName(s, c.nodeId)}</span>}
                 {c.state === CommandState.RUNNING && <span className="num text-foreground">{c.cpuCores.toFixed(1)} cores</span>}
-                {c.rebuilt && <span className="num">{c.rebuilt.units}/{c.rebuilt.of} crates</span>}
+                {c.rebuilt && <span className="num">{c.rebuilt.units}/{c.rebuilt.of} units</span>}
               </div>
 
               {c.url && (
@@ -104,7 +129,7 @@ export function LiveCommandTable({ s, commands }: { s: Snapshot; commands: Comma
                         {bytes(c.memoryBytes)} · high {limit(memHigh)}
                         {c.swapBytes > 0n && <span className="text-frost"> +{bytes(c.swapBytes)} swap</span>}
                       </span>
-                      <WorkspaceCell id={c.workspaceId} known={workspacesById.has(c.workspaceId)} />
+                      {showWorkspace && <WorkspaceCell id={c.workspaceId} known={workspacesById.has(c.workspaceId)} />}
                     </div>
                     {memHigh > 0n && <Meter value={Number(c.memoryBytes) / Number(memHigh)} marker={Number(memLow) / Number(memHigh)} />}
                   </div>
@@ -121,11 +146,11 @@ export function LiveCommandTable({ s, commands }: { s: Snapshot; commands: Comma
         })}
       </div>
 
-      <div className="hidden md:block">
+      <div className="hidden lg:block">
         <Table className="text-[12px]">
           <TableHeader className="eyebrow">
             <TableRow className="border-border hover:bg-transparent">
-              {[...identityColumns(project), "for", "cpu", "memory · high", "crates", "why"].map((h) => (
+              {[...identityColumns(showProject, showWorkspace, showNode), "for", "cpu", "memory · high", "units", "why"].map((h) => (
                 <TableHead key={h} className="h-auto px-2 py-2 font-normal text-muted-foreground">
                   {h}
                 </TableHead>
@@ -157,7 +182,7 @@ export function LiveCommandTable({ s, commands }: { s: Snapshot; commands: Comma
                           params={{ id: c.id }}
                           search={{ sample: true }}
                           title="Sample stacks, syscalls, open files & Linux diagnostics"
-                          className="rounded border border-primary/35 bg-ember-wash px-1.5 py-px font-mono text-[9.5px] text-primary hover:brightness-110"
+                          className="rounded border border-primary/35 bg-ember-wash px-2 py-0.5 font-mono text-[9.5px] text-primary hover:brightness-110"
                         >
                           ◎ Sample
                         </Link>
@@ -172,19 +197,21 @@ export function LiveCommandTable({ s, commands }: { s: Snapshot; commands: Comma
                   <TableCell className="px-2 py-2.5">
                     <SessionLink id={c.sessionId} />
                   </TableCell>
-                  {!project && (
+                  {showProject && (
                     <TableCell className="px-2 py-2.5">
                       <ProjectTag name={c.project || commandProject(s, c.sessionId, repoId || null)} />
                     </TableCell>
                   )}
                   <TableCell className="px-2 py-2.5 font-mono text-[11px] text-muted-foreground">{repoId || "—"}</TableCell>
-                  <TableCell className="px-2 py-2.5">
-                    <WorkspaceCell id={c.workspaceId} known={workspacesById.has(c.workspaceId)} />
-                  </TableCell>
+                  {showWorkspace && (
+                    <TableCell className="px-2 py-2.5">
+                      <WorkspaceCell id={c.workspaceId} known={workspacesById.has(c.workspaceId)} />
+                    </TableCell>
+                  )}
                   <TableCell className="px-2 py-2.5">
                     <RuntimeBadge runtime={runtime} />
                   </TableCell>
-                  <TableCell className="px-2 py-2.5 font-mono text-[11px] text-muted-foreground">{nodeName(s, c.nodeId)}</TableCell>
+                  {showNode && <TableCell className="px-2 py-2.5 font-mono text-[11px] text-muted-foreground">{nodeName(s, c.nodeId)}</TableCell>}
                   <TableCell className="num px-2 py-2.5 font-mono text-[11px] text-muted-foreground">{duration((now - since) / 1000)}</TableCell>
                   <TableCell className="num px-2 py-2.5 font-mono text-[11px]">{c.state === CommandState.RUNNING ? `${c.cpuCores.toFixed(1)} cores` : "—"}</TableCell>
                   <TableCell className="w-40 px-2 py-2.5">
@@ -213,15 +240,31 @@ export function LiveCommandTable({ s, commands }: { s: Snapshot; commands: Comma
 }
 
 /** Commands that ended: outcome, time against cold, and why it failed. */
-export function HistoryTable({ s, rows, limit = 200 }: { s: Snapshot; rows: FinishedCommand[]; limit?: number }) {
+export function HistoryTable({
+  s,
+  rows,
+  limit = 200,
+  empty = "Nothing matches.",
+  hideColumns,
+}: {
+  s: Snapshot;
+  rows: FinishedCommand[];
+  limit?: number;
+  empty?: string;
+  hideColumns?: readonly CommandTableColumn[];
+}) {
   const now = Number(s.now);
   const [project] = useProject();
-  if (rows.length === 0) return <Empty>Nothing matches.</Empty>;
+  if (rows.length === 0) return <Empty>{empty}</Empty>;
+  const hidden = new Set(hideColumns);
+  const showProject = !project && !hidden.has("project");
+  const showWorkspace = !hidden.has("workspace");
+  const showNode = !hidden.has("node");
   const workspacesById = new Map(s.workspaces.map((w) => [w.id, w]));
   const shown = rows.slice(0, limit);
   return (
     <div>
-      <div className="space-y-2 md:hidden">
+      <div className="space-y-2 xl:hidden">
         {shown.map((c) => {
           const runtime = commandRuntime(s, c, workspacesById);
           return (
@@ -240,15 +283,16 @@ export function HistoryTable({ s, rows, limit = 200 }: { s: Snapshot; rows: Fini
 
               <div className="num mt-1.5 flex flex-wrap items-center gap-x-2.5 gap-y-1 text-[10.5px] text-muted-foreground">
                 <SessionLink id={c.sessionId} />
-                {!project && <ProjectTag name={commandProject(s, c.sessionId, c.repoId)} />}
+                {showProject && <ProjectTag name={commandProject(s, c.sessionId, c.repoId)} />}
                 {c.repoId && <span>{c.repoId}</span>}
-                <span>{nodeName(s, c.nodeId)}</span>
+                {showWorkspace && c.workspaceId && <WorkspaceCell id={c.workspaceId} known={workspacesById.has(c.workspaceId)} />}
+                {showNode && <span>{nodeName(s, c.nodeId)}</span>}
                 <span className="text-faint">{ago(c.endedAt, now)}</span>
               </div>
 
               <div className="num mt-1 flex flex-wrap items-center gap-x-3 gap-y-0.5 text-[10px] text-faint">
                 {c.coldSeconds !== undefined && <span>cold {duration(c.coldSeconds)}</span>}
-                {c.rebuilt !== undefined && <span>{c.rebuilt}/{c.of ?? 0} crates</span>}
+                {c.rebuilt !== undefined && <span>{c.rebuilt}/{c.of ?? 0} units</span>}
                 <span>
                   peak {bytes(c.peakMemoryBytes)}
                   {c.parks > 0 && <span className="text-frost"> ❄{c.parks}</span>}
@@ -260,11 +304,11 @@ export function HistoryTable({ s, rows, limit = 200 }: { s: Snapshot; rows: Fini
         })}
       </div>
 
-      <div className="hidden md:block">
+      <div className="hidden xl:block">
         <Table className="text-[12px]">
           <TableHeader className="eyebrow">
             <TableRow className="border-border hover:bg-transparent">
-              {[...identityColumns(project), "ended", "took", "cold", "speedup", "crates", "peak mem", "why"].map((h) => (
+              {[...identityColumns(showProject, showWorkspace, showNode), "ended", "took", "cold", "speedup", "units", "peak mem", "why"].map((h) => (
                 <TableHead key={h} className="h-auto px-2 py-2 font-normal text-muted-foreground">
                   {h}
                 </TableHead>
@@ -273,11 +317,11 @@ export function HistoryTable({ s, rows, limit = 200 }: { s: Snapshot; rows: Fini
           </TableHeader>
           <TableBody className="num font-mono text-[11px]">
             {shown.map((c) => (
-              <TableRow key={c.id} className="border-border/60 hover:bg-muted/60">
+              <TableRow key={c.id} className="border-border/60 align-top hover:bg-muted/60">
                 <TableCell className="px-2 py-2">
                   <StateBadge state={c.state} />
                 </TableCell>
-                <TableCell className="max-w-[300px] px-2 py-2">
+                <TableCell className="max-w-[300px] px-2 py-2 whitespace-normal">
                   <Link to="/commands/$id" params={{ id: c.id }} className="block text-foreground hover:text-primary">
                     <CommandInline argv={c.argv} />
                   </Link>
@@ -286,19 +330,21 @@ export function HistoryTable({ s, rows, limit = 200 }: { s: Snapshot; rows: Fini
                 <TableCell className="px-2 py-2">
                   <SessionLink id={c.sessionId} />
                 </TableCell>
-                {!project && (
+                {showProject && (
                   <TableCell className="px-2 py-2">
                     <ProjectTag name={commandProject(s, c.sessionId, c.repoId)} />
                   </TableCell>
                 )}
                 <TableCell className="px-2 py-2 text-muted-foreground">{c.repoId || "—"}</TableCell>
-                <TableCell className="px-2 py-2">
-                  <WorkspaceCell id={c.workspaceId} known={workspacesById.has(c.workspaceId)} />
-                </TableCell>
+                {showWorkspace && (
+                  <TableCell className="px-2 py-2">
+                    <WorkspaceCell id={c.workspaceId} known={workspacesById.has(c.workspaceId)} />
+                  </TableCell>
+                )}
                 <TableCell className="px-2 py-2">
                   <RuntimeBadge runtime={commandRuntime(s, c, workspacesById)} />
                 </TableCell>
-                <TableCell className="px-2 py-2 text-muted-foreground">{nodeName(s, c.nodeId)}</TableCell>
+                {showNode && <TableCell className="px-2 py-2 text-muted-foreground">{nodeName(s, c.nodeId)}</TableCell>}
                 <TableCell className="px-2 py-2 text-muted-foreground">{ago(c.endedAt, now)}</TableCell>
                 <TableCell className="px-2 py-2">{duration(c.seconds)}</TableCell>
                 <TableCell className="px-2 py-2 text-faint">{c.coldSeconds !== undefined ? duration(c.coldSeconds) : "—"}</TableCell>
@@ -308,7 +354,7 @@ export function HistoryTable({ s, rows, limit = 200 }: { s: Snapshot; rows: Fini
                   {bytes(c.peakMemoryBytes)}
                   {c.parks > 0 && <span className="text-frost"> ❄{c.parks}</span>}
                 </TableCell>
-                <TableCell className="px-2 py-2 font-sans text-muted-foreground">{c.failure ? (FAILURE[c.failure] ?? c.failure) : ""}</TableCell>
+                <TableCell className="max-w-[260px] px-2 py-2 font-sans whitespace-normal text-muted-foreground">{c.failure ? (FAILURE[c.failure] ?? c.failure) : ""}</TableCell>
               </TableRow>
             ))}
           </TableBody>

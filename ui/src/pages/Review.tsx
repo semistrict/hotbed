@@ -102,7 +102,7 @@ function ReviewView({ s, r }: { s: Snapshot; r: Review }) {
                 <>{short(r.head)}, the whole tree</>
               )}
             </span>
-            {r.snapshotOf && <div className="mt-0.5 text-[11px] text-warning">uncommitted changes on {short(r.snapshotOf)}, as a snapshot commit</div>}
+            {r.snapshotOf && <div className="mt-0.5 text-[11px] text-warning-ink">uncommitted changes on {short(r.snapshotOf)}, as a snapshot commit</div>}
           </Fact>
           <Fact label="implementer">
             {implStamp ? (
@@ -142,10 +142,18 @@ function ReviewView({ s, r }: { s: Snapshot; r: Review }) {
         </div>
 
         {r.instructions && <Prose label="asked to look at" text={r.instructions} />}
-        {r.reviewers.length === 0 && r.summary && (
-          <Prose label={r.state === ReviewState.DONE ? "the reviewer's summary" : `why it ${r.state === ReviewState.FAILED ? "failed" : "was cancelled"}`} text={r.summary} />
+        {r.summary && (r.reviewers.length === 0 || r.state === ReviewState.FAILED || r.state === ReviewState.CANCELLED) && (
+          <Prose
+            label={
+              r.state === ReviewState.FAILED
+                ? "why it failed"
+                : r.state === ReviewState.CANCELLED
+                  ? "why it was cancelled"
+                  : "the reviewer's summary"
+            }
+            text={r.summary}
+          />
         )}
-        {r.state === ReviewState.CANCELLED && r.summary && <Prose label="why it was cancelled" text={r.summary} />}
         {r.reviewers.length === 0 && r.report && <Report text={r.report} />}
       </Card>
 
@@ -209,7 +217,7 @@ function ReviewerRow({ s, rv, now }: { s: Snapshot; rv: Reviewer; now: number })
           {rv.ended && <span className="ml-1.5 text-faint">· ended {ago(rv.ended.at, now)}</span>}
         </span>
       </div>
-      {rv.summary && <p className="mt-1.5 text-[12.5px] leading-relaxed whitespace-pre-wrap text-foreground">{rv.summary}</p>}
+      {rv.summary && <Markdown className="mt-1.5 text-[12.5px] leading-relaxed text-foreground">{rv.summary}</Markdown>}
       {rv.report && <Report text={rv.report} label={`reviewer #${rv.id} report (${rv.model || "unknown"})`} />}
     </div>
   );
@@ -222,7 +230,7 @@ function ModelPill({ model }: { model: string }) {
 const SEVERITY_TONE: Record<FindingSeverity, string> = {
   [FindingSeverity.UNSPECIFIED]: "text-muted-foreground",
   [FindingSeverity.IMPORTANT]: "text-critical",
-  [FindingSeverity.PRE_EXISTING]: "text-warning",
+  [FindingSeverity.PRE_EXISTING]: "text-warning-ink",
   [FindingSeverity.NIT]: "text-muted-foreground",
 };
 
@@ -239,7 +247,7 @@ function Prose({ label, text }: { label: string; text: string }) {
   return (
     <div className="mt-4 border-t border-border pt-3">
       <div className="eyebrow">{label}</div>
-      <p className="mt-1.5 text-[13px] leading-relaxed whitespace-pre-wrap text-foreground">{text}</p>
+      <Markdown className="mt-1.5 text-[13px] leading-relaxed text-foreground">{text}</Markdown>
     </div>
   );
 }
@@ -271,14 +279,14 @@ function StampLine({ s, st, now, hideModel = false }: { s: Snapshot; st: Stamp; 
     <span className="inline-flex flex-wrap items-center gap-1" title={titleParts.join(" · ")}>
       {user ? (
         <>
-          <span className="rounded bg-ember-wash px-1 py-0.2 font-mono text-[10px] font-medium text-primary">user</span>
+          <span className="rounded bg-ember-wash px-1 py-px font-mono text-[10px] font-medium text-primary">user</span>
           <span className="text-foreground">{st.user || "you"}</span>
         </>
       ) : (
         <>
-          <span className="rounded border border-border px-1 py-0.2 font-mono text-[10px] text-muted-foreground">agent</span>
+          <span className="rounded border border-border px-1 py-px font-mono text-[10px] text-muted-foreground">agent</span>
           {listed ? <SessionLink id={st.session} /> : <span className="font-mono text-[11px]">{st.session}</span>}
-          {!hideModel && st.model && <span className="rounded bg-muted px-1 py-0.2 font-mono text-[10.5px] text-foreground">{st.model}</span>}
+          {!hideModel && st.model && <span className="rounded bg-muted px-1 py-px font-mono text-[10.5px] text-foreground">{st.model}</span>}
           {st.subagent && <span className="font-mono text-[10.5px] text-muted-foreground">({st.subagent})</span>}
         </>
       )}
@@ -293,7 +301,7 @@ const DECISION: Record<FindingDecision, { text: string; className: string }> = {
   [FindingDecision.OPEN]: { text: "undecided", className: "text-muted-foreground border-border" },
   [FindingDecision.ACCEPTED]: { text: "✓ accepted", className: "text-good-ink border-good/40" },
   [FindingDecision.DISMISSED]: { text: "⊘ dismissed", className: "text-faint border-border" },
-  [FindingDecision.WONT_FIX]: { text: "⊘ won't fix", className: "text-warning border-warning/40" },
+  [FindingDecision.WONT_FIX]: { text: "⊘ won't fix", className: "text-warning-ink border-warning/40" },
   [FindingDecision.FIXED]: { text: "✓ fixed", className: "text-good-ink border-good/40 bg-good/10" },
   [FindingDecision.INVALID]: { text: "✗ invalid", className: "text-faint border-border" },
 };
@@ -312,7 +320,7 @@ function FindingCard({ s, r, f, now, delay }: { s: Snapshot; r: Review; f: Findi
           <h3 className="text-[15px] font-semibold text-foreground">{f.title}</h3>
           {f.category && <span className="font-mono text-[10px] tracking-wider text-faint uppercase">{f.category}</span>}
           {f.verdict !== FindingVerdict.UNSPECIFIED && (
-            <span className={`font-mono text-[10.5px] ${f.verdict === FindingVerdict.CONFIRMED ? "text-critical" : "text-warning"}`}>
+            <span className={`font-mono text-[10.5px] ${f.verdict === FindingVerdict.CONFIRMED ? "text-critical" : "text-warning-ink"}`}>
               {f.verdict === FindingVerdict.CONFIRMED ? "confirmed" : "plausible"}
             </span>
           )}
@@ -327,19 +335,24 @@ function FindingCard({ s, r, f, now, delay }: { s: Snapshot; r: Review; f: Findi
           )}
           <Badge
             variant="outline"
-            className={`h-auto max-w-full rounded-md px-1.5 py-0.5 text-left font-mono text-[10.5px] font-normal whitespace-normal sm:ml-auto ${decision.className}`}
-            title={f.decided ? `${actorSummary(f.decided)}: ${f.decided.reason}` : "The implementer has not decided"}
+            className={`h-auto shrink-0 rounded-md px-1.5 py-0.5 font-mono text-[10.5px] font-normal sm:ml-auto ${decision.className}`}
+            title={f.decided ? `${actorSummary(f.decided)}${f.decided.reason ? `: ${f.decided.reason}` : ""}` : "The implementer has not decided"}
           >
             {decision.text}
             {f.decided && <span className="ml-1 text-faint">({isUserActor(f.decided) ? "user" : f.decided.model || f.decided.session || "agent"})</span>}
-            {f.decided?.reason && <span className="text-muted-foreground">: {f.decided.reason}</span>}
           </Badge>
         </header>
-        <p className="text-[13px] leading-relaxed whitespace-pre-wrap text-foreground">{f.summary}</p>
+        {f.decided?.reason && (
+          <div className="space-y-1 rounded-lg border border-border/70 bg-muted/30 px-3 py-2 text-[12.5px]">
+            <div className="eyebrow">decision note</div>
+            <Markdown className="leading-relaxed text-foreground/90">{f.decided.reason}</Markdown>
+          </div>
+        )}
+        <Markdown className="text-[13px] leading-relaxed text-foreground">{f.summary}</Markdown>
         {f.failureScenario && (
-          <div className="rounded-lg border-l-2 border-critical/50 bg-muted/40 px-3 py-2 text-[12.5px]">
-            <span className="eyebrow mr-2">when it fails</span>
-            <span className="whitespace-pre-wrap text-foreground">{f.failureScenario}</span>
+          <div className="space-y-1 rounded-lg border-l-2 border-critical/50 bg-muted/40 px-3 py-2 text-[12.5px]">
+            <div className="eyebrow">when it fails</div>
+            <Markdown className="leading-relaxed text-foreground">{f.failureScenario}</Markdown>
           </div>
         )}
         {f.locations.map((l, i) => (
@@ -440,16 +453,18 @@ function Thread({ s, events, now }: { s: Snapshot; events: ReviewEvent[]; now: n
   return (
     <ol className="space-y-2 border-l-2 border-border pl-3">
       {events.map((e) => (
-        <li key={String(e.seq)} className="text-[12.5px]">
+        <li key={String(e.seq)} className="space-y-1 text-[12.5px]">
           {e.by && (
             <div className="text-[11px] text-muted-foreground">
               <StampLine s={s} st={e.by} now={now} />
             </div>
           )}
           {e.quick !== QuickResponse.UNSPECIFIED && (
-            <span className="mr-2 rounded-md bg-ember-wash px-1.5 py-0.5 font-mono text-[10.5px] text-primary">{quickLabel(e.quick)}</span>
+            <div>
+              <span className="rounded-md bg-ember-wash px-1.5 py-0.5 font-mono text-[10.5px] text-primary">{quickLabel(e.quick)}</span>
+            </div>
           )}
-          {e.text && <span className="whitespace-pre-wrap text-foreground">{e.text}</span>}
+          {e.text && <Markdown className="leading-relaxed text-foreground">{e.text}</Markdown>}
         </li>
       ))}
     </ol>
@@ -480,21 +495,26 @@ function Respond({ reviewId, findingId, latest = QuickResponse.UNSPECIFIED }: { 
       />
       <div className="flex flex-wrap items-center gap-2">
         {findingId !== null &&
-          QUICKS.map((q) => (
-            <Button
-              key={q.quick}
-              type="button"
-              variant="outline"
-              size="sm"
-              disabled={send.isPending}
-              onClick={() => send.mutate(q.quick)}
-              title={q.hint}
-              aria-pressed={latest === q.quick}
-              className={`text-[12px] ${latest === q.quick ? "border-primary/60 bg-ember-wash text-primary hover:bg-ember-wash" : "border-border text-foreground"}`}
-            >
-              {q.label}
-            </Button>
-          ))}
+          QUICKS.map((q) => {
+            const duplicate = latest === q.quick && text.trim() === "";
+            const sendingThis = send.isPending && send.variables === q.quick;
+            return (
+              <Button
+                key={q.quick}
+                type="button"
+                variant="outline"
+                size="sm"
+                disabled={send.isPending || duplicate}
+                onClick={() => {
+                  if (!duplicate) send.mutate(q.quick);
+                }}
+                title={duplicate ? "Already selected; add a comment to send again" : q.hint}
+                className={`text-[12px] ${latest === q.quick ? "border-primary/60 bg-ember-wash text-primary hover:bg-ember-wash" : "border-border text-foreground"}`}
+              >
+                {sendingThis ? "Sending…" : q.label}
+              </Button>
+            );
+          })}
         <Button
           type="button"
           size="sm"
@@ -502,7 +522,7 @@ function Respond({ reviewId, findingId, latest = QuickResponse.UNSPECIFIED }: { 
           onClick={() => send.mutate(QuickResponse.UNSPECIFIED)}
           className="text-[12.5px]"
         >
-          {send.isPending ? "Sending…" : "Comment"}
+          {send.isPending && send.variables === QuickResponse.UNSPECIFIED ? "Sending…" : "Comment"}
         </Button>
         {send.error && <span className="font-mono text-[11px] text-critical">{String(send.error)}</span>}
       </div>

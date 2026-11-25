@@ -242,6 +242,9 @@ func (e *Engine) shellSpec(shellID string, w *workspace, repo string, args, extr
 	if ws.SessionId != "" {
 		env = append(env, "HOTBED_SESSION="+ws.SessionId)
 	}
+	if mem := e.memoryBudgetBytes(e.usesRuntime(ws.Id), 0); mem > 0 {
+		env = append(env, "HOTBED_MEMORY_BYTES="+strconv.FormatInt(mem, 10))
+	}
 	env = append(env, extraEnv...)
 	env = append(env, userEnv...)
 

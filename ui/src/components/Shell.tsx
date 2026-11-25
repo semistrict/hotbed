@@ -17,19 +17,19 @@ import {
   Server,
   Sun,
   Terminal,
-  X,
   type LucideIcon,
 } from "lucide-react";
 import { useEffect, useState, type ReactNode } from "react";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
-import { Button } from "@/components/ui/button";
 import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuGroup,
   DropdownMenuItem,
   DropdownMenuLabel,
+  DropdownMenuRadioGroup,
+  DropdownMenuRadioItem,
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
@@ -106,15 +106,30 @@ export function isNavActive(pathname: string, to: NavItem["to"]): boolean {
   return pathname === to || pathname.startsWith(`${to}/`);
 }
 
-export function routeTitle(pathname: string): string {
+export function routeTitle(pathname: string, workosEnabled = true): string {
   if (pathname.startsWith("/workspaces")) return "Workspace";
   const found = ALL_NAV.find((n) => isNavActive(pathname, n.to));
+  if (found?.to === "/org" && !workosEnabled) return "Access & Tokens";
   return found?.label ?? "hotbed";
+}
+
+export function routeParent(pathname: string): NavItem["to"] | null {
+  if (pathname === "/workspaces" || pathname.startsWith("/workspaces/")) return "/";
+  for (const item of ALL_NAV) {
+    if (item.to !== "/" && pathname.startsWith(`${item.to}/`)) return item.to;
+  }
+  return null;
 }
 
 type Theme = "system" | "light" | "dark";
 
-function useTheme(): [Theme, (next: Theme) => void, () => void] {
+const THEME_OPTIONS: readonly { value: Theme; label: string; icon: LucideIcon }[] = [
+  { value: "system", label: "Auto", icon: Monitor },
+  { value: "dark", label: "Dark", icon: Moon },
+  { value: "light", label: "Light", icon: Sun },
+];
+
+function useTheme(): [Theme, (next: Theme) => void] {
   const [theme, setTheme] = useState<Theme>(() => {
     try {
       const saved = localStorage.getItem("hotbed-theme");
@@ -133,8 +148,7 @@ function useTheme(): [Theme, (next: Theme) => void, () => void] {
       // Private windows refuse storage; the theme still applies for this visit.
     }
   }, [theme]);
-  const cycle = () => setTheme((t) => (t === "system" ? "dark" : t === "dark" ? "light" : "system"));
-  return [theme, setTheme, cycle];
+  return [theme, setTheme];
 }
 
 function readInitialSidebarOpen(): boolean {
@@ -155,19 +169,26 @@ export function Shell() {
 function ShellFrame() {
   const { data: whole, isError, error } = useSnapshot();
   const { data } = useScopedSnapshot();
-  const [project, chooseProject] = useProject();
-  const [theme, setTheme, cycleTheme] = useTheme();
+  const { data: auth } = useAuthMe();
+  const [theme, setTheme] = useTheme();
   const pathname = useRouterState({ select: (s) => s.location.pathname });
-  const { setOpenMobile } = useSidebar();
+  const { isMobile, state, setOpenMobile } = useSidebar();
   const online = whole?.nodes.filter((n) => n.online).length ?? 0;
+  const workosEnabled = Boolean(auth?.workosEnabled);
 
   // Close the mobile navigation drawer whenever the route changes.
   useEffect(() => {
     setOpenMobile(false);
   }, [pathname, setOpenMobile]);
 
-  const currentLabel = routeTitle(pathname);
+  const currentLabel = routeTitle(pathname, workosEnabled);
+  const parentTo = routeParent(pathname);
   const openQuestions = data?.openQuestions ?? 0;
+  const controllerDotClass = isError
+    ? "inline-block size-1.5 rounded-full bg-critical"
+    : online === 0
+      ? "inline-block size-1.5 rounded-full bg-muted-foreground/60"
+      : "live-dot inline-block size-1.5 rounded-full bg-primary text-primary";
 
   return (
     <>
@@ -177,42 +198,30 @@ function ShellFrame() {
         pathname={pathname}
         theme={theme}
         setTheme={setTheme}
-        cycleTheme={cycleTheme}
         online={online}
+        workosEnabled={workosEnabled}
       />
 
       <SidebarInset className="min-w-0 bg-transparent">
         <header className="sticky top-0 z-30 flex h-13 shrink-0 items-center gap-2 border-b border-border bg-background/80 px-3 backdrop-blur-md sm:h-12 sm:px-5 lg:px-7">
           <SidebarTrigger className="size-9 shrink-0 text-muted-foreground hover:text-foreground md:size-7" />
-          <Separator orientation="vertical" className="mr-0.5 h-4 bg-border" />
+          <Separator orientation="vertical" className="mr-0.5 h-4 bg-border data-vertical:self-center" />
 
           <div className="flex min-w-0 items-center gap-2">
-            <Link to="/" className="flex shrink-0 items-center gap-1.5 md:hidden" aria-label="hotbed home">
-              <Logo size={20} />
-            </Link>
-            <span className="truncate text-[13px] font-medium text-foreground">{currentLabel}</span>
-            {project && (
-              <span className="hidden items-center gap-1 rounded-full border border-primary/35 bg-ember-wash px-2 py-0.5 font-mono text-[10.5px] text-primary sm:inline-flex">
-                <span aria-hidden>◆</span>
-                <span className="max-w-32 truncate">{project}</span>
-                <button
-                  type="button"
-                  onClick={() => chooseProject(null)}
-                  className="ml-0.5 rounded-full p-0.5 text-primary/80 transition-colors hover:bg-primary/15 hover:text-primary"
-                  aria-label="Clear project scope"
-                  title="Show every project"
-                >
-                  <X className="size-2.5" />
-                </button>
-              </span>
+            {parentTo ? (
+              <Link
+                to={parentTo}
+                className="truncate text-[13px] font-medium text-foreground underline-offset-4 transition-colors hover:text-primary hover:underline"
+              >
+                {currentLabel}
+              </Link>
+            ) : (
+              <span className="truncate text-[13px] font-medium text-foreground">{currentLabel}</span>
             )}
           </div>
 
           <div className="ml-auto flex shrink-0 items-center gap-2">
-            {/* On mobile, expose a quick compact project switcher right in the header */}
-            <div className="md:hidden">
-              <ProjectPicker compact />
-            </div>
+            {(isMobile || state === "collapsed") && <ProjectPicker compact />}
 
             {openQuestions > 0 && pathname !== "/questions" && (
               <Link
@@ -229,9 +238,13 @@ function ShellFrame() {
               <Link
                 to="/nodes"
                 className="hidden items-center gap-2 rounded-full border border-border bg-card/60 px-2.5 py-1 font-mono text-[10.5px] text-muted-foreground transition-colors hover:border-border-strong hover:text-foreground sm:inline-flex"
-                title={`${whole.controller} · ${online} of ${whole.nodes.length} nodes online`}
+                title={
+                  isError
+                    ? `Lost connection to ${whole.controller} · ${online} of ${whole.nodes.length} nodes online`
+                    : `${whole.controller} · ${online} of ${whole.nodes.length} nodes online`
+                }
               >
-                <span className="live-dot inline-block size-1.5 rounded-full bg-primary text-primary" />
+                <span className={controllerDotClass} />
                 <span className="max-w-36 truncate">{whole.controller}</span>
                 <span className="text-faint">·</span>
                 <span className="num text-foreground">
@@ -273,19 +286,23 @@ function AppSidebar({
   pathname,
   theme,
   setTheme,
-  cycleTheme,
   online,
+  workosEnabled,
 }: {
   whole: Snapshot | undefined;
   scoped: Snapshot | undefined;
   pathname: string;
   theme: Theme;
   setTheme: (next: Theme) => void;
-  cycleTheme: () => void;
   online: number;
+  workosEnabled: boolean;
 }) {
   const [project] = useProject();
   const { setOpenMobile } = useSidebar();
+
+  const infraNav = INFRA_NAV.map((item) =>
+    item.to === "/org" && !workosEnabled ? { ...item, label: "Access & Tokens" } : item,
+  );
 
   const reviewsToDecide = scoped
     ? scoped.projects.filter((p) => project === null || p.name === project).reduce((sum, p) => sum + p.reviewsToDecide, 0)
@@ -361,7 +378,7 @@ function AppSidebar({
         node: (
           <Badge
             variant="secondary"
-            className="h-4 min-w-4 bg-[color-mix(in_oklab,var(--warning)_22%,transparent)] px-1.5 font-mono text-[10px] leading-4 text-warning"
+            className="h-4 min-w-4 bg-[color-mix(in_oklab,var(--warning)_22%,transparent)] px-1.5 font-mono text-[10px] leading-4 text-warning-ink"
             title={`${logWarns} warnings in the last 24h`}
           >
             {logWarns}
@@ -384,13 +401,7 @@ function AppSidebar({
             isActive={active}
             tooltip={`${item.label}${badge.tooltipSuffix ?? ""}`}
             className="h-9 gap-2.5 rounded-lg px-2.5 text-[13px] text-muted-foreground transition-colors hover:bg-sidebar-accent/80 hover:text-foreground data-active:bg-ember-wash data-active:font-medium data-active:text-foreground data-active:[&_svg]:text-primary md:h-8 md:text-[12.5px]"
-            render={
-              <Link
-                to={item.to}
-                title={item.shared ? "Shared across every project" : undefined}
-                onClick={() => setOpenMobile(false)}
-              />
-            }
+            render={<Link to={item.to} onClick={() => setOpenMobile(false)} />}
           >
             <Icon className="size-4 shrink-0" />
             <span>{item.label}</span>
@@ -399,7 +410,7 @@ function AppSidebar({
           {badge.urgent && (
             <span
               aria-hidden
-              className="pointer-events-none absolute top-1.5 right-1.5 hidden size-1.5 rounded-full bg-primary group-data-[collapsible=icon]:block"
+              className="pointer-events-none absolute top-1 right-1 hidden size-1.5 rounded-full bg-primary group-data-[collapsible=icon]:block"
             />
           )}
         </SidebarMenuItem>
@@ -407,7 +418,7 @@ function AppSidebar({
     });
 
   return (
-    <Sidebar collapsible="icon" className="border-r border-sidebar-border bg-sidebar/95 backdrop-blur-md">
+    <Sidebar collapsible="icon" className="border-r border-sidebar-border">
       <SidebarHeader className="gap-2.5 border-b border-sidebar-border/80 px-3 py-3 group-data-[collapsible=icon]:items-center group-data-[collapsible=icon]:px-2">
         <Link
           to="/"
@@ -424,42 +435,28 @@ function AppSidebar({
         </div>
       </SidebarHeader>
 
-      <SidebarContent className="px-1 py-1.5">
-        <SidebarGroup className="py-1.5">
-          <SidebarGroupLabel className="eyebrow h-7 px-2 text-[10px]">
+      <SidebarContent className="px-1 py-1.5 group-data-[collapsible=icon]:px-0">
+        <SidebarGroup className="py-1.5 group-data-[collapsible=icon]:px-1.5">
+          <SidebarGroupLabel className="eyebrow h-7 px-2 text-[10px] group-data-[collapsible=icon]:-mt-7">
             {project ? `Project · ${project}` : "Workspace"}
           </SidebarGroupLabel>
           <SidebarGroupContent>
-            <SidebarMenu className="gap-0.5">{renderNavItems(WORKSPACE_NAV)}</SidebarMenu>
+            <SidebarMenu className="gap-0.5 group-data-[collapsible=icon]:items-center">{renderNavItems(WORKSPACE_NAV)}</SidebarMenu>
           </SidebarGroupContent>
         </SidebarGroup>
 
         <SidebarSeparator className="my-1" />
 
-        <SidebarGroup className="py-1.5">
-          <SidebarGroupLabel className="eyebrow h-7 px-2 text-[10px]">Infrastructure</SidebarGroupLabel>
+        <SidebarGroup className="py-1.5 group-data-[collapsible=icon]:px-1.5">
+          <SidebarGroupLabel className="eyebrow h-7 px-2 text-[10px] group-data-[collapsible=icon]:-mt-7">Infrastructure</SidebarGroupLabel>
           <SidebarGroupContent>
-            <SidebarMenu className="gap-0.5">{renderNavItems(INFRA_NAV)}</SidebarMenu>
+            <SidebarMenu className="gap-0.5 group-data-[collapsible=icon]:items-center">{renderNavItems(infraNav)}</SidebarMenu>
           </SidebarGroupContent>
         </SidebarGroup>
       </SidebarContent>
 
-      <SidebarFooter className="gap-2 border-t border-sidebar-border/80 p-2.5 group-data-[collapsible=icon]:items-center group-data-[collapsible=icon]:px-2">
-        {whole && (
-          <div
-            className="flex items-center gap-2 rounded-lg bg-sidebar-accent/55 px-2.5 py-1.5 font-mono text-[10.5px] text-muted-foreground group-data-[collapsible=icon]:justify-center group-data-[collapsible=icon]:bg-transparent group-data-[collapsible=icon]:p-1.5"
-            title={`${whole.controller} · ${online}/${whole.nodes.length} nodes online`}
-          >
-            <span className="live-dot inline-block size-1.5 shrink-0 rounded-full bg-primary text-primary" />
-            <span className="min-w-0 flex-1 truncate group-data-[collapsible=icon]:hidden">{whole.controller}</span>
-            <span className="num shrink-0 text-foreground group-data-[collapsible=icon]:hidden">
-              {online}/{whole.nodes.length}
-            </span>
-          </div>
-        )}
-
-        <ThemeControl theme={theme} setTheme={setTheme} cycleTheme={cycleTheme} />
-        <AccountMenu />
+      <SidebarFooter className="gap-2 border-t border-sidebar-border/80 p-2.5 group-data-[collapsible=icon]:items-center group-data-[collapsible=icon]:px-1.5">
+        <AccountMenu theme={theme} setTheme={setTheme} />
       </SidebarFooter>
 
       <SidebarRail />
@@ -479,60 +476,30 @@ function Logo({ size = 26 }: { size?: number }) {
   );
 }
 
-function ThemeControl({
+function AppearanceMenuSection({
   theme,
   setTheme,
-  cycleTheme,
 }: {
   theme: Theme;
   setTheme: (next: Theme) => void;
-  cycleTheme: () => void;
 }) {
-  const options: readonly { value: Theme; label: string; icon: LucideIcon }[] = [
-    { value: "system", label: "Auto", icon: Monitor },
-    { value: "dark", label: "Dark", icon: Moon },
-    { value: "light", label: "Light", icon: Sun },
-  ];
-  const ActiveIcon = options.find((o) => o.value === theme)?.icon ?? Monitor;
-
   return (
-    <>
-      <div
-        role="group"
-        aria-label="Theme"
-        className="grid grid-cols-3 gap-0.5 rounded-lg border border-sidebar-border bg-background/50 p-0.5 group-data-[collapsible=icon]:hidden"
+    <DropdownMenuGroup>
+      <DropdownMenuLabel>Appearance</DropdownMenuLabel>
+      <DropdownMenuRadioGroup
+        value={theme}
+        onValueChange={(value) => {
+          if (value === "system" || value === "dark" || value === "light") setTheme(value);
+        }}
       >
-        {options.map(({ value, label, icon: Icon }) => {
-          const active = theme === value;
-          return (
-            <button
-              key={value}
-              type="button"
-              onClick={() => setTheme(value)}
-              aria-pressed={active}
-              className={`flex h-7 items-center justify-center gap-1 rounded-md font-mono text-[10.5px] transition-colors ${
-                active ? "bg-sidebar-accent font-medium text-foreground shadow-xs" : "text-muted-foreground hover:text-foreground"
-              }`}
-            >
-              <Icon className="size-3" />
-              <span>{label}</span>
-            </button>
-          );
-        })}
-      </div>
-
-      <Button
-        type="button"
-        variant="ghost"
-        size="icon-sm"
-        onClick={cycleTheme}
-        className="hidden size-8 text-muted-foreground hover:text-foreground group-data-[collapsible=icon]:inline-flex"
-        title={`Theme: ${theme}`}
-        aria-label={`Switch theme (currently ${theme})`}
-      >
-        <ActiveIcon className="size-4" />
-      </Button>
-    </>
+        {THEME_OPTIONS.map(({ value, label, icon: Icon }) => (
+          <DropdownMenuRadioItem key={value} value={value} className="text-[12.5px]">
+            <Icon className="size-3.5 text-muted-foreground" />
+            {label}
+          </DropdownMenuRadioItem>
+        ))}
+      </DropdownMenuRadioGroup>
+    </DropdownMenuGroup>
   );
 }
 
@@ -563,6 +530,7 @@ function OrgPicker() {
           return;
         }
         if (val !== auth.organization?.id) {
+          setOpenMobile(false);
           chooseProject(null);
           switchOrg.mutate(val);
         }
@@ -593,11 +561,47 @@ function OrgPicker() {
   );
 }
 
-function AccountMenu() {
+function AccountMenu({ theme, setTheme }: { theme: Theme; setTheme: (next: Theme) => void }) {
   const { data: auth } = useAuthMe();
   const navigate = useNavigate();
   const { isMobile, setOpenMobile } = useSidebar();
-  if (!auth?.authenticated || !auth.workosEnabled) return null;
+
+  if (!auth?.authenticated || !auth.workosEnabled) {
+    const activeTheme = THEME_OPTIONS.find((o) => o.value === theme) ?? {
+      value: "system" as const,
+      label: "Auto",
+      icon: Monitor,
+    };
+    const ActiveIcon = activeTheme.icon;
+    return (
+      <SidebarMenu className="group-data-[collapsible=icon]:items-center">
+        <SidebarMenuItem>
+          <DropdownMenu>
+            <DropdownMenuTrigger
+              render={
+                <SidebarMenuButton
+                  className="h-8 gap-2.5 rounded-lg px-2.5 text-[12.5px] text-muted-foreground hover:bg-sidebar-accent/80 hover:text-foreground group-data-[collapsible=icon]:justify-center"
+                  tooltip={`Appearance (${activeTheme.label})`}
+                />
+              }
+            >
+              <ActiveIcon className="size-4 shrink-0" />
+              <span className="group-data-[collapsible=icon]:hidden">Appearance</span>
+              <ChevronsUpDown className="ml-auto size-3.5 shrink-0 text-faint group-data-[collapsible=icon]:hidden" />
+            </DropdownMenuTrigger>
+            <DropdownMenuContent
+              side={isMobile ? "top" : "right"}
+              align="end"
+              sideOffset={6}
+              className="w-44 font-sans"
+            >
+              <AppearanceMenuSection theme={theme} setTheme={setTheme} />
+            </DropdownMenuContent>
+          </DropdownMenu>
+        </SidebarMenuItem>
+      </SidebarMenu>
+    );
+  }
 
   const initials = (auth.user.name || auth.user.email || "U")
     .split(/[\s@._-]+/)
@@ -607,7 +611,7 @@ function AccountMenu() {
     .join("");
 
   return (
-    <SidebarMenu>
+    <SidebarMenu className="group-data-[collapsible=icon]:items-center">
       <SidebarMenuItem>
         <DropdownMenu>
           <DropdownMenuTrigger
@@ -653,6 +657,8 @@ function AccountMenu() {
               Organization & Access
             </DropdownMenuItem>
             <DropdownMenuSeparator />
+            <AppearanceMenuSection theme={theme} setTheme={setTheme} />
+            <DropdownMenuSeparator />
             <DropdownMenuItem variant="destructive" onClick={() => void signOut()}>
               <LogOut className="size-4" />
               Sign out
@@ -670,9 +676,10 @@ const ALL_PROJECTS = "__all__";
 function ProjectPicker({ compact = false }: { compact?: boolean }) {
   const { data } = useSnapshot();
   const [project, choose] = useProject();
+  const { setOpenMobile } = useSidebar();
   if (!data) return null;
   const items = [
-    { value: ALL_PROJECTS, label: compact ? "all projects" : "every project" },
+    { value: ALL_PROJECTS, label: "All projects" },
     ...data.projects.map((p) => ({
       value: p.name,
       label: p.openQuestions > 0 ? `${p.name} (${p.openQuestions} ?)` : p.name,
@@ -683,7 +690,10 @@ function ProjectPicker({ compact = false }: { compact?: boolean }) {
     <Select
       items={items}
       value={project ?? ALL_PROJECTS}
-      onValueChange={(val) => choose(!val || val === ALL_PROJECTS ? null : val)}
+      onValueChange={(val) => {
+        choose(!val || val === ALL_PROJECTS ? null : val);
+        setOpenMobile(false);
+      }}
     >
       <SelectTrigger
         size="sm"
@@ -699,9 +709,9 @@ function ProjectPicker({ compact = false }: { compact?: boolean }) {
           <SelectValue className="truncate" />
         </span>
       </SelectTrigger>
-      <SelectContent className="min-w-44 font-mono text-[12px]">
+      <SelectContent align={compact ? "end" : "start"} className="min-w-44 font-mono text-[12px]">
         <SelectItem value={ALL_PROJECTS} className="text-[12px]">
-          {compact ? "all projects" : "every project"}
+          All projects
         </SelectItem>
         {data.projects.length > 0 && <SelectSeparator />}
         {data.projects.map((p) => (

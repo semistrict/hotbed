@@ -4,14 +4,14 @@ import { CommandState, RunOutcome } from "../api";
 
 /** Command states, each an icon and a word, never color alone. */
 const STATES: Record<CommandState, { label: string; icon: string; className: string }> = {
-  [CommandState.UNSPECIFIED]: { label: "unknown", icon: "?", className: "text-faint bg-muted" },
+  [CommandState.UNSPECIFIED]: { label: "unknown", icon: "?", className: "text-muted-foreground bg-muted" },
   [CommandState.QUEUED]: { label: "queued", icon: "◌", className: "text-muted-foreground bg-muted" },
   [CommandState.RUNNING]: { label: "running", icon: "●", className: "text-primary bg-ember-wash" },
   [CommandState.PARKED]: { label: "parked", icon: "❄", className: "text-frost bg-frost-wash" },
   [CommandState.PAUSED]: { label: "paused", icon: "⏸", className: "text-frost bg-frost-wash" },
   [CommandState.SUCCEEDED]: { label: "ok", icon: "✓", className: "text-good-ink bg-[color-mix(in_oklab,var(--good)_12%,transparent)]" },
   [CommandState.FAILED]: { label: "failed", icon: "✕", className: "text-critical bg-[color-mix(in_oklab,var(--critical)_12%,transparent)]" },
-  [CommandState.CANCELLED]: { label: "cancelled", icon: "⊘", className: "text-faint bg-muted" },
+  [CommandState.CANCELLED]: { label: "cancelled", icon: "⊘", className: "text-muted-foreground bg-muted" },
 };
 
 export function StateBadge({ state }: { state: CommandState }) {
@@ -33,11 +33,15 @@ export function BuildingBadge({ project, generation, progress }: { project: stri
     .filter(Boolean)
     .join(" · ");
   return (
-    <Badge variant="secondary" title={title} className="h-auto rounded-md border-transparent bg-ember-wash px-1.5 py-0.5 font-mono text-[10.5px] font-normal text-primary">
-      <span className="ember-pulse" aria-hidden>
+    <Badge
+      variant="secondary"
+      title={title}
+      className="h-auto max-w-full min-w-0 shrink rounded-md border-transparent bg-ember-wash px-1.5 py-0.5 font-mono text-[10.5px] font-normal text-primary"
+    >
+      <span className="ember-pulse shrink-0" aria-hidden>
         ●
       </span>
-      {label}
+      <span className="truncate">{label}</span>
     </Badge>
   );
 }
@@ -46,30 +50,33 @@ export function OnlineBadge({ online, asleep, storageError = "" }: { online: boo
   if (!online && storageError) {
     // Its worker heartbeats but cannot open its storage: it serves nothing.
     return (
-      <Badge variant="ghost" className="h-auto gap-1.5 px-0 py-0 font-mono text-[10.5px] font-normal text-serious" title={storageError}>
-        <span className="inline-block size-1.5 rounded-full bg-serious" aria-hidden />
+      <span className="inline-flex items-center gap-1.5 font-mono text-[10.5px] font-normal whitespace-nowrap text-serious-ink" title={storageError}>
+        <span className="inline-block size-1.5 shrink-0 rounded-full bg-serious" aria-hidden />
         no storage
-      </Badge>
+      </span>
     );
   }
   if (asleep) {
     return (
-      <Badge variant="ghost" className="h-auto gap-1.5 px-0 py-0 font-mono text-[10.5px] font-normal text-muted-foreground" title="Powered off while idle; a run placed on it wakes it">
-        <span className="inline-block size-1.5 rounded-full bg-muted-foreground/50" aria-hidden />
+      <span
+        className="inline-flex items-center gap-1.5 font-mono text-[10.5px] font-normal whitespace-nowrap text-muted-foreground"
+        title="Powered off while idle; a run placed on it wakes it"
+      >
+        <span className="inline-block size-1.5 shrink-0 rounded-full bg-muted-foreground/50" aria-hidden />
         asleep
-      </Badge>
+      </span>
     );
   }
   return online ? (
-    <Badge variant="ghost" className="h-auto gap-1.5 px-0 py-0 font-mono text-[10.5px] font-normal text-good-ink">
-      <span className="live-dot inline-block size-1.5 rounded-full bg-good text-good" aria-hidden />
+    <span className="inline-flex items-center gap-1.5 font-mono text-[10.5px] font-normal whitespace-nowrap text-good-ink">
+      <span className="live-dot inline-block size-1.5 shrink-0 rounded-full bg-good text-good" aria-hidden />
       online
-    </Badge>
+    </span>
   ) : (
-    <Badge variant="ghost" className="h-auto gap-1.5 px-0 py-0 font-mono text-[10.5px] font-normal text-faint">
-      <span className="inline-block size-1.5 rounded-full border border-faint" aria-hidden />
+    <span className="inline-flex items-center gap-1.5 font-mono text-[10.5px] font-normal whitespace-nowrap text-faint">
+      <span className="inline-block size-1.5 shrink-0 rounded-full border border-faint" aria-hidden />
       offline
-    </Badge>
+    </span>
   );
 }
 
@@ -120,8 +127,8 @@ export function RuntimeBadge({ runtime }: { runtime?: string }) {
 /** A scheduled run's outcome: a command's state while it ran, or why it never did. */
 const OUTCOMES: Partial<Record<RunOutcome, { label: string; icon: string; className: string }>> = {
   [RunOutcome.NOT_STARTED]: { label: "not started", icon: "⚠", className: "text-critical bg-[color-mix(in_oklab,var(--critical)_12%,transparent)]" },
-  [RunOutcome.SKIPPED]: { label: "skipped", icon: "⤼", className: "text-faint bg-muted" },
-  [RunOutcome.MISSED]: { label: "missed", icon: "○", className: "text-warning bg-[color-mix(in_oklab,var(--warning)_14%,transparent)]" },
+  [RunOutcome.SKIPPED]: { label: "skipped", icon: "⤼", className: "text-muted-foreground bg-muted" },
+  [RunOutcome.MISSED]: { label: "missed", icon: "○", className: "text-warning-ink bg-[color-mix(in_oklab,var(--warning)_14%,transparent)]" },
 };
 
 const OUTCOME_TO_STATE: Partial<Record<RunOutcome, CommandState>> = {
@@ -134,7 +141,7 @@ const OUTCOME_TO_STATE: Partial<Record<RunOutcome, CommandState>> = {
 export function OutcomeBadge({ outcome }: { outcome: RunOutcome }) {
   const st = OUTCOME_TO_STATE[outcome];
   if (st !== undefined) return <StateBadge state={st} />;
-  const o = OUTCOMES[outcome] ?? { label: "unknown", icon: "?", className: "text-faint bg-muted" };
+  const o = OUTCOMES[outcome] ?? { label: "unknown", icon: "?", className: "text-muted-foreground bg-muted" };
   return (
     <Badge variant="secondary" className={cn("h-auto rounded-md border-transparent px-1.5 py-0.5 font-mono text-[10.5px] font-normal", o.className)}>
       <span aria-hidden>{o.icon}</span>

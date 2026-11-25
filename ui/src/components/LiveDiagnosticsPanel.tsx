@@ -269,7 +269,7 @@ export function LiveDiagnosticsPanel({ id, onSamplePid }: { id: string; onSample
       <div className="space-y-5">
         {/* Row 1: Instant /proc & cgroup inspection buttons */}
         <div className="space-y-2">
-          <div className="flex items-center justify-between">
+          <div className="flex flex-wrap items-center justify-between gap-2">
             <span className="eyebrow">Inspect (/proc & cgroup v2 · instant, non-intrusive)</span>
             {inspectData && (
               <span className="font-mono text-[10.5px] text-faint">
@@ -757,56 +757,60 @@ function FilesView({ files, selectedPid = null }: { files: OpenFile[]; selectedP
           className="h-7 w-full bg-background/80 font-mono text-[11px] placeholder:text-faint sm:ml-auto sm:w-56"
         />
       </div>
-      <div className="max-h-[380px] overflow-auto">
-        <table className="w-full border-collapse font-mono text-[11px]">
-          <thead className="sticky top-0 bg-card text-left text-[10px] uppercase tracking-wider text-muted-foreground">
-            <tr className="border-b border-border">
-              <th className="px-2 py-1.5">PID</th>
-              <th className="px-2 py-1.5">FD</th>
-              <th className="px-2 py-1.5">Kind</th>
-              <th className="px-2 py-1.5">Mode</th>
-              <th className="px-2 py-1.5">Target / Endpoint</th>
-              <th className="px-2 py-1.5 text-right">Offset / State</th>
-            </tr>
-          </thead>
-          <tbody className="divide-y divide-border">
-            {shown.map((f, i) => (
-              <tr key={`${f.pid}-${f.fd}-${i}`} className="hover:bg-muted/40">
-                <td className="num px-2 py-1 text-muted-foreground">
-                  {f.pid} <span className="text-faint">{f.comm}</span>
-                </td>
-                <td className="num px-2 py-1 text-foreground">{f.fd}</td>
-                <td className="px-2 py-1">
-                  <span
-                    className={`rounded px-1.5 py-0.5 text-[10px] ${
-                      f.kind === "socket"
-                        ? "bg-frost-wash text-frost"
-                        : f.kind === "deleted"
-                          ? "bg-[color-mix(in_oklab,var(--critical)_15%,transparent)] text-critical"
-                          : "bg-muted text-muted-foreground"
-                    }`}
-                  >
-                    {f.socketProto || f.kind}
-                  </span>
-                </td>
-                <td className="px-2 py-1 text-faint">{f.mode || "—"}</td>
-                <td className="max-w-[440px] truncate px-2 py-1 text-foreground" title={f.target}>
-                  {f.localAddr ? `${f.localAddr}${f.remoteAddr && !f.remoteAddr.endsWith(":0") ? ` → ${f.remoteAddr}` : ""}` : f.target}
-                </td>
-                <td className="num px-2 py-1 text-right text-muted-foreground">
-                  {f.socketState ? (
-                    <span className={f.socketState === "LISTEN" ? "text-good-ink" : f.socketState === "ESTABLISHED" ? "text-frost" : ""}>{f.socketState}</span>
-                  ) : f.pos > 0n ? (
-                    bytes(f.pos)
-                  ) : (
-                    "—"
-                  )}
-                </td>
+      {shown.length === 0 ? (
+        <Empty>No open file descriptors match the current filter.</Empty>
+      ) : (
+        <div className="max-h-[380px] overflow-auto">
+          <table className="w-full border-collapse font-mono text-[11px]">
+            <thead className="sticky top-0 bg-card text-left text-[10px] uppercase tracking-wider text-muted-foreground">
+              <tr className="border-b border-border">
+                <th className="px-2 py-1.5">PID</th>
+                <th className="px-2 py-1.5">FD</th>
+                <th className="px-2 py-1.5">Kind</th>
+                <th className="px-2 py-1.5">Mode</th>
+                <th className="px-2 py-1.5">Target / Endpoint</th>
+                <th className="px-2 py-1.5 text-right">Offset / State</th>
               </tr>
-            ))}
-          </tbody>
-        </table>
-      </div>
+            </thead>
+            <tbody className="divide-y divide-border">
+              {shown.map((f, i) => (
+                <tr key={`${f.pid}-${f.fd}-${i}`} className="hover:bg-muted/40">
+                  <td className="num px-2 py-1 text-muted-foreground">
+                    {f.pid} <span className="text-faint">{f.comm}</span>
+                  </td>
+                  <td className="num px-2 py-1 text-foreground">{f.fd}</td>
+                  <td className="px-2 py-1">
+                    <span
+                      className={`rounded px-1.5 py-0.5 text-[10px] ${
+                        f.kind === "socket"
+                          ? "bg-frost-wash text-frost"
+                          : f.kind === "deleted"
+                            ? "bg-[color-mix(in_oklab,var(--critical)_15%,transparent)] text-critical"
+                            : "bg-muted text-muted-foreground"
+                      }`}
+                    >
+                      {f.socketProto || f.kind}
+                    </span>
+                  </td>
+                  <td className="px-2 py-1 text-faint">{f.mode || "—"}</td>
+                  <td className="max-w-[440px] truncate px-2 py-1 text-foreground" title={f.target}>
+                    {f.localAddr ? `${f.localAddr}${f.remoteAddr && !f.remoteAddr.endsWith(":0") ? ` → ${f.remoteAddr}` : ""}` : f.target}
+                  </td>
+                  <td className="num px-2 py-1 text-right text-muted-foreground">
+                    {f.socketState ? (
+                      <span className={f.socketState === "LISTEN" ? "text-good-ink" : f.socketState === "ESTABLISHED" ? "text-frost" : ""}>{f.socketState}</span>
+                    ) : f.pos > 0n ? (
+                      bytes(f.pos)
+                    ) : (
+                      "—"
+                    )}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
     </div>
   );
 }
@@ -837,7 +841,7 @@ function CgroupView({ stats }: { stats: CgroupStats | null }) {
         />
       </div>
 
-      <div className="grid grid-cols-3 gap-2.5">
+      <div className="grid grid-cols-1 gap-2.5 sm:grid-cols-3">
         <MiniMetric label="PSI CPU avg10" value={`${stats.psiCpuSomeAvg10.toFixed(2)}%`} sub={`full ${stats.psiCpuFullAvg10.toFixed(2)}%`} />
         <MiniMetric label="PSI Memory avg10" value={`${stats.psiMemSomeAvg10.toFixed(2)}%`} sub={`full ${stats.psiMemFullAvg10.toFixed(2)}%`} />
         <MiniMetric label="PSI IO avg10" value={`${stats.psiIoSomeAvg10.toFixed(2)}%`} sub={`full ${stats.psiIoFullAvg10.toFixed(2)}%`} />

@@ -22,7 +22,7 @@ const fmt = (s: AdmissionSignal, v: number) => (s.unit === "bytes" ? bytes(v) : 
 /** What the limit of a signal is, as the worker applies it. */
 export function signalRule(s: AdmissionSignal): string {
   const rule = s.floor ? `holds under ${fmt(s, s.limit)}` : `holds at ${fmt(s, s.limit)}`;
-  return s.resume > 0 ? `${rule} · resumes under ${fmt(s, s.resume)}` : rule;
+  return s.resume > 0 ? `${rule} · ${s.floor ? "resumes above" : "resumes under"} ${fmt(s, s.resume)}` : rule;
 }
 
 /** Whether the node starts new work or holds it, and for how long. */
@@ -37,7 +37,7 @@ export function AdmissionBadge({ a, now }: { a: Admission | null | undefined; no
   }
   const held = a.since > 0n ? duration((Number(now) - Number(a.since)) / 1000) : "";
   return (
-    <Badge variant="secondary" title={a.reason} className="h-auto bg-serious/15 px-2.5 py-0.5 font-mono text-[10.5px] font-normal text-serious">
+    <Badge variant="secondary" title={a.reason} className="h-auto bg-serious/15 px-2.5 py-0.5 font-mono text-[10.5px] font-normal text-serious-ink">
       holding new work{held && ` · ${held}`}
     </Badge>
   );
@@ -52,7 +52,13 @@ function SignalBar({ s }: { s: AdmissionSignal }) {
     <div className="relative h-1.5 w-full rounded-full" style={{ background: `color-mix(in oklab, ${color} 16%, transparent)` }}>
       <div className="h-full rounded-full transition-[width] duration-700" style={{ width: at(s.value), background: color }} />
       <div className="absolute -top-1 h-3.5 w-[2px] rounded bg-warning" style={{ left: at(s.limit) }} title={signalRule(s)} />
-      {s.resume > 0 && <div className="absolute -top-1 h-3.5 w-0 border-l-2 border-dashed border-warning/70" style={{ left: at(s.resume) }} title={`resumes under ${fmt(s, s.resume)}`} />}
+      {s.resume > 0 && (
+        <div
+          className="absolute -top-1 h-3.5 w-0 border-l-2 border-dashed border-warning/70"
+          style={{ left: at(s.resume) }}
+          title={`${s.floor ? "resumes above" : "resumes under"} ${fmt(s, s.resume)}`}
+        />
+      )}
     </div>
   );
 }
@@ -90,7 +96,7 @@ export function AdmissionPanel({ a, now }: { a: Admission | null | undefined; no
               <TableCell className="num px-2 py-2 font-mono text-[11px] text-foreground">{fmt(s, s.value)}</TableCell>
               <TableCell className="px-2 py-2 font-mono text-[11px] text-muted-foreground">{signalRule(s)}</TableCell>
               <TableCell className="num px-2 py-2 font-mono text-[11px] text-muted-foreground">{s.waiting || "—"}</TableCell>
-              <TableCell className="px-2 py-2 font-mono text-[10.5px]">{s.holding ? <span className="text-serious">holding</span> : <span className="text-good-ink">ok</span>}</TableCell>
+              <TableCell className="px-2 py-2 font-mono text-[10.5px]">{s.holding ? <span className="text-serious-ink">holding</span> : <span className="text-good-ink">ok</span>}</TableCell>
             </TableRow>
           ))}
         </TableBody>
@@ -145,7 +151,7 @@ function roleOf(d: PlacementDecision, nodeId: string): { text: string; className
   if (c.chosen) return { text: `chosen · cost ${c.cost.toFixed(2)}`, className: "text-good-ink" };
   if (c.unfit) return { text: "ruled out", className: "text-faint" };
   const won = d.candidates.find((x) => x.chosen);
-  return { text: `passed over · ${c.cost.toFixed(2)}${won ? ` vs ${won.cost.toFixed(2)}` : ""}`, className: "text-warning" };
+  return { text: `passed over · ${c.cost.toFixed(2)}${won ? ` vs ${won.cost.toFixed(2)}` : ""}`, className: "text-warning-ink" };
 }
 
 /**
@@ -162,23 +168,25 @@ export function PlacementList({ placements, nodeId, limit = 20, now }: { placeme
         return (
           <li key={String(d.id)}>
             <Collapsible>
-              <CollapsibleTrigger className="group flex w-full cursor-pointer flex-wrap items-center gap-x-2.5 gap-y-1 py-2 text-left font-mono text-[11px] hover:bg-muted/60">
-                <span className="num shrink-0 text-faint" title={ago(d.at, now)}>
-                  {hhmmss(d.at)}
-                </span>
-                <ChevronRightIcon className="size-3 shrink-0 text-faint transition-transform group-data-panel-open:rotate-90" />
+              <div className="flex flex-wrap items-center gap-x-2.5 gap-y-1 py-2 font-mono text-[11px] hover:bg-muted/60">
+                <CollapsibleTrigger className="group flex min-w-0 flex-1 cursor-pointer flex-wrap items-center gap-x-2.5 gap-y-1 text-left">
+                  <span className="num shrink-0 text-faint" title={ago(d.at, now)}>
+                    {hhmmss(d.at)}
+                  </span>
+                  <ChevronRightIcon className="size-3 shrink-0 text-faint transition-transform group-data-panel-open:rotate-90" />
+                  <span className="shrink-0 text-faint">{d.project}</span>
+                  <span className={`shrink-0 ${d.nodeId ? "text-foreground" : "text-critical"}`}>{d.nodeId ? `→ ${d.hostname}` : "refused"}</span>
+                  <span className="min-w-0 truncate text-muted-foreground">{d.reason}</span>
+                  {role && <span className={`shrink-0 sm:ml-auto ${role.className}`}>{role.text}</span>}
+                </CollapsibleTrigger>
                 {d.sessionId ? (
-                  <Link to="/sessions/$id" params={{ id: d.sessionId }} className="shrink-0 text-foreground hover:text-primary" onClick={(e) => e.stopPropagation()}>
+                  <Link to="/sessions/$id" params={{ id: d.sessionId }} className="shrink-0 text-foreground hover:text-primary">
                     {d.sessionId}
                   </Link>
                 ) : (
                   <span className="shrink-0 text-faint">—</span>
                 )}
-                <span className="shrink-0 text-faint">{d.project}</span>
-                <span className={`shrink-0 ${d.nodeId ? "text-foreground" : "text-critical"}`}>{d.nodeId ? `→ ${d.hostname}` : "refused"}</span>
-                <span className="min-w-0 truncate text-muted-foreground">{d.reason}</span>
-                {role && <span className={`shrink-0 sm:ml-auto ${role.className}`}>{role.text}</span>}
-              </CollapsibleTrigger>
+              </div>
               <CollapsibleContent>
                 <div className="mb-3 sm:ml-6">
                   <Table className="text-[11px]">

@@ -8,6 +8,7 @@ import {
   resolveHoverPoints,
   resolveSeriesPoint,
   splitLineRuns,
+  Tooltip,
   type LineSeries,
 } from "./LineChart";
 
@@ -192,5 +193,48 @@ describe("LineChart nearest-timestamp hover resolution", () => {
 
     // Mid-outage (t=15000), vm1's nearest sample is 14.9s away and must not match.
     expect(resolveHoverPoints(series, 15_000).map((h) => h.series.id)).toEqual(["steady"]);
+  });
+});
+
+describe("LineChart axis layout and tooltip clamping", () => {
+  it("expands padLeft dynamically for wide formatted Y-axis labels", () => {
+    const series: LineSeries[] = [
+      {
+        id: "r2",
+        label: "upload",
+        color: "var(--series-1)",
+        points: [
+          { t: 1_000, v: 500 },
+          { t: 6_000, v: 1000 },
+        ],
+      },
+    ];
+    const svg = renderToStaticMarkup(
+      createElement(LineChart, { series, width: 400, format: (v) => `${v.toFixed(0)} ms/s` }),
+    );
+    const x1Match = svg.match(/<line x1="(\d+)"/);
+    expect(x1Match).not.toBeNull();
+    expect(Number(x1Match![1])).toBeGreaterThan(40);
+  });
+
+  it("emits a single X-axis tick when t0 === t1 instead of 5 overlapping labels", () => {
+    const t = Date.UTC(2026, 10, 25, 14, 5, 0);
+    const series: LineSeries[] = [
+      { id: "only", label: "only", color: "var(--series-1)", points: [{ t, v: 42 }] },
+    ];
+    const svg = renderToStaticMarkup(createElement(LineChart, { series, width: 400, format: (v) => `${v}` }));
+    const xTickTexts = svg.match(/y="174"/g) ?? [];
+    expect(xTickTexts).toHaveLength(1);
+  });
+
+  it("clamps hover Tooltip position inside [0, width]", () => {
+    const overflowRight = renderToStaticMarkup(createElement(Tooltip, { x: 450, width: 300, title: "14:05:00", children: "val" }));
+    expect(overflowRight).toContain("right:14px");
+    const overflowLeft = renderToStaticMarkup(createElement(Tooltip, { x: -50, width: 300, title: "14:05:00", children: "val" }));
+    expect(overflowLeft).toContain("left:14px");
+    const narrowLeft = renderToStaticMarkup(createElement(Tooltip, { x: 90, width: 180, title: "14:05:00", children: "val" }));
+    expect(narrowLeft).toContain("left:20px");
+    const narrowRight = renderToStaticMarkup(createElement(Tooltip, { x: 100, width: 180, title: "14:05:00", children: "val" }));
+    expect(narrowRight).toContain("right:20px");
   });
 });

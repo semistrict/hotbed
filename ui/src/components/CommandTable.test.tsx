@@ -127,4 +127,75 @@ describe("CommandTable runtime column", () => {
     expect(html).toContain("Firecracker microVM runtime");
     expect(html).toContain("cladefs host-FUSE runtime");
   });
+
+  it("supports custom empty text, hideColumns, units header, workspace mobile cell, and responsive breakpoints", () => {
+    const s = create(SnapshotSchema, {
+      now: 200_000n,
+      nodes: [create(NodeSchema, { id: "n1", hostname: "ubu1", online: true })],
+      workspaces: [create(WorkspaceSchema, { id: "ws-1", runtime: "vm" })],
+    });
+
+    expect(renderToStaticMarkup(<HistoryTable s={s} rows={[]} />)).toContain("Nothing matches.");
+    expect(renderToStaticMarkup(<HistoryTable s={s} rows={[]} empty="No finished commands in this workspace yet." />)).toContain(
+      "No finished commands in this workspace yet.",
+    );
+
+    const liveCmds = [
+      create(CommandSchema, {
+        id: "c-live",
+        nodeId: "n1",
+        workspaceId: "ws-1",
+        sessionId: "warm-fox",
+        project: "hotbed",
+        repo: "hotbed",
+        kind: "test",
+        argv: "go test ./...",
+        state: CommandState.RUNNING,
+        queuedAt: 190_000n,
+        startedAt: 191_000n,
+      }),
+    ];
+    const liveHtml = renderToStaticMarkup(
+      <LiveCommandTable s={s} commands={liveCmds} hideColumns={["workspace", "node", "project"]} />,
+    );
+    expect(liveHtml).toContain("lg:hidden");
+    expect(liveHtml).toContain("hidden lg:block");
+    expect(liveHtml).toContain(">units<");
+    expect(liveHtml).not.toContain(">crates<");
+    expect(liveHtml).not.toContain(">workspace<");
+    expect(liveHtml).not.toContain(">node<");
+    expect(liveHtml).not.toContain(">project<");
+    expect(liveHtml).toContain("px-2 py-0.5");
+
+    const doneRows = [
+      create(FinishedCommandSchema, {
+        id: "c-done",
+        nodeId: "n1",
+        workspaceId: "ws-1",
+        sessionId: "warm-fox",
+        repoId: "hotbed",
+        argv: "go test -race ./...",
+        kind: "test",
+        failure: "test",
+        state: CommandState.FAILED,
+        endedAt: 195_000n,
+        seconds: 4.2,
+      }),
+    ];
+    const fullHistoryHtml = renderToStaticMarkup(<HistoryTable s={s} rows={doneRows} />);
+    expect(fullHistoryHtml).toContain("xl:hidden");
+    expect(fullHistoryHtml).toContain("hidden xl:block");
+    expect(fullHistoryHtml).toContain(">units<");
+    expect(fullHistoryHtml).not.toContain(">crates<");
+    expect(fullHistoryHtml).toContain("whitespace-normal");
+    // WorkspaceCell appears in both mobile card and desktop table when not hidden.
+    expect(fullHistoryHtml.split("ws-1").length - 1).toBeGreaterThanOrEqual(2);
+
+    const hiddenHistoryHtml = renderToStaticMarkup(
+      <HistoryTable s={s} rows={doneRows} hideColumns={["workspace", "node", "project"]} />,
+    );
+    expect(hiddenHistoryHtml).not.toContain(">workspace<");
+    expect(hiddenHistoryHtml).not.toContain(">node<");
+    expect(hiddenHistoryHtml).not.toContain(">project<");
+  });
 });
