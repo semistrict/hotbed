@@ -7,6 +7,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
@@ -244,22 +245,31 @@ func (b *CladefsFUSEBackend) mountDir(tenant, cell uint64) string {
 	return filepath.Join(b.mountRoot, cladefs.Base32ID(tenant), cladefs.Base32ID(cell))
 }
 
-func (b *CladefsFUSEBackend) mountStoreDir(tenant, cell uint64) string {
+func (b *CladefsFUSEBackend) mountStoreDir(tenant, cell uint64) (string, error) {
 	rel := filepath.Join(cladefs.Base32ID(tenant), cladefs.Base32ID(cell))
-	roots := filepath.SplitList(b.mountStoresRoot)
+	var roots []string
+	for _, r := range filepath.SplitList(b.mountStoresRoot) {
+		if r != "" {
+			roots = append(roots, r)
+		}
+	}
+	if len(roots) == 0 {
+		return "", fmt.Errorf("cladefs FUSE mount stores root is empty")
+	}
 	for _, root := range roots {
-		if root == "" {
+		cand := filepath.Join(root, rel)
+		fi, err := os.Stat(cand)
+		if err == nil {
+			if fi.IsDir() {
+				return cand, nil
+			}
 			continue
 		}
-		cand := filepath.Join(root, rel)
-		if _, err := os.Stat(cand); err == nil {
-			return cand
+		if !errors.Is(err, os.ErrNotExist) {
+			return "", fmt.Errorf("stat mount store %s: %w", cand, err)
 		}
 	}
-	if len(roots) > 0 && roots[0] != "" {
-		return filepath.Join(roots[0], rel)
-	}
-	return filepath.Join(b.mountStoresRoot, rel)
+	return filepath.Join(roots[0], rel), nil
 }
 
 func (b *CladefsFUSEBackend) loadState() {
@@ -495,7 +505,11 @@ func (b *CladefsFUSEBackend) EnsureProvisionedBaseImage(ctx context.Context, spe
 		return cladefs.CellRef{}, fmt.Errorf("create cladefs FUSE base cell: %w", err)
 	}
 	mntDir := b.mountDir(cfg.TenantID, cellID)
-	storeDir := b.mountStoreDir(cfg.TenantID, cellID)
+	storeDir, err := b.mountStoreDir(cfg.TenantID, cellID)
+	if err != nil {
+		_ = b.detachMount(ctx, cfg.TenantID, cellID, mntDir, false, true)
+		return cladefs.CellRef{}, fmt.Errorf("resolve cladefs FUSE base store dir: %w", err)
+	}
 	cleanupOnErr := func() {
 		_ = b.detachMount(ctx, cfg.TenantID, cellID, mntDir, false, true)
 		cctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
@@ -599,7 +613,12 @@ func (b *CladefsFUSEBackend) forkAndMount(ctx context.Context, from cladefs.Cell
 		cancel()
 		return 0, 0, "", "", fmt.Errorf("forked cell %d attached with shown=false (head kind missing)", attachedCell)
 	}
-	return forkRef.Tenant, attachedCell, b.mountDir(forkRef.Tenant, attachedCell), b.mountStoreDir(forkRef.Tenant, attachedCell), nil
+	storeDir, err = b.mountStoreDir(forkRef.Tenant, attachedCell)
+	if err != nil {
+		_ = b.detachMount(ctx, forkRef.Tenant, attachedCell, "", false, true)
+		return 0, 0, "", "", fmt.Errorf("resolve cladefs FUSE mount store dir: %w", err)
+	}
+	return forkRef.Tenant, attachedCell, b.mountDir(forkRef.Tenant, attachedCell), storeDir, nil
 }
 
 // forkEphemeralAndMount forks an R2 version into a host-local ephemeral cell
@@ -883,7 +902,14 @@ func (b *CladefsFUSEBackend) DeleteWorkspace(ctx context.Context, wsID string) e
 	if err := b.detachMount(ctx, m.Tenant, m.Cell, m.MountPath, false, true); err != nil {
 		slog.Warn("detach cladefs FUSE workspace failed", "workspace", wsID, "cell", m.Cell, "err", err)
 	}
-	storeDir := cmp.Or(m.StorePath, b.mountStoreDir(m.Tenant, m.Cell))
+	storeDir := m.StorePath
+	if storeDir == "" {
+		var err error
+		storeDir, err = b.mountStoreDir(m.Tenant, m.Cell)
+		if err != nil {
+			return err
+		}
+	}
 	cctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
 	defer cancel()
 	return b.currentStore().DeleteCellAbs(cctx, storeDir)

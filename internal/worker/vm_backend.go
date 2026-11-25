@@ -751,7 +751,7 @@ func (b *VMBackend) EnsureProvisionedBaseImage(ctx context.Context, spec baseima
 		return cladefs.CellRef{}, fmt.Errorf("clear stale VM base image cell %s: %w", key, err)
 	}
 
-	tarPath := filepath.Join(b.currentStore().CellRoot(), "vm-"+key+".tar")
+	tarPath := filepath.Join(b.currentStore().PickRoot(), "vm-"+key+".tar")
 	defer os.Remove(tarPath)
 	slog.Info("building Firecracker VM base image", "key", key, "image", spec.Image)
 	if err := vm.BuildGuestTar(ctx, vm.GuestImageOptions{
@@ -1281,7 +1281,9 @@ func (b *VMBackend) ReconcileOrphans(ctx context.Context, liveWorkspaces map[str
 	if startup {
 		for _, root := range st.CellRoots() {
 			// Sweep orphaned local ws/<id> cells not belonging to any live workspace
-			// (and not held by any still-alive VM).
+			// (and not held by any still-alive VM). Use DeleteCellAbs/DropCellAbs
+			// with the exact enumerated path so a stray entry in an earlier root
+			// cannot redirect deletion away from this root.
 			wsRoot := filepath.Join(root, "ws")
 			if ents, err := os.ReadDir(wsRoot); err == nil {
 				for _, ent := range ents {
@@ -1295,10 +1297,11 @@ func (b *VMBackend) ReconcileOrphans(ctx context.Context, liveWorkspaces map[str
 					if err := b.mgr.EnsureNotRunning(ctx, id); err != nil {
 						continue
 					}
-					if err := st.DeleteCell(ctx, "ws/"+id); err != nil {
-						slog.Warn("sweep orphan cladefs workspace cell failed", "workspace", id, "err", err)
+					full := filepath.Join(wsRoot, id)
+					if err := st.DeleteCellAbs(ctx, full); err != nil {
+						slog.Warn("sweep orphan cladefs workspace cell failed", "workspace", id, "path", full, "err", err)
 					} else {
-						slog.Info("swept orphan cladefs workspace cell", "workspace", id)
+						slog.Info("swept orphan cladefs workspace cell", "workspace", id, "path", full)
 					}
 				}
 			}
@@ -1319,9 +1322,9 @@ func (b *VMBackend) ReconcileOrphans(ctx context.Context, liveWorkspaces map[str
 							if err := b.mgr.EnsureNotRunning(ctx, "base-"+be.Name()); err != nil {
 								continue
 							}
-							rel := filepath.Join("bases", proj.Name(), be.Name())
-							if err := st.DropCell(ctx, rel); err == nil {
-								slog.Info("dropped leftover local cladefs base cell", "cell", rel)
+							full := filepath.Join(basesRoot, proj.Name(), be.Name())
+							if err := st.DropCellAbs(ctx, full); err == nil {
+								slog.Info("dropped leftover local cladefs base cell", "path", full)
 							}
 						}
 					}
@@ -1340,9 +1343,9 @@ func (b *VMBackend) ReconcileOrphans(ctx context.Context, liveWorkspaces map[str
 					if err := b.mgr.EnsureNotRunning(ctx, "prov-"+key); err != nil {
 						continue
 					}
-					rel := filepath.Join("baseimages", ent.Name())
-					if err := st.DropCell(ctx, rel); err == nil {
-						slog.Info("dropped leftover local cladefs baseimage cell", "cell", rel)
+					full := filepath.Join(baseImgRoot, ent.Name())
+					if err := st.DropCellAbs(ctx, full); err == nil {
+						slog.Info("dropped leftover local cladefs baseimage cell", "path", full)
 					}
 				}
 			}

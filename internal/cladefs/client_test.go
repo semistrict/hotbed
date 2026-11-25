@@ -3,7 +3,9 @@ package cladefs
 import (
 	"context"
 	"errors"
+	"os"
 	"path/filepath"
+	"sync"
 	"syscall"
 	"testing"
 	"time"
@@ -33,9 +35,11 @@ func (f *fakeHealth) Check(context.Context, *healthpb.HealthCheckRequest, ...grp
 
 type fakeCladefs struct {
 	cladefsdv1.CladefsdClient
+	mu         sync.Mutex
 	grantReq   *cladefsdv1.GrantRequest
 	grantSock  string
 	createReqs []*cladefsdv1.CreateCellRequest
+	createHook func(path string)
 	cells      map[string]uint64
 	synced     map[string]bool
 	peers      []string
@@ -82,6 +86,11 @@ func (f *fakeCladefs) ImportImage(_ context.Context, req *cladefsdv1.ImportImage
 }
 
 func (f *fakeCladefs) CreateCell(_ context.Context, req *cladefsdv1.CreateCellRequest, _ ...grpc.CallOption) (*cladefsdv1.CreateCellResponse, error) {
+	if f.createHook != nil {
+		f.createHook(req.Path)
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	f.createReqs = append(f.createReqs, req)
 	id := req.Cell
 	if id == 0 {
@@ -313,5 +322,133 @@ func TestStoreJBODSpreadsAndResolvesAcrossMultipleRoots(t *testing.T) {
 	}
 	if err := st.DeleteCell(ctx, "ws/ws-2"); err != nil {
 		t.Fatalf("DeleteCell ws/ws-2: %v", err)
+	}
+}
+
+func TestStoreJBODGrantIncludesAllRoots(t *testing.T) {
+	ctx := context.Background()
+	rootA := t.TempDir()
+	rootB := t.TempDir()
+	api := newFakeCladefs()
+	api.grantSock = "/run/cladefsd/t7.sock"
+
+	st, err := NewStore(ctx, Config{
+		CellRoot: rootA + string(filepath.ListSeparator) + rootB,
+		TenantID: 7,
+	}, api, nil, nil)
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	if st.VMSock() != "/run/cladefsd/t7.sock" {
+		t.Fatalf("VMSock = %q, want /run/cladefsd/t7.sock", st.VMSock())
+	}
+	if api.grantReq == nil || api.grantReq.Dir != rootA || len(api.grantReq.Dirs) != 1 || api.grantReq.Dirs[0] != rootB {
+		t.Fatalf("GrantRequest = %+v, want Dir=%q Dirs=[%q]", api.grantReq, rootA, rootB)
+	}
+}
+
+func TestStoreJBODCellPathIgnoresFilesAndPropagatesStatErrors(t *testing.T) {
+	ctx := context.Background()
+	rootA := t.TempDir()
+	rootB := t.TempDir()
+	api := newFakeCladefs()
+
+	st, err := NewStore(ctx, Config{CellRoots: []string{rootA, rootB}}, api, nil, nil)
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	// Regular file on rootA must not shadow an actual cell directory on rootB.
+	if err := os.MkdirAll(filepath.Join(rootA, "ws"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(rootA, "ws", "orphan"), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	wantB := filepath.Join(rootB, "ws", "orphan")
+	if err := os.MkdirAll(wantB, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	got, err := st.CellPath("ws/orphan")
+	if err != nil || got != wantB {
+		t.Fatalf("CellPath = (%q, %v), want %q", got, err, wantB)
+	}
+
+	// Unreadable secondary root must return an error instead of falling back to rootA.
+	if os.Geteuid() != 0 {
+		if err := os.Chmod(filepath.Join(rootB, "ws"), 0o000); err != nil {
+			t.Fatal(err)
+		}
+		defer os.Chmod(filepath.Join(rootB, "ws"), 0o755)
+		if _, err := st.CellPath("ws/orphan"); err == nil {
+			t.Fatalf("expected CellPath error on unreadable secondary root, got nil")
+		}
+	}
+}
+
+func TestStoreJBODConcurrentCreateUsesSingleRoot(t *testing.T) {
+	ctx := context.Background()
+	rootA := t.TempDir()
+	rootB := t.TempDir()
+	api := newFakeCladefs()
+	started := make(chan struct{}, 2)
+	release := make(chan struct{})
+	var once sync.Once
+	api.createHook = func(string) {
+		started <- struct{}{}
+		once.Do(func() { <-release })
+	}
+
+	st, err := NewStore(ctx, Config{CellRoots: []string{rootA, rootB}}, api, nil, nil)
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	var wg sync.WaitGroup
+	paths := make([]string, 2)
+	for i := range 2 {
+		wg.Add(1)
+		go func(idx int) {
+			defer wg.Done()
+			ref, err := st.CreateCell(ctx, "ws/same", 1<<20, nil, 0)
+			if err != nil {
+				t.Errorf("CreateCell[%d]: %v", idx, err)
+				return
+			}
+			paths[idx] = ref.HostPath
+		}(i)
+	}
+	<-started
+	close(release)
+	wg.Wait()
+	if paths[0] == "" || paths[0] != paths[1] {
+		t.Fatalf("concurrent CreateCell split across roots: %q vs %q", paths[0], paths[1])
+	}
+}
+
+func TestStoreJBODNestedRootsLongestPrefixAndLiteralColon(t *testing.T) {
+	ctx := context.Background()
+	parent := t.TempDir()
+	nested := filepath.Join(parent, "diskB")
+	if err := os.MkdirAll(nested, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	st, err := NewStore(ctx, Config{CellRoots: []string{parent, nested}}, newFakeCladefs(), nil, nil)
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	if got := st.rootForHostPath(filepath.Join(nested, "ws", "a")); got != nested {
+		t.Fatalf("rootForHostPath(nested) = %q, want %q", got, nested)
+	}
+
+	// Literal colon in CellRoots slice must not be split again.
+	colonDir := filepath.Join(t.TempDir(), "disk:cells")
+	if err := os.MkdirAll(colonDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	st2, err := NewStore(ctx, Config{CellRoots: []string{colonDir}}, newFakeCladefs(), nil, nil)
+	if err != nil {
+		t.Fatalf("NewStore colonDir: %v", err)
+	}
+	if got := st2.CellRoots(); len(got) != 1 || got[0] != colonDir {
+		t.Fatalf("CellRoots = %v, want [%q]", got, colonDir)
 	}
 }
