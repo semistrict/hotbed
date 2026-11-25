@@ -297,6 +297,15 @@ func (e *Engine) volPath(vol string) string {
 	return e.cfg.Store.Path(vol)
 }
 
+// commandVolPath returns the host rootfs path for command c, honoring a
+// managed cladefs-FUSE base build's mounted root directory when set.
+func (e *Engine) commandVolPath(c *command) string {
+	if c != nil && c.managedFreshen != nil && c.managedFreshen.rootDir != "" {
+		return c.managedFreshen.rootDir
+	}
+	return e.volPath(c.rec.Volume)
+}
+
 // workRoot returns the host path corresponding to /work inside volume vol.
 func (e *Engine) workRoot(vol string) string {
 	return filepath.Join(e.volPath(vol), "work")
@@ -393,7 +402,10 @@ type command struct {
 	// broadcast to WatchWorkspace watchers for a freshen command.
 	lastFreshenStep int
 	lastFreshenDone bool
-	out             *output
+	// managedFreshen is non-nil for VM / cladefs-FUSE base builds scheduled
+	// through Engine admission control and finalized by EnsureProjectBase.
+	managedFreshen *managedFreshen
+	out            *output
 }
 
 // newCommand makes the engine's command for rec.
@@ -407,6 +419,15 @@ func (e *Engine) newCommand(rec *pb.CommandRecord) *command {
 
 func (c *command) cmd() *pb.Command { return c.rec.Command }
 func (c *command) unitName() string { return "hotbed-" + c.cmd().Id }
+
+// runtimeTarget returns the WorkspaceRuntime target ID for c: its temporary
+// base VM ID for VM base freshens, or its workspace ID for workspace commands.
+func (c *command) runtimeTarget() string {
+	if c != nil && c.managedFreshen != nil && c.managedFreshen.vmID != "" {
+		return c.managedFreshen.vmID
+	}
+	return c.cmd().WorkspaceId
+}
 
 // NewEngine loads the worker's state from dir.
 func NewEngine(ctx context.Context, cfg EngineConfig) (*Engine, error) {
@@ -876,6 +897,9 @@ func (e *Engine) measureDisk(ctx context.Context) {
 	e.mu.Lock()
 	vols := map[string]string{}
 	for _, b := range e.bases {
+		if isCladefsBase(b) {
+			continue
+		}
 		if b.State == pb.BaseState_BASE_STATE_FAILED {
 			b.SizeBytes = 0
 			continue

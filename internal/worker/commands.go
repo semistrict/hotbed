@@ -676,10 +676,16 @@ func (e *Engine) admit(ctx context.Context) {
 		}
 		c.cmd().Reason = ""
 		spec, err := e.spec(c)
-		volPath := e.volPath(c.rec.Volume)
+		volPath := e.commandVolPath(c)
 		cmdID := c.cmd().Id
 		isBench := c.cmd().Bench
-		useRT := e.usesRuntime(c.cmd().WorkspaceId)
+		useRT := e.usesRuntime(c.runtimeTarget()) || c.isVMFreshen()
+		var beforeStart func(context.Context) error
+		var onStartFail func()
+		if c.managedFreshen != nil {
+			beforeStart = c.managedFreshen.beforeStart
+			onStartFail = c.managedFreshen.onStartFail
+		}
 		var admitDone chan struct{}
 		if err == nil {
 			c.admitting = true
@@ -730,6 +736,32 @@ func (e *Engine) admit(ctx context.Context) {
 				continue
 			}
 		}
+		ranBeforeStart := false
+		if err == nil && beforeStart != nil {
+			if err = beforeStart(ctx); err == nil {
+				ranBeforeStart = true
+				e.mu.Lock()
+				cancelledAfterBefore := c.cmd().State != queued || c.stopping
+				e.mu.Unlock()
+				if cancelledAfterBefore {
+					if onStartFail != nil {
+						onStartFail()
+					}
+					if madeTmp {
+						removeTmp(volPath, cmdID)
+					}
+					e.mu.Lock()
+					stopBy := c.stopBy
+					c.stopping, c.stopBy = false, nil
+					if api.Live(c.cmd().State) {
+						e.endBy(c, cancelled, nil, c.stopWhy, stopBy)
+					}
+					finishAdmit()
+					e.mu.Unlock()
+					continue
+				}
+			}
+		}
 		if err == nil {
 			err = e.stopLeftover(ctx, c)
 		}
@@ -741,6 +773,9 @@ func (e *Engine) admit(ctx context.Context) {
 		}
 		if err == nil {
 			err = e.cfg.Units.Start(ctx, spec)
+		}
+		if err != nil && ranBeforeStart && onStartFail != nil {
+			onStartFail()
 		}
 		e.mu.Lock()
 		if err != nil {
@@ -789,6 +824,9 @@ func (e *Engine) admit(ctx context.Context) {
 				e.watchExitBgLocked(ctx, spec.Slice, c.unitName())
 				e.mu.Unlock()
 				continue
+			}
+			if ranBeforeStart && onStartFail != nil {
+				onStartFail()
 			}
 			if madeTmp {
 				removeTmp(volPath, cmdID)
@@ -1060,23 +1098,28 @@ func (e *Engine) roomFor(c *command, cpuPreempted bool, mem sysinfo.Mem, hasMem 
 // spec is the unit for c. Call with e.mu held.
 func (e *Engine) spec(c *command) (unit.Spec, error) {
 	cmd := c.cmd()
-	tmpDir, err := e.tmpDir(c)
-	if err != nil {
-		return unit.Spec{}, err
-	}
-	runDir, err := e.runtimeDir(c)
-	if err != nil {
-		return unit.Spec{}, err
-	}
 	logPath, err := e.logPath(cmd.Id)
 	if err != nil {
 		return unit.Spec{}, err
 	}
-	volPath := e.volPath(c.rec.Volume)
+	vmFreshen := c.managedFreshen != nil && c.managedFreshen.vmID != ""
+	var tmpDir, runDir string
+	if !vmFreshen {
+		if tmpDir, err = e.tmpDir(c); err != nil {
+			return unit.Spec{}, err
+		}
+		if runDir, err = e.runtimeDir(c); err != nil {
+			return unit.Spec{}, err
+		}
+	}
+	volPath := e.commandVolPath(c)
 	runtimeTarget := e.runtimeChrootDir()
 	env := append(cacheEnv(), "XDG_RUNTIME_DIR="+runtimeTarget)
 	env = append(env, c.rec.Env...)
 	env = append(env, "HOTBED_WORKSPACE="+cmd.WorkspaceId, "HOTBED_COMMAND="+cmd.Id)
+	if vmFreshen {
+		env = append(env, "HOTBED_RUNTIME_TARGET="+c.managedFreshen.vmID)
+	}
 	props := slices.Clone(e.cfg.UnitProperties)
 	if cmd.Bench {
 		// Measurements run at normal CPU and IO priority: on CPUs of their
@@ -1098,7 +1141,6 @@ func (e *Engine) spec(c *command) (unit.Spec, error) {
 		Slice:        e.sliceOf(c),
 		Argv:         cmd.Args,
 		Dir:          c.rec.Dir,
-		Binds:        []unit.Bind{{Source: runDir, Target: runtimeTarget}},
 		Tmp:          tmpDir,
 		User:         e.cfg.User,
 		Env:          env,
@@ -1112,7 +1154,10 @@ func (e *Engine) spec(c *command) (unit.Spec, error) {
 		TraceFS:      true,
 		Properties:   props,
 	}
-	e.inRootfs(&spec, volPath)
+	if !vmFreshen {
+		spec.Binds = []unit.Bind{{Source: runDir, Target: runtimeTarget}}
+		e.inRootfs(&spec, volPath)
+	}
 	return spec, nil
 }
 
@@ -1920,7 +1965,7 @@ func (e *Engine) endBy(c *command, state pb.CommandState, code *int32, why strin
 		delete(e.portProxies, cmd.Id)
 		_ = p.Close()
 	}
-	if !e.usesRuntime(cmd.WorkspaceId) {
+	if !e.usesRuntime(c.runtimeTarget()) && !c.isVMFreshen() {
 		e.dropTmp(c)
 	}
 
@@ -1944,6 +1989,20 @@ func (e *Engine) endBy(c *command, state pb.CommandState, code *int32, why strin
 	}
 	if cmd.Kind == "freshen" {
 		e.saveCommand(c, change{what: what, detail: detail, diagnostics: by.diagnostics()})
+		if mf := c.managedFreshen; mf != nil {
+			// Managed VM / cladefs-FUSE base builds finalize their R2 cell and
+			// Base record inside EnsureProjectBase once tmp cleanup finishes.
+			gone, done := c.tmpGone, mf.done
+			if gone == nil {
+				close(done)
+			} else {
+				go func() {
+					<-gone
+					close(done)
+				}()
+			}
+			return
+		}
 		// Its tmp would be baked into the base: snapshot once it is gone.
 		gone, ok := c.tmpGone, state == succeeded
 		e.startBgLocked(func(ctx context.Context) {

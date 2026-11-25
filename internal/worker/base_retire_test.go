@@ -205,7 +205,7 @@ func TestCladefsFUSEBackendRetiresSupersededBaseOnAdoptShared(t *testing.T) {
 		Cell:    501,
 		Version: 2,
 	}
-	got, err := b.EnsureProjectBase(ctx, proj, heads, shared, spec, nil, nil, nil)
+	got, err := b.EnsureProjectBase(ctx, proj, heads, shared, spec, nil, nil, nil, nil)
 	if err != nil {
 		t.Fatalf("EnsureProjectBase: %v", err)
 	}
@@ -353,10 +353,19 @@ func TestCladefsFUSEBackendSetsUploadIntervalOnBaseBuilds(t *testing.T) {
 		Name:  "demo",
 		Repos: []*pb.Repo{{Id: "app", Url: "https://example.invalid/app.git", Branch: "main"}},
 	}
-	runStep := func(context.Context, string, string, []string, []string) (string, error) {
-		return "::hotbed-head:: app abc123\n", nil
+	runFreshen := func(_ context.Context, s managedFreshenSpec) (*managedFreshenHandle, error) {
+		return &managedFreshenHandle{
+			baseID: s.BaseID,
+			cmdID:  "f-" + s.BaseID + "-test",
+			stubResult: &managedFreshenResult{
+				BaseID:    s.BaseID,
+				CommandID: "f-" + s.BaseID + "-test",
+				RepoHeads: map[string]string{"app": "abc123"},
+				State:     succeeded,
+			},
+		}, nil
 	}
-	res, err := b.EnsureProjectBase(ctx, proj, map[string]string{"app": "abc123"}, nil, spec, nil, runStep, nil)
+	res, err := b.EnsureProjectBase(ctx, proj, map[string]string{"app": "abc123"}, nil, spec, nil, runFreshen, nil, nil)
 	if err != nil {
 		t.Fatalf("EnsureProjectBase: %v", err)
 	}
@@ -429,7 +438,7 @@ func TestVMBackendSetsUploadIntervalOnProjectBaseBuild(t *testing.T) {
 		Name:  "demo",
 		Repos: []*pb.Repo{{Id: "app", Url: "https://example.invalid/app.git", Branch: "main"}},
 	}
-	_, err = b.EnsureProjectBase(ctx, proj, map[string]string{"app": "def456"}, nil, spec, nil)
+	_, err = b.EnsureProjectBase(ctx, proj, map[string]string{"app": "def456"}, nil, spec, nil, nil, nil)
 	if err == nil {
 		t.Fatal("expected EnsureProjectBase to fail at failingVMLauncher")
 	}
@@ -477,7 +486,7 @@ func TestVMBackendSetsUploadIntervalOnProjectBaseBuild(t *testing.T) {
 		decommissioned: map[uint64]bool{},
 	}
 	b2.store.Store(store2)
-	if _, err := b2.EnsureProjectBase(ctx, proj, map[string]string{"app": "def456"}, nil, spec, nil); err == nil {
+	if _, err := b2.EnsureProjectBase(ctx, proj, map[string]string{"app": "def456"}, nil, spec, nil, nil, nil); err == nil {
 		t.Fatal("expected EnsureProjectBase to fail when TakeCell fails")
 	}
 	// createReqs[0]: failed TakeCell(951, 15000ms); createReqs[1]: cleanup DeleteBucketCell -> TakeCell(951, nil).

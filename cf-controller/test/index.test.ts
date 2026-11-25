@@ -13,6 +13,7 @@ import { describe, expect, it } from "vite-plus/test";
 import {
 	BaseSchema,
 	BaseState,
+	CheckpointSchema,
 	CladefsCellSchema,
 	ClusterService,
 	CommandLogSchema,
@@ -2003,5 +2004,61 @@ describe("Security, cron, daemon logs, tunnel, and workspace regression tests", 
 		} finally {
 			bridge.close();
 		}
+	});
+
+	it("includes live freshen commands in getSnapshot and excludes ended ones", async () => {
+		const owner = ownerClients();
+		const joiner = workerClients(JOIN_TOKEN, "node-freshen-snap", "ubu-freshen", "100.73.156.99:7121");
+		const joined = await joiner.cluster.join({});
+		const worker = workerClients(OWNER_TOKEN, "node-freshen-snap", "ubu-freshen", "100.73.156.99:7121");
+
+		await worker.cluster.heartbeat(
+			create(HeartbeatRequestSchema, {
+				clusterId: joined.clusterId,
+				resources: create(ResourcesSchema, {
+					arch: "amd64",
+					cpus: 16,
+					memoryBytes: BigInt(32 * 1024 ** 3),
+					version: "build 191",
+				}),
+			}),
+		);
+
+		const nowMs = BigInt(Date.now());
+		await worker.cluster.pushEvents({
+			clusterId: joined.clusterId,
+			epoch: "ep-freshen-snap",
+			checkpoint: create(CheckpointSchema, {
+				seq: 1n,
+				commands: [
+					create(CommandSchema, {
+						id: "f-cladefs-vm-live",
+						nodeId: "node-freshen-snap",
+						project: "cladefs",
+						kind: "freshen",
+						argv: "freshen cladefs-vm-12345678",
+						state: CommandState.RUNNING,
+						queuedAt: nowMs,
+						startedAt: nowMs,
+					}),
+					create(CommandSchema, {
+						id: "f-cladefs-vm-done",
+						nodeId: "node-freshen-snap",
+						project: "cladefs",
+						kind: "freshen",
+						argv: "freshen cladefs-vm-00000000",
+						state: CommandState.SUCCEEDED,
+						queuedAt: nowMs - 1000n,
+						startedAt: nowMs - 1000n,
+						endedAt: nowMs,
+					}),
+				],
+			}),
+		});
+
+		const snap = await owner.cluster.getSnapshot({});
+		const ids = snap.commands.map((c) => c.id);
+		expect(ids).toContain("f-cladefs-vm-live");
+		expect(ids).not.toContain("f-cladefs-vm-done");
 	});
 });

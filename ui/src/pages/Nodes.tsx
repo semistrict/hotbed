@@ -77,12 +77,14 @@ export function PageTitle({ title, sub, right }: { title: string; sub?: string; 
 }
 
 function NodeCard({ n, s, color, now, delay }: { n: Node; s: Snapshot; color: string; now: number; delay: number }) {
+  const buildingBases = s.bases.filter((b) => b.nodeId === n.id && b.state === BaseState.BUILDING);
+  const buildingCmdIds = new Set(buildingBases.map((b) => b.command).filter(Boolean));
   const cmds = s.commands.filter(
     (c) =>
       c.nodeId === n.id &&
+      !buildingCmdIds.has(c.id) &&
       (c.state === CommandState.RUNNING || c.state === CommandState.PARKED || c.state === CommandState.PAUSED || c.state === CommandState.QUEUED),
   );
-  const buildingBases = s.bases.filter((b) => b.nodeId === n.id && b.state === BaseState.BUILDING);
   const pills = [
     ...buildingBases.map((b) => <BuildingBadge key={`base-${b.id}`} project={b.project} generation={b.generation} progress={b.progress} />),
     ...cmds.map((c) => <StateBadge key={c.id} state={c.state} />),

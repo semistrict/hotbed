@@ -383,18 +383,17 @@ func canTake(cmd *pb.Command, kind pb.InterventionKind) error {
 // returns nil when nothing could be taken or the bounded payload still exceeds
 // maxDiagnosticsBytes.
 func (e *Engine) diagnose(ctx context.Context, cmd *pb.Command, iv *pb.CommandIntervention) *pb.CommandDiagnostics {
-	isVM := cmd.WorkspaceId != "" && e.usesRuntime(cmd.WorkspaceId)
-	switch {
-	case !isVM && e.cfg.Inspector == nil:
-		iv.DiagnosticsError = "this worker takes no diagnostics: process inspection is not configured on it"
-		return nil
-	case cmd.State == queued:
+	if cmd.State == queued {
 		iv.DiagnosticsError = "it had not started: it had no processes to diagnose"
 		return nil
 	}
 	route, err := e.resolveLiveCommand(cmd.Id)
 	if err != nil {
 		iv.DiagnosticsError = message(err)
+		return nil
+	}
+	if !route.isVM && e.cfg.Inspector == nil {
+		iv.DiagnosticsError = "this worker takes no diagnostics: process inspection is not configured on it"
 		return nil
 	}
 	d := &pb.CommandDiagnostics{CommandId: cmd.Id, Intervention: iv}

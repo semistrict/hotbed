@@ -88,7 +88,7 @@ func (e *Engine) resolveLiveCommand(id string) (liveCommandRoute, error) {
 	}
 	cmd := c.cmd()
 	state := cmd.State
-	wsID := cmd.WorkspaceId
+	wsID := c.runtimeTarget()
 	unitName := c.unitName()
 	cgroup := c.rec.Cgroup
 	e.mu.Unlock()
@@ -222,7 +222,7 @@ func (e *Engine) CommandProfile(id string, req *pb.GetProfileRequest) (*pb.Comma
 	isLive := ok && api.Live(c.cmd().State)
 	wsID := ""
 	if ok {
-		wsID = c.cmd().WorkspaceId
+		wsID = c.runtimeTarget()
 	}
 	e.mu.Unlock()
 	isVM := wsID != "" && e.usesRuntime(wsID)

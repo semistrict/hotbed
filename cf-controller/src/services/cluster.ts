@@ -73,7 +73,7 @@ import {
 import { ErrorCode, codeOf, hotbedError } from "../errors.ts";
 import { canonicalRemote, stepHash, validateRepoURL } from "../gitops.ts";
 import { overlayHostSamples, prepareHostUsage } from "../hostusage.ts";
-import { workOf } from "../standby.ts";
+import { isCommandLive, workOf } from "../standby.ts";
 import { KEEP_EVENTS, KEEP_PLACEMENTS_MS, type ForkRow, type SampleRow } from "../store.ts";
 import type { ScheduleRunner } from "./schedules.ts";
 
@@ -991,7 +991,7 @@ export function createClusterService(
 				workspaces.push(...nv.workspaces);
 				if (nv.online) {
 					for (const c of nv.commands) {
-						if (c.kind !== "freshen") commands.push(c);
+						if (c.kind !== "freshen" || isCommandLive(c.state)) commands.push(c);
 					}
 				}
 			}

@@ -65,7 +65,7 @@ export function LiveCommandTable({ s, commands }: { s: Snapshot; commands: Comma
 
               <div className="mt-2 flex flex-wrap items-center gap-x-2.5 gap-y-1 text-[10.5px] text-muted-foreground">
                 <SessionLink id={c.sessionId} />
-                {!project && <ProjectTag name={commandProject(s, c.sessionId, repoId || null)} />}
+                {!project && <ProjectTag name={c.project || commandProject(s, c.sessionId, repoId || null)} />}
                 {repoId && <span>{repoId}</span>}
                 <span>{nodeName(s, c.nodeId)}</span>
                 {c.state === CommandState.RUNNING && <span className="num text-foreground">{c.cpuCores.toFixed(1)} cores</span>}
@@ -159,7 +159,7 @@ export function LiveCommandTable({ s, commands }: { s: Snapshot; commands: Comma
                   </TableCell>
                   {!project && (
                     <TableCell className="px-2 py-2.5">
-                      <ProjectTag name={commandProject(s, c.sessionId, repoId || null)} />
+                      <ProjectTag name={c.project || commandProject(s, c.sessionId, repoId || null)} />
                     </TableCell>
                   )}
                   <TableCell className="px-2 py-2.5 font-mono text-[11px] text-muted-foreground">{repoId || "—"}</TableCell>

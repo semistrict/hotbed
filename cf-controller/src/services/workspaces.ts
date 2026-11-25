@@ -241,7 +241,7 @@ export function createWorkspaceService(ctrl: ControllerContext): {
 			nodeAddr: ctrl.nodeAddr(nid),
 			project: b.project,
 			kind: "freshen",
-			argv: `freshen ${b.project} g${b.generation}`,
+			argv: b.cladefsCell ? `freshen ${b.id}` : `freshen ${b.project} g${b.generation}`,
 			endedAt: b.builtAt,
 		});
 		const failedStep = b.steps.find((st) => st.ran && !st.ok);

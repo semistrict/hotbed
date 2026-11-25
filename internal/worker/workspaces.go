@@ -22,6 +22,7 @@ import (
 	"github.com/semistrict/hotbed/internal/api"
 	pb "github.com/semistrict/hotbed/internal/gen/hotbed/v1"
 	"github.com/semistrict/hotbed/internal/gitops"
+	"github.com/semistrict/hotbed/internal/runtime"
 	"github.com/semistrict/hotbed/internal/storage"
 )
 
@@ -238,7 +239,7 @@ func (e *Engine) forkPrepared(ctx context.Context, base string) {
 func (e *Engine) baseFailed(b *pb.Base, why string) {
 	var fallback *pb.Base
 	for _, o := range e.bases {
-		if o.Project == b.Project && o.State == warm && (fallback == nil || o.Generation > fallback.Generation) {
+		if o.Project == b.Project && !isCladefsBase(o) && o.State == warm && (fallback == nil || o.Generation > fallback.Generation) {
 			fallback = o
 		}
 	}
@@ -292,7 +293,11 @@ func (e *Engine) workspaceView(w *workspace) *pb.Workspace {
 		ws.Reason = fmt.Sprintf("base %s parked: %s", ws.BaseId, cmd.Reason)
 	default:
 		if step, steps, name, allDone := c.out.freshenStep(); allDone {
-			ws.Reason = fmt.Sprintf("snapshotting base %s", ws.BaseId)
+			if isCladefsBase(b) {
+				ws.Reason = fmt.Sprintf("syncing base %s to R2", ws.BaseId)
+			} else {
+				ws.Reason = fmt.Sprintf("snapshotting base %s", ws.BaseId)
+			}
 		} else if step > 0 {
 			ws.Reason = fmt.Sprintf("freshening base %s: step %d/%d %s", ws.BaseId, step, steps, name)
 		}
@@ -603,6 +608,29 @@ func syncInProgressRepo(reason string) string {
 func (e *Engine) reconcileLoaded() {
 	e.mu.Lock()
 	defer e.mu.Unlock()
+	baseIDs := make([]string, 0, len(e.bases))
+	for id := range e.bases {
+		baseIDs = append(baseIDs, id)
+	}
+	sort.Strings(baseIDs)
+	for _, id := range baseIDs {
+		b := e.bases[id]
+		if !isCladefsBase(b) || b.State != building {
+			continue
+		}
+		// Managed VM / cladefs-FUSE base builds finalize inside an in-memory
+		// EnsureProjectBase goroutine that does not survive a worker restart.
+		now := e.nowMs()
+		b.State = broken
+		b.BuiltAt = &now
+		why := fmt.Sprintf("base %s build interrupted by worker restart", b.Id)
+		e.saveBase(b, change{what: "failed", detail: why})
+		if b.Command != "" {
+			if c, ok := e.commands[b.Command]; ok && api.Live(c.cmd().State) {
+				e.end(c, cancelled, nil, "interrupted by worker restart")
+			}
+		}
+	}
 	wsIDs := make([]string, 0, len(e.workspaces))
 	for id := range e.workspaces {
 		wsIDs = append(wsIDs, id)
@@ -611,6 +639,15 @@ func (e *Engine) reconcileLoaded() {
 	for _, id := range wsIDs {
 		w := e.workspaces[id]
 		ws := w.ws()
+		if ws.State == preparing && (ws.Runtime == runtime.KindVM || ws.Runtime == runtime.KindCladefs) {
+			// VM / cladefs-FUSE workspace preparation runs in a background
+			// goroutine that died with the previous worker process.
+			ws.State = failedWS
+			ws.Reason = "interrupted by worker restart while preparing workspace"
+			ws.LastActiveAt = e.nowMs()
+			e.saveWorkspace(w, change{what: "failed", detail: ws.Reason})
+			continue
+		}
 		if ws.State == released || ws.State == failedWS || !isSyncInProgress(ws.Reason) {
 			continue
 		}

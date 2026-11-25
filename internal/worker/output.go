@@ -34,6 +34,7 @@ type found struct {
 	allDone     bool               // the freshen said its steps are done
 	started     map[string]bool    // freshen steps started
 	done        map[string]float64 // seconds each finished freshen step took
+	repoHeads   map[string]string  // repo -> commit SHA from ::hotbed-head:: lines
 }
 
 func newOutput(path string) *output { return &output{lines: cmdlog.NewLines(path)} }
@@ -124,6 +125,17 @@ func (o *output) freshenStep() (step, steps int, name string, allDone bool) {
 	return o.found.step, o.found.steps, o.found.stepName, o.found.allDone
 }
 
+// repoHeads returns a copy of repo -> HEAD SHA markers emitted during a freshen.
+func (o *output) repoHeads() map[string]string {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	out := make(map[string]string, len(o.found.repoHeads))
+	for k, v := range o.found.repoHeads {
+		out[k] = v
+	}
+	return out
+}
+
 // settle marks the steps a freshen ran as done, with their times; the one
 // it started and did not finish failed. Steps after it never ran, so the
 // base does not have them and they are left out. The freshen runs its
@@ -161,6 +173,16 @@ func (f *found) line(l []byte) {
 		f.compileErr = true
 	case (bytes.Contains(l, []byte("FAIL")) || bytes.Contains(l, []byte("failed"))) && testFailure.Match(l):
 		f.testFail = true
+	}
+	if bytes.HasPrefix(l, []byte("::hotbed-head:: ")) {
+		fields := bytes.Fields(l[len("::hotbed-head:: "):])
+		if len(fields) == 2 {
+			if f.repoHeads == nil {
+				f.repoHeads = map[string]string{}
+			}
+			f.repoHeads[string(fields[0])] = string(fields[1])
+		}
+		return
 	}
 	if !bytes.HasPrefix(l, []byte("::hotbed:: step")) {
 		return

@@ -211,7 +211,10 @@ func (u *runtimeUnits) lookup(unitName string) *rtCmd {
 }
 
 func (u *runtimeUnits) Start(ctx context.Context, s unit.Spec) error {
-	wsID := envValue(s.Env, "HOTBED_WORKSPACE")
+	wsID := envValue(s.Env, "HOTBED_RUNTIME_TARGET")
+	if wsID == "" {
+		wsID = envValue(s.Env, "HOTBED_WORKSPACE")
+	}
 	if wsID == "" || !u.useRT(wsID) {
 		return u.inner.Start(ctx, s)
 	}
@@ -224,7 +227,13 @@ func (u *runtimeUnits) Start(ctx context.Context, s unit.Spec) error {
 			return err
 		}
 	}
-	env := append([]string(nil), s.Env...)
+	env := make([]string, 0, len(s.Env)+1)
+	for _, kv := range s.Env {
+		if strings.HasPrefix(kv, "HOTBED_RUNTIME_TARGET=") {
+			continue
+		}
+		env = append(env, kv)
+	}
 	if len(s.PathPrefix) > 0 {
 		env = append(env, "PATH="+strings.Join(s.PathPrefix, ":")+":/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin")
 	}

@@ -232,7 +232,13 @@ export function NodePage() {
                 <span className="font-mono text-foreground">{b.project}</span>
                 <span className="font-mono text-[11px] text-faint">g{b.generation}</span>
                 <span className="num font-mono text-[11px] text-primary">{percent(b.progress)}</span>
-                <span className="ml-auto font-mono text-[11px] text-muted-foreground">{b.id}</span>
+                {b.command ? (
+                  <Link to="/commands/$id" params={{ id: b.command }} className="ml-auto font-mono text-[11px] text-muted-foreground hover:text-primary">
+                    {b.id} · {b.command}
+                  </Link>
+                ) : (
+                  <span className="ml-auto font-mono text-[11px] text-muted-foreground">{b.id}</span>
+                )}
               </li>
             ))}
           </ul>

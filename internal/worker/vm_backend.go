@@ -763,10 +763,16 @@ func (b *VMBackend) EnsureProjectBase(
 	existingShared *pb.CladefsCell,
 	spec baseimage.Spec,
 	sandboxEnv []string,
+	onBaseTarget func(baseID string),
+	runFreshen managedFreshenRunner,
 ) (*vmProjectBase, error) {
 	spec = spec.Normalized()
 	baseKey := b.vmBaseKey(spec)
 	recipe := vmProjectRecipe(baseKey, p, heads)
+	baseID := fmt.Sprintf("%s-vm-%s", p.GetName(), recipe[:8])
+	if onBaseTarget != nil {
+		onBaseTarget(baseID)
+	}
 
 	lock := b.projectLock(p.GetName())
 	lock.Lock()
@@ -828,7 +834,6 @@ func (b *VMBackend) EnsureProjectBase(
 		return adopted, nil
 	}
 
-	baseID := fmt.Sprintf("%s-vm-%s", p.GetName(), recipe[:8])
 	rel := filepath.Join("bases", p.GetName(), baseID)
 	vmID := "base-" + baseID
 	if b.mgr != nil {
@@ -884,105 +889,150 @@ func (b *VMBackend) EnsureProjectBase(
 	}
 	forkRef = takenRef
 
-	untrack := b.trackBuild(vmID)
-	if _, err := b.mgr.Start(ctx, vm.LaunchSpec{
-		ID:            vmID,
-		CellHostPath:  forkRef.HostPath,
-		CladefsVMSock: b.currentStore().VMSock(),
-	}); err != nil {
-		untrack()
-		b.cleanupCell(ctx, rel)
-		return nil, fmt.Errorf("boot project base VM %s: %w", vmID, err)
-	}
-
-	env := append([]string{}, cacheEnv()...)
-	env = append(env, sandboxEnv...)
-	env = append(env,
-		"HOME="+spec.Home,
-		"XDG_RUNTIME_DIR="+fmt.Sprintf("/run/user/%d", spec.UID),
-		"PATH="+strings.Join(cachePath, ":")+":/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
-		"HOTBED_GIT_CRED_SOCK=/run/hotbed/git-auth/git-cred.sock",
-	)
-
-	// 1. Clone/fetch all project repos inside the Firecracker VM, pinning each
-	// repo to its resolved target commit when known.
-	var cloneScript strings.Builder
-	cloneScript.WriteString("set -euo pipefail\nmkdir -p /work\ncd /work\n")
-	for _, r := range p.GetRepos() {
-		branch := cmp.Or(r.GetBranch(), "main")
-		commit := heads[r.GetId()]
-		fmt.Fprintf(&cloneScript, `
-if [ -d %q/.git ]; then
-  git -C %q fetch --prune origin %q
-else
-  git clone --quiet --filter=blob:none --branch %q --single-branch %q %q
-fi
-`, r.GetId(), r.GetId(), branch, branch, r.GetUrl(), r.GetId())
-		if commit != "" {
-			fmt.Fprintf(&cloneScript, `
-if ! git -C %q cat-file -e %q^{commit} 2>/dev/null; then
-  git -C %q fetch --quiet origin %q
-fi
-git -C %q checkout -B %q %q
-`, r.GetId(), commit, r.GetId(), commit, r.GetId(), branch, commit)
-		} else {
-			fmt.Fprintf(&cloneScript, `
-if git -C %q rev-parse --verify FETCH_HEAD >/dev/null 2>&1; then
-  git -C %q checkout -B %q FETCH_HEAD
-fi
-`, r.GetId(), r.GetId(), branch)
-		}
-		fmt.Fprintf(&cloneScript, `
-git -C %q submodule update --quiet --init --recursive --force
-if [ -f %q/Cargo.toml ] && [ ! -f %q/rust-toolchain.toml ] && [ ! -f %q/rust-toolchain ] && command -v rustup >/dev/null; then
-  rustup show active-toolchain >/dev/null 2>&1 || rustup default stable
-fi
-printf '::hotbed-head:: %s %%s\n' "$(git -C %q rev-parse HEAD)"
-`, r.GetId(), r.GetId(), r.GetId(), r.GetId(), r.GetId(), r.GetId())
-	}
-
-	out, runErr := b.runGuestCommand(ctx, vmID, "freshen-repos-"+baseID, "/work", []string{"/bin/bash", "-c", cloneScript.String()}, env, spec.UID, spec.GID)
-	// 2. Run selected project setup steps directly via bash -c (avoiding nested
-	// shell quoting so variables like $dest expand inside the step's shell).
 	stepsToRun := selectProjectBaseSteps(p, prevBase, heads)
-	if runErr == nil {
-		for i, s := range stepsToRun {
-			stepCmdID := fmt.Sprintf("freshen-step-%d-%s", i+1, baseID)
-			if _, err := b.runGuestCommand(ctx, vmID, stepCmdID, "/work", []string{"/bin/bash", "-eo", "pipefail", "-c", s.GetScript()}, env, spec.UID, spec.GID); err != nil {
-				runErr = fmt.Errorf("step %q: %w", s.GetName(), err)
-				break
+	script := buildCladefsFreshenScript(p, heads, stepsToRun, false)
+
+	var (
+		repoHeads  map[string]string
+		handle     *managedFreshenHandle
+		freshenRes managedFreshenResult
+	)
+	if runFreshen != nil {
+		env := append(slices.Clone(sandboxEnv),
+			"HOME="+spec.Home,
+			"HOTBED_GIT_CRED_SOCK=/run/hotbed/git-auth/git-cred.sock",
+		)
+		var (
+			vmStarted        atomic.Bool
+			stopMu           sync.Mutex
+			startFailStopErr error
+		)
+		untrack := b.trackBuild(vmID)
+		handle, err = runFreshen(ctx, managedFreshenSpec{
+			Project:    p,
+			BaseID:     baseID,
+			Recipe:     recipe,
+			Arch:       goruntime.GOARCH,
+			Cold:       prevBase == nil,
+			PrevBase:   prevBase,
+			StepsToRun: stepsToRun,
+			Heads:      heads,
+			Script:     script,
+			Env:        env,
+			VMID:       vmID,
+			BeforeStart: func(startCtx context.Context) error {
+				if _, err := b.mgr.Start(startCtx, vm.LaunchSpec{
+					ID:            vmID,
+					CellHostPath:  forkRef.HostPath,
+					CladefsVMSock: b.currentStore().VMSock(),
+				}); err != nil {
+					return fmt.Errorf("boot project base VM %s: %w", vmID, err)
+				}
+				vmStarted.Store(true)
+				return nil
+			},
+			OnStartFail: func() {
+				if vmStarted.Swap(false) {
+					err := b.stopBuildVM(context.Background(), vmID, false)
+					stopMu.Lock()
+					startFailStopErr = err
+					stopMu.Unlock()
+				}
+			},
+		})
+		if err != nil {
+			untrack()
+			b.cleanupCell(ctx, rel)
+			return nil, fmt.Errorf("queue VM project base %s: %w", baseID, err)
+		}
+		var waitErr error
+		freshenRes, waitErr = handle.Wait(ctx)
+		runOK := waitErr == nil && freshenRes.State == succeeded
+		stopMu.Lock()
+		stopErr := startFailStopErr
+		stopMu.Unlock()
+		if vmStarted.Swap(false) {
+			stopErr = b.stopBuildVM(ctx, vmID, runOK)
+		}
+		untrack()
+		if waitErr != nil {
+			if stopErr == nil {
+				b.cleanupCell(ctx, rel)
+			}
+			handle.Finish(false, freshenRes, cladefs.CellRef{}, waitErr.Error())
+			return nil, fmt.Errorf("freshen VM project base %s (command %s): %w", baseID, handle.CommandID(), waitErr)
+		}
+		if freshenRes.State != succeeded {
+			if stopErr == nil {
+				b.cleanupCell(ctx, rel)
+			}
+			detail := cmp.Or(freshenRes.Reason, "freshen "+stateName(freshenRes.State))
+			handle.Finish(false, freshenRes, cladefs.CellRef{}, detail)
+			return nil, fmt.Errorf("freshen VM project base %s failed (command %s): %s", baseID, handle.CommandID(), detail)
+		}
+		if stopErr != nil {
+			handle.Finish(false, freshenRes, cladefs.CellRef{}, fmt.Sprintf("stop project base VM %s: %v", vmID, stopErr))
+			return nil, fmt.Errorf("stop project base VM %s: %w", vmID, stopErr)
+		}
+		repoHeads = freshenRes.RepoHeads
+	} else {
+		untrack := b.trackBuild(vmID)
+		if _, err := b.mgr.Start(ctx, vm.LaunchSpec{
+			ID:            vmID,
+			CellHostPath:  forkRef.HostPath,
+			CladefsVMSock: b.currentStore().VMSock(),
+		}); err != nil {
+			untrack()
+			b.cleanupCell(ctx, rel)
+			return nil, fmt.Errorf("boot project base VM %s: %w", vmID, err)
+		}
+		env := append([]string{}, cacheEnv()...)
+		env = append(env, sandboxEnv...)
+		env = append(env,
+			"HOME="+spec.Home,
+			"XDG_RUNTIME_DIR="+fmt.Sprintf("/run/user/%d", spec.UID),
+			"PATH="+strings.Join(cachePath, ":")+":/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+			"HOTBED_GIT_CRED_SOCK=/run/hotbed/git-auth/git-cred.sock",
+		)
+		out, runErr := b.runGuestCommand(ctx, vmID, "freshen-"+baseID, "/work", []string{"/bin/bash", "-c", script}, env, spec.UID, spec.GID)
+		stopErr := b.stopBuildVM(ctx, vmID, runErr == nil)
+		untrack()
+		if runErr != nil {
+			if stopErr == nil {
+				b.cleanupCell(ctx, rel)
+			}
+			return nil, fmt.Errorf("freshen VM project base %s: %w", baseID, runErr)
+		}
+		if stopErr != nil {
+			return nil, fmt.Errorf("stop project base VM %s: %w", vmID, stopErr)
+		}
+		repoHeads = map[string]string{}
+		for _, line := range strings.Split(out, "\n") {
+			if rest, ok := strings.CutPrefix(strings.TrimSpace(line), "::hotbed-head:: "); ok {
+				parts := strings.Fields(rest)
+				if len(parts) == 2 {
+					repoHeads[parts[0]] = parts[1]
+				}
 			}
 		}
-	}
-	stopErr := b.stopBuildVM(ctx, vmID, runErr == nil)
-	untrack()
-	if runErr != nil {
-		if stopErr == nil {
-			b.cleanupCell(ctx, rel)
-		}
-		return nil, fmt.Errorf("freshen VM project base %s: %w", baseID, runErr)
-	}
-	if stopErr != nil {
-		return nil, fmt.Errorf("stop project base VM %s: %w", vmID, stopErr)
 	}
 
 	ver, err := b.currentStore().MakeVersionAndSync(ctx, rel, 2)
 	if err != nil {
 		b.cleanupCell(ctx, rel)
+		handle.Finish(false, freshenRes, cladefs.CellRef{}, fmt.Sprintf("sync to R2: %v", err))
 		return nil, fmt.Errorf("sync VM project base %s to R2: %w", baseID, err)
 	}
 	// Drop the local project base cell directory now that it is durable in R2;
 	// local SSD stays strictly a cache (CLADEFSD_PART_CACHE) + active workspaces.
 	_ = b.currentStore().DropCell(ctx, rel)
 	forkRef.Version = ver
+	handle.Finish(true, freshenRes, forkRef, "")
 
-	repoHeads := map[string]string{}
-	for _, line := range strings.Split(out, "\n") {
-		if rest, ok := strings.CutPrefix(strings.TrimSpace(line), "::hotbed-head:: "); ok {
-			parts := strings.Fields(rest)
-			if len(parts) == 2 {
-				repoHeads[parts[0]] = parts[1]
-			}
+	if len(repoHeads) == 0 && len(heads) > 0 {
+		repoHeads = make(map[string]string, len(heads))
+		for k, v := range heads {
+			repoHeads[k] = v
 		}
 	}
 
@@ -1373,7 +1423,14 @@ func (e *Engine) createVMWorkspace(ctx context.Context, req *pb.CreateWorkspaceR
 		heads, err := e.remoteHeads(bgCtx, p)
 		var projBase *vmProjectBase
 		if err == nil {
-			projBase, err = e.cfg.VM.EnsureProjectBase(bgCtx, p, heads, req.GetSharedBase(), baseSpec, e.sandboxEnv())
+			projBase, err = e.cfg.VM.EnsureProjectBase(
+				bgCtx, p, heads, req.GetSharedBase(), baseSpec, e.sandboxEnv(),
+				func(baseID string) { e.setPreparingWorkspaceBase(req.Id, baseID) },
+				e.startManagedFreshen,
+			)
+		}
+		if err == nil {
+			e.recordWarmCladefsBase(p, projBase, goruntime.GOARCH)
 		}
 		var cell *pb.CladefsCell
 		if err == nil {

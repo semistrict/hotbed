@@ -103,7 +103,7 @@ func (e *Engine) baseFor(ctx context.Context, p *pb.HostedProject) (b *pb.Base, 
 	e.mu.Lock()
 	var newest, newestWarm *pb.Base
 	for _, b := range e.bases {
-		if b.Project != p.Name {
+		if b.Project != p.Name || isCladefsBase(b) {
 			continue
 		}
 		if b.State == building && b.Recipe == want {
@@ -527,7 +527,7 @@ func (e *Engine) freshened(ctx context.Context, c *command, ok bool, seconds flo
 	// It takes over from older generations; one that finished behind a
 	// newer warm one is stale itself.
 	for _, o := range e.bases {
-		if o == b || o.Project != b.Project || o.State != warm {
+		if o == b || o.Project != b.Project || isCladefsBase(o) || o.State != warm {
 			continue
 		}
 		if o.Generation < b.Generation {
@@ -555,7 +555,7 @@ func (e *Engine) freshened(ctx context.Context, c *command, ok bool, seconds flo
 func (e *Engine) previousBase(b *pb.Base) *pb.Base {
 	var prev *pb.Base
 	for _, o := range e.bases {
-		if o.Project == b.Project && o.Generation < b.Generation && (prev == nil || o.Generation > prev.Generation) {
+		if o.Project == b.Project && !isCladefsBase(o) && o.Generation < b.Generation && (prev == nil || o.Generation > prev.Generation) {
 			prev = o
 		}
 	}
@@ -571,6 +571,9 @@ func (e *Engine) collectBases(ctx context.Context) {
 	e.mu.Lock()
 	newest := map[string]int32{}
 	for _, b := range e.bases {
+		if isCladefsBase(b) {
+			continue
+		}
 		newest[b.Project] = max(newest[b.Project], b.Generation)
 	}
 	var dead []*pb.Base
@@ -584,6 +587,15 @@ func (e *Engine) collectBases(ctx context.Context) {
 				used = true
 				break
 			}
+		}
+		if isCladefsBase(b) {
+			// R2 cell retirement is owned by VMBackend/CladefsFUSEBackend baseRetirer;
+			// only remove stale or removed-project records from e.bases once unused.
+			if !used && (b.State == stale || e.projectRemoved(b.Project)) {
+				delete(e.bases, b.Id)
+				e.deleteBase(b, "collected")
+			}
+			continue
 		}
 		if !used {
 			dead = append(dead, b)
@@ -677,6 +689,9 @@ func (e *Engine) collectBaseImages(ctx context.Context) {
 	e.mu.Lock()
 	var liveBases []liveBase
 	for _, b := range e.bases {
+		if isCladefsBase(b) {
+			continue
+		}
 		if b.State == warm || b.State == building || e.finalizingBases[b.Id] {
 			liveBases = append(liveBases, liveBase{
 				id:      b.Id,
@@ -820,12 +835,12 @@ func (e *Engine) git(dir string) gitops.Git {
 func (e *Engine) dropSuperseded(project string) {
 	var newest int32
 	for _, b := range e.bases {
-		if b.Project == project {
+		if b.Project == project && !isCladefsBase(b) {
 			newest = max(newest, b.Generation)
 		}
 	}
 	for _, b := range e.bases {
-		if b.Project != project || b.State != building || b.Generation >= newest || e.waitedFor(b.Id) {
+		if b.Project != project || isCladefsBase(b) || b.State != building || b.Generation >= newest || e.waitedFor(b.Id) {
 			continue
 		}
 		b.State = stale

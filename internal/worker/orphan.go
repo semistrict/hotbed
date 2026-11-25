@@ -9,6 +9,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/semistrict/hotbed/internal/api"
 	"github.com/semistrict/hotbed/internal/storage"
 	"github.com/semistrict/hotbed/internal/unit"
 	"golang.org/x/sync/errgroup"
@@ -40,9 +41,18 @@ func (e *Engine) sweepOrphans(ctx context.Context) {
 
 	e.mu.Lock()
 	for _, c := range e.commands {
+		if b, ok := e.bases[c.rec.BaseId]; ok && isCladefsBase(b) && !api.Live(c.cmd().State) {
+			continue // interrupted cladefs base freshen cancelled on startup: sweep its unit
+		}
 		knownUnits[c.unitName()] = true
 	}
 	for _, b := range e.bases {
+		if isCladefsBase(b) {
+			if b.Command != "" && b.State == building {
+				knownUnits["hotbed-"+b.Command] = true
+			}
+			continue
+		}
 		if b.Command != "" {
 			knownUnits["hotbed-"+b.Command] = true
 		}

@@ -33,12 +33,16 @@ const tmpName = ".tmp"
 
 func (e *Engine) tmpRoot(vol string) string { return filepath.Join(e.volPath(vol), tmpName) }
 
+func (e *Engine) commandTmpRoot(c *command) string {
+	return filepath.Join(e.commandVolPath(c), tmpName)
+}
+
 // tmpDir is c's temporary directory, bound to /tmp and /var/tmp.
 func (e *Engine) tmpDir(c *command) (string, error) {
 	if err := validateID(c.cmd().Id); err != nil {
 		return "", err
 	}
-	return filepath.Join(e.tmpRoot(c.rec.Volume), c.cmd().Id, "tmp"), nil
+	return filepath.Join(e.commandTmpRoot(c), c.cmd().Id, "tmp"), nil
 }
 
 // runtimeDir is c's per-command XDG_RUNTIME_DIR backing directory, bound to
@@ -48,7 +52,7 @@ func (e *Engine) runtimeDir(c *command) (string, error) {
 	if err := validateID(c.cmd().Id); err != nil {
 		return "", err
 	}
-	return filepath.Join(e.tmpRoot(c.rec.Volume), c.cmd().Id, "run"), nil
+	return filepath.Join(e.commandTmpRoot(c), c.cmd().Id, "run"), nil
 }
 
 // makeTmpEntry creates <volPath>/.tmp/<name>/{tmp,run} without following
@@ -143,7 +147,7 @@ func ensureConfinedDir(root *os.Root, name string, mode fs.FileMode, cred *sysca
 
 // makeTmp makes c's per-command temporary and XDG runtime directories.
 func (e *Engine) makeTmp(c *command) error {
-	return makeTmpDirs(e.volPath(c.rec.Volume), c.cmd().Id, e.cred)
+	return makeTmpDirs(e.commandVolPath(c), c.cmd().Id, e.cred)
 }
 
 // dropTmp removes c's temporary directory, its processes gone, in the
@@ -159,7 +163,7 @@ func (e *Engine) dropTmp(c *command) {
 		close(gone)
 		return
 	}
-	volPath := e.volPath(c.rec.Volume)
+	volPath := e.commandVolPath(c)
 	id := c.cmd().Id
 	admitDone := c.admitDone
 	if !e.startBgLocked(func(context.Context) {
@@ -311,6 +315,9 @@ func (e *Engine) sweepTmp() {
 	}
 	vols := map[string]bool{}
 	for _, b := range e.bases {
+		if isCladefsBase(b) {
+			continue
+		}
 		vols[baseVolume(b.Project, b.Generation)] = true
 	}
 	for _, w := range e.workspaces {

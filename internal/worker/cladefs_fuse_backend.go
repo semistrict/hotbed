@@ -25,7 +25,6 @@ import (
 	"github.com/semistrict/hotbed/internal/runtime"
 	"github.com/semistrict/hotbed/internal/statedir"
 	"github.com/semistrict/hotbed/internal/storage"
-	"github.com/semistrict/hotbed/internal/unit"
 )
 
 // CladefsFUSEBackend manages R2-backed cladefs cells mounted into the host
@@ -603,12 +602,17 @@ func (b *CladefsFUSEBackend) EnsureProjectBase(
 	existingShared *pb.CladefsCell,
 	spec baseimage.Spec,
 	prov baseimage.Provisioner,
-	runStep func(ctx context.Context, rootDir, name string, argv, env []string) (string, error),
+	runFreshen managedFreshenRunner,
+	onBaseTarget func(baseID string),
 	sandboxEnv []string,
 ) (*vmProjectBase, error) {
 	spec = spec.Normalized()
 	baseKey := b.fuseBaseKey(spec)
 	recipe := fuseProjectRecipe(baseKey, p, heads)
+	baseID := fmt.Sprintf("%s-fuse-%s", p.GetName(), recipe[:8])
+	if onBaseTarget != nil {
+		onBaseTarget(baseID)
+	}
 
 	lock := b.projectLock(p.GetName())
 	lock.Lock()
@@ -671,7 +675,9 @@ func (b *CladefsFUSEBackend) EnsureProjectBase(
 	if err := clearMountNosuid(b.mountRoot); err != nil {
 		return nil, fmt.Errorf("enable setuid on cladefs FUSE mount %s: %w", b.mountRoot, err)
 	}
-	baseID := fmt.Sprintf("%s-fuse-%s", p.GetName(), recipe[:8])
+	if runFreshen == nil {
+		return nil, fmt.Errorf("freshen cladefs FUSE project base %s: no freshen runner configured", baseID)
+	}
 	var tenant, cellID uint64
 	var mntDir, storeDir string
 	var err error
@@ -698,79 +704,56 @@ func (b *CladefsFUSEBackend) EnsureProjectBase(
 		_ = b.currentStore().DeleteCellAbs(context.Background(), storeDir)
 	}
 
-	env := append([]string{}, cacheEnv()...)
-	env = append(env, sandboxEnv...)
-	env = append(env, "HOME="+spec.Home)
-
-	var cloneScript strings.Builder
-	cloneScript.WriteString("set -euo pipefail\nmkdir -p /work\ncd /work\n")
-	for _, r := range p.GetRepos() {
-		branch := cmp.Or(r.GetBranch(), "main")
-		commit := heads[r.GetId()]
-		fmt.Fprintf(&cloneScript, `
-if [ -d %q/.git ]; then
-  git -C %q fetch --prune origin %q
-else
-  git clone --quiet --filter=blob:none --branch %q --single-branch %q %q
-fi
-`, r.GetId(), r.GetId(), branch, branch, r.GetUrl(), r.GetId())
-		if commit != "" {
-			fmt.Fprintf(&cloneScript, `
-if ! git -C %q cat-file -e %q^{commit} 2>/dev/null; then
-  git -C %q fetch --quiet origin %q
-fi
-git -C %q checkout -B %q %q
-`, r.GetId(), commit, r.GetId(), commit, r.GetId(), branch, commit)
-		} else {
-			fmt.Fprintf(&cloneScript, `
-if git -C %q rev-parse --verify FETCH_HEAD >/dev/null 2>&1; then
-  git -C %q checkout -B %q FETCH_HEAD
-fi
-`, r.GetId(), r.GetId(), branch)
-		}
-		fmt.Fprintf(&cloneScript, `
-if [ -f %q/.gitmodules ]; then
-  git -C %q submodule update --quiet --init --recursive --force
-fi
-printf '::hotbed-head:: %s %%s\n' "$(git -C %q rev-parse HEAD)"
-`, r.GetId(), r.GetId(), r.GetId(), r.GetId())
-	}
-
-	attempt := randomUnitSuffix()
-	out, runErr := runStep(ctx, mntDir, fmt.Sprintf("hotbed-fuse-repos-%s-%s", baseID, attempt), []string{"/bin/bash", "-c", cloneScript.String()}, env)
 	stepsToRun := selectProjectBaseSteps(p, prevBase, heads)
-	if runErr == nil {
-		for i, s := range stepsToRun {
-			stepUnit := fmt.Sprintf("hotbed-fuse-step-%d-%s-%s", i+1, baseID, attempt)
-			if _, err := runStep(ctx, mntDir, stepUnit, []string{"/bin/bash", "-eo", "pipefail", "-c", s.GetScript()}, env); err != nil {
-				runErr = fmt.Errorf("step %q: %w", s.GetName(), err)
-				break
-			}
-		}
-	}
-	if runErr != nil {
+	script := buildCladefsFreshenScript(p, heads, stepsToRun, true)
+	handle, err := runFreshen(ctx, managedFreshenSpec{
+		Project:    p,
+		BaseID:     baseID,
+		Recipe:     recipe,
+		Arch:       goruntime.GOARCH,
+		Cold:       prevBase == nil,
+		PrevBase:   prevBase,
+		StepsToRun: stepsToRun,
+		Heads:      heads,
+		Script:     script,
+		Env:        slices.Clone(sandboxEnv),
+		RootDir:    mntDir,
+	})
+	if err != nil {
 		cleanupOnErr()
-		return nil, fmt.Errorf("freshen cladefs FUSE project base %s: %w", baseID, runErr)
+		return nil, fmt.Errorf("queue cladefs FUSE project base %s: %w", baseID, err)
+	}
+	freshenRes, waitErr := handle.Wait(ctx)
+	if waitErr != nil {
+		cleanupOnErr()
+		handle.Finish(false, freshenRes, cladefs.CellRef{}, waitErr.Error())
+		return nil, fmt.Errorf("freshen cladefs FUSE project base %s (command %s): %w", baseID, handle.CommandID(), waitErr)
+	}
+	if freshenRes.State != succeeded {
+		cleanupOnErr()
+		detail := cmp.Or(freshenRes.Reason, "freshen "+stateName(freshenRes.State))
+		handle.Finish(false, freshenRes, cladefs.CellRef{}, detail)
+		return nil, fmt.Errorf("freshen cladefs FUSE project base %s failed (command %s): %s", baseID, handle.CommandID(), detail)
 	}
 
 	if err := b.currentStore().MountDetach(ctx, tenant, cellID, false); err != nil {
 		cleanupOnErr()
+		handle.Finish(false, freshenRes, cladefs.CellRef{}, fmt.Sprintf("detach mount: %v", err))
 		return nil, fmt.Errorf("detach cladefs FUSE project base %s: %w", baseID, err)
 	}
 	ver, err := b.currentStore().MakeVersionAndSyncAbs(ctx, storeDir, 2)
 	if err != nil {
 		_ = b.currentStore().DeleteCellAbs(context.Background(), storeDir)
+		handle.Finish(false, freshenRes, cladefs.CellRef{}, fmt.Sprintf("sync to R2: %v", err))
 		return nil, fmt.Errorf("sync cladefs FUSE project base %s to R2: %w", baseID, err)
 	}
 	_ = b.currentStore().DropCellAbs(ctx, storeDir)
 
-	repoHeads := map[string]string{}
-	for _, line := range strings.Split(out, "\n") {
-		if rest, ok := strings.CutPrefix(strings.TrimSpace(line), "::hotbed-head:: "); ok {
-			parts := strings.Fields(rest)
-			if len(parts) == 2 {
-				repoHeads[parts[0]] = parts[1]
-			}
+	repoHeads := freshenRes.RepoHeads
+	if len(repoHeads) == 0 && len(heads) > 0 {
+		repoHeads = make(map[string]string, len(heads))
+		for k, v := range heads {
+			repoHeads[k] = v
 		}
 	}
 	ref := cladefs.CellRef{
@@ -779,6 +762,7 @@ printf '::hotbed-head:: %s %%s\n' "$(git -C %q rev-parse HEAD)"
 		Cell:    cellID,
 		Version: ver,
 	}
+	handle.Finish(true, freshenRes, ref, "")
 	res := &vmProjectBase{
 		Ref:          ref,
 		BaseID:       baseID,
@@ -889,59 +873,6 @@ func (e *Engine) createCladefsFUSEWorkspace(ctx context.Context, req *pb.CreateW
 	e.saveWorkspace(w, change{what: "created", detail: "cladefs host FUSE"})
 	e.mu.Unlock()
 
-	runInChroot := func(stepCtx context.Context, rootDir, unitName string, argv, env []string) (string, error) {
-		if err := makeTmpDirs(rootDir, unitName, e.cred); err != nil {
-			return "", err
-		}
-		tmpBase := filepath.Join(rootDir, tmpName, unitName)
-		defer os.RemoveAll(tmpBase)
-		tmpDir := filepath.Join(tmpBase, "tmp")
-		runDir := filepath.Join(tmpBase, "run")
-		runtimeTarget := e.runtimeChrootDir()
-		logPath := filepath.Join(e.cfg.Dir, "logs", unitName+".log")
-		_ = os.MkdirAll(filepath.Dir(logPath), 0o755)
-		stepEnv := append(append([]string(nil), env...), "XDG_RUNTIME_DIR="+runtimeTarget)
-		spec := unit.Spec{
-			Name:       unitName,
-			Slice:      cmp.Or(e.cfg.Slice, unit.DefaultSlice),
-			Argv:       argv,
-			Dir:        WorkPath,
-			Binds:      []unit.Bind{{Source: runDir, Target: runtimeTarget}},
-			Tmp:        tmpDir,
-			User:       e.cfg.User,
-			Env:        stepEnv,
-			PathPrefix: cachePath,
-			Log:        logPath,
-			Properties: e.cfg.UnitProperties,
-		}
-		e.inRootfs(&spec, rootDir)
-		if err := e.cfg.Units.Start(stepCtx, spec); err != nil {
-			return "", err
-		}
-		// Always stop and reset-failed the transient unit once its status is
-		// read so RemainAfterExit=yes units never stay loaded in systemd.
-		defer func() {
-			_ = e.cfg.Units.Stop(context.Background(), spec.Name)
-		}()
-		if err := e.cfg.Units.Wait(stepCtx, spec.Slice, spec.Name); err != nil {
-			return "", err
-		}
-		st, err := e.cfg.Units.Status(stepCtx, spec.Name)
-		outBytes, _ := os.ReadFile(logPath)
-		out := string(outBytes)
-		if err != nil {
-			return out, err
-		}
-		if st.ExitCode != 0 {
-			tail := out
-			if len(tail) > 2048 {
-				tail = tail[len(tail)-2048:]
-			}
-			return out, fmt.Errorf("chroot step %s exited %d:\n%s", unitName, st.ExitCode, strings.TrimSpace(tail))
-		}
-		return out, nil
-	}
-
 	finishFUSE := func(bgCtx context.Context) {
 		start := e.now()
 		var baseSpec baseimage.Spec
@@ -953,7 +884,15 @@ func (e *Engine) createCladefsFUSEWorkspace(ctx context.Context, req *pb.CreateW
 		heads, err := e.remoteHeads(bgCtx, p)
 		var projBase *vmProjectBase
 		if err == nil {
-			projBase, err = e.cfg.CladefsFUSE.EnsureProjectBase(bgCtx, p, heads, req.GetSharedBase(), baseSpec, prov, runInChroot, e.sandboxEnv())
+			projBase, err = e.cfg.CladefsFUSE.EnsureProjectBase(
+				bgCtx, p, heads, req.GetSharedBase(), baseSpec, prov,
+				e.startManagedFreshen,
+				func(baseID string) { e.setPreparingWorkspaceBase(req.Id, baseID) },
+				e.sandboxEnv(),
+			)
+		}
+		if err == nil {
+			e.recordWarmCladefsBase(p, projBase, goruntime.GOARCH)
 		}
 		var cell *pb.CladefsCell
 		var mntDir string
