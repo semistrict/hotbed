@@ -4592,17 +4592,18 @@ message ProxyGitHubAPIResponse {
 
 // ---- memories ---------------------------------------------------------------
 
-// Cross-agent memories and learned rules curated with user approval. Agents
-// propose learnings (globally or for a project); the user approves, edits, or
-// rejects them in the cockpit. Approved memories are returned in compact form
-// on session start (always-on rules inline; on-demand memories as a 1-line
-// index fetched in full via GetMemories).
+// Cross-agent memories and learned rules shared across sessions and machines.
+// Memories are automatically approved on creation (globally or for a project)
+// and returned in compact form on session start (always-on rules inline;
+// on-demand memories as a 1-line index fetched in full via GetMemories).
+// Users can edit any field, promote project memories to global, reorder,
+// archive/restore, or permanently remove them.
 service MemoryService {
-  // Propose a new memory or an update/consolidation of existing approved
-  // memories (--supersede ID). Defaults to the active session's project;
-  // pass --global for cross-project learnings. Use --mode always for short
-  // guardrails (<= 240 chars) or --mode on_demand (default) for detailed
-  // playbooks fetched with `hotbed memory get`.
+  // Create a new memory or supersede/consolidate existing memories
+  // (--supersede ID). Automatically approved and active immediately. Defaults
+  // to the active session's project; pass --global for cross-project learnings.
+  // Use --mode always for short guardrails (<= 240 chars) or --mode on_demand
+  // (default) for detailed playbooks fetched with `hotbed memory get`.
   rpc ProposeMemory(ProposeMemoryRequest) returns (Memory) {
     option (command) = {
       name: "memory propose"
@@ -4620,23 +4621,6 @@ service MemoryService {
       session: true
       read_only: true
       format: "{{range .memories}}#{{pad 4 .id}}  {{pad 10 (state .state)}}  {{pad 12 (or .project \"global\")}}  {{with .content}}{{pad 9 (state .mode)}}  {{pad 28 .slug}}  {{short 60 .summary}}{{end}}\n{{end}}{{with .reminder}}{{.}}{{end}}"
-    };
-    option (command) = {
-      name: "memory proposals"
-      help: "List proposed memories waiting for the user's approval, newest first."
-      session: true
-      read_only: true
-      format: "{{range .memories}}#{{pad 4 .id}}  {{pad 10 (state .state)}}  {{pad 12 (or .project \"global\")}}  {{with .content}}{{pad 9 (state .mode)}}  {{pad 28 .slug}}  {{short 60 .summary}}{{end}}\n{{end}}{{with .reminder}}{{.}}{{end}}"
-      fixed: [
-        {
-          field: "states"
-          value: "[MemoryState.MEMORY_STATE_PROPOSED]"
-        },
-        {
-          field: "order"
-          value: "MemoryOrder.MEMORY_ORDER_NEWEST"
-        }
-      ]
     };
   }
   // Fetch the full markdown body of one or more memories by slug or ID
@@ -4661,53 +4645,35 @@ service MemoryService {
       format: "#{{.id}}  {{state .state}}  rev={{.revision}}  [{{if .project}}{{.project}}{{else}}global{{end}}{{if .repo}}/{{.repo}}{{end}}]{{with .content}}  {{.slug}} ({{state .mode}})\n{{if .title}}title     {{.title}}\n{{end}}summary   {{.summary}}{{if .tags}}\ntags      {{join \", \" .tags}}{{end}}{{if .body}}\n\n{{.body}}{{end}}{{end}}{{if .supersedesIds}}\nsupersedes {{join \", \" .supersedesIds}}{{end}}{{if .supersededBy}}\nsuperseded-by #{{.supersededBy}}{{end}}{{if .cockpitUrl}}\ncockpit   {{.cockpitUrl}}{{end}}"
     };
   }
-  // Edit a proposed memory before user approval (agent action).
-  rpc EditMemory(EditMemoryRequest) returns (Memory) {
-    option (command) = {
-      name: "memory edit"
-      session: true
-      before: ["LoadEditMemoryBody"]
-      format: "#{{.id}}  {{state .state}}  rev={{.revision}}  [{{if .project}}{{.project}}{{else}}global{{end}}] {{with .content}}{{.slug}}{{end}}{{with .reminder}}\n{{.}}{{end}}"
-    };
-  }
-  // Withdraw a proposed memory that is no longer needed; it stays in history.
-  rpc WithdrawMemory(WithdrawMemoryRequest) returns (Memory) {
-    option (command) = {
-      name: "memory withdraw"
-      session: true
-      destructive: true
-      format: "#{{.id}}  {{state .state}}  rev={{.revision}}  [{{if .project}}{{.project}}{{else}}global{{end}}] {{with .content}}{{.slug}}{{end}}"
-    };
-  }
-  // Approve a proposed memory for the user, optionally applying edits first.
-  // Any approved memories listed in supersedes_ids are atomically superseded.
-  // The user approves in the cockpit; an agent uses this only at the user's word.
-  rpc ApproveMemory(ApproveMemoryRequest) returns (Memory) {
-    option (command) = {
-      name: "memory approve"
-      session: true
-      before: ["LoadApproveMemoryBody"]
-      format: "#{{.id}}  {{state .state}}  rev={{.revision}}  [{{if .project}}{{.project}}{{else}}global{{end}}] {{with .content}}{{.slug}}{{end}}"
-    };
-  }
-  // Reject a proposed memory for the user with an optional reason.
-  rpc RejectMemory(RejectMemoryRequest) returns (Memory) {
-    option (command) = {
-      name: "memory reject"
-      session: true
-      format: "#{{.id}}  {{state .state}}  rev={{.revision}}  [{{if .project}}{{.project}}{{else}}global{{end}}] {{with .content}}{{.slug}}{{end}}"
-    };
-  }
-  // Revise an approved or proposed memory directly for the user.
+  // Edit a memory in any way (slug, title, summary, body, mode, tags, scope,
+  // repo, or rationale). Unspecified fields stay unchanged unless
+  // --replace-content or a clear flag is passed.
   rpc ReviseMemory(ReviseMemoryRequest) returns (Memory) {
     option (command) = {
-      name: "memory revise"
+      name: "memory edit"
       session: true
       before: ["LoadReviseMemoryBody"]
       format: "#{{.id}}  {{state .state}}  rev={{.revision}}  [{{if .project}}{{.project}}{{else}}global{{end}}] {{with .content}}{{.slug}}{{end}}"
     };
+    option (command) = {
+      name: "memory promote"
+      help: "Promote a project-specific memory to a global memory shared across all projects."
+      session: true
+      before: ["LoadReviseMemoryBody"]
+      format: "#{{.id}}  {{state .state}}  rev={{.revision}}  [{{if .project}}{{.project}}{{else}}global{{end}}] {{with .content}}{{.slug}}{{end}}"
+      fixed: [
+        {
+          field: "global"
+          value: "true"
+        },
+        {
+          field: "project"
+          value: "\"\""
+        }
+      ]
+    };
   }
-  // Archive an approved memory so it is no longer returned on session start;
+  // Archive an active memory so it is no longer returned on session start;
   // history is preserved and it can be restored.
   rpc ArchiveMemory(ArchiveMemoryRequest) returns (Memory) {
     option (command) = {
@@ -4717,12 +4683,21 @@ service MemoryService {
       format: "#{{.id}}  {{state .state}}  rev={{.revision}}  [{{if .project}}{{.project}}{{else}}global{{end}}] {{with .content}}{{.slug}}{{end}}"
     };
   }
-  // Restore an archived or rejected memory (to approved, or back to proposed).
+  // Restore an archived, rejected, or withdrawn memory back to active.
   rpc RestoreMemory(RestoreMemoryRequest) returns (Memory) {
     option (command) = {
       name: "memory restore"
       session: true
       format: "#{{.id}}  {{state .state}}  rev={{.revision}}  [{{if .project}}{{.project}}{{else}}global{{end}}] {{with .content}}{{.slug}}{{end}}"
+    };
+  }
+  // Permanently remove a memory and its revision history.
+  rpc DeleteMemory(DeleteMemoryRequest) returns (Memory) {
+    option (command) = {
+      name: "memory rm"
+      session: true
+      destructive: true
+      format: "#{{.id}}  removed  [{{if .project}}{{.project}}{{else}}global{{end}}] {{with .content}}{{.slug}}{{end}}"
     };
   }
   // Move an approved memory in the user's startup priority order.
@@ -4885,8 +4860,8 @@ message ProposeMemoryRequest {
   string rationale = 6;
   // Exact model ID proposing this memory (optional).
   string model = 7;
-  // Directly approve on creation (user-only: refused when called from an agent session).
-  bool approve = 8;
+  reserved 8;
+  reserved "approve";
   string session_id = 9 [(param) = {
     hidden: true
     default: "session"
@@ -4997,98 +4972,42 @@ message ShowMemoryRequest {
   }];
 }
 
-message EditMemoryRequest {
-  // Memory ID to edit (must be in PROPOSED state).
-  int32 id = 1 [(param) = {positional: true}];
-  MemoryContent content = 2 [(param) = {flatten: true}];
-  // Optional updated rationale.
-  string rationale = 3;
-  // Updated list of superseded approved memory IDs (pass replace_supersedes to clear).
-  repeated int32 supersedes_ids = 4 [(param) = {name: "supersede"}];
-  // Replace supersedes_ids with the given list (even if empty).
-  bool replace_supersedes = 5;
-  string session_id = 6 [(param) = {
-    hidden: true
-    default: "session"
-  }];
-  // Refuse with CONFLICT unless the memory is at this revision.
-  int64 if_revision = 7 [(param) = {name: "if-revision"}];
-  // Path to a markdown file for body, or "-" to read from stdin (local).
-  string body_file = 8 [(param) = {
-    name: "body-file"
-    local: true
-  }];
-}
-
-message WithdrawMemoryRequest {
-  // Memory ID to withdraw (must be in PROPOSED state).
-  int32 id = 1 [(param) = {positional: true}];
-  // Why the proposal is being withdrawn.
-  string reason = 2;
-  string session_id = 3 [(param) = {
-    hidden: true
-    default: "session"
-  }];
-  int64 if_revision = 4 [(param) = {name: "if-revision"}];
-}
-
-message ApproveMemoryRequest {
-  // Proposed memory ID to approve.
-  int32 id = 1 [(param) = {positional: true}];
-  // Optional edits to apply atomically before approving.
-  MemoryContent content = 2 [(param) = {flatten: true}];
-  // Optionally change scope to global on approval.
-  bool global = 3;
-  // Optionally change scope to this project on approval.
-  string project = 4 [(param) = {short: "p"}];
-  // Optional note on approval.
-  string note = 5;
-  string session_id = 6 [(param) = {
-    hidden: true
-    default: "named_session"
-  }];
-  int64 if_revision = 7 [(param) = {name: "if-revision"}];
-  // Path to a markdown file for body, or "-" to read from stdin (local).
-  string body_file = 8 [(param) = {
-    name: "body-file"
-    local: true
-  }];
-}
-
-message RejectMemoryRequest {
-  // Proposed memory ID to reject.
-  int32 id = 1 [(param) = {positional: true}];
-  // Why it was rejected (delivered to the proposing session via poll).
-  string reason = 2;
-  string session_id = 3 [(param) = {
-    hidden: true
-    default: "named_session"
-  }];
-  int64 if_revision = 4 [(param) = {name: "if-revision"}];
-}
-
 message ReviseMemoryRequest {
-  // Memory ID to revise (APPROVED or PROPOSED).
+  // Memory ID to edit.
   int32 id = 1 [(param) = {positional: true}];
   MemoryContent content = 2 [(param) = {flatten: true}];
-  // Optionally change scope to global.
+  // Change scope to global (shared across all projects).
   bool global = 3;
-  // Optionally change scope to this project.
+  // Change scope to this project.
   string project = 4 [(param) = {short: "p"}];
   string session_id = 5 [(param) = {
     hidden: true
     default: "named_session"
   }];
+  // Refuse with CONFLICT unless the memory is at this revision.
   int64 if_revision = 6 [(param) = {name: "if-revision"}];
   // Path to a markdown file for body, or "-" to read from stdin (local).
   string body_file = 7 [(param) = {
     name: "body-file"
     local: true
   }];
+  // Replace all content fields (slug, title, summary, body, mode, tags) with
+  // the provided content instead of merging only non-empty fields.
+  bool replace_content = 8 [(param) = {name: "replace-content"}];
+  // Clear the optional title.
+  bool clear_title = 9 [(param) = {name: "clear-title"}];
+  // Clear the optional body (allowed in always mode).
+  bool clear_body = 10 [(param) = {name: "clear-body"}];
+  // Replace tags with the provided --tag list (omit --tag to clear all tags).
+  bool replace_tags = 11 [(param) = {name: "replace-tags"}];
+  // Set or clear ("") the optional repo within a project-scoped memory.
+  optional string repo = 12;
+  // Set or clear ("") the provenance rationale.
+  optional string rationale = 13;
 }
 
 message ArchiveMemoryRequest {
-  // Approved memory ID to archive.
+  // Active memory ID to archive.
   int32 id = 1 [(param) = {positional: true}];
   // Why it was archived.
   string reason = 2;
@@ -5100,15 +5019,26 @@ message ArchiveMemoryRequest {
 }
 
 message RestoreMemoryRequest {
-  // Archived or rejected memory ID to restore.
+  // Archived, rejected, or withdrawn memory ID to restore.
   int32 id = 1 [(param) = {positional: true}];
-  // Restore back to PROPOSED instead of APPROVED.
-  bool to_proposed = 2;
+  reserved 2;
+  reserved "to_proposed";
   string session_id = 3 [(param) = {
     hidden: true
     default: "named_session"
   }];
   int64 if_revision = 4 [(param) = {name: "if-revision"}];
+}
+
+message DeleteMemoryRequest {
+  // Memory ID to permanently remove.
+  int32 id = 1 [(param) = {positional: true}];
+  string session_id = 2 [(param) = {
+    hidden: true
+    default: "named_session"
+  }];
+  // Refuse with CONFLICT unless the memory is at this revision.
+  int64 if_revision = 3 [(param) = {name: "if-revision"}];
 }
 
 message MoveMemoryRequest {

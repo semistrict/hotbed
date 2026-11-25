@@ -31,7 +31,6 @@ import {
 	MemoryScope,
 	MemoryService,
 	MemoryState,
-	MemoryUpdate_What,
 	NodeSystemUpgradeSchema,
 	NodeUsageSchema,
 	PromptSchema,
@@ -890,68 +889,148 @@ describe("Cloudflare Workers single-DO hotbed controller", () => {
 		expect(res.status).toBe(404);
 	});
 
-	it("supports MemoryService proposals, approval, superseding, session start recall, and poll events", async () => {
+	it("supports MemoryService auto-approval, full editing, promoting to global, superseding, removal, and session recall", async () => {
 		const owner = ownerClients();
-		await owner.cluster.addProject({ name: "mem-proj", repos: ["github.com/org/mem-proj"] });
+		await owner.cluster.addProject({
+			name: "mem-proj",
+			repos: ["github.com/org/mem-proj", "github.com/org/mem-extra"],
+		});
+		await owner.cluster.addProject({ name: "other-proj", repos: ["github.com/org/other-proj"] });
 		const s1 = await owner.sessions.startSession({ project: "mem-proj" });
 
-		// Agent proposes global always-on rule + project on-demand memory
+		// Agent saves global always-on rule + project on-demand memory — both are auto-approved immediately.
 		const m1 = await owner.memories.proposeMemory({
 			sessionId: s1.id,
 			global: true,
 			content: {
 				slug: "use-neon",
+				title: "Subagent model",
 				summary: "Use gemini-4-neon for subagents.",
+				body: "Optional detail body.",
 				mode: MemoryMode.ALWAYS,
+				tags: ["subagents", "models"],
 			},
 			rationale: "user preference",
 		});
-		expect(m1.state).toBe(MemoryState.PROPOSED);
+		expect(m1.state).toBe(MemoryState.APPROVED);
 		expect(m1.scope).toBe(MemoryScope.GLOBAL);
+		expect(m1.reminder).toBeUndefined();
 
 		const m2 = await owner.memories.proposeMemory({
 			sessionId: s1.id,
+			repo: "github.com/org/mem-proj",
 			content: {
 				slug: "build-tips",
+				title: "Build tips",
 				summary: "Build tips for mem-proj",
 				body: "Always run pnpm build first.",
 				mode: MemoryMode.ON_DEMAND,
+				tags: ["build"],
 			},
+			rationale: "discovered during build",
 		});
+		expect(m2.state).toBe(MemoryState.APPROVED);
 		expect(m2.project).toBe("mem-proj");
+		expect(m2.repo).toBe("github.com/org/mem-proj");
 
-		// Snapshot counts pending memories
+		// Snapshot reports 0 pending memories.
 		const snap = await owner.cluster.getSnapshot({});
-		expect(snap.pendingMemories).toBe(2);
-		expect(snap.globalPendingMemories).toBe(1);
-		expect(snap.projects.find((p) => p.name === "mem-proj")?.pendingMemories).toBe(1);
+		expect(snap.pendingMemories).toBe(0);
+		expect(snap.globalPendingMemories).toBe(0);
 
-		// Approve both
-		await owner.memories.approveMemory({ id: m1.id });
-		await owner.memories.approveMemory({
-			id: m2.id,
-			content: { summary: "Updated build tips for mem-proj" },
-		});
-
-		// Poll delivers both approval events
-		const evs = await owner.sessions.poll({ sessionId: s1.id, after: 0n, timeoutSeconds: 1 });
-		const memEvents = evs.events.filter((e) => e.event.case === "memory");
-		expect(memEvents.length).toBe(2);
-		expect(memEvents[0].event.case === "memory" && memEvents[0].event.value.what).toBe(
-			MemoryUpdate_What.APPROVED,
-		);
-		expect(memEvents[1].event.case === "memory" && memEvents[1].event.value.what).toBe(
-			MemoryUpdate_What.APPROVED_EDITED,
-		);
-
-		// New session receives both in briefing + memory-saving reminder
+		// New session immediately receives both in briefing + memory-saving reminder.
 		const s2 = await owner.sessions.startSession({ project: "mem-proj" });
 		expect(s2.memories?.always.map((e) => e.slug)).toEqual(["use-neon"]);
 		expect(s2.memories?.onDemand.map((e) => e.slug)).toEqual(["build-tips"]);
 		expect(s2.memories?.totalApproved).toBe(2);
 		expect(s2.reminder).toContain("hotbed memory propose");
 
-		// Supersede m1 with a refined version
+		// Editing content on a project memory without passing repo preserves its repo!
+		const m2Edited = await owner.memories.reviseMemory({
+			id: m2.id,
+			project: "mem-proj",
+			content: { summary: "Updated build tips for mem-proj" },
+		});
+		expect(m2Edited.repo).toBe("github.com/org/mem-proj");
+		expect(m2Edited.content?.summary).toBe("Updated build tips for mem-proj");
+		expect(m2Edited.content?.body).toBe("Always run pnpm build first.");
+
+		// Editing can change repo, clear repo, edit/clear rationale, and replace/clear title, body, tags.
+		const m2RepoChanged = await owner.memories.reviseMemory({
+			id: m2.id,
+			repo: "github.com/org/mem-extra",
+			rationale: "updated rationale",
+		});
+		expect(m2RepoChanged.repo).toBe("github.com/org/mem-extra");
+		expect(m2RepoChanged.provenance?.rationale).toBe("updated rationale");
+
+		const m1Cleared = await owner.memories.reviseMemory({
+			id: m1.id,
+			replaceContent: true,
+			content: {
+				slug: "use-neon",
+				title: "",
+				summary: "Use gemini-4-neon for subagents (edited).",
+				body: "",
+				mode: MemoryMode.ALWAYS,
+				tags: [],
+			},
+			rationale: "",
+		});
+		expect(m1Cleared.content?.title).toBe("");
+		expect(m1Cleared.content?.body).toBe("");
+		expect(m1Cleared.content?.tags).toEqual([]);
+		expect(m1Cleared.provenance?.rationale).toBe("");
+
+		// Promote project-specific m2 to global — clears project & repo, records "promoted", visible in other-proj!
+		const m2Promoted = await owner.memories.reviseMemory({
+			id: m2.id,
+			global: true,
+		});
+		expect(m2Promoted.scope).toBe(MemoryScope.GLOBAL);
+		expect(m2Promoted.project).toBe("");
+		expect(m2Promoted.repo).toBe("");
+
+		const m2Shown = await owner.memories.showMemory({ ref: String(m2.id) });
+		expect(m2Shown.history.some((h) => h.what === "promoted")).toBe(true);
+
+		// Promoting a project memory whose slug collides with an existing global memory fails with conflict,
+		// and succeeds when renamed in the same edit call.
+		const mCollide = await owner.memories.proposeMemory({
+			sessionId: s1.id,
+			content: {
+				slug: "build-tips",
+				summary: "Project-specific build tips colliding with global",
+				mode: MemoryMode.ALWAYS,
+			},
+		});
+		await expect(owner.memories.reviseMemory({ id: mCollide.id, global: true })).rejects.toThrow(
+			/already uses slug/,
+		);
+		const mCollidePromoted = await owner.memories.reviseMemory({
+			id: mCollide.id,
+			global: true,
+			content: { slug: "build-tips-extra" },
+		});
+		expect(mCollidePromoted.scope).toBe(MemoryScope.GLOBAL);
+		expect(mCollidePromoted.content?.slug).toBe("build-tips-extra");
+		await owner.memories.deleteMemory({ id: mCollide.id });
+
+		// Archiving, editing while archived, and restoring works cleanly.
+		const m2Arch = await owner.memories.archiveMemory({ id: m2.id, reason: "temp" });
+		expect(m2Arch.state).toBe(MemoryState.ARCHIVED);
+		const m2ArchEdited = await owner.memories.reviseMemory({
+			id: m2.id,
+			content: { summary: "Updated while archived" },
+		});
+		expect(m2ArchEdited.content?.summary).toBe("Updated while archived");
+		const m2Restored = await owner.memories.restoreMemory({ id: m2.id });
+		expect(m2Restored.state).toBe(MemoryState.APPROVED);
+
+		const sOther = await owner.sessions.startSession({ project: "other-proj" });
+		expect(sOther.memories?.onDemand.map((e) => e.slug)).toEqual(["build-tips"]);
+
+		// Supersede m1 immediately with a refined version.
 		const m3 = await owner.memories.proposeMemory({
 			sessionId: s2.id,
 			global: true,
@@ -962,18 +1041,27 @@ describe("Cloudflare Workers single-DO hotbed controller", () => {
 				mode: MemoryMode.ALWAYS,
 			},
 		});
-		await owner.memories.approveMemory({ id: m3.id });
+		expect(m3.state).toBe(MemoryState.APPROVED);
 		const oldM1 = await owner.memories.showMemory({ ref: String(m1.id) });
 		expect(oldM1.state).toBe(MemoryState.SUPERSEDED);
 		expect(oldM1.supersededBy).toBe(m3.id);
 
-		// GetMemories resolves slug to m3 and fetches full body for build-tips
+		// GetMemories resolves slug to m3 and fetches full body for build-tips.
 		const fetched = await owner.memories.getMemories({
 			project: "mem-proj",
 			refs: ["use-neon", "build-tips"],
 		});
 		expect(fetched.memories.map((m) => m.id)).toEqual([m3.id, m2.id]);
 		expect(fetched.memories[1].content?.body).toContain("pnpm build");
+
+		// Permanently remove m2 — it disappears completely and is no longer returned on session start.
+		const deleted = await owner.memories.deleteMemory({ id: m2.id });
+		expect(deleted.id).toBe(m2.id);
+		await expect(owner.memories.showMemory({ ref: String(m2.id) })).rejects.toThrow();
+
+		const sAfterDelete = await owner.sessions.startSession({ project: "other-proj" });
+		expect(sAfterDelete.memories?.onDemand).toEqual([]);
+		expect(sAfterDelete.memories?.always.map((e) => e.slug)).toEqual(["use-neon"]);
 	});
 });
 

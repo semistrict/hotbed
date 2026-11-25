@@ -148,6 +148,7 @@ export class ControllerDO extends DurableObject<ControllerEnv> {
 			await migrate(this.db, migrations);
 
 			this.store = new ControllerStore(this.ctx.storage, this.db);
+			this.store.autoApproveLegacyProposedMemories();
 			this.tunnel = new WorkerTunnelHub(this.ctx);
 			this.questionBridge = new QuestionBridgeHub(this.ctx);
 			this.initRuntime();

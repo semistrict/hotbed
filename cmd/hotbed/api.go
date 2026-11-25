@@ -310,14 +310,6 @@ func (h cliHooks) LoadProposeMemoryBody(_ context.Context, _ *apicmd.Call, req *
 	return h.loadMemoryBody(req.BodyFile, &req.Content)
 }
 
-func (h cliHooks) LoadEditMemoryBody(_ context.Context, _ *apicmd.Call, req *pb.EditMemoryRequest) error {
-	return h.loadMemoryBody(req.BodyFile, &req.Content)
-}
-
-func (h cliHooks) LoadApproveMemoryBody(_ context.Context, _ *apicmd.Call, req *pb.ApproveMemoryRequest) error {
-	return h.loadMemoryBody(req.BodyFile, &req.Content)
-}
-
 func (h cliHooks) LoadReviseMemoryBody(_ context.Context, _ *apicmd.Call, req *pb.ReviseMemoryRequest) error {
 	return h.loadMemoryBody(req.BodyFile, &req.Content)
 }

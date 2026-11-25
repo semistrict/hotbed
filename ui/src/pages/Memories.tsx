@@ -28,7 +28,6 @@ import { SessionLink } from "../components/SessionLink";
 import { Card, Empty } from "../components/Panel";
 import { ago } from "../lib/format";
 import {
-  computeLineDiff,
   computeStartupBudget,
   formatBytesKB,
   MEMORY_TAB_STATES,
@@ -50,9 +49,8 @@ export interface MemoriesSearch {
 }
 
 const TABS: { tab: MemoryTab; label: string; empty: string }[] = [
-  { tab: "proposals", label: "Proposals", empty: "No proposed memories waiting for you. An agent proposes with hotbed memory propose." },
-  { tab: "approved", label: "Approved", empty: "No approved memories yet. Approve a proposal or add one directly." },
-  { tab: "history", label: "History", empty: "No rejected, superseded, archived, or withdrawn memories." },
+  { tab: "active", label: "Active", empty: "No active memories yet. Agents save learnings with hotbed memory propose, or add one directly." },
+  { tab: "history", label: "History", empty: "No archived, superseded, rejected, or withdrawn memories." },
   { tab: "all", label: "All", empty: "No memories yet." },
 ];
 
@@ -65,9 +63,9 @@ const SORTS: { sort: MemoryOrderSlug; label: string }[] = [
 ];
 
 const STATE_TAG: Record<MemoryState, { text: string; className: string }> = {
-  [MemoryState.UNSPECIFIED]: { text: "● proposed", className: "text-primary" },
+  [MemoryState.UNSPECIFIED]: { text: "✓ active", className: "text-good-ink" },
   [MemoryState.PROPOSED]: { text: "● proposed", className: "text-primary" },
-  [MemoryState.APPROVED]: { text: "✓ approved", className: "text-good-ink" },
+  [MemoryState.APPROVED]: { text: "✓ active", className: "text-good-ink" },
   [MemoryState.REJECTED]: { text: "✕ rejected", className: "text-critical" },
   [MemoryState.SUPERSEDED]: { text: "↻ superseded", className: "text-muted-foreground" },
   [MemoryState.ARCHIVED]: { text: "⊘ archived", className: "text-faint" },
@@ -80,6 +78,7 @@ const MODE_ITEMS = [
   { value: String(MemoryMode.ALWAYS), label: "Always-on (inline rule)" },
   { value: String(MemoryMode.ON_DEMAND), label: "On-demand (index + get)" },
 ];
+const ALL_REPOS = "__all_repos__";
 
 const MOVE = ["move-memory"];
 
@@ -96,6 +95,7 @@ export function MemoriesPage() {
 
 export function MemoryDetailPage() {
   const { id } = useParams({ from: "/memories/$id" });
+  const navigate = useNavigate();
   const { data: s } = useScopedSnapshot();
   const detail = useQuery({
     queryKey: ["memory", id],
@@ -115,7 +115,18 @@ export function MemoryDetailPage() {
         }
       />
       {detail.isError && <div className="rounded-xl border border-critical/40 bg-card px-4 py-2.5 font-mono text-[11.5px] text-critical">{String(detail.error)}</div>}
-      {detail.data && <MemoryCard s={s} m={detail.data} now={Number(s.now)} delay={0} mover={null} defaultExpanded />}
+      {detail.data && (
+        <MemoryCard
+          s={s}
+          m={detail.data}
+          now={Number(s.now)}
+          delay={0}
+          mover={null}
+          defaultExpanded
+          isFull
+          onDeleted={() => void navigate({ to: "/memories" })}
+        />
+      )}
     </div>
   );
 }
@@ -126,10 +137,10 @@ function MemoriesView({ s }: { s: Snapshot }) {
   const [project] = useProject();
   const [creating, setCreating] = useState(false);
 
-  const tab: MemoryTab = search.tab ?? (s.pendingMemories > 0 ? "proposals" : "approved");
+  const tab: MemoryTab = search.tab ?? "active";
   const scopeSlug = search.scope ?? "all";
   const modeSlug = search.mode ?? "all";
-  const sort: MemoryOrderSlug = search.sort ?? (tab === "approved" ? "rank" : "newest");
+  const sort: MemoryOrderSlug = search.sort ?? (tab === "active" ? "rank" : "newest");
   const queryText = search.q ?? "";
 
   const scopeFilter =
@@ -155,7 +166,7 @@ function MemoriesView({ s }: { s: Snapshot }) {
     placeholderData: (prev, prevQuery) => (prevQuery?.queryKey[1] === project ? prev : undefined),
   });
 
-  // Fetch approved memories for startup budget calculation (global + selected project).
+  // Fetch active memories for startup budget calculation (global + selected project).
   const budgetQuery = useQuery({
     queryKey: ["memories", project, "budget"],
     queryFn: () => api.memories({ project, states: [MemoryState.APPROVED], order: MEMORY_ORDER_FROM_SLUG.rank }),
@@ -173,12 +184,11 @@ function MemoriesView({ s }: { s: Snapshot }) {
 
   const budget = useMemo(() => computeStartupBudget(budgetQuery.data?.memories ?? []), [budgetQuery.data?.memories]);
   const move = useMoveMemory(key);
-  const movable = tab === "approved" && sort === "rank" && !queryText && modeSlug === "all";
+  const movable = tab === "active" && sort === "rank" && !queryText && modeSlug === "all";
   const now = Number(s.now);
 
   const counts: Partial<Record<MemoryTab, number>> = {
-    proposals: s.pendingMemories,
-    approved: budgetQuery.data?.total,
+    active: budgetQuery.data?.total,
   };
 
   return (
@@ -186,7 +196,7 @@ function MemoriesView({ s }: { s: Snapshot }) {
       <div className="flex flex-wrap items-start justify-between gap-4">
         <PageTitle
           title="Memories"
-          sub={`Cross-agent learnings for ${project ? `global + ${project}` : "global + every project"}. Approved always-on rules and on-demand indexes are returned on every hotbed session start.`}
+          sub={`Cross-agent learnings for ${project ? `global + ${project}` : "global + every project"}. Memories are active immediately and returned on every hotbed session start.`}
         />
         <Button
           type="button"
@@ -210,7 +220,7 @@ function MemoriesView({ s }: { s: Snapshot }) {
                   <TabsTrigger key={t.tab} value={t.tab} className="px-2.5 text-[12px] sm:px-3 sm:text-[12.5px]">
                     {t.label}
                     {counts[t.tab] ? (
-                      <span className={`ml-1 font-mono text-[10.5px] ${t.tab === "proposals" ? "text-primary" : "text-muted-foreground"}`}>{counts[t.tab]}</span>
+                      <span className="ml-1 font-mono text-[10.5px] text-muted-foreground">{counts[t.tab]}</span>
                     ) : null}
                   </TabsTrigger>
                 ))}
@@ -301,7 +311,7 @@ function MemoriesView({ s }: { s: Snapshot }) {
       ) : (
         <MemoryList s={s} memories={memories} now={now} movable={movable} onMove={(id, before) => move.mutate({ id, before })} />
       )}
-      {tab === "approved" && !movable && memories.length > 1 && (
+      {tab === "active" && !movable && memories.length > 1 && (
         <p className="font-mono text-[11px] text-faint">Sort by startup order (with all modes and no search filter) to drag and reorder.</p>
       )}
     </div>
@@ -436,6 +446,8 @@ function MemoryCard({
   delay,
   mover,
   defaultExpanded = false,
+  isFull = false,
+  onDeleted,
 }: {
   s: Snapshot;
   m: Memory;
@@ -443,34 +455,28 @@ function MemoryCard({
   delay: number;
   mover: React.ReactNode;
   defaultExpanded?: boolean;
+  isFull?: boolean;
+  onDeleted?: () => void;
 }) {
-  const tag = STATE_TAG[m.state] ?? STATE_TAG[MemoryState.PROPOSED];
-  const [expanded, setExpanded] = useState(defaultExpanded || m.state === MemoryState.PROPOSED);
-  const [editing, setEditing] = useState<"approve" | "revise" | null>(null);
-  const [rejecting, setRejecting] = useState(false);
-  const [reason, setReason] = useState("");
+  const tag = STATE_TAG[m.state] ?? STATE_TAG[MemoryState.APPROVED];
+  const [expanded, setExpanded] = useState(defaultExpanded);
+  const [editing, setEditing] = useState(false);
+  const [confirmRemove, setConfirmRemove] = useState(false);
   const settle = useSettleMemories();
 
-  // ListMemories omits body to stay compact; fetch full detail when expanded or editing.
-  const needsFull = expanded || editing !== null || m.supersedesIds.length > 0;
+  // ListMemories omits body to stay compact; fetch full detail whenever expanded or editing.
+  const needsFull = expanded || editing;
   const detail = useQuery({
     queryKey: ["memory", String(m.id), String(m.revision)],
     queryFn: () => api.memory(String(m.id)),
-    enabled: needsFull && !m.content?.body && m.history.length === 0,
+    enabled: needsFull && !isFull,
   });
+  const hasFull = isFull || detail.data !== undefined;
   const full = detail.data ?? m;
   const content = full.content;
 
-  const approve = useMutation({
-    mutationFn: () => api.approveMemory(m.id, { ifRevision: full.revision }),
-    onSettled: settle,
-  });
-  const reject = useMutation({
-    mutationFn: () => api.rejectMemory(m.id, reason, full.revision),
-    onSuccess: () => {
-      setRejecting(false);
-      setReason("");
-    },
+  const promote = useMutation({
+    mutationFn: () => api.reviseMemory(m.id, { global: true, ifRevision: full.revision }),
     onSettled: settle,
   });
   const archive = useMutation({
@@ -478,30 +484,37 @@ function MemoryCard({
     onSettled: settle,
   });
   const restore = useMutation({
-    mutationFn: (toProposed: boolean) => api.restoreMemory(m.id, toProposed, full.revision),
+    mutationFn: () => api.restoreMemory(m.id, full.revision),
+    onSettled: settle,
+  });
+  const remove = useMutation({
+    mutationFn: () => api.deleteMemory(m.id, full.revision),
+    onSuccess: () => {
+      setConfirmRemove(false);
+      onDeleted?.();
+    },
     onSettled: settle,
   });
   const toggleMode = useMutation({
-    mutationFn: () => {
-      const nextMode = content?.mode === MemoryMode.ALWAYS ? MemoryMode.ON_DEMAND : MemoryMode.ALWAYS;
+    mutationFn: async () => {
+      const current = hasFull ? full : await api.memory(String(m.id));
+      const c = current.content;
+      const nextMode = c?.mode === MemoryMode.ALWAYS ? MemoryMode.ON_DEMAND : MemoryMode.ALWAYS;
       return api.reviseMemory(m.id, {
         content: {
-          slug: content?.slug ?? "",
-          title: content?.title ?? "",
-          summary: content?.summary ?? "",
-          body: content?.body || (nextMode === MemoryMode.ON_DEMAND ? content?.summary ?? "" : ""),
           mode: nextMode,
-          tags: content?.tags ?? [],
+          ...(nextMode === MemoryMode.ON_DEMAND && !c?.body?.trim() ? { body: c?.summary ?? "" } : {}),
         },
-        ifRevision: full.revision,
+        ifRevision: current.revision,
       });
     },
     onSettled: settle,
   });
 
-  const busy = approve.isPending || reject.isPending || archive.isPending || restore.isPending || toggleMode.isPending;
-  const actionError = approve.error ?? reject.error ?? archive.error ?? restore.error ?? toggleMode.error;
+  const busy = promote.isPending || archive.isPending || restore.isPending || remove.isPending || toggleMode.isPending;
+  const actionError = promote.error ?? archive.error ?? restore.error ?? remove.error ?? toggleMode.error;
   const muted = m.state === MemoryState.ARCHIVED || m.state === MemoryState.WITHDRAWN || m.state === MemoryState.SUPERSEDED;
+  const isProjectScoped = m.scope === MemoryScope.PROJECT && m.project !== "";
 
   return (
     <Card delay={delay} className={muted ? "opacity-75" : ""}>
@@ -538,18 +551,31 @@ function MemoryCard({
             )}
             {m.proposed && (
               <span className="text-[11px] text-muted-foreground sm:ml-auto">
-                <StampLine s={s} st={m.proposed} now={now} verb="proposed" />
+                <StampLine s={s} st={m.proposed} now={now} verb="saved" />
               </span>
             )}
           </header>
 
           {editing ? (
-            <MemoryEditor
-              s={s}
-              m={full}
-              mode={editing}
-              onDone={() => setEditing(null)}
-            />
+            hasFull ? (
+              <MemoryEditor
+                key={`${full.id}:${String(full.revision)}`}
+                s={s}
+                m={full}
+                onDone={() => setEditing(false)}
+              />
+            ) : (
+              <div className="flex items-center gap-3 rounded-lg border border-border bg-muted/30 p-3 font-mono text-[11.5px] text-muted-foreground">
+                {detail.isError ? (
+                  <span className="text-critical">Could not load memory: {String(detail.error)}</span>
+                ) : (
+                  <span>loading memory…</span>
+                )}
+                <button type="button" onClick={() => setEditing(false)} className={LINK}>
+                  cancel
+                </button>
+              </div>
+            )
           ) : (
             <>
               <div className="space-y-1.5">
@@ -571,10 +597,6 @@ function MemoryCard({
                   <span className="font-mono text-[10.5px] text-foreground">Rationale: </span>
                   {full.provenance.rationale}
                 </div>
-              )}
-
-              {m.supersedesIds.length > 0 && m.state === MemoryState.PROPOSED && (
-                <SupersedesDiff proposal={full} />
               )}
 
               <div>
@@ -600,110 +622,78 @@ function MemoryCard({
           )}
 
           {!editing && (
-            <div className="flex flex-wrap items-center gap-2 pt-1">
-              {m.state === MemoryState.PROPOSED && (
-                <>
-                  <Button
-                    type="button"
-                    size="sm"
-                    disabled={busy}
-                    onClick={() => approve.mutate()}
-                    className="text-[12.5px]"
-                  >
-                    {approve.isPending ? "Approving…" : m.supersedesIds.length > 0 ? "Approve & supersede" : "Approve"}
-                  </Button>
-                  <Button
-                    type="button"
-                    variant="outline"
-                    size="sm"
-                    disabled={busy}
-                    onClick={() => {
-                      setExpanded(true);
-                      setEditing("approve");
-                    }}
-                    className="border-border-strong text-[12.5px]"
-                  >
-                    Edit & approve
-                  </Button>
-                  {rejecting ? (
-                    <>
-                      <Button
-                        type="button"
-                        variant="destructive"
-                        size="sm"
-                        disabled={busy}
-                        onClick={() => reject.mutate()}
-                        className="border-critical/50 text-[12.5px] text-critical"
-                      >
-                        {reject.isPending ? "Rejecting…" : "Confirm reject"}
-                      </Button>
-                      <Input
-                        value={reason}
-                        onChange={(e) => setReason(e.target.value)}
-                        placeholder="Why not (optional, sent via poll)"
-                        className="w-full bg-background/60 text-[12.5px] sm:max-w-xs"
-                        aria-label="Rejection reason"
-                        autoFocus
-                      />
-                      <Button type="button" variant="ghost" size="sm" onClick={() => setRejecting(false)} className="text-[12px] text-muted-foreground">
-                        cancel
-                      </Button>
-                    </>
-                  ) : (
-                    <Button
-                      type="button"
-                      variant="ghost"
-                      size="sm"
-                      disabled={busy}
-                      onClick={() => setRejecting(true)}
-                      className="text-[12.5px] text-muted-foreground"
-                    >
-                      Reject…
-                    </Button>
-                  )}
-                </>
-              )}
+            <div className="flex flex-wrap items-center gap-2.5 pt-1">
+              <button
+                type="button"
+                disabled={busy}
+                onClick={() => {
+                  setExpanded(true);
+                  setConfirmRemove(false);
+                  setEditing(true);
+                }}
+                className={LINK}
+              >
+                edit
+              </button>
 
               {m.state === MemoryState.APPROVED && (
                 <>
-                  <button
-                    type="button"
-                    disabled={busy}
-                    onClick={() => {
-                      setExpanded(true);
-                      setEditing("revise");
-                    }}
-                    className={LINK}
-                  >
-                    edit
-                  </button>
+                  {isProjectScoped && (
+                    <button
+                      type="button"
+                      disabled={busy}
+                      onClick={() => promote.mutate()}
+                      className={LINK}
+                      title="Make this memory global across all projects"
+                    >
+                      {promote.isPending ? "promoting…" : "promote to global"}
+                    </button>
+                  )}
                   <button type="button" disabled={busy} onClick={() => toggleMode.mutate()} className={LINK}>
-                    switch to {content?.mode === MemoryMode.ALWAYS ? "on-demand" : "always-on"}
+                    {toggleMode.isPending
+                      ? "switching…"
+                      : `switch to ${content?.mode === MemoryMode.ALWAYS ? "on-demand" : "always-on"}`}
                   </button>
                   <button type="button" disabled={busy} onClick={() => archive.mutate()} className={LINK}>
-                    archive
+                    {archive.isPending ? "archiving…" : "archive"}
                   </button>
                 </>
               )}
 
               {(m.state === MemoryState.ARCHIVED || m.state === MemoryState.REJECTED || m.state === MemoryState.WITHDRAWN) && (
+                <button type="button" disabled={busy} onClick={() => restore.mutate()} className={LINK}>
+                  {restore.isPending ? "restoring…" : "↩ restore"}
+                </button>
+              )}
+
+              {confirmRemove ? (
                 <>
-                  <button type="button" disabled={busy} onClick={() => restore.mutate(false)} className={LINK}>
-                    ↩ restore as approved
-                  </button>
-                  <button type="button" disabled={busy} onClick={() => restore.mutate(true)} className={LINK}>
-                    restore to proposals
+                  <Button
+                    type="button"
+                    variant="destructive"
+                    size="sm"
+                    disabled={busy}
+                    onClick={() => remove.mutate()}
+                    className="h-6 border-critical/50 px-2 text-[11.5px] text-critical"
+                  >
+                    {remove.isPending ? "Removing…" : "Confirm remove"}
+                  </Button>
+                  <button type="button" disabled={busy} onClick={() => setConfirmRemove(false)} className={LINK}>
+                    cancel
                   </button>
                 </>
+              ) : (
+                <button
+                  type="button"
+                  disabled={busy}
+                  onClick={() => setConfirmRemove(true)}
+                  className={`${LINK} hover:text-critical`}
+                >
+                  remove
+                </button>
               )}
 
               {actionError && <span className="font-mono text-[11px] text-critical">{String(actionError)}</span>}
-            </div>
-          )}
-
-          {m.decided && m.state === MemoryState.REJECTED && m.decided.reason && (
-            <div className="text-[12px] text-muted-foreground">
-              Rejected: <span className="text-foreground">{m.decided.reason}</span>
             </div>
           )}
 
@@ -714,83 +704,13 @@ function MemoryCard({
   );
 }
 
-function SupersedesDiff({ proposal }: { proposal: Memory }) {
-  const targetsQuery = useQuery({
-    queryKey: ["memory-supersedes", proposal.id, proposal.supersedesIds.join(",")],
-    queryFn: () => Promise.all(proposal.supersedesIds.map((id) => api.memory(String(id)))),
-  });
-
-  if (targetsQuery.isLoading) {
-    return <div className="font-mono text-[11px] text-faint">loading diff against {proposal.supersedesIds.map((i) => `#${i}`).join(", ")}…</div>;
-  }
-  if (targetsQuery.isError || !targetsQuery.data) {
-    return null;
-  }
-
-  const targets = targetsQuery.data;
-  const stale = targets.filter((t) => t.state !== MemoryState.APPROVED);
-  const prevSummary = targets.map((t) => t.content?.summary ?? "").join("\n");
-  const prevBody = targets.map((t) => t.content?.body ?? "").join("\n---\n");
-  const summaryDiff = computeLineDiff(prevSummary, proposal.content?.summary ?? "");
-  const bodyDiff = computeLineDiff(prevBody, proposal.content?.body ?? "");
-
-  return (
-    <div className="space-y-2 rounded-lg border border-border bg-muted/40 p-3">
-      <div className="flex flex-wrap items-center gap-2 font-mono text-[11px] text-muted-foreground">
-        <span>
-          Supersedes {targets.map((t) => `#${t.id} (${t.content?.slug})`).join(", ")}
-        </span>
-        {stale.length > 0 && (
-          <span className="text-warning">
-            ⚠ {stale.map((t) => `#${t.id}`).join(", ")} is no longer approved
-          </span>
-        )}
-      </div>
-      <div className="space-y-1.5 font-mono text-[11px]">
-        <div className="text-[10px] uppercase tracking-wider text-faint">Summary diff</div>
-        <DiffBlock lines={summaryDiff} />
-        {(prevBody || proposal.content?.body) && (
-          <>
-            <div className="pt-1 text-[10px] uppercase tracking-wider text-faint">Body diff</div>
-            <DiffBlock lines={bodyDiff} />
-          </>
-        )}
-      </div>
-    </div>
-  );
-}
-
-function DiffBlock({ lines }: { lines: ReturnType<typeof computeLineDiff> }) {
-  return (
-    <pre className="max-h-64 overflow-auto rounded-md border border-border bg-background/70 p-2 leading-relaxed whitespace-pre-wrap">
-      {lines.map((l, idx) => (
-        <div
-          key={idx}
-          className={
-            l.kind === "add"
-              ? "bg-good/10 text-good-ink"
-              : l.kind === "del"
-                ? "bg-[color-mix(in_oklab,var(--critical)_12%,transparent)] text-critical"
-                : "text-muted-foreground"
-          }
-        >
-          {l.kind === "add" ? "+ " : l.kind === "del" ? "- " : "  "}
-          {l.text}
-        </div>
-      ))}
-    </pre>
-  );
-}
-
 function MemoryEditor({
   s,
   m,
-  mode,
   onDone,
 }: {
   s: Snapshot;
   m: Memory;
-  mode: "approve" | "revise";
   onDone: () => void;
 }) {
   const settle = useSettleMemories();
@@ -799,10 +719,15 @@ function MemoryEditor({
   const [title, setTitle] = useState(c?.title ?? "");
   const [memMode, setMemMode] = useState<MemoryMode>(c?.mode || MemoryMode.ON_DEMAND);
   const [scopeVal, setScopeVal] = useState<string>(m.scope === MemoryScope.GLOBAL || !m.project ? "__global__" : m.project);
+  const [repoVal, setRepoVal] = useState<string>(m.repo || ALL_REPOS);
   const [summary, setSummary] = useState(c?.summary ?? "");
   const [body, setBody] = useState(c?.body ?? "");
   const [tags, setTags] = useState((c?.tags ?? []).join(", "));
+  const [rationale, setRationale] = useState(m.provenance?.rationale ?? "");
   const [preview, setPreview] = useState(false);
+
+  const selectedProject = scopeVal === "__global__" ? undefined : s.projects.find((p) => p.name === scopeVal);
+  const projectRepos = selectedProject?.repos ?? [];
 
   const maxSummary = memMode === MemoryMode.ALWAYS ? 240 : 280;
   const parsedTags = tags
@@ -810,9 +735,21 @@ function MemoryEditor({
     .map((t) => t.trim().toLowerCase())
     .filter(Boolean);
 
+  const handleScopeChange = (next: string) => {
+    setScopeVal(next);
+    if (next === "__global__") {
+      setRepoVal(ALL_REPOS);
+      return;
+    }
+    const nextProj = s.projects.find((p) => p.name === next);
+    if (repoVal !== ALL_REPOS && !nextProj?.repos.includes(repoVal)) {
+      setRepoVal(ALL_REPOS);
+    }
+  };
+
   const save = useMutation({
-    mutationFn: () => {
-      const payload = {
+    mutationFn: () =>
+      api.reviseMemory(m.id, {
         content: {
           slug: slug.trim().toLowerCase(),
           title: title.trim(),
@@ -821,12 +758,13 @@ function MemoryEditor({
           mode: memMode,
           tags: parsedTags,
         },
+        replaceContent: true,
         global: scopeVal === "__global__",
         project: scopeVal === "__global__" ? "" : scopeVal,
+        repo: scopeVal === "__global__" ? undefined : repoVal === ALL_REPOS ? "" : repoVal,
+        rationale: rationale.trim(),
         ifRevision: m.revision,
-      };
-      return mode === "approve" ? api.approveMemory(m.id, payload) : api.reviseMemory(m.id, payload);
-    },
+      }),
     onSuccess: onDone,
     onSettled: settle,
   });
@@ -834,6 +772,10 @@ function MemoryEditor({
   const scopeItems = [
     { value: "__global__", label: "Global (all projects)" },
     ...s.projects.map((p) => ({ value: p.name, label: `Project: ${p.name}` })),
+  ];
+  const repoItems = [
+    { value: ALL_REPOS, label: `All repos in ${scopeVal}` },
+    ...projectRepos.map((r) => ({ value: r, label: remoteName(r) })),
   ];
 
   return (
@@ -844,9 +786,9 @@ function MemoryEditor({
         if (!save.isPending) save.mutate();
       }}
     >
-      <div className="grid gap-2 sm:grid-cols-3">
+      <div className={`grid gap-2 ${projectRepos.length > 0 ? "sm:grid-cols-2 lg:grid-cols-4" : "sm:grid-cols-3"}`}>
         <Input value={slug} onChange={(e) => setSlug(e.target.value)} placeholder="slug-kebab-case" className="bg-background/60 font-mono text-[12.5px]" aria-label="Slug" required />
-        <Select items={scopeItems} value={scopeVal} onValueChange={(v) => v && setScopeVal(v)}>
+        <Select items={scopeItems} value={scopeVal} onValueChange={(v) => v && handleScopeChange(v)}>
           <SelectTrigger aria-label="Scope" className="w-full bg-background/60 text-[12.5px]">
             <SelectValue />
           </SelectTrigger>
@@ -858,6 +800,20 @@ function MemoryEditor({
             ))}
           </SelectContent>
         </Select>
+        {projectRepos.length > 0 && (
+          <Select items={repoItems} value={repoVal} onValueChange={(v) => v && setRepoVal(v)}>
+            <SelectTrigger aria-label="Repo" className="w-full bg-background/60 font-mono text-[12px]">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent className="font-mono text-[12px]">
+              {repoItems.map((item) => (
+                <SelectItem key={item.value} value={item.value} className="text-[12px]">
+                  {item.label}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        )}
         <Select items={MODE_ITEMS} value={String(memMode)} onValueChange={(v) => v && setMemMode(Number(v) as MemoryMode)}>
           <SelectTrigger aria-label="Delivery mode" className="w-full bg-background/60 text-[12.5px]">
             <SelectValue />
@@ -914,7 +870,10 @@ function MemoryEditor({
         )}
       </div>
 
-      <Input value={tags} onChange={(e) => setTags(e.target.value)} placeholder="Tags (comma-separated, optional)" className="bg-background/60 font-mono text-[11.5px]" aria-label="Tags" />
+      <div className="grid gap-2 sm:grid-cols-2">
+        <Input value={tags} onChange={(e) => setTags(e.target.value)} placeholder="Tags (comma-separated, optional)" className="bg-background/60 font-mono text-[11.5px]" aria-label="Tags" />
+        <Input value={rationale} onChange={(e) => setRationale(e.target.value)} placeholder="Rationale (optional)" className="bg-background/60 text-[12px]" aria-label="Rationale" />
+      </div>
 
       <div className="flex flex-wrap items-center gap-2 pt-1">
         <Button
@@ -923,7 +882,7 @@ function MemoryEditor({
           disabled={save.isPending || !slug.trim() || !summary.trim()}
           className="text-[12.5px]"
         >
-          {save.isPending ? "Saving…" : mode === "approve" ? "Save & approve" : "Save changes"}
+          {save.isPending ? "Saving…" : "Save changes"}
         </Button>
         <Button type="button" variant="ghost" size="sm" onClick={onDone} className="text-[12px] text-muted-foreground">
           cancel
@@ -940,15 +899,31 @@ function NewMemoryForm({ s, defaultProject, onDone }: { s: Snapshot; defaultProj
   const [title, setTitle] = useState("");
   const [memMode, setMemMode] = useState<MemoryMode>(MemoryMode.ALWAYS);
   const [scopeVal, setScopeVal] = useState<string>(defaultProject ?? "__global__");
+  const [repoVal, setRepoVal] = useState<string>(ALL_REPOS);
   const [summary, setSummary] = useState("");
   const [body, setBody] = useState("");
   const [tags, setTags] = useState("");
+  const [rationale, setRationale] = useState("");
+  const [preview, setPreview] = useState(false);
+
+  const selectedProject = scopeVal === "__global__" ? undefined : s.projects.find((p) => p.name === scopeVal);
+  const projectRepos = selectedProject?.repos ?? [];
 
   const maxSummary = memMode === MemoryMode.ALWAYS ? 240 : 280;
   const scopeItems = [
     { value: "__global__", label: "Global (all projects)" },
     ...s.projects.map((p) => ({ value: p.name, label: `Project: ${p.name}` })),
   ];
+  const repoItems = [
+    { value: ALL_REPOS, label: `All repos in ${scopeVal}` },
+    ...projectRepos.map((r) => ({ value: r, label: remoteName(r) })),
+  ];
+
+  const handleScopeChange = (next: string) => {
+    setScopeVal(next);
+    setRepoVal(ALL_REPOS);
+  };
+
   const createMut = useMutation({
     mutationFn: () =>
       api.proposeMemory({
@@ -965,7 +940,8 @@ function NewMemoryForm({ s, defaultProject, onDone }: { s: Snapshot; defaultProj
         },
         global: scopeVal === "__global__",
         project: scopeVal === "__global__" ? "" : scopeVal,
-        approve: true,
+        repo: scopeVal === "__global__" || repoVal === ALL_REPOS ? "" : repoVal,
+        rationale: rationale.trim(),
       }),
     onSuccess: onDone,
     onSettled: settle,
@@ -980,10 +956,10 @@ function NewMemoryForm({ s, defaultProject, onDone }: { s: Snapshot; defaultProj
           if (!createMut.isPending) createMut.mutate();
         }}
       >
-        <div className="text-[13.5px] font-semibold text-foreground">New approved memory</div>
-        <div className="grid gap-2 sm:grid-cols-3">
+        <div className="text-[13.5px] font-semibold text-foreground">New memory</div>
+        <div className={`grid gap-2 ${projectRepos.length > 0 ? "sm:grid-cols-2 lg:grid-cols-4" : "sm:grid-cols-3"}`}>
           <Input value={slug} onChange={(e) => setSlug(e.target.value)} placeholder="slug-kebab-case" className="bg-background/60 font-mono text-[12.5px]" required autoFocus />
-          <Select items={scopeItems} value={scopeVal} onValueChange={(v) => v && setScopeVal(v)}>
+          <Select items={scopeItems} value={scopeVal} onValueChange={(v) => v && handleScopeChange(v)}>
             <SelectTrigger aria-label="Scope" className="w-full bg-background/60 text-[12.5px]">
               <SelectValue />
             </SelectTrigger>
@@ -995,6 +971,20 @@ function NewMemoryForm({ s, defaultProject, onDone }: { s: Snapshot; defaultProj
               ))}
             </SelectContent>
           </Select>
+          {projectRepos.length > 0 && (
+            <Select items={repoItems} value={repoVal} onValueChange={(v) => v && setRepoVal(v)}>
+              <SelectTrigger aria-label="Repo" className="w-full bg-background/60 font-mono text-[12px]">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent className="font-mono text-[12px]">
+                {repoItems.map((item) => (
+                  <SelectItem key={item.value} value={item.value} className="text-[12px]">
+                    {item.label}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          )}
           <Select items={MODE_ITEMS} value={String(memMode)} onValueChange={(v) => v && setMemMode(Number(v) as MemoryMode)}>
             <SelectTrigger aria-label="Delivery mode" className="w-full bg-background/60 text-[12.5px]">
               <SelectValue />
@@ -1022,14 +1012,33 @@ function NewMemoryForm({ s, defaultProject, onDone }: { s: Snapshot; defaultProj
             {Array.from(summary).length} / {maxSummary} chars
           </div>
         </div>
-        <Textarea
-          rows={4}
-          value={body}
-          onChange={(e) => setBody(e.target.value)}
-          placeholder={memMode === MemoryMode.ON_DEMAND ? "Full markdown details (required for on-demand)" : "Optional rationale / examples (markdown)"}
-          className="bg-background/60 font-mono text-[12px]"
-        />
-        <Input value={tags} onChange={(e) => setTags(e.target.value)} placeholder="Tags (comma-separated, optional)" className="bg-background/60 font-mono text-[11.5px]" />
+        <div className="space-y-1">
+          <div className="flex items-center justify-between">
+            <span className="font-mono text-[10.5px] text-muted-foreground">
+              Body (markdown{memMode === MemoryMode.ON_DEMAND ? ", required for on-demand" : ", optional for always-on"})
+            </span>
+            <button type="button" onClick={() => setPreview((v) => !v)} className={LINK}>
+              {preview ? "edit markdown" : "preview markdown"}
+            </button>
+          </div>
+          {preview ? (
+            <div className="min-h-24 rounded-lg border border-border bg-background/60 p-3">
+              {body.trim() ? <Markdown className="text-[13px]">{body}</Markdown> : <span className="font-mono text-[11px] text-faint">Empty body</span>}
+            </div>
+          ) : (
+            <Textarea
+              rows={4}
+              value={body}
+              onChange={(e) => setBody(e.target.value)}
+              placeholder={memMode === MemoryMode.ON_DEMAND ? "Full markdown details (required for on-demand)" : "Optional rationale / examples (markdown)"}
+              className="bg-background/60 font-mono text-[12px]"
+            />
+          )}
+        </div>
+        <div className="grid gap-2 sm:grid-cols-2">
+          <Input value={tags} onChange={(e) => setTags(e.target.value)} placeholder="Tags (comma-separated, optional)" className="bg-background/60 font-mono text-[11.5px]" />
+          <Input value={rationale} onChange={(e) => setRationale(e.target.value)} placeholder="Rationale (optional)" className="bg-background/60 text-[12px]" />
+        </div>
         <div className="flex flex-wrap items-center gap-2">
           <Button
             type="submit"
@@ -1037,7 +1046,7 @@ function NewMemoryForm({ s, defaultProject, onDone }: { s: Snapshot; defaultProj
             disabled={createMut.isPending || !slug.trim() || !summary.trim()}
             className="text-[12.5px]"
           >
-            {createMut.isPending ? "Saving…" : "Create & approve"}
+            {createMut.isPending ? "Saving…" : "Create memory"}
           </Button>
           <Button type="button" variant="ghost" size="sm" onClick={onDone} className="text-[12px] text-muted-foreground">
             cancel

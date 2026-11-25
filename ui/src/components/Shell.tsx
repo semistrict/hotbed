@@ -307,17 +307,6 @@ function AppSidebar({
         tooltipSuffix: ` (${scoped.openQuestions} waiting)`,
       };
     }
-    if (to === "/memories" && scoped && scoped.pendingMemories > 0) {
-      return {
-        node: (
-          <Badge className="h-4 min-w-4 px-1.5 font-mono text-[10px] leading-4" aria-label={`${scoped.pendingMemories} pending proposals`}>
-            {scoped.pendingMemories}
-          </Badge>
-        ),
-        urgent: true,
-        tooltipSuffix: ` (${scoped.pendingMemories} pending)`,
-      };
-    }
     if (to === "/reviews" && reviewsToDecide > 0) {
       return {
         node: (

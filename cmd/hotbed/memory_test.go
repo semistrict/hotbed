@@ -14,107 +14,62 @@ import (
 
 func TestMemoryLifecycleAndSessionRecall(t *testing.T) {
 	c := newCluster(t)
+	c.ok(nil, "project", "add", "other")
 	c.ok(nil, "session", "start", "brave-otter")
 	c.ok(nil, "session", "start", "calm-heron")
+	c.ok(nil, "session", "start", "other-fox", "-p", "other")
 
-	// Agents cannot self-approve a memory.
-	if _, e := c.fails("memory", "propose", "-s", "brave-otter", "--global", "--mode", "always",
-		"--slug", "no-self-approve", "--summary", "Should fail", "--approve"); e.Code != api.CodeInvalidArgs {
-		t.Fatalf("self-approve by agent = %v, want INVALID_ARGS", e)
-	}
-
-	// Propose a global always-on rule (the triggering example).
-	prop1 := &pb.Memory{}
-	c.ok(prop1, "memory", "propose", "-s", "brave-otter",
+	// Saving a global always-on rule from an agent session is automatically approved immediately.
+	mem1 := &pb.Memory{}
+	c.ok(mem1, "memory", "propose", "-s", "brave-otter",
 		"--global", "--mode", "always",
 		"--slug", "subagent-model-neon",
+		"--title", "Subagent model",
 		"--summary", "Use gemini-4-neon (not GPT models) for all T3 Code delegated subagents.",
 		"--rationale", "User correction in thread fxdax",
 		"--model", "gemini-4-neon",
 		"--tag", "subagents", "--tag", "models",
 	)
-	if prop1.Id != 1 || prop1.State != pb.MemoryState_MEMORY_STATE_PROPOSED || prop1.Scope != pb.MemoryScope_MEMORY_SCOPE_GLOBAL {
-		t.Fatalf("prop1 = %v", prop1)
+	if mem1.Id != 1 || mem1.State != pb.MemoryState_MEMORY_STATE_APPROVED || mem1.Scope != pb.MemoryScope_MEMORY_SCOPE_GLOBAL {
+		t.Fatalf("mem1 = %v, want APPROVED GLOBAL", mem1)
 	}
-	if prop1.CockpitUrl == "" || !strings.HasSuffix(prop1.CockpitUrl, "/memories/1") {
-		t.Errorf("prop1 cockpitUrl = %q, want suffix /memories/1", prop1.CockpitUrl)
+	if mem1.CockpitUrl == "" || !strings.HasSuffix(mem1.CockpitUrl, "/memories/1") {
+		t.Errorf("mem1 cockpitUrl = %q, want suffix /memories/1", mem1.CockpitUrl)
 	}
-	if prop1.GetReminder() == "" {
-		t.Errorf("expected poll reminder on proposal")
+	if mem1.GetReminder() != "" {
+		t.Errorf("auto-approved memory should carry no approval poll reminder, got %q", mem1.GetReminder())
 	}
 
-	// Propose a project-scoped on-demand memory with --body-file - (stdin).
-	prop2 := &pb.Memory{}
-	c.okIn("# Debugging ZFS flakes\n\nRun `zpool status` first.\n", prop2,
+	// Saving a project-scoped on-demand memory with --body-file - (stdin) is also auto-approved.
+	mem2 := &pb.Memory{}
+	c.okIn("# Debugging ZFS flakes\n\nRun `zpool status` first.\n", mem2,
 		"memory", "propose", "-s", "brave-otter",
 		"--slug", "zfs-base-freshen",
 		"--title", "ZFS base freshening",
 		"--summary", "How to debug ZFS snapshot/clone base freshening flakes.",
+		"--rationale", "Debugging session",
+		"--tag", "zfs", "--tag", "bases",
 		"--body-file", "-",
 	)
-	if prop2.Id != 2 || prop2.Scope != pb.MemoryScope_MEMORY_SCOPE_PROJECT || prop2.Project != "test" {
-		t.Fatalf("prop2 = %v", prop2)
+	if mem2.Id != 2 || mem2.State != pb.MemoryState_MEMORY_STATE_APPROVED || mem2.Scope != pb.MemoryScope_MEMORY_SCOPE_PROJECT || mem2.Project != "test" {
+		t.Fatalf("mem2 = %v, want APPROVED PROJECT test", mem2)
 	}
 
-	// Edit proposal #2 before approval.
-	edited2 := &pb.Memory{}
-	c.ok(edited2, "memory", "edit", "-s", "calm-heron", "2",
-		"--summary", "How to debug ZFS snapshot/clone base freshening flakes (read before debugging).",
-		"--if-revision", fmt.Sprint(prop2.Revision),
-	)
-	if edited2.Revision != prop2.Revision+1 {
-		t.Errorf("edited2 rev = %d, want %d", edited2.Revision, prop2.Revision+1)
+	// Default `memory ls` immediately shows both active memories (no approval step).
+	activeList := &pb.ListMemoriesResponse{}
+	c.ok(activeList, "memory", "ls", "-s", "brave-otter")
+	if len(activeList.Memories) != 2 {
+		t.Fatalf("active ls = %d, want 2", len(activeList.Memories))
 	}
 
-	// Proposals list shows both; default `memory ls` (approved) shows neither yet.
-	props := &pb.ListMemoriesResponse{}
-	c.ok(props, "memory", "proposals", "-s", "brave-otter")
-	if len(props.Memories) != 2 {
-		t.Fatalf("proposals = %d, want 2", len(props.Memories))
-	}
-	approvedList := &pb.ListMemoriesResponse{}
-	c.ok(approvedList, "memory", "ls", "-s", "brave-otter")
-	if len(approvedList.Memories) != 0 {
-		t.Fatalf("approved ls before approval = %d, want 0", len(approvedList.Memories))
-	}
-
-	// Snapshot reports pending memories (1 global, 1 project = 2 total).
+	// Snapshot reports 0 pending memories.
 	snap := &pb.Snapshot{}
 	c.ok(snap, "snapshot")
-	if snap.PendingMemories != 2 || snap.GlobalPendingMemories != 1 {
-		t.Errorf("snapshot pendingMemories=%d global=%d, want 2 and 1", snap.PendingMemories, snap.GlobalPendingMemories)
+	if snap.PendingMemories != 0 || snap.GlobalPendingMemories != 0 {
+		t.Errorf("snapshot pendingMemories=%d global=%d, want 0 and 0", snap.PendingMemories, snap.GlobalPendingMemories)
 	}
 
-	// User approves #1 as-is and #2 with edits.
-	app1 := &pb.Memory{}
-	c.ok(app1, "memory", "approve", "1")
-	if app1.State != pb.MemoryState_MEMORY_STATE_APPROVED {
-		t.Fatalf("app1 state = %v", app1.State)
-	}
-	app2 := &pb.Memory{}
-	c.ok(app2, "memory", "approve", "2", "--summary", "ZFS base freshening playbook — read before debugging base failures.")
-	if app2.State != pb.MemoryState_MEMORY_STATE_APPROVED {
-		t.Fatalf("app2 state = %v", app2.State)
-	}
-
-	// Proposer's poll receives both approval events.
-	polled := &pb.SessionEvents{}
-	c.ok(polled, "poll", "-s", "brave-otter", "--timeout", "1")
-	var memWhats []pb.MemoryUpdate_What
-	for _, ev := range polled.Events {
-		if m := ev.GetMemory(); m != nil {
-			memWhats = append(memWhats, m.What)
-		}
-	}
-	wantWhats := []pb.MemoryUpdate_What{
-		pb.MemoryUpdate_WHAT_APPROVED,
-		pb.MemoryUpdate_WHAT_APPROVED_EDITED,
-	}
-	if !slices.Equal(memWhats, wantWhats) {
-		t.Fatalf("poll memory events = %v, want %v", memWhats, wantWhats)
-	}
-
-	// Starting a new session returns both memories in compact form (plain text + JSON).
+	// Starting a new session immediately returns both memories in compact form (plain text + JSON).
 	started := &pb.Session{}
 	c.ok(started, "session", "start", "keen-fox")
 	if started.Memories == nil || len(started.Memories.Always) != 1 || len(started.Memories.OnDemand) != 1 {
@@ -163,45 +118,92 @@ func TestMemoryLifecycleAndSessionRecall(t *testing.T) {
 		t.Fatalf("memory ls -q zpool = %+v", searched.Memories)
 	}
 
-	// `memory show` returns full audit history.
-	shown := &pb.Memory{}
-	c.ok(shown, "memory", "show", "-s", "keen-fox", "2")
-	if len(shown.History) < 3 {
-		t.Errorf("memory show 2 history len = %d, want >= 3 (proposed, edited, approved)", len(shown.History))
+	// Edit a memory in any way: partial edits, clearing title/tags/rationale/body, changing mode/slug.
+	edited1 := &pb.Memory{}
+	c.ok(edited1, "memory", "edit", "1",
+		"--summary", "Use gemini-4-neon (high) for subagents.",
+		"--clear-title",
+		"--replace-tags",
+		"--rationale", "",
+		"--if-revision", fmt.Sprint(mem1.Revision),
+	)
+	if edited1.Content.Title != "" || len(edited1.Content.Tags) != 0 || edited1.Provenance.GetRationale() != "" {
+		t.Errorf("expected cleared title/tags/rationale, got title=%q tags=%v rationale=%q",
+			edited1.Content.Title, edited1.Content.Tags, edited1.Provenance.GetRationale())
+	}
+	if edited1.Content.Summary != "Use gemini-4-neon (high) for subagents." {
+		t.Errorf("edited1 summary = %q", edited1.Content.Summary)
 	}
 
-	// Superseding an existing memory atomically transitions old -> superseded and keeps slug working.
-	prop3 := &pb.Memory{}
-	c.ok(prop3, "memory", "propose", "-s", "brave-otter",
+	// Full content replacement (--replace-content) lets users edit or clear any content field in one shot.
+	replaced1 := &pb.Memory{}
+	c.ok(replaced1, "memory", "edit", "1",
+		"--replace-content",
+		"--slug", "subagent-model-neon",
+		"--mode", "always",
+		"--summary", "Use gemini-4-neon for all T3 Code subagents.",
+		"--tag", "agents",
+	)
+	if replaced1.Content.Title != "" || replaced1.Content.Body != "" || !slices.Equal(replaced1.Content.Tags, []string{"agents"}) {
+		t.Errorf("replaced1 content = %+v", replaced1.Content)
+	}
+
+	// Promote project-specific memory #2 to global via `hotbed memory promote`.
+	// Before promotion, project "other" does NOT see #2.
+	otherBefore := &pb.ListMemoriesResponse{}
+	c.ok(otherBefore, "memory", "ls", "-p", "other")
+	if len(otherBefore.Memories) != 1 || otherBefore.Memories[0].Id != 1 {
+		t.Fatalf("other project before promote = %+v, want only #1", otherBefore.Memories)
+	}
+
+	promoted2 := &pb.Memory{}
+	c.ok(promoted2, "memory", "promote", "2")
+	if promoted2.Scope != pb.MemoryScope_MEMORY_SCOPE_GLOBAL || promoted2.Project != "" || promoted2.Repo != "" {
+		t.Fatalf("promoted2 = scope=%v project=%q repo=%q, want GLOBAL empty", promoted2.Scope, promoted2.Project, promoted2.Repo)
+	}
+	// After promotion, project "other" sees #2 too!
+	otherAfter := &pb.ListMemoriesResponse{}
+	c.ok(otherAfter, "memory", "ls", "-p", "other")
+	if len(otherAfter.Memories) != 2 {
+		t.Fatalf("other project after promote = %d, want 2", len(otherAfter.Memories))
+	}
+	// ShowMemory records the "promoted" history entry.
+	shown2 := &pb.Memory{}
+	c.ok(shown2, "memory", "show", "2")
+	if !slices.ContainsFunc(shown2.History, func(ch *pb.MemoryChange) bool { return ch.What == "promoted" }) {
+		t.Errorf("expected 'promoted' entry in memory #2 history, got %+v", shown2.History)
+	}
+
+	// Demote #2 back to project "test" via `memory edit -p test` to verify scope editing in both directions.
+	demoted2 := &pb.Memory{}
+	c.ok(demoted2, "memory", "edit", "2", "-p", "test")
+	if demoted2.Scope != pb.MemoryScope_MEMORY_SCOPE_PROJECT || demoted2.Project != "test" {
+		t.Fatalf("demoted2 = scope=%v project=%q, want PROJECT test", demoted2.Scope, demoted2.Project)
+	}
+
+	// Superseding an existing memory immediately transitions old -> superseded and keeps slug working.
+	mem3 := &pb.Memory{}
+	c.ok(mem3, "memory", "propose", "-s", "brave-otter",
 		"--global", "--mode", "always",
 		"--slug", "subagent-model-neon",
 		"--supersede", "1",
 		"--summary", "Use gemini-4-neon (high) for all T3 Code subagents; never GPT.",
 	)
-	app3 := &pb.Memory{}
-	c.ok(app3, "memory", "approve", fmt.Sprint(prop3.Id))
-	if app3.State != pb.MemoryState_MEMORY_STATE_APPROVED {
-		t.Fatalf("app3 state = %v", app3.State)
+	if mem3.State != pb.MemoryState_MEMORY_STATE_APPROVED {
+		t.Fatalf("mem3 state = %v, want APPROVED", mem3.State)
 	}
 	old1 := &pb.Memory{}
 	c.ok(old1, "memory", "show", "1")
-	if old1.State != pb.MemoryState_MEMORY_STATE_SUPERSEDED || old1.SupersededBy != prop3.Id {
+	if old1.State != pb.MemoryState_MEMORY_STATE_SUPERSEDED || old1.SupersededBy != mem3.Id {
 		t.Fatalf("old1 after supersede = state=%v supersededBy=%d", old1.State, old1.SupersededBy)
 	}
-	// Slug resolves to the new #3!
 	gotNew := &pb.GetMemoriesResponse{}
 	c.ok(gotNew, "memory", "get", "subagent-model-neon")
-	if len(gotNew.Memories) != 1 || gotNew.Memories[0].Id != prop3.Id {
-		t.Fatalf("slug lookup after supersede = %+v, want #%d", gotNew.Memories, prop3.Id)
+	if len(gotNew.Memories) != 1 || gotNew.Memories[0].Id != mem3.Id {
+		t.Fatalf("slug lookup after supersede = %+v, want #%d", gotNew.Memories, mem3.Id)
 	}
 
-	// User revise, move, archive, restore, reject, and agent withdraw (also ensures 100% RPC CLI coverage!).
-	rev := &pb.Memory{}
-	c.ok(rev, "memory", "revise", fmt.Sprint(prop3.Id), "--summary", "Use gemini-4-neon for subagents (never GPT).")
-	if !strings.Contains(rev.Content.Summary, "never GPT") {
-		t.Errorf("revised summary = %q", rev.Content.Summary)
-	}
-
+	// Move, archive, restore, and permanently remove (`memory rm`).
 	moved := &pb.Memory{}
 	c.ok(moved, "memory", "move", "2", "--first")
 	if moved.Id != 2 {
@@ -220,39 +222,32 @@ func TestMemoryLifecycleAndSessionRecall(t *testing.T) {
 		t.Fatalf("restored state = %v", rest.State)
 	}
 
-	// Propose + reject delivers poll event to proposer.
-	prop4 := &pb.Memory{}
-	c.ok(prop4, "memory", "propose", "-s", "brave-otter", "--global", "--mode", "always",
-		"--slug", "bad-rule", "--summary", "A rule to reject")
-	rej := &pb.Memory{}
-	c.ok(rej, "memory", "reject", fmt.Sprint(prop4.Id), "--reason", "too broad")
-	if rej.State != pb.MemoryState_MEMORY_STATE_REJECTED {
-		t.Fatalf("rejected state = %v", rej.State)
+	// Permanently remove #2 via `hotbed memory rm`.
+	if _, e := c.fails("memory", "rm", "2", "--if-revision", "999"); e.Code != api.CodeConflict {
+		t.Fatalf("rm with wrong revision = %v, want CONFLICT", e)
 	}
-	polledRej := &pb.SessionEvents{}
-	c.ok(polledRej, "poll", "-s", "brave-otter", "--timeout", "1")
-	if !slices.ContainsFunc(polledRej.Events, func(e *pb.SessionEvent) bool {
-		return e.GetMemory().GetWhat() == pb.MemoryUpdate_WHAT_REJECTED && e.GetMemory().GetMemory().GetId() == prop4.Id
-	}) {
-		t.Errorf("expected WHAT_REJECTED poll event for #%d, got %+v", prop4.Id, polledRej.Events)
+	removed := &pb.Memory{}
+	c.ok(removed, "memory", "rm", "2", "--if-revision", fmt.Sprint(rest.Revision))
+	if removed.Id != 2 {
+		t.Fatalf("removed = %+v, want id 2", removed)
 	}
-
-	// Propose + withdraw by agent.
-	prop5 := &pb.Memory{}
-	c.ok(prop5, "memory", "propose", "-s", "brave-otter", "--global", "--mode", "always",
-		"--slug", "temp-draft", "--summary", "Draft to withdraw")
-	wd := &pb.Memory{}
-	c.ok(wd, "memory", "withdraw", "-s", "brave-otter", fmt.Sprint(prop5.Id), "--reason", "superseded by better idea")
-	if wd.State != pb.MemoryState_MEMORY_STATE_WITHDRAWN {
-		t.Fatalf("withdrawn state = %v", wd.State)
+	if _, e := c.fails("memory", "show", "2"); e.Code != api.CodeNotFound {
+		t.Fatalf("show after rm = %v, want NOT_FOUND", e)
+	}
+	// Slug of removed memory can be reused cleanly!
+	reused := &pb.Memory{}
+	c.ok(reused, "memory", "propose", "-p", "test", "--mode", "always",
+		"--slug", "zfs-base-freshen", "--summary", "Fresh memory reusing removed slug.")
+	if reused.State != pb.MemoryState_MEMORY_STATE_APPROVED || reused.Content.Slug != "zfs-base-freshen" {
+		t.Fatalf("reused = %+v", reused)
 	}
 }
 
 func TestMCPServerIncludesMemoriesInInstructionsAndTools(t *testing.T) {
 	c := newCluster(t)
-	// Seed an approved global memory directly (user action, no session bound).
+	// Seed a global memory directly (user action, no session bound, auto-approved).
 	c.ok(nil, "memory", "propose", "--global", "--mode", "always",
-		"--slug", "mcp-test-rule", "--summary", "Always prefer neon over GPT.", "--approve")
+		"--slug", "mcp-test-rule", "--summary", "Always prefer neon over GPT.")
 
 	dir := t.TempDir()
 	t.Chdir(dir)
@@ -262,7 +257,7 @@ func TestMCPServerIncludesMemoriesInInstructionsAndTools(t *testing.T) {
 
 	instr := m.InitializeResult().Instructions
 	if !strings.Contains(instr, "mcp-test-rule") || !strings.Contains(instr, "Always prefer neon over GPT.") {
-		t.Errorf("MCP server instructions missing approved memory:\n%s", instr)
+		t.Errorf("MCP server instructions missing active memory:\n%s", instr)
 	}
 	if !strings.Contains(instr, "memory_propose") || !strings.Contains(instr, "hotbed memory propose") {
 		t.Errorf("MCP server instructions missing memory-saving reminder:\n%s", instr)
@@ -275,17 +270,17 @@ func TestMCPServerIncludesMemoriesInInstructionsAndTools(t *testing.T) {
 		t.Fatalf("MCP memory_get = %+v", got)
 	}
 
-	// Propose via memory_propose MCP tool (inherits MCP session automatically).
+	// Save via memory_propose MCP tool (inherits MCP session automatically and auto-approves).
 	prop := &pb.Memory{}
 	m.call(prop, "memory_propose", map[string]any{
 		"global":  true,
 		"mode":    "on_demand",
 		"slug":    "mcp-playbook",
-		"summary": "Playbook proposed over MCP",
+		"summary": "Playbook saved over MCP",
 		"body":    "Step 1: verify MCP.\n",
 	})
-	if prop.State != pb.MemoryState_MEMORY_STATE_PROPOSED || prop.Proposed.Session == "" {
-		t.Fatalf("MCP memory_propose = %+v", prop)
+	if prop.State != pb.MemoryState_MEMORY_STATE_APPROVED || prop.Proposed.Session == "" {
+		t.Fatalf("MCP memory_propose = %+v, want APPROVED with session", prop)
 	}
 	_ = filepath.Clean(dir)
 }

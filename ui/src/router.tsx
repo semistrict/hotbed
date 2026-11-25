@@ -41,7 +41,7 @@ const questions = createRoute({
     sort: typeof s.sort === "string" && SORTS.includes(s.sort) ? (s.sort as QuestionsSearch["sort"]) : undefined,
   }),
 });
-const MEMORY_TABS = ["proposals", "approved", "history", "all"];
+const MEMORY_TABS = ["active", "history", "all"];
 const MEMORY_SCOPES = ["all", "global", "project"];
 const MEMORY_MODES = ["all", "always", "on-demand"];
 const MEMORY_SORTS = ["rank", "newest", "oldest", "updated", "slug"];
@@ -50,7 +50,12 @@ const memories = createRoute({
   path: "/memories",
   component: MemoriesPage,
   validateSearch: (s: Record<string, unknown>): MemoriesSearch => ({
-    tab: typeof s.tab === "string" && MEMORY_TABS.includes(s.tab) ? (s.tab as MemoriesSearch["tab"]) : undefined,
+    tab:
+      s.tab === "approved"
+        ? "active"
+        : typeof s.tab === "string" && MEMORY_TABS.includes(s.tab)
+          ? (s.tab as MemoriesSearch["tab"])
+          : undefined,
     scope: typeof s.scope === "string" && MEMORY_SCOPES.includes(s.scope) ? (s.scope as MemoriesSearch["scope"]) : undefined,
     mode: typeof s.mode === "string" && MEMORY_MODES.includes(s.mode) ? (s.mode as MemoriesSearch["mode"]) : undefined,
     sort: typeof s.sort === "string" && MEMORY_SORTS.includes(s.sort) ? (s.sort as MemoriesSearch["sort"]) : undefined,

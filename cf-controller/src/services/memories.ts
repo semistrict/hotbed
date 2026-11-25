@@ -6,7 +6,6 @@ import {
 	MemoryContentSchema,
 	MemoryMode,
 	MemoryProvenanceSchema,
-	MemorySchema,
 	MemoryScope,
 	MemoryService,
 	MemoryState,
@@ -27,9 +26,6 @@ const MAX_ON_DEMAND_SUMMARY_RUNES = 280;
 const MAX_BODY_BYTES = 64 * 1024;
 const MAX_TAGS = 10;
 const DIRTY_KEPT = 20;
-
-const MEMORY_POLL_REMINDER =
-	"Reminder: proposed memories wait for the user's approval in the cockpit, and decisions reach you through `hotbed poll` (MCP: `poll`). Keep working meanwhile.";
 
 function stateWord(st: MemoryState): string {
 	switch (st) {
@@ -162,36 +158,29 @@ function validateContent(c?: MemoryContent): MemoryContent {
 function mergeContent(
 	base: MemoryContent,
 	patch?: MemoryContent,
-): { merged: MemoryContent; changed: boolean } {
-	if (!patch) return { merged: clone(MemoryContentSchema, base), changed: false };
+	opts?: {
+		replaceContent?: boolean;
+		clearTitle?: boolean;
+		clearBody?: boolean;
+		replaceTags?: boolean;
+	},
+): MemoryContent {
+	if (opts?.replaceContent) {
+		return validateContent(patch);
+	}
 	const out = clone(MemoryContentSchema, base);
-	let changed = false;
-	if (patch.slug.trim()) {
-		if (patch.slug.trim().toLowerCase() !== out.slug) changed = true;
-		out.slug = patch.slug;
+	if (patch) {
+		if (patch.slug.trim()) out.slug = patch.slug;
+		if (patch.title.trim()) out.title = patch.title;
+		if (patch.summary.trim()) out.summary = patch.summary;
+		if (patch.body.trim()) out.body = patch.body;
+		if (patch.mode !== MemoryMode.UNSPECIFIED) out.mode = patch.mode;
+		if (patch.tags.length > 0) out.tags = normalizeTags(patch.tags);
 	}
-	if (patch.title.trim()) {
-		if (patch.title.trim() !== out.title) changed = true;
-		out.title = patch.title;
-	}
-	if (patch.summary.trim()) {
-		if (patch.summary.trim() !== out.summary) changed = true;
-		out.summary = patch.summary;
-	}
-	if (patch.body.trim()) {
-		if (patch.body.trim() !== out.body) changed = true;
-		out.body = patch.body;
-	}
-	if (patch.mode !== MemoryMode.UNSPECIFIED) {
-		if (patch.mode !== out.mode) changed = true;
-		out.mode = patch.mode;
-	}
-	if (patch.tags.length > 0) {
-		const norm = normalizeTags(patch.tags);
-		if (JSON.stringify(norm) !== JSON.stringify(out.tags)) changed = true;
-		out.tags = norm;
-	}
-	return { merged: validateContent(out), changed };
+	if (opts?.clearTitle) out.title = "";
+	if (opts?.clearBody) out.body = "";
+	if (opts?.replaceTags) out.tags = normalizeTags(patch?.tags ?? []);
+	return validateContent(out);
 }
 
 function checkRevision(m: Memory, want: bigint): void {
@@ -217,12 +206,6 @@ function memoryRepo(project: Project, named: string, fromRemote: string): string
 	const from = canonicalRemote(fromRemote);
 	if (from && project.repos.includes(from)) return from;
 	return "";
-}
-
-function withReminder(m: Memory): Memory {
-	const out = clone(MemorySchema, m);
-	out.reminder = MEMORY_POLL_REMINDER;
-	return out;
 }
 
 export function createMemoryService(ctrl: ControllerContext): ServiceImpl<typeof MemoryService> {
@@ -276,7 +259,7 @@ export function createMemoryService(ctrl: ControllerContext): ServiceImpl<typeof
 			if (!found) {
 				throw hotbedError(
 					ErrorCode.NotFound,
-					`no approved memory "${slugPart}" in ${scopeKey ? `project ${scopeKey}` : "global"}`,
+					`no active memory "${slugPart}" in ${scopeKey ? `project ${scopeKey}` : "global"}`,
 				).withSuggestion("hotbed memory ls");
 			}
 			return found;
@@ -296,22 +279,12 @@ export function createMemoryService(ctrl: ControllerContext): ServiceImpl<typeof
 				.join(", ");
 			throw hotbedError(
 				ErrorCode.NotFound,
-				`no approved memory "${slug}" in ${activeProject ? `project ${activeProject} or global` : "global"}`,
+				`no active memory "${slug}" in ${activeProject ? `project ${activeProject} or global` : "global"}`,
 			).withSuggestion(`found in another scope: ${hints}`);
 		}
-		throw hotbedError(ErrorCode.NotFound, `no approved memory "${rawRef}"`).withSuggestion(
+		throw hotbedError(ErrorCode.NotFound, `no active memory "${rawRef}"`).withSuggestion(
 			"hotbed memory ls",
 		);
-	}
-
-	function checkMemoryScopePermission(m: Memory, project: Project | null, bySession: string): void {
-		if (!project) return;
-		if (m.scope === MemoryScope.PROJECT && m.project !== project.name) {
-			throw hotbedError(
-				ErrorCode.Conflict,
-				`memory #${m.id} belongs to project ${m.project}; session ${bySession} works on ${project.name}`,
-			).withSuggestion(`leave it to a session of ${m.project}`);
-		}
 	}
 
 	return {
@@ -323,19 +296,11 @@ export function createMemoryService(ctrl: ControllerContext): ServiceImpl<typeof
 			if (req.global && req.repo) {
 				throw hotbedError(ErrorCode.InvalidArgs, "a global memory cannot be scoped to a repo");
 			}
-			if (req.approve && req.sessionId) {
-				throw hotbedError(
-					ErrorCode.InvalidArgs,
-					"agents cannot self-approve memories: omit --approve to propose for user review",
-				).withSuggestion(
-					"submit a proposal without --approve; the user approves it in the cockpit",
-				);
-			}
-			const { by, project: sessProject } = req.approve
-				? ctrl.userStamp(caller, "", req.rationale.trim())
-				: ctrl.agentStamp(caller, req.sessionId, req.rationale.trim());
-			const content = validateContent(req.content);
-			const supersedesIds = normalizeSupersedes(req.supersedesIds);
+			const { by, project: sessProject } = ctrl.userStamp(
+				caller,
+				req.sessionId,
+				req.rationale.trim(),
+			);
 
 			let scope = MemoryScope.PROJECT;
 			let targetProject: Project | null = null;
@@ -349,7 +314,7 @@ export function createMemoryService(ctrl: ControllerContext): ServiceImpl<typeof
 					throw hotbedError(
 						ErrorCode.Conflict,
 						`session ${by.session} works on project ${sessProject.name}, not ${targetProject.name}`,
-					).withSuggestion("propose for your session's project or pass --global");
+					).withSuggestion("save for your session's project or pass --global");
 				}
 				repo = memoryRepo(targetProject, req.repo, req.from?.remote ?? "");
 			} else if (sessProject) {
@@ -359,8 +324,11 @@ export function createMemoryService(ctrl: ControllerContext): ServiceImpl<typeof
 				throw hotbedError(
 					ErrorCode.InvalidArgs,
 					"specify --global or -p PROJECT when creating a memory outside a session",
-				);
+				).withSuggestion("pass --global, -p PROJECT, or -s SESSION");
 			}
+
+			const content = validateContent(req.content);
+			const supersedesIds = normalizeSupersedes(req.supersedesIds);
 
 			// Agents may only supersede global memories or memories of their own project.
 			if (sessProject) {
@@ -391,7 +359,7 @@ export function createMemoryService(ctrl: ControllerContext): ServiceImpl<typeof
 				rationale: req.rationale.trim(),
 			});
 
-			const mem = ctrl.store.proposeMemory({
+			return ctrl.store.proposeMemory({
 				scope,
 				project: targetProject?.name ?? "",
 				repo,
@@ -399,9 +367,7 @@ export function createMemoryService(ctrl: ControllerContext): ServiceImpl<typeof
 				supersedesIds,
 				provenance,
 				by,
-				approve: req.approve,
 			});
-			return req.approve ? mem : withReminder(mem);
 		},
 
 		listMemories(req) {
@@ -435,11 +401,9 @@ export function createMemoryService(ctrl: ControllerContext): ServiceImpl<typeof
 				limit: req.limit,
 				includeBody: false,
 			});
-			const isProposalList = req.states.length === 1 && req.states[0] === MemoryState.PROPOSED;
 			return create(ListMemoriesResponseSchema, {
 				memories,
 				total,
-				...(isProposalList ? { reminder: MEMORY_POLL_REMINDER } : {}),
 			});
 		},
 
@@ -470,136 +434,12 @@ export function createMemoryService(ctrl: ControllerContext): ServiceImpl<typeof
 			return m;
 		},
 
-		editMemory(req, ctx) {
-			const { by, project } = ctrl.agentStamp(getCaller(ctx.values), req.sessionId, "");
-			const supersedes = normalizeSupersedes(req.supersedesIds);
-			const m = ctrl.store.changeMemory(req.id, "edited", by, (item) => {
-				checkMemoryScopePermission(item, project, by.session);
-				checkRevision(item, req.ifRevision);
-				if (item.state !== MemoryState.PROPOSED) {
-					throw hotbedError(
-						ErrorCode.Conflict,
-						`memory #${item.id} is ${stateWord(item.state)}; only a proposed memory can be edited by an agent`,
-					).withSuggestion(
-						`propose an update instead: hotbed memory propose --supersede ${item.id} ...`,
-					);
-				}
-				const { merged } = mergeContent(item.content!, req.content);
-				item.content = merged;
-				if (req.rationale.trim()) {
-					if (!item.provenance) item.provenance = create(MemoryProvenanceSchema);
-					item.provenance.rationale = req.rationale.trim();
-				}
-				if (req.replaceSupersedes || supersedes.length > 0) {
-					for (const tid of supersedes) {
-						const t = ctrl.store.getMemory(tid);
-						if (t.state !== MemoryState.APPROVED) {
-							throw hotbedError(
-								ErrorCode.Conflict,
-								`cannot supersede memory #${tid}: it is ${stateWord(t.state)}, not approved`,
-							);
-						}
-						if (t.scope === MemoryScope.PROJECT && t.project !== project.name) {
-							throw hotbedError(
-								ErrorCode.Conflict,
-								`cannot supersede memory #${tid} of project ${t.project} from session ${by.session}`,
-							);
-						}
-					}
-					item.supersedesIds = supersedes;
-				}
-				item.edited = by;
-			});
-			return withReminder(m);
-		},
-
-		withdrawMemory(req, ctx) {
-			const { by, project } = ctrl.agentStamp(getCaller(ctx.values), req.sessionId, req.reason);
-			return ctrl.store.changeMemory(req.id, "withdrawn", by, (item) => {
-				checkMemoryScopePermission(item, project, by.session);
-				checkRevision(item, req.ifRevision);
-				if (item.state !== MemoryState.PROPOSED) {
-					throw hotbedError(
-						ErrorCode.Conflict,
-						`memory #${item.id} is ${stateWord(item.state)}; only a proposed memory can be withdrawn`,
-					);
-				}
-				item.state = MemoryState.WITHDRAWN;
-				item.decided = by;
-			});
-		},
-
-		approveMemory(req, ctx) {
-			if (req.global && req.project) {
-				throw hotbedError(ErrorCode.InvalidArgs, "give either --global or --project, not both");
-			}
-			const { by, project } = ctrl.userStamp(getCaller(ctx.values), req.sessionId, req.note.trim());
-			const { memory } = ctrl.store.approveMemory(req.id, by, (item) => {
-				if (item.scope === MemoryScope.PROJECT) {
-					inProject("memory", item.id, item.project, project, by);
-				}
-				checkRevision(item, req.ifRevision);
-				if (item.state !== MemoryState.PROPOSED) {
-					throw hotbedError(
-						ErrorCode.Conflict,
-						`memory #${item.id} is ${stateWord(item.state)}; only a proposed memory can be approved`,
-					);
-				}
-				let edited = false;
-				if (req.global && item.scope !== MemoryScope.GLOBAL) {
-					item.scope = MemoryScope.GLOBAL;
-					item.project = "";
-					item.repo = "";
-					edited = true;
-				} else if (req.project) {
-					ctrl.store.getProject(req.project);
-					if (item.scope !== MemoryScope.PROJECT || item.project !== req.project) {
-						item.scope = MemoryScope.PROJECT;
-						item.project = req.project;
-						item.repo = "";
-						edited = true;
-					}
-				}
-				const res = mergeContent(item.content!, req.content);
-				item.content = res.merged;
-				if (res.changed) edited = true;
-				return edited;
-			});
-			if (memory.proposed?.session) {
-				ctrl.sessionWakes.wake(memory.proposed.session);
-			}
-			return memory;
-		},
-
-		rejectMemory(req, ctx) {
-			const { by, project } = ctrl.userStamp(
-				getCaller(ctx.values),
-				req.sessionId,
-				req.reason.trim(),
-			);
-			const m = ctrl.store.rejectMemory(req.id, by, (item) => {
-				if (item.scope === MemoryScope.PROJECT) {
-					inProject("memory", item.id, item.project, project, by);
-				}
-				checkRevision(item, req.ifRevision);
-				if (item.state !== MemoryState.PROPOSED) {
-					throw hotbedError(
-						ErrorCode.Conflict,
-						`memory #${item.id} is ${stateWord(item.state)}; only a proposed memory can be rejected`,
-					);
-				}
-				item.state = MemoryState.REJECTED;
-				item.decided = by;
-			});
-			if (m.proposed?.session) {
-				ctrl.sessionWakes.wake(m.proposed.session);
-			}
-			return m;
-		},
-
 		reviseMemory(req, ctx) {
 			if (req.global && req.project) {
 				throw hotbedError(ErrorCode.InvalidArgs, "give either --global or --project, not both");
+			}
+			if (req.global && req.repo !== undefined && req.repo.trim()) {
+				throw hotbedError(ErrorCode.InvalidArgs, "a global memory cannot be scoped to a repo");
 			}
 			const { by, project } = ctrl.userStamp(getCaller(ctx.values), req.sessionId, "");
 			return ctrl.store.changeMemory(req.id, "edited", by, (item) => {
@@ -607,25 +447,61 @@ export function createMemoryService(ctrl: ControllerContext): ServiceImpl<typeof
 					inProject("memory", item.id, item.project, project, by);
 				}
 				checkRevision(item, req.ifRevision);
-				if (item.state !== MemoryState.APPROVED && item.state !== MemoryState.PROPOSED) {
-					throw hotbedError(
-						ErrorCode.Conflict,
-						`memory #${item.id} is ${stateWord(item.state)}; only approved or proposed memories can be revised`,
-					).withSuggestion(`restore it first: hotbed memory restore ${item.id}`);
-				}
+
+				const wasProject = item.scope === MemoryScope.PROJECT;
+
 				if (req.global) {
 					item.scope = MemoryScope.GLOBAL;
 					item.project = "";
 					item.repo = "";
 				} else if (req.project) {
-					ctrl.store.getProject(req.project);
+					const targetProj = ctrl.store.getProject(req.project);
+					if (project && project.name !== targetProj.name) {
+						throw hotbedError(
+							ErrorCode.Conflict,
+							`session ${by.session} works on project ${project.name}, not ${targetProj.name}`,
+						).withSuggestion("edit memories in your session's project or promote with --global");
+					}
+					const projectChanged =
+						item.scope !== MemoryScope.PROJECT || item.project !== targetProj.name;
 					item.scope = MemoryScope.PROJECT;
-					item.project = req.project;
-					item.repo = "";
+					item.project = targetProj.name;
+					if (req.repo !== undefined) {
+						item.repo = req.repo.trim() ? memoryRepo(targetProj, req.repo.trim(), "") : "";
+					} else if (projectChanged && item.repo && !targetProj.repos.includes(item.repo)) {
+						item.repo = "";
+					}
+				} else if (req.repo !== undefined) {
+					if (item.scope === MemoryScope.GLOBAL) {
+						if (req.repo.trim()) {
+							throw hotbedError(
+								ErrorCode.InvalidArgs,
+								"a global memory cannot be scoped to a repo",
+							);
+						}
+						item.repo = "";
+					} else {
+						const curProj = ctrl.store.getProject(item.project);
+						item.repo = req.repo.trim() ? memoryRepo(curProj, req.repo.trim(), "") : "";
+					}
 				}
-				const { merged } = mergeContent(item.content!, req.content);
-				item.content = merged;
+
+				item.content = mergeContent(item.content!, req.content, {
+					replaceContent: req.replaceContent,
+					clearTitle: req.clearTitle,
+					clearBody: req.clearBody,
+					replaceTags: req.replaceTags,
+				});
+
+				if (req.rationale !== undefined) {
+					if (!item.provenance) item.provenance = create(MemoryProvenanceSchema);
+					item.provenance.rationale = req.rationale.trim();
+				}
+
 				item.edited = by;
+				if (wasProject && item.scope === MemoryScope.GLOBAL) {
+					return "promoted";
+				}
 			});
 		},
 
@@ -643,7 +519,7 @@ export function createMemoryService(ctrl: ControllerContext): ServiceImpl<typeof
 				if (item.state !== MemoryState.APPROVED) {
 					throw hotbedError(
 						ErrorCode.Conflict,
-						`memory #${item.id} is ${stateWord(item.state)}; only an approved memory can be archived`,
+						`memory #${item.id} is ${stateWord(item.state)}; only an active memory can be archived`,
 					);
 				}
 				item.state = MemoryState.ARCHIVED;
@@ -668,13 +544,19 @@ export function createMemoryService(ctrl: ControllerContext): ServiceImpl<typeof
 						`memory #${item.id} is ${stateWord(item.state)}; only archived, rejected, or withdrawn memories can be restored`,
 					);
 				}
-				item.state = req.toProposed ? MemoryState.PROPOSED : MemoryState.APPROVED;
+				item.state = MemoryState.APPROVED;
 				item.archived = undefined;
-				if (!req.toProposed) {
-					item.decided = by;
-				} else {
-					item.decided = undefined;
+				item.decided = by;
+			});
+		},
+
+		deleteMemory(req, ctx) {
+			const { by, project } = ctrl.userStamp(getCaller(ctx.values), req.sessionId, "");
+			return ctrl.store.deleteMemory(req.id, (item) => {
+				if (item.scope === MemoryScope.PROJECT) {
+					inProject("memory", item.id, item.project, project, by);
 				}
+				checkRevision(item, req.ifRevision);
 			});
 		},
 
@@ -701,13 +583,13 @@ export function createMemoryService(ctrl: ControllerContext): ServiceImpl<typeof
 				if (m.state !== MemoryState.APPROVED) {
 					throw hotbedError(
 						ErrorCode.Conflict,
-						`memory #${m.id} is ${stateWord(m.state)}: only approved memories can be moved`,
+						`memory #${m.id} is ${stateWord(m.state)}: only active memories can be moved`,
 					);
 				}
 				if (before && before.state !== MemoryState.APPROVED) {
 					throw hotbedError(
 						ErrorCode.Conflict,
-						`memory #${before.id} is ${stateWord(before.state)}: only approved memories have a place in the order`,
+						`memory #${before.id} is ${stateWord(before.state)}: only active memories have a place in the order`,
 					);
 				}
 			});

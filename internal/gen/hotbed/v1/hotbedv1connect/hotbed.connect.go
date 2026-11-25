@@ -306,16 +306,6 @@ const (
 	MemoryServiceGetMemoriesProcedure = "/hotbed.v1.MemoryService/GetMemories"
 	// MemoryServiceShowMemoryProcedure is the procedure name of the MemoryService's ShowMemory RPC.
 	MemoryServiceShowMemoryProcedure = "/hotbed.v1.MemoryService/ShowMemory"
-	// MemoryServiceEditMemoryProcedure is the procedure name of the MemoryService's EditMemory RPC.
-	MemoryServiceEditMemoryProcedure = "/hotbed.v1.MemoryService/EditMemory"
-	// MemoryServiceWithdrawMemoryProcedure is the procedure name of the MemoryService's WithdrawMemory
-	// RPC.
-	MemoryServiceWithdrawMemoryProcedure = "/hotbed.v1.MemoryService/WithdrawMemory"
-	// MemoryServiceApproveMemoryProcedure is the procedure name of the MemoryService's ApproveMemory
-	// RPC.
-	MemoryServiceApproveMemoryProcedure = "/hotbed.v1.MemoryService/ApproveMemory"
-	// MemoryServiceRejectMemoryProcedure is the procedure name of the MemoryService's RejectMemory RPC.
-	MemoryServiceRejectMemoryProcedure = "/hotbed.v1.MemoryService/RejectMemory"
 	// MemoryServiceReviseMemoryProcedure is the procedure name of the MemoryService's ReviseMemory RPC.
 	MemoryServiceReviseMemoryProcedure = "/hotbed.v1.MemoryService/ReviseMemory"
 	// MemoryServiceArchiveMemoryProcedure is the procedure name of the MemoryService's ArchiveMemory
@@ -324,6 +314,8 @@ const (
 	// MemoryServiceRestoreMemoryProcedure is the procedure name of the MemoryService's RestoreMemory
 	// RPC.
 	MemoryServiceRestoreMemoryProcedure = "/hotbed.v1.MemoryService/RestoreMemory"
+	// MemoryServiceDeleteMemoryProcedure is the procedure name of the MemoryService's DeleteMemory RPC.
+	MemoryServiceDeleteMemoryProcedure = "/hotbed.v1.MemoryService/DeleteMemory"
 	// MemoryServiceMoveMemoryProcedure is the procedure name of the MemoryService's MoveMemory RPC.
 	MemoryServiceMoveMemoryProcedure = "/hotbed.v1.MemoryService/MoveMemory"
 )
@@ -4571,34 +4563,6 @@ var (
 			IdempotencyLevel: connect.IdempotencyIdempotent,
 		}
 	})
-	memoryServiceEditMemorySpec = sync.OnceValue(func() connect.Spec {
-		return connect.Spec{
-			StreamType: connect.StreamTypeUnary,
-			Schema:     v1.File_hotbed_v1_hotbed_proto.Services().ByName("MemoryService").Methods().ByName("EditMemory"),
-			Procedure:  MemoryServiceEditMemoryProcedure,
-		}
-	})
-	memoryServiceWithdrawMemorySpec = sync.OnceValue(func() connect.Spec {
-		return connect.Spec{
-			StreamType: connect.StreamTypeUnary,
-			Schema:     v1.File_hotbed_v1_hotbed_proto.Services().ByName("MemoryService").Methods().ByName("WithdrawMemory"),
-			Procedure:  MemoryServiceWithdrawMemoryProcedure,
-		}
-	})
-	memoryServiceApproveMemorySpec = sync.OnceValue(func() connect.Spec {
-		return connect.Spec{
-			StreamType: connect.StreamTypeUnary,
-			Schema:     v1.File_hotbed_v1_hotbed_proto.Services().ByName("MemoryService").Methods().ByName("ApproveMemory"),
-			Procedure:  MemoryServiceApproveMemoryProcedure,
-		}
-	})
-	memoryServiceRejectMemorySpec = sync.OnceValue(func() connect.Spec {
-		return connect.Spec{
-			StreamType: connect.StreamTypeUnary,
-			Schema:     v1.File_hotbed_v1_hotbed_proto.Services().ByName("MemoryService").Methods().ByName("RejectMemory"),
-			Procedure:  MemoryServiceRejectMemoryProcedure,
-		}
-	})
 	memoryServiceReviseMemorySpec = sync.OnceValue(func() connect.Spec {
 		return connect.Spec{
 			StreamType: connect.StreamTypeUnary,
@@ -4620,6 +4584,13 @@ var (
 			Procedure:  MemoryServiceRestoreMemoryProcedure,
 		}
 	})
+	memoryServiceDeleteMemorySpec = sync.OnceValue(func() connect.Spec {
+		return connect.Spec{
+			StreamType: connect.StreamTypeUnary,
+			Schema:     v1.File_hotbed_v1_hotbed_proto.Services().ByName("MemoryService").Methods().ByName("DeleteMemory"),
+			Procedure:  MemoryServiceDeleteMemoryProcedure,
+		}
+	})
 	memoryServiceMoveMemorySpec = sync.OnceValue(func() connect.Spec {
 		return connect.Spec{
 			StreamType: connect.StreamTypeUnary,
@@ -4631,11 +4602,11 @@ var (
 
 // MemoryServiceClient is a client for the hotbed.v1.MemoryService service.
 type MemoryServiceClient interface {
-	// Propose a new memory or an update/consolidation of existing approved
-	// memories (--supersede ID). Defaults to the active session's project;
-	// pass --global for cross-project learnings. Use --mode always for short
-	// guardrails (<= 240 chars) or --mode on_demand (default) for detailed
-	// playbooks fetched with `hotbed memory get`.
+	// Create a new memory or supersede/consolidate existing memories
+	// (--supersede ID). Automatically approved and active immediately. Defaults
+	// to the active session's project; pass --global for cross-project learnings.
+	// Use --mode always for short guardrails (<= 240 chars) or --mode on_demand
+	// (default) for detailed playbooks fetched with `hotbed memory get`.
 	ProposeMemory(context.Context, *v1.ProposeMemoryRequest) (*v1.Memory, error)
 	// List memories (compact metadata without full body). Defaults to approved
 	// memories for global + active project (or global only outside a project).
@@ -4646,23 +4617,17 @@ type MemoryServiceClient interface {
 	// Show one memory with its full body, provenance, supersession links, and
 	// complete revision history.
 	ShowMemory(context.Context, *v1.ShowMemoryRequest) (*v1.Memory, error)
-	// Edit a proposed memory before user approval (agent action).
-	EditMemory(context.Context, *v1.EditMemoryRequest) (*v1.Memory, error)
-	// Withdraw a proposed memory that is no longer needed; it stays in history.
-	WithdrawMemory(context.Context, *v1.WithdrawMemoryRequest) (*v1.Memory, error)
-	// Approve a proposed memory for the user, optionally applying edits first.
-	// Any approved memories listed in supersedes_ids are atomically superseded.
-	// The user approves in the cockpit; an agent uses this only at the user's word.
-	ApproveMemory(context.Context, *v1.ApproveMemoryRequest) (*v1.Memory, error)
-	// Reject a proposed memory for the user with an optional reason.
-	RejectMemory(context.Context, *v1.RejectMemoryRequest) (*v1.Memory, error)
-	// Revise an approved or proposed memory directly for the user.
+	// Edit a memory in any way (slug, title, summary, body, mode, tags, scope,
+	// repo, or rationale). Unspecified fields stay unchanged unless
+	// --replace-content or a clear flag is passed.
 	ReviseMemory(context.Context, *v1.ReviseMemoryRequest) (*v1.Memory, error)
-	// Archive an approved memory so it is no longer returned on session start;
+	// Archive an active memory so it is no longer returned on session start;
 	// history is preserved and it can be restored.
 	ArchiveMemory(context.Context, *v1.ArchiveMemoryRequest) (*v1.Memory, error)
-	// Restore an archived or rejected memory (to approved, or back to proposed).
+	// Restore an archived, rejected, or withdrawn memory back to active.
 	RestoreMemory(context.Context, *v1.RestoreMemoryRequest) (*v1.Memory, error)
+	// Permanently remove a memory and its revision history.
+	DeleteMemory(context.Context, *v1.DeleteMemoryRequest) (*v1.Memory, error)
 	// Move an approved memory in the user's startup priority order.
 	MoveMemory(context.Context, *v1.MoveMemoryRequest) (*v1.Memory, error)
 }
@@ -4675,11 +4640,11 @@ func NewMemoryServiceClient(client *connect.Client) MemoryServiceClient {
 
 // MemoryServiceHandler is an implementation of the hotbed.v1.MemoryService service.
 type MemoryServiceHandler interface {
-	// Propose a new memory or an update/consolidation of existing approved
-	// memories (--supersede ID). Defaults to the active session's project;
-	// pass --global for cross-project learnings. Use --mode always for short
-	// guardrails (<= 240 chars) or --mode on_demand (default) for detailed
-	// playbooks fetched with `hotbed memory get`.
+	// Create a new memory or supersede/consolidate existing memories
+	// (--supersede ID). Automatically approved and active immediately. Defaults
+	// to the active session's project; pass --global for cross-project learnings.
+	// Use --mode always for short guardrails (<= 240 chars) or --mode on_demand
+	// (default) for detailed playbooks fetched with `hotbed memory get`.
 	ProposeMemory(context.Context, *v1.ProposeMemoryRequest) (*v1.Memory, error)
 	// List memories (compact metadata without full body). Defaults to approved
 	// memories for global + active project (or global only outside a project).
@@ -4690,23 +4655,17 @@ type MemoryServiceHandler interface {
 	// Show one memory with its full body, provenance, supersession links, and
 	// complete revision history.
 	ShowMemory(context.Context, *v1.ShowMemoryRequest) (*v1.Memory, error)
-	// Edit a proposed memory before user approval (agent action).
-	EditMemory(context.Context, *v1.EditMemoryRequest) (*v1.Memory, error)
-	// Withdraw a proposed memory that is no longer needed; it stays in history.
-	WithdrawMemory(context.Context, *v1.WithdrawMemoryRequest) (*v1.Memory, error)
-	// Approve a proposed memory for the user, optionally applying edits first.
-	// Any approved memories listed in supersedes_ids are atomically superseded.
-	// The user approves in the cockpit; an agent uses this only at the user's word.
-	ApproveMemory(context.Context, *v1.ApproveMemoryRequest) (*v1.Memory, error)
-	// Reject a proposed memory for the user with an optional reason.
-	RejectMemory(context.Context, *v1.RejectMemoryRequest) (*v1.Memory, error)
-	// Revise an approved or proposed memory directly for the user.
+	// Edit a memory in any way (slug, title, summary, body, mode, tags, scope,
+	// repo, or rationale). Unspecified fields stay unchanged unless
+	// --replace-content or a clear flag is passed.
 	ReviseMemory(context.Context, *v1.ReviseMemoryRequest) (*v1.Memory, error)
-	// Archive an approved memory so it is no longer returned on session start;
+	// Archive an active memory so it is no longer returned on session start;
 	// history is preserved and it can be restored.
 	ArchiveMemory(context.Context, *v1.ArchiveMemoryRequest) (*v1.Memory, error)
-	// Restore an archived or rejected memory (to approved, or back to proposed).
+	// Restore an archived, rejected, or withdrawn memory back to active.
 	RestoreMemory(context.Context, *v1.RestoreMemoryRequest) (*v1.Memory, error)
+	// Permanently remove a memory and its revision history.
+	DeleteMemory(context.Context, *v1.DeleteMemoryRequest) (*v1.Memory, error)
 	// Move an approved memory in the user's startup priority order.
 	MoveMemory(context.Context, *v1.MoveMemoryRequest) (*v1.Memory, error)
 }
@@ -4720,13 +4679,10 @@ func RegisterMemoryServiceHandler(server *connect.Server, svc MemoryServiceHandl
 		connect.Method{Spec: memoryServiceListMemoriesSpec(), Handler: adapter.listMemories},
 		connect.Method{Spec: memoryServiceGetMemoriesSpec(), Handler: adapter.getMemories},
 		connect.Method{Spec: memoryServiceShowMemorySpec(), Handler: adapter.showMemory},
-		connect.Method{Spec: memoryServiceEditMemorySpec(), Handler: adapter.editMemory},
-		connect.Method{Spec: memoryServiceWithdrawMemorySpec(), Handler: adapter.withdrawMemory},
-		connect.Method{Spec: memoryServiceApproveMemorySpec(), Handler: adapter.approveMemory},
-		connect.Method{Spec: memoryServiceRejectMemorySpec(), Handler: adapter.rejectMemory},
 		connect.Method{Spec: memoryServiceReviseMemorySpec(), Handler: adapter.reviseMemory},
 		connect.Method{Spec: memoryServiceArchiveMemorySpec(), Handler: adapter.archiveMemory},
 		connect.Method{Spec: memoryServiceRestoreMemorySpec(), Handler: adapter.restoreMemory},
+		connect.Method{Spec: memoryServiceDeleteMemorySpec(), Handler: adapter.deleteMemory},
 		connect.Method{Spec: memoryServiceMoveMemorySpec(), Handler: adapter.moveMemory},
 	)
 }
@@ -4750,22 +4706,6 @@ func (UnimplementedMemoryServiceHandler) ShowMemory(context.Context, *v1.ShowMem
 	return nil, connect.NewError(connect.CodeUnimplemented, "hotbed.v1.MemoryService.ShowMemory is not implemented")
 }
 
-func (UnimplementedMemoryServiceHandler) EditMemory(context.Context, *v1.EditMemoryRequest) (*v1.Memory, error) {
-	return nil, connect.NewError(connect.CodeUnimplemented, "hotbed.v1.MemoryService.EditMemory is not implemented")
-}
-
-func (UnimplementedMemoryServiceHandler) WithdrawMemory(context.Context, *v1.WithdrawMemoryRequest) (*v1.Memory, error) {
-	return nil, connect.NewError(connect.CodeUnimplemented, "hotbed.v1.MemoryService.WithdrawMemory is not implemented")
-}
-
-func (UnimplementedMemoryServiceHandler) ApproveMemory(context.Context, *v1.ApproveMemoryRequest) (*v1.Memory, error) {
-	return nil, connect.NewError(connect.CodeUnimplemented, "hotbed.v1.MemoryService.ApproveMemory is not implemented")
-}
-
-func (UnimplementedMemoryServiceHandler) RejectMemory(context.Context, *v1.RejectMemoryRequest) (*v1.Memory, error) {
-	return nil, connect.NewError(connect.CodeUnimplemented, "hotbed.v1.MemoryService.RejectMemory is not implemented")
-}
-
 func (UnimplementedMemoryServiceHandler) ReviseMemory(context.Context, *v1.ReviseMemoryRequest) (*v1.Memory, error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, "hotbed.v1.MemoryService.ReviseMemory is not implemented")
 }
@@ -4776,6 +4716,10 @@ func (UnimplementedMemoryServiceHandler) ArchiveMemory(context.Context, *v1.Arch
 
 func (UnimplementedMemoryServiceHandler) RestoreMemory(context.Context, *v1.RestoreMemoryRequest) (*v1.Memory, error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, "hotbed.v1.MemoryService.RestoreMemory is not implemented")
+}
+
+func (UnimplementedMemoryServiceHandler) DeleteMemory(context.Context, *v1.DeleteMemoryRequest) (*v1.Memory, error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, "hotbed.v1.MemoryService.DeleteMemory is not implemented")
 }
 
 func (UnimplementedMemoryServiceHandler) MoveMemory(context.Context, *v1.MoveMemoryRequest) (*v1.Memory, error) {
@@ -4818,38 +4762,6 @@ func (c *memoryServiceClient) ShowMemory(ctx context.Context, req *v1.ShowMemory
 	return &res, nil
 }
 
-func (c *memoryServiceClient) EditMemory(ctx context.Context, req *v1.EditMemoryRequest) (*v1.Memory, error) {
-	var res v1.Memory
-	if err := c.client.CallUnary(ctx, memoryServiceEditMemorySpec(), req, &res); err != nil {
-		return nil, err
-	}
-	return &res, nil
-}
-
-func (c *memoryServiceClient) WithdrawMemory(ctx context.Context, req *v1.WithdrawMemoryRequest) (*v1.Memory, error) {
-	var res v1.Memory
-	if err := c.client.CallUnary(ctx, memoryServiceWithdrawMemorySpec(), req, &res); err != nil {
-		return nil, err
-	}
-	return &res, nil
-}
-
-func (c *memoryServiceClient) ApproveMemory(ctx context.Context, req *v1.ApproveMemoryRequest) (*v1.Memory, error) {
-	var res v1.Memory
-	if err := c.client.CallUnary(ctx, memoryServiceApproveMemorySpec(), req, &res); err != nil {
-		return nil, err
-	}
-	return &res, nil
-}
-
-func (c *memoryServiceClient) RejectMemory(ctx context.Context, req *v1.RejectMemoryRequest) (*v1.Memory, error) {
-	var res v1.Memory
-	if err := c.client.CallUnary(ctx, memoryServiceRejectMemorySpec(), req, &res); err != nil {
-		return nil, err
-	}
-	return &res, nil
-}
-
 func (c *memoryServiceClient) ReviseMemory(ctx context.Context, req *v1.ReviseMemoryRequest) (*v1.Memory, error) {
 	var res v1.Memory
 	if err := c.client.CallUnary(ctx, memoryServiceReviseMemorySpec(), req, &res); err != nil {
@@ -4869,6 +4781,14 @@ func (c *memoryServiceClient) ArchiveMemory(ctx context.Context, req *v1.Archive
 func (c *memoryServiceClient) RestoreMemory(ctx context.Context, req *v1.RestoreMemoryRequest) (*v1.Memory, error) {
 	var res v1.Memory
 	if err := c.client.CallUnary(ctx, memoryServiceRestoreMemorySpec(), req, &res); err != nil {
+		return nil, err
+	}
+	return &res, nil
+}
+
+func (c *memoryServiceClient) DeleteMemory(ctx context.Context, req *v1.DeleteMemoryRequest) (*v1.Memory, error) {
+	var res v1.Memory
+	if err := c.client.CallUnary(ctx, memoryServiceDeleteMemorySpec(), req, &res); err != nil {
 		return nil, err
 	}
 	return &res, nil
@@ -4932,54 +4852,6 @@ func (h memoryServiceHandler) showMemory(ctx context.Context, _ connect.Spec, st
 	return stream.Send(res)
 }
 
-func (h memoryServiceHandler) editMemory(ctx context.Context, _ connect.Spec, stream connect.ServerStream) error {
-	var req v1.EditMemoryRequest
-	if err := stream.Receive(&req); err != nil {
-		return err
-	}
-	res, err := h.svc.EditMemory(ctx, &req)
-	if err != nil {
-		return err
-	}
-	return stream.Send(res)
-}
-
-func (h memoryServiceHandler) withdrawMemory(ctx context.Context, _ connect.Spec, stream connect.ServerStream) error {
-	var req v1.WithdrawMemoryRequest
-	if err := stream.Receive(&req); err != nil {
-		return err
-	}
-	res, err := h.svc.WithdrawMemory(ctx, &req)
-	if err != nil {
-		return err
-	}
-	return stream.Send(res)
-}
-
-func (h memoryServiceHandler) approveMemory(ctx context.Context, _ connect.Spec, stream connect.ServerStream) error {
-	var req v1.ApproveMemoryRequest
-	if err := stream.Receive(&req); err != nil {
-		return err
-	}
-	res, err := h.svc.ApproveMemory(ctx, &req)
-	if err != nil {
-		return err
-	}
-	return stream.Send(res)
-}
-
-func (h memoryServiceHandler) rejectMemory(ctx context.Context, _ connect.Spec, stream connect.ServerStream) error {
-	var req v1.RejectMemoryRequest
-	if err := stream.Receive(&req); err != nil {
-		return err
-	}
-	res, err := h.svc.RejectMemory(ctx, &req)
-	if err != nil {
-		return err
-	}
-	return stream.Send(res)
-}
-
 func (h memoryServiceHandler) reviseMemory(ctx context.Context, _ connect.Spec, stream connect.ServerStream) error {
 	var req v1.ReviseMemoryRequest
 	if err := stream.Receive(&req); err != nil {
@@ -5010,6 +4882,18 @@ func (h memoryServiceHandler) restoreMemory(ctx context.Context, _ connect.Spec,
 		return err
 	}
 	res, err := h.svc.RestoreMemory(ctx, &req)
+	if err != nil {
+		return err
+	}
+	return stream.Send(res)
+}
+
+func (h memoryServiceHandler) deleteMemory(ctx context.Context, _ connect.Spec, stream connect.ServerStream) error {
+	var req v1.DeleteMemoryRequest
+	if err := stream.Receive(&req); err != nil {
+		return err
+	}
+	res, err := h.svc.DeleteMemory(ctx, &req)
 	if err != nil {
 		return err
 	}

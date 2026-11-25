@@ -1,18 +1,17 @@
 import { MemoryMode, MemoryScope, MemoryState, type Memory } from "../api";
 
-export type MemoryTab = "proposals" | "approved" | "history" | "all";
+export type MemoryTab = "active" | "history" | "all";
 
 export const MEMORY_TAB_STATES: Record<MemoryTab, MemoryState[]> = {
-  proposals: [MemoryState.PROPOSED],
-  approved: [MemoryState.APPROVED],
-  history: [MemoryState.REJECTED, MemoryState.SUPERSEDED, MemoryState.ARCHIVED, MemoryState.WITHDRAWN],
+  active: [MemoryState.APPROVED],
+  history: [MemoryState.ARCHIVED, MemoryState.SUPERSEDED, MemoryState.REJECTED, MemoryState.WITHDRAWN],
   all: [
-    MemoryState.PROPOSED,
     MemoryState.APPROVED,
-    MemoryState.REJECTED,
-    MemoryState.SUPERSEDED,
     MemoryState.ARCHIVED,
+    MemoryState.SUPERSEDED,
+    MemoryState.REJECTED,
     MemoryState.WITHDRAWN,
+    MemoryState.PROPOSED,
   ],
 };
 

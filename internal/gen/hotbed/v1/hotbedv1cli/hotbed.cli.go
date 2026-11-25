@@ -26,19 +26,15 @@ type Hooks interface {
 	EditedPrompt(ctx context.Context, c *apicmd.Call, input []byte) (*v1.Prompt, error)
 	// ListedRemote fills in hotbed.v1.ListQuestionsRequest.remote (question ls, question outbox).
 	ListedRemote(ctx context.Context, c *apicmd.Call, req *v1.ListQuestionsRequest) (string, error)
-	// LoadApproveMemoryBody runs before memory approve, and may change its request.
-	LoadApproveMemoryBody(ctx context.Context, c *apicmd.Call, req *v1.ApproveMemoryRequest) error
-	// LoadEditMemoryBody runs before memory edit, and may change its request.
-	LoadEditMemoryBody(ctx context.Context, c *apicmd.Call, req *v1.EditMemoryRequest) error
 	// LoadGitCredentialSecrets runs before auth set, and may change its request.
 	LoadGitCredentialSecrets(ctx context.Context, c *apicmd.Call, req *v1.PutGitCredentialRequest) error
 	// LoadProposeMemoryBody runs before memory propose, and may change its request.
 	LoadProposeMemoryBody(ctx context.Context, c *apicmd.Call, req *v1.ProposeMemoryRequest) error
-	// LoadReviseMemoryBody runs before memory revise, and may change its request.
+	// LoadReviseMemoryBody runs before memory edit, memory promote, and may change its request.
 	LoadReviseMemoryBody(ctx context.Context, c *apicmd.Call, req *v1.ReviseMemoryRequest) error
 	// MemoryGetRemote fills in hotbed.v1.GetMemoriesRequest.remote (memory get).
 	MemoryGetRemote(ctx context.Context, c *apicmd.Call, req *v1.GetMemoriesRequest) (string, error)
-	// MemoryListedRemote fills in hotbed.v1.ListMemoriesRequest.remote (memory ls, memory proposals).
+	// MemoryListedRemote fills in hotbed.v1.ListMemoriesRequest.remote (memory ls).
 	MemoryListedRemote(ctx context.Context, c *apicmd.Call, req *v1.ListMemoriesRequest) (string, error)
 	// MemoryProposedFrom fills in hotbed.v1.ProposeMemoryRequest.from (memory propose).
 	MemoryProposedFrom(ctx context.Context, c *apicmd.Call, req *v1.ProposeMemoryRequest) (*v1.AskedFrom, error)
@@ -69,12 +65,6 @@ func Table(h Hooks) apicmd.Hooks {
 	}
 	t.Fields["ListedRemote"] = func(ctx context.Context, c *apicmd.Call, req proto.Message) (any, error) {
 		return h.ListedRemote(ctx, c, req.(*v1.ListQuestionsRequest))
-	}
-	t.Before["LoadApproveMemoryBody"] = func(ctx context.Context, c *apicmd.Call, req proto.Message) error {
-		return h.LoadApproveMemoryBody(ctx, c, req.(*v1.ApproveMemoryRequest))
-	}
-	t.Before["LoadEditMemoryBody"] = func(ctx context.Context, c *apicmd.Call, req proto.Message) error {
-		return h.LoadEditMemoryBody(ctx, c, req.(*v1.EditMemoryRequest))
 	}
 	t.Before["LoadGitCredentialSecrets"] = func(ctx context.Context, c *apicmd.Call, req proto.Message) error {
 		return h.LoadGitCredentialSecrets(ctx, c, req.(*v1.PutGitCredentialRequest))

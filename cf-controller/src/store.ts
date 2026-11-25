@@ -41,8 +41,6 @@ import {
 	MemorySchema,
 	MemoryScope,
 	MemoryState,
-	MemoryUpdate_What,
-	MemoryUpdateSchema,
 	NodeSchema,
 	PlacementDecisionSchema,
 	ProjectChangeSchema,
@@ -298,24 +296,6 @@ export function memoryModeName(m: MemoryMode): string {
 function memorySearchText(c?: MemoryContent): string {
 	if (!c) return "";
 	return [c.slug, c.title, c.summary, ...c.tags, c.body].filter(Boolean).join("\n").toLowerCase();
-}
-
-function memoryDecisionLine(m: Memory, what: MemoryUpdate_What): string {
-	const scope = m.project || "global";
-	const slug = m.content?.slug ?? "";
-	const head = `memory #${m.id} ([${scope}] ${slug})`;
-	if (what === MemoryUpdate_What.REJECTED) {
-		const r = m.decided?.reason ?? "";
-		return r ? `${head} rejected: ${r}` : `${head} rejected`;
-	}
-	const sup =
-		m.supersedesIds.length > 0
-			? ` (superseded ${m.supersedesIds.map((id) => `#${id}`).join(", ")})`
-			: "";
-	if (what === MemoryUpdate_What.APPROVED_EDITED) {
-		return `${head} approved with edits${sup}`;
-	}
-	return `${head} approved${sup}`;
 }
 
 function quickResponseName(q: QuickResponse): string {
@@ -3719,7 +3699,6 @@ export class ControllerStore {
 		supersedesIds: number[];
 		provenance?: MemoryProvenance;
 		by: Stamp;
-		approve: boolean;
 	}): Memory {
 		return this.transactionSync(() => {
 			const pid = opts.scope === MemoryScope.PROJECT ? this.projectIdByName(opts.project) : null;
@@ -3737,11 +3716,12 @@ export class ControllerStore {
 				project: scopeKey,
 				repo: opts.repo,
 				content: opts.content,
-				state: MemoryState.PROPOSED,
+				state: MemoryState.APPROVED,
 				rank: BigInt(top - 1),
 				supersedesIds: opts.supersedesIds,
 				provenance: opts.provenance,
 				proposed: opts.by,
+				decided: opts.by,
 				updatedAt: opts.by.at,
 			});
 
@@ -3766,10 +3746,12 @@ export class ControllerStore {
 					ErrorCode.Conflict,
 					`an approved memory #${existingSlug.id} already uses slug "${opts.content.slug}" in ${where}`,
 				).withSuggestion(
-					`pass --supersede ${existingSlug.id} to propose an update to it, or pick a different --slug`,
+					`pass --supersede ${existingSlug.id} to update it, or pick a different --slug`,
 				);
 			}
 
+			// Insert initially in PROPOSED state so we obtain item.id before freeing
+			// superseded targets' slugs in the unique approved-slug index.
 			this.sql.exec(
 				`INSERT INTO memories (project_id, scope_key, repo, slug, mode, state, rank, proposed_by, proposed_at, updated_at, search_text, doc)
 				 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '')`,
@@ -3778,7 +3760,7 @@ export class ControllerStore {
 				opts.repo,
 				opts.content.slug,
 				memoryModeName(opts.content.mode),
-				memoryStateName(item.state),
+				memoryStateName(MemoryState.PROPOSED),
 				Number(item.rank),
 				opts.by.session,
 				Number(opts.by.at),
@@ -3786,26 +3768,95 @@ export class ControllerStore {
 				memorySearchText(opts.content),
 			);
 			item.id = num(this.sql.exec("SELECT last_insert_rowid() AS id").one().id);
-			this.saveMemoryRow(item, pid, "proposed", opts.by);
 
-			if (opts.approve) {
-				if (supersededTargets.length > 0) {
-					let minRank = supersededTargets[0].rank;
-					for (const t of supersededTargets) {
-						if (t.rank < minRank) minRank = t.rank;
-						t.state = MemoryState.SUPERSEDED;
-						t.supersededBy = item.id;
-						t.updatedAt = opts.by.at;
-						const tpid = t.scope === MemoryScope.PROJECT ? this.projectIdByName(t.project) : null;
-						this.saveMemoryRow(t, tpid, "superseded", opts.by);
+			if (supersededTargets.length > 0) {
+				let minRank = supersededTargets[0].rank;
+				for (const t of supersededTargets) {
+					if (t.rank < minRank) minRank = t.rank;
+					t.state = MemoryState.SUPERSEDED;
+					t.supersededBy = item.id;
+					t.updatedAt = opts.by.at;
+					const tpid = t.scope === MemoryScope.PROJECT ? this.projectIdByName(t.project) : null;
+					this.saveMemoryRow(t, tpid, "superseded", opts.by);
+				}
+				item.rank = minRank;
+			}
+			this.saveMemoryRow(item, pid, "created", opts.by);
+			return item;
+		});
+	}
+
+	/**
+	 * Auto-approves any legacy MEMORY_STATE_PROPOSED rows left from before
+	 * memories became automatically approved on creation. Idempotent and fast
+	 * when no proposed rows exist.
+	 */
+	autoApproveLegacyProposedMemories(): number {
+		const rows = this.sql
+			.exec(
+				`SELECT m.id, m.rank, COALESCE(p.name, '') AS project, m.doc
+				 FROM memories m LEFT JOIN projects p ON p.id = m.project_id
+				 WHERE m.state = ?
+				 ORDER BY m.id ASC`,
+				memoryStateName(MemoryState.PROPOSED),
+			)
+			.toArray();
+		if (rows.length === 0) return 0;
+
+		return this.transactionSync(() => {
+			let approved = 0;
+			for (const r of rows) {
+				const item = this.decodeMemoryRow(r);
+				const scopeKey = item.scope === MemoryScope.PROJECT ? item.project : "";
+				const pid = item.scope === MemoryScope.PROJECT ? this.projectIdByName(item.project) : null;
+				const by =
+					item.proposed ??
+					create(StampSchema, {
+						at: item.updatedAt || BigInt(Date.now()),
+					});
+
+				// Supersede any targets that are still active.
+				let minRank: bigint | null = null;
+				for (const tid of item.supersedesIds) {
+					if (tid === item.id) continue;
+					let target: Memory | null = null;
+					try {
+						target = this.getMemory(tid);
+					} catch {
+						continue;
 					}
+					if (target.state !== MemoryState.APPROVED) continue;
+					if (minRank === null || target.rank < minRank) minRank = target.rank;
+					target.state = MemoryState.SUPERSEDED;
+					target.supersededBy = item.id;
+					target.updatedAt = by.at;
+					const tpid =
+						target.scope === MemoryScope.PROJECT ? this.projectIdByName(target.project) : null;
+					this.saveMemoryRow(target, tpid, "superseded", by);
+				}
+				if (minRank !== null) {
 					item.rank = minRank;
 				}
+
+				// Disambiguate slug if another active memory already holds it.
+				if (item.content) {
+					const conflict = this.findApprovedByScopeSlug(scopeKey, item.content.slug);
+					if (conflict && conflict.id !== item.id) {
+						const suffix = `-${item.id}`;
+						const base = item.content.slug
+							.slice(0, Math.max(1, 64 - suffix.length))
+							.replace(/-+$/, "");
+						item.content.slug = `${base}${suffix}`;
+					}
+				}
+
 				item.state = MemoryState.APPROVED;
-				item.decided = opts.by;
-				this.saveMemoryRow(item, pid, "approved", opts.by);
+				item.decided = by;
+				item.updatedAt = by.at;
+				this.saveMemoryRow(item, pid, "approved", by);
+				approved++;
 			}
-			return item;
+			return approved;
 		});
 	}
 
@@ -4077,115 +4128,16 @@ export class ControllerStore {
 		return { total, global, byProject };
 	}
 
-	changeMemory(id: number, what: string, by: Stamp, edit: (m: Memory) => void): Memory {
+	changeMemory(id: number, what: string, by: Stamp, edit: (m: Memory) => string | void): Memory {
 		return this.transactionSync(() => this.changeMemoryTx(id, what, by, edit));
 	}
 
-	approveMemory(
-		id: number,
-		by: Stamp,
-		edit: (m: Memory) => boolean,
-	): { memory: Memory; edited: boolean } {
+	deleteMemory(id: number, check: (m: Memory) => void): Memory {
 		return this.transactionSync(() => {
 			const item = this.getMemory(id);
-			const edited = edit(item);
-			const scopeKey = item.scope === MemoryScope.PROJECT ? item.project : "";
-			const pid = item.scope === MemoryScope.PROJECT ? this.projectIdByName(item.project) : null;
-
-			// Validate and transition superseded targets first so their slugs are released.
-			const targets: Memory[] = [];
-			for (const tid of item.supersedesIds) {
-				if (tid === item.id) {
-					throw hotbedError(ErrorCode.InvalidArgs, `memory #${item.id} cannot supersede itself`);
-				}
-				const target = this.getMemory(tid);
-				if (target.state !== MemoryState.APPROVED) {
-					throw hotbedError(
-						ErrorCode.Conflict,
-						`cannot approve memory #${item.id}: target memory #${tid} is no longer approved`,
-					).withSuggestion(`hotbed memory show ${tid}`);
-				}
-				targets.push(target);
-			}
-
-			// Ensure no other approved memory holds (scopeKey, slug).
-			const slug = item.content?.slug ?? "";
-			const conflict = this.findApprovedByScopeSlug(scopeKey, slug);
-			if (conflict && !item.supersedesIds.includes(conflict.id)) {
-				const where = scopeKey ? `project ${scopeKey}` : "global";
-				throw hotbedError(
-					ErrorCode.Conflict,
-					`an approved memory #${conflict.id} already uses slug "${slug}" in ${where}`,
-				).withSuggestion(`revise its slug or archive #${conflict.id} first`);
-			}
-
-			let nextRank: bigint;
-			if (targets.length > 0) {
-				nextRank = targets[0].rank;
-				for (const t of targets) {
-					if (t.rank < nextRank) nextRank = t.rank;
-					t.state = MemoryState.SUPERSEDED;
-					t.supersededBy = item.id;
-					t.updatedAt = by.at;
-					const tpid = t.scope === MemoryScope.PROJECT ? this.projectIdByName(t.project) : null;
-					this.saveMemoryRow(t, tpid, "superseded", by);
-				}
-			} else {
-				const top = num(
-					this.sql
-						.exec(
-							"SELECT COALESCE(MIN(rank), 0) AS m FROM memories WHERE state = ?",
-							memoryStateName(MemoryState.APPROVED),
-						)
-						.one().m,
-				);
-				nextRank = BigInt(top - 1);
-			}
-
-			item.rank = nextRank;
-			item.state = MemoryState.APPROVED;
-			item.decided = by;
-			if (edited) item.edited = by;
-			item.updatedAt = by.at;
-			this.saveMemoryRow(item, pid, "approved", by);
-
-			const what = edited ? MemoryUpdate_What.APPROVED_EDITED : MemoryUpdate_What.APPROVED;
-			const copy = clone(MemorySchema, item);
-			copy.history = [];
-			this.tellSession(
-				item.proposed?.session ?? "",
-				by.at,
-				create(SessionEventSchema, {
-					detail: memoryDecisionLine(item, what),
-					event: {
-						case: "memory",
-						value: create(MemoryUpdateSchema, { what, memory: copy }),
-					},
-				}),
-			);
-			return { memory: item, edited };
-		});
-	}
-
-	rejectMemory(id: number, by: Stamp, edit: (m: Memory) => void): Memory {
-		return this.transactionSync(() => {
-			const item = this.changeMemoryTx(id, "rejected", by, edit);
-			const copy = clone(MemorySchema, item);
-			copy.history = [];
-			this.tellSession(
-				item.proposed?.session ?? "",
-				by.at,
-				create(SessionEventSchema, {
-					detail: memoryDecisionLine(item, MemoryUpdate_What.REJECTED),
-					event: {
-						case: "memory",
-						value: create(MemoryUpdateSchema, {
-							what: MemoryUpdate_What.REJECTED,
-							memory: copy,
-						}),
-					},
-				}),
-			);
+			check(item);
+			this.sql.exec("DELETE FROM memory_changes WHERE memory_id = ?", id);
+			this.sql.exec("DELETE FROM memories WHERE id = ?", id);
 			return item;
 		});
 	}
@@ -4238,9 +4190,14 @@ export class ControllerStore {
 		});
 	}
 
-	private changeMemoryTx(id: number, what: string, by: Stamp, edit: (m: Memory) => void): Memory {
+	private changeMemoryTx(
+		id: number,
+		what: string,
+		by: Stamp,
+		edit: (m: Memory) => string | void,
+	): Memory {
 		const item = this.getMemory(id);
-		edit(item);
+		const label = edit(item) || what;
 		const scopeKey = item.scope === MemoryScope.PROJECT ? item.project : "";
 		const pid = item.scope === MemoryScope.PROJECT ? this.projectIdByName(item.project) : null;
 		if (item.state === MemoryState.APPROVED) {
@@ -4251,11 +4208,11 @@ export class ControllerStore {
 				throw hotbedError(
 					ErrorCode.Conflict,
 					`an approved memory #${conflict.id} already uses slug "${slug}" in ${where}`,
-				).withSuggestion(`pick a different slug or archive #${conflict.id} first`);
+				).withSuggestion(`pick a different slug or remove/archive #${conflict.id} first`);
 			}
 		}
-		if (what !== "moved") item.updatedAt = by.at;
-		this.saveMemoryRow(item, pid, what, by);
+		if (label !== "moved") item.updatedAt = by.at;
+		this.saveMemoryRow(item, pid, label, by);
 		return item;
 	}
 

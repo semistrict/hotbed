@@ -846,14 +846,11 @@ func TestCommandsActingAsNoSessionAreRefused(t *testing.T) {
 		"question edit":   {edited, []string{"1"}, "name the session making the change"},
 		"question rm":     {"", []string{"1"}, "name the session making the change"},
 		"question ack":    {"", []string{"1"}, "name the session making the change"},
-		"question ls":      {"", nil, "say which project"},
-		"question outbox":  {"", nil, "say which project"},
-		"memory propose":   {"", []string{"--slug", "s", "--summary", "sum"}, "name the session making the change"},
-		"memory edit":      {"", []string{"1", "--summary", "sum"}, "name the session making the change"},
-		"memory withdraw":  {"", []string{"1"}, "name the session making the change"},
-		"memory ls":        {"", nil, "say which project"},
-		"memory proposals": {"", nil, "say which project"},
-		"poll":             {"", []string{"--timeout", "1"}, "name the session"},
+		"question ls":     {"", nil, "say which project"},
+		"question outbox": {"", nil, "say which project"},
+		"memory propose":  {"", []string{"--slug", "s", "--summary", "sum"}, "specify --global or -p PROJECT"},
+		"memory ls":       {"", nil, "say which project"},
+		"poll":            {"", []string{"--timeout", "1"}, "name the session"},
 	}
 	s, err := apiSchema()
 	if err != nil {

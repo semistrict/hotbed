@@ -555,11 +555,11 @@ Proxy a GitHub REST or GraphQL API request through the controller using its stor
 
 ## `memory`
 
-Cross-agent memories and learned rules curated with user approval.
+Cross-agent memories and learned rules shared across sessions and machines.
 
 ### `hotbed memory propose`
 
-Propose a new memory or an update/consolidation of existing approved memories (--supersede ID). Defaults to the active session's project; pass --global for cross-project learnings. Use --mode always for short guardrails (<= 240 chars) or --mode on_demand (default) for detailed playbooks fetched with `hotbed memory get`.
+Create a new memory or supersede/consolidate existing memories (--supersede ID). Automatically approved and active immediately. Defaults to the active session's project; pass --global for cross-project learnings. Use --mode always for short guardrails (<= 240 chars) or --mode on_demand (default) for detailed playbooks fetched with `hotbed memory get`.
 
 *MCP tool: `memory_propose` · uses `-s/--session`*
 
@@ -577,7 +577,6 @@ Propose a new memory or an update/consolidation of existing approved memories (-
 | `--supersede` |  | Existing approved memory IDs this proposal updates or consolidates (repeatable). |
 | `--rationale` |  | Why this learning is being proposed (e.g. user correction or incident). |
 | `--model` |  | Exact model ID proposing this memory (optional). |
-| `--approve` |  | Directly approve on creation (user-only: refused when called from an agent session). |
 | `--body-file` |  | Path to a markdown file for body, or "-" to read from stdin (local). |
 
 ### `hotbed memory ls`
@@ -596,22 +595,6 @@ List memories (compact metadata without full body). Defaults to approved memorie
 | `--tag` |  | Filter by tag. |
 | `-q`, `--query` |  | Case-insensitive substring search across slug, title, summary, tags, and body. |
 | `--sort` |  | Sort order: rank, newest, oldest, updated, or slug. |
-| `-n`, `--limit` |  | Maximum memories to return; 0 for all. |
-
-### `hotbed memory proposals`
-
-List proposed memories waiting for the user's approval, newest first.
-
-*MCP tool: `memory_proposals` · uses `-s/--session`*
-
-| Argument / Flag | Env | Help |
-| --- | --- | --- |
-| `--scope` |  | Filter by scope: global or project; omit for global + active project. |
-| `--mode` |  | Filter by delivery mode: always or on_demand. |
-| `-p`, `--project` | `HOTBED_PROJECT` | Only memories for this project (with global unless --scope project). |
-| `--all-projects` |  | List memories across global and every project. |
-| `--tag` |  | Filter by tag. |
-| `-q`, `--query` |  | Case-insensitive substring search across slug, title, summary, tags, and body. |
 | `-n`, `--limit` |  | Maximum memories to return; 0 for all. |
 
 ### `hotbed memory get REF...`
@@ -638,113 +621,87 @@ Show one memory with its full body, provenance, supersession links, and complete
 
 ### `hotbed memory edit ID`
 
-Edit a proposed memory before user approval (agent action).
+Edit a memory in any way (slug, title, summary, body, mode, tags, scope, repo, or rationale). Unspecified fields stay unchanged unless --replace-content or a clear flag is passed.
 
 *MCP tool: `memory_edit` · uses `-s/--session`*
 
 | Argument / Flag | Env | Help |
 | --- | --- | --- |
-| `ID` |  | Memory ID to edit (must be in PROPOSED state). |
+| `ID` |  | Memory ID to edit. |
 | `--slug` |  | Lowercase kebab-case identifier, e.g. "subagent-model-neon" (max 64 chars). |
 | `--title` |  | Short human title (optional; max 120 chars). |
 | `--summary` |  | Compact in-context component: the complete rule for ALWAYS mode (<= 240 chars), or a 1-line description + when-to-read trigger for ON_DEMAND mode (<= 280 chars). |
 | `--body` |  | Full markdown details fetched via `hotbed memory get` (required for ON_DEMAND, optional for ALWAYS; max 64 KiB). |
 | `--mode` |  | Delivery mode: always (inline rule on session start) or on_demand (index on session start, full body fetched on demand). |
 | `--tag` |  | Short lowercase tags for filtering and search (repeatable). |
-| `--rationale` |  | Optional updated rationale. |
-| `--supersede` |  | Updated list of superseded approved memory IDs (pass replace_supersedes to clear). |
-| `--replace-supersedes` |  | Replace supersedes_ids with the given list (even if empty). |
+| `--global` |  | Change scope to global (shared across all projects). |
+| `-p`, `--project` |  | Change scope to this project. |
 | `--if-revision` |  | Refuse with CONFLICT unless the memory is at this revision. |
 | `--body-file` |  | Path to a markdown file for body, or "-" to read from stdin (local). |
+| `--replace-content` |  | Replace all content fields (slug, title, summary, body, mode, tags) with the provided content instead of merging only non-empty fields. |
+| `--clear-title` |  | Clear the optional title. |
+| `--clear-body` |  | Clear the optional body (allowed in always mode). |
+| `--replace-tags` |  | Replace tags with the provided --tag list (omit --tag to clear all tags). |
+| `--repo` |  | Set or clear ("") the optional repo within a project-scoped memory. |
+| `--rationale` |  | Set or clear ("") the provenance rationale. |
 
-### `hotbed memory withdraw ID`
+### `hotbed memory promote ID`
 
-Withdraw a proposed memory that is no longer needed; it stays in history.
+Promote a project-specific memory to a global memory shared across all projects.
 
-*MCP tool: `memory_withdraw` · uses `-s/--session`*
-
-| Argument / Flag | Env | Help |
-| --- | --- | --- |
-| `ID` |  | Memory ID to withdraw (must be in PROPOSED state). |
-| `--reason` |  | Why the proposal is being withdrawn. |
-| `--if-revision` |  |  |
-
-### `hotbed memory approve ID`
-
-Approve a proposed memory for the user, optionally applying edits first. Any approved memories listed in supersedes_ids are atomically superseded. The user approves in the cockpit; an agent uses this only at the user's word.
-
-*MCP tool: `memory_approve` · uses `-s/--session`*
+*MCP tool: `memory_promote` · uses `-s/--session`*
 
 | Argument / Flag | Env | Help |
 | --- | --- | --- |
-| `ID` |  | Proposed memory ID to approve. |
+| `ID` |  | Memory ID to edit. |
 | `--slug` |  | Lowercase kebab-case identifier, e.g. "subagent-model-neon" (max 64 chars). |
 | `--title` |  | Short human title (optional; max 120 chars). |
 | `--summary` |  | Compact in-context component: the complete rule for ALWAYS mode (<= 240 chars), or a 1-line description + when-to-read trigger for ON_DEMAND mode (<= 280 chars). |
 | `--body` |  | Full markdown details fetched via `hotbed memory get` (required for ON_DEMAND, optional for ALWAYS; max 64 KiB). |
 | `--mode` |  | Delivery mode: always (inline rule on session start) or on_demand (index on session start, full body fetched on demand). |
 | `--tag` |  | Short lowercase tags for filtering and search (repeatable). |
-| `--global` |  | Optionally change scope to global on approval. |
-| `-p`, `--project` |  | Optionally change scope to this project on approval. |
-| `--note` |  | Optional note on approval. |
-| `--if-revision` |  |  |
+| `--if-revision` |  | Refuse with CONFLICT unless the memory is at this revision. |
 | `--body-file` |  | Path to a markdown file for body, or "-" to read from stdin (local). |
-
-### `hotbed memory reject ID`
-
-Reject a proposed memory for the user with an optional reason.
-
-*MCP tool: `memory_reject` · uses `-s/--session`*
-
-| Argument / Flag | Env | Help |
-| --- | --- | --- |
-| `ID` |  | Proposed memory ID to reject. |
-| `--reason` |  | Why it was rejected (delivered to the proposing session via poll). |
-| `--if-revision` |  |  |
-
-### `hotbed memory revise ID`
-
-Revise an approved or proposed memory directly for the user.
-
-*MCP tool: `memory_revise` · uses `-s/--session`*
-
-| Argument / Flag | Env | Help |
-| --- | --- | --- |
-| `ID` |  | Memory ID to revise (APPROVED or PROPOSED). |
-| `--slug` |  | Lowercase kebab-case identifier, e.g. "subagent-model-neon" (max 64 chars). |
-| `--title` |  | Short human title (optional; max 120 chars). |
-| `--summary` |  | Compact in-context component: the complete rule for ALWAYS mode (<= 240 chars), or a 1-line description + when-to-read trigger for ON_DEMAND mode (<= 280 chars). |
-| `--body` |  | Full markdown details fetched via `hotbed memory get` (required for ON_DEMAND, optional for ALWAYS; max 64 KiB). |
-| `--mode` |  | Delivery mode: always (inline rule on session start) or on_demand (index on session start, full body fetched on demand). |
-| `--tag` |  | Short lowercase tags for filtering and search (repeatable). |
-| `--global` |  | Optionally change scope to global. |
-| `-p`, `--project` |  | Optionally change scope to this project. |
-| `--if-revision` |  |  |
-| `--body-file` |  | Path to a markdown file for body, or "-" to read from stdin (local). |
+| `--replace-content` |  | Replace all content fields (slug, title, summary, body, mode, tags) with the provided content instead of merging only non-empty fields. |
+| `--clear-title` |  | Clear the optional title. |
+| `--clear-body` |  | Clear the optional body (allowed in always mode). |
+| `--replace-tags` |  | Replace tags with the provided --tag list (omit --tag to clear all tags). |
+| `--repo` |  | Set or clear ("") the optional repo within a project-scoped memory. |
+| `--rationale` |  | Set or clear ("") the provenance rationale. |
 
 ### `hotbed memory archive ID`
 
-Archive an approved memory so it is no longer returned on session start; history is preserved and it can be restored.
+Archive an active memory so it is no longer returned on session start; history is preserved and it can be restored.
 
 *MCP tool: `memory_archive` · uses `-s/--session`*
 
 | Argument / Flag | Env | Help |
 | --- | --- | --- |
-| `ID` |  | Approved memory ID to archive. |
+| `ID` |  | Active memory ID to archive. |
 | `--reason` |  | Why it was archived. |
 | `--if-revision` |  |  |
 
 ### `hotbed memory restore ID`
 
-Restore an archived or rejected memory (to approved, or back to proposed).
+Restore an archived, rejected, or withdrawn memory back to active.
 
 *MCP tool: `memory_restore` · uses `-s/--session`*
 
 | Argument / Flag | Env | Help |
 | --- | --- | --- |
-| `ID` |  | Archived or rejected memory ID to restore. |
-| `--to-proposed` |  | Restore back to PROPOSED instead of APPROVED. |
+| `ID` |  | Archived, rejected, or withdrawn memory ID to restore. |
 | `--if-revision` |  |  |
+
+### `hotbed memory rm ID`
+
+Permanently remove a memory and its revision history.
+
+*MCP tool: `memory_rm` · uses `-s/--session`*
+
+| Argument / Flag | Env | Help |
+| --- | --- | --- |
+| `ID` |  | Memory ID to permanently remove. |
+| `--if-revision` |  | Refuse with CONFLICT unless the memory is at this revision. |
 
 ### `hotbed memory move ID`
 

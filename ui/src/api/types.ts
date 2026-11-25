@@ -427,23 +427,21 @@ export interface ProposeMemoryInput {
   content: MemoryContentInput;
   global?: boolean;
   project?: string;
+  repo?: string;
   supersedesIds?: number[];
   rationale?: string;
-  approve?: boolean;
-}
-
-export interface ApproveMemoryInput {
-  content?: MemoryContentInput;
-  global?: boolean;
-  project?: string;
-  note?: string;
-  ifRevision?: bigint;
 }
 
 export interface ReviseMemoryInput {
-  content: MemoryContentInput;
+  content?: MemoryContentInput;
   global?: boolean;
   project?: string;
+  repo?: string;
+  rationale?: string;
+  replaceContent?: boolean;
+  clearTitle?: boolean;
+  clearBody?: boolean;
+  replaceTags?: boolean;
   ifRevision?: bigint;
 }
 
@@ -473,11 +471,10 @@ export interface Api {
   memories(filter: MemoryFilter): Promise<ListMemoriesResponse>;
   memory(ref: string): Promise<Memory>;
   proposeMemory(input: ProposeMemoryInput): Promise<Memory>;
-  approveMemory(id: number, input?: ApproveMemoryInput): Promise<Memory>;
-  rejectMemory(id: number, reason: string, ifRevision?: bigint): Promise<Memory>;
   reviseMemory(id: number, input: ReviseMemoryInput): Promise<Memory>;
   archiveMemory(id: number, reason?: string, ifRevision?: bigint): Promise<Memory>;
-  restoreMemory(id: number, toProposed?: boolean, ifRevision?: bigint): Promise<Memory>;
+  restoreMemory(id: number, ifRevision?: bigint): Promise<Memory>;
+  deleteMemory(id: number, ifRevision?: bigint): Promise<Memory>;
   moveMemory(id: number, before: number | null): Promise<Memory>;
   reviews(project: string | null): Promise<Review[]>;
   review(id: number): Promise<Review>;
