@@ -102,22 +102,28 @@ func projectStepHashes(p *pb.HostedProject) map[string]string {
 	return out
 }
 
-// tenantCellRoot returns the cell root directory for a cladefs tenant.
-// Tenant 0 (default/legacy org) uses baseRoot directly to preserve existing
-// on-disk cell paths; non-zero org tenants each get an isolated subdirectory
-// under the primary root so cladefsd.Grant binds a distinct directory per tenant.
+// tenantCellRoot returns the cell root directory (or colon-separated JBOD list)
+// for a cladefs tenant. Tenant 0 (default/legacy org) uses baseRoot directly to
+// preserve existing on-disk cell paths; non-zero org tenants each get an
+// isolated tenant-<id> subdirectory under every configured JBOD root so
+// cladefsd.Grant (Dir + Dirs) isolates tenants without losing JBOD striping.
 func tenantCellRoot(baseRoot string, tenantID uint64) string {
 	if tenantID == 0 {
 		return baseRoot
 	}
-	primary := baseRoot
-	for _, r := range filepath.SplitList(baseRoot) {
-		if r != "" {
-			primary = r
-			break
+	sub := fmt.Sprintf("tenant-%d", tenantID)
+	parts := filepath.SplitList(baseRoot)
+	var scoped []string
+	for _, r := range parts {
+		if r == "" {
+			continue
 		}
+		scoped = append(scoped, filepath.Join(r, sub))
 	}
-	return filepath.Join(primary, fmt.Sprintf("tenant-%d", tenantID))
+	if len(scoped) == 0 {
+		return filepath.Join(baseRoot, sub)
+	}
+	return strings.Join(scoped, string(filepath.ListSeparator))
 }
 
 func resolveVMUserIDs(vmUser string) (uid, gid uint32) {

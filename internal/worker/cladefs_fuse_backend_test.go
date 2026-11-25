@@ -222,9 +222,13 @@ func TestTenantCellRootAndCacheIsolation(t *testing.T) {
 	if got := tenantCellRoot("/mnt/cells/hotbed", 0); got != "/mnt/cells/hotbed" {
 		t.Fatalf("tenantCellRoot(0) = %q, want legacy path unchanged", got)
 	}
-	// Non-zero tenants get isolated subdirectories under the primary root.
-	if got := tenantCellRoot("/mnt/a/hotbed:/mnt/b/hotbed", 3); got != filepath.Join("/mnt/a/hotbed", "tenant-3") {
-		t.Fatalf("tenantCellRoot(3) = %q, want /mnt/a/hotbed/tenant-3", got)
+	// Non-zero tenants get isolated subdirectories under every configured JBOD root.
+	wantJBOD := strings.Join([]string{
+		filepath.Join("/mnt/a/hotbed", "tenant-3"),
+		filepath.Join("/mnt/b/hotbed", "tenant-3"),
+	}, string(filepath.ListSeparator))
+	if got := tenantCellRoot("/mnt/a/hotbed:/mnt/b/hotbed", 3); got != wantJBOD {
+		t.Fatalf("tenantCellRoot(3) = %q, want %q", got, wantJBOD)
 	}
 
 	dir := t.TempDir()

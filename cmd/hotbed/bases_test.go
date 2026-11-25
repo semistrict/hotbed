@@ -255,7 +255,7 @@ func TestFreshenCLIAndMCP(t *testing.T) {
 	var shown pb.GetFreshenResponse
 	c.ok(&shown, "freshen", "show", g2CmdID)
 	if shown.Freshen == nil || shown.Freshen.Id != g2CmdID || shown.Freshen.FailedStep != "broken-step" {
-		t.Fatalf("freshen show %s = %+v", g2CmdID, shown)
+		t.Fatalf("freshen show %s = %+v", g2CmdID, &shown)
 	}
 	if shown.Freshen.FromBaseId != "app-g1" {
 		t.Errorf("freshen g2 FromBaseId = %q, want app-g1", shown.Freshen.FromBaseId)
