@@ -19,23 +19,27 @@ import (
 // without FreezeFS, or a cladefsd build without ephemeral-cell snapshots).
 var ErrSuspendUnsupported = errors.New("vm memory-cell suspend unsupported")
 
-// MemoryCellSnapshot identifies the memory cell version returned by
+// MemoryCellSnapshot identifies the memory cell created or checkpointed by
 // Firecracker's PUT /snapshot/create when snapshotting directly into a
-// cladefsd memory cell (TASK-456.4).
+// cladefsd memory cell (TASK-456.4). For host-local ephemeral memory cells,
+// Ephemeral is true and Version is 0 (zero bucket uploads).
 type MemoryCellSnapshot struct {
-	Tenant  uint64 `json:"tenant"`
-	Cell    uint64 `json:"cell"`
-	Version uint64 `json:"version"`
+	Tenant    uint64 `json:"tenant"`
+	Cell      uint64 `json:"cell"`
+	Version   uint64 `json:"version"`
+	Ephemeral bool   `json:"ephemeral,omitempty"`
 }
 
 // CreateMemoryCellConfig configures PUT /snapshot/create's `memory_cell` field.
-// For a cold-booted VM, both PathOnHost and CladefsdSocket must be set. For a
-// VM already restored from a memory cell (MemBackendType::Cell), both fields
-// must be omitted (marshaling to `{}`) so Firecracker writes only dirty private
-// pages into its existing forked memory cell.
+// For a cold-booted VM, both PathOnHost and CladefsdSocket must be set (with
+// Ephemeral: true for host-local zero-bucket-upload parking). For a VM already
+// restored from a memory cell (MemBackendType::Cell), both path fields must be
+// omitted (marshaling to `{}`) so Firecracker writes only dirty private pages
+// into its existing memory cell.
 type CreateMemoryCellConfig struct {
 	PathOnHost     string `json:"path_on_host,omitempty"`
 	CladefsdSocket string `json:"cladefsd_socket,omitempty"`
+	Ephemeral      bool   `json:"ephemeral,omitempty"`
 }
 
 // CreateSnapshotRequest matches Firecracker's CreateSnapshotParams schema.
@@ -53,12 +57,15 @@ type MemBackendConfig struct {
 }
 
 // MemoryCellConfig matches Firecracker's MemoryCellConfig schema for
-// PUT /snapshot/load with backend_type "Cell".
+// PUT /snapshot/load with backend_type "Cell". When Ephemeral is true,
+// cladefsd reopens the existing host-local ephemeral memory cell in place with
+// zero bucket I/O and Version must be 0.
 type MemoryCellConfig struct {
-	Tenant         uint64 `json:"tenant"`
-	Cell           uint64 `json:"cell"`
-	Version        uint64 `json:"version"`
+	Tenant         uint64 `json:"tenant,omitempty"`
+	Cell           uint64 `json:"cell,omitempty"`
+	Version        uint64 `json:"version,omitempty"`
 	CladefsdSocket string `json:"cladefsd_socket"`
+	Ephemeral      bool   `json:"ephemeral,omitempty"`
 }
 
 // CladefsOverride overrides an extent-store device path on PUT /snapshot/load.
@@ -164,6 +171,7 @@ func isUnsupportedSnapshotFault(msg string) bool {
 		strings.Contains(low, "not supported") ||
 		strings.Contains(low, "enotsup") ||
 		strings.Contains(low, "unknown field `memory_cell`") ||
+		strings.Contains(low, "unknown field `ephemeral`") ||
 		strings.Contains(low, "unknown variant `cell`")
 }
 
@@ -178,7 +186,7 @@ func (c *fcAPIClient) CreateSnapshot(ctx context.Context, req CreateSnapshotRequ
 	if err := c.do(ctx, http.MethodPut, "/snapshot/create", req, &out); err != nil {
 		return MemoryCellSnapshot{}, err
 	}
-	if out.Cell == 0 || out.Version == 0 {
+	if out.Cell == 0 || (!out.Ephemeral && out.Version == 0) {
 		return MemoryCellSnapshot{}, fmt.Errorf("firecracker PUT /snapshot/create returned incomplete memory cell snapshot: %+v", out)
 	}
 	return out, nil

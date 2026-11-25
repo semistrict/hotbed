@@ -84,7 +84,12 @@ func startFakeFCAPI(t *testing.T, sockPath string) *fakeFCAPI {
 		if req.SnapshotPath != "" {
 			_ = os.WriteFile(req.SnapshotPath, []byte("fake-snapshot-state"), 0o644)
 		}
-		resp.Version = f.nextVersion.Add(1) - 1
+		if (req.MemoryCell != nil && req.MemoryCell.Ephemeral) || resp.Ephemeral {
+			resp.Ephemeral = true
+			resp.Version = 0
+		} else {
+			resp.Version = f.nextVersion.Add(1) - 1
+		}
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
 		_ = json.NewEncoder(w).Encode(resp)
@@ -225,7 +230,7 @@ func TestSuspendAndResumeMemoryCell(t *testing.T) {
 		t.Fatalf("cold boot args = %v, want --api-sock and --config-file", launchArgs[0])
 	}
 
-	// 1. First suspend (cold-booted VM): must pass path_on_host + cladefsd_socket.
+	// 1. First suspend (cold-booted VM): must pass path_on_host + cladefsd_socket + ephemeral: true.
 	susp1, err := mgr.Suspend(ctx, "ws-snap", "/mnt/cells/mem/ws-snap/g1", 512<<20)
 	if err != nil {
 		t.Fatalf("Suspend #1: %v", err)
@@ -236,7 +241,7 @@ func TestSuspendAndResumeMemoryCell(t *testing.T) {
 	if _, err := mgr.ClientFor("ws-snap"); err == nil {
 		t.Fatal("expected ClientFor to fail while suspended")
 	}
-	if susp1.WorkingSetBytes != 512<<20 || susp1.MemoryCell.Cell != 42 || susp1.MemoryCell.Version != 1 {
+	if susp1.WorkingSetBytes != 512<<20 || susp1.MemoryCell.Cell != 42 || !susp1.MemoryCell.Ephemeral || susp1.MemoryCell.Version != 0 {
 		t.Fatalf("unexpected susp1: %+v", susp1)
 	}
 	fc1 := fcServers[0]
@@ -247,8 +252,8 @@ func TestSuspendAndResumeMemoryCell(t *testing.T) {
 	if len(fc1.creates) != 1 {
 		t.Fatalf("fc1 creates len = %d, want 1", len(fc1.creates))
 	}
-	if got := fc1.creates[0].MemoryCell; got == nil || got.PathOnHost != "/mnt/cells/mem/ws-snap/g1" || got.CladefsdSocket != "/run/cladefsd/tenant-7.sock" {
-		t.Fatalf("cold suspend memory_cell = %+v, want path_on_host + cladefsd_socket", got)
+	if got := fc1.creates[0].MemoryCell; got == nil || got.PathOnHost != "/mnt/cells/mem/ws-snap/g1" || got.CladefsdSocket != "/run/cladefsd/tenant-7.sock" || !got.Ephemeral {
+		t.Fatalf("cold suspend memory_cell = %+v, want path_on_host + cladefsd_socket + ephemeral=true", got)
 	}
 	fc1.mu.Unlock()
 
@@ -261,15 +266,16 @@ func TestSuspendAndResumeMemoryCell(t *testing.T) {
 		t.Fatal("expected Start on suspended VM to fail")
 	}
 
-	// 2. Resume from memory cell: bare Firecracker (--api-sock, NO --config-file) + PUT /snapshot/load + ThawFS.
-	resumed, err := mgr.Resume(ctx, "ws-snap", "/mnt/cells/mem/ws-snap/g2")
+	// 2. Resume ephemeral memory cell in place: bare Firecracker (--api-sock, NO --config-file)
+	// + PUT /snapshot/load reopening g1 in place with ephemeral: true + ThawFS.
+	resumed, err := mgr.Resume(ctx, "ws-snap", "")
 	if err != nil {
 		t.Fatalf("Resume: %v", err)
 	}
 	if mgr.IsSuspended("ws-snap") {
 		t.Fatal("expected IsSuspended=false after Resume")
 	}
-	if !resumed.FromMemoryCell || resumed.MemoryCellPath != "/mnt/cells/mem/ws-snap/g2" {
+	if !resumed.FromMemoryCell || resumed.MemoryCellPath != "/mnt/cells/mem/ws-snap/g1" {
 		t.Fatalf("unexpected resumed instance: FromMemoryCell=%v MemoryCellPath=%q", resumed.FromMemoryCell, resumed.MemoryCellPath)
 	}
 	if slices.Contains(launchArgs[1], "--config-file") || !slices.Contains(launchArgs[1], "--api-sock") {
@@ -281,10 +287,10 @@ func TestSuspendAndResumeMemoryCell(t *testing.T) {
 		t.Fatalf("fc2 loads len = %d, want 1", len(fc2.loads))
 	}
 	loadReq := fc2.loads[0]
-	if loadReq.MemBackend.BackendType != "Cell" || loadReq.MemBackend.BackendPath != "/mnt/cells/mem/ws-snap/g2" {
+	if loadReq.MemBackend.BackendType != "Cell" || loadReq.MemBackend.BackendPath != "/mnt/cells/mem/ws-snap/g1" {
 		t.Fatalf("unexpected mem_backend: %+v", loadReq.MemBackend)
 	}
-	if loadReq.MemoryCell == nil || loadReq.MemoryCell.Tenant != 7 || loadReq.MemoryCell.Cell != 42 || loadReq.MemoryCell.Version != 1 {
+	if loadReq.MemoryCell == nil || loadReq.MemoryCell.Tenant != 7 || loadReq.MemoryCell.Cell != 42 || loadReq.MemoryCell.Version != 0 || !loadReq.MemoryCell.Ephemeral {
 		t.Fatalf("unexpected memory_cell on load: %+v", loadReq.MemoryCell)
 	}
 	if !loadReq.ResumeVM || len(loadReq.CladefsOverrides) != 1 || loadReq.CladefsOverrides[0].PathOnHost != "/mnt/cells/ws/ws-snap" {
@@ -298,7 +304,10 @@ func TestSuspendAndResumeMemoryCell(t *testing.T) {
 	}
 	evMu.Unlock()
 
-	// 3. Second suspend (already restored from memory cell): MUST pass empty memory_cell: {}!
+	// 3. Second suspend (already restored from ephemeral memory cell): MUST pass empty memory_cell: {}!
+	fc2.mu.Lock()
+	fc2.createResp.Ephemeral = true
+	fc2.mu.Unlock()
 	susp2, err := mgr.Suspend(ctx, "ws-snap", "/mnt/cells/mem/ws-snap/should-be-ignored", 384<<20)
 	if err != nil {
 		t.Fatalf("Suspend #2: %v", err)
@@ -307,16 +316,16 @@ func TestSuspendAndResumeMemoryCell(t *testing.T) {
 	if len(fc2.creates) != 1 {
 		t.Fatalf("fc2 creates len = %d, want 1", len(fc2.creates))
 	}
-	if got := fc2.creates[0].MemoryCell; got == nil || got.PathOnHost != "" || got.CladefsdSocket != "" {
+	if got := fc2.creates[0].MemoryCell; got == nil || got.PathOnHost != "" || got.CladefsdSocket != "" || got.Ephemeral {
 		t.Fatalf("incremental re-suspend memory_cell = %+v, want empty {}", got)
 	}
 	fc2.mu.Unlock()
-	if susp2.MemoryCellPath != "/mnt/cells/mem/ws-snap/g2" {
-		t.Fatalf("susp2.MemoryCellPath = %q, want g2", susp2.MemoryCellPath)
+	if susp2.MemoryCellPath != "/mnt/cells/mem/ws-snap/g1" || !susp2.MemoryCell.Ephemeral {
+		t.Fatalf("susp2 = %+v, want in-place ephemeral g1", susp2)
 	}
 	memPaths := mgr.MemoryCellPaths("ws-snap")
-	if len(memPaths) != 2 || !slices.Contains(memPaths, "/mnt/cells/mem/ws-snap/g1") || !slices.Contains(memPaths, "/mnt/cells/mem/ws-snap/g2") {
-		t.Fatalf("MemoryCellPaths = %v, want g1 and g2", memPaths)
+	if !slices.Equal(memPaths, []string{"/mnt/cells/mem/ws-snap/g1"}) {
+		t.Fatalf("MemoryCellPaths = %v, want [g1]", memPaths)
 	}
 }
 
@@ -473,9 +482,9 @@ func TestResumeRollbackAndWorkerRestartReconnect(t *testing.T) {
 		t.Fatal("expected ws-rec to remain suspended after failed Resume")
 	}
 
-	// Retry Resume succeeds once backend error clears.
+	// Retry Resume succeeds once backend error clears (ephemeral reopens g1 in place).
 	failNextLoad = false
-	if _, err := mgr2.Resume(ctx, "ws-rec", "/mnt/cells/mem/ws-rec/g3"); err != nil {
+	if _, err := mgr2.Resume(ctx, "ws-rec", ""); err != nil {
 		t.Fatalf("Resume retry: %v", err)
 	}
 	if mgr2.IsSuspended("ws-rec") || mgr2.Get("ws-rec") == nil {

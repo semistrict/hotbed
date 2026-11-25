@@ -1670,15 +1670,21 @@ func (b *VMBackend) IsVMSuspended(wsID string) (bool, int64) {
 // EnsureVM implements runtime.GuestResolver. If wsID is currently suspended in
 // a CladeFS memory cell, EnsureVM resumes it lazily via PUT /snapshot/load.
 func (b *VMBackend) EnsureVM(ctx context.Context, wsID string) (*guestd.Client, error) {
-	if b.mgr.IsSuspended(wsID) {
-		nextMemPath, err := b.allocMemCellPath(wsID)
-		if err != nil {
-			return nil, err
+	if susp := b.mgr.Suspended(wsID); susp != nil {
+		var nextMemPath string
+		if !susp.MemoryCell.Ephemeral {
+			var err error
+			nextMemPath, err = b.allocMemCellPath(wsID)
+			if err != nil {
+				return nil, err
+			}
 		}
 		inst, err := b.mgr.Resume(ctx, wsID, nextMemPath)
 		if err != nil {
-			if st := b.currentStore(); st != nil {
-				_ = st.DeleteCellAbs(context.WithoutCancel(ctx), nextMemPath)
+			if nextMemPath != "" {
+				if st := b.currentStore(); st != nil {
+					_ = st.DeleteCellAbs(context.WithoutCancel(ctx), nextMemPath)
+				}
 			}
 			return nil, err
 		}

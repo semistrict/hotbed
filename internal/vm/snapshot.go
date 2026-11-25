@@ -214,14 +214,17 @@ func (m *Manager) Suspend(ctx context.Context, id, memCellHostPath string, worki
 	var memCfg *CreateMemoryCellConfig
 	var activeMemCellPath string
 	if inst.FromMemoryCell {
-		// VM was already restored from a memory cell: omit both fields so
-		// Firecracker commits only dirty private pages into its forked cell.
+		// VM was already restored from a memory cell: omit path fields so
+		// Firecracker commits only dirty private pages into its existing cell.
 		memCfg = &CreateMemoryCellConfig{}
 		activeMemCellPath = inst.MemoryCellPath
 	} else {
+		// Cold-booted workspace VM: create a standalone host-local ephemeral
+		// memory cell (zero bucket uploads).
 		memCfg = &CreateMemoryCellConfig{
 			PathOnHost:     memCellHostPath,
 			CladefsdSocket: inst.CladefsVMSock,
+			Ephemeral:      true,
 		}
 		activeMemCellPath = memCellHostPath
 	}
@@ -317,14 +320,14 @@ func (m *Manager) Suspend(ctx context.Context, id, memCellHostPath string, worki
 // from the CladeFS memory cell), waits for hotbed-guestd to answer over vsock,
 // and thaws the guest filesystem (FITHAW).
 //
+// For host-local ephemeral memory cells (susp.MemoryCell.Ephemeral == true),
+// cladefsd reopens susp.MemoryCellPath in place with zero bucket I/O and
+// nextMemCellHostPath may be empty. For bucket-backed memory cell versions,
 // nextMemCellHostPath is the fresh cell directory path into which cladefsd
 // forks the snapshot's memory cell version for this resumed run.
 func (m *Manager) Resume(ctx context.Context, id, nextMemCellHostPath string) (*Instance, error) {
 	if id == "" {
 		return nil, errors.New("vm resume: id is required")
-	}
-	if nextMemCellHostPath == "" {
-		return nil, fmt.Errorf("vm %s: nextMemCellHostPath is required to resume", id)
 	}
 	lock := m.vmLock(id)
 	lock.Lock()
@@ -340,6 +343,13 @@ func (m *Manager) Resume(ctx context.Context, id, nextMemCellHostPath string) (*
 	m.mu.Unlock()
 	if susp == nil {
 		return nil, fmt.Errorf("vm %s: not suspended", id)
+	}
+	backendPath := nextMemCellHostPath
+	if susp.MemoryCell.Ephemeral {
+		backendPath = susp.MemoryCellPath
+	}
+	if backendPath == "" {
+		return nil, fmt.Errorf("vm %s: memory cell backend path is required to resume", id)
 	}
 
 	if err := os.MkdirAll(susp.Dir, 0o755); err != nil {
@@ -424,13 +434,14 @@ func (m *Manager) Resume(ctx context.Context, id, nextMemCellHostPath string) (*
 		SnapshotPath: susp.SnapshotStatePath,
 		MemBackend: MemBackendConfig{
 			BackendType: "Cell",
-			BackendPath: nextMemCellHostPath,
+			BackendPath: backendPath,
 		},
 		MemoryCell: &MemoryCellConfig{
 			Tenant:         susp.MemoryCell.Tenant,
 			Cell:           susp.MemoryCell.Cell,
 			Version:        susp.MemoryCell.Version,
 			CladefsdSocket: susp.CladefsVMSock,
+			Ephemeral:      susp.MemoryCell.Ephemeral,
 		},
 		ResumeVM: true,
 		VsockOverride: &VsockOverride{
@@ -466,7 +477,7 @@ func (m *Manager) Resume(ctx context.Context, id, nextMemCellHostPath string) (*
 	}
 
 	prevMem := slices.Clone(susp.PrevMemCellPaths)
-	if susp.MemoryCellPath != "" && !slices.Contains(prevMem, susp.MemoryCellPath) {
+	if susp.MemoryCellPath != "" && susp.MemoryCellPath != backendPath && !slices.Contains(prevMem, susp.MemoryCellPath) {
 		prevMem = append(prevMem, susp.MemoryCellPath)
 	}
 
@@ -485,7 +496,7 @@ func (m *Manager) Resume(ctx context.Context, id, nextMemCellHostPath string) (*
 		Client:           client,
 		StartedAt:        now,
 		FromMemoryCell:   true,
-		MemoryCellPath:   nextMemCellHostPath,
+		MemoryCellPath:   backendPath,
 		PrevMemCellPaths: prevMem,
 		ToolsDiskPath:    susp.ToolsDiskPath,
 		gitAuth:          gaBridge,
@@ -518,7 +529,7 @@ func (m *Manager) Resume(ctx context.Context, id, nextMemCellHostPath string) (*
 	m.mu.Unlock()
 
 	slog.Info("resumed Firecracker VM from cladefs memory cell",
-		"vm", id, "memoryCell", nextMemCellHostPath,
+		"vm", id, "memoryCell", backendPath, "ephemeral", susp.MemoryCell.Ephemeral,
 		"sourceCell", susp.MemoryCell.Cell, "sourceVersion", susp.MemoryCell.Version)
 	return inst, nil
 }
