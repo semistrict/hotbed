@@ -491,3 +491,10 @@ func (s *Service) GetProfile(_ context.Context, req *pb.GetProfileRequest) (*pb.
 func (s *Service) GetDaemonLogs(_ context.Context, req *pb.GetDaemonLogsRequest) (*pb.GetDaemonLogsResponse, error) {
 	return s.E.DaemonLogs(req)
 }
+
+func (s *Service) UpgradeSystem(ctx context.Context, req *pb.WorkerUpgradeSystemRequest) (*pb.NodeSystemUpgrade, error) {
+	if !s.isController(ctx) {
+		return nil, api.Errorf(api.CodeNotAuthorized, "only the controller may run system upgrades on this worker")
+	}
+	return s.E.UpgradeSystem(ctx, req)
+}

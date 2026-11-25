@@ -37,8 +37,10 @@ type artifactKind struct {
 }
 
 var (
-	artifactGuestd = artifactKind{dir: "guestd", filename: "hotbed-guestd", mode: 0o755}
-	artifactKernel = artifactKind{dir: "kernels", filename: "vmlinux", mode: 0o644}
+	artifactGuestd      = artifactKind{dir: "guestd", filename: "hotbed-guestd", mode: 0o755}
+	artifactKernel      = artifactKind{dir: "kernels", filename: "vmlinux", mode: 0o644}
+	artifactCladefsd    = artifactKind{dir: "cladefsd", filename: "cladefsd", mode: 0o755}
+	artifactFirecracker = artifactKind{dir: "firecracker", filename: "firecracker", mode: 0o755}
 )
 
 // CachedPath returns the on-disk path if art is already present and valid in

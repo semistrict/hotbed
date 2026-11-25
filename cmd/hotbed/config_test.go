@@ -1,12 +1,19 @@
 package main
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"net/http"
+	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	"github.com/semistrict/hotbed/internal/api"
+	"github.com/semistrict/hotbed/internal/worker"
 )
 
 func TestWorkerConfigCLI(t *testing.T) {
@@ -97,5 +104,88 @@ func TestWorkerConfigCLI(t *testing.T) {
 	c.ok(nil, "config", "rm", "--defaults")
 	if _, e := c.fails("config", "rm", "ubu1"); e == nil || e.Code != api.CodeNotFound {
 		t.Fatalf("second config rm ubu1 = %+v, want NOT_FOUND", e)
+	}
+}
+
+func TestSystemUpgradeCLI(t *testing.T) {
+	payload := []byte("cladefsd-release-binary")
+	sumBytes := sha256.Sum256(payload)
+	sumHex := hex.EncodeToString(sumBytes[:])
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/cladefsd" {
+			http.NotFound(w, r)
+			return
+		}
+		_, _ = w.Write(payload)
+	}))
+	t.Cleanup(srv.Close)
+
+	binDir := t.TempDir()
+	cladefsdBin := filepath.Join(binDir, "cladefsd")
+	if err := os.WriteFile(cladefsdBin, []byte("old-cladefsd"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	var restarts atomic.Int32
+	c := newCluster(t, func(cfg *worker.EngineConfig) {
+		cfg.Artifacts = &worker.ArtifactStore{WorkerDir: cfg.Dir, DownloadClient: srv.Client()}
+		cfg.SystemUpgradeOps = &worker.SystemUpgradeOps{
+			RestartService: func(ctx context.Context, service string) error {
+				restarts.Add(1)
+				return nil
+			},
+			Reconnect: func(ctx context.Context) (uint64, error) {
+				return 11, nil
+			},
+		}
+	})
+
+	// Configure cluster-wide system.cladefsd artifact for both supported arches
+	// (fake.NewSystem reports arm64 regardless of host GOARCH).
+	artJSON := `{"url":"` + srv.URL + `/cladefsd","sha256":"` + sumHex + `","version":"cladefs-test"}`
+	c.okIn(
+		`{"system":{"cladefsd":{"amd64":`+artJSON+`,"arm64":`+artJSON+`},"cladefsdBin":"`+cladefsdBin+`"}}`,
+		nil, "config", "set",
+	)
+
+	var out struct {
+		Nodes []struct {
+			Node               string `json:"node"`
+			Arch               string `json:"arch"`
+			Status             string `json:"status"`
+			CladefsdUpdated    bool   `json:"cladefsdUpdated"`
+			RestartedCladefsd  bool   `json:"restartedCladefsd"`
+			CladefsIncarnation string `json:"cladefsIncarnation"`
+		} `json:"nodes"`
+	}
+
+	// 1. Dry-run reports pending upgrade without touching the binary or restarting.
+	c.ok(&out, "system", "upgrade", "--dry-run")
+	if len(out.Nodes) != 1 || out.Nodes[0].Status != "dry-run" || !out.Nodes[0].CladefsdUpdated {
+		t.Fatalf("dry-run out = %+v", out)
+	}
+	if restarts.Load() != 0 {
+		t.Fatalf("dry-run restarted cladefsd %d times", restarts.Load())
+	}
+
+	// 2. Real upgrade installs binary, restarts cladefsd, and reconnects.
+	c.ok(&out, "system", "upgrade")
+	if len(out.Nodes) != 1 || out.Nodes[0].Status != "upgraded" || !out.Nodes[0].CladefsdUpdated || !out.Nodes[0].RestartedCladefsd || out.Nodes[0].CladefsIncarnation != "11" {
+		t.Fatalf("upgrade out = %+v", out)
+	}
+	if restarts.Load() != 1 {
+		t.Fatalf("restarts = %d, want 1", restarts.Load())
+	}
+	if got, err := os.ReadFile(cladefsdBin); err != nil || string(got) != string(payload) {
+		t.Fatalf("installed cladefsd = (%q, %v), want %q", got, err, payload)
+	}
+
+	// 3. Re-running without --force reports up-to-date and does not restart again.
+	if code, text, stderr := c.hotbed("system", "upgrade", "asahimbp"); code != 0 || !strings.Contains(text, "up-to-date") {
+		t.Fatalf("second system upgrade text: code=%d out=%q stderr=%q", code, text, stderr)
+	}
+	if restarts.Load() != 1 {
+		t.Fatalf("restarts after up-to-date = %d, want 1", restarts.Load())
 	}
 }

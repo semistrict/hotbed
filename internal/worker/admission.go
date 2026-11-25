@@ -297,7 +297,13 @@ func (e *Engine) admission() *pb.Admission {
 	holding := e.held.kind != ""
 	reason := e.held.reason
 	since := e.held.since
-	if (e.held.kind == "host-cpu" || e.held.kind == "host-memory") && hu == nil {
+	if e.systemUpgrading {
+		holding = true
+		reason = "upgrading cladefs"
+		if since.IsZero() {
+			since = now
+		}
+	} else if (e.held.kind == "host-cpu" || e.held.kind == "host-memory") && hu == nil {
 		// Host signal went stale past TTL before the next sample/step tick.
 		kind, r := e.nodeHold(now)
 		holding = kind != ""

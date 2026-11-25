@@ -31,6 +31,7 @@ import {
 	MemoryService,
 	MemoryState,
 	MemoryUpdate_What,
+	NodeSystemUpgradeSchema,
 	NodeUsageSchema,
 	PromptSchema,
 	QuestionService,
@@ -48,6 +49,8 @@ import {
 	StepSchema,
 	TraceCommandChunkSchema,
 	WorkerConfigSchema,
+	WorkerSystemConfigSchema,
+	WorkerUpgradeSystemRequestSchema,
 	WorkerVMConfigSchema,
 	WorkspaceSchema,
 	WorkspaceService,
@@ -1625,5 +1628,118 @@ describe("Security, cron, daemon logs, tunnel, and workspace regression tests", 
 		expect(delNode.deleted).toBe(true);
 		const delDef = await owner.cluster.deleteWorkerConfig({ defaults: true });
 		expect(delDef.deleted).toBe(true);
+	});
+
+	it("validates WorkerSystemConfig and orchestrates explicit system upgrade over worker tunnel", async () => {
+		const owner = ownerClients();
+		const worker = workerClients(OWNER_TOKEN, "node-sys-1", "ubu-sys-1", "100.73.156.99:7121");
+		const joined = await worker.cluster.join({});
+		const workerWithToken = workerClients(
+			joined.workerToken || OWNER_TOKEN,
+			"node-sys-1",
+			"ubu-sys-1",
+			"100.73.156.99:7121",
+		);
+		await workerWithToken.cluster.heartbeat(
+			create(HeartbeatRequestSchema, {
+				clusterId: joined.clusterId,
+				resources: create(ResourcesSchema, {
+					arch: "amd64",
+					cpus: 16,
+					memoryBytes: BigInt(27 * 1024 ** 3),
+				}),
+			}),
+		);
+
+		const cladefsdSha = "d".repeat(64);
+		const fcSha = "e".repeat(64);
+
+		// Workers cannot trigger system upgrades or call WorkspaceService.upgradeSystem directly.
+		await expect(workerWithToken.cluster.upgradeSystem({ node: "ubu-sys-1" })).rejects.toThrow(
+			/not authorized|may not trigger/,
+		);
+		await expect(owner.workspaces.upgradeSystem({})).rejects.toThrow(
+			/permission_denied|internal controller-to-worker/,
+		);
+
+		// Without artifacts configured for amd64, node is skipped cleanly.
+		const skipped = await owner.cluster.upgradeSystem({ node: "ubu-sys-1" });
+		expect(skipped.nodes).toHaveLength(1);
+		expect(skipped.nodes[0].node).toBe("ubu-sys-1");
+		expect(skipped.nodes[0].status).toBe("skipped");
+
+		// Configure cluster-wide system.cladefsd + system.firecracker for amd64.
+		await owner.cluster.setWorkerConfig({
+			config: create(WorkerConfigSchema, {
+				system: create(WorkerSystemConfigSchema, {
+					cladefsd: {
+						amd64: create(ManagedArtifactSchema, {
+							url: "https://example.com/cladefsd-linux-amd64",
+							sha256: cladefsdSha,
+							version: "cladefs-d3043d4a",
+						}),
+					},
+					firecracker: {
+						amd64: create(ManagedArtifactSchema, {
+							url: "https://example.com/firecracker-linux-amd64",
+							sha256: fcSha,
+							version: "fc-d3043d4a",
+						}),
+					},
+				}),
+			}),
+		});
+
+		// Open worker tunnel and handle /hotbed.v1.WorkspaceService/UpgradeSystem.
+		const receivedReqs: Array<MessageShape<typeof WorkerUpgradeSystemRequestSchema>> = [];
+		const tunnel = await openMockWorkerTunnel(
+			joined.workerToken || OWNER_TOKEN,
+			"node-sys-1",
+			"ubu-sys-1",
+			"100.73.156.99:7121",
+			{
+				unary: {
+					"/hotbed.v1.WorkspaceService/UpgradeSystem": (reqBytes) => {
+						const wreq = fromBinary(WorkerUpgradeSystemRequestSchema, reqBytes);
+						receivedReqs.push(wreq);
+						return toBinary(
+							NodeSystemUpgradeSchema,
+							create(NodeSystemUpgradeSchema, {
+								node: "ubu-sys-1",
+								arch: "amd64",
+								status: "upgraded",
+								cladefsdVersion: wreq.cladefsd?.version ?? "",
+								cladefsdSha256: wreq.cladefsd?.sha256 ?? "",
+								cladefsdUpdated: true,
+								firecrackerVersion: wreq.firecracker?.version ?? "",
+								firecrackerSha256: wreq.firecracker?.sha256 ?? "",
+								firecrackerUpdated: true,
+								restartedCladefsd: true,
+								cladefsIncarnation: 9n,
+							}),
+						);
+					},
+				},
+			},
+		);
+
+		try {
+			const upgraded = await owner.cluster.upgradeSystem({ node: "ubu-sys-1" });
+			expect(upgraded.nodes).toHaveLength(1);
+			expect(upgraded.nodes[0].status).toBe("upgraded");
+			expect(upgraded.nodes[0].cladefsdUpdated).toBe(true);
+			expect(upgraded.nodes[0].firecrackerUpdated).toBe(true);
+			expect(upgraded.nodes[0].restartedCladefsd).toBe(true);
+			expect(upgraded.nodes[0].cladefsIncarnation).toBe(9n);
+			expect(receivedReqs).toHaveLength(1);
+			expect(receivedReqs[0].cladefsd?.sha256).toBe(cladefsdSha);
+			expect(receivedReqs[0].firecracker?.sha256).toBe(fcSha);
+
+			// Cluster events log records the upgrade event.
+			const evs = await owner.cluster.listEvents({ node: "ubu-sys-1", kinds: ["upgrade"] });
+			expect(evs.events.some((e) => e.text.includes("system upgrade"))).toBe(true);
+		} finally {
+			tunnel.close();
+		}
 	});
 });

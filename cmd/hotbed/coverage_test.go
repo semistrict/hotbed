@@ -28,6 +28,8 @@ var nodeProtocol = []string{
 	"/hotbed.v1.ClusterService/Standby",
 	"/hotbed.v1.ClusterService/ReportHostUsage",
 	"/hotbed.v1.ClusterService/SaveCommandDiagnostics",
+	// Controller-to-worker RPC invoked over the worker tunnel by ClusterService.UpgradeSystem.
+	"/hotbed.v1.WorkspaceService/UpgradeSystem",
 }
 
 var cliCalls sync.Map // procedure -> struct{}

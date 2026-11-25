@@ -3,10 +3,12 @@ import {
 	ManagedArtifactSchema,
 	WorkerCladefsFUSEConfigSchema,
 	WorkerConfigSchema,
+	WorkerSystemConfigSchema,
 	WorkerVMConfigSchema,
 	type ManagedArtifact,
 	type WorkerCladefsFUSEConfig,
 	type WorkerConfig,
+	type WorkerSystemConfig,
 	type WorkerVMConfig,
 } from "./gen/hotbed/v1/hotbed_pb.ts";
 import { ErrorCode, hotbedError } from "./errors.ts";
@@ -98,6 +100,33 @@ export function validateWorkerConfig(cfg: WorkerConfig): void {
 			validateArtifact("vm.guestd", arch, art);
 		}
 	}
+	if (cfg.system) {
+		const sys = cfg.system;
+		for (const [arch, art] of Object.entries(sys.cladefsd)) {
+			validateArtifact("system.cladefsd", arch, art);
+		}
+		for (const [arch, art] of Object.entries(sys.firecracker)) {
+			validateArtifact("system.firecracker", arch, art);
+		}
+		if (sys.cladefsdBin && !sys.cladefsdBin.startsWith("/")) {
+			throw hotbedError(
+				ErrorCode.InvalidArgs,
+				`system.cladefsd_bin "${sys.cladefsdBin}" must start with /`,
+			);
+		}
+		if (sys.firecrackerBin && !sys.firecrackerBin.startsWith("/")) {
+			throw hotbedError(
+				ErrorCode.InvalidArgs,
+				`system.firecracker_bin "${sys.firecrackerBin}" must start with /`,
+			);
+		}
+		if (sys.cladefsdService && !/^[a-zA-Z0-9._@-]+$/.test(sys.cladefsdService)) {
+			throw hotbedError(
+				ErrorCode.InvalidArgs,
+				`invalid system.cladefsd_service "${sys.cladefsdService}"`,
+			);
+		}
+	}
 }
 
 function normalizeArtifactMap(
@@ -181,6 +210,21 @@ export function mergeWorkerCladefsFUSEConfig(
 	return out;
 }
 
+export function mergeWorkerSystemConfig(
+	base?: WorkerSystemConfig,
+	patch?: WorkerSystemConfig,
+): WorkerSystemConfig | undefined {
+	if (!base && !patch) return undefined;
+	const out = base ? clone(WorkerSystemConfigSchema, base) : create(WorkerSystemConfigSchema);
+	if (!patch) return out;
+	if (patch.cladefsdBin !== undefined) out.cladefsdBin = patch.cladefsdBin;
+	if (patch.cladefsdService !== undefined) out.cladefsdService = patch.cladefsdService;
+	if (patch.firecrackerBin !== undefined) out.firecrackerBin = patch.firecrackerBin;
+	out.cladefsd = normalizeArtifactMap(out.cladefsd, patch.cladefsd);
+	out.firecracker = normalizeArtifactMap(out.firecracker, patch.firecracker);
+	return out;
+}
+
 export function mergeWorkerConfig(base: WorkerConfig | null, patch: WorkerConfig): WorkerConfig {
 	const out = base ? clone(WorkerConfigSchema, base) : create(WorkerConfigSchema);
 	if (patch.defaultRuntime !== undefined) out.defaultRuntime = patch.defaultRuntime;
@@ -188,5 +232,6 @@ export function mergeWorkerConfig(base: WorkerConfig | null, patch: WorkerConfig
 	if (patch.unitProperties.length > 0) out.unitProperties = [...patch.unitProperties];
 	out.vm = mergeWorkerVMConfig(out.vm, patch.vm);
 	out.cladefsFuse = mergeWorkerCladefsFUSEConfig(out.cladefsFuse, patch.cladefsFuse);
+	out.system = mergeWorkerSystemConfig(out.system, patch.system);
 	return out;
 }

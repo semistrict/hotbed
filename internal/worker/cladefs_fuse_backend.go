@@ -122,10 +122,78 @@ func (b *CladefsFUSEBackend) UpdateConfig(cfg statedir.CladefsFUSEConfig) {
 }
 
 func (b *CladefsFUSEBackend) Close() error {
-	if b.store != nil {
-		return b.store.Close()
+	b.mu.Lock()
+	st := b.store
+	b.store = nil
+	b.mu.Unlock()
+	if st != nil {
+		return st.Close()
 	}
 	return nil
+}
+
+// StopAllForUpgrade detaches all active host-FUSE workspace mounts and closes
+// the cladefsd gRPC connection prior to a disruptive cladefsd restart.
+func (b *CladefsFUSEBackend) StopAllForUpgrade(ctx context.Context) error {
+	b.mu.Lock()
+	ids := make([]string, 0, len(b.wsMounts))
+	for id := range b.wsMounts {
+		ids = append(ids, id)
+	}
+	b.mu.Unlock()
+
+	var firstErr error
+	for _, id := range ids {
+		if err := b.DeleteWorkspace(ctx, id); err != nil && firstErr == nil {
+			firstErr = err
+		}
+	}
+	if err := b.Close(); err != nil && firstErr == nil {
+		firstErr = err
+	}
+	return firstErr
+}
+
+// ReconnectCladefs waits for cladefsd and its host FUSE Mount service to come
+// back online after a restart, clears nosuid on mountRoot, refreshes the gRPC
+// client and incarnation, and re-applies the peer mesh.
+func (b *CladefsFUSEBackend) ReconnectCladefs(ctx context.Context) (uint64, error) {
+	cfg := b.configSnapshot()
+	cellRoot := cmp.Or(cfg.CellRoot, "/mnt/fxdax-scratch/cladefsd/cells/hotbed")
+	ccfg := cladefs.Config{
+		ControlSock: cfg.CladefsControlSock,
+		CellRoot:    cellRoot,
+		TenantID:    cfg.TenantID,
+		DefaultCap:  cmp.Or(cfg.DiskBytes, uint64(64<<30)),
+	}
+	st, inc, err := waitForCladefsReconnect(ctx, ccfg, 30*time.Second, func(ctx context.Context, s *cladefs.Store) (uint64, error) {
+		if _, err := s.MountList(ctx); err != nil {
+			return 0, err
+		}
+		return s.Incarnation(ctx)
+	})
+	if err != nil {
+		return 0, err
+	}
+	if err := clearMountNosuid(b.mountRoot); err != nil {
+		_ = st.Close()
+		return 0, fmt.Errorf("enable setuid on cladefs FUSE mount %s: %w", b.mountRoot, err)
+	}
+	b.mu.Lock()
+	old := b.store
+	b.store = st
+	b.incarnation = inc
+	prevPeers := slices.Clone(b.lastPeers)
+	b.lastPeers = nil
+	b.decommissioned = map[uint64]bool{}
+	b.mu.Unlock()
+	if old != nil {
+		_ = old.Close()
+	}
+	if len(prevPeers) > 0 {
+		b.ApplyHeartbeat(ctx, prevPeers, nil)
+	}
+	return inc, nil
 }
 
 func (b *CladefsFUSEBackend) cacheDir() string {

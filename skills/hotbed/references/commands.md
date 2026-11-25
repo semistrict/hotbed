@@ -238,6 +238,22 @@ Remove controller-managed worker/VM configuration for a node (or cluster default
 | `NODE` |  | Worker hostname whose overrides to delete; omit with --defaults to clear cluster defaults. |
 | `--defaults` |  | Delete cluster-wide defaults instead of a per-node override. |
 
+## `system`
+
+Explicit host system runtime operations such as upgrading cladefsd, firecracker, and guest kernels (upgrade).
+
+### `hotbed system upgrade [NODE]`
+
+Explicitly upgrade host cladefs components (cladefsd, firecracker, guest kernel) on one node or rolling across all online nodes one at a time. Stages and SHA-256-verifies artifacts before draining the node, stopping active commands/shells, releasing active cladefs/VM workspaces, installing binaries atomically, restarting cladefsd, and verifying health.
+
+*MCP tool: `system_upgrade`*
+
+| Argument / Flag | Env | Help |
+| --- | --- | --- |
+| `NODE` |  | Target worker hostname or ID; omit to roll across all online workers one at a time. |
+| `--force` |  | Restart cladefsd even when installed binaries already match the configured SHA-256. |
+| `--dry-run` |  | Stage and verify artifacts and report active work without terminating commands or restarting cladefsd. |
+
 ## `poll`
 
 ### `hotbed poll`

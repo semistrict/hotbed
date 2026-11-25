@@ -50,6 +50,10 @@ func (e *Engine) CreateWorkspace(ctx context.Context, req *pb.CreateWorkspaceReq
 		return nil, api.Errorf(api.CodeInvalidArgs, "workspace %s names no project", req.Id)
 	}
 	e.mu.Lock()
+	if e.systemUpgrading {
+		e.mu.Unlock()
+		return nil, &api.Error{Code: api.CodeConflict, Message: "node is upgrading cladefs; try again shortly", Retryable: true}
+	}
 	// The controller's word that this node keeps the project, newer than its
 	// last heartbeat's.
 	e.vouched[p.Name] = e.now()

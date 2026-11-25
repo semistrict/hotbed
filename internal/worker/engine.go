@@ -167,6 +167,11 @@ type EngineConfig struct {
 	// Engine.Sync call (repo + submodules); zero or negative uses
 	// DefaultMaxSyncBundleBytes.
 	MaxSyncBundleBytes int64
+	// Artifacts caches controller-managed binaries and kernels for explicit
+	// system upgrades (optional; defaults to WorkerDir-backed ArtifactStore).
+	Artifacts *ArtifactStore
+	// SystemUpgradeOps overrides host OS actions in Engine.UpgradeSystem (for tests).
+	SystemUpgradeOps *SystemUpgradeOps
 }
 
 // DefaultMaxSyncBundleBytes caps the total bundle bytes accepted by a single
@@ -190,7 +195,9 @@ type Engine struct {
 	rtUnits        *runtimeUnits
 	portProxies    map[string]*portProxy
 
-	mu sync.Mutex
+	mu              sync.Mutex
+	upgradeMu       sync.Mutex
+	systemUpgrading bool
 	// projects is what the controller's last heartbeat said this node keeps
 	// bases of; nil until one has.
 	projects map[string]*pb.HostedProject

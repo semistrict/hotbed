@@ -407,7 +407,7 @@ func HeartbeatOnce(ctx context.Context, eng *Engine, cluster hotbedv1connect.Clu
 // defaultMaxUpgradeDefer caps how long a worker defers an upgrade while active
 // work runs, so a stuck job or long-lived session cannot strand a node in
 // "upgrading" (refused by controller placement) indefinitely.
-const defaultMaxUpgradeDefer = 15 * time.Minute
+const defaultMaxUpgradeDefer = 1 * time.Minute
 
 // activeUpgradeWork reports how many active commands, interactive shells, and
 // in-flight base/fork builds would be disrupted if the worker restarted now.

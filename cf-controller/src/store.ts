@@ -2274,6 +2274,25 @@ export class ControllerStore {
 			}));
 	}
 
+	recordClusterEvent(
+		nodeId: string,
+		kind: string,
+		text: string,
+		nowMs: number,
+		refType = "",
+		refId = "",
+	): void {
+		this.sql.exec(
+			"INSERT INTO events (at, kind, node_id, text, ref_type, ref_id) VALUES (?, ?, ?, ?, ?, ?)",
+			nowMs,
+			kind,
+			nodeId,
+			text,
+			refType,
+			refId,
+		);
+	}
+
 	recentEvents(limit: number): ClusterEvent[] {
 		return this.sql
 			.exec(

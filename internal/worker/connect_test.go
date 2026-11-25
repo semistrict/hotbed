@@ -814,6 +814,43 @@ func TestHeartbeatDefersUpgradeDuringActiveWork(t *testing.T) {
 		}
 	})
 
+	t.Run("default MaxDefer cap is 1 minute", func(t *testing.T) {
+		eng, follow, exe, cl := newEngine(t)
+		now := time.Unix(1795320000, 0)
+		follow.Now = func() time.Time { return now }
+		follow.MaxDefer = 0 // use defaultMaxUpgradeDefer
+
+		if got := follow.maxDefer(); got != time.Minute {
+			t.Fatalf("default follow.maxDefer() = %s, want 1m", got)
+		}
+
+		eng.mu.Lock()
+		eng.commands["c-default-defer"] = &command{rec: &pb.CommandRecord{Command: &pb.Command{Id: "c-default-defer", State: running, Limits: &pb.CommandLimits{}}}}
+		eng.mu.Unlock()
+
+		// t=0: starts deferring.
+		if err := HeartbeatOnce(t.Context(), eng, cl, "cl", follow); err != nil {
+			t.Fatalf("HeartbeatOnce at t=0 = %v, want nil", err)
+		}
+		// t=59s: still deferred.
+		now = now.Add(59 * time.Second)
+		if err := HeartbeatOnce(t.Context(), eng, cl, "cl", follow); err != nil {
+			t.Fatalf("HeartbeatOnce at t=59s = %v, want nil", err)
+		}
+		if got := readExe(t, exe); got != "old build 8" {
+			t.Fatalf("exe overwritten before 1m default cap: %q", got)
+		}
+		// t=60s: default 1m cap reached -> installs and requests restart.
+		now = now.Add(time.Second)
+		err := HeartbeatOnce(t.Context(), eng, cl, "cl", follow)
+		if !errors.Is(err, update.ErrRestart) {
+			t.Fatalf("HeartbeatOnce at t=1m = %v, want update.ErrRestart", err)
+		}
+		if got := readExe(t, exe); got != string(payload9) {
+			t.Fatalf("exe after 1m default cap = %q, want %q", got, string(payload9))
+		}
+	})
+
 	t.Run("long-running command hits MaxDefer cap and upgrades cleanly", func(t *testing.T) {
 		eng, follow, exe, cl := newEngine(t)
 		now := time.Unix(1795320000, 0)

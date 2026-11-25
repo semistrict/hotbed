@@ -1015,6 +1015,77 @@ func (b *VMBackend) StopVM(ctx context.Context, wsID string) error {
 	return b.mgr.StopVM(ctx, wsID)
 }
 
+// CurrentKernelPath returns the active guest kernel path for new VM boots.
+func (b *VMBackend) CurrentKernelPath() string {
+	return cmp.Or(b.configSnapshot().KernelPath, vm.DefaultKernelPath)
+}
+
+// SetKernelPath hot-reloads the guest kernel path for all subsequent VM boots.
+func (b *VMBackend) SetKernelPath(p string) {
+	cfg := b.configSnapshot()
+	cfg.KernelPath = p
+	b.UpdateConfig(cfg)
+}
+
+// StopAllForUpgrade gracefully stops and syncs every tracked Firecracker VM and
+// closes the cladefsd gRPC connection prior to a disruptive cladefsd restart.
+func (b *VMBackend) StopAllForUpgrade(ctx context.Context) error {
+	var firstErr error
+	if b.mgr != nil {
+		for _, id := range b.mgr.List() {
+			if err := b.mgr.Stop(ctx, id, true); err != nil && firstErr == nil {
+				firstErr = err
+			}
+		}
+	}
+	b.mu.Lock()
+	b.wsCells = map[string]cladefs.CellRef{}
+	st := b.store
+	b.store = nil
+	b.mu.Unlock()
+	if st != nil {
+		if err := st.Close(); err != nil && firstErr == nil {
+			firstErr = err
+		}
+	}
+	return firstErr
+}
+
+// ReconnectCladefs waits for cladefsd to come back online after a restart,
+// refreshes the gRPC client and incarnation, and re-applies the peer mesh.
+func (b *VMBackend) ReconnectCladefs(ctx context.Context) (uint64, error) {
+	cfg := b.configSnapshot()
+	cellRoot := cmp.Or(cfg.CellRoot, "/mnt/fxdax-scratch/cladefsd/cells/hotbed")
+	ccfg := cladefs.Config{
+		ControlSock: cfg.CladefsControlSock,
+		VMSock:      cfg.CladefsVMSock,
+		CellRoot:    cellRoot,
+		TenantID:    cfg.TenantID,
+		DefaultCap:  cfg.DiskBytes,
+	}
+	st, inc, err := waitForCladefsReconnect(ctx, ccfg, 30*time.Second, func(ctx context.Context, s *cladefs.Store) (uint64, error) {
+		return s.Incarnation(ctx)
+	})
+	if err != nil {
+		return 0, err
+	}
+	b.mu.Lock()
+	old := b.store
+	b.store = st
+	b.incarnation = inc
+	prevPeers := slices.Clone(b.lastPeers)
+	b.lastPeers = nil
+	b.decommissioned = map[uint64]bool{}
+	b.mu.Unlock()
+	if old != nil {
+		_ = old.Close()
+	}
+	if len(prevPeers) > 0 {
+		b.ApplyHeartbeat(ctx, prevPeers, nil)
+	}
+	return inc, nil
+}
+
 // SetGitAuthHostSock wires the worker's live gitAuthServer Unix socket into the
 // Firecracker VM manager for guest->host vsock port 5002 bridging.
 func (b *VMBackend) SetGitAuthHostSock(sock string) {

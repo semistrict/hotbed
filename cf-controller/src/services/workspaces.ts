@@ -1356,6 +1356,13 @@ export function createWorkspaceService(ctrl: ControllerContext): {
 			});
 			return create(GetDaemonLogsResponseSchema, { entries: allEntries, sources, truncated });
 		},
+
+		upgradeSystem() {
+			throw hotbedError(
+				ErrorCode.NotAuthorized,
+				"WorkspaceService.UpgradeSystem is an internal controller-to-worker RPC",
+			).withSuggestion("run `hotbed system upgrade` instead");
+		},
 	};
 
 	return {

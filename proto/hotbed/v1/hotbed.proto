@@ -29,6 +29,10 @@ service ClusterService {
     name: "config"
     help: "Centrally managed cluster and per-node worker/VM configuration (show, set, rm)."
   };
+  option (group) = {
+    name: "system"
+    help: "Explicit host system runtime operations such as upgrading cladefsd, firecracker, and guest kernels (upgrade)."
+  };
   // Join admits the calling tailnet node as a worker.
   rpc Join(JoinRequest) returns (JoinResponse);
   // PushEvents delivers a worker's events, in order, from after what the
@@ -255,6 +259,18 @@ service ClusterService {
       format: "{{if .node}}{{.node}}{{else}}defaults{{end}}  removed"
     };
   }
+  // Explicitly upgrade host cladefs components (cladefsd, firecracker, guest
+  // kernel) on one node or rolling across all online nodes one at a time.
+  // Stages and SHA-256-verifies artifacts before draining the node, stopping
+  // active commands/shells, releasing active cladefs/VM workspaces, installing
+  // binaries atomically, restarting cladefsd, and verifying health.
+  rpc UpgradeSystem(UpgradeSystemRequest) returns (UpgradeSystemResponse) {
+    option (command) = {
+      name: "system upgrade"
+      destructive: true
+      format: "{{range .nodes}}{{pad 14 .node}}  {{pad 10 .status}}{{with .cladefsdVersion}}  cladefsd={{.}}{{end}}{{if .cladefsdUpdated}}(updated){{end}}{{with .firecrackerVersion}}  firecracker={{.}}{{end}}{{if .firecrackerUpdated}}(updated){{end}}{{with .kernelVersion}}  kernel={{.}}{{end}}{{if .kernelUpdated}}(updated){{end}}  stopped={{.stoppedCommands}}  shells={{.closedShells}}  released={{.releasedWorkspaces}}{{with .error}}  err={{.}}{{end}}\n{{end}}"
+    };
+  }
 }
 
 // An agent's sessions, on the controller. A session holds workspaces, of
@@ -417,6 +433,9 @@ service WorkspaceService {
       format: "{{range .entries}}{{ts .at}}  {{pad 5 (upper (state .level))}}  {{pad 14 .source}}  {{.msg}}{{if .attrsJson}}  {{.attrsJson}}{{end}}{{if .sourceLoc}}  ({{.sourceLoc}}){{end}}\n{{end}}{{range .sources}}{{if not .reachable}}# {{.source}} ({{.role}}): unreachable{{if .error}}: {{.error}}{{end}}\n{{end}}{{end}}"
     };
   }
+  // UpgradeSystem executes an explicit disruptive host cladefs/system upgrade
+  // on this worker. Called only by the controller on behalf of ClusterService.UpgradeSystem.
+  rpc UpgradeSystem(WorkerUpgradeSystemRequest) returns (NodeSystemUpgrade);
 }
 
 // ErrorInfo rides on every error as a detail: a code programs act on, what
@@ -740,6 +759,22 @@ message WorkerCladefsFUSEConfig {
   optional uint64 disk_bytes = 9;
 }
 
+// Controller-managed host system runtime components (cladefsd, firecracker)
+// applied only by an explicit `hotbed system upgrade` operation because
+// restarting cladefsd terminates running VMs and host-FUSE mounts.
+message WorkerSystemConfig {
+  // Managed cladefsd binaries keyed by GOARCH ("amd64", "arm64").
+  map<string, ManagedArtifact> cladefsd = 1;
+  // Managed firecracker binaries keyed by GOARCH ("amd64", "arm64").
+  map<string, ManagedArtifact> firecracker = 2;
+  // Host install path for cladefsd (default "/usr/local/bin/cladefsd").
+  optional string cladefsd_bin = 3;
+  // Host systemd service name for cladefsd (default "cladefsd.service").
+  optional string cladefsd_service = 4;
+  // Host install path for firecracker (default "/usr/local/bin/firecracker").
+  optional string firecracker_bin = 5;
+}
+
 // Controller-managed worker configuration, either cluster-wide defaults
 // (node == "") or a per-node override (node == hostname).
 message WorkerConfig {
@@ -757,6 +792,7 @@ message WorkerConfig {
   int64 revision = 7;
   int64 updated_at = 8;
   string updated_by = 9;
+  WorkerSystemConfig system = 10;
 }
 
 message GetWorkerConfigRequest {
@@ -819,6 +855,55 @@ message UpgradeControllerResponse {
   int64 from = 2;
   // True when a new build was installed and the controller is restarting.
   bool restarting = 3;
+}
+
+message UpgradeSystemRequest {
+  // Target worker hostname or ID; omit to roll across all online workers one at a time.
+  string node = 1 [(param) = {
+    positional: true
+    optional: true
+  }];
+  // Restart cladefsd even when installed binaries already match the configured SHA-256.
+  bool force = 2;
+  // Stage and verify artifacts and report active work without terminating commands or restarting cladefsd.
+  bool dry_run = 3 [(param) = {name: "dry-run"}];
+}
+
+message WorkerUpgradeSystemRequest {
+  ManagedArtifact cladefsd = 1;
+  ManagedArtifact firecracker = 2;
+  ManagedArtifact kernel = 3;
+  string cladefsd_bin = 4;
+  string cladefsd_service = 5;
+  string firecracker_bin = 6;
+  bool force = 7;
+  bool dry_run = 8;
+}
+
+message NodeSystemUpgrade {
+  string node = 1;
+  string arch = 2;
+  // One of "upgraded", "up-to-date", "dry-run", "skipped", or "failed".
+  string status = 3;
+  string cladefsd_version = 4;
+  string cladefsd_sha256 = 5;
+  bool cladefsd_updated = 6;
+  string firecracker_version = 7;
+  string firecracker_sha256 = 8;
+  bool firecracker_updated = 9;
+  string kernel_version = 10;
+  string kernel_sha256 = 11;
+  bool kernel_updated = 12;
+  int32 stopped_commands = 13;
+  int32 closed_shells = 14;
+  int32 released_workspaces = 15;
+  bool restarted_cladefsd = 16;
+  uint64 cladefs_incarnation = 17;
+  string error = 18;
+}
+
+message UpgradeSystemResponse {
+  repeated NodeSystemUpgrade nodes = 1;
 }
 
 // ---- repos and bases --------------------------------------------------

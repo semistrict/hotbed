@@ -936,6 +936,9 @@ func (e *Engine) admissionBlocker(c, ahead, holder *command) (kind, reason strin
 }
 
 func (e *Engine) admissionBlockerFor(c, ahead, holder *command, cpuPreempted bool, mem sysinfo.Mem, hasMem bool) (kind, reason string, holds bool) {
+	if e.systemUpgrading {
+		return "upgrade", "waiting: node is upgrading cladefs", true
+	}
 	if wsID := c.cmd().WorkspaceId; wsID != "" {
 		w, ok := e.workspaces[wsID]
 		if !ok {

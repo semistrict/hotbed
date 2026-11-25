@@ -25,6 +25,7 @@ import {
 	NodeDetailSchema,
 	NodeHourSchema,
 	NodeHoursSchema,
+	NodeSystemUpgradeSchema,
 	NodeUsageSchema,
 	PushEventsResponseSchema,
 	RepoSchema,
@@ -41,7 +42,9 @@ import {
 	StepStatusSchema,
 	TotalsSchema,
 	UpgradeControllerResponseSchema,
+	UpgradeSystemResponseSchema,
 	WorkerConfigSchema,
+	WorkerUpgradeSystemRequestSchema,
 	type Base,
 	type ClusterEvent,
 	type Command,
@@ -50,6 +53,7 @@ import {
 	type HourBucket,
 	type LoadSample,
 	type NodeHours,
+	type NodeSystemUpgrade,
 	type PlacementDecision,
 	type Repo,
 	type RepoSummary,
@@ -1197,6 +1201,129 @@ export function createClusterService(
 				throw hotbedError(ErrorCode.NotFound, `no worker config set for ${label}`);
 			}
 			return create(DeleteWorkerConfigResponseSchema, { node: scope, deleted: true });
+		},
+
+		async upgradeSystem(req, ctx) {
+			const caller = getCaller(ctx.values);
+			if (caller.role === "worker") {
+				throw hotbedError(ErrorCode.NotAuthorized, "workers may not trigger system upgrades");
+			}
+			const target = req.node.trim();
+			const targets = [];
+			if (target) {
+				const r = ctrl.findNodeByNameOrId(target);
+				const n = ctrl.withOnline(r.node);
+				if (!n.online) {
+					throw hotbedError(
+						ErrorCode.WorkerUnreachable,
+						`${n.hostname} is offline; cannot run system upgrade`,
+						{ retryable: true },
+					);
+				}
+				targets.push(n);
+			} else {
+				const nvs = ctrl.views().filter((nv) => nv.online);
+				nvs.sort((a, b) => a.node.hostname.localeCompare(b.node.hostname));
+				for (const nv of nvs) {
+					targets.push(nv.node);
+				}
+				if (targets.length === 0) {
+					throw hotbedError(ErrorCode.WorkerUnreachable, "no online workers to upgrade", {
+						retryable: true,
+					});
+				}
+			}
+
+			const results: NodeSystemUpgrade[] = [];
+			for (const node of targets) {
+				const arch = node.resources?.arch || "";
+				const effective = ctrl.store.effectiveWorkerConfig(node.hostname);
+				const sys = effective?.system;
+				const vm = effective?.vm;
+				const cladefsd = arch ? sys?.cladefsd[arch] : undefined;
+				const firecracker = arch ? sys?.firecracker[arch] : undefined;
+				const kernel = arch ? vm?.kernels[arch] : undefined;
+
+				if (!cladefsd && !firecracker && !kernel && !req.force) {
+					results.push(
+						create(NodeSystemUpgradeSchema, {
+							node: node.hostname,
+							arch,
+							status: "skipped",
+							error: `no system/cladefs artifacts configured for ${arch || "unknown arch"}`,
+						}),
+					);
+					continue;
+				}
+
+				const workerReq = create(WorkerUpgradeSystemRequestSchema, {
+					cladefsd,
+					firecracker,
+					kernel,
+					cladefsdBin: sys?.cladefsdBin ?? "",
+					cladefsdService: sys?.cladefsdService ?? "",
+					firecrackerBin: sys?.firecrackerBin ?? vm?.firecrackerBin ?? "",
+					force: req.force,
+					dryRun: req.dryRun,
+				});
+
+				try {
+					const res = await ctrl.tunnel.callUnary(
+						node.id,
+						node.hostname,
+						"/hotbed.v1.WorkspaceService/UpgradeSystem",
+						WorkerUpgradeSystemRequestSchema,
+						workerReq,
+						NodeSystemUpgradeSchema,
+						5 * 60_000,
+						ctx.signal,
+					);
+					if (!res.node) res.node = node.hostname;
+					if (!res.arch) res.arch = arch;
+					results.push(res);
+
+					if (!req.dryRun && res.status === "upgraded") {
+						const parts: string[] = [];
+						if (res.cladefsdUpdated) {
+							parts.push(`cladefsd=${res.cladefsdVersion || res.cladefsdSha256.slice(0, 12)}`);
+						}
+						if (res.firecrackerUpdated) {
+							parts.push(
+								`firecracker=${res.firecrackerVersion || res.firecrackerSha256.slice(0, 12)}`,
+							);
+						}
+						if (res.kernelUpdated) {
+							parts.push(`kernel=${res.kernelVersion || res.kernelSha256.slice(0, 12)}`);
+						}
+						if (res.restartedCladefsd) {
+							parts.push("restarted cladefsd");
+						}
+						ctrl.store.recordClusterEvent(
+							node.id,
+							"upgrade",
+							`${node.hostname} system upgrade: ${parts.join(", ") || "complete"}`,
+							ctrl.now(),
+						);
+					}
+					if (res.status === "failed") {
+						throw hotbedError(
+							ErrorCode.Internal,
+							`system upgrade failed on ${node.hostname}: ${res.error || "unknown error"}`,
+						);
+					}
+				} catch (err) {
+					const msg = err instanceof Error ? err.message : String(err);
+					if (targets.length === 1) {
+						throw err;
+					}
+					throw hotbedError(
+						ErrorCode.Internal,
+						`rolling system upgrade stopped on ${node.hostname} after ${results.length} node(s): ${msg}`,
+					);
+				}
+			}
+
+			return create(UpgradeSystemResponseSchema, { nodes: results });
 		},
 	};
 }

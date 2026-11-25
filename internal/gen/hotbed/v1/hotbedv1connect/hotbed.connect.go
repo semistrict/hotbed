@@ -117,6 +117,9 @@ const (
 	// ClusterServiceDeleteWorkerConfigProcedure is the procedure name of the ClusterService's
 	// DeleteWorkerConfig RPC.
 	ClusterServiceDeleteWorkerConfigProcedure = "/hotbed.v1.ClusterService/DeleteWorkerConfig"
+	// ClusterServiceUpgradeSystemProcedure is the procedure name of the ClusterService's UpgradeSystem
+	// RPC.
+	ClusterServiceUpgradeSystemProcedure = "/hotbed.v1.ClusterService/UpgradeSystem"
 	// SessionServiceStartSessionProcedure is the procedure name of the SessionService's StartSession
 	// RPC.
 	SessionServiceStartSessionProcedure = "/hotbed.v1.SessionService/StartSession"
@@ -196,6 +199,9 @@ const (
 	// WorkspaceServiceGetDaemonLogsProcedure is the procedure name of the WorkspaceService's
 	// GetDaemonLogs RPC.
 	WorkspaceServiceGetDaemonLogsProcedure = "/hotbed.v1.WorkspaceService/GetDaemonLogs"
+	// WorkspaceServiceUpgradeSystemProcedure is the procedure name of the WorkspaceService's
+	// UpgradeSystem RPC.
+	WorkspaceServiceUpgradeSystemProcedure = "/hotbed.v1.WorkspaceService/UpgradeSystem"
 	// ScheduleServicePutScheduleProcedure is the procedure name of the ScheduleService's PutSchedule
 	// RPC.
 	ScheduleServicePutScheduleProcedure = "/hotbed.v1.ScheduleService/PutSchedule"
@@ -556,6 +562,13 @@ var (
 			Procedure:  ClusterServiceDeleteWorkerConfigProcedure,
 		}
 	})
+	clusterServiceUpgradeSystemSpec = sync.OnceValue(func() connect.Spec {
+		return connect.Spec{
+			StreamType: connect.StreamTypeUnary,
+			Schema:     v1.File_hotbed_v1_hotbed_proto.Services().ByName("ClusterService").Methods().ByName("UpgradeSystem"),
+			Procedure:  ClusterServiceUpgradeSystemProcedure,
+		}
+	})
 )
 
 // ClusterServiceClient is a client for the hotbed.v1.ClusterService service.
@@ -661,6 +674,12 @@ type ClusterServiceClient interface {
 	// Remove controller-managed worker/VM configuration for a node (or cluster
 	// defaults with --defaults).
 	DeleteWorkerConfig(context.Context, *v1.DeleteWorkerConfigRequest) (*v1.DeleteWorkerConfigResponse, error)
+	// Explicitly upgrade host cladefs components (cladefsd, firecracker, guest
+	// kernel) on one node or rolling across all online nodes one at a time.
+	// Stages and SHA-256-verifies artifacts before draining the node, stopping
+	// active commands/shells, releasing active cladefs/VM workspaces, installing
+	// binaries atomically, restarting cladefsd, and verifying health.
+	UpgradeSystem(context.Context, *v1.UpgradeSystemRequest) (*v1.UpgradeSystemResponse, error)
 }
 
 // NewClusterServiceClient constructs a client for the hotbed.v1.ClusterService service. Multiple
@@ -792,6 +811,12 @@ type ClusterServiceHandler interface {
 	// Remove controller-managed worker/VM configuration for a node (or cluster
 	// defaults with --defaults).
 	DeleteWorkerConfig(context.Context, *v1.DeleteWorkerConfigRequest) (*v1.DeleteWorkerConfigResponse, error)
+	// Explicitly upgrade host cladefs components (cladefsd, firecracker, guest
+	// kernel) on one node or rolling across all online nodes one at a time.
+	// Stages and SHA-256-verifies artifacts before draining the node, stopping
+	// active commands/shells, releasing active cladefs/VM workspaces, installing
+	// binaries atomically, restarting cladefsd, and verifying health.
+	UpgradeSystem(context.Context, *v1.UpgradeSystemRequest) (*v1.UpgradeSystemResponse, error)
 }
 
 // RegisterClusterServiceHandler registers svc as the hotbed.v1.ClusterService implementation on
@@ -830,6 +855,7 @@ func RegisterClusterServiceHandler(server *connect.Server, svc ClusterServiceHan
 		connect.Method{Spec: clusterServiceGetWorkerConfigSpec(), Handler: adapter.getWorkerConfig},
 		connect.Method{Spec: clusterServiceSetWorkerConfigSpec(), Handler: adapter.setWorkerConfig},
 		connect.Method{Spec: clusterServiceDeleteWorkerConfigSpec(), Handler: adapter.deleteWorkerConfig},
+		connect.Method{Spec: clusterServiceUpgradeSystemSpec(), Handler: adapter.upgradeSystem},
 	)
 }
 
@@ -973,6 +999,10 @@ func (UnimplementedClusterServiceHandler) SetWorkerConfig(context.Context, *v1.S
 
 func (UnimplementedClusterServiceHandler) DeleteWorkerConfig(context.Context, *v1.DeleteWorkerConfigRequest) (*v1.DeleteWorkerConfigResponse, error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, "hotbed.v1.ClusterService.DeleteWorkerConfig is not implemented")
+}
+
+func (UnimplementedClusterServiceHandler) UpgradeSystem(context.Context, *v1.UpgradeSystemRequest) (*v1.UpgradeSystemResponse, error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, "hotbed.v1.ClusterService.UpgradeSystem is not implemented")
 }
 
 type clusterServiceClient struct {
@@ -1222,6 +1252,14 @@ func (c *clusterServiceClient) SetWorkerConfig(ctx context.Context, req *v1.SetW
 func (c *clusterServiceClient) DeleteWorkerConfig(ctx context.Context, req *v1.DeleteWorkerConfigRequest) (*v1.DeleteWorkerConfigResponse, error) {
 	var res v1.DeleteWorkerConfigResponse
 	if err := c.client.CallUnary(ctx, clusterServiceDeleteWorkerConfigSpec(), req, &res); err != nil {
+		return nil, err
+	}
+	return &res, nil
+}
+
+func (c *clusterServiceClient) UpgradeSystem(ctx context.Context, req *v1.UpgradeSystemRequest) (*v1.UpgradeSystemResponse, error) {
+	var res v1.UpgradeSystemResponse
+	if err := c.client.CallUnary(ctx, clusterServiceUpgradeSystemSpec(), req, &res); err != nil {
 		return nil, err
 	}
 	return &res, nil
@@ -1591,6 +1629,18 @@ func (h clusterServiceHandler) deleteWorkerConfig(ctx context.Context, _ connect
 		return err
 	}
 	res, err := h.svc.DeleteWorkerConfig(ctx, &req)
+	if err != nil {
+		return err
+	}
+	return stream.Send(res)
+}
+
+func (h clusterServiceHandler) upgradeSystem(ctx context.Context, _ connect.Spec, stream connect.ServerStream) error {
+	var req v1.UpgradeSystemRequest
+	if err := stream.Receive(&req); err != nil {
+		return err
+	}
+	res, err := h.svc.UpgradeSystem(ctx, &req)
 	if err != nil {
 		return err
 	}
@@ -2126,6 +2176,13 @@ var (
 			IdempotencyLevel: connect.IdempotencyIdempotent,
 		}
 	})
+	workspaceServiceUpgradeSystemSpec = sync.OnceValue(func() connect.Spec {
+		return connect.Spec{
+			StreamType: connect.StreamTypeUnary,
+			Schema:     v1.File_hotbed_v1_hotbed_proto.Services().ByName("WorkspaceService").Methods().ByName("UpgradeSystem"),
+			Procedure:  WorkspaceServiceUpgradeSystemProcedure,
+		}
+	})
 )
 
 // WorkspaceServiceClient is a client for the hotbed.v1.WorkspaceService service.
@@ -2193,6 +2250,9 @@ type WorkspaceServiceClient interface {
 	// GetDaemonLogs returns recent WARN and ERROR slog records from the
 	// controller, a worker, or all of them, newest first.
 	GetDaemonLogs(context.Context, *v1.GetDaemonLogsRequest) (*v1.GetDaemonLogsResponse, error)
+	// UpgradeSystem executes an explicit disruptive host cladefs/system upgrade
+	// on this worker. Called only by the controller on behalf of ClusterService.UpgradeSystem.
+	UpgradeSystem(context.Context, *v1.WorkerUpgradeSystemRequest) (*v1.NodeSystemUpgrade, error)
 }
 
 // NewWorkspaceServiceClient constructs a client for the hotbed.v1.WorkspaceService service.
@@ -2379,6 +2439,9 @@ type WorkspaceServiceHandler interface {
 	// GetDaemonLogs returns recent WARN and ERROR slog records from the
 	// controller, a worker, or all of them, newest first.
 	GetDaemonLogs(context.Context, *v1.GetDaemonLogsRequest) (*v1.GetDaemonLogsResponse, error)
+	// UpgradeSystem executes an explicit disruptive host cladefs/system upgrade
+	// on this worker. Called only by the controller on behalf of ClusterService.UpgradeSystem.
+	UpgradeSystem(context.Context, *v1.WorkerUpgradeSystemRequest) (*v1.NodeSystemUpgrade, error)
 }
 
 // RegisterWorkspaceServiceHandler registers svc as the hotbed.v1.WorkspaceService implementation on
@@ -2408,6 +2471,7 @@ func RegisterWorkspaceServiceHandler(server *connect.Server, svc WorkspaceServic
 		connect.Method{Spec: workspaceServiceSampleCommandSpec(), Handler: adapter.sampleCommand},
 		connect.Method{Spec: workspaceServiceGetProfileSpec(), Handler: adapter.getProfile},
 		connect.Method{Spec: workspaceServiceGetDaemonLogsSpec(), Handler: adapter.getDaemonLogs},
+		connect.Method{Spec: workspaceServiceUpgradeSystemSpec(), Handler: adapter.upgradeSystem},
 	)
 }
 
@@ -2578,6 +2642,10 @@ func (UnimplementedWorkspaceServiceHandler) GetProfile(context.Context, *v1.GetP
 
 func (UnimplementedWorkspaceServiceHandler) GetDaemonLogs(context.Context, *v1.GetDaemonLogsRequest) (*v1.GetDaemonLogsResponse, error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, "hotbed.v1.WorkspaceService.GetDaemonLogs is not implemented")
+}
+
+func (UnimplementedWorkspaceServiceHandler) UpgradeSystem(context.Context, *v1.WorkerUpgradeSystemRequest) (*v1.NodeSystemUpgrade, error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, "hotbed.v1.WorkspaceService.UpgradeSystem is not implemented")
 }
 
 type workspaceServiceClient struct {
@@ -2755,6 +2823,14 @@ func (c *workspaceServiceClient) GetProfile(ctx context.Context, req *v1.GetProf
 func (c *workspaceServiceClient) GetDaemonLogs(ctx context.Context, req *v1.GetDaemonLogsRequest) (*v1.GetDaemonLogsResponse, error) {
 	var res v1.GetDaemonLogsResponse
 	if err := c.client.CallUnary(ctx, workspaceServiceGetDaemonLogsSpec(), req, &res); err != nil {
+		return nil, err
+	}
+	return &res, nil
+}
+
+func (c *workspaceServiceClient) UpgradeSystem(ctx context.Context, req *v1.WorkerUpgradeSystemRequest) (*v1.NodeSystemUpgrade, error) {
+	var res v1.NodeSystemUpgrade
+	if err := c.client.CallUnary(ctx, workspaceServiceUpgradeSystemSpec(), req, &res); err != nil {
 		return nil, err
 	}
 	return &res, nil
@@ -3000,6 +3076,18 @@ func (h workspaceServiceHandler) getDaemonLogs(ctx context.Context, _ connect.Sp
 		return err
 	}
 	res, err := h.svc.GetDaemonLogs(ctx, &req)
+	if err != nil {
+		return err
+	}
+	return stream.Send(res)
+}
+
+func (h workspaceServiceHandler) upgradeSystem(ctx context.Context, _ connect.Spec, stream connect.ServerStream) error {
+	var req v1.WorkerUpgradeSystemRequest
+	if err := stream.Receive(&req); err != nil {
+		return err
+	}
+	res, err := h.svc.UpgradeSystem(ctx, &req)
 	if err != nil {
 		return err
 	}
