@@ -2008,9 +2008,19 @@ describe("Security, cron, daemon logs, tunnel, and workspace regression tests", 
 
 	it("includes live freshen commands in getSnapshot and excludes ended ones", async () => {
 		const owner = ownerClients();
-		const joiner = workerClients(JOIN_TOKEN, "node-freshen-snap", "ubu-freshen", "100.73.156.99:7121");
+		const joiner = workerClients(
+			JOIN_TOKEN,
+			"node-freshen-snap",
+			"ubu-freshen",
+			"100.73.156.99:7121",
+		);
 		const joined = await joiner.cluster.join({});
-		const worker = workerClients(OWNER_TOKEN, "node-freshen-snap", "ubu-freshen", "100.73.156.99:7121");
+		const worker = workerClients(
+			OWNER_TOKEN,
+			"node-freshen-snap",
+			"ubu-freshen",
+			"100.73.156.99:7121",
+		);
 
 		await worker.cluster.heartbeat(
 			create(HeartbeatRequestSchema, {
@@ -2060,5 +2070,154 @@ describe("Security, cron, daemon logs, tunnel, and workspace regression tests", 
 		const ids = snap.commands.map((c) => c.id);
 		expect(ids).toContain("f-cladefs-vm-live");
 		expect(ids).not.toContain("f-cladefs-vm-done");
+	});
+
+	it("waits briefly for a reconnecting worker WebSocket tunnel instead of failing immediately", async () => {
+		const owner = ownerClients();
+		await owner.cluster.putRepo({
+			repo: create(RepoSchema, {
+				id: "proj-reconnect",
+				url: "https://example.com/proj-reconnect.git",
+				branch: "main",
+			}),
+		});
+		const joiner = workerClients(JOIN_TOKEN, "node-reconn", "ubu-reconn", "100.73.156.81:7121");
+		const joined = await joiner.cluster.join({});
+		const worker = workerClients(OWNER_TOKEN, "node-reconn", "ubu-reconn", "100.73.156.81:7121");
+		await worker.cluster.heartbeat(
+			create(HeartbeatRequestSchema, {
+				clusterId: joined.clusterId,
+				resources: create(ResourcesSchema, {
+					arch: "amd64",
+					cpus: 16,
+					memoryBytes: BigInt(32 * 1024 ** 3),
+					version: "build 195",
+				}),
+			}),
+		);
+		const sess = await owner.sessions.startSession({
+			id: "reconn-fox",
+			project: "proj-reconnect",
+			agent: "test",
+		});
+
+		// Start CreateWorkspace while the worker has no active tunnel yet; connect 150ms later.
+		const tunnels: Array<Awaited<ReturnType<typeof openMockWorkerTunnel>>> = [];
+		const connectTimer = setTimeout(async () => {
+			tunnels.push(
+				await openMockWorkerTunnel(OWNER_TOKEN, "node-reconn", "ubu-reconn", "100.73.156.81:7121", {
+					unary: {
+						"/hotbed.v1.WorkspaceService/CreateWorkspace": (reqBytes) => {
+							const req = fromBinary(CreateWorkspaceRequestSchema, reqBytes);
+							return toBinary(
+								WorkspaceSchema,
+								create(WorkspaceSchema, {
+									id: req.id,
+									sessionId: req.sessionId,
+									project: "proj-reconnect",
+									state: WorkspaceState.IDLE,
+									node: "ubu-reconn",
+								}),
+							);
+						},
+					},
+				}),
+			);
+		}, 150);
+
+		try {
+			const ws = await owner.workspaces.createWorkspace({
+				sessionId: sess.id,
+				repo: "proj-reconnect",
+				placement: { node: "ubu-reconn" },
+			});
+			expect(ws.state).toBe(WorkspaceState.IDLE);
+			expect(ws.node).toBe("ubu-reconn");
+		} finally {
+			clearTimeout(connectTimer);
+			for (const t of tunnels) t.close();
+		}
+	});
+
+	it("prefers an online node with an active WebSocket tunnel over one reconnecting", async () => {
+		const owner = ownerClients();
+		await owner.cluster.putRepo({
+			repo: create(RepoSchema, {
+				id: "proj-tunnel-pref",
+				url: "https://example.com/proj-tunnel-pref.git",
+				branch: "main",
+			}),
+		});
+		const j1 = workerClients(JOIN_TOKEN, "node-tpref-1", "ubu-tpref-1", "100.73.156.82:7121");
+		const joined1 = await j1.cluster.join({});
+		const w1 = workerClients(OWNER_TOKEN, "node-tpref-1", "ubu-tpref-1", "100.73.156.82:7121");
+		await w1.cluster.heartbeat(
+			create(HeartbeatRequestSchema, {
+				clusterId: joined1.clusterId,
+				resources: create(ResourcesSchema, {
+					arch: "amd64",
+					cpus: 32,
+					memoryBytes: BigInt(64 * 1024 ** 3),
+					version: "build 195",
+				}),
+			}),
+		);
+
+		const j2 = workerClients(JOIN_TOKEN, "node-tpref-2", "vm-tpref-2", "100.73.156.83:7121");
+		const joined2 = await j2.cluster.join({});
+		const w2 = workerClients(OWNER_TOKEN, "node-tpref-2", "vm-tpref-2", "100.73.156.83:7121");
+		await w2.cluster.heartbeat(
+			create(HeartbeatRequestSchema, {
+				clusterId: joined2.clusterId,
+				resources: create(ResourcesSchema, {
+					arch: "arm64",
+					cpus: 4,
+					memoryBytes: BigInt(8 * 1024 ** 3),
+					version: "build 195",
+				}),
+			}),
+		);
+
+		const tunnel2 = await openMockWorkerTunnel(
+			OWNER_TOKEN,
+			"node-tpref-2",
+			"vm-tpref-2",
+			"100.73.156.83:7121",
+			{
+				unary: {
+					"/hotbed.v1.WorkspaceService/CreateWorkspace": (reqBytes) => {
+						const req = fromBinary(CreateWorkspaceRequestSchema, reqBytes);
+						return toBinary(
+							WorkspaceSchema,
+							create(WorkspaceSchema, {
+								id: req.id,
+								sessionId: req.sessionId,
+								project: "proj-tunnel-pref",
+								state: WorkspaceState.IDLE,
+								node: "vm-tpref-2",
+							}),
+						);
+					},
+				},
+			},
+		);
+
+		try {
+			const sess = await owner.sessions.startSession({
+				id: "tpref-owl",
+				project: "proj-tunnel-pref",
+				agent: "test",
+			});
+			const ws = await owner.workspaces.createWorkspace({
+				sessionId: sess.id,
+				repo: "proj-tunnel-pref",
+			});
+			// ubu-tpref-1 has no active tunnel (even though it has 32 CPUs & 64 GiB RAM),
+			// so placement must immediately route to vm-tpref-2 which has a live tunnel.
+			expect(ws.node).toBe("vm-tpref-2");
+			expect(tunnel2.calls).toContain("/hotbed.v1.WorkspaceService/CreateWorkspace");
+		} finally {
+			tunnel2.close();
+		}
 	});
 });

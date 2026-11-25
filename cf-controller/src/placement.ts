@@ -28,6 +28,7 @@ const BROKEN_COST = 10;
 const PRESSURE_COST = 1;
 const HOLDING_COST = 1;
 const WAKE_COST = 1;
+const RECONNECTING_COST = 5;
 
 export interface NodeRow {
 	node: Node;
@@ -37,6 +38,8 @@ export interface NodeRow {
 
 export interface NodeView extends NodeRow {
 	online: boolean;
+	/** Whether the node currently holds an open /ws/worker reverse-RPC tunnel (defaults true when omitted). */
+	tunnelConnected?: boolean;
 	wakeFailed: boolean;
 	bases: Base[];
 	workspaces: Workspace[];
@@ -50,6 +53,7 @@ export interface Candidate {
 	warm: boolean;
 	broken: boolean;
 	asleep: boolean;
+	tunnelConnected: boolean;
 	upgrading: number;
 	cpus: number;
 	cpuBusy: number;
@@ -106,6 +110,12 @@ export function candidateParts(c: Candidate, p?: Placement): CostPart[] {
 	}
 	if (c.asleep) {
 		add("asleep", WAKE_COST, "it is asleep: the run waits for it to boot");
+	} else if (!c.tunnelConnected) {
+		add(
+			"tunnel-reconnecting",
+			RECONNECTING_COST,
+			"its controller WebSocket tunnel is reconnecting",
+		);
 	}
 	if (!c.mine) {
 		add("move", MOVE_COST, "the session has no workspace here");
@@ -251,6 +261,7 @@ export function buildCandidates(
 			warm,
 			broken,
 			asleep,
+			tunnelConnected: nv.tunnelConnected !== false,
 			upgrading,
 			cpus,
 			cpuBusy,

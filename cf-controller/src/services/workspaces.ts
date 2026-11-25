@@ -371,17 +371,17 @@ export function createWorkspaceService(ctrl: ControllerContext): {
 		while (true) {
 			const claimed = await claim(sess, req, syncHost, skip, signal);
 			if (claimed.err) {
-				if (lastErr) throw lastErr;
 				if (claimed.upgrading.length > 0) {
 					if (upgradeDeadline === 0) {
 						upgradeDeadline =
 							Date.now() + Math.min(UPGRADE_WAIT_MS, ctrl.power.wakeWaitMs || UPGRADE_WAIT_MS);
 					}
-					if (Date.now() >= upgradeDeadline) throw claimed.err;
-					const ready = await waitUpgrade(claimed.upgrading, upgradeDeadline, signal);
-					if (!ready) throw claimed.err;
-					continue;
+					if (Date.now() < upgradeDeadline) {
+						const ready = await waitUpgrade(claimed.upgrading, upgradeDeadline, signal);
+						if (ready) continue;
+					}
 				}
+				if (lastErr) throw lastErr;
 				throw claimed.err;
 			}
 			const node = claimed.node!;

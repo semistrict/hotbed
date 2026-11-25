@@ -134,7 +134,12 @@ func runTunnelLoop(
 	if err != nil {
 		return err
 	}
-	backoff := time.Second
+	const (
+		quickReconnectDelay = 150 * time.Millisecond
+		initialBackoff      = time.Second
+		maxBackoff          = 30 * time.Second
+	)
+	backoff := initialBackoff
 	for {
 		if ctx.Err() != nil {
 			return nil
@@ -144,15 +149,20 @@ func runTunnelLoop(
 		if ctx.Err() != nil {
 			return nil
 		}
+		delay := backoff
 		if time.Since(connectedAt) > 15*time.Second {
-			backoff = time.Second
+			// A sustained tunnel dropped (e.g. edge reset or DO deploy);
+			// reconnect promptly once before escalating to exponential backoff.
+			delay = quickReconnectDelay
+			backoff = initialBackoff
+		} else {
+			backoff = min(backoff*2, maxBackoff)
 		}
-		slog.Warn("controller WebSocket tunnel disconnected; reconnecting", "url", wsURL, "backoff", backoff, "err", err)
+		slog.Warn("controller WebSocket tunnel disconnected; reconnecting", "url", wsURL, "backoff", delay, "err", err)
 		select {
 		case <-ctx.Done():
 			return nil
-		case <-time.After(backoff):
-			backoff = min(backoff*2, 30*time.Second)
+		case <-time.After(delay):
 		}
 	}
 }

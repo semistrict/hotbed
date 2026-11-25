@@ -76,6 +76,7 @@ interface PendingStream {
 }
 
 const MAX_STREAM_QUEUE_BYTES = 16 * 1024 * 1024;
+const DEFAULT_RECONNECT_WAIT_MS = 5_000;
 
 type PendingCall = PendingUnary | PendingStream;
 
@@ -106,9 +107,12 @@ function decodeBase64(b64: string): Uint8Array {
 export class WorkerTunnelHub {
 	private readonly ctx: DurableObjectState;
 	private readonly pending = new Map<string, PendingCall>();
+	private readonly connectWaiters = new Map<string, Set<() => void>>();
+	private readonly reconnectWaitMs: number;
 
-	constructor(ctx: DurableObjectState) {
+	constructor(ctx: DurableObjectState, reconnectWaitMs = DEFAULT_RECONNECT_WAIT_MS) {
 		this.ctx = ctx;
+		this.reconnectWaitMs = reconnectWaitMs;
 		// Auto-reply to worker keepalive pings without waking the DO from hibernation.
 		this.ctx.setWebSocketAutoResponse(new WebSocketRequestResponsePair("ping", "pong"));
 	}
@@ -131,6 +135,60 @@ export class WorkerTunnelHub {
 		}
 		this.ctx.acceptWebSocket(server, [attachment.nodeId, `host:${attachment.hostname}`]);
 		server.serializeAttachment(attachment);
+		this.notifyConnected(attachment.nodeId);
+	}
+
+	private notifyConnected(nodeId: string): void {
+		const waiters = this.connectWaiters.get(nodeId);
+		if (!waiters || waiters.size === 0) return;
+		this.connectWaiters.delete(nodeId);
+		for (const wake of waiters) {
+			wake();
+		}
+	}
+
+	/**
+	 * Returns the active WebSocket for nodeId, waiting up to waitMs for a
+	 * briefly disconnected worker to reconnect its /ws/worker tunnel.
+	 */
+	private async waitForSocket(
+		nodeId: string,
+		waitMs: number,
+		signal?: AbortSignal,
+	): Promise<{ ws: WebSocket; meta: WorkerSocketAttachment } | null> {
+		const immediate = this.socketFor(nodeId);
+		if (immediate) return immediate;
+		if (waitMs <= 0 || signal?.aborted) return null;
+
+		await new Promise<void>((resolve) => {
+			let settled = false;
+			const finish = () => {
+				if (settled) return;
+				settled = true;
+				clearTimeout(timer);
+				signal?.removeEventListener("abort", finish);
+				const set = this.connectWaiters.get(nodeId);
+				if (set) {
+					set.delete(finish);
+					if (set.size === 0) this.connectWaiters.delete(nodeId);
+				}
+				resolve();
+			};
+			let set = this.connectWaiters.get(nodeId);
+			if (!set) {
+				set = new Set();
+				this.connectWaiters.set(nodeId, set);
+			}
+			set.add(finish);
+			const timer = setTimeout(finish, waitMs);
+			signal?.addEventListener("abort", finish, { once: true });
+			// Re-check in case accept() landed before the waiter was registered.
+			if (this.socketFor(nodeId)) {
+				finish();
+			}
+		});
+		if (signal?.aborted) return null;
+		return this.socketFor(nodeId);
 	}
 
 	private openSocketsFor(nodeId: string): Array<{ ws: WebSocket; meta: WorkerSocketAttachment }> {
@@ -331,7 +389,11 @@ export class WorkerTunnelHub {
 		if (signal?.aborted) {
 			throw hotbedError(ErrorCode.Internal, `${host}: ${procedure} canceled`);
 		}
-		const sock = this.socketFor(nodeId);
+		const waitMs = Math.min(this.reconnectWaitMs, timeoutMs);
+		let sock = await this.waitForSocket(nodeId, waitMs, signal);
+		if (signal?.aborted) {
+			throw hotbedError(ErrorCode.Internal, `${host}: ${procedure} canceled`);
+		}
 		if (!sock) {
 			throw hotbedError(
 				ErrorCode.WorkerUnreachable,
@@ -351,52 +413,81 @@ export class WorkerTunnelHub {
 			body,
 			stream: false,
 		};
+		const frameJSON = JSON.stringify(frame);
 
-		const bytes = await new Promise<Uint8Array>((resolve, reject) => {
-			const sendCancel = () => {
-				try {
-					sock.ws.send(JSON.stringify({ type: "rpc_cancel", id } satisfies TunnelDownMessage));
-				} catch {
-					// ignore
+		// Register pending before send so an immediate reply cannot beat registration.
+		// If send() throws synchronously on a dying socket, wait once for a replacement
+		// socket and retry sending the exact same frame (it never left the DO).
+		const sendWithReconnect = async (): Promise<Uint8Array> => {
+			for (let attempt = 0; attempt < 2; attempt++) {
+				const curSock = sock!;
+				let sendErrMsg = "";
+				const p = new Promise<Uint8Array>((resolve, reject) => {
+					const sendCancel = () => {
+						try {
+							curSock.ws.send(
+								JSON.stringify({ type: "rpc_cancel", id } satisfies TunnelDownMessage),
+							);
+						} catch {
+							// ignore
+						}
+					};
+					const onAbort = () => {
+						clearTimeout(timer);
+						this.pending.delete(id);
+						sendCancel();
+						reject(hotbedError(ErrorCode.Internal, `${host}: ${procedure} canceled`));
+					};
+					const cleanup = () => {
+						signal?.removeEventListener("abort", onAbort);
+					};
+					const timer = setTimeout(() => {
+						cleanup();
+						this.pending.delete(id);
+						sendCancel();
+						reject(
+							hotbedError(ErrorCode.WorkerUnreachable, `${host}: ${procedure} timed out`, {
+								retryable: true,
+							}),
+						);
+					}, timeoutMs);
+					signal?.addEventListener("abort", onAbort, { once: true });
+					this.pending.set(id, { kind: "unary", nodeId, resolve, reject, timer, cleanup });
+					try {
+						curSock.ws.send(frameJSON);
+					} catch (err) {
+						clearTimeout(timer);
+						cleanup();
+						this.pending.delete(id);
+						sendErrMsg = err instanceof Error ? err.message : String(err);
+						resolve(new Uint8Array(0));
+					}
+				});
+				if (!sendErrMsg) {
+					return await p;
 				}
-			};
-			const onAbort = () => {
-				clearTimeout(timer);
-				this.pending.delete(id);
-				sendCancel();
-				reject(hotbedError(ErrorCode.Internal, `${host}: ${procedure} canceled`));
-			};
-			const cleanup = () => {
-				signal?.removeEventListener("abort", onAbort);
-			};
-			const timer = setTimeout(() => {
-				cleanup();
-				this.pending.delete(id);
-				sendCancel();
-				reject(
-					hotbedError(ErrorCode.WorkerUnreachable, `${host}: ${procedure} timed out`, {
-						retryable: true,
-					}),
-				);
-			}, timeoutMs);
-			signal?.addEventListener("abort", onAbort, { once: true });
-			this.pending.set(id, { kind: "unary", nodeId, resolve, reject, timer, cleanup });
-			try {
-				sock.ws.send(JSON.stringify(frame));
-			} catch (err) {
-				clearTimeout(timer);
-				cleanup();
-				this.pending.delete(id);
-				reject(
-					hotbedError(
-						ErrorCode.WorkerUnreachable,
-						`${host}: send over tunnel failed: ${err instanceof Error ? err.message : String(err)}`,
-						{ retryable: true },
-					),
+				if (attempt === 0) {
+					const next = await this.waitForSocket(nodeId, waitMs, signal);
+					if (signal?.aborted) {
+						throw hotbedError(ErrorCode.Internal, `${host}: ${procedure} canceled`);
+					}
+					if (next && next.ws !== curSock.ws) {
+						sock = next;
+						continue;
+					}
+				}
+				throw hotbedError(
+					ErrorCode.WorkerUnreachable,
+					`${host}: send over tunnel failed: ${sendErrMsg}`,
+					{ retryable: true },
 				);
 			}
-		});
+			throw hotbedError(ErrorCode.WorkerUnreachable, `${host}: send over tunnel failed`, {
+				retryable: true,
+			});
+		};
 
+		const bytes = await sendWithReconnect();
 		return fromBinary(resSchema, bytes);
 	}
 
@@ -413,7 +504,10 @@ export class WorkerTunnelHub {
 		if (signal?.aborted) {
 			return;
 		}
-		const sock = this.socketFor(nodeId);
+		let sock = await this.waitForSocket(nodeId, this.reconnectWaitMs, signal);
+		if (signal?.aborted) {
+			return;
+		}
 		if (!sock) {
 			throw hotbedError(
 				ErrorCode.WorkerUnreachable,
@@ -430,6 +524,7 @@ export class WorkerTunnelHub {
 			body,
 			stream: true,
 		};
+		const frameJSON = JSON.stringify(frame);
 		const state: PendingStream = {
 			kind: "stream",
 			nodeId,
@@ -445,7 +540,7 @@ export class WorkerTunnelHub {
 			state.done = true;
 			this.pending.delete(id);
 			try {
-				sock.ws.send(JSON.stringify({ type: "rpc_cancel", id } satisfies TunnelDownMessage));
+				sock?.ws.send(JSON.stringify({ type: "rpc_cancel", id } satisfies TunnelDownMessage));
 			} catch {
 				// ignore
 			}
@@ -455,14 +550,36 @@ export class WorkerTunnelHub {
 		};
 		signal?.addEventListener("abort", onAbort, { once: true });
 
-		try {
-			sock.ws.send(JSON.stringify(frame));
-		} catch (err) {
+		let sent = false;
+		let lastSendErr: unknown = null;
+		for (let attempt = 0; attempt < 2; attempt++) {
+			try {
+				sock.ws.send(frameJSON);
+				sent = true;
+				break;
+			} catch (err) {
+				lastSendErr = err;
+				if (attempt === 0) {
+					const prevWs = sock.ws;
+					const next = await this.waitForSocket(nodeId, this.reconnectWaitMs, signal);
+					if (signal?.aborted) {
+						this.pending.delete(id);
+						signal.removeEventListener("abort", onAbort);
+						return;
+					}
+					if (next && next.ws !== prevWs) {
+						sock = next;
+						continue;
+					}
+				}
+			}
+		}
+		if (!sent) {
 			this.pending.delete(id);
 			signal?.removeEventListener("abort", onAbort);
 			throw hotbedError(
 				ErrorCode.WorkerUnreachable,
-				`${host}: send over tunnel failed: ${err instanceof Error ? err.message : String(err)}`,
+				`${host}: send over tunnel failed: ${lastSendErr instanceof Error ? lastSendErr.message : String(lastSendErr)}`,
 				{ retryable: true },
 			);
 		}

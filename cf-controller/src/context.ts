@@ -280,6 +280,7 @@ export class ControllerContext {
 				...n,
 				node,
 				online: node.online,
+				tunnelConnected: this.tunnel.isConnected(n.node.id),
 				wakeFailed: this.power.wakeFailed(node, nowMs),
 				bases: v.bases,
 				workspaces: v.workspaces,
