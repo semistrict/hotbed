@@ -2,11 +2,13 @@ package worker
 
 import (
 	"context"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
 
 	pb "github.com/semistrict/hotbed/internal/gen/hotbed/v1"
+	"github.com/semistrict/hotbed/internal/statedir"
 )
 
 // The node admits no more work than the memory its commands hold fits:
@@ -397,5 +399,93 @@ func TestMemoryPressureParks(t *testing.T) {
 	e.step(t.Context())
 	if s := young.cmd().State; s != running {
 		t.Fatalf("the first in line is %v once pressure fell, want thawed", s)
+	}
+}
+
+func TestCommandAndShellMemoryBudgetEnv(t *testing.T) {
+	const GiB = 1 << 30
+	e, _, _, _ := parkEngine(t)
+	e.mu.Lock()
+	e.resources.MemoryBytes = 10 * GiB
+	e.cfg.VM = &VMBackend{cfg: statedir.VMConfig{MemMiB: 6144}}
+	e.cfg.Runtime = &trackingRuntime{}
+	e.cfg.RuntimeFor = e.isVMWorkspace
+	e.vmWorkspaces.Store("ws-vm", struct{}{})
+
+	// Host-FUSE / chroot command (including base freshen) gets slice ceiling.
+	hostCmd := e.newCommand(&pb.CommandRecord{
+		Command: &pb.Command{Id: "c-host", Kind: "freshen", Args: []string{"true"}, Limits: &pb.CommandLimits{CpuWeight: 100}},
+		Dir:     WorkPath,
+		Volume:  "v-host",
+	})
+	hostSpec, err := e.spec(hostCmd)
+	if err != nil {
+		e.mu.Unlock()
+		t.Fatalf("spec(hostCmd): %v", err)
+	}
+	if got, want := envValue(hostSpec.Env, "HOTBED_MEMORY_BYTES"), strconv.FormatInt(10*GiB, 10); got != want {
+		e.mu.Unlock()
+		t.Fatalf("host command HOTBED_MEMORY_BYTES = %q, want %q", got, want)
+	}
+
+	// Explicit --mem-high tighter than the slice tightens HOTBED_MEMORY_BYTES.
+	cappedCmd := e.newCommand(&pb.CommandRecord{
+		Command: &pb.Command{Id: "c-cap", Kind: "build", Args: []string{"true"}, Limits: &pb.CommandLimits{CpuWeight: 100, MemoryHighBytes: 4 * GiB}},
+		Dir:     WorkPath,
+		Volume:  "v-host",
+	})
+	cappedSpec, err := e.spec(cappedCmd)
+	if err != nil {
+		e.mu.Unlock()
+		t.Fatalf("spec(cappedCmd): %v", err)
+	}
+	if got, want := envValue(cappedSpec.Env, "HOTBED_MEMORY_BYTES"), strconv.FormatInt(4*GiB, 10); got != want {
+		e.mu.Unlock()
+		t.Fatalf("capped command HOTBED_MEMORY_BYTES = %q, want %q", got, want)
+	}
+
+	// VM command and VM freshen get the Firecracker guest RAM size.
+	vmCmd := e.newCommand(&pb.CommandRecord{
+		Command: &pb.Command{Id: "c-vm", WorkspaceId: "ws-vm", Kind: "build", Args: []string{"true"}, Limits: &pb.CommandLimits{CpuWeight: 100}},
+		Dir:     WorkPath,
+		Volume:  "v-vm",
+	})
+	vmSpec, err := e.spec(vmCmd)
+	if err != nil {
+		e.mu.Unlock()
+		t.Fatalf("spec(vmCmd): %v", err)
+	}
+	if got, want := envValue(vmSpec.Env, "HOTBED_MEMORY_BYTES"), strconv.FormatInt(6*GiB, 10); got != want {
+		e.mu.Unlock()
+		t.Fatalf("VM command HOTBED_MEMORY_BYTES = %q, want %q", got, want)
+	}
+
+	vmFreshen := e.newCommand(&pb.CommandRecord{
+		Command: &pb.Command{Id: "f-vm", Kind: "freshen", Args: []string{"true"}, Limits: &pb.CommandLimits{CpuWeight: 100}},
+		Dir:     WorkPath,
+	})
+	vmFreshen.managedFreshen = &managedFreshen{vmID: "base-vm-1"}
+	vmFreshenSpec, err := e.spec(vmFreshen)
+	if err != nil {
+		e.mu.Unlock()
+		t.Fatalf("spec(vmFreshen): %v", err)
+	}
+	if got, want := envValue(vmFreshenSpec.Env, "HOTBED_MEMORY_BYTES"), strconv.FormatInt(6*GiB, 10); got != want {
+		e.mu.Unlock()
+		t.Fatalf("VM freshen HOTBED_MEMORY_BYTES = %q, want %q", got, want)
+	}
+
+	// Shells receive the same budget.
+	hostWS := &workspace{rec: &pb.WorkspaceRecord{Workspace: &pb.Workspace{Id: "ws-host", SessionId: "s1"}, Volume: "v-host"}}
+	hostShellSpec, _ := e.shellSpec("sh1", hostWS, "", []string{"bash"}, nil, nil, false)
+	if got, want := envValue(hostShellSpec.Env, "HOTBED_MEMORY_BYTES"), strconv.FormatInt(10*GiB, 10); got != want {
+		e.mu.Unlock()
+		t.Fatalf("host shell HOTBED_MEMORY_BYTES = %q, want %q", got, want)
+	}
+	vmWS := &workspace{rec: &pb.WorkspaceRecord{Workspace: &pb.Workspace{Id: "ws-vm", SessionId: "s1"}, Volume: "v-vm"}}
+	vmShellSpec, _ := e.shellSpec("sh2", vmWS, "", []string{"bash"}, nil, nil, false)
+	e.mu.Unlock()
+	if got, want := envValue(vmShellSpec.Env, "HOTBED_MEMORY_BYTES"), strconv.FormatInt(6*GiB, 10); got != want {
+		t.Fatalf("VM shell HOTBED_MEMORY_BYTES = %q, want %q", got, want)
 	}
 }

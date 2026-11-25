@@ -629,6 +629,30 @@ func TestBackstopClampRespectsStaticLimits(t *testing.T) {
 		t.Fatalf("Clamp(High=16G) = %+v, want High=16G Max=%d", highOnly, wantMax)
 	}
 
+	// Tighter Max alone (e.g. asahimbp's 50-memory.conf with MemoryMax=10G and
+	// no MemoryHigh) preserves a reclaim cushion below Max instead of collapsing
+	// High == Max.
+	asahi := BackstopFor(17*GiB, Swap{Zram: 8 * GiB})
+	maxOnly := asahi.Clamp(MemoryLimits{Max: 10 * GiB})
+	wantAsahiHigh := 10*GiB - asahi.Headroom/2
+	if maxOnly.Max != 10*GiB || maxOnly.High != wantAsahiHigh || maxOnly.High >= maxOnly.Max {
+		t.Fatalf("Clamp(Max=10G on 17G+8G zram) = %+v, want High=%d (< Max=10G)", maxOnly, wantAsahiHigh)
+	}
+
+	// On a small Max-only static cap where Headroom/2 > Max/8, the cushion
+	// scales to Max/8 so High stays positive and well below Max.
+	smallMax := base.Clamp(MemoryLimits{Max: 4 * GiB})
+	wantSmallHigh := int64(4*GiB - (4*GiB)/8)
+	if smallMax.Max != 4*GiB || smallMax.High != wantSmallHigh {
+		t.Fatalf("Clamp(Max=4G) = %+v, want High=%d Max=4G", smallMax, wantSmallHigh)
+	}
+
+	// Explicit static High > Max still clamps High down to Max.
+	inverted := base.Clamp(MemoryLimits{High: 14 * GiB, Max: 12 * GiB})
+	if inverted.Max != 12*GiB || inverted.High != 12*GiB {
+		t.Fatalf("Clamp(High=14G, Max=12G) = %+v, want High=12G Max=12G", inverted)
+	}
+
 	// Looser static limits never weaken the computed backstop.
 	looser := base.Clamp(MemoryLimits{High: 26 * GiB, Max: 27 * GiB, SwapMax: 8 * GiB})
 	if looser != base {

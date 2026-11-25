@@ -541,6 +541,27 @@ func (e *Engine) admitLimit() int64 {
 	return int64(float64(e.resources.GetMemoryBytes()) * admitMemory)
 }
 
+// memoryBudgetBytes returns the effective memory ceiling in bytes for a
+// command or shell running in this worker: Firecracker guest RAM for VM
+// runtimes (bounded by the host slice), or the work slice's memory limit
+// (e.resources.MemoryBytes) for host runtimes, further capped by any explicit
+// per-command MemoryHigh limit. Call with e.mu held.
+func (e *Engine) memoryBudgetBytes(isVM bool, memHigh int64) int64 {
+	budget := e.resources.GetMemoryBytes()
+	if isVM && e.cfg.VM != nil {
+		if mib := e.cfg.VM.configSnapshot().MemMiB; mib > 0 {
+			vmBytes := int64(mib) << 20
+			if budget <= 0 || vmBytes < budget {
+				budget = vmBytes
+			}
+		}
+	}
+	if memHigh > 0 && (budget <= 0 || memHigh < budget) {
+		budget = memHigh
+	}
+	return budget
+}
+
 func (e *Engine) observe(ctx context.Context, c *command, st unit.State, sampledAt time.Time) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
@@ -1200,6 +1221,9 @@ func (e *Engine) spec(c *command) (unit.Spec, error) {
 	env := append(cacheEnv(), "XDG_RUNTIME_DIR="+runtimeTarget)
 	env = append(env, c.rec.Env...)
 	env = append(env, "HOTBED_WORKSPACE="+cmd.WorkspaceId, "HOTBED_COMMAND="+cmd.Id)
+	if mem := e.memoryBudgetBytes(vmFreshen || e.usesRuntime(c.runtimeTarget()), cmd.Limits.GetMemoryHighBytes()); mem > 0 {
+		env = append(env, "HOTBED_MEMORY_BYTES="+strconv.FormatInt(mem, 10))
+	}
 	if vmFreshen {
 		env = append(env, "HOTBED_RUNTIME_TARGET="+c.managedFreshen.vmID)
 	}

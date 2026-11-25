@@ -91,6 +91,9 @@ builds and installs from a lockfile: they run again whenever any repo moved.
 - Install into the workspace, never into `$HOME` or the system, or forks won't have it. Programs go
   in `$HOTBED_BIN` (on PATH). Caches and data go in `$XDG_CACHE_HOME` and `$XDG_DATA_HOME`.
   `CARGO_HOME`, `RUSTUP_HOME`, `GOPATH` and npm's cache already point into the workspace.
+  `$HOTBED_MEMORY_BYTES` carries the command's effective memory ceiling in bytes (the VM's RAM or the
+  host work slice's limit), so memory-heavy build steps (e.g. `CARGO_BUILD_JOBS`) can scale parallelism
+  to fit without OOM-killing on smaller nodes.
 - Make steps safe to repeat: check before installing, use `mkdir -p` and `--force`. A step that fails
   its second run is refused (`STEP_NOT_IDEMPOTENT`).
 - To fix a step, add it again under the same name. `hotbed step ls` (`-p PROJECT` for another
