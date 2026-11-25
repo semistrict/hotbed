@@ -522,7 +522,6 @@ hotbed schedule run nightly                 # a run now; prints its session, for
 | `hotbed daemon-logs [--source controller\|HOST] [--level warn\|error] [--since 1h] [-q Q] [-n N]` | Rotating WARN/ERROR slog logs from the controller and every worker, newest first (with rotation disk stats) |
 | `hotbed snapshot` | Everything the cockpit shows, as JSON |
 | `hotbed upgrade` | Install the controller's build over this hotbed (a CI build does it by itself) |
-| `hotbed admin upgrade` | Have the controller check CI for a newer build now and refresh its release metadata |
 | `hotbed system upgrade [HOST] [--force] [--dry-run]` | Explicitly upgrade host `cladefsd`, `firecracker`, and managed guest kernel binaries from controller config (`system.cladefsd`, `system.firecracker`, `vm.kernels`); drains and terminates live commands, shells, and workspaces on each node before restarting `cladefsd` |
 | `hotbed login [CONTROLLER] [--device] [--org ORG]` | Sign in to a WorkOS-enabled controller with Google (browser login, or `--device` for SSH/headless) |
 | `hotbed logout [CONTROLLER]` | Remove locally stored WorkOS credentials for a controller |

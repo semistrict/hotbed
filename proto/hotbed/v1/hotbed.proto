@@ -69,9 +69,6 @@ service ClusterService {
   rpc GetBuild(GetBuildRequest) returns (Build) {
     option idempotency_level = IDEMPOTENT;
   }
-  // UpgradeController checks CI for a newer build immediately, installs it
-  // over the controller, and restarts the controller as it.
-  rpc UpgradeController(UpgradeControllerRequest) returns (UpgradeControllerResponse);
   // List repos registered with the cluster.
   rpc ListRepos(ListReposRequest) returns (ListReposResponse) {
     option idempotency_level = IDEMPOTENT;
@@ -845,17 +842,6 @@ message DeleteWorkerConfigResponse {
 message GetBuildRequest {
   string os = 1;
   string arch = 2;
-}
-
-message UpgradeControllerRequest {}
-
-message UpgradeControllerResponse {
-  // The build the controller runs, or is restarting into.
-  int64 build = 1;
-  // The build the controller was running before (0 for a dev build).
-  int64 from = 2;
-  // True when a new build was installed and the controller is restarting.
-  bool restarting = 3;
 }
 
 message UpgradeSystemRequest {

@@ -331,8 +331,8 @@ func TestInitVMWorker(t *testing.T) {
 		if !strings.Contains(apiErr.Message, "--zfs-device") || !strings.Contains(apiErr.Message, "version skew") {
 			t.Errorf("message = %q, want mention of --zfs-device and version skew", apiErr.Message)
 		}
-		if !strings.Contains(apiErr.Suggestion, "hotbed admin upgrade") || !strings.Contains(apiErr.Suggestion, "--binary") {
-			t.Errorf("suggestion = %q, want mention of hotbed admin upgrade and --binary", apiErr.Suggestion)
+		if !strings.Contains(apiErr.Suggestion, "CI to deploy") || !strings.Contains(apiErr.Suggestion, "--binary") {
+			t.Errorf("suggestion = %q, want mention of CI deploy and --binary", apiErr.Suggestion)
 		}
 		if len(cmds) != 1 {
 			t.Fatalf("expected only help probe to run, got %q", cmds)
@@ -348,8 +348,8 @@ func TestInitVMWorker(t *testing.T) {
 		if !errors.As(err, &apiErr) || apiErr.Code != api.CodeInvalidArgs {
 			t.Fatalf("expected INVALID_ARGS *api.Error, got %v", err)
 		}
-		if !strings.Contains(apiErr.Suggestion, "hotbed admin upgrade") || !strings.Contains(apiErr.Suggestion, "--binary") {
-			t.Errorf("suggestion = %q, want mention of hotbed admin upgrade and --binary", apiErr.Suggestion)
+		if !strings.Contains(apiErr.Suggestion, "CI to deploy") || !strings.Contains(apiErr.Suggestion, "--binary") {
+			t.Errorf("suggestion = %q, want mention of CI deploy and --binary", apiErr.Suggestion)
 		}
 	})
 

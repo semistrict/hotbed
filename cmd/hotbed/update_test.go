@@ -2,7 +2,6 @@ package main
 
 import (
 	"errors"
-	"io"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -129,65 +128,6 @@ func TestADevControllerHandsOutNoBuild(t *testing.T) {
 	code, e := c.fails("upgrade")
 	if code != exitError || e.Code != "NOT_FOUND" || !strings.HasPrefix(e.Message, "the controller runs dev (") || !strings.HasSuffix(e.Message, "), a build it doesn't keep: nothing to upgrade to") {
 		t.Errorf("upgrade from a dev controller: exit %d, %+v", code, e)
-	}
-	// Without updates configured on the controller, admin upgrade says why.
-	code, e = c.fails("admin", "upgrade")
-	if code != exitError || e.Code != "NOT_FOUND" || !strings.Contains(e.Message, "does not follow CI builds") {
-		t.Errorf("admin upgrade without updates configured: exit %d, %+v", code, e)
-	}
-}
-
-// Admin upgrade refreshes the controller's cached GitHub release metadata in
-// place (no process restart) and immediately serves the new build's binaries.
-func TestAdminUpgradeRefreshesControllerRelease(t *testing.T) {
-	g := updatetest.NewGitHub(t)
-	g.Publish(7)
-	ghClient := g.Client()
-
-	c := newClusterWith(t, clusterOpts{
-		server: func(s *testServerConfig) {
-			s.UpdatesRepo = ghClient.Repo
-			s.UpdatesAPIBase = ghClient.API
-			s.UpdatesToken = ghClient.Token
-		},
-	})
-
-	// First admin upgrade fetches build 7 from GitHub.
-	var res adminUpgradeResult
-	c.ok(&res, "admin", "upgrade")
-	if res != (adminUpgradeResult{Build: 7, Upgraded: true, From: 0, Restarting: false}) {
-		t.Fatalf("initial admin upgrade = %+v", res)
-	}
-
-	// Already on build 7: admin upgrade reports no upgrade.
-	c.ok(&res, "admin", "upgrade")
-	if res != (adminUpgradeResult{Build: 7, Upgraded: false, From: 0, Restarting: false}) {
-		t.Fatalf("admin upgrade on latest = %+v", res)
-	}
-
-	// Publish build 8: admin upgrade immediately advances to build 8 and serves
-	// build 8's assets via /builds/8/<asset>.
-	g.Publish(8)
-	c.ok(&res, "admin", "upgrade")
-	if res != (adminUpgradeResult{Build: 8, Upgraded: true, From: 7, Restarting: false}) {
-		t.Fatalf("admin upgrade to 8 = %+v", res)
-	}
-	b, err := c.asWorker.GetBuild(t.Context(), &pb.GetBuildRequest{Os: runtime.GOOS, Arch: runtime.GOARCH})
-	if err != nil || b.Number != 8 {
-		t.Fatalf("the controller's build after admin upgrade = %v, %v; want 8", b, err)
-	}
-	resp, err := c.tn.Client(laptop).Get(c.ctrlSrv.URL + b.Path)
-	if err != nil {
-		t.Fatalf("GET %s: %v", b.Path, err)
-	}
-	defer resp.Body.Close()
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		t.Fatal(err)
-	}
-	want := "hotbed build 8 for " + runtime.GOOS + "/" + runtime.GOARCH
-	if resp.StatusCode != http.StatusOK || string(body) != want {
-		t.Errorf("GET %s = %d %q, want 200 %q", b.Path, resp.StatusCode, string(body), want)
 	}
 }
 
