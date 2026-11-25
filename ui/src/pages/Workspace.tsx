@@ -170,16 +170,16 @@ function FileBrowser({ workspaceId, selected }: { workspaceId: string; selected?
   const changed = new Set(content.data?.changedLines ?? []);
 
   return (
-    <div className="grid gap-4 lg:grid-cols-[280px_1fr]">
-      <ul className="max-h-[480px] overflow-y-auto rounded-lg border border-border bg-background/40 p-2 font-mono text-[11px]">
+    <div className="grid gap-4 lg:grid-cols-[280px_minmax(0,1fr)]">
+      <ul className="max-h-[220px] overflow-y-auto rounded-lg border border-border bg-background/40 p-2 font-mono text-[11px] lg:max-h-[480px]">
         {files.data.map((f) => (
           <TreeRow key={f.path} f={f} active={f.path === path} onPick={() => navigate({ to: "/workspaces/$id", params: { id: workspaceId }, search: { file: f.path }, replace: true, resetScroll: false })} />
         ))}
       </ul>
       <div className="min-w-0 overflow-hidden rounded-lg border border-border bg-background/40">
-        <div className="flex items-center gap-2 border-b border-border px-3 py-2 font-mono text-[11px] text-muted-foreground">
-          <span className="text-foreground">{path}</span>
-          {changed.size > 0 && <span className="text-primary">{changed.size} changed lines</span>}
+        <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5 border-b border-border px-3 py-2 font-mono text-[11px] text-muted-foreground">
+          <span className="min-w-0 break-all text-foreground">{path}</span>
+          {changed.size > 0 && <span className="shrink-0 text-primary">{changed.size} changed lines</span>}
         </div>
         <pre className="max-h-[440px] overflow-auto py-2 font-mono text-[11.5px] leading-[1.65]">
           {content.data?.text.split("\n").map((line, i) => (

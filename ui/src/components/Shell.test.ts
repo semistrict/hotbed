@@ -1,0 +1,40 @@
+import { describe, expect, it } from "vitest";
+import { isNavActive, routeTitle } from "./Shell";
+
+describe("Shell navigation helpers", () => {
+  it("marks Projects active for root and workspace detail routes", () => {
+    expect(isNavActive("/", "/")).toBe(true);
+    expect(isNavActive("/workspaces/ws-123", "/")).toBe(true);
+    expect(isNavActive("/questions", "/")).toBe(false);
+    expect(isNavActive("/nodes/ubu1", "/")).toBe(false);
+  });
+
+  it("marks section routes active for both list and detail deep links", () => {
+    expect(isNavActive("/questions", "/questions")).toBe(true);
+    expect(isNavActive("/memories", "/memories")).toBe(true);
+    expect(isNavActive("/memories/42", "/memories")).toBe(true);
+    expect(isNavActive("/reviews/7", "/reviews")).toBe(true);
+    expect(isNavActive("/sessions/bold-otter", "/sessions")).toBe(true);
+    expect(isNavActive("/commands/cmd-9", "/commands")).toBe(true);
+    expect(isNavActive("/nodes/ubu1.local", "/nodes")).toBe(true);
+    expect(isNavActive("/logs", "/logs")).toBe(true);
+    expect(isNavActive("/org", "/org")).toBe(true);
+    expect(isNavActive("/cluster", "/cluster")).toBe(true);
+  });
+
+  it("does not match sibling prefixes accidentally", () => {
+    expect(isNavActive("/organizations", "/org")).toBe(false);
+    expect(isNavActive("/clusters", "/cluster")).toBe(false);
+  });
+
+  it("resolves human-readable header titles for every deep link", () => {
+    expect(routeTitle("/")).toBe("Projects");
+    expect(routeTitle("/workspaces/ws-1")).toBe("Workspace");
+    expect(routeTitle("/reviews/42")).toBe("Reviews");
+    expect(routeTitle("/memories/11")).toBe("Memories");
+    expect(routeTitle("/nodes/ubu1")).toBe("Nodes");
+    expect(routeTitle("/commands/abc")).toBe("Commands");
+    expect(routeTitle("/sessions/warm-fox")).toBe("Sessions");
+    expect(routeTitle("/org")).toBe("Organization");
+  });
+});

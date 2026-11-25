@@ -192,47 +192,51 @@ export function ContinuousProfilePanel({ id, node, live }: ContinuousProfileProp
               onChange={(e) => setQueryText(e.target.value)}
               placeholder="Filter functions, symbols, modules..."
               aria-label="Filter profile functions"
-              className="min-w-[220px] flex-1 bg-background/70 font-mono text-[11.5px] placeholder:text-faint"
+              className="w-full bg-background/70 font-mono text-[11.5px] placeholder:text-faint sm:min-w-[220px] sm:flex-1"
             />
             {isNode && (
-              <Tabs
-                value={windowBucket ? "" : range}
-                onValueChange={(v) => {
-                  setRange(v as RangeKey);
-                  setWindowBucket(null);
-                }}
-              >
+              <div className="max-w-full overflow-x-auto no-scrollbar">
+                <Tabs
+                  value={windowBucket ? "" : range}
+                  onValueChange={(v) => {
+                    setRange(v as RangeKey);
+                    setWindowBucket(null);
+                  }}
+                >
+                  <TabsList className="h-8 border border-border bg-background/60 font-mono text-[11px]">
+                    {(
+                      [
+                        ["1m", "1m"],
+                        ["5m", "5m"],
+                        ["15m", "15m"],
+                        ["all", "All (30m)"],
+                      ] as const
+                    ).map(([k, label]) => (
+                      <TabsTrigger key={k} value={k} className="px-2 font-mono text-[11px]">
+                        {label}
+                      </TabsTrigger>
+                    ))}
+                  </TabsList>
+                </Tabs>
+              </div>
+            )}
+            <div className="max-w-full overflow-x-auto no-scrollbar">
+              <Tabs value={view} onValueChange={(v) => setView(v as ProfileView)}>
                 <TabsList className="h-8 border border-border bg-background/60 font-mono text-[11px]">
                   {(
                     [
-                      ["1m", "1m"],
-                      ["5m", "5m"],
-                      ["15m", "15m"],
-                      ["all", "All (30m)"],
+                      ["flamegraph", "Flamegraph"],
+                      ["top", "Top functions"],
+                      ["folded", "Folded stacks"],
                     ] as const
                   ).map(([k, label]) => (
-                    <TabsTrigger key={k} value={k} className="px-2 font-mono text-[11px]">
+                    <TabsTrigger key={k} value={k} className="px-2.5 font-mono text-[11px]">
                       {label}
                     </TabsTrigger>
                   ))}
                 </TabsList>
               </Tabs>
-            )}
-            <Tabs value={view} onValueChange={(v) => setView(v as ProfileView)}>
-              <TabsList className="h-8 border border-border bg-background/60 font-mono text-[11px]">
-                {(
-                  [
-                    ["flamegraph", "Flamegraph"],
-                    ["top", "Top functions"],
-                    ["folded", "Folded stacks"],
-                  ] as const
-                ).map(([k, label]) => (
-                  <TabsTrigger key={k} value={k} className="px-2.5 font-mono text-[11px]">
-                    {label}
-                  </TabsTrigger>
-                ))}
-              </TabsList>
-            </Tabs>
+            </div>
           </div>
 
           {/* Runtime type & process comm filter chips */}

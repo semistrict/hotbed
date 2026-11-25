@@ -52,16 +52,16 @@ export function Crumbs({ project: named, workspaceId, repoId, here }: Trail) {
     ),
   ].filter(Boolean);
   return (
-    <Breadcrumb className="rise">
-      <BreadcrumbList className="gap-1.5 font-mono text-[11px] text-faint">
+    <Breadcrumb className="rise min-w-0">
+      <BreadcrumbList className="flex-wrap gap-1.5 font-mono text-[11px] text-faint">
         {steps.map((step, i) => (
           <Fragment key={i}>
-            <BreadcrumbItem>{step}</BreadcrumbItem>
+            <BreadcrumbItem className="min-w-0">{step}</BreadcrumbItem>
             <BreadcrumbSeparator className="text-faint" />
           </Fragment>
         ))}
-        <BreadcrumbItem>
-          <BreadcrumbPage className="font-mono text-[11px] text-foreground">{here}</BreadcrumbPage>
+        <BreadcrumbItem className="min-w-0">
+          <BreadcrumbPage className="break-all font-mono text-[11px] text-foreground">{here}</BreadcrumbPage>
         </BreadcrumbItem>
       </BreadcrumbList>
     </Breadcrumb>

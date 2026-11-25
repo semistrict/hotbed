@@ -40,19 +40,19 @@ function Overview({ s, colors }: { s: Snapshot; colors: Map<string, string> }) {
   return (
     <div className="grid grid-cols-12 gap-4">
       {/* The headline: what warm forks saved. */}
-      <section className="rise col-span-12 overflow-hidden rounded-3xl border border-border bg-card/80 lg:col-span-7">
-        <div className="relative p-6 sm:p-8">
+      <section className="rise col-span-12 min-w-0 overflow-hidden rounded-3xl border border-border bg-card/80 lg:col-span-7">
+        <div className="relative p-5 sm:p-7 lg:p-8">
           <div className="pointer-events-none absolute -top-24 -left-16 size-80 rounded-full bg-primary/20 blur-3xl" />
           <div className="eyebrow relative">compile time saved · last 24 hours</div>
-          <div className="relative mt-3 flex items-baseline gap-1 text-foreground">
+          <div className="relative mt-3 flex flex-wrap items-baseline gap-y-1 text-foreground">
             {durationParts(day.saved).map(([n, u]) => (
               <span key={u} className="flex items-baseline">
-                <span className="display text-[88px] leading-[0.85] font-semibold sm:text-[120px]">{n}</span>
-                <span className="display mr-4 text-[40px] font-light text-primary italic sm:text-[52px]">{u}</span>
+                <span className="display text-[56px] leading-[0.88] font-semibold sm:text-[88px] xl:text-[116px]">{n}</span>
+                <span className="display mr-2.5 text-[28px] font-light text-primary italic sm:mr-4 sm:text-[42px] xl:text-[52px]">{u}</span>
               </span>
             ))}
           </div>
-          <p className="relative mt-5 max-w-xl text-[14px] leading-relaxed text-muted-foreground">
+          <p className="relative mt-4 max-w-xl text-[13.5px] leading-relaxed text-muted-foreground sm:mt-5 sm:text-[14px]">
             <span className="num font-mono text-foreground">{compact(day.builds)}</span> builds and tests started from a warm, forked base and ran in{" "}
             <span className="num font-mono text-foreground">{duration(day.spent)}</span>. From nothing they would have taken{" "}
             <span className="num font-mono text-foreground">{duration(day.cold)}</span> —{" "}
@@ -195,7 +195,7 @@ function BaseList({ s }: { s: Snapshot }) {
   return (
     <ul className="divide-y divide-border text-[12px]">
       {rows.map(({ p, warm, building, failed, gen }) => (
-        <li key={p.name} className="flex items-center gap-3 py-2">
+        <li key={p.name} className="flex flex-wrap items-center gap-x-3 gap-y-1 py-2">
           <span className="font-mono text-foreground">{p.name}</span>
           <span className="num font-mono text-faint">g{gen}</span>
           <span className="ml-auto text-muted-foreground">
@@ -203,12 +203,12 @@ function BaseList({ s }: { s: Snapshot }) {
             {failed > 0 && <span className="ml-2 font-mono text-critical">{failed} failed</span>}
           </span>
           {building.length > 0 ? (
-            <span className="w-28">
+            <span className="w-24 sm:w-28">
               <Meter value={building[0]?.progress ?? 0} warn={2} danger={2} />
               <span className="font-mono text-[9.5px] text-primary">building g{building[0]?.generation}</span>
             </span>
           ) : (
-            <span className="w-28 text-right font-mono text-[10px] text-faint">up to date</span>
+            <span className="w-20 text-right font-mono text-[10px] text-faint sm:w-28">up to date</span>
           )}
         </li>
       ))}

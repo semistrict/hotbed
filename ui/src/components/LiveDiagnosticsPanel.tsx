@@ -352,7 +352,7 @@ export function LiveDiagnosticsPanel({ id, onSamplePid }: { id: string; onSample
                 disabled={traceRunning}
                 placeholder="strace -e (e.g. file,network)"
                 aria-label="strace syscall filter"
-                className="h-7 w-[240px] bg-background/80 font-mono text-[11px] placeholder:text-faint"
+                className="h-7 w-full bg-background/80 font-mono text-[11px] placeholder:text-faint sm:w-[240px]"
               />
               {traceRunning && (
                 <Button
@@ -754,7 +754,7 @@ function FilesView({ files, selectedPid = null }: { files: OpenFile[]; selectedP
           value={search}
           onChange={(e) => setSearch(e.target.value)}
           placeholder="Filter paths, ports, sockets..."
-          className="ml-auto h-7 w-auto min-w-[180px] bg-background/80 font-mono text-[11px] placeholder:text-faint"
+          className="h-7 w-full bg-background/80 font-mono text-[11px] placeholder:text-faint sm:ml-auto sm:w-56"
         />
       </div>
       <div className="max-h-[380px] overflow-auto">

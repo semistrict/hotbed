@@ -105,12 +105,15 @@ export function MemoryDetailPage() {
   if (!s) return null;
   return (
     <div className="space-y-6">
-      <div className="flex items-center justify-between">
-        <PageTitle title={`Memory #${id}`} sub="Full details, provenance, and revision history." />
-        <Link to="/memories" className="rounded-lg border border-border px-3 py-1.5 font-mono text-[11.5px] text-muted-foreground hover:border-border-strong hover:text-foreground">
-          ← all memories
-        </Link>
-      </div>
+      <PageTitle
+        title={`Memory #${id}`}
+        sub="Full details, provenance, and revision history."
+        right={
+          <Link to="/memories" className="inline-block rounded-lg border border-border px-3 py-1.5 font-mono text-[11.5px] text-muted-foreground hover:border-border-strong hover:text-foreground">
+            ← all memories
+          </Link>
+        }
+      />
       {detail.isError && <div className="rounded-xl border border-critical/40 bg-card px-4 py-2.5 font-mono text-[11.5px] text-critical">{String(detail.error)}</div>}
       {detail.data && <MemoryCard s={s} m={detail.data} now={Number(s.now)} delay={0} mover={null} defaultExpanded />}
     </div>
@@ -198,75 +201,85 @@ function MemoriesView({ s }: { s: Snapshot }) {
 
       {creating && <NewMemoryForm s={s} defaultProject={project} onDone={() => setCreating(false)} />}
 
-      <div className="rise flex flex-wrap items-center gap-3">
-        <Tabs value={tab} onValueChange={(v) => navigate({ search: { ...search, tab: v as MemoryTab, sort: undefined } })}>
-          <TabsList aria-label="Memories" className="border border-border bg-card/70">
-            {TABS.map((t) => (
-              <TabsTrigger key={t.tab} value={t.tab} className="px-3 text-[12.5px]">
-                {t.label}
-                {counts[t.tab] ? (
-                  <span className={`ml-1 font-mono text-[10.5px] ${t.tab === "proposals" ? "text-primary" : "text-muted-foreground"}`}>{counts[t.tab]}</span>
-                ) : null}
-              </TabsTrigger>
-            ))}
-          </TabsList>
-        </Tabs>
+      <div className="rise space-y-2.5">
+        <div className="flex flex-wrap items-center gap-2.5">
+          <div className="max-w-full overflow-x-auto no-scrollbar">
+            <Tabs value={tab} onValueChange={(v) => navigate({ search: { ...search, tab: v as MemoryTab, sort: undefined } })}>
+              <TabsList aria-label="Memories" className="border border-border bg-card/70">
+                {TABS.map((t) => (
+                  <TabsTrigger key={t.tab} value={t.tab} className="px-2.5 text-[12px] sm:px-3 sm:text-[12.5px]">
+                    {t.label}
+                    {counts[t.tab] ? (
+                      <span className={`ml-1 font-mono text-[10.5px] ${t.tab === "proposals" ? "text-primary" : "text-muted-foreground"}`}>{counts[t.tab]}</span>
+                    ) : null}
+                  </TabsTrigger>
+                ))}
+              </TabsList>
+            </Tabs>
+          </div>
 
-        <Tabs value={scopeSlug} onValueChange={(v) => navigate({ search: { ...search, tab, scope: v === "all" ? undefined : (v as "global" | "project") } })}>
-          <TabsList className="border border-border bg-card/70 font-mono text-[11px]">
-            {(
-              [
-                ["all", project ? `global + ${project}` : "all scopes"],
-                ["global", "global"],
-                ["project", project ?? "projects"],
-              ] as const
-            ).map(([val, label]) => (
-              <TabsTrigger key={val} value={val} className="px-2.5 font-mono text-[11px]">
-                {label}
-              </TabsTrigger>
-            ))}
-          </TabsList>
-        </Tabs>
+          <Input
+            type="search"
+            value={queryText}
+            onChange={(e) => navigate({ search: { ...search, tab, q: e.target.value || undefined } })}
+            placeholder="Search slug, summary, body…"
+            aria-label="Search memories"
+            className="w-full bg-card text-[12px] placeholder:text-faint sm:w-56"
+          />
 
-        <Tabs value={modeSlug} onValueChange={(v) => navigate({ search: { ...search, tab, mode: v === "all" ? undefined : (v as "always" | "on-demand") } })}>
-          <TabsList className="border border-border bg-card/70 font-mono text-[11px]">
-            {(
-              [
-                ["all", "all modes"],
-                ["always", "always-on"],
-                ["on-demand", "on-demand"],
-              ] as const
-            ).map(([val, label]) => (
-              <TabsTrigger key={val} value={val} className="px-2.5 font-mono text-[11px]">
-                {label}
-              </TabsTrigger>
-            ))}
-          </TabsList>
-        </Tabs>
+          <div className="flex items-center gap-2 font-mono text-[11px] text-muted-foreground sm:ml-auto">
+            <span>sort</span>
+            <Select items={SORT_ITEMS} value={sort} onValueChange={(v) => v && navigate({ search: { ...search, tab, sort: v as MemoryOrderSlug } })}>
+              <SelectTrigger size="sm" aria-label="Sort memories" className="bg-card font-mono text-[11.5px] text-foreground">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent className="font-mono text-[11.5px]">
+                {SORTS.map((o) => (
+                  <SelectItem key={o.sort} value={o.sort} className="text-[11.5px]">
+                    {o.label}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
+        </div>
 
-        <Input
-          type="search"
-          value={queryText}
-          onChange={(e) => navigate({ search: { ...search, tab, q: e.target.value || undefined } })}
-          placeholder="Search slug, summary, body…"
-          aria-label="Search memories"
-          className="w-56 bg-card text-[12px] placeholder:text-faint"
-        />
+        <div className="flex flex-wrap items-center gap-2">
+          <div className="max-w-full overflow-x-auto no-scrollbar">
+            <Tabs value={scopeSlug} onValueChange={(v) => navigate({ search: { ...search, tab, scope: v === "all" ? undefined : (v as "global" | "project") } })}>
+              <TabsList className="border border-border bg-card/70 font-mono text-[11px]">
+                {(
+                  [
+                    ["all", project ? `global + ${project}` : "all scopes"],
+                    ["global", "global"],
+                    ["project", project ?? "projects"],
+                  ] as const
+                ).map(([val, label]) => (
+                  <TabsTrigger key={val} value={val} className="px-2.5 font-mono text-[11px]">
+                    {label}
+                  </TabsTrigger>
+                ))}
+              </TabsList>
+            </Tabs>
+          </div>
 
-        <div className="ml-auto flex items-center gap-2 font-mono text-[11px] text-muted-foreground">
-          <span>sort</span>
-          <Select items={SORT_ITEMS} value={sort} onValueChange={(v) => v && navigate({ search: { ...search, tab, sort: v as MemoryOrderSlug } })}>
-            <SelectTrigger size="sm" aria-label="Sort memories" className="bg-card font-mono text-[11.5px] text-foreground">
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent className="font-mono text-[11.5px]">
-              {SORTS.map((o) => (
-                <SelectItem key={o.sort} value={o.sort} className="text-[11.5px]">
-                  {o.label}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
+          <div className="max-w-full overflow-x-auto no-scrollbar">
+            <Tabs value={modeSlug} onValueChange={(v) => navigate({ search: { ...search, tab, mode: v === "all" ? undefined : (v as "always" | "on-demand") } })}>
+              <TabsList className="border border-border bg-card/70 font-mono text-[11px]">
+                {(
+                  [
+                    ["all", "all modes"],
+                    ["always", "always-on"],
+                    ["on-demand", "on-demand"],
+                  ] as const
+                ).map(([val, label]) => (
+                  <TabsTrigger key={val} value={val} className="px-2.5 font-mono text-[11px]">
+                    {label}
+                  </TabsTrigger>
+                ))}
+              </TabsList>
+            </Tabs>
+          </div>
         </div>
       </div>
 
@@ -400,9 +413,9 @@ function MemoryList({
 }
 
 function Mover({ first, last, onUp, onDown }: { first: boolean; last: boolean; onUp: () => void; onDown: () => void }) {
-  const btn = "rounded px-1 leading-none text-muted-foreground hover:bg-muted hover:text-foreground disabled:opacity-30 disabled:hover:bg-transparent";
+  const btn = "rounded p-1.5 leading-none text-muted-foreground hover:bg-muted hover:text-foreground disabled:opacity-30 disabled:hover:bg-transparent sm:px-1 sm:py-0.5";
   return (
-    <div className="flex flex-col items-center gap-0.5 font-mono text-[11px]">
+    <div className="flex shrink-0 flex-col items-center gap-0.5 font-mono text-[11px]">
       <button type="button" className={btn} disabled={first} onClick={onUp} aria-label="Move up" title="Move up">
         ▲
       </button>
@@ -492,11 +505,11 @@ function MemoryCard({
 
   return (
     <Card delay={delay} className={muted ? "opacity-75" : ""}>
-      <div className="flex gap-3">
+      <div className="flex gap-2 sm:gap-3">
         {mover}
         <div className="min-w-0 flex-1 space-y-3">
           <header className="flex flex-wrap items-center gap-x-2.5 gap-y-1">
-            <Link to="/memories/$id" params={{ id: String(m.id) }} className="font-mono text-[13px] font-semibold text-foreground hover:underline">
+            <Link to="/memories/$id" params={{ id: String(m.id) }} className="break-all font-mono text-[13px] font-semibold text-foreground hover:underline">
               {content?.slug ?? `#${m.id}`}
             </Link>
             <span className="font-mono text-[10.5px] text-faint">#{m.id}</span>
@@ -524,7 +537,7 @@ function MemoryCard({
               </Link>
             )}
             {m.proposed && (
-              <span className="ml-auto text-[11px] text-muted-foreground">
+              <span className="text-[11px] text-muted-foreground sm:ml-auto">
                 <StampLine s={s} st={m.proposed} now={now} verb="proposed" />
               </span>
             )}
@@ -628,7 +641,7 @@ function MemoryCard({
                         value={reason}
                         onChange={(e) => setReason(e.target.value)}
                         placeholder="Why not (optional, sent via poll)"
-                        className="max-w-xs bg-background/60 text-[12.5px]"
+                        className="w-full bg-background/60 text-[12.5px] sm:max-w-xs"
                         aria-label="Rejection reason"
                         autoFocus
                       />
@@ -1053,7 +1066,7 @@ function ProvenanceLine({ m }: { m: Memory }) {
         </span>
       )}
       {p.model && <span>model {p.model}</span>}
-      {p.t3codeThreadId && <span className="text-faint">thread {p.t3codeThreadId}</span>}
+      {p.t3codeThreadId && <span className="break-all text-faint">thread {p.t3codeThreadId}</span>}
     </div>
   );
 }

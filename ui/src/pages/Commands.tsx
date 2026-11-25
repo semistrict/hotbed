@@ -62,33 +62,39 @@ export function CommandsPage() {
       </div>
 
       <div className="rise flex flex-wrap items-center gap-2">
-        {STATES.map((x) => (
-          <Chip key={x.id} active={state === x.id} search={{ ...baseSearch, state: x.id === "live" ? undefined : x.id }}>
-            {x.label}
-          </Chip>
-        ))}
-        <span className="mx-1 h-4 w-px bg-border" />
-        <Chip active={!node} search={{ ...baseSearch, node: undefined }}>
-          every node
-        </Chip>
-        {s.nodes
-          .filter((n) => n.online)
-          .map((n) => (
-            <Chip key={n.id} active={node === n.id} search={{ ...baseSearch, node: n.id }}>
-              {n.hostname}
+        <div className="flex flex-wrap items-center gap-1.5">
+          {STATES.map((x) => (
+            <Chip key={x.id} active={state === x.id} search={{ ...baseSearch, state: x.id === "live" ? undefined : x.id }}>
+              {x.label}
             </Chip>
           ))}
-        {s.repos.length > 1 && (
-          <>
-            <span className="mx-1 h-4 w-px bg-border" />
-            <Chip active={!repo} search={{ ...baseSearch, repo: undefined }}>
-              every repo
-            </Chip>
-            {s.repos.map((r) => (
-              <Chip key={r.id} active={repo === r.id} search={{ ...baseSearch, repo: r.id }}>
-                {r.id}
+        </div>
+        <span className="mx-1 hidden h-4 w-px bg-border sm:inline-block" />
+        <div className="flex flex-wrap items-center gap-1.5">
+          <Chip active={!node} search={{ ...baseSearch, node: undefined }}>
+            every node
+          </Chip>
+          {s.nodes
+            .filter((n) => n.online)
+            .map((n) => (
+              <Chip key={n.id} active={node === n.id} search={{ ...baseSearch, node: n.id }}>
+                {n.hostname}
               </Chip>
             ))}
+        </div>
+        {s.repos.length > 1 && (
+          <>
+            <span className="mx-1 hidden h-4 w-px bg-border sm:inline-block" />
+            <div className="flex flex-wrap items-center gap-1.5">
+              <Chip active={!repo} search={{ ...baseSearch, repo: undefined }}>
+                every repo
+              </Chip>
+              {s.repos.map((r) => (
+                <Chip key={r.id} active={repo === r.id} search={{ ...baseSearch, repo: r.id }}>
+                  {r.id}
+                </Chip>
+              ))}
+            </div>
           </>
         )}
       </div>

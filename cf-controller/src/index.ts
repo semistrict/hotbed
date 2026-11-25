@@ -14,6 +14,9 @@ export { ControllerDO };
 
 const DO_PREFIXES = ["/hotbed.v1.", "/ws/", "/builds/", "/admin/"];
 
+const STATIC_ASSET_EXT_RE =
+	/\.(?:js|mjs|cjs|css|map|svg|png|jpe?g|gif|webp|avif|ico|woff2?|ttf|otf|eot|json|txt|xml|webmanifest|wasm)$/i;
+
 function isControllerRoute(pathname: string, testHarness: boolean): boolean {
 	if (pathname === "/healthz") return true;
 	if (testHarness && pathname.startsWith("/__test/")) return true;
@@ -23,6 +26,36 @@ function isControllerRoute(pathname: string, testHarness: boolean): boolean {
 function acceptsHtml(req: Request): boolean {
 	const accept = (req.headers.get("Accept") ?? "").toLowerCase();
 	return accept.includes("text/html") || accept.includes("*/*");
+}
+
+function isSpaFallbackCandidate(request: Request, pathname: string): boolean {
+	if (request.method !== "GET" && request.method !== "HEAD") return false;
+	if (pathname.startsWith("/assets/")) return false;
+	if (STATIC_ASSET_EXT_RE.test(pathname)) return false;
+	return true;
+}
+
+/**
+ * Fetches static assets with SPA deep-link fallback.
+ *
+ * Cloudflare Workers Static Assets defaults to `html_handling: "auto-trailing-slash"`,
+ * which responds to `/index.html` with a `307 Temporary Redirect` to `/`. Fetching `/`
+ * directly returns `200 OK` with `index.html` so deep links stay at their requested URL
+ * instead of redirecting browsers back to the root `/` page.
+ */
+async function fetchCockpitAsset(assets: Fetcher, request: Request, url: URL): Promise<Response> {
+	const assetRes = await assets.fetch(request);
+	if (assetRes.status !== 404 || !isSpaFallbackCandidate(request, url.pathname)) {
+		return assetRes;
+	}
+	const rootUrl = new URL("/", url);
+	const rootRes = await assets.fetch(new Request(rootUrl.toString(), request));
+	if (rootRes.status !== 404) {
+		return rootRes;
+	}
+	// Fallback for environments configured with html_handling: "none".
+	const indexUrl = new URL("/index.html", url);
+	return assets.fetch(new Request(indexUrl.toString(), request));
 }
 
 function sanitizeIncomingRequest(request: Request): Request {
@@ -114,7 +147,7 @@ export default {
 		if (needsOrgSelection) {
 			if (request.method === "GET" && acceptsHtml(request)) {
 				const orgsUrl = new URL("/auth/orgs", url);
-				if (url.pathname !== "/") {
+				if (url.pathname !== "/" || url.search) {
 					orgsUrl.searchParams.set("return_to", `${url.pathname}${url.search}`);
 				}
 				const res = Response.redirect(orgsUrl.toString(), 302);
@@ -132,7 +165,7 @@ export default {
 				: undefined;
 			if (request.method === "GET" && acceptsHtml(request)) {
 				const loginUrl = new URL("/auth/login", url);
-				if (url.pathname !== "/") {
+				if (url.pathname !== "/" || url.search) {
 					loginUrl.searchParams.set("return_to", `${url.pathname}${url.search}`);
 				}
 				return withSetCookie(Response.redirect(loginUrl.toString(), 302), clearCookie);
@@ -141,16 +174,7 @@ export default {
 		}
 
 		if (env.ASSETS) {
-			const assetRes = await env.ASSETS.fetch(request);
-			if (assetRes.status !== 404) {
-				return withSetCookie(assetRes, setCookie);
-			}
-			// SPA fallback to /index.html for browser routes without a file extension.
-			if (request.method === "GET" && !url.pathname.includes(".")) {
-				const indexUrl = new URL("/index.html", url);
-				const indexRes = await env.ASSETS.fetch(new Request(indexUrl.toString(), request));
-				return withSetCookie(indexRes, setCookie);
-			}
+			const assetRes = await fetchCockpitAsset(env.ASSETS, request, url);
 			return withSetCookie(assetRes, setCookie);
 		}
 

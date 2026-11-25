@@ -1,6 +1,7 @@
 import { useQuery } from "@tanstack/react-query";
 import { Link, useParams, useSearch } from "@tanstack/react-router";
 import { type ReactNode, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { api, CommandState, type Command, type CommandEvent, type CommandLimits, type FinishedCommand, type Snapshot } from "../api";
 import { Meter } from "../components/charts/Bars";
@@ -88,18 +89,19 @@ function CommandView({
           <KindTag kind={kind} />
           {(live?.bench ?? done?.bench) && <BenchTag />}
           {live && isLive(live) && (
-            <div className="ml-auto flex flex-wrap items-center gap-2">
+            <div className="flex flex-wrap items-center gap-2 sm:ml-auto">
               <ByHandButtons command={live} open={activeAct} onOpen={setAct} />
               {canSample && (
-                <button
+                <Button
                   type="button"
+                  size="sm"
                   onClick={() => triggerSample(0)}
                   title="Sample stacks, syscalls, open files, sockets, locks, cgroup PSI & PMU counters (like macOS Activity Monitor Sample)"
-                  className="inline-flex items-center gap-1.5 rounded-lg bg-primary px-3.5 py-1.5 font-mono text-[11.5px] font-semibold text-primary-foreground shadow-sm transition-all hover:brightness-110 active:scale-[0.98]"
+                  className="gap-1.5 font-mono text-[11.5px] font-semibold shadow-sm"
                 >
                   <span aria-hidden>◎</span>
                   Sample Process
-                </button>
+                </Button>
               )}
             </div>
           )}
@@ -286,7 +288,7 @@ function LogCard({ id, live }: { id: string; live: boolean }) {
           onChange={(e) => setQuery(e.target.value)}
           placeholder="search output"
           aria-label="Search output"
-          className="h-7 w-44 rounded-full bg-background/40 font-mono text-[11px] placeholder:text-faint sm:w-60"
+          className="h-7 w-full rounded-full bg-background/40 font-mono text-[11px] placeholder:text-faint sm:w-60"
         />
       }
     >

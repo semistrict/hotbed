@@ -58,7 +58,7 @@ function ReviewView({ s, r }: { s: Snapshot; r: Review }) {
           <span className={`font-mono text-[11px] ${state.className}`}>{state.text}</span>
           <SeverityCounts r={r} />
         </div>
-        <h1 className="display text-[38px] leading-tight font-semibold text-balance">{r.title}</h1>
+        <h1 className="display text-[26px] leading-tight font-semibold text-balance sm:text-[34px] lg:text-[38px]">{r.title}</h1>
       </header>
       <Card>
         <dl className="grid gap-x-8 gap-y-3 text-[12px] sm:grid-cols-2 lg:grid-cols-4">
@@ -198,7 +198,7 @@ function FindingCard({ s, r, f, now, delay }: { s: Snapshot; r: Review; f: Findi
           )}
           <Badge
             variant="outline"
-            className={`ml-auto h-auto rounded-md px-1.5 py-0.5 font-mono text-[10.5px] font-normal ${decision.className}`}
+            className={`h-auto max-w-full rounded-md px-1.5 py-0.5 text-left font-mono text-[10.5px] font-normal whitespace-normal sm:ml-auto ${decision.className}`}
             title={f.decided ? `${f.decided.session || "you"}: ${f.decided.reason}` : "The agent that asked has not decided"}
           >
             {decision.text}
@@ -281,12 +281,12 @@ function Excerpt({ l }: { l: Location }) {
   const lines = numbered(l);
   return (
     <figure className="overflow-hidden rounded-lg border border-border">
-      <figcaption className="border-b border-border bg-muted/60 px-3 py-1 font-mono text-[11px] text-foreground">{where(l)}</figcaption>
+      <figcaption className="break-all border-b border-border bg-muted/60 px-3 py-1 font-mono text-[11px] text-foreground">{where(l)}</figcaption>
       {lines.length > 0 && (
         <pre className="overflow-x-auto bg-background/50 py-1.5 font-mono text-[11.5px] leading-relaxed">
           {lines.map((line, i) => (
             <div key={i} className="flex">
-              {line.n !== null && <span className="w-12 shrink-0 pr-3 text-right text-faint select-none">{line.n}</span>}
+              {line.n !== null && <span className="w-9 shrink-0 pr-2.5 text-right text-faint select-none sm:w-12 sm:pr-3">{line.n}</span>}
               <span className={`pr-3 whitespace-pre ${line.n === null ? "pl-3" : ""}`}>{line.text}</span>
             </div>
           ))}

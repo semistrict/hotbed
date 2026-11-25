@@ -622,11 +622,11 @@ export async function handleAuthRoute(
 	if (pathname === "/auth/login") {
 		if (request.method === "GET") {
 			const mode = url.searchParams.get("mode");
+			const returnTo = isSafeReturnTo(url.searchParams.get("return_to"));
 			if (workosEnabled && mode !== "token") {
 				const state = randomHex(16);
 				const codeVerifier = randomBase64Url(32);
 				const codeChallenge = await pkceS256(codeVerifier);
-				const returnTo = isSafeReturnTo(url.searchParams.get("return_to"));
 				const provider = url.searchParams.get("provider")?.trim() || undefined;
 				const organizationId = url.searchParams.get("organization_id")?.trim() || undefined;
 				const screenHint = url.searchParams.get("screen_hint")?.trim() || undefined;
@@ -653,26 +653,31 @@ export async function handleAuthRoute(
 					},
 				});
 			}
-			return new Response(renderLoginPage(undefined, workosEnabled), {
+			return new Response(renderLoginPage(undefined, workosEnabled, returnTo), {
 				status: 200,
 				headers: { "Content-Type": "text/html; charset=utf-8" },
 			});
 		}
 
 		if (request.method === "POST") {
+			const body = await readBodyParams(request);
+			const returnTo = isSafeReturnTo(body.return_to ?? url.searchParams.get("return_to"));
 			if (!ownerToken) {
 				return new Response(
-					renderLoginPage("OWNER_TOKEN is not configured on this controller.", workosEnabled),
+					renderLoginPage(
+						"OWNER_TOKEN is not configured on this controller.",
+						workosEnabled,
+						returnTo,
+					),
 					{
 						status: 503,
 						headers: { "Content-Type": "text/html; charset=utf-8" },
 					},
 				);
 			}
-			const body = await readBodyParams(request);
 			const submitted = (body.token ?? "").trim();
 			if (!submitted || !(await timingSafeStringEqual(submitted, ownerToken))) {
-				return new Response(renderLoginPage("Invalid owner token.", workosEnabled), {
+				return new Response(renderLoginPage("Invalid owner token.", workosEnabled, returnTo), {
 					status: 401,
 					headers: { "Content-Type": "text/html; charset=utf-8" },
 				});
@@ -681,7 +686,7 @@ export async function handleAuthRoute(
 			return new Response(null, {
 				status: 303,
 				headers: {
-					Location: "/",
+					Location: returnTo,
 					"Set-Cookie": cookie,
 				},
 			});

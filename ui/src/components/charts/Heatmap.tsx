@@ -20,24 +20,26 @@ export function Heatmap({ rows, format, labelEvery = 3, scale = { low: "0%", hig
   const [ref, width] = useWidth<HTMLDivElement>();
   const [hover, setHover] = useState<{ r: number; c: number } | null>(null);
   const cols = rows[0]?.cells.length ?? 0;
-  const cellW = cols ? (width - LABEL_W) / cols : 0;
+  const labelW = width > 0 && width < 420 ? 58 : LABEL_W;
+  const step = width > 0 && width < 420 ? Math.max(labelEvery, 6) : labelEvery;
+  const cellW = cols ? Math.max(0, width - labelW) / cols : 0;
   const height = rows.length * CELL_H + 20;
   const cell = hover ? rows[hover.r]?.cells[hover.c] : undefined;
   const row = hover ? rows[hover.r] : undefined;
 
   return (
-    <div ref={ref} className="relative">
+    <div ref={ref} className="relative min-w-0">
       {width > 0 && (
         <svg width={width} height={height} className="block" onPointerLeave={() => setHover(null)}>
           {rows.map((r, ri) => (
             <g key={r.id}>
               <text x={0} y={ri * CELL_H + CELL_H / 2} dy="0.32em" className="fill-muted-foreground font-mono text-[10px]">
-                {r.label}
+                {r.label.length > (labelW < 70 ? 8 : 11) ? `${r.label.slice(0, labelW < 70 ? 7 : 10)}…` : r.label}
               </text>
               {r.cells.map((c, ci) => (
                 <rect
                   key={c.key}
-                  x={LABEL_W + ci * cellW + 1}
+                  x={labelW + ci * cellW + 1}
                   y={ri * CELL_H + 1}
                   width={Math.max(0, cellW - 2)}
                   height={CELL_H - 2}
@@ -51,25 +53,25 @@ export function Heatmap({ rows, format, labelEvery = 3, scale = { low: "0%", hig
             </g>
           ))}
           {rows[0]?.cells.map((c, ci) =>
-            ci % labelEvery === 0 ? (
-              <text key={c.key} x={LABEL_W + ci * cellW + cellW / 2} y={height - 5} textAnchor="middle" className="num fill-faint font-mono text-[9.5px]">
+            ci % step === 0 ? (
+              <text key={c.key} x={labelW + ci * cellW + cellW / 2} y={height - 5} textAnchor="middle" className="num fill-faint font-mono text-[9.5px]">
                 {c.label}
               </text>
             ) : null,
           )}
         </svg>
       )}
-      <div className="mt-1 flex items-center gap-1.5 pl-[78px] text-[10px] text-faint">
+      <div className="mt-1.5 flex flex-wrap items-center gap-x-1.5 gap-y-1 text-[10px] text-faint sm:pl-[78px]">
         <span>{scale.low}</span>
         {STEPS.map((s) => (
-          <span key={s} className="inline-block h-2 w-5 rounded-[2px]" style={{ background: s }} />
+          <span key={s} className="inline-block h-2 w-4 rounded-[2px] sm:w-5" style={{ background: s }} />
         ))}
         <span>{scale.high}</span>
-        <span className="ml-3 inline-block h-2 w-5 rounded-[2px] border border-dashed border-border-strong" />
+        <span className="ml-2 inline-block h-2 w-4 rounded-[2px] border border-dashed border-border-strong sm:ml-3 sm:w-5" />
         <span>offline</span>
       </div>
       {cell && row && hover && (
-        <Tooltip x={LABEL_W + hover.c * cellW + cellW / 2} width={width} title={`${row.label} · ${cell.label}`}>
+        <Tooltip x={labelW + hover.c * cellW + cellW / 2} width={width} title={`${row.label} · ${cell.label}`}>
           <span className="num font-mono font-semibold text-foreground">{cell.v === null ? "offline" : format(cell.v)}</span>
         </Tooltip>
       )}

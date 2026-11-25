@@ -174,7 +174,7 @@ export function OrganizationPage() {
               <Empty>No organizations yet.</Empty>
             )}
 
-            <form onSubmit={onCreateOrg} className="mt-4 flex gap-2 border-t border-border pt-4">
+            <form onSubmit={onCreateOrg} className="mt-4 flex flex-col gap-2 border-t border-border pt-4 sm:flex-row">
               <Input
                 type="text"
                 value={newOrgName}
@@ -186,7 +186,7 @@ export function OrganizationPage() {
               <Button
                 type="submit"
                 disabled={createOrg.isPending || !newOrgName.trim()}
-                className="text-[12px]"
+                className="w-full text-[12px] sm:w-auto"
               >
                 {createOrg.isPending ? "Creating…" : "Create org"}
               </Button>

@@ -162,7 +162,7 @@ export function PlacementList({ placements, nodeId, limit = 20, now }: { placeme
         return (
           <li key={String(d.id)}>
             <Collapsible>
-              <CollapsibleTrigger className="group flex w-full cursor-pointer items-center gap-2.5 py-2 text-left font-mono text-[11px] hover:bg-muted/60">
+              <CollapsibleTrigger className="group flex w-full cursor-pointer flex-wrap items-center gap-x-2.5 gap-y-1 py-2 text-left font-mono text-[11px] hover:bg-muted/60">
                 <span className="num shrink-0 text-faint" title={ago(d.at, now)}>
                   {hhmmss(d.at)}
                 </span>
@@ -176,11 +176,11 @@ export function PlacementList({ placements, nodeId, limit = 20, now }: { placeme
                 )}
                 <span className="shrink-0 text-faint">{d.project}</span>
                 <span className={`shrink-0 ${d.nodeId ? "text-foreground" : "text-critical"}`}>{d.nodeId ? `→ ${d.hostname}` : "refused"}</span>
-                <span className="truncate text-muted-foreground">{d.reason}</span>
-                {role && <span className={`ml-auto shrink-0 ${role.className}`}>{role.text}</span>}
+                <span className="min-w-0 truncate text-muted-foreground">{d.reason}</span>
+                {role && <span className={`shrink-0 sm:ml-auto ${role.className}`}>{role.text}</span>}
               </CollapsibleTrigger>
               <CollapsibleContent>
-                <div className="mb-3 ml-8">
+                <div className="mb-3 sm:ml-6">
                   <Table className="text-[11px]">
                     <TableBody>
                       {d.candidates.map((c) => (

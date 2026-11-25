@@ -97,18 +97,20 @@ function Questions({ s }: { s: Snapshot }) {
         title="Questions"
         sub={`What agents asked you about ${project ?? "every project"}: each project's sessions share one list. Answer when you like; an answer waits in the outbox until an agent reads it and marks it handled. Nothing is ever removed.`}
       />
-      <div className="rise flex flex-wrap items-center gap-3">
-        <Tabs value={tab} onValueChange={(v) => navigate({ search: { tab: v as QuestionTab } })}>
-          <TabsList aria-label="Questions" className="border border-border bg-card/70">
-            {TABS.map((t) => (
-              <TabsTrigger key={t.tab} value={t.tab} className="px-3 text-[12.5px]">
-                {t.label}
-                {counts[t.tab] ? <span className={`ml-1 font-mono text-[10.5px] ${t.tab === "inbox" ? "text-primary" : "text-muted-foreground"}`}>{counts[t.tab]}</span> : null}
-              </TabsTrigger>
-            ))}
-          </TabsList>
-        </Tabs>
-        <div className="ml-auto flex items-center gap-2 font-mono text-[11px] text-muted-foreground">
+      <div className="rise flex flex-wrap items-center gap-2.5 sm:gap-3">
+        <div className="max-w-full overflow-x-auto no-scrollbar">
+          <Tabs value={tab} onValueChange={(v) => navigate({ search: { tab: v as QuestionTab } })}>
+            <TabsList aria-label="Questions" className="border border-border bg-card/70">
+              {TABS.map((t) => (
+                <TabsTrigger key={t.tab} value={t.tab} className="px-2.5 text-[12px] sm:px-3 sm:text-[12.5px]">
+                  {t.label}
+                  {counts[t.tab] ? <span className={`ml-1 font-mono text-[10.5px] ${t.tab === "inbox" ? "text-primary" : "text-muted-foreground"}`}>{counts[t.tab]}</span> : null}
+                </TabsTrigger>
+              ))}
+            </TabsList>
+          </Tabs>
+        </div>
+        <div className="flex items-center gap-2 font-mono text-[11px] text-muted-foreground sm:ml-auto">
           <span>sort</span>
           <Select items={SORT_ITEMS} value={sort} onValueChange={(v) => v && navigate({ search: { tab, sort: v as QuestionOrderSlug } })}>
             <SelectTrigger size="sm" aria-label="Sort questions" className="bg-card font-mono text-[11.5px] text-foreground">
@@ -233,9 +235,9 @@ function QuestionList({ s, questions, now, movable, onMove }: { s: Snapshot; que
 }
 
 function Mover({ first, last, onUp, onDown }: { first: boolean; last: boolean; onUp: () => void; onDown: () => void }) {
-  const btn = "rounded px-1 leading-none text-muted-foreground hover:bg-muted hover:text-foreground disabled:opacity-30 disabled:hover:bg-transparent";
+  const btn = "rounded p-1.5 leading-none text-muted-foreground hover:bg-muted hover:text-foreground disabled:opacity-30 disabled:hover:bg-transparent sm:px-1 sm:py-0.5";
   return (
-    <div className="flex flex-col items-center gap-0.5 font-mono text-[11px]">
+    <div className="flex shrink-0 flex-col items-center gap-0.5 font-mono text-[11px]">
       <button type="button" className={btn} disabled={first} onClick={onUp} aria-label="Move up" title="Move up">
         ▲
       </button>
@@ -276,10 +278,10 @@ function QuestionCard({ s, q, now, delay, mover }: { s: Snapshot; q: Question; n
   const answerable = q.state === QuestionState.OPEN || q.state === QuestionState.ANSWERED || q.state === QuestionState.DISMISSED;
   return (
     <Card delay={delay} className={q.state === QuestionState.DELETED ? "opacity-70" : ""}>
-      <div className="flex gap-3">
+      <div className="flex gap-2 sm:gap-3">
         {mover}
         <div className="min-w-0 flex-1 space-y-3">
-          <header className="flex flex-wrap items-baseline gap-x-3 gap-y-1">
+          <header className="flex flex-wrap items-baseline gap-x-2.5 gap-y-1 sm:gap-x-3">
             <span className="eyebrow text-foreground">{prompt?.header ?? ""}</span>
             <span className="font-mono text-[10.5px] text-faint">#{q.id}</span>
             {showProject && <ProjectTag name={q.project} />}
@@ -293,7 +295,7 @@ function QuestionCard({ s, q, now, delay, mover }: { s: Snapshot; q: Question; n
               </button>
             )}
             {q.asked && (
-              <span className="ml-auto text-[11px] text-muted-foreground">
+              <span className="text-[11px] text-muted-foreground sm:ml-auto">
                 <StampLine s={s} st={q.asked} now={now} verb="asked" />
               </span>
             )}
@@ -352,7 +354,7 @@ function AskedFromLine({ q }: { q: Question }) {
         </span>
       </CollapsibleTrigger>
       <CollapsibleContent>
-        <div className="mt-2 space-y-1 rounded-lg border border-border bg-muted/50 px-3 py-2 font-mono text-[10.5px]">
+        <div className="mt-2 space-y-1 break-all rounded-lg border border-border bg-muted/50 px-3 py-2 font-mono text-[10.5px]">
           <div>{f.dir}</div>
           {f.remote && <div className="text-faint">{f.remote}</div>}
           {f.head && <div className="text-faint">{f.head}</div>}
@@ -483,7 +485,7 @@ function AnswerForm({ q }: { q: Question }) {
             <Button type="button" variant="outline" size="sm" disabled={busy} onClick={() => dismiss.mutate()} className={`${dismissWidth} justify-start border-border-strong text-[12.5px]`}>
               Dismiss
             </Button>
-            <Input value={reason} onChange={(e) => setReason(e.target.value)} placeholder="Why not (optional)" className="max-w-xs bg-background/60 text-[12.5px]" aria-label="Why you dismiss it" />
+            <Input value={reason} onChange={(e) => setReason(e.target.value)} placeholder="Why not (optional)" className="w-full bg-background/60 text-[12.5px] sm:max-w-xs" aria-label="Why you dismiss it" />
             <Button type="button" variant="ghost" size="sm" onClick={() => setDismissing(false)} className="text-[12px] text-muted-foreground">
               cancel
             </Button>

@@ -393,7 +393,7 @@ export function ClusterObjectStoreSection({ s, colors }: { s: Snapshot; colors: 
               const extCap = Number(os.extentCacheCapacityBytes);
               return (
                 <div key={n.id} className="space-y-1.5 border-b border-border/60 pb-3 last:border-b-0 last:pb-0">
-                  <div className="flex items-center justify-between font-mono text-[11px]">
+                  <div className="flex flex-wrap items-center justify-between gap-1 font-mono text-[11px]">
                     <Link to="/nodes/$hostname" params={{ hostname: n.hostname }} className="flex items-center gap-1.5 text-foreground hover:text-primary">
                       <span className="inline-block size-1.5 rounded-full" style={{ background: colors.get(n.id) ?? "var(--faint)" }} />
                       <span>{n.hostname}</span>
@@ -402,7 +402,7 @@ export function ClusterObjectStoreSection({ s, colors }: { s: Snapshot; colors: 
                       {compact(os.extentCachePinnedEntries)} pinned · {compact(os.extentCacheIdleEntries)} idle · {compact(os.cacheTrims)} trims
                     </span>
                   </div>
-                  <div className="grid grid-cols-2 gap-3">
+                  <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
                     <div>
                       <div className="mb-1 flex justify-between font-mono text-[10px] text-muted-foreground">
                         <span>SSD part cache</span>
@@ -450,7 +450,7 @@ export function ClusterObjectStoreSection({ s, colors }: { s: Snapshot; colors: 
             )
           }
         >
-          <div className="grid grid-cols-2 gap-3 font-mono text-[11px]">
+          <div className="grid grid-cols-1 gap-3 font-mono text-[11px] sm:grid-cols-2">
             <div className="rounded-xl border border-border/70 bg-muted/25 p-2.5">
               <div className="eyebrow">window full / reclaims</div>
               <div className={`num mt-1 text-[16px] font-semibold ${daxThrashing ? "text-serious" : "text-foreground"}`}>
@@ -465,8 +465,8 @@ export function ClusterObjectStoreSection({ s, colors }: { s: Snapshot; colors: 
               </div>
               <div className="mt-0.5 text-[10px] text-faint">guest wait on commit seals</div>
             </div>
-            <div className="col-span-2 rounded-xl border border-border/70 bg-muted/25 p-2.5">
-              <div className="flex items-baseline justify-between">
+            <div className="rounded-xl border border-border/70 bg-muted/25 p-2.5 sm:col-span-2">
+              <div className="flex flex-wrap items-baseline justify-between gap-1">
                 <span className="eyebrow">non-DAX device reads</span>
                 <span className="num text-[12px] text-foreground">
                   {bytes(sum.daxDeviceReadBytes)} · {duration(sum.daxDeviceReadsSec)}
@@ -477,7 +477,7 @@ export function ClusterObjectStoreSection({ s, colors }: { s: Snapshot; colors: 
                   {vmNodes.map((n) => {
                     const os = n.objectStore!;
                     return (
-                      <div key={n.id} className="flex items-center justify-between">
+                      <div key={n.id} className="flex flex-wrap items-center justify-between gap-1">
                         <Link to="/nodes/$hostname" params={{ hostname: n.hostname }} className="text-foreground hover:text-primary">
                           {n.hostname} ({os.activeVms} VM)
                         </Link>

@@ -1,5 +1,7 @@
 import { useQuery } from "@tanstack/react-query";
+import { ChevronRightIcon } from "lucide-react";
 import { useState } from "react";
+import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import { api, StepState, stepStateLabel, type Project, type StepStatus } from "../api";
 import { ago, duration } from "../lib/format";
 import { ScriptBlock } from "./CommandBlock";
@@ -36,23 +38,18 @@ export function SetupSteps({ project, now }: { project: Project; now: number | b
   const pending = (status.data ?? []).reduce((n, s) => n + s.nodes.filter((x) => x.state !== StepState.APPLIED).length, 0);
 
   return (
-    <section aria-label={`${project.name} setup steps`} className="rounded-xl border border-border/80 bg-background/35">
-      <button
-        type="button"
-        onClick={() => setOpen((o) => !o)}
-        aria-expanded={open}
-        className="flex w-full flex-wrap items-baseline gap-x-3 gap-y-1 px-4 py-3 text-left"
-      >
-        <span className="font-mono text-[10.5px] text-faint">{open ? "▾" : "▸"}</span>
+    <Collapsible open={open} onOpenChange={setOpen} aria-label={`${project.name} setup steps`} className="rounded-xl border border-border/80 bg-background/35">
+      <CollapsibleTrigger className="group flex w-full cursor-pointer flex-wrap items-center gap-x-2.5 gap-y-1 px-3 py-2.5 text-left sm:px-4 sm:py-3">
+        <ChevronRightIcon className="size-3.5 shrink-0 text-faint transition-transform group-data-panel-open:rotate-90" />
         <span className="text-[12.5px] font-semibold text-foreground">Setup steps</span>
         <span className="font-mono text-[11px] text-muted-foreground">
-          {project.steps.length === 0 ? "none" : `${project.steps.length} · run in order in /work, beside every repo`}
+          {project.steps.length === 0 ? "none" : `${project.steps.length} · run in order in /work`}
         </span>
-        {pending > 0 && <span className="font-mono text-[11px] text-warning">{pending} not yet in a node's newest base</span>}
-        {project.hosts.length > 0 && <span className="ml-auto font-mono text-[11px] text-faint">bases kept on {project.hosts.join(", ")}</span>}
-      </button>
-      {open && (
-        <div className="space-y-3 border-t border-border/60 px-4 pt-3 pb-4">
+        {pending > 0 && <span className="font-mono text-[11px] text-warning">{pending} pending</span>}
+        {project.hosts.length > 0 && <span className="font-mono text-[11px] text-faint sm:ml-auto">bases on {project.hosts.join(", ")}</span>}
+      </CollapsibleTrigger>
+      <CollapsibleContent>
+        <div className="space-y-3 border-t border-border/60 px-3 pt-3 pb-3.5 sm:px-4 sm:pb-4">
           {project.steps.length === 0 ? (
             <p className="font-mono text-[11.5px] text-faint">
               No setup steps: workspaces start with the checkouts alone. hotbed step add -p {project.name} NAME -- SCRIPT tries one in a workspace and saves it.
@@ -76,7 +73,7 @@ export function SetupSteps({ project, now }: { project: Project; now: number | b
                       set {ago(step.updatedAt, now)}
                       {step.updatedBy && ` from ${step.updatedBy}`}
                     </span>
-                    <span className="ml-auto flex flex-wrap gap-1.5">
+                    <span className="flex flex-wrap gap-1.5 sm:ml-auto">
                       {(nodes.get(step.name) ?? []).map((n) => (
                         <span
                           key={n.node}
@@ -96,7 +93,7 @@ export function SetupSteps({ project, now }: { project: Project; now: number | b
           )}
           {status.isError && <p className="font-mono text-[11px] text-critical">Cannot read where each node stands: {String(status.error)}</p>}
         </div>
-      )}
-    </section>
+      </CollapsibleContent>
+    </Collapsible>
   );
 }

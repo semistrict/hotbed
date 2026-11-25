@@ -475,25 +475,28 @@ function StacksAndThreadsTab({ sample, onSamplePid }: { sample: ProcessSample; o
   return (
     <div className="space-y-4">
       <div className="flex flex-wrap items-center gap-2">
-        <Tabs value={subView} onValueChange={(v) => setSubView(v as "tree" | "threads" | "flamegraph")}>
-          <TabsList className="h-8 border border-border bg-background/60 font-mono text-[11px]">
-            <TabsTrigger value="tree" className="px-2.5 font-mono text-[11px]">
-              Call Tree
-            </TabsTrigger>
-            <TabsTrigger value="threads" className="px-2.5 font-mono text-[11px]">
-              Threads (User + Syscall + Kernel)
-            </TabsTrigger>
-            <TabsTrigger value="flamegraph" className="px-2.5 font-mono text-[11px]">
-              FlameGraph
-            </TabsTrigger>
-          </TabsList>
-        </Tabs>
+        <div className="max-w-full overflow-x-auto no-scrollbar">
+          <Tabs value={subView} onValueChange={(v) => setSubView(v as "tree" | "threads" | "flamegraph")}>
+            <TabsList className="h-8 border border-border bg-background/60 font-mono text-[11px]">
+              <TabsTrigger value="tree" className="px-2.5 font-mono text-[11px]">
+                Call Tree
+              </TabsTrigger>
+              <TabsTrigger value="threads" className="px-2.5 font-mono text-[11px]">
+                <span>Threads</span>
+                <span className="hidden sm:inline"> (User + Syscall + Kernel)</span>
+              </TabsTrigger>
+              <TabsTrigger value="flamegraph" className="px-2.5 font-mono text-[11px]">
+                FlameGraph
+              </TabsTrigger>
+            </TabsList>
+          </Tabs>
+        </div>
         <Input
           type="search"
           value={filter}
           onChange={(e) => setFilter(e.target.value)}
           placeholder="Filter symbols, syscalls, wchan, threads..."
-          className="min-w-[220px] flex-1 bg-background/70 font-mono text-[11px] placeholder:text-faint"
+          className="w-full bg-background/70 font-mono text-[11px] placeholder:text-faint sm:min-w-[220px] sm:flex-1"
         />
         {subView === "threads" && (
           <Label className="flex h-8 cursor-pointer items-center gap-1.5 rounded-md border border-border px-2.5 font-mono text-[10.5px] font-normal text-muted-foreground">
@@ -570,7 +573,7 @@ function ProcessHeader({ proc, onSamplePid }: { proc: SampledProcess; onSamplePi
           <span className="text-[10.5px] text-faint">· {proc.threads.length} threads · {proc.openFdsCount} FDs</span>
         </div>
         {proc.cmdline && (
-          <div className="max-w-[780px] truncate text-[10.5px] text-muted-foreground" title={proc.cmdline}>
+          <div className="max-w-full truncate text-[10.5px] text-muted-foreground sm:max-w-[780px]" title={proc.cmdline}>
             {proc.cmdline}
           </div>
         )}

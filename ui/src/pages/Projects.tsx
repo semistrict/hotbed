@@ -1,5 +1,6 @@
 import { Link, useNavigate } from "@tanstack/react-router";
 import { useState } from "react";
+import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { BaseState, CommandState, WorkspaceState, workspaceStateLabel, type Project, type RepoSummary, type Snapshot, type Workspace } from "../api";
@@ -96,18 +97,20 @@ function Projects({ s }: { s: Snapshot }) {
         }
         right={
           chosen ? (
-            <button
+            <Button
               type="button"
+              variant="outline"
+              size="sm"
               onClick={() => choose(null)}
-              className="rounded-full border border-border px-3 py-1 font-mono text-[11px] text-muted-foreground hover:border-border-strong hover:text-foreground"
+              className="rounded-full font-mono text-[11px] text-muted-foreground hover:text-foreground"
             >
               show every project
-            </button>
+            </Button>
           ) : undefined
         }
       />
 
-      <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 xl:grid-cols-6">
+      <div className="grid grid-cols-2 gap-2.5 sm:grid-cols-3 sm:gap-3 xl:grid-cols-6">
         <StatTile label="Projects" value={visibleProjects.length} foot={`${workingProjects} working now`} />
         <StatTile label="Repos" value={scoped.repos.length} foot={`${scoped.bases.filter((b) => b.state === BaseState.WARM).length} warm bases`} />
         <StatTile
@@ -125,7 +128,7 @@ function Projects({ s }: { s: Snapshot }) {
       </div>
 
       {all.length > 0 && (
-        <div className="rise flex items-center gap-2">
+        <div className="rise flex flex-wrap items-center gap-2">
           <Input
             type="search"
             value={q}
@@ -175,13 +178,13 @@ function ProjectSection({ s, a, now, q, delay }: { s: Snapshot; a: Activity; now
   return (
     <Card delay={delay} className={here ? "border-primary/50" : ""}>
       <div className="space-y-4">
-        <header className="flex flex-wrap items-baseline gap-x-4 gap-y-2 border-b border-border pb-3">
-          <div className="flex items-baseline gap-2.5">
+        <header className="flex flex-col gap-3 border-b border-border pb-3 lg:flex-row lg:flex-wrap lg:items-baseline lg:gap-x-4 lg:gap-y-2">
+          <div className="flex flex-wrap items-baseline gap-x-2.5 gap-y-1">
             <button
               type="button"
               onClick={() => choose(here ? null : p.name)}
               title={here ? "Show every project" : `Scope cockpit to ${p.name}`}
-              className="display text-left text-[26px] leading-none font-medium hover:text-primary"
+              className="display text-left text-[24px] leading-none font-medium hover:text-primary sm:text-[26px]"
             >
               {p.name}
             </button>
@@ -189,25 +192,25 @@ function ProjectSection({ s, a, now, q, delay }: { s: Snapshot; a: Activity; now
             <span className="font-mono text-[11px] text-faint">{a.lastActive > 0 ? `active ${ago(a.lastActive, now)}` : "no sessions today"}</span>
           </div>
 
-          <div className="ml-auto flex flex-wrap items-center gap-3 font-mono text-[11px]">
-            <button type="button" onClick={() => open("/sessions")} className="rounded-md border border-border px-2.5 py-1 text-muted-foreground hover:border-border-strong hover:text-foreground">
+          <div className="flex flex-wrap items-center gap-2 font-mono text-[11px] lg:ml-auto lg:gap-2.5">
+            <button type="button" onClick={() => open("/sessions")} className="rounded-md border border-border px-2.5 py-1.5 text-muted-foreground hover:border-border-strong hover:text-foreground sm:py-1">
               <span className={a.working > 0 ? "text-primary" : "text-foreground"}>{a.working + a.idle}</span> sessions
               {a.working > 0 && <span className="text-primary"> · {a.working} working</span>}
             </button>
-            <button type="button" onClick={() => open("/commands")} className="rounded-md border border-border px-2.5 py-1 text-muted-foreground hover:border-border-strong hover:text-foreground">
+            <button type="button" onClick={() => open("/commands")} className="rounded-md border border-border px-2.5 py-1.5 text-muted-foreground hover:border-border-strong hover:text-foreground sm:py-1">
               {a.running > 0 && <span className="text-primary">{a.running} live · </span>}
               <span className="text-foreground">{a.finished}</span> today
               {a.failed > 0 && <span className="text-critical"> · {a.failed} failed</span>}
             </button>
-            <button type="button" onClick={() => open("/questions")} className="rounded-md border border-border px-2.5 py-1 text-muted-foreground hover:border-border-strong hover:text-foreground">
+            <button type="button" onClick={() => open("/questions")} className="rounded-md border border-border px-2.5 py-1.5 text-muted-foreground hover:border-border-strong hover:text-foreground sm:py-1">
               <span className={p.openQuestions > 0 ? "text-primary" : "text-foreground"}>{p.openQuestions}</span> questions
               {p.outbox > 0 && <span className="text-frost"> · {p.outbox} outbox</span>}
             </button>
-            <button type="button" onClick={() => open("/reviews")} className="rounded-md border border-border px-2.5 py-1 text-muted-foreground hover:border-border-strong hover:text-foreground">
+            <button type="button" onClick={() => open("/reviews")} className="rounded-md border border-border px-2.5 py-1.5 text-muted-foreground hover:border-border-strong hover:text-foreground sm:py-1">
               <span className={p.activeReviews > 0 ? "text-primary" : "text-foreground"}>{p.activeReviews}</span> reviews
               {p.reviewsToDecide > 0 && <span className="text-primary"> · {p.reviewsToDecide} to decide</span>}
             </button>
-            <button type="button" onClick={() => open("/schedules")} className="rounded-md border border-border px-2.5 py-1 text-muted-foreground hover:border-border-strong hover:text-foreground">
+            <button type="button" onClick={() => open("/schedules")} className="rounded-md border border-border px-2.5 py-1.5 text-muted-foreground hover:border-border-strong hover:text-foreground sm:py-1">
               <span className="text-foreground">{p.schedules}</span> schedules
             </button>
           </div>
@@ -235,7 +238,7 @@ function ProjectBody({ s, project, now, q }: { s: Snapshot; project: Project; no
   const shown = showReleased || q !== "" ? allWorkspaces : live;
 
   return (
-    <div className="rounded-xl border border-border/80 bg-background/35 p-4">
+    <div className="rounded-xl border border-border/80 bg-background/35 p-3 sm:p-4">
       {project.repos.length === 0 ? (
         <p className="font-mono text-[11.5px] text-faint">No repos in this project yet. Add one with hotbed project add {project.name} --repo REMOTE.</p>
       ) : (
@@ -247,7 +250,7 @@ function ProjectBody({ s, project, now, q }: { s: Snapshot; project: Project; no
       )}
       <div className="mt-2.5 flex flex-wrap items-baseline gap-x-3 gap-y-1 border-t border-border/60 pt-2.5">
         <BasesSummary s={s} bases={bases} />
-        <span className="ml-auto font-mono text-[11px] text-muted-foreground">
+        <span className="font-mono text-[11px] text-muted-foreground sm:ml-auto">
           {live.length > 0 ? (
             <>
               <span className="text-foreground">{live.length}</span> live workspace{live.length === 1 ? "" : "s"} · {bytes(owned)} owned
@@ -316,49 +319,96 @@ function BasesSummary({ s, bases }: { s: Snapshot; bases: Snapshot["bases"] }) {
 
 function RepoWorkspaceTable({ s, rows, now }: { s: Snapshot; rows: Workspace[]; now: number }) {
   return (
-    <Table className="text-[12px]">
-      <TableHeader className="eyebrow">
-        <TableRow className="border-border/70 hover:bg-transparent">
-          {["workspace", "session", "agent", "node", "base", "files", "owns", "fork", "created", "active"].map((h) => (
-            <TableHead key={h} className="h-auto px-2 py-1.5 font-normal text-muted-foreground">
-              {h}
-            </TableHead>
-          ))}
-        </TableRow>
-      </TableHeader>
-      <TableBody className="num font-mono text-[11px]">
+    <>
+      <div className="space-y-2 md:hidden">
         {rows.map((w) => {
           const base = s.bases.find((b) => b.id === w.baseId);
           const live = s.commands.filter((c) => c.workspaceId === w.id && isLive(c)).length;
           return (
-            <TableRow key={w.id} className={`border-border/50 hover:bg-muted/60 ${w.state === WorkspaceState.RELEASED ? "opacity-45" : ""}`}>
-              <TableCell className="px-2 py-2">
-                <Link to="/workspaces/$id" params={{ id: w.id }} className="text-foreground hover:text-primary">
-                  {w.id}
-                </Link>
-                {w.state !== WorkspaceState.ACTIVE && w.state !== WorkspaceState.IDLE && <span className={`ml-2 text-[9.5px] ${stateTone[w.state]}`}>{workspaceStateLabel(w.state)}</span>}
-              </TableCell>
-              <TableCell className="px-2 py-2">
-                {w.sessionId ? (
-                  <Link to="/sessions/$id" params={{ id: w.sessionId }} className="text-muted-foreground hover:text-primary">
+            <div
+              key={w.id}
+              className={`rounded-lg border border-border/70 bg-card/60 p-2.5 font-mono text-[11px] ${w.state === WorkspaceState.RELEASED ? "opacity-50" : ""}`}
+            >
+              <div className="flex flex-wrap items-baseline justify-between gap-2">
+                <div className="min-w-0">
+                  <Link to="/workspaces/$id" params={{ id: w.id }} className="font-medium text-foreground hover:text-primary">
+                    {w.id}
+                  </Link>
+                  {w.state !== WorkspaceState.ACTIVE && w.state !== WorkspaceState.IDLE && (
+                    <span className={`ml-2 text-[9.5px] ${stateTone[w.state]}`}>{workspaceStateLabel(w.state)}</span>
+                  )}
+                </div>
+                <span className="shrink-0 text-[10.5px]">
+                  {live > 0 ? <span className="text-primary">{live} live</span> : <span className="text-faint">{ago(w.lastActiveAt, now)}</span>}
+                </span>
+              </div>
+              <div className="mt-1.5 flex flex-wrap items-center gap-x-3 gap-y-1 text-[10.5px] text-muted-foreground">
+                {w.sessionId && (
+                  <Link to="/sessions/$id" params={{ id: w.sessionId }} className="text-foreground/85 hover:text-primary">
                     {w.sessionId}
                   </Link>
-                ) : (
-                  <span className="text-faint">—</span>
                 )}
-              </TableCell>
-              <TableCell className="px-2 py-2 text-muted-foreground">{w.agent}</TableCell>
-              <TableCell className="px-2 py-2 text-muted-foreground">{nodeName(s, w.nodeId)}</TableCell>
-              <TableCell className="px-2 py-2 text-faint">g{base?.generation ?? "?"}</TableCell>
-              <TableCell className="px-2 py-2">{filesChanged(w)}</TableCell>
-              <TableCell className="px-2 py-2">{bytes(w.exclusiveBytes)}</TableCell>
-              <TableCell className="px-2 py-2 text-faint">{String(w.forkMillis)} ms</TableCell>
-              <TableCell className="px-2 py-2 text-muted-foreground">{ago(w.createdAt, now)}</TableCell>
-              <TableCell className="px-2 py-2">{live > 0 ? <span className="text-primary">{live} live</span> : <span className="text-faint">{ago(w.lastActiveAt, now)}</span>}</TableCell>
-            </TableRow>
+                <span>{nodeName(s, w.nodeId)}</span>
+                <span className="text-faint">g{base?.generation ?? "?"}</span>
+                <span>{w.agent}</span>
+              </div>
+              <div className="num mt-1.5 flex flex-wrap gap-x-3 gap-y-0.5 text-[10px] text-faint">
+                <span>{filesChanged(w)} files</span>
+                <span>{bytes(w.exclusiveBytes)} owned</span>
+                <span>{String(w.forkMillis)} ms fork</span>
+                <span>created {ago(w.createdAt, now)}</span>
+              </div>
+            </div>
           );
         })}
-      </TableBody>
-    </Table>
+      </div>
+
+      <div className="hidden md:block">
+        <Table className="text-[12px]">
+          <TableHeader className="eyebrow">
+            <TableRow className="border-border/70 hover:bg-transparent">
+              {["workspace", "session", "agent", "node", "base", "files", "owns", "fork", "created", "active"].map((h) => (
+                <TableHead key={h} className="h-auto px-2 py-1.5 font-normal text-muted-foreground">
+                  {h}
+                </TableHead>
+              ))}
+            </TableRow>
+          </TableHeader>
+          <TableBody className="num font-mono text-[11px]">
+            {rows.map((w) => {
+              const base = s.bases.find((b) => b.id === w.baseId);
+              const live = s.commands.filter((c) => c.workspaceId === w.id && isLive(c)).length;
+              return (
+                <TableRow key={w.id} className={`border-border/50 hover:bg-muted/60 ${w.state === WorkspaceState.RELEASED ? "opacity-45" : ""}`}>
+                  <TableCell className="px-2 py-2">
+                    <Link to="/workspaces/$id" params={{ id: w.id }} className="text-foreground hover:text-primary">
+                      {w.id}
+                    </Link>
+                    {w.state !== WorkspaceState.ACTIVE && w.state !== WorkspaceState.IDLE && <span className={`ml-2 text-[9.5px] ${stateTone[w.state]}`}>{workspaceStateLabel(w.state)}</span>}
+                  </TableCell>
+                  <TableCell className="px-2 py-2">
+                    {w.sessionId ? (
+                      <Link to="/sessions/$id" params={{ id: w.sessionId }} className="text-muted-foreground hover:text-primary">
+                        {w.sessionId}
+                      </Link>
+                    ) : (
+                      <span className="text-faint">—</span>
+                    )}
+                  </TableCell>
+                  <TableCell className="px-2 py-2 text-muted-foreground">{w.agent}</TableCell>
+                  <TableCell className="px-2 py-2 text-muted-foreground">{nodeName(s, w.nodeId)}</TableCell>
+                  <TableCell className="px-2 py-2 text-faint">g{base?.generation ?? "?"}</TableCell>
+                  <TableCell className="px-2 py-2">{filesChanged(w)}</TableCell>
+                  <TableCell className="px-2 py-2">{bytes(w.exclusiveBytes)}</TableCell>
+                  <TableCell className="px-2 py-2 text-faint">{String(w.forkMillis)} ms</TableCell>
+                  <TableCell className="px-2 py-2 text-muted-foreground">{ago(w.createdAt, now)}</TableCell>
+                  <TableCell className="px-2 py-2">{live > 0 ? <span className="text-primary">{live} live</span> : <span className="text-faint">{ago(w.lastActiveAt, now)}</span>}</TableCell>
+                </TableRow>
+              );
+            })}
+          </TableBody>
+        </Table>
+      </div>
+    </>
   );
 }

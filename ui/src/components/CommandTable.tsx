@@ -33,87 +33,164 @@ export function LiveCommandTable({ s, commands }: { s: Snapshot; commands: Comma
   if (commands.length === 0) return <Empty>No commands here right now.</Empty>;
   const knownWorkspaces = new Set(s.workspaces.map((w) => w.id));
   return (
-    <Table className="text-[12px]">
-      <TableHeader className="eyebrow">
-        <TableRow className="border-border hover:bg-transparent">
-          {[...identityColumns(project), "for", "cpu", "memory · high", "crates", "why"].map((h) => (
-            <TableHead key={h} className="h-auto px-2 py-2 font-normal text-muted-foreground">
-              {h}
-            </TableHead>
-          ))}
-        </TableRow>
-      </TableHeader>
-      <TableBody>
+    <>
+      <div className="space-y-2.5 md:hidden">
         {commands.map((c) => {
           const since = Number(c.startedAt ?? c.queuedAt);
           const repoId = c.repo;
           const memLow = c.limits?.memoryLowBytes ?? 0n;
           const memHigh = c.limits?.memoryHighBytes ?? 0n;
           return (
-            <TableRow key={c.id} className="border-border/60 align-top hover:bg-muted/60">
-              <TableCell className="px-2 py-2.5">
+            <div key={c.id} className="rounded-xl border border-border/70 bg-background/40 p-3 font-mono text-[11px]">
+              <div className="flex flex-wrap items-center gap-1.5">
                 <StateBadge state={c.state} />
-              </TableCell>
-              <TableCell className="max-w-[320px] px-2 py-2.5 whitespace-normal">
-                <Link to="/commands/$id" params={{ id: c.id }} className="block font-mono text-[11.5px] text-foreground hover:text-primary">
-                  <CommandInline argv={c.argv} args={c.args} />
-                </Link>
-                <div className="mt-0.5 flex flex-wrap items-center gap-2">
-                  <KindTag kind={c.kind} />
-                  {c.bench && <BenchTag />}
-                  {c.state !== CommandState.QUEUED && (
-                    <Link
-                      to="/commands/$id"
-                      params={{ id: c.id }}
-                      search={{ sample: true }}
-                      title="Sample stacks, syscalls, open files & Linux diagnostics"
-                      className="rounded border border-primary/35 bg-ember-wash px-1.5 py-px font-mono text-[9.5px] text-primary hover:brightness-110"
-                    >
-                      ◎ Sample
-                    </Link>
-                  )}
-                  {c.url && (
-                    <a href={c.url} className="font-mono text-[10px] text-primary hover:underline" target="_blank" rel="noreferrer">
-                      {c.url.replace("http://", "")} ↗
-                    </a>
-                  )}
-                </div>
-              </TableCell>
-              <TableCell className="px-2 py-2.5">
+                <KindTag kind={c.kind} />
+                {c.bench && <BenchTag />}
+                {c.state !== CommandState.QUEUED && (
+                  <Link
+                    to="/commands/$id"
+                    params={{ id: c.id }}
+                    search={{ sample: true }}
+                    className="rounded border border-primary/35 bg-ember-wash px-1.5 py-px text-[9.5px] text-primary"
+                  >
+                    ◎ Sample
+                  </Link>
+                )}
+                <span className="num ml-auto text-[10.5px] text-muted-foreground">{duration((now - since) / 1000)}</span>
+              </div>
+
+              <Link to="/commands/$id" params={{ id: c.id }} className="mt-2 block text-[12px] text-foreground hover:text-primary">
+                <CommandInline argv={c.argv} args={c.args} />
+              </Link>
+
+              <div className="mt-2 flex flex-wrap items-center gap-x-2.5 gap-y-1 text-[10.5px] text-muted-foreground">
                 <SessionLink id={c.sessionId} />
-              </TableCell>
-              {!project && (
-                <TableCell className="px-2 py-2.5">
-                  <ProjectTag name={commandProject(s, c.sessionId, repoId || null)} />
-                </TableCell>
+                {!project && <ProjectTag name={commandProject(s, c.sessionId, repoId || null)} />}
+                {repoId && <span>{repoId}</span>}
+                <span>{nodeName(s, c.nodeId)}</span>
+                {c.state === CommandState.RUNNING && <span className="num text-foreground">{c.cpuCores.toFixed(1)} cores</span>}
+                {c.rebuilt && <span className="num">{c.rebuilt.units}/{c.rebuilt.of} crates</span>}
+              </div>
+
+              {c.url && (
+                <div className="mt-1">
+                  <a href={c.url} className="text-[10.5px] text-primary hover:underline" target="_blank" rel="noreferrer">
+                    {c.url.replace("http://", "")} ↗
+                  </a>
+                </div>
               )}
-              <TableCell className="px-2 py-2.5 font-mono text-[11px] text-muted-foreground">{repoId || "—"}</TableCell>
-              <TableCell className="px-2 py-2.5">
-                <WorkspaceCell id={c.workspaceId} known={knownWorkspaces.has(c.workspaceId)} />
-              </TableCell>
-              <TableCell className="px-2 py-2.5 font-mono text-[11px] text-muted-foreground">{nodeName(s, c.nodeId)}</TableCell>
-              <TableCell className="num px-2 py-2.5 font-mono text-[11px] text-muted-foreground">{duration((now - since) / 1000)}</TableCell>
-              <TableCell className="num px-2 py-2.5 font-mono text-[11px]">{c.state === CommandState.RUNNING ? `${c.cpuCores.toFixed(1)} cores` : "—"}</TableCell>
-              <TableCell className="w-40 px-2 py-2.5">
+
+              <div className="mt-2 border-t border-border/60 pt-2">
                 {c.state === CommandState.QUEUED ? (
-                  <span className="font-mono text-[11px] text-faint">low {limit(memLow)}</span>
+                  <span className="text-[10.5px] text-faint">memory.low {limit(memLow)}</span>
                 ) : (
-                  <>
-                    <div className="num mb-1 font-mono text-[10.5px] text-muted-foreground">
-                      {bytes(c.memoryBytes)} · {limit(memHigh)}
-                      {c.swapBytes > 0n && <span className="text-frost"> +{bytes(c.swapBytes)} swap</span>}
+                  <div>
+                    <div className="num mb-1 flex items-baseline justify-between text-[10.5px] text-muted-foreground">
+                      <span>
+                        {bytes(c.memoryBytes)} · high {limit(memHigh)}
+                        {c.swapBytes > 0n && <span className="text-frost"> +{bytes(c.swapBytes)} swap</span>}
+                      </span>
+                      <WorkspaceCell id={c.workspaceId} known={knownWorkspaces.has(c.workspaceId)} />
                     </div>
                     {memHigh > 0n && <Meter value={Number(c.memoryBytes) / Number(memHigh)} marker={Number(memLow) / Number(memHigh)} />}
-                  </>
+                  </div>
                 )}
-              </TableCell>
-              <TableCell className="num px-2 py-2.5 font-mono text-[11px] text-muted-foreground">{c.rebuilt ? `${c.rebuilt.units}/${c.rebuilt.of}` : "—"}</TableCell>
-              <TableCell className="max-w-[260px] px-2 py-2.5 text-[11px] whitespace-normal text-muted-foreground">{c.reason || (c.state === CommandState.RUNNING ? `started ${ago(since, now)}` : "")}</TableCell>
-            </TableRow>
+              </div>
+
+              {(c.reason || c.state === CommandState.RUNNING) && (
+                <div className="mt-1.5 font-sans text-[11px] text-muted-foreground">
+                  {c.reason || `started ${ago(since, now)}`}
+                </div>
+              )}
+            </div>
           );
         })}
-      </TableBody>
-    </Table>
+      </div>
+
+      <div className="hidden md:block">
+        <Table className="text-[12px]">
+          <TableHeader className="eyebrow">
+            <TableRow className="border-border hover:bg-transparent">
+              {[...identityColumns(project), "for", "cpu", "memory · high", "crates", "why"].map((h) => (
+                <TableHead key={h} className="h-auto px-2 py-2 font-normal text-muted-foreground">
+                  {h}
+                </TableHead>
+              ))}
+            </TableRow>
+          </TableHeader>
+          <TableBody>
+            {commands.map((c) => {
+              const since = Number(c.startedAt ?? c.queuedAt);
+              const repoId = c.repo;
+              const memLow = c.limits?.memoryLowBytes ?? 0n;
+              const memHigh = c.limits?.memoryHighBytes ?? 0n;
+              return (
+                <TableRow key={c.id} className="border-border/60 align-top hover:bg-muted/60">
+                  <TableCell className="px-2 py-2.5">
+                    <StateBadge state={c.state} />
+                  </TableCell>
+                  <TableCell className="max-w-[320px] px-2 py-2.5 whitespace-normal">
+                    <Link to="/commands/$id" params={{ id: c.id }} className="block font-mono text-[11.5px] text-foreground hover:text-primary">
+                      <CommandInline argv={c.argv} args={c.args} />
+                    </Link>
+                    <div className="mt-0.5 flex flex-wrap items-center gap-2">
+                      <KindTag kind={c.kind} />
+                      {c.bench && <BenchTag />}
+                      {c.state !== CommandState.QUEUED && (
+                        <Link
+                          to="/commands/$id"
+                          params={{ id: c.id }}
+                          search={{ sample: true }}
+                          title="Sample stacks, syscalls, open files & Linux diagnostics"
+                          className="rounded border border-primary/35 bg-ember-wash px-1.5 py-px font-mono text-[9.5px] text-primary hover:brightness-110"
+                        >
+                          ◎ Sample
+                        </Link>
+                      )}
+                      {c.url && (
+                        <a href={c.url} className="font-mono text-[10px] text-primary hover:underline" target="_blank" rel="noreferrer">
+                          {c.url.replace("http://", "")} ↗
+                        </a>
+                      )}
+                    </div>
+                  </TableCell>
+                  <TableCell className="px-2 py-2.5">
+                    <SessionLink id={c.sessionId} />
+                  </TableCell>
+                  {!project && (
+                    <TableCell className="px-2 py-2.5">
+                      <ProjectTag name={commandProject(s, c.sessionId, repoId || null)} />
+                    </TableCell>
+                  )}
+                  <TableCell className="px-2 py-2.5 font-mono text-[11px] text-muted-foreground">{repoId || "—"}</TableCell>
+                  <TableCell className="px-2 py-2.5">
+                    <WorkspaceCell id={c.workspaceId} known={knownWorkspaces.has(c.workspaceId)} />
+                  </TableCell>
+                  <TableCell className="px-2 py-2.5 font-mono text-[11px] text-muted-foreground">{nodeName(s, c.nodeId)}</TableCell>
+                  <TableCell className="num px-2 py-2.5 font-mono text-[11px] text-muted-foreground">{duration((now - since) / 1000)}</TableCell>
+                  <TableCell className="num px-2 py-2.5 font-mono text-[11px]">{c.state === CommandState.RUNNING ? `${c.cpuCores.toFixed(1)} cores` : "—"}</TableCell>
+                  <TableCell className="w-40 px-2 py-2.5">
+                    {c.state === CommandState.QUEUED ? (
+                      <span className="font-mono text-[11px] text-faint">low {limit(memLow)}</span>
+                    ) : (
+                      <>
+                        <div className="num mb-1 font-mono text-[10.5px] text-muted-foreground">
+                          {bytes(c.memoryBytes)} · {limit(memHigh)}
+                          {c.swapBytes > 0n && <span className="text-frost"> +{bytes(c.swapBytes)} swap</span>}
+                        </div>
+                        {memHigh > 0n && <Meter value={Number(c.memoryBytes) / Number(memHigh)} marker={Number(memLow) / Number(memHigh)} />}
+                      </>
+                    )}
+                  </TableCell>
+                  <TableCell className="num px-2 py-2.5 font-mono text-[11px] text-muted-foreground">{c.rebuilt ? `${c.rebuilt.units}/${c.rebuilt.of}` : "—"}</TableCell>
+                  <TableCell className="max-w-[260px] px-2 py-2.5 text-[11px] whitespace-normal text-muted-foreground">{c.reason || (c.state === CommandState.RUNNING ? `started ${ago(since, now)}` : "")}</TableCell>
+                </TableRow>
+              );
+            })}
+          </TableBody>
+        </Table>
+      </div>
+    </>
   );
 }
 
@@ -123,57 +200,95 @@ export function HistoryTable({ s, rows, limit = 200 }: { s: Snapshot; rows: Fini
   const [project] = useProject();
   if (rows.length === 0) return <Empty>Nothing matches.</Empty>;
   const knownWorkspaces = new Set(s.workspaces.map((w) => w.id));
+  const shown = rows.slice(0, limit);
   return (
     <div>
-      <Table className="text-[12px]">
-        <TableHeader className="eyebrow">
-          <TableRow className="border-border hover:bg-transparent">
-            {[...identityColumns(project), "ended", "took", "cold", "speedup", "crates", "peak mem", "why"].map((h) => (
-              <TableHead key={h} className="h-auto px-2 py-2 font-normal text-muted-foreground">
-                {h}
-              </TableHead>
-            ))}
-          </TableRow>
-        </TableHeader>
-        <TableBody className="num font-mono text-[11px]">
-          {rows.slice(0, limit).map((c) => (
-            <TableRow key={c.id} className="border-border/60 hover:bg-muted/60">
-              <TableCell className="px-2 py-2">
-                <StateBadge state={c.state} />
-              </TableCell>
-              <TableCell className="max-w-[300px] px-2 py-2">
-                <Link to="/commands/$id" params={{ id: c.id }} className="block text-foreground hover:text-primary">
-                  <CommandInline argv={c.argv} />
-                </Link>
-                {c.bench && <BenchTag />}
-              </TableCell>
-              <TableCell className="px-2 py-2">
-                <SessionLink id={c.sessionId} />
-              </TableCell>
-              {!project && (
-                <TableCell className="px-2 py-2">
-                  <ProjectTag name={commandProject(s, c.sessionId, c.repoId)} />
-                </TableCell>
-              )}
-              <TableCell className="px-2 py-2 text-muted-foreground">{c.repoId || "—"}</TableCell>
-              <TableCell className="px-2 py-2">
-                <WorkspaceCell id={c.workspaceId} known={knownWorkspaces.has(c.workspaceId)} />
-              </TableCell>
-              <TableCell className="px-2 py-2 text-muted-foreground">{nodeName(s, c.nodeId)}</TableCell>
-              <TableCell className="px-2 py-2 text-muted-foreground">{ago(c.endedAt, now)}</TableCell>
-              <TableCell className="px-2 py-2">{duration(c.seconds)}</TableCell>
-              <TableCell className="px-2 py-2 text-faint">{c.coldSeconds !== undefined ? duration(c.coldSeconds) : "—"}</TableCell>
-              <TableCell className="px-2 py-2 text-primary">{c.coldSeconds !== undefined ? speedup(c.coldSeconds, c.seconds) : "—"}</TableCell>
-              <TableCell className="px-2 py-2 text-muted-foreground">{c.rebuilt !== undefined ? `${c.rebuilt}/${c.of ?? 0}` : "—"}</TableCell>
-              <TableCell className="px-2 py-2 text-muted-foreground">
-                {bytes(c.peakMemoryBytes)}
+      <div className="space-y-2 md:hidden">
+        {shown.map((c) => (
+          <div key={c.id} className="rounded-xl border border-border/70 bg-background/40 p-2.5 font-mono text-[11px]">
+            <div className="flex flex-wrap items-center gap-1.5">
+              <StateBadge state={c.state} />
+              {c.bench && <BenchTag />}
+              <span className="num ml-auto text-foreground">{duration(c.seconds)}</span>
+              {c.coldSeconds !== undefined && <span className="num text-primary">{speedup(c.coldSeconds, c.seconds)}</span>}
+            </div>
+
+            <Link to="/commands/$id" params={{ id: c.id }} className="mt-1.5 block text-[11.5px] text-foreground hover:text-primary">
+              <CommandInline argv={c.argv} />
+            </Link>
+
+            <div className="num mt-1.5 flex flex-wrap items-center gap-x-2.5 gap-y-1 text-[10.5px] text-muted-foreground">
+              <SessionLink id={c.sessionId} />
+              {!project && <ProjectTag name={commandProject(s, c.sessionId, c.repoId)} />}
+              {c.repoId && <span>{c.repoId}</span>}
+              <span>{nodeName(s, c.nodeId)}</span>
+              <span className="text-faint">{ago(c.endedAt, now)}</span>
+            </div>
+
+            <div className="num mt-1 flex flex-wrap items-center gap-x-3 gap-y-0.5 text-[10px] text-faint">
+              {c.coldSeconds !== undefined && <span>cold {duration(c.coldSeconds)}</span>}
+              {c.rebuilt !== undefined && <span>{c.rebuilt}/{c.of ?? 0} crates</span>}
+              <span>
+                peak {bytes(c.peakMemoryBytes)}
                 {c.parks > 0 && <span className="text-frost"> ❄{c.parks}</span>}
-              </TableCell>
-              <TableCell className="px-2 py-2 font-sans text-muted-foreground">{c.failure ? (FAILURE[c.failure] ?? c.failure) : ""}</TableCell>
+              </span>
+              {c.failure && <span className="font-sans text-critical">{FAILURE[c.failure] ?? c.failure}</span>}
+            </div>
+          </div>
+        ))}
+      </div>
+
+      <div className="hidden md:block">
+        <Table className="text-[12px]">
+          <TableHeader className="eyebrow">
+            <TableRow className="border-border hover:bg-transparent">
+              {[...identityColumns(project), "ended", "took", "cold", "speedup", "crates", "peak mem", "why"].map((h) => (
+                <TableHead key={h} className="h-auto px-2 py-2 font-normal text-muted-foreground">
+                  {h}
+                </TableHead>
+              ))}
             </TableRow>
-          ))}
-        </TableBody>
-      </Table>
+          </TableHeader>
+          <TableBody className="num font-mono text-[11px]">
+            {shown.map((c) => (
+              <TableRow key={c.id} className="border-border/60 hover:bg-muted/60">
+                <TableCell className="px-2 py-2">
+                  <StateBadge state={c.state} />
+                </TableCell>
+                <TableCell className="max-w-[300px] px-2 py-2">
+                  <Link to="/commands/$id" params={{ id: c.id }} className="block text-foreground hover:text-primary">
+                    <CommandInline argv={c.argv} />
+                  </Link>
+                  {c.bench && <BenchTag />}
+                </TableCell>
+                <TableCell className="px-2 py-2">
+                  <SessionLink id={c.sessionId} />
+                </TableCell>
+                {!project && (
+                  <TableCell className="px-2 py-2">
+                    <ProjectTag name={commandProject(s, c.sessionId, c.repoId)} />
+                  </TableCell>
+                )}
+                <TableCell className="px-2 py-2 text-muted-foreground">{c.repoId || "—"}</TableCell>
+                <TableCell className="px-2 py-2">
+                  <WorkspaceCell id={c.workspaceId} known={knownWorkspaces.has(c.workspaceId)} />
+                </TableCell>
+                <TableCell className="px-2 py-2 text-muted-foreground">{nodeName(s, c.nodeId)}</TableCell>
+                <TableCell className="px-2 py-2 text-muted-foreground">{ago(c.endedAt, now)}</TableCell>
+                <TableCell className="px-2 py-2">{duration(c.seconds)}</TableCell>
+                <TableCell className="px-2 py-2 text-faint">{c.coldSeconds !== undefined ? duration(c.coldSeconds) : "—"}</TableCell>
+                <TableCell className="px-2 py-2 text-primary">{c.coldSeconds !== undefined ? speedup(c.coldSeconds, c.seconds) : "—"}</TableCell>
+                <TableCell className="px-2 py-2 text-muted-foreground">{c.rebuilt !== undefined ? `${c.rebuilt}/${c.of ?? 0}` : "—"}</TableCell>
+                <TableCell className="px-2 py-2 text-muted-foreground">
+                  {bytes(c.peakMemoryBytes)}
+                  {c.parks > 0 && <span className="text-frost"> ❄{c.parks}</span>}
+                </TableCell>
+                <TableCell className="px-2 py-2 font-sans text-muted-foreground">{c.failure ? (FAILURE[c.failure] ?? c.failure) : ""}</TableCell>
+              </TableRow>
+            ))}
+          </TableBody>
+        </Table>
+      </div>
       {rows.length > limit && <p className="mt-3 text-center font-mono text-[10.5px] text-faint">showing {limit} of {rows.length}</p>}
     </div>
   );

@@ -37,7 +37,7 @@ import {
 	timingSafeStringEqual,
 	type AuthEnv,
 } from "./auth.ts";
-import { formatOrgToken, isWorkOSEnabled } from "./workos.ts";
+import { formatOrgToken, isSafeReturnTo, isWorkOSEnabled } from "./workos.ts";
 import { BuildDistributor, type BuildsEnv, type TestBuildConfig } from "./builds.ts";
 import { createConnectFetchDispatcher, type ConnectFetchDispatcher } from "./connect-adapter.ts";
 import { ControllerContext } from "./context.ts";
@@ -343,34 +343,43 @@ export class ControllerDO extends DurableObject<ControllerEnv> {
 		// 2. Cockpit cookie auth endpoints
 		if (pathname === "/auth/login") {
 			if (request.method === "GET") {
-				return new Response(renderLoginPage(), {
+				const returnTo = isSafeReturnTo(url.searchParams.get("return_to"));
+				return new Response(renderLoginPage(undefined, false, returnTo), {
 					status: 200,
 					headers: { "Content-Type": "text/html; charset=utf-8" },
 				});
 			}
 			if (request.method === "POST") {
+				let submitted = "";
+				let rawReturnTo: string | null = url.searchParams.get("return_to");
+				const ct = (request.headers.get("Content-Type") ?? "").toLowerCase();
+				if (ct.includes("application/json")) {
+					const body = (await request.json().catch(() => ({}))) as {
+						token?: string;
+						return_to?: string;
+					};
+					submitted = (body.token ?? "").trim();
+					if (typeof body.return_to === "string") rawReturnTo = body.return_to;
+				} else {
+					const form = await request.formData().catch(() => null);
+					const tokenField = form?.get("token");
+					submitted = typeof tokenField === "string" ? tokenField.trim() : "";
+					const rtField = form?.get("return_to");
+					if (typeof rtField === "string") rawReturnTo = rtField;
+				}
+				const returnTo = isSafeReturnTo(rawReturnTo);
 				const ownerToken = (this.env.OWNER_TOKEN ?? "").trim();
 				if (!ownerToken) {
 					return new Response(
-						renderLoginPage("OWNER_TOKEN is not configured on this controller."),
+						renderLoginPage("OWNER_TOKEN is not configured on this controller.", false, returnTo),
 						{
 							status: 503,
 							headers: { "Content-Type": "text/html; charset=utf-8" },
 						},
 					);
 				}
-				let submitted = "";
-				const ct = (request.headers.get("Content-Type") ?? "").toLowerCase();
-				if (ct.includes("application/json")) {
-					const body = (await request.json().catch(() => ({}))) as { token?: string };
-					submitted = (body.token ?? "").trim();
-				} else {
-					const form = await request.formData().catch(() => null);
-					const tokenField = form?.get("token");
-					submitted = typeof tokenField === "string" ? tokenField.trim() : "";
-				}
 				if (!submitted || !(await timingSafeStringEqual(submitted, ownerToken))) {
-					return new Response(renderLoginPage("Invalid owner token."), {
+					return new Response(renderLoginPage("Invalid owner token.", false, returnTo), {
 						status: 401,
 						headers: { "Content-Type": "text/html; charset=utf-8" },
 					});
@@ -380,7 +389,7 @@ export class ControllerDO extends DurableObject<ControllerEnv> {
 				return new Response(null, {
 					status: 303,
 					headers: {
-						Location: "/",
+						Location: returnTo,
 						"Set-Cookie": cookie,
 					},
 				});

@@ -74,80 +74,156 @@ export function SessionTable({ s, sessions, now }: { s: Snapshot; sessions: Sess
   const [project] = useProject();
   const columns = ["session", ...(project ? [] : ["project"]), "state", "agent", "workspaces", "commands", "failed", "started", "last active", "abandoned in · ended"];
   return (
-    <Table className="text-[12px]">
-      <TableHeader className="eyebrow">
-        <TableRow className="border-border hover:bg-transparent">
-          {columns.map((h) => (
-            <TableHead key={h} className="h-auto px-2 py-2 font-normal text-muted-foreground">
-              {h}
-            </TableHead>
-          ))}
-        </TableRow>
-      </TableHeader>
-      <TableBody className="num font-mono text-[11px]">
+    <>
+      <div className="space-y-2.5 md:hidden">
         {sessions.map((x) => {
           const finished = s.history.filter((c) => c.sessionId === x.id);
           const running = s.commands.filter((c) => c.sessionId === x.id && isLive(c)).length;
           const failed = finished.filter((c) => c.state === CommandState.FAILED).length;
           const left = idleLeftMs(x, now);
           return (
-            <TableRow key={x.id} className={`border-border/60 hover:bg-muted/60 ${x.endedAt !== undefined ? "text-muted-foreground" : ""}`}>
-              <TableCell className="px-2 py-2.5">
-                <Link to="/sessions/$id" params={{ id: x.id }} className="display text-[16px] font-medium text-foreground hover:text-primary">
-                  {x.id}
-                </Link>
-                {x.schedule && (
-                  <Link to="/schedules" className="ml-2 text-[10.5px] text-muted-foreground hover:text-primary" title="a run of this scheduled command">
-                    ⟳ {x.schedule}
+            <div
+              key={x.id}
+              className={`rounded-xl border border-border/70 bg-background/40 p-3 font-mono text-[11px] ${x.endedAt !== undefined ? "text-muted-foreground" : ""}`}
+            >
+              <div className="flex flex-wrap items-baseline justify-between gap-2">
+                <div className="flex flex-wrap items-baseline gap-2">
+                  <Link to="/sessions/$id" params={{ id: x.id }} className="display text-[17px] font-medium text-foreground hover:text-primary">
+                    {x.id}
                   </Link>
-                )}
-                {x.t3codeThreadId && (
-                  <span className="ml-2 text-[10.5px] text-muted-foreground" title={`T3 Code thread ${x.t3codeThreadId}`}>
-                    t3:{x.t3codeThreadId}
-                  </span>
-                )}
-              </TableCell>
-              {!project && (
-                <TableCell className="px-2 py-2.5">
-                  <ProjectTag name={x.project} />
-                </TableCell>
-              )}
-              <TableCell className="px-2 py-2.5">
+                  {!project && <ProjectTag name={x.project} />}
+                </div>
                 <SessionStateLabel s={s} session={x} />
-              </TableCell>
-              <TableCell className="px-2 py-2.5 text-muted-foreground">{x.agent}</TableCell>
-              <TableCell className="px-2 py-2.5">
-                <div className="flex flex-wrap gap-1.5">
+              </div>
+
+              {(x.schedule || x.t3codeThreadId) && (
+                <div className="mt-1 flex flex-wrap items-center gap-2 text-[10.5px] text-muted-foreground">
+                  {x.schedule && (
+                    <Link to="/schedules" className="hover:text-primary">
+                      ⟳ {x.schedule}
+                    </Link>
+                  )}
+                  {x.t3codeThreadId && <span className="break-all">t3:{x.t3codeThreadId}</span>}
+                </div>
+              )}
+
+              <div className="num mt-2 flex flex-wrap items-center gap-x-3 gap-y-1 text-[10.5px] text-muted-foreground">
+                <span>{x.agent}</span>
+                <span>
+                  {running > 0 && <span className="text-primary">{running} live · </span>}
+                  {finished.length} cmds
+                </span>
+                {failed > 0 && <span className="text-critical">{failed} failed</span>}
+                <span className="text-faint">active {ago(x.lastActiveAt, now)}</span>
+              </div>
+
+              {x.workspaces.length > 0 && (
+                <div className="mt-2 flex flex-wrap gap-1.5">
                   {x.workspaces.map((w) => (
-                    <span key={w.id} className={`rounded border px-1.5 py-0.5 ${w.releasedAt !== undefined ? "border-border text-faint" : "border-border-strong text-foreground"}`} title={w.id}>
+                    <span
+                      key={w.id}
+                      className={`rounded border px-1.5 py-0.5 text-[10px] ${w.releasedAt !== undefined ? "border-border text-faint" : "border-border-strong text-foreground"}`}
+                      title={w.id}
+                    >
                       {nodeName(s, w.nodeId)}
                     </span>
                   ))}
                 </div>
-              </TableCell>
-              <TableCell className="px-2 py-2.5">
-                {running > 0 && <span className="text-primary">{running} live · </span>}
-                {finished.length}
-              </TableCell>
-              <TableCell className={`px-2 py-2.5 ${failed > 0 ? "text-critical" : "text-faint"}`}>{failed}</TableCell>
-              <TableCell className="px-2 py-2.5 text-muted-foreground">{ago(x.startedAt, now)}</TableCell>
-              <TableCell className="px-2 py-2.5 text-muted-foreground">{ago(x.lastActiveAt, now)}</TableCell>
-              <TableCell className="w-44 px-2 py-2.5">
+              )}
+
+              <div className="mt-2.5 border-t border-border/60 pt-2">
                 {x.endedAt !== undefined ? (
-                  <span className={x.endReason.startsWith("abandoned") ? "text-warning" : "text-faint"}>
-                    {ago(x.endedAt, now)} · {endedHow(x)}
+                  <span className={`text-[10.5px] ${x.endReason.startsWith("abandoned") ? "text-warning" : "text-faint"}`}>
+                    ended {ago(x.endedAt, now)} · {endedHow(x)}
                   </span>
                 ) : x.scheduleRunning ? (
-                  <span className="text-[10.5px] text-muted-foreground">not while its run lasts</span>
+                  <span className="text-[10.5px] text-muted-foreground">scheduled run · not abandoned while running</span>
                 ) : (
                   <IdleLeft left={left} />
                 )}
-              </TableCell>
-            </TableRow>
+              </div>
+            </div>
           );
         })}
-      </TableBody>
-    </Table>
+      </div>
+
+      <div className="hidden md:block">
+        <Table className="text-[12px]">
+          <TableHeader className="eyebrow">
+            <TableRow className="border-border hover:bg-transparent">
+              {columns.map((h) => (
+                <TableHead key={h} className="h-auto px-2 py-2 font-normal text-muted-foreground">
+                  {h}
+                </TableHead>
+              ))}
+            </TableRow>
+          </TableHeader>
+          <TableBody className="num font-mono text-[11px]">
+            {sessions.map((x) => {
+              const finished = s.history.filter((c) => c.sessionId === x.id);
+              const running = s.commands.filter((c) => c.sessionId === x.id && isLive(c)).length;
+              const failed = finished.filter((c) => c.state === CommandState.FAILED).length;
+              const left = idleLeftMs(x, now);
+              return (
+                <TableRow key={x.id} className={`border-border/60 hover:bg-muted/60 ${x.endedAt !== undefined ? "text-muted-foreground" : ""}`}>
+                  <TableCell className="px-2 py-2.5">
+                    <Link to="/sessions/$id" params={{ id: x.id }} className="display text-[16px] font-medium text-foreground hover:text-primary">
+                      {x.id}
+                    </Link>
+                    {x.schedule && (
+                      <Link to="/schedules" className="ml-2 text-[10.5px] text-muted-foreground hover:text-primary" title="a run of this scheduled command">
+                        ⟳ {x.schedule}
+                      </Link>
+                    )}
+                    {x.t3codeThreadId && (
+                      <span className="ml-2 text-[10.5px] text-muted-foreground" title={`T3 Code thread ${x.t3codeThreadId}`}>
+                        t3:{x.t3codeThreadId}
+                      </span>
+                    )}
+                  </TableCell>
+                  {!project && (
+                    <TableCell className="px-2 py-2.5">
+                      <ProjectTag name={x.project} />
+                    </TableCell>
+                  )}
+                  <TableCell className="px-2 py-2.5">
+                    <SessionStateLabel s={s} session={x} />
+                  </TableCell>
+                  <TableCell className="px-2 py-2.5 text-muted-foreground">{x.agent}</TableCell>
+                  <TableCell className="px-2 py-2.5">
+                    <div className="flex flex-wrap gap-1.5">
+                      {x.workspaces.map((w) => (
+                        <span key={w.id} className={`rounded border px-1.5 py-0.5 ${w.releasedAt !== undefined ? "border-border text-faint" : "border-border-strong text-foreground"}`} title={w.id}>
+                          {nodeName(s, w.nodeId)}
+                        </span>
+                      ))}
+                    </div>
+                  </TableCell>
+                  <TableCell className="px-2 py-2.5">
+                    {running > 0 && <span className="text-primary">{running} live · </span>}
+                    {finished.length}
+                  </TableCell>
+                  <TableCell className={`px-2 py-2.5 ${failed > 0 ? "text-critical" : "text-faint"}`}>{failed}</TableCell>
+                  <TableCell className="px-2 py-2.5 text-muted-foreground">{ago(x.startedAt, now)}</TableCell>
+                  <TableCell className="px-2 py-2.5 text-muted-foreground">{ago(x.lastActiveAt, now)}</TableCell>
+                  <TableCell className="w-44 px-2 py-2.5">
+                    {x.endedAt !== undefined ? (
+                      <span className={x.endReason.startsWith("abandoned") ? "text-warning" : "text-faint"}>
+                        {ago(x.endedAt, now)} · {endedHow(x)}
+                      </span>
+                    ) : x.scheduleRunning ? (
+                      <span className="text-[10.5px] text-muted-foreground">not while its run lasts</span>
+                    ) : (
+                      <IdleLeft left={left} />
+                    )}
+                  </TableCell>
+                </TableRow>
+              );
+            })}
+          </TableBody>
+        </Table>
+      </div>
+    </>
   );
 }
 

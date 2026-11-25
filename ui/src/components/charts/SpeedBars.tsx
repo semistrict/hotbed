@@ -23,15 +23,19 @@ export function SpeedBars({ rows }: { rows: SpeedRow[] }) {
       {rows.map((r, i) => (
         <li key={r.id} className="slide-in" style={{ animationDelay: `${i * 40}ms` }}>
           <Link to="/commands/$id" params={{ id: r.id }} className="group block">
-            <div className="mb-1 flex items-baseline gap-3 text-[11.5px]">
-              <CommandInline argv={r.argv} args={r.args} className="font-mono text-foreground group-hover:text-primary" />
-              <span className="truncate text-faint">{r.sub}</span>
-              <span className="ml-auto shrink-0 font-mono">
-                <span className="num font-semibold text-foreground">{duration(r.seconds)}</span>
-                <span className="text-faint"> vs </span>
-                <span className="num text-muted-foreground">{duration(r.coldSeconds)}</span>
-              </span>
-              <span className="num w-12 shrink-0 text-right font-display text-[15px] font-semibold text-primary">{speedup(r.coldSeconds, r.seconds)}</span>
+            <div className="mb-1 flex flex-col gap-0.5 text-[11.5px] sm:flex-row sm:items-baseline sm:gap-3">
+              <div className="flex min-w-0 items-baseline justify-between gap-2 sm:contents">
+                <CommandInline argv={r.argv} args={r.args} className="min-w-0 font-mono text-foreground group-hover:text-primary" />
+                <span className="num shrink-0 font-display text-[15px] font-semibold text-primary sm:order-4 sm:w-12 sm:text-right">{speedup(r.coldSeconds, r.seconds)}</span>
+              </div>
+              <div className="flex min-w-0 items-baseline justify-between gap-2 text-[10.5px] sm:contents sm:text-[11.5px]">
+                <span className="truncate text-faint sm:order-2">{r.sub}</span>
+                <span className="shrink-0 font-mono sm:order-3 sm:ml-auto">
+                  <span className="num font-semibold text-foreground">{duration(r.seconds)}</span>
+                  <span className="text-faint"> vs </span>
+                  <span className="num text-muted-foreground">{duration(r.coldSeconds)}</span>
+                </span>
+              </div>
             </div>
             <div className="relative h-[10px]">
               <div

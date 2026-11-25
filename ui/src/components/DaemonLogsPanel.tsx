@@ -150,52 +150,58 @@ export function DaemonLogsPanel({
               onChange={(e) => setQueryText(e.target.value)}
               placeholder="Filter messages, attrs, source file..."
               aria-label="Filter daemon logs"
-              className="min-w-[220px] flex-1 bg-background/70 font-mono text-[11.5px] placeholder:text-faint"
+              className="w-full bg-background/70 font-mono text-[11.5px] placeholder:text-faint sm:min-w-[220px] sm:flex-1"
             />
             {!lockedSource && sources.length > 0 && (
-              <Tabs value={source || "__all__"} onValueChange={(v) => setSource(v === "__all__" ? "" : String(v))}>
+              <div className="max-w-full overflow-x-auto no-scrollbar">
+                <Tabs value={source || "__all__"} onValueChange={(v) => setSource(v === "__all__" ? "" : String(v))}>
+                  <TabsList className="h-8 border border-border bg-background/60 font-mono text-[11px]">
+                    <TabsTrigger value="__all__" className="px-2 font-mono text-[11px]">
+                      All
+                    </TabsTrigger>
+                    {sources.map((src) => (
+                      <TabsTrigger key={`${src.role}-${src.source}`} value={src.source} className="px-2 font-mono text-[11px]">
+                        {src.source}
+                      </TabsTrigger>
+                    ))}
+                  </TabsList>
+                </Tabs>
+              </div>
+            )}
+            <div className="max-w-full overflow-x-auto no-scrollbar">
+              <Tabs value={level || "__all__"} onValueChange={(v) => setLevel((v === "__all__" ? "" : v) as DaemonLogLevelSlug | "")}>
                 <TabsList className="h-8 border border-border bg-background/60 font-mono text-[11px]">
                   <TabsTrigger value="__all__" className="px-2 font-mono text-[11px]">
-                    All
+                    Warn + Error
                   </TabsTrigger>
-                  {sources.map((src) => (
-                    <TabsTrigger key={`${src.role}-${src.source}`} value={src.source} className="px-2 font-mono text-[11px]">
-                      {src.source}
+                  <TabsTrigger value="error" className="px-2 font-mono text-[11px]">
+                    Errors
+                  </TabsTrigger>
+                  <TabsTrigger value="warn" className="px-2 font-mono text-[11px]">
+                    Warns
+                  </TabsTrigger>
+                </TabsList>
+              </Tabs>
+            </div>
+            <div className="max-w-full overflow-x-auto no-scrollbar">
+              <Tabs value={since || "__all__"} onValueChange={(v) => setSince((v === "__all__" ? "" : v) as SinceKey)}>
+                <TabsList className="h-8 border border-border bg-background/60 font-mono text-[11px]">
+                  {(
+                    [
+                      ["15m", "15m"],
+                      ["1h", "1h"],
+                      ["24h", "24h"],
+                      ["7d", "7d"],
+                      ["__all__", "All"],
+                    ] as const
+                  ).map(([val, label]) => (
+                    <TabsTrigger key={val} value={val} className="px-2 font-mono text-[11px]">
+                      {label}
                     </TabsTrigger>
                   ))}
                 </TabsList>
               </Tabs>
-            )}
-            <Tabs value={level || "__all__"} onValueChange={(v) => setLevel((v === "__all__" ? "" : v) as DaemonLogLevelSlug | "")}>
-              <TabsList className="h-8 border border-border bg-background/60 font-mono text-[11px]">
-                <TabsTrigger value="__all__" className="px-2 font-mono text-[11px]">
-                  Warn + Error
-                </TabsTrigger>
-                <TabsTrigger value="error" className="px-2 font-mono text-[11px]">
-                  Errors
-                </TabsTrigger>
-                <TabsTrigger value="warn" className="px-2 font-mono text-[11px]">
-                  Warns
-                </TabsTrigger>
-              </TabsList>
-            </Tabs>
-            <Tabs value={since || "__all__"} onValueChange={(v) => setSince((v === "__all__" ? "" : v) as SinceKey)}>
-              <TabsList className="h-8 border border-border bg-background/60 font-mono text-[11px]">
-                {(
-                  [
-                    ["15m", "15m"],
-                    ["1h", "1h"],
-                    ["24h", "24h"],
-                    ["7d", "7d"],
-                    ["__all__", "All"],
-                  ] as const
-                ).map(([val, label]) => (
-                  <TabsTrigger key={val} value={val} className="px-2 font-mono text-[11px]">
-                    {label}
-                  </TabsTrigger>
-                ))}
-              </TabsList>
-            </Tabs>
+            </div>
           </div>
 
           {unreachable.length > 0 && (
@@ -222,7 +228,64 @@ export function DaemonLogsPanel({
             </Empty>
           ) : (
             <>
-              <div className={`${compact ? "max-h-[380px]" : "max-h-[680px]"} overflow-auto rounded-lg border border-border`}>
+              <div className={`${compact ? "max-h-[420px]" : "max-h-[680px]"} space-y-2 overflow-y-auto md:hidden`}>
+                {entries.map((entry, idx) => {
+                  const rowKey = `${entry.at}-${entry.source}-${idx}`;
+                  const isOpen = expanded === rowKey;
+                  const attrs = parseAttrs(entry.attrsJson);
+                  return (
+                    <div
+                      key={rowKey}
+                      onClick={() => setExpanded(isOpen ? null : rowKey)}
+                      className={`cursor-pointer rounded-xl border border-border/70 p-2.5 font-mono text-[11px] transition-colors ${isOpen ? "bg-muted/40" : "bg-background/40 hover:bg-muted/30"}`}
+                    >
+                      <div className="flex flex-wrap items-center gap-1.5">
+                        <LevelBadge level={entry.level} />
+                        {!lockedSource && <SourceBadge entry={entry} />}
+                        <span className="num ml-auto text-[10px] text-faint">{formatEntryTime(entry.at)}</span>
+                      </div>
+                      <div className="mt-1.5 break-words text-[11.5px] text-foreground">{entry.msg}</div>
+                      {attrs.length > 0 && (
+                        <div className="mt-1.5 flex flex-wrap gap-1">
+                          {attrs.slice(0, isOpen ? attrs.length : 4).map(([k, v]) => (
+                            <span
+                              key={k}
+                              className={`inline-flex max-w-full truncate rounded px-1.5 py-0.5 text-[10px] ${
+                                k === "err" || k === "error"
+                                  ? "bg-[color-mix(in_oklab,var(--critical)_14%,transparent)] text-critical"
+                                  : "bg-muted text-muted-foreground"
+                              }`}
+                              title={`${k}=${v}`}
+                            >
+                              <span className="text-faint">{k}=</span>
+                              <span className="truncate">{v}</span>
+                            </span>
+                          ))}
+                          {!isOpen && attrs.length > 4 && <span className="text-[10px] text-faint">+{attrs.length - 4} more</span>}
+                        </div>
+                      )}
+                      {isOpen && (
+                        <div className="mt-2.5 space-y-1.5 border-t border-border/60 pt-2 text-[10.5px]">
+                          <div className="flex flex-wrap gap-x-4 gap-y-0.5 text-muted-foreground">
+                            <span>{new Date(Number(entry.at)).toISOString()}</span>
+                            <span>
+                              {entry.source} ({entry.role})
+                            </span>
+                            {entry.sourceLoc && <span className="break-all">{entry.sourceLoc}</span>}
+                          </div>
+                          {entry.attrsJson && (
+                            <pre className="max-h-56 overflow-auto rounded-md border border-border bg-card p-2 text-[10.5px] leading-relaxed text-foreground">
+                              {prettyJson(entry.attrsJson)}
+                            </pre>
+                          )}
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+
+              <div className={`hidden md:block ${compact ? "max-h-[380px]" : "max-h-[680px]"} overflow-auto rounded-lg border border-border`}>
                 <Table className="font-mono text-[11.5px]">
                   <TableHeader className="sticky top-0 z-10 bg-card text-[10px] uppercase tracking-wider text-muted-foreground">
                     <TableRow className="border-border hover:bg-transparent">

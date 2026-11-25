@@ -66,12 +66,12 @@ function Admission({ s, now }: { s: Snapshot; now: number }) {
 
 export function PageTitle({ title, sub, right }: { title: string; sub?: string; right?: React.ReactNode }) {
   return (
-    <div className="rise flex flex-wrap items-end gap-4">
-      <div>
-        <h1 className="display text-[44px] leading-none font-semibold">{title}</h1>
-        {sub && <p className="mt-2 text-[13px] text-muted-foreground">{sub}</p>}
+    <div className="rise flex flex-wrap items-end gap-3 sm:gap-4">
+      <div className="min-w-0 flex-1">
+        <h1 className="display break-words text-[30px] leading-[1.05] font-semibold sm:text-[38px] lg:text-[44px]">{title}</h1>
+        {sub && <p className="mt-1.5 break-words text-[12.5px] leading-relaxed text-muted-foreground sm:mt-2 sm:text-[13px]">{sub}</p>}
       </div>
-      {right && <div className="ml-auto">{right}</div>}
+      {right && <div className="min-w-0 sm:ml-auto">{right}</div>}
     </div>
   );
 }
@@ -105,19 +105,19 @@ function NodeCard({ n, s, color, now, delay }: { n: Node; s: Snapshot; color: st
     <Link
       to="/nodes/$hostname"
       params={{ hostname: n.hostname }}
-      className={`rise group block rounded-2xl border border-border bg-card/80 p-5 transition-colors hover:border-border-strong ${n.online ? "" : "opacity-60"}`}
+      className={`rise group block min-w-0 rounded-2xl border border-border bg-card/80 p-4 transition-colors hover:border-border-strong sm:p-5 ${n.online ? "" : "opacity-60"}`}
       style={{ animationDelay: `${delay}ms` }}
     >
-      <div className="flex items-start gap-3">
-        <span className="mt-2 inline-block h-[3px] w-4 rounded-full" style={{ background: color }} />
-        <div className="min-w-0">
-          <div className="display text-[26px] leading-none font-semibold group-hover:text-primary">{n.hostname}</div>
+      <div className="flex flex-wrap items-start gap-2.5 sm:flex-nowrap sm:gap-3">
+        <span className="mt-2 inline-block h-[3px] w-4 shrink-0 rounded-full" style={{ background: color }} />
+        <div className="min-w-0 flex-1">
+          <div className="display truncate text-[22px] leading-none font-semibold group-hover:text-primary sm:text-[26px]">{n.hostname}</div>
           <div className="mt-1.5 flex items-center gap-2 text-[11.5px] text-muted-foreground">
             <ArchBadge arch={res?.arch ?? ""} />
             <span className="truncate">{res?.machine ?? ""}</span>
           </div>
         </div>
-        <div className="ml-auto flex flex-col items-end gap-1 text-right">
+        <div className="ml-auto flex shrink-0 flex-col items-end gap-1 text-right">
           <OnlineBadge online={n.online} asleep={n.asleep} storageError={n.storageError} />
           {n.online && <AdmissionBadge a={admission} now={now} />}
           <div className="mt-1 font-mono text-[10px] text-faint">
@@ -200,7 +200,7 @@ function NodeCard({ n, s, color, now, delay }: { n: Node; s: Snapshot; color: st
               </div>
             )}
           </div>
-          <div className="mt-4 flex items-center gap-3 border-t border-border pt-3 font-mono text-[10.5px] whitespace-nowrap text-muted-foreground">
+          <div className="mt-4 flex flex-wrap items-center gap-x-3 gap-y-1.5 border-t border-border pt-3 font-mono text-[10.5px] text-muted-foreground">
             <span>
               <span className="text-foreground">{bases}</span> bases
             </span>
@@ -215,7 +215,7 @@ function NodeCard({ n, s, color, now, delay }: { n: Node; s: Snapshot; color: st
                 {n.daemonLogs.errors24h > 0 ? `${n.daemonLogs.errors24h} err` : `${n.daemonLogs.warns24h} warn`}
               </span>
             )}
-            <span className="ml-auto flex gap-1">
+            <span className="ml-auto flex flex-wrap gap-1">
               {pills.slice(0, 3)}
               {pills.length > 3 && <span className="text-faint">+{pills.length - 3}</span>}
             </span>
@@ -233,7 +233,7 @@ function NodeCard({ n, s, color, now, delay }: { n: Node; s: Snapshot; color: st
 function Row({ label, value, children }: { label: string; value: string; children: React.ReactNode }) {
   return (
     <div>
-      <div className="mb-1 flex justify-between text-[10.5px]">
+      <div className="mb-1 flex flex-wrap items-baseline justify-between gap-x-2 text-[10.5px]">
         <span className="eyebrow">{label}</span>
         <span className="num font-mono text-muted-foreground">{value}</span>
       </div>

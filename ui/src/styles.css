@@ -270,6 +270,7 @@
   html {
     background: var(--background);
     font-family: var(--font-sans);
+    overflow-x: clip;
   }
   body {
     background:
@@ -282,6 +283,7 @@
     font-feature-settings: "ss01", "cv11";
     -webkit-font-smoothing: antialiased;
     min-height: 100dvh;
+    overflow-x: clip;
   }
   /* Film grain over everything, so flat surfaces read as soil, not plastic. */
   body::after {
@@ -299,6 +301,13 @@
 }
 
 @layer components {
+  .no-scrollbar {
+    scrollbar-width: none;
+    -ms-overflow-style: none;
+  }
+  .no-scrollbar::-webkit-scrollbar {
+    display: none;
+  }
   .num {
     font-variant-numeric: tabular-nums;
   }
