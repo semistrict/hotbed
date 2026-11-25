@@ -18,8 +18,6 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
-	"log/slog"
-	"math"
 	"net"
 	"net/http"
 	"os"
@@ -33,6 +31,8 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/lima-vm/go-qcow2reader"
+	"github.com/lima-vm/go-qcow2reader/convert"
 	"golang.org/x/crypto/ssh"
 	"golang.org/x/sys/unix"
 
@@ -42,13 +42,11 @@ import (
 	"github.com/semistrict/hotbed/internal/worker"
 )
 
-func init() {
-	watchPausedVM = darwinWatchPausedVM
-}
-
-// Setup creates, boots, and provisions a QEMU Ubuntu Linux worker VM in o.Dir
-// (default ~/.hotbed) with sparse discard-enabled qcow2 + ZFS storage, joins
-// it to o.Controller, and starts the hotbed-worker systemd service inside it.
+// Setup creates, boots, and provisions an Ubuntu Linux worker VM in o.Dir
+// (default ~/.hotbed): an Apple Virtualization framework VM, run by vfkit,
+// with nested virtualization (so its worker runs Firecracker microVMs) and
+// sparse discard-enabled raw disks + ZFS storage. It joins the VM to
+// o.Controller and starts the hotbed-worker systemd service inside it.
 func Setup(ctx context.Context, o Options, _ worker.Tailnet, hc *http.Client, _ worker.Check) (Result, error) {
 	if o.ZFSDevice != "" {
 		return Result{}, api.Errorf(api.CodeInvalidArgs, "--zfs-device is only supported on Linux workers")
@@ -62,20 +60,17 @@ func Setup(ctx context.Context, o Options, _ worker.Tailnet, hc *http.Client, _ 
 		return Result{}, err
 	}
 	arch := runtime.GOARCH
-	if arch != "arm64" && arch != "amd64" {
-		return Result{}, api.Errorf(api.CodePlatformNotSupported, "macOS worker VM supports arm64 and amd64; this is %s", arch)
+	if arch != "arm64" {
+		return Result{}, api.Errorf(api.CodePlatformNotSupported, "the macOS worker VM needs nested virtualization, which the Virtualization framework has only on Apple silicon (M3 or later); this Mac is %s", arch)
 	}
-
-	qemuBin, qemuImg, err := findQEMUBinaries(arch)
-	if err != nil {
-		return Result{}, err
-	}
-	fwCode, fwVarsTemplate, err := findUEFIFirmware(arch, qemuBin)
-	if err != nil {
-		return Result{}, err
-	}
-
 	p := NewVMPaths(baseDir)
+	if err := refuseQEMUVM(p); err != nil {
+		return Result{}, err
+	}
+	vfkitBin, err := findVfkit()
+	if err != nil {
+		return Result{}, err
+	}
 	if err := os.MkdirAll(p.CacheDir, 0o755); err != nil {
 		return Result{}, err
 	}
@@ -115,13 +110,6 @@ func Setup(ctx context.Context, o Options, _ worker.Tailnet, hc *http.Client, _ 
 	rootSize := cmp.Or(max(0, o.RootSize), max(0, prev.RootSizeBytes), DefaultRootSize)
 	zfsSize := cmp.Or(max(0, o.DiskSize), max(0, prev.ZFSSizeBytes), DefaultDiskSize)
 	swapSize := cmp.Or(max(0, o.SwapSize), max(0, prev.SwapSizeBytes), memBytes)
-	sshPort := cmp.Or(max(0, o.SSHPort), max(0, prev.SSHPort))
-	if sshPort == 0 {
-		sshPort, err = pickSSHPort()
-		if err != nil {
-			return Result{}, err
-		}
-	}
 
 	imageURL, imageFilename, sumsURL := UbuntuCloudImageURL(ubuntuVer, arch)
 	if o.ImageURL != "" {
@@ -142,9 +130,7 @@ func Setup(ctx context.Context, o Options, _ worker.Tailnet, hc *http.Client, _ 
 		RootSizeBytes:  rootSize,
 		ZFSSizeBytes:   zfsSize,
 		SwapSizeBytes:  swapSize,
-		SSHPort:        sshPort,
-		QEMUBinary:     qemuBin,
-		FirmwareCode:   fwCode,
+		VfkitBinary:    vfkitBin,
 		StateDir:       DefaultVMStateDir,
 		UnitProperties: o.UnitProperties,
 		Slice:          o.Slice,
@@ -160,7 +146,7 @@ func Setup(ctx context.Context, o Options, _ worker.Tailnet, hc *http.Client, _ 
 	}
 	// Set up, the VM is not the supervisor's to stop: it starts again, if
 	// it is to, once the VM is.
-	if err := stopSupervisor(ctx, cfg, p); err != nil {
+	if err := stopSupervisor(ctx, p); err != nil {
 		return Result{}, err
 	}
 
@@ -168,6 +154,10 @@ func Setup(ctx context.Context, o Options, _ worker.Tailnet, hc *http.Client, _ 
 		ubuntuVer, arch, hostname, baseDir, cpus, FormatBytes(memBytes), FormatBytes(zfsSize))
 
 	cachedImg, err := ensureCloudImage(ctx, p.CacheDir, imageURL, imageFilename, sumsURL, o.Progress)
+	if err != nil {
+		return Result{}, err
+	}
+	rawImg, err := ensureRawImage(cachedImg, o.Progress)
 	if err != nil {
 		return Result{}, err
 	}
@@ -185,7 +175,7 @@ func Setup(ctx context.Context, o Options, _ worker.Tailnet, hc *http.Client, _ 
 	if err := ensureSeedISO(ctx, p.SeedISO, hostname, username, pubKeys, hostKey); err != nil {
 		return Result{}, err
 	}
-	if err := ensureVMDisks(ctx, qemuImg, cachedImg, fwVarsTemplate, cfg, p, o.Progress); err != nil {
+	if err := ensureVMDisks(rawImg, cfg, p, o.Progress); err != nil {
 		return Result{}, err
 	}
 	if err := ensureVMPrivatePermissions(p); err != nil {
@@ -214,7 +204,7 @@ func Setup(ctx context.Context, o Options, _ worker.Tailnet, hc *http.Client, _ 
 	case o.NoStart:
 		_ = setVMMarker(p.StoppedMarker, true)
 		_ = setVMMarker(p.AsleepMarker, false)
-		if err := disableSupervisor(ctx, cfg, p); err != nil {
+		if err := disableSupervisor(ctx, p); err != nil {
 			return Result{}, err
 		}
 		if err := stopVM(ctx, cfg, p, o.Progress); err != nil {
@@ -232,12 +222,12 @@ func Setup(ctx context.Context, o Options, _ worker.Tailnet, hc *http.Client, _ 
 	default:
 		_ = setVMMarker(p.StoppedMarker, false)
 		_ = setVMMarker(p.AsleepMarker, false)
-		if err := disableSupervisor(ctx, cfg, p); err != nil {
+		if err := disableSupervisor(ctx, p); err != nil {
 			return Result{}, err
 		}
 	}
 
-	pid, procState, qmp, err := vmDetailedState(ctx, p)
+	pid, procState, vmState, err := vmDetailedState(ctx, p)
 	if err != nil {
 		return Result{}, err
 	}
@@ -245,14 +235,14 @@ func Setup(ctx context.Context, o Options, _ worker.Tailnet, hc *http.Client, _ 
 	paused := procState == vmProcPaused
 	disks := collectVMDisks(cfg, p)
 	return Result{
-		Platform:   "darwin-qemu",
+		Platform:   "darwin-vz",
 		Dir:        baseDir,
 		StateDir:   cfg.StateDir,
 		Controller: controller,
 		User:       username,
 		Node:       initRes.Node,
 		ClusterID:  initRes.ClusterID,
-		Storage:    "zfs-qcow2",
+		Storage:    "zfs-raw",
 		Running:    running && !o.NoStart,
 		Service:    cmp.Or(initRes.Service, "hotbed-worker.service"),
 		VM: &VMStatus{
@@ -261,12 +251,10 @@ func Setup(ctx context.Context, o Options, _ worker.Tailnet, hc *http.Client, _ 
 			Ubuntu:     cfg.UbuntuVersion,
 			CPUs:       cfg.CPUs,
 			MemoryMB:   cfg.MemoryBytes / (1 << 20),
-			SSHPort:    cfg.SSHPort,
 			PID:        pid,
 			Running:    running,
 			Paused:     paused,
-			QMPStatus:  qmp.QMPStatus,
-			IOErrors:   qmp.IOErrors,
+			State:      vmState,
 			Tailscale:  tsState,
 			Autostart:  cfg.Autostart,
 			Supervised: supervised(ctx, p) || (cfg.Autostart && !isVMStoppedByUser(p) && isDaemonLoaded(ctx)),
@@ -283,7 +271,7 @@ func Setup(ctx context.Context, o Options, _ worker.Tailnet, hc *http.Client, _ 
 }
 
 // refuseResizeWhileRunning fails when the VM runs (or is paused) with other
-// vCPUs or RAM than cfg asks for: QEMU keeps what it started with, so
+// vCPUs or RAM than cfg asks for: the VM keeps what it started with, so
 // recording the new size would only claim it.
 func refuseResizeWhileRunning(ctx context.Context, prev, cfg VMConfig, p VMPaths) error {
 	if prev.CPUs == cfg.CPUs && prev.MemoryBytes == cfg.MemoryBytes {
@@ -311,6 +299,9 @@ func loadVM(dir string) (baseDir string, cfg VMConfig, p VMPaths, err error) {
 		return "", cfg, p, err
 	}
 	p = NewVMPaths(baseDir)
+	if err := refuseQEMUVM(p); err != nil {
+		return "", cfg, p, err
+	}
 	if err := readJSON(p.Config, &cfg); err != nil {
 		if errors.Is(err, fs.ErrNotExist) {
 			return "", cfg, p, api.Errorf(api.CodeNotInitialized, "no worker VM configured in %s", baseDir).
@@ -318,16 +309,46 @@ func loadVM(dir string) (baseDir string, cfg VMConfig, p VMPaths, err error) {
 		}
 		return "", cfg, p, err
 	}
+	if cfg.VfkitBinary == "" {
+		return "", cfg, p, api.Errorf(api.CodeNotInitialized, "the worker VM configured in %s names no vfkit binary", p.Config).
+			WithSuggestion("run `hotbed worker init` again")
+	}
 	return baseDir, cfg, p, nil
 }
 
-// GetStatus reports the local macOS QEMU worker VM's state and sparse disk usage.
+// qemuVMFiles are what a worker VM set up when hotbed ran it on QEMU keeps in
+// its VM directory.
+var qemuVMFiles = []string{"qemu.pid", "root.qcow2", "zfs.qcow2", "swap.qcow2"}
+
+// refuseQEMUVM fails when the worker VM in p was set up for QEMU: its disks
+// are qcow2, which the Virtualization framework cannot read, and a QEMU still
+// running it is no process this hotbed knows. Moving it is a few steps for
+// the person who owns it, not something to guess at.
+func refuseQEMUVM(p VMPaths) error {
+	var found []string
+	for _, name := range qemuVMFiles {
+		if _, err := os.Stat(filepath.Join(p.VMDir, name)); err == nil {
+			found = append(found, name)
+		} else if !errors.Is(err, fs.ErrNotExist) {
+			return err
+		}
+	}
+	if len(found) == 0 {
+		return nil
+	}
+	return api.Errorf(api.CodeConflict, "the worker VM in %s was set up for QEMU (%s); hotbed now runs it with vfkit on raw disks", p.VMDir, strings.Join(found, ", ")).
+		WithSuggestion("power the guest off and wait for qemu-system to exit; in " + p.VMDir +
+			" convert root.qcow2 and zfs.qcow2 to root.img and zfs.img (`qemu-img convert -p -O raw root.qcow2 root.img`), then delete the .qcow2 files, qemu.pid and efivars.fd," +
+			" and run `hotbed worker init` again; in the guest, point /etc/fstab's swap at " + swapDiskByID)
+}
+
+// GetStatus reports the local macOS worker VM's state and sparse disk usage.
 func GetStatus(ctx context.Context, dir string) (Status, error) {
 	baseDir, cfg, p, err := loadVM(dir)
 	if err != nil {
 		return Status{}, err
 	}
-	pid, procState, qmp, err := vmDetailedState(ctx, p)
+	pid, procState, vmState, err := vmDetailedState(ctx, p)
 	if err != nil {
 		return Status{}, err
 	}
@@ -349,12 +370,12 @@ func GetStatus(ctx context.Context, dir string) (Status, error) {
 		}
 	}
 	return Status{
-		Platform:   "darwin-qemu",
+		Platform:   "darwin-vz",
 		Dir:        baseDir,
 		StateDir:   cfg.StateDir,
 		Controller: cfg.Controller,
 		User:       cfg.User,
-		Storage:    "zfs-qcow2",
+		Storage:    "zfs-raw",
 		Running:    running && workerRunning,
 		Service:    "hotbed-worker.service",
 		VM: &VMStatus{
@@ -363,12 +384,10 @@ func GetStatus(ctx context.Context, dir string) (Status, error) {
 			Ubuntu:     cfg.UbuntuVersion,
 			CPUs:       cfg.CPUs,
 			MemoryMB:   cfg.MemoryBytes / (1 << 20),
-			SSHPort:    cfg.SSHPort,
 			PID:        pid,
 			Running:    running,
 			Paused:     paused,
-			QMPStatus:  qmp.QMPStatus,
-			IOErrors:   qmp.IOErrors,
+			State:      vmState,
 			Tailscale:  tsState,
 			Autostart:  cfg.Autostart,
 			Supervised: supervised(ctx, p) || (cfg.Autostart && !isVMStoppedByUser(p) && isDaemonLoaded(ctx)),
@@ -378,7 +397,7 @@ func GetStatus(ctx context.Context, dir string) (Status, error) {
 	}, nil
 }
 
-// Start boots the configured macOS QEMU worker VM if it is not already
+// Start boots the configured macOS worker VM if it is not already
 // running, then, with autostart, its supervisor, which from then on powers
 // it as the controller says: it stays up for a sleep-after from now. The
 // supervisor is stopped first, so the two never start or stop it at once.
@@ -389,7 +408,7 @@ func Start(ctx context.Context, dir string) (Status, error) {
 	}
 	_ = setVMMarker(p.StoppedMarker, false)
 	_ = setVMMarker(p.AsleepMarker, false)
-	if err := stopSupervisor(ctx, cfg, p); err != nil {
+	if err := stopSupervisor(ctx, p); err != nil {
 		return Status{}, err
 	}
 	if err := ensureVMRunning(ctx, cfg, p, os.Stderr); err != nil {
@@ -419,7 +438,7 @@ func Stop(ctx context.Context, dir string) (Status, error) {
 	}
 	_ = setVMMarker(p.StoppedMarker, true)
 	_ = setVMMarker(p.AsleepMarker, false)
-	if err := disableSupervisor(ctx, cfg, p); err != nil {
+	if err := disableSupervisor(ctx, p); err != nil {
 		return Status{}, err
 	}
 	if err := stopVM(ctx, cfg, p, os.Stderr); err != nil {
@@ -430,18 +449,18 @@ func Stop(ctx context.Context, dir string) (Status, error) {
 
 // Trim flushes ZFS async/deferred frees (so autotrim=on punches freed extents
 // without touching unused metaslabs) and runs `fstrim -a` inside the VM to
-// punch freed clusters out of the host's qcow2 sparse images on APFS.
+// punch freed blocks out of the host's sparse disk images on APFS.
 func Trim(ctx context.Context, dir string) (TrimResult, error) {
 	baseDir, cfg, p, err := loadVM(dir)
 	if err != nil {
 		return TrimResult{}, err
 	}
-	_, procState, qmp, err := vmDetailedState(ctx, p)
+	_, procState, _, err := vmDetailedState(ctx, p)
 	if err != nil {
 		return TrimResult{}, err
 	}
 	if procState == vmProcPaused {
-		return TrimResult{}, pausedVMConflictError(qmp, "before trimming")
+		return TrimResult{}, pausedVMConflictError("before trimming")
 	}
 	if procState != vmProcRunning {
 		return TrimResult{}, api.Errorf(api.CodeConflict, "worker VM is not running").
@@ -460,7 +479,7 @@ func Trim(ctx context.Context, dir string) (TrimResult, error) {
 	before := totalAllocated(collectVMDisks(cfg, p))
 	// Flush async_destroy and advance past ZFS's 2-TXG deferred-free window so
 	// autotrim=on punches out all freed blocks without touching unused metaslabs,
-	// then run fstrim -a for the ext4 root qcow2.
+	// then run fstrim -a for the ext4 root disk.
 	trimCmd := fmt.Sprintf("sudo zpool wait -t free %[1]s && for i in 1 2 3 4; do sudo zpool sync %[1]s; done && sudo fstrim -a && sleep 2", DefaultPoolName)
 	if _, err := sshRun(ctx, cl, trimCmd); err != nil {
 		return TrimResult{}, fmt.Errorf("trim inside VM: %w", err)
@@ -484,11 +503,14 @@ func Destroy(ctx context.Context, o DestroyOptions) (DestroyResult, error) {
 		return DestroyResult{}, err
 	}
 	p := NewVMPaths(baseDir)
+	if err := refuseQEMUVM(p); err != nil {
+		return DestroyResult{}, err
+	}
 	var cfg VMConfig
 	if err := readJSON(p.Config, &cfg); err != nil && !errors.Is(err, fs.ErrNotExist) {
 		return DestroyResult{}, err
 	}
-	if err := stopSupervisor(ctx, cfg, p); err != nil {
+	if err := stopSupervisor(ctx, p); err != nil {
 		return DestroyResult{}, err
 	}
 	if err := stopVM(ctx, cfg, p, o.Progress); err != nil {
@@ -500,9 +522,7 @@ func Destroy(ctx context.Context, o DestroyOptions) (DestroyResult, error) {
 			removed = append(removed, plist)
 		}
 	}
-	if qmp := qmpSocketPath(p); qmp != p.QMPSock {
-		_ = os.Remove(qmp)
-	}
+	removeVMSockets(p)
 	if _, err := os.Stat(p.VMDir); err == nil {
 		if err := os.RemoveAll(p.VMDir); err != nil {
 			return DestroyResult{}, err
@@ -523,34 +543,36 @@ func Destroy(ctx context.Context, o DestroyOptions) (DestroyResult, error) {
 	return DestroyResult{Dir: baseDir, Removed: removed}, nil
 }
 
-// SSH opens an interactive SSH session (or runs args) inside the macOS QEMU VM.
+// SSH opens an interactive SSH session (or runs args) inside the macOS worker
+// VM, over the guest's vsock SSH socket.
 func SSH(ctx context.Context, dir string, args []string) (int, error) {
 	_, cfg, p, err := loadVM(dir)
 	if err != nil {
 		return 1, err
 	}
-	_, procState, qmp, err := vmDetailedState(ctx, p)
+	_, procState, _, err := vmDetailedState(ctx, p)
 	if err != nil {
 		return 1, err
 	}
 	if procState == vmProcPaused {
-		return 1, pausedVMConflictError(qmp, "")
+		return 1, pausedVMConflictError("")
 	}
 	if procState != vmProcRunning {
 		return 1, api.Errorf(api.CodeConflict, "worker VM is not running").
 			WithSuggestion("start it with `hotbed worker start`")
 	}
-	knownHosts, err := ensureVMKnownHosts(ctx, p, cfg.SSHPort)
+	knownHosts, err := ensureVMKnownHosts(ctx, p)
 	if err != nil {
 		return 1, err
 	}
 	sshArgs := []string{
 		"-i", p.KeyPriv,
-		"-p", strconv.Itoa(cfg.SSHPort),
+		"-o", "ProxyCommand=/usr/bin/nc -U " + shell.Quote(sshSocketPath(p)),
+		"-o", "HostKeyAlias=" + vmHostKeyAlias,
 		"-o", "StrictHostKeyChecking=yes",
 		"-o", "UserKnownHostsFile=" + knownHosts,
 		"-o", "LogLevel=ERROR",
-		cfg.User + "@127.0.0.1",
+		cfg.User + "@" + vmHostKeyAlias,
 	}
 	sshArgs = append(sshArgs, args...)
 	cmd := exec.CommandContext(ctx, "ssh", sshArgs...)
@@ -567,24 +589,17 @@ func SSH(ctx context.Context, dir string, args []string) (int, error) {
 	return 0, nil
 }
 
-// --- QEMU / firmware / host resource helpers ---
+// --- vfkit / host resource helpers ---
 
-func findQEMUBinaries(arch string) (qemuSys, qemuImg string, err error) {
-	sysName := "qemu-system-aarch64"
-	if arch == "amd64" {
-		sysName = "qemu-system-x86_64"
+// findVfkit finds vfkit, which runs the worker VM on Apple's Virtualization
+// framework.
+func findVfkit() (string, error) {
+	bin := findInPaths("vfkit", "/opt/homebrew/bin", "/usr/local/bin")
+	if bin == "" {
+		return "", api.Errorf(api.CodeInvalidArgs, "vfkit not found in PATH").
+			WithSuggestion("install it with `brew install vfkit`")
 	}
-	qemuSys = findInPaths(sysName, "/opt/homebrew/bin", "/usr/local/bin")
-	if qemuSys == "" {
-		return "", "", api.Errorf(api.CodeInvalidArgs, "%s not found in PATH", sysName).
-			WithSuggestion("install QEMU with `brew install qemu`")
-	}
-	qemuImg = findInPaths("qemu-img", filepath.Dir(qemuSys), "/opt/homebrew/bin", "/usr/local/bin")
-	if qemuImg == "" {
-		return "", "", api.Errorf(api.CodeInvalidArgs, "qemu-img not found in PATH").
-			WithSuggestion("install QEMU with `brew install qemu`")
-	}
-	return qemuSys, qemuImg, nil
+	return bin, nil
 }
 
 func findInPaths(name string, extraDirs ...string) string {
@@ -603,43 +618,6 @@ func findInPaths(name string, extraDirs ...string) string {
 	return ""
 }
 
-func findUEFIFirmware(arch, qemuBin string) (code, varsTemplate string, err error) {
-	shareDirs := []string{
-		filepath.Clean(filepath.Join(filepath.Dir(qemuBin), "..", "share", "qemu")),
-		"/opt/homebrew/share/qemu",
-		"/usr/local/share/qemu",
-		"/usr/share/qemu",
-	}
-	codeName := "edk2-aarch64-code.fd"
-	varsName := ""
-	if arch == "amd64" {
-		codeName = "edk2-x86_64-code.fd"
-		varsName = "edk2-i386-vars.fd"
-	}
-	for _, d := range shareDirs {
-		p := filepath.Join(d, codeName)
-		if _, err := os.Stat(p); err == nil {
-			code = p
-			if varsName != "" {
-				vp := filepath.Join(d, varsName)
-				if _, err := os.Stat(vp); err == nil {
-					varsTemplate = vp
-				}
-			}
-			break
-		}
-	}
-	if code == "" {
-		return "", "", api.Errorf(api.CodeInvalidArgs, "QEMU UEFI firmware %s not found", codeName).
-			WithSuggestion("reinstall QEMU with `brew install qemu`")
-	}
-	if varsName != "" && varsTemplate == "" {
-		return "", "", api.Errorf(api.CodeInvalidArgs, "QEMU UEFI vars template %s not found", varsName).
-			WithSuggestion("reinstall QEMU with `brew install qemu`")
-	}
-	return code, varsTemplate, nil
-}
-
 func defaultVMCPUs() int {
 	n := runtime.NumCPU() / 2
 	if n < 2 {
@@ -655,21 +633,6 @@ func defaultVMMemory() (int64, error) {
 		return 0, fmt.Errorf("read this Mac's RAM (sysctl hw.memsize): %w", err)
 	}
 	return DefaultVMMemory(int64(total)), nil
-}
-
-func pickSSHPort() (int, error) {
-	// Prefer a stable memorable localhost port when free.
-	if l, err := net.Listen("tcp", "127.0.0.1:22222"); err == nil {
-		l.Close()
-		return 22222, nil
-	}
-	l, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		return 0, fmt.Errorf("allocate SSH port: %w", err)
-	}
-	port := l.Addr().(*net.TCPAddr).Port
-	l.Close()
-	return port, nil
 }
 
 // --- Linux binary resolution & controller download ---
@@ -843,7 +806,7 @@ func verifyLinuxELF(path, arch string) error {
 	return nil
 }
 
-// --- Cloud image download, SSH keys, seed ISO, and sparse qcow2 disks ---
+// --- Cloud image download, SSH keys, seed ISO, and sparse raw disks ---
 
 func ensureCloudImage(ctx context.Context, cacheDir, imageURL, filename, sumsURL string, progress io.Writer) (string, error) {
 	dst := filepath.Join(cacheDir, filename)
@@ -1210,10 +1173,11 @@ func vmHostKeyCallback(pubPath string) (ssh.HostKeyCallback, []string, error) {
 
 var errHostKeyProbed = errors.New("host key probed")
 
-// probeAndPinVMHostKey performs a single SSH transport handshake to 127.0.0.1:port
-// using vmHostKeyCallback so interactive SSH and Go dialSSH share the exact same
-// atomic HostKeyPub pin when pubPath does not yet exist.
-func probeAndPinVMHostKey(ctx context.Context, port int, pubPath string, timeout time.Duration) error {
+// probeAndPinVMHostKey performs a single SSH transport handshake over the
+// guest's SSH socket sock using vmHostKeyCallback so interactive SSH and Go
+// dialSSH share the exact same atomic HostKeyPub pin when pubPath does not yet
+// exist.
+func probeAndPinVMHostKey(ctx context.Context, sock, pubPath string, timeout time.Duration) error {
 	if _, err := loadSSHPublicKey(pubPath); err == nil {
 		return nil
 	} else if !errors.Is(err, fs.ErrNotExist) {
@@ -1231,12 +1195,11 @@ func probeAndPinVMHostKey(ctx context.Context, port int, pubPath string, timeout
 		probed = true
 		return errHostKeyProbed
 	}
-	addr := net.JoinHostPort("127.0.0.1", strconv.Itoa(port))
 	var d net.Dialer
 	d.Timeout = timeout
-	conn, err := d.DialContext(ctx, "tcp", addr)
+	conn, err := d.DialContext(ctx, "unix", sock)
 	if err != nil {
-		return fmt.Errorf("probe VM SSH host key on %s: %w", addr, err)
+		return fmt.Errorf("probe VM SSH host key on %s: %w", sock, err)
 	}
 	defer conn.Close()
 	if timeout > 0 {
@@ -1245,7 +1208,7 @@ func probeAndPinVMHostKey(ctx context.Context, port int, pubPath string, timeout
 	stopCancel := context.AfterFunc(ctx, func() { _ = conn.Close() })
 	defer stopCancel()
 
-	c, _, _, err := ssh.NewClientConn(conn, addr, &ssh.ClientConfig{
+	c, _, _, err := ssh.NewClientConn(conn, vmHostKeyAlias, &ssh.ClientConfig{
 		User:              "probe",
 		HostKeyCallback:   probeCB,
 		HostKeyAlgorithms: algos,
@@ -1261,9 +1224,9 @@ func probeAndPinVMHostKey(ctx context.Context, port int, pubPath string, timeout
 		return nil
 	}
 	if err != nil {
-		return fmt.Errorf("probe VM SSH host key on %s: %w", addr, err)
+		return fmt.Errorf("probe VM SSH host key on %s: %w", sock, err)
 	}
-	return fmt.Errorf("probe VM SSH host key on %s: handshake completed without host key", addr)
+	return fmt.Errorf("probe VM SSH host key on %s: handshake completed without host key", sock)
 }
 
 func writeFileAtomic(path string, data []byte, perm fs.FileMode) error {
@@ -1291,17 +1254,21 @@ func writeFileAtomic(path string, data []byte, perm fs.FileMode) error {
 	return os.Rename(tmp.Name(), path)
 }
 
+// vmHostKeyAlias is the name the VM's SSH host key is known by: OpenSSH
+// reaches the VM through a ProxyCommand, not an address.
+const vmHostKeyAlias = "hotbed-vm"
+
 // ensureVMKnownHosts guarantees p.HostKeyPub is pinned (performing a single
 // atomic SSH host-key probe when absent) and writes a 0600 known_hosts file
 // derived strictly from p.HostKeyPub for OpenSSH with StrictHostKeyChecking=yes.
-func ensureVMKnownHosts(ctx context.Context, p VMPaths, port int) (string, error) {
+func ensureVMKnownHosts(ctx context.Context, p VMPaths) (string, error) {
 	if err := ensurePrivateVMDir(p.VMDir); err != nil {
 		return "", err
 	}
 	knownHosts := filepath.Join(p.VMDir, "known_hosts")
 	pubKey, err := loadSSHPublicKey(p.HostKeyPub)
 	if errors.Is(err, fs.ErrNotExist) {
-		if perr := probeAndPinVMHostKey(ctx, port, p.HostKeyPub, 5*time.Second); perr != nil {
+		if perr := probeAndPinVMHostKey(ctx, sshSocketPath(p), p.HostKeyPub, 5*time.Second); perr != nil {
 			return "", perr
 		}
 		pubKey, err = loadSSHPublicKey(p.HostKeyPub)
@@ -1309,7 +1276,7 @@ func ensureVMKnownHosts(ctx context.Context, p VMPaths, port int) (string, error
 	if err != nil {
 		return "", err
 	}
-	line := fmt.Sprintf("[127.0.0.1]:%d %s\n", port, strings.TrimSpace(string(ssh.MarshalAuthorizedKey(pubKey))))
+	line := fmt.Sprintf("%s %s\n", vmHostKeyAlias, strings.TrimSpace(string(ssh.MarshalAuthorizedKey(pubKey))))
 	if err := writeFileAtomic(knownHosts, []byte(line), 0o600); err != nil {
 		return "", err
 	}
@@ -1353,92 +1320,169 @@ func ensureSeedISO(ctx context.Context, isoPath, hostname, username string, pubK
 	return os.Chmod(isoPath, 0o600)
 }
 
-func ensureVMDisks(ctx context.Context, qemuImg, cachedImg, fwVarsTemplate string, cfg VMConfig, p VMPaths, progress io.Writer) error {
+// ensureRawImage converts the cloud image at img (qcow2, as Ubuntu publishes
+// it) to a sparse raw image beside it, once: the Virtualization framework
+// reads only raw disks. It returns the raw image's path.
+func ensureRawImage(img string, progress io.Writer) (string, error) {
+	dst := strings.TrimSuffix(img, filepath.Ext(img)) + ".raw"
+	if _, err := os.Stat(dst); err == nil {
+		return dst, nil
+	} else if !errors.Is(err, fs.ErrNotExist) {
+		return "", err
+	}
+	progressf(progress, "converting %s to a raw disk image", filepath.Base(img))
+	if err := convertToRaw(img, dst); err != nil {
+		return "", fmt.Errorf("convert %s to raw: %w", img, err)
+	}
+	return dst, nil
+}
+
+// convertToRaw writes the disk image at src (qcow2 or raw) to a new sparse
+// raw file at dst, atomically.
+func convertToRaw(src, dst string) error {
+	in, err := os.Open(src)
+	if err != nil {
+		return err
+	}
+	defer in.Close()
+	img, err := qcow2reader.Open(in)
+	if err != nil {
+		return err
+	}
+	defer img.Close()
+	if err := img.Readable(); err != nil {
+		return err
+	}
+	part := dst + ".part"
+	out, err := os.OpenFile(part, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o644)
+	if err != nil {
+		return err
+	}
+	defer os.Remove(part)
+	// Convert skips zero extents, so the file is sized first: they stay holes.
+	if err := out.Truncate(img.Size()); err != nil {
+		out.Close()
+		return err
+	}
+	if err := convert.Convert(out, img, convert.Options{}); err != nil {
+		out.Close()
+		return err
+	}
+	if err := out.Sync(); err != nil {
+		out.Close()
+		return err
+	}
+	if err := out.Close(); err != nil {
+		return err
+	}
+	return os.Rename(part, dst)
+}
+
+// ensureVMDisks creates whichever of the VM's sparse raw disks are missing:
+// the root disk as an APFS clone of rawImg grown to cfg.RootSizeBytes, and
+// empty ZFS and swap disks.
+func ensureVMDisks(rawImg string, cfg VMConfig, p VMPaths, progress io.Writer) error {
 	if err := ensurePrivateVMDir(p.VMDir); err != nil {
 		return err
 	}
 	if _, err := os.Stat(p.RootDisk); errors.Is(err, fs.ErrNotExist) {
 		progressf(progress, "creating sparse root disk %s (%s virtual)", p.RootDisk, FormatBytes(cfg.RootSizeBytes))
-		if err := copyFileAtomic(cachedImg, p.RootDisk, 0o600); err != nil {
+		if err := createRootDisk(rawImg, p.RootDisk, cfg.RootSizeBytes); err != nil {
 			return fmt.Errorf("create root disk: %w", err)
 		}
-		if err := runQEMUImg(ctx, qemuImg, "resize", p.RootDisk, strconv.FormatInt(cfg.RootSizeBytes, 10)); err != nil {
-			os.Remove(p.RootDisk)
-			return err
-		}
-	}
-	if err := os.Chmod(p.RootDisk, 0o600); err != nil && !errors.Is(err, fs.ErrNotExist) {
+	} else if err != nil {
 		return err
 	}
-	if _, err := os.Stat(p.ZFSDisk); errors.Is(err, fs.ErrNotExist) {
-		progressf(progress, "creating sparse ZFS qcow2 disk %s (%s virtual)", p.ZFSDisk, FormatBytes(cfg.ZFSSizeBytes))
-		if err := runQEMUImg(ctx, qemuImg, "create", "-f", "qcow2",
-			"-o", "preallocation=off,cluster_size=65536",
-			p.ZFSDisk, strconv.FormatInt(cfg.ZFSSizeBytes, 10)); err != nil {
-			return err
-		}
+	if err := os.Chmod(p.RootDisk, 0o600); err != nil {
+		return err
 	}
-	if _, err := os.Stat(p.SwapDisk); errors.Is(err, fs.ErrNotExist) {
-		progressf(progress, "creating sparse swap qcow2 disk %s (%s virtual)", p.SwapDisk, FormatBytes(cfg.SwapSizeBytes))
-		if err := runQEMUImg(ctx, qemuImg, "create", "-f", "qcow2",
-			"-o", "preallocation=off,cluster_size=65536",
-			p.SwapDisk, strconv.FormatInt(cfg.SwapSizeBytes, 10)); err != nil {
+	for _, d := range []struct {
+		name, path string
+		size       int64
+	}{{"ZFS", p.ZFSDisk, cfg.ZFSSizeBytes}, {"swap", p.SwapDisk, cfg.SwapSizeBytes}} {
+		if _, err := os.Stat(d.path); errors.Is(err, fs.ErrNotExist) {
+			progressf(progress, "creating sparse %s disk %s (%s virtual)", d.name, d.path, FormatBytes(d.size))
+			if err := createSparseDisk(d.path, d.size); err != nil {
+				return fmt.Errorf("create %s disk: %w", d.name, err)
+			}
+		} else if err != nil {
 			return err
-		}
-	}
-	if _, err := os.Stat(p.EFIVars); errors.Is(err, fs.ErrNotExist) {
-		if cfg.Arch == "arm64" {
-			f, err := os.OpenFile(p.EFIVars, os.O_CREATE|os.O_RDWR|os.O_TRUNC, 0o644)
-			if err != nil {
-				return err
-			}
-			// QEMU virt pflash1 expects an exact 64 MiB raw flash image.
-			if err := f.Truncate(64 << 20); err != nil {
-				f.Close()
-				return err
-			}
-			if err := f.Close(); err != nil {
-				return err
-			}
-		} else {
-			if err := copyFileAtomic(fwVarsTemplate, p.EFIVars, 0o644); err != nil {
-				return fmt.Errorf("copy UEFI vars: %w", err)
-			}
 		}
 	}
 	return nil
 }
 
-func runQEMUImg(ctx context.Context, qemuImg string, args ...string) error {
-	cmd := exec.CommandContext(ctx, qemuImg, args...)
-	var stderr bytes.Buffer
-	cmd.Stderr = &stderr
-	if err := cmd.Run(); err != nil {
-		return fmt.Errorf("qemu-img %s: %w: %s", strings.Join(args, " "), err, strings.TrimSpace(stderr.String()))
+// createRootDisk clones rawImg to path (sharing its blocks on APFS) and grows
+// it to size.
+func createRootDisk(rawImg, path string, size int64) error {
+	fi, err := os.Stat(rawImg)
+	if err != nil {
+		return err
 	}
-	return nil
+	if fi.Size() > size {
+		return fmt.Errorf("cloud image %s is %s, more than the %s root disk", rawImg, FormatBytes(fi.Size()), FormatBytes(size))
+	}
+	part := path + ".part"
+	_ = os.Remove(part)
+	if err := unix.Clonefile(rawImg, part, 0); err != nil {
+		return fmt.Errorf("clone %s: %w", rawImg, err)
+	}
+	defer os.Remove(part)
+	if err := os.Truncate(part, size); err != nil {
+		return err
+	}
+	if err := os.Chmod(part, 0o600); err != nil {
+		return err
+	}
+	return os.Rename(part, path)
 }
 
-// --- QEMU process lifecycle ---
+// createSparseDisk creates an empty sparse raw disk of size at path.
+func createSparseDisk(path string, size int64) error {
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
+	if err != nil {
+		return err
+	}
+	if err := f.Truncate(size); err != nil {
+		f.Close()
+		os.Remove(path)
+		return err
+	}
+	return f.Close()
+}
 
-// qmpSocketPath returns p.QMPSock unless it would exceed macOS's 104-byte
-// Unix domain socket path limit, in which case it uses a short /tmp path keyed
-// on the symlink-resolved VMDir so symlinked and canonical paths agree on the
-// same socket.
-func qmpSocketPath(p VMPaths) string {
-	if len(p.QMPSock) < 100 {
-		return p.QMPSock
+// --- vfkit process lifecycle ---
+
+// vmSocketPath is path unless it would exceed macOS's 104-byte Unix domain
+// socket path limit, in which case it is a short /tmp path keyed on the
+// symlink-resolved VMDir (so symlinked and canonical paths agree) and the
+// socket's name.
+func vmSocketPath(p VMPaths, path string) string {
+	if len(path) < 100 {
+		return path
 	}
 	key := filepath.Clean(p.VMDir)
 	if resolved := evalExistingSymlinks(key); resolved != "" {
 		key = resolved
 	}
-	return hashedQMPSocketPath(key)
+	return hashedSocketPath(key, filepath.Base(path))
 }
 
-func hashedQMPSocketPath(vmDir string) string {
+func hashedSocketPath(vmDir, name string) string {
 	sum := sha256.Sum256([]byte(vmDir))
-	return filepath.Join("/tmp", "hotbed-qmp-"+hex.EncodeToString(sum[:6])+".sock")
+	return filepath.Join("/tmp", "hotbed-"+hex.EncodeToString(sum[:6])+"-"+name)
+}
+
+// controlSocketPath is where vfkit serves its REST API for the VM in p.
+func controlSocketPath(p VMPaths) string { return vmSocketPath(p, p.ControlSock) }
+
+// sshSocketPath is where vfkit forwards connections to the guest's SSH.
+func sshSocketPath(p VMPaths) string { return vmSocketPath(p, p.SSHSock) }
+
+// removeVMSockets removes the VM's sockets, which a vfkit that is gone left.
+func removeVMSockets(p VMPaths) {
+	_ = os.Remove(controlSocketPath(p))
+	_ = os.Remove(sshSocketPath(p))
 }
 
 type vmProcState int
@@ -1530,8 +1574,8 @@ func parsePSStatCommand(out string) (string, vmProcState) {
 	return cmd, vmProcRunning
 }
 
-// isVMProcess reports whether pid is a live, non-zombie QEMU process belonging
-// to this VM (matching qemu-system* and this VM's exact -pidfile or QMP socket).
+// isVMProcess reports whether pid is a live, non-zombie vfkit process
+// belonging to this VM (matching vfkit and this VM's exact --pidfile).
 func isVMProcess(ctx context.Context, pid int, p VMPaths) (vmProcState, error) {
 	cmdLine, state, err := processCommandLine(ctx, pid)
 	if state != vmProcRunning {
@@ -1549,45 +1593,24 @@ func isVMProcessCmd(cmdLine string, p VMPaths) bool {
 		return false
 	}
 	// Inspect the executable before the first flag so paths with spaces still
-	// match while wrappers or tools merely mentioning qemu-system (e.g.
-	// `grep qemu-system ...`, `sh -c "qemu-system ..."`, or `env /path/qemu-system ...`)
-	// are rejected.
+	// match while wrappers or tools merely mentioning vfkit (e.g.
+	// `grep vfkit ...`, `sh -c "vfkit ..."`, or `env /path/vfkit ...`) are
+	// rejected.
 	idx := indexFlagStart(cmdLine)
 	if idx < 0 {
 		return false
 	}
 	exe := strings.Trim(strings.TrimSpace(cmdLine[:idx]), `"'`)
-	base := filepath.Base(exe)
-	if !strings.HasPrefix(base, "qemu-system") || strings.ContainsAny(base, " \t") || strings.Contains(exe, " /") {
+	if filepath.Base(exe) != "vfkit" || strings.Contains(exe, " /") {
 		return false
 	}
 	args := cmdLine[idx:] // begins with whitespace + '-'
-	return vmCmdMatchesPaths(args, resolvePathCandidates(p.PIDFile), qmpSocketCandidates(p))
-}
-
-func qmpSocketCandidates(p VMPaths) []string {
-	seen := make(map[string]struct{}, 6)
-	var out []string
-	add := func(path string) {
-		for _, c := range resolvePathCandidates(path) {
-			if _, ok := seen[c]; !ok {
-				seen[c] = struct{}{}
-				out = append(out, c)
-			}
+	for _, pidFile := range resolvePathCandidates(p.PIDFile) {
+		if matchPIDFileArg(args, pidFile) {
+			return true
 		}
 	}
-	add(qmpSocketPath(p))
-	if len(p.QMPSock) >= 100 {
-		// Also match VMs launched before qmpSocketPath resolved symlinks.
-		add(hashedQMPSocketPath(filepath.Clean(p.VMDir)))
-	}
-	if realVMDir := evalExistingSymlinks(p.VMDir); realVMDir != "" && realVMDir != filepath.Clean(p.VMDir) {
-		realP := p
-		realP.VMDir = realVMDir
-		realP.QMPSock = filepath.Join(realVMDir, filepath.Base(p.QMPSock))
-		add(qmpSocketPath(realP))
-	}
-	return out
+	return false
 }
 
 func indexFlagStart(s string) int {
@@ -1641,20 +1664,6 @@ func evalExistingSymlinks(path string) string {
 	}
 }
 
-func vmCmdMatchesPaths(args string, pidFiles, qmpSocks []string) bool {
-	for _, pidFile := range pidFiles {
-		if matchPIDFileArg(args, pidFile) {
-			return true
-		}
-	}
-	for _, qmpSock := range qmpSocks {
-		if matchQMPSockArg(args, qmpSock) {
-			return true
-		}
-	}
-	return false
-}
-
 // matchPIDFileArg reports whether args contains a -pidfile / --pidfile flag
 // whose value is exactly pidFile (unquoted or quoted, with argument boundaries).
 func matchPIDFileArg(args, pidFile string) bool {
@@ -1694,102 +1703,6 @@ func matchPIDFileArg(args, pidFile string) bool {
 		}
 	}
 	return false
-}
-
-// matchQMPSockArg reports whether args binds this VM's QMP socket via
-// `-qmp unix:<qmpSock>[,...]` or `path=<qmpSock>[,...]` with exact boundaries.
-func matchQMPSockArg(args, qmpSock string) bool {
-	if qmpSock == "" {
-		return false
-	}
-	for i := 0; i < len(args); i++ {
-		if !isSpaceByte(args[i]) {
-			continue
-		}
-		j := i + 1
-		for j < len(args) && isSpaceByte(args[j]) {
-			j++
-		}
-		rest := args[j:]
-		var afterFlag string
-		switch {
-		case strings.HasPrefix(rest, "--qmp"):
-			afterFlag = rest[len("--qmp"):]
-		case strings.HasPrefix(rest, "-qmp"):
-			afterFlag = rest[len("-qmp"):]
-		default:
-			continue
-		}
-		if len(afterFlag) == 0 {
-			continue
-		}
-		if afterFlag[0] == '=' {
-			afterFlag = afterFlag[1:]
-		} else if isSpaceByte(afterFlag[0]) {
-			afterFlag = strings.TrimLeft(afterFlag, " \t")
-		} else {
-			continue
-		}
-		if matchQMPUnixValue(afterFlag, qmpSock) {
-			return true
-		}
-	}
-
-	const pathKey = "path="
-	for offset := 0; offset < len(args); {
-		rel := strings.Index(args[offset:], pathKey)
-		if rel < 0 {
-			break
-		}
-		pos := offset + rel
-		offset = pos + len(pathKey)
-		if pos == 0 {
-			continue
-		}
-		prev := args[pos-1]
-		if !isSpaceByte(prev) && prev != ',' && prev != ':' && !isQuoteByte(prev) {
-			continue
-		}
-		val := args[pos+len(pathKey):]
-		if matchTokenValue(val, qmpSock, true) {
-			return true
-		}
-		// Handle an outer quote around the whole option value, such as
-		// `-chardev "socket,id=qmp,path=/path/to/qmp.sock"`.
-		if strings.HasPrefix(val, qmpSock) {
-			rem := val[len(qmpSock):]
-			if len(rem) > 0 && isQuoteByte(rem[0]) && isArgDelimiter(rem[1:], false) && strings.Count(args[:pos], string(rem[0]))%2 == 1 {
-				return true
-			}
-		}
-	}
-	return false
-}
-
-func matchQMPUnixValue(val, qmpSock string) bool {
-	if val == "" || qmpSock == "" {
-		return false
-	}
-	var outerQuote byte
-	if isQuoteByte(val[0]) {
-		outerQuote = val[0]
-		val = val[1:]
-	}
-	if !strings.HasPrefix(val, "unix:") {
-		return false
-	}
-	afterUnix := val[len("unix:"):]
-	if outerQuote != 0 {
-		if !strings.HasPrefix(afterUnix, qmpSock) {
-			return false
-		}
-		rem := afterUnix[len(qmpSock):]
-		if len(rem) > 0 && rem[0] == ',' {
-			return true
-		}
-		return len(rem) > 0 && rem[0] == outerQuote && isArgDelimiter(rem[1:], false)
-	}
-	return matchTokenValue(afterUnix, qmpSock, true)
 }
 
 func matchTokenValue(s, want string, allowComma bool) bool {
@@ -1842,191 +1755,53 @@ func vmProcessAlive(ctx context.Context, pid int, p VMPaths) (vmProcState, error
 	return isVMProcess(ctx, pid, p)
 }
 
-const defaultMinHostFreeBytes int64 = 2 << 30 // 2 GiB
-
 var (
-	// minHostFreeBytes is the minimum free space required on the host
-	// filesystem hosting p.VMDir before resuming a paused VM. Overridable in tests.
-	minHostFreeBytes = defaultMinHostFreeBytes
-	// hostFreeBytes reports available bytes on the filesystem containing dir.
-	// Overridable in tests.
-	hostFreeBytes = darwinHostFreeBytes
-	// resumeVerifyTimeout and resumeVerifyInterval bound how long resumePausedVM
-	// polls query-status after sending QMP cont. Overridable in tests.
-	resumeVerifyTimeout  = 2 * time.Second
-	resumeVerifyInterval = 100 * time.Millisecond
-	// pausedVMCheckInterval is how often the supervisor polls for a paused VM.
-	// Overridable in tests.
-	pausedVMCheckInterval = 15 * time.Second
 	// resyncGuestClock steps the guest clock over SSH after resuming a paused VM.
 	// Overridable in tests.
 	resyncGuestClock = darwinResyncGuestClock
-
-	vmRecoverMu sync.Mutex
+	// resumeVerifyTimeout and resumeVerifyInterval bound how long
+	// resumePausedVM waits for vfkit to report the VM running. Overridable in
+	// tests.
+	resumeVerifyTimeout  = 5 * time.Second
+	resumeVerifyInterval = 100 * time.Millisecond
 )
 
-// vmQMPInfo captures the QEMU run state and any non-"ok" block device io-status
-// entries reported over QMP.
-type vmQMPInfo struct {
-	Known     bool
-	Running   bool
-	QMPStatus string
-	IOErrors  []string
-}
-
-// isPaused reports whether QEMU is in a paused state that can be resumed via
-// QMP `cont` (or quit directly if stopping). Other non-running statuses such as
-// "suspended", "debug", or "guest-panicked" are intentionally excluded so they
-// do not trigger `qmpQuit` instead of clean ACPI/SSH poweroff or `cont` recovery.
-func (q vmQMPInfo) isPaused() bool {
-	return q.QMPStatus == "paused" || q.QMPStatus == "io-error"
-}
-
-func (q vmQMPInfo) isIOErrorPause() bool {
-	return q.QMPStatus == "io-error" || len(q.IOErrors) > 0
-}
-
-func formatQMPPauseDetail(q vmQMPInfo) string {
-	switch {
-	case q.QMPStatus != "" && len(q.IOErrors) > 0:
-		return fmt.Sprintf("%s: %s", q.QMPStatus, strings.Join(q.IOErrors, ", "))
-	case q.QMPStatus != "":
-		return q.QMPStatus
-	case len(q.IOErrors) > 0:
-		return strings.Join(q.IOErrors, ", ")
-	default:
-		return "paused"
-	}
-}
-
-func pausedVMConflictError(q vmQMPInfo, suffix string) *api.Error {
-	detail := formatQMPPauseDetail(q)
+func pausedVMConflictError(suffix string) *api.Error {
 	suggestion := "resume it with `hotbed worker start`"
-	if q.isIOErrorPause() {
-		suggestion = "free disk space on the host and run `hotbed worker start`"
-	}
 	if suffix != "" {
 		suggestion += " " + suffix
 	}
-	return api.Errorf(api.CodeConflict, "worker VM is paused (%s)", detail).WithSuggestion(suggestion)
+	return api.Errorf(api.CodeConflict, "worker VM is paused").WithSuggestion(suggestion)
 }
 
-func darwinHostFreeBytes(dir string) (int64, error) {
-	var st syscall.Statfs_t
-	if err := syscall.Statfs(dir, &st); err != nil {
-		return 0, err
-	}
-	if st.Bsize <= 0 {
-		return 0, fmt.Errorf("statfs %s: invalid block size %d", dir, st.Bsize)
-	}
-	bsize := uint64(st.Bsize)
-	if st.Bavail > math.MaxInt64/bsize {
-		return math.MaxInt64, nil
-	}
-	return int64(st.Bavail * bsize), nil
-}
-
-// qmpInspectVM queries QMP `query-status` via QMPQueryStatus, and when the
-// guest is paused or in an I/O error state, also queries `query-block` to
-// collect any block devices whose `io-status` is not `"ok"` (such as
-// `"swap: nospace"`).
-func qmpInspectVM(ctx context.Context, sockPath string) (vmQMPInfo, error) {
-	status, err := QMPQueryStatus(ctx, sockPath)
-	if err != nil {
-		return vmQMPInfo{}, err
-	}
-	info := vmQMPInfo{
-		Known:     true,
-		Running:   status == "running",
-		QMPStatus: status,
-	}
-	if info.isPaused() {
-		if c, derr := dialQMP(ctx, sockPath); derr == nil {
-			defer c.Close()
-			if blkRaw, berr := c.execute("query-block"); berr == nil {
-				info.IOErrors = parseQMPBlockIOErrors(blkRaw)
-			}
-		}
-	}
-	return info, nil
-}
-
-func parseQMPBlockIOErrors(raw json.RawMessage) []string {
-	var blocks []struct {
-		Device   string `json:"device"`
-		Qdev     string `json:"qdev"`
-		IOStatus string `json:"io-status"`
-		Inserted *struct {
-			NodeName string `json:"node-name"`
-			File     string `json:"file"`
-		} `json:"inserted"`
-	}
-	if err := json.Unmarshal(raw, &blocks); err != nil {
-		return nil
-	}
-	var errs []string
-	for _, b := range blocks {
-		if b.IOStatus == "" || b.IOStatus == "ok" {
-			continue
-		}
-		name := b.Device
-		if name == "" && b.Inserted != nil {
-			name = cmp.Or(b.Inserted.NodeName, filepath.Base(b.Inserted.File))
-		}
-		if name == "" {
-			name = cmp.Or(b.Qdev, "block")
-		}
-		errs = append(errs, fmt.Sprintf("%s: %s", name, b.IOStatus))
-	}
-	return errs
-}
-
-func qmpCont(ctx context.Context, sockPath string) error {
-	c, err := dialQMP(ctx, sockPath)
-	if err != nil {
-		return err
-	}
-	defer c.Close()
-	_, err = c.execute("cont")
-	return err
-}
-
-func qmpQuit(ctx context.Context, sockPath string) error {
-	c, err := dialQMP(ctx, sockPath)
-	if err != nil {
-		return err
-	}
-	defer c.Close()
-	_, err = c.execute("quit")
-	return err
-}
-
-func vmDetailedState(ctx context.Context, p VMPaths) (int, vmProcState, vmQMPInfo, error) {
+// vmDetailedState reports the VM's vfkit process (its pid and whether it
+// runs, is paused, or is missing) and the VM state vfkit reports.
+func vmDetailedState(ctx context.Context, p VMPaths) (int, vmProcState, string, error) {
 	if err := ctx.Err(); err != nil {
-		return 0, vmProcUnknown, vmQMPInfo{}, err
+		return 0, vmProcUnknown, "", err
 	}
 	b, err := os.ReadFile(p.PIDFile)
 	if err != nil {
 		if errors.Is(err, fs.ErrNotExist) {
-			return 0, vmProcMissing, vmQMPInfo{}, nil
+			return 0, vmProcMissing, "", nil
 		}
-		return 0, vmProcUnknown, vmQMPInfo{}, fmt.Errorf("read %s: %w", p.PIDFile, err)
+		return 0, vmProcUnknown, "", fmt.Errorf("read %s: %w", p.PIDFile, err)
 	}
 	pid, err := strconv.Atoi(strings.TrimSpace(string(b)))
 	if err != nil || pid <= 0 {
-		return 0, vmProcMissing, vmQMPInfo{}, nil
+		return 0, vmProcMissing, "", nil
 	}
 	state, err := vmProcessAlive(ctx, pid, p)
 	if state != vmProcRunning {
-		return 0, state, vmQMPInfo{}, err
+		return 0, state, "", err
 	}
-	qctx, cancel := context.WithTimeout(ctx, 2*time.Second)
-	qmp, qerr := qmpInspectVM(qctx, qmpSocketPath(p))
+	sctx, cancel := context.WithTimeout(ctx, 2*time.Second)
+	vmState, serr := vfkitVMState(sctx, controlSocketPath(p))
 	cancel()
-	if qerr == nil && qmp.isPaused() {
-		return pid, vmProcPaused, qmp, nil
+	if serr == nil && vmState == vfkitStatePaused {
+		return pid, vmProcPaused, vmState, nil
 	}
-	return pid, vmProcRunning, qmp, nil
+	return pid, vmProcRunning, vmState, nil
 }
 
 func vmProcessState(ctx context.Context, p VMPaths) (int, vmProcState, error) {
@@ -2034,51 +1809,32 @@ func vmProcessState(ctx context.Context, p VMPaths) (int, vmProcState, error) {
 	return pid, state, err
 }
 
-// resumePausedVM resumes a live but paused QEMU VM via QMP `cont` once the
-// host filesystem hosting p.VMDir has at least minHostFreeBytes available,
-// verifies QEMU reports `running: true`, and best-effort resyncs the guest
-// clock over SSH.
-func resumePausedVM(ctx context.Context, cfg VMConfig, p VMPaths, qmp vmQMPInfo, progress io.Writer) error {
-	detail := formatQMPPauseDetail(qmp)
-	freeDir := p.VMDir
-	freeBytes, err := hostFreeBytes(freeDir)
-	if err != nil {
-		return fmt.Errorf("worker VM is paused (%s) and checking host free space on %s failed: %w", detail, freeDir, err)
-	}
-	if freeBytes < minHostFreeBytes {
-		return api.Errorf(api.CodeConflict,
-			"worker VM is paused (%s) and host filesystem %s has only %s free (need at least %s to resume)",
-			detail, freeDir, FormatBytes(freeBytes), FormatBytes(minHostFreeBytes),
-		).WithSuggestion(fmt.Sprintf("free disk space on the host (at least %s free) and run `hotbed worker start`", FormatBytes(minHostFreeBytes)))
-	}
-
-	progressf(progress, "resuming paused worker VM (%s; host free space %s)", detail, FormatBytes(freeBytes))
-	qmpSock := qmpSocketPath(p)
-	cctx, cancel := context.WithTimeout(ctx, 5*time.Second)
-	err = qmpCont(cctx, qmpSock)
+// resumePausedVM resumes a live but paused VM through vfkit, waits for vfkit
+// to report it running (it takes the request asynchronously), and best-effort
+// resyncs the guest clock over SSH.
+func resumePausedVM(ctx context.Context, cfg VMConfig, p VMPaths, progress io.Writer) error {
+	progressf(progress, "resuming paused worker VM")
+	sock := controlSocketPath(p)
+	rctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	err := vfkitSetVMState(rctx, sock, vfkitResume)
 	cancel()
 	if err != nil {
-		return fmt.Errorf("resume paused worker VM via QMP cont: %w", err)
+		return fmt.Errorf("resume paused worker VM: %w", err)
 	}
-
 	deadline := time.Now().Add(resumeVerifyTimeout)
-	var latest vmQMPInfo
 	for {
-		vctx, vcancel := context.WithTimeout(ctx, 2*time.Second)
-		st, verr := qmpInspectVM(vctx, qmpSock)
-		vcancel()
-		if verr != nil {
-			return fmt.Errorf("verify resumed worker VM status: %w", verr)
+		sctx, scancel := context.WithTimeout(ctx, 2*time.Second)
+		state, err := vfkitVMState(sctx, sock)
+		scancel()
+		if err != nil {
+			return fmt.Errorf("verify resumed worker VM: %w", err)
 		}
-		latest = st
-		if st.Running {
+		if state == vfkitStateRunning {
 			break
 		}
 		if time.Now().After(deadline) {
-			return api.Errorf(api.CodeConflict,
-				"worker VM remained paused after QMP cont (%s; host free space %s)",
-				formatQMPPauseDetail(latest), FormatBytes(freeBytes),
-			).WithSuggestion("check host disk space and " + p.QEMULog + ", then retry `hotbed worker start`")
+			return api.Errorf(api.CodeConflict, "worker VM is still %s after vfkit was asked to resume it", state).
+				WithSuggestion("check " + p.VfkitLog + ", then retry `hotbed worker start`")
 		}
 		select {
 		case <-ctx.Done():
@@ -2086,7 +1842,6 @@ func resumePausedVM(ctx context.Context, cfg VMConfig, p VMPaths, qmp vmQMPInfo,
 		case <-time.After(resumeVerifyInterval):
 		}
 	}
-
 	if err := resyncGuestClock(ctx, cfg, p); err != nil {
 		progressf(progress, "resumed worker VM, but guest clock resync over SSH failed (best effort): %v", err)
 	}
@@ -2094,7 +1849,7 @@ func resumePausedVM(ctx context.Context, cfg VMConfig, p VMPaths, qmp vmQMPInfo,
 }
 
 func darwinResyncGuestClock(ctx context.Context, cfg VMConfig, p VMPaths) error {
-	if cfg.SSHPort <= 0 || cfg.User == "" {
+	if cfg.User == "" {
 		return nil
 	}
 	signer, err := loadSSHSigner(p.KeyPriv)
@@ -2119,74 +1874,12 @@ func darwinResyncGuestClock(ctx context.Context, cfg VMConfig, p VMPaths) error 
 	return err
 }
 
-// checkAndRecoverPausedVM inspects the worker VM once and, if QEMU has paused
-// it due to an I/O error (such as host ENOSPC), logs the QMP io-status and host
-// free space and resumes it via QMP `cont` once host free space meets
-// minHostFreeBytes.
-func checkAndRecoverPausedVM(ctx context.Context, cfg VMConfig, p VMPaths, log *slog.Logger) (bool, error) {
-	vmRecoverMu.Lock()
-	defer vmRecoverMu.Unlock()
-
-	if log == nil {
-		log = slog.Default()
-	}
-	pid, procState, qmp, err := vmDetailedState(ctx, p)
-	if err != nil || procState != vmProcPaused {
-		return false, err
-	}
-	if !qmp.isIOErrorPause() {
-		return false, nil
-	}
-	freeBytes, freeErr := hostFreeBytes(p.VMDir)
-	if freeErr != nil {
-		log.Warn("supervise: worker VM is paused; failed to check host disk free space",
-			"node", cfg.Hostname, "pid", pid, "qmpStatus", qmp.QMPStatus, "ioErrors", qmp.IOErrors, "err", freeErr)
-		return false, freeErr
-	}
-	if freeBytes < minHostFreeBytes {
-		log.Warn("supervise: worker VM is paused; waiting for host disk space before resuming",
-			"node", cfg.Hostname, "pid", pid, "qmpStatus", qmp.QMPStatus, "ioErrors", qmp.IOErrors,
-			"hostFree", FormatBytes(freeBytes), "minFree", FormatBytes(minHostFreeBytes))
-		return false, nil
-	}
-	log.Warn("supervise: worker VM is paused; host disk space recovered, resuming via QMP cont",
-		"node", cfg.Hostname, "pid", pid, "qmpStatus", qmp.QMPStatus, "ioErrors", qmp.IOErrors,
-		"hostFree", FormatBytes(freeBytes), "minFree", FormatBytes(minHostFreeBytes))
-	if err := resumePausedVM(ctx, cfg, p, qmp, nil); err != nil {
-		log.Warn("supervise: failed to resume paused worker VM",
-			"node", cfg.Hostname, "pid", pid, "qmpStatus", qmp.QMPStatus, "ioErrors", qmp.IOErrors,
-			"hostFree", FormatBytes(freeBytes), "err", err)
-		return false, err
-	}
-	log.Info("supervise: resumed paused worker VM",
-		"node", cfg.Hostname, "pid", pid, "qmpStatus", qmp.QMPStatus, "ioErrors", qmp.IOErrors,
-		"hostFree", FormatBytes(freeBytes))
-	return true, nil
-}
-
-func darwinWatchPausedVM(ctx context.Context, dir string, log *slog.Logger) {
-	_, cfg, p, err := loadVM(dir)
-	if err != nil {
-		return
-	}
-	if log == nil {
-		log = slog.Default()
-	}
-	_, _ = checkAndRecoverPausedVM(ctx, cfg, p, log)
-	t := time.NewTicker(pausedVMCheckInterval)
-	defer t.Stop()
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-t.C:
-			_, _ = checkAndRecoverPausedVM(ctx, cfg, p, log)
-		}
-	}
-}
+// vmStartTimeout bounds how long ensureVMRunning waits for vfkit to report
+// the VM running. Overridable in tests.
+var vmStartTimeout = 15 * time.Second
 
 func ensureVMRunning(ctx context.Context, cfg VMConfig, p VMPaths, progress io.Writer) error {
-	pid, procState, qmp, err := vmDetailedState(ctx, p)
+	pid, procState, _, err := vmDetailedState(ctx, p)
 	if err != nil {
 		return err
 	}
@@ -2195,29 +1888,33 @@ func ensureVMRunning(ctx context.Context, cfg VMConfig, p VMPaths, progress io.W
 		progressf(progress, "worker VM is already running (pid %d)", pid)
 		return nil
 	case vmProcPaused:
-		return resumePausedVM(ctx, cfg, p, qmp, progress)
+		return resumePausedVM(ctx, cfg, p, progress)
 	}
-	qmpSock := qmpSocketPath(p)
-	_ = os.Remove(qmpSock)
+	controlSock := controlSocketPath(p)
+	removeVMSockets(p)
 	_ = os.Remove(p.PIDFile)
 
-	args, err := QEMUArgs(cfg, p, qmpSock)
+	_, err = os.Stat(p.EFIVars)
+	if err != nil && !errors.Is(err, fs.ErrNotExist) {
+		return err
+	}
+	args, err := VfkitArgs(cfg, p, controlSock, sshSocketPath(p), err != nil)
 	if err != nil {
 		return err
 	}
-	logFile, err := os.OpenFile(p.QEMULog, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o644)
+	logFile, err := os.OpenFile(p.VfkitLog, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o644)
 	if err != nil {
 		return err
 	}
-	progressf(progress, "starting QEMU VM (%s, %d vCPUs, %s RAM, ssh 127.0.0.1:%d)",
-		cfg.Hostname, cfg.CPUs, FormatBytes(cfg.MemoryBytes), cfg.SSHPort)
-	cmd := exec.Command(cfg.QEMUBinary, args...)
+	progressf(progress, "starting worker VM (%s, %d vCPUs, %s RAM, nested virtualization)",
+		cfg.Hostname, cfg.CPUs, FormatBytes(cfg.MemoryBytes))
+	cmd := exec.Command(cfg.VfkitBinary, args...)
 	cmd.Stdout = logFile
 	cmd.Stderr = logFile
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
 	if err := cmd.Start(); err != nil {
 		logFile.Close()
-		return fmt.Errorf("start QEMU: %w", err)
+		return fmt.Errorf("start vfkit: %w", err)
 	}
 	logFile.Close()
 	// Reap in background if it exits while we're still running; if it lives past
@@ -2225,25 +1922,29 @@ func ensureVMRunning(ctx context.Context, cfg VMConfig, p VMPaths, progress io.W
 	exited := make(chan error, 1)
 	go func() { exited <- cmd.Wait() }()
 
-	deadline := time.Now().Add(15 * time.Second)
+	deadline := time.Now().Add(vmStartTimeout)
 	for time.Now().Before(deadline) {
 		select {
 		case err := <-exited:
-			logTail, _ := os.ReadFile(p.QEMULog)
-			return fmt.Errorf("QEMU exited immediately (%v): %s", err, strings.TrimSpace(string(logTail)))
+			logTail, _ := os.ReadFile(p.VfkitLog)
+			e := api.Errorf(api.CodeInternal, "vfkit exited immediately (%v): %s", err, strings.TrimSpace(string(logTail)))
+			if strings.Contains(string(logTail), "nested virtualization") {
+				e = e.WithSuggestion("nested virtualization needs an Apple M3 or later and macOS 15 or later")
+			}
+			return e
 		case <-ctx.Done():
 			return ctx.Err()
 		default:
 		}
-		qctx, cancel := context.WithTimeout(ctx, 500*time.Millisecond)
-		_, qerr := QMPQueryStatus(qctx, qmpSock)
+		sctx, cancel := context.WithTimeout(ctx, 500*time.Millisecond)
+		state, serr := vfkitVMState(sctx, controlSock)
 		cancel()
-		if qerr == nil {
+		if serr == nil && (state == vfkitStateRunning || state == vfkitStateStarting) {
 			return nil
 		}
 		time.Sleep(250 * time.Millisecond)
 	}
-	return fmt.Errorf("timed out waiting for QEMU QMP socket at %s (check %s)", qmpSock, p.QEMULog)
+	return fmt.Errorf("timed out waiting for vfkit to run the VM (its API at %s; check %s)", controlSock, p.VfkitLog)
 }
 
 func stopVM(ctx context.Context, cfg VMConfig, p VMPaths, progress io.Writer) error {
@@ -2253,15 +1954,15 @@ func stopVM(ctx context.Context, cfg VMConfig, p VMPaths, progress io.Writer) er
 		return err
 	case vmProcMissing:
 		_ = os.Remove(p.PIDFile)
-		_ = os.Remove(qmpSocketPath(p))
+		removeVMSockets(p)
 		return nil
 	}
 	progressf(progress, "shutting down worker VM (pid %d)", pid)
 
-	// Prefer clean guest poweroff over SSH so ZFS exports cleanly; fall back to QMP ACPI powerdown.
-	// If the VM is paused (e.g. io-error), the guest cannot process SSH or ACPI, so quit QEMU cleanly via QMP.
+	// Prefer clean guest poweroff over SSH so ZFS exports cleanly; fall back to
+	// the VM's power button. A paused guest can do neither, so its plug is pulled.
 	poweredDown := false
-	if procState == vmProcRunning && cfg.SSHPort > 0 && cfg.User != "" {
+	if procState == vmProcRunning && cfg.User != "" {
 		if signer, err := loadSSHSigner(p.KeyPriv); err == nil {
 			if cl, err := dialSSH(ctx, cfg, p, signer, 3*time.Second); err == nil {
 				_, _ = sshRun(ctx, cl, "sudo systemctl poweroff || sudo poweroff")
@@ -2271,12 +1972,12 @@ func stopVM(ctx context.Context, cfg VMConfig, p VMPaths, progress io.Writer) er
 		}
 	}
 	if !poweredDown {
-		qctx, cancel := context.WithTimeout(ctx, 3*time.Second)
+		sctx, cancel := context.WithTimeout(ctx, 3*time.Second)
+		change := vfkitStop
 		if procState == vmProcPaused {
-			_ = qmpQuit(qctx, qmpSocketPath(p))
-		} else {
-			_ = QMPPowerdown(qctx, qmpSocketPath(p))
+			change = vfkitHardStop
 		}
+		_ = vfkitSetVMState(sctx, controlSocketPath(p), change)
 		cancel()
 	}
 
@@ -2286,7 +1987,7 @@ func stopVM(ctx context.Context, cfg VMConfig, p VMPaths, progress io.Writer) er
 		switch state {
 		case vmProcMissing:
 			_ = os.Remove(p.PIDFile)
-			_ = os.Remove(qmpSocketPath(p))
+			removeVMSockets(p)
 			return nil
 		case vmProcUnknown:
 			return err
@@ -2351,7 +2052,7 @@ func stopVM(ctx context.Context, cfg VMConfig, p VMPaths, progress io.Writer) er
 		return fmt.Errorf("worker VM (pid %d) did not exit after SIGKILL", pid)
 	}
 	_ = os.Remove(p.PIDFile)
-	_ = os.Remove(qmpSocketPath(p))
+	removeVMSockets(p)
 	return nil
 }
 
@@ -2369,14 +2070,13 @@ func dialSSH(ctx context.Context, cfg VMConfig, p VMPaths, signer ssh.Signer, ti
 		HostKeyAlgorithms: hostKeyAlgos,
 		Timeout:           timeout,
 	}
-	addr := net.JoinHostPort("127.0.0.1", strconv.Itoa(cfg.SSHPort))
 	var d net.Dialer
 	d.Timeout = timeout
-	conn, err := d.DialContext(ctx, "tcp", addr)
+	conn, err := d.DialContext(ctx, "unix", sshSocketPath(p))
 	if err != nil {
 		return nil, err
 	}
-	c, chans, reqs, err := ssh.NewClientConn(conn, addr, sshCfg)
+	c, chans, reqs, err := ssh.NewClientConn(conn, vmHostKeyAlias, sshCfg)
 	if err != nil {
 		conn.Close()
 		return nil, err
@@ -2385,22 +2085,22 @@ func dialSSH(ctx context.Context, cfg VMConfig, p VMPaths, signer ssh.Signer, ti
 }
 
 func waitForSSH(ctx context.Context, cfg VMConfig, p VMPaths, signer ssh.Signer, progress io.Writer) (*ssh.Client, error) {
-	progressf(progress, "waiting for Ubuntu VM to boot and accept SSH on 127.0.0.1:%d", cfg.SSHPort)
+	progressf(progress, "waiting for Ubuntu VM to boot and accept SSH on %s", sshSocketPath(p))
 	deadline := time.Now().Add(3 * time.Minute)
 	for time.Now().Before(deadline) {
 		if ctx.Err() != nil {
 			return nil, ctx.Err()
 		}
-		_, procState, qmp, err := vmDetailedState(ctx, p)
+		_, procState, _, err := vmDetailedState(ctx, p)
 		if err != nil {
 			if ctx.Err() != nil {
 				return nil, ctx.Err()
 			}
 		} else if procState == vmProcMissing {
-			logTail, _ := os.ReadFile(p.QEMULog)
+			logTail, _ := os.ReadFile(p.VfkitLog)
 			return nil, fmt.Errorf("worker VM exited while booting (see %s): %s", p.ConsoleLog, strings.TrimSpace(string(logTail)))
 		} else if procState == vmProcPaused {
-			return nil, pausedVMConflictError(qmp, "")
+			return nil, pausedVMConflictError("")
 		}
 		if cl, err := dialSSH(ctx, cfg, p, signer, 3*time.Second); err == nil {
 			return cl, nil

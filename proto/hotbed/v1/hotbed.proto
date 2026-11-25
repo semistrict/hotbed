@@ -54,10 +54,10 @@ service ClusterService {
   // after at most two minutes, and the host calls again with how the VM is
   // then, as it does each time it has started or stopped the VM.
   rpc Standby(StandbyRequest) returns (stream StandbyResponse);
-  // ReportHostUsage reports host-side truth about a VM worker (QEMU CPU,
+  // ReportHostUsage reports host-side truth about a VM worker (VM CPU,
   // host CPU/load, host memory pressure) from its host supervisor so
   // controller placement, worker admission, and the cockpit can see host
-  // starvation that the Linux guest cannot observe under HVF.
+  // starvation that the Linux guest cannot observe from inside its VM.
   rpc ReportHostUsage(ReportHostUsageRequest) returns (ReportHostUsageResponse);
   // List the cluster's workers.
   rpc ListNodes(ListNodesRequest) returns (ListNodesResponse) {
@@ -652,7 +652,7 @@ message ObjectStoreStats {
 
 // Host-side view of a VM worker, reported by its host supervisor (macOS).
 message HostUsage {
-  // Share of configured vCPUs the QEMU process actually got on the host
+  // Share of configured vCPUs the VM process actually got on the host
   // (0..1; e.g. 1.5 cores used on a 7-vCPU VM = 0.214).
   double vm_cpu_busy = 1;
   // Share of host CPUs busy across the whole host (0..1).

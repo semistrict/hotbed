@@ -15,7 +15,7 @@ import (
 
 // TestHostCPUStarvationHoldsWork verifies board 9281: when the Linux guest
 // looks busy (92%) with low guest PSI (31%, below cpuHoldAt 60%) while the
-// macOS host gives QEMU only 20% of its vCPUs (host 95% busy), the worker
+// macOS host gives the VM only 20% of its vCPUs (host 95% busy), the worker
 // holds new work — including measurements — reports host signals in admission,
 // and admits queued work once the host recovers.
 func TestHostCPUStarvationHoldsWork(t *testing.T) {
@@ -48,7 +48,7 @@ func TestHostCPUStarvationHoldsWork(t *testing.T) {
 		t.Fatalf("without host usage, guest PSI 31%% should not hold: %v", a)
 	}
 
-	// Host supervisor reports QEMU only gets 20% while host is 95% busy.
+	// Host supervisor reports the VM only gets 20% while host is 95% busy.
 	e.SetHostUsage(&pb.HostUsage{
 		VmCpuBusy:          0.20,
 		HostCpuBusy:        0.95,

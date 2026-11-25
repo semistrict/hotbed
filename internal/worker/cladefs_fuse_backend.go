@@ -30,7 +30,7 @@ import (
 
 // CladefsFUSEBackend manages R2-backed cladefs cells mounted into the host
 // filesystem via cladefsd's host FUSE mount (CLADEFSD_MOUNT) for nodes that do
-// not run Firecracker microVMs (e.g. 16 KiB arm64 Apple Silicon or QEMU VMs).
+// not run Firecracker microVMs (e.g. 16 KiB arm64 Apple Silicon or VMs without nested virtualization).
 //
 // Shared base images and project bases are versioned and synced to R2 and then
 // dropped locally (DropCell), so local SSD holds only CLADEFSD_PART_CACHE and

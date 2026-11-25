@@ -770,7 +770,7 @@ export const ObjectStoreStatsSchema: GenMessage<ObjectStoreStats> = /*@__PURE__*
  */
 export type HostUsage = Message<"hotbed.v1.HostUsage"> & {
   /**
-   * Share of configured vCPUs the QEMU process actually got on the host
+   * Share of configured vCPUs the VM process actually got on the host
    * (0..1; e.g. 1.5 cores used on a 7-vCPU VM = 0.214).
    *
    * @generated from field: double vm_cpu_busy = 1;
@@ -16390,10 +16390,10 @@ export const ClusterService: GenService<{
     output: typeof StandbyResponseSchema;
   },
   /**
-   * ReportHostUsage reports host-side truth about a VM worker (QEMU CPU,
+   * ReportHostUsage reports host-side truth about a VM worker (VM CPU,
    * host CPU/load, host memory pressure) from its host supervisor so
    * controller placement, worker admission, and the cockpit can see host
-   * starvation that the Linux guest cannot observe under HVF.
+   * starvation that the Linux guest cannot observe from inside its VM.
    *
    * @generated from rpc hotbed.v1.ClusterService.ReportHostUsage
    */

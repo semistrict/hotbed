@@ -1659,15 +1659,15 @@ func removeAnchoredTarget(baseDir, target string, expectRegular bool) (bool, err
 	return true, nil
 }
 
-// SSH is only meaningful on macOS QEMU workers.
+// SSH is only meaningful on macOS worker VMs.
 func SSH(context.Context, string, []string) (int, error) {
-	return 1, api.Errorf(api.CodePlatformNotSupported, "worker ssh is for macOS QEMU VMs; this worker runs directly on Linux")
+	return 1, api.Errorf(api.CodePlatformNotSupported, "worker ssh is for macOS worker VMs; this worker runs directly on Linux")
 }
 
-// Supervise is only meaningful on macOS QEMU workers: a Linux worker runs
+// Supervise is only meaningful on macOS worker VMs: a Linux worker runs
 // on its host, which the controller does not power.
 func Supervise(context.Context, string, func(string) (hotbedv1connect.ClusterServiceClient, error), *slog.Logger) error {
-	return api.Errorf(api.CodePlatformNotSupported, "worker supervise is for macOS QEMU VMs; this worker runs directly on Linux")
+	return api.Errorf(api.CodePlatformNotSupported, "worker supervise is for macOS worker VMs; this worker runs directly on Linux")
 }
 
 func DaemonVMStatus(context.Context, string) DaemonVMState {

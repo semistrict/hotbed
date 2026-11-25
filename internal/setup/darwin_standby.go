@@ -28,25 +28,25 @@ import (
 // LaunchAgent runs from login on: it holds the controller's Standby call
 // and starts or stops the VM as the controller says (Standby).
 
-// qemuVM is the worker VM, as Standby runs it.
-type qemuVM struct {
+// vfkitVM is the worker VM, as Standby runs it.
+type vfkitVM struct {
 	cfg     VMConfig
 	p       VMPaths
 	sampler *hostUsageSampler
 }
 
-func (vm qemuVM) Running(ctx context.Context) bool {
+func (vm vfkitVM) Running(ctx context.Context) bool {
 	_, state, _ := vmProcessState(ctx, vm.p)
 	return state == vmProcRunning
 }
 
-func (vm qemuVM) Start(ctx context.Context) error {
+func (vm vfkitVM) Start(ctx context.Context) error {
 	// Once begun, a start or stop finishes, so a VM is never left half
 	// stopped (the supervisor exiting for a new build, or unloaded).
 	return ensureVMRunning(context.WithoutCancel(ctx), vm.cfg, vm.p, os.Stderr)
 }
 
-func (vm qemuVM) Stop(ctx context.Context) error {
+func (vm vfkitVM) Stop(ctx context.Context) error {
 	return stopVM(context.WithoutCancel(ctx), vm.cfg, vm.p, os.Stderr)
 }
 
@@ -65,21 +65,21 @@ func Supervise(ctx context.Context, dir string, cluster func(controller string) 
 	if err != nil {
 		return err
 	}
-	vm := qemuVM{cfg: cfg, p: p, sampler: newDarwinHostUsageSampler()}
+	vm := vfkitVM{cfg: cfg, p: p, sampler: newDarwinHostUsageSampler()}
 	cleanStaleVMFiles(ctx, p)
 	log.Info("supervising the worker VM", "node", cfg.Hostname, "controller", cfg.Controller, "sleepAfter", sleepAfter)
 	Standby(ctx, c, cfg.Hostname, sleepAfter, vm, log)
 	return nil
 }
 
-// cleanStaleVMFiles removes leftover qemu.pid and qmp.sock files (for example
-// after a crash or host reboot) when no QEMU process for this VM is running.
+// cleanStaleVMFiles removes a leftover vfkit pid file and sockets (for
+// example after a crash or host reboot) when no vfkit runs this VM.
 func cleanStaleVMFiles(ctx context.Context, p VMPaths) {
 	if _, state, _ := vmProcessState(ctx, p); state != vmProcMissing {
 		return
 	}
 	_ = os.Remove(p.PIDFile)
-	_ = os.Remove(qmpSocketPath(p))
+	removeVMSockets(p)
 }
 
 func launchAgentLabel(baseDir string) string {
@@ -146,21 +146,15 @@ var runLaunchctl = func(ctx context.Context, args ...string) ([]byte, error) {
 
 // stopSupervisor unloads the LaunchAgent, if loaded, and returns once it is
 // gone, so nothing starts or stops the VM until it is loaded again; the VM
-// runs on. A LaunchAgent from before the supervisor ran QEMU itself, which
-// unloading it kills: the VM is shut down cleanly first.
-func stopSupervisor(ctx context.Context, cfg VMConfig, p VMPaths) error {
+// runs on.
+func stopSupervisor(ctx context.Context, p VMPaths) error {
 	target := launchDomain() + "/" + launchAgentLabel(p.BaseDir)
-	out, loaded, err := supervisorPrint(ctx, p)
+	loaded, err := supervisorState(ctx, p)
 	if err != nil {
 		return err
 	}
 	if !loaded {
 		return nil
-	}
-	if strings.Contains(out, "qemu-system") {
-		if err := stopVM(ctx, cfg, p, os.Stderr); err != nil {
-			return err
-		}
 	}
 	if err := launchctl(ctx, "bootout", target); err != nil {
 		stillLoaded, stateErr := supervisorState(ctx, p)
@@ -192,8 +186,8 @@ func stopSupervisor(ctx context.Context, cfg VMConfig, p VMPaths) error {
 
 // disableSupervisor stops the supervisor and removes its LaunchAgent, so it
 // does not come back at the next login.
-func disableSupervisor(ctx context.Context, cfg VMConfig, p VMPaths) error {
-	if err := stopSupervisor(ctx, cfg, p); err != nil {
+func disableSupervisor(ctx context.Context, p VMPaths) error {
+	if err := stopSupervisor(ctx, p); err != nil {
 		return err
 	}
 	if plist := launchAgentPath(p.BaseDir); plist != "" {
@@ -288,10 +282,7 @@ func DisableLegacyWorkerLaunchAgent(ctx context.Context, dir string) error {
 	if err != nil {
 		return err
 	}
-	p := NewVMPaths(baseDir)
-	var cfg VMConfig
-	_ = readJSON(p.Config, &cfg)
-	return disableSupervisor(ctx, cfg, p)
+	return disableSupervisor(ctx, NewVMPaths(baseDir))
 }
 
 func setVMMarker(path string, on bool) error {
@@ -355,7 +346,7 @@ func DaemonVMStatus(ctx context.Context, dir string) DaemonVMState {
 		return DaemonVMState{Configured: false, State: "unconfigured"}
 	}
 	st := vmStateBase(cfg)
-	_, procState, qmp, err := vmDetailedState(ctx, p)
+	_, procState, _, err := vmDetailedState(ctx, p)
 	if err != nil {
 		st.State = "error"
 		st.Detail = err.Error()
@@ -366,11 +357,6 @@ func DaemonVMStatus(ctx context.Context, dir string) DaemonVMState {
 		st.State = "running"
 	case vmProcPaused:
 		st.State = "paused"
-		if len(qmp.IOErrors) > 0 {
-			st.Detail = strings.Join(qmp.IOErrors, "; ")
-		} else if qmp.QMPStatus != "" {
-			st.Detail = qmp.QMPStatus
-		}
 	default:
 		switch {
 		case isVMStoppedByUser(p):
@@ -420,7 +406,7 @@ func StopDaemonVM(ctx context.Context, dir string) error {
 }
 
 type daemonSupervisedVM struct {
-	qemuVM
+	vfkitVM
 	onState func(DaemonVMState)
 }
 
@@ -437,7 +423,7 @@ func (vm daemonSupervisedVM) emit(state, detail string) {
 func (vm daemonSupervisedVM) Start(ctx context.Context) error {
 	_ = setVMMarker(vm.p.AsleepMarker, false)
 	vm.emit("starting", "booting worker VM")
-	if err := vm.qemuVM.Start(ctx); err != nil {
+	if err := vm.vfkitVM.Start(ctx); err != nil {
 		vm.emit("error", err.Error())
 		return err
 	}
@@ -447,7 +433,7 @@ func (vm daemonSupervisedVM) Start(ctx context.Context) error {
 
 func (vm daemonSupervisedVM) Stop(ctx context.Context) error {
 	vm.emit("stopping", "powering off idle VM")
-	if err := vm.qemuVM.Stop(ctx); err != nil {
+	if err := vm.vfkitVM.Stop(ctx); err != nil {
 		vm.emit("error", err.Error())
 		return err
 	}
@@ -458,8 +444,8 @@ func (vm daemonSupervisedVM) Stop(ctx context.Context) error {
 
 // SuperviseVMForDaemon watches the local macOS worker VM configuration under
 // dir, auto-starts the VM on boot/daemon startup (unless explicitly stopped or
-// sleeping since this boot), runs Standby + host-usage reporting + paused-VM
-// watching, and reports state transitions to onState until ctx is cancelled.
+// sleeping since this boot), runs Standby + host-usage reporting, and reports
+// state transitions to onState until ctx is cancelled.
 func SuperviseVMForDaemon(
 	ctx context.Context,
 	dir string,
@@ -533,16 +519,12 @@ func SuperviseVMForDaemon(
 		activeKey = key
 
 		vm := daemonSupervisedVM{
-			qemuVM:  qemuVM{cfg: cfg, p: p, sampler: newDarwinHostUsageSampler()},
+			vfkitVM:  vfkitVM{cfg: cfg, p: p, sampler: newDarwinHostUsageSampler()},
 			onState: emit,
 		}
 		cleanStaleVMFiles(subCtx, p)
 
-		subWG.Add(2)
-		go func() {
-			defer subWG.Done()
-			WatchPausedVM(subCtx, dir, log)
-		}()
+		subWG.Add(1)
 		go func() {
 			defer subWG.Done()
 			// Auto-start the VM on Mac boot / daemon startup unless Standby

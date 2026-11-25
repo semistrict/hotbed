@@ -1,81 +1,74 @@
 package setup
 
 import (
-	"bufio"
 	"context"
 	"encoding/json"
 	"net"
+	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
 
-func TestQMPClient(t *testing.T) {
+func TestVfkitClient(t *testing.T) {
 	// Keep socket path short for macOS 104-byte Unix socket limit.
-	tmpDir, err := os.MkdirTemp("/tmp", "hb-qmp-*")
+	tmpDir, err := os.MkdirTemp("/tmp", "hb-vfkit-*")
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { os.RemoveAll(tmpDir) })
-	sock := filepath.Join(tmpDir, "q.sock")
-
+	sock := filepath.Join(tmpDir, "v.sock")
 	ln, err := net.Listen("unix", sock)
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer ln.Close()
-
-	gotPowerdown := make(chan bool, 1)
-	go func() {
-		for {
-			conn, err := ln.Accept()
-			if err != nil {
+	// Replies as vfkit 0.6.4 gives them.
+	changes := make(chan string, 1)
+	srv := &http.Server{Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/vm/state":
+			_, _ = w.Write([]byte(`{"canHardStop":true,"canPause":true,"canResume":false,"canStart":false,"canStop":true,"state":"VirtualMachineStateRunning"}`))
+		case r.Method == http.MethodPost && r.URL.Path == "/vm/state":
+			var req struct {
+				State string `json:"state"`
+			}
+			if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+				http.Error(w, err.Error(), http.StatusBadRequest)
 				return
 			}
-			go func(c net.Conn) {
-				defer c.Close()
-				_, _ = c.Write([]byte(`{"QMP":{"version":{"qemu":{"major":11}}}}` + "\n"))
-				sc := bufio.NewScanner(c)
-				for sc.Scan() {
-					var req struct {
-						Execute string `json:"execute"`
-					}
-					if err := json.Unmarshal(sc.Bytes(), &req); err != nil {
-						return
-					}
-					switch req.Execute {
-					case "qmp_capabilities":
-						_, _ = c.Write([]byte(`{"return":{}}` + "\n"))
-					case "query-status":
-						// Send an async event first to ensure the client ignores events.
-						_, _ = c.Write([]byte(`{"event":"RESUME"}` + "\n"))
-						_, _ = c.Write([]byte(`{"return":{"status":"running"}}` + "\n"))
-					case "system_powerdown":
-						gotPowerdown <- true
-						_, _ = c.Write([]byte(`{"return":{}}` + "\n"))
-					}
-				}
-			}(conn)
+			if req.State == "Pause" {
+				http.Error(w, "VM cannot be paused", http.StatusBadRequest)
+				return
+			}
+			changes <- req.State
+			w.WriteHeader(http.StatusAccepted)
+		default:
+			http.NotFound(w, r)
 		}
-	}()
+	})}
+	go func() { _ = srv.Serve(ln) }()
+	t.Cleanup(func() { _ = srv.Close() })
 
 	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
 	defer cancel()
-	st, err := QMPQueryStatus(ctx, sock)
+	st, err := vfkitVMState(ctx, sock)
 	if err != nil {
-		t.Fatalf("QMPQueryStatus: %v", err)
+		t.Fatalf("vfkitVMState: %v", err)
 	}
-	if st != "running" {
-		t.Fatalf("status = %q, want running", st)
+	if st != vfkitStateRunning {
+		t.Fatalf("state = %q, want %q", st, vfkitStateRunning)
 	}
-	if err := QMPPowerdown(ctx, sock); err != nil {
-		t.Fatalf("QMPPowerdown: %v", err)
+	if err := vfkitSetVMState(ctx, sock, vfkitStop); err != nil {
+		t.Fatalf("vfkitSetVMState(Stop): %v", err)
 	}
-	select {
-	case <-gotPowerdown:
-	case <-time.After(time.Second):
-		t.Fatal("mock QMP server did not receive system_powerdown")
+	if got := <-changes; got != vfkitStop {
+		t.Fatalf("vfkit got state change %q, want %q", got, vfkitStop)
+	}
+	err = vfkitSetVMState(ctx, sock, "Pause")
+	if err == nil || !strings.Contains(err.Error(), "400 Bad Request: VM cannot be paused") {
+		t.Fatalf("vfkitSetVMState(Pause) = %v, want the 400 and its message", err)
 	}
 }
 

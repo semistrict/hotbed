@@ -42,7 +42,7 @@ type Config struct {
 
 // Daemon runs all local host background services under one process:
 //   - outbound T3 Code question notification bridge
-//   - macOS QEMU worker VM auto-start & Standby supervisor
+//   - macOS worker VM auto-start & Standby supervisor
 //   - native macOS menubar status app
 type Daemon struct {
 	cfg        Config

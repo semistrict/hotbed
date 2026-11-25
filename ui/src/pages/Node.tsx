@@ -23,7 +23,7 @@ export function HostStealBadge({ guestBusy, host }: { guestBusy: number; host?: 
   if (!host || !hasCpuStealWarning(guestBusy, host)) return null;
   return (
     <span
-      title={`Guest reports ${percent(guestBusy)} CPU busy, but QEMU only receives ${percent(host.vmCpuBusy)} on the host (${formatHostUsageFoot(host)})`}
+      title={`Guest reports ${percent(guestBusy)} CPU busy, but the VM only receives ${percent(host.vmCpuBusy)} on the host (${formatHostUsageFoot(host)})`}
       className="rounded-full bg-serious/15 px-2.5 py-0.5 font-mono text-[10.5px] whitespace-nowrap text-serious-ink"
     >
       host CPU steal · VM {percent(host.vmCpuBusy)} vs guest {percent(guestBusy)}

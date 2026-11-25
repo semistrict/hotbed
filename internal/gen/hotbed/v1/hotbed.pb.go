@@ -2913,7 +2913,7 @@ func (x *ObjectStoreStats) GetMemoryPressure() bool {
 // Host-side view of a VM worker, reported by its host supervisor (macOS).
 type HostUsage struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
-	// Share of configured vCPUs the QEMU process actually got on the host
+	// Share of configured vCPUs the VM process actually got on the host
 	// (0..1; e.g. 1.5 cores used on a 7-vCPU VM = 0.214).
 	VmCpuBusy float64 `protobuf:"fixed64,1,opt,name=vm_cpu_busy,json=vmCpuBusy,proto3" json:"vm_cpu_busy,omitempty"`
 	// Share of host CPUs busy across the whole host (0..1).

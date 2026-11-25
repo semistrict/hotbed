@@ -15,8 +15,10 @@ hotbed serve /var/lib/hotbed
 # - Linux: reuses btrfs/zfs if ~/.hotbed is on one, else creates a sparse file-backed ZFS pool
 #   with autotrim=on, joins the cluster, and installs/starts hotbed-worker.service.
 sudo hotbed worker init <controller>
-# - macOS: boots an Ubuntu LTS QEMU (HVF) VM in ~/.hotbed/vm with sparse discard-enabled qcow2
-#   ZFS + swap disks that grow on demand and punch holes back out when data is deleted.
+# - macOS (Apple silicon, M3 or later; `brew install vfkit`): boots an Ubuntu LTS VM on Apple's
+#   Virtualization framework with nested virtualization (so it runs Firecracker microVMs) in
+#   ~/.hotbed/vm, with sparse discard-enabled raw ZFS + swap disks that grow on demand and punch
+#   holes back out when data is deleted.
 hotbed worker init <controller>
 #   A LaunchAgent runs `hotbed worker supervise`, which powers the VM off once it has had no
 #   work for --sleep-after (default 30m; 0 never) and on again when a run is placed on it:

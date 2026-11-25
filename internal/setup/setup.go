@@ -1,17 +1,16 @@
 // Package setup provisions a hotbed worker node on the current machine in a
 // single command: directly on Linux (using native btrfs/zfs or a sparse
-// file-backed ZFS pool in ~/.hotbed) and via a QEMU Ubuntu VM with sparse
-// discard-enabled qcow2 + ZFS disks in ~/.hotbed on macOS.
+// file-backed ZFS pool in ~/.hotbed) and via an Ubuntu VM (Apple
+// Virtualization framework, run by vfkit, with nested virtualization) with
+// sparse discard-enabled raw disks and ZFS in ~/.hotbed on macOS.
 package setup
 
 import (
-	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"io/fs"
-	"log/slog"
 	"os"
 	"os/user"
 	"path/filepath"
@@ -21,15 +20,15 @@ import (
 )
 
 const (
-	// DefaultUbuntuVersion is the Ubuntu LTS release used for macOS QEMU VMs.
+	// DefaultUbuntuVersion is the Ubuntu LTS release used for macOS worker VMs.
 	DefaultUbuntuVersion = "26.04"
 	// DefaultDiskSize is the default virtual size of the sparse ZFS disk image.
 	DefaultDiskSize = 256 << 30 // 256 GiB
 	// DefaultRootSize is the default virtual size of the VM OS root disk.
 	DefaultRootSize = 32 << 30 // 32 GiB
-	// DefaultPoolName is the ZFS pool name created for file/qcow2-backed workers.
+	// DefaultPoolName is the ZFS pool name created for file- and disk-image-backed workers.
 	DefaultPoolName = "hotbed"
-	// DefaultVMStateDir is the worker state directory inside a macOS QEMU VM.
+	// DefaultVMStateDir is the worker state directory inside a macOS worker VM.
 	DefaultVMStateDir = "/var/lib/hotbed"
 	// DaemonLaunchAgentLabel is the unified macOS LaunchAgent label for `hotbed daemon`.
 	DaemonLaunchAgentLabel = "com.semistrict.hotbed.daemon"
@@ -50,7 +49,7 @@ type Options struct {
 	Slice          string
 	NoStart        bool
 
-	// macOS QEMU VM options (ignored on Linux).
+	// macOS worker VM options (ignored on Linux).
 	Hostname         string
 	CPUs             int
 	MemoryBytes      int64
@@ -60,7 +59,6 @@ type Options struct {
 	ImageURL         string
 	BinaryPath       string // path to Linux hotbed binary
 	TailscaleAuthKey string
-	SSHPort          int
 	NoAutostart      bool
 	SleepAfter       string // macOS VM: how long idle before it powers off; "" default, "0" never
 
@@ -70,14 +68,14 @@ type Options struct {
 
 // Result is returned by Setup as the CLI envelope data.
 type Result struct {
-	Platform   string     `json:"platform"` // "linux" or "darwin-qemu"
+	Platform   string     `json:"platform"` // "linux" or "darwin-vz"
 	Dir        string     `json:"dir"`
 	StateDir   string     `json:"stateDir"`
 	Controller string     `json:"controller"`
 	User       string     `json:"user"`
 	Node       string     `json:"node,omitempty"`
 	ClusterID  string     `json:"clusterId,omitempty"`
-	Storage    string     `json:"storage"` // "btrfs", "zfs", "zfs-file", "zfs-device", "zfs-qcow2"
+	Storage    string     `json:"storage"` // "btrfs", "zfs", "zfs-file", "zfs-device", "zfs-raw"
 	Running    bool       `json:"running"`
 	Service    string     `json:"service,omitempty"`
 	VM         *VMStatus  `json:"vm,omitempty"`
@@ -99,23 +97,21 @@ type Status struct {
 	Disks      []DiskStat `json:"disks,omitempty"`
 }
 
-// VMStatus describes the macOS QEMU VM backing a worker.
+// VMStatus describes the macOS VM backing a worker.
 type VMStatus struct {
 	Hostname   string   `json:"hostname"`
 	Arch       string   `json:"arch"`
 	Ubuntu     string   `json:"ubuntu"`
 	CPUs       int      `json:"cpus"`
 	MemoryMB   int64    `json:"memoryMB"`
-	SSHPort    int      `json:"sshPort"`
-	PID        int      `json:"pid,omitempty"`
-	Running    bool     `json:"running"`
-	Paused     bool     `json:"paused,omitempty"`
-	QMPStatus  string   `json:"qmpStatus,omitempty"`
-	IOErrors   []string `json:"ioErrors,omitempty"`
-	Tailscale  string   `json:"tailscale,omitempty"`
-	Autostart  bool     `json:"autostart"`
-	Supervised bool     `json:"supervised"` // its supervisor (LaunchAgent) runs
-	ConsoleLog string   `json:"consoleLog,omitempty"`
+	PID        int    `json:"pid,omitempty"`
+	Running    bool   `json:"running"`
+	Paused     bool   `json:"paused,omitempty"`
+	State      string `json:"state,omitempty"` // as vfkit reports it, e.g. VirtualMachineStateRunning
+	Tailscale  string `json:"tailscale,omitempty"`
+	Autostart  bool   `json:"autostart"`
+	Supervised bool   `json:"supervised"` // its supervisor (LaunchAgent) runs
+	ConsoleLog string `json:"consoleLog,omitempty"`
 }
 
 // DaemonVMState summarizes the local worker VM state for `hotbed daemon` and
@@ -129,17 +125,6 @@ type DaemonVMState struct {
 	Autostart  bool   `json:"autostart"`
 	State      string `json:"state"` // "running", "starting", "stopping", "asleep", "stopped", "paused", "error", "unconfigured"
 	Detail     string `json:"detail,omitempty"`
-}
-
-var watchPausedVM func(ctx context.Context, dir string, log *slog.Logger)
-
-// WatchPausedVM periodically checks a local worker VM for pause states such as
-// QEMU io-error (host ENOSPC) and resumes it once host disk space recovers.
-// It is a no-op on platforms without a local VM.
-func WatchPausedVM(ctx context.Context, dir string, log *slog.Logger) {
-	if watchPausedVM != nil {
-		watchPausedVM(ctx, dir, log)
-	}
 }
 
 // DiskStat reports virtual vs actual allocated on-disk bytes for a sparse image.
