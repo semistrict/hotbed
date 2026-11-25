@@ -186,10 +186,11 @@ func TestMergeWorkerConfigAndRequiresRestart(t *testing.T) {
 			Vcpus:          proto.Int32(8),
 			MemMib:         proto.Int32(12288),
 			DaxWindowBytes: proto.Uint64(16 << 30),
+			Nofile:         proto.Uint64(131072),
 		},
 	}
 	merged := MergeWorkerConfig(local, remote)
-	if !merged.VM.Default || merged.VM.VCPUs != 8 || merged.VM.MemMiB != 12288 || merged.VM.DAXWindowBytes != 16<<30 {
+	if !merged.VM.Default || merged.VM.VCPUs != 8 || merged.VM.MemMiB != 12288 || merged.VM.DAXWindowBytes != 16<<30 || merged.VM.Nofile != 131072 {
 		t.Fatalf("merged VM = %+v", merged.VM)
 	}
 	if merged.VM.KernelPath != "/var/lib/cladefs/vmlinux" {

@@ -118,6 +118,7 @@ type VMConfig struct {
 	BridgeName         string   `json:"bridgeName,omitempty"`
 	BridgeCIDR         string   `json:"bridgeCIDR,omitempty"`
 	DNSServers         []string `json:"dnsServers,omitempty"`
+	Nofile             uint64   `json:"nofile,omitempty"`
 }
 
 func (c Config) validate() error {

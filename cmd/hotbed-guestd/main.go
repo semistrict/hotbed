@@ -26,6 +26,7 @@ func main() {
 		stateDir    = flag.String("state-dir", "/run/hotbed-guestd", "runtime state directory for logs and sync bundles")
 		listenDir   = flag.String("listen-dir", "", "if set, listen on Unix sockets in this directory instead of AF_VSOCK (for tests)")
 		gitAuthSock = flag.String("git-auth-sock", "/run/hotbed/git-auth/git-cred.sock", "guest Unix socket path bridged to host git-auth over vsock (empty disables)")
+		nofileFlag  = flag.Uint64("nofile", 0, "RLIMIT_NOFILE soft and hard limit for guestd and spawned commands (0 = HOTBED_NOFILE or default 65536)")
 		pid1        = flag.Bool("pid1", false, "mount Linux API filesystems and supervise child when running as PID 1")
 		noPID1      = flag.Bool("no-pid1", false, "run server directly without PID 1 supervisor wrapper")
 	)
@@ -38,10 +39,14 @@ func main() {
 	}
 
 	log := slog.New(slog.NewJSONHandler(os.Stderr, nil))
+	nofile := resolveNofileLimit(*nofileFlag)
 	if !*noPID1 && (*pid1 || os.Getpid() == 1) {
-		if runPID1Supervisor(log) {
+		if runPID1Supervisor(log, nofile) {
 			return
 		}
+	}
+	if _, err := applyNofileLimit(log, nofile); err != nil {
+		log.Warn("set RLIMIT_NOFILE failed", "limit", nofile, "err", err)
 	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)

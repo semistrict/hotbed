@@ -40,6 +40,7 @@ var validCmdID = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9._-]{0,127}$`)
 type ServerConfig struct {
 	WorkDir  string // workspace root containing repo checkouts (default /work)
 	StateDir string // runtime dir for logs and temp sync bundles (default /run/hotbed-guestd)
+	RunDir   string // base directory for per-user XDG_RUNTIME_DIR (<RunDir>/user/<uid>, default /run)
 	Logger   *slog.Logger
 }
 
@@ -47,6 +48,7 @@ type ServerConfig struct {
 type Server struct {
 	workDir  string
 	stateDir string
+	runDir   string
 	logDir   string
 	syncDir  string
 	log      *slog.Logger
@@ -79,6 +81,9 @@ func NewServer(cfg ServerConfig) (*Server, error) {
 	if cfg.StateDir == "" {
 		cfg.StateDir = "/run/hotbed-guestd"
 	}
+	if cfg.RunDir == "" {
+		cfg.RunDir = "/run"
+	}
 	if cfg.Logger == nil {
 		cfg.Logger = slog.Default()
 	}
@@ -93,6 +98,7 @@ func NewServer(cfg ServerConfig) (*Server, error) {
 	return &Server{
 		workDir:  cfg.WorkDir,
 		stateDir: cfg.StateDir,
+		runDir:   cfg.RunDir,
 		logDir:   logDir,
 		syncDir:  syncDir,
 		log:      cfg.Logger,
@@ -177,6 +183,62 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// ensureRuntimeDir creates <runDir>/user/<uid> (0700, owned by uid:gid when
+// running as root) so rootless podman and other XDG-aware tools have a valid
+// XDG_RUNTIME_DIR inside minimal Firecracker VMs without systemd-logind.
+func (s *Server) ensureRuntimeDir(uid, gid int) string {
+	if uid <= 0 || s.runDir == "" {
+		return ""
+	}
+	userRoot := filepath.Join(s.runDir, "user")
+	if err := os.MkdirAll(userRoot, 0o755); err != nil {
+		s.log.Warn("create runtime user root failed", "path", userRoot, "err", err)
+		return ""
+	}
+	_ = os.Chmod(userRoot, 0o755)
+
+	dir := filepath.Join(userRoot, strconv.Itoa(uid))
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		s.log.Warn("create runtime user dir failed", "path", dir, "err", err)
+		return ""
+	}
+	if os.Geteuid() == 0 {
+		if err := os.Chown(dir, uid, gid); err != nil {
+			s.log.Warn("chown runtime user dir failed", "path", dir, "uid", uid, "gid", gid, "err", err)
+		}
+	}
+	if err := os.Chmod(dir, 0o700); err != nil {
+		s.log.Warn("chmod runtime user dir failed", "path", dir, "err", err)
+	}
+	return dir
+}
+
+// withDefaultRuntimeEnv returns env with XDG_RUNTIME_DIR=runtimeDir set when
+// runtimeDir is non-empty and env does not already specify XDG_RUNTIME_DIR.
+func withDefaultRuntimeEnv(env []string, runtimeDir string) []string {
+	if runtimeDir == "" {
+		return env
+	}
+	for _, kv := range env {
+		if strings.HasPrefix(kv, "XDG_RUNTIME_DIR=") {
+			return env
+		}
+	}
+	if len(env) == 0 {
+		base := os.Environ()
+		out := make([]string, 0, len(base)+1)
+		for _, kv := range base {
+			if !strings.HasPrefix(kv, "XDG_RUNTIME_DIR=") {
+				out = append(out, kv)
+			}
+		}
+		return append(out, "XDG_RUNTIME_DIR="+runtimeDir)
+	}
+	out := make([]string, len(env), len(env)+1)
+	copy(out, env)
+	return append(out, "XDG_RUNTIME_DIR="+runtimeDir)
+}
+
 func (s *Server) handleStartCommand(w http.ResponseWriter, r *http.Request) {
 	var req StartCommandRequest
 	if err := json.NewDecoder(io.LimitReader(r.Body, 4<<20)).Decode(&req); err != nil {
@@ -209,12 +271,13 @@ func (s *Server) handleStartCommand(w http.ResponseWriter, r *http.Request) {
 	}
 
 	dir := s.resolveWorkDir(req.Dir)
+	runtimeDir := s.ensureRuntimeDir(req.UID, req.GID)
 	cmd := exec.Command(req.Argv[0], req.Argv[1:]...)
 	cmd.Dir = dir
 	cmd.Stdout = logFile
 	cmd.Stderr = logFile
-	if len(req.Env) > 0 {
-		cmd.Env = req.Env
+	if env := withDefaultRuntimeEnv(req.Env, runtimeDir); len(env) > 0 {
+		cmd.Env = env
 	}
 	attr := &syscall.SysProcAttr{Setpgid: true}
 	if req.UID > 0 || req.GID > 0 {
@@ -924,13 +987,14 @@ func (s *Server) handleShellConn(ctx context.Context, conn net.Conn) {
 		return writeFrame(conn, typ, payload)
 	}
 
+	runtimeDir := s.ensureRuntimeDir(req.UID, req.GID)
 	cmd := exec.Command(argv[0], argv[1:]...)
 	cmd.Dir = dir
 	env := append([]string(nil), req.Env...)
 	if req.Term != "" {
 		env = append(env, "TERM="+req.Term)
 	}
-	if len(env) > 0 {
+	if env = withDefaultRuntimeEnv(env, runtimeDir); len(env) > 0 {
 		cmd.Env = env
 	}
 	attr := &syscall.SysProcAttr{}

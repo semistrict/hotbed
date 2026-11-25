@@ -25,6 +25,7 @@ const (
 	DefaultDAXPrivateMaxBytes = 512 << 20
 	DefaultCacheType          = "Unsafe"
 	DefaultMemMiB             = 4096
+	DefaultNofile             = 65536
 	DefaultBootTimeout        = 30 * time.Second
 	DefaultShutdownTimeout    = 5 * time.Second
 
@@ -52,6 +53,7 @@ type Config struct {
 	BridgeName         string        // host bridge for VM TAPs (default hb-vm0)
 	BridgeCIDR         string        // gateway IP/mask on BridgeName (default 10.199.0.1/16)
 	DNSServers         []string      // nameservers written to guest /etc/resolv.conf
+	Nofile             uint64        // RLIMIT_NOFILE soft/hard limit inside guest VMs (0 = guestd default 65536)
 	GitAuthHostSock    string        // host path to hotbed gitAuthServer Unix socket (bridged via vsock port 5002)
 	BootTimeout        time.Duration // max wait for hotbed-guestd /v1/health after VM launch
 	ShutdownTimeout    time.Duration // max wait for clean Firecracker exit after /v1/shutdown

@@ -723,6 +723,8 @@ message WorkerVMConfig {
   // Optional override for managed hotbed-guestd binaries keyed by GOARCH.
   // When unset for the worker's arch, workers follow Build.guestd automatically.
   map<string, ManagedArtifact> guestd = 23;
+  // Default RLIMIT_NOFILE soft and hard limit inside guest VMs (0 = hotbed-guestd default 65536).
+  optional uint64 nofile = 24;
 }
 
 // Controller-managed cladefs host-FUSE runtime settings.

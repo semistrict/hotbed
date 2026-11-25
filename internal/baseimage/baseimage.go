@@ -139,10 +139,59 @@ export DEBIAN_FRONTEND=noninteractive
 apt-get update -qq
 apt-get install -y -qq --no-install-recommends \
   bash ca-certificates coreutils curl git gh openssh-client \
-  build-essential clang pkg-config python3 gzip tar xz-utils unzip jq procps iproute2 passwd \
+  build-essential autoconf automake libtool clang pkg-config python3 gzip tar xz-utils unzip jq procps iproute2 passwd \
   libseccomp-dev libssl-dev libelf-dev musl-tools sqlite3 fuse3 sudo \
   strace linux-perf bpftrace elfutils gdb
 rm -rf /var/lib/apt/lists/*
+
+# Patch fusermount3 to allow unprivileged FUSE mounts over cladefs/Fxfs
+# (magic 0x46784673), which upstream libfuse's hardcoded parent-filesystem
+# whitelist omits. Divert Debian's stock binary so apt upgrades never clobber it.
+(
+  set -euo pipefail
+  tmp="$(mktemp -d /tmp/libfuse-build.XXXXXX)"
+  trap 'rm -rf "$tmp"' EXIT
+  curl --proto "=https" --tlsv1.2 -fsSL \
+    "https://github.com/libfuse/libfuse/releases/download/fuse-3.17.2/fuse-3.17.2.tar.gz" \
+    -o "$tmp/fuse.tar.gz"
+  printf "3d932431ad94e86179e5265cddde1d67aa3bb2fb09a5bd35c641f86f2b5ed06f  %%s\n" "$tmp/fuse.tar.gz" | sha256sum -c -
+  tar -xzf "$tmp/fuse.tar.gz" -C "$tmp"
+  src="$tmp/fuse-3.17.2"
+  cat > "$src/fuse_config.h" <<'FUSE_CFG_EOF'
+#define PACKAGE_VERSION "3.17.2"
+#define HAVE_LINUX_CLOSE_RANGE_H 1
+FUSE_CFG_EOF
+  python3 - "$src/util/fusermount.c" <<'PY_EOF'
+import sys
+p = sys.argv[1]
+s = open(p).read()
+needle = "0x2FC12FC1 /* ZFS_SUPER_MAGIC */,"
+if needle not in s:
+    raise SystemExit("fusermount.c whitelist anchor not found")
+s = s.replace(needle, needle + "\n\t\t0x46784673 /* FXFS_SUPER_MAGIC */,", 1)
+open(p, "w").write(s)
+PY_EOF
+  grep -q '0x46784673' "$src/util/fusermount.c"
+  gcc -O2 -DFUSE_CONF='"/etc/fuse.conf"' -I"$src" -I"$src/include" -I"$src/lib" \
+    "$src/util/fusermount.c" "$src/lib/mount_util.c" "$src/lib/util.c" \
+    -o "$tmp/fusermount3"
+  dpkg-divert --local --rename --add /usr/bin/fusermount3
+  install -o root -g root -m 4755 "$tmp/fusermount3" /usr/bin/fusermount3
+  /usr/bin/fusermount3 -V
+  test -u /usr/bin/fusermount3
+)
+
+# Configure rootless podman/buildah defaults for workspaces without a systemd
+# user session (both chroot units and Firecracker VMs with hotbed-guestd PID 1).
+mkdir -p /etc/containers/containers.conf.d
+cat > /etc/containers/containers.conf.d/50-hotbed.conf <<'CONTAINERS_EOF'
+# Managed by hotbed. Workspaces run without a systemd user session, so default
+# rootless podman/buildah to cgroupfs and file event logs.
+[engine]
+cgroup_manager = "cgroupfs"
+events_logger = "file"
+CONTAINERS_EOF
+chmod 0644 /etc/containers/containers.conf.d/50-hotbed.conf
 
 # Ensure /usr/bin/perf is a direct executable (Debian's linux-perf installs it
 # directly, or as /usr/bin/perf_<ver>; fall back to symlinking if needed).
@@ -196,7 +245,7 @@ su -s /bin/bash %[1]s -c '
 
 # Fail hard if any required baseline binary or tracer is missing.
 export PATH="/work/.hotbed/cargo/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
-for bin in git curl gcc pkg-config sudo strace perf bpftrace eu-stack gdb rustup cargo rustc; do
+for bin in git curl gcc autoconf automake autoreconf pkg-config fusermount3 sudo strace perf bpftrace eu-stack gdb rustup cargo rustc; do
   command -v "$bin" >/dev/null 2>&1 || { echo "missing required tool in base image: $bin" >&2; exit 1; }
 done
 %[5]s`, shellQuote(user), uid, gid, shellQuote(home), sudoers)

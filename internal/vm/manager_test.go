@@ -98,6 +98,26 @@ func TestBuildFirecrackerConfig(t *testing.T) {
 	if !strings.Contains(fc.BootSource.BootArgs, "ip=10.199.0.2::10.199.0.1:255.255.0.0::eth0:off") {
 		t.Fatalf("boot_args missing ip=: %q", fc.BootSource.BootArgs)
 	}
+	if strings.Contains(fc.BootSource.BootArgs, "HOTBED_NOFILE=") {
+		t.Fatalf("boot_args should omit HOTBED_NOFILE when unset: %q", fc.BootSource.BootArgs)
+	}
+	nofileMgr, err := NewManager(Config{
+		RunDir:         t.TempDir(),
+		KernelPath:     "/var/lib/cladefs/vmlinux",
+		Nofile:         131072,
+		DisableNetwork: true,
+	})
+	if err != nil {
+		t.Fatalf("NewManager(Nofile): %v", err)
+	}
+	nofileFC := nofileMgr.BuildFirecrackerConfig(LaunchSpec{
+		ID:            "ws-nofile",
+		CellHostPath:  "/mnt/cells/ws-nofile",
+		CladefsVMSock: "/run/cladefsd/vm.sock",
+	}, 5, "/run/hotbed/vms/ws-nofile/vsock.sock", NetAlloc{})
+	if !strings.Contains(nofileFC.BootSource.BootArgs, "HOTBED_NOFILE=131072") {
+		t.Fatalf("boot_args missing HOTBED_NOFILE=131072: %q", nofileFC.BootSource.BootArgs)
+	}
 	if len(fc.Cladefs) != 1 || fc.Cladefs[0].DAXPrivateMaxBytes != 256<<20 {
 		t.Fatalf("unexpected cladefs config: %+v", fc.Cladefs)
 	}

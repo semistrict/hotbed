@@ -1517,6 +1517,7 @@ describe("Security, cron, daemon logs, tunnel, and workspace regression tests", 
 					vcpus: 8,
 					memMib: 12288,
 					cacheType: "Unsafe",
+					nofile: 65536n,
 					kernels: {
 						amd64: create(ManagedArtifactSchema, {
 							url: "https://example.com/vmlinux-kvm",
@@ -1582,6 +1583,7 @@ describe("Security, cron, daemon logs, tunnel, and workspace regression tests", 
 		expect(hb.workerConfig?.vm?.enabled).toBe(true);
 		expect(hb.workerConfig?.vm?.vcpus).toBe(8);
 		expect(hb.workerConfig?.vm?.memMib).toBe(16384);
+		expect(hb.workerConfig?.vm?.nofile).toBe(65536n);
 		expect(hb.workerConfig?.vm?.kernels?.amd64?.sha256).toBe(kernelSha);
 		expect(hb.build?.number).toBe(178n);
 		expect(hb.build?.guestd?.sha256).toBe(guestdSha);

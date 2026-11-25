@@ -82,6 +82,9 @@ export function validateWorkerConfig(cfg: WorkerConfig): void {
 		if (vm.memMib !== undefined && vm.memMib < 0) {
 			throw hotbedError(ErrorCode.InvalidArgs, `vm.mem_mib must be >= 0 (got ${vm.memMib})`);
 		}
+		if (vm.nofile !== undefined && vm.nofile < 0n) {
+			throw hotbedError(ErrorCode.InvalidArgs, `vm.nofile must be >= 0 (got ${vm.nofile})`);
+		}
 		if (vm.cacheType !== undefined && !VALID_CACHE_TYPES.has(vm.cacheType)) {
 			throw hotbedError(
 				ErrorCode.InvalidArgs,
@@ -151,6 +154,7 @@ export function mergeWorkerVMConfig(
 	if (patch.bridgeName !== undefined) out.bridgeName = patch.bridgeName;
 	if (patch.bridgeCidr !== undefined) out.bridgeCidr = patch.bridgeCidr;
 	if (patch.dnsServers.length > 0) out.dnsServers = [...patch.dnsServers];
+	if (patch.nofile !== undefined) out.nofile = patch.nofile;
 	out.kernels = normalizeArtifactMap(out.kernels, patch.kernels);
 	out.guestd = normalizeArtifactMap(out.guestd, patch.guestd);
 	return out;

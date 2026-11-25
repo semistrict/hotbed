@@ -184,6 +184,9 @@ func MergeWorkerConfig(local statedir.WorkerConfig, remote *pb.WorkerConfig) sta
 		if len(rvm.DnsServers) > 0 {
 			out.VM.DNSServers = slices.Clone(rvm.DnsServers)
 		}
+		if rvm.Nofile != nil {
+			out.VM.Nofile = rvm.GetNofile()
+		}
 	}
 	if rfuse := remote.GetCladefsFuse(); rfuse != nil {
 		if out.CladefsFUSE == nil {
@@ -448,6 +451,7 @@ func workerConfigEqual(a, b statedir.WorkerConfig) bool {
 			av.CacheType != bv.CacheType ||
 			av.BridgeName != bv.BridgeName ||
 			av.BridgeCIDR != bv.BridgeCIDR ||
+			av.Nofile != bv.Nofile ||
 			!slices.Equal(av.DNSServers, bv.DNSServers) {
 			return false
 		}

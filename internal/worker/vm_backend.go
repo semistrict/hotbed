@@ -133,6 +133,7 @@ func OpenVMBackend(ctx context.Context, workerDir string, cfg statedir.VMConfig,
 		BridgeName:         cfg.BridgeName,
 		BridgeCIDR:         cfg.BridgeCIDR,
 		DNSServers:         cfg.DNSServers,
+		Nofile:             cfg.Nofile,
 		GitAuthHostSock:    gitAuthHostSock,
 	})
 	if err != nil {
@@ -198,6 +199,7 @@ func (b *VMBackend) UpdateConfig(cfg statedir.VMConfig) {
 			DisableDAX:         cfg.DisableDAX,
 			CacheType:          cfg.CacheType,
 			DNSServers:         cfg.DNSServers,
+			Nofile:             cfg.Nofile,
 		})
 	}
 }
@@ -772,6 +774,7 @@ func (b *VMBackend) EnsureProjectBase(
 	env = append(env, sandboxEnv...)
 	env = append(env,
 		"HOME="+spec.Home,
+		"XDG_RUNTIME_DIR="+fmt.Sprintf("/run/user/%d", spec.UID),
 		"PATH="+strings.Join(cachePath, ":")+":/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
 		"HOTBED_GIT_CRED_SOCK=/run/hotbed/git-auth/git-cred.sock",
 	)

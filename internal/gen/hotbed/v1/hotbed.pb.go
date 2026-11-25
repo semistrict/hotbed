@@ -3366,7 +3366,9 @@ type WorkerVMConfig struct {
 	Kernels map[string]*ManagedArtifact `protobuf:"bytes,22,rep,name=kernels,proto3" json:"kernels,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
 	// Optional override for managed hotbed-guestd binaries keyed by GOARCH.
 	// When unset for the worker's arch, workers follow Build.guestd automatically.
-	Guestd        map[string]*ManagedArtifact `protobuf:"bytes,23,rep,name=guestd,proto3" json:"guestd,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
+	Guestd map[string]*ManagedArtifact `protobuf:"bytes,23,rep,name=guestd,proto3" json:"guestd,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
+	// Default RLIMIT_NOFILE soft and hard limit inside guest VMs (0 = hotbed-guestd default 65536).
+	Nofile        *uint64 `protobuf:"varint,24,opt,name=nofile,proto3,oneof" json:"nofile,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -3560,6 +3562,13 @@ func (x *WorkerVMConfig) GetGuestd() map[string]*ManagedArtifact {
 		return x.Guestd
 	}
 	return nil
+}
+
+func (x *WorkerVMConfig) GetNofile() uint64 {
+	if x != nil && x.Nofile != nil {
+		return *x.Nofile
+	}
+	return 0
 }
 
 // Controller-managed cladefs host-FUSE runtime settings.
@@ -26428,7 +26437,7 @@ const file_hotbed_v1_hotbed_proto_rawDesc = "" +
 	"\x06sha256\x18\x02 \x01(\tR\x06sha256\x12\x12\n" +
 	"\x04path\x18\x03 \x01(\tR\x04path\x12!\n" +
 	"\fdownload_url\x18\x04 \x01(\tR\vdownloadUrl\x122\n" +
-	"\x06guestd\x18\x05 \x01(\v2\x1a.hotbed.v1.ManagedArtifactR\x06guestd\"\xc8\v\n" +
+	"\x06guestd\x18\x05 \x01(\v2\x1a.hotbed.v1.ManagedArtifactR\x06guestd\"\xf0\v\n" +
 	"\x0eWorkerVMConfig\x12\x1d\n" +
 	"\aenabled\x18\x01 \x01(\bH\x00R\aenabled\x88\x01\x01\x12,\n" +
 	"\x0fdefault_runtime\x18\x02 \x01(\bH\x01R\x0edefaultRuntime\x88\x01\x01\x125\n" +
@@ -26462,7 +26471,8 @@ const file_hotbed_v1_hotbed_proto_rawDesc = "" +
 	"\vdns_servers\x18\x15 \x03(\tR\n" +
 	"dnsServers\x12@\n" +
 	"\akernels\x18\x16 \x03(\v2&.hotbed.v1.WorkerVMConfig.KernelsEntryR\akernels\x12=\n" +
-	"\x06guestd\x18\x17 \x03(\v2%.hotbed.v1.WorkerVMConfig.GuestdEntryR\x06guestd\x1aV\n" +
+	"\x06guestd\x18\x17 \x03(\v2%.hotbed.v1.WorkerVMConfig.GuestdEntryR\x06guestd\x12\x1b\n" +
+	"\x06nofile\x18\x18 \x01(\x04H\x14R\x06nofile\x88\x01\x01\x1aV\n" +
 	"\fKernelsEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x120\n" +
 	"\x05value\x18\x02 \x01(\v2\x1a.hotbed.v1.ManagedArtifactR\x05value:\x028\x01\x1aU\n" +
@@ -26493,7 +26503,8 @@ const file_hotbed_v1_hotbed_proto_rawDesc = "" +
 	"\f_disable_daxB\r\n" +
 	"\v_cache_typeB\x0e\n" +
 	"\f_bridge_nameB\x0e\n" +
-	"\f_bridge_cidr\"\xaa\x04\n" +
+	"\f_bridge_cidrB\t\n" +
+	"\a_nofile\"\xaa\x04\n" +
 	"\x17WorkerCladefsFUSEConfig\x12\x1d\n" +
 	"\aenabled\x18\x01 \x01(\bH\x00R\aenabled\x88\x01\x01\x12,\n" +
 	"\x0fdefault_runtime\x18\x02 \x01(\bH\x01R\x0edefaultRuntime\x88\x01\x01\x125\n" +

@@ -227,6 +227,9 @@ func (m *Manager) BuildFirecrackerConfig(spec LaunchSpec, cid uint32, vsockUDS s
 	if ipArg := netAlloc.KernelIPArg(); ipArg != "" {
 		bootParts = append(bootParts, ipArg)
 	}
+	if cfg.Nofile > 0 {
+		bootParts = append(bootParts, fmt.Sprintf("HOTBED_NOFILE=%d", cfg.Nofile))
+	}
 	if extra := strings.TrimSpace(spec.ExtraBootArgs); extra != "" {
 		bootParts = append(bootParts, extra)
 	}
