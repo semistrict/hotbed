@@ -17,9 +17,9 @@ Do not pipe `hotbed session start` into `jq` or capture/swallow its stdout: it p
 Whenever you resolve a non-obvious bug or tooling quirk, learn a standing preference from the user, or the user says "remember this" / "add to memory" / `/learn`, save it to hotbed memory (not just a local markdown file) so every future session and harness gets it on `hotbed session start`:
 
 ```sh
-hotbed memory add --slug SHORT-SLUG --summary "Concise rule (<= 240 chars)"         # project always-on rule
-hotbed memory add --global --slug SHORT-SLUG --summary "Cross-project rule"         # global always-on rule
-hotbed memory add --slug SHORT-SLUG --summary "1-line trigger" --body-file - <<'EOF' # on-demand playbook
+hotbed memory add --slug SHORT-SLUG --summary "Concise rule (<= 240 chars)" --rationale "Why / what triggered it"         # project always-on rule
+hotbed memory add --global --slug SHORT-SLUG --summary "Cross-project rule" --rationale "Why / what triggered it"         # global always-on rule
+hotbed memory add --slug SHORT-SLUG --summary "1-line trigger" --rationale "Why / what triggered it" --body-file - <<'EOF' # on-demand playbook
 ```
 
 Omitting `--mode` defaults to `always` when `--body` is empty and `on_demand` when `--body` is given. Use `--supersede ID` or `hotbed memory edit ID` to update existing memories instead of duplicating them.

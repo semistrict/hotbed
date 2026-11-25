@@ -984,11 +984,13 @@ describe("Cloudflare Workers single-DO hotbed controller", () => {
 		// Omitting mode defaults to ALWAYS when body is empty and ON_DEMAND when body is set.
 		const mAutoAlways = await owner.memories.proposeMemory({
 			sessionId: s1.id,
+			rationale: "testing default always mode",
 			content: { slug: "auto-always-rule", summary: "Concise inline rule without --mode." },
 		});
 		expect(mAutoAlways.content?.mode).toBe(MemoryMode.ALWAYS);
 		const mAutoOnDemand = await owner.memories.proposeMemory({
 			sessionId: s1.id,
+			rationale: "testing default on_demand mode",
 			content: {
 				slug: "auto-on-demand-playbook",
 				summary: "Trigger line without --mode.",
@@ -999,6 +1001,7 @@ describe("Cloudflare Workers single-DO hotbed controller", () => {
 		await expect(
 			owner.memories.proposeMemory({
 				sessionId: s1.id,
+				rationale: "testing explicit on_demand without body",
 				content: {
 					slug: "explicit-on-demand-no-body",
 					summary: "Explicit on_demand still requires body.",
@@ -1067,6 +1070,7 @@ describe("Cloudflare Workers single-DO hotbed controller", () => {
 		// and succeeds when renamed in the same edit call.
 		const mCollide = await owner.memories.proposeMemory({
 			sessionId: s1.id,
+			rationale: "testing slug collision on promote",
 			content: {
 				slug: "build-tips",
 				summary: "Project-specific build tips colliding with global",
@@ -1085,9 +1089,17 @@ describe("Cloudflare Workers single-DO hotbed controller", () => {
 		expect(mCollidePromoted.content?.slug).toBe("build-tips-extra");
 		await owner.memories.deleteMemory({ id: mCollide.id });
 
-		// Archiving, editing while archived, and restoring works cleanly.
-		const m2Arch = await owner.memories.archiveMemory({ id: m2.id, reason: "temp" });
+		// Agent archiving requires a reason; archiving, editing while archived, and restoring works cleanly.
+		await expect(owner.memories.archiveMemory({ id: m2.id, sessionId: s2.id })).rejects.toThrow(
+			/--reason/,
+		);
+		const m2Arch = await owner.memories.archiveMemory({
+			id: m2.id,
+			sessionId: s2.id,
+			reason: "temp",
+		});
 		expect(m2Arch.state).toBe(MemoryState.ARCHIVED);
+		expect(m2Arch.archived?.reason).toBe("temp");
 		const m2ArchEdited = await owner.memories.reviseMemory({
 			id: m2.id,
 			content: { summary: "Updated while archived" },
@@ -1099,11 +1111,25 @@ describe("Cloudflare Workers single-DO hotbed controller", () => {
 		const sOther = await owner.sessions.startSession({ project: "other-proj" });
 		expect(sOther.memories?.onDemand.map((e) => e.slug)).toEqual(["build-tips"]);
 
+		// Agent proposing a memory without rationale is rejected.
+		await expect(
+			owner.memories.proposeMemory({
+				sessionId: s2.id,
+				global: true,
+				content: {
+					slug: "missing-rationale",
+					summary: "Should fail without rationale.",
+					mode: MemoryMode.ALWAYS,
+				},
+			}),
+		).rejects.toThrow(/--rationale/);
+
 		// Supersede m1 immediately with a refined version.
 		const m3 = await owner.memories.proposeMemory({
 			sessionId: s2.id,
 			global: true,
 			supersedesIds: [m1.id],
+			rationale: "User asked to clarify high tier",
 			content: {
 				slug: "use-neon",
 				summary: "Use gemini-4-neon (high) for subagents.",
@@ -1115,13 +1141,18 @@ describe("Cloudflare Workers single-DO hotbed controller", () => {
 		expect(oldM1.state).toBe(MemoryState.SUPERSEDED);
 		expect(oldM1.supersededBy).toBe(m3.id);
 
-		// GetMemories resolves slug to m3 and fetches full body for build-tips.
+		// GetMemories resolves slug to m3 and fetches full body for build-tips,
+		// omitting rationale/reason metadata from read context (while showMemory retains it).
 		const fetched = await owner.memories.getMemories({
 			project: "mem-proj",
 			refs: ["use-neon", "build-tips"],
 		});
 		expect(fetched.memories.map((m) => m.id)).toEqual([m3.id, m2.id]);
 		expect(fetched.memories[1].content?.body).toContain("pnpm build");
+		expect(fetched.memories[0].provenance?.rationale).toBe("");
+		expect(fetched.memories[0].proposed?.reason).toBe("");
+		const shownM3 = await owner.memories.showMemory({ ref: String(m3.id) });
+		expect(shownM3.provenance?.rationale).toBe("User asked to clarify high tier");
 
 		// Permanently remove m2 — it disappears completely and is no longer returned on session start.
 		const deleted = await owner.memories.deleteMemory({ id: m2.id });

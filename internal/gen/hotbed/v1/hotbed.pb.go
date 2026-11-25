@@ -27351,7 +27351,7 @@ type ProposeMemoryRequest struct {
 	Repo string `protobuf:"bytes,4,opt,name=repo,proto3" json:"repo,omitempty"`
 	// Existing approved memory IDs this proposal updates or consolidates (repeatable).
 	SupersedesIds []int32 `protobuf:"varint,5,rep,packed,name=supersedes_ids,json=supersedesIds,proto3" json:"supersedes_ids,omitempty"`
-	// Why this learning is being proposed (e.g. user correction or incident).
+	// Why this learning is being added and what triggered it (required for agents; stored as metadata only, not returned when reading memories in context).
 	Rationale string `protobuf:"bytes,6,opt,name=rationale,proto3" json:"rationale,omitempty"`
 	// Exact model ID proposing this memory (optional).
 	Model          string     `protobuf:"bytes,7,opt,name=model,proto3" json:"model,omitempty"`
@@ -28036,7 +28036,7 @@ type ArchiveMemoryRequest struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// Active memory ID to archive.
 	Id int32 `protobuf:"varint,1,opt,name=id,proto3" json:"id,omitempty"`
-	// Why it was archived.
+	// Why it is being archived (required for agents).
 	Reason        string `protobuf:"bytes,2,opt,name=reason,proto3" json:"reason,omitempty"`
 	SessionId     string `protobuf:"bytes,3,opt,name=session_id,json=sessionId,proto3" json:"session_id,omitempty"`
 	IfRevision    int64  `protobuf:"varint,4,opt,name=if_revision,json=ifRevision,proto3" json:"if_revision,omitempty"`
@@ -31941,7 +31941,7 @@ const file_hotbed_v1_hotbed_proto_rawDesc = "" +
 	"\n" +
 	"auth tokenP\x01bM{{.host}}/{{.repository}}  credential={{.credential}}  expires={{.expiresAt}}\x90\x02\x02\x12p\n" +
 	"\x0eProxyGitHubAPI\x12 .hotbed.v1.ProxyGitHubAPIRequest\x1a!.hotbed.v1.ProxyGitHubAPIResponse\"\x19\x82\xb5\x18\x15\n" +
-	"\bauth apib\t{{.body}}2\x98\x1a\n" +
+	"\bauth apib\t{{.body}}2\xa8\x1b\n" +
 	"\rMemoryService\x12\x80\x05\n" +
 	"\rProposeMemory\x12\x1f.hotbed.v1.ProposeMemoryRequest\x1a\x11.hotbed.v1.Memory\"\xba\x04\x82\xb5\x18\x86\x02\n" +
 	"\n" +
@@ -31962,15 +31962,17 @@ const file_hotbed_v1_hotbed_proto_rawDesc = "" +
 	"{{.summary}}{{if .body}}\n" +
 	"\n" +
 	"{{.body}}{{end}}{{end}}\n" +
-	"{{end}}\x90\x02\x02\x12\xd1\x04\n" +
+	"{{end}}\x90\x02\x02\x12\xe1\x05\n" +
 	"\n" +
-	"ShowMemory\x12\x1c.hotbed.v1.ShowMemoryRequest\x1a\x11.hotbed.v1.Memory\"\x91\x04\x82\xb5\x18\x89\x04\n" +
-	"\vmemory show\x18\x01P\x01b\xf5\x03#{{.id}}  {{state .state}}  rev={{.revision}}  [{{if .project}}{{.project}}{{else}}global{{end}}{{if .repo}}/{{.repo}}{{end}}]{{with .content}}  {{.slug}} ({{state .mode}})\n" +
+	"ShowMemory\x12\x1c.hotbed.v1.ShowMemoryRequest\x1a\x11.hotbed.v1.Memory\"\xa1\x05\x82\xb5\x18\x99\x05\n" +
+	"\vmemory show\x18\x01P\x01b\x85\x05#{{.id}}  {{state .state}}  rev={{.revision}}  [{{if .project}}{{.project}}{{else}}global{{end}}{{if .repo}}/{{.repo}}{{end}}]{{with .content}}  {{.slug}} ({{state .mode}})\n" +
 	"{{if .title}}title     {{.title}}\n" +
 	"{{end}}summary   {{.summary}}{{if .tags}}\n" +
 	"tags      {{join \", \" .tags}}{{end}}{{if .body}}\n" +
 	"\n" +
-	"{{.body}}{{end}}{{end}}{{if .supersedesIds}}\n" +
+	"{{.body}}{{end}}{{end}}{{with .provenance}}{{if .rationale}}\n" +
+	"rationale {{.rationale}}{{end}}{{end}}{{with .archived}}{{if .reason}}\n" +
+	"archived  {{.reason}}{{end}}{{end}}{{if .supersedesIds}}\n" +
 	"supersedes {{join \", \" .supersedesIds}}{{end}}{{if .supersededBy}}\n" +
 	"superseded-by #{{.supersededBy}}{{end}}{{if .cockpitUrl}}\n" +
 	"cockpit   {{.cockpitUrl}}{{end}}\x90\x02\x02\x12\x98\x04\n" +

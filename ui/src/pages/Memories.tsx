@@ -739,6 +739,13 @@ function MemoryCard({
                 </div>
               )}
 
+              {full.state === MemoryState.ARCHIVED && full.archived?.reason && (
+                <div className="rounded-lg border border-border bg-muted/40 px-3 py-2 text-[12px] text-muted-foreground">
+                  <span className="font-mono text-[10.5px] text-foreground">Archive reason: </span>
+                  {full.archived.reason}
+                </div>
+              )}
+
               <Collapsible open={expanded} onOpenChange={setExpanded}>
                 <CollapsibleTrigger className="group inline-flex cursor-pointer items-center gap-1 font-mono text-[11px] text-muted-foreground hover:text-foreground">
                   <ChevronRightIcon className="size-3 text-faint transition-transform group-data-panel-open:rotate-90" />

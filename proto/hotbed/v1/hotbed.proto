@@ -4896,7 +4896,7 @@ service MemoryService {
       name: "memory show"
       session: true
       read_only: true
-      format: "#{{.id}}  {{state .state}}  rev={{.revision}}  [{{if .project}}{{.project}}{{else}}global{{end}}{{if .repo}}/{{.repo}}{{end}}]{{with .content}}  {{.slug}} ({{state .mode}})\n{{if .title}}title     {{.title}}\n{{end}}summary   {{.summary}}{{if .tags}}\ntags      {{join \", \" .tags}}{{end}}{{if .body}}\n\n{{.body}}{{end}}{{end}}{{if .supersedesIds}}\nsupersedes {{join \", \" .supersedesIds}}{{end}}{{if .supersededBy}}\nsuperseded-by #{{.supersededBy}}{{end}}{{if .cockpitUrl}}\ncockpit   {{.cockpitUrl}}{{end}}"
+      format: "#{{.id}}  {{state .state}}  rev={{.revision}}  [{{if .project}}{{.project}}{{else}}global{{end}}{{if .repo}}/{{.repo}}{{end}}]{{with .content}}  {{.slug}} ({{state .mode}})\n{{if .title}}title     {{.title}}\n{{end}}summary   {{.summary}}{{if .tags}}\ntags      {{join \", \" .tags}}{{end}}{{if .body}}\n\n{{.body}}{{end}}{{end}}{{with .provenance}}{{if .rationale}}\nrationale {{.rationale}}{{end}}{{end}}{{with .archived}}{{if .reason}}\narchived  {{.reason}}{{end}}{{end}}{{if .supersedesIds}}\nsupersedes {{join \", \" .supersedesIds}}{{end}}{{if .supersededBy}}\nsuperseded-by #{{.supersededBy}}{{end}}{{if .cockpitUrl}}\ncockpit   {{.cockpitUrl}}{{end}}"
     };
   }
   // Edit a memory in any way (slug, title, summary, body, mode, tags, scope,
@@ -5110,7 +5110,7 @@ message ProposeMemoryRequest {
   string repo = 4;
   // Existing approved memory IDs this proposal updates or consolidates (repeatable).
   repeated int32 supersedes_ids = 5 [(param) = {name: "supersede"}];
-  // Why this learning is being proposed (e.g. user correction or incident).
+  // Why this learning is being added and what triggered it (required for agents; stored as metadata only, not returned when reading memories in context).
   string rationale = 6;
   // Exact model ID proposing this memory (optional).
   string model = 7;
@@ -5263,7 +5263,7 @@ message ReviseMemoryRequest {
 message ArchiveMemoryRequest {
   // Active memory ID to archive.
   int32 id = 1 [(param) = {positional: true}];
-  // Why it was archived.
+  // Why it is being archived (required for agents).
   string reason = 2;
   string session_id = 3 [(param) = {
     hidden: true

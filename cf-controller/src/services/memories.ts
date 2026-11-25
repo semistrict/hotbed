@@ -1,6 +1,7 @@
 import type { ServiceImpl } from "@connectrpc/connect";
 import { clone, create } from "@bufbuild/protobuf";
 import {
+	ActorKind,
 	GetMemoriesResponseSchema,
 	ListMemoriesResponseSchema,
 	MemoryContentSchema,
@@ -297,11 +298,14 @@ export function createMemoryService(ctrl: ControllerContext): ServiceImpl<typeof
 			if (req.global && req.repo) {
 				throw hotbedError(ErrorCode.InvalidArgs, "a global memory cannot be scoped to a repo");
 			}
-			const { by, project: sessProject } = ctrl.userStamp(
-				caller,
-				req.sessionId,
-				req.rationale.trim(),
-			);
+			const rationale = req.rationale.trim();
+			const { by, project: sessProject } = ctrl.userStamp(caller, req.sessionId, rationale);
+			if (by.actorKind === ActorKind.AGENT && !rationale) {
+				throw hotbedError(
+					ErrorCode.InvalidArgs,
+					"give --rationale explaining why you are adding this memory and what triggered it",
+				).withSuggestion('pass --rationale "..."');
+			}
 
 			let scope = MemoryScope.PROJECT;
 			let targetProject: Project | null = null;
@@ -422,6 +426,10 @@ export function createMemoryService(ctrl: ControllerContext): ServiceImpl<typeof
 				const m = resolveRef(ref, activeProject);
 				if (!seen.has(m.id)) {
 					seen.add(m.id);
+					// Justification / provenance rationale is pure metadata for humans and auditing,
+					// not returned in context when reading memories.
+					if (m.provenance) m.provenance.rationale = "";
+					if (m.proposed) m.proposed.reason = "";
 					memories.push(m);
 				}
 			}
@@ -507,11 +515,14 @@ export function createMemoryService(ctrl: ControllerContext): ServiceImpl<typeof
 		},
 
 		archiveMemory(req, ctx) {
-			const { by, project } = ctrl.userStamp(
-				getCaller(ctx.values),
-				req.sessionId,
-				req.reason.trim(),
-			);
+			const reason = req.reason.trim();
+			const { by, project } = ctrl.userStamp(getCaller(ctx.values), req.sessionId, reason);
+			if (by.actorKind === ActorKind.AGENT && !reason) {
+				throw hotbedError(
+					ErrorCode.InvalidArgs,
+					"give --reason explaining why this memory is being archived",
+				).withSuggestion('pass --reason "..."');
+			}
 			return ctrl.store.changeMemory(req.id, "archived", by, (item) => {
 				if (item.scope === MemoryScope.PROJECT) {
 					inProject("memory", item.id, item.project, project, by);

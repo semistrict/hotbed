@@ -87,21 +87,27 @@ hotbed memory add --global \
   --rationale "User correction in thread fxdax"
 hotbed memory add --slug zfs-base-freshen \
   --summary "ZFS clone/snapshot base freshening internals — read before debugging base failures." \
+  --rationale "Hit ZFS clone flake while debugging base freshening" \
   --body-file - <<'EOF'
 ...detailed markdown playbook...
 EOF
-hotbed memory add --supersede 4 --slug subagent-model-neon --summary "..."
+hotbed memory add --supersede 4 --slug subagent-model-neon --summary "..." --rationale "..."
 hotbed memory edit 4 --summary "..." [--global | -p PROJECT] [--repo REPO] [--rationale "..."]
 hotbed memory promote 2                          # promote a project-specific memory to global
-hotbed memory archive 2 --reason "..."           # soft-retire (restorable via `memory restore`)
+hotbed memory archive 2 --reason "..."           # soft-retire (restorable via `memory restore`; --reason required for agents)
 hotbed memory rm 2                               # permanently remove a memory
 ```
 
 - **Save lessons when you resolve them (not just in local files):** whenever you resolve a
   non-obvious bug or repo/tooling quirk, the user corrects you, or the user says "remember this" /
   "add to memory" / `/learn`, save it with `hotbed memory add` (alias `memory propose`, MCP:
-  `memory_add`) so every future session gets it on `hotbed session start`. `hotbed session end`
-  prompts you at wrap-up.
+  `memory_add`) so every future session gets it on `hotbed session start`. Agents must pass
+  `--rationale "..."` explaining why the memory is being added and what triggered it; this
+  rationale is stored as metadata only and is not returned in context when reading memories.
+  `hotbed session end` prompts you at wrap-up.
+- **Archive outdated memories with a reason:** when a memory is obsolete or no longer true,
+  agents can soft-retire it with `hotbed memory archive ID --reason "..."` (MCP: `memory_archive`;
+  `--reason` is required for agents). Archived memories can be restored with `hotbed memory restore`.
 - **Automatic delivery mode:** omit `--mode` and hotbed picks automatically:
   - No `--body` → `always`: short guardrail/preference (≤ 240 chars) printed inline on every
     `hotbed session start` (and in `hotbed mcp` server instructions).

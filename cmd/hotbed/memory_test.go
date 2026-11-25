@@ -55,8 +55,13 @@ func TestMemoryLifecycleAndSessionRecall(t *testing.T) {
 		t.Fatalf("mem2 = %v, want APPROVED PROJECT test ON_DEMAND", mem2)
 	}
 
+	// Agent saving a memory without --rationale is rejected.
+	if _, e := c.fails("memory", "add", "-s", "brave-otter", "--slug", "no-rationale", "--summary", "needs rationale"); e.Code != api.CodeInvalidArgs {
+		t.Fatalf("agent memory add without rationale = %v, want INVALID_ARGS", e)
+	}
+
 	// Explicit --mode on_demand without --body is still rejected.
-	if _, e := c.fails("memory", "add", "-s", "brave-otter", "--mode", "on_demand", "--slug", "no-body", "--summary", "needs body"); e.Code != api.CodeInvalidArgs {
+	if _, e := c.fails("memory", "add", "-s", "brave-otter", "--mode", "on_demand", "--slug", "no-body", "--summary", "needs body", "--rationale", "testing"); e.Code != api.CodeInvalidArgs {
 		t.Fatalf("explicit on_demand without body = %v, want INVALID_ARGS", e)
 	}
 
@@ -106,7 +111,8 @@ func TestMemoryLifecycleAndSessionRecall(t *testing.T) {
 		t.Errorf("expected nil memories with --omit-memories, got %+v", bare.Memories)
 	}
 
-	// On-demand full retrieval via `hotbed memory get` fetches multiple refs with full body.
+	// On-demand full retrieval via `hotbed memory get` fetches multiple refs with full body,
+	// and omits rationale/reason metadata from agent read context.
 	got := &pb.GetMemoriesResponse{}
 	c.ok(got, "memory", "get", "-s", "keen-fox", "global/subagent-model-neon", "zfs-base-freshen")
 	if len(got.Memories) != 2 {
@@ -114,6 +120,12 @@ func TestMemoryLifecycleAndSessionRecall(t *testing.T) {
 	}
 	if !strings.Contains(got.Memories[1].Content.Body, "zpool status") {
 		t.Errorf("memory get body = %q, want zpool status", got.Memories[1].Content.Body)
+	}
+	for _, gm := range got.Memories {
+		if gm.Provenance.GetRationale() != "" || gm.Proposed.GetReason() != "" {
+			t.Errorf("memory get leaked justification metadata on #%d: rationale=%q proposed.reason=%q",
+				gm.Id, gm.Provenance.GetRationale(), gm.Proposed.GetReason())
+		}
 	}
 
 	// `memory ls` omits full body (progressive disclosure) and supports -q search.
@@ -193,6 +205,7 @@ func TestMemoryLifecycleAndSessionRecall(t *testing.T) {
 		"--slug", "subagent-model-neon",
 		"--supersede", "1",
 		"--summary", "Use gemini-4-neon (high) for all T3 Code subagents; never GPT.",
+		"--rationale", "Clarified model tier with user",
 	)
 	if mem3.State != pb.MemoryState_MEMORY_STATE_APPROVED {
 		t.Fatalf("mem3 state = %v, want APPROVED", mem3.State)
@@ -215,10 +228,15 @@ func TestMemoryLifecycleAndSessionRecall(t *testing.T) {
 		t.Errorf("moved = %v", moved)
 	}
 
+	// Agent archiving a memory without --reason is rejected; with --reason it succeeds.
+	if _, e := c.fails("memory", "archive", "-s", "brave-otter", "2"); e.Code != api.CodeInvalidArgs {
+		t.Fatalf("agent memory archive without reason = %v, want INVALID_ARGS", e)
+	}
+
 	arch := &pb.Memory{}
-	c.ok(arch, "memory", "archive", "2", "--reason", "no longer needed")
-	if arch.State != pb.MemoryState_MEMORY_STATE_ARCHIVED {
-		t.Fatalf("archived state = %v", arch.State)
+	c.ok(arch, "memory", "archive", "-s", "brave-otter", "2", "--reason", "no longer needed")
+	if arch.State != pb.MemoryState_MEMORY_STATE_ARCHIVED || arch.Archived.GetReason() != "no longer needed" {
+		t.Fatalf("archived = state=%v reason=%q", arch.State, arch.Archived.GetReason())
 	}
 
 	rest := &pb.Memory{}
@@ -278,11 +296,12 @@ func TestMCPServerIncludesMemoriesInInstructionsAndTools(t *testing.T) {
 	// Save via memory_add MCP tool (inherits MCP session automatically and auto-approves).
 	prop := &pb.Memory{}
 	m.call(prop, "memory_add", map[string]any{
-		"global":  true,
-		"mode":    "on_demand",
-		"slug":    "mcp-playbook",
-		"summary": "Playbook saved over MCP",
-		"body":    "Step 1: verify MCP.\n",
+		"global":    true,
+		"mode":      "on_demand",
+		"slug":      "mcp-playbook",
+		"summary":   "Playbook saved over MCP",
+		"body":      "Step 1: verify MCP.\n",
+		"rationale": "Triggered while verifying MCP memory_add",
 	})
 	if prop.State != pb.MemoryState_MEMORY_STATE_APPROVED || prop.Proposed.Session == "" {
 		t.Fatalf("MCP memory_add = %+v, want APPROVED with session", prop)

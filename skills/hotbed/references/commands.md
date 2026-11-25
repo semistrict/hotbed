@@ -607,7 +607,7 @@ Save a new memory or supersede/consolidate existing memories (--supersede ID). A
 | `-p`, `--project` |  | Project to scope this memory to (default: the active session's project). |
 | `--repo` |  | Optional repo within the project (default: this checkout's remote if held by the project). |
 | `--supersede` |  | Existing approved memory IDs this proposal updates or consolidates (repeatable). |
-| `--rationale` |  | Why this learning is being proposed (e.g. user correction or incident). |
+| `--rationale` |  | Why this learning is being added and what triggered it (required for agents; stored as metadata only, not returned when reading memories in context). |
 | `--model` |  | Exact model ID proposing this memory (optional). |
 | `--body-file` |  | Path to a markdown file for body, or "-" to read from stdin (local). |
 
@@ -629,7 +629,7 @@ Alias for `hotbed memory add`.
 | `-p`, `--project` |  | Project to scope this memory to (default: the active session's project). |
 | `--repo` |  | Optional repo within the project (default: this checkout's remote if held by the project). |
 | `--supersede` |  | Existing approved memory IDs this proposal updates or consolidates (repeatable). |
-| `--rationale` |  | Why this learning is being proposed (e.g. user correction or incident). |
+| `--rationale` |  | Why this learning is being added and what triggered it (required for agents; stored as metadata only, not returned when reading memories in context). |
 | `--model` |  | Exact model ID proposing this memory (optional). |
 | `--body-file` |  | Path to a markdown file for body, or "-" to read from stdin (local). |
 
@@ -732,7 +732,7 @@ Archive an active memory so it is no longer returned on session start; history i
 | Argument / Flag | Env | Help |
 | --- | --- | --- |
 | `ID` |  | Active memory ID to archive. |
-| `--reason` |  | Why it was archived. |
+| `--reason` |  | Why it is being archived (required for agents). |
 | `--if-revision` |  |  |
 
 ### `hotbed memory restore ID`

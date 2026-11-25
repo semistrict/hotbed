@@ -878,19 +878,19 @@ export function setupStepsReminder(p?: Project | null): string {
 }
 
 export const MEMORY_FAILURE_REMINDER =
-	'Reminder: if this failure revealed a reusable fix, quirk, or gotcha, save it with `hotbed memory add --slug SLUG --summary "..."` (MCP: `memory_add`; add `--body "..."` for long notes, `--global` for cross-project rules).';
+	'Reminder: if this failure revealed a reusable fix, quirk, or gotcha, save it with `hotbed memory add --slug SLUG --summary "..." --rationale "..."` (MCP: `memory_add`; add `--body "..."` for long notes, `--global` for cross-project rules).';
 
 export const MEMORY_FEEDBACK_REMINDER =
-	'Reminder: if this user answer or review feedback reflects a standing preference, convention, or pitfall, save it with `hotbed memory add --slug SLUG --summary "..."` (MCP: `memory_add`; pass `--global` if cross-project).';
+	'Reminder: if this user answer or review feedback reflects a standing preference, convention, or pitfall, save it with `hotbed memory add --slug SLUG --summary "..." --rationale "..."` (MCP: `memory_add`; pass `--global` if cross-project).';
 
 export const MEMORY_FIX_REMINDER =
-	'Reminder: if this defect exposed a reusable pitfall or invariant, save it with `hotbed memory add --slug SLUG --summary "..."` (MCP: `memory_add`).';
+	'Reminder: if this defect exposed a reusable pitfall or invariant, save it with `hotbed memory add --slug SLUG --summary "..." --rationale "..."` (MCP: `memory_add`).';
 
 export const MEMORY_SESSION_END_REMINDER =
-	'Before wrapping up: if this session uncovered a reusable gotcha, tooling quirk, or user correction, save it with `hotbed memory add --slug SLUG --summary "..." [--global] [--body "..."]` (MCP: `memory_add`).';
+	'Before wrapping up: if this session uncovered a reusable gotcha, tooling quirk, or user correction, save it with `hotbed memory add --slug SLUG --summary "..." --rationale "..." [--global] [--body "..."]` (MCP: `memory_add`), or archive obsolete memories with `hotbed memory archive ID --reason "..."`.';
 
 export function memorySavingReminder(): string {
-	return 'Memories: save reusable gotchas, tooling quirks, and user corrections with `hotbed memory add --slug SLUG --summary "..." [--global] [--body "..."]` (MCP: `memory_add`).';
+	return 'Memories: save reusable gotchas, tooling quirks, and user corrections with `hotbed memory add --slug SLUG --summary "..." --rationale "..." [--global] [--body "..."]` (MCP: `memory_add`), and archive obsolete ones with `hotbed memory archive ID --reason "..."`.';
 }
 
 export function sessionStartReminder(p?: Project | null): string {
