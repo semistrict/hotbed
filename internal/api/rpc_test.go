@@ -79,3 +79,22 @@ func TestAuthInterceptorAndRoundTripper(t *testing.T) {
 		t.Fatalf("AuthRoundTripper headers = (%q, %q, %q, %q)", gotAuth, gotNode, gotHost, gotAddr)
 	}
 }
+
+// worker init takes the controller as a URL or a tailnet name, as its help
+// says: a URL stays a URL, a name becomes host:port.
+func TestControllerAddr(t *testing.T) {
+	for in, want := range map[string]string{
+		"https://hotbed-controller.example.workers.dev/": "https://hotbed-controller.example.workers.dev",
+		"http://ubu1:7120": "http://ubu1:7120",
+		"ubu1":             "ubu1:7120",
+		"ubu1:9000":        "ubu1:9000",
+	} {
+		got, err := ControllerAddr(in)
+		if err != nil || got != want {
+			t.Errorf("ControllerAddr(%q) = (%q, %v), want (%q, nil)", in, got, err, want)
+		}
+	}
+	if _, err := ControllerAddr("ubu1/path"); err == nil {
+		t.Error("ControllerAddr accepted a host with a path")
+	}
+}

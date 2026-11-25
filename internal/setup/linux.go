@@ -77,7 +77,7 @@ func Setup(ctx context.Context, o Options, tn worker.Tailnet, hc *http.Client, c
 		return Result{}, api.Errorf(api.CodeInvalidArgs, "setting up a Linux worker requires root privileges (for storage, join, and systemd)").
 			WithSuggestion("run with sudo: sudo hotbed worker init " + o.Controller)
 	}
-	controller, err := api.ControllerHostPort(o.Controller)
+	controller, err := api.ControllerAddr(o.Controller)
 	if err != nil {
 		return Result{}, err
 	}

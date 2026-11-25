@@ -132,6 +132,17 @@ func Controller(addr string, hc *http.Client, interceptors ...connect.ClientInte
 	return hotbedv1connect.NewClusterServiceClient(c), hotbedv1connect.NewWorkspaceServiceClient(c), nil
 }
 
+// ControllerAddr normalizes a controller address as a person types it: an
+// http(s):// URL (such as a Cloudflare Workers controller) becomes its base
+// URL (ControllerBaseURL), a tailnet name or address its host:port
+// (ControllerHostPort).
+func ControllerAddr(addr string) (string, error) {
+	if IsRemoteURL(addr) {
+		return ControllerBaseURL(addr)
+	}
+	return ControllerHostPort(addr)
+}
+
 // ControllerHostPort turns a controller address as a person types it into
 // host:port. "ubu1" becomes "ubu1:7120"; "ubu1:9000" and "[fd7a::1]:7120"
 // stay as they are; a bare IPv6 address gets brackets and the default port.

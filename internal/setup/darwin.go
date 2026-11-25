@@ -51,7 +51,7 @@ func Setup(ctx context.Context, o Options, _ worker.Tailnet, hc *http.Client, _ 
 	if o.ZFSDevice != "" {
 		return Result{}, api.Errorf(api.CodeInvalidArgs, "--zfs-device is only supported on Linux workers")
 	}
-	controller, err := api.ControllerHostPort(o.Controller)
+	controller, err := api.ControllerAddr(o.Controller)
 	if err != nil {
 		return Result{}, err
 	}
@@ -652,11 +652,7 @@ func resolveLinuxBinary(ctx context.Context, explicit, controller, cacheDir, arc
 	if hc == nil {
 		hc = &http.Client{Timeout: 60 * time.Second}
 	}
-	hostPort, err := api.ControllerHostPort(controller)
-	if err != nil {
-		return "", err
-	}
-	cluster, _, err := api.Controller(hostPort, hc)
+	cluster, _, err := api.Controller(controller, hc)
 	if err != nil {
 		return "", err
 	}
@@ -665,14 +661,14 @@ func resolveLinuxBinary(ctx context.Context, explicit, controller, cacheDir, arc
 	if err != nil {
 		ae := api.FromConnect(err)
 		if ae.Code == api.CodeNotFound {
-			return "", api.Errorf(api.CodeNotFound, "controller %s has no published Linux %s build (%s)", hostPort, arch, ae.Message).
+			return "", api.Errorf(api.CodeNotFound, "controller %s has no published Linux %s build (%s)", controller, arch, ae.Message).
 				WithSuggestion(fmt.Sprintf("pass --binary /path/to/hotbed-linux-%s or run the controller on a published CI build", arch))
 		}
-		return "", api.Errorf(ae.Code, "fetch Linux %s binary from controller %s: %s", arch, hostPort, ae.Message).
+		return "", api.Errorf(ae.Code, "fetch Linux %s binary from controller %s: %s", arch, controller, ae.Message).
 			WithSuggestion(suggest)
 	}
 	if b.Sha256 == "" || (b.DownloadUrl == "" && (b.Path == "" || !strings.HasPrefix(b.Path, "/builds/"))) {
-		return "", api.Errorf(api.CodeInternal, "controller %s returned incomplete build metadata for linux/%s", hostPort, arch).
+		return "", api.Errorf(api.CodeInternal, "controller %s returned incomplete build metadata for linux/%s", controller, arch).
 			WithSuggestion(suggest)
 	}
 

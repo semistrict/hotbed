@@ -142,12 +142,7 @@ func Join(ctx context.Context, o JoinOptions, tn Tailnet, hc *http.Client, check
 	}
 	o.Dir = dir
 	remote := api.IsRemoteURL(o.Controller)
-	var controller string
-	if remote {
-		controller, err = api.ControllerBaseURL(o.Controller)
-	} else {
-		controller, err = api.ControllerHostPort(o.Controller)
-	}
+	controller, err := api.ControllerAddr(o.Controller)
 	if err != nil {
 		return JoinResult{}, err
 	}
