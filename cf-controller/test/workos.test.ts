@@ -78,8 +78,9 @@ function makeWorkOSEnv(overrides?: Partial<ControllerEnv & WorkOSEnv>): Controll
 		WORKOS_CLIENT_ID,
 		WORKOS_API_KEY,
 		WORKOS_COOKIE_PASSWORD,
-		WORKOS_AUTH_PROVIDER: "authkit",
+		WORKOS_AUTH_PROVIDER: "GoogleOAuth",
 		WORKOS_API_BASE: WORKOS_ORIGIN,
+		INITIAL_SIGNUP_CODE: "LC2026051",
 		ALLOW_LOCAL_REPOS: "1",
 		...overrides,
 	};
@@ -447,6 +448,7 @@ describe("WorkOS multi-organization, multi-user, per-org ControllerDO integratio
 						last_name: "G",
 					},
 					organization_id: "org_echo",
+					authentication_method: "GoogleOAuth",
 					access_token: shortLivedJwt,
 					refresh_token: "rt_1",
 				}),
@@ -486,6 +488,7 @@ describe("WorkOS multi-organization, multi-user, per-org ControllerDO integratio
 						last_name: "G",
 					},
 					organization_id: "org_echo",
+					authentication_method: "GoogleOAuth",
 					access_token: freshJwt,
 					refresh_token: "rt_cli_1",
 				}),
@@ -553,19 +556,23 @@ describe("WorkOS multi-organization, multi-user, per-org ControllerDO integratio
 			return null;
 		});
 
-		// /auth/config advertises WorkOS
+		// /auth/config advertises Google-only WorkOS auth + signup code requirement
 		const cfgRes = await callWorker(testEnv, "https://controller.test/auth/config");
 		expect(cfgRes.status).toBe(200);
 		const cfg = (await cfgRes.json()) as {
 			workosEnabled: boolean;
 			authProvider: string;
 			clientId: string;
+			tokenLoginEnabled: boolean;
+			signupCodeRequired: boolean;
 		};
 		expect(cfg.workosEnabled).toBe(true);
-		expect(cfg.authProvider).toBe("authkit");
+		expect(cfg.authProvider).toBe("GoogleOAuth");
 		expect(cfg.clientId).toBe(WORKOS_CLIENT_ID);
+		expect(cfg.tokenLoginEnabled).toBe(false);
+		expect(cfg.signupCodeRequired).toBe(true);
 
-		// Step 1: GET /auth/login redirects to WorkOS AuthKit with PKCE + state cookie
+		// Step 1: GET /auth/login redirects straight to GoogleOAuth via WorkOS with PKCE + state cookie
 		const loginStart = await callWorker(
 			testEnv,
 			"https://controller.test/auth/login?return_to=/questions",
@@ -575,7 +582,7 @@ describe("WorkOS multi-organization, multi-user, per-org ControllerDO integratio
 		const authUrl = new URL(loginStart.headers.get("Location")!);
 		expect(authUrl.origin).toBe(WORKOS_ORIGIN);
 		expect(authUrl.pathname).toBe("/user_management/authorize");
-		expect(authUrl.searchParams.get("provider")).toBe("authkit");
+		expect(authUrl.searchParams.get("provider")).toBe("GoogleOAuth");
 		expect(authUrl.searchParams.get("code_challenge_method")).toBe("S256");
 		const state = authUrl.searchParams.get("state")!;
 		const stateCookie = cookiePair(extractCookies(loginStart)[0]);
@@ -1022,6 +1029,7 @@ describe("WorkOS multi-organization, multi-user, per-org ControllerDO integratio
 					return Response.json({
 						user: { id: "user_pat", email: "pat@acme.test" },
 						organization_id: "org_refresh_test",
+						authentication_method: "GoogleOAuth",
 						access_token: expiredAdminJwt,
 						refresh_token: "rt_overlap_1",
 					});
@@ -1151,5 +1159,387 @@ describe("WorkOS multi-organization, multi-user, per-org ControllerDO integratio
 			{ method: "DELETE", headers: { Authorization: `Bearer ${demotedJwt}` } },
 		);
 		expect(badPercent.status).toBe(400);
+	});
+
+	it("enforces Google-only auth and requires a post-Google sign-up code (initial LC2026051) for new accounts", async () => {
+		const testEnv = makeWorkOSEnv({
+			OWNER_TOKEN: "superadmin-owner-token",
+			DEFAULT_ORG_ID: "org_default_mapped",
+			INITIAL_SIGNUP_CODE: "LC2026051",
+		});
+		const nowSec = Math.floor(Date.now() / 1000);
+
+		const newUserOrgLessJwt = await signJwt({
+			sub: "user_new_google",
+			email: "newuser@gmail.com",
+			sid: "sess_new_1",
+			exp: nowSec + 3600,
+		});
+		const cliNewUserJwt = await signJwt({
+			sub: "user_cli_new",
+			email: "clinew@gmail.com",
+			sid: "sess_cli_new",
+			exp: nowSec + 3600,
+		});
+		const bypassAttackerJwt = await signJwt({
+			sub: "user_bypass_attempt",
+			email: "bypass@gmail.com",
+			sid: "sess_bypass",
+			exp: nowSec + 3600,
+		});
+		const defaultAdminJwt = await signJwt({
+			sub: "user_admin",
+			email: "ramon@echophase.com",
+			org_id: "org_default_mapped",
+			role: "admin",
+			sid: "sess_admin",
+			exp: nowSec + 3600,
+		});
+		const otherOrgAdminJwt = await signJwt({
+			sub: "user_other_admin",
+			email: "admin@other.test",
+			org_id: "org_other_tenant",
+			role: "admin",
+			sid: "sess_other",
+			exp: nowSec + 3600,
+		});
+
+		let nextAuthResponse: () => Response = () =>
+			Response.json({ message: "no mock set" }, { status: 500 });
+
+		mockHandlers.push((url, init) => {
+			const method = (init?.method ?? "GET").toUpperCase();
+			if (url.pathname === "/user_management/authenticate" && method === "POST") {
+				return nextAuthResponse();
+			}
+			if (url.pathname === "/user_management/organization_memberships" && method === "GET") {
+				return Response.json({ data: [] });
+			}
+			if (url.pathname === "/user_management/users/user_bypass_attempt" && method === "GET") {
+				return Response.json({ id: "user_bypass_attempt", email: "bypass@gmail.com" });
+			}
+			if (url.pathname === "/organizations" && method === "POST") {
+				return Response.json({ id: "org_created_new", name: "New Team" }, { status: 201 });
+			}
+			if (url.pathname === "/user_management/organization_memberships" && method === "POST") {
+				return Response.json(
+					{
+						id: "om_new_1",
+						user_id: "user_new_google",
+						organization_id: "org_created_new",
+						status: "active",
+						role: { slug: "admin" },
+					},
+					{ status: 201 },
+				);
+			}
+			return null;
+		});
+
+		// 1. Google-only enforcement on login & CLI authorize endpoints
+		// GET /auth/login?mode=token still redirects straight to GoogleOAuth (no token form!)
+		const tokenModeGet = await callWorker(
+			testEnv,
+			"https://hotbed.semistrict.com/auth/login?mode=token",
+			{ redirect: "manual" },
+		);
+		expect(tokenModeGet.status).toBe(302);
+		const googleRedirect = new URL(tokenModeGet.headers.get("Location")!);
+		expect(googleRedirect.searchParams.get("provider")).toBe("GoogleOAuth");
+		expect(googleRedirect.searchParams.get("redirect_uri")).toBe(
+			"https://hotbed.semistrict.com/auth/callback",
+		);
+
+		// POST /auth/login is disabled when Google/WorkOS auth is enabled
+		const tokenModePost = await callWorker(testEnv, "https://hotbed.semistrict.com/auth/login", {
+			method: "POST",
+			headers: {
+				"Content-Type": "application/x-www-form-urlencoded",
+				Origin: "https://hotbed.semistrict.com",
+			},
+			body: "token=superadmin-owner-token",
+		});
+		expect(tokenModePost.status).toBe(403);
+
+		// Non-Google provider overrides are rejected
+		const nonGoogleLogin = await callWorker(
+			testEnv,
+			"https://hotbed.semistrict.com/auth/login?provider=GitHubOAuth",
+		);
+		expect(nonGoogleLogin.status).toBe(400);
+
+		const cliChallenge = await pkceS256("verifier_google_only_test_1234567890");
+		const nonGoogleCli = await callWorker(
+			testEnv,
+			`https://hotbed.semistrict.com/auth/cli/authorize?redirect_uri=${encodeURIComponent("http://127.0.0.1:45680/callback")}&state=s1&code_challenge=${encodeURIComponent(cliChallenge)}&provider=Password`,
+		);
+		expect(nonGoogleCli.status).toBe(400);
+
+		// Callback rejects non-Google authentication_method (e.g. Password) and error page has no token form
+		const badMethodStart = await callWorker(testEnv, "https://hotbed.semistrict.com/auth/login", {
+			redirect: "manual",
+		});
+		const badMethodState = new URL(badMethodStart.headers.get("Location")!).searchParams.get(
+			"state",
+		)!;
+		const badMethodCookie = cookiePair(extractCookies(badMethodStart)[0]);
+		nextAuthResponse = () =>
+			Response.json({
+				user: { id: "user_pw", email: "pw@example.com" },
+				authentication_method: "Password",
+				access_token: newUserOrgLessJwt,
+				refresh_token: "rt_pw",
+			});
+		const badMethodCb = await callWorker(
+			testEnv,
+			`https://hotbed.semistrict.com/auth/callback?code=c_pw&state=${encodeURIComponent(badMethodState)}`,
+			{ headers: { Cookie: badMethodCookie }, redirect: "manual" },
+		);
+		expect(badMethodCb.status).toBe(401);
+		const badMethodHtml = await badMethodCb.text();
+		expect(badMethodHtml).toContain("Google sign-in is required");
+		expect(badMethodHtml).not.toContain('name="token"');
+		expect(extractCookies(badMethodCb).some((c) => c.startsWith("hotbed_wos_session="))).toBe(
+			false,
+		);
+
+		// 2. New Google user flow: Google auth FIRST, then sign-up code prompt!
+		const startRes = await callWorker(
+			testEnv,
+			"https://hotbed.semistrict.com/auth/login?return_to=/sessions",
+			{ redirect: "manual" },
+		);
+		expect(startRes.status).toBe(302);
+		const startLoc = new URL(startRes.headers.get("Location")!);
+		expect(startLoc.searchParams.get("provider")).toBe("GoogleOAuth");
+		const stateCookie = cookiePair(extractCookies(startRes)[0]);
+
+		nextAuthResponse = () =>
+			Response.json({
+				user: { id: "user_new_google", email: "newuser@gmail.com" },
+				authentication_method: "GoogleOAuth",
+				access_token: newUserOrgLessJwt,
+				refresh_token: "rt_new_1",
+			});
+		const cbRes = await callWorker(
+			testEnv,
+			`https://hotbed.semistrict.com/auth/callback?code=c_new&state=${encodeURIComponent(startLoc.searchParams.get("state")!)}`,
+			{ headers: { Cookie: stateCookie }, redirect: "manual" },
+		);
+		expect(cbRes.status).toBe(303);
+		expect(cbRes.headers.get("Location")).toBe("https://hotbed.semistrict.com/auth/signup-code");
+		// Must NOT issue session cookie before sign-up code is redeemed
+		expect(extractCookies(cbRes).some((c) => c.startsWith("hotbed_wos_session="))).toBe(false);
+		const pendingSignupRaw = extractCookies(cbRes).find((c) =>
+			c.startsWith("hotbed_pending_signup="),
+		);
+		expect(pendingSignupRaw).toBeTruthy();
+		const pendingSignupCookie = cookiePair(pendingSignupRaw!);
+
+		// Domain separation: pending-signup cookie cannot be forged as hotbed_wos_session
+		const pendingVal = pendingSignupCookie.slice("hotbed_pending_signup=".length);
+		const forgedRes = await callWorker(testEnv, "https://hotbed.semistrict.com/auth/me", {
+			headers: { Cookie: `hotbed_wos_session=${pendingVal}` },
+		});
+		expect(forgedRes.status).toBe(401);
+
+		// GET /auth/signup-code renders the form with the Google user's email
+		const codePage = await callWorker(testEnv, "https://hotbed.semistrict.com/auth/signup-code", {
+			headers: { Cookie: pendingSignupCookie },
+		});
+		expect(codePage.status).toBe(200);
+		const codePageHtml = await codePage.text();
+		expect(codePageHtml).toContain("newuser@gmail.com");
+		expect(codePageHtml).toContain('action="/auth/signup-code"');
+
+		// Wrong code is rejected with 403 and does NOT clear pending cookie
+		const wrongCodeRes = await callWorker(
+			testEnv,
+			"https://hotbed.semistrict.com/auth/signup-code",
+			{
+				method: "POST",
+				headers: {
+					Cookie: pendingSignupCookie,
+					"Content-Type": "application/x-www-form-urlencoded",
+					Origin: "https://hotbed.semistrict.com",
+				},
+				body: "code=WRONG-CODE",
+				redirect: "manual",
+			},
+		);
+		expect(wrongCodeRes.status).toBe(403);
+		expect(await wrongCodeRes.text()).toContain("Invalid sign-up code");
+
+		// Initial sign-up code LC2026051 (case-insensitive, trimmed) succeeds!
+		const okCodeRes = await callWorker(testEnv, "https://hotbed.semistrict.com/auth/signup-code", {
+			method: "POST",
+			headers: {
+				Cookie: pendingSignupCookie,
+				"Content-Type": "application/x-www-form-urlencoded",
+				Origin: "https://hotbed.semistrict.com",
+			},
+			body: "code=+lc2026051+",
+			redirect: "manual",
+		});
+		expect(okCodeRes.status).toBe(303);
+		expect(okCodeRes.headers.get("Location")).toBe(
+			"https://hotbed.semistrict.com/auth/orgs?return_to=%2Fsessions",
+		);
+		const sessionCookieRaw = extractCookies(okCodeRes).find((c) =>
+			c.startsWith("hotbed_wos_session="),
+		);
+		expect(sessionCookieRaw).toBeTruthy();
+
+		// Logging in a second time as the now-approved user skips /auth/signup-code even before org creation
+		const secondStart = await callWorker(testEnv, "https://hotbed.semistrict.com/auth/login", {
+			redirect: "manual",
+		});
+		const secondState = new URL(secondStart.headers.get("Location")!).searchParams.get("state")!;
+		const secondStateCookie = cookiePair(extractCookies(secondStart)[0]);
+		const secondCb = await callWorker(
+			testEnv,
+			`https://hotbed.semistrict.com/auth/callback?code=c_new_2&state=${encodeURIComponent(secondState)}`,
+			{ headers: { Cookie: secondStateCookie }, redirect: "manual" },
+		);
+		expect(secondCb.status).toBe(303);
+		expect(secondCb.headers.get("Location")).toBe("https://hotbed.semistrict.com/auth/orgs");
+
+		// 3. Direct API bypass attempt: unapproved org-less JWT cannot call POST /auth/org/create without a sign-up code
+		const bypassOrgRes = await callWorker(
+			testEnv,
+			"https://hotbed.semistrict.com/auth/org/create",
+			{
+				method: "POST",
+				headers: {
+					Authorization: `Bearer ${bypassAttackerJwt}`,
+					"Content-Type": "application/json",
+					Accept: "application/json",
+				},
+				body: JSON.stringify({ name: "Bypass Org" }),
+			},
+		);
+		expect(bypassOrgRes.status).toBe(403);
+
+		// 4. New Google user via CLI loopback flow hits /auth/signup-code first, then redirects to 127.0.0.1 after code entry
+		const cliVerifier = "cli_new_user_verifier_1234567890abcdef";
+		const cliChallenge2 = await pkceS256(cliVerifier);
+		const cliRedirect = "http://127.0.0.1:45681/callback";
+		const cliStart = await callWorker(
+			testEnv,
+			`https://hotbed.semistrict.com/auth/cli/authorize?redirect_uri=${encodeURIComponent(cliRedirect)}&state=cli_new_s1&code_challenge=${encodeURIComponent(cliChallenge2)}`,
+			{ redirect: "manual" },
+		);
+		expect(cliStart.status).toBe(302);
+		const cliStartState = new URL(cliStart.headers.get("Location")!).searchParams.get("state")!;
+		const cliStartCookie = cookiePair(extractCookies(cliStart)[0]);
+		nextAuthResponse = () =>
+			Response.json({
+				user: { id: "user_cli_new", email: "clinew@gmail.com" },
+				oauth_tokens: { provider: "GoogleOAuth" },
+				access_token: cliNewUserJwt,
+				refresh_token: "rt_cli_new",
+			});
+		const cliCb = await callWorker(
+			testEnv,
+			`https://hotbed.semistrict.com/auth/callback?code=c_cli_new&state=${encodeURIComponent(cliStartState)}`,
+			{ headers: { Cookie: cliStartCookie }, redirect: "manual" },
+		);
+		expect(cliCb.status).toBe(303);
+		expect(cliCb.headers.get("Location")).toBe("https://hotbed.semistrict.com/auth/signup-code");
+		const cliPendingCookie = cookiePair(
+			extractCookies(cliCb).find((c) => c.startsWith("hotbed_pending_signup="))!,
+		);
+		const cliRedeem = await callWorker(testEnv, "https://hotbed.semistrict.com/auth/signup-code", {
+			method: "POST",
+			headers: {
+				Cookie: cliPendingCookie,
+				"Content-Type": "application/x-www-form-urlencoded",
+				Origin: "https://hotbed.semistrict.com",
+			},
+			body: "code=LC2026051",
+			redirect: "manual",
+		});
+		expect(cliRedeem.status).toBe(303);
+		const cliLoopbackLoc = new URL(cliRedeem.headers.get("Location")!);
+		expect(cliLoopbackLoc.origin).toBe("http://127.0.0.1:45681");
+		expect(cliLoopbackLoc.searchParams.get("state")).toBe("cli_new_s1");
+		expect(cliLoopbackLoc.searchParams.get("code")).toBeTruthy();
+
+		// 5. Admin management of sign-up codes: non-default org admin (even spoofing internal header) is forbidden; default org admin can rotate & revoke
+		const otherAdminList = await callWorker(
+			testEnv,
+			"https://hotbed.semistrict.com/admin/signup-codes",
+			{
+				headers: {
+					Authorization: `Bearer ${otherOrgAdminJwt}`,
+					"X-Hotbed-Internal-Global-Admin": "1",
+				},
+			},
+		);
+		expect(otherAdminList.status).toBe(403);
+
+		const listRes = await callWorker(testEnv, "https://hotbed.semistrict.com/admin/signup-codes", {
+			headers: { Authorization: `Bearer ${defaultAdminJwt}` },
+		});
+		expect(listRes.status).toBe(200);
+		const listed = (await listRes.json()) as {
+			codes: Array<{ code: string; useCount: number; revokedAt: number | null }>;
+			approvedUsersCount: number;
+		};
+		expect(listed.codes.find((c) => c.code === "LC2026051")?.useCount).toBe(2);
+		expect(listed.approvedUsersCount).toBe(2);
+
+		// Add a new code and revoke LC2026051
+		const addCodeRes = await callWorker(
+			testEnv,
+			"https://hotbed.semistrict.com/admin/signup-codes",
+			{
+				method: "POST",
+				headers: {
+					Authorization: `Bearer ${defaultAdminJwt}`,
+					"Content-Type": "application/json",
+				},
+				body: JSON.stringify({ code: "NEXTCODE2026", label: "batch-2", maxUses: 1 }),
+			},
+		);
+		expect(addCodeRes.status).toBe(201);
+
+		const revokeRes = await callWorker(
+			testEnv,
+			"https://hotbed.semistrict.com/admin/signup-codes/LC2026051",
+			{
+				method: "DELETE",
+				headers: { Authorization: `Bearer ${defaultAdminJwt}` },
+			},
+		);
+		expect(revokeRes.status).toBe(200);
+
+		// Revoked initial code is rejected and is NOT resurrected even if DO restarts
+		const revokedAttempt = await callWorker(
+			testEnv,
+			"https://hotbed.semistrict.com/auth/org/create",
+			{
+				method: "POST",
+				headers: {
+					Authorization: `Bearer ${bypassAttackerJwt}`,
+					"Content-Type": "application/json",
+					Accept: "application/json",
+				},
+				body: JSON.stringify({ name: "Should Fail", signupCode: "LC2026051" }),
+			},
+		);
+		expect(revokedAttempt.status).toBe(403);
+
+		// New code works for its 1 allowed use, then fails on a 2nd user
+		const newCodeOk = await callWorker(testEnv, "https://hotbed.semistrict.com/auth/org/create", {
+			method: "POST",
+			headers: {
+				Authorization: `Bearer ${bypassAttackerJwt}`,
+				"Content-Type": "application/json",
+				Accept: "application/json",
+			},
+			body: JSON.stringify({ name: "Allowed With New Code", signupCode: "NEXTCODE2026" }),
+		});
+		expect(newCodeOk.status).toBe(201);
 	});
 });

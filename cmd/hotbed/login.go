@@ -15,11 +15,11 @@ import (
 )
 
 type loginCmd struct {
-	Controller string `arg:"" optional:"" env:"HOTBED_CONTROLLER" help:"Controller HTTPS URL (e.g. https://hotbed-controller.example.workers.dev). Defaults to HOTBED_CONTROLLER or your configured controller."`
+	Controller string `arg:"" optional:"" env:"HOTBED_CONTROLLER" help:"Controller HTTPS URL (e.g. https://hotbed.semistrict.com). Defaults to HOTBED_CONTROLLER or your configured controller."`
 	Device     bool   `name:"device" help:"Use OAuth 2.0 Device Authorization Grant (for SSH/headless machines without a local browser)."`
 	NoOpen     bool   `name:"no-open" help:"Print the login URL without opening a browser."`
 	Org        string `name:"org" help:"Optional WorkOS organization ID to sign directly into."`
-	Provider   string `name:"provider" help:"Optional WorkOS provider override (e.g. GoogleOAuth, authkit)."`
+	Provider   string `name:"provider" help:"WorkOS provider (GoogleOAuth)."`
 }
 
 type loginResult struct {
@@ -39,7 +39,7 @@ func (c *loginCmd) Exec(ctx context.Context, d deps) (any, error) {
 	}
 	if ctrl == "" {
 		return nil, api.Errorf(api.CodeInvalidArgs, "controller URL is required").
-			WithSuggestion("run `hotbed login https://hotbed-controller.<your-subdomain>.workers.dev` or set HOTBED_CONTROLLER")
+			WithSuggestion("run `hotbed login https://hotbed.semistrict.com` or set HOTBED_CONTROLLER")
 	}
 	base, err := api.ControllerBaseURL(ctrl)
 	if err != nil {

@@ -628,6 +628,144 @@ export class ControllerStore {
 		return true;
 	}
 
+	// ---- signup_codes & approved_users (Drizzle ORM) --------------------
+
+	seedInitialSignupCode(rawCode: string, nowMs: number): void {
+		const normalized = rawCode.trim().toUpperCase();
+		if (!normalized) return;
+		if (this.getMeta("signup_codes_seeded") !== null) return;
+		this.db
+			.insert(dbSchema.signupCodes)
+			.values({
+				code: normalized,
+				label: "initial",
+				maxUses: null,
+				useCount: 0,
+				createdAt: nowMs,
+				revokedAt: null,
+			})
+			.onConflictDoNothing()
+			.run();
+		this.setMeta("signup_codes_seeded", "1");
+	}
+
+	isUserSignupApproved(userId: string): boolean {
+		const row = this.db
+			.select({ userId: dbSchema.approvedUsers.userId })
+			.from(dbSchema.approvedUsers)
+			.where(eq(dbSchema.approvedUsers.userId, userId))
+			.get();
+		return Boolean(row);
+	}
+
+	countApprovedUsers(): number {
+		return this.db
+			.select({ userId: dbSchema.approvedUsers.userId })
+			.from(dbSchema.approvedUsers)
+			.all().length;
+	}
+
+	listSignupCodes(): Array<{
+		code: string;
+		label: string;
+		maxUses: number | null;
+		useCount: number;
+		createdAt: number;
+		revokedAt: number | null;
+	}> {
+		return this.db
+			.select({
+				code: dbSchema.signupCodes.code,
+				label: dbSchema.signupCodes.label,
+				maxUses: dbSchema.signupCodes.maxUses,
+				useCount: dbSchema.signupCodes.useCount,
+				createdAt: dbSchema.signupCodes.createdAt,
+				revokedAt: dbSchema.signupCodes.revokedAt,
+			})
+			.from(dbSchema.signupCodes)
+			.all()
+			.sort((a, b) => b.createdAt - a.createdAt);
+	}
+
+	listActiveSignupCodes(): Array<{ code: string; maxUses: number | null; useCount: number }> {
+		return this.listSignupCodes()
+			.filter((c) => c.revokedAt === null && (c.maxUses === null || c.useCount < c.maxUses))
+			.map(({ code, maxUses, useCount }) => ({ code, maxUses, useCount }));
+	}
+
+	putSignupCode(row: {
+		code: string;
+		label: string;
+		maxUses: number | null;
+		createdAt: number;
+	}): void {
+		const normalized = row.code.trim().toUpperCase();
+		this.db
+			.insert(dbSchema.signupCodes)
+			.values({
+				code: normalized,
+				label: row.label,
+				maxUses: row.maxUses,
+				useCount: 0,
+				createdAt: row.createdAt,
+				revokedAt: null,
+			})
+			.onConflictDoUpdate({
+				target: dbSchema.signupCodes.code,
+				set: {
+					label: row.label,
+					maxUses: row.maxUses,
+					revokedAt: null,
+				},
+			})
+			.run();
+	}
+
+	revokeSignupCode(rawCode: string, nowMs: number): boolean {
+		const normalized = rawCode.trim().toUpperCase();
+		const existing = this.db
+			.select({ code: dbSchema.signupCodes.code, revokedAt: dbSchema.signupCodes.revokedAt })
+			.from(dbSchema.signupCodes)
+			.where(eq(dbSchema.signupCodes.code, normalized))
+			.get();
+		if (!existing) return false;
+		if (existing.revokedAt === null) {
+			this.db
+				.update(dbSchema.signupCodes)
+				.set({ revokedAt: nowMs })
+				.where(eq(dbSchema.signupCodes.code, normalized))
+				.run();
+		}
+		return true;
+	}
+
+	recordSignupRedemption(userId: string, email: string, matchedCode: string, nowMs: number): void {
+		this.storage.transactionSync(() => {
+			const codeRow = this.db
+				.select({ useCount: dbSchema.signupCodes.useCount })
+				.from(dbSchema.signupCodes)
+				.where(eq(dbSchema.signupCodes.code, matchedCode))
+				.get();
+			if (codeRow) {
+				this.db
+					.update(dbSchema.signupCodes)
+					.set({ useCount: codeRow.useCount + 1 })
+					.where(eq(dbSchema.signupCodes.code, matchedCode))
+					.run();
+			}
+			this.db
+				.insert(dbSchema.approvedUsers)
+				.values({
+					userId,
+					email,
+					signupCode: matchedCode,
+					approvedAt: nowMs,
+				})
+				.onConflictDoNothing()
+				.run();
+		});
+	}
+
 	putApiToken(row: {
 		id: string;
 		tokenHash: string;

@@ -6,6 +6,7 @@ import {
 	getBearerToken,
 	getCookie,
 	INTERNAL_AUTH_HEADER,
+	INTERNAL_GLOBAL_ADMIN_HEADER,
 	INTERNAL_ORG_HEADER,
 	makeSessionCookie,
 	NOOP_TOKEN_LOOKUP,
@@ -33,6 +34,7 @@ import {
 	getOrganization,
 	getOrganizationMembership,
 	getUser,
+	GOOGLE_OAUTH_PROVIDER,
 	isAllowedCliRedirectUri,
 	isSafeReturnTo,
 	isValidOrgId,
@@ -48,6 +50,7 @@ import {
 	randomBase64Url,
 	removeOrganizationMembership,
 	renderOrgPickerPage,
+	renderSignupCodePage,
 	revokeOrganizationInvitation,
 	sealPayload,
 	sendOrganizationInvitation,
@@ -56,12 +59,13 @@ import {
 	verifyWorkOSAccessToken,
 	WORKOS_OAUTH_STATE_COOKIE,
 	WORKOS_PENDING_ORG_COOKIE,
+	WORKOS_PENDING_SIGNUP_COOKIE,
 	WORKOS_SESSION_COOKIE,
-	workosAuthProvider,
 	workosClientId,
 	type CliHandoffPayload,
 	type OAuthStatePayload,
 	type PendingOrgSelectionPayload,
+	type PendingSignupPayload,
 	type WorkOSOrganizationSummary,
 	type WorkOSSessionPayload,
 	type WorkOSUser,
@@ -130,6 +134,7 @@ export interface EdgeAuthResult {
 	setCookie?: string;
 	clearWorkOSCookie?: boolean;
 	needsOrgSelection?: boolean;
+	globalAdmin?: boolean;
 }
 
 function defaultDoName(request: Request, url: URL, env: ControllerEnv): string {
@@ -282,9 +287,10 @@ export async function resolveEdgeRouting(
 					doName: doNameForOrg(explicitOrg, env),
 					orgId: explicitOrg,
 					caller: null,
+					globalAdmin: doNameForOrg(explicitOrg, env) === "default",
 				};
 			}
-			return { doName: fallbackDo, orgId: "", caller: null };
+			return { doName: fallbackDo, orgId: "", caller: null, globalAdmin: true };
 		}
 
 		// 1b. Org-scoped worker / join / API tokens (hbw_<org>.<sec>, hbj_<org>.<sec>, hbu_<org>.<sec>)
@@ -334,10 +340,14 @@ export async function resolveEdgeRouting(
 				addr: headerAddr,
 				authMethod: "workos-jwt",
 			};
+			const defaultOrg = (env.DEFAULT_ORG_ID ?? "").trim();
 			return {
 				doName: doNameForOrg(claims.orgId, env),
 				orgId: claims.orgId,
 				caller,
+				globalAdmin: Boolean(
+					defaultOrg && claims.orgId === defaultOrg && isOrgAdmin(caller.orgRole),
+				),
 			};
 		}
 
@@ -365,12 +375,16 @@ export async function resolveEdgeRouting(
 					needsOrgSelection: true,
 				};
 			}
+			const defaultOrg = (env.DEFAULT_ORG_ID ?? "").trim();
 			return {
 				doName: doNameForOrg(resolved.caller.orgId, env),
 				orgId: resolved.caller.orgId,
 				caller: resolved.caller,
 				session: resolved.session,
 				setCookie: resolved.setCookie,
+				globalAdmin: Boolean(
+					defaultOrg && resolved.caller.orgId === defaultOrg && isOrgAdmin(resolved.caller.orgRole),
+				),
 			};
 		}
 	}
@@ -386,6 +400,9 @@ export function attachInternalAuth(request: Request, routing: EdgeAuthResult): R
 	}
 	if (routing.caller) {
 		headers.set(INTERNAL_AUTH_HEADER, JSON.stringify(routing.caller));
+	}
+	if (routing.globalAdmin) {
+		headers.set(INTERNAL_GLOBAL_ADMIN_HEADER, "1");
 	}
 	return new Request(request, { headers });
 }
@@ -429,6 +446,42 @@ async function readBodyParams(req: Request): Promise<Record<string, string>> {
 	return out;
 }
 
+async function isUserSignupApproved(
+	request: Request,
+	url: URL,
+	env: ControllerEnv,
+	userId: string,
+): Promise<boolean> {
+	const res = await env.CONTROLLER.getByName(defaultDoName(request, url, env)).fetch(
+		new Request(new URL("/internal/signup/check", url).toString(), {
+			method: "POST",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify({ userId }),
+		}),
+	);
+	if (!res.ok) return false;
+	const data = (await res.json().catch(() => ({}))) as { approved?: boolean };
+	return Boolean(data.approved);
+}
+
+async function redeemSignupCode(
+	request: Request,
+	url: URL,
+	env: ControllerEnv,
+	params: { userId: string; email: string; code: string },
+): Promise<{ ok: true } | { ok: false; message: string }> {
+	const res = await env.CONTROLLER.getByName(defaultDoName(request, url, env)).fetch(
+		new Request(new URL("/internal/signup/redeem", url).toString(), {
+			method: "POST",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify(params),
+		}),
+	);
+	if (res.ok) return { ok: true };
+	const data = (await res.json().catch(() => ({}))) as { message?: string };
+	return { ok: false, message: data.message || "Invalid sign-up code." };
+}
+
 async function finalizeWorkOSLogin(
 	request: Request,
 	url: URL,
@@ -449,14 +502,17 @@ async function finalizeWorkOSLogin(
 		cliCodeChallenge?: string;
 	},
 	clearCookies: string[] = [],
+	prefetchedOrgs?: WorkOSOrganizationSummary[],
 ): Promise<Response> {
 	const secure = url.protocol === "https:";
 	let active = auth;
-	let orgs: WorkOSOrganizationSummary[] = [];
-	try {
-		orgs = await listUserOrganizations(env, active.user.id);
-	} catch {
-		orgs = [];
+	let orgs: WorkOSOrganizationSummary[] = prefetchedOrgs ?? [];
+	if (!prefetchedOrgs) {
+		try {
+			orgs = await listUserOrganizations(env, active.user.id);
+		} catch {
+			orgs = [];
+		}
 	}
 
 	// If no organization is active yet and the user belongs to exactly one org, activate it automatically.
@@ -637,23 +693,32 @@ export async function handleAuthRoute(
 	if (pathname === "/auth/config" && request.method === "GET") {
 		return Response.json({
 			workosEnabled,
-			authProvider: workosEnabled ? workosAuthProvider(env) : "",
+			authProvider: workosEnabled ? GOOGLE_OAUTH_PROVIDER : "",
 			clientId: workosEnabled ? workosClientId(env) : "",
 			deviceAuthSupported: workosEnabled,
-			tokenLoginEnabled: Boolean(ownerToken),
+			tokenLoginEnabled: !workosEnabled && Boolean(ownerToken),
+			signupCodeRequired: workosEnabled,
 		});
 	}
 
 	// 2. GET/POST /auth/login
 	if (pathname === "/auth/login") {
 		if (request.method === "GET") {
-			const mode = url.searchParams.get("mode");
 			const returnTo = isSafeReturnTo(url.searchParams.get("return_to"));
-			if (workosEnabled && mode !== "token") {
+			if (workosEnabled) {
+				const requestedProvider = (url.searchParams.get("provider") ?? "").trim();
+				if (requestedProvider && requestedProvider !== GOOGLE_OAUTH_PROVIDER) {
+					return Response.json(
+						{
+							code: ErrorCode.InvalidArgs,
+							message: `only Google sign-in (${GOOGLE_OAUTH_PROVIDER}) is supported`,
+						},
+						{ status: 400 },
+					);
+				}
 				const state = randomHex(16);
 				const codeVerifier = randomBase64Url(32);
 				const codeChallenge = await pkceS256(codeVerifier);
-				const provider = url.searchParams.get("provider")?.trim() || undefined;
 				const organizationId = url.searchParams.get("organization_id")?.trim() || undefined;
 				const screenHint = url.searchParams.get("screen_hint")?.trim() || undefined;
 				const statePayload: OAuthStatePayload = {
@@ -667,7 +732,6 @@ export async function handleAuthRoute(
 					redirectUri: `${url.origin}/auth/callback`,
 					state,
 					codeChallenge,
-					provider,
 					organizationId,
 					screenHint,
 				});
@@ -686,6 +750,15 @@ export async function handleAuthRoute(
 		}
 
 		if (request.method === "POST") {
+			if (workosEnabled) {
+				return Response.json(
+					{
+						code: ErrorCode.NotAuthorized,
+						message: "Google sign-in is required; token login is disabled",
+					},
+					{ status: 403 },
+				);
+			}
 			const csrfErr = checkSameOrigin(request);
 			if (csrfErr) {
 				return Response.json({ code: ErrorCode.NotAuthorized, message: csrfErr }, { status: 403 });
@@ -740,7 +813,16 @@ export async function handleAuthRoute(
 		const cliState = (url.searchParams.get("state") ?? "").trim();
 		const cliCodeChallenge = (url.searchParams.get("code_challenge") ?? "").trim();
 		const organizationId = (url.searchParams.get("organization_id") ?? "").trim() || undefined;
-		const provider = (url.searchParams.get("provider") ?? "").trim() || undefined;
+		const requestedProvider = (url.searchParams.get("provider") ?? "").trim();
+		if (requestedProvider && requestedProvider !== GOOGLE_OAUTH_PROVIDER) {
+			return Response.json(
+				{
+					code: ErrorCode.InvalidArgs,
+					message: `only Google sign-in (${GOOGLE_OAUTH_PROVIDER}) is supported`,
+				},
+				{ status: 400 },
+			);
+		}
 		if (!isAllowedCliRedirectUri(redirectUri)) {
 			return Response.json(
 				{
@@ -775,7 +857,6 @@ export async function handleAuthRoute(
 			redirectUri: `${url.origin}/auth/callback`,
 			state,
 			codeChallenge,
-			provider,
 			organizationId,
 		});
 		return new Response(null, {
@@ -884,6 +965,41 @@ export async function handleAuthRoute(
 					{ status: 200, headers },
 				);
 			}
+			let orgs: WorkOSOrganizationSummary[] = [];
+			try {
+				orgs = await listUserOrganizations(env, auth.user.id);
+			} catch {
+				orgs = [];
+			}
+			const existingOrApproved =
+				Boolean(auth.organizationId) ||
+				orgs.length > 0 ||
+				(await isUserSignupApproved(request, url, env, auth.user.id));
+			if (!existingOrApproved) {
+				const pendingSignup: PendingSignupPayload = {
+					user: auth.user,
+					accessToken: auth.accessToken,
+					refreshToken: auth.refreshToken,
+					sessionId: auth.sessionId,
+					role: auth.role,
+					expiresAt: auth.expiresAt,
+					returnTo: savedState.returnTo,
+					cliRedirectUri: savedState.cliRedirectUri,
+					cliState: savedState.cliState,
+					cliCodeChallenge: savedState.cliCodeChallenge,
+					exp: Date.now() + 10 * 60_000,
+				};
+				const sealedSignup = await sealPayload(env, "pending-signup", pendingSignup);
+				const headers = new Headers({
+					Location: new URL("/auth/signup-code", url).toString(),
+				});
+				headers.append("Set-Cookie", clearStateCookie);
+				headers.append(
+					"Set-Cookie",
+					makeShortAuthCookie(WORKOS_PENDING_SIGNUP_COOKIE, sealedSignup, secure),
+				);
+				return new Response(null, { status: 303, headers });
+			}
 			return finalizeWorkOSLogin(
 				request,
 				url,
@@ -896,6 +1012,7 @@ export async function handleAuthRoute(
 					cliCodeChallenge: savedState.cliCodeChallenge,
 				},
 				[clearStateCookie],
+				orgs,
 			);
 		} catch (err) {
 			const he = fromUnknownError(err);
@@ -907,6 +1024,109 @@ export async function handleAuthRoute(
 				},
 			});
 		}
+	}
+
+	// 4b. GET/POST /auth/signup-code — Post-Google sign-up code gate for new accounts
+	if (pathname === "/auth/signup-code") {
+		if (!workosEnabled) {
+			return Response.redirect(new URL("/", url).toString(), 302);
+		}
+		if (request.method === "GET") {
+			const rawPending = getCookie(request, WORKOS_PENDING_SIGNUP_COOKIE);
+			const pending = rawPending
+				? await unsealPayload<PendingSignupPayload>(env, "pending-signup", rawPending)
+				: null;
+			if (!pending || pending.exp < Date.now()) {
+				return new Response(null, {
+					status: 302,
+					headers: {
+						Location: new URL("/auth/login", url).toString(),
+						"Set-Cookie": clearShortAuthCookie(WORKOS_PENDING_SIGNUP_COOKIE, secure),
+					},
+				});
+			}
+			return new Response(
+				renderSignupCodePage({
+					email: pending.user.email,
+					returnTo: pending.returnTo,
+				}),
+				{ status: 200, headers: { "Content-Type": "text/html; charset=utf-8" } },
+			);
+		}
+		if (request.method === "POST") {
+			const csrfErr = checkSameOrigin(request);
+			if (csrfErr) {
+				return Response.json({ code: ErrorCode.NotAuthorized, message: csrfErr }, { status: 403 });
+			}
+			const rawPending = getCookie(request, WORKOS_PENDING_SIGNUP_COOKIE);
+			const pending = rawPending
+				? await unsealPayload<PendingSignupPayload>(env, "pending-signup", rawPending)
+				: null;
+			if (!pending || pending.exp < Date.now()) {
+				const clearCookie = clearShortAuthCookie(WORKOS_PENDING_SIGNUP_COOKIE, secure);
+				if (wantsJson(request)) {
+					return Response.json(
+						{
+							code: ErrorCode.NotAuthorized,
+							message: "Sign-up session expired. Please sign in with Google again.",
+						},
+						{ status: 401, headers: { "Set-Cookie": clearCookie } },
+					);
+				}
+				return new Response(null, {
+					status: 303,
+					headers: {
+						Location: new URL("/auth/login", url).toString(),
+						"Set-Cookie": clearCookie,
+					},
+				});
+			}
+			const body = await readBodyParams(request);
+			const submittedCode = (body.code || body.signupCode || body.signup_code || "").trim();
+			const redeemed = await redeemSignupCode(request, url, env, {
+				userId: pending.user.id,
+				email: pending.user.email,
+				code: submittedCode,
+			});
+			if (!redeemed.ok) {
+				if (wantsJson(request)) {
+					return Response.json(
+						{ code: ErrorCode.NotAuthorized, message: redeemed.message },
+						{ status: 403 },
+					);
+				}
+				return new Response(
+					renderSignupCodePage({
+						email: pending.user.email,
+						error: redeemed.message,
+						returnTo: pending.returnTo,
+					}),
+					{ status: 403, headers: { "Content-Type": "text/html; charset=utf-8" } },
+				);
+			}
+			return finalizeWorkOSLogin(
+				request,
+				url,
+				env,
+				{
+					user: pending.user,
+					organizationId: "",
+					accessToken: pending.accessToken,
+					refreshToken: pending.refreshToken,
+					sessionId: pending.sessionId,
+					role: pending.role,
+					expiresAt: pending.expiresAt,
+				},
+				{
+					returnTo: body.return_to || pending.returnTo,
+					cliRedirectUri: pending.cliRedirectUri,
+					cliState: pending.cliState,
+					cliCodeChallenge: pending.cliCodeChallenge,
+				},
+				[clearShortAuthCookie(WORKOS_PENDING_SIGNUP_COOKIE, secure)],
+			);
+		}
+		return new Response("Method Not Allowed", { status: 405 });
 	}
 
 	// 5. POST /auth/org/select-pending — complete WorkOS organization_selection_required flow
@@ -986,6 +1206,18 @@ export async function handleAuthRoute(
 				return Response.redirect(new URL("/auth/login", url).toString(), 302);
 			}
 			const orgs = await listUserOrganizations(env, resolved.session.userId);
+			if (
+				orgs.length === 0 &&
+				!(await isUserSignupApproved(request, url, env, resolved.session.userId))
+			) {
+				return new Response(null, {
+					status: 302,
+					headers: {
+						Location: new URL("/auth/login", url).toString(),
+						"Set-Cookie": clearWorkOSSessionCookie(secure),
+					},
+				});
+			}
 			const returnTo = isSafeReturnTo(url.searchParams.get("return_to"));
 			const res = new Response(
 				renderOrgPickerPage({
@@ -1187,6 +1419,35 @@ export async function handleAuthRoute(
 			} catch {
 				organizations = [];
 			}
+			const existingOrApproved =
+				Boolean(active.organizationId) ||
+				organizations.length > 0 ||
+				(await isUserSignupApproved(request, url, env, active.user.id));
+			if (!existingOrApproved) {
+				const submittedCode = (body.signupCode || body.signup_code || "").trim();
+				if (!submittedCode) {
+					return Response.json(
+						hotbedError(
+							ErrorCode.NotAuthorized,
+							"A valid sign-up code is required for new accounts.",
+						)
+							.withSuggestion("sign in via browser first to enter your sign-up code")
+							.toJSON(),
+						{ status: 403 },
+					);
+				}
+				const redeemed = await redeemSignupCode(request, url, env, {
+					userId: active.user.id,
+					email: active.user.email,
+					code: submittedCode,
+				});
+				if (!redeemed.ok) {
+					return Response.json(
+						{ code: ErrorCode.NotAuthorized, message: redeemed.message },
+						{ status: 403 },
+					);
+				}
+			}
 			if (!active.organizationId && organizations.length === 1 && active.refreshToken) {
 				try {
 					active = await authenticateWithRefreshToken(env, {
@@ -1240,11 +1501,24 @@ export async function handleAuthRoute(
 		let logoutUrl = "/auth/login";
 		if (workosEnabled) {
 			const rawCookie = getCookie(request, WORKOS_SESSION_COOKIE);
+			let sessionId = "";
 			if (rawCookie) {
 				const session = await unsealPayload<WorkOSSessionPayload>(env, "session", rawCookie);
-				if (session?.sessionId) {
-					logoutUrl = buildLogoutUrl(env, session.sessionId, `${url.origin}/auth/login`);
+				sessionId = session?.sessionId ?? "";
+			}
+			if (!sessionId) {
+				const rawPendingSignup = getCookie(request, WORKOS_PENDING_SIGNUP_COOKIE);
+				if (rawPendingSignup) {
+					const pending = await unsealPayload<PendingSignupPayload>(
+						env,
+						"pending-signup",
+						rawPendingSignup,
+					);
+					sessionId = pending?.sessionId ?? "";
 				}
+			}
+			if (sessionId) {
+				logoutUrl = buildLogoutUrl(env, sessionId, `${url.origin}/auth/login`);
 			}
 		}
 		const headers = new Headers();
@@ -1252,6 +1526,7 @@ export async function handleAuthRoute(
 		headers.append("Set-Cookie", clearWorkOSSessionCookie(secure));
 		headers.append("Set-Cookie", clearShortAuthCookie(WORKOS_OAUTH_STATE_COOKIE, secure));
 		headers.append("Set-Cookie", clearShortAuthCookie(WORKOS_PENDING_ORG_COOKIE, secure));
+		headers.append("Set-Cookie", clearShortAuthCookie(WORKOS_PENDING_SIGNUP_COOKIE, secure));
 		if (wantsJson(request)) {
 			return Response.json({ ok: true, logoutUrl }, { status: 200, headers });
 		}
@@ -1569,6 +1844,49 @@ export async function handleAuthRoute(
 					),
 					rotatedCookie,
 				);
+			}
+
+			// Defense-in-depth: an org-less user cannot create an organization without first redeeming a sign-up code.
+			if (!ctx.organizationId) {
+				let existingOrgs: WorkOSOrganizationSummary[] = [];
+				try {
+					existingOrgs = await listUserOrganizations(env, ctx.userId);
+				} catch {
+					existingOrgs = [];
+				}
+				const approved =
+					existingOrgs.length > 0 || (await isUserSignupApproved(request, url, env, ctx.userId));
+				if (!approved) {
+					const submittedCode = (body.signupCode || body.signup_code || "").trim();
+					if (!submittedCode) {
+						return withSetCookie(
+							Response.json(
+								hotbedError(
+									ErrorCode.NotAuthorized,
+									"A valid sign-up code is required for new accounts.",
+								)
+									.withSuggestion("enter your sign-up code after signing in with Google")
+									.toJSON(),
+								{ status: 403 },
+							),
+							rotatedCookie,
+						);
+					}
+					const redeemed = await redeemSignupCode(request, url, env, {
+						userId: ctx.userId,
+						email: ctx.email,
+						code: submittedCode,
+					});
+					if (!redeemed.ok) {
+						return withSetCookie(
+							Response.json(
+								{ code: ErrorCode.NotAuthorized, message: redeemed.message },
+								{ status: 403 },
+							),
+							rotatedCookie,
+						);
+					}
+				}
 			}
 
 			const org = await createOrganization(env, name);

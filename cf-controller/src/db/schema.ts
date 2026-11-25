@@ -501,3 +501,27 @@ export const workerConfigs = sqliteTable("worker_configs", {
 	updatedAt: integer("updated_at").notNull(),
 	updatedBy: text("updated_by").notNull().default(""),
 });
+
+export const signupCodes = sqliteTable(
+	"signup_codes",
+	{
+		code: text("code").primaryKey(),
+		label: text("label").notNull().default(""),
+		maxUses: integer("max_uses"),
+		useCount: integer("use_count").notNull().default(0),
+		createdAt: integer("created_at").notNull(),
+		revokedAt: integer("revoked_at"),
+	},
+	(t) => [index("signup_codes_created").on(t.createdAt)],
+);
+
+export const approvedUsers = sqliteTable(
+	"approved_users",
+	{
+		userId: text("user_id").primaryKey(),
+		email: text("email").notNull().default(""),
+		signupCode: text("signup_code").notNull().default(""),
+		approvedAt: integer("approved_at").notNull(),
+	},
+	(t) => [index("approved_users_at").on(t.approvedAt)],
+);

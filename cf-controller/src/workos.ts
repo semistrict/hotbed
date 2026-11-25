@@ -9,6 +9,7 @@ export interface WorkOSEnv {
 	WORKOS_API_BASE?: string;
 	WORKOS_JWKS_URL?: string;
 	DEFAULT_ORG_ID?: string;
+	INITIAL_SIGNUP_CODE?: string;
 }
 
 export interface WorkOSUser {
@@ -96,7 +97,26 @@ export interface CliHandoffPayload {
 	exp: number;
 }
 
-export type SealPurpose = "session" | "oauth-state" | "pending-org" | "cli-handoff";
+export interface PendingSignupPayload {
+	user: WorkOSUser;
+	accessToken: string;
+	refreshToken: string;
+	sessionId: string;
+	role: string;
+	expiresAt: number;
+	returnTo: string;
+	cliRedirectUri?: string;
+	cliState?: string;
+	cliCodeChallenge?: string;
+	exp: number;
+}
+
+export type SealPurpose =
+	| "session"
+	| "oauth-state"
+	| "pending-org"
+	| "pending-signup"
+	| "cli-handoff";
 
 export interface VerifiedWorkOSClaims {
 	sub: string;
@@ -116,6 +136,7 @@ export type AuthenticateResult =
 			refreshToken: string;
 			sessionId: string;
 			role: string;
+			authenticationMethod: string;
 			expiresAt: number;
 	  }
 	| {
@@ -124,9 +145,12 @@ export type AuthenticateResult =
 			organizations: Array<{ id: string; name: string }>;
 	  };
 
+export const GOOGLE_OAUTH_PROVIDER = "GoogleOAuth";
+
 export const WORKOS_SESSION_COOKIE = "hotbed_wos_session";
 export const WORKOS_OAUTH_STATE_COOKIE = "hotbed_oauth_state";
 export const WORKOS_PENDING_ORG_COOKIE = "hotbed_pending_org";
+export const WORKOS_PENDING_SIGNUP_COOKIE = "hotbed_pending_signup";
 
 const ORG_ID_RE = /^[A-Za-z0-9_-]{1,128}$/;
 
@@ -157,9 +181,17 @@ export function workosJwksUrl(env: WorkOSEnv): string {
 	return `${workosApiBase(env)}/sso/jwks/${encodeURIComponent(workosClientId(env))}`;
 }
 
-export function workosAuthProvider(env: WorkOSEnv): string {
-	const raw = (env.WORKOS_AUTH_PROVIDER ?? "").trim();
-	return raw || "authkit";
+export function workosAuthProvider(_env?: WorkOSEnv): string {
+	return GOOGLE_OAUTH_PROVIDER;
+}
+
+export function assertGoogleAuthMethod(authenticationMethod: string): void {
+	if (authenticationMethod !== GOOGLE_OAUTH_PROVIDER) {
+		throw hotbedError(
+			ErrorCode.NotAuthorized,
+			"Google sign-in is required; other authentication methods are not supported",
+		).withSuggestion("sign in with your Google account");
+	}
 }
 
 export function doNameForOrg(orgId: string, env: Pick<WorkOSEnv, "DEFAULT_ORG_ID">): string {
@@ -557,7 +589,6 @@ export function buildAuthorizeUrl(
 		state: string;
 		codeChallenge: string;
 		organizationId?: string;
-		provider?: string;
 		screenHint?: string;
 	},
 ): string {
@@ -565,7 +596,7 @@ export function buildAuthorizeUrl(
 	u.searchParams.set("client_id", workosClientId(env));
 	u.searchParams.set("redirect_uri", params.redirectUri);
 	u.searchParams.set("response_type", "code");
-	u.searchParams.set("provider", params.provider || workosAuthProvider(env));
+	u.searchParams.set("provider", GOOGLE_OAUTH_PROVIDER);
 	u.searchParams.set("state", params.state);
 	u.searchParams.set("code_challenge", params.codeChallenge);
 	u.searchParams.set("code_challenge_method", "S256");
@@ -592,6 +623,8 @@ function parseAuthSuccess(data: {
 	organization_id?: string | null;
 	access_token: string;
 	refresh_token: string;
+	authentication_method?: string | null;
+	oauth_tokens?: { provider?: string | null } | null;
 }): Extract<AuthenticateResult, { kind: "authenticated" }> {
 	const claims = decodeJwtClaimsUnverified(data.access_token) ?? {};
 	const expSec = typeof claims.exp === "number" ? claims.exp : Math.floor(Date.now() / 1000) + 300;
@@ -600,6 +633,10 @@ function parseAuthSuccess(data: {
 		(typeof claims.org_id === "string" ? claims.org_id : "");
 	const role = typeof claims.role === "string" ? claims.role : "";
 	const sid = typeof claims.sid === "string" ? claims.sid : "";
+	const authenticationMethod =
+		(typeof data.authentication_method === "string" && data.authentication_method.trim()) ||
+		(typeof data.oauth_tokens?.provider === "string" && data.oauth_tokens.provider.trim()) ||
+		"";
 	return {
 		kind: "authenticated",
 		user: mapUser(data.user),
@@ -608,6 +645,7 @@ function parseAuthSuccess(data: {
 		refreshToken: data.refresh_token,
 		sessionId: sid,
 		role,
+		authenticationMethod,
 		expiresAt: expSec * 1000,
 	};
 }
@@ -660,14 +698,18 @@ export async function authenticateWithCode(
 			`WorkOS authentication failed (HTTP ${res.status})`;
 		throw hotbedError(ErrorCode.NotAuthorized, msg);
 	}
-	return parseAuthSuccess(
+	const parsed = parseAuthSuccess(
 		data as {
 			user: RawWorkOSUser;
 			organization_id?: string | null;
 			access_token: string;
 			refresh_token: string;
+			authentication_method?: string | null;
+			oauth_tokens?: { provider?: string | null } | null;
 		},
 	);
+	assertGoogleAuthMethod(parsed.authenticationMethod);
+	return parsed;
 }
 
 export async function authenticateWithOrgSelection(
@@ -702,14 +744,18 @@ export async function authenticateWithOrgSelection(
 			`WorkOS organization selection failed (HTTP ${res.status})`;
 		throw hotbedError(ErrorCode.NotAuthorized, msg);
 	}
-	return parseAuthSuccess(
+	const parsed = parseAuthSuccess(
 		data as {
 			user: RawWorkOSUser;
 			organization_id?: string | null;
 			access_token: string;
 			refresh_token: string;
+			authentication_method?: string | null;
+			oauth_tokens?: { provider?: string | null } | null;
 		},
 	);
+	assertGoogleAuthMethod(parsed.authenticationMethod);
+	return parsed;
 }
 
 const RECENT_REFRESH_TTL_MS = 15_000;
@@ -892,16 +938,20 @@ export async function pollDeviceToken(
 			`WorkOS device authentication failed (HTTP ${res.status})`;
 		throw hotbedError(ErrorCode.NotAuthorized, msg);
 	}
+	const auth = parseAuthSuccess(
+		data as {
+			user: RawWorkOSUser;
+			organization_id?: string | null;
+			access_token: string;
+			refresh_token: string;
+			authentication_method?: string | null;
+			oauth_tokens?: { provider?: string | null } | null;
+		},
+	);
+	assertGoogleAuthMethod(auth.authenticationMethod);
 	return {
 		status: "complete",
-		auth: parseAuthSuccess(
-			data as {
-				user: RawWorkOSUser;
-				organization_id?: string | null;
-				access_token: string;
-				refresh_token: string;
-			},
-		),
+		auth,
 	};
 }
 
@@ -1282,6 +1332,51 @@ export function renderOrgPickerPage(opts: {
   ${errHtml}
   ${orgButtons || `<p class="sub">You don't belong to an organization yet. Create one below to start your cluster.</p>`}
   ${createSection}
+  <div class="footer">
+    <span>hotbed cockpit</span>
+    <form method="POST" action="/auth/logout"><button type="submit" class="logout">Sign out</button></form>
+  </div>
+</div>
+</body>
+</html>`;
+}
+
+export function renderSignupCodePage(opts: {
+	email: string;
+	error?: string;
+	returnTo?: string;
+}): string {
+	const errHtml = opts.error ? `<p class="err">${escapeHtml(opts.error)}</p>` : "";
+	return `<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>hotbed — sign-up code</title>
+<style>
+  body{margin:0;min-height:100vh;display:grid;place-items:center;background:#0b0d12;color:#e5e7eb;font-family:system-ui,-apple-system,sans-serif;padding:24px;box-sizing:border-box}
+  .card{width:100%;max-width:440px;padding:28px;border:1px solid #1f2430;border-radius:14px;background:#121620;box-sizing:border-box}
+  h1{margin:0 0 6px;font-size:19px;font-weight:600}
+  .sub{margin:0 0 20px;color:#9ca3af;font-size:13px;line-height:1.45}
+  .err{color:#f87171;margin:0 0 14px;font-size:13px;padding:10px 12px;border:1px solid #7f1d1d;background:#1f1115;border-radius:8px}
+  input[type=text]{width:100%;padding:10px 12px;border-radius:8px;border:1px solid #2b3242;background:#0b0d12;color:#f9fafb;font-size:14px;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;letter-spacing:.04em;box-sizing:border-box;margin-bottom:12px}
+  button.primary{width:100%;padding:10px 12px;border-radius:8px;border:0;background:#3b82f6;color:#fff;font-weight:600;font-size:14px;cursor:pointer}
+  button.primary:hover{background:#2563eb}
+  .footer{margin-top:18px;display:flex;justify-content:space-between;align-items:center;font-size:12px;color:#6b7280}
+  .logout{background:none;border:0;color:#9ca3af;cursor:pointer;font-size:12px;padding:0;text-decoration:underline}
+  .logout:hover{color:#e5e7eb}
+</style>
+</head>
+<body>
+<div class="card">
+  <h1>Enter sign-up code</h1>
+  <p class="sub">${opts.email ? `Signed in with Google as ${escapeHtml(opts.email)}. ` : ""}New hotbed accounts require a sign-up code to continue.</p>
+  ${errHtml}
+  <form method="POST" action="/auth/signup-code">
+    <input type="hidden" name="return_to" value="${escapeHtml(opts.returnTo || "/")}" />
+    <input type="text" name="code" placeholder="Sign-up code" autocomplete="one-time-code" autocapitalize="characters" spellcheck="false" autofocus required />
+    <button type="submit" class="primary">Continue</button>
+  </form>
   <div class="footer">
     <span>hotbed cockpit</span>
     <form method="POST" action="/auth/logout"><button type="submit" class="logout">Sign out</button></form>
