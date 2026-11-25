@@ -593,10 +593,10 @@ type ClusterServiceClient interface {
 	// after at most two minutes, and the host calls again with how the VM is
 	// then, as it does each time it has started or stopped the VM.
 	Standby(context.Context, *v1.StandbyRequest) (ClusterServiceStandbyClientStream, error)
-	// ReportHostUsage reports host-side truth about a VM worker (QEMU CPU,
+	// ReportHostUsage reports host-side truth about a VM worker (VM CPU,
 	// host CPU/load, host memory pressure) from its host supervisor so
 	// controller placement, worker admission, and the cockpit can see host
-	// starvation that the Linux guest cannot observe under HVF.
+	// starvation that the Linux guest cannot observe from inside its VM.
 	ReportHostUsage(context.Context, *v1.ReportHostUsageRequest) (*v1.ReportHostUsageResponse, error)
 	// List the cluster's workers.
 	ListNodes(context.Context, *v1.ListNodesRequest) (*v1.ListNodesResponse, error)
@@ -733,10 +733,10 @@ type ClusterServiceHandler interface {
 	// after at most two minutes, and the host calls again with how the VM is
 	// then, as it does each time it has started or stopped the VM.
 	Standby(context.Context, *v1.StandbyRequest, ClusterServiceStandbyServerStream) error
-	// ReportHostUsage reports host-side truth about a VM worker (QEMU CPU,
+	// ReportHostUsage reports host-side truth about a VM worker (VM CPU,
 	// host CPU/load, host memory pressure) from its host supervisor so
 	// controller placement, worker admission, and the cockpit can see host
-	// starvation that the Linux guest cannot observe under HVF.
+	// starvation that the Linux guest cannot observe from inside its VM.
 	ReportHostUsage(context.Context, *v1.ReportHostUsageRequest) (*v1.ReportHostUsageResponse, error)
 	// List the cluster's workers.
 	ListNodes(context.Context, *v1.ListNodesRequest) (*v1.ListNodesResponse, error)

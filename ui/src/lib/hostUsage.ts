@@ -14,7 +14,7 @@ export function nodeHostUsage(n: Node): HostUsage | undefined {
   return n.online ? n.hostUsage : undefined;
 }
 
-/** True when guest CPU looks busy while host QEMU CPU is much lower (>= 35% CPU steal). */
+/** True when guest CPU looks busy while the VM's host CPU is much lower (>= 35% CPU steal). */
 export function hasCpuStealWarning(guestBusy: number, host?: HostUsage): boolean {
   if (!host) return false;
   return guestBusy >= HOST_STEAL_GUEST_MIN && guestBusy - host.vmCpuBusy >= HOST_STEAL_DIFF_HOLD_AT;

@@ -233,7 +233,7 @@ func TestHostUsageSamplerDeltaAndProbeErrors(t *testing.T) {
 	procErr = nil
 
 	// Next successful sample 5s after the first successful sample computes the
-	// delta cleanly: QEMU used 5s of CPU across 4 vCPUs -> 1.0 core / 4 = 0.25.
+	// delta cleanly: the VM used 5s of CPU across 4 vCPUs -> 1.0 core / 4 = 0.25.
 	now = now.Add(3 * time.Second)
 	cpuTime += 3 * time.Second
 	pctCPU = 999 // ignored when delta is available

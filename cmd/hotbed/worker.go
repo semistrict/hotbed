@@ -7,7 +7,6 @@ import (
 	"log/slog"
 	"os"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/semistrict/hotbed/internal/api"
@@ -16,13 +15,13 @@ import (
 )
 
 type workerCmd struct {
-	Init      workerInitCmd      `cmd:"" help:"Initialize and start a worker node on this machine in ~/.hotbed (direct on Linux, QEMU Ubuntu+ZFS sparse qcow2 VM on macOS)."`
+	Init      workerInitCmd      `cmd:"" help:"Initialize and start a worker node on this machine in ~/.hotbed (direct on Linux, an Ubuntu+ZFS VM with nested virtualization on macOS)."`
 	Status    workerStatusCmd    `cmd:"" help:"Show the local worker's state and sparse disk usage."`
-	Start     workerStartCmd     `cmd:"" help:"Start the local worker (systemd service on Linux, QEMU VM on macOS)."`
+	Start     workerStartCmd     `cmd:"" help:"Start the local worker (systemd service on Linux, the worker VM on macOS)."`
 	Stop      workerStopCmd      `cmd:"" help:"Gracefully stop the local worker."`
 	Trim      workerTrimCmd      `cmd:"" help:"Punch freed blocks out of sparse worker storage (ZFS autotrim / fstrim)."`
-	SSH       workerSSHCmd       `cmd:"" help:"Open an SSH shell or run a command inside the macOS QEMU worker VM."`
-	Supervise workerSuperviseCmd `cmd:"" help:"Power the macOS QEMU worker VM as the controller says, until stopped: off once idle, on when a run needs it. Its LaunchAgent runs it."`
+	SSH       workerSSHCmd       `cmd:"" help:"Open an SSH shell or run a command inside the macOS worker VM."`
+	Supervise workerSuperviseCmd `cmd:"" help:"Power the macOS worker VM as the controller says, until stopped: off once idle, on when a run needs it. Its LaunchAgent runs it."`
 	Destroy   workerDestroyCmd   `cmd:"" help:"Stop and remove the local worker setup from ~/.hotbed."`
 }
 
@@ -33,7 +32,7 @@ type workerInitCmd struct {
 	User             string   `help:"Unix user commands run as (default: invoking user)."`
 	DiskSize         string   `name:"disk-size" default:"256G" help:"Virtual size of the sparse ZFS disk image when creating one (e.g. 256G, 512G)."`
 	ZFSDataset       string   `name:"zfs-dataset" help:"ZFS dataset for volumes when using native ZFS on Linux."`
-	ZFSDevice        string   `name:"zfs-device" help:"Linux: block device path under /dev/ for a dedicated ZFS pool (e.g. /dev/disk/by-id/scsi-0QEMU_QEMU_HARDDISK_hotbed-zfs)."`
+	ZFSDevice        string   `name:"zfs-device" help:"Linux: block device path under /dev/ for a dedicated ZFS pool (e.g. /dev/disk/by-id/virtio-hotbed-zfs)."`
 	TrimFS           bool     `name:"fstrim" hidden:"" help:"Linux: also run fstrim -a in the periodic trim timer (used for VM guests)."`
 	ZFSARCMax        string   `name:"zfs-arc-max" help:"Linux: cap the ZFS ARC of the pool hotbed makes, e.g. 4G (default: zfs's own, nearly all of RAM; the macOS VM caps it to a quarter of its RAM)."`
 	UnitProperties   []string `name:"unit-property" help:"systemd property every command gets (repeatable)."`
@@ -42,13 +41,12 @@ type workerInitCmd struct {
 	Hostname         string   `help:"macOS VM: Tailscale and guest hostname (default <mac-hostname>-worker)."`
 	CPUs             int      `name:"cpus" help:"macOS VM: vCPU count (default: half of host CPUs, min 2)."`
 	Memory           string   `help:"macOS VM: RAM size, e.g. 8G, 16G (default: a quarter of host RAM, clamped 4G..16G). The Mac keeps all of it for as long as the VM runs."`
-	RootSize         string   `name:"root-size" default:"32G" help:"macOS VM: virtual size of the sparse Ubuntu OS qcow2 disk."`
-	SwapSize         string   `name:"swap-size" help:"macOS VM: virtual size of the sparse discard swap qcow2 disk (default: matches VM memory)."`
+	RootSize         string   `name:"root-size" default:"32G" help:"macOS VM: virtual size of the sparse Ubuntu OS disk."`
+	SwapSize         string   `name:"swap-size" help:"macOS VM: virtual size of the sparse discard swap disk (default: matches VM memory)."`
 	Ubuntu           string   `default:"26.04" help:"macOS VM: Ubuntu release version for the cloud image."`
 	ImageURL         string   `name:"image-url" help:"macOS VM: override Ubuntu cloud image URL."`
 	Binary           string   `type:"path" help:"macOS VM: path to a Linux hotbed binary (default: fetched from the controller)."`
 	TailscaleAuthKey string   `name:"tailscale-auth-key" env:"TS_AUTHKEY" help:"macOS VM: optional Tailscale auth key for non-interactive login."`
-	SSHPort          int      `name:"ssh-port" help:"macOS VM: localhost TCP port forwarded to guest SSH (default: 22222 or a free port)."`
 	NoAutostart      bool     `name:"no-autostart" help:"macOS VM: do not install the LaunchAgent that powers the VM off once idle and on when a run needs it."`
 	SleepAfter       string   `name:"sleep-after" help:"macOS VM: how long the VM has no work before it powers off, e.g. 30m, 2h; 0 never (default 30m, or as before)."`
 }
@@ -113,7 +111,6 @@ func (c *workerInitCmd) Exec(ctx context.Context, d deps) (any, error) {
 		ImageURL:         c.ImageURL,
 		BinaryPath:       c.Binary,
 		TailscaleAuthKey: c.TailscaleAuthKey,
-		SSHPort:          c.SSHPort,
 		NoAutostart:      c.NoAutostart,
 		SleepAfter:       c.SleepAfter,
 		Progress:         d.stderr,
@@ -190,12 +187,6 @@ func (c *workerSuperviseCmd) Exec(ctx context.Context, d deps) (any, error) {
 			cancel()
 		}
 	}()
-	var watchWG sync.WaitGroup
-	watchWG.Add(1)
-	go func() {
-		defer watchWG.Done()
-		setup.WatchPausedVM(ctx, c.Dir, slog.Default())
-	}()
 	err = setup.Supervise(ctx, c.Dir, func(controller string) (hotbedv1connect.ClusterServiceClient, error) {
 		ic, err := controllerAuthInterceptors(controller, d.http)
 		if err != nil {
@@ -205,7 +196,6 @@ func (c *workerSuperviseCmd) Exec(ctx context.Context, d deps) (any, error) {
 		return cluster, err
 	}, slog.Default())
 	cancel()
-	watchWG.Wait()
 	return nil, err
 }
 

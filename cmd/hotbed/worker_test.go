@@ -21,7 +21,7 @@ func TestWorkerInitParsesZFSDeviceFlags(t *testing.T) {
 		"--json", "worker", "init", "ctrl.ts.net:7120",
 		"--dir", "/var/lib/hotbed",
 		"--user", "alice",
-		"--zfs-device", "/dev/disk/by-id/scsi-0QEMU_QEMU_HARDDISK_hotbed-zfs",
+		"--zfs-device", "/dev/disk/by-id/virtio-hotbed-zfs",
 		"--hostname", "mac-worker",
 		"--slice", "work.slice",
 		"--unit-property", "DeviceAllow=/dev/kvm",
@@ -37,7 +37,7 @@ func TestWorkerInitParsesZFSDeviceFlags(t *testing.T) {
 	if initCmd.Controller != "ctrl.ts.net:7120" ||
 		initCmd.Dir != "/var/lib/hotbed" ||
 		initCmd.User != "alice" ||
-		initCmd.ZFSDevice != "/dev/disk/by-id/scsi-0QEMU_QEMU_HARDDISK_hotbed-zfs" ||
+		initCmd.ZFSDevice != "/dev/disk/by-id/virtio-hotbed-zfs" ||
 		initCmd.TrimFS ||
 		initCmd.Hostname != "mac-worker" ||
 		initCmd.Slice != "work.slice" ||
@@ -53,7 +53,7 @@ func TestWorkerInitParsesZFSDeviceFlags(t *testing.T) {
 	}
 	if _, err := parser2.Parse([]string{
 		"--json", "worker", "init", "ctrl.ts.net:7120",
-		"--zfs-device", "/dev/disk/by-id/scsi-0QEMU_QEMU_HARDDISK_hotbed-zfs",
+		"--zfs-device", "/dev/disk/by-id/virtio-hotbed-zfs",
 		"--fstrim",
 		"--zfs-arc-max", "3221225472",
 	}); err != nil {

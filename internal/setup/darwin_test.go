@@ -3,7 +3,6 @@
 package setup
 
 import (
-	"bufio"
 	"bytes"
 	"context"
 	"crypto/ed25519"
@@ -15,9 +14,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"io/fs"
-	"log/slog"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -43,27 +40,24 @@ import (
 	"github.com/semistrict/hotbed/internal/gen/hotbed/v1/hotbedv1connect"
 )
 
-// TestLiveQEMUAndZFSSparsePunchHole boots a real Ubuntu 26.04 LTS VM under
-// QEMU HVF, installs zfsutils-linux, creates the sparse qcow2 ZFS pool,
-// writes 128 MiB of incompressible data, deletes it, flushes ZFS deferred
-// frees so autotrim=on punches holes back out, and verifies zfs.qcow2 shrinks
-// on APFS. Opt-in via HOTBED_TEST_QEMU=1 (downloads ~600 MiB Ubuntu image into
-// ~/.hotbed/cache).
-func TestLiveQEMUAndZFSSparsePunchHole(t *testing.T) {
-	if os.Getenv("HOTBED_TEST_QEMU") != "1" {
-		t.Skip("set HOTBED_TEST_QEMU=1 to run live QEMU Ubuntu + ZFS hole-punching test")
+// TestLiveVZAndZFSSparsePunchHole boots a real Ubuntu 26.04 LTS VM under
+// vfkit (Apple's Virtualization framework) with nested virtualization, checks
+// the guest has /dev/kvm, installs zfsutils-linux, creates the sparse raw ZFS
+// pool, writes 128 MiB of incompressible data, deletes it, flushes ZFS
+// deferred frees so autotrim=on punches holes back out, and verifies zfs.img
+// shrinks on APFS. Opt-in via HOTBED_TEST_VZ=1 (downloads ~600 MiB Ubuntu
+// image into ~/.hotbed/cache; needs vfkit and an M3 or later Mac).
+func TestLiveVZAndZFSSparsePunchHole(t *testing.T) {
+	if os.Getenv("HOTBED_TEST_VZ") != "1" {
+		t.Skip("set HOTBED_TEST_VZ=1 to run the live vfkit Ubuntu + nested KVM + ZFS hole-punching test")
 	}
 	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Minute)
 	defer cancel()
 
 	arch := runtime.GOARCH
-	qemuBin, qemuImg, err := findQEMUBinaries(arch)
+	vfkitBin, err := findVfkit()
 	if err != nil {
-		t.Fatalf("findQEMUBinaries: %v", err)
-	}
-	fwCode, fwVars, err := findUEFIFirmware(arch, qemuBin)
-	if err != nil {
-		t.Fatalf("findUEFIFirmware: %v", err)
+		t.Fatalf("findVfkit: %v", err)
 	}
 
 	// Reuse ~/.hotbed/cache so we don't re-download Ubuntu across runs,
@@ -82,21 +76,27 @@ func TestLiveQEMUAndZFSSparsePunchHole(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ensureCloudImage: %v", err)
 	}
+	rawImg, err := ensureRawImage(cachedImg, os.Stderr)
+	if err != nil {
+		t.Fatalf("ensureRawImage: %v", err)
+	}
 	linuxBin, err := resolveLinuxBinary(ctx, os.Getenv("HOTBED_TEST_BINARY"), "127.0.0.1:7120", cacheDir, arch, nil, os.Stderr)
 	if err != nil {
 		t.Fatalf("resolveLinuxBinary: %v", err)
 	}
 
-	baseDir := t.TempDir()
+	// The VM's disks clone the cached raw image, which APFS does only on its
+	// own volume: keep them beside the cache, not in t.TempDir().
+	baseDir, err := os.MkdirTemp(defaultBase, "vz-test-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(baseDir) })
 	p := NewVMPaths(baseDir)
 	if err := os.MkdirAll(p.VMDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
 
-	sshPort, err := pickSSHPort()
-	if err != nil {
-		t.Fatal(err)
-	}
 	cfg := VMConfig{
 		Controller:    "127.0.0.1:7120",
 		User:          "hotbedtest",
@@ -109,9 +109,7 @@ func TestLiveQEMUAndZFSSparsePunchHole(t *testing.T) {
 		RootSizeBytes: 16 << 30,
 		ZFSSizeBytes:  64 << 30,
 		SwapSizeBytes: 2 << 30,
-		SSHPort:       sshPort,
-		QEMUBinary:    qemuBin,
-		FirmwareCode:  fwCode,
+		VfkitBinary:   vfkitBin,
 		StateDir:      DefaultVMStateDir,
 	}
 
@@ -126,7 +124,7 @@ func TestLiveQEMUAndZFSSparsePunchHole(t *testing.T) {
 	if err := ensureSeedISO(ctx, p.SeedISO, cfg.Hostname, cfg.User, []string{pubKey}, hostKey); err != nil {
 		t.Fatal(err)
 	}
-	if err := ensureVMDisks(ctx, qemuImg, cachedImg, fwVars, cfg, p, os.Stderr); err != nil {
+	if err := ensureVMDisks(rawImg, cfg, p, os.Stderr); err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() {
@@ -139,9 +137,9 @@ func TestLiveQEMUAndZFSSparsePunchHole(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Logf("initial zfs.qcow2: allocated=%s virtual=%s", FormatBytes(initialStat.AllocatedBytes), FormatBytes(initialStat.VirtualBytes))
+	t.Logf("initial zfs.img: allocated=%s virtual=%s", FormatBytes(initialStat.AllocatedBytes), FormatBytes(initialStat.VirtualBytes))
 	if initialStat.AllocatedBytes > 2<<20 {
-		t.Fatalf("initial zfs.qcow2 too large: %d bytes", initialStat.AllocatedBytes)
+		t.Fatalf("initial zfs.img too large: %d bytes", initialStat.AllocatedBytes)
 	}
 
 	if err := ensureVMRunning(ctx, cfg, p, os.Stderr); err != nil {
@@ -152,6 +150,29 @@ func TestLiveQEMUAndZFSSparsePunchHole(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer cl.Close()
+
+	// Nested virtualization: the guest's worker runs Firecracker on /dev/kvm.
+	if out, err := sshRun(ctx, cl, "test -c /dev/kvm && echo kvm"); err != nil || strings.TrimSpace(out) != "kvm" {
+		t.Fatalf("guest has no /dev/kvm (nested virtualization): %q, %v", out, err)
+	}
+
+	// Host usage samples the Virtualization framework process that runs this
+	// VM, not vfkit.
+	vfkitPID, state, err := vmProcessState(ctx, p)
+	if err != nil || state != vmProcRunning {
+		t.Fatalf("vmProcessState = (%d, %v, %v), want a running vfkit", vfkitPID, state, err)
+	}
+	vzPID, err := vzProcessFor(vfkitPID)
+	if err != nil {
+		t.Fatalf("vzProcessFor(%d): %v", vfkitPID, err)
+	}
+	if exe, err := processExecutable(vzPID); err != nil || filepath.Base(exe) != vzProcessName {
+		t.Fatalf("vzProcessFor(%d) = %d, whose executable is %q (%v), want %s", vfkitPID, vzPID, exe, err, vzProcessName)
+	}
+	usage, err := (vfkitVM{cfg: cfg, p: p, sampler: newDarwinHostUsageSampler()}).SampleHostUsage(ctx)
+	if err != nil || usage == nil {
+		t.Fatalf("SampleHostUsage = (%v, %v), want a sample", usage, err)
+	}
 
 	// Install zfsutils-linux and create the autotrim ZFS pool + discard swap.
 	setupScript := `set -euo pipefail
@@ -171,7 +192,7 @@ sudo swapon --discard ` + swapDiskByID + `
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Logf("after zpool create: zfs.qcow2 allocated=%s", FormatBytes(postCreateStat.AllocatedBytes))
+	t.Logf("after zpool create: zfs.img allocated=%s", FormatBytes(postCreateStat.AllocatedBytes))
 
 	// Verify Linux hotbed binary runs cleanly inside the VM.
 	if err := sshUploadFile(ctx, cl, linuxBin, vmBinPath, "0755"); err != nil {
@@ -204,23 +225,23 @@ sync
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Logf("after 128 MiB write: zfs.qcow2 allocated=%s", FormatBytes(grownStat.AllocatedBytes))
+	t.Logf("after 128 MiB write: zfs.img allocated=%s", FormatBytes(grownStat.AllocatedBytes))
 	if grownStat.AllocatedBytes < 100<<20 {
-		t.Fatalf("expected zfs.qcow2 to grow past 100 MiB after 128 MiB random write, got %s", FormatBytes(grownStat.AllocatedBytes))
+		t.Fatalf("expected zfs.img to grow past 100 MiB after 128 MiB random write, got %s", FormatBytes(grownStat.AllocatedBytes))
 	}
 
 	// Destroy the dataset, wait for ZFS async_destroy, and advance 4 TXGs so
 	// ZFS drains its ms_defer[TXG_DEFER_SIZE=2] deferred-free queues and
-	// autotrim=on with zfs_trim_txg_batch=1 punches holes out of zfs.qcow2 on
+	// autotrim=on with zfs_trim_txg_batch=1 punches holes out of zfs.img on
 	// APFS (without manual full-pool zpool trim initializing unused metaslabs).
 	diag, err := sshRun(ctx, cl, `set -e
 echo 1 | sudo tee /sys/module/zfs/parameters/zfs_trim_txg_batch >/dev/null
-echo "1. after dd:      $(cat /sys/block/sdb/stat)"
+echo "1. after dd:      $(cat /sys/block/vdb/stat)"
 sudo zfs destroy -r hotbed/testvol
 sudo zpool wait -t free hotbed
 for i in 1 2 3 4; do sudo zpool sync hotbed; done
 sleep 3
-echo "2. after autotrim: $(cat /sys/block/sdb/stat)"
+echo "2. after autotrim: $(cat /sys/block/vdb/stat)"
 sudo zpool list -v hotbed
 `)
 	if err != nil {
@@ -232,7 +253,7 @@ sudo zpool list -v hotbed
 		t.Fatal(err)
 	}
 	reclaimed := grownStat.AllocatedBytes - trimmedStat.AllocatedBytes
-	t.Logf("after destroy + autotrim sync: zfs.qcow2 allocated=%s (reclaimed %s)",
+	t.Logf("after destroy + autotrim sync: zfs.img allocated=%s (reclaimed %s)",
 		FormatBytes(trimmedStat.AllocatedBytes), FormatBytes(reclaimed))
 
 	// Close SSH and shut down cleanly to see if any remaining discards flush on close.
@@ -244,12 +265,31 @@ sudo zpool list -v hotbed
 	if err != nil {
 		t.Fatal(err)
 	}
-	infoOut, _ := exec.Command(qemuImg, "info", p.ZFSDisk).CombinedOutput()
-	t.Logf("after stopVM: zfs.qcow2 allocated=%s logical=%s\n%s",
-		FormatBytes(afterStopStat.AllocatedBytes), FormatBytes(afterStopStat.LogicalBytes), string(infoOut))
+	t.Logf("after stopVM: zfs.img allocated=%s logical=%s",
+		FormatBytes(afterStopStat.AllocatedBytes), FormatBytes(afterStopStat.LogicalBytes))
 	if trimmedStat.AllocatedBytes > 32<<20 {
-		t.Fatalf("expected zfs.qcow2 to punch back under 32 MiB after trim, still %s (after stop: %s)",
+		t.Fatalf("expected zfs.img to punch back under 32 MiB after trim, still %s (after stop: %s)",
 			FormatBytes(trimmedStat.AllocatedBytes), FormatBytes(afterStopStat.AllocatedBytes))
+	}
+
+	// A second boot keeps the EFI variable store the first one created, and
+	// the guest comes back with its pool.
+	if _, err := os.Stat(p.EFIVars); err != nil {
+		t.Fatalf("first boot left no EFI variable store: %v", err)
+	}
+	if err := ensureVMRunning(ctx, cfg, p, os.Stderr); err != nil {
+		t.Fatalf("second boot: %v", err)
+	}
+	cl2, err := waitForSSH(ctx, cfg, p, signer, os.Stderr)
+	if err != nil {
+		t.Fatalf("second boot SSH: %v", err)
+	}
+	defer cl2.Close()
+	if out, err := sshRun(ctx, cl2, "sudo zpool import -d /dev/disk/by-id hotbed 2>/dev/null; sudo zpool list -H -o name hotbed"); err != nil || strings.TrimSpace(out) != "hotbed" {
+		t.Fatalf("second boot: pool hotbed = %q, %v", out, err)
+	}
+	if err := stopVM(ctx, cfg, p, os.Stderr); err != nil {
+		t.Fatalf("second stopVM: %v", err)
 	}
 }
 
@@ -742,29 +782,20 @@ func TestIsVMProcessCmd(t *testing.T) {
 	baseDir := filepath.Join(t.TempDir(), "hb")
 	p := NewVMPaths(baseDir)
 	cfg := VMConfig{
-		Hostname:     "mac-worker",
-		Arch:         "arm64",
-		CPUs:         4,
-		MemoryBytes:  4 << 30,
-		SSHPort:      22222,
-		QEMUBinary:   "/opt/homebrew/bin/qemu-system-aarch64",
-		FirmwareCode: "/opt/homebrew/share/qemu/edk2-aarch64-code.fd",
+		Hostname:    "mac-worker",
+		Arch:        "arm64",
+		CPUs:        4,
+		MemoryBytes: 4 << 30,
+		VfkitBinary: "/opt/homebrew/bin/vfkit",
 	}
-	args, err := QEMUArgs(cfg, p, qmpSocketPath(p))
+	args, err := VfkitArgs(cfg, p, controlSocketPath(p), sshSocketPath(p), false)
 	if err != nil {
-		t.Fatalf("QEMUArgs: %v", err)
+		t.Fatalf("VfkitArgs: %v", err)
 	}
-	realCmd := cfg.QEMUBinary + " " + strings.Join(args, " ")
+	realCmd := cfg.VfkitBinary + " " + strings.Join(args, " ")
 
-	// Long base dir triggers /tmp/hotbed-qmp-<hash>.sock.
-	longBase := filepath.Join(t.TempDir(), strings.Repeat("nested-dir-", 10))
-	longP := NewVMPaths(longBase)
-	longQMP := qmpSocketPath(longP)
-	if !strings.HasPrefix(longQMP, "/tmp/hotbed-qmp-") {
-		t.Fatalf("expected hashed /tmp QMP socket path, got %q", longQMP)
-	}
-
-	// Symlinked base dir: VMPaths uses the symlink, while QEMU args use the resolved target.
+	// Symlinked base dir: VMPaths uses the symlink, while the running vfkit
+	// was given the resolved target.
 	symlinkRoot := t.TempDir()
 	realBase := filepath.Join(symlinkRoot, "real-hb")
 	linkBase := filepath.Join(symlinkRoot, "link-hb")
@@ -774,37 +805,11 @@ func TestIsVMProcessCmd(t *testing.T) {
 	if err := os.Symlink(realBase, linkBase); err != nil {
 		t.Fatal(err)
 	}
-	realP := NewVMPaths(realBase)
 	linkP := NewVMPaths(linkBase)
-	resolvedRealPID := evalExistingSymlinks(realP.PIDFile)
-	resolvedRealQMP := evalExistingSymlinks(qmpSocketPath(realP))
-
-	// Long symlinked base dir under /tmp (macOS /tmp -> /private/tmp) forces the
-	// hashed /tmp/hotbed-qmp-<hash>.sock path regardless of host TMPDIR length.
-	longSymTmp, err := os.MkdirTemp("/tmp", "hotbed-long-symlink-test-"+strings.Repeat("x", 60)+"-")
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = os.RemoveAll(longSymTmp) })
-	longRealBase := filepath.Join(longSymTmp, "real-hb")
-	longLinkBase := filepath.Join(longSymTmp, "link-hb")
-	if err := os.MkdirAll(filepath.Join(longRealBase, "vm"), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.Symlink(longRealBase, longLinkBase); err != nil {
-		t.Fatal(err)
-	}
-	longRealP := NewVMPaths(longRealBase)
-	longLinkP := NewVMPaths(longLinkBase)
-	if len(longRealP.QMPSock) < 100 || len(longLinkP.QMPSock) < 100 {
-		t.Fatalf("expected long symlink QMP socket paths >= 100 bytes, got %d and %d", len(longRealP.QMPSock), len(longLinkP.QMPSock))
-	}
-	resolvedLongRealQMP := evalExistingSymlinks(qmpSocketPath(longRealP))
+	resolvedRealPID := evalExistingSymlinks(NewVMPaths(realBase).PIDFile)
 
 	// Base dir containing spaces.
-	spaceBase := filepath.Join(t.TempDir(), "my worker dir")
-	spaceP := NewVMPaths(spaceBase)
-
+	spaceP := NewVMPaths(filepath.Join(t.TempDir(), "my worker dir"))
 	otherP := NewVMPaths(filepath.Join(t.TempDir(), "other"))
 
 	tests := []struct {
@@ -813,32 +818,23 @@ func TestIsVMProcessCmd(t *testing.T) {
 		p    VMPaths
 		want bool
 	}{
-		{name: "real arm64 qemu args", cmd: realCmd, p: p, want: true},
-		{name: "x86_64 qemu with space in binary path", cmd: "/Applications/My Tools/qemu-system-x86_64 -machine q35 -pidfile " + p.PIDFile, p: p, want: true},
-		{name: "pidfile in middle of args", cmd: "/opt/homebrew/bin/qemu-system-aarch64 -pidfile " + p.PIDFile + " -machine virt", p: p, want: true},
-		{name: "pidfile with equals syntax", cmd: "/opt/homebrew/bin/qemu-system-aarch64 -machine virt --pidfile=" + p.PIDFile + " -m 4096", p: p, want: true},
-		{name: "quoted pidfile with spaces", cmd: `/opt/homebrew/bin/qemu-system-aarch64 -machine virt -pidfile "` + spaceP.PIDFile + `" -m 4096`, p: spaceP, want: true},
-		{name: "unquoted pidfile with spaces", cmd: "/opt/homebrew/bin/qemu-system-aarch64 -machine virt -pidfile " + spaceP.PIDFile + " -m 4096", p: spaceP, want: true},
-		{name: "long path matched via hashed qmp socket", cmd: "/opt/homebrew/bin/qemu-system-aarch64 -qmp unix:" + longQMP + ",server=on,wait=off", p: longP, want: true},
-		{name: "qmp unix socket at end of line", cmd: "/opt/homebrew/bin/qemu-system-aarch64 -qmp unix:" + qmpSocketPath(p), p: p, want: true},
-		{name: "qmp unix socket quoted", cmd: `/opt/homebrew/bin/qemu-system-aarch64 -qmp "unix:` + qmpSocketPath(p) + `,server=on,wait=off"`, p: p, want: true},
-		{name: "chardev path matching qmp socket", cmd: "/opt/homebrew/bin/qemu-system-aarch64 -chardev socket,id=qmp,path=" + qmpSocketPath(p) + ",server=on,wait=off", p: p, want: true},
-		{name: "qmp unix path= syntax", cmd: "/opt/homebrew/bin/qemu-system-aarch64 -qmp unix:path=" + qmpSocketPath(p) + ",server=on,wait=off", p: p, want: true},
-		{name: "symlink resolved pidfile matches", cmd: "/opt/homebrew/bin/qemu-system-aarch64 -machine virt -pidfile " + resolvedRealPID, p: linkP, want: true},
-		{name: "symlink resolved qmp socket matches", cmd: "/opt/homebrew/bin/qemu-system-aarch64 -qmp unix:" + resolvedRealQMP + ",server=on,wait=off", p: linkP, want: true},
-		{name: "long symlink under /tmp resolved qmp socket matches", cmd: "/opt/homebrew/bin/qemu-system-aarch64 -qmp unix:" + resolvedLongRealQMP + ",server=on,wait=off", p: longLinkP, want: true},
-		{name: "other VM referencing our firmware and disks under vmDir", cmd: "/opt/homebrew/bin/qemu-system-aarch64 -machine virt -pidfile " + otherP.PIDFile + " -drive if=pflash,format=raw,file=" + p.EFIVars + " -drive file=" + p.RootDisk + " -qmp unix:" + qmpSocketPath(otherP) + ",server=on,wait=off", p: p, want: false},
-		{name: "other VM mentioning our pidfile under -drive", cmd: "/opt/homebrew/bin/qemu-system-aarch64 -machine virt -pidfile " + otherP.PIDFile + " -drive file=" + p.PIDFile, p: p, want: false},
-		{name: "pidfile suffix trap", cmd: "/opt/homebrew/bin/qemu-system-aarch64 -machine virt -pidfile " + p.PIDFile + ".bak", p: p, want: false},
-		{name: "qmp unix suffix trap", cmd: "/opt/homebrew/bin/qemu-system-aarch64 -qmp unix:" + qmpSocketPath(p) + ".bak,server=on,wait=off", p: p, want: false},
-		{name: "chardev path suffix trap", cmd: "/opt/homebrew/bin/qemu-system-aarch64 -chardev socket,id=qmp,path=" + qmpSocketPath(p) + "2,server=on", p: p, want: false},
-		{name: "chardev non-path key boundary trap", cmd: "/opt/homebrew/bin/qemu-system-aarch64 -chardev socket,id=qmp,mypath=" + qmpSocketPath(p) + ",server=on", p: p, want: false},
+		{name: "real vfkit args", cmd: realCmd, p: p, want: true},
+		{name: "vfkit with space in binary path", cmd: "/Applications/My Tools/vfkit --cpus 2 --pidfile " + p.PIDFile, p: p, want: true},
+		{name: "pidfile in middle of args", cmd: "/opt/homebrew/bin/vfkit --pidfile " + p.PIDFile + " --cpus 2", p: p, want: true},
+		{name: "pidfile with equals syntax", cmd: "/opt/homebrew/bin/vfkit --cpus 2 --pidfile=" + p.PIDFile + " --memory 4096", p: p, want: true},
+		{name: "quoted pidfile with spaces", cmd: `/opt/homebrew/bin/vfkit --cpus 2 --pidfile "` + spaceP.PIDFile + `" --memory 4096`, p: spaceP, want: true},
+		{name: "unquoted pidfile with spaces", cmd: "/opt/homebrew/bin/vfkit --cpus 2 --pidfile " + spaceP.PIDFile + " --memory 4096", p: spaceP, want: true},
+		{name: "symlink resolved pidfile matches", cmd: "/opt/homebrew/bin/vfkit --cpus 2 --pidfile " + resolvedRealPID, p: linkP, want: true},
+		{name: "other VM referencing our disks", cmd: "/opt/homebrew/bin/vfkit --pidfile " + otherP.PIDFile + " --device virtio-blk,path=" + p.RootDisk, p: p, want: false},
+		{name: "other VM mentioning our pidfile in a device", cmd: "/opt/homebrew/bin/vfkit --pidfile " + otherP.PIDFile + " --device virtio-blk,path=" + p.PIDFile, p: p, want: false},
+		{name: "pidfile suffix trap", cmd: "/opt/homebrew/bin/vfkit --cpus 2 --pidfile " + p.PIDFile + ".bak", p: p, want: false},
+		{name: "qemu with our pidfile", cmd: "/opt/homebrew/bin/qemu-system-aarch64 -machine virt -pidfile " + p.PIDFile, p: p, want: false},
 		{name: "unrelated sleep process", cmd: "/bin/sleep 60", p: p, want: false},
-		{name: "grep mentioning qemu-system and pidfile", cmd: "/usr/bin/grep qemu-system " + p.PIDFile, p: p, want: false},
-		{name: "env wrapper running qemu-system", cmd: "/usr/bin/env /opt/homebrew/bin/qemu-system-aarch64 -pidfile " + p.PIDFile, p: p, want: false},
-		{name: "shell wrapper mentioning qemu-system", cmd: "/bin/sh -c qemu-system-aarch64 -pidfile " + p.PIDFile, p: p, want: false},
-		{name: "other VM qemu process", cmd: "/opt/homebrew/bin/qemu-system-aarch64 -machine virt -pidfile " + otherP.PIDFile, p: p, want: false},
-		{name: "sibling VMDir prefix trap", cmd: "/opt/homebrew/bin/qemu-system-aarch64 -machine virt -pidfile " + p.VMDir + "2/qemu.pid", p: p, want: false},
+		{name: "grep mentioning vfkit and pidfile", cmd: "/usr/bin/grep vfkit " + p.PIDFile, p: p, want: false},
+		{name: "env wrapper running vfkit", cmd: "/usr/bin/env /opt/homebrew/bin/vfkit --pidfile " + p.PIDFile, p: p, want: false},
+		{name: "shell wrapper mentioning vfkit", cmd: "/bin/sh -c vfkit --pidfile " + p.PIDFile, p: p, want: false},
+		{name: "other VM vfkit process", cmd: "/opt/homebrew/bin/vfkit --cpus 2 --pidfile " + otherP.PIDFile, p: p, want: false},
+		{name: "sibling VMDir prefix trap", cmd: "/opt/homebrew/bin/vfkit --cpus 2 --pidfile " + p.VMDir + "2/vfkit.pid", p: p, want: false},
 		{name: "empty command line", cmd: "   ", p: p, want: false},
 	}
 
@@ -851,6 +847,87 @@ func TestIsVMProcessCmd(t *testing.T) {
 	}
 }
 
+func TestVMSocketPath(t *testing.T) {
+	p := NewVMPaths(filepath.Join(t.TempDir(), "hb"))
+	if got := controlSocketPath(p); got != p.ControlSock {
+		t.Fatalf("controlSocketPath = %q, want %q", got, p.ControlSock)
+	}
+
+	// A long symlinked base dir under /tmp (macOS /tmp -> /private/tmp) forces
+	// short hashed /tmp paths, the same through the symlink as through its
+	// target, and distinct per socket.
+	longSymTmp, err := os.MkdirTemp("/tmp", "hotbed-long-symlink-test-"+strings.Repeat("x", 60)+"-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(longSymTmp) })
+	realBase := filepath.Join(longSymTmp, "real-hb")
+	linkBase := filepath.Join(longSymTmp, "link-hb")
+	if err := os.MkdirAll(filepath.Join(realBase, "vm"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(realBase, linkBase); err != nil {
+		t.Fatal(err)
+	}
+	realP, linkP := NewVMPaths(realBase), NewVMPaths(linkBase)
+	if len(realP.ControlSock) < 100 {
+		t.Fatalf("expected a socket path >= 100 bytes, got %d", len(realP.ControlSock))
+	}
+	ctl, ssh := controlSocketPath(linkP), sshSocketPath(linkP)
+	if !strings.HasPrefix(ctl, "/tmp/hotbed-") || !strings.HasSuffix(ctl, "-vfkit.sock") || len(ctl) >= 100 {
+		t.Fatalf("controlSocketPath = %q, want a short /tmp/hotbed-<hash>-vfkit.sock", ctl)
+	}
+	if !strings.HasSuffix(ssh, "-ssh.sock") || strings.TrimSuffix(ssh, "-ssh.sock") != strings.TrimSuffix(ctl, "-vfkit.sock") {
+		t.Fatalf("sshSocketPath = %q, want the same hash as %q with -ssh.sock", ssh, ctl)
+	}
+	if got := controlSocketPath(realP); got != ctl {
+		t.Fatalf("controlSocketPath through the symlink = %q, through its target %q; want them the same", ctl, got)
+	}
+}
+
+func TestVfkitArgs(t *testing.T) {
+	p := NewVMPaths("/Users/a/.hotbed")
+	cfg := VMConfig{Arch: "arm64", CPUs: 6, MemoryBytes: 12 << 30, VfkitBinary: "/opt/homebrew/bin/vfkit"}
+	args, err := VfkitArgs(cfg, p, "/Users/a/.hotbed/vm/vfkit.sock", "/Users/a/.hotbed/vm/ssh.sock", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{
+		"--cpus", "6",
+		"--memory", "12288",
+		"--nested",
+		"--pidfile", "/Users/a/.hotbed/vm/vfkit.pid",
+		"--restful-uri", "unix:///Users/a/.hotbed/vm/vfkit.sock",
+		"--bootloader", "efi,variable-store=/Users/a/.hotbed/vm/efi-vars",
+		"--device", "virtio-blk,path=/Users/a/.hotbed/vm/root.img,deviceId=hotbed-root",
+		"--device", "virtio-blk,path=/Users/a/.hotbed/vm/zfs.img,deviceId=hotbed-zfs",
+		"--device", "virtio-blk,path=/Users/a/.hotbed/vm/swap.img,deviceId=hotbed-swap",
+		"--device", "virtio-blk,path=/Users/a/.hotbed/vm/seed.iso,deviceId=hotbed-seed",
+		"--device", "virtio-net,nat",
+		"--device", "virtio-vsock,port=22,socketURL=/Users/a/.hotbed/vm/ssh.sock,connect",
+		"--device", "virtio-serial,logFilePath=/Users/a/.hotbed/vm/console.log",
+		"--device", "virtio-rng",
+	}
+	if !slices.Equal(args, want) {
+		t.Fatalf("VfkitArgs =\n%q\nwant\n%q", args, want)
+	}
+	// A first boot creates the EFI variable store; later boots keep it.
+	first, err := VfkitArgs(cfg, p, "c", "s", true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if i := slices.Index(first, "--bootloader"); first[i+1] != "efi,variable-store=/Users/a/.hotbed/vm/efi-vars,create" {
+		t.Fatalf("first boot --bootloader %q, want the store created", first[i+1])
+	}
+	if zfsDiskByID != "/dev/disk/by-id/virtio-hotbed-zfs" || swapDiskByID != "/dev/disk/by-id/virtio-hotbed-swap" {
+		t.Fatalf("guest disk paths %q, %q do not name the deviceIds VfkitArgs gives", zfsDiskByID, swapDiskByID)
+	}
+	cfg.Arch = "amd64"
+	if _, err := VfkitArgs(cfg, p, "c", "s", false); err == nil || !strings.Contains(err.Error(), "only on Apple silicon") {
+		t.Fatalf("VfkitArgs(amd64) = %v, want an Apple silicon error", err)
+	}
+}
+
 func TestParsePSStatCommand(t *testing.T) {
 	tests := []struct {
 		name      string
@@ -858,9 +935,9 @@ func TestParsePSStatCommand(t *testing.T) {
 		wantCmd   string
 		wantState vmProcState
 	}{
-		{name: "normal process", in: "S+   /opt/homebrew/bin/qemu-system-aarch64 -machine virt\n", wantCmd: "/opt/homebrew/bin/qemu-system-aarch64 -machine virt", wantState: vmProcRunning},
-		{name: "zombie Z", in: "Z    (qemu-system-aarch64)\n", wantState: vmProcMissing},
-		{name: "zombie ZN", in: "ZN   /opt/homebrew/bin/qemu-system-aarch64 -pidfile /tmp/vm/qemu.pid\n", wantState: vmProcMissing},
+		{name: "normal process", in: "S+   /opt/homebrew/bin/vfkit --cpus 2\n", wantCmd: "/opt/homebrew/bin/vfkit --cpus 2", wantState: vmProcRunning},
+		{name: "zombie Z", in: "Z    (vfkit)\n", wantState: vmProcMissing},
+		{name: "zombie ZN", in: "ZN   /opt/homebrew/bin/vfkit --pidfile /tmp/vm/vfkit.pid\n", wantState: vmProcMissing},
 		{name: "zombie stat only", in: "Z\n", wantState: vmProcMissing},
 		{name: "empty", in: "   \n", wantState: vmProcMissing},
 		{name: "stat only", in: "S\n", wantState: vmProcUnknown},
@@ -894,11 +971,11 @@ func TestVMProcessStateRecycledPID(t *testing.T) {
 	if err := os.WriteFile(p.PIDFile, []byte(strconv.Itoa(sleepCmd.Process.Pid)+"\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	qmpSock := qmpSocketPath(p)
-	if err := os.WriteFile(qmpSock, []byte("stale"), 0o644); err != nil {
+	ctlSock := controlSocketPath(p)
+	if err := os.WriteFile(ctlSock, []byte("stale"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { _ = os.Remove(qmpSock) })
+	t.Cleanup(func() { _ = os.Remove(ctlSock) })
 
 	start := time.Now()
 	pid, state, err := vmProcessState(t.Context(), p)
@@ -910,7 +987,7 @@ func TestVMProcessStateRecycledPID(t *testing.T) {
 		t.Fatalf("vmProcessState took %v for stale recycled PID; expected fast rejection", elapsed)
 	}
 
-	// stopVM must NOT signal the unrelated process, and MUST clean stale pid/qmp files.
+	// stopVM must NOT signal the unrelated process, and MUST clean stale pid/socket files.
 	if err := stopVM(t.Context(), VMConfig{}, p, nil); err != nil {
 		t.Fatalf("stopVM: %v", err)
 	}
@@ -918,10 +995,10 @@ func TestVMProcessStateRecycledPID(t *testing.T) {
 		t.Fatalf("unrelated process %d was killed by stopVM: %v", sleepCmd.Process.Pid, err)
 	}
 	if _, err := os.Stat(p.PIDFile); !errors.Is(err, fs.ErrNotExist) {
-		t.Errorf("stale qemu.pid still exists after stopVM: err=%v", err)
+		t.Errorf("stale vfkit.pid still exists after stopVM: err=%v", err)
 	}
-	if _, err := os.Stat(qmpSock); !errors.Is(err, fs.ErrNotExist) {
-		t.Errorf("stale qmp.sock still exists after stopVM: err=%v", err)
+	if _, err := os.Stat(ctlSock); !errors.Is(err, fs.ErrNotExist) {
+		t.Errorf("stale vfkit.sock still exists after stopVM: err=%v", err)
 	}
 }
 
@@ -944,14 +1021,14 @@ func TestVMProcessStateLiveAndMissing(t *testing.T) {
 		t.Fatalf("invalid pidfile: got (%d, %v, %v), want (0, vmProcMissing, nil)", pid, state, err)
 	}
 
-	// Live PID matching this VM's QEMU command line -> running even when QMP
+	// Live PID matching this VM's vfkit command line -> running even when its API
 	// socket is not yet up.
 	orig := processCommandLine
 	t.Cleanup(func() { processCommandLine = orig })
 	myPID := os.Getpid()
 	processCommandLine = func(_ context.Context, pid int) (string, vmProcState, error) {
 		if pid == myPID {
-			return "/opt/homebrew/bin/qemu-system-aarch64 -machine virt -pidfile " + p.PIDFile, vmProcRunning, nil
+			return "/opt/homebrew/bin/vfkit --cpus 2 --pidfile " + p.PIDFile, vmProcRunning, nil
 		}
 		return "", vmProcMissing, nil
 	}
@@ -959,13 +1036,13 @@ func TestVMProcessStateLiveAndMissing(t *testing.T) {
 		t.Fatal(err)
 	}
 	if pid, state, err := vmProcessState(t.Context(), p); err != nil || state != vmProcRunning || pid != myPID {
-		t.Fatalf("matching qemu pid: got (%d, %v, %v), want (%d, vmProcRunning, nil)", pid, state, err, myPID)
+		t.Fatalf("matching vfkit pid: got (%d, %v, %v), want (%d, vmProcRunning, nil)", pid, state, err, myPID)
 	}
 }
 
 func TestStopVMDoesNotKillRecycledPIDMidShutdown(t *testing.T) {
 	// Spawn a real unrelated process. Pretend on the very first check
-	// (vmProcessState) it was QEMU, and immediately afterward its PID was
+	// (vmProcessState) it was vfkit, and immediately afterward its PID was
 	// recycled to /bin/sleep before stopVM could send SIGTERM/SIGKILL.
 	sleepCmd := exec.Command("/bin/sleep", "30")
 	if err := sleepCmd.Start(); err != nil {
@@ -984,11 +1061,11 @@ func TestStopVMDoesNotKillRecycledPIDMidShutdown(t *testing.T) {
 	if err := os.WriteFile(p.PIDFile, []byte(strconv.Itoa(targetPID)+"\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	qmpSock := qmpSocketPath(p)
-	if err := os.WriteFile(qmpSock, []byte("stale"), 0o644); err != nil {
+	ctlSock := controlSocketPath(p)
+	if err := os.WriteFile(ctlSock, []byte("stale"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { _ = os.Remove(qmpSock) })
+	t.Cleanup(func() { _ = os.Remove(ctlSock) })
 
 	orig := processCommandLine
 	t.Cleanup(func() { processCommandLine = orig })
@@ -998,7 +1075,7 @@ func TestStopVMDoesNotKillRecycledPIDMidShutdown(t *testing.T) {
 			return "", vmProcMissing, nil
 		}
 		if calls.Add(1) == 1 {
-			return "/opt/homebrew/bin/qemu-system-aarch64 -machine virt -pidfile " + p.PIDFile, vmProcRunning, nil
+			return "/opt/homebrew/bin/vfkit --cpus 2 --pidfile " + p.PIDFile, vmProcRunning, nil
 		}
 		return "/bin/sleep 30", vmProcRunning, nil
 	}
@@ -1008,16 +1085,16 @@ func TestStopVMDoesNotKillRecycledPIDMidShutdown(t *testing.T) {
 		t.Fatalf("stopVM: %v", err)
 	}
 	if elapsed := time.Since(start); elapsed > 5*time.Second {
-		t.Fatalf("stopVM took %v; expected quick exit once PID no longer matched QEMU", elapsed)
+		t.Fatalf("stopVM took %v; expected quick exit once PID no longer matched vfkit", elapsed)
 	}
 	if err := syscall.Kill(targetPID, 0); err != nil {
 		t.Fatalf("recycled process %d was signaled by stopVM: %v", targetPID, err)
 	}
 	if _, err := os.Stat(p.PIDFile); !errors.Is(err, fs.ErrNotExist) {
-		t.Errorf("qemu.pid was not removed: err=%v", err)
+		t.Errorf("vfkit.pid was not removed: err=%v", err)
 	}
-	if _, err := os.Stat(qmpSock); !errors.Is(err, fs.ErrNotExist) {
-		t.Errorf("qmp.sock was not removed: err=%v", err)
+	if _, err := os.Stat(ctlSock); !errors.Is(err, fs.ErrNotExist) {
+		t.Errorf("vfkit.sock was not removed: err=%v", err)
 	}
 }
 
@@ -1128,11 +1205,11 @@ func TestStopVMAndDestroyAbortOnUnknownProcessState(t *testing.T) {
 	if err := os.WriteFile(p.PIDFile, []byte(strconv.Itoa(myPID)+"\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	qmpSock := qmpSocketPath(p)
-	if err := os.WriteFile(qmpSock, []byte("live-qmp"), 0o644); err != nil {
+	ctlSock := controlSocketPath(p)
+	if err := os.WriteFile(ctlSock, []byte("live-vfkit"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { _ = os.Remove(qmpSock) })
+	t.Cleanup(func() { _ = os.Remove(ctlSock) })
 	if err := os.WriteFile(p.RootDisk, []byte("live-root-disk"), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -1145,15 +1222,15 @@ func TestStopVMAndDestroyAbortOnUnknownProcessState(t *testing.T) {
 		return "", vmProcUnknown, probeErr
 	}
 
-	// stopVM must propagate the error and preserve qemu.pid and qmp.sock.
+	// stopVM must propagate the error and preserve vfkit.pid and vfkit.sock.
 	if err := stopVM(t.Context(), VMConfig{}, p, nil); !errors.Is(err, probeErr) {
 		t.Fatalf("stopVM err = %v, want %v", err, probeErr)
 	}
 	if _, err := os.Stat(p.PIDFile); err != nil {
-		t.Errorf("stopVM removed qemu.pid on vmProcUnknown: %v", err)
+		t.Errorf("stopVM removed vfkit.pid on vmProcUnknown: %v", err)
 	}
-	if _, err := os.Stat(qmpSock); err != nil {
-		t.Errorf("stopVM removed qmp.sock on vmProcUnknown: %v", err)
+	if _, err := os.Stat(ctlSock); err != nil {
+		t.Errorf("stopVM removed vfkit.sock on vmProcUnknown: %v", err)
 	}
 
 	// ensureVMRunning must also refuse to unlink files or double-boot on vmProcUnknown.
@@ -1161,26 +1238,26 @@ func TestStopVMAndDestroyAbortOnUnknownProcessState(t *testing.T) {
 		t.Fatalf("ensureVMRunning err = %v, want %v", err, probeErr)
 	}
 	if _, err := os.Stat(p.PIDFile); err != nil {
-		t.Errorf("ensureVMRunning removed qemu.pid on vmProcUnknown: %v", err)
+		t.Errorf("ensureVMRunning removed vfkit.pid on vmProcUnknown: %v", err)
 	}
-	if _, err := os.Stat(qmpSock); err != nil {
-		t.Errorf("ensureVMRunning removed qmp.sock on vmProcUnknown: %v", err)
+	if _, err := os.Stat(ctlSock); err != nil {
+		t.Errorf("ensureVMRunning removed vfkit.sock on vmProcUnknown: %v", err)
 	}
 
 	// cleanStaleVMFiles must NOT unlink files on vmProcUnknown.
 	cleanStaleVMFiles(t.Context(), p)
 	if _, err := os.Stat(p.PIDFile); err != nil {
-		t.Errorf("cleanStaleVMFiles removed qemu.pid on vmProcUnknown: %v", err)
+		t.Errorf("cleanStaleVMFiles removed vfkit.pid on vmProcUnknown: %v", err)
 	}
-	if _, err := os.Stat(qmpSock); err != nil {
-		t.Errorf("cleanStaleVMFiles removed qmp.sock on vmProcUnknown: %v", err)
+	if _, err := os.Stat(ctlSock); err != nil {
+		t.Errorf("cleanStaleVMFiles removed vfkit.sock on vmProcUnknown: %v", err)
 	}
 
-	// Destroy must abort and leave VM disks, pidfile, and qmp socket intact!
+	// Destroy must abort and leave VM disks, pidfile, and vfkit socket intact!
 	if _, err := Destroy(t.Context(), DestroyOptions{Dir: baseDir}); !errors.Is(err, probeErr) {
 		t.Fatalf("Destroy err = %v, want %v", err, probeErr)
 	}
-	for _, path := range []string{p.VMDir, p.RootDisk, p.ZFSDisk, p.PIDFile, qmpSock} {
+	for _, path := range []string{p.VMDir, p.RootDisk, p.ZFSDisk, p.PIDFile, ctlSock} {
 		if _, err := os.Stat(path); err != nil {
 			t.Errorf("Destroy deleted %s after stopVM inspection error: %v", path, err)
 		}
@@ -1193,7 +1270,7 @@ func TestStopVMAndDestroyAbortOnUnknownProcessState(t *testing.T) {
 			return "", vmProcMissing, nil
 		}
 		if calls.Add(1) == 1 {
-			return "/opt/homebrew/bin/qemu-system-aarch64 -machine virt -pidfile " + p.PIDFile, vmProcRunning, nil
+			return "/opt/homebrew/bin/vfkit --cpus 2 --pidfile " + p.PIDFile, vmProcRunning, nil
 		}
 		return "", vmProcUnknown, probeErr
 	}
@@ -1201,10 +1278,10 @@ func TestStopVMAndDestroyAbortOnUnknownProcessState(t *testing.T) {
 		t.Fatalf("stopVM mid-shutdown err = %v, want %v", err, probeErr)
 	}
 	if _, err := os.Stat(p.PIDFile); err != nil {
-		t.Errorf("stopVM removed qemu.pid on mid-shutdown vmProcUnknown: %v", err)
+		t.Errorf("stopVM removed vfkit.pid on mid-shutdown vmProcUnknown: %v", err)
 	}
-	if _, err := os.Stat(qmpSock); err != nil {
-		t.Errorf("stopVM removed qmp.sock on mid-shutdown vmProcUnknown: %v", err)
+	if _, err := os.Stat(ctlSock); err != nil {
+		t.Errorf("stopVM removed vfkit.sock on mid-shutdown vmProcUnknown: %v", err)
 	}
 
 	// Destroy still succeeds cleanly once the VM is already stopped (no PID file).
@@ -1334,32 +1411,11 @@ func TestLaunchAgentLifecycle(t *testing.T) {
 	mu.Lock()
 	bootoutDelays[target] = 3
 	mu.Unlock()
-	if err := stopSupervisor(t.Context(), VMConfig{}, p); err != nil {
+	if err := stopSupervisor(t.Context(), p); err != nil {
 		t.Fatalf("stopSupervisor: %v", err)
 	}
 	if supervised(t.Context(), p) {
 		t.Fatal("expected supervised() == false after stopSupervisor")
-	}
-
-	// 2b. Legacy LaunchAgent running qemu-system directly stops the VM (cleaning stale files) before bootout.
-	if err := os.WriteFile(p.PIDFile, []byte("999999\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	legacyQMP := qmpSocketPath(p)
-	if err := os.WriteFile(legacyQMP, []byte("stale"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	mu.Lock()
-	loaded[target] = "program = /opt/homebrew/bin/qemu-system-aarch64"
-	mu.Unlock()
-	if err := stopSupervisor(t.Context(), VMConfig{}, p); err != nil {
-		t.Fatalf("stopSupervisor (legacy qemu): %v", err)
-	}
-	if _, err := os.Stat(p.PIDFile); !errors.Is(err, fs.ErrNotExist) {
-		t.Errorf("legacy stopSupervisor left stale qemu.pid: err=%v", err)
-	}
-	if _, err := os.Stat(legacyQMP); !errors.Is(err, fs.ErrNotExist) {
-		t.Errorf("legacy stopSupervisor left stale qmp.sock: err=%v", err)
 	}
 
 	// 3. stopSupervisor tolerates a race where the job exits right before bootout.
@@ -1367,7 +1423,7 @@ func TestLaunchAgentLifecycle(t *testing.T) {
 	loaded[target] = "worker supervise"
 	failBootoutErr = errors.New("exit status 3")
 	mu.Unlock()
-	if err := stopSupervisor(t.Context(), VMConfig{}, p); err != nil {
+	if err := stopSupervisor(t.Context(), p); err != nil {
 		t.Fatalf("stopSupervisor with already-gone race: %v", err)
 	}
 	mu.Lock()
@@ -1378,22 +1434,22 @@ func TestLaunchAgentLifecycle(t *testing.T) {
 	if err := startSupervisor(t.Context(), p); err != nil {
 		t.Fatalf("startSupervisor (2): %v", err)
 	}
-	if err := disableSupervisor(t.Context(), VMConfig{}, p); err != nil {
+	if err := disableSupervisor(t.Context(), p); err != nil {
 		t.Fatalf("disableSupervisor: %v", err)
 	}
 	if _, err := os.Stat(plistPath); !errors.Is(err, fs.ErrNotExist) {
 		t.Fatalf("plist should be removed by disableSupervisor, stat err=%v", err)
 	}
 
-	// 5. Destroy boots out the LaunchAgent, removes plist, cleans stale pid/qmp, and deletes VMDir.
+	// 5. Destroy boots out the LaunchAgent, removes plist, cleans stale pid/socket, and deletes VMDir.
 	if err := startSupervisor(t.Context(), p); err != nil {
 		t.Fatalf("startSupervisor (3): %v", err)
 	}
 	if err := os.WriteFile(p.PIDFile, []byte("999999\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	qmpSock := qmpSocketPath(p)
-	if err := os.WriteFile(qmpSock, []byte("stale"), 0o644); err != nil {
+	ctlSock := controlSocketPath(p)
+	if err := os.WriteFile(ctlSock, []byte("stale"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	res, err := Destroy(t.Context(), DestroyOptions{Dir: baseDir})
@@ -1406,8 +1462,8 @@ func TestLaunchAgentLifecycle(t *testing.T) {
 	if _, err := os.Stat(plistPath); !errors.Is(err, fs.ErrNotExist) {
 		t.Errorf("Destroy left plist behind: %v", err)
 	}
-	if _, err := os.Stat(qmpSock); !errors.Is(err, fs.ErrNotExist) {
-		t.Errorf("Destroy left qmp.sock behind: %v", err)
+	if _, err := os.Stat(ctlSock); !errors.Is(err, fs.ErrNotExist) {
+		t.Errorf("Destroy left vfkit.sock behind: %v", err)
 	}
 	if !slices.Contains(res.Removed, plistPath) || !slices.Contains(res.Removed, p.VMDir) {
 		t.Errorf("Destroy.Removed = %v, want %q and %q", res.Removed, plistPath, p.VMDir)
@@ -1435,22 +1491,22 @@ func TestCleanStaleVMFiles(t *testing.T) {
 	if err := os.MkdirAll(p.VMDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	qmpSock := qmpSocketPath(p)
-	t.Cleanup(func() { _ = os.Remove(qmpSock) })
+	ctlSock := controlSocketPath(p)
+	t.Cleanup(func() { _ = os.Remove(ctlSock) })
 
 	// When VM is not running (e.g., stale recycled PID after reboot), cleanStaleVMFiles removes both files.
 	if err := os.WriteFile(p.PIDFile, []byte(strconv.Itoa(os.Getpid())+"\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(qmpSock, []byte("stale"), 0o644); err != nil {
+	if err := os.WriteFile(ctlSock, []byte("stale"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	cleanStaleVMFiles(t.Context(), p)
 	if _, err := os.Stat(p.PIDFile); !errors.Is(err, fs.ErrNotExist) {
-		t.Errorf("expected stale qemu.pid removed, err=%v", err)
+		t.Errorf("expected stale vfkit.pid removed, err=%v", err)
 	}
-	if _, err := os.Stat(qmpSock); !errors.Is(err, fs.ErrNotExist) {
-		t.Errorf("expected stale qmp.sock removed, err=%v", err)
+	if _, err := os.Stat(ctlSock); !errors.Is(err, fs.ErrNotExist) {
+		t.Errorf("expected stale vfkit.sock removed, err=%v", err)
 	}
 
 	// When VM IS running, cleanStaleVMFiles leaves both files untouched.
@@ -1459,22 +1515,22 @@ func TestCleanStaleVMFiles(t *testing.T) {
 	myPID := os.Getpid()
 	processCommandLine = func(_ context.Context, pid int) (string, vmProcState, error) {
 		if pid == myPID {
-			return "/opt/homebrew/bin/qemu-system-aarch64 -machine virt -pidfile " + p.PIDFile, vmProcRunning, nil
+			return "/opt/homebrew/bin/vfkit --cpus 2 --pidfile " + p.PIDFile, vmProcRunning, nil
 		}
 		return "", vmProcMissing, nil
 	}
 	if err := os.WriteFile(p.PIDFile, []byte(strconv.Itoa(myPID)+"\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(qmpSock, []byte("live"), 0o644); err != nil {
+	if err := os.WriteFile(ctlSock, []byte("live"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	cleanStaleVMFiles(t.Context(), p)
 	if _, err := os.Stat(p.PIDFile); err != nil {
-		t.Errorf("live qemu.pid was unexpectedly removed: %v", err)
+		t.Errorf("live vfkit.pid was unexpectedly removed: %v", err)
 	}
-	if _, err := os.Stat(qmpSock); err != nil {
-		t.Errorf("live qmp.sock was unexpectedly removed: %v", err)
+	if _, err := os.Stat(ctlSock); err != nil {
+		t.Errorf("live vfkit.sock was unexpectedly removed: %v", err)
 	}
 }
 
@@ -1545,7 +1601,7 @@ func TestSupervisorStateAndStopSupervisorErrors(t *testing.T) {
 		runLaunchctl = func(_ context.Context, _ ...string) ([]byte, error) {
 			return []byte("Operation not permitted"), permErr
 		}
-		if err := stopSupervisor(t.Context(), VMConfig{}, p); !errors.Is(err, permErr) {
+		if err := stopSupervisor(t.Context(), p); !errors.Is(err, permErr) {
 			t.Fatalf("stopSupervisor err = %v, want wrapped %v", err, permErr)
 		}
 	})
@@ -1568,7 +1624,7 @@ func TestSupervisorStateAndStopSupervisorErrors(t *testing.T) {
 				return nil, errors.New("unexpected subcommand")
 			}
 		}
-		err := stopSupervisor(t.Context(), VMConfig{}, p)
+		err := stopSupervisor(t.Context(), p)
 		if !errors.Is(err, bootoutErr) || !errors.Is(err, printErr) {
 			t.Fatalf("stopSupervisor err = %v, want error wrapping both %v and %v", err, bootoutErr, printErr)
 		}
@@ -1589,7 +1645,7 @@ func TestSupervisorStateAndStopSupervisorErrors(t *testing.T) {
 				return nil, errors.New("unexpected subcommand")
 			}
 		}
-		err := stopSupervisor(ctx, VMConfig{}, p)
+		err := stopSupervisor(ctx, p)
 		if !errors.Is(err, context.Canceled) {
 			t.Fatalf("stopSupervisor err = %v, want context.Canceled", err)
 		}
@@ -1612,14 +1668,16 @@ func TestSupervisorStateAndStopSupervisorErrors(t *testing.T) {
 				return nil, errors.New("unexpected subcommand")
 			}
 		}
-		err := stopSupervisor(t.Context(), VMConfig{}, p)
+		err := stopSupervisor(t.Context(), p)
 		if !errors.Is(err, pollErr) {
 			t.Fatalf("stopSupervisor err = %v, want wrapped %v", err, pollErr)
 		}
 	})
 }
 
-func startTestSSHServer(t *testing.T, hostSigner ssh.Signer, clientPub ssh.PublicKey) int {
+// startTestSSHServer serves SSH as hostSigner, accepting clientPub, on a new
+// Unix socket, as vfkit serves the guest's vsock SSH, and returns its path.
+func startTestSSHServer(t *testing.T, hostSigner ssh.Signer, clientPub ssh.PublicKey) string {
 	t.Helper()
 	srvCfg := &ssh.ServerConfig{
 		PublicKeyCallback: func(_ ssh.ConnMetadata, key ssh.PublicKey) (*ssh.Permissions, error) {
@@ -1630,7 +1688,14 @@ func startTestSSHServer(t *testing.T, hostSigner ssh.Signer, clientPub ssh.Publi
 		},
 	}
 	srvCfg.AddHostKey(hostSigner)
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	// Keep the socket path short for macOS's 104-byte Unix socket limit.
+	dir, err := os.MkdirTemp("/tmp", "hb-ssh-*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(dir) })
+	sock := filepath.Join(dir, "ssh.sock")
+	ln, err := net.Listen("unix", sock)
 	if err != nil {
 		t.Fatalf("listen ssh: %v", err)
 	}
@@ -1655,7 +1720,13 @@ func startTestSSHServer(t *testing.T, hostSigner ssh.Signer, clientPub ssh.Publi
 			}(conn)
 		}
 	}()
-	return ln.Addr().(*net.TCPAddr).Port
+	return sock
+}
+
+// withSSHSock is p with its guest SSH socket at sock.
+func withSSHSock(p VMPaths, sock string) VMPaths {
+	p.SSHSock = sock
+	return p
 }
 
 func generateTestHostSigner(t *testing.T) ssh.Signer {
@@ -1723,7 +1794,7 @@ func TestVMSSHHostKeyPinning(t *testing.T) {
 			t.Fatalf("parse seeded host key: %v", err)
 		}
 		goodPort := startTestSSHServer(t, seededSigner, clientSigner.PublicKey())
-		cl, err := dialSSH(t.Context(), VMConfig{User: "alice", SSHPort: goodPort}, p, clientSigner, 5*time.Second)
+		cl, err := dialSSH(t.Context(), VMConfig{User: "alice"}, withSSHSock(p, goodPort), clientSigner, 5*time.Second)
 		if err != nil {
 			t.Fatalf("dialSSH with matching seeded host key failed: %v", err)
 		}
@@ -1731,7 +1802,7 @@ func TestVMSSHHostKeyPinning(t *testing.T) {
 
 		// Mismatched server host key is rejected.
 		wrongPort := startTestSSHServer(t, generateTestHostSigner(t), clientSigner.PublicKey())
-		if badCl, err := dialSSH(t.Context(), VMConfig{User: "alice", SSHPort: wrongPort}, p, clientSigner, 5*time.Second); err == nil {
+		if badCl, err := dialSSH(t.Context(), VMConfig{User: "alice"}, withSSHSock(p, wrongPort), clientSigner, 5*time.Second); err == nil {
 			badCl.Close()
 			t.Fatalf("dialSSH accepted mismatched host key; want rejection")
 		}
@@ -1754,7 +1825,7 @@ func TestVMSSHHostKeyPinning(t *testing.T) {
 		firstPort := startTestSSHServer(t, firstHostSigner, clientSigner.PublicKey())
 
 		// First connection pins the key.
-		cl1, err := dialSSH(t.Context(), VMConfig{User: "alice", SSHPort: firstPort}, p, clientSigner, 5*time.Second)
+		cl1, err := dialSSH(t.Context(), VMConfig{User: "alice"}, withSSHSock(p, firstPort), clientSigner, 5*time.Second)
 		if err != nil {
 			t.Fatalf("TOFU first dialSSH failed: %v", err)
 		}
@@ -1776,7 +1847,7 @@ func TestVMSSHHostKeyPinning(t *testing.T) {
 		}
 
 		// Subsequent connection to the same host key succeeds.
-		cl2, err := dialSSH(t.Context(), VMConfig{User: "alice", SSHPort: firstPort}, p, clientSigner, 5*time.Second)
+		cl2, err := dialSSH(t.Context(), VMConfig{User: "alice"}, withSSHSock(p, firstPort), clientSigner, 5*time.Second)
 		if err != nil {
 			t.Fatalf("second dialSSH with pinned key failed: %v", err)
 		}
@@ -1785,7 +1856,7 @@ func TestVMSSHHostKeyPinning(t *testing.T) {
 		// Subsequent connection to a different host key is rejected.
 		otherHostSigner := generateTestHostSigner(t)
 		otherPort := startTestSSHServer(t, otherHostSigner, clientSigner.PublicKey())
-		if badCl, err := dialSSH(t.Context(), VMConfig{User: "alice", SSHPort: otherPort}, p, clientSigner, 5*time.Second); err == nil {
+		if badCl, err := dialSSH(t.Context(), VMConfig{User: "alice"}, withSSHSock(p, otherPort), clientSigner, 5*time.Second); err == nil {
 			badCl.Close()
 			t.Fatalf("dialSSH accepted changed host key after TOFU pin; want rejection")
 		}
@@ -1807,7 +1878,7 @@ func TestEnsurePrivateVMDirAndFilePermissions(t *testing.T) {
 		t.Fatalf("new VMDir perm = %04o, want 0700", fi.Mode().Perm())
 	}
 
-	// Simulate a pre-upgrade VM dir with loose 0755 dir and 0644 seed.iso / root.qcow2.
+	// Simulate a pre-upgrade VM dir with loose 0755 dir and 0644 seed.iso / root.img.
 	if err := os.Chmod(p.VMDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -1892,7 +1963,7 @@ func TestPrepareVMHostKeyForSetup(t *testing.T) {
 		}
 		guestSigner := generateTestHostSigner(t)
 		port := startTestSSHServer(t, guestSigner, clientSigner.PublicKey())
-		cl, err := dialSSH(t.Context(), VMConfig{User: "alice", SSHPort: port}, p, clientSigner, 5*time.Second)
+		cl, err := dialSSH(t.Context(), VMConfig{User: "alice"}, withSSHSock(p, port), clientSigner, 5*time.Second)
 		if err != nil {
 			t.Fatalf("dialSSH TOFU after existing-disk reinit failed: %v", err)
 		}
@@ -1969,7 +2040,7 @@ func TestUnifiedInteractiveSSHAndDialSSHPinning(t *testing.T) {
 		firstHost := generateTestHostSigner(t)
 		firstPort := startTestSSHServer(t, firstHost, clientSigner.PublicKey())
 
-		knownHosts, err := ensureVMKnownHosts(t.Context(), p, firstPort)
+		knownHosts, err := ensureVMKnownHosts(t.Context(), withSSHSock(p, firstPort))
 		if err != nil {
 			t.Fatalf("ensureVMKnownHosts: %v", err)
 		}
@@ -1982,7 +2053,7 @@ func TestUnifiedInteractiveSSHAndDialSSHPinning(t *testing.T) {
 			t.Fatal(err)
 		}
 		wantPubLine := strings.TrimSpace(string(ssh.MarshalAuthorizedKey(firstHost.PublicKey())))
-		wantEntry := "[127.0.0.1]:" + strconv.Itoa(firstPort) + " " + wantPubLine + "\n"
+		wantEntry := vmHostKeyAlias + " " + wantPubLine + "\n"
 		if string(khBytes) != wantEntry {
 			t.Fatalf("known_hosts = %q, want %q", string(khBytes), wantEntry)
 		}
@@ -1995,7 +2066,7 @@ func TestUnifiedInteractiveSSHAndDialSSHPinning(t *testing.T) {
 		}
 
 		// Go dialSSH accepts the pinned key.
-		cl, err := dialSSH(t.Context(), VMConfig{User: "alice", SSHPort: firstPort}, p, clientSigner, 5*time.Second)
+		cl, err := dialSSH(t.Context(), VMConfig{User: "alice"}, withSSHSock(p, firstPort), clientSigner, 5*time.Second)
 		if err != nil {
 			t.Fatalf("dialSSH with key pinned by ensureVMKnownHosts failed: %v", err)
 		}
@@ -2004,7 +2075,7 @@ func TestUnifiedInteractiveSSHAndDialSSHPinning(t *testing.T) {
 		// Go dialSSH rejects a different host key.
 		otherHost := generateTestHostSigner(t)
 		otherPort := startTestSSHServer(t, otherHost, clientSigner.PublicKey())
-		if badCl, err := dialSSH(t.Context(), VMConfig{User: "alice", SSHPort: otherPort}, p, clientSigner, 5*time.Second); err == nil {
+		if badCl, err := dialSSH(t.Context(), VMConfig{User: "alice"}, withSSHSock(p, otherPort), clientSigner, 5*time.Second); err == nil {
 			badCl.Close()
 			t.Fatalf("dialSSH accepted changed host key after interactive-SSH pin")
 		}
@@ -2022,7 +2093,7 @@ func TestUnifiedInteractiveSSHAndDialSSHPinning(t *testing.T) {
 		firstHost := generateTestHostSigner(t)
 		firstPort := startTestSSHServer(t, firstHost, clientSigner.PublicKey())
 
-		cl, err := dialSSH(t.Context(), VMConfig{User: "alice", SSHPort: firstPort}, p, clientSigner, 5*time.Second)
+		cl, err := dialSSH(t.Context(), VMConfig{User: "alice"}, withSSHSock(p, firstPort), clientSigner, 5*time.Second)
 		if err != nil {
 			t.Fatalf("initial dialSSH failed: %v", err)
 		}
@@ -2033,7 +2104,7 @@ func TestUnifiedInteractiveSSHAndDialSSHPinning(t *testing.T) {
 		otherHost := generateTestHostSigner(t)
 		otherPort := startTestSSHServer(t, otherHost, clientSigner.PublicKey())
 
-		knownHosts, err := ensureVMKnownHosts(t.Context(), p, otherPort)
+		knownHosts, err := ensureVMKnownHosts(t.Context(), withSSHSock(p, otherPort))
 		if err != nil {
 			t.Fatalf("ensureVMKnownHosts: %v", err)
 		}
@@ -2042,7 +2113,7 @@ func TestUnifiedInteractiveSSHAndDialSSHPinning(t *testing.T) {
 			t.Fatal(err)
 		}
 		wantPubLine := strings.TrimSpace(string(ssh.MarshalAuthorizedKey(firstHost.PublicKey())))
-		wantEntry := "[127.0.0.1]:" + strconv.Itoa(otherPort) + " " + wantPubLine + "\n"
+		wantEntry := vmHostKeyAlias + " " + wantPubLine + "\n"
 		if string(khBytes) != wantEntry {
 			t.Fatalf("known_hosts = %q, want %q", string(khBytes), wantEntry)
 		}
@@ -2097,7 +2168,7 @@ func TestPinnedRSAHostKeyNegotiatesRSASHA2(t *testing.T) {
 	port := startTestSSHServer(t, rsaHost, clientSigner.PublicKey())
 
 	// First connect (TOFU) pins the RSA host key.
-	cl1, err := dialSSH(t.Context(), VMConfig{User: "alice", SSHPort: port}, p, clientSigner, 5*time.Second)
+	cl1, err := dialSSH(t.Context(), VMConfig{User: "alice"}, withSSHSock(p, port), clientSigner, 5*time.Second)
 	if err != nil {
 		t.Fatalf("first dialSSH to RSA-SHA2 server failed: %v", err)
 	}
@@ -2105,7 +2176,7 @@ func TestPinnedRSAHostKeyNegotiatesRSASHA2(t *testing.T) {
 
 	// Second connect uses the pinned RSA key and must negotiate rsa-sha2-512/rsa-sha2-256
 	// (sending only ssh-rsa fails against an RSA-SHA2-only server).
-	cl2, err := dialSSH(t.Context(), VMConfig{User: "alice", SSHPort: port}, p, clientSigner, 5*time.Second)
+	cl2, err := dialSSH(t.Context(), VMConfig{User: "alice"}, withSSHSock(p, port), clientSigner, 5*time.Second)
 	if err != nil {
 		t.Fatalf("second dialSSH to pinned RSA-SHA2 server failed: %v", err)
 	}
@@ -2114,7 +2185,7 @@ func TestPinnedRSAHostKeyNegotiatesRSASHA2(t *testing.T) {
 	// A different RSA-SHA2 server key is still rejected.
 	otherRSAHost := generateRSASHA2OnlyHostSigner(t)
 	otherPort := startTestSSHServer(t, otherRSAHost, clientSigner.PublicKey())
-	if badCl, err := dialSSH(t.Context(), VMConfig{User: "alice", SSHPort: otherPort}, p, clientSigner, 5*time.Second); err == nil {
+	if badCl, err := dialSSH(t.Context(), VMConfig{User: "alice"}, withSSHSock(p, otherPort), clientSigner, 5*time.Second); err == nil {
 		badCl.Close()
 		t.Fatalf("dialSSH accepted different RSA-SHA2 host key; want rejection")
 	}
@@ -2134,146 +2205,95 @@ func TestDarwinSetupRejectsZFSDevice(t *testing.T) {
 	}
 }
 
-type mockQMPServer struct {
-	sockPath string
-	ln       net.Listener
-
+// mockVfkit serves vfkit's REST API (GET and POST /vm/state) on a Unix
+// socket, as vfkit 0.6.4 answers.
+type mockVfkit struct {
 	mu         sync.Mutex
-	running    bool
-	status     string
-	blockJSON  string
+	state      string
 	stayPaused bool
-	contCalls  int
-	quitCalls  int
-	commands   []string
+	changes    []string
 }
 
-func startMockQMPServer(t *testing.T, sockPath string, running bool, status, blockJSON string) *mockQMPServer {
+func startMockVfkit(t *testing.T, sockPath, state string) *mockVfkit {
 	t.Helper()
 	_ = os.Remove(sockPath)
 	ln, err := net.Listen("unix", sockPath)
 	if err != nil {
-		t.Fatalf("listen mock QMP %s: %v", sockPath, err)
+		t.Fatalf("listen mock vfkit: %v", err)
 	}
-	s := &mockQMPServer{
-		sockPath:  sockPath,
-		ln:        ln,
-		running:   running,
-		status:    status,
-		blockJSON: blockJSON,
-	}
+	m := &mockVfkit{state: state}
+	srv := &http.Server{Handler: http.HandlerFunc(m.serveHTTP)}
+	go func() { _ = srv.Serve(ln) }()
 	t.Cleanup(func() {
-		_ = ln.Close()
+		_ = srv.Close()
 		_ = os.Remove(sockPath)
 	})
-	go s.serve()
-	return s
+	return m
 }
 
-func (s *mockQMPServer) serve() {
-	for {
-		conn, err := s.ln.Accept()
-		if err != nil {
+func (m *mockVfkit) serveHTTP(w http.ResponseWriter, r *http.Request) {
+	if r.URL.Path != "/vm/state" {
+		http.NotFound(w, r)
+		return
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	switch r.Method {
+	case http.MethodGet:
+		_ = json.NewEncoder(w).Encode(map[string]any{"state": m.state, "canStop": true, "canHardStop": true})
+	case http.MethodPost:
+		var req struct {
+			State string `json:"state"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
 		}
-		go func(c net.Conn) {
-			defer c.Close()
-			_, _ = c.Write([]byte(`{"QMP":{"version":{"qemu":{"major":10,"minor":0,"micro":0}}}}` + "\n"))
-			sc := bufio.NewScanner(c)
-			for sc.Scan() {
-				var req struct {
-					Execute string `json:"execute"`
-				}
-				if err := json.Unmarshal(sc.Bytes(), &req); err != nil {
-					return
-				}
-				s.mu.Lock()
-				s.commands = append(s.commands, req.Execute)
-				switch req.Execute {
-				case "qmp_capabilities":
-					s.mu.Unlock()
-					_, _ = c.Write([]byte(`{"return":{}}` + "\n"))
-				case "query-status":
-					running := s.running
-					st := s.status
-					s.mu.Unlock()
-					if !running {
-						_, _ = c.Write([]byte(`{"event":"STOP"}` + "\n"))
-					}
-					_, _ = fmt.Fprintf(c, `{"return":{"running":%t,"singlestep":false,"status":%q}}`+"\n", running, st)
-				case "query-block":
-					blk := s.blockJSON
-					if blk == "" {
-						blk = "[]"
-					}
-					s.mu.Unlock()
-					var compact bytes.Buffer
-					if err := json.Compact(&compact, []byte(blk)); err == nil {
-						blk = compact.String()
-					}
-					_, _ = fmt.Fprintf(c, `{"return":%s}`+"\n", blk)
-				case "cont":
-					s.contCalls++
-					if !s.stayPaused {
-						s.running = true
-						s.status = "running"
-						s.blockJSON = `[{"device":"root","io-status":"ok"},{"device":"swap","io-status":"ok"}]`
-					}
-					resumed := !s.stayPaused
-					s.mu.Unlock()
-					if resumed {
-						_, _ = c.Write([]byte(`{"event":"RESUME"}` + "\n"))
-					}
-					_, _ = c.Write([]byte(`{"return":{}}` + "\n"))
-				case "quit":
-					s.quitCalls++
-					s.mu.Unlock()
-					_, _ = c.Write([]byte(`{"return":{}}` + "\n"))
-				default:
-					s.mu.Unlock()
-					_, _ = c.Write([]byte(`{"error":{"class":"CommandNotFound","desc":"unknown"}}` + "\n"))
-				}
-			}
-		}(conn)
+		m.changes = append(m.changes, req.State)
+		if req.State == vfkitResume && !m.stayPaused {
+			m.state = vfkitStateRunning
+		}
+		w.WriteHeader(http.StatusAccepted)
+	default:
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 	}
 }
 
-func (s *mockQMPServer) setState(running bool, status, blockJSON string) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.running = running
-	s.status = status
-	s.blockJSON = blockJSON
+func (m *mockVfkit) setState(state string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.state = state
 }
 
-func (s *mockQMPServer) getContCalls() int {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return s.contCalls
+func (m *mockVfkit) getChanges() []string {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return slices.Clone(m.changes)
 }
 
-func (s *mockQMPServer) getCommands() []string {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return slices.Clone(s.commands)
-}
-
-func setupMockDarwinVM(t *testing.T, running bool, status, blockJSON string) (string, VMConfig, VMPaths, *mockQMPServer) {
+// setupMockDarwinVM sets up a configured worker VM whose vfkit is this test
+// process, serving a mock REST API that reports state.
+func setupMockDarwinVM(t *testing.T, state string) (string, VMConfig, VMPaths, *mockVfkit) {
 	t.Helper()
-	baseDir := t.TempDir()
+	// Keep the control socket short for macOS's 104-byte Unix socket limit.
+	baseDir, err := os.MkdirTemp("/tmp", "hb-vm-*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(baseDir) })
 	p := NewVMPaths(baseDir)
 	if err := os.MkdirAll(p.VMDir, 0o700); err != nil {
 		t.Fatal(err)
 	}
 	cfg := VMConfig{
 		Controller:    "ctrl.ts.net:7120",
-		User:          "alice",
+		User:          "", // avoid real SSH dials in unit tests
 		Hostname:      "mac-worker",
 		Arch:          "arm64",
 		UbuntuVersion: DefaultUbuntuVersion,
 		CPUs:          4,
 		MemoryBytes:   4 << 30,
-		SSHPort:       0, // avoid real SSH dials in unit tests
+		VfkitBinary:   "/opt/homebrew/bin/vfkit",
 		StateDir:      DefaultVMStateDir,
 	}
 	if err := writeJSONAtomic(p.Config, cfg, 0o644); err != nil {
@@ -2292,7 +2312,7 @@ func setupMockDarwinVM(t *testing.T, running bool, status, blockJSON string) (st
 	})
 	processCommandLine = func(_ context.Context, pid int) (string, vmProcState, error) {
 		if pid == myPID {
-			return "/opt/homebrew/bin/qemu-system-aarch64 -machine virt -pidfile " + p.PIDFile, vmProcRunning, nil
+			return "/opt/homebrew/bin/vfkit --cpus 2 --pidfile " + p.PIDFile, vmProcRunning, nil
 		}
 		return "", vmProcMissing, nil
 	}
@@ -2300,213 +2320,89 @@ func setupMockDarwinVM(t *testing.T, running bool, status, blockJSON string) (st
 		return []byte("Could not find service"), errors.New("exit status 113")
 	}
 
-	qmp := startMockQMPServer(t, qmpSocketPath(p), running, status, blockJSON)
-	return baseDir, cfg, p, qmp
+	vf := startMockVfkit(t, controlSocketPath(p), state)
+	return baseDir, cfg, p, vf
 }
 
-func TestQMPInspectVM(t *testing.T) {
-	tmpDir, err := os.MkdirTemp("/tmp", "hb-qmp-inspect-*")
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = os.RemoveAll(tmpDir) })
-	sock := filepath.Join(tmpDir, "q.sock")
-
-	srv := startMockQMPServer(t, sock, true, "running", `[{"device":"swap","io-status":"ok"}]`)
-
-	t.Run("running VM does not query block devices", func(t *testing.T) {
-		info, err := qmpInspectVM(t.Context(), sock)
-		if err != nil {
-			t.Fatalf("qmpInspectVM: %v", err)
-		}
-		if !info.Known || !info.Running || info.QMPStatus != "running" || len(info.IOErrors) != 0 {
-			t.Fatalf("qmpInspectVM(running) = %+v, want Known=true Running=true QMPStatus=running IOErrors=nil", info)
-		}
-		if slices.Contains(srv.getCommands(), "query-block") {
-			t.Errorf("query-block should not be called when VM is running; commands=%v", srv.getCommands())
-		}
-	})
-
-	t.Run("paused io-error collects non-ok block io-status", func(t *testing.T) {
-		srv.setState(false, "io-error", `[
-			{"device":"root","io-status":"ok"},
-			{"device":"swap","io-status":"nospace"},
-			{"device":"","io-status":"failed","inserted":{"file":"/Users/alice/.hotbed/vm/zfs.qcow2"}}
-		]`)
-		info, err := qmpInspectVM(t.Context(), sock)
-		if err != nil {
-			t.Fatalf("qmpInspectVM(io-error): %v", err)
-		}
-		if !info.Known || info.Running || info.QMPStatus != "io-error" {
-			t.Fatalf("qmpInspectVM(io-error) = %+v, want Known=true Running=false QMPStatus=io-error", info)
-		}
-		wantErrs := []string{"swap: nospace", "zfs.qcow2: failed"}
-		if !slices.Equal(info.IOErrors, wantErrs) {
-			t.Fatalf("IOErrors = %v, want %v", info.IOErrors, wantErrs)
-		}
-	})
-
-	t.Run("paused without io errors reports paused with empty IOErrors", func(t *testing.T) {
-		srv.setState(false, "paused", `[{"device":"root","io-status":"ok"},{"device":"swap","io-status":"ok"}]`)
-		info, err := qmpInspectVM(t.Context(), sock)
-		if err != nil {
-			t.Fatalf("qmpInspectVM(paused): %v", err)
-		}
-		if !info.Known || info.Running || info.QMPStatus != "paused" || len(info.IOErrors) != 0 {
-			t.Fatalf("qmpInspectVM(paused) = %+v, want Known=true Running=false QMPStatus=paused IOErrors=nil", info)
-		}
-	})
-
-	t.Run("non-paused non-running statuses do not query block devices", func(t *testing.T) {
-		for _, status := range []string{"suspended", "debug", "guest-panicked"} {
-			before := len(srv.getCommands())
-			srv.setState(false, status, `[{"device":"swap","io-status":"nospace"}]`)
-			info, err := qmpInspectVM(t.Context(), sock)
-			if err != nil {
-				t.Fatalf("qmpInspectVM(%s): %v", status, err)
-			}
-			if !info.Known || info.Running || info.QMPStatus != status || len(info.IOErrors) != 0 {
-				t.Fatalf("qmpInspectVM(%s) = %+v, want Known=true Running=false QMPStatus=%s IOErrors=nil", status, info, status)
-			}
-			newCmds := srv.getCommands()[before:]
-			if slices.Contains(newCmds, "query-block") {
-				t.Errorf("query-block should not be called for status %q; commands=%v", status, newCmds)
-			}
-		}
-	})
-}
-
-func TestVMProcessStateExcludesNonPausedQMPStatuses(t *testing.T) {
-	for _, status := range []string{"suspended", "debug", "guest-panicked"} {
-		t.Run(status, func(t *testing.T) {
-			_, _, p, _ := setupMockDarwinVM(t, false, status, `[{"device":"root","io-status":"ok"}]`)
-			pid, state, qmp, err := vmDetailedState(t.Context(), p)
-			if err != nil || state != vmProcRunning || pid != os.Getpid() {
-				t.Fatalf("vmDetailedState(%s) = (%d, %v, %+v, %v), want (%d, vmProcRunning, ..., nil)",
-					status, pid, state, qmp, err, os.Getpid())
-			}
-			if qmp.QMPStatus != status {
-				t.Fatalf("qmp.QMPStatus = %q, want %q", qmp.QMPStatus, status)
+func TestVMDetailedStateReportsVfkitState(t *testing.T) {
+	// Only a paused VM is paused; vfkit's other states leave the process
+	// running and are reported as they are.
+	for _, tc := range []struct {
+		state string
+		want  vmProcState
+	}{
+		{vfkitStateRunning, vmProcRunning},
+		{vfkitStateStarting, vmProcRunning},
+		{"VirtualMachineStateError", vmProcRunning},
+		{vfkitStatePaused, vmProcPaused},
+	} {
+		t.Run(tc.state, func(t *testing.T) {
+			_, _, p, _ := setupMockDarwinVM(t, tc.state)
+			pid, state, vmState, err := vmDetailedState(t.Context(), p)
+			if err != nil || state != tc.want || pid != os.Getpid() || vmState != tc.state {
+				t.Fatalf("vmDetailedState = (%d, %v, %q, %v), want (%d, %v, %q, nil)", pid, state, vmState, err, os.Getpid(), tc.want, tc.state)
 			}
 		})
 	}
 }
 
-func TestVMStatusAndProcessStatePausedOnIOError(t *testing.T) {
-	nospaceBlocks := `[{"device":"root","io-status":"ok"},{"device":"swap","io-status":"nospace"}]`
-	baseDir, cfg, p, qmp := setupMockDarwinVM(t, false, "io-error", nospaceBlocks)
+func TestVMStatusAndProcessStatePaused(t *testing.T) {
+	baseDir, cfg, p, vf := setupMockDarwinVM(t, vfkitStatePaused)
 
 	pid, state, err := vmProcessState(t.Context(), p)
 	if err != nil || state != vmProcPaused || pid != os.Getpid() {
-		t.Fatalf("vmProcessState(io-error) = (%d, %v, %v), want (%d, vmProcPaused, nil)", pid, state, err, os.Getpid())
+		t.Fatalf("vmProcessState(paused) = (%d, %v, %v), want (%d, vmProcPaused, nil)", pid, state, err, os.Getpid())
 	}
-	if (qemuVM{cfg: cfg, p: p}).Running(t.Context()) {
-		t.Fatal("qemuVM.Running() = true for paused VM, want false")
+	if (vfkitVM{cfg: cfg, p: p}).Running(t.Context()) {
+		t.Fatal("vfkitVM.Running() = true for paused VM, want false")
 	}
 
 	st, err := GetStatus(t.Context(), baseDir)
 	if err != nil {
-		t.Fatalf("GetStatus(io-error): %v", err)
+		t.Fatalf("GetStatus(paused): %v", err)
 	}
-	if st.Running {
-		t.Fatalf("Status.Running = true for paused VM, want false")
-	}
-	if st.VM == nil {
-		t.Fatal("Status.VM is nil")
-	}
-	if st.VM.Running || !st.VM.Paused || st.VM.PID != os.Getpid() || st.VM.QMPStatus != "io-error" {
-		t.Fatalf("Status.VM = %+v, want Running=false Paused=true PID=%d QMPStatus=io-error", st.VM, os.Getpid())
-	}
-	if want := []string{"swap: nospace"}; !slices.Equal(st.VM.IOErrors, want) {
-		t.Fatalf("Status.VM.IOErrors = %v, want %v", st.VM.IOErrors, want)
+	if st.Running || st.VM == nil || st.VM.Running || !st.VM.Paused || st.VM.PID != os.Getpid() || st.VM.State != vfkitStatePaused {
+		t.Fatalf("Status = %+v, VM = %+v, want Running=false and VM Running=false Paused=true PID=%d State=%s", st, st.VM, os.Getpid(), vfkitStatePaused)
 	}
 
 	// Trim and SSH must report the paused state clearly rather than "not running".
-	if _, err := Trim(t.Context(), baseDir); err == nil || !strings.Contains(err.Error(), "paused") || !strings.Contains(err.Error(), "swap: nospace") {
-		t.Fatalf("Trim(paused) err = %v, want paused error mentioning swap: nospace", err)
+	if _, err := Trim(t.Context(), baseDir); err == nil || err.Error() != "CONFLICT: worker VM is paused" {
+		t.Fatalf("Trim(paused) err = %v, want the paused conflict", err)
 	}
-	if _, err := SSH(t.Context(), baseDir, nil); err == nil || !strings.Contains(err.Error(), "paused") || !strings.Contains(err.Error(), "swap: nospace") {
-		t.Fatalf("SSH(paused) err = %v, want paused error mentioning swap: nospace", err)
+	if _, err := SSH(t.Context(), baseDir, nil); err == nil || err.Error() != "CONFLICT: worker VM is paused" {
+		t.Fatalf("SSH(paused) err = %v, want the paused conflict", err)
 	}
 
-	// Once QEMU resumes, vmProcessState and GetStatus report Running=true, Paused=false.
-	qmp.setState(true, "running", `[{"device":"root","io-status":"ok"},{"device":"swap","io-status":"ok"}]`)
-	pid, state, err = vmProcessState(t.Context(), p)
-	if err != nil || state != vmProcRunning || pid != os.Getpid() {
-		t.Fatalf("vmProcessState(running) = (%d, %v, %v), want (%d, vmProcRunning, nil)", pid, state, err, os.Getpid())
-	}
-	if !(qemuVM{cfg: cfg, p: p}).Running(t.Context()) {
-		t.Fatal("qemuVM.Running() = false for running VM, want true")
+	vf.setState(vfkitStateRunning)
+	if !(vfkitVM{cfg: cfg, p: p}).Running(t.Context()) {
+		t.Fatal("vfkitVM.Running() = false for running VM, want true")
 	}
 	st, err = GetStatus(t.Context(), baseDir)
 	if err != nil {
 		t.Fatalf("GetStatus(running): %v", err)
 	}
-	if !st.VM.Running || st.VM.Paused || st.VM.QMPStatus != "running" || len(st.VM.IOErrors) != 0 {
-		t.Fatalf("Status.VM(running) = %+v, want Running=true Paused=false QMPStatus=running IOErrors=nil", st.VM)
+	if !st.VM.Running || st.VM.Paused || st.VM.State != vfkitStateRunning {
+		t.Fatalf("Status.VM(running) = %+v, want Running=true Paused=false State=%s", st.VM, vfkitStateRunning)
 	}
 }
 
-func TestStartAndResumePausedVM(t *testing.T) {
-	origMinFree := minHostFreeBytes
-	origHostFree := hostFreeBytes
+func TestStartResumesPausedVM(t *testing.T) {
 	origResync := resyncGuestClock
-	origVerifyTimeout := resumeVerifyTimeout
-	origVerifyInterval := resumeVerifyInterval
-	t.Cleanup(func() {
-		minHostFreeBytes = origMinFree
-		hostFreeBytes = origHostFree
-		resyncGuestClock = origResync
-		resumeVerifyTimeout = origVerifyTimeout
-		resumeVerifyInterval = origVerifyInterval
-	})
-	minHostFreeBytes = 2 << 30
-	resumeVerifyTimeout = 80 * time.Millisecond
-	resumeVerifyInterval = 10 * time.Millisecond
+	t.Cleanup(func() { resyncGuestClock = origResync })
 
-	nospaceBlocks := `[{"device":"root","io-status":"ok"},{"device":"swap","io-status":"nospace"}]`
-
-	t.Run("Start refuses loudly when host disk is below threshold", func(t *testing.T) {
-		baseDir, _, _, qmp := setupMockDarwinVM(t, false, "io-error", nospaceBlocks)
-		hostFreeBytes = func(string) (int64, error) { return 512 << 20, nil }
-		resyncGuestClock = func(context.Context, VMConfig, VMPaths) error {
-			t.Fatal("resyncGuestClock should not be called when resume is refused")
-			return nil
-		}
-
-		_, err := Start(t.Context(), baseDir)
-		var apiErr *api.Error
-		if !errors.As(err, &apiErr) || apiErr.Code != api.CodeConflict {
-			t.Fatalf("Start(low disk) err = %v, want CONFLICT *api.Error", err)
-		}
-		for _, want := range []string{"io-error", "swap: nospace", "512.0 MiB", "2.00 GiB"} {
-			if !strings.Contains(apiErr.Message, want) {
-				t.Errorf("Start error message %q missing %q", apiErr.Message, want)
-			}
-		}
-		if !strings.Contains(apiErr.Suggestion, "free disk space") {
-			t.Errorf("Start error suggestion %q missing disk space guidance", apiErr.Suggestion)
-		}
-		if qmp.getContCalls() != 0 {
-			t.Fatalf("expected 0 QMP cont calls when disk is full, got %d", qmp.getContCalls())
-		}
-	})
-
-	t.Run("Start resumes via QMP cont and resyncs clock when free space allows", func(t *testing.T) {
-		baseDir, _, p, qmp := setupMockDarwinVM(t, false, "io-error", nospaceBlocks)
-		hostFreeBytes = func(string) (int64, error) { return 5 << 30, nil }
+	t.Run("Start resumes through vfkit and resyncs the guest clock", func(t *testing.T) {
+		baseDir, _, p, vf := setupMockDarwinVM(t, vfkitStatePaused)
 		var resyncCalls atomic.Int32
 		resyncGuestClock = func(context.Context, VMConfig, VMPaths) error {
 			resyncCalls.Add(1)
 			return nil
 		}
-
 		st, err := Start(t.Context(), baseDir)
 		if err != nil {
-			t.Fatalf("Start(free disk): %v", err)
+			t.Fatalf("Start(paused): %v", err)
 		}
-		if qmp.getContCalls() != 1 {
-			t.Fatalf("contCalls = %d, want 1", qmp.getContCalls())
+		if got := vf.getChanges(); !slices.Equal(got, []string{vfkitResume}) {
+			t.Fatalf("vfkit state changes = %v, want [Resume]", got)
 		}
 		if resyncCalls.Load() != 1 {
 			t.Fatalf("resyncCalls = %d, want 1", resyncCalls.Load())
@@ -2514,166 +2410,104 @@ func TestStartAndResumePausedVM(t *testing.T) {
 		if st.VM == nil || !st.VM.Running || st.VM.Paused {
 			t.Fatalf("Status.VM after resume = %+v, want Running=true Paused=false", st.VM)
 		}
-		_, state, err := vmProcessState(t.Context(), p)
-		if err != nil || state != vmProcRunning {
+		if _, state, err := vmProcessState(t.Context(), p); err != nil || state != vmProcRunning {
 			t.Fatalf("vmProcessState after resume = (%v, %v), want (vmProcRunning, nil)", state, err)
-		}
-	})
-
-	t.Run("ensureVMRunning fails loudly if VM remains paused after cont", func(t *testing.T) {
-		_, cfg, p, qmp := setupMockDarwinVM(t, false, "io-error", nospaceBlocks)
-		qmp.mu.Lock()
-		qmp.stayPaused = true
-		qmp.mu.Unlock()
-		hostFreeBytes = func(string) (int64, error) { return 5 << 30, nil }
-		resyncGuestClock = func(context.Context, VMConfig, VMPaths) error {
-			t.Fatal("resyncGuestClock should not run when VM stayed paused")
-			return nil
-		}
-
-		err := ensureVMRunning(t.Context(), cfg, p, nil)
-		var apiErr *api.Error
-		if !errors.As(err, &apiErr) || apiErr.Code != api.CodeConflict {
-			t.Fatalf("ensureVMRunning(stayPaused) err = %v, want CONFLICT *api.Error", err)
-		}
-		if !strings.Contains(apiErr.Message, "remained paused") || !strings.Contains(apiErr.Message, "swap: nospace") {
-			t.Errorf("err message = %q, want mention of remained paused and swap: nospace", apiErr.Message)
-		}
-		if qmp.getContCalls() != 1 {
-			t.Fatalf("contCalls = %d, want 1", qmp.getContCalls())
-		}
-	})
-
-	t.Run("ensureVMRunning resumes manually paused VM when disk space allows", func(t *testing.T) {
-		_, cfg, p, qmp := setupMockDarwinVM(t, false, "paused", `[{"device":"root","io-status":"ok"}]`)
-		hostFreeBytes = func(string) (int64, error) { return 5 << 30, nil }
-		resyncGuestClock = func(context.Context, VMConfig, VMPaths) error { return nil }
-
-		if err := ensureVMRunning(t.Context(), cfg, p, nil); err != nil {
-			t.Fatalf("ensureVMRunning(paused): %v", err)
-		}
-		if qmp.getContCalls() != 1 {
-			t.Fatalf("contCalls = %d, want 1", qmp.getContCalls())
 		}
 	})
 }
 
-func TestSupervisorPausedVMRecovery(t *testing.T) {
-	origMinFree := minHostFreeBytes
-	origHostFree := hostFreeBytes
-	origResync := resyncGuestClock
-	origCheckInterval := pausedVMCheckInterval
+func TestResumeThatDoesNotTakeFails(t *testing.T) {
+	origResync, origTimeout, origInterval := resyncGuestClock, resumeVerifyTimeout, resumeVerifyInterval
 	t.Cleanup(func() {
-		minHostFreeBytes = origMinFree
-		hostFreeBytes = origHostFree
-		resyncGuestClock = origResync
-		pausedVMCheckInterval = origCheckInterval
+		resyncGuestClock, resumeVerifyTimeout, resumeVerifyInterval = origResync, origTimeout, origInterval
 	})
-	minHostFreeBytes = 2 << 30
-	pausedVMCheckInterval = 15 * time.Millisecond
-
-	nospaceBlocks := `[{"device":"root","io-status":"ok"},{"device":"swap","io-status":"nospace"}]`
-	baseDir, cfg, p, qmp := setupMockDarwinVM(t, false, "io-error", nospaceBlocks)
-
-	var freeBytes atomic.Int64
-	freeBytes.Store(256 << 20) // 256 MiB: below 2 GiB threshold
-	hostFreeBytes = func(string) (int64, error) { return freeBytes.Load(), nil }
-
-	var resyncCalls atomic.Int32
+	resumeVerifyTimeout, resumeVerifyInterval = 50*time.Millisecond, 5*time.Millisecond
 	resyncGuestClock = func(context.Context, VMConfig, VMPaths) error {
-		resyncCalls.Add(1)
+		t.Fatal("resyncGuestClock ran for a VM that stayed paused")
 		return nil
 	}
-
-	var logBuf bytes.Buffer
-	log := slog.New(slog.NewTextHandler(&logBuf, &slog.HandlerOptions{Level: slog.LevelInfo}))
-
-	// 1. Below threshold: supervisor logs host free space and io-status, does NOT send cont.
-	resumed, err := checkAndRecoverPausedVM(t.Context(), cfg, p, log)
-	if err != nil || resumed {
-		t.Fatalf("checkAndRecoverPausedVM(low disk) = (%v, %v), want (false, nil)", resumed, err)
+	_, cfg, p, vf := setupMockDarwinVM(t, vfkitStatePaused)
+	vf.mu.Lock()
+	vf.stayPaused = true
+	vf.mu.Unlock()
+	err := ensureVMRunning(t.Context(), cfg, p, nil)
+	var apiErr *api.Error
+	if !errors.As(err, &apiErr) || apiErr.Code != api.CodeConflict || apiErr.Message != "worker VM is still VirtualMachineStatePaused after vfkit was asked to resume it" {
+		t.Fatalf("ensureVMRunning(stays paused) = %v, want the still-paused conflict", err)
 	}
-	if qmp.getContCalls() != 0 {
-		t.Fatalf("contCalls = %d while disk below threshold, want 0", qmp.getContCalls())
+}
+
+// A worker VM set up for QEMU is refused everywhere, so nothing starts a
+// second VM on its disks, deletes them under a running QEMU, or makes an empty
+// ZFS disk beside its pool.
+func TestQEMUVMRefused(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	baseDir, _, p, _ := setupMockDarwinVM(t, vfkitStateRunning)
+	if err := os.WriteFile(filepath.Join(p.VMDir, "zfs.qcow2"), []byte("pool"), 0o600); err != nil {
+		t.Fatal(err)
 	}
-	logOut := logBuf.String()
-	for _, want := range []string{"qmpStatus=io-error", "swap: nospace", "256.0 MiB", "2.00 GiB"} {
-		if !strings.Contains(logOut, want) {
-			t.Errorf("supervisor log %q missing %q", logOut, want)
+	if err := os.WriteFile(filepath.Join(p.VMDir, "qemu.pid"), []byte("123\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	const want = "the worker VM in "
+	check := func(name string, err error) {
+		t.Helper()
+		var apiErr *api.Error
+		if !errors.As(err, &apiErr) || apiErr.Code != api.CodeConflict ||
+			apiErr.Message != want+p.VMDir+" was set up for QEMU (qemu.pid, zfs.qcow2); hotbed now runs it with vfkit on raw disks" ||
+			!strings.Contains(apiErr.Suggestion, "qemu-img convert -p -O raw root.qcow2 root.img") {
+			t.Fatalf("%s = %v, want the QEMU conflict", name, err)
 		}
 	}
-
-	// 2. Manual pause (status=paused, no IO errors): supervisor leaves it alone.
-	qmp.setState(false, "paused", `[{"device":"root","io-status":"ok"}]`)
-	freeBytes.Store(4 << 30)
-	resumed, err = checkAndRecoverPausedVM(t.Context(), cfg, p, log)
-	if err != nil || resumed || qmp.getContCalls() != 0 {
-		t.Fatalf("checkAndRecoverPausedVM(manual pause) = (%v, %v, cont=%d), want (false, nil, 0)", resumed, err, qmp.getContCalls())
+	_, err := GetStatus(t.Context(), baseDir)
+	check("GetStatus", err)
+	_, err = Start(t.Context(), baseDir)
+	check("Start", err)
+	_, err = Destroy(t.Context(), DestroyOptions{Dir: baseDir})
+	check("Destroy", err)
+	_, err = Setup(t.Context(), Options{Controller: "ctrl.ts.net:7120", Dir: baseDir}, nil, nil, nil)
+	check("Setup", err)
+	if _, err := os.Stat(filepath.Join(p.VMDir, "zfs.qcow2")); err != nil {
+		t.Fatalf("the QEMU disk is gone: %v", err)
 	}
+	if _, err := os.Stat(p.ZFSDisk); !errors.Is(err, fs.ErrNotExist) {
+		t.Fatalf("a raw ZFS disk was made beside the QEMU one: %v", err)
+	}
+}
 
-	// 3. Put VM back into io-error and run darwinWatchPausedVM: it detects and resumes automatically.
-	qmp.setState(false, "io-error", nospaceBlocks)
-	freeBytes.Store(512 << 20)
+func TestLoadVMWithoutVfkitBinary(t *testing.T) {
+	baseDir, cfg, p, _ := setupMockDarwinVM(t, vfkitStateRunning)
+	cfg.VfkitBinary = ""
+	if err := writeJSONAtomic(p.Config, cfg, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	_, err := GetStatus(t.Context(), baseDir)
+	var apiErr *api.Error
+	if !errors.As(err, &apiErr) || apiErr.Code != api.CodeNotInitialized {
+		t.Fatalf("GetStatus = %v, want NOT_INITIALIZED", err)
+	}
+}
 
-	checked := make(chan struct{}, 16)
-	hostFreeBytes = func(string) (int64, error) {
-		v := freeBytes.Load()
-		select {
-		case checked <- struct{}{}:
-		default:
+func TestStopVMPausedPullsThePlug(t *testing.T) {
+	// A paused guest cannot power itself off: stopVM hard-stops it. The mock
+	// vfkit (this process) never exits, so stopVM goes on to signals; the
+	// process check says it is gone once the hard stop arrives.
+	_, cfg, p, vf := setupMockDarwinVM(t, vfkitStatePaused)
+	myPID := os.Getpid()
+	processCommandLine = func(_ context.Context, pid int) (string, vmProcState, error) {
+		if pid == myPID && !slices.Contains(vf.getChanges(), vfkitHardStop) {
+			return "/opt/homebrew/bin/vfkit --cpus 2 --pidfile " + p.PIDFile, vmProcRunning, nil
 		}
-		return v, nil
+		return "/bin/other", vmProcRunning, nil
 	}
-	resynced := make(chan struct{}, 4)
-	resyncGuestClock = func(context.Context, VMConfig, VMPaths) error {
-		resyncCalls.Add(1)
-		select {
-		case resynced <- struct{}{}:
-		default:
-		}
-		return nil
+	if err := stopVM(t.Context(), cfg, p, nil); err != nil {
+		t.Fatalf("stopVM(paused): %v", err)
 	}
-
-	watchCtx, watchCancel := context.WithCancel(t.Context())
-	defer watchCancel()
-	watchDone := make(chan struct{})
-	go func() {
-		defer close(watchDone)
-		darwinWatchPausedVM(watchCtx, baseDir, log)
-	}()
-
-	// Wait deterministically for the initial check and at least one ticker check
-	// while host free space is still below threshold.
-	for range 2 {
-		select {
-		case <-checked:
-		case <-time.After(2 * time.Second):
-			t.Fatal("timed out waiting for paused-VM watcher check ticks")
-		}
+	if got := vf.getChanges(); !slices.Equal(got, []string{vfkitHardStop}) {
+		t.Fatalf("vfkit state changes = %v, want [HardStop]", got)
 	}
-	if qmp.getContCalls() != 0 {
-		t.Fatalf("watcher sent cont while host free space was below threshold")
-	}
-
-	// Host space recovers -> watcher resumes VM and resyncs guest clock.
-	freeBytes.Store(4 << 30)
-	select {
-	case <-resynced:
-	case <-time.After(2 * time.Second):
-		t.Fatal("timed out waiting for paused-VM watcher to resume and resync guest clock")
-	}
-	watchCancel()
-	<-watchDone
-
-	if qmp.getContCalls() != 1 {
-		t.Fatalf("watcher contCalls = %d, want 1", qmp.getContCalls())
-	}
-	if resyncCalls.Load() != 1 {
-		t.Fatalf("watcher resyncCalls = %d, want 1", resyncCalls.Load())
-	}
-	_, state, err := vmProcessState(t.Context(), p)
-	if err != nil || state != vmProcRunning {
-		t.Fatalf("vmProcessState after watcher recovery = (%v, %v), want (vmProcRunning, nil)", state, err)
+	if _, err := os.Stat(p.PIDFile); !errors.Is(err, fs.ErrNotExist) {
+		t.Fatalf("stopVM left %s: %v", p.PIDFile, err)
 	}
 }
 
@@ -2700,7 +2534,13 @@ func TestDarwinResyncGuestClock(t *testing.T) {
 		},
 	}
 	srvCfg.AddHostKey(hostSigner)
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	sockDir, err := os.MkdirTemp("/tmp", "hb-ssh-*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(sockDir) })
+	p = withSSHSock(p, filepath.Join(sockDir, "ssh.sock"))
+	ln, err := net.Listen("unix", p.SSHSock)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -2752,10 +2592,7 @@ func TestDarwinResyncGuestClock(t *testing.T) {
 		}
 	}()
 
-	cfg := VMConfig{
-		User:    "alice",
-		SSHPort: ln.Addr().(*net.TCPAddr).Port,
-	}
+	cfg := VMConfig{User: "alice"}
 	if err := darwinResyncGuestClock(t.Context(), cfg, p); err != nil {
 		t.Fatalf("darwinResyncGuestClock: %v", err)
 	}
@@ -2770,7 +2607,7 @@ func TestDarwinResyncGuestClock(t *testing.T) {
 }
 
 // worker init with another size refuses while the VM runs, rather than
-// recording a size QEMU, started with the old one, does not have.
+// recording a size the VM, started with the old one, does not have.
 func TestRefuseResizeWhileRunning(t *testing.T) {
 	p := NewVMPaths(t.TempDir())
 	if err := os.MkdirAll(p.VMDir, 0o755); err != nil {
@@ -2788,7 +2625,7 @@ func TestRefuseResizeWhileRunning(t *testing.T) {
 	myPID := os.Getpid()
 	processCommandLine = func(_ context.Context, pid int) (string, vmProcState, error) {
 		if pid == myPID {
-			return "/opt/homebrew/bin/qemu-system-aarch64 -machine virt -pidfile " + p.PIDFile, vmProcRunning, nil
+			return "/opt/homebrew/bin/vfkit --cpus 2 --pidfile " + p.PIDFile, vmProcRunning, nil
 		}
 		return "", vmProcMissing, nil
 	}

@@ -30,7 +30,7 @@ type hostUsageProbes struct {
 }
 
 // hostUsageSampler computes host-side CPU and memory pressure metrics for a
-// QEMU VM process, using cumulative process CPU time deltas across samples so
+// VM process, using cumulative process CPU time deltas across samples so
 // interval averages are free of instantaneous spikes.
 type hostUsageSampler struct {
 	mu           sync.Mutex
@@ -47,8 +47,8 @@ func newHostUsageSampler(probes hostUsageProbes) *hostUsageSampler {
 	return &hostUsageSampler{probes: probes}
 }
 
-// Sample reads host-side metrics for QEMU pid configured with vcpus.
-// All critical probes (QEMU CPU, host CPU busy, host load, and host memory
+// Sample reads host-side metrics for VM process pid configured with vcpus.
+// All critical probes (VM CPU, host CPU busy, host load, and host memory
 // pressure) must succeed so a failing probe never sends a synthetic zero that
 // could clear an active starvation hold.
 func (s *hostUsageSampler) Sample(ctx context.Context, pid, vcpus int) (*pb.HostUsage, error) {

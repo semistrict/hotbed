@@ -21,9 +21,7 @@ type VMConfig struct {
 	RootSizeBytes  int64    `json:"rootSizeBytes"`
 	ZFSSizeBytes   int64    `json:"zfsSizeBytes"`
 	SwapSizeBytes  int64    `json:"swapSizeBytes"`
-	SSHPort        int      `json:"sshPort"`
-	QEMUBinary     string   `json:"qemuBinary"`
-	FirmwareCode   string   `json:"firmwareCode"`
+	VfkitBinary    string   `json:"vfkitBinary"`
 	StateDir       string   `json:"stateDir"`
 	UnitProperties []string `json:"unitProperties,omitempty"`
 	Slice          string   `json:"slice,omitempty"`
@@ -62,10 +60,14 @@ type VMPaths struct {
 	SwapDisk    string
 	EFIVars     string
 	SeedISO     string
-	QMPSock     string
-	PIDFile     string
-	ConsoleLog  string
-	QEMULog     string
+	// ControlSock is vfkit's REST API (VM state, clean and hard stop).
+	ControlSock string
+	// SSHSock is the host end of the guest's vsock port 22, where systemd's
+	// sshd-vsock.socket answers.
+	SSHSock    string
+	PIDFile    string
+	ConsoleLog string
+	VfkitLog   string
 	// StandbyLog is the VM's supervisor's log (hotbed worker supervise).
 	StandbyLog    string
 	StoppedMarker string
@@ -84,15 +86,16 @@ func NewVMPaths(baseDir string) VMPaths {
 		KeyPub:        filepath.Join(vmDir, "id_ed25519.pub"),
 		HostKeyPriv:   filepath.Join(vmDir, "vm-ssh-host-ed25519"),
 		HostKeyPub:    filepath.Join(vmDir, "vm-ssh-host-ed25519.pub"),
-		RootDisk:      filepath.Join(vmDir, "root.qcow2"),
-		ZFSDisk:       filepath.Join(vmDir, "zfs.qcow2"),
-		SwapDisk:      filepath.Join(vmDir, "swap.qcow2"),
-		EFIVars:       filepath.Join(vmDir, "efivars.fd"),
+		RootDisk:      filepath.Join(vmDir, "root.img"),
+		ZFSDisk:       filepath.Join(vmDir, "zfs.img"),
+		SwapDisk:      filepath.Join(vmDir, "swap.img"),
+		EFIVars:       filepath.Join(vmDir, "efi-vars"),
 		SeedISO:       filepath.Join(vmDir, "seed.iso"),
-		QMPSock:       filepath.Join(vmDir, "qmp.sock"),
-		PIDFile:       filepath.Join(vmDir, "qemu.pid"),
+		ControlSock:   filepath.Join(vmDir, "vfkit.sock"),
+		SSHSock:       filepath.Join(vmDir, "ssh.sock"),
+		PIDFile:       filepath.Join(vmDir, "vfkit.pid"),
 		ConsoleLog:    filepath.Join(vmDir, "console.log"),
-		QEMULog:       filepath.Join(vmDir, "qemu.log"),
+		VfkitLog:      filepath.Join(vmDir, "vfkit.log"),
 		StandbyLog:    filepath.Join(vmDir, "supervise.log"),
 		StoppedMarker: filepath.Join(vmDir, "stopped"),
 		AsleepMarker:  filepath.Join(vmDir, "asleep"),
@@ -132,13 +135,26 @@ func ParseSHA256Sums(content, filename string) (string, bool) {
 	return "", false
 }
 
-// QEMUArgs builds the QEMU command-line arguments for cfg and paths.
-// All writable disks use virtio-scsi-pci + scsi-hd with discard=unmap and
-// detect-zeroes=unmap so guest TRIM/UNMAP (ZFS autotrim, fstrim,
-// swapon --discard) punches holes out of the host qcow2 files on APFS.
-func QEMUArgs(cfg VMConfig, p VMPaths, qmpSock string) ([]string, error) {
-	if cfg.Arch != "arm64" && cfg.Arch != "amd64" {
-		return nil, fmt.Errorf("unsupported VM architecture %q", cfg.Arch)
+// Guest disk identifiers: virtio-blk deviceIds, which the guest lists as
+// /dev/disk/by-id/virtio-<id>.
+const (
+	rootDiskID = "hotbed-root"
+	zfsDiskID  = "hotbed-zfs"
+	swapDiskID = "hotbed-swap"
+	seedDiskID = "hotbed-seed"
+)
+
+// VfkitArgs builds the vfkit command line for cfg: an Apple Virtualization
+// framework VM with nested virtualization (so the guest has /dev/kvm for
+// Firecracker), booted by EFI from the root disk. Disks are sparse raw files:
+// guest TRIM (ZFS autotrim, fstrim, swapon --discard) punches holes out of
+// them on APFS. controlSock serves vfkit's REST API; sshSock is the host end
+// of guest vsock port 22, where systemd's sshd-vsock.socket answers.
+// createEFIVars has vfkit create the EFI variable store, which it must only
+// when there is none: creating one replaces what the guest keeps there.
+func VfkitArgs(cfg VMConfig, p VMPaths, controlSock, sshSock string, createEFIVars bool) ([]string, error) {
+	if cfg.Arch != "arm64" {
+		return nil, fmt.Errorf("unsupported VM architecture %q: the worker VM needs nested virtualization, which the Virtualization framework has only on Apple silicon", cfg.Arch)
 	}
 	if cfg.CPUs <= 0 {
 		return nil, fmt.Errorf("invalid VM CPU count %d", cfg.CPUs)
@@ -147,52 +163,27 @@ func QEMUArgs(cfg VMConfig, p VMPaths, qmpSock string) ([]string, error) {
 	if memMB < 512 {
 		return nil, fmt.Errorf("VM memory %d MiB is too small (minimum 512 MiB)", memMB)
 	}
-	var args []string
-	if cfg.Arch == "arm64" {
-		args = append(args,
-			"-machine", "virt,highmem=on",
-			"-accel", "hvf",
-			"-cpu", "host",
-		)
-	} else {
-		args = append(args,
-			"-machine", "q35",
-			"-accel", "hvf",
-			"-cpu", "host",
-		)
+	disk := func(path, id string) string { return "virtio-blk,path=" + path + ",deviceId=" + id }
+	efi := "efi,variable-store=" + p.EFIVars
+	if createEFIVars {
+		efi += ",create"
 	}
-	args = append(args,
-		"-name", "hotbed-"+cfg.Hostname,
-		"-smp", strconv.Itoa(cfg.CPUs),
-		"-m", strconv.FormatInt(memMB, 10),
-		"-display", "none",
-		"-monitor", "none",
-		"-serial", "file:"+p.ConsoleLog,
-		"-pidfile", p.PIDFile,
-		// UEFI firmware + per-VM NVRAM variables.
-		"-drive", "if=pflash,format=raw,readonly=on,file="+cfg.FirmwareCode,
-		"-drive", "if=pflash,format=raw,file="+p.EFIVars,
-		// VirtIO SCSI controller: rock-solid SCSI UNMAP -> qcow2 unmap -> APFS F_PUNCHHOLE.
-		"-device", "virtio-scsi-pci,id=scsi0",
-		"-drive", "if=none,id=root,file="+p.RootDisk+",format=qcow2,discard=unmap,detect-zeroes=unmap,cache=writeback",
-		"-device", "scsi-hd,bus=scsi0.0,drive=root,serial=hotbed-root,bootindex=1",
-		"-drive", "if=none,id=zfs,file="+p.ZFSDisk+",format=qcow2,discard=unmap,detect-zeroes=unmap,cache=writeback",
-		"-device", "scsi-hd,bus=scsi0.0,drive=zfs,serial=hotbed-zfs",
-		"-drive", "if=none,id=swap,file="+p.SwapDisk+",format=qcow2,discard=unmap,detect-zeroes=unmap,cache=writeback",
-		"-device", "scsi-hd,bus=scsi0.0,drive=swap,serial=hotbed-swap",
-		// Cloud-init NoCloud seed CD-ROM.
-		"-drive", "if=none,id=seed,file="+p.SeedISO+",format=raw,readonly=on",
-		"-device", "scsi-cd,bus=scsi0.0,drive=seed",
-		// User-mode networking with localhost SSH forwarding (zero root needed).
-		"-netdev", fmt.Sprintf("user,id=net0,hostfwd=tcp:127.0.0.1:%d-:22", cfg.SSHPort),
-		"-device", "virtio-net-pci,netdev=net0",
-		// Fast guest entropy.
-		"-device", "virtio-rng-pci",
-	)
-	if qmpSock != "" {
-		args = append(args, "-qmp", "unix:"+qmpSock+",server=on,wait=off")
-	}
-	return args, nil
+	return []string{
+		"--cpus", strconv.Itoa(cfg.CPUs),
+		"--memory", strconv.FormatInt(memMB, 10),
+		"--nested",
+		"--pidfile", p.PIDFile,
+		"--restful-uri", "unix://" + controlSock,
+		"--bootloader", efi,
+		"--device", disk(p.RootDisk, rootDiskID),
+		"--device", disk(p.ZFSDisk, zfsDiskID),
+		"--device", disk(p.SwapDisk, swapDiskID),
+		"--device", disk(p.SeedISO, seedDiskID),
+		"--device", "virtio-net,nat",
+		"--device", "virtio-vsock,port=22,socketURL=" + sshSock + ",connect",
+		"--device", "virtio-serial,logFilePath=" + p.ConsoleLog,
+		"--device", "virtio-rng",
+	}, nil
 }
 
 // CloudInitMetaData renders the NoCloud meta-data YAML.
@@ -273,7 +264,7 @@ func SystemdWorkerUnit(binaryPath, stateDir, zfsImportPre string) string {
 
 // SystemdTrimUnits renders the periodic trim service and timer that flushes
 // ZFS async/deferred frees so autotrim=on punches freed extents out of sparse
-// backing files / qcow2 images without initializing untouched metaslabs, and
+// backing files / disk images without initializing untouched metaslabs, and
 // runs `fstrim -a` when fstrimAll is true (for the VM's ext4 root disk).
 func SystemdTrimUnits(poolName string, fstrimAll bool) (service, timer string) {
 	cmd := fmt.Sprintf("zpool wait -t free %[1]s || true; zpool sync %[1]s || true; zpool sync %[1]s || true; zpool sync %[1]s || true", poolName)
@@ -363,9 +354,9 @@ type LinuxSetupMeta struct {
 const (
 	// vmBinPath is where the worker VM's hotbed binary is installed.
 	vmBinPath = "/usr/local/bin/hotbed"
-	// Guest /dev/disk/by-id paths matching QEMUArgs scsi-hd serials.
-	zfsDiskByID  = "/dev/disk/by-id/scsi-0QEMU_QEMU_HARDDISK_hotbed-zfs"
-	swapDiskByID = "/dev/disk/by-id/scsi-0QEMU_QEMU_HARDDISK_hotbed-swap"
+	// Guest /dev/disk/by-id paths of VfkitArgs's disks.
+	zfsDiskByID  = "/dev/disk/by-id/virtio-" + zfsDiskID
+	swapDiskByID = "/dev/disk/by-id/virtio-" + swapDiskID
 )
 
 // DefaultVMMemory is the RAM a new worker VM gets on a Mac with hostBytes of
@@ -380,15 +371,15 @@ func DefaultVMMemory(hostBytes int64) int64 {
 
 // VMZFSARCMax caps the worker VM's ZFS ARC at a quarter of its RAM. zfs's
 // own cap is nearly all of it, and every page the ARC cycles through is one
-// the Mac then holds; with the qcow2 disks on the Mac's page cache
-// (cache=writeback), what the ARC drops is still cached, as clean pages the
-// Mac can drop instead of compressing.
+// the Mac then holds; with the disk images on the Mac's page cache, what the
+// ARC drops is still cached, as clean pages the Mac can drop instead of
+// compressing.
 func VMZFSARCMax(memBytes int64) int64 {
 	return memBytes / 4
 }
 
 // VMWorkerInitArgs is the command that provisions the Linux worker inside the
-// macOS QEMU VM via `hotbed worker init --zfs-device`. Its JSON envelope is
+// macOS worker VM via `hotbed worker init --zfs-device`. Its JSON envelope is
 // parsed, so it asks for one: hotbed prints plain text unless told otherwise.
 func VMWorkerInitArgs(cfg VMConfig, noStart bool) []string {
 	args := []string{
