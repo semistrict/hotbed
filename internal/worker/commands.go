@@ -412,6 +412,12 @@ func (e *Engine) step(ctx context.Context) {
 			e.observe(ctx, c, *st, sampledAt)
 		}
 	}
+	e.mu.Lock()
+	measuring := e.measuring() != nil
+	e.mu.Unlock()
+	if !measuring {
+		e.releaseHeld(ctx)
+	}
 	e.settleBench(ctx)
 	e.admit(ctx)
 	e.limit(ctx)

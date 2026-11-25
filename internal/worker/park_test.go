@@ -474,3 +474,27 @@ func TestSwapFullHoldsNewWorkWhenRAMAboveAdmitLimit(t *testing.T) {
 		t.Fatalf("c-wait after swap headroom returned = %v, want running", st)
 	}
 }
+
+// A command left parked (frozen for memory by a worker from before parking
+// was removed) is thawed on a node that takes no measurements: nothing else
+// would ever thaw it.
+func TestALeftoverParkedCommandIsThawed(t *testing.T) {
+	e, units, _, now := parkEngine(t)
+	c := e.start(t, units, now, "left-1", "a", "build")
+	if err := units.Freeze(t.Context(), c.unitName()); err != nil {
+		t.Fatal(err)
+	}
+	e.mu.Lock()
+	c.cmd().State = parked
+	c.cmd().Reason = "frozen at 95% memory in use; its memory goes to swap until there is room"
+	c.rec.ParkedAt = e.nowMs()
+	e.mu.Unlock()
+	*now = now.Add(time.Minute)
+	e.step(t.Context())
+	if s := c.cmd().State; s != running || e.frozen(t, c.unitName()) {
+		t.Fatalf("left-1 = %v, frozen %v; want running and thawed", s, e.frozen(t, c.unitName()))
+	}
+	if c.cmd().Reason != "" {
+		t.Errorf("reason = %q, want cleared", c.cmd().Reason)
+	}
+}

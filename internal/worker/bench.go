@@ -344,9 +344,6 @@ func (e *Engine) settleBench(ctx context.Context) {
 	e.mu.Lock()
 	m := e.measuring()
 	e.mu.Unlock()
-	if m == nil {
-		e.releaseHeld(ctx)
-	}
 	if m != nil || !iso.Active() || e.now().Before(e.offRetry) {
 		return
 	}
