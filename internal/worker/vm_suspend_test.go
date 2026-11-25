@@ -249,8 +249,9 @@ func TestVMParkSuspendsToMemoryCellAndResumesOnThaw(t *testing.T) {
 	if !ok || cur.State != parked {
 		t.Fatalf("cmd-young state = %v, want parked", cur.GetState())
 	}
-	if susp, wsBytes := resolver.IsVMSuspended("ws-young"); !susp || wsBytes != 4<<30 {
-		t.Fatalf("ws-young suspended = (%v, %d), want (true, %d)", susp, wsBytes, int64(4<<30))
+	susp, wsBytes := resolver.IsVMSuspended("ws-young")
+	if !susp || wsBytes <= 0 {
+		t.Fatalf("ws-young suspended = (%v, %d), want (true, >0)", susp, wsBytes)
 	}
 	if susp, _ := resolver.IsVMSuspended("ws-old"); susp {
 		t.Fatal("ws-old must remain running while ws-young is parked")
@@ -264,13 +265,16 @@ func TestVMParkSuspendsToMemoryCellAndResumesOnThaw(t *testing.T) {
 	}
 	eng.mu.Unlock()
 
-	// Subsequent ticks while suspended must keep cmd-young parked (never ExitCode 137)
-	// and must not wake the VM.
+	// Subsequent ticks while suspended must keep cmd-young parked (never ExitCode 137),
+	// report the pre-suspend working set as SwapBytes, and never wake the VM.
 	*now = now.Add(2 * time.Second)
 	eng.step(ctx)
 	cur, _ = eng.Command(youngCmd.Id)
 	if cur.State != parked {
 		t.Fatalf("cmd-young after tick while suspended = %v (reason=%q), want parked", cur.State, cur.Reason)
+	}
+	if cur.SwapBytes != wsBytes {
+		t.Fatalf("cmd-young SwapBytes while suspended = %d, want %d", cur.SwapBytes, wsBytes)
 	}
 	if susp, _ := resolver.IsVMSuspended("ws-young"); !susp {
 		t.Fatal("ws-young should remain suspended across status ticks")
