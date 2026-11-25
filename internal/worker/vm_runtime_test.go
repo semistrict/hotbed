@@ -597,11 +597,32 @@ func TestVMCommandInspectTraceSampleDiagnoseAndProfile(t *testing.T) {
 	runGitTest(t, originRepo, "commit", "-m", "init")
 	baseCommit := runGitTest(t, originRepo, "rev-parse", "HEAD")
 
-	guestWork := filepath.Join(t.TempDir(), "work")
+	guestBase, err := os.MkdirTemp("/tmp", "hb-guest-diag-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(guestBase) })
+	if err := os.Chmod(guestBase, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	guestWork := filepath.Join(guestBase, "work")
+	guestState := filepath.Join(guestBase, "state")
 	if err := os.MkdirAll(guestWork, 0o755); err != nil {
 		t.Fatal(err)
 	}
+	if err := os.MkdirAll(guestState, 0o755); err != nil {
+		t.Fatal(err)
+	}
 	runGitTest(t, guestWork, "clone", originRepo, "app")
+	if os.Geteuid() == 0 {
+		sp := fake.BaseImage(nil).Spec.Normalized()
+		_ = filepath.Walk(guestWork, func(p string, _ os.FileInfo, err error) error {
+			if err == nil {
+				_ = os.Chown(p, sp.UID, sp.GID)
+			}
+			return nil
+		})
+	}
 
 	sockDir, err := os.MkdirTemp("/tmp", "hb-vmdiag-")
 	if err != nil {
@@ -617,7 +638,7 @@ func TestVMCommandInspectTraceSampleDiagnoseAndProfile(t *testing.T) {
 
 	srv, err := guestd.NewServer(guestd.ServerConfig{
 		WorkDir:   guestWork,
-		StateDir:  t.TempDir(),
+		StateDir:  guestState,
 		Inspector: fake.Inspector{},
 	})
 	if err != nil {
@@ -693,8 +714,13 @@ func TestVMCommandInspectTraceSampleDiagnoseAndProfile(t *testing.T) {
 	deadline := time.Now().Add(5 * time.Second)
 	for {
 		eng.step(ctx)
-		if cur, ok := eng.Command(cmd.Id); ok && cur.State == running {
-			break
+		if cur, ok := eng.Command(cmd.Id); ok {
+			if cur.State == running {
+				break
+			}
+			if !api.Live(cur.State) {
+				t.Fatalf("command %s ended before running: state=%v reason=%q", cmd.Id, cur.State, cur.Reason)
+			}
 		}
 		if time.Now().After(deadline) {
 			t.Fatalf("timed out waiting for command %s to start running", cmd.Id)
