@@ -19,6 +19,7 @@ import (
 	"github.com/semistrict/hotbed/internal/baseimage"
 	pb "github.com/semistrict/hotbed/internal/gen/hotbed/v1"
 	"github.com/semistrict/hotbed/internal/gitops"
+	hotbedruntime "github.com/semistrict/hotbed/internal/runtime"
 	"github.com/semistrict/hotbed/internal/shell"
 	"github.com/semistrict/hotbed/internal/storage"
 )
@@ -365,7 +366,8 @@ func (e *Engine) startFreshen(ctx context.Context, p *pb.HostedProject, gen int3
 		Command: &pb.Command{
 			Id: id, NodeId: e.cfg.NodeID, Argv: fmt.Sprintf("freshen %s g%d", p.Name, gen), Project: p.Name,
 			Args: []string{"/bin/bash", "-c", freshenScript(p, h, prev, run)}, Kind: "freshen",
-			State: queued, QueuedAt: now, Limits: &pb.CommandLimits{CpuWeight: 100},
+			Runtime: hotbedruntime.KindChroot,
+			State:   queued, QueuedAt: now, Limits: &pb.CommandLimits{CpuWeight: 100},
 			Timeline: []*pb.CommandEvent{{At: now, What: "queued", Detail: "base " + b.Id}},
 		},
 		Project: p.Name, Agent: "hotbed", Volume: vol, Dir: WorkPath, BaseId: b.Id,

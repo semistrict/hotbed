@@ -6443,7 +6443,7 @@ type Workspace struct {
 	Node string `protobuf:"bytes,25,opt,name=node,proto3" json:"node,omitempty"`
 	// Each repo checked out, by ID.
 	Repos []*WorkspaceRepo `protobuf:"bytes,26,rep,name=repos,proto3" json:"repos,omitempty"`
-	// Execution runtime backing this workspace ("vm" or "chroot").
+	// Execution runtime backing this workspace ("vm", "cladefs", or "chroot").
 	Runtime string `protobuf:"bytes,27,opt,name=runtime,proto3" json:"runtime,omitempty"`
 	// Cladefs cell coordinates when backed by cladefsd + Firecracker.
 	CladefsCell   *CladefsCell `protobuf:"bytes,28,opt,name=cladefs_cell,json=cladefsCell,proto3" json:"cladefs_cell,omitempty"`
@@ -8416,6 +8416,8 @@ type Command struct {
 	DroppedOutputBytes int64 `protobuf:"varint,28,opt,name=dropped_output_bytes,json=droppedOutputBytes,proto3" json:"dropped_output_bytes,omitempty"`
 	// Its stops, pauses and resumes by hand, oldest first.
 	Interventions []*CommandIntervention `protobuf:"bytes,29,rep,name=interventions,proto3" json:"interventions,omitempty"`
+	// Execution runtime backing this command ("vm", "cladefs", or "chroot").
+	Runtime       string `protobuf:"bytes,30,opt,name=runtime,proto3" json:"runtime,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -8653,6 +8655,13 @@ func (x *Command) GetInterventions() []*CommandIntervention {
 	return nil
 }
 
+func (x *Command) GetRuntime() string {
+	if x != nil {
+		return x.Runtime
+	}
+	return ""
+}
+
 // A command that ended, as history keeps it.
 type FinishedCommand struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
@@ -8688,6 +8697,8 @@ type FinishedCommand struct {
 	Project string `protobuf:"bytes,23,opt,name=project,proto3" json:"project,omitempty"`
 	// Its stops, pauses and resumes by hand, oldest first.
 	Interventions []*CommandIntervention `protobuf:"bytes,24,rep,name=interventions,proto3" json:"interventions,omitempty"`
+	// Execution runtime that ran this command ("vm", "cladefs", or "chroot").
+	Runtime       string `protobuf:"bytes,25,opt,name=runtime,proto3" json:"runtime,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -8888,6 +8899,13 @@ func (x *FinishedCommand) GetInterventions() []*CommandIntervention {
 		return x.Interventions
 	}
 	return nil
+}
+
+func (x *FinishedCommand) GetRuntime() string {
+	if x != nil {
+		return x.Runtime
+	}
+	return ""
 }
 
 type RunCommandRequest struct {
@@ -29719,7 +29737,7 @@ const file_hotbed_v1_hotbed_proto_rawDesc = "" +
 	"\fCommandEvent\x12\x0e\n" +
 	"\x02at\x18\x01 \x01(\x03R\x02at\x12\x12\n" +
 	"\x04what\x18\x02 \x01(\tR\x04what\x12\x16\n" +
-	"\x06detail\x18\x03 \x01(\tR\x06detail\"\xf9\a\n" +
+	"\x06detail\x18\x03 \x01(\tR\x06detail\"\x93\b\n" +
 	"\aCommand\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12!\n" +
 	"\fworkspace_id\x18\x02 \x01(\tR\vworkspaceId\x12\x17\n" +
@@ -29754,12 +29772,13 @@ const file_hotbed_v1_hotbed_proto_rawDesc = "" +
 	"\aproject\x18\x1a \x01(\tR\aproject\x12\x12\n" +
 	"\x04repo\x18\x1b \x01(\tR\x04repo\x120\n" +
 	"\x14dropped_output_bytes\x18\x1c \x01(\x03R\x12droppedOutputBytes\x12D\n" +
-	"\rinterventions\x18\x1d \x03(\v2\x1e.hotbed.v1.CommandInterventionR\rinterventionsB\r\n" +
+	"\rinterventions\x18\x1d \x03(\v2\x1e.hotbed.v1.CommandInterventionR\rinterventions\x12\x18\n" +
+	"\aruntime\x18\x1e \x01(\tR\aruntimeB\r\n" +
 	"\v_started_atB\v\n" +
 	"\t_ended_atB\f\n" +
 	"\n" +
 	"_exit_codeB\x0f\n" +
-	"\r_cold_seconds\"\x99\x06\n" +
+	"\r_cold_seconds\"\xb3\x06\n" +
 	"\x0fFinishedCommand\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x17\n" +
 	"\arepo_id\x18\x02 \x01(\tR\x06repoId\x12\x17\n" +
@@ -29787,7 +29806,8 @@ const file_hotbed_v1_hotbed_proto_rawDesc = "" +
 	"\vcockpit_url\x18\x16 \x01(\tR\n" +
 	"cockpitUrl\x12\x18\n" +
 	"\aproject\x18\x17 \x01(\tR\aproject\x12D\n" +
-	"\rinterventions\x18\x18 \x03(\v2\x1e.hotbed.v1.CommandInterventionR\rinterventionsB\f\n" +
+	"\rinterventions\x18\x18 \x03(\v2\x1e.hotbed.v1.CommandInterventionR\rinterventions\x12\x18\n" +
+	"\aruntime\x18\x19 \x01(\tR\aruntimeB\f\n" +
 	"\n" +
 	"_exit_codeB\x0f\n" +
 	"\r_cold_secondsB\n" +

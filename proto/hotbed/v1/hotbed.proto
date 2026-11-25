@@ -1247,7 +1247,7 @@ message Workspace {
   string node = 25;
   // Each repo checked out, by ID.
   repeated WorkspaceRepo repos = 26;
-  // Execution runtime backing this workspace ("vm" or "chroot").
+  // Execution runtime backing this workspace ("vm", "cladefs", or "chroot").
   string runtime = 27;
   // Cladefs cell coordinates when backed by cladefsd + Firecracker.
   CladefsCell cladefs_cell = 28;
@@ -1567,6 +1567,8 @@ message Command {
   int64 dropped_output_bytes = 28;
   // Its stops, pauses and resumes by hand, oldest first.
   repeated CommandIntervention interventions = 29;
+  // Execution runtime backing this command ("vm", "cladefs", or "chroot").
+  string runtime = 30;
 }
 
 // A command that ended, as history keeps it.
@@ -1603,6 +1605,8 @@ message FinishedCommand {
   string project = 23;
   // Its stops, pauses and resumes by hand, oldest first.
   repeated CommandIntervention interventions = 24;
+  // Execution runtime that ran this command ("vm", "cladefs", or "chroot").
+  string runtime = 25;
 }
 
 message RunCommandRequest {

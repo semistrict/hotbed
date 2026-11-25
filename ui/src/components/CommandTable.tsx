@@ -10,10 +10,22 @@ import { CommandInline } from "./CommandBlock";
 import { Empty } from "./Panel";
 import { ProjectTag } from "./ProjectTag";
 import { SessionLink } from "./SessionLink";
-import { BenchTag, KindTag, StateBadge } from "./StateBadges";
+import { BenchTag, KindTag, RuntimeBadge, StateBadge } from "./StateBadges";
 
 function identityColumns(project: string | null): string[] {
-  return ["state", "command", "session", ...(project ? [] : ["project"]), "repo", "workspace", "node"];
+  return ["state", "command", "session", ...(project ? [] : ["project"]), "repo", "workspace", "runtime", "node"];
+}
+
+export function commandRuntime(
+  s: Snapshot,
+  c: { runtime?: string; workspaceId: string },
+  workspacesById?: Map<string, Snapshot["workspaces"][number]>,
+): string {
+  if (c.runtime) return c.runtime;
+  if (!c.workspaceId) return "";
+  const w = workspacesById ? workspacesById.get(c.workspaceId) : s.workspaces.find((x) => x.id === c.workspaceId);
+  if (!w) return "";
+  return w.runtime || "chroot";
 }
 
 function WorkspaceCell({ id, known }: { id: string; known: boolean }) {
@@ -31,13 +43,14 @@ export function LiveCommandTable({ s, commands }: { s: Snapshot; commands: Comma
   const now = Number(s.now);
   const [project] = useProject();
   if (commands.length === 0) return <Empty>No commands here right now.</Empty>;
-  const knownWorkspaces = new Set(s.workspaces.map((w) => w.id));
+  const workspacesById = new Map(s.workspaces.map((w) => [w.id, w]));
   return (
     <>
       <div className="space-y-2.5 md:hidden">
         {commands.map((c) => {
           const since = Number(c.startedAt ?? c.queuedAt);
           const repoId = c.repo;
+          const runtime = commandRuntime(s, c, workspacesById);
           const memLow = c.limits?.memoryLowBytes ?? 0n;
           const memHigh = c.limits?.memoryHighBytes ?? 0n;
           return (
@@ -45,6 +58,7 @@ export function LiveCommandTable({ s, commands }: { s: Snapshot; commands: Comma
               <div className="flex flex-wrap items-center gap-1.5">
                 <StateBadge state={c.state} />
                 <KindTag kind={c.kind} />
+                {runtime && <RuntimeBadge runtime={runtime} />}
                 {c.bench && <BenchTag />}
                 {c.state !== CommandState.QUEUED && (
                   <Link
@@ -90,7 +104,7 @@ export function LiveCommandTable({ s, commands }: { s: Snapshot; commands: Comma
                         {bytes(c.memoryBytes)} · high {limit(memHigh)}
                         {c.swapBytes > 0n && <span className="text-frost"> +{bytes(c.swapBytes)} swap</span>}
                       </span>
-                      <WorkspaceCell id={c.workspaceId} known={knownWorkspaces.has(c.workspaceId)} />
+                      <WorkspaceCell id={c.workspaceId} known={workspacesById.has(c.workspaceId)} />
                     </div>
                     {memHigh > 0n && <Meter value={Number(c.memoryBytes) / Number(memHigh)} marker={Number(memLow) / Number(memHigh)} />}
                   </div>
@@ -122,6 +136,7 @@ export function LiveCommandTable({ s, commands }: { s: Snapshot; commands: Comma
             {commands.map((c) => {
               const since = Number(c.startedAt ?? c.queuedAt);
               const repoId = c.repo;
+              const runtime = commandRuntime(s, c, workspacesById);
               const memLow = c.limits?.memoryLowBytes ?? 0n;
               const memHigh = c.limits?.memoryHighBytes ?? 0n;
               return (
@@ -164,7 +179,10 @@ export function LiveCommandTable({ s, commands }: { s: Snapshot; commands: Comma
                   )}
                   <TableCell className="px-2 py-2.5 font-mono text-[11px] text-muted-foreground">{repoId || "—"}</TableCell>
                   <TableCell className="px-2 py-2.5">
-                    <WorkspaceCell id={c.workspaceId} known={knownWorkspaces.has(c.workspaceId)} />
+                    <WorkspaceCell id={c.workspaceId} known={workspacesById.has(c.workspaceId)} />
+                  </TableCell>
+                  <TableCell className="px-2 py-2.5">
+                    <RuntimeBadge runtime={runtime} />
                   </TableCell>
                   <TableCell className="px-2 py-2.5 font-mono text-[11px] text-muted-foreground">{nodeName(s, c.nodeId)}</TableCell>
                   <TableCell className="num px-2 py-2.5 font-mono text-[11px] text-muted-foreground">{duration((now - since) / 1000)}</TableCell>
@@ -199,43 +217,47 @@ export function HistoryTable({ s, rows, limit = 200 }: { s: Snapshot; rows: Fini
   const now = Number(s.now);
   const [project] = useProject();
   if (rows.length === 0) return <Empty>Nothing matches.</Empty>;
-  const knownWorkspaces = new Set(s.workspaces.map((w) => w.id));
+  const workspacesById = new Map(s.workspaces.map((w) => [w.id, w]));
   const shown = rows.slice(0, limit);
   return (
     <div>
       <div className="space-y-2 md:hidden">
-        {shown.map((c) => (
-          <div key={c.id} className="rounded-xl border border-border/70 bg-background/40 p-2.5 font-mono text-[11px]">
-            <div className="flex flex-wrap items-center gap-1.5">
-              <StateBadge state={c.state} />
-              {c.bench && <BenchTag />}
-              <span className="num ml-auto text-foreground">{duration(c.seconds)}</span>
-              {c.coldSeconds !== undefined && <span className="num text-primary">{speedup(c.coldSeconds, c.seconds)}</span>}
-            </div>
+        {shown.map((c) => {
+          const runtime = commandRuntime(s, c, workspacesById);
+          return (
+            <div key={c.id} className="rounded-xl border border-border/70 bg-background/40 p-2.5 font-mono text-[11px]">
+              <div className="flex flex-wrap items-center gap-1.5">
+                <StateBadge state={c.state} />
+                {runtime && <RuntimeBadge runtime={runtime} />}
+                {c.bench && <BenchTag />}
+                <span className="num ml-auto text-foreground">{duration(c.seconds)}</span>
+                {c.coldSeconds !== undefined && <span className="num text-primary">{speedup(c.coldSeconds, c.seconds)}</span>}
+              </div>
 
-            <Link to="/commands/$id" params={{ id: c.id }} className="mt-1.5 block text-[11.5px] text-foreground hover:text-primary">
-              <CommandInline argv={c.argv} />
-            </Link>
+              <Link to="/commands/$id" params={{ id: c.id }} className="mt-1.5 block text-[11.5px] text-foreground hover:text-primary">
+                <CommandInline argv={c.argv} />
+              </Link>
 
-            <div className="num mt-1.5 flex flex-wrap items-center gap-x-2.5 gap-y-1 text-[10.5px] text-muted-foreground">
-              <SessionLink id={c.sessionId} />
-              {!project && <ProjectTag name={commandProject(s, c.sessionId, c.repoId)} />}
-              {c.repoId && <span>{c.repoId}</span>}
-              <span>{nodeName(s, c.nodeId)}</span>
-              <span className="text-faint">{ago(c.endedAt, now)}</span>
-            </div>
+              <div className="num mt-1.5 flex flex-wrap items-center gap-x-2.5 gap-y-1 text-[10.5px] text-muted-foreground">
+                <SessionLink id={c.sessionId} />
+                {!project && <ProjectTag name={commandProject(s, c.sessionId, c.repoId)} />}
+                {c.repoId && <span>{c.repoId}</span>}
+                <span>{nodeName(s, c.nodeId)}</span>
+                <span className="text-faint">{ago(c.endedAt, now)}</span>
+              </div>
 
-            <div className="num mt-1 flex flex-wrap items-center gap-x-3 gap-y-0.5 text-[10px] text-faint">
-              {c.coldSeconds !== undefined && <span>cold {duration(c.coldSeconds)}</span>}
-              {c.rebuilt !== undefined && <span>{c.rebuilt}/{c.of ?? 0} crates</span>}
-              <span>
-                peak {bytes(c.peakMemoryBytes)}
-                {c.parks > 0 && <span className="text-frost"> ❄{c.parks}</span>}
-              </span>
-              {c.failure && <span className="font-sans text-critical">{FAILURE[c.failure] ?? c.failure}</span>}
+              <div className="num mt-1 flex flex-wrap items-center gap-x-3 gap-y-0.5 text-[10px] text-faint">
+                {c.coldSeconds !== undefined && <span>cold {duration(c.coldSeconds)}</span>}
+                {c.rebuilt !== undefined && <span>{c.rebuilt}/{c.of ?? 0} crates</span>}
+                <span>
+                  peak {bytes(c.peakMemoryBytes)}
+                  {c.parks > 0 && <span className="text-frost"> ❄{c.parks}</span>}
+                </span>
+                {c.failure && <span className="font-sans text-critical">{FAILURE[c.failure] ?? c.failure}</span>}
+              </div>
             </div>
-          </div>
-        ))}
+          );
+        })}
       </div>
 
       <div className="hidden md:block">
@@ -271,7 +293,10 @@ export function HistoryTable({ s, rows, limit = 200 }: { s: Snapshot; rows: Fini
                 )}
                 <TableCell className="px-2 py-2 text-muted-foreground">{c.repoId || "—"}</TableCell>
                 <TableCell className="px-2 py-2">
-                  <WorkspaceCell id={c.workspaceId} known={knownWorkspaces.has(c.workspaceId)} />
+                  <WorkspaceCell id={c.workspaceId} known={workspacesById.has(c.workspaceId)} />
+                </TableCell>
+                <TableCell className="px-2 py-2">
+                  <RuntimeBadge runtime={commandRuntime(s, c, workspacesById)} />
                 </TableCell>
                 <TableCell className="px-2 py-2 text-muted-foreground">{nodeName(s, c.nodeId)}</TableCell>
                 <TableCell className="px-2 py-2 text-muted-foreground">{ago(c.endedAt, now)}</TableCell>

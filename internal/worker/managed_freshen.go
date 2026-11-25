@@ -11,6 +11,7 @@ import (
 	"github.com/semistrict/hotbed/internal/api"
 	"github.com/semistrict/hotbed/internal/cladefs"
 	pb "github.com/semistrict/hotbed/internal/gen/hotbed/v1"
+	"github.com/semistrict/hotbed/internal/runtime"
 )
 
 // isCladefsBase reports whether b is an R2-backed cladefs base (Firecracker VM
@@ -344,6 +345,10 @@ func (e *Engine) startManagedFreshen(_ context.Context, spec managedFreshenSpec)
 	for _, r := range spec.Project.GetRepos() {
 		b.Repos = append(b.Repos, &pb.BaseRepo{Repo: r.GetId(), Commit: spec.Heads[r.GetId()]})
 	}
+	cmdRuntime := runtime.KindCladefs
+	if spec.VMID != "" {
+		cmdRuntime = runtime.KindVM
+	}
 	c := e.newCommand(&pb.CommandRecord{
 		Command: &pb.Command{
 			Id:       cmdID,
@@ -352,6 +357,7 @@ func (e *Engine) startManagedFreshen(_ context.Context, spec managedFreshenSpec)
 			Project:  spec.Project.Name,
 			Args:     []string{"/bin/bash", "-c", spec.Script},
 			Kind:     "freshen",
+			Runtime:  cmdRuntime,
 			State:    queued,
 			QueuedAt: now,
 			Limits:   &pb.CommandLimits{CpuWeight: 100},

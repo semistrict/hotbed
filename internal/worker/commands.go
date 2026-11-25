@@ -21,6 +21,7 @@ import (
 	"github.com/semistrict/hotbed/internal/api"
 	pb "github.com/semistrict/hotbed/internal/gen/hotbed/v1"
 	"github.com/semistrict/hotbed/internal/profiler"
+	"github.com/semistrict/hotbed/internal/runtime"
 	"github.com/semistrict/hotbed/internal/shell"
 	"github.com/semistrict/hotbed/internal/sysinfo"
 	"github.com/semistrict/hotbed/internal/unit"
@@ -130,6 +131,7 @@ func (e *Engine) Exec(_ context.Context, req *pb.RunCommandRequest) (*pb.Command
 			Argv: shell.Join(req.Args), Args: req.Args, Kind: kind,
 			State: queued, QueuedAt: now, Limits: limits, Attached: req.Attached,
 			SessionId: w.ws().SessionId, Bench: req.Bench, Repo: req.Repo,
+			Runtime:  e.workspaceRuntime(w),
 			Timeline: []*pb.CommandEvent{{At: now, What: "queued", Detail: "by " + w.ws().Agent}},
 		},
 		RepoId: req.Repo, Project: w.ws().Project, Agent: w.ws().Agent, Volume: w.rec.Volume,
@@ -170,6 +172,37 @@ func newID() string {
 }
 
 func isBuild(kind string) bool { return kind == "build" || kind == "test" || kind == "check" }
+
+func (e *Engine) workspaceRuntime(w *workspace) string {
+	if w != nil {
+		if rt := w.ws().Runtime; rt != "" {
+			return rt
+		}
+		if e.usesRuntime(w.ws().Id) && e.cfg.Runtime != nil {
+			return e.cfg.Runtime.Kind()
+		}
+	}
+	return runtime.KindChroot
+}
+
+func (e *Engine) commandRuntime(c *command) string {
+	if c == nil {
+		return ""
+	}
+	if rt := c.cmd().Runtime; rt != "" {
+		return rt
+	}
+	if c.isVMFreshen() {
+		return runtime.KindVM
+	}
+	if c.isManagedFreshen() {
+		return runtime.KindCladefs
+	}
+	if c.cmd().Kind == "freshen" {
+		return runtime.KindChroot
+	}
+	return e.workspaceRuntime(e.workspaces[c.cmd().WorkspaceId])
+}
 
 // Stop ends a command: a queued one never starts, a running or parked one is
 // stopped. It returns the command as it ended.
@@ -2073,7 +2106,7 @@ func (e *Engine) endBy(c *command, state pb.CommandState, code *int32, why strin
 		Argv: cmd.Argv, Kind: cmd.Kind, State: state, ExitCode: code, Failure: failure,
 		EndedAt: now, QueuedSeconds: float64(started-cmd.QueuedAt) / 1000, Seconds: seconds,
 		ColdSeconds: cmd.ColdSeconds, PeakMemoryBytes: c.rec.PeakMemoryBytes, Parks: c.rec.Parks,
-		SessionId: cmd.SessionId, Reason: why, Bench: cmd.Bench,
+		SessionId: cmd.SessionId, Reason: why, Bench: cmd.Bench, Runtime: e.commandRuntime(c),
 	}
 	if len(cmd.Interventions) > 0 {
 		f.Interventions = make([]*pb.CommandIntervention, len(cmd.Interventions))

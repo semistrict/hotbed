@@ -2058,6 +2058,7 @@ describe("Security, cron, daemon logs, tunnel, and workspace regression tests", 
 						nodeId: "node-freshen-snap",
 						project: "cladefs",
 						kind: "freshen",
+						runtime: "vm",
 						argv: "freshen cladefs-vm-12345678",
 						state: CommandState.RUNNING,
 						queuedAt: nowMs,
@@ -2068,6 +2069,7 @@ describe("Security, cron, daemon logs, tunnel, and workspace regression tests", 
 						nodeId: "node-freshen-snap",
 						project: "cladefs",
 						kind: "freshen",
+						runtime: "vm",
 						argv: "freshen cladefs-vm-00000000",
 						state: CommandState.SUCCEEDED,
 						queuedAt: nowMs - 1000n,
@@ -2079,6 +2081,8 @@ describe("Security, cron, daemon logs, tunnel, and workspace regression tests", 
 		});
 
 		const snap = await owner.cluster.getSnapshot({});
+		const liveFreshen = snap.commands.find((c) => c.id === "f-cladefs-vm-live");
+		expect(liveFreshen?.runtime).toBe("vm");
 		const ids = snap.commands.map((c) => c.id);
 		expect(ids).toContain("f-cladefs-vm-live");
 		expect(ids).not.toContain("f-cladefs-vm-done");

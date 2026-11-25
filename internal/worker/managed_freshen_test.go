@@ -93,6 +93,11 @@ echo "::hotbed:: steps done"
 	if !strings.HasPrefix(cmdID, "f-cladefs-fuse-12345678-") {
 		t.Fatalf("cmdID = %q, want f-cladefs-fuse-12345678-*", cmdID)
 	}
+	if cmd, ok := e.Command(cmdID); !ok {
+		t.Fatalf("Command(%s) not found", cmdID)
+	} else if cmd.Runtime != runtime.KindCladefs {
+		t.Fatalf("managed FUSE freshen Runtime = %q, want %q", cmd.Runtime, runtime.KindCladefs)
+	}
 
 	// Step while host memory pressure is holding: command MUST remain queued and
 	// BeforeStart must NOT be invoked yet.
@@ -410,6 +415,96 @@ func TestRuntimeUnitsRoutesManagedVMFreshenViaRuntimeTarget(t *testing.T) {
 		}
 	}
 }
+
+func TestCommandRuntimeSetForWorkspacesAndFreshens(t *testing.T) {
+	now := time.Unix(1795300000, 0)
+	e := limited(t, &now)
+	e.mu.Lock()
+	for _, tc := range []struct {
+		id string
+		rt string
+	}{
+		{id: "ws-rt-vm", rt: runtime.KindVM},
+		{id: "ws-rt-cladefs", rt: runtime.KindCladefs},
+		{id: "ws-rt-chroot", rt: runtime.KindChroot},
+		{id: "ws-rt-legacy", rt: ""},
+	} {
+		e.workspaces[tc.id] = &workspace{rec: &pb.WorkspaceRecord{
+			Workspace: &pb.Workspace{
+				Id: tc.id, Project: "cladefs", NodeId: e.cfg.NodeID,
+				State: idle, Runtime: tc.rt,
+			},
+			Volume: "ws/" + tc.id,
+		}}
+	}
+	e.mu.Unlock()
+
+	for _, tc := range []struct {
+		wsID string
+		want string
+	}{
+		{wsID: "ws-rt-vm", want: runtime.KindVM},
+		{wsID: "ws-rt-cladefs", want: runtime.KindCladefs},
+		{wsID: "ws-rt-chroot", want: runtime.KindChroot},
+		{wsID: "ws-rt-legacy", want: runtime.KindChroot},
+	} {
+		cmd, err := e.Exec(t.Context(), &pb.RunCommandRequest{
+			WorkspaceId: tc.wsID,
+			Args:        []string{"true"},
+			Kind:        "shell",
+		})
+		if err != nil {
+			t.Fatalf("Exec(%s): %v", tc.wsID, err)
+		}
+		if cmd.Runtime != tc.want {
+			t.Fatalf("live command for %s: Runtime = %q, want %q", tc.wsID, cmd.Runtime, tc.want)
+		}
+		e.mu.Lock()
+		c := e.commands[cmd.Id]
+		e.endBy(c, succeeded, int32Ptr(0), "", nil)
+		e.mu.Unlock()
+	}
+
+	evs, err := e.db.events(0, 100)
+	if err != nil {
+		t.Fatalf("events: %v", err)
+	}
+	gotFinished := map[string]string{}
+	for _, ev := range evs {
+		if fc := ev.GetCommand().GetFinished(); fc != nil {
+			gotFinished[fc.WorkspaceId] = fc.Runtime
+		}
+	}
+	for wsID, want := range map[string]string{
+		"ws-rt-vm":      runtime.KindVM,
+		"ws-rt-cladefs": runtime.KindCladefs,
+		"ws-rt-chroot":  runtime.KindChroot,
+		"ws-rt-legacy":  runtime.KindChroot,
+	} {
+		if gotFinished[wsID] != want {
+			t.Fatalf("finished command for %s: Runtime = %q, want %q", wsID, gotFinished[wsID], want)
+		}
+	}
+
+	vmHandle, err := e.startManagedFreshen(t.Context(), managedFreshenSpec{
+		Project: &pb.HostedProject{Name: "cladefs"},
+		BaseID:  "cladefs-vm-99999999",
+		VMID:    "base-cladefs-vm-99999999",
+		Script:  "true",
+	})
+	if err != nil {
+		t.Fatalf("startManagedFreshen(vm): %v", err)
+	}
+	vmCmd, ok := e.Command(vmHandle.CommandID())
+	if !ok {
+		t.Fatalf("Command(%s) not found", vmHandle.CommandID())
+	}
+	if vmCmd.Runtime != runtime.KindVM {
+		t.Fatalf("managed VM freshen Runtime = %q, want %q", vmCmd.Runtime, runtime.KindVM)
+	}
+}
+
+func int32Ptr(v int32) *int32 { return &v }
 
 type stubWorkspaceRuntime struct {
 	runtime.WorkspaceRuntime
