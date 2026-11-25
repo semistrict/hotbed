@@ -801,6 +801,58 @@ func TestRuntimeUnitsReclaimRoutesVMCgroupToGuestAndHostFirecrackerUnit(t *testi
 	}
 }
 
+// When guest zram, tmpfs, or guest kernel caches hold gigabytes inside the host
+// Firecracker process while the guest command cgroup reports tiny anon memory
+// (0-1 MiB), runtimeUnits.Memory must attribute the real host Firecracker RAM
+// and runtimeUnits.Reclaim on a quiescent VM must reclaim all host RAM above
+// vmHostMinResidentBytes (not just the tiny guest cgroup anon figure).
+func TestRuntimeUnitsMemoryAndReclaimAccountForHostVMRam(t *testing.T) {
+	vmCG := "/user.slice/user-1000.slice/user-1000-hotbed.slice/hotbed-vm-ws-zram.service"
+	inner := &hostVMReclaimUnits{
+		Units: &fake.Units{},
+		vmUnits: map[string]unit.State{
+			"hotbed-vm-ws-zram": {Loaded: true, Running: true, Cgroup: vmCG},
+		},
+		vmMem: map[string]unit.MemoryUse{
+			// 3000 MiB host anon + 400 MiB host swap on the Firecracker unit.
+			vmCG: {Anon: 3000 << 20, Swap: 400 << 20},
+		},
+	}
+	spy := &reclaimSpyRuntime{
+		statuses: map[string]map[string]runtime.CommandStatus{
+			"ws-zram": {
+				// Guest command pushed its pages to guest zram: guest anon is 1 MiB.
+				"cmd-1": {ID: "cmd-1", Frozen: true, MemoryAnon: 1 << 20, MemorySwap: 256 << 20},
+			},
+		},
+	}
+	ru := newRuntimeUnits(inner, spy, func(string) bool { return true }, 0, 0)
+	ru.canSuspend = func(string) bool { return true }
+
+	mem, err := ru.Memory("vm:ws-zram:cmd-1")
+	if err != nil {
+		t.Fatalf("Memory: %v", err)
+	}
+	wantAnon := int64(3000<<20) - vmHostMinResidentBytes
+	wantHeld := int64(3400<<20) - vmHostMinResidentBytes
+	if mem.Anon != wantAnon || mem.Held() != wantHeld {
+		t.Fatalf("Memory = %+v (held=%d), want Anon=%d Held=%d (real host VM RAM)",
+			mem, mem.Held(), wantAnon, wantHeld)
+	}
+
+	// Even when the caller passes n=0 (or tiny n=1 MiB), quiescent VM fallback
+	// reclaim must push ALL reclaimable host VM RAM (3000 - 64 = 2936 MiB).
+	if err := ru.Reclaim("vm:ws-zram:cmd-1", 0); err != nil {
+		t.Fatalf("Reclaim(0): %v", err)
+	}
+	inner.mu.Lock()
+	if len(inner.reclaimCalls) != 1 || inner.reclaimCalls[0].n != wantAnon {
+		inner.mu.Unlock()
+		t.Fatalf("host reclaim calls = %+v, want single reclaim of %d bytes", inner.reclaimCalls, wantAnon)
+	}
+	inner.mu.Unlock()
+}
+
 func TestVMCommandInspectTraceSampleDiagnoseAndProfile(t *testing.T) {
 	ctx := t.Context()
 

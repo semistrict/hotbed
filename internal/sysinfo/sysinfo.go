@@ -262,23 +262,56 @@ func fuller(a, b Mem) bool {
 	return float64(a.Used())/float64(a.Total) > float64(b.Used())/float64(b.Total)
 }
 
-// cgroupMemory reads a cgroup's limit and use; ok is false when it has no
-// limit, or is not there (a slice with no unit running).
+// readCgroupLimit reads a cgroup v2 byte limit file (memory.max or
+// memory.high). Returns ok=false when the file does not exist or is "max".
+func readCgroupLimit(p string) (int64, bool, error) {
+	b, err := os.ReadFile(p)
+	if os.IsNotExist(err) {
+		return 0, false, nil
+	}
+	if err != nil {
+		return 0, false, err
+	}
+	s := strings.TrimSpace(string(b))
+	if s == "" || s == "max" {
+		return 0, false, nil
+	}
+	n, err := strconv.ParseInt(s, 10, 64)
+	if err != nil {
+		return 0, false, fmt.Errorf("%s: %w", p, err)
+	}
+	if n <= 0 {
+		return 0, false, nil
+	}
+	return n, true, nil
+}
+
+// cgroupMemory reads a cgroup's effective memory limit and use; ok is false
+// when it has neither a finite memory.max nor memory.high, or is not there (a
+// slice with no unit running). When both memory.max and memory.high are finite,
+// the tighter limit (typically memory.high) is used so admission and parking
+// trigger BEFORE memory.current crosses memory.high and causes permanent
+// kernel throttling / memory PSI stalls.
 func cgroupMemory(dir string) (m Mem, ok bool, err error) {
 	base := path("/sys/fs/cgroup" + dir)
-	maxb, err := os.ReadFile(base + "/memory.max")
-	if os.IsNotExist(err) {
-		return Mem{}, false, nil
-	}
+	maxLim, hasMax, err := readCgroupLimit(base + "/memory.max")
 	if err != nil {
 		return Mem{}, false, err
 	}
-	if strings.TrimSpace(string(maxb)) == "max" {
-		return Mem{}, false, nil
-	}
-	limit, err := strconv.ParseInt(strings.TrimSpace(string(maxb)), 10, 64)
+	highLim, hasHigh, err := readCgroupLimit(base + "/memory.high")
 	if err != nil {
-		return Mem{}, false, fmt.Errorf("%s/memory.max: %w", dir, err)
+		return Mem{}, false, err
+	}
+	var limit int64
+	switch {
+	case hasMax && hasHigh:
+		limit = min(maxLim, highLim)
+	case hasHigh:
+		limit = highLim
+	case hasMax:
+		limit = maxLim
+	default:
+		return Mem{}, false, nil
 	}
 	cur, err := os.ReadFile(base + "/memory.current")
 	if err != nil {

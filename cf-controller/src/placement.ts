@@ -58,6 +58,7 @@ export interface Candidate {
 	cpus: number;
 	cpuBusy: number;
 	queued: number;
+	parked: number;
 	ram: bigint;
 	free: bigint;
 	pressure: number;
@@ -98,6 +99,13 @@ export function candidateParts(c: Candidate, p?: Placement): CostPart[] {
 	};
 	if (candidateHolds(c, p)) {
 		add("holding", HOLDING_COST, `it holds new work: ${c.admission?.reason ?? ""}`);
+	}
+	if (c.parked > 0) {
+		add(
+			"parked",
+			HOLDING_COST + c.parked / Math.max(c.cpus, 1),
+			`${c.parked} command(s) parked waiting for memory`,
+		);
 	}
 	const hs = hostStarvationCost(c.cpuBusy, c.hostUsage);
 	if (hs.value > 0) {
@@ -256,8 +264,10 @@ export function buildCandidates(
 		}
 
 		let queued = 0;
+		let parked = 0;
 		for (const cmd of nv.commands) {
 			if (cmd.state === CommandState.QUEUED) queued++;
+			else if (cmd.state === CommandState.PARKED) parked++;
 		}
 
 		out.push({
@@ -272,6 +282,7 @@ export function buildCandidates(
 			cpus,
 			cpuBusy,
 			queued,
+			parked,
 			ram,
 			free,
 			pressure,

@@ -152,6 +152,13 @@ func (e *Engine) hibernateIdleVMs(ctx context.Context) {
 			backoff := time.Minute
 			if errors.Is(err, vm.ErrSuspendUnsupported) {
 				backoff = 5 * time.Minute
+				// Fallback for pre-upgrade VMs (--no-api) or pre-upgrade
+				// Firecracker: drop guest page caches and push the idle VM's
+				// cold host Firecracker RAM out of the work slice so idle VMs
+				// do not squat on gigabytes of RAM.
+				if e.rtUnits != nil {
+					e.rtUnits.reclaimIdleVM(ctx, wsID)
+				}
 			}
 			e.mu.Lock()
 			w.suspendRetryAt = e.now().Add(backoff)
@@ -512,6 +519,48 @@ func (u *runtimeUnits) pumpLogs(ctx context.Context, rc *rtCmd) {
 	}
 }
 
+func (u *runtimeUnits) liveCountInVM(wsID string) int {
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	n := 0
+	for _, rc := range u.cmds {
+		if rc.wsID == wsID {
+			n++
+		}
+	}
+	return max(n, 1)
+}
+
+func (u *runtimeUnits) vmAdjustedMemory(ctx context.Context, wsID string, guestAnon, guestSwap int64, hostMem unit.MemoryUse, hasHost bool) unit.MemoryUse {
+	if susp, wsBytes := u.isSuspended(wsID); susp {
+		return unit.MemoryUse{Anon: 0, Swap: wsBytes}
+	}
+	anon, swap := guestAnon, guestSwap
+	if hasHost {
+		hostAnon := max(hostMem.Anon, 0)
+		hostHeld := max(hostMem.Held(), 0)
+		if anon > hostAnon {
+			swap += anon - hostAnon
+			anon = hostAnon
+		}
+		nLive := int64(u.liveCountInVM(wsID))
+		// When the host Firecracker process holds more RAM than the guest
+		// command's cgroup reports (e.g. guest zram pool, guest tmpfs, or
+		// guest kernel/page cache), attribute the VM's excess host footprint
+		// above vmHostMinResidentBytes across its live commands so admission
+		// reservations and reclaim see the real host memory cost.
+		vmResident := max(hostAnon-vmHostMinResidentBytes, 0) / nLive
+		vmHeld := max(hostHeld-vmHostMinResidentBytes, 0) / nLive
+		if vmResident > anon {
+			anon = vmResident
+		}
+		if anon+swap < vmHeld {
+			swap = vmHeld - anon
+		}
+	}
+	return unit.MemoryUse{Anon: anon, Swap: swap}
+}
+
 func toUnitState(wsID string, st runtime.CommandStatus) unit.State {
 	return unit.State{
 		Loaded:     true,
@@ -529,6 +578,15 @@ func toUnitState(wsID string, st runtime.CommandStatus) unit.State {
 	}
 }
 
+func withMemoryUse(st unit.State, mem unit.MemoryUse) unit.State {
+	m := mem
+	st.MemoryUse = &m
+	if m.Anon > st.Memory {
+		st.Memory = m.Anon
+	}
+	return st
+}
+
 func (u *runtimeUnits) Status(ctx context.Context, name string) (unit.State, error) {
 	rc := u.lookup(name)
 	if rc == nil {
@@ -542,7 +600,9 @@ func (u *runtimeUnits) Status(ctx context.Context, name string) (unit.State, err
 	if !ok {
 		return unit.State{Loaded: false}, nil
 	}
-	return toUnitState(rc.wsID, st), nil
+	_, hostMem, hasHost := u.vmHostMemory(ctx, rc.wsID)
+	mem := u.vmAdjustedMemory(ctx, rc.wsID, st.MemoryAnon, st.MemorySwap, hostMem, hasHost)
+	return withMemoryUse(toUnitState(rc.wsID, st), mem), nil
 }
 
 func (u *runtimeUnits) StatusMany(ctx context.Context, names []string) (map[string]unit.State, error) {
@@ -567,31 +627,47 @@ func (u *runtimeUnits) StatusMany(ctx context.Context, names []string) (map[stri
 			out[k] = v
 		}
 	}
-	var firstErr error
+	var (
+		outMu    sync.Mutex
+		firstErr error
+		wg       sync.WaitGroup
+	)
 	for wsID, rcs := range byWS {
-		ids := make([]string, len(rcs))
-		for i, rc := range rcs {
-			ids[i] = rc.cmdID
-		}
-		m, err := u.rt.StatusMany(ctx, wsID, ids)
-		if err != nil {
-			slog.Warn("read VM commands", "workspace", wsID, "count", len(ids), "err", err)
-			if firstErr == nil {
-				firstErr = err
+		wsID, rcs := wsID, rcs
+		wg.Go(func() {
+			ids := make([]string, len(rcs))
+			for i, rc := range rcs {
+				ids[i] = rc.cmdID
 			}
-			continue
-		}
-		for name, rc := range byUnit {
-			if rc.wsID != wsID {
-				continue
+			vctx, cancel := context.WithTimeout(ctx, 3*time.Second)
+			defer cancel()
+			m, err := u.rt.StatusMany(vctx, wsID, ids)
+			if err != nil {
+				slog.Warn("read VM commands", "workspace", wsID, "count", len(ids), "err", err)
+				outMu.Lock()
+				if firstErr == nil {
+					firstErr = err
+				}
+				outMu.Unlock()
+				return
 			}
-			if st, ok := m[rc.cmdID]; ok {
-				out[name] = toUnitState(wsID, st)
-			} else {
-				out[name] = unit.State{Loaded: false}
+			_, hostMem, hasHost := u.vmHostMemory(vctx, wsID)
+			outMu.Lock()
+			for name, rc := range byUnit {
+				if rc.wsID != wsID {
+					continue
+				}
+				if st, ok := m[rc.cmdID]; ok {
+					mem := u.vmAdjustedMemory(vctx, wsID, st.MemoryAnon, st.MemorySwap, hostMem, hasHost)
+					out[name] = withMemoryUse(toUnitState(wsID, st), mem)
+				} else {
+					out[name] = unit.State{Loaded: false}
+				}
 			}
-		}
+			outMu.Unlock()
+		})
 	}
+	wg.Wait()
 	if len(out) == 0 && firstErr != nil {
 		return nil, firstErr
 	}
@@ -667,24 +743,39 @@ func (u *runtimeUnits) vmHostMemory(ctx context.Context, wsID string) (cg string
 	return "", unit.MemoryUse{}, false
 }
 
+func (u *runtimeUnits) reclaimIdleVM(ctx context.Context, wsID string) {
+	gctx, gcancel := context.WithTimeout(ctx, 3*time.Second)
+	_ = u.rt.Reclaim(gctx, wsID, "", 0)
+	gcancel()
+	hctx, hcancel := context.WithTimeout(ctx, 2*time.Second)
+	vmCG, hostMem, hasHost := u.vmHostMemory(hctx, wsID)
+	hcancel()
+	if vmCG != "" && hasHost {
+		if target := max(hostMem.Anon-vmHostMinResidentBytes, 0); target > 0 {
+			if err := u.inner.Reclaim(vmCG, target); err != nil {
+				slog.Warn("reclaim idle VM host cgroup failed", "workspace", wsID, "target", target, "err", err)
+			}
+		}
+	}
+}
+
 func (u *runtimeUnits) Reclaim(cgroup string, n int64) error {
 	if wsID, cmdID, ok := parseVMCgroup(cgroup); ok {
+		quiescent := u.canSuspend != nil && u.canSuspend(wsID)
 		// Preferred path: when the entire workspace VM is quiescent (all live
 		// commands parked/paused, no active shell or dev server), snapshot the
 		// VM straight into a CladeFS memory cell and stop Firecracker so it
 		// holds zero host RAM and zero swap.
-		if sr, ok := u.rt.(runtime.SuspendableRuntime); ok && u.canSuspend != nil && u.canSuspend(wsID) {
+		if sr, ok := u.rt.(runtime.SuspendableRuntime); ok && quiescent {
 			if susp, _ := sr.IsSuspended(wsID); susp {
 				return nil
 			}
 			workingSet := n
-			if workingSet <= 0 {
-				hctx, hcancel := context.WithTimeout(context.Background(), 2*time.Second)
-				if _, hostMem, hasHost := u.vmHostMemory(hctx, wsID); hasHost {
-					workingSet = hostMem.Anon
-				}
-				hcancel()
+			hctx, hcancel := context.WithTimeout(context.Background(), 2*time.Second)
+			if _, hostMem, hasHost := u.vmHostMemory(hctx, wsID); hasHost {
+				workingSet = max(workingSet, hostMem.Anon)
 			}
+			hcancel()
 			sctx, scancel := context.WithTimeout(context.Background(), 30*time.Second)
 			err := sr.SuspendWorkspace(sctx, wsID, workingSet)
 			scancel()
@@ -712,28 +803,39 @@ func (u *runtimeUnits) Reclaim(cgroup string, n int64) error {
 		// 2. Push the frozen guest command's cold anonymous RAM out of the host
 		// Firecracker unit's cgroup into host zram/swap WITHOUT ever freezing
 		// Firecracker (keeping cladefsd DAX unmaps and guestd responsive).
+		// When the entire VM is quiescent, reclaim all host-resident anon above
+		// vmHostMinResidentBytes (including guest zram, tmpfs, and guest kernel
+		// memory that the guest command cgroup does not report).
 		hctx, hcancel := context.WithTimeout(context.Background(), 2*time.Second)
 		vmCG, hostMem, hasHostMem := u.vmHostMemory(hctx, wsID)
 		if vmCG == "" {
 			vmCG = u.vmCgroup(hctx, wsID)
 		}
 		hcancel()
-		if vmCG != "" && n > 0 {
-			hostTarget := n
-			if hasHostMem {
-				reclaimable := max(hostMem.Anon-vmHostMinResidentBytes, 0)
-				hostTarget = min(hostTarget, reclaimable)
+		if vmCG != "" {
+			var hostTarget int64
+			if quiescent && hasHostMem {
+				hostTarget = max(hostMem.Anon-vmHostMinResidentBytes, 0)
+			} else if n > 0 {
+				hostTarget = n
+				if hasHostMem {
+					reclaimable := max(hostMem.Anon-vmHostMinResidentBytes, 0)
+					hostTarget = min(hostTarget, reclaimable)
+				}
 			}
 			if hostTarget > 0 {
 				if err := u.inner.Reclaim(vmCG, hostTarget); err != nil {
 					return err
 				}
+				if guestErr != nil {
+					slog.Warn("in-guest VM reclaim failed; host Firecracker cgroup reclaim succeeded",
+						"workspace", wsID, "command", cmdID, "hostTarget", hostTarget, "err", guestErr)
+				}
+				return nil
 			}
-			if guestErr != nil {
-				slog.Warn("in-guest VM reclaim failed; host Firecracker cgroup reclaim succeeded",
-					"workspace", wsID, "command", cmdID, "hostTarget", hostTarget, "err", guestErr)
+			if hasHostMem && guestErr == nil {
+				return nil
 			}
-			return nil
 		}
 		return guestErr
 	}
@@ -759,16 +861,8 @@ func (u *runtimeUnits) Memory(cgroup string) (unit.MemoryUse, error) {
 		if !found {
 			return unit.MemoryUse{}, os.ErrNotExist
 		}
-		anon, swap := st.MemoryAnon, st.MemorySwap
-		if _, hostMem, ok := u.vmHostMemory(ctx, wsID); ok && anon > 0 {
-			// A command inside the VM cannot have more host-resident anonymous
-			// RAM than the entire Firecracker host unit; the difference sits in
-			// host swap/zram (preserving Held() = Anon + Swap).
-			hostResident := min(anon, max(hostMem.Anon, 0))
-			swap += anon - hostResident
-			anon = hostResident
-		}
-		return unit.MemoryUse{Anon: anon, Swap: swap}, nil
+		_, hostMem, hasHost := u.vmHostMemory(ctx, wsID)
+		return u.vmAdjustedMemory(ctx, wsID, st.MemoryAnon, st.MemorySwap, hostMem, hasHost), nil
 	}
 	return u.inner.Memory(cgroup)
 }

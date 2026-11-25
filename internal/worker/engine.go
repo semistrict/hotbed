@@ -399,6 +399,10 @@ type command struct {
 	// this command to make room; while that command is queued or running, this
 	// command stays parked (board 7907). Persisted in worker.db across restarts.
 	preemptedBy string
+	// resumedAt is when this command was last thawed or resumed (Unix ms), so
+	// rotation gives every newly thawed command a full rotateAfter run quantum
+	// before rotating it out for another long-parked command.
+	resumedAt int64
 	// residentBytes is the most recent anonymous RAM (memory.stat anon) read
 	// from the unit's cgroup, and residentKnown reports whether it has been
 	// measured. reclaimed reports whether Reclaim succeeded and residentBytes

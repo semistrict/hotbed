@@ -305,6 +305,10 @@ type State struct {
 	CPUNanos   uint64
 	Memory     int64
 	MemoryPeak int64
+	// MemoryUse, when non-nil, carries the unit's own anonymous + swap memory
+	// already sampled alongside Status/StatusMany (avoiding a second RPC for
+	// guest VM commands).
+	MemoryUse *MemoryUse
 }
 
 const statusProperties = "Id,LoadState,ActiveState,SubState,Result,ExecMainStatus,ExecMainCode,MainPID,ControlGroup,CPUUsageNSec,MemoryCurrent,FreezerState"

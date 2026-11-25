@@ -99,6 +99,57 @@ func TestAParkedCommandGetsItsTurn(t *testing.T) {
 	}
 }
 
+// When multiple parked commands have all waited longer than rotateAfter, each
+// thawed command must still get a full rotateAfter run quantum before rotating
+// out for the next waiting command (preventing 1 Hz park/thaw thrashing).
+func TestRotationDoesNotThrashMultipleLongParkedCommands(t *testing.T) {
+	e, units, sys, now := parkEngine(t)
+	c1 := e.start(t, units, now, "cmd-1", "a", "build")
+	c2 := e.start(t, units, now, "cmd-2", "b", "build")
+	c3 := e.start(t, units, now, "cmd-3", "c", "build")
+
+	// Park c3 then c2 under memory pressure, leaving c1 running.
+	sys.SetUsed(sys.Mem.Total * 95 / 100)
+	e.step(t.Context())
+	*now = now.Add(time.Second)
+	e.step(t.Context())
+	if c1.cmd().State != running || c2.cmd().State != parked || c3.cmd().State != parked {
+		t.Fatalf("states after parking = (%v, %v, %v), want (running, parked, parked)",
+			c1.cmd().State, c2.cmd().State, c3.cmd().State)
+	}
+
+	// Both parked commands have large swap so neither fits alongside the running one.
+	units.SetSwap("hotbed-cmd-2", sys.Mem.Total/2)
+	units.SetSwap("hotbed-cmd-3", sys.Mem.Total/2)
+	sys.SetUsed(sys.Mem.Total * 40 / 100)
+
+	// Advance past rotateAfter: oldest parked (c3, parked first) trades with c1.
+	*now = now.Add(rotateAfter + time.Minute)
+	e.step(t.Context())
+	if c3.cmd().State != running || c1.cmd().State != parked || c2.cmd().State != parked {
+		t.Fatalf("after first rotation = (%v, %v, %v), want (parked, parked, running)",
+			c1.cmd().State, c2.cmd().State, c3.cmd().State)
+	}
+
+	// One second later, c2 has STILL been parked > rotateAfter, but c3 has only
+	// run for 1 second: c3 MUST NOT be rotated out immediately.
+	units.SetSwap("hotbed-cmd-1", sys.Mem.Total/2)
+	*now = now.Add(time.Second)
+	e.step(t.Context())
+	if c3.cmd().State != running || c2.cmd().State != parked {
+		t.Fatalf("1s after thawing c3: c3=%v c2=%v, want c3 still running (no 1 Hz rotation thrash)",
+			c3.cmd().State, c2.cmd().State)
+	}
+
+	// Once c3 has run for rotateAfter, c2 gets its turn.
+	*now = now.Add(rotateAfter)
+	e.step(t.Context())
+	if c2.cmd().State != running || c3.cmd().State != parked {
+		t.Fatalf("after c3 ran rotateAfter: c2=%v c3=%v, want c2 running and c3 parked",
+			c2.cmd().State, c3.cmd().State)
+	}
+}
+
 // A base build is parked last, and thawed first, at once: every workspace
 // wanting its base waits on it.
 func TestABaseBuildIsParkedLastAndThawedFirst(t *testing.T) {

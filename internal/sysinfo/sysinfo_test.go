@@ -2,6 +2,7 @@ package sysinfo
 
 import (
 	"math"
+	"os"
 	"strconv"
 	"strings"
 	"testing"
@@ -75,6 +76,59 @@ func TestMemoryOfTheTightestDomain(t *testing.T) {
 	}
 	if host.Domain != "" || host.Total != 16384000*1024 {
 		t.Errorf("Memory outside any limit = %+v, want the host's", host)
+	}
+}
+
+// A cgroup's memory.high is where the kernel begins throttling and generating
+// memory PSI; admission and parking must treat min(memory.high, memory.max) as
+// the cgroup's effective budget so parking triggers BEFORE memory.high stalls.
+func TestMemoryUsesTighterMemoryHigh(t *testing.T) {
+	tmp := t.TempDir()
+	// Host has 32 GiB RAM (24 GiB available = 25% used).
+	if err := os.MkdirAll(tmp+"/proc", 0o755); err != nil {
+		t.Fatal(err)
+	}
+	meminfo := "MemTotal:       33554432 kB\nMemAvailable:   25165824 kB\nSwapTotal:       8388608 kB\nSwapFree:        8388608 kB\n"
+	if err := os.WriteFile(tmp+"/proc/meminfo", []byte(meminfo), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// Slice has memory.high=16 GiB, memory.max=18 GiB, memory.current=15.5 GiB.
+	sliceDir := tmp + "/sys/fs/cgroup/user.slice/user-1000-hotbed.slice"
+	if err := os.MkdirAll(sliceDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	const giB = 1 << 30
+	write := func(name, val string) {
+		t.Helper()
+		if err := os.WriteFile(sliceDir+"/"+name, []byte(val+"\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write("memory.high", strconv.FormatInt(16*giB, 10))
+	write("memory.max", strconv.FormatInt(18*giB, 10))
+	write("memory.current", strconv.FormatInt(15*giB+giB/2, 10))
+	write("memory.stat", "inactive_file 0\n")
+
+	prev := Root
+	Root = tmp
+	t.Cleanup(func() { Root = prev })
+
+	m, err := Memory("/user.slice/user-1000-hotbed.slice")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if m.Total != 16*giB || m.Available != giB/2 {
+		t.Fatalf("Memory with memory.high=16G, memory.max=18G, current=15.5G = %+v, want Total=16G Available=0.5G", m)
+	}
+
+	// memory.max=max with a finite memory.high still enforces memory.high.
+	write("memory.max", "max")
+	m2, err := Memory("/user.slice/user-1000-hotbed.slice")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if m2.Total != 16*giB || m2.Available != giB/2 {
+		t.Fatalf("Memory with memory.high=16G, memory.max=max = %+v, want Total=16G Available=0.5G", m2)
 	}
 }
 

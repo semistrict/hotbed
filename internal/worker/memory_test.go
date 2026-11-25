@@ -344,6 +344,70 @@ func TestFreshenAdmitsWhenIdleEvenIfGuaranteeExceedsMemAvailable(t *testing.T) {
 		if kind != "pressure" {
 			t.Fatalf("VM command at 30%% PSI = %q (%q), want pressure hold", kind, reason)
 		}
+
+		// When another command is already running on the node, a new VM command
+		// in a different workspace must NOT bypass host parkAt (96% used).
+		sys.Psi = 0
+		e.Sample()
+		e.mu.Lock()
+		e.commands["other-run"] = e.newCommand(&pb.CommandRecord{
+			Command: &pb.Command{Id: "other-run", WorkspaceId: "other-ws", State: running},
+		})
+		kind, reason = e.room(c)
+		e.mu.Unlock()
+		if kind != "memory" {
+			t.Fatalf("VM command at 96%% host memory with another running command = %q (%q), want memory hold", kind, reason)
+		}
+	})
+
+	t.Run("queued same-or-lower priority work waits while work is already parked for memory", func(t *testing.T) {
+		e, units, sys, now := parkEngine(t)
+		_ = e.start(t, units, now, "run-1", "a", "build")
+		p := e.start(t, units, now, "parked-1", "b", "build")
+
+		// Park parked-1 due to memory pressure.
+		sys.SetUsed(sys.Mem.Total * 95 / 100)
+		e.step(t.Context())
+		if p.cmd().State != parked {
+			t.Fatalf("parked-1 = %v, want parked", p.cmd().State)
+		}
+
+		// Memory usage sits at 85% (above thawBelow=78%, below parkAt=93%) with 0% PSI:
+		// parked-1 cannot thaw yet, so a brand-new same-priority command with 0 reservation
+		// must wait in queued rather than piling on and getting immediately parked.
+		sys.SetUsed(sys.Mem.Total * 85 / 100)
+		sys.Psi = 0
+		e.Sample()
+		*now = now.Add(time.Second)
+		if _, err := e.Exec(t.Context(), &pb.RunCommandRequest{
+			Id: "new-same", WorkspaceId: "c", Args: []string{"sleep", "60"}, Kind: "build",
+		}); err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { units.Stop(context.WithoutCancel(t.Context()), "hotbed-new-same") })
+		e.step(t.Context())
+
+		if got := e.commands["new-same"].cmd(); got.State != queued || !strings.Contains(got.Reason, "parked") {
+			t.Fatalf("new-same while parked-1 is parked = %v (%q), want queued waiting behind parked work", got.State, got.Reason)
+		}
+
+		// A strictly higher-priority command or a base freshen is NOT blocked by parked normal work.
+		e.mu.Lock()
+		high := e.newCommand(&pb.CommandRecord{
+			Command: &pb.Command{Id: "high-q", WorkspaceId: "c", Kind: "build", Limits: &pb.CommandLimits{Priority: 10}},
+		})
+		highKind, highReason := e.room(high)
+		freshen := e.newCommand(&pb.CommandRecord{
+			Command: &pb.Command{Id: "f-q", Kind: "freshen"},
+		})
+		freshenKind, freshenReason := e.room(freshen)
+		e.mu.Unlock()
+		if highKind != "" {
+			t.Errorf("high-priority command blocked by parked normal work: %q (%q)", highKind, highReason)
+		}
+		if freshenKind != "" {
+			t.Errorf("base freshen blocked by parked normal work: %q (%q)", freshenKind, freshenReason)
+		}
 	})
 }
 

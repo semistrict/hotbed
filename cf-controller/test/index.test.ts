@@ -1224,6 +1224,24 @@ describe("BuildDistributor pinned controller version and placement semantics", (
 		expect(pickOld.err).toBeDefined();
 		expect(pickOld.err?.message).toContain("build 171");
 
+		// Placement steers new work away from a node with parked commands even
+		// when it is not currently holding and has low CPU busy.
+		const busyParked = makeView("n-parked", "parked-worker", "build 172 (749b28361a43)");
+		busyParked.commands = [
+			{ id: "c1", state: CommandState.PARKED } as never,
+			{ id: "c2", state: CommandState.PARKED } as never,
+		];
+		const cleanNode = makeView("n-clean", "clean-worker", "build 172 (749b28361a43)");
+		const csParked = buildCandidates(
+			[busyParked, cleanNode],
+			"app",
+			new Map([["n-parked", "ws-existing"]]),
+			() => 172,
+		);
+		const pickedClean = chooseCandidate(csParked, undefined, [], true);
+		expect(pickedClean.err).toBeUndefined();
+		expect(pickedClean.chosen?.host).toBe("clean-worker");
+
 		// Private repos (GITHUB_TOKEN set) omit direct downloadUrl so clients use /builds/ proxy,
 		// and force-refresh on a baked pinned build returns the baked release without calling GitHub.
 		const priv = new BuildDistributor(

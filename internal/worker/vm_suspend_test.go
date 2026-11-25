@@ -17,6 +17,7 @@ import (
 	"github.com/semistrict/hotbed/internal/runtime"
 	"github.com/semistrict/hotbed/internal/sysinfo"
 	"github.com/semistrict/hotbed/internal/unit"
+	"github.com/semistrict/hotbed/internal/vm"
 )
 
 type suspendableTestResolver struct {
@@ -454,5 +455,125 @@ func TestRuntimeUnitsMemoryReturnsZeroAnonWhileSuspended(t *testing.T) {
 	}
 	if mem != (unit.MemoryUse{Anon: 0, Swap: 768 << 20}) {
 		t.Fatalf("Memory = %+v, want {Anon:0 Swap:%d}", mem, int64(768<<20))
+	}
+}
+
+// When memory-cell suspend returns ErrSuspendUnsupported on an idle VM (e.g. a
+// pre-upgrade VM launched with --no-api or pre-upgrade Firecracker),
+// hibernateIdleVMs must still reclaim the idle VM's host Firecracker RAM so it
+// does not squat on gigabytes of RAM inside the work slice.
+func TestIdleVMFallbackReclaimsHostRAMWhenSuspendUnsupported(t *testing.T) {
+	ctx := t.Context()
+	now := time.Date(2026, 11, 25, 12, 0, 0, 0, time.UTC)
+	dir := t.TempDir()
+	store := &fake.Store{Root: filepath.Join(dir, "volumes")}
+	sys := fake.NewSystem()
+	vmCG := "/user.slice/user-1000.slice/user-1000-hotbed.slice/hotbed-vm-ws-old-noapi.service"
+	inner := &hostVMReclaimUnits{
+		Units: &fake.Units{},
+		vmUnits: map[string]unit.State{
+			"hotbed-vm-ws-old-noapi": {Loaded: true, Running: true, Cgroup: vmCG},
+		},
+		vmMem: map[string]unit.MemoryUse{
+			vmCG: {Anon: 1024 << 20, Swap: 0},
+		},
+	}
+	resolver := newSuspendableTestResolver()
+	resolver.suspendErr = fmt.Errorf("no api sock: %w", vm.ErrSuspendUnsupported)
+	rt := runtime.NewGuestRuntime(resolver)
+	eng, err := NewEngine(ctx, EngineConfig{
+		Dir:                dir,
+		NodeID:             "n1",
+		Host:               "worker1",
+		Store:              store,
+		BaseImage:          fake.BaseImage(store),
+		Units:              inner,
+		Runtime:            rt,
+		RuntimeFor:         func(string) bool { return true },
+		System:             sys,
+		Now:                func() time.Time { return now },
+		VMIdleSuspendAfter: 2 * time.Minute,
+	})
+	if err != nil {
+		t.Fatalf("NewEngine: %v", err)
+	}
+	t.Cleanup(func() { _ = eng.Close() })
+	seedTestVMWorkspace(t, eng, resolver, "ws-old-noapi", now)
+
+	now = now.Add(3 * time.Minute)
+	eng.step(ctx)
+
+	inner.mu.Lock()
+	calls := len(inner.reclaimCalls)
+	reclaimed := int64(0)
+	if calls > 0 {
+		reclaimed = inner.reclaimCalls[0].n
+	}
+	inner.mu.Unlock()
+	wantReclaim := int64(1024<<20) - vmHostMinResidentBytes
+	if calls != 1 || reclaimed != wantReclaim {
+		t.Fatalf("idle VM fallback host reclaim calls=%d bytes=%d, want 1 call of %d bytes", calls, reclaimed, wantReclaim)
+	}
+}
+
+type lockCheckUnits struct {
+	*fake.Units
+	eng       *Engine
+	mu        sync.Mutex
+	memCalls  int
+	lockedErr bool
+}
+
+func (u *lockCheckUnits) Memory(cgroup string) (unit.MemoryUse, error) {
+	u.mu.Lock()
+	u.memCalls++
+	u.mu.Unlock()
+	if !u.eng.mu.TryLock() {
+		u.mu.Lock()
+		u.lockedErr = true
+		u.mu.Unlock()
+	} else {
+		u.eng.mu.Unlock()
+	}
+	return u.Units.Memory(cgroup)
+}
+
+// Engine.step must read Units.Memory outside e.mu so a slow cgroup or VM vsock
+// memory read never blocks heartbeats, RPCs, or Stop calls across the worker.
+func TestStepReadsMemoryOutsideEngineLock(t *testing.T) {
+	baseUnits := &fake.Units{}
+	units := &lockCheckUnits{Units: baseUnits}
+	sys := fake.NewSystem()
+	store := &fake.Store{Root: t.TempDir()}
+	now := time.Unix(1795400000, 0)
+	e, err := NewEngine(t.Context(), EngineConfig{
+		Dir: t.TempDir(), NodeID: "n", Host: "ubu1",
+		Store: store, BaseImage: fake.BaseImage(store), Units: units, System: sys, Now: func() time.Time { return now },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = e.Close() })
+	units.eng = e
+	if err := os.MkdirAll(filepath.Join(store.Path("ws/a"), "work", "app"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	e.workspaces["a"] = &workspace{rec: &pb.WorkspaceRecord{
+		Workspace: &pb.Workspace{Id: "a", Project: "app", Repos: []*pb.WorkspaceRepo{{Repo: "app"}}, State: idle},
+		Volume:    "ws/a",
+	}}
+	_ = e.start(t, baseUnits, &now, "c-1", "a", "build")
+
+	now = now.Add(time.Second)
+	e.step(t.Context())
+
+	units.mu.Lock()
+	calls, wasLocked := units.memCalls, units.lockedErr
+	units.mu.Unlock()
+	if calls == 0 {
+		t.Fatal("expected Units.Memory to be called during step")
+	}
+	if wasLocked {
+		t.Fatal("Units.Memory was called while Engine.mu was held")
 	}
 }
