@@ -373,7 +373,7 @@ func TestSpecKeyAndDefaultProvisionScript(t *testing.T) {
 	script := a.Normalized().Script
 	for _, want := range []string{
 		"strace", "linux-perf", "bpftrace", "elfutils", "gdb",
-		"rustup", "rustup-init", "sha256sum -c -",
+		"rustup", "rustup-init", "--profile minimal", "sha256sum -c -", "cargo --version",
 		"build-essential", "autoconf", "automake", "libtool", "autoreconf",
 		"0x46784673", "dpkg-divert --local --rename --add /usr/bin/fusermount3",
 		"/etc/containers/containers.conf.d/50-hotbed.conf", `cgroup_manager = "cgroupfs"`,

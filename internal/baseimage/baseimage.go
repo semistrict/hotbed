@@ -239,15 +239,16 @@ su -s /bin/bash %[1]s -c '
   curl --proto "=https" --tlsv1.2 -fsSL "https://static.rust-lang.org/rustup/archive/1.29.3/${triple}/rustup-init" -o "$tmp"
   printf "%%s  %%s\n" "$sha" "$tmp" | sha256sum -c -
   chmod 0755 "$tmp"
-  "$tmp" -y --no-modify-path --default-toolchain stable --component clippy,rustfmt
+  "$tmp" -y --no-modify-path --profile minimal --default-toolchain stable --component clippy,rustfmt
   rm -f "$tmp"
 '
 
-# Fail hard if any required baseline binary or tracer is missing.
+# Fail hard if any required baseline binary or tracer is missing or unreadable.
 export PATH="/work/.hotbed/cargo/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 for bin in git curl gcc autoconf automake autoreconf pkg-config fusermount3 sudo strace perf bpftrace eu-stack gdb rustup cargo rustc; do
   command -v "$bin" >/dev/null 2>&1 || { echo "missing required tool in base image: $bin" >&2; exit 1; }
 done
+cargo --version && rustc --version
 %[5]s`, shellQuote(user), uid, gid, shellQuote(home), sudoers)
 }
 

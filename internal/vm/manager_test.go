@@ -9,11 +9,13 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"net/http"
 	"os"
 	"path/filepath"
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -759,12 +761,12 @@ func TestManagerStopEscalatesToKillAndHonorsCancelledContext(t *testing.T) {
 	}
 
 	// Pass an ALREADY-CANCELLED caller context (the exact base-build abort bug):
-	// Manager.Stop must still stop/kill Firecracker instead of deleting meta.json
-	// while leaving the unit running.
+	// Manager.Stop(..., syncFS=false) must still stop/kill Firecracker instead
+	// of deleting meta.json while leaving the unit running.
 	cancelledCtx, cancel := context.WithCancel(ctx)
 	cancel()
-	if err := mgr.Stop(cancelledCtx, "base-cladefs-vm-deadbeef", true); err != nil {
-		t.Fatalf("Stop with cancelled ctx should escalate to Kill and succeed: %v", err)
+	if err := mgr.Stop(cancelledCtx, "base-cladefs-vm-deadbeef", false); err != nil {
+		t.Fatalf("Stop(syncFS=false) with cancelled ctx should escalate to Kill and succeed: %v", err)
 	}
 	fl.mu.Lock()
 	kills := slices.Clone(fl.killCalls)
@@ -778,6 +780,147 @@ func TestManagerStopEscalatesToKillAndHonorsCancelledContext(t *testing.T) {
 	}
 	if _, err := os.Stat(inst.Dir); !os.IsNotExist(err) {
 		t.Fatalf("expected %s removed after Kill confirmed dead", inst.Dir)
+	}
+}
+
+func startSlowShutdownGuestd(t *testing.T, shutdownDelay time.Duration, shutdownErr bool) (func(string) guestd.DialFunc, *atomic.Bool) {
+	t.Helper()
+	sockDir := shortSockDir(t)
+	ctrlSock := filepath.Join(sockDir, "ctrl.sock")
+	ln, err := net.Listen("unix", ctrlSock)
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	t.Cleanup(func() { _ = ln.Close() })
+	var completed atomic.Bool
+	mux := http.NewServeMux()
+	mux.HandleFunc("/guestd.v1.GuestService/Health", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/proto")
+		w.WriteHeader(http.StatusOK)
+	})
+	mux.HandleFunc("/guestd.v1.GuestService/Shutdown", func(w http.ResponseWriter, r *http.Request) {
+		select {
+		case <-r.Context().Done():
+			return
+		case <-time.After(shutdownDelay):
+		}
+		if shutdownErr {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusInternalServerError)
+			_, _ = w.Write([]byte(`{"code":"internal","message":"sync failed"}`))
+			return
+		}
+		completed.Store(true)
+		w.Header().Set("Content-Type", "application/proto")
+		w.WriteHeader(http.StatusOK)
+	})
+	srv := &http.Server{Handler: mux}
+	go func() { _ = srv.Serve(ln) }()
+	t.Cleanup(func() { _ = srv.Close() })
+	return func(_ string) guestd.DialFunc {
+		return guestd.UnixMapDialer(map[uint32]string{guestd.ControlPort: ctrlSock})
+	}, &completed
+}
+
+func TestManagerStopSyncFSWaitsBeyondShutdownTimeoutAndFailsOnSyncError(t *testing.T) {
+	ctx := context.Background()
+
+	// 1. Sync takes 150ms (> 50ms ShutdownTimeout, < 2s SyncShutdownTimeout):
+	// Stop(syncFS=true) must wait for full guest syscall.Sync() instead of
+	// killing Firecracker mid-sync (board 11807).
+	fl1 := newFakeLauncher()
+	dialer1, completed1 := startSlowShutdownGuestd(t, 150*time.Millisecond, false)
+	mgr1, err := NewManager(Config{
+		RunDir:              shortSockDir(t),
+		DisableNetwork:      true,
+		BootTimeout:         5 * time.Second,
+		ShutdownTimeout:     50 * time.Millisecond,
+		SyncShutdownTimeout: 2 * time.Second,
+	}, WithLauncher(fl1), WithDialerFactory(dialer1), fakeToolsDiskOpt(t))
+	if err != nil {
+		t.Fatalf("NewManager 1: %v", err)
+	}
+	inst1, err := mgr1.Start(ctx, LaunchSpec{
+		ID:            "prov-slow-sync",
+		CellHostPath:  "/mnt/cells/prov-slow-sync",
+		CladefsVMSock: "/run/cladefsd/vm.sock",
+	})
+	if err != nil {
+		t.Fatalf("Start 1: %v", err)
+	}
+	if err := mgr1.Stop(ctx, "prov-slow-sync", true); err != nil {
+		t.Fatalf("Stop(syncFS=true) failed on slow sync within SyncShutdownTimeout: %v", err)
+	}
+	if !completed1.Load() {
+		t.Fatal("guest Shutdown(SyncFs=true) did not complete before VM was stopped")
+	}
+	if _, err := os.Stat(inst1.Dir); !os.IsNotExist(err) {
+		t.Fatalf("expected %s removed after Stop", inst1.Dir)
+	}
+
+	// 2. Sync exceeds SyncShutdownTimeout: Stop(syncFS=true) must still stop
+	// Firecracker and clean up metadata, AND return an error so callers never
+	// snapshot a half-flushed cell to R2.
+	fl2 := newFakeLauncher()
+	dialer2, completed2 := startSlowShutdownGuestd(t, 400*time.Millisecond, false)
+	mgr2, err := NewManager(Config{
+		RunDir:              shortSockDir(t),
+		DisableNetwork:      true,
+		BootTimeout:         5 * time.Second,
+		ShutdownTimeout:     50 * time.Millisecond,
+		SyncShutdownTimeout: 80 * time.Millisecond,
+	}, WithLauncher(fl2), WithDialerFactory(dialer2), fakeToolsDiskOpt(t))
+	if err != nil {
+		t.Fatalf("NewManager 2: %v", err)
+	}
+	inst2, err := mgr2.Start(ctx, LaunchSpec{
+		ID:            "prov-timeout-sync",
+		CellHostPath:  "/mnt/cells/prov-timeout-sync",
+		CladefsVMSock: "/run/cladefsd/vm.sock",
+	})
+	if err != nil {
+		t.Fatalf("Start 2: %v", err)
+	}
+	if err := mgr2.Stop(ctx, "prov-timeout-sync", true); err == nil {
+		t.Fatal("expected Stop(syncFS=true) to fail when guest sync timed out")
+	}
+	if completed2.Load() {
+		t.Fatal("expected timed-out sync not to have completed")
+	}
+	if st, _ := fl2.Status(ctx, inst2.UnitName); st.Alive() {
+		t.Fatalf("VM unit %s must still be stopped after sync timeout", inst2.UnitName)
+	}
+	if _, err := os.Stat(inst2.Dir); !os.IsNotExist(err) {
+		t.Fatalf("expected %s cleaned up after sync timeout stop", inst2.Dir)
+	}
+
+	// 3. Cancelled context with syncFS=true: must still stop VM cleanly AND
+	// return a non-nil sync-skipped error.
+	fl3 := newFakeLauncher()
+	mgr3, err := NewManager(Config{
+		RunDir:          shortSockDir(t),
+		DisableNetwork:  true,
+		BootTimeout:     5 * time.Second,
+		ShutdownTimeout: 50 * time.Millisecond,
+	}, WithLauncher(fl3), WithDialerFactory(startTestGuestd(t)), fakeToolsDiskOpt(t))
+	if err != nil {
+		t.Fatalf("NewManager 3: %v", err)
+	}
+	inst3, err := mgr3.Start(ctx, LaunchSpec{
+		ID:            "prov-cancel-sync",
+		CellHostPath:  "/mnt/cells/prov-cancel-sync",
+		CladefsVMSock: "/run/cladefsd/vm.sock",
+	})
+	if err != nil {
+		t.Fatalf("Start 3: %v", err)
+	}
+	cancelledCtx, cancel := context.WithCancel(ctx)
+	cancel()
+	if err := mgr3.Stop(cancelledCtx, "prov-cancel-sync", true); err == nil {
+		t.Fatal("expected Stop(syncFS=true) with cancelled ctx to report sync skipped")
+	}
+	if st, _ := fl3.Status(ctx, inst3.UnitName); st.Alive() {
+		t.Fatalf("VM unit %s must still be stopped on cancelled ctx", inst3.UnitName)
 	}
 }
 

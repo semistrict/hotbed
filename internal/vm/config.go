@@ -26,8 +26,9 @@ const (
 	DefaultCacheType          = "Unsafe"
 	DefaultMemMiB             = 4096
 	DefaultNofile             = 65536
-	DefaultBootTimeout        = 30 * time.Second
-	DefaultShutdownTimeout    = 5 * time.Second
+	DefaultBootTimeout         = 30 * time.Second
+	DefaultShutdownTimeout     = 5 * time.Second
+	DefaultSyncShutdownTimeout = 3 * time.Minute
 
 	// Firecracker exit codes defined by cladefs's Firecracker build.
 	ExitCodeCladefsdLost = 158
@@ -55,8 +56,9 @@ type Config struct {
 	DNSServers         []string      // nameservers written to guest /etc/resolv.conf
 	Nofile             uint64        // RLIMIT_NOFILE soft/hard limit inside guest VMs (0 = guestd default 65536)
 	GitAuthHostSock    string        // host path to hotbed gitAuthServer Unix socket (bridged via vsock port 5002)
-	BootTimeout        time.Duration // max wait for hotbed-guestd Health RPC after VM launch
-	ShutdownTimeout    time.Duration // max wait for clean Firecracker exit after Shutdown RPC
+	BootTimeout         time.Duration // max wait for hotbed-guestd Health RPC after VM launch
+	ShutdownTimeout     time.Duration // max wait for clean Firecracker exit after Shutdown RPC
+	SyncShutdownTimeout time.Duration // max wait for guestd Shutdown(SyncFs=true) flush before killing VM
 	DisableNetwork     bool          // skip TAP/bridge setup (for isolated tests)
 }
 
@@ -114,6 +116,9 @@ func (c Config) Normalized() Config {
 	}
 	if c.ShutdownTimeout <= 0 {
 		c.ShutdownTimeout = DefaultShutdownTimeout
+	}
+	if c.SyncShutdownTimeout <= 0 {
+		c.SyncShutdownTimeout = DefaultSyncShutdownTimeout
 	}
 	return c
 }

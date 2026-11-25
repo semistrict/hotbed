@@ -232,6 +232,9 @@ func (m *Manager) UpdateConfig(cfg Config) {
 	if cfg.ShutdownTimeout <= 0 {
 		cfg.ShutdownTimeout = m.cfg.ShutdownTimeout
 	}
+	if cfg.SyncShutdownTimeout <= 0 {
+		cfg.SyncShutdownTimeout = m.cfg.SyncShutdownTimeout
+	}
 	m.cfg = cfg.Normalized()
 }
 
@@ -773,7 +776,10 @@ func (m *Manager) forceStopUnit(ctx context.Context, unitName string) error {
 // (escalating to SIGKILL on failure/timeout), and ONLY THEN cleans up
 // tracking, TAP, CID, and inst.Dir. If the unit cannot be confirmed dead,
 // metadata and tracking are preserved for retry/reconciliation and an error is
-// returned. Idempotent if not tracked.
+// returned. When syncFS is true, Stop gives guestd SyncShutdownTimeout to flush
+// dirty page cache synchronously and returns an error (after still stopping and
+// cleaning up Firecracker) if the guest sync could not complete — preventing
+// callers from snapshotting a half-flushed cell to R2. Idempotent if not tracked.
 func (m *Manager) Stop(ctx context.Context, id string, syncFS bool) error {
 	m.mu.Lock()
 	inst, ok := m.instances[id]
@@ -782,16 +788,38 @@ func (m *Manager) Stop(ctx context.Context, id string, syncFS bool) error {
 		return nil
 	}
 
-	if inst.Client != nil && ctx.Err() == nil {
+	var syncErr error
+	if syncFS {
+		switch {
+		case ctx.Err() != nil:
+			syncErr = fmt.Errorf("guest sync skipped: %w", ctx.Err())
+		case inst.Client == nil:
+			syncErr = errors.New("guest sync skipped: no guestd client")
+		default:
+			rpcTimeout := max(m.cfg.SyncShutdownTimeout, m.cfg.ShutdownTimeout)
+			sctx, cancel := context.WithTimeout(ctx, rpcTimeout)
+			if err := inst.Client.Shutdown(sctx, &guestdv1.ShutdownRequest{
+				SyncFs:       true,
+				StopCommands: true,
+				PowerOff:     true,
+			}); err != nil {
+				syncErr = fmt.Errorf("guest shutdown/sync failed: %w", err)
+				slog.Error("vm guest sync/shutdown failed before stop", "vm", id, "timeout", rpcTimeout, "err", err)
+			}
+			cancel()
+		}
+	} else if inst.Client != nil && ctx.Err() == nil {
 		sctx, cancel := context.WithTimeout(ctx, m.cfg.ShutdownTimeout)
 		_ = inst.Client.Shutdown(sctx, &guestdv1.ShutdownRequest{
-			SyncFs:       syncFS,
+			SyncFs:       false,
 			StopCommands: true,
 			PowerOff:     true,
 		})
 		cancel()
+	}
 
-		// Wait briefly for Firecracker to exit cleanly on its own.
+	if syncErr == nil && inst.Client != nil && ctx.Err() == nil {
+		// Wait briefly for Firecracker to exit cleanly on its own after PowerOff.
 		deadline := time.Now().Add(m.cfg.ShutdownTimeout)
 	waitLoop:
 		for time.Now().Before(deadline) {
@@ -837,6 +865,9 @@ func (m *Manager) Stop(ctx context.Context, id string, syncFS bool) error {
 	}
 	m.releaseCID(inst.GuestCID)
 	_ = os.RemoveAll(inst.Dir)
+	if syncErr != nil {
+		return fmt.Errorf("vm %s: %w", id, syncErr)
+	}
 	return nil
 }
 

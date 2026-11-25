@@ -760,7 +760,13 @@ func (b *VMBackend) cleanupCell(ctx context.Context, rel string) {
 }
 
 func (b *VMBackend) stopBuildVM(ctx context.Context, vmID string, syncFS bool) error {
-	sctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 20*time.Second)
+	timeout := 20 * time.Second
+	if syncFS {
+		// Allow full guest syscall.Sync() (SyncShutdownTimeout = 3m) plus
+		// poweroff and systemd unit cleanup before aborting.
+		timeout = vm.DefaultSyncShutdownTimeout + 30*time.Second
+	}
+	sctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), timeout)
 	defer cancel()
 	return b.mgr.Stop(sctx, vmID, syncFS)
 }
