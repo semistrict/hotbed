@@ -31,6 +31,7 @@ import (
 	"syscall"
 	"time"
 
+	"connectrpc.com/connect/v2"
 	"github.com/lima-vm/go-qcow2reader"
 	"github.com/lima-vm/go-qcow2reader/convert"
 	"golang.org/x/crypto/ssh"
@@ -80,7 +81,7 @@ func Setup(ctx context.Context, o Options, _ worker.Tailnet, hc *http.Client, _ 
 
 	// Resolve or download the Linux hotbed binary up front so we fail fast
 	// before downloading an image or booting a VM.
-	linuxBin, err := resolveLinuxBinary(ctx, o.BinaryPath, controller, p.CacheDir, arch, hc, o.Progress)
+	linuxBin, err := resolveLinuxBinary(ctx, o.BinaryPath, controller, o.Token, p.CacheDir, arch, hc, o.Progress)
 	if err != nil {
 		return Result{}, err
 	}
@@ -637,7 +638,10 @@ func defaultVMMemory() (int64, error) {
 
 // --- Linux binary resolution & controller download ---
 
-func resolveLinuxBinary(ctx context.Context, explicit, controller, cacheDir, arch string, hc *http.Client, progress io.Writer) (string, error) {
+// resolveLinuxBinary is explicit, or else the controller's Linux build for
+// arch, fetched into cacheDir. token, when set, authenticates to the
+// controller, and only to it: a build's DownloadUrl elsewhere gets no token.
+func resolveLinuxBinary(ctx context.Context, explicit, controller, token, cacheDir, arch string, hc *http.Client, progress io.Writer) (string, error) {
 	if explicit != "" {
 		abs, err := filepath.Abs(explicit)
 		if err != nil {
@@ -652,7 +656,11 @@ func resolveLinuxBinary(ctx context.Context, explicit, controller, cacheDir, arc
 	if hc == nil {
 		hc = &http.Client{Timeout: 60 * time.Second}
 	}
-	cluster, _, err := api.Controller(controller, hc)
+	var interceptors []connect.ClientInterceptor
+	if token != "" {
+		interceptors = append(interceptors, api.AuthInterceptor(token, "", "", ""))
+	}
+	cluster, _, err := api.Controller(controller, hc, interceptors...)
 	if err != nil {
 		return "", err
 	}
@@ -682,7 +690,8 @@ func resolveLinuxBinary(ctx context.Context, explicit, controller, cacheDir, arc
 	}
 
 	downloadURL := b.DownloadUrl
-	if downloadURL == "" {
+	fromController := downloadURL == ""
+	if fromController {
 		base, err := api.ControllerBaseURL(controller)
 		if err != nil {
 			return "", err
@@ -695,6 +704,9 @@ func resolveLinuxBinary(ctx context.Context, explicit, controller, cacheDir, arc
 	req, err := http.NewRequestWithContext(dlCtx, http.MethodGet, downloadURL, nil)
 	if err != nil {
 		return "", err
+	}
+	if fromController && token != "" {
+		req.Header.Set("Authorization", "Bearer "+token)
 	}
 	resp, err := streamingHTTPClient(hc).Do(req)
 	if err != nil {

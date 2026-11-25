@@ -80,7 +80,7 @@ func TestLiveVZAndZFSSparsePunchHole(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ensureRawImage: %v", err)
 	}
-	linuxBin, err := resolveLinuxBinary(ctx, os.Getenv("HOTBED_TEST_BINARY"), "127.0.0.1:7120", cacheDir, arch, nil, os.Stderr)
+	linuxBin, err := resolveLinuxBinary(ctx, os.Getenv("HOTBED_TEST_BINARY"), "127.0.0.1:7120", "", cacheDir, arch, nil, os.Stderr)
 	if err != nil {
 		t.Fatalf("resolveLinuxBinary: %v", err)
 	}
@@ -585,6 +585,55 @@ func TestResolveLinuxBinary(t *testing.T) {
 	arm64SumBytes := sha256.Sum256(arm64Payload)
 	arm64Sum := hex.EncodeToString(arm64SumBytes[:])
 
+	t.Run("authenticates to an HTTPS controller and only to it", func(t *testing.T) {
+		const token = "tok-123"
+		var elsewhereAuth atomic.Value
+		elsewhereAuth.Store("unset")
+		elsewhere := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			elsewhereAuth.Store(r.Header.Get("Authorization"))
+			_, _ = w.Write(arm64Payload)
+		}))
+		defer elsewhere.Close()
+		var downloadURL string
+		srv := connect.NewServer()
+		hotbedv1connect.RegisterClusterServiceHandler(srv, &fakeBuildCluster{
+			getBuild: func(_ context.Context, _ *pb.GetBuildRequest) (*pb.Build, error) {
+				return &pb.Build{Number: 42, Sha256: arm64Sum, Path: "/builds/42/hotbed-linux-arm64", DownloadUrl: downloadURL}, nil
+			},
+		})
+		mux := http.NewServeMux()
+		connecthttp.Mount(mux, srv)
+		mux.HandleFunc("GET /builds/42/hotbed-linux-arm64", func(w http.ResponseWriter, _ *http.Request) {
+			_, _ = w.Write(arm64Payload)
+		})
+		authed := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.Header.Get("Authorization") != "Bearer "+token {
+				http.Error(w, "authentication required", http.StatusUnauthorized)
+				return
+			}
+			mux.ServeHTTP(w, r)
+		})
+		ts := httptest.NewServer(authed)
+		defer ts.Close()
+
+		// The controller's own /builds path gets the token.
+		if _, err := resolveLinuxBinary(t.Context(), "", ts.URL, token, t.TempDir(), "arm64", ts.Client(), nil); err != nil {
+			t.Fatalf("resolveLinuxBinary from the controller: %v", err)
+		}
+		// Without it the controller refuses.
+		if _, err := resolveLinuxBinary(t.Context(), "", ts.URL, "", t.TempDir(), "arm64", ts.Client(), nil); err == nil {
+			t.Fatal("resolveLinuxBinary without a token succeeded against a controller that requires one")
+		}
+		// A download URL elsewhere gets no token.
+		downloadURL = elsewhere.URL + "/hotbed-linux-arm64"
+		if _, err := resolveLinuxBinary(t.Context(), "", ts.URL, token, t.TempDir(), "arm64", ts.Client(), nil); err != nil {
+			t.Fatalf("resolveLinuxBinary from elsewhere: %v", err)
+		}
+		if got := elsewhereAuth.Load(); got != "" {
+			t.Fatalf("download elsewhere got Authorization %q, want none", got)
+		}
+	})
+
 	t.Run("downloads and caches verified binary from controller", func(t *testing.T) {
 		var downloads atomic.Int32
 		srv := connect.NewServer()
@@ -611,7 +660,7 @@ func TestResolveLinuxBinary(t *testing.T) {
 
 		cacheDir := t.TempDir()
 		addr := ts.Listener.Addr().String()
-		got, err := resolveLinuxBinary(t.Context(), "", addr, cacheDir, "arm64", ts.Client(), nil)
+		got, err := resolveLinuxBinary(t.Context(), "", addr, "", cacheDir, "arm64", ts.Client(), nil)
 		if err != nil {
 			t.Fatalf("resolveLinuxBinary: %v", err)
 		}
@@ -627,7 +676,7 @@ func TestResolveLinuxBinary(t *testing.T) {
 		}
 
 		// Second call with matching controller SHA-256 reuses cache without re-downloading.
-		got2, err := resolveLinuxBinary(t.Context(), "", addr, cacheDir, "arm64", ts.Client(), nil)
+		got2, err := resolveLinuxBinary(t.Context(), "", addr, "", cacheDir, "arm64", ts.Client(), nil)
 		if err != nil {
 			t.Fatalf("second resolveLinuxBinary: %v", err)
 		}
@@ -656,7 +705,7 @@ func TestResolveLinuxBinary(t *testing.T) {
 		defer ts.Close()
 
 		cacheDir := t.TempDir()
-		_, err := resolveLinuxBinary(t.Context(), "", ts.Listener.Addr().String(), cacheDir, "arm64", ts.Client(), nil)
+		_, err := resolveLinuxBinary(t.Context(), "", ts.Listener.Addr().String(), "", cacheDir, "arm64", ts.Client(), nil)
 		if err == nil || !strings.Contains(err.Error(), "sha256") {
 			t.Fatalf("resolveLinuxBinary err = %v, want sha256 mismatch", err)
 		}
@@ -677,7 +726,7 @@ func TestResolveLinuxBinary(t *testing.T) {
 		ts := httptest.NewServer(mux)
 		defer ts.Close()
 
-		_, err := resolveLinuxBinary(t.Context(), "", ts.Listener.Addr().String(), t.TempDir(), "arm64", ts.Client(), nil)
+		_, err := resolveLinuxBinary(t.Context(), "", ts.Listener.Addr().String(), "", t.TempDir(), "arm64", ts.Client(), nil)
 		var apiErr *api.Error
 		if !errors.As(err, &apiErr) || apiErr.Code != api.CodeNotFound || !strings.Contains(apiErr.Suggestion, "--binary") || !strings.Contains(apiErr.Message, "no published Linux") {
 			t.Fatalf("err = %v, want NOT_FOUND *api.Error explaining no published Linux build and suggesting --binary", err)
@@ -711,7 +760,7 @@ func TestResolveLinuxBinary(t *testing.T) {
 
 		shortTimeoutClient := *ts.Client()
 		shortTimeoutClient.Timeout = 50 * time.Millisecond
-		got, err := resolveLinuxBinary(t.Context(), "", ts.Listener.Addr().String(), t.TempDir(), "arm64", &shortTimeoutClient, nil)
+		got, err := resolveLinuxBinary(t.Context(), "", ts.Listener.Addr().String(), "", t.TempDir(), "arm64", &shortTimeoutClient, nil)
 		if err != nil {
 			t.Fatalf("resolveLinuxBinary failed under short Client.Timeout: %v", err)
 		}
@@ -749,7 +798,7 @@ func TestResolveLinuxBinary(t *testing.T) {
 		ts := httptest.NewServer(mux)
 		defer ts.Close()
 
-		got, err := resolveLinuxBinary(t.Context(), "", ts.Listener.Addr().String(), t.TempDir(), "arm64", ts.Client(), nil)
+		got, err := resolveLinuxBinary(t.Context(), "", ts.Listener.Addr().String(), "", t.TempDir(), "arm64", ts.Client(), nil)
 		if err != nil {
 			t.Fatalf("resolveLinuxBinary with download_url: %v", err)
 		}
@@ -768,11 +817,11 @@ func TestResolveLinuxBinary(t *testing.T) {
 		if err := os.WriteFile(good, arm64Payload, 0o755); err != nil {
 			t.Fatal(err)
 		}
-		got, err := resolveLinuxBinary(t.Context(), good, "127.0.0.1:1", t.TempDir(), "arm64", nil, nil)
+		got, err := resolveLinuxBinary(t.Context(), good, "127.0.0.1:1", "", t.TempDir(), "arm64", nil, nil)
 		if err != nil || got != good {
 			t.Fatalf("resolveLinuxBinary(explicit) = (%q, %v), want (%q, nil)", got, err, good)
 		}
-		if _, err := resolveLinuxBinary(t.Context(), good, "127.0.0.1:1", t.TempDir(), "amd64", nil, nil); err == nil {
+		if _, err := resolveLinuxBinary(t.Context(), good, "127.0.0.1:1", "", t.TempDir(), "amd64", nil, nil); err == nil {
 			t.Fatal("resolveLinuxBinary accepted arm64 --binary for amd64 guest")
 		}
 	})
