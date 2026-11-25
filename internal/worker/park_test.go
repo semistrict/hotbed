@@ -335,6 +335,61 @@ func TestFocusSessionContinuityUnderConstraint(t *testing.T) {
 				e.state("b-hi"), e.state("a2"))
 		}
 	})
+
+	t.Run("focus session work does not jump ahead of a waiting measurement", func(t *testing.T) {
+		now := time.Unix(1795400000, 0)
+		units, sys := &fake.Units{}, fake.NewSystem()
+		units.SetCores(6) // exceeds the 4 work CPUs left beside bench CPUs
+		store := &fake.Store{Root: t.TempDir()}
+		iso := fake.NewIsolation("4-7", 4)
+		e, err := NewEngine(t.Context(), EngineConfig{
+			Dir: t.TempDir(), NodeID: "n", Host: "asahimbp",
+			Store: store, BaseImage: fake.BaseImage(store), Units: units, System: sys,
+			Bench: iso, Now: func() time.Time { return now },
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { e.Close() })
+		for _, w := range []string{"a", "b"} {
+			if err := os.MkdirAll(filepath.Join(store.Path("ws/"+w), "work", "app"), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			e.workspaces[w] = &workspace{rec: &pb.WorkspaceRecord{
+				Workspace: &pb.Workspace{Id: w, Project: "app", SessionId: "tidy-owl", Repos: []*pb.WorkspaceRepo{{Repo: "app"}}, State: idle},
+				Volume:    "ws/" + w,
+			}}
+		}
+
+		w1 := e.start(t, units, &now, "w1", "a", "shell")
+		// Seed w1's measured CPU load above the 4 work CPUs left beside bench CPUs.
+		e.mu.Lock()
+		w1.cmd().CpuCores = 6
+		e.mu.Unlock()
+
+		now = now.Add(time.Second)
+		if _, err := e.Exec(t.Context(), &pb.RunCommandRequest{
+			Id: "bench-1", WorkspaceId: "b", Args: []string{"sleep", "60"}, Bench: true,
+		}); err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { units.Stop(context.WithoutCancel(t.Context()), "hotbed-bench-1") })
+
+		// Queue w2 in the SAME focus session ("tidy-owl") behind bench-1.
+		now = now.Add(time.Second)
+		if _, err := e.Exec(t.Context(), &pb.RunCommandRequest{
+			Id: "w2", WorkspaceId: "a", Args: []string{"sleep", "60"},
+		}); err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { units.Stop(context.WithoutCancel(t.Context()), "hotbed-w2") })
+
+		e.step(t.Context())
+		if gotB, gotW2 := e.commands["bench-1"].cmd(), e.commands["w2"].cmd(); gotB.State != queued || gotW2.State != queued || !strings.Contains(gotW2.Reason, "waiting behind measurement bench-1") {
+			t.Fatalf("with bench-1 waiting for CPUs: bench-1=%v (%q), w2=%v (%q); want both queued with w2 waiting behind bench-1",
+				gotB.State, gotB.Reason, gotW2.State, gotW2.Reason)
+		}
+	})
 }
 
 // A node with running work must not admit additional commands once physical RAM

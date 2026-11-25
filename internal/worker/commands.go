@@ -699,8 +699,10 @@ func oomReason(st unit.State, peakBytes int64) string {
 }
 
 // admit starts queued commands, highest priority first, then base builds, then
-// the focus session's work, then oldest queued first, while they fit,
-// preempting strictly lower-priority running commands when needed (board 7907).
+// measurements (so waiting measurements hold the line ahead of focus-session
+// work), then the focus session's work, then oldest queued first, while they
+// fit, preempting strictly lower-priority running commands when needed (board
+// 7907).
 func (e *Engine) admit(ctx context.Context) {
 	e.mu.Lock()
 	e.weighHold(e.now())
@@ -715,6 +717,7 @@ func (e *Engine) admit(ctx context.Context) {
 		return cmp.Or(
 			cmp.Compare(b.priority(), a.priority()),
 			cmpBool(b.isFreshen(), a.isFreshen()),
+			cmpBool(b.cmd().Bench, a.cmd().Bench),
 			cmpBool(isFocusCommand(b, focus), isFocusCommand(a, focus)),
 			cmp.Compare(a.cmd().QueuedAt, b.cmd().QueuedAt),
 			cmp.Compare(a.cmd().Id, b.cmd().Id),
