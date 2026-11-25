@@ -728,7 +728,7 @@ func (e *Engine) activeSyncBlockersLocked(wsID string) []string {
 	return ids
 }
 
-func syncConflictError(wsID string, ids []string) *api.Error {
+func syncConflictError(wsID, sessionID string, ids []string) *api.Error {
 	label := "command " + ids[0]
 	if len(ids) > 1 {
 		label = "commands " + strings.Join(ids, ", ")
@@ -737,7 +737,7 @@ func syncConflictError(wsID string, ids []string) *api.Error {
 		Code:      api.CodeConflict,
 		Message:   fmt.Sprintf("cannot sync workspace %s while %s is active", wsID, label),
 		Retryable: true,
-	}).WithSuggestion("wait for it to finish, stop it (`hotbed stop " + ids[0] + "`), or pass --no-sync")
+	}).WithSuggestion("wait for it to finish, stop it (`" + sessionScopedCmd("stop", sessionID, ids[0]) + "`), or pass --no-sync")
 }
 
 // Sync checks out a snapshot of an agent's worktree, carried by git
@@ -797,7 +797,7 @@ func (e *Engine) Sync(ctx context.Context, h *pb.SyncHeader, bundle io.Reader) (
 	e.mu.Lock()
 	if blockers := e.activeSyncBlockersLocked(ws.Id); len(blockers) > 0 {
 		e.mu.Unlock()
-		return nil, syncConflictError(ws.Id, blockers)
+		return nil, syncConflictError(ws.Id, ws.SessionId, blockers)
 	}
 	e.mu.Unlock()
 	// The stream holds each submodule's bundle, its size given, then the
@@ -850,7 +850,7 @@ func (e *Engine) Sync(ctx context.Context, h *pb.SyncHeader, bundle io.Reader) (
 		// closing the race where a command was admitted while the bundle streamed.
 		if blockers := e.activeSyncBlockersLocked(ws.Id); len(blockers) > 0 {
 			e.mu.Unlock()
-			return nil, syncConflictError(ws.Id, blockers)
+			return nil, syncConflictError(ws.Id, ws.SessionId, blockers)
 		}
 		// Persist the apply intent and invalidate the cached tree BEFORE
 		// gitops.Apply can mutate disk so a crash or restart mid-apply never

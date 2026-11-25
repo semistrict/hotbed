@@ -749,8 +749,13 @@ func (s *Store) MountAttach(ctx context.Context, tenant, cell, capBytes uint64, 
 	return resp.GetCell(), resp.GetShown(), nil
 }
 
-// MountDetach detaches an attached cell from cladefsd's host FUSE mount.
-// When force is false, cladefsd flushes dirty Fxfs state before returning.
+// MountDetach detaches an attached cell from cladefsd's host FUSE mount and
+// unmounts its Fxfs filesystem (writing back dirty Fxfs state in both force and
+// non-force modes). When force is false, cladefsd waits indefinitely for the
+// kernel to send FUSE FORGET for every looked-up node before unmounting, and
+// rejects any subsequent Detach (including force=true) with EBUSY while
+// detaching. When force is true, cladefsd invalidates cached names and unmounts
+// immediately without waiting for kernel FORGETs.
 func (s *Store) MountDetach(ctx context.Context, tenant, cell uint64, force bool) error {
 	if s.mount == nil {
 		return errors.New("cladefs: mount client not available")

@@ -1639,6 +1639,16 @@ func (e *Engine) thawStrays(ctx context.Context) {
 	}
 }
 
+// sessionScopedCmd formats a session-scoped hotbed CLI command (such as
+// "logs -f" or "stop"), including "-s <session>" whenever the command belongs
+// to a session so the hint works verbatim from any thread or checkout.
+func sessionScopedCmd(subcmd, sessionID, cmdID string) string {
+	if sessionID != "" {
+		return fmt.Sprintf("hotbed %s -s %s %s", subcmd, sessionID, cmdID)
+	}
+	return fmt.Sprintf("hotbed %s %s", subcmd, cmdID)
+}
+
 // pause freezes c, which ran its soft time limit without ending (one
 // parked for memory is frozen already), and then pushes its memory to swap:
 // no one may come back for it.
@@ -1656,7 +1666,8 @@ func (e *Engine) pause(ctx context.Context, c *command) {
 		limit := time.Duration(cmd.Limits.GetSoftLimitSeconds()) * time.Second
 		cmd.State = paused
 		cmd.CpuCores = 0
-		cmd.Reason = fmt.Sprintf("paused: it ran %s, its soft time limit, without ending; waiting on it again (hotbed logs -f %s) resumes it", limit, cmd.Id)
+		cmd.Reason = fmt.Sprintf("paused: it ran %s, its soft time limit, without ending; waiting on it again (%s) resumes it",
+			limit, sessionScopedCmd("logs -f", cmd.SessionId, cmd.Id))
 		cmd.Timeline = append(cmd.Timeline, &pb.CommandEvent{At: e.nowMs(), What: "paused", Detail: "after its soft time limit of " + limit.String()})
 		c.rec.HeldFor = ""
 		c.preemptedBy = ""

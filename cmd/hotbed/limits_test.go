@@ -75,16 +75,25 @@ func TestSoftLimitPausesAndWaitingResumes(t *testing.T) {
 		" (its hard limit stops it 2h0m0s after it started). To end it: hotbed stop -s slow-ox " + id + "\n"; code != exitPaused || stdout != "start\n" || !strings.HasSuffix(stderr, want) {
 		t.Fatalf("run past its soft limit: exit %d, stdout %q, stderr %q; want exit 124, start, and stderr ending %q", code, stdout, stderr, want)
 	}
-	if cmd := c.commandOf("slow-ox", id); cmd.State != pb.CommandState_COMMAND_STATE_PAUSED ||
-		cmd.Reason != "paused: it ran 1s, its soft time limit, without ending; waiting on it again (hotbed logs -f "+id+") resumes it" {
-		t.Errorf("the paused command: %v, %q", cmd.State, cmd.Reason)
+	cmd := c.commandOf("slow-ox", id)
+	wantReason := "paused: it ran 1s, its soft time limit, without ending; waiting on it again (hotbed logs -f -s slow-ox " + id + ") resumes it"
+	if cmd.State != pb.CommandState_COMMAND_STATE_PAUSED || cmd.Reason != wantReason {
+		t.Errorf("the paused command: %v, %q; want %q", cmd.State, cmd.Reason, wantReason)
 	}
 
-	// The paused command does not see go until it resumes.
+	// The paused command does not see go until it resumes. Executing the exact
+	// resume command advertised in cmd.Reason must work verbatim even without
+	// ambient session binding (e.g. from another session/thread context).
 	c.ok(nil, "run", "-s", "slow-ox", "-r", "app", "--detach", "--", "touch", "go")
-	code, stdout, stderr = c.hotbed("logs", "-f", "-s", "slow-ox", id)
+	startIdx := strings.Index(cmd.Reason, "(hotbed ")
+	endIdx := strings.Index(cmd.Reason, ") resumes it")
+	if startIdx < 0 || endIdx <= startIdx {
+		t.Fatalf("paused reason missing resume command hint: %q", cmd.Reason)
+	}
+	hintArgs := strings.Fields(cmd.Reason[startIdx+1 : endIdx])[1:] // strip leading "hotbed"
+	code, stdout, stderr = c.hotbed(hintArgs...)
 	if code != 5 || stdout != "start\ndone\n" {
-		t.Fatalf("logs -f of the paused command: exit %d, stdout %q, stderr %q; want exit 5 with all its output", code, stdout, stderr)
+		t.Fatalf("running hint %q of the paused command: exit %d, stdout %q, stderr %q; want exit 5 with all its output", hintArgs, code, stdout, stderr)
 	}
 	c.eventually("its end in the session", func() bool { return len(ends(c.events("slow-ox"), id)) > 0 })
 	if got := eventWhats(c.events("slow-ox"), id); !slices.Equal(got, []string{"admitted", "paused", "resumed", "exited"}) {
