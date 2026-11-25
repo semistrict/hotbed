@@ -98,7 +98,7 @@ func (e *Engine) vmMemoryTightLocked() bool {
 			return true
 		}
 	}
-	if e.usage.GetMemoryPressure() >= admitPressure {
+	if e.memPressureHolding || e.usage.GetMemoryPressure() >= admitPressure {
 		return true
 	}
 	if e.lastMem.Total > 0 && float64(e.lastMem.Used()) >= float64(e.lastMem.Total)*admitMemory {

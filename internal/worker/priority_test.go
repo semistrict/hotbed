@@ -134,12 +134,12 @@ func TestHighPriorityPreemptsLowerAndThawsOnCompletion(t *testing.T) {
 			t.Error("low-1 unit is not frozen")
 		}
 
-		// Even across more ticks (and even past rotateAfter!) while high-1 is
-		// still running, low-1 must stay parked and must NOT rotate out high-1.
-		*now = now.Add(rotateAfter + time.Minute)
+		// Even across more ticks and long waits while high-1 is still running,
+		// low-1 must stay parked and must NOT preempt high-1.
+		*now = now.Add(15 * time.Minute)
 		e.step(t.Context())
 		if sLow, sHigh := e.state("low-1"), e.state("high-1"); sLow != parked || sHigh != running {
-			t.Fatalf("while high-1 runs past rotateAfter: low-1=%v high-1=%v, want parked/running", sLow, sHigh)
+			t.Fatalf("while high-1 runs for 15m: low-1=%v high-1=%v, want parked/running", sLow, sHigh)
 		}
 
 		// high-1 completes -> low-1 automatically thaws!
@@ -814,12 +814,12 @@ func TestPreemptedByPersistsAcrossRestart(t *testing.T) {
 		t.Fatalf("after restart: low-cpu.preemptedBy = %q, want %q", restoredPreemptedBy, "high-cpu")
 	}
 
-	// Even with low CPU/memory usage and past rotateAfter, low-cpu MUST stay
+	// Even with low CPU/memory usage and a long wait, low-cpu MUST stay
 	// parked while high-cpu is still running!
 	sys.SetCPUPressure(0)
 	sys.SetUsed(sys.Mem.Total * 20 / 100)
 	e2.Sample()
-	now = now.Add(rotateAfter + time.Minute)
+	now = now.Add(15 * time.Minute)
 	e2.step(t.Context())
 	if sHigh, sLow := e2.state("high-cpu"), e2.state("low-cpu"); sHigh != running || sLow != parked {
 		t.Fatalf("after restart while high-cpu runs: high-cpu=%v low-cpu=%v, want running/parked", sHigh, sLow)

@@ -189,7 +189,7 @@ func TestSyncGuardWhileCommandRunning(t *testing.T) {
 	e.mu.Lock()
 	parkedCmd := e.commands["cmd-parked"]
 	e.mu.Unlock()
-	if !e.parkOne(t.Context(), parkedCmd, "memory pressure", "park cmd-parked", "") {
+	if !e.parkOne(t.Context(), parkedCmd, "memory pressure", "park cmd-parked", "", true) {
 		t.Fatal("parkOne(cmd-parked) = false, want true")
 	}
 	if s := e.state("cmd-parked"); s != parked {

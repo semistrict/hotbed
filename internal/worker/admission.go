@@ -237,6 +237,19 @@ func (e *Engine) isHostStarved(now time.Time) bool {
 	return cpuHeld
 }
 
+// weighMemPressure updates e.memPressureHolding with hysteresis: holds once
+// memory PSI (some avg10) reaches admitPressure and clears once it drops below
+// memPressureResumeAt. Call with e.mu held.
+func (e *Engine) weighMemPressure(p float64) bool {
+	switch {
+	case p >= admitPressure:
+		e.memPressureHolding = true
+	case e.memPressureHolding && p < memPressureResumeAt:
+		e.memPressureHolding = false
+	}
+	return e.memPressureHolding
+}
+
 // nodeHold is what holds every new command on the node now, whatever it
 // would need, or "": host starvation, saturated CPUs, memory pressure or a
 // full disk. Call with e.mu held.
@@ -251,8 +264,8 @@ func (e *Engine) nodeHold(now time.Time) (kind, reason string) {
 	switch u := e.usage; {
 	case e.cpu.holding:
 		return "cpu", fmt.Sprintf("CPU pressure %.0f%% (peak %.0f%% in the last %s); new work starts again under %.0f%%", u.GetCpuPressure(), e.cpu.peak(), cpuWindow, cpuResumeAt)
-	case u.GetMemoryPressure() >= admitPressure:
-		return "pressure", fmt.Sprintf("memory pressure %.0f%%; new work starts again under %.0f%%", u.GetMemoryPressure(), admitPressure)
+	case e.memPressureHolding || u.GetMemoryPressure() >= admitPressure:
+		return "pressure", fmt.Sprintf("memory pressure %.0f%%; new work starts again under %.0f%%", u.GetMemoryPressure(), memPressureResumeAt)
 	case e.diskLow():
 		return "disk", fmt.Sprintf("%s of disk free; new work starts again once %s is", gib(e.disk.FreeBytes), gib(e.minFreeBytes()))
 	}
@@ -328,8 +341,8 @@ func (e *Engine) admission() *pb.Admission {
 			Detail: fmt.Sprintf("peak %.0f%% in the last %s; measurements are not held", e.cpu.peak(), cpuWindow),
 		},
 		{
-			Name: "memory-pressure", Value: u.GetMemoryPressure(), Limit: admitPressure, Unit: "%",
-			Holding: u.GetMemoryPressure() >= admitPressure, Waiting: waiting["pressure"],
+			Name: "memory-pressure", Value: u.GetMemoryPressure(), Limit: admitPressure, Resume: memPressureResumeAt, Unit: "%",
+			Holding: e.memPressureHolding || u.GetMemoryPressure() >= admitPressure, Waiting: waiting["pressure"],
 		},
 		{
 			Name: "memory-reserved", Value: float64(e.reserved()), Limit: float64(e.admitLimit()), Unit: "bytes",

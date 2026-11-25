@@ -60,10 +60,10 @@ func (e *Engine) start(t *testing.T, units *fake.Units, now *time.Time, id, ws, 
 	return e.commands[id]
 }
 
-// A parked command whose own swap would never fit beside the others isn't
-// parked for good: once it has waited rotateAfter it trades places with
-// the newest running command (board 7422).
-func TestAParkedCommandGetsItsTurn(t *testing.T) {
+// Under memory constraint, same-priority running commands run to completion
+// instead of round-robinning through swap. Once the running command finishes,
+// the parked command thaws immediately.
+func TestSamePriorityRunsToCompletionWithoutRoundRobin(t *testing.T) {
 	e, units, sys, now := parkEngine(t)
 	old := e.start(t, units, now, "old-1", "a", "build")
 	young := e.start(t, units, now, "young-1", "b", "build")
@@ -72,82 +72,317 @@ func TestAParkedCommandGetsItsTurn(t *testing.T) {
 	if s := young.cmd().State; s != parked {
 		t.Fatalf("the newest is %v at 95%%, want parked", s)
 	}
-	// Its memory went to swap, more than would fit back beside the other.
+	// Its memory went to swap, more than would fit back beside old-1.
 	units.SetSwap("hotbed-young-1", sys.Mem.Total/2)
 	sys.SetUsed(sys.Mem.Total * 40 / 100)
-	*now = now.Add(rotateAfter - time.Second)
+
+	// Even after 30 minutes, old-1 keeps running to completion — no rotation!
+	*now = now.Add(30 * time.Minute)
 	e.step(t.Context())
-	if s := young.cmd().State; s != parked {
-		t.Fatalf("the parked one is %v before its turn, want still parked", s)
+	if s, o := young.cmd().State, old.cmd().State; s != parked || o != running {
+		t.Fatalf("after 30m: young=%v old=%v; want young parked and old still running (no round-robin)", s, o)
+	}
+
+	// Once old-1 finishes, young-1 thaws immediately and takes the node.
+	if _, err := e.Stop(t.Context(), "old-1", "done"); err != nil {
+		t.Fatal(err)
 	}
 	*now = now.Add(time.Second)
 	e.step(t.Context())
-	if s, o := young.cmd().State, old.cmd().State; s != running || o != parked {
-		t.Fatalf("after %v the parked one is %v and the other %v; want them traded", rotateAfter, s, o)
-	}
-	if r := old.cmd().Reason; !strings.HasPrefix(r, "frozen to give young-1 its turn (parked 10m0s)") {
-		t.Errorf("the other's reason = %q", r)
+	if s := young.cmd().State; s != running {
+		t.Fatalf("after old-1 finished: young=%v, want thawed/running", s)
 	}
 	if st, _ := units.Status(t.Context(), "hotbed-young-1"); st.Frozen {
 		t.Error("the thawed one's unit is still frozen")
 	}
-	// The one parked in its place waits its own turn, not trading straight back.
-	units.SetSwap("hotbed-old-1", sys.Mem.Total/2)
-	*now = now.Add(time.Second)
-	e.step(t.Context())
-	if s := old.cmd().State; s != parked {
-		t.Errorf("the one parked in its place is %v a second later, want parked", s)
-	}
 }
 
-// When multiple parked commands have all waited longer than rotateAfter, each
-// thawed command must still get a full rotateAfter run quantum before rotating
-// out for the next waiting command (preventing 1 Hz park/thaw thrashing).
-func TestRotationDoesNotThrashMultipleLongParkedCommands(t *testing.T) {
+// Parking peels off newest-started commands first, and thawing resumes
+// oldest-started commands first (the strict inverse of parking) so already-
+// progressed work finishes before newer work. Concurrent thawing alongside
+// running work accounts for peak headroom and refuses to re-thaw a command
+// that has already been parked twice against the same running workload.
+func TestThawOrderIsOldestStartedFirstAndAntiThrash(t *testing.T) {
+	t.Run("oldest started thaws first after runner finishes", func(t *testing.T) {
+		e, units, sys, now := parkEngine(t)
+		c1 := e.start(t, units, now, "cmd-1", "a", "build")
+		c2 := e.start(t, units, now, "cmd-2", "b", "build")
+		c3 := e.start(t, units, now, "cmd-3", "c", "build")
+
+		// Park c3 first (newest), then c2, leaving c1 running.
+		sys.SetUsed(sys.Mem.Total * 95 / 100)
+		e.step(t.Context())
+		*now = now.Add(time.Second)
+		e.step(t.Context())
+		if c1.cmd().State != running || c2.cmd().State != parked || c3.cmd().State != parked {
+			t.Fatalf("states after parking = (%v, %v, %v), want (running, parked, parked)",
+				c1.cmd().State, c2.cmd().State, c3.cmd().State)
+		}
+
+		// Keep memory high enough that neither thaws concurrently, then end c1:
+		// c2 (started before c3) MUST thaw ahead of c3 even though c3 parked earlier.
+		units.SetSwap("hotbed-cmd-2", sys.Mem.Total/2)
+		units.SetSwap("hotbed-cmd-3", sys.Mem.Total/2)
+		sys.SetUsed(sys.Mem.Total * 60 / 100)
+		if _, err := e.Stop(t.Context(), "cmd-1", "done"); err != nil {
+			t.Fatal(err)
+		}
+		*now = now.Add(time.Second)
+		e.step(t.Context())
+		if c2.cmd().State != running || c3.cmd().State != parked {
+			t.Fatalf("after c1 exited: c2=%v c3=%v, want c2 running (oldest started) and c3 parked",
+				c2.cmd().State, c3.cmd().State)
+		}
+	})
+
+	t.Run("peak headroom and same-workload guard prevent park/thaw oscillation", func(t *testing.T) {
+		e, units, sys, now := parkEngine(t)
+		c1 := e.start(t, units, now, "cmd-1", "a", "build")
+		c2 := e.start(t, units, now, "cmd-2", "b", "build")
+
+		// Record c1 peaking at 10 GiB, then park c2 at 95% memory.
+		units.SetAnon("hotbed-cmd-1", 10<<30)
+		*now = now.Add(time.Second)
+		e.step(t.Context())
+		sys.SetUsed(sys.Mem.Total * 95 / 100)
+		*now = now.Add(time.Second)
+		e.step(t.Context())
+		if c1.cmd().State != running || c2.cmd().State != parked {
+			t.Fatalf("after park: c1=%v c2=%v, want running/parked", c1.cmd().State, c2.cmd().State)
+		}
+
+		// c1 momentarily dips from 10 GiB to 3 GiB (mem.Used = 4 GiB = 25%):
+		// projectedUsed = 4 GiB + (10 - 3) GiB = 11 GiB (69% > 50% same-workload
+		// limit) so c2 MUST NOT thaw into c1's transient dip!
+		units.SetAnon("hotbed-cmd-1", 3<<30)
+		sys.SetUsed(4 << 30)
+		*now = now.Add(time.Second)
+		e.step(t.Context())
+		if c2.cmd().State != parked {
+			t.Fatalf("c2 during c1 transient dip = %v, want parked (peak headroom respected)", c2.cmd().State)
+		}
+
+		// Now test repeated same-workload parking with small observed peaks:
+		e2, units2, sys2, now2 := parkEngine(t)
+		r1 := e2.start(t, units2, now2, "r-1", "a", "build")
+		r2 := e2.start(t, units2, now2, "r-2", "b", "build")
+
+		// First park under memory pressure.
+		sys2.SetUsed(sys2.Mem.Total * 95 / 100)
+		e2.step(t.Context())
+		if r2.cmd().State != parked {
+			t.Fatalf("r2 after 1st park = %v, want parked", r2.cmd().State)
+		}
+		// At 55% RAM (above 50% same-workload ceiling), r2 stays parked.
+		sys2.SetUsed(sys2.Mem.Total * 55 / 100)
+		*now2 = now2.Add(time.Second)
+		e2.step(t.Context())
+		if r2.cmd().State != parked {
+			t.Fatalf("r2 at 55%% RAM alongside same workload = %v, want parked", r2.cmd().State)
+		}
+		// If RAM drops to 30% (<= 50%), r2 gets one chance to thaw concurrently.
+		sys2.SetUsed(sys2.Mem.Total * 30 / 100)
+		*now2 = now2.Add(time.Second)
+		e2.step(t.Context())
+		if r2.cmd().State != running {
+			t.Fatalf("r2 at 30%% RAM after 1st park = %v, want running", r2.cmd().State)
+		}
+		// If it immediately triggers a 2nd park against the exact same running
+		// workload (nothing finished in between), dropping to 30% again MUST NOT
+		// thaw it concurrently — it waits for r1 to finish!
+		sys2.SetUsed(sys2.Mem.Total * 95 / 100)
+		*now2 = now2.Add(time.Second)
+		e2.step(t.Context())
+		if r2.cmd().State != parked {
+			t.Fatalf("r2 after 2nd park = %v, want parked", r2.cmd().State)
+		}
+		sys2.SetUsed(sys2.Mem.Total * 30 / 100)
+		*now2 = now2.Add(time.Second)
+		e2.step(t.Context())
+		if r2.cmd().State != parked {
+			t.Fatalf("r2 at 30%% RAM after 2nd same-workload park = %v, want parked until a command finishes", r2.cmd().State)
+		}
+		// Once r1 finishes, r2 thaws immediately.
+		if _, err := e2.Stop(t.Context(), r1.cmd().Id, "done"); err != nil {
+			t.Fatal(err)
+		}
+		*now2 = now2.Add(time.Second)
+		e2.step(t.Context())
+		if r2.cmd().State != running {
+			t.Fatalf("r2 after r1 finished = %v, want running", r2.cmd().State)
+		}
+	})
+}
+
+// Under constraint, hotbed focuses on completing one session's work rather than
+// interleaving across sessions: non-focus sessions are parked before the focus
+// session, and when a focus session finishes a command while it already has
+// more work queued on the node, it drains its queued work before switching.
+func TestFocusSessionContinuityUnderConstraint(t *testing.T) {
+	t.Run("parks other session before focus session", func(t *testing.T) {
+		e, units, sys, now := parkEngine(t)
+		e.workspaces["a"].ws().SessionId = "sess-1"
+		e.workspaces["b"].ws().SessionId = "sess-2"
+		e.workspaces["c"].ws().SessionId = "sess-1"
+
+		a1 := e.start(t, units, now, "a1", "a", "build")
+		b1 := e.start(t, units, now, "b1", "b", "build")
+		a2 := e.start(t, units, now, "a2", "c", "build")
+
+		// Even though a2 started after b1, sess-1 is the focus session (oldest
+		// running a1), so b1 (sess-2) is parked first!
+		sys.SetUsed(sys.Mem.Total * 95 / 100)
+		*now = now.Add(time.Second)
+		e.step(t.Context())
+		if a1.cmd().State != running || a2.cmd().State != running || b1.cmd().State != parked {
+			t.Fatalf("after park: a1=%v a2=%v b1=%v, want running/running/parked",
+				a1.cmd().State, a2.cmd().State, b1.cmd().State)
+		}
+	})
+
+	t.Run("focus session drains its queued work before switching, but higher priority still wins", func(t *testing.T) {
+		e, units, _, now := parkEngine(t)
+		e.workspaces["a"].ws().SessionId = "sess-1"
+		e.workspaces["b"].ws().SessionId = "sess-2"
+		e.workspaces["c"].ws().SessionId = "sess-1"
+
+		_ = e.start(t, units, now, "a1", "a", "build")
+		units.SetAnon("hotbed-a1", 14<<30) // fills 13.76 GiB admitLimit
+		*now = now.Add(time.Second)
+		e.step(t.Context())
+
+		// sess-2 queues b1 first (t+1), then sess-1 queues a2 (t+2); each needs 8 GiB.
+		*now = now.Add(time.Second)
+		if _, err := e.Exec(t.Context(), &pb.RunCommandRequest{
+			Id: "b1", WorkspaceId: "b", Args: []string{"sleep", "60"},
+			Limits: &pb.CommandLimits{MemoryLowBytes: 8 << 30},
+		}); err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { units.Stop(context.WithoutCancel(t.Context()), "hotbed-b1") })
+
+		*now = now.Add(time.Second)
+		if _, err := e.Exec(t.Context(), &pb.RunCommandRequest{
+			Id: "a2", WorkspaceId: "c", Args: []string{"sleep", "60"},
+			Limits: &pb.CommandLimits{MemoryLowBytes: 8 << 30},
+		}); err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { units.Stop(context.WithoutCancel(t.Context()), "hotbed-a2") })
+		e.step(t.Context())
+		if e.state("b1") != queued || e.state("a2") != queued {
+			t.Fatalf("while a1 runs: b1=%v a2=%v, want queued/queued", e.state("b1"), e.state("a2"))
+		}
+
+		// When a1 finishes, sess-1 still has a2 queued -> a2 admits ahead of b1!
+		if _, err := e.Stop(t.Context(), "a1", "done"); err != nil {
+			t.Fatal(err)
+		}
+		*now = now.Add(time.Second)
+		e.step(t.Context())
+		if e.state("a2") != running || e.state("b1") != queued {
+			t.Fatalf("after a1 finished: a2=%v b1=%v, want a2 running (focus session) and b1 queued",
+				e.state("a2"), e.state("b1"))
+		}
+
+		// Once a2 finishes and sess-1 has no more queued work, b1 admits immediately.
+		if _, err := e.Stop(t.Context(), "a2", "done"); err != nil {
+			t.Fatal(err)
+		}
+		*now = now.Add(time.Second)
+		e.step(t.Context())
+		if e.state("b1") != running {
+			t.Fatalf("after a2 finished: b1=%v, want running", e.state("b1"))
+		}
+	})
+
+	t.Run("higher priority from another session still beats focus session", func(t *testing.T) {
+		e, units, _, now := parkEngine(t)
+		e.workspaces["a"].ws().SessionId = "sess-1"
+		e.workspaces["b"].ws().SessionId = "sess-2"
+		e.workspaces["c"].ws().SessionId = "sess-1"
+
+		_ = e.start(t, units, now, "a1", "a", "build")
+		units.SetAnon("hotbed-a1", 14<<30)
+		*now = now.Add(time.Second)
+		e.step(t.Context())
+
+		*now = now.Add(time.Second)
+		if _, err := e.Exec(t.Context(), &pb.RunCommandRequest{
+			Id: "a2", WorkspaceId: "c", Args: []string{"sleep", "60"},
+			Limits: &pb.CommandLimits{MemoryLowBytes: 8 << 30},
+		}); err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { units.Stop(context.WithoutCancel(t.Context()), "hotbed-a2") })
+
+		*now = now.Add(time.Second)
+		if _, err := e.Exec(t.Context(), &pb.RunCommandRequest{
+			Id: "b-hi", WorkspaceId: "b", Args: []string{"sleep", "60"},
+			Limits: &pb.CommandLimits{Priority: 10, MemoryLowBytes: 8 << 30},
+		}); err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { units.Stop(context.WithoutCancel(t.Context()), "hotbed-b-hi") })
+
+		if _, err := e.Stop(t.Context(), "a1", "done"); err != nil {
+			t.Fatal(err)
+		}
+		*now = now.Add(time.Second)
+		e.step(t.Context())
+		if e.state("b-hi") != running || e.state("a2") != queued {
+			t.Fatalf("after a1 finished: b-hi=%v a2=%v, want b-hi running (higher priority) and a2 queued",
+				e.state("b-hi"), e.state("a2"))
+		}
+	})
+}
+
+// A node with running work must not admit additional commands once physical RAM
+// reaches admitMemory (86%), and memory pressure uses hysteresis (holds at 22%,
+// stays held at 15%, resumes below 12%) so brief dips do not flap admission.
+func TestBusyNodeHoldsAtAdmitMemoryAndMemoryPressureHysteresis(t *testing.T) {
 	e, units, sys, now := parkEngine(t)
-	c1 := e.start(t, units, now, "cmd-1", "a", "build")
-	c2 := e.start(t, units, now, "cmd-2", "b", "build")
-	c3 := e.start(t, units, now, "cmd-3", "c", "build")
+	_ = e.start(t, units, now, "run-1", "a", "build")
 
-	// Park c3 then c2 under memory pressure, leaving c1 running.
-	sys.SetUsed(sys.Mem.Total * 95 / 100)
-	e.step(t.Context())
+	// 88% RAM used (>= admitMemory 86%, < parkAt 93%) with plenty of free swap:
+	// must NOT admit a 2nd command only to park it seconds later.
+	sys.SetUsed(sys.Mem.Total * 88 / 100)
+	e.Sample()
 	*now = now.Add(time.Second)
-	e.step(t.Context())
-	if c1.cmd().State != running || c2.cmd().State != parked || c3.cmd().State != parked {
-		t.Fatalf("states after parking = (%v, %v, %v), want (running, parked, parked)",
-			c1.cmd().State, c2.cmd().State, c3.cmd().State)
+	if _, err := e.Exec(t.Context(), &pb.RunCommandRequest{
+		Id: "wait-mem", WorkspaceId: "b", Args: []string{"sleep", "60"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { units.Stop(context.WithoutCancel(t.Context()), "hotbed-wait-mem") })
+	e.admit(t.Context())
+	if got := e.commands["wait-mem"].cmd(); got.State != queued || !strings.Contains(got.Reason, "while other work is running") {
+		t.Fatalf("wait-mem at 88%% RAM beside run-1 = %v (%q), want queued", got.State, got.Reason)
 	}
 
-	// Both parked commands have large swap so neither fits alongside the running one.
-	units.SetSwap("hotbed-cmd-2", sys.Mem.Total/2)
-	units.SetSwap("hotbed-cmd-3", sys.Mem.Total/2)
-	sys.SetUsed(sys.Mem.Total * 40 / 100)
-
-	// Advance past rotateAfter: oldest parked (c3, parked first) trades with c1.
-	*now = now.Add(rotateAfter + time.Minute)
-	e.step(t.Context())
-	if c3.cmd().State != running || c1.cmd().State != parked || c2.cmd().State != parked {
-		t.Fatalf("after first rotation = (%v, %v, %v), want (parked, parked, running)",
-			c1.cmd().State, c2.cmd().State, c3.cmd().State)
-	}
-
-	// One second later, c2 has STILL been parked > rotateAfter, but c3 has only
-	// run for 1 second: c3 MUST NOT be rotated out immediately.
-	units.SetSwap("hotbed-cmd-1", sys.Mem.Total/2)
+	// Memory drops to 50%, but memory PSI spiked to 25% (>= 22%) and then only
+	// dipped to 15% (>= 12% resume threshold): must remain held!
+	sys.SetUsed(sys.Mem.Total * 50 / 100)
+	sys.Psi = 25
+	e.Sample()
+	sys.Psi = 15
 	*now = now.Add(time.Second)
-	e.step(t.Context())
-	if c3.cmd().State != running || c2.cmd().State != parked {
-		t.Fatalf("1s after thawing c3: c3=%v c2=%v, want c3 still running (no 1 Hz rotation thrash)",
-			c3.cmd().State, c2.cmd().State)
+	e.Sample()
+	e.admit(t.Context())
+	if got := e.commands["wait-mem"].cmd(); got.State != queued || !strings.Contains(got.Reason, "memory pressure") {
+		t.Fatalf("wait-mem at 15%% PSI after 25%% spike = %v (%q), want still held by hysteresis", got.State, got.Reason)
+	}
+	if a := e.Heartbeat("cl").Admission; !a.Holding || !signal(a, "memory-pressure").Holding {
+		t.Fatalf("expected memory-pressure signal holding at 15%% PSI after 25%% spike, got %+v", a)
 	}
 
-	// Once c3 has run for rotateAfter, c2 gets its turn.
-	*now = now.Add(rotateAfter)
-	e.step(t.Context())
-	if c2.cmd().State != running || c3.cmd().State != parked {
-		t.Fatalf("after c3 ran rotateAfter: c2=%v c3=%v, want c2 running and c3 parked",
-			c2.cmd().State, c3.cmd().State)
+	// Once PSI drops under 12% (e.g. 10%), admission resumes cleanly.
+	sys.Psi = 10
+	*now = now.Add(time.Second)
+	e.Sample()
+	e.admit(t.Context())
+	if st := e.state("wait-mem"); st != running {
+		t.Fatalf("wait-mem once PSI dropped to 10%% = %v, want running", st)
 	}
 }
 
@@ -621,18 +856,18 @@ func TestStepBatchesStatusMany(t *testing.T) {
 }
 
 // When a slice's finite swap budget (MemorySwapMax) is exhausted (>= 95% full)
-// while RAM is already above admitMemory and work is running, new non-bench
+// while RAM is already above thawBelow and work is running, new non-bench
 // work must stay queued rather than admitting and forcing an impossible park
 // into a full swap cap. Once swap headroom returns (or the node goes idle),
 // queued work admits immediately.
 func TestSwapFullHoldsNewWorkWhenRAMAboveAdmitLimit(t *testing.T) {
 	e, units, sys, clk := parkEngine(t)
 	e.start(t, units, clk, "c-run", "a", "build")
-	// 88% RAM used (>= admitMemory 86%, < parkAt 93%) and 98% slice swap full.
+	// 75% RAM used (>= thawBelow 70%, < admitMemory 86%) and 98% slice swap full.
 	const giB = int64(1 << 30)
 	sys.SetMem(sysinfo.Mem{
 		Total:     16 * giB,
-		Available: 16*giB - 14*giB - 100<<20, // ~88.1% used
+		Available: 4 * giB, // 75% used
 		SwapTotal: 4 * giB,
 		SwapFree:  80 << 20, // ~98% swap used
 	})
@@ -654,7 +889,7 @@ func TestSwapFullHoldsNewWorkWhenRAMAboveAdmitLimit(t *testing.T) {
 	// Once swap headroom returns (e.g. an idle VM stopped or swap drained), c-wait admits.
 	sys.SetMem(sysinfo.Mem{
 		Total:     16 * giB,
-		Available: 16*giB - 14*giB - 100<<20,
+		Available: 4 * giB,
 		SwapTotal: 4 * giB,
 		SwapFree:  2 * giB,
 	})

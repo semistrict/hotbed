@@ -38,15 +38,23 @@ const WorkPath = "/work"
 
 // The thresholds the node runs work by.
 const (
-	admitMemory   = 0.86 // admit while reservations fit in this share of RAM
-	admitPressure = 22.0 // and memory pressure (PSI some avg10, %) is below this
-	parkAt        = 0.93 // park the newest command when memory in use passes this
-	parkPressure  = 40.0 // or memory pressure (PSI some avg10, %) reaches this
+	admitMemory         = 0.86 // admit while reservations and (when busy) used RAM fit in this share of RAM
+	admitPressure       = 22.0 // hold new work once memory pressure (PSI some avg10, %) reaches this
+	memPressureResumeAt = 12.0 // resume admitting/thawing once memory pressure drops under this
+	parkAt              = 0.93 // park the lowest-priority/newest command when memory in use passes this
+	parkPressure        = 40.0 // or memory pressure (PSI some avg10, %) reaches this
 	// pressureSettle is how long a park for pressure waits on the one
 	// before to show in pressure, an average over 10 s.
 	pressureSettle = 20 * time.Second
-	thawBelow      = 0.78 // thaw the oldest parked one when it fits under this
-	minFreeDisk    = 0.05 // keep this share of the disk free before admitting
+	// thawBelow is the projected RAM ceiling for thawing a parked command
+	// alongside already-running work once a command has completed (or when
+	// parked by preemption rather than memory pressure).
+	thawBelow = 0.70
+	// thawSameWorkloadBelow is the stricter projected RAM ceiling for thawing
+	// a memory-parked command back alongside the exact same running workload
+	// when nothing has finished since it was parked.
+	thawSameWorkloadBelow = 0.50
+	minFreeDisk           = 0.05 // keep this share of the disk free before admitting
 	orphanAfter    = 30 * time.Second
 	keepEnded      = 2 * time.Minute
 	keepReleased   = 10 * time.Minute
@@ -226,8 +234,16 @@ type Engine struct {
 	lastMem sysinfo.Mem
 	// cpu holds new work while the CPUs are saturated; held is what holds
 	// new work on the node now, if anything, and since when.
-	cpu  cpuGate
-	held hold
+	cpu                cpuGate
+	memPressureHolding bool
+	held               hold
+	// completions counts started non-bench, non-server commands that have ended
+	// on this worker, so park() knows whether anything actually finished since
+	// a command was parked for memory. lastFocusSession remembers the session
+	// whose work was most recently making progress on this node so it can drain
+	// already-queued/parked work in its warm workspace before switching.
+	completions      uint64
+	lastFocusSession string
 	// hostUsage is the latest host-side view of this VM worker from the
 	// controller's heartbeat reply, and hostUsageUntil is the engine clock
 	// deadline after which it is treated as stale and ignored. hostCPUHolding
@@ -399,10 +415,15 @@ type command struct {
 	// this command to make room; while that command is queued or running, this
 	// command stays parked (board 7907). Persisted in worker.db across restarts.
 	preemptedBy string
-	// resumedAt is when this command was last thawed or resumed (Unix ms), so
-	// rotation gives every newly thawed command a full rotateAfter run quantum
-	// before rotating it out for another long-parked command.
-	resumedAt int64
+	// parkedForMemory records that the current parked state was triggered by
+	// memory exhaustion or memory PSI (not priority preemption or --bench).
+	// lastMemoryParkCompletions and memoryParksSameWorkload track how many
+	// times this command has been parked for memory without any running
+	// command completing in between, preventing park/thaw oscillation against
+	// the exact same running workload.
+	parkedForMemory           bool
+	lastMemoryParkCompletions uint64
+	memoryParksSameWorkload   int
 	// residentBytes is the most recent anonymous RAM (memory.stat anon) read
 	// from the unit's cgroup, and residentKnown reports whether it has been
 	// measured. reclaimed reports whether Reclaim succeeded and residentBytes
@@ -891,6 +912,7 @@ func (e *Engine) Sample() {
 	}
 	now := e.now()
 	e.cpu.weigh(now, cpuP)
+	e.weighMemPressure(memP)
 	wasHeld := e.held.kind != ""
 	e.weighHold(now)
 	cleared := wasHeld && e.held.kind == ""

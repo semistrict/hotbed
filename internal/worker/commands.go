@@ -698,12 +698,13 @@ func oomReason(st unit.State, peakBytes int64) string {
 	return fmt.Sprintf("killed by the OOM killer (%s)", strings.Join(parts, "; "))
 }
 
-// admit starts queued commands, highest priority first then oldest first,
-// while they fit, preempting strictly lower-priority running commands when
-// needed (board 7907).
+// admit starts queued commands, highest priority first, then base builds, then
+// the focus session's work, then oldest queued first, while they fit,
+// preempting strictly lower-priority running commands when needed (board 7907).
 func (e *Engine) admit(ctx context.Context) {
 	e.mu.Lock()
 	e.weighHold(e.now())
+	focus := e.focusSessionLocked()
 	var waiting []*command
 	for _, c := range e.commands {
 		if c.cmd().State == queued {
@@ -713,6 +714,8 @@ func (e *Engine) admit(ctx context.Context) {
 	slices.SortFunc(waiting, func(a, b *command) int {
 		return cmp.Or(
 			cmp.Compare(b.priority(), a.priority()),
+			cmpBool(b.isFreshen(), a.isFreshen()),
+			cmpBool(isFocusCommand(b, focus), isFocusCommand(a, focus)),
 			cmp.Compare(a.cmd().QueuedAt, b.cmd().QueuedAt),
 			cmp.Compare(a.cmd().Id, b.cmd().Id),
 		)
@@ -755,7 +758,7 @@ func (e *Engine) admit(ctx context.Context) {
 					e.mu.Unlock()
 					pReason := fmt.Sprintf("preempted by higher-priority command %s (priority %d > %d)", cID, cPrio, vPrio)
 					pFeed := fmt.Sprintf("park %s · preempted by %s (priority %d > %d)", vArgv, cID, cPrio, vPrio)
-					if e.parkOne(ctx, v, pReason, pFeed, cID) {
+					if e.parkOne(ctx, v, pReason, pFeed, cID, false) {
 						parkedAny = true
 						if m, err := e.cfg.System.Meminfo(); err == nil && m.Total > 0 {
 							mem, hasMem = m, true
@@ -972,6 +975,9 @@ func (e *Engine) admit(ctx context.Context) {
 		now := e.nowMs()
 		cmd.State = running
 		cmd.StartedAt = &now
+		if isFocusEligible(c) {
+			e.lastFocusSession = e.focusSessionLocked()
+		}
 		finishAdmit()
 		share := fmt.Sprintf("weight %d", cmd.Limits.CpuWeight)
 		if cmd.Bench {
@@ -988,6 +994,12 @@ func (e *Engine) admit(ctx context.Context) {
 		e.saveCommand(c, ch)
 		e.watchExitBgLocked(ctx, spec.Slice, c.unitName())
 		e.mu.Unlock()
+		// Refresh physical memory after starting a command (which may have
+		// booted a Firecracker VM or faulted RAM) before checking the next
+		// queued command in the same tick.
+		if m, err := e.cfg.System.Meminfo(); err == nil && m.Total > 0 {
+			mem, hasMem = m, true
+		}
 	}
 }
 
@@ -1064,28 +1076,121 @@ func (e *Engine) preemptCandidatesLocked(c *command) []*command {
 	if c.reservation() > e.admitLimit()-(e.reservedFor(cPrio)-reclaimable) {
 		return nil
 	}
-	slices.SortFunc(victims, compareParkVictim)
+	focus := e.focusSessionLocked()
+	slices.SortFunc(victims, func(a, b *command) int { return compareParkVictim(a, b, focus) })
 	return victims
 }
 
+// isFocusEligible reports whether c participates in session-focus scheduling:
+// regular session-owned work (not benchmarks, dev servers, or base builds).
+func isFocusEligible(c *command) bool {
+	cmd := c.cmd()
+	return cmd.SessionId != "" && !cmd.Bench && cmd.Kind != "server" && !c.isFreshen()
+}
+
+func isFocusCommand(c *command, focus string) bool {
+	return focus != "" && isFocusEligible(c) && c.cmd().SessionId == focus
+}
+
+// focusSessionLocked returns the session currently focused for completion on
+// this node, or "" if no session-scoped work is active:
+//  1. The session of the highest-priority, oldest-started running command.
+//  2. Otherwise, e.lastFocusSession if it still has a parked or queued command
+//     at the highest active priority (so a session finishes its already-queued
+//     or parked work in its warm workspace/VM before switching).
+//  3. Otherwise, the session of the highest-priority, oldest-started parked
+//     command (or oldest-queued if none is parked).
+//
+// Call with e.mu held.
+func (e *Engine) focusSessionLocked() string {
+	var bestRun, bestPark, bestQueue *command
+	var maxPendingPrio int32
+	hasPending := false
+	for _, c := range e.commands {
+		if c.stopping || c.deactivating || !isFocusEligible(c) {
+			continue
+		}
+		switch c.cmd().State {
+		case running:
+			if bestRun == nil ||
+				c.priority() > bestRun.priority() ||
+				(c.priority() == bestRun.priority() && cmp.Or(cmp.Compare(c.cmd().GetStartedAt(), bestRun.cmd().GetStartedAt()), cmp.Compare(c.cmd().Id, bestRun.cmd().Id)) < 0) {
+				bestRun = c
+			}
+		case parked:
+			if c.rec.HeldFor != "" {
+				continue
+			}
+			if !hasPending || c.priority() > maxPendingPrio {
+				maxPendingPrio = c.priority()
+				hasPending = true
+			}
+			if bestPark == nil ||
+				c.priority() > bestPark.priority() ||
+				(c.priority() == bestPark.priority() && cmp.Or(cmp.Compare(c.cmd().GetStartedAt(), bestPark.cmd().GetStartedAt()), cmp.Compare(c.cmd().QueuedAt, bestPark.cmd().QueuedAt), cmp.Compare(c.cmd().Id, bestPark.cmd().Id)) < 0) {
+				bestPark = c
+			}
+		case queued:
+			if !hasPending || c.priority() > maxPendingPrio {
+				maxPendingPrio = c.priority()
+				hasPending = true
+			}
+			if bestQueue == nil ||
+				c.priority() > bestQueue.priority() ||
+				(c.priority() == bestQueue.priority() && cmp.Or(cmp.Compare(c.cmd().QueuedAt, bestQueue.cmd().QueuedAt), cmp.Compare(c.cmd().Id, bestQueue.cmd().Id)) < 0) {
+				bestQueue = c
+			}
+		}
+	}
+	if bestRun != nil {
+		return bestRun.cmd().SessionId
+	}
+	if e.lastFocusSession != "" && hasPending {
+		for _, c := range e.commands {
+			if c.stopping || c.deactivating || !isFocusEligible(c) {
+				continue
+			}
+			st := c.cmd().State
+			if (st == parked && c.rec.HeldFor == "") || st == queued {
+				if c.cmd().SessionId == e.lastFocusSession && c.priority() == maxPendingPrio {
+					return e.lastFocusSession
+				}
+			}
+		}
+	}
+	if bestPark != nil && (bestQueue == nil || bestPark.priority() >= bestQueue.priority()) {
+		return bestPark.cmd().SessionId
+	}
+	if bestQueue != nil {
+		return bestQueue.cmd().SessionId
+	}
+	return ""
+}
+
 // compareParkVictim orders running commands by which should be parked first:
-// lowest priority first, work before base builds, newest first.
-func compareParkVictim(a, b *command) int {
+// lowest priority first, work before base builds, non-focus sessions before
+// the focus session, then newest started first.
+func compareParkVictim(a, b *command, focus string) int {
 	return cmp.Or(
 		cmp.Compare(a.priority(), b.priority()),
 		cmpBool(a.isFreshen(), b.isFreshen()),
+		cmpBool(isFocusCommand(a, focus), isFocusCommand(b, focus)),
 		cmp.Compare(b.cmd().GetStartedAt(), a.cmd().GetStartedAt()),
 		cmp.Compare(b.cmd().Id, a.cmd().Id),
 	)
 }
 
 // compareThawOrder orders parked commands by which should thaw first:
-// highest priority first, base builds before work, longest parked first.
-func compareThawOrder(a, b *command) int {
+// highest priority first, base builds before work, the focus session first,
+// then oldest started first (the strict inverse of compareParkVictim so
+// already-progressed commands finish rather than rotating).
+func compareThawOrder(a, b *command, focus string) int {
 	return cmp.Or(
 		cmp.Compare(b.priority(), a.priority()),
 		cmpBool(b.isFreshen(), a.isFreshen()),
-		cmp.Compare(a.rec.ParkedAt, b.rec.ParkedAt),
+		cmpBool(isFocusCommand(b, focus), isFocusCommand(a, focus)),
+		cmp.Compare(a.cmd().GetStartedAt(), b.cmd().GetStartedAt()),
+		cmp.Compare(a.cmd().QueuedAt, b.cmd().QueuedAt),
 		cmp.Compare(a.cmd().Id, b.cmd().Id),
 	)
 }
@@ -1218,12 +1323,20 @@ func (e *Engine) roomFor(c *command, cpuPreempted bool, mem sysinfo.Mem, hasMem 
 		if float64(memUsed) > float64(memTotal)*parkAt {
 			return "memory", fmt.Sprintf("waiting for memory: %.0f%% in use (%s physically available on the node)", 100*float64(memUsed)/float64(memTotal), gib(max(0, physRoom)))
 		}
+		// When other work is already running on the node, do not pile another
+		// command on once physical RAM has already reached admitMemory (86%):
+		// leaving less than 7% headroom below parkAt (93%) almost immediately
+		// parks the newly admitted command. An idle node still admits up to
+		// parkAt so shared desktop hosts with cached OS memory keep moving.
+		if !c.cmd().Bench && e.hasRunningWorkLocked() && float64(memUsed) >= float64(memTotal)*admitMemory {
+			return "memory", fmt.Sprintf("waiting for memory: %.0f%% in use while other work is running (limit %.0f%%)", 100*float64(memUsed)/float64(memTotal), admitMemory*100)
+		}
 		// When the work slice's swap budget is saturated (>= 95% used) and RAM
-		// is already above admitMemory with work running, parking cannot evict
+		// is already above thawBelow with work running, parking cannot evict
 		// anonymous pages to swap (memory.reclaim returns EAGAIN) — queue new
 		// work instead of piling into a permanent memory.high PSI livelock.
 		if !c.cmd().Bench && swapTotal > 0 && float64(swapTotal-swapFree) >= float64(swapTotal)*0.95 &&
-			float64(memUsed) >= float64(memTotal)*admitMemory && e.hasRunningWorkLocked() {
+			float64(memUsed) >= float64(memTotal)*thawBelow && e.hasRunningWorkLocked() {
 			return "memory", fmt.Sprintf("waiting for memory: swap %.0f%% full (%s free) while RAM is %.0f%% in use",
 				100*float64(swapTotal-swapFree)/float64(swapTotal), gib(max(0, swapFree)), 100*float64(memUsed)/float64(memTotal))
 		}
@@ -1240,8 +1353,8 @@ func (e *Engine) roomFor(c *command, cpuPreempted bool, mem sysinfo.Mem, hasMem 
 		}
 	}
 	switch {
-	case e.usage.GetMemoryPressure() >= admitPressure:
-		return "pressure", fmt.Sprintf("waiting: memory pressure %.0f%%", e.usage.GetMemoryPressure())
+	case e.memPressureHolding || e.usage.GetMemoryPressure() >= admitPressure:
+		return "pressure", fmt.Sprintf("waiting: memory pressure %.0f%% (resumes under %.0f%%)", e.usage.GetMemoryPressure(), memPressureResumeAt)
 	case !cpuPreempted && e.cpu.holding && !c.cmd().Bench:
 		return "cpu", fmt.Sprintf("waiting: CPU pressure %.0f%% (peak %.0f%% in the last %s); the node holds new work until it is under %.0f%%", e.usage.GetCpuPressure(), e.cpu.peak(), cpuWindow, cpuResumeAt)
 	}
@@ -1364,24 +1477,27 @@ func hasProperty(props []string, prefix string) bool {
 	return slices.ContainsFunc(props, func(p string) bool { return strings.HasPrefix(p, prefix) })
 }
 
-// park freezes the newest running command when memory runs short, and
-// thaws the parked command first in line when there is room for it again.
-// Memory runs short when too much of it is in use, or when tasks stall
-// waiting for it (memory pressure past parkPressure) while what is in use
-// looks fine: the kernel counts file pages as available that linkers and
-// compilers have mapped and fault straight back in, so the node thrashes
-// with a quarter of its memory "available" (board 9128). While tasks stall
-// so, nothing is thawed either. Nothing is killed for memory. Parking frees memory for the commands left
-// running, so it never freezes the last of them, and with none left running
-// it thaws the first in line whatever memory says: else every command could
-// sit frozen, waiting for room that only running ones could make. A
-// measurement is never parked, but counts among those left running.
+// park freezes the lowest-priority/newest running command (outside the focus
+// session first) when memory runs short, and thaws the highest-priority /
+// focus-session / oldest-started parked command when there is genuine room for
+// it again or nothing is left running. Memory runs short when too much of it is
+// in use, or when tasks stall waiting for it (memory pressure past
+// parkPressure) while what is in use looks fine: the kernel counts file pages
+// as available that linkers and compilers have mapped and fault straight back
+// in, so the node thrashes with a quarter of its memory "available" (board
+// 9128). While memory pressure holds, nothing is thawed alongside running work.
+// Nothing is killed for memory. Parking frees memory for the commands left
+// running, so it never freezes the last of them, and with none left running it
+// thaws the first in line whatever memory says: else every command could sit
+// frozen, waiting for room that only running ones could make. A measurement is
+// never parked, but counts among those left running.
 //
-// A base build is parked last and thawed first: every workspace that wants
-// its base waits on it. And nothing waits for good: one first in line
-// longer than rotateAfter (a base build at once) trades places with the
-// newest running command, though its own swap (what parking it pushed out)
-// would never fit beside the others (board 7422).
+// Under constraint, hotbed prioritizes concrete completion over fairness:
+// same-priority running commands run to completion without round-robin rotation
+// through swap. A base build is parked last and thawed first (taking precedence
+// immediately over same-priority regular work so workspaces waiting on its base
+// unblock), and strictly higher-priority parked commands preempt lower-priority
+// running work immediately.
 func (e *Engine) park(ctx context.Context) {
 	mem, err := e.cfg.System.Meminfo()
 	if err != nil {
@@ -1400,6 +1516,8 @@ func (e *Engine) park(ctx context.Context) {
 	}
 
 	e.mu.Lock()
+	e.weighMemPressure(pressure)
+	focus := e.focusSessionLocked()
 	var runningCmds, parkedCmds []*command
 	measuring := 0
 	for _, c := range e.commands {
@@ -1416,26 +1534,30 @@ func (e *Engine) park(ctx context.Context) {
 			parkedCmds = append(parkedCmds, c)
 		}
 	}
-	// Victims first: lowest priority, work before base builds, newest first.
-	slices.SortFunc(runningCmds, compareParkVictim)
-	// First in line: highest priority, base builds before work, longest parked.
-	slices.SortFunc(parkedCmds, compareThawOrder)
+	// Victims first: lowest priority, work before base builds, non-focus
+	// sessions before the focus session, newest started first.
+	slices.SortFunc(runningCmds, func(a, b *command) int { return compareParkVictim(a, b, focus) })
+	// First in line: highest priority, base builds before work, focus session
+	// first, oldest started first.
+	slices.SortFunc(parkedCmds, func(a, b *command) int { return compareThawOrder(a, b, focus) })
 	nowTime := e.now()
-	now := nowTime.UnixMilli()
 
 	canPark := len(runningCmds) > 0 && len(runningCmds)+measuring > 1
 	// Pressure is an average over 10 s: one park shows in it only after
 	// that, so the next waits for pressureSettle.
 	stalling := pressure >= parkPressure && nowTime.Sub(e.pressureParkedAt) >= pressureSettle
 	var parkVictim, thawTarget *command
-	var parkReason, parkFeed, thawWhy string
+	var parkReason, parkFeed, preemptBy, thawWhy string
+	parkForMemory := false
 	switch {
 	case float64(mem.Used()) > total*parkAt && canPark:
 		parkVictim = runningCmds[0]
+		parkForMemory = true
 		parkReason = fmt.Sprintf("frozen at %.0f%% %s in use; its memory goes to swap until there is room", pct, of)
 		parkFeed = fmt.Sprintf("park %s · %s at %.0f%%", parkVictim.cmd().Argv, cmp.Or(mem.Domain, "memory"), pct)
 	case stalling && canPark:
 		parkVictim = runningCmds[0]
+		parkForMemory = true
 		e.pressureParkedAt = nowTime
 		parkReason = fmt.Sprintf("frozen at memory pressure %.0f%% (%.0f%% %s in use); its memory goes to swap until there is room", pressure, pct, of)
 		parkFeed = fmt.Sprintf("park %s · memory pressure %.0f%%", parkVictim.cmd().Argv, pressure)
@@ -1446,7 +1568,7 @@ func (e *Engine) park(ctx context.Context) {
 				break
 			}
 		}
-	case len(parkedCmds) > 0 && pressure < admitPressure && !e.cpu.holding && !e.isHostStarved(nowTime):
+	case len(parkedCmds) > 0 && !e.memPressureHolding && pressure < admitPressure && !e.cpu.holding && !e.isHostStarved(nowTime):
 		var first *command
 		for _, c := range parkedCmds {
 			if !e.thawBlockedByPriority(c, false, mem) {
@@ -1455,29 +1577,27 @@ func (e *Engine) park(ctx context.Context) {
 			}
 		}
 		if first != nil {
-			if float64(mem.Used()+first.cmd().SwapBytes) <= total*thawBelow &&
-				e.reservedFor(first.priority()) <= e.admitLimit() {
+			if e.canThawAlongsideLocked(first, runningCmds, mem) {
 				thawTarget = first
 			} else if len(runningCmds) > 0 {
 				victim := runningCmds[0]
-				// Never rotate out a strictly higher-priority running command,
-				// nor a same-priority base build. A strictly higher-priority
-				// parked command (or a base build) takes its turn at once.
-				canRotateVictim := victim.priority() < first.priority() ||
-					(victim.priority() == first.priority() && !victim.isFreshen())
-				wait := rotateAfter
-				if first.isFreshen() || victim.priority() < first.priority() {
-					wait = 0
-				}
-				firstWaited := time.Duration(now-first.rec.ParkedAt) * time.Millisecond
-				victimRan := time.Duration(now-victim.runningSinceMs()) * time.Millisecond
-				if canRotateVictim && firstWaited >= wait && (wait == 0 || victimRan >= wait) {
+				// Never rotate out same-priority regular work: let the running
+				// command finish instead of thrashing swap. Only preempt for a
+				// strictly higher-priority parked command or a base build
+				// (which unblocks every workspace waiting on it).
+				if victim.priority() < first.priority() {
 					parkVictim = victim
 					thawTarget = first
-					waited := firstWaited.Round(time.Second)
-					parkReason = fmt.Sprintf("frozen to give %s its turn (parked %s); its memory goes to swap until there is room", first.cmd().Id, waited)
-					parkFeed = fmt.Sprintf("park %s · %s's turn", parkVictim.cmd().Argv, first.cmd().Id)
-					thawWhy = fmt.Sprintf(", its turn: %s frozen in its place", parkVictim.cmd().Id)
+					preemptBy = first.cmd().Id
+					parkReason = fmt.Sprintf("preempted by higher-priority command %s (priority %d > %d)", first.cmd().Id, first.priority(), victim.priority())
+					parkFeed = fmt.Sprintf("park %s · preempted by %s (priority %d > %d)", parkVictim.cmd().Argv, first.cmd().Id, first.priority(), victim.priority())
+					thawWhy = fmt.Sprintf(", preempted %s", parkVictim.cmd().Id)
+				} else if victim.priority() == first.priority() && first.isFreshen() && !victim.isFreshen() {
+					parkVictim = victim
+					thawTarget = first
+					parkReason = fmt.Sprintf("frozen for base build %s; its memory goes to swap until there is room", first.cmd().Id)
+					parkFeed = fmt.Sprintf("park %s · for base build %s", parkVictim.cmd().Argv, first.cmd().Id)
+					thawWhy = fmt.Sprintf(", ahead of %s (parked)", parkVictim.cmd().Id)
 				}
 			}
 		}
@@ -1485,13 +1605,57 @@ func (e *Engine) park(ctx context.Context) {
 	e.mu.Unlock()
 
 	if parkVictim != nil {
-		if !e.parkOne(ctx, parkVictim, parkReason, parkFeed, "") {
+		if !e.parkOne(ctx, parkVictim, parkReason, parkFeed, preemptBy, parkForMemory) {
 			return
 		}
 	}
 	if thawTarget != nil {
 		e.thawOne(ctx, thawTarget, thawWhy)
 	}
+}
+
+// thawNeedBytes estimates the additional physical RAM c will fault back in
+// once thawed: at least its swapped bytes, and at least its peak reservation
+// above what is already resident in RAM. Call with e.mu held.
+func (c *command) thawNeedBytes() int64 {
+	need := c.cmd().SwapBytes
+	if peak := c.reservation() - c.residentBytes; peak > need {
+		need = peak
+	}
+	return max(int64(0), need)
+}
+
+// canThawAlongsideLocked reports whether parked command first fits in RAM
+// alongside runningCmds without triggering a park/thaw oscillation loop.
+// Call with e.mu held.
+func (e *Engine) canThawAlongsideLocked(first *command, runningCmds []*command, mem sysinfo.Mem) bool {
+	if mem.Total <= 0 {
+		return false
+	}
+	if e.reservedFor(first.priority()) > e.admitLimit() {
+		return false
+	}
+	projectedUsed := mem.Used() + first.thawNeedBytes()
+	for _, r := range runningCmds {
+		if r.residentKnown {
+			if headroom := r.reservation() - r.residentBytes; headroom > 0 {
+				projectedUsed += headroom
+			}
+		}
+	}
+	limitFrac := thawBelow
+	if first.parkedForMemory && first.lastMemoryParkCompletions == e.completions {
+		// Nothing has finished since first was parked for memory/pressure.
+		// If it already tried thawing once alongside this exact same workload
+		// and got parked again, wait for a running command to complete instead
+		// of thrashing. Even on the first park, require wide-open RAM so
+		// transient dips or file-page pressure don't immediately re-park it.
+		if first.memoryParksSameWorkload >= 2 {
+			return false
+		}
+		limitFrac = thawSameWorkloadBelow
+	}
+	return float64(projectedUsed) <= float64(mem.Total)*limitFrac
 }
 
 // canQueuedMakeProgress reports whether queued command q can realistically be
@@ -1559,15 +1723,7 @@ func (e *Engine) thawBlockedByPriority(c *command, idle bool, mem sysinfo.Mem) b
 	return e.hasHigherPriorityQueued(c.priority(), idle, mem)
 }
 
-// rotateAfter is how long a parked command waits for room before it trades
-// places with the newest running one.
-const rotateAfter = 10 * time.Minute
-
 func (c *command) isFreshen() bool { return c.cmd().Kind == "freshen" }
-
-func (c *command) runningSinceMs() int64 {
-	return max(c.cmd().GetStartedAt(), c.resumedAt)
-}
 
 // parkedAheadOfLocked counts commands currently parked for memory (not held
 // beside a measurement) that sort ahead of or equal to c in scheduling order.
@@ -1652,8 +1808,9 @@ func (e *Engine) reconcileInactiveUnit(ctx context.Context, c *command) bool {
 
 // parkOne freezes victim and pushes its memory to swap, saying why, and
 // says whether it did. preemptedBy, if non-empty, names the higher-priority
-// command that preempted victim.
-func (e *Engine) parkOne(ctx context.Context, victim *command, reason, feedText, preemptedBy string) bool {
+// command that preempted victim. forMemory records whether this park was caused
+// by memory exhaustion or memory PSI (as opposed to priority/base preemption).
+func (e *Engine) parkOne(ctx context.Context, victim *command, reason, feedText, preemptedBy string, forMemory bool) bool {
 	victim.freezeMu.Lock()
 	defer victim.freezeMu.Unlock()
 	e.mu.Lock()
@@ -1691,6 +1848,15 @@ func (e *Engine) parkOne(ctx context.Context, victim *command, reason, feedText,
 	victim.rec.Parks++
 	victim.rec.ParkedAt = now
 	victim.preemptedBy = preemptedBy
+	victim.parkedForMemory = forMemory
+	if forMemory {
+		if victim.lastMemoryParkCompletions == e.completions && victim.memoryParksSameWorkload > 0 {
+			victim.memoryParksSameWorkload++
+		} else {
+			victim.lastMemoryParkCompletions = e.completions
+			victim.memoryParksSameWorkload = 1
+		}
+	}
 	victim.reclaimed = false
 	e.saveCommand(victim, change{what: "parked", detail: reason, feed: feed(feedPark, feedText, ref("command", cmd.Id))})
 	cgroup, reclaimTarget, residentKnown := victim.rec.Cgroup, max(cmd.MemoryBytes, victim.residentBytes), victim.residentKnown
@@ -2050,10 +2216,13 @@ func (e *Engine) commitPendingThawLocked(c *command) {
 	}
 	cmd.State = running
 	cmd.Reason = ""
-	c.resumedAt = now
 	c.rec.HeldFor = ""
 	c.preemptedBy = ""
+	c.parkedForMemory = false
 	c.reclaimed = false
+	if isFocusEligible(c) {
+		e.lastFocusSession = e.focusSessionLocked()
+	}
 	cmd.Timeline = append(cmd.Timeline, &pb.CommandEvent{At: now, What: pt.ch.what, Detail: pt.ch.detail})
 	e.saveCommand(c, pt.ch)
 }
@@ -2164,12 +2333,19 @@ func (e *Engine) endBy(c *command, state pb.CommandState, code *int32, why strin
 	}
 	by.record(cmd)
 	now := e.nowMs()
+	if cmd.StartedAt != nil && !cmd.Bench && cmd.Kind != "server" {
+		e.completions++
+		if isFocusEligible(c) {
+			e.lastFocusSession = cmd.SessionId
+		}
+	}
 	cmd.State = state
 	cmd.EndedAt = &now
 	cmd.ExitCode = code
 	cmd.CpuCores = 0
 	cmd.Reason = why
 	c.preemptedBy = ""
+	c.parkedForMemory = false
 	c.reclaimed = false
 	what, detail := "exited", "exit "+codeText(code)
 	if state == cancelled {

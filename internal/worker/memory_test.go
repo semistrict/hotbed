@@ -458,11 +458,21 @@ func TestMemoryPressureParks(t *testing.T) {
 	if s := mid.cmd().State; s != parked {
 		t.Fatalf("a parked one is %v at 30%% memory pressure, want still parked", s)
 	}
+	// Hysteresis: dipping to 18% (above 12% resume threshold) still holds.
+	sys.Psi = 18
+	*now = now.Add(time.Second)
+	e.step(t.Context())
+	if s := mid.cmd().State; s != parked {
+		t.Fatalf("a parked one is %v at 18%% memory pressure (hysteresis), want still parked", s)
+	}
 	sys.Psi = 5
 	*now = now.Add(time.Second)
 	e.step(t.Context())
-	if s := young.cmd().State; s != running {
-		t.Fatalf("the first in line is %v once pressure fell, want thawed", s)
+	if s := mid.cmd().State; s != running {
+		t.Fatalf("the oldest-started parked command (mid) is %v once pressure fell, want thawed", s)
+	}
+	if s := young.cmd().State; s != parked {
+		t.Fatalf("young is %v, want still parked behind older-started mid", s)
 	}
 }
 
