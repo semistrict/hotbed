@@ -267,6 +267,7 @@ service ClusterService {
   rpc UpgradeSystem(UpgradeSystemRequest) returns (UpgradeSystemResponse) {
     option (command) = {
       name: "system upgrade"
+      waits: true
       destructive: true
       format: "{{range .nodes}}{{pad 14 .node}}  {{pad 10 .status}}{{with .cladefsdVersion}}  cladefsd={{.}}{{end}}{{if .cladefsdUpdated}}(updated){{end}}{{with .firecrackerVersion}}  firecracker={{.}}{{end}}{{if .firecrackerUpdated}}(updated){{end}}{{with .kernelVersion}}  kernel={{.}}{{end}}{{if .kernelUpdated}}(updated){{end}}  stopped={{.stoppedCommands}}  shells={{.closedShells}}  released={{.releasedWorkspaces}}{{with .error}}  err={{.}}{{end}}\n{{end}}"
     };

@@ -87,9 +87,9 @@ func TestCladefsFUSEBackendPrepareAndDeleteWorkspaceEphemeral(t *testing.T) {
 		workerDir:       tmp,
 		mountRoot:       mountRoot,
 		mountStoresRoot: mountStoresRoot,
-		store:           store,
 		wsMounts:        map[string]fuseWSMount{},
 	}
+	b.store.Store(store)
 
 	baseRef := cladefs.CellRef{Tenant: 0, Cell: 42, Version: 7}
 	cell, mntPath, err := b.PrepareWorkspace(ctx, "ws-1", baseRef, 99)

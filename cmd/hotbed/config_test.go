@@ -188,4 +188,23 @@ func TestSystemUpgradeCLI(t *testing.T) {
 	if restarts.Load() != 1 {
 		t.Fatalf("restarts after up-to-date = %d, want 1", restarts.Load())
 	}
+
+	// 4. Verify `system upgrade` is marked `waits: true` so the CLI uses the
+	// no-header-timeout stream client for large binary downloads + rolling restarts.
+	schema, err := apiSchema()
+	if err != nil {
+		t.Fatalf("apiSchema: %v", err)
+	}
+	found := false
+	for _, cmd := range schema.Commands {
+		if cmd.Name() == "system upgrade" {
+			found = true
+			if !cmd.Waits {
+				t.Fatalf("system upgrade command has Waits=false, want true")
+			}
+		}
+	}
+	if !found {
+		t.Fatal("system upgrade command not found in apiSchema")
+	}
 }

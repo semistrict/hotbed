@@ -246,7 +246,7 @@ Explicit host system runtime operations such as upgrading cladefsd, firecracker,
 
 Explicitly upgrade host cladefs components (cladefsd, firecracker, guest kernel) on one node or rolling across all online nodes one at a time. Stages and SHA-256-verifies artifacts before draining the node, stopping active commands/shells, releasing active cladefs/VM workspaces, installing binaries atomically, restarting cladefsd, and verifying health.
 
-*MCP tool: `system_upgrade`*
+*MCP tool: `system_upgrade` · waits (no short deadline)*
 
 | Argument / Flag | Env | Help |
 | --- | --- | --- |

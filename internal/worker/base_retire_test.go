@@ -145,11 +145,11 @@ func TestCladefsFUSEBackendRetiresSupersededBaseOnAdoptShared(t *testing.T) {
 
 	b := &CladefsFUSEBackend{
 		workerDir:    tmp,
-		store:        store,
 		projectBases: map[string]*vmProjectBase{},
 		sharedBases:  map[string]*pb.CladefsCell{},
 		wsMounts:     map[string]fuseWSMount{},
 	}
+	b.store.Store(store)
 	b.retirer.load(b.cacheDir())
 	b.retirer.setGrace(0)
 

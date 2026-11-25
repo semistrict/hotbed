@@ -18,6 +18,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	cladefsdv1 "github.com/semistrict/cladefs/go/cladefsd/v1"
@@ -36,7 +37,7 @@ import (
 type VMBackend struct {
 	cfg         statedir.VMConfig
 	workerDir   string
-	store       *cladefs.Store
+	store       atomic.Pointer[cladefs.Store]
 	mgr         *vm.Manager
 	rt          *runtime.GuestRuntime
 	incarnation uint64
@@ -152,7 +153,6 @@ func OpenVMBackend(ctx context.Context, workerDir string, cfg statedir.VMConfig,
 	b := &VMBackend{
 		cfg:            cfg,
 		workerDir:      workerDir,
-		store:          cstore,
 		mgr:            mgr,
 		incarnation:    inc,
 		baseImages:     map[string]cladefs.CellRef{},
@@ -161,9 +161,14 @@ func OpenVMBackend(ctx context.Context, workerDir string, cfg statedir.VMConfig,
 		sharedBases:    map[string]*pb.CladefsCell{},
 		decommissioned: map[uint64]bool{},
 	}
+	b.store.Store(cstore)
 	b.loadCachedBases()
 	b.rt = runtime.NewGuestRuntime(b)
 	return b, nil
+}
+
+func (b *VMBackend) currentStore() *cladefs.Store {
+	return b.store.Load()
 }
 
 func (b *VMBackend) configSnapshot() statedir.VMConfig {
@@ -273,9 +278,11 @@ func (b *VMBackend) saveCacheJSON(name string, v any) {
 
 // Close closes the cladefsd gRPC connection. Surviving Firecracker VMs remain
 // running in systemd units so worker upgrades/restarts do not disrupt them.
+// The store pointer stays non-nil (closed) so any racing goroutine receives a
+// clean gRPC error rather than panicking on a nil pointer.
 func (b *VMBackend) Close() error {
-	if b.store != nil {
-		return b.store.Close()
+	if st := b.currentStore(); st != nil {
+		return st.Close()
 	}
 	return nil
 }
@@ -309,7 +316,7 @@ func (b *VMBackend) HeartbeatMeta() (peerAddr string, incarnation uint64, shared
 
 // SampleObjectStore fetches cumulative cladefsd R2 object-store counters.
 func (b *VMBackend) SampleObjectStore(ctx context.Context) *pb.ObjectStoreStats {
-	return sampleCladefsObjectStore(ctx, b.store)
+	return sampleCladefsObjectStore(ctx, b.currentStore())
 }
 
 func sampleCladefsObjectStore(ctx context.Context, store *cladefs.Store) *pb.ObjectStoreStats {
@@ -471,7 +478,8 @@ func objectStoreStatsFromCounters(resp interface {
 // ApplyHeartbeat reconciles cladefs peer mesh (SetPeers) and retired-host
 // decommissioning (DecommissionHost) from HeartbeatResponse.
 func (b *VMBackend) ApplyHeartbeat(ctx context.Context, peers []string, decommission []uint64) {
-	if b.store == nil {
+	st := b.currentStore()
+	if st == nil {
 		return
 	}
 	if len(peers) > 0 && b.configSnapshot().CladefsPeerAddr != "" {
@@ -481,7 +489,7 @@ func (b *VMBackend) ApplyHeartbeat(ctx context.Context, peers []string, decommis
 		changed := !slices.Equal(b.lastPeers, sorted)
 		b.mu.Unlock()
 		if changed {
-			if err := b.store.SetPeers(ctx, sorted); err != nil {
+			if err := st.SetPeers(ctx, sorted); err != nil {
 				slog.Warn("cladefsd SetPeers failed", "peers", sorted, "err", err)
 			} else {
 				b.mu.Lock()
@@ -501,7 +509,7 @@ func (b *VMBackend) ApplyHeartbeat(ctx context.Context, peers []string, decommis
 		if done {
 			continue
 		}
-		retired, left, err := b.store.DecommissionHost(ctx, inc)
+		retired, left, err := st.DecommissionHost(ctx, inc)
 		if err != nil {
 			slog.Warn("cladefsd DecommissionHost failed", "incarnation", inc, "err", err)
 			continue
@@ -591,9 +599,9 @@ func (b *VMBackend) EnsureProvisionedBaseImage(ctx context.Context, spec baseima
 
 	rel := "baseimages/vm-" + key
 	// Clean any interrupted previous build at rel.
-	_ = b.store.DeleteCell(ctx, rel)
+	_ = b.currentStore().DeleteCell(ctx, rel)
 
-	tarPath := filepath.Join(b.store.CellRoot(), "vm-"+key+".tar")
+	tarPath := filepath.Join(b.currentStore().CellRoot(), "vm-"+key+".tar")
 	defer os.Remove(tarPath)
 	slog.Info("building Firecracker VM base image", "key", key, "image", spec.Image)
 	if err := vm.BuildGuestTar(ctx, vm.GuestImageOptions{
@@ -605,7 +613,7 @@ func (b *VMBackend) EnsureProvisionedBaseImage(ctx context.Context, spec baseima
 	}); err != nil {
 		return cladefs.CellRef{}, fmt.Errorf("build VM guest base tar: %w", err)
 	}
-	rawRef, err := b.store.ImportImage(ctx, rel, tarPath, cfg.DiskBytes)
+	rawRef, err := b.currentStore().ImportImage(ctx, rel, tarPath, cfg.DiskBytes)
 	if err != nil {
 		return cladefs.CellRef{}, fmt.Errorf("import VM base image into cladefsd: %w", err)
 	}
@@ -617,10 +625,10 @@ func (b *VMBackend) EnsureProvisionedBaseImage(ctx context.Context, spec baseima
 		inst, err := b.mgr.Start(ctx, vm.LaunchSpec{
 			ID:            provID,
 			CellHostPath:  rawRef.HostPath,
-			CladefsVMSock: b.store.VMSock(),
+			CladefsVMSock: b.currentStore().VMSock(),
 		})
 		if err != nil {
-			_ = b.store.DeleteCell(ctx, rel)
+			_ = b.currentStore().DeleteCell(ctx, rel)
 			return cladefs.CellRef{}, fmt.Errorf("boot provisioning VM %s: %w", provID, err)
 		}
 		_ = inst
@@ -630,23 +638,23 @@ func (b *VMBackend) EnsureProvisionedBaseImage(ctx context.Context, spec baseima
 		}, 0, 0)
 		stopErr := b.mgr.Stop(ctx, provID, true)
 		if runErr != nil {
-			_ = b.store.DeleteCell(ctx, rel)
+			_ = b.currentStore().DeleteCell(ctx, rel)
 			return cladefs.CellRef{}, fmt.Errorf("provision VM base image %s: %w", key, runErr)
 		}
 		if stopErr != nil {
-			_ = b.store.DeleteCell(ctx, rel)
+			_ = b.currentStore().DeleteCell(ctx, rel)
 			return cladefs.CellRef{}, fmt.Errorf("stop provisioning VM %s: %w", provID, stopErr)
 		}
 	}
 
-	ver, err := b.store.MakeVersionAndSync(ctx, rel, 2)
+	ver, err := b.currentStore().MakeVersionAndSync(ctx, rel, 2)
 	if err != nil {
-		_ = b.store.DeleteCell(ctx, rel)
+		_ = b.currentStore().DeleteCell(ctx, rel)
 		return cladefs.CellRef{}, fmt.Errorf("version & sync VM base image %s to R2: %w", key, err)
 	}
 	// Drop the local base cell directory now that its version is durable in R2;
 	// subsequent forks read from R2 via the local SSD CLADEFSD_PART_CACHE.
-	_ = b.store.DropCell(ctx, rel)
+	_ = b.currentStore().DropCell(ctx, rel)
 	rawRef.Version = ver
 	b.mu.Lock()
 	if b.baseImages == nil {
@@ -704,7 +712,7 @@ func (b *VMBackend) EnsureProjectBase(
 	if cur != nil && cur.Recipe == recipe && cur.Ref.Cell > 0 && cur.Ref.Version > 0 {
 		out := *cur
 		b.mu.Unlock()
-		b.retirer.sweep(ctx, b.store, "vm-retire", time.Now())
+		b.retirer.sweep(ctx, b.currentStore(), "vm-retire", time.Now())
 		return &out, nil
 	}
 	var prevBase *vmProjectBase
@@ -750,23 +758,23 @@ func (b *VMBackend) EnsureProjectBase(
 		}
 		b.mu.Unlock()
 		b.saveCacheJSON("project-"+p.GetName()+".json", adopted)
-		b.retirer.sweep(ctx, b.store, "vm-retire", time.Now())
+		b.retirer.sweep(ctx, b.currentStore(), "vm-retire", time.Now())
 		return adopted, nil
 	}
 
 	baseID := fmt.Sprintf("%s-vm-%s", p.GetName(), recipe[:8])
 	rel := filepath.Join("bases", p.GetName(), baseID)
-	_ = b.store.DeleteCell(ctx, rel)
+	_ = b.currentStore().DeleteCell(ctx, rel)
 
 	// Prefer incremental fork from the previous warm project base when compatible.
 	var forkRef cladefs.CellRef
 	var err error
 	if prevBase != nil {
-		forkRef, err = b.store.ForkVersion(ctx, prevBase.Ref, rel, false)
+		forkRef, err = b.currentStore().ForkVersion(ctx, prevBase.Ref, rel, false)
 		if err != nil {
 			slog.Warn("incremental VM project base fork failed; falling back to cold base",
 				"project", p.GetName(), "prevBase", prevBase.BaseID, "err", err)
-			_ = b.store.DeleteCell(ctx, rel)
+			_ = b.currentStore().DeleteCell(ctx, rel)
 			prevBase = nil
 		}
 	}
@@ -775,7 +783,7 @@ func (b *VMBackend) EnsureProjectBase(
 		if berr != nil {
 			return nil, berr
 		}
-		forkRef, err = b.store.ForkVersion(ctx, baseImgRef, rel, false)
+		forkRef, err = b.currentStore().ForkVersion(ctx, baseImgRef, rel, false)
 		if err != nil {
 			return nil, fmt.Errorf("fork VM project base %s: %w", baseID, err)
 		}
@@ -785,9 +793,9 @@ func (b *VMBackend) EnsureProjectBase(
 	if _, err := b.mgr.Start(ctx, vm.LaunchSpec{
 		ID:            vmID,
 		CellHostPath:  forkRef.HostPath,
-		CladefsVMSock: b.store.VMSock(),
+		CladefsVMSock: b.currentStore().VMSock(),
 	}); err != nil {
-		_ = b.store.DeleteCell(ctx, rel)
+		_ = b.currentStore().DeleteCell(ctx, rel)
 		return nil, fmt.Errorf("boot project base VM %s: %w", vmID, err)
 	}
 
@@ -852,22 +860,22 @@ printf '::hotbed-head:: %s %%s\n' "$(git -C %q rev-parse HEAD)"
 	}
 	stopErr := b.mgr.Stop(ctx, vmID, true)
 	if runErr != nil {
-		_ = b.store.DeleteCell(ctx, rel)
+		_ = b.currentStore().DeleteCell(ctx, rel)
 		return nil, fmt.Errorf("freshen VM project base %s: %w", baseID, runErr)
 	}
 	if stopErr != nil {
-		_ = b.store.DeleteCell(ctx, rel)
+		_ = b.currentStore().DeleteCell(ctx, rel)
 		return nil, fmt.Errorf("stop project base VM %s: %w", vmID, stopErr)
 	}
 
-	ver, err := b.store.MakeVersionAndSync(ctx, rel, 2)
+	ver, err := b.currentStore().MakeVersionAndSync(ctx, rel, 2)
 	if err != nil {
-		_ = b.store.DeleteCell(ctx, rel)
+		_ = b.currentStore().DeleteCell(ctx, rel)
 		return nil, fmt.Errorf("sync VM project base %s to R2: %w", baseID, err)
 	}
 	// Drop the local project base cell directory now that it is durable in R2;
 	// local SSD stays strictly a cache (CLADEFSD_PART_CACHE) + active workspaces.
-	_ = b.store.DropCell(ctx, rel)
+	_ = b.currentStore().DropCell(ctx, rel)
 	forkRef.Version = ver
 
 	repoHeads := map[string]string{}
@@ -906,7 +914,7 @@ printf '::hotbed-head:: %s %%s\n' "$(git -C %q rev-parse HEAD)"
 	if superseded != nil && superseded.Ref.Cell > 0 && superseded.Ref.Cell != forkRef.Cell {
 		b.retirer.enqueue(superseded.Ref.Tenant, superseded.Ref.Cell, superseded.BaseID, time.Now())
 	}
-	b.retirer.sweep(ctx, b.store, "vm-retire", time.Now())
+	b.retirer.sweep(ctx, b.currentStore(), "vm-retire", time.Now())
 	slog.Info("VM project base built and published to R2",
 		"project", p.GetName(), "baseId", baseID, "incremental", prevBase != nil,
 		"steps", len(stepsToRun), "cell", forkRef.Cell, "version", forkRef.Version)
@@ -919,7 +927,7 @@ printf '::hotbed-head:: %s %%s\n' "$(git -C %q rev-parse HEAD)"
 // big builds never hit R2 upload lag bounds), and boots the Firecracker microVM.
 func (b *VMBackend) PrepareWorkspace(ctx context.Context, wsID string, baseRef cladefs.CellRef, fencingToken uint64) (*pb.CladefsCell, error) {
 	rel := "ws/" + wsID
-	wsRef, err := b.store.ForkVersion(ctx, baseRef, rel, true)
+	wsRef, err := b.currentStore().ForkVersion(ctx, baseRef, rel, true)
 	if err != nil {
 		return nil, fmt.Errorf("fork ephemeral cladefs workspace %s: %w", wsID, err)
 	}
@@ -928,7 +936,7 @@ func (b *VMBackend) PrepareWorkspace(ctx context.Context, wsID string, baseRef c
 	b.mu.Unlock()
 
 	if _, err := b.EnsureVM(ctx, wsID); err != nil {
-		_ = b.store.DeleteCell(ctx, rel)
+		_ = b.currentStore().DeleteCell(ctx, rel)
 		b.mu.Lock()
 		delete(b.wsCells, wsID)
 		b.mu.Unlock()
@@ -948,7 +956,7 @@ func (b *VMBackend) DeleteWorkspaceCell(ctx context.Context, wsID string) error 
 	b.mu.Lock()
 	delete(b.wsCells, wsID)
 	b.mu.Unlock()
-	return b.store.DeleteCell(ctx, "ws/"+wsID)
+	return b.currentStore().DeleteCell(ctx, "ws/"+wsID)
 }
 
 // EnsureVM implements runtime.GuestResolver.
@@ -967,7 +975,7 @@ func (b *VMBackend) EnsureVM(ctx context.Context, wsID string) (*guestd.Client, 
 	cellPath := ref.HostPath
 	if !ok || cellPath == "" {
 		var err error
-		cellPath, err = b.store.CellPath("ws/" + wsID)
+		cellPath, err = b.currentStore().CellPath("ws/" + wsID)
 		if err != nil {
 			return nil, err
 		}
@@ -975,7 +983,7 @@ func (b *VMBackend) EnsureVM(ctx context.Context, wsID string) (*guestd.Client, 
 	inst, err := b.mgr.Start(ctx, vm.LaunchSpec{
 		ID:            wsID,
 		CellHostPath:  cellPath,
-		CladefsVMSock: b.store.VMSock(),
+		CladefsVMSock: b.currentStore().VMSock(),
 	})
 	if err != nil {
 		return nil, err
@@ -1029,6 +1037,8 @@ func (b *VMBackend) SetKernelPath(p string) {
 
 // StopAllForUpgrade gracefully stops and syncs every tracked Firecracker VM and
 // closes the cladefsd gRPC connection prior to a disruptive cladefsd restart.
+// The store pointer stays non-nil (closed) so any racing background operation
+// receives a clean gRPC error instead of panicking on a nil pointer.
 func (b *VMBackend) StopAllForUpgrade(ctx context.Context) error {
 	var firstErr error
 	if b.mgr != nil {
@@ -1040,10 +1050,8 @@ func (b *VMBackend) StopAllForUpgrade(ctx context.Context) error {
 	}
 	b.mu.Lock()
 	b.wsCells = map[string]cladefs.CellRef{}
-	st := b.store
-	b.store = nil
 	b.mu.Unlock()
-	if st != nil {
+	if st := b.currentStore(); st != nil {
 		if err := st.Close(); err != nil && firstErr == nil {
 			firstErr = err
 		}
@@ -1069,15 +1077,14 @@ func (b *VMBackend) ReconnectCladefs(ctx context.Context) (uint64, error) {
 	if err != nil {
 		return 0, err
 	}
+	old := b.store.Swap(st)
 	b.mu.Lock()
-	old := b.store
-	b.store = st
 	b.incarnation = inc
 	prevPeers := slices.Clone(b.lastPeers)
 	b.lastPeers = nil
 	b.decommissioned = map[uint64]bool{}
 	b.mu.Unlock()
-	if old != nil {
+	if old != nil && old != st {
 		_ = old.Close()
 	}
 	if len(prevPeers) > 0 {

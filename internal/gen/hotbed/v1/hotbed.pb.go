@@ -29520,7 +29520,7 @@ const file_hotbed_v1_hotbed_proto_rawDesc = "" +
 	"\x13MEMORY_ORDER_NEWEST\x10\x02\x12\x17\n" +
 	"\x13MEMORY_ORDER_OLDEST\x10\x03\x12\x18\n" +
 	"\x14MEMORY_ORDER_UPDATED\x10\x04\x12\x15\n" +
-	"\x11MEMORY_ORDER_SLUG\x10\x052\xd34\n" +
+	"\x11MEMORY_ORDER_SLUG\x10\x052\xd54\n" +
 	"\x0eClusterService\x127\n" +
 	"\x04Join\x12\x16.hotbed.v1.JoinRequest\x1a\x17.hotbed.v1.JoinResponse\x12I\n" +
 	"\n" +
@@ -29601,9 +29601,9 @@ const file_hotbed_v1_hotbed_proto_rawDesc = "" +
 	"config set2\b\n" +
 	"\x06configbm{{if .node}}{{.node}}{{else}}defaults{{end}}  rev={{.revision}}{{with .defaultRuntime}}  runtime={{.}}{{end}}\x12\xab\x01\n" +
 	"\x12DeleteWorkerConfig\x12$.hotbed.v1.DeleteWorkerConfigRequest\x1a%.hotbed.v1.DeleteWorkerConfigResponse\"H\x82\xb5\x18D\n" +
-	"\tconfig rmX\x01b5{{if .node}}{{.node}}{{else}}defaults{{end}}  removed\x12\xae\x04\n" +
-	"\rUpgradeSystem\x12\x1f.hotbed.v1.UpgradeSystemRequest\x1a .hotbed.v1.UpgradeSystemResponse\"\xd9\x03\x82\xb5\x18\xd4\x03\n" +
-	"\x0esystem upgradeX\x01b\xbf\x03{{range .nodes}}{{pad 14 .node}}  {{pad 10 .status}}{{with .cladefsdVersion}}  cladefsd={{.}}{{end}}{{if .cladefsdUpdated}}(updated){{end}}{{with .firecrackerVersion}}  firecracker={{.}}{{end}}{{if .firecrackerUpdated}}(updated){{end}}{{with .kernelVersion}}  kernel={{.}}{{end}}{{if .kernelUpdated}}(updated){{end}}  stopped={{.stoppedCommands}}  shells={{.closedShells}}  released={{.releasedWorkspaces}}{{with .error}}  err={{.}}{{end}}\n" +
+	"\tconfig rmX\x01b5{{if .node}}{{.node}}{{else}}defaults{{end}}  removed\x12\xb0\x04\n" +
+	"\rUpgradeSystem\x12\x1f.hotbed.v1.UpgradeSystemRequest\x1a .hotbed.v1.UpgradeSystemResponse\"\xdb\x03\x82\xb5\x18\xd6\x03\n" +
+	"\x0esystem upgradeH\x01X\x01b\xbf\x03{{range .nodes}}{{pad 14 .node}}  {{pad 10 .status}}{{with .cladefsdVersion}}  cladefsd={{.}}{{end}}{{if .cladefsdUpdated}}(updated){{end}}{{with .firecrackerVersion}}  firecracker={{.}}{{end}}{{if .firecrackerUpdated}}(updated){{end}}{{with .kernelVersion}}  kernel={{.}}{{end}}{{if .kernelUpdated}}(updated){{end}}  stopped={{.stoppedCommands}}  shells={{.closedShells}}  released={{.releasedWorkspaces}}{{with .error}}  err={{.}}{{end}}\n" +
 	"{{end}}\x1a\xf7\x03\x82\xb5\x18\x8c\x01\n" +
 	"\aproject\x12\x80\x01Projects: what sessions work on and questions are about, each one or more repos (add, rm-repo, ls, show, bases, rebuild, hosts).\x82\xb5\x18=\n" +
 	"\x04repo\x125Repos the cluster keeps built bases of (add, ls, rm).\x82\xb5\x18I\n" +

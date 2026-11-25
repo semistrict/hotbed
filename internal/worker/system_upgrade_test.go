@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/semistrict/hotbed/internal/api"
+	"github.com/semistrict/hotbed/internal/cladefs"
 	"github.com/semistrict/hotbed/internal/fake"
 	pb "github.com/semistrict/hotbed/internal/gen/hotbed/v1"
 )
@@ -333,5 +334,30 @@ func TestUpgradeSystemDryRunAndFullLifecycle(t *testing.T) {
 	}
 	if adm := eng.admission(); adm.GetHolding() && strings.Contains(adm.GetReason(), "upgrading cladefs") {
 		t.Fatalf("admission still holding for system upgrade after completion: %+v", adm)
+	}
+}
+
+// Regression test: StopAllForUpgrade and Close must never nil out the
+// cladefs.Store pointer on VMBackend or CladefsFUSEBackend, so racing
+// background operations (like EnsureProjectBase cleanup calling DeleteCell)
+// receive a clean error rather than panicking on a nil *cladefs.Store.
+func TestBackendStoreRemainsNonNilAcrossStopAllForUpgrade(t *testing.T) {
+	st := &cladefs.Store{}
+	vmb := &VMBackend{wsCells: map[string]cladefs.CellRef{}}
+	vmb.store.Store(st)
+	if err := vmb.StopAllForUpgrade(t.Context()); err != nil {
+		t.Fatalf("VMBackend.StopAllForUpgrade: %v", err)
+	}
+	if got := vmb.currentStore(); got != st {
+		t.Fatalf("VMBackend.currentStore() after StopAllForUpgrade = %v, want non-nil %p", got, st)
+	}
+
+	fb := &CladefsFUSEBackend{wsMounts: map[string]fuseWSMount{}}
+	fb.store.Store(st)
+	if err := fb.StopAllForUpgrade(t.Context()); err != nil {
+		t.Fatalf("CladefsFUSEBackend.StopAllForUpgrade: %v", err)
+	}
+	if got := fb.currentStore(); got != st {
+		t.Fatalf("CladefsFUSEBackend.currentStore() after StopAllForUpgrade = %v, want non-nil %p", got, st)
 	}
 }
