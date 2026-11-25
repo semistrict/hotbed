@@ -121,6 +121,9 @@ func TestCladefsFUSEBackendPrepareAndDeleteWorkspaceEphemeral(t *testing.T) {
 	if len(mnt.attachReqs) != 1 || mnt.attachReqs[0].GetCell() != 101 {
 		t.Fatalf("MountAttach requests = %+v, want cell 101", mnt.attachReqs)
 	}
+	if mnt.attachReqs[0].UploadIntervalMs != nil {
+		t.Fatalf("ephemeral workspace MountAttach UploadIntervalMs = %v, want nil", *mnt.attachReqs[0].UploadIntervalMs)
+	}
 	if cell.GetCell() != 101 {
 		t.Fatalf("returned cell = %d, want 101", cell.GetCell())
 	}

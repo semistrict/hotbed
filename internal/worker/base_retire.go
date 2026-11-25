@@ -14,8 +14,9 @@ import (
 )
 
 const (
-	defaultBaseRetireGrace = 5 * time.Minute
-	retiredBasesFile       = "retired-bases.json"
+	defaultBaseRetireGrace  = 5 * time.Minute
+	retiredBasesFile        = "retired-bases.json"
+	baseBuildUploadInterval = 15 * time.Second
 )
 
 type retiredBase struct {
@@ -30,6 +31,7 @@ type retiredBase struct {
 // cell head is marked deleted for cladefs-gc (hotbed question 537).
 type baseRetirer struct {
 	mu       sync.Mutex
+	sweepMu  sync.Mutex
 	grace    time.Duration // <=0 uses defaultBaseRetireGrace; set explicit tiny/negative via override
 	graceSet bool
 	cacheDir string
@@ -108,11 +110,16 @@ func (r *baseRetirer) enqueue(tenant, cell uint64, baseID string, now time.Time)
 }
 
 // sweep deletes any pending retired base cells whose grace window has elapsed.
-// Cells that fail transiently stay queued for the next sweep.
+// Cells that fail transiently stay queued for the next sweep. Concurrent sweeps
+// return immediately so two callers never collide on the same staging directory.
 func (r *baseRetirer) sweep(ctx context.Context, store *cladefs.Store, stagingPrefix string, now time.Time) {
 	if store == nil {
 		return
 	}
+	if !r.sweepMu.TryLock() {
+		return
+	}
+	defer r.sweepMu.Unlock()
 	r.mu.Lock()
 	var due []retiredBase
 	for _, p := range r.pending {
@@ -151,4 +158,34 @@ func (r *baseRetirer) sweep(ctx context.Context, store *cladefs.Store, stagingPr
 	r.pending = kept
 	r.saveLocked()
 	r.mu.Unlock()
+}
+
+type supersededBaseImage struct {
+	key string
+	ref cladefs.CellRef
+}
+
+// collectSupersededBaseImages removes every cached base image other than keepKey
+// (with a distinct non-zero cell ID) from baseImages and returns them for
+// cache-file cleanup and deferred R2 retirement. Caller must hold the map lock.
+func collectSupersededBaseImages(baseImages map[string]cladefs.CellRef, keepKey string, keepCell uint64) []supersededBaseImage {
+	var out []supersededBaseImage
+	for oldKey, oldRef := range baseImages {
+		if oldKey != keepKey && oldRef.Cell > 0 && oldRef.Cell != keepCell {
+			out = append(out, supersededBaseImage{key: oldKey, ref: oldRef})
+			delete(baseImages, oldKey)
+		}
+	}
+	return out
+}
+
+// retireSupersededBaseImages removes stale baseimage-<key>.json cache files and
+// enqueues their R2 cells for deferred deletion after the grace window.
+func retireSupersededBaseImages(cacheDir string, superseded []supersededBaseImage, retirer *baseRetirer, now time.Time) {
+	for _, old := range superseded {
+		if cacheDir != "" {
+			_ = os.Remove(filepath.Join(cacheDir, "baseimage-"+old.key+".json"))
+		}
+		retirer.enqueue(old.ref.Tenant, old.ref.Cell, "baseimage-"+old.key, now)
+	}
 }
