@@ -589,9 +589,31 @@ Proxy a GitHub REST or GraphQL API request through the controller using its stor
 
 Cross-agent memories and learned rules shared across sessions and machines.
 
+### `hotbed memory add`
+
+Save a new memory or supersede/consolidate existing memories (--supersede ID). Automatically approved and active immediately. Defaults to the active session's project; pass --global for cross-project learnings. When --mode is omitted, omitting --body saves a short always-on rule (<= 240 chars) and passing --body/--body-file saves an on-demand playbook fetched with `hotbed memory get`.
+
+*MCP tool: `memory_add` · uses `-s/--session`*
+
+| Argument / Flag | Env | Help |
+| --- | --- | --- |
+| `--slug` |  | Lowercase kebab-case identifier, e.g. "subagent-model-neon" (max 64 chars). |
+| `--title` |  | Short human title (optional; max 120 chars). |
+| `--summary` |  | Compact in-context component: the complete rule for ALWAYS mode (<= 240 chars), or a 1-line description + when-to-read trigger for ON_DEMAND mode (<= 280 chars). |
+| `--body` |  | Full markdown details fetched via `hotbed memory get` (required for ON_DEMAND, optional for ALWAYS; max 64 KiB). |
+| `--mode` |  | Delivery mode: always (inline rule on session start) or on_demand (index on session start, full body fetched on demand). |
+| `--tag` |  | Short lowercase tags for filtering and search (repeatable). |
+| `--global` |  | Propose as a global memory (applies across all projects and machines). |
+| `-p`, `--project` |  | Project to scope this memory to (default: the active session's project). |
+| `--repo` |  | Optional repo within the project (default: this checkout's remote if held by the project). |
+| `--supersede` |  | Existing approved memory IDs this proposal updates or consolidates (repeatable). |
+| `--rationale` |  | Why this learning is being proposed (e.g. user correction or incident). |
+| `--model` |  | Exact model ID proposing this memory (optional). |
+| `--body-file` |  | Path to a markdown file for body, or "-" to read from stdin (local). |
+
 ### `hotbed memory propose`
 
-Create a new memory or supersede/consolidate existing memories (--supersede ID). Automatically approved and active immediately. Defaults to the active session's project; pass --global for cross-project learnings. Use --mode always for short guardrails (<= 240 chars) or --mode on_demand (default) for detailed playbooks fetched with `hotbed memory get`.
+Alias for `hotbed memory add`.
 
 *MCP tool: `memory_propose` · uses `-s/--session`*
 

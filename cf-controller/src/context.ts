@@ -878,20 +878,19 @@ export function setupStepsReminder(p?: Project | null): string {
 }
 
 export const MEMORY_FAILURE_REMINDER =
-	'Reminder: if this failure revealed a reusable fix, quirk, or gotcha, save it as a memory (`hotbed memory propose --slug SLUG --summary "..."`, MCP: `memory_propose`; check `hotbed memory ls` first).';
+	'Reminder: if this failure revealed a reusable fix, quirk, or gotcha, save it with `hotbed memory add --slug SLUG --summary "..."` (MCP: `memory_add`; add `--body "..."` for long notes, `--global` for cross-project rules).';
 
 export const MEMORY_FEEDBACK_REMINDER =
-	'Reminder: if this user answer or review feedback reflects a standing preference, convention, or pitfall, save it as a memory (`hotbed memory propose --slug SLUG --summary "..."`, MCP: `memory_propose`; check `hotbed memory ls` first).';
+	'Reminder: if this user answer or review feedback reflects a standing preference, convention, or pitfall, save it with `hotbed memory add --slug SLUG --summary "..."` (MCP: `memory_add`; pass `--global` if cross-project).';
 
 export const MEMORY_FIX_REMINDER =
-	'Reminder: if this defect exposed a reusable pitfall or invariant, save it as a memory (`hotbed memory propose --slug SLUG --summary "..."`, MCP: `memory_propose`; check `hotbed memory ls` first).';
+	'Reminder: if this defect exposed a reusable pitfall or invariant, save it with `hotbed memory add --slug SLUG --summary "..."` (MCP: `memory_add`).';
+
+export const MEMORY_SESSION_END_REMINDER =
+	'Before wrapping up: if this session uncovered a reusable gotcha, tooling quirk, or user correction, save it with `hotbed memory add --slug SLUG --summary "..." [--global] [--body "..."]` (MCP: `memory_add`).';
 
 export function memorySavingReminder(): string {
-	return (
-		'Reminder: keep saving reusable lessons as memories (`hotbed memory propose --slug SLUG --summary "..." [--body "..." | --mode always] [--global]`, MCP: `memory_propose`) ' +
-		"whenever something goes wrong (a failed command/build, tricky bug, or repo/tooling quirk) or the user corrects you. " +
-		"Check `hotbed memory ls` first and use `--supersede ID` to refine existing memories."
-	);
+	return 'Memories: save reusable gotchas, tooling quirks, and user corrections with `hotbed memory add --slug SLUG --summary "..." [--global] [--body "..."]` (MCP: `memory_add`).';
 }
 
 export function sessionStartReminder(p?: Project | null): string {

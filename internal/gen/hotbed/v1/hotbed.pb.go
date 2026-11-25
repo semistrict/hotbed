@@ -31941,10 +31941,14 @@ const file_hotbed_v1_hotbed_proto_rawDesc = "" +
 	"\n" +
 	"auth tokenP\x01bM{{.host}}/{{.repository}}  credential={{.credential}}  expires={{.expiresAt}}\x90\x02\x02\x12p\n" +
 	"\x0eProxyGitHubAPI\x12 .hotbed.v1.ProxyGitHubAPIRequest\x1a!.hotbed.v1.ProxyGitHubAPIResponse\"\x19\x82\xb5\x18\x15\n" +
-	"\bauth apib\t{{.body}}2\xed\x17\n" +
-	"\rMemoryService\x12\xd5\x02\n" +
-	"\rProposeMemory\x12\x1f.hotbed.v1.ProposeMemoryRequest\x1a\x11.hotbed.v1.Memory\"\x8f\x02\x82\xb5\x18\x8a\x02\n" +
-	"\x0ememory propose\x18\x01:\x15LoadProposeMemoryBodyb\xde\x01#{{.id}}  {{state .state}}  rev={{.revision}}  [{{if .project}}{{.project}}{{else}}global{{end}}] {{with .content}}{{.slug}}  ({{state .mode}}){{end}}{{if .cockpitUrl}}\n" +
+	"\bauth apib\t{{.body}}2\x98\x1a\n" +
+	"\rMemoryService\x12\x80\x05\n" +
+	"\rProposeMemory\x12\x1f.hotbed.v1.ProposeMemoryRequest\x1a\x11.hotbed.v1.Memory\"\xba\x04\x82\xb5\x18\x86\x02\n" +
+	"\n" +
+	"memory add\x18\x01:\x15LoadProposeMemoryBodyb\xde\x01#{{.id}}  {{state .state}}  rev={{.revision}}  [{{if .project}}{{.project}}{{else}}global{{end}}] {{with .content}}{{.slug}}  ({{state .mode}}){{end}}{{if .cockpitUrl}}\n" +
+	"{{.cockpitUrl}}{{end}}{{with .reminder}}\n" +
+	"{{.}}{{end}}\x82\xb5\x18\xaa\x02\n" +
+	"\x0ememory propose\x12\x1eAlias for `hotbed memory add`.\x18\x01:\x15LoadProposeMemoryBodyb\xde\x01#{{.id}}  {{state .state}}  rev={{.revision}}  [{{if .project}}{{.project}}{{else}}global{{end}}] {{with .content}}{{.slug}}  ({{state .mode}}){{end}}{{if .cockpitUrl}}\n" +
 	"{{.cockpitUrl}}{{end}}{{with .reminder}}\n" +
 	"{{.}}{{end}}\x12\xcb\x02\n" +
 	"\fListMemories\x12\x1e.hotbed.v1.ListMemoriesRequest\x1a\x1f.hotbed.v1.ListMemoriesResponse\"\xf9\x01\x82\xb5\x18\xf1\x01\n" +

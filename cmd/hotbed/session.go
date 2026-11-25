@@ -549,7 +549,7 @@ func waitReady(ctx context.Context, w workerClients, ws *pb.Workspace, stderr io
 	}
 	if ws.State == pb.WorkspaceState_WORKSPACE_STATE_FAILED {
 		return nil, api.Errorf(api.CodeWorkspaceFailed, "workspace %s failed: %s", ws.Id, ws.Reason).
-			WithSuggestion("fix the failing step (hotbed step ls, then hotbed step add), then run again; if it uncovered a reusable quirk, save it with `hotbed memory propose`")
+			WithSuggestion("fix the failing step (hotbed step ls, then hotbed step add), then run again; if it uncovered a reusable quirk, save it with `hotbed memory add --slug SLUG --summary \"...\"`")
 	}
 	return ws, nil
 }
@@ -982,7 +982,6 @@ func followStatus(id string, c *pb.Command, stderr io.Writer) (int, error) {
 		return 0, api.Errorf(api.CodeInternal, "%s returned unspecified state", id)
 	case strings.HasPrefix(c.Reason, "killed by the OOM killer"):
 		fmt.Fprintf(stderr, "hotbed: %s: %s\n", id, c.Reason)
-		printMemoryFailureHint(stderr)
 		if c.ExitCode != nil && *c.ExitCode > 0 {
 			return int(*c.ExitCode), nil
 		}
@@ -990,7 +989,6 @@ func followStatus(id string, c *pb.Command, stderr io.Writer) (int, error) {
 	case strings.HasPrefix(c.Reason, "killed by signal "):
 		// Report it the way a shell would: 128 plus the signal.
 		fmt.Fprintf(stderr, "hotbed: %s: %s\n", id, c.Reason)
-		printMemoryFailureHint(stderr)
 		sigFields := strings.Fields(strings.TrimPrefix(c.Reason, "killed by signal "))
 		sig := 0
 		if len(sigFields) > 0 {
@@ -1003,20 +1001,11 @@ func followStatus(id string, c *pb.Command, stderr io.Writer) (int, error) {
 		}
 		return 0, nil
 	case c.ExitCode != nil && *c.ExitCode > 0:
-		printMemoryFailureHint(stderr)
 		return int(*c.ExitCode), nil
 	case c.State == pb.CommandState_COMMAND_STATE_CANCELLED:
 		return 0, api.Errorf(api.CodeInternal, "%s was cancelled: %s", id, c.Reason)
 	default:
 		return 0, api.Errorf(api.CodeInternal, "%s failed: %s", id, c.Reason)
-	}
-}
-
-const memoryFailureHint = "hotbed: reminder: if this failure reveals a reusable fix, quirk, or gotcha, save it with `hotbed memory propose --slug SLUG --summary \"...\"` (check `hotbed memory ls` first)\n"
-
-func printMemoryFailureHint(stderr io.Writer) {
-	if stderr != nil {
-		fmt.Fprint(stderr, memoryFailureHint)
 	}
 }
 

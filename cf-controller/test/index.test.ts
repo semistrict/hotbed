@@ -693,11 +693,11 @@ describe("Cloudflare Workers single-DO hotbed controller", () => {
 			sessionId: sess.id,
 			fix: { commit: "c".repeat(40), notes: "added rate limit", locations: [] },
 		});
-		expect(decidedFixed.reminder).toContain("hotbed memory propose");
+		expect(decidedFixed.reminder).toContain("hotbed memory add");
 		expect(decidedFixed.findings[0].decided?.model).toBe("claude-opus-4-6");
 		const revResponses = await owner.reviews.listResponses({ reviewId: rev.id, after: 0n });
 		expect(revResponses.responses.length).toBe(1);
-		expect(revResponses.reminder).toContain("hotbed memory propose");
+		expect(revResponses.reminder).toContain("hotbed memory add");
 		const finished = await owner.reviews.finishReview({
 			id: rev.id,
 			sessionId: sess.id,
@@ -979,7 +979,40 @@ describe("Cloudflare Workers single-DO hotbed controller", () => {
 		expect(s2.memories?.always.map((e) => e.slug)).toEqual(["use-neon"]);
 		expect(s2.memories?.onDemand.map((e) => e.slug)).toEqual(["build-tips"]);
 		expect(s2.memories?.totalApproved).toBe(2);
-		expect(s2.reminder).toContain("hotbed memory propose");
+		expect(s2.reminder).toContain("hotbed memory add");
+
+		// Omitting mode defaults to ALWAYS when body is empty and ON_DEMAND when body is set.
+		const mAutoAlways = await owner.memories.proposeMemory({
+			sessionId: s1.id,
+			content: { slug: "auto-always-rule", summary: "Concise inline rule without --mode." },
+		});
+		expect(mAutoAlways.content?.mode).toBe(MemoryMode.ALWAYS);
+		const mAutoOnDemand = await owner.memories.proposeMemory({
+			sessionId: s1.id,
+			content: {
+				slug: "auto-on-demand-playbook",
+				summary: "Trigger line without --mode.",
+				body: "Full playbook body.",
+			},
+		});
+		expect(mAutoOnDemand.content?.mode).toBe(MemoryMode.ON_DEMAND);
+		await expect(
+			owner.memories.proposeMemory({
+				sessionId: s1.id,
+				content: {
+					slug: "explicit-on-demand-no-body",
+					summary: "Explicit on_demand still requires body.",
+					mode: MemoryMode.ON_DEMAND,
+				},
+			}),
+		).rejects.toThrow(/require --body/);
+		await owner.memories.deleteMemory({ id: mAutoAlways.id });
+		await owner.memories.deleteMemory({ id: mAutoOnDemand.id });
+
+		// Ending a session returns a wrap-up memory reminder.
+		const sEnd = await owner.sessions.startSession({ project: "mem-proj" });
+		const sEnded = await owner.sessions.endSession({ id: sEnd.id });
+		expect(sEnded.reminder).toContain("hotbed memory add");
 
 		// Editing content on a project memory without passing repo preserves its repo!
 		const m2Edited = await owner.memories.reviseMemory({

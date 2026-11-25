@@ -14,14 +14,16 @@ you changed.
 ## The loop
 
 ```sh
-S=$(hotbed session start | jq -r .data.id)       # e.g. brave-otter (bound to T3CODE_THREAD_ID or this git worktree in ~/.hotbed/sessions.json)
+hotbed session start                             # prints active memories & binds to T3CODE_THREAD_ID / worktree
 hotbed run -- go vet ./...                       # short work: placed on a node, syncs your edits there, runs, prints output, exits with its status
                                                  # (124 if still running after 10 min: paused, see Time limits)
 hotbed run --detach -- cargo nextest run         # long work: prints the command's ID and returns
 hotbed poll                                      # what happened since the last poll: commands ended, answers, reviews (up to 2 min)
 hotbed logs -n 50 CMD                            # its output, once poll says it exited
-hotbed session end
+hotbed session end                               # ends session and reminds you to save any lessons learned
 ```
+
+Do not pipe `hotbed session start` into `jq` or swallow its stdout: it prints active memories directly and auto-binds the session so `-s` is not needed.
 
 - **A session works on a project.** A project is one or more repos, named by their canonical git
   remotes (`github.com/semistrict/hotbed`). `session start` picks the one project that holds this
@@ -68,6 +70,50 @@ hotbed session end
   git checkout -b fix`, `hotbed run -r ratel -- sed -i ...`, `git commit`, `git push`. If that
   node is offline it fails retryably rather than start over; `--node`/`--arch` naming another
   node start a fresh workspace there.
+
+## Memories & learning
+
+Memories are cross-agent rules and playbooks shared across every agent harness and machine. New
+memories are automatically approved and active immediately; users can edit any field, promote a
+project memory to global, archive/restore, reorder, or permanently remove them in the cockpit or CLI.
+
+```sh
+hotbed session start                             # prints active always-on rules + on-demand index
+hotbed memory get subagent-model-neon            # fetch full markdown body of one or more memories
+hotbed memory ls [-q QUERY] [--scope global|project] [--all-projects]
+hotbed memory add --global \
+  --slug subagent-model-neon \
+  --summary "Use gemini-4-neon (not GPT models) for all T3 Code delegated subagents." \
+  --rationale "User correction in thread fxdax"
+hotbed memory add --slug zfs-base-freshen \
+  --summary "ZFS clone/snapshot base freshening internals — read before debugging base failures." \
+  --body-file - <<'EOF'
+...detailed markdown playbook...
+EOF
+hotbed memory add --supersede 4 --slug subagent-model-neon --summary "..."
+hotbed memory edit 4 --summary "..." [--global | -p PROJECT] [--repo REPO] [--rationale "..."]
+hotbed memory promote 2                          # promote a project-specific memory to global
+hotbed memory archive 2 --reason "..."           # soft-retire (restorable via `memory restore`)
+hotbed memory rm 2                               # permanently remove a memory
+```
+
+- **Save lessons when you resolve them (not just in local files):** whenever you resolve a
+  non-obvious bug or repo/tooling quirk, the user corrects you, or the user says "remember this" /
+  "add to memory" / `/learn`, save it with `hotbed memory add` (alias `memory propose`, MCP:
+  `memory_add`) so every future session gets it on `hotbed session start`. `hotbed session end`
+  prompts you at wrap-up.
+- **Automatic delivery mode:** omit `--mode` and hotbed picks automatically:
+  - No `--body` → `always`: short guardrail/preference (≤ 240 chars) printed inline on every
+    `hotbed session start` (and in `hotbed mcp` server instructions).
+  - With `--body` / `--body-file` → `on_demand`: 1-line summary + trigger on `session start`; fetch
+    details with `hotbed memory get SLUG [SLUG...]` (or `global/SLUG`, `PROJECT/SLUG`, `#ID`).
+- **Two scopes:** defaults to your session's project (and repo if held by the project); pass
+  `--global` for cross-project preferences and workflows. Use `hotbed memory promote ID` (or
+  `hotbed memory edit ID --global`) to promote a project memory to global.
+- **Update & condense, don't duplicate:** if a slug already exists, hotbed tells you its `#ID` so
+  you can pass `--supersede ID` or edit in place with `hotbed memory edit ID` (supporting
+  `--clear-title`, `--clear-body`, `--replace-tags`, `--replace-content`, `--repo`, `--rationale`).
+  `hotbed memory show REF` prints provenance, supersession links, and full revision history.
 
 ## Missing a tool or dependency? Add a step
 
@@ -173,54 +219,6 @@ hotbed question ack 12           # you read it and acted on it: it is handled
   ID --reason WHY`; `question reopen` and `question revise` likewise only at the user's word.
   `question move ID --first|--last|--before ID` reorders the user's list within the question's
   project. `question projects` counts every project's open and outbox questions.
-
-## Memories & learning
-
-Memories are cross-agent rules and playbooks shared across every agent harness and machine. New
-memories are automatically approved and take effect immediately; users can edit any field, promote
-a project memory to global, archive/restore, reorder, or permanently remove them in the cockpit or
-CLI.
-
-```sh
-hotbed session start                             # returns active always-on rules + on-demand index
-hotbed memory get subagent-model-neon            # fetch full markdown body of one or more memories
-hotbed memory ls [-q QUERY] [--scope global|project] [--all-projects]
-hotbed memory propose --global --mode always \
-  --slug subagent-model-neon \
-  --summary "Use gemini-4-neon (not GPT models) for all T3 Code delegated subagents." \
-  --rationale "User correction in thread fxdax"
-hotbed memory propose --slug zfs-base-freshen \
-  --summary "ZFS clone/snapshot base freshening internals — read before debugging base failures." \
-  --body-file - <<'EOF'
-...detailed markdown playbook...
-EOF
-hotbed memory propose --supersede 4 --slug subagent-model-neon --mode always --summary "..."
-hotbed memory edit 4 --summary "..." [--global | -p PROJECT] [--repo REPO] [--rationale "..."]
-hotbed memory promote 2                          # promote a project-specific memory to global
-hotbed memory archive 2 --reason "..."           # soft-retire (restorable via `memory restore`)
-hotbed memory rm 2                               # permanently remove a memory
-```
-
-- **Save lessons proactively:** whenever a command or build fails unexpectedly, you discover a
-  repo/tooling quirk, the user corrects you, or you fix a tricky bug or review defect, save a
-  memory (`hotbed memory propose`, MCP: `memory_propose`) so future sessions don't repeat the same
-  mistake. `session start`, failed runs, `poll` failure/feedback events, `question ack`, and
-  `review fixed` / `review responses` include reminders to keep doing so.
-- **Two delivery modes, progressive disclosure:**
-  - `--mode always`: ultra-short guardrail or preference (≤ 240 chars) printed directly on every
-    `hotbed session start` (and in `hotbed mcp` server instructions) so you obey it immediately.
-  - `--mode on_demand` (default): 1-line summary + when-to-read trigger on `session start`; call
-    `hotbed memory get SLUG [SLUG...]` (or `global/SLUG`, `PROJECT/SLUG`, `#ID`) when relevant.
-- **Two scopes:** defaults to your session's project (and repo if held by the project); pass
-  `--global` for cross-project preferences and workflows. Use `hotbed memory promote ID` (or
-  `hotbed memory edit ID --global`) to promote a project memory to global.
-- **Update & condense, don't duplicate:** check `hotbed memory ls` before saving. Pass
-  `--supersede ID` (repeatable) to replace or consolidate existing memories immediately (the old
-  versions stay in history as superseded), or edit in place with `hotbed memory edit ID` (supporting
-  `--clear-title`, `--clear-body`, `--replace-tags`, `--replace-content`, `--repo`, `--rationale`).
-  `hotbed memory show REF` prints provenance, supersession links, and full revision history.
-  `hotbed memory archive ID`, `hotbed memory restore ID`, `hotbed memory rm ID`, and
-  `hotbed memory move ID` manage the active list.
 
 ## Reviews: asking reviewer agents, and the user
 

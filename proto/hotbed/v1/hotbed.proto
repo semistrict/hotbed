@@ -4845,14 +4845,22 @@ message ProxyGitHubAPIResponse {
 // Users can edit any field, promote project memories to global, reorder,
 // archive/restore, or permanently remove them.
 service MemoryService {
-  // Create a new memory or supersede/consolidate existing memories
+  // Save a new memory or supersede/consolidate existing memories
   // (--supersede ID). Automatically approved and active immediately. Defaults
   // to the active session's project; pass --global for cross-project learnings.
-  // Use --mode always for short guardrails (<= 240 chars) or --mode on_demand
-  // (default) for detailed playbooks fetched with `hotbed memory get`.
+  // When --mode is omitted, omitting --body saves a short always-on rule
+  // (<= 240 chars) and passing --body/--body-file saves an on-demand playbook
+  // fetched with `hotbed memory get`.
   rpc ProposeMemory(ProposeMemoryRequest) returns (Memory) {
     option (command) = {
+      name: "memory add"
+      session: true
+      before: ["LoadProposeMemoryBody"]
+      format: "#{{.id}}  {{state .state}}  rev={{.revision}}  [{{if .project}}{{.project}}{{else}}global{{end}}] {{with .content}}{{.slug}}  ({{state .mode}}){{end}}{{if .cockpitUrl}}\n{{.cockpitUrl}}{{end}}{{with .reminder}}\n{{.}}{{end}}"
+    };
+    option (command) = {
       name: "memory propose"
+      help: "Alias for `hotbed memory add`."
       session: true
       before: ["LoadProposeMemoryBody"]
       format: "#{{.id}}  {{state .state}}  rev={{.revision}}  [{{if .project}}{{.project}}{{else}}global{{end}}] {{with .content}}{{.slug}}  ({{state .mode}}){{end}}{{if .cockpitUrl}}\n{{.cockpitUrl}}{{end}}{{with .reminder}}\n{{.}}{{end}}"

@@ -5,12 +5,24 @@
 Use hotbed itself to build, test, and verify hotbed actively while working on this repo (especially Linux-specific code and tests):
 
 ```sh
-S=$(hotbed session start | jq -r .data.id)   # e.g. selected-pug (bound to T3CODE_THREAD_ID / worktree in ~/.hotbed/sessions.json)
+hotbed session start                        # prints active memories and binds to T3CODE_THREAD_ID / worktree
 hotbed run -- go test -race ./...           # the controller picks the node; --arch/--node narrow it
 hotbed session end
 ```
 
-Read `hotbed skills get hotbed` for the full CLI workflow. Session and repo are flags (`-s`/`HOTBED_SESSION`, `-r`/`HOTBED_REPO`) defaulted from `T3CODE_THREAD_ID` / the current git worktree and checkout, never positional arguments. A session idle for an hour is abandoned; any session call, and an attached `hotbed run` for as long as it runs, keeps it alive, so never wrap a run in a keep-alive loop. End it with `hotbed session end` when done.
+Do not pipe `hotbed session start` into `jq` or capture/swallow its stdout: it prints active memories directly and auto-binds the session so `-s` is not needed. Read `hotbed skills get hotbed` for the full CLI workflow. Session and repo are flags (`-s`/`HOTBED_SESSION`, `-r`/`HOTBED_REPO`) defaulted from `T3CODE_THREAD_ID` / the current git worktree and checkout, never positional arguments. A session idle for an hour is abandoned; any session call, and an attached `hotbed run` for as long as it runs, keeps it alive, so never wrap a run in a keep-alive loop. End it with `hotbed session end` when done.
+
+## Save reusable lessons to hotbed memory
+
+Whenever you resolve a non-obvious bug or tooling quirk, learn a standing preference from the user, or the user says "remember this" / "add to memory" / `/learn`, save it to hotbed memory (not just a local markdown file) so every future session and harness gets it on `hotbed session start`:
+
+```sh
+hotbed memory add --slug SHORT-SLUG --summary "Concise rule (<= 240 chars)"         # project always-on rule
+hotbed memory add --global --slug SHORT-SLUG --summary "Cross-project rule"         # global always-on rule
+hotbed memory add --slug SHORT-SLUG --summary "1-line trigger" --body-file - <<'EOF' # on-demand playbook
+```
+
+Omitting `--mode` defaults to `always` when `--body` is empty and `on_demand` when `--body` is given. Use `--supersede ID` or `hotbed memory edit ID` to update existing memories instead of duplicating them.
 
 ## Every API call has a CLI command
 

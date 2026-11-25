@@ -28,7 +28,7 @@ type Hooks interface {
 	ListedRemote(ctx context.Context, c *apicmd.Call, req *v1.ListQuestionsRequest) (string, error)
 	// LoadGitCredentialSecrets runs before auth set, and may change its request.
 	LoadGitCredentialSecrets(ctx context.Context, c *apicmd.Call, req *v1.PutGitCredentialRequest) error
-	// LoadProposeMemoryBody runs before memory propose, and may change its request.
+	// LoadProposeMemoryBody runs before memory add, memory propose, and may change its request.
 	LoadProposeMemoryBody(ctx context.Context, c *apicmd.Call, req *v1.ProposeMemoryRequest) error
 	// LoadReviseMemoryBody runs before memory edit, memory promote, and may change its request.
 	LoadReviseMemoryBody(ctx context.Context, c *apicmd.Call, req *v1.ReviseMemoryRequest) error
@@ -36,7 +36,7 @@ type Hooks interface {
 	MemoryGetRemote(ctx context.Context, c *apicmd.Call, req *v1.GetMemoriesRequest) (string, error)
 	// MemoryListedRemote fills in hotbed.v1.ListMemoriesRequest.remote (memory ls).
 	MemoryListedRemote(ctx context.Context, c *apicmd.Call, req *v1.ListMemoriesRequest) (string, error)
-	// MemoryProposedFrom fills in hotbed.v1.ProposeMemoryRequest.from (memory propose).
+	// MemoryProposedFrom fills in hotbed.v1.ProposeMemoryRequest.from (memory add, memory propose).
 	MemoryProposedFrom(ctx context.Context, c *apicmd.Call, req *v1.ProposeMemoryRequest) (*v1.AskedFrom, error)
 	// MemoryShowRemote fills in hotbed.v1.ShowMemoryRequest.remote (memory show).
 	MemoryShowRemote(ctx context.Context, c *apicmd.Call, req *v1.ShowMemoryRequest) (string, error)

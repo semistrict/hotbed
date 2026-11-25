@@ -518,11 +518,12 @@ func TestSetupStepsReminder(t *testing.T) {
 	c.ok(resumed, "session", "start", "warm-owl", "--resume")
 	checkReminder(t, "session start --resume (json)", resumed.GetReminder(), "suite", true)
 
-	// session end / ls do not carry a reminder.
+	// session end carries the wrap-up memory reminder (not a setup-steps reminder);
+	// session ls carries no reminder.
 	ended := &pb.Session{}
 	c.ok(ended, "session", "end", "-s", "warm-owl")
-	if ended.Reminder != nil {
-		t.Errorf("session end carried reminder: %q", ended.GetReminder())
+	if strings.Contains(ended.GetReminder(), "setup steps") || !strings.Contains(ended.GetReminder(), "hotbed memory add") {
+		t.Errorf("session end reminder = %q, want memory wrap-up reminder without setup steps", ended.GetReminder())
 	}
 	lsSess := &pb.ListSessionsResponse{}
 	c.ok(lsSess, "session", "ls", "-p", "suite", "--ended")
