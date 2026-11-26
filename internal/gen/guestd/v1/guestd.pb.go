@@ -1758,9 +1758,7 @@ const file_guestd_v1_guestd_proto_rawDesc = "" +
 	"\x04Sync\x12\x16.guestd.v1.SyncRequest\x1a\x17.guestd.v1.SyncResponse(\x01\x12K\n" +
 	"\tListFiles\x12\x1b.guestd.v1.ListFilesRequest\x1a\x1c.guestd.v1.ListFilesResponse\"\x03\x90\x02\x01\x12A\n" +
 	"\aGetFile\x12\x19.guestd.v1.GetFileRequest\x1a\x16.hotbed.v1.FileContent\"\x03\x90\x02\x01\x12H\n" +
-	"\bShutdown\x12\x1a.guestd.v1.ShutdownRequest\x1a\x1b.guestd.v1.ShutdownResponse\"\x03\x90\x02\x02B\x9f\x01\n" +
-	"\rcom.guestd.v1B\vGuestdProtoP\x01Z<github.com/semistrict/hotbed/internal/gen/guestd/v1;guestdv1\xa2\x02\x03GXX\xaa\x02\tGuestd.V1\xca\x02\tGuestd\\V1\xe2\x02\x15Guestd\\V1\\GPBMetadata\xea\x02\n" +
-	"Guestd::V1b\x06proto3"
+	"\bShutdown\x12\x1a.guestd.v1.ShutdownRequest\x1a\x1b.guestd.v1.ShutdownResponse\"\x03\x90\x02\x02B>Z<github.com/semistrict/hotbed/internal/gen/guestd/v1;guestdv1b\x06proto3"
 
 var (
 	file_guestd_v1_guestd_proto_rawDescOnce sync.Once

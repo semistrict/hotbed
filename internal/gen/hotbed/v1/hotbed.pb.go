@@ -8967,7 +8967,8 @@ type FinishedCommand struct {
 	Kind        string       `protobuf:"bytes,7,opt,name=kind,proto3" json:"kind,omitempty"`
 	State       CommandState `protobuf:"varint,8,opt,name=state,proto3,enum=hotbed.v1.CommandState" json:"state,omitempty"`
 	ExitCode    *int32       `protobuf:"varint,9,opt,name=exit_code,json=exitCode,proto3,oneof" json:"exit_code,omitempty"`
-	// compile, test, lint, signal, exit; empty when it succeeded.
+	// compile, test, lint, oom, vm (its VM ended under it), signal, exit;
+	// empty when it succeeded.
 	Failure         string   `protobuf:"bytes,10,opt,name=failure,proto3" json:"failure,omitempty"`
 	EndedAt         int64    `protobuf:"varint,11,opt,name=ended_at,json=endedAt,proto3" json:"ended_at,omitempty"`
 	QueuedSeconds   float64  `protobuf:"fixed64,12,opt,name=queued_seconds,json=queuedSeconds,proto3" json:"queued_seconds,omitempty"`

@@ -565,6 +565,7 @@ func toUnitState(wsID string, st runtime.CommandStatus) unit.State {
 		Signal:     st.Signal,
 		Result:     st.Result,
 		OOMKilled:  st.OOMKilled,
+		VMExit:     st.VMExit,
 		Memory:     st.MemoryAnon,
 		MemoryPeak: st.MemoryPeak,
 		CPUNanos:   uint64(max(st.CPUUsec, 0)) * 1000,

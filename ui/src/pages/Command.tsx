@@ -16,6 +16,7 @@ import { ProcessSamplePanel, type SampleTrigger } from "../components/ProcessSam
 import { Card, StatTile } from "../components/Panel";
 import { BenchTag, KindTag, RuntimeBadge, StateBadge } from "../components/StateBadges";
 import { nodeName, useSnapshot } from "../lib/data";
+import { endedExit, endedHow } from "../lib/exit";
 import { atEnd } from "../lib/follow";
 import { ago, bytes, duration, hhmmss, limit, speedup } from "../lib/format";
 import { isLive } from "../lib/live";
@@ -107,14 +108,7 @@ function CommandView({
       stats.push(<StatTile key="limit" label="Time limit" value={timeLimit.value} unit={timeLimit.unit} foot={timeLimit.foot} />);
     }
   } else if (done) {
-    const exitDisplay =
-      done.exitCode !== undefined
-        ? String(done.exitCode)
-        : done.state === CommandState.SUCCEEDED
-          ? "0"
-          : done.state === CommandState.CANCELLED
-            ? "—"
-            : "signal";
+    const exitDisplay = endedExit(done);
     const exitFoot = done.failure
       ? (FAILURE[done.failure] ?? done.failure)
       : done.state === CommandState.SUCCEEDED
@@ -213,7 +207,7 @@ function CommandView({
           )}
         </p>
         {live?.reason && <p className={`mt-3 inline-block rounded-lg px-3 py-1.5 font-mono text-[11.5px] ${state === CommandState.PARKED || state === CommandState.PAUSED ? "bg-frost-wash text-frost" : "bg-muted text-muted-foreground"}`}>{live.reason}</p>}
-        {done?.failure && <p className="mt-3 inline-block rounded-lg bg-[color-mix(in_oklab,var(--critical)_12%,transparent)] px-3 py-1.5 font-mono text-[11.5px] text-critical">{FAILURE[done.failure] ?? done.failure} · exit {done.exitCode ?? "signal"}</p>}
+        {done?.failure && <p className="mt-3 inline-block rounded-lg bg-[color-mix(in_oklab,var(--critical)_12%,transparent)] px-3 py-1.5 font-mono text-[11.5px] text-critical">{FAILURE[done.failure] ?? done.failure} · {endedHow(done)}</p>}
       </div>
 
       <div className={`grid grid-cols-2 gap-3 sm:grid-cols-3 ${statGridCols}`}>{stats}</div>

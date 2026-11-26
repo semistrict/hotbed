@@ -728,6 +728,9 @@ func (b *VMBackend) runGuestCommand(ctx context.Context, vmID, cmdID, dir string
 			return out.String(), err
 		}
 		if st, ok := stMap[cmdID]; ok && st.Exited {
+			if st.VMExit != nil {
+				return out.String(), fmt.Errorf("guest command %s: %s", cmdID, vmExitReason(*st.VMExit))
+			}
 			if st.ExitCode != 0 {
 				tail := out.String()
 				if len(tail) > 2048 {
@@ -1724,26 +1727,22 @@ func (b *VMBackend) ClientFor(wsID string) (*guestd.Client, error) {
 	return b.mgr.ClientFor(wsID)
 }
 
-// VMExited reports whether wsID's Firecracker process is no longer running.
-func (b *VMBackend) VMExited(ctx context.Context, wsID string) (bool, int) {
-	ex, code, _, _, _ := b.VMExitStatus(ctx, wsID)
-	return ex, code
-}
-
-// VMExitStatus reports whether wsID's Firecracker process has exited along with
-// systemd exit code, signal, result, and OOM-kill status.
-func (b *VMBackend) VMExitStatus(ctx context.Context, wsID string) (exited bool, exitCode, signal int, result string, oomKilled bool) {
+// VMExit implements runtime.VMExitReporter: how wsID's Firecracker process
+// ended, as systemd saw it, or false while it runs (or its state cannot be
+// read).
+func (b *VMBackend) VMExit(ctx context.Context, wsID string) (unit.VMExit, bool) {
 	if b.mgr.Get(wsID) == nil {
-		return true, 0, 0, "", false
+		return unit.VMExit{Gone: true}, true
 	}
 	st, err := b.mgr.Status(ctx, wsID)
 	if err != nil {
-		return false, 0, 0, "", false
+		slog.Warn("read a VM's state", "workspace", wsID, "err", err)
+		return unit.VMExit{}, false
 	}
-	if !st.Running {
-		return true, st.ExitCode, st.Signal, st.Result, st.OOMKilled
+	if st.Running {
+		return unit.VMExit{}, false
 	}
-	return false, 0, 0, "", false
+	return unit.VMExit{ExitCode: st.ExitCode, Signal: st.Signal, Result: st.Result, OOMKilled: st.OOMKilled}, true
 }
 
 // StopVM implements runtime.GuestResolver.

@@ -1659,7 +1659,8 @@ message FinishedCommand {
   string kind = 7;
   CommandState state = 8;
   optional int32 exit_code = 9;
-  // compile, test, lint, signal, exit; empty when it succeeded.
+  // compile, test, lint, oom, vm (its VM ended under it), signal, exit;
+  // empty when it succeeded.
   string failure = 10;
   int64 ended_at = 11;
   double queued_seconds = 12;

@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"net"
 	"net/http"
@@ -389,6 +390,13 @@ func TestAttachFollowStatusNeverExitsZeroForLiveOrFailedCommand(t *testing.T) {
 	}
 	if code, err := followStatus("c1", &pb.Command{Id: "c1", State: pb.CommandState_COMMAND_STATE_CANCELLED, Reason: "killed by signal 15"}, &stderr); err != nil || code != 143 {
 		t.Errorf("CANCELLED(signal 15) = (%d, %v), want (143, nil)", code, err)
+	}
+	// A command whose VM ended under it never exited: not 137 as if killed,
+	// but a retryable failure of its VM.
+	code, err := followStatus("c1", &pb.Command{Id: "c1", State: pb.CommandState_COMMAND_STATE_FAILED, Reason: "its VM was killed by signal 9"}, &stderr)
+	var ae *api.Error
+	if code != 0 || !errors.As(err, &ae) || ae.Code != api.CodeWorkspaceFailed || !ae.Retryable || ae.Message != "c1 failed: its VM was killed by signal 9" {
+		t.Errorf("FAILED(its VM was killed by signal 9) = (%d, %#v), want (0, retryable %s)", code, err, api.CodeWorkspaceFailed)
 	}
 }
 
