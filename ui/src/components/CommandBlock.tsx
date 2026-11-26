@@ -3,6 +3,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { commandSummary, shellJoinWords, shellQuoteWord, unwrapCommand } from "../lib/command";
+import { CodeLines, useHighlighter } from "./CodeLines";
 
 const SHELL_VAR_RE = /^[A-Za-z_][A-Za-z0-9_]*$/;
 
@@ -83,9 +84,11 @@ function CopyButton({ text, label = "Copy" }: { text: string; label?: string }) 
  * Full command display for the Command detail page and Schedule cards.
  *
  * Short single-line commands render cleanly inline; inline `bash -c` and
- * `python(3) -c` scripts and long/multi-line commands render in a monospace
- * code box with line numbers, a Script/Raw toggle, verbatim Copy button,
- * and collapse/expand when tall.
+ * `python(3) -c` scripts and long/multi-line commands render in a
+ * syntax-highlighted code box with line numbers, a Script/Raw toggle,
+ * verbatim Copy button, and collapse/expand when tall. A one-line shell
+ * script shows one command per line in the Script view; Raw and Copy keep
+ * it as run.
  */
 export function CommandBlock({
   argv,
@@ -103,8 +106,13 @@ export function CommandBlock({
   const parsed = useMemo(() => unwrapCommand(args, argv), [args, argv]);
   const [rawView, setRawView] = useState(false);
   const [expanded, setExpanded] = useState(false);
+  const highlighter = useHighlighter();
 
   const isScript = parsed.kind === "script";
+  const formatted = useMemo(
+    () => (parsed.kind === "script" && parsed.language === "bash" ? highlighter?.formatOneLiner(parsed.display) : undefined),
+    [highlighter, parsed],
+  );
   const rawWithEnv = formatRawWithEnv(parsed.raw, env);
 
   // Short plain commands on the Command page render as a crisp monospace heading.
@@ -141,11 +149,11 @@ export function CommandBlock({
     );
   }
 
-  const displayCode = isScript && !rawView ? parsed.display : parsed.raw;
-  const lines = displayCode.split("\n");
-  const totalLines = lines.length;
+  const scriptView = isScript && !rawView;
+  const displayCode = scriptView ? (formatted ?? parsed.display) : parsed.raw;
+  const displayLanguage = scriptView ? parsed.language : "bash";
+  const totalLines = displayCode.split("\n").length;
   const collapsible = totalLines > maxLines;
-  const shownLines = collapsible && !expanded ? lines.slice(0, maxLines - 2) : lines;
   const showGutter = totalLines > 1 || isScript;
 
   const langLabel = isScript ? parsed.badge : "shell";
@@ -193,6 +201,7 @@ export function CommandBlock({
         )}
         <span className="text-[10.5px] text-faint">
           {totalLines} {totalLines === 1 ? "line" : "lines"}
+          {scriptView && formatted !== undefined && <span title="Laid out one command per line; Raw shows it as run"> · formatted</span>}
         </span>
         <div className="ml-auto flex shrink-0 items-center gap-1.5">
           {isScript && (
@@ -212,22 +221,14 @@ export function CommandBlock({
       </div>
 
       <div className="relative">
-        <pre className="m-0 overflow-x-auto py-2.5 font-mono text-[12px] leading-[1.65] text-foreground">
-          <code>
-            {shownLines.map((line, idx) => (
-              <span key={idx} className="flex hover:bg-muted/35">
-                {showGutter && (
-                  <span className="w-10 shrink-0 pr-3 text-right text-[10.5px] leading-[1.9] select-none text-faint">
-                    {idx + 1}
-                  </span>
-                )}
-                <span className={`min-w-0 flex-1 pr-3 whitespace-pre-wrap break-words ${showGutter ? "" : "pl-3"}`}>
-                  {line || " "}
-                </span>
-              </span>
-            ))}
-          </code>
-        </pre>
+        <CodeLines
+          code={displayCode}
+          language={displayLanguage}
+          gutter={showGutter}
+          limit={collapsible && !expanded ? maxLines - 2 : undefined}
+          className="py-2.5 text-[12px]"
+          lineClassName="pr-3"
+        />
 
         {collapsible && !expanded && (
           <div
@@ -256,30 +257,28 @@ export function CommandBlock({
 }
 
 /**
- * A bash script, such as a setup step's: monospace with line numbers,
- * a verbatim Copy button, and collapsed past maxLines.
+ * A bash script, such as a setup step's: syntax-highlighted with line
+ * numbers, a verbatim Copy button, and collapsed past maxLines.
  */
 export function ScriptBlock({ script, maxLines = 12 }: { script: string; maxLines?: number }) {
   const [expanded, setExpanded] = useState(false);
-  const lines = script.replace(/\n$/, "").split("\n");
-  const collapsible = lines.length > maxLines;
-  const shown = collapsible && !expanded ? lines.slice(0, maxLines - 2) : lines;
+  const code = script.replace(/\n$/, "");
+  const totalLines = code.split("\n").length;
+  const collapsible = totalLines > maxLines;
   return (
     <div className="overflow-hidden rounded-lg border border-border bg-muted/40">
       <div className="relative">
         <div className="absolute top-1.5 right-1.5 z-10">
           <CopyButton text={script} label="Copy" />
         </div>
-        <pre className="m-0 overflow-x-auto py-2 font-mono text-[11.5px] leading-[1.65] text-foreground">
-          <code>
-            {shown.map((line, i) => (
-              <span key={i} className="flex hover:bg-muted/35">
-                <span className="w-9 shrink-0 pr-3 text-right text-[10px] leading-[1.9] select-none text-faint">{i + 1}</span>
-                <span className="min-w-0 flex-1 pr-16 whitespace-pre-wrap break-words">{line || " "}</span>
-              </span>
-            ))}
-          </code>
-        </pre>
+        <CodeLines
+          code={code}
+          language="bash"
+          gutter
+          limit={collapsible && !expanded ? maxLines - 2 : undefined}
+          className="py-2 text-[11.5px]"
+          lineClassName="pr-16"
+        />
       </div>
       {collapsible && (
         <div className="border-t border-border bg-muted/25 px-3 py-1 text-center">
@@ -290,7 +289,7 @@ export function ScriptBlock({ script, maxLines = 12 }: { script: string; maxLine
             onClick={() => setExpanded((e) => !e)}
             className="font-mono text-[10.5px] text-muted-foreground hover:text-primary"
           >
-            {expanded ? "Collapse" : `Show all ${lines.length} lines`}
+            {expanded ? "Collapse" : `Show all ${totalLines} lines`}
           </Button>
         </div>
       )}

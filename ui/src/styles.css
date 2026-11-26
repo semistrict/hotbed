@@ -212,6 +212,21 @@
   --grain-opacity: 0.07;
 }
 
+/* Syntax colors for highlighted scripts (lib/highlight.ts), drawn from the roles above. */
+:root {
+  --shiki-foreground: var(--foreground);
+  --shiki-background: transparent;
+  --shiki-token-keyword: var(--primary);
+  --shiki-token-string: var(--sprout);
+  --shiki-token-string-expression: var(--sprout);
+  --shiki-token-comment: var(--faint);
+  --shiki-token-function: var(--frost);
+  --shiki-token-constant: var(--warning-ink);
+  --shiki-token-parameter: var(--serious-ink);
+  --shiki-token-punctuation: var(--muted-foreground);
+  --shiki-token-link: var(--frost);
+}
+
 @theme inline {
   --color-background: var(--background);
   --color-foreground: var(--foreground);
