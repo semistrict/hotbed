@@ -153,7 +153,11 @@ jobs:
       - name: Vet
         run: go vet ./...
       - name: Test
-        run: go test -race ./...
+        # cmd/hotbed is ~200 integration tests, each with a controller and
+        # workers of its own, run one after another: ~265s under -race on an
+        # M-series Mac, past 600s on this runner. Its total, not a hung test,
+        # outgrew go test's 10m default; 20m still stops a hang.
+        run: go test -race -timeout 20m ./...
 
   test-cf-controller:
     runs-on: ubuntu-latest
