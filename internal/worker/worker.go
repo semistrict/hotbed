@@ -37,6 +37,7 @@ import (
 	"github.com/semistrict/hotbed/internal/tailnet"
 	"github.com/semistrict/hotbed/internal/unit"
 	"github.com/semistrict/hotbed/internal/version"
+	"github.com/semistrict/hotbed/internal/vm"
 )
 
 // Tailnet is what a worker needs from this machine's tailscaled.
@@ -388,6 +389,9 @@ func Run(ctx context.Context, dir string, cfg statedir.WorkerConfig, tn Tailnet,
 		ecfg.ScratchDisk = effCfg.Bench.Disk
 	}
 	if effCfg.VM != nil && effCfg.VM.Enabled {
+		if err := EnsureKVMAccess(ctx, cmp.Or(effCfg.VM.VMUser, vm.DefaultVMUser)); err != nil {
+			return fmt.Errorf("give Firecracker /dev/kvm: %w", err)
+		}
 		vmb, err := OpenVMBackend(ctx, dir, *effCfg.VM, workSlice, "")
 		if err != nil {
 			return fmt.Errorf("start cladefs Firecracker VM backend: %w", err)

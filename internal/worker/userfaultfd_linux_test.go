@@ -239,3 +239,65 @@ func TestEnsureUserfaultfdAccess(t *testing.T) {
 		}
 	})
 }
+
+// Firecracker runs as the VM user and opens /dev/kvm: on a host whose VM
+// user is not in the kvm group (vm1, set up without it), the worker adds it.
+func TestEnsureKVMAccess(t *testing.T) {
+	kvmEnv := func(devGID uint32, devPerm fs.FileMode, inKVM *bool, cmds *[]string) userfaultfdEnv {
+		return userfaultfdEnv{
+			devPath:     "/dev/kvm",
+			groupName:   "kvm",
+			statDev:     func(string) (uint32, fs.FileMode, error) { return devGID, devPerm, nil },
+			lookupGroup: func(string) (uint32, error) { return 991, nil },
+			userInGroup: func(u string, gid uint32) (bool, error) {
+				if u != "cladefsd" || gid != 991 {
+					return false, fmt.Errorf("unexpected userInGroup(%q, %d)", u, gid)
+				}
+				return *inKVM, nil
+			},
+			run: func(_ context.Context, name string, args ...string) (string, error) {
+				cmd := name + " " + strings.Join(args, " ")
+				*cmds = append(*cmds, cmd)
+				if cmd == "usermod -aG kvm cladefsd" {
+					*inKVM = true
+				}
+				return "", nil
+			},
+		}
+	}
+
+	t.Run("adds the VM user to kvm", func(t *testing.T) {
+		inKVM := false
+		var cmds []string
+		if err := ensureKVMAccess(t.Context(), "cladefsd", kvmEnv(991, 0o660, &inKVM, &cmds)); err != nil {
+			t.Fatalf("ensureKVMAccess: %v", err)
+		}
+		if !slices.Equal(cmds, []string{"usermod -aG kvm cladefsd"}) {
+			t.Fatalf("commands = %v, want [usermod -aG kvm cladefsd]", cmds)
+		}
+	})
+
+	t.Run("runs nothing once the VM user is in kvm", func(t *testing.T) {
+		inKVM := true
+		var cmds []string
+		if err := ensureKVMAccess(t.Context(), "cladefsd", kvmEnv(991, 0o660, &inKVM, &cmds)); err != nil || len(cmds) != 0 {
+			t.Fatalf("ensureKVMAccess = %v, commands %v; want nil and none", err, cmds)
+		}
+	})
+
+	t.Run("fails when kvm cannot open /dev/kvm", func(t *testing.T) {
+		inKVM := true
+		var cmds []string
+		err := ensureKVMAccess(t.Context(), "cladefsd", kvmEnv(0, 0o600, &inKVM, &cmds))
+		if err == nil || err.Error() != "/dev/kvm has gid=0 mode=0600; Firecracker (as cladefsd) needs it read-write for group kvm (gid 991)" {
+			t.Fatalf("ensureKVMAccess(0600 root) = %v", err)
+		}
+	})
+
+	t.Run("fails without /dev/kvm", func(t *testing.T) {
+		env := userfaultfdEnv{devPath: "/dev/kvm", statDev: func(string) (uint32, fs.FileMode, error) { return 0, 0, fs.ErrNotExist }}
+		if err := ensureKVMAccess(t.Context(), "cladefsd", env); err == nil || !errors.Is(err, fs.ErrNotExist) {
+			t.Fatalf("ensureKVMAccess(no /dev/kvm) = %v, want not exist", err)
+		}
+	})
+}

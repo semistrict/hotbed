@@ -71,35 +71,9 @@ func ensureUserfaultfdAccess(ctx context.Context, username string, env userfault
 		return fmt.Errorf("stat %s: %w", env.devPath, err)
 	}
 
-	kvmGID, err := env.lookupGroup(env.groupName)
+	kvmGID, err := ensureGroupMember(ctx, env, username)
 	if err != nil {
-		if !errors.Is(err, errUnknownGroup) {
-			return fmt.Errorf("look up group %q: %w", env.groupName, err)
-		}
-		if _, err := env.run(ctx, "groupadd", "--system", env.groupName); err != nil {
-			return fmt.Errorf("create group %q: %w", env.groupName, err)
-		}
-		kvmGID, err = env.lookupGroup(env.groupName)
-		if err != nil {
-			return fmt.Errorf("look up group %q after groupadd: %w", env.groupName, err)
-		}
-	}
-
-	inGroup, err := env.userInGroup(username, kvmGID)
-	if err != nil {
-		return fmt.Errorf("check %q membership in group %q: %w", username, env.groupName, err)
-	}
-	if !inGroup {
-		if _, err := env.run(ctx, "usermod", "-aG", env.groupName, username); err != nil {
-			return fmt.Errorf("add %q to group %q: %w", username, env.groupName, err)
-		}
-		inGroup, err = env.userInGroup(username, kvmGID)
-		if err != nil {
-			return fmt.Errorf("verify %q membership in group %q: %w", username, env.groupName, err)
-		}
-		if !inGroup {
-			return fmt.Errorf("user %q is still not in group %q (gid %d) after usermod", username, env.groupName, kvmGID)
-		}
+		return err
 	}
 
 	ruleChanged, err := writeUdevRuleIfChanged(env.rulePath, []byte(userfaultfdUdevRule))
@@ -129,6 +103,73 @@ func ensureUserfaultfdAccess(ctx context.Context, username string, env userfault
 	if devGID != kvmGID || devPerm&0o660 != 0o660 {
 		return fmt.Errorf("%s has gid=%d mode=%04o after applying %s (want gid=%d (%s) mode 0660); check for conflicting udev rules in %s",
 			env.devPath, devGID, devPerm, env.rulePath, kvmGID, env.groupName, filepath.Dir(env.rulePath))
+	}
+	return nil
+}
+
+// ensureGroupMember makes username a member of env.groupName, creating the
+// group when the host has none, and returns the group's gid.
+func ensureGroupMember(ctx context.Context, env userfaultfdEnv, username string) (uint32, error) {
+	gid, err := env.lookupGroup(env.groupName)
+	if err != nil {
+		if !errors.Is(err, errUnknownGroup) {
+			return 0, fmt.Errorf("look up group %q: %w", env.groupName, err)
+		}
+		if _, err := env.run(ctx, "groupadd", "--system", env.groupName); err != nil {
+			return 0, fmt.Errorf("create group %q: %w", env.groupName, err)
+		}
+		gid, err = env.lookupGroup(env.groupName)
+		if err != nil {
+			return 0, fmt.Errorf("look up group %q after groupadd: %w", env.groupName, err)
+		}
+	}
+	inGroup, err := env.userInGroup(username, gid)
+	if err != nil {
+		return 0, fmt.Errorf("check %q membership in group %q: %w", username, env.groupName, err)
+	}
+	if inGroup {
+		return gid, nil
+	}
+	if _, err := env.run(ctx, "usermod", "-aG", env.groupName, username); err != nil {
+		return 0, fmt.Errorf("add %q to group %q: %w", username, env.groupName, err)
+	}
+	inGroup, err = env.userInGroup(username, gid)
+	if err != nil {
+		return 0, fmt.Errorf("verify %q membership in group %q: %w", username, env.groupName, err)
+	}
+	if !inGroup {
+		return 0, fmt.Errorf("user %q is still not in group %q (gid %d) after usermod", username, env.groupName, gid)
+	}
+	return gid, nil
+}
+
+const kvmDevPath = "/dev/kvm"
+
+// EnsureKVMAccess makes vmUser, the user Firecracker runs as, a member of the
+// kvm group that owns /dev/kvm, so Firecracker can open it. It fails when
+// /dev/kvm is missing or not group read-writable by kvm: the host cannot run
+// the VM runtime then.
+func EnsureKVMAccess(ctx context.Context, vmUser string) error {
+	env := defaultUserfaultfdEnv()
+	env.devPath = kvmDevPath
+	return ensureKVMAccess(ctx, vmUser, env)
+}
+
+func ensureKVMAccess(ctx context.Context, vmUser string, env userfaultfdEnv) error {
+	devGID, devPerm, err := env.statDev(env.devPath)
+	if err != nil {
+		return fmt.Errorf("the VM runtime needs %s: %w", env.devPath, err)
+	}
+	kvmGID, err := ensureGroupMember(ctx, env, vmUser)
+	if err != nil {
+		return err
+	}
+	if devPerm&0o006 == 0o006 {
+		return nil // anyone may open it
+	}
+	if devGID != kvmGID || devPerm&0o060 != 0o060 {
+		return fmt.Errorf("%s has gid=%d mode=%04o; Firecracker (as %s) needs it read-write for group %s (gid %d)",
+			env.devPath, devGID, devPerm, vmUser, env.groupName, kvmGID)
 	}
 	return nil
 }
