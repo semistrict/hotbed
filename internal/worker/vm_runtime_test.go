@@ -15,6 +15,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/google/go-cmp/cmp"
 	cladefsdv1 "github.com/semistrict/cladefs/go/cladefsd/v1"
 	"github.com/semistrict/hotbed/internal/api"
 	"github.com/semistrict/hotbed/internal/fake"
@@ -24,6 +25,7 @@ import (
 	"github.com/semistrict/hotbed/internal/profiler"
 	"github.com/semistrict/hotbed/internal/runtime"
 	"github.com/semistrict/hotbed/internal/unit"
+	"google.golang.org/protobuf/testing/protocmp"
 )
 
 type testGuestResolver struct {
@@ -523,7 +525,11 @@ func TestObjectStoreStatsFromCounters(t *testing.T) {
 		"cladefsd_page_cache_limit_bytes 536870912",
 		`cladefsd_peer_parts_total{outcome="given"} 42`,
 		`cladefsd_peer_parts_total{outcome="missing"} 5`,
+		`cladefsd_peer_parts_total{outcome="failed"} 3`,
 		`cladefsd_peer_served_parts_total{outcome="served"} 19`,
+		`cladefsd_peer_served_parts_total{outcome="missing"} 2`,
+		`cladefsd_part_cache_shard_state{device="230:16",shard="0"} 0`,
+		`cladefsd_part_cache_shard_state{device="230:0",shard="1"} 2`,
 		`cladefsd_upload_pending_bytes{cell="0/abc"} 1000`,
 		`cladefsd_upload_pending_bytes{cell="0/def"} 2500`,
 		"cladefsd_memory_pressure 1",
@@ -545,6 +551,16 @@ func TestObjectStoreStatsFromCounters(t *testing.T) {
 	}
 	if got.PeerPartsGiven != 42 || got.PeerPartsServed != 19 || got.UploadPendingBytes != 3500 || !got.MemoryPressure || !got.MemoryFull || got.ExtentCacheLimitBytes != 464519168 || got.ExtentCacheFloorBytes != 464519168 {
 		t.Fatalf("unexpected peer/upload/memory governor stats: %+v", got)
+	}
+	if got.PeerPartsMissing != 5 || got.PeerPartsFailed != 3 || got.PeerServedPartsMissing != 2 {
+		t.Fatalf("peer outcomes: missing=%d failed=%d served-missing=%d, want 5 3 2", got.PeerPartsMissing, got.PeerPartsFailed, got.PeerServedPartsMissing)
+	}
+	wantShards := []*pb.PartCacheShard{
+		{Shard: 0, Device: "230:16", State: pb.PartCacheShardState_PART_CACHE_SHARD_STATE_ONLINE},
+		{Shard: 1, Device: "230:0", State: pb.PartCacheShardState_PART_CACHE_SHARD_STATE_OFFLINE},
+	}
+	if diff := cmp.Diff(wantShards, got.PartCacheShards, protocmp.Transform()); diff != "" {
+		t.Fatalf("part cache shards (-want +got):\n%s", diff)
 	}
 }
 

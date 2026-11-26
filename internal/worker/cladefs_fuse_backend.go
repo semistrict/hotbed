@@ -510,9 +510,13 @@ func (b *CladefsFUSEBackend) HeartbeatMeta() (peerAddr string, incarnation uint6
 	return b.cfg.CladefsPeerAddr, b.incarnation, held, retired
 }
 
-// SampleObjectStore fetches cumulative cladefsd R2 object-store counters.
+// SampleObjectStore fetches cumulative cladefsd R2 object-store counters and
+// the peer mesh this worker last applied.
 func (b *CladefsFUSEBackend) SampleObjectStore(ctx context.Context) *pb.ObjectStoreStats {
-	return sampleCladefsObjectStore(ctx, b.currentStore())
+	b.mu.Lock()
+	addr, peers := b.cfg.CladefsPeerAddr, slices.Clone(b.lastPeers)
+	b.mu.Unlock()
+	return sampleCladefsObjectStore(ctx, b.currentStore(), addr, peers)
 }
 
 // ApplyHeartbeat reconciles cladefs peer mesh (SetPeers), retired-host

@@ -77,6 +77,7 @@ type Server struct {
 	profiler      profiler.Profiler
 	allowPowerOff bool
 	powerOff      func() error
+	syncFS        func() // optional test hook overriding syncFilesystems
 
 	mu   sync.Mutex
 	cmds map[string]*managedCmd
@@ -573,13 +574,38 @@ func (s *Server) ThawCommand(_ context.Context, req *guestdv1.ThawCommandRequest
 	return mc.snapshot(), nil
 }
 
+func (s *Server) hasRunningCommand() bool {
+	s.mu.Lock()
+	cmds := make([]*managedCmd, 0, len(s.cmds))
+	for _, mc := range s.cmds {
+		cmds = append(cmds, mc)
+	}
+	s.mu.Unlock()
+	for _, mc := range cmds {
+		mc.mu.Lock()
+		running := mc.state == guestdv1.CommandState_COMMAND_STATE_RUNNING
+		mc.mu.Unlock()
+		if running {
+			return true
+		}
+	}
+	return false
+}
+
 func (s *Server) Reclaim(_ context.Context, req *guestdv1.ReclaimRequest) (*guestdv1.ReclaimResponse, error) {
-	// Flush dirty pages first so drop_caches can drop them (and evict sealed
-	// cladefs page-cache inodes so subsequent reads use DAX), reclaim any
-	// remaining file/slab cache in the target cgroup, then compact free memory
-	// into 2 MiB pageblock_order blocks so virtio-balloon free-page-reporting
-	// returns them to the host.
-	syncFilesystems()
+	// Flush dirty pages only when the VM is quiescent (idle or all commands
+	// frozen/exited): calling a global sync() during a proactive sweep while a
+	// build is actively writing blocks behind every dirty cladefs write and
+	// hits the worker's 10s RPC timeout. Boot writeback sysctls (64 MiB / 5s)
+	// already keep old build outputs flushed asynchronously so drop_caches
+	// drops them without stalling active writers.
+	if !s.hasRunningCommand() {
+		if s.syncFS != nil {
+			s.syncFS()
+		} else {
+			syncFilesystems()
+		}
+	}
 	_ = dropPageCaches()
 	if req.GetId() != "" && req.GetBytes() > 0 {
 		if mc, ok := s.getCmd(req.GetId()); ok && mc.cg != nil {

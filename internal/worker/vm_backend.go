@@ -337,12 +337,16 @@ func (b *VMBackend) HeartbeatMeta() (peerAddr string, incarnation uint64, held [
 	return b.cfg.CladefsPeerAddr, b.incarnation, held, retired
 }
 
-// SampleObjectStore fetches cumulative cladefsd R2 object-store counters.
+// SampleObjectStore fetches cumulative cladefsd R2 object-store counters and
+// the peer mesh this worker last applied.
 func (b *VMBackend) SampleObjectStore(ctx context.Context) *pb.ObjectStoreStats {
-	return sampleCladefsObjectStore(ctx, b.currentStore())
+	b.mu.Lock()
+	addr, peers := b.cfg.CladefsPeerAddr, slices.Clone(b.lastPeers)
+	b.mu.Unlock()
+	return sampleCladefsObjectStore(ctx, b.currentStore(), addr, peers)
 }
 
-func sampleCladefsObjectStore(ctx context.Context, store *cladefs.Store) *pb.ObjectStoreStats {
+func sampleCladefsObjectStore(ctx context.Context, store *cladefs.Store, peerAddr string, peers []string) *pb.ObjectStoreStats {
 	if store == nil {
 		return nil
 	}
@@ -354,6 +358,8 @@ func sampleCladefsObjectStore(ctx context.Context, store *cladefs.Store) *pb.Obj
 		return nil
 	}
 	out := objectStoreStatsFromCounters(resp)
+	out.PeerAddress = peerAddr
+	out.Peers = peers
 	sctx, scancel := context.WithTimeout(ctx, 1500*time.Millisecond)
 	defer scancel()
 	if stats, serr := store.GetStats(sctx, &cladefsdv1.GetStatsRequest{
@@ -484,16 +490,27 @@ func applyCladefsPrometheusMetrics(out *pb.ObjectStoreStats, text string) bool {
 		case "cladefsd_page_cache_limit_bytes":
 			out.PageCacheLimitBytes = val
 			matched = true
+		case "cladefsd_part_cache_shard_state":
+			out.PartCacheShards = append(out.PartCacheShards, partCacheShard(labels, val))
+			matched = true
 		case "cladefsd_peer_parts_total":
-			if labels == `outcome="given"` {
+			switch promLabel(labels, "outcome") {
+			case "given":
 				out.PeerPartsGiven = val
-				matched = true
+			case "missing":
+				out.PeerPartsMissing = val
+			case "failed":
+				out.PeerPartsFailed = val
 			}
+			matched = true
 		case "cladefsd_peer_served_parts_total":
-			if labels == `outcome="served"` {
+			switch promLabel(labels, "outcome") {
+			case "served":
 				out.PeerPartsServed = val
-				matched = true
+			case "missing":
+				out.PeerServedPartsMissing = val
 			}
+			matched = true
 		case "cladefsd_upload_pending_bytes":
 			uploadPending += val
 			matched = true
@@ -528,6 +545,42 @@ func applyCladefsPrometheusMetrics(out *pb.ObjectStoreStats, text string) bool {
 		out.UploadPendingBytes = uploadPending
 	}
 	return matched
+}
+
+// partCacheShard reads one cladefsd_part_cache_shard_state sample: cladefsd
+// reports 0=online, 1=suspect, 2=offline, 3=returning.
+func partCacheShard(labels string, state uint64) *pb.PartCacheShard {
+	shard, err := strconv.ParseUint(promLabel(labels, "shard"), 10, 32)
+	if err != nil {
+		slog.Warn("cladefsd part cache shard without a numeric shard label", "labels", labels, "err", err)
+	}
+	st := pb.PartCacheShardState_PART_CACHE_SHARD_STATE_UNSPECIFIED
+	switch state {
+	case 0:
+		st = pb.PartCacheShardState_PART_CACHE_SHARD_STATE_ONLINE
+	case 1:
+		st = pb.PartCacheShardState_PART_CACHE_SHARD_STATE_SUSPECT
+	case 2:
+		st = pb.PartCacheShardState_PART_CACHE_SHARD_STATE_OFFLINE
+	case 3:
+		st = pb.PartCacheShardState_PART_CACHE_SHARD_STATE_RETURNING
+	default:
+		slog.Warn("cladefsd part cache shard in an unknown state", "labels", labels, "state", state)
+	}
+	return &pb.PartCacheShard{Shard: uint32(shard), Device: promLabel(labels, "device"), State: st}
+}
+
+// promLabel returns the value of label key in a raw Prometheus label block
+// (`a="x",b="y"`), or "" if it is absent. cladefsd's label values never
+// contain commas or escaped quotes.
+func promLabel(labels, key string) string {
+	for _, kv := range strings.Split(labels, ",") {
+		k, v, ok := strings.Cut(kv, "=")
+		if ok && strings.TrimSpace(k) == key {
+			return strings.Trim(strings.TrimSpace(v), `"`)
+		}
+	}
+	return ""
 }
 
 // parsePromLine splits a Prometheus text exposition sample line into its metric

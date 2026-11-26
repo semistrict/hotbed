@@ -686,9 +686,25 @@ message ObjectStoreStats {
   uint64 page_cache_bytes = 37;
   uint64 page_cache_dirty_bytes = 38;
   uint64 page_cache_limit_bytes = 39;
-  // LAN peer mesh part transfers (fetched from peers / served to peers).
+  // cladefs distributed part cache (the peer mesh): each part has one owner
+  // among the peers by rendezvous hashing, and a host that misses its own
+  // part cache asks the owner before R2. Parts asked of the owning peer, by
+  // outcome: given (saved an R2 GET), missing (the owner had none and the
+  // host went to R2), failed (error, timeout or bad CRC; that peer is
+  // skipped for 30s).
   uint64 peer_parts_given = 40;
+  uint64 peer_parts_missing = 47;
+  uint64 peer_parts_failed = 48;
+  // Parts peers asked this host for as their owner: served, or missing
+  // (it held none).
   uint64 peer_parts_served = 41;
+  uint64 peer_served_parts_missing = 49;
+  // This host's peer address (HOST:PORT), empty if it serves no peers, and
+  // the peer list it last applied (SetPeers), sorted, itself included.
+  string peer_address = 50;
+  repeated string peers = 51;
+  // Health of each disk (shard) of the SSD part cache.
+  repeated PartCacheShard part_cache_shards = 52;
   // Bytes of cell commits pending upload to R2 across open cells.
   uint64 upload_pending_bytes = 42;
   // Daemon memory governor pressure state.
@@ -698,6 +714,25 @@ message ObjectStoreStats {
   bool memory_full = 44;
   uint64 extent_cache_limit_bytes = 45;
   uint64 extent_cache_floor_bytes = 46;
+}
+
+// One disk of cladefsd's SSD part cache.
+message PartCacheShard {
+  // The shard's index and its backing device (MAJOR:MINOR).
+  uint32 shard = 1;
+  string device = 2;
+  PartCacheShardState state = 3;
+}
+
+enum PartCacheShardState {
+  PART_CACHE_SHARD_STATE_UNSPECIFIED = 0;
+  PART_CACHE_SHARD_STATE_ONLINE = 1;
+  // Errors seen; still used while cladefsd decides.
+  PART_CACHE_SHARD_STATE_SUSPECT = 2;
+  // Taken out of the cache: its parts go to other shards or R2.
+  PART_CACHE_SHARD_STATE_OFFLINE = 3;
+  // Coming back after being offline.
+  PART_CACHE_SHARD_STATE_RETURNING = 4;
 }
 
 // Host-side view of a VM worker, reported by its host supervisor (macOS).
@@ -2771,6 +2806,9 @@ message Totals {
   uint64 r2_get_requests = 10;
   uint64 r2_failed_requests = 11;
   double r2_commit_wait_seconds = 12;
+  // Parts nodes got from the owning peer instead of R2, and served to peers.
+  uint64 peer_parts_given = 13;
+  uint64 peer_parts_served = 14;
 }
 
 message Sample {
@@ -2788,6 +2826,11 @@ message Sample {
   double upload_bytes_per_sec = 9;
   double download_bytes_per_sec = 10;
   double commit_wait_ms_per_sec = 11;
+  // Distributed part cache rates: parts got from the owning peer, served to
+  // peers, and R2 GETs (whole and ranged), per second.
+  double peer_parts_given_per_sec = 12;
+  double peer_parts_served_per_sec = 13;
+  double r2_gets_per_sec = 14;
 }
 
 message Samples {

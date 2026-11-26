@@ -1709,6 +1709,8 @@ describe("Security, cron, daemon logs, tunnel, and workspace regression tests", 
 				r2Gets: 0,
 				r2Fails: 0,
 				r2WaitNs: 0,
+				peerGiven: 0,
+				peerServed: 0,
 			},
 			// First R2 sample carries existing since-boot totals: must establish baseline with 0 delta.
 			{
@@ -1720,8 +1722,11 @@ describe("Security, cron, daemon logs, tunnel, and workspace regression tests", 
 				r2Gets: 50,
 				r2Fails: 0,
 				r2WaitNs: 1_000_000_000,
+				peerGiven: 1000,
+				peerServed: 200,
 			},
-			// 10 seconds later: +10 MiB up, +2 MiB down, +10 puts, +4 gets, +1 fail, +500 ms commit wait.
+			// 10 seconds later: +10 MiB up, +2 MiB down, +10 puts, +4 gets, +1 fail, +500 ms commit wait,
+			// +100 parts from peers, +30 served to peers.
 			{
 				...base,
 				t: now - 10_000,
@@ -1731,6 +1736,8 @@ describe("Security, cron, daemon logs, tunnel, and workspace regression tests", 
 				r2Gets: 54,
 				r2Fails: 1,
 				r2WaitNs: 1_500_000_000,
+				peerGiven: 1100,
+				peerServed: 230,
 			},
 			// Daemon restarted and uploaded 4 MiB more in 10s.
 			{
@@ -1742,6 +1749,8 @@ describe("Security, cron, daemon logs, tunnel, and workspace regression tests", 
 				r2Gets: 2,
 				r2Fails: 0,
 				r2WaitNs: 0,
+				peerGiven: 40,
+				peerServed: 10,
 			},
 		];
 		const { series, nodeHourly, r2Totals } = buildSeries(samples, now);
@@ -1751,6 +1760,8 @@ describe("Security, cron, daemon logs, tunnel, and workspace regression tests", 
 		expect(r2Totals.gets).toBe(6);
 		expect(r2Totals.fails).toBe(1);
 		expect(r2Totals.waitNs).toBe(500_000_000);
+		expect(r2Totals.peerGiven).toBe(140);
+		expect(r2Totals.peerServed).toBe(40);
 
 		const pts = series.n1.samples;
 		expect(pts).toHaveLength(4);
@@ -1758,6 +1769,10 @@ describe("Security, cron, daemon logs, tunnel, and workspace regression tests", 
 		expect(pts[2].uploadBytesPerSec).toBeCloseTo(1_000_000, 1);
 		expect(pts[2].downloadBytesPerSec).toBeCloseTo(200_000, 1);
 		expect(pts[2].commitWaitMsPerSec).toBeCloseTo(50, 1);
+		expect(pts[2].peerPartsGivenPerSec).toBeCloseTo(10, 5);
+		expect(pts[2].peerPartsServedPerSec).toBeCloseTo(3, 5);
+		expect(pts[2].r2GetsPerSec).toBeCloseTo(0.4, 5);
+		expect(pts[1].peerPartsGivenPerSec).toBe(0);
 		expect(pts[3].uploadBytesPerSec).toBeCloseTo(400_000, 1);
 
 		const hourSumUp = nodeHourly.n1.hours.reduce((acc, h) => acc + Number(h.uploadBytes), 0);

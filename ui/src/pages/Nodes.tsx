@@ -247,7 +247,9 @@ function formatCladefsActivity(os: ObjectStoreStats): { parts: string[]; thrashi
     parts.push(`${os.mountCellsAttached} FUSE ${os.mountCellsAttached === 1 ? "cell" : "cells"}`);
   }
   if (os.peerPartsGiven > 0n || os.peerPartsServed > 0n) {
-    parts.push(`peers ↓${compact(os.peerPartsGiven)} ↑${compact(os.peerPartsServed)}`);
+    parts.push(
+      `peers ↓${compact(os.peerPartsGiven)} ↑${compact(os.peerPartsServed)}${os.peerPartsFailed > 0n ? ` · ${compact(os.peerPartsFailed)} failed` : ""}`,
+    );
   }
   return { parts, thrashing };
 }

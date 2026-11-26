@@ -292,6 +292,8 @@ export const samples = sqliteTable(
 		r2Gets: integer("r2_gets").notNull().default(0),
 		r2Fails: integer("r2_fails").notNull().default(0),
 		r2WaitNs: integer("r2_wait_ns").notNull().default(0),
+		peerGiven: integer("peer_given").notNull().default(0),
+		peerServed: integer("peer_served").notNull().default(0),
 	},
 	(t) => [primaryKey({ columns: [t.nodeId, t.t] }), index("samples_t").on(t.t)],
 );
