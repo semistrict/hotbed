@@ -314,13 +314,9 @@ export function createMemoryService(ctrl: ControllerContext): ServiceImpl<typeof
 			if (req.global) {
 				scope = MemoryScope.GLOBAL;
 			} else if (req.project) {
+				// Named outright, any project: a session of one project often learns
+				// what belongs to another (a cladefs session about hotbed, say).
 				targetProject = ctrl.store.getProject(req.project);
-				if (sessProject && sessProject.name !== targetProject.name) {
-					throw hotbedError(
-						ErrorCode.Conflict,
-						`session ${by.session} works on project ${sessProject.name}, not ${targetProject.name}`,
-					).withSuggestion("save for your session's project or pass --global");
-				}
 				repo = memoryRepo(targetProject, req.repo, req.from?.remote ?? "");
 			} else if (sessProject) {
 				targetProject = sessProject;
@@ -335,15 +331,16 @@ export function createMemoryService(ctrl: ControllerContext): ServiceImpl<typeof
 			const content = validateContent(req.content);
 			const supersedesIds = normalizeSupersedes(req.supersedesIds);
 
-			// Agents may only supersede global memories or memories of their own project.
-			if (sessProject) {
+			// A project's memory replaces only memories its project sees: global ones
+			// and its own. A global memory may replace any (consolidating upward).
+			if (targetProject) {
 				for (const tid of supersedesIds) {
 					const target = ctrl.store.getMemory(tid);
-					if (target.scope === MemoryScope.PROJECT && target.project !== sessProject.name) {
+					if (target.scope === MemoryScope.PROJECT && target.project !== targetProject.name) {
 						throw hotbedError(
 							ErrorCode.Conflict,
-							`cannot supersede memory #${tid} of project ${target.project} from session ${by.session} (${sessProject.name})`,
-						);
+							`memory #${tid} is project ${target.project}'s: a memory of project ${targetProject.name} cannot supersede it`,
+						).withSuggestion(`save it for that project (-p ${target.project}) or as --global`);
 					}
 				}
 			}
@@ -465,12 +462,6 @@ export function createMemoryService(ctrl: ControllerContext): ServiceImpl<typeof
 					item.repo = "";
 				} else if (req.project) {
 					const targetProj = ctrl.store.getProject(req.project);
-					if (project && project.name !== targetProj.name) {
-						throw hotbedError(
-							ErrorCode.Conflict,
-							`session ${by.session} works on project ${project.name}, not ${targetProj.name}`,
-						).withSuggestion("edit memories in your session's project or promote with --global");
-					}
 					const projectChanged =
 						item.scope !== MemoryScope.PROJECT || item.project !== targetProj.name;
 					item.scope = MemoryScope.PROJECT;

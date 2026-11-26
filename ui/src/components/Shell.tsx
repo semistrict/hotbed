@@ -14,6 +14,7 @@ import {
   Monitor,
   Moon,
   ScrollText,
+  Bug,
   Server,
   SlidersHorizontal,
   Sun,
@@ -73,6 +74,7 @@ interface NavItem {
     | "/cluster"
     | "/nodes"
     | "/logs"
+    | "/issues"
     | "/settings"
     | "/org";
   readonly label: string;
@@ -96,6 +98,7 @@ const INFRA_NAV: readonly NavItem[] = [
   { to: "/cluster", label: "Cluster", icon: Activity, shared: true },
   { to: "/nodes", label: "Nodes", icon: Server, shared: true },
   { to: "/logs", label: "Logs", icon: ScrollText, shared: true },
+  { to: "/issues", label: "Issues", icon: Bug, shared: true },
   { to: "/settings", label: "Settings", icon: SlidersHorizontal, shared: true },
   { to: "/org", label: "Organization", icon: Building2, shared: true },
 ];
@@ -325,6 +328,16 @@ function AppSidebar({
         ),
         urgent: true,
         tooltipSuffix: ` (${scoped.openQuestions} waiting)`,
+      };
+    }
+    if (to === "/issues" && whole && whole.openIssues > 0) {
+      return {
+        node: (
+          <Badge variant="outline" className="h-4 min-w-4 px-1.5 font-mono text-[10px] leading-4 text-muted-foreground" aria-label={`${whole.openIssues} open issues`}>
+            {whole.openIssues}
+          </Badge>
+        ),
+        tooltipSuffix: ` (${whole.openIssues} open)`,
       };
     }
     if (to === "/reviews" && reviewsToDecide > 0) {

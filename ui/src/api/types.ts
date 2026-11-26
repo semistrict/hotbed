@@ -6,6 +6,7 @@ import {
   ActorKind,
   BaseState,
   CommandState,
+  IssueState,
   DaemonLogLevel,
   FindingDecision,
   FindingSeverity,
@@ -104,6 +105,8 @@ import {
   type PromptOption,
   type PromptSchema,
   type QueryOutputRequestSchema,
+  type Issue,
+  type IssueUpvote,
   type OutputQuery,
   type OutputLine,
   type Question,
@@ -157,6 +160,7 @@ export {
   ActorKind,
   BaseState,
   CommandState,
+  IssueState,
   DaemonLogLevel,
   FindingDecision,
   FindingSeverity,
@@ -189,6 +193,8 @@ export {
   type Command,
   type CommandDiagnostics,
   type CommandSample,
+  type Issue,
+  type IssueUpvote,
   type OutputQuery,
   type OutputLine,
   type CommandEvent,
@@ -545,6 +551,11 @@ export interface Api {
   pauseCommand(id: string, opts?: StopOrPauseOptions): Promise<Command>;
   resumeCommand(id: string, opts?: ResumeOptions): Promise<Command>;
   getCommandDiagnostics(id: string): Promise<CommandDiagnostics[]>;
+  /** Problems with hotbed itself, most +1'd first. */
+  issues(which: "open" | "archived" | "all"): Promise<Issue[]>;
+  issue(id: number): Promise<Issue>;
+  archiveIssue(id: number, reason: string): Promise<Issue>;
+  reopenIssue(id: number): Promise<Issue>;
   commandProfile(id: string, query?: ProfileQuery): Promise<CommandProfile>;
   nodeProfile(node: string, query?: ProfileQuery): Promise<CommandProfile>;
   daemonLogs(query?: DaemonLogsQuery): Promise<GetDaemonLogsResponse>;

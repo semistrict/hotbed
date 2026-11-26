@@ -17,6 +17,9 @@ import {
 	BaseSchema,
 	ClusterEventSchema,
 	CommandDiagnosticsSchema,
+	type Issue,
+	IssueSchema,
+	IssueState,
 	type CommandSample,
 	CommandSampleSchema,
 	CommandProfileSchema,
@@ -220,6 +223,10 @@ export interface CommandRoute {
 	histChecked: boolean;
 	baseChecked: boolean;
 	base?: Base;
+}
+
+function issueStateName(st: IssueState): string {
+	return st === IssueState.ARCHIVED ? "archived" : "open";
 }
 
 function marshal<T extends DescMessage>(schema: T, msg: MessageShape<T>): string {
@@ -3157,6 +3164,65 @@ export class ControllerStore {
 			by.host,
 			by.reason,
 			marshal(QuestionSchema, stored),
+		);
+	}
+
+	// ---- issues ---------------------------------------------------------
+
+	/** Files a new issue, numbering it. */
+	addIssue(issue: Issue): Issue {
+		return this.transactionSync(() => {
+			this.sql.exec(
+				"INSERT INTO issues (state, votes, updated_at, doc) VALUES (?, 0, ?, '')",
+				issueStateName(issue.state),
+				Number(issue.updatedAt),
+			);
+			issue.id = num(this.sql.exec("SELECT last_insert_rowid() AS id").one().id);
+			this.saveIssue(issue);
+			return issue;
+		});
+	}
+
+	saveIssue(issue: Issue): void {
+		this.sql.exec(
+			"UPDATE issues SET state = ?, votes = ?, updated_at = ?, doc = ? WHERE id = ?",
+			issueStateName(issue.state),
+			issue.votes,
+			Number(issue.updatedAt),
+			marshal(IssueSchema, issue),
+			issue.id,
+		);
+	}
+
+	getIssue(id: number): Issue {
+		const rows = this.sql.exec("SELECT doc FROM issues WHERE id = ?", id).toArray();
+		if (rows.length === 0) {
+			throw hotbedError(ErrorCode.NotFound, `no issue ${id}`).withSuggestion(
+				"list them: hotbed issue ls --all",
+			);
+		}
+		return unmarshal(IssueSchema, str(rows[0].doc));
+	}
+
+	/** Issues in state (any, when undefined), most voted first, then most recently changed. */
+	listIssues(state?: IssueState): Issue[] {
+		const rows =
+			state === undefined
+				? this.sql.exec("SELECT doc FROM issues ORDER BY votes DESC, updated_at DESC").toArray()
+				: this.sql
+						.exec(
+							"SELECT doc FROM issues WHERE state = ? ORDER BY votes DESC, updated_at DESC",
+							issueStateName(state),
+						)
+						.toArray();
+		return rows.map((r) => unmarshal(IssueSchema, str(r.doc)));
+	}
+
+	countOpenIssues(): number {
+		return num(
+			this.sql
+				.exec("SELECT COUNT(*) AS n FROM issues WHERE state = ?", issueStateName(IssueState.OPEN))
+				.one().n,
 		);
 	}
 

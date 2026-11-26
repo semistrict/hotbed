@@ -132,6 +132,22 @@ describe("OrganizationPage RBAC gating", () => {
     expect(html.includes(">Remove<")).toBe(true);
     expect(html.includes(">Revoke<")).toBe(true);
   });
+
+  it("hides join token mint and revoke controls for viewers", () => {
+    mockRole = "viewer";
+    mockJoinTokensState = {
+      data: {
+        tokens: [{ id: "jt_1", label: "box", createdBy: "alice@acme.test", createdAt: 1700000000000 }],
+      },
+      isLoading: false,
+      error: null,
+    };
+    const html = renderOrgPage();
+
+    expect(html.includes("Mint join token")).toBe(false);
+    expect(html.includes(">Revoke<")).toBe(false);
+    expect(html.includes("Create token")).toBe(true);
+  });
 });
 
 describe("OrganizationPage loading and error states", () => {

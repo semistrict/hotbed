@@ -35,6 +35,7 @@ function formatDate(ms: number | string | null | undefined): string {
 }
 
 const INVITE_ROLES = [
+  { value: "viewer", label: "viewer" },
   { value: "member", label: "member" },
   { value: "admin", label: "admin" },
 ];
@@ -46,6 +47,7 @@ export function OrganizationPage() {
   const workosEnabled = Boolean(auth?.workosEnabled);
   const activeOrg = auth?.organization ?? null;
   const isOrgAdmin = !workosEnabled || activeOrg?.role === "admin" || activeOrg?.role === "owner";
+  const isViewer = workosEnabled && activeOrg?.role === "viewer";
 
   const { data: team, isLoading: loadingTeam, error: teamErr } = useOrgMembers(Boolean(workosEnabled && activeOrg));
   const { data: joinTokens, isLoading: loadingJoinTokens, error: joinTokensErr } = useJoinTokens();
@@ -380,31 +382,33 @@ export function OrganizationPage() {
           title="Worker Join Tokens"
           sub="Org-scoped tokens (hbj_...) used to join Linux or macOS workers to this cluster. Exchanged for a node-bound worker token on join."
         >
-          <form onSubmit={onMintJoin} className="mb-4 flex flex-wrap gap-2">
-            <Input
-              type="text"
-              value={joinLabel}
-              onChange={(e) => setJoinLabel(e.target.value)}
-              placeholder="Label (e.g. build-box)"
-              className="min-w-[140px] flex-1 bg-background text-[12.5px]"
-            />
-            <Input
-              type="number"
-              min="1"
-              value={joinHours}
-              onChange={(e) => setJoinHours(e.target.value)}
-              title="Expiry in hours"
-              className="w-20 bg-background font-mono text-[12px]"
-            />
-            <span className="self-center font-mono text-[11px] text-muted-foreground">hrs</span>
-            <Button
-              type="submit"
-              disabled={createJoinToken.isPending}
-              className="text-[12px]"
-            >
-              {createJoinToken.isPending ? "Minting…" : "Mint join token"}
-            </Button>
-          </form>
+          {!isViewer && (
+            <form onSubmit={onMintJoin} className="mb-4 flex flex-wrap gap-2">
+              <Input
+                type="text"
+                value={joinLabel}
+                onChange={(e) => setJoinLabel(e.target.value)}
+                placeholder="Label (e.g. build-box)"
+                className="min-w-[140px] flex-1 bg-background text-[12.5px]"
+              />
+              <Input
+                type="number"
+                min="1"
+                value={joinHours}
+                onChange={(e) => setJoinHours(e.target.value)}
+                title="Expiry in hours"
+                className="w-20 bg-background font-mono text-[12px]"
+              />
+              <span className="self-center font-mono text-[11px] text-muted-foreground">hrs</span>
+              <Button
+                type="submit"
+                disabled={createJoinToken.isPending}
+                className="text-[12px]"
+              >
+                {createJoinToken.isPending ? "Minting…" : "Mint join token"}
+              </Button>
+            </form>
+          )}
 
           {(createJoinToken.error || revokeJoinToken.error) && (
             <Alert variant="destructive" className="mb-3 border-critical/40 font-mono text-[11px]">
@@ -466,7 +470,7 @@ export function OrganizationPage() {
                       {t.revokedAt ? " · revoked" : ""}
                     </div>
                   </div>
-                  {!t.revokedAt && (
+                  {!isViewer && !t.revokedAt && (
                     <Button
                       type="button"
                       variant="outline"

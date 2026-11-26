@@ -3,6 +3,7 @@ package cfbundle
 import (
 	"os"
 	"path/filepath"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -60,5 +61,45 @@ func TestEnsureBuildsOnlyAMissingOrStaleBundle(t *testing.T) {
 	write(t, filepath.Join(root, "cf-controller", "pnpm-lock.yaml"), base.Add(3*time.Hour))
 	if _, err := ensure(root, build); err != nil || builds != 3 {
 		t.Fatalf("lockfile newer than the bundle: %d builds (err %v), want a rebuild", builds, err)
+	}
+}
+
+// Two harnesses finding the bundle stale at once build it once: the second
+// waits for the first's build, rather than clear the bundle under it, and
+// then finds it fresh.
+func TestEnsureBuildsOnceAcrossConcurrentCallers(t *testing.T) {
+	root := t.TempDir()
+	base := time.Unix(1795300000, 0)
+	write(t, filepath.Join(root, "cf-controller", "src", "index.ts"), base)
+
+	var secondBuilt atomic.Bool
+	secondDone := make(chan error, 1)
+	first := func(string) error {
+		// While this build runs, another caller finds the bundle missing.
+		go func() {
+			_, err := ensure(root, func(string) error {
+				secondBuilt.Store(true)
+				write(t, filepath.Join(root, Dir, "index.js"), base.Add(2*time.Hour))
+				return nil
+			})
+			secondDone <- err
+		}()
+		// It must wait for this build: its finishing first means it ran beside it.
+		select {
+		case err := <-secondDone:
+			t.Fatalf("a second ensure finished during the first's build (err %v): it must wait for the build lock", err)
+		case <-time.After(200 * time.Millisecond):
+		}
+		write(t, filepath.Join(root, Dir, "index.js"), base.Add(time.Hour))
+		return nil
+	}
+	if _, err := ensure(root, first); err != nil {
+		t.Fatal(err)
+	}
+	if err := <-secondDone; err != nil {
+		t.Fatal(err)
+	}
+	if secondBuilt.Load() {
+		t.Fatal("the second caller built again after the first's build: it must look again once it holds the lock")
 	}
 }

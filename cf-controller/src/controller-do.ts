@@ -16,6 +16,7 @@ import {
 	MemoryService,
 	QuestionService,
 	ReviewService,
+	IssueService,
 	RunOutcome,
 	ScheduledRunSchema,
 	ScheduleService,
@@ -50,6 +51,7 @@ import { createGitAuthService } from "./services/gitauth.ts";
 import { createMemoryService } from "./services/memories.ts";
 import { createQuestionService } from "./services/questions.ts";
 import { createReviewService } from "./services/reviews.ts";
+import { createIssueService } from "./services/issues.ts";
 import { createScheduleService, type ScheduleRunner } from "./services/schedules.ts";
 import { createSessionService } from "./services/sessions.ts";
 import { createWorkspaceService } from "./services/workspaces.ts";
@@ -216,6 +218,7 @@ export class ControllerDO extends DurableObject<ControllerEnv> {
 		const questionSvc = createQuestionService(this.ctrl);
 		const memorySvc = createMemoryService(this.ctrl);
 		const reviewSvc = createReviewService(this.ctrl);
+		const issueSvc = createIssueService(this.ctrl);
 		const gitAuthSvc = createGitAuthService(this.ctrl);
 
 		this.dispatcher = createConnectFetchDispatcher((router) => {
@@ -225,6 +228,7 @@ export class ControllerDO extends DurableObject<ControllerEnv> {
 			router.service(QuestionService, questionSvc);
 			router.service(MemoryService, memorySvc);
 			router.service(ReviewService, reviewSvc);
+			router.service(IssueService, issueSvc);
 			router.service(ScheduleService, schedSvc.impl);
 			router.service(GitAuthService, gitAuthSvc);
 		});
@@ -646,6 +650,15 @@ export class ControllerDO extends DurableObject<ControllerEnv> {
 						{ status: 403 },
 					);
 				}
+				if (caller.orgRole === "viewer") {
+					return Response.json(
+						{
+							code: ErrorCode.NotAuthorized,
+							message: "viewer role is read-only and cannot mint worker tokens",
+						},
+						{ status: 403 },
+					);
+				}
 				const body = (await request.json().catch(() => ({}))) as {
 					nodeId?: string;
 					hostname?: string;
@@ -693,6 +706,15 @@ export class ControllerDO extends DurableObject<ControllerEnv> {
 					});
 				}
 				if (pathname === "/admin/join-tokens" && request.method === "POST") {
+					if (caller.orgRole === "viewer") {
+						return Response.json(
+							{
+								code: ErrorCode.NotAuthorized,
+								message: "viewer role is read-only and cannot mint join tokens",
+							},
+							{ status: 403 },
+						);
+					}
 					const body = (await request.json().catch(() => ({}))) as {
 						label?: string;
 						expiresInHours?: number;
@@ -732,6 +754,15 @@ export class ControllerDO extends DurableObject<ControllerEnv> {
 					);
 				}
 				if (pathname.startsWith("/admin/join-tokens/") && request.method === "DELETE") {
+					if (caller.orgRole === "viewer") {
+						return Response.json(
+							{
+								code: ErrorCode.NotAuthorized,
+								message: "viewer role is read-only and cannot revoke join tokens",
+							},
+							{ status: 403 },
+						);
+					}
 					const id = decodePathSegment(pathname.slice("/admin/join-tokens/".length));
 					if (id === null) {
 						return Response.json(
@@ -959,6 +990,15 @@ export class ControllerDO extends DurableObject<ControllerEnv> {
 			} catch (err) {
 				const he = fromUnknownError(err);
 				return Response.json(he.toJSON(), { status: 403 });
+			}
+			if (caller.orgRole === "viewer") {
+				return Response.json(
+					{
+						code: ErrorCode.NotAuthorized,
+						message: "viewer role is read-only and cannot connect as a worker",
+					},
+					{ status: 403 },
+				);
 			}
 			// Pin nodeId to the token's DB-bound identity for worker-token auth so
 			// one worker token can never hijack another node's WebSocket tunnel.

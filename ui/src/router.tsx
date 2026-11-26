@@ -12,6 +12,7 @@ import { OverviewPage } from "./pages/Overview";
 import { ProjectsPage } from "./pages/Projects";
 import { MemoriesPage, MemoryDetailPage, type MemoriesSearch } from "./pages/Memories";
 import { QuestionDetailPage, QuestionsPage, type QuestionsSearch } from "./pages/Questions";
+import { IssueDetailPage, IssuesPage, type IssuesSearch, type IssuesTab } from "./pages/Issues";
 import { ReviewPage } from "./pages/Review";
 import { ReviewsPage } from "./pages/Reviews";
 import { SessionPage } from "./pages/Session";
@@ -42,6 +43,16 @@ const questions = createRoute({
     sort: typeof s.sort === "string" && SORTS.includes(s.sort) ? (s.sort as QuestionsSearch["sort"]) : undefined,
   }),
 });
+const ISSUE_TABS: readonly IssuesTab[] = ["open", "archived", "all"];
+const issues = createRoute({
+  getParentRoute: () => root,
+  path: "/issues",
+  component: IssuesPage,
+  validateSearch: (s: Record<string, unknown>): IssuesSearch => ({
+    tab: typeof s.tab === "string" && ISSUE_TABS.includes(s.tab as IssuesTab) ? (s.tab as IssuesTab) : undefined,
+  }),
+});
+const issueDetail = createRoute({ getParentRoute: () => root, path: "/issues/$id", component: IssueDetailPage });
 const questionDetail = createRoute({ getParentRoute: () => root, path: "/questions/$id", component: QuestionDetailPage });
 const MEMORY_TABS = ["active", "history", "all"];
 const MEMORY_SCOPES = ["all", "global", "project"];
@@ -168,7 +179,7 @@ const history = createRoute({
   },
 });
 
-const routeTree = root.addChildren([projects, sessions, session, questions, questionDetail, memories, memoryDetail, reviews, review, schedules, overview, organization, settings, nodes, node, daemonLogs, workspaces, workspace, commands, command, history]);
+const routeTree = root.addChildren([projects, sessions, session, questions, questionDetail, issues, issueDetail, memories, memoryDetail, reviews, review, schedules, overview, organization, settings, nodes, node, daemonLogs, workspaces, workspace, commands, command, history]);
 
 export const router = createRouter({ routeTree, defaultPreload: "intent", scrollRestoration: true });
 

@@ -128,8 +128,10 @@ hotbed memory rm 2                               # permanently remove a memory
   - With `--body` / `--body-file` → `on_demand`: 1-line summary + trigger on `session start`; fetch
     details with `hotbed memory get SLUG [SLUG...]` (or `global/SLUG`, `PROJECT/SLUG`, `#ID`).
 - **Two scopes:** defaults to your session's project (and repo if held by the project); pass
-  `--global` for cross-project preferences and workflows. Use `hotbed memory promote ID` (or
-  `hotbed memory edit ID --global`) to promote a project memory to global.
+  `--global` for cross-project preferences and workflows, or `-p PROJECT` for a lesson that
+  belongs to another project than your session's. Use `hotbed memory promote ID` (or
+  `hotbed memory edit ID --global`) to promote a project memory to global. A project's memory
+  can supersede only global memories and its own project's; a global one can supersede any.
 - **Update & condense, don't duplicate:** if a slug already exists, hotbed tells you its `#ID` so
   you can pass `--supersede ID` or edit in place with `hotbed memory edit ID` (supporting
   `--clear-title`, `--clear-body`, `--replace-tags`, `--replace-content`, `--repo`, `--rationale`).
@@ -246,6 +248,23 @@ hotbed question ack 12           # you read it and acted on it: it is handled
   ID --reason WHY`; `question reopen` and `question revise` likewise only at the user's word.
   `question move ID --first|--last|--before ID` reorders the user's list within the question's
   project. `question projects` counts every project's open and outbox questions.
+
+## Problems with hotbed itself: issues
+
+When hotbed itself fails you (a bug, a missing capability, an error that misleads you), say so,
+once: list first, and +1 one already reported rather than report it again. Its votes are how the
+user sees what costs agents most.
+
+```sh
+hotbed issue ls -q "wait queued"                # open issues whose title or body hold the words
+hotbed issue upvote 12 -m "same, on vm1"         # you hit it too: each session counts once
+hotbed issue report "run --wait counts time queued" -m "what you did, what happened, what you expected; the command and error"
+hotbed issue show 12                             # it, and everyone who +1'd it
+```
+
+Work around it meanwhile, and say so in your reply. The user archives an issue once it is dealt
+with (`hotbed issue archive ID -m WHY`, `hotbed issue reopen ID`): an archived one takes no more
++1s, so if it is back, report it again naming it. The cockpit's Issues page lists them.
 
 ## Reviews: asking reviewer agents, and the user
 
@@ -572,6 +591,7 @@ hotbed schedule run nightly                 # a run now; prints its session, for
 | `hotbed output CMD [--grep P -C N] [--head N \| --tail N] [--from N --to M] [--after N] [--until P \| --wait] [--timeout S] [--since-sync] [--raw] [--max N]` | Read a command's output, kept whole, as its terminal shows it: bounded answers that say what they left out; `--until` / `--wait` wait first (MCP tool `output`) |
 | `hotbed detach CMD` | Let an attached command run on, detached (MCP tool `detach`) |
 | `hotbed send CMD TEXT [--no-newline]` | Type into a command run with `--tty` (MCP tool `send`) |
+| `hotbed issue report TITLE [-m DETAILS]` / `issue ls [-q WORDS] [--archived \| --all]` / `issue show ID` / `issue upvote ID [-m COMMENT]` / `issue archive ID [-m WHY]` / `issue reopen ID` | Problems with hotbed itself: report one once, +1 it after (MCP tools `issue_report`, `issue_ls`, …) |
 | `hotbed logs CMD [-f \| -n N]` | A command's output, any session's by its ID; `-f` (the session's own command: it waits on it) follows until it ends, `-n N` its last N lines (at most 1 MiB of them; stderr says when it cut). A log keeps its first 16 MiB and last 240 MiB, with a `[hotbed: … dropped here …]` line between; logs of ended commands are kept 7 days |
 | `hotbed stop CMD [-m COMMENT] [--diagnose]` | Stops a command of the session (another session's: `-s SESSION`); with `--diagnose`, takes its diagnostics first |
 | `hotbed pause CMD [-m COMMENT] [--diagnose]` | Pauses a command by hand: frozen until `hotbed resume`, waiting on it or not; with `--diagnose`, takes its diagnostics first |

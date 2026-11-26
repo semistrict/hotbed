@@ -266,6 +266,47 @@ func TestMemoryLifecycleAndSessionRecall(t *testing.T) {
 	}
 }
 
+// A session of one project saves a memory for another by naming it: a
+// session often learns what belongs to a project it is not working on.
+func TestMemoryAddForAnotherProject(t *testing.T) {
+	c := newCluster(t)
+	c.ok(nil, "project", "add", "other")
+	c.ok(nil, "session", "start", "brave-otter") // project test
+
+	theirs := &pb.Memory{}
+	c.ok(theirs, "memory", "add", "-s", "brave-otter", "-p", "other",
+		"--slug", "other-rule", "--summary", "A rule of project other.", "--rationale", "learned in a test session")
+	if theirs.Scope != pb.MemoryScope_MEMORY_SCOPE_PROJECT || theirs.Project != "other" || theirs.State != pb.MemoryState_MEMORY_STATE_APPROVED {
+		t.Fatalf("memory add -p other from a test session = scope %v project %q state %v, want PROJECT other APPROVED", theirs.Scope, theirs.Project, theirs.State)
+	}
+	if theirs.Proposed.GetSession() != "brave-otter" {
+		t.Errorf("proposed by session %q, want brave-otter", theirs.Proposed.GetSession())
+	}
+
+	// It may supersede that project's memories...
+	replaced := &pb.Memory{}
+	c.ok(replaced, "memory", "add", "-s", "brave-otter", "-p", "other", "--supersede", fmt.Sprint(theirs.Id),
+		"--slug", "other-rule", "--summary", "A sharper rule of project other.", "--rationale", "sharpened")
+	if replaced.Project != "other" || !slices.Equal(replaced.SupersedesIds, []int32{theirs.Id}) {
+		t.Fatalf("superseding within other = project %q supersedes %v, want other [%d]", replaced.Project, replaced.SupersedesIds, theirs.Id)
+	}
+
+	// ...but a memory of one project never replaces another project's.
+	if _, e := c.fails("memory", "add", "-s", "brave-otter", "--supersede", fmt.Sprint(replaced.Id),
+		"--slug", "steal", "--summary", "A test rule.", "--rationale", "testing"); e.Code != api.CodeConflict ||
+		e.Message != fmt.Sprintf("memory #%d is project other's: a memory of project test cannot supersede it", replaced.Id) {
+		t.Fatalf("test memory superseding other's = %v, want CONFLICT naming both projects", e)
+	}
+
+	// A global memory may consolidate it upward.
+	global := &pb.Memory{}
+	c.ok(global, "memory", "add", "-s", "brave-otter", "--global", "--supersede", fmt.Sprint(replaced.Id),
+		"--slug", "everyone-rule", "--summary", "A rule for every project.", "--rationale", "applies everywhere")
+	if global.Scope != pb.MemoryScope_MEMORY_SCOPE_GLOBAL || !slices.Equal(global.SupersedesIds, []int32{replaced.Id}) {
+		t.Fatalf("global superseding other's = scope %v supersedes %v, want GLOBAL [%d]", global.Scope, global.SupersedesIds, replaced.Id)
+	}
+}
+
 func TestMCPServerIncludesMemoriesInInstructionsAndTools(t *testing.T) {
 	c := newCluster(t)
 	// Seed a global memory directly (user action, no session bound, auto-approved).

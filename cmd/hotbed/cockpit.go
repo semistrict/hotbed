@@ -12,10 +12,10 @@ import (
 )
 
 // cockpit is the controller's UI, which has a page for each session,
-// workspace, command, node, memory and question. Every such object a command
-// prints carries its page's URL (cockpit_url), made here from the address the
-// CLI calls the controller at: the controller does not know the name it is
-// reached by.
+// workspace, command, node, memory, question and issue. Every such object a
+// command prints carries its page's URL (cockpit_url), made here from the
+// address the CLI calls the controller at: the controller does not know the
+// name it is reached by.
 type cockpit struct {
 	// base is "http://HOST:PORT"; empty when the command calls no
 	// controller, and then nothing has a page.
@@ -59,6 +59,7 @@ var pages = map[protoreflect.FullName]struct{ kind, key protoreflect.Name }{
 	fullName(&pb.Node{}):             {"nodes", "hostname"},
 	fullName(&pb.Memory{}):           {"memories", "id"},
 	fullName(&pb.Question{}):         {"questions", "id"},
+	fullName(&pb.Issue{}):            {"issues", "id"},
 }
 
 func fullName(m proto.Message) protoreflect.FullName { return m.ProtoReflect().Descriptor().FullName() }

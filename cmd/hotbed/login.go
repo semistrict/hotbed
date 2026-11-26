@@ -291,7 +291,7 @@ func (c *orgMembersCmd) Exec(ctx context.Context, d deps) (any, error) {
 type orgInviteCmd struct {
 	controllerClient
 	Email string `arg:"" help:"Email address to invite to the active organization."`
-	Role  string `name:"role" default:"member" help:"Role slug to assign (e.g. member, admin)."`
+	Role  string `name:"role" default:"member" help:"Role slug to assign (e.g. viewer, member, admin)."`
 }
 
 func (c *orgInviteCmd) Exec(ctx context.Context, d deps) (any, error) {
