@@ -7,6 +7,7 @@ import (
 	"time"
 
 	pb "github.com/semistrict/hotbed/internal/gen/hotbed/v1"
+	"github.com/semistrict/hotbed/internal/worker"
 )
 
 // A node saturated with CPU pressure holds new work, and the CLI shows all
@@ -97,7 +98,10 @@ func TestAttachedRunReportsQueuedWaitReason(t *testing.T) {
 		followWaitPollInterval = origPoll
 	})
 
-	c := newCluster(t)
+	// The worker's own clock, so releasing the pressure need not wait out the
+	// CPU gate's window in real time.
+	workerClock := &clock{}
+	c := newCluster(t, func(cfg *worker.EngineConfig) { cfg.Now = workerClock.Now })
 	c.addRepo(upstream(t))
 	c.ok(nil, "session", "start", "wait-owl")
 	c.workspace("wait-owl", nil)
@@ -125,8 +129,10 @@ func TestAttachedRunReportsQueuedWaitReason(t *testing.T) {
 	// Give the follow watcher a couple of ticks to emit the queued status line.
 	time.Sleep(250 * time.Millisecond)
 
-	// Release admission pressure so the command runs and finishes cleanly.
+	// Release admission pressure so the command runs and finishes cleanly: the
+	// gate starts work again once a whole window has passed under its peak.
 	n.system.SetCPUPressure(0)
+	workerClock.advance(31 * time.Second)
 	n.engine.Sample()
 
 	res := <-done
