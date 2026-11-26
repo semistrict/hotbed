@@ -733,7 +733,6 @@ func TestProactiveGuestCacheReclaimUnderHostPressure(t *testing.T) {
 		Dir:        dir,
 		NodeID:     "node-vm",
 		Host:       "node-vm.tail.ts.net",
-		User:       "ramon",
 		BaseImage:  fake.BaseImage(store),
 		Store:      store,
 		Units:      &fake.Units{},
