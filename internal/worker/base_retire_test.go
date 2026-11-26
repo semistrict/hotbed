@@ -2,6 +2,7 @@ package worker
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
@@ -32,6 +33,7 @@ type fakeRetireCladefsClient struct {
 	nextCell        uint64
 	nextVersion     uint64
 	createErr       func(*cladefsdv1.CreateCellRequest) error
+	forkErr         func(*cladefsdv1.ForkCellRequest) error
 	deleteErr       func(*cladefsdv1.DeleteCellRequest) error
 }
 
@@ -47,6 +49,11 @@ func (f *fakeRetireCladefsClient) CreateCell(_ context.Context, req *cladefsdv1.
 
 func (f *fakeRetireCladefsClient) ForkCell(_ context.Context, req *cladefsdv1.ForkCellRequest, _ ...grpc.CallOption) (*cladefsdv1.ForkCellResponse, error) {
 	f.forkReqs = append(f.forkReqs, req)
+	if f.forkErr != nil {
+		if err := f.forkErr(req); err != nil {
+			return nil, err
+		}
+	}
 	f.nextCell++
 	return &cladefsdv1.ForkCellResponse{Tenant: req.GetTenant(), Cell: f.nextCell}, nil
 }
@@ -93,9 +100,9 @@ func TestBaseRetirerLifecycleAndPersistence(t *testing.T) {
 	var r baseRetirer
 	r.load(cacheDir)
 	r.setGrace(5 * time.Minute)
-	r.enqueue(0, 1001, "proj-old", t0)
+	r.enqueue(0, 1001, "baseimage-old", t0)
 	// Duplicate enqueue must not duplicate or push out RetireAfter.
-	r.enqueue(0, 1001, "proj-old", t0.Add(2*time.Minute))
+	r.enqueue(0, 1001, "baseimage-old", t0.Add(2*time.Minute))
 
 	// Before grace period elapses: nothing deleted.
 	r.sweep(ctx, store, t0.Add(4*time.Minute))
@@ -131,6 +138,30 @@ func TestBaseRetirerLifecycleAndPersistence(t *testing.T) {
 	}
 }
 
+// Project bases are the controller's to retire: a node's retire queue from
+// before keeps only its base images, since another node may now hold a
+// project base this node replaced.
+func TestBaseRetirerLeavesQueuedProjectBasesToTheController(t *testing.T) {
+	cacheDir := t.TempDir()
+	saved := []retiredBase{
+		{Cell: 1, BaseID: "baseimage-k1"},
+		{Cell: 2, BaseID: "demo-vm-12345678"},
+		{Cell: 3, BaseID: "demo-fuse-12345678"},
+	}
+	raw, err := json.Marshal(saved)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(cacheDir, retiredBasesFile), raw, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	var r baseRetirer
+	r.load(cacheDir)
+	if len(r.pending) != 1 || r.pending[0].Cell != 1 {
+		t.Fatalf("pending = %+v, want only the base image (cell 1)", r.pending)
+	}
+}
+
 func TestDeleteBucketCellTreatsAlreadyDeletedAsSuccess(t *testing.T) {
 	ctx := context.Background()
 	tmp := t.TempDir()
@@ -160,8 +191,11 @@ func TestDeleteBucketCellTreatsAlreadyDeletedAsSuccess(t *testing.T) {
 	}
 }
 
-func TestCladefsFUSEBackendRetiresSupersededBaseOnAdoptShared(t *testing.T) {
-	ctx := context.Background()
+// Adopting the cluster's up-to-date base deletes nothing: the base this node
+// held may be another node's, or forked from still, so only the controller,
+// which sees every node's held bases, says when a base cell goes.
+func TestAdoptingSharedBaseLeavesRetiringToTheController(t *testing.T) {
+	ctx := t.Context()
 	tmp := t.TempDir()
 	api := &fakeRetireCladefsClient{}
 	store, err := cladefs.NewStore(ctx, cladefs.Config{CellRoot: filepath.Join(tmp, "cells")}, api, nil, nil)
@@ -170,13 +204,11 @@ func TestCladefsFUSEBackendRetiresSupersededBaseOnAdoptShared(t *testing.T) {
 	}
 
 	b := &CladefsFUSEBackend{
-		workerDir:    tmp,
-		projectBases: map[string]*vmProjectBase{},
-		sharedBases:  map[string]*pb.CladefsCell{},
-		wsMounts:     map[string]fuseWSMount{},
+		workerDir: tmp,
+		wsMounts:  map[string]fuseWSMount{},
 	}
 	b.store.Store(store)
-	b.retirer.load(b.cacheDir())
+	b.loadState()
 	b.retirer.setGrace(0)
 
 	proj := &pb.HostedProject{
@@ -190,21 +222,20 @@ func TestCladefsFUSEBackendRetiresSupersededBaseOnAdoptShared(t *testing.T) {
 	heads := map[string]string{"cladefs": "deadbeef"}
 	newRecipe := fuseProjectRecipe(baseKey, proj, heads)
 
-	// Seed an older local cached base for the same project.
-	b.projectBases["cladefs"] = &vmProjectBase{
+	b.held.hold("cladefs", &projectBase{
 		Ref:    cladefs.CellRef{Tenant: 0, Cell: 500, Version: 1},
 		BaseID: "cladefs-fuse-old",
 		Recipe: "oldrecipe",
-	}
+	}, false, false)
 
-	shared := &pb.CladefsCell{
+	shared := &pb.SharedBase{Cell: &pb.CladefsCell{
 		Project: "cladefs",
 		BaseId:  "cladefs-fuse-new",
 		Recipe:  newRecipe,
 		Tenant:  0,
 		Cell:    501,
 		Version: 2,
-	}
+	}}
 	got, err := b.EnsureProjectBase(ctx, proj, heads, shared, spec, nil, nil, nil, nil)
 	if err != nil {
 		t.Fatalf("EnsureProjectBase: %v", err)
@@ -212,11 +243,13 @@ func TestCladefsFUSEBackendRetiresSupersededBaseOnAdoptShared(t *testing.T) {
 	if got.Ref.Cell != 501 {
 		t.Fatalf("adopted cell = %d, want 501", got.Ref.Cell)
 	}
-	if len(api.createReqs) != 1 || api.createReqs[0].GetCell() != 500 {
-		t.Fatalf("expected TakeCell for superseded cell 500, got %+v", api.createReqs)
+	b.ApplyHeartbeat(ctx, nil, nil, nil)
+	if len(api.createReqs) != 0 || len(api.deleteReqs) != 0 {
+		t.Fatalf("adopting deleted cells: takes=%+v deletes=%+v, want none", api.createReqs, api.deleteReqs)
 	}
-	if len(api.deleteReqs) != 1 {
-		t.Fatalf("expected DeleteCell for superseded cell 500, got %+v", api.deleteReqs)
+	_, _, held, _ := b.HeartbeatMeta()
+	if len(held) != 1 || held[0].GetCell().GetCell() != 501 {
+		t.Fatalf("held = %+v, want only cell 501", held)
 	}
 }
 
@@ -321,8 +354,6 @@ func TestCladefsFUSEBackendSetsUploadIntervalOnBaseBuilds(t *testing.T) {
 		mountRoot:       mountRoot,
 		mountStoresRoot: filepath.Join(tmp, "mount-stores"),
 		baseImages:      map[string]cladefs.CellRef{},
-		projectBases:    map[string]*vmProjectBase{},
-		sharedBases:     map[string]*pb.CladefsCell{},
 		wsMounts:        map[string]fuseWSMount{},
 	}
 	b.store.Store(store)
@@ -427,8 +458,6 @@ func TestVMBackendSetsUploadIntervalOnProjectBaseBuild(t *testing.T) {
 		mgr:            mgr,
 		baseImages:     map[string]cladefs.CellRef{},
 		wsCells:        map[string]cladefs.CellRef{},
-		projectBases:   map[string]*vmProjectBase{},
-		sharedBases:    map[string]*pb.CladefsCell{},
 		decommissioned: map[uint64]bool{},
 	}
 	b.store.Store(store)
@@ -483,8 +512,6 @@ func TestVMBackendSetsUploadIntervalOnProjectBaseBuild(t *testing.T) {
 		mgr:            mgr,
 		baseImages:     map[string]cladefs.CellRef{baseKey: {Tenant: 0, Cell: 850, Version: 3}},
 		wsCells:        map[string]cladefs.CellRef{},
-		projectBases:   map[string]*vmProjectBase{},
-		sharedBases:    map[string]*pb.CladefsCell{},
 		decommissioned: map[uint64]bool{},
 	}
 	b2.store.Store(store2)

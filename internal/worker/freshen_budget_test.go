@@ -231,8 +231,6 @@ func TestVMBackendFreshenCapFallbackAndDedupe(t *testing.T) {
 		mgr:            mgr,
 		baseImages:     map[string]cladefs.CellRef{},
 		wsCells:        map[string]cladefs.CellRef{},
-		projectBases:   map[string]*vmProjectBase{},
-		sharedBases:    map[string]*pb.CladefsCell{},
 		activeBuilds:   map[string]struct{}{},
 		decommissioned: map[uint64]bool{},
 	}
@@ -304,8 +302,8 @@ func TestVMBackendFreshenCapFallbackAndDedupe(t *testing.T) {
 	if res1.Base.SetupHash == "" {
 		t.Fatalf("expected SetupHash populated on warm base")
 	}
-	if _, _, shared := b.HeartbeatMeta(); len(shared) != 1 || shared[0].Runtime != runtime.KindVM {
-		t.Fatalf("sharedBases = %+v, want runtime=vm", shared)
+	if _, _, held, _ := b.HeartbeatMeta(); len(held) != 1 || held[0].GetCell().GetRuntime() != runtime.KindVM {
+		t.Fatalf("held bases = %+v, want runtime=vm", held)
 	}
 
 	// 2. Commit-only drift within minInterval (30m): skipped, returns warm base with empty note.
@@ -317,7 +315,7 @@ func TestVMBackendFreshenCapFallbackAndDedupe(t *testing.T) {
 	// 3. After 31m with AllowBackground=true: returns warm base IMMEDIATELY with DeferBackground=true
 	// EVEN WHILE projectLock is held by an in-flight background freshen!
 	now = now.Add(31 * time.Minute)
-	lock := b.projectLock(proj.Name)
+	lock := b.held.lock(proj.Name)
 	lock.Lock()
 	done := make(chan ensureBaseResult, 1)
 	go func() {
@@ -391,8 +389,6 @@ func TestCladefsFUSEBackendFreshenCapFallbackAndDedupe(t *testing.T) {
 		mountStoresRoot: filepath.Join(tmp, "mount-stores"),
 		decommissioned:  map[uint64]bool{},
 		baseImages:      map[string]cladefs.CellRef{},
-		projectBases:    map[string]*vmProjectBase{},
-		sharedBases:     map[string]*pb.CladefsCell{},
 		wsMounts:        map[string]fuseWSMount{},
 		clearNosuidFn:   func(string) error { return nil },
 		cleanupMount:    func(string, bool) {},
@@ -455,8 +451,8 @@ func TestCladefsFUSEBackendFreshenCapFallbackAndDedupe(t *testing.T) {
 	if err != nil || runs.Load() != 1 {
 		t.Fatalf("cold cladefs ensureProjectBase = (%+v, %v, runs=%d)", res1, err, runs.Load())
 	}
-	if _, _, shared := b.HeartbeatMeta(); len(shared) != 1 || shared[0].Runtime != runtime.KindCladefs {
-		t.Fatalf("sharedBases = %+v, want runtime=cladefs", shared)
+	if _, _, held, _ := b.HeartbeatMeta(); len(held) != 1 || held[0].GetCell().GetRuntime() != runtime.KindCladefs {
+		t.Fatalf("held bases = %+v, want runtime=cladefs", held)
 	}
 
 	// 2. OOM failure on structural step change falls back to warm base and suppresses retry!
@@ -484,7 +480,7 @@ func TestCladefsFUSEBackendFreshenCapFallbackAndDedupe(t *testing.T) {
 
 	// 4. R2 shared base adoption (Fast Path 2) clears local failure state at 0 build cost!
 	recipeC3 := fuseProjectRecipe(baseKey, proj2, map[string]string{"app": "c3"})
-	adopted, err := b.ensureProjectBase(ctx, proj2, map[string]string{"app": "c3"}, &pb.CladefsCell{
+	adopted, err := b.ensureProjectBase(ctx, proj2, map[string]string{"app": "c3"}, &pb.SharedBase{Cell: &pb.CladefsCell{
 		Project: "demo",
 		Arch:    "arm64",
 		BaseId:  "demo-fuse-adopted",
@@ -493,7 +489,7 @@ func TestCladefsFUSEBackendFreshenCapFallbackAndDedupe(t *testing.T) {
 		Tenant:  0,
 		Cell:    7777,
 		Version: 99,
-	}, spec, nil, runFreshen, nil, nil, opts(true))
+	}}, spec, nil, runFreshen, nil, nil, opts(true))
 	if err != nil || adopted.Base.BaseID != "demo-fuse-adopted" || runs.Load() != 2 {
 		t.Fatalf("R2 adoption = (%+v, %v, runs=%d), want demo-fuse-adopted with runs=2", adopted, err, runs.Load())
 	}

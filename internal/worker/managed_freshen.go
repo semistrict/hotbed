@@ -65,7 +65,7 @@ type managedFreshenSpec struct {
 	CreatedAt   int64
 	PrepSeconds float64
 	PrepPhases  []*pb.FreshenPhase
-	PrevBase    *vmProjectBase
+	PrevBase    *projectBase
 	StepsToRun  []*pb.Step
 	Heads       map[string]string
 	Script      string
@@ -169,8 +169,8 @@ printf '::hotbed-head:: %s %%s\n' "$(git -C %q rev-parse HEAD)"
 }
 
 // plannedManagedSteps builds the initial AppliedStep list for a VM or
-// cladefs-FUSE base build from the previous vmProjectBase (if any).
-func plannedManagedSteps(p *pb.HostedProject, prev *vmProjectBase, run []*pb.Step) []*pb.AppliedStep {
+// cladefs-FUSE base build from the previous projectBase (if any).
+func plannedManagedSteps(p *pb.HostedProject, prev *projectBase, run []*pb.Step) []*pb.AppliedStep {
 	var prevPB *pb.Base
 	if prev != nil && len(prev.StepHashes) > 0 {
 		prevPB = &pb.Base{}
@@ -230,7 +230,7 @@ func (e *Engine) setPreparingWorkspaceBase(wsID, baseID string) {
 
 // recordWarmCladefsBase ensures an adopted or cached warm R2 project base has a
 // warm record in e.bases so project bases listings and workspace views know it.
-func (e *Engine) recordWarmCladefsBase(p *pb.HostedProject, pbBase *vmProjectBase, arch string) {
+func (e *Engine) recordWarmCladefsBase(p *pb.HostedProject, pbBase *projectBase, arch string) {
 	if p == nil || pbBase == nil || pbBase.BaseID == "" || pbBase.Ref.Cell == 0 {
 		return
 	}

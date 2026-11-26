@@ -126,8 +126,6 @@ func TestCladefsFUSEBackendDetachCleanupForceAndTimeout(t *testing.T) {
 		mountRoot:       mountRoot,
 		mountStoresRoot: filepath.Join(tmp, "mount-stores"),
 		baseImages:      map[string]cladefs.CellRef{},
-		projectBases:    map[string]*vmProjectBase{},
-		sharedBases:     map[string]*pb.CladefsCell{},
 		wsMounts:        map[string]fuseWSMount{},
 		detachTimeout:   80 * time.Millisecond,
 		cleanupMount: func(dir string, syncFS bool) {

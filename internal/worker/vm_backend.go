@@ -47,12 +47,10 @@ type VMBackend struct {
 	incarnation uint64
 
 	baseMu         sync.Mutex // serializes base image provisioning
-	projectLocks   sync.Map   // project -> *sync.Mutex
+	held           heldBases  // the project bases this node hands out
 	mu             sync.Mutex
 	baseImages     map[string]cladefs.CellRef // vmBaseKey -> cached R2 base cell ref
 	wsCells        map[string]cladefs.CellRef // wsID -> forked cell ref
-	projectBases   map[string]*vmProjectBase  // project -> warm project base in R2
-	sharedBases    map[string]*pb.CladefsCell // project -> advertised R2 shared base
 	activeBuilds   map[string]struct{}        // in-flight base-* / prov-* VM IDs owned by this worker
 	lastPeers      []string
 	decommissioned map[uint64]bool
@@ -63,22 +61,11 @@ type VMBackend struct {
 	boots sync.Map
 }
 
-type vmProjectBase struct {
-	Ref          cladefs.CellRef   `json:"ref"`
-	BaseID       string            `json:"baseId"`
-	Recipe       string            `json:"recipe"`
-	BaseKey      string            `json:"baseKey,omitempty"`
-	SetupHash    string            `json:"setupHash,omitempty"`
-	ScratchEpoch int64             `json:"scratchEpoch,omitempty"`
-	Repos        map[string]string `json:"repos"`                // repoID -> checked-out HEAD commit
-	StepHashes   map[string]string `json:"stepHashes,omitempty"` // step name -> last executed script hash
-}
-
 // selectProjectBaseSteps returns the subset of p's setup steps that must run
 // when freshening from prev (nil for a cold build from the OS base image).
 // On an incremental freshen, steps whose script hash changed (or that are new)
 // always run, and --every-pull steps run whenever any repo commit moved.
-func selectProjectBaseSteps(p *pb.HostedProject, prev *vmProjectBase, heads map[string]string) []*pb.Step {
+func selectProjectBaseSteps(p *pb.HostedProject, prev *projectBase, heads map[string]string) []*pb.Step {
 	steps := p.GetSteps()
 	if prev == nil || prev.StepHashes == nil {
 		return steps
@@ -211,8 +198,6 @@ func OpenVMBackend(ctx context.Context, workerDir string, cfg statedir.VMConfig,
 		incarnation:    inc,
 		baseImages:     map[string]cladefs.CellRef{},
 		wsCells:        map[string]cladefs.CellRef{},
-		projectBases:   map[string]*vmProjectBase{},
-		sharedBases:    map[string]*pb.CladefsCell{},
 		activeBuilds:   map[string]struct{}{},
 		decommissioned: map[uint64]bool{},
 	}
@@ -274,11 +259,12 @@ func (b *VMBackend) cacheDir() string {
 
 func (b *VMBackend) loadCachedBases() {
 	b.retirer.load(b.cacheDir())
+	wantTenant := b.cfg.TenantID
+	b.held.load(b.cacheDir(), wantTenant)
 	ents, err := os.ReadDir(b.cacheDir())
 	if err != nil {
 		return
 	}
-	wantTenant := b.cfg.TenantID
 	for _, ent := range ents {
 		if !strings.HasSuffix(ent.Name(), ".json") {
 			continue
@@ -295,24 +281,6 @@ func (b *VMBackend) loadCachedBases() {
 					b.baseImages = map[string]cladefs.CellRef{}
 				}
 				b.baseImages[key] = ref
-			}
-			continue
-		}
-		if proj, ok := strings.CutPrefix(ent.Name(), "project-"); ok {
-			proj = strings.TrimSuffix(proj, ".json")
-			var pbBase vmProjectBase
-			if json.Unmarshal(raw, &pbBase) == nil && pbBase.Ref.Cell > 0 && pbBase.Ref.Version > 0 && pbBase.Ref.Tenant == wantTenant {
-				b.projectBases[proj] = &pbBase
-				b.sharedBases[proj] = &pb.CladefsCell{
-					Project: proj,
-					Arch:    goruntime.GOARCH,
-					BaseId:  pbBase.BaseID,
-					Recipe:  pbBase.Recipe,
-					Runtime: runtime.KindVM,
-					Tenant:  pbBase.Ref.Tenant,
-					Cell:    pbBase.Ref.Cell,
-					Version: pbBase.Ref.Version,
-				}
 			}
 		}
 	}
@@ -360,15 +328,13 @@ func (b *VMBackend) Runtimes() []string {
 	return []string{runtime.KindVM}
 }
 
-// HeartbeatMeta returns cladefs peer address, incarnation, and advertised R2
-// shared bases for HeartbeatRequest.
-func (b *VMBackend) HeartbeatMeta() (peerAddr string, incarnation uint64, sharedBases []*pb.CladefsCell) {
+// HeartbeatMeta returns the cladefs peer address, incarnation, the project
+// bases held here and the base cells retired since, for HeartbeatRequest.
+func (b *VMBackend) HeartbeatMeta() (peerAddr string, incarnation uint64, held []*pb.SharedBase, retired []*pb.CladefsCell) {
+	held, retired = b.held.report(runtime.KindVM)
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	for _, sb := range b.sharedBases {
-		sharedBases = append(sharedBases, clone(sb))
-	}
-	return b.cfg.CladefsPeerAddr, b.incarnation, sharedBases
+	return b.cfg.CladefsPeerAddr, b.incarnation, held, retired
 }
 
 // SampleObjectStore fetches cumulative cladefsd R2 object-store counters.
@@ -655,9 +621,10 @@ func objectStoreStatsFromCounters(resp interface {
 	return out
 }
 
-// ApplyHeartbeat reconciles cladefs peer mesh (SetPeers) and retired-host
-// decommissioning (DecommissionHost) from HeartbeatResponse.
-func (b *VMBackend) ApplyHeartbeat(ctx context.Context, peers []string, decommission []uint64) {
+// ApplyHeartbeat reconciles cladefs peer mesh (SetPeers), retired-host
+// decommissioning (DecommissionHost) and the project base cells to retire
+// from HeartbeatResponse.
+func (b *VMBackend) ApplyHeartbeat(ctx context.Context, peers []string, decommission []uint64, retire []*pb.CladefsCell) {
 	st := b.currentStore()
 	if st == nil {
 		return
@@ -701,6 +668,7 @@ func (b *VMBackend) ApplyHeartbeat(ctx context.Context, peers []string, decommis
 			b.mu.Unlock()
 		}
 	}
+	b.held.retire(ctx, st, retire)
 	b.retirer.sweep(ctx, st, time.Now())
 }
 
@@ -954,28 +922,22 @@ func vmProjectRecipe(baseKey string, p *pb.HostedProject, heads map[string]strin
 	return hex.EncodeToString(h.Sum(nil))[:16]
 }
 
-func (b *VMBackend) projectLock(name string) *sync.Mutex {
-	mu, _ := b.projectLocks.LoadOrStore(name, &sync.Mutex{})
-	return mu.(*sync.Mutex)
-}
-
-// EnsureProjectBase builds (or reuses from local cache / R2 shared_bases) a
-// warm cladefs project base with all project repos checked out at heads under
-// /work/<repo> and setup steps executed inside a Firecracker VM, then uploads
-// it to R2 and publishes it in sharedBases for heartbeat advertisement.
-// When an existing project base matches baseKey and ScratchEpoch, it forks
-// incrementally from that base and runs only new/changed and --every-pull steps.
+// EnsureProjectBase returns a warm project base for p's workspaces: the one
+// this node holds or the cluster's newest (shared), whichever is up to date,
+// or a new one built on top of the newer of them in a Firecracker VM, with
+// every repo at its head under /work/<repo> and the steps that need to run run,
+// and uploaded to the shared bucket.
 func (b *VMBackend) EnsureProjectBase(
 	ctx context.Context,
 	p *pb.HostedProject,
 	heads map[string]string,
-	existingShared *pb.CladefsCell,
+	shared *pb.SharedBase,
 	spec baseimage.Spec,
 	sandboxEnv []string,
 	onBaseTarget func(baseID string),
 	runFreshen managedFreshenRunner,
-) (*vmProjectBase, error) {
-	res, err := b.ensureProjectBase(ctx, p, heads, existingShared, spec, sandboxEnv, onBaseTarget, runFreshen, ensureBaseOpts{})
+) (*projectBase, error) {
+	res, err := b.ensureProjectBase(ctx, p, heads, shared, spec, sandboxEnv, onBaseTarget, runFreshen, ensureBaseOpts{})
 	return res.Base, err
 }
 
@@ -983,192 +945,59 @@ func (b *VMBackend) ensureProjectBase(
 	ctx context.Context,
 	p *pb.HostedProject,
 	heads map[string]string,
-	existingShared *pb.CladefsCell,
+	shared *pb.SharedBase,
 	spec baseimage.Spec,
 	sandboxEnv []string,
 	onBaseTarget func(baseID string),
 	runFreshen managedFreshenRunner,
 	opts ensureBaseOpts,
 ) (ensureBaseResult, error) {
-	nowFn := opts.Now
-	if nowFn == nil {
-		nowFn = time.Now
-	}
 	spec = spec.Normalized()
 	baseKey := b.vmBaseKey(spec)
 	recipe := vmProjectRecipe(baseKey, p, heads)
-	setupHash := projectSetupHash(p)
-	baseID := fmt.Sprintf("%s-vm-%s", p.GetName(), recipe[:8])
-
-	wantTenant := b.configSnapshot().TenantID
+	tenant := b.configSnapshot().TenantID
 	if st := b.currentStore(); st != nil {
-		wantTenant = st.TenantID()
+		tenant = st.TenantID()
 	}
-	canAdoptShared := existingShared != nil &&
-		existingShared.Cell > 0 &&
-		existingShared.Version > 0 &&
-		existingShared.Recipe == recipe &&
-		existingShared.Tenant == wantTenant
+	return b.held.ensure(ctx, baseRequest{
+		project:      p,
+		heads:        heads,
+		shared:       shared,
+		runtime:      runtime.KindVM,
+		tenant:       tenant,
+		baseKey:      baseKey,
+		recipe:       recipe,
+		baseID:       fmt.Sprintf("%s-vm-%s", p.GetName(), recipe[:8]),
+		onBaseTarget: onBaseTarget,
+		opts:         opts,
+		build: func(ctx context.Context, plan basePlan) (builtBase, error) {
+			return b.buildProjectBase(ctx, p, heads, spec, baseKey, sandboxEnv, runFreshen, plan)
+		},
+	})
+}
 
-	// Lock-free fast check BEFORE acquiring projectLock: if an up-to-date base
-	// exists, or if this is commit-only drift on a structurally valid warm base
-	// that should be skipped or deferred to the background, return immediately
-	// without blocking behind an in-flight background freshen.
-	b.mu.Lock()
-	var fastCur *vmProjectBase
-	if cur := b.projectBases[p.GetName()]; cur != nil && cur.Ref.Cell > 0 && cur.Ref.Version > 0 {
-		cp := *cur
-		fastCur = &cp
-	}
-	b.mu.Unlock()
-	if fastCur != nil && fastCur.Recipe == recipe {
-		b.retirer.sweep(ctx, b.currentStore(), time.Now())
-		return ensureBaseResult{Base: fastCur}, nil
-	}
-	if opts.Budget != nil {
-		fastDrift, fastCold := vmBaseHasStructuralDrift(p, fastCur, baseKey)
-		fastRequired := fastCur == nil || fastCold != "" || fastDrift
-		if !fastRequired && fastCur != nil && !canAdoptShared {
-			dec := opts.Budget.decide(
-				nowFn(), p.GetName(), runtime.KindVM, recipe, setupHash,
-				p.GetScratchEpoch(), fastCur.BaseID, true, false, opts.AllowBackground, opts.Background,
-			)
-			switch dec.action {
-			case freshenActionSkip:
-				if dec.throttledUntilMs > 0 {
-					slog.Info("skipping optional VM base freshen (throttled)",
-						"project", p.GetName(), "warmBase", fastCur.BaseID,
-						"nextAllowedAt", time.UnixMilli(dec.throttledUntilMs).Format(time.RFC3339))
-				}
-				return ensureBaseResult{Base: fastCur, Note: dec.note}, nil
-			case freshenActionDeferBackground:
-				return ensureBaseResult{Base: fastCur, DeferBackground: true}, nil
-			}
-		} else if fastRequired && opts.OnRequireBuild != nil {
-			opts.OnRequireBuild()
-		}
-	}
-
-	lock := b.projectLock(p.GetName())
-	lock.Lock()
-	defer lock.Unlock()
-
-	// Fast path 1: local cached project base matches recipe (including repo HEADs).
-	b.mu.Lock()
-	cur := b.projectBases[p.GetName()]
-	if cur != nil && cur.Recipe == recipe && cur.Ref.Cell > 0 && cur.Ref.Version > 0 {
-		out := *cur
-		b.mu.Unlock()
-		b.retirer.sweep(ctx, b.currentStore(), time.Now())
-		return ensureBaseResult{Base: &out}, nil
-	}
-	var fallbackBase *vmProjectBase
-	if cur != nil && cur.Ref.Cell > 0 && cur.Ref.Version > 0 {
-		cp := *cur
-		fallbackBase = &cp
-	}
-	structuralDrift, coldReason := vmBaseHasStructuralDrift(p, fallbackBase, baseKey)
-	var prevBase *vmProjectBase
-	if fallbackBase != nil && coldReason == "" {
-		cp := *fallbackBase
-		prevBase = &cp
-	}
-	b.mu.Unlock()
-
-	// Fast path 2: controller advertised an up-to-date shared base in R2!
-	if canAdoptShared {
-		repos := make(map[string]string, len(heads))
-		for k, v := range heads {
-			repos[k] = v
-		}
-		adopted := &vmProjectBase{
-			Ref: cladefs.CellRef{
-				Tenant:  existingShared.Tenant,
-				Cell:    existingShared.Cell,
-				Version: existingShared.Version,
-			},
-			BaseID:       cmp.Or(existingShared.BaseId, p.GetName()+"-vm-"+recipe[:8]),
-			Recipe:       recipe,
-			BaseKey:      baseKey,
-			SetupHash:    setupHash,
-			ScratchEpoch: p.GetScratchEpoch(),
-			Repos:        repos,
-			StepHashes:   projectStepHashes(p),
-		}
-		if fallbackBase != nil && fallbackBase.Ref.Cell > 0 && fallbackBase.Ref.Cell != adopted.Ref.Cell {
-			b.retirer.enqueue(fallbackBase.Ref.Tenant, fallbackBase.Ref.Cell, fallbackBase.BaseID, time.Now())
-		}
-		b.mu.Lock()
-		b.projectBases[p.GetName()] = adopted
-		b.sharedBases[p.GetName()] = &pb.CladefsCell{
-			Project: p.GetName(),
-			Arch:    goruntime.GOARCH,
-			BaseId:  adopted.BaseID,
-			Recipe:  recipe,
-			Runtime: runtime.KindVM,
-			Tenant:  adopted.Ref.Tenant,
-			Cell:    adopted.Ref.Cell,
-			Version: adopted.Ref.Version,
-		}
-		b.mu.Unlock()
-		b.saveCacheJSON("project-"+p.GetName()+".json", adopted)
-		opts.Budget.recordAdopted(p.GetName(), runtime.KindVM)
-		b.retirer.sweep(ctx, b.currentStore(), time.Now())
-		return ensureBaseResult{Base: adopted}, nil
-	}
-
-	required := fallbackBase == nil || coldReason != "" || structuralDrift
-	if opts.Budget != nil {
-		prevID := ""
-		if fallbackBase != nil {
-			prevID = fallbackBase.BaseID
-		}
-		dec := opts.Budget.decide(
-			nowFn(), p.GetName(), runtime.KindVM, recipe, setupHash,
-			p.GetScratchEpoch(), prevID, fallbackBase != nil, required, opts.AllowBackground, opts.Background,
-		)
-		switch dec.action {
-		case freshenActionSkip:
-			if fallbackBase != nil {
-				if dec.throttledUntilMs > 0 {
-					slog.Info("skipping optional VM base freshen (throttled)",
-						"project", p.GetName(), "warmBase", fallbackBase.BaseID,
-						"nextAllowedAt", time.UnixMilli(dec.throttledUntilMs).Format(time.RFC3339))
-				}
-				return ensureBaseResult{Base: fallbackBase, Note: dec.note}, nil
-			}
-			return ensureBaseResult{}, dec.err
-		case freshenActionDeferBackground:
-			return ensureBaseResult{Base: fallbackBase, DeferBackground: true}, nil
-		}
-	}
-
-	if onBaseTarget != nil {
-		onBaseTarget(baseID)
-	}
-
-	failBuild := func(cmdID, summary string, stepFailed bool, activeDur time.Duration, origErr error) (ensureBaseResult, error) {
-		shutdown := ctx.Err() != nil
-		opts.Budget.recordFailure(
-			nowFn(), p.GetName(), runtime.KindVM, recipe, setupHash,
-			p.GetScratchEpoch(), baseID, cmdID, summary,
-			stepFailed, fallbackBase != nil, shutdown, activeDur,
-		)
-		if fallbackBase != nil && !opts.Background && !shutdown {
-			slog.Warn("VM project base freshen failed; falling back to existing warm base",
-				"project", p.GetName(), "failedBase", baseID, "fallbackBase", fallbackBase.BaseID, "err", origErr)
-			return ensureBaseResult{
-				Base: fallbackBase,
-				Note: freshenFallbackNote(fallbackBase.BaseID, summary),
-			}, nil
-		}
-		return ensureBaseResult{}, origErr
+// buildProjectBase builds plan's base: it forks the base to build on (or the
+// provisioned base image), boots a Firecracker VM on the fork, freshens the
+// repos and runs the steps that need to run in it, and uploads the result.
+func (b *VMBackend) buildProjectBase(
+	ctx context.Context,
+	p *pb.HostedProject,
+	heads map[string]string,
+	spec baseimage.Spec,
+	baseKey string,
+	sandboxEnv []string,
+	runFreshen managedFreshenRunner,
+	plan basePlan,
+) (builtBase, error) {
+	baseID, prevBase := plan.baseID, plan.prev
+	fail := func(cmdID, summary string, stepFailed bool, active time.Duration, err error) (builtBase, error) {
+		return builtBase{}, &baseBuildError{cmdID: cmdID, summary: summary, stepFailed: stepFailed, active: active, err: err}
 	}
 
 	vmID := "base-" + baseID
 	if b.mgr != nil {
 		if err := b.mgr.EnsureNotRunning(ctx, vmID); err != nil {
-			return failBuild("", fmt.Sprintf("base %s failed: %v", baseID, err), false, 0, fmt.Errorf("prepare VM project base %s: %w", baseID, err))
+			return fail("", fmt.Sprintf("base %s failed: %v", baseID, err), false, 0, fmt.Errorf("prepare VM project base %s: %w", baseID, err))
 		}
 	}
 
@@ -1177,7 +1006,6 @@ func (b *VMBackend) ensureProjectBase(
 	var prepPhases []*pb.FreshenPhase
 	fromBaseID := ""
 
-	// Prefer incremental fork from the previous warm project base when compatible.
 	var forkRef cladefs.CellRef
 	var err error
 	if prevBase != nil {
@@ -1186,31 +1014,25 @@ func (b *VMBackend) ensureProjectBase(
 		forkRef, err = b.currentStore().ForkVersion(ctx, prevBase.Ref, false)
 		if err != nil {
 			if ctx.Err() != nil {
-				return failBuild("", fmt.Sprintf("base %s cancelled: %v", baseID, err), false, time.Since(prepStart), err)
+				return fail("", fmt.Sprintf("base %s cancelled: %v", baseID, err), false, time.Since(prepStart), err)
 			}
-			slog.Warn("incremental VM project base fork failed; falling back to cold base",
-				"project", p.GetName(), "prevBase", prevBase.BaseID, "err", err)
-			prevBase = nil
-			fallbackBase = nil
-			coldReason = "incremental_fork_failed"
-		} else {
-			forkEndMs := time.Now().UnixMilli()
-			fromBaseID = prevBase.BaseID
-			prepPhases = append(prepPhases, &pb.FreshenPhase{
-				Name:      "fork",
-				StartedAt: forkStartMs,
-				EndedAt:   &forkEndMs,
-				Seconds:   time.Since(forkStart).Seconds(),
-				Detail:    "from " + prevBase.BaseID,
-			})
+			return builtBase{}, &incrementalForkError{err: err}
 		}
-	}
-	if prevBase == nil {
+		forkEndMs := time.Now().UnixMilli()
+		fromBaseID = prevBase.BaseID
+		prepPhases = append(prepPhases, &pb.FreshenPhase{
+			Name:      "fork",
+			StartedAt: forkStartMs,
+			EndedAt:   &forkEndMs,
+			Seconds:   time.Since(forkStart).Seconds(),
+			Detail:    "from " + prevBase.BaseID,
+		})
+	} else {
 		imgStart := time.Now()
 		imgStartMs := imgStart.UnixMilli()
 		baseImgRef, berr := b.EnsureProvisionedBaseImage(ctx, spec)
 		if berr != nil {
-			return failBuild("", fmt.Sprintf("base %s failed: %v", baseID, berr), false, time.Since(prepStart), berr)
+			return fail("", fmt.Sprintf("base %s failed: %v", baseID, berr), false, time.Since(prepStart), berr)
 		}
 		imgEndMs := time.Now().UnixMilli()
 		prepPhases = append(prepPhases, &pb.FreshenPhase{
@@ -1224,7 +1046,7 @@ func (b *VMBackend) ensureProjectBase(
 		forkStartMs := forkStart.UnixMilli()
 		forkRef, err = b.currentStore().ForkVersion(ctx, baseImgRef, false)
 		if err != nil {
-			return failBuild("", fmt.Sprintf("base %s failed: %v", baseID, err), false, time.Since(prepStart), fmt.Errorf("fork VM project base %s: %w", baseID, err))
+			return fail("", fmt.Sprintf("base %s failed: %v", baseID, err), false, time.Since(prepStart), fmt.Errorf("fork VM project base %s: %w", baseID, err))
 		}
 		forkEndMs := time.Now().UnixMilli()
 		prepPhases = append(prepPhases, &pb.FreshenPhase{
@@ -1244,18 +1066,18 @@ func (b *VMBackend) ensureProjectBase(
 	takeStartMs := takeStart.UnixMilli()
 	if err := b.currentStore().SyncCell(ctx, forkRef.Tenant, forkRef.Cell); err != nil {
 		b.cleanupCell(ctx, forkRef.Tenant, forkRef.Cell)
-		return failBuild("", fmt.Sprintf("base %s failed: %v", baseID, err), false, time.Since(prepStart), fmt.Errorf("sync forked VM project base %s: %w", baseID, err))
+		return fail("", fmt.Sprintf("base %s failed: %v", baseID, err), false, time.Since(prepStart), fmt.Errorf("sync forked VM project base %s: %w", baseID, err))
 	}
 	if err := b.currentStore().DropCell(ctx, forkRef.Tenant, forkRef.Cell); err != nil {
 		b.cleanupCell(ctx, forkRef.Tenant, forkRef.Cell)
-		return failBuild("", fmt.Sprintf("base %s failed: %v", baseID, err), false, time.Since(prepStart), fmt.Errorf("drop forked VM project base %s before take: %w", baseID, err))
+		return fail("", fmt.Sprintf("base %s failed: %v", baseID, err), false, time.Since(prepStart), fmt.Errorf("drop forked VM project base %s before take: %w", baseID, err))
 	}
 	takenRef, err := b.currentStore().TakeCell(ctx, forkRef.Tenant, forkRef.Cell, cfg.DiskBytes, nil, baseBuildUploadInterval)
 	if err != nil {
 		cctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
 		_ = b.currentStore().DeleteBucketCell(cctx, forkRef.Tenant, forkRef.Cell)
 		cancel()
-		return failBuild("", fmt.Sprintf("base %s failed: %v", baseID, err), false, time.Since(prepStart), fmt.Errorf("re-open VM project base %s with upload interval: %w", baseID, err))
+		return fail("", fmt.Sprintf("base %s failed: %v", baseID, err), false, time.Since(prepStart), fmt.Errorf("re-open VM project base %s with upload interval: %w", baseID, err))
 	}
 	forkRef = takenRef
 	takeEndMs := time.Now().UnixMilli()
@@ -1301,13 +1123,13 @@ func (b *VMBackend) ensureProjectBase(
 		handle, err = runFreshen(ctx, managedFreshenSpec{
 			Project:     p,
 			BaseID:      baseID,
-			Recipe:      recipe,
+			Recipe:      plan.recipe,
 			Arch:        goruntime.GOARCH,
 			Runtime:     runtime.KindVM,
 			Cold:        prevBase == nil,
-			ColdReason:  coldReason,
+			ColdReason:  plan.coldReason,
 			FromBaseID:  fromBaseID,
-			Optional:    !required,
+			Optional:    !plan.required,
 			CreatedAt:   createdAt,
 			PrepSeconds: prepSeconds,
 			PrepPhases:  prepPhases,
@@ -1347,7 +1169,7 @@ func (b *VMBackend) ensureProjectBase(
 		if err != nil {
 			untrack()
 			b.cleanupCell(ctx, forkRef.Tenant, forkRef.Cell)
-			return failBuild("", fmt.Sprintf("base %s failed: %v", baseID, err), false, activeDuration(), fmt.Errorf("queue VM project base %s: %w", baseID, err))
+			return fail("", fmt.Sprintf("base %s failed: %v", baseID, err), false, activeDuration(), fmt.Errorf("queue VM project base %s: %w", baseID, err))
 		}
 		var waitErr error
 		freshenRes, waitErr = handle.Wait(ctx)
@@ -1382,7 +1204,7 @@ func (b *VMBackend) ensureProjectBase(
 			freshenRes.FinalizeSeconds = finalizeSeconds
 			handle.Finish(false, freshenRes, cladefs.CellRef{}, waitErr.Error())
 			summary := managedFreshenFailureSummary(baseID, handle.CommandID(), freshenRes, waitErr.Error())
-			return failBuild(handle.CommandID(), summary, freshenRes.StepFailed, activeDuration(), fmt.Errorf("freshen VM project base %s (command %s): %w", baseID, handle.CommandID(), waitErr))
+			return fail(handle.CommandID(), summary, freshenRes.StepFailed, activeDuration(), fmt.Errorf("freshen VM project base %s (command %s): %w", baseID, handle.CommandID(), waitErr))
 		}
 		if freshenRes.State != succeeded {
 			if stopErr == nil {
@@ -1392,14 +1214,14 @@ func (b *VMBackend) ensureProjectBase(
 			freshenRes.FinalizeSeconds = finalizeSeconds
 			handle.Finish(false, freshenRes, cladefs.CellRef{}, detail)
 			summary := managedFreshenFailureSummary(baseID, handle.CommandID(), freshenRes, detail)
-			return failBuild(handle.CommandID(), summary, freshenRes.StepFailed, activeDuration(), fmt.Errorf("freshen VM project base %s failed (command %s): %s", baseID, handle.CommandID(), detail))
+			return fail(handle.CommandID(), summary, freshenRes.StepFailed, activeDuration(), fmt.Errorf("freshen VM project base %s failed (command %s): %s", baseID, handle.CommandID(), detail))
 		}
 		if stopErr != nil {
 			freshenRes.FinalizeSeconds = finalizeSeconds
 			detail := fmt.Sprintf("stop project base VM %s: %v", vmID, stopErr)
 			handle.Finish(false, freshenRes, cladefs.CellRef{}, detail)
 			summary := managedFreshenFailureSummary(baseID, handle.CommandID(), freshenRes, detail)
-			return failBuild(handle.CommandID(), summary, false, activeDuration(), fmt.Errorf("stop project base VM %s: %w", vmID, stopErr))
+			return fail(handle.CommandID(), summary, false, activeDuration(), fmt.Errorf("stop project base VM %s: %w", vmID, stopErr))
 		}
 		repoHeads = freshenRes.RepoHeads
 	} else {
@@ -1412,7 +1234,7 @@ func (b *VMBackend) ensureProjectBase(
 		}); err != nil {
 			untrack()
 			b.cleanupCell(ctx, forkRef.Tenant, forkRef.Cell)
-			return failBuild("", fmt.Sprintf("base %s failed: %v", baseID, err), false, activeDuration(), fmt.Errorf("boot project base VM %s: %w", vmID, err))
+			return fail("", fmt.Sprintf("base %s failed: %v", baseID, err), false, activeDuration(), fmt.Errorf("boot project base VM %s: %w", vmID, err))
 		}
 		env := append([]string{}, cacheEnv()...)
 		env = append(env, sandboxEnv...)
@@ -1430,10 +1252,10 @@ func (b *VMBackend) ensureProjectBase(
 			if stopErr == nil {
 				b.cleanupCell(ctx, forkRef.Tenant, forkRef.Cell)
 			}
-			return failBuild("", fmt.Sprintf("base %s failed: %v", baseID, runErr), false, activeDuration(), fmt.Errorf("freshen VM project base %s: %w", baseID, runErr))
+			return fail("", fmt.Sprintf("base %s failed: %v", baseID, runErr), false, activeDuration(), fmt.Errorf("freshen VM project base %s: %w", baseID, runErr))
 		}
 		if stopErr != nil {
-			return failBuild("", fmt.Sprintf("base %s failed: %v", baseID, stopErr), false, activeDuration(), fmt.Errorf("stop project base VM %s: %w", vmID, stopErr))
+			return fail("", fmt.Sprintf("base %s failed: %v", baseID, stopErr), false, activeDuration(), fmt.Errorf("stop project base VM %s: %w", vmID, stopErr))
 		}
 		repoHeads = map[string]string{}
 		for _, line := range strings.Split(out, "\n") {
@@ -1461,55 +1283,14 @@ func (b *VMBackend) ensureProjectBase(
 		detail := fmt.Sprintf("sync to R2: %v", err)
 		handle.Finish(false, freshenRes, cladefs.CellRef{}, detail)
 		summary := managedFreshenFailureSummary(baseID, handle.CommandID(), freshenRes, detail)
-		return failBuild(handle.CommandID(), summary, false, activeDuration(), fmt.Errorf("sync VM project base %s to R2: %w", baseID, err))
+		return fail(handle.CommandID(), summary, false, activeDuration(), fmt.Errorf("sync VM project base %s to R2: %w", baseID, err))
 	}
 	// Drop the local project base cell directory now that it is durable in R2;
 	// local SSD stays strictly a cache (CLADEFSD_PART_CACHE) + active workspaces.
 	_ = b.currentStore().DropCell(ctx, forkRef.Tenant, forkRef.Cell)
 	forkRef.Version = ver
 	handle.Finish(true, freshenRes, forkRef, "")
-	opts.Budget.recordSuccess(nowFn(), p.GetName(), runtime.KindVM, activeDuration())
-
-	if len(repoHeads) == 0 && len(heads) > 0 {
-		repoHeads = make(map[string]string, len(heads))
-		for k, v := range heads {
-			repoHeads[k] = v
-		}
-	}
-
-	res := &vmProjectBase{
-		Ref:          forkRef,
-		BaseID:       baseID,
-		Recipe:       recipe,
-		BaseKey:      baseKey,
-		SetupHash:    setupHash,
-		ScratchEpoch: p.GetScratchEpoch(),
-		Repos:        repoHeads,
-		StepHashes:   projectStepHashes(p),
-	}
-	b.mu.Lock()
-	superseded := b.projectBases[p.GetName()]
-	b.projectBases[p.GetName()] = res
-	b.sharedBases[p.GetName()] = &pb.CladefsCell{
-		Project: p.GetName(),
-		Arch:    goruntime.GOARCH,
-		BaseId:  baseID,
-		Recipe:  recipe,
-		Runtime: runtime.KindVM,
-		Tenant:  forkRef.Tenant,
-		Cell:    forkRef.Cell,
-		Version: forkRef.Version,
-	}
-	b.mu.Unlock()
-	b.saveCacheJSON("project-"+p.GetName()+".json", res)
-	if superseded != nil && superseded.Ref.Cell > 0 && superseded.Ref.Cell != forkRef.Cell {
-		b.retirer.enqueue(superseded.Ref.Tenant, superseded.Ref.Cell, superseded.BaseID, time.Now())
-	}
-	b.retirer.sweep(ctx, b.currentStore(), time.Now())
-	slog.Info("VM project base built and published to R2",
-		"project", p.GetName(), "baseId", baseID, "incremental", prevBase != nil,
-		"optional", !required, "steps", len(stepsToRun), "cell", forkRef.Cell, "version", forkRef.Version)
-	return ensureBaseResult{Base: res}, nil
+	return builtBase{ref: forkRef, repoHeads: repoHeads, steps: len(stepsToRun), active: activeDuration()}, nil
 }
 
 // PrepareWorkspace forks an ephemeral workspace cell from baseRef (reads come
@@ -1821,7 +1602,7 @@ func (b *VMBackend) ReconnectCladefs(ctx context.Context) (uint64, error) {
 		_ = old.Close()
 	}
 	if len(prevPeers) > 0 {
-		b.ApplyHeartbeat(ctx, prevPeers, nil)
+		b.ApplyHeartbeat(ctx, prevPeers, nil, nil)
 	}
 	return inc, nil
 }
@@ -1897,6 +1678,9 @@ func (e *Engine) createVMWorkspace(ctx context.Context, req *pb.CreateWorkspaceR
 		var cell *pb.CladefsCell
 		if err == nil {
 			cell, err = e.cfg.VM.PrepareWorkspace(bgCtx, req.Id, projBase.Ref, req.GetFencingToken())
+			if cladefs.IsGone(err) {
+				e.cfg.VM.held.forget(p.Name, projBase.Ref)
+			}
 		}
 		forkMs := e.now().Sub(start).Milliseconds()
 

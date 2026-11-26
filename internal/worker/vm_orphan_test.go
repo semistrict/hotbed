@@ -184,8 +184,6 @@ func newTestVMBackend(t *testing.T, api *strictVMCladefsClient, fl *fakeVMLaunch
 		mgr:            mgr,
 		baseImages:     map[string]cladefs.CellRef{},
 		wsCells:        map[string]cladefs.CellRef{},
-		projectBases:   map[string]*vmProjectBase{},
-		sharedBases:    map[string]*pb.CladefsCell{},
 		activeBuilds:   map[string]struct{}{},
 		decommissioned: map[uint64]bool{},
 	}

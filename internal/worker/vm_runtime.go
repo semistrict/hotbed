@@ -278,9 +278,9 @@ func (e *Engine) applyCladefsHeartbeat(ctx context.Context, reply *pb.HeartbeatR
 		return
 	}
 	if e.cfg.VM != nil {
-		e.cfg.VM.ApplyHeartbeat(ctx, reply.GetCladefsPeers(), reply.GetDecommissionIncarnations())
+		e.cfg.VM.ApplyHeartbeat(ctx, reply.GetCladefsPeers(), reply.GetDecommissionIncarnations(), reply.GetRetireBases())
 	} else if e.cfg.CladefsFUSE != nil {
-		e.cfg.CladefsFUSE.ApplyHeartbeat(ctx, reply.GetCladefsPeers(), reply.GetDecommissionIncarnations())
+		e.cfg.CladefsFUSE.ApplyHeartbeat(ctx, reply.GetCladefsPeers(), reply.GetDecommissionIncarnations(), reply.GetRetireBases())
 	}
 }
 

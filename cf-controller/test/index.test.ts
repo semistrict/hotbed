@@ -59,6 +59,7 @@ import {
 	ScheduledCommandSchema,
 	ScheduleService,
 	SessionService,
+	SharedBaseSchema,
 	StepSchema,
 	TraceCommandChunkSchema,
 	WorkerConfigSchema,
@@ -782,15 +783,18 @@ describe("Cloudflare Workers single-DO hotbed controller", () => {
 				usage: create(NodeUsageSchema, { cpuBusy: 0.1, memoryUsedBytes: BigInt(4 * 1024 ** 3) }),
 				cladefsPeerAddr: "100.73.156.10:9185",
 				cladefsIncarnation: 111n,
-				sharedBases: [
-					create(CladefsCellSchema, {
-						project: "clade-demo",
-						arch: "amd64",
-						baseId: "clade-demo-g1",
-						recipe: "r1",
-						tenant: 0n,
-						cell: 42n,
-						version: 7n,
+				heldBases: [
+					create(SharedBaseSchema, {
+						cell: create(CladefsCellSchema, {
+							project: "clade-demo",
+							arch: "amd64",
+							baseId: "clade-demo-g1",
+							recipe: "r1",
+							runtime: "vm",
+							tenant: 0n,
+							cell: 42n,
+							version: 7n,
+						}),
 					}),
 				],
 			}),
@@ -902,8 +906,8 @@ describe("Cloudflare Workers single-DO hotbed controller", () => {
 			expect(created.runtime).toBe("vm");
 			expect(captured.length).toBe(1);
 			expect(captured[0].runtime).toBe("vm");
-			expect(captured[0].sharedBase?.cell).toBe(42n);
-			expect(captured[0].sharedBase?.version).toBe(7n);
+			expect(captured[0].sharedBase?.cell?.cell).toBe(42n);
+			expect(captured[0].sharedBase?.cell?.version).toBe(7n);
 			expect(captured[0].fencingToken).toBeGreaterThan(0n);
 
 			// Second session gets strictly higher monotonic fencing token
@@ -1956,16 +1960,18 @@ describe("Security, cron, daemon logs, tunnel, and workspace regression tests", 
 					memoryBytes: BigInt(16 * 1024 ** 3),
 					runtimes: ["vm"],
 				}),
-				sharedBases: [
-					create(CladefsCellSchema, {
-						project: "iso-proj",
-						arch: "arm64",
-						baseId: "iso-proj-vm-11111111",
-						recipe: "vm-recipe-1",
-						runtime: "vm",
-						tenant: 0n,
-						cell: 101n,
-						version: 11n,
+				heldBases: [
+					create(SharedBaseSchema, {
+						cell: create(CladefsCellSchema, {
+							project: "iso-proj",
+							arch: "arm64",
+							baseId: "iso-proj-vm-11111111",
+							recipe: "vm-recipe-1",
+							runtime: "vm",
+							tenant: 0n,
+							cell: 101n,
+							version: 11n,
+						}),
 					}),
 				],
 			}),
@@ -1980,16 +1986,18 @@ describe("Security, cron, daemon logs, tunnel, and workspace regression tests", 
 					memoryBytes: BigInt(16 * 1024 ** 3),
 					runtimes: ["cladefs"],
 				}),
-				sharedBases: [
-					create(CladefsCellSchema, {
-						project: "iso-proj",
-						arch: "arm64",
-						baseId: "iso-proj-fuse-22222222",
-						recipe: "fuse-recipe-1",
-						runtime: "cladefs",
-						tenant: 0n,
-						cell: 202n,
-						version: 22n,
+				heldBases: [
+					create(SharedBaseSchema, {
+						cell: create(CladefsCellSchema, {
+							project: "iso-proj",
+							arch: "arm64",
+							baseId: "iso-proj-fuse-22222222",
+							recipe: "fuse-recipe-1",
+							runtime: "cladefs",
+							tenant: 0n,
+							cell: 202n,
+							version: 22n,
+						}),
 					}),
 				],
 			}),
@@ -2042,10 +2050,149 @@ describe("Security, cron, daemon logs, tunnel, and workspace regression tests", 
 			});
 			expect(capturedVM).toHaveLength(1);
 			// Must receive the arm64 VM shared base (cell 101), NOT the newer cladefs cell (202)!
-			expect(capturedVM[0].sharedBase?.cell).toBe(101n);
-			expect(capturedVM[0].sharedBase?.runtime).toBe("vm");
+			expect(capturedVM[0].sharedBase?.cell?.cell).toBe(101n);
+			expect(capturedVM[0].sharedBase?.cell?.runtime).toBe("vm");
 		} finally {
 			vmTunnel.close();
+		}
+	});
+
+	it("keeps one chain of shared bases per project, arch and runtime, and retires replaced bases no worker holds", async () => {
+		const owner = ownerClients();
+		const a = workerClients(OWNER_TOKEN, "node-chain-a", "chain-a", "100.73.157.1:7121");
+		const b = workerClients(OWNER_TOKEN, "node-chain-b", "chain-b", "100.73.157.2:7121");
+		const j = await a.cluster.join({});
+		await b.cluster.join({});
+		const stub = env.CONTROLLER.getByName("default");
+		let clock = Date.now();
+		const tenantBefore = await runInDurableObject(stub, async (instance) => {
+			// eslint-disable-next-line @typescript-eslint/no-explicit-any
+			const ctrl = (instance as any).ctrl;
+			ctrl.nowFn = () => clock;
+			return ctrl.cladefsTenantId as bigint | null;
+		});
+		const base = (cell: bigint, tenant = 0n) =>
+			create(SharedBaseSchema, {
+				cell: create(CladefsCellSchema, {
+					project: "chain-proj",
+					arch: "arm64",
+					baseId: `chain-proj-vm-${cell}`,
+					recipe: `r${cell}`,
+					runtime: "vm",
+					tenant,
+					cell,
+					version: 1n,
+				}),
+				repos: { "chain-proj": `c${cell}` },
+			});
+		const beat = async (
+			w: ReturnType<typeof workerClients>,
+			held: ReturnType<typeof base>[],
+			retired: bigint[] = [],
+		) => {
+			const hb = await w.cluster.heartbeat(
+				create(HeartbeatRequestSchema, {
+					clusterId: j.clusterId,
+					resources: create(ResourcesSchema, {
+						arch: "arm64",
+						cpus: 8,
+						memoryBytes: BigInt(16 * 1024 ** 3),
+						runtimes: ["vm"],
+					}),
+					heldBases: held,
+					retiredBases: retired.map((c) => base(c).cell!),
+				}),
+			);
+			return hb.retireBases.map((c) => c.cell);
+		};
+		const latest = () =>
+			runInDurableObject(
+				stub,
+				async (instance) =>
+					// eslint-disable-next-line @typescript-eslint/no-explicit-any
+					(instance as any).store.latestSharedBase("chain-proj", "arm64", 0n, "vm")?.cell?.cell,
+			);
+		try {
+			// a builds base 1; b takes it up; a builds base 2 on it.
+			await beat(a, [base(1n)]);
+			await beat(b, [base(1n)]);
+			expect(await beat(a, [base(2n)])).toEqual([]);
+			expect(await latest()).toBe(2n);
+
+			// The newest is the one heard of last, whoever heartbeats last.
+			await beat(b, [base(1n)]);
+			expect(await latest()).toBe(2n);
+
+			// b still holds base 1, so it stays, however long.
+			clock += 60 * 60_000;
+			await beat(b, [base(1n)]);
+			expect(await beat(a, [base(2n)])).toEqual([]);
+
+			// b moves to base 2: base 1, held by nobody, stays through the grace...
+			await beat(b, [base(2n)]);
+			clock += 14 * 60_000;
+			expect(await beat(a, [base(2n)])).toEqual([]);
+
+			// ...then its builder, a, is asked to retire it; b is not.
+			clock += 2 * 60_000;
+			expect(await beat(b, [base(2n)])).toEqual([]);
+			expect(await beat(a, [base(2n)])).toEqual([1n]);
+
+			// a retired it, and is asked no more.
+			await beat(a, [base(2n)], [1n]);
+			expect(await beat(a, [base(2n)])).toEqual([]);
+
+			// The newest base stays, held or not.
+			await beat(a, []);
+			await beat(b, []);
+			clock += 60 * 60_000;
+			await beat(b, []);
+			expect(await beat(a, [])).toEqual([]);
+			expect(await latest()).toBe(2n);
+
+			// A base replaced just now stays through the grace, however long
+			// nobody held it: some node may be forking it as the newest.
+			await beat(a, [base(3n)]);
+			expect(await beat(a, [base(3n)])).toEqual([]);
+			clock += 16 * 60_000;
+			expect(await beat(a, [base(3n)])).toEqual([2n]);
+			await beat(a, [base(3n)], [2n]);
+
+			// A heartbeat that cannot say which bases its worker holds (its cladefs
+			// runtime is down) keeps the holds it last reported.
+			await beat(a, [base(4n)]);
+			await beat(b, [base(3n)]);
+			await b.cluster.heartbeat(
+				create(HeartbeatRequestSchema, {
+					clusterId: j.clusterId,
+					resources: create(ResourcesSchema, { arch: "arm64", cpus: 8, runtimes: [] }),
+				}),
+			);
+			clock += 60 * 60_000;
+			expect(await beat(a, [base(4n)])).toEqual([]);
+
+			// The bases a retired node built pass to the next node that heartbeats:
+			// b deletes base 3 once a is gone and b no longer holds it.
+			clock += 10 * 60_000;
+			await beat(b, [base(4n)]);
+			await owner.cluster.retireNode({ node: "chain-a" });
+			clock += 16 * 60_000;
+			expect(await beat(b, [base(4n)])).toEqual([3n]);
+
+			// A base of another tenant is no base of this controller's.
+			await runInDurableObject(stub, async (instance) => {
+				// eslint-disable-next-line @typescript-eslint/no-explicit-any
+				(instance as any).ctrl.cladefsTenantId = 0n;
+			});
+			await beat(b, [base(4n), base(5n, 7n)]);
+			expect(await latest()).toBe(4n);
+		} finally {
+			await runInDurableObject(stub, async (instance) => {
+				// eslint-disable-next-line @typescript-eslint/no-explicit-any
+				const ctrl = (instance as any).ctrl;
+				ctrl.nowFn = () => Date.now();
+				ctrl.cladefsTenantId = tenantBefore;
+			});
 		}
 	});
 

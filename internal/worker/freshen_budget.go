@@ -501,9 +501,9 @@ func projectSetupHash(p *pb.HostedProject) string {
 	return hex.EncodeToString(h.Sum(nil))[:16]
 }
 
-// vmBaseHasStructuralDrift reports whether prev cannot structurally satisfy p
+// baseHasStructuralDrift reports whether prev cannot structurally satisfy p
 // (ignoring commit-only movement on existing repos).
-func vmBaseHasStructuralDrift(p *pb.HostedProject, prev *vmProjectBase, baseKey string) (drift bool, coldReason string) {
+func baseHasStructuralDrift(p *pb.HostedProject, prev *projectBase, baseKey string) (drift bool, coldReason string) {
 	if prev == nil || prev.Ref.Cell == 0 || prev.Ref.Version == 0 {
 		return true, "no_previous_base"
 	}
@@ -601,7 +601,7 @@ func managedFreshenFailureSummary(baseID, cmdID string, res managedFreshenResult
 }
 
 type ensureBaseResult struct {
-	Base            *vmProjectBase
+	Base            *projectBase
 	Note            string
 	DeferBackground bool
 }
@@ -609,7 +609,7 @@ type ensureBaseResult struct {
 type pendingOptionalFreshen struct {
 	project     *pb.HostedProject
 	runtime     string
-	sharedBase  *pb.CladefsCell
+	sharedBase  *pb.SharedBase
 	requestedAt time.Time
 }
 
@@ -672,7 +672,7 @@ func (e *Engine) recordUserActivityLocked(now time.Time) {
 
 // scheduleOptionalFreshen queues a lightweight deferred optional base freshen
 // to run in the background once the node has been quiet for policy.IdleDelay.
-func (e *Engine) scheduleOptionalFreshen(p *pb.HostedProject, rt string, shared *pb.CladefsCell) {
+func (e *Engine) scheduleOptionalFreshen(p *pb.HostedProject, rt string, shared *pb.SharedBase) {
 	if p == nil || p.GetName() == "" {
 		return
 	}
@@ -687,7 +687,7 @@ func (e *Engine) scheduleOptionalFreshen(p *pb.HostedProject, rt string, shared 
 	if e.pendingFreshens == nil {
 		e.pendingFreshens = map[string]*pendingOptionalFreshen{}
 	}
-	var sb *pb.CladefsCell
+	var sb *pb.SharedBase
 	if shared != nil {
 		sb = clone(shared)
 	}

@@ -15,7 +15,6 @@ import {
 	ActorKind,
 	BaseFreshenSchema,
 	BaseSchema,
-	CladefsCellSchema,
 	ClusterEventSchema,
 	CommandDiagnosticsSchema,
 	CommandProfileSchema,
@@ -68,6 +67,7 @@ import {
 	SessionEventSchema,
 	SessionSchema,
 	SessionWorkspaceSchema,
+	SharedBaseSchema,
 	StampSchema,
 	WorkerConfigSchema,
 	WorkspaceSchema,
@@ -98,6 +98,7 @@ import {
 	type MemoryIndexEntry,
 	type MemoryProvenance,
 	type Node,
+	type SharedBase,
 	type PlacementDecision,
 	type Project,
 	type ProjectChange,
@@ -1031,7 +1032,11 @@ export class ControllerStore {
 	}
 
 	retireNode(id: string, atMs: number): void {
-		this.sql.exec("UPDATE nodes SET retired_at = ? WHERE id = ?", atMs, id);
+		this.transactionSync(() => {
+			this.sql.exec("UPDATE nodes SET retired_at = ? WHERE id = ?", atMs, id);
+			// A node gone for good holds no base any more.
+			this.sql.exec("DELETE FROM shared_base_holders WHERE node_id = ?", id);
+		});
 	}
 
 	hasNode(id: string): boolean {
@@ -3628,123 +3633,158 @@ export class ControllerStore {
 		return next;
 	}
 
-	private inferSharedBaseRuntime(explicit: string, baseId: string, nodeRuntimes: string[]): string {
-		if (explicit === "vm" || explicit === "cladefs") return explicit;
-		if (baseId.includes("-vm-")) return "vm";
-		if (baseId.includes("-fuse-")) return "cladefs";
-		const valid = nodeRuntimes.filter((r) => r === "vm" || r === "cladefs");
-		if (valid.length === 1) return valid[0];
-		return "";
-	}
-
-	upsertSharedBases(
+	/**
+	 * Records the project bases a worker holds (HeartbeatRequest.held_bases)
+	 * and the base cells it retired since its last heartbeat. A base heard of
+	 * for the first time is the newest of its chain, replacing the one before
+	 * it, and its holder's to delete once it goes; the bases of retired nodes
+	 * pass to this one, which can delete them as well: the bucket is shared.
+	 */
+	recordHeldBases(
 		nodeId: string,
 		arch: string,
-		cells: CladefsCell[],
+		held: SharedBase[],
+		retired: CladefsCell[],
 		nowMs: number,
 		allowedTenant?: bigint | null,
-		nodeRuntimes: string[] = [],
 	): void {
-		if (cells.length === 0) return;
 		this.transactionSync(() => {
-			for (const c of cells) {
-				if (!c.project || c.cell === 0n || c.version === 0n) continue;
+			for (const c of retired) {
+				this.sql.exec(
+					"DELETE FROM shared_bases WHERE tenant = ? AND cell = ? AND node_id = ?",
+					c.tenant.toString(),
+					c.cell.toString(),
+					nodeId,
+				);
+			}
+			this.sql.exec("DELETE FROM shared_base_holders WHERE node_id = ?", nodeId);
+			for (const b of held) {
+				const c = b.cell;
+				if (!c?.project || c.cell === 0n || c.version === 0n) continue;
+				if (c.runtime !== "vm" && c.runtime !== "cladefs") continue;
 				if (allowedTenant !== undefined && allowedTenant !== null && c.tenant !== allowedTenant) {
 					continue;
 				}
 				const cellArch = c.arch || arch;
 				if (!cellArch) continue;
-				const cellRuntime = this.inferSharedBaseRuntime(c.runtime, c.baseId ?? "", nodeRuntimes);
+				const tenant = c.tenant.toString();
+				const cell = c.cell.toString();
+				const known =
+					this.sql
+						.exec("SELECT 1 FROM shared_bases WHERE tenant = ? AND cell = ?", tenant, cell)
+						.toArray().length > 0;
+				if (!known) {
+					this.sql.exec(
+						`UPDATE shared_bases SET replaced_at = ?
+						 WHERE project = ? AND arch = ? AND runtime = ? AND tenant = ? AND replaced_at IS NULL`,
+						nowMs,
+						c.project,
+						cellArch,
+						c.runtime,
+						tenant,
+					);
+					this.sql.exec(
+						`INSERT INTO shared_bases (tenant, cell, project, arch, runtime, seen_at, base, node_id)
+						 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+						tenant,
+						cell,
+						c.project,
+						cellArch,
+						c.runtime,
+						nowMs,
+						marshal(SharedBaseSchema, b),
+						nodeId,
+					);
+				}
 				this.sql.exec(
-					`INSERT INTO shared_bases (project, arch, recipe, base_id, runtime, tenant, cell, version, node_id, updated_at)
-					 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-					 ON CONFLICT (project, arch, recipe) DO UPDATE SET
-						base_id = excluded.base_id,
-						runtime = CASE WHEN excluded.runtime != '' THEN excluded.runtime ELSE shared_bases.runtime END,
-						tenant = excluded.tenant,
-						cell = excluded.cell,
-						version = excluded.version,
-						node_id = excluded.node_id,
-						updated_at = excluded.updated_at`,
-					c.project,
-					cellArch,
-					c.recipe ?? "",
-					c.baseId ?? "",
-					cellRuntime,
-					c.tenant.toString(),
-					c.cell.toString(),
-					c.version.toString(),
+					"INSERT OR IGNORE INTO shared_base_holders (node_id, tenant, cell) VALUES (?, ?, ?)",
 					nodeId,
-					nowMs,
+					tenant,
+					cell,
 				);
 			}
+			this.sql.exec(
+				"UPDATE shared_bases SET node_id = ? WHERE node_id IN (SELECT id FROM nodes WHERE retired_at IS NOT NULL)",
+				nodeId,
+			);
+			const isHeld = `EXISTS (SELECT 1 FROM shared_base_holders h
+				WHERE h.tenant = shared_bases.tenant AND h.cell = shared_bases.cell)`;
+			this.sql.exec(
+				`UPDATE shared_bases SET unheld_since = NULL WHERE unheld_since IS NOT NULL AND ${isHeld}`,
+			);
+			this.sql.exec(
+				`UPDATE shared_bases SET unheld_since = ? WHERE unheld_since IS NULL AND NOT ${isHeld}`,
+				nowMs,
+			);
 		});
 	}
 
+	/**
+	 * The base cells for nodeId to delete from the shared bucket: a newer base
+	 * of the same project, arch and runtime replaced each at least graceMs ago,
+	 * and no worker has held it for graceMs. The newest base of each chain is
+	 * kept, held or not.
+	 */
+	basesToRetire(nodeId: string, nowMs: number, graceMs: number): CladefsCell[] {
+		const before = nowMs - graceMs;
+		return this.sql
+			.exec(
+				`SELECT base FROM shared_bases
+				 WHERE node_id = ? AND replaced_at <= ? AND unheld_since <= ?
+				 ORDER BY seen_at`,
+				nodeId,
+				before,
+				before,
+			)
+			.toArray()
+			.map((r) => unmarshal(SharedBaseSchema, str(r.base)).cell)
+			.filter((c): c is CladefsCell => c !== undefined);
+	}
+
+	/**
+	 * The newest base of project for arch and runtime: the one a node forks
+	 * its workspaces from, or builds the next base on.
+	 */
 	latestSharedBase(
 		project: string,
 		arch: string,
-		allowedTenant?: bigint | null,
-		runtime?: string,
-	): CladefsCell | undefined {
-		if (!project || !arch) return undefined;
-		const conds = ["project = ?", "arch = ?"];
-		const params: SqlStorageValue[] = [project, arch];
-		if (allowedTenant !== undefined && allowedTenant !== null) {
-			conds.push("tenant = ?");
-			params.push(allowedTenant.toString());
-		}
-		if (runtime === "vm") {
-			conds.push("(runtime = 'vm' OR (runtime = '' AND base_id LIKE '%-vm-%'))");
-		} else if (runtime === "cladefs") {
-			conds.push("(runtime = 'cladefs' OR (runtime = '' AND base_id LIKE '%-fuse-%'))");
-		}
-		const rows = this.sql
-			.exec(
-				`SELECT project, arch, recipe, base_id, runtime, tenant, cell, version
-				 FROM shared_bases
-				 WHERE ${conds.join(" AND ")}
-				 ORDER BY updated_at DESC LIMIT 1`,
-				...params,
-			)
-			.toArray();
-		if (rows.length === 0) return undefined;
-		const r = rows[0];
-		return create(CladefsCellSchema, {
-			project: str(r.project),
-			arch: str(r.arch),
-			recipe: str(r.recipe),
-			baseId: str(r.base_id),
-			runtime: str(r.runtime),
-			tenant: BigInt(str(r.tenant)),
-			cell: BigInt(str(r.cell)),
-			version: BigInt(str(r.version)),
-		});
+		allowedTenant: bigint | null | undefined,
+		runtime: string,
+	): SharedBase | undefined {
+		const rows = this.sharedBaseRows(project, arch, allowedTenant, runtime, "base");
+		return rows.length > 0 ? unmarshal(SharedBaseSchema, str(rows[0].base)) : undefined;
 	}
 
 	hasSharedBase(
 		project: string,
 		arch: string,
-		allowedTenant?: bigint | null,
-		runtime?: string,
+		allowedTenant: bigint | null | undefined,
+		runtime: string,
 	): boolean {
-		if (!project || !arch) return false;
-		const conds = ["project = ?", "arch = ?"];
-		const params: SqlStorageValue[] = [project, arch];
+		return this.sharedBaseRows(project, arch, allowedTenant, runtime, "1").length > 0;
+	}
+
+	private sharedBaseRows(
+		project: string,
+		arch: string,
+		allowedTenant: bigint | null | undefined,
+		runtime: string,
+		what: string,
+	) {
+		if (!project || !arch || !runtime) return [];
+		const conds = ["project = ?", "arch = ?", "runtime = ?"];
+		const params: SqlStorageValue[] = [project, arch, runtime];
 		if (allowedTenant !== undefined && allowedTenant !== null) {
 			conds.push("tenant = ?");
 			params.push(allowedTenant.toString());
 		}
-		if (runtime === "vm") {
-			conds.push("(runtime = 'vm' OR (runtime = '' AND base_id LIKE '%-vm-%'))");
-		} else if (runtime === "cladefs") {
-			conds.push("(runtime = 'cladefs' OR (runtime = '' AND base_id LIKE '%-fuse-%'))");
-		}
-		return (
-			this.sql
-				.exec(`SELECT 1 FROM shared_bases WHERE ${conds.join(" AND ")} LIMIT 1`, ...params)
-				.toArray().length > 0
-		);
+		return this.sql
+			.exec(
+				`SELECT ${what} AS base FROM shared_bases
+				 WHERE replaced_at IS NULL AND ${conds.join(" AND ")} LIMIT 1`,
+				...params,
+			)
+			.toArray();
 	}
 
 	hasLegacyTenantZeroData(): boolean {

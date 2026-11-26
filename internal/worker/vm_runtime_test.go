@@ -602,7 +602,7 @@ func TestProjectBaseRecipesAndIncrementalStepSelection(t *testing.T) {
 	}
 
 	// Incremental freshen when only repo HEAD moved runs only --every-pull steps.
-	prev := &vmProjectBase{
+	prev := &projectBase{
 		Repos:      map[string]string{"cladefs": "aaa111"},
 		StepHashes: map[string]string{"deps": "h-deps", "build": "h-build"},
 	}
