@@ -92,29 +92,19 @@ func (g *GuestRuntime) StartCommand(ctx context.Context, wsID string, spec Comma
 	return err
 }
 
-// vmExitChecker is optionally implemented by a GuestResolver that can report
-// whether a workspace's Firecracker VMM process has already exited (e.g. exit
-// 158 on cladefsd restart or exit 159 on DAX fault).
-type vmExitChecker interface {
-	VMExited(ctx context.Context, wsID string) (exited bool, exitCode int)
+// VMExitReporter is optionally implemented by a GuestResolver that can tell
+// how a workspace's Firecracker process ended (e.g. exit 158 on losing
+// cladefsd, signal 9 from systemd-oomd or cladefsd letting it go).
+type VMExitReporter interface {
+	// VMExit reports how wsID's VM ended, or false while it runs.
+	VMExit(ctx context.Context, wsID string) (unit.VMExit, bool)
 }
 
-// vmExitStatusChecker is optionally implemented by a GuestResolver that can
-// report rich systemd exit details (OOM kill, signal, result) when a
-// workspace's Firecracker VMM process exits.
-type vmExitStatusChecker interface {
-	VMExitStatus(ctx context.Context, wsID string) (exited bool, exitCode, signal int, result string, oomKilled bool)
-}
-
-func (g *GuestRuntime) vmExitStatus(ctx context.Context, wsID string) (exited bool, exitCode, signal int, result string, oomKilled bool) {
-	if c, ok := g.vms.(vmExitStatusChecker); ok {
-		return c.VMExitStatus(ctx, wsID)
+func (g *GuestRuntime) vmExit(ctx context.Context, wsID string) (unit.VMExit, bool) {
+	if r, ok := g.vms.(VMExitReporter); ok {
+		return r.VMExit(ctx, wsID)
 	}
-	if c, ok := g.vms.(vmExitChecker); ok {
-		ex, code := c.VMExited(ctx, wsID)
-		return ex, code, 0, "", false
-	}
-	return false, 0, 0, "", false
+	return unit.VMExit{}, false
 }
 
 func (g *GuestRuntime) StatusMany(ctx context.Context, wsID string, ids []string) (map[string]CommandStatus, error) {
@@ -147,20 +137,12 @@ func (g *GuestRuntime) StatusMany(ctx context.Context, wsID string, ids []string
 		err = rerr
 	}
 	if len(ids) > 0 {
-		if exited, code, sig, res, oom := g.vmExitStatus(ctx, wsID); exited {
-			if code == 0 && sig == 0 && !oom {
-				code = 137
-			}
+		// The guest cannot be asked, and its VM has ended: every command in
+		// it ended with it, each with no exit of its own to report.
+		if ex, ended := g.vmExit(ctx, wsID); ended {
 			out := make(map[string]CommandStatus, len(ids))
 			for _, id := range ids {
-				out[id] = CommandStatus{
-					ID:        id,
-					Exited:    true,
-					ExitCode:  code,
-					Signal:    sig,
-					Result:    res,
-					OOMKilled: oom,
-				}
+				out[id] = CommandStatus{ID: id, Exited: true, VMExit: &ex}
 			}
 			return out, nil
 		}
@@ -176,7 +158,7 @@ func (g *GuestRuntime) StopCommand(ctx context.Context, wsID, cmdID string, grac
 			return nil
 		}
 	}
-	if exited, _, _, _, _ := g.vmExitStatus(ctx, wsID); exited {
+	if _, ended := g.vmExit(ctx, wsID); ended {
 		return nil
 	}
 	return err

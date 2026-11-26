@@ -1,7 +1,7 @@
 {
 	"version": "6",
 	"dialect": "sqlite",
-	"id": "526f6bb9-ecd8-42a4-b2e7-5d29d4e51279",
+	"id": "94d9d0c9-11c9-4d47-8f08-bf7126391a45",
 	"prevId": "b49b8233-77c8-4747-af7b-a9980f75d7e9",
 	"tables": {
 		"api_tokens": {
@@ -392,69 +392,6 @@
 			},
 			"foreignKeys": {},
 			"compositePrimaryKeys": {},
-			"uniqueConstraints": {},
-			"checkConstraints": {}
-		},
-		"command_samples": {
-			"name": "command_samples",
-			"columns": {
-				"command_id": {
-					"name": "command_id",
-					"type": "text",
-					"primaryKey": false,
-					"notNull": true,
-					"autoincrement": false
-				},
-				"seq": {
-					"name": "seq",
-					"type": "integer",
-					"primaryKey": false,
-					"notNull": true,
-					"autoincrement": false
-				},
-				"node_id": {
-					"name": "node_id",
-					"type": "text",
-					"primaryKey": false,
-					"notNull": true,
-					"autoincrement": false
-				},
-				"created_at": {
-					"name": "created_at",
-					"type": "integer",
-					"primaryKey": false,
-					"notNull": true,
-					"autoincrement": false
-				},
-				"meta": {
-					"name": "meta",
-					"type": "text",
-					"primaryKey": false,
-					"notNull": true,
-					"autoincrement": false
-				},
-				"doc": {
-					"name": "doc",
-					"type": "blob",
-					"primaryKey": false,
-					"notNull": true,
-					"autoincrement": false
-				}
-			},
-			"indexes": {
-				"command_samples_created": {
-					"name": "command_samples_created",
-					"columns": ["created_at"],
-					"isUnique": false
-				}
-			},
-			"foreignKeys": {},
-			"compositePrimaryKeys": {
-				"command_samples_command_id_seq_pk": {
-					"columns": ["command_id", "seq"],
-					"name": "command_samples_command_id_seq_pk"
-				}
-			},
 			"uniqueConstraints": {},
 			"checkConstraints": {}
 		},
@@ -2272,99 +2209,6 @@
 				}
 			},
 			"compositePrimaryKeys": {},
-			"uniqueConstraints": {},
-			"checkConstraints": {}
-		},
-		"shared_bases": {
-			"name": "shared_bases",
-			"columns": {
-				"project": {
-					"name": "project",
-					"type": "text",
-					"primaryKey": false,
-					"notNull": true,
-					"autoincrement": false
-				},
-				"arch": {
-					"name": "arch",
-					"type": "text",
-					"primaryKey": false,
-					"notNull": true,
-					"autoincrement": false
-				},
-				"recipe": {
-					"name": "recipe",
-					"type": "text",
-					"primaryKey": false,
-					"notNull": true,
-					"autoincrement": false,
-					"default": "''"
-				},
-				"base_id": {
-					"name": "base_id",
-					"type": "text",
-					"primaryKey": false,
-					"notNull": true,
-					"autoincrement": false
-				},
-				"runtime": {
-					"name": "runtime",
-					"type": "text",
-					"primaryKey": false,
-					"notNull": true,
-					"autoincrement": false,
-					"default": "''"
-				},
-				"tenant": {
-					"name": "tenant",
-					"type": "text",
-					"primaryKey": false,
-					"notNull": true,
-					"autoincrement": false
-				},
-				"cell": {
-					"name": "cell",
-					"type": "text",
-					"primaryKey": false,
-					"notNull": true,
-					"autoincrement": false
-				},
-				"version": {
-					"name": "version",
-					"type": "text",
-					"primaryKey": false,
-					"notNull": true,
-					"autoincrement": false
-				},
-				"node_id": {
-					"name": "node_id",
-					"type": "text",
-					"primaryKey": false,
-					"notNull": true,
-					"autoincrement": false
-				},
-				"updated_at": {
-					"name": "updated_at",
-					"type": "integer",
-					"primaryKey": false,
-					"notNull": true,
-					"autoincrement": false
-				}
-			},
-			"indexes": {
-				"shared_bases_project_arch": {
-					"name": "shared_bases_project_arch",
-					"columns": ["project", "arch", "runtime", "updated_at"],
-					"isUnique": false
-				}
-			},
-			"foreignKeys": {},
-			"compositePrimaryKeys": {
-				"shared_bases_project_arch_recipe_pk": {
-					"columns": ["project", "arch", "recipe"],
-					"name": "shared_bases_project_arch_recipe_pk"
-				}
-			},
 			"uniqueConstraints": {},
 			"checkConstraints": {}
 		},

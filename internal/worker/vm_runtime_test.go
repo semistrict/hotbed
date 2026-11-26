@@ -602,7 +602,7 @@ func TestProjectBaseRecipesAndIncrementalStepSelection(t *testing.T) {
 	}
 
 	// Incremental freshen when only repo HEAD moved runs only --every-pull steps.
-	prev := &vmProjectBase{
+	prev := &projectBase{
 		Repos:      map[string]string{"cladefs": "aaa111"},
 		StepHashes: map[string]string{"deps": "h-deps", "build": "h-build"},
 	}
@@ -1167,6 +1167,7 @@ func TestVMCommandGuestOOMAndPeakMemoryTelemetry(t *testing.T) {
 		id           string
 		status       runtime.CommandStatus
 		wantReason   string
+		wantFailure  string
 		wantExitCode *int32
 	}{
 		{
@@ -1184,6 +1185,7 @@ func TestVMCommandGuestOOMAndPeakMemoryTelemetry(t *testing.T) {
 				CPUUsec:    120000,
 			},
 			wantReason:   "killed by the OOM killer (signal 9; peak 7.0 GiB)",
+			wantFailure:  "oom",
 			wantExitCode: nil,
 		},
 		{
@@ -1200,7 +1202,39 @@ func TestVMCommandGuestOOMAndPeakMemoryTelemetry(t *testing.T) {
 				MemoryPeak: 6 << 30,
 			},
 			wantReason:   "killed by the OOM killer (exit 137; peak 6.0 GiB)",
+			wantFailure:  "oom",
 			wantExitCode: func() *int32 { v := int32(137); return &v }(),
+		},
+		// The VM's end is never passed off as the command's own: cladefsd
+		// letting a stalled VM go SIGKILLs Firecracker, and the command
+		// was reported "killed by signal 9".
+		{
+			name:        "VM killed by a signal under it",
+			id:          "vm-signal",
+			status:      runtime.CommandStatus{ID: "vm-signal", Exited: true, VMExit: &unit.VMExit{Signal: 9, Result: "signal"}},
+			wantReason:  "its VM was killed by signal 9",
+			wantFailure: "vm",
+		},
+		{
+			name:        "VM killed by the host's OOM killer",
+			id:          "vm-oom",
+			status:      runtime.CommandStatus{ID: "vm-oom", Exited: true, VMExit: &unit.VMExit{Signal: 9, Result: "oom-kill", OOMKilled: true}},
+			wantReason:  "its VM was killed by the host's OOM killer",
+			wantFailure: "vm",
+		},
+		{
+			name:        "VM lost cladefsd",
+			id:          "vm-158",
+			status:      runtime.CommandStatus{ID: "vm-158", Exited: true, VMExit: &unit.VMExit{ExitCode: 158, Result: "exit-code"}},
+			wantReason:  "its VM ended: firecracker exited 158: lost connection to cladefsd (or VM process was frozen past quarantine deadline)",
+			wantFailure: "vm",
+		},
+		{
+			name:        "VM gone",
+			id:          "vm-gone",
+			status:      runtime.CommandStatus{ID: "vm-gone", Exited: true, VMExit: &unit.VMExit{Gone: true}},
+			wantReason:  "its VM stopped while it ran",
+			wantFailure: "vm",
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -1237,6 +1271,19 @@ func TestVMCommandGuestOOMAndPeakMemoryTelemetry(t *testing.T) {
 			}
 			if tc.wantExitCode != nil && (got.ExitCode == nil || *got.ExitCode != *tc.wantExitCode) {
 				t.Fatalf("ExitCode = %v, want %d", got.ExitCode, *tc.wantExitCode)
+			}
+			events, err := e.Events(0, 10000)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var finished *pb.FinishedCommand
+			for _, ev := range events {
+				if ch := ev.GetCommand(); ch != nil && ch.Command.Id == tc.id && ch.Finished != nil {
+					finished = ch.Finished
+				}
+			}
+			if finished == nil || finished.Failure != tc.wantFailure {
+				t.Fatalf("finished = %+v, want failure %q", finished, tc.wantFailure)
 			}
 		})
 	}

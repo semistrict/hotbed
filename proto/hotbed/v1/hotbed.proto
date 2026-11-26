@@ -523,6 +523,28 @@ message CladefsCell {
   string runtime = 9;
 }
 
+// A project base in the shared bucket. Bases are shared and workspaces are
+// not: a node forks each workspace, on its own disk, from the newest base of
+// its project for its arch and runtime, whichever node built it, and builds
+// the next base on top of that one. So one chain of bases serves every node of
+// an arch, not one chain per node. The newest is the one the controller heard
+// of last, by its own clock, never a worker's.
+message SharedBase {
+  // Its cell and version; their project, arch, recipe, runtime and base_id
+  // say whose base it is.
+  CladefsCell cell = 1;
+  // The base image and node settings (disk size, DNS) it was built from. A
+  // base is built on top of another only if their keys match.
+  string base_key = 2;
+  // Its project's repos and steps as it was built for them.
+  string setup_hash = 3;
+  int64 scratch_epoch = 4;
+  // Each repo's commit, checked out in it.
+  map<string, string> repos = 5;
+  // Each setup step's script hash, as last run in it.
+  map<string, string> step_hashes = 6;
+}
+
 message NodeUsage {
   // Share of CPU time busy across all CPUs, 0..1.
   double cpu_busy = 1;
@@ -1358,7 +1380,7 @@ message WorkspaceRepo {
 // most one workspace per node, besides throwaway ones. Called on a worker (by the controller), it
 // makes the workspace the request names.
 message CreateWorkspaceRequest {
-  reserved 3, 4, 9;
+  reserved 3, 4, 9, 13;
   reserved "branch", "node", "repo_config";
   // The project's repo the run syncs (sync_dir) and runs in; empty for none.
   string repo = 1;
@@ -1378,8 +1400,10 @@ message CreateWorkspaceRequest {
   HostedProject project = 11;
   // Execution runtime requested/assigned ("vm", "cladefs", or empty for worker default).
   string runtime = 12;
-  // Set by the controller: shared cladefs base version in R2 to fork O(1).
-  CladefsCell shared_base = 13;
+  // Set by the controller: the newest base of the project for the node's
+  // arch and runtime, which the node forks the workspace from, or builds the
+  // next base on top of, rather than starting from its own.
+  SharedBase shared_base = 16;
   // Set by the controller: monotonic fencing token for cladefs PlaceCell/TakeCell.
   uint64 fencing_token = 14;
   // A throwaway workspace for one command (Workspace.throwaway): a new one,
@@ -1735,7 +1759,8 @@ message FinishedCommand {
   string kind = 7;
   CommandState state = 8;
   optional int32 exit_code = 9;
-  // compile, test, lint, signal, exit; empty when it succeeded.
+  // compile, test, lint, oom, vm (its VM ended under it), signal, exit;
+  // empty when it succeeded.
   string failure = 10;
   int64 ended_at = 11;
   double queued_seconds = 12;
@@ -2638,6 +2663,8 @@ message WorkspaceUsage {
 }
 
 message HeartbeatRequest {
+  reserved 19;
+  reserved "shared_bases";
   string cluster_id = 1;
   Resources resources = 2;
   NodeUsage usage = 3;
@@ -2666,10 +2693,14 @@ message HeartbeatRequest {
   string cladefs_peer_addr = 17;
   // This worker's cladefsd ephemeral host incarnation (for DecommissionHost).
   uint64 cladefs_incarnation = 18;
-  // Warm uploaded cladefs base versions advertised by this worker to the cluster.
-  repeated CladefsCell shared_bases = 19;
   // Cumulative cladefsd object-store (R2) counters since daemon start.
   ObjectStoreStats object_store = 20;
+  // The project bases this worker hands out, one per project: no node
+  // deletes a base while a worker holds it.
+  repeated SharedBase held_bases = 21;
+  // Base cells this worker deleted from the shared bucket since its last
+  // heartbeat, as HeartbeatResponse.retire_bases asked.
+  repeated CladefsCell retired_bases = 22;
 }
 
 message HeartbeatResponse {
@@ -2694,6 +2725,11 @@ message HeartbeatResponse {
   // Effective controller-managed worker configuration for this node (cluster
   // defaults merged with any per-node override).
   WorkerConfig worker_config = 9;
+  // Project base cells for this worker to delete from the shared bucket: each
+  // replaced by a newer base of its project, arch and runtime, and held by no
+  // worker for a while. This worker built them, or took them over from a
+  // retired node.
+  repeated CladefsCell retire_bases = 10;
 }
 
 // ---- the cockpit ----------------------------------------------------------

@@ -54,6 +54,7 @@ import {
 	type Command,
 	type CommandDiagnostics,
 	type FinishedCommand,
+	type HeartbeatRequest,
 	type HourBucket,
 	type LoadSample,
 	type NodeHours,
@@ -77,7 +78,7 @@ import {
 } from "../context.ts";
 import { ErrorCode, codeOf, hotbedError } from "../errors.ts";
 import { buildFreshenSummary, isFreshenActive, synthesizeLegacyFreshens } from "../freshens.ts";
-import { canonicalRemote, stepHash, validateRepoURL } from "../gitops.ts";
+import { canonicalRemote, parseBuildNumber, stepHash, validateRepoURL } from "../gitops.ts";
 import { overlayHostSamples, prepareHostUsage } from "../hostusage.ts";
 import { isCommandLive, workOf } from "../standby.ts";
 import { KEEP_EVENTS, KEEP_PLACEMENTS_MS, type ForkRow, type SampleRow } from "../store.ts";
@@ -96,6 +97,21 @@ const STANDBY_MAX_STREAM_MS = 25_000;
 
 const DEFAULT_FRESHEN_WINDOW_MS = 24 * 3600_000;
 const DEFAULT_FRESHEN_LIMIT = 30;
+
+// How long a project base nobody holds is kept, once a newer base replaced
+// it: long enough for a node that was just handed it to fork it, and for a
+// worker that heartbeats without its bases (upgrading, or its cladefs down) to
+// hold them again.
+const SHARED_BASE_RETIRE_GRACE_MS = 15 * 60_000;
+
+// Whether a heartbeat says which bases its worker holds: one whose cladefs
+// backend is up (it offers vm or cladefs) on the controller's build (an older
+// one may not know held_bases). Others keep the holds they last reported.
+export function reportsHeldBases(req: HeartbeatRequest, wantBuild: number): boolean {
+	if (req.storageError) return false;
+	if (!(req.resources?.runtimes ?? []).some((r) => r === "vm" || r === "cladefs")) return false;
+	return wantBuild === 0 || parseBuildNumber(req.resources?.version ?? "") >= wantBuild;
+}
 
 function parseFreshenSinceMs(raw: string, nowMs: number): number {
 	const s = raw.trim().toLowerCase();
@@ -526,14 +542,15 @@ export function createClusterService(
 			const nowMs = ctrl.now();
 			const hu = ctrl.hostUsages.get(caller.hostname, nowMs);
 			ctrl.store.beat(caller.nodeId, req, nowMs);
-			if (req.sharedBases.length > 0) {
-				ctrl.store.upsertSharedBases(
+			const holdsBases = reportsHeldBases(req, ctrl.follows(req.resources?.arch ?? ""));
+			if (holdsBases) {
+				ctrl.store.recordHeldBases(
 					caller.nodeId,
 					req.resources?.arch ?? "",
-					req.sharedBases,
+					req.heldBases,
+					req.retiredBases,
 					nowMs,
 					ctrl.cladefsTenantId,
-					req.resources?.runtimes ?? [],
 				);
 			}
 			ctrl.power.changes.wake(caller.hostname);
@@ -576,6 +593,9 @@ export function createClusterService(
 				cladefsPeers,
 				decommissionIncarnations,
 				workerConfig,
+				retireBases: holdsBases
+					? ctrl.store.basesToRetire(caller.nodeId, nowMs, SHARED_BASE_RETIRE_GRACE_MS)
+					: [],
 			});
 		},
 

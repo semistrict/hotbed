@@ -17,7 +17,6 @@ import (
 
 	"github.com/semistrict/hotbed/internal/baseimage"
 	"github.com/semistrict/hotbed/internal/cladefs"
-	pb "github.com/semistrict/hotbed/internal/gen/hotbed/v1"
 	"github.com/semistrict/hotbed/internal/runtime"
 	"github.com/semistrict/hotbed/internal/statedir"
 	"github.com/semistrict/hotbed/internal/storage"
@@ -200,8 +199,6 @@ func TestCladefsFUSELoadStateIndexesMultipleBaseImagesByKey(t *testing.T) {
 		workerDir:      dir,
 		decommissioned: map[uint64]bool{},
 		baseImages:     map[string]cladefs.CellRef{},
-		projectBases:   map[string]*vmProjectBase{},
-		sharedBases:    map[string]*pb.CladefsCell{},
 		wsMounts:       map[string]fuseWSMount{},
 	}
 	wantKey := b.fuseBaseKey(spec)
@@ -238,17 +235,13 @@ func TestTenantCellRootAndCacheIsolation(t *testing.T) {
 
 	dir := t.TempDir()
 	vm0 := &VMBackend{
-		workerDir:    dir,
-		baseImages:   map[string]cladefs.CellRef{},
-		projectBases: map[string]*vmProjectBase{},
-		sharedBases:  map[string]*pb.CladefsCell{},
+		workerDir:  dir,
+		baseImages: map[string]cladefs.CellRef{},
 	}
 	vm2 := &VMBackend{
-		cfg:          statedir.VMConfig{TenantID: 2},
-		workerDir:    dir,
-		baseImages:   map[string]cladefs.CellRef{},
-		projectBases: map[string]*vmProjectBase{},
-		sharedBases:  map[string]*pb.CladefsCell{},
+		cfg:        statedir.VMConfig{TenantID: 2},
+		workerDir:  dir,
+		baseImages: map[string]cladefs.CellRef{},
 	}
 	if vm0.cacheDir() != filepath.Join(dir, "vm-bases") {
 		t.Fatalf("vm0.cacheDir() = %q, want legacy vm-bases", vm0.cacheDir())
@@ -283,8 +276,6 @@ func TestTenantCellRootAndCacheIsolation(t *testing.T) {
 		cfg:            statedir.CladefsFUSEConfig{TenantID: 4},
 		workerDir:      dir,
 		baseImages:     map[string]cladefs.CellRef{},
-		projectBases:   map[string]*vmProjectBase{},
-		sharedBases:    map[string]*pb.CladefsCell{},
 		wsMounts:       map[string]fuseWSMount{},
 		decommissioned: map[uint64]bool{},
 	}

@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -25,9 +26,10 @@ type retiredBase struct {
 	RetireAfter time.Time `json:"retireAfter"`
 }
 
-// baseRetirer tracks superseded R2 base cells and deletes them after a short
-// grace window so concurrent forks from other workers finish before the old
-// cell head is marked deleted for cladefs-gc (hotbed question 537).
+// baseRetirer tracks this node's superseded base image cells and deletes them
+// after a short grace window so forks under way finish before the old cell
+// head is marked deleted for cladefs-gc (hotbed question 537). Project bases
+// are not its: the controller retires those (HeartbeatResponse.retire_bases).
 type baseRetirer struct {
 	mu       sync.Mutex
 	sweepMu  sync.Mutex
@@ -64,7 +66,15 @@ func (r *baseRetirer) load(cacheDir string) {
 	}
 	var saved []retiredBase
 	if json.Unmarshal(raw, &saved) == nil {
-		r.pending = saved
+		// Project bases are the controller's to retire now (another node may
+		// hold one this node replaced): keep only base images.
+		for _, b := range saved {
+			if strings.HasPrefix(b.BaseID, "baseimage-") {
+				r.pending = append(r.pending, b)
+			} else {
+				slog.Info("leaving project base cell to the controller to retire", "baseId", b.BaseID, "cell", b.Cell)
+			}
+		}
 	}
 }
 

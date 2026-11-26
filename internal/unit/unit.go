@@ -133,6 +133,19 @@ type VMSize struct {
 	MemMiB int
 }
 
+// VMExit is how a command's VM ended under it, as the host saw the VM's
+// process: the command itself never reported an end, so none of this is the
+// command's own exit.
+type VMExit struct {
+	// Gone is a VM no longer tracked, so with no exit to report: it was
+	// stopped and removed.
+	Gone      bool
+	ExitCode  int
+	Signal    int
+	Result    string // systemd's unit Result ("signal", "oom-kill", ...)
+	OOMKilled bool
+}
+
 // tmpBinds are the binds that show s.Tmp at TmpPaths.
 func (s Spec) tmpBinds() []Bind {
 	if s.Tmp == "" {
@@ -309,7 +322,11 @@ type State struct {
 	// reported Result=oom-kill or the unit's cgroup recorded an OOM kill.
 	Result    string
 	OOMKilled bool
-	PID       int
+	// VMExit, when set, is the end of the VM the command ran in, which took
+	// the command with it: ExitCode, Signal, Result and OOMKilled are then
+	// unknown, as the command never reported an end of its own.
+	VMExit     *VMExit
+	PID        int
 	Cgroup     string // path under /sys/fs/cgroup
 	CPUNanos   uint64
 	Memory     int64

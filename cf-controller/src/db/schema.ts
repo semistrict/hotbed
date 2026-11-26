@@ -450,23 +450,48 @@ export const gitCredentials = sqliteTable(
 	(t) => [index("git_credentials_host").on(t.host)],
 );
 
+/**
+ * Project bases in the shared bucket, a cladefs cell each, as workers hold
+ * them: one chain of bases per project, arch and runtime, which every node of
+ * that arch forks its workspaces from and builds the next base on. `base` is
+ * the SharedBase (protobuf JSON); `seen_at` is when a worker first reported
+ * it, which orders a chain; `replaced_at` is when a newer base of its chain
+ * was first reported (null for the newest); `node_id` is the node that
+ * deletes the cell once it goes (its first holder, its builder, or a node that
+ * took it over from a retired one); `unheld_since` is when the last worker
+ * stopped holding it.
+ */
 export const sharedBases = sqliteTable(
 	"shared_bases",
 	{
-		project: text("project").notNull(),
-		arch: text("arch").notNull(),
-		recipe: text("recipe").notNull().default(""),
-		baseId: text("base_id").notNull(),
-		runtime: text("runtime").notNull().default(""),
 		tenant: text("tenant").notNull(),
 		cell: text("cell").notNull(),
-		version: text("version").notNull(),
+		project: text("project").notNull(),
+		arch: text("arch").notNull(),
+		runtime: text("runtime").notNull(),
+		seenAt: integer("seen_at").notNull(),
+		replacedAt: integer("replaced_at"),
+		base: text("base").notNull(),
 		nodeId: text("node_id").notNull(),
-		updatedAt: integer("updated_at").notNull(),
+		unheldSince: integer("unheld_since"),
 	},
 	(t) => [
-		primaryKey({ columns: [t.project, t.arch, t.recipe] }),
-		index("shared_bases_project_arch").on(t.project, t.arch, t.runtime, t.updatedAt),
+		primaryKey({ columns: [t.tenant, t.cell] }),
+		index("shared_bases_lineage").on(t.project, t.arch, t.runtime, t.tenant, t.replacedAt),
+	],
+);
+
+/** Which worker holds which shared base: no base is deleted while held. */
+export const sharedBaseHolders = sqliteTable(
+	"shared_base_holders",
+	{
+		nodeId: text("node_id").notNull(),
+		tenant: text("tenant").notNull(),
+		cell: text("cell").notNull(),
+	},
+	(t) => [
+		primaryKey({ columns: [t.nodeId, t.tenant, t.cell] }),
+		index("shared_base_holders_cell").on(t.tenant, t.cell),
 	],
 );
 

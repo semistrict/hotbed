@@ -750,6 +750,12 @@ func (s *Store) Incarnation(ctx context.Context) (uint64, error) {
 	return resp.GetIncarnation(), nil
 }
 
+// IsGone reports whether err says a cell, or the version asked of it, is not
+// there: never made, deleted, or its head marked deleted.
+func IsGone(err error) bool {
+	return errors.Is(err, storage.ErrNotFound) || isNotFound(err) || isDeleted(err)
+}
+
 func isNotFound(err error) bool {
 	if errors.Is(err, syscall.ENOENT) {
 		return true

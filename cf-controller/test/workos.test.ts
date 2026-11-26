@@ -14,6 +14,7 @@ import {
 	RepoSchema,
 	ResourcesSchema,
 	SessionService,
+	SharedBaseSchema,
 	WorkerCladefsFUSEConfigSchema,
 	WorkerConfigSchema,
 	WorkerFreshenConfigSchema,
@@ -1677,24 +1678,28 @@ describe("WorkOS multi-organization, multi-user, per-org ControllerDO integratio
 				clusterId: joined.clusterId,
 				resources: create(ResourcesSchema, { arch: "amd64", cpus: 8 }),
 				usage: create(NodeUsageSchema),
-				sharedBases: [
-					create(CladefsCellSchema, {
-						project: "wrong-tenant-proj",
-						arch: "amd64",
-						recipe: "r-wrong",
-						baseId: "wrong-1",
-						tenant: 0n,
-						cell: 11n,
-						version: 1n,
+				heldBases: [
+					create(SharedBaseSchema, {
+						cell: create(CladefsCellSchema, {
+							project: "wrong-tenant-proj",
+							arch: "amd64",
+							recipe: "r-wrong",
+							baseId: "wrong-1",
+							tenant: 0n,
+							cell: 11n,
+							version: 1n,
+						}),
 					}),
-					create(CladefsCellSchema, {
-						project: "right-tenant-proj",
-						arch: "amd64",
-						recipe: "r-right",
-						baseId: "right-1",
-						tenant: tenantA!,
-						cell: 22n,
-						version: 2n,
+					create(SharedBaseSchema, {
+						cell: create(CladefsCellSchema, {
+							project: "right-tenant-proj",
+							arch: "amd64",
+							recipe: "r-right",
+							baseId: "right-1",
+							tenant: tenantA!,
+							cell: 22n,
+							version: 2n,
+						}),
 					}),
 				],
 			}),

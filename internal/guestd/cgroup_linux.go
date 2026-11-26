@@ -161,12 +161,20 @@ func (c *cmdCgroup) reclaim(n int64) error {
 	return err
 }
 
-func dropPageCaches() error {
-	err := os.WriteFile("/proc/sys/vm/drop_caches", []byte("3\n"), 0o644)
+func writeProcVM(path, val string) error {
+	err := os.WriteFile(path, []byte(val), 0o644)
 	if errors.Is(err, os.ErrNotExist) || errors.Is(err, os.ErrPermission) || errors.Is(err, syscall.EROFS) {
 		return nil
 	}
 	return err
+}
+
+func dropPageCaches() error {
+	return writeProcVM("/proc/sys/vm/drop_caches", "3\n")
+}
+
+func compactMemory() error {
+	return writeProcVM("/proc/sys/vm/compact_memory", "1\n")
 }
 
 func (c *cmdCgroup) remove() {

@@ -370,6 +370,7 @@ export const FAILURE: Record<string, string> = {
   test: "tests failed",
   lint: "lint denied",
   oom: "OOM killed",
+  vm: "its VM ended",
   signal: "killed by signal",
   exit: "non-zero exit",
 };

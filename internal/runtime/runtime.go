@@ -41,16 +41,19 @@ type CommandSpec struct {
 
 // CommandStatus is the runtime's observed state of a single command.
 type CommandStatus struct {
-	ID         string
-	Running    bool
-	Frozen     bool
-	Exited     bool
-	ExitCode   int
-	Signal     int
-	Result     string
-	OOMKilled  bool
-	MainPID    int
-	Cgroup     string
+	ID        string
+	Running   bool
+	Frozen    bool
+	Exited    bool
+	ExitCode  int
+	Signal    int
+	Result    string
+	OOMKilled bool
+	// VMExit, when set, is the end of the VM the command ran in: its guest
+	// could not be asked, so the command's own exit is unknown.
+	VMExit         *unit.VMExit
+	MainPID        int
+	Cgroup         string
 	MemoryAnon     int64
 	MemorySwap     int64
 	MemoryPeak     int64

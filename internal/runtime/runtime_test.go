@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
@@ -153,10 +154,14 @@ type deadVMResolver struct {
 	exited map[string]int
 }
 
-func (d *deadVMResolver) VMExited(_ context.Context, wsID string) (bool, int) {
+func (d *deadVMResolver) VMExit(_ context.Context, wsID string) (unit.VMExit, bool) {
 	code, ok := d.exited[wsID]
-	return ok, code
+	return unit.VMExit{ExitCode: code}, ok
 }
+
+// A runtime.VMExitReporter, as the worker's VM backend must be for a dead
+// VM's commands to end rather than stay running forever.
+var _ runtime.VMExitReporter = (*deadVMResolver)(nil)
 
 func TestGuestRuntimeDeadVMStatusAndStop(t *testing.T) {
 	// Point client at a closed Unix socket so every vsock RPC fails with ECONNREFUSED.
@@ -178,10 +183,13 @@ func TestGuestRuntimeDeadVMStatusAndStop(t *testing.T) {
 	if err != nil {
 		t.Fatalf("StatusMany on dead VM returned error: %v", err)
 	}
+	// Each command ended with its VM, with no exit of its own: the VM's exit
+	// is the VM's, never passed off as the command's.
 	for _, id := range []string{"c1", "c2"} {
 		st := sts[id]
-		if !st.Exited || st.ExitCode != 158 {
-			t.Fatalf("status[%s] = %+v, want Exited=true ExitCode=158", id, st)
+		want := runtime.CommandStatus{ID: id, Exited: true, VMExit: &unit.VMExit{ExitCode: 158}}
+		if !reflect.DeepEqual(st, want) {
+			t.Fatalf("status[%s] = %+v (VMExit %+v), want %+v (VMExit %+v)", id, st, st.VMExit, want, want.VMExit)
 		}
 	}
 	if err := rt.StopCommand(ctx, "ws-dead", "c1", time.Second); err != nil {
@@ -202,11 +210,11 @@ func (o *oomVMResolver) EnsureVM(ctx context.Context, wsID string, _ unit.VMSize
 	return o.fakeResolver.EnsureVM(ctx, wsID, unit.VMSize{})
 }
 
-func (o *oomVMResolver) VMExitStatus(_ context.Context, wsID string) (bool, int, int, string, bool) {
+func (o *oomVMResolver) VMExit(_ context.Context, wsID string) (unit.VMExit, bool) {
 	if wsID == "ws-oom" {
-		return true, 0, 9, "oom-kill", true
+		return unit.VMExit{Signal: 9, Result: "oom-kill", OOMKilled: true}, true
 	}
-	return false, 0, 0, "", false
+	return unit.VMExit{}, false
 }
 
 type fakeGuestHandler struct {
@@ -287,14 +295,16 @@ func TestGuestRuntimeOOMStatusEnsureVMAndReclaim(t *testing.T) {
 	}
 	rt := runtime.NewGuestRuntime(res)
 
-	// 1. StatusMany propagates OOMKilled / Signal / Result from VMExitStatus.
+	// 1. StatusMany reports the host OOM kill of the VM as the VM's end, not
+	// as the command's own OOM kill or signal.
 	sts, err := rt.StatusMany(ctx, "ws-oom", []string{"c1"})
 	if err != nil {
 		t.Fatalf("StatusMany on OOM VM: %v", err)
 	}
 	st := sts["c1"]
-	if !st.Exited || !st.OOMKilled || st.Signal != 9 || st.Result != "oom-kill" {
-		t.Fatalf("OOM status = %+v, want Exited=true OOMKilled=true Signal=9 Result=oom-kill", st)
+	wantVM := unit.VMExit{Signal: 9, Result: "oom-kill", OOMKilled: true}
+	if !st.Exited || st.OOMKilled || st.Signal != 0 || st.ExitCode != 0 || st.VMExit == nil || *st.VMExit != wantVM {
+		t.Fatalf("OOM status = %+v (VMExit %+v), want Exited with VMExit %+v and no exit of its own", st, st.VMExit, wantVM)
 	}
 
 	// 2. StartCommand always goes through EnsureVM (not bypassing it via ClientFor),

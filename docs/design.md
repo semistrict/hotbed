@@ -204,6 +204,22 @@ A project's bases are kept only by its hosts (`hotbed project hosts`; none means
 and only while every remote it holds is a repo of the cluster: a workspace of it could not be
 made otherwise, so its bases go once unused.
 
+Bases are shared and workspaces are not. A base is a version of a CladeFS cell in the shared
+bucket, which any node of its arch and runtime can fork; a workspace is an ephemeral fork of one,
+on its node's disk alone. So a project has one chain of bases per arch and runtime, not one per
+node: the controller sends each new workspace's node the newest base of its project for the node's
+arch and runtime (`CreateWorkspaceRequest.shared_base`), whichever node built it, newest being the
+one the controller heard of last, by its own clock. The node takes that one as its newest warm base,
+unless the base it holds is up to date with every repo's head, or is one it built since it last told
+the controller what it holds. A node holds the base it last handed out, a project each, and says so
+in every heartbeat (`held_bases`). The controller deletes no base while a worker holds it: a base
+that a newer one of its chain replaced at least 15 minutes ago, and that no worker has held for 15
+minutes, is retired by the node that first held it (`HeartbeatResponse.retire_bases`), or by any
+node once that one is retired. A heartbeat that cannot say what its worker holds (its cladefs
+runtime down, or an older build) leaves the holds it last reported. A base to build on that cannot
+be forked any more is forgotten, and the node builds on the base it holds instead, or from the base
+image.
+
 Bases are brought up to date only when a workspace asks for one; nothing builds in the background.
 When a workspace is created, its node compares each repo's branch head and the project's steps
 with its newest warm base:
@@ -252,8 +268,8 @@ the controller's (it follows within minutes; until then a run waits for it, retr
 keeping the project's bases, not `--node`, not `--arch`, without measurement CPUs for `--bench`, or
 with less RAM than `--mem-low`. Each node left weighs its load (CPU busy, plus queued commands
 per CPU, plus 1 when `--mem-low` does not fit now), plus 0.3 when the session has no workspace
-there (a fresh fork rebuilds what the session had compiled), plus 0.5 more when the node
-has no warm base (its first build is from nothing), plus 10 when its newest base failed with none
+there (a fresh fork rebuilds what the session had compiled), plus 0.5 more when neither the
+node nor the cluster has a warm base of the project for its arch and runtime (its first build is from nothing), plus 10 when its newest base failed with none
 warm; the least wins. So a session stays put until its node is clearly busier, and a saturated
 warm node loses to an idle cold one, which then gets a base of its own: no node starves for want
 of a first build.

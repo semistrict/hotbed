@@ -31,15 +31,9 @@ func (e *Engine) Heartbeat(clusterID string) *pb.HeartbeatRequest {
 		DiskBytes: e.diskBytes, Disk: clone(e.disk), Storage: e.cfg.Store.Kind(), OomKills: e.oomKills,
 	}
 	if e.cfg.VM != nil {
-		peerAddr, inc, shared := e.cfg.VM.HeartbeatMeta()
-		h.CladefsPeerAddr = peerAddr
-		h.CladefsIncarnation = inc
-		h.SharedBases = shared
+		h.CladefsPeerAddr, h.CladefsIncarnation, h.HeldBases, h.RetiredBases = e.cfg.VM.HeartbeatMeta()
 	} else if e.cfg.CladefsFUSE != nil {
-		peerAddr, inc, shared := e.cfg.CladefsFUSE.HeartbeatMeta()
-		h.CladefsPeerAddr = peerAddr
-		h.CladefsIncarnation = inc
-		h.SharedBases = shared
+		h.CladefsPeerAddr, h.CladefsIncarnation, h.HeldBases, h.RetiredBases = e.cfg.CladefsFUSE.HeartbeatMeta()
 		if h.Resources != nil {
 			h.Resources.Runtimes = fuseRuntimes
 		}
@@ -95,9 +89,16 @@ func (e *Engine) Heartbeat(clusterID string) *pb.HeartbeatRequest {
 	return h
 }
 
-// delivered forgets the sessions a heartbeat told the controller about;
-// those of a heartbeat that failed go with the next one.
+// delivered forgets the sessions, held bases and retired base cells a
+// heartbeat told the controller about; those of a heartbeat that failed go
+// with the next one.
 func (e *Engine) delivered(h *pb.HeartbeatRequest) {
+	switch {
+	case e.cfg.VM != nil:
+		e.cfg.VM.held.delivered(h.HeldBases, h.RetiredBases)
+	case e.cfg.CladefsFUSE != nil:
+		e.cfg.CladefsFUSE.held.delivered(h.HeldBases, h.RetiredBases)
+	}
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	for _, s := range h.ActiveSessions {

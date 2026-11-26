@@ -13,7 +13,9 @@ import m0010 from "./0010_motionless_ben_grimm.sql";
 import m0011 from "./0011_panoramic_caretaker.sql";
 import m0012 from "./0012_talented_silverclaw.sql";
 import m0013 from "./0013_nebulous_sphinx.sql";
-import m0014 from "./0014_tan_jean_grey.sql";
+import m0014 from "./0014_drop_node_keyed_shared_bases.sql";
+import m0015 from "./0015_shared_bases_held_by_workers.sql";
+import m0016 from "./0016_smooth_gideon.sql";
 
 export default {
 	journal,
@@ -33,5 +35,7 @@ export default {
 		m0012,
 		m0013,
 		m0014,
+		m0015,
+		m0016,
 	},
 };
