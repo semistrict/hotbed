@@ -49,7 +49,7 @@ func awaitStorage(
 		reply, herr := cluster.Heartbeat(ctx, &pb.HeartbeatRequest{
 			ClusterId:    clusterID,
 			StorageError: last,
-			Resources:    &pb.Resources{Arch: runtime.GOARCH, Cpus: int32(runtime.NumCPU()), Version: version.String()},
+			Resources:    &pb.Resources{Os: runtime.GOOS, Arch: runtime.GOARCH, Cpus: int32(runtime.NumCPU()), Version: version.String()},
 		})
 		switch e := api.FromConnect(herr); {
 		case herr == nil:

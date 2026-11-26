@@ -110,7 +110,8 @@ export type Resources = Message<"hotbed.v1.Resources"> & {
 
   /**
    * The worker's own OS (Go's GOOS: "linux", "darwin"): which build of
-   * hotbed it runs. Empty from workers before it, all Linux.
+   * hotbed it runs. Empty from workers before it, whose OS the controller
+   * reads from kernel (a Mac's is "Darwin <release>").
    *
    * @generated from field: string os = 10;
    */

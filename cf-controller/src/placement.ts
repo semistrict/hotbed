@@ -16,6 +16,7 @@ import {
 	type Node,
 	type Placement,
 	type PlacementDecision,
+	type Resources,
 	type Workspace,
 } from "./gen/hotbed/v1/hotbed_pb.ts";
 import { ErrorCode, HotbedError, hotbedError } from "./errors.ts";
@@ -250,14 +251,14 @@ export function buildCandidates(
 	nvs: NodeView[],
 	project: string,
 	mine: Map<string, string>,
-	follows: (arch: string) => number,
+	follows: (res: Resources | undefined) => number,
 	sharedWarm?: (arch: string, runtimes: string[]) => boolean,
 ): Candidate[] {
 	const out: Candidate[] = [];
 	for (const nv of nvs) {
 		const res = nv.hb?.resources;
 		const asleep = nv.node.asleep;
-		const want = follows(res?.arch ?? "");
+		const want = follows(res);
 		const on = parseBuildNumber(res?.version ?? "");
 		const upgrading = want !== 0 && on < want && !asleep ? on || -1 : 0;
 

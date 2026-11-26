@@ -9,8 +9,12 @@ package update
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"crypto/sha256"
+	"debug/elf"
+	"debug/macho"
+	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -20,6 +24,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strconv"
 	"strings"
@@ -276,7 +281,9 @@ func (c Cache) Prune(keep ...int64) {
 }
 
 // Install puts the binary r reads in place of exe, in one rename, once it
-// matches sum.
+// matches sum and is an executable for this machine's OS and architecture: a
+// node handed another platform's build (a Mac worker once got the Linux one)
+// keeps the binary it can run rather than replacing it with one it cannot.
 func Install(r io.Reader, sum, exe string) (err error) {
 	tmp, err := os.CreateTemp(filepath.Dir(exe), "."+filepath.Base(exe)+".new-")
 	if err != nil {
@@ -298,8 +305,61 @@ func Install(r io.Reader, sum, exe string) (err error) {
 	if got := hex.EncodeToString(h.Sum(nil)); got != sum {
 		return fmt.Errorf("the new binary's sha256 is %s, not %s", got, sum)
 	}
+	if err := RunsHere(tmp.Name()); err != nil {
+		return err
+	}
 	if err := os.Chmod(tmp.Name(), 0o755); err != nil {
 		return err
 	}
 	return os.Rename(tmp.Name(), exe)
 }
+
+// RunsHere says whether the file at path is an executable for this machine:
+// ELF for Linux, Mach-O for macOS, built for runtime.GOARCH.
+func RunsHere(path string) error {
+	return runsOn(path, Platform{runtime.GOOS, runtime.GOARCH})
+}
+
+func runsOn(path string, want Platform) error {
+	got, err := binaryPlatform(path)
+	if err != nil {
+		return err
+	}
+	if got != want {
+		return fmt.Errorf("the new binary is built for %s, not for this %s machine", got, want)
+	}
+	return nil
+}
+
+// binaryPlatform reads the platform an executable is built for from its
+// header; an architecture hotbed isn't built for reads as "unknown".
+func binaryPlatform(path string) (Platform, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return Platform{}, err
+	}
+	defer f.Close()
+	var hdr [20]byte
+	if _, err := io.ReadFull(f, hdr[:]); err != nil {
+		return Platform{}, fmt.Errorf("the new binary is not an executable: read its header: %w", err)
+	}
+	arch := func(a string, ok bool) string {
+		if !ok {
+			return "unknown"
+		}
+		return a
+	}
+	switch {
+	case bytes.HasPrefix(hdr[:], []byte(elf.ELFMAG)):
+		a, ok := elfMachines[elf.Machine(binary.LittleEndian.Uint16(hdr[18:20]))]
+		return Platform{"linux", arch(a, ok)}, nil
+	case binary.LittleEndian.Uint32(hdr[0:4]) == macho.Magic64:
+		a, ok := machoCPUs[macho.Cpu(binary.LittleEndian.Uint32(hdr[4:8]))]
+		return Platform{"darwin", arch(a, ok)}, nil
+	}
+	return Platform{}, errors.New("the new binary is neither an ELF nor a Mach-O executable")
+}
+
+var elfMachines = map[elf.Machine]string{elf.EM_X86_64: "amd64", elf.EM_AARCH64: "arm64"}
+
+var machoCPUs = map[macho.Cpu]string{macho.CpuAmd64: "amd64", macho.CpuArm64: "arm64"}

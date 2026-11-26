@@ -1925,7 +1925,8 @@ type Resources struct {
 	// Execution runtimes supported on this worker (e.g. "vm", "cladefs").
 	Runtimes []string `protobuf:"bytes,9,rep,name=runtimes,proto3" json:"runtimes,omitempty"`
 	// The worker's own OS (Go's GOOS: "linux", "darwin"): which build of
-	// hotbed it runs. Empty from workers before it, all Linux.
+	// hotbed it runs. Empty from workers before it, whose OS the controller
+	// reads from kernel (a Mac's is "Darwin <release>").
 	Os            string `protobuf:"bytes,10,opt,name=os,proto3" json:"os,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache

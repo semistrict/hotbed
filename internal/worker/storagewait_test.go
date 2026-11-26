@@ -20,6 +20,7 @@ import (
 	"github.com/semistrict/hotbed/internal/gen/hotbed/v1/hotbedv1connect"
 	"github.com/semistrict/hotbed/internal/storage"
 	"github.com/semistrict/hotbed/internal/update"
+	"github.com/semistrict/hotbed/internal/update/updatetest"
 	"github.com/semistrict/hotbed/internal/version"
 )
 
@@ -76,7 +77,7 @@ func TestAwaitStorageReportsUntilStorageOpens(t *testing.T) {
 	}
 	want := &pb.HeartbeatRequest{
 		ClusterId: "cl", StorageError: openErr.Error(),
-		Resources: &pb.Resources{Arch: runtime.GOARCH, Cpus: int32(runtime.NumCPU()), Version: version.String()},
+		Resources: &pb.Resources{Os: runtime.GOOS, Arch: runtime.GOARCH, Cpus: int32(runtime.NumCPU()), Version: version.String()},
 	}
 	if len(cl.beats) != 2 {
 		t.Fatalf("heartbeats = %d, want 2 (one per failed open)", len(cl.beats))
@@ -128,7 +129,7 @@ func TestAwaitStorageRidesOutUnreachableController(t *testing.T) {
 
 // A waiting worker still installs the controller's build, so a fix reaches it.
 func TestAwaitStorageInstallsControllerBuild(t *testing.T) {
-	payload := []byte("hotbed build 9 binary")
+	payload := updatetest.Binary("hotbed build 9 binary")
 	sum := sha256.Sum256(payload)
 	const path = "/builds/9/hotbed-linux-amd64"
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

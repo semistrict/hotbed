@@ -1801,6 +1801,62 @@ describe("Security, cron, daemon logs, tunnel, and workspace regression tests", 
 		expect(hourSumUp).toBe(14_000_000);
 	});
 
+	it("hands each worker the build for its own OS, a Mac the darwin binary with the Linux guestd", async () => {
+		const linuxSha = "d".repeat(64);
+		const darwinSha = "e".repeat(64);
+		const guestdSha = "f".repeat(64);
+		const stub = env.CONTROLLER.get(env.CONTROLLER.idFromName("default"));
+		await runInDurableObject(stub, async (instance) => {
+			// eslint-disable-next-line @typescript-eslint/no-explicit-any
+			(instance as any).builds.setTestConfig({
+				updatesRepo: "semistrict/hotbed",
+				updatesToken: "",
+				controllerBuild: 179,
+				controllerSha256Sums: [
+					`${linuxSha}  hotbed-linux-arm64`,
+					`${darwinSha}  hotbed-darwin-arm64`,
+					`${guestdSha}  hotbed-guestd-linux-arm64`,
+				].join("\n"),
+			});
+		});
+		const beat = async (nodeId: string, host: string, resources: object) => {
+			const w = workerClients(OWNER_TOKEN, nodeId, host, "100.73.156.20:7121");
+			const joined = await w.cluster.join({});
+			const wt = workerClients(
+				joined.workerToken || OWNER_TOKEN,
+				nodeId,
+				host,
+				"100.73.156.20:7121",
+			);
+			const hb = await wt.cluster.heartbeat(
+				create(HeartbeatRequestSchema, {
+					clusterId: joined.clusterId,
+					resources: create(ResourcesSchema, { arch: "arm64", cpus: 8, ...resources }),
+				}),
+			);
+			return hb.build;
+		};
+
+		const mac = await beat("node-os-mac", "mac-os", { os: "darwin", kernel: "Darwin 27.2.0" });
+		expect(mac?.path).toBe("/builds/179/hotbed-darwin-arm64");
+		expect(mac?.sha256).toBe(darwinSha);
+		expect(mac?.guestd?.path).toBe("/builds/179/hotbed-guestd-linux-arm64");
+
+		// A worker from before Resources.os is a Mac by its kernel.
+		const oldMac = await beat("node-os-oldmac", "mac-old", { kernel: "Darwin 27.2.0" });
+		expect(oldMac?.path).toBe("/builds/179/hotbed-darwin-arm64");
+
+		const linux = await beat("node-os-linux", "linux-os", {
+			os: "linux",
+			kernel: "7.2.12-402.asahi.fc45.aarch64+16k",
+		});
+		expect(linux?.path).toBe("/builds/179/hotbed-linux-arm64");
+		expect(linux?.guestd?.path).toBe("/builds/179/hotbed-guestd-linux-arm64");
+
+		const oldLinux = await beat("node-os-oldlinux", "linux-old", { kernel: "7.0.0-44-generic" });
+		expect(oldLinux?.path).toBe("/builds/179/hotbed-linux-arm64");
+	});
+
 	it("manages centralized worker & VM config, merges into HeartbeatResponse, and attaches Build.guestd", async () => {
 		const owner = ownerClients();
 		const worker = workerClients(OWNER_TOKEN, "node-cfg-1", "ubu1", "100.73.156.10:7121");

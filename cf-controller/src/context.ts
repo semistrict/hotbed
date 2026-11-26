@@ -20,6 +20,7 @@ import {
 	type Node,
 	type Project,
 	type Repo,
+	type Resources,
 	type Session,
 	type Stamp,
 	type Workspace,
@@ -259,15 +260,15 @@ export class ControllerContext {
 		);
 	}
 
-	follows(arch: string): number {
-		if (!this.builds.buildFor("linux", arch)) return 0;
+	follows(res: Resources | undefined): number {
+		if (!this.builds.buildForNode(res)) return 0;
 		return this.builds.currentBuildNumber();
 	}
 
 	nodeServes(row: NodeRow): boolean {
 		const node = this.withOnline(row.node);
 		if (!node.online || node.asleep) return false;
-		const want = this.follows(row.hb?.resources?.arch ?? "");
+		const want = this.follows(row.hb?.resources);
 		if (want === 0) return true;
 		const v = row.hb?.resources?.version ?? "";
 		const m = /^build\s+(\d+)\b/.exec(v.trim());

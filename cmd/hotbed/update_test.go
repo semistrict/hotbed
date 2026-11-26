@@ -2,6 +2,7 @@ package main
 
 import (
 	"errors"
+	"fmt"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -11,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/semistrict/hotbed/internal/fake"
 	pb "github.com/semistrict/hotbed/internal/gen/hotbed/v1"
 	"github.com/semistrict/hotbed/internal/update"
 	"github.com/semistrict/hotbed/internal/update/updatetest"
@@ -26,6 +28,18 @@ func writeExe(t *testing.T, content string) string {
 	}
 	return exe
 }
+
+// hostBuild is build n's binary for this machine, as updatetest publishes it.
+func hostBuild(n int64) string {
+	here := update.Platform{OS: runtime.GOOS, Arch: runtime.GOARCH}
+	return string(updatetest.BinaryFor(here, fmt.Sprintf("hotbed build %d for %s", n, here)))
+}
+
+// onHostArch has a worker report this machine's arch, as one that installs a
+// real build over itself must: update.Install takes only a binary it can run.
+var onHostArch = []func(*worker.EngineConfig){func(cfg *worker.EngineConfig) {
+	cfg.System.(*fake.System).Arch = runtime.GOARCH
+}}
 
 func read(t *testing.T, path string) string {
 	t.Helper()
@@ -52,6 +66,7 @@ func TestNodesFollowTheControllersBuild(t *testing.T) {
 	}
 	workerExe := writeExe(t, "old worker")
 	c := newClusterWith(t, clusterOpts{
+		engine: onHostArch,
 		server: func(s *testServerConfig) { s.Builds, s.Build = &cache, 7 },
 		follow: func(ctrl string, hc *http.Client) *worker.Follow {
 			return &worker.Follow{URL: "http://" + ctrl, Client: hc, Exe: workerExe}
@@ -66,8 +81,8 @@ func TestNodesFollowTheControllersBuild(t *testing.T) {
 	case <-time.After(30 * time.Second):
 		t.Fatal("the worker never installed the controller's build")
 	}
-	if got := read(t, workerExe); got != "hotbed build 7 for linux/arm64" {
-		t.Errorf("the worker's binary is %q, want the controller's build for linux/arm64", got)
+	if got := read(t, workerExe); got != hostBuild(7) {
+		t.Errorf("the worker's binary is %q, want the controller's build for this machine, %q", got, hostBuild(7))
 	}
 
 	var ls pb.ListNodesResponse
@@ -89,7 +104,7 @@ func TestNodesFollowTheControllersBuild(t *testing.T) {
 	// One on a CI build follows the controller, after the command it ran.
 	c.cli.build = 3
 	code, _, stderr := c.hotbed("nodes")
-	want := "hotbed build 7 for " + runtime.GOOS + "/" + runtime.GOARCH
+	want := hostBuild(7)
 	if code != 0 || read(t, cliExe) != want || !strings.Contains(stderr, "hotbed: upgraded to build 7, the controller's") {
 		t.Fatalf("a client on build 3: exit %d, stderr %q, binary %q, want %q", code, stderr, read(t, cliExe), want)
 	}
@@ -203,6 +218,7 @@ func TestWorkerDefersUpgradeUntilRunningCommandFinishes(t *testing.T) {
 
 	workerExe := writeExe(t, "old worker")
 	c := newClusterWith(t, clusterOpts{
+		engine: onHostArch,
 		follow: func(ctrl string, hc *http.Client) *worker.Follow {
 			return &worker.Follow{URL: "http://" + ctrl, Client: hc, Exe: workerExe}
 		},
@@ -271,8 +287,8 @@ func TestWorkerDefersUpgradeUntilRunningCommandFinishes(t *testing.T) {
 	case <-time.After(15 * time.Second):
 		t.Fatal("worker never installed build 8 and restarted after command finished")
 	}
-	if got := read(t, workerExe); got != "hotbed build 8 for linux/arm64" {
-		t.Errorf("worker binary after drain = %q, want build 8 for linux/arm64", got)
+	if got := read(t, workerExe); got != hostBuild(8) {
+		t.Errorf("worker binary after drain = %q, want build 8 for this machine, %q", got, hostBuild(8))
 	}
 }
 
@@ -288,6 +304,7 @@ func TestPinnedControllerVersionUpdatesWorkerDirectlyFromGitHub(t *testing.T) {
 
 	workerExe := writeExe(t, "old worker")
 	c := newClusterWith(t, clusterOpts{
+		engine: onHostArch,
 		server: func(s *testServerConfig) {
 			s.UpdatesRepo = "semistrict/hotbed"
 			s.UpdatesDownloadBase = g.URL()
@@ -314,8 +331,8 @@ func TestPinnedControllerVersionUpdatesWorkerDirectlyFromGitHub(t *testing.T) {
 	case <-time.After(30 * time.Second):
 		t.Fatal("the worker never installed the controller's pinned build from GitHub")
 	}
-	if got := read(t, workerExe); got != "hotbed build 12 for linux/arm64" {
-		t.Errorf("worker binary = %q, want build 12 for linux/arm64", got)
+	if got := read(t, workerExe); got != hostBuild(12) {
+		t.Errorf("worker binary = %q, want build 12 for this machine, %q", got, hostBuild(12))
 	}
 	if got := g.DirectDownloads.Load(); got == 0 {
 		t.Errorf("DirectDownloads = %d, want >= 1 (worker should download directly from GitHub)", got)

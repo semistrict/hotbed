@@ -625,7 +625,7 @@ export function createClusterService(
 			const nowMs = ctrl.now();
 			const hu = ctrl.hostUsages.get(caller.hostname, nowMs);
 			ctrl.store.beat(caller.nodeId, req, nowMs);
-			const holdsBases = reportsHeldBases(req, ctrl.follows(req.resources?.arch ?? ""));
+			const holdsBases = reportsHeldBases(req, ctrl.follows(req.resources));
 			if (holdsBases) {
 				ctrl.store.recordHeldBases(
 					caller.nodeId,
@@ -651,7 +651,7 @@ export function createClusterService(
 					);
 				}
 			}
-			const build = ctrl.builds.buildFor(req.resources?.os || "linux", req.resources?.arch ?? "");
+			const build = ctrl.builds.buildForNode(req.resources);
 			const peerSet = new Set<string>();
 			for (const nr of ctrl.store.listNodes()) {
 				const peerAddr = nr.hb?.cladefsPeerAddr?.trim();

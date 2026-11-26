@@ -932,7 +932,7 @@ export function createWorkspaceService(ctrl: ControllerContext): {
 					filtered,
 					p.name,
 					mine,
-					(arch) => ctrl.follows(arch),
+					(res) => ctrl.follows(res),
 					(arch, runtimes) => {
 						const targetRuntimes = reqRuntimeForWarm
 							? runtimes.includes(reqRuntimeForWarm)

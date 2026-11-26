@@ -1,5 +1,10 @@
 import { create } from "@bufbuild/protobuf";
-import { BuildSchema, ManagedArtifactSchema, type Build } from "./gen/hotbed/v1/hotbed_pb.ts";
+import {
+	BuildSchema,
+	ManagedArtifactSchema,
+	type Build,
+	type Resources,
+} from "./gen/hotbed/v1/hotbed_pb.ts";
 import { ErrorCode, hotbedError } from "./errors.ts";
 import {
 	COMPILED_BUILD_NUMBER,
@@ -71,6 +76,17 @@ export function guestdAssetName(arch: string): string {
 
 export function isSupportedPlatform(os: string, arch: string): boolean {
 	return SUPPORTED_PLATFORMS.some((p) => p.os === os && p.arch === arch);
+}
+
+/**
+ * The OS whose build a node runs. A worker reports it (Resources.os); one
+ * built before that field (build 293 and older) is told apart by its kernel,
+ * which a Mac worker reports as "Darwin <release>" (internal/worker/host_darwin.go).
+ * Handing a Mac the Linux binary replaces its hotbed CLI with one it cannot run.
+ */
+export function nodeOS(res: Resources | undefined): string {
+	if (res?.os) return res.os;
+	return res?.kernel.startsWith("Darwin ") ? "darwin" : "linux";
 }
 
 function parsePositiveBuild(raw: string | undefined): number {
@@ -277,6 +293,11 @@ export class BuildDistributor {
 
 	versionString(): string {
 		return formatControllerVersion(this.currentBuildNumber(), this.controllerCommit());
+	}
+
+	/** The build a node with these resources follows. */
+	buildForNode(res: Resources | undefined): Build | undefined {
+		return this.buildFor(nodeOS(res), res?.arch ?? "");
 	}
 
 	buildFor(os: string, arch: string): Build | undefined {

@@ -23,6 +23,7 @@ import (
 	pb "github.com/semistrict/hotbed/internal/gen/hotbed/v1"
 	"github.com/semistrict/hotbed/internal/gen/hotbed/v1/hotbedv1connect"
 	"github.com/semistrict/hotbed/internal/update"
+	"github.com/semistrict/hotbed/internal/update/updatetest"
 )
 
 // sizedEvents are events whose feed text makes each encode to about kb KiB.
@@ -574,7 +575,7 @@ func (c *buildHeartbeatCluster) Heartbeat(_ context.Context, _ *pb.HeartbeatRequ
 // upgrades indefinitely (board 7989).
 func TestHeartbeatDefersUpgradeDuringActiveWork(t *testing.T) {
 	payloadFor := func(text string) ([]byte, string) {
-		b := []byte(text)
+		b := updatetest.Binary(text)
 		s := sha256.Sum256(b)
 		return b, hex.EncodeToString(s[:])
 	}
@@ -1051,7 +1052,7 @@ func TestKeepWithFailureHookResetsTransportOnTimeout(t *testing.T) {
 }
 
 func TestFollowDownloadsDirectlyFromGitHubAndNeverDowngrades(t *testing.T) {
-	payload := []byte("hotbed build 172 direct from github")
+	payload := updatetest.Binary("hotbed build 172 direct from github")
 	sumBytes := sha256.Sum256(payload)
 	sum := hex.EncodeToString(sumBytes[:])
 

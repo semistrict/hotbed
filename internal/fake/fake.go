@@ -15,6 +15,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strings"
 	"sync"
@@ -732,7 +733,7 @@ func NewSystem() *System {
 func (s *System) Resources() (*pb.Resources, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return &pb.Resources{Arch: s.Arch, Cpus: 8, MemoryBytes: s.Mem.Total, SwapBytes: s.Mem.SwapTotal, Kernel: "fake", Machine: "Test Machine"}, nil
+	return &pb.Resources{Os: runtime.GOOS, Arch: s.Arch, Cpus: 8, MemoryBytes: s.Mem.Total, SwapBytes: s.Mem.SwapTotal, Kernel: "fake", Machine: "Test Machine"}, nil
 }
 
 func (s *System) Meminfo() (sysinfo.Mem, error) {

@@ -5,10 +5,14 @@ package updatetest
 import (
 	"bytes"
 	"crypto/sha256"
+	"debug/elf"
+	"debug/macho"
+	"encoding/binary"
 	"encoding/hex"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"runtime"
 	"slices"
 	"strings"
 	"sync/atomic"
@@ -149,7 +153,7 @@ func (g *GitHub) Publish(n int64) {
 	assets := map[string][]byte{}
 	var sums bytes.Buffer
 	for _, p := range update.Platforms {
-		b := []byte(fmt.Sprintf("hotbed build %d for %s", n, p))
+		b := BinaryFor(p, fmt.Sprintf("hotbed build %d for %s", n, p))
 		assets[p.Asset()] = b
 		fmt.Fprintf(&sums, "%s  %s\n", Sum(b), p.Asset())
 	}
@@ -167,4 +171,28 @@ func Sum(b []byte) string {
 // Client reads the fake's releases.
 func (g *GitHub) Client() *update.GitHub {
 	return &update.GitHub{API: g.srv.URL, Repo: "semistrict/hotbed", Token: g.token, Client: g.srv.Client()}
+}
+
+// Binary is a stand-in hotbed binary that update.Install takes on this
+// machine: an executable header for runtime.GOOS/GOARCH, then payload.
+func Binary(payload string) []byte {
+	return BinaryFor(update.Platform{OS: runtime.GOOS, Arch: runtime.GOARCH}, payload)
+}
+
+// BinaryFor is a stand-in hotbed binary for platform p.
+func BinaryFor(p update.Platform, payload string) []byte {
+	hdr := make([]byte, 20)
+	switch p.OS {
+	case "linux":
+		copy(hdr, elf.ELFMAG)
+		m := map[string]elf.Machine{"amd64": elf.EM_X86_64, "arm64": elf.EM_AARCH64}[p.Arch]
+		binary.LittleEndian.PutUint16(hdr[18:20], uint16(m))
+	case "darwin":
+		binary.LittleEndian.PutUint32(hdr[0:4], macho.Magic64)
+		c := map[string]macho.Cpu{"amd64": macho.CpuAmd64, "arm64": macho.CpuArm64}[p.Arch]
+		binary.LittleEndian.PutUint32(hdr[4:8], uint32(c))
+	default:
+		panic("updatetest: no stand-in binary for " + p.String())
+	}
+	return append(hdr, payload...)
 }
