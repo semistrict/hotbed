@@ -93,6 +93,7 @@ func (darwinSystem) Resources() (*pb.Resources, error) {
 		return nil, fmt.Errorf("sysctl machdep.cpu.brand_string: %w", err)
 	}
 	return &pb.Resources{
+		Os:          runtime.GOOS,
 		Arch:        runtime.GOARCH,
 		Cpus:        int32(runtime.NumCPU()),
 		MemoryBytes: mem.Total,

@@ -287,8 +287,10 @@ export class BuildDistributor {
 		if (!asset) return undefined;
 		// Private repos (configured with GITHUB_TOKEN) require authenticated /builds/ proxying.
 		const downloadUrl = this.updatesToken() ? "" : asset.downloadUrl || "";
+		// hotbed-guestd runs in the worker's VMs, Linux whatever the worker's
+		// own OS (a Mac's are machined's).
 		let guestd;
-		if (os === "linux" && arch) {
+		if (arch) {
 			const gName = guestdAssetName(arch);
 			const gAsset = rel.assets[gName];
 			if (gAsset) {

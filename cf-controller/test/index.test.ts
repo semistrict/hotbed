@@ -1206,6 +1206,7 @@ describe("BuildDistributor pinned controller version and placement semantics", (
 		const amd64Sum = "a".repeat(64);
 		const arm64Sum = "b".repeat(64);
 		const darwinSum = "c".repeat(64);
+		const guestdSum = "d".repeat(64);
 		const dist = new BuildDistributor(
 			{
 				UPDATES_REPO: "semistrict/hotbed",
@@ -1215,6 +1216,7 @@ describe("BuildDistributor pinned controller version and placement semantics", (
 					`${amd64Sum}  hotbed-linux-amd64`,
 					`${arm64Sum}  hotbed-linux-arm64`,
 					`${darwinSum}  hotbed-darwin-arm64`,
+					`${guestdSum}  hotbed-guestd-linux-arm64`,
 				].join("\n"),
 			},
 			kv,
@@ -1235,6 +1237,14 @@ describe("BuildDistributor pinned controller version and placement semantics", (
 		expect(b!.downloadUrl).toBe(
 			"https://github.com/semistrict/hotbed/releases/download/build-172/hotbed-linux-amd64",
 		);
+
+		// A Mac's worker gets the darwin build, and the Linux hotbed-guestd its
+		// VMs boot.
+		const mac = dist.buildFor("darwin", "arm64");
+		expect(mac!.sha256).toBe(darwinSum);
+		expect(mac!.path).toBe("/builds/172/hotbed-darwin-arm64");
+		expect(mac!.guestd!.sha256).toBe(guestdSum);
+		expect(mac!.guestd!.path).toBe("/builds/172/hotbed-guestd-linux-arm64");
 
 		// Without baked sums, stale cache (build 170) is ignored for pinned build 172 and triggers immediate refresh.
 		const unbaked = new BuildDistributor(

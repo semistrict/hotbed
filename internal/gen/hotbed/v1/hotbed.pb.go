@@ -1923,7 +1923,10 @@ type Resources struct {
 	// The hotbed build it runs: "build 42 (0123456789ab)", or "dev (...)".
 	Version string `protobuf:"bytes,8,opt,name=version,proto3" json:"version,omitempty"`
 	// Execution runtimes supported on this worker (e.g. "vm", "cladefs").
-	Runtimes      []string `protobuf:"bytes,9,rep,name=runtimes,proto3" json:"runtimes,omitempty"`
+	Runtimes []string `protobuf:"bytes,9,rep,name=runtimes,proto3" json:"runtimes,omitempty"`
+	// The worker's own OS (Go's GOOS: "linux", "darwin"): which build of
+	// hotbed it runs. Empty from workers before it, all Linux.
+	Os            string `protobuf:"bytes,10,opt,name=os,proto3" json:"os,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -2019,6 +2022,13 @@ func (x *Resources) GetRuntimes() []string {
 		return x.Runtimes
 	}
 	return nil
+}
+
+func (x *Resources) GetOs() string {
+	if x != nil {
+		return x.Os
+	}
+	return ""
 }
 
 // CladefsCell identifies a cladefsd cell (and optionally an uploaded version)
@@ -31785,7 +31795,7 @@ const file_hotbed_v1_hotbed_proto_rawDesc = "" +
 	"\n" +
 	"suggestion\x18\x02 \x01(\tR\n" +
 	"suggestion\x12\x1c\n" +
-	"\tretryable\x18\x03 \x01(\bR\tretryable\"\xfc\x01\n" +
+	"\tretryable\x18\x03 \x01(\bR\tretryable\"\x8c\x02\n" +
 	"\tResources\x12\x12\n" +
 	"\x04arch\x18\x01 \x01(\tR\x04arch\x12\x12\n" +
 	"\x04cpus\x18\x02 \x01(\x05R\x04cpus\x12!\n" +
@@ -31797,7 +31807,9 @@ const file_hotbed_v1_hotbed_proto_rawDesc = "" +
 	"\n" +
 	"bench_cpus\x18\a \x01(\tR\tbenchCpus\x12\x18\n" +
 	"\aversion\x18\b \x01(\tR\aversion\x12\x1a\n" +
-	"\bruntimes\x18\t \x03(\tR\bruntimes\"\xf1\x01\n" +
+	"\bruntimes\x18\t \x03(\tR\bruntimes\x12\x0e\n" +
+	"\x02os\x18\n" +
+	" \x01(\tR\x02os\"\xf1\x01\n" +
 	"\vCladefsCell\x12\x16\n" +
 	"\x06tenant\x18\x01 \x01(\x04R\x06tenant\x12\x12\n" +
 	"\x04cell\x18\x02 \x01(\x04R\x04cell\x12\x18\n" +

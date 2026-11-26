@@ -651,7 +651,7 @@ export function createClusterService(
 					);
 				}
 			}
-			const build = ctrl.builds.buildFor("linux", req.resources?.arch ?? "");
+			const build = ctrl.builds.buildFor(req.resources?.os || "linux", req.resources?.arch ?? "");
 			const peerSet = new Set<string>();
 			for (const nr of ctrl.store.listNodes()) {
 				const peerAddr = nr.hb?.cladefsPeerAddr?.trim();
