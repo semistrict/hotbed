@@ -3,8 +3,6 @@ package main
 import (
 	"bytes"
 	"encoding/json"
-	"errors"
-	"io"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -13,132 +11,12 @@ import (
 	"testing"
 	"time"
 
-	"connectrpc.com/connect/v2"
 	"google.golang.org/protobuf/encoding/protojson"
 	"google.golang.org/protobuf/proto"
 
 	"github.com/semistrict/hotbed/internal/api"
 	pb "github.com/semistrict/hotbed/internal/gen/hotbed/v1"
 )
-
-// When the controller is unreachable, workspaceFor only falls back to lastUsed
-// when the requested placement imposes no restrictions incompatible with the
-// cached workspace (--node must match, and --arch/--bench/--mem-low refuse to
-// silently bypass placement) (board 7894).
-func TestSessionWorkspaceForPlacementCheckWhenControllerUnreachable(t *testing.T) {
-	c := newCluster(t)
-	c.addRepo(upstream(t))
-	c.ok(nil, "session", "start", "safe-fox")
-	c.workspace("safe-fox", nil) // caches asahimbp as lastUsed
-
-	c.ctrl.setDown(true)
-
-	// No placement restriction -> falls back to lastUsed on asahimbp.
-	if code, out, stderr := c.hotbed("run", "-s", "safe-fox", "-r", "app", "--", "echo", "ok"); code != 0 || out != "ok\n" {
-		t.Fatalf("run without placement offline: code=%d out=%q stderr=%q", code, out, stderr)
-	}
-	// Matching --node -> falls back to lastUsed on asahimbp.
-	if code, out, stderr := c.hotbed("run", "-s", "safe-fox", "-r", "app", "--node", "asahimbp", "--", "echo", "matched"); code != 0 || out != "matched\n" {
-		t.Fatalf("run with matching --node offline: code=%d out=%q stderr=%q", code, out, stderr)
-	}
-
-	// Incompatible placement restrictions must NOT silently bypass placement.
-	for _, tc := range []struct {
-		name string
-		args []string
-	}{
-		{"different node", []string{"run", "-s", "safe-fox", "-r", "app", "--node", "mini", "--", "true"}},
-		{"arch", []string{"run", "-s", "safe-fox", "-r", "app", "--arch", "arm64", "--", "true"}},
-		{"bench", []string{"run", "-s", "safe-fox", "-r", "app", "--bench", "--", "true"}},
-		{"mem-low", []string{"run", "-s", "safe-fox", "-r", "app", "--mem-low", "1G", "--", "true"}},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			_, e := c.fails(tc.args...)
-			if e.Code != api.CodeControllerUnreachable {
-				t.Errorf("%v when controller is down = %+v, want %s", tc.args, e, api.CodeControllerUnreachable)
-			}
-		})
-	}
-}
-
-// When the controller is unreachable, hotbed logs on a base freshen (which has
-// SessionId == "") still finds the command via askKnownWorkers (board 7894).
-func TestSessionAskKnownWorkersFindsFreshenWhenControllerUnreachable(t *testing.T) {
-	c := newCluster(t)
-	c.addRepo(upstream(t))
-	c.ok(nil, "session", "start", "freshen-owl")
-	// Establish a known workspace on asahimbp first.
-	c.workspace("freshen-owl", nil)
-
-	// Trigger a failing base freshen on the same worker via a second session.
-	c.ok(nil, "step", "set", "-p", "app", "broken", "--", "echo broken offline >&2; exit 3")
-	c.ok(nil, "session", "start", "other-owl")
-	if code, out, stderr := c.hotbed("run", "-s", "other-owl", "-r", "app", "--", "true"); code != 0 {
-		t.Fatalf("run triggering freshen: code=%d out=%q stderr=%q", code, out, stderr)
-	}
-
-	// Find the failed freshen command ID from the worker's commands.
-	var freshenID string
-	c.eventually("freshen command recorded on worker", func() bool {
-		cp, err := c.engine().Checkpoint()
-		if err != nil {
-			t.Fatal(err)
-		}
-		for _, cmd := range cp.Commands {
-			if strings.HasPrefix(cmd.Id, "f-app-g2-") && cmd.SessionId == "" {
-				freshenID = cmd.Id
-				return true
-			}
-		}
-		return false
-	})
-
-	// Take controller down and read the freshen log via the session with a known worker.
-	c.ctrl.setDown(true)
-	code, out, stderr := c.hotbed("logs", "-s", "freshen-owl", freshenID)
-	if code != 0 || !strings.Contains(out, "broken offline") {
-		t.Fatalf("logs of freshen %s with controller down: code=%d out=%q stderr=%q", freshenID, code, out, stderr)
-	}
-}
-
-// A direct worker RPC that fails because the worker is down must report
-// WORKER_UNREACHABLE rather than blaming the controller (board 7894).
-func TestSessionDirectWorkerUnreachableReportsWorkerUnreachable(t *testing.T) {
-	// Unit checks on api.FromWorker.
-	if err := api.FromWorker("worker1:7121", nil); err != nil {
-		t.Fatalf("FromWorker(nil) = %v, want nil", err)
-	}
-	if err := api.FromWorker("worker1:7121", io.EOF); !errors.Is(err, io.EOF) {
-		t.Fatalf("FromWorker(EOF) = %v, want io.EOF", err)
-	}
-	unavail := connect.NewError(connect.CodeUnavailable, "connection refused")
-	got := api.FromWorker("worker1:7121", unavail)
-	e := api.FromConnect(got)
-	if e.Code != api.CodeWorkerUnreachable || !e.Retryable || !strings.Contains(e.Message, "worker1:7121") {
-		t.Fatalf("FromWorker(unavailable) = %+v, want WORKER_UNREACHABLE retryable naming worker", e)
-	}
-	notFound := api.ToConnect(api.Errorf(api.CodeNotFound, "missing"))
-	if api.CodeOf(api.FromWorker("worker1:7121", notFound)) != api.CodeNotFound {
-		t.Fatalf("FromWorker(NOT_FOUND) changed code to %s", api.CodeOf(api.FromWorker("worker1:7121", notFound)))
-	}
-
-	// End-to-end: halt the worker while the controller is down (using lastUsed)
-	// and while the controller is up (after GetCommand / CreateWorkspace points to it).
-	c := newCluster(t)
-	c.addRepo(upstream(t))
-	c.ok(nil, "session", "start", "down-yak")
-	c.workspace("down-yak", nil)
-
-	c.nodes[0].halted.Store(true)
-	c.ctrl.setDown(true)
-	_, errObj := c.fails("run", "-s", "down-yak", "-r", "app", "--", "true")
-	if errObj.Code != api.CodeWorkerUnreachable || !errObj.Retryable {
-		t.Fatalf("run against halted worker = %+v, want WORKER_UNREACHABLE (retryable)", errObj)
-	}
-	if strings.Contains(errObj.Suggestion, "controller") {
-		t.Errorf("worker unreachable suggestion blames controller: %q", errObj.Suggestion)
-	}
-}
 
 // session start must reload-modify-write sessions.json after StartSession
 // returns instead of overwriting concurrent edits with the pre-RPC snapshot
@@ -488,60 +366,4 @@ func TestReachWorkspaceForTimesOutOnStuckController(t *testing.T) {
 		}
 	})
 
-	t.Run("stuck controller with cached workspace falls back offline", func(t *testing.T) {
-		c := newCluster(t)
-		c.addRepo(upstream(t))
-		c.ok(nil, "session", "start", "stuck-fallback")
-		cached := c.workspace("stuck-fallback", nil)
-
-		base := c.cli.stream.Transport
-		if base == nil {
-			base = http.DefaultTransport
-		}
-		stuck := roundTripFunc(func(req *http.Request) (*http.Response, error) {
-			if strings.HasSuffix(req.URL.Path, "/CreateWorkspace") {
-				<-req.Context().Done()
-				return nil, req.Context().Err()
-			}
-			return base.RoundTrip(req)
-		})
-
-		d := c.cli
-		var stdout, stderr bytes.Buffer
-		d.stdout, d.stderr = &stdout, &stderr
-		d.stream = &http.Client{Transport: stuck}
-
-		addr, err := d.controller()
-		if err != nil {
-			t.Fatal(err)
-		}
-		f := controllerClient{}
-		f.callController(addr, d)
-
-		stuckTimeout(t)
-		start := time.Now()
-		ws, _, err := f.workspaceFor(t.Context(), d, &pb.CreateWorkspaceRequest{SessionId: "stuck-fallback", Repo: "app", Placement: &pb.Placement{}})
-		elapsed := time.Since(start)
-		if err != nil {
-			t.Fatalf("workspaceFor fallback failed: %v (stderr=%q)", err, stderr.String())
-		}
-		if ws.Id != cached.Id {
-			t.Fatalf("fallback workspace = %q, want cached %q", ws.Id, cached.Id)
-		}
-		if !strings.Contains(stderr.String(), "controller is out of reach") {
-			t.Errorf("stderr = %q, want offline fallback notice", stderr.String())
-		}
-		if elapsed > 3*time.Second {
-			t.Fatalf("workspaceFor fallback took %v, expected prompt timeout around %v", elapsed, createWorkspaceTimeout)
-		}
-	})
-}
-
-// reach fails hard when given an empty worker address rather than silently
-// falling back to controller forwarding (board 7872).
-func TestReachFailsHardOnEmptyAddr(t *testing.T) {
-	f := controllerClient{}
-	if _, err := f.reach(deps{}, ""); err == nil || api.CodeOf(err) != api.CodeInternal {
-		t.Fatalf("reach(\"\") = %v (code %s), want %s", err, api.CodeOf(err), api.CodeInternal)
-	}
 }

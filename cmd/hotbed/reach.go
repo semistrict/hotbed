@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net"
+	"net/http"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -11,50 +13,68 @@ import (
 	"strings"
 	"time"
 
-	"connectrpc.com/connect/v2"
-
 	"github.com/semistrict/hotbed/internal/api"
 	pb "github.com/semistrict/hotbed/internal/gen/hotbed/v1"
 	"github.com/semistrict/hotbed/internal/gen/hotbed/v1/hotbedv1connect"
+	"github.com/semistrict/hotbed/internal/httpx"
+	"github.com/semistrict/hotbed/internal/setup"
 )
 
-// The controller says where a session's workspaces are; the CLI then
-// syncs, runs commands and reads their output on the workspace's worker
-// itself, so bundles and logs never detour through the controller, and work
-// goes on while the controller is out of reach.
+// Clients call workspaces only through the controller, which relays each
+// call to the workspace's worker over the worker's own tunnel to it, or, for
+// this machine's own worker, over the worker's Unix socket: never a worker
+// directly over the network.
 
-// workerClients is the clients that reach one workspace's worker: calls for unary
-// calls, stream for streams, which have no deadline; and the controller,
-// whose history keeps the commands the worker has forgotten.
+// workerClients is the clients that reach one workspace's worker: calls for
+// unary calls, stream for streams, which have no deadline; and the
+// controller, whose history keeps the commands the worker has forgotten.
 type workerClients struct {
 	calls, stream hotbedv1connect.WorkspaceServiceClient
 	controller    hotbedv1connect.WorkspaceServiceClient
 }
 
-// reach dials the worker at addr directly.
-func (f controllerClient) reach(d deps, addr string) (workerClients, error) {
-	if addr == "" {
-		return workerClients{}, api.Errorf(api.CodeInternal, "workspace has no worker address").
-			WithSuggestion("check that the worker is online (hotbed nodes) and retry")
-	}
-	cl, err := f.clients(d.http)
+// reach is the clients that reach node's worker: through the controller,
+// or over the Unix socket of this machine's worker when it is node's.
+func (f controllerClient) reach(d deps, node string) (workerClients, error) {
+	calls, err := f.clients(d.http)
 	if err != nil {
 		return workerClients{}, err
 	}
-	interceptors := append([]connect.ClientInterceptor{api.WorkerErrors(addr)}, rideOut(d, "the worker at "+addr)...)
-	calls, err := api.Dial(addr, api.WorkerPort, d.http, interceptors...)
+	stream, err := f.clients(d.stream)
 	if err != nil {
 		return workerClients{}, err
 	}
-	stream, err := api.Dial(addr, api.WorkerPort, d.stream, interceptors...)
+	w := workerClients{calls: calls.workspaces, stream: stream.workspaces, controller: calls.workspaces}
+	local, err := setup.LocalWorker("")
+	if err != nil || local.Socket == "" || node == "" || local.NodeID != node {
+		return w, nil
+	}
+	interceptors := rideOut(d, "this machine's worker")
+	uc, err := api.Dial("http://worker", api.WorkerPort, unixHTTP(local.Socket, d.http.Timeout), interceptors...)
 	if err != nil {
 		return workerClients{}, err
 	}
-	return workerClients{
-		calls:      hotbedv1connect.NewWorkspaceServiceClient(calls),
-		stream:     hotbedv1connect.NewWorkspaceServiceClient(stream),
-		controller: cl.workspaces,
-	}, nil
+	us, err := api.Dial("http://worker", api.WorkerPort, unixHTTP(local.Socket, 0), interceptors...)
+	if err != nil {
+		return workerClients{}, err
+	}
+	w.calls, w.stream = hotbedv1connect.NewWorkspaceServiceClient(uc), hotbedv1connect.NewWorkspaceServiceClient(us)
+	return w, nil
+}
+
+// unixHTTP is an HTTP client whose every connection is to the Unix socket
+// at sock, with timeout (0 for none, for streams).
+func unixHTTP(sock string, timeout time.Duration) *http.Client {
+	return &http.Client{
+		Timeout: timeout,
+		Transport: &http.Transport{
+			DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
+				var d net.Dialer
+				return d.DialContext(ctx, "unix", sock)
+			},
+			Protocols: httpx.Protocols(),
+		},
+	}
 }
 
 // diagnoseCallTimeout bounds a direct StopCommand/PauseCommand RPC when
@@ -87,8 +107,7 @@ func (w workerClients) command(ctx context.Context, id string) (*pb.Command, err
 // the workspace the session has there (or gets), or a new throwaway one
 // (req.Throwaway). req.Repo is the project's repo the run syncs and runs in,
 // "" for none; req.SyncDir is its checkout, which the run syncs first, ""
-// for none. With the controller out of reach a run goes where the session
-// last ran on this machine; a throwaway one cannot.
+// for none.
 func (f controllerClient) workspaceFor(ctx context.Context, d deps, req *pb.CreateWorkspaceRequest) (*pb.Workspace, workerClients, error) {
 	// CreateWorkspace can legitimately take longer than d.http's 60s timeout
 	// while preparing a base or under heavy worker load (board 7957).
@@ -96,21 +115,8 @@ func (f controllerClient) workspaceFor(ctx context.Context, d deps, req *pb.Crea
 	if err != nil {
 		return nil, workerClients{}, err
 	}
-	// Out of reach, the controller is waited for only when this machine has
-	// no cached workspace that satisfies p: otherwise the run goes where it
-	// last did.
-	call := ctx
-	if known, err := loadKnown(d, req.SessionId); err == nil && known.Last != "" && !req.Throwaway {
-		if k, ok := known.Workspaces[known.Last]; ok && placementFitsSpot(req.Placement, k) {
-			call = api.WithoutRideOut(ctx)
-		}
-	}
-	ws, err := createWaking(call, d, cl.workspaces, req)
-	switch {
-	case err == nil:
-	case api.CodeOf(err) == api.CodeControllerUnreachable && !req.Throwaway:
-		return f.lastUsedFor(ctx, d, req.SessionId, req.Placement, err)
-	default:
+	ws, err := createWaking(ctx, d, cl.workspaces, req)
+	if err != nil {
 		return nil, workerClients{}, err
 	}
 	if req.Throwaway && !ws.Throwaway {
@@ -119,21 +125,19 @@ func (f controllerClient) workspaceFor(ctx context.Context, d deps, req *pb.Crea
 		return nil, workerClients{}, api.Errorf(api.CodePlatformNotSupported, "%s gave workspace %s, which is not throwaway: it predates hotbed run --fork", ws.Node, ws.Id).
 			WithSuggestion("run without --fork, or once the controller and workers run this build (hotbed nodes)")
 	}
-	w, err := f.reach(d, ws.NodeAddr)
+	w, err := f.reach(d, ws.NodeId)
 	if err != nil {
 		return nil, workerClients{}, err
 	}
-	if ws.Throwaway {
-		rememberWorker(d, req.SessionId, ws)
-	} else {
+	if !ws.Throwaway {
 		remember(d, req.SessionId, ws)
 	}
 	return ws, w, nil
 }
 
 // createWorkspaceTimeout bounds CreateWorkspace on d.stream so a live-but-stuck
-// controller cannot hang `hotbed run` forever or prevent offline fallback to a
-// cached workspace, while still allowing >60s base prep and wakeRideOut (5m).
+// controller cannot hang `hotbed run` forever, while still allowing >60s base
+// prep and wakeRideOut (5m).
 var createWorkspaceTimeout = 10 * time.Minute
 
 // wakeRideOut is how long a run waits for the node it goes to to wake.
@@ -180,71 +184,15 @@ func createWaking(ctx context.Context, d deps, ws hotbedv1connect.WorkspaceServi
 	}
 }
 
-// placementFitsSpot reports whether a cached workspace at k can satisfy p
-// without consulting the controller. Arch, bench, and memory-low constraints
-// require controller placement; an explicit node must match k.Node.
-func placementFitsSpot(p *pb.Placement, k spot) bool {
-	if p == nil {
-		return true
-	}
-	if p.Arch != "" || p.Bench || p.MemoryLowBytes > 0 {
-		return false
-	}
-	if p.Node != "" && k.Node != p.Node {
-		return false
-	}
-	return true
-}
-
-// lastUsed is the session's workspace this machine last used, as its worker
-// has it now, or unreachable when there is none.
-func (f controllerClient) lastUsed(ctx context.Context, d deps, session string, unreachable error) (*pb.Workspace, workerClients, error) {
-	return f.lastUsedFor(ctx, d, session, nil, unreachable)
-}
-
-// lastUsedFor is lastUsed constrained by p: if p imposes placement restrictions
-// that the cached workspace cannot satisfy, it refuses to bypass placement and
-// returns unreachable.
-func (f controllerClient) lastUsedFor(ctx context.Context, d deps, session string, p *pb.Placement, unreachable error) (*pb.Workspace, workerClients, error) {
-	known, err := loadKnown(d, session)
-	if err != nil || known.Last == "" {
-		return nil, workerClients{}, unreachable
-	}
-	k, ok := known.Workspaces[known.Last]
-	if !ok || !placementFitsSpot(p, k) {
-		return nil, workerClients{}, unreachable
-	}
-	fmt.Fprintf(d.stderr, "hotbed: the controller is out of reach; using %s on %s\n", known.Last, k.Node)
-	return f.onWorker(ctx, d, &pb.Workspace{Id: known.Last, NodeAddr: k.NodeAddr, Node: k.Node, Project: k.Project})
-}
-
-// hasKnownWorkers reports whether this machine has cached worker addresses for
-// session that can be queried directly when the controller is unreachable.
-func hasKnownWorkers(d deps, session string) bool {
-	if session == "" {
-		return false
-	}
-	known, err := loadKnown(d, session)
-	if err != nil {
-		return false
-	}
-	for _, k := range known.Workspaces {
-		if k.NodeAddr != "" {
-			return true
-		}
-	}
-	return false
-}
-
 // onWorker is the workspace found, as its worker has it now.
 func (f controllerClient) onWorker(ctx context.Context, d deps, found *pb.Workspace) (*pb.Workspace, workerClients, error) {
-	w, err := f.reach(d, found.NodeAddr)
+	w, err := f.reach(d, found.NodeId)
 	if err != nil {
 		return nil, workerClients{}, err
 	}
 	ws, err := w.calls.GetWorkspace(ctx, &pb.GetWorkspaceRequest{Id: found.Id})
 	if err != nil {
-		return nil, workerClients{}, refusal(err, found.NodeAddr)
+		return nil, workerClients{}, err
 	}
 	ws.NodeAddr, ws.Node = found.NodeAddr, found.Node
 	if ws.Project == "" {
@@ -255,21 +203,14 @@ func (f controllerClient) onWorker(ctx context.Context, d deps, found *pb.Worksp
 
 // locate finds the session's workspace (on node, when it names one) and its
 // worker, and returns the workspace as its worker has it now. A session
-// with workspaces on several nodes needs node to say which. With the
-// controller out of reach, it goes by where this machine last used one.
+// with workspaces on several nodes needs node to say which.
 func (f controllerClient) locate(ctx context.Context, d deps, session, node string) (*pb.Workspace, workerClients, error) {
 	cl, err := f.clients(d.http)
 	if err != nil {
 		return nil, workerClients{}, err
 	}
-	// Out of reach, the controller is not waited for: the workspace's
-	// worker is where this machine last found it.
-	list, err := cl.workspaces.ListWorkspaces(api.WithoutRideOut(ctx), &pb.ListWorkspacesRequest{SessionId: session})
-	switch {
-	case err == nil:
-	case api.CodeOf(err) == api.CodeControllerUnreachable && node == "":
-		return f.lastUsed(ctx, d, session, err)
-	default:
+	list, err := cl.workspaces.ListWorkspaces(ctx, &pb.ListWorkspacesRequest{SessionId: session})
+	if err != nil {
 		return nil, workerClients{}, err
 	}
 	var found []*pb.Workspace
@@ -333,28 +274,17 @@ func (f controllerClient) checkoutOf(ctx context.Context, d deps, session, expli
 }
 
 // findCommand finds the command its ID names, whichever session's (or a
-// base's freshen, which is no session's), and its worker. The session, if
-// any, is where to look when the controller cannot say: the workers this
-// machine last found its workspaces on.
-func (f controllerClient) findCommand(ctx context.Context, d deps, session, id string) (*pb.Command, workerClients, error) {
+// base's freshen, which is no session's), and its worker.
+func (f controllerClient) findCommand(ctx context.Context, d deps, _, id string) (*pb.Command, workerClients, error) {
 	cl, err := f.clients(d.http)
 	if err != nil {
 		return nil, workerClients{}, err
 	}
-	cmd, err := cl.workspaces.GetCommand(api.WithoutRideOut(ctx), &pb.GetCommandRequest{Id: id})
-	var code api.Code
+	cmd, err := cl.workspaces.GetCommand(ctx, &pb.GetCommandRequest{Id: id})
 	if err != nil {
-		code = api.CodeOf(err)
-	}
-	switch {
-	case code == api.CodeControllerUnreachable, code == api.CodeNotFound:
-		// Out of reach, or a command run on its worker a moment ago that the
-		// controller has not heard of yet: ask the session's workers.
-		return f.askKnownWorkers(ctx, d, session, id, err)
-	case err != nil:
 		return nil, workerClients{}, err
 	}
-	w, err := f.reach(d, cmd.NodeAddr)
+	w, err := f.reach(d, cmd.NodeId)
 	return cmd, w, err
 }
 
@@ -381,53 +311,17 @@ func ownerSuggestion(cmd *pb.Command) string {
 	return fmt.Sprintf("%s is session %s's: pass -s %s to act on it", cmd.Id, cmd.SessionId, cmd.SessionId)
 }
 
-// refusal says what to do about a worker that would not take the call: on
-// the worker's own machine, it admits only root and the user its commands
-// run as.
-func refusal(err error, addr string) error {
-	e := api.FromConnect(err)
-	if e.Code != api.CodeNotAuthorized {
-		return err
-	}
-	return e.WithSuggestion(fmt.Sprintf("on %s itself, run hotbed as root or as the user its commands run as; or run it from another of your machines", addr))
-}
-
-// askKnownWorkers looks for a command on the workers this machine last
-// found the session's workspaces on, and fails with notFound otherwise.
-func (f controllerClient) askKnownWorkers(ctx context.Context, d deps, session, id string, notFound error) (*pb.Command, workerClients, error) {
-	if session == "" {
-		return nil, workerClients{}, notFound
-	}
-	known, err := loadKnown(d, session)
-	if err != nil {
-		return nil, workerClients{}, notFound
-	}
-	for _, k := range known.Workspaces {
-		if k.NodeAddr == "" {
-			continue
-		}
-		w, err := f.reach(d, k.NodeAddr)
-		if err != nil {
-			continue
-		}
-		if cmd, err := w.calls.GetCommand(ctx, &pb.GetCommandRequest{Id: id}); err == nil {
-			return cmd, w, nil
-		}
-	}
-	return nil, workerClients{}, notFound
-}
-
-// known is where this machine last used a session's workspaces: each by ID,
-// and the one it used last.
+// known is where this machine last used a session's workspaces, each by
+// ID, and the one it used last: the checkouts it synced into them, which a
+// run infers its repo from.
 type known struct {
 	Last       string          `json:"last,omitempty"`
 	Workspaces map[string]spot `json:"workspaces,omitempty"`
 }
 
 type spot struct {
-	NodeAddr string `json:"nodeAddr"`
-	Node     string `json:"node,omitempty"`
-	Project  string `json:"project,omitempty"`
+	Node    string `json:"node,omitempty"`
+	Project string `json:"project,omitempty"`
 	// The checkouts synced into it, by repo.
 	SyncDirs map[string]string `json:"syncDirs,omitempty"`
 }
@@ -445,14 +339,13 @@ func loadKnown(d deps, session string) (known, error) {
 	return k, json.Unmarshal(b, &k)
 }
 
-// remember notes where a session's workspace is, for when the controller
-// is out of reach.
+// remember notes a session's workspace and the checkouts synced into it.
 func remember(d deps, session string, ws *pb.Workspace) {
 	k, err := loadKnown(d, session)
 	if err != nil {
 		k = known{}
 	}
-	sp := spot{NodeAddr: ws.NodeAddr, Node: ws.Node, Project: ws.Project}
+	sp := spot{Node: ws.Node, Project: ws.Project}
 	for _, r := range ws.Repos {
 		if r.SyncDir != "" {
 			if sp.SyncDirs == nil {
@@ -468,29 +361,6 @@ func remember(d deps, session string, ws *pb.Workspace) {
 		k.Workspaces = map[string]spot{}
 	}
 	k.Last, k.Workspaces[ws.Id] = ws.Id, sp
-	if err := saveKnown(d, session, k); err != nil {
-		fmt.Fprintf(d.stderr, "hotbed: could not note where %s is: %v\n", ws.Id, err)
-	}
-}
-
-// rememberWorker notes the worker of a session's throwaway workspace, so
-// that its command can be found there before the controller hears of it,
-// unless this machine already knows a workspace of the session there. It
-// is never the workspace last used.
-func rememberWorker(d deps, session string, ws *pb.Workspace) {
-	k, err := loadKnown(d, session)
-	if err != nil {
-		k = known{}
-	}
-	for _, sp := range k.Workspaces {
-		if sp.NodeAddr == ws.NodeAddr {
-			return
-		}
-	}
-	if k.Workspaces == nil {
-		k.Workspaces = map[string]spot{}
-	}
-	k.Workspaces[ws.Id] = spot{NodeAddr: ws.NodeAddr, Node: ws.Node, Project: ws.Project}
 	if err := saveKnown(d, session, k); err != nil {
 		fmt.Fprintf(d.stderr, "hotbed: could not note where %s is: %v\n", ws.Id, err)
 	}

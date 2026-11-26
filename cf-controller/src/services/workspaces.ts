@@ -46,6 +46,9 @@ import {
 	TraceCommandChunkSchema,
 	TraceCommandRequestSchema,
 	WorkspaceSchema,
+	WatchWorkspaceRequestSchema,
+	SyncRequestSchema,
+	SyncResponseSchema,
 	WorkspaceService,
 	WorkspaceState,
 	type Base,
@@ -79,6 +82,9 @@ import { sessionEndedError, type CommandRoute, type WorkspaceRow } from "../stor
 
 const DEFAULT_COMMAND_LIMIT = 50;
 const DIAGNOSE_RPC_TIMEOUT_MS = 90_000;
+// A sync's bundles pass through the controller to the worker, which applies
+// them: big checkouts over slow links take minutes.
+const SYNC_RPC_TIMEOUT_MS = 15 * 60_000;
 const WORKER_PROBE_TIMEOUT_MS = 5_000;
 const DAEMON_LOG_WORKER_TIMEOUT_MS = 5_000;
 const DEFAULT_DAEMON_LOG_LIMIT = 200;
@@ -1114,21 +1120,8 @@ export function createWorkspaceService(ctrl: ControllerContext): {
 
 	async function runCommandInternal(req: RunCommandRequest): Promise<Command> {
 		const { host, row, project } = workspaceOf(req.workspaceId);
-		const fwd = create(RunCommandRequestSchema, {
-			workspaceId: req.workspaceId,
-			args: req.args,
-			env: req.env,
-			kind: req.kind,
-			limits: req.limits,
-			attached: req.attached,
-			port: req.port,
-			bench: req.bench,
-			id: newId(),
-			repo: req.repo,
-			vmCpus: req.vmCpus,
-			vmMemoryBytes: req.vmMemoryBytes,
-			placement: req.placement,
-		});
+		const fwd = clone(RunCommandRequestSchema, req);
+		if (!fwd.id) fwd.id = newId();
 		ctrl.store.addCommand(fwd.id, row.session, row.node, row.id, ctrl.now());
 		try {
 			const cmd = await ctrl.tunnel.callUnary(
@@ -1207,11 +1200,25 @@ export function createWorkspaceService(ctrl: ControllerContext): {
 			return getWorkspaceInternal(req.id);
 		},
 
-		watchWorkspace() {
-			throw hotbedError(
-				ErrorCode.PlatformNotSupported,
-				"WatchWorkspace is served directly by the workspace's worker",
-			);
+		async *watchWorkspace(req, ctx) {
+			const { host, row } = workspaceOf(req.id);
+			try {
+				yield* ctrl.tunnel.callServerStream(
+					row.node,
+					host,
+					"/hotbed.v1.WorkspaceService/WatchWorkspace",
+					WatchWorkspaceRequestSchema,
+					req,
+					WorkspaceSchema,
+					ctx.signal,
+					(headers) => {
+						const progress = headers["Hotbed-Progress"];
+						if (progress) ctx.responseHeader.set("Hotbed-Progress", progress);
+					},
+				);
+			} catch (err) {
+				throw fromWorkerError(host, err);
+			}
 		},
 
 		async listWorkspaces(req) {
@@ -1258,11 +1265,35 @@ export function createWorkspaceService(ctrl: ControllerContext): {
 			return create(ReleaseWorkspaceResponseSchema);
 		},
 
-		async sync() {
-			throw hotbedError(
-				ErrorCode.PlatformNotSupported,
-				"Sync is served directly by the workspace's worker",
-			);
+		async sync(reqs, ctx) {
+			// The first message names the workspace; the rest are its
+			// bundles' bytes, passed on as they come.
+			const it = reqs[Symbol.asyncIterator]();
+			const first = await it.next();
+			if (first.done || first.value.msg.case !== "header") {
+				throw hotbedError(ErrorCode.InvalidArgs, "a sync starts with its header");
+			}
+			const head = first.value;
+			const header = first.value.msg.value;
+			const { host, row } = workspaceOf(header.workspaceId);
+			async function* all() {
+				yield head;
+				for (let r = await it.next(); !r.done; r = await it.next()) yield r.value;
+			}
+			try {
+				return await ctrl.tunnel.callClientStream(
+					row.node,
+					host,
+					"/hotbed.v1.WorkspaceService/Sync",
+					SyncRequestSchema,
+					all(),
+					SyncResponseSchema,
+					SYNC_RPC_TIMEOUT_MS,
+					ctx.signal,
+				);
+			} catch (err) {
+				throw fromWorkerError(host, err);
+			}
 		},
 
 		async listFiles(req) {
@@ -1299,11 +1330,8 @@ export function createWorkspaceService(ctrl: ControllerContext): {
 			}
 		},
 
-		async runCommand() {
-			throw hotbedError(
-				ErrorCode.PlatformNotSupported,
-				"RunCommand is served directly by the workspace's worker",
-			);
+		async runCommand(req) {
+			return runCommandInternal(req);
 		},
 
 		async openShell(req) {
@@ -1484,9 +1512,9 @@ export function createWorkspaceService(ctrl: ControllerContext): {
 			});
 		},
 
-		async stopCommand(req) {
+		async stopCommand(req, ctx) {
 			const fwd = clone(StopCommandRequestSchema, req);
-			fwd.host = "";
+			fwd.host = getCaller(ctx.values).hostname;
 			fwd.internal = false;
 			fwd.reason = "";
 			return byHand(
@@ -1507,9 +1535,9 @@ export function createWorkspaceService(ctrl: ControllerContext): {
 			);
 		},
 
-		async pauseCommand(req) {
+		async pauseCommand(req, ctx) {
 			const fwd = clone(PauseCommandRequestSchema, req);
-			fwd.host = "";
+			fwd.host = getCaller(ctx.values).hostname;
 			return byHand(
 				fwd.id,
 				fwd.sessionId,
@@ -1528,9 +1556,9 @@ export function createWorkspaceService(ctrl: ControllerContext): {
 			);
 		},
 
-		async resumeCommand(req) {
+		async resumeCommand(req, ctx) {
 			const fwd = clone(ResumeCommandRequestSchema, req);
-			fwd.host = "";
+			fwd.host = getCaller(ctx.values).hostname;
 			return byHand(
 				fwd.id,
 				fwd.sessionId,
@@ -1550,18 +1578,13 @@ export function createWorkspaceService(ctrl: ControllerContext): {
 		},
 
 		async *followLog(req, ctx) {
-			// What the output has so far, as written, for the cockpit's
-			// terminal; a follower, which waits on the command, calls its
-			// worker.
-			if (req.follow || req.wait) {
-				throw hotbedError(
-					ErrorCode.PlatformNotSupported,
-					"FollowLog with follow is served directly by the workspace's worker",
-				);
-			}
+			// What the output has so far, as the controller keeps it, for
+			// the cockpit's terminal; a follower, which waits on the command,
+			// is relayed to its worker.
 			const reqOffset = Number(req.offset);
-			const stored = await ctrl.commands.readOutputChunks(req.id, reqOffset);
-			if (stored.hasOutput) {
+			const stored =
+				req.follow || req.wait ? null : await ctrl.commands.readOutputChunks(req.id, reqOffset);
+			if (stored?.hasOutput) {
 				for (const c of stored.chunks) {
 					let data = c.data;
 					// If caller requested a mid-chunk offset on normal (non-marker) data, slice to reqOffset.

@@ -29,6 +29,9 @@ type Paths struct {
 	Machined string
 	// Socket is machined's API socket: Machined, and Cladefsd.
 	Socket string
+	// WorkerSocket is where the worker serves its API for clients on this
+	// Mac (statedir.WorkerConfig.Socket).
+	WorkerSocket string
 	// State is machined's --state: short, as its vsock sockets go below it.
 	State string
 	// Images is machined's --images: the worker's artifacts directory, where
@@ -50,15 +53,16 @@ func NewPaths(base string) Paths {
 	m := filepath.Join(base, "machined")
 	w := filepath.Join(base, "worker")
 	return Paths{
-		Base:     base,
-		Worker:   w,
-		Machined: m,
-		Socket:   filepath.Join(m, "machined.sock"),
-		State:    filepath.Join(m, "state"),
-		Images:   filepath.Join(w, "artifacts"),
-		Stopped:  filepath.Join(base, "worker-stopped"),
-		Status:   filepath.Join(base, "worker-status.json"),
-		Logs:     filepath.Join(base, "logs"),
+		Base:         base,
+		Worker:       w,
+		Machined:     m,
+		Socket:       filepath.Join(m, "machined.sock"),
+		WorkerSocket: filepath.Join(w, "worker.sock"),
+		State:        filepath.Join(m, "state"),
+		Images:       filepath.Join(w, "artifacts"),
+		Stopped:      filepath.Join(base, "worker-stopped"),
+		Status:       filepath.Join(base, "worker-status.json"),
+		Logs:         filepath.Join(base, "logs"),
 	}
 }
 
@@ -72,6 +76,32 @@ func (p Paths) Configured() bool {
 // VMConfig is the worker's VM config: every workspace a VM of machined's.
 func (p Paths) VMConfig() *statedir.VMConfig {
 	return &statedir.VMConfig{Enabled: true, Default: true, MachinedSock: p.Socket, MachinedImages: p.Images}
+}
+
+// ensureConfig gives the worker's config what a Mac's worker runs with
+// (VMConfig's machined, its Unix socket), as hotbed worker init writes it: a
+// worker joined by an older build gets them as the daemon starts it.
+func (p Paths) ensureConfig() error {
+	cfg, err := statedir.Load(p.Worker)
+	if err != nil {
+		return err
+	}
+	w := cfg.Worker
+	if w == nil {
+		return fmt.Errorf("%s holds no worker", p.Worker)
+	}
+	want := p.VMConfig()
+	changed := w.Socket != p.WorkerSocket
+	w.Socket = p.WorkerSocket
+	if w.VM == nil {
+		w.VM, changed = want, true
+	} else if w.VM.MachinedSock != want.MachinedSock || w.VM.MachinedImages != want.MachinedImages || !w.VM.Enabled {
+		w.VM.Enabled, w.VM.MachinedSock, w.VM.MachinedImages, changed = true, want.MachinedSock, want.MachinedImages, true
+	}
+	if !changed {
+		return nil
+	}
+	return statedir.Rewrite(p.Worker, cfg)
 }
 
 // State is how the worker stands, as the daemon's menubar and hotbed worker

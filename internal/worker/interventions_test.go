@@ -508,15 +508,17 @@ func TestServiceInterventionHostIdentityAndValidation(t *testing.T) {
 	}
 	ctrlWS := hotbedv1connect.NewWorkspaceServiceClient(ctrlConn)
 
-	// Even the controller's forwarded req.Host is ignored; authoritative host
-	// is always httpx.Peer(ctx).Hostname (board 9810). Sessionless calls
-	// (cockpit/human) are allowed for any command (board 9796).
+	// Clients reach workers only through the controller, which sets
+	// req.Host to the host it authenticated the caller as (overwriting any
+	// the caller gave): from the controller alone it names who acted.
+	// Sessionless calls (cockpit/human) are allowed for any command (board
+	// 9796).
 	pausedCmd, err := ctrlWS.PauseCommand(t.Context(), &pb.PauseCommandRequest{Id: "c-auth", Comment: "from cockpit", Host: "laptop"})
 	if err != nil {
 		t.Fatalf("PauseCommand as controller: %v", err)
 	}
-	if got := pausedCmd.Interventions[0].By.GetHost(); got != "ubu1" {
-		t.Errorf("controller peer host = %q, want ubu1 (req.Host must be ignored)", got)
+	if got := pausedCmd.Interventions[0].By.GetHost(); got != "laptop" {
+		t.Errorf("controller-forwarded host = %q, want laptop, the caller the controller says", got)
 	}
 
 	// Non-controller caller cannot spoof req.Host: uses httpx.Peer hostname.

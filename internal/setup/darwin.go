@@ -58,6 +58,7 @@ func Setup(ctx context.Context, o Options, tn worker.Tailnet, hc *http.Client, c
 		return Result{}, err
 	}
 	cfg.Worker.VM = p.VMConfig()
+	cfg.Worker.Socket = p.WorkerSocket
 	if err := statedir.Rewrite(p.Worker, cfg); err != nil {
 		return Result{}, err
 	}
@@ -240,6 +241,23 @@ func DisableLegacyWorkerLaunchAgent(ctx context.Context, dir string) error {
 func legacyLabelSuffix(baseDir string) string {
 	sum := sha256.Sum256([]byte(filepath.Clean(baseDir)))
 	return hex.EncodeToString(sum[:4])
+}
+
+// LocalWorker is the worker set up in dir (default ~/.hotbed) that serves
+// clients on this Mac on a Unix socket: its node and socket, or zero.
+func LocalWorker(dir string) (LocalWorkerSocket, error) {
+	baseDir, err := ResolveDir(dir)
+	if err != nil {
+		return LocalWorkerSocket{}, err
+	}
+	cfg, err := statedir.Load(macworker.NewPaths(baseDir).Worker)
+	if errors.Is(err, fs.ErrNotExist) {
+		return LocalWorkerSocket{}, nil
+	}
+	if err != nil || cfg.Worker == nil {
+		return LocalWorkerSocket{}, err
+	}
+	return LocalWorkerSocket{NodeID: cfg.Worker.NodeID, Socket: cfg.Worker.Socket}, nil
 }
 
 // joinedController is the controller the worker in baseDir joined.

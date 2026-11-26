@@ -990,26 +990,27 @@ func TestRunWatchesAgainWhenTheStreamDrops(t *testing.T) {
 	var watchingOnce sync.Once
 	watching := make(chan struct{})
 	reconnected := make(chan struct{})
-	origWorker := *c.nodes[0].handler.Load()
-	var wrapped http.Handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if strings.HasSuffix(r.URL.Path, "/WatchWorkspace") {
-			watchMu.Lock()
-			watches++
-			n := watches
-			if n == 2 {
-				close(reconnected)
-			}
-			watchMu.Unlock()
-			if n == 1 {
-				w = &flushNotifyWriter{
-					ResponseWriter: w,
-					onFlush:        func() { watchingOnce.Do(func() { close(watching) }) },
+	hook := func(origWorker http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if strings.HasSuffix(r.URL.Path, "/WatchWorkspace") {
+				watchMu.Lock()
+				watches++
+				n := watches
+				if n == 2 {
+					close(reconnected)
+				}
+				watchMu.Unlock()
+				if n == 1 {
+					w = &flushNotifyWriter{
+						ResponseWriter: w,
+						onFlush:        func() { watchingOnce.Do(func() { close(watching) }) },
+					}
 				}
 			}
-		}
-		origWorker.ServeHTTP(w, r)
-	})
-	c.nodes[0].handler.Store(&wrapped)
+			origWorker.ServeHTTP(w, r)
+		})
+	}
+	c.nodes[0].tunnelHook.Store(&hook)
 
 	type result struct {
 		code           int
@@ -1033,7 +1034,7 @@ func TestRunWatchesAgainWhenTheStreamDrops(t *testing.T) {
 		write(t, flag, "")
 		t.Fatal("run never established initial WatchWorkspace")
 	}
-	c.nodes[0].srv.CloseClientConnections()
+	(*c.nodes[0].dropTunnel.Load())()
 	select {
 	case <-reconnected:
 	case r := <-done:
@@ -1116,79 +1117,6 @@ func TestSupersededBaseBuildIsDropped(t *testing.T) {
 		}
 		return slices.Equal(bases, []string{"app-g2 BASE_STATE_WARM"})
 	})
-}
-
-// The CLI syncs, runs and follows output on the workspace's worker itself:
-// the controller only says where the workspace is.
-func TestCLITalksToTheWorkerDirectly(t *testing.T) {
-	c := newCluster(t)
-	origin := upstream(t)
-	c.addRepo(origin)
-	c.ok(nil, "session", "start", "near-fox")
-	agent := filepath.Join(t.TempDir(), "agent")
-	gitIn(t, filepath.Dir(agent), "clone", "--quiet", origin, agent)
-	t.Chdir(agent)
-	write(t, filepath.Join(agent, "src/lib.txt"), "edited\n")
-	calls := c.ctrl.record()
-	code, stdout, stderr := c.hotbed("run", "-s", "near-fox", "--", "cat", "src/lib.txt")
-	if code != 0 || stdout != "edited\n" || !strings.Contains(stderr, "synced 1 changed files") {
-		t.Fatalf("run: exit %d, stdout %q, stderr %q", code, stdout, stderr)
-	}
-	if got := calls(); !slices.Equal(got, []string{"CreateWorkspace", "ListWorkspaces"}) {
-		t.Errorf("run called the controller's %v, want only CreateWorkspace, to place the run, and ListWorkspaces, to tell the repo", got)
-	}
-
-	srv := &pb.Command{}
-	c.ok(srv, "run", "-s", "near-fox", "-r", "app", "--detach", "--mem", "1G", "--", "sh", "-c", "echo up; sleep 300")
-	calls = c.ctrl.record()
-	c.eventually("the server's output", func() bool {
-		_, out, _ := c.hotbed("logs", "-s", "near-fox", srv.Id)
-		return out == "up\n"
-	})
-	c.ok(nil, "stop", "-s", "near-fox", srv.Id)
-	if got := calls(); !slices.Equal(got, []string{"GetCommand"}) {
-		t.Errorf("logs and stop called the controller's %v, want only GetCommand", got)
-	}
-}
-
-// With the controller out of reach, an agent keeps running commands in its
-// workspace; what happened reaches the session once the controller is
-// back, and the session, used meanwhile, is not abandoned.
-func TestWorkGoesOnWithoutTheController(t *testing.T) {
-	c := newCluster(t)
-	c.addRepo(upstream(t))
-	c.ok(nil, "session", "start", "lone-gnu")
-	c.workspace("lone-gnu", nil)
-	cursor := &pb.SessionEvents{}
-	c.ok(cursor, "poll", "-s", "lone-gnu", "--timeout", "1")
-
-	c.ctrl.setDown(true)
-	code, stdout, stderr := c.hotbed("run", "-s", "lone-gnu", "-r", "app", "--", "sh", "-c", "echo alone; exit 4")
-	if code != 4 || stdout != "alone\n" {
-		t.Fatalf("run with the controller down: exit %d, stdout %q, stderr %q", code, stdout, stderr)
-	}
-	if _, e := c.fails("ps", "-s", "lone-gnu"); e.Code != api.CodeControllerUnreachable {
-		t.Errorf("ps with the controller down: %+v", e)
-	}
-	c.clock.advance(61 * time.Minute)
-	c.ctrl.setDown(false)
-	c.online()
-	if err := c.server.ReapIdle(t.Context()); err != nil {
-		t.Fatal(err)
-	}
-	var events []*pb.SessionEvent
-	c.eventually("the command run meanwhile to reach the session", func() bool {
-		res := &pb.SessionEvents{}
-		c.ok(res, "poll", "-s", "lone-gnu", "--timeout", "1")
-		if res.Ended {
-			t.Fatalf("the session was abandoned while it was used: %v", res)
-		}
-		events = append(events, res.Events...)
-		return countWhat(events, "exited") == 1
-	})
-	if last := events[len(events)-1].GetCommand(); last.GetExitCode() != 4 {
-		t.Errorf("exited event = %v, want exit 4", last)
-	}
 }
 
 // A base's freshen log, which a failed run names, can be read from the

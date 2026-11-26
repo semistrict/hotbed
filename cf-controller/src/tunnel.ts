@@ -16,11 +16,13 @@ export interface WorkerSocketAttachment {
  * Wire protocol over the worker <-> controller WebSocket tunnel (/ws/worker).
  *
  * Controller -> Worker:
- *   { type: "rpc_req", id, procedure, body (base64 proto), stream: boolean }
+ *   { type: "rpc_req", id, procedure, body (base64 proto), stream: boolean, clientStream?: boolean }
+ *   { type: "rpc_send", id, body (base64 proto) }   one request message of a clientStream call
+ *   { type: "rpc_close_send", id }                   its request messages end
  *   { type: "rpc_cancel", id }
  *
  * Worker -> Controller:
- *   { type: "rpc_msg", id, body (base64 proto) }
+ *   { type: "rpc_msg", id, body (base64 proto), headers? }   headers: response headers to pass on, on a call's first message
  *   { type: "rpc_end", id }
  *   { type: "rpc_err", id, code, message, suggestion?, retryable? }
  */
@@ -31,6 +33,16 @@ export type TunnelDownMessage =
 			procedure: string;
 			body: string;
 			stream: boolean;
+			clientStream?: boolean;
+	  }
+	| {
+			type: "rpc_send";
+			id: string;
+			body: string;
+	  }
+	| {
+			type: "rpc_close_send";
+			id: string;
 	  }
 	| {
 			type: "rpc_cancel";
@@ -42,6 +54,7 @@ export type TunnelUpMessage =
 			type: "rpc_msg";
 			id: string;
 			body: string;
+			headers?: Record<string, string>;
 	  }
 	| {
 			type: "rpc_end";
@@ -73,6 +86,7 @@ interface PendingStream {
 	done: boolean;
 	error: Error | null;
 	notify: (() => void) | null;
+	onHeaders?: (headers: Record<string, string>) => void;
 }
 
 const MAX_STREAM_QUEUE_BYTES = 16 * 1024 * 1024;
@@ -276,6 +290,10 @@ export class WorkerTunnelHub {
 				this.pending.delete(msg.id);
 				call.resolve(bytes);
 			} else {
+				if (msg.headers && call.onHeaders) {
+					call.onHeaders(msg.headers);
+					call.onHeaders = undefined;
+				}
 				if (call.queuedBytes + bytes.byteLength > MAX_STREAM_QUEUE_BYTES) {
 					call.error = hotbedError(
 						ErrorCode.Internal,
@@ -500,6 +518,7 @@ export class WorkerTunnelHub {
 		reqMsg: MessageShape<Req>,
 		resSchema: Res,
 		signal?: AbortSignal,
+		onHeaders?: (headers: Record<string, string>) => void,
 	): AsyncGenerator<MessageShape<Res>> {
 		if (signal?.aborted) {
 			return;
@@ -533,6 +552,7 @@ export class WorkerTunnelHub {
 			done: false,
 			error: null,
 			notify: null,
+			onHeaders,
 		};
 		this.pending.set(id, state);
 
@@ -608,5 +628,111 @@ export class WorkerTunnelHub {
 				}
 			}
 		}
+	}
+
+	/**
+	 * Invokes a client-streaming WorkspaceService RPC (Sync) on a connected
+	 * worker over its WebSocket tunnel: each of reqs in an rpc_send frame, in
+	 * order, then rpc_close_send; the worker answers with one message.
+	 */
+	async callClientStream<Req extends DescMessage, Res extends DescMessage>(
+		nodeId: string,
+		host: string,
+		procedure: string,
+		reqSchema: Req,
+		reqs: AsyncIterable<MessageShape<Req>>,
+		resSchema: Res,
+		timeoutMs: number,
+		signal?: AbortSignal,
+	): Promise<MessageShape<Res>> {
+		const sock = await this.waitForSocket(nodeId, this.reconnectWaitMs, signal);
+		if (signal?.aborted) {
+			throw hotbedError(ErrorCode.Internal, `${host}: ${procedure} canceled`);
+		}
+		if (!sock) {
+			throw hotbedError(
+				ErrorCode.WorkerUnreachable,
+				`${host} has no active controller WebSocket tunnel`,
+				{
+					retryable: true,
+					suggestion: "check that the worker is running and connected to the controller",
+				},
+			);
+		}
+		const id = randomHex(8);
+		const cancel = () => {
+			try {
+				sock.ws.send(JSON.stringify({ type: "rpc_cancel", id } satisfies TunnelDownMessage));
+			} catch {
+				// ignore
+			}
+		};
+		let settled = false;
+		const result = new Promise<Uint8Array>((resolve, reject) => {
+			const onAbort = () => {
+				clearTimeout(timer);
+				this.pending.delete(id);
+				cancel();
+				reject(hotbedError(ErrorCode.Internal, `${host}: ${procedure} canceled`));
+			};
+			const cleanup = () => {
+				settled = true;
+				signal?.removeEventListener("abort", onAbort);
+			};
+			const timer = setTimeout(() => {
+				cleanup();
+				this.pending.delete(id);
+				cancel();
+				reject(
+					hotbedError(ErrorCode.WorkerUnreachable, `${host}: ${procedure} timed out`, {
+						retryable: true,
+					}),
+				);
+			}, timeoutMs);
+			signal?.addEventListener("abort", onAbort, { once: true });
+			this.pending.set(id, { kind: "unary", nodeId, resolve, reject, timer, cleanup });
+		});
+		// The answer may come (an error) before every message is sent.
+		result.catch(() => {});
+		try {
+			sock.ws.send(
+				JSON.stringify({
+					type: "rpc_req",
+					id,
+					procedure,
+					body: "",
+					stream: false,
+					clientStream: true,
+				} satisfies TunnelDownMessage),
+			);
+			for await (const m of reqs) {
+				if (settled || !this.pending.has(id)) break;
+				sock.ws.send(
+					JSON.stringify({
+						type: "rpc_send",
+						id,
+						body: encodeBase64(toBinary(reqSchema, m)),
+					} satisfies TunnelDownMessage),
+				);
+			}
+			if (this.pending.has(id)) {
+				sock.ws.send(JSON.stringify({ type: "rpc_close_send", id } satisfies TunnelDownMessage));
+			}
+		} catch (err) {
+			const call = this.pending.get(id);
+			this.pending.delete(id);
+			if (call?.kind === "unary") {
+				clearTimeout(call.timer);
+				call.cleanup?.();
+			}
+			cancel();
+			if (err instanceof HotbedError) throw err;
+			throw hotbedError(
+				ErrorCode.WorkerUnreachable,
+				`${host}: send over tunnel failed: ${err instanceof Error ? err.message : String(err)}`,
+				{ retryable: true },
+			);
+		}
+		return fromBinary(resSchema, await result);
 	}
 }

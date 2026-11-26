@@ -41,3 +41,7 @@ func Trim(context.Context, string) (TrimResult, error) {
 func Destroy(context.Context, DestroyOptions) (DestroyResult, error) {
 	return DestroyResult{}, unsupported()
 }
+
+// LocalWorker is none: clients reach this machine's worker through the
+// controller.
+func LocalWorker(string) (LocalWorkerSocket, error) { return LocalWorkerSocket{}, nil }

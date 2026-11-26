@@ -8,6 +8,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io/fs"
 	"log/slog"
 	"net"
 	"net/http"
@@ -258,6 +259,12 @@ func Run(ctx context.Context, dir string, cfg statedir.WorkerConfig, tn Tailnet,
 	if err != nil {
 		return err
 	}
+	if cfg.Socket != "" && cfg.NodeID != self.NodeID {
+		cfg.NodeID = self.NodeID
+		if err := statedir.Rewrite(dir, statedir.Config{Worker: &cfg}); err != nil {
+			return err
+		}
+	}
 	if cfg.Owner == "" || cfg.ControllerNodeID == "" {
 		if remote {
 			if cfg.Owner == "" {
@@ -445,6 +452,7 @@ func Run(ctx context.Context, dir string, cfg statedir.WorkerConfig, tn Tailnet,
 	}
 	policy := httpx.Policy{
 		Owner: cfg.Owner, Self: self.Addrs, Hosts: []string{self.Hostname, self.DNSName}, LocalUsers: local,
+		Node: self.Peer,
 	}
 	srv := &http.Server{Handler: Handler(tn, policy, eng), ReadHeaderTimeout: 10 * time.Second, Protocols: httpx.Protocols()}
 	srv.RegisterOnShutdown(eng.DrainStreams)
@@ -478,6 +486,15 @@ func Run(ctx context.Context, dir string, cfg statedir.WorkerConfig, tn Tailnet,
 	}
 	if len(sshListeners) > 0 {
 		eng.SetShellListen(sshListeners[0].Addr().String(), api.WorkerSSHPort)
+	}
+	if cfg.Socket != "" {
+		l, err := listenUnix(cfg.Socket)
+		if err != nil {
+			closeAll()
+			return err
+		}
+		slog.Info("worker listening", "socket", cfg.Socket)
+		listeners = append(listeners, l)
 	}
 
 	g, gctx := errgroup.WithContext(ctx)
@@ -544,6 +561,23 @@ func Run(ctx context.Context, dir string, cfg statedir.WorkerConfig, tn Tailnet,
 		return srv.Shutdown(shutdown)
 	})
 	return g.Wait()
+}
+
+// listenUnix listens on the Unix socket at path, its owner's alone (0600):
+// clients on this machine call the worker there.
+func listenUnix(path string) (net.Listener, error) {
+	if err := os.Remove(path); err != nil && !errors.Is(err, fs.ErrNotExist) {
+		return nil, fmt.Errorf("remove the worker's old socket: %w", err)
+	}
+	l, err := net.Listen("unix", path)
+	if err != nil {
+		return nil, fmt.Errorf("listen on the worker's socket: %w", err)
+	}
+	if err := os.Chmod(path, 0o600); err != nil {
+		l.Close()
+		return nil, fmt.Errorf("make the worker's socket its owner's alone: %w", err)
+	}
+	return l, nil
 }
 
 // workerAdvertiseAddr returns this worker's direct tailnet address (host:7121)

@@ -67,9 +67,16 @@ type node struct {
 	system *fake.System
 	srv    *httptest.Server
 	// cut, set, drops every call between the worker and the controller,
-	// both ways, as a network partition would; clients still reach it.
+	// both ways, as a network partition would.
 	cut     atomic.Bool
 	handler atomic.Pointer[http.Handler]
+	// tunnelHook, set, wraps the worker's handler of the calls the
+	// controller relays to it over its tunnel: clients' calls, as the
+	// controller passes them on.
+	tunnelHook atomic.Pointer[func(http.Handler) http.Handler]
+	// dropTunnel ends the worker's tunnel to the controller, which it
+	// dials again at once, as a dropped connection does.
+	dropTunnel atomic.Pointer[context.CancelFunc]
 	// halted is set while the worker is stopped: its server refuses
 	// calls, as a stopped worker's port does, and refused counts them.
 	halted  atomic.Bool
@@ -421,6 +428,10 @@ func (nd *node) start() {
 			if gate := nd.createGate.Load(); gate != nil && strings.HasSuffix(r.URL.Path, "/CreateWorkspace") {
 				<-*gate
 			}
+			if hook := nd.tunnelHook.Load(); hook != nil {
+				(*hook)(next).ServeHTTP(w, r)
+				return
+			}
 			next.ServeHTTP(w, r)
 		})
 	}
@@ -440,18 +451,23 @@ func (nd *node) start() {
 	}()
 	go func() {
 		defer wg.Done()
-		_ = worker.TunnelWithMiddleware(
-			ctx,
-			eng,
-			ctrlURL,
-			nd.c.harness.token,
-			tailnet.Self{Peer: nd.peer},
-			workerAddr,
-			ubu1.Peer.NodeID,
-			"ramon@",
-			nd.c.tn.Client(nd.peer),
-			tunnelWrap,
-		)
+		for ctx.Err() == nil {
+			tctx, drop := context.WithCancel(ctx)
+			nd.dropTunnel.Store(&drop)
+			_ = worker.TunnelWithMiddleware(
+				tctx,
+				eng,
+				ctrlURL,
+				nd.c.harness.token,
+				tailnet.Self{Peer: nd.peer},
+				workerAddr,
+				ubu1.Peer.NodeID,
+				"ramon@",
+				nd.c.tn.Client(nd.peer),
+				tunnelWrap,
+			)
+			drop()
+		}
 	}()
 	nd.mu.Lock()
 	nd.engine = eng

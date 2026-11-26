@@ -158,11 +158,10 @@ func TestByHandStopWithDiagnoseTellsWaitingAgentAndPersists(t *testing.T) {
 }
 
 // A person stops a command from the cockpit (via controller, no session): its
-// diagnostics are taken first, the worker stamps the authenticated peer
-// hostname ("controller" over the controller WebSocket tunnel) rather than
-// trusting any caller-supplied Host field, and the agent's attached run ends
-// with COMMAND_STOPPED naming that host, the comment, and the diagnostics
-// command.
+// diagnostics are taken first, the worker stamps the host the controller
+// authenticated the caller as (the controller overwrites any caller-supplied
+// Host field), and the agent's attached run ends with COMMAND_STOPPED naming
+// that host, the comment, and the diagnostics command.
 func TestByHandStopFromCockpitTellsWaitingAgent(t *testing.T) {
 	c := diagnosingCluster(t)
 	c.ok(nil, "session", "start", "keen-fox")
@@ -178,10 +177,10 @@ func TestByHandStopFromCockpitTellsWaitingAgent(t *testing.T) {
 		t.Fatalf("stopped: %v with interventions %v", stopped.State, stopped.Interventions)
 	}
 	iv := stopped.Interventions[0]
-	if iv.By.GetHost() != "controller" || iv.By.GetSession() != "" || !iv.Diagnosed {
+	if iv.By.GetHost() != "laptop" || iv.By.GetSession() != "" || !iv.Diagnosed {
 		t.Errorf("cockpit stop intervention: %v", iv)
 	}
-	note := "stopped by controller: \"" + comment + "\". Diagnostics taken as it stopped: hotbed diagnostics " + id + "."
+	note := "stopped by laptop: \"" + comment + "\". Diagnostics taken as it stopped: hotbed diagnostics " + id + "."
 	if stopped.Reason != note {
 		t.Errorf("reason = %q, want %q", stopped.Reason, note)
 	}

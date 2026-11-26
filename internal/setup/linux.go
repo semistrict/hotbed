@@ -1685,3 +1685,7 @@ func runCmd(ctx context.Context, name string, args ...string) (string, error) {
 	}
 	return stdout.String(), nil
 }
+
+// LocalWorker is none: clients reach this machine's worker through the
+// controller.
+func LocalWorker(string) (LocalWorkerSocket, error) { return LocalWorkerSocket{}, nil }

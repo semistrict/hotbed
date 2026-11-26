@@ -158,6 +158,11 @@ func (s *Supervisor) Run(ctx context.Context) {
 			mach, release = m, rel
 			fallthrough
 		case work == nil:
+			if err := s.Paths.ensureConfig(); err != nil {
+				failed("configure the worker", err)
+				report("error")
+				break
+			}
 			w, err := s.start(ctx, "worker", filepath.Join(s.Paths.Logs, "worker.log"),
 				filepath.Join(s.Paths.Base, "worker.pid"), s.Exe, "serve", s.Paths.Worker)
 			if err != nil {

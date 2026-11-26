@@ -36,6 +36,9 @@ type tunnelDownMessage struct {
 	Procedure string `json:"procedure,omitempty"`
 	Body      string `json:"body,omitempty"`
 	Stream    bool   `json:"stream,omitempty"`
+	// ClientStream: the call's request is a stream (Sync), its messages
+	// following in rpc_send frames, rpc_close_send ending them.
+	ClientStream bool `json:"clientStream,omitempty"`
 }
 
 // tunnelUpMessage is sent by a worker back to the Cloudflare Workers controller
@@ -48,6 +51,17 @@ type tunnelUpMessage struct {
 	Message    string `json:"message,omitempty"`
 	Suggestion string `json:"suggestion,omitempty"`
 	Retryable  bool   `json:"retryable,omitempty"`
+	// Headers are the response headers the controller passes on to its
+	// caller (api.ProgressHeader), on a call's first message.
+	Headers map[string]string `json:"headers,omitempty"`
+}
+
+// tunnelHeaders are the response headers of h the controller passes on.
+func tunnelHeaders(h http.Header) map[string]string {
+	if v := h.Get(api.ProgressHeader); v != "" {
+		return map[string]string{api.ProgressHeader: v}
+	}
+	return nil
 }
 
 // Tunnel maintains an outbound persistent WebSocket connection to a remote
@@ -271,6 +285,14 @@ func serveTunnelOnceWithTimeouts(
 
 	var inflightMu sync.Mutex
 	inflight := map[string]context.CancelFunc{}
+	// The request streams of client-streaming calls under way, by ID: the
+	// read loop's alone.
+	sending := map[string]chan []byte{}
+	defer func() {
+		for _, ch := range sending {
+			close(ch)
+		}
+	}()
 	var wg sync.WaitGroup
 	defer func() {
 		connCancel()
@@ -303,11 +325,43 @@ func serveTunnelOnceWithTimeouts(
 				delete(inflight, req.ID)
 			}
 			inflightMu.Unlock()
+			if ch, ok := sending[req.ID]; ok {
+				close(ch)
+				delete(sending, req.ID)
+			}
+		case "rpc_send", "rpc_close_send":
+			ch, ok := sending[req.ID]
+			if !ok {
+				continue
+			}
+			if req.Type == "rpc_close_send" {
+				close(ch)
+				delete(sending, req.ID)
+				continue
+			}
+			msg, err := base64.StdEncoding.DecodeString(req.Body)
+			if err != nil {
+				slog.Warn("ignore a controller tunnel request message that is not base64", "id", req.ID, "err", err)
+				continue
+			}
+			inflightMu.Lock()
+			_, live := inflight[req.ID]
+			inflightMu.Unlock()
+			if live {
+				// Its handler reads them in order; a full queue holds the
+				// tunnel's reads back until it does.
+				ch <- msg
+			}
 		case "rpc_req":
 			callCtx, callCancel := context.WithCancel(connCtx)
 			inflightMu.Lock()
 			inflight[req.ID] = callCancel
 			inflightMu.Unlock()
+			var reqs chan []byte
+			if req.ClientStream {
+				reqs = make(chan []byte, 64)
+				sending[req.ID] = reqs
+			}
 			wg.Add(1)
 			go func(r tunnelDownMessage) {
 				defer wg.Done()
@@ -317,6 +371,10 @@ func serveTunnelOnceWithTimeouts(
 					delete(inflight, r.ID)
 					inflightMu.Unlock()
 				}()
+				if reqs != nil {
+					dispatchTunnelClientStream(callCtx, handler, r.ID, r.Procedure, reqs, sendMsg)
+					return
+				}
 				dispatchTunnelRPC(callCtx, handler, r, sendMsg)
 			}(req)
 		}
@@ -369,9 +427,10 @@ func dispatchTunnelUnary(
 
 	if resp.StatusCode == http.StatusOK {
 		send(tunnelUpMessage{
-			Type: "rpc_msg",
-			ID:   id,
-			Body: base64.StdEncoding.EncodeToString(respBody),
+			Type:    "rpc_msg",
+			ID:      id,
+			Body:    base64.StdEncoding.EncodeToString(respBody),
+			Headers: tunnelHeaders(resp.Header),
 		})
 		return
 	}
@@ -408,6 +467,56 @@ func dispatchTunnelStream(
 	w.finish()
 }
 
+// dispatchTunnelClientStream serves a client-streaming call (Sync), its
+// request messages arriving on reqs until it is closed, and sends its one
+// response message, or its error.
+func dispatchTunnelClientStream(
+	ctx context.Context,
+	handler http.Handler,
+	id, procedure string,
+	reqs <-chan []byte,
+	send func(tunnelUpMessage),
+) {
+	body, feed := io.Pipe()
+	go func() {
+		for {
+			select {
+			case msg, ok := <-reqs:
+				if !ok {
+					feed.Close()
+					return
+				}
+				env := make([]byte, 5+len(msg))
+				binary.BigEndian.PutUint32(env[1:5], uint32(len(msg)))
+				copy(env[5:], msg)
+				if _, err := feed.Write(env); err != nil {
+					// The handler stopped reading: drain what still comes.
+					for range reqs {
+					}
+					return
+				}
+			case <-ctx.Done():
+				feed.CloseWithError(ctx.Err())
+				for range reqs {
+				}
+				return
+			}
+		}
+	}()
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, "http://tunnel.local"+procedure, body)
+	if err != nil {
+		body.CloseWithError(err)
+		send(tunnelUpMessage{Type: "rpc_err", ID: id, Code: string(api.CodeInternal), Message: err.Error()})
+		return
+	}
+	httpReq.Header.Set("Content-Type", "application/connect+proto")
+	httpReq.Header.Set("Connect-Protocol-Version", "1")
+	w := &tunnelStreamWriter{header: make(http.Header), id: id, send: send}
+	handler.ServeHTTP(w, httpReq)
+	body.Close()
+	w.finish()
+}
+
 type tunnelStreamWriter struct {
 	header   http.Header
 	status   int
@@ -416,6 +525,8 @@ type tunnelStreamWriter struct {
 	buf      bytes.Buffer
 	ended    bool
 	errBytes bytes.Buffer
+	// sentAny: a message went, with the headers.
+	sentAny bool
 }
 
 func (w *tunnelStreamWriter) Header() http.Header { return w.header }
@@ -465,11 +576,16 @@ func (w *tunnelStreamWriter) drainFrames() {
 			}
 			return
 		}
-		w.send(tunnelUpMessage{
+		msg := tunnelUpMessage{
 			Type: "rpc_msg",
 			ID:   w.id,
 			Body: base64.StdEncoding.EncodeToString(payload),
-		})
+		}
+		if !w.sentAny {
+			msg.Headers = tunnelHeaders(w.header)
+			w.sentAny = true
+		}
+		w.send(msg)
 	}
 }
 

@@ -214,15 +214,8 @@ func (c *shellCmd) existingWorkspace(ctx context.Context, d deps, session, node 
 	if err != nil {
 		return nil, workerClients{}, false, err
 	}
-	list, err := cl.workspaces.ListWorkspaces(api.WithoutRideOut(ctx), &pb.ListWorkspacesRequest{SessionId: session})
+	list, err := cl.workspaces.ListWorkspaces(ctx, &pb.ListWorkspacesRequest{SessionId: session})
 	if err != nil {
-		if api.CodeOf(err) == api.CodeControllerUnreachable && node == "" {
-			ws, w, lerr := c.lastUsed(ctx, d, session, err)
-			if lerr != nil {
-				return nil, workerClients{}, false, lerr
-			}
-			return ws, w, true, nil
-		}
 		return nil, workerClients{}, false, err
 	}
 	var matches []*pb.Workspace

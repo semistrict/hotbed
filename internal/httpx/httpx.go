@@ -60,6 +60,9 @@ type Policy struct {
 	// machine itself: the tailnet says such a connection is this node's, the
 	// owner's, whoever on the machine opened it.
 	LocalUsers []uint32
+	// Node is this node itself: who a caller over the server's Unix socket
+	// is (its file mode says who may connect).
+	Node tailnet.Peer
 }
 
 type peerKey struct{}
@@ -67,6 +70,9 @@ type peerKey struct{}
 type localCaller struct {
 	local bool
 	uid   uint32
+	// socket: it called over the Unix socket, its user unknown, so never
+	// taken for root.
+	socket bool
 }
 
 type localCallerKey struct{}
@@ -132,6 +138,14 @@ func AdmitConn(ctx context.Context, conn net.Conn, id Identifier, p Policy) (tai
 // admit returns who is calling, whether they are local and their UID, or why they may not.
 func admit(r *http.Request, id Identifier, p Policy) (tailnet.Peer, localCaller, *refusal) {
 	la, _ := r.Context().Value(http.LocalAddrContextKey).(net.Addr)
+	if _, ok := la.(*net.UnixAddr); ok {
+		// Over the server's Unix socket: its file mode let the caller
+		// connect, and no browser reaches it.
+		if p.Node.NodeID == "" {
+			return tailnet.Peer{}, localCaller{}, refuse("this server has no node to admit its Unix socket's callers as")
+		}
+		return p.Node, localCaller{local: true, socket: true}, nil
+	}
 	peer, lc, ref := admitAddr(r.Context(), r.RemoteAddr, la, id, p)
 	if ref != nil {
 		return tailnet.Peer{}, localCaller{}, ref
@@ -280,7 +294,7 @@ func WithPeer(ctx context.Context, p tailnet.Peer) context.Context {
 // process on this machine itself.
 func IsLocalNonRoot(ctx context.Context) bool {
 	lc, _ := ctx.Value(localCallerKey{}).(localCaller)
-	return lc.local && lc.uid != 0
+	return lc.local && (lc.uid != 0 || lc.socket)
 }
 
 // NewServer returns a Connect server that sends every handler error with

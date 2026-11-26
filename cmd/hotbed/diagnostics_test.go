@@ -370,53 +370,6 @@ func TestWorkerRemovesDeliveredProfileFiles(t *testing.T) {
 	}
 }
 
-// When the controller is unreachable and the session has known workers,
-// `hotbed profile` skips RideOut on the initial controller call and falls back
-// to the worker immediately instead of hanging for 3 minutes (board 7894).
-func TestProfileWorkerFallbackSkipsRideOut(t *testing.T) {
-	prof := fake.NewProfiler()
-	c := newCluster(t, func(cfg *worker.EngineConfig) { cfg.Profiler = prof })
-	c.addRepo(upstream(t))
-	c.ok(nil, "session", "start", "fast-prof")
-	c.workspace("fast-prof", nil)
-	var cmd pb.Command
-	c.ok(&cmd, "run", "-s", "fast-prof", "-r", "app", "--detach", "--mem", "1G", "--", "sleep", "30")
-	prof.Store.Record(profiler.Sample{
-		CommandID: cmd.Id,
-		Timestamp: time.Now(),
-		Comm:      "sleep",
-		Frames:    []profiler.ResolvedFrame{{Name: "main.work", FrameType: "go"}},
-	})
-
-	// Enable a long RideOut window and take the controller down.
-	c.cli.rideOut = 30 * time.Second
-	c.ctrl.setDown(true)
-
-	start := time.Now()
-	code, stdout, stderr := c.hotbed("--json", "profile", "-s", "fast-prof", cmd.Id)
-	elapsed := time.Since(start)
-	if code != 0 {
-		t.Fatalf("profile with controller down exited %d: stdout=%q stderr=%q", code, stdout, stderr)
-	}
-	if elapsed > 5*time.Second {
-		t.Fatalf("profile took %v waiting on RideOut before falling back to worker", elapsed)
-	}
-	if strings.Contains(stderr, "out of reach") {
-		t.Errorf("stderr = %q, want no controller RideOut wait when known workers exist", stderr)
-	}
-	var env output
-	if err := json.Unmarshal([]byte(stdout), &env); err != nil || !env.OK {
-		t.Fatalf("profile output = %q (%v)", stdout, err)
-	}
-	var got pb.CommandProfile
-	if err := protojson.Unmarshal(env.Data, &got); err != nil {
-		t.Fatal(err)
-	}
-	if got.TotalSamples != 1 {
-		t.Fatalf("profile from worker fallback has %d samples, want 1", got.TotalSamples)
-	}
-}
-
 // rawCommands that emit structured data (`run --detach`, `trace` summary,
 // `sample`, and `profile`) honor `--jq`, `--json`, and default plain-text
 // output consistently (board 7894).

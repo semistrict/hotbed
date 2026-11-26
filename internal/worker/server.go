@@ -215,7 +215,7 @@ func (s *Service) StopCommand(ctx context.Context, req *pb.StopCommandRequest) (
 		Comment:  req.Comment,
 		Diagnose: req.Diagnose,
 		Session:  req.SessionId,
-		Host:     httpx.Peer(ctx).Hostname,
+		Host:     s.callerHost(ctx, req.Host),
 	})
 }
 
@@ -228,7 +228,7 @@ func (s *Service) PauseCommand(ctx context.Context, req *pb.PauseCommandRequest)
 		Comment:  req.Comment,
 		Diagnose: req.Diagnose,
 		Session:  req.SessionId,
-		Host:     httpx.Peer(ctx).Hostname,
+		Host:     s.callerHost(ctx, req.Host),
 	})
 }
 
@@ -240,8 +240,17 @@ func (s *Service) ResumeCommand(ctx context.Context, req *pb.ResumeCommandReques
 	return s.E.Resume(ctx, req.Id, Intervention{
 		Comment: req.Comment,
 		Session: req.SessionId,
-		Host:    httpx.Peer(ctx).Hostname,
+		Host:    s.callerHost(ctx, req.Host),
 	})
+}
+
+// callerHost is the host a call came from: the one the controller says
+// (host) when it forwards the call, else the caller's own.
+func (s *Service) callerHost(ctx context.Context, host string) string {
+	if host != "" && s.isController(ctx) {
+		return host
+	}
+	return httpx.Peer(ctx).Hostname
 }
 
 func (s *Service) streamsDone() <-chan struct{} {

@@ -867,20 +867,9 @@ func (c *profileCmd) Raw(ctx context.Context, d deps) (int, bool, error) {
 		prof, err = cl.workspaces.GetProfile(ctx, req)
 	} else {
 		req.Target = &pb.GetProfileRequest_CommandId{CommandId: c.Command}
-		// Query via controller first so finished commands work even after their
-		// worker forgets them or goes offline. Fall back to known workers if the
-		// controller is unreachable, skipping RideOut when known workers exist.
-		session, serr := c.sessionFlag.optional(ctx, d)
-		call := ctx
-		if serr == nil && hasKnownWorkers(d, session) {
-			call = api.WithoutRideOut(ctx)
-		}
-		prof, err = cl.workspaces.GetProfile(call, req)
-		if err != nil && api.CodeOf(err) == api.CodeControllerUnreachable && serr == nil {
-			if _, w, werr := c.askKnownWorkers(ctx, d, session, c.Command, err); werr == nil {
-				prof, err = w.calls.GetProfile(ctx, req)
-			}
-		}
+		// The controller keeps finished commands' profiles after their
+		// worker forgets them.
+		prof, err = cl.workspaces.GetProfile(ctx, req)
 	}
 	if err != nil {
 		return 0, false, err

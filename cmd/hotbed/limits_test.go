@@ -490,22 +490,6 @@ func TestPollCutOffByARestartIsMadeAgain(t *testing.T) {
 	}
 }
 
-// With the controller down, run does not wait for it: the workspace's worker
-// is where this machine last found it.
-func TestRunDoesNotWaitForAControllerItCanDoWithout(t *testing.T) {
-	c := newCluster(t)
-	c.cli.rideOut = time.Minute
-	c.addRepo(upstream(t))
-	c.ok(nil, "session", "start", "bold-ant")
-	c.workspace("bold-ant", nil)
-	c.ctrl.setDown(true)
-	start := time.Now()
-	code, stdout, stderr := c.hotbed("run", "-s", "bold-ant", "-r", "app", "--", "echo", "alone")
-	if took := time.Since(start); code != 0 || stdout != "alone\n" || took > 20*time.Second {
-		t.Errorf("run with the controller down: exit %d after %s, stdout %q, stderr %q; want it at once on the worker", code, took, stdout, stderr)
-	}
-}
-
 // stuckThaw is units that cannot thaw.
 type stuckThaw struct{ worker.Units }
 

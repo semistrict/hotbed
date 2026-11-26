@@ -5,11 +5,11 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -22,7 +22,6 @@ import (
 	"github.com/semistrict/hotbed/internal/api"
 	pb "github.com/semistrict/hotbed/internal/gen/hotbed/v1"
 	"github.com/semistrict/hotbed/internal/gen/hotbed/v1/hotbedv1connect"
-	"github.com/semistrict/hotbed/internal/httpx"
 )
 
 type syncBuffer struct {
@@ -74,17 +73,18 @@ func TestAttachRidesOutWorkerRestartMidCommand(t *testing.T) {
 		return strings.Contains(stdout.String(), "before\n")
 	})
 
-	// Halt the worker, wait until RideOut notices it is out of reach, then bring
-	// the worker back up on the same state directory and units (the command keeps
-	// running throughout).
+	// Halt the worker, wait until the controller has lost its tunnel, then
+	// bring the worker back up on the same state directory and units (the
+	// command keeps running throughout).
 	c.nodes[0].halt()
-	c.eventually("ride-out notices worker is out of reach", func() bool {
+	c.eventually("the controller to lose the worker's tunnel", func() bool {
 		select {
 		case code := <-done:
 			t.Fatalf("hotbed run exited prematurely with code %d while worker was down (stdout=%q stderr=%q)", code, stdout.String(), stderr.String())
 		default:
 		}
-		return strings.Contains(stderr.String(), "is out of reach")
+		ids, err := c.store.ConnectedWorkers(t.Context())
+		return err == nil && !slices.Contains(ids, c.nodes[0].peer.NodeID)
 	})
 	select {
 	case code := <-done:
@@ -134,174 +134,6 @@ func TestAttachRidesOutWorkerRestartMidCommand(t *testing.T) {
 	}
 }
 
-// Re-tests attached `hotbed run` across a real TCP listener shutdown and
-// reopen on the same address (real ECONNRESET/EOF + ECONNREFUSED, matching
-// `hotbed serve` restarting via execve), both when output arrived before the
-// restart (r.got == true) and when the command was silent before the restart
-// (r.got == false) (board 7945).
-func TestAttachRidesOutRealTCPWorkerRestart(t *testing.T) {
-	for _, tc := range []struct {
-		name      string
-		preOutput bool
-	}{
-		{"after_first_output", true},
-		{"before_first_output", false},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			c := newCluster(t)
-			c.cli.rideOut = 30 * time.Second
-			c.addRepo(upstream(t))
-			c.ok(nil, "session", "start", "tcp-elk")
-			c.workspace("tcp-elk", nil)
-
-			// Close the test worker's httptest server and take over its exact
-			// TCP address with a real http.Server using httpx.Protocols() so we
-			// can close the listener (producing real ECONNREFUSED) and reopen it.
-			nd := c.nodes[0]
-			addr := strings.TrimPrefix(nd.srv.URL, "http://")
-			nd.srv.Close()
-
-			listenAndServe := func(onFollow func()) (*http.Server, net.Listener) {
-				ln, err := net.Listen("tcp", addr)
-				if err != nil {
-					t.Fatalf("listen %s: %v", addr, err)
-				}
-				srv := &http.Server{
-					Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-						if onFollow != nil && strings.HasSuffix(r.URL.Path, "/FollowLog") {
-							onFollow()
-						}
-						(*nd.handler.Load()).ServeHTTP(w, r)
-					}),
-					Protocols: httpx.Protocols(),
-				}
-				go srv.Serve(ln)
-				return srv, ln
-			}
-
-			var follow1Once sync.Once
-			follow1Arrived := make(chan struct{})
-			srv1, _ := listenAndServe(func() {
-				follow1Once.Do(func() { close(follow1Arrived) })
-			})
-			var srv2 *http.Server
-			t.Cleanup(func() {
-				srv1.Close()
-				if srv2 != nil {
-					srv2.Close()
-				}
-			})
-
-			gateDir := t.TempDir()
-			gate1 := filepath.Join(gateDir, "resumed")
-			gate2 := filepath.Join(gateDir, "release")
-			var script string
-			wantOut := "resumed\nafter\n"
-			if tc.preOutput {
-				script = fmt.Sprintf(`echo before; while [ ! -e %q ]; do sleep 0.05; done; echo resumed; while [ ! -e %q ]; do sleep 0.05; done; echo after; exit 7`, gate1, gate2)
-				wantOut = "before\nresumed\nafter\n"
-			} else {
-				script = fmt.Sprintf(`while [ ! -e %q ]; do sleep 0.05; done; echo resumed; while [ ! -e %q ]; do sleep 0.05; done; echo after; exit 7`, gate1, gate2)
-			}
-
-			var stdout, stderr syncBuffer
-			d := c.cli
-			d.stdin = strings.NewReader("")
-			d.stdout = &stdout
-			d.stderr = &stderr
-
-			done := make(chan int, 1)
-			go func() {
-				done <- run(t.Context(), []string{"run", "-s", "tcp-elk", "-r", "app", "--", "sh", "-c", script}, d)
-			}()
-
-			if tc.preOutput {
-				c.eventually("pre-restart output", func() bool {
-					return strings.Contains(stdout.String(), "before\n")
-				})
-			} else {
-				var cmdID string
-				c.eventually("command running before restart", func() bool {
-					m := started.FindStringSubmatch(stderr.String())
-					if m == nil {
-						return false
-					}
-					cmdID = m[1]
-					cmd, ok := nd.eng().Command(cmdID)
-					return ok && cmd.State == pb.CommandState_COMMAND_STATE_RUNNING
-				})
-				select {
-				case <-follow1Arrived:
-				case <-time.After(10 * time.Second):
-					t.Fatal("timed out waiting for FollowLog stream to attach before restart")
-				}
-			}
-
-			// Abruptly kill the worker's HTTP server + engine (real TCP close + ECONNREFUSED).
-			srv1.Close()
-			nd.halt()
-
-			c.eventually("ride-out reports worker out of reach", func() bool {
-				select {
-				case code := <-done:
-					t.Fatalf("hotbed run exited %d while worker was down (stdout=%q stderr=%q)", code, stdout.String(), stderr.String())
-				default:
-				}
-				return strings.Contains(stderr.String(), "is out of reach")
-			})
-
-			select {
-			case code := <-done:
-				t.Fatalf("hotbed run exited %d while worker was down (stdout=%q stderr=%q)", code, stdout.String(), stderr.String())
-			default:
-			}
-
-			// Restart the worker engine and reopen the TCP listener on the same address.
-			nd.start()
-			srv2, _ = listenAndServe(nil)
-
-			// Release the first marker and wait deterministically until the reconnected
-			// stream delivers it while the command is still running.
-			if err := os.WriteFile(gate1, nil, 0o644); err != nil {
-				t.Fatal(err)
-			}
-			c.eventually("post-restart output streamed", func() bool {
-				select {
-				case code := <-done:
-					t.Fatalf("hotbed run exited %d after worker restarted while waiting for post-restart output (stdout=%q stderr=%q)", code, stdout.String(), stderr.String())
-				default:
-				}
-				return strings.Contains(stdout.String(), "resumed\n")
-			})
-			select {
-			case code := <-done:
-				t.Fatalf("hotbed run exited %d after worker restarted while command still running (stdout=%q stderr=%q)", code, stdout.String(), stderr.String())
-			default:
-			}
-
-			if err := os.WriteFile(gate2, nil, 0o644); err != nil {
-				t.Fatal(err)
-			}
-
-			select {
-			case code := <-done:
-				if code != 7 {
-					t.Fatalf("hotbed run exited %d, want 7 (stdout=%q stderr=%q)", code, stdout.String(), stderr.String())
-				}
-			case <-time.After(30 * time.Second):
-				t.Fatalf("timed out waiting for hotbed run (stdout=%q stderr=%q)", stdout.String(), stderr.String())
-			}
-			if got := stdout.String(); got != wantOut {
-				t.Errorf("stdout = %q, want %q", got, wantOut)
-			}
-		})
-	}
-}
-
-// When a worker stays down past followRideOut (even when RideOut returns a
-// stream whose errors surface only on Receive), followLog must not reset its
-// down timer on every reconnect attempt: it must fail with WORKER_UNREACHABLE
-// rather than looping forever or exiting 0 (board 7945).
 func TestAttachFollowLogGivesUpAfterFollowRideOut(t *testing.T) {
 	prev := followRideOut
 	followRideOut = 2 * time.Second

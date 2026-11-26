@@ -86,6 +86,14 @@ type Status struct {
 	Disks []DiskStat       `json:"disks,omitempty"`
 }
 
+// LocalWorkerSocket is a worker on this machine that serves its clients
+// here on a Unix socket: those of its node's workspaces and commands call it
+// there, the rest through the controller.
+type LocalWorkerSocket struct {
+	NodeID string
+	Socket string
+}
+
 // DiskStat reports virtual vs actual allocated on-disk bytes for a sparse image.
 type DiskStat struct {
 	Name           string `json:"name"`

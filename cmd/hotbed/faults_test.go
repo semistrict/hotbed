@@ -115,43 +115,6 @@ func TestWorkerRestartMidCommand(t *testing.T) {
 	}
 }
 
-// Commands run while the controller is down, and a new controller (a
-// deploy) on the same database: each end reaches its session once, and
-// history has each command.
-func TestControllerRestartWithEventsInFlight(t *testing.T) {
-	c := newCluster(t)
-	c.addRepo(upstream(t))
-	c.ok(nil, "session", "start", "busy-ant")
-	c.workspace("busy-ant", nil)
-	c.ctrl.setDown(true)
-	var ids []string
-	for i := range 3 {
-		id, code := c.runAttached("busy-ant", "sh", "-c", fmt.Sprintf("exit %d", i))
-		if code != i {
-			t.Fatalf("run of exit %d returned %d", i, code)
-		}
-		ids = append(ids, id)
-	}
-	c.restart()
-	c.ctrl.setDown(false)
-	c.converged()
-	evs := c.events("busy-ant")
-	for i, id := range ids {
-		if got := ends(evs, id); !slices.Equal(got, []string{fmt.Sprintf("exited exit %d", i)}) {
-			t.Errorf("ends of %s = %q, want one exit %d", id, got, i)
-		}
-	}
-	history, err := c.store.History(t.Context(), time.Time{})
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, id := range ids {
-		if !slices.ContainsFunc(history, func(f *pb.FinishedCommand) bool { return f.Id == id }) {
-			t.Errorf("history has no %s", id)
-		}
-	}
-}
-
 // A worker whose database is lost starts a new epoch. Its session hears
 // that its command and workspace are lost, and a new workspace works.
 func TestLostWorkerDatabase(t *testing.T) {
@@ -182,46 +145,6 @@ func TestLostWorkerDatabase(t *testing.T) {
 	if code, out, stderr := c.hotbed("run", "-s", "poor-cod", "-r", "app", "--", "cat", "src/lib.txt"); code != 0 || out != "base\n" {
 		t.Errorf("run in the new workspace: exit %d, %q, stderr %q", code, out, stderr)
 	}
-}
-
-// A worker cut off from the controller keeps serving clients; its events
-// and the release of an ended session's workspace go through once it is
-// back. Other workers are not held up.
-func TestPartitionedWorker(t *testing.T) {
-	c := newFleet(t, 2)
-	c.addRepo(upstream(t))
-	for _, s := range []string{"near-yak", "far-gnu", "gone-emu"} {
-		c.ok(nil, "session", "start", s)
-	}
-	c.workspace("near-yak", &pb.Placement{Node: "asahimbp"})
-	c.workspace("far-gnu", &pb.Placement{Node: "mini"})
-	gone := c.workspace("gone-emu", &pb.Placement{Node: "mini"})
-
-	c.nodes[1].cut.Store(true)
-	far, code := c.runAttached("far-gnu", "sh", "-c", "exit 5")
-	if code != 5 {
-		t.Fatalf("run on the cut-off worker returned %d", code)
-	}
-	near, code := c.runAttached("near-yak", "true")
-	if code != 0 {
-		t.Fatalf("run on the other worker returned %d", code)
-	}
-	c.eventually("the other worker's command to reach its session", func() bool { return len(ends(c.events("near-yak"), near)) == 1 })
-	if got := ends(c.events("far-gnu"), far); len(got) != 0 {
-		t.Errorf("the cut-off worker's command reached its session: %q", got)
-	}
-	c.ok(nil, "session", "end", "-s", "gone-emu")
-
-	c.nodes[1].cut.Store(false)
-	c.heartbeat()
-	c.converged()
-	if got := ends(c.events("far-gnu"), far); !slices.Equal(got, []string{"exited exit 5"}) {
-		t.Errorf("ends of %s = %q, want one exit 5", far, got)
-	}
-	c.eventually("the ended session's workspace to be released", func() bool {
-		ws, err := c.nodes[1].eng().Workspace(gone.Id)
-		return err == nil && ws.State == pb.WorkspaceState_WORKSPACE_STATE_RELEASED
-	})
 }
 
 // With its worker cut off, the controller answers for a command from the

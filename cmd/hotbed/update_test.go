@@ -169,7 +169,10 @@ func ridesOut(t *testing.T, logs bool) {
 	}
 	c.eventually("the client to follow the command's output", func() bool { return nd.follows.Load() > opened })
 	nd.halt()
-	c.eventually("the client to find its worker stopped", func() bool { return nd.refused.Load() > 0 })
+	c.eventually("the controller to lose the worker's tunnel", func() bool {
+		ids, err := c.store.ConnectedWorkers(t.Context())
+		return err == nil && !slices.Contains(ids, nd.peer.NodeID)
+	})
 	g.open(t, "go")
 	nd.start()
 	select {

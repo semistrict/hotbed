@@ -74,6 +74,15 @@ type WorkerConfig struct {
 	// Token is the bearer token used to authenticate to a remote HTTPS
 	// controller (such as Cloudflare Workers) and its /ws/worker tunnel.
 	Token string `json:"token,omitempty"`
+	// Socket, if set, is a Unix socket the worker serves its API on too, for
+	// clients on its own machine, who cannot be told apart by user over the
+	// tailnet off Linux: its file mode alone says who may connect (macOS:
+	// the Mac's user, 0600).
+	Socket string `json:"socket,omitempty"`
+	// NodeID is the node the worker last ran as (its workspaces' and
+	// commands' node_id), for clients on its machine to tell their own
+	// worker's work by.
+	NodeID string `json:"nodeId,omitempty"`
 	// VM enables the cladefsd + Firecracker microVM runtime alongside chroot.
 	VM *VMConfig `json:"vm,omitempty"`
 	// CladefsFUSE enables the cladefsd host-FUSE runtime alongside chroot
