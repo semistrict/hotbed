@@ -8,6 +8,7 @@ import (
 
 	"github.com/semistrict/hotbed/internal/api"
 	pb "github.com/semistrict/hotbed/internal/gen/hotbed/v1"
+	"github.com/semistrict/hotbed/internal/sysinfo"
 )
 
 func TestShellCommandEndToEnd(t *testing.T) {
@@ -94,7 +95,7 @@ func TestShellPrefersExistingWorkspaceOverBusyPlacement(t *testing.T) {
 
 	// Make asahimbp look heavily loaded so normal load-based placement would
 	// migrate a new workspace to idle mini.
-	c.nodes[0].system.SetBusy(0.99)
+	c.nodes[0].system.SetCPU(sysinfo.CPUShare{Busy: 0.99})
 	c.nodes[0].system.SetCPUPressure(80)
 	c.nodes[0].eng().Sample()
 	c.heartbeat()

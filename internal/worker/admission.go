@@ -33,8 +33,8 @@ const (
 	hostCPUBusyResumeAt    = 0.70 // resume once host CPU drops under 70%
 	hostLoadPerCPUHoldAt   = 1.25 // host 1m load >= 1.25 * host_cpus
 	hostLoadPerCPUResumeAt = 1.00 // resume once host 1m load < 1.0 * host_cpus
-	hostStealGuestMin      = 0.50 // guest CPU busy >= 50% when checking steal
-	hostStealDeltaHoldAt   = 0.35 // guest_cpu_busy - vm_cpu_busy >= 35% steal
+	hostStealGuestMin      = 0.50 // guest CPU busy outside nested VMs >= 50% when checking steal
+	hostStealDeltaHoldAt   = 0.35 // guest busy outside nested VMs - vm_cpu_busy >= 35% steal
 	hostStealDeltaResumeAt = 0.20 // resume once steal drops under 20%
 )
 
@@ -142,7 +142,7 @@ func (e *Engine) weighHostCPU(now time.Time) {
 	}
 	hostBusy := hu.GetHostCpuBusy()
 	vmBusy := hu.GetVmCpuBusy()
-	guestBusy := e.usage.GetCpuBusy()
+	guestBusy := e.cpuOwnBusy
 	steal := max(0.0, guestBusy-vmBusy)
 	hasCpus := hu.GetHostCpus() > 0
 	loadHigh := hasCpus && hu.GetHostLoad_1M() >= float64(hu.GetHostCpus())*hostLoadPerCPUHoldAt
@@ -171,14 +171,14 @@ func (e *Engine) hostCPUStatus(hu *pb.HostUsage) (holding bool, value, limit, re
 	}
 	hostBusy := hu.GetHostCpuBusy()
 	vmBusy := hu.GetVmCpuBusy()
-	guestBusy := e.usage.GetCpuBusy()
+	guestBusy := e.cpuOwnBusy
 	steal := max(0.0, guestBusy-vmBusy)
 	hasCpus := hu.GetHostCpus() > 0
 	loadHigh := hasCpus && hu.GetHostLoad_1M() >= float64(hu.GetHostCpus())*hostLoadPerCPUHoldAt
 	busyHigh := hostBusy >= hostCPUBusyHoldAt
 	stealHigh := guestBusy >= hostStealGuestMin && steal >= hostStealDeltaHoldAt
 
-	detail = fmt.Sprintf("host CPU %.0f%%, VM got %.0f%%, guest reports %.0f%%", hostBusy*100, vmBusy*100, guestBusy*100)
+	detail = fmt.Sprintf("host CPU %.0f%%, VM got %.0f%%, guest busy %.0f%% outside nested VMs", hostBusy*100, vmBusy*100, guestBusy*100)
 	if hasCpus {
 		detail += fmt.Sprintf(", host load %.1f/%d", hu.GetHostLoad_1M(), hu.GetHostCpus())
 	}
@@ -186,7 +186,7 @@ func (e *Engine) hostCPUStatus(hu *pb.HostUsage) (holding bool, value, limit, re
 	switch {
 	case stealHigh:
 		return true, steal * 100, hostStealDeltaHoldAt * 100, hostStealDeltaResumeAt * 100,
-			fmt.Sprintf("host CPU starvation: guest reports %.0f%% CPU busy while VM gets %.0f%% (%.0f%% steal, host %.0f%% busy)",
+			fmt.Sprintf("host CPU starvation: guest %.0f%% CPU busy outside nested VMs while VM gets %.0f%% (%.0f%% steal, host %.0f%% busy)",
 				guestBusy*100, vmBusy*100, steal*100, hostBusy*100),
 			detail
 	case busyHigh:

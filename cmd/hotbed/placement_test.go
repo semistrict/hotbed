@@ -10,6 +10,7 @@ import (
 	"github.com/semistrict/hotbed/internal/api"
 	"github.com/semistrict/hotbed/internal/fake"
 	pb "github.com/semistrict/hotbed/internal/gen/hotbed/v1"
+	"github.com/semistrict/hotbed/internal/sysinfo"
 	"github.com/semistrict/hotbed/internal/worker"
 )
 
@@ -21,7 +22,7 @@ func (c *cluster) load(busy map[string]float64) {
 		if nd.halted.Load() {
 			continue
 		}
-		nd.system.SetBusy(busy[nd.peer.Hostname])
+		nd.system.SetCPU(sysinfo.CPUShare{Busy: busy[nd.peer.Hostname]})
 		nd.eng().Sample()
 		if err := worker.HeartbeatOnce(c.t.Context(), nd.eng(), nd.cluster, c.id, nil); err != nil {
 			c.t.Fatal(err)

@@ -704,7 +704,8 @@ type System struct {
 	Psi  float64
 	// CPUPsi is CPU pressure, PSI some avg10 in percent.
 	CPUPsi float64
-	Busy   float64
+	// CPUShare is how its CPU time is spent.
+	CPUShare sysinfo.CPUShare
 }
 
 func NewSystem() *System {
@@ -735,19 +736,19 @@ func (s *System) Pressure(resource string) (float64, error) {
 	return 0, nil
 }
 
-func (s *System) CPUBusy() (float64, error) {
+func (s *System) CPU() (sysinfo.CPUShare, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return s.Busy, nil
+	return s.CPUShare, nil
 }
 
 func (s *System) OOMKills() (int64, error) { return 0, nil }
 
-// SetBusy sets the share of its CPUs kept busy, 0 to 1.
-func (s *System) SetBusy(busy float64) {
+// SetCPU sets how its CPU time is spent.
+func (s *System) SetCPU(share sysinfo.CPUShare) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.Busy = busy
+	s.CPUShare = share
 }
 
 // SetCPUPressure sets CPU pressure, PSI some avg10 in percent.

@@ -102,7 +102,7 @@ type System interface {
 	Resources() (*pb.Resources, error)
 	Meminfo() (sysinfo.Mem, error)
 	Pressure(resource string) (float64, error)
-	CPUBusy() (float64, error)
+	CPU() (sysinfo.CPUShare, error)
 	OOMKills() (int64, error)
 }
 
@@ -228,6 +228,11 @@ type Engine struct {
 	workspaces      map[string]*workspace
 	commands        map[string]*command
 	usage           *pb.NodeUsage
+	// cpuOwnBusy is the share of CPU time Sample last saw busy outside
+	// nested VMs (sysinfo.CPUShare.Own): what the steal check compares with
+	// what the VM's host gave it, as an idle nested vCPU looks busy here
+	// while costing the host nothing.
+	cpuOwnBusy float64
 	// lastMem is the most recent sysinfo.Mem reading from Sample, kept so
 	// fallback memory checks pair total and used from the same domain (host
 	// or enclosing cgroup slice) instead of mixing slice limit with host use.
@@ -853,7 +858,7 @@ func (e *Engine) projectLock(name string) *sync.Mutex {
 // Sample measures the machine's load and memory now, for the next report;
 // the engine does it every api.ReportInterval.
 func (e *Engine) Sample() {
-	busy, err := e.cfg.System.CPUBusy()
+	cpu, err := e.cfg.System.CPU()
 	if err != nil {
 		slog.Warn("sample cpu", "err", err)
 	}
@@ -887,8 +892,9 @@ func (e *Engine) Sample() {
 	if mem.Total > 0 {
 		e.lastMem = mem
 	}
+	e.cpuOwnBusy = cpu.Own()
 	e.usage = &pb.NodeUsage{
-		CpuBusy:         busy,
+		CpuBusy:         cpu.Busy,
 		MemoryUsedBytes: mem.Used(),
 		SwapUsedBytes:   mem.SwapTotal - mem.SwapFree,
 		CpuPressure:     cpuP,
