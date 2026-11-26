@@ -293,6 +293,10 @@ type Engine struct {
 	// e.mu (preventing re-entrant deadlocks when callers such as endBy already
 	// hold e.mu and query usesRuntime).
 	vmWorkspaces sync.Map // workspace ID -> struct{}
+	// vmCacheReclaim tracks per-VM proactive guest page-cache reclaim state
+	// (guarded by e.mu) so host memory pressure triggers bounded, non-overlapping
+	// guestd Reclaim calls.
+	vmCacheReclaim map[string]vmCacheReclaimState
 
 	// bgCtx is cancelled and closing set under e.mu when Close begins; bg
 	// tracks every Engine-owned background goroutine so Close waits for them
@@ -917,6 +921,7 @@ func (e *Engine) Sample() {
 	wasHeld := e.held.kind != ""
 	e.weighHold(now)
 	cleared := wasHeld && e.held.kind == ""
+	e.scheduleGuestCacheReclaimLocked(now, mem, memP)
 	e.mu.Unlock()
 	if cleared {
 		e.stepSoon()
