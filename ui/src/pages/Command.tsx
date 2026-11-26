@@ -336,6 +336,7 @@ function CommandView({
                   <Limit label="memory.max" value="none — park, don't kill" />
                   {live.limits.softLimitSeconds > 0n && <Limit label="soft time limit" value={duration(Number(live.limits.softLimitSeconds))} />}
                   {live.limits.hardLimitSeconds > 0n && <Limit label="hard time limit" value={duration(Number(live.limits.hardLimitSeconds))} />}
+                  {live.limits.keepIdle && <Limit label="idle on much memory" value="kept running (--keep-idle)" />}
                 </dl>
                 {live.limits.memoryHighBytes > 0n && (
                   <div className="mt-4">

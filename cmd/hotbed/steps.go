@@ -64,7 +64,10 @@ type stepAddCmd struct {
 	stepScript
 }
 
-func (c *stepAddCmd) SetDashArgs(args []string) { c.Args = args }
+func (c *stepAddCmd) SetDashArgs(args []string) (before []string) {
+	before, c.Args = c.Args, args
+	return before
+}
 
 // Exec runs the step in /work of the session's workspace, as bases run it,
 // so the agent has what it installs at once, then again, because bases run
@@ -124,7 +127,10 @@ type stepSetCmd struct {
 	stepScript
 }
 
-func (c *stepSetCmd) SetDashArgs(args []string) { c.Args = args }
+func (c *stepSetCmd) SetDashArgs(args []string) (before []string) {
+	before, c.Args = c.Args, args
+	return before
+}
 
 func (c *stepSetCmd) Exec(ctx context.Context, d deps) (any, error) {
 	script, err := c.script()

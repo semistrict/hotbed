@@ -33,7 +33,10 @@ type shellCmd struct {
 	placementFlags
 }
 
-func (c *shellCmd) SetDashArgs(args []string) { c.Args = args }
+func (c *shellCmd) SetDashArgs(args []string) (before []string) {
+	before, c.Args = c.Args, args
+	return before
+}
 
 func (c *shellCmd) Exec(context.Context, deps) (any, error) { return nil, errors.New("shell is raw") }
 

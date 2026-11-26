@@ -61,9 +61,11 @@ type deps struct {
 
 // dashDashCommand accepts passthrough arguments after "--", parsed before kong
 // so optional positional arguments (like an inferred repo name) never swallow
-// the command after "--".
+// the command after "--". SetDashArgs returns what kong had passed through
+// from before "--": an unknown flag there, and all after it, which would be
+// dropped unnoticed.
 type dashDashCommand interface {
-	SetDashArgs(args []string)
+	SetDashArgs(args []string) (before []string)
 }
 
 // command is a leaf of the command tree. Exec returns the envelope's data.
@@ -139,7 +141,10 @@ func parse(args []string, stdout io.Writer) (cmd command, name string, opts outp
 		cmd, name, opts, exitCode, err = parseOnce(args[:sep], stdout)
 		if err == nil && exitCode == nil {
 			if dd, ok := cmd.(dashDashCommand); ok {
-				dd.SetDashArgs(args[sep+1:])
+				if before := dd.SetDashArgs(args[sep+1:]); len(before) > 0 {
+					return nil, "", outputOpts{}, nil, api.Errorf(api.CodeInvalidArgs, "unknown flag %s of hotbed %s (before --)", before[0], name).
+						WithSuggestion(fmt.Sprintf("hotbed %s --help lists its flags; the command goes after --", name))
+				}
 				return cmd, name, opts, nil, nil
 			}
 		}

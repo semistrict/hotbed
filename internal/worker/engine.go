@@ -311,6 +311,9 @@ type Engine struct {
 	bgCancel context.CancelFunc
 	bg       sync.WaitGroup
 	closing  bool
+	// idleStops tracks the stops stopIdleHogs has under way (in bg too),
+	// apart from bg's long-lived goroutines, so they can be waited on alone.
+	idleStops sync.WaitGroup
 
 	// streamsDone is closed by DrainStreams (and Close) to end long-lived
 	// streaming RPCs (FollowLog, WatchWorkspace) during HTTP server shutdown

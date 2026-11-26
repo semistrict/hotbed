@@ -490,8 +490,9 @@ A command that hangs (a deadlocked test) must not hold you, or the node, for hou
   swapping back in what it must.
 - **Idle on much memory**: a running command that holds over a quarter of the node's memory (in
   RAM or swap) for 5 minutes while using under 0.1 CPU cores on average is stopped (cancelled) as
-  stuck, whatever its limits; its reason says so. Dev servers (`--port`), interactive (`--tty`)
-  commands and measurements are exempt.
+  stuck, whatever its time limits, its diagnostics taken first (`hotbed diagnostics CMD` shows where
+  it was stuck); its reason says so. Dev servers (`--port`), interactive (`--tty`) commands and
+  measurements are exempt; `--keep-idle` keeps one that rightly waits on much memory.
 - An attached run waits only `--wait` (2m) before leaving its command running, detached, which
   drops its soft limit: a soft limit pauses a command only while you wait on it. A long build or
   test suite you expect to take 25 minutes: `--detach --mem 8G --expect 25m`, then

@@ -28,7 +28,10 @@ type scheduleAddCmd struct {
 	placementFlags
 }
 
-func (c *scheduleAddCmd) SetDashArgs(args []string) { c.Args = args }
+func (c *scheduleAddCmd) SetDashArgs(args []string) (before []string) {
+	before, c.Args = c.Args, args
+	return before
+}
 
 func (c *scheduleAddCmd) Exec(ctx context.Context, d deps) (any, error) {
 	req, err := c.request(c.Args, "hotbed schedule add NAME -r REPO --cron '0 2 * * *' -- scripts/nightly.sh", false)

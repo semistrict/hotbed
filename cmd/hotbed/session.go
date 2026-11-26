@@ -708,6 +708,7 @@ type commandFlags struct {
 	Bench     bool     `help:"Run it as a measurement: alone among measurements on the node, once running work leaves it room, on the node's measurement CPUs, which no other command uses meanwhile, isolated for its whole run (cache, memory bandwidth, IRQs, others' clocks and disk IO where the node has them), never swapped or parked. It fails if the isolation was lost."`
 	SoftLimit string   `help:"Pause the command (freeze it, its memory to swap) once it has run this long without ending, such as 10m: counted from its start and again each time you wait on it (attached run, hotbed logs -f), which resumes it. 0 for none (default: 10m attached, none detached, scheduled or --bench)."`
 	HardLimit string   `help:"Stop the command this long after it started, paused or not, such as 2h; 0 for none, unless it has a soft limit (default: 2h attached or with a soft limit, else none)."`
+	KeepIdle  bool     `help:"Keep the command running while it holds over a quarter of the node's memory for work and uses under 0.1 CPU cores, which otherwise stops it as stuck after 5 minutes: for one that rightly waits on much memory."`
 	VMCPUs    int      `name:"vm-cpus" help:"vCPUs its VM's guest sees (default: the node's). It sizes the VM only: admission goes by what commands are measured to use. vm runtime only."`
 	VMMem     string   `name:"vm-mem" default:"0" help:"Memory its VM's guest sees, such as 16G (default: the node's). It sizes the VM only, as --vm-cpus does. vm runtime only."`
 }
@@ -802,7 +803,7 @@ func (f commandFlags) request(args []string, example string, attached bool) (*pb
 		Limits: &pb.CommandLimits{
 			CpuWeight: int32(f.CPUWeight), MemoryLowBytes: low, MemoryHighBytes: high,
 			SoftLimitSeconds: int64(soft / time.Second), HardLimitSeconds: int64(hard / time.Second),
-			Priority: priority,
+			Priority: priority, KeepIdle: f.KeepIdle,
 		},
 	}, nil
 }
@@ -870,7 +871,10 @@ type runCmd struct {
 	placementFlags
 }
 
-func (c *runCmd) SetDashArgs(args []string) { c.Args = args }
+func (c *runCmd) SetDashArgs(args []string) (before []string) {
+	before, c.Args = c.Args, args
+	return before
+}
 
 // Raw asks the controller where to run, syncs the checkout it is run in
 // there, runs the command, and streams its output to stdout. Interrupting

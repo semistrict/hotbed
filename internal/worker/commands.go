@@ -524,7 +524,7 @@ func (e *Engine) step(ctx context.Context) {
 	e.settleBench(ctx)
 	e.admit(ctx)
 	e.limit(ctx)
-	e.stopIdleHogs(ctx)
+	e.stopIdleHogs()
 	e.retireVMs(ctx)
 	e.releaseSpentThrowaways()
 	e.maybeStartPendingFreshens(ctx)
@@ -796,7 +796,7 @@ func (e *Engine) observe(ctx context.Context, c *command, st unit.State, sampled
 	e.checkIsolation(c, st.Exited)
 	c.deactivating = st.Loaded && !st.Exited && !st.Running
 	if !st.Exited {
-		e.watchIdle(c, mem.Held(), c.rec.Cgroup != "" && hasMem && !st.Frozen, sampledAt, st.CPUNanos)
+		e.watchIdle(c, st, mem, c.rec.Cgroup != "" && hasMem, sampledAt)
 		return
 	}
 	// removeUnit has removed the unit and read the rest of its output.

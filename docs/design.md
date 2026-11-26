@@ -406,10 +406,12 @@ did. A base build is guaranteed what the project's last base build on the node h
 admitted beside it leaves it that room from its first step. Admitted commands run until they end,
 swapping to zstd zram or disk if they must; nothing is frozen or killed for memory pressure by the
 worker. The one exception is a command that looks stuck on what it holds: one that holds over a
-quarter of the work slice's budget (anonymous and swapped) for five minutes running while using
-under 0.1 CPU cores on average over them is stopped (cancelled), as it keeps that memory from all
-other work. Dev servers, interactive (`--tty`) commands, measurements, and frozen (paused or held)
-commands are exempt.
+quarter of the work slice's budget itself (anonymous and swapped; a VM command its guest's, not its
+share of the VM) for five minutes running while using under 0.1 CPU cores on average over them is
+stopped (cancelled) as the node's own intervention, its diagnostics taken first, as it keeps that
+memory from all other work. A thrashing command is stopped too: at that CPU use it makes next to
+no progress. Dev servers, interactive (`--tty`) commands, measurements, frozen (paused or held)
+commands, and runs with `--keep-idle` are exempt.
 Beneath all that, the work slice itself is bounded (`MemoryHigh=`, `MemoryMax=`, and `MemorySwapMax=`
 on zram hosts at its start), leaving the host an eighth of its RAM (at least 1 GiB) for OS headroom,
 an eighth (or `cladefsd`'s floor if larger) for `cladefsd`'s protected DAX cache, and a 3:1

@@ -6,16 +6,21 @@ import (
 	"log/slog"
 	"slices"
 	"time"
+
+	"github.com/semistrict/hotbed/internal/unit"
 )
 
 // A command that holds a large share of the node's memory while barely using
 // a CPU is presumed stuck (a hung test, a deadlock, a wait on something that
-// will not come) and keeps that memory from all other work: admission
-// reserves what commands hold (board 9128), and pushed to swap it still fills
-// the node's swap. One that does so for idleHogWindow is stopped.
+// will not come) and keeps that memory from all other work: in RAM it leaves
+// the rest of the node less, pushed to swap it fills the node's swap, and
+// admission reserves at least what it held until it ends (board 9128). One
+// that does so for idleHogWindow is stopped, its diagnostics taken first to
+// show where it was stuck, unless its run asked to be kept (--keep-idle).
 const (
-	// idleHogShare is the share of the node's memory (admitLimit) a command
-	// must hold, in RAM or swap, for its CPU use to be watched.
+	// idleHogShare is the share of the node's memory for work (admitLimit) a
+	// command must hold itself, in RAM or swap, for its CPU use to be
+	// watched.
 	idleHogShare = 0.25
 	// idleHogCores is the average CPU use, over idleHogWindow, below which a
 	// command holding that much is stopped.
@@ -79,30 +84,40 @@ func (w *idleWatch) stuck() (over time.Duration, cores float64, ok bool) {
 }
 
 // idleHogWatched says whether c is one the stop applies to: running (one
-// frozen, held or paused, uses no CPU by design), and not a dev server, an
+// frozen, held or paused, uses no CPU by design), not being stopped, paused
+// or resumed already, not asked to be kept, and not a dev server, an
 // interactive command or a measurement, which may rightly sit on what they
 // hold while idle. Call with e.mu held.
 func idleHogWatched(c *command) bool {
 	cmd := c.cmd()
 	return cmd.State == running && !c.stopping && !c.intervening && !c.deactivating &&
-		cmd.Kind != "server" && !cmd.TtyInput && !cmd.Bench
+		!cmd.Limits.GetKeepIdle() && cmd.Kind != "server" && !cmd.TtyInput && !cmd.Bench
 }
 
-// watchIdle records c's sample in its idle watch: it holds held, in RAM or
-// swap (known says whether that could be read), and has used nanos of CPU
-// time by at. Call with e.mu held.
-func (e *Engine) watchIdle(c *command, held int64, known bool, at time.Time, nanos uint64) {
+// watchIdle records in c's idle watch its sample st, taken at at, and mem,
+// the memory it holds as observe read it (known says whether it could). What
+// counts is what its processes hold themselves (st.OwnMemoryUse, if set): a
+// VM command is not charged its share of its VM's footprint here, as
+// stopping it would free no more than its own. Call with e.mu held.
+func (e *Engine) watchIdle(c *command, st unit.State, mem unit.MemoryUse, known bool, at time.Time) {
+	own := mem
+	if st.OwnMemoryUse != nil {
+		own, known = *st.OwnMemoryUse, true
+	}
 	limit := e.admitLimit()
-	heavy := known && limit > 0 && float64(held) > idleHogShare*float64(limit) && idleHogWatched(c)
-	c.idle.see(heavy, held, at, nanos)
+	heavy := known && !st.Frozen && limit > 0 && float64(own.Held()) > idleHogShare*float64(limit) && idleHogWatched(c)
+	c.idle.see(heavy, own.Held(), at, st.CPUNanos)
 }
 
 // stopIdleHogs stops each command that held over idleHogShare of the node's
-// memory for idleHogWindow while using under idleHogCores.
-func (e *Engine) stopIdleHogs(ctx context.Context) {
-	type hog struct{ id, why string }
-	var hogs []hog
+// memory for work for idleHogWindow while using under idleHogCores. Each
+// stop is the node's own intervention, so its diagnostics are taken first
+// and kept with it (hotbed diagnostics), and runs in the background: the
+// diagnostics take seconds, which step must not wait on. A stop someone
+// else began first wins.
+func (e *Engine) stopIdleHogs() {
 	e.mu.Lock()
+	defer e.mu.Unlock()
 	limit := e.admitLimit()
 	for _, c := range e.commands {
 		if !idleHogWatched(c) {
@@ -112,15 +127,21 @@ func (e *Engine) stopIdleHogs(ctx context.Context) {
 		if !ok {
 			continue
 		}
-		hogs = append(hogs, hog{c.cmd().Id, fmt.Sprintf(
-			"it held %s, over %.0f%% of the node's %s, for %s while using %.2f CPU cores on average: stopped as stuck, to free that memory",
-			gib(c.idle.held), idleHogShare*100, gib(limit), over.Round(time.Second), cores)})
-	}
-	e.mu.Unlock()
-	for _, h := range hogs {
-		slog.Warn("stop a command holding much memory idle", "command", h.id, "why", h.why)
-		if _, err := e.Stop(ctx, h.id, h.why); err != nil {
-			slog.Error("stop a command holding much memory idle", "command", h.id, "err", err)
+		id := c.cmd().Id
+		why := fmt.Sprintf(
+			"it held %s, over %.0f%% of the %s this node has for work, for %s while using %.2f CPU cores on average: stopped as stuck, to free that memory (hotbed run --keep-idle keeps a command that rightly waits on much memory)",
+			gib(c.idle.held), idleHogShare*100, gib(limit), over.Round(time.Second), cores)
+		// Watched afresh, should its stop not come to pass.
+		c.idle = idleWatch{}
+		e.idleStops.Add(1)
+		if !e.startBgLocked(func(ctx context.Context) {
+			defer e.idleStops.Done()
+			slog.Warn("stop a command holding much memory idle", "command", id, "why", why)
+			if _, err := e.StopWith(ctx, id, Intervention{Comment: why, Diagnose: true, Host: e.cfg.Host}); err != nil {
+				slog.Warn("stop a command holding much memory idle", "command", id, "err", err)
+			}
+		}) {
+			e.idleStops.Done() // the engine is closing
 		}
 	}
 }

@@ -8624,7 +8624,11 @@ type CommandLimits struct {
 	HardLimitSeconds int64 `protobuf:"varint,5,opt,name=hard_limit_seconds,json=hardLimitSeconds,proto3" json:"hard_limit_seconds,omitempty"`
 	// Scheduling priority (default 0 = normal): higher is admitted first.
 	// Nothing running is preempted for it.
-	Priority      int32 `protobuf:"varint,6,opt,name=priority,proto3" json:"priority,omitempty"`
+	Priority int32 `protobuf:"varint,6,opt,name=priority,proto3" json:"priority,omitempty"`
+	// Keep it running while it holds over a quarter of the node's memory for
+	// work and barely uses a CPU, which otherwise stops it as stuck after five
+	// minutes: for a command that rightly waits on much memory.
+	KeepIdle      bool `protobuf:"varint,7,opt,name=keep_idle,json=keepIdle,proto3" json:"keep_idle,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -8699,6 +8703,13 @@ func (x *CommandLimits) GetPriority() int32 {
 		return x.Priority
 	}
 	return 0
+}
+
+func (x *CommandLimits) GetKeepIdle() bool {
+	if x != nil {
+		return x.KeepIdle
+	}
+	return false
 }
 
 type Rebuilt struct {
@@ -32124,7 +32135,7 @@ const file_hotbed_v1_hotbed_proto_rawDesc = "" +
 	"\vFileContent\x12\x12\n" +
 	"\x04path\x18\x01 \x01(\tR\x04path\x12\x12\n" +
 	"\x04text\x18\x02 \x01(\tR\x04text\x12#\n" +
-	"\rchanged_lines\x18\x03 \x03(\x05R\fchangedLines\"\xfc\x01\n" +
+	"\rchanged_lines\x18\x03 \x03(\x05R\fchangedLines\"\x99\x02\n" +
 	"\rCommandLimits\x12\x1d\n" +
 	"\n" +
 	"cpu_weight\x18\x01 \x01(\x05R\tcpuWeight\x12(\n" +
@@ -32132,7 +32143,8 @@ const file_hotbed_v1_hotbed_proto_rawDesc = "" +
 	"\x11memory_high_bytes\x18\x03 \x01(\x03R\x0fmemoryHighBytes\x12,\n" +
 	"\x12soft_limit_seconds\x18\x04 \x01(\x03R\x10softLimitSeconds\x12,\n" +
 	"\x12hard_limit_seconds\x18\x05 \x01(\x03R\x10hardLimitSeconds\x12\x1a\n" +
-	"\bpriority\x18\x06 \x01(\x05R\bpriority\"/\n" +
+	"\bpriority\x18\x06 \x01(\x05R\bpriority\x12\x1b\n" +
+	"\tkeep_idle\x18\a \x01(\bR\bkeepIdle\"/\n" +
 	"\aRebuilt\x12\x14\n" +
 	"\x05units\x18\x01 \x01(\x05R\x05units\x12\x0e\n" +
 	"\x02of\x18\x02 \x01(\x05R\x02of\"\xdf\x01\n" +

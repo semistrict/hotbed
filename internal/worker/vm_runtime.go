@@ -686,6 +686,9 @@ func toUnitState(wsID string, st runtime.CommandStatus) unit.State {
 		MemoryPeak: st.MemoryPeak,
 		CPUNanos:   uint64(max(st.CPUUsec, 0)) * 1000,
 		Cgroup:     makeVMCgroup(wsID, st.ID),
+		// What its guest cgroup holds, before vmAdjustedMemory charges it
+		// a share of its VM's host footprint.
+		OwnMemoryUse: &unit.MemoryUse{Anon: st.MemoryAnon, Swap: st.MemorySwap},
 	}
 }
 

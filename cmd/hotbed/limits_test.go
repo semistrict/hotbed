@@ -273,6 +273,17 @@ func TestTimeLimitDefaultsAndFlags(t *testing.T) {
 		}
 	}
 
+	// --keep-idle keeps a command idle on much memory running; without it,
+	// one is stopped as stuck.
+	kept := &pb.Command{}
+	c.ok(kept, "run", "-s", "neat-cod", "-r", "app", "--detach", "--mem", "1G", "--keep-idle", "--", "true")
+	if !c.commandOf("neat-cod", kept.Id).Limits.KeepIdle {
+		t.Errorf("%s run with --keep-idle has no keep_idle", kept.Id)
+	}
+	if c.commandOf("neat-cod", detached.Id).Limits.KeepIdle {
+		t.Errorf("%s run without --keep-idle has keep_idle", detached.Id)
+	}
+
 	for _, tc := range []struct {
 		args []string
 		want string

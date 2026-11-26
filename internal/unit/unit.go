@@ -343,6 +343,10 @@ type State struct {
 	// already sampled alongside Status/StatusMany (avoiding a second RPC for
 	// guest VM commands).
 	MemoryUse *MemoryUse
+	// OwnMemoryUse, when non-nil, is what of MemoryUse the unit's processes
+	// hold themselves, where MemoryUse also charges it a share of what holds
+	// them (a VM's footprint beyond its guest's commands).
+	OwnMemoryUse *MemoryUse
 }
 
 const statusProperties = "Id,LoadState,ActiveState,SubState,Result,ExecMainStatus,ExecMainCode,MainPID,ControlGroup,CPUUsageNSec,MemoryCurrent,FreezerState"
