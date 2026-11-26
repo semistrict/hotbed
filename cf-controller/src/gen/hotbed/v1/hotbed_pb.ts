@@ -3912,9 +3912,10 @@ export type CommandLimits = Message<"hotbed.v1.CommandLimits"> & {
 	priority: number;
 
 	/**
-	 * Keep it running while it holds over a quarter of the node's memory for
-	 * work and barely uses a CPU, which otherwise stops it as stuck after five
-	 * minutes: for a command that rightly waits on much memory.
+	 * Keep it running while it reserves over a quarter of the node's memory
+	 * for work and keeps less than a core busy for each 6 GiB of it, which
+	 * otherwise stops it after five minutes: for a command that rightly holds
+	 * much memory for little CPU.
 	 *
 	 * @generated from field: bool keep_idle = 7;
 	 */

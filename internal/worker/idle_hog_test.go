@@ -1,23 +1,23 @@
 package worker
 
 import (
+	"fmt"
 	"testing"
 	"time"
 
 	"github.com/semistrict/hotbed/internal/fake"
 	pb "github.com/semistrict/hotbed/internal/gen/hotbed/v1"
-	"github.com/semistrict/hotbed/internal/runtime"
 	"github.com/semistrict/hotbed/internal/unit"
 )
 
-// stepFor steps e every 30 seconds of its clock for d, adding to unit what
-// a CPU busy that share of the time would use.
-func stepFor(t *testing.T, e *Engine, units *fake.Units, now *time.Time, unit string, busy float64, d time.Duration) {
+// stepFor steps e every 30 seconds of its clock for d, adding to unit the
+// CPU time that many cores busy would use.
+func stepFor(t *testing.T, e *Engine, units *fake.Units, now *time.Time, unit string, cores float64, d time.Duration) {
 	t.Helper()
 	const every = 30 * time.Second
 	for range d / every {
 		*now = now.Add(every)
-		units.AddCPU(unit, time.Duration(busy*float64(every)))
+		units.AddCPU(unit, time.Duration(cores*float64(every)))
 		e.step(t.Context())
 	}
 }
@@ -41,58 +41,104 @@ func wantRunning(t *testing.T, e *Engine, id, when string) {
 	}
 }
 
-// wantStoppedAsStuck waits for the background stop of command id and fails
-// t unless it ended cancelled, the node's intervention saying why.
-func wantStoppedAsStuck(t *testing.T, e *Engine, id, why string) {
+// wantStoppedAsWasteful waits for the background stop of command id and
+// fails t unless it ended cancelled, the node's intervention saying it kept
+// reserved of the node's 16 GiB for over at cores on average.
+func wantStoppedAsWasteful(t *testing.T, e *Engine, id, over, reserved, cores string) {
 	t.Helper()
 	e.idleStops.Wait()
-	want := `stopped by the node asahimbp: "` + why + ` (hotbed run --keep-idle keeps a command that rightly waits on much memory)". ` +
-		"No diagnostics: this worker takes no diagnostics: process inspection is not configured on it."
+	want := fmt.Sprintf(`stopped by the node asahimbp: "for %s it kept %s of the 16.0 GiB this node has for work, over 25%%, while using %s CPU cores on average, under one core for each 6 GiB: stopped to free that memory for the work queued behind it (hotbed run --keep-idle keeps a command that rightly holds much memory for little CPU)". `+
+		"No diagnostics: this worker takes no diagnostics: process inspection is not configured on it.", over, reserved, cores)
 	if s, got := commandState(t, e, id); s != cancelled || got != want {
 		t.Fatalf("%s = (%v, %q), want (cancelled, %q)", id, s, got, want)
 	}
 }
 
-// A command holding over a quarter of the node's memory for work, in RAM or
-// swap, while barely using a CPU for five minutes is stopped as stuck, its
-// diagnostics taken first: it keeps that memory from all other work.
-func TestACommandIdleOnMuchMemoryIsStopped(t *testing.T) {
-	e, units, _, now := parkEngine(t)
-	e.start(t, units, now, "hung-1", "a", "test")
-	// 5 GiB of the node's 16 GiB, part of it swapped out.
-	units.SetAnon("hotbed-hung-1", 3<<30)
-	units.SetSwap("hotbed-hung-1", 2<<30)
+// A command reserving over a quarter of the node's memory for work while
+// keeping less than a core busy for each 6 GiB of it for five minutes is
+// stopped, its diagnostics taken first: it keeps other work queued for little.
+// One busy enough runs on.
+func TestACommandUsingLittleCPUForMuchMemoryIsStopped(t *testing.T) {
+	for _, tc := range []struct {
+		cores float64
+		want  pb.CommandState
+	}{
+		// 12 GiB needs 2 cores.
+		{2.1, running},
+		{1.9, cancelled},
+	} {
+		t.Run(fmt.Sprintf("%.1f cores on 12 GiB", tc.cores), func(t *testing.T) {
+			e, units, _, now := parkEngine(t)
+			e.start(t, units, now, "test-1", "a", "test")
+			// 12 GiB of the node's 16 GiB, part of it swapped out.
+			units.SetAnon("hotbed-test-1", 9<<30)
+			units.SetSwap("hotbed-test-1", 3<<30)
 
-	// First seen holding it 30s from now: five minutes on is 5m30s.
-	stepFor(t, e, units, now, "hotbed-hung-1", 0.01, 5*time.Minute)
-	wantRunning(t, e, "hung-1", "after 4m30s idle on 5 GiB")
-	stepFor(t, e, units, now, "hotbed-hung-1", 0.01, 30*time.Second)
-	wantStoppedAsStuck(t, e, "hung-1",
-		"it held 5.0 GiB, over 25% of the 16.0 GiB this node has for work, for 5m0s while using 0.01 CPU cores on average: stopped as stuck, to free that memory")
+			// First seen holding it 30s from now: five minutes on is 5m30s.
+			stepFor(t, e, units, now, "hotbed-test-1", tc.cores, 5*time.Minute)
+			wantRunning(t, e, "test-1", fmt.Sprintf("after 4m30s at %.1f cores on 12 GiB", tc.cores))
+			stepFor(t, e, units, now, "hotbed-test-1", tc.cores, 30*time.Second)
+			if tc.want == running {
+				stepFor(t, e, units, now, "hotbed-test-1", tc.cores, 10*time.Minute)
+				e.idleStops.Wait()
+				wantRunning(t, e, "test-1", fmt.Sprintf("after 15m at %.1f cores on 12 GiB", tc.cores))
+				return
+			}
+			wantStoppedAsWasteful(t, e, "test-1", "5m0s", "12.0 GiB", "1.90")
+		})
+	}
 }
 
-// One that computes, however much it holds, runs on; once it stops
-// computing it is stopped five minutes after.
-func TestACommandBusyOnMuchMemoryRuns(t *testing.T) {
+// What counts is what it reserves, which is what makes other work queue,
+// not what it holds now: the most it has held (as a VM keeps from the host
+// what its guest is done with), or the memory it was guaranteed.
+func TestWhatACommandReservesCounts(t *testing.T) {
+	t.Run("the most it held", func(t *testing.T) {
+		e, units, _, now := parkEngine(t)
+		e.start(t, units, now, "tests-1", "a", "test")
+		units.SetAnon("hotbed-tests-1", 10<<30)
+		stepFor(t, e, units, now, "hotbed-tests-1", 4, 30*time.Second)
+		units.SetAnon("hotbed-tests-1", 512<<20)
+		stepFor(t, e, units, now, "hotbed-tests-1", 1, 4*time.Minute+30*time.Second)
+		wantRunning(t, e, "tests-1", "4m30s after it held 10 GiB")
+		stepFor(t, e, units, now, "hotbed-tests-1", 1, 30*time.Second)
+		wantStoppedAsWasteful(t, e, "tests-1", "5m0s", "10.0 GiB", "1.00")
+	})
+	t.Run("its guarantee", func(t *testing.T) {
+		e, units, _, now := parkEngine(t)
+		c := e.start(t, units, now, "lean-1", "a", "test")
+		e.mu.Lock()
+		c.cmd().Limits.MemoryLowBytes = 6 << 30
+		e.mu.Unlock()
+		stepFor(t, e, units, now, "hotbed-lean-1", 0.5, 5*time.Minute)
+		wantRunning(t, e, "lean-1", "after 4m30s guaranteed 6 GiB at 0.5 cores")
+		stepFor(t, e, units, now, "hotbed-lean-1", 0.5, 30*time.Second)
+		wantStoppedAsWasteful(t, e, "lean-1", "5m0s", "6.0 GiB", "0.50")
+	})
+}
+
+// Its average is taken over the last five minutes: once one that computed
+// slows down, it is stopped as soon as that average falls below the line.
+func TestACommandThatStopsComputingIsStoppedOnceItsAverageFalls(t *testing.T) {
 	e, units, _, now := parkEngine(t)
 	e.start(t, units, now, "link-1", "a", "build")
 	units.SetAnon("hotbed-link-1", 12<<30)
 
-	stepFor(t, e, units, now, "hotbed-link-1", 1, 10*time.Minute)
-	wantRunning(t, e, "link-1", "after 10m busy on 12 GiB")
-	// Its average over the last five minutes falls below 0.1 cores only
-	// once it has been idle for all but 30s of them.
-	stepFor(t, e, units, now, "hotbed-link-1", 0, 4*time.Minute+30*time.Second)
-	wantRunning(t, e, "link-1", "4m30s after it stopped computing")
+	stepFor(t, e, units, now, "hotbed-link-1", 2.5, 10*time.Minute)
+	wantRunning(t, e, "link-1", "after 10m at 2.5 cores on 12 GiB")
+	// Its marks are a minute apart, from 30s after it started: 1m after it
+	// stops computing, the window from 5m30s still averages 11.25 core-minutes
+	// over 5.5 minutes (2.05 cores); 30s later, from 6m30s, 8.75 over 5 (1.75).
+	stepFor(t, e, units, now, "hotbed-link-1", 0, time.Minute)
+	wantRunning(t, e, "link-1", "1m after it stopped computing")
 	stepFor(t, e, units, now, "hotbed-link-1", 0, 30*time.Second)
-	wantStoppedAsStuck(t, e, "link-1",
-		"it held 12.0 GiB, over 25% of the 16.0 GiB this node has for work, for 5m30s while using 0.09 CPU cores on average: stopped as stuck, to free that memory")
+	wantStoppedAsWasteful(t, e, "link-1", "5m0s", "12.0 GiB", "1.75")
 }
 
-// Holding less, or holding it with a break, does not count; nor does sitting
+// Reserving a quarter of the node or less does not count; nor does sitting
 // idle frozen, as a dev server, an interactive command or a measurement,
 // which may rightly wait on what they hold, or when its run asked to be kept.
-func TestIdleOnMuchMemoryExemptions(t *testing.T) {
+func TestUsingLittleCPUForMuchMemoryExemptions(t *testing.T) {
 	for _, tc := range []struct {
 		name  string
 		setup func(units *fake.Units, c *command)
@@ -111,7 +157,9 @@ func TestIdleOnMuchMemoryExemptions(t *testing.T) {
 			e, units, _, now := parkEngine(t)
 			c := e.start(t, units, now, "idle-1", "a", "test")
 			units.SetAnon("hotbed-idle-1", 6<<30)
+			e.mu.Lock()
 			tc.setup(units, c)
+			e.mu.Unlock()
 			stepFor(t, e, units, now, "hotbed-idle-1", 0, 15*time.Minute)
 			e.idleStops.Wait() // any stop it began
 			if s, why := commandState(t, e, "idle-1"); s != tc.want {
@@ -119,75 +167,22 @@ func TestIdleOnMuchMemoryExemptions(t *testing.T) {
 			}
 		})
 	}
-
-	t.Run("a break in holding it starts the five minutes over", func(t *testing.T) {
-		e, units, _, now := parkEngine(t)
-		e.start(t, units, now, "idle-1", "a", "test")
-		units.SetAnon("hotbed-idle-1", 6<<30)
-		stepFor(t, e, units, now, "hotbed-idle-1", 0, 4*time.Minute+30*time.Second)
-		units.SetAnon("hotbed-idle-1", 1<<30)
-		stepFor(t, e, units, now, "hotbed-idle-1", 0, 30*time.Second)
-		units.SetAnon("hotbed-idle-1", 6<<30)
-		// Seen holding it again at the first of these steps.
-		stepFor(t, e, units, now, "hotbed-idle-1", 0, 5*time.Minute)
-		wantRunning(t, e, "idle-1", "4m30s after it again held 6 GiB")
-		stepFor(t, e, units, now, "hotbed-idle-1", 0, 30*time.Second)
-		wantStoppedAsStuck(t, e, "idle-1",
-			"it held 6.0 GiB, over 25% of the 16.0 GiB this node has for work, for 5m0s while using 0.00 CPU cores on average: stopped as stuck, to free that memory")
-	})
-}
-
-// A VM command is judged on what its own processes hold, not the share of
-// its VM's footprint it is charged for admission: stopping it frees no more
-// than its own.
-func TestIdleOnMuchMemoryCountsAVMCommandsOwn(t *testing.T) {
-	e, units, _, now := parkEngine(t)
-	c := e.start(t, units, now, "vm-1", "a", "test")
-	charged := unit.MemoryUse{Anon: 8 << 30}
-	at := *now
-	for i := range 12 {
-		at = at.Add(30 * time.Second)
-		st := unit.State{Loaded: true, Running: true, OwnMemoryUse: &unit.MemoryUse{Anon: 20 << 20}}
-		e.mu.Lock()
-		e.watchIdle(c, st, charged, true, at)
-		marks := len(c.idle.marks)
-		e.mu.Unlock()
-		if marks != 0 {
-			t.Fatalf("sample %d: watched as holding much, with 20 MiB of its own and 8 GiB charged", i)
-		}
-	}
-	e.mu.Lock()
-	e.watchIdle(c, unit.State{Loaded: true, Running: true, OwnMemoryUse: &unit.MemoryUse{Anon: 6 << 30}}, charged, true, at)
-	marks, held := len(c.idle.marks), c.idle.held
-	e.mu.Unlock()
-	if marks != 1 || held != 6<<30 {
-		t.Fatalf("with 6 GiB of its own: marks %d, held %s; want 1 mark of 6.0 GiB", marks, gib(held))
-	}
-}
-
-// A VM command's status carries what its guest cgroup holds as its own,
-// beside the share of its VM's footprint admission charges it.
-func TestAVMCommandsStatusCarriesItsOwnMemory(t *testing.T) {
-	st := toUnitState("ws", runtime.CommandStatus{ID: "c", Running: true, MemoryAnon: 20 << 20, MemorySwap: 4 << 20})
-	if st.OwnMemoryUse == nil || *st.OwnMemoryUse != (unit.MemoryUse{Anon: 20 << 20, Swap: 4 << 20}) {
-		t.Fatalf("own memory = %v, want 20 MiB anon, 4 MiB swap", st.OwnMemoryUse)
-	}
 }
 
 // A unit seen frozen while its command is recorded running (mid-pause, or
 // a stray freeze) uses no CPU by design: it starts the watch over.
-func TestIdleOnMuchMemoryIgnoresAFrozenUnit(t *testing.T) {
+func TestUsingLittleCPUIgnoresAFrozenUnit(t *testing.T) {
 	e, units, _, now := parkEngine(t)
 	c := e.start(t, units, now, "frozen-1", "a", "test")
 	at := now.Add(30 * time.Second)
-	mem := unit.MemoryUse{Anon: 6 << 30}
 	e.mu.Lock()
 	defer e.mu.Unlock()
-	e.watchIdle(c, unit.State{Loaded: true, Running: true}, mem, true, at)
+	c.rec.PeakHeldBytes = 6 << 30
+	e.watchIdle(c, unit.State{Loaded: true, Running: true}, at)
 	if len(c.idle.marks) != 1 {
-		t.Fatalf("marks of a running unit holding 6 GiB = %d, want 1", len(c.idle.marks))
+		t.Fatalf("marks of a running unit reserving 6 GiB = %d, want 1", len(c.idle.marks))
 	}
-	e.watchIdle(c, unit.State{Loaded: true, Running: true, Frozen: true}, mem, true, at.Add(30*time.Second))
+	e.watchIdle(c, unit.State{Loaded: true, Running: true, Frozen: true}, at.Add(30*time.Second))
 	if len(c.idle.marks) != 0 {
 		t.Fatalf("marks once its unit is frozen = %d, want 0", len(c.idle.marks))
 	}
@@ -198,17 +193,20 @@ func TestIdleOnMuchMemoryIgnoresAFrozenUnit(t *testing.T) {
 func TestIdleWatchStartsOverWhenCPUTimeGoesBack(t *testing.T) {
 	var w idleWatch
 	t0 := time.Unix(1795400000, 0)
-	w.see(true, 6<<30, t0, uint64(100*time.Second))
-	w.see(true, 6<<30, t0.Add(4*time.Minute), uint64(100*time.Second))
-	w.see(true, 6<<30, t0.Add(5*time.Minute), 0)
-	if _, _, ok := w.stuck(); ok {
-		t.Fatal("stuck right after its CPU time went back")
+	mark := func(d time.Duration, cpu time.Duration) cpuMark {
+		return cpuMark{at: t0.Add(d), nanos: uint64(cpu), reserved: 6 << 30}
+	}
+	w.see(true, mark(0, 100*time.Second))
+	w.see(true, mark(4*time.Minute, 100*time.Second))
+	w.see(true, mark(5*time.Minute, 0))
+	if _, _, _, ok := w.wasteful(); ok {
+		t.Fatal("wasteful right after its CPU time went back")
 	}
 	if len(w.marks) != 1 || !w.marks[0].at.Equal(t0.Add(5*time.Minute)) {
 		t.Fatalf("marks after its CPU time went back = %v, want one at 5m", w.marks)
 	}
-	w.see(true, 6<<30, t0.Add(10*time.Minute), 0)
-	if over, cores, ok := w.stuck(); !ok || over != 5*time.Minute || cores != 0 {
-		t.Fatalf("stuck 5m after = (%s, %.2f, %v), want (5m0s, 0.00, true)", over, cores, ok)
+	w.see(true, mark(10*time.Minute, 0))
+	if over, cores, reserved, ok := w.wasteful(); !ok || over != 5*time.Minute || cores != 0 || reserved != 6<<30 {
+		t.Fatalf("5m after = (%s, %.2f, %s, %v), want (5m0s, 0.00, 6.0 GiB, true)", over, cores, gib(reserved), ok)
 	}
 }

@@ -1660,9 +1660,10 @@ message CommandLimits {
   // Scheduling priority (default 0 = normal): higher is admitted first.
   // Nothing running is preempted for it.
   int32 priority = 6;
-  // Keep it running while it holds over a quarter of the node's memory for
-  // work and barely uses a CPU, which otherwise stops it as stuck after five
-  // minutes: for a command that rightly waits on much memory.
+  // Keep it running while it reserves over a quarter of the node's memory
+  // for work and keeps less than a core busy for each 6 GiB of it, which
+  // otherwise stops it after five minutes: for a command that rightly holds
+  // much memory for little CPU.
   bool keep_idle = 7;
 }
 

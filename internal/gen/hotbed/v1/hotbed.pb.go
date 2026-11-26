@@ -8630,9 +8630,10 @@ type CommandLimits struct {
 	// Scheduling priority (default 0 = normal): higher is admitted first.
 	// Nothing running is preempted for it.
 	Priority int32 `protobuf:"varint,6,opt,name=priority,proto3" json:"priority,omitempty"`
-	// Keep it running while it holds over a quarter of the node's memory for
-	// work and barely uses a CPU, which otherwise stops it as stuck after five
-	// minutes: for a command that rightly waits on much memory.
+	// Keep it running while it reserves over a quarter of the node's memory
+	// for work and keeps less than a core busy for each 6 GiB of it, which
+	// otherwise stops it after five minutes: for a command that rightly holds
+	// much memory for little CPU.
 	KeepIdle      bool `protobuf:"varint,7,opt,name=keep_idle,json=keepIdle,proto3" json:"keep_idle,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache

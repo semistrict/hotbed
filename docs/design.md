@@ -405,14 +405,13 @@ held of its own (anonymous and swapped, not file cache), as a build needs again 
 did. A base build is guaranteed what the project's last base build on the node held, so work
 admitted beside it leaves it that room from its first step. Admitted commands run until they end,
 swapping to zstd zram or disk if they must; nothing is frozen or killed for memory pressure by the
-worker. The one exception is a command that looks stuck on what it holds: one that holds over a
-quarter of the work slice's budget itself (anonymous and swapped; a VM command its guest's, not its
-share of the VM) for five minutes running while using under 0.1 CPU cores on average over them is
-stopped (cancelled) as the node's own intervention, its diagnostics taken first, as it keeps that
-memory from all other work. A thrashing command is stopped too: at that CPU use it makes next to
-no progress. Dev servers, interactive (`--tty`) commands, measurements, frozen (paused or held)
-commands, and runs with `--keep-idle` are exempt; base builds are not, as a setup step stuck that
-way would hold its project's workspaces anyway, until its time limit.
+worker. The one exception is a command that keeps much memory for little work: one that reserves
+over a quarter of the work slice's budget (its reservation, as above: what makes other work queue;
+for a VM command that includes what its VM keeps from the host after its guest is done with it)
+while keeping less than a core busy for each 6 GiB of it, on average over the last five minutes, is
+stopped (cancelled) as the node's own intervention, its diagnostics taken first. A thrashing or hung
+command is caught too. Dev servers, interactive (`--tty`) commands, measurements, frozen (paused or
+held) commands, and runs with `--keep-idle` are exempt; base builds are not.
 Beneath all that, the work slice itself is bounded (`MemoryHigh=`, `MemoryMax=`, and `MemorySwapMax=`
 on zram hosts at its start), leaving the host an eighth of its RAM (at least 1 GiB) for OS headroom,
 an eighth (or `cladefsd`'s floor if larger) for `cladefsd`'s protected DAX cache, and a 3:1
