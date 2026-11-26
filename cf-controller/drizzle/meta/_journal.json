@@ -134,6 +134,13 @@
 			"when": 1795716374397,
 			"tag": "0018_chunky_silvermane",
 			"breakpoints": true
+		},
+		{
+			"idx": 19,
+			"version": "6",
+			"when": 1795717010976,
+			"tag": "0019_futuristic_earthquake",
+			"breakpoints": true
 		}
 	]
 }

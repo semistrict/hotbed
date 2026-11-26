@@ -1331,6 +1331,7 @@ export function createClusterService(
 				placements,
 				admissionEvents,
 				pendingMemories: memCounts.total,
+				openIssues: ctrl.store.countOpenIssues(),
 				globalPendingMemories: memCounts.global,
 			});
 		},

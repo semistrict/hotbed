@@ -394,6 +394,20 @@ export const questionChanges = sqliteTable(
 	(t) => [index("question_changes_question").on(t.questionId, t.seq)],
 );
 
+// Problems with hotbed itself (IssueService): doc is the Issue as protobuf
+// JSON, its votes and state copied out to sort and filter by.
+export const issues = sqliteTable(
+	"issues",
+	{
+		id: integer("id").primaryKey({ autoIncrement: true }),
+		state: text("state").notNull(),
+		votes: integer("votes").notNull(),
+		updatedAt: integer("updated_at").notNull(),
+		doc: text("doc").notNull(),
+	},
+	(t) => [index("issues_state").on(t.state, t.votes)],
+);
+
 export const reviews = sqliteTable(
 	"reviews",
 	{

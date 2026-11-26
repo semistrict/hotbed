@@ -12,6 +12,7 @@ import {
   QuestionOrder,
   QuestionService,
   ReviewService,
+  IssueService,
   WorkspaceService,
 } from "../gen/hotbed/v1/hotbed_pb";
 import type { Api, CommandDiagnostics, DaemonLogsQuery, ProfileQuery, SampleCommandChunk, SampleOptions, TraceOptions, TraceSummary } from "./types";
@@ -29,6 +30,7 @@ export function createConnectApi(
   const questions = createClient(QuestionService, transport);
   const memories = createClient(MemoryService, transport);
   const reviews = createClient(ReviewService, transport);
+  const issues = createClient(IssueService, transport);
   const gitauth = createClient(GitAuthService, transport);
 
   return {
@@ -252,6 +254,11 @@ export function createConnectApi(
         id,
         place: before === null ? { case: "last", value: true } : { case: "before", value: before },
       }),
+    issues: async (which) =>
+      (await issues.listIssues({ archived: which === "archived", all: which === "all" })).issues,
+    issue: (id) => issues.getIssue({ id }),
+    archiveIssue: (id, reason) => issues.archiveIssue({ id, reason }),
+    reopenIssue: (id) => issues.reopenIssue({ id }),
     reviews: async (project) =>
       (await reviews.listReviews({ scope: project ? { case: "project", value: project } : { case: "allProjects", value: true } })).reviews,
     review: (id) => reviews.getReview({ id }),

@@ -3141,6 +3141,8 @@ message Snapshot {
   int32 pending_memories = 24;
   // Proposed global memories waiting for the user's approval.
   int32 global_pending_memories = 25;
+  // Issues with hotbed itself reported and not archived (IssueService).
+  int32 open_issues = 26;
 }
 
 // Where the controller put a session's workspace, and why: every node it
@@ -5326,6 +5328,180 @@ message ProxyGitHubAPIResponse {
 // on-demand memories as a 1-line index fetched in full via GetMemories).
 // Users can edit any field, promote project memories to global, reorder,
 // archive/restore, or permanently remove them.
+// IssueService keeps the problems agents and people hit with hotbed itself:
+// a bug, a missing capability, an error that misleads. Each is reported
+// once and +1'd by everyone else who hits it, so its votes say how much it
+// costs; the user archives one once it is dealt with.
+service IssueService {
+  // Report a problem with hotbed itself: what you did, what happened, what
+  // you expected, and the command or error. List first (hotbed issue ls -q
+  // WORD): one already reported is +1'd (hotbed issue upvote), not
+  // reported again.
+  rpc ReportIssue(ReportIssueRequest) returns (Issue) {
+    option (command) = {
+      name: "issue report"
+      session: true
+      format: "#{{.id}}  {{state .state}}  {{.title}}{{with .cockpitUrl}}\n{{.}}{{end}}"
+    };
+  }
+  // List the issues reported, most +1'd first: open ones, or archived ones,
+  // or all; -q narrows them to those whose title or body holds the words.
+  rpc ListIssues(ListIssuesRequest) returns (ListIssuesResponse) {
+    option idempotency_level = IDEMPOTENT;
+    option (command) = {
+      name: "issue ls"
+      read_only: true
+      format: "{{range .issues}}#{{pad 4 .id}}  {{pad 8 (state .state)}}  +{{pad 3 (or .votes 0)}}  {{short 80 .title}}\n{{else}}(no issues)\n{{end}}"
+    };
+  }
+  // Show an issue: what was reported, by whom, and everyone who +1'd it.
+  rpc GetIssue(GetIssueRequest) returns (Issue) {
+    option idempotency_level = IDEMPOTENT;
+    option (command) = {
+      name: "issue show"
+      read_only: true
+      format: "#{{.id}}  {{state .state}}  +{{or .votes 0}}  {{.title}}{{with .body}}\n\n{{.}}{{end}}{{range .upvotes}}\n+1 {{with .by}}{{or .session .host}}{{end}}{{with .comment}}: {{.}}{{end}}{{end}}{{with .archived}}\narchived{{with .reason}}: {{.}}{{end}}{{end}}{{with .cockpitUrl}}\n{{.}}{{end}}"
+    };
+  }
+  // +1 an issue you hit too, saying what you saw if it adds anything. Each
+  // session +1s an issue once; its reporter's report counts as one.
+  rpc UpvoteIssue(UpvoteIssueRequest) returns (Issue) {
+    option (command) = {
+      name: "issue upvote"
+      session: true
+      format: "#{{.id}}  {{state .state}}  +{{or .votes 0}}  {{.title}}"
+    };
+  }
+  // Archive an issue dealt with (fixed, or not to be): the user does this in
+  // the cockpit; an agent only when the user asks.
+  rpc ArchiveIssue(ArchiveIssueRequest) returns (Issue) {
+    option (command) = {
+      name: "issue archive"
+      session: true
+      format: "#{{.id}}  {{state .state}}  {{.title}}"
+    };
+  }
+  // Reopen an archived issue: it is back.
+  rpc ReopenIssue(ReopenIssueRequest) returns (Issue) {
+    option (command) = {
+      name: "issue reopen"
+      session: true
+      format: "#{{.id}}  {{state .state}}  {{.title}}"
+    };
+  }
+}
+
+enum IssueState {
+  ISSUE_STATE_UNSPECIFIED = 0;
+  ISSUE_STATE_OPEN = 1;
+  ISSUE_STATE_ARCHIVED = 2;
+}
+
+// A problem with hotbed itself, as reported, and everyone who hit it.
+message Issue {
+  int32 id = 1;
+  // One line: what is wrong.
+  string title = 2;
+  // What was done, what happened, what was expected; the command and error.
+  string body = 3;
+  IssueState state = 4;
+  // Who reported it, and when.
+  Stamp reported = 5;
+  // Everyone else who hit it and said so, oldest first.
+  repeated IssueUpvote upvotes = 6;
+  // How many hit it: its reporter and each upvote.
+  int32 votes = 7;
+  // Who archived it, when, and why; unset while open.
+  Stamp archived = 8;
+  // Its last change, in Unix milliseconds.
+  int64 updated_at = 9;
+  // The project its reporter worked on, for context.
+  string project = 10;
+  // Its page in the cockpit. The CLI and its MCP tools fill it from the
+  // controller they call (cmd/hotbed/cockpit.go); the API leaves it empty.
+  string cockpit_url = 11;
+}
+
+message IssueUpvote {
+  Stamp by = 1;
+  // What they saw, if it adds to the report.
+  string comment = 2;
+}
+
+message ReportIssueRequest {
+  // One line: what is wrong.
+  string title = 1 [(param) = {
+    positional: true
+    required: true
+  }];
+  // What you did, what happened, what you expected; the command and error.
+  string body = 2 [(param) = {short: "m"}];
+  // The reporting session; empty for a person.
+  string session_id = 3 [(param) = {
+    hidden: true
+    default: "named_session"
+  }];
+}
+
+message ListIssuesRequest {
+  // Archived issues instead of open ones.
+  bool archived = 1;
+  // Open and archived issues alike.
+  bool all = 2;
+  // Only issues whose title or body holds each of these words (any case).
+  string query = 3 [(param) = {short: "q"}];
+}
+
+message ListIssuesResponse {
+  // Most +1'd first, then most recently changed.
+  repeated Issue issues = 1;
+}
+
+message GetIssueRequest {
+  int32 id = 1 [(param) = {
+    positional: true
+    required: true
+  }];
+}
+
+message UpvoteIssueRequest {
+  int32 id = 1 [(param) = {
+    positional: true
+    required: true
+  }];
+  // What you saw, if it adds to the report.
+  string comment = 2 [(param) = {short: "m"}];
+  // The session +1ing it; empty for a person.
+  string session_id = 3 [(param) = {
+    hidden: true
+    default: "named_session"
+  }];
+}
+
+message ArchiveIssueRequest {
+  int32 id = 1 [(param) = {
+    positional: true
+    required: true
+  }];
+  // Why: fixed (say where), or not to be fixed (say why).
+  string reason = 2 [(param) = {short: "m"}];
+  string session_id = 3 [(param) = {
+    hidden: true
+    default: "named_session"
+  }];
+}
+
+message ReopenIssueRequest {
+  int32 id = 1 [(param) = {
+    positional: true
+    required: true
+  }];
+  string session_id = 2 [(param) = {
+    hidden: true
+    default: "named_session"
+  }];
+}
+
 service MemoryService {
   // Save a new memory or supersede/consolidate existing memories
   // (--supersede ID). Automatically approved and active immediately. Defaults

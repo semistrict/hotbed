@@ -662,9 +662,76 @@ Proxy a GitHub REST or GraphQL API request through the controller using its stor
 | `--body` |  | Optional request body (e.g. JSON for POST/PATCH/GraphQL). |
 | `-H`, `--header` |  | Additional request headers as "Key: Value" (Authorization/Cookie are ignored). |
 
-## `memory`
+## `issue`
 
 Cross-agent memories and learned rules shared across sessions and machines.
+
+### `hotbed issue report TITLE`
+
+Report a problem with hotbed itself: what you did, what happened, what you expected, and the command or error. List first (hotbed issue ls -q WORD): one already reported is +1'd (hotbed issue upvote), not reported again.
+
+*MCP tool: `issue_report` · uses `-s/--session`*
+
+| Argument / Flag | Env | Help |
+| --- | --- | --- |
+| `TITLE` |  | One line: what is wrong. |
+| `-m`, `--body` |  | What you did, what happened, what you expected; the command and error. |
+
+### `hotbed issue ls`
+
+List the issues reported, most +1'd first: open ones, or archived ones, or all; -q narrows them to those whose title or body holds the words.
+
+*MCP tool: `issue_ls`*
+
+| Argument / Flag | Env | Help |
+| --- | --- | --- |
+| `--archived` |  | Archived issues instead of open ones. |
+| `--all` |  | Open and archived issues alike. |
+| `-q`, `--query` |  | Only issues whose title or body holds each of these words (any case). |
+
+### `hotbed issue show ID`
+
+Show an issue: what was reported, by whom, and everyone who +1'd it.
+
+*MCP tool: `issue_show`*
+
+| Argument / Flag | Env | Help |
+| --- | --- | --- |
+| `ID` |  |  |
+
+### `hotbed issue upvote ID`
+
++1 an issue you hit too, saying what you saw if it adds anything. Each session +1s an issue once; its reporter's report counts as one.
+
+*MCP tool: `issue_upvote` · uses `-s/--session`*
+
+| Argument / Flag | Env | Help |
+| --- | --- | --- |
+| `ID` |  |  |
+| `-m`, `--comment` |  | What you saw, if it adds to the report. |
+
+### `hotbed issue archive ID`
+
+Archive an issue dealt with (fixed, or not to be): the user does this in the cockpit; an agent only when the user asks.
+
+*MCP tool: `issue_archive` · uses `-s/--session`*
+
+| Argument / Flag | Env | Help |
+| --- | --- | --- |
+| `ID` |  |  |
+| `-m`, `--reason` |  | Why: fixed (say where), or not to be fixed (say why). |
+
+### `hotbed issue reopen ID`
+
+Reopen an archived issue: it is back.
+
+*MCP tool: `issue_reopen` · uses `-s/--session`*
+
+| Argument / Flag | Env | Help |
+| --- | --- | --- |
+| `ID` |  |  |
+
+## `memory`
 
 ### `hotbed memory add`
 

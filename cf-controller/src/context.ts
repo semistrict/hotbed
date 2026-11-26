@@ -920,8 +920,12 @@ export function memorySavingReminder(): string {
 	return `Lessons: ${LESSON_HOMES} Archive obsolete memories with \`hotbed memory archive ID --reason "..."\`.`;
 }
 
+/** How an agent reports a problem with hotbed itself, once, and counts its own hitting of one already reported. */
+export const ISSUE_REMINDER =
+	"Hotbed itself failing you (a bug, a missing capability, a misleading error)? `hotbed issue ls -q WORD`: +1 one already reported (`hotbed issue upvote ID -m WHAT`), else `hotbed issue report TITLE -m DETAILS`.";
+
 export function sessionStartReminder(p?: Project | null): string {
-	return `${setupStepsReminder(p)}\n${memorySavingReminder()}`;
+	return `${setupStepsReminder(p)}\n${memorySavingReminder()}\n${ISSUE_REMINDER}`;
 }
 
 export function inProject(

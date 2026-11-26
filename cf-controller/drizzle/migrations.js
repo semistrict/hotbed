@@ -18,6 +18,7 @@ import m0015 from "./0015_shared_bases_held_by_workers.sql";
 import m0016 from "./0016_smooth_gideon.sql";
 import m0017 from "./0017_careless_jackpot.sql";
 import m0018 from "./0018_chunky_silvermane.sql";
+import m0019 from "./0019_futuristic_earthquake.sql";
 
 export default {
 	journal,
@@ -41,5 +42,6 @@ export default {
 		m0016,
 		m0017,
 		m0018,
+		m0019,
 	},
 };
