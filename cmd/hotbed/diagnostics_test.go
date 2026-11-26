@@ -42,7 +42,7 @@ func TestInspectTraceAndContinuousProfileE2E(t *testing.T) {
 	c.ok(&sess, "session", "start", "trace-fox")
 	// Start a long-running detached command so we can inspect, trace, and profile it live.
 	var cmd pb.Command
-	c.ok(&cmd, "run", "-s", sess.Id, "-r", "app", "--detach", "--", "sleep", "30")
+	c.ok(&cmd, "run", "-s", sess.Id, "-r", "app", "--detach", "--mem", "1G", "--", "sleep", "30")
 	c.eventually("command running", func() bool {
 		var ps pb.ListCommandsResponse
 		c.ok(&ps, "ps", "-s", sess.Id)
@@ -283,7 +283,7 @@ func TestProfileOfDeepStacksE2E(t *testing.T) {
 	c.ok(&sess, "session", "start", "deep-fox")
 	c.workspace("deep-fox", nil)
 	var cmd pb.Command
-	c.ok(&cmd, "run", "-s", sess.Id, "-r", "app", "--detach", "--", "sleep", "30")
+	c.ok(&cmd, "run", "-s", sess.Id, "-r", "app", "--detach", "--mem", "1G", "--", "sleep", "30")
 
 	now := time.Now()
 	frame := func(i int) profiler.ResolvedFrame {
@@ -340,7 +340,7 @@ func TestWorkerRemovesDeliveredProfileFiles(t *testing.T) {
 	c.ok(&sess, "session", "start", "tidy-fox")
 	c.workspace("tidy-fox", nil)
 	var cmd pb.Command
-	c.ok(&cmd, "run", "-s", sess.Id, "-r", "app", "--detach", "--", "sleep", "30")
+	c.ok(&cmd, "run", "-s", sess.Id, "-r", "app", "--detach", "--mem", "1G", "--", "sleep", "30")
 	prof.Store.Record(profiler.Sample{CommandID: cmd.Id, Timestamp: time.Now(), Comm: "app", Frames: []profiler.ResolvedFrame{{Name: "main.main", FrameType: "go"}}})
 	c.ok(nil, "stop", "-s", sess.Id, cmd.Id)
 
@@ -380,7 +380,7 @@ func TestProfileWorkerFallbackSkipsRideOut(t *testing.T) {
 	c.ok(nil, "session", "start", "fast-prof")
 	c.workspace("fast-prof", nil)
 	var cmd pb.Command
-	c.ok(&cmd, "run", "-s", "fast-prof", "-r", "app", "--detach", "--", "sleep", "30")
+	c.ok(&cmd, "run", "-s", "fast-prof", "-r", "app", "--detach", "--mem", "1G", "--", "sleep", "30")
 	prof.Store.Record(profiler.Sample{
 		CommandID: cmd.Id,
 		Timestamp: time.Now(),
@@ -431,12 +431,12 @@ func TestFormatRawCommandsHonorJSONJQAndPlainText(t *testing.T) {
 	c.workspace("fmt-fox", nil)
 
 	// 1. run --detach with --jq, plain text, and --json
-	code, jqID, stderr := c.hotbed("--jq", ".id", "run", "-s", "fmt-fox", "-r", "app", "--detach", "--", "sleep", "30")
+	code, jqID, stderr := c.hotbed("--jq", ".id", "run", "-s", "fmt-fox", "-r", "app", "--detach", "--mem", "1G", "--", "sleep", "30")
 	cmdID := strings.TrimSpace(jqID)
 	if code != 0 || cmdID == "" || strings.HasPrefix(cmdID, "{") || strings.HasPrefix(cmdID, "\"") {
 		t.Fatalf("run --detach --jq .id: code=%d out=%q stderr=%q", code, jqID, stderr)
 	}
-	code, plainRun, stderr := c.hotbed("run", "-s", "fmt-fox", "-r", "app", "--detach", "--", "true")
+	code, plainRun, stderr := c.hotbed("run", "-s", "fmt-fox", "-r", "app", "--detach", "--mem", "1G", "--", "true")
 	if code != 0 || strings.HasPrefix(strings.TrimSpace(plainRun), "{") || !strings.Contains(plainRun, "id") {
 		t.Fatalf("run --detach plain text: code=%d out=%q stderr=%q", code, plainRun, stderr)
 	}
@@ -506,7 +506,7 @@ func TestProfileExplicitFormatJSONAndPlainText(t *testing.T) {
 	c.workspace("prof-fmt-fox", nil)
 
 	var cmd pb.Command
-	c.ok(&cmd, "run", "-s", "prof-fmt-fox", "-r", "app", "--detach", "--", "sleep", "30")
+	c.ok(&cmd, "run", "-s", "prof-fmt-fox", "-r", "app", "--detach", "--mem", "1G", "--", "sleep", "30")
 	c.eventually("command running", func() bool {
 		var ps pb.ListCommandsResponse
 		c.ok(&ps, "ps", "-s", "prof-fmt-fox")

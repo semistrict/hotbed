@@ -22,7 +22,7 @@ func TestWorkspaceCommands(t *testing.T) {
 	write(t, filepath.Join(agent, "src/lib.txt"), "edited\n")
 	write(t, filepath.Join(agent, "src/new.txt"), "new\n")
 	t.Chdir(agent)
-	c.ok(nil, "run", "-s", S, "-r", "app", "--detach", "--", "true")
+	c.ok(nil, "run", "-s", S, "-r", "app", "--detach", "--mem", "1G", "--", "true")
 	ws := &pb.Workspace{}
 	c.ok(ws, "workspace", "show", "-s", S)
 
@@ -80,7 +80,7 @@ func TestWorkspaceCommands(t *testing.T) {
 
 	// logs --tail prints a command's last lines.
 	cmd := &pb.Command{}
-	c.ok(cmd, "run", "-s", S, "-r", "app", "--detach", "--", "sh", "-c", "echo one; echo two; echo three")
+	c.ok(cmd, "run", "-s", S, "-r", "app", "--detach", "--mem", "1G", "--", "sh", "-c", "echo one; echo two; echo three")
 	c.eventually("the command to end", func() bool {
 		ps := &pb.ListCommandsResponse{}
 		c.ok(ps, "ps", "-s", S)
@@ -92,7 +92,7 @@ func TestWorkspaceCommands(t *testing.T) {
 	// Lines past the response's 1 MiB are left out, and stderr says so. Two
 	// lines of 600 KiB fit only the last; binary output arrives as UTF-8.
 	big := &pb.Command{}
-	c.ok(big, "run", "-s", S, "-r", "app", "--detach", "--", "sh", "-c",
+	c.ok(big, "run", "-s", S, "-r", "app", "--detach", "--mem", "1G", "--", "sh", "-c",
 		`printf 'first\n'; head -c 614400 /dev/zero | tr '\0' a; echo; head -c 614400 /dev/zero | tr '\0' b; printf '\377\n'`)
 	c.eventually("the big command to end", func() bool {
 		ps := &pb.ListCommandsResponse{}
@@ -179,8 +179,8 @@ func TestWorkspaceAndCommandProjectFiltering(t *testing.T) {
 
 	cmdA := &pb.Command{}
 	cmdB := &pb.Command{}
-	c.ok(cmdA, "run", "-s", "alpha-fox", "-r", "app", "--detach", "--", "sh", "-c", "sleep 30")
-	c.ok(cmdB, "run", "-s", "beta-owl", "-r", "app", "--detach", "--", "sh", "-c", "sleep 30")
+	c.ok(cmdA, "run", "-s", "alpha-fox", "-r", "app", "--detach", "--mem", "1G", "--", "sh", "-c", "sleep 30")
+	c.ok(cmdB, "run", "-s", "beta-owl", "-r", "app", "--detach", "--mem", "1G", "--", "sh", "-c", "sleep 30")
 	t.Cleanup(func() {
 		c.hotbed("stop", "-s", "alpha-fox", cmdA.Id)
 		c.hotbed("stop", "-s", "beta-owl", cmdB.Id)

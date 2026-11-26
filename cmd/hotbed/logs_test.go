@@ -23,7 +23,7 @@ func TestLogsOfACommandPastItsLogLimit(t *testing.T) {
 	c.ok(nil, "session", "start", "loud-yak")
 	c.workspace("loud-yak", nil)
 	cmd := &pb.Command{}
-	c.ok(cmd, "run", "-s", "loud-yak", "-r", "app", "--detach", "--", "sh", "-c", "awk 'BEGIN { for (i = 1; i <= 2000000; i++) print i }'; sleep 300")
+	c.ok(cmd, "run", "-s", "loud-yak", "-r", "app", "--detach", "--mem", "1G", "--", "sh", "-c", "awk 'BEGIN { for (i = 1; i <= 2000000; i++) print i }'; sleep 300")
 	var full strings.Builder
 	for i := 1; i <= 2_000_000; i++ {
 		fmt.Fprintln(&full, i)
@@ -78,7 +78,7 @@ func TestACommandReadsByItsIDFromAnySession(t *testing.T) {
 	c.ok(nil, "session", "start", "other-elk")
 	c.workspace("own-ox", nil)
 	cmd := &pb.Command{}
-	c.ok(cmd, "run", "-s", "own-ox", "-r", "app", "--detach", "--", "sh", "-c", "echo hello; sleep 300")
+	c.ok(cmd, "run", "-s", "own-ox", "-r", "app", "--detach", "--mem", "1G", "--", "sh", "-c", "echo hello; sleep 300")
 	c.eventually("its output", func() bool {
 		_, out, _ := c.hotbed("logs", "-s", "own-ox", cmd.Id)
 		return out == "hello\n"
@@ -181,7 +181,7 @@ func TestLogsReadableAfterControllerAndWorkerRestartWithLostDB(t *testing.T) {
 	c.workspace("crab-log", nil)
 
 	cmd := &pb.Command{}
-	c.ok(cmd, "run", "-s", "crab-log", "-r", "app", "--detach", "--", "sh", "-c", "echo survivor-log-line; sleep 300")
+	c.ok(cmd, "run", "-s", "crab-log", "-r", "app", "--detach", "--mem", "1G", "--", "sh", "-c", "echo survivor-log-line; sleep 300")
 	c.eventually("output on disk and command recorded on controller", func() bool {
 		code, out, _ := c.hotbed("logs", "-s", "crab-log", cmd.Id)
 		if code != 0 || out != "survivor-log-line\n" {

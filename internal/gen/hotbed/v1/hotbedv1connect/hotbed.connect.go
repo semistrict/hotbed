@@ -195,6 +195,14 @@ const (
 	// WorkspaceServiceGetLogLinesProcedure is the procedure name of the WorkspaceService's GetLogLines
 	// RPC.
 	WorkspaceServiceGetLogLinesProcedure = "/hotbed.v1.WorkspaceService/GetLogLines"
+	// WorkspaceServiceQueryOutputProcedure is the procedure name of the WorkspaceService's QueryOutput
+	// RPC.
+	WorkspaceServiceQueryOutputProcedure = "/hotbed.v1.WorkspaceService/QueryOutput"
+	// WorkspaceServiceDetachCommandProcedure is the procedure name of the WorkspaceService's
+	// DetachCommand RPC.
+	WorkspaceServiceDetachCommandProcedure = "/hotbed.v1.WorkspaceService/DetachCommand"
+	// WorkspaceServiceSendInputProcedure is the procedure name of the WorkspaceService's SendInput RPC.
+	WorkspaceServiceSendInputProcedure = "/hotbed.v1.WorkspaceService/SendInput"
 	// WorkspaceServiceInspectCommandProcedure is the procedure name of the WorkspaceService's
 	// InspectCommand RPC.
 	WorkspaceServiceInspectCommandProcedure = "/hotbed.v1.WorkspaceService/InspectCommand"
@@ -2299,6 +2307,28 @@ var (
 			IdempotencyLevel: connect.IdempotencyIdempotent,
 		}
 	})
+	workspaceServiceQueryOutputSpec = sync.OnceValue(func() connect.Spec {
+		return connect.Spec{
+			StreamType:       connect.StreamTypeUnary,
+			Schema:           v1.File_hotbed_v1_hotbed_proto.Services().ByName("WorkspaceService").Methods().ByName("QueryOutput"),
+			Procedure:        WorkspaceServiceQueryOutputProcedure,
+			IdempotencyLevel: connect.IdempotencyIdempotent,
+		}
+	})
+	workspaceServiceDetachCommandSpec = sync.OnceValue(func() connect.Spec {
+		return connect.Spec{
+			StreamType: connect.StreamTypeUnary,
+			Schema:     v1.File_hotbed_v1_hotbed_proto.Services().ByName("WorkspaceService").Methods().ByName("DetachCommand"),
+			Procedure:  WorkspaceServiceDetachCommandProcedure,
+		}
+	})
+	workspaceServiceSendInputSpec = sync.OnceValue(func() connect.Spec {
+		return connect.Spec{
+			StreamType: connect.StreamTypeUnary,
+			Schema:     v1.File_hotbed_v1_hotbed_proto.Services().ByName("WorkspaceService").Methods().ByName("SendInput"),
+			Procedure:  WorkspaceServiceSendInputProcedure,
+		}
+	})
 	workspaceServiceInspectCommandSpec = sync.OnceValue(func() connect.Spec {
 		return connect.Spec{
 			StreamType:       connect.StreamTypeUnary,
@@ -2382,13 +2412,31 @@ type WorkspaceServiceClient interface {
 	// ResumeCommand thaws a paused command, whatever paused it. It is left to
 	// its limits, as a detached one is: its soft limit counts from now.
 	ResumeCommand(context.Context, *v1.ResumeCommandRequest) (*v1.Command, error)
-	// FollowLog streams a command's output from an offset; with follow, until
-	// the command ends or is paused. An attached command stops when no one
-	// follows it.
+	// FollowLog streams a command's output from an offset, as written; with
+	// follow, until the command ends or is paused. An attached command stops
+	// when no one follows it. The controller serves it without follow (what
+	// the output has so far); a follower calls the worker.
 	FollowLog(context.Context, *v1.FollowLogRequest) (WorkspaceServiceFollowLogClientStream, error)
 	// GetLogLines returns the last lines of a command's output, at most
-	// 1 MiB of them: FollowLog streams more.
+	// 1 MiB of them, as its terminal shows them (progress redraws collapsed,
+	// colors gone): FollowLog streams more, as written.
 	GetLogLines(context.Context, *v1.GetLogLinesRequest) (*v1.CommandLog, error)
+	// QueryOutput reads a command's output, live or ended, as its terminal
+	// shows it (settled: progress redraws collapsed to their last state,
+	// colors gone), or raw: the lines matching a pattern with context, a range
+	// of lines, its head or tail, or what came after a line already read;
+	// with until, it first waits for a matching line or the command's end.
+	// Every output is kept whole, so nothing need be filtered as it runs:
+	// read what matters once it does. Each answer is bounded and says what
+	// it left out.
+	QueryOutput(context.Context, *v1.QueryOutputRequest) (*v1.OutputQuery, error)
+	// DetachCommand lets an attached command run on with no one following
+	// it, as a detached one does: left to its hard time limit, its soft one
+	// gone. hotbed run does this when a command outlasts its --wait.
+	DetachCommand(context.Context, *v1.DetachCommandRequest) (*v1.Command, error)
+	// SendInput types into a command run in a terminal (tty): a prompt's
+	// answer, a key a tool waits for.
+	SendInput(context.Context, *v1.SendInputRequest) (*v1.SendInputResponse, error)
 	// InspectCommand takes an opt-in, non-intrusive Linux snapshot of a live
 	// command's cgroup (processes, open files/sockets, cgroup stats, kernel
 	// stacks, memory maps, limits) and reports which tracing tools exist on the node.
@@ -2571,13 +2619,31 @@ type WorkspaceServiceHandler interface {
 	// ResumeCommand thaws a paused command, whatever paused it. It is left to
 	// its limits, as a detached one is: its soft limit counts from now.
 	ResumeCommand(context.Context, *v1.ResumeCommandRequest) (*v1.Command, error)
-	// FollowLog streams a command's output from an offset; with follow, until
-	// the command ends or is paused. An attached command stops when no one
-	// follows it.
+	// FollowLog streams a command's output from an offset, as written; with
+	// follow, until the command ends or is paused. An attached command stops
+	// when no one follows it. The controller serves it without follow (what
+	// the output has so far); a follower calls the worker.
 	FollowLog(context.Context, *v1.FollowLogRequest, WorkspaceServiceFollowLogServerStream) error
 	// GetLogLines returns the last lines of a command's output, at most
-	// 1 MiB of them: FollowLog streams more.
+	// 1 MiB of them, as its terminal shows them (progress redraws collapsed,
+	// colors gone): FollowLog streams more, as written.
 	GetLogLines(context.Context, *v1.GetLogLinesRequest) (*v1.CommandLog, error)
+	// QueryOutput reads a command's output, live or ended, as its terminal
+	// shows it (settled: progress redraws collapsed to their last state,
+	// colors gone), or raw: the lines matching a pattern with context, a range
+	// of lines, its head or tail, or what came after a line already read;
+	// with until, it first waits for a matching line or the command's end.
+	// Every output is kept whole, so nothing need be filtered as it runs:
+	// read what matters once it does. Each answer is bounded and says what
+	// it left out.
+	QueryOutput(context.Context, *v1.QueryOutputRequest) (*v1.OutputQuery, error)
+	// DetachCommand lets an attached command run on with no one following
+	// it, as a detached one does: left to its hard time limit, its soft one
+	// gone. hotbed run does this when a command outlasts its --wait.
+	DetachCommand(context.Context, *v1.DetachCommandRequest) (*v1.Command, error)
+	// SendInput types into a command run in a terminal (tty): a prompt's
+	// answer, a key a tool waits for.
+	SendInput(context.Context, *v1.SendInputRequest) (*v1.SendInputResponse, error)
 	// InspectCommand takes an opt-in, non-intrusive Linux snapshot of a live
 	// command's cgroup (processes, open files/sockets, cgroup stats, kernel
 	// stacks, memory maps, limits) and reports which tracing tools exist on the node.
@@ -2627,6 +2693,9 @@ func RegisterWorkspaceServiceHandler(server *connect.Server, svc WorkspaceServic
 		connect.Method{Spec: workspaceServiceResumeCommandSpec(), Handler: adapter.resumeCommand},
 		connect.Method{Spec: workspaceServiceFollowLogSpec(), Handler: adapter.followLog},
 		connect.Method{Spec: workspaceServiceGetLogLinesSpec(), Handler: adapter.getLogLines},
+		connect.Method{Spec: workspaceServiceQueryOutputSpec(), Handler: adapter.queryOutput},
+		connect.Method{Spec: workspaceServiceDetachCommandSpec(), Handler: adapter.detachCommand},
+		connect.Method{Spec: workspaceServiceSendInputSpec(), Handler: adapter.sendInput},
 		connect.Method{Spec: workspaceServiceInspectCommandSpec(), Handler: adapter.inspectCommand},
 		connect.Method{Spec: workspaceServiceTraceCommandSpec(), Handler: adapter.traceCommand},
 		connect.Method{Spec: workspaceServiceSampleCommandSpec(), Handler: adapter.sampleCommand},
@@ -2783,6 +2852,18 @@ func (UnimplementedWorkspaceServiceHandler) FollowLog(context.Context, *v1.Follo
 
 func (UnimplementedWorkspaceServiceHandler) GetLogLines(context.Context, *v1.GetLogLinesRequest) (*v1.CommandLog, error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, "hotbed.v1.WorkspaceService.GetLogLines is not implemented")
+}
+
+func (UnimplementedWorkspaceServiceHandler) QueryOutput(context.Context, *v1.QueryOutputRequest) (*v1.OutputQuery, error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, "hotbed.v1.WorkspaceService.QueryOutput is not implemented")
+}
+
+func (UnimplementedWorkspaceServiceHandler) DetachCommand(context.Context, *v1.DetachCommandRequest) (*v1.Command, error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, "hotbed.v1.WorkspaceService.DetachCommand is not implemented")
+}
+
+func (UnimplementedWorkspaceServiceHandler) SendInput(context.Context, *v1.SendInputRequest) (*v1.SendInputResponse, error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, "hotbed.v1.WorkspaceService.SendInput is not implemented")
 }
 
 func (UnimplementedWorkspaceServiceHandler) InspectCommand(context.Context, *v1.InspectCommandRequest) (*v1.InspectCommandResponse, error) {
@@ -2944,6 +3025,30 @@ func (c *workspaceServiceClient) FollowLog(ctx context.Context, req *v1.FollowLo
 func (c *workspaceServiceClient) GetLogLines(ctx context.Context, req *v1.GetLogLinesRequest) (*v1.CommandLog, error) {
 	var res v1.CommandLog
 	if err := c.client.CallUnary(ctx, workspaceServiceGetLogLinesSpec(), req, &res); err != nil {
+		return nil, err
+	}
+	return &res, nil
+}
+
+func (c *workspaceServiceClient) QueryOutput(ctx context.Context, req *v1.QueryOutputRequest) (*v1.OutputQuery, error) {
+	var res v1.OutputQuery
+	if err := c.client.CallUnary(ctx, workspaceServiceQueryOutputSpec(), req, &res); err != nil {
+		return nil, err
+	}
+	return &res, nil
+}
+
+func (c *workspaceServiceClient) DetachCommand(ctx context.Context, req *v1.DetachCommandRequest) (*v1.Command, error) {
+	var res v1.Command
+	if err := c.client.CallUnary(ctx, workspaceServiceDetachCommandSpec(), req, &res); err != nil {
+		return nil, err
+	}
+	return &res, nil
+}
+
+func (c *workspaceServiceClient) SendInput(ctx context.Context, req *v1.SendInputRequest) (*v1.SendInputResponse, error) {
+	var res v1.SendInputResponse
+	if err := c.client.CallUnary(ctx, workspaceServiceSendInputSpec(), req, &res); err != nil {
 		return nil, err
 	}
 	return &res, nil
@@ -3185,6 +3290,42 @@ func (h workspaceServiceHandler) getLogLines(ctx context.Context, _ connect.Spec
 		return err
 	}
 	res, err := h.svc.GetLogLines(ctx, &req)
+	if err != nil {
+		return err
+	}
+	return stream.Send(res)
+}
+
+func (h workspaceServiceHandler) queryOutput(ctx context.Context, _ connect.Spec, stream connect.ServerStream) error {
+	var req v1.QueryOutputRequest
+	if err := stream.Receive(&req); err != nil {
+		return err
+	}
+	res, err := h.svc.QueryOutput(ctx, &req)
+	if err != nil {
+		return err
+	}
+	return stream.Send(res)
+}
+
+func (h workspaceServiceHandler) detachCommand(ctx context.Context, _ connect.Spec, stream connect.ServerStream) error {
+	var req v1.DetachCommandRequest
+	if err := stream.Receive(&req); err != nil {
+		return err
+	}
+	res, err := h.svc.DetachCommand(ctx, &req)
+	if err != nil {
+		return err
+	}
+	return stream.Send(res)
+}
+
+func (h workspaceServiceHandler) sendInput(ctx context.Context, _ connect.Spec, stream connect.ServerStream) error {
+	var req v1.SendInputRequest
+	if err := stream.Receive(&req); err != nil {
+		return err
+	}
+	res, err := h.svc.SendInput(ctx, &req)
 	if err != nil {
 		return err
 	}

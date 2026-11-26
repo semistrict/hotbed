@@ -6,6 +6,7 @@ import {
 	CommandLogSchema,
 	CommandProfileSchema,
 	CommandSchema,
+	CommandEstimateSchema,
 	CommandState,
 	CreateWorkspaceRequestSchema,
 	DaemonLogSourceSchema,
@@ -18,6 +19,13 @@ import {
 	GetProfileRequestSchema,
 	GetWorkspaceRequestSchema,
 	InspectCommandRequestSchema,
+	FollowLogRequestSchema,
+	LogChunkSchema,
+	QueryOutputRequestSchema,
+	OutputQuerySchema,
+	DetachCommandRequestSchema,
+	SendInputRequestSchema,
+	SendInputResponseSchema,
 	InspectCommandResponseSchema,
 	ListCommandsResponseSchema,
 	ListFilesRequestSchema,
@@ -114,6 +122,8 @@ function commandOfHistory(f: FinishedCommand): Command {
 				? create(RebuiltSchema, { units: f.rebuilt, of: f.of })
 				: undefined,
 		interventions: f.interventions.map((iv) => clone(CommandInterventionSchema, iv)),
+		samples: f.samples,
+		estimate: f.estimate ? clone(CommandEstimateSchema, f.estimate) : undefined,
 	});
 }
 
@@ -1108,11 +1118,30 @@ export function createWorkspaceService(ctrl: ControllerContext): {
 			);
 		},
 
-		followLog() {
-			throw hotbedError(
-				ErrorCode.PlatformNotSupported,
-				"FollowLog is served directly by the workspace's worker",
-			);
+		async *followLog(req, ctx) {
+			// What the output has so far, as written, for the cockpit's
+			// terminal; a follower, which waits on the command, calls its
+			// worker.
+			if (req.follow || req.wait) {
+				throw hotbedError(
+					ErrorCode.PlatformNotSupported,
+					"FollowLog with follow is served directly by the workspace's worker",
+				);
+			}
+			const { host, nodeId } = commandOf(req.id);
+			try {
+				yield* ctrl.tunnel.callServerStream(
+					nodeId,
+					host,
+					"/hotbed.v1.WorkspaceService/FollowLog",
+					FollowLogRequestSchema,
+					req,
+					LogChunkSchema,
+					ctx.signal,
+				);
+			} catch (err) {
+				throw fromWorkerError(host, err);
+			}
 		},
 
 		async getLogLines(req) {
@@ -1125,6 +1154,75 @@ export function createWorkspaceService(ctrl: ControllerContext): {
 					GetLogLinesRequestSchema,
 					req,
 					CommandLogSchema,
+					WORKER_RPC_TIMEOUT_MS,
+				);
+			} catch (err) {
+				throw fromWorkerError(host, err);
+			}
+		},
+
+		async queryOutput(req) {
+			const { host, nodeId } = commandOf(req.id);
+			// A query that waits (--until, --wait) holds the call that long.
+			const waitsMs =
+				req.until || req.wait ? Math.min(Math.max(req.timeoutSeconds || 60, 0), 600) * 1000 : 0;
+			try {
+				const out = await ctrl.tunnel.callUnary(
+					nodeId,
+					host,
+					"/hotbed.v1.WorkspaceService/QueryOutput",
+					QueryOutputRequestSchema,
+					req,
+					OutputQuerySchema,
+					WORKER_RPC_TIMEOUT_MS + waitsMs,
+				);
+				if (out.state === CommandState.UNSPECIFIED) {
+					// Its worker has forgotten it, ended: history has how.
+					const f = ctrl.store.finishedCommand(req.id);
+					if (f) {
+						out.state = f.state;
+						out.exitCode = f.exitCode;
+					}
+				}
+				return out;
+			} catch (err) {
+				throw fromWorkerError(host, err);
+			}
+		},
+
+		async detachCommand(req) {
+			return byHand(
+				req.id,
+				req.sessionId,
+				false,
+				"/hotbed.v1.WorkspaceService/DetachCommand",
+				(nodeId, host, t) =>
+					ctrl.tunnel.callUnary(
+						nodeId,
+						host,
+						"/hotbed.v1.WorkspaceService/DetachCommand",
+						DetachCommandRequestSchema,
+						req,
+						CommandSchema,
+						t,
+					),
+			);
+		},
+
+		async sendInput(req) {
+			const route = ctrl.store.lookupCommand(req.id);
+			if (req.sessionId && req.sessionId !== route.session) {
+				throw hotbedError(ErrorCode.NotFound, `session ${req.sessionId} has no command ${req.id}`);
+			}
+			const { host } = ensureOnlineWorker(route.node);
+			try {
+				return await ctrl.tunnel.callUnary(
+					route.node,
+					host,
+					"/hotbed.v1.WorkspaceService/SendInput",
+					SendInputRequestSchema,
+					req,
+					SendInputResponseSchema,
 					WORKER_RPC_TIMEOUT_MS,
 				);
 			} catch (err) {

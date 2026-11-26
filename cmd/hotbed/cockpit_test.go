@@ -105,7 +105,7 @@ func TestOutputsCarryCockpitURLs(t *testing.T) {
 		t.Errorf("workspace show: cockpitUrl %q", ws.CockpitUrl)
 	}
 	cmd := &pb.Command{}
-	c.ok(cmd, "run", "-s", S, "-r", "app", "--detach", "--port", "5173", "--", "true")
+	c.ok(cmd, "run", "-s", S, "-r", "app", "--detach", "--mem", "1G", "--port", "5173", "--", "true")
 	if cmd.CockpitUrl != base+"/commands/"+cmd.Id || cmd.Url != "http://asahimbp:5173" {
 		t.Errorf("run --detach: cockpitUrl %q, url %q (the server's, untouched)", cmd.CockpitUrl, cmd.Url)
 	}

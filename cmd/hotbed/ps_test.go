@@ -25,7 +25,7 @@ func TestPsSearchesHistory(t *testing.T) {
 	finished := func(session, script string) string {
 		t.Helper()
 		cmd := &pb.Command{}
-		c.ok(cmd, "run", "-s", session, "-r", "app", "--detach", "--", "sh", "-c", script)
+		c.ok(cmd, "run", "-s", session, "-r", "app", "--detach", "--mem", "1G", "--", "sh", "-c", script)
 		if code, _, stderr := c.hotbed("logs", "-f", "-s", session, cmd.Id); code != 0 {
 			t.Fatalf("logs -f %s: exit %d (stderr %q)", script, code, stderr)
 		}
@@ -46,7 +46,7 @@ func TestPsSearchesHistory(t *testing.T) {
 		})
 	})
 	live := &pb.Command{}
-	c.ok(live, "run", "-s", "calm-yak", "-r", "app", "--detach", "--", "sh", "-c", "sleep 30; echo alpha-live")
+	c.ok(live, "run", "-s", "calm-yak", "-r", "app", "--detach", "--mem", "1G", "--", "sh", "-c", "sleep 30; echo alpha-live")
 	t.Cleanup(func() { c.hotbed("stop", "-s", "calm-yak", live.Id) })
 
 	ps := func(args ...string) ([]string, int32) {

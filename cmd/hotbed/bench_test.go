@@ -66,7 +66,7 @@ func (c *cluster) command(id string) *pb.Command {
 func (c *cluster) detach(flags []string, args ...string) *pb.Command {
 	c.t.Helper()
 	var cmd pb.Command
-	c.ok(&cmd, append(append(append([]string{"run", "-s", "tidy-owl", "-r", "app", "--detach"}, flags...), "--"), args...)...)
+	c.ok(&cmd, append(append(append([]string{"run", "-s", "tidy-owl", "-r", "app", "--detach", "--mem", "1G"}, flags...), "--"), args...)...)
 	return &cmd
 }
 

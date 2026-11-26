@@ -15,6 +15,7 @@ import (
 	pb "github.com/semistrict/hotbed/internal/gen/hotbed/v1"
 	"github.com/semistrict/hotbed/internal/gen/hotbed/v1/hotbedv1connect"
 	"github.com/semistrict/hotbed/internal/httpx"
+	"github.com/semistrict/hotbed/internal/settle"
 	"google.golang.org/protobuf/proto"
 )
 
@@ -437,7 +438,44 @@ func (s *Service) GetLogLines(_ context.Context, req *pb.GetLogLinesRequest) (*p
 	if err != nil {
 		return nil, err
 	}
+	// As its terminal shows them: what a command in one redraws (progress,
+	// colors) settled. A tail starts at a line's start, so it settles as the
+	// whole output would, but for a redraw reaching above it.
+	if len(lines) > 0 {
+		lines = settle.Lines([]byte(strings.Join(lines, "\n")))
+	}
 	return &pb.CommandLog{CommandId: req.Id, Lines: lines, Cut: cut}, nil
+}
+
+func (s *Service) QueryOutput(ctx context.Context, req *pb.QueryOutputRequest) (*pb.OutputQuery, error) {
+	if err := validateID(req.Id); err != nil {
+		return nil, err
+	}
+	s.E.usedCommand(req.Id)
+	return s.E.QueryOutput(ctx, req)
+}
+
+func (s *Service) DetachCommand(_ context.Context, req *pb.DetachCommandRequest) (*pb.Command, error) {
+	if err := s.checkInterventionTarget(req.Id, req.SessionId); err != nil {
+		return nil, err
+	}
+	s.E.usedCommand(req.Id)
+	return s.E.Detach(req.Id)
+}
+
+func (s *Service) SendInput(ctx context.Context, req *pb.SendInputRequest) (*pb.SendInputResponse, error) {
+	if err := s.checkInterventionTarget(req.Id, req.SessionId); err != nil {
+		return nil, err
+	}
+	s.E.usedCommand(req.Id)
+	data := req.Text
+	if !req.NoNewline {
+		data += "\n"
+	}
+	if err := s.E.SendInput(ctx, req.Id, []byte(data)); err != nil {
+		return nil, err
+	}
+	return &pb.SendInputResponse{Bytes: int64(len(data))}, nil
 }
 
 func (s *Service) InspectCommand(ctx context.Context, req *pb.InspectCommandRequest) (*pb.InspectCommandResponse, error) {

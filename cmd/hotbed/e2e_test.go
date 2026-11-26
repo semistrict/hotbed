@@ -411,7 +411,7 @@ func TestSessionWithSyncedCheckout(t *testing.T) {
 
 	// A detached command runs until stopped.
 	srv := &pb.Command{}
-	c.ok(srv, "run", "-s", S, "-r", "app", "--detach", "--port", "5173", "--", "sh", "-c", "echo serving; sleep 300")
+	c.ok(srv, "run", "-s", S, "-r", "app", "--detach", "--mem", "1G", "--port", "5173", "--", "sh", "-c", "echo serving; sleep 300")
 	if srv.Url != "http://asahimbp:5173" || srv.Attached || srv.SessionId != S {
 		t.Errorf("detached run = %v", srv)
 	}
@@ -497,7 +497,7 @@ func TestAbandonedSessionEnds(t *testing.T) {
 	c.ok(nil, "session", "start", "idle-yak")
 	c.workspace("idle-yak", nil)
 	srv := &pb.Command{}
-	c.ok(srv, "run", "-s", "idle-yak", "-r", "app", "--detach", "--", "sleep", "300")
+	c.ok(srv, "run", "-s", "idle-yak", "-r", "app", "--detach", "--mem", "1G", "--", "sleep", "300")
 	c.heartbeat() // the run counts as using the session now, not after the clock moves
 
 	c.clock.advance(59 * time.Minute)
@@ -1091,7 +1091,7 @@ func TestSupersededBaseBuildIsDropped(t *testing.T) {
 	c.addProject(upstream(t))
 	c.ok(nil, "step", "set", "-p", "app", "build", "--every-pull", "--", "sleep 30")
 	c.ok(nil, "session", "start", "slow-ant")
-	c.ok(nil, "run", "-s", "slow-ant", "-r", "app", "--detach", "--", "true")
+	c.ok(nil, "run", "-s", "slow-ant", "-r", "app", "--detach", "--mem", "1G", "--", "true")
 	waiting := &pb.Workspace{}
 	c.ok(waiting, "workspace", "show", "-s", "slow-ant")
 	if waiting.BaseId != "app-g1" || waiting.State != pb.WorkspaceState_WORKSPACE_STATE_PREPARING {
@@ -1139,7 +1139,7 @@ func TestCLITalksToTheWorkerDirectly(t *testing.T) {
 	}
 
 	srv := &pb.Command{}
-	c.ok(srv, "run", "-s", "near-fox", "-r", "app", "--detach", "--", "sh", "-c", "echo up; sleep 300")
+	c.ok(srv, "run", "-s", "near-fox", "-r", "app", "--detach", "--mem", "1G", "--", "sh", "-c", "echo up; sleep 300")
 	calls = c.ctrl.record()
 	c.eventually("the server's output", func() bool {
 		_, out, _ := c.hotbed("logs", "-s", "near-fox", srv.Id)

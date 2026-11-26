@@ -15,11 +15,11 @@ you changed.
 
 ```sh
 hotbed session start                             # prints active memories & binds to T3CODE_THREAD_ID / worktree
-hotbed run -- go vet ./...                       # short work: placed on a node, syncs your edits there, runs, prints output, exits with its status
-                                                 # (124 if still running after 10 min: paused, see Time limits)
-hotbed run --detach -- cargo nextest run         # long work: prints the command's ID and returns
+hotbed run -- go vet ./...                       # quick work: placed on a node, syncs your edits there, runs, prints output, exits with its status
+                                                 # (125 if still running after 2 min: left running, detached; see run)
+hotbed run --detach --mem 8G -- cargo nextest run  # long work: say what it needs; prints the command's ID and returns
 hotbed poll                                      # what happened since the last poll: commands ended, answers, reviews (up to 2 min)
-hotbed logs -n 50 CMD                            # its output, once poll says it exited
+hotbed output CMD --grep 'FAIL|panicked' -C 3    # read its output, kept whole: never filter a run's output as it runs
 hotbed session end                               # ends session and reminds you to save any lessons learned
 ```
 
@@ -372,10 +372,26 @@ down, not restarting. What happened meanwhile reaches `poll` once it is back.
 
 `hotbed run [flags] -- CMD...` (session defaults from `HOTBED_SESSION` / `T3CODE_THREAD_ID` / git worktree; repo defaults from `HOTBED_REPO` / current git checkout; override with `-s` / `-r`)
 
-- Attached (the default): prints the command's output as it runs and exits with its status. Ctrl-C
-  or killing `hotbed run` stops the command.
-- `--detach`: prints the command (with its ID) as an envelope and returns at once. Use for dev
-  servers (`--port 5173` puts its URL in the cockpit) and for work you will wait on with `logs -f`.
+- Attached (the default) is for **quick** work: it prints the command's output as it runs and exits
+  with its status. Ctrl-C or killing `hotbed run` stops the command. It waits at most `--wait`
+  (default **2m**; `0` for until it ends; with `--soft-limit` alone, until that pauses it, exiting 124): a command
+  still running then is **left running, detached**, and `run` exits **125**, saying how to read
+  it. Past `--max-output` (default **32K**, `0` for all) its output stops printing as it runs;
+  its last lines print as it ends. Either way **all of it is kept**: read it with `hotbed output`.
+  So **never pipe a run through `grep`, `tail` or `head`**: what you filter out is what you need
+  when it fails. An attached run is admitted ahead of detached work and charged little memory
+  (512 MiB, or what it holds): the fast lane.
+- `--detach` is for **long** work and dev servers: it prints the command (with its ID) as an
+  envelope and returns at once. Say what it needs: `--mem 8G` (the memory it holds at its peak,
+  reserved for it) and `--expect 20m` (how long it should take); its end sets both beside what it
+  took. Without `--mem`, the newest earlier run of the same command line in the project gives it;
+  with neither, the run is refused. In a VM it runs **in a terminal** (`--tty` / `--no-tty` to
+  choose): tools draw progress and color as for a person, and read what `hotbed send CMD TEXT`
+  types; `hotbed output` settles what they redraw. Its end arrives in `hotbed poll`.
+- Dev servers: `--port 5173` puts its URL in the cockpit; `--ready 'listening'` (a regular
+  expression its output will match) or `--ready-port` makes `run --detach` return once it is ready
+  (at most `--ready-timeout`, default 2m), failing (NOT_READY) if it ends first. After an edit,
+  `hotbed output CMD --since-sync` is what it logged since the edit reached it.
 - `--kind build|test|check|server|shell`: classifies the run for history and cold-build metrics.
   Defaults to `server` when `--port` is set, otherwise `shell`; pass `--kind` explicitly when you
   want a run recorded as `build`, `test`, `check`, or `server`.
@@ -412,6 +428,28 @@ down, not restarting. What happened meanwhile reaches `poll` once it is back.
 - Toolchains and caches (`RUSTUP_HOME`, `CARGO_HOME`, `GOMODCACHE`, `GOCACHE`, `XDG_*`) live
   inside the workspace, so the base's downloads and builds are already there.
 
+## Reading output: output
+
+`hotbed output CMD` (also the `output` MCP tool) reads a command's output, live or ended, as its
+terminal shows it: progress bars and redraws collapsed to their last state, colors gone (`--raw`
+for it as written). Every answer is bounded (`--max`, default 200 lines), numbers its lines, and
+says what it left out and how to get it; it ends with the command's state and the line to read on
+`--after`:
+
+- `--grep PATTERN -C 3` (RE2, `-i` to ignore case): the matching lines with context; `--head N` /
+  `--tail N` take the first or last N matches.
+- `--tail N`, `--head N`, `--from N --to M`: lines by place (the default is its last lines).
+- `--after N`: only what came after line N (each answer's `next --after N`).
+- `--until PATTERN --timeout 600`: first wait for a line matching it (or the command's end), then
+  answer, the matching lines marked: a test's result, a server's "listening".
+- `--wait --timeout 600`: first wait for it to end.
+- `--since-sync`: what it wrote since its workspace last synced (a dev server after your edit).
+
+`hotbed detach CMD` lets an attached command run on with no one waiting (as `run` does after
+`--wait`); `hotbed send CMD TEXT` types into one run in a terminal (a newline follows unless
+`--no-newline`). The cockpit's command page shows the output as lines and, for one in a
+terminal, the terminal itself.
+
 ## Time limits
 
 A command that hangs (a deadlocked test) must not hold you, or the node, for hours:
@@ -429,8 +467,11 @@ A command that hangs (a deadlocked test) must not hold you, or the node, for hou
   a measurement (`--bench`) is never paused, so takes only `--hard-limit`.
 - A paused command gives back its guaranteed memory (`--mem-low`); resumed, it runs at once,
   swapping back in what it must.
-- A long build or test suite you expect to take 25 minutes: `--soft-limit 30m`, or just
-  `hotbed logs -f` it again when it pauses.
+- An attached run waits only `--wait` (2m) before leaving its command running, detached, which
+  drops its soft limit: a soft limit pauses a command only while you wait on it. A long build or
+  test suite you expect to take 25 minutes: `--detach --mem 8G --expect 25m`, then
+  `hotbed output CMD --wait --timeout 600` or `hotbed poll`; or wait on it attached with
+  `--wait 30m`.
 
 ## Stopped or paused by hand
 
@@ -526,6 +567,9 @@ hotbed schedule run nightly                 # a run now; prints its session, for
 | `hotbed schedule add ... -p PROJECT` | A schedule's runs work on its project (default: the one holding its repo) |
 | `hotbed schedule ls [-p PROJECT \| --all-projects]` | The project's schedules (`--all-projects`: every project's) |
 | `hotbed ps [-p PROJECT \| --all] [-e] [-m TEXT] [-n N]` | The session's commands, live and just ended (`-p`: a project's, `--all`: every session's; `-e`: ended ones too, from 30 days of history; `-m`: only those whose command line holds TEXT; `-n`: the newest N ended ones, default 50, 0 for all; running ones always show) |
+| `hotbed output CMD [--grep P -C N] [--head N \| --tail N] [--from N --to M] [--after N] [--until P \| --wait] [--timeout S] [--since-sync] [--raw] [--max N]` | Read a command's output, kept whole, as its terminal shows it: bounded answers that say what they left out; `--until` / `--wait` wait first (MCP tool `output`) |
+| `hotbed detach CMD` | Let an attached command run on, detached (MCP tool `detach`) |
+| `hotbed send CMD TEXT [--no-newline]` | Type into a command run in a terminal (MCP tool `send`) |
 | `hotbed logs CMD [-f \| -n N]` | A command's output, any session's by its ID; `-f` (the session's own command: it waits on it) follows until it ends, `-n N` its last N lines (at most 1 MiB of them; stderr says when it cut). A log keeps its first 16 MiB and last 240 MiB, with a `[hotbed: … dropped here …]` line between; logs of ended commands are kept 7 days |
 | `hotbed stop CMD [-m COMMENT] [--diagnose]` | Stops a command of the session (another session's: `-s SESSION`); with `--diagnose`, takes its diagnostics first |
 | `hotbed pause CMD [-m COMMENT] [--diagnose]` | Pauses a command by hand: frozen until `hotbed resume`, waiting on it or not; with `--diagnose`, takes its diagnostics first |

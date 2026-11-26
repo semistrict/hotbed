@@ -29,7 +29,11 @@ const (
 	// stopped it by hand: its message says who, what they wrote, and how to
 	// read its diagnostics.
 	CodeCommandStopped Code = "COMMAND_STOPPED"
-	CodeInternal       Code = "INTERNAL"
+	// CodeNotReady is how a detached run that waits to be ready (--ready,
+	// --ready-port) ends when its command ended first, or did not get ready
+	// in time and runs on.
+	CodeNotReady Code = "NOT_READY"
+	CodeInternal Code = "INTERNAL"
 )
 
 // Error is a failure with a code, a hint for what to do next, and whether

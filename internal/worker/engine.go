@@ -53,10 +53,16 @@ const (
 	// asked for no guarantee (--mem-low) will hold, until PeakHeldBytes grows
 	// past it.
 	defaultReservation int64 = 2 << 30
-	minFreeDisk              = 0.05 // keep this share of the disk free before admitting
-	orphanAfter              = 30 * time.Second
-	keepEnded                = 2 * time.Minute
-	keepReleased             = 10 * time.Minute
+	// quickReservation is what admission assumes of an attached command
+	// (hotbed run, a client waiting on it) that asked for no guarantee and
+	// gave no estimate: a quick one, which is what hotbed run is for. One
+	// that turns out to hold more is charged what it held; one that outlasts
+	// its run's wait is detached, and charged as a long one from then on.
+	quickReservation int64 = 512 << 20
+	minFreeDisk            = 0.05 // keep this share of the disk free before admitting
+	orphanAfter            = 30 * time.Second
+	keepEnded              = 2 * time.Minute
+	keepReleased           = 10 * time.Minute
 	// keepProfiles is how long a command's profile file stays when the
 	// controller may lack it: as long as the controller keeps history.
 	keepProfiles = 30 * 24 * time.Hour

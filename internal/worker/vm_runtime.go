@@ -567,6 +567,7 @@ func (u *runtimeUnits) Start(ctx context.Context, s unit.Spec) error {
 		MemoryHigh: s.MemoryHigh,
 		LogPath:    s.Log,
 		VM:         s.VM,
+		TTY:        s.TTY,
 	})
 	if err != nil {
 		return err

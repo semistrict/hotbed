@@ -34,7 +34,7 @@ func TestRunForkRunsInAThrowawayWorkspace(t *testing.T) {
 	attached := m[1]
 
 	var detached pb.Command
-	c.ok(&detached, "run", "-s", "fork-elk", "-r", "app", "--fork", "--detach", "--", "sleep", "60")
+	c.ok(&detached, "run", "-s", "fork-elk", "-r", "app", "--fork", "--detach", "--mem", "1G", "--", "sleep", "60")
 	if forks := []string{attached, detached.WorkspaceId}; slices.Contains(forks, ws.Id) || attached == detached.WorkspaceId {
 		t.Errorf("forks ran in %v; want each in a new workspace, neither the session's %s", forks, ws.Id)
 	}
@@ -79,9 +79,9 @@ func TestRunForkFirstLeavesTheSessionWithoutAWorkspace(t *testing.T) {
 	c.ok(nil, "session", "start", "fork-owl")
 
 	var fork pb.Command
-	c.ok(&fork, "run", "-s", "fork-owl", "-r", "app", "--fork", "--detach", "--", "sleep", "60")
+	c.ok(&fork, "run", "-s", "fork-owl", "-r", "app", "--fork", "--detach", "--mem", "1G", "--", "sleep", "60")
 	var plain pb.Command
-	c.ok(&plain, "run", "-s", "fork-owl", "-r", "app", "--detach", "--", "true")
+	c.ok(&plain, "run", "-s", "fork-owl", "-r", "app", "--detach", "--mem", "1G", "--", "true")
 	if plain.WorkspaceId == fork.WorkspaceId {
 		t.Errorf("the session's first plain run went to the fork's workspace %s; want one of its own", fork.WorkspaceId)
 	}

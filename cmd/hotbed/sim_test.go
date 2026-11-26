@@ -185,7 +185,7 @@ func (s *sim) detach() string {
 	}
 	ss := ws[s.rng.IntN(len(ws))]
 	cmd := &pb.Command{}
-	code, stdout, _ := s.c.hotbed("--json", "run", "-s", ss.id, "-r", "app", "--detach", "--", "sh", "-c", fmt.Sprintf("sleep 0.%d; exit %d", s.rng.IntN(9)+1, s.rng.IntN(3)))
+	code, stdout, _ := s.c.hotbed("--json", "run", "-s", ss.id, "-r", "app", "--detach", "--mem", "1G", "--", "sh", "-c", fmt.Sprintf("sleep 0.%d; exit %d", s.rng.IntN(9)+1, s.rng.IntN(3)))
 	if code != 0 || decode(stdout, cmd) != nil {
 		return fmt.Sprintf("detach in %s: failed", ss.id)
 	}

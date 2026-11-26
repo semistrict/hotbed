@@ -10,6 +10,7 @@ import { Meter } from "../components/charts/Bars";
 import { SpeedBars } from "../components/charts/SpeedBars";
 import { actsFor, ByHandButtons, ByHandForm, InterventionsCard, type ByHandAction } from "../components/ByHand";
 import { CommandBlock } from "../components/CommandBlock";
+import { TerminalView } from "../components/TerminalView";
 import { KeptSampleView, seedKeptSample, TakingView, useCommandSamples } from "../components/CommandSamples";
 import { Crumbs } from "../components/Crumbs";
 import { commandRuntime, FAILURE } from "../components/CommandTable";
@@ -120,6 +121,7 @@ function CommandView({
   const timeLimit = formatTimeLimit(kind, live?.limits);
   const unitLabel = repoUnitLabel(s, repoId);
 
+  const estimate = live?.estimate ?? done?.estimate;
   const stats: ReactNode[] = [
     <StatTile key="took" label={ended ? "Took" : "Running for"} value={duration(took)} tone="ember" />,
   ];
@@ -168,7 +170,12 @@ function CommandView({
     }
   }
   stats.push(
-    <StatTile key="memory" label="Memory" value={bytes(live?.memoryBytes ?? done?.peakMemoryBytes ?? 0)} foot={live ? "now" : "peak"} />,
+    <StatTile
+      key="memory"
+      label="Memory"
+      value={bytes(live?.memoryBytes ?? done?.peakMemoryBytes ?? 0)}
+      foot={[live ? "now" : "peak", estimate?.memoryBytes ? `${bytes(estimate.memoryBytes)} estimated (${estimate.source})` : null].filter(Boolean).join(" · ")}
+    />,
     <StatTile key="parked" label="Parked" value={done?.parks ?? live?.timeline.filter((e) => e.what === "parked").length ?? 0} unit="times" tone="frost" />,
   );
 
@@ -317,7 +324,7 @@ function CommandView({
       {/* minmax(0,…) keeps long log lines from widening the column past the page: the log scrolls in its own box.
           The log keeps its place in the tree as the command ends, so its search and scroll stay. */}
       <div className={`grid grid-cols-[minmax(0,1fr)] gap-4 ${live ? "lg:grid-cols-[minmax(0,1fr)_320px]" : ""}`}>
-        <LogCard id={id} live={running} />
+        <LogCard id={id} live={running} tty={Boolean(live?.tty)} />
         {live && (
           <div className="space-y-4">
             {live.limits && (
@@ -416,8 +423,14 @@ function Timeline({ events }: { events: CommandEvent[] }) {
 
 const EMPTY_LINES: string[] = [];
 
-function LogCard({ id, live }: { id: string; live: boolean }) {
-  const log = useQuery({ queryKey: ["log", id], queryFn: () => api.commandLog(id), refetchInterval: live ? 1000 : false });
+/**
+ * A command's output: its lines as its terminal shows them (settled,
+ * searchable), or, for one run in a terminal by default, the terminal
+ * itself, replaying what it wrote as written.
+ */
+function LogCard({ id, live, tty }: { id: string; live: boolean; tty: boolean }) {
+  const [view, setView] = useState<"lines" | "terminal">(tty ? "terminal" : "lines");
+  const log = useQuery({ queryKey: ["log", id], queryFn: () => api.commandLog(id), refetchInterval: live && view === "lines" ? 1000 : false });
   const [query, setQuery] = useState("");
   const lines = log.data?.lines ?? EMPTY_LINES;
   const matches = useMemo(() => searchLog(lines, query), [lines, query]);
@@ -432,17 +445,33 @@ function LogCard({ id, live }: { id: string; live: boolean }) {
         .filter(Boolean)
         .join(" · ")}
       right={
-        <Input
-          type="search"
-          value={query}
-          onChange={(e) => setQuery(e.target.value)}
-          placeholder="search output"
-          aria-label="Search output"
-          className="h-7 w-full rounded-full bg-background/40 font-mono text-[11px] placeholder:text-faint sm:w-60"
-        />
+        <div className="flex w-full flex-wrap items-center gap-2 sm:w-auto">
+          <Tabs value={view} onValueChange={(v) => setView(v as "lines" | "terminal")}>
+            <TabsList className="h-7 border border-border font-mono text-[11px]">
+              <TabsTrigger value="lines" className="px-2 font-mono text-[11px]">
+                Lines
+              </TabsTrigger>
+              <TabsTrigger value="terminal" className="px-2 font-mono text-[11px]" title="What it wrote, as written: colors and redraws included">
+                Terminal
+              </TabsTrigger>
+            </TabsList>
+          </Tabs>
+          {view === "lines" && (
+            <Input
+              type="search"
+              value={query}
+              onChange={(e) => setQuery(e.target.value)}
+              placeholder="search output"
+              aria-label="Search output"
+              className="h-7 w-full rounded-full bg-background/40 font-mono text-[11px] placeholder:text-faint sm:w-60"
+            />
+          )}
+        </div>
       }
     >
-      {log.isLoading ? (
+      {view === "terminal" ? (
+        <TerminalView id={id} live={live} />
+      ) : log.isLoading ? (
         <div className={`${logBox} text-faint`}>loading output…</div>
       ) : log.isError ? (
         <div className={`${logBox} text-critical`}>Cannot load output: {String(log.error)}</div>

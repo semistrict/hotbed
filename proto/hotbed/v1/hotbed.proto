@@ -432,16 +432,54 @@ service WorkspaceService {
   // ResumeCommand thaws a paused command, whatever paused it. It is left to
   // its limits, as a detached one is: its soft limit counts from now.
   rpc ResumeCommand(ResumeCommandRequest) returns (Command);
-  // FollowLog streams a command's output from an offset; with follow, until
-  // the command ends or is paused. An attached command stops when no one
-  // follows it.
+  // FollowLog streams a command's output from an offset, as written; with
+  // follow, until the command ends or is paused. An attached command stops
+  // when no one follows it. The controller serves it without follow (what
+  // the output has so far); a follower calls the worker.
   rpc FollowLog(FollowLogRequest) returns (stream LogChunk) {
     option idempotency_level = IDEMPOTENT;
   }
   // GetLogLines returns the last lines of a command's output, at most
-  // 1 MiB of them: FollowLog streams more.
+  // 1 MiB of them, as its terminal shows them (progress redraws collapsed,
+  // colors gone): FollowLog streams more, as written.
   rpc GetLogLines(GetLogLinesRequest) returns (CommandLog) {
     option idempotency_level = IDEMPOTENT;
+  }
+  // QueryOutput reads a command's output, live or ended, as its terminal
+  // shows it (settled: progress redraws collapsed to their last state,
+  // colors gone), or raw: the lines matching a pattern with context, a range
+  // of lines, its head or tail, or what came after a line already read;
+  // with until, it first waits for a matching line or the command's end.
+  // Every output is kept whole, so nothing need be filtered as it runs:
+  // read what matters once it does. Each answer is bounded and says what
+  // it left out.
+  rpc QueryOutput(QueryOutputRequest) returns (OutputQuery) {
+    option idempotency_level = IDEMPOTENT;
+    option (command) = {
+      name: "output"
+      read_only: true
+      waits: true
+      format: "{{range .lines}}{{pad 6 .number}}{{if .match}}: {{else}}  {{end}}{{.text}}\n{{end}}[{{.commandId}} {{state .state}}{{with .exitCode}} exit {{.}}{{end}} · {{or .totalLines 0}} lines{{with .matches}} · {{.}} matching{{end}}{{with .waited}} · wait {{.}}{{end}}{{with .nextLine}} · next --after {{.}}{{end}}]{{with .omitted}}\n[{{.}}]{{end}}"
+    };
+  }
+  // DetachCommand lets an attached command run on with no one following
+  // it, as a detached one does: left to its hard time limit, its soft one
+  // gone. hotbed run does this when a command outlasts its --wait.
+  rpc DetachCommand(DetachCommandRequest) returns (Command) {
+    option (command) = {
+      name: "detach"
+      session: true
+      format: "{{.id}}  {{state .state}}  detached"
+    };
+  }
+  // SendInput types into a command run in a terminal (tty): a prompt's
+  // answer, a key a tool waits for.
+  rpc SendInput(SendInputRequest) returns (SendInputResponse) {
+    option (command) = {
+      name: "send"
+      session: true
+      format: "sent {{.bytes}} bytes"
+    };
   }
   // InspectCommand takes an opt-in, non-intrusive Linux snapshot of a live
   // command's cgroup (processes, open files/sockets, cgroup stats, kernel
@@ -1779,6 +1817,10 @@ message Command {
   // How many activity samples have been kept of it: the seq of its newest
   // (ListCommandSamples), 0 for none.
   int32 samples = 33;
+  // It runs in a terminal (RunCommandRequest.tty).
+  bool tty = 34;
+  // What it was expected to need.
+  CommandEstimate estimate = 35;
 }
 
 // A command that ended, as history keeps it.
@@ -1820,6 +1862,9 @@ message FinishedCommand {
   string runtime = 25;
   // How many activity samples were kept of it, as Command.samples.
   int32 samples = 26;
+  // What it was expected to need, to set beside peak_memory_bytes and
+  // seconds.
+  CommandEstimate estimate = 27;
 }
 
 message RunCommandRequest {
@@ -1848,6 +1893,154 @@ message RunCommandRequest {
   // Memory its VM's guest sees; 0 for the node's default. It sizes the VM
   // only, as vm_cpus does. vm runtime only.
   int64 vm_memory_bytes = 12;
+  // Whether it runs in a terminal.
+  TtyMode tty = 13;
+  // What it is expected to need: the memory it holds is reserved for it,
+  // and its end says how it compared.
+  CommandEstimate estimate = 14;
+}
+
+// Whether a command runs in a terminal (a pseudo-terminal for its input
+// and output), as in a person's shell: tools then draw progress, color
+// and line-buffer as they would for a person, and read input sent them
+// (SendInput). Output queries settle what it redraws; the raw output keeps
+// it all.
+enum TtyMode {
+  // A terminal for a detached command in a VM; none for an attached one,
+  // whose output prints as it goes, or one in the cladefs runtime.
+  TTY_MODE_DEFAULT = 0;
+  // A terminal. vm runtime only.
+  TTY_MODE_ON = 1;
+  // No terminal: output to a file, input from /dev/null.
+  TTY_MODE_OFF = 2;
+}
+
+// What a long command is expected to need.
+message CommandEstimate {
+  // Memory it holds at its peak: reserved for it as it is admitted.
+  int64 memory_bytes = 1;
+  // How long it should take.
+  int64 seconds = 2;
+  // Where the estimate came from: "given", or "history" (an earlier run of
+  // the same command line, its measured peak and time).
+  string source = 3;
+}
+
+message QueryOutputRequest {
+  // The command's ID.
+  string id = 1 [(param) = {
+    positional: true
+    required: true
+  }];
+  // Only lines matching this RE2 regular expression, with --context lines
+  // around each.
+  string grep = 2 [(param) = {short: "g"}];
+  // Match grep and until ignoring case.
+  bool ignore_case = 3 [(param) = {
+    short: "i"
+    name: "ignore-case"
+  }];
+  // Lines of context around each grep match.
+  int32 context = 4 [(param) = {short: "C"}];
+  // Its first N lines.
+  int32 head = 5;
+  // Its last N lines.
+  int32 tail = 6 [(param) = {short: "n"}];
+  // Lines from this line number on (1 is the first).
+  int64 from = 7;
+  // Lines up to and including this line number.
+  int64 to = 8;
+  // Only lines after this line number: what came since an earlier answer's
+  // next line.
+  int64 after = 9;
+  // Only lines written since its workspace last synced: what a dev server
+  // logged since your last edit reached it.
+  bool since_sync = 10 [(param) = {name: "since-sync"}];
+  // Wait, first, until a line (after --after) matches this RE2 regular
+  // expression or the command ends; then answer, the matching lines
+  // marked.
+  string until = 11;
+  // Wait, first, until the command ends.
+  bool wait = 12;
+  // How long --until or --wait waits at most, in seconds (default 60, at
+  // most 600).
+  int32 timeout_seconds = 13 [(param) = {name: "timeout"}];
+  // Lines as written, escape sequences and redraws included, not settled.
+  bool raw = 14;
+  // At most this many lines in the answer (default 200, at most 5000).
+  int32 max_lines = 15 [(param) = {name: "max"}];
+}
+
+// A line of a command's output.
+message OutputLine {
+  // Its number in the output, 1 for the first.
+  int64 number = 1;
+  // As settled, or raw; one longer than 2000 characters is cut, saying so.
+  string text = 2;
+  // It matched grep or until (not context around a match).
+  bool match = 3;
+}
+
+message OutputQuery {
+  string command_id = 1;
+  // The command's state as the answer was made.
+  CommandState state = 2;
+  // Its exit code, once it exited.
+  optional int32 exit_code = 3;
+  // Lines in its output so far.
+  int64 total_lines = 4;
+  // Bytes in its output so far, as written.
+  int64 total_bytes = 5;
+  // The lines asked for, in order.
+  repeated OutputLine lines = 6;
+  // With --grep or --until: how many lines in what was asked for matched.
+  optional int64 matches = 7;
+  // What the answer left out and how to get it; empty when it left out
+  // nothing asked for.
+  string omitted = 8;
+  // The number of the last line it has: pass it as --after for what comes
+  // next.
+  int64 next_line = 9;
+  // With --until or --wait: "matched", "ended" or "timeout".
+  string waited = 10;
+  // Bytes its log dropped past its size limit: a line in the output says
+  // where.
+  int64 dropped_bytes = 11;
+}
+
+message DetachCommandRequest {
+  // The command's ID.
+  string id = 1 [(param) = {
+    positional: true
+    required: true
+  }];
+  // The session detaching it, for an agent: it must be the command's.
+  string session_id = 2 [(param) = {
+    hidden: true
+    default: "named_session"
+  }];
+}
+
+message SendInputRequest {
+  // The command's ID.
+  string id = 1 [(param) = {
+    positional: true
+    required: true
+  }];
+  // What to type. A newline follows it unless --no-newline.
+  string text = 2 [(param) = {positional: true}];
+  // Send the text as it is, without a newline after it.
+  bool no_newline = 3 [(param) = {name: "no-newline"}];
+  // The session sending it, for an agent: it must be the command's.
+  string session_id = 4 [(param) = {
+    hidden: true
+    default: "named_session"
+  }];
+}
+
+message SendInputResponse {
+  // Bytes written to its terminal.
+  int64 bytes = 1;
 }
 
 message OpenShellRequest {

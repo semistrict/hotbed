@@ -15,7 +15,7 @@ import type { Message } from "@bufbuild/protobuf";
  * Describes the file hotbed/v1/worker.proto.
  */
 export const file_hotbed_v1_worker: GenFile = /*@__PURE__*/
-  fileDesc("ChZob3RiZWQvdjEvd29ya2VyLnByb3RvEglob3RiZWQudjEiigEKD1dvcmtzcGFjZVJlY29yZBInCgl3b3Jrc3BhY2UYASABKAsyFC5ob3RiZWQudjEuV29ya3NwYWNlEg4KBnZvbHVtZRgCIAEoCRIVCg1iYXNlX3NuYXBzaG90GAMgASgJEgwKBG5vdGUYBCABKAkSGQoRdGhyb3dhd2F5X2NvbW1hbmQYBSABKAkiwwIKDUNvbW1hbmRSZWNvcmQSIwoHY29tbWFuZBgBIAEoCzISLmhvdGJlZC52MS5Db21tYW5kEg8KB3JlcG9faWQYAiABKAkSDwoHcHJvamVjdBgOIAEoCRINCgVhZ2VudBgDIAEoCRIOCgZ2b2x1bWUYBCABKAkSCwoDZGlyGAUgASgJEgsKA2VudhgGIAMoCRIPCgdiYXNlX2lkGAcgASgJEg0KBXBhcmtzGAggASgFEhEKCXBhcmtlZF9hdBgJIAEoAxIZChFwZWFrX21lbW9yeV9ieXRlcxgKIAEoAxIOCgZjZ3JvdXAYCyABKAkSFgoOaXNvbGF0aW9uX2xvc3QYDCABKAkSEQoJd2FpdGVkX2F0GA0gASgDEhAKCGhlbGRfZm9yGA8gASgJEhcKD3BlYWtfaGVsZF9ieXRlcxgQIAEoA0I+WjxnaXRodWIuY29tL3NlbWlzdHJpY3QvaG90YmVkL2ludGVybmFsL2dlbi9ob3RiZWQvdjE7aG90YmVkdjFiBnByb3RvMw", [file_hotbed_v1_hotbed]);
+  fileDesc("ChZob3RiZWQvdjEvd29ya2VyLnByb3RvEglob3RiZWQudjEiigEKD1dvcmtzcGFjZVJlY29yZBInCgl3b3Jrc3BhY2UYASABKAsyFC5ob3RiZWQudjEuV29ya3NwYWNlEg4KBnZvbHVtZRgCIAEoCRIVCg1iYXNlX3NuYXBzaG90GAMgASgJEgwKBG5vdGUYBCABKAkSGQoRdGhyb3dhd2F5X2NvbW1hbmQYBSABKAki3QIKDUNvbW1hbmRSZWNvcmQSIwoHY29tbWFuZBgBIAEoCzISLmhvdGJlZC52MS5Db21tYW5kEg8KB3JlcG9faWQYAiABKAkSDwoHcHJvamVjdBgOIAEoCRINCgVhZ2VudBgDIAEoCRIOCgZ2b2x1bWUYBCABKAkSCwoDZGlyGAUgASgJEgsKA2VudhgGIAMoCRIPCgdiYXNlX2lkGAcgASgJEg0KBXBhcmtzGAggASgFEhEKCXBhcmtlZF9hdBgJIAEoAxIZChFwZWFrX21lbW9yeV9ieXRlcxgKIAEoAxIOCgZjZ3JvdXAYCyABKAkSFgoOaXNvbGF0aW9uX2xvc3QYDCABKAkSEQoJd2FpdGVkX2F0GA0gASgDEhAKCGhlbGRfZm9yGA8gASgJEhcKD3BlYWtfaGVsZF9ieXRlcxgQIAEoAxIYChBzeW5jZWRfYXRfb2Zmc2V0GBEgASgDQj5aPGdpdGh1Yi5jb20vc2VtaXN0cmljdC9ob3RiZWQvaW50ZXJuYWwvZ2VuL2hvdGJlZC92MTtob3RiZWR2MWIGcHJvdG8z", [file_hotbed_v1_hotbed]);
 
 /**
  * @generated from message hotbed.v1.WorkspaceRecord
@@ -165,6 +165,15 @@ export type CommandRecord = Message<"hotbed.v1.CommandRecord"> & {
    * @generated from field: int64 peak_held_bytes = 16;
    */
   peakHeldBytes: bigint;
+
+  /**
+   * Where its log stood when its workspace last synced while it ran: what
+   * it wrote from there on came after an edit reached it (a dev server's
+   * output since the agent's change).
+   *
+   * @generated from field: int64 synced_at_offset = 17;
+   */
+  syncedAtOffset: bigint;
 };
 
 /**

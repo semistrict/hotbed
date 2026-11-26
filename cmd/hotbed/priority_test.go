@@ -29,7 +29,7 @@ func TestPriorityFlagParsingAndLimits(t *testing.T) {
 		{"-100", -100},
 	}
 	for _, tc := range cases {
-		args := []string{"run", "-s", "prio-fox", "-r", "app", "--detach"}
+		args := []string{"run", "-s", "prio-fox", "-r", "app", "--detach", "--mem", "1G"}
 		if tc.flag != "" {
 			if strings.HasPrefix(tc.flag, "-") {
 				args = append(args, "--priority="+tc.flag)
@@ -47,7 +47,7 @@ func TestPriorityFlagParsingAndLimits(t *testing.T) {
 
 	for _, bad := range []string{"101", "-101", "super", "1.5"} {
 		flag := "--priority=" + bad
-		code, err := c.fails("run", "-s", "prio-fox", "-r", "app", "--detach", flag, "--", "true")
+		code, err := c.fails("run", "-s", "prio-fox", "-r", "app", "--detach", "--mem", "1G", flag, "--", "true")
 		if code != exitError || err.Code != api.CodeInvalidArgs {
 			t.Errorf("--priority %q -> exit %d, code %q; want exit %d, %q", bad, code, err.Code, exitError, api.CodeInvalidArgs)
 		}

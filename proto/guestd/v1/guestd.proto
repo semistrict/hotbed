@@ -40,6 +40,9 @@ service GuestService {
     option idempotency_level = IDEMPOTENT;
   }
 
+  // SendInput writes to a command's terminal (StartCommandRequest.tty).
+  rpc SendInput(SendInputRequest) returns (SendInputResponse);
+
   // InspectCommand runs an opt-in Linux inspection of a live command inside the guest VM.
   rpc InspectCommand(hotbed.v1.InspectCommandRequest) returns (hotbed.v1.InspectCommandResponse) {
     option idempotency_level = NO_SIDE_EFFECTS;
@@ -119,7 +122,19 @@ message StartCommandRequest {
   int64 memory_low = 9;
   int64 memory_high = 10;
   string tmp_dir = 11;
+  // Run it in a pseudo-terminal of cols by rows: its stdin, stdout and
+  // stderr, and its controlling terminal; what it writes goes to its log.
+  bool tty = 12;
+  int32 cols = 13;
+  int32 rows = 14;
 }
+
+message SendInputRequest {
+  string id = 1;
+  bytes data = 2;
+}
+
+message SendInputResponse {}
 
 message CommandStatus {
   string id = 1;

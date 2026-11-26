@@ -51,4 +51,8 @@ message CommandRecord {
   // cache): while it runs or is parked, the node reserves at least this
   // for it, as it may need it again.
   int64 peak_held_bytes = 16;
+  // Where its log stood when its workspace last synced while it ran: what
+  // it wrote from there on came after an edit reached it (a dev server's
+  // output since the agent's change).
+  int64 synced_at_offset = 17;
 }

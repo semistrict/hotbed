@@ -101,7 +101,7 @@ func TestWorkerRestartMidCommand(t *testing.T) {
 	c.workspace("warm-elk", nil)
 	flag := filepath.Join(t.TempDir(), "go")
 	cmd := &pb.Command{}
-	c.ok(cmd, "run", "-s", "warm-elk", "-r", "app", "--detach", "--", "sh", "-c", waitFor(flag, "exit 3"))
+	c.ok(cmd, "run", "-s", "warm-elk", "-r", "app", "--detach", "--mem", "1G", "--", "sh", "-c", waitFor(flag, "exit 3"))
 	c.eventually("the command to run", func() bool {
 		got, ok := c.engine().Command(cmd.Id)
 		return ok && got.State == runningState
@@ -160,7 +160,7 @@ func TestLostWorkerDatabase(t *testing.T) {
 	c.ok(nil, "session", "start", "poor-cod")
 	first := c.workspace("poor-cod", nil)
 	cmd := &pb.Command{}
-	c.ok(cmd, "run", "-s", "poor-cod", "-r", "app", "--detach", "--", "sleep", "30")
+	c.ok(cmd, "run", "-s", "poor-cod", "-r", "app", "--detach", "--mem", "1G", "--", "sleep", "30")
 	c.eventually("the command to run", func() bool { return c.commandStates("poor-cod")[cmd.Id] == pb.CommandState_COMMAND_STATE_RUNNING })
 	c.nodes[0].wipe()
 	c.eventually("the loss to reach the session", func() bool { return len(ends(c.events("poor-cod"), cmd.Id)) > 0 })
@@ -233,7 +233,7 @@ func TestCutOffWorkersCommandIsAnsweredFromItsView(t *testing.T) {
 	c.workspace("far-gnu", &pb.Placement{Node: "mini"})
 	g := newGate(t)
 	var cmd pb.Command
-	c.ok(&cmd, append([]string{"run", "-s", "far-gnu", "-r", "app", "--detach", "--"}, g.until("far")...)...)
+	c.ok(&cmd, append([]string{"run", "-s", "far-gnu", "-r", "app", "--detach", "--mem", "1G", "--"}, g.until("far")...)...)
 	c.eventually("the command to run", func() bool {
 		got, err := c.workspaces().GetCommand(t.Context(), &pb.GetCommandRequest{Id: cmd.Id})
 		return err == nil && got.State == runningState

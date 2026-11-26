@@ -71,6 +71,22 @@ export function createConnectApi(
       }),
     completeGitHubLogin: (loginId) => gitauth.completeGitHubLogin({ loginId }),
     commandLog: (id) => workspaces.getLogLines({ id, tail: 2000 }),
+    outputBytes: async (id, offset, signal) => {
+      const parts: Uint8Array[] = [];
+      let next = offset;
+      for await (const ch of workspaces.followLog({ id, offset, follow: false }, { signal })) {
+        if (ch.data.length > 0) parts.push(ch.data);
+        next = ch.nextOffset;
+      }
+      const data = new Uint8Array(parts.reduce((n, p) => n + p.length, 0));
+      let at = 0;
+      for (const p of parts) {
+        data.set(p, at);
+        at += p.length;
+      }
+      return { data, next };
+    },
+    queryOutput: (id, query) => workspaces.queryOutput({ ...query, id }),
     files: async (workspaceId) => (await workspaces.listFiles({ workspaceId })).files,
     file: (workspaceId, path) => workspaces.getFile({ workspaceId, path }),
     inspectCommand: (id, opts, signal) =>

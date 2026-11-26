@@ -1,0 +1,262 @@
+package main
+
+import (
+	"bytes"
+	"context"
+	"fmt"
+	"io"
+	"net"
+	"net/url"
+	"time"
+
+	"github.com/semistrict/hotbed/internal/api"
+	pb "github.com/semistrict/hotbed/internal/gen/hotbed/v1"
+	"github.com/semistrict/hotbed/internal/shell"
+)
+
+// What hotbed run does by default: a run is for quick work. One that has not
+// ended after defaultRunWait is left running, detached, and read with hotbed
+// output; past defaultMaxOutput, its output stops printing as it runs (all
+// of it is kept), and its last lines print as it ends.
+const (
+	defaultRunWait   = 2 * time.Minute
+	defaultMaxOutput = "32K"
+	// endTailLines is how many of its last lines a run prints as it ends or
+	// is detached, when its output did not all print as it ran.
+	endTailLines = 40
+	// exitDetached is how hotbed run exits when it left the command running,
+	// detached, after --wait.
+	exitDetached = 125
+)
+
+// runWait is how long an attached run waits on its command before
+// detaching it: --wait, or defaultRunWait; 0 for until it ends, as with
+// --soft-limit alone, which bounds the wait itself (the command pauses,
+// and the run exits 124, as before).
+func (c *runCmd) runWait() (time.Duration, error) {
+	if c.Detach {
+		if c.Wait != "" {
+			return 0, api.Errorf(api.CodeInvalidArgs, "--wait is how long an attached run waits: a detached one does not wait").
+				WithSuggestion("drop --wait, or --detach")
+		}
+		return 0, nil
+	}
+	if c.Wait == "" && c.SoftLimit != "" {
+		return 0, nil
+	}
+	return parseLimit("--wait", c.Wait, defaultRunWait)
+}
+
+// ttyMode is the terminal --tty or --no-tty asks for.
+func (c *runCmd) ttyMode() pb.TtyMode {
+	switch {
+	case c.TTY:
+		return pb.TtyMode_TTY_MODE_ON
+	case c.NoTTY:
+		return pb.TtyMode_TTY_MODE_OFF
+	}
+	return pb.TtyMode_TTY_MODE_DEFAULT
+}
+
+// estimate is what the run is expected to need: as --mem and --expect
+// give it, or, for a detached run that gives neither, what the newest
+// earlier run of the same command line in the project held at its peak and
+// took. A detached run with neither is refused: a long job says what it
+// needs, so the node reserves it.
+func (c *runCmd) estimate(ctx context.Context, d deps, project, repo string, args []string) (*pb.CommandEstimate, error) {
+	var est pb.CommandEstimate
+	if c.Mem != "" {
+		mem, err := parseSize(c.Mem)
+		if err != nil {
+			return nil, err
+		}
+		est.MemoryBytes = mem
+	}
+	if c.Expect != "" {
+		d, err := parseLimit("--expect", c.Expect, 0)
+		if err != nil {
+			return nil, err
+		}
+		est.Seconds = int64(d / time.Second)
+	}
+	if est.MemoryBytes > 0 || est.Seconds > 0 {
+		est.Source = "given"
+		return &est, nil
+	}
+	if !c.Detach {
+		return nil, nil
+	}
+	argv := shell.Join(args)
+	cl, err := c.clients(d.http)
+	if err != nil {
+		return nil, err
+	}
+	limit := int32(50)
+	res, err := cl.workspaces.ListCommands(ctx, &pb.ListCommandsRequest{Project: project, Ended: true, Match: argv, Limit: &limit})
+	if err != nil {
+		return nil, err
+	}
+	for i := len(res.Commands) - 1; i >= 0; i-- {
+		cmd := res.Commands[i]
+		if cmd.Argv != argv || cmd.Repo != repo || cmd.MemoryBytes <= 0 || cmd.EndedAt == nil || cmd.StartedAt == nil {
+			continue
+		}
+		return &pb.CommandEstimate{
+			MemoryBytes: cmd.MemoryBytes,
+			Seconds:     (*cmd.EndedAt - *cmd.StartedAt) / 1000,
+			Source:      "history",
+		}, nil
+	}
+	return nil, api.Errorf(api.CodeInvalidArgs, "a detached run needs --mem: the memory it holds at its peak, which the node reserves for it; no earlier run of %s in project %s says", argv, project).
+		WithSuggestion("pass --mem 4G (and --expect 20m), or run it attached: hotbed run waits on it, and detaches it after --wait")
+}
+
+// attachFor is attach, waiting at most wait (0 for until it ends): a
+// command that outlasts it is left running, detached, and detached says so.
+func attachFor(ctx context.Context, wk workerClients, id, session string, wait time.Duration, w, stderr io.Writer) (code int, detached bool, err error) {
+	if wait <= 0 {
+		code, err = attach(ctx, wk, id, w, stderr)
+		return code, false, err
+	}
+	fctx, cancel := context.WithTimeout(ctx, wait)
+	defer cancel()
+	code, err = follow(fctx, wk, id, w, stderr)
+	switch {
+	case ctx.Err() != nil:
+		// Interrupted: stop it, as attach does.
+		code, err = attach(ctx, wk, id, w, stderr)
+		return code, false, err
+	case fctx.Err() == nil:
+		return code, false, err
+	}
+	dctx, dcancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
+	defer dcancel()
+	if _, derr := wk.calls.DetachCommand(dctx, &pb.DetachCommandRequest{Id: id, SessionId: session}); derr != nil {
+		if api.CodeOf(derr) == api.CodeConflict {
+			// It ended, or paused, as the wait ran out: say how.
+			code, err = follow(ctx, wk, id, w, stderr)
+			return code, false, err
+		}
+		return 0, false, derr
+	}
+	return 0, true, nil
+}
+
+// outputBudget passes the first limit bytes of a command's output through
+// to w, cut at a line's end where one is near, and holds back the rest,
+// noting once, inline, that it does.
+type outputBudget struct {
+	w       io.Writer
+	limit   int64
+	written int64
+	held    int64
+}
+
+func (b *outputBudget) Write(p []byte) (int, error) {
+	n := len(p)
+	if b.limit <= 0 {
+		return b.w.Write(p)
+	}
+	if room := b.limit - b.written; room > 0 && b.held == 0 {
+		take := p[:min(int64(len(p)), room)]
+		if int64(len(p)) > room {
+			// Stop at the last line's end that fits, not mid-line.
+			if i := bytes.LastIndexByte(take, '\n'); i >= 0 {
+				take = take[:i+1]
+			}
+		}
+		if _, err := b.w.Write(take); err != nil {
+			return 0, err
+		}
+		b.written += int64(len(take))
+		p = p[len(take):]
+	}
+	if len(p) > 0 {
+		if b.held == 0 {
+			if _, err := fmt.Fprintf(b.w, "\n[hotbed: output past %s stops printing here as it runs; all of it is kept, and its last lines print at its end]\n", size(b.limit)); err != nil {
+				return 0, err
+			}
+		}
+		b.held += int64(len(p))
+	}
+	return n, nil
+}
+
+// printTail prints the last lines of command id's output to w, as its
+// terminal shows them, after a note of what did not print; the run's
+// output having been held back (outputBudget).
+func printTail(ctx context.Context, wk workerClients, id string, w io.Writer) error {
+	q, err := wk.calls.QueryOutput(ctx, &pb.QueryOutputRequest{Id: id, Tail: endTailLines})
+	if err != nil {
+		return err
+	}
+	if len(q.Lines) == 0 {
+		return nil
+	}
+	fmt.Fprintf(w, "[hotbed: its last %d of %d lines:]\n", len(q.Lines), q.TotalLines)
+	for _, l := range q.Lines {
+		fmt.Fprintln(w, l.Text)
+	}
+	fmt.Fprintf(w, "[hotbed: all %d lines are kept: hotbed output %s --grep PATTERN (or --from N --to M, --head N, --tail N)]\n", q.TotalLines, id)
+	return nil
+}
+
+// detachedHelp is what a run says when it left its command running.
+func detachedHelp(id string, wait time.Duration) string {
+	return fmt.Sprintf("hotbed: %s still runs after %s, detached: its output is kept whole. "+
+		"Read it: hotbed output %s (--grep PATTERN, --tail N); wait for a line: hotbed output %s --until PATTERN --timeout 600; "+
+		"its end: hotbed output %s --wait --timeout 600, or hotbed poll. Stop it: hotbed stop %s",
+		id, wait, id, id, id, id)
+}
+
+// waitServing waits, at most timeout, for detached command cmd to be ready:
+// a line of its output matching pattern, and/or its port taking
+// connections; it fails if the command ends first.
+func waitServing(ctx context.Context, wk workerClients, cmd *pb.Command, pattern string, port bool, timeout time.Duration, stderr io.Writer) error {
+	deadline := time.Now().Add(timeout)
+	if pattern != "" {
+		left := time.Until(deadline)
+		q, err := wk.calls.QueryOutput(ctx, &pb.QueryOutputRequest{Id: cmd.Id, Until: pattern, TimeoutSeconds: int32(max(1, left/time.Second)), Tail: endTailLines})
+		if err != nil {
+			return err
+		}
+		switch q.Waited {
+		case "matched":
+			fmt.Fprintf(stderr, "hotbed: %s is ready: its output says so\n", cmd.Id)
+		case "timeout":
+			return api.Errorf(api.CodeNotReady, "%s wrote no line matching %q in %s: it runs on", cmd.Id, pattern, timeout).
+				WithSuggestion(fmt.Sprintf("read what it wrote: hotbed output %s", cmd.Id))
+		default:
+			return api.Errorf(api.CodeNotReady, "%s %s before writing a line matching %q", cmd.Id, q.Waited, pattern).
+				WithSuggestion(fmt.Sprintf("read why: hotbed output %s", cmd.Id))
+		}
+	}
+	if !port {
+		return nil
+	}
+	u, err := url.Parse(cmd.Url)
+	if err != nil || cmd.Url == "" {
+		return api.Errorf(api.CodeInvalidArgs, "--ready-port needs --port: %s has no URL", cmd.Id)
+	}
+	for {
+		conn, err := (&net.Dialer{Timeout: 2 * time.Second}).DialContext(ctx, "tcp", u.Host)
+		if err == nil {
+			_ = conn.Close()
+			fmt.Fprintf(stderr, "hotbed: %s is ready: %s takes connections\n", cmd.Id, cmd.Url)
+			return nil
+		}
+		if c, cerr := wk.command(ctx, cmd.Id); cerr == nil && !api.Live(c.State) {
+			return api.Errorf(api.CodeNotReady, "%s ended before %s took connections: %s", cmd.Id, cmd.Url, c.Reason).
+				WithSuggestion(fmt.Sprintf("read why: hotbed output %s", cmd.Id))
+		}
+		if time.Now().After(deadline) {
+			return api.Errorf(api.CodeNotReady, "%s took no connections in %s: it runs on", cmd.Url, timeout).
+				WithSuggestion(fmt.Sprintf("read what it wrote: hotbed output %s", cmd.Id))
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(500 * time.Millisecond):
+		}
+	}
+}

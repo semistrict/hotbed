@@ -84,7 +84,7 @@ func TestSoftLimitPausesAndWaitingResumes(t *testing.T) {
 	// The paused command does not see go until it resumes. Executing the exact
 	// resume command advertised in cmd.Reason must work verbatim even without
 	// ambient session binding (e.g. from another session/thread context).
-	c.ok(nil, "run", "-s", "slow-ox", "-r", "app", "--detach", "--", "touch", "go")
+	c.ok(nil, "run", "-s", "slow-ox", "-r", "app", "--detach", "--mem", "1G", "--", "touch", "go")
 	startIdx := strings.Index(cmd.Reason, "(hotbed ")
 	endIdx := strings.Index(cmd.Reason, ") resumes it")
 	if startIdx < 0 || endIdx <= startIdx {
@@ -259,11 +259,11 @@ func TestTimeLimitDefaultsAndFlags(t *testing.T) {
 
 	attached, _ := c.runAttached("neat-cod", "true")
 	detached := &pb.Command{}
-	c.ok(detached, "run", "-s", "neat-cod", "-r", "app", "--detach", "--", "true")
+	c.ok(detached, "run", "-s", "neat-cod", "-r", "app", "--detach", "--mem", "1G", "--", "true")
 	given := &pb.Command{}
-	c.ok(given, "run", "-s", "neat-cod", "-r", "app", "--detach", "--soft-limit", "30m", "--", "true")
+	c.ok(given, "run", "-s", "neat-cod", "-r", "app", "--detach", "--mem", "1G", "--soft-limit", "30m", "--", "true")
 	unbounded := &pb.Command{}
-	c.ok(unbounded, "run", "-s", "neat-cod", "-r", "app", "--soft-limit", "0", "--hard-limit", "0", "--detach", "--", "true")
+	c.ok(unbounded, "run", "-s", "neat-cod", "-r", "app", "--soft-limit", "0", "--hard-limit", "0", "--detach", "--mem", "1G", "--", "true")
 	for _, tc := range []struct {
 		id         string
 		soft, hard int64
@@ -299,7 +299,7 @@ func TestLogsFollowExitsWithTheCommandsStatus(t *testing.T) {
 	c.workspace("glad-asp", nil)
 	for script, want := range map[string]int{"echo seven; exit 7": 7, "true": 0, "kill -TERM $$": 143} {
 		cmd := &pb.Command{}
-		c.ok(cmd, "run", "-s", "glad-asp", "-r", "app", "--detach", "--", "sh", "-c", script)
+		c.ok(cmd, "run", "-s", "glad-asp", "-r", "app", "--detach", "--mem", "1G", "--", "sh", "-c", script)
 		if code, _, stderr := c.hotbed("logs", "-f", "-s", "glad-asp", cmd.Id); code != want {
 			t.Errorf("logs -f of %q: exit %d (stderr %q), want %d", script, code, stderr, want)
 		}
@@ -315,7 +315,7 @@ func TestLogsFollowReportsOOMKill(t *testing.T) {
 	c.ok(nil, "session", "start", "bold-yak")
 	c.workspace("bold-yak", nil)
 	cmd := &pb.Command{}
-	c.ok(cmd, "run", "-s", "bold-yak", "-r", "app", "--detach", "--", "sleep", "60")
+	c.ok(cmd, "run", "-s", "bold-yak", "-r", "app", "--detach", "--mem", "1G", "--", "sleep", "60")
 	c.eventually("command running", func() bool {
 		got, ok := c.engine().Command(cmd.Id)
 		return ok && got.State == pb.CommandState_COMMAND_STATE_RUNNING
@@ -343,7 +343,7 @@ func TestLogsOfACommandItsWorkerForgot(t *testing.T) {
 	c.ok(nil, "session", "start", "keen-elk")
 	c.workspace("keen-elk", nil)
 	cmd := &pb.Command{}
-	c.ok(cmd, "run", "-s", "keen-elk", "-r", "app", "--detach", "--", "sh", "-c", "echo kept; exit 3")
+	c.ok(cmd, "run", "-s", "keen-elk", "-r", "app", "--detach", "--mem", "1G", "--", "sh", "-c", "echo kept; exit 3")
 	if code, _, stderr := c.hotbed("logs", "-f", "-s", "keen-elk", cmd.Id); code != 3 {
 		t.Fatalf("logs -f while its worker has it: exit %d (stderr %q), want 3", code, stderr)
 	}

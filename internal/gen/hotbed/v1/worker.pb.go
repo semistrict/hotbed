@@ -136,8 +136,12 @@ type CommandRecord struct {
 	// cache): while it runs or is parked, the node reserves at least this
 	// for it, as it may need it again.
 	PeakHeldBytes int64 `protobuf:"varint,16,opt,name=peak_held_bytes,json=peakHeldBytes,proto3" json:"peak_held_bytes,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	// Where its log stood when its workspace last synced while it ran: what
+	// it wrote from there on came after an edit reached it (a dev server's
+	// output since the agent's change).
+	SyncedAtOffset int64 `protobuf:"varint,17,opt,name=synced_at_offset,json=syncedAtOffset,proto3" json:"synced_at_offset,omitempty"`
+	unknownFields  protoimpl.UnknownFields
+	sizeCache      protoimpl.SizeCache
 }
 
 func (x *CommandRecord) Reset() {
@@ -282,6 +286,13 @@ func (x *CommandRecord) GetPeakHeldBytes() int64 {
 	return 0
 }
 
+func (x *CommandRecord) GetSyncedAtOffset() int64 {
+	if x != nil {
+		return x.SyncedAtOffset
+	}
+	return 0
+}
+
 var File_hotbed_v1_worker_proto protoreflect.FileDescriptor
 
 const file_hotbed_v1_worker_proto_rawDesc = "" +
@@ -292,7 +303,7 @@ const file_hotbed_v1_worker_proto_rawDesc = "" +
 	"\x06volume\x18\x02 \x01(\tR\x06volume\x12#\n" +
 	"\rbase_snapshot\x18\x03 \x01(\tR\fbaseSnapshot\x12\x12\n" +
 	"\x04note\x18\x04 \x01(\tR\x04note\x12+\n" +
-	"\x11throwaway_command\x18\x05 \x01(\tR\x10throwawayCommand\"\xd9\x03\n" +
+	"\x11throwaway_command\x18\x05 \x01(\tR\x10throwawayCommand\"\x83\x04\n" +
 	"\rCommandRecord\x12,\n" +
 	"\acommand\x18\x01 \x01(\v2\x12.hotbed.v1.CommandR\acommand\x12\x17\n" +
 	"\arepo_id\x18\x02 \x01(\tR\x06repoId\x12\x18\n" +
@@ -310,7 +321,8 @@ const file_hotbed_v1_worker_proto_rawDesc = "" +
 	"\x0eisolation_lost\x18\f \x01(\tR\risolationLost\x12\x1b\n" +
 	"\twaited_at\x18\r \x01(\x03R\bwaitedAt\x12\x19\n" +
 	"\bheld_for\x18\x0f \x01(\tR\aheldFor\x12&\n" +
-	"\x0fpeak_held_bytes\x18\x10 \x01(\x03R\rpeakHeldBytesB>Z<github.com/semistrict/hotbed/internal/gen/hotbed/v1;hotbedv1b\x06proto3"
+	"\x0fpeak_held_bytes\x18\x10 \x01(\x03R\rpeakHeldBytes\x12(\n" +
+	"\x10synced_at_offset\x18\x11 \x01(\x03R\x0esyncedAtOffsetB>Z<github.com/semistrict/hotbed/internal/gen/hotbed/v1;hotbedv1b\x06proto3"
 
 var (
 	file_hotbed_v1_worker_proto_rawDescOnce sync.Once

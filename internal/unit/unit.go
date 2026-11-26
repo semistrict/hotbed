@@ -124,6 +124,10 @@ type Spec struct {
 	Properties []string
 	// VM sizes the VM it runs in, where it runs in one booted for it.
 	VM VMSize
+	// TTY runs it in a terminal: its input and output a pseudo-terminal's,
+	// what it writes going to Log. Only a runtime with a guest (the vm
+	// runtime) has one; a systemd unit refuses it.
+	TTY bool
 }
 
 // VMSize is how many vCPUs and how much memory (MiB) a VM's guest sees; a
@@ -167,6 +171,9 @@ func Start(ctx context.Context, s Spec) error {
 	}
 	if s.RootDir == "" {
 		return errors.New("root directory is required")
+	}
+	if s.TTY {
+		return errors.New("a command in a terminal needs the vm runtime: a systemd unit writes its output to a file")
 	}
 	if err := os.MkdirAll(filepath.Dir(s.Log), 0o755); err != nil {
 		return err

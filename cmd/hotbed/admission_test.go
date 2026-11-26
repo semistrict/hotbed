@@ -42,7 +42,7 @@ func TestNodeShowsWhyItHoldsWork(t *testing.T) {
 	}
 
 	var cmd pb.Command
-	c.ok(&cmd, "run", "-s", "busy-owl", "-r", "app", "--detach", "--", "sleep", "60")
+	c.ok(&cmd, "run", "-s", "busy-owl", "-r", "app", "--detach", "--mem", "1G", "--", "sleep", "60")
 	c.eventually("the command to wait for the CPUs", func() bool {
 		var ls pb.ListCommandsResponse
 		c.ok(&ls, "ps", "-s", "busy-owl")

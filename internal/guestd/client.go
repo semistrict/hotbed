@@ -192,6 +192,13 @@ func (c *Client) ThawCommand(ctx context.Context, id string) (*guestdv1.CommandS
 	})
 }
 
+// SendInput writes data to the terminal of command id. It is not retried:
+// input sent twice is typed twice.
+func (c *Client) SendInput(ctx context.Context, id string, data []byte) error {
+	_, err := c.rpc.SendInput(ctx, &guestdv1.SendInputRequest{Id: id, Data: data})
+	return err
+}
+
 // Reclaim asks hotbed-guestd to drop clean guest page caches (and reclaim from
 // command id's cgroup when id and bytes are set) so virtio-balloon
 // free-page-reporting returns unused host RAM.

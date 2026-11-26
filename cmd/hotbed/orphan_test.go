@@ -20,7 +20,7 @@ func TestOrphanSweepAfterLostWorkerDatabase(t *testing.T) {
 	first := c.workspace("neat-fox", nil)
 
 	cmd := &pb.Command{}
-	c.ok(cmd, "run", "-s", "neat-fox", "-r", "app", "--detach", "--", "sleep", "60")
+	c.ok(cmd, "run", "-s", "neat-fox", "-r", "app", "--detach", "--mem", "1G", "--", "sleep", "60")
 	c.eventually("detached command to run", func() bool {
 		return c.commandStates("neat-fox")[cmd.Id] == pb.CommandState_COMMAND_STATE_RUNNING
 	})

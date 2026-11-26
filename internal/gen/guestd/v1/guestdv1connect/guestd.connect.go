@@ -39,6 +39,8 @@ const (
 	GuestServiceFreezeCommandProcedure = "/guestd.v1.GuestService/FreezeCommand"
 	// GuestServiceThawCommandProcedure is the procedure name of the GuestService's ThawCommand RPC.
 	GuestServiceThawCommandProcedure = "/guestd.v1.GuestService/ThawCommand"
+	// GuestServiceSendInputProcedure is the procedure name of the GuestService's SendInput RPC.
+	GuestServiceSendInputProcedure = "/guestd.v1.GuestService/SendInput"
 	// GuestServiceInspectCommandProcedure is the procedure name of the GuestService's InspectCommand
 	// RPC.
 	GuestServiceInspectCommandProcedure = "/guestd.v1.GuestService/InspectCommand"
@@ -112,6 +114,13 @@ var (
 			Schema:           v1.File_guestd_v1_guestd_proto.Services().ByName("GuestService").Methods().ByName("ThawCommand"),
 			Procedure:        GuestServiceThawCommandProcedure,
 			IdempotencyLevel: connect.IdempotencyIdempotent,
+		}
+	})
+	guestServiceSendInputSpec = sync.OnceValue(func() connect.Spec {
+		return connect.Spec{
+			StreamType: connect.StreamTypeUnary,
+			Schema:     v1.File_guestd_v1_guestd_proto.Services().ByName("GuestService").Methods().ByName("SendInput"),
+			Procedure:  GuestServiceSendInputProcedure,
 		}
 	})
 	guestServiceInspectCommandSpec = sync.OnceValue(func() connect.Spec {
@@ -215,6 +224,8 @@ type GuestServiceClient interface {
 	FreezeCommand(context.Context, *v1.FreezeCommandRequest) (*v1.CommandStatus, error)
 	// ThawCommand unfreezes a frozen command inside the guest.
 	ThawCommand(context.Context, *v1.ThawCommandRequest) (*v1.CommandStatus, error)
+	// SendInput writes to a command's terminal (StartCommandRequest.tty).
+	SendInput(context.Context, *v1.SendInputRequest) (*v1.SendInputResponse, error)
 	// InspectCommand runs an opt-in Linux inspection of a live command inside the guest VM.
 	InspectCommand(context.Context, *v11.InspectCommandRequest) (*v11.InspectCommandResponse, error)
 	// TraceCommand runs an opt-in active Linux trace on a live command inside the guest VM.
@@ -352,6 +363,8 @@ type GuestServiceHandler interface {
 	FreezeCommand(context.Context, *v1.FreezeCommandRequest) (*v1.CommandStatus, error)
 	// ThawCommand unfreezes a frozen command inside the guest.
 	ThawCommand(context.Context, *v1.ThawCommandRequest) (*v1.CommandStatus, error)
+	// SendInput writes to a command's terminal (StartCommandRequest.tty).
+	SendInput(context.Context, *v1.SendInputRequest) (*v1.SendInputResponse, error)
 	// InspectCommand runs an opt-in Linux inspection of a live command inside the guest VM.
 	InspectCommand(context.Context, *v11.InspectCommandRequest) (*v11.InspectCommandResponse, error)
 	// TraceCommand runs an opt-in active Linux trace on a live command inside the guest VM.
@@ -387,6 +400,7 @@ func RegisterGuestServiceHandler(server *connect.Server, svc GuestServiceHandler
 		connect.Method{Spec: guestServiceStopCommandSpec(), Handler: adapter.stopCommand},
 		connect.Method{Spec: guestServiceFreezeCommandSpec(), Handler: adapter.freezeCommand},
 		connect.Method{Spec: guestServiceThawCommandSpec(), Handler: adapter.thawCommand},
+		connect.Method{Spec: guestServiceSendInputSpec(), Handler: adapter.sendInput},
 		connect.Method{Spec: guestServiceInspectCommandSpec(), Handler: adapter.inspectCommand},
 		connect.Method{Spec: guestServiceTraceCommandSpec(), Handler: adapter.traceCommand},
 		connect.Method{Spec: guestServiceSampleCommandSpec(), Handler: adapter.sampleCommand},
@@ -489,6 +503,10 @@ func (UnimplementedGuestServiceHandler) ThawCommand(context.Context, *v1.ThawCom
 	return nil, connect.NewError(connect.CodeUnimplemented, "guestd.v1.GuestService.ThawCommand is not implemented")
 }
 
+func (UnimplementedGuestServiceHandler) SendInput(context.Context, *v1.SendInputRequest) (*v1.SendInputResponse, error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, "guestd.v1.GuestService.SendInput is not implemented")
+}
+
 func (UnimplementedGuestServiceHandler) InspectCommand(context.Context, *v11.InspectCommandRequest) (*v11.InspectCommandResponse, error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, "guestd.v1.GuestService.InspectCommand is not implemented")
 }
@@ -580,6 +598,14 @@ func (c *guestServiceClient) FreezeCommand(ctx context.Context, req *v1.FreezeCo
 func (c *guestServiceClient) ThawCommand(ctx context.Context, req *v1.ThawCommandRequest) (*v1.CommandStatus, error) {
 	var res v1.CommandStatus
 	if err := c.client.CallUnary(ctx, guestServiceThawCommandSpec(), req, &res); err != nil {
+		return nil, err
+	}
+	return &res, nil
+}
+
+func (c *guestServiceClient) SendInput(ctx context.Context, req *v1.SendInputRequest) (*v1.SendInputResponse, error) {
+	var res v1.SendInputResponse
+	if err := c.client.CallUnary(ctx, guestServiceSendInputSpec(), req, &res); err != nil {
 		return nil, err
 	}
 	return &res, nil
@@ -741,6 +767,18 @@ func (h guestServiceHandler) thawCommand(ctx context.Context, _ connect.Spec, st
 		return err
 	}
 	res, err := h.svc.ThawCommand(ctx, &req)
+	if err != nil {
+		return err
+	}
+	return stream.Send(res)
+}
+
+func (h guestServiceHandler) sendInput(ctx context.Context, _ connect.Spec, stream connect.ServerStream) error {
+	var req v1.SendInputRequest
+	if err := stream.Receive(&req); err != nil {
+		return err
+	}
+	res, err := h.svc.SendInput(ctx, &req)
 	if err != nil {
 		return err
 	}

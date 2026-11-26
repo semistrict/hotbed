@@ -219,7 +219,7 @@ func TestByHandPauseHoldsUntilResumed(t *testing.T) {
 	}
 
 	// Waiting on it again leaves it paused: it does not see go.
-	c.ok(nil, "run", "-s", "deft-emu", "-r", "app", "--detach", "--", "touch", "go")
+	c.ok(nil, "run", "-s", "deft-emu", "-r", "app", "--detach", "--mem", "1G", "--", "touch", "go")
 	if code, _, stderr := c.hotbed("logs", "-f", "-s", "deft-emu", id); code != exitPaused || stderr != held {
 		t.Fatalf("logs -f of it: exit %d, stderr %q; want 124, %q", code, stderr, held)
 	}
@@ -288,7 +288,7 @@ func TestByHandWithoutDiagnostics(t *testing.T) {
 	c.ok(nil, "session", "start", "bare-gnu")
 	c.workspace("bare-gnu", nil)
 	cmd := &pb.Command{}
-	c.ok(cmd, "run", "-s", "bare-gnu", "-r", "app", "--detach", "--", "sleep", "300")
+	c.ok(cmd, "run", "-s", "bare-gnu", "-r", "app", "--detach", "--mem", "1G", "--", "sleep", "300")
 	c.eventually("it running", func() bool {
 		return c.commandOf("bare-gnu", cmd.Id).State == pb.CommandState_COMMAND_STATE_RUNNING
 	})

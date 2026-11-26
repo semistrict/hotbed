@@ -903,6 +903,11 @@ func (e *Engine) Sync(ctx context.Context, h *pb.SyncHeader, bundle io.Reader) (
 	}
 	w.ws().LastActiveAt = e.nowMs()
 	e.saveWorkspace(w, change{what: "synced", detail: fmt.Sprintf("%s: %d files changed", r.Repo, changed)})
+	if changed > 0 {
+		// What its running commands (a dev server) write from here on came
+		// after this edit: output --since-sync.
+		e.markSyncedLocked(w.ws().Id)
+	}
 	if n > 0 {
 		e.stepSoon()
 	}

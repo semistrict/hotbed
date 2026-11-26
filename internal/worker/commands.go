@@ -132,6 +132,14 @@ func (e *Engine) Exec(_ context.Context, req *pb.RunCommandRequest) (*pb.Command
 	if err := e.checkVMRequestLocked(req); err != nil {
 		return nil, err
 	}
+	tty, err := e.ttyFor(req)
+	if err != nil {
+		return nil, err
+	}
+	estimate, err := checkEstimate(req.Estimate)
+	if err != nil {
+		return nil, err
+	}
 	now := e.nowMs()
 	c := e.newCommand(&pb.CommandRecord{
 		Command: &pb.Command{
@@ -140,6 +148,7 @@ func (e *Engine) Exec(_ context.Context, req *pb.RunCommandRequest) (*pb.Command
 			State: queued, QueuedAt: now, Limits: limits, Attached: req.Attached,
 			SessionId: w.ws().SessionId, Bench: req.Bench, Repo: req.Repo,
 			VmCpus: req.VmCpus, VmMemoryBytes: req.VmMemoryBytes,
+			Tty: tty, Estimate: estimate,
 			Runtime:  e.workspaceRuntime(w),
 			Timeline: []*pb.CommandEvent{{At: now, What: "queued", Detail: "by " + w.ws().Agent}},
 		},
@@ -202,6 +211,54 @@ func (e *Engine) checkVMRequestLocked(req *pb.RunCommandRequest) error {
 			WithSuggestion("ask for memory in that range, or pick a bigger node with --node (hotbed nodes lists them)")
 	}
 	return nil
+}
+
+// ttyFor is whether req runs in a terminal: as it asks, or, by default, a
+// detached command in a VM, whose output no one prints as it goes, so
+// tools may draw for a person as they would in a shell; queries of its
+// output settle what they redraw. Call with e.mu held.
+func (e *Engine) ttyFor(req *pb.RunCommandRequest) (bool, error) {
+	vm := e.usesRuntime(req.WorkspaceId)
+	switch req.Tty {
+	case pb.TtyMode_TTY_MODE_ON:
+		if !vm {
+			return false, api.Errorf(api.CodeInvalidArgs, "workspace %s runs commands on the host: a terminal needs the vm runtime", req.WorkspaceId).
+				WithSuggestion("drop --tty, or run with --runtime vm")
+		}
+		return true, nil
+	case pb.TtyMode_TTY_MODE_OFF:
+		return false, nil
+	default:
+		return vm && !req.Attached, nil
+	}
+}
+
+// checkEstimate is a run's estimate as kept with it, or why it is not one.
+func checkEstimate(est *pb.CommandEstimate) (*pb.CommandEstimate, error) {
+	if est == nil || (est.MemoryBytes == 0 && est.Seconds == 0) {
+		return nil, nil
+	}
+	if est.MemoryBytes < 0 || est.Seconds < 0 {
+		return nil, api.Errorf(api.CodeInvalidArgs, "an estimate of %d bytes and %d seconds: neither may be negative", est.MemoryBytes, est.Seconds)
+	}
+	out := proto.Clone(est).(*pb.CommandEstimate)
+	if out.Source == "" {
+		out.Source = "given"
+	}
+	return out, nil
+}
+
+// estimateNote sets what a command was expected to need beside what it
+// took: its peak memory and how long it ran.
+func estimateNote(est *pb.CommandEstimate, peak int64, seconds float64) string {
+	var parts []string
+	if est.MemoryBytes > 0 {
+		parts = append(parts, fmt.Sprintf("peak %s of %s estimated", gib(peak), gib(est.MemoryBytes)))
+	}
+	if est.Seconds > 0 {
+		parts = append(parts, fmt.Sprintf("took %s of %s expected", dur(seconds), dur(float64(est.Seconds))))
+	}
+	return strings.Join(parts, " · ") + " (" + est.Source + ")"
 }
 
 // vmSize is the size of the VM c runs in, as its unit asks it.
@@ -535,8 +592,9 @@ func reserves(s pb.CommandState) bool { return s == running || s == parked }
 
 // reservation is the memory the node keeps for c while it reserves: its
 // guarantee, or as much as it has held of its own, if more. One that asked
-// for no guarantee is assumed to need defaultReservation (at most admitLimit,
-// so it can always run alone): a build grows to gigabytes well after it
+// for no guarantee is charged its estimate, if it gave one; else, attached,
+// quickReservation, and detached, defaultReservation (each at most
+// admitLimit, so it can always run alone): a build grows to gigabytes well after it
 // starts, by when admission would have let others in beside it. From there
 // it only grows: a build's need recurs (each link wants its memory again), so
 // what it has held is what it may hold again, whatever it asked for. Never
@@ -544,7 +602,13 @@ func reserves(s pb.CommandState) bool { return s == running || s == parked }
 // fills, so counting it would leave the node idle. Call with e.mu held.
 func (e *Engine) reservation(c *command) int64 {
 	base := c.cmd().Limits.GetMemoryLowBytes()
-	if base == 0 {
+	switch {
+	case base > 0:
+	case c.cmd().GetEstimate().GetMemoryBytes() > 0:
+		base = min(c.cmd().GetEstimate().GetMemoryBytes(), e.admitLimit())
+	case c.cmd().Attached:
+		base = min(quickReservation, e.admitLimit())
+	default:
 		base = min(defaultReservation, e.admitLimit())
 	}
 	return max(base, c.rec.PeakHeldBytes)
@@ -803,7 +867,8 @@ func oomReason(st unit.State, peakBytes int64) string {
 	return fmt.Sprintf("killed by the OOM killer (%s)", strings.Join(parts, "; "))
 }
 
-// admit starts queued commands, highest priority first, then base builds, then
+// admit starts queued commands, highest priority first, then attached ones
+// (quick runs a client waits on, the fast lane), then base builds, then
 // measurements (so waiting measurements hold the line ahead of focus-session
 // work), then the focus session's work, then oldest queued first, while they
 // fit. What it starts runs until it ends: nothing is frozen to make room.
@@ -820,6 +885,7 @@ func (e *Engine) admit(ctx context.Context) {
 	slices.SortFunc(waiting, func(a, b *command) int {
 		return cmp.Or(
 			cmp.Compare(b.priority(), a.priority()),
+			cmpBool(b.cmd().Attached, a.cmd().Attached),
 			cmpBool(b.isFreshen(), a.isFreshen()),
 			cmpBool(b.cmd().Bench, a.cmd().Bench),
 			cmpBool(isFocusCommand(b, focus), isFocusCommand(a, focus)),
@@ -1420,6 +1486,7 @@ func (e *Engine) spec(c *command) (unit.Spec, error) {
 		TraceFS:      true,
 		Properties:   props,
 		VM:           vmSize(c),
+		TTY:          cmd.Tty,
 	}
 	if !vmFreshen {
 		spec.Binds = []unit.Bind{{Source: runDir, Target: runtimeTarget}}
@@ -2020,13 +2087,16 @@ func (e *Engine) endBy(c *command, state pb.CommandState, code *int32, why strin
 		})
 		return
 	}
+	if est := cmd.Estimate; est != nil {
+		cmd.Timeline = append(cmd.Timeline, &pb.CommandEvent{At: now, What: "estimate", Detail: estimateNote(est, c.rec.PeakMemoryBytes, seconds)})
+	}
 	f := &pb.FinishedCommand{
 		Id: cmd.Id, RepoId: c.rec.RepoId, NodeId: cmd.NodeId, WorkspaceId: cmd.WorkspaceId, Agent: c.rec.Agent,
 		Argv: cmd.Argv, Kind: cmd.Kind, State: state, ExitCode: code, Failure: failure,
 		EndedAt: now, QueuedSeconds: float64(started-cmd.QueuedAt) / 1000, Seconds: seconds,
 		ColdSeconds: cmd.ColdSeconds, PeakMemoryBytes: c.rec.PeakMemoryBytes, Parks: c.rec.Parks,
 		SessionId: cmd.SessionId, Reason: why, Bench: cmd.Bench, Runtime: e.commandRuntime(c),
-		Samples: cmd.Samples,
+		Samples: cmd.Samples, Estimate: clone(cmd.Estimate),
 	}
 	if len(cmd.Interventions) > 0 {
 		f.Interventions = make([]*pb.CommandIntervention, len(cmd.Interventions))

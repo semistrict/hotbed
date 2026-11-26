@@ -340,6 +340,58 @@ List a session's commands, live and just ended (-p for a project, --all for ever
 | `-n`, `--limit` |  | At most this many of the commands that ended, the newest to end (default 50); 0 for every one. Commands not yet ended are all listed. |
 | `--all` |  | Every session's commands. |
 
+## `output`
+
+### `hotbed output ID`
+
+QueryOutput reads a command's output, live or ended, as its terminal shows it (settled: progress redraws collapsed to their last state, colors gone), or raw: the lines matching a pattern with context, a range of lines, its head or tail, or what came after a line already read; with until, it first waits for a matching line or the command's end. Every output is kept whole, so nothing need be filtered as it runs: read what matters once it does. Each answer is bounded and says what it left out.
+
+*MCP tool: `output` · waits (no short deadline)*
+
+| Argument / Flag | Env | Help |
+| --- | --- | --- |
+| `ID` |  | The command's ID. |
+| `-g`, `--grep` |  | Only lines matching this RE2 regular expression, with --context lines around each. |
+| `-i`, `--ignore-case` |  | Match grep and until ignoring case. |
+| `-C`, `--context` |  | Lines of context around each grep match. |
+| `--head` |  | Its first N lines. |
+| `-n`, `--tail` |  | Its last N lines. |
+| `--from` |  | Lines from this line number on (1 is the first). |
+| `--to` |  | Lines up to and including this line number. |
+| `--after` |  | Only lines after this line number: what came since an earlier answer's next line. |
+| `--since-sync` |  | Only lines written since its workspace last synced: what a dev server logged since your last edit reached it. |
+| `--until` |  | Wait, first, until a line (after --after) matches this RE2 regular expression or the command ends; then answer, the matching lines marked. |
+| `--wait` |  | Wait, first, until the command ends. |
+| `--timeout` |  | How long --until or --wait waits at most, in seconds (default 60, at most 600). |
+| `--raw` |  | Lines as written, escape sequences and redraws included, not settled. |
+| `--max` |  | At most this many lines in the answer (default 200, at most 5000). |
+
+## `detach`
+
+### `hotbed detach ID`
+
+DetachCommand lets an attached command run on with no one following it, as a detached one does: left to its hard time limit, its soft one gone. hotbed run does this when a command outlasts its --wait.
+
+*MCP tool: `detach` · uses `-s/--session`*
+
+| Argument / Flag | Env | Help |
+| --- | --- | --- |
+| `ID` |  | The command's ID. |
+
+## `send`
+
+### `hotbed send ID TEXT`
+
+SendInput types into a command run in a terminal (tty): a prompt's answer, a key a tool waits for.
+
+*MCP tool: `send` · uses `-s/--session`*
+
+| Argument / Flag | Env | Help |
+| --- | --- | --- |
+| `ID` |  | The command's ID. |
+| `TEXT` |  | What to type. A newline follows it unless --no-newline. |
+| `--no-newline` |  | Send the text as it is, without a newline after it. |
+
 ## `daemon-logs`
 
 ### `hotbed daemon-logs`

@@ -19,6 +19,7 @@ import (
 	"runtime"
 	"sort"
 	"strconv"
+	"slices"
 	"strings"
 	"sync"
 	"syscall"
@@ -103,7 +104,18 @@ type managedCmd struct {
 	exited       int64
 	errMsg       string
 	done         chan struct{}
+	// master is its terminal, when it runs in one (tty); pumped is closed
+	// once all it wrote there is in its log.
+	master *os.File
+	pumped chan struct{}
 }
+
+// Terminal size a command run in a terminal gets when its start names none:
+// wide, so lines a tool fits to its width are seldom cut.
+const (
+	defaultTTYCols = 200
+	defaultTTYRows = 50
+)
 
 // NewServer constructs a guestd Server and prepares its state directories.
 func NewServer(cfg ServerConfig) (*Server, error) {
@@ -321,9 +333,28 @@ func (s *Server) StartCommand(_ context.Context, req *guestdv1.StartCommandReque
 		return nil, connect.NewError(connect.CodeInternal, "start command: "+err.Error())
 	}
 	cmd.Dir = dir
-	cmd.Stdout = logFile
-	cmd.Stderr = logFile
+	var master, slave *os.File
 	attr := &syscall.SysProcAttr{Setpgid: true}
+	if req.GetTty() {
+		if master, slave, _, err = pty.Open(); err != nil {
+			_ = logFile.Close()
+			s.mu.Unlock()
+			return nil, connect.NewError(connect.CodeInternal, "open a terminal: "+err.Error())
+		}
+		cols, rows := uint16(defaultTTYCols), uint16(defaultTTYRows)
+		if req.GetCols() > 0 && req.GetRows() > 0 {
+			cols, rows = uint16(req.GetCols()), uint16(req.GetRows())
+		}
+		_ = pty.Resize(master, cols, rows)
+		cmd.Env = withEnvDefault(cmd.Env, "TERM", "xterm-256color")
+		cmd.Stdin, cmd.Stdout, cmd.Stderr = slave, slave, slave
+		// Its own session, the terminal its controlling one; a session
+		// leader leads its process group too, so no Setpgid.
+		attr = &syscall.SysProcAttr{Setsid: true, Setctty: true}
+	} else {
+		cmd.Stdout = logFile
+		cmd.Stderr = logFile
+	}
 	if req.Uid > 0 || req.Gid > 0 {
 		if os.Geteuid() == 0 {
 			attr.Credential = &syscall.Credential{
@@ -338,8 +369,14 @@ func (s *Server) StartCommand(_ context.Context, req *guestdv1.StartCommandReque
 	usedCgroupFD, closeCgroupFD := attachCgroupAttr(attr, cg)
 	err = cmd.Start()
 	closeCgroupFD()
+	if slave != nil {
+		_ = slave.Close()
+	}
 	if err != nil {
 		_ = logFile.Close()
+		if master != nil {
+			_ = master.Close()
+		}
 		if cg != nil {
 			cg.remove()
 		}
@@ -362,6 +399,14 @@ func (s *Server) StartCommand(_ context.Context, req *guestdv1.StartCommandReque
 		mainPID: pid,
 		started: time.Now().UnixMilli(),
 		done:    make(chan struct{}),
+	}
+	if master != nil {
+		mc.master, mc.pumped = master, make(chan struct{})
+		go func() {
+			// Ends with EIO once every holder of the terminal has exited.
+			_, _ = io.Copy(logFile, master)
+			close(mc.pumped)
+		}()
 	}
 	s.cmds[req.Id] = mc
 	s.mu.Unlock()
@@ -395,9 +440,57 @@ func (s *Server) waitCommand(mc *managedCmd) {
 	if err != nil && code == 0 && sig == 0 {
 		mc.errMsg = err.Error()
 	}
+	if mc.master != nil {
+		// What it wrote last is still in its terminal: let it reach the log.
+		// Everything holding the terminal is killed with its cgroup, so the
+		// pump ends; one outside any cgroup is given a moment.
+		select {
+		case <-mc.pumped:
+		case <-time.After(2 * time.Second):
+			s.log.Warn("terminal still held after the command exited; closing it", "id", mc.id)
+		}
+		_ = mc.master.Close()
+		<-mc.pumped
+	}
 	_ = mc.logFile.Close()
 	close(mc.done)
 	mc.mu.Unlock()
+}
+
+// SendInput writes to the terminal of a command run in one.
+func (s *Server) SendInput(_ context.Context, req *guestdv1.SendInputRequest) (*guestdv1.SendInputResponse, error) {
+	s.mu.Lock()
+	mc, ok := s.cmds[req.GetId()]
+	s.mu.Unlock()
+	if !ok {
+		return nil, connect.NewError(connect.CodeNotFound, fmt.Sprintf("no command %s", req.GetId()))
+	}
+	if mc.master == nil {
+		return nil, connect.NewError(connect.CodeFailedPrecondition, fmt.Sprintf("command %s does not run in a terminal: it reads no input", req.GetId()))
+	}
+	select {
+	case <-mc.done:
+		return nil, connect.NewError(connect.CodeFailedPrecondition, fmt.Sprintf("command %s has exited", req.GetId()))
+	default:
+	}
+	if _, err := mc.master.Write(req.GetData()); err != nil {
+		return nil, connect.NewError(connect.CodeInternal, "write to its terminal: "+err.Error())
+	}
+	return &guestdv1.SendInputResponse{}, nil
+}
+
+// withEnvDefault sets key=value in env unless env sets key. An empty env
+// means the process's own, as exec.Cmd takes it.
+func withEnvDefault(env []string, key, value string) []string {
+	if len(env) == 0 {
+		env = os.Environ()
+	}
+	for _, kv := range env {
+		if strings.HasPrefix(kv, key+"=") {
+			return env
+		}
+	}
+	return append(slices.Clip(env), key+"="+value)
 }
 
 func (mc *managedCmd) snapshot() *guestdv1.CommandStatus {

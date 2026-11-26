@@ -853,8 +853,19 @@ type runCmd struct {
 	Args   []string `arg:"" optional:"" passthrough:"" help:"The command, after --."`
 	NoSync bool     `help:"Do not sync the checkout this is run in: the run then stays in the workspace the session has, whose state lives on its node alone."`
 	Fork   bool     `help:"Run in a throwaway workspace of its own: a new one, forked from the project's base with this checkout synced in, and deleted, with whatever the command left in it, once the command ends. It neither waits for the session's workspace nor changes it."`
-	Detach bool     `help:"Return once the command is queued; it runs until it ends, hotbed stop, or a time limit given. For dev servers and long jobs; wait on it with hotbed logs -f."`
+	Detach bool     `help:"Return once the command is queued; it runs until it ends, hotbed stop, or a time limit given. For dev servers and long jobs: it needs --mem (unless an earlier run of the same command says), and runs in a terminal in a VM; read it with hotbed output."`
 	Port   int      `help:"Port a dev server listens on, for its URL."`
+	Wait   string   `help:"How long to wait on the command before leaving it running, detached (exit 125): it runs on, its output kept whole for hotbed output to read. Such as 10m; 0 to wait until it ends (default: 2m; with --soft-limit, until that pauses it)."`
+	// MaxOutput bounds what prints as the command runs.
+	MaxOutput string `name:"max-output" default:"32K" help:"Print at most this much of its output as it runs, such as 64K; past it, the rest is kept whole, its last lines print as it ends, and hotbed output reads all of it. 0 to print it all."`
+	TTY       bool   `name:"tty" xor:"tty" help:"Run it in a terminal, as in a person's shell: tools draw progress and color, and read what hotbed send types; hotbed output settles what they redraw. Default for --detach in a VM. vm runtime only."`
+	NoTTY     bool   `name:"no-tty" xor:"tty" help:"Run it without a terminal: output to a file, input from /dev/null."`
+	Mem       string `help:"The memory it is expected to hold at its peak, such as 4G: the node reserves it for it. A detached run needs it, unless an earlier run of the same command says."`
+	Expect    string `help:"How long it is expected to take, such as 20m: its end says how it compared."`
+	Ready     string `help:"With --detach, return once a line of its output matches this regular expression (it is ready): a dev server's \"listening\". Waits at most --ready-timeout."`
+	ReadyPort bool   `name:"ready-port" help:"With --detach and --port, return once its port takes connections."`
+	// ReadyTimeout bounds --ready and --ready-port.
+	ReadyTimeout string `name:"ready-timeout" default:"2m" help:"How long --ready and --ready-port wait at most."`
 	commandFlags
 	placementFlags
 }
@@ -869,6 +880,26 @@ func (c *runCmd) Raw(ctx context.Context, d deps) (int, bool, error) {
 	if err != nil {
 		return 0, false, err
 	}
+	wait, err := c.runWait()
+	if err != nil {
+		return 0, false, err
+	}
+	maxOutput, err := parseSize(c.MaxOutput)
+	if err != nil {
+		return 0, false, err
+	}
+	readyTimeout, err := parseLimit("--ready-timeout", c.ReadyTimeout, 2*time.Minute)
+	if err != nil {
+		return 0, false, err
+	}
+	if (c.Ready != "" || c.ReadyPort) && !c.Detach {
+		return 0, false, api.Errorf(api.CodeInvalidArgs, "--ready and --ready-port wait for a detached run to be ready").
+			WithSuggestion("add --detach")
+	}
+	if c.ReadyPort && c.Port == 0 {
+		return 0, false, api.Errorf(api.CodeInvalidArgs, "--ready-port waits for --port: give the port it listens on")
+	}
+	req.Tty = c.ttyMode()
 	session, err := c.sessionFlag.resolve(ctx, d)
 	if err != nil {
 		return 0, false, err
@@ -889,6 +920,12 @@ func (c *runCmd) Raw(ctx context.Context, d deps) (int, bool, error) {
 	if err != nil {
 		return 0, false, err
 	}
+	if req.Estimate, err = c.estimate(ctx, d, ws.Project, repo, req.Args); err != nil {
+		if ws.Throwaway {
+			c.discard(ctx, d, ws)
+		}
+		return 0, false, err
+	}
 	cmd, err := c.start(ctx, d, w, ws, req, repo, dir)
 	if err != nil {
 		if ws.Throwaway {
@@ -900,6 +937,11 @@ func (c *runCmd) Raw(ctx context.Context, d deps) (int, bool, error) {
 		cmd.Project = ws.Project
 	}
 	if c.Detach {
+		if c.Ready != "" || c.ReadyPort {
+			if err := waitServing(ctx, w, cmd, c.Ready, c.ReadyPort, readyTimeout, d.stderr); err != nil {
+				return 0, false, err
+			}
+		}
 		d.cockpit.fill(cmd)
 		if err := writeOutput(d.stdout, "run", c, cmd, d.output); err != nil {
 			return 0, false, err
@@ -911,7 +953,19 @@ func (c *runCmd) Raw(ctx context.Context, d deps) (int, bool, error) {
 		where = "throwaway workspace " + ws.Id
 	}
 	fmt.Fprintf(d.stderr, "hotbed: %s running in %s on %s (hotbed stop -s %s %s)\n", cmd.Id, where, ws.Node, session, cmd.Id)
-	code, err := attach(ctx, w, cmd.Id, d.stdout, d.stderr)
+	out := &outputBudget{w: d.stdout, limit: maxOutput}
+	code, detached, err := attachFor(ctx, w, cmd.Id, session, wait, out, d.stderr)
+	if out.held > 0 && (err == nil || detached) {
+		tctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
+		defer cancel()
+		if terr := printTail(tctx, w, cmd.Id, d.stdout); terr != nil {
+			fmt.Fprintf(d.stderr, "hotbed: could not read %s's last lines: %v; hotbed output %s reads them\n", cmd.Id, api.FromConnect(terr), cmd.Id)
+		}
+	}
+	if detached {
+		fmt.Fprintln(d.stderr, detachedHelp(cmd.Id, wait))
+		return exitDetached, true, nil
+	}
 	return code, true, err
 }
 

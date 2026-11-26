@@ -102,6 +102,9 @@ import {
   type Prompt,
   type PromptOption,
   type PromptSchema,
+  type QueryOutputRequestSchema,
+  type OutputQuery,
+  type OutputLine,
   type Question,
   type QuestionChange,
   type Rebuilt,
@@ -185,6 +188,8 @@ export {
   type Command,
   type CommandDiagnostics,
   type CommandSample,
+  type OutputQuery,
+  type OutputLine,
   type CommandEvent,
   type CommandIntervention,
   type CommandLimits,
@@ -295,6 +300,7 @@ export {
 
 export type AnswerInput = MessageInitShape<typeof AnswerSchema>;
 export type PromptInput = MessageInitShape<typeof PromptSchema>;
+export type OutputQueryInput = Omit<MessageInitShape<typeof QueryOutputRequestSchema>, "id" | "$typeName">;
 export type MemoryContentInput = MessageInitShape<typeof MemoryContentSchema>;
 export type WorkerConfigInput = MessageInitShape<typeof WorkerConfigSchema>;
 
@@ -520,6 +526,10 @@ export interface Api {
   startGitHubLogin(input?: StartGitHubLoginInput): Promise<GitHubLoginChallenge>;
   completeGitHubLogin(loginId: string): Promise<GitCredential>;
   commandLog(id: string): Promise<CommandLog>;
+  /** A command's output as written, from offset to what it has so far, and the offset to read on from. */
+  outputBytes(id: string, offset: bigint, signal?: AbortSignal): Promise<{ data: Uint8Array; next: bigint }>;
+  /** Questions of a command's output (QueryOutput). */
+  queryOutput(id: string, query: OutputQueryInput): Promise<OutputQuery>;
   files(workspaceId: string): Promise<FileEntry[]>;
   file(workspaceId: string, path: string): Promise<FileContent>;
   inspectCommand(id: string, opts?: { sections?: InspectSection[]; pid?: number }, signal?: AbortSignal): Promise<InspectCommandResponse>;

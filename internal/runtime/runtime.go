@@ -37,6 +37,8 @@ type CommandSpec struct {
 	// VM is the size of the VM it runs in, on a runtime that boots one for
 	// it; zero fields for the node's defaults.
 	VM unit.VMSize
+	// TTY runs it in a terminal (unit.Spec.TTY).
+	TTY bool
 }
 
 // CommandStatus is the runtime's observed state of a single command.
@@ -109,6 +111,8 @@ type WorkspaceRuntime interface {
 	StopCommand(ctx context.Context, wsID, cmdID string, grace time.Duration) error
 	FreezeCommand(ctx context.Context, wsID, cmdID string) error
 	ThawCommand(ctx context.Context, wsID, cmdID string) error
+	// SendInput writes data to the terminal of a command run in one.
+	SendInput(ctx context.Context, wsID, cmdID string, data []byte) error
 	Reclaim(ctx context.Context, wsID, cmdID string, bytes int64) error
 	StreamLogs(ctx context.Context, wsID, cmdID string, offset int64, follow bool, dst io.Writer) (int64, error)
 

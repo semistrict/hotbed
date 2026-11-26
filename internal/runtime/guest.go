@@ -88,8 +88,17 @@ func (g *GuestRuntime) StartCommand(ctx context.Context, wsID string, spec Comma
 		CpuWeight:  int32(spec.CPUWeight),
 		MemoryLow:  spec.MemoryLow,
 		MemoryHigh: spec.MemoryHigh,
+		Tty:        spec.TTY,
 	})
 	return err
+}
+
+func (g *GuestRuntime) SendInput(ctx context.Context, wsID, cmdID string, data []byte) error {
+	c, err := g.vms.ClientFor(wsID)
+	if err != nil {
+		return err
+	}
+	return c.SendInput(ctx, cmdID, data)
 }
 
 // VMExitReporter is optionally implemented by a GuestResolver that can tell

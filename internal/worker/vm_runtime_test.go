@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -319,6 +320,51 @@ func TestEngineWithGuestRuntimeEndToEnd(t *testing.T) {
 		t.Fatalf("Teardown count after the command ended = %d, want 1", rt.torn[wsID])
 	}
 
+	// 3b. A detached command runs in a terminal by default: it sees one,
+	// reads what hotbed send types, and its output reads settled.
+	if !cmd.Tty {
+		t.Fatalf("detached VM command tty = false, want a terminal by default")
+	}
+	ttyCmd, err := eng.Exec(ctx, &pb.RunCommandRequest{
+		WorkspaceId: wsID,
+		Repo:        "app",
+		Args:        []string{"/bin/sh", "-c", `test -t 0 && test -t 1 && printf 'IN_A_TERMINAL\n'; printf '\033[31mred\033[0m 10%%\r\033[K100%%\n'; read answer; echo "GOT $answer"`},
+	})
+	if err != nil {
+		t.Fatalf("Engine.Exec(tty): %v", err)
+	}
+	stepping, stopStepping := context.WithCancel(ctx)
+	defer stopStepping()
+	go func() {
+		for stepping.Err() == nil {
+			eng.step(stepping)
+			time.Sleep(50 * time.Millisecond)
+		}
+	}()
+	ready, err := eng.QueryOutput(ctx, &pb.QueryOutputRequest{Id: ttyCmd.Id, Until: "^100%$", TimeoutSeconds: 10})
+	if err != nil {
+		t.Fatalf("QueryOutput --until: %v", err)
+	}
+	if ready.Waited != "matched" {
+		t.Fatalf("waited = %q, want matched; lines %v", ready.Waited, ready.Lines)
+	}
+	if err := eng.SendInput(ctx, ttyCmd.Id, []byte("yes\n")); err != nil {
+		t.Fatalf("SendInput: %v", err)
+	}
+	ended, err := eng.QueryOutput(ctx, &pb.QueryOutputRequest{Id: ttyCmd.Id, Wait: true, TimeoutSeconds: 10})
+	if err != nil {
+		t.Fatalf("QueryOutput --wait: %v", err)
+	}
+	var got []string
+	for _, l := range ended.Lines {
+		got = append(got, l.Text)
+	}
+	// The terminal echoes what was typed; the redraw settles to its end.
+	if want := []string{"IN_A_TERMINAL", "100%", "yes", "GOT yes"}; ended.Waited != "ended" || !slices.Equal(got, want) {
+		t.Fatalf("after input: waited %q, lines %q; want ended, %q", ended.Waited, got, want)
+	}
+	stopStepping()
+
 	// 4. Interactive piped shell routed through guestd!
 	var shOut bytes.Buffer
 	shHandle, err := eng.cfg.Units.StartShell(ctx, unit.Spec{
@@ -375,8 +421,9 @@ func TestEngineWithGuestRuntimeEndToEnd(t *testing.T) {
 	if err := eng.ReleaseWorkspace(ctx, wsID); err != nil {
 		t.Fatalf("ReleaseWorkspace: %v", err)
 	}
-	if rt.torn[wsID] != 2 {
-		t.Fatalf("Teardown count after release = %d, want 2", rt.torn[wsID])
+	// One for each command's VM, and one for the release.
+	if rt.torn[wsID] != 3 {
+		t.Fatalf("Teardown count after release = %d, want 3", rt.torn[wsID])
 	}
 }
 
