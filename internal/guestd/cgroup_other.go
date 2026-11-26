@@ -25,6 +25,7 @@ func (c *cmdCgroup) killAll()                     {}
 func (c *cmdCgroup) reclaim(int64) error          { return nil }
 func dropPageCaches() error                       { return nil }
 func compactMemory() error                        { return nil }
+func guestCleanFileBytes() int64                  { return 0 }
 func (c *cmdCgroup) remove() {}
 func (c *cmdCgroup) stats() cmdCgroupStats {
 	if c == nil {

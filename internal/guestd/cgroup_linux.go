@@ -109,6 +109,14 @@ func guestSwapTotalBytes() int64 {
 	return parseMeminfoSwapTotal(string(b))
 }
 
+func guestCleanFileBytes() int64 {
+	b, err := os.ReadFile("/proc/meminfo")
+	if err != nil {
+		return 0
+	}
+	return parseMeminfoCleanFileBytes(string(b))
+}
+
 // writeCgroupReclaim writes payload to a cgroup v2 memory.reclaim file using raw
 // syscalls. Never use os.WriteFile: kernfs cgroup files are pollable, so Go's
 // runtime netpoller interprets memory.reclaim's EAGAIN (reclaimed less than

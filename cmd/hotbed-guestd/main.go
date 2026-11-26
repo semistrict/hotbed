@@ -121,6 +121,12 @@ func main() {
 			})
 		})
 	}
+	if *listenDir == "" {
+		g.Go(func() error {
+			srv.WatchFileCache(gctx)
+			return nil
+		})
+	}
 
 	log.Info("hotbed-guestd ready",
 		"workDir", *workDir,

@@ -11,8 +11,28 @@ import (
 
 // parseMeminfoSwapTotal parses SwapTotal in bytes from /proc/meminfo text.
 func parseMeminfoSwapTotal(raw string) int64 {
+	return parseMeminfoField(raw, "SwapTotal:")
+}
+
+// parseMeminfoCleanFileBytes parses clean, reclaimable file-backed page cache
+// bytes from /proc/meminfo text: Active(file) + Inactive(file) - Dirty - Writeback.
+// Using Active(file)+Inactive(file) excludes tmpfs/Shmem (which lives on the
+// anonymous LRU in Linux), so tmpfs-heavy workloads never false-trigger reclaim.
+func parseMeminfoCleanFileBytes(raw string) int64 {
+	activeFile := parseMeminfoField(raw, "Active(file):")
+	inactiveFile := parseMeminfoField(raw, "Inactive(file):")
+	dirty := parseMeminfoField(raw, "Dirty:")
+	writeback := parseMeminfoField(raw, "Writeback:")
+	clean := activeFile + inactiveFile - dirty - writeback
+	if clean < 0 {
+		return 0
+	}
+	return clean
+}
+
+func parseMeminfoField(raw, prefix string) int64 {
 	for _, line := range strings.Split(raw, "\n") {
-		rest, ok := strings.CutPrefix(line, "SwapTotal:")
+		rest, ok := strings.CutPrefix(line, prefix)
 		if !ok {
 			continue
 		}

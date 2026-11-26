@@ -64,6 +64,13 @@ type ServerConfig struct {
 	// host tests running as root, which would otherwise reboot the host).
 	AllowPowerOff bool
 	PowerOff      func() error // optional override for powerOffGuest (tests)
+
+	// Optional tuning for WatchFileCache (zero values use production defaults).
+	FileCacheThreshold     int64
+	FileCacheCheckInterval time.Duration
+	FileCacheMinCooldown   time.Duration
+	FileCacheMaxCooldown   time.Duration
+	FileCacheMinFreed      int64
 }
 
 // Server runs inside a workspace VM and handles requests from hotbed-worker.
@@ -78,7 +85,21 @@ type Server struct {
 	profiler      profiler.Profiler
 	allowPowerOff bool
 	powerOff      func() error
-	syncFS        func() // optional test hook overriding syncFilesystems
+
+	fileCacheThreshold     int64
+	fileCacheCheckInterval time.Duration
+	fileCacheMinCooldown   time.Duration
+	fileCacheMaxCooldown   time.Duration
+	fileCacheMinFreed      int64
+
+	// Optional test hooks overriding Linux /proc & syscall operations.
+	syncFS         func()
+	dropCaches     func() error
+	compactMem     func() error
+	cleanFileBytes func() int64
+	nowFn          func() time.Time
+
+	reclaimMu sync.Mutex
 
 	mu   sync.Mutex
 	cmds map[string]*managedCmd
@@ -149,17 +170,22 @@ func NewServer(cfg ServerConfig) (*Server, error) {
 		powerOffFn = powerOffGuest
 	}
 	return &Server{
-		workDir:       cfg.WorkDir,
-		stateDir:      cfg.StateDir,
-		runDir:        cfg.RunDir,
-		logDir:        logDir,
-		syncDir:       syncDir,
-		log:           cfg.Logger,
-		inspector:     insp,
-		profiler:      cfg.Profiler,
-		allowPowerOff: cfg.AllowPowerOff,
-		powerOff:      powerOffFn,
-		cmds:          map[string]*managedCmd{},
+		workDir:                cfg.WorkDir,
+		stateDir:               cfg.StateDir,
+		runDir:                 cfg.RunDir,
+		logDir:                 logDir,
+		syncDir:                syncDir,
+		log:                    cfg.Logger,
+		inspector:              insp,
+		profiler:               cfg.Profiler,
+		allowPowerOff:          cfg.AllowPowerOff,
+		powerOff:               powerOffFn,
+		fileCacheThreshold:     cfg.FileCacheThreshold,
+		fileCacheCheckInterval: cfg.FileCacheCheckInterval,
+		fileCacheMinCooldown:   cfg.FileCacheMinCooldown,
+		fileCacheMaxCooldown:   cfg.FileCacheMaxCooldown,
+		fileCacheMinFreed:      cfg.FileCacheMinFreed,
+		cmds:                   map[string]*managedCmd{},
 	}, nil
 }
 
@@ -692,7 +718,46 @@ func (s *Server) hasRunningCommand() bool {
 	return false
 }
 
+func (s *Server) doSyncFS() {
+	if s.syncFS != nil {
+		s.syncFS()
+		return
+	}
+	syncFilesystems()
+}
+
+func (s *Server) doDropCaches() error {
+	if s.dropCaches != nil {
+		return s.dropCaches()
+	}
+	return dropPageCaches()
+}
+
+func (s *Server) doCompactMemory() error {
+	if s.compactMem != nil {
+		return s.compactMem()
+	}
+	return compactMemory()
+}
+
+func (s *Server) readCleanFileBytes() int64 {
+	if s.cleanFileBytes != nil {
+		return s.cleanFileBytes()
+	}
+	return guestCleanFileBytes()
+}
+
+func (s *Server) now() time.Time {
+	if s.nowFn != nil {
+		return s.nowFn()
+	}
+	return time.Now()
+}
+
 func (s *Server) Reclaim(_ context.Context, req *guestdv1.ReclaimRequest) (*guestdv1.ReclaimResponse, error) {
+	s.reclaimMu.Lock()
+	defer s.reclaimMu.Unlock()
+
 	// Flush dirty pages only when the VM is quiescent (idle or all commands
 	// frozen/exited): calling a global sync() during a proactive sweep while a
 	// build is actively writing blocks behind every dirty cladefs write and
@@ -700,19 +765,15 @@ func (s *Server) Reclaim(_ context.Context, req *guestdv1.ReclaimRequest) (*gues
 	// already keep old build outputs flushed asynchronously so drop_caches
 	// drops them without stalling active writers.
 	if !s.hasRunningCommand() {
-		if s.syncFS != nil {
-			s.syncFS()
-		} else {
-			syncFilesystems()
-		}
+		s.doSyncFS()
 	}
-	_ = dropPageCaches()
+	_ = s.doDropCaches()
 	if req.GetId() != "" && req.GetBytes() > 0 {
 		if mc, ok := s.getCmd(req.GetId()); ok && mc.cg != nil {
 			_ = mc.cg.reclaim(req.GetBytes())
 		}
 	}
-	_ = compactMemory()
+	_ = s.doCompactMemory()
 	return &guestdv1.ReclaimResponse{}, nil
 }
 

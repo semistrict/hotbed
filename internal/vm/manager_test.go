@@ -27,6 +27,7 @@ type fakeLauncher struct {
 	running      map[string]bool
 	deactivating map[string]bool
 	exited       map[string]int
+	customStatus map[string]ProcessStatus
 	slices       map[string]string
 	onStart      func(ProcessSpec) error
 	onStop       func(ctx context.Context, name string) error
@@ -40,6 +41,7 @@ func newFakeLauncher() *fakeLauncher {
 		running:      map[string]bool{},
 		deactivating: map[string]bool{},
 		exited:       map[string]int{},
+		customStatus: map[string]ProcessStatus{},
 		slices:       map[string]string{},
 	}
 }
@@ -71,6 +73,7 @@ func (f *fakeLauncher) Stop(ctx context.Context, name string) error {
 	defer f.mu.Unlock()
 	delete(f.running, name)
 	delete(f.deactivating, name)
+	delete(f.customStatus, name)
 	f.exited[name] = 0
 	return nil
 }
@@ -78,6 +81,9 @@ func (f *fakeLauncher) Stop(ctx context.Context, name string) error {
 func (f *fakeLauncher) Status(_ context.Context, name string) (ProcessStatus, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if st, ok := f.customStatus[name]; ok {
+		return st, nil
+	}
 	if f.running[name] {
 		return ProcessStatus{Loaded: true, Running: true}, nil
 	}

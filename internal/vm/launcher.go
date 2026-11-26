@@ -58,6 +58,16 @@ func (s ProcessStatus) Alive() bool {
 	return s.Running || s.Deactivating
 }
 
+// DiedAbnormally reports whether the VMM process exited due to a signal,
+// OOM kill, core dump, or non-zero exit code.
+func (s ProcessStatus) DiedAbnormally() bool {
+	if !s.Exited {
+		return false
+	}
+	return s.Signal != 0 || s.OOMKilled || s.ExitCode != 0 ||
+		s.Result == "signal" || s.Result == "core-dump" || s.Result == "oom-kill" || s.Result == "exit-code"
+}
+
 // SystemdLauncher runs each Firecracker VM as a transient systemd service unit
 // so VMs outlive hotbed-worker restarts and are accounted under hotbed.slice.
 //
@@ -316,6 +326,8 @@ type directProc struct {
 	done     chan struct{}
 	exited   bool
 	exitCode int
+	signal   int
+	result   string
 }
 
 // NewDirectLauncher creates a DirectLauncher.
@@ -357,17 +369,30 @@ func (l *DirectLauncher) Start(_ context.Context, s ProcessSpec) error {
 	go func() {
 		err := cmd.Wait()
 		code := 0
+		sig := 0
+		result := "success"
 		if err != nil {
 			var ee *exec.ExitError
 			if errors.As(err, &ee) {
-				code = ee.ExitCode()
+				if ws, ok := ee.Sys().(syscall.WaitStatus); ok && ws.Signaled() {
+					sig = int(ws.Signal())
+					result = "signal"
+				} else {
+					code = ee.ExitCode()
+					if code != 0 {
+						result = "exit-code"
+					}
+				}
 			} else {
 				code = 1
+				result = "exit-code"
 			}
 		}
 		l.mu.Lock()
 		p.exited = true
 		p.exitCode = code
+		p.signal = sig
+		p.result = result
 		l.mu.Unlock()
 		if logFile != nil {
 			_ = logFile.Close()
@@ -431,6 +456,8 @@ func (l *DirectLauncher) Status(_ context.Context, name string) (ProcessStatus, 
 		Running:  !p.exited,
 		Exited:   p.exited,
 		ExitCode: p.exitCode,
+		Signal:   p.signal,
+		Result:   p.result,
 	}, nil
 }
 

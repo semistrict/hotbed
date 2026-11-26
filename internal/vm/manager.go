@@ -30,18 +30,19 @@ func IsEphemeralBuildID(id string) bool {
 
 // Instance represents one live Firecracker microVM backing a workspace.
 type Instance struct {
-	ID            string
-	UnitName      string
-	Dir           string
-	CellPath      string
-	CladefsVMSock string
-	VsockUDS      string
-	ConsoleLog    string
-	GuestCID      uint32
-	Net           NetAlloc
-	Client        *guestd.Client
-	StartedAt     time.Time
-	ToolsDiskPath string
+	ID             string
+	UnitName       string
+	Dir            string
+	CellPath       string
+	CladefsVMSock  string
+	VsockUDS       string
+	ConsoleLog     string
+	FirecrackerLog string
+	GuestCID       uint32
+	Net            NetAlloc
+	Client         *guestd.Client
+	StartedAt      time.Time
+	ToolsDiskPath  string
 	// VCPUs and MemMiB are the size it booted at, as its guest sees it.
 	VCPUs  int
 	MemMiB int
@@ -78,18 +79,28 @@ func (b BootTimes) String() string {
 // vmMeta is persisted to <RunDir>/<id>/meta.json so hotbed-worker can reconnect
 // to surviving Firecracker VMs across worker restarts without disrupting them.
 type vmMeta struct {
-	ID            string    `json:"id"`
-	UnitName      string    `json:"unitName"`
-	CellPath      string    `json:"cellPath"`
-	CladefsVMSock string    `json:"cladefsVMSock,omitempty"`
-	VsockUDS      string    `json:"vsockUDS"`
-	ConsoleLog    string    `json:"consoleLog"`
-	GuestCID      uint32    `json:"guestCID"`
-	Net           NetAlloc  `json:"net"`
-	StartedAt     time.Time `json:"startedAt"`
-	ToolsDiskPath string    `json:"toolsDiskPath,omitempty"`
-	VCPUs         int       `json:"vcpus,omitempty"`
-	MemMiB        int       `json:"memMiB,omitempty"`
+	ID             string    `json:"id"`
+	UnitName       string    `json:"unitName"`
+	CellPath       string    `json:"cellPath"`
+	CladefsVMSock  string    `json:"cladefsVMSock,omitempty"`
+	VsockUDS       string    `json:"vsockUDS"`
+	ConsoleLog     string    `json:"consoleLog"`
+	FirecrackerLog string    `json:"firecrackerLog,omitempty"`
+	GuestCID       uint32    `json:"guestCID"`
+	Net            NetAlloc  `json:"net"`
+	StartedAt      time.Time `json:"startedAt"`
+	ToolsDiskPath  string    `json:"toolsDiskPath,omitempty"`
+	VCPUs          int       `json:"vcpus,omitempty"`
+	MemMiB         int       `json:"memMiB,omitempty"`
+}
+
+const (
+	crashedDirName   = "_crashed"
+	maxCrashedVMDirs = 50
+)
+
+func isReservedRunDirName(name string) bool {
+	return name == toolsDirName || name == crashedDirName
 }
 
 // Manager launches, tracks, reconnects, and tears down Firecracker microVMs.
@@ -456,6 +467,7 @@ func (m *Manager) Start(ctx context.Context, spec LaunchSpec) (*Instance, error)
 
 	vsockUDS := filepath.Join(vmDir, "vsock.sock")
 	consoleLog := filepath.Join(vmDir, "console.log")
+	fcLog := filepath.Join(vmDir, "firecracker.log")
 	configPath := filepath.Join(vmDir, "vm.json")
 	unitName := "hotbed-vm-" + spec.ID
 
@@ -522,36 +534,48 @@ func (m *Manager) Start(ctx context.Context, spec LaunchSpec) (*Instance, error)
 
 	now := time.Now().UTC()
 	meta := vmMeta{
-		ID:            spec.ID,
-		UnitName:      unitName,
-		CellPath:      spec.CellHostPath,
-		CladefsVMSock: spec.CladefsVMSock,
-		VsockUDS:      vsockUDS,
-		ConsoleLog:    consoleLog,
-		GuestCID:      cid,
-		Net:           netAlloc,
-		StartedAt:     now,
-		ToolsDiskPath: spec.ToolsDiskPath,
-		VCPUs:         vcpus,
-		MemMiB:        memMiB,
+		ID:             spec.ID,
+		UnitName:       unitName,
+		CellPath:       spec.CellHostPath,
+		CladefsVMSock:  spec.CladefsVMSock,
+		VsockUDS:       vsockUDS,
+		ConsoleLog:     consoleLog,
+		FirecrackerLog: fcLog,
+		GuestCID:       cid,
+		Net:            netAlloc,
+		StartedAt:      now,
+		ToolsDiskPath:  spec.ToolsDiskPath,
+		VCPUs:          vcpus,
+		MemMiB:         memMiB,
 	}
 	if err := writeMeta(vmDir, meta); err != nil {
 		cleanupOnErr(true)
 		return nil, fmt.Errorf("vm %s: persist metadata: %w", spec.ID, err)
 	}
 
-	// Ensure Firecracker can write console.log when running as VMUser.
-	if f, err := os.OpenFile(consoleLog, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644); err == nil {
-		_ = f.Close()
-		_ = chownSockForUser(consoleLog, cfg.VMUser)
+	// Ensure Firecracker can write console.log and firecracker.log when running as VMUser.
+	for _, logPath := range []string{consoleLog, fcLog} {
+		if f, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644); err == nil {
+			_ = f.Close()
+			_ = chownSockForUser(logPath, cfg.VMUser)
+		}
 	}
 
 	procSpec := ProcessSpec{
-		Name:       unitName,
-		Slice:      cfg.Slice,
-		User:       cfg.VMUser,
-		Binary:     cfg.FirecrackerBin,
-		Args:       []string{"--enable-pci", "--no-api", "--config-file", configPath},
+		Name:   unitName,
+		Slice:  cfg.Slice,
+		User:   cfg.VMUser,
+		Binary: cfg.FirecrackerBin,
+		Args: []string{
+			"--id", spec.ID,
+			"--enable-pci",
+			"--no-api",
+			"--config-file", configPath,
+			"--log-path", fcLog,
+			"--level", "Info",
+			"--show-level",
+			"--show-log-origin",
+		},
 		ConsoleLog: consoleLog,
 	}
 	launching := time.Now()
@@ -564,10 +588,11 @@ func (m *Manager) Start(ctx context.Context, spec LaunchSpec) (*Instance, error)
 	boot.Launch = launched.Sub(launching)
 
 	client := guestd.NewClient(m.dialerFn(vsockUDS))
-	checks, err := m.waitHealthy(ctx, unitName, consoleLog, client)
+	checks, err := m.waitHealthy(ctx, unitName, consoleLog, fcLog, client)
 	boot.Guest, boot.HealthChecks = time.Since(launched), checks
 	if err != nil {
 		stopCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), m.stopTimeout())
+		preSt, _ := m.launcher.Status(stopCtx, unitName)
 		stopErr := m.forceStopUnit(stopCtx, unitName)
 		cancel()
 		if stopErr != nil {
@@ -580,27 +605,31 @@ func (m *Manager) Start(ctx context.Context, spec LaunchSpec) (*Instance, error)
 				"vm", spec.ID, "unit", unitName, "startErr", err, "stopErr", stopErr)
 			return nil, fmt.Errorf("vm %s: %w (cleanup stop failed: %v)", spec.ID, err, stopErr)
 		}
+		if preSt.DiedAbnormally() {
+			m.preserveCrashedLogs(spec.ID, unitName, vmDir, preSt, "start failed", err)
+		}
 		cleanupOnErr(true)
 		return nil, fmt.Errorf("vm %s: %w", spec.ID, err)
 	}
 
 	inst := &Instance{
-		ID:            spec.ID,
-		UnitName:      unitName,
-		Dir:           vmDir,
-		CellPath:      spec.CellHostPath,
-		CladefsVMSock: spec.CladefsVMSock,
-		VsockUDS:      vsockUDS,
-		ConsoleLog:    consoleLog,
-		GuestCID:      cid,
-		Net:           netAlloc,
-		Client:        client,
-		StartedAt:     now,
-		ToolsDiskPath: spec.ToolsDiskPath,
-		VCPUs:         vcpus,
-		MemMiB:        memMiB,
-		Boot:          boot,
-		gitAuth:       gaBridge,
+		ID:             spec.ID,
+		UnitName:       unitName,
+		Dir:            vmDir,
+		CellPath:       spec.CellHostPath,
+		CladefsVMSock:  spec.CladefsVMSock,
+		VsockUDS:       vsockUDS,
+		ConsoleLog:     consoleLog,
+		FirecrackerLog: fcLog,
+		GuestCID:       cid,
+		Net:            netAlloc,
+		Client:         client,
+		StartedAt:      now,
+		ToolsDiskPath:  spec.ToolsDiskPath,
+		VCPUs:          vcpus,
+		MemMiB:         memMiB,
+		Boot:           boot,
+		gitAuth:        gaBridge,
 	}
 	slog.Info("vm booted", "vm", spec.ID, "vcpus", vcpus, "mem_mib", memMiB, "total", boot.Total(),
 		"prepare", boot.Prepare, "launch", boot.Launch, "guest", boot.Guest, "health_checks", boot.HealthChecks)
@@ -614,7 +643,7 @@ func (m *Manager) Start(ctx context.Context, spec LaunchSpec) (*Instance, error)
 
 // waitHealthy waits for the guestd of the VM unitName runs to answer, and
 // says how many times it asked.
-func (m *Manager) waitHealthy(ctx context.Context, unitName, consoleLog string, client *guestd.Client) (int, error) {
+func (m *Manager) waitHealthy(ctx context.Context, unitName, consoleLog, fcLog string, client *guestd.Client) (int, error) {
 	deadline := time.Now().Add(m.cfg.BootTimeout)
 	var lastErr error
 	checks := 0
@@ -633,19 +662,11 @@ func (m *Manager) waitHealthy(ctx context.Context, unitName, consoleLog string, 
 
 		// Fail fast if Firecracker already exited (e.g. exit 158/159 or bad config).
 		if st, serr := m.launcher.Status(ctx, unitName); serr == nil && st.Loaded && st.Exited {
-			tail := readTail(consoleLog, 2048)
-			if tail != "" {
-				return checks, fmt.Errorf("%s\nconsole tail:\n%s", ExitReason(st.ExitCode), tail)
-			}
-			return checks, errors.New(ExitReason(st.ExitCode))
+			return checks, formatBootFailure(ExitReason(st.ExitCode), consoleLog, fcLog)
 		}
 
 		if time.Now().After(deadline) {
-			tail := readTail(consoleLog, 2048)
-			if tail != "" {
-				return checks, fmt.Errorf("timed out waiting for hotbed-guestd after %s (last err: %v)\nconsole tail:\n%s", m.cfg.BootTimeout, lastErr, tail)
-			}
-			return checks, fmt.Errorf("timed out waiting for hotbed-guestd after %s (last err: %v)", m.cfg.BootTimeout, lastErr)
+			return checks, formatBootFailure(fmt.Sprintf("timed out waiting for hotbed-guestd after %s (last err: %v)", m.cfg.BootTimeout, lastErr), consoleLog, fcLog)
 		}
 		select {
 		case <-ctx.Done():
@@ -653,6 +674,20 @@ func (m *Manager) waitHealthy(ctx context.Context, unitName, consoleLog string, 
 		case <-time.After(100 * time.Millisecond):
 		}
 	}
+}
+
+func formatBootFailure(base, consoleLog, fcLog string) error {
+	var b strings.Builder
+	b.WriteString(base)
+	if tail := readTail(consoleLog, 2048); tail != "" {
+		b.WriteString("\nconsole tail:\n")
+		b.WriteString(tail)
+	}
+	if tail := readTail(fcLog, 2048); tail != "" {
+		b.WriteString("\nfirecracker log tail:\n")
+		b.WriteString(tail)
+	}
+	return errors.New(b.String())
 }
 
 // Reconnect scans cfg.RunDir for Firecracker VMs that survived a hotbed-worker
@@ -673,7 +708,7 @@ func (m *Manager) Reconnect(ctx context.Context) (int, error) {
 			continue
 		}
 		id := ent.Name()
-		if id == toolsDirName {
+		if isReservedRunDirName(id) {
 			continue
 		}
 		vmDir := filepath.Join(m.cfg.RunDir, id)
@@ -732,6 +767,9 @@ func (m *Manager) Reconnect(ctx context.Context) (int, error) {
 			continue
 		}
 		if !st.Running {
+			if st.DiedAbnormally() {
+				m.preserveCrashedLogs(meta.ID, meta.UnitName, vmDir, st, "dead on reconnect", nil)
+			}
 			if m.net != nil && meta.Net.TAPName != "" {
 				m.net.ReleaseTAP(ctx, meta.Net)
 			}
@@ -757,21 +795,22 @@ func (m *Manager) Reconnect(ctx context.Context) (int, error) {
 		}
 
 		inst := &Instance{
-			ID:            meta.ID,
-			UnitName:      meta.UnitName,
-			Dir:           vmDir,
-			CellPath:      meta.CellPath,
-			CladefsVMSock: meta.CladefsVMSock,
-			VsockUDS:      meta.VsockUDS,
-			ConsoleLog:    meta.ConsoleLog,
-			GuestCID:      meta.GuestCID,
-			Net:           meta.Net,
-			Client:        client,
-			StartedAt:     meta.StartedAt,
-			ToolsDiskPath: meta.ToolsDiskPath,
-			VCPUs:         meta.VCPUs,
-			MemMiB:        meta.MemMiB,
-			gitAuth:       gaBridge,
+			ID:             meta.ID,
+			UnitName:       meta.UnitName,
+			Dir:            vmDir,
+			CellPath:       meta.CellPath,
+			CladefsVMSock:  meta.CladefsVMSock,
+			VsockUDS:       meta.VsockUDS,
+			ConsoleLog:     meta.ConsoleLog,
+			FirecrackerLog: meta.FirecrackerLog,
+			GuestCID:       meta.GuestCID,
+			Net:            meta.Net,
+			Client:         client,
+			StartedAt:      meta.StartedAt,
+			ToolsDiskPath:  meta.ToolsDiskPath,
+			VCPUs:          meta.VCPUs,
+			MemMiB:         meta.MemMiB,
+			gitAuth:        gaBridge,
 		}
 		m.mu.Lock()
 		m.instances[meta.ID] = inst
@@ -910,10 +949,18 @@ func (m *Manager) Stop(ctx context.Context, id string, syncFS bool) error {
 	stopCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), m.stopTimeout())
 	defer cancel()
 
+	// Capture exit status before forceStopUnit runs `systemctl reset-failed`,
+	// which clears systemd's Result / ExecMainCode / ExecMainStatus fields.
+	preSt, _ := m.launcher.Status(stopCtx, inst.UnitName)
+
 	if err := m.forceStopUnit(stopCtx, inst.UnitName); err != nil {
 		slog.Error("vm stop failed; preserving instance tracking and metadata",
 			"vm", id, "unit", inst.UnitName, "dir", inst.Dir, "err", err)
 		return fmt.Errorf("vm %s: stop failed: %w", id, err)
+	}
+
+	if preSt.DiedAbnormally() || syncErr != nil {
+		m.preserveCrashedLogs(id, inst.UnitName, inst.Dir, preSt, "stop", syncErr)
 	}
 
 	m.mu.Lock()
@@ -987,7 +1034,7 @@ func (m *Manager) ReconcileOrphans(ctx context.Context, ownedIDs map[string]bool
 
 	if entries, err := os.ReadDir(cfg.RunDir); err == nil {
 		for _, ent := range entries {
-			if ent.IsDir() && ent.Name() != "" && ent.Name() != toolsDirName {
+			if ent.IsDir() && ent.Name() != "" && !isReservedRunDirName(ent.Name()) {
 				candidates[ent.Name()] = struct{}{}
 			}
 		}
@@ -1029,12 +1076,17 @@ func (m *Manager) ReconcileOrphans(ctx context.Context, ownedIDs map[string]bool
 			}
 		} else {
 			stopCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), m.stopTimeout())
-			err := m.forceStopUnit(stopCtx, "hotbed-vm-"+id)
+			unitName := "hotbed-vm-" + id
+			preSt, _ := m.launcher.Status(stopCtx, unitName)
+			err := m.forceStopUnit(stopCtx, unitName)
 			if err != nil {
 				cancel()
-				slog.Warn("reap untracked orphan Firecracker VM failed", "vm", id, "unit", "hotbed-vm-"+id, "err", err)
+				slog.Warn("reap untracked orphan Firecracker VM failed", "vm", id, "unit", unitName, "err", err)
 				stillAlive[id] = true
 				continue
+			}
+			if preSt.DiedAbnormally() {
+				m.preserveCrashedLogs(id, unitName, vmDir, preSt, "orphan reap", nil)
 			}
 			if m.net != nil {
 				if metaErr == nil && meta.Net.TAPName != "" {
@@ -1197,4 +1249,95 @@ func readTail(path string, maxBytes int64) string {
 	}
 	b, _ := io.ReadAll(io.LimitReader(f, maxBytes))
 	return strings.TrimSpace(string(b))
+}
+
+type crashedVMRecord struct {
+	VMID       string        `json:"vmId"`
+	UnitName   string        `json:"unitName"`
+	CapturedAt time.Time     `json:"capturedAt"`
+	Why        string        `json:"why"`
+	SyncErr    string        `json:"syncErr,omitempty"`
+	Status     ProcessStatus `json:"status"`
+}
+
+// preserveCrashedLogs copies Firecracker's log, console output, and metadata
+// from vmDir into <RunDir>/_crashed/<timestamp>-<id>/ before vmDir is removed,
+// keeping at most maxCrashedVMDirs entries.
+func (m *Manager) preserveCrashedLogs(id, unitName, vmDir string, st ProcessStatus, why string, syncErr error) string {
+	cfg := m.configSnapshot()
+	if cfg.RunDir == "" {
+		return ""
+	}
+	crashRoot := filepath.Join(cfg.RunDir, crashedDirName)
+	now := time.Now().UTC()
+	dstDir := filepath.Join(crashRoot, fmt.Sprintf("%s-%s", now.Format("20060102T150405.000Z"), id))
+	if err := os.MkdirAll(dstDir, 0o755); err != nil {
+		slog.Warn("preserve crashed VM logs: mkdir failed", "vm", id, "dir", dstDir, "err", err)
+		return ""
+	}
+
+	for _, name := range []string{"firecracker.log", "console.log", "vm.json", "meta.json"} {
+		_ = copyCrashFile(filepath.Join(vmDir, name), filepath.Join(dstDir, name))
+	}
+
+	rec := crashedVMRecord{
+		VMID:       id,
+		UnitName:   unitName,
+		CapturedAt: now,
+		Why:        why,
+		Status:     st,
+	}
+	if syncErr != nil {
+		rec.SyncErr = syncErr.Error()
+	}
+	if b, err := json.MarshalIndent(rec, "", "  "); err == nil {
+		_ = os.WriteFile(filepath.Join(dstDir, "exit.json"), b, 0o644)
+	}
+
+	pruneCrashedDirs(crashRoot, maxCrashedVMDirs)
+	slog.Warn("preserved crashed VM logs",
+		"vm", id, "unit", unitName, "dir", dstDir, "why", why,
+		"signal", st.Signal, "exitCode", st.ExitCode, "result", st.Result, "oomKilled", st.OOMKilled)
+	return dstDir
+}
+
+func copyCrashFile(src, dst string) error {
+	in, err := os.Open(src)
+	if err != nil {
+		return err
+	}
+	defer in.Close()
+	out, err := os.OpenFile(dst, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o644)
+	if err != nil {
+		return err
+	}
+	_, cpErr := io.Copy(out, in)
+	closeErr := out.Close()
+	if cpErr != nil {
+		return cpErr
+	}
+	return closeErr
+}
+
+func pruneCrashedDirs(crashRoot string, keep int) {
+	if keep <= 0 {
+		return
+	}
+	entries, err := os.ReadDir(crashRoot)
+	if err != nil || len(entries) <= keep {
+		return
+	}
+	names := make([]string, 0, len(entries))
+	for _, ent := range entries {
+		if ent.IsDir() {
+			names = append(names, ent.Name())
+		}
+	}
+	slices.Sort(names)
+	if len(names) <= keep {
+		return
+	}
+	for _, old := range names[:len(names)-keep] {
+		_ = os.RemoveAll(filepath.Join(crashRoot, old))
+	}
 }
