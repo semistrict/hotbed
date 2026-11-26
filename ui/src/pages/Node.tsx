@@ -1,4 +1,7 @@
-import { Link, useParams } from "@tanstack/react-router";
+import { Link, useNavigate, useParams } from "@tanstack/react-router";
+import { Trash2 } from "lucide-react";
+import { useState } from "react";
+import { Button } from "@/components/ui/button";
 import { BaseState, baseStateLabel, CommandState, nodeAdmission, WorkspaceState, type HostUsage } from "../api";
 import { Meter, SegmentedBar } from "../components/charts/Bars";
 import { Columns } from "../components/charts/Columns";
@@ -7,10 +10,12 @@ import { HistoryTable, LiveCommandTable } from "../components/CommandTable";
 import { AdmissionBadge, AdmissionPanel, heldBands, PlacementList } from "../components/Admission";
 import { ContinuousProfilePanel } from "../components/ContinuousProfilePanel";
 import { DaemonLogsPanel } from "../components/DaemonLogsPanel";
+import { DeleteNodeDialog } from "../components/DeleteNodeDialog";
 import { EventFeed } from "../components/EventFeed";
 import { NodeObjectStoreSection } from "../components/ObjectStorePanel";
 import { Card, Empty, StatTile } from "../components/Panel";
 import { ArchBadge, BuildingBadge, OnlineBadge } from "../components/StateBadges";
+import { isReadOnlyViewer, useAuthMe } from "../lib/auth";
 import { useNodeColors, useSnapshot } from "../lib/data";
 import { ago, bytes, compact, duration, percent } from "../lib/format";
 import { buildCpuChartSeries, formatHostUsageFoot, hasCpuStealWarning, isHostStarved, nodeHostUsage } from "../lib/hostUsage";
@@ -47,11 +52,15 @@ export function HostCpuTile({ guestBusy, vcpus, host, online = true }: { guestBu
 
 export function NodePage() {
   const { hostname } = useParams({ from: "/nodes/$hostname" });
+  const navigate = useNavigate();
   const { data: s } = useSnapshot();
+  const { data: auth } = useAuthMe();
   const colors = useNodeColors(s?.nodes);
+  const [deleteOpen, setDeleteOpen] = useState(false);
   if (!s) return null;
   const n = s.nodes.find((x) => x.hostname === hostname);
   if (!n) return <NotFound />;
+  const isViewer = isReadOnlyViewer(auth);
   const now = Number(s.now);
   const color = colors.get(n.id) ?? "var(--series-1)";
   const series = s.series[n.id]?.samples ?? [];
@@ -101,6 +110,29 @@ export function NodePage() {
             >
               configure →
             </Link>
+            {!isViewer && (
+              <span
+                className="inline-flex"
+                title={
+                  n.online
+                    ? "Stop the worker on this node first (hotbed worker stop) before deleting it."
+                    : `Delete ${n.hostname} from the cluster`
+                }
+              >
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="xs"
+                  disabled={n.online}
+                  onClick={() => setDeleteOpen(true)}
+                  aria-label={`Delete ${n.hostname}`}
+                  className="h-auto gap-1 rounded-full border-border bg-card/70 px-2.5 py-0.5 font-mono text-[10.5px] text-muted-foreground hover:border-critical/60 hover:text-critical"
+                >
+                  <Trash2 className="size-3" />
+                  Delete
+                </Button>
+              </span>
+            )}
           </div>
         }
       />
@@ -324,6 +356,11 @@ export function NodePage() {
       <Card title="Ended here, 24 h" sub={`${history.length} commands`}>
         <HistoryTable s={s} rows={history} limit={60} />
       </Card>
+      <DeleteNodeDialog
+        node={deleteOpen ? n : null}
+        onOpenChange={setDeleteOpen}
+        onDeleted={() => void navigate({ to: "/nodes" })}
+      />
     </div>
   );
 }

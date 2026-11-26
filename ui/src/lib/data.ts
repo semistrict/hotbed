@@ -1,4 +1,4 @@
-import { keepPreviousData, useQuery } from "@tanstack/react-query";
+import { keepPreviousData, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useMemo } from "react";
 import { api, type Node, type Snapshot } from "../api";
 import { cmpBig } from "./format";
@@ -12,6 +12,25 @@ export function useSnapshot() {
     queryFn: () => api.snapshot(),
     refetchInterval: 1000,
     placeholderData: keepPreviousData,
+  });
+}
+
+/** Retire an offline node so it leaves the cluster and cockpit while keeping its history. */
+export function useRetireNode() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (node: string) => api.retireNode(node),
+    onSuccess: async (retired) => {
+      qc.setQueryData<Snapshot>(["snapshot"], (prev) =>
+        prev
+          ? {
+              ...prev,
+              nodes: prev.nodes.filter((n) => n.id !== retired.id && n.hostname !== retired.hostname),
+            }
+          : prev,
+      );
+      await qc.invalidateQueries({ queryKey: ["snapshot"] });
+    },
   });
 }
 

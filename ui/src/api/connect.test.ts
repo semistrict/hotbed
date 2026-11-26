@@ -451,6 +451,29 @@ describe("createConnectApi + protobuf-es types", () => {
     expect(stalled).toHaveLength(1);
   });
 
+  it("calls ClusterService.retireNode with the target node and returns the retired Node", async () => {
+    let seenNode = "";
+    const transport = createRouterTransport(({ service }) => {
+      service(ClusterService, {
+        retireNode: (req) => {
+          seenNode = req.node;
+          return create(NodeSchema, {
+            id: "node-dead-1",
+            hostname: "old-box",
+            online: false,
+          });
+        },
+      });
+    });
+
+    const api = createConnectApi(transport);
+    const retired = await api.retireNode("node-dead-1");
+    expect(seenNode).toBe("node-dead-1");
+    expect(retired.id).toBe("node-dead-1");
+    expect(retired.hostname).toBe("old-box");
+    expect(retired.online).toBe(false);
+  });
+
   it("formats bigint timestamps and byte sizes directly without ISO string round-trips", () => {
     expect(ago(1795320000000n, 1795320030000n)).toBe("30s ago");
     expect(ago(1795320000000n, 1795320000000n)).toBe("now");

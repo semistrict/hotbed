@@ -113,6 +113,10 @@ export async function fetchAuthMe(): Promise<AuthMe | null> {
   return (await res.json()) as AuthMe;
 }
 
+export function isReadOnlyViewer(auth: AuthMe | null | undefined): boolean {
+  return Boolean(auth?.workosEnabled && auth.organization?.role === "viewer");
+}
+
 export function useAuthMe() {
   return useQuery({
     queryKey: ["auth-me"],

@@ -117,3 +117,54 @@ describe("Nodes cladefs stats rendering", () => {
     expect(cardHtml).toContain("250 GiB free of 500 GiB");
   });
 });
+
+describe("Nodes delete controls", () => {
+  const onlineNode = create(NodeSchema, {
+    id: "n-online",
+    hostname: "ubu1",
+    online: true,
+    resources: create(ResourcesSchema, { arch: "amd64", cpus: 16, memoryBytes: 32n * 1024n ** 3n }),
+    usage: create(NodeUsageSchema, { cpuBusy: 0.25, memoryUsedBytes: 8n * 1024n ** 3n }),
+  });
+  const offlineNode = create(NodeSchema, {
+    id: "n-offline",
+    hostname: "old-box",
+    online: false,
+    resources: create(ResourcesSchema, { arch: "arm64", cpus: 8, memoryBytes: 16n * 1024n ** 3n }),
+  });
+  const snap = create(SnapshotSchema, { now: 100_000n, nodes: [onlineNode, offlineNode] });
+
+  it("renders a Delete button on offline NodeCards without nesting button inside anchor, and omits it on online cards", () => {
+    const onDelete = vi.fn();
+    const offlineHtml = renderToStaticMarkup(
+      <NodeCard n={offlineNode} s={snap} color="#fff" now={100_000} delay={0} onDelete={onDelete} />,
+    );
+    expect(offlineHtml).toContain('aria-label="Delete old-box"');
+    expect(offlineHtml).toContain("Delete");
+    // Ensure the delete button is never nested inside an <a> element.
+    expect(offlineHtml).not.toMatch(/<a\b[^>]*>[\s\S]*?<button\b[\s\S]*?<\/a>/);
+
+    const onlineHtml = renderToStaticMarkup(
+      <NodeCard n={onlineNode} s={snap} color="#fff" now={100_000} delay={0} onDelete={onDelete} />,
+    );
+    expect(onlineHtml).not.toContain('aria-label="Delete ubu1"');
+  });
+
+  it("renders enabled Delete for offline nodes and disabled Delete for online nodes in NodeTable", () => {
+    const tableHtml = renderToStaticMarkup(<NodeTable s={snap} onDelete={vi.fn()} />);
+    const onlineBtn = tableHtml.match(/<button\b[^>]*aria-label="Delete ubu1"[^>]*>/)?.[0] ?? "";
+    const offlineBtn = tableHtml.match(/<button\b[^>]*aria-label="Delete old-box"[^>]*>/)?.[0] ?? "";
+    expect(onlineBtn).toMatch(/\sdisabled(?:=""|\s|>)/);
+    expect(tableHtml).toContain("Stop the worker on this node first (hotbed worker stop) before deleting it.");
+    expect(offlineBtn).toContain('aria-label="Delete old-box"');
+    expect(offlineBtn).not.toMatch(/\sdisabled(?:=""|\s|>)/);
+  });
+
+  it("hides Delete controls when onDelete is omitted (e.g. read-only viewer)", () => {
+    const offlineHtml = renderToStaticMarkup(<NodeCard n={offlineNode} s={snap} color="#fff" now={100_000} delay={0} />);
+    expect(offlineHtml).not.toContain('aria-label="Delete old-box"');
+
+    const tableHtml = renderToStaticMarkup(<NodeTable s={snap} />);
+    expect(tableHtml).not.toContain("aria-label=\"Delete ");
+  });
+});

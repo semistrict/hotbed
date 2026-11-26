@@ -523,6 +523,7 @@ export interface StartGitHubLoginInput {
 
 export interface Api {
   snapshot(): Promise<Snapshot>;
+  retireNode(node: string): Promise<Node>;
   steps(project: string): Promise<StepStatus[]>;
   getWorkerConfig(node?: string): Promise<GetWorkerConfigResponse>;
   setWorkerConfig(input: SetWorkerConfigInput): Promise<WorkerConfig>;

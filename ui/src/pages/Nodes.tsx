@@ -1,34 +1,50 @@
 import { Link } from "@tanstack/react-router";
+import { Trash2 } from "lucide-react";
+import { useState } from "react";
+import { Button } from "@/components/ui/button";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { BaseState, CommandState, nodeAdmission, WorkspaceState, type Node, type ObjectStoreStats, type Snapshot } from "../api";
 import { AdmissionBadge, PlacementList } from "../components/Admission";
 import { Meter, SegmentedBar, Sparkline } from "../components/charts/Bars";
 import { Heatmap } from "../components/charts/Heatmap";
+import { DeleteNodeDialog } from "../components/DeleteNodeDialog";
 import { EventFeed } from "../components/EventFeed";
 import { nodeCacheHit } from "../components/ObjectStorePanel";
 import { Card } from "../components/Panel";
 import { ArchBadge, BuildingBadge, OnlineBadge, StateBadge } from "../components/StateBadges";
+import { isReadOnlyViewer, useAuthMe } from "../lib/auth";
 import { useNodeColors, useSnapshot } from "../lib/data";
 import { ago, bytes, compact, percent } from "../lib/format";
 import { formatHostUsageFoot, isHostStarved, nodeHostUsage } from "../lib/hostUsage";
 
 export function NodesPage() {
   const { data } = useSnapshot();
+  const { data: auth } = useAuthMe();
   const colors = useNodeColors(data?.nodes);
+  const [deleteTargetId, setDeleteTargetId] = useState<string | null>(null);
   if (!data) return null;
   const nowMs = Number(data.now);
+  const isViewer = isReadOnlyViewer(auth);
+  const onDelete = isViewer ? undefined : (n: Node) => setDeleteTargetId(n.id);
+  const deleteTarget = deleteTargetId ? (data.nodes.find((n) => n.id === deleteTargetId) ?? null) : null;
   return (
     <div className="space-y-6">
       <PageTitle title="Nodes" sub={`${data.nodes.filter((n) => n.online).length} of ${data.nodes.length} online · old PCs and Apple Silicon laptops on Asahi Linux`} />
       <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
         {data.nodes.map((n, i) => (
-          <NodeCard key={n.id} n={n} s={data} color={colors.get(n.id) ?? "var(--faint)"} now={nowMs} delay={i * 50} />
+          <NodeCard key={n.id} n={n} s={data} color={colors.get(n.id) ?? "var(--faint)"} now={nowMs} delay={i * 50} onDelete={onDelete} />
         ))}
       </div>
       <Admission s={data} now={nowMs} />
       <Card title="All nodes" sub="Every figure on this page as a table" delay={400}>
-        <NodeTable s={data} />
+        <NodeTable s={data} onDelete={onDelete} />
       </Card>
+      <DeleteNodeDialog
+        node={deleteTarget}
+        onOpenChange={(open) => {
+          if (!open) setDeleteTargetId(null);
+        }}
+      />
     </div>
   );
 }
@@ -77,7 +93,7 @@ export function PageTitle({ title, sub, right }: { title: string; sub?: string; 
   );
 }
 
-export function NodeCard({ n, s, color, now, delay }: { n: Node; s: Snapshot; color: string; now: number; delay: number }) {
+export function NodeCard({ n, s, color, now, delay, onDelete }: { n: Node; s: Snapshot; color: string; now: number; delay: number; onDelete?: (n: Node) => void }) {
   const buildingBases = s.bases.filter((b) => b.nodeId === n.id && b.state === BaseState.BUILDING);
   const buildingCmdIds = new Set(buildingBases.map((b) => b.command).filter(Boolean));
   const cmds = s.commands.filter(
@@ -105,16 +121,20 @@ export function NodeCard({ n, s, color, now, delay }: { n: Node; s: Snapshot; co
   const host = nodeHostUsage(n);
   const hostStarved = isHostStarved(usage?.cpuBusy ?? 0, host);
   return (
-    <Link
-      to="/nodes/$hostname"
-      params={{ hostname: n.hostname }}
-      className={`rise group block min-w-0 rounded-2xl border border-border bg-card/80 p-4 transition-colors hover:border-border-strong sm:p-5 ${n.online ? "" : "opacity-60"}`}
+    <div
+      className={`rise group relative block min-w-0 rounded-2xl border border-border bg-card/80 p-4 transition-[color,border-color,opacity] hover:border-border-strong sm:p-5 ${n.online ? "" : "opacity-60 hover:opacity-100"}`}
       style={{ animationDelay: `${delay}ms` }}
     >
       <div className="flex flex-wrap items-start gap-2.5 sm:flex-nowrap sm:gap-3">
         <span className="mt-2 inline-block h-[3px] w-4 shrink-0 rounded-full" style={{ background: color }} />
         <div className="min-w-0 flex-1">
-          <div className="display truncate text-[22px] leading-none font-semibold group-hover:text-primary sm:text-[26px]">{n.hostname}</div>
+          <Link
+            to="/nodes/$hostname"
+            params={{ hostname: n.hostname }}
+            className="display block truncate text-[22px] leading-none font-semibold group-hover:text-primary after:absolute after:inset-0 sm:text-[26px]"
+          >
+            {n.hostname}
+          </Link>
           <div className="mt-1.5 flex items-center gap-2 text-[11.5px] text-muted-foreground">
             <ArchBadge arch={res?.arch ?? ""} />
             <span className="truncate">{res?.machine ?? ""}</span>
@@ -223,11 +243,24 @@ export function NodeCard({ n, s, color, now, delay }: { n: Node; s: Snapshot; co
           </div>
         </>
       ) : (
-        <div className="mt-6 rounded-lg border border-dashed border-border-strong p-4 text-[12px] text-muted-foreground">
-          Not reporting. Its bases stay on its disk; workspaces go to other nodes until it is back.
+        <div className="mt-6 flex flex-wrap items-center justify-between gap-3 rounded-lg border border-dashed border-border-strong p-4 text-[12px] text-muted-foreground">
+          <span>Not reporting. Its bases stay on its disk; workspaces go to other nodes until it is back.</span>
+          {onDelete && (
+            <Button
+              type="button"
+              variant="outline"
+              size="xs"
+              onClick={() => onDelete(n)}
+              aria-label={`Delete ${n.hostname}`}
+              className="relative z-10 gap-1 font-mono text-[10.5px] text-muted-foreground hover:border-critical/60 hover:text-critical"
+            >
+              <Trash2 className="size-3" />
+              Delete
+            </Button>
+          )}
         </div>
       )}
-    </Link>
+    </div>
   );
 }
 
@@ -342,7 +375,7 @@ function Row({ label, value, children }: { label: string; value: string; childre
   );
 }
 
-export function NodeTable({ s }: { s: Snapshot }) {
+export function NodeTable({ s, onDelete }: { s: Snapshot; onDelete?: (n: Node) => void }) {
   const now = Number(s.now);
   const hasCladefs = s.nodes.some((n) => n.objectStore != null);
   const headers = hasCladefs
@@ -360,6 +393,11 @@ export function NodeTable({ s }: { s: Snapshot }) {
               {h}
             </TableHead>
           ))}
+          {onDelete && (
+            <TableHead className="h-auto px-2 py-2 text-right font-normal text-muted-foreground">
+              <span className="sr-only">Actions</span>
+            </TableHead>
+          )}
         </TableRow>
       </TableHeader>
       <TableBody className="num font-mono text-[11px]">
@@ -432,6 +470,31 @@ export function NodeTable({ s }: { s: Snapshot }) {
               </TableCell>
               <TableCell className="px-2 py-2 text-muted-foreground">{n.resources?.kernel ?? ""}</TableCell>
               <TableCell className="px-2 py-2 text-muted-foreground">{ago(n.lastSeen ?? n.joinedAt, now)}</TableCell>
+              {onDelete && (
+                <TableCell className="px-2 py-2 text-right">
+                  <span
+                    className="inline-flex"
+                    title={
+                      n.online
+                        ? "Stop the worker on this node first (hotbed worker stop) before deleting it."
+                        : `Delete ${n.hostname} from the cluster`
+                    }
+                  >
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="xs"
+                      disabled={n.online}
+                      onClick={() => onDelete(n)}
+                      aria-label={`Delete ${n.hostname}`}
+                      className="gap-1 font-mono text-[10.5px] text-muted-foreground hover:border-critical/60 hover:text-critical"
+                    >
+                      <Trash2 className="size-3" />
+                      Delete
+                    </Button>
+                  </span>
+                </TableCell>
+              )}
             </TableRow>
           );
         })}

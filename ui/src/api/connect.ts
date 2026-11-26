@@ -35,6 +35,7 @@ export function createConnectApi(
 
   return {
     snapshot: () => cluster.getSnapshot({}),
+    retireNode: (node) => cluster.retireNode({ node }),
     steps: async (project) => (await cluster.listSteps({ project })).steps,
     getWorkerConfig: (node = "") => cluster.getWorkerConfig({ node }),
     setWorkerConfig: (input) =>
