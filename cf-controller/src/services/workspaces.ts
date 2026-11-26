@@ -1578,42 +1578,56 @@ export function createWorkspaceService(ctrl: ControllerContext): {
 		},
 
 		async *followLog(req, ctx) {
-			// What the output has so far, as the controller keeps it, for
-			// the cockpit's terminal; a follower, which waits on the command,
-			// is relayed to its worker.
+			// The command's worker has its output as its log keeps it (cut
+			// past its limit); what the controller keeps of it serves a
+			// reader the worker cannot answer, gone or forgetful.
 			const reqOffset = Number(req.offset);
-			const stored =
-				req.follow || req.wait ? null : await ctrl.commands.readOutputChunks(req.id, reqOffset);
-			if (stored?.hasOutput) {
-				for (const c of stored.chunks) {
-					let data = c.data;
-					// If caller requested a mid-chunk offset on normal (non-marker) data, slice to reqOffset.
-					if (reqOffset > c.offset && c.nextOffset === c.offset + c.data.byteLength) {
-						const skip = reqOffset - c.offset;
-						if (skip >= data.byteLength) continue;
-						data = data.subarray(skip);
-					}
-					yield create(LogChunkSchema, {
-						data,
-						nextOffset: BigInt(c.nextOffset),
-						receivedAt: req.timestamps ? BigInt(c.receivedAt) : 0n,
-					});
-				}
-				return;
-			}
-			const { host, nodeId } = commandOf(req.id);
+			let relayed = false;
+			let failed: unknown = null;
+			let host = "";
 			try {
-				yield* ctrl.tunnel.callServerStream(
-					nodeId,
-					host,
+				const route = commandOf(req.id);
+				host = route.host;
+				for await (const chunk of ctrl.tunnel.callServerStream(
+					route.nodeId,
+					route.host,
 					"/hotbed.v1.WorkspaceService/FollowLog",
 					FollowLogRequestSchema,
 					req,
 					LogChunkSchema,
 					ctx.signal,
-				);
+				)) {
+					relayed = true;
+					yield chunk;
+				}
+				return;
 			} catch (err) {
-				throw fromWorkerError(host, err);
+				failed = host ? fromWorkerError(host, err) : err;
+				const code = codeOf(failed);
+				if (
+					relayed ||
+					req.follow ||
+					req.wait ||
+					(code !== ErrorCode.WorkerUnreachable && code !== ErrorCode.NotFound)
+				) {
+					throw failed;
+				}
+			}
+			const stored = await ctrl.commands.readOutputChunks(req.id, reqOffset);
+			if (!stored.hasOutput) throw failed;
+			for (const c of stored.chunks) {
+				let data = c.data;
+				// If caller requested a mid-chunk offset on normal (non-marker) data, slice to reqOffset.
+				if (reqOffset > c.offset && c.nextOffset === c.offset + c.data.byteLength) {
+					const skip = reqOffset - c.offset;
+					if (skip >= data.byteLength) continue;
+					data = data.subarray(skip);
+				}
+				yield create(LogChunkSchema, {
+					data,
+					nextOffset: BigInt(c.nextOffset),
+					receivedAt: req.timestamps ? BigInt(c.receivedAt) : 0n,
+				});
 			}
 		},
 
