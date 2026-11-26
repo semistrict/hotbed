@@ -181,6 +181,8 @@ export interface SampleRow {
 	r2Gets: number;
 	r2Fails: number;
 	r2WaitNs: number;
+	peerGiven: number;
+	peerServed: number;
 }
 
 export interface ForkRow {
@@ -2169,7 +2171,7 @@ export class ControllerStore {
 			const memFrac = mb > 0 ? Number(h.usage?.memoryUsedBytes ?? 0n) / mb : 0;
 			const os = h.objectStore;
 			this.sql.exec(
-				"INSERT OR REPLACE INTO samples (node_id, t, cpu, memory, psi, cpu_psi, holding, running, queued, parked, oom, r2_up, r2_down, r2_puts, r2_gets, r2_fails, r2_wait_ns) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+				"INSERT OR REPLACE INTO samples (node_id, t, cpu, memory, psi, cpu_psi, holding, running, queued, parked, oom, r2_up, r2_down, r2_puts, r2_gets, r2_fails, r2_wait_ns, peer_given, peer_served) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
 				nodeId,
 				nowMs,
 				h.usage?.cpuBusy ?? 0,
@@ -2187,6 +2189,8 @@ export class ControllerStore {
 				os?.getRequests ?? 0n,
 				os?.failedRequests ?? 0n,
 				os?.commitWaitNs ?? 0n,
+				os?.peerPartsGiven ?? 0n,
+				os?.peerPartsServed ?? 0n,
 			);
 			for (const session of h.activeSessions) {
 				this.touchSession(session, nowMs);
@@ -2472,7 +2476,7 @@ export class ControllerStore {
 	samplesSince(sinceMs: number): SampleRow[] {
 		return this.sql
 			.exec(
-				"SELECT node_id, t, cpu, memory, psi, cpu_psi, holding, running, queued, parked, oom, r2_up, r2_down, r2_puts, r2_gets, r2_fails, r2_wait_ns FROM samples WHERE t >= ? ORDER BY t",
+				"SELECT node_id, t, cpu, memory, psi, cpu_psi, holding, running, queued, parked, oom, r2_up, r2_down, r2_puts, r2_gets, r2_fails, r2_wait_ns, peer_given, peer_served FROM samples WHERE t >= ? ORDER BY t",
 				sinceMs,
 			)
 			.toArray()
@@ -2494,6 +2498,8 @@ export class ControllerStore {
 				r2Gets: num(r.r2_gets),
 				r2Fails: num(r.r2_fails),
 				r2WaitNs: num(r.r2_wait_ns),
+				peerGiven: num(r.peer_given),
+				peerServed: num(r.peer_served),
 			}));
 	}
 

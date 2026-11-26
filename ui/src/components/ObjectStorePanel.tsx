@@ -4,6 +4,7 @@ import { Meter, SegmentedBar } from "./charts/Bars";
 import { Columns } from "./charts/Columns";
 import { LineChart } from "./charts/LineChart";
 import { Card, Empty, StatTile } from "./Panel";
+import { ClusterPeerCacheCard, NodePeerCacheCard } from "./PeerCachePanel";
 import { bytes, bytesPerSec, compact, duration, percent } from "../lib/format";
 
 // Published Cloudflare R2 Standard pricing (USD, gross before free tier; $0 egress).
@@ -379,6 +380,8 @@ export function ClusterObjectStoreSection({ s, colors }: { s: Snapshot; colors: 
           </div>
         </Card>
 
+        <ClusterPeerCacheCard s={s} colors={colors} />
+
         <Card
           className="col-span-12 xl:col-span-5"
           title="Part cache & extent cache"
@@ -723,11 +726,6 @@ export function NodeObjectStoreSection({ n, s }: { n: Node; s: Snapshot }) {
                     <span className="num text-foreground">{compact(os.mountCellsAttached)}</span> FUSE {os.mountCellsAttached === 1 ? "cell" : "cells"}
                   </span>
                 )}
-                {(os.peerPartsGiven > 0n || os.peerPartsServed > 0n) && (
-                  <span>
-                    peers <span className="num text-foreground">↓{compact(os.peerPartsGiven)} ↑{compact(os.peerPartsServed)}</span>
-                  </span>
-                )}
                 {os.uploadPendingBytes > 0n && (
                   <span>
                     <span className="num text-foreground">{bytes(os.uploadPendingBytes)}</span> upload pending
@@ -775,6 +773,8 @@ export function NodeObjectStoreSection({ n, s }: { n: Node; s: Snapshot }) {
           )}
         </div>
       )}
+
+      <NodePeerCacheCard n={n} s={s} />
     </section>
   );
 }

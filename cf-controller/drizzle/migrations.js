@@ -16,6 +16,7 @@ import m0013 from "./0013_nebulous_sphinx.sql";
 import m0014 from "./0014_drop_node_keyed_shared_bases.sql";
 import m0015 from "./0015_shared_bases_held_by_workers.sql";
 import m0016 from "./0016_smooth_gideon.sql";
+import m0017 from "./0017_careless_jackpot.sql";
 
 export default {
 	journal,
@@ -37,5 +38,6 @@ export default {
 		m0014,
 		m0015,
 		m0016,
+		m0017,
 	},
 };
