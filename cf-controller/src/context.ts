@@ -80,9 +80,11 @@ export class ControllerContext {
 	readonly questionBridge?: QuestionBridgeHub;
 	readonly builds: BuildDistributor;
 	readonly power = new StandbyState(() => this.now());
+	readonly capacityChanges = new Wakeups();
 	readonly hostUsages = new HostUsageState();
 	readonly sessionWakes = new Wakeups();
 	readonly creatingWS = new Map<string, { promise: Promise<void>; resolve: () => void }>();
+	readonly sessionRaces = new Map<string, Promise<void>>();
 	readonly startingRuns = new Map<
 		string,
 		{ schedule: string; scheduled: boolean; stopWhy: string; abort: AbortController }

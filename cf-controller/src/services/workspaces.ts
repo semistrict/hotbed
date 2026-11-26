@@ -34,6 +34,7 @@ import {
 	OpenShellRequestSchema,
 	OpenShellResponseSchema,
 	PauseCommandRequestSchema,
+	PlacementDecisionSchema,
 	RebuiltSchema,
 	ReleaseWorkspaceRequestSchema,
 	ReleaseWorkspaceResponseSchema,
@@ -54,6 +55,7 @@ import {
 	type DaemonLogSource,
 	type FinishedCommand,
 	type Node,
+	type PlacementDecision,
 	type RunCommandRequest,
 	type Session,
 	type StopCommandRequest,
@@ -82,6 +84,9 @@ const DAEMON_LOG_WORKER_TIMEOUT_MS = 5_000;
 const DEFAULT_DAEMON_LOG_LIMIT = 200;
 const MAX_DAEMON_LOG_LIMIT = 1000;
 const UPGRADE_WAIT_MS = 90_000;
+const CAPACITY_WAIT_MS = 35_000;
+const WORKSPACE_RACE_HEDGE_MS = 2_000;
+const WORKSPACE_RACE_PREPARE_WAIT_MS = 1_500;
 
 function passOver(err: unknown): boolean {
 	const c = codeOf(err);
@@ -124,6 +129,7 @@ function commandOfHistory(f: FinishedCommand): Command {
 		interventions: f.interventions.map((iv) => clone(CommandInterventionSchema, iv)),
 		samples: f.samples,
 		estimate: f.estimate ? clone(CommandEstimateSchema, f.estimate) : undefined,
+		placement: f.placement ? clone(PlacementDecisionSchema, f.placement) : undefined,
 	});
 }
 
@@ -375,6 +381,363 @@ export function createWorkspaceService(ctrl: ControllerContext): {
 		}
 	}
 
+	async function waitCapacity(
+		hosts: string[],
+		deadlineMs: number,
+		signal?: AbortSignal,
+	): Promise<void> {
+		if (signal?.aborted) return;
+		const rem = deadlineMs - Date.now();
+		if (rem <= 0) return;
+		const waiters = [
+			ctrl.capacityChanges.wait("*"),
+			...hosts.map((h) => ctrl.power.changes.wait(h)),
+		];
+		try {
+			await waitPromise(Promise.race(waiters.map((w) => w.promise)), rem, signal);
+		} finally {
+			for (const w of waiters) w.cancel();
+		}
+	}
+
+	function formatWaitSuffix(waitStartMs: number): string {
+		if (waitStartMs <= 0) return "";
+		const secs = Math.max(1, Math.round((Date.now() - waitStartMs) / 1000));
+		return ` (waited ${secs}s for capacity)`;
+	}
+
+	function finalizeDecision(
+		d: PlacementDecision,
+		winner: Candidate,
+		reason: string,
+	): PlacementDecision {
+		d.nodeId = winner.view.node.id;
+		d.hostname = winner.host;
+		d.reason = reason;
+		for (const pc of d.candidates) {
+			pc.chosen = pc.nodeId === d.nodeId;
+		}
+		ctrl.store.addPlacement(d, ctrl.now());
+		return d;
+	}
+
+	function allocateWorkspaceLocked(
+		sess: Session,
+		projectName: string,
+		hosted: ReturnType<ControllerContext["hosted"]>,
+		node: Candidate,
+		req: CreateWorkspaceRequest,
+		syncHost: string,
+	): CreateWorkspaceRequest {
+		const chosenArch = node.view.hb?.resources?.arch ?? "";
+		const reqRuntime = req.placement?.bench ? "cladefs" : (req.placement?.runtime ?? "");
+		const chosenRuntimes = (node.view.hb?.resources?.runtimes ?? []).filter(
+			(r) => r === "vm" || r === "cladefs",
+		);
+		const sharedBaseRuntime = reqRuntime || chosenRuntimes[0] || "";
+		const sharedBase = ctrl.store.latestSharedBase(
+			projectName,
+			chosenArch,
+			ctrl.cladefsTenantId,
+			sharedBaseRuntime,
+		);
+		const fencingToken = ctrl.store.nextFencingToken();
+		const fwd = create(CreateWorkspaceRequestSchema, {
+			repo: req.repo,
+			agent: sess.agent,
+			id: newId(),
+			sessionId: sess.id,
+			syncDir: req.syncDir,
+			syncHost: req.syncDir ? syncHost : "",
+			project: hosted,
+			runtime: reqRuntime,
+			sharedBase,
+			fencingToken,
+			throwaway: req.throwaway,
+		});
+		const ok = ctrl.store.addLiveWorkspace(
+			fwd.id,
+			sess.id,
+			node.view.node.id,
+			sess.agent,
+			ctrl.now(),
+			req.throwaway,
+		);
+		if (!ok) {
+			const cur = ctrl.store.getSession(sess.id);
+			throw sessionEndedError(sess.id, cur.endReason);
+		}
+		ctrl.markCreatingWS(fwd.id);
+		return fwd;
+	}
+
+	function discardRacedWorkspace(
+		node: Candidate,
+		fwd: CreateWorkspaceRequest,
+		ac: AbortController,
+		promise: Promise<{ ws?: Workspace; err?: unknown }>,
+	): void {
+		ac.abort();
+		void promise.then(async (res) => {
+			if (res.ws) {
+				await releaseFailedWorkspace(res.ws.id).catch(() => {});
+				return;
+			}
+			// Best-effort cleanup in case the worker already created the workspace
+			// right as the controller aborted the CreateWorkspace RPC.
+			try {
+				await ctrl.tunnel.callUnary(
+					node.view.node.id,
+					node.host,
+					"/hotbed.v1.WorkspaceService/ReleaseWorkspace",
+					ReleaseWorkspaceRequestSchema,
+					create(ReleaseWorkspaceRequestSchema, { id: fwd.id }),
+					ReleaseWorkspaceResponseSchema,
+					WORKER_RPC_TIMEOUT_MS,
+				);
+			} catch {
+				// Worker never created it or is unreachable.
+			}
+		});
+	}
+
+	function linkAbort(parent?: AbortSignal): { ac: AbortController; unlink: () => void } {
+		const ac = new AbortController();
+		if (!parent) return { ac, unlink: () => {} };
+		if (parent.aborted) {
+			ac.abort();
+			return { ac, unlink: () => {} };
+		}
+		const onAbort = () => ac.abort();
+		parent.addEventListener("abort", onAbort, { once: true });
+		return { ac, unlink: () => parent.removeEventListener("abort", onAbort) };
+	}
+
+	async function raceWorkspaces(
+		sess: Session,
+		req: CreateWorkspaceRequest,
+		syncHost: string,
+		primary: Candidate,
+		primaryFwd: CreateWorkspaceRequest,
+		runnerUp: Candidate,
+		runnerUpFwdInitial: CreateWorkspaceRequest | undefined,
+		decision: PlacementDecision,
+		waitStartMs: number,
+		signal?: AbortSignal,
+	): Promise<{ ws?: Workspace; skipIds?: string[]; err?: unknown }> {
+		let releaseSessionRace!: () => void;
+		let raceToken: Promise<void> | null = null;
+		if (!req.throwaway) {
+			raceToken = new Promise<void>((r) => {
+				releaseSessionRace = r;
+			});
+			ctrl.sessionRaces.set(sess.id, raceToken);
+		}
+		const l1 = linkAbort(signal);
+		const l2 = linkAbort(signal);
+		type Attempt = {
+			node: Candidate;
+			fwd: CreateWorkspaceRequest;
+			ac: AbortController;
+			promise: Promise<{ ws?: Workspace; err?: unknown }>;
+			done: boolean;
+			res?: { ws?: Workspace; err?: unknown };
+		};
+		const startAttempt = (
+			node: Candidate,
+			fwd: CreateWorkspaceRequest,
+			ac: AbortController,
+		): Attempt => {
+			const att: Attempt = {
+				node,
+				fwd,
+				ac,
+				done: false,
+				promise: makeWorkspace(sess, node, fwd, ac.signal).then(
+					(ws) => {
+						att.done = true;
+						att.res = { ws };
+						return att.res;
+					},
+					(err) => {
+						att.done = true;
+						att.res = { err };
+						return att.res;
+					},
+				),
+			};
+			return att;
+		};
+
+		const waitSuffix = formatWaitSuffix(waitStartMs);
+		const baseReason = decision.reason;
+
+		try {
+			const a1 = startAttempt(primary, primaryFwd, l1.ac);
+			let a2: Attempt | null = runnerUpFwdInitial
+				? startAttempt(runnerUp, runnerUpFwdInitial, l2.ac)
+				: null;
+
+			const launchRunnerUp = async (): Promise<Attempt | null> => {
+				if (a2 || signal?.aborted) return a2;
+				try {
+					const fwd2 = await ctrl.withPlacementLock(() => {
+						const p = ctrl.store.getProject(sess.project);
+						const hosted = ctrl.hosted(p);
+						if (!req.throwaway) {
+							const existing = ctrl.store
+								.sessionWorkspaces(sess.id)
+								.find((w) => !w.throwaway && w.node === runnerUp.view.node.id);
+							if (existing) return null;
+						}
+						ctrl.power.wake(runnerUp.host, ctrl.now());
+						return allocateWorkspaceLocked(sess, p.name, hosted, runnerUp, req, syncHost);
+					});
+					if (!fwd2) return null;
+					a2 = startAttempt(runnerUp, fwd2, l2.ac);
+					return a2;
+				} catch {
+					return null;
+				}
+			};
+
+			// Hedged mode: give the clearly cheaper primary a short head start. If it
+			// returns a ready workspace before the hedge timer, never touch runnerUp.
+			if (!a2) {
+				let timer: ReturnType<typeof setTimeout> | undefined;
+				const hedge = new Promise<"hedge">((resolve) => {
+					timer = setTimeout(() => resolve("hedge"), WORKSPACE_RACE_HEDGE_MS);
+				});
+				const first = await Promise.race([a1.promise.then(() => "p1" as const), hedge]);
+				if (timer !== undefined) clearTimeout(timer);
+				if (first === "p1") {
+					const r1 = a1.res!;
+					if (r1.ws && (r1.ws.state !== WorkspaceState.PREPARING || !runnerUp.warm)) {
+						r1.ws.placement = finalizeDecision(decision, primary, baseReason + waitSuffix);
+						return { ws: r1.ws };
+					}
+					if (r1.err && (signal?.aborted || !passOver(r1.err))) {
+						return { err: r1.err };
+					}
+					// Primary returned PREPARING while runnerUp has a warm base, or primary
+					// failed with passOver: immediately launch runnerUp to race or take over.
+					await launchRunnerUp();
+				} else {
+					// Primary is still creating past the hedge delay: start runnerUp in parallel.
+					await launchRunnerUp();
+				}
+			}
+
+			if (!a2) {
+				const r1 = await a1.promise;
+				if (r1.ws) {
+					r1.ws.placement = finalizeDecision(decision, primary, baseReason + waitSuffix);
+					return { ws: r1.ws };
+				}
+				return {
+					err: r1.err,
+					skipIds: passOver(r1.err) ? [primary.view.node.id] : undefined,
+				};
+			}
+
+			// Parallel race between primary (a1) and runnerUp (a2).
+			// First READY (!PREPARING) workspace wins immediately; PREPARING waits for
+			// the other racer in case the other finishes READY.
+			const isReady = (r?: { ws?: Workspace; err?: unknown }) =>
+				Boolean(r?.ws && r.ws.state !== WorkspaceState.PREPARING);
+
+			if (!a1.done && !a2.done) {
+				await Promise.race([a1.promise, a2.promise]);
+			}
+
+			if (isReady(a1.res)) {
+				discardRacedWorkspace(a2.node, a2.fwd, a2.ac, a2.promise);
+				a1.res!.ws!.placement = finalizeDecision(
+					decision,
+					primary,
+					`${baseReason} (raced ${runnerUp.host})${waitSuffix}`,
+				);
+				return { ws: a1.res!.ws };
+			}
+			if (isReady(a2.res)) {
+				discardRacedWorkspace(a1.node, a1.fwd, a1.ac, a1.promise);
+				a2.res!.ws!.placement = finalizeDecision(
+					decision,
+					runnerUp,
+					`won workspace race against ${primary.host}${waitSuffix}`,
+				);
+				return { ws: a2.res!.ws };
+			}
+
+			// Neither is READY yet. If one already returned PREPARING while the other
+			// is still in flight, give the other racer a short grace window to finish
+			// READY before picking the PREPARING workspace and discarding the slow one.
+			if ((a1.done && a1.res?.ws) || (a2.done && a2.res?.ws)) {
+				const pending = a1.done ? a2.promise : a1.promise;
+				await waitPromise(
+					pending.then(() => {}),
+					WORKSPACE_RACE_PREPARE_WAIT_MS,
+					signal,
+				);
+			} else {
+				await Promise.all([a1.promise, a2.promise]);
+			}
+			const r1 = a1.res;
+			const r2 = a2.res;
+			if (isReady(r1)) {
+				discardRacedWorkspace(a2.node, a2.fwd, a2.ac, a2.promise);
+				r1!.ws!.placement = finalizeDecision(
+					decision,
+					primary,
+					`${baseReason} (raced ${runnerUp.host})${waitSuffix}`,
+				);
+				return { ws: r1!.ws };
+			}
+			if (isReady(r2)) {
+				discardRacedWorkspace(a1.node, a1.fwd, a1.ac, a1.promise);
+				r2!.ws!.placement = finalizeDecision(
+					decision,
+					runnerUp,
+					`won workspace race against ${primary.host}${waitSuffix}`,
+				);
+				return { ws: r2!.ws };
+			}
+			// Both are PREPARING, or one succeeded as PREPARING while the other failed/stalled.
+			if (r1?.ws) {
+				discardRacedWorkspace(a2.node, a2.fwd, a2.ac, a2.promise);
+				r1.ws.placement = finalizeDecision(
+					decision,
+					primary,
+					`${baseReason} (raced ${runnerUp.host})${waitSuffix}`,
+				);
+				return { ws: r1.ws };
+			}
+			if (r2?.ws) {
+				discardRacedWorkspace(a1.node, a1.fwd, a1.ac, a1.promise);
+				r2.ws.placement = finalizeDecision(
+					decision,
+					runnerUp,
+					`won workspace race against ${primary.host}${waitSuffix}`,
+				);
+				return { ws: r2.ws };
+			}
+			// Both failed.
+			const skipIds: string[] = [];
+			if (r1 && passOver(r1.err)) skipIds.push(primary.view.node.id);
+			if (r2 && passOver(r2.err)) skipIds.push(runnerUp.view.node.id);
+			return { err: r1?.err ?? r2?.err, skipIds: skipIds.length > 0 ? skipIds : undefined };
+		} finally {
+			l1.unlink();
+			l2.unlink();
+			if (raceToken) {
+				if (ctrl.sessionRaces.get(sess.id) === raceToken) {
+					ctrl.sessionRaces.delete(sess.id);
+				}
+				releaseSessionRace();
+			}
+		}
+	}
+
 	async function createWorkspaceInternal(
 		req: CreateWorkspaceRequest,
 		syncHost: string,
@@ -391,9 +754,42 @@ export function createWorkspaceService(ctrl: ControllerContext): {
 		const skip = new Set<string>();
 		let lastErr: unknown = null;
 		let upgradeDeadline = 0;
+		let capacityWaitStartedAt = 0;
+		let capacityDeadline = 0;
 
 		while (true) {
-			const claimed = await claim(sess, req, syncHost, skip, signal);
+			if (!req.throwaway) {
+				const inFlightRace = ctrl.sessionRaces.get(sess.id);
+				if (inFlightRace) {
+					await inFlightRace;
+					if (signal?.aborted) throw hotbedError(ErrorCode.Internal, "placement canceled");
+				}
+			}
+			const claimed = await claim(sess, req, syncHost, skip, signal, capacityWaitStartedAt);
+			if (claimed.allBusy) {
+				const hosts = claimed.busyHosts ?? [];
+				if (capacityWaitStartedAt === 0) {
+					capacityWaitStartedAt = Date.now();
+					capacityDeadline =
+						capacityWaitStartedAt +
+						Math.min(CAPACITY_WAIT_MS, ctrl.power.wakeWaitMs || CAPACITY_WAIT_MS);
+				}
+				if (signal?.aborted) {
+					throw hotbedError(ErrorCode.Internal, "placement canceled");
+				}
+				if (Date.now() >= capacityDeadline) {
+					throw hotbedError(
+						ErrorCode.NodesBusy,
+						`all eligible nodes are currently full (${hosts.join(", ")}); queued at controller, waiting for any to free up`,
+						{
+							retryable: true,
+							suggestion: "hotbed run waits automatically; pass --node HOST to queue on one node",
+						},
+					);
+				}
+				await waitCapacity(hosts, capacityDeadline, signal);
+				continue;
+			}
 			if (claimed.err) {
 				if (claimed.upgrading.length > 0) {
 					if (upgradeDeadline === 0) {
@@ -426,6 +822,7 @@ export function createWorkspaceService(ctrl: ControllerContext): {
 						ctrl.store.releaseWorkspaceRow(ws.id, ctrl.now());
 						continue;
 					}
+					ws.placement = claimed.decision;
 					return ws;
 				} catch (err) {
 					if (codeOf(err) === ErrorCode.NotFound && !ctrl.creatingWS.has(node.mine)) {
@@ -436,8 +833,32 @@ export function createWorkspaceService(ctrl: ControllerContext): {
 				}
 			}
 
+			if (claimed.runnerUp && claimed.decision) {
+				const raced = await raceWorkspaces(
+					sess,
+					req,
+					syncHost,
+					node,
+					claimed.fwd,
+					claimed.runnerUp,
+					claimed.runnerUpFwd,
+					claimed.decision,
+					capacityWaitStartedAt,
+					signal,
+				);
+				if (raced.ws) return raced.ws;
+				if (signal?.aborted || !raced.skipIds || raced.skipIds.length === 0) {
+					throw raced.err;
+				}
+				for (const id of raced.skipIds) skip.add(id);
+				lastErr = raced.err;
+				continue;
+			}
+
 			try {
-				return await makeWorkspace(sess, node, claimed.fwd, signal);
+				const ws = await makeWorkspace(sess, node, claimed.fwd, signal);
+				ws.placement = claimed.decision;
+				return ws;
 			} catch (err) {
 				if (signal?.aborted || !passOver(err)) throw err;
 				skip.add(node.view.node.id);
@@ -452,9 +873,15 @@ export function createWorkspaceService(ctrl: ControllerContext): {
 		syncHost: string,
 		skip: Set<string>,
 		signal?: AbortSignal,
+		waitStartMs = 0,
 	): Promise<{
 		node?: Candidate;
 		fwd?: CreateWorkspaceRequest;
+		runnerUp?: Candidate;
+		runnerUpFwd?: CreateWorkspaceRequest;
+		decision?: PlacementDecision;
+		allBusy?: boolean;
+		busyHosts?: string[];
 		upgrading: string[];
 		err?: unknown;
 	}> {
@@ -511,68 +938,61 @@ export function createWorkspaceService(ctrl: ControllerContext): {
 						);
 					},
 				);
-				const { chosen, why, err } = chooseCandidate(
+				const { chosen, runnerUp, raceImmediate, allBusy, busyHosts, why, err } = chooseCandidate(
 					cs,
 					req.placement,
 					p.hosts,
 					req.syncDir !== "",
+					{ waitForCapacity: req.waitForCapacity },
 				);
-				const d = buildPlacementDecision(cs, req.placement, p.hosts, chosen, why, err);
+				if (allBusy) {
+					return { kind: "done" as const, allBusy: true, busyHosts, upgrading: [] };
+				}
+				const waitSuffix = formatWaitSuffix(waitStartMs);
+				const d = buildPlacementDecision(
+					cs,
+					req.placement,
+					p.hosts,
+					chosen,
+					runnerUp ? why : why + waitSuffix,
+					err,
+					{
+						noSync: req.syncDir === "",
+						throwaway: req.throwaway,
+					},
+				);
 				d.sessionId = sess.id;
 				d.project = p.name;
 				d.repo = req.repo;
-				ctrl.store.addPlacement(d, ctrl.now());
+				if (!runnerUp) {
+					ctrl.store.addPlacement(d, ctrl.now());
+				}
 				if (err || !chosen) {
 					const up = upgradingFor(cs, req.placement, p.hosts, req.syncDir !== "");
-					return { kind: "done" as const, upgrading: up, err };
+					return { kind: "done" as const, decision: d, upgrading: up, err };
 				}
 				if (chosen.asleep) {
-					return { kind: "done" as const, node: chosen, upgrading: [] };
+					return { kind: "done" as const, node: chosen, decision: d, upgrading: [] };
 				}
 				ctrl.power.wake(chosen.host, ctrl.now());
 				if (chosen.mine) {
-					return { kind: "done" as const, node: chosen, upgrading: [] };
+					return { kind: "done" as const, node: chosen, decision: d, upgrading: [] };
 				}
-				const chosenArch = chosen.view.hb?.resources?.arch ?? "";
-				const reqRuntime = req.placement?.bench ? "cladefs" : (req.placement?.runtime ?? "");
-				const chosenRuntimes = (chosen.view.hb?.resources?.runtimes ?? []).filter(
-					(r) => r === "vm" || r === "cladefs",
-				);
-				const sharedBaseRuntime = reqRuntime || chosenRuntimes[0] || "";
-				const sharedBase = ctrl.store.latestSharedBase(
-					p.name,
-					chosenArch,
-					ctrl.cladefsTenantId,
-					sharedBaseRuntime,
-				);
-				const fencingToken = ctrl.store.nextFencingToken();
-				const fwd = create(CreateWorkspaceRequestSchema, {
-					repo: req.repo,
-					agent: sess.agent,
-					id: newId(),
-					sessionId: sess.id,
-					syncDir: req.syncDir,
-					syncHost: req.syncDir ? syncHost : "",
-					project: hosted,
-					runtime: reqRuntime,
-					sharedBase,
-					fencingToken,
-					throwaway: req.throwaway,
-				});
-				const ok = ctrl.store.addLiveWorkspace(
-					fwd.id,
-					sess.id,
-					chosen.view.node.id,
-					sess.agent,
-					ctrl.now(),
-					req.throwaway,
-				);
-				if (!ok) {
-					const cur = ctrl.store.getSession(sess.id);
-					throw sessionEndedError(sess.id, cur.endReason);
+				const fwd = allocateWorkspaceLocked(sess, p.name, hosted, chosen, req, syncHost);
+				let runnerUpFwd: CreateWorkspaceRequest | undefined;
+				if (runnerUp && raceImmediate) {
+					ctrl.power.wake(runnerUp.host, ctrl.now());
+					runnerUpFwd = allocateWorkspaceLocked(sess, p.name, hosted, runnerUp, req, syncHost);
 				}
-				ctrl.markCreatingWS(fwd.id);
-				return { kind: "done" as const, node: chosen, fwd, upgrading: [] };
+				return {
+					kind: "done" as const,
+					node: chosen,
+					fwd,
+					runnerUp,
+					runnerUpFwd,
+					decision: d,
+					upgrading: [],
+				};
 			});
 
 			if (step.kind === "done") {
@@ -632,7 +1052,14 @@ export function createWorkspaceService(ctrl: ControllerContext): {
 					signal,
 				);
 			} catch (err) {
-				ctrl.store.dropWorkspace(fwd.id);
+				if (signal?.aborted) {
+					// The worker may still finish creating the workspace after we aborted
+					// the RPC; mark it released instead of dropping the row so toRelease()
+					// reaps it on the worker's next heartbeat.
+					ctrl.store.releaseWorkspaceRow(fwd.id, ctrl.now());
+				} else {
+					ctrl.store.dropWorkspace(fwd.id);
+				}
 				throw fromWorkerError(node.host, err);
 			}
 			const wRow = ctrl.store.getWorkspace(fwd.id);
@@ -675,7 +1102,10 @@ export function createWorkspaceService(ctrl: ControllerContext): {
 			try {
 				return await createWorkspaceInternal(req, "", signal);
 			} catch (err) {
-				if (codeOf(err) !== ErrorCode.NodeWaking || signal?.aborted || Date.now() > deadline) {
+				const c = codeOf(err);
+				if (signal?.aborted) throw err;
+				if (c === ErrorCode.NodesBusy) continue;
+				if (c !== ErrorCode.NodeWaking || Date.now() > deadline) {
 					throw err;
 				}
 			}
@@ -697,6 +1127,7 @@ export function createWorkspaceService(ctrl: ControllerContext): {
 			repo: req.repo,
 			vmCpus: req.vmCpus,
 			vmMemoryBytes: req.vmMemoryBytes,
+			placement: req.placement,
 		});
 		ctrl.store.addCommand(fwd.id, row.session, row.node, row.id, ctrl.now());
 		try {

@@ -632,7 +632,7 @@ hotbed schedule run nightly                 # a run now; prints its session, for
 | `hotbed config show [HOST]` | Show controller-managed cluster default and per-node worker/VM configuration (plus merged effective config when `HOST` is given) |
 | `hotbed config set [HOST] [--replace] [--if-revision N]` | Merge (or replace) controller-managed cluster defaults or per-node worker/VM configuration (VM tuning, managed guest kernels, `hotbed-guestd`, FUSE settings) from JSON on stdin or `--file` |
 | `hotbed config rm HOST \| --defaults` | Remove controller-managed per-node overrides for `HOST`, or clear cluster-wide defaults with `--defaults` |
-| `hotbed placements [--node HOST] [--session S]` | Where the controller put each workspace and why: every node's cost in parts, or why it was ruled out (kept a day) |
+| `hotbed placements [--node HOST] [--session S]` | Where the controller put each workspace and why: what the run asked for (`--node`, `--arch`, `--mem-low`, `--mem`, `--fork`, `--no-sync`, or `any node`), every node's cost in parts, or why it was ruled out (kept a day; also recorded on each command in `ps --json` and the cockpit) |
 | `hotbed events [--node HOST] [--kind KIND ...]` | The cluster's events, newest first; `--kind hold --kind wait --kind unhold` is every time a node held work and why |
 | `hotbed daemon-logs [--source controller\|HOST] [--level warn\|error] [--since 1h] [-q Q] [-n N]` | Rotating WARN/ERROR slog logs from the controller and every worker, newest first (with rotation disk stats) |
 | `hotbed snapshot` | Everything the cockpit shows, as JSON |

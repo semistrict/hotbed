@@ -157,6 +157,65 @@ var formatFuncs = template.FuncMap{
 		}
 		return time.UnixMilli(ms).UTC().Format("2006-01-02T15:04:05.000Z")
 	},
+	// placementReq summarizes what a PlacementDecision asked for (e.g.
+	// "--node ubu1 --mem-low 4.0 GiB"), "any node" when unconstrained, or ""
+	// for legacy decisions that predate PlacementDecision.request.
+	"placementReq": func(v any) string {
+		m, ok := v.(map[string]any)
+		if !ok {
+			return ""
+		}
+		req, ok := m["request"].(map[string]any)
+		if !ok {
+			return ""
+		}
+		var parts []string
+		if s, _ := req["node"].(string); s != "" {
+			parts = append(parts, "--node "+s)
+		}
+		if s, _ := req["arch"].(string); s != "" {
+			parts = append(parts, "--arch "+s)
+		}
+		if s, _ := req["runtime"].(string); s != "" {
+			parts = append(parts, "--runtime "+s)
+		}
+		if b, _ := req["bench"].(bool); b {
+			parts = append(parts, "--bench")
+		}
+		if n, err := toInt64(req["memoryLowBytes"]); err == nil && n > 0 {
+			parts = append(parts, "--mem-low "+formatBytesShort(n))
+		}
+		if n, err := toInt64(req["memoryEstimateBytes"]); err == nil && n > 0 {
+			parts = append(parts, "--mem "+formatBytesShort(n))
+		}
+		if n, err := toInt64(req["vmCpus"]); err == nil && n > 0 {
+			parts = append(parts, fmt.Sprintf("--vm-cpus %d", n))
+		}
+		if n, err := toInt64(req["vmMemoryBytes"]); err == nil && n > 0 {
+			parts = append(parts, "--vm-mem "+formatBytesShort(n))
+		}
+		if b, _ := m["noSync"].(bool); b {
+			parts = append(parts, "--no-sync")
+		}
+		if b, _ := m["throwaway"].(bool); b {
+			parts = append(parts, "--fork")
+		}
+		if len(parts) == 0 {
+			return "any node"
+		}
+		return strings.Join(parts, " ")
+	},
+}
+
+func formatBytesShort(b int64) string {
+	switch {
+	case b >= 1<<30:
+		return fmt.Sprintf("%.1f GiB", float64(b)/(1<<30))
+	case b >= 1<<20:
+		return fmt.Sprintf("%.0f MiB", float64(b)/(1<<20))
+	default:
+		return fmt.Sprintf("%d B", b)
+	}
 }
 
 func toInt64(v any) (int64, error) {

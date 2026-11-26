@@ -149,7 +149,8 @@ func (e *Engine) Exec(_ context.Context, req *pb.RunCommandRequest) (*pb.Command
 			SessionId: w.ws().SessionId, Bench: req.Bench, Repo: req.Repo,
 			VmCpus: req.VmCpus, VmMemoryBytes: req.VmMemoryBytes,
 			Tty: tty, TtyInput: ttyInput, Estimate: estimate,
-			Runtime:  e.workspaceRuntime(w),
+			Placement: clone(req.Placement),
+			Runtime:   e.workspaceRuntime(w),
 			Timeline: []*pb.CommandEvent{{At: now, What: "queued", Detail: "by " + w.ws().Agent}},
 		},
 		RepoId: req.Repo, Project: w.ws().Project, Agent: w.ws().Agent, Volume: w.rec.Volume,
@@ -2106,7 +2107,7 @@ func (e *Engine) endBy(c *command, state pb.CommandState, code *int32, why strin
 		EndedAt: now, QueuedSeconds: float64(started-cmd.QueuedAt) / 1000, Seconds: seconds,
 		ColdSeconds: cmd.ColdSeconds, PeakMemoryBytes: c.rec.PeakMemoryBytes, Parks: c.rec.Parks,
 		SessionId: cmd.SessionId, Reason: why, Bench: cmd.Bench, Runtime: e.commandRuntime(c),
-		Samples: cmd.Samples, Estimate: clone(cmd.Estimate),
+		Samples: cmd.Samples, Estimate: clone(cmd.Estimate), Placement: clone(cmd.Placement),
 	}
 	if len(cmd.Interventions) > 0 {
 		f.Interventions = make([]*pb.CommandIntervention, len(cmd.Interventions))

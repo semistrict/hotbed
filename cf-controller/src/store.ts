@@ -2454,6 +2454,7 @@ export class ControllerStore {
 			d.sessionId,
 			marshal(PlacementDecisionSchema, stored),
 		);
+		d.id = big(this.sql.exec("SELECT last_insert_rowid() AS id").one().id);
 	}
 
 	placementsSince(sinceMs: number): PlacementDecision[] {

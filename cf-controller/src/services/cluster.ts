@@ -608,6 +608,10 @@ export function createClusterService(
 			ctrl.sessionWakes.wakeAll(res.sessions);
 			if (res.lost.length > 0) ctrl.loseRuns(res.lost);
 			if (res.finished) await ctrl.settleRuns();
+			if (res.finished || res.lost.length > 0) {
+				ctrl.power.changes.wake(caller.hostname);
+				ctrl.capacityChanges.wake("*");
+			}
 			return create(PushEventsResponseSchema, {
 				applied: res.applied,
 				checkpointNeeded: res.checkpointNeeded,
@@ -632,6 +636,7 @@ export function createClusterService(
 				);
 			}
 			ctrl.power.changes.wake(caller.hostname);
+			ctrl.capacityChanges.wake("*");
 			const { projects, release } = ctrl.hostingFor(caller.nodeId, caller.hostname);
 			if (ctrl.builds.needsImmediateRefresh(nowMs)) {
 				try {
@@ -754,6 +759,8 @@ export function createClusterService(
 			ctrl.power.authorizeHostReporter(req.node, caller, nowMs);
 			const { usage, effectiveAt, expiresAt } = prepareHostUsage(req.usage, nowMs);
 			ctrl.hostUsages.record(req.node, usage, effectiveAt, expiresAt, nowMs);
+			ctrl.power.changes.wake(req.node);
+			ctrl.capacityChanges.wake("*");
 			return create(ReportHostUsageResponseSchema);
 		},
 

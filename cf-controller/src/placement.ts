@@ -1,4 +1,4 @@
-import { create } from "@bufbuild/protobuf";
+import { clone, create } from "@bufbuild/protobuf";
 import {
 	BaseState,
 	CommandState,
@@ -6,6 +6,7 @@ import {
 	HeartbeatRequestSchema,
 	PlacementCandidateSchema,
 	PlacementDecisionSchema,
+	PlacementSchema,
 	type Admission,
 	type Base,
 	type Command,
@@ -29,6 +30,8 @@ const PRESSURE_COST = 1;
 const HOLDING_COST = 1;
 const WAKE_COST = 1;
 const RECONNECTING_COST = 5;
+export const FULL_RAM_FRAC = 0.95; // mirrors internal/worker/engine.go fullAt
+export const RACE_COST_MARGIN = 0.35;
 
 export interface NodeRow {
 	node: Node;
@@ -76,6 +79,31 @@ function candidateHolds(c: Candidate, p?: Placement): boolean {
 	return false;
 }
 
+function candidateMemoryNeed(c: Candidate, p?: Placement): bigint {
+	const memLow = p?.memoryLowBytes ?? 0n;
+	if (memLow > 0n) return memLow;
+	const memEst = p?.memoryEstimateBytes ?? 0n;
+	if (memEst > 0n) {
+		return c.ram > 0n && memEst > c.ram ? c.ram : memEst;
+	}
+	return 0n;
+}
+
+export function candidateHasCapacity(c: Candidate, p?: Placement): boolean {
+	if (c.asleep) return true; // waking an asleep node brings fresh capacity
+	if (!c.tunnelConnected) return false;
+	if (candidateHolds(c, p)) return false;
+	if (c.parked > 0) return false;
+	if (c.ram > 0n) {
+		if (c.free <= 0n) return false;
+		const used = c.view.hb?.usage?.memoryUsedBytes ?? 0n;
+		if (Number(used) >= Number(c.ram) * FULL_RAM_FRAC) return false;
+	}
+	const need = candidateMemoryNeed(c, p);
+	if (need > 0n && need > c.free) return false;
+	return true;
+}
+
 export function candidateParts(c: Candidate, p?: Placement): CostPart[] {
 	const out: CostPart[] = [
 		create(CostPartSchema, {
@@ -112,9 +140,16 @@ export function candidateParts(c: Candidate, p?: Placement): CostPart[] {
 		add("host-cpu-starvation", hs.value, hs.detail);
 	}
 	const memLow = p?.memoryLowBytes ?? 0n;
-	if (memLow > c.free) {
+	const need = candidateMemoryNeed(c, p);
+	if (need > c.free || (c.ram > 0n && c.free <= 0n)) {
 		const avail = c.free > 0n ? c.free : 0n;
-		add("memory", FULL_COST, `the ${memLow} bytes guaranteed do not fit in the ${avail} free now`);
+		const what =
+			memLow > 0n
+				? `the ${memLow} bytes guaranteed do not fit in the ${avail} free now`
+				: need > 0n
+					? `the ${need} bytes estimated do not fit in the ${avail} free now`
+					: `no memory headroom free now (${avail} of ${c.ram} bytes)`;
+		add("memory", FULL_COST, what);
 	}
 	if (c.asleep) {
 		add("asleep", WAKE_COST, "it is asleep: the run waits for it to boot");
@@ -302,21 +337,14 @@ export function buildCandidates(
 	return out;
 }
 
-function cheapest(cs: Candidate[], p?: Placement): Candidate {
-	let best = cs[0];
-	for (let i = 1; i < cs.length; i++) {
-		const a = cs[i];
+export function rankCandidates(cs: Candidate[], p?: Placement): Candidate[] {
+	return [...cs].sort((a, b) => {
 		const ca = candidateCost(a, p);
-		const cb = candidateCost(best, p);
-		if (
-			ca < cb ||
-			(ca === cb && a.free > best.free) ||
-			(ca === cb && a.free === best.free && a.host < best.host)
-		) {
-			best = a;
-		}
-	}
-	return best;
+		const cb = candidateCost(b, p);
+		if (ca !== cb) return ca < cb ? -1 : 1;
+		if (a.free !== b.free) return a.free > b.free ? -1 : 1;
+		return a.host < b.host ? -1 : a.host > b.host ? 1 : 0;
+	});
 }
 
 function upgradingHosts(scope: Candidate[], p: Placement | undefined, hosts: string[]): string[] {
@@ -377,12 +405,58 @@ function refusal(
 	return hotbedError(code, message, { suggestion, retryable });
 }
 
+export interface ChooseResult {
+	chosen?: Candidate;
+	/** Eligible second host to race workspace creation against when creating a new workspace. */
+	runnerUp?: Candidate;
+	/** True when runnerUp is close enough in cost to race from t=0 rather than hedging. */
+	raceImmediate?: boolean;
+	/** True when multiple fit nodes exist, waitForCapacity is set, and all are currently saturated. */
+	allBusy?: boolean;
+	busyHosts?: string[];
+	why: string;
+	err?: HotbedError;
+}
+
+function pickFromFit(
+	fit: Candidate[],
+	p: Placement | undefined,
+	why: string,
+	pinned: boolean,
+	waitForCapacity: boolean,
+): ChooseResult {
+	const ranked = rankCandidates(fit, p);
+	const withCap = ranked.filter((c) => candidateHasCapacity(c, p));
+	if (withCap.length > 0) {
+		const primary = withCap[0];
+		let runnerUp: Candidate | undefined;
+		let raceImmediate = false;
+		if (!pinned && !primary.mine && !primary.asleep) {
+			runnerUp = withCap.slice(1).find((c) => !c.mine && !c.asleep && c.tunnelConnected);
+			if (runnerUp) {
+				raceImmediate = candidateCost(runnerUp, p) - candidateCost(primary, p) <= RACE_COST_MARGIN;
+			}
+		}
+		return { chosen: primary, runnerUp, raceImmediate, why };
+	}
+	if (!pinned && waitForCapacity) {
+		return {
+			allBusy: true,
+			busyHosts: ranked.map((c) => c.host),
+			why: "",
+		};
+	}
+	return { chosen: ranked[0], why };
+}
+
 export function chooseCandidate(
 	cs: Candidate[],
 	p: Placement | undefined,
 	hosts: string[],
 	syncs: boolean,
-): { chosen?: Candidate; why: string; err?: HotbedError } {
+	opts?: { waitForCapacity?: boolean },
+): ChooseResult {
+	const waitForCapacity = Boolean(opts?.waitForCapacity);
 	let scope = cs;
 	if (p?.node) {
 		scope = cs.filter((c) => c.host === p.node);
@@ -400,10 +474,13 @@ export function chooseCandidate(
 	if (!syncs && held.length > 0) {
 		const fit = held.filter(fits);
 		if (fit.length > 0) {
-			return {
-				chosen: cheapest(fit, p),
-				why: "the run syncs no checkout, so it stays in the session's workspace",
-			};
+			return pickFromFit(
+				fit,
+				p,
+				"the run syncs no checkout, so it stays in the session's workspace",
+				Boolean(p?.node) || fit.length <= 1,
+				waitForCapacity,
+			);
 		}
 		const away = held.filter(
 			(c) => (!c.view.online || c.upgrading !== 0) && fitsOnline(c, p, hosts),
@@ -416,10 +493,13 @@ export function chooseCandidate(
 	if (fit.length === 0) {
 		return { why: "", err: refusal(scope, p, hosts, false) };
 	}
-	return {
-		chosen: cheapest(fit, p),
-		why: p?.node ? "the node asked for" : "the least costly node",
-	};
+	return pickFromFit(
+		fit,
+		p,
+		p?.node ? "the node asked for" : "the least costly node",
+		Boolean(p?.node) || fit.length <= 1,
+		waitForCapacity,
+	);
 }
 
 export function buildPlacementDecision(
@@ -429,12 +509,16 @@ export function buildPlacementDecision(
 	chosen: Candidate | undefined,
 	why: string,
 	err: HotbedError | undefined,
+	opts?: { noSync?: boolean; throwaway?: boolean },
 ): PlacementDecision {
 	const d = create(PlacementDecisionSchema, {
 		nodeId: err ? "" : (chosen?.view.node.id ?? ""),
 		hostname: err ? "" : (chosen?.host ?? ""),
 		reason: err ? err.message : why,
 		candidates: [],
+		request: p ? clone(PlacementSchema, p) : create(PlacementSchema),
+		noSync: Boolean(opts?.noSync),
+		throwaway: Boolean(opts?.throwaway),
 	});
 	for (const c of cs) {
 		const unfit =

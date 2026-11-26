@@ -155,11 +155,13 @@ export function createScheduleService(
 				create(CreateWorkspaceRequestSchema, {
 					sessionId: run.sessionId,
 					repo: sc.repo,
+					waitForCapacity: true,
 					placement: create(PlacementSchema, {
 						node: sc.node,
 						arch: sc.arch,
 						bench: sc.command?.bench ?? false,
 						memoryLowBytes: sc.command?.limits?.memoryLowBytes ?? 0n,
+						memoryEstimateBytes: sc.command?.estimate?.memoryBytes ?? 0n,
 						// Only a VM is sized.
 						runtime: sc.command?.vmCpus || sc.command?.vmMemoryBytes ? "vm" : "",
 						vmCpus: sc.command?.vmCpus ?? 0,
@@ -178,6 +180,7 @@ export function createScheduleService(
 			cmdReq.attached = false;
 			cmdReq.port = 0;
 			cmdReq.repo = sc.repo;
+			cmdReq.placement = w.placement;
 			const cmd = await ws.runCommandInternal(cmdReq);
 
 			if (sr?.stopWhy) {

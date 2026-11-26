@@ -261,7 +261,7 @@ service ClusterService {
     option (command) = {
       name: "placements"
       read_only: true
-      format: "{{range .placements}}{{time .at}}  {{pad 14 .sessionId}}  {{if .hostname}}-> {{pad 12 .hostname}}{{else}}refused       {{end}}  {{.reason}}{{range .candidates}}\n    {{pad 12 .hostname}}  {{if .unfit}}ruled out: {{.unfit}}{{else}}cost {{printf \"%.2f\" .cost}}{{range .parts}}  {{.name}}={{printf \"%.2f\" .value}}{{end}}{{end}}{{if .chosen}}  CHOSEN{{end}}{{end}}\n{{end}}"
+      format: "{{range .placements}}{{time .at}}  {{pad 14 .sessionId}}  {{if .hostname}}-> {{pad 12 .hostname}}{{else}}refused       {{end}}  {{.reason}}{{with (placementReq .)}}  [{{.}}]{{end}}{{range .candidates}}\n    {{pad 12 .hostname}}  {{if .unfit}}ruled out: {{.unfit}}{{else}}cost {{printf \"%.2f\" .cost}}{{range .parts}}  {{.name}}={{printf \"%.2f\" .value}}{{end}}{{end}}{{if .chosen}}  CHOSEN{{end}}{{end}}\n{{end}}"
     };
   }
   // The cluster's events, newest first: what workers did (admitted, held,
@@ -1457,6 +1457,11 @@ message Workspace {
   // its worker releases it, with whatever the command left in it, once that
   // command ends. It is not the session's workspace on its node.
   bool throwaway = 29;
+  // Set by the controller on CreateWorkspace: the placement decision that put
+  // this run here (what it asked for, every node weighed, and why this node
+  // won). Not persisted on the workspace itself, which a session reuses across
+  // runs with different placement requests.
+  PlacementDecision placement = 30;
 }
 
 // One repo of a workspace, at /work/<repo>.
@@ -1509,6 +1514,11 @@ message CreateWorkspaceRequest {
   // forked from the project's base, never the session's workspace, which it
   // neither waits for nor changes.
   bool throwaway = 15;
+  // When true and multiple eligible nodes exist but every one is currently
+  // holding or out of admission headroom, wait at the controller and
+  // re-evaluate whenever any eligible node reports free capacity, rather than
+  // committing up front to one full node's local queue.
+  bool wait_for_capacity = 17;
 }
 
 // Placement narrows where a run may go. The controller picks among the nodes
@@ -1530,6 +1540,10 @@ message Placement {
   int32 vm_cpus = 6;
   // The memory the run's VM is to have: nodes with less RAM are left out.
   int64 vm_memory_bytes = 7;
+  // Expected peak memory (--mem / history estimate): used to judge whether a
+  // node has admission headroom right now, without ruling out smaller nodes
+  // (workers cap estimates at their work slice budget).
+  int64 memory_estimate_bytes = 8;
 }
 
 message GetWorkspaceRequest {
@@ -1855,6 +1869,9 @@ message Command {
   // It reads its input from its terminal too (--tty): SendInput types into
   // it.
   bool tty_input = 36;
+  // Why this command was placed on its node, including what it asked for and
+  // every candidate node weighed.
+  PlacementDecision placement = 37;
 }
 
 // A command that ended, as history keeps it.
@@ -1899,6 +1916,9 @@ message FinishedCommand {
   // What it was expected to need, to set beside peak_memory_bytes and
   // seconds.
   CommandEstimate estimate = 27;
+  // Why this command was placed on its node, including what it asked for and
+  // every candidate node weighed.
+  PlacementDecision placement = 28;
 }
 
 message RunCommandRequest {
@@ -1932,6 +1952,9 @@ message RunCommandRequest {
   // What it is expected to need: the memory it holds is reserved for it,
   // and its end says how it compared.
   CommandEstimate estimate = 14;
+  // The placement decision that put this run on this node (what it asked for,
+  // every node weighed, and why this node won), from CreateWorkspace.
+  PlacementDecision placement = 15;
 }
 
 // Whether a command runs in a terminal (a pseudo-terminal), as in a
@@ -3170,6 +3193,13 @@ message PlacementDecision {
   // Why it went there ("the least costly node"), or why it went nowhere.
   string reason = 8;
   repeated PlacementCandidate candidates = 9;
+  // What the caller asked for when placing this run.
+  Placement request = 10;
+  // Whether the run synced no local checkout (--no-sync or outside a checkout),
+  // which pins it to the session's existing workspace if it has one.
+  bool no_sync = 11;
+  // Whether the run asked for a throwaway workspace (--fork).
+  bool throwaway = 12;
 }
 
 message PlacementCandidate {

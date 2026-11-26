@@ -918,11 +918,33 @@ func (c *runCmd) Raw(ctx context.Context, d deps) (int, bool, error) {
 			return 0, false, err
 		}
 	}
+	var memEst int64
+	if c.Mem != "" {
+		if memEst, err = parseSize(c.Mem); err != nil {
+			return 0, false, err
+		}
+	}
+	pl := c.placement(req)
+	pl.MemoryEstimateBytes = memEst
 	ws, w, err := c.workspaceFor(ctx, d, &pb.CreateWorkspaceRequest{
-		SessionId: session, Repo: repo, Placement: c.placement(req), SyncDir: dir, Throwaway: c.Fork,
+		SessionId: session, Repo: repo, Placement: pl, SyncDir: dir, Throwaway: c.Fork, WaitForCapacity: !c.Detach,
 	})
 	if err != nil {
 		return 0, false, err
+	}
+	req.Placement = ws.Placement
+	if req.Placement == nil {
+		req.Placement = &pb.PlacementDecision{
+			SessionId: session,
+			Project:   ws.Project,
+			Repo:      repo,
+			NodeId:    ws.NodeId,
+			Hostname:  ws.Node,
+			Reason:    "controller unreachable; reused cached workspace",
+			Request:   pl,
+			NoSync:    dir == "",
+			Throwaway: c.Fork,
+		}
 	}
 	if req.Estimate, err = c.estimate(ctx, d, ws.Project, repo, req.Args); err != nil {
 		if ws.Throwaway {

@@ -7229,7 +7229,12 @@ type Workspace struct {
 	// A throwaway workspace (hotbed run --fork): one command runs in it, and
 	// its worker releases it, with whatever the command left in it, once that
 	// command ends. It is not the session's workspace on its node.
-	Throwaway     bool `protobuf:"varint,29,opt,name=throwaway,proto3" json:"throwaway,omitempty"`
+	Throwaway bool `protobuf:"varint,29,opt,name=throwaway,proto3" json:"throwaway,omitempty"`
+	// Set by the controller on CreateWorkspace: the placement decision that put
+	// this run here (what it asked for, every node weighed, and why this node
+	// won). Not persisted on the workspace itself, which a session reuses across
+	// runs with different placement requests.
+	Placement     *PlacementDecision `protobuf:"bytes,30,opt,name=placement,proto3" json:"placement,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -7411,6 +7416,13 @@ func (x *Workspace) GetThrowaway() bool {
 	return false
 }
 
+func (x *Workspace) GetPlacement() *PlacementDecision {
+	if x != nil {
+		return x.Placement
+	}
+	return nil
+}
+
 // One repo of a workspace, at /work/<repo>.
 type WorkspaceRepo struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
@@ -7534,9 +7546,14 @@ type CreateWorkspaceRequest struct {
 	// A throwaway workspace for one command (Workspace.throwaway): a new one,
 	// forked from the project's base, never the session's workspace, which it
 	// neither waits for nor changes.
-	Throwaway     bool `protobuf:"varint,15,opt,name=throwaway,proto3" json:"throwaway,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	Throwaway bool `protobuf:"varint,15,opt,name=throwaway,proto3" json:"throwaway,omitempty"`
+	// When true and multiple eligible nodes exist but every one is currently
+	// holding or out of admission headroom, wait at the controller and
+	// re-evaluate whenever any eligible node reports free capacity, rather than
+	// committing up front to one full node's local queue.
+	WaitForCapacity bool `protobuf:"varint,17,opt,name=wait_for_capacity,json=waitForCapacity,proto3" json:"wait_for_capacity,omitempty"`
+	unknownFields   protoimpl.UnknownFields
+	sizeCache       protoimpl.SizeCache
 }
 
 func (x *CreateWorkspaceRequest) Reset() {
@@ -7653,6 +7670,13 @@ func (x *CreateWorkspaceRequest) GetThrowaway() bool {
 	return false
 }
 
+func (x *CreateWorkspaceRequest) GetWaitForCapacity() bool {
+	if x != nil {
+		return x.WaitForCapacity
+	}
+	return false
+}
+
 // Placement narrows where a run may go. The controller picks among the nodes
 // left by load, preferring one where the session already has a workspace,
 // then one with a warm base of its project.
@@ -7673,8 +7697,12 @@ type Placement struct {
 	VmCpus int32 `protobuf:"varint,6,opt,name=vm_cpus,json=vmCpus,proto3" json:"vm_cpus,omitempty"`
 	// The memory the run's VM is to have: nodes with less RAM are left out.
 	VmMemoryBytes int64 `protobuf:"varint,7,opt,name=vm_memory_bytes,json=vmMemoryBytes,proto3" json:"vm_memory_bytes,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	// Expected peak memory (--mem / history estimate): used to judge whether a
+	// node has admission headroom right now, without ruling out smaller nodes
+	// (workers cap estimates at their work slice budget).
+	MemoryEstimateBytes int64 `protobuf:"varint,8,opt,name=memory_estimate_bytes,json=memoryEstimateBytes,proto3" json:"memory_estimate_bytes,omitempty"`
+	unknownFields       protoimpl.UnknownFields
+	sizeCache           protoimpl.SizeCache
 }
 
 func (x *Placement) Reset() {
@@ -7752,6 +7780,13 @@ func (x *Placement) GetVmCpus() int32 {
 func (x *Placement) GetVmMemoryBytes() int64 {
 	if x != nil {
 		return x.VmMemoryBytes
+	}
+	return 0
+}
+
+func (x *Placement) GetMemoryEstimateBytes() int64 {
+	if x != nil {
+		return x.MemoryEstimateBytes
 	}
 	return 0
 }
@@ -9588,7 +9623,10 @@ type Command struct {
 	Estimate *CommandEstimate `protobuf:"bytes,35,opt,name=estimate,proto3" json:"estimate,omitempty"`
 	// It reads its input from its terminal too (--tty): SendInput types into
 	// it.
-	TtyInput      bool `protobuf:"varint,36,opt,name=tty_input,json=ttyInput,proto3" json:"tty_input,omitempty"`
+	TtyInput bool `protobuf:"varint,36,opt,name=tty_input,json=ttyInput,proto3" json:"tty_input,omitempty"`
+	// Why this command was placed on its node, including what it asked for and
+	// every candidate node weighed.
+	Placement     *PlacementDecision `protobuf:"bytes,37,opt,name=placement,proto3" json:"placement,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -9875,6 +9913,13 @@ func (x *Command) GetTtyInput() bool {
 	return false
 }
 
+func (x *Command) GetPlacement() *PlacementDecision {
+	if x != nil {
+		return x.Placement
+	}
+	return nil
+}
+
 // A command that ended, as history keeps it.
 type FinishedCommand struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
@@ -9917,7 +9962,10 @@ type FinishedCommand struct {
 	Samples int32 `protobuf:"varint,26,opt,name=samples,proto3" json:"samples,omitempty"`
 	// What it was expected to need, to set beside peak_memory_bytes and
 	// seconds.
-	Estimate      *CommandEstimate `protobuf:"bytes,27,opt,name=estimate,proto3" json:"estimate,omitempty"`
+	Estimate *CommandEstimate `protobuf:"bytes,27,opt,name=estimate,proto3" json:"estimate,omitempty"`
+	// Why this command was placed on its node, including what it asked for and
+	// every candidate node weighed.
+	Placement     *PlacementDecision `protobuf:"bytes,28,opt,name=placement,proto3" json:"placement,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -10141,6 +10189,13 @@ func (x *FinishedCommand) GetEstimate() *CommandEstimate {
 	return nil
 }
 
+func (x *FinishedCommand) GetPlacement() *PlacementDecision {
+	if x != nil {
+		return x.Placement
+	}
+	return nil
+}
+
 type RunCommandRequest struct {
 	state       protoimpl.MessageState `protogen:"open.v1"`
 	WorkspaceId string                 `protobuf:"bytes,1,opt,name=workspace_id,json=workspaceId,proto3" json:"workspace_id,omitempty"`
@@ -10172,7 +10227,10 @@ type RunCommandRequest struct {
 	Tty TtyMode `protobuf:"varint,13,opt,name=tty,proto3,enum=hotbed.v1.TtyMode" json:"tty,omitempty"`
 	// What it is expected to need: the memory it holds is reserved for it,
 	// and its end says how it compared.
-	Estimate      *CommandEstimate `protobuf:"bytes,14,opt,name=estimate,proto3" json:"estimate,omitempty"`
+	Estimate *CommandEstimate `protobuf:"bytes,14,opt,name=estimate,proto3" json:"estimate,omitempty"`
+	// The placement decision that put this run on this node (what it asked for,
+	// every node weighed, and why this node won), from CreateWorkspace.
+	Placement     *PlacementDecision `protobuf:"bytes,15,opt,name=placement,proto3" json:"placement,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -10301,6 +10359,13 @@ func (x *RunCommandRequest) GetTty() TtyMode {
 func (x *RunCommandRequest) GetEstimate() *CommandEstimate {
 	if x != nil {
 		return x.Estimate
+	}
+	return nil
+}
+
+func (x *RunCommandRequest) GetPlacement() *PlacementDecision {
+	if x != nil {
+		return x.Placement
 	}
 	return nil
 }
@@ -17687,8 +17752,15 @@ type PlacementDecision struct {
 	NodeId   string `protobuf:"bytes,6,opt,name=node_id,json=nodeId,proto3" json:"node_id,omitempty"`
 	Hostname string `protobuf:"bytes,7,opt,name=hostname,proto3" json:"hostname,omitempty"`
 	// Why it went there ("the least costly node"), or why it went nowhere.
-	Reason        string                `protobuf:"bytes,8,opt,name=reason,proto3" json:"reason,omitempty"`
-	Candidates    []*PlacementCandidate `protobuf:"bytes,9,rep,name=candidates,proto3" json:"candidates,omitempty"`
+	Reason     string                `protobuf:"bytes,8,opt,name=reason,proto3" json:"reason,omitempty"`
+	Candidates []*PlacementCandidate `protobuf:"bytes,9,rep,name=candidates,proto3" json:"candidates,omitempty"`
+	// What the caller asked for when placing this run.
+	Request *Placement `protobuf:"bytes,10,opt,name=request,proto3" json:"request,omitempty"`
+	// Whether the run synced no local checkout (--no-sync or outside a checkout),
+	// which pins it to the session's existing workspace if it has one.
+	NoSync bool `protobuf:"varint,11,opt,name=no_sync,json=noSync,proto3" json:"no_sync,omitempty"`
+	// Whether the run asked for a throwaway workspace (--fork).
+	Throwaway     bool `protobuf:"varint,12,opt,name=throwaway,proto3" json:"throwaway,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -17784,6 +17856,27 @@ func (x *PlacementDecision) GetCandidates() []*PlacementCandidate {
 		return x.Candidates
 	}
 	return nil
+}
+
+func (x *PlacementDecision) GetRequest() *Placement {
+	if x != nil {
+		return x.Request
+	}
+	return nil
+}
+
+func (x *PlacementDecision) GetNoSync() bool {
+	if x != nil {
+		return x.NoSync
+	}
+	return false
+}
+
+func (x *PlacementDecision) GetThrowaway() bool {
+	if x != nil {
+		return x.Throwaway
+	}
+	return false
 }
 
 type PlacementCandidate struct {
@@ -32043,7 +32136,7 @@ const file_hotbed_v1_hotbed_proto_rawDesc = "" +
 	"\x04repo\x18\x01 \x01(\tR\x04repo\x12\x16\n" +
 	"\x06commit\x18\x02 \x01(\tR\x06commit\x12\x18\n" +
 	"\amessage\x18\x03 \x01(\tR\amessage\x12\x1c\n" +
-	"\ttoolchain\x18\x04 \x01(\tR\ttoolchain\"\xa2\x06\n" +
+	"\ttoolchain\x18\x04 \x01(\tR\ttoolchain\"\xde\x06\n" +
 	"\tWorkspace\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x17\n" +
 	"\abase_id\x18\x03 \x01(\tR\x06baseId\x12\x17\n" +
@@ -32069,7 +32162,8 @@ const file_hotbed_v1_hotbed_proto_rawDesc = "" +
 	"\x05repos\x18\x1a \x03(\v2\x18.hotbed.v1.WorkspaceRepoR\x05repos\x12\x18\n" +
 	"\aruntime\x18\x1b \x01(\tR\aruntime\x129\n" +
 	"\fcladefs_cell\x18\x1c \x01(\v2\x16.hotbed.v1.CladefsCellR\vcladefsCell\x12\x1c\n" +
-	"\tthrowaway\x18\x1d \x01(\bR\tthrowawayJ\x04\b\x02\x10\x03J\x04\b\x06\x10\aJ\x04\b\a\x10\bJ\x04\b\b\x10\tJ\x04\b\t\x10\n" +
+	"\tthrowaway\x18\x1d \x01(\bR\tthrowaway\x12:\n" +
+	"\tplacement\x18\x1e \x01(\v2\x1c.hotbed.v1.PlacementDecisionR\tplacementJ\x04\b\x02\x10\x03J\x04\b\x06\x10\aJ\x04\b\a\x10\bJ\x04\b\b\x10\tJ\x04\b\t\x10\n" +
 	"J\x04\b\n" +
 	"\x10\vJ\x04\b\x11\x10\x12J\x04\b\x13\x10\x14R\arepo_idR\x06branchR\x04headR\vbase_commitR\x04treeR\rfiles_changedR\x04pathR\bsync_dir\"\xac\x01\n" +
 	"\rWorkspaceRepo\x12\x12\n" +
@@ -32079,7 +32173,7 @@ const file_hotbed_v1_hotbed_proto_rawDesc = "" +
 	"baseCommit\x12\x12\n" +
 	"\x04tree\x18\x04 \x01(\tR\x04tree\x12#\n" +
 	"\rfiles_changed\x18\x05 \x01(\x05R\ffilesChanged\x12\x19\n" +
-	"\bsync_dir\x18\x06 \x01(\tR\asyncDir\"\xd9\x03\n" +
+	"\bsync_dir\x18\x06 \x01(\tR\asyncDir\"\x85\x04\n" +
 	"\x16CreateWorkspaceRequest\x12\x12\n" +
 	"\x04repo\x18\x01 \x01(\tR\x04repo\x12\x14\n" +
 	"\x05agent\x18\x02 \x01(\tR\x05agent\x122\n" +
@@ -32095,8 +32189,9 @@ const file_hotbed_v1_hotbed_proto_rawDesc = "" +
 	"\vshared_base\x18\x10 \x01(\v2\x15.hotbed.v1.SharedBaseR\n" +
 	"sharedBase\x12#\n" +
 	"\rfencing_token\x18\x0e \x01(\x04R\ffencingToken\x12\x1c\n" +
-	"\tthrowaway\x18\x0f \x01(\bR\tthrowawayJ\x04\b\x03\x10\x04J\x04\b\x04\x10\x05J\x04\b\t\x10\n" +
-	"J\x04\b\r\x10\x0eR\x06branchR\x04nodeR\vrepo_config\"\xce\x01\n" +
+	"\tthrowaway\x18\x0f \x01(\bR\tthrowaway\x12*\n" +
+	"\x11wait_for_capacity\x18\x11 \x01(\bR\x0fwaitForCapacityJ\x04\b\x03\x10\x04J\x04\b\x04\x10\x05J\x04\b\t\x10\n" +
+	"J\x04\b\r\x10\x0eR\x06branchR\x04nodeR\vrepo_config\"\x82\x02\n" +
 	"\tPlacement\x12\x12\n" +
 	"\x04node\x18\x01 \x01(\tR\x04node\x12\x12\n" +
 	"\x04arch\x18\x02 \x01(\tR\x04arch\x12\x14\n" +
@@ -32104,7 +32199,8 @@ const file_hotbed_v1_hotbed_proto_rawDesc = "" +
 	"\x10memory_low_bytes\x18\x04 \x01(\x03R\x0ememoryLowBytes\x12\x18\n" +
 	"\aruntime\x18\x05 \x01(\tR\aruntime\x12\x17\n" +
 	"\avm_cpus\x18\x06 \x01(\x05R\x06vmCpus\x12&\n" +
-	"\x0fvm_memory_bytes\x18\a \x01(\x03R\rvmMemoryBytes\"%\n" +
+	"\x0fvm_memory_bytes\x18\a \x01(\x03R\rvmMemoryBytes\x122\n" +
+	"\x15memory_estimate_bytes\x18\b \x01(\x03R\x13memoryEstimateBytes\"%\n" +
 	"\x13GetWorkspaceRequest\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\"'\n" +
 	"\x15WatchWorkspaceRequest\x12\x0e\n" +
@@ -32220,7 +32316,8 @@ const file_hotbed_v1_hotbed_proto_rawDesc = "" +
 	"\fCommandEvent\x12\x0e\n" +
 	"\x02at\x18\x01 \x01(\x03R\x02at\x12\x12\n" +
 	"\x04what\x18\x02 \x01(\tR\x04what\x12\x16\n" +
-	"\x06detail\x18\x03 \x01(\tR\x06detail\"\xd5\t\n" +
+	"\x06detail\x18\x03 \x01(\tR\x06detail\"\x91\n" +
+	"\n" +
 	"\aCommand\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12!\n" +
 	"\fworkspace_id\x18\x02 \x01(\tR\vworkspaceId\x12\x17\n" +
@@ -32262,12 +32359,13 @@ const file_hotbed_v1_hotbed_proto_rawDesc = "" +
 	"\asamples\x18! \x01(\x05R\asamples\x12\x10\n" +
 	"\x03tty\x18\" \x01(\bR\x03tty\x126\n" +
 	"\bestimate\x18# \x01(\v2\x1a.hotbed.v1.CommandEstimateR\bestimate\x12\x1b\n" +
-	"\ttty_input\x18$ \x01(\bR\bttyInputB\r\n" +
+	"\ttty_input\x18$ \x01(\bR\bttyInput\x12:\n" +
+	"\tplacement\x18% \x01(\v2\x1c.hotbed.v1.PlacementDecisionR\tplacementB\r\n" +
 	"\v_started_atB\v\n" +
 	"\t_ended_atB\f\n" +
 	"\n" +
 	"_exit_codeB\x0f\n" +
-	"\r_cold_seconds\"\x85\a\n" +
+	"\r_cold_seconds\"\xc1\a\n" +
 	"\x0fFinishedCommand\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x17\n" +
 	"\arepo_id\x18\x02 \x01(\tR\x06repoId\x12\x17\n" +
@@ -32298,13 +32396,14 @@ const file_hotbed_v1_hotbed_proto_rawDesc = "" +
 	"\rinterventions\x18\x18 \x03(\v2\x1e.hotbed.v1.CommandInterventionR\rinterventions\x12\x18\n" +
 	"\aruntime\x18\x19 \x01(\tR\aruntime\x12\x18\n" +
 	"\asamples\x18\x1a \x01(\x05R\asamples\x126\n" +
-	"\bestimate\x18\x1b \x01(\v2\x1a.hotbed.v1.CommandEstimateR\bestimateB\f\n" +
+	"\bestimate\x18\x1b \x01(\v2\x1a.hotbed.v1.CommandEstimateR\bestimate\x12:\n" +
+	"\tplacement\x18\x1c \x01(\v2\x1c.hotbed.v1.PlacementDecisionR\tplacementB\f\n" +
 	"\n" +
 	"_exit_codeB\x0f\n" +
 	"\r_cold_secondsB\n" +
 	"\n" +
 	"\b_rebuiltB\x05\n" +
-	"\x03_of\"\xab\x03\n" +
+	"\x03_of\"\xe7\x03\n" +
 	"\x11RunCommandRequest\x12!\n" +
 	"\fworkspace_id\x18\x01 \x01(\tR\vworkspaceId\x12\x12\n" +
 	"\x04args\x18\x02 \x03(\tR\x04args\x12\x10\n" +
@@ -32320,7 +32419,8 @@ const file_hotbed_v1_hotbed_proto_rawDesc = "" +
 	"\avm_cpus\x18\v \x01(\x05R\x06vmCpus\x12&\n" +
 	"\x0fvm_memory_bytes\x18\f \x01(\x03R\rvmMemoryBytes\x12$\n" +
 	"\x03tty\x18\r \x01(\x0e2\x12.hotbed.v1.TtyModeR\x03tty\x126\n" +
-	"\bestimate\x18\x0e \x01(\v2\x1a.hotbed.v1.CommandEstimateR\bestimate\"f\n" +
+	"\bestimate\x18\x0e \x01(\v2\x1a.hotbed.v1.CommandEstimateR\bestimate\x12:\n" +
+	"\tplacement\x18\x0f \x01(\v2\x1c.hotbed.v1.PlacementDecisionR\tplacement\"f\n" +
 	"\x0fCommandEstimate\x12!\n" +
 	"\fmemory_bytes\x18\x01 \x01(\x03R\vmemoryBytes\x12\x18\n" +
 	"\aseconds\x18\x02 \x01(\x03R\aseconds\x12\x16\n" +
@@ -33074,7 +33174,7 @@ const file_hotbed_v1_hotbed_proto_rawDesc = "" +
 	"\x05value\x18\x02 \x01(\v2\x12.hotbed.v1.SamplesR\x05value:\x028\x01\x1aS\n" +
 	"\x0fNodeHourlyEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12*\n" +
-	"\x05value\x18\x02 \x01(\v2\x14.hotbed.v1.NodeHoursR\x05value:\x028\x01\"\x8c\x02\n" +
+	"\x05value\x18\x02 \x01(\v2\x14.hotbed.v1.NodeHoursR\x05value:\x028\x01\"\xf3\x02\n" +
 	"\x11PlacementDecision\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\x03R\x02id\x12\x0e\n" +
 	"\x02at\x18\x02 \x01(\x03R\x02at\x12\x1d\n" +
@@ -33087,7 +33187,11 @@ const file_hotbed_v1_hotbed_proto_rawDesc = "" +
 	"\x06reason\x18\b \x01(\tR\x06reason\x12=\n" +
 	"\n" +
 	"candidates\x18\t \x03(\v2\x1d.hotbed.v1.PlacementCandidateR\n" +
-	"candidates\"\xca\x01\n" +
+	"candidates\x12.\n" +
+	"\arequest\x18\n" +
+	" \x01(\v2\x14.hotbed.v1.PlacementR\arequest\x12\x17\n" +
+	"\ano_sync\x18\v \x01(\bR\x06noSync\x12\x1c\n" +
+	"\tthrowaway\x18\f \x01(\bR\tthrowaway\"\xca\x01\n" +
 	"\x12PlacementCandidate\x12\x17\n" +
 	"\anode_id\x18\x01 \x01(\tR\x06nodeId\x12\x1a\n" +
 	"\bhostname\x18\x02 \x01(\tR\bhostname\x12\x14\n" +
@@ -34609,7 +34713,7 @@ const file_hotbed_v1_hotbed_proto_rawDesc = "" +
 	"\x13MEMORY_ORDER_NEWEST\x10\x02\x12\x17\n" +
 	"\x13MEMORY_ORDER_OLDEST\x10\x03\x12\x18\n" +
 	"\x14MEMORY_ORDER_UPDATED\x10\x04\x12\x15\n" +
-	"\x11MEMORY_ORDER_SLUG\x10\x052\x9f;\n" +
+	"\x11MEMORY_ORDER_SLUG\x10\x052\xc8;\n" +
 	"\x0eClusterService\x127\n" +
 	"\x04Join\x12\x16.hotbed.v1.JoinRequest\x1a\x17.hotbed.v1.JoinResponse\x12I\n" +
 	"\n" +
@@ -34683,10 +34787,10 @@ const file_hotbed_v1_hotbed_proto_rawDesc = "" +
 	"  {{time .at}}  {{pad 14 .sessionId}}  {{if .hostname}}-> {{.hostname}}{{else}}refused{{end}}  {{.reason}}{{end}}{{end}}\x90\x02\x02\x12f\n" +
 	"\n" +
 	"RetireNode\x12\x1c.hotbed.v1.RetireNodeRequest\x1a\x0f.hotbed.v1.Node\")\x82\xb5\x18%\n" +
-	"\vnode retireb\x16{{.hostname}}  retired\x12\xe0\x03\n" +
-	"\x0eListPlacements\x12 .hotbed.v1.ListPlacementsRequest\x1a!.hotbed.v1.ListPlacementsResponse\"\x88\x03\x82\xb5\x18\x80\x03\n" +
+	"\vnode retireb\x16{{.hostname}}  retired\x12\x89\x04\n" +
+	"\x0eListPlacements\x12 .hotbed.v1.ListPlacementsRequest\x1a!.hotbed.v1.ListPlacementsResponse\"\xb1\x03\x82\xb5\x18\xa9\x03\n" +
 	"\n" +
-	"placementsP\x01b\xef\x02{{range .placements}}{{time .at}}  {{pad 14 .sessionId}}  {{if .hostname}}-> {{pad 12 .hostname}}{{else}}refused       {{end}}  {{.reason}}{{range .candidates}}\n" +
+	"placementsP\x01b\x98\x03{{range .placements}}{{time .at}}  {{pad 14 .sessionId}}  {{if .hostname}}-> {{pad 12 .hostname}}{{else}}refused       {{end}}  {{.reason}}{{with (placementReq .)}}  [{{.}}]{{end}}{{range .candidates}}\n" +
 	"    {{pad 12 .hostname}}  {{if .unfit}}ruled out: {{.unfit}}{{else}}cost {{printf \"%.2f\" .cost}}{{range .parts}}  {{.name}}={{printf \"%.2f\" .value}}{{end}}{{end}}{{if .chosen}}  CHOSEN{{end}}{{end}}\n" +
 	"{{end}}\x90\x02\x02\x12\xb5\x01\n" +
 	"\n" +
@@ -35380,558 +35484,563 @@ var file_hotbed_v1_hotbed_proto_depIdxs = []int32{
 	3,   // 50: hotbed.v1.Workspace.state:type_name -> hotbed.v1.WorkspaceState
 	92,  // 51: hotbed.v1.Workspace.repos:type_name -> hotbed.v1.WorkspaceRepo
 	33,  // 52: hotbed.v1.Workspace.cladefs_cell:type_name -> hotbed.v1.CladefsCell
-	94,  // 53: hotbed.v1.CreateWorkspaceRequest.placement:type_name -> hotbed.v1.Placement
-	87,  // 54: hotbed.v1.CreateWorkspaceRequest.project:type_name -> hotbed.v1.HostedProject
-	34,  // 55: hotbed.v1.CreateWorkspaceRequest.shared_base:type_name -> hotbed.v1.SharedBase
-	91,  // 56: hotbed.v1.ListWorkspacesResponse.workspaces:type_name -> hotbed.v1.Workspace
-	102, // 57: hotbed.v1.SyncRequest.header:type_name -> hotbed.v1.SyncHeader
-	103, // 58: hotbed.v1.SyncHeader.submodules:type_name -> hotbed.v1.SyncSubmodule
-	105, // 59: hotbed.v1.ListFilesResponse.files:type_name -> hotbed.v1.FileEntry
-	5,   // 60: hotbed.v1.CommandIntervention.kind:type_name -> hotbed.v1.InterventionKind
-	272, // 61: hotbed.v1.CommandIntervention.by:type_name -> hotbed.v1.Stamp
-	112, // 62: hotbed.v1.CommandDiagnostics.intervention:type_name -> hotbed.v1.CommandIntervention
-	262, // 63: hotbed.v1.CommandDiagnostics.sample:type_name -> hotbed.v1.ProcessSample
-	246, // 64: hotbed.v1.CommandDiagnostics.inspect:type_name -> hotbed.v1.InspectCommandResponse
-	113, // 65: hotbed.v1.GetCommandDiagnosticsResponse.diagnostics:type_name -> hotbed.v1.CommandDiagnostics
-	113, // 66: hotbed.v1.SaveCommandDiagnosticsRequest.diagnostics:type_name -> hotbed.v1.CommandDiagnostics
-	272, // 67: hotbed.v1.CommandSample.by:type_name -> hotbed.v1.Stamp
-	262, // 68: hotbed.v1.CommandSample.sample:type_name -> hotbed.v1.ProcessSample
-	118, // 69: hotbed.v1.ListCommandSamplesResponse.samples:type_name -> hotbed.v1.CommandSample
-	118, // 70: hotbed.v1.SaveCommandSampleRequest.sample:type_name -> hotbed.v1.CommandSample
-	4,   // 71: hotbed.v1.Command.state:type_name -> hotbed.v1.CommandState
-	110, // 72: hotbed.v1.Command.limits:type_name -> hotbed.v1.CommandLimits
-	111, // 73: hotbed.v1.Command.rebuilt:type_name -> hotbed.v1.Rebuilt
-	124, // 74: hotbed.v1.Command.timeline:type_name -> hotbed.v1.CommandEvent
-	112, // 75: hotbed.v1.Command.interventions:type_name -> hotbed.v1.CommandIntervention
-	128, // 76: hotbed.v1.Command.estimate:type_name -> hotbed.v1.CommandEstimate
-	4,   // 77: hotbed.v1.FinishedCommand.state:type_name -> hotbed.v1.CommandState
-	112, // 78: hotbed.v1.FinishedCommand.interventions:type_name -> hotbed.v1.CommandIntervention
-	128, // 79: hotbed.v1.FinishedCommand.estimate:type_name -> hotbed.v1.CommandEstimate
-	110, // 80: hotbed.v1.RunCommandRequest.limits:type_name -> hotbed.v1.CommandLimits
-	6,   // 81: hotbed.v1.RunCommandRequest.tty:type_name -> hotbed.v1.TtyMode
-	128, // 82: hotbed.v1.RunCommandRequest.estimate:type_name -> hotbed.v1.CommandEstimate
-	4,   // 83: hotbed.v1.OutputQuery.state:type_name -> hotbed.v1.CommandState
-	130, // 84: hotbed.v1.OutputQuery.lines:type_name -> hotbed.v1.OutputLine
-	125, // 85: hotbed.v1.ListCommandsResponse.commands:type_name -> hotbed.v1.Command
-	4,   // 86: hotbed.v1.LogChunk.state:type_name -> hotbed.v1.CommandState
-	112, // 87: hotbed.v1.LogChunk.ended_by:type_name -> hotbed.v1.CommandIntervention
-	146, // 88: hotbed.v1.Session.workspaces:type_name -> hotbed.v1.SessionWorkspace
-	342, // 89: hotbed.v1.Session.memories:type_name -> hotbed.v1.MemoryBriefing
-	145, // 90: hotbed.v1.ListSessionsResponse.sessions:type_name -> hotbed.v1.Session
-	145, // 91: hotbed.v1.SearchSessionsResponse.sessions:type_name -> hotbed.v1.Session
-	153, // 92: hotbed.v1.Project.history:type_name -> hotbed.v1.ProjectChange
-	72,  // 93: hotbed.v1.Project.steps:type_name -> hotbed.v1.Step
-	272, // 94: hotbed.v1.ProjectChange.by:type_name -> hotbed.v1.Stamp
-	152, // 95: hotbed.v1.ListProjectsResponse.projects:type_name -> hotbed.v1.Project
-	2,   // 96: hotbed.v1.ListBasesRequest.state:type_name -> hotbed.v1.BaseState
-	161, // 97: hotbed.v1.ListBasesResponse.bases:type_name -> hotbed.v1.NodeBase
-	88,  // 98: hotbed.v1.NodeBase.base:type_name -> hotbed.v1.Base
-	7,   // 99: hotbed.v1.ListFreshensRequest.state:type_name -> hotbed.v1.FreshenState
-	170, // 100: hotbed.v1.ListFreshensResponse.summary:type_name -> hotbed.v1.FreshenSummary
-	166, // 101: hotbed.v1.ListFreshensResponse.freshens:type_name -> hotbed.v1.BaseFreshen
-	166, // 102: hotbed.v1.GetFreshenResponse.freshen:type_name -> hotbed.v1.BaseFreshen
-	36,  // 103: hotbed.v1.GetFreshenResponse.node_admission:type_name -> hotbed.v1.Admission
-	200, // 104: hotbed.v1.GetFreshenResponse.related_events:type_name -> hotbed.v1.ClusterEvent
-	7,   // 105: hotbed.v1.BaseFreshen.state:type_name -> hotbed.v1.FreshenState
-	90,  // 106: hotbed.v1.BaseFreshen.repos:type_name -> hotbed.v1.BaseRepo
-	73,  // 107: hotbed.v1.BaseFreshen.steps:type_name -> hotbed.v1.AppliedStep
-	89,  // 108: hotbed.v1.BaseFreshen.phases:type_name -> hotbed.v1.FreshenPhase
-	124, // 109: hotbed.v1.BaseFreshen.timeline:type_name -> hotbed.v1.CommandEvent
-	7,   // 110: hotbed.v1.NodeProjectFreshenSummary.active_state:type_name -> hotbed.v1.FreshenState
-	365, // 111: hotbed.v1.NodeProjectFreshenSummary.cold_reasons:type_name -> hotbed.v1.NodeProjectFreshenSummary.ColdReasonsEntry
-	167, // 112: hotbed.v1.FreshenSummary.total_duration:type_name -> hotbed.v1.DurationStats
-	167, // 113: hotbed.v1.FreshenSummary.queue_duration:type_name -> hotbed.v1.DurationStats
-	167, // 114: hotbed.v1.FreshenSummary.prep_duration:type_name -> hotbed.v1.DurationStats
-	167, // 115: hotbed.v1.FreshenSummary.git_duration:type_name -> hotbed.v1.DurationStats
-	167, // 116: hotbed.v1.FreshenSummary.steps_duration:type_name -> hotbed.v1.DurationStats
-	167, // 117: hotbed.v1.FreshenSummary.parked_duration:type_name -> hotbed.v1.DurationStats
-	167, // 118: hotbed.v1.FreshenSummary.finalize_duration:type_name -> hotbed.v1.DurationStats
-	168, // 119: hotbed.v1.FreshenSummary.slowest_steps:type_name -> hotbed.v1.StepTimingSummary
-	169, // 120: hotbed.v1.FreshenSummary.by_node_project:type_name -> hotbed.v1.NodeProjectFreshenSummary
-	145, // 121: hotbed.v1.GetSessionResponse.session:type_name -> hotbed.v1.Session
-	91,  // 122: hotbed.v1.GetSessionResponse.workspaces:type_name -> hotbed.v1.Workspace
-	125, // 123: hotbed.v1.GetSessionResponse.commands:type_name -> hotbed.v1.Command
-	366, // 124: hotbed.v1.GetSessionResponse.node_hosts:type_name -> hotbed.v1.GetSessionResponse.NodeHostsEntry
-	177, // 125: hotbed.v1.SessionEvents.events:type_name -> hotbed.v1.SessionEvent
-	178, // 126: hotbed.v1.SessionEvent.command:type_name -> hotbed.v1.CommandUpdate
-	179, // 127: hotbed.v1.SessionEvent.workspace:type_name -> hotbed.v1.WorkspaceUpdate
-	180, // 128: hotbed.v1.SessionEvent.question:type_name -> hotbed.v1.QuestionUpdate
-	181, // 129: hotbed.v1.SessionEvent.review:type_name -> hotbed.v1.ReviewUpdate
-	182, // 130: hotbed.v1.SessionEvent.memory:type_name -> hotbed.v1.MemoryUpdate
-	26,  // 131: hotbed.v1.CommandUpdate.what:type_name -> hotbed.v1.CommandUpdate.What
-	4,   // 132: hotbed.v1.CommandUpdate.state:type_name -> hotbed.v1.CommandState
-	27,  // 133: hotbed.v1.WorkspaceUpdate.what:type_name -> hotbed.v1.WorkspaceUpdate.What
-	28,  // 134: hotbed.v1.QuestionUpdate.what:type_name -> hotbed.v1.QuestionUpdate.What
-	274, // 135: hotbed.v1.QuestionUpdate.question:type_name -> hotbed.v1.Question
-	29,  // 136: hotbed.v1.ReviewUpdate.what:type_name -> hotbed.v1.ReviewUpdate.What
-	30,  // 137: hotbed.v1.MemoryUpdate.what:type_name -> hotbed.v1.MemoryUpdate.What
-	339, // 138: hotbed.v1.MemoryUpdate.memory:type_name -> hotbed.v1.Memory
-	186, // 139: hotbed.v1.WorkerEvent.ref:type_name -> hotbed.v1.EventRef
-	188, // 140: hotbed.v1.Event.base:type_name -> hotbed.v1.BaseChange
-	189, // 141: hotbed.v1.Event.workspace:type_name -> hotbed.v1.WorkspaceChange
-	190, // 142: hotbed.v1.Event.command:type_name -> hotbed.v1.CommandChange
-	185, // 143: hotbed.v1.Event.feed:type_name -> hotbed.v1.WorkerEvent
-	88,  // 144: hotbed.v1.BaseChange.base:type_name -> hotbed.v1.Base
-	91,  // 145: hotbed.v1.WorkspaceChange.workspace:type_name -> hotbed.v1.Workspace
-	125, // 146: hotbed.v1.CommandChange.command:type_name -> hotbed.v1.Command
-	126, // 147: hotbed.v1.CommandChange.finished:type_name -> hotbed.v1.FinishedCommand
-	268, // 148: hotbed.v1.CommandChange.profile:type_name -> hotbed.v1.CommandProfile
-	113, // 149: hotbed.v1.CommandChange.diagnostics:type_name -> hotbed.v1.CommandDiagnostics
-	88,  // 150: hotbed.v1.Checkpoint.bases:type_name -> hotbed.v1.Base
-	91,  // 151: hotbed.v1.Checkpoint.workspaces:type_name -> hotbed.v1.Workspace
-	125, // 152: hotbed.v1.Checkpoint.commands:type_name -> hotbed.v1.Command
-	187, // 153: hotbed.v1.PushEventsRequest.events:type_name -> hotbed.v1.Event
-	191, // 154: hotbed.v1.PushEventsRequest.checkpoint:type_name -> hotbed.v1.Checkpoint
-	32,  // 155: hotbed.v1.HeartbeatRequest.resources:type_name -> hotbed.v1.Resources
-	35,  // 156: hotbed.v1.HeartbeatRequest.usage:type_name -> hotbed.v1.NodeUsage
-	38,  // 157: hotbed.v1.HeartbeatRequest.disk:type_name -> hotbed.v1.DiskUsage
-	194, // 158: hotbed.v1.HeartbeatRequest.commands:type_name -> hotbed.v1.CommandUsage
-	195, // 159: hotbed.v1.HeartbeatRequest.bases:type_name -> hotbed.v1.BaseUsage
-	196, // 160: hotbed.v1.HeartbeatRequest.workspaces:type_name -> hotbed.v1.WorkspaceUsage
-	48,  // 161: hotbed.v1.HeartbeatRequest.profiler:type_name -> hotbed.v1.ProfilerStatus
-	222, // 162: hotbed.v1.HeartbeatRequest.daemon_logs:type_name -> hotbed.v1.DaemonLogSource
-	36,  // 163: hotbed.v1.HeartbeatRequest.admission:type_name -> hotbed.v1.Admission
-	40,  // 164: hotbed.v1.HeartbeatRequest.object_store:type_name -> hotbed.v1.ObjectStoreStats
-	34,  // 165: hotbed.v1.HeartbeatRequest.held_bases:type_name -> hotbed.v1.SharedBase
-	33,  // 166: hotbed.v1.HeartbeatRequest.retired_bases:type_name -> hotbed.v1.CladefsCell
-	87,  // 167: hotbed.v1.HeartbeatResponse.projects:type_name -> hotbed.v1.HostedProject
-	54,  // 168: hotbed.v1.HeartbeatResponse.build:type_name -> hotbed.v1.Build
-	43,  // 169: hotbed.v1.HeartbeatResponse.host_usage:type_name -> hotbed.v1.HostUsage
-	60,  // 170: hotbed.v1.HeartbeatResponse.worker_config:type_name -> hotbed.v1.WorkerConfig
-	33,  // 171: hotbed.v1.HeartbeatResponse.retire_bases:type_name -> hotbed.v1.CladefsCell
-	186, // 172: hotbed.v1.ClusterEvent.ref:type_name -> hotbed.v1.EventRef
-	202, // 173: hotbed.v1.Samples.samples:type_name -> hotbed.v1.Sample
-	206, // 174: hotbed.v1.NodeHours.hours:type_name -> hotbed.v1.NodeHour
-	39,  // 175: hotbed.v1.Snapshot.nodes:type_name -> hotbed.v1.Node
-	199, // 176: hotbed.v1.Snapshot.repos:type_name -> hotbed.v1.RepoSummary
-	88,  // 177: hotbed.v1.Snapshot.bases:type_name -> hotbed.v1.Base
-	91,  // 178: hotbed.v1.Snapshot.workspaces:type_name -> hotbed.v1.Workspace
-	125, // 179: hotbed.v1.Snapshot.commands:type_name -> hotbed.v1.Command
-	200, // 180: hotbed.v1.Snapshot.events:type_name -> hotbed.v1.ClusterEvent
-	201, // 181: hotbed.v1.Snapshot.totals24h:type_name -> hotbed.v1.Totals
-	367, // 182: hotbed.v1.Snapshot.series:type_name -> hotbed.v1.Snapshot.SeriesEntry
-	204, // 183: hotbed.v1.Snapshot.load:type_name -> hotbed.v1.LoadSample
-	205, // 184: hotbed.v1.Snapshot.hourly:type_name -> hotbed.v1.HourBucket
-	368, // 185: hotbed.v1.Snapshot.node_hourly:type_name -> hotbed.v1.Snapshot.NodeHourlyEntry
-	126, // 186: hotbed.v1.Snapshot.history:type_name -> hotbed.v1.FinishedCommand
-	145, // 187: hotbed.v1.Snapshot.sessions:type_name -> hotbed.v1.Session
-	224, // 188: hotbed.v1.Snapshot.schedules:type_name -> hotbed.v1.ScheduledCommand
-	152, // 189: hotbed.v1.Snapshot.projects:type_name -> hotbed.v1.Project
-	222, // 190: hotbed.v1.Snapshot.controller_logs:type_name -> hotbed.v1.DaemonLogSource
-	210, // 191: hotbed.v1.Snapshot.placements:type_name -> hotbed.v1.PlacementDecision
-	200, // 192: hotbed.v1.Snapshot.admission_events:type_name -> hotbed.v1.ClusterEvent
-	211, // 193: hotbed.v1.PlacementDecision.candidates:type_name -> hotbed.v1.PlacementCandidate
-	212, // 194: hotbed.v1.PlacementCandidate.parts:type_name -> hotbed.v1.CostPart
-	39,  // 195: hotbed.v1.NodeDetail.node:type_name -> hotbed.v1.Node
-	200, // 196: hotbed.v1.NodeDetail.events:type_name -> hotbed.v1.ClusterEvent
-	210, // 197: hotbed.v1.NodeDetail.placements:type_name -> hotbed.v1.PlacementDecision
-	210, // 198: hotbed.v1.ListPlacementsResponse.placements:type_name -> hotbed.v1.PlacementDecision
-	200, // 199: hotbed.v1.ListEventsResponse.events:type_name -> hotbed.v1.ClusterEvent
-	8,   // 200: hotbed.v1.GetDaemonLogsRequest.level:type_name -> hotbed.v1.DaemonLogLevel
-	8,   // 201: hotbed.v1.DaemonLogEntry.level:type_name -> hotbed.v1.DaemonLogLevel
-	221, // 202: hotbed.v1.GetDaemonLogsResponse.entries:type_name -> hotbed.v1.DaemonLogEntry
-	222, // 203: hotbed.v1.GetDaemonLogsResponse.sources:type_name -> hotbed.v1.DaemonLogSource
-	127, // 204: hotbed.v1.ScheduledCommand.command:type_name -> hotbed.v1.RunCommandRequest
-	225, // 205: hotbed.v1.ScheduledCommand.runs:type_name -> hotbed.v1.ScheduledRun
-	9,   // 206: hotbed.v1.ScheduledRun.outcome:type_name -> hotbed.v1.RunOutcome
-	224, // 207: hotbed.v1.PutScheduleRequest.schedule:type_name -> hotbed.v1.ScheduledCommand
-	224, // 208: hotbed.v1.ListSchedulesResponse.schedules:type_name -> hotbed.v1.ScheduledCommand
-	10,  // 209: hotbed.v1.InspectCommandRequest.sections:type_name -> hotbed.v1.InspectSection
-	235, // 210: hotbed.v1.ProcessInfo.threads:type_name -> hotbed.v1.ThreadInfo
-	238, // 211: hotbed.v1.CgroupStats.io:type_name -> hotbed.v1.CgroupIO
-	241, // 212: hotbed.v1.ProcessMemoryMap.top_regions:type_name -> hotbed.v1.MemoryRegion
-	243, // 213: hotbed.v1.ProcessLimits.items:type_name -> hotbed.v1.ResourceLimit
-	236, // 214: hotbed.v1.InspectCommandResponse.procs:type_name -> hotbed.v1.ProcessInfo
-	237, // 215: hotbed.v1.InspectCommandResponse.files:type_name -> hotbed.v1.OpenFile
-	239, // 216: hotbed.v1.InspectCommandResponse.cgroup_stats:type_name -> hotbed.v1.CgroupStats
-	240, // 217: hotbed.v1.InspectCommandResponse.kstacks:type_name -> hotbed.v1.ThreadKernelStack
-	242, // 218: hotbed.v1.InspectCommandResponse.maps:type_name -> hotbed.v1.ProcessMemoryMap
-	244, // 219: hotbed.v1.InspectCommandResponse.limits:type_name -> hotbed.v1.ProcessLimits
-	245, // 220: hotbed.v1.InspectCommandResponse.available_tools:type_name -> hotbed.v1.ToolCapability
-	11,  // 221: hotbed.v1.TraceCommandRequest.kind:type_name -> hotbed.v1.TraceKind
-	11,  // 222: hotbed.v1.TraceSummary.kind:type_name -> hotbed.v1.TraceKind
-	265, // 223: hotbed.v1.TraceSummary.stacks:type_name -> hotbed.v1.FoldedStack
-	266, // 224: hotbed.v1.TraceSummary.top_functions:type_name -> hotbed.v1.ProfileFunction
-	248, // 225: hotbed.v1.TraceSummary.counters:type_name -> hotbed.v1.PerfCounter
-	249, // 226: hotbed.v1.TraceSummary.syscalls:type_name -> hotbed.v1.SyscallStat
-	264, // 227: hotbed.v1.TraceSummary.frames:type_name -> hotbed.v1.ProfileFrame
-	250, // 228: hotbed.v1.TraceCommandChunk.summary:type_name -> hotbed.v1.TraceSummary
-	262, // 229: hotbed.v1.SampleCommandChunk.sample:type_name -> hotbed.v1.ProcessSample
-	118, // 230: hotbed.v1.SampleCommandChunk.kept:type_name -> hotbed.v1.CommandSample
-	369, // 231: hotbed.v1.SampledThread.state_counts:type_name -> hotbed.v1.SampledThread.StateCountsEntry
-	255, // 232: hotbed.v1.SampledThread.syscall:type_name -> hotbed.v1.ThreadSyscall
-	370, // 233: hotbed.v1.SampledThread.syscall_counts:type_name -> hotbed.v1.SampledThread.SyscallCountsEntry
-	256, // 234: hotbed.v1.SampledThread.user_frames:type_name -> hotbed.v1.StackFrame
-	257, // 235: hotbed.v1.SampledProcess.threads:type_name -> hotbed.v1.SampledThread
-	242, // 236: hotbed.v1.SampledProcess.memory_map:type_name -> hotbed.v1.ProcessMemoryMap
-	244, // 237: hotbed.v1.SampledProcess.limits:type_name -> hotbed.v1.ProcessLimits
-	239, // 238: hotbed.v1.SampledCgroup.end:type_name -> hotbed.v1.CgroupStats
-	254, // 239: hotbed.v1.ProcessSample.collectors:type_name -> hotbed.v1.SampleCollector
-	260, // 240: hotbed.v1.ProcessSample.procs:type_name -> hotbed.v1.SampledProcess
-	258, // 241: hotbed.v1.ProcessSample.files:type_name -> hotbed.v1.SampledOpenFile
-	259, // 242: hotbed.v1.ProcessSample.locks:type_name -> hotbed.v1.FileLock
-	261, // 243: hotbed.v1.ProcessSample.cgroup_stats:type_name -> hotbed.v1.SampledCgroup
-	265, // 244: hotbed.v1.ProcessSample.sampled_stacks:type_name -> hotbed.v1.FoldedStack
-	265, // 245: hotbed.v1.ProcessSample.on_cpu_stacks:type_name -> hotbed.v1.FoldedStack
-	266, // 246: hotbed.v1.ProcessSample.on_cpu_top_functions:type_name -> hotbed.v1.ProfileFunction
-	248, // 247: hotbed.v1.ProcessSample.perf_counters:type_name -> hotbed.v1.PerfCounter
-	264, // 248: hotbed.v1.ProcessSample.frames:type_name -> hotbed.v1.ProfileFrame
-	265, // 249: hotbed.v1.CommandProfile.stacks:type_name -> hotbed.v1.FoldedStack
-	266, // 250: hotbed.v1.CommandProfile.top_functions:type_name -> hotbed.v1.ProfileFunction
-	267, // 251: hotbed.v1.CommandProfile.buckets:type_name -> hotbed.v1.ProfileBucket
-	264, // 252: hotbed.v1.CommandProfile.frames:type_name -> hotbed.v1.ProfileFrame
-	270, // 253: hotbed.v1.Prompt.options:type_name -> hotbed.v1.PromptOption
-	13,  // 254: hotbed.v1.Stamp.actor_kind:type_name -> hotbed.v1.ActorKind
-	269, // 255: hotbed.v1.Question.prompt:type_name -> hotbed.v1.Prompt
-	12,  // 256: hotbed.v1.Question.state:type_name -> hotbed.v1.QuestionState
-	271, // 257: hotbed.v1.Question.answer:type_name -> hotbed.v1.Answer
-	272, // 258: hotbed.v1.Question.asked:type_name -> hotbed.v1.Stamp
-	273, // 259: hotbed.v1.Question.asked_from:type_name -> hotbed.v1.AskedFrom
-	272, // 260: hotbed.v1.Question.edited:type_name -> hotbed.v1.Stamp
-	272, // 261: hotbed.v1.Question.answered:type_name -> hotbed.v1.Stamp
-	272, // 262: hotbed.v1.Question.dismissed:type_name -> hotbed.v1.Stamp
-	272, // 263: hotbed.v1.Question.handled:type_name -> hotbed.v1.Stamp
-	272, // 264: hotbed.v1.Question.deleted:type_name -> hotbed.v1.Stamp
-	275, // 265: hotbed.v1.Question.history:type_name -> hotbed.v1.QuestionChange
-	272, // 266: hotbed.v1.QuestionChange.by:type_name -> hotbed.v1.Stamp
-	274, // 267: hotbed.v1.QuestionChange.question:type_name -> hotbed.v1.Question
-	269, // 268: hotbed.v1.AddQuestionsRequest.questions:type_name -> hotbed.v1.Prompt
-	273, // 269: hotbed.v1.AddQuestionsRequest.asked_from:type_name -> hotbed.v1.AskedFrom
-	274, // 270: hotbed.v1.AddQuestionsResponse.questions:type_name -> hotbed.v1.Question
-	269, // 271: hotbed.v1.EditQuestionRequest.prompt:type_name -> hotbed.v1.Prompt
-	12,  // 272: hotbed.v1.ListQuestionsRequest.states:type_name -> hotbed.v1.QuestionState
-	14,  // 273: hotbed.v1.ListQuestionsRequest.order:type_name -> hotbed.v1.QuestionOrder
-	274, // 274: hotbed.v1.ListQuestionsResponse.questions:type_name -> hotbed.v1.Question
-	281, // 275: hotbed.v1.ListQuestionsResponse.sessions:type_name -> hotbed.v1.QuestionSession
-	285, // 276: hotbed.v1.ListQuestionProjectsResponse.projects:type_name -> hotbed.v1.QuestionProject
-	271, // 277: hotbed.v1.AnswerQuestionRequest.answer:type_name -> hotbed.v1.Answer
-	269, // 278: hotbed.v1.ReviseQuestionRequest.prompt:type_name -> hotbed.v1.Prompt
-	274, // 279: hotbed.v1.AckQuestionsResponse.questions:type_name -> hotbed.v1.Question
-	19,  // 280: hotbed.v1.Reviewer.state:type_name -> hotbed.v1.ReviewerState
-	272, // 281: hotbed.v1.Reviewer.started:type_name -> hotbed.v1.Stamp
-	272, // 282: hotbed.v1.Reviewer.ended:type_name -> hotbed.v1.Stamp
-	295, // 283: hotbed.v1.ReportedFinding.locations:type_name -> hotbed.v1.Location
-	16,  // 284: hotbed.v1.Finding.severity:type_name -> hotbed.v1.FindingSeverity
-	17,  // 285: hotbed.v1.Finding.verdict:type_name -> hotbed.v1.FindingVerdict
-	295, // 286: hotbed.v1.Finding.locations:type_name -> hotbed.v1.Location
-	18,  // 287: hotbed.v1.Finding.decision:type_name -> hotbed.v1.FindingDecision
-	272, // 288: hotbed.v1.Finding.decided:type_name -> hotbed.v1.Stamp
-	272, // 289: hotbed.v1.Finding.found:type_name -> hotbed.v1.Stamp
-	20,  // 290: hotbed.v1.Finding.quick:type_name -> hotbed.v1.QuickResponse
-	298, // 291: hotbed.v1.Finding.fix:type_name -> hotbed.v1.Fix
-	272, // 292: hotbed.v1.Finding.quick_by:type_name -> hotbed.v1.Stamp
-	295, // 293: hotbed.v1.Fix.locations:type_name -> hotbed.v1.Location
-	15,  // 294: hotbed.v1.Review.state:type_name -> hotbed.v1.ReviewState
-	272, // 295: hotbed.v1.Review.requested:type_name -> hotbed.v1.Stamp
-	272, // 296: hotbed.v1.Review.started:type_name -> hotbed.v1.Stamp
-	272, // 297: hotbed.v1.Review.ended:type_name -> hotbed.v1.Stamp
-	297, // 298: hotbed.v1.Review.findings:type_name -> hotbed.v1.Finding
-	300, // 299: hotbed.v1.Review.events:type_name -> hotbed.v1.ReviewEvent
-	272, // 300: hotbed.v1.Review.implementer:type_name -> hotbed.v1.Stamp
-	294, // 301: hotbed.v1.Review.reviewers:type_name -> hotbed.v1.Reviewer
-	272, // 302: hotbed.v1.ReviewEvent.by:type_name -> hotbed.v1.Stamp
-	20,  // 303: hotbed.v1.ReviewEvent.quick:type_name -> hotbed.v1.QuickResponse
-	15,  // 304: hotbed.v1.ListReviewsRequest.states:type_name -> hotbed.v1.ReviewState
-	299, // 305: hotbed.v1.ListReviewsResponse.reviews:type_name -> hotbed.v1.Review
-	296, // 306: hotbed.v1.AddFindingsRequest.findings:type_name -> hotbed.v1.ReportedFinding
-	297, // 307: hotbed.v1.AddFindingsResponse.findings:type_name -> hotbed.v1.Finding
-	18,  // 308: hotbed.v1.DecideFindingsRequest.decision:type_name -> hotbed.v1.FindingDecision
-	298, // 309: hotbed.v1.DecideFindingsRequest.fix:type_name -> hotbed.v1.Fix
-	13,  // 310: hotbed.v1.DecideFindingsRequest.actor_kind:type_name -> hotbed.v1.ActorKind
-	297, // 311: hotbed.v1.DecideFindingsResponse.findings:type_name -> hotbed.v1.Finding
-	20,  // 312: hotbed.v1.RespondRequest.quick:type_name -> hotbed.v1.QuickResponse
-	13,  // 313: hotbed.v1.RespondRequest.actor_kind:type_name -> hotbed.v1.ActorKind
-	300, // 314: hotbed.v1.ListResponsesResponse.responses:type_name -> hotbed.v1.ReviewEvent
-	315, // 315: hotbed.v1.ListGitCredentialsResponse.credentials:type_name -> hotbed.v1.GitCredential
-	21,  // 316: hotbed.v1.Issue.state:type_name -> hotbed.v1.IssueState
-	272, // 317: hotbed.v1.Issue.reported:type_name -> hotbed.v1.Stamp
-	329, // 318: hotbed.v1.Issue.upvotes:type_name -> hotbed.v1.IssueUpvote
-	272, // 319: hotbed.v1.Issue.archived:type_name -> hotbed.v1.Stamp
-	272, // 320: hotbed.v1.IssueUpvote.by:type_name -> hotbed.v1.Stamp
-	328, // 321: hotbed.v1.ListIssuesResponse.issues:type_name -> hotbed.v1.Issue
-	23,  // 322: hotbed.v1.MemoryContent.mode:type_name -> hotbed.v1.MemoryMode
-	273, // 323: hotbed.v1.MemoryProvenance.from:type_name -> hotbed.v1.AskedFrom
-	22,  // 324: hotbed.v1.Memory.scope:type_name -> hotbed.v1.MemoryScope
-	337, // 325: hotbed.v1.Memory.content:type_name -> hotbed.v1.MemoryContent
-	24,  // 326: hotbed.v1.Memory.state:type_name -> hotbed.v1.MemoryState
-	338, // 327: hotbed.v1.Memory.provenance:type_name -> hotbed.v1.MemoryProvenance
-	272, // 328: hotbed.v1.Memory.proposed:type_name -> hotbed.v1.Stamp
-	272, // 329: hotbed.v1.Memory.edited:type_name -> hotbed.v1.Stamp
-	272, // 330: hotbed.v1.Memory.decided:type_name -> hotbed.v1.Stamp
-	272, // 331: hotbed.v1.Memory.archived:type_name -> hotbed.v1.Stamp
-	340, // 332: hotbed.v1.Memory.history:type_name -> hotbed.v1.MemoryChange
-	272, // 333: hotbed.v1.MemoryChange.by:type_name -> hotbed.v1.Stamp
-	339, // 334: hotbed.v1.MemoryChange.memory:type_name -> hotbed.v1.Memory
-	22,  // 335: hotbed.v1.MemoryIndexEntry.scope:type_name -> hotbed.v1.MemoryScope
-	23,  // 336: hotbed.v1.MemoryIndexEntry.mode:type_name -> hotbed.v1.MemoryMode
-	341, // 337: hotbed.v1.MemoryBriefing.always:type_name -> hotbed.v1.MemoryIndexEntry
-	341, // 338: hotbed.v1.MemoryBriefing.on_demand:type_name -> hotbed.v1.MemoryIndexEntry
-	337, // 339: hotbed.v1.ProposeMemoryRequest.content:type_name -> hotbed.v1.MemoryContent
-	273, // 340: hotbed.v1.ProposeMemoryRequest.from:type_name -> hotbed.v1.AskedFrom
-	24,  // 341: hotbed.v1.ListMemoriesRequest.states:type_name -> hotbed.v1.MemoryState
-	22,  // 342: hotbed.v1.ListMemoriesRequest.scope:type_name -> hotbed.v1.MemoryScope
-	23,  // 343: hotbed.v1.ListMemoriesRequest.mode:type_name -> hotbed.v1.MemoryMode
-	25,  // 344: hotbed.v1.ListMemoriesRequest.order:type_name -> hotbed.v1.MemoryOrder
-	339, // 345: hotbed.v1.ListMemoriesResponse.memories:type_name -> hotbed.v1.Memory
-	339, // 346: hotbed.v1.GetMemoriesResponse.memories:type_name -> hotbed.v1.Memory
-	337, // 347: hotbed.v1.ReviseMemoryRequest.content:type_name -> hotbed.v1.MemoryContent
-	356, // 348: hotbed.v1.CommandSpec.fixed:type_name -> hotbed.v1.FixedField
-	357, // 349: hotbed.v1.CommandSpec.input:type_name -> hotbed.v1.InputSpec
-	53,  // 350: hotbed.v1.WorkerVMConfig.KernelsEntry.value:type_name -> hotbed.v1.ManagedArtifact
-	53,  // 351: hotbed.v1.WorkerVMConfig.GuestdEntry.value:type_name -> hotbed.v1.ManagedArtifact
-	53,  // 352: hotbed.v1.WorkerSystemConfig.CladefsdEntry.value:type_name -> hotbed.v1.ManagedArtifact
-	53,  // 353: hotbed.v1.WorkerSystemConfig.FirecrackerEntry.value:type_name -> hotbed.v1.ManagedArtifact
-	203, // 354: hotbed.v1.Snapshot.SeriesEntry.value:type_name -> hotbed.v1.Samples
-	207, // 355: hotbed.v1.Snapshot.NodeHourlyEntry.value:type_name -> hotbed.v1.NodeHours
-	371, // 356: hotbed.v1.group:extendee -> google.protobuf.ServiceOptions
-	372, // 357: hotbed.v1.command:extendee -> google.protobuf.MethodOptions
-	373, // 358: hotbed.v1.param:extendee -> google.protobuf.FieldOptions
-	354, // 359: hotbed.v1.group:type_name -> hotbed.v1.GroupSpec
-	355, // 360: hotbed.v1.command:type_name -> hotbed.v1.CommandSpec
-	358, // 361: hotbed.v1.param:type_name -> hotbed.v1.ParamSpec
-	49,  // 362: hotbed.v1.ClusterService.Join:input_type -> hotbed.v1.JoinRequest
-	192, // 363: hotbed.v1.ClusterService.PushEvents:input_type -> hotbed.v1.PushEventsRequest
-	197, // 364: hotbed.v1.ClusterService.Heartbeat:input_type -> hotbed.v1.HeartbeatRequest
-	46,  // 365: hotbed.v1.ClusterService.Standby:input_type -> hotbed.v1.StandbyRequest
-	44,  // 366: hotbed.v1.ClusterService.ReportHostUsage:input_type -> hotbed.v1.ReportHostUsageRequest
-	51,  // 367: hotbed.v1.ClusterService.ListNodes:input_type -> hotbed.v1.ListNodesRequest
-	66,  // 368: hotbed.v1.ClusterService.GetBuild:input_type -> hotbed.v1.GetBuildRequest
-	80,  // 369: hotbed.v1.ClusterService.ListRepos:input_type -> hotbed.v1.ListReposRequest
-	82,  // 370: hotbed.v1.ClusterService.PutRepo:input_type -> hotbed.v1.PutRepoRequest
-	83,  // 371: hotbed.v1.ClusterService.DeleteRepo:input_type -> hotbed.v1.DeleteRepoRequest
-	85,  // 372: hotbed.v1.ClusterService.RebuildProject:input_type -> hotbed.v1.RebuildProjectRequest
-	86,  // 373: hotbed.v1.ClusterService.SetProjectHosts:input_type -> hotbed.v1.SetProjectHostsRequest
-	74,  // 374: hotbed.v1.ClusterService.PutStep:input_type -> hotbed.v1.PutStepRequest
-	75,  // 375: hotbed.v1.ClusterService.DeleteStep:input_type -> hotbed.v1.DeleteStepRequest
-	76,  // 376: hotbed.v1.ClusterService.ListSteps:input_type -> hotbed.v1.ListStepsRequest
-	154, // 377: hotbed.v1.ClusterService.AddProject:input_type -> hotbed.v1.AddProjectRequest
-	155, // 378: hotbed.v1.ClusterService.RemoveProjectRepos:input_type -> hotbed.v1.RemoveProjectReposRequest
-	157, // 379: hotbed.v1.ClusterService.ListProjects:input_type -> hotbed.v1.ListProjectsRequest
-	156, // 380: hotbed.v1.ClusterService.GetProject:input_type -> hotbed.v1.GetProjectRequest
-	159, // 381: hotbed.v1.ClusterService.ListBases:input_type -> hotbed.v1.ListBasesRequest
-	162, // 382: hotbed.v1.ClusterService.ListFreshens:input_type -> hotbed.v1.ListFreshensRequest
-	164, // 383: hotbed.v1.ClusterService.GetFreshen:input_type -> hotbed.v1.GetFreshenRequest
-	208, // 384: hotbed.v1.ClusterService.GetSnapshot:input_type -> hotbed.v1.GetSnapshotRequest
-	114, // 385: hotbed.v1.ClusterService.GetCommandDiagnostics:input_type -> hotbed.v1.GetCommandDiagnosticsRequest
-	116, // 386: hotbed.v1.ClusterService.SaveCommandDiagnostics:input_type -> hotbed.v1.SaveCommandDiagnosticsRequest
-	119, // 387: hotbed.v1.ClusterService.ListCommandSamples:input_type -> hotbed.v1.ListCommandSamplesRequest
-	121, // 388: hotbed.v1.ClusterService.GetCommandSample:input_type -> hotbed.v1.GetCommandSampleRequest
-	122, // 389: hotbed.v1.ClusterService.SaveCommandSample:input_type -> hotbed.v1.SaveCommandSampleRequest
-	214, // 390: hotbed.v1.ClusterService.GetNode:input_type -> hotbed.v1.GetNodeRequest
-	213, // 391: hotbed.v1.ClusterService.RetireNode:input_type -> hotbed.v1.RetireNodeRequest
-	216, // 392: hotbed.v1.ClusterService.ListPlacements:input_type -> hotbed.v1.ListPlacementsRequest
-	218, // 393: hotbed.v1.ClusterService.ListEvents:input_type -> hotbed.v1.ListEventsRequest
-	61,  // 394: hotbed.v1.ClusterService.GetWorkerConfig:input_type -> hotbed.v1.GetWorkerConfigRequest
-	63,  // 395: hotbed.v1.ClusterService.SetWorkerConfig:input_type -> hotbed.v1.SetWorkerConfigRequest
-	64,  // 396: hotbed.v1.ClusterService.DeleteWorkerConfig:input_type -> hotbed.v1.DeleteWorkerConfigRequest
-	67,  // 397: hotbed.v1.ClusterService.UpgradeSystem:input_type -> hotbed.v1.UpgradeSystemRequest
-	147, // 398: hotbed.v1.SessionService.StartSession:input_type -> hotbed.v1.StartSessionRequest
-	171, // 399: hotbed.v1.SessionService.GetSession:input_type -> hotbed.v1.GetSessionRequest
-	148, // 400: hotbed.v1.SessionService.ListSessions:input_type -> hotbed.v1.ListSessionsRequest
-	150, // 401: hotbed.v1.SessionService.SearchSessions:input_type -> hotbed.v1.SearchSessionsRequest
-	173, // 402: hotbed.v1.SessionService.EndSession:input_type -> hotbed.v1.EndSessionRequest
-	174, // 403: hotbed.v1.SessionService.WatchSession:input_type -> hotbed.v1.WatchSessionRequest
-	175, // 404: hotbed.v1.SessionService.Poll:input_type -> hotbed.v1.PollRequest
-	93,  // 405: hotbed.v1.WorkspaceService.CreateWorkspace:input_type -> hotbed.v1.CreateWorkspaceRequest
-	95,  // 406: hotbed.v1.WorkspaceService.GetWorkspace:input_type -> hotbed.v1.GetWorkspaceRequest
-	96,  // 407: hotbed.v1.WorkspaceService.WatchWorkspace:input_type -> hotbed.v1.WatchWorkspaceRequest
-	97,  // 408: hotbed.v1.WorkspaceService.ListWorkspaces:input_type -> hotbed.v1.ListWorkspacesRequest
-	99,  // 409: hotbed.v1.WorkspaceService.ReleaseWorkspace:input_type -> hotbed.v1.ReleaseWorkspaceRequest
-	101, // 410: hotbed.v1.WorkspaceService.Sync:input_type -> hotbed.v1.SyncRequest
-	106, // 411: hotbed.v1.WorkspaceService.ListFiles:input_type -> hotbed.v1.ListFilesRequest
-	108, // 412: hotbed.v1.WorkspaceService.GetFile:input_type -> hotbed.v1.GetFileRequest
-	127, // 413: hotbed.v1.WorkspaceService.RunCommand:input_type -> hotbed.v1.RunCommandRequest
-	135, // 414: hotbed.v1.WorkspaceService.OpenShell:input_type -> hotbed.v1.OpenShellRequest
-	137, // 415: hotbed.v1.WorkspaceService.GetCommand:input_type -> hotbed.v1.GetCommandRequest
-	138, // 416: hotbed.v1.WorkspaceService.ListCommands:input_type -> hotbed.v1.ListCommandsRequest
-	140, // 417: hotbed.v1.WorkspaceService.StopCommand:input_type -> hotbed.v1.StopCommandRequest
-	141, // 418: hotbed.v1.WorkspaceService.PauseCommand:input_type -> hotbed.v1.PauseCommandRequest
-	142, // 419: hotbed.v1.WorkspaceService.ResumeCommand:input_type -> hotbed.v1.ResumeCommandRequest
-	143, // 420: hotbed.v1.WorkspaceService.FollowLog:input_type -> hotbed.v1.FollowLogRequest
-	183, // 421: hotbed.v1.WorkspaceService.GetLogLines:input_type -> hotbed.v1.GetLogLinesRequest
-	129, // 422: hotbed.v1.WorkspaceService.QueryOutput:input_type -> hotbed.v1.QueryOutputRequest
-	132, // 423: hotbed.v1.WorkspaceService.DetachCommand:input_type -> hotbed.v1.DetachCommandRequest
-	133, // 424: hotbed.v1.WorkspaceService.SendInput:input_type -> hotbed.v1.SendInputRequest
-	234, // 425: hotbed.v1.WorkspaceService.InspectCommand:input_type -> hotbed.v1.InspectCommandRequest
-	247, // 426: hotbed.v1.WorkspaceService.TraceCommand:input_type -> hotbed.v1.TraceCommandRequest
-	252, // 427: hotbed.v1.WorkspaceService.SampleCommand:input_type -> hotbed.v1.SampleCommandRequest
-	263, // 428: hotbed.v1.WorkspaceService.GetProfile:input_type -> hotbed.v1.GetProfileRequest
-	220, // 429: hotbed.v1.WorkspaceService.GetDaemonLogs:input_type -> hotbed.v1.GetDaemonLogsRequest
-	68,  // 430: hotbed.v1.WorkspaceService.UpgradeSystem:input_type -> hotbed.v1.WorkerUpgradeSystemRequest
-	226, // 431: hotbed.v1.ScheduleService.PutSchedule:input_type -> hotbed.v1.PutScheduleRequest
-	227, // 432: hotbed.v1.ScheduleService.ListSchedules:input_type -> hotbed.v1.ListSchedulesRequest
-	229, // 433: hotbed.v1.ScheduleService.GetSchedule:input_type -> hotbed.v1.GetScheduleRequest
-	230, // 434: hotbed.v1.ScheduleService.DeleteSchedule:input_type -> hotbed.v1.DeleteScheduleRequest
-	232, // 435: hotbed.v1.ScheduleService.RunSchedule:input_type -> hotbed.v1.RunScheduleRequest
-	233, // 436: hotbed.v1.ScheduleService.PauseSchedule:input_type -> hotbed.v1.PauseScheduleRequest
-	276, // 437: hotbed.v1.QuestionService.AddQuestions:input_type -> hotbed.v1.AddQuestionsRequest
-	278, // 438: hotbed.v1.QuestionService.EditQuestion:input_type -> hotbed.v1.EditQuestionRequest
-	279, // 439: hotbed.v1.QuestionService.DeleteQuestion:input_type -> hotbed.v1.DeleteQuestionRequest
-	280, // 440: hotbed.v1.QuestionService.ListQuestions:input_type -> hotbed.v1.ListQuestionsRequest
-	283, // 441: hotbed.v1.QuestionService.ListQuestionProjects:input_type -> hotbed.v1.ListQuestionProjectsRequest
-	286, // 442: hotbed.v1.QuestionService.GetQuestion:input_type -> hotbed.v1.GetQuestionRequest
-	287, // 443: hotbed.v1.QuestionService.AnswerQuestion:input_type -> hotbed.v1.AnswerQuestionRequest
-	288, // 444: hotbed.v1.QuestionService.DismissQuestion:input_type -> hotbed.v1.DismissQuestionRequest
-	289, // 445: hotbed.v1.QuestionService.ReviseQuestion:input_type -> hotbed.v1.ReviseQuestionRequest
-	290, // 446: hotbed.v1.QuestionService.ReopenQuestion:input_type -> hotbed.v1.ReopenQuestionRequest
-	291, // 447: hotbed.v1.QuestionService.MoveQuestion:input_type -> hotbed.v1.MoveQuestionRequest
-	292, // 448: hotbed.v1.QuestionService.AckQuestions:input_type -> hotbed.v1.AckQuestionsRequest
-	301, // 449: hotbed.v1.ReviewService.RequestReview:input_type -> hotbed.v1.RequestReviewRequest
-	302, // 450: hotbed.v1.ReviewService.ListReviews:input_type -> hotbed.v1.ListReviewsRequest
-	304, // 451: hotbed.v1.ReviewService.GetReview:input_type -> hotbed.v1.GetReviewRequest
-	305, // 452: hotbed.v1.ReviewService.StartReview:input_type -> hotbed.v1.StartReviewRequest
-	306, // 453: hotbed.v1.ReviewService.AddFindings:input_type -> hotbed.v1.AddFindingsRequest
-	308, // 454: hotbed.v1.ReviewService.FinishReview:input_type -> hotbed.v1.FinishReviewRequest
-	309, // 455: hotbed.v1.ReviewService.CancelReview:input_type -> hotbed.v1.CancelReviewRequest
-	310, // 456: hotbed.v1.ReviewService.DecideFindings:input_type -> hotbed.v1.DecideFindingsRequest
-	312, // 457: hotbed.v1.ReviewService.Respond:input_type -> hotbed.v1.RespondRequest
-	313, // 458: hotbed.v1.ReviewService.ListResponses:input_type -> hotbed.v1.ListResponsesRequest
-	316, // 459: hotbed.v1.GitAuthService.StartGitHubLogin:input_type -> hotbed.v1.StartGitHubLoginRequest
-	318, // 460: hotbed.v1.GitAuthService.CompleteGitHubLogin:input_type -> hotbed.v1.CompleteGitHubLoginRequest
-	319, // 461: hotbed.v1.GitAuthService.PutGitCredential:input_type -> hotbed.v1.PutGitCredentialRequest
-	320, // 462: hotbed.v1.GitAuthService.ListGitCredentials:input_type -> hotbed.v1.ListGitCredentialsRequest
-	322, // 463: hotbed.v1.GitAuthService.DeleteGitCredential:input_type -> hotbed.v1.DeleteGitCredentialRequest
-	324, // 464: hotbed.v1.GitAuthService.MintGitToken:input_type -> hotbed.v1.MintGitTokenRequest
-	326, // 465: hotbed.v1.GitAuthService.ProxyGitHubAPI:input_type -> hotbed.v1.ProxyGitHubAPIRequest
-	330, // 466: hotbed.v1.IssueService.ReportIssue:input_type -> hotbed.v1.ReportIssueRequest
-	331, // 467: hotbed.v1.IssueService.ListIssues:input_type -> hotbed.v1.ListIssuesRequest
-	333, // 468: hotbed.v1.IssueService.GetIssue:input_type -> hotbed.v1.GetIssueRequest
-	334, // 469: hotbed.v1.IssueService.UpvoteIssue:input_type -> hotbed.v1.UpvoteIssueRequest
-	335, // 470: hotbed.v1.IssueService.ArchiveIssue:input_type -> hotbed.v1.ArchiveIssueRequest
-	336, // 471: hotbed.v1.IssueService.ReopenIssue:input_type -> hotbed.v1.ReopenIssueRequest
-	343, // 472: hotbed.v1.MemoryService.ProposeMemory:input_type -> hotbed.v1.ProposeMemoryRequest
-	344, // 473: hotbed.v1.MemoryService.ListMemories:input_type -> hotbed.v1.ListMemoriesRequest
-	346, // 474: hotbed.v1.MemoryService.GetMemories:input_type -> hotbed.v1.GetMemoriesRequest
-	348, // 475: hotbed.v1.MemoryService.ShowMemory:input_type -> hotbed.v1.ShowMemoryRequest
-	349, // 476: hotbed.v1.MemoryService.ReviseMemory:input_type -> hotbed.v1.ReviseMemoryRequest
-	350, // 477: hotbed.v1.MemoryService.ArchiveMemory:input_type -> hotbed.v1.ArchiveMemoryRequest
-	351, // 478: hotbed.v1.MemoryService.RestoreMemory:input_type -> hotbed.v1.RestoreMemoryRequest
-	352, // 479: hotbed.v1.MemoryService.DeleteMemory:input_type -> hotbed.v1.DeleteMemoryRequest
-	353, // 480: hotbed.v1.MemoryService.MoveMemory:input_type -> hotbed.v1.MoveMemoryRequest
-	50,  // 481: hotbed.v1.ClusterService.Join:output_type -> hotbed.v1.JoinResponse
-	193, // 482: hotbed.v1.ClusterService.PushEvents:output_type -> hotbed.v1.PushEventsResponse
-	198, // 483: hotbed.v1.ClusterService.Heartbeat:output_type -> hotbed.v1.HeartbeatResponse
-	47,  // 484: hotbed.v1.ClusterService.Standby:output_type -> hotbed.v1.StandbyResponse
-	45,  // 485: hotbed.v1.ClusterService.ReportHostUsage:output_type -> hotbed.v1.ReportHostUsageResponse
-	52,  // 486: hotbed.v1.ClusterService.ListNodes:output_type -> hotbed.v1.ListNodesResponse
-	54,  // 487: hotbed.v1.ClusterService.GetBuild:output_type -> hotbed.v1.Build
-	81,  // 488: hotbed.v1.ClusterService.ListRepos:output_type -> hotbed.v1.ListReposResponse
-	71,  // 489: hotbed.v1.ClusterService.PutRepo:output_type -> hotbed.v1.Repo
-	84,  // 490: hotbed.v1.ClusterService.DeleteRepo:output_type -> hotbed.v1.DeleteRepoResponse
-	152, // 491: hotbed.v1.ClusterService.RebuildProject:output_type -> hotbed.v1.Project
-	152, // 492: hotbed.v1.ClusterService.SetProjectHosts:output_type -> hotbed.v1.Project
-	152, // 493: hotbed.v1.ClusterService.PutStep:output_type -> hotbed.v1.Project
-	152, // 494: hotbed.v1.ClusterService.DeleteStep:output_type -> hotbed.v1.Project
-	77,  // 495: hotbed.v1.ClusterService.ListSteps:output_type -> hotbed.v1.ListStepsResponse
-	152, // 496: hotbed.v1.ClusterService.AddProject:output_type -> hotbed.v1.Project
-	152, // 497: hotbed.v1.ClusterService.RemoveProjectRepos:output_type -> hotbed.v1.Project
-	158, // 498: hotbed.v1.ClusterService.ListProjects:output_type -> hotbed.v1.ListProjectsResponse
-	152, // 499: hotbed.v1.ClusterService.GetProject:output_type -> hotbed.v1.Project
-	160, // 500: hotbed.v1.ClusterService.ListBases:output_type -> hotbed.v1.ListBasesResponse
-	163, // 501: hotbed.v1.ClusterService.ListFreshens:output_type -> hotbed.v1.ListFreshensResponse
-	165, // 502: hotbed.v1.ClusterService.GetFreshen:output_type -> hotbed.v1.GetFreshenResponse
-	209, // 503: hotbed.v1.ClusterService.GetSnapshot:output_type -> hotbed.v1.Snapshot
-	115, // 504: hotbed.v1.ClusterService.GetCommandDiagnostics:output_type -> hotbed.v1.GetCommandDiagnosticsResponse
-	117, // 505: hotbed.v1.ClusterService.SaveCommandDiagnostics:output_type -> hotbed.v1.SaveCommandDiagnosticsResponse
-	120, // 506: hotbed.v1.ClusterService.ListCommandSamples:output_type -> hotbed.v1.ListCommandSamplesResponse
-	118, // 507: hotbed.v1.ClusterService.GetCommandSample:output_type -> hotbed.v1.CommandSample
-	123, // 508: hotbed.v1.ClusterService.SaveCommandSample:output_type -> hotbed.v1.SaveCommandSampleResponse
-	215, // 509: hotbed.v1.ClusterService.GetNode:output_type -> hotbed.v1.NodeDetail
-	39,  // 510: hotbed.v1.ClusterService.RetireNode:output_type -> hotbed.v1.Node
-	217, // 511: hotbed.v1.ClusterService.ListPlacements:output_type -> hotbed.v1.ListPlacementsResponse
-	219, // 512: hotbed.v1.ClusterService.ListEvents:output_type -> hotbed.v1.ListEventsResponse
-	62,  // 513: hotbed.v1.ClusterService.GetWorkerConfig:output_type -> hotbed.v1.GetWorkerConfigResponse
-	60,  // 514: hotbed.v1.ClusterService.SetWorkerConfig:output_type -> hotbed.v1.WorkerConfig
-	65,  // 515: hotbed.v1.ClusterService.DeleteWorkerConfig:output_type -> hotbed.v1.DeleteWorkerConfigResponse
-	70,  // 516: hotbed.v1.ClusterService.UpgradeSystem:output_type -> hotbed.v1.UpgradeSystemResponse
-	145, // 517: hotbed.v1.SessionService.StartSession:output_type -> hotbed.v1.Session
-	172, // 518: hotbed.v1.SessionService.GetSession:output_type -> hotbed.v1.GetSessionResponse
-	149, // 519: hotbed.v1.SessionService.ListSessions:output_type -> hotbed.v1.ListSessionsResponse
-	151, // 520: hotbed.v1.SessionService.SearchSessions:output_type -> hotbed.v1.SearchSessionsResponse
-	145, // 521: hotbed.v1.SessionService.EndSession:output_type -> hotbed.v1.Session
-	176, // 522: hotbed.v1.SessionService.WatchSession:output_type -> hotbed.v1.SessionEvents
-	176, // 523: hotbed.v1.SessionService.Poll:output_type -> hotbed.v1.SessionEvents
-	91,  // 524: hotbed.v1.WorkspaceService.CreateWorkspace:output_type -> hotbed.v1.Workspace
-	91,  // 525: hotbed.v1.WorkspaceService.GetWorkspace:output_type -> hotbed.v1.Workspace
-	91,  // 526: hotbed.v1.WorkspaceService.WatchWorkspace:output_type -> hotbed.v1.Workspace
-	98,  // 527: hotbed.v1.WorkspaceService.ListWorkspaces:output_type -> hotbed.v1.ListWorkspacesResponse
-	100, // 528: hotbed.v1.WorkspaceService.ReleaseWorkspace:output_type -> hotbed.v1.ReleaseWorkspaceResponse
-	104, // 529: hotbed.v1.WorkspaceService.Sync:output_type -> hotbed.v1.SyncResponse
-	107, // 530: hotbed.v1.WorkspaceService.ListFiles:output_type -> hotbed.v1.ListFilesResponse
-	109, // 531: hotbed.v1.WorkspaceService.GetFile:output_type -> hotbed.v1.FileContent
-	125, // 532: hotbed.v1.WorkspaceService.RunCommand:output_type -> hotbed.v1.Command
-	136, // 533: hotbed.v1.WorkspaceService.OpenShell:output_type -> hotbed.v1.OpenShellResponse
-	125, // 534: hotbed.v1.WorkspaceService.GetCommand:output_type -> hotbed.v1.Command
-	139, // 535: hotbed.v1.WorkspaceService.ListCommands:output_type -> hotbed.v1.ListCommandsResponse
-	125, // 536: hotbed.v1.WorkspaceService.StopCommand:output_type -> hotbed.v1.Command
-	125, // 537: hotbed.v1.WorkspaceService.PauseCommand:output_type -> hotbed.v1.Command
-	125, // 538: hotbed.v1.WorkspaceService.ResumeCommand:output_type -> hotbed.v1.Command
-	144, // 539: hotbed.v1.WorkspaceService.FollowLog:output_type -> hotbed.v1.LogChunk
-	184, // 540: hotbed.v1.WorkspaceService.GetLogLines:output_type -> hotbed.v1.CommandLog
-	131, // 541: hotbed.v1.WorkspaceService.QueryOutput:output_type -> hotbed.v1.OutputQuery
-	125, // 542: hotbed.v1.WorkspaceService.DetachCommand:output_type -> hotbed.v1.Command
-	134, // 543: hotbed.v1.WorkspaceService.SendInput:output_type -> hotbed.v1.SendInputResponse
-	246, // 544: hotbed.v1.WorkspaceService.InspectCommand:output_type -> hotbed.v1.InspectCommandResponse
-	251, // 545: hotbed.v1.WorkspaceService.TraceCommand:output_type -> hotbed.v1.TraceCommandChunk
-	253, // 546: hotbed.v1.WorkspaceService.SampleCommand:output_type -> hotbed.v1.SampleCommandChunk
-	268, // 547: hotbed.v1.WorkspaceService.GetProfile:output_type -> hotbed.v1.CommandProfile
-	223, // 548: hotbed.v1.WorkspaceService.GetDaemonLogs:output_type -> hotbed.v1.GetDaemonLogsResponse
-	69,  // 549: hotbed.v1.WorkspaceService.UpgradeSystem:output_type -> hotbed.v1.NodeSystemUpgrade
-	224, // 550: hotbed.v1.ScheduleService.PutSchedule:output_type -> hotbed.v1.ScheduledCommand
-	228, // 551: hotbed.v1.ScheduleService.ListSchedules:output_type -> hotbed.v1.ListSchedulesResponse
-	224, // 552: hotbed.v1.ScheduleService.GetSchedule:output_type -> hotbed.v1.ScheduledCommand
-	231, // 553: hotbed.v1.ScheduleService.DeleteSchedule:output_type -> hotbed.v1.DeleteScheduleResponse
-	225, // 554: hotbed.v1.ScheduleService.RunSchedule:output_type -> hotbed.v1.ScheduledRun
-	224, // 555: hotbed.v1.ScheduleService.PauseSchedule:output_type -> hotbed.v1.ScheduledCommand
-	277, // 556: hotbed.v1.QuestionService.AddQuestions:output_type -> hotbed.v1.AddQuestionsResponse
-	274, // 557: hotbed.v1.QuestionService.EditQuestion:output_type -> hotbed.v1.Question
-	274, // 558: hotbed.v1.QuestionService.DeleteQuestion:output_type -> hotbed.v1.Question
-	282, // 559: hotbed.v1.QuestionService.ListQuestions:output_type -> hotbed.v1.ListQuestionsResponse
-	284, // 560: hotbed.v1.QuestionService.ListQuestionProjects:output_type -> hotbed.v1.ListQuestionProjectsResponse
-	274, // 561: hotbed.v1.QuestionService.GetQuestion:output_type -> hotbed.v1.Question
-	274, // 562: hotbed.v1.QuestionService.AnswerQuestion:output_type -> hotbed.v1.Question
-	274, // 563: hotbed.v1.QuestionService.DismissQuestion:output_type -> hotbed.v1.Question
-	274, // 564: hotbed.v1.QuestionService.ReviseQuestion:output_type -> hotbed.v1.Question
-	274, // 565: hotbed.v1.QuestionService.ReopenQuestion:output_type -> hotbed.v1.Question
-	274, // 566: hotbed.v1.QuestionService.MoveQuestion:output_type -> hotbed.v1.Question
-	293, // 567: hotbed.v1.QuestionService.AckQuestions:output_type -> hotbed.v1.AckQuestionsResponse
-	299, // 568: hotbed.v1.ReviewService.RequestReview:output_type -> hotbed.v1.Review
-	303, // 569: hotbed.v1.ReviewService.ListReviews:output_type -> hotbed.v1.ListReviewsResponse
-	299, // 570: hotbed.v1.ReviewService.GetReview:output_type -> hotbed.v1.Review
-	299, // 571: hotbed.v1.ReviewService.StartReview:output_type -> hotbed.v1.Review
-	307, // 572: hotbed.v1.ReviewService.AddFindings:output_type -> hotbed.v1.AddFindingsResponse
-	299, // 573: hotbed.v1.ReviewService.FinishReview:output_type -> hotbed.v1.Review
-	299, // 574: hotbed.v1.ReviewService.CancelReview:output_type -> hotbed.v1.Review
-	311, // 575: hotbed.v1.ReviewService.DecideFindings:output_type -> hotbed.v1.DecideFindingsResponse
-	300, // 576: hotbed.v1.ReviewService.Respond:output_type -> hotbed.v1.ReviewEvent
-	314, // 577: hotbed.v1.ReviewService.ListResponses:output_type -> hotbed.v1.ListResponsesResponse
-	317, // 578: hotbed.v1.GitAuthService.StartGitHubLogin:output_type -> hotbed.v1.GitHubLoginChallenge
-	315, // 579: hotbed.v1.GitAuthService.CompleteGitHubLogin:output_type -> hotbed.v1.GitCredential
-	315, // 580: hotbed.v1.GitAuthService.PutGitCredential:output_type -> hotbed.v1.GitCredential
-	321, // 581: hotbed.v1.GitAuthService.ListGitCredentials:output_type -> hotbed.v1.ListGitCredentialsResponse
-	323, // 582: hotbed.v1.GitAuthService.DeleteGitCredential:output_type -> hotbed.v1.DeleteGitCredentialResponse
-	325, // 583: hotbed.v1.GitAuthService.MintGitToken:output_type -> hotbed.v1.GitToken
-	327, // 584: hotbed.v1.GitAuthService.ProxyGitHubAPI:output_type -> hotbed.v1.ProxyGitHubAPIResponse
-	328, // 585: hotbed.v1.IssueService.ReportIssue:output_type -> hotbed.v1.Issue
-	332, // 586: hotbed.v1.IssueService.ListIssues:output_type -> hotbed.v1.ListIssuesResponse
-	328, // 587: hotbed.v1.IssueService.GetIssue:output_type -> hotbed.v1.Issue
-	328, // 588: hotbed.v1.IssueService.UpvoteIssue:output_type -> hotbed.v1.Issue
-	328, // 589: hotbed.v1.IssueService.ArchiveIssue:output_type -> hotbed.v1.Issue
-	328, // 590: hotbed.v1.IssueService.ReopenIssue:output_type -> hotbed.v1.Issue
-	339, // 591: hotbed.v1.MemoryService.ProposeMemory:output_type -> hotbed.v1.Memory
-	345, // 592: hotbed.v1.MemoryService.ListMemories:output_type -> hotbed.v1.ListMemoriesResponse
-	347, // 593: hotbed.v1.MemoryService.GetMemories:output_type -> hotbed.v1.GetMemoriesResponse
-	339, // 594: hotbed.v1.MemoryService.ShowMemory:output_type -> hotbed.v1.Memory
-	339, // 595: hotbed.v1.MemoryService.ReviseMemory:output_type -> hotbed.v1.Memory
-	339, // 596: hotbed.v1.MemoryService.ArchiveMemory:output_type -> hotbed.v1.Memory
-	339, // 597: hotbed.v1.MemoryService.RestoreMemory:output_type -> hotbed.v1.Memory
-	339, // 598: hotbed.v1.MemoryService.DeleteMemory:output_type -> hotbed.v1.Memory
-	339, // 599: hotbed.v1.MemoryService.MoveMemory:output_type -> hotbed.v1.Memory
-	481, // [481:600] is the sub-list for method output_type
-	362, // [362:481] is the sub-list for method input_type
-	359, // [359:362] is the sub-list for extension type_name
-	356, // [356:359] is the sub-list for extension extendee
-	0,   // [0:356] is the sub-list for field type_name
+	210, // 53: hotbed.v1.Workspace.placement:type_name -> hotbed.v1.PlacementDecision
+	94,  // 54: hotbed.v1.CreateWorkspaceRequest.placement:type_name -> hotbed.v1.Placement
+	87,  // 55: hotbed.v1.CreateWorkspaceRequest.project:type_name -> hotbed.v1.HostedProject
+	34,  // 56: hotbed.v1.CreateWorkspaceRequest.shared_base:type_name -> hotbed.v1.SharedBase
+	91,  // 57: hotbed.v1.ListWorkspacesResponse.workspaces:type_name -> hotbed.v1.Workspace
+	102, // 58: hotbed.v1.SyncRequest.header:type_name -> hotbed.v1.SyncHeader
+	103, // 59: hotbed.v1.SyncHeader.submodules:type_name -> hotbed.v1.SyncSubmodule
+	105, // 60: hotbed.v1.ListFilesResponse.files:type_name -> hotbed.v1.FileEntry
+	5,   // 61: hotbed.v1.CommandIntervention.kind:type_name -> hotbed.v1.InterventionKind
+	272, // 62: hotbed.v1.CommandIntervention.by:type_name -> hotbed.v1.Stamp
+	112, // 63: hotbed.v1.CommandDiagnostics.intervention:type_name -> hotbed.v1.CommandIntervention
+	262, // 64: hotbed.v1.CommandDiagnostics.sample:type_name -> hotbed.v1.ProcessSample
+	246, // 65: hotbed.v1.CommandDiagnostics.inspect:type_name -> hotbed.v1.InspectCommandResponse
+	113, // 66: hotbed.v1.GetCommandDiagnosticsResponse.diagnostics:type_name -> hotbed.v1.CommandDiagnostics
+	113, // 67: hotbed.v1.SaveCommandDiagnosticsRequest.diagnostics:type_name -> hotbed.v1.CommandDiagnostics
+	272, // 68: hotbed.v1.CommandSample.by:type_name -> hotbed.v1.Stamp
+	262, // 69: hotbed.v1.CommandSample.sample:type_name -> hotbed.v1.ProcessSample
+	118, // 70: hotbed.v1.ListCommandSamplesResponse.samples:type_name -> hotbed.v1.CommandSample
+	118, // 71: hotbed.v1.SaveCommandSampleRequest.sample:type_name -> hotbed.v1.CommandSample
+	4,   // 72: hotbed.v1.Command.state:type_name -> hotbed.v1.CommandState
+	110, // 73: hotbed.v1.Command.limits:type_name -> hotbed.v1.CommandLimits
+	111, // 74: hotbed.v1.Command.rebuilt:type_name -> hotbed.v1.Rebuilt
+	124, // 75: hotbed.v1.Command.timeline:type_name -> hotbed.v1.CommandEvent
+	112, // 76: hotbed.v1.Command.interventions:type_name -> hotbed.v1.CommandIntervention
+	128, // 77: hotbed.v1.Command.estimate:type_name -> hotbed.v1.CommandEstimate
+	210, // 78: hotbed.v1.Command.placement:type_name -> hotbed.v1.PlacementDecision
+	4,   // 79: hotbed.v1.FinishedCommand.state:type_name -> hotbed.v1.CommandState
+	112, // 80: hotbed.v1.FinishedCommand.interventions:type_name -> hotbed.v1.CommandIntervention
+	128, // 81: hotbed.v1.FinishedCommand.estimate:type_name -> hotbed.v1.CommandEstimate
+	210, // 82: hotbed.v1.FinishedCommand.placement:type_name -> hotbed.v1.PlacementDecision
+	110, // 83: hotbed.v1.RunCommandRequest.limits:type_name -> hotbed.v1.CommandLimits
+	6,   // 84: hotbed.v1.RunCommandRequest.tty:type_name -> hotbed.v1.TtyMode
+	128, // 85: hotbed.v1.RunCommandRequest.estimate:type_name -> hotbed.v1.CommandEstimate
+	210, // 86: hotbed.v1.RunCommandRequest.placement:type_name -> hotbed.v1.PlacementDecision
+	4,   // 87: hotbed.v1.OutputQuery.state:type_name -> hotbed.v1.CommandState
+	130, // 88: hotbed.v1.OutputQuery.lines:type_name -> hotbed.v1.OutputLine
+	125, // 89: hotbed.v1.ListCommandsResponse.commands:type_name -> hotbed.v1.Command
+	4,   // 90: hotbed.v1.LogChunk.state:type_name -> hotbed.v1.CommandState
+	112, // 91: hotbed.v1.LogChunk.ended_by:type_name -> hotbed.v1.CommandIntervention
+	146, // 92: hotbed.v1.Session.workspaces:type_name -> hotbed.v1.SessionWorkspace
+	342, // 93: hotbed.v1.Session.memories:type_name -> hotbed.v1.MemoryBriefing
+	145, // 94: hotbed.v1.ListSessionsResponse.sessions:type_name -> hotbed.v1.Session
+	145, // 95: hotbed.v1.SearchSessionsResponse.sessions:type_name -> hotbed.v1.Session
+	153, // 96: hotbed.v1.Project.history:type_name -> hotbed.v1.ProjectChange
+	72,  // 97: hotbed.v1.Project.steps:type_name -> hotbed.v1.Step
+	272, // 98: hotbed.v1.ProjectChange.by:type_name -> hotbed.v1.Stamp
+	152, // 99: hotbed.v1.ListProjectsResponse.projects:type_name -> hotbed.v1.Project
+	2,   // 100: hotbed.v1.ListBasesRequest.state:type_name -> hotbed.v1.BaseState
+	161, // 101: hotbed.v1.ListBasesResponse.bases:type_name -> hotbed.v1.NodeBase
+	88,  // 102: hotbed.v1.NodeBase.base:type_name -> hotbed.v1.Base
+	7,   // 103: hotbed.v1.ListFreshensRequest.state:type_name -> hotbed.v1.FreshenState
+	170, // 104: hotbed.v1.ListFreshensResponse.summary:type_name -> hotbed.v1.FreshenSummary
+	166, // 105: hotbed.v1.ListFreshensResponse.freshens:type_name -> hotbed.v1.BaseFreshen
+	166, // 106: hotbed.v1.GetFreshenResponse.freshen:type_name -> hotbed.v1.BaseFreshen
+	36,  // 107: hotbed.v1.GetFreshenResponse.node_admission:type_name -> hotbed.v1.Admission
+	200, // 108: hotbed.v1.GetFreshenResponse.related_events:type_name -> hotbed.v1.ClusterEvent
+	7,   // 109: hotbed.v1.BaseFreshen.state:type_name -> hotbed.v1.FreshenState
+	90,  // 110: hotbed.v1.BaseFreshen.repos:type_name -> hotbed.v1.BaseRepo
+	73,  // 111: hotbed.v1.BaseFreshen.steps:type_name -> hotbed.v1.AppliedStep
+	89,  // 112: hotbed.v1.BaseFreshen.phases:type_name -> hotbed.v1.FreshenPhase
+	124, // 113: hotbed.v1.BaseFreshen.timeline:type_name -> hotbed.v1.CommandEvent
+	7,   // 114: hotbed.v1.NodeProjectFreshenSummary.active_state:type_name -> hotbed.v1.FreshenState
+	365, // 115: hotbed.v1.NodeProjectFreshenSummary.cold_reasons:type_name -> hotbed.v1.NodeProjectFreshenSummary.ColdReasonsEntry
+	167, // 116: hotbed.v1.FreshenSummary.total_duration:type_name -> hotbed.v1.DurationStats
+	167, // 117: hotbed.v1.FreshenSummary.queue_duration:type_name -> hotbed.v1.DurationStats
+	167, // 118: hotbed.v1.FreshenSummary.prep_duration:type_name -> hotbed.v1.DurationStats
+	167, // 119: hotbed.v1.FreshenSummary.git_duration:type_name -> hotbed.v1.DurationStats
+	167, // 120: hotbed.v1.FreshenSummary.steps_duration:type_name -> hotbed.v1.DurationStats
+	167, // 121: hotbed.v1.FreshenSummary.parked_duration:type_name -> hotbed.v1.DurationStats
+	167, // 122: hotbed.v1.FreshenSummary.finalize_duration:type_name -> hotbed.v1.DurationStats
+	168, // 123: hotbed.v1.FreshenSummary.slowest_steps:type_name -> hotbed.v1.StepTimingSummary
+	169, // 124: hotbed.v1.FreshenSummary.by_node_project:type_name -> hotbed.v1.NodeProjectFreshenSummary
+	145, // 125: hotbed.v1.GetSessionResponse.session:type_name -> hotbed.v1.Session
+	91,  // 126: hotbed.v1.GetSessionResponse.workspaces:type_name -> hotbed.v1.Workspace
+	125, // 127: hotbed.v1.GetSessionResponse.commands:type_name -> hotbed.v1.Command
+	366, // 128: hotbed.v1.GetSessionResponse.node_hosts:type_name -> hotbed.v1.GetSessionResponse.NodeHostsEntry
+	177, // 129: hotbed.v1.SessionEvents.events:type_name -> hotbed.v1.SessionEvent
+	178, // 130: hotbed.v1.SessionEvent.command:type_name -> hotbed.v1.CommandUpdate
+	179, // 131: hotbed.v1.SessionEvent.workspace:type_name -> hotbed.v1.WorkspaceUpdate
+	180, // 132: hotbed.v1.SessionEvent.question:type_name -> hotbed.v1.QuestionUpdate
+	181, // 133: hotbed.v1.SessionEvent.review:type_name -> hotbed.v1.ReviewUpdate
+	182, // 134: hotbed.v1.SessionEvent.memory:type_name -> hotbed.v1.MemoryUpdate
+	26,  // 135: hotbed.v1.CommandUpdate.what:type_name -> hotbed.v1.CommandUpdate.What
+	4,   // 136: hotbed.v1.CommandUpdate.state:type_name -> hotbed.v1.CommandState
+	27,  // 137: hotbed.v1.WorkspaceUpdate.what:type_name -> hotbed.v1.WorkspaceUpdate.What
+	28,  // 138: hotbed.v1.QuestionUpdate.what:type_name -> hotbed.v1.QuestionUpdate.What
+	274, // 139: hotbed.v1.QuestionUpdate.question:type_name -> hotbed.v1.Question
+	29,  // 140: hotbed.v1.ReviewUpdate.what:type_name -> hotbed.v1.ReviewUpdate.What
+	30,  // 141: hotbed.v1.MemoryUpdate.what:type_name -> hotbed.v1.MemoryUpdate.What
+	339, // 142: hotbed.v1.MemoryUpdate.memory:type_name -> hotbed.v1.Memory
+	186, // 143: hotbed.v1.WorkerEvent.ref:type_name -> hotbed.v1.EventRef
+	188, // 144: hotbed.v1.Event.base:type_name -> hotbed.v1.BaseChange
+	189, // 145: hotbed.v1.Event.workspace:type_name -> hotbed.v1.WorkspaceChange
+	190, // 146: hotbed.v1.Event.command:type_name -> hotbed.v1.CommandChange
+	185, // 147: hotbed.v1.Event.feed:type_name -> hotbed.v1.WorkerEvent
+	88,  // 148: hotbed.v1.BaseChange.base:type_name -> hotbed.v1.Base
+	91,  // 149: hotbed.v1.WorkspaceChange.workspace:type_name -> hotbed.v1.Workspace
+	125, // 150: hotbed.v1.CommandChange.command:type_name -> hotbed.v1.Command
+	126, // 151: hotbed.v1.CommandChange.finished:type_name -> hotbed.v1.FinishedCommand
+	268, // 152: hotbed.v1.CommandChange.profile:type_name -> hotbed.v1.CommandProfile
+	113, // 153: hotbed.v1.CommandChange.diagnostics:type_name -> hotbed.v1.CommandDiagnostics
+	88,  // 154: hotbed.v1.Checkpoint.bases:type_name -> hotbed.v1.Base
+	91,  // 155: hotbed.v1.Checkpoint.workspaces:type_name -> hotbed.v1.Workspace
+	125, // 156: hotbed.v1.Checkpoint.commands:type_name -> hotbed.v1.Command
+	187, // 157: hotbed.v1.PushEventsRequest.events:type_name -> hotbed.v1.Event
+	191, // 158: hotbed.v1.PushEventsRequest.checkpoint:type_name -> hotbed.v1.Checkpoint
+	32,  // 159: hotbed.v1.HeartbeatRequest.resources:type_name -> hotbed.v1.Resources
+	35,  // 160: hotbed.v1.HeartbeatRequest.usage:type_name -> hotbed.v1.NodeUsage
+	38,  // 161: hotbed.v1.HeartbeatRequest.disk:type_name -> hotbed.v1.DiskUsage
+	194, // 162: hotbed.v1.HeartbeatRequest.commands:type_name -> hotbed.v1.CommandUsage
+	195, // 163: hotbed.v1.HeartbeatRequest.bases:type_name -> hotbed.v1.BaseUsage
+	196, // 164: hotbed.v1.HeartbeatRequest.workspaces:type_name -> hotbed.v1.WorkspaceUsage
+	48,  // 165: hotbed.v1.HeartbeatRequest.profiler:type_name -> hotbed.v1.ProfilerStatus
+	222, // 166: hotbed.v1.HeartbeatRequest.daemon_logs:type_name -> hotbed.v1.DaemonLogSource
+	36,  // 167: hotbed.v1.HeartbeatRequest.admission:type_name -> hotbed.v1.Admission
+	40,  // 168: hotbed.v1.HeartbeatRequest.object_store:type_name -> hotbed.v1.ObjectStoreStats
+	34,  // 169: hotbed.v1.HeartbeatRequest.held_bases:type_name -> hotbed.v1.SharedBase
+	33,  // 170: hotbed.v1.HeartbeatRequest.retired_bases:type_name -> hotbed.v1.CladefsCell
+	87,  // 171: hotbed.v1.HeartbeatResponse.projects:type_name -> hotbed.v1.HostedProject
+	54,  // 172: hotbed.v1.HeartbeatResponse.build:type_name -> hotbed.v1.Build
+	43,  // 173: hotbed.v1.HeartbeatResponse.host_usage:type_name -> hotbed.v1.HostUsage
+	60,  // 174: hotbed.v1.HeartbeatResponse.worker_config:type_name -> hotbed.v1.WorkerConfig
+	33,  // 175: hotbed.v1.HeartbeatResponse.retire_bases:type_name -> hotbed.v1.CladefsCell
+	186, // 176: hotbed.v1.ClusterEvent.ref:type_name -> hotbed.v1.EventRef
+	202, // 177: hotbed.v1.Samples.samples:type_name -> hotbed.v1.Sample
+	206, // 178: hotbed.v1.NodeHours.hours:type_name -> hotbed.v1.NodeHour
+	39,  // 179: hotbed.v1.Snapshot.nodes:type_name -> hotbed.v1.Node
+	199, // 180: hotbed.v1.Snapshot.repos:type_name -> hotbed.v1.RepoSummary
+	88,  // 181: hotbed.v1.Snapshot.bases:type_name -> hotbed.v1.Base
+	91,  // 182: hotbed.v1.Snapshot.workspaces:type_name -> hotbed.v1.Workspace
+	125, // 183: hotbed.v1.Snapshot.commands:type_name -> hotbed.v1.Command
+	200, // 184: hotbed.v1.Snapshot.events:type_name -> hotbed.v1.ClusterEvent
+	201, // 185: hotbed.v1.Snapshot.totals24h:type_name -> hotbed.v1.Totals
+	367, // 186: hotbed.v1.Snapshot.series:type_name -> hotbed.v1.Snapshot.SeriesEntry
+	204, // 187: hotbed.v1.Snapshot.load:type_name -> hotbed.v1.LoadSample
+	205, // 188: hotbed.v1.Snapshot.hourly:type_name -> hotbed.v1.HourBucket
+	368, // 189: hotbed.v1.Snapshot.node_hourly:type_name -> hotbed.v1.Snapshot.NodeHourlyEntry
+	126, // 190: hotbed.v1.Snapshot.history:type_name -> hotbed.v1.FinishedCommand
+	145, // 191: hotbed.v1.Snapshot.sessions:type_name -> hotbed.v1.Session
+	224, // 192: hotbed.v1.Snapshot.schedules:type_name -> hotbed.v1.ScheduledCommand
+	152, // 193: hotbed.v1.Snapshot.projects:type_name -> hotbed.v1.Project
+	222, // 194: hotbed.v1.Snapshot.controller_logs:type_name -> hotbed.v1.DaemonLogSource
+	210, // 195: hotbed.v1.Snapshot.placements:type_name -> hotbed.v1.PlacementDecision
+	200, // 196: hotbed.v1.Snapshot.admission_events:type_name -> hotbed.v1.ClusterEvent
+	211, // 197: hotbed.v1.PlacementDecision.candidates:type_name -> hotbed.v1.PlacementCandidate
+	94,  // 198: hotbed.v1.PlacementDecision.request:type_name -> hotbed.v1.Placement
+	212, // 199: hotbed.v1.PlacementCandidate.parts:type_name -> hotbed.v1.CostPart
+	39,  // 200: hotbed.v1.NodeDetail.node:type_name -> hotbed.v1.Node
+	200, // 201: hotbed.v1.NodeDetail.events:type_name -> hotbed.v1.ClusterEvent
+	210, // 202: hotbed.v1.NodeDetail.placements:type_name -> hotbed.v1.PlacementDecision
+	210, // 203: hotbed.v1.ListPlacementsResponse.placements:type_name -> hotbed.v1.PlacementDecision
+	200, // 204: hotbed.v1.ListEventsResponse.events:type_name -> hotbed.v1.ClusterEvent
+	8,   // 205: hotbed.v1.GetDaemonLogsRequest.level:type_name -> hotbed.v1.DaemonLogLevel
+	8,   // 206: hotbed.v1.DaemonLogEntry.level:type_name -> hotbed.v1.DaemonLogLevel
+	221, // 207: hotbed.v1.GetDaemonLogsResponse.entries:type_name -> hotbed.v1.DaemonLogEntry
+	222, // 208: hotbed.v1.GetDaemonLogsResponse.sources:type_name -> hotbed.v1.DaemonLogSource
+	127, // 209: hotbed.v1.ScheduledCommand.command:type_name -> hotbed.v1.RunCommandRequest
+	225, // 210: hotbed.v1.ScheduledCommand.runs:type_name -> hotbed.v1.ScheduledRun
+	9,   // 211: hotbed.v1.ScheduledRun.outcome:type_name -> hotbed.v1.RunOutcome
+	224, // 212: hotbed.v1.PutScheduleRequest.schedule:type_name -> hotbed.v1.ScheduledCommand
+	224, // 213: hotbed.v1.ListSchedulesResponse.schedules:type_name -> hotbed.v1.ScheduledCommand
+	10,  // 214: hotbed.v1.InspectCommandRequest.sections:type_name -> hotbed.v1.InspectSection
+	235, // 215: hotbed.v1.ProcessInfo.threads:type_name -> hotbed.v1.ThreadInfo
+	238, // 216: hotbed.v1.CgroupStats.io:type_name -> hotbed.v1.CgroupIO
+	241, // 217: hotbed.v1.ProcessMemoryMap.top_regions:type_name -> hotbed.v1.MemoryRegion
+	243, // 218: hotbed.v1.ProcessLimits.items:type_name -> hotbed.v1.ResourceLimit
+	236, // 219: hotbed.v1.InspectCommandResponse.procs:type_name -> hotbed.v1.ProcessInfo
+	237, // 220: hotbed.v1.InspectCommandResponse.files:type_name -> hotbed.v1.OpenFile
+	239, // 221: hotbed.v1.InspectCommandResponse.cgroup_stats:type_name -> hotbed.v1.CgroupStats
+	240, // 222: hotbed.v1.InspectCommandResponse.kstacks:type_name -> hotbed.v1.ThreadKernelStack
+	242, // 223: hotbed.v1.InspectCommandResponse.maps:type_name -> hotbed.v1.ProcessMemoryMap
+	244, // 224: hotbed.v1.InspectCommandResponse.limits:type_name -> hotbed.v1.ProcessLimits
+	245, // 225: hotbed.v1.InspectCommandResponse.available_tools:type_name -> hotbed.v1.ToolCapability
+	11,  // 226: hotbed.v1.TraceCommandRequest.kind:type_name -> hotbed.v1.TraceKind
+	11,  // 227: hotbed.v1.TraceSummary.kind:type_name -> hotbed.v1.TraceKind
+	265, // 228: hotbed.v1.TraceSummary.stacks:type_name -> hotbed.v1.FoldedStack
+	266, // 229: hotbed.v1.TraceSummary.top_functions:type_name -> hotbed.v1.ProfileFunction
+	248, // 230: hotbed.v1.TraceSummary.counters:type_name -> hotbed.v1.PerfCounter
+	249, // 231: hotbed.v1.TraceSummary.syscalls:type_name -> hotbed.v1.SyscallStat
+	264, // 232: hotbed.v1.TraceSummary.frames:type_name -> hotbed.v1.ProfileFrame
+	250, // 233: hotbed.v1.TraceCommandChunk.summary:type_name -> hotbed.v1.TraceSummary
+	262, // 234: hotbed.v1.SampleCommandChunk.sample:type_name -> hotbed.v1.ProcessSample
+	118, // 235: hotbed.v1.SampleCommandChunk.kept:type_name -> hotbed.v1.CommandSample
+	369, // 236: hotbed.v1.SampledThread.state_counts:type_name -> hotbed.v1.SampledThread.StateCountsEntry
+	255, // 237: hotbed.v1.SampledThread.syscall:type_name -> hotbed.v1.ThreadSyscall
+	370, // 238: hotbed.v1.SampledThread.syscall_counts:type_name -> hotbed.v1.SampledThread.SyscallCountsEntry
+	256, // 239: hotbed.v1.SampledThread.user_frames:type_name -> hotbed.v1.StackFrame
+	257, // 240: hotbed.v1.SampledProcess.threads:type_name -> hotbed.v1.SampledThread
+	242, // 241: hotbed.v1.SampledProcess.memory_map:type_name -> hotbed.v1.ProcessMemoryMap
+	244, // 242: hotbed.v1.SampledProcess.limits:type_name -> hotbed.v1.ProcessLimits
+	239, // 243: hotbed.v1.SampledCgroup.end:type_name -> hotbed.v1.CgroupStats
+	254, // 244: hotbed.v1.ProcessSample.collectors:type_name -> hotbed.v1.SampleCollector
+	260, // 245: hotbed.v1.ProcessSample.procs:type_name -> hotbed.v1.SampledProcess
+	258, // 246: hotbed.v1.ProcessSample.files:type_name -> hotbed.v1.SampledOpenFile
+	259, // 247: hotbed.v1.ProcessSample.locks:type_name -> hotbed.v1.FileLock
+	261, // 248: hotbed.v1.ProcessSample.cgroup_stats:type_name -> hotbed.v1.SampledCgroup
+	265, // 249: hotbed.v1.ProcessSample.sampled_stacks:type_name -> hotbed.v1.FoldedStack
+	265, // 250: hotbed.v1.ProcessSample.on_cpu_stacks:type_name -> hotbed.v1.FoldedStack
+	266, // 251: hotbed.v1.ProcessSample.on_cpu_top_functions:type_name -> hotbed.v1.ProfileFunction
+	248, // 252: hotbed.v1.ProcessSample.perf_counters:type_name -> hotbed.v1.PerfCounter
+	264, // 253: hotbed.v1.ProcessSample.frames:type_name -> hotbed.v1.ProfileFrame
+	265, // 254: hotbed.v1.CommandProfile.stacks:type_name -> hotbed.v1.FoldedStack
+	266, // 255: hotbed.v1.CommandProfile.top_functions:type_name -> hotbed.v1.ProfileFunction
+	267, // 256: hotbed.v1.CommandProfile.buckets:type_name -> hotbed.v1.ProfileBucket
+	264, // 257: hotbed.v1.CommandProfile.frames:type_name -> hotbed.v1.ProfileFrame
+	270, // 258: hotbed.v1.Prompt.options:type_name -> hotbed.v1.PromptOption
+	13,  // 259: hotbed.v1.Stamp.actor_kind:type_name -> hotbed.v1.ActorKind
+	269, // 260: hotbed.v1.Question.prompt:type_name -> hotbed.v1.Prompt
+	12,  // 261: hotbed.v1.Question.state:type_name -> hotbed.v1.QuestionState
+	271, // 262: hotbed.v1.Question.answer:type_name -> hotbed.v1.Answer
+	272, // 263: hotbed.v1.Question.asked:type_name -> hotbed.v1.Stamp
+	273, // 264: hotbed.v1.Question.asked_from:type_name -> hotbed.v1.AskedFrom
+	272, // 265: hotbed.v1.Question.edited:type_name -> hotbed.v1.Stamp
+	272, // 266: hotbed.v1.Question.answered:type_name -> hotbed.v1.Stamp
+	272, // 267: hotbed.v1.Question.dismissed:type_name -> hotbed.v1.Stamp
+	272, // 268: hotbed.v1.Question.handled:type_name -> hotbed.v1.Stamp
+	272, // 269: hotbed.v1.Question.deleted:type_name -> hotbed.v1.Stamp
+	275, // 270: hotbed.v1.Question.history:type_name -> hotbed.v1.QuestionChange
+	272, // 271: hotbed.v1.QuestionChange.by:type_name -> hotbed.v1.Stamp
+	274, // 272: hotbed.v1.QuestionChange.question:type_name -> hotbed.v1.Question
+	269, // 273: hotbed.v1.AddQuestionsRequest.questions:type_name -> hotbed.v1.Prompt
+	273, // 274: hotbed.v1.AddQuestionsRequest.asked_from:type_name -> hotbed.v1.AskedFrom
+	274, // 275: hotbed.v1.AddQuestionsResponse.questions:type_name -> hotbed.v1.Question
+	269, // 276: hotbed.v1.EditQuestionRequest.prompt:type_name -> hotbed.v1.Prompt
+	12,  // 277: hotbed.v1.ListQuestionsRequest.states:type_name -> hotbed.v1.QuestionState
+	14,  // 278: hotbed.v1.ListQuestionsRequest.order:type_name -> hotbed.v1.QuestionOrder
+	274, // 279: hotbed.v1.ListQuestionsResponse.questions:type_name -> hotbed.v1.Question
+	281, // 280: hotbed.v1.ListQuestionsResponse.sessions:type_name -> hotbed.v1.QuestionSession
+	285, // 281: hotbed.v1.ListQuestionProjectsResponse.projects:type_name -> hotbed.v1.QuestionProject
+	271, // 282: hotbed.v1.AnswerQuestionRequest.answer:type_name -> hotbed.v1.Answer
+	269, // 283: hotbed.v1.ReviseQuestionRequest.prompt:type_name -> hotbed.v1.Prompt
+	274, // 284: hotbed.v1.AckQuestionsResponse.questions:type_name -> hotbed.v1.Question
+	19,  // 285: hotbed.v1.Reviewer.state:type_name -> hotbed.v1.ReviewerState
+	272, // 286: hotbed.v1.Reviewer.started:type_name -> hotbed.v1.Stamp
+	272, // 287: hotbed.v1.Reviewer.ended:type_name -> hotbed.v1.Stamp
+	295, // 288: hotbed.v1.ReportedFinding.locations:type_name -> hotbed.v1.Location
+	16,  // 289: hotbed.v1.Finding.severity:type_name -> hotbed.v1.FindingSeverity
+	17,  // 290: hotbed.v1.Finding.verdict:type_name -> hotbed.v1.FindingVerdict
+	295, // 291: hotbed.v1.Finding.locations:type_name -> hotbed.v1.Location
+	18,  // 292: hotbed.v1.Finding.decision:type_name -> hotbed.v1.FindingDecision
+	272, // 293: hotbed.v1.Finding.decided:type_name -> hotbed.v1.Stamp
+	272, // 294: hotbed.v1.Finding.found:type_name -> hotbed.v1.Stamp
+	20,  // 295: hotbed.v1.Finding.quick:type_name -> hotbed.v1.QuickResponse
+	298, // 296: hotbed.v1.Finding.fix:type_name -> hotbed.v1.Fix
+	272, // 297: hotbed.v1.Finding.quick_by:type_name -> hotbed.v1.Stamp
+	295, // 298: hotbed.v1.Fix.locations:type_name -> hotbed.v1.Location
+	15,  // 299: hotbed.v1.Review.state:type_name -> hotbed.v1.ReviewState
+	272, // 300: hotbed.v1.Review.requested:type_name -> hotbed.v1.Stamp
+	272, // 301: hotbed.v1.Review.started:type_name -> hotbed.v1.Stamp
+	272, // 302: hotbed.v1.Review.ended:type_name -> hotbed.v1.Stamp
+	297, // 303: hotbed.v1.Review.findings:type_name -> hotbed.v1.Finding
+	300, // 304: hotbed.v1.Review.events:type_name -> hotbed.v1.ReviewEvent
+	272, // 305: hotbed.v1.Review.implementer:type_name -> hotbed.v1.Stamp
+	294, // 306: hotbed.v1.Review.reviewers:type_name -> hotbed.v1.Reviewer
+	272, // 307: hotbed.v1.ReviewEvent.by:type_name -> hotbed.v1.Stamp
+	20,  // 308: hotbed.v1.ReviewEvent.quick:type_name -> hotbed.v1.QuickResponse
+	15,  // 309: hotbed.v1.ListReviewsRequest.states:type_name -> hotbed.v1.ReviewState
+	299, // 310: hotbed.v1.ListReviewsResponse.reviews:type_name -> hotbed.v1.Review
+	296, // 311: hotbed.v1.AddFindingsRequest.findings:type_name -> hotbed.v1.ReportedFinding
+	297, // 312: hotbed.v1.AddFindingsResponse.findings:type_name -> hotbed.v1.Finding
+	18,  // 313: hotbed.v1.DecideFindingsRequest.decision:type_name -> hotbed.v1.FindingDecision
+	298, // 314: hotbed.v1.DecideFindingsRequest.fix:type_name -> hotbed.v1.Fix
+	13,  // 315: hotbed.v1.DecideFindingsRequest.actor_kind:type_name -> hotbed.v1.ActorKind
+	297, // 316: hotbed.v1.DecideFindingsResponse.findings:type_name -> hotbed.v1.Finding
+	20,  // 317: hotbed.v1.RespondRequest.quick:type_name -> hotbed.v1.QuickResponse
+	13,  // 318: hotbed.v1.RespondRequest.actor_kind:type_name -> hotbed.v1.ActorKind
+	300, // 319: hotbed.v1.ListResponsesResponse.responses:type_name -> hotbed.v1.ReviewEvent
+	315, // 320: hotbed.v1.ListGitCredentialsResponse.credentials:type_name -> hotbed.v1.GitCredential
+	21,  // 321: hotbed.v1.Issue.state:type_name -> hotbed.v1.IssueState
+	272, // 322: hotbed.v1.Issue.reported:type_name -> hotbed.v1.Stamp
+	329, // 323: hotbed.v1.Issue.upvotes:type_name -> hotbed.v1.IssueUpvote
+	272, // 324: hotbed.v1.Issue.archived:type_name -> hotbed.v1.Stamp
+	272, // 325: hotbed.v1.IssueUpvote.by:type_name -> hotbed.v1.Stamp
+	328, // 326: hotbed.v1.ListIssuesResponse.issues:type_name -> hotbed.v1.Issue
+	23,  // 327: hotbed.v1.MemoryContent.mode:type_name -> hotbed.v1.MemoryMode
+	273, // 328: hotbed.v1.MemoryProvenance.from:type_name -> hotbed.v1.AskedFrom
+	22,  // 329: hotbed.v1.Memory.scope:type_name -> hotbed.v1.MemoryScope
+	337, // 330: hotbed.v1.Memory.content:type_name -> hotbed.v1.MemoryContent
+	24,  // 331: hotbed.v1.Memory.state:type_name -> hotbed.v1.MemoryState
+	338, // 332: hotbed.v1.Memory.provenance:type_name -> hotbed.v1.MemoryProvenance
+	272, // 333: hotbed.v1.Memory.proposed:type_name -> hotbed.v1.Stamp
+	272, // 334: hotbed.v1.Memory.edited:type_name -> hotbed.v1.Stamp
+	272, // 335: hotbed.v1.Memory.decided:type_name -> hotbed.v1.Stamp
+	272, // 336: hotbed.v1.Memory.archived:type_name -> hotbed.v1.Stamp
+	340, // 337: hotbed.v1.Memory.history:type_name -> hotbed.v1.MemoryChange
+	272, // 338: hotbed.v1.MemoryChange.by:type_name -> hotbed.v1.Stamp
+	339, // 339: hotbed.v1.MemoryChange.memory:type_name -> hotbed.v1.Memory
+	22,  // 340: hotbed.v1.MemoryIndexEntry.scope:type_name -> hotbed.v1.MemoryScope
+	23,  // 341: hotbed.v1.MemoryIndexEntry.mode:type_name -> hotbed.v1.MemoryMode
+	341, // 342: hotbed.v1.MemoryBriefing.always:type_name -> hotbed.v1.MemoryIndexEntry
+	341, // 343: hotbed.v1.MemoryBriefing.on_demand:type_name -> hotbed.v1.MemoryIndexEntry
+	337, // 344: hotbed.v1.ProposeMemoryRequest.content:type_name -> hotbed.v1.MemoryContent
+	273, // 345: hotbed.v1.ProposeMemoryRequest.from:type_name -> hotbed.v1.AskedFrom
+	24,  // 346: hotbed.v1.ListMemoriesRequest.states:type_name -> hotbed.v1.MemoryState
+	22,  // 347: hotbed.v1.ListMemoriesRequest.scope:type_name -> hotbed.v1.MemoryScope
+	23,  // 348: hotbed.v1.ListMemoriesRequest.mode:type_name -> hotbed.v1.MemoryMode
+	25,  // 349: hotbed.v1.ListMemoriesRequest.order:type_name -> hotbed.v1.MemoryOrder
+	339, // 350: hotbed.v1.ListMemoriesResponse.memories:type_name -> hotbed.v1.Memory
+	339, // 351: hotbed.v1.GetMemoriesResponse.memories:type_name -> hotbed.v1.Memory
+	337, // 352: hotbed.v1.ReviseMemoryRequest.content:type_name -> hotbed.v1.MemoryContent
+	356, // 353: hotbed.v1.CommandSpec.fixed:type_name -> hotbed.v1.FixedField
+	357, // 354: hotbed.v1.CommandSpec.input:type_name -> hotbed.v1.InputSpec
+	53,  // 355: hotbed.v1.WorkerVMConfig.KernelsEntry.value:type_name -> hotbed.v1.ManagedArtifact
+	53,  // 356: hotbed.v1.WorkerVMConfig.GuestdEntry.value:type_name -> hotbed.v1.ManagedArtifact
+	53,  // 357: hotbed.v1.WorkerSystemConfig.CladefsdEntry.value:type_name -> hotbed.v1.ManagedArtifact
+	53,  // 358: hotbed.v1.WorkerSystemConfig.FirecrackerEntry.value:type_name -> hotbed.v1.ManagedArtifact
+	203, // 359: hotbed.v1.Snapshot.SeriesEntry.value:type_name -> hotbed.v1.Samples
+	207, // 360: hotbed.v1.Snapshot.NodeHourlyEntry.value:type_name -> hotbed.v1.NodeHours
+	371, // 361: hotbed.v1.group:extendee -> google.protobuf.ServiceOptions
+	372, // 362: hotbed.v1.command:extendee -> google.protobuf.MethodOptions
+	373, // 363: hotbed.v1.param:extendee -> google.protobuf.FieldOptions
+	354, // 364: hotbed.v1.group:type_name -> hotbed.v1.GroupSpec
+	355, // 365: hotbed.v1.command:type_name -> hotbed.v1.CommandSpec
+	358, // 366: hotbed.v1.param:type_name -> hotbed.v1.ParamSpec
+	49,  // 367: hotbed.v1.ClusterService.Join:input_type -> hotbed.v1.JoinRequest
+	192, // 368: hotbed.v1.ClusterService.PushEvents:input_type -> hotbed.v1.PushEventsRequest
+	197, // 369: hotbed.v1.ClusterService.Heartbeat:input_type -> hotbed.v1.HeartbeatRequest
+	46,  // 370: hotbed.v1.ClusterService.Standby:input_type -> hotbed.v1.StandbyRequest
+	44,  // 371: hotbed.v1.ClusterService.ReportHostUsage:input_type -> hotbed.v1.ReportHostUsageRequest
+	51,  // 372: hotbed.v1.ClusterService.ListNodes:input_type -> hotbed.v1.ListNodesRequest
+	66,  // 373: hotbed.v1.ClusterService.GetBuild:input_type -> hotbed.v1.GetBuildRequest
+	80,  // 374: hotbed.v1.ClusterService.ListRepos:input_type -> hotbed.v1.ListReposRequest
+	82,  // 375: hotbed.v1.ClusterService.PutRepo:input_type -> hotbed.v1.PutRepoRequest
+	83,  // 376: hotbed.v1.ClusterService.DeleteRepo:input_type -> hotbed.v1.DeleteRepoRequest
+	85,  // 377: hotbed.v1.ClusterService.RebuildProject:input_type -> hotbed.v1.RebuildProjectRequest
+	86,  // 378: hotbed.v1.ClusterService.SetProjectHosts:input_type -> hotbed.v1.SetProjectHostsRequest
+	74,  // 379: hotbed.v1.ClusterService.PutStep:input_type -> hotbed.v1.PutStepRequest
+	75,  // 380: hotbed.v1.ClusterService.DeleteStep:input_type -> hotbed.v1.DeleteStepRequest
+	76,  // 381: hotbed.v1.ClusterService.ListSteps:input_type -> hotbed.v1.ListStepsRequest
+	154, // 382: hotbed.v1.ClusterService.AddProject:input_type -> hotbed.v1.AddProjectRequest
+	155, // 383: hotbed.v1.ClusterService.RemoveProjectRepos:input_type -> hotbed.v1.RemoveProjectReposRequest
+	157, // 384: hotbed.v1.ClusterService.ListProjects:input_type -> hotbed.v1.ListProjectsRequest
+	156, // 385: hotbed.v1.ClusterService.GetProject:input_type -> hotbed.v1.GetProjectRequest
+	159, // 386: hotbed.v1.ClusterService.ListBases:input_type -> hotbed.v1.ListBasesRequest
+	162, // 387: hotbed.v1.ClusterService.ListFreshens:input_type -> hotbed.v1.ListFreshensRequest
+	164, // 388: hotbed.v1.ClusterService.GetFreshen:input_type -> hotbed.v1.GetFreshenRequest
+	208, // 389: hotbed.v1.ClusterService.GetSnapshot:input_type -> hotbed.v1.GetSnapshotRequest
+	114, // 390: hotbed.v1.ClusterService.GetCommandDiagnostics:input_type -> hotbed.v1.GetCommandDiagnosticsRequest
+	116, // 391: hotbed.v1.ClusterService.SaveCommandDiagnostics:input_type -> hotbed.v1.SaveCommandDiagnosticsRequest
+	119, // 392: hotbed.v1.ClusterService.ListCommandSamples:input_type -> hotbed.v1.ListCommandSamplesRequest
+	121, // 393: hotbed.v1.ClusterService.GetCommandSample:input_type -> hotbed.v1.GetCommandSampleRequest
+	122, // 394: hotbed.v1.ClusterService.SaveCommandSample:input_type -> hotbed.v1.SaveCommandSampleRequest
+	214, // 395: hotbed.v1.ClusterService.GetNode:input_type -> hotbed.v1.GetNodeRequest
+	213, // 396: hotbed.v1.ClusterService.RetireNode:input_type -> hotbed.v1.RetireNodeRequest
+	216, // 397: hotbed.v1.ClusterService.ListPlacements:input_type -> hotbed.v1.ListPlacementsRequest
+	218, // 398: hotbed.v1.ClusterService.ListEvents:input_type -> hotbed.v1.ListEventsRequest
+	61,  // 399: hotbed.v1.ClusterService.GetWorkerConfig:input_type -> hotbed.v1.GetWorkerConfigRequest
+	63,  // 400: hotbed.v1.ClusterService.SetWorkerConfig:input_type -> hotbed.v1.SetWorkerConfigRequest
+	64,  // 401: hotbed.v1.ClusterService.DeleteWorkerConfig:input_type -> hotbed.v1.DeleteWorkerConfigRequest
+	67,  // 402: hotbed.v1.ClusterService.UpgradeSystem:input_type -> hotbed.v1.UpgradeSystemRequest
+	147, // 403: hotbed.v1.SessionService.StartSession:input_type -> hotbed.v1.StartSessionRequest
+	171, // 404: hotbed.v1.SessionService.GetSession:input_type -> hotbed.v1.GetSessionRequest
+	148, // 405: hotbed.v1.SessionService.ListSessions:input_type -> hotbed.v1.ListSessionsRequest
+	150, // 406: hotbed.v1.SessionService.SearchSessions:input_type -> hotbed.v1.SearchSessionsRequest
+	173, // 407: hotbed.v1.SessionService.EndSession:input_type -> hotbed.v1.EndSessionRequest
+	174, // 408: hotbed.v1.SessionService.WatchSession:input_type -> hotbed.v1.WatchSessionRequest
+	175, // 409: hotbed.v1.SessionService.Poll:input_type -> hotbed.v1.PollRequest
+	93,  // 410: hotbed.v1.WorkspaceService.CreateWorkspace:input_type -> hotbed.v1.CreateWorkspaceRequest
+	95,  // 411: hotbed.v1.WorkspaceService.GetWorkspace:input_type -> hotbed.v1.GetWorkspaceRequest
+	96,  // 412: hotbed.v1.WorkspaceService.WatchWorkspace:input_type -> hotbed.v1.WatchWorkspaceRequest
+	97,  // 413: hotbed.v1.WorkspaceService.ListWorkspaces:input_type -> hotbed.v1.ListWorkspacesRequest
+	99,  // 414: hotbed.v1.WorkspaceService.ReleaseWorkspace:input_type -> hotbed.v1.ReleaseWorkspaceRequest
+	101, // 415: hotbed.v1.WorkspaceService.Sync:input_type -> hotbed.v1.SyncRequest
+	106, // 416: hotbed.v1.WorkspaceService.ListFiles:input_type -> hotbed.v1.ListFilesRequest
+	108, // 417: hotbed.v1.WorkspaceService.GetFile:input_type -> hotbed.v1.GetFileRequest
+	127, // 418: hotbed.v1.WorkspaceService.RunCommand:input_type -> hotbed.v1.RunCommandRequest
+	135, // 419: hotbed.v1.WorkspaceService.OpenShell:input_type -> hotbed.v1.OpenShellRequest
+	137, // 420: hotbed.v1.WorkspaceService.GetCommand:input_type -> hotbed.v1.GetCommandRequest
+	138, // 421: hotbed.v1.WorkspaceService.ListCommands:input_type -> hotbed.v1.ListCommandsRequest
+	140, // 422: hotbed.v1.WorkspaceService.StopCommand:input_type -> hotbed.v1.StopCommandRequest
+	141, // 423: hotbed.v1.WorkspaceService.PauseCommand:input_type -> hotbed.v1.PauseCommandRequest
+	142, // 424: hotbed.v1.WorkspaceService.ResumeCommand:input_type -> hotbed.v1.ResumeCommandRequest
+	143, // 425: hotbed.v1.WorkspaceService.FollowLog:input_type -> hotbed.v1.FollowLogRequest
+	183, // 426: hotbed.v1.WorkspaceService.GetLogLines:input_type -> hotbed.v1.GetLogLinesRequest
+	129, // 427: hotbed.v1.WorkspaceService.QueryOutput:input_type -> hotbed.v1.QueryOutputRequest
+	132, // 428: hotbed.v1.WorkspaceService.DetachCommand:input_type -> hotbed.v1.DetachCommandRequest
+	133, // 429: hotbed.v1.WorkspaceService.SendInput:input_type -> hotbed.v1.SendInputRequest
+	234, // 430: hotbed.v1.WorkspaceService.InspectCommand:input_type -> hotbed.v1.InspectCommandRequest
+	247, // 431: hotbed.v1.WorkspaceService.TraceCommand:input_type -> hotbed.v1.TraceCommandRequest
+	252, // 432: hotbed.v1.WorkspaceService.SampleCommand:input_type -> hotbed.v1.SampleCommandRequest
+	263, // 433: hotbed.v1.WorkspaceService.GetProfile:input_type -> hotbed.v1.GetProfileRequest
+	220, // 434: hotbed.v1.WorkspaceService.GetDaemonLogs:input_type -> hotbed.v1.GetDaemonLogsRequest
+	68,  // 435: hotbed.v1.WorkspaceService.UpgradeSystem:input_type -> hotbed.v1.WorkerUpgradeSystemRequest
+	226, // 436: hotbed.v1.ScheduleService.PutSchedule:input_type -> hotbed.v1.PutScheduleRequest
+	227, // 437: hotbed.v1.ScheduleService.ListSchedules:input_type -> hotbed.v1.ListSchedulesRequest
+	229, // 438: hotbed.v1.ScheduleService.GetSchedule:input_type -> hotbed.v1.GetScheduleRequest
+	230, // 439: hotbed.v1.ScheduleService.DeleteSchedule:input_type -> hotbed.v1.DeleteScheduleRequest
+	232, // 440: hotbed.v1.ScheduleService.RunSchedule:input_type -> hotbed.v1.RunScheduleRequest
+	233, // 441: hotbed.v1.ScheduleService.PauseSchedule:input_type -> hotbed.v1.PauseScheduleRequest
+	276, // 442: hotbed.v1.QuestionService.AddQuestions:input_type -> hotbed.v1.AddQuestionsRequest
+	278, // 443: hotbed.v1.QuestionService.EditQuestion:input_type -> hotbed.v1.EditQuestionRequest
+	279, // 444: hotbed.v1.QuestionService.DeleteQuestion:input_type -> hotbed.v1.DeleteQuestionRequest
+	280, // 445: hotbed.v1.QuestionService.ListQuestions:input_type -> hotbed.v1.ListQuestionsRequest
+	283, // 446: hotbed.v1.QuestionService.ListQuestionProjects:input_type -> hotbed.v1.ListQuestionProjectsRequest
+	286, // 447: hotbed.v1.QuestionService.GetQuestion:input_type -> hotbed.v1.GetQuestionRequest
+	287, // 448: hotbed.v1.QuestionService.AnswerQuestion:input_type -> hotbed.v1.AnswerQuestionRequest
+	288, // 449: hotbed.v1.QuestionService.DismissQuestion:input_type -> hotbed.v1.DismissQuestionRequest
+	289, // 450: hotbed.v1.QuestionService.ReviseQuestion:input_type -> hotbed.v1.ReviseQuestionRequest
+	290, // 451: hotbed.v1.QuestionService.ReopenQuestion:input_type -> hotbed.v1.ReopenQuestionRequest
+	291, // 452: hotbed.v1.QuestionService.MoveQuestion:input_type -> hotbed.v1.MoveQuestionRequest
+	292, // 453: hotbed.v1.QuestionService.AckQuestions:input_type -> hotbed.v1.AckQuestionsRequest
+	301, // 454: hotbed.v1.ReviewService.RequestReview:input_type -> hotbed.v1.RequestReviewRequest
+	302, // 455: hotbed.v1.ReviewService.ListReviews:input_type -> hotbed.v1.ListReviewsRequest
+	304, // 456: hotbed.v1.ReviewService.GetReview:input_type -> hotbed.v1.GetReviewRequest
+	305, // 457: hotbed.v1.ReviewService.StartReview:input_type -> hotbed.v1.StartReviewRequest
+	306, // 458: hotbed.v1.ReviewService.AddFindings:input_type -> hotbed.v1.AddFindingsRequest
+	308, // 459: hotbed.v1.ReviewService.FinishReview:input_type -> hotbed.v1.FinishReviewRequest
+	309, // 460: hotbed.v1.ReviewService.CancelReview:input_type -> hotbed.v1.CancelReviewRequest
+	310, // 461: hotbed.v1.ReviewService.DecideFindings:input_type -> hotbed.v1.DecideFindingsRequest
+	312, // 462: hotbed.v1.ReviewService.Respond:input_type -> hotbed.v1.RespondRequest
+	313, // 463: hotbed.v1.ReviewService.ListResponses:input_type -> hotbed.v1.ListResponsesRequest
+	316, // 464: hotbed.v1.GitAuthService.StartGitHubLogin:input_type -> hotbed.v1.StartGitHubLoginRequest
+	318, // 465: hotbed.v1.GitAuthService.CompleteGitHubLogin:input_type -> hotbed.v1.CompleteGitHubLoginRequest
+	319, // 466: hotbed.v1.GitAuthService.PutGitCredential:input_type -> hotbed.v1.PutGitCredentialRequest
+	320, // 467: hotbed.v1.GitAuthService.ListGitCredentials:input_type -> hotbed.v1.ListGitCredentialsRequest
+	322, // 468: hotbed.v1.GitAuthService.DeleteGitCredential:input_type -> hotbed.v1.DeleteGitCredentialRequest
+	324, // 469: hotbed.v1.GitAuthService.MintGitToken:input_type -> hotbed.v1.MintGitTokenRequest
+	326, // 470: hotbed.v1.GitAuthService.ProxyGitHubAPI:input_type -> hotbed.v1.ProxyGitHubAPIRequest
+	330, // 471: hotbed.v1.IssueService.ReportIssue:input_type -> hotbed.v1.ReportIssueRequest
+	331, // 472: hotbed.v1.IssueService.ListIssues:input_type -> hotbed.v1.ListIssuesRequest
+	333, // 473: hotbed.v1.IssueService.GetIssue:input_type -> hotbed.v1.GetIssueRequest
+	334, // 474: hotbed.v1.IssueService.UpvoteIssue:input_type -> hotbed.v1.UpvoteIssueRequest
+	335, // 475: hotbed.v1.IssueService.ArchiveIssue:input_type -> hotbed.v1.ArchiveIssueRequest
+	336, // 476: hotbed.v1.IssueService.ReopenIssue:input_type -> hotbed.v1.ReopenIssueRequest
+	343, // 477: hotbed.v1.MemoryService.ProposeMemory:input_type -> hotbed.v1.ProposeMemoryRequest
+	344, // 478: hotbed.v1.MemoryService.ListMemories:input_type -> hotbed.v1.ListMemoriesRequest
+	346, // 479: hotbed.v1.MemoryService.GetMemories:input_type -> hotbed.v1.GetMemoriesRequest
+	348, // 480: hotbed.v1.MemoryService.ShowMemory:input_type -> hotbed.v1.ShowMemoryRequest
+	349, // 481: hotbed.v1.MemoryService.ReviseMemory:input_type -> hotbed.v1.ReviseMemoryRequest
+	350, // 482: hotbed.v1.MemoryService.ArchiveMemory:input_type -> hotbed.v1.ArchiveMemoryRequest
+	351, // 483: hotbed.v1.MemoryService.RestoreMemory:input_type -> hotbed.v1.RestoreMemoryRequest
+	352, // 484: hotbed.v1.MemoryService.DeleteMemory:input_type -> hotbed.v1.DeleteMemoryRequest
+	353, // 485: hotbed.v1.MemoryService.MoveMemory:input_type -> hotbed.v1.MoveMemoryRequest
+	50,  // 486: hotbed.v1.ClusterService.Join:output_type -> hotbed.v1.JoinResponse
+	193, // 487: hotbed.v1.ClusterService.PushEvents:output_type -> hotbed.v1.PushEventsResponse
+	198, // 488: hotbed.v1.ClusterService.Heartbeat:output_type -> hotbed.v1.HeartbeatResponse
+	47,  // 489: hotbed.v1.ClusterService.Standby:output_type -> hotbed.v1.StandbyResponse
+	45,  // 490: hotbed.v1.ClusterService.ReportHostUsage:output_type -> hotbed.v1.ReportHostUsageResponse
+	52,  // 491: hotbed.v1.ClusterService.ListNodes:output_type -> hotbed.v1.ListNodesResponse
+	54,  // 492: hotbed.v1.ClusterService.GetBuild:output_type -> hotbed.v1.Build
+	81,  // 493: hotbed.v1.ClusterService.ListRepos:output_type -> hotbed.v1.ListReposResponse
+	71,  // 494: hotbed.v1.ClusterService.PutRepo:output_type -> hotbed.v1.Repo
+	84,  // 495: hotbed.v1.ClusterService.DeleteRepo:output_type -> hotbed.v1.DeleteRepoResponse
+	152, // 496: hotbed.v1.ClusterService.RebuildProject:output_type -> hotbed.v1.Project
+	152, // 497: hotbed.v1.ClusterService.SetProjectHosts:output_type -> hotbed.v1.Project
+	152, // 498: hotbed.v1.ClusterService.PutStep:output_type -> hotbed.v1.Project
+	152, // 499: hotbed.v1.ClusterService.DeleteStep:output_type -> hotbed.v1.Project
+	77,  // 500: hotbed.v1.ClusterService.ListSteps:output_type -> hotbed.v1.ListStepsResponse
+	152, // 501: hotbed.v1.ClusterService.AddProject:output_type -> hotbed.v1.Project
+	152, // 502: hotbed.v1.ClusterService.RemoveProjectRepos:output_type -> hotbed.v1.Project
+	158, // 503: hotbed.v1.ClusterService.ListProjects:output_type -> hotbed.v1.ListProjectsResponse
+	152, // 504: hotbed.v1.ClusterService.GetProject:output_type -> hotbed.v1.Project
+	160, // 505: hotbed.v1.ClusterService.ListBases:output_type -> hotbed.v1.ListBasesResponse
+	163, // 506: hotbed.v1.ClusterService.ListFreshens:output_type -> hotbed.v1.ListFreshensResponse
+	165, // 507: hotbed.v1.ClusterService.GetFreshen:output_type -> hotbed.v1.GetFreshenResponse
+	209, // 508: hotbed.v1.ClusterService.GetSnapshot:output_type -> hotbed.v1.Snapshot
+	115, // 509: hotbed.v1.ClusterService.GetCommandDiagnostics:output_type -> hotbed.v1.GetCommandDiagnosticsResponse
+	117, // 510: hotbed.v1.ClusterService.SaveCommandDiagnostics:output_type -> hotbed.v1.SaveCommandDiagnosticsResponse
+	120, // 511: hotbed.v1.ClusterService.ListCommandSamples:output_type -> hotbed.v1.ListCommandSamplesResponse
+	118, // 512: hotbed.v1.ClusterService.GetCommandSample:output_type -> hotbed.v1.CommandSample
+	123, // 513: hotbed.v1.ClusterService.SaveCommandSample:output_type -> hotbed.v1.SaveCommandSampleResponse
+	215, // 514: hotbed.v1.ClusterService.GetNode:output_type -> hotbed.v1.NodeDetail
+	39,  // 515: hotbed.v1.ClusterService.RetireNode:output_type -> hotbed.v1.Node
+	217, // 516: hotbed.v1.ClusterService.ListPlacements:output_type -> hotbed.v1.ListPlacementsResponse
+	219, // 517: hotbed.v1.ClusterService.ListEvents:output_type -> hotbed.v1.ListEventsResponse
+	62,  // 518: hotbed.v1.ClusterService.GetWorkerConfig:output_type -> hotbed.v1.GetWorkerConfigResponse
+	60,  // 519: hotbed.v1.ClusterService.SetWorkerConfig:output_type -> hotbed.v1.WorkerConfig
+	65,  // 520: hotbed.v1.ClusterService.DeleteWorkerConfig:output_type -> hotbed.v1.DeleteWorkerConfigResponse
+	70,  // 521: hotbed.v1.ClusterService.UpgradeSystem:output_type -> hotbed.v1.UpgradeSystemResponse
+	145, // 522: hotbed.v1.SessionService.StartSession:output_type -> hotbed.v1.Session
+	172, // 523: hotbed.v1.SessionService.GetSession:output_type -> hotbed.v1.GetSessionResponse
+	149, // 524: hotbed.v1.SessionService.ListSessions:output_type -> hotbed.v1.ListSessionsResponse
+	151, // 525: hotbed.v1.SessionService.SearchSessions:output_type -> hotbed.v1.SearchSessionsResponse
+	145, // 526: hotbed.v1.SessionService.EndSession:output_type -> hotbed.v1.Session
+	176, // 527: hotbed.v1.SessionService.WatchSession:output_type -> hotbed.v1.SessionEvents
+	176, // 528: hotbed.v1.SessionService.Poll:output_type -> hotbed.v1.SessionEvents
+	91,  // 529: hotbed.v1.WorkspaceService.CreateWorkspace:output_type -> hotbed.v1.Workspace
+	91,  // 530: hotbed.v1.WorkspaceService.GetWorkspace:output_type -> hotbed.v1.Workspace
+	91,  // 531: hotbed.v1.WorkspaceService.WatchWorkspace:output_type -> hotbed.v1.Workspace
+	98,  // 532: hotbed.v1.WorkspaceService.ListWorkspaces:output_type -> hotbed.v1.ListWorkspacesResponse
+	100, // 533: hotbed.v1.WorkspaceService.ReleaseWorkspace:output_type -> hotbed.v1.ReleaseWorkspaceResponse
+	104, // 534: hotbed.v1.WorkspaceService.Sync:output_type -> hotbed.v1.SyncResponse
+	107, // 535: hotbed.v1.WorkspaceService.ListFiles:output_type -> hotbed.v1.ListFilesResponse
+	109, // 536: hotbed.v1.WorkspaceService.GetFile:output_type -> hotbed.v1.FileContent
+	125, // 537: hotbed.v1.WorkspaceService.RunCommand:output_type -> hotbed.v1.Command
+	136, // 538: hotbed.v1.WorkspaceService.OpenShell:output_type -> hotbed.v1.OpenShellResponse
+	125, // 539: hotbed.v1.WorkspaceService.GetCommand:output_type -> hotbed.v1.Command
+	139, // 540: hotbed.v1.WorkspaceService.ListCommands:output_type -> hotbed.v1.ListCommandsResponse
+	125, // 541: hotbed.v1.WorkspaceService.StopCommand:output_type -> hotbed.v1.Command
+	125, // 542: hotbed.v1.WorkspaceService.PauseCommand:output_type -> hotbed.v1.Command
+	125, // 543: hotbed.v1.WorkspaceService.ResumeCommand:output_type -> hotbed.v1.Command
+	144, // 544: hotbed.v1.WorkspaceService.FollowLog:output_type -> hotbed.v1.LogChunk
+	184, // 545: hotbed.v1.WorkspaceService.GetLogLines:output_type -> hotbed.v1.CommandLog
+	131, // 546: hotbed.v1.WorkspaceService.QueryOutput:output_type -> hotbed.v1.OutputQuery
+	125, // 547: hotbed.v1.WorkspaceService.DetachCommand:output_type -> hotbed.v1.Command
+	134, // 548: hotbed.v1.WorkspaceService.SendInput:output_type -> hotbed.v1.SendInputResponse
+	246, // 549: hotbed.v1.WorkspaceService.InspectCommand:output_type -> hotbed.v1.InspectCommandResponse
+	251, // 550: hotbed.v1.WorkspaceService.TraceCommand:output_type -> hotbed.v1.TraceCommandChunk
+	253, // 551: hotbed.v1.WorkspaceService.SampleCommand:output_type -> hotbed.v1.SampleCommandChunk
+	268, // 552: hotbed.v1.WorkspaceService.GetProfile:output_type -> hotbed.v1.CommandProfile
+	223, // 553: hotbed.v1.WorkspaceService.GetDaemonLogs:output_type -> hotbed.v1.GetDaemonLogsResponse
+	69,  // 554: hotbed.v1.WorkspaceService.UpgradeSystem:output_type -> hotbed.v1.NodeSystemUpgrade
+	224, // 555: hotbed.v1.ScheduleService.PutSchedule:output_type -> hotbed.v1.ScheduledCommand
+	228, // 556: hotbed.v1.ScheduleService.ListSchedules:output_type -> hotbed.v1.ListSchedulesResponse
+	224, // 557: hotbed.v1.ScheduleService.GetSchedule:output_type -> hotbed.v1.ScheduledCommand
+	231, // 558: hotbed.v1.ScheduleService.DeleteSchedule:output_type -> hotbed.v1.DeleteScheduleResponse
+	225, // 559: hotbed.v1.ScheduleService.RunSchedule:output_type -> hotbed.v1.ScheduledRun
+	224, // 560: hotbed.v1.ScheduleService.PauseSchedule:output_type -> hotbed.v1.ScheduledCommand
+	277, // 561: hotbed.v1.QuestionService.AddQuestions:output_type -> hotbed.v1.AddQuestionsResponse
+	274, // 562: hotbed.v1.QuestionService.EditQuestion:output_type -> hotbed.v1.Question
+	274, // 563: hotbed.v1.QuestionService.DeleteQuestion:output_type -> hotbed.v1.Question
+	282, // 564: hotbed.v1.QuestionService.ListQuestions:output_type -> hotbed.v1.ListQuestionsResponse
+	284, // 565: hotbed.v1.QuestionService.ListQuestionProjects:output_type -> hotbed.v1.ListQuestionProjectsResponse
+	274, // 566: hotbed.v1.QuestionService.GetQuestion:output_type -> hotbed.v1.Question
+	274, // 567: hotbed.v1.QuestionService.AnswerQuestion:output_type -> hotbed.v1.Question
+	274, // 568: hotbed.v1.QuestionService.DismissQuestion:output_type -> hotbed.v1.Question
+	274, // 569: hotbed.v1.QuestionService.ReviseQuestion:output_type -> hotbed.v1.Question
+	274, // 570: hotbed.v1.QuestionService.ReopenQuestion:output_type -> hotbed.v1.Question
+	274, // 571: hotbed.v1.QuestionService.MoveQuestion:output_type -> hotbed.v1.Question
+	293, // 572: hotbed.v1.QuestionService.AckQuestions:output_type -> hotbed.v1.AckQuestionsResponse
+	299, // 573: hotbed.v1.ReviewService.RequestReview:output_type -> hotbed.v1.Review
+	303, // 574: hotbed.v1.ReviewService.ListReviews:output_type -> hotbed.v1.ListReviewsResponse
+	299, // 575: hotbed.v1.ReviewService.GetReview:output_type -> hotbed.v1.Review
+	299, // 576: hotbed.v1.ReviewService.StartReview:output_type -> hotbed.v1.Review
+	307, // 577: hotbed.v1.ReviewService.AddFindings:output_type -> hotbed.v1.AddFindingsResponse
+	299, // 578: hotbed.v1.ReviewService.FinishReview:output_type -> hotbed.v1.Review
+	299, // 579: hotbed.v1.ReviewService.CancelReview:output_type -> hotbed.v1.Review
+	311, // 580: hotbed.v1.ReviewService.DecideFindings:output_type -> hotbed.v1.DecideFindingsResponse
+	300, // 581: hotbed.v1.ReviewService.Respond:output_type -> hotbed.v1.ReviewEvent
+	314, // 582: hotbed.v1.ReviewService.ListResponses:output_type -> hotbed.v1.ListResponsesResponse
+	317, // 583: hotbed.v1.GitAuthService.StartGitHubLogin:output_type -> hotbed.v1.GitHubLoginChallenge
+	315, // 584: hotbed.v1.GitAuthService.CompleteGitHubLogin:output_type -> hotbed.v1.GitCredential
+	315, // 585: hotbed.v1.GitAuthService.PutGitCredential:output_type -> hotbed.v1.GitCredential
+	321, // 586: hotbed.v1.GitAuthService.ListGitCredentials:output_type -> hotbed.v1.ListGitCredentialsResponse
+	323, // 587: hotbed.v1.GitAuthService.DeleteGitCredential:output_type -> hotbed.v1.DeleteGitCredentialResponse
+	325, // 588: hotbed.v1.GitAuthService.MintGitToken:output_type -> hotbed.v1.GitToken
+	327, // 589: hotbed.v1.GitAuthService.ProxyGitHubAPI:output_type -> hotbed.v1.ProxyGitHubAPIResponse
+	328, // 590: hotbed.v1.IssueService.ReportIssue:output_type -> hotbed.v1.Issue
+	332, // 591: hotbed.v1.IssueService.ListIssues:output_type -> hotbed.v1.ListIssuesResponse
+	328, // 592: hotbed.v1.IssueService.GetIssue:output_type -> hotbed.v1.Issue
+	328, // 593: hotbed.v1.IssueService.UpvoteIssue:output_type -> hotbed.v1.Issue
+	328, // 594: hotbed.v1.IssueService.ArchiveIssue:output_type -> hotbed.v1.Issue
+	328, // 595: hotbed.v1.IssueService.ReopenIssue:output_type -> hotbed.v1.Issue
+	339, // 596: hotbed.v1.MemoryService.ProposeMemory:output_type -> hotbed.v1.Memory
+	345, // 597: hotbed.v1.MemoryService.ListMemories:output_type -> hotbed.v1.ListMemoriesResponse
+	347, // 598: hotbed.v1.MemoryService.GetMemories:output_type -> hotbed.v1.GetMemoriesResponse
+	339, // 599: hotbed.v1.MemoryService.ShowMemory:output_type -> hotbed.v1.Memory
+	339, // 600: hotbed.v1.MemoryService.ReviseMemory:output_type -> hotbed.v1.Memory
+	339, // 601: hotbed.v1.MemoryService.ArchiveMemory:output_type -> hotbed.v1.Memory
+	339, // 602: hotbed.v1.MemoryService.RestoreMemory:output_type -> hotbed.v1.Memory
+	339, // 603: hotbed.v1.MemoryService.DeleteMemory:output_type -> hotbed.v1.Memory
+	339, // 604: hotbed.v1.MemoryService.MoveMemory:output_type -> hotbed.v1.Memory
+	486, // [486:605] is the sub-list for method output_type
+	367, // [367:486] is the sub-list for method input_type
+	364, // [364:367] is the sub-list for extension type_name
+	361, // [361:364] is the sub-list for extension extendee
+	0,   // [0:361] is the sub-list for field type_name
 }
 
 func init() { file_hotbed_v1_hotbed_proto_init() }

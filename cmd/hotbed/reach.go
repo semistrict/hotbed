@@ -105,11 +105,6 @@ func (f controllerClient) workspaceFor(ctx context.Context, d deps, req *pb.Crea
 			call = api.WithoutRideOut(ctx)
 		}
 	}
-	if createWorkspaceTimeout > 0 {
-		var cancel context.CancelFunc
-		call, cancel = context.WithTimeout(call, createWorkspaceTimeout)
-		defer cancel()
-	}
 	ws, err := createWaking(call, d, cl.workspaces, req)
 	switch {
 	case err == nil:
@@ -145,19 +140,42 @@ var createWorkspaceTimeout = 10 * time.Minute
 const wakeRideOut = 5 * time.Minute
 
 // createWaking creates the workspace, calling again while the node placement
-// picked is waking up (NODE_WAKING), for up to wakeRideOut, saying so once
-// on stderr.
+// picked is waking up (NODE_WAKING, up to wakeRideOut) or while all eligible
+// nodes are full and the run is queued at the controller (NODES_BUSY, until
+// any eligible node frees up), saying so once on stderr. Each individual RPC
+// is bounded by createWorkspaceTimeout so a stuck controller fails promptly.
 func createWaking(ctx context.Context, d deps, ws hotbedv1connect.WorkspaceServiceClient, req *pb.CreateWorkspaceRequest) (*pb.Workspace, error) {
-	deadline := time.Now().Add(wakeRideOut)
-	said := false
+	wakeDeadline := time.Now().Add(wakeRideOut)
+	saidWake, saidBusy := false, false
 	for {
-		w, err := ws.CreateWorkspace(ctx, req)
-		if api.CodeOf(err) != api.CodeNodeWaking || time.Now().After(deadline) || ctx.Err() != nil {
-			return w, err
+		call := ctx
+		var cancel context.CancelFunc
+		if createWorkspaceTimeout > 0 {
+			call, cancel = context.WithTimeout(ctx, createWorkspaceTimeout)
 		}
-		if !said {
-			fmt.Fprintf(d.stderr, "hotbed: %s; waiting up to %s for it\n", api.FromConnect(err).Message, wakeRideOut)
-			said = true
+		w, err := ws.CreateWorkspace(call, req)
+		if cancel != nil {
+			cancel()
+		}
+		switch api.CodeOf(err) {
+		case api.CodeNodeWaking:
+			if time.Now().After(wakeDeadline) || ctx.Err() != nil {
+				return w, err
+			}
+			if !saidWake {
+				fmt.Fprintf(d.stderr, "hotbed: %s; waiting up to %s for it\n", api.FromConnect(err).Message, wakeRideOut)
+				saidWake = true
+			}
+		case api.CodeNodesBusy:
+			if ctx.Err() != nil {
+				return w, err
+			}
+			if !saidBusy {
+				fmt.Fprintf(d.stderr, "hotbed: %s\n", api.FromConnect(err).Message)
+				saidBusy = true
+			}
+		default:
+			return w, err
 		}
 	}
 }

@@ -25,6 +25,7 @@ const (
 	CodeSyncRefused           Code = "SYNC_REFUSED"
 	CodeWorkerUnreachable     Code = "WORKER_UNREACHABLE"
 	CodeNodeWaking            Code = "NODE_WAKING" // the node a run goes to is booting; call again
+	CodeNodesBusy             Code = "NODES_BUSY"  // all eligible nodes are full/holding; call again as any frees up
 	// CodeCommandStopped is how waiting on a command ends when someone
 	// stopped it by hand: its message says who, what they wrote, and how to
 	// read its diagnostics.

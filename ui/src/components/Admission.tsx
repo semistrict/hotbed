@@ -154,6 +154,107 @@ function roleOf(d: PlacementDecision, nodeId: string): { text: string; className
   return { text: `passed over · ${c.cost.toFixed(2)}${won ? ` vs ${won.cost.toFixed(2)}` : ""}`, className: "text-warning-ink" };
 }
 
+/** Requested placement constraints for a decision, or null for legacy records that predate request tracking. */
+export function placementRequirements(d: PlacementDecision): { label: string; pinned?: boolean }[] | null {
+  if (!d.request) return null;
+  const reqs: { label: string; pinned?: boolean }[] = [];
+  if (d.request.node) reqs.push({ label: `--node ${d.request.node}`, pinned: true });
+  if (d.request.arch) reqs.push({ label: `--arch ${d.request.arch}`, pinned: true });
+  if (d.request.runtime) reqs.push({ label: `--runtime ${d.request.runtime}` });
+  if (d.request.bench) reqs.push({ label: "--bench", pinned: true });
+  if (d.request.memoryLowBytes > 0n) reqs.push({ label: `--mem-low ${bytes(d.request.memoryLowBytes)}` });
+  if (d.request.memoryEstimateBytes > 0n) reqs.push({ label: `--mem ${bytes(d.request.memoryEstimateBytes)}` });
+  if (d.request.vmCpus > 0) reqs.push({ label: `--vm-cpus ${d.request.vmCpus}` });
+  if (d.request.vmMemoryBytes > 0n) reqs.push({ label: `--vm-mem ${bytes(d.request.vmMemoryBytes)}` });
+  if (d.noSync) reqs.push({ label: "--no-sync", pinned: true });
+  if (d.throwaway) reqs.push({ label: "--fork" });
+  return reqs;
+}
+
+export function PlacementReqBadges({ decision }: { decision: PlacementDecision }) {
+  const reqs = placementRequirements(decision);
+  if (reqs === null) return null;
+  if (reqs.length === 0) {
+    return (
+      <Badge variant="secondary" className="h-auto bg-muted px-2 py-0.5 font-mono text-[10px] font-normal text-muted-foreground">
+        any eligible node
+      </Badge>
+    );
+  }
+  return (
+    <span className="inline-flex flex-wrap items-center gap-1">
+      {reqs.map((r) => (
+        <Badge
+          key={r.label}
+          variant="secondary"
+          className={`h-auto px-2 py-0.5 font-mono text-[10px] font-normal ${r.pinned ? "bg-serious/15 text-serious-ink" : "bg-muted text-foreground"}`}
+        >
+          {r.label}
+        </Badge>
+      ))}
+    </span>
+  );
+}
+
+function PlacementCandidatesTable({ decision, nodeId }: { decision: PlacementDecision; nodeId?: string }) {
+  if (decision.candidates.length === 0) return null;
+  return (
+    <Table className="text-[11px]">
+      <TableBody>
+        {decision.candidates.map((c) => (
+          <TableRow key={c.nodeId} className={`border-border/50 ${c.nodeId === nodeId ? "bg-muted/50" : ""}`}>
+            <TableCell className="w-28 px-2 py-1.5 font-mono text-foreground">
+              {c.hostname}
+              {c.mine && <span className="ml-1.5 text-[9.5px] text-faint">session's</span>}
+            </TableCell>
+            {c.unfit ? (
+              <TableCell colSpan={2} className="px-2 py-1.5 text-faint whitespace-normal">
+                ruled out: {c.unfit}
+              </TableCell>
+            ) : (
+              <>
+                <TableCell className="num w-16 px-2 py-1.5 font-mono text-foreground">{c.cost.toFixed(2)}</TableCell>
+                <TableCell className="px-2 py-1.5 whitespace-normal">
+                  <Parts parts={c.parts} />
+                  <div className="mt-1 flex flex-wrap gap-x-3 text-[10px] text-muted-foreground">
+                    {c.parts
+                      .filter((p) => p.value > 0)
+                      .map((p) => (
+                        <span key={p.name} title={p.detail}>
+                          <span className="mr-1 inline-block size-1.5 rounded-[2px]" style={{ background: PART_COLOR[p.name] ?? "var(--muted-foreground)" }} />
+                          {p.name} {p.value.toFixed(2)} <span className="text-faint">({p.detail})</span>
+                        </span>
+                      ))}
+                  </div>
+                </TableCell>
+              </>
+            )}
+            <TableCell className="w-14 px-2 py-1.5 text-right font-mono text-[10px]">{c.chosen && <span className="text-good-ink">chosen</span>}</TableCell>
+          </TableRow>
+        ))}
+      </TableBody>
+    </Table>
+  );
+}
+
+/** Full placement breakdown for one command: requested constraints, chosen host + reason, and every node weighed. */
+export function PlacementDetail({ decision }: { decision: PlacementDecision }) {
+  return (
+    <div className="space-y-3">
+      <div className="flex flex-wrap items-center gap-x-3 gap-y-1.5 font-mono text-[11.5px]">
+        <span className="text-muted-foreground">requested</span>
+        <PlacementReqBadges decision={decision} />
+        <span className="text-faint">·</span>
+        <span className={decision.nodeId ? "text-foreground" : "text-critical"}>
+          {decision.hostname ? `→ ${decision.hostname}` : "refused"}
+        </span>
+        {decision.reason && <span className="text-muted-foreground">{decision.reason}</span>}
+      </div>
+      <PlacementCandidatesTable decision={decision} />
+    </div>
+  );
+}
+
 /**
  * Placement decisions, newest first, each opening to every node weighed:
  * its cost in parts, or why it was ruled out. With nodeId, each says what it
@@ -176,6 +277,7 @@ export function PlacementList({ placements, nodeId, limit = 20, now }: { placeme
                   <ChevronRightIcon className="size-3 shrink-0 text-faint transition-transform group-data-panel-open:rotate-90" />
                   <span className="shrink-0 text-faint">{d.project}</span>
                   <span className={`shrink-0 ${d.nodeId ? "text-foreground" : "text-critical"}`}>{d.nodeId ? `→ ${d.hostname}` : "refused"}</span>
+                  <PlacementReqBadges decision={d} />
                   <span className="min-w-0 truncate text-muted-foreground">{d.reason}</span>
                   {role && <span className={`shrink-0 sm:ml-auto ${role.className}`}>{role.text}</span>}
                 </CollapsibleTrigger>
@@ -189,41 +291,7 @@ export function PlacementList({ placements, nodeId, limit = 20, now }: { placeme
               </div>
               <CollapsibleContent>
                 <div className="mb-3 sm:ml-6">
-                  <Table className="text-[11px]">
-                    <TableBody>
-                      {d.candidates.map((c) => (
-                        <TableRow key={c.nodeId} className={`border-border/50 ${c.nodeId === nodeId ? "bg-muted/50" : ""}`}>
-                          <TableCell className="w-28 px-2 py-1.5 font-mono text-foreground">
-                            {c.hostname}
-                            {c.mine && <span className="ml-1.5 text-[9.5px] text-faint">session's</span>}
-                          </TableCell>
-                          {c.unfit ? (
-                            <TableCell colSpan={2} className="px-2 py-1.5 text-faint whitespace-normal">
-                              ruled out: {c.unfit}
-                            </TableCell>
-                          ) : (
-                            <>
-                              <TableCell className="num w-16 px-2 py-1.5 font-mono text-foreground">{c.cost.toFixed(2)}</TableCell>
-                              <TableCell className="px-2 py-1.5 whitespace-normal">
-                                <Parts parts={c.parts} />
-                                <div className="mt-1 flex flex-wrap gap-x-3 text-[10px] text-muted-foreground">
-                                  {c.parts
-                                    .filter((p) => p.value > 0)
-                                    .map((p) => (
-                                      <span key={p.name} title={p.detail}>
-                                        <span className="mr-1 inline-block size-1.5 rounded-[2px]" style={{ background: PART_COLOR[p.name] ?? "var(--muted-foreground)" }} />
-                                        {p.name} {p.value.toFixed(2)} <span className="text-faint">({p.detail})</span>
-                                      </span>
-                                    ))}
-                                </div>
-                              </TableCell>
-                            </>
-                          )}
-                          <TableCell className="w-14 px-2 py-1.5 text-right font-mono text-[10px]">{c.chosen && <span className="text-good-ink">chosen</span>}</TableCell>
-                        </TableRow>
-                      ))}
-                    </TableBody>
-                  </Table>
+                  <PlacementCandidatesTable decision={d} nodeId={nodeId} />
                 </div>
               </CollapsibleContent>
             </Collapsible>

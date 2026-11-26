@@ -21,6 +21,7 @@ export const ErrorCode = {
 	SyncRefused: "SYNC_REFUSED",
 	WorkerUnreachable: "WORKER_UNREACHABLE",
 	NodeWaking: "NODE_WAKING",
+	NodesBusy: "NODES_BUSY",
 	CommandStopped: "COMMAND_STOPPED",
 	Internal: "INTERNAL",
 } as const;
@@ -86,6 +87,7 @@ export function connectCodeFor(code: HotbedErrorCode): Code {
 		case ErrorCode.RepoUnreachable:
 		case ErrorCode.WorkerUnreachable:
 		case ErrorCode.NodeWaking:
+		case ErrorCode.NodesBusy:
 		case ErrorCode.ControllerUnreachable:
 		case ErrorCode.TailscaleUnavailable:
 			return Code.Unavailable;

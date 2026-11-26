@@ -1,10 +1,11 @@
 import { Link } from "@tanstack/react-router";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
-import { CommandState, type Command, type FinishedCommand, type Snapshot } from "../api";
+import { CommandState, type Command, type FinishedCommand, type PlacementDecision, type Snapshot } from "../api";
 import { nodeName } from "../lib/data";
 import { ago, bytes, duration, limit, speedup } from "../lib/format";
 import { useProject } from "../lib/project";
 import { commandProject } from "../lib/projects";
+import { placementRequirements } from "./Admission";
 import { Meter } from "./charts/Bars";
 import { CommandInline } from "./CommandBlock";
 import { Empty } from "./Panel";
@@ -46,6 +47,30 @@ function WorkspaceCell({ id, known }: { id: string; known: boolean }) {
     <Link to="/workspaces/$id" params={{ id }} className="font-mono text-[11px] text-muted-foreground hover:text-primary">
       {id}
     </Link>
+  );
+}
+
+function NodePlacementCell({ host, placement }: { host: string; placement?: PlacementDecision }) {
+  const reqs = placement ? placementRequirements(placement) : null;
+  const title = placement
+    ? [reqs && reqs.length > 0 ? reqs.map((r) => r.label).join(" ") : reqs ? "any eligible node" : "", placement.reason].filter(Boolean).join(" · ")
+    : undefined;
+  return (
+    <div title={title}>
+      <div>{host}</div>
+      {reqs && reqs.length > 0 && (
+        <div className="mt-0.5 flex flex-wrap gap-1">
+          {reqs.map((r) => (
+            <span
+              key={r.label}
+              className={`rounded px-1 py-px text-[9.5px] ${r.pinned ? "bg-serious/15 text-serious-ink" : "bg-muted text-faint"}`}
+            >
+              {r.label}
+            </span>
+          ))}
+        </div>
+      )}
+    </div>
   );
 }
 
@@ -211,7 +236,11 @@ export function LiveCommandTable({
                   <TableCell className="px-2 py-2.5">
                     <RuntimeBadge runtime={runtime} />
                   </TableCell>
-                  {showNode && <TableCell className="px-2 py-2.5 font-mono text-[11px] text-muted-foreground">{nodeName(s, c.nodeId)}</TableCell>}
+                  {showNode && (
+                    <TableCell className="px-2 py-2.5 font-mono text-[11px] text-muted-foreground">
+                      <NodePlacementCell host={nodeName(s, c.nodeId)} placement={c.placement} />
+                    </TableCell>
+                  )}
                   <TableCell className="num px-2 py-2.5 font-mono text-[11px] text-muted-foreground">{duration((now - since) / 1000)}</TableCell>
                   <TableCell className="num px-2 py-2.5 font-mono text-[11px]">{c.state === CommandState.RUNNING ? `${c.cpuCores.toFixed(1)} cores` : "—"}</TableCell>
                   <TableCell className="w-40 px-2 py-2.5">
@@ -344,7 +373,11 @@ export function HistoryTable({
                 <TableCell className="px-2 py-2">
                   <RuntimeBadge runtime={commandRuntime(s, c, workspacesById)} />
                 </TableCell>
-                {showNode && <TableCell className="px-2 py-2 text-muted-foreground">{nodeName(s, c.nodeId)}</TableCell>}
+                {showNode && (
+                  <TableCell className="px-2 py-2 text-muted-foreground">
+                    <NodePlacementCell host={nodeName(s, c.nodeId)} placement={c.placement} />
+                  </TableCell>
+                )}
                 <TableCell className="px-2 py-2 text-muted-foreground">{ago(c.endedAt, now)}</TableCell>
                 <TableCell className="px-2 py-2">{duration(c.seconds)}</TableCell>
                 <TableCell className="px-2 py-2 text-faint">{c.coldSeconds !== undefined ? duration(c.coldSeconds) : "—"}</TableCell>

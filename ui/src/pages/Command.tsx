@@ -9,6 +9,7 @@ import { api, CommandState, type Command, type CommandEvent, type CommandLimits,
 import { Meter } from "../components/charts/Bars";
 import { SpeedBars } from "../components/charts/SpeedBars";
 import { actsFor, ByHandButtons, ByHandForm, InterventionsCard, type ByHandAction } from "../components/ByHand";
+import { PlacementDetail } from "../components/Admission";
 import { CommandBlock } from "../components/CommandBlock";
 import { TerminalView } from "../components/TerminalView";
 import { KeptSampleView, seedKeptSample, TakingView, useCommandSamples } from "../components/CommandSamples";
@@ -122,6 +123,7 @@ function CommandView({
   const unitLabel = repoUnitLabel(s, repoId);
 
   const estimate = live?.estimate ?? done?.estimate;
+  const placement = live?.placement ?? done?.placement;
   const stats: ReactNode[] = [
     <StatTile key="took" label={ended ? "Took" : "Running for"} value={duration(took)} tone="ember" />,
   ];
@@ -308,6 +310,12 @@ function CommandView({
       <div className={`grid grid-cols-2 gap-3 sm:grid-cols-3 ${statGridCols}`}>{stats}</div>
 
       <InterventionsCard s={s} id={id} interventions={live ? live.interventions : null} />
+
+      {placement && (
+        <Card title="Placement" sub={placement.at > 0n ? `decided ${ago(placement.at, now)} (${hhmmss(placement.at)})` : "what this run asked for and why it went here"}>
+          <PlacementDetail decision={placement} />
+        </Card>
+      )}
 
       {cold !== null && (
         <Card title="Against a cold build">

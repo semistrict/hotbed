@@ -1,7 +1,7 @@
 import { create } from "@bufbuild/protobuf";
 import { describe, expect, it } from "vitest";
-import { AdmissionSignalSchema, SampleSchema } from "../gen/hotbed/v1/hotbed_pb";
-import { heldBands, signalRule } from "./Admission";
+import { AdmissionSignalSchema, PlacementDecisionSchema, PlacementSchema, SampleSchema } from "../gen/hotbed/v1/hotbed_pb";
+import { heldBands, placementRequirements, signalRule } from "./Admission";
 
 const sample = (t: bigint, holding: boolean) => create(SampleSchema, { t, holding });
 
@@ -23,5 +23,39 @@ describe("signalRule", () => {
     expect(
       signalRule(create(AdmissionSignalSchema, { ...cpu, name: "disk-free", unit: "bytes", floor: true, limit: 5 * 1024 ** 3, resume: 10 * 1024 ** 3 })),
     ).toBe("holds under 5 GiB · resumes above 10 GiB");
+  });
+});
+
+describe("placementRequirements", () => {
+  it("returns null for legacy decisions without a recorded request", () => {
+    expect(placementRequirements(create(PlacementDecisionSchema, { hostname: "ubu1", reason: "the node asked for" }))).toBeNull();
+  });
+
+  it("returns empty array for unconstrained decisions and marks pinned constraints", () => {
+    expect(placementRequirements(create(PlacementDecisionSchema, { request: create(PlacementSchema) }))).toEqual([]);
+    const pinned = create(PlacementDecisionSchema, {
+      request: create(PlacementSchema, {
+        node: "ubu1",
+        arch: "amd64",
+        runtime: "vm",
+        bench: true,
+        memoryLowBytes: 4n << 30n,
+        vmCpus: 4,
+        vmMemoryBytes: 8n << 30n,
+      }),
+      noSync: true,
+      throwaway: true,
+    });
+    expect(placementRequirements(pinned)).toEqual([
+      { label: "--node ubu1", pinned: true },
+      { label: "--arch amd64", pinned: true },
+      { label: "--runtime vm" },
+      { label: "--bench", pinned: true },
+      { label: "--mem-low 4 GiB" },
+      { label: "--vm-cpus 4" },
+      { label: "--vm-mem 8 GiB" },
+      { label: "--no-sync", pinned: true },
+      { label: "--fork" },
+    ]);
   });
 });

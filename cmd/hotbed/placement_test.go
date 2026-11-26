@@ -4,6 +4,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -170,4 +171,177 @@ func TestRunPassesOverANodeThatCannotTakeIt(t *testing.T) {
 	if _, e := c.fails("run", "-s", S, "-r", "app", "--node", "asahimbp", "--no-sync", "--", "true"); e.Code != api.CodeWorkerUnreachable || !e.Retryable {
 		t.Errorf("run pinned to the cut-off node: %+v", e)
 	}
+}
+
+// Each command carries the placement decision that put it on its node — both
+// what the caller asked for (--node, --mem-low, --fork, --no-sync, or any node)
+// and every candidate node weighed — through live state and ended history.
+func TestCommandRecordsPlacementDecisionAndRequirements(t *testing.T) {
+	c := newFleet(t, 2)
+	origin := upstream(t)
+	c.addRepo(origin)
+	const S = "clear-owl"
+	c.ok(nil, "session", "start", S)
+	agent := filepath.Join(t.TempDir(), "agent")
+	gitIn(t, filepath.Dir(agent), "clone", "--quiet", origin, agent)
+	t.Chdir(agent)
+
+	c.load(map[string]float64{"asahimbp": 0.9})
+	// Unconstrained run: picks mini (idle), records empty Placement request.
+	if node, _ := c.ranOn(S, "base\n", "--", "cat", "src/lib.txt"); node != "mini" {
+		t.Fatalf("unconstrained run went to %s, want mini", node)
+	}
+	// Pinned + fork + mem-low run: goes to asahimbp despite load, records constraints.
+	if node, _ := c.ranOn(S, "base\n", "--node", "asahimbp", "--mem-low", "1G", "--fork", "--", "cat", "src/lib.txt"); node != "asahimbp" {
+		t.Fatalf("pinned run went to %s, want asahimbp", node)
+	}
+
+	ps := &pb.ListCommandsResponse{}
+	c.ok(ps, "ps", "-s", S, "-e")
+	if len(ps.Commands) != 2 {
+		t.Fatalf("ps -e returned %d commands, want 2", len(ps.Commands))
+	}
+	auto := ps.Commands[0].GetPlacement()
+	if auto == nil || auto.GetHostname() != "mini" || auto.GetReason() != "the least costly node" {
+		t.Fatalf("unconstrained command placement = %+v, want mini / least costly", auto)
+	}
+	if auto.GetRequest() == nil || auto.GetRequest().GetNode() != "" || auto.GetNoSync() || auto.GetThrowaway() {
+		t.Errorf("unconstrained command request = %+v, noSync=%v throwaway=%v", auto.GetRequest(), auto.GetNoSync(), auto.GetThrowaway())
+	}
+	if len(auto.GetCandidates()) != 2 {
+		t.Errorf("unconstrained candidates = %d, want 2", len(auto.GetCandidates()))
+	}
+
+	pinned := ps.Commands[1].GetPlacement()
+	if pinned == nil || pinned.GetHostname() != "asahimbp" || pinned.GetReason() != "the node asked for" {
+		t.Fatalf("pinned command placement = %+v, want asahimbp / node asked for", pinned)
+	}
+	if pinned.GetRequest().GetNode() != "asahimbp" || pinned.GetRequest().GetMemoryLowBytes() != 1<<30 || !pinned.GetThrowaway() || pinned.GetNoSync() {
+		t.Errorf("pinned command request = %+v, noSync=%v throwaway=%v", pinned.GetRequest(), pinned.GetNoSync(), pinned.GetThrowaway())
+	}
+
+	// Plain-text `hotbed placements` shows requested requirements on each line.
+	code, out, errOut := c.hotbed("placements", "--session", S)
+	if code != 0 {
+		t.Fatalf("placements: exit %d, stderr %q", code, errOut)
+	}
+	if !strings.Contains(out, "[any node]") || !strings.Contains(out, "[--node asahimbp --mem-low 1.0 GiB --fork]") {
+		t.Errorf("placements output missing request summary:\n%s", out)
+	}
+}
+
+// When all eligible hosts are holding work, an unconstrained run queues at the
+// controller instead of committing to one full host's local queue, and runs on
+// whichever eligible host frees up first.
+func TestRunWaitsAtControllerAndTakesFirstHostWithCapacity(t *testing.T) {
+	workerClock := &clock{}
+	c := newFleetWith(t, 2, clusterOpts{engine: []func(*worker.EngineConfig){func(cfg *worker.EngineConfig) {
+		cfg.Now = workerClock.Now
+	}}})
+	origin := upstream(t)
+	c.addRepo(origin)
+	const S = "late-fox"
+	c.ok(nil, "session", "start", S)
+	agent := filepath.Join(t.TempDir(), "agent")
+	gitIn(t, filepath.Dir(agent), "clone", "--quiet", origin, agent)
+	t.Chdir(agent)
+
+	// Both nodes hold new work; mini looks slightly busier than asahimbp, so
+	// eager placement would have locked the run onto asahimbp.
+	c.nodes[0].system.SetCPUPressure(75) // asahimbp
+	c.nodes[1].system.SetCPUPressure(75) // mini
+	c.load(map[string]float64{"asahimbp": 0.2, "mini": 0.8})
+
+	type runRes struct {
+		code   int
+		out    string
+		stderr string
+	}
+	done := make(chan runRes, 1)
+	go func() {
+		code, out, stderr := c.hotbed("run", "-s", S, "-r", "app", "--", "cat", "src/lib.txt")
+		done <- runRes{code, out, stderr}
+	}()
+
+	// While both nodes hold work, the run waits at the controller: neither
+	// worker gets a queued command.
+	time.Sleep(250 * time.Millisecond)
+	select {
+	case r := <-done:
+		t.Fatalf("run returned while both nodes were holding: exit %d out=%q stderr=%q", r.code, r.out, r.stderr)
+	default:
+	}
+	ps := &pb.ListCommandsResponse{}
+	c.ok(ps, "ps", "-s", S)
+	if len(ps.Commands) != 0 {
+		t.Fatalf("commands queued on workers while all nodes full = %+v, want none (late binding)", ps.Commands)
+	}
+
+	// Release ONLY mini's hold while keeping asahimbp holding: mini must win.
+	c.nodes[1].system.SetCPUPressure(0)
+	workerClock.advance(31 * time.Second)
+	c.load(map[string]float64{"asahimbp": 0.2, "mini": 0.1})
+
+	res := <-done
+	if res.code != 0 || res.out != "base\n" {
+		t.Fatalf("run after mini freed up: exit %d out=%q stderr=%q", res.code, res.out, res.stderr)
+	}
+	if !strings.Contains(res.stderr, " on mini ") {
+		t.Fatalf("run went elsewhere (stderr=%q), want mini (the first host to free up)", res.stderr)
+	}
+	var hist pb.ListCommandsResponse
+	c.ok(&hist, "ps", "-s", S, "-e")
+	if len(hist.Commands) != 1 || hist.Commands[0].GetPlacement().GetHostname() != "mini" {
+		t.Fatalf("history placement = %+v, want mini", hist.Commands)
+	}
+	if got := hist.Commands[0].GetPlacement().GetReason(); !strings.Contains(got, "for capacity") {
+		t.Errorf("placement reason = %q, want wait-for-capacity note", got)
+	}
+}
+
+// When two similarly-loaded eligible hosts need a new workspace, the controller
+// races workspace creation across both, uses the first ready winner, and
+// releases the losing workspace.
+func TestRunRacesWorkspaceCreationAcrossTwoHosts(t *testing.T) {
+	c := newFleet(t, 2) // asahimbp and mini, both idle (equal cost)
+	origin := upstream(t)
+	c.addRepo(origin)
+	const S = "race-jay"
+	c.ok(nil, "session", "start", S)
+	agent := filepath.Join(t.TempDir(), "agent")
+	gitIn(t, filepath.Dir(agent), "clone", "--quiet", origin, agent)
+	t.Chdir(agent)
+
+	// Stall asahimbp's CreateWorkspace so mini wins the 2-host race without
+	// waiting on asahimbp.
+	gate := make(chan struct{})
+	c.nodes[0].createGate.Store(&gate)
+	openGate := sync.OnceFunc(func() {
+		close(gate)
+		c.nodes[0].createGate.Store(nil)
+	})
+	defer openGate()
+
+	node, stderr := c.ranOn(S, "base\n", "--", "cat", "src/lib.txt")
+	if node != "mini" {
+		t.Fatalf("raced run went to %s (stderr=%q), want mini to beat stalled asahimbp", node, stderr)
+	}
+
+	var hist pb.ListCommandsResponse
+	c.ok(&hist, "ps", "-s", S, "-e")
+	if len(hist.Commands) != 1 {
+		t.Fatalf("ps -e = %d commands, want 1", len(hist.Commands))
+	}
+	pl := hist.Commands[0].GetPlacement()
+	if pl.GetHostname() != "mini" || !strings.Contains(pl.GetReason(), "won workspace race against asahimbp") {
+		t.Errorf("raced command placement = %+v, want mini winning race against asahimbp", pl)
+	}
+
+	// Unblock asahimbp and confirm the losing workspace is cleanly released.
+	openGate()
+	c.eventually("losing raced workspace on asahimbp to be released", func() bool {
+		ls := &pb.ListWorkspacesResponse{}
+		c.ok(ls, "workspace", "ls", "-s", S)
+		return len(ls.Workspaces) == 1 && ls.Workspaces[0].Node == "mini"
+	})
 }
