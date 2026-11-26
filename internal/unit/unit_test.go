@@ -472,11 +472,13 @@ func TestMemoryIsAnonAndSwapNotCache(t *testing.T) {
 // A work slice leaves the host an eighth of its RAM, at least 1 GiB: past
 // High the slice is throttled, past Max one of its commands is killed,
 // before the host runs short (board 9128). On hosts with zram swap, swap
-// lives in host RAM outside the slice's memcg, so SwapMax bounds it and
-// High/Max reserve the full 1:1 worst-case zram footprint (board 9361, 9588).
+// lives in host RAM outside the slice's memcg, so SwapMax bounds logical swap
+// (up to 2*Headroom, capped at high/2) and High/Max reserve its 3:1 compressed
+// physical footprint (board 9361, 9588).
 func TestBackstopLeavesTheHostRoom(t *testing.T) {
 	const GiB = 1 << 30
 	const MiB = 1 << 20
+	ceilDiv3 := func(n int64) int64 { return (n + zramCompressionRatio - 1) / zramCompressionRatio }
 	for _, c := range []struct {
 		name      string
 		total     int64
@@ -504,60 +506,60 @@ func TestBackstopLeavesTheHostRoom(t *testing.T) {
 			wantProps: []string{"MemoryHigh=11274289152", "MemoryMax=12079595520", "MemorySwapMax=infinity"},
 		},
 		{
-			name:      "zram-only swap 16 GiB preserves full headroom at 1:1",
+			name:      "zram-only swap 16 GiB preserves full headroom at 3:1",
 			total:     16 * GiB,
 			swap:      Swap{Zram: 8 * GiB},
-			want:      Backstop{Headroom: 2 * GiB, High: 12 * GiB, Max: 13 * GiB, SwapMax: 2 * GiB},
-			wantProps: []string{"MemoryHigh=12884901888", "MemoryMax=13958643712", "MemorySwapMax=2147483648"},
+			want:      Backstop{Headroom: 2 * GiB, High: 14*GiB - ceilDiv3(4*GiB), Max: 15*GiB - ceilDiv3(4*GiB), SwapMax: 4 * GiB},
+			wantProps: []string{"MemoryHigh=13600729770", "MemoryMax=14674471594", "MemorySwapMax=4294967296"},
 		},
 		{
 			name:      "zram-only swap 17 GiB (asahimbp)",
 			total:     17 * GiB,
 			swap:      Swap{Zram: 8 * GiB},
-			want:      Backstop{Headroom: 2176 * MiB, High: 13056 * MiB, Max: 14144 * MiB, SwapMax: 2176 * MiB},
-			wantProps: []string{"MemoryHigh=13690208256", "MemoryMax=14831058944", "MemorySwapMax=2281701376"},
+			want:      Backstop{Headroom: 2176 * MiB, High: 15232*MiB - ceilDiv3(4352*MiB), Max: 16320*MiB - ceilDiv3(4352*MiB), SwapMax: 4352 * MiB},
+			wantProps: []string{"MemoryHigh=14450775381", "MemoryMax=15591626069", "MemorySwapMax=4563402752"},
 		},
 		{
 			name:      "mixed zram and disk with large zram caps SwapMax 28 GiB (ubu1-like)",
 			total:     28 * GiB,
 			swap:      Swap{Zram: 14 * GiB, Disk: 8 * GiB},
-			want:      Backstop{Headroom: 3584 * MiB, High: 21504 * MiB, Max: 23296 * MiB, SwapMax: 3584 * MiB},
-			wantProps: []string{"MemoryHigh=22548578304", "MemoryMax=24427626496", "MemorySwapMax=3758096384"},
+			want:      Backstop{Headroom: 3584 * MiB, High: 25088*MiB - ceilDiv3(7168*MiB), Max: 26880*MiB - ceilDiv3(7168*MiB), SwapMax: 7168 * MiB},
+			wantProps: []string{"MemoryHigh=23801277098", "MemoryMax=25680325290", "MemorySwapMax=7516192768"},
 		},
 		{
 			name:      "mixed small zram within budget and disk leaves SwapMax unbounded",
 			total:     32 * GiB,
 			swap:      Swap{Zram: 1 * GiB, Disk: 16 * GiB},
-			want:      Backstop{Headroom: 4 * GiB, High: 27 * GiB, Max: 29 * GiB, SwapMax: SwapMaxUnbounded},
-			wantProps: []string{"MemoryHigh=28991029248", "MemoryMax=31138512896", "MemorySwapMax=infinity"},
+			want:      Backstop{Headroom: 4 * GiB, High: 28*GiB - ceilDiv3(1*GiB), Max: 30*GiB - ceilDiv3(1*GiB), SwapMax: SwapMaxUnbounded},
+			wantProps: []string{"MemoryHigh=29706857130", "MemoryMax=31854340778", "MemorySwapMax=infinity"},
 		},
 		{
 			name:      "small zram-only host caps SwapMax to device size",
 			total:     32 * GiB,
 			swap:      Swap{Zram: 1 * GiB},
-			want:      Backstop{Headroom: 4 * GiB, High: 27 * GiB, Max: 29 * GiB, SwapMax: 1 * GiB},
-			wantProps: []string{"MemoryHigh=28991029248", "MemoryMax=31138512896", "MemorySwapMax=1073741824"},
+			want:      Backstop{Headroom: 4 * GiB, High: 28*GiB - ceilDiv3(1*GiB), Max: 30*GiB - ceilDiv3(1*GiB), SwapMax: 1 * GiB},
+			wantProps: []string{"MemoryHigh=29706857130", "MemoryMax=31854340778", "MemorySwapMax=1073741824"},
 		},
 		{
 			name:      "small 4 GiB VM with huge zram",
 			total:     4 * GiB,
 			swap:      Swap{Zram: 16 * GiB},
-			want:      Backstop{Headroom: 1 * GiB, High: 2304 * MiB, Max: 2816 * MiB, SwapMax: 768 * MiB},
-			wantProps: []string{"MemoryHigh=2415919104", "MemoryMax=2952790016", "MemorySwapMax=805306368"},
+			want:      Backstop{Headroom: 1 * GiB, High: 2560 * MiB, Max: 3 * GiB, SwapMax: 1536 * MiB},
+			wantProps: []string{"MemoryHigh=2684354560", "MemoryMax=3221225472", "MemorySwapMax=1610612736"},
 		},
 		{
 			name:      "small 2 GiB VM with zram keeps High positive",
 			total:     2 * GiB,
 			swap:      Swap{Zram: 2 * GiB},
-			want:      Backstop{Headroom: 1 * GiB, High: 768 * MiB, Max: 1280 * MiB, SwapMax: 256 * MiB},
-			wantProps: []string{"MemoryHigh=805306368", "MemoryMax=1342177280", "MemorySwapMax=268435456"},
+			want:      Backstop{Headroom: 1 * GiB, High: 1*GiB - ceilDiv3(512*MiB), Max: 1536*MiB - ceilDiv3(512*MiB), SwapMax: 512 * MiB},
+			wantProps: []string{"MemoryHigh=894784853", "MemoryMax=1431655765", "MemorySwapMax=536870912"},
 		},
 		{
 			name:      "tiny 1 GiB VM clamps headroom safely",
 			total:     1 * GiB,
 			swap:      Swap{Zram: 1 * GiB},
-			want:      Backstop{Headroom: 512 * MiB, High: 384 * MiB, Max: 640 * MiB, SwapMax: 128 * MiB},
-			wantProps: []string{"MemoryHigh=402653184", "MemoryMax=671088640", "MemorySwapMax=134217728"},
+			want:      Backstop{Headroom: 512 * MiB, High: 512*MiB - ceilDiv3(256*MiB), Max: 768*MiB - ceilDiv3(256*MiB), SwapMax: 256 * MiB},
+			wantProps: []string{"MemoryHigh=447392426", "MemoryMax=715827882", "MemorySwapMax=268435456"},
 		},
 	} {
 		t.Run(c.name, func(t *testing.T) {
@@ -577,9 +579,9 @@ func TestBackstopLeavesTheHostRoom(t *testing.T) {
 					t.Errorf("unbounded backstop Properties() = %q, want MemorySwapMax=infinity", props)
 				}
 			}
-			// Invariants: High < Max < total, and even in the 1:1 incompressible
-			// worst case High+zramBound leaves full Headroom and Max+zramBound
-			// leaves at least Headroom/2 hard host reserve.
+			// Invariants: High < Max < total, and at 3:1 zstd zram compression
+			// High+zramRAM leaves full Headroom and Max+zramRAM leaves at least
+			// Headroom/2 hard host reserve.
 			if !(0 < got.High && got.High < got.Max && got.Max < c.total) {
 				t.Errorf("broken ordering: High=%d Max=%d total=%d", got.High, got.Max, c.total)
 			}
@@ -588,23 +590,14 @@ func TestBackstopLeavesTheHostRoom(t *testing.T) {
 				if got.SwapMax > 0 {
 					zramBound = min(zramBound, got.SwapMax)
 				}
-				if reserve := c.total - (got.High + zramBound); reserve < got.Headroom {
-					t.Errorf("at 1:1 incompressible zram, total-(High+zramBound) = %d, want >= Headroom (%d)",
+				zramRAM := ceilDiv3(zramBound)
+				if reserve := c.total - (got.High + zramRAM); reserve < got.Headroom {
+					t.Errorf("at 3:1 zram, total-(High+zramRAM) = %d, want >= Headroom (%d)",
 						reserve, got.Headroom)
 				}
-				if reserve := c.total - (got.Max + zramBound); reserve < got.Headroom/2 {
-					t.Errorf("at 1:1 incompressible zram, total-(Max+zramBound) = %d, want >= Headroom/2 (%d)",
+				if reserve := c.total - (got.Max + zramRAM); reserve < got.Headroom/2 {
+					t.Errorf("at 3:1 zram, total-(Max+zramRAM) = %d, want >= Headroom/2 (%d)",
 						reserve, got.Headroom/2)
-				}
-				if got.SwapMax > 0 {
-					if reserve := c.total - (got.High + got.SwapMax); reserve < got.Headroom {
-						t.Errorf("at 1:1 incompressible worst case, total-(High+SwapMax) = %d, want >= Headroom (%d)",
-							reserve, got.Headroom)
-					}
-					if reserve := c.total - (got.Max + got.SwapMax); reserve < got.Headroom/2 {
-						t.Errorf("at 1:1 incompressible worst case, total-(Max+SwapMax) = %d, want >= Headroom/2 (%d)",
-							reserve, got.Headroom/2)
-					}
 				}
 			}
 		})
@@ -615,11 +608,11 @@ func TestBackstopClampRespectsStaticLimits(t *testing.T) {
 	const GiB = 1 << 30
 	base := BackstopFor(28*GiB, Swap{Zram: 14 * GiB, Disk: 8 * GiB})
 
-	// Tighter host drop-in (e.g. ubu1's 157-memory_guard.sh: High=16G, Max=18G, SwapMax=4G)
-	// must tighten High and Max while keeping the tighter SwapMax (3.5 GiB).
+	// Tighter host drop-in (e.g. High=16G, Max=18G, SwapMax=4G) must tighten
+	// High, Max, and SwapMax (base.SwapMax is 7 GiB).
 	got := base.Clamp(MemoryLimits{High: 16 * GiB, Max: 18 * GiB, SwapMax: 4 * GiB})
-	if got.High != 16*GiB || got.Max != 18*GiB || got.SwapMax != base.SwapMax {
-		t.Fatalf("Clamp(16G/18G/4G) = %+v, want High=16G Max=18G SwapMax=%d", got, base.SwapMax)
+	if got.High != 16*GiB || got.Max != 18*GiB || got.SwapMax != 4*GiB {
+		t.Fatalf("Clamp(16G/18G/4G) = %+v, want High=16G Max=18G SwapMax=4G", got)
 	}
 
 	// Tighter High alone also pulls Max down to High + Headroom/2.
@@ -654,7 +647,7 @@ func TestBackstopClampRespectsStaticLimits(t *testing.T) {
 	}
 
 	// Looser static limits never weaken the computed backstop.
-	looser := base.Clamp(MemoryLimits{High: 26 * GiB, Max: 27 * GiB, SwapMax: 8 * GiB})
+	looser := base.Clamp(MemoryLimits{High: 26 * GiB, Max: 27 * GiB, SwapMax: 12 * GiB})
 	if looser != base {
 		t.Fatalf("Clamp(looser) = %+v, want unchanged %+v", looser, base)
 	}
@@ -697,7 +690,7 @@ func TestBackstopForWithReserve(t *testing.T) {
 		reserve int64
 	}{
 		{
-			name:    "ubu1-like 28 GiB with default cladefs reserve (1/6)",
+			name:    "ubu1-like 28 GiB with default cladefs reserve (1/8)",
 			total:   28 * GiB,
 			swap:    Swap{Zram: 14 * GiB, Disk: 8 * GiB},
 			reserve: CladefsReserve(28*GiB, 0),
@@ -747,32 +740,36 @@ func TestBackstopForWithReserve(t *testing.T) {
 			if got.Headroom+got.Reserve > c.total/2 {
 				t.Fatalf("Headroom+Reserve = %d exceeds total/2 (%d)", got.Headroom+got.Reserve, c.total/2)
 			}
-			zramBound := int64(0)
+			zramRAM := int64(0)
 			if c.swap.Zram > 0 {
-				zramBound = c.swap.Zram
+				zramBound := c.swap.Zram
 				if got.SwapMax > 0 {
 					zramBound = min(zramBound, got.SwapMax)
 				}
+				zramRAM = (zramBound + zramCompressionRatio - 1) / zramCompressionRatio
 			}
-			if freeAtHigh := c.total - (got.High + zramBound); freeAtHigh < got.Headroom+got.Reserve {
-				t.Errorf("free at High + zram = %d, want >= Headroom+Reserve (%d)", freeAtHigh, got.Headroom+got.Reserve)
+			if freeAtHigh := c.total - (got.High + zramRAM); freeAtHigh < got.Headroom+got.Reserve {
+				t.Errorf("free at High + 3:1 zram = %d, want >= Headroom+Reserve (%d)", freeAtHigh, got.Headroom+got.Reserve)
 			}
-			if freeAtMax := c.total - (got.Max + zramBound); freeAtMax < got.Headroom/2+got.Reserve {
-				t.Errorf("free at Max + zram = %d, want >= Headroom/2+Reserve (%d)", freeAtMax, got.Headroom/2+got.Reserve)
+			if freeAtMax := c.total - (got.Max + zramRAM); freeAtMax < got.Headroom/2+got.Reserve {
+				t.Errorf("free at Max + 3:1 zram = %d, want >= Headroom/2+Reserve (%d)", freeAtMax, got.Headroom/2+got.Reserve)
 			}
 		})
 	}
 
-	// Concrete check for ubu1-like 28 GiB host: High drops to ~16.3 GiB so VMs
-	// hit memory.high before starving cladefsd's ~4.67 GiB DAX cache.
+	// Concrete check for ubu1-like 28 GiB host: Reserve = 3.5 GiB (1/8),
+	// SwapMax = 7 GiB (2*Headroom), High ~ 18.67 GiB, Max ~ 20.42 GiB.
 	ubu := BackstopForWithReserve(28*GiB, Swap{Zram: 14 * GiB, Disk: 8 * GiB}, CladefsReserve(28*GiB, 0))
-	if ubu.High > 17*GiB || ubu.High < 15*GiB {
-		t.Fatalf("ubu1 High = %d MiB, want within [15 GiB, 17 GiB]", ubu.High/MiB)
+	if ubu.High > 19*GiB || ubu.High < 18*GiB {
+		t.Fatalf("ubu1 High = %d MiB, want within [18 GiB, 19 GiB]", ubu.High/MiB)
 	}
-	if ubu.Reserve != (28*GiB)/6 {
-		t.Fatalf("ubu1 Reserve = %d, want %d", ubu.Reserve, (28*GiB)/6)
+	if ubu.Reserve != (28*GiB)/8 {
+		t.Fatalf("ubu1 Reserve = %d, want %d", ubu.Reserve, (28*GiB)/8)
 	}
-	// Higher daemon floor (6 GiB) overrides the 1/6 default.
+	if ubu.SwapMax != 7*GiB {
+		t.Fatalf("ubu1 SwapMax = %d, want 7 GiB", ubu.SwapMax)
+	}
+	// Higher daemon floor (6 GiB) overrides the 1/8 default.
 	ubu6 := BackstopForWithReserve(28*GiB, Swap{Zram: 14 * GiB, Disk: 8 * GiB}, CladefsReserve(28*GiB, 6*GiB))
 	if ubu6.Reserve != 6*GiB {
 		t.Fatalf("ubu6 Reserve = %d, want 6 GiB", ubu6.Reserve)
@@ -780,9 +777,10 @@ func TestBackstopForWithReserve(t *testing.T) {
 	if ubu6.High >= ubu.High {
 		t.Fatalf("larger daemon floor should tighten High: got %d >= %d", ubu6.High, ubu.High)
 	}
-	// Static desktop clamp on asahimbp (MemoryMax=10G) still wins cleanly.
+	// Static desktop clamp on asahimbp (MemoryMax=10G) still wins cleanly while
+	// SwapMax doubles to 4.25 GiB for zstd zram.
 	asahi := BackstopForWithReserve(17*GiB, Swap{Zram: 8 * GiB}, CladefsReserve(17*GiB, 0)).Clamp(MemoryLimits{Max: 10 * GiB})
-	if asahi.Max != 10*GiB || asahi.High >= 10*GiB || asahi.High < 8*GiB {
-		t.Fatalf("asahimbp clamped = %+v, want Max=10G High in [8G,10G)", asahi)
+	if asahi.Max != 10*GiB || asahi.High >= 10*GiB || asahi.High < 8*GiB || asahi.SwapMax != 4352*MiB {
+		t.Fatalf("asahimbp clamped = %+v, want Max=10G High in [8G,10G) SwapMax=4352MiB", asahi)
 	}
 }

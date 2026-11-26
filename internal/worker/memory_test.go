@@ -20,12 +20,12 @@ import (
 func TestAdmissionReservesWhatCommandsHeld(t *testing.T) {
 	e, units, _, now := parkEngine(t)
 	e.start(t, units, now, "build-1", "a", "build")
-	// 14 GiB of a 16 GiB node: past the 86% (13.8 GiB) reservations may take.
-	units.SetAnon("hotbed-build-1", 10<<30)
-	units.SetSwap("hotbed-build-1", 4<<30)
+	// 17 GiB of a 16 GiB slice: past the 16.0 GiB reservations may take.
+	units.SetAnon("hotbed-build-1", 12<<30)
+	units.SetSwap("hotbed-build-1", 5<<30)
 	e.step(t.Context())
-	if got := e.Heartbeat("cl").ReservedMemoryBytes; got != 14<<30 {
-		t.Fatalf("reserved = %s, want 14.0 GiB, what build-1 held", gib(got))
+	if got := e.Heartbeat("cl").ReservedMemoryBytes; got != 17<<30 {
+		t.Fatalf("reserved = %s, want 17.0 GiB, what build-1 held", gib(got))
 	}
 
 	*now = now.Add(time.Second)
@@ -35,10 +35,10 @@ func TestAdmissionReservesWhatCommandsHeld(t *testing.T) {
 	t.Cleanup(func() { units.Stop(context.WithoutCancel(t.Context()), "hotbed-next-1") })
 	e.step(t.Context())
 	next := e.commands["next-1"].cmd()
-	if want := "waiting for memory: needs 4.0 GiB, but running commands hold or are guaranteed 14.0 GiB (limit 13.8 GiB)"; next.State != queued || next.Reason != want {
-		t.Fatalf("next-1 beside 14 GiB held is %v: %q, want queued: %q", next.State, next.Reason, want)
+	if want := "waiting for memory: needs 2.0 GiB, but running commands hold or are guaranteed 17.0 GiB (limit 16.0 GiB)"; next.State != queued || next.Reason != want {
+		t.Fatalf("next-1 beside 17 GiB held is %v: %q, want queued: %q", next.State, next.Reason, want)
 	}
-	if s := signal(e.Heartbeat("cl").Admission, "memory-reserved"); s.Value != float64(14<<30) || !s.Holding || s.Waiting != 1 {
+	if s := signal(e.Heartbeat("cl").Admission, "memory-reserved"); s.Value != float64(17<<30) || !s.Holding || s.Waiting != 1 {
 		t.Errorf("memory-reserved signal = %v", s)
 	}
 
@@ -54,8 +54,8 @@ func TestAdmissionReservesWhatCommandsHeld(t *testing.T) {
 	e.mu.Lock()
 	kind, reason := e.room(withGuarantee)
 	e.mu.Unlock()
-	if want := "waiting for memory: needs 2.0 GiB, but running commands hold or are guaranteed 14.0 GiB (limit 13.8 GiB)"; kind != "memory" || reason != want {
-		t.Fatalf("guaranteed command beside 14 GiB held = (%q, %q), want (memory, %q)", kind, reason, want)
+	if want := "waiting for memory: needs 2.0 GiB, but running commands hold or are guaranteed 17.0 GiB (limit 16.0 GiB)"; kind != "memory" || reason != want {
+		t.Fatalf("guaranteed command beside 17 GiB held = (%q, %q), want (memory, %q)", kind, reason, want)
 	}
 
 	// Between links a build holds little, but needs it all again at the next.
@@ -99,9 +99,9 @@ func TestABaseBuildIsGuaranteedWhatTheLastOneHeld(t *testing.T) {
 		t.Fatalf("g1's peak memory = %s, want 9.0 GiB, what its freshen held", gib(got))
 	}
 
-	// Work holding 5 GiB leaves 8.8 GiB: g2, needing 9, waits.
+	// Work holding 8 GiB leaves 8.0 GiB: g2, needing 9, waits.
 	e.start(t, units, now, "work-1", "a", "build")
-	units.SetAnon("hotbed-work-1", 5<<30)
+	units.SetAnon("hotbed-work-1", 8<<30)
 	e.step(t.Context())
 	g2, err := e.startFreshen(t.Context(), project, 2, nil, "no_previous_base", h, "r2")
 	if err != nil {
@@ -116,8 +116,8 @@ func TestABaseBuildIsGuaranteedWhatTheLastOneHeld(t *testing.T) {
 	e.mu.Lock()
 	kind, reason := e.room(f)
 	e.mu.Unlock()
-	if want := "waiting for memory: needs 9.0 GiB, 8.8 GiB left of what running commands hold or are guaranteed"; kind != "memory" || reason != want {
-		t.Fatalf("g2 beside 5 GiB of work: %s %q, want memory %q", kind, reason, want)
+	if want := "waiting for memory: needs 9.0 GiB, 8.0 GiB left of what running commands hold or are guaranteed"; kind != "memory" || reason != want {
+		t.Fatalf("g2 beside 8 GiB of work: %s %q, want memory %q", kind, reason, want)
 	}
 
 	// Once the work holds less than it did it still reserves its peak; a
@@ -131,7 +131,7 @@ func TestABaseBuildIsGuaranteedWhatTheLastOneHeld(t *testing.T) {
 		t.Fatalf("g2 on a drained node is %v: %q, want running", s, f.cmd().Reason)
 	}
 	work2 := e.start(t, units, now, "work-2", "b", "build")
-	units.SetAnon("hotbed-work-2", 5<<30)
+	units.SetAnon("hotbed-work-2", 6<<30)
 	e.step(t.Context())
 	if s := work2.cmd().State; s != running {
 		t.Fatalf("work-2 is %v", s)
@@ -143,7 +143,7 @@ func TestABaseBuildIsGuaranteedWhatTheLastOneHeld(t *testing.T) {
 	t.Cleanup(func() { units.Stop(context.WithoutCancel(t.Context()), "hotbed-work-3") })
 	e.step(t.Context())
 	if w3 := e.commands["work-3"].cmd(); w3.State != queued || !strings.HasPrefix(w3.Reason, "waiting for memory") {
-		t.Fatalf("work-3 beside g2's 9 GiB guarantee and work-2's 5 GiB is %v: %q, want waiting for memory", w3.State, w3.Reason)
+		t.Fatalf("work-3 beside g2's 9 GiB guarantee and work-2's 6 GiB is %v: %q, want waiting for memory", w3.State, w3.Reason)
 	}
 
 	// A guarantee past what reservations may take is cut to it.
@@ -525,7 +525,7 @@ func TestFullAdmitLimitReservationBlocksZeroReservationWork(t *testing.T) {
 		t.Cleanup(func() { units.Stop(context.WithoutCancel(t.Context()), "hotbed-work-zero") })
 		e.step(t.Context())
 		w := e.commands["work-zero"].cmd()
-		wantReason := "waiting for memory: needs 4.0 GiB, but running commands hold or are guaranteed " + gib(limit) + " (limit " + gib(limit) + ")"
+		wantReason := "waiting for memory: needs 2.0 GiB, but running commands hold or are guaranteed " + gib(limit) + " (limit " + gib(limit) + ")"
 		if w.State != queued || w.Reason != wantReason {
 			t.Fatalf("work-zero beside full-admitLimit freshen = (%v, %q), want (queued, %q)", w.State, w.Reason, wantReason)
 		}
@@ -584,7 +584,11 @@ func TestFullAdmitLimitReservationBlocksZeroReservationWork(t *testing.T) {
 func TestAdmissionAssumesADefaultReservationThatOnlyGrows(t *testing.T) {
 	e, units, sys, now := parkEngine(t)
 	sys.SetUsed(0)
-	// 13.76 GiB may be reserved: three default 4 GiB reservations fit, not four.
+	// Shrink slice budget to 7.5 GiB: three default 2 GiB reservations fit (6 GiB),
+	// leaving 1.5 GiB so a fourth waits.
+	e.mu.Lock()
+	e.resources.MemoryBytes = 7<<30 + 512<<20
+	e.mu.Unlock()
 	for _, id := range []string{"b-1", "b-2", "b-3"} {
 		ws := map[string]string{"b-1": "a", "b-2": "b", "b-3": "c"}[id]
 		e.start(t, units, now, id, ws, "build")
@@ -604,7 +608,7 @@ func TestAdmissionAssumesADefaultReservationThatOnlyGrows(t *testing.T) {
 	}
 	t.Cleanup(func() { units.Stop(context.WithoutCancel(t.Context()), "hotbed-b-4") })
 	e.step(t.Context())
-	if w := e.commands["b-4"].cmd(); w.State != queued || w.Reason != "waiting for memory: needs 4.0 GiB, 1.8 GiB left of what running commands hold or are guaranteed" {
+	if w := e.commands["b-4"].cmd(); w.State != queued || w.Reason != "waiting for memory: needs 2.0 GiB, 1.5 GiB left of what running commands hold or are guaranteed" {
 		t.Fatalf("b-4 = (%v, %q), want queued for memory", w.State, w.Reason)
 	}
 
@@ -621,5 +625,85 @@ func TestAdmissionAssumesADefaultReservationThatOnlyGrows(t *testing.T) {
 	}
 	if got := e.reservation(e.commands["b-2"]); got != defaultReservation {
 		t.Fatalf("b-2 reservation = %s, want the default %s", gib(got), gib(defaultReservation))
+	}
+}
+
+// cladefsd's DAX extent cache lives in memfd/shmem, which Linux /proc/meminfo
+// excludes from MemAvailable even though cladefsd evicts everything above its
+// protected floor on demand. Both host-domain admission checks and reported
+// heartbeat usage must credit reclaimable DAX cache above floor, while cgroup
+// slice-domain readings (which exclude cladefsd) must not double-credit it.
+func TestReclaimableCladefsDAXCacheCreditedOnHostDomain(t *testing.T) {
+	const GiB = int64(1 << 30)
+	e, units, sys, now := parkEngine(t)
+
+	// Simulate ubu1: 28 GiB physical RAM, 18 GiB work slice (backstop.High),
+	// 27 GiB raw host used (~96.4% >= fullAt 95%) because cladefsd holds
+	// 9 GiB of DAX cache above its 3.5 GiB floor (5.5 GiB reclaimable).
+	e.mu.Lock()
+	e.resources.MemoryBytes = 18 * GiB
+	e.objectStore = &pb.ObjectStoreStats{
+		ExtentCacheBytes:      uint64(9 * GiB),
+		ExtentCacheFloorBytes: uint64(3*GiB + 512<<20),
+		ExtentCacheLimitBytes: uint64(12 * GiB),
+	}
+	e.mu.Unlock()
+	sys.Mem.Total = 28 * GiB
+	sys.Mem.Available = 1 * GiB // 27 GiB raw used (96.4%), 6.5 GiB effective available (76.8% used)
+	sys.Mem.Domain = ""
+	e.Sample()
+
+	// Heartbeat MemoryUsedBytes must project effective available RAM (6.5 GiB)
+	// against the 18 GiB slice budget (18 - 6.5 = 11.5 GiB), never raw 27 GiB.
+	if got, want := e.Heartbeat("cl").Usage.GetMemoryUsedBytes(), 11*GiB+512<<20; got != want {
+		t.Fatalf("reported MemoryUsedBytes = %s, want %s (18 GiB slice minus 6.5 GiB effective avail)", gib(got), gib(want))
+	}
+
+	// Start one command, then admit a second with explicit --mem-low 4G:
+	// raw MemAvailable is only 1 GiB, but effective available is 6.5 GiB.
+	_ = e.start(t, units, now, "run-1", "a", "build")
+	*now = now.Add(time.Second)
+	if _, err := e.Exec(t.Context(), &pb.RunCommandRequest{
+		Id: "run-2", WorkspaceId: "b", Args: []string{"sleep", "60"},
+		Limits: &pb.CommandLimits{MemoryLowBytes: 4 * GiB},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { units.Stop(context.WithoutCancel(t.Context()), "hotbed-run-2") })
+	e.step(t.Context())
+	if got := e.commands["run-2"].cmd(); got.State != running {
+		t.Fatalf("run-2 with 5.5 GiB reclaimable DAX cache = %v (%q), want running", got.State, got.Reason)
+	}
+
+	// Once cladefsd cache is at or below its floor, zero credit applies and
+	// 96.4% host RAM used still holds new work at fullAt.
+	e.mu.Lock()
+	e.objectStore.ExtentCacheBytes = uint64(3 * GiB)
+	e.mu.Unlock()
+	e.Sample()
+	*now = now.Add(time.Second)
+	if _, err := e.Exec(t.Context(), &pb.RunCommandRequest{
+		Id: "wait-floor", WorkspaceId: "c", Args: []string{"sleep", "60"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { units.Stop(context.WithoutCancel(t.Context()), "hotbed-wait-floor") })
+	e.step(t.Context())
+	if got := e.commands["wait-floor"].cmd(); got.State != queued || !strings.Contains(got.Reason, "in use") {
+		t.Fatalf("wait-floor at 96%% host RAM with cache below floor = %v (%q), want queued at fullAt", got.State, got.Reason)
+	}
+
+	// On a cgroup slice domain (mem.Domain != ""), cladefsd runs outside the
+	// slice so warm DAX cache above floor must NOT be subtracted from slice use.
+	e.mu.Lock()
+	e.objectStore.ExtentCacheBytes = uint64(9 * GiB)
+	e.mu.Unlock()
+	sys.Mem.Total = 18 * GiB
+	sys.Mem.Available = 512 << 20 // 97.2% of slice used
+	sys.Mem.Domain = "/user.slice/user-1000-hotbed.slice"
+	e.Sample()
+	e.step(t.Context())
+	if got := e.commands["wait-floor"].cmd(); got.State != queued || !strings.Contains(got.Reason, "in use") {
+		t.Fatalf("wait-floor at 97%% slice RAM = %v (%q), want queued (no DAX credit on slice domain)", got.State, got.Reason)
 	}
 }

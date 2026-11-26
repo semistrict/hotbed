@@ -131,14 +131,14 @@ func TestCladefsMemoryStarvationHoldsNewWork(t *testing.T) {
 	}
 	a := e.Heartbeat("c").Admission
 	sig := signal(a, "cladefs-memory")
-	if !a.Holding || sig == nil || !sig.Holding || !sig.Floor || sig.Waiting != 1 || sig.Limit != float64(4*GiB) || sig.Resume != float64(5*GiB) {
+	if !a.Holding || sig == nil || !sig.Holding || !sig.Floor || sig.Waiting != 1 || sig.Limit != float64(4*GiB) || sig.Resume != float64(4*GiB+512<<20) {
 		t.Fatalf("admission while cladefsd full = %+v (signal=%+v)", a, sig)
 	}
 	if holds := feedOf(t, e, "hold"); len(holds) != 1 || !strings.Contains(holds[0], "cladefsd host memory full") {
 		t.Errorf("hold events = %q, want cladefsd full hold", holds)
 	}
 
-	// 2. No longer full, but still evicting within the 25% hysteresis band near floor -> still holds.
+	// 2. No longer full, but still evicting within the 12.5% hysteresis band near floor -> still holds.
 	now = now.Add(10 * time.Second)
 	e.mu.Lock()
 	e.objectStore = &pb.ObjectStoreStats{
@@ -155,12 +155,12 @@ func TestCladefsMemoryStarvationHoldsNewWork(t *testing.T) {
 		t.Fatalf("c-cladefs while pressured near floor = %v, want queued", s)
 	}
 
-	// 3. Routine cold-cache trimming well above the floor -> NOT starved; resumes and admits!
+	// 3. Routine cold-cache trimming above the 12.5% band (e.g. 25% above floor) -> NOT starved; resumes and admits!
 	now = now.Add(10 * time.Second)
 	e.mu.Lock()
 	e.objectStore = &pb.ObjectStoreStats{
-		ExtentCacheBytes:      6 * GiB,
-		ExtentCacheLimitBytes: 6 * GiB,
+		ExtentCacheBytes:      5 * GiB,
+		ExtentCacheLimitBytes: 5 * GiB,
 		ExtentCacheFloorBytes: 4 * GiB,
 		MemoryPressure:        true,
 		MemoryFull:            false,
@@ -169,7 +169,7 @@ func TestCladefsMemoryStarvationHoldsNewWork(t *testing.T) {
 	e.Sample()
 	e.admit(t.Context())
 	if s := e.state("c-cladefs"); s != running {
-		t.Fatalf("c-cladefs with warm cache above floor = %v, want running", s)
+		t.Fatalf("c-cladefs with warm cache above 12.5%% floor band = %v, want running", s)
 	}
 	if unholds := feedOf(t, e, "unhold"); len(unholds) != 1 || !strings.Contains(unholds[0], "cladefs-memory") {
 		t.Errorf("unhold events = %q, want cladefs-memory unhold", unholds)

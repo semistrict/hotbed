@@ -746,21 +746,28 @@ type Swap struct {
 // backstop clears any stale finite runtime cap from a prior worker run.
 const SwapMaxUnbounded int64 = 0
 
+// zramCompressionRatio is the conservative planning compression ratio for zstd
+// zram on build/test/VM anonymous memory: SwapMax bytes of logical zram swap
+// are budgeted as ceil(SwapMax / zramCompressionRatio) bytes of physical RAM.
+const zramCompressionRatio = 3
+
 // Backstop is the memory a work slice may take of a host with total bytes
 // of RAM, all its commands together: past High the kernel throttles them
 // and reclaims their memory; past Max it kills one of them, in the slice,
 // rather than stall the whole host. Either leaves the host room
 // (Headroom, an eighth of RAM, at least 1 GiB) for its desktop, its
 // system, the worker and the kernel: their memory is what the host needs
-// to stay up (board 9128). The worker's admission and parking keep
-// commands well under it; it is there for when they fall short.
+// to stay up (board 9128). The worker's admission keeps commands within
+// High; the slice limits are there for when they fall short.
 //
 // On hosts with zram swap, pages the slice swaps out are compressed into
 // zram's own kernel memory pool, which is not charged to the slice's memcg
 // (board 9361). SwapMax caps the slice's MemorySwapMax when zram could
-// otherwise exceed the swap budget, and High and Max are lowered by the full
-// worst-case (1:1 incompressible) zram footprint so the host still keeps its
-// full Headroom at High and Headroom/2 hard reserve at Max.
+// otherwise exceed the swap budget (up to 2*Headroom, bounded by half of
+// high-before-zram on small hosts), and High and Max deduct the budgeted
+// compressed physical footprint (1/zramCompressionRatio of bounded zram)
+// so zstd zram gives the slice real headroom for proactive reclaim while
+// still keeping Headroom+Reserve at High and Headroom/2+Reserve at Max.
 type Backstop struct {
 	Headroom int64
 	// Reserve is extra host RAM held outside the work slice at both High and
@@ -776,13 +783,14 @@ type Backstop struct {
 }
 
 // CladefsReserve returns the host RAM reserved outside the work slice for
-// cladefsd's shared DAX extent cache: at least a sixth of total RAM, or
-// daemonFloor when cladefsd's configured governor floor is larger.
+// cladefsd's shared DAX extent cache: at least an eighth of total RAM
+// (matching cladefsd's protected 1/8 floor), or daemonFloor when cladefsd's
+// configured governor floor is larger.
 func CladefsReserve(total, daemonFloor int64) int64 {
 	if total <= 0 {
 		return 0
 	}
-	return max(total/6, daemonFloor)
+	return max(total/8, daemonFloor)
 }
 
 // BackstopFor is the backstop of a host with total bytes of RAM and swap
@@ -816,21 +824,22 @@ func BackstopForWithReserve(total int64, swap Swap, reserve int64) Backstop {
 		return Backstop{Headroom: room, Reserve: res, High: high, Max: maxMem, SwapMax: SwapMaxUnbounded}
 	}
 
-	// Bound zram usage to one headroom slice (and at most a quarter of
-	// total-room-reserve on small hosts so High remains well above zero).
-	// Deduct the full zramBound (1:1 incompressible worst case) from resident
-	// High and Max so even incompressible pages swapped into zram leave the
-	// host its full Headroom+Reserve at High and Headroom/2+Reserve at Max.
-	swapBudget := min(room, high/4)
+	// Allow up to 2*Headroom of logical zram swap (capped at half of high on
+	// small hosts) so proactive VM memory.reclaim can utilize zstd zram instead
+	// of slamming into MemorySwapMax prematurely. Deduct the compressed
+	// physical RAM footprint (at zramCompressionRatio:1) from High and Max so
+	// the host preserves Headroom+Reserve at High and Headroom/2+Reserve at Max.
+	swapBudget := min(room*2, high/2)
 	zramBound := min(zram, swapBudget)
+	zramRAM := (zramBound + zramCompressionRatio - 1) / zramCompressionRatio
 
 	// Cap MemorySwapMax whenever zram exceeds the swap budget (including
 	// mixed zram+disk hosts like ubu1, where higher-priority zram fills
 	// before disk) or when zram is the only swap. When a host pairs a small
 	// zram device (<= swapBudget) with disk swap, zram is already bounded
 	// by its device size, so leaving MemorySwapMax unbounded (infinity)
-	// lets parked commands spill to disk freely while High/Max still reserve
-	// the full zram device size at 1:1.
+	// lets commands spill to disk freely while High/Max still reserve
+	// zram's compressed footprint.
 	swapMax := SwapMaxUnbounded
 	if zram > swapBudget || disk == 0 {
 		swapMax = zramBound
@@ -839,8 +848,8 @@ func BackstopForWithReserve(total int64, swap Swap, reserve int64) Backstop {
 	return Backstop{
 		Headroom: room,
 		Reserve:  res,
-		High:     high - zramBound,
-		Max:      maxMem - zramBound,
+		High:     high - zramRAM,
+		Max:      maxMem - zramRAM,
 		SwapMax:  swapMax,
 	}
 }

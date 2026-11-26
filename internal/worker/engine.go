@@ -39,19 +39,20 @@ const WorkPath = "/work"
 
 // The thresholds the node runs work by.
 const (
-	admitMemory         = 0.86 // admit while reservations and (when busy) used RAM fit in this share of RAM
 	admitPressure       = 22.0 // hold new work once memory pressure (PSI some avg10, %) reaches this
 	memPressureResumeAt = 12.0 // resume admitting once memory pressure drops under this
-	// fullAt is the share of RAM in use past which no new work starts. What
-	// already runs goes on, swapping if it must; nothing is frozen or killed
-	// for memory.
-	fullAt = 0.93
+	// fullAt is the share of effective RAM in use (after crediting reclaimable
+	// cladefsd DAX cache on the host domain) at or past which no new work
+	// starts. What already runs goes on, swapping if it must; nothing is frozen
+	// or killed for memory.
+	fullAt = 0.95
 	// swapFullRAM is the share of RAM in use past which a full swap budget
 	// (95%) holds new work: what runs could no longer spill to swap.
 	swapFullRAM = 0.70
-	// defaultReservation is the memory admission assumes a command that
-	// asked for no guarantee (--mem-low) will hold, until it holds more.
-	defaultReservation int64 = 4 << 30
+	// defaultReservation is the initial memory admission assumes a command that
+	// asked for no guarantee (--mem-low) will hold, until PeakHeldBytes grows
+	// past it.
+	defaultReservation int64 = 2 << 30
 	minFreeDisk              = 0.05 // keep this share of the disk free before admitting
 	orphanAfter              = 30 * time.Second
 	keepEnded                = 2 * time.Minute
@@ -898,7 +899,7 @@ func (e *Engine) Sample() {
 	e.cpuOwnBusy = cpu.Own()
 	e.usage = &pb.NodeUsage{
 		CpuBusy:         cpu.Busy,
-		MemoryUsedBytes: mem.Used(),
+		MemoryUsedBytes: e.reportedMemUsedLocked(mem),
 		SwapUsedBytes:   mem.SwapTotal - mem.SwapFree,
 		CpuPressure:     cpuP,
 		MemoryPressure:  memP,

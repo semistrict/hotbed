@@ -252,7 +252,7 @@ func (e *Engine) weighMemPressure(p float64) bool {
 
 // cladefsMemoryStarved reports whether cladefsd's memory governor says the
 // host is full (cache squeezed to its floor, refusing new cells) or actively
-// evicting at/near its floor (within cladefsd's 25% hysteresis band).
+// evicting at/near its floor (within a 12.5% hysteresis band above floor).
 // Call with e.mu held.
 func (e *Engine) cladefsMemoryStarved() (bool, string) {
 	os := e.objectStore
@@ -268,7 +268,7 @@ func (e *Engine) cladefsMemoryStarved() (bool, string) {
 		}
 		return true, "cladefsd host memory full (DAX cache at floor); new work waits for cache headroom"
 	}
-	if os.GetMemoryPressure() && floor > 0 && limit > 0 && limit <= floor+floor/4 {
+	if os.GetMemoryPressure() && floor > 0 && limit > 0 && limit <= floor+floor/8 {
 		return true, fmt.Sprintf("cladefsd memory pressure near floor (DAX cache limit %s, floor %s); new work waits for cache headroom", gib(int64(limit)), gib(int64(floor)))
 	}
 	return false, ""
@@ -374,7 +374,7 @@ func (e *Engine) admission() *pb.Admission {
 		{
 			Name: "memory-reserved", Value: float64(e.reserved()), Limit: float64(e.admitLimit()), Unit: "bytes",
 			Holding: waiting["memory"] > 0, Waiting: waiting["memory"],
-			Detail: fmt.Sprintf("held at most or guaranteed by running and parked commands, base builds too, of the %.0f%% of RAM they may take", admitMemory*100),
+			Detail: "held at most or guaranteed by running and parked commands, base builds too, of the work slice's memory budget",
 		},
 		{
 			Name: "disk-free", Value: float64(e.disk.GetFreeBytes()), Limit: float64(e.minFreeBytes()), Unit: "bytes", Floor: true,
@@ -391,7 +391,7 @@ func (e *Engine) admission() *pb.Admission {
 			val = float64(os.GetExtentCacheBytes())
 		}
 		floor := os.GetExtentCacheFloorBytes()
-		resume := floor + floor/4
+		resume := floor + floor/8
 		detail := fmt.Sprintf("DAX cache holding %s", gib(int64(os.GetExtentCacheBytes())))
 		if os.GetMemoryFull() {
 			detail += " (host memory full)"

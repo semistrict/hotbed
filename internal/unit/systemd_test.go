@@ -866,9 +866,9 @@ func TestBackstopBoundsZramSwap(t *testing.T) {
 
 		eventsMaxBefore := readEvent(t, swapEventsPath, "max")
 
-		// Verify swap-enabled commands allocating past Max + SwapMax (3 * 1.5 GiB =
-		// 4.5 GiB vs High 2.25 / Max 2.75 / SwapMax <= 0.75) stay bounded in both
-		// RAM and swap while actually swapping and hitting memory.swap.max.
+		// Verify swap-enabled commands allocating past Max + SwapMax stay bounded
+		// in both RAM and swap while actually swapping and hitting memory.swap.max.
+		perProcMiB := (b.Max+b.SwapMax)/(3*(1<<20)) + 256
 		root, roBinds := minimalRoot(t)
 		for i := range 3 {
 			n := fmt.Sprintf("%s-zram-%d", name(t), i)
@@ -877,7 +877,7 @@ func TestBackstopBoundsZramSwap(t *testing.T) {
 				Log: filepath.Join(t.TempDir(), "out.log"),
 				// Repeat a 1 MiB random chunk so every 4 KiB page is incompressible
 				// while allocating quickly without burning CPU on urandom.
-				Argv: []string{"python3", "-c", "import os, time; c = os.urandom(1 << 20); b = bytearray(c) * 1536; time.sleep(20)"},
+				Argv: []string{"python3", "-c", fmt.Sprintf("import os, time; c = os.urandom(1 << 20); b = bytearray(c) * %d; time.sleep(20)", perProcMiB)},
 			})
 			if err != nil {
 				t.Fatal(err)

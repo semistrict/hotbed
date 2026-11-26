@@ -98,7 +98,7 @@ func startWithLimits(t *testing.T, e *Engine, units *fake.Units, now *time.Time,
 func TestSamePriorityDoesNotPreempt(t *testing.T) {
 	e, units, _, now := parkEngine(t)
 	_ = startWithLimits(t, e, units, now, "norm-1", "a", "build", &pb.CommandLimits{Priority: 10})
-	units.SetAnon("hotbed-norm-1", 14<<30)
+	units.SetAnon("hotbed-norm-1", 15<<30)
 	*now = now.Add(time.Second)
 	e.step(t.Context())
 
@@ -121,12 +121,12 @@ func TestSamePriorityDoesNotPreempt(t *testing.T) {
 // queued commands are admitted ahead of earlier-queued lower-priority commands.
 func TestQueueAdmissionOrdersByPriorityThenFIFO(t *testing.T) {
 	e, units, _, now := parkEngine(t)
-	// Queue low first (t+1), then high (t+2), each wanting 8 GiB on a 16 GiB
-	// node (admitLimit 13.76 GiB, so only one can start at once).
+	// Queue low first (t+1), then high (t+2), each wanting 9 GiB on a 16 GiB
+	// node (admitLimit 16 GiB, so only one can start at once).
 	*now = now.Add(time.Second)
 	if _, err := e.Exec(t.Context(), &pb.RunCommandRequest{
 		Id: "q-low", WorkspaceId: "a", Args: []string{"sleep", "60"},
-		Limits: &pb.CommandLimits{Priority: -10, MemoryLowBytes: 8 << 30},
+		Limits: &pb.CommandLimits{Priority: -10, MemoryLowBytes: 9 << 30},
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -135,7 +135,7 @@ func TestQueueAdmissionOrdersByPriorityThenFIFO(t *testing.T) {
 	*now = now.Add(time.Second)
 	if _, err := e.Exec(t.Context(), &pb.RunCommandRequest{
 		Id: "q-high", WorkspaceId: "b", Args: []string{"sleep", "60"},
-		Limits: &pb.CommandLimits{Priority: 10, MemoryLowBytes: 8 << 30},
+		Limits: &pb.CommandLimits{Priority: 10, MemoryLowBytes: 9 << 30},
 	}); err != nil {
 		t.Fatal(err)
 	}

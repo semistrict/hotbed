@@ -560,10 +560,60 @@ func (e *Engine) reserved() int64 {
 	return n
 }
 
-// admitLimit is the memory reservations may take: admitMemory of RAM.
-// Call with e.mu held.
+// admitLimit is the memory reservations may take: the work slice's memory
+// budget (e.resources.MemoryBytes, which on Linux is already backstop.High
+// after deducting host headroom, cladefsd reserve, zram footprint, and any
+// static slice drop-in clamp). Call with e.mu held.
 func (e *Engine) admitLimit() int64 {
-	return int64(float64(e.resources.GetMemoryBytes()) * admitMemory)
+	return e.resources.GetMemoryBytes()
+}
+
+// reclaimableCladefsCacheBytes returns the bytes of cladefsd's DAX extent cache
+// held above its protected floor. That cache lives in shmem/memfd, which Linux
+// /proc/meminfo excludes from MemAvailable even though cladefsd's memory
+// governor evicts everything above ExtentCacheFloorBytes on demand.
+func reclaimableCladefsCacheBytes(os *pb.ObjectStoreStats) int64 {
+	if os == nil {
+		return 0
+	}
+	used := int64(os.GetExtentCacheBytes())
+	floor := int64(os.GetExtentCacheFloorBytes())
+	if floor <= 0 || used <= floor {
+		return 0
+	}
+	return used - floor
+}
+
+// effectiveMemUsedLocked returns non-reclaimable memory used in mem's domain.
+// On the host domain (mem.Domain == ""), cladefsd's evictable DAX extent cache
+// above its floor is credited back so warm DAX caching does not look like
+// unavailable RAM; on a cgroup slice domain (mem.Domain != ""), cladefsd runs
+// outside the slice so mem.Used() is returned unchanged. Call with e.mu held.
+func (e *Engine) effectiveMemUsedLocked(mem sysinfo.Mem) int64 {
+	used := mem.Used()
+	if mem.Domain == "" {
+		used = max(0, used-reclaimableCladefsCacheBytes(e.objectStore))
+	}
+	return used
+}
+
+// reportedMemUsedLocked returns MemoryUsedBytes for heartbeats and controller
+// placement, paired against e.resources.MemoryBytes. When mem comes from a
+// wider host domain (mem.Total > e.resources.MemoryBytes), it projects the
+// host's effective available RAM onto the slice budget so controller placement
+// (free = resources.MemoryBytes - max(used, reserved)) and cockpit gauges do
+// not double-subtract OS headroom, cladefsd's reserve, or evictable DAX cache.
+// Call with e.mu held.
+func (e *Engine) reportedMemUsedLocked(mem sysinfo.Mem) int64 {
+	if mem.Total <= 0 {
+		return 0
+	}
+	used := e.effectiveMemUsedLocked(mem)
+	avail := max(0, mem.Total-used)
+	if r := e.resources.GetMemoryBytes(); r > 0 && mem.Total > r {
+		return max(0, r-min(r, avail))
+	}
+	return used
 }
 
 // fitsReservation reports whether a command reserving want bytes fits alongside
@@ -1232,10 +1282,10 @@ func (e *Engine) roomFor(c *command, mem sysinfo.Mem, hasMem bool) (kind, reason
 	}
 	var memTotal, memUsed, swapTotal, swapFree int64
 	if hasMem {
-		memTotal, memUsed = mem.Total, mem.Used()
+		memTotal, memUsed = mem.Total, e.effectiveMemUsedLocked(mem)
 		swapTotal, swapFree = mem.SwapTotal, mem.SwapFree
 	} else if e.lastMem.Total > 0 {
-		memTotal, memUsed = e.lastMem.Total, e.lastMem.Used()
+		memTotal, memUsed = e.lastMem.Total, e.effectiveMemUsedLocked(e.lastMem)
 		swapTotal, swapFree = e.lastMem.SwapTotal, e.lastMem.SwapFree
 	} else if t := e.resources.GetMemoryBytes(); t > 0 && e.usage.GetMemoryUsedBytes() > 0 {
 		memTotal, memUsed = t, e.usage.GetMemoryUsedBytes()
@@ -1248,15 +1298,8 @@ func (e *Engine) roomFor(c *command, mem sysinfo.Mem, hasMem bool) (kind, reason
 	vmSoloBypass := e.usesRuntime(c.runtimeTarget()) && !e.hasOtherStartedCommandLocked(c.runtimeTarget())
 	if memTotal > 0 && !vmSoloBypass {
 		physRoom := memTotal - memUsed
-		if float64(memUsed) > float64(memTotal)*fullAt {
+		if memUsed >= int64(float64(memTotal)*fullAt) {
 			return "memory", fmt.Sprintf("waiting for memory: %.0f%% in use (%s physically available on the node)", 100*float64(memUsed)/float64(memTotal), gib(max(0, physRoom)))
-		}
-		// When other work is already running on the node, do not pile another
-		// command on once physical RAM has already reached admitMemory (86%).
-		// An idle node still admits up to fullAt so shared desktop hosts with
-		// cached OS memory keep moving.
-		if !c.cmd().Bench && e.hasRunningWorkLocked() && float64(memUsed) >= float64(memTotal)*admitMemory {
-			return "memory", fmt.Sprintf("waiting for memory: %.0f%% in use while other work is running (limit %.0f%%)", 100*float64(memUsed)/float64(memTotal), admitMemory*100)
 		}
 		// When the work slice's swap budget is saturated (>= 95% used) and RAM
 		// is already above swapFullRAM with work running, nothing more can
@@ -1271,8 +1314,8 @@ func (e *Engine) roomFor(c *command, mem sysinfo.Mem, hasMem bool) (kind, reason
 		// sized from an earlier build's PeakHeldBytes (anon + swap, capped at
 		// admitLimit), not a requirement that all of it sit free in physical
 		// RAM before starting: OS/kernel/ZFS ARC overhead or a shared host
-		// routinely keeps idle MemAvailable below admitMemory of RAM, so
-		// requiring want <= physRoom would deadlock base builds on idle nodes
+		// routinely keeps idle MemAvailable below admitLimit, so requiring
+		// want <= physRoom would deadlock base builds on idle nodes
 		// (board 11078). Explicit caller --mem-low guarantees, and what a
 		// command has already held, still verify physical headroom; the
 		// default reservation does not: it is an estimate for admission.

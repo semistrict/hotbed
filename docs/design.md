@@ -379,26 +379,23 @@ dev servers run until stopped or their workspace is released. An attached `hotbe
 command if the client goes away; `--detach` leaves it running (`hotbed logs`, `hotbed stop`).
 `hotbed exec` exits with the command's status; its own failures print an envelope and exit 1 or 2.
 
-The worker admits a queued command when its reservation fits in 86% of RAM beside those of the
-running and parked commands, base builds among them (and physical RAM is under 86% when other work
-is already running), memory pressure (PSI some avg10) is not holding (holds at 22%, resumes under
-12%), and the disk has room. A command's reservation is its guarantee or, if more, the most memory
-it has held of its own (anonymous and swapped, not file cache), as a build needs again what its
-last link did. A base build is guaranteed what the project's last base build on the node held, so
-work admitted beside it leaves it that room from its first step. When memory in use passes 93%, or
-memory pressure reaches 40% (the kernel counts mapped file pages a thrashing build faults straight
-back in as available, so memory in use can look fine while the node stalls), it **parks** the
-lowest-priority, non-focus-session, newest running command (`systemctl freeze`, then `memory.reclaim`
-pushes it to swap), one each 20 seconds for pressure. Under constraint, hotbed prioritizes concrete
-completion over fairness: same-priority running commands run to completion without round-robin
-rotation through swap, and parked/queued work drains focus-session and oldest-started first once the
-running work finishes or projected memory headroom cleanly clears. Only strictly higher-priority
-commands and base builds preempt same-or-lower-priority running work immediately. Nothing is killed
-for memory by the worker. Beneath all that, the work slice itself is
-bounded (`MemoryHigh=`, `MemoryMax=` at its start), leaving the host an eighth of its RAM (at least
-1 GiB): past High the kernel throttles and reclaims the commands together, past Max it kills one of
-them inside the slice, so an overload waits or loses a command but never takes the host down. The
-worker measures its memory within that bound. The measurement slice is outside it.
+The worker admits a queued command when its reservation fits within the work slice's memory budget
+(`MemoryHigh`) beside those of running and parked commands, base builds among them, effective RAM in
+use (crediting `cladefsd`'s reclaimable DAX extent cache above its floor on the host domain) is
+under 95%, memory pressure (PSI some avg10) is not holding (holds at 22%, resumes under 12%),
+`cladefsd` is not memory-starved near its DAX cache floor, and the disk has room. A command's
+reservation is its guarantee (defaulting to 2 GiB when unset) or, if more, the most memory it has
+held of its own (anonymous and swapped, not file cache), as a build needs again what its last link
+did. A base build is guaranteed what the project's last base build on the node held, so work
+admitted beside it leaves it that room from its first step. Admitted commands run until they end,
+swapping to zstd zram or disk if they must; nothing is frozen or killed for memory by the worker.
+Beneath all that, the work slice itself is bounded (`MemoryHigh=`, `MemoryMax=`, and `MemorySwapMax=`
+on zram hosts at its start), leaving the host an eighth of its RAM (at least 1 GiB) for OS headroom,
+an eighth (or `cladefsd`'s floor if larger) for `cladefsd`'s protected DAX cache, and a 3:1
+compressed RAM budget for up to `2 * Headroom` of logical zram swap: past High the kernel throttles
+and reclaims the commands together, past Max it kills one of them inside the slice, so an overload
+waits or loses a command but never takes the host down. The worker measures its memory within that
+bound. The measurement slice is outside it.
 
 ## Measurements
 

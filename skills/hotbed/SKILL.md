@@ -365,7 +365,7 @@ down, not restarting. What happened meanwhile reaches `poll` once it is back.
   `-10`, `high` = `10`, `urgent` = `20`, or any integer in `-100..100`). Higher-priority queued
   commands admit ahead of lower-priority ones; nothing running is preempted for them.
 - `--mem-low 2G` guarantees memory: the command queues until that fits. Without it, admission
-  counts a command as needing 4 GiB, or the most it has held if more, so a node takes only as many
+  counts a command as needing 2 GiB, or the most it has held if more, so a node takes only as many
   as fit; pass a smaller `--mem-low` for light commands. `--mem-high 8G` throttles and swaps past
   that. Nothing is frozen or killed for memory: what is admitted runs, swapping if
   it must, and a full node holds new work until it has room. Stop a command by hand

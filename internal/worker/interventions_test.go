@@ -821,7 +821,7 @@ func TestManualResumeHonorsOnlyTheMeasurementHold(t *testing.T) {
 		now := time.Unix(1795300000, 0)
 		units, store := &fake.Units{}, &fake.Store{Root: t.TempDir()}
 		e := newInterventionEngine(t, t.TempDir(), store, units, nil, &now)
-		// Reserve 10 GiB on a 16 GiB node (admitLimit = 13.76 GiB).
+		// Reserve 10 GiB on a 16 GiB slice (admitLimit = 16 GiB).
 		startTestCommand(t, e, store, units, "c-big1", func(req *pb.RunCommandRequest) {
 			req.Limits = &pb.CommandLimits{MemoryLowBytes: 10 << 30}
 		})

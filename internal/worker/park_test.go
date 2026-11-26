@@ -69,15 +69,15 @@ func TestFocusSessionContinuityUnderConstraint(t *testing.T) {
 		e.workspaces["c"].ws().SessionId = "sess-1"
 
 		_ = e.start(t, units, now, "a1", "a", "build")
-		units.SetAnon("hotbed-a1", 14<<30) // fills 13.76 GiB admitLimit
+		units.SetAnon("hotbed-a1", 16<<30) // fills 16 GiB admitLimit
 		*now = now.Add(time.Second)
 		e.step(t.Context())
 
-		// sess-2 queues b1 first (t+1), then sess-1 queues a2 (t+2); each needs 8 GiB.
+		// sess-2 queues b1 first (t+1), then sess-1 queues a2 (t+2); each needs 9 GiB.
 		*now = now.Add(time.Second)
 		if _, err := e.Exec(t.Context(), &pb.RunCommandRequest{
 			Id: "b1", WorkspaceId: "b", Args: []string{"sleep", "60"},
-			Limits: &pb.CommandLimits{MemoryLowBytes: 8 << 30},
+			Limits: &pb.CommandLimits{MemoryLowBytes: 9 << 30},
 		}); err != nil {
 			t.Fatal(err)
 		}
@@ -86,7 +86,7 @@ func TestFocusSessionContinuityUnderConstraint(t *testing.T) {
 		*now = now.Add(time.Second)
 		if _, err := e.Exec(t.Context(), &pb.RunCommandRequest{
 			Id: "a2", WorkspaceId: "c", Args: []string{"sleep", "60"},
-			Limits: &pb.CommandLimits{MemoryLowBytes: 8 << 30},
+			Limits: &pb.CommandLimits{MemoryLowBytes: 9 << 30},
 		}); err != nil {
 			t.Fatal(err)
 		}
@@ -125,14 +125,14 @@ func TestFocusSessionContinuityUnderConstraint(t *testing.T) {
 		e.workspaces["c"].ws().SessionId = "sess-1"
 
 		_ = e.start(t, units, now, "a1", "a", "build")
-		units.SetAnon("hotbed-a1", 14<<30)
+		units.SetAnon("hotbed-a1", 16<<30)
 		*now = now.Add(time.Second)
 		e.step(t.Context())
 
 		*now = now.Add(time.Second)
 		if _, err := e.Exec(t.Context(), &pb.RunCommandRequest{
 			Id: "a2", WorkspaceId: "c", Args: []string{"sleep", "60"},
-			Limits: &pb.CommandLimits{MemoryLowBytes: 8 << 30},
+			Limits: &pb.CommandLimits{MemoryLowBytes: 9 << 30},
 		}); err != nil {
 			t.Fatal(err)
 		}
@@ -141,7 +141,7 @@ func TestFocusSessionContinuityUnderConstraint(t *testing.T) {
 		*now = now.Add(time.Second)
 		if _, err := e.Exec(t.Context(), &pb.RunCommandRequest{
 			Id: "b-hi", WorkspaceId: "b", Args: []string{"sleep", "60"},
-			Limits: &pb.CommandLimits{Priority: 10, MemoryLowBytes: 8 << 30},
+			Limits: &pb.CommandLimits{Priority: 10, MemoryLowBytes: 9 << 30},
 		}); err != nil {
 			t.Fatal(err)
 		}
@@ -214,27 +214,42 @@ func TestFocusSessionContinuityUnderConstraint(t *testing.T) {
 	})
 }
 
-// A node with running work must not admit additional commands once physical RAM
-// reaches admitMemory (86%), and memory pressure uses hysteresis (holds at 22%,
-// stays held at 15%, resumes below 12%) so brief dips do not flap admission.
-func TestBusyNodeHoldsAtAdmitMemoryAndMemoryPressureHysteresis(t *testing.T) {
+// A busy node admits cleanly under fullAt (95%) while memory pressure is low
+// and swap is free, holds once effective RAM reaches fullAt (95%), and applies
+// memory pressure hysteresis (holds at 22%, stays held at 15%, resumes below
+// 12%) so brief dips do not flap admission.
+func TestBusyNodeAdmitsUnderFullAtAndMemoryPressureHysteresis(t *testing.T) {
 	e, units, sys, now := parkEngine(t)
 	_ = e.start(t, units, now, "run-1", "a", "build")
 
-	// 88% RAM used (>= admitMemory 86%, < parkAt 93%) with plenty of free swap:
-	// must NOT admit a 2nd command only to park it seconds later.
+	// 88% RAM used (< fullAt 95%) with 0% PSI and plenty of free swap: admits.
 	sys.SetUsed(sys.Mem.Total * 88 / 100)
 	e.Sample()
 	*now = now.Add(time.Second)
 	if _, err := e.Exec(t.Context(), &pb.RunCommandRequest{
-		Id: "wait-mem", WorkspaceId: "b", Args: []string{"sleep", "60"},
+		Id: "run-2", WorkspaceId: "b", Args: []string{"sleep", "60"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { units.Stop(context.WithoutCancel(t.Context()), "hotbed-run-2") })
+	e.admit(t.Context())
+	if got := e.commands["run-2"].cmd(); got.State != running {
+		t.Fatalf("run-2 at 88%% RAM with 0%% PSI = %v (%q), want running", got.State, got.Reason)
+	}
+
+	// 95% RAM used (>= fullAt 95%): holds new work.
+	sys.SetUsed(sys.Mem.Total * 95 / 100)
+	e.Sample()
+	*now = now.Add(time.Second)
+	if _, err := e.Exec(t.Context(), &pb.RunCommandRequest{
+		Id: "wait-mem", WorkspaceId: "c", Args: []string{"sleep", "60"},
 	}); err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { units.Stop(context.WithoutCancel(t.Context()), "hotbed-wait-mem") })
 	e.admit(t.Context())
-	if got := e.commands["wait-mem"].cmd(); got.State != queued || !strings.Contains(got.Reason, "while other work is running") {
-		t.Fatalf("wait-mem at 88%% RAM beside run-1 = %v (%q), want queued", got.State, got.Reason)
+	if got := e.commands["wait-mem"].cmd(); got.State != queued || !strings.Contains(got.Reason, "in use") {
+		t.Fatalf("wait-mem at 95%% RAM = %v (%q), want queued at fullAt", got.State, got.Reason)
 	}
 
 	// Memory drops to 50%, but memory PSI spiked to 25% (>= 22%) and then only
