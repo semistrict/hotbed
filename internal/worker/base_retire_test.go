@@ -84,6 +84,11 @@ func (f *fakeRetireCladefsClient) DropCell(_ context.Context, req *cladefsdv1.Dr
 	return &cladefsdv1.DropCellResponse{}, nil
 }
 
+// GetStats answers the incarnation each heartbeat follows (cladefsdLink.sync).
+func (f *fakeRetireCladefsClient) GetStats(context.Context, *cladefsdv1.GetStatsRequest, ...grpc.CallOption) (*cladefsdv1.GetStatsResponse, error) {
+	return &cladefsdv1.GetStatsResponse{}, nil
+}
+
 func TestBaseRetirerLifecycleAndPersistence(t *testing.T) {
 	ctx := context.Background()
 	tmp := t.TempDir()
@@ -454,11 +459,10 @@ func TestVMBackendSetsUploadIntervalOnProjectBaseBuild(t *testing.T) {
 	}
 
 	b := &VMBackend{
-		workerDir:      tmp,
-		mgr:            mgr,
-		baseImages:     map[string]cladefs.CellRef{},
-		wsCells:        map[string]cladefs.CellRef{},
-		decommissioned: map[uint64]bool{},
+		workerDir:  tmp,
+		mgr:        mgr,
+		baseImages: map[string]cladefs.CellRef{},
+		wsCells:    map[string]cladefs.CellRef{},
 	}
 	b.store.Store(store)
 	spec := baseimage.Spec{Image: "debian:trixie-slim", Arch: "amd64"}.Normalized()
@@ -508,11 +512,10 @@ func TestVMBackendSetsUploadIntervalOnProjectBaseBuild(t *testing.T) {
 		t.Fatalf("NewStore2: %v", err)
 	}
 	b2 := &VMBackend{
-		workerDir:      tmp,
-		mgr:            mgr,
-		baseImages:     map[string]cladefs.CellRef{baseKey: {Tenant: 0, Cell: 850, Version: 3}},
-		wsCells:        map[string]cladefs.CellRef{},
-		decommissioned: map[uint64]bool{},
+		workerDir:  tmp,
+		mgr:        mgr,
+		baseImages: map[string]cladefs.CellRef{baseKey: {Tenant: 0, Cell: 850, Version: 3}},
+		wsCells:    map[string]cladefs.CellRef{},
 	}
 	b2.store.Store(store2)
 	if _, err := b2.EnsureProjectBase(ctx, proj, map[string]string{"app": "def456"}, nil, spec, nil, nil, nil); err == nil {

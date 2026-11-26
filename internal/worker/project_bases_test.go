@@ -88,7 +88,6 @@ func newSharingNode(t *testing.T, firstCell uint64) *sharingNode {
 			workerDir:       tmp,
 			mountRoot:       filepath.Join(tmp, "mnt"),
 			mountStoresRoot: filepath.Join(tmp, "mount-stores"),
-			decommissioned:  map[uint64]bool{},
 			baseImages:      map[string]cladefs.CellRef{},
 			wsMounts:        map[string]fuseWSMount{},
 			clearNosuidFn:   func(string) error { return nil },

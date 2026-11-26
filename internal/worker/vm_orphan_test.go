@@ -180,12 +180,11 @@ func newTestVMBackend(t *testing.T, api *strictVMCladefsClient, fl *fakeVMLaunch
 		t.Fatalf("vm.NewManager: %v", err)
 	}
 	b := &VMBackend{
-		workerDir:      tmp,
-		mgr:            mgr,
-		baseImages:     map[string]cladefs.CellRef{},
-		wsCells:        map[string]cladefs.CellRef{},
-		activeBuilds:   map[string]struct{}{},
-		decommissioned: map[uint64]bool{},
+		workerDir:    tmp,
+		mgr:          mgr,
+		baseImages:   map[string]cladefs.CellRef{},
+		wsCells:      map[string]cladefs.CellRef{},
+		activeBuilds: map[string]struct{}{},
 	}
 	b.store.Store(store)
 	b.rt = runtime.NewGuestRuntime(b)

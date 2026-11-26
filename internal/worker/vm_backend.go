@@ -39,22 +39,20 @@ import (
 // mesh updates (SetPeers), retired-host decommissioning (DecommissionHost),
 // and R2-backed warm project bases for a hotbed worker with statedir.VMConfig.
 type VMBackend struct {
-	cfg         statedir.VMConfig
-	workerDir   string
-	store       atomic.Pointer[cladefs.Store]
-	mgr         *vm.Manager
-	rt          *runtime.GuestRuntime
-	incarnation uint64
+	cfg       statedir.VMConfig
+	workerDir string
+	store     atomic.Pointer[cladefs.Store]
+	mgr       *vm.Manager
+	rt        *runtime.GuestRuntime
+	link      cladefsdLink
 
-	baseMu         sync.Mutex // serializes base image provisioning
-	held           heldBases  // the project bases this node hands out
-	mu             sync.Mutex
-	baseImages     map[string]cladefs.CellRef // vmBaseKey -> cached R2 base cell ref
-	wsCells        map[string]cladefs.CellRef // wsID -> forked cell ref
-	activeBuilds   map[string]struct{}        // in-flight base-* / prov-* VM IDs owned by this worker
-	lastPeers      []string
-	decommissioned map[uint64]bool
-	retirer        baseRetirer
+	baseMu       sync.Mutex // serializes base image provisioning
+	held         heldBases  // the project bases this node hands out
+	mu           sync.Mutex
+	baseImages   map[string]cladefs.CellRef // vmBaseKey -> cached R2 base cell ref
+	wsCells      map[string]cladefs.CellRef // wsID -> forked cell ref
+	activeBuilds map[string]struct{}        // in-flight base-* / prov-* VM IDs owned by this worker
+	retirer      baseRetirer
 	// boots serializes EnsureVM per VM (ID -> *sync.Mutex): a VM is down
 	// between commands, and callers that find it so at once wait for one
 	// boot rather than race it.
@@ -192,14 +190,13 @@ func OpenVMBackend(ctx context.Context, workerDir string, cfg statedir.VMConfig,
 
 	_ = ensureDirTraversable(workerDir)
 	b := &VMBackend{
-		cfg:            cfg,
-		workerDir:      workerDir,
-		mgr:            mgr,
-		incarnation:    inc,
-		baseImages:     map[string]cladefs.CellRef{},
-		wsCells:        map[string]cladefs.CellRef{},
-		activeBuilds:   map[string]struct{}{},
-		decommissioned: map[uint64]bool{},
+		cfg:          cfg,
+		workerDir:    workerDir,
+		mgr:          mgr,
+		link:         cladefsdLink{incarnation: inc},
+		baseImages:   map[string]cladefs.CellRef{},
+		wsCells:      map[string]cladefs.CellRef{},
+		activeBuilds: map[string]struct{}{},
 	}
 	b.store.Store(cstore)
 	b.loadCachedBases()
@@ -332,18 +329,13 @@ func (b *VMBackend) Runtimes() []string {
 // bases held here and the base cells retired since, for HeartbeatRequest.
 func (b *VMBackend) HeartbeatMeta() (peerAddr string, incarnation uint64, held []*pb.SharedBase, retired []*pb.CladefsCell) {
 	held, retired = b.held.report(runtime.KindVM)
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	return b.cfg.CladefsPeerAddr, b.incarnation, held, retired
+	return b.configSnapshot().CladefsPeerAddr, b.link.Incarnation(), held, retired
 }
 
 // SampleObjectStore fetches cumulative cladefsd R2 object-store counters and
 // the peer mesh this worker last applied.
 func (b *VMBackend) SampleObjectStore(ctx context.Context) *pb.ObjectStoreStats {
-	b.mu.Lock()
-	addr, peers := b.cfg.CladefsPeerAddr, slices.Clone(b.lastPeers)
-	b.mu.Unlock()
-	return sampleCladefsObjectStore(ctx, b.currentStore(), addr, peers)
+	return sampleCladefsObjectStore(ctx, b.currentStore(), b.configSnapshot().CladefsPeerAddr, b.link.Peers())
 }
 
 func sampleCladefsObjectStore(ctx context.Context, store *cladefs.Store, peerAddr string, peers []string) *pb.ObjectStoreStats {
@@ -729,45 +721,7 @@ func (b *VMBackend) ApplyHeartbeat(ctx context.Context, peers []string, decommis
 	if st == nil {
 		return
 	}
-	if len(peers) > 0 && b.configSnapshot().CladefsPeerAddr != "" {
-		sorted := slices.Clone(peers)
-		slices.Sort(sorted)
-		b.mu.Lock()
-		changed := !slices.Equal(b.lastPeers, sorted)
-		b.mu.Unlock()
-		if changed {
-			if err := st.SetPeers(ctx, sorted); err != nil {
-				slog.Warn("cladefsd SetPeers failed", "peers", sorted, "err", err)
-			} else {
-				b.mu.Lock()
-				b.lastPeers = sorted
-				b.mu.Unlock()
-				slog.Info("updated cladefsd peer mesh", "peers", sorted)
-			}
-		}
-	}
-	for _, inc := range decommission {
-		if inc == 0 || inc == b.incarnation {
-			continue
-		}
-		b.mu.Lock()
-		done := b.decommissioned[inc]
-		b.mu.Unlock()
-		if done {
-			continue
-		}
-		retired, left, err := st.DecommissionHost(ctx, inc)
-		if err != nil {
-			slog.Warn("cladefsd DecommissionHost failed", "incarnation", inc, "err", err)
-			continue
-		}
-		slog.Info("decommissioned retired cladefs host", "incarnation", inc, "retired", retired, "left", left)
-		if left == 0 {
-			b.mu.Lock()
-			b.decommissioned[inc] = true
-			b.mu.Unlock()
-		}
-	}
+	b.link.sync(ctx, st, b.configSnapshot().CladefsPeerAddr, peers, decommission)
 	b.held.retire(ctx, st, retire)
 	b.retirer.sweep(ctx, st, time.Now())
 }
@@ -1653,10 +1607,10 @@ func (b *VMBackend) SetKernelPath(p string) {
 	b.UpdateConfig(cfg)
 }
 
-// StopAllForUpgrade gracefully stops and syncs every tracked Firecracker VM and
-// closes the cladefsd gRPC connection prior to a disruptive cladefsd restart.
-// The store pointer stays non-nil (closed) so any racing background operation
-// receives a clean gRPC error instead of panicking on a nil pointer.
+// StopAllForUpgrade gracefully stops and syncs every tracked Firecracker VM
+// prior to a disruptive cladefsd restart. It keeps the cladefsd connection
+// open: gRPC dials the restarted daemon again by itself, so the worker keeps
+// working even when ReconnectCladefs gives up before the daemon answers.
 func (b *VMBackend) StopAllForUpgrade(ctx context.Context) error {
 	var firstErr error
 	if b.mgr != nil {
@@ -1671,16 +1625,12 @@ func (b *VMBackend) StopAllForUpgrade(ctx context.Context) error {
 	b.mu.Lock()
 	b.wsCells = map[string]cladefs.CellRef{}
 	b.mu.Unlock()
-	if st := b.currentStore(); st != nil {
-		if err := st.Close(); err != nil && firstErr == nil {
-			firstErr = err
-		}
-	}
 	return firstErr
 }
 
-// ReconnectCladefs waits for cladefsd to come back online after a restart,
-// refreshes the gRPC client and incarnation, and re-applies the peer mesh.
+// ReconnectCladefs waits for cladefsd to come back online after a restart and
+// swaps in a fresh gRPC client, noting the new incarnation; the next
+// heartbeat applies the peer mesh to it.
 func (b *VMBackend) ReconnectCladefs(ctx context.Context) (uint64, error) {
 	cfg := b.configSnapshot()
 	cellRoot := tenantCellRoot(cmp.Or(cfg.CellRoot, "/mnt/fxdax-scratch/cladefsd/cells/hotbed"), cfg.TenantID)
@@ -1694,24 +1644,18 @@ func (b *VMBackend) ReconnectCladefs(ctx context.Context) (uint64, error) {
 		VMGID:       vmGID,
 		DefaultCap:  cfg.DiskBytes,
 	}
-	st, inc, err := waitForCladefsReconnect(ctx, ccfg, 30*time.Second, func(ctx context.Context, s *cladefs.Store) (uint64, error) {
+	st, inc, err := waitForCladefsReconnect(ctx, ccfg, cladefsdStartWait, func(ctx context.Context, s *cladefs.Store) (uint64, error) {
 		return s.Incarnation(ctx)
 	})
 	if err != nil {
 		return 0, err
 	}
 	old := b.store.Swap(st)
-	b.mu.Lock()
-	b.incarnation = inc
-	prevPeers := slices.Clone(b.lastPeers)
-	b.lastPeers = nil
-	b.decommissioned = map[uint64]bool{}
-	b.mu.Unlock()
+	b.link.restarted(inc)
 	if old != nil && old != st {
-		_ = old.Close()
-	}
-	if len(prevPeers) > 0 {
-		b.ApplyHeartbeat(ctx, prevPeers, nil, nil)
+		if err := old.Close(); err != nil {
+			slog.Warn("close the cladefsd client of before its restart", "err", err)
+		}
 	}
 	return inc, nil
 }

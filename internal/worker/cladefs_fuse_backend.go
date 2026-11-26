@@ -42,19 +42,17 @@ type CladefsFUSEBackend struct {
 	mountRoot       string
 	mountStoresRoot string
 	store           atomic.Pointer[cladefs.Store]
-	incarnation     uint64
+	link            cladefsdLink
 
 	baseMu sync.Mutex
 	held   heldBases // the project bases this node hands out
 
-	mu             sync.Mutex
-	lastPeers      []string
-	decommissioned map[uint64]bool
-	baseImages     map[string]cladefs.CellRef // fuseBaseKey -> cached R2 base cell ref
-	wsMounts       map[string]fuseWSMount     // wsID -> active FUSE mount
-	retirer        baseRetirer
-	unhealthy      bool
-	recovering     bool
+	mu         sync.Mutex
+	baseImages map[string]cladefs.CellRef // fuseBaseKey -> cached R2 base cell ref
+	wsMounts   map[string]fuseWSMount     // wsID -> active FUSE mount
+	retirer    baseRetirer
+	unhealthy  bool
+	recovering bool
 
 	detachTimeout time.Duration      // optional MountDetach deadline override (tests; default 30s)
 	cleanupMount  func(string, bool) // optional cleanupFUSEMountDir override (tests)
@@ -146,8 +144,7 @@ func OpenCladefsFUSEBackend(ctx context.Context, workerDir string, cfg statedir.
 		workerDir:       workerDir,
 		mountRoot:       mountRoot,
 		mountStoresRoot: mountStoresRoot,
-		incarnation:     inc,
-		decommissioned:  map[uint64]bool{},
+		link:            cladefsdLink{incarnation: inc},
 		baseImages:      map[string]cladefs.CellRef{},
 		wsMounts:        map[string]fuseWSMount{},
 	}
@@ -205,7 +202,8 @@ func (b *CladefsFUSEBackend) StopAllForUpgrade(ctx context.Context) error {
 
 // ReconnectCladefs waits for cladefsd and its host FUSE Mount service to come
 // back online after a restart, clears nosuid on mountRoot, refreshes the gRPC
-// client and incarnation, and re-applies the peer mesh.
+// client and noting the new incarnation; the next heartbeat applies the peer
+// mesh to it.
 func (b *CladefsFUSEBackend) ReconnectCladefs(ctx context.Context) (uint64, error) {
 	cfg := b.configSnapshot()
 	cellRoot := tenantCellRoot(cmp.Or(cfg.CellRoot, "/mnt/fxdax-scratch/cladefsd/cells/hotbed"), cfg.TenantID)
@@ -215,7 +213,7 @@ func (b *CladefsFUSEBackend) ReconnectCladefs(ctx context.Context) (uint64, erro
 		TenantID:    cfg.TenantID,
 		DefaultCap:  cmp.Or(cfg.DiskBytes, uint64(64<<30)),
 	}
-	st, inc, err := waitForCladefsReconnect(ctx, ccfg, 30*time.Second, func(ctx context.Context, s *cladefs.Store) (uint64, error) {
+	st, inc, err := waitForCladefsReconnect(ctx, ccfg, cladefsdStartWait, func(ctx context.Context, s *cladefs.Store) (uint64, error) {
 		if _, err := s.MountList(ctx); err != nil {
 			return 0, err
 		}
@@ -229,17 +227,11 @@ func (b *CladefsFUSEBackend) ReconnectCladefs(ctx context.Context) (uint64, erro
 		return 0, fmt.Errorf("enable setuid on cladefs FUSE mount %s: %w", b.mountRoot, err)
 	}
 	old := b.store.Swap(st)
-	b.mu.Lock()
-	b.incarnation = inc
-	prevPeers := slices.Clone(b.lastPeers)
-	b.lastPeers = nil
-	b.decommissioned = map[uint64]bool{}
-	b.mu.Unlock()
+	b.link.restarted(inc)
 	if old != nil && old != st {
-		_ = old.Close()
-	}
-	if len(prevPeers) > 0 {
-		b.ApplyHeartbeat(ctx, prevPeers, nil, nil)
+		if err := old.Close(); err != nil {
+			slog.Warn("close the cladefsd client of before its restart", "err", err)
+		}
 	}
 	return inc, nil
 }
@@ -505,18 +497,13 @@ func (b *CladefsFUSEBackend) MountPath(vol string) (string, bool) {
 // bases held here and the base cells retired since, for HeartbeatRequest.
 func (b *CladefsFUSEBackend) HeartbeatMeta() (peerAddr string, incarnation uint64, held []*pb.SharedBase, retired []*pb.CladefsCell) {
 	held, retired = b.held.report(runtime.KindCladefs)
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	return b.cfg.CladefsPeerAddr, b.incarnation, held, retired
+	return b.configSnapshot().CladefsPeerAddr, b.link.Incarnation(), held, retired
 }
 
 // SampleObjectStore fetches cumulative cladefsd R2 object-store counters and
 // the peer mesh this worker last applied.
 func (b *CladefsFUSEBackend) SampleObjectStore(ctx context.Context) *pb.ObjectStoreStats {
-	b.mu.Lock()
-	addr, peers := b.cfg.CladefsPeerAddr, slices.Clone(b.lastPeers)
-	b.mu.Unlock()
-	return sampleCladefsObjectStore(ctx, b.currentStore(), addr, peers)
+	return sampleCladefsObjectStore(ctx, b.currentStore(), b.configSnapshot().CladefsPeerAddr, b.link.Peers())
 }
 
 // ApplyHeartbeat reconciles cladefs peer mesh (SetPeers), retired-host
@@ -527,45 +514,7 @@ func (b *CladefsFUSEBackend) ApplyHeartbeat(ctx context.Context, peers []string,
 	if st == nil {
 		return
 	}
-	if len(peers) > 0 && b.configSnapshot().CladefsPeerAddr != "" {
-		sorted := slices.Clone(peers)
-		slices.Sort(sorted)
-		b.mu.Lock()
-		changed := !slices.Equal(b.lastPeers, sorted)
-		b.mu.Unlock()
-		if changed {
-			if err := st.SetPeers(ctx, sorted); err != nil {
-				slog.Warn("cladefsd SetPeers failed", "peers", sorted, "err", err)
-			} else {
-				b.mu.Lock()
-				b.lastPeers = sorted
-				b.mu.Unlock()
-				slog.Info("updated cladefsd peer mesh", "peers", sorted)
-			}
-		}
-	}
-	for _, inc := range decommission {
-		if inc == 0 || inc == b.incarnation {
-			continue
-		}
-		b.mu.Lock()
-		done := b.decommissioned[inc]
-		b.mu.Unlock()
-		if done {
-			continue
-		}
-		retired, left, err := st.DecommissionHost(ctx, inc)
-		if err != nil {
-			slog.Warn("cladefsd DecommissionHost failed", "incarnation", inc, "err", err)
-			continue
-		}
-		slog.Info("decommissioned retired cladefs host", "incarnation", inc, "retired", retired, "left", left)
-		if left == 0 {
-			b.mu.Lock()
-			b.decommissioned[inc] = true
-			b.mu.Unlock()
-		}
-	}
+	b.link.sync(ctx, st, b.configSnapshot().CladefsPeerAddr, peers, decommission)
 	b.held.retire(ctx, st, retire)
 	b.retirer.sweep(ctx, st, time.Now())
 }

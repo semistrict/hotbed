@@ -196,10 +196,9 @@ func TestCladefsFUSELoadStateIndexesMultipleBaseImagesByKey(t *testing.T) {
 	}
 	spec := baseimage.Spec{User: "ramon", UID: 1000, GID: 1000}.Normalized()
 	b := &CladefsFUSEBackend{
-		workerDir:      dir,
-		decommissioned: map[uint64]bool{},
-		baseImages:     map[string]cladefs.CellRef{},
-		wsMounts:       map[string]fuseWSMount{},
+		workerDir:  dir,
+		baseImages: map[string]cladefs.CellRef{},
+		wsMounts:   map[string]fuseWSMount{},
 	}
 	wantKey := b.fuseBaseKey(spec)
 	// Write both the wanted key and a lexicographically later stale key.
@@ -273,11 +272,10 @@ func TestTenantCellRootAndCacheIsolation(t *testing.T) {
 	// Same isolation for CladefsFUSEBackend.
 	fuse0 := &CladefsFUSEBackend{workerDir: dir}
 	fuse4 := &CladefsFUSEBackend{
-		cfg:            statedir.CladefsFUSEConfig{TenantID: 4},
-		workerDir:      dir,
-		baseImages:     map[string]cladefs.CellRef{},
-		wsMounts:       map[string]fuseWSMount{},
-		decommissioned: map[uint64]bool{},
+		cfg:        statedir.CladefsFUSEConfig{TenantID: 4},
+		workerDir:  dir,
+		baseImages: map[string]cladefs.CellRef{},
+		wsMounts:   map[string]fuseWSMount{},
 	}
 	if fuse0.cacheDir() != filepath.Join(dir, "cladefs-fuse-bases") || fuse0.wsStatePath() != filepath.Join(dir, "cladefs-fuse-ws.json") {
 		t.Fatalf("fuse0 paths changed unexpectedly: cache=%q ws=%q", fuse0.cacheDir(), fuse0.wsStatePath())

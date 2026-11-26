@@ -227,12 +227,11 @@ func TestVMBackendFreshenCapFallbackAndDedupe(t *testing.T) {
 		t.Fatal(err)
 	}
 	b := &VMBackend{
-		workerDir:      tmp,
-		mgr:            mgr,
-		baseImages:     map[string]cladefs.CellRef{},
-		wsCells:        map[string]cladefs.CellRef{},
-		activeBuilds:   map[string]struct{}{},
-		decommissioned: map[uint64]bool{},
+		workerDir:    tmp,
+		mgr:          mgr,
+		baseImages:   map[string]cladefs.CellRef{},
+		wsCells:      map[string]cladefs.CellRef{},
+		activeBuilds: map[string]struct{}{},
 	}
 	b.store.Store(cstore)
 	spec := baseimage.Spec{Image: "debian:trixie-slim", Arch: "amd64"}.Normalized()
@@ -387,7 +386,6 @@ func TestCladefsFUSEBackendFreshenCapFallbackAndDedupe(t *testing.T) {
 		workerDir:       tmp,
 		mountRoot:       filepath.Join(tmp, "mnt"),
 		mountStoresRoot: filepath.Join(tmp, "mount-stores"),
-		decommissioned:  map[uint64]bool{},
 		baseImages:      map[string]cladefs.CellRef{},
 		wsMounts:        map[string]fuseWSMount{},
 		clearNosuidFn:   func(string) error { return nil },
