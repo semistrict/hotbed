@@ -1086,6 +1086,72 @@ func follow(ctx context.Context, wk workerClients, id string, w, stderr io.Write
 	return followStatus(id, c, stderr)
 }
 
+func followTimed(ctx context.Context, wk workerClients, id string, w, stderr io.Writer) (int, error) {
+	tw := &timestampLineWriter{w: w, now: time.Now()}
+	c, err := followLogStream(ctx, wk, id, true, tw.WriteChunk, stderr)
+	if ferr := tw.Flush(); err == nil && ferr != nil {
+		err = ferr
+	}
+	if err != nil {
+		return 0, err
+	}
+	return followStatus(id, c, stderr)
+}
+
+// timestampLineWriter buffers raw log chunks tagged with their received
+// timestamp (unix ms) and writes each line prefixed with its formatted local
+// wall time.
+type timestampLineWriter struct {
+	w      io.Writer
+	now    time.Time
+	buf    []byte
+	lineTs int64
+}
+
+func (tw *timestampLineWriter) WriteChunk(p []byte, ts int64) error {
+	for len(p) > 0 {
+		i := bytes.IndexByte(p, '\n')
+		if i < 0 {
+			if ts > 0 {
+				tw.lineTs = ts
+			}
+			tw.buf = append(tw.buf, p...)
+			return nil
+		}
+		if ts > 0 {
+			tw.lineTs = ts
+		}
+		tw.buf = append(tw.buf, p[:i]...)
+		if err := tw.emit(); err != nil {
+			return err
+		}
+		p = p[i+1:]
+	}
+	return nil
+}
+
+func (tw *timestampLineWriter) Flush() error {
+	if len(tw.buf) == 0 {
+		return nil
+	}
+	return tw.emit()
+}
+
+func (tw *timestampLineWriter) emit() error {
+	if _, err := fmt.Fprintf(tw.w, "%s  ", formatLogTimestamp(tw.lineTs, tw.now)); err != nil {
+		return err
+	}
+	if _, err := tw.w.Write(tw.buf); err != nil {
+		return err
+	}
+	if _, err := io.WriteString(tw.w, "\n"); err != nil {
+		return err
+	}
+	tw.buf = tw.buf[:0]
+	tw.lineTs = 0
+	return nil
+}
+
 func followStatus(id string, c *pb.Command, stderr io.Writer) (int, error) {
 	if c == nil {
 		return 0, api.Errorf(api.CodeInternal, "%s ended with no command status", id)
@@ -1172,6 +1238,13 @@ var (
 // parked, it writes a deduplicated status line to stderr so the caller sees why
 // it is waiting instead of staring at silence.
 func followLog(ctx context.Context, wk workerClients, id string, w, stderr io.Writer) (*pb.Command, error) {
+	return followLogStream(ctx, wk, id, false, func(p []byte, _ int64) error {
+		_, err := w.Write(p)
+		return err
+	}, stderr)
+}
+
+func followLogStream(ctx context.Context, wk workerClients, id string, timestamps bool, writeChunk func([]byte, int64) error, stderr io.Writer) (*pb.Command, error) {
 	var offset int64
 	var lastActivity atomic.Int64
 	lastActivity.Store(time.Now().UnixNano())
@@ -1250,7 +1323,7 @@ func followLog(ctx context.Context, wk workerClients, id string, w, stderr io.Wr
 		}
 	}
 	for {
-		in, err := wk.stream.FollowLog(ctx, &pb.FollowLogRequest{Id: id, Offset: offset, Follow: true, Wait: true})
+		in, err := wk.stream.FollowLog(ctx, &pb.FollowLogRequest{Id: id, Offset: offset, Follow: true, Wait: true, Timestamps: timestamps})
 		if err != nil {
 			if wait(err) {
 				continue
@@ -1278,7 +1351,7 @@ func followLog(ctx context.Context, wk workerClients, id string, w, stderr io.Wr
 			down = time.Time{}
 			if len(chunk.Data) > 0 {
 				lastActivity.Store(time.Now().UnixNano())
-				if _, werr := w.Write(chunk.Data); werr != nil {
+				if werr := writeChunk(chunk.Data, chunk.ReceivedAt); werr != nil {
 					in.Close()
 					return nil, werr
 				}
@@ -1343,7 +1416,7 @@ func followLog(ctx context.Context, wk workerClients, id string, w, stderr io.Wr
 			// The stream dropped before the command ended or paused (e.g. a
 			// worker restart); drain any output written after offset without
 			// setting Wait (which would resume a paused command).
-			if err := drainLog(ctx, wk, id, offset, w, wait); err != nil {
+			if err := drainLog(ctx, wk, id, offset, timestamps, writeChunk, wait); err != nil {
 				return nil, err
 			}
 		}
@@ -1385,9 +1458,9 @@ func applyFollowTerminal(id string, c *pb.Command, state pb.CommandState, endedB
 
 // drainLog reads any remaining output of id from offset without following or
 // setting Wait (so it never resumes a paused command).
-func drainLog(ctx context.Context, wk workerClients, id string, offset int64, w io.Writer, wait func(error) bool) error {
+func drainLog(ctx context.Context, wk workerClients, id string, offset int64, timestamps bool, writeChunk func([]byte, int64) error, wait func(error) bool) error {
 	for {
-		in, err := wk.stream.FollowLog(ctx, &pb.FollowLogRequest{Id: id, Offset: offset})
+		in, err := wk.stream.FollowLog(ctx, &pb.FollowLogRequest{Id: id, Offset: offset, Timestamps: timestamps})
 		if err != nil {
 			if api.CodeOf(err) == api.CodeNotFound {
 				return nil
@@ -1406,9 +1479,11 @@ func drainLog(ctx context.Context, wk workerClients, id string, offset int64, w 
 				}
 				break
 			}
-			if _, werr := w.Write(chunk.Data); werr != nil {
-				in.Close()
-				return werr
+			if len(chunk.Data) > 0 {
+				if werr := writeChunk(chunk.Data, chunk.ReceivedAt); werr != nil {
+					in.Close()
+					return werr
+				}
 			}
 			offset = chunk.NextOffset
 		}
@@ -1432,9 +1507,10 @@ func drainLog(ctx context.Context, wk workerClients, id string, offset int64, w 
 type logsCmd struct {
 	controllerClient
 	sessionFlag
-	Command string `arg:"" help:"The command's ID."`
-	Follow  bool   `short:"f" xor:"tail" help:"Wait on the command: print its output until it ends, and exit with its status (124 if its soft time limit pauses it; waiting resumes a paused one)."`
-	Tail    int    `short:"n" xor:"tail" help:"Print only the last N lines."`
+	Command    string `arg:"" help:"The command's ID."`
+	Follow     bool   `short:"f" xor:"tail" help:"Wait on the command: print its output until it ends, and exit with its status (124 if its soft time limit pauses it; waiting resumes a paused one)."`
+	Tail       int    `short:"n" xor:"tail" help:"Print only the last N lines."`
+	Timestamps bool   `short:"t" help:"Prefix each line with the local time it was received (HH:MM:SS.mmm)."`
 }
 
 // Raw prints the command's output as is, from its worker: any session's
@@ -1465,7 +1541,18 @@ func (c *logsCmd) Raw(ctx context.Context, d deps) (int, bool, error) {
 		if log.Cut {
 			fmt.Fprintf(d.stderr, "hotbed: only the last %d lines fit in one response; hotbed logs %s without -n prints it all\n", len(log.Lines), c.Command)
 		}
-		for _, line := range log.Lines {
+		now := time.Now()
+		for i, line := range log.Lines {
+			if c.Timestamps {
+				var ts int64
+				if i < len(log.LineTimestamps) {
+					ts = log.LineTimestamps[i]
+				}
+				if _, err := fmt.Fprintf(d.stdout, "%s  %s\n", formatLogTimestamp(ts, now), line); err != nil {
+					return 0, true, err
+				}
+				continue
+			}
 			if _, err := fmt.Fprintln(d.stdout, line); err != nil {
 				return 0, true, err
 			}
@@ -1475,24 +1562,45 @@ func (c *logsCmd) Raw(ctx context.Context, d deps) (int, bool, error) {
 	if c.Follow {
 		// Until it ends or is paused, across its worker's restarts, exiting
 		// with its status as attached run does.
-		code, err := follow(ctx, w, c.Command, d.stdout, d.stderr)
+		var code int
+		var err error
+		if c.Timestamps {
+			code, err = followTimed(ctx, w, c.Command, d.stdout, d.stderr)
+		} else {
+			code, err = follow(ctx, w, c.Command, d.stdout, d.stderr)
+		}
 		if ctx.Err() != nil {
 			return 130, true, nil
 		}
 		return code, true, err
 	}
-	in, err := w.stream.FollowLog(ctx, &pb.FollowLogRequest{Id: c.Command})
+	in, err := w.stream.FollowLog(ctx, &pb.FollowLogRequest{Id: c.Command, Timestamps: c.Timestamps})
 	if err != nil {
 		return 0, false, err
 	}
 	defer in.Close()
+	var tw *timestampLineWriter
+	if c.Timestamps {
+		tw = &timestampLineWriter{w: d.stdout, now: time.Now()}
+	}
 	for {
 		chunk, err := in.Receive()
 		if errors.Is(err, io.EOF) || ctx.Err() != nil {
+			if tw != nil {
+				if ferr := tw.Flush(); ferr != nil {
+					return 0, true, ferr
+				}
+			}
 			return exitOK, true, nil
 		}
 		if err != nil {
 			return 0, true, err
+		}
+		if tw != nil {
+			if err := tw.WriteChunk(chunk.Data, chunk.ReceivedAt); err != nil {
+				return 0, true, err
+			}
+			continue
 		}
 		if _, err := d.stdout.Write(chunk.Data); err != nil {
 			return 0, true, err

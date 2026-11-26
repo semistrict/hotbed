@@ -62,9 +62,14 @@ func TestRunDetachesAfterItsWaitAndOutputReadsItAll(t *testing.T) {
 		t.Fatalf("output lines missing received_at timestamps: %v", q.Lines)
 	}
 	code, text, stderr := c.hotbed("output", id, "--tail", "2")
-	wantRe := regexp.MustCompile(`^300     \d\d:\d\d:\d\d  line 300\n301     \d\d:\d\d:\d\d  error: boom\n\[` + regexp.QuoteMeta(id) + ` running · 301 lines · next --after 301\]`)
-	if code != exitOK || !wantRe.MatchString(text) {
-		t.Fatalf("output --tail 2: exit %d, %q (stderr %q), want match %s", code, text, stderr, wantRe)
+	wantPlain := "300     line 300\n301     error: boom\n[" + id + " running · 301 lines · next --after 301]\n"
+	if code != exitOK || !strings.HasPrefix(text, wantPlain) {
+		t.Fatalf("output --tail 2: exit %d, %q (stderr %q), want prefix %q", code, text, stderr, wantPlain)
+	}
+	code, timedText, stderr := c.hotbed("output", id, "--tail", "2", "--timestamps")
+	wantTimedRe := regexp.MustCompile(`^300     \d\d:\d\d:\d\d\.\d\d\d  line 300\n301     \d\d:\d\d:\d\d\.\d\d\d  error: boom\n\[` + regexp.QuoteMeta(id) + ` running · 301 lines · next --after 301\]\n`)
+	if code != exitOK || !wantTimedRe.MatchString(timedText) {
+		t.Fatalf("output --tail 2 --timestamps: exit %d, %q (stderr %q), want match %s", code, timedText, stderr, wantTimedRe)
 	}
 	c.ok(&q, "output", id, "--until", "never", "--after", "301", "--timeout", "1")
 	if q.Waited != "timeout" {

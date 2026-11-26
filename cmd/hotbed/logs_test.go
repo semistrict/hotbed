@@ -215,3 +215,33 @@ func TestLogsReadableAfterControllerAndWorkerRestartWithLostDB(t *testing.T) {
 		}
 	}
 }
+
+// hotbed logs --timestamps (-t) prefixes every line with its local receive time
+// across full replay, --tail (-n), and live follow (-f).
+func TestLogsTimestampsOption(t *testing.T) {
+	c := newCluster(t)
+	c.addRepo(upstream(t))
+	c.ok(nil, "session", "start", "ts-owl")
+	c.workspace("ts-owl", nil)
+
+	cmd := &pb.Command{}
+	c.ok(cmd, "run", "-s", "ts-owl", "-r", "app", "--detach", "--mem", "1G", "--", "sh", "-c", "echo first; sleep 0.05; echo second")
+	lineRe := regexp.MustCompile(`^\d\d:\d\d:\d\d\.\d\d\d  first\n\d\d:\d\d:\d\d\.\d\d\d  second\n$`)
+
+	code, followOut, stderr := c.hotbed("logs", "-s", "ts-owl", "-f", "-t", cmd.Id)
+	if code != 0 || !lineRe.MatchString(followOut) {
+		t.Fatalf("logs -f -t: exit %d, out=%q stderr=%q, want match %s", code, followOut, stderr, lineRe)
+	}
+	code, fullOut, stderr := c.hotbed("logs", "--timestamps", cmd.Id)
+	if code != 0 || fullOut != followOut {
+		t.Fatalf("logs --timestamps: exit %d, out=%q (want %q) stderr=%q", code, fullOut, followOut, stderr)
+	}
+	code, tailOut, stderr := c.hotbed("logs", "-n", "2", "-t", cmd.Id)
+	if code != 0 || tailOut != followOut {
+		t.Fatalf("logs -n 2 -t: exit %d, out=%q (want %q) stderr=%q", code, tailOut, followOut, stderr)
+	}
+	// Without -t, output stays plain.
+	if code, plain, _ := c.hotbed("logs", cmd.Id); code != 0 || plain != "first\nsecond\n" {
+		t.Fatalf("logs plain: exit %d, out=%q, want first/second", code, plain)
+	}
+}

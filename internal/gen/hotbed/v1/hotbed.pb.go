@@ -10472,7 +10472,10 @@ type QueryOutputRequest struct {
 	// Lines as written, escape sequences and redraws included, not settled.
 	Raw bool `protobuf:"varint,14,opt,name=raw,proto3" json:"raw,omitempty"`
 	// At most this many lines in the answer (default 200, at most 5000).
-	MaxLines      int32 `protobuf:"varint,15,opt,name=max_lines,json=maxLines,proto3" json:"max_lines,omitempty"`
+	MaxLines int32 `protobuf:"varint,15,opt,name=max_lines,json=maxLines,proto3" json:"max_lines,omitempty"`
+	// Prefix each line with the local time it was received (HH:MM:SS.mmm) in
+	// plain-text output. JSON output always includes received_at.
+	Timestamps    bool `protobuf:"varint,16,opt,name=timestamps,proto3" json:"timestamps,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -10610,6 +10613,13 @@ func (x *QueryOutputRequest) GetMaxLines() int32 {
 		return x.MaxLines
 	}
 	return 0
+}
+
+func (x *QueryOutputRequest) GetTimestamps() bool {
+	if x != nil {
+		return x.Timestamps
+	}
+	return false
 }
 
 // A line of a command's output.
@@ -11595,7 +11605,10 @@ type FollowLogRequest struct {
 	Follow bool                   `protobuf:"varint,3,opt,name=follow,proto3" json:"follow,omitempty"`
 	// The caller waits on the command (with follow): a command its soft time
 	// limit paused resumes, and its soft limit counts again from now.
-	Wait          bool `protobuf:"varint,4,opt,name=wait,proto3" json:"wait,omitempty"`
+	Wait bool `protobuf:"varint,4,opt,name=wait,proto3" json:"wait,omitempty"`
+	// When true, split chunks at recorded receive-timestamp boundaries and set
+	// LogChunk.received_at on each chunk.
+	Timestamps    bool `protobuf:"varint,5,opt,name=timestamps,proto3" json:"timestamps,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -11658,6 +11671,13 @@ func (x *FollowLogRequest) GetWait() bool {
 	return false
 }
 
+func (x *FollowLogRequest) GetTimestamps() bool {
+	if x != nil {
+		return x.Timestamps
+	}
+	return false
+}
+
 type LogChunk struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// The command's output; where a long log dropped bytes past its limit, a
@@ -11670,8 +11690,12 @@ type LogChunk struct {
 	// Set on the terminal chunk when FollowLog stops following because the
 	// command paused or ended: captures the state and intervention at the moment
 	// the wait ended so a subsequent quick resume cannot hide a hand pause.
-	State         CommandState         `protobuf:"varint,3,opt,name=state,proto3,enum=hotbed.v1.CommandState" json:"state,omitempty"`
-	EndedBy       *CommandIntervention `protobuf:"bytes,4,opt,name=ended_by,json=endedBy,proto3" json:"ended_by,omitempty"`
+	State   CommandState         `protobuf:"varint,3,opt,name=state,proto3,enum=hotbed.v1.CommandState" json:"state,omitempty"`
+	EndedBy *CommandIntervention `protobuf:"bytes,4,opt,name=ended_by,json=endedBy,proto3" json:"ended_by,omitempty"`
+	// Unix milliseconds when this chunk's bytes were received, populated when
+	// FollowLogRequest.timestamps is true (0 when unknown or for synthetic
+	// dropped-bytes markers).
+	ReceivedAt    int64 `protobuf:"varint,5,opt,name=received_at,json=receivedAt,proto3" json:"received_at,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -11732,6 +11756,13 @@ func (x *LogChunk) GetEndedBy() *CommandIntervention {
 		return x.EndedBy
 	}
 	return nil
+}
+
+func (x *LogChunk) GetReceivedAt() int64 {
+	if x != nil {
+		return x.ReceivedAt
+	}
+	return 0
 }
 
 type Session struct {
@@ -32424,7 +32455,7 @@ const file_hotbed_v1_hotbed_proto_rawDesc = "" +
 	"\x0fCommandEstimate\x12!\n" +
 	"\fmemory_bytes\x18\x01 \x01(\x03R\vmemoryBytes\x12\x18\n" +
 	"\aseconds\x18\x02 \x01(\x03R\aseconds\x12\x16\n" +
-	"\x06source\x18\x03 \x01(\tR\x06source\"\xdd\x03\n" +
+	"\x06source\x18\x03 \x01(\tR\x06source\"\x88\x04\n" +
 	"\x12QueryOutputRequest\x12\x18\n" +
 	"\x02id\x18\x01 \x01(\tB\b\x82\xb5\x18\x04\x18\x01X\x01R\x02id\x12\x1b\n" +
 	"\x04grep\x18\x02 \x01(\tB\a\x82\xb5\x18\x03\x12\x01gR\x04grep\x125\n" +
@@ -32448,7 +32479,10 @@ const file_hotbed_v1_hotbed_proto_rawDesc = "" +
 	"\atimeoutR\x0etimeoutSeconds\x12\x10\n" +
 	"\x03raw\x18\x0e \x01(\bR\x03raw\x12&\n" +
 	"\tmax_lines\x18\x0f \x01(\x05B\t\x82\xb5\x18\x05\n" +
-	"\x03maxR\bmaxLines\"o\n" +
+	"\x03maxR\bmaxLines\x12)\n" +
+	"\n" +
+	"timestamps\x18\x10 \x01(\bB\t\x82\xb5\x18\x05\x12\x01tP\x01R\n" +
+	"timestamps\"o\n" +
 	"\n" +
 	"OutputLine\x12\x16\n" +
 	"\x06number\x18\x01 \x01(\x03R\x06number\x12\x12\n" +
@@ -32539,18 +32573,23 @@ const file_hotbed_v1_hotbed_proto_rawDesc = "" +
 	"\acomment\x18\x02 \x01(\tR\acomment\x12\x1d\n" +
 	"\n" +
 	"session_id\x18\x03 \x01(\tR\tsessionId\x12\x12\n" +
-	"\x04host\x18\x04 \x01(\tR\x04host\"f\n" +
+	"\x04host\x18\x04 \x01(\tR\x04host\"\x86\x01\n" +
 	"\x10FollowLogRequest\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x16\n" +
 	"\x06offset\x18\x02 \x01(\x03R\x06offset\x12\x16\n" +
 	"\x06follow\x18\x03 \x01(\bR\x06follow\x12\x12\n" +
-	"\x04wait\x18\x04 \x01(\bR\x04wait\"\xa9\x01\n" +
+	"\x04wait\x18\x04 \x01(\bR\x04wait\x12\x1e\n" +
+	"\n" +
+	"timestamps\x18\x05 \x01(\bR\n" +
+	"timestamps\"\xca\x01\n" +
 	"\bLogChunk\x12\x12\n" +
 	"\x04data\x18\x01 \x01(\fR\x04data\x12\x1f\n" +
 	"\vnext_offset\x18\x02 \x01(\x03R\n" +
 	"nextOffset\x12-\n" +
 	"\x05state\x18\x03 \x01(\x0e2\x17.hotbed.v1.CommandStateR\x05state\x129\n" +
-	"\bended_by\x18\x04 \x01(\v2\x1e.hotbed.v1.CommandInterventionR\aendedBy\"\xc9\x04\n" +
+	"\bended_by\x18\x04 \x01(\v2\x1e.hotbed.v1.CommandInterventionR\aendedBy\x12\x1f\n" +
+	"\vreceived_at\x18\x05 \x01(\x03R\n" +
+	"receivedAt\"\xc9\x04\n" +
 	"\aSession\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x14\n" +
 	"\x05agent\x18\x02 \x01(\tR\x05agent\x12\x1d\n" +
@@ -34831,7 +34870,7 @@ const file_hotbed_v1_hotbed_proto_rawDesc = "" +
 	"{{else}}{{if not .ended}}nothing yet ({{.live}} live)\n" +
 	"{{end}}{{end}}{{if .ended}}session ended: {{.endReason}}\n" +
 	"{{end}}{{with .reminder}}{{.}}\n" +
-	"{{end}}{{define \"event\"}}{{time .at}}  {{with .command}}{{.commandId}}  {{pad 14 (what .what)}}  {{short 60 .argv}}{{end}}{{with .workspace}}{{.workspaceId}}  workspace {{what .what}}{{end}}{{with .question}}question #{{.question.id}}  {{what .what}}{{end}}{{with .review}}review #{{.reviewId}}  {{what .what}}{{end}}{{with .memory}}memory #{{.memory.id}}  {{what .what}}{{end}}{{with .detail}}  {{.}}{{end}}{{end}}\x90\x02\x022\xcd\x17\n" +
+	"{{end}}{{define \"event\"}}{{time .at}}  {{with .command}}{{.commandId}}  {{pad 14 (what .what)}}  {{short 60 .argv}}{{end}}{{with .workspace}}{{.workspaceId}}  workspace {{what .what}}{{end}}{{with .question}}question #{{.question.id}}  {{what .what}}{{end}}{{with .review}}review #{{.reviewId}}  {{what .what}}{{end}}{{with .memory}}memory #{{.memory.id}}  {{what .what}}{{end}}{{with .detail}}  {{.}}{{end}}{{end}}\x90\x02\x022\xaf\x17\n" +
 	"\x10WorkspaceService\x12J\n" +
 	"\x0fCreateWorkspace\x12!.hotbed.v1.CreateWorkspaceRequest\x1a\x14.hotbed.v1.Workspace\x12I\n" +
 	"\fGetWorkspace\x12\x1e.hotbed.v1.GetWorkspaceRequest\x1a\x14.hotbed.v1.Workspace\"\x03\x90\x02\x02\x12O\n" +
@@ -34854,9 +34893,9 @@ const file_hotbed_v1_hotbed_proto_rawDesc = "" +
 	"\fPauseCommand\x12\x1e.hotbed.v1.PauseCommandRequest\x1a\x12.hotbed.v1.Command\x12D\n" +
 	"\rResumeCommand\x12\x1f.hotbed.v1.ResumeCommandRequest\x1a\x12.hotbed.v1.Command\x12D\n" +
 	"\tFollowLog\x12\x1b.hotbed.v1.FollowLogRequest\x1a\x13.hotbed.v1.LogChunk\"\x03\x90\x02\x020\x01\x12H\n" +
-	"\vGetLogLines\x12\x1d.hotbed.v1.GetLogLinesRequest\x1a\x15.hotbed.v1.CommandLog\"\x03\x90\x02\x02\x12\xcf\x03\n" +
-	"\vQueryOutput\x12\x1d.hotbed.v1.QueryOutputRequest\x1a\x16.hotbed.v1.OutputQuery\"\x88\x03\x82\xb5\x18\x80\x03\n" +
-	"\x06outputH\x01P\x01b\xf1\x02{{range .lines}}{{pad 6 .number}}  {{pad 8 (time .receivedAt)}}{{if .match}}: {{else}}  {{end}}{{.text}}\n" +
+	"\vGetLogLines\x12\x1d.hotbed.v1.GetLogLinesRequest\x1a\x15.hotbed.v1.CommandLog\"\x03\x90\x02\x02\x12\xb1\x03\n" +
+	"\vQueryOutput\x12\x1d.hotbed.v1.QueryOutputRequest\x1a\x16.hotbed.v1.OutputQuery\"\xea\x02\x82\xb5\x18\xe2\x02\n" +
+	"\x06outputH\x01P\x01b\xd3\x02{{range .lines}}{{pad 6 .number}}{{if .match}}: {{else}}  {{end}}{{.text}}\n" +
 	"{{end}}[{{.commandId}} {{state .state}}{{with .exitCode}} exit {{.}}{{end}} · {{or .totalLines 0}} lines{{with .matches}} · {{.}} matching{{end}}{{with .waited}} · wait {{.}}{{end}}{{with .nextLine}} · next --after {{.}}{{end}}]{{with .omitted}}\n" +
 	"[{{.}}]{{end}}\x90\x02\x02\x12y\n" +
 	"\rDetachCommand\x12\x1f.hotbed.v1.DetachCommandRequest\x1a\x12.hotbed.v1.Command\"3\x82\xb5\x18/\n" +

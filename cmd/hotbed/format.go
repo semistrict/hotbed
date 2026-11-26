@@ -3,8 +3,10 @@ package main
 import (
 	"fmt"
 	"io"
+	"strings"
 	"sync"
 	"text/template"
+	"time"
 
 	"github.com/itchyny/gojq"
 	"google.golang.org/protobuf/proto"
@@ -99,7 +101,72 @@ func writeOutput(w io.Writer, name string, cmd command, data any, opts outputOpt
 		_, err := io.WriteString(w, formatFreshenShowReport(res))
 		return err
 	}
+	if wantsOutputTimestamps(cmd) {
+		if res, ok := asProtoResponse(data, func() *pb.OutputQuery { return &pb.OutputQuery{} }); ok {
+			_, err := io.WriteString(w, formatOutputQueryWithTimestamps(res, time.Now()))
+			return err
+		}
+	}
 	return apicmd.FormatPlain(w, formatTemplate(name, cmd), data)
+}
+
+func wantsOutputTimestamps(cmd command) bool {
+	ac, ok := cmd.(*apiCommand)
+	if !ok {
+		return false
+	}
+	for p, v := range ac.Args.Given {
+		if p.Name == "timestamps" {
+			b, _ := v.(bool)
+			return b
+		}
+	}
+	return false
+}
+
+// formatLogTimestamp renders a unix-millisecond received timestamp in local
+// wall time: "15:04:05.000" today (12 chars), "2006-01-02 15:04:05.000" for
+// earlier days, or "-           " (12 chars) when unknown (0).
+func formatLogTimestamp(ms int64, now time.Time) string {
+	if ms <= 0 {
+		return "-           "
+	}
+	t := time.UnixMilli(ms).Local()
+	if y, m, d := now.Date(); t.Year() == y && t.Month() == m && t.Day() == d {
+		return t.Format("15:04:05.000")
+	}
+	return t.Format("2006-01-02 15:04:05.000")
+}
+
+func formatOutputQueryWithTimestamps(res *pb.OutputQuery, now time.Time) string {
+	var b strings.Builder
+	for _, l := range res.Lines {
+		sep := "  "
+		if l.Match {
+			sep = ": "
+		}
+		fmt.Fprintf(&b, "%-6d  %s%s%s\n", l.Number, formatLogTimestamp(l.ReceivedAt, now), sep, l.Text)
+	}
+	fmt.Fprintf(&b, "[%s %s", res.CommandId, enumStateWord(res.State.String(), "COMMAND_STATE_"))
+	if res.ExitCode != nil && *res.ExitCode != 0 {
+		fmt.Fprintf(&b, " exit %d", *res.ExitCode)
+	}
+	fmt.Fprintf(&b, " · %d lines", res.TotalLines)
+	if res.Matches != nil && *res.Matches > 0 {
+		fmt.Fprintf(&b, " · %d matching", *res.Matches)
+	}
+	if res.Waited != "" {
+		fmt.Fprintf(&b, " · wait %s", res.Waited)
+	}
+	if res.NextLine > 0 {
+		fmt.Fprintf(&b, " · next --after %d", res.NextLine)
+	}
+	b.WriteByte(']')
+	if res.Omitted != "" {
+		fmt.Fprintf(&b, "\n[%s]", res.Omitted)
+	}
+	b.WriteByte('\n')
+	return b.String()
 }
 
 func asProtoResponse[T proto.Message](data any, newEmpty func() T) (T, bool) {

@@ -37,6 +37,9 @@ func (e *Engine) QueryOutput(ctx context.Context, req *pb.QueryOutputRequest) (*
 	if err := validateID(req.Id); err != nil {
 		return nil, err
 	}
+	if req.Timestamps {
+		return nil, api.Errorf(api.CodeInvalidArgs, "timestamps is a client-only formatting option")
+	}
 	q, until, err := outputQuery(req)
 	if err != nil {
 		return nil, err

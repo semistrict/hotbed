@@ -2,7 +2,9 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link, useNavigate, useParams, useSearch } from "@tanstack/react-router";
 import { type ReactNode, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
+import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { api, CommandState, type Command, type CommandEvent, type CommandLimits, type FinishedCommand, type Snapshot } from "../api";
@@ -438,15 +440,35 @@ interface TimedLogLine {
   at: bigint;
 }
 
+const OUTPUT_TIMESTAMPS_KEY = "hotbed:output:timestamps";
+
+function readTimestampsPref(): boolean {
+  if (typeof window === "undefined") return true;
+  try {
+    return window.localStorage.getItem(OUTPUT_TIMESTAMPS_KEY) !== "0";
+  } catch {
+    return true;
+  }
+}
+
 /**
  * A command's output: its lines as its terminal shows them (settled,
  * searchable), or, for one run in a terminal by default, the terminal
  * itself, replaying what it wrote as written.
  */
-function LogCard({ id, live, tty }: { id: string; live: boolean; tty: boolean }) {
+export function LogCard({ id, live, tty }: { id: string; live: boolean; tty: boolean }) {
   const [view, setView] = useState<"lines" | "terminal">(tty ? "terminal" : "lines");
   const log = useQuery({ queryKey: ["log", id], queryFn: () => api.commandLog(id), refetchInterval: live && view === "lines" ? 1000 : false });
   const [query, setQuery] = useState("");
+  const [showTimestamps, setShowTimestamps] = useState<boolean>(readTimestampsPref);
+  const toggleTimestamps = (checked: boolean) => {
+    setShowTimestamps(checked);
+    try {
+      localStorage.setItem(OUTPUT_TIMESTAMPS_KEY, checked ? "1" : "0");
+    } catch {
+      // Ignore storage errors (private mode / tests).
+    }
+  };
   const lines = log.data?.lines ?? EMPTY_LINES;
   const timestamps = log.data?.lineTimestamps ?? EMPTY_TIMESTAMPS;
   const timedLines = useMemo<TimedLogLine[]>(
@@ -454,6 +476,7 @@ function LogCard({ id, live, tty }: { id: string; live: boolean; tty: boolean })
     [lines, timestamps],
   );
   const hasTimestamps = useMemo(() => timestamps.some((t) => t > 0n), [timestamps]);
+  const showTimestampGutter = showTimestamps && hasTimestamps;
   const matches = useMemo(() => searchLog(lines, query), [lines, query]);
   const searching = query.trim() !== "";
   return (
@@ -478,14 +501,23 @@ function LogCard({ id, live, tty }: { id: string; live: boolean; tty: boolean })
             </TabsList>
           </Tabs>
           {view === "lines" && (
-            <Input
-              type="search"
-              value={query}
-              onChange={(e) => setQuery(e.target.value)}
-              placeholder="search output"
-              aria-label="Search output"
-              className="h-7 w-full rounded-full bg-background/40 font-mono text-[11px] placeholder:text-faint sm:w-60"
-            />
+            <>
+              <Label className="flex h-7 cursor-pointer items-center gap-1.5 rounded-md border border-border bg-background/40 px-2 font-mono text-[11px] font-normal text-muted-foreground select-none hover:text-foreground">
+                <Checkbox
+                  checked={showTimestamps}
+                  onCheckedChange={(c) => toggleTimestamps(Boolean(c))}
+                />
+                Timestamps
+              </Label>
+              <Input
+                type="search"
+                value={query}
+                onChange={(e) => setQuery(e.target.value)}
+                placeholder="search output"
+                aria-label="Search output"
+                className="h-7 w-full rounded-full bg-background/40 font-mono text-[11px] placeholder:text-faint sm:w-60"
+              />
+            </>
           )}
         </div>
       }
@@ -499,9 +531,9 @@ function LogCard({ id, live, tty }: { id: string; live: boolean; tty: boolean })
       ) : !live && lines.length === 0 ? (
         <div className={`${logBox} text-faint`}>No output captured.</div>
       ) : searching ? (
-        <LogMatches lines={lines} timestamps={timestamps} hasTimestamps={hasTimestamps} matches={matches} />
+        <LogMatches lines={lines} timestamps={timestamps} showTimestamps={showTimestampGutter} matches={matches} />
       ) : (
-        <LogView lines={timedLines} hasTimestamps={hasTimestamps} live={live} />
+        <LogView lines={timedLines} showTimestamps={showTimestampGutter} live={live} />
       )}
     </Card>
   );
@@ -509,7 +541,18 @@ function LogCard({ id, live, tty }: { id: string; live: boolean; tty: boolean })
 
 const logBox = "max-h-[520px] overflow-auto rounded-lg border border-border bg-background/60 p-3 font-mono text-[11.5px] leading-[1.7]";
 
-function LogView({ lines, hasTimestamps, live }: { lines: TimedLogLine[]; hasTimestamps: boolean; live: boolean }) {
+function LogTimestamp({ at }: { at: bigint }) {
+  return (
+    <span
+      className="num inline-flex shrink-0 items-center whitespace-nowrap border-r border-border/50 pr-3 text-[10.5px] text-faint/80 select-none"
+      title={at > 0n ? new Date(Number(at)).toISOString() : undefined}
+    >
+      {at > 0n ? hhmmssms(at) : <span className="invisible">00:00:00.000</span>}
+    </span>
+  );
+}
+
+export function LogView({ lines, showTimestamps, live }: { lines: TimedLogLine[]; showTimestamps: boolean; live: boolean }) {
   const box = useRef<HTMLDivElement>(null);
   const { shown, following, behind, onScroll, follow } = useHeld(lines, live, "end");
   // Scroll only the log's own box (scrollIntoView would scroll the page too),
@@ -522,19 +565,17 @@ function LogView({ lines, hasTimestamps, live }: { lines: TimedLogLine[]; hasTim
     <div className="relative">
       <div ref={box} onScroll={onScroll} className={logBox}>
         {shown.map((l, i) => (
-          <div key={i} className={`flex whitespace-pre ${tone(l.text)}`}>
-            {hasTimestamps && (
-              <span
-                className="num w-[92px] shrink-0 pr-3 text-right text-faint select-none"
-                title={l.at > 0n ? new Date(Number(l.at)).toISOString() : undefined}
-              >
-                {l.at > 0n ? hhmmssms(l.at) : ""}
-              </span>
-            )}
+          <div key={i} className={`flex gap-3 whitespace-pre ${tone(l.text)}`}>
+            {showTimestamps && <LogTimestamp at={l.at} />}
             <span>{l.text || " "}</span>
           </div>
         ))}
-        {live && following && <div className="ember-pulse text-primary">▍</div>}
+        {live && following && (
+          <div className="flex gap-3 whitespace-pre">
+            {showTimestamps && <LogTimestamp at={0n} />}
+            <span className="ember-pulse text-primary">▍</span>
+          </div>
+        )}
       </div>
       {live && !following && (
         <Button type="button" size="xs" variant="outline" onClick={follow} className="absolute right-4 bottom-3 bg-card font-mono text-[10.5px] shadow-sm">
@@ -549,12 +590,12 @@ function LogView({ lines, hasTimestamps, live }: { lines: TimedLogLine[]; hasTim
 function LogMatches({
   lines,
   timestamps,
-  hasTimestamps,
+  showTimestamps,
   matches,
 }: {
   lines: string[];
   timestamps: bigint[];
-  hasTimestamps: boolean;
+  showTimestamps: boolean;
   matches: LogMatch[];
 }) {
   if (matches.length === 0) return <div className={`${logBox} text-faint`}>No line matches.</div>;
@@ -571,16 +612,9 @@ function LogMatches({
         }
         parts.push(text.slice(atPos));
         return (
-          <div key={line} className={`flex whitespace-pre ${tone(text)}`}>
-            <span className="num w-12 shrink-0 pr-3 text-right text-faint select-none">{line + 1}</span>
-            {hasTimestamps && (
-              <span
-                className="num w-[92px] shrink-0 pr-3 text-right text-faint select-none"
-                title={at > 0n ? new Date(Number(at)).toISOString() : undefined}
-              >
-                {at > 0n ? hhmmssms(at) : ""}
-              </span>
-            )}
+          <div key={line} className={`flex gap-3 whitespace-pre ${tone(text)}`}>
+            <span className="num inline-flex min-w-[4ch] shrink-0 items-center justify-end text-[10.5px] text-faint/80 select-none">{line + 1}</span>
+            {showTimestamps && <LogTimestamp at={at} />}
             <span>{parts}</span>
           </div>
         );

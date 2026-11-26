@@ -293,6 +293,7 @@ func (s *Service) FollowLog(ctx context.Context, req *pb.FollowLogRequest, strea
 	startIvSeq := s.E.LastInterventionSeq(req.Id)
 	var endState pb.CommandState
 	var endedBy *pb.CommandIntervention
+	var tsIdx *cmdlog.TimestampIndex
 	buf := make([]byte, 64<<10)
 	for {
 		if f == nil {
@@ -320,8 +321,23 @@ func (s *Service) FollowLog(ctx context.Context, req *pb.FollowLogRequest, strea
 				if len(data) == 0 {
 					break
 				}
-				if err := stream.Send(&pb.LogChunk{Data: data, NextOffset: next}); err != nil {
-					return nil // the client went away
+				if req.Timestamps && next == offset+int64(len(data)) {
+					if tsIdx == nil || next > tsIdx.MaxOffset() {
+						tsIdx, _ = cmdlog.ReadTimestamps(path)
+					}
+					if err := tsIdx.SplitChunks(offset, data, func(chunkOff int64, chunk []byte, ts int64) error {
+						return stream.Send(&pb.LogChunk{
+							Data:       chunk,
+							NextOffset: chunkOff + int64(len(chunk)),
+							ReceivedAt: ts,
+						})
+					}); err != nil {
+						return nil // the client went away
+					}
+				} else {
+					if err := stream.Send(&pb.LogChunk{Data: data, NextOffset: next}); err != nil {
+						return nil // the client went away
+					}
 				}
 				offset = next
 			}

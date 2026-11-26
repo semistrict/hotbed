@@ -223,6 +223,14 @@ func ReadTimestamps(path string) (*TimestampIndex, error) {
 // Empty reports whether the index has no timestamp entries.
 func (idx *TimestampIndex) Empty() bool { return idx == nil || len(idx.entries) == 0 }
 
+// MaxOffset returns the highest end offset covered by idx, or 0 when empty.
+func (idx *TimestampIndex) MaxOffset() int64 {
+	if idx == nil || len(idx.entries) == 0 {
+		return 0
+	}
+	return idx.entries[len(idx.entries)-1].EndOffset
+}
+
 // At returns the receive timestamp (unix ms) for logical byte offset off, or 0
 // if no timestamp entry covers off.
 func (idx *TimestampIndex) At(off int64) int64 {

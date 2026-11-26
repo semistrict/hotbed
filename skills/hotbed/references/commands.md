@@ -365,6 +365,7 @@ QueryOutput reads a command's output, live or ended, as its terminal shows it (s
 | `--timeout` |  | How long --until or --wait waits at most, in seconds (default 60, at most 600). |
 | `--raw` |  | Lines as written, escape sequences and redraws included, not settled. |
 | `--max` |  | At most this many lines in the answer (default 200, at most 5000). |
+| `-t`, `--timestamps` |  | Prefix each line with the local time it was received (HH:MM:SS.mmm) in plain-text output. JSON output always includes received_at. |
 
 ## `detach`
 

@@ -459,7 +459,7 @@ service WorkspaceService {
       name: "output"
       read_only: true
       waits: true
-      format: "{{range .lines}}{{pad 6 .number}}  {{pad 8 (time .receivedAt)}}{{if .match}}: {{else}}  {{end}}{{.text}}\n{{end}}[{{.commandId}} {{state .state}}{{with .exitCode}} exit {{.}}{{end}} · {{or .totalLines 0}} lines{{with .matches}} · {{.}} matching{{end}}{{with .waited}} · wait {{.}}{{end}}{{with .nextLine}} · next --after {{.}}{{end}}]{{with .omitted}}\n[{{.}}]{{end}}"
+      format: "{{range .lines}}{{pad 6 .number}}{{if .match}}: {{else}}  {{end}}{{.text}}\n{{end}}[{{.commandId}} {{state .state}}{{with .exitCode}} exit {{.}}{{end}} · {{or .totalLines 0}} lines{{with .matches}} · {{.}} matching{{end}}{{with .waited}} · wait {{.}}{{end}}{{with .nextLine}} · next --after {{.}}{{end}}]{{with .omitted}}\n[{{.}}]{{end}}"
     };
   }
   // DetachCommand lets an attached command run on with no one following
@@ -2028,6 +2028,12 @@ message QueryOutputRequest {
   bool raw = 14;
   // At most this many lines in the answer (default 200, at most 5000).
   int32 max_lines = 15 [(param) = {name: "max"}];
+  // Prefix each line with the local time it was received (HH:MM:SS.mmm) in
+  // plain-text output. JSON output always includes received_at.
+  bool timestamps = 16 [(param) = {
+    short: "t"
+    local: true
+  }];
 }
 
 // A line of a command's output.
@@ -2207,6 +2213,9 @@ message FollowLogRequest {
   // The caller waits on the command (with follow): a command its soft time
   // limit paused resumes, and its soft limit counts again from now.
   bool wait = 4;
+  // When true, split chunks at recorded receive-timestamp boundaries and set
+  // LogChunk.received_at on each chunk.
+  bool timestamps = 5;
 }
 
 message LogChunk {
@@ -2222,6 +2231,10 @@ message LogChunk {
   // the wait ended so a subsequent quick resume cannot hide a hand pause.
   CommandState state = 3;
   CommandIntervention ended_by = 4;
+  // Unix milliseconds when this chunk's bytes were received, populated when
+  // FollowLogRequest.timestamps is true (0 when unknown or for synthetic
+  // dropped-bytes markers).
+  int64 received_at = 5;
 }
 
 // ---- sessions -------------------------------------------------------------
