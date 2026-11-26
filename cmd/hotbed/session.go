@@ -551,7 +551,7 @@ func waitReady(ctx context.Context, w workerClients, ws *pb.Workspace, stderr io
 	}
 	if ws.State == pb.WorkspaceState_WORKSPACE_STATE_FAILED {
 		return nil, api.Errorf(api.CodeWorkspaceFailed, "workspace %s failed: %s", ws.Id, ws.Reason).
-			WithSuggestion("fix the failing step (hotbed step ls, then hotbed step add), then run again; if it uncovered a reusable quirk, save it with `hotbed memory add --slug SLUG --summary \"...\"`")
+			WithSuggestion("fix the failing step (hotbed step ls, then hotbed step add), then run again")
 	}
 	return ws, nil
 }

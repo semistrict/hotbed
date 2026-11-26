@@ -15,7 +15,13 @@ import {
 	type Question,
 } from "../gen/hotbed/v1/hotbed_pb.ts";
 import { getCaller } from "../connect-adapter.ts";
-import { inProject, stamped, validateT3CodeThreadId, type ControllerContext } from "../context.ts";
+import {
+	inProject,
+	MEMORY_FEEDBACK_REMINDER,
+	stamped,
+	validateT3CodeThreadId,
+	type ControllerContext,
+} from "../context.ts";
 import { ErrorCode, hotbedError, type HotbedError } from "../errors.ts";
 import { canonicalRemote } from "../gitops.ts";
 
@@ -508,7 +514,7 @@ export function createQuestionService(
 			ctrl.questionBridge?.broadcastUpdate("handled", qs);
 			return create(AckQuestionsResponseSchema, {
 				questions: qs,
-				reminder: `${POLL_REMINDER} If the user's answer reflects a standing preference or project convention, save it as a memory (\`hotbed memory add --slug SLUG --summary "..."\`, MCP: \`memory_add\`).`,
+				reminder: `${POLL_REMINDER} ${MEMORY_FEEDBACK_REMINDER}`,
 			});
 		},
 	};

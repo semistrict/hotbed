@@ -902,20 +902,22 @@ export function setupStepsReminder(p?: Project | null): string {
 	return `Reminder: make sure project ${p.name} has setup steps (\`hotbed step ls -p ${p.name}\`, \`hotbed step add\`, \`hotbed step set\`; use \`--every-pull\` for dependency installs and builds) for common things like toolchain installs, dependencies, and pre-builds. ${standard}`;
 }
 
-export const MEMORY_FAILURE_REMINDER =
-	'Reminder: if this failure revealed a reusable fix, quirk, or gotcha, save it with `hotbed memory add --slug SLUG --summary "..." --rationale "..."` (MCP: `memory_add`; add `--body "..."` for long notes, `--global` for cross-project rules).';
+// Where a lesson goes. Every always-on memory costs every session's context,
+// so the reminders below send a lesson to the place it will be found first
+// (its fix, the repo, a skill) and to memory only when it has no such home.
+const LESSON_HOMES =
+	'fix its cause, or write it where it will be found (the repo\'s AGENTS.md, a comment by the code, the tool\'s skill); save a memory only for what has no such home (a preference, a machine fact, a workaround naming its open bug): `hotbed memory ls -q WORD` for one to update, else `hotbed memory add --slug SLUG --summary "..." --rationale "..."` (MCP: `memory_add`).';
 
-export const MEMORY_FEEDBACK_REMINDER =
-	'Reminder: if this user answer or review feedback reflects a standing preference, convention, or pitfall, save it with `hotbed memory add --slug SLUG --summary "..." --rationale "..."` (MCP: `memory_add`; pass `--global` if cross-project).';
+export const MEMORY_FAILURE_REMINDER = `Reminder: if this failure revealed a reusable fix or quirk, ${LESSON_HOMES}`;
 
-export const MEMORY_FIX_REMINDER =
-	'Reminder: if this defect exposed a reusable pitfall or invariant, save it with `hotbed memory add --slug SLUG --summary "..." --rationale "..."` (MCP: `memory_add`).';
+export const MEMORY_FEEDBACK_REMINDER = `Reminder: if this user answer or review feedback reflects a standing preference or convention, ${LESSON_HOMES}`;
 
-export const MEMORY_SESSION_END_REMINDER =
-	'Before wrapping up: if this session uncovered a reusable gotcha, tooling quirk, or user correction, save it with `hotbed memory add --slug SLUG --summary "..." --rationale "..." [--global] [--body "..."]` (MCP: `memory_add`), or archive obsolete memories with `hotbed memory archive ID --reason "..."`.';
+export const MEMORY_FIX_REMINDER = `Reminder: if this defect exposed a reusable pitfall or invariant, ${LESSON_HOMES}`;
+
+export const MEMORY_SESSION_END_REMINDER = `Before wrapping up: if this session taught something reusable, ${LESSON_HOMES} Archive memories it made obsolete with \`hotbed memory archive ID --reason "..."\`.`;
 
 export function memorySavingReminder(): string {
-	return 'Memories: save reusable gotchas, tooling quirks, and user corrections with `hotbed memory add --slug SLUG --summary "..." --rationale "..." [--global] [--body "..."]` (MCP: `memory_add`), and archive obsolete ones with `hotbed memory archive ID --reason "..."`.';
+	return `Lessons: ${LESSON_HOMES} Archive obsolete memories with \`hotbed memory archive ID --reason "..."\`.`;
 }
 
 export function sessionStartReminder(p?: Project | null): string {

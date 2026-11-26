@@ -539,8 +539,9 @@ func reserves(s pb.CommandState) bool { return s == running || s == parked }
 // so it can always run alone): a build grows to gigabytes well after it
 // starts, by when admission would have let others in beside it. From there
 // it only grows: a build's need recurs (each link wants its memory again), so
-// what it has held is what it may hold again, whatever it asked for. Call
-// with e.mu held.
+// what it has held is what it may hold again, whatever it asked for. Never
+// the RAM its VM was given: that is a configured ceiling a guest rarely
+// fills, so counting it would leave the node idle. Call with e.mu held.
 func (e *Engine) reservation(c *command) int64 {
 	base := c.cmd().Limits.GetMemoryLowBytes()
 	if base == 0 {

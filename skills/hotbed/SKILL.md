@@ -69,6 +69,8 @@ Do not pipe `hotbed session start` into `jq` or swallow its stdout: it prints ac
   stays on its node: a run on another node sees the base plus your checkout, not it. `hotbed
   sync` sends the checkout to every workspace the session has. A run of a repo the session's
   project does not hold is refused: add its remote with `hotbed project add PROJECT --repo REMOTE`.
+  In the workspace your checkout's state is a `hotbed sync` commit at `HEAD`, over the base's
+  commit: to compare with the base, use `git show HEAD~1:PATH` or a SHA, never `HEAD:PATH`.
 - **Without a checkout** (`-r REPO` elsewhere, or `--no-sync`) a run changes only what its
   workspace holds, so it stays in the session's workspace, as over ssh: `hotbed run -r ratel --
   git checkout -b fix`, `hotbed run -r ratel -- sed -i ...`, `git commit`, `git push`. If that
@@ -83,19 +85,19 @@ project memory to global, archive/restore, reorder, or permanently remove them i
 
 ```sh
 hotbed session start                             # prints active always-on rules + on-demand index
-hotbed memory get subagent-model-neon            # fetch full markdown body of one or more memories
+hotbed memory get zsh-and-macos-shell-footguns   # fetch full markdown body of one or more memories
 hotbed memory ls [-q QUERY] [--scope global|project] [--all-projects]
 hotbed memory add --global \
-  --slug subagent-model-neon \
-  --summary "Use gemini-4-neon (not GPT models) for all T3 Code delegated subagents." \
-  --rationale "User correction in thread fxdax"
+  --slug short-replies \
+  --summary "Keep chat replies to a few lines; put long detail in files or artifacts." \
+  --rationale "User correction: they don't read long replies"
 hotbed memory add --slug zfs-base-freshen \
   --summary "ZFS clone/snapshot base freshening internals — read before debugging base failures." \
   --rationale "Hit ZFS clone flake while debugging base freshening" \
   --body-file - <<'EOF'
 ...detailed markdown playbook...
 EOF
-hotbed memory add --supersede 4 --slug subagent-model-neon --summary "..." --rationale "..."
+hotbed memory add --supersede 4 --slug short-replies --summary "..." --rationale "..."
 hotbed memory edit 4 --summary "..." [--global | -p PROJECT] [--repo REPO] [--rationale "..."]
 hotbed memory promote 2                          # promote a project-specific memory to global
 hotbed memory archive 2 --reason "..."           # soft-retire (restorable via `memory restore`; --reason required for agents)
@@ -109,6 +111,14 @@ hotbed memory rm 2                               # permanently remove a memory
   `--rationale "..."` explaining why the memory is being added and what triggered it; this
   rationale is stored as metadata only and is not returned in context when reading memories.
   `hotbed session end` prompts you at wrap-up.
+- **A memory is the last resort.** Every always-on memory costs every session's context, so first
+  put the lesson where it will be found: fix the bug or tooling quirk itself (a script, a check, a
+  clearer error); write a design decision as a comment beside the code it constrains, or in the
+  repo's `AGENTS.md` (a subdirectory's own `AGENTS.md` for rules about that part); and put how to
+  use a tool in that tool's skill. Save a memory for what has no such home: the user's
+  preferences, facts about machines, and workarounds for open bugs (name the bug's task so the
+  memory can go once it is fixed). Check `hotbed memory ls -q WORD` first and update a memory that
+  already covers it; keep each memory to one rule, so one can be retired without the others.
 - **Archive outdated memories with a reason:** when a memory is obsolete or no longer true,
   agents can soft-retire it with `hotbed memory archive ID --reason "..."` (MCP: `memory_archive`;
   `--reason` is required for agents). Archived memories can be restored with `hotbed memory restore`.
@@ -143,6 +153,10 @@ bash script run with `-eo pipefail` in `/work`, beside every repo of the project
 first for one repo's build), and it is like a database migration: a base runs it once, and again
 only when its script changes. Add `--every-pull` for steps that must follow the code, such as
 builds and installs from a lockfile: they run again whenever any repo moved.
+
+Bases run steps against the default branch's files. A branch that changes what a step reads (a
+package list, a script it runs) must run that step's script in its own workspace first, or its
+runs lack what the change adds.
 
 - Install into the workspace, never into `$HOME` or the system, or forks won't have it. Programs go
   in `$HOTBED_BIN` (on PATH). Caches and data go in `$XDG_CACHE_HOME` and `$XDG_DATA_HOME`.
@@ -327,6 +341,7 @@ Everything that happens in your session later reaches you through **one call, `h
 your commands admitted, parked, paused or ended, your workspaces ready or failed, the user's
 answers to your questions, your reviews finished or failed, and responses to them. Attached
 `hotbed run` is for short work only (a build, a quick test); anything long, `--detach` it and poll.
+An attached `run` killed locally (a tool timeout, Ctrl-C) stops its command on the node too.
 
 - `poll` returns at once with what happened since the session's last poll, or waits up to two
   minutes for something to happen. Nothing after two minutes means nothing happened yet: carry

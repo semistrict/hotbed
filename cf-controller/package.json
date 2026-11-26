@@ -6,7 +6,7 @@
 		"dev": "cf dev",
 		"build": "cf build",
 		"deploy": "cf deploy",
-		"db:generate": "drizzle-kit generate",
+		"db:generate": "drizzle-kit generate && vp fmt drizzle",
 		"check": "cf workers types && vp check",
 		"format": "vp fmt",
 		"test": "vp test",

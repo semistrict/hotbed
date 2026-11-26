@@ -83,7 +83,7 @@ func (s *mcpServer) serve(ctx context.Context, t mcp.Transport) error {
 	s.alive = alive
 	// Started now, before the client asks for anything; if the controller
 	// cannot be reached, each tool call tries again.
-	instructions := "hotbed's tools: builds, tests and dev servers on a hotbed cluster, questions for the user, and cross-agent memories. Read `hotbed skills get hotbed` for how hotbed works. Save reusable lessons as memories (`memory_add`) whenever you hit a repo/tooling quirk, resolve a tricky bug, or the user corrects you."
+	instructions := "hotbed's tools: builds, tests and dev servers on a hotbed cluster, questions for the user, and cross-agent memories. Read `hotbed skills get hotbed` for how hotbed works. A reusable lesson goes where it will be found: its fix, the repo's AGENTS.md, a comment by the code, or a skill; save a memory (`memory_add`) only for what has none of those (a preference, a machine fact, a workaround naming its open bug), updating one that covers it (`memory_ls`)."
 	if id, err := s.ensure(ctx); err != nil {
 		fmt.Fprintf(s.d.stderr, "hotbed mcp: no session yet: %v\n", toAPIError(err))
 	} else {

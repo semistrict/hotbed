@@ -12,17 +12,18 @@ hotbed session end
 
 Do not pipe `hotbed session start` into `jq` or capture/swallow its stdout: it prints active memories directly and auto-binds the session so `-s` is not needed. Read `hotbed skills get hotbed` for the full CLI workflow. Session and repo are flags (`-s`/`HOTBED_SESSION`, `-r`/`HOTBED_REPO`) defaulted from `T3CODE_THREAD_ID` / the current git worktree and checkout, never positional arguments. A session idle for an hour is abandoned; any session call, and an attached `hotbed run` for as long as it runs, keeps it alive, so never wrap a run in a keep-alive loop. End it with `hotbed session end` when done.
 
-## Save reusable lessons to hotbed memory
+## Put each lesson where it will be found
 
-Whenever you resolve a non-obvious bug or tooling quirk, learn a standing preference from the user, or the user says "remember this" / "add to memory" / `/learn`, save it to hotbed memory (not just a local markdown file) so every future session and harness gets it on `hotbed session start`:
+When you resolve a non-obvious bug or tooling quirk, or learn a standing preference, keep the lesson where the next agent will meet it: fix the cause (a script, a check, a clearer error); write a design decision as a comment beside the code it constrains, or here (a subdirectory's own `AGENTS.md`, such as `ui/` or `cf-controller/`, for rules about that part); put how to use hotbed in `skills/hotbed/SKILL.md`. Save a hotbed memory (not a local markdown file) only for what has no such home: the user's preferences, facts about machines, and workarounds for open bugs, naming the bug's task. Every always-on memory costs every session's context.
 
 ```sh
+hotbed memory ls -q WORD                     # one that already covers it? update it (memory edit ID, or add --supersede ID)
 hotbed memory add --slug SHORT-SLUG --summary "Concise rule (<= 240 chars)" --rationale "Why / what triggered it"         # project always-on rule
 hotbed memory add --global --slug SHORT-SLUG --summary "Cross-project rule" --rationale "Why / what triggered it"         # global always-on rule
 hotbed memory add --slug SHORT-SLUG --summary "1-line trigger" --rationale "Why / what triggered it" --body-file - <<'EOF' # on-demand playbook
 ```
 
-Omitting `--mode` defaults to `always` when `--body` is empty and `on_demand` when `--body` is given. Use `--supersede ID` or `hotbed memory edit ID` to update existing memories instead of duplicating them.
+Omitting `--mode` defaults to `always` when `--body` is empty and `on_demand` when `--body` is given. Keep each memory to one rule, so one can be retired without the others, and archive one once its bug is fixed or it moved into the repo.
 
 ## Every API call has a CLI command
 
@@ -36,7 +37,7 @@ Commit changes once they have compiled and their tests have passed (`go test -ra
 
 A branch lives only as long as the work on it: once its tests pass, land it on `main` and push to `main` unless the user says otherwise. Pushing to `main` needs no question. Never leave finished work waiting on a branch, nor start work from a stale base: merge `main` in often so nothing drifts far from it.
 
-After every push to `main`, CI builds the release and deploys the Cloudflare Worker controller automatically (`gh run list --workflow build --branch main`). Once the `build` workflow succeeds, run `hotbed upgrade` to install the new CLI on the PATH and check that `hotbed version` names the pushed commit. Never copy a local `go build` over it: a dev build (build 0) stops following the controller.
+After every push to `main`, CI builds the release and deploys the Cloudflare Worker controller automatically (`gh run list --workflow build --branch main`). Once the `build` workflow succeeds, run `hotbed upgrade` to install the new CLI on the PATH and check that `hotbed version` names the pushed commit. Never copy a local `go build` over it: a dev build (build 0) stops following the controller. Before ending your turn, watch the rollout finish: `hotbed nodes --json` shows the controller's build (`controllerVersion`) and each worker's (`resources.version`). Other agents push to `main` constantly, so rebase right before pushing. Never deploy a branch to the fleet's own nodes: one deployed by hand once rolled the controller back past `main`'s newer database schema and it crash-looped. Try a branch in a hotbed session instead.
 
 ## Don't wait on the user: decide, and ask in hotbed
 
@@ -44,7 +45,7 @@ Never ask the user anything directly in chat when you can make a reasonable call
 
 ## Database migrations (Drizzle for controller, goose + sqlc for worker)
 
-- **Controller (`cf-controller/`):** Single SQLite Durable Object (`ControllerDO`). Schema lives in `cf-controller/src/db/schema.ts`, migrations are generated via `pnpm -C cf-controller run db:generate` into `cf-controller/drizzle/`, and auto-run at DO startup.
+- **Controller (`cf-controller/`):** Single SQLite Durable Object (`ControllerDO`). Schema lives in `cf-controller/src/db/schema.ts`, migrations are generated via `pnpm -C cf-controller run db:generate` into `cf-controller/drizzle/` (formatted for `vp check` by the script), and auto-run at DO startup. `drizzle-kit generate` asks on a TTY whether a dropped and added table or column is a rename; without one, split such a change: remove the old, `db:generate`, add the new, `db:generate` (two migrations).
 - **Worker (`internal/worker/db/`):** SQLite schema in `internal/worker/db/migrations/` is managed with `github.com/pressly/goose/v3` and runs automatically at startup inside `openDB` (`PRAGMA foreign_keys = ON` is enabled on every connection).
   - **DDL changes go in SQL migrations** (`NNNNN_name.sql` with `-- +goose Up` / `-- +goose Down`) so `sqlc` can parse the schema statically.
   - **Data backfills that need Go logic** (protobuf JSON, canonical remotes, etc.) go in numbered Go migrations registered with `goose.WithGoMigrations` in `migrations.go`.

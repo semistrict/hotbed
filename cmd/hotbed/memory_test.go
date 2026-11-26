@@ -329,6 +329,13 @@ func TestMemorySavingReminders(t *testing.T) {
 	if !strings.Contains(sess.GetReminder(), "hotbed memory add") {
 		t.Errorf("json session start reminder = %q, want memory add prompt", sess.GetReminder())
 	}
+	// A memory is the last resort: the reminder sends a lesson to its fix or
+	// the repo first, and to an existing memory before a new one.
+	for _, want := range []string{"fix its cause", "AGENTS.md", "hotbed memory ls -q"} {
+		if !strings.Contains(sess.GetReminder(), want) {
+			t.Errorf("json session start reminder = %q, want %q", sess.GetReminder(), want)
+		}
+	}
 	// Session end emits the wrap-up memory reminder (plain + JSON).
 	code, endOut, endErr := c.hotbed("session", "end", "-s", "swift-fox")
 	if code != 0 || !strings.Contains(endOut, "hotbed memory add") {
