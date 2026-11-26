@@ -678,3 +678,166 @@ func TestFreshVMDoesNotIdleForAQueuedCommand(t *testing.T) {
 		t.Fatalf("fresh VM past its grace with a command queued for it: retire reason %q, want %q", why, "no command ran in it")
 	}
 }
+
+type reclaimCall struct {
+	wsID  string
+	cmdID string
+	bytes int64
+}
+
+type proactiveReclaimSpyRuntime struct {
+	runtime.WorkspaceRuntime
+	mu      sync.Mutex
+	calls   []reclaimCall
+	ch      chan reclaimCall
+	blockCh chan struct{}
+}
+
+func (r *proactiveReclaimSpyRuntime) Kind() string { return runtime.KindVM }
+
+func (r *proactiveReclaimSpyRuntime) Reclaim(ctx context.Context, wsID, cmdID string, bytes int64) error {
+	call := reclaimCall{wsID: wsID, cmdID: cmdID, bytes: bytes}
+	r.mu.Lock()
+	r.calls = append(r.calls, call)
+	ch := r.ch
+	blockCh := r.blockCh
+	r.mu.Unlock()
+	if ch != nil {
+		ch <- call
+	}
+	if blockCh != nil {
+		select {
+		case <-blockCh:
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
+	return nil
+}
+
+func (r *proactiveReclaimSpyRuntime) count() int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return len(r.calls)
+}
+
+func TestProactiveGuestCacheReclaimUnderHostPressure(t *testing.T) {
+	spy := &proactiveReclaimSpyRuntime{ch: make(chan reclaimCall, 8)}
+	dir := t.TempDir()
+	store := &fake.Store{Root: filepath.Join(dir, "volumes")}
+	sys := fake.NewSystem()
+	sys.Mem = sysinfo.Mem{Total: 16 << 30, Available: 12 << 30}
+	now := time.Date(2026, 11, 26, 8, 0, 0, 0, time.UTC)
+
+	eng, err := NewEngine(t.Context(), EngineConfig{
+		Dir:        dir,
+		NodeID:     "node-vm",
+		Host:       "node-vm.tail.ts.net",
+		BaseImage:  fake.BaseImage(store),
+		Store:      store,
+		Units:      &fake.Units{},
+		Runtime:    spy,
+		RuntimeFor: func(string) bool { return true },
+		System:     sys,
+		Now:        func() time.Time { return now },
+	})
+	if err != nil {
+		t.Fatalf("NewEngine: %v", err)
+	}
+	t.Cleanup(func() { _ = eng.Close() })
+
+	// Seed a running VM command in ws-hot.
+	eng.mu.Lock()
+	eng.commands["c-run"] = eng.newCommand(&pb.CommandRecord{
+		Command: &pb.Command{Id: "c-run", WorkspaceId: "ws-hot", State: running, Limits: &pb.CommandLimits{}},
+		Cgroup:  makeVMCgroup("ws-hot", "c-run"),
+	})
+	eng.mu.Unlock()
+
+	waitCall := func(wantWS string) {
+		t.Helper()
+		select {
+		case got := <-spy.ch:
+			if got.wsID != wantWS || got.cmdID != "" || got.bytes != 0 {
+				t.Fatalf("reclaim call = %+v, want {wsID:%q cmdID:\"\" bytes:0}", got, wantWS)
+			}
+		case <-time.After(2 * time.Second):
+			t.Fatalf("timed out waiting for proactive guest cache reclaim on %s", wantWS)
+		}
+	}
+
+	// 1. Comfortable host (0% PSI, 50% used): no reclaim.
+	sys.SetUsed(8 << 30)
+	sys.Psi = 0
+	eng.Sample()
+	eng.bg.Wait()
+	if got := spy.count(); got != 0 {
+		t.Fatalf("reclaims under comfortable host = %d, want 0", got)
+	}
+
+	// 2. Host memory PSI >= 5% triggers whole-VM guest cache reclaim.
+	sys.Psi = 6.0
+	eng.Sample()
+	waitCall("ws-hot")
+	eng.bg.Wait()
+
+	// 3. Within cooldown, another Sample does not re-trigger.
+	now = now.Add(guestCacheReclaimCooldown - time.Second)
+	eng.Sample()
+	eng.bg.Wait()
+	if got := spy.count(); got != 1 {
+		t.Fatalf("reclaims within cooldown = %d, want 1", got)
+	}
+
+	// 4. Past cooldown, cladefsd memory pressure triggers reclaim even at 0% PSI.
+	sys.Psi = 0
+	sys.SetUsed(4 << 30)
+	eng.mu.Lock()
+	eng.objectStore = &pb.ObjectStoreStats{MemoryPressure: true}
+	eng.mu.Unlock()
+	now = now.Add(2 * time.Second)
+	eng.Sample()
+	waitCall("ws-hot")
+	eng.bg.Wait()
+
+	// 5. Effective memory >= 80% of admitLimit triggers reclaim, but evictable
+	// cladefsd DAX cache above floor does NOT false-trigger.
+	eng.mu.Lock()
+	eng.objectStore = &pb.ObjectStoreStats{
+		ExtentCacheBytes:      6 << 30,
+		ExtentCacheFloorBytes: 2 << 30,
+	}
+	eng.mu.Unlock()
+	sys.SetUsed(14 << 30) // 14 GiB - 4 GiB reclaimable DAX = 10 GiB (62.5% < 80%)
+	now = now.Add(guestCacheReclaimCooldown + time.Second)
+	eng.Sample()
+	eng.bg.Wait()
+	if got := spy.count(); got != 2 {
+		t.Fatalf("evictable DAX cache false-triggered reclaim: count = %d, want 2", got)
+	}
+
+	// Drop reclaimable DAX cache so effective used is 14 GiB (87.5% >= 80%).
+	eng.mu.Lock()
+	eng.objectStore = nil
+	eng.mu.Unlock()
+	eng.Sample()
+	waitCall("ws-hot")
+	eng.bg.Wait()
+
+	// 6. While a reclaim is in flight, even past cooldown a concurrent Sample
+	// must not overlap a second reclaim on the same VM.
+	block := make(chan struct{})
+	spy.mu.Lock()
+	spy.blockCh = block
+	spy.mu.Unlock()
+	now = now.Add(guestCacheReclaimCooldown + time.Second)
+	eng.Sample()
+	waitCall("ws-hot")
+	now = now.Add(guestCacheReclaimCooldown + time.Second)
+	eng.Sample()
+	close(block)
+	eng.bg.Wait()
+	if got := spy.count(); got != 4 {
+		t.Fatalf("overlapping reclaim fired while in-flight: count = %d, want 4", got)
+	}
+}

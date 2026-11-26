@@ -19,6 +19,7 @@ import (
 	"github.com/semistrict/hotbed/internal/gitops"
 	"github.com/semistrict/hotbed/internal/runtime"
 	"github.com/semistrict/hotbed/internal/statedir"
+	"github.com/semistrict/hotbed/internal/sysinfo"
 	"github.com/semistrict/hotbed/internal/unit"
 )
 
@@ -333,6 +334,119 @@ func parseVMCgroup(cg string) (wsID, cmdID string, ok bool) {
 // and cladefsd DAX queues warm in host RAM when host-side cgroup memory.reclaim
 // pushes a parked/paused VM command's cold anonymous heap out to host swap.
 const vmHostMinResidentBytes int64 = 64 << 20
+
+const (
+	// guestCacheReclaimPressure triggers a non-disruptive guest-only cache
+	// reclaim (sync -> drop_caches=3 -> compact_memory=1) when host memory PSI
+	// (some avg10) reaches this percentage, well before admitPressure (22%) or
+	// cgroup memory.high throttling.
+	guestCacheReclaimPressure = 5.0
+	// guestCacheReclaimMemRatio triggers guest cache reclaim once effective
+	// memory usage reaches this fraction of admitLimit(), catching clean
+	// cladefs page-cache buildup before it hits slice MemoryHigh/MemorySwapMax.
+	guestCacheReclaimMemRatio = 0.80
+	// guestCacheReclaimCooldown is the minimum interval between proactive
+	// guest-cache reclaims on the same running VM.
+	guestCacheReclaimCooldown = 30 * time.Second
+)
+
+type vmCacheReclaimState struct {
+	inFlight bool
+	lastAt   time.Time
+}
+
+// guestCacheReclaimReasonLocked returns a human-readable reason to proactively
+// drop clean guest page cache on running VMs, or "" when the host has ample
+// memory headroom. Call with e.mu held.
+func (e *Engine) guestCacheReclaimReasonLocked(mem sysinfo.Mem, memP float64) string {
+	if e.cfg.Runtime == nil {
+		return ""
+	}
+	if memP >= guestCacheReclaimPressure {
+		return fmt.Sprintf("host memory pressure %.1f%%", memP)
+	}
+	if e.objectStore != nil && (e.objectStore.GetMemoryFull() || e.objectStore.GetMemoryPressure()) {
+		return "cladefsd memory pressure"
+	}
+	if limit := e.admitLimit(); limit > 0 && mem.Total > 0 {
+		used := e.reportedMemUsedLocked(mem)
+		if used >= int64(float64(limit)*guestCacheReclaimMemRatio) {
+			return fmt.Sprintf("memory used %s/%s", gib(used), gib(limit))
+		}
+	}
+	return ""
+}
+
+// scheduleGuestCacheReclaimLocked dispatches asynchronous guest-only Reclaim
+// RPCs (sync -> drop_caches=3 -> compact_memory=1, without pausing the VM or
+// pushing Firecracker into host swap) for running VM workspaces when host
+// memory is under pressure. Call with e.mu held.
+func (e *Engine) scheduleGuestCacheReclaimLocked(now time.Time, mem sysinfo.Mem, memP float64) {
+	if e.cfg.Runtime == nil {
+		return
+	}
+	activeWS := map[string]struct{}{}
+	for _, c := range e.commands {
+		if c.stopping || c.cmd().State != running {
+			continue
+		}
+		wsID := c.cmd().WorkspaceId
+		if !e.usesRuntime(wsID) {
+			if cgWS, _, ok := parseVMCgroup(c.rec.Cgroup); ok && e.usesRuntime(cgWS) {
+				wsID = cgWS
+			} else {
+				continue
+			}
+		}
+		activeWS[wsID] = struct{}{}
+	}
+	for wsID, st := range e.vmCacheReclaim {
+		if _, ok := activeWS[wsID]; !ok && !st.inFlight {
+			delete(e.vmCacheReclaim, wsID)
+		}
+	}
+	if len(activeWS) == 0 {
+		return
+	}
+	reason := e.guestCacheReclaimReasonLocked(mem, memP)
+	if reason == "" {
+		return
+	}
+	if e.vmCacheReclaim == nil {
+		e.vmCacheReclaim = map[string]vmCacheReclaimState{}
+	}
+	for wsID := range activeWS {
+		st := e.vmCacheReclaim[wsID]
+		if st.inFlight || (!st.lastAt.IsZero() && now.Sub(st.lastAt) < guestCacheReclaimCooldown) {
+			continue
+		}
+		prev := st
+		e.vmCacheReclaim[wsID] = vmCacheReclaimState{inFlight: true, lastAt: now}
+		wsID, reason := wsID, reason
+		started := e.startBgLocked(func(bgCtx context.Context) {
+			defer func() {
+				e.mu.Lock()
+				cur := e.vmCacheReclaim[wsID]
+				cur.inFlight = false
+				e.vmCacheReclaim[wsID] = cur
+				e.mu.Unlock()
+			}()
+			rctx, cancel := context.WithTimeout(bgCtx, 10*time.Second)
+			err := e.cfg.Runtime.Reclaim(rctx, wsID, "", 0)
+			cancel()
+			if err != nil {
+				if bgCtx.Err() == nil {
+					slog.Warn("proactive guest page-cache reclaim failed", "workspace", wsID, "reason", reason, "err", err)
+				}
+				return
+			}
+			slog.Info("reclaimed guest page cache under host memory pressure", "workspace", wsID, "reason", reason)
+		})
+		if !started {
+			e.vmCacheReclaim[wsID] = prev
+		}
+	}
+}
 
 // runtimeUnits wraps a host Units implementation (Systemd) and routes commands
 // and interactive shells belonging to VM-backed workspaces through
