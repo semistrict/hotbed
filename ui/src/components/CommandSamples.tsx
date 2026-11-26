@@ -1,5 +1,6 @@
 import { clone } from "@bufbuild/protobuf";
 import { type QueryClient, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useState } from "react";
 import { Button } from "@/components/ui/button";
 import { api, type CommandSample, type ProcessSample } from "../api";
 import { CommandSampleSchema } from "../gen/hotbed/v1/hotbed_pb";
@@ -40,18 +41,35 @@ export function relisted(listed: CommandSample[], prev: SampleList | undefined):
 }
 
 /**
+ * How long after a command's sample count changes its list is asked for
+ * again, waiting for the controller to list the newest: a sample reaches it
+ * within seconds of being kept, and one pruned (kept 30 days) never will.
+ */
+export const SAMPLE_DELIVERY_WINDOW_MS = 60_000;
+
+/** Whether to ask for a command's samples again: one counted is not listed, and it may still come. */
+export function awaitingSamples(listed: readonly CommandSample[] | undefined, count: number | undefined, countChangedAt: number, now: number): boolean {
+  return count !== undefined && newestSeq(listed) < count && now - countChangedAt < SAMPLE_DELIVERY_WINDOW_MS;
+}
+
+/**
  * The samples kept of command id, oldest first, without their contents.
  * count is how many it has (Command.samples, FinishedCommand.samples): the
- * list is fetched again until the controller lists the newest, so a sample
- * anyone takes, or one still on its way as the command ends, shows up.
+ * list is fetched again while the controller has yet to list the newest, so
+ * a sample anyone takes, or one still on its way as the command ends, shows
+ * up.
  */
 export function useCommandSamples(id: string, count: number | undefined) {
   const qc = useQueryClient();
+  // When count last changed, set as it renders, so the very render that
+  // brings a new count asks again.
+  const [counted, setCounted] = useState(() => ({ count, at: Date.now() }));
+  if (counted.count !== count) setCounted({ count, at: Date.now() });
   return useQuery({
     queryKey: sampleKeys.list(id),
     queryFn: async () => relisted(await api.listCommandSamples(id), qc.getQueryData<SampleList>(sampleKeys.list(id))),
     staleTime: Infinity,
-    refetchInterval: (q) => (count !== undefined && newestSeq(q.state.data?.listed) < count ? 1000 : false),
+    refetchInterval: (q) => (awaitingSamples(q.state.data?.listed, count, counted.at, Date.now()) ? 1000 : false),
     select: samplesShown,
   });
 }

@@ -1,7 +1,7 @@
 import { create } from "@bufbuild/protobuf";
 import { describe, expect, it } from "vitest";
 import { CommandSampleSchema } from "../gen/hotbed/v1/hotbed_pb";
-import { relisted, samplesShown } from "./CommandSamples";
+import { awaitingSamples, relisted, SAMPLE_DELIVERY_WINDOW_MS, samplesShown } from "./CommandSamples";
 
 const sample = (seq: number) => create(CommandSampleSchema, { commandId: "c1", seq });
 const seqs = (ss: { seq: number }[]) => ss.map((s) => s.seq);
@@ -23,5 +23,22 @@ describe("sample lists", () => {
 
   it("start from nothing when nothing was listed or seeded", () => {
     expect(relisted([sample(1)], undefined)).toEqual({ listed: [sample(1)], seeded: [] });
+  });
+});
+
+describe("awaitingSamples", () => {
+  const listed = [sample(1), sample(2)];
+
+  it("asks again while the controller lacks a counted sample, within the delivery window", () => {
+    expect(awaitingSamples(listed, 3, 1000, 1000 + SAMPLE_DELIVERY_WINDOW_MS - 1)).toBe(true);
+  });
+
+  it("stops once the newest is listed, or the window has passed (a pruned sample never comes)", () => {
+    expect(awaitingSamples(listed, 2, 1000, 1001)).toBe(false);
+    expect(awaitingSamples(listed, 3, 1000, 1000 + SAMPLE_DELIVERY_WINDOW_MS)).toBe(false);
+  });
+
+  it("never asks again for a command with no count", () => {
+    expect(awaitingSamples([], undefined, 1000, 1001)).toBe(false);
   });
 });
