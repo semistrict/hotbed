@@ -14,6 +14,7 @@ import (
 	"net"
 	"net/http"
 	"net/netip"
+	"net/url"
 	"path/filepath"
 	"slices"
 	"strconv"
@@ -78,6 +79,57 @@ func (e *Engine) SetShellListen(addr string, port int) {
 	defer e.mu.Unlock()
 	e.shellAddr = addr
 	e.shellPort = port
+}
+
+// SetShellServer is the shell server that serves the SSH connections the
+// controller relays to this worker (OpenPipe "ssh").
+func (e *Engine) SetShellServer(s *ShellServer) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.shellServer = s
+}
+
+// OpenPipe is this worker's end of a byte stream the controller relays from
+// a client: kind "ssh" is its shell server (OpenShell's ticket admits the
+// client), kind "port" the port a live command of workspace serves on
+// (hotbed run --port), and nothing else on the machine.
+func (e *Engine) OpenPipe(kind, workspace string, port int) (net.Conn, error) {
+	switch kind {
+	case "ssh":
+		e.mu.Lock()
+		srv := e.shellServer
+		e.mu.Unlock()
+		if srv == nil {
+			return nil, api.Errorf(api.CodePlatformNotSupported, "this worker serves no shells")
+		}
+		client, server := net.Pipe()
+		go srv.ServeConn(server)
+		return client, nil
+	case "port":
+		if !e.servesPort(workspace, port) {
+			return nil, api.Errorf(api.CodeNotFound, "no command in workspace %s serves on port %d", workspace, port)
+		}
+		d := net.Dialer{Timeout: 5 * time.Second}
+		return d.Dial("tcp", net.JoinHostPort("127.0.0.1", strconv.Itoa(port)))
+	default:
+		return nil, api.Errorf(api.CodeInvalidArgs, "no pipe of kind %q", kind)
+	}
+}
+
+// servesPort reports whether a live command of workspace serves on port.
+func (e *Engine) servesPort(workspace string, port int) bool {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	for _, c := range e.commands {
+		cmd := c.cmd()
+		if cmd.WorkspaceId != workspace || cmd.EndedAt != nil || cmd.Url == "" {
+			continue
+		}
+		if u, err := url.Parse(cmd.Url); err == nil && u.Port() == strconv.Itoa(port) {
+			return true
+		}
+	}
+	return false
 }
 
 // OpenShell issues a single-use, short-lived SSH ticket for an interactive
@@ -429,6 +481,30 @@ func (s *ShellServer) Serve(l net.Listener) error {
 	}
 }
 
+// ServeConn serves one SSH connection the controller relays from a client
+// (a pipe over the worker's tunnel), until it ends: the shell ticket its
+// client's key holds, which OpenShell gave, admits it, as the controller
+// admitted the client.
+func (s *ShellServer) ServeConn(conn net.Conn) {
+	s.mu.Lock()
+	if s.closed {
+		s.mu.Unlock()
+		conn.Close()
+		return
+	}
+	s.conns[conn] = struct{}{}
+	s.wg.Add(1)
+	s.mu.Unlock()
+	defer s.wg.Done()
+	defer func() {
+		s.mu.Lock()
+		delete(s.conns, conn)
+		s.mu.Unlock()
+		conn.Close()
+	}()
+	s.serveConn(conn)
+}
+
 // Close closes every listener and active SSH connection and waits for
 // handlers to finish.
 func (s *ShellServer) Close() error {
@@ -464,8 +540,18 @@ func (s *ShellServer) handleConn(conn net.Conn) {
 		slog.Warn("refused an ssh shell connection", "remote", conn.RemoteAddr(), "why", err)
 		return
 	}
+	s.serveConn(conn)
+}
+
+// serveConn serves an admitted SSH connection: its shell ticket says what
+// it may run.
+func (s *ShellServer) serveConn(conn net.Conn) {
+	if err := conn.SetDeadline(time.Now().Add(shellHandshakeBudget)); err != nil {
+		return
+	}
 	sconn, chans, reqs, err := ssh.NewServerConn(conn, s.sshCfg)
 	if err != nil {
+		slog.Warn("ssh shell handshake failed", "remote", conn.RemoteAddr(), "err", err)
 		return
 	}
 	waitDone := make(chan struct{})

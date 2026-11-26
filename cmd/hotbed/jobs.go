@@ -3,11 +3,10 @@ package main
 import (
 	"bytes"
 	"context"
-	"errors"
 	"fmt"
 	"io"
-	"net"
 	"net/url"
+	"strconv"
 	"sync/atomic"
 	"time"
 
@@ -237,27 +236,10 @@ func detachedHelp(id string, wait time.Duration) string {
 		id, wait, id, id, id, id)
 }
 
-// serving says whether a server takes connections at addr. A VM's port is
-// a proxy on its worker, which accepts at once and closes the connection
-// when it cannot reach the port in the VM: a connection closed straight
-// away is no server; one held open, or answered, is.
-func serving(ctx context.Context, addr string) bool {
-	conn, err := (&net.Dialer{Timeout: 2 * time.Second}).DialContext(ctx, "tcp", addr)
-	if err != nil {
-		return false
-	}
-	defer conn.Close()
-	_ = conn.SetReadDeadline(time.Now().Add(time.Second))
-	var b [1]byte
-	n, err := conn.Read(b[:])
-	var nerr net.Error
-	return n > 0 || (errors.As(err, &nerr) && nerr.Timeout())
-}
-
 // waitServing waits, at most timeout, for detached command cmd to be ready:
 // a line of its output matching pattern, and/or its port taking
 // connections; it fails if the command ends first.
-func waitServing(ctx context.Context, wk workerClients, cmd *pb.Command, pattern string, port bool, timeout time.Duration, stderr io.Writer) error {
+func waitServing(ctx context.Context, wk workerClients, cmd *pb.Command, pattern string, port bool, timeout time.Duration, stderr io.Writer, serving func(ctx context.Context, workspace string, port int) bool) error {
 	deadline := time.Now().Add(timeout)
 	if pattern != "" {
 		left := time.Until(deadline)
@@ -283,8 +265,12 @@ func waitServing(ctx context.Context, wk workerClients, cmd *pb.Command, pattern
 	if err != nil || cmd.Url == "" {
 		return api.Errorf(api.CodeInvalidArgs, "--ready-port needs --port: %s has no URL", cmd.Id)
 	}
+	portNum, err := strconv.Atoi(u.Port())
+	if err != nil {
+		return api.Errorf(api.CodeInternal, "%s's URL %s names no port", cmd.Id, cmd.Url)
+	}
 	for {
-		if serving(ctx, u.Host) {
+		if serving(ctx, cmd.WorkspaceId, portNum) {
 			fmt.Fprintf(stderr, "hotbed: %s is ready: %s takes connections\n", cmd.Id, cmd.Url)
 			return nil
 		}

@@ -626,7 +626,100 @@ export class ControllerDO extends DurableObject<ControllerEnv> {
 		if (url.pathname === "/ws/worker" || url.pathname === "/ws/questions") {
 			return this.handleWebSocketUpgrade(request, url.pathname);
 		}
+		if (url.pathname === "/ws/pipe") {
+			return this.handlePipeUpgrade(request, url);
+		}
 		return new Response("Use typed Workers RPC methods on ControllerDO", { status: 405 });
+	}
+
+	/**
+	 * /ws/pipe?workspace=ID&kind=ssh|port[&port=N]: a client's byte stream to
+	 * the workspace's worker, relayed over the worker's tunnel: its shell
+	 * server (hotbed shell's ssh; OpenShell's ticket admits it), or a port a
+	 * command of the workspace serves on. Binary messages carry the bytes;
+	 * one text message, {"type":"opened"}, says the worker's end is open; the
+	 * socket closes when either end does, with why if it failed.
+	 */
+	private async handlePipeUpgrade(request: Request, url: URL): Promise<Response> {
+		const mismatch = this.checkOrgMismatch(request);
+		if (mismatch) return mismatch;
+		if ((request.headers.get("Upgrade") ?? "").toLowerCase() !== "websocket") {
+			return new Response("Expected Upgrade: websocket", { status: 426 });
+		}
+		let caller;
+		try {
+			caller = await this.authRequest(request);
+		} catch (err) {
+			return Response.json(fromUnknownError(err).toJSON(), { status: 403 });
+		}
+		if (caller.role === "worker" || caller.orgRole === "viewer") {
+			return Response.json(
+				{
+					code: ErrorCode.NotAuthorized,
+					message: "a worker or a viewer opens no pipes to workspaces",
+				},
+				{ status: 403 },
+			);
+		}
+		const workspace = url.searchParams.get("workspace") ?? "";
+		const kind = url.searchParams.get("kind") ?? "";
+		const port = Number(url.searchParams.get("port") ?? "0");
+		if ((kind !== "ssh" && kind !== "port") || (kind === "port" && !(port > 0 && port < 65536))) {
+			return Response.json(
+				{
+					code: ErrorCode.InvalidArgs,
+					message: "kind is ssh, or port with a port from 1 to 65535",
+				},
+				{ status: 400 },
+			);
+		}
+		let node: string;
+		try {
+			const row = this.store.getWorkspace(workspace);
+			if (row.released)
+				throw new HotbedError(ErrorCode.NotFound, `workspace ${workspace} was released`);
+			node = row.node;
+		} catch (err) {
+			return Response.json(fromUnknownError(err).toJSON(), { status: 404 });
+		}
+
+		const pair = new WebSocketPair();
+		const client = pair[0];
+		const server = pair[1];
+		server.accept();
+		const closeClient = (message: string) => {
+			try {
+				server.close(message ? 1011 : 1000, message.slice(0, 120));
+			} catch {
+				// already closed
+			}
+		};
+		let pipe;
+		try {
+			pipe = await this.tunnel.openPipe(node, node, kind, workspace, port, {
+				onOpened: () => server.send(JSON.stringify({ type: "opened" })),
+				onData: (bytes) => server.send(bytes),
+				onClose: closeClient,
+			});
+		} catch (err) {
+			closeClient(fromUnknownError(err).message);
+			return new Response(null, { status: 101, webSocket: client });
+		}
+		// Sent in order, a message's bytes once the one before's are.
+		let sending: Promise<void> = Promise.resolve();
+		server.addEventListener("message", (ev) => {
+			const data: unknown = ev.data;
+			sending = sending.then(async () => {
+				if (typeof data === "string") pipe.send(new TextEncoder().encode(data));
+				else if (data instanceof ArrayBuffer) pipe.send(new Uint8Array(data));
+				else if (ArrayBuffer.isView(data))
+					pipe.send(new Uint8Array(data.buffer, data.byteOffset, data.byteLength));
+				else if (data instanceof Blob) pipe.send(new Uint8Array(await data.arrayBuffer()));
+			});
+		});
+		server.addEventListener("close", () => pipe.close());
+		server.addEventListener("error", () => pipe.close());
+		return new Response(null, { status: 101, webSocket: client });
 	}
 
 	private async handleWebSocketUpgrade(request: Request, pathname: string): Promise<Response> {

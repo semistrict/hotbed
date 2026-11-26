@@ -274,6 +274,8 @@ type Engine struct {
 	shellHostPub string
 	shellPort    int
 	shellAddr    string
+	// shellServer serves the SSH connections the controller relays.
+	shellServer  *ShellServer
 	shellTickets map[string]*shellTicket
 	shells       map[string]*activeShell
 	// dirtyGen increments whenever a DB save fails; savedGen tracks the last
@@ -286,7 +288,7 @@ type Engine struct {
 	kick       chan struct{} // an event was written: push soon
 	outputKick chan struct{} // a command started/changed/ended: push output soon
 	collect    chan struct{} // a base may have become garbage: collect soon
-	stepc   chan struct{} // a command may start or have ended: step soon
+	stepc      chan struct{} // a command may start or have ended: step soon
 	// updated is closed, and replaced, whenever a base, workspace or
 	// command changes, to wake whoever watches them.
 	updated chan struct{}

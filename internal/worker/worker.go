@@ -457,6 +457,7 @@ func Run(ctx context.Context, dir string, cfg statedir.WorkerConfig, tn Tailnet,
 	srv := &http.Server{Handler: Handler(tn, policy, eng), ReadHeaderTimeout: 10 * time.Second, Protocols: httpx.Protocols()}
 	srv.RegisterOnShutdown(eng.DrainStreams)
 	shellSrv := NewShellServer(tn, policy, eng)
+	eng.SetShellServer(shellSrv)
 	var listeners []net.Listener
 	var sshListeners []net.Listener
 	closeAll := func() {

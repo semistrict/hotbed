@@ -644,12 +644,10 @@ func (dc *devCluster) seed(ctx context.Context, hc, workerHC *http.Client) error
 	}
 
 	// Run two short commands (one succeeded build, one failed test) so history is populated.
-	runOnWorker := func(addr string, req *pb.RunCommandRequest) (*pb.Command, error) {
-		wconn, err := api.Dial(addr, api.WorkerPort, workerHC)
-		if err != nil {
-			return nil, err
-		}
-		return hotbedv1connect.NewWorkspaceServiceClient(wconn).RunCommand(ctx, req)
+	// Through the controller, which relays it to the workspace's worker, as
+	// every client's call is.
+	runOnWorker := func(_ string, req *pb.RunCommandRequest) (*pb.Command, error) {
+		return workspaces.RunCommand(ctx, req)
 	}
 	if _, err := runOnWorker(wsUbu1.NodeAddr, &pb.RunCommandRequest{
 		WorkspaceId: wsUbu1.Id,

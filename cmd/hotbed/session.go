@@ -964,7 +964,10 @@ func (c *runCmd) Raw(ctx context.Context, d deps) (int, bool, error) {
 	}
 	if c.Detach {
 		if c.Ready != "" || c.ReadyPort {
-			if err := waitServing(ctx, w, cmd, c.Ready, c.ReadyPort, readyTimeout, d.stderr); err != nil {
+			serving := func(ctx context.Context, workspace string, port int) bool {
+				return c.portServing(ctx, d, workspace, port)
+			}
+			if err := waitServing(ctx, w, cmd, c.Ready, c.ReadyPort, readyTimeout, d.stderr, serving); err != nil {
 				return 0, false, err
 			}
 		}

@@ -118,13 +118,24 @@ func (c *shellCmd) Raw(ctx context.Context, d deps) (int, bool, error) {
 	if err != nil {
 		return 0, false, err
 	}
-	host, port, err := net.SplitHostPort(resp.Addr)
-	if err != nil {
-		return 0, false, api.Errorf(api.CodeInternal, "worker returned invalid SSH address %q: %v", resp.Addr, err)
-	}
 	if strings.TrimSpace(resp.HostPublicKey) == "" {
 		return 0, false, api.Errorf(api.CodeInternal, "worker returned empty SSH host public key")
 	}
+	// ssh reaches the worker's shell server through the controller: a pipe
+	// it relays over the worker's tunnel, served on loopback here.
+	pipeCtx, stopPipe := context.WithCancel(ctx)
+	defer stopPipe()
+	local, err := c.localPipe(pipeCtx, d, ws.Id, "ssh", 0)
+	if err != nil {
+		return 0, false, err
+	}
+	host, port, err := net.SplitHostPort(local)
+	if err != nil {
+		return 0, false, err
+	}
+	// The worker's host key, pinned under the workspace's name, whatever
+	// loopback port the pipe has.
+	alias := "hotbed-" + ws.Id
 
 	tmpDir, err := os.MkdirTemp("", "hotbed-ssh-*")
 	if err != nil {
@@ -137,10 +148,7 @@ func (c *shellCmd) Raw(ctx context.Context, d deps) (int, bool, error) {
 		return 0, false, err
 	}
 	knownHostsPath := filepath.Join(tmpDir, "known_hosts")
-	knownEntry := fmt.Sprintf("[%s]:%s %s\n", host, port, strings.TrimSpace(resp.HostPublicKey))
-	if port == "22" {
-		knownEntry = fmt.Sprintf("%s %s\n", host, strings.TrimSpace(resp.HostPublicKey))
-	}
+	knownEntry := fmt.Sprintf("%s %s\n", alias, strings.TrimSpace(resp.HostPublicKey))
 	if err := os.WriteFile(knownHostsPath, []byte(knownEntry), 0o600); err != nil {
 		return 0, false, err
 	}
@@ -158,6 +166,7 @@ func (c *shellCmd) Raw(ctx context.Context, d deps) (int, bool, error) {
 		"-o", "BatchMode=yes",
 		"-o", "StrictHostKeyChecking=yes",
 		"-o", "UserKnownHostsFile=" + knownHostsPath,
+		"-o", "HostKeyAlias=" + alias,
 		"-o", "GlobalKnownHostsFile=/dev/null",
 		"-o", "ControlMaster=no",
 		"-o", "ControlPath=none",

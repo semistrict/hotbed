@@ -146,7 +146,9 @@ export default {
 			// WebSocket upgrades (status 101 with webSocket pair) must use stub.fetch()
 			// per Cloudflare Workers runtime; all other routes use typed Workers RPC.
 			const res =
-				url.pathname === "/ws/worker" || url.pathname === "/ws/questions"
+				url.pathname === "/ws/worker" ||
+				url.pathname === "/ws/questions" ||
+				url.pathname === "/ws/pipe"
 					? await stub.fetch(fwd)
 					: await stub.handleHttpRequest(stripRequestSignal(fwd));
 			return withSetCookie(res, routing.setCookie);

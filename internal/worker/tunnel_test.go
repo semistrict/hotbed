@@ -206,7 +206,7 @@ func TestWorkerWebSocketTunnel(t *testing.T) {
 		t.Fatalf("tunnelWSURL: %v", err)
 	}
 	go func() {
-		_ = serveTunnelOnce(ctx, handler, wsURL, "sec-tok", tailnet.Self{
+		_ = serveTunnelOnce(ctx, handler, nil, wsURL, "sec-tok", tailnet.Self{
 			NodeID:   "node-1",
 			Hostname: "ubu1",
 		}, "100.73.156.10:7121", wsSrv.Client())
@@ -246,7 +246,7 @@ func TestWorkerWebSocketTunnelReadTimeoutOnSilentServer(t *testing.T) {
 	defer cancel()
 
 	start := time.Now()
-	err = serveTunnelOnceWithTimeouts(ctx, http.NotFoundHandler(), wsURL, "tok", tailnet.Self{
+	err = serveTunnelOnceWithTimeouts(ctx, http.NotFoundHandler(), nil, wsURL, "tok", tailnet.Self{
 		NodeID:   "node-1",
 		Hostname: "ubu1",
 	}, "100.73.156.10:7121", wsSrv.Client(), 40*time.Millisecond, 150*time.Millisecond)

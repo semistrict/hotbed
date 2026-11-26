@@ -163,7 +163,7 @@ func TestDetachedRunWaitsUntilReady(t *testing.T) {
 
 // A port proxy that accepts and closes at once (its VM's server not up) is
 // not serving; a server that holds the connection, or answers, is.
-func TestServingSeesThroughAPortProxy(t *testing.T) {
+func TestServesSeesThroughAPortProxy(t *testing.T) {
 	listen := func(handle func(net.Conn)) string {
 		ln, err := net.Listen("tcp", "127.0.0.1:0")
 		if err != nil {
@@ -184,10 +184,17 @@ func TestServingSeesThroughAPortProxy(t *testing.T) {
 	closes := listen(func(c net.Conn) { c.Close() })
 	holds := listen(func(c net.Conn) { time.Sleep(3 * time.Second); c.Close() })
 	answers := listen(func(c net.Conn) { _, _ = c.Write([]byte("hello")); c.Close() })
-	if serving(t.Context(), closes) {
+	serving := func(addr string) bool {
+		conn, err := net.Dial("tcp", addr)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return serves(conn)
+	}
+	if serving(closes) {
 		t.Error("a proxy closing at once counts as serving")
 	}
-	if !serving(t.Context(), holds) || !serving(t.Context(), answers) {
+	if !serving(holds) || !serving(answers) {
 		t.Error("a server holding or answering a connection does not count as serving")
 	}
 }

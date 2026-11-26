@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -39,6 +40,18 @@ type tunnelDownMessage struct {
 	// ClientStream: the call's request is a stream (Sync), its messages
 	// following in rpc_send frames, rpc_close_send ending them.
 	ClientStream bool `json:"clientStream,omitempty"`
+	// Kind, Workspace and Port are a pipe_open's: a byte stream between a
+	// client and, on this worker, its shell server ("ssh") or a port a
+	// command of Workspace's serves on ("port").
+	Kind      string `json:"kind,omitempty"`
+	Workspace string `json:"workspace,omitempty"`
+	Port      int    `json:"port,omitempty"`
+}
+
+// pipeOpener opens the worker's end of a pipe the controller relays a
+// client's byte stream through.
+type pipeOpener interface {
+	OpenPipe(kind, workspace string, port int) (net.Conn, error)
 }
 
 // tunnelUpMessage is sent by a worker back to the Cloudflare Workers controller
@@ -104,7 +117,7 @@ func TunnelWithMiddleware(
 	if wrap != nil {
 		handler = wrap(handler)
 	}
-	return runTunnelLoop(ctx, handler, controllerBaseURL, token, self, workerAddr, hc)
+	return runTunnelLoop(ctx, handler, eng, controllerBaseURL, token, self, workerAddr, hc)
 }
 
 func newTunnelHandler(eng *Engine, peer tailnet.Peer) http.Handler {
@@ -138,6 +151,7 @@ func tunnelWSURL(controllerBaseURL string) (string, error) {
 func runTunnelLoop(
 	ctx context.Context,
 	handler http.Handler,
+	pipes pipeOpener,
 	controllerBaseURL string,
 	token string,
 	self tailnet.Self,
@@ -159,7 +173,7 @@ func runTunnelLoop(
 			return nil
 		}
 		connectedAt := time.Now()
-		err := serveTunnelOnce(ctx, handler, wsURL, token, self, workerAddr, hc)
+		err := serveTunnelOnce(ctx, handler, pipes, wsURL, token, self, workerAddr, hc)
 		if ctx.Err() != nil {
 			return nil
 		}
@@ -194,18 +208,20 @@ const (
 func serveTunnelOnce(
 	ctx context.Context,
 	handler http.Handler,
+	pipes pipeOpener,
 	wsURL string,
 	token string,
 	self tailnet.Self,
 	workerAddr string,
 	hc *http.Client,
 ) error {
-	return serveTunnelOnceWithTimeouts(ctx, handler, wsURL, token, self, workerAddr, hc, defaultTunnelPingInterval, defaultTunnelReadTimeout)
+	return serveTunnelOnceWithTimeouts(ctx, handler, pipes, wsURL, token, self, workerAddr, hc, defaultTunnelPingInterval, defaultTunnelReadTimeout)
 }
 
 func serveTunnelOnceWithTimeouts(
 	ctx context.Context,
 	handler http.Handler,
+	pipes pipeOpener,
 	wsURL string,
 	token string,
 	self tailnet.Self,
@@ -293,6 +309,14 @@ func serveTunnelOnceWithTimeouts(
 			close(ch)
 		}
 	}()
+	// The pipes open, by ID: what the client sends each, in order. The read
+	// loop's alone.
+	piping := map[string]chan []byte{}
+	defer func() {
+		for _, ch := range piping {
+			close(ch)
+		}
+	}()
 	var wg sync.WaitGroup
 	defer func() {
 		connCancel()
@@ -352,6 +376,35 @@ func serveTunnelOnceWithTimeouts(
 				// tunnel's reads back until it does.
 				ch <- msg
 			}
+		case "pipe_open":
+			if pipes == nil {
+				sendMsg(tunnelUpMessage{Type: "pipe_close", ID: req.ID, Message: "this worker opens no pipes"})
+				continue
+			}
+			in := make(chan []byte, 64)
+			piping[req.ID] = in
+			wg.Add(1)
+			go func(r tunnelDownMessage) {
+				defer wg.Done()
+				servePipe(connCtx, pipes, r, in, sendMsg)
+			}(req)
+		case "pipe_data", "pipe_close":
+			in, ok := piping[req.ID]
+			if !ok {
+				continue
+			}
+			if req.Type == "pipe_close" {
+				close(in)
+				delete(piping, req.ID)
+				continue
+			}
+			b, err := base64.StdEncoding.DecodeString(req.Body)
+			if err != nil {
+				close(in)
+				delete(piping, req.ID)
+				continue
+			}
+			in <- b
 		case "rpc_req":
 			callCtx, callCancel := context.WithCancel(connCtx)
 			inflightMu.Lock()
@@ -465,6 +518,57 @@ func dispatchTunnelStream(
 	}
 	handler.ServeHTTP(w, httpReq)
 	w.finish()
+}
+
+// servePipe opens the worker's end of pipe r and copies bytes both ways
+// until either end closes: in is what the client sends, in order (closed
+// when it closes); what the worker's end writes goes back in pipe_data
+// frames, pipe_close last, with why if it failed.
+func servePipe(ctx context.Context, pipes pipeOpener, r tunnelDownMessage, in <-chan []byte, send func(tunnelUpMessage)) {
+	conn, err := pipes.OpenPipe(r.Kind, r.Workspace, r.Port)
+	if err != nil {
+		send(tunnelUpMessage{Type: "pipe_close", ID: r.ID, Message: err.Error()})
+		for range in {
+		}
+		return
+	}
+	send(tunnelUpMessage{Type: "pipe_opened", ID: r.ID})
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		buf := make([]byte, 64<<10)
+		for {
+			n, err := conn.Read(buf)
+			if n > 0 {
+				send(tunnelUpMessage{Type: "pipe_data", ID: r.ID, Body: base64.StdEncoding.EncodeToString(buf[:n])})
+			}
+			if err != nil {
+				return
+			}
+		}
+	}()
+	writing := true
+	for writing {
+		select {
+		case b, ok := <-in:
+			if !ok {
+				writing = false
+				break
+			}
+			if _, err := conn.Write(b); err != nil {
+				writing = false
+			}
+		case <-done:
+			writing = false
+		case <-ctx.Done():
+			writing = false
+		}
+	}
+	conn.Close()
+	<-done
+	send(tunnelUpMessage{Type: "pipe_close", ID: r.ID})
+	for range in {
+	}
 }
 
 // dispatchTunnelClientStream serves a client-streaming call (Sync), its

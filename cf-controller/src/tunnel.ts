@@ -20,11 +20,17 @@ export interface WorkerSocketAttachment {
  *   { type: "rpc_send", id, body (base64 proto) }   one request message of a clientStream call
  *   { type: "rpc_close_send", id }                   its request messages end
  *   { type: "rpc_cancel", id }
+ *   { type: "pipe_open", id, kind, workspace, port }   a client's byte stream: "ssh" (the worker's shell server) or "port"
+ *   { type: "pipe_data", id, body (base64 bytes) }
+ *   { type: "pipe_close", id }
  *
  * Worker -> Controller:
  *   { type: "rpc_msg", id, body (base64 proto), headers? }   headers: response headers to pass on, on a call's first message
  *   { type: "rpc_end", id }
  *   { type: "rpc_err", id, code, message, suggestion?, retryable? }
+ *   { type: "pipe_opened", id }                        the worker's end of a pipe is open
+ *   { type: "pipe_data", id, body (base64 bytes) }
+ *   { type: "pipe_close", id, message? }                message: why it failed, if it did
  */
 export type TunnelDownMessage =
 	| {
@@ -47,6 +53,22 @@ export type TunnelDownMessage =
 	| {
 			type: "rpc_cancel";
 			id: string;
+	  }
+	| {
+			type: "pipe_open";
+			id: string;
+			kind: string;
+			workspace: string;
+			port: number;
+	  }
+	| {
+			type: "pipe_data";
+			id: string;
+			body: string;
+	  }
+	| {
+			type: "pipe_close";
+			id: string;
 	  };
 
 export type TunnelUpMessage =
@@ -67,7 +89,34 @@ export type TunnelUpMessage =
 			message: string;
 			suggestion?: string;
 			retryable?: boolean;
+	  }
+	| {
+			type: "pipe_opened";
+			id: string;
+	  }
+	| {
+			type: "pipe_data";
+			id: string;
+			body: string;
+	  }
+	| {
+			type: "pipe_close";
+			id: string;
+			message?: string;
 	  };
+
+/** A client's end of a pipe to a worker, as the controller relays it. */
+export interface PipeHandlers {
+	onOpened: () => void;
+	onData: (bytes: Uint8Array) => void;
+	onClose: (message: string) => void;
+}
+
+/** The controller's end of a pipe to a worker. */
+export interface PipeEnd {
+	send: (bytes: Uint8Array) => void;
+	close: () => void;
+}
 
 interface PendingUnary {
 	kind: "unary";
@@ -121,6 +170,7 @@ function decodeBase64(b64: string): Uint8Array {
 export class WorkerTunnelHub {
 	private readonly ctx: DurableObjectState;
 	private readonly pending = new Map<string, PendingCall>();
+	private readonly pipes = new Map<string, PipeHandlers & { nodeId: string }>();
 	private readonly connectWaiters = new Map<string, Set<() => void>>();
 	private readonly reconnectWaitMs: number;
 
@@ -258,6 +308,18 @@ export class WorkerTunnelHub {
 		} catch {
 			return;
 		}
+		if (msg.type === "pipe_opened" || msg.type === "pipe_data" || msg.type === "pipe_close") {
+			const pipe = this.pipes.get(msg.id);
+			const from = ws.deserializeAttachment() as WorkerSocketAttachment | null;
+			if (!pipe || !from || from.nodeId !== pipe.nodeId) return;
+			if (msg.type === "pipe_opened") pipe.onOpened();
+			else if (msg.type === "pipe_data") pipe.onData(decodeBase64(msg.body));
+			else {
+				this.pipes.delete(msg.id);
+				pipe.onClose(msg.message ?? "");
+			}
+			return;
+		}
 		const call = this.pending.get(msg.id);
 		if (!call) return;
 		const sender = ws.deserializeAttachment() as WorkerSocketAttachment | null;
@@ -376,6 +438,11 @@ export class WorkerTunnelHub {
 	}
 
 	private failPendingForNode(nodeId: string, err: HotbedError): void {
+		for (const [id, pipe] of this.pipes) {
+			if (pipe.nodeId !== nodeId) continue;
+			this.pipes.delete(id);
+			pipe.onClose(err.message);
+		}
 		for (const [id, call] of this.pending) {
 			if (call.nodeId !== nodeId) continue;
 			this.pending.delete(id);
@@ -734,5 +801,62 @@ export class WorkerTunnelHub {
 			);
 		}
 		return fromBinary(resSchema, await result);
+	}
+
+	/**
+	 * Opens a pipe to a worker for a client's byte stream: kind "ssh" (its
+	 * shell server) or "port" (a port a command of workspace serves on).
+	 */
+	async openPipe(
+		nodeId: string,
+		host: string,
+		kind: string,
+		workspace: string,
+		port: number,
+		handlers: PipeHandlers,
+	): Promise<PipeEnd> {
+		const sock = await this.waitForSocket(nodeId, this.reconnectWaitMs);
+		if (!sock) {
+			throw hotbedError(
+				ErrorCode.WorkerUnreachable,
+				`${host} has no active controller WebSocket tunnel`,
+				{
+					retryable: true,
+				},
+			);
+		}
+		const id = randomHex(8);
+		this.pipes.set(id, { nodeId, ...handlers });
+		const sendFrame = (frame: TunnelDownMessage) => sock.ws.send(JSON.stringify(frame));
+		try {
+			sendFrame({ type: "pipe_open", id, kind, workspace, port });
+		} catch (err) {
+			this.pipes.delete(id);
+			throw hotbedError(
+				ErrorCode.WorkerUnreachable,
+				`${host}: send over tunnel failed: ${err instanceof Error ? err.message : String(err)}`,
+				{ retryable: true },
+			);
+		}
+		return {
+			send: (bytes) => {
+				if (!this.pipes.has(id)) return;
+				try {
+					sendFrame({ type: "pipe_data", id, body: encodeBase64(bytes) });
+				} catch {
+					const pipe = this.pipes.get(id);
+					this.pipes.delete(id);
+					pipe?.onClose(`${host} went away`);
+				}
+			},
+			close: () => {
+				if (!this.pipes.delete(id)) return;
+				try {
+					sendFrame({ type: "pipe_close", id });
+				} catch {
+					// ignore
+				}
+			},
+		};
 	}
 }

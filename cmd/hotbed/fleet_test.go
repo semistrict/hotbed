@@ -408,6 +408,7 @@ func (nd *node) start() {
 	sshAddr := sshLn.Addr().(*net.TCPAddr)
 	eng.SetShellListen(sshAddr.String(), sshAddr.Port)
 	shellSrv := worker.NewShellServer(sshTestID{nd.c.tn}, httpx.Policy{Owner: "ramon@", Self: loopback}, eng)
+	eng.SetShellServer(shellSrv)
 	h := workerHandler(nd.c.tn, eng)
 	nd.handler.Store(&h)
 	nd.halted.Store(false)
