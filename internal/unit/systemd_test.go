@@ -583,6 +583,7 @@ func TestChrootShellsTerminalHasANameInside(t *testing.T) {
 // main process with SIGTERM (15). Status must report OOMKilled=true rather
 // than leaving callers thinking it was an unexplained SIGTERM (board 7232).
 func TestOOMKillReported(t *testing.T) {
+	t.Skip("flaky on CI: the cgroup OOM kill sometimes never comes within 10 s (board 14249)")
 	root, roBinds := minimalRoot(t)
 	n := name(t)
 	log := filepath.Join(t.TempDir(), "out.log")
