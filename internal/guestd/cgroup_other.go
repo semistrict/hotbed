@@ -24,6 +24,7 @@ func (c *cmdCgroup) thaw() error                  { return errors.New("cgroup v2
 func (c *cmdCgroup) killAll()                     {}
 func (c *cmdCgroup) reclaim(int64) error          { return nil }
 func dropPageCaches() error                       { return nil }
+func compactMemory() error                        { return nil }
 func (c *cmdCgroup) remove() {}
 func (c *cmdCgroup) stats() cmdCgroupStats {
 	if c == nil {

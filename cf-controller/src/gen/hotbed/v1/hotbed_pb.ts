@@ -4266,7 +4266,8 @@ export type FinishedCommand = Message<"hotbed.v1.FinishedCommand"> & {
 	exitCode?: number | undefined;
 
 	/**
-	 * compile, test, lint, signal, exit; empty when it succeeded.
+	 * compile, test, lint, oom, vm (its VM ended under it), signal, exit;
+	 * empty when it succeeded.
 	 *
 	 * @generated from field: string failure = 10;
 	 */

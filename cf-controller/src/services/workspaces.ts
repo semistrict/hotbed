@@ -99,6 +99,9 @@ function commandOfHistory(f: FinishedCommand): Command {
 		startedAt: started,
 		endedAt: ended,
 		exitCode: f.exitCode,
+		// An ended command's memory is its peak, as its worker reports it
+		// the moment it ends.
+		memoryBytes: f.peakMemoryBytes,
 		coldSeconds: f.coldSeconds,
 		reason: f.reason,
 		sessionId: f.sessionId,

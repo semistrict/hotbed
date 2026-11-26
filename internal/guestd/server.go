@@ -574,15 +574,19 @@ func (s *Server) ThawCommand(_ context.Context, req *guestdv1.ThawCommandRequest
 }
 
 func (s *Server) Reclaim(_ context.Context, req *guestdv1.ReclaimRequest) (*guestdv1.ReclaimResponse, error) {
-	// Drop clean guest page caches first so virtio-balloon free-page-reporting
-	// returns clean file cache immediately and swapless cgroup reclaim sees only
-	// remaining reclaimable file/slab bytes instead of spinning on anon RAM.
+	// Flush dirty pages first so drop_caches can drop them (and evict sealed
+	// cladefs page-cache inodes so subsequent reads use DAX), reclaim any
+	// remaining file/slab cache in the target cgroup, then compact free memory
+	// into 2 MiB pageblock_order blocks so virtio-balloon free-page-reporting
+	// returns them to the host.
+	syncFilesystems()
 	_ = dropPageCaches()
 	if req.GetId() != "" && req.GetBytes() > 0 {
 		if mc, ok := s.getCmd(req.GetId()); ok && mc.cg != nil {
 			_ = mc.cg.reclaim(req.GetBytes())
 		}
 	}
+	_ = compactMemory()
 	return &guestdv1.ReclaimResponse{}, nil
 }
 

@@ -399,6 +399,10 @@ type command struct {
 	stopping bool
 	stopWhy  string
 	stopBy   *byHand
+	// failure is the kind of failure its unit's end showed ("oom", "vm"),
+	// which its output cannot: set as it ends, it wins over what the output
+	// suggests.
+	failure string
 	// intervening is set while a hand stop, pause or resume is in flight
 	// (including while diagnostics are taken outside e.mu), so another
 	// intervention or background scheduler transition does not race it.

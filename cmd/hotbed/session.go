@@ -1038,6 +1038,13 @@ func followStatus(id string, c *pb.Command, stderr io.Writer) (int, error) {
 			return int(*c.ExitCode), nil
 		}
 		return 137, nil
+	case strings.HasPrefix(c.Reason, "its VM "):
+		// Its VM ended under it: the command never exited, so there is no
+		// code of its own to return, and running it again can succeed.
+		err := api.Errorf(api.CodeWorkspaceFailed, "%s failed: %s", cmdID, c.Reason).
+			WithSuggestion("its VM failed, not the command: run it again")
+		err.Retryable = true
+		return 0, err
 	case strings.HasPrefix(c.Reason, "killed by signal "):
 		// Report it the way a shell would: 128 plus the signal.
 		fmt.Fprintf(stderr, "hotbed: %s: %s\n", id, c.Reason)

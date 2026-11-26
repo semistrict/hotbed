@@ -82,9 +82,14 @@ func (r *lifecycleTestResolver) StopVM(_ context.Context, wsID string) error {
 	return r.stoppedErr
 }
 
-func (r *lifecycleTestResolver) VMExitStatus(_ context.Context, _ string) (bool, int, int, string, bool) {
-	return false, 0, 0, "", false
+func (r *lifecycleTestResolver) VMExit(_ context.Context, _ string) (unit.VMExit, bool) {
+	return unit.VMExit{}, false
 }
+
+var (
+	_ runtime.VMExitReporter = (*lifecycleTestResolver)(nil)
+	_ runtime.VMExitReporter = (*VMBackend)(nil)
+)
 
 func startLocalTestGuestd(t *testing.T) *guestd.Client {
 	t.Helper()

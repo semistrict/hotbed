@@ -82,6 +82,14 @@ func TestPsSearchesHistory(t *testing.T) {
 		}
 	}
 
+	// A command history recalls keeps its peak memory (fake units report
+	// 64 MiB), not 0 as if it had used none.
+	var ended pb.ListCommandsResponse
+	c.ok(&ended, "ps", "-s", "keen-elk", "-e", "-m", "alpha")
+	if len(ended.Commands) != 1 || ended.Commands[0].Id != one || ended.Commands[0].MemoryBytes != 64<<20 {
+		t.Errorf("ps -e recalled %v, want only %s with MemoryBytes %d", ended.Commands, one, 64<<20)
+	}
+
 	// The plain listing says what the limit left out.
 	code, stdout, stderr := c.hotbed("ps", "--all", "-e", "-m", "alpha", "-n", "1")
 	if code != 0 || !strings.HasSuffix(stdout, "\n(+1 older ended, not shown: --limit 0 for every one)\n") || strings.Contains(stdout, one) {

@@ -25,6 +25,7 @@ import (
 	"github.com/semistrict/hotbed/internal/shell"
 	"github.com/semistrict/hotbed/internal/sysinfo"
 	"github.com/semistrict/hotbed/internal/unit"
+	"github.com/semistrict/hotbed/internal/vm"
 )
 
 const (
@@ -709,12 +710,7 @@ func (e *Engine) observe(ctx context.Context, c *command, st unit.State, sampled
 		cmd.MemoryBytes = st.Memory
 		c.rec.PeakMemoryBytes = max(c.rec.PeakMemoryBytes, st.Memory)
 	}
-	if st.MemoryPeak > 0 {
-		c.rec.PeakMemoryBytes = max(c.rec.PeakMemoryBytes, st.MemoryPeak)
-		if st.Exited && cmd.MemoryBytes == 0 {
-			cmd.MemoryBytes = st.MemoryPeak
-		}
-	}
+	c.rec.PeakMemoryBytes = max(c.rec.PeakMemoryBytes, st.MemoryPeak)
 	if c.rec.Cgroup != "" {
 		if hasMem {
 			cmd.SwapBytes = mem.Swap
@@ -734,12 +730,18 @@ func (e *Engine) observe(ctx context.Context, c *command, st unit.State, sampled
 		return
 	}
 	// removeUnit has removed the unit and read the rest of its output.
+	if st.VMExit != nil {
+		c.failure = "vm"
+		e.end(c, failed, nil, vmExitReason(*st.VMExit))
+		return
+	}
 	if st.OOMKilled || st.Result == "oom-kill" {
 		var code *int32
 		if st.Signal == 0 && st.ExitCode != 0 {
 			ec := int32(st.ExitCode)
 			code = &ec
 		}
+		c.failure = "oom"
 		e.end(c, failed, code, oomReason(st, c.rec.PeakMemoryBytes))
 		return
 	}
@@ -761,6 +763,22 @@ func (e *Engine) observe(ctx context.Context, c *command, st unit.State, sampled
 		state = failed
 	}
 	e.end(c, state, &code, "")
+}
+
+// vmExitReason says how the VM a command ran in ended under it: the command
+// never reported an end of its own, so the reason is the VM's, never a
+// signal or exit the command did not have.
+func vmExitReason(ex unit.VMExit) string {
+	switch {
+	case ex.Gone:
+		return "its VM stopped while it ran"
+	case ex.OOMKilled || ex.Result == "oom-kill":
+		return "its VM was killed by the host's OOM killer"
+	case ex.Signal != 0:
+		return fmt.Sprintf("its VM was killed by signal %d", ex.Signal)
+	default:
+		return "its VM ended: " + vm.ExitReason(ex.ExitCode)
+	}
 }
 
 // oomReason explains an OOM kill clearly, including when systemd's default
@@ -1924,6 +1942,10 @@ func (e *Engine) endBy(c *command, state pb.CommandState, code *int32, why strin
 	cmd.EndedAt = &now
 	cmd.ExitCode = code
 	cmd.CpuCores = 0
+	// An ended command's memory is its peak, as history keeps it.
+	if c.rec.PeakMemoryBytes > 0 {
+		cmd.MemoryBytes = c.rec.PeakMemoryBytes
+	}
 	cmd.Reason = why
 	what, detail := "exited", "exit "+codeText(code)
 	if state == cancelled {
@@ -1950,8 +1972,8 @@ func (e *Engine) endBy(c *command, state pb.CommandState, code *int32, why strin
 	}
 	seconds := float64(now-started) / 1000
 	units, failure := c.out.result(state, code, cmd.Kind)
-	if state == failed && strings.HasPrefix(why, "killed by the OOM killer") {
-		failure = "oom"
+	if state == failed && c.failure != "" {
+		failure = c.failure
 	}
 	if cmd.Rebuilt != nil {
 		cmd.Rebuilt.Units = int32(units)
