@@ -182,6 +182,9 @@ runs lack what the change adds.
 - Steps run chrooted as the build user with passwordless `sudo` to root: a step installs OS
   packages with `sudo apt-get install -y PKG`, and they are in every base after it. Commands and
   shells have the same `sudo`.
+- In a vm workspace, a command profiles itself without `sudo`: `perf record -g -- CMD` (kernel
+  stacks included) and `perf report` work as the workspace user, since the guest boots with
+  `kernel.perf_event_paranoid=-1` and `kptr_restrict=0`.
 
 ## Asking the user: questions
 

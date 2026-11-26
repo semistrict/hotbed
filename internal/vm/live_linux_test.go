@@ -142,11 +142,11 @@ func TestLiveFirecrackerCladefsEndToEnd(t *testing.T) {
 	}
 	t.Logf("VM booted in %s: unit=%s cid=%d tap=%s ip=%s", inst.Boot, inst.UnitName, inst.GuestCID, inst.Net.TAPName, inst.Net.GuestIP)
 
-	// 4. Verify health, tools-disk pivot, cgroup placement, network interface, and freeze/thaw via GuestRuntime.
+	// 4. Verify health, tools-disk pivot, cgroup placement, network interface, unprivileged perf (guestd's boot sysctls), and freeze/thaw via GuestRuntime.
 	rt := runtime.NewGuestRuntime(&liveResolver{mgr: mgr})
 	if err := rt.StartCommand(ctx, "ws-live-1", runtime.CommandSpec{
 		ID:   "live-check",
-		Argv: []string{"/bin/sh", "-c", "cat /proc/self/cgroup && test -x /run/hotbed-tools/hotbed-guestd && test ! -e /sbin/hotbed-guestd && grep -F '" + inst.Net.GuestIP + "' /proc/net/fib_trie && echo LIVE_STEP3_OK"},
+		Argv: []string{"/bin/sh", "-c", "cat /proc/self/cgroup && test -x /run/hotbed-tools/hotbed-guestd && test ! -e /sbin/hotbed-guestd && grep -F '" + inst.Net.GuestIP + "' /proc/net/fib_trie && test \"$(cat /proc/sys/kernel/perf_event_paranoid)\" = -1 && echo LIVE_STEP3_OK"},
 		Dir:  "/work",
 	}); err != nil {
 		t.Fatalf("StartCommand: %v", err)

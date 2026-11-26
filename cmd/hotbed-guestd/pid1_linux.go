@@ -234,6 +234,41 @@ func pivotToWorkspaceRootWithOps(log *slog.Logger, spec string, ops pivotRootOps
 	return true, devMoved, nil
 }
 
+// guestSysctls are the kernel settings hotbed-guestd PID 1 applies at boot,
+// keyed by path under /proc/sys.
+var guestSysctls = []struct {
+	name  string
+	value string
+}{
+	// Writeback: bound dirty page accumulation in large-RAM microVMs
+	// (12-18.5 GiB). Linux defaults (dirty_background_ratio=10%,
+	// dirty_ratio=20%, dirty_expire_centisecs=3000) let gigabytes of build
+	// outputs sit dirty in guest RAM for 30s before flushing to cladefsd; dirty
+	// folios cannot be reclaimed or sealed into host DAX until written back.
+	{"vm/dirty_bytes", "536870912\n"},           // 512 MiB cap before throttling writers
+	{"vm/dirty_background_bytes", "67108864\n"}, // 64 MiB starts async writeback promptly
+	{"vm/dirty_expire_centisecs", "500\n"},      // 5s dirty age (down from 30s)
+	{"vm/dirty_writeback_centisecs", "200\n"},   // 2s flusher sweep (down from 5s)
+
+	// Profiling: let the workspace user run perf (kernel stacks, tracepoints,
+	// system-wide) and bpftrace-style readers resolve kernel symbols without
+	// sudo. The VM is single-tenant and its user already has passwordless sudo
+	// to root, so the distro defaults (perf_event_paranoid=2, kptr_restrict=1)
+	// guard nothing here; they only made a plain `perf record -g` exit 255.
+	{"kernel/perf_event_paranoid", "-1\n"},
+	{"kernel/kptr_restrict", "0\n"},
+}
+
+func configureGuestSysctls(log *slog.Logger, procRoot string) {
+	sysDir := filepath.Join(procRoot, "sys")
+	for _, s := range guestSysctls {
+		p := filepath.Join(sysDir, s.name)
+		if err := os.WriteFile(p, []byte(s.value), 0o644); err != nil && !os.IsNotExist(err) && log != nil {
+			log.Warn("set guest sysctl failed", "path", p, "value", strings.TrimSpace(s.value), "err", err)
+		}
+	}
+}
+
 // runPID1Supervisor pivots onto the workspace rootfs (when booted from the
 // separate read-only tools disk), mounts Linux API filesystems, forks
 // hotbed-guestd as a child process (PID 2) with --no-pid1, and stays as PID 1
@@ -243,31 +278,6 @@ func pivotToWorkspaceRootWithOps(log *slog.Logger, spec string, ops pivotRootOps
 //
 // Returns true if the supervisor ran to completion (caller should exit), or
 // false if spawning the child failed and caller should fall back in-process.
-// guestWritebackSysctls bounds dirty page accumulation in large-RAM microVMs
-// (12-18.5 GiB). Linux defaults (dirty_background_ratio=10%, dirty_ratio=20%,
-// dirty_expire_centisecs=3000) let gigabytes of build outputs sit dirty in
-// guest RAM for 30s before flushing to cladefsd; dirty folios cannot be
-// reclaimed or sealed into host DAX until written back.
-var guestWritebackSysctls = []struct {
-	name  string
-	value string
-}{
-	{"dirty_bytes", "536870912\n"},           // 512 MiB cap before throttling writers
-	{"dirty_background_bytes", "67108864\n"}, // 64 MiB starts async writeback promptly
-	{"dirty_expire_centisecs", "500\n"},      // 5s dirty age (down from 30s)
-	{"dirty_writeback_centisecs", "200\n"},   // 2s flusher sweep (down from 5s)
-}
-
-func configureGuestWriteback(log *slog.Logger, procRoot string) {
-	vmDir := filepath.Join(procRoot, "sys", "vm")
-	for _, s := range guestWritebackSysctls {
-		p := filepath.Join(vmDir, s.name)
-		if err := os.WriteFile(p, []byte(s.value), 0o644); err != nil && !os.IsNotExist(err) && log != nil {
-			log.Warn("set guest vm writeback sysctl failed", "path", p, "value", strings.TrimSpace(s.value), "err", err)
-		}
-	}
-}
-
 func runPID1Supervisor(log *slog.Logger, nofile uint64) bool {
 	pivoted, devMoved, err := pivotToWorkspaceRoot(log)
 	if err != nil {
@@ -322,7 +332,7 @@ func runPID1Supervisor(log *slog.Logger, nofile uint64) bool {
 	// (or disk swap) + proactive VM memory.reclaim, so guest zram would
 	// double-compress anonymous pages and make them 1:1 incompressible when
 	// reclaimed into host zram.
-	configureGuestWriteback(log, "/proc")
+	configureGuestSysctls(log, "/proc")
 	// Ensure loopback is up (minimal Firecracker kernels leave lo DOWN).
 	if ipBin, err := exec.LookPath("ip"); err == nil {
 		_ = exec.Command(ipBin, "link", "set", "lo", "up").Run()

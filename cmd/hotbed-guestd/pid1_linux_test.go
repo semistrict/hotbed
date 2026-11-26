@@ -150,22 +150,25 @@ func TestPivotToWorkspaceRootDevMoveFallbackAndInvalidSpec(t *testing.T) {
 	}
 }
 
-func TestConfigureGuestWriteback(t *testing.T) {
+func TestConfigureGuestSysctls(t *testing.T) {
 	procRoot := t.TempDir()
-	vmDir := procRoot + "/sys/vm"
-	if err := os.MkdirAll(vmDir, 0o755); err != nil {
-		t.Fatal(err)
+	for _, d := range []string{"/sys/vm", "/sys/kernel"} {
+		if err := os.MkdirAll(procRoot+d, 0o755); err != nil {
+			t.Fatal(err)
+		}
 	}
-	configureGuestWriteback(nil, procRoot)
+	configureGuestSysctls(nil, procRoot)
 
 	want := map[string]string{
-		"dirty_bytes":               "536870912\n",
-		"dirty_background_bytes":    "67108864\n",
-		"dirty_expire_centisecs":    "500\n",
-		"dirty_writeback_centisecs": "200\n",
+		"vm/dirty_bytes":               "536870912\n",
+		"vm/dirty_background_bytes":    "67108864\n",
+		"vm/dirty_expire_centisecs":    "500\n",
+		"vm/dirty_writeback_centisecs": "200\n",
+		"kernel/perf_event_paranoid":   "-1\n",
+		"kernel/kptr_restrict":         "0\n",
 	}
 	for name, wantVal := range want {
-		got, err := os.ReadFile(vmDir + "/" + name)
+		got, err := os.ReadFile(procRoot + "/sys/" + name)
 		if err != nil {
 			t.Fatalf("read %s: %v", name, err)
 		}
