@@ -45,8 +45,34 @@ type Instance struct {
 	// VCPUs and MemMiB are the size it booted at, as its guest sees it.
 	VCPUs  int
 	MemMiB int
+	// Boot is how long each step of its boot took; zero for a VM
+	// reconnected after a worker restart.
+	Boot BootTimes
 
 	gitAuth io.Closer
+}
+
+// BootTimes is how long each step of a VM's boot took, from Start's call to
+// its guestd answering.
+type BootTimes struct {
+	// Prepare is its directory, network tap, git-auth bridge, tools disk,
+	// config and metadata.
+	Prepare time.Duration
+	// Launch is starting the Firecracker process (its systemd unit).
+	Launch time.Duration
+	// Guest is from the process starting to hotbed-guestd answering: the
+	// guest kernel's boot, its init, and guestd's start.
+	Guest time.Duration
+	// HealthChecks is how many times guestd was asked before it answered.
+	HealthChecks int
+}
+
+// Total is the whole boot.
+func (b BootTimes) Total() time.Duration { return b.Prepare + b.Launch + b.Guest }
+
+func (b BootTimes) String() string {
+	ms := func(d time.Duration) string { return fmt.Sprintf("%dms", d.Milliseconds()) }
+	return fmt.Sprintf("%s: prepare %s, launch %s, guest %s (%d health checks)", ms(b.Total()), ms(b.Prepare), ms(b.Launch), ms(b.Guest), b.HealthChecks)
 }
 
 // vmMeta is persisted to <RunDir>/<id>/meta.json so hotbed-worker can reconnect
@@ -408,6 +434,8 @@ func (m *Manager) Start(ctx context.Context, spec LaunchSpec) (*Instance, error)
 	cfg := m.cfg
 	m.mu.Unlock()
 
+	began := time.Now()
+	var boot BootTimes
 	startedOK := false
 	defer func() {
 		if !startedOK {
@@ -526,13 +554,19 @@ func (m *Manager) Start(ctx context.Context, spec LaunchSpec) (*Instance, error)
 		Args:       []string{"--enable-pci", "--no-api", "--config-file", configPath},
 		ConsoleLog: consoleLog,
 	}
+	launching := time.Now()
+	boot.Prepare = launching.Sub(began)
 	if err := m.launcher.Start(ctx, procSpec); err != nil {
 		cleanupOnErr(true)
 		return nil, fmt.Errorf("vm %s: launch firecracker: %w", spec.ID, err)
 	}
+	launched := time.Now()
+	boot.Launch = launched.Sub(launching)
 
 	client := guestd.NewClient(m.dialerFn(vsockUDS))
-	if err := m.waitHealthy(ctx, unitName, consoleLog, client); err != nil {
+	checks, err := m.waitHealthy(ctx, unitName, consoleLog, client)
+	boot.Guest, boot.HealthChecks = time.Since(launched), checks
+	if err != nil {
 		stopCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), m.stopTimeout())
 		stopErr := m.forceStopUnit(stopCtx, unitName)
 		cancel()
@@ -565,8 +599,11 @@ func (m *Manager) Start(ctx context.Context, spec LaunchSpec) (*Instance, error)
 		ToolsDiskPath: spec.ToolsDiskPath,
 		VCPUs:         vcpus,
 		MemMiB:        memMiB,
+		Boot:          boot,
 		gitAuth:       gaBridge,
 	}
+	slog.Info("vm booted", "vm", spec.ID, "vcpus", vcpus, "mem_mib", memMiB, "total", boot.Total(),
+		"prepare", boot.Prepare, "launch", boot.Launch, "guest", boot.Guest, "health_checks", boot.HealthChecks)
 	m.mu.Lock()
 	m.instances[spec.ID] = inst
 	delete(m.starting, spec.ID)
@@ -575,18 +612,22 @@ func (m *Manager) Start(ctx context.Context, spec LaunchSpec) (*Instance, error)
 	return inst, nil
 }
 
-func (m *Manager) waitHealthy(ctx context.Context, unitName, consoleLog string, client *guestd.Client) error {
+// waitHealthy waits for the guestd of the VM unitName runs to answer, and
+// says how many times it asked.
+func (m *Manager) waitHealthy(ctx context.Context, unitName, consoleLog string, client *guestd.Client) (int, error) {
 	deadline := time.Now().Add(m.cfg.BootTimeout)
 	var lastErr error
+	checks := 0
 	for {
 		if ctx.Err() != nil {
-			return ctx.Err()
+			return checks, ctx.Err()
 		}
 		hctx, cancel := context.WithTimeout(ctx, 2*time.Second)
 		_, err := client.Health(hctx)
 		cancel()
+		checks++
 		if err == nil {
-			return nil
+			return checks, nil
 		}
 		lastErr = err
 
@@ -594,21 +635,21 @@ func (m *Manager) waitHealthy(ctx context.Context, unitName, consoleLog string, 
 		if st, serr := m.launcher.Status(ctx, unitName); serr == nil && st.Loaded && st.Exited {
 			tail := readTail(consoleLog, 2048)
 			if tail != "" {
-				return fmt.Errorf("%s\nconsole tail:\n%s", ExitReason(st.ExitCode), tail)
+				return checks, fmt.Errorf("%s\nconsole tail:\n%s", ExitReason(st.ExitCode), tail)
 			}
-			return errors.New(ExitReason(st.ExitCode))
+			return checks, errors.New(ExitReason(st.ExitCode))
 		}
 
 		if time.Now().After(deadline) {
 			tail := readTail(consoleLog, 2048)
 			if tail != "" {
-				return fmt.Errorf("timed out waiting for hotbed-guestd after %s (last err: %v)\nconsole tail:\n%s", m.cfg.BootTimeout, lastErr, tail)
+				return checks, fmt.Errorf("timed out waiting for hotbed-guestd after %s (last err: %v)\nconsole tail:\n%s", m.cfg.BootTimeout, lastErr, tail)
 			}
-			return fmt.Errorf("timed out waiting for hotbed-guestd after %s (last err: %v)", m.cfg.BootTimeout, lastErr)
+			return checks, fmt.Errorf("timed out waiting for hotbed-guestd after %s (last err: %v)", m.cfg.BootTimeout, lastErr)
 		}
 		select {
 		case <-ctx.Done():
-			return ctx.Err()
+			return checks, ctx.Err()
 		case <-time.After(100 * time.Millisecond):
 		}
 	}

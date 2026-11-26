@@ -1493,6 +1493,16 @@ func (b *VMBackend) EnsureVM(ctx context.Context, wsID string, size unit.VMSize)
 	return inst.Client, nil
 }
 
+// BootSince is how the VM of workspace wsID booted, when it booted at or
+// after since: a command's start that booted it says how long that took.
+func (b *VMBackend) BootSince(wsID string, since time.Time) (vm.BootTimes, bool) {
+	inst := b.mgr.Get(wsID)
+	if inst == nil || inst.StartedAt.Before(since) || inst.Boot.Total() == 0 {
+		return vm.BootTimes{}, false
+	}
+	return inst.Boot, true
+}
+
 // sizeDiffers reports whether wsID's running VM has another size than a
 // non-zero field of size asks.
 func (b *VMBackend) sizeDiffers(wsID string, size unit.VMSize) bool {

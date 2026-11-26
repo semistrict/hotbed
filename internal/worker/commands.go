@@ -990,8 +990,15 @@ func (e *Engine) admit(ctx context.Context) {
 				err = fmt.Errorf("isolate the node: %w", err)
 			}
 		}
+		var booted string
 		if err == nil {
+			startCall := time.Now()
 			err = e.cfg.Units.Start(ctx, spec)
+			if err == nil && e.cfg.VM != nil {
+				if b, ok := e.cfg.VM.BootSince(c.cmd().WorkspaceId, startCall); ok {
+					booted = " · VM booted in " + b.String()
+				}
+			}
 		}
 		releaseVM()
 		if err != nil && ranBeforeStart && onStartFail != nil {
@@ -1073,7 +1080,7 @@ func (e *Engine) admit(ctx context.Context) {
 		if cmd.Bench {
 			share = "measurement on CPUs " + e.cfg.Bench.CPUs().String()
 		}
-		cmd.Timeline = append(cmd.Timeline, &pb.CommandEvent{At: now, What: "admitted", Detail: fmt.Sprintf("%s · low %s · high %s", share, limit(cmd.Limits.MemoryLowBytes), limit(cmd.Limits.MemoryHighBytes))})
+		cmd.Timeline = append(cmd.Timeline, &pb.CommandEvent{At: now, What: "admitted", Detail: fmt.Sprintf("%s · low %s · high %s%s", share, limit(cmd.Limits.MemoryLowBytes), limit(cmd.Limits.MemoryHighBytes), booted)})
 		ch := change{what: "admitted"}
 		switch {
 		case cmd.Bench:
