@@ -353,6 +353,15 @@ describe("Cloudflare Workers single-DO hotbed controller", () => {
 				repo: create(RepoSchema, { id: "evil", url: "https://github.com/example/evil.git" }),
 			}),
 		).rejects.toThrow(/worker token is not authorized/);
+		// A worker reads its own config (none is set here), and no other scope.
+		const own = await worker.cluster.getWorkerConfig({ node: "ubu1" });
+		expect(own.nodes).toEqual([]);
+		await expect(worker.cluster.getWorkerConfig({ node: "asahimbp" })).rejects.toThrow(
+			/a worker may read only its own config \(ubu1\), not asahimbp/,
+		);
+		await expect(worker.cluster.getWorkerConfig({})).rejects.toThrow(
+			/a worker may read only its own config \(ubu1\), not every scope/,
+		);
 		const hb = await worker.cluster.heartbeat(
 			create(HeartbeatRequestSchema, {
 				clusterId: joined.clusterId,

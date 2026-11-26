@@ -1361,8 +1361,15 @@ export function createClusterService(
 			});
 		},
 
-		getWorkerConfig(req) {
+		getWorkerConfig(req, ctx) {
 			const target = req.node.trim();
+			const caller = getCaller(ctx.values);
+			if (caller.role === "worker" && (target === "" || target !== caller.hostname)) {
+				throw hotbedError(
+					ErrorCode.NotAuthorized,
+					`a worker may read only its own config (${caller.hostname}), not ${target || "every scope"}`,
+				);
+			}
 			const defaults = applyOrgCladefsTenant(
 				ctrl.store.getWorkerConfig("") ?? undefined,
 				ctrl.cladefsTenantId,
