@@ -592,13 +592,15 @@ func TestOOMKillReported(t *testing.T) {
 		ReadOnlyBinds: roBinds,
 		User:          testUser(t),
 		Log:           log,
-		NoSwap:        true,
-		Properties:    []string{"MemoryMax=32M"},
-		// Spawn a child that faults 64 MiB of anonymous pages while the parent
+		NoSwap:     true,
+		Properties: []string{"MemoryMax=64M"},
+		// Spawn a child that faults 192 MiB of anonymous pages while the parent
 		// shell waits on it, matching how cargo/bash hosts a child rustc/ld
-		// that gets OOM-killed. Fill with non-zero bytes so glibc/kernel cannot
-		// leave the buffer as demand-paged zero pages under MemoryMax=32M.
-		Argv: []string{"sh", "-c", `python3 -c 'b = b"x" * (64*1024*1024); import time; time.sleep(10)'`},
+		// that gets OOM-killed. Keep MemoryMax well above python3's startup
+		// text/shared-lib footprint (so cgroup reclaim cannot livelock thrashing
+		// clean executable pages under Ubuntu 26.04), and keep "; true" so dash
+		// forks python3 instead of exec'ing it in place.
+		Argv: []string{"sh", "-c", `python3 -c 'b = b"x" * (192*1024*1024); import time; time.sleep(10)'; true`},
 	})
 	if err != nil {
 		t.Fatal(err)
