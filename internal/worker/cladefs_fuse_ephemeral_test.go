@@ -23,20 +23,17 @@ type fakeFuseCladefsClient struct {
 	syncReqs   []*cladefsdv1.SyncCellRequest
 	dropReqs   []*cladefsdv1.DropCellRequest
 	deleteReqs []*cladefsdv1.DeleteCellRequest
-	cells      map[string]uint64
+	cells      map[uint64]bool
 	nextCell   uint64
 }
 
 func (f *fakeFuseCladefsClient) ForkCell(_ context.Context, req *cladefsdv1.ForkCellRequest, _ ...grpc.CallOption) (*cladefsdv1.ForkCellResponse, error) {
 	f.forkReqs = append(f.forkReqs, req)
 	if f.cells == nil {
-		f.cells = map[string]uint64{}
-	}
-	if _, exists := f.cells[req.GetTo()]; exists {
-		return nil, status.Error(codes.AlreadyExists, "cell already exists (EEXIST)")
+		f.cells = map[uint64]bool{}
 	}
 	f.nextCell++
-	f.cells[req.GetTo()] = f.nextCell
+	f.cells[f.nextCell] = true
 	return &cladefsdv1.ForkCellResponse{Tenant: req.GetTenant(), Cell: f.nextCell}, nil
 }
 
@@ -47,12 +44,13 @@ func (f *fakeFuseCladefsClient) SyncCell(_ context.Context, req *cladefsdv1.Sync
 
 func (f *fakeFuseCladefsClient) DropCell(_ context.Context, req *cladefsdv1.DropCellRequest, _ ...grpc.CallOption) (*cladefsdv1.DropCellResponse, error) {
 	f.dropReqs = append(f.dropReqs, req)
+	delete(f.cells, req.GetCell())
 	return &cladefsdv1.DropCellResponse{}, nil
 }
 
 func (f *fakeFuseCladefsClient) DeleteCell(_ context.Context, req *cladefsdv1.DeleteCellRequest, _ ...grpc.CallOption) (*cladefsdv1.DeleteCellResponse, error) {
 	f.deleteReqs = append(f.deleteReqs, req)
-	delete(f.cells, req.GetPath())
+	delete(f.cells, req.GetCell())
 	return &cladefsdv1.DeleteCellResponse{}, nil
 }
 
@@ -103,10 +101,6 @@ func TestCladefsFUSEBackendPrepareAndDeleteWorkspaceEphemeral(t *testing.T) {
 	b.store.Store(store)
 
 	baseRef := cladefs.CellRef{Tenant: 0, Cell: 42, Version: 7}
-	// Pre-seed a stale unmounted ephemeral cell at fuse-ws/ws-1: PrepareWorkspace
-	// must clear it via DeleteCell before ForkVersion rather than failing EEXIST.
-	wantStorePath := filepath.Join(cellRoot, "fuse-ws", "ws-1")
-	api.cells = map[string]uint64{wantStorePath: 77}
 
 	cell, mntPath, err := b.PrepareWorkspace(ctx, "ws-1", baseRef, 99)
 	if err != nil {
@@ -148,9 +142,8 @@ func TestCladefsFUSEBackendPrepareAndDeleteWorkspaceEphemeral(t *testing.T) {
 	if len(mnt.detachReqs) != 1 || mnt.detachReqs[0].GetCell() != 101 || !mnt.detachReqs[0].GetForce() {
 		t.Fatalf("MountDetach requests = %+v, want force detach cell 101", mnt.detachReqs)
 	}
-	// Pre-clear DeleteCell + DeleteWorkspace DeleteCell = 2 deletes for ws-1.
-	if len(api.deleteReqs) != 2 || api.deleteReqs[1].GetPath() != wantStorePath {
-		t.Fatalf("DeleteCell requests = %+v, want 2nd path %q", api.deleteReqs, wantStorePath)
+	if len(api.deleteReqs) != 1 || api.deleteReqs[0].GetCell() != 101 {
+		t.Fatalf("DeleteCell requests = %+v, want cell 101", api.deleteReqs)
 	}
 
 	// Verify attach failure cleans up the forked ephemeral cell.
@@ -158,9 +151,8 @@ func TestCladefsFUSEBackendPrepareAndDeleteWorkspaceEphemeral(t *testing.T) {
 	if _, _, err := b.PrepareWorkspace(ctx, "ws-2", baseRef, 100); err == nil {
 		t.Fatal("expected PrepareWorkspace error when MountAttach fails")
 	}
-	wantStorePath2 := filepath.Join(cellRoot, "fuse-ws", "ws-2")
-	if len(api.deleteReqs) != 4 || api.deleteReqs[3].GetPath() != wantStorePath2 {
-		t.Fatalf("cleanup DeleteCell = %+v, want 4th path %q", api.deleteReqs, wantStorePath2)
+	if len(api.deleteReqs) != 2 || api.deleteReqs[1].GetCell() != 102 {
+		t.Fatalf("cleanup DeleteCell = %+v, want 2nd cell 102", api.deleteReqs)
 	}
 }
 

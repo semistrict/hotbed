@@ -14,7 +14,7 @@ require (
 	github.com/lima-vm/go-qcow2reader v0.8.0
 	github.com/modelcontextprotocol/go-sdk v1.8.0
 	github.com/pressly/goose/v3 v3.30.1
-	github.com/semistrict/cladefs/go v0.0.0-20261125070933-47231bd69a56
+	github.com/semistrict/cladefs/go v0.0.0-20261126083123-9c17b7094cc6
 	go.opentelemetry.io/collector/component v1.71.0
 	go.opentelemetry.io/collector/consumer/xconsumer v0.165.0
 	go.opentelemetry.io/collector/pdata/pprofile v0.165.0

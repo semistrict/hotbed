@@ -14,8 +14,6 @@ import (
 
 	cladefsdv1 "github.com/semistrict/cladefs/go/cladefsd/v1"
 	"google.golang.org/grpc"
-	"google.golang.org/grpc/codes"
-	"google.golang.org/grpc/status"
 
 	"github.com/semistrict/hotbed/internal/cladefs"
 	"github.com/semistrict/hotbed/internal/fake"
@@ -30,15 +28,15 @@ import (
 type strictVMCladefsClient struct {
 	cladefsdv1.CladefsdClient
 	mu         sync.Mutex
-	cells      map[string]uint64
-	deleted    []string
-	dropped    []string
+	cells      map[uint64]bool
+	deleted    []uint64
+	dropped    []uint64
 	nextCellID uint64
 }
 
 func newStrictVMCladefsClient() *strictVMCladefsClient {
 	return &strictVMCladefsClient{
-		cells:      map[string]uint64{},
+		cells:      map[uint64]bool{},
 		nextCellID: 10,
 	}
 }
@@ -46,30 +44,24 @@ func newStrictVMCladefsClient() *strictVMCladefsClient {
 func (c *strictVMCladefsClient) ForkCell(_ context.Context, req *cladefsdv1.ForkCellRequest, _ ...grpc.CallOption) (*cladefsdv1.ForkCellResponse, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if _, exists := c.cells[req.GetTo()]; exists {
-		return nil, status.Error(codes.AlreadyExists, "already exists (EEXIST)")
-	}
 	c.nextCellID++
-	c.cells[req.GetTo()] = c.nextCellID
-	_ = os.MkdirAll(req.GetTo(), 0o755)
+	c.cells[c.nextCellID] = true
 	return &cladefsdv1.ForkCellResponse{Tenant: req.GetTenant(), Cell: c.nextCellID}, nil
 }
 
 func (c *strictVMCladefsClient) DeleteCell(_ context.Context, req *cladefsdv1.DeleteCellRequest, _ ...grpc.CallOption) (*cladefsdv1.DeleteCellResponse, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	c.deleted = append(c.deleted, req.GetPath())
-	delete(c.cells, req.GetPath())
-	_ = os.RemoveAll(req.GetPath())
+	c.deleted = append(c.deleted, req.GetCell())
+	delete(c.cells, req.GetCell())
 	return &cladefsdv1.DeleteCellResponse{}, nil
 }
 
 func (c *strictVMCladefsClient) DropCell(_ context.Context, req *cladefsdv1.DropCellRequest, _ ...grpc.CallOption) (*cladefsdv1.DropCellResponse, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	c.dropped = append(c.dropped, req.GetPath())
-	delete(c.cells, req.GetPath())
-	_ = os.RemoveAll(req.GetPath())
+	c.dropped = append(c.dropped, req.GetCell())
+	delete(c.cells, req.GetCell())
 	return &cladefsdv1.DropCellResponse{}, nil
 }
 
@@ -206,23 +198,23 @@ func TestVMBackendPrepareWorkspaceIdempotentAndGuardsLiveVM(t *testing.T) {
 	ctx := context.Background()
 	api := newStrictVMCladefsClient()
 	fl := newFakeVMLauncher()
-	b, cellRoot := newTestVMBackend(t, api, fl)
+	b, _ := newTestVMBackend(t, api, fl)
 
 	baseRef := cladefs.CellRef{Tenant: 1, Cell: 100, Version: 5}
-	stalePath := filepath.Join(cellRoot, "ws", "uhuvox5f")
 
-	// Seed a stale ws/uhuvox5f cell with NO live VM: PrepareWorkspace must clear
-	// it instead of failing with EEXIST.
-	api.cells[stalePath] = 999
-	if err := os.MkdirAll(stalePath, 0o755); err != nil {
-		t.Fatal(err)
-	}
+	// Seed a stale wsCells entry with NO live VM: PrepareWorkspace must delete it
+	// before forking a fresh cell.
+	api.cells[999] = true
+	b.wsCells["uhuvox5f"] = cladefs.CellRef{Tenant: 1, Cell: 999, HostPath: cladefs.FormatCellID(1, 999)}
 	cell, err := b.PrepareWorkspace(ctx, "uhuvox5f", baseRef, 1)
 	if err != nil {
 		t.Fatalf("PrepareWorkspace with stale cell failed: %v", err)
 	}
 	if cell.GetCell() == 0 {
 		t.Fatalf("expected non-zero forked cell, got %+v", cell)
+	}
+	if api.cells[999] {
+		t.Fatal("expected stale cell 999 to be deleted")
 	}
 
 	// While uhuvox5f's VM is alive, PrepareWorkspace must refuse with ErrBusy
@@ -284,7 +276,7 @@ func TestEngineSweepOrphansAndPeriodicReconcileVMZombies(t *testing.T) {
 
 	api := newStrictVMCladefsClient()
 	fl := newFakeVMLauncher()
-	vmb, cellRoot := newTestVMBackend(t, api, fl)
+	vmb, _ := newTestVMBackend(t, api, fl)
 
 	// Live workspace VM + cell must survive startup sweep.
 	if _, err := vmb.PrepareWorkspace(ctx, "ws-live", cladefs.CellRef{Tenant: 1, Cell: 1, Version: 1}, 1); err != nil {
@@ -292,23 +284,15 @@ func TestEngineSweepOrphansAndPeriodicReconcileVMZombies(t *testing.T) {
 	}
 
 	// Simulate surviving dir-less zombie units from prior worker incarnation:
-	// two base-build VMs, a prov VM, a released workspace VM, and a stale ws cell.
+	// two base-build VMs, a prov VM, and a released workspace VM with a tracked cell.
 	fl.mu.Lock()
 	fl.running["hotbed-vm-base-cladefs-vm-b470a516"] = true
 	fl.running["hotbed-vm-base-cladefs-vm-cba75ac3"] = true
 	fl.running["hotbed-vm-prov-baseimg-deadbeef"] = true
 	fl.running["hotbed-vm-ws-released"] = true
 	fl.mu.Unlock()
-	orphanCell := filepath.Join(cellRoot, "ws", "ws-orphan-disk")
-	if err := os.MkdirAll(orphanCell, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	api.cells[orphanCell] = 500
-	staleBaseCell := filepath.Join(cellRoot, "bases", "cladefs", "cladefs-vm-b470a516")
-	if err := os.MkdirAll(staleBaseCell, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	api.cells[staleBaseCell] = 501
+	api.cells[500] = true
+	vmb.wsCells["ws-released"] = cladefs.CellRef{Tenant: 1, Cell: 500, HostPath: cladefs.FormatCellID(1, 500)}
 
 	// Restart engine with VMBackend: NewEngine runs sweepOrphans -> reconcileVMOrphans(startup=true).
 	e2, err := NewEngine(ctx, EngineConfig{
@@ -335,11 +319,8 @@ func TestEngineSweepOrphansAndPeriodicReconcileVMZombies(t *testing.T) {
 	if st, _ := fl.Status(ctx, "hotbed-vm-ws-live"); !st.Alive() {
 		t.Fatal("live workspace VM ws-live was erroneously reaped")
 	}
-	if _, err := os.Stat(orphanCell); !os.IsNotExist(err) {
-		t.Fatalf("expected orphan cell %s swept at startup", orphanCell)
-	}
-	if _, err := os.Stat(staleBaseCell); !os.IsNotExist(err) {
-		t.Fatalf("expected stale local base cell %s dropped at startup", staleBaseCell)
+	if api.cells[500] {
+		t.Fatalf("expected orphan cell 500 swept at startup")
 	}
 
 	// Periodic reconciliation (startup=false) must preserve an active in-flight
