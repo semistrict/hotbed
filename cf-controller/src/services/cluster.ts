@@ -217,9 +217,12 @@ interface R2Totals {
 	gets: number;
 	fails: number;
 	waitNs: number;
-	// Parts got from the owning peer instead of R2, and served to peers.
+	// Parts got from the owning peer instead of R2, and served to peers,
+	// and their bytes.
 	peerGiven: number;
 	peerServed: number;
+	peerGivenBytes: number;
+	peerServedBytes: number;
 }
 
 function hasObjectStoreCounters(s: SampleRow): boolean {
@@ -231,7 +234,9 @@ function hasObjectStoreCounters(s: SampleRow): boolean {
 		s.r2Fails > 0 ||
 		s.r2WaitNs > 0 ||
 		s.peerGiven > 0 ||
-		s.peerServed > 0
+		s.peerServed > 0 ||
+		s.peerGivenBytes > 0 ||
+		s.peerServedBytes > 0
 	);
 }
 
@@ -269,6 +274,8 @@ export function buildSeries(
 		waitNs: 0,
 		peerGiven: 0,
 		peerServed: 0,
+		peerGivenBytes: 0,
+		peerServedBytes: 0,
 	};
 	const since = nowMs - LIVE_WINDOW_MS;
 
@@ -281,6 +288,8 @@ export function buildSeries(
 		let dWaitNs = 0;
 		let dPeerGiven = 0;
 		let dPeerServed = 0;
+		let dPeerGivenBytes = 0;
+		let dPeerServedBytes = 0;
 		let dtSec = SAMPLE_SECONDS;
 		if (hasObjectStoreCounters(s)) {
 			const prev = prevR2.get(s.node);
@@ -294,6 +303,8 @@ export function buildSeries(
 				dWaitNs = counterDelta(s.r2WaitNs, prev.r2WaitNs);
 				dPeerGiven = counterDelta(s.peerGiven, prev.peerGiven);
 				dPeerServed = counterDelta(s.peerServed, prev.peerServed);
+				dPeerGivenBytes = counterDelta(s.peerGivenBytes, prev.peerGivenBytes);
+				dPeerServedBytes = counterDelta(s.peerServedBytes, prev.peerServedBytes);
 			}
 			prevR2.set(s.node, s);
 		}
@@ -305,6 +316,8 @@ export function buildSeries(
 		r2Totals.waitNs += dWaitNs;
 		r2Totals.peerGiven += dPeerGiven;
 		r2Totals.peerServed += dPeerServed;
+		r2Totals.peerGivenBytes += dPeerGivenBytes;
+		r2Totals.peerServedBytes += dPeerServedBytes;
 
 		if (s.t >= since) {
 			if (!live[s.node]) live[s.node] = create(SamplesSchema);
@@ -322,6 +335,8 @@ export function buildSeries(
 					peerPartsGivenPerSec: dPeerGiven / dtSec,
 					peerPartsServedPerSec: dPeerServed / dtSec,
 					r2GetsPerSec: dGets / dtSec,
+					peerGivenBytesPerSec: dPeerGivenBytes / dtSec,
+					peerServedBytesPerSec: dPeerServedBytes / dtSec,
 				}),
 			);
 			const b = Math.floor(s.t / (SAMPLE_SECONDS * 1000)) * (SAMPLE_SECONDS * 1000);
@@ -466,6 +481,8 @@ function buildTotals(
 		r2CommitWaitSeconds: r2Totals.waitNs / 1e9,
 		peerPartsGiven: BigInt(Math.round(r2Totals.peerGiven)),
 		peerPartsServed: BigInt(Math.round(r2Totals.peerServed)),
+		peerGivenBytes: BigInt(Math.round(r2Totals.peerGivenBytes)),
+		peerServedBytes: BigInt(Math.round(r2Totals.peerServedBytes)),
 	});
 	for (const c of history) {
 		t.parks += c.parks;

@@ -183,6 +183,8 @@ export interface SampleRow {
 	r2WaitNs: number;
 	peerGiven: number;
 	peerServed: number;
+	peerGivenBytes: number;
+	peerServedBytes: number;
 }
 
 export interface ForkRow {
@@ -2171,7 +2173,7 @@ export class ControllerStore {
 			const memFrac = mb > 0 ? Number(h.usage?.memoryUsedBytes ?? 0n) / mb : 0;
 			const os = h.objectStore;
 			this.sql.exec(
-				"INSERT OR REPLACE INTO samples (node_id, t, cpu, memory, psi, cpu_psi, holding, running, queued, parked, oom, r2_up, r2_down, r2_puts, r2_gets, r2_fails, r2_wait_ns, peer_given, peer_served) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+				"INSERT OR REPLACE INTO samples (node_id, t, cpu, memory, psi, cpu_psi, holding, running, queued, parked, oom, r2_up, r2_down, r2_puts, r2_gets, r2_fails, r2_wait_ns, peer_given, peer_served, peer_given_bytes, peer_served_bytes) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
 				nodeId,
 				nowMs,
 				h.usage?.cpuBusy ?? 0,
@@ -2191,6 +2193,8 @@ export class ControllerStore {
 				os?.commitWaitNs ?? 0n,
 				os?.peerPartsGiven ?? 0n,
 				os?.peerPartsServed ?? 0n,
+				os?.peerGivenBytes ?? 0n,
+				os?.peerServedBytes ?? 0n,
 			);
 			for (const session of h.activeSessions) {
 				this.touchSession(session, nowMs);
@@ -2476,7 +2480,7 @@ export class ControllerStore {
 	samplesSince(sinceMs: number): SampleRow[] {
 		return this.sql
 			.exec(
-				"SELECT node_id, t, cpu, memory, psi, cpu_psi, holding, running, queued, parked, oom, r2_up, r2_down, r2_puts, r2_gets, r2_fails, r2_wait_ns, peer_given, peer_served FROM samples WHERE t >= ? ORDER BY t",
+				"SELECT node_id, t, cpu, memory, psi, cpu_psi, holding, running, queued, parked, oom, r2_up, r2_down, r2_puts, r2_gets, r2_fails, r2_wait_ns, peer_given, peer_served, peer_given_bytes, peer_served_bytes FROM samples WHERE t >= ? ORDER BY t",
 				sinceMs,
 			)
 			.toArray()
@@ -2500,6 +2504,8 @@ export class ControllerStore {
 				r2WaitNs: num(r.r2_wait_ns),
 				peerGiven: num(r.peer_given),
 				peerServed: num(r.peer_served),
+				peerGivenBytes: num(r.peer_given_bytes),
+				peerServedBytes: num(r.peer_served_bytes),
 			}));
 	}
 

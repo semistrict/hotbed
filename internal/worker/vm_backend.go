@@ -503,6 +503,21 @@ func applyCladefsPrometheusMetrics(out *pb.ObjectStoreStats, text string) bool {
 				out.PeerPartsFailed = val
 			}
 			matched = true
+		case "cladefsd_peer_asked_parts_total":
+			out.PeerPartsAsked = val
+			matched = true
+		case "cladefsd_peer_given_bytes_total":
+			out.PeerGivenBytes = val
+			matched = true
+		case "cladefsd_peer_served_bytes_total":
+			out.PeerServedBytes = val
+			matched = true
+		case "cladefsd_part_fetches_total", "cladefsd_part_fetch_bytes_total", "cladefsd_tail_fetches_total":
+			if out.PartFetches == nil {
+				out.PartFetches = &pb.PartFetches{}
+			}
+			applyPartFetch(out.PartFetches, name, promLabel(labels, "source"), val)
+			matched = true
 		case "cladefsd_peer_served_parts_total":
 			switch promLabel(labels, "outcome") {
 			case "served":
@@ -545,6 +560,38 @@ func applyCladefsPrometheusMetrics(out *pb.ObjectStoreStats, text string) bool {
 		out.UploadPendingBytes = uploadPending
 	}
 	return matched
+}
+
+// applyPartFetch records one sample of cladefsd's part and tail fetch
+// counters by source.
+func applyPartFetch(f *pb.PartFetches, name, source string, val uint64) {
+	var dst *uint64
+	switch name + "/" + source {
+	case "cladefsd_part_fetches_total/memory":
+		dst = &f.Memory
+	case "cladefsd_part_fetch_bytes_total/memory":
+		dst = &f.MemoryBytes
+	case "cladefsd_part_fetches_total/part_cache":
+		dst = &f.PartCache
+	case "cladefsd_part_fetch_bytes_total/part_cache":
+		dst = &f.PartCacheBytes
+	case "cladefsd_part_fetches_total/peer":
+		dst = &f.Peer
+	case "cladefsd_part_fetch_bytes_total/peer":
+		dst = &f.PeerBytes
+	case "cladefsd_part_fetches_total/bucket":
+		dst = &f.Bucket
+	case "cladefsd_part_fetch_bytes_total/bucket":
+		dst = &f.BucketBytes
+	case "cladefsd_tail_fetches_total/part_cache":
+		dst = &f.TailsFromPartCache
+	case "cladefsd_tail_fetches_total/bucket":
+		dst = &f.TailsFromBucket
+	default:
+		slog.Warn("cladefsd fetch counter with an unknown source", "metric", name, "source", source)
+		return
+	}
+	*dst = val
 }
 
 // partCacheShard reads one cladefsd_part_cache_shard_state sample: cladefsd

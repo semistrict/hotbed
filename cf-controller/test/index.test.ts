@@ -1711,6 +1711,8 @@ describe("Security, cron, daemon logs, tunnel, and workspace regression tests", 
 				r2WaitNs: 0,
 				peerGiven: 0,
 				peerServed: 0,
+				peerGivenBytes: 0,
+				peerServedBytes: 0,
 			},
 			// First R2 sample carries existing since-boot totals: must establish baseline with 0 delta.
 			{
@@ -1724,9 +1726,11 @@ describe("Security, cron, daemon logs, tunnel, and workspace regression tests", 
 				r2WaitNs: 1_000_000_000,
 				peerGiven: 1000,
 				peerServed: 200,
+				peerGivenBytes: 8_000_000,
+				peerServedBytes: 1_600_000,
 			},
 			// 10 seconds later: +10 MiB up, +2 MiB down, +10 puts, +4 gets, +1 fail, +500 ms commit wait,
-			// +100 parts from peers, +30 served to peers.
+			// +100 parts (1 MB) from peers, +30 (300 KB) served to peers.
 			{
 				...base,
 				t: now - 10_000,
@@ -1738,6 +1742,8 @@ describe("Security, cron, daemon logs, tunnel, and workspace regression tests", 
 				r2WaitNs: 1_500_000_000,
 				peerGiven: 1100,
 				peerServed: 230,
+				peerGivenBytes: 9_000_000,
+				peerServedBytes: 1_900_000,
 			},
 			// Daemon restarted and uploaded 4 MiB more in 10s.
 			{
@@ -1751,6 +1757,8 @@ describe("Security, cron, daemon logs, tunnel, and workspace regression tests", 
 				r2WaitNs: 0,
 				peerGiven: 40,
 				peerServed: 10,
+				peerGivenBytes: 400_000,
+				peerServedBytes: 100_000,
 			},
 		];
 		const { series, nodeHourly, r2Totals } = buildSeries(samples, now);
@@ -1762,6 +1770,8 @@ describe("Security, cron, daemon logs, tunnel, and workspace regression tests", 
 		expect(r2Totals.waitNs).toBe(500_000_000);
 		expect(r2Totals.peerGiven).toBe(140);
 		expect(r2Totals.peerServed).toBe(40);
+		expect(r2Totals.peerGivenBytes).toBe(1_400_000);
+		expect(r2Totals.peerServedBytes).toBe(400_000);
 
 		const pts = series.n1.samples;
 		expect(pts).toHaveLength(4);
@@ -1772,6 +1782,8 @@ describe("Security, cron, daemon logs, tunnel, and workspace regression tests", 
 		expect(pts[2].peerPartsGivenPerSec).toBeCloseTo(10, 5);
 		expect(pts[2].peerPartsServedPerSec).toBeCloseTo(3, 5);
 		expect(pts[2].r2GetsPerSec).toBeCloseTo(0.4, 5);
+		expect(pts[2].peerGivenBytesPerSec).toBeCloseTo(100_000, 1);
+		expect(pts[2].peerServedBytesPerSec).toBeCloseTo(30_000, 1);
 		expect(pts[1].peerPartsGivenPerSec).toBe(0);
 		expect(pts[3].uploadBytesPerSec).toBeCloseTo(400_000, 1);
 

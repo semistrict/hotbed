@@ -601,6 +601,19 @@ func TestObjectStoreStatsFromCounters(t *testing.T) {
 		`cladefsd_peer_parts_total{outcome="failed"} 3`,
 		`cladefsd_peer_served_parts_total{outcome="served"} 19`,
 		`cladefsd_peer_served_parts_total{outcome="missing"} 2`,
+		"cladefsd_peer_asked_parts_total 50",
+		"cladefsd_peer_given_bytes_total 44040192",
+		"cladefsd_peer_served_bytes_total 19922944",
+		`cladefsd_part_fetches_total{source="memory"} 900`,
+		`cladefsd_part_fetches_total{source="part_cache"} 400`,
+		`cladefsd_part_fetches_total{source="peer"} 42`,
+		`cladefsd_part_fetches_total{source="bucket"} 11`,
+		`cladefsd_part_fetch_bytes_total{source="memory"} 943718400`,
+		`cladefsd_part_fetch_bytes_total{source="part_cache"} 419430400`,
+		`cladefsd_part_fetch_bytes_total{source="peer"} 44040192`,
+		`cladefsd_part_fetch_bytes_total{source="bucket"} 11534336`,
+		`cladefsd_tail_fetches_total{source="part_cache"} 30`,
+		`cladefsd_tail_fetches_total{source="bucket"} 6`,
 		`cladefsd_part_cache_shard_state{device="230:16",shard="0"} 0`,
 		`cladefsd_part_cache_shard_state{device="230:0",shard="1"} 2`,
 		`cladefsd_upload_pending_bytes{cell="0/abc"} 1000`,
@@ -627,6 +640,19 @@ func TestObjectStoreStatsFromCounters(t *testing.T) {
 	}
 	if got.PeerPartsMissing != 5 || got.PeerPartsFailed != 3 || got.PeerServedPartsMissing != 2 {
 		t.Fatalf("peer outcomes: missing=%d failed=%d served-missing=%d, want 5 3 2", got.PeerPartsMissing, got.PeerPartsFailed, got.PeerServedPartsMissing)
+	}
+	if got.PeerPartsAsked != 50 || got.PeerGivenBytes != 44040192 || got.PeerServedBytes != 19922944 {
+		t.Fatalf("peer asked/bytes: asked=%d given-bytes=%d served-bytes=%d, want 50 44040192 19922944", got.PeerPartsAsked, got.PeerGivenBytes, got.PeerServedBytes)
+	}
+	wantFetches := &pb.PartFetches{
+		Memory: 900, MemoryBytes: 943718400,
+		PartCache: 400, PartCacheBytes: 419430400,
+		Peer: 42, PeerBytes: 44040192,
+		Bucket: 11, BucketBytes: 11534336,
+		TailsFromPartCache: 30, TailsFromBucket: 6,
+	}
+	if diff := cmp.Diff(wantFetches, got.PartFetches, protocmp.Transform()); diff != "" {
+		t.Fatalf("part fetches (-want +got):\n%s", diff)
 	}
 	wantShards := []*pb.PartCacheShard{
 		{Shard: 0, Device: "230:16", State: pb.PartCacheShardState_PART_CACHE_SHARD_STATE_ONLINE},

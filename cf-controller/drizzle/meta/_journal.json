@@ -127,6 +127,13 @@
 			"when": 1795704093550,
 			"tag": "0017_careless_jackpot",
 			"breakpoints": true
+		},
+		{
+			"idx": 18,
+			"version": "6",
+			"when": 1795716374397,
+			"tag": "0018_chunky_silvermane",
+			"breakpoints": true
 		}
 	]
 }

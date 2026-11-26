@@ -729,14 +729,20 @@ message ObjectStoreStats {
   // part cache asks the owner before R2. Parts asked of the owning peer, by
   // outcome: given (saved an R2 GET), missing (the owner had none and the
   // host went to R2), failed (error, timeout or bad CRC; that peer is
-  // skipped for 30s).
+  // skipped for 30s). Asked counts every ask; given counts only parts that
+  // passed the CRC check, as do the given bytes (bytes not fetched from R2).
+  uint64 peer_parts_asked = 53;
   uint64 peer_parts_given = 40;
+  uint64 peer_given_bytes = 54;
   uint64 peer_parts_missing = 47;
   uint64 peer_parts_failed = 48;
-  // Parts peers asked this host for as their owner: served, or missing
-  // (it held none).
+  // Parts peers asked this host for as their owner: served (and their
+  // bytes), or missing (it held none).
   uint64 peer_parts_served = 41;
+  uint64 peer_served_bytes = 55;
   uint64 peer_served_parts_missing = 49;
+  // Where the parts this host read, or served to peers, were found.
+  PartFetches part_fetches = 56;
   // This host's peer address (HOST:PORT), empty if it serves no peers, and
   // the peer list it last applied (SetPeers), sorted, itself included.
   string peer_address = 50;
@@ -752,6 +758,26 @@ message ObjectStoreStats {
   bool memory_full = 44;
   uint64 extent_cache_limit_bytes = 45;
   uint64 extent_cache_floor_bytes = 46;
+}
+
+// Parts cladefsd read, for its own reads and for parts it served to peers,
+// by where it found them, with their bytes as stored in the bucket. A read
+// that joins a fetch already under way is not counted again. Bucket means a
+// part GET to R2.
+message PartFetches {
+  uint64 memory = 1;
+  uint64 memory_bytes = 2;
+  uint64 part_cache = 3;
+  uint64 part_cache_bytes = 4;
+  uint64 peer = 5;
+  uint64 peer_bytes = 6;
+  uint64 bucket = 7;
+  uint64 bucket_bytes = 8;
+  // Object tails read, from the SSD part cache or the bucket. Counts only: a
+  // tail read from the bucket can take two GETs and download more than the
+  // tail. Tails never come from peers.
+  uint64 tails_from_part_cache = 9;
+  uint64 tails_from_bucket = 10;
 }
 
 // One disk of cladefsd's SSD part cache.
@@ -3007,6 +3033,9 @@ message Totals {
   // Parts nodes got from the owning peer instead of R2, and served to peers.
   uint64 peer_parts_given = 13;
   uint64 peer_parts_served = 14;
+  // Their bytes: given bytes are bytes not downloaded from R2.
+  uint64 peer_given_bytes = 15;
+  uint64 peer_served_bytes = 16;
 }
 
 message Sample {
@@ -3029,6 +3058,9 @@ message Sample {
   double peer_parts_given_per_sec = 12;
   double peer_parts_served_per_sec = 13;
   double r2_gets_per_sec = 14;
+  // Bytes got from the owning peer, and served to peers, per second.
+  double peer_given_bytes_per_sec = 15;
+  double peer_served_bytes_per_sec = 16;
 }
 
 message Samples {
