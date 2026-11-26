@@ -30,6 +30,7 @@ import {
 	NodeHoursSchema,
 	NodeSystemUpgradeSchema,
 	NodeUsageSchema,
+	PushCommandOutputResponseSchema,
 	PushEventsResponseSchema,
 	RepoSchema,
 	RepoSummarySchema,
@@ -1401,6 +1402,38 @@ export function createClusterService(
 				throw hotbedError(ErrorCode.InvalidArgs, "sample with positive seq is required");
 			await ctrl.commands.saveSample(caller.nodeId, s, ctrl.now());
 			return create(SaveCommandSampleResponseSchema);
+		},
+
+		async pushCommandOutput(req, ctx) {
+			const caller = getCaller(ctx.values);
+			if (!ctrl.store.hasNode(caller.nodeId)) {
+				throw hotbedError(ErrorCode.NotJoined, `${caller.hostname} has not joined this cluster`);
+			}
+			const commandId = req.commandId.trim();
+			if (!commandId) throw hotbedError(ErrorCode.InvalidArgs, "command ID is required");
+			let totalBytes = 0;
+			for (const chunk of req.chunks) {
+				if (chunk.offset < 0n || chunk.nextOffset < chunk.offset) {
+					throw hotbedError(
+						ErrorCode.InvalidArgs,
+						`invalid chunk offsets [${chunk.offset}, ${chunk.nextOffset})`,
+					);
+				}
+				totalBytes += chunk.data.byteLength;
+			}
+			if (totalBytes > 2 << 20) {
+				throw hotbedError(
+					ErrorCode.InvalidArgs,
+					`pushCommandOutput batch too large (${totalBytes} bytes, max 2 MiB)`,
+				);
+			}
+			const { ackedOffset } = await ctrl.commands.appendOutputChunks(
+				commandId,
+				req.chunks,
+				req.eof,
+				ctrl.now(),
+			);
+			return create(PushCommandOutputResponseSchema, { ackedOffset: BigInt(ackedOffset) });
 		},
 
 		async listCommandSamples(req) {

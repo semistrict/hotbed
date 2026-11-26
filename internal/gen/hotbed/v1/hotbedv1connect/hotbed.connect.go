@@ -112,6 +112,9 @@ const (
 	// ClusterServiceSaveCommandSampleProcedure is the procedure name of the ClusterService's
 	// SaveCommandSample RPC.
 	ClusterServiceSaveCommandSampleProcedure = "/hotbed.v1.ClusterService/SaveCommandSample"
+	// ClusterServicePushCommandOutputProcedure is the procedure name of the ClusterService's
+	// PushCommandOutput RPC.
+	ClusterServicePushCommandOutputProcedure = "/hotbed.v1.ClusterService/PushCommandOutput"
 	// ClusterServiceGetNodeProcedure is the procedure name of the ClusterService's GetNode RPC.
 	ClusterServiceGetNodeProcedure = "/hotbed.v1.ClusterService/GetNode"
 	// ClusterServiceRetireNodeProcedure is the procedure name of the ClusterService's RetireNode RPC.
@@ -566,6 +569,14 @@ var (
 			Procedure:  ClusterServiceSaveCommandSampleProcedure,
 		}
 	})
+	clusterServicePushCommandOutputSpec = sync.OnceValue(func() connect.Spec {
+		return connect.Spec{
+			StreamType:       connect.StreamTypeUnary,
+			Schema:           v1.File_hotbed_v1_hotbed_proto.Services().ByName("ClusterService").Methods().ByName("PushCommandOutput"),
+			Procedure:        ClusterServicePushCommandOutputProcedure,
+			IdempotencyLevel: connect.IdempotencyIdempotent,
+		}
+	})
 	clusterServiceGetNodeSpec = sync.OnceValue(func() connect.Spec {
 		return connect.Spec{
 			StreamType:       connect.StreamTypeUnary,
@@ -719,6 +730,10 @@ type ClusterServiceClient interface {
 	// its commands to the controller with explicit acknowledgement, as
 	// SaveCommandDiagnostics does diagnostics.
 	SaveCommandSample(context.Context, *v1.SaveCommandSampleRequest) (*v1.SaveCommandSampleResponse, error)
+	// PushCommandOutput appends chunks of a command's output (with logical byte
+	// offsets and per-chunk receive timestamps) to that command's dedicated
+	// CommandDO as it runs and on completion (eof=true). Idempotent by offset.
+	PushCommandOutput(context.Context, *v1.PushCommandOutputRequest) (*v1.PushCommandOutputResponse, error)
 	// A node with how it decides whether to start new work (its admission:
 	// whether it holds work, why, and every signal it weighs against its
 	// limit), the work it recently held or made wait, and the placements
@@ -869,6 +884,10 @@ type ClusterServiceHandler interface {
 	// its commands to the controller with explicit acknowledgement, as
 	// SaveCommandDiagnostics does diagnostics.
 	SaveCommandSample(context.Context, *v1.SaveCommandSampleRequest) (*v1.SaveCommandSampleResponse, error)
+	// PushCommandOutput appends chunks of a command's output (with logical byte
+	// offsets and per-chunk receive timestamps) to that command's dedicated
+	// CommandDO as it runs and on completion (eof=true). Idempotent by offset.
+	PushCommandOutput(context.Context, *v1.PushCommandOutputRequest) (*v1.PushCommandOutputResponse, error)
 	// A node with how it decides whether to start new work (its admission:
 	// whether it holds work, why, and every signal it weighs against its
 	// limit), the work it recently held or made wait, and the placements
@@ -935,6 +954,7 @@ func RegisterClusterServiceHandler(server *connect.Server, svc ClusterServiceHan
 		connect.Method{Spec: clusterServiceListCommandSamplesSpec(), Handler: adapter.listCommandSamples},
 		connect.Method{Spec: clusterServiceGetCommandSampleSpec(), Handler: adapter.getCommandSample},
 		connect.Method{Spec: clusterServiceSaveCommandSampleSpec(), Handler: adapter.saveCommandSample},
+		connect.Method{Spec: clusterServicePushCommandOutputSpec(), Handler: adapter.pushCommandOutput},
 		connect.Method{Spec: clusterServiceGetNodeSpec(), Handler: adapter.getNode},
 		connect.Method{Spec: clusterServiceRetireNodeSpec(), Handler: adapter.retireNode},
 		connect.Method{Spec: clusterServiceListPlacementsSpec(), Handler: adapter.listPlacements},
@@ -1074,6 +1094,10 @@ func (UnimplementedClusterServiceHandler) GetCommandSample(context.Context, *v1.
 
 func (UnimplementedClusterServiceHandler) SaveCommandSample(context.Context, *v1.SaveCommandSampleRequest) (*v1.SaveCommandSampleResponse, error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, "hotbed.v1.ClusterService.SaveCommandSample is not implemented")
+}
+
+func (UnimplementedClusterServiceHandler) PushCommandOutput(context.Context, *v1.PushCommandOutputRequest) (*v1.PushCommandOutputResponse, error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, "hotbed.v1.ClusterService.PushCommandOutput is not implemented")
 }
 
 func (UnimplementedClusterServiceHandler) GetNode(context.Context, *v1.GetNodeRequest) (*v1.NodeDetail, error) {
@@ -1331,6 +1355,14 @@ func (c *clusterServiceClient) GetCommandSample(ctx context.Context, req *v1.Get
 func (c *clusterServiceClient) SaveCommandSample(ctx context.Context, req *v1.SaveCommandSampleRequest) (*v1.SaveCommandSampleResponse, error) {
 	var res v1.SaveCommandSampleResponse
 	if err := c.client.CallUnary(ctx, clusterServiceSaveCommandSampleSpec(), req, &res); err != nil {
+		return nil, err
+	}
+	return &res, nil
+}
+
+func (c *clusterServiceClient) PushCommandOutput(ctx context.Context, req *v1.PushCommandOutputRequest) (*v1.PushCommandOutputResponse, error) {
+	var res v1.PushCommandOutputResponse
+	if err := c.client.CallUnary(ctx, clusterServicePushCommandOutputSpec(), req, &res); err != nil {
 		return nil, err
 	}
 	return &res, nil
@@ -1728,6 +1760,18 @@ func (h clusterServiceHandler) saveCommandSample(ctx context.Context, _ connect.
 		return err
 	}
 	res, err := h.svc.SaveCommandSample(ctx, &req)
+	if err != nil {
+		return err
+	}
+	return stream.Send(res)
+}
+
+func (h clusterServiceHandler) pushCommandOutput(ctx context.Context, _ connect.Spec, stream connect.ServerStream) error {
+	var req v1.PushCommandOutputRequest
+	if err := stream.Receive(&req); err != nil {
+		return err
+	}
+	res, err := h.svc.PushCommandOutput(ctx, &req)
 	if err != nil {
 		return err
 	}

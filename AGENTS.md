@@ -50,7 +50,7 @@ Never ask the user anything directly in chat when you can make a reasonable call
   - **DDL changes go in SQL migrations** (`NNNNN_name.sql` with `-- +goose Up` / `-- +goose Down`) so `sqlc` can parse the schema statically.
   - **Data backfills that need Go logic** (protobuf JSON, canonical remotes, etc.) go in numbered Go migrations registered with `goose.WithGoMigrations` in `migrations.go`.
   - **Typed queries live in `queries/*.sql` and compile via `make sqlc` (`sqlc generate`).** Never edit files in `db/gen/` by hand. With SQLite in `sqlc`, do not mix `sqlc.arg(...)` (`?N`) with bare `?` or `sqlc.slice(...)` in the same statement (`TestSQLcGeneratedQueriesHaveSafeSQLitePlaceholders` enforces this).
-- **Wire formats stay clean:** don't keep legacy wire-format compatibility shims when a cleaner RPC or protobuf change calls for it.
+- **Wire formats & Go↔TS schemas live in protobuf:** define every RPC payload, JSON schema, and data format shared between Go and TypeScript in `proto/hotbed/v1/hotbed.proto` — never hand-maintain duplicate Go/TS JSON structs, and don't keep legacy wire-format compatibility shims when a cleaner RPC or protobuf change calls for it.
 
 ## No silent fallbacks to a costlier path: fail hard
 

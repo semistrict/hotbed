@@ -231,6 +231,12 @@ service ClusterService {
   // its commands to the controller with explicit acknowledgement, as
   // SaveCommandDiagnostics does diagnostics.
   rpc SaveCommandSample(SaveCommandSampleRequest) returns (SaveCommandSampleResponse);
+  // PushCommandOutput appends chunks of a command's output (with logical byte
+  // offsets and per-chunk receive timestamps) to that command's dedicated
+  // CommandDO as it runs and on completion (eof=true). Idempotent by offset.
+  rpc PushCommandOutput(PushCommandOutputRequest) returns (PushCommandOutputResponse) {
+    option idempotency_level = IDEMPOTENT;
+  }
   // A node with how it decides whether to start new work (its admission:
   // whether it holds work, why, and every signal it weighs against its
   // limit), the work it recently held or made wait, and the placements
@@ -1797,6 +1803,32 @@ message SaveCommandSampleRequest {
 }
 
 message SaveCommandSampleResponse {}
+
+message CommandOutputChunk {
+  // Logical start byte offset in the command's log file.
+  int64 offset = 1;
+  // Logical end byte offset after this chunk (offset + len(data), or dropped.To
+  // for a synthetic dropped-bytes marker).
+  int64 next_offset = 2;
+  // Unix milliseconds when these bytes were received (0 for dropped-bytes
+  // markers or logs without timestamps).
+  int64 received_at = 3;
+  // Raw output bytes (or dropped-bytes marker line).
+  bytes data = 4;
+}
+
+message PushCommandOutputRequest {
+  string command_id = 1;
+  repeated CommandOutputChunk chunks = 2;
+  // True once the command has finished and all output bytes up to the final
+  // chunk have been sent.
+  bool eof = 3;
+}
+
+message PushCommandOutputResponse {
+  // Highest logical next_offset durably stored in the command's CommandDO.
+  int64 acked_offset = 1;
+}
 
 message CommandEvent {
   int64 at = 1;

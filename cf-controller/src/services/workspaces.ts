@@ -1559,6 +1559,25 @@ export function createWorkspaceService(ctrl: ControllerContext): {
 					"FollowLog with follow is served directly by the workspace's worker",
 				);
 			}
+			const reqOffset = Number(req.offset);
+			const stored = await ctrl.commands.readOutputChunks(req.id, reqOffset);
+			if (stored.hasOutput) {
+				for (const c of stored.chunks) {
+					let data = c.data;
+					// If caller requested a mid-chunk offset on normal (non-marker) data, slice to reqOffset.
+					if (reqOffset > c.offset && c.nextOffset === c.offset + c.data.byteLength) {
+						const skip = reqOffset - c.offset;
+						if (skip >= data.byteLength) continue;
+						data = data.subarray(skip);
+					}
+					yield create(LogChunkSchema, {
+						data,
+						nextOffset: BigInt(c.nextOffset),
+						receivedAt: req.timestamps ? BigInt(c.receivedAt) : 0n,
+					});
+				}
+				return;
+			}
 			const { host, nodeId } = commandOf(req.id);
 			try {
 				yield* ctrl.tunnel.callServerStream(
@@ -1577,6 +1596,15 @@ export function createWorkspaceService(ctrl: ControllerContext): {
 
 		async getLogLines(req) {
 			const effectiveTail = req.tail > 0 ? req.tail : 2000;
+			const streamed = await ctrl.commands.getOutputLines(req.id, effectiveTail);
+			if (streamed.hasOutput) {
+				return create(CommandLogSchema, {
+					commandId: req.id,
+					lines: streamed.lines,
+					cut: streamed.cut,
+					lineTimestamps: streamed.lineTimestamps.map((t) => BigInt(t)),
+				});
+			}
 			const finished = ctrl.store.finishedCommand(req.id);
 			let cached = finished ? await ctrl.commands.getOutputLog(req.id) : null;
 			if (cached && (!cached.cut || cached.tail >= effectiveTail)) {

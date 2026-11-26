@@ -7,10 +7,19 @@ import {
 	CommandSampleSchema,
 	type CommandDiagnostics,
 	type CommandLog,
+	type CommandOutputChunk,
 	type CommandProfile,
 	type CommandSample,
 } from "./gen/hotbed/v1/hotbed_pb.ts";
+import { extractLogLines, type TimedOutputChunk } from "./settle.ts";
 import { KEEP_HISTORY_MS, MAX_COMMAND_SAMPLES } from "./store.ts";
+
+// Bounded per-CommandDO output storage: keep up to 32 MiB total (2 MiB head + 30 MiB tail)
+// so a runaway command can never exhaust a Durable Object's SQLite quota.
+const MAX_STORED_OUTPUT_BYTES = 32 << 20;
+const KEEP_HEAD_OUTPUT_BYTES = 2 << 20;
+const KEEP_TAIL_OUTPUT_BYTES = 28 << 20;
+const DEFAULT_LOG_LINES_MAX_BYTES = 1 << 20;
 
 export interface StoredOutputLog {
 	tail: number;
@@ -22,6 +31,20 @@ export interface CommandOutputCache {
 	tail: number;
 	cut: boolean;
 	log: CommandLog;
+}
+
+export interface CommandOutputStreamRead {
+	chunks: TimedOutputChunk[];
+	eof: boolean;
+	hasOutput: boolean;
+}
+
+export interface CommandOutputLinesResult {
+	lines: string[];
+	lineTimestamps: number[];
+	cut: boolean;
+	eof: boolean;
+	hasOutput: boolean;
 }
 
 function sqlStr(v: SqlStorageValue | undefined): string {
@@ -95,6 +118,12 @@ export class CommandDO extends DurableObject<Env> {
 				cut INTEGER NOT NULL,
 				updated_at INTEGER NOT NULL,
 				doc BLOB NOT NULL
+			);
+			CREATE TABLE IF NOT EXISTS command_output_chunks (
+				offset INTEGER PRIMARY KEY,
+				next_offset INTEGER NOT NULL,
+				received_at INTEGER NOT NULL,
+				data BLOB NOT NULL
 			);
 		`);
 	}
@@ -263,6 +292,195 @@ export class CommandDO extends DurableObject<Env> {
 		};
 	}
 
+	async appendOutputChunks(params: {
+		chunks: TimedOutputChunk[];
+		eof: boolean;
+		nowMs?: number;
+	}): Promise<{ ackedOffset: number }> {
+		this.ensureSchema();
+		const nowMs = params.nowMs ?? Date.now();
+		let ackedOffset = 0;
+		this.ctx.storage.transactionSync(() => {
+			for (const c of params.chunks) {
+				if (c.offset < 0 || c.nextOffset < c.offset) continue;
+				if (c.data.byteLength === 0 && c.nextOffset === c.offset) continue;
+				this.sql.exec(
+					`INSERT OR IGNORE INTO command_output_chunks (offset, next_offset, received_at, data)
+					 VALUES (?, ?, ?, ?)`,
+					c.offset,
+					c.nextOffset,
+					c.receivedAt,
+					c.data,
+				);
+			}
+			if (params.eof) {
+				this.sql.exec(
+					`INSERT INTO command_meta (key, value) VALUES ('output_eof', '1')
+					 ON CONFLICT (key) DO UPDATE SET value = '1'`,
+				);
+			}
+			this.compactOutputChunksLocked();
+			const ackRows = this.sql
+				.exec("SELECT COALESCE(MAX(next_offset), 0) AS ack FROM command_output_chunks")
+				.toArray();
+			ackedOffset = ackRows.length > 0 ? sqlNum(ackRows[0].ack) : 0;
+			if (ackedOffset > 0) {
+				const prevRows = this.sql
+					.exec("SELECT value FROM command_meta WHERE key = 'output_acked_offset'")
+					.toArray();
+				const prev = prevRows.length > 0 ? sqlNum(prevRows[0].value) : 0;
+				if (ackedOffset > prev) {
+					this.sql.exec(
+						`INSERT INTO command_meta (key, value) VALUES ('output_acked_offset', ?)
+						 ON CONFLICT (key) DO UPDATE SET value = excluded.value`,
+						String(ackedOffset),
+					);
+				} else {
+					ackedOffset = prev;
+				}
+			}
+		});
+		await this.scheduleExpiry(nowMs);
+		return { ackedOffset };
+	}
+
+	private compactOutputChunksLocked(): void {
+		const sizeRows = this.sql
+			.exec("SELECT COALESCE(SUM(LENGTH(data)), 0) AS total FROM command_output_chunks")
+			.toArray();
+		const total = sizeRows.length > 0 ? sqlNum(sizeRows[0].total) : 0;
+		if (total <= MAX_STORED_OUTPUT_BYTES) return;
+
+		const metaRows = this.sql
+			.exec(
+				"SELECT offset, next_offset, LENGTH(data) AS sz FROM command_output_chunks ORDER BY offset",
+			)
+			.toArray();
+		if (metaRows.length < 3) return;
+
+		let headKeepEndIdx = 0;
+		let headBytes = 0;
+		for (let i = 0; i < metaRows.length; i++) {
+			const sz = sqlNum(metaRows[i].sz);
+			if (headBytes + sz > KEEP_HEAD_OUTPUT_BYTES && i > 0) break;
+			headBytes += sz;
+			headKeepEndIdx = i;
+		}
+		let tailKeepStartIdx = metaRows.length - 1;
+		let tailBytes = 0;
+		for (let i = metaRows.length - 1; i > headKeepEndIdx; i--) {
+			const sz = sqlNum(metaRows[i].sz);
+			if (tailBytes + sz > KEEP_TAIL_OUTPUT_BYTES && i < metaRows.length - 1) break;
+			tailBytes += sz;
+			tailKeepStartIdx = i;
+		}
+		if (tailKeepStartIdx <= headKeepEndIdx + 1) return;
+
+		const dropFromOffset = sqlNum(metaRows[headKeepEndIdx + 1].offset);
+		const dropToOffset = sqlNum(metaRows[tailKeepStartIdx - 1].offset);
+		const droppedNextOffset = sqlNum(metaRows[tailKeepStartIdx - 1].next_offset);
+		const droppedBytes = Math.max(0, droppedNextOffset - dropFromOffset);
+		this.sql.exec(
+			"DELETE FROM command_output_chunks WHERE offset >= ? AND offset <= ?",
+			dropFromOffset,
+			dropToOffset,
+		);
+		const marker = new TextEncoder().encode(
+			`\n[hotbed: ${droppedBytes} bytes dropped here (output cap)]\n`,
+		);
+		this.sql.exec(
+			`INSERT OR REPLACE INTO command_output_chunks (offset, next_offset, received_at, data)
+			 VALUES (?, ?, 0, ?)`,
+			dropFromOffset,
+			droppedNextOffset,
+			marker,
+		);
+		this.sql.exec(
+			`INSERT INTO command_meta (key, value) VALUES ('output_cut', '1')
+			 ON CONFLICT (key) DO UPDATE SET value = '1'`,
+		);
+	}
+
+	readOutputChunks(afterOffset = 0): CommandOutputStreamRead {
+		this.ensureSchema();
+		const eof =
+			this.sql.exec("SELECT 1 FROM command_meta WHERE key = 'output_eof' AND value = '1'").toArray()
+				.length > 0;
+		const anyRow =
+			this.sql.exec("SELECT 1 FROM command_output_chunks LIMIT 1").toArray().length > 0;
+		if (!eof && !anyRow) {
+			return { chunks: [], eof: false, hasOutput: false };
+		}
+		const rows = this.sql
+			.exec(
+				"SELECT offset, next_offset, received_at, data FROM command_output_chunks WHERE next_offset > ? ORDER BY offset",
+				afterOffset,
+			)
+			.toArray();
+		const chunks: TimedOutputChunk[] = [];
+		for (const r of rows) {
+			const data = toUint8Array(r.data);
+			if (!data) continue;
+			chunks.push({
+				offset: sqlNum(r.offset),
+				nextOffset: sqlNum(r.next_offset),
+				receivedAt: sqlNum(r.received_at),
+				data,
+			});
+		}
+		return { chunks, eof, hasOutput: true };
+	}
+
+	getOutputLines(tail = 2000, maxBytes = DEFAULT_LOG_LINES_MAX_BYTES): CommandOutputLinesResult {
+		this.ensureSchema();
+		const eof =
+			this.sql.exec("SELECT 1 FROM command_meta WHERE key = 'output_eof' AND value = '1'").toArray()
+				.length > 0;
+		const anyRow =
+			this.sql.exec("SELECT 1 FROM command_output_chunks LIMIT 1").toArray().length > 0;
+		if (!eof && !anyRow) {
+			return { lines: [], lineTimestamps: [], cut: false, eof: false, hasOutput: false };
+		}
+		const alreadyCut =
+			this.sql.exec("SELECT 1 FROM command_meta WHERE key = 'output_cut' AND value = '1'").toArray()
+				.length > 0;
+
+		// Read from the tail so a huge stored log never blows up DO memory.
+		const readBudget = Math.max(maxBytes * 2, 2 << 20);
+		const rows = this.sql
+			.exec(
+				"SELECT offset, next_offset, received_at, data FROM command_output_chunks ORDER BY offset DESC",
+			)
+			.toArray();
+		const picked: TimedOutputChunk[] = [];
+		let totalBytes = 0;
+		let trimmedEarly = false;
+		for (const r of rows) {
+			const data = toUint8Array(r.data);
+			if (!data) continue;
+			if (picked.length > 0 && totalBytes + data.byteLength > readBudget) {
+				trimmedEarly = true;
+				break;
+			}
+			totalBytes += data.byteLength;
+			picked.push({
+				offset: sqlNum(r.offset),
+				nextOffset: sqlNum(r.next_offset),
+				receivedAt: sqlNum(r.received_at),
+				data,
+			});
+		}
+		picked.reverse();
+		const extracted = extractLogLines(picked, tail, maxBytes, alreadyCut || trimmedEarly);
+		return {
+			lines: extracted.lines,
+			lineTimestamps: extracted.lineTimestamps,
+			cut: extracted.cut,
+			eof,
+			hasOutput: true,
+		};
+	}
+
 	async clear(): Promise<void> {
 		await this.ctx.storage.deleteAlarm();
 		await this.ctx.storage.deleteAll();
@@ -395,5 +613,32 @@ export class CommandStoreClient {
 			cut: stored.cut,
 			log: fromBinary(CommandLogSchema, stored.doc),
 		};
+	}
+
+	async appendOutputChunks(
+		commandId: string,
+		chunks: CommandOutputChunk[],
+		eof: boolean,
+		nowMs = Date.now(),
+	): Promise<{ ackedOffset: number }> {
+		const mapped: TimedOutputChunk[] = chunks.map((c) => ({
+			offset: Number(c.offset),
+			nextOffset: Number(c.nextOffset),
+			receivedAt: Number(c.receivedAt),
+			data: c.data,
+		}));
+		return this.stub(commandId).appendOutputChunks({ chunks: mapped, eof, nowMs });
+	}
+
+	async readOutputChunks(commandId: string, afterOffset = 0): Promise<CommandOutputStreamRead> {
+		return this.stub(commandId).readOutputChunks(afterOffset);
+	}
+
+	async getOutputLines(
+		commandId: string,
+		tail = 2000,
+		maxBytes = DEFAULT_LOG_LINES_MAX_BYTES,
+	): Promise<CommandOutputLinesResult> {
+		return this.stub(commandId).getOutputLines(tail, maxBytes);
 	}
 }

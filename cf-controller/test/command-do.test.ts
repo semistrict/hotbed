@@ -276,6 +276,93 @@ describe("CommandDO per-command SQLite storage via typed Workers RPC", () => {
 		const tail2 = await owner.workspaces.getLogLines({ id: cmdId, tail: 2 });
 		expect(tail2.lines).toEqual(["line-2", "line-3"]);
 		expect(tail2.lineTimestamps).toEqual([1_700_000_002_000n, 1_700_000_003_000n]);
+
+		// Workers push live output chunks to CommandDO as output arrives; GetLogLines
+		// and FollowLog serve directly from CommandDO without hitting any worker tunnel.
+		const liveCmdId = "c-live-stream";
+		const enc = new TextEncoder();
+		const b1 = enc.encode("hello\nprogress 10%\rprogress 100%\n");
+		const r1 = await worker.cluster.pushCommandOutput({
+			commandId: liveCmdId,
+			chunks: [
+				{
+					offset: 0n,
+					nextOffset: BigInt(b1.byteLength),
+					receivedAt: 1_700_000_100_000n,
+					data: b1,
+				},
+			],
+			eof: false,
+		});
+		expect(r1.ackedOffset).toBe(BigInt(b1.byteLength));
+
+		// Duplicate retry at offset 0 is idempotent.
+		const rDup = await worker.cluster.pushCommandOutput({
+			commandId: liveCmdId,
+			chunks: [
+				{
+					offset: 0n,
+					nextOffset: BigInt(b1.byteLength),
+					receivedAt: 1_700_000_100_000n,
+					data: b1,
+				},
+			],
+			eof: false,
+		});
+		expect(rDup.ackedOffset).toBe(BigInt(b1.byteLength));
+
+		// Second chunk arrives with ANSI color + eof=true.
+		const b2 = enc.encode("\x1b[32mok\x1b[0m\n");
+		const r2 = await worker.cluster.pushCommandOutput({
+			commandId: liveCmdId,
+			chunks: [
+				{
+					offset: BigInt(b1.byteLength),
+					nextOffset: BigInt(b1.byteLength + b2.byteLength),
+					receivedAt: 1_700_000_200_000n,
+					data: b2,
+				},
+			],
+			eof: true,
+		});
+		expect(r2.ackedOffset).toBe(BigInt(b1.byteLength + b2.byteLength));
+
+		// GetLogLines settles CR redraws and strips ANSI escapes with exact per-line timestamps.
+		const liveLines = await owner.workspaces.getLogLines({ id: liveCmdId, tail: 10 });
+		expect(liveLines.lines).toEqual(["hello", "progress 100%", "ok"]);
+		expect(liveLines.lineTimestamps).toEqual([
+			1_700_000_100_000n,
+			1_700_000_100_000n,
+			1_700_000_200_000n,
+		]);
+
+		// FollowLog (non-follow) streams raw chunks & timestamps directly from CommandDO,
+		// including mid-chunk offset slicing.
+		const rawChunks: Array<{ text: string; nextOffset: bigint; receivedAt: bigint }> = [];
+		for await (const chunk of owner.workspaces.followLog({
+			id: liveCmdId,
+			offset: 6n, // after "hello\n"
+			follow: false,
+			timestamps: true,
+		})) {
+			rawChunks.push({
+				text: new TextDecoder().decode(chunk.data),
+				nextOffset: chunk.nextOffset,
+				receivedAt: chunk.receivedAt,
+			});
+		}
+		expect(rawChunks).toEqual([
+			{
+				text: "progress 10%\rprogress 100%\n",
+				nextOffset: BigInt(b1.byteLength),
+				receivedAt: 1_700_000_100_000n,
+			},
+			{
+				text: "\x1b[32mok\x1b[0m\n",
+				nextOffset: BigInt(b1.byteLength + b2.byteLength),
+				receivedAt: 1_700_000_200_000n,
+			},
+		]);
 	});
 
 	it("serves ControllerDO via typed Workers RPC and rejects non-WebSocket HTTP fetch() calls", async () => {

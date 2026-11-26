@@ -85,8 +85,10 @@ func Connect(ctx context.Context, eng *Engine, cluster hotbedv1connect.ClusterSe
 func connectWithReset(ctx context.Context, eng *Engine, cluster hotbedv1connect.ClusterServiceClient, clusterID string, follow *Follow, resetTransport func()) error {
 	g, ctx := errgroup.WithContext(ctx)
 	p := &pusher{eng: eng, cluster: cluster, clusterID: clusterID, follow: follow}
+	op := newOutputPusher(eng, cluster)
 	wakePush := make(chan struct{}, 1)
 	wakeBeat := make(chan struct{}, 1)
+	wakeOutput := make(chan struct{}, 1)
 	beatKick := make(chan struct{}, 1)
 	signal := func(ch chan struct{}) {
 		select {
@@ -105,15 +107,22 @@ func connectWithReset(ctx context.Context, eng *Engine, cluster hotbedv1connect.
 	g.Go(func() error {
 		return keepWithFailureHook(ctx, "push events", eng.Kicked(), wakePush, func() {
 			signal(wakeBeat)
+			signal(wakeOutput)
 			if follow != nil && (follow.deferred() != 0 || follow.restartPending()) && (!eng.hasActiveUpgradeWork() || follow.deferExpired()) {
 				signal(beatKick)
 			}
 		}, onFail, p.once)
 	})
 	g.Go(func() error {
-		return keepWithFailureHook(ctx, "heartbeat", beatKick, wakeBeat, func() { signal(wakePush) }, onFail, func(ctx context.Context) (bool, error) {
+		return keepWithFailureHook(ctx, "heartbeat", beatKick, wakeBeat, func() {
+			signal(wakePush)
+			signal(wakeOutput)
+		}, onFail, func(ctx context.Context) (bool, error) {
 			return false, HeartbeatOnce(ctx, eng, cluster, clusterID, follow)
 		})
+	})
+	g.Go(func() error {
+		return runOutputPusher(ctx, op, eng.OutputKicked(), wakeOutput, onFail)
 	})
 	return g.Wait()
 }

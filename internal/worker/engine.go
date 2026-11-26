@@ -283,8 +283,9 @@ type Engine struct {
 	// applied is the last event the controller said it applied.
 	applied atomic.Int64
 
-	kick    chan struct{} // an event was written: push soon
-	collect chan struct{} // a base may have become garbage: collect soon
+	kick       chan struct{} // an event was written: push soon
+	outputKick chan struct{} // a command started/changed/ended: push output soon
+	collect    chan struct{} // a base may have become garbage: collect soon
 	stepc   chan struct{} // a command may start or have ended: step soon
 	// updated is closed, and replaced, whenever a base, workspace or
 	// command changes, to wake whoever watches them.
@@ -543,6 +544,7 @@ func NewEngine(ctx context.Context, cfg EngineConfig) (*Engine, error) {
 		shells:           map[string]*activeShell{},
 		portProxies:      map[string]*portProxy{},
 		kick:             make(chan struct{}, 1),
+		outputKick:       make(chan struct{}, 1),
 		collect:          make(chan struct{}, 1),
 		stepc:            make(chan struct{}, 1),
 		updated:          make(chan struct{}),
@@ -794,6 +796,35 @@ func (e *Engine) Run(ctx context.Context) {
 // Kicked is signalled whenever an event was written.
 func (e *Engine) Kicked() <-chan struct{} { return e.kick }
 
+// OutputKicked is signalled whenever a command's lifecycle changes so the live
+// output pusher wakes immediately.
+func (e *Engine) OutputKicked() <-chan struct{} { return e.outputKick }
+
+type outputTarget struct {
+	id      string
+	logPath string
+	ended   bool
+}
+
+// outputTargets returns every command currently tracked in memory (live and
+// recently ended) along with its log file path and whether it has ended.
+func (e *Engine) outputTargets() []outputTarget {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if len(e.commands) == 0 {
+		return nil
+	}
+	out := make([]outputTarget, 0, len(e.commands))
+	for id, c := range e.commands {
+		out = append(out, outputTarget{
+			id:      id,
+			logPath: filepath.Join(e.logsDir(), id+".log"),
+			ended:   !api.Live(c.cmd().State),
+		})
+	}
+	return out
+}
+
 // stepSoon asks Run to step now rather than at its next tick: a command was
 // queued, or one may have ended.
 func (e *Engine) stepSoon() {
@@ -833,6 +864,10 @@ func (e *Engine) collectSoon() {
 func (e *Engine) changed() {
 	select {
 	case e.kick <- struct{}{}:
+	default:
+	}
+	select {
+	case e.outputKick <- struct{}{}:
 	default:
 	}
 }
