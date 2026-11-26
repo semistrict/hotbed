@@ -1,9 +1,11 @@
 package main
 
 import (
+	"net"
 	"regexp"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/semistrict/hotbed/internal/api"
 	pb "github.com/semistrict/hotbed/internal/gen/hotbed/v1"
@@ -71,7 +73,7 @@ func TestRunDetachesAfterItsWaitAndOutputReadsItAll(t *testing.T) {
 	if cmd.Attached {
 		t.Fatalf("detach = %v, want it detached", &cmd)
 	}
-	if code, e := c.fails("send", "-s", "slow-owl", id, "yes"); code != exitError || e.Code != api.CodeConflict || !strings.Contains(e.Message, "does not run in a terminal") {
+	if code, e := c.fails("send", "-s", "slow-owl", id, "yes"); code != exitError || e.Code != api.CodeConflict || !strings.Contains(e.Message, "does not read its input from a terminal") {
 		t.Fatalf("send to a command with no terminal: exit %d, %+v; want CONFLICT saying so", code, e)
 	}
 	c.ok(nil, "stop", "-s", "slow-owl", id)
@@ -147,5 +149,36 @@ func TestDetachedRunWaitsUntilReady(t *testing.T) {
 	code, e := c.fails("run", "-s", "keen-bat", "-r", "app", "--detach", "--mem", "1G", "--ready", "^listening", "--", "sh", "-c", "echo no port; exit 1")
 	if code != exitError || e.Code != api.CodeNotReady || !strings.Contains(e.Message, "ended before writing a line matching") {
 		t.Fatalf("run --ready of one that exits: exit %d, %+v; want NOT_READY saying it ended", code, e)
+	}
+}
+
+// A port proxy that accepts and closes at once (its VM's server not up) is
+// not serving; a server that holds the connection, or answers, is.
+func TestServingSeesThroughAPortProxy(t *testing.T) {
+	listen := func(handle func(net.Conn)) string {
+		ln, err := net.Listen("tcp", "127.0.0.1:0")
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { ln.Close() })
+		go func() {
+			for {
+				c, err := ln.Accept()
+				if err != nil {
+					return
+				}
+				go handle(c)
+			}
+		}()
+		return ln.Addr().String()
+	}
+	closes := listen(func(c net.Conn) { c.Close() })
+	holds := listen(func(c net.Conn) { time.Sleep(3 * time.Second); c.Close() })
+	answers := listen(func(c net.Conn) { _, _ = c.Write([]byte("hello")); c.Close() })
+	if serving(t.Context(), closes) {
+		t.Error("a proxy closing at once counts as serving")
+	}
+	if !serving(t.Context(), holds) || !serving(t.Context(), answers) {
+		t.Error("a server holding or answering a connection does not count as serving")
 	}
 }

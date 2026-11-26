@@ -165,7 +165,7 @@ func TestDetach(t *testing.T) {
 func TestSendInputNeedsATerminal(t *testing.T) {
 	e := jobEngine(t, "c-i", "")
 	err := e.SendInput(t.Context(), "c-i", []byte("y\n"))
-	if api.CodeOf(err) != api.CodeConflict || !strings.Contains(err.Error(), "does not run in a terminal") {
+	if api.CodeOf(err) != api.CodeConflict || !strings.Contains(err.Error(), "does not read its input from a terminal") {
 		t.Fatalf("input to a command with no terminal: %v, want CONFLICT saying so", err)
 	}
 }
@@ -176,10 +176,10 @@ func TestTerminalOnTheHost(t *testing.T) {
 	// for is refused.
 	e.mu.Lock()
 	defer e.mu.Unlock()
-	if tty, err := e.ttyFor(&pb.RunCommandRequest{WorkspaceId: "w"}); tty || err != nil {
-		t.Errorf("default on the host: %v %v, want no terminal", tty, err)
+	if tty, input, err := e.ttyFor(&pb.RunCommandRequest{WorkspaceId: "w"}); tty || input || err != nil {
+		t.Errorf("default on the host: %v %v %v, want no terminal", tty, input, err)
 	}
-	if _, err := e.ttyFor(&pb.RunCommandRequest{WorkspaceId: "w", Tty: pb.TtyMode_TTY_MODE_ON}); api.CodeOf(err) != api.CodeInvalidArgs {
+	if _, _, err := e.ttyFor(&pb.RunCommandRequest{WorkspaceId: "w", Tty: pb.TtyMode_TTY_MODE_ON}); api.CodeOf(err) != api.CodeInvalidArgs {
 		t.Errorf("--tty on the host: %v, want INVALID_ARGS", err)
 	}
 }
@@ -225,5 +225,49 @@ func TestEstimateComparedAtTheEnd(t *testing.T) {
 	}
 	if !strings.Contains(note, "of 4.0 GiB estimated") || !strings.Contains(note, "expected") || !strings.HasSuffix(note, "(given)") {
 		t.Fatalf("estimate note %q, want peak and time set beside the estimate", note)
+	}
+}
+
+// Waiting --until a line since the last sync ignores lines from before it.
+func TestQueryOutputUntilSinceSync(t *testing.T) {
+	e := jobEngine(t, "c-us", "listening on :1\n")
+	e.mu.Lock()
+	e.markSyncedLocked("w")
+	e.mu.Unlock()
+	q, err := e.QueryOutput(t.Context(), &pb.QueryOutputRequest{Id: "c-us", SinceSync: true, Until: "listening", TimeoutSeconds: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if q.Waited != "timeout" {
+		t.Fatalf("until since sync, only an old match: waited %q, want timeout", q.Waited)
+	}
+	appendLog(t, e, "c-us", "reloading\nlistening on :2\n")
+	q, err = e.QueryOutput(t.Context(), &pb.QueryOutputRequest{Id: "c-us", SinceSync: true, Until: "listening", TimeoutSeconds: 5})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.Join(texts(q), "|"); q.Waited != "matched" || got != ":listening on :2" {
+		t.Fatalf("until since sync: waited %q, lines %q; want matched, the new line", q.Waited, got)
+	}
+}
+
+// A row still being drawn is not passed by next_line: waiting --after it
+// sees how it ends.
+func TestNextLineStopsBeforeTheRowBeingDrawn(t *testing.T) {
+	e := jobEngine(t, "c-n", "start\nbuilding |")
+	q, err := e.QueryOutput(t.Context(), &pb.QueryOutputRequest{Id: "c-n"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if q.TotalLines != 2 || q.NextLine != 1 {
+		t.Fatalf("total %d next %d, want 2 and 1", q.TotalLines, q.NextLine)
+	}
+	appendLog(t, e, "c-n", "\r\x1b[KBuild finished\n")
+	q, err = e.QueryOutput(t.Context(), &pb.QueryOutputRequest{Id: "c-n", Until: "finished", After: q.NextLine, TimeoutSeconds: 5})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if q.Waited != "matched" {
+		t.Fatalf("until after next_line: waited %q, want matched", q.Waited)
 	}
 }

@@ -1817,10 +1817,13 @@ message Command {
   // How many activity samples have been kept of it: the seq of its newest
   // (ListCommandSamples), 0 for none.
   int32 samples = 33;
-  // It runs in a terminal (RunCommandRequest.tty).
+  // Its output goes to a terminal (RunCommandRequest.tty).
   bool tty = 34;
   // What it was expected to need.
   CommandEstimate estimate = 35;
+  // It reads its input from its terminal too (--tty): SendInput types into
+  // it.
+  bool tty_input = 36;
 }
 
 // A command that ended, as history keeps it.
@@ -1900,16 +1903,18 @@ message RunCommandRequest {
   CommandEstimate estimate = 14;
 }
 
-// Whether a command runs in a terminal (a pseudo-terminal for its input
-// and output), as in a person's shell: tools then draw progress, color
-// and line-buffer as they would for a person, and read input sent them
-// (SendInput). Output queries settle what it redraws; the raw output keeps
-// it all.
+// Whether a command runs in a terminal (a pseudo-terminal), as in a
+// person's shell: tools then draw progress, color and line-buffer as they
+// would for a person. Output queries settle what it redraws; the raw output
+// keeps it all.
 enum TtyMode {
-  // A terminal for a detached command in a VM; none for an attached one,
+  // A terminal for the output of a detached command in a VM, its input
+  // /dev/null and no controlling terminal, so a prompt fails at once rather
+  // than wait for an answer no one gives; none for an attached command,
   // whose output prints as it goes, or one in the cladefs runtime.
   TTY_MODE_DEFAULT = 0;
-  // A terminal. vm runtime only.
+  // A terminal for its input and output, its controlling one: it reads
+  // what SendInput types. vm runtime only.
   TTY_MODE_ON = 1;
   // No terminal: output to a file, input from /dev/null.
   TTY_MODE_OFF = 2;

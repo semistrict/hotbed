@@ -378,18 +378,20 @@ func (InterventionKind) EnumDescriptor() ([]byte, []int) {
 	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{5}
 }
 
-// Whether a command runs in a terminal (a pseudo-terminal for its input
-// and output), as in a person's shell: tools then draw progress, color
-// and line-buffer as they would for a person, and read input sent them
-// (SendInput). Output queries settle what it redraws; the raw output keeps
-// it all.
+// Whether a command runs in a terminal (a pseudo-terminal), as in a
+// person's shell: tools then draw progress, color and line-buffer as they
+// would for a person. Output queries settle what it redraws; the raw output
+// keeps it all.
 type TtyMode int32
 
 const (
-	// A terminal for a detached command in a VM; none for an attached one,
+	// A terminal for the output of a detached command in a VM, its input
+	// /dev/null and no controlling terminal, so a prompt fails at once rather
+	// than wait for an answer no one gives; none for an attached command,
 	// whose output prints as it goes, or one in the cladefs runtime.
 	TtyMode_TTY_MODE_DEFAULT TtyMode = 0
-	// A terminal. vm runtime only.
+	// A terminal for its input and output, its controlling one: it reads
+	// what SendInput types. vm runtime only.
 	TtyMode_TTY_MODE_ON TtyMode = 1
 	// No terminal: output to a file, input from /dev/null.
 	TtyMode_TTY_MODE_OFF TtyMode = 2
@@ -9357,10 +9359,13 @@ type Command struct {
 	// How many activity samples have been kept of it: the seq of its newest
 	// (ListCommandSamples), 0 for none.
 	Samples int32 `protobuf:"varint,33,opt,name=samples,proto3" json:"samples,omitempty"`
-	// It runs in a terminal (RunCommandRequest.tty).
+	// Its output goes to a terminal (RunCommandRequest.tty).
 	Tty bool `protobuf:"varint,34,opt,name=tty,proto3" json:"tty,omitempty"`
 	// What it was expected to need.
-	Estimate      *CommandEstimate `protobuf:"bytes,35,opt,name=estimate,proto3" json:"estimate,omitempty"`
+	Estimate *CommandEstimate `protobuf:"bytes,35,opt,name=estimate,proto3" json:"estimate,omitempty"`
+	// It reads its input from its terminal too (--tty): SendInput types into
+	// it.
+	TtyInput      bool `protobuf:"varint,36,opt,name=tty_input,json=ttyInput,proto3" json:"tty_input,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -9638,6 +9643,13 @@ func (x *Command) GetEstimate() *CommandEstimate {
 		return x.Estimate
 	}
 	return nil
+}
+
+func (x *Command) GetTtyInput() bool {
+	if x != nil {
+		return x.TtyInput
+	}
+	return false
 }
 
 // A command that ended, as history keeps it.
@@ -31325,7 +31337,7 @@ const file_hotbed_v1_hotbed_proto_rawDesc = "" +
 	"\fCommandEvent\x12\x0e\n" +
 	"\x02at\x18\x01 \x01(\x03R\x02at\x12\x12\n" +
 	"\x04what\x18\x02 \x01(\tR\x04what\x12\x16\n" +
-	"\x06detail\x18\x03 \x01(\tR\x06detail\"\xb8\t\n" +
+	"\x06detail\x18\x03 \x01(\tR\x06detail\"\xd5\t\n" +
 	"\aCommand\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12!\n" +
 	"\fworkspace_id\x18\x02 \x01(\tR\vworkspaceId\x12\x17\n" +
@@ -31366,7 +31378,8 @@ const file_hotbed_v1_hotbed_proto_rawDesc = "" +
 	"\x0fvm_memory_bytes\x18  \x01(\x03R\rvmMemoryBytes\x12\x18\n" +
 	"\asamples\x18! \x01(\x05R\asamples\x12\x10\n" +
 	"\x03tty\x18\" \x01(\bR\x03tty\x126\n" +
-	"\bestimate\x18# \x01(\v2\x1a.hotbed.v1.CommandEstimateR\bestimateB\r\n" +
+	"\bestimate\x18# \x01(\v2\x1a.hotbed.v1.CommandEstimateR\bestimate\x12\x1b\n" +
+	"\ttty_input\x18$ \x01(\bR\bttyInputB\r\n" +
 	"\v_started_atB\v\n" +
 	"\t_ended_atB\f\n" +
 	"\n" +

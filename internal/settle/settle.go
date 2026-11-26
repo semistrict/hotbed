@@ -6,7 +6,8 @@
 //
 // It is a small terminal emulator over a live window of the newest rows: a
 // row that scrolls out of the window can no longer be redrawn, so it is
-// settled and emitted. Lines have no width limit: nothing wraps.
+// settled and emitted. Nothing wraps; a row holds at most MaxCols runes, past
+// which what is written to it is dropped.
 package settle
 
 import (
@@ -15,9 +16,19 @@ import (
 	"unicode/utf8"
 )
 
-// Window is how many of the newest rows a program can still redraw by
-// moving the cursor up: more than any multi-line progress display.
-const Window = 64
+const (
+	// Window is how many of the newest rows a program can still redraw by
+	// moving the cursor up: more than any multi-line progress display.
+	Window = 64
+	// ScreenRows is the height of the terminal a command runs in (guestd's):
+	// absolute positions (CSI H) count from the top of its last ScreenRows
+	// rows.
+	ScreenRows = 50
+	// MaxCols bounds a row: a cursor moved past it, or text written past it,
+	// goes nowhere, so a hostile or broken output cannot grow one row
+	// without end.
+	MaxCols = 1 << 16
+)
 
 // Screen is a terminal emulator that emits each row once it settles.
 type Screen struct {
@@ -30,17 +41,22 @@ type Screen struct {
 	state   escState
 	params  []byte
 	partial []byte // the start of a UTF-8 rune split across writes
+
+	// The cursor as saved (ESC 7, CSI s), its row an index into rows kept
+	// current as rows settle; savedRow < 0 once that row has settled.
+	saved              bool
+	savedRow, savedCol int
 }
 
 type escState int
 
 const (
-	ground escState = iota
-	escape          // after ESC
-	csi             // after ESC [
-	osc             // after ESC ]: to BEL or ESC \
-	oscEsc          // ESC inside an OSC, perhaps its ST
-	charset         // after ESC ( and the like: one more byte
+	ground  escState = iota
+	escape           // after ESC
+	csi              // after ESC [
+	osc              // after ESC ]: to BEL or ESC \
+	oscEsc           // ESC inside an OSC, perhaps its ST
+	charset          // after ESC ( and the like: one more byte
 )
 
 // New is a screen that calls emit with each settled line, in order.
@@ -108,7 +124,7 @@ func (s *Screen) Write(p []byte) {
 			}
 			i++
 		case b == '\t':
-			s.col = (s.col/8 + 1) * 8
+			s.col = min((s.col/8+1)*8, MaxCols)
 			i++
 		case b < 0x20 || b == 0x7f:
 			i++ // other controls (BEL, SI, SO, NUL) print nothing
@@ -135,6 +151,12 @@ func (s *Screen) escapeByte(b byte) {
 		s.state = osc
 	case '(', ')', '*', '+', '#', '%':
 		s.state = charset
+	case '7': // save the cursor
+		s.state = ground
+		s.save()
+	case '8': // restore it
+		s.state = ground
+		s.restore()
 	case 'M': // reverse index: up a row
 		s.state = ground
 		s.up(1)
@@ -171,7 +193,7 @@ func (s *Screen) csiByte(b byte) {
 		if v == 0 && def > 0 {
 			return def
 		}
-		return v
+		return min(v, MaxCols)
 	}
 	switch b {
 	case 'A': // cursor up
@@ -179,7 +201,7 @@ func (s *Screen) csiByte(b byte) {
 	case 'B', 'e': // cursor down
 		s.down(n(0, 1))
 	case 'C', 'a': // cursor forward
-		s.col += n(0, 1)
+		s.col = min(s.col+n(0, 1), MaxCols)
 	case 'D': // cursor back
 		s.col = max(0, s.col-n(0, 1))
 	case 'E': // next line
@@ -190,12 +212,17 @@ func (s *Screen) csiByte(b byte) {
 		s.col = 0
 	case 'G', '`': // column
 		s.col = n(0, 1) - 1
-	case 'H', 'f': // position, within the live window
-		s.row = min(n(0, 1)-1, Window-1)
+	case 'H', 'f': // position on the screen: its last ScreenRows rows
+		top := max(0, len(s.rows)-ScreenRows)
+		s.row = top + min(n(0, 1), ScreenRows) - 1
 		for s.row >= len(s.rows) {
 			s.rows = append(s.rows, nil)
 		}
 		s.col = n(1, 1) - 1
+	case 's':
+		s.save()
+	case 'u':
+		s.restore()
 	case 'K': // erase in line
 		s.eraseLine(n(0, 0))
 	case 'J': // erase in display
@@ -216,7 +243,18 @@ func (s *Screen) csiByte(b byte) {
 	// restore), and the rest change nothing seen here.
 }
 
+func (s *Screen) save() { s.saved, s.savedRow, s.savedCol = true, s.row, s.col }
+
+func (s *Screen) restore() {
+	if s.saved && s.savedRow >= 0 {
+		s.row, s.col = s.savedRow, s.savedCol
+	}
+}
+
 func (s *Screen) put(r rune) {
+	if s.col >= MaxCols {
+		return
+	}
 	row := s.rows[s.row]
 	for len(row) < s.col {
 		row = append(row, ' ')
@@ -240,6 +278,7 @@ func (s *Screen) lineFeed() {
 			s.emit(line(s.rows[0]))
 			s.rows = s.rows[1:]
 			s.row--
+			s.savedRow--
 		}
 	}
 }

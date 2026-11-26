@@ -80,3 +80,39 @@ func TestWindowSettles(t *testing.T) {
 		t.Fatalf("the window's top row after a long cursor up = %q, want it changed", emitted[11])
 	}
 }
+
+// A cursor move to a huge column, or a line with no end, cannot grow a row
+// past MaxCols.
+func TestRowsAreBounded(t *testing.T) {
+	for _, in := range []string{
+		"\x1b[1099511627776Gx\n",
+		"\x1b[9223372036854775807Cx\n",
+		strings.Repeat("y", MaxCols+100) + "\n",
+		"\t" + strings.Repeat("\x1b[99999999Cz", 3) + "\n",
+	} {
+		lines := Lines([]byte(in))
+		if len(lines) != 1 || len([]rune(lines[0])) > MaxCols {
+			t.Errorf("Lines(%.30q…) = %d lines, first %d runes; want one, at most %d", in, len(lines), len([]rune(lines[0])), MaxCols)
+		}
+	}
+}
+
+// A tool that saves the cursor, draws a status line at the bottom of its
+// screen, and restores the cursor leaves the log lines it wrote as they
+// were, and goes on below them.
+func TestStatusLineDrawnWithSaveAndRestore(t *testing.T) {
+	var b strings.Builder
+	b.WriteString("one\ntwo\n")
+	b.WriteString("\x1b7\x1b[50;1H\x1b[Kbuilding 3/9\x1b8")
+	b.WriteString("three\n")
+	b.WriteString("\x1b[s\x1b[50;1H\x1b[K\x1b[u")
+	got := Lines([]byte(b.String()))
+	want := []string{"one", "two", "three"}
+	// The status row the tool cleared is blank at the screen's bottom.
+	for len(got) > len(want) && got[len(got)-1] == "" {
+		got = got[:len(got)-1]
+	}
+	if !slices.Equal(got, want) {
+		t.Errorf("Lines = %q, want %q", got, want)
+	}
+}

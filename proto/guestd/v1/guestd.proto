@@ -122,11 +122,15 @@ message StartCommandRequest {
   int64 memory_low = 9;
   int64 memory_high = 10;
   string tmp_dir = 11;
-  // Run it in a pseudo-terminal of cols by rows: its stdin, stdout and
-  // stderr, and its controlling terminal; what it writes goes to its log.
+  // Run it with a pseudo-terminal of cols by rows for its stdout and
+  // stderr; what it writes goes to its log.
   bool tty = 12;
   int32 cols = 13;
   int32 rows = 14;
+  // With tty, the terminal is its stdin and controlling terminal too (it
+  // reads SendInput). Without, stdin is /dev/null and it has no controlling
+  // terminal, so a prompt fails at once.
+  bool tty_input = 15;
 }
 
 message SendInputRequest {

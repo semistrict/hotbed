@@ -124,10 +124,11 @@ type Spec struct {
 	Properties []string
 	// VM sizes the VM it runs in, where it runs in one booted for it.
 	VM VMSize
-	// TTY runs it in a terminal: its input and output a pseudo-terminal's,
-	// what it writes going to Log. Only a runtime with a guest (the vm
-	// runtime) has one; a systemd unit refuses it.
-	TTY bool
+	// TTY runs it with a terminal for its output, what it writes going to
+	// Log; TTYInput for its input too, its controlling terminal. Only a
+	// runtime with a guest (the vm runtime) has one; a systemd unit refuses
+	// it.
+	TTY, TTYInput bool
 }
 
 // VMSize is how many vCPUs and how much memory (MiB) a VM's guest sees; a

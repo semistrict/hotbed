@@ -568,6 +568,7 @@ func (u *runtimeUnits) Start(ctx context.Context, s unit.Spec) error {
 		LogPath:    s.Log,
 		VM:         s.VM,
 		TTY:        s.TTY,
+		TTYInput:   s.TTYInput,
 	})
 	if err != nil {
 		return err

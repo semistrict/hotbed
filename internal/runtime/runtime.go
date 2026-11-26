@@ -37,8 +37,8 @@ type CommandSpec struct {
 	// VM is the size of the VM it runs in, on a runtime that boots one for
 	// it; zero fields for the node's defaults.
 	VM unit.VMSize
-	// TTY runs it in a terminal (unit.Spec.TTY).
-	TTY bool
+	// TTY runs it in a terminal; TTYInput its input too (unit.Spec).
+	TTY, TTYInput bool
 }
 
 // CommandStatus is the runtime's observed state of a single command.

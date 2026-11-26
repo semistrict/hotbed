@@ -210,11 +210,15 @@ type StartCommandRequest struct {
 	MemoryLow  int64                  `protobuf:"varint,9,opt,name=memory_low,json=memoryLow,proto3" json:"memory_low,omitempty"`
 	MemoryHigh int64                  `protobuf:"varint,10,opt,name=memory_high,json=memoryHigh,proto3" json:"memory_high,omitempty"`
 	TmpDir     string                 `protobuf:"bytes,11,opt,name=tmp_dir,json=tmpDir,proto3" json:"tmp_dir,omitempty"`
-	// Run it in a pseudo-terminal of cols by rows: its stdin, stdout and
-	// stderr, and its controlling terminal; what it writes goes to its log.
-	Tty           bool  `protobuf:"varint,12,opt,name=tty,proto3" json:"tty,omitempty"`
-	Cols          int32 `protobuf:"varint,13,opt,name=cols,proto3" json:"cols,omitempty"`
-	Rows          int32 `protobuf:"varint,14,opt,name=rows,proto3" json:"rows,omitempty"`
+	// Run it with a pseudo-terminal of cols by rows for its stdout and
+	// stderr; what it writes goes to its log.
+	Tty  bool  `protobuf:"varint,12,opt,name=tty,proto3" json:"tty,omitempty"`
+	Cols int32 `protobuf:"varint,13,opt,name=cols,proto3" json:"cols,omitempty"`
+	Rows int32 `protobuf:"varint,14,opt,name=rows,proto3" json:"rows,omitempty"`
+	// With tty, the terminal is its stdin and controlling terminal too (it
+	// reads SendInput). Without, stdin is /dev/null and it has no controlling
+	// terminal, so a prompt fails at once.
+	TtyInput      bool `protobuf:"varint,15,opt,name=tty_input,json=ttyInput,proto3" json:"tty_input,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -345,6 +349,13 @@ func (x *StartCommandRequest) GetRows() int32 {
 		return x.Rows
 	}
 	return 0
+}
+
+func (x *StartCommandRequest) GetTtyInput() bool {
+	if x != nil {
+		return x.TtyInput
+	}
+	return false
 }
 
 type SendInputRequest struct {
@@ -1736,7 +1747,7 @@ const file_guestd_v1_guestd_proto_rawDesc = "" +
 	"\x04arch\x18\x03 \x01(\tR\x04arch\x12\x12\n" +
 	"\x04pid1\x18\x04 \x01(\bR\x04pid1\x12\x1b\n" +
 	"\tcgroup_v2\x18\x05 \x01(\bR\bcgroupV2\x12\x19\n" +
-	"\bwork_dir\x18\x06 \x01(\tR\aworkDir\"\xc7\x02\n" +
+	"\bwork_dir\x18\x06 \x01(\tR\aworkDir\"\xe4\x02\n" +
 	"\x13StartCommandRequest\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x12\n" +
 	"\x04argv\x18\x02 \x03(\tR\x04argv\x12\x10\n" +
@@ -1755,7 +1766,8 @@ const file_guestd_v1_guestd_proto_rawDesc = "" +
 	"\atmp_dir\x18\v \x01(\tR\x06tmpDir\x12\x10\n" +
 	"\x03tty\x18\f \x01(\bR\x03tty\x12\x12\n" +
 	"\x04cols\x18\r \x01(\x05R\x04cols\x12\x12\n" +
-	"\x04rows\x18\x0e \x01(\x05R\x04rows\"6\n" +
+	"\x04rows\x18\x0e \x01(\x05R\x04rows\x12\x1b\n" +
+	"\ttty_input\x18\x0f \x01(\bR\bttyInput\"6\n" +
 	"\x10SendInputRequest\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x12\n" +
 	"\x04data\x18\x02 \x01(\fR\x04data\"\x13\n" +

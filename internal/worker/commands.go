@@ -132,7 +132,7 @@ func (e *Engine) Exec(_ context.Context, req *pb.RunCommandRequest) (*pb.Command
 	if err := e.checkVMRequestLocked(req); err != nil {
 		return nil, err
 	}
-	tty, err := e.ttyFor(req)
+	tty, ttyInput, err := e.ttyFor(req)
 	if err != nil {
 		return nil, err
 	}
@@ -148,7 +148,7 @@ func (e *Engine) Exec(_ context.Context, req *pb.RunCommandRequest) (*pb.Command
 			State: queued, QueuedAt: now, Limits: limits, Attached: req.Attached,
 			SessionId: w.ws().SessionId, Bench: req.Bench, Repo: req.Repo,
 			VmCpus: req.VmCpus, VmMemoryBytes: req.VmMemoryBytes,
-			Tty: tty, Estimate: estimate,
+			Tty: tty, TtyInput: ttyInput, Estimate: estimate,
 			Runtime:  e.workspaceRuntime(w),
 			Timeline: []*pb.CommandEvent{{At: now, What: "queued", Detail: "by " + w.ws().Agent}},
 		},
@@ -213,23 +213,25 @@ func (e *Engine) checkVMRequestLocked(req *pb.RunCommandRequest) error {
 	return nil
 }
 
-// ttyFor is whether req runs in a terminal: as it asks, or, by default, a
-// detached command in a VM, whose output no one prints as it goes, so
-// tools may draw for a person as they would in a shell; queries of its
-// output settle what they redraw. Call with e.mu held.
-func (e *Engine) ttyFor(req *pb.RunCommandRequest) (bool, error) {
+// ttyFor is whether req's output goes to a terminal, and its input comes
+// from it: as it asks (--tty, both), or, by default, the output of a
+// detached command in a VM, whose output no one prints as it goes, so tools
+// may draw for a person as they would in a shell (queries of its output
+// settle what they redraw), its input still /dev/null, so a prompt fails at
+// once rather than wait for an answer no one gives. Call with e.mu held.
+func (e *Engine) ttyFor(req *pb.RunCommandRequest) (tty, input bool, err error) {
 	vm := e.usesRuntime(req.WorkspaceId)
 	switch req.Tty {
 	case pb.TtyMode_TTY_MODE_ON:
 		if !vm {
-			return false, api.Errorf(api.CodeInvalidArgs, "workspace %s runs commands on the host: a terminal needs the vm runtime", req.WorkspaceId).
+			return false, false, api.Errorf(api.CodeInvalidArgs, "workspace %s runs commands on the host: a terminal needs the vm runtime", req.WorkspaceId).
 				WithSuggestion("drop --tty, or run with --runtime vm")
 		}
-		return true, nil
+		return true, true, nil
 	case pb.TtyMode_TTY_MODE_OFF:
-		return false, nil
+		return false, false, nil
 	default:
-		return vm && !req.Attached, nil
+		return vm && !req.Attached, false, nil
 	}
 }
 
@@ -867,11 +869,12 @@ func oomReason(st unit.State, peakBytes int64) string {
 	return fmt.Sprintf("killed by the OOM killer (%s)", strings.Join(parts, "; "))
 }
 
-// admit starts queued commands, highest priority first, then attached ones
-// (quick runs a client waits on, the fast lane), then base builds, then
-// measurements (so waiting measurements hold the line ahead of focus-session
-// work), then the focus session's work, then oldest queued first, while they
-// fit. What it starts runs until it ends: nothing is frozen to make room.
+// admit starts queued commands, highest priority first, then base builds
+// (which workspaces wait on), then measurements (so waiting measurements
+// hold the line ahead of other work), then attached ones (quick runs a
+// client waits on, the fast lane), then the focus session's work, then
+// oldest queued first, while they fit. What it starts runs until it ends:
+// nothing is frozen to make room.
 func (e *Engine) admit(ctx context.Context) {
 	e.mu.Lock()
 	e.weighHold(e.now())
@@ -885,9 +888,9 @@ func (e *Engine) admit(ctx context.Context) {
 	slices.SortFunc(waiting, func(a, b *command) int {
 		return cmp.Or(
 			cmp.Compare(b.priority(), a.priority()),
-			cmpBool(b.cmd().Attached, a.cmd().Attached),
 			cmpBool(b.isFreshen(), a.isFreshen()),
 			cmpBool(b.cmd().Bench, a.cmd().Bench),
+			cmpBool(b.cmd().Attached, a.cmd().Attached),
 			cmpBool(isFocusCommand(b, focus), isFocusCommand(a, focus)),
 			cmp.Compare(a.cmd().QueuedAt, b.cmd().QueuedAt),
 			cmp.Compare(a.cmd().Id, b.cmd().Id),
@@ -1487,6 +1490,7 @@ func (e *Engine) spec(c *command) (unit.Spec, error) {
 		Properties:   props,
 		VM:           vmSize(c),
 		TTY:          cmd.Tty,
+		TTYInput:     cmd.TtyInput,
 	}
 	if !vmFreshen {
 		spec.Binds = []unit.Bind{{Source: runDir, Target: runtimeTarget}}

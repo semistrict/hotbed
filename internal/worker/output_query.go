@@ -53,12 +53,25 @@ func (e *Engine) QueryOutput(ctx context.Context, req *pb.QueryOutputRequest) (*
 		return nil, err
 	}
 	defer done()
+	after := req.After
 	if req.SinceSync {
 		q.SinceOffset = e.syncedAt(req.Id)
+		if until != nil {
+			// Waiting for a line since the sync: lines before it are past.
+			line, total, err := outq.LineAt(fileSource(path), q.SinceOffset, req.Raw)
+			if err != nil {
+				return nil, err
+			}
+			if line == 0 {
+				after = max(after, total)
+			} else {
+				after = max(after, line-1)
+			}
+		}
 	}
 	var waited string
 	if until != nil || req.Wait {
-		if waited, err = e.waitOutput(ctx, req.Id, path, until, req.After, req.Raw, timeout); err != nil {
+		if waited, err = e.waitOutput(ctx, req.Id, path, until, after, req.Raw, timeout); err != nil {
 			return nil, err
 		}
 	}
@@ -80,7 +93,9 @@ func (e *Engine) QueryOutput(ctx context.Context, req *pb.QueryOutputRequest) (*
 		out.Matches = &ans.Matches
 	}
 	out.TotalLines = ans.Total
-	out.NextLine = ans.Total
+	// Read on after the lines that can no longer change: a row still being
+	// drawn may yet end as the line waited for.
+	out.NextLine = ans.Final
 	if st, err := os.Stat(path); err == nil {
 		out.TotalBytes = st.Size()
 	}
@@ -89,6 +104,11 @@ func (e *Engine) QueryOutput(ctx context.Context, req *pb.QueryOutputRequest) (*
 	}
 	if cmd, ok := e.Command(req.Id); ok {
 		out.State, out.ExitCode = cmd.State, cmd.ExitCode
+		if !api.Live(cmd.State) {
+			out.NextLine = ans.Total
+		}
+	} else {
+		out.NextLine = ans.Total // forgotten: long ended
 	}
 	return out, nil
 }
@@ -312,12 +332,12 @@ func (e *Engine) SendInput(ctx context.Context, id string, data []byte) error {
 		return notFound("command", id)
 	}
 	cmd, target := c.cmd(), c.runtimeTarget()
-	state, tty := cmd.State, cmd.Tty
+	state, input := cmd.State, cmd.TtyInput
 	e.mu.Unlock()
 	switch {
-	case !tty:
-		return api.Errorf(api.CodeConflict, "command %s does not run in a terminal: it reads no input", id).
-			WithSuggestion("run it in one: hotbed run --tty (a detached run in a VM gets one by default)")
+	case !input:
+		return api.Errorf(api.CodeConflict, "command %s does not read its input from a terminal: it reads no input", id).
+			WithSuggestion("run it with one: hotbed run --detach --tty")
 	case state != running:
 		return api.Errorf(api.CodeConflict, "command %s is %s, not running: nothing reads its input", id, stateName(state))
 	case e.cfg.Runtime == nil:

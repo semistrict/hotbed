@@ -17,9 +17,9 @@ import (
 	"path/filepath"
 	"regexp"
 	"runtime"
+	"slices"
 	"sort"
 	"strconv"
-	"slices"
 	"strings"
 	"sync"
 	"syscall"
@@ -53,9 +53,9 @@ var _ guestdv1connect.GuestServiceHandler = (*Server)(nil)
 
 // ServerConfig configures a guestd.Server.
 type ServerConfig struct {
-	WorkDir   string            // workspace root containing repo checkouts (default /work)
-	StateDir  string            // runtime dir for logs and temp sync bundles (default /run/hotbed-guestd)
-	RunDir    string            // base directory for per-user XDG_RUNTIME_DIR (<RunDir>/user/<uid>, default /run)
+	WorkDir   string // workspace root containing repo checkouts (default /work)
+	StateDir  string // runtime dir for logs and temp sync bundles (default /run/hotbed-guestd)
+	RunDir    string // base directory for per-user XDG_RUNTIME_DIR (<RunDir>/user/<uid>, default /run)
 	Logger    *slog.Logger
 	Inspector inspect.Inspector // defaults to inspect.Linux{}
 	Profiler  profiler.Profiler // optional always-on in-guest eBPF continuous profiler
@@ -106,8 +106,9 @@ type managedCmd struct {
 	done         chan struct{}
 	// master is its terminal, when it runs in one (tty); pumped is closed
 	// once all it wrote there is in its log.
-	master *os.File
-	pumped chan struct{}
+	master   *os.File
+	pumped   chan struct{}
+	ttyInput bool
 }
 
 // Terminal size a command run in a terminal gets when its start names none:
@@ -347,10 +348,16 @@ func (s *Server) StartCommand(_ context.Context, req *guestdv1.StartCommandReque
 		}
 		_ = pty.Resize(master, cols, rows)
 		cmd.Env = withEnvDefault(cmd.Env, "TERM", "xterm-256color")
-		cmd.Stdin, cmd.Stdout, cmd.Stderr = slave, slave, slave
-		// Its own session, the terminal its controlling one; a session
-		// leader leads its process group too, so no Setpgid.
-		attr = &syscall.SysProcAttr{Setsid: true, Setctty: true}
+		cmd.Stdout, cmd.Stderr = slave, slave
+		if req.GetTtyInput() {
+			// Its input too: its own session, the terminal its controlling
+			// one; a session leader leads its process group too, so no
+			// Setpgid.
+			cmd.Stdin = slave
+			attr = &syscall.SysProcAttr{Setsid: true, Setctty: true}
+		}
+		// Else input stays /dev/null, and with no controlling terminal
+		// /dev/tty fails too: a prompt fails at once.
 	} else {
 		cmd.Stdout = logFile
 		cmd.Stderr = logFile
@@ -401,7 +408,7 @@ func (s *Server) StartCommand(_ context.Context, req *guestdv1.StartCommandReque
 		done:    make(chan struct{}),
 	}
 	if master != nil {
-		mc.master, mc.pumped = master, make(chan struct{})
+		mc.master, mc.pumped, mc.ttyInput = master, make(chan struct{}), req.GetTtyInput()
 		go func() {
 			// Ends with EIO once every holder of the terminal has exited.
 			_, _ = io.Copy(logFile, master)
@@ -465,8 +472,8 @@ func (s *Server) SendInput(_ context.Context, req *guestdv1.SendInputRequest) (*
 	if !ok {
 		return nil, connect.NewError(connect.CodeNotFound, fmt.Sprintf("no command %s", req.GetId()))
 	}
-	if mc.master == nil {
-		return nil, connect.NewError(connect.CodeFailedPrecondition, fmt.Sprintf("command %s does not run in a terminal: it reads no input", req.GetId()))
+	if mc.master == nil || !mc.ttyInput {
+		return nil, connect.NewError(connect.CodeFailedPrecondition, fmt.Sprintf("command %s does not read its input from a terminal", req.GetId()))
 	}
 	select {
 	case <-mc.done:

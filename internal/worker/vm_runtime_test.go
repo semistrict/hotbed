@@ -322,12 +322,13 @@ func TestEngineWithGuestRuntimeEndToEnd(t *testing.T) {
 
 	// 3b. A detached command runs in a terminal by default: it sees one,
 	// reads what hotbed send types, and its output reads settled.
-	if !cmd.Tty {
-		t.Fatalf("detached VM command tty = false, want a terminal by default")
+	if !cmd.Tty || cmd.TtyInput {
+		t.Fatalf("detached VM command tty %v, input %v; want a terminal for its output by default, not its input", cmd.Tty, cmd.TtyInput)
 	}
 	ttyCmd, err := eng.Exec(ctx, &pb.RunCommandRequest{
 		WorkspaceId: wsID,
 		Repo:        "app",
+		Tty:         pb.TtyMode_TTY_MODE_ON,
 		Args:        []string{"/bin/sh", "-c", `test -t 0 && test -t 1 && printf 'IN_A_TERMINAL\n'; printf '\033[31mred\033[0m 10%%\r\033[K100%%\n'; read answer; echo "GOT $answer"`},
 	})
 	if err != nil {
@@ -362,6 +363,31 @@ func TestEngineWithGuestRuntimeEndToEnd(t *testing.T) {
 	// The terminal echoes what was typed; the redraw settles to its end.
 	if want := []string{"IN_A_TERMINAL", "100%", "yes", "GOT yes"}; ended.Waited != "ended" || !slices.Equal(got, want) {
 		t.Fatalf("after input: waited %q, lines %q; want ended, %q", ended.Waited, got, want)
+	}
+
+	// By default its output goes to a terminal but its input does not: a
+	// prompt fails at once.
+	outOnly, err := eng.Exec(ctx, &pb.RunCommandRequest{
+		WorkspaceId: wsID,
+		Repo:        "app",
+		Args:        []string{"/bin/sh", "-c", `test -t 1 && echo OUT_TTY; test -t 0 || echo IN_NOT_TTY; read x || echo NO_INPUT`},
+	})
+	if err != nil {
+		t.Fatalf("Engine.Exec(output-only tty): %v", err)
+	}
+	done, err := eng.QueryOutput(ctx, &pb.QueryOutputRequest{Id: outOnly.Id, Wait: true, TimeoutSeconds: 10})
+	if err != nil {
+		t.Fatalf("QueryOutput --wait: %v", err)
+	}
+	got = got[:0]
+	for _, l := range done.Lines {
+		got = append(got, l.Text)
+	}
+	if want := []string{"OUT_TTY", "IN_NOT_TTY", "NO_INPUT"}; done.Waited != "ended" || !slices.Equal(got, want) {
+		t.Fatalf("output-only terminal: waited %q, lines %q; want ended, %q", done.Waited, got, want)
+	}
+	if err := eng.SendInput(ctx, outOnly.Id, []byte("x\n")); api.CodeOf(err) != api.CodeConflict {
+		t.Fatalf("input to a command whose input is not a terminal: %v, want CONFLICT", err)
 	}
 	stopStepping()
 
@@ -422,8 +448,8 @@ func TestEngineWithGuestRuntimeEndToEnd(t *testing.T) {
 		t.Fatalf("ReleaseWorkspace: %v", err)
 	}
 	// One for each command's VM, and one for the release.
-	if rt.torn[wsID] != 3 {
-		t.Fatalf("Teardown count after release = %d, want 3", rt.torn[wsID])
+	if rt.torn[wsID] != 4 {
+		t.Fatalf("Teardown count after release = %d, want 4", rt.torn[wsID])
 	}
 }
 

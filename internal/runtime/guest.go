@@ -89,6 +89,7 @@ func (g *GuestRuntime) StartCommand(ctx context.Context, wsID string, spec Comma
 		MemoryLow:  spec.MemoryLow,
 		MemoryHigh: spec.MemoryHigh,
 		Tty:        spec.TTY,
+		TtyInput:   spec.TTYInput,
 	})
 	return err
 }

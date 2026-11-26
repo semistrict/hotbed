@@ -858,7 +858,7 @@ type runCmd struct {
 	Wait   string   `help:"How long to wait on the command before leaving it running, detached (exit 125): it runs on, its output kept whole for hotbed output to read. Such as 10m; 0 to wait until it ends (default: 2m; with --soft-limit, until that pauses it)."`
 	// MaxOutput bounds what prints as the command runs.
 	MaxOutput string `name:"max-output" default:"32K" help:"Print at most this much of its output as it runs, such as 64K; past it, the rest is kept whole, its last lines print as it ends, and hotbed output reads all of it. 0 to print it all."`
-	TTY       bool   `name:"tty" xor:"tty" help:"Run it in a terminal, as in a person's shell: tools draw progress and color, and read what hotbed send types; hotbed output settles what they redraw. Default for --detach in a VM. vm runtime only."`
+	TTY       bool   `name:"tty" xor:"tty" help:"Run it in a terminal for its input too: it reads what hotbed send types, and a prompt waits for an answer. vm runtime only. (By default a detached run in a VM gets a terminal for its output only: tools draw progress and color, hotbed output settles what they redraw, and a prompt fails at once.)"`
 	NoTTY     bool   `name:"no-tty" xor:"tty" help:"Run it without a terminal: output to a file, input from /dev/null."`
 	Mem       string `help:"The memory it is expected to hold at its peak, such as 4G: the node reserves it for it. A detached run needs it, unless an earlier run of the same command says."`
 	Expect    string `help:"How long it is expected to take, such as 20m: its end says how it compared."`

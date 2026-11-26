@@ -181,3 +181,37 @@ func TestWatcher(t *testing.T) {
 		}
 	}
 }
+
+// A row still being drawn is not final: an --after past it would miss how
+// it ends.
+func TestFinal(t *testing.T) {
+	for _, tc := range []struct {
+		out   string
+		raw   bool
+		total int64
+		final int64
+	}{
+		{"a\nb\n", false, 2, 2},
+		{"a\nbuilding |", false, 2, 1},
+		{"a\nbuilding |\r", false, 2, 1},
+		{"a\nb\n", true, 2, 2},
+		{"a\nbuilding", true, 2, 1},
+	} {
+		a := run(t, tc.out, Query{Raw: tc.raw})
+		if a.Total != tc.total || a.Final != tc.final {
+			t.Errorf("%q raw=%v: total %d final %d, want %d %d", tc.out, tc.raw, a.Total, a.Final, tc.total, tc.final)
+		}
+	}
+}
+
+func TestLineAt(t *testing.T) {
+	out := "one\ntwo\nthree\n"
+	for _, raw := range []bool{false, true} {
+		if line, total, err := LineAt(chunks(out, 3), int64(strings.Index(out, "two")), raw); err != nil || line != 2 || total != 3 {
+			t.Errorf("raw=%v: line %d total %d err %v, want 2 3", raw, line, total, err)
+		}
+		if line, total, _ := LineAt(chunks(out, 3), int64(len(out)), raw); line != 0 || total != 3 {
+			t.Errorf("raw=%v at the end: line %d total %d, want 0 (nothing since) 3", raw, line, total)
+		}
+	}
+}

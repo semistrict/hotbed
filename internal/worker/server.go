@@ -440,9 +440,10 @@ func (s *Service) GetLogLines(_ context.Context, req *pb.GetLogLinesRequest) (*p
 	}
 	// As its terminal shows them: what a command in one redraws (progress,
 	// colors) settled. A tail starts at a line's start, so it settles as the
-	// whole output would, but for a redraw reaching above it.
-	if len(lines) > 0 {
-		lines = settle.Lines([]byte(strings.Join(lines, "\n")))
+	// whole output would, but for a redraw reaching above it. One that
+	// redraws nothing is its lines as they are, however long.
+	if joined := strings.Join(lines, "\n"); strings.ContainsAny(joined, "\x1b\r\b") {
+		lines = settle.Lines([]byte(joined))
 	}
 	return &pb.CommandLog{CommandId: req.Id, Lines: lines, Cut: cut}, nil
 }

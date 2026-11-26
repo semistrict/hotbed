@@ -3,10 +3,12 @@ package main
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net"
 	"net/url"
+	"sync/atomic"
 	"time"
 
 	"github.com/semistrict/hotbed/internal/api"
@@ -111,33 +113,59 @@ func (c *runCmd) estimate(ctx context.Context, d deps, project, repo string, arg
 		WithSuggestion("pass --mem 4G (and --expect 20m), or run it attached: hotbed run waits on it, and detaches it after --wait")
 }
 
-// attachFor is attach, waiting at most wait (0 for until it ends): a
+// attachFor is attach, waiting at most wait from the command's start (0
+// for until it ends): time queued is the node's, not the command's. A
 // command that outlasts it is left running, detached, and detached says so.
 func attachFor(ctx context.Context, wk workerClients, id, session string, wait time.Duration, w, stderr io.Writer) (code int, detached bool, err error) {
 	if wait <= 0 {
 		code, err = attach(ctx, wk, id, w, stderr)
 		return code, false, err
 	}
-	fctx, cancel := context.WithTimeout(ctx, wait)
+	fctx, cancel := context.WithCancel(ctx)
 	defer cancel()
+	var waited atomic.Bool
+	go func() {
+		for {
+			if c, err := wk.command(fctx, id); err == nil && c.State != pb.CommandState_COMMAND_STATE_QUEUED {
+				break
+			}
+			select {
+			case <-fctx.Done():
+				return
+			case <-time.After(500 * time.Millisecond):
+			}
+		}
+		select {
+		case <-fctx.Done():
+		case <-time.After(wait):
+			waited.Store(true)
+			cancel()
+		}
+	}()
 	code, err = follow(fctx, wk, id, w, stderr)
 	switch {
 	case ctx.Err() != nil:
 		// Interrupted: stop it, as attach does.
 		code, err = attach(ctx, wk, id, w, stderr)
 		return code, false, err
-	case fctx.Err() == nil:
+	case !waited.Load():
 		return code, false, err
 	}
 	dctx, dcancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
 	defer dcancel()
 	if _, derr := wk.calls.DetachCommand(dctx, &pb.DetachCommandRequest{Id: id, SessionId: session}); derr != nil {
-		if api.CodeOf(derr) == api.CodeConflict {
-			// It ended, or paused, as the wait ran out: say how.
-			code, err = follow(ctx, wk, id, w, stderr)
-			return code, false, err
+		if api.CodeOf(derr) != api.CodeConflict {
+			return 0, false, derr
 		}
-		return 0, false, derr
+		// It ended, or paused, as the wait ran out: say how, without
+		// following it again (which would print its output again, and
+		// resume it, paused).
+		c, err := wk.command(dctx, id)
+		if err != nil {
+			return 0, false, err
+		}
+		code, err = followStatus(id, c, stderr)
+		return code, false, err
 	}
 	return 0, true, nil
 }
@@ -209,6 +237,23 @@ func detachedHelp(id string, wait time.Duration) string {
 		id, wait, id, id, id, id)
 }
 
+// serving says whether a server takes connections at addr. A VM's port is
+// a proxy on its worker, which accepts at once and closes the connection
+// when it cannot reach the port in the VM: a connection closed straight
+// away is no server; one held open, or answered, is.
+func serving(ctx context.Context, addr string) bool {
+	conn, err := (&net.Dialer{Timeout: 2 * time.Second}).DialContext(ctx, "tcp", addr)
+	if err != nil {
+		return false
+	}
+	defer conn.Close()
+	_ = conn.SetReadDeadline(time.Now().Add(time.Second))
+	var b [1]byte
+	n, err := conn.Read(b[:])
+	var nerr net.Error
+	return n > 0 || (errors.As(err, &nerr) && nerr.Timeout())
+}
+
 // waitServing waits, at most timeout, for detached command cmd to be ready:
 // a line of its output matching pattern, and/or its port taking
 // connections; it fails if the command ends first.
@@ -239,9 +284,7 @@ func waitServing(ctx context.Context, wk workerClients, cmd *pb.Command, pattern
 		return api.Errorf(api.CodeInvalidArgs, "--ready-port needs --port: %s has no URL", cmd.Id)
 	}
 	for {
-		conn, err := (&net.Dialer{Timeout: 2 * time.Second}).DialContext(ctx, "tcp", u.Host)
-		if err == nil {
-			_ = conn.Close()
+		if serving(ctx, u.Host) {
 			fmt.Fprintf(stderr, "hotbed: %s is ready: %s takes connections\n", cmd.Id, cmd.Url)
 			return nil
 		}
