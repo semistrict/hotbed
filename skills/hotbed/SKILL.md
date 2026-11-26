@@ -128,8 +128,10 @@ hotbed memory rm 2                               # permanently remove a memory
   - With `--body` / `--body-file` → `on_demand`: 1-line summary + trigger on `session start`; fetch
     details with `hotbed memory get SLUG [SLUG...]` (or `global/SLUG`, `PROJECT/SLUG`, `#ID`).
 - **Two scopes:** defaults to your session's project (and repo if held by the project); pass
-  `--global` for cross-project preferences and workflows. Use `hotbed memory promote ID` (or
-  `hotbed memory edit ID --global`) to promote a project memory to global.
+  `--global` for cross-project preferences and workflows, or `-p PROJECT` for a lesson that
+  belongs to another project than your session's. Use `hotbed memory promote ID` (or
+  `hotbed memory edit ID --global`) to promote a project memory to global. A project's memory
+  can supersede only global memories and its own project's; a global one can supersede any.
 - **Update & condense, don't duplicate:** if a slug already exists, hotbed tells you its `#ID` so
   you can pass `--supersede ID` or edit in place with `hotbed memory edit ID` (supporting
   `--clear-title`, `--clear-body`, `--replace-tags`, `--replace-content`, `--repo`, `--rationale`).

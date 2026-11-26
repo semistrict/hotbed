@@ -12,6 +12,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"time"
 )
 
@@ -31,27 +32,67 @@ func Ensure(root string) (string, error) {
 	})
 }
 
+// lockDir holds the lock that serializes builds, under cf-controller: hidden,
+// so newestSource skips it, and apart from .cloudflare, which a build clears.
+const lockDir = ".cfbundle"
+
 func ensure(root string, build func(controller string) error) (string, error) {
 	dir := filepath.Join(root, Dir)
 	controller := filepath.Join(root, "cf-controller")
-	built, err := modTime(filepath.Join(dir, "index.js"))
-	if err != nil && !errors.Is(err, fs.ErrNotExist) {
+	if stale, err := isStale(dir, controller); err != nil || !stale {
+		return dir, err
+	}
+	// Harnesses run in parallel test binaries (go test ./... runs cmd/hotbed's
+	// and dev-cockpit's at once), and a build clears the bundle before writing
+	// it: one process's build must never run under another's harness starting
+	// from the bundle. So one builds at a time, and each looks again once it
+	// holds the lock, finding the bundle another process just built.
+	err := withLock(filepath.Join(controller, lockDir), func() error {
+		stale, err := isStale(dir, controller)
+		if err != nil || !stale {
+			return err
+		}
+		return build(controller)
+	})
+	if err != nil {
 		return "", err
 	}
-	stale := err != nil
-	if !stale {
-		newest, err := newestSource(controller)
-		if err != nil {
-			return "", err
-		}
-		stale = newest.After(built)
-	}
-	if stale {
-		if err := build(controller); err != nil {
-			return "", err
-		}
-	}
 	return dir, nil
+}
+
+// isStale reports whether the bundle in dir is missing or older than any of
+// controller's sources.
+func isStale(dir, controller string) (bool, error) {
+	built, err := modTime(filepath.Join(dir, "index.js"))
+	if errors.Is(err, fs.ErrNotExist) {
+		return true, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	newest, err := newestSource(controller)
+	if err != nil {
+		return false, err
+	}
+	return newest.After(built), nil
+}
+
+// withLock runs fn holding an exclusive lock on a file in dir, across
+// processes.
+func withLock(dir string, fn func() error) error {
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return fmt.Errorf("make the cf-controller build lock's directory: %w", err)
+	}
+	f, err := os.OpenFile(filepath.Join(dir, "build.lock"), os.O_CREATE|os.O_RDWR, 0o644)
+	if err != nil {
+		return fmt.Errorf("open the cf-controller build lock: %w", err)
+	}
+	defer f.Close()
+	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX); err != nil {
+		return fmt.Errorf("take the cf-controller build lock: %w", err)
+	}
+	defer func() { _ = syscall.Flock(int(f.Fd()), syscall.LOCK_UN) }()
+	return fn()
 }
 
 func modTime(path string) (time.Time, error) {
