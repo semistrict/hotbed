@@ -16,6 +16,7 @@ import {
 	MemoryService,
 	QuestionService,
 	ReviewService,
+	IssueService,
 	RunOutcome,
 	ScheduledRunSchema,
 	ScheduleService,
@@ -50,6 +51,7 @@ import { createGitAuthService } from "./services/gitauth.ts";
 import { createMemoryService } from "./services/memories.ts";
 import { createQuestionService } from "./services/questions.ts";
 import { createReviewService } from "./services/reviews.ts";
+import { createIssueService } from "./services/issues.ts";
 import { createScheduleService, type ScheduleRunner } from "./services/schedules.ts";
 import { createSessionService } from "./services/sessions.ts";
 import { createWorkspaceService } from "./services/workspaces.ts";
@@ -216,6 +218,7 @@ export class ControllerDO extends DurableObject<ControllerEnv> {
 		const questionSvc = createQuestionService(this.ctrl);
 		const memorySvc = createMemoryService(this.ctrl);
 		const reviewSvc = createReviewService(this.ctrl);
+		const issueSvc = createIssueService(this.ctrl);
 		const gitAuthSvc = createGitAuthService(this.ctrl);
 
 		this.dispatcher = createConnectFetchDispatcher((router) => {
@@ -225,6 +228,7 @@ export class ControllerDO extends DurableObject<ControllerEnv> {
 			router.service(QuestionService, questionSvc);
 			router.service(MemoryService, memorySvc);
 			router.service(ReviewService, reviewSvc);
+			router.service(IssueService, issueSvc);
 			router.service(ScheduleService, schedSvc.impl);
 			router.service(GitAuthService, gitAuthSvc);
 		});

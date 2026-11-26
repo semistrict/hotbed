@@ -31,6 +31,8 @@ const (
 	ReviewServiceName = "hotbed.v1.ReviewService"
 	// GitAuthServiceName is the fully-qualified name of the GitAuthService service.
 	GitAuthServiceName = "hotbed.v1.GitAuthService"
+	// IssueServiceName is the fully-qualified name of the IssueService service.
+	IssueServiceName = "hotbed.v1.IssueService"
 	// MemoryServiceName is the fully-qualified name of the MemoryService service.
 	MemoryServiceName = "hotbed.v1.MemoryService"
 )
@@ -319,6 +321,18 @@ const (
 	// GitAuthServiceProxyGitHubAPIProcedure is the procedure name of the GitAuthService's
 	// ProxyGitHubAPI RPC.
 	GitAuthServiceProxyGitHubAPIProcedure = "/hotbed.v1.GitAuthService/ProxyGitHubAPI"
+	// IssueServiceReportIssueProcedure is the procedure name of the IssueService's ReportIssue RPC.
+	IssueServiceReportIssueProcedure = "/hotbed.v1.IssueService/ReportIssue"
+	// IssueServiceListIssuesProcedure is the procedure name of the IssueService's ListIssues RPC.
+	IssueServiceListIssuesProcedure = "/hotbed.v1.IssueService/ListIssues"
+	// IssueServiceGetIssueProcedure is the procedure name of the IssueService's GetIssue RPC.
+	IssueServiceGetIssueProcedure = "/hotbed.v1.IssueService/GetIssue"
+	// IssueServiceUpvoteIssueProcedure is the procedure name of the IssueService's UpvoteIssue RPC.
+	IssueServiceUpvoteIssueProcedure = "/hotbed.v1.IssueService/UpvoteIssue"
+	// IssueServiceArchiveIssueProcedure is the procedure name of the IssueService's ArchiveIssue RPC.
+	IssueServiceArchiveIssueProcedure = "/hotbed.v1.IssueService/ArchiveIssue"
+	// IssueServiceReopenIssueProcedure is the procedure name of the IssueService's ReopenIssue RPC.
+	IssueServiceReopenIssueProcedure = "/hotbed.v1.IssueService/ReopenIssue"
 	// MemoryServiceProposeMemoryProcedure is the procedure name of the MemoryService's ProposeMemory
 	// RPC.
 	MemoryServiceProposeMemoryProcedure = "/hotbed.v1.MemoryService/ProposeMemory"
@@ -4876,6 +4890,269 @@ func (h gitAuthServiceHandler) proxyGitHubAPI(ctx context.Context, _ connect.Spe
 		return err
 	}
 	res, err := h.svc.ProxyGitHubAPI(ctx, &req)
+	if err != nil {
+		return err
+	}
+	return stream.Send(res)
+}
+
+var (
+	issueServiceReportIssueSpec = sync.OnceValue(func() connect.Spec {
+		return connect.Spec{
+			StreamType: connect.StreamTypeUnary,
+			Schema:     v1.File_hotbed_v1_hotbed_proto.Services().ByName("IssueService").Methods().ByName("ReportIssue"),
+			Procedure:  IssueServiceReportIssueProcedure,
+		}
+	})
+	issueServiceListIssuesSpec = sync.OnceValue(func() connect.Spec {
+		return connect.Spec{
+			StreamType:       connect.StreamTypeUnary,
+			Schema:           v1.File_hotbed_v1_hotbed_proto.Services().ByName("IssueService").Methods().ByName("ListIssues"),
+			Procedure:        IssueServiceListIssuesProcedure,
+			IdempotencyLevel: connect.IdempotencyIdempotent,
+		}
+	})
+	issueServiceGetIssueSpec = sync.OnceValue(func() connect.Spec {
+		return connect.Spec{
+			StreamType:       connect.StreamTypeUnary,
+			Schema:           v1.File_hotbed_v1_hotbed_proto.Services().ByName("IssueService").Methods().ByName("GetIssue"),
+			Procedure:        IssueServiceGetIssueProcedure,
+			IdempotencyLevel: connect.IdempotencyIdempotent,
+		}
+	})
+	issueServiceUpvoteIssueSpec = sync.OnceValue(func() connect.Spec {
+		return connect.Spec{
+			StreamType: connect.StreamTypeUnary,
+			Schema:     v1.File_hotbed_v1_hotbed_proto.Services().ByName("IssueService").Methods().ByName("UpvoteIssue"),
+			Procedure:  IssueServiceUpvoteIssueProcedure,
+		}
+	})
+	issueServiceArchiveIssueSpec = sync.OnceValue(func() connect.Spec {
+		return connect.Spec{
+			StreamType: connect.StreamTypeUnary,
+			Schema:     v1.File_hotbed_v1_hotbed_proto.Services().ByName("IssueService").Methods().ByName("ArchiveIssue"),
+			Procedure:  IssueServiceArchiveIssueProcedure,
+		}
+	})
+	issueServiceReopenIssueSpec = sync.OnceValue(func() connect.Spec {
+		return connect.Spec{
+			StreamType: connect.StreamTypeUnary,
+			Schema:     v1.File_hotbed_v1_hotbed_proto.Services().ByName("IssueService").Methods().ByName("ReopenIssue"),
+			Procedure:  IssueServiceReopenIssueProcedure,
+		}
+	})
+)
+
+// IssueServiceClient is a client for the hotbed.v1.IssueService service.
+type IssueServiceClient interface {
+	// Report a problem with hotbed itself: what you did, what happened, what
+	// you expected, and the command or error. List first (hotbed issue ls -q
+	// WORD): one already reported is +1'd (hotbed issue upvote), not
+	// reported again.
+	ReportIssue(context.Context, *v1.ReportIssueRequest) (*v1.Issue, error)
+	// List the issues reported, most +1'd first: open ones, or archived ones,
+	// or all; -q narrows them to those whose title or body holds the words.
+	ListIssues(context.Context, *v1.ListIssuesRequest) (*v1.ListIssuesResponse, error)
+	// Show an issue: what was reported, by whom, and everyone who +1'd it.
+	GetIssue(context.Context, *v1.GetIssueRequest) (*v1.Issue, error)
+	// +1 an issue you hit too, saying what you saw if it adds anything. Each
+	// session +1s an issue once; its reporter's report counts as one.
+	UpvoteIssue(context.Context, *v1.UpvoteIssueRequest) (*v1.Issue, error)
+	// Archive an issue dealt with (fixed, or not to be): the user does this in
+	// the cockpit; an agent only when the user asks.
+	ArchiveIssue(context.Context, *v1.ArchiveIssueRequest) (*v1.Issue, error)
+	// Reopen an archived issue: it is back.
+	ReopenIssue(context.Context, *v1.ReopenIssueRequest) (*v1.Issue, error)
+}
+
+// NewIssueServiceClient constructs a client for the hotbed.v1.IssueService service. Multiple
+// service clients may share a single connect.Client.
+func NewIssueServiceClient(client *connect.Client) IssueServiceClient {
+	return &issueServiceClient{client: client}
+}
+
+// IssueServiceHandler is an implementation of the hotbed.v1.IssueService service.
+type IssueServiceHandler interface {
+	// Report a problem with hotbed itself: what you did, what happened, what
+	// you expected, and the command or error. List first (hotbed issue ls -q
+	// WORD): one already reported is +1'd (hotbed issue upvote), not
+	// reported again.
+	ReportIssue(context.Context, *v1.ReportIssueRequest) (*v1.Issue, error)
+	// List the issues reported, most +1'd first: open ones, or archived ones,
+	// or all; -q narrows them to those whose title or body holds the words.
+	ListIssues(context.Context, *v1.ListIssuesRequest) (*v1.ListIssuesResponse, error)
+	// Show an issue: what was reported, by whom, and everyone who +1'd it.
+	GetIssue(context.Context, *v1.GetIssueRequest) (*v1.Issue, error)
+	// +1 an issue you hit too, saying what you saw if it adds anything. Each
+	// session +1s an issue once; its reporter's report counts as one.
+	UpvoteIssue(context.Context, *v1.UpvoteIssueRequest) (*v1.Issue, error)
+	// Archive an issue dealt with (fixed, or not to be): the user does this in
+	// the cockpit; an agent only when the user asks.
+	ArchiveIssue(context.Context, *v1.ArchiveIssueRequest) (*v1.Issue, error)
+	// Reopen an archived issue: it is back.
+	ReopenIssue(context.Context, *v1.ReopenIssueRequest) (*v1.Issue, error)
+}
+
+// RegisterIssueServiceHandler registers svc as the hotbed.v1.IssueService implementation on server.
+func RegisterIssueServiceHandler(server *connect.Server, svc IssueServiceHandler) {
+	adapter := issueServiceHandler{svc: svc}
+	server.Register(
+		connect.Method{Spec: issueServiceReportIssueSpec(), Handler: adapter.reportIssue},
+		connect.Method{Spec: issueServiceListIssuesSpec(), Handler: adapter.listIssues},
+		connect.Method{Spec: issueServiceGetIssueSpec(), Handler: adapter.getIssue},
+		connect.Method{Spec: issueServiceUpvoteIssueSpec(), Handler: adapter.upvoteIssue},
+		connect.Method{Spec: issueServiceArchiveIssueSpec(), Handler: adapter.archiveIssue},
+		connect.Method{Spec: issueServiceReopenIssueSpec(), Handler: adapter.reopenIssue},
+	)
+}
+
+// UnimplementedIssueServiceHandler returns CodeUnimplemented from all methods.
+type UnimplementedIssueServiceHandler struct{}
+
+func (UnimplementedIssueServiceHandler) ReportIssue(context.Context, *v1.ReportIssueRequest) (*v1.Issue, error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, "hotbed.v1.IssueService.ReportIssue is not implemented")
+}
+
+func (UnimplementedIssueServiceHandler) ListIssues(context.Context, *v1.ListIssuesRequest) (*v1.ListIssuesResponse, error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, "hotbed.v1.IssueService.ListIssues is not implemented")
+}
+
+func (UnimplementedIssueServiceHandler) GetIssue(context.Context, *v1.GetIssueRequest) (*v1.Issue, error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, "hotbed.v1.IssueService.GetIssue is not implemented")
+}
+
+func (UnimplementedIssueServiceHandler) UpvoteIssue(context.Context, *v1.UpvoteIssueRequest) (*v1.Issue, error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, "hotbed.v1.IssueService.UpvoteIssue is not implemented")
+}
+
+func (UnimplementedIssueServiceHandler) ArchiveIssue(context.Context, *v1.ArchiveIssueRequest) (*v1.Issue, error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, "hotbed.v1.IssueService.ArchiveIssue is not implemented")
+}
+
+func (UnimplementedIssueServiceHandler) ReopenIssue(context.Context, *v1.ReopenIssueRequest) (*v1.Issue, error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, "hotbed.v1.IssueService.ReopenIssue is not implemented")
+}
+
+type issueServiceClient struct {
+	client *connect.Client
+}
+
+func (c *issueServiceClient) ReportIssue(ctx context.Context, req *v1.ReportIssueRequest) (*v1.Issue, error) {
+	var res v1.Issue
+	if err := c.client.CallUnary(ctx, issueServiceReportIssueSpec(), req, &res); err != nil {
+		return nil, err
+	}
+	return &res, nil
+}
+
+func (c *issueServiceClient) ListIssues(ctx context.Context, req *v1.ListIssuesRequest) (*v1.ListIssuesResponse, error) {
+	var res v1.ListIssuesResponse
+	if err := c.client.CallUnary(ctx, issueServiceListIssuesSpec(), req, &res); err != nil {
+		return nil, err
+	}
+	return &res, nil
+}
+
+func (c *issueServiceClient) GetIssue(ctx context.Context, req *v1.GetIssueRequest) (*v1.Issue, error) {
+	var res v1.Issue
+	if err := c.client.CallUnary(ctx, issueServiceGetIssueSpec(), req, &res); err != nil {
+		return nil, err
+	}
+	return &res, nil
+}
+
+func (c *issueServiceClient) UpvoteIssue(ctx context.Context, req *v1.UpvoteIssueRequest) (*v1.Issue, error) {
+	var res v1.Issue
+	if err := c.client.CallUnary(ctx, issueServiceUpvoteIssueSpec(), req, &res); err != nil {
+		return nil, err
+	}
+	return &res, nil
+}
+
+func (c *issueServiceClient) ArchiveIssue(ctx context.Context, req *v1.ArchiveIssueRequest) (*v1.Issue, error) {
+	var res v1.Issue
+	if err := c.client.CallUnary(ctx, issueServiceArchiveIssueSpec(), req, &res); err != nil {
+		return nil, err
+	}
+	return &res, nil
+}
+
+func (c *issueServiceClient) ReopenIssue(ctx context.Context, req *v1.ReopenIssueRequest) (*v1.Issue, error) {
+	var res v1.Issue
+	if err := c.client.CallUnary(ctx, issueServiceReopenIssueSpec(), req, &res); err != nil {
+		return nil, err
+	}
+	return &res, nil
+}
+
+type issueServiceHandler struct{ svc IssueServiceHandler }
+
+func (h issueServiceHandler) reportIssue(ctx context.Context, _ connect.Spec, stream connect.ServerStream) error {
+	var req v1.ReportIssueRequest
+	if err := stream.Receive(&req); err != nil {
+		return err
+	}
+	res, err := h.svc.ReportIssue(ctx, &req)
+	if err != nil {
+		return err
+	}
+	return stream.Send(res)
+}
+
+func (h issueServiceHandler) listIssues(ctx context.Context, _ connect.Spec, stream connect.ServerStream) error {
+	var req v1.ListIssuesRequest
+	if err := stream.Receive(&req); err != nil {
+		return err
+	}
+	res, err := h.svc.ListIssues(ctx, &req)
+	if err != nil {
+		return err
+	}
+	return stream.Send(res)
+}
+
+func (h issueServiceHandler) getIssue(ctx context.Context, _ connect.Spec, stream connect.ServerStream) error {
+	var req v1.GetIssueRequest
+	if err := stream.Receive(&req); err != nil {
+		return err
+	}
+	res, err := h.svc.GetIssue(ctx, &req)
+	if err != nil {
+		return err
+	}
+	return stream.Send(res)
+}
+
+func (h issueServiceHandler) upvoteIssue(ctx context.Context, _ connect.Spec, stream connect.ServerStream) error {
+	var req v1.UpvoteIssueRequest
+	if err := stream.Receive(&req); err != nil {
+		return err
+	}
+	res, err := h.svc.UpvoteIssue(ctx, &req)
+	if err != nil {
+		return err
+	}
+	return stream.Send(res)
+}
+
+func (h issueServiceHandler) archiveIssue(ctx context.Context, _ connect.Spec, stream connect.ServerStream) error {
+	var req v1.ArchiveIssueRequest
+	if err := stream.Receive(&req); err != nil {
+		return err
+	}
+	res, err := h.svc.ArchiveIssue(ctx, &req)
+	if err != nil {
+		return err
+	}
+	return stream.Send(res)
+}
+
+func (h issueServiceHandler) reopenIssue(ctx context.Context, _ connect.Spec, stream connect.ServerStream) error {
+	var req v1.ReopenIssueRequest
+	if err := stream.Receive(&req); err != nil {
+		return err
+	}
+	res, err := h.svc.ReopenIssue(ctx, &req)
 	if err != nil {
 		return err
 	}
