@@ -50,6 +50,17 @@ type ProcessStatus struct {
 	Signal       int
 	Result       string
 	OOMKilled    bool
+	// Detail is how an exited VM ended, when its VMM says so in words
+	// (machined's); else its ExitCode is Firecracker's.
+	Detail string
+}
+
+// Why is how an exited VM ended, for people.
+func (s ProcessStatus) Why() string {
+	if s.Detail != "" {
+		return s.Detail
+	}
+	return ExitReason(s.ExitCode)
 }
 
 // Alive reports whether the VMM process may still be executing (active,

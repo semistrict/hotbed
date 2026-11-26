@@ -127,7 +127,11 @@ type pivotRootOps struct {
 	mkdirAll  func(path string, perm os.FileMode) error
 	pivotRoot func(newroot, putold string) error
 	chdir     func(dir string) error
+	chroot    func(dir string) error
 	unsetenv  func(key string) error
+	// rootIsInitramfs reports whether / is the kernel's initramfs (rootfs),
+	// which pivot_root refuses to leave.
+	rootIsInitramfs func() (bool, error)
 }
 
 var defaultPivotRootOps = pivotRootOps{
@@ -135,14 +139,29 @@ var defaultPivotRootOps = pivotRootOps{
 	mkdirAll:  os.MkdirAll,
 	pivotRoot: syscall.PivotRoot,
 	chdir:     os.Chdir,
+	chroot:    syscall.Chroot,
 	unsetenv:  os.Unsetenv,
+	rootIsInitramfs: func() (bool, error) {
+		var st syscall.Statfs_t
+		if err := syscall.Statfs("/", &st); err != nil {
+			return false, err
+		}
+		return st.Type == ramfsMagic || st.Type == tmpfsMagic, nil
+	},
 }
 
-// pivotToWorkspaceRoot switches from the read-only host tools disk (/dev/vda)
-// to the cladefs workspace rootfs specified by HOTBED_ROOT (<fstype>:<source>,
-// e.g. "cladefs:rootfs"), leaving the tools disk mounted read-only at
-// /run/hotbed-tools so hotbed-guestd executes directly off it without baking
-// binaries into workspace base images.
+// The initramfs's filesystem types (statfs(2)).
+const (
+	ramfsMagic = 0x858458f6
+	tmpfsMagic = 0x01021994
+)
+
+// pivotToWorkspaceRoot switches from what hotbed-guestd booted off (the
+// read-only host tools disk under Firecracker, an initramfs under machined) to
+// the cladefs workspace rootfs specified by HOTBED_ROOT (<fstype>:<source>,
+// e.g. "cladefs:rootfs"), leaving the old root mounted at /run/hotbed-tools so
+// hotbed-guestd executes directly off it without baking binaries into
+// workspace base images.
 func pivotToWorkspaceRoot(log *slog.Logger) (pivoted, devMoved bool, err error) {
 	return pivotToWorkspaceRootWithOps(log, os.Getenv("HOTBED_ROOT"), defaultPivotRootOps)
 }
@@ -185,11 +204,31 @@ func pivotToWorkspaceRootWithOps(log *slog.Logger, spec string, ops pivotRootOps
 	if err := ops.mkdirAll(putOld, 0o555); err != nil {
 		return false, devMoved, fmt.Errorf("mkdir %s: %w", putOld, err)
 	}
-	if err := ops.pivotRoot(newRoot, putOld); err != nil {
+	initramfs, err := ops.rootIsInitramfs()
+	if err != nil {
+		return false, devMoved, fmt.Errorf("statfs /: %w", err)
+	}
+	if initramfs {
+		// pivot_root(2) refuses to leave rootfs: bind the initramfs where the
+		// tools disk would go, move the workspace root over /, and chroot
+		// into it (switch_root's way, with the old root kept reachable).
+		if err := ops.mount("/", putOld, "", syscall.MS_BIND, ""); err != nil {
+			return false, devMoved, fmt.Errorf("bind the initramfs on %s: %w", putOld, err)
+		}
+		if err := ops.chdir(newRoot); err != nil {
+			return false, devMoved, fmt.Errorf("chdir %s: %w", newRoot, err)
+		}
+		if err := ops.mount(newRoot, "/", "", syscall.MS_MOVE, ""); err != nil {
+			return false, devMoved, fmt.Errorf("move %s over /: %w", newRoot, err)
+		}
+		if err := ops.chroot("."); err != nil {
+			return false, devMoved, fmt.Errorf("chroot into the workspace root: %w", err)
+		}
+	} else if err := ops.pivotRoot(newRoot, putOld); err != nil {
 		return false, devMoved, fmt.Errorf("pivot_root(%s, %s): %w", newRoot, putOld, err)
 	}
 	if err := ops.chdir("/"); err != nil {
-		return false, devMoved, fmt.Errorf("chdir / after pivot_root: %w", err)
+		return false, devMoved, fmt.Errorf("chdir / after switching root: %w", err)
 	}
 	_ = ops.unsetenv("HOTBED_ROOT")
 	return true, devMoved, nil
@@ -213,10 +252,10 @@ var guestWritebackSysctls = []struct {
 	name  string
 	value string
 }{
-	{"dirty_bytes", "536870912\n"},            // 512 MiB cap before throttling writers
-	{"dirty_background_bytes", "67108864\n"},  // 64 MiB starts async writeback promptly
-	{"dirty_expire_centisecs", "500\n"},       // 5s dirty age (down from 30s)
-	{"dirty_writeback_centisecs", "200\n"},    // 2s flusher sweep (down from 5s)
+	{"dirty_bytes", "536870912\n"},           // 512 MiB cap before throttling writers
+	{"dirty_background_bytes", "67108864\n"}, // 64 MiB starts async writeback promptly
+	{"dirty_expire_centisecs", "500\n"},      // 5s dirty age (down from 30s)
+	{"dirty_writeback_centisecs", "200\n"},   // 2s flusher sweep (down from 5s)
 }
 
 func configureGuestWriteback(log *slog.Logger, procRoot string) {

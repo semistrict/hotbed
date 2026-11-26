@@ -1587,7 +1587,7 @@ func (b *VMBackend) VMExit(ctx context.Context, wsID string) (unit.VMExit, bool)
 	if st.Running {
 		return unit.VMExit{}, false
 	}
-	return unit.VMExit{ExitCode: st.ExitCode, Signal: st.Signal, Result: st.Result, OOMKilled: st.OOMKilled}, true
+	return unit.VMExit{ExitCode: st.ExitCode, Signal: st.Signal, Result: st.Result, OOMKilled: st.OOMKilled, Detail: st.Detail}, true
 }
 
 // StopVM implements runtime.GuestResolver.

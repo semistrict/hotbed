@@ -149,6 +149,9 @@ type VMExit struct {
 	Signal    int
 	Result    string // systemd's unit Result ("signal", "oom-kill", ...)
 	OOMKilled bool
+	// Detail is how it ended in its VMM's words (vm.ProcessStatus.Detail),
+	// when the VMM says so.
+	Detail string
 }
 
 // tmpBinds are the binds that show s.Tmp at TmpPaths.

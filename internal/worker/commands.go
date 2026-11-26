@@ -850,7 +850,7 @@ func vmExitReason(ex unit.VMExit) string {
 	case ex.Signal != 0:
 		return fmt.Sprintf("its VM was killed by signal %d", ex.Signal)
 	default:
-		return "its VM ended: " + vm.ExitReason(ex.ExitCode)
+		return "its VM ended: " + vm.ProcessStatus{ExitCode: ex.ExitCode, Detail: ex.Detail}.Why()
 	}
 }
 

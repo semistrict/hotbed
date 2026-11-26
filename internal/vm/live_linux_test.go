@@ -14,9 +14,7 @@ import (
 	"time"
 
 	"github.com/semistrict/hotbed/internal/cladefs"
-	"github.com/semistrict/hotbed/internal/guestd"
 	"github.com/semistrict/hotbed/internal/runtime"
-	"github.com/semistrict/hotbed/internal/unit"
 	"github.com/semistrict/hotbed/internal/vm"
 )
 
@@ -211,16 +209,4 @@ func TestLiveFirecrackerCladefsEndToEnd(t *testing.T) {
 	if err := store.DeleteCell(ctx, baseRef.Tenant, baseRef.Cell); err != nil {
 		t.Fatalf("DeleteCell base-live: %v", err)
 	}
-}
-
-type liveResolver struct{ mgr *vm.Manager }
-
-func (r *liveResolver) EnsureVM(_ context.Context, wsID string, _ unit.VMSize) (*guestd.Client, error) {
-	return r.mgr.ClientFor(wsID)
-}
-func (r *liveResolver) ClientFor(wsID string) (*guestd.Client, error) {
-	return r.mgr.ClientFor(wsID)
-}
-func (r *liveResolver) StopVM(ctx context.Context, wsID string) error {
-	return r.mgr.StopVM(ctx, wsID)
 }

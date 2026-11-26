@@ -28,15 +28,16 @@ func IsEphemeralBuildID(id string) bool {
 	return strings.HasPrefix(id, "base-") || strings.HasPrefix(id, "prov-")
 }
 
-// Instance represents one live Firecracker microVM backing a workspace.
+// Instance represents one live VM backing a workspace.
 type Instance struct {
-	ID             string
-	UnitName       string
-	Dir            string
-	CellPath       string
-	CladefsVMSock  string
-	VsockUDS       string
-	ConsoleLog     string
+	ID            string
+	UnitName      string
+	Dir           string
+	CellPath      string
+	CladefsVMSock string
+	VsockUDS      string
+	ConsoleLog    string
+	// FirecrackerLog is Firecracker's own log; "" under machined.
 	FirecrackerLog string
 	GuestCID       uint32
 	Net            NetAlloc
@@ -56,10 +57,10 @@ type Instance struct {
 // BootTimes is how long each step of a VM's boot took, from Start's call to
 // its guestd answering.
 type BootTimes struct {
-	// Prepare is its directory, network tap, git-auth bridge, tools disk,
-	// config and metadata.
+	// Prepare is its directory and metadata.
 	Prepare time.Duration
-	// Launch is starting the Firecracker process (its systemd unit).
+	// Launch is its VMM's boot: a Firecracker process's network tap, tools
+	// disk, config and systemd unit, or machined's machine.
 	Launch time.Duration
 	// Guest is from the process starting to hotbed-guestd answering: the
 	// guest kernel's boot, its init, and guestd's start.
@@ -77,7 +78,7 @@ func (b BootTimes) String() string {
 }
 
 // vmMeta is persisted to <RunDir>/<id>/meta.json so hotbed-worker can reconnect
-// to surviving Firecracker VMs across worker restarts without disrupting them.
+// to surviving VMs across worker restarts without disrupting them.
 type vmMeta struct {
 	ID             string    `json:"id"`
 	UnitName       string    `json:"unitName"`
@@ -103,20 +104,12 @@ func isReservedRunDirName(name string) bool {
 	return name == toolsDirName || name == crashedDirName
 }
 
-// Manager launches, tracks, reconnects, and tears down Firecracker microVMs.
-// It implements runtime.GuestResolver via ClientFor.
+// Manager launches, tracks, reconnects, and tears down VMs, which its VMM
+// runs. It implements runtime.GuestResolver via ClientFor.
 type Manager struct {
-	cfg         Config
-	launcher    Launcher
-	net         *NetManager
-	dialerFn    func(vsockUDS string) guestd.DialFunc
-	toolsDiskFn func(cacheDir, guestdBin string) (string, error)
-
-	toolsMu        sync.Mutex
-	toolsCacheBin  string
-	toolsCacheSize int64
-	toolsCacheMod  int64
-	toolsCachePath string
+	cfg      Config
+	vmm      VMM
+	dialerFn func(vsockUDS string) guestd.DialFunc
 
 	mu        sync.Mutex
 	instances map[string]*Instance
@@ -125,27 +118,42 @@ type Manager struct {
 	nextCID   uint32
 }
 
-// ManagerOption overrides optional Manager collaborators (used in tests).
-type ManagerOption func(*Manager)
+// ManagerOption overrides optional Manager collaborators.
+type ManagerOption func(*managerOptions)
 
-// WithLauncher replaces the default SystemdLauncher.
+type managerOptions struct {
+	vmm         VMM
+	launcher    Launcher
+	dialerFn    func(vsockUDS string) guestd.DialFunc
+	toolsDiskFn func(cacheDir, guestdBin string) (string, error)
+}
+
+// WithVMM runs the manager's VMs on v (machined's, Machined) instead of
+// Firecracker; WithLauncher and WithToolsDiskBuilder are then Firecracker's,
+// unused.
+func WithVMM(v VMM) ManagerOption {
+	return func(o *managerOptions) { o.vmm = v }
+}
+
+// WithLauncher replaces Firecracker's default SystemdLauncher.
 func WithLauncher(l Launcher) ManagerOption {
-	return func(m *Manager) { m.launcher = l }
+	return func(o *managerOptions) { o.launcher = l }
 }
 
 // WithDialerFactory overrides how a VM's guestd.DialFunc is constructed from its
 // vsock UDS path (default: guestd.FirecrackerVsockDialer).
 func WithDialerFactory(fn func(vsockUDS string) guestd.DialFunc) ManagerOption {
-	return func(m *Manager) { m.dialerFn = fn }
+	return func(o *managerOptions) { o.dialerFn = fn }
 }
 
-// WithToolsDiskBuilder overrides how the read-only hotbed-tools disk image is
-// built from cfg.GuestdBin (default: EnsureToolsDisk).
+// WithToolsDiskBuilder overrides how Firecracker's read-only hotbed-tools
+// disk image is built from cfg.GuestdBin (default: EnsureToolsDisk).
 func WithToolsDiskBuilder(fn func(cacheDir, guestdBin string) (string, error)) ManagerOption {
-	return func(m *Manager) { m.toolsDiskFn = fn }
+	return func(o *managerOptions) { o.toolsDiskFn = fn }
 }
 
-// NewManager creates a Firecracker VM manager rooted at cfg.RunDir.
+// NewManager creates a VM manager rooted at cfg.RunDir, whose VMs are
+// Firecracker's unless WithVMM says otherwise.
 func NewManager(cfg Config, opts ...ManagerOption) (*Manager, error) {
 	cfg = cfg.Normalized()
 	if cfg.RunDir == "" {
@@ -159,96 +167,56 @@ func NewManager(cfg Config, opts ...ManagerOption) (*Manager, error) {
 	if err := os.MkdirAll(cfg.RunDir, 0o755); err != nil {
 		return nil, fmt.Errorf("vm: create RunDir %s: %w", cfg.RunDir, err)
 	}
-	var nm *NetManager
-	if !cfg.DisableNetwork {
-		nm, err = NewNetManager(cfg.BridgeName, cfg.BridgeCIDR, cfg.VMUser)
-		if err != nil {
-			return nil, err
-		}
-	}
-	m := &Manager{
-		cfg:         cfg,
+	o := managerOptions{
 		launcher:    SystemdLauncher{},
-		net:         nm,
 		toolsDiskFn: EnsureToolsDisk,
 		dialerFn: func(uds string) guestd.DialFunc {
 			return guestd.FirecrackerVsockDialer(uds)
 		},
+	}
+	for _, opt := range opts {
+		opt(&o)
+	}
+	if o.vmm == nil {
+		fc := &firecrackerVMM{launcher: o.launcher, toolsDiskFn: o.toolsDiskFn}
+		if !cfg.DisableNetwork {
+			fc.net, err = NewNetManager(cfg.BridgeName, cfg.BridgeCIDR, cfg.VMUser)
+			if err != nil {
+				return nil, err
+			}
+		}
+		o.vmm = fc
+	}
+	return &Manager{
+		cfg:       cfg,
+		vmm:       o.vmm,
+		dialerFn:  o.dialerFn,
 		instances: map[string]*Instance{},
 		starting:  map[string]struct{}{},
 		usedCIDs:  map[uint32]string{},
 		nextCID:   3, // CID 0,1,2 are reserved (hypervisor, local, host)
-	}
-	for _, opt := range opts {
-		opt(m)
-	}
-	return m, nil
+	}, nil
 }
 
-// FirecrackerConfig matches Firecracker's --config-file JSON schema (including
-// cladefs's virtio-extent "cladefs" device array).
-type FirecrackerConfig struct {
-	BootSource    fcBootSource     `json:"boot-source"`
-	Drives        []fcDrive        `json:"drives"`
-	Pmem          []fcPmem         `json:"pmem,omitempty"`
-	MachineConfig fcMachineConfig  `json:"machine-config"`
-	Vsock         fcVsock          `json:"vsock"`
-	NetInterfaces []fcNetInterface `json:"network-interfaces,omitempty"`
-	Balloon       *fcBalloon       `json:"balloon,omitempty"`
-	Cladefs       []fcCladefs      `json:"cladefs"`
+// unitName is VM id's unit, its name to the VMM.
+func unitName(id string) string { return "hotbed-vm-" + id }
+
+// machine is how m names inst's VM to its VMM.
+func (inst *Instance) machine() Machine {
+	return Machine{ID: inst.ID, Unit: inst.UnitName, Dir: inst.Dir, ConsoleLog: inst.ConsoleLog, CID: inst.GuestCID}
 }
 
-type fcDrive struct {
-	DriveID      string `json:"drive_id"`
-	PathOnHost   string `json:"path_on_host"`
-	IsRootDevice bool   `json:"is_root_device"`
-	IsReadOnly   bool   `json:"is_read_only"`
+// booted is what inst's boot took.
+func (inst *Instance) booted() Booted {
+	return Booted{VsockUDS: inst.VsockUDS, Net: inst.Net, ToolsDiskPath: inst.ToolsDiskPath, FirecrackerLog: inst.FirecrackerLog, VCPUs: inst.VCPUs, MemMiB: inst.MemMiB}
 }
 
-type fcPmem struct {
-	ID         string `json:"id"`
-	PathOnHost string `json:"path_on_host"`
-	RootDevice bool   `json:"root_device"`
-	ReadOnly   bool   `json:"read_only"`
+func (meta vmMeta) machine(dir string) Machine {
+	return Machine{ID: meta.ID, Unit: meta.UnitName, Dir: dir, ConsoleLog: meta.ConsoleLog, CID: meta.GuestCID}
 }
 
-type fcBootSource struct {
-	KernelImagePath string `json:"kernel_image_path"`
-	BootArgs        string `json:"boot_args"`
-}
-
-type fcMachineConfig struct {
-	VCPUCount  int `json:"vcpu_count"`
-	MemSizeMiB int `json:"mem_size_mib"`
-}
-
-type fcVsock struct {
-	GuestCID uint32 `json:"guest_cid"`
-	UDSPath  string `json:"uds_path"`
-}
-
-type fcNetInterface struct {
-	IfaceID     string `json:"iface_id"`
-	GuestMAC    string `json:"guest_mac,omitempty"`
-	HostDevName string `json:"host_dev_name"`
-}
-
-type fcBalloon struct {
-	AmountMiB            int  `json:"amount_mib"`
-	DeflateOnOOM         bool `json:"deflate_on_oom"`
-	StatsPollingInterval int  `json:"stats_polling_interval_s,omitempty"`
-	FreePageReporting    bool `json:"free_page_reporting,omitempty"`
-}
-
-type fcCladefs struct {
-	ID                 string `json:"id"`
-	Tag                string `json:"tag"`
-	PathOnHost         string `json:"path_on_host"`
-	Capacity           uint64 `json:"capacity"`
-	CladefsdSocket     string `json:"cladefsd_socket"`
-	DAXWindowSize      uint64 `json:"dax_window_size,omitempty"`
-	DAXPrivateMaxBytes uint64 `json:"dax_private_max_bytes,omitempty"`
-	CacheType          string `json:"cache_type,omitempty"`
+func (meta vmMeta) booted() Booted {
+	return Booted{VsockUDS: meta.VsockUDS, Net: meta.Net, ToolsDiskPath: meta.ToolsDiskPath, FirecrackerLog: meta.FirecrackerLog, VCPUs: meta.VCPUs, MemMiB: meta.MemMiB}
 }
 
 // configSnapshot returns a copy of the manager's current Config under lock.
@@ -292,143 +260,14 @@ func (m *Manager) UpdateConfig(cfg Config) {
 	m.cfg = cfg.Normalized()
 }
 
-// BuildFirecrackerConfig constructs the Firecracker JSON config for spec.
-func (m *Manager) BuildFirecrackerConfig(spec LaunchSpec, cid uint32, vsockUDS string, netAlloc NetAlloc) FirecrackerConfig {
-	cfg := m.configSnapshot()
-	vcpus, memMiB := cfg.size(spec)
-	diskBytes := spec.DiskBytes
-	if diskBytes == 0 {
-		diskBytes = cfg.DefaultDiskBytes
-	}
-	var bootParts []string
-	drives := []fcDrive{}
-	var pmems []fcPmem
-	if spec.ToolsDiskPath != "" {
-		// Boot from the read-only host tools disk mapped via virtio-pmem
-		// (/dev/pmem0, appended by Firecracker because root_device=true &
-		// read_only=true), then hotbed-guestd PID 1 mounts cladefs:rootfs and
-		// pivot_roots onto it. Using virtio-pmem shares the host page cache
-		// across VMs with zero block-queue I/O and avoids arm64 PCI virtio-blk
-		// boot hangs.
-		bootParts = []string{
-			"console=ttyS0",
-			"reboot=k",
-			"panic=1",
-			"psi=1",
-			"init=/hotbed-guestd",
-			"HOTBED_ROOT=cladefs:rootfs",
-		}
-		pmems = []fcPmem{{
-			ID:         "hotbed-tools",
-			PathOnHost: spec.ToolsDiskPath,
-			RootDevice: true,
-			ReadOnly:   true,
-		}}
-	} else {
-		bootParts = []string{
-			"root=rootfs",
-			"rootfstype=cladefs",
-			"rw",
-			"console=ttyS0",
-			"reboot=k",
-			"panic=1",
-			"psi=1",
-			"init=/sbin/hotbed-guestd",
-		}
-	}
-	if ipArg := netAlloc.KernelIPArg(); ipArg != "" {
-		bootParts = append(bootParts, ipArg)
-	}
-	if cfg.Nofile > 0 {
-		bootParts = append(bootParts, fmt.Sprintf("HOTBED_NOFILE=%d", cfg.Nofile))
-	}
-	if extra := strings.TrimSpace(spec.ExtraBootArgs); extra != "" {
-		bootParts = append(bootParts, extra)
-	}
-
-	fc := FirecrackerConfig{
-		BootSource: fcBootSource{
-			KernelImagePath: cfg.KernelPath,
-			BootArgs:        strings.Join(bootParts, " "),
-		},
-		Drives: drives,
-		Pmem:   pmems,
-		MachineConfig: fcMachineConfig{
-			VCPUCount:  vcpus,
-			MemSizeMiB: memMiB,
-		},
-		Vsock: fcVsock{
-			GuestCID: cid,
-			UDSPath:  vsockUDS,
-		},
-		Balloon: &fcBalloon{
-			AmountMiB:            cfg.BalloonTargetMiB,
-			DeflateOnOOM:         true,
-			StatsPollingInterval: 5,
-			FreePageReporting:    true,
-		},
-		Cladefs: []fcCladefs{{
-			ID:                 "rootfs",
-			Tag:                "rootfs",
-			PathOnHost:         spec.CellHostPath,
-			Capacity:           diskBytes,
-			CladefsdSocket:     spec.CladefsVMSock,
-			DAXWindowSize:      cfg.DAXWindowBytes,
-			DAXPrivateMaxBytes: cfg.DAXPrivateMaxBytes,
-			CacheType:          cfg.CacheType,
-		}},
-	}
-	if netAlloc.TAPName != "" {
-		fc.NetInterfaces = []fcNetInterface{{
-			IfaceID:     "eth0",
-			GuestMAC:    netAlloc.GuestMAC,
-			HostDevName: netAlloc.TAPName,
-		}}
-	}
-	return fc
-}
-
-// ensureToolsDisk builds or returns the cached read-only ext4 disk image for
-// guestdBin. Stat metadata is cached in memory so repeated VM boots avoid
-// re-hashing the binary while still rebuilding whenever guestdBin changes.
-func (m *Manager) ensureToolsDisk(runDir, guestdBin string) (string, error) {
-	m.toolsMu.Lock()
-	defer m.toolsMu.Unlock()
-
-	cacheDir := filepath.Join(runDir, toolsDirName)
-	if info, err := os.Stat(guestdBin); err == nil {
-		if m.toolsCachePath != "" &&
-			m.toolsCacheBin == guestdBin &&
-			m.toolsCacheSize == info.Size() &&
-			m.toolsCacheMod == info.ModTime().UnixNano() {
-			if st, serr := os.Stat(m.toolsCachePath); serr == nil && st.Size() > 0 {
-				return m.toolsCachePath, nil
-			}
-		}
-		p, err := m.toolsDiskFn(cacheDir, guestdBin)
-		if err != nil {
-			return "", err
-		}
-		m.toolsCacheBin = guestdBin
-		m.toolsCacheSize = info.Size()
-		m.toolsCacheMod = info.ModTime().UnixNano()
-		m.toolsCachePath = p
-		return p, nil
-	}
-	return m.toolsDiskFn(cacheDir, guestdBin)
-}
-
-// Start boots a Firecracker microVM for spec, waits for hotbed-guestd to report
-// healthy over AF_VSOCK, and registers the live Instance.
+// Start boots a VM for spec on the manager's VMM, waits for hotbed-guestd to
+// report healthy over its vsock, and registers the live Instance.
 func (m *Manager) Start(ctx context.Context, spec LaunchSpec) (*Instance, error) {
 	if spec.ID == "" {
 		return nil, errors.New("vm: LaunchSpec.ID is required")
 	}
 	if spec.CellHostPath == "" {
 		return nil, errors.New("vm: LaunchSpec.CellHostPath is required")
-	}
-	if spec.CladefsVMSock == "" {
-		return nil, errors.New("vm: LaunchSpec.CladefsVMSock is required")
 	}
 
 	m.mu.Lock()
@@ -456,182 +295,109 @@ func (m *Manager) Start(ctx context.Context, spec LaunchSpec) (*Instance, error)
 		}
 	}()
 
-	vmDir := filepath.Join(cfg.RunDir, spec.ID)
-	if err := os.MkdirAll(vmDir, 0o755); err != nil {
+	mach := Machine{ID: spec.ID, Unit: unitName(spec.ID), Dir: filepath.Join(cfg.RunDir, spec.ID), CID: cid}
+	mach.ConsoleLog = filepath.Join(mach.Dir, "console.log")
+	if err := os.MkdirAll(mach.Dir, 0o755); err != nil {
 		m.releaseCID(cid)
-		return nil, fmt.Errorf("vm: create dir %s: %w", vmDir, err)
+		return nil, fmt.Errorf("vm: create dir %s: %w", mach.Dir, err)
 	}
-	// Firecracker runs as VMUser and creates/removes vsock sockets in vmDir.
-	_ = chownSockForUser(vmDir, cfg.VMUser)
-	_ = os.Chmod(vmDir, 0o755)
-
-	vsockUDS := filepath.Join(vmDir, "vsock.sock")
-	consoleLog := filepath.Join(vmDir, "console.log")
-	fcLog := filepath.Join(vmDir, "firecracker.log")
-	configPath := filepath.Join(vmDir, "vm.json")
-	unitName := "hotbed-vm-" + spec.ID
-
-	_ = os.Remove(vsockUDS)
-
-	var netAlloc NetAlloc
-	if !cfg.DisableNetwork && !spec.DisableNet && m.net != nil {
-		var err error
-		netAlloc, err = m.net.AllocTAP(ctx, spec.ID)
-		if err != nil {
-			m.releaseCID(cid)
-			return nil, fmt.Errorf("vm %s: alloc network: %w", spec.ID, err)
-		}
-	}
-
-	var gaBridge *gitAuthBridge
-	if cfg.GitAuthHostSock != "" {
-		var err error
-		gaBridge, err = startGitAuthBridge(vsockUDS, cfg.GitAuthHostSock, cfg.VMUser)
-		if err != nil {
-			if m.net != nil {
-				m.net.ReleaseTAP(ctx, netAlloc)
-			}
-			m.releaseCID(cid)
-			return nil, fmt.Errorf("vm %s: start git-auth bridge: %w", spec.ID, err)
-		}
-	}
-
-	cleanupOnErr := func(removeDir bool) {
-		if gaBridge != nil {
-			_ = gaBridge.Close()
-		}
-		if m.net != nil && netAlloc.TAPName != "" {
-			cctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-			m.net.ReleaseTAP(cctx, netAlloc)
-			cancel()
-		}
+	cleanupOnErr := func(b Booted) {
+		cctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+		m.vmm.Free(cctx, mach, b)
+		cancel()
 		m.releaseCID(cid)
-		if removeDir {
-			_ = os.RemoveAll(vmDir)
-		}
-	}
-
-	if spec.ToolsDiskPath == "" {
-		toolsPath, err := m.ensureToolsDisk(cfg.RunDir, cfg.GuestdBin)
-		if err != nil {
-			cleanupOnErr(true)
-			return nil, fmt.Errorf("vm %s: prepare tools disk: %w", spec.ID, err)
-		}
-		spec.ToolsDiskPath = toolsPath
-	}
-
-	fcCfg := m.BuildFirecrackerConfig(spec, cid, vsockUDS, netAlloc)
-	vcpus, memMiB := fcCfg.MachineConfig.VCPUCount, fcCfg.MachineConfig.MemSizeMiB
-	cfgBytes, err := json.MarshalIndent(fcCfg, "", "  ")
-	if err != nil {
-		cleanupOnErr(true)
-		return nil, fmt.Errorf("vm %s: encode firecracker config: %w", spec.ID, err)
-	}
-	if err := os.WriteFile(configPath, cfgBytes, 0o644); err != nil {
-		cleanupOnErr(true)
-		return nil, fmt.Errorf("vm %s: write %s: %w", spec.ID, configPath, err)
+		_ = os.RemoveAll(mach.Dir)
 	}
 
 	now := time.Now().UTC()
 	meta := vmMeta{
-		ID:             spec.ID,
-		UnitName:       unitName,
-		CellPath:       spec.CellHostPath,
-		CladefsVMSock:  spec.CladefsVMSock,
-		VsockUDS:       vsockUDS,
-		ConsoleLog:     consoleLog,
-		FirecrackerLog: fcLog,
-		GuestCID:       cid,
-		Net:            netAlloc,
-		StartedAt:      now,
-		ToolsDiskPath:  spec.ToolsDiskPath,
-		VCPUs:          vcpus,
-		MemMiB:         memMiB,
+		ID:            spec.ID,
+		UnitName:      mach.Unit,
+		CellPath:      spec.CellHostPath,
+		CladefsVMSock: spec.CladefsVMSock,
+		ConsoleLog:    mach.ConsoleLog,
+		GuestCID:      cid,
+		StartedAt:     now,
 	}
-	if err := writeMeta(vmDir, meta); err != nil {
-		cleanupOnErr(true)
+	// Written before the boot too, so a worker that dies during it leaves
+	// the orphan reaper what to stop.
+	if err := writeMeta(mach.Dir, meta); err != nil {
+		cleanupOnErr(Booted{})
 		return nil, fmt.Errorf("vm %s: persist metadata: %w", spec.ID, err)
 	}
 
-	// Ensure Firecracker can write console.log and firecracker.log when running as VMUser.
-	for _, logPath := range []string{consoleLog, fcLog} {
-		if f, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644); err == nil {
-			_ = f.Close()
-			_ = chownSockForUser(logPath, cfg.VMUser)
-		}
-	}
-
-	procSpec := ProcessSpec{
-		Name:   unitName,
-		Slice:  cfg.Slice,
-		User:   cfg.VMUser,
-		Binary: cfg.FirecrackerBin,
-		Args: []string{
-			"--id", spec.ID,
-			"--enable-pci",
-			"--no-api",
-			"--config-file", configPath,
-			"--log-path", fcLog,
-			"--level", "Info",
-			"--show-level",
-			"--show-log-origin",
-		},
-		ConsoleLog: consoleLog,
-	}
 	launching := time.Now()
 	boot.Prepare = launching.Sub(began)
-	if err := m.launcher.Start(ctx, procSpec); err != nil {
-		cleanupOnErr(true)
-		return nil, fmt.Errorf("vm %s: launch firecracker: %w", spec.ID, err)
+	b, err := m.vmm.Boot(ctx, mach, spec, cfg)
+	if err != nil {
+		cleanupOnErr(Booted{})
+		return nil, err
 	}
 	launched := time.Now()
 	boot.Launch = launched.Sub(launching)
+	meta.VsockUDS, meta.Net, meta.ToolsDiskPath, meta.FirecrackerLog, meta.VCPUs, meta.MemMiB = b.VsockUDS, b.Net, b.ToolsDiskPath, b.FirecrackerLog, b.VCPUs, b.MemMiB
 
-	client := guestd.NewClient(m.dialerFn(vsockUDS))
-	checks, err := m.waitHealthy(ctx, unitName, consoleLog, fcLog, client)
-	boot.Guest, boot.HealthChecks = time.Since(launched), checks
-	if err != nil {
+	// Until the VM is confirmed gone, keep its metadata for the orphan
+	// reaper: stop it on any failure from here on.
+	stopOnErr := func(err error) (*Instance, error) {
 		stopCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), m.stopTimeout())
-		preSt, _ := m.launcher.Status(stopCtx, unitName)
-		stopErr := m.forceStopUnit(stopCtx, unitName)
+		// How it ended, before stopping it clears that (systemd's
+		// reset-failed).
+		preSt, _ := m.vmm.Status(stopCtx, mach.Unit)
+		stopErr := m.forceStopUnit(stopCtx, mach.Unit)
 		cancel()
 		if stopErr != nil {
-			// Unit may still be alive: preserve vmDir, CID, and TAP/IP so
-			// orphan reconciliation can stop it cleanly without leaking metadata.
-			if gaBridge != nil {
-				_ = gaBridge.Close()
-			}
-			slog.Error("vm start failed and unit failed to stop; preserving metadata for orphan reaper",
-				"vm", spec.ID, "unit", unitName, "startErr", err, "stopErr", stopErr)
+			slog.Error("vm start failed and its VM failed to stop; preserving metadata for orphan reaper",
+				"vm", spec.ID, "unit", mach.Unit, "startErr", err, "stopErr", stopErr)
 			return nil, fmt.Errorf("vm %s: %w (cleanup stop failed: %v)", spec.ID, err, stopErr)
 		}
 		if preSt.DiedAbnormally() {
-			m.preserveCrashedLogs(spec.ID, unitName, vmDir, preSt, "start failed", err)
+			m.preserveCrashedLogs(spec.ID, mach.Unit, mach.Dir, preSt, "start failed", err)
 		}
-		cleanupOnErr(true)
+		cleanupOnErr(b)
 		return nil, fmt.Errorf("vm %s: %w", spec.ID, err)
+	}
+	if err := writeMeta(mach.Dir, meta); err != nil {
+		return stopOnErr(fmt.Errorf("persist metadata: %w", err))
+	}
+	var gaBridge *gitAuthBridge
+	if cfg.GitAuthHostSock != "" {
+		gaBridge, err = startGitAuthBridge(b.VsockUDS, cfg.GitAuthHostSock, cfg.VMUser)
+		if err != nil {
+			return stopOnErr(fmt.Errorf("start git-auth bridge: %w", err))
+		}
+	}
+
+	client := guestd.NewClient(m.dialerFn(b.VsockUDS))
+	checks, err := m.waitHealthy(ctx, mach.Unit, mach.ConsoleLog, b.FirecrackerLog, client)
+	boot.Guest, boot.HealthChecks = time.Since(launched), checks
+	if err != nil {
+		if gaBridge != nil {
+			_ = gaBridge.Close()
+		}
+		return stopOnErr(err)
 	}
 
 	inst := &Instance{
 		ID:             spec.ID,
-		UnitName:       unitName,
-		Dir:            vmDir,
+		UnitName:       mach.Unit,
+		Dir:            mach.Dir,
 		CellPath:       spec.CellHostPath,
 		CladefsVMSock:  spec.CladefsVMSock,
-		VsockUDS:       vsockUDS,
-		ConsoleLog:     consoleLog,
-		FirecrackerLog: fcLog,
+		VsockUDS:       b.VsockUDS,
+		ConsoleLog:     mach.ConsoleLog,
+		FirecrackerLog: b.FirecrackerLog,
 		GuestCID:       cid,
-		Net:            netAlloc,
+		Net:            b.Net,
 		Client:         client,
 		StartedAt:      now,
-		ToolsDiskPath:  spec.ToolsDiskPath,
-		VCPUs:          vcpus,
-		MemMiB:         memMiB,
+		ToolsDiskPath:  b.ToolsDiskPath,
+		VCPUs:          b.VCPUs,
+		MemMiB:         b.MemMiB,
 		Boot:           boot,
 		gitAuth:        gaBridge,
 	}
-	slog.Info("vm booted", "vm", spec.ID, "vcpus", vcpus, "mem_mib", memMiB, "total", boot.Total(),
+	slog.Info("vm booted", "vm", spec.ID, "vcpus", b.VCPUs, "mem_mib", b.MemMiB, "total", boot.Total(),
 		"prepare", boot.Prepare, "launch", boot.Launch, "guest", boot.Guest, "health_checks", boot.HealthChecks)
 	m.mu.Lock()
 	m.instances[spec.ID] = inst
@@ -660,9 +426,10 @@ func (m *Manager) waitHealthy(ctx context.Context, unitName, consoleLog, fcLog s
 		}
 		lastErr = err
 
-		// Fail fast if Firecracker already exited (e.g. exit 158/159 or bad config).
-		if st, serr := m.launcher.Status(ctx, unitName); serr == nil && st.Loaded && st.Exited {
-			return checks, formatBootFailure(ExitReason(st.ExitCode), consoleLog, fcLog)
+		// Fail fast if the VM already exited (e.g. Firecracker's exit
+		// 158/159 or a bad config).
+		if st, serr := m.vmm.Status(ctx, unitName); serr == nil && st.Loaded && st.Exited {
+			return checks, formatBootFailure(st.Why(), consoleLog, fcLog)
 		}
 
 		if time.Now().After(deadline) {
@@ -690,7 +457,7 @@ func formatBootFailure(base, consoleLog, fcLog string) error {
 	return errors.New(b.String())
 }
 
-// Reconnect scans cfg.RunDir for Firecracker VMs that survived a hotbed-worker
+// Reconnect scans cfg.RunDir for VMs that survived a hotbed-worker
 // restart, re-attaches their git-auth vsock bridges and guestd clients, stops
 // any ephemeral base/prov build VMs from a prior worker incarnation, and cleans
 // up stale directories whose VMs are verified dead.
@@ -715,15 +482,14 @@ func (m *Manager) Reconnect(ctx context.Context) (int, error) {
 		meta, err := readMeta(vmDir)
 		if err != nil {
 			// Only remove a corrupt/incomplete dir if its unit is confirmed dead.
-			if st, serr := m.launcher.Status(ctx, "hotbed-vm-"+id); serr == nil && !st.Alive() {
-				if m.net != nil {
-					m.net.ReleaseTAPByVMID(ctx, id)
-				}
+			if st, serr := m.vmm.Status(ctx, unitName(id)); serr == nil && !st.Alive() {
+				m.vmm.Free(ctx, Machine{ID: id, Unit: unitName(id), Dir: vmDir}, Booted{})
 				_ = os.RemoveAll(vmDir)
 			}
 			continue
 		}
-		st, err := m.launcher.Status(ctx, meta.UnitName)
+		mach, booted := meta.machine(vmDir), meta.booted()
+		st, err := m.vmm.Status(ctx, meta.UnitName)
 		if IsEphemeralBuildID(meta.ID) {
 			// Ephemeral base-build / provisioning VMs belong to a single worker
 			// incarnation; never adopt them across restarts.
@@ -737,13 +503,7 @@ func (m *Manager) Reconnect(ctx context.Context) (int, error) {
 					continue
 				}
 			}
-			if m.net != nil {
-				if meta.Net.TAPName != "" {
-					m.net.ReleaseTAP(ctx, meta.Net)
-				} else {
-					m.net.ReleaseTAPByVMID(ctx, meta.ID)
-				}
-			}
+			m.vmm.Free(ctx, mach, booted)
 			_ = os.RemoveAll(vmDir)
 			slog.Info("vm reconnect: reaped leftover build VM", "vm", meta.ID, "unit", meta.UnitName)
 			continue
@@ -760,9 +520,7 @@ func (m *Manager) Reconnect(ctx context.Context) (int, error) {
 				slog.Warn("vm reconnect: finish stopping deactivating VM failed", "vm", meta.ID, "err", stopErr)
 				continue
 			}
-			if m.net != nil && meta.Net.TAPName != "" {
-				m.net.ReleaseTAP(ctx, meta.Net)
-			}
+			m.vmm.Free(ctx, mach, booted)
 			_ = os.RemoveAll(vmDir)
 			continue
 		}
@@ -770,9 +528,7 @@ func (m *Manager) Reconnect(ctx context.Context) (int, error) {
 			if st.DiedAbnormally() {
 				m.preserveCrashedLogs(meta.ID, meta.UnitName, vmDir, st, "dead on reconnect", nil)
 			}
-			if m.net != nil && meta.Net.TAPName != "" {
-				m.net.ReleaseTAP(ctx, meta.Net)
-			}
+			m.vmm.Free(ctx, mach, booted)
 			_ = os.RemoveAll(vmDir)
 			continue
 		}
@@ -821,9 +577,7 @@ func (m *Manager) Reconnect(ctx context.Context) (int, error) {
 			}
 		}
 		m.mu.Unlock()
-		if m.net != nil && meta.Net.GuestIP != "" {
-			m.net.ReserveIP(meta.ID, meta.Net.GuestIP)
-		}
+		m.vmm.Adopt(mach, booted)
 		reconnected++
 	}
 	return reconnected, nil
@@ -839,25 +593,24 @@ func (m *Manager) killWaitTimeout() time.Duration {
 	return min(max(cfg.ShutdownTimeout, time.Second), 5*time.Second)
 }
 
-// forceStopUnit stops unitName, escalates to Killer.Kill (SIGKILL) if it stays
-// alive or Stop errors, and only returns nil once launcher.Status confirms the
-// unit is no longer alive.
+// forceStopUnit stops unitName, escalates to the VMM's Kill (SIGKILL) if it
+// stays alive or Stop errors, and only returns nil once the VMM's Status
+// confirms the unit is no longer alive.
 func (m *Manager) forceStopUnit(ctx context.Context, unitName string) error {
-	stopErr := m.launcher.Stop(ctx, unitName)
-	st, stErr := m.launcher.Status(ctx, unitName)
+	stopErr := m.vmm.Stop(ctx, unitName)
+	st, stErr := m.vmm.Status(ctx, unitName)
 	if stErr == nil && !st.Alive() {
 		return nil
 	}
 
-	var killErr error
-	if killer, ok := m.launcher.(Killer); ok {
-		killErr = killer.Kill(ctx, unitName)
+	killErr := m.vmm.Kill(ctx, unitName)
+	if !errors.Is(killErr, ErrNoKill) {
 		deadline := time.Now().Add(m.killWaitTimeout())
 	waitDead:
 		for time.Now().Before(deadline) {
-			st, stErr = m.launcher.Status(ctx, unitName)
+			st, stErr = m.vmm.Status(ctx, unitName)
 			if stErr == nil && !st.Alive() {
-				_ = m.launcher.Stop(ctx, unitName)
+				_ = m.vmm.Stop(ctx, unitName)
 				return nil
 			}
 			select {
@@ -866,9 +619,9 @@ func (m *Manager) forceStopUnit(ctx context.Context, unitName string) error {
 			case <-time.After(25 * time.Millisecond):
 			}
 		}
-		st, stErr = m.launcher.Status(ctx, unitName)
+		st, stErr = m.vmm.Status(ctx, unitName)
 		if stErr == nil && !st.Alive() {
-			_ = m.launcher.Stop(ctx, unitName)
+			_ = m.vmm.Stop(ctx, unitName)
 			return nil
 		}
 	}
@@ -879,7 +632,7 @@ func (m *Manager) forceStopUnit(ctx context.Context, unitName string) error {
 	return fmt.Errorf("unit %s is still alive after stop/kill (stop=%v, kill=%v)", unitName, stopErr, killErr)
 }
 
-// Stop gracefully shuts down the Firecracker VM for id (syncing Fxfs inside the
+// Stop gracefully shuts down the VM for id (syncing Fxfs inside the
 // guest if syncFS is true), verifies the Firecracker unit actually exited
 // (escalating to SIGKILL on failure/timeout), and ONLY THEN cleans up
 // tracking, TAP, CID, and inst.Dir. If the unit cannot be confirmed dead,
@@ -927,11 +680,11 @@ func (m *Manager) Stop(ctx context.Context, id string, syncFS bool) error {
 	}
 
 	if syncErr == nil && inst.Client != nil && ctx.Err() == nil {
-		// Wait briefly for Firecracker to exit cleanly on its own after PowerOff.
+		// Wait briefly for the VM to exit cleanly on its own after PowerOff.
 		deadline := time.Now().Add(m.cfg.ShutdownTimeout)
 	waitLoop:
 		for time.Now().Before(deadline) {
-			st, err := m.launcher.Status(ctx, inst.UnitName)
+			st, err := m.vmm.Status(ctx, inst.UnitName)
 			if err != nil || !st.Alive() {
 				break
 			}
@@ -951,7 +704,7 @@ func (m *Manager) Stop(ctx context.Context, id string, syncFS bool) error {
 
 	// Capture exit status before forceStopUnit runs `systemctl reset-failed`,
 	// which clears systemd's Result / ExecMainCode / ExecMainStatus fields.
-	preSt, _ := m.launcher.Status(stopCtx, inst.UnitName)
+	preSt, _ := m.vmm.Status(stopCtx, inst.UnitName)
 
 	if err := m.forceStopUnit(stopCtx, inst.UnitName); err != nil {
 		slog.Error("vm stop failed; preserving instance tracking and metadata",
@@ -972,13 +725,7 @@ func (m *Manager) Stop(ctx context.Context, id string, syncFS bool) error {
 	if inst.gitAuth != nil {
 		_ = inst.gitAuth.Close()
 	}
-	if m.net != nil {
-		if inst.Net.TAPName != "" {
-			m.net.ReleaseTAP(stopCtx, inst.Net)
-		} else {
-			m.net.ReleaseTAPByVMID(stopCtx, id)
-		}
-	}
+	m.vmm.Free(stopCtx, inst.machine(), inst.booted())
 	m.releaseCID(inst.GuestCID)
 	_ = os.RemoveAll(inst.Dir)
 	if syncErr != nil {
@@ -987,7 +734,7 @@ func (m *Manager) Stop(ctx context.Context, id string, syncFS bool) error {
 	return nil
 }
 
-// EnsureNotRunning verifies no live Firecracker unit or in-flight launch holds
+// EnsureNotRunning verifies no live VM or in-flight launch holds
 // id. If a tracked instance already exited, its stale state is cleaned up.
 func (m *Manager) EnsureNotRunning(ctx context.Context, id string) error {
 	m.mu.Lock()
@@ -997,9 +744,9 @@ func (m *Manager) EnsureNotRunning(ctx context.Context, id string) error {
 	if starting {
 		return fmt.Errorf("vm %s is currently starting: %w", id, ErrVMRunning)
 	}
-	unitName := "hotbed-vm-" + id
-	if st, err := m.launcher.Status(ctx, unitName); err == nil && st.Alive() {
-		return fmt.Errorf("vm %s (%s): %w", id, unitName, ErrVMRunning)
+	unit := unitName(id)
+	if st, err := m.vmm.Status(ctx, unit); err == nil && st.Alive() {
+		return fmt.Errorf("vm %s (%s): %w", id, unit, ErrVMRunning)
 	}
 	if tracked {
 		return m.Stop(ctx, id, false)
@@ -1007,7 +754,7 @@ func (m *Manager) EnsureNotRunning(ctx context.Context, id string) error {
 	return nil
 }
 
-// ReconcileOrphans discovers every active hotbed-vm-* unit in systemd, every
+// ReconcileOrphans discovers every hotbed-vm-* unit its VMM runs, every
 // tracked instance, and every RunDir entry not in ownedIDs (or currently
 // starting), force-stops it, releases its TAP (even when RunDir/meta.json was
 // already deleted), removes its RunDir, and sweeps orphaned TAPs on the bridge.
@@ -1016,7 +763,7 @@ func (m *Manager) ReconcileOrphans(ctx context.Context, ownedIDs map[string]bool
 	cfg := m.configSnapshot()
 	candidates := map[string]struct{}{}
 
-	if units, err := m.launcher.List(ctx, cfg.Slice); err != nil {
+	if units, err := m.vmm.List(ctx, cfg.Slice); err != nil {
 		slog.Warn("vm reconcile orphans: list units failed", "slice", cfg.Slice, "err", err)
 	} else {
 		for _, u := range units {
@@ -1070,30 +817,28 @@ func (m *Manager) ReconcileOrphans(ctx context.Context, ownedIDs map[string]bool
 
 		if inst != nil {
 			if err := m.Stop(ctx, id, false); err != nil {
-				slog.Warn("reap tracked orphan Firecracker VM failed", "vm", id, "err", err)
+				slog.Warn("reap tracked orphan VM failed", "vm", id, "err", err)
 				stillAlive[id] = true
 				continue
 			}
 		} else {
 			stopCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), m.stopTimeout())
-			unitName := "hotbed-vm-" + id
-			preSt, _ := m.launcher.Status(stopCtx, unitName)
-			err := m.forceStopUnit(stopCtx, unitName)
+			preSt, _ := m.vmm.Status(stopCtx, unitName(id))
+			err := m.forceStopUnit(stopCtx, unitName(id))
 			if err != nil {
 				cancel()
-				slog.Warn("reap untracked orphan Firecracker VM failed", "vm", id, "unit", unitName, "err", err)
+				slog.Warn("reap untracked orphan VM failed", "vm", id, "unit", unitName(id), "err", err)
 				stillAlive[id] = true
 				continue
 			}
 			if preSt.DiedAbnormally() {
-				m.preserveCrashedLogs(id, unitName, vmDir, preSt, "orphan reap", nil)
+				m.preserveCrashedLogs(id, unitName(id), vmDir, preSt, "orphan reap", nil)
 			}
-			if m.net != nil {
-				if metaErr == nil && meta.Net.TAPName != "" {
-					m.net.ReleaseTAP(stopCtx, meta.Net)
-				}
-				m.net.ReleaseTAPByVMID(stopCtx, id)
+			var booted Booted
+			if metaErr == nil {
+				booted = meta.booted()
 			}
+			m.vmm.Free(stopCtx, Machine{ID: id, Unit: unitName(id), Dir: vmDir}, booted)
 			cancel()
 			_ = os.RemoveAll(vmDir)
 		}
@@ -1102,27 +847,25 @@ func (m *Manager) ReconcileOrphans(ctx context.Context, ownedIDs map[string]bool
 		if cellPath != "" {
 			reapedCellPaths = append(reapedCellPaths, cellPath)
 		}
-		slog.Info("reaped orphan Firecracker VM", "vm", id, "unit", "hotbed-vm-"+id)
+		slog.Info("reaped orphan VM", "vm", id, "unit", unitName(id))
 	}
 
-	if m.net != nil {
-		liveIDs := make(map[string]bool, len(ownedIDs)+len(stillAlive))
-		for id := range ownedIDs {
-			liveIDs[id] = true
-		}
-		for id := range stillAlive {
-			liveIDs[id] = true
-		}
-		m.mu.Lock()
-		for id := range m.instances {
-			liveIDs[id] = true
-		}
-		for id := range m.starting {
-			liveIDs[id] = true
-		}
-		m.mu.Unlock()
-		m.net.SweepOrphanTAPs(ctx, liveIDs)
+	liveIDs := make(map[string]bool, len(ownedIDs)+len(stillAlive))
+	for id := range ownedIDs {
+		liveIDs[id] = true
 	}
+	for id := range stillAlive {
+		liveIDs[id] = true
+	}
+	m.mu.Lock()
+	for id := range m.instances {
+		liveIDs[id] = true
+	}
+	for id := range m.starting {
+		liveIDs[id] = true
+	}
+	m.mu.Unlock()
+	m.vmm.Sweep(ctx, liveIDs)
 	return reapedIDs, reapedCellPaths
 }
 
@@ -1157,7 +900,7 @@ func (m *Manager) StopVM(ctx context.Context, workspaceID string) error {
 	return m.Stop(ctx, workspaceID, true)
 }
 
-// Status reports the underlying Firecracker VMM process status for id.
+// Status reports the status of id's VM, as its VMM has it.
 func (m *Manager) Status(ctx context.Context, id string) (ProcessStatus, error) {
 	m.mu.Lock()
 	inst, ok := m.instances[id]
@@ -1165,7 +908,7 @@ func (m *Manager) Status(ctx context.Context, id string) (ProcessStatus, error) 
 	if !ok {
 		return ProcessStatus{}, nil
 	}
-	return m.launcher.Status(ctx, inst.UnitName)
+	return m.vmm.Status(ctx, inst.UnitName)
 }
 
 // List returns IDs of all tracked running VMs.
@@ -1260,7 +1003,7 @@ type crashedVMRecord struct {
 	Status     ProcessStatus `json:"status"`
 }
 
-// preserveCrashedLogs copies Firecracker's log, console output, and metadata
+// preserveCrashedLogs copies its VMM's log (Firecracker's), console output, and metadata
 // from vmDir into <RunDir>/_crashed/<timestamp>-<id>/ before vmDir is removed,
 // keeping at most maxCrashedVMDirs entries.
 func (m *Manager) preserveCrashedLogs(id, unitName, vmDir string, st ProcessStatus, why string, syncErr error) string {
