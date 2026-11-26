@@ -29,6 +29,7 @@ import (
 	"time"
 
 	"github.com/semistrict/hotbed/internal/api"
+	"github.com/semistrict/hotbed/internal/cfbundle"
 	"github.com/semistrict/hotbed/internal/fake"
 	pb "github.com/semistrict/hotbed/internal/gen/hotbed/v1"
 	"github.com/semistrict/hotbed/internal/gen/hotbed/v1/hotbedv1connect"
@@ -132,12 +133,9 @@ func startDevHarness() (*devHarness, error) {
 	if err != nil {
 		return nil, err
 	}
-	bundleDir := filepath.Join(root, "cf-controller", ".cloudflare", "output", "v1", "workers", "default", "bundle")
-	if _, err := os.Stat(filepath.Join(bundleDir, "index.js")); err != nil {
-		build := exec.Command("pnpm", "-C", filepath.Join(root, "cf-controller"), "run", "build")
-		if out, berr := build.CombinedOutput(); berr != nil {
-			return nil, fmt.Errorf("build cf-controller bundle: %w\n%s", berr, out)
-		}
+	bundleDir, err := cfbundle.Ensure(root)
+	if err != nil {
+		return nil, err
 	}
 	script := filepath.Join(root, "cf-controller", "scripts", "harness.mjs")
 	cmd := exec.Command("node", script, "--bundle", bundleDir)
