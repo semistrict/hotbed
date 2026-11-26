@@ -650,6 +650,15 @@ export class ControllerDO extends DurableObject<ControllerEnv> {
 						{ status: 403 },
 					);
 				}
+				if (caller.orgRole === "viewer") {
+					return Response.json(
+						{
+							code: ErrorCode.NotAuthorized,
+							message: "viewer role is read-only and cannot mint worker tokens",
+						},
+						{ status: 403 },
+					);
+				}
 				const body = (await request.json().catch(() => ({}))) as {
 					nodeId?: string;
 					hostname?: string;
@@ -697,6 +706,15 @@ export class ControllerDO extends DurableObject<ControllerEnv> {
 					});
 				}
 				if (pathname === "/admin/join-tokens" && request.method === "POST") {
+					if (caller.orgRole === "viewer") {
+						return Response.json(
+							{
+								code: ErrorCode.NotAuthorized,
+								message: "viewer role is read-only and cannot mint join tokens",
+							},
+							{ status: 403 },
+						);
+					}
 					const body = (await request.json().catch(() => ({}))) as {
 						label?: string;
 						expiresInHours?: number;
@@ -736,6 +754,15 @@ export class ControllerDO extends DurableObject<ControllerEnv> {
 					);
 				}
 				if (pathname.startsWith("/admin/join-tokens/") && request.method === "DELETE") {
+					if (caller.orgRole === "viewer") {
+						return Response.json(
+							{
+								code: ErrorCode.NotAuthorized,
+								message: "viewer role is read-only and cannot revoke join tokens",
+							},
+							{ status: 403 },
+						);
+					}
 					const id = decodePathSegment(pathname.slice("/admin/join-tokens/".length));
 					if (id === null) {
 						return Response.json(
@@ -963,6 +990,15 @@ export class ControllerDO extends DurableObject<ControllerEnv> {
 			} catch (err) {
 				const he = fromUnknownError(err);
 				return Response.json(he.toJSON(), { status: 403 });
+			}
+			if (caller.orgRole === "viewer") {
+				return Response.json(
+					{
+						code: ErrorCode.NotAuthorized,
+						message: "viewer role is read-only and cannot connect as a worker",
+					},
+					{ status: 403 },
+				);
 			}
 			// Pin nodeId to the token's DB-bound identity for worker-token auth so
 			// one worker token can never hijack another node's WebSocket tunnel.

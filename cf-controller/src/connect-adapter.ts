@@ -62,12 +62,74 @@ const WORKER_ALLOWED_PROCEDURES = new Set([
 	"/hotbed.v1.GitAuthService/MintGitToken",
 ]);
 
-const workerRoleScopeInterceptor: Interceptor = (next) => async (req) => {
+export const VIEWER_ALLOWED_PROCEDURES = new Set([
+	// ClusterService (read-only)
+	"/hotbed.v1.ClusterService/ListNodes",
+	"/hotbed.v1.ClusterService/GetBuild",
+	"/hotbed.v1.ClusterService/ListRepos",
+	"/hotbed.v1.ClusterService/ListSteps",
+	"/hotbed.v1.ClusterService/ListProjects",
+	"/hotbed.v1.ClusterService/GetProject",
+	"/hotbed.v1.ClusterService/ListBases",
+	"/hotbed.v1.ClusterService/ListFreshens",
+	"/hotbed.v1.ClusterService/GetFreshen",
+	"/hotbed.v1.ClusterService/GetSnapshot",
+	"/hotbed.v1.ClusterService/GetCommandDiagnostics",
+	"/hotbed.v1.ClusterService/GetNode",
+	"/hotbed.v1.ClusterService/ListPlacements",
+	"/hotbed.v1.ClusterService/ListEvents",
+	"/hotbed.v1.ClusterService/GetWorkerConfig",
+	// SessionService (read-only)
+	"/hotbed.v1.SessionService/GetSession",
+	"/hotbed.v1.SessionService/ListSessions",
+	"/hotbed.v1.SessionService/SearchSessions",
+	"/hotbed.v1.SessionService/WatchSession",
+	"/hotbed.v1.SessionService/Poll",
+	// WorkspaceService (read-only)
+	"/hotbed.v1.WorkspaceService/GetWorkspace",
+	"/hotbed.v1.WorkspaceService/WatchWorkspace",
+	"/hotbed.v1.WorkspaceService/ListWorkspaces",
+	"/hotbed.v1.WorkspaceService/ListFiles",
+	"/hotbed.v1.WorkspaceService/GetFile",
+	"/hotbed.v1.WorkspaceService/GetCommand",
+	"/hotbed.v1.WorkspaceService/ListCommands",
+	"/hotbed.v1.WorkspaceService/FollowLog",
+	"/hotbed.v1.WorkspaceService/GetLogLines",
+	"/hotbed.v1.WorkspaceService/InspectCommand",
+	"/hotbed.v1.WorkspaceService/GetProfile",
+	"/hotbed.v1.WorkspaceService/GetDaemonLogs",
+	// ScheduleService (read-only)
+	"/hotbed.v1.ScheduleService/ListSchedules",
+	"/hotbed.v1.ScheduleService/GetSchedule",
+	// QuestionService (read-only)
+	"/hotbed.v1.QuestionService/ListQuestions",
+	"/hotbed.v1.QuestionService/ListQuestionProjects",
+	"/hotbed.v1.QuestionService/GetQuestion",
+	// ReviewService (read-only)
+	"/hotbed.v1.ReviewService/ListReviews",
+	"/hotbed.v1.ReviewService/GetReview",
+	"/hotbed.v1.ReviewService/ListResponses",
+	// GitAuthService (read-only metadata)
+	"/hotbed.v1.GitAuthService/ListGitCredentials",
+	// MemoryService (read-only)
+	"/hotbed.v1.MemoryService/ListMemories",
+	"/hotbed.v1.MemoryService/GetMemories",
+	"/hotbed.v1.MemoryService/ShowMemory",
+]);
+
+const roleScopeInterceptor: Interceptor = (next) => async (req) => {
 	const caller = getCaller(req.contextValues);
+	const proc = `/${req.service.typeName}/${req.method.name}`;
 	if (caller.role === "worker") {
-		const proc = `/${req.service.typeName}/${req.method.name}`;
 		if (!WORKER_ALLOWED_PROCEDURES.has(proc)) {
 			throw hotbedError(ErrorCode.NotAuthorized, `worker token is not authorized to call ${proc}`);
+		}
+	} else if (caller.orgRole === "viewer") {
+		if (!VIEWER_ALLOWED_PROCEDURES.has(proc)) {
+			throw hotbedError(
+				ErrorCode.NotAuthorized,
+				`viewer role is read-only and cannot call ${proc}`,
+			).withSuggestion("ask an organization admin to upgrade your role to member or admin");
 		}
 	}
 	return next(req);
@@ -85,7 +147,7 @@ export function createConnectFetchDispatcher(
 		connect: true,
 		grpcWeb: true,
 		grpc: true,
-		interceptors: [hotbedErrorInterceptor, workerRoleScopeInterceptor, noLocalFieldsInterceptor],
+		interceptors: [hotbedErrorInterceptor, roleScopeInterceptor, noLocalFieldsInterceptor],
 	});
 	register(router);
 
