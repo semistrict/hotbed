@@ -419,3 +419,71 @@ func TestVMBackendEnsureVMBootsOnceForConcurrentCallers(t *testing.T) {
 	default:
 	}
 }
+
+// A worker that restarts boots an idle VM workspace again on the cell its
+// saved record names: the in-memory cell map starts empty, and the record
+// is what lasts.
+func TestEngineRestartBootsSavedVMWorkspaceOnItsCell(t *testing.T) {
+	ctx := t.Context()
+	dir := t.TempDir()
+	store := &fake.Store{Root: t.TempDir()}
+	units := &fake.Units{}
+	t.Cleanup(units.Close)
+
+	e1, err := NewEngine(ctx, EngineConfig{
+		Dir: dir, NodeID: "n1", Host: "vm1",
+		Store: store, BaseImage: fake.BaseImage(store), Units: units, System: fake.NewSystem(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	e1.mu.Lock()
+	for _, w := range []*workspace{
+		{rec: &pb.WorkspaceRecord{
+			Workspace: &pb.Workspace{Id: "ws-idle", Project: "hotbed", State: idle, Runtime: runtime.KindVM,
+				CladefsCell: &pb.CladefsCell{Tenant: 1, Cell: 42, Version: 7}},
+			Volume: "ws/ws-idle",
+		}},
+		{rec: &pb.WorkspaceRecord{
+			Workspace: &pb.Workspace{Id: "ws-released", Project: "hotbed", State: released, Runtime: runtime.KindVM,
+				CladefsCell: &pb.CladefsCell{Tenant: 1, Cell: 43, Version: 7}},
+			Volume: "ws/ws-released",
+		}},
+	} {
+		e1.workspaces[w.ws().Id] = w
+		e1.saveWorkspace(w, change{what: "ready"})
+	}
+	e1.mu.Unlock()
+	if err := e1.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	api := newStrictVMCladefsClient()
+	api.cells[42] = true
+	fl := newFakeVMLauncher()
+	vmb, _ := newTestVMBackend(t, api, fl)
+	e2, err := NewEngine(ctx, EngineConfig{
+		Dir: dir, NodeID: "n1", Host: "vm1",
+		Store: store, BaseImage: fake.BaseImage(store), Units: units, System: fake.NewSystem(),
+		VM: vmb,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { e2.Close() })
+	t.Cleanup(func() { _ = vmb.mgr.Stop(context.Background(), "ws-idle", true) })
+
+	if _, err := vmb.EnsureVM(ctx, "ws-idle", unit.VMSize{}); err != nil {
+		t.Fatalf("EnsureVM after restart: %v", err)
+	}
+	if got, want := vmb.mgr.Get("ws-idle").CellPath, cladefs.FormatCellID(1, 42); got != want {
+		t.Fatalf("VM booted on cell %q, want the saved %q", got, want)
+	}
+	if !api.cells[42] {
+		t.Fatal("restart deleted the idle workspace's cell")
+	}
+	if _, err := vmb.EnsureVM(ctx, "ws-released", unit.VMSize{}); err == nil ||
+		err.Error() != "vm ws-released: no cladefs cell recorded for workspace" {
+		t.Fatalf("EnsureVM on a released workspace = %v, want no cell", err)
+	}
+}

@@ -1560,6 +1560,23 @@ func (b *VMBackend) PrepareWorkspace(ctx context.Context, wsID string, baseRef c
 	}, nil
 }
 
+// RestoreWorkspaceCell records the cladefs cell a workspace's saved record
+// names, so a worker that restarted can boot that workspace's VM again. The
+// record is the lasting copy; wsCells only caches it for this incarnation.
+func (b *VMBackend) RestoreWorkspaceCell(wsID string, cell *pb.CladefsCell) {
+	if cell.GetCell() == 0 {
+		return
+	}
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.wsCells[wsID] = cladefs.CellRef{
+		HostPath: cladefs.FormatCellID(cell.GetTenant(), cell.GetCell()),
+		Tenant:   cell.GetTenant(),
+		Cell:     cell.GetCell(),
+		Version:  cell.GetVersion(),
+	}
+}
+
 // ReconcileOrphans stops orphaned Firecracker VMs (including prior worker
 // incarnations' base/prov build VMs and zombie units whose RunDir was lost),
 // releases orphaned TAPs, and cleans up orphaned local cladefs cells.

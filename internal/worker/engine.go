@@ -610,6 +610,9 @@ func (e *Engine) load() error {
 		e.workspaces[r.Workspace.Id] = &workspace{rec: r, vmUsed: r.Workspace.Runtime == runtime.KindVM}
 		if r.Workspace.Runtime == runtime.KindVM {
 			e.vmWorkspaces.Store(r.Workspace.Id, struct{}{})
+			if e.cfg.VM != nil && wsHasVolume(r.Workspace.State) {
+				e.cfg.VM.RestoreWorkspaceCell(r.Workspace.Id, r.Workspace.GetCladefsCell())
+			}
 		}
 	}); err != nil {
 		return err
