@@ -388,8 +388,11 @@ func (w *workspace) ws() *pb.Workspace { return w.rec.Workspace }
 type command struct {
 	rec *pb.CommandRecord
 
-	cpuNanos   uint64
-	cpuAt      time.Time
+	cpuNanos uint64
+	cpuAt    time.Time
+	// idle is what is seen of it while it holds much of the node's memory,
+	// to stop it should it sit idle on it (stopIdleHogs). Guarded by e.mu.
+	idle       idleWatch
 	followers  int
 	lastFollow time.Time
 	// profileSeq is the event that carries the command's profile to the

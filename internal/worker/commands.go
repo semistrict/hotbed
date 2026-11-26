@@ -409,7 +409,8 @@ func (Systemd) StatusManyAt(ctx context.Context, names []string) (map[string]uni
 const minCPUSampleWindow = 100 * time.Millisecond
 
 // step moves every command along: reads running units, admits queued
-// commands, holds them to their time limits, stops orphaned attached commands.
+// commands, holds them to their time limits, stops those that sit idle on
+// much of the node's memory, stops orphaned attached commands.
 func (e *Engine) step(ctx context.Context) {
 	e.mu.Lock()
 	var active []*command
@@ -523,6 +524,7 @@ func (e *Engine) step(ctx context.Context) {
 	e.settleBench(ctx)
 	e.admit(ctx)
 	e.limit(ctx)
+	e.stopIdleHogs(ctx)
 	e.retireVMs(ctx)
 	e.releaseSpentThrowaways()
 	e.maybeStartPendingFreshens(ctx)
@@ -794,6 +796,7 @@ func (e *Engine) observe(ctx context.Context, c *command, st unit.State, sampled
 	e.checkIsolation(c, st.Exited)
 	c.deactivating = st.Loaded && !st.Exited && !st.Running
 	if !st.Exited {
+		e.watchIdle(c, mem.Held(), c.rec.Cgroup != "" && hasMem && !st.Frozen, sampledAt, st.CPUNanos)
 		return
 	}
 	// removeUnit has removed the unit and read the rest of its output.

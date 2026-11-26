@@ -488,6 +488,10 @@ A command that hangs (a deadlocked test) must not hold you, or the node, for hou
   a measurement (`--bench`) is never paused, so takes only `--hard-limit`.
 - A paused command gives back its guaranteed memory (`--mem-low`); resumed, it runs at once,
   swapping back in what it must.
+- **Idle on much memory**: a running command that holds over a quarter of the node's memory (in
+  RAM or swap) for 5 minutes while using under 0.1 CPU cores on average is stopped (cancelled) as
+  stuck, whatever its limits; its reason says so. Dev servers (`--port`), interactive (`--tty`)
+  commands and measurements are exempt.
 - An attached run waits only `--wait` (2m) before leaving its command running, detached, which
   drops its soft limit: a soft limit pauses a command only while you wait on it. A long build or
   test suite you expect to take 25 minutes: `--detach --mem 8G --expect 25m`, then

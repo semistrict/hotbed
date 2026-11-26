@@ -277,8 +277,9 @@ type Units struct {
 	units  map[string]*proc
 	specs  map[string]unit.Spec
 	cores  float64
-	swap   map[string]int64 // by unit name
-	anon   map[string]int64 // by unit name
+	cpu    map[string]time.Duration // by unit name, beside cores
+	swap   map[string]int64         // by unit name
+	anon   map[string]int64         // by unit name
 	execs  []Exec
 	closed bool
 	wg     sync.WaitGroup
@@ -323,6 +324,18 @@ func (u *Units) SetCores(cores float64) {
 	u.mu.Lock()
 	defer u.mu.Unlock()
 	u.cores = cores
+}
+
+// AddCPU has unit name report d more CPU time used, beside what SetCores
+// has every command use as wall-clock time passes: it moves with a test's
+// clock where cores cannot.
+func (u *Units) AddCPU(name string, d time.Duration) {
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	if u.cpu == nil {
+		u.cpu = map[string]time.Duration{}
+	}
+	u.cpu[name] += d
 }
 
 // Spec is what the unit name was started with, after it ended too.
@@ -530,7 +543,7 @@ func (u *Units) stateLocked(name string, now time.Time) unit.State {
 		ExitCode: p.code, Signal: p.signal, Result: p.result, OOMKilled: p.oomKilled,
 		PID:    p.cmd.Process.Pid,
 		Cgroup: "/hotbed.slice/" + name + ".service", Memory: 64 << 20,
-		CPUNanos: uint64(u.cores * float64(elapsed)),
+		CPUNanos: uint64(u.cores*float64(elapsed)) + uint64(u.cpu[name]),
 	}
 }
 
