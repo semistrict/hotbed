@@ -1,9 +1,13 @@
 package guestd
 
 import (
+	"context"
 	"os"
 	"path/filepath"
+	"sync/atomic"
 	"testing"
+
+	guestdv1 "github.com/semistrict/hotbed/internal/gen/guestd/v1"
 )
 
 func TestParseMeminfoSwapTotal(t *testing.T) {
@@ -85,4 +89,61 @@ func TestPlanReclaimSwaplessVsSwapped(t *testing.T) {
 			t.Fatalf("planReclaim(swapped) = (%q, %v), want (\"536870912\", true)", payload, ok)
 		}
 	})
+}
+
+func TestReclaimSkipsSyncWhileCommandRunning(t *testing.T) {
+	srv, err := NewServer(ServerConfig{
+		WorkDir:  t.TempDir(),
+		StateDir: t.TempDir(),
+		RunDir:   t.TempDir(),
+	})
+	if err != nil {
+		t.Fatalf("NewServer: %v", err)
+	}
+	var syncs atomic.Int32
+	srv.syncFS = func() { syncs.Add(1) }
+
+	ctx := context.Background()
+
+	// Idle VM (no commands): sync runs.
+	if _, err := srv.Reclaim(ctx, &guestdv1.ReclaimRequest{}); err != nil {
+		t.Fatalf("Reclaim(idle): %v", err)
+	}
+	if got := syncs.Load(); got != 1 {
+		t.Fatalf("syncs on idle VM = %d, want 1", got)
+	}
+
+	// Active running command: proactive Reclaim skips blocking global sync.
+	mc := &managedCmd{id: "c1", state: guestdv1.CommandState_COMMAND_STATE_RUNNING}
+	srv.mu.Lock()
+	srv.cmds["c1"] = mc
+	srv.mu.Unlock()
+	if _, err := srv.Reclaim(ctx, &guestdv1.ReclaimRequest{}); err != nil {
+		t.Fatalf("Reclaim(running): %v", err)
+	}
+	if got := syncs.Load(); got != 1 {
+		t.Fatalf("syncs while command running = %d, want 1 (skipped)", got)
+	}
+
+	// Frozen (paused) command: sync runs.
+	mc.mu.Lock()
+	mc.state = guestdv1.CommandState_COMMAND_STATE_FROZEN
+	mc.mu.Unlock()
+	if _, err := srv.Reclaim(ctx, &guestdv1.ReclaimRequest{Id: "c1"}); err != nil {
+		t.Fatalf("Reclaim(frozen): %v", err)
+	}
+	if got := syncs.Load(); got != 2 {
+		t.Fatalf("syncs while command frozen = %d, want 2", got)
+	}
+
+	// Exited command: sync runs.
+	mc.mu.Lock()
+	mc.state = guestdv1.CommandState_COMMAND_STATE_EXITED
+	mc.mu.Unlock()
+	if _, err := srv.Reclaim(ctx, &guestdv1.ReclaimRequest{}); err != nil {
+		t.Fatalf("Reclaim(exited): %v", err)
+	}
+	if got := syncs.Load(); got != 3 {
+		t.Fatalf("syncs after command exited = %d, want 3", got)
+	}
 }
