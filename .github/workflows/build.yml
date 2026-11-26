@@ -11,10 +11,13 @@ on:
 permissions:
   contents: write
 
-# Builds publish in the order they were pushed.
+# Builds publish in the order they were pushed, every push its own run: GitHub keeps one pending
+# run a group by default, a newer push replacing (cancelling) it, so a push's run was often
+# cancelled before it began; `queue: max` holds up to 100 pending runs, run one after another.
 concurrency:
   group: build
   cancel-in-progress: false
+  queue: max
 
 jobs:
   test-linux:
