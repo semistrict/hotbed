@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"io"
 	"slices"
 	"strings"
@@ -148,6 +149,9 @@ func TestMCPServerIsASession(t *testing.T) {
 	session := added.Questions[0].Asked.Session
 	if session == "" || added.Questions[0].Project != "test" {
 		t.Fatalf("question asked as %q in project %q, want the server's session in the tests' project", session, added.Questions[0].Project)
+	}
+	if want := c.cockpit().base + "/questions/" + fmt.Sprint(added.Questions[0].Id); added.Questions[0].CockpitUrl != want {
+		t.Errorf("question_add's question links to %q, want its page %s", added.Questions[0].CockpitUrl, want)
 	}
 	var current sessionBinding
 	c.ok(&current, "session", "current")

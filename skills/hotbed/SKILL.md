@@ -185,6 +185,9 @@ hotbed question outbox           # answers waiting for an agent
 hotbed question ack 12           # you read it and acted on it: it is handled
 ```
 
+- **Send the user its link.** Each question `question add` returns carries its cockpit page
+  (`cockpitUrl`, printed under it), where the user answers it: when you want an answer, put the
+  link and the question in plain words in your reply, not just its number.
 - **Poll before you assume no answer.** The user answers whenever they like; an answer reaches
   you only through `hotbed poll`. Before you end your turn, commit, or conclude the user has not
   answered, poll. Every question command's response carries a `reminder` saying so.

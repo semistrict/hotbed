@@ -11,7 +11,7 @@ import { OrganizationPage } from "./pages/Organization";
 import { OverviewPage } from "./pages/Overview";
 import { ProjectsPage } from "./pages/Projects";
 import { MemoriesPage, MemoryDetailPage, type MemoriesSearch } from "./pages/Memories";
-import { QuestionsPage, type QuestionsSearch } from "./pages/Questions";
+import { QuestionDetailPage, QuestionsPage, type QuestionsSearch } from "./pages/Questions";
 import { ReviewPage } from "./pages/Review";
 import { ReviewsPage } from "./pages/Reviews";
 import { SessionPage } from "./pages/Session";
@@ -42,6 +42,7 @@ const questions = createRoute({
     sort: typeof s.sort === "string" && SORTS.includes(s.sort) ? (s.sort as QuestionsSearch["sort"]) : undefined,
   }),
 });
+const questionDetail = createRoute({ getParentRoute: () => root, path: "/questions/$id", component: QuestionDetailPage });
 const MEMORY_TABS = ["active", "history", "all"];
 const MEMORY_SCOPES = ["all", "global", "project"];
 const MEMORY_MODES = ["all", "always", "on-demand"];
@@ -167,7 +168,7 @@ const history = createRoute({
   },
 });
 
-const routeTree = root.addChildren([projects, sessions, session, questions, memories, memoryDetail, reviews, review, schedules, overview, organization, settings, nodes, node, daemonLogs, workspaces, workspace, commands, command, history]);
+const routeTree = root.addChildren([projects, sessions, session, questions, questionDetail, memories, memoryDetail, reviews, review, schedules, overview, organization, settings, nodes, node, daemonLogs, workspaces, workspace, commands, command, history]);
 
 export const router = createRouter({ routeTree, defaultPreload: "intent", scrollRestoration: true });
 

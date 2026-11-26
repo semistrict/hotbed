@@ -22783,8 +22783,12 @@ type Question struct {
 	// T3CODE_THREAD_ID when asked, or resolved from the asking session's
 	// t3code_thread_id).
 	T3CodeThreadId string `protobuf:"bytes,19,opt,name=t3code_thread_id,json=t3codeThreadId,proto3" json:"t3code_thread_id,omitempty"`
-	unknownFields  protoimpl.UnknownFields
-	sizeCache      protoimpl.SizeCache
+	// Its page in the cockpit, where the user answers it. The CLI and its
+	// MCP tools fill it from the controller they call (cmd/hotbed/cockpit.go);
+	// the API leaves it empty.
+	CockpitUrl    string `protobuf:"bytes,20,opt,name=cockpit_url,json=cockpitUrl,proto3" json:"cockpit_url,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *Question) Reset() {
@@ -22946,6 +22950,13 @@ func (x *Question) GetReminder() string {
 func (x *Question) GetT3CodeThreadId() string {
 	if x != nil {
 		return x.T3CodeThreadId
+	}
+	return ""
+}
+
+func (x *Question) GetCockpitUrl() string {
+	if x != nil {
+		return x.CockpitUrl
 	}
 	return ""
 }
@@ -31776,7 +31787,7 @@ const file_hotbed_v1_hotbed_proto_rawDesc = "" +
 	"\x04head\x18\x04 \x01(\tR\x04head\x12\x1f\n" +
 	"\vdirty_files\x18\x05 \x01(\x05R\n" +
 	"dirtyFiles\x12\x14\n" +
-	"\x05dirty\x18\x06 \x03(\tR\x05dirty\"\xe7\x05\n" +
+	"\x05dirty\x18\x06 \x03(\tR\x05dirty\"\x88\x06\n" +
 	"\bQuestion\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\x05R\x02id\x12)\n" +
 	"\x06prompt\x18\x02 \x01(\v2\x11.hotbed.v1.PromptR\x06prompt\x12.\n" +
@@ -31799,7 +31810,9 @@ const file_hotbed_v1_hotbed_proto_rawDesc = "" +
 	"\x04repo\x18\x10 \x01(\tR\x04repo\x12\x1a\n" +
 	"\brevision\x18\x11 \x01(\x03R\brevision\x12\x1f\n" +
 	"\breminder\x18\x12 \x01(\tH\x00R\breminder\x88\x01\x01\x12(\n" +
-	"\x10t3code_thread_id\x18\x13 \x01(\tR\x0et3codeThreadIdB\v\n" +
+	"\x10t3code_thread_id\x18\x13 \x01(\tR\x0et3codeThreadId\x12\x1f\n" +
+	"\vcockpit_url\x18\x14 \x01(\tR\n" +
+	"cockpitUrlB\v\n" +
 	"\t_reminder\"\x89\x01\n" +
 	"\x0eQuestionChange\x12\x10\n" +
 	"\x03seq\x18\x01 \x01(\x03R\x03seq\x12\x12\n" +
@@ -32761,14 +32774,16 @@ const file_hotbed_v1_hotbed_proto_rawDesc = "" +
 	"\vGetSchedule\x12\x1d.hotbed.v1.GetScheduleRequest\x1a\x1b.hotbed.v1.ScheduledCommand\"\x03\x90\x02\x02\x12U\n" +
 	"\x0eDeleteSchedule\x12 .hotbed.v1.DeleteScheduleRequest\x1a!.hotbed.v1.DeleteScheduleResponse\x12E\n" +
 	"\vRunSchedule\x12\x1d.hotbed.v1.RunScheduleRequest\x1a\x17.hotbed.v1.ScheduledRun\x12M\n" +
-	"\rPauseSchedule\x12\x1f.hotbed.v1.PauseScheduleRequest\x1a\x1b.hotbed.v1.ScheduledCommand2\xdf\x1d\n" +
-	"\x0fQuestionService\x12\x82\x02\n" +
-	"\fAddQuestions\x12\x1e.hotbed.v1.AddQuestionsRequest\x1a\x1f.hotbed.v1.AddQuestionsResponse\"\xb0\x01\x82\xb5\x18\xab\x01\n" +
-	"\fquestion add\x18\x012\x00b\x96\x01{{range .questions}}#{{.id}}  {{state .state}}  rev={{.revision}}  {{with .prompt}}{{short 72 .question}}{{end}}\n" +
-	"{{end}}{{with .reminder}}{{.}}{{end}}\x12\xe8\x01\n" +
-	"\fEditQuestion\x12\x1e.hotbed.v1.EditQuestionRequest\x1a\x13.hotbed.v1.Question\"\xa2\x01\x82\xb5\x18\x9d\x01\n" +
+	"\rPauseSchedule\x12\x1f.hotbed.v1.PauseScheduleRequest\x1a\x1b.hotbed.v1.ScheduledCommand2\x80\x1f\n" +
+	"\x0fQuestionService\x12\xa9\x02\n" +
+	"\fAddQuestions\x12\x1e.hotbed.v1.AddQuestionsRequest\x1a\x1f.hotbed.v1.AddQuestionsResponse\"\xd7\x01\x82\xb5\x18\xd2\x01\n" +
+	"\fquestion add\x18\x012\x00b\xbd\x01{{range .questions}}#{{.id}}  {{state .state}}  rev={{.revision}}  {{with .prompt}}{{short 72 .question}}{{end}}{{with .cockpitUrl}}\n" +
+	"      {{.}}{{end}}\n" +
+	"{{end}}{{with .reminder}}{{.}}{{end}}\x12\x90\x02\n" +
+	"\fEditQuestion\x12\x1e.hotbed.v1.EditQuestionRequest\x1a\x13.hotbed.v1.Question\"\xca\x01\x82\xb5\x18\xc5\x01\n" +
 	"\rquestion edit\x18\x012\x16\n" +
-	"\x06prompt\x12\fEditedPromptbr#{{.id}}  {{state .state}}  rev={{.revision}}  {{with .prompt}}{{.question}}{{end}}{{with .reminder}}\n" +
+	"\x06prompt\x12\fEditedPromptb\x99\x01#{{.id}}  {{state .state}}  rev={{.revision}}  {{with .prompt}}{{.question}}{{end}}{{with .cockpitUrl}}\n" +
+	"      {{.}}{{end}}{{with .reminder}}\n" +
 	"{{.}}{{end}}\x12\xac\x01\n" +
 	"\x0eDeleteQuestion\x12 .hotbed.v1.DeleteQuestionRequest\x1a\x13.hotbed.v1.Question\"c\x82\xb5\x18_\n" +
 	"\vquestion rm\x18\x01X\x01bL#{{.id}}  {{state .state}}  rev={{.revision}}{{with .reminder}}\n" +
@@ -32787,23 +32802,25 @@ const file_hotbed_v1_hotbed_proto_rawDesc = "" +
 	"{{end}}{{end}}{{with .reminder}}{{.}}{{end}}\x90\x02\x02\x12\xf6\x01\n" +
 	"\x14ListQuestionProjects\x12&.hotbed.v1.ListQuestionProjectsRequest\x1a'.hotbed.v1.ListQuestionProjectsResponse\"\x8c\x01\x82\xb5\x18\x84\x01\n" +
 	"\x11question projectsP\x01bm{{range .projects}}{{pad 18 .name}}  open={{.open}}  outbox={{.outbox}}\n" +
-	"{{end}}{{with .reminder}}{{.}}{{end}}\x90\x02\x02\x12\xe4\x03\n" +
-	"\vGetQuestion\x12\x1d.hotbed.v1.GetQuestionRequest\x1a\x13.hotbed.v1.Question\"\xa0\x03\x82\xb5\x18\x98\x03\n" +
-	"\rquestion showP\x01b\x84\x03#{{.id}}  {{state .state}}  rev={{.revision}}  {{with .prompt}}{{.question}}{{end}}{{if .project}}\n" +
+	"{{end}}{{with .reminder}}{{.}}{{end}}\x90\x02\x02\x12\x8e\x04\n" +
+	"\vGetQuestion\x12\x1d.hotbed.v1.GetQuestionRequest\x1a\x13.hotbed.v1.Question\"\xca\x03\x82\xb5\x18\xc2\x03\n" +
+	"\rquestion showP\x01b\xae\x03#{{.id}}  {{state .state}}  rev={{.revision}}  {{with .prompt}}{{.question}}{{end}}{{if .project}}\n" +
 	"project  {{.project}}{{end}}{{with .asked}}{{if .session}}\n" +
 	"session  {{.session}}{{end}}{{end}}{{if .t3codeThreadId}}\n" +
 	"thread   {{.t3codeThreadId}}{{end}}{{if .answer}}\n" +
-	"answer   {{join \", \" .answer.picked}}{{if .answer.other}} ({{.answer.other}}){{end}}{{end}}{{with .reminder}}\n" +
+	"answer   {{join \", \" .answer.picked}}{{if .answer.other}} ({{.answer.other}}){{end}}{{end}}{{with .cockpitUrl}}\n" +
+	"link     {{.}}{{end}}{{with .reminder}}\n" +
 	"{{.}}{{end}}\x90\x02\x02\x12\xae\x01\n" +
 	"\x0eAnswerQuestion\x12 .hotbed.v1.AnswerQuestionRequest\x1a\x13.hotbed.v1.Question\"e\x82\xb5\x18a\n" +
 	"\x0fquestion answer\x18\x01bL#{{.id}}  {{state .state}}  rev={{.revision}}{{with .reminder}}\n" +
 	"{{.}}{{end}}\x12\xb1\x01\n" +
 	"\x0fDismissQuestion\x12!.hotbed.v1.DismissQuestionRequest\x1a\x13.hotbed.v1.Question\"f\x82\xb5\x18b\n" +
 	"\x10question dismiss\x18\x01bL#{{.id}}  {{state .state}}  rev={{.revision}}{{with .reminder}}\n" +
-	"{{.}}{{end}}\x12\xef\x01\n" +
-	"\x0eReviseQuestion\x12 .hotbed.v1.ReviseQuestionRequest\x1a\x13.hotbed.v1.Question\"\xa5\x01\x82\xb5\x18\xa0\x01\n" +
+	"{{.}}{{end}}\x12\x97\x02\n" +
+	"\x0eReviseQuestion\x12 .hotbed.v1.ReviseQuestionRequest\x1a\x13.hotbed.v1.Question\"\xcd\x01\x82\xb5\x18\xc8\x01\n" +
 	"\x0fquestion revise\x18\x012\x17\n" +
-	"\x06prompt\x12\rRevisedPromptbr#{{.id}}  {{state .state}}  rev={{.revision}}  {{with .prompt}}{{.question}}{{end}}{{with .reminder}}\n" +
+	"\x06prompt\x12\rRevisedPromptb\x99\x01#{{.id}}  {{state .state}}  rev={{.revision}}  {{with .prompt}}{{.question}}{{end}}{{with .cockpitUrl}}\n" +
+	"      {{.}}{{end}}{{with .reminder}}\n" +
 	"{{.}}{{end}}\x12\xae\x01\n" +
 	"\x0eReopenQuestion\x12 .hotbed.v1.ReopenQuestionRequest\x1a\x13.hotbed.v1.Question\"e\x82\xb5\x18a\n" +
 	"\x0fquestion reopen\x18\x01bL#{{.id}}  {{state .state}}  rev={{.revision}}{{with .reminder}}\n" +

@@ -3744,7 +3744,7 @@ service QuestionService {
       name: "question add"
       session: true
       input: {}
-      format: "{{range .questions}}#{{.id}}  {{state .state}}  rev={{.revision}}  {{with .prompt}}{{short 72 .question}}{{end}}\n{{end}}{{with .reminder}}{{.}}{{end}}"
+      format: "{{range .questions}}#{{.id}}  {{state .state}}  rev={{.revision}}  {{with .prompt}}{{short 72 .question}}{{end}}{{with .cockpitUrl}}\n      {{.}}{{end}}\n{{end}}{{with .reminder}}{{.}}{{end}}"
     };
   }
   // Rewrite an open question: one question's JSON on stdin or --file, bare
@@ -3757,7 +3757,7 @@ service QuestionService {
         field: "prompt"
         hook: "EditedPrompt"
       }
-      format: "#{{.id}}  {{state .state}}  rev={{.revision}}  {{with .prompt}}{{.question}}{{end}}{{with .reminder}}\n{{.}}{{end}}"
+      format: "#{{.id}}  {{state .state}}  rev={{.revision}}  {{with .prompt}}{{.question}}{{end}}{{with .cockpitUrl}}\n      {{.}}{{end}}{{with .reminder}}\n{{.}}{{end}}"
     };
   }
   // Delete a question that is no longer needed, whichever session asked
@@ -3819,7 +3819,7 @@ service QuestionService {
     option (command) = {
       name: "question show"
       read_only: true
-      format: "#{{.id}}  {{state .state}}  rev={{.revision}}  {{with .prompt}}{{.question}}{{end}}{{if .project}}\nproject  {{.project}}{{end}}{{with .asked}}{{if .session}}\nsession  {{.session}}{{end}}{{end}}{{if .t3codeThreadId}}\nthread   {{.t3codeThreadId}}{{end}}{{if .answer}}\nanswer   {{join \", \" .answer.picked}}{{if .answer.other}} ({{.answer.other}}){{end}}{{end}}{{with .reminder}}\n{{.}}{{end}}"
+      format: "#{{.id}}  {{state .state}}  rev={{.revision}}  {{with .prompt}}{{.question}}{{end}}{{if .project}}\nproject  {{.project}}{{end}}{{with .asked}}{{if .session}}\nsession  {{.session}}{{end}}{{end}}{{if .t3codeThreadId}}\nthread   {{.t3codeThreadId}}{{end}}{{if .answer}}\nanswer   {{join \", \" .answer.picked}}{{if .answer.other}} ({{.answer.other}}){{end}}{{end}}{{with .cockpitUrl}}\nlink     {{.}}{{end}}{{with .reminder}}\n{{.}}{{end}}"
     };
   }
   // Answer a question for the user, which puts it in the outbox; or change
@@ -3854,7 +3854,7 @@ service QuestionService {
         field: "prompt"
         hook: "RevisedPrompt"
       }
-      format: "#{{.id}}  {{state .state}}  rev={{.revision}}  {{with .prompt}}{{.question}}{{end}}{{with .reminder}}\n{{.}}{{end}}"
+      format: "#{{.id}}  {{state .state}}  rev={{.revision}}  {{with .prompt}}{{.question}}{{end}}{{with .cockpitUrl}}\n      {{.}}{{end}}{{with .reminder}}\n{{.}}{{end}}"
     };
   }
   // Return an answered, dismissed or handled question to the user, open
@@ -4034,6 +4034,10 @@ message Question {
   // T3CODE_THREAD_ID when asked, or resolved from the asking session's
   // t3code_thread_id).
   string t3code_thread_id = 19;
+  // Its page in the cockpit, where the user answers it. The CLI and its
+  // MCP tools fill it from the controller they call (cmd/hotbed/cockpit.go);
+  // the API leaves it empty.
+  string cockpit_url = 20;
 }
 
 // One change to a question, as its history keeps it.

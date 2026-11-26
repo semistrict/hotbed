@@ -1,7 +1,9 @@
 package main
 
 import (
+	"fmt"
 	"slices"
+	"strings"
 	"testing"
 
 	"google.golang.org/protobuf/reflect/protoreflect"
@@ -36,7 +38,7 @@ func TestEveryCockpitURLHasAPage(t *testing.T) {
 	}
 	visit(pb.File_hotbed_v1_hotbed_proto.Messages())
 	slices.Sort(with)
-	if want := []string{"Command", "FinishedCommand", "Memory", "Node", "Session", "SessionWorkspace", "Workspace"}; !slices.Equal(with, want) {
+	if want := []string{"Command", "FinishedCommand", "Memory", "Node", "Question", "Session", "SessionWorkspace", "Workspace"}; !slices.Equal(with, want) {
 		t.Errorf("messages with a cockpit_url = %v, want %v", with, want)
 	}
 	if got := c.node("asahi mbp"); got != "http://ubu1:7120/nodes/asahi%20mbp" {
@@ -144,6 +146,23 @@ func TestOutputsCarryCockpitURLs(t *testing.T) {
 		len(snap.Workspaces) != 1 || snap.Workspaces[0].CockpitUrl != base+"/workspaces/"+ws.Id ||
 		len(snap.Nodes) != 1 || snap.Nodes[0].CockpitUrl != base+"/nodes/asahimbp" {
 		t.Errorf("snapshot sessions %v, workspaces %v, nodes %v", snap.Sessions, snap.Workspaces, snap.Nodes)
+	}
+
+	// A question links to its own page, and question add prints the link.
+	added := &pb.AddQuestionsResponse{}
+	c.okIn(storeQuestion, added, "question", "add", "-s", S)
+	qURL := fmt.Sprintf("%s/questions/%d", base, added.Questions[0].GetId())
+	if len(added.Questions) != 1 || added.Questions[0].CockpitUrl != qURL {
+		t.Errorf("question add = %v, want it to link to %s", added.Questions, qURL)
+	}
+	shown := &pb.Question{}
+	c.ok(shown, "question", "show", fmt.Sprint(added.Questions[0].GetId()))
+	if shown.CockpitUrl != qURL {
+		t.Errorf("question show: cockpitUrl %q, want %s", shown.CockpitUrl, qURL)
+	}
+	code, text, stderr := c.hotbedIn(storeQuestion, "question", "add", "-s", S)
+	if want := fmt.Sprintf("%s/questions/%d\n", base, added.Questions[0].GetId()+1); code != exitOK || !strings.Contains(text, "\n      "+want) {
+		t.Errorf("question add printed %q (stderr %q, exit %d), want the question's link %q on its own line", text, stderr, code, want)
 	}
 
 	var released releaseResult

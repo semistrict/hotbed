@@ -533,6 +533,8 @@ export interface Api {
   nodeProfile(node: string, query?: ProfileQuery): Promise<CommandProfile>;
   daemonLogs(query?: DaemonLogsQuery): Promise<GetDaemonLogsResponse>;
   questions(filter: QuestionFilter): Promise<ListQuestionsResponse>;
+  /** One question, with its history. */
+  question(id: number): Promise<Question>;
   questionHistory(id: number): Promise<QuestionChange[]>;
   answerQuestion(id: number, answer: AnswerInput): Promise<Question>;
   dismissQuestion(id: number, reason: string): Promise<Question>;

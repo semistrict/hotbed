@@ -179,6 +179,7 @@ export function createConnectApi(
         states,
         order,
       }),
+    question: (id) => questions.getQuestion({ id }),
     questionHistory: async (id) => (await questions.getQuestion({ id })).history,
     answerQuestion: (id, answer) => questions.answerQuestion({ id, answer }),
     dismissQuestion: (id, reason) => questions.dismissQuestion({ id, reason }),

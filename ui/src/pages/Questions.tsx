@@ -1,5 +1,5 @@
 import { useIsMutating, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { useNavigate, useSearch } from "@tanstack/react-router";
+import { Link, useNavigate, useParams, useSearch } from "@tanstack/react-router";
 import { ChevronRightIcon } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState, type DragEvent } from "react";
 import { Alert, AlertDescription } from "@/components/ui/alert";
@@ -150,6 +150,35 @@ function Questions({ s }: { s: Snapshot }) {
         <QuestionList s={s} questions={questions} now={now} movable={movable} onMove={(id, before) => move.mutate({ id, before })} />
       )}
       {tab === "inbox" && !movable && questions.length > 1 && <p className="font-mono text-[11px] text-faint">Sort by your order to rearrange the inbox.</p>}
+    </div>
+  );
+}
+
+/** One question on a page of its own: where a link an agent sends leads. */
+export function QuestionDetailPage() {
+  const { id } = useParams({ from: "/questions/$id" });
+  const { data: s } = useScopedSnapshot();
+  // Under ["questions"], so what an answer refreshes includes it.
+  const q = useQuery({ queryKey: ["questions", "one", id], queryFn: () => api.question(Number(id)), refetchInterval: 2000 });
+  if (!s) return null;
+  return (
+    <div className="space-y-6">
+      <PageTitle
+        title={`Question #${id}`}
+        sub="What an agent asked you. Answer it here; the answer waits in the outbox until the agent reads it."
+        right={
+          <Link to="/questions" className="inline-block rounded-lg border border-border px-3 py-1.5 font-mono text-[11.5px] text-muted-foreground hover:border-border-strong hover:text-foreground">
+            ← all questions
+          </Link>
+        }
+      />
+      {q.isError && (
+        <Alert variant="destructive" className="rounded-xl border-critical/40 bg-card px-4 py-2.5 font-mono text-[11.5px]">
+          <AlertDescription className="text-[11.5px] text-critical">Could not load question #{id}: {String(q.error)}</AlertDescription>
+        </Alert>
+      )}
+      {q.isPending && <div className="py-16 text-center font-mono text-[12px] text-muted-foreground">loading question #{id}…</div>}
+      {q.data && <QuestionCard s={s} q={q.data} now={Number(s.now)} delay={0} mover={null} />}
     </div>
   );
 }
@@ -365,7 +394,9 @@ function QuestionCard({
         <div className="min-w-0 flex-1 space-y-3">
           <header className="flex flex-wrap items-baseline gap-x-2.5 gap-y-1 sm:gap-x-3">
             <span className="eyebrow text-foreground">{prompt?.header ?? ""}</span>
-            <span className="font-mono text-[10.5px] text-faint">#{q.id}</span>
+            <Link to="/questions/$id" params={{ id: String(q.id) }} className="font-mono text-[10.5px] text-faint hover:text-foreground" title="This question's own page">
+              #{q.id}
+            </Link>
             {showProject && <ProjectTag name={q.project} />}
             {q.repo && <span className="font-mono text-[10.5px] text-muted-foreground" title={q.repo}>{remoteName(q.repo)}</span>}
             <span className={`font-mono text-[10.5px] ${tag.className}`}>{tag.text}</span>
