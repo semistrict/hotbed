@@ -147,6 +147,9 @@ export interface WorkspaceRow {
 	node: string;
 	agent: string;
 	released: boolean;
+	// A throwaway workspace (hotbed run --fork): never the session's
+	// workspace on its node.
+	throwaway: boolean;
 }
 
 export interface NodeStateView {
@@ -1636,16 +1639,18 @@ export class ControllerStore {
 		nodeId: string,
 		agent: string,
 		nowMs: number,
+		throwaway = false,
 	): boolean {
 		const res = this.sql.exec(
-			`INSERT INTO workspaces (id, session_id, node_id, agent, created_at)
-			 SELECT ?, ?, ?, ?, ?
+			`INSERT INTO workspaces (id, session_id, node_id, agent, created_at, throwaway)
+			 SELECT ?, ?, ?, ?, ?, ?
 			 WHERE EXISTS (SELECT 1 FROM sessions WHERE id = ? AND ended_at IS NULL)`,
 			id,
 			sessionId,
 			nodeId,
 			agent,
 			nowMs,
+			throwaway ? 1 : 0,
 			sessionId,
 		);
 		return res.rowsWritten > 0;
@@ -1657,7 +1662,10 @@ export class ControllerStore {
 
 	getWorkspace(id: string): WorkspaceRow {
 		const rows = this.sql
-			.exec("SELECT id, session_id, node_id, agent, released_at FROM workspaces WHERE id = ?", id)
+			.exec(
+				"SELECT id, session_id, node_id, agent, released_at, throwaway FROM workspaces WHERE id = ?",
+				id,
+			)
 			.toArray();
 		if (rows.length === 0) {
 			throw hotbedError(ErrorCode.NotFound, `no workspace ${id}`);
@@ -1669,13 +1677,14 @@ export class ControllerStore {
 			node: str(r.node_id),
 			agent: str(r.agent),
 			released: r.released_at !== null && r.released_at !== undefined,
+			throwaway: Boolean(r.throwaway),
 		};
 	}
 
 	sessionWorkspaces(sessionId: string): WorkspaceRow[] {
 		return this.sql
 			.exec(
-				"SELECT id, session_id, node_id, agent FROM workspaces WHERE session_id = ? AND released_at IS NULL ORDER BY created_at, id",
+				"SELECT id, session_id, node_id, agent, throwaway FROM workspaces WHERE session_id = ? AND released_at IS NULL ORDER BY created_at, id",
 				sessionId,
 			)
 			.toArray()
@@ -1685,6 +1694,7 @@ export class ControllerStore {
 				node: str(r.node_id),
 				agent: str(r.agent),
 				released: false,
+				throwaway: Boolean(r.throwaway),
 			}));
 	}
 
@@ -2084,12 +2094,13 @@ export class ControllerStore {
 	private noteWorkspace(nodeId: string, ws: Workspace): void {
 		if (!ws.sessionId) return;
 		this.sql.exec(
-			"INSERT OR IGNORE INTO workspaces (id, session_id, node_id, agent, created_at) VALUES (?, ?, ?, ?, ?)",
+			"INSERT OR IGNORE INTO workspaces (id, session_id, node_id, agent, created_at, throwaway) VALUES (?, ?, ?, ?, ?, ?)",
 			ws.id,
 			ws.sessionId,
 			nodeId,
 			ws.agent,
 			Number(ws.createdAt),
+			ws.throwaway ? 1 : 0,
 		);
 		if (ws.forkMillis > 0n) {
 			this.sql.exec(

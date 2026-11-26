@@ -473,7 +473,9 @@ export function createWorkspaceService(ctrl: ControllerContext): {
 						needProbe.push(w);
 						continue;
 					}
-					mine.set(w.node, w.id);
+					// A throwaway workspace is no one's to run in again, and a
+					// throwaway run gets a new workspace wherever it goes.
+					if (!w.throwaway && !req.throwaway) mine.set(w.node, w.id);
 				}
 				if (needRelease.length > 0 || needProbe.length > 0) {
 					return { kind: "reconcile" as const, needRelease, needProbe };
@@ -542,6 +544,7 @@ export function createWorkspaceService(ctrl: ControllerContext): {
 					runtime: reqRuntime,
 					sharedBase,
 					fencingToken,
+					throwaway: req.throwaway,
 				});
 				const ok = ctrl.store.addLiveWorkspace(
 					fwd.id,
@@ -549,6 +552,7 @@ export function createWorkspaceService(ctrl: ControllerContext): {
 					chosen.view.node.id,
 					sess.agent,
 					ctrl.now(),
+					req.throwaway,
 				);
 				if (!ok) {
 					const cur = ctrl.store.getSession(sess.id);

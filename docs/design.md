@@ -239,7 +239,11 @@ steps moved to its project with `cd <repo>` in front, and nothing was rebuilt.
 The controller places every run, not every session: `hotbed run` asks it (`CreateWorkspace` with a
 `Placement`) where to go, and gets the session's workspace on that node, or a new one there. A
 session has at most one workspace per node, of its project, made the first time it runs there,
-all released when it ends. A run names the project's repo it syncs and starts in; one of a repo
+all released when it ends. `hotbed run --fork` is the exception: it gets a throwaway workspace
+(`CreateWorkspaceRequest.throwaway`), always a new one, forked from the base and placed as any
+new workspace is, which is never the session's workspace on its node; its worker releases it,
+with whatever the command left in it, as that one command ends, or once it has sat ready 10
+minutes with no command (its client gave up on it). A run names the project's repo it syncs and starts in; one of a repo
 the project does not hold is refused. The agent's checkout is the truth: each run sends it to the workspace
 it runs in, and whatever earlier commands wrote stays on their node.
 
@@ -308,7 +312,8 @@ or tracing packages.
   boots its own once admitted. `--vm-cpus` and
   `--vm-mem` size a command's VM (else the node's defaults); they size the VM only, and admission
   keeps going by measured use. A workspace's disk is an ephemeral cell, which cladefs never forks
-  (its doc-25), so a VM cannot run on a copy of it.
+  (its doc-25), so a VM cannot run on a copy of it: a command that is not to wait runs with
+  `--fork`, in a throwaway workspace of its own forked from the base (see Placement).
 - **A fixed path.** Inside its root, every project's repos sit at `/work/<repo>`
   and commands start in their repo's checkout (or `/work`). Each command gets a private `/tmp` and
   `/var/tmp` (`<volume>/.tmp/<command>/tmp`) and a private `0700` `XDG_RUNTIME_DIR` at

@@ -1887,7 +1887,7 @@ func (e *Engine) createVMWorkspace(ctx context.Context, req *pb.CreateWorkspaceR
 		Workspace: &pb.Workspace{
 			Id: req.Id, Project: p.Name, BaseId: "vm-base", NodeId: e.cfg.NodeID, Agent: req.Agent,
 			Repos: repos, State: preparing, CreatedAt: now, LastActiveAt: now,
-			SessionId: req.SessionId, SyncHost: req.SyncHost, Runtime: runtime.KindVM,
+			SessionId: req.SessionId, SyncHost: req.SyncHost, Runtime: runtime.KindVM, Throwaway: req.Throwaway,
 			Reason: "preparing Firecracker VM base",
 		},
 		Volume: "ws/" + req.Id, BaseSnapshot: "vm-base",

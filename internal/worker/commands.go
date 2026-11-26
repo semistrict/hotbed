@@ -84,6 +84,10 @@ func (e *Engine) Exec(_ context.Context, req *pb.RunCommandRequest) (*pb.Command
 		return nil, api.Errorf(api.CodeConflict, "workspace %s failed: %s", req.WorkspaceId, w.ws().Reason).
 			WithSuggestion("run again: the controller releases a failed workspace and gives the session a new one")
 	}
+	if ran := w.rec.ThrowawayCommand; ran != "" {
+		return nil, api.Errorf(api.CodeConflict, "workspace %s is throwaway: command %s ran in it, and it goes when that ends", req.WorkspaceId, ran).
+			WithSuggestion("hotbed run --fork gets each command a throwaway workspace of its own")
+	}
 	dir := WorkPath
 	if req.Repo != "" {
 		if repoOf(w.ws(), req.Repo) == nil {
@@ -162,6 +166,9 @@ func (e *Engine) Exec(_ context.Context, req *pb.RunCommandRequest) (*pb.Command
 	w.ws().LastActiveAt = now
 	if w.ws().State != preparing {
 		w.ws().State = activeWS
+	}
+	if w.ws().Throwaway {
+		w.rec.ThrowawayCommand = id
 	}
 	e.saveWorkspace(w, change{what: "active", detail: "running " + id})
 	e.commands[id] = c
@@ -457,6 +464,7 @@ func (e *Engine) step(ctx context.Context) {
 	e.admit(ctx)
 	e.limit(ctx)
 	e.retireVMs(ctx)
+	e.releaseSpentThrowaways()
 	e.maybeStartPendingFreshens(ctx)
 	e.reap(ctx)
 	e.forget()
@@ -2032,6 +2040,56 @@ func (e *Engine) workspaceBusy(id string) bool {
 		}
 	}
 	return false
+}
+
+// unusedThrowawayGrace is how long a ready throwaway workspace waits, from
+// its last sync, for the command it was made for: past it, the client that
+// made it is taken to have given up on it.
+const unusedThrowawayGrace = 10 * time.Minute
+
+// throwawayReleaseRetry is how long after starting to release a throwaway
+// workspace its release is started again, should the first fail.
+const throwawayReleaseRetry = time.Minute
+
+// releaseSpentThrowaways releases, in the background, each throwaway
+// workspace that is done with (throwawaySpentLocked), and again a minute
+// after a release that failed; one a worker restart cut short is done
+// with all the same.
+func (e *Engine) releaseSpentThrowaways() {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	now := e.now()
+	for id, w := range e.workspaces {
+		if !w.ws().Throwaway || w.ws().State == released || now.Before(w.releaseRetryAt) {
+			continue
+		}
+		if why := e.throwawaySpentLocked(w); why != "" {
+			slog.Info("release throwaway workspace", "workspace", id, "why", why)
+			w.releaseRetryAt = now.Add(throwawayReleaseRetry)
+			e.releaseWorkspaceAsyncLocked(id)
+		}
+	}
+}
+
+// throwawaySpentLocked says why throwaway workspace w is done with, or ""
+// while it is not: its command has ended (or been forgotten, long ended),
+// or, with none run in it, it has sat ready, or failed, unused past
+// unusedThrowawayGrace. Call with e.mu held.
+func (e *Engine) throwawaySpentLocked(w *workspace) string {
+	if ran := w.rec.ThrowawayCommand; ran != "" {
+		if c, ok := e.commands[ran]; ok && api.Live(c.cmd().State) {
+			return ""
+		}
+		return "command " + ran + " ended"
+	}
+	ws := w.ws()
+	if (ws.State != idle && ws.State != failedWS) || isSyncInProgress(ws.Reason) || e.workspaceBusy(ws.Id) {
+		return ""
+	}
+	if e.now().Sub(time.UnixMilli(ws.LastActiveAt)) < unusedThrowawayGrace {
+		return ""
+	}
+	return fmt.Sprintf("no command ran in it for %s", unusedThrowawayGrace)
 }
 
 // ranIn names where a command ran: its repo, or its project when it ran in

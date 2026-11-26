@@ -617,3 +617,21 @@ func TestShellTeardownWaitsForClientDisconnect(t *testing.T) {
 		}
 	})
 }
+
+// A throwaway workspace holds its one command and nothing else: no shell
+// opens in it.
+func TestShellRefusesAThrowawayWorkspace(t *testing.T) {
+	now := time.Now()
+	id := staticID{peer: tailnet.Peer{NodeID: "nLaptop", Hostname: "laptop", Login: "ramon@"}, uid: 1000}
+	eng, _, wsID := startShellTestEngine(t, id, &now)
+	eng.mu.Lock()
+	eng.workspaces[wsID].ws().Throwaway = true
+	eng.mu.Unlock()
+
+	_, pub := genTestKey(t)
+	_, err := eng.OpenShell(t.Context(), &pb.OpenShellRequest{WorkspaceId: wsID, PublicKey: pub})
+	want := "workspace " + wsID + " is throwaway: it holds one command, and goes when that ends"
+	if e := api.FromConnect(err); api.CodeOf(err) != api.CodeConflict || e.Message != want {
+		t.Errorf("shell in a throwaway workspace = %v; want CONFLICT %q", err, want)
+	}
+}

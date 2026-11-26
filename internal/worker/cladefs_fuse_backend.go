@@ -1274,7 +1274,7 @@ func (e *Engine) createCladefsFUSEWorkspace(ctx context.Context, req *pb.CreateW
 		Workspace: &pb.Workspace{
 			Id: req.Id, Project: p.Name, BaseId: "cladefs-base", NodeId: e.cfg.NodeID, Agent: req.Agent,
 			Repos: repos, State: preparing, CreatedAt: now, LastActiveAt: now,
-			SessionId: req.SessionId, SyncHost: req.SyncHost, Runtime: runtime.KindCladefs,
+			SessionId: req.SessionId, SyncHost: req.SyncHost, Runtime: runtime.KindCladefs, Throwaway: req.Throwaway,
 			Reason: "preparing cladefs R2 base",
 		},
 		Volume: "ws/" + req.Id, BaseSnapshot: "cladefs-base",

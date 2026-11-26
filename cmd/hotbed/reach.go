@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"strings"
 	"time"
 
@@ -82,12 +83,13 @@ func (w workerClients) command(ctx context.Context, id string) (*pb.Command, err
 	return c, err
 }
 
-// workspaceFor asks the controller where a run of the session goes, with
-// the workspace the session has there (or gets). repo is the project's repo
-// the run syncs and runs in, "" for none; dir is its checkout, which the run
-// syncs first, "" for none. With the controller out of reach it goes where
-// the session last ran on this machine.
-func (f controllerClient) workspaceFor(ctx context.Context, d deps, session, repo string, p *pb.Placement, dir string) (*pb.Workspace, workerClients, error) {
+// workspaceFor asks the controller where a run of req's session goes, with
+// the workspace the session has there (or gets), or a new throwaway one
+// (req.Throwaway). req.Repo is the project's repo the run syncs and runs in,
+// "" for none; req.SyncDir is its checkout, which the run syncs first, ""
+// for none. With the controller out of reach a run goes where the session
+// last ran on this machine; a throwaway one cannot.
+func (f controllerClient) workspaceFor(ctx context.Context, d deps, req *pb.CreateWorkspaceRequest) (*pb.Workspace, workerClients, error) {
 	// CreateWorkspace can legitimately take longer than d.http's 60s timeout
 	// while preparing a base or under heavy worker load (board 7957).
 	cl, err := f.clients(d.stream)
@@ -98,8 +100,8 @@ func (f controllerClient) workspaceFor(ctx context.Context, d deps, session, rep
 	// no cached workspace that satisfies p: otherwise the run goes where it
 	// last did.
 	call := ctx
-	if known, err := loadKnown(d, session); err == nil && known.Last != "" {
-		if k, ok := known.Workspaces[known.Last]; ok && placementFitsSpot(p, k) {
+	if known, err := loadKnown(d, req.SessionId); err == nil && known.Last != "" && !req.Throwaway {
+		if k, ok := known.Workspaces[known.Last]; ok && placementFitsSpot(req.Placement, k) {
 			call = api.WithoutRideOut(ctx)
 		}
 	}
@@ -108,19 +110,29 @@ func (f controllerClient) workspaceFor(ctx context.Context, d deps, session, rep
 		call, cancel = context.WithTimeout(call, createWorkspaceTimeout)
 		defer cancel()
 	}
-	ws, err := createWaking(call, d, cl.workspaces, &pb.CreateWorkspaceRequest{SessionId: session, Repo: repo, Placement: p, SyncDir: dir})
+	ws, err := createWaking(call, d, cl.workspaces, req)
 	switch {
 	case err == nil:
-	case api.CodeOf(err) == api.CodeControllerUnreachable:
-		return f.lastUsedFor(ctx, d, session, p, err)
+	case api.CodeOf(err) == api.CodeControllerUnreachable && !req.Throwaway:
+		return f.lastUsedFor(ctx, d, req.SessionId, req.Placement, err)
 	default:
 		return nil, workerClients{}, err
+	}
+	if req.Throwaway && !ws.Throwaway {
+		// A controller or worker older than --fork: what it gave may be
+		// the session's own workspace, not to be run in as a throwaway.
+		return nil, workerClients{}, api.Errorf(api.CodePlatformNotSupported, "%s gave workspace %s, which is not throwaway: it predates hotbed run --fork", ws.Node, ws.Id).
+			WithSuggestion("run without --fork, or once the controller and workers run this build (hotbed nodes)")
 	}
 	w, err := f.reach(d, ws.NodeAddr)
 	if err != nil {
 		return nil, workerClients{}, err
 	}
-	remember(d, session, ws)
+	if ws.Throwaway {
+		rememberWorker(d, req.SessionId, ws)
+	} else {
+		remember(d, req.SessionId, ws)
+	}
 	return ws, w, nil
 }
 
@@ -243,7 +255,7 @@ func (f controllerClient) locate(ctx context.Context, d deps, session, node stri
 		return nil, workerClients{}, err
 	}
 	var found []*pb.Workspace
-	for _, w := range list.Workspaces {
+	for _, w := range ownWorkspaces(list.Workspaces) {
 		if node == "" || w.Node == node {
 			found = append(found, w)
 		}
@@ -441,6 +453,35 @@ func remember(d deps, session string, ws *pb.Workspace) {
 	if err := saveKnown(d, session, k); err != nil {
 		fmt.Fprintf(d.stderr, "hotbed: could not note where %s is: %v\n", ws.Id, err)
 	}
+}
+
+// rememberWorker notes the worker of a session's throwaway workspace, so
+// that its command can be found there before the controller hears of it,
+// unless this machine already knows a workspace of the session there. It
+// is never the workspace last used.
+func rememberWorker(d deps, session string, ws *pb.Workspace) {
+	k, err := loadKnown(d, session)
+	if err != nil {
+		k = known{}
+	}
+	for _, sp := range k.Workspaces {
+		if sp.NodeAddr == ws.NodeAddr {
+			return
+		}
+	}
+	if k.Workspaces == nil {
+		k.Workspaces = map[string]spot{}
+	}
+	k.Workspaces[ws.Id] = spot{NodeAddr: ws.NodeAddr, Node: ws.Node, Project: ws.Project}
+	if err := saveKnown(d, session, k); err != nil {
+		fmt.Fprintf(d.stderr, "hotbed: could not note where %s is: %v\n", ws.Id, err)
+	}
+}
+
+// ownWorkspaces are the session's own workspaces among ws: all but its
+// throwaway ones, which are each one command's.
+func ownWorkspaces(ws []*pb.Workspace) []*pb.Workspace {
+	return slices.DeleteFunc(slices.Clone(ws), func(w *pb.Workspace) bool { return w.Throwaway })
 }
 
 // forget drops a session's released workspace from what this machine

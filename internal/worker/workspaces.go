@@ -89,7 +89,7 @@ func (e *Engine) CreateWorkspace(ctx context.Context, req *pb.CreateWorkspaceReq
 		Workspace: &pb.Workspace{
 			Id: req.Id, Project: p.Name, BaseId: base.Id, NodeId: e.cfg.NodeID, Agent: req.Agent,
 			Repos: reposOf(base), State: preparing, CreatedAt: now, LastActiveAt: now,
-			SessionId: req.SessionId, SyncHost: req.SyncHost, Runtime: wsRuntime,
+			SessionId: req.SessionId, SyncHost: req.SyncHost, Runtime: wsRuntime, Throwaway: req.Throwaway,
 			Reason: fmt.Sprintf("waiting for base %s to freshen", base.Id),
 		},
 		Volume: "ws/" + req.Id, BaseSnapshot: base.Id, Note: note,
@@ -374,9 +374,15 @@ func (e *Engine) ReleaseWorkspaceAsync(id string) {
 		return
 	}
 	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.releaseWorkspaceAsyncLocked(id)
+}
+
+// releaseWorkspaceAsyncLocked is ReleaseWorkspaceAsync, called with e.mu
+// held.
+func (e *Engine) releaseWorkspaceAsyncLocked(id string) {
 	w, ok := e.workspaces[id]
 	if !ok || w.ws().State == released || w.releasing || w.releaseQueued {
-		e.mu.Unlock()
 		return
 	}
 	w.releaseQueued = true
@@ -387,13 +393,12 @@ func (e *Engine) ReleaseWorkspaceAsync(id string) {
 			e.mu.Unlock()
 		}()
 		if err := e.ReleaseWorkspace(bgCtx, id); err != nil && api.CodeOf(err) != api.CodeNotFound && bgCtx.Err() == nil {
-			slog.Error("release workspace of an ended session", "workspace", id, "err", err)
+			slog.Error("release workspace in the background", "workspace", id, "err", err)
 		}
 	})
 	if !started {
 		w.releaseQueued = false
 	}
-	e.mu.Unlock()
 }
 
 func (e *Engine) ReleaseWorkspace(ctx context.Context, id string) (retErr error) {

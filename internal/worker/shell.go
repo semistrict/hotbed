@@ -119,6 +119,10 @@ func (e *Engine) OpenShell(ctx context.Context, req *pb.OpenShellRequest) (*pb.O
 		return nil, api.Errorf(api.CodeWorkspaceFailed, "workspace %s failed: %s", req.WorkspaceId, w.ws().Reason).
 			WithSuggestion("run again: the controller releases a failed workspace and gives the session a new one")
 	}
+	if w.ws().Throwaway {
+		return nil, api.Errorf(api.CodeConflict, "workspace %s is throwaway: it holds one command, and goes when that ends", req.WorkspaceId).
+			WithSuggestion("hotbed shell opens a shell in the session's workspace")
+	}
 	if req.Repo != "" && repoOf(w.ws(), req.Repo) == nil {
 		return nil, api.Errorf(api.CodeInvalidArgs, "workspace %s of project %s has no repo %s", req.WorkspaceId, w.ws().Project, req.Repo).
 			WithSuggestion("hotbed project ls shows each project's repos; hotbed repo add puts a repo in one")

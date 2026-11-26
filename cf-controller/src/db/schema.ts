@@ -180,6 +180,9 @@ export const workspaces = sqliteTable(
 		createdAt: integer("created_at").notNull(),
 		forkMillis: integer("fork_millis"),
 		releasedAt: integer("released_at"),
+		// A throwaway workspace (hotbed run --fork): never the session's
+		// workspace on its node.
+		throwaway: integer("throwaway", { mode: "boolean" }).notNull().default(false),
 	},
 	(t) => [index("workspaces_session").on(t.sessionId), index("workspaces_created").on(t.createdAt)],
 );

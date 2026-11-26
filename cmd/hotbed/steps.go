@@ -83,7 +83,7 @@ func (c *stepAddCmd) Exec(ctx context.Context, d deps) (any, error) {
 	if err != nil {
 		return nil, err
 	}
-	ws, w, err := c.workspaceFor(ctx, d, session, "", &pb.Placement{}, "")
+	ws, w, err := c.workspaceFor(ctx, d, &pb.CreateWorkspaceRequest{SessionId: session, Placement: &pb.Placement{}})
 	if err != nil {
 		return nil, err
 	}

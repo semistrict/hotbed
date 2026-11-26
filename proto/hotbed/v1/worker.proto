@@ -15,6 +15,10 @@ message WorkspaceRecord {
   // Why the base it forks is not up to date, if it is not; its reason once
   // it is ready.
   string note = 4;
+  // Of a throwaway workspace: the one command run in it, from when it was
+  // queued. Its worker releases the workspace once that command has ended,
+  // or has been forgotten.
+  string throwaway_command = 5;
 }
 
 message CommandRecord {

@@ -420,7 +420,7 @@ func TestReachWorkspaceForUsesStreamClientNotShortHTTPTimeout(t *testing.T) {
 
 	f := controllerClient{}
 	f.callController(addr, d)
-	ws, w, err := f.workspaceFor(t.Context(), d, "slow-ws", "app", &pb.Placement{}, "")
+	ws, w, err := f.workspaceFor(t.Context(), d, &pb.CreateWorkspaceRequest{SessionId: "slow-ws", Repo: "app", Placement: &pb.Placement{}})
 	if err != nil {
 		t.Fatalf("workspaceFor with 50ms d.http timeout and 150ms CreateWorkspace failed: %v (stderr=%q)", err, stderr.String())
 	}
@@ -475,7 +475,7 @@ func TestReachWorkspaceForTimesOutOnStuckController(t *testing.T) {
 
 		stuckTimeout(t)
 		start := time.Now()
-		_, _, err := f.workspaceFor(t.Context(), d, "stuck-elk", "app", &pb.Placement{}, "")
+		_, _, err := f.workspaceFor(t.Context(), d, &pb.CreateWorkspaceRequest{SessionId: "stuck-elk", Repo: "app", Placement: &pb.Placement{}})
 		elapsed := time.Since(start)
 		if err == nil {
 			t.Fatal("workspaceFor against stuck controller succeeded, want CONTROLLER_UNREACHABLE")
@@ -520,7 +520,7 @@ func TestReachWorkspaceForTimesOutOnStuckController(t *testing.T) {
 
 		stuckTimeout(t)
 		start := time.Now()
-		ws, _, err := f.workspaceFor(t.Context(), d, "stuck-fallback", "app", &pb.Placement{}, "")
+		ws, _, err := f.workspaceFor(t.Context(), d, &pb.CreateWorkspaceRequest{SessionId: "stuck-fallback", Repo: "app", Placement: &pb.Placement{}})
 		elapsed := time.Since(start)
 		if err != nil {
 			t.Fatalf("workspaceFor fallback failed: %v (stderr=%q)", err, stderr.String())
