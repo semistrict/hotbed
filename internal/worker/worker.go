@@ -135,6 +135,27 @@ func CheckMachine(ctx context.Context, o JoinOptions) (string, error) {
 
 // Join makes o.Dir the state directory of a worker in the cluster that the
 // controller at o.Controller runs.
+// runtimeEnabled says cfg enables a runtime the worker can serve with.
+func runtimeEnabled(cfg statedir.WorkerConfig) bool {
+	return (cfg.VM != nil && cfg.VM.Enabled) || (cfg.CladefsFUSE != nil && cfg.CladefsFUSE.Enabled)
+}
+
+// refreshControllerConfig fetches the controller's effective config for
+// this worker and caches it in dir, as a heartbeat does.
+func refreshControllerConfig(ctx context.Context, cluster hotbedv1connect.ClusterServiceClient, dir, hostname string) (*pb.WorkerConfig, error) {
+	cctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+	resp, err := cluster.GetWorkerConfig(cctx, &pb.GetWorkerConfigRequest{Node: hostname})
+	if err != nil {
+		return nil, err
+	}
+	fresh := resp.GetEffective()
+	if err := SaveControllerConfig(dir, fresh); err != nil {
+		return nil, err
+	}
+	return fresh, nil
+}
+
 func Join(ctx context.Context, o JoinOptions, tn Tailnet, hc *http.Client, check Check) (JoinResult, error) {
 	dir, err := filepath.Abs(o.Dir)
 	if err != nil {
@@ -307,6 +328,18 @@ func Run(ctx context.Context, dir string, cfg statedir.WorkerConfig, tn Tailnet,
 		slog.Warn("load cached controller worker config failed; using local hotbed.json", "err", cerr)
 	}
 	effCfg := ApplyCachedArtifacts(artifacts, runtime.GOARCH, MergeWorkerConfig(cfg, cachedRemote), cachedRemote)
+	if !runtimeEnabled(effCfg) {
+		// The cached config enables no runtime, which a worker cannot serve
+		// without, and heartbeats bring the controller's config only once it
+		// serves: ask the controller for its config now, so turning a runtime
+		// on with hotbed config set reaches a worker that had none.
+		if fresh, err := refreshControllerConfig(ctx, cluster, dir, self.Hostname); err != nil {
+			slog.Warn("fetch controller worker config for a worker with no runtime failed", "err", err)
+		} else {
+			cachedRemote = fresh
+			effCfg = ApplyCachedArtifacts(artifacts, runtime.GOARCH, MergeWorkerConfig(cfg, cachedRemote), cachedRemote)
+		}
+	}
 	follow.ConfigSync = NewConfigSyncer(dir, cfg, cachedRemote, effCfg, artifacts)
 
 	store, err := awaitStorage(ctx, func(ctx context.Context) (storage.Store, error) {
