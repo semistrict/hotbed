@@ -352,6 +352,10 @@ func TestManagerStartReconnectAndStop(t *testing.T) {
 	if inst.VCPUs != 3 || inst.MemMiB != 1536 {
 		t.Fatalf("instance size = %d vCPUs, %d MiB, want 3, 1536", inst.VCPUs, inst.MemMiB)
 	}
+	// It says how long its boot took, step by step, the steps adding up.
+	if b := inst.Boot; b.HealthChecks < 1 || b.Guest <= 0 || b.Total() != b.Prepare+b.Launch+b.Guest {
+		t.Fatalf("instance boot = %+v, want a guest wait and at least one health check", b)
+	}
 	var fcCfg FirecrackerConfig
 	if b, err := os.ReadFile(filepath.Join(inst.Dir, "vm.json")); err != nil {
 		t.Fatalf("read vm.json: %v", err)

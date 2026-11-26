@@ -142,7 +142,7 @@ func TestLiveFirecrackerCladefsEndToEnd(t *testing.T) {
 	if err != nil {
 		t.Fatalf("mgr.Start: %v", err)
 	}
-	t.Logf("VM booted: unit=%s cid=%d tap=%s ip=%s", inst.UnitName, inst.GuestCID, inst.Net.TAPName, inst.Net.GuestIP)
+	t.Logf("VM booted in %s: unit=%s cid=%d tap=%s ip=%s", inst.Boot, inst.UnitName, inst.GuestCID, inst.Net.TAPName, inst.Net.GuestIP)
 
 	// 4. Verify health, tools-disk pivot, cgroup placement, network interface, and freeze/thaw via GuestRuntime.
 	rt := runtime.NewGuestRuntime(&liveResolver{mgr: mgr})
