@@ -149,7 +149,7 @@ func (e *Engine) Pause(ctx context.Context, id string, in Intervention) (*pb.Com
 		c.rec.HeldFor = ""
 		cmd.Timeline = append(cmd.Timeline, &pb.CommandEvent{At: e.nowMs(), What: "paused", Detail: tlNote})
 		e.saveCommand(c, change{
-			what: "paused", detail: tlNote, diagnostics: h.diag,
+			what: "paused", detail: tlNote, out: outbox{diagnostics: h.diag},
 			feed: feed(feedPause, fmt.Sprintf("pause %s · by %s", cmd.Argv, api.Who(h.iv.By)), ref("command", cmd.Id)),
 		})
 	})
@@ -409,10 +409,10 @@ func (e *Engine) diagnose(ctx context.Context, cmd *pb.Command, iv *pb.CommandIn
 }
 
 // boundDiagnostics ensures d encodes to at most maxDiagnosticsBytes (1 MiB) by
-// progressively trimming verbose sections (maps, files, kstacks, stacks,
-// processes) and recording a truncation note in iv.DiagnosticsError. If the
-// payload still exceeds maxDiagnosticsBytes after trimming, it records an
-// error in iv.DiagnosticsError and returns (nil, false).
+// progressively trimming verbose sections (trimToFit, then the inspection or
+// the sample whole) and recording a truncation note in iv.DiagnosticsError.
+// If the payload still exceeds maxDiagnosticsBytes after trimming, it
+// records an error in iv.DiagnosticsError and returns (nil, false).
 func boundDiagnostics(d *pb.CommandDiagnostics, iv *pb.CommandIntervention) (*pb.CommandDiagnostics, bool) {
 	if d == nil {
 		return nil, false
@@ -425,7 +425,6 @@ func boundDiagnostics(d *pb.CommandDiagnostics, iv *pb.CommandIntervention) (*pb
 	}
 	d = proto.Clone(d).(*pb.CommandDiagnostics)
 	d.Intervention = iv
-	var trimmed []string
 	appendErr := func(note string) {
 		if iv.DiagnosticsError == "" {
 			iv.DiagnosticsError = note
@@ -434,127 +433,7 @@ func boundDiagnostics(d *pb.CommandDiagnostics, iv *pb.CommandIntervention) (*pb
 		}
 	}
 	fits := func() bool { return proto.Size(d) <= budget }
-
-	if !fits() {
-		dropped := false
-		if d.Inspect != nil && len(d.Inspect.Maps) > 0 {
-			d.Inspect.Maps = nil
-			dropped = true
-		}
-		if d.Sample != nil {
-			for _, p := range d.Sample.Procs {
-				if p.MemoryMap != nil {
-					p.MemoryMap = nil
-					dropped = true
-				}
-			}
-		}
-		if dropped {
-			trimmed = append(trimmed, "maps")
-		}
-	}
-	if !fits() {
-		dropped := false
-		if d.Inspect != nil && len(d.Inspect.Files) > 0 {
-			d.Inspect.Files = nil
-			dropped = true
-		}
-		if d.Sample != nil {
-			if len(d.Sample.Files) > 0 {
-				d.Sample.Files = nil
-				dropped = true
-			}
-			if len(d.Sample.Locks) > 0 {
-				d.Sample.Locks = nil
-				dropped = true
-			}
-		}
-		if dropped {
-			trimmed = append(trimmed, "files")
-		}
-	}
-	if !fits() {
-		dropped := false
-		if d.Inspect != nil && len(d.Inspect.Kstacks) > 0 {
-			d.Inspect.Kstacks = nil
-			dropped = true
-		}
-		if d.Sample != nil {
-			for _, p := range d.Sample.Procs {
-				for _, th := range p.Threads {
-					if len(th.KernelFrames) > 0 {
-						th.KernelFrames = nil
-						dropped = true
-					}
-				}
-			}
-		}
-		if dropped {
-			trimmed = append(trimmed, "kstacks")
-		}
-	}
-	if !fits() && d.Sample != nil {
-		dropped := false
-		if len(d.Sample.SampledStacks) > 0 {
-			d.Sample.SampledStacks = nil
-			dropped = true
-		}
-		if len(d.Sample.OnCpuStacks) > 0 {
-			d.Sample.OnCpuStacks = nil
-			dropped = true
-		}
-		if len(d.Sample.OnCpuTopFunctions) > 0 {
-			d.Sample.OnCpuTopFunctions = nil
-			dropped = true
-		}
-		if len(d.Sample.Frames) > 0 {
-			d.Sample.Frames = nil
-			dropped = true
-		}
-		for _, p := range d.Sample.Procs {
-			for _, th := range p.Threads {
-				if len(th.UserFrames) > 0 {
-					th.UserFrames = nil
-					dropped = true
-				}
-			}
-		}
-		if dropped {
-			trimmed = append(trimmed, "stacks")
-		}
-	}
-	if !fits() {
-		dropped := false
-		if d.Sample != nil && len(d.Sample.Procs) > 0 {
-			for _, p := range d.Sample.Procs {
-				if len(p.Threads) > 0 {
-					p.Threads = nil
-					dropped = true
-				}
-			}
-			if !fits() {
-				d.Sample.Procs = nil
-				dropped = true
-			}
-		}
-		if !fits() && d.Inspect != nil {
-			if len(d.Inspect.Limits) > 0 {
-				d.Inspect.Limits = nil
-				dropped = true
-			}
-			if len(d.Inspect.AvailableTools) > 0 {
-				d.Inspect.AvailableTools = nil
-				dropped = true
-			}
-			if !fits() && len(d.Inspect.Procs) > 0 {
-				d.Inspect.Procs = nil
-				dropped = true
-			}
-		}
-		if dropped {
-			trimmed = append(trimmed, "processes")
-		}
-	}
+	trimmed := trimToFit(fits, d.Sample, d.Inspect)
 	if !fits() && d.Inspect != nil && d.Sample != nil {
 		origInspect := d.Inspect
 		d.Inspect = nil
@@ -579,6 +458,118 @@ func boundDiagnostics(d *pb.CommandDiagnostics, iv *pb.CommandIntervention) (*pb
 		return nil, false
 	}
 	return d, true
+}
+
+// trimToFit drops the bulkiest parts of sample and inspect (either may be
+// nil), a tier at a time: memory maps, files, kernel stacks, user stacks,
+// then threads and processes, until fits says what holds them is small
+// enough. It returns the tiers it dropped.
+func trimToFit(fits func() bool, sample *pb.ProcessSample, inspect *pb.InspectCommandResponse) []string {
+	var trimmed []string
+	tier := func(name string, drop func() bool) {
+		if !fits() && drop() {
+			trimmed = append(trimmed, name)
+		}
+	}
+	tier("maps", func() bool {
+		dropped := false
+		if inspect != nil && len(inspect.Maps) > 0 {
+			inspect.Maps = nil
+			dropped = true
+		}
+		if sample != nil {
+			for _, p := range sample.Procs {
+				if p.MemoryMap != nil {
+					p.MemoryMap = nil
+					dropped = true
+				}
+			}
+		}
+		return dropped
+	})
+	tier("files", func() bool {
+		dropped := false
+		if inspect != nil && len(inspect.Files) > 0 {
+			inspect.Files = nil
+			dropped = true
+		}
+		if sample != nil {
+			if len(sample.Files) > 0 {
+				sample.Files = nil
+				dropped = true
+			}
+			if len(sample.Locks) > 0 {
+				sample.Locks = nil
+				dropped = true
+			}
+		}
+		return dropped
+	})
+	tier("kstacks", func() bool {
+		dropped := false
+		if inspect != nil && len(inspect.Kstacks) > 0 {
+			inspect.Kstacks = nil
+			dropped = true
+		}
+		if sample != nil {
+			for _, p := range sample.Procs {
+				for _, th := range p.Threads {
+					if len(th.KernelFrames) > 0 {
+						th.KernelFrames = nil
+						dropped = true
+					}
+				}
+			}
+		}
+		return dropped
+	})
+	tier("stacks", func() bool {
+		if sample == nil {
+			return false
+		}
+		dropped := len(sample.SampledStacks) > 0 || len(sample.OnCpuStacks) > 0 || len(sample.OnCpuTopFunctions) > 0 || len(sample.Frames) > 0
+		sample.SampledStacks, sample.OnCpuStacks, sample.OnCpuTopFunctions, sample.Frames = nil, nil, nil, nil
+		for _, p := range sample.Procs {
+			for _, th := range p.Threads {
+				if len(th.UserFrames) > 0 {
+					th.UserFrames = nil
+					dropped = true
+				}
+			}
+		}
+		return dropped
+	})
+	tier("processes", func() bool {
+		dropped := false
+		if sample != nil && len(sample.Procs) > 0 {
+			for _, p := range sample.Procs {
+				if len(p.Threads) > 0 {
+					p.Threads = nil
+					dropped = true
+				}
+			}
+			if !fits() {
+				sample.Procs = nil
+				dropped = true
+			}
+		}
+		if !fits() && inspect != nil {
+			if len(inspect.Limits) > 0 {
+				inspect.Limits = nil
+				dropped = true
+			}
+			if len(inspect.AvailableTools) > 0 {
+				inspect.AvailableTools = nil
+				dropped = true
+			}
+			if !fits() && len(inspect.Procs) > 0 {
+				inspect.Procs = nil
+				dropped = true
+			}
+		}
+		return dropped
+	})
+	return trimmed
 }
 
 // current returns command id as it is.

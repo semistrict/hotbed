@@ -180,6 +180,31 @@ GetCommandDiagnostics is the diagnostics taken of a command as someone stopped o
 | `--seq` |  | Return only the diagnostics for this intervention sequence number (0 for all, paginated). |
 | `--after-seq` |  | Return diagnostics with sequence number strictly greater than this cursor. |
 
+## `samples`
+
+The controller: membership, events, repos and the cockpit's view.
+
+### `hotbed samples ls ID`
+
+ListCommandSamples is the activity samples someone took of a command (SampleCommand), oldest first, without their contents: the controller keeps them, live or long ended. GetCommandSample has each one's.
+
+*MCP tool: `samples_ls`*
+
+| Argument / Flag | Env | Help |
+| --- | --- | --- |
+| `ID` |  | The command's ID. |
+
+### `hotbed samples show ID SEQ`
+
+GetCommandSample is one activity sample someone took of a command, in full.
+
+*MCP tool: `samples_show`*
+
+| Argument / Flag | Env | Help |
+| --- | --- | --- |
+| `ID` |  | The command's ID. |
+| `SEQ` |  | Which of its samples: 1 for its first (hotbed samples ls). |
+
 ## `node`
 
 Inspect or retire individual cluster worker nodes (show, retire).

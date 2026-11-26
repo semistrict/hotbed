@@ -37,6 +37,8 @@ import {
 	SampleSchema,
 	SamplesSchema,
 	SaveCommandDiagnosticsResponseSchema,
+	SaveCommandSampleResponseSchema,
+	ListCommandSamplesResponseSchema,
 	SnapshotSchema,
 	StandbyResponseSchema,
 	StepOnNodeSchema,
@@ -1279,6 +1281,39 @@ export function createClusterService(
 			}
 			ctrl.store.saveCommandDiagnostics(caller.nodeId, d, ctrl.now());
 			return create(SaveCommandDiagnosticsResponseSchema);
+		},
+
+		saveCommandSample(req, ctx) {
+			const caller = getCaller(ctx.values);
+			if (!ctrl.store.hasNode(caller.nodeId)) {
+				throw hotbedError(ErrorCode.NotJoined, `${caller.hostname} has not joined this cluster`);
+			}
+			const s = req.sample;
+			if (!s) throw hotbedError(ErrorCode.InvalidArgs, "sample is required");
+			if (!s.commandId.trim()) throw hotbedError(ErrorCode.InvalidArgs, "command ID is required");
+			if (s.seq <= 0)
+				throw hotbedError(ErrorCode.InvalidArgs, "sample with positive seq is required");
+			ctrl.store.saveCommandSample(caller.nodeId, s, ctrl.now());
+			return create(SaveCommandSampleResponseSchema);
+		},
+
+		listCommandSamples(req) {
+			if (!req.id.trim()) throw hotbedError(ErrorCode.InvalidArgs, "command ID is required");
+			const samples = ctrl.store.listCommandSamples(req.id);
+			if (samples.length === 0) ctrl.store.lookupCommand(req.id);
+			return create(ListCommandSamplesResponseSchema, { samples });
+		},
+
+		getCommandSample(req) {
+			if (!req.id.trim()) throw hotbedError(ErrorCode.InvalidArgs, "command ID is required");
+			if (req.seq <= 0) throw hotbedError(ErrorCode.InvalidArgs, "seq must be positive");
+			const s = ctrl.store.getCommandSample(req.id, req.seq);
+			if (s) return s;
+			ctrl.store.lookupCommand(req.id);
+			throw hotbedError(
+				ErrorCode.NotFound,
+				`command ${req.id} has no sample ${req.seq}`,
+			).withSuggestion(`list its samples (hotbed samples ls ${req.id})`);
 		},
 
 		getCommandDiagnostics(req) {

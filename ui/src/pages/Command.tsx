@@ -1,25 +1,29 @@
-import { useQuery } from "@tanstack/react-query";
-import { Link, useParams, useSearch } from "@tanstack/react-router";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { Link, useNavigate, useParams, useSearch } from "@tanstack/react-router";
 import { type ReactNode, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { api, CommandState, type Command, type CommandEvent, type CommandLimits, type FinishedCommand, type Snapshot } from "../api";
 import { Meter } from "../components/charts/Bars";
 import { SpeedBars } from "../components/charts/SpeedBars";
 import { actsFor, ByHandButtons, ByHandForm, InterventionsCard, type ByHandAction } from "../components/ByHand";
 import { CommandBlock } from "../components/CommandBlock";
+import { KeptSampleView, seedKeptSample, TakingView, useCommandSamples } from "../components/CommandSamples";
 import { Crumbs } from "../components/Crumbs";
 import { commandRuntime, FAILURE } from "../components/CommandTable";
 import { ContinuousProfilePanel } from "../components/ContinuousProfilePanel";
 import { LiveDiagnosticsPanel } from "../components/LiveDiagnosticsPanel";
-import { ProcessSamplePanel, type SampleTrigger } from "../components/ProcessSamplePanel";
 import { Card, StatTile } from "../components/Panel";
 import { BenchTag, KindTag, RuntimeBadge, StateBadge } from "../components/StateBadges";
 import { nodeName, useSnapshot } from "../lib/data";
-import { atEnd } from "../lib/follow";
+import { useHeld } from "../lib/follow";
 import { ago, bytes, duration, hhmmss, limit, speedup } from "../lib/format";
+import type { CommandSearch } from "../router";
 import { isLive } from "../lib/live";
 import { searchLog, type LogMatch } from "../lib/logsearch";
+import { samplings, useTaking } from "../lib/sampling";
 import { NotFound } from "./NotFound";
 
 export function CommandPage() {
@@ -30,35 +34,69 @@ export function CommandPage() {
   const live = s.commands.find((c) => c.id === id);
   const done = s.history.find((c) => c.id === id);
   if (!live && !done) return <NotFound />;
-  return <CommandView s={s} live={live ?? null} done={done ?? null} id={id} autoSample={Boolean(search.sample)} autoSamplePid={search.pid} />;
+  return <CommandView key={id} s={s} live={live ?? null} done={done ?? null} id={id} search={search} />;
 }
+
+/** What the command page shows: its overview, one of its kept samples, or the sample being taken. */
+type View = "overview" | "taking" | number;
+
+const SAMPLE_WINDOWS = [1, 3, 5, 10].map((sec) => ({ value: String(sec), label: `${sec}s window` }));
 
 function CommandView({
   s,
   live,
   done,
   id,
-  autoSample,
-  autoSamplePid,
+  search,
 }: {
   s: Snapshot;
   live: Command | null;
   done: FinishedCommand | null;
   id: string;
-  autoSample: boolean;
-  autoSamplePid?: number;
+  search: CommandSearch;
 }) {
-  const samplePanelRef = useRef<HTMLDivElement>(null);
-  const [sampleTrigger, setSampleTrigger] = useState<SampleTrigger | null>(() => (autoSample ? { seq: 1, pid: autoSamplePid } : null));
-  const triggerSample = (pid?: number) => {
-    setSampleTrigger((prev) => ({ seq: (prev?.seq ?? 0) + 1, pid }));
-    requestAnimationFrame(() => samplePanelRef.current?.scrollIntoView({ behavior: "smooth", block: "nearest" }));
+  const navigate = useNavigate({ from: "/commands/$id" });
+  const qc = useQueryClient();
+  const running = Boolean(live && isLive(live));
+  const canSample = running && live?.state !== CommandState.QUEUED;
+  // Once the command ran here, its diagnostics stay on the page after it ends.
+  const [ranHere, setRanHere] = useState(running);
+  if (running && !ranHere) setRanHere(true);
+
+  const [sampleSeconds, setSampleSeconds] = useState(3);
+  const taking = useTaking(id);
+  const kept = useCommandSamples(id, live?.samples);
+  const [watchingTaking, setWatchingTaking] = useState(false);
+  const view: View = watchingTaking && taking ? "taking" : (search.sample ?? "overview");
+  const show = (next: "overview" | number) => {
+    setWatchingTaking(false);
+    void navigate({ search: (prev) => ({ ...prev, sample: next === "overview" ? undefined : next }), replace: true });
   };
+  const takeSample = (pid?: number) => {
+    samplings.take(id, { durationSeconds: sampleSeconds, pid });
+    setWatchingTaking(true);
+  };
+
+  // A link that asks for a sample (?take) takes one as the page opens, once:
+  // the URL forgets the ask, so a reload does not take another.
   useEffect(() => {
-    if (autoSample) {
-      requestAnimationFrame(() => samplePanelRef.current?.scrollIntoView({ behavior: "smooth", block: "nearest" }));
+    if (!search.take || !canSample) return;
+    samplings.take(id, { durationSeconds: 3, pid: search.pid });
+    setWatchingTaking(true);
+    void navigate({ search: (prev) => ({ ...prev, take: undefined, pid: undefined }), replace: true });
+  }, [search.take, search.pid, canSample, id, navigate]);
+
+  // A sample once kept is the command's: its tab takes over from the taking.
+  useEffect(() => {
+    if (!taking?.done || !taking.kept || !taking.sample) return;
+    seedKeptSample(qc, id, taking.kept, taking.sample);
+    samplings.dismiss(id);
+    if (watchingTaking) {
+      setWatchingTaking(false);
+      const seq = taking.kept.seq;
+      void navigate({ search: (prev) => ({ ...prev, sample: seq }), replace: true });
     }
-  }, [autoSample, id]);
+  }, [taking, watchingTaking, qc, id, navigate]);
 
   const now = Number(s.now);
   const argv = live?.argv ?? done?.argv ?? "";
@@ -73,7 +111,6 @@ function CommandView({
   const rebuilt = live?.rebuilt ? live.rebuilt : done?.rebuilt !== undefined && done ? { units: done.rebuilt, of: done.of ?? 0 } : null;
   const workspace = s.workspaces.find((w) => w.id === workspaceId);
   const repoId = done?.repoId || live?.repo || null;
-  const canSample = Boolean(live && isLive(live) && live.state !== CommandState.QUEUED);
   const [act, setAct] = useState<ByHandAction | null>(null);
   const activeAct = live && act && actsFor(live).includes(act) ? act : null;
 
@@ -163,16 +200,30 @@ function CommandView({
             <div className="flex flex-wrap items-center gap-2 sm:ml-auto">
               <ByHandButtons command={live} open={activeAct} onOpen={setAct} />
               {canSample && (
-                <Button
-                  type="button"
-                  size="sm"
-                  onClick={() => triggerSample(0)}
-                  title="Sample stacks, syscalls, open files, sockets, locks, cgroup PSI & PMU counters (like macOS Activity Monitor Sample)"
-                  className="gap-1.5 font-mono text-[11.5px] font-semibold shadow-sm"
-                >
-                  <span aria-hidden>◎</span>
-                  Sample Process
-                </Button>
+                <div className="flex items-center gap-1.5">
+                  <Select items={SAMPLE_WINDOWS} value={String(sampleSeconds)} onValueChange={(v) => v !== null && setSampleSeconds(Number(v))}>
+                    <SelectTrigger size="sm" aria-label="Sample window" className="h-8 bg-background/80 font-mono text-[11px] text-foreground">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent className="font-mono text-[11px]">
+                      {SAMPLE_WINDOWS.map((w) => (
+                        <SelectItem key={w.value} value={w.value} className="text-[11px]">
+                          {w.label}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                  <Button
+                    type="button"
+                    size="sm"
+                    onClick={() => (taking && !taking.done ? setWatchingTaking(true) : takeSample())}
+                    title="Sample stacks, syscalls, open files, sockets, locks, cgroup PSI & PMU counters (like macOS Activity Monitor Sample); each sample is kept and opens in its own tab"
+                    className="gap-1.5 font-mono text-[11.5px] font-semibold shadow-sm"
+                  >
+                    <span aria-hidden>◎</span>
+                    {taking && !taking.done ? `Sampling… ${taking.progress}%` : "Sample Process"}
+                  </Button>
+                </div>
               )}
             </div>
           )}
@@ -216,6 +267,43 @@ function CommandView({
         {done?.failure && <p className="mt-3 inline-block rounded-lg bg-[color-mix(in_oklab,var(--critical)_12%,transparent)] px-3 py-1.5 font-mono text-[11.5px] text-critical">{FAILURE[done.failure] ?? done.failure} · exit {done.exitCode ?? "signal"}</p>}
       </div>
 
+      {(taking || (kept.data?.length ?? 0) > 0) && (
+        <Tabs value={String(view)} onValueChange={(v) => (v === "taking" ? setWatchingTaking(true) : show(v === "overview" ? "overview" : Number(v)))}>
+          <div className="max-w-full overflow-x-auto no-scrollbar border-b border-border">
+            <TabsList variant="line" className="font-mono text-[11.5px]">
+              <TabsTrigger value="overview" className="px-2.5 font-mono text-[11.5px]">
+                Overview
+              </TabsTrigger>
+              {kept.data?.map((k) => (
+                <TabsTrigger key={k.seq} value={String(k.seq)} className="px-2.5 font-mono text-[11.5px]" title={`Sample #${k.seq}`}>
+                  ◎ #{k.seq}
+                  {k.by?.at ? <span className="text-faint">{hhmmss(k.by.at)}</span> : null}
+                </TabsTrigger>
+              ))}
+              {taking && (
+                <TabsTrigger value="taking" className="px-2.5 font-mono text-[11.5px]">
+                  {taking.done ? (
+                    <span className="text-warning-ink">◎ unkept</span>
+                  ) : (
+                    <>
+                      <span className="live-dot inline-block size-1.5 rounded-full bg-primary" />
+                      sampling {taking.progress}%
+                    </>
+                  )}
+                </TabsTrigger>
+              )}
+            </TabsList>
+          </div>
+        </Tabs>
+      )}
+
+      {typeof view === "number" && <KeptSampleView key={view} id={id} seq={view} onSamplePid={canSample ? takeSample : undefined} />}
+      {view === "taking" && taking && (
+        <TakingView taking={taking} onCancel={() => samplings.cancel(id)} onDismiss={() => { samplings.dismiss(id); setWatchingTaking(false); }} onSamplePid={canSample ? takeSample : undefined} />
+      )}
+
+      {/* The overview stays mounted behind a sample's tab, so its log, search and panels are as left. */}
+      <div hidden={view !== "overview"} className="space-y-6">
       <div className={`grid grid-cols-2 gap-3 sm:grid-cols-3 ${statGridCols}`}>{stats}</div>
 
       <InterventionsCard s={s} id={id} interventions={live ? live.interventions : null} />
@@ -226,19 +314,17 @@ function CommandView({
         </Card>
       )}
 
-      {/* Activity Monitor-style one-click Linux process sample: stacks, syscalls, open files, sockets, locks, cgroup PSI & PMU. */}
-      {canSample && <ProcessSamplePanel key={`sample-${id}`} id={id} trigger={sampleTrigger} panelRef={samplePanelRef} />}
-
       {/* Opt-in Linux process inspection & active tracing (strace, perf, stacks, eBPF): zero overhead until clicked. */}
-      {live && isLive(live) && <LiveDiagnosticsPanel key={`diag-${id}`} id={id} onSamplePid={(pid) => triggerSample(pid)} />}
+      {ranHere && <LiveDiagnosticsPanel id={id} ended={!running} onSamplePid={canSample ? takeSample : undefined} />}
 
       {/* Always-on OpenTelemetry eBPF continuous profile: queryable both while running and after exit. */}
-      <ContinuousProfilePanel key={`prof-${id}`} id={id} live={!!live && isLive(live)} />
+      <ContinuousProfilePanel id={id} live={running} />
 
-      {/* minmax(0,…) keeps long log lines from widening the column past the page: the log scrolls in its own box. */}
-      {live ? (
-        <div className="grid grid-cols-[minmax(0,1fr)] gap-4 lg:grid-cols-[minmax(0,1fr)_320px]">
-          <LogCard id={id} live={isLive(live)} />
+      {/* minmax(0,…) keeps long log lines from widening the column past the page: the log scrolls in its own box.
+          The log keeps its place in the tree as the command ends, so its search and scroll stay. */}
+      <div className={`grid grid-cols-[minmax(0,1fr)] gap-4 ${live ? "lg:grid-cols-[minmax(0,1fr)_320px]" : ""}`}>
+        <LogCard id={id} live={running} />
+        {live && (
           <div className="space-y-4">
             {live.limits && (
               <Card title="Limits" sub="cgroup v2, set at admission">
@@ -265,10 +351,9 @@ function CommandView({
               <Timeline events={live.timeline} />
             </Card>
           </div>
-        </div>
-      ) : (
-        <LogCard id={id} live={false} />
-      )}
+        )}
+      </div>
+      </div>
     </div>
   );
 }
@@ -382,21 +467,28 @@ const logBox = "max-h-[520px] overflow-auto rounded-lg border border-border bg-b
 
 function LogView({ lines, live }: { lines: string[]; live: boolean }) {
   const box = useRef<HTMLDivElement>(null);
-  const following = useRef(true);
+  const { shown, following, behind, onScroll, follow } = useHeld(lines, live, "end");
   // Scroll only the log's own box (scrollIntoView would scroll the page too),
-  // and only while the reader sits at its end.
+  // and only while the reader follows it.
   useLayoutEffect(() => {
     const el = box.current;
-    if (el && live && following.current) el.scrollTop = el.scrollHeight;
-  }, [lines.length, live]);
+    if (el && live && following) el.scrollTop = el.scrollHeight;
+  }, [shown, live, following]);
   return (
-    <div ref={box} onScroll={(e) => (following.current = atEnd(e.currentTarget))} className={logBox}>
-      {lines.map((l, i) => (
-        <div key={i} className={`whitespace-pre ${tone(l)}`}>
-          {l || " "}
-        </div>
-      ))}
-      {live && <div className="ember-pulse text-primary">▍</div>}
+    <div className="relative">
+      <div ref={box} onScroll={onScroll} className={logBox}>
+        {shown.map((l, i) => (
+          <div key={i} className={`whitespace-pre ${tone(l)}`}>
+            {l || " "}
+          </div>
+        ))}
+        {live && following && <div className="ember-pulse text-primary">▍</div>}
+      </div>
+      {live && !following && (
+        <Button type="button" size="xs" variant="outline" onClick={follow} className="absolute right-4 bottom-3 bg-card font-mono text-[10.5px] shadow-sm">
+          {behind ? "new output · " : "paused · "}follow ↓
+        </Button>
+      )}
     </div>
   );
 }

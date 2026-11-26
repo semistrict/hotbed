@@ -230,14 +230,16 @@ describe("createConnectApi + protobuf-es types", () => {
         },
         getDaemonLogs: () => logsPb,
         async *sampleCommand() {
-          yield { status: "done", progressPct: 100, sample: samplePb, done: true };
+          yield { status: "done", progressPct: 100, sample: samplePb, done: true, kept: { commandId: "cmd-1", seq: 3 } };
         },
       });
     });
 
     const api = createConnectApi(transport);
 
-    const sample = await api.sampleCommand("cmd-1", { durationSeconds: 3 }, () => {});
+    const final = await api.sampleCommand("cmd-1", { durationSeconds: 3 }, () => {});
+    expect(final?.kept?.seq).toBe(3);
+    const sample = final?.sample;
     expect(sample?.commandId).toBe("cmd-1");
     expect(sample?.hostname).toBe("ubu1");
     expect(sample?.durationMs).toBe(3000n);

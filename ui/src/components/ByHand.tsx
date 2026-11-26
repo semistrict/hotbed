@@ -18,7 +18,7 @@ import { hhmmss } from "../lib/format";
 import { isLive } from "../lib/live";
 import { InspectReport } from "./LiveDiagnosticsPanel";
 import { Card } from "./Panel";
-import { SampleReport } from "./ProcessSamplePanel";
+import { SampleReport } from "./SampleReport";
 import { SessionLink } from "./SessionLink";
 
 export type ByHandAction = "stop" | "pause" | "resume";

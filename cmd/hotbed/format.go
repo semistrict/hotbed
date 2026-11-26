@@ -87,6 +87,10 @@ func writeOutput(w io.Writer, name string, cmd command, data any, opts outputOpt
 		_, err := io.WriteString(w, formatCommandDiagnosticsReport(res))
 		return err
 	}
+	if res, ok := asProtoResponse(data, func() *pb.CommandSample { return &pb.CommandSample{} }); ok {
+		_, err := io.WriteString(w, formatCommandSampleReport(res))
+		return err
+	}
 	if res, ok := asListFreshensResponse(data); ok {
 		_, err := io.WriteString(w, formatFreshenListReport(res))
 		return err

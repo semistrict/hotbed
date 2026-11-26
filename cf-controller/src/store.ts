@@ -18,6 +18,8 @@ import {
 	CladefsCellSchema,
 	ClusterEventSchema,
 	CommandDiagnosticsSchema,
+	type CommandSample,
+	CommandSampleSchema,
 	CommandProfileSchema,
 	CommandSchema,
 	CommandState,
@@ -139,6 +141,8 @@ export const KEEP_HISTORY_MS = 30 * 24 * 3600_000;
 export const KEEP_EVENTS = 5000;
 export const KEEP_RUNS = 200;
 export const KEEP_DAEMON_LOGS_MS = 14 * 24 * 3600_000;
+/** How many of a command's activity samples are kept: its newest. */
+export const MAX_COMMAND_SAMPLES = 32;
 export const LOST_DETAIL = "lost: its worker no longer has it (the worker's state was reset)";
 
 export interface WorkspaceRow {
@@ -2419,6 +2423,47 @@ export class ControllerStore {
 		);
 	}
 
+	/**
+	 * Keeps sample, one of a command's kept activity samples, with only its
+	 * newest MAX_COMMAND_SAMPLES kept per command.
+	 */
+	saveCommandSample(nodeId: string, sample: CommandSample, nowMs = Date.now()): void {
+		const meta = create(CommandSampleSchema, { ...sample, sample: undefined });
+		this.sql.exec(
+			"INSERT INTO command_samples (command_id, seq, node_id, created_at, meta, doc) VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT (command_id, seq) DO UPDATE SET node_id = excluded.node_id, created_at = excluded.created_at, meta = excluded.meta, doc = excluded.doc",
+			sample.commandId,
+			sample.seq,
+			nodeId,
+			Number(sample.by?.at || BigInt(nowMs)),
+			marshal(CommandSampleSchema, meta),
+			toBinary(CommandSampleSchema, sample),
+		);
+		this.sql.exec(
+			"DELETE FROM command_samples WHERE command_id = ? AND seq <= ?",
+			sample.commandId,
+			sample.seq - MAX_COMMAND_SAMPLES,
+		);
+	}
+
+	/** A command's kept samples, oldest first, each without its sample. */
+	listCommandSamples(commandId: string): CommandSample[] {
+		return this.sql
+			.exec("SELECT meta FROM command_samples WHERE command_id = ? ORDER BY seq", commandId)
+			.toArray()
+			.map((r) => unmarshal(CommandSampleSchema, str(r.meta)));
+	}
+
+	getCommandSample(commandId: string, seq: number): CommandSample | null {
+		const rows = this.sql
+			.exec("SELECT doc FROM command_samples WHERE command_id = ? AND seq = ?", commandId, seq)
+			.toArray();
+		if (rows.length === 0) return null;
+		const raw = rows[0].doc;
+		if (!(raw instanceof ArrayBuffer))
+			throw new Error(`command sample ${commandId} #${seq} is not binary`);
+		return fromBinary(CommandSampleSchema, new Uint8Array(raw));
+	}
+
 	samplesSince(sinceMs: number): SampleRow[] {
 		return this.sql
 			.exec(
@@ -4558,6 +4603,7 @@ export class ControllerStore {
 		);
 		this.sql.exec("DELETE FROM command_profiles WHERE ended_at < ?", histCutoff);
 		this.sql.exec("DELETE FROM command_diagnostics WHERE created_at < ?", histCutoff);
+		this.sql.exec("DELETE FROM command_samples WHERE created_at < ?", histCutoff);
 		this.sql.exec(
 			"DELETE FROM events WHERE id <= (SELECT MAX(e.id) FROM events e) - ?",
 			KEEP_EVENTS,

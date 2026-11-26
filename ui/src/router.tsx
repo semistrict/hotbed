@@ -128,13 +128,29 @@ const commands = createRoute({
     outcome: s.outcome === "failed" || s.outcome === "succeeded" ? s.outcome : undefined,
   }),
 });
+/**
+ * A command page's place: sample, the kept sample it shows (else its
+ * overview); take, to take a sample as it opens, of pid if given.
+ */
+export interface CommandSearch {
+  sample?: number;
+  take?: true;
+  pid?: number;
+}
+
+function positive(v: unknown): number | undefined {
+  const n = typeof v === "number" ? v : typeof v === "string" ? Number(v) : NaN;
+  return Number.isInteger(n) && n > 0 ? n : undefined;
+}
+
 const command = createRoute({
   getParentRoute: () => root,
   path: "/commands/$id",
   component: CommandPage,
-  validateSearch: (s: Record<string, unknown>): { sample?: boolean; pid?: number } => ({
-    sample: s.sample === true || s.sample === "1" || s.sample === "true" ? true : undefined,
-    pid: typeof s.pid === "number" && s.pid > 0 ? s.pid : typeof s.pid === "string" && Number(s.pid) > 0 ? Number(s.pid) : undefined,
+  validateSearch: (s: Record<string, unknown>): CommandSearch => ({
+    sample: positive(s.sample),
+    take: s.take === true || s.take === "1" || s.take === "true" ? true : undefined,
+    pid: positive(s.pid),
   }),
 });
 

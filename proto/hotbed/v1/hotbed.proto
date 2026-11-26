@@ -208,6 +208,29 @@ service ClusterService {
   // diagnostics from its worker to the controller with explicit
   // acknowledgement, independent of the event-stream checkpoint path.
   rpc SaveCommandDiagnostics(SaveCommandDiagnosticsRequest) returns (SaveCommandDiagnosticsResponse);
+  // ListCommandSamples is the activity samples someone took of a command
+  // (SampleCommand), oldest first, without their contents: the controller
+  // keeps them, live or long ended. GetCommandSample has each one's.
+  rpc ListCommandSamples(ListCommandSamplesRequest) returns (ListCommandSamplesResponse) {
+    option idempotency_level = IDEMPOTENT;
+    option (command) = {
+      name: "samples ls"
+      read_only: true
+      format: "{{range .samples}}#{{pad 4 .seq}}  {{with .by}}{{ts .at}}  {{end}}{{.durationSeconds}}s  {{if .pid}}pid {{.pid}}{{else}}all pids{{end}}{{with .by}}{{if .session}}  by {{.session}}{{else if .host}}  by {{.host}}{{end}}{{end}}{{with .truncated}}  ({{.}}){{end}}\n{{else}}(no samples)\n{{end}}"
+    };
+  }
+  // GetCommandSample is one activity sample someone took of a command, in full.
+  rpc GetCommandSample(GetCommandSampleRequest) returns (CommandSample) {
+    option idempotency_level = IDEMPOTENT;
+    option (command) = {
+      name: "samples show"
+      read_only: true
+    };
+  }
+  // SaveCommandSample delivers an activity sample a worker kept of one of
+  // its commands to the controller with explicit acknowledgement, as
+  // SaveCommandDiagnostics does diagnostics.
+  rpc SaveCommandSample(SaveCommandSampleRequest) returns (SaveCommandSampleResponse);
   // A node with how it decides whether to start new work (its admission:
   // whether it holds work, why, and every signal it weighs against its
   // limit), the work it recently held or made wait, and the placements
@@ -1583,6 +1606,56 @@ message SaveCommandDiagnosticsRequest {
 
 message SaveCommandDiagnosticsResponse {}
 
+// An activity sample someone took of a command (SampleCommand), kept with it.
+message CommandSample {
+  string command_id = 1;
+  // 1 for the command's first, and so on.
+  int32 seq = 2;
+  // When it was taken, and who took it: a session for an agent's, else the
+  // host it came from.
+  Stamp by = 3;
+  // The window it watched, as asked.
+  int32 duration_seconds = 4;
+  // The one PID it watched, or 0 for every process of the command.
+  int32 pid = 5;
+  // What was dropped from it to fit its size limit, if anything.
+  string truncated = 6;
+  // The sample itself; unset in a listing (ListCommandSamples).
+  ProcessSample sample = 7;
+}
+
+message ListCommandSamplesRequest {
+  // The command's ID.
+  string id = 1 [(param) = {
+    positional: true
+    required: true
+  }];
+}
+
+message ListCommandSamplesResponse {
+  // Oldest first, each without its sample.
+  repeated CommandSample samples = 1;
+}
+
+message GetCommandSampleRequest {
+  // The command's ID.
+  string id = 1 [(param) = {
+    positional: true
+    required: true
+  }];
+  // Which of its samples: 1 for its first (hotbed samples ls).
+  int32 seq = 2 [(param) = {
+    positional: true
+    required: true
+  }];
+}
+
+message SaveCommandSampleRequest {
+  CommandSample sample = 1;
+}
+
+message SaveCommandSampleResponse {}
+
 message CommandEvent {
   int64 at = 1;
   // queued, admitted, parked, thawed, paused, resumed, exited, cancelled
@@ -1644,6 +1717,9 @@ message Command {
   int32 vm_cpus = 31;
   // Memory its VM's guest sees, as asked; 0 for the node's default.
   int64 vm_memory_bytes = 32;
+  // How many activity samples have been kept of it: the seq of its newest
+  // (ListCommandSamples), 0 for none.
+  int32 samples = 33;
 }
 
 // A command that ended, as history keeps it.
@@ -3302,6 +3378,8 @@ message SampleCommandRequest {
   int32 duration_seconds = 2;
   // Optional: focus on one PID inside the command's cgroup (0 = all PIDs in the cgroup).
   int32 pid = 3;
+  // The agent's session that takes it; empty for a person.
+  string session_id = 4;
 }
 
 message SampleCommandChunk {
@@ -3309,9 +3387,16 @@ message SampleCommandChunk {
   string status = 1;
   // 0..100 approximate progress percent.
   int32 progress_pct = 2;
-  // Final comprehensive activity sample; set when done=true.
+  // Final comprehensive activity sample; set when done=true. It is the
+  // sample as kept: what its size limit dropped is gone from it.
   ProcessSample sample = 3;
   bool done = 4;
+  // With the final sample: how it was kept with the command (its seq for
+  // GetCommandSample, who took it, what was trimmed), without the sample
+  // itself, which is `sample`; unset when it could not be kept.
+  CommandSample kept = 5;
+  // Why the final sample could not be kept, when it could not.
+  string not_kept = 6;
 }
 
 // Status of one Linux telemetry collector used during a SampleCommand run.

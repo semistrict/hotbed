@@ -89,7 +89,7 @@ export function LiveCommandTable({
                   <Link
                     to="/commands/$id"
                     params={{ id: c.id }}
-                    search={{ sample: true }}
+                    search={{ take: true }}
                     className="rounded border border-primary/35 bg-ember-wash px-2 py-0.5 text-[9.5px] text-primary"
                   >
                     ◎ Sample
@@ -180,7 +180,7 @@ export function LiveCommandTable({
                         <Link
                           to="/commands/$id"
                           params={{ id: c.id }}
-                          search={{ sample: true }}
+                          search={{ take: true }}
                           title="Sample stacks, syscalls, open files & Linux diagnostics"
                           className="rounded border border-primary/35 bg-ember-wash px-2 py-0.5 font-mono text-[9.5px] text-primary hover:brightness-110"
                         >

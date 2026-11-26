@@ -320,6 +320,7 @@ func (c *sampleCmd) Raw(ctx context.Context, d deps) (int, bool, error) {
 		Id:              c.Command,
 		DurationSeconds: c.Duration,
 		Pid:             c.PID,
+		SessionId:       session,
 	})
 	if err != nil {
 		return 0, false, err
@@ -343,6 +344,14 @@ func (c *sampleCmd) Raw(ctx context.Context, d deps) (int, bool, error) {
 		}
 		if chunk.Sample != nil {
 			sample = chunk.Sample
+		}
+		if chunk.Done {
+			switch {
+			case chunk.Kept != nil:
+				fmt.Fprintf(d.stderr, "hotbed: kept as sample %d (hotbed samples show %s %d)\n", chunk.Kept.Seq, c.Command, chunk.Kept.Seq)
+			case chunk.NotKept != "":
+				fmt.Fprintf(d.stderr, "hotbed: the sample was not kept: %s\n", chunk.NotKept)
+			}
 		}
 	}
 	if sample == nil {
@@ -419,6 +428,19 @@ func safeFoldStack(frames []*pb.ProfileFrame, st *pb.FoldedStack) string {
 		}
 	}
 	return flame.Fold(frames, st)
+}
+
+// formatCommandSampleReport is a kept sample's report: who took it and when,
+// then formatSampleTextReport's.
+func formatCommandSampleReport(cs *pb.CommandSample) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "Sample %d of %s, taken %s by %s", cs.Seq, cs.CommandId, time.UnixMilli(cs.GetBy().GetAt()).UTC().Format(time.RFC3339), api.Who(cs.By))
+	if cs.Truncated != "" {
+		fmt.Fprintf(&b, " (%s)", cs.Truncated)
+	}
+	b.WriteString("\n\n")
+	b.WriteString(formatSampleTextReport(cs.Sample))
+	return b.String()
 }
 
 // formatSampleTextReport renders a ProcessSample as a human-readable plain-text

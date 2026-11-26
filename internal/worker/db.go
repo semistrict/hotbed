@@ -20,11 +20,12 @@ import (
 
 const (
 	pendingDiagRecordKind   = "pending_diag"
+	pendingSampleRecordKind = "pending_sample"
 	freshenBudgetRecordKind = "freshen_budget"
 	freshenBudgetRecordID   = "state"
 )
 
-func pendingDiagKey(cmdID string, seq int32) string {
+func pendingKey(cmdID string, seq int32) string {
 	return fmt.Sprintf("%s:%d", cmdID, seq)
 }
 
@@ -106,10 +107,78 @@ func (d *db) commit(kind, id string, rec proto.Message, ev *pb.Event) error {
 	return tx.Commit()
 }
 
+// outbox is what a command's change hands the controller beside its event,
+// each delivered by a call of its own the controller acknowledges, so a
+// bulky payload never holds up the event stream: the diagnostics taken
+// before a stop or pause by hand (SaveCommandDiagnostics), or an activity
+// sample someone took and kept (SaveCommandSample).
+type outbox struct {
+	diagnostics *pb.CommandDiagnostics
+	sample      *pb.CommandSample
+}
+
+// pendingKind is one kind of outbox record: how worker.db files it.
+type pendingKind[T proto.Message] struct {
+	kind string
+	new  func() T
+	key  func(T) (cmdID string, seq int32)
+}
+
+var (
+	pendingDiagnostics = pendingKind[*pb.CommandDiagnostics]{
+		kind: pendingDiagRecordKind,
+		new:  func() *pb.CommandDiagnostics { return &pb.CommandDiagnostics{} },
+		key: func(d *pb.CommandDiagnostics) (string, int32) {
+			return d.CommandId, d.GetIntervention().GetSeq()
+		},
+	}
+	pendingSamples = pendingKind[*pb.CommandSample]{
+		kind: pendingSampleRecordKind,
+		new:  func() *pb.CommandSample { return &pb.CommandSample{} },
+		key:  func(s *pb.CommandSample) (string, int32) { return s.CommandId, s.Seq },
+	}
+)
+
+func (k pendingKind[T]) id(m T) string {
+	cmdID, seq := k.key(m)
+	return pendingKey(cmdID, seq)
+}
+
+// put files m in the outbox within q's transaction.
+func (k pendingKind[T]) put(ctx context.Context, q *workerdb.Queries, m T) error {
+	doc, err := protojson.Marshal(m)
+	if err != nil {
+		return err
+	}
+	return q.UpsertRecord(ctx, workerdb.UpsertRecordParams{Kind: k.kind, ID: k.id(m), Doc: string(doc)})
+}
+
+// list is every record of this kind waiting for the controller's
+// acknowledgement, by command and then seq.
+func (k pendingKind[T]) list(d *db) ([]T, error) {
+	var out []T
+	if err := allRecords(context.Background(), d.q, k.kind, func() proto.Message { return k.new() }, func(m proto.Message) {
+		out = append(out, m.(T))
+	}); err != nil {
+		return nil, err
+	}
+	slices.SortFunc(out, func(a, b T) int {
+		ac, as := k.key(a)
+		bc, bs := k.key(b)
+		return cmp.Or(cmp.Compare(ac, bc), cmp.Compare(as, bs))
+	})
+	return out, nil
+}
+
+// remove drops m from the outbox once the controller acknowledges it.
+func (k pendingKind[T]) remove(d *db, m T) error {
+	return d.q.DeleteRecord(context.Background(), workerdb.DeleteRecordParams{Kind: k.kind, ID: k.id(m)})
+}
+
 // commitCommand writes a command record (or deletes it when rec is nil),
-// persists any pending intervention diagnostics for independent delivery via
-// SaveCommandDiagnostics, and appends the event, all in one transaction.
-func (d *db) commitCommand(id string, rec *pb.CommandRecord, diag *pb.CommandDiagnostics, ev *pb.Event) error {
+// files what out holds for its own delivery, and appends the event, all in
+// one transaction.
+func (d *db) commitCommand(id string, rec *pb.CommandRecord, out outbox, ev *pb.Event) error {
 	ctx := context.Background()
 	evDoc, err := protojson.Marshal(ev)
 	if err != nil {
@@ -133,16 +202,13 @@ func (d *db) commitCommand(id string, rec *pb.CommandRecord, diag *pb.CommandDia
 	if err != nil {
 		return err
 	}
-	if diag != nil {
-		ddoc, err := protojson.Marshal(diag)
-		if err != nil {
+	if out.diagnostics != nil {
+		if err := pendingDiagnostics.put(ctx, q, out.diagnostics); err != nil {
 			return err
 		}
-		if err := q.UpsertRecord(ctx, workerdb.UpsertRecordParams{
-			Kind: pendingDiagRecordKind,
-			ID:   pendingDiagKey(diag.CommandId, diag.GetIntervention().GetSeq()),
-			Doc:  string(ddoc),
-		}); err != nil {
+	}
+	if out.sample != nil {
+		if err := pendingSamples.put(ctx, q, out.sample); err != nil {
 			return err
 		}
 	}
@@ -154,33 +220,6 @@ func (d *db) commitCommand(id string, rec *pb.CommandRecord, diag *pb.CommandDia
 		return err
 	}
 	return tx.Commit()
-}
-
-// listPendingDiagnostics returns all captured intervention diagnostics waiting
-// to be acknowledged by the controller via SaveCommandDiagnostics.
-func (d *db) listPendingDiagnostics() ([]*pb.CommandDiagnostics, error) {
-	var out []*pb.CommandDiagnostics
-	if err := allRecords(context.Background(), d.q, pendingDiagRecordKind, func() proto.Message { return &pb.CommandDiagnostics{} }, func(m proto.Message) {
-		out = append(out, m.(*pb.CommandDiagnostics))
-	}); err != nil {
-		return nil, err
-	}
-	slices.SortFunc(out, func(a, b *pb.CommandDiagnostics) int {
-		return cmp.Or(
-			cmp.Compare(a.CommandId, b.CommandId),
-			cmp.Compare(a.GetIntervention().GetSeq(), b.GetIntervention().GetSeq()),
-		)
-	})
-	return out, nil
-}
-
-// deletePendingDiagnostics removes a pending diagnostics record after the
-// controller acknowledges SaveCommandDiagnostics.
-func (d *db) deletePendingDiagnostics(cmdID string, seq int32) error {
-	return d.q.DeleteRecord(context.Background(), workerdb.DeleteRecordParams{
-		Kind: pendingDiagRecordKind,
-		ID:   pendingDiagKey(cmdID, seq),
-	})
 }
 
 // loadFreshenBudget reads the persisted freshen budget JSON state, or nil if absent.

@@ -2,9 +2,9 @@ import { create } from "@bufbuild/protobuf";
 import { describe, expect, it } from "vitest";
 import { FoldedStackSchema, ProfileFrameSchema, SampledProcessSchema } from "../gen/hotbed/v1/hotbed_pb";
 import { signedBytes } from "../lib/format";
-import { buildCallTreeFromStacks, buildCallTreesByComm } from "./ProcessSamplePanel";
+import { buildCallTreeFromStacks, buildCallTreesByComm } from "./SampleReport";
 
-describe("ProcessSamplePanel call tree helpers", () => {
+describe("SampleReport call tree helpers", () => {
   const frames = [
     create(ProfileFrameSchema, { name: "rustc", frameType: "process" }),
     create(ProfileFrameSchema, { name: "main", module: "rustc", frameType: "native" }),

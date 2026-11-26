@@ -514,7 +514,9 @@ hotbed schedule run nightly                 # a run now; prints its session, for
 | `hotbed resume CMD [-m COMMENT]` | Resumes a paused command |
 | `hotbed diagnostics CMD [--seq N \| --after-seq N]` | The diagnostics taken of a command as someone stopped or paused it (activity sample and inspection), live or ended; supports `--seq` / `--after-seq` pagination and the `diagnostics` MCP tool |
 | `hotbed inspect [procs\|files\|cgroup\|kstack\|maps\|limits] CMD` | Opt-in Linux `/proc` & cgroup v2 inspection of a live command |
-| `hotbed sample CMD [-d SEC] [--pid PID] [--text]` | Activity Monitor-style Linux activity sample of a live command (CPU/IO deltas, user & kernel stacks, syscalls, open files/sockets/locks, cgroup/PSI deltas & perf counters) |
+| `hotbed sample CMD [-d SEC] [--pid PID] [--text]` | Activity Monitor-style Linux activity sample of a live command (CPU/IO deltas, user & kernel stacks, syscalls, open files/sockets/locks, cgroup/PSI deltas & perf counters); each is kept with the command, and stderr names its number |
+| `hotbed samples ls CMD` | The activity samples kept of a command (its newest 32, each trimmed to 1 MiB), live or ended: number, when, window, PID, who took it |
+| `hotbed samples show CMD N` | One kept activity sample in full, as `hotbed sample --text` prints it (`--json` for the sample itself) |
 | `hotbed trace [strace\|perf\|stat\|stacks\|bpf] CMD` | Opt-in active Linux tracing (`strace`, `perf`, thread stacks, `bpftrace`) of a live command |
 | `hotbed profile CMD \| --node HOST [--last 5m] [--query Q] [--format json\|folded\|top]` | Query the always-on OpenTelemetry eBPF continuous profile of a command (live or finished) or host-wide across a node. Its JSON lists each frame once, in `frames`; stacks, functions and buckets name frames by index there (`folded` and `top` print them by name) |
 | `hotbed workspace ls [-p PROJECT \| --all]` | The session's workspaces (`-p`: a project's, `--all`: every session's) |

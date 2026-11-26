@@ -1,6 +1,6 @@
-import { useQuery } from "@tanstack/react-query";
+import { keepPreviousData, useQuery } from "@tanstack/react-query";
 import { Link } from "@tanstack/react-router";
-import { Fragment, useEffect, useMemo, useState } from "react";
+import { Fragment, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -8,6 +8,7 @@ import { Input } from "@/components/ui/input";
 import { TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { api, DAEMON_LOG_LEVEL_FROM_SLUG, DaemonLogLevel, type DaemonLogEntry, type DaemonLogLevelSlug, type DaemonLogSource } from "../api";
+import { useHeld } from "../lib/follow";
 import { bytes, hhmmss } from "../lib/format";
 import { Card, Empty } from "./Panel";
 
@@ -30,6 +31,8 @@ export interface DaemonLogsPanelProps {
   /** Optional header action on the right of the card. */
   headerRight?: React.ReactNode;
 }
+
+const EMPTY_ENTRIES: DaemonLogEntry[] = [];
 
 export function DaemonLogsPanel({
   lockedSource,
@@ -83,11 +86,23 @@ export function DaemonLogsPanel({
         limit: compact ? 100 : 300,
       }),
     refetchInterval: live ? 5000 : false,
+    // A changed filter keeps the rows shown until its own arrive.
+    placeholderData: keepPreviousData,
   });
 
   const data = logsQuery.data;
   const sources = data?.sources ?? [];
-  const entries = data?.entries ?? [];
+  // Newest first: while the reader scrolls down into older rows, the rows
+  // hold still rather than shift under them as newer ones arrive.
+  const { shown: entries, following, behind, onScroll, follow } = useHeld(data?.entries ?? EMPTY_ENTRIES, live, "start");
+  // A new filter is a new list: show it from its newest.
+  useEffect(() => follow(), [source, level, since, debouncedQuery, follow]);
+  const mobileBox = useRef<HTMLDivElement>(null);
+  const tableBox = useRef<HTMLDivElement>(null);
+  useLayoutEffect(() => {
+    if (!following) return;
+    for (const el of [mobileBox.current, tableBox.current]) if (el) el.scrollTop = 0;
+  }, [following]);
   const keyedEntries = useMemo(() => {
     const seen = new Map<string, number>();
     return entries.map((entry) => {
@@ -229,7 +244,12 @@ export function DaemonLogsPanel({
             </Empty>
           ) : (
             <>
-              <div className={`${compact ? "max-h-[420px]" : "max-h-[680px]"} space-y-2 overflow-y-auto md:hidden`}>
+              {behind && (
+                <Button type="button" variant="outline" size="xs" onClick={follow} className="w-full font-mono text-[10.5px] text-primary">
+                  newer entries · show them ↑
+                </Button>
+              )}
+              <div ref={mobileBox} onScroll={onScroll} className={`${compact ? "max-h-[420px]" : "max-h-[680px]"} space-y-2 overflow-y-auto md:hidden`}>
                 {keyedEntries.map(({ entry, rowKey }) => {
                   const isOpen = expanded === rowKey;
                   const attrs = parseAttrs(entry.attrsJson);
@@ -285,7 +305,7 @@ export function DaemonLogsPanel({
                 })}
               </div>
 
-              <div className={`hidden md:block ${compact ? "max-h-[380px]" : "max-h-[680px]"} overflow-auto rounded-lg border border-border`}>
+              <div ref={tableBox} onScroll={onScroll} className={`hidden md:block ${compact ? "max-h-[380px]" : "max-h-[680px]"} overflow-auto rounded-lg border border-border`}>
                 <table className="w-full caption-bottom font-mono text-[11.5px]">
                   <TableHeader className="sticky top-0 z-10 bg-card text-[10px] uppercase tracking-wider text-muted-foreground">
                     <TableRow className="border-border hover:bg-transparent">

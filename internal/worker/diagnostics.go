@@ -12,6 +12,8 @@ import (
 	"sync"
 	"time"
 
+	"google.golang.org/protobuf/proto"
+
 	"github.com/semistrict/hotbed/internal/api"
 	pb "github.com/semistrict/hotbed/internal/gen/hotbed/v1"
 	"github.com/semistrict/hotbed/internal/inspect"
@@ -193,8 +195,10 @@ func (e *Engine) Trace(ctx context.Context, req *pb.TraceCommandRequest, emit in
 }
 
 // SampleCommand takes a comprehensive Activity Monitor-style Linux activity sample of
-// a live command and streams progress plus the final report via emit.
-func (e *Engine) SampleCommand(ctx context.Context, req *pb.SampleCommandRequest, emit inspect.SampleEmit) error {
+// a live command and streams progress plus the final report via emit. The
+// final sample is kept with the command (keepSample) before it is emitted;
+// host is where the call came from.
+func (e *Engine) SampleCommand(ctx context.Context, req *pb.SampleCommandRequest, host string, emit inspect.SampleEmit) error {
 	route, err := e.resolveLiveCommand(req.Id)
 	if err != nil {
 		if e.cfg.Inspector == nil && e.cfg.Runtime == nil {
@@ -202,13 +206,65 @@ func (e *Engine) SampleCommand(ctx context.Context, req *pb.SampleCommandRequest
 		}
 		return err
 	}
+	by := &pb.Stamp{At: e.nowMs(), Session: req.SessionId, Host: host}
+	keep := func(ch *pb.SampleCommandChunk) error {
+		if ch != nil && ch.Done && ch.Sample != nil {
+			e.keepSample(req, by, ch)
+		}
+		return emit(ch)
+	}
 	if route.isVM {
-		return e.cfg.Runtime.SampleCommand(ctx, route.wsID, req, e.wrapVMSampleEmit(route.wsID, emit))
+		return e.cfg.Runtime.SampleCommand(ctx, route.wsID, req, e.wrapVMSampleEmit(route.wsID, keep))
 	}
 	if e.cfg.Inspector == nil {
 		return api.Errorf(api.CodePlatformNotSupported, "process sampling is not configured on this worker")
 	}
-	return e.cfg.Inspector.Sample(ctx, e.hostInspectTarget(ctx, req.Id, route), req, emit)
+	return e.cfg.Inspector.Sample(ctx, e.hostInspectTarget(ctx, req.Id, route), req, keep)
+}
+
+// maxSampleBytes bounds a kept activity sample, as maxDiagnosticsBytes does
+// diagnostics: the controller stores each in one row.
+const maxSampleBytes = 1 << 20
+
+// keepSample numbers the final sample ch carries after its command's
+// others, trims it to maxSampleBytes, and saves it with the command for
+// the controller (SaveCommandSample), all before ch goes to whoever asked:
+// ch then carries the sample as kept and how it was kept, or why it was not.
+func (e *Engine) keepSample(req *pb.SampleCommandRequest, by *pb.Stamp, ch *pb.SampleCommandChunk) {
+	cs := &pb.CommandSample{
+		CommandId:       req.Id,
+		By:              by,
+		DurationSeconds: int32(inspect.ClampSampleDuration(req.DurationSeconds)),
+		Pid:             req.Pid,
+		Sample:          ch.Sample,
+	}
+	if proto.Size(cs) > maxSampleBytes {
+		cs = proto.Clone(cs).(*pb.CommandSample)
+		// Headroom for the seq this numbers it with below.
+		const headroom = 16
+		fits := func() bool { return proto.Size(cs) <= maxSampleBytes-headroom }
+		if trimmed := trimToFit(fits, cs.Sample, nil); len(trimmed) > 0 {
+			cs.Truncated = "dropped " + strings.Join(trimmed, ", ") + " to fit 1 MiB"
+		}
+		if !fits() {
+			ch.NotKept = fmt.Sprintf("it is %d bytes even trimmed, past the %d it may be", proto.Size(cs), maxSampleBytes)
+			return
+		}
+	}
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	c, ok := e.commands[req.Id]
+	if !ok || !api.Live(c.cmd().State) {
+		ch.NotKept = "its command ended as it was sampled"
+		return
+	}
+	cmd := c.cmd()
+	cmd.Samples++
+	cs.Seq = cmd.Samples
+	e.saveCommand(c, change{what: "sampled", out: outbox{sample: cs}})
+	ch.Sample = cs.Sample
+	ch.Kept = proto.CloneOf(cs)
+	ch.Kept.Sample = nil
 }
 
 // CommandProfile queries the always-on OpenTelemetry eBPF continuous profile

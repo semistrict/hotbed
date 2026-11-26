@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"google.golang.org/protobuf/encoding/protojson"
+	"google.golang.org/protobuf/proto"
 
 	"github.com/semistrict/hotbed/internal/api"
 	"github.com/semistrict/hotbed/internal/fake"
@@ -76,6 +77,44 @@ func TestInspectTraceAndContinuousProfileE2E(t *testing.T) {
 	code, textSample, stderr := c.hotbed("sample", "-s", sess.Id, "-d", "1", "--text", cmd.Id)
 	if code != 0 || strings.Contains(textSample, "=== Diagnosis:") || !strings.Contains(textSample, "=== Process ") || !strings.Contains(textSample, "=== Sampled Stacks") || !strings.Contains(textSample, "main.work") {
 		t.Fatalf("sample --text: code=%d out=%q stderr=%q", code, textSample, stderr)
+	}
+	if want := fmt.Sprintf("hotbed: kept as sample 2 (hotbed samples show %s 2)\n", cmd.Id); !strings.Contains(stderr, want) {
+		t.Fatalf("sample --text stderr = %q, want it to say %q", stderr, want)
+	}
+
+	// 1c. Each sample is kept with the command, numbered, on the controller.
+	c.eventually("both samples kept", func() bool {
+		var kept pb.ListCommandSamplesResponse
+		c.ok(&kept, "samples", "ls", cmd.Id)
+		return len(kept.Samples) == 2
+	})
+	var kept pb.ListCommandSamplesResponse
+	c.ok(&kept, "samples", "ls", cmd.Id)
+	for i, s := range kept.Samples {
+		if s.CommandId != cmd.Id || s.Seq != int32(i+1) || s.DurationSeconds != 1 || s.By.GetSession() != sess.Id || s.Sample != nil {
+			t.Fatalf("samples ls [%d] = %v, want seq %d of %s by %s, 1s, without its sample", i, s, i+1, cmd.Id, sess.Id)
+		}
+	}
+	code, lsText, stderr := c.hotbed("samples", "ls", cmd.Id)
+	if code != 0 || !strings.HasPrefix(lsText, "#1     ") || !strings.Contains(lsText, "  1s  all pids  by "+sess.Id+"\n#2 ") {
+		t.Fatalf("samples ls text: code=%d out=%q stderr=%q", code, lsText, stderr)
+	}
+	var shown pb.CommandSample
+	c.ok(&shown, "samples", "show", cmd.Id, "1")
+	if shown.Seq != 1 || shown.Sample == nil || !proto.Equal(shown.Sample, &sample) {
+		t.Fatalf("samples show %s 1 = %v, want the sample the first hotbed sample printed", cmd.Id, &shown)
+	}
+	code, showText, stderr := c.hotbed("samples", "show", cmd.Id, "2")
+	if code != 0 || !strings.HasPrefix(showText, "Sample 2 of "+cmd.Id+", taken ") || !strings.Contains(showText, "=== Sampled Stacks") {
+		t.Fatalf("samples show text: code=%d out=%q stderr=%q", code, showText, stderr)
+	}
+	if code, e := c.fails("samples", "show", cmd.Id, "9"); code != exitError || e.Code != api.CodeNotFound {
+		t.Fatalf("samples show of a missing sample: code=%d err=%+v, want not found", code, e)
+	}
+	var ps pb.ListCommandsResponse
+	c.ok(&ps, "ps", "-s", sess.Id)
+	if len(ps.Commands) != 1 || ps.Commands[0].Samples != 2 {
+		t.Fatalf("ps shows %+v, want the command with 2 samples kept", ps.Commands)
 	}
 
 	// 2. Opt-in active tracers: strace live, strace -c, perf CPU (json & folded), perf stat, stacks, bpf.

@@ -55,7 +55,7 @@ func (f *fakeInspector) Sample(_ context.Context, _ inspect.Target, req *pb.Samp
 		return f.sampleErr
 	}
 	if f.sample != nil {
-		return emit(&pb.SampleCommandChunk{Sample: f.sample})
+		return emit(&pb.SampleCommandChunk{Sample: f.sample, Done: true})
 	}
 	return nil
 }

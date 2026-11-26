@@ -1032,14 +1032,19 @@ func TestVMCommandInspectTraceSampleDiagnoseAndProfile(t *testing.T) {
 		t.Fatalf("expected trace summary from guestd, got %+v", gotTraceSummary)
 	}
 
-	// 3. Sample routes through guestd and annotates Hostname with worker + VM workspace.
+	// 3. Sample routes through guestd and annotates Hostname with worker + VM
+	// workspace, and the sample is kept so labeled.
 	var gotSample *pb.ProcessSample
+	var gotSeq int32
 	if err := eng.SampleCommand(ctx, &pb.SampleCommandRequest{
 		Id:              cmd.Id,
 		DurationSeconds: 1,
-	}, func(ch *pb.SampleCommandChunk) error {
+	}, "laptop", func(ch *pb.SampleCommandChunk) error {
 		if ch.Sample != nil {
 			gotSample = ch.Sample
+		}
+		if ch.Done {
+			gotSeq = ch.Kept.GetSeq()
 		}
 		return nil
 	}); err != nil {
@@ -1050,6 +1055,16 @@ func TestVMCommandInspectTraceSampleDiagnoseAndProfile(t *testing.T) {
 	}
 	if wantHost := "worker1 (vm:" + wsID + ")"; gotSample.Hostname != wantHost {
 		t.Fatalf("sample Hostname = %q, want %q", gotSample.Hostname, wantHost)
+	}
+	if gotSeq != 1 {
+		t.Fatalf("final sample chunk seq = %d, want 1", gotSeq)
+	}
+	kept, err := eng.PendingSamples()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(kept) != 1 || kept[0].Seq != 1 || kept[0].Sample.GetHostname() != gotSample.Hostname || kept[0].By.GetHost() != "laptop" {
+		t.Fatalf("kept samples = %+v, want sample 1 from laptop labeled %q", kept, gotSample.Hostname)
 	}
 
 	// 4. CommandProfile queries the guest's always-on eBPF profiler live over vsock.

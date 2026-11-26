@@ -1963,7 +1963,7 @@ func (e *Engine) endBy(c *command, state pb.CommandState, code *int32, why strin
 		cmd.ColdSeconds = &total
 	}
 	if cmd.Kind == "freshen" {
-		e.saveCommand(c, change{what: what, detail: detail, diagnostics: by.diagnostics()})
+		e.saveCommand(c, change{what: what, detail: detail, out: outbox{diagnostics: by.diagnostics()}})
 		if mf := c.managedFreshen; mf != nil {
 			// Managed VM / cladefs-FUSE base builds finalize their R2 cell and
 			// Base record inside EnsureProjectBase once tmp cleanup finishes.
@@ -2038,7 +2038,7 @@ func (e *Engine) endBy(c *command, state pb.CommandState, code *int32, why strin
 		}
 		prof = snap
 	}
-	e.saveCommand(c, change{what: what, detail: detail, finished: f, feed: line, profile: prof, diagnostics: by.diagnostics()})
+	e.saveCommand(c, change{what: what, detail: detail, finished: f, feed: line, profile: prof, out: outbox{diagnostics: by.diagnostics()}})
 	if prof != nil && !e.isDirty() {
 		// The event just written carries the profile to the controller.
 		if _, newest, err := e.db.eventRange(); err != nil {

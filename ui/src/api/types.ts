@@ -37,6 +37,7 @@ import {
   type ClusterEvent,
   type Command,
   type CommandDiagnostics,
+  type CommandSample,
   type CommandEvent,
   type CommandIntervention,
   type CommandLimits,
@@ -180,6 +181,7 @@ export {
   type ClusterEvent,
   type Command,
   type CommandDiagnostics,
+  type CommandSample,
   type CommandEvent,
   type CommandIntervention,
   type CommandLimits,
@@ -518,7 +520,11 @@ export interface Api {
   file(workspaceId: string, path: string): Promise<FileContent>;
   inspectCommand(id: string, opts?: { sections?: InspectSection[]; pid?: number }, signal?: AbortSignal): Promise<InspectCommandResponse>;
   traceCommand(id: string, opts: TraceOptions, onChunk: (chunk: TraceCommandChunk) => void, signal?: AbortSignal): Promise<TraceSummary | null>;
-  sampleCommand(id: string, opts: SampleOptions, onChunk: (chunk: SampleCommandChunk) => void, signal?: AbortSignal): Promise<ProcessSample | null>;
+  /** Takes a sample, kept with the command; resolves to its final chunk: the sample as kept, and its seq or why it was not kept. */
+  sampleCommand(id: string, opts: SampleOptions, onChunk: (chunk: SampleCommandChunk) => void, signal?: AbortSignal): Promise<SampleCommandChunk | null>;
+  /** The samples kept of a command, oldest first, without their contents. */
+  listCommandSamples(id: string): Promise<CommandSample[]>;
+  getCommandSample(id: string, seq: number): Promise<CommandSample>;
   stopCommand(id: string, opts?: StopOrPauseOptions): Promise<Command>;
   pauseCommand(id: string, opts?: StopOrPauseOptions): Promise<Command>;
   resumeCommand(id: string, opts?: ResumeOptions): Promise<Command>;

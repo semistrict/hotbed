@@ -14,7 +14,7 @@ import {
   ReviewService,
   WorkspaceService,
 } from "../gen/hotbed/v1/hotbed_pb";
-import type { Api, CommandDiagnostics, DaemonLogsQuery, ProcessSample, ProfileQuery, SampleOptions, TraceOptions, TraceSummary } from "./types";
+import type { Api, CommandDiagnostics, DaemonLogsQuery, ProfileQuery, SampleCommandChunk, SampleOptions, TraceOptions, TraceSummary } from "./types";
 
 /**
  * The controller's API over Connect, from the page's own origin: the
@@ -103,13 +103,15 @@ export function createConnectApi(
         },
         { signal },
       );
-      let finalSample: ProcessSample | null = null;
+      let final: SampleCommandChunk | null = null;
       for await (const ch of stream) {
-        if (ch.sample) finalSample = ch.sample;
+        if (ch.done) final = ch;
         onChunk(ch);
       }
-      return finalSample;
+      return final;
     },
+    listCommandSamples: async (id) => (await cluster.listCommandSamples({ id })).samples,
+    getCommandSample: (id, seq) => cluster.getCommandSample({ id, seq }),
     stopCommand: (id, opts) =>
       workspaces.stopCommand({
         id,

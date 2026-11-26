@@ -1,12 +1,10 @@
-import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Fragment, useMemo, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import {
-  api,
   type FileLock,
   type FoldedStack,
   type PerfCounter,
@@ -20,16 +18,10 @@ import {
 import { bytes, hhmmss, signedBytes } from "../lib/format";
 import { SegmentedBar } from "./charts/Bars";
 import { FlameGraph } from "./FlameGraph";
-import { Card, Empty } from "./Panel";
+import { Empty } from "./Panel";
 
 type SampleTab = "stacks" | "files" | "system";
 type StackSubView = "tree" | "threads" | "flamegraph";
-
-export interface SampleTrigger {
-  seq: number;
-  pid?: number;
-  durationSeconds?: number;
-}
 
 export interface LocalCallTreeNode {
   symbol: string;
@@ -122,190 +114,6 @@ export function buildCallTreesByComm(
     result.push({ comm, procs: commProcs, totalSamples, nodes });
   }
   return result;
-}
-
-/**
- * macOS Activity Monitor-style "Sample Process" workbench powered by Linux
- * (/proc deltas, multi-poll kernel stacks & syscalls with FD resolution,
- * repeated eu-stack/gdb user stacks, socket TX/RX queues, pipe peers, epoll
- * targets, /proc/locks, cgroup v2 & PSI stall deltas, perf stat, and OTel eBPF).
- * Zero overhead until triggered.
- */
-export function ProcessSamplePanel({
-  id,
-  trigger,
-  panelRef,
-}: {
-  id: string;
-  trigger?: SampleTrigger | null;
-  panelRef?: React.RefObject<HTMLDivElement | null>;
-}) {
-  const [durationSec, setDurationSec] = useState<number>(3);
-  const [selectedPid, setSelectedPid] = useState<number>(0);
-  const [running, setRunning] = useState(false);
-  const [status, setStatus] = useState("");
-  const [progress, setProgress] = useState(0);
-  const [sample, setSample] = useState<ProcessSample | null>(null);
-  const [error, setError] = useState<string | null>(null);
-  const abortRef = useRef<AbortController | null>(null);
-  const lastTriggerSeq = useRef<number>(0);
-
-  const runSample = useCallback(
-    async (opts?: { pid?: number; duration?: number }) => {
-      const pid = opts?.pid !== undefined ? opts.pid : selectedPid;
-      const dur = opts?.duration !== undefined ? opts.duration : durationSec;
-      if (opts?.pid !== undefined) setSelectedPid(opts.pid);
-      if (opts?.duration !== undefined) setDurationSec(opts.duration);
-
-      abortRef.current?.abort();
-      const ac = new AbortController();
-      abortRef.current = ac;
-
-      setRunning(true);
-      setStatus("Starting Linux activity sample...");
-      setProgress(4);
-      setError(null);
-
-      try {
-        const res = await api.sampleCommand(
-          id,
-          { durationSeconds: dur, pid: pid || undefined },
-          (ch) => {
-            if (ch.status) setStatus(ch.status);
-            if (ch.progressPct > 0) setProgress(ch.progressPct);
-            if (ch.sample) setSample(ch.sample);
-          },
-          ac.signal,
-        );
-        if (res) setSample(res);
-        setStatus("");
-        setProgress(100);
-      } catch (e) {
-        if ((e as Error)?.name === "AbortError") {
-          setStatus("Sample cancelled.");
-        } else {
-          setError(e instanceof Error ? e.message : String(e));
-          setStatus("");
-        }
-      } finally {
-        setRunning(false);
-        if (abortRef.current === ac) abortRef.current = null;
-      }
-    },
-    [id, selectedPid, durationSec],
-  );
-
-  // Clean up in-flight sample when switching commands or unmounting.
-  useEffect(() => {
-    return () => {
-      abortRef.current?.abort();
-    };
-  }, [id]);
-
-  // Honor external trigger requests (e.g., top-of-page Sample button or ?sample=1).
-  useEffect(() => {
-    if (!trigger || trigger.seq === 0 || trigger.seq === lastTriggerSeq.current) return;
-    lastTriggerSeq.current = trigger.seq;
-    void runSample({ pid: trigger.pid, duration: trigger.durationSeconds });
-  }, [trigger, runSample]);
-
-  const cancel = () => abortRef.current?.abort();
-
-  const samplePidItems = sample
-    ? [
-        { value: "0", label: `All PIDs (${sample.procs.length})` },
-        ...sample.procs.map((p) => ({ value: String(p.pid), label: `PID ${p.pid} (${p.comm})` })),
-      ]
-    : [];
-  const sampleDurationItems = [1, 3, 5, 10].map((s) => ({ value: String(s), label: `${s}s window` }));
-
-  const headerControls = (
-    <div className="flex flex-wrap items-center gap-2 font-mono text-[11px]">
-      {sample && sample.procs.length > 0 && (
-        <Select items={samplePidItems} value={String(selectedPid)} disabled={running} onValueChange={(v) => v !== null && setSelectedPid(Number(v))}>
-          <SelectTrigger size="sm" aria-label="Sample target PID" className="h-7 bg-background/80 font-mono text-[11px] text-foreground">
-            <SelectValue />
-          </SelectTrigger>
-          <SelectContent className="font-mono text-[11px]">
-            {samplePidItems.map((item) => (
-              <SelectItem key={item.value} value={item.value} className="text-[11px]">
-                {item.label}
-              </SelectItem>
-            ))}
-          </SelectContent>
-        </Select>
-      )}
-      <Select items={sampleDurationItems} value={String(durationSec)} disabled={running} onValueChange={(v) => v !== null && setDurationSec(Number(v))}>
-        <SelectTrigger size="sm" aria-label="Sample duration" className="h-7 bg-background/80 font-mono text-[11px] text-foreground">
-          <SelectValue />
-        </SelectTrigger>
-        <SelectContent className="font-mono text-[11px]">
-          {sampleDurationItems.map((item) => (
-            <SelectItem key={item.value} value={item.value} className="text-[11px]">
-              {item.label}
-            </SelectItem>
-          ))}
-        </SelectContent>
-      </Select>
-      {running ? (
-        <Button type="button" variant="destructive" size="sm" onClick={cancel} className="border-critical font-mono text-[11px] font-semibold text-critical">
-          Cancel
-        </Button>
-      ) : (
-        <Button type="button" size="sm" onClick={() => void runSample()} className="gap-1.5 font-mono text-[11px] font-semibold shadow-sm">
-          <span aria-hidden>◎</span>
-          {sample ? "Re-sample" : "Sample Process"}
-        </Button>
-      )}
-    </div>
-  );
-
-  return (
-    <div ref={panelRef}>
-      <Card
-        title="Process Activity Sample"
-        sub="Activity Monitor-style one-click Linux sample: user + kernel call trees, syscalls with FD resolution, open files/sockets/locks, cgroup PSI & PMU deltas"
-        right={headerControls}
-      >
-        <div className="space-y-4">
-          {/* Progress indicator while sampling */}
-          {running && (
-            <div className="space-y-2 rounded-xl border border-primary/30 bg-ember-wash/60 px-3.5 py-3">
-              <div className="flex items-center justify-between gap-2 font-mono text-[11.5px]">
-                <span className="inline-flex items-center gap-2 text-foreground">
-                  <span className="live-dot inline-block size-2 rounded-full bg-primary" />
-                  {status || "Sampling..."}
-                </span>
-                <span className="num text-primary">{progress}%</span>
-              </div>
-              <div className="h-1.5 w-full overflow-hidden rounded-full bg-background/70">
-                <div className="h-full rounded-full bg-primary transition-[width] duration-200" style={{ width: `${Math.max(5, Math.min(100, progress))}%` }} />
-              </div>
-            </div>
-          )}
-
-          {error && (
-            <div className="rounded-lg border border-critical/30 bg-[color-mix(in_oklab,var(--critical)_10%,transparent)] px-3 py-2 font-mono text-[11.5px] text-critical">
-              {error}
-            </div>
-          )}
-
-          {!sample && !running && !error && (
-            <div className="rounded-xl border border-dashed border-border-strong bg-background/40 px-4 py-5">
-              <div className="space-y-1">
-                <div className="text-[12.5px] font-medium text-foreground">See everything this command is doing right now</div>
-                <div className="text-[11.5px] text-muted-foreground">
-                  Samples user & kernel thread stacks, active syscalls, open files, TCP/UDP queues, pipe peers, epoll targets, file locks, cgroup PSI stalls, and hardware counters over a short window to diagnose hangs or bottlenecks.
-                </div>
-              </div>
-            </div>
-          )}
-
-          {sample && <SampleReport sample={sample} onSamplePid={(pid) => void runSample({ pid })} />}
-        </div>
-      </Card>
-    </div>
-  );
 }
 
 /** What a sample adds up to, across its processes and threads. */

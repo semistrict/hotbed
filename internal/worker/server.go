@@ -463,7 +463,7 @@ func (s *Service) SampleCommand(ctx context.Context, req *pb.SampleCommandReques
 		return err
 	}
 	s.E.usedCommand(req.Id)
-	return s.E.SampleCommand(ctx, req, func(chunk *pb.SampleCommandChunk) error {
+	return s.E.SampleCommand(ctx, req, httpx.Peer(ctx).Hostname, func(chunk *pb.SampleCommandChunk) error {
 		return stream.Send(chunk)
 	})
 }

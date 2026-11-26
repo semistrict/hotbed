@@ -253,6 +253,25 @@ export const commandDiagnostics = sqliteTable(
 	],
 );
 
+// The activity samples kept of commands (SaveCommandSample): meta is the
+// CommandSample without its sample, as protobuf JSON, for listings; doc is
+// the whole CommandSample, as protobuf binary.
+export const commandSamples = sqliteTable(
+	"command_samples",
+	{
+		commandId: text("command_id").notNull(),
+		seq: integer("seq").notNull(),
+		nodeId: text("node_id").notNull(),
+		createdAt: integer("created_at").notNull(),
+		meta: text("meta").notNull(),
+		doc: blob("doc", { mode: "buffer" }).notNull(),
+	},
+	(t) => [
+		primaryKey({ columns: [t.commandId, t.seq] }),
+		index("command_samples_created").on(t.createdAt),
+	],
+);
+
 export const samples = sqliteTable(
 	"samples",
 	{

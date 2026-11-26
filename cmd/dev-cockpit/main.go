@@ -674,12 +674,14 @@ func (dc *devCluster) seed(ctx context.Context, hc, workerHC *http.Client) error
 		return fmt.Errorf("wait finished commands in history: %w", err)
 	}
 
-	// Start two long-running live commands (a test suite + a simulated dev server).
+	// Start two long-running live commands (a test suite + a simulated dev
+	// server). The suite streams a line every half second, so following a
+	// live log, and reading back through one as it grows, can be tried.
 	liveTest, err := runOnWorker(wsUbu1.NodeAddr, &pb.RunCommandRequest{
 		WorkspaceId: wsUbu1.Id,
 		Repo:        "cladefs",
 		Kind:        "test",
-		Args:        []string{"sh", "-c", "echo 'running integration suite (42 tests)...'; sleep 3600"},
+		Args:        []string{"sh", "-c", `echo 'running integration suite...'; i=0; while :; do i=$((i+1)); echo "=== RUN   TestIntegration/case_$i"; echo "--- PASS: TestIntegration/case_$i (0.0$((i % 10))s)"; sleep 0.5; done`},
 	})
 	if err != nil {
 		return fmt.Errorf("run live test: %w", err)

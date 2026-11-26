@@ -246,7 +246,7 @@ func (p *pusher) once(ctx context.Context) (bool, error) {
 		return false, err
 	}
 	if len(read) == 0 {
-		return p.pushDiagnostics(ctx)
+		return p.pushOutbox(ctx)
 	}
 	events := firstFitting(read, pushBytes)
 	shed := false
@@ -283,7 +283,7 @@ func (p *pusher) once(ctx context.Context) (bool, error) {
 						if more {
 							return true, nil
 						}
-						return p.pushDiagnostics(ctx)
+						return p.pushOutbox(ctx)
 					} else if connect.CodeOf(err2) != connect.CodeResourceExhausted {
 						return false, err2
 					}
@@ -302,27 +302,44 @@ func (p *pusher) once(ctx context.Context) (bool, error) {
 	if more {
 		return true, nil
 	}
-	return p.pushDiagnostics(ctx)
+	return p.pushOutbox(ctx)
 }
 
-// pushDiagnostics delivers pending_diag records stored in worker.db to the
-// controller via SaveCommandDiagnostics, deleting each record only after the
+// pushOutbox delivers what worker.db holds for the controller beside the
+// event stream (outbox): diagnostics by SaveCommandDiagnostics and kept
+// samples by SaveCommandSample, deleting each record only after the
 // controller explicitly acknowledges it.
-func (p *pusher) pushDiagnostics(ctx context.Context) (bool, error) {
-	pending, err := p.eng.db.listPendingDiagnostics()
-	if err != nil || len(pending) == 0 {
+func (p *pusher) pushOutbox(ctx context.Context) (bool, error) {
+	if err := deliver(ctx, p.eng.db, pendingDiagnostics, func(ctx context.Context, d *pb.CommandDiagnostics) error {
+		_, err := p.cluster.SaveCommandDiagnostics(ctx, &pb.SaveCommandDiagnosticsRequest{Diagnostics: d})
+		return err
+	}); err != nil {
 		return false, err
 	}
-	for _, diag := range pending {
-		if _, err := p.cluster.SaveCommandDiagnostics(ctx, &pb.SaveCommandDiagnosticsRequest{Diagnostics: diag}); err != nil {
-			return false, err
+	return false, deliver(ctx, p.eng.db, pendingSamples, func(ctx context.Context, s *pb.CommandSample) error {
+		_, err := p.cluster.SaveCommandSample(ctx, &pb.SaveCommandSampleRequest{Sample: s})
+		return err
+	})
+}
+
+// deliver sends each pending record of kind k with save, oldest first, and
+// drops it from worker.db once save returns.
+func deliver[T proto.Message](ctx context.Context, d *db, k pendingKind[T], save func(context.Context, T) error) error {
+	pending, err := k.list(d)
+	if err != nil {
+		return err
+	}
+	for _, m := range pending {
+		if err := save(ctx, m); err != nil {
+			return err
 		}
-		if err := p.eng.db.deletePendingDiagnostics(diag.CommandId, diag.GetIntervention().GetSeq()); err != nil {
-			slog.Error("delete acknowledged pending diagnostics", "command", diag.CommandId, "seq", diag.GetIntervention().GetSeq(), "err", err)
-			return false, err
+		if err := k.remove(d, m); err != nil {
+			cmdID, seq := k.key(m)
+			slog.Error("delete acknowledged outbox record", "kind", k.kind, "command", cmdID, "seq", seq, "err", err)
+			return err
 		}
 	}
-	return false, nil
+	return nil
 }
 
 // shedOversizedEvent drops optional bulk payloads (command profiles and any

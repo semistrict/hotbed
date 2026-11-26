@@ -18,8 +18,10 @@ type change struct {
 	finished *pb.FinishedCommand
 	// profile is the command's continuous eBPF profile snapshot, when it ends.
 	profile *pb.CommandProfile
-	// diagnostics is the diagnostics taken before a stop or pause by hand.
-	diagnostics *pb.CommandDiagnostics
+	// out is what goes to the controller beside the event, each by its own
+	// call: diagnostics taken before a stop or pause by hand, or a sample
+	// someone kept.
+	out outbox
 }
 
 // feedKind is what a line of the cockpit's feed says happened. Every kind
@@ -82,7 +84,7 @@ func (e *Engine) saveWorkspace(w *workspace, ch change) {
 func (e *Engine) saveCommand(c *command, ch change) {
 	ev := e.newEvent(ch)
 	ev.Change = &pb.Event_Command{Command: &pb.CommandChange{What: ch.what, Command: clone(c.cmd()), Detail: ch.detail, Finished: ch.finished, Profile: ch.profile}}
-	e.writeCommand(c.cmd().Id, c.rec, ch.diagnostics, ev)
+	e.writeCommand(c.cmd().Id, c.rec, ch.out, ev)
 }
 
 // note records an event that changes no record: what the node itself did,
@@ -112,14 +114,14 @@ func (e *Engine) deleteWorkspace(w *workspace) {
 func (e *Engine) deleteCommand(c *command) {
 	ev := e.newEvent(change{})
 	ev.Change = &pb.Event_Command{Command: &pb.CommandChange{What: "forgotten", Command: clone(c.cmd())}}
-	e.writeCommand(c.cmd().Id, nil, nil, ev)
+	e.writeCommand(c.cmd().Id, nil, outbox{}, ev)
 }
 
-// writeCommand commits a command record (nil deletes it) and any pending
-// intervention diagnostics with its event in one transaction. Call with e.mu
-// held.
-func (e *Engine) writeCommand(id string, rec *pb.CommandRecord, diag *pb.CommandDiagnostics, ev *pb.Event) {
-	if err := e.db.commitCommand(id, rec, diag, ev); err != nil {
+// writeCommand commits a command record (nil deletes it) and what out
+// holds for the controller with its event in one transaction. Call with
+// e.mu held.
+func (e *Engine) writeCommand(id string, rec *pb.CommandRecord, out outbox, ev *pb.Event) {
+	if err := e.db.commitCommand(id, rec, out, ev); err != nil {
 		slog.Error("save command", "command", id, "err", err)
 		e.dirtyGen++
 	}
@@ -130,7 +132,13 @@ func (e *Engine) writeCommand(id string, rec *pb.CommandRecord, diag *pb.Command
 // PendingDiagnostics returns captured intervention diagnostics persisted in
 // worker.db that have not yet been acknowledged by the controller.
 func (e *Engine) PendingDiagnostics() ([]*pb.CommandDiagnostics, error) {
-	return e.db.listPendingDiagnostics()
+	return pendingDiagnostics.list(e.db)
+}
+
+// PendingSamples returns kept activity samples persisted in worker.db that
+// the controller has not yet acknowledged.
+func (e *Engine) PendingSamples() ([]*pb.CommandSample, error) {
+	return pendingSamples.list(e.db)
 }
 
 // isDirty reports whether a DB save failed since the last in-memory checkpoint

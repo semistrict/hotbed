@@ -79,7 +79,7 @@ export function mergeInspectResult(
  * Strictly opt-in Linux process inspection & active tracing workbench.
  * Zero worker calls are made until the user explicitly presses a button.
  */
-export function LiveDiagnosticsPanel({ id, onSamplePid }: { id: string; onSamplePid?: (pid: number) => void }) {
+export function LiveDiagnosticsPanel({ id, ended = false, onSamplePid }: { id: string; ended?: boolean; onSamplePid?: (pid: number) => void }) {
   const [selectedPid, setSelectedPid] = useState<number>(0);
   const [inspectTab, setInspectTab] = useState<InspectSection | null>(null);
   const [inspectState, setInspectState] = useState<ScopedInspectState | null>(null);
@@ -148,6 +148,7 @@ export function LiveDiagnosticsPanel({ id, onSamplePid }: { id: string; onSample
   };
 
   const runInspect = async (section: InspectSection, pidOverride?: number) => {
+    if (ended) return;
     const pid = pidOverride ?? selectedPid;
     inspectAbortRef.current?.abort();
     const ac = new AbortController();
@@ -175,6 +176,7 @@ export function LiveDiagnosticsPanel({ id, onSamplePid }: { id: string; onSample
   };
 
   const runTrace = async (kind: TraceKind) => {
+    if (ended) return;
     traceAbortRef.current?.abort();
     const ac = new AbortController();
     traceAbortRef.current = ac;
@@ -245,7 +247,7 @@ export function LiveDiagnosticsPanel({ id, onSamplePid }: { id: string; onSample
   const headerRight = (
     <div className="flex flex-wrap items-center gap-2 font-mono text-[10.5px]">
       {inspectData && inspectData.procs.length > 0 && (
-        <Select items={pidItems} value={String(selectedPid)} onValueChange={(v) => v !== null && selectPid(Number(v))}>
+        <Select items={pidItems} value={String(selectedPid)} disabled={ended} onValueChange={(v) => v !== null && selectPid(Number(v))}>
           <SelectTrigger size="sm" aria-label="Target PID" className="h-7 bg-background/80 font-mono text-[11px] text-foreground">
             <SelectValue />
           </SelectTrigger>
@@ -259,7 +261,7 @@ export function LiveDiagnosticsPanel({ id, onSamplePid }: { id: string; onSample
         </Select>
       )}
       <Badge variant="outline" className="bg-muted/60 font-mono text-[10.5px] font-normal text-muted-foreground">
-        opt-in · zero overhead until clicked
+        {ended ? "ended · what was taken stays here" : "opt-in · zero overhead until clicked"}
       </Badge>
     </div>
   );
@@ -287,6 +289,7 @@ export function LiveDiagnosticsPanel({ id, onSamplePid }: { id: string; onSample
                   variant="outline"
                   size="sm"
                   title={b.desc}
+                  disabled={ended}
                   onClick={() => void runInspect(b.id)}
                   className={`font-mono text-[11.5px] ${
                     active
@@ -378,7 +381,7 @@ export function LiveDiagnosticsPanel({ id, onSamplePid }: { id: string; onSample
                 <button
                   key={b.kind}
                   type="button"
-                  disabled={traceRunning || Boolean(unavailable)}
+                  disabled={ended || traceRunning || Boolean(unavailable)}
                   title={unavailable ? `${b.tool} unavailable: ${cap?.detail ?? ""}` : b.hint}
                   onClick={() => void runTrace(b.kind)}
                   className={`rounded-lg border px-2.5 py-1.5 font-mono text-[11px] transition-colors ${
