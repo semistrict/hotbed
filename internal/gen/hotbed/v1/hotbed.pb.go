@@ -833,6 +833,9 @@ const (
 	ActorKind_ACTOR_KIND_USER ActorKind = 1
 	// An AI agent (a session, or a sub-agent running inside a session).
 	ActorKind_ACTOR_KIND_AGENT ActorKind = 2
+	// The node itself, by a rule of its own (host names it): such as its stop
+	// of a command that sat idle on much of its memory.
+	ActorKind_ACTOR_KIND_NODE ActorKind = 3
 )
 
 // Enum value maps for ActorKind.
@@ -841,11 +844,13 @@ var (
 		0: "ACTOR_KIND_UNSPECIFIED",
 		1: "ACTOR_KIND_USER",
 		2: "ACTOR_KIND_AGENT",
+		3: "ACTOR_KIND_NODE",
 	}
 	ActorKind_value = map[string]int32{
 		"ACTOR_KIND_UNSPECIFIED": 0,
 		"ACTOR_KIND_USER":        1,
 		"ACTOR_KIND_AGENT":       2,
+		"ACTOR_KIND_NODE":        3,
 	}
 )
 
@@ -34506,11 +34511,12 @@ const file_hotbed_v1_hotbed_proto_rawDesc = "" +
 	"\x17QUESTION_STATE_ANSWERED\x10\x02\x12\x1c\n" +
 	"\x18QUESTION_STATE_DISMISSED\x10\x03\x12\x1a\n" +
 	"\x16QUESTION_STATE_HANDLED\x10\x04\x12\x1a\n" +
-	"\x16QUESTION_STATE_DELETED\x10\x05*R\n" +
+	"\x16QUESTION_STATE_DELETED\x10\x05*g\n" +
 	"\tActorKind\x12\x1a\n" +
 	"\x16ACTOR_KIND_UNSPECIFIED\x10\x00\x12\x13\n" +
 	"\x0fACTOR_KIND_USER\x10\x01\x12\x14\n" +
-	"\x10ACTOR_KIND_AGENT\x10\x02*\x9a\x01\n" +
+	"\x10ACTOR_KIND_AGENT\x10\x02\x12\x13\n" +
+	"\x0fACTOR_KIND_NODE\x10\x03*\x9a\x01\n" +
 	"\rQuestionOrder\x12\x1e\n" +
 	"\x1aQUESTION_ORDER_UNSPECIFIED\x10\x00\x12\x19\n" +
 	"\x15QUESTION_ORDER_NEWEST\x10\x01\x12\x19\n" +

@@ -411,7 +411,8 @@ share of the VM) for five minutes running while using under 0.1 CPU cores on ave
 stopped (cancelled) as the node's own intervention, its diagnostics taken first, as it keeps that
 memory from all other work. A thrashing command is stopped too: at that CPU use it makes next to
 no progress. Dev servers, interactive (`--tty`) commands, measurements, frozen (paused or held)
-commands, and runs with `--keep-idle` are exempt.
+commands, and runs with `--keep-idle` are exempt; base builds are not, as a setup step stuck that
+way would hold its project's workspaces anyway, until its time limit.
 Beneath all that, the work slice itself is bounded (`MemoryHigh=`, `MemoryMax=`, and `MemorySwapMax=`
 on zram hosts at its start), leaving the host an eighth of its RAM (at least 1 GiB) for OS headroom,
 an eighth (or `cladefsd`'s floor if larger) for `cladefsd`'s protected DAX cache, and a 3:1

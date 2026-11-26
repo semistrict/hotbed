@@ -103,6 +103,9 @@ func TestCommandInterventionHelpers(t *testing.T) {
 	if got := Who(&hotbedv1.Stamp{Session: "brave-otter"}); got != "session brave-otter" {
 		t.Errorf("Who(session) = %q", got)
 	}
+	if got := Who(&hotbedv1.Stamp{Host: "ubu1", ActorKind: hotbedv1.ActorKind_ACTOR_KIND_NODE}); got != "the node ubu1" {
+		t.Errorf("Who(node) = %q", got)
+	}
 	if got := Who(nil); got != "someone" {
 		t.Errorf("Who(nil) = %q", got)
 	}

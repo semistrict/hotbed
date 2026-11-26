@@ -4235,6 +4235,9 @@ enum ActorKind {
   ACTOR_KIND_USER = 1;
   // An AI agent (a session, or a sub-agent running inside a session).
   ACTOR_KIND_AGENT = 2;
+  // The node itself, by a rule of its own (host names it): such as its stop
+  // of a command that sat idle on much of its memory.
+  ACTOR_KIND_NODE = 3;
 }
 
 // Who changed a question or review, and when: an agent's session (with its

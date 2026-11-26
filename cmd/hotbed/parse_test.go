@@ -21,6 +21,9 @@ func TestUnknownFlagBeforeDashDashIsRefused(t *testing.T) {
 			t.Errorf("parse %q: err %v, want %q", args, err, want)
 		}
 	}
+	if _, _, _, _, err := parse([]string{"run", "make", "--", "-j8"}, io.Discard); err == nil || err.Error() != "INVALID_ARGS: unexpected argument make of hotbed run (before --)" {
+		t.Errorf("parse run make -- -j8: err %v", err)
+	}
 
 	cmd, _, _, _, err := parse([]string{"run", "--keep-idle", "--mem", "8G", "--", "make", "test"}, io.Discard)
 	if err != nil {

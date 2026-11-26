@@ -136,8 +136,17 @@ func (e *Engine) stopIdleHogs() {
 		e.idleStops.Add(1)
 		if !e.startBgLocked(func(ctx context.Context) {
 			defer e.idleStops.Done()
+			// StopWith goes on whoever asked it gone, but the engine closing
+			// should not wait out its diagnostics.
+			defer context.AfterFunc(ctx, func() {
+				e.mu.Lock()
+				defer e.mu.Unlock()
+				if c.cancelDiag != nil {
+					c.cancelDiag()
+				}
+			})()
 			slog.Warn("stop a command holding much memory idle", "command", id, "why", why)
-			if _, err := e.StopWith(ctx, id, Intervention{Comment: why, Diagnose: true, Host: e.cfg.Host}); err != nil {
+			if _, err := e.StopWith(ctx, id, Intervention{Comment: why, Diagnose: true, Host: e.cfg.Host, ByNode: true}); err != nil {
 				slog.Warn("stop a command holding much memory idle", "command", id, "err", err)
 			}
 		}) {

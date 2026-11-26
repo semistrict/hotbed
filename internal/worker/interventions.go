@@ -15,7 +15,7 @@ import (
 )
 
 // Intervention is someone's stop, pause or resume of a command by hand, as
-// their call asks it.
+// their call asks it, or the node's own (ByNode).
 type Intervention struct {
 	Comment string
 	// Diagnose takes the command's diagnostics first (a stop or pause).
@@ -24,6 +24,9 @@ type Intervention struct {
 	Session string
 	// Host is where the call came from.
 	Host string
+	// ByNode is the node's own, by a rule of its own (Host names it), not
+	// a person's or an agent's.
+	ByNode bool
 }
 
 // How long the activity sample taken of a command stopped or paused by hand
@@ -300,6 +303,9 @@ func (e *Engine) intervene(ctx context.Context, id string, kind pb.InterventionK
 		Kind: kind, Comment: in.Comment,
 		By: &pb.Stamp{At: e.nowMs(), Session: in.Session, Host: in.Host},
 	}}}
+	if in.ByNode {
+		h.iv.By.ActorKind = pb.ActorKind_ACTOR_KIND_NODE
+	}
 	e.mu.Unlock()
 	done := func() {
 		e.mu.Lock()

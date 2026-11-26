@@ -6,6 +6,7 @@ import (
 
 	"github.com/semistrict/hotbed/internal/fake"
 	pb "github.com/semistrict/hotbed/internal/gen/hotbed/v1"
+	"github.com/semistrict/hotbed/internal/runtime"
 	"github.com/semistrict/hotbed/internal/unit"
 )
 
@@ -45,7 +46,7 @@ func wantRunning(t *testing.T, e *Engine, id, when string) {
 func wantStoppedAsStuck(t *testing.T, e *Engine, id, why string) {
 	t.Helper()
 	e.idleStops.Wait()
-	want := `stopped by asahimbp: "` + why + ` (hotbed run --keep-idle keeps a command that rightly waits on much memory)". ` +
+	want := `stopped by the node asahimbp: "` + why + ` (hotbed run --keep-idle keeps a command that rightly waits on much memory)". ` +
 		"No diagnostics: this worker takes no diagnostics: process inspection is not configured on it."
 	if s, got := commandState(t, e, id); s != cancelled || got != want {
 		t.Fatalf("%s = (%v, %q), want (cancelled, %q)", id, s, got, want)
@@ -161,6 +162,34 @@ func TestIdleOnMuchMemoryCountsAVMCommandsOwn(t *testing.T) {
 	e.mu.Unlock()
 	if marks != 1 || held != 6<<30 {
 		t.Fatalf("with 6 GiB of its own: marks %d, held %s; want 1 mark of 6.0 GiB", marks, gib(held))
+	}
+}
+
+// A VM command's status carries what its guest cgroup holds as its own,
+// beside the share of its VM's footprint admission charges it.
+func TestAVMCommandsStatusCarriesItsOwnMemory(t *testing.T) {
+	st := toUnitState("ws", runtime.CommandStatus{ID: "c", Running: true, MemoryAnon: 20 << 20, MemorySwap: 4 << 20})
+	if st.OwnMemoryUse == nil || *st.OwnMemoryUse != (unit.MemoryUse{Anon: 20 << 20, Swap: 4 << 20}) {
+		t.Fatalf("own memory = %v, want 20 MiB anon, 4 MiB swap", st.OwnMemoryUse)
+	}
+}
+
+// A unit seen frozen while its command is recorded running (mid-pause, or
+// a stray freeze) uses no CPU by design: it starts the watch over.
+func TestIdleOnMuchMemoryIgnoresAFrozenUnit(t *testing.T) {
+	e, units, _, now := parkEngine(t)
+	c := e.start(t, units, now, "frozen-1", "a", "test")
+	at := now.Add(30 * time.Second)
+	mem := unit.MemoryUse{Anon: 6 << 30}
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.watchIdle(c, unit.State{Loaded: true, Running: true}, mem, true, at)
+	if len(c.idle.marks) != 1 {
+		t.Fatalf("marks of a running unit holding 6 GiB = %d, want 1", len(c.idle.marks))
+	}
+	e.watchIdle(c, unit.State{Loaded: true, Running: true, Frozen: true}, mem, true, at.Add(30*time.Second))
+	if len(c.idle.marks) != 0 {
+		t.Fatalf("marks once its unit is frozen = %d, want 0", len(c.idle.marks))
 	}
 }
 

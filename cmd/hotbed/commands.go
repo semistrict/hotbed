@@ -142,7 +142,11 @@ func parse(args []string, stdout io.Writer) (cmd command, name string, opts outp
 		if err == nil && exitCode == nil {
 			if dd, ok := cmd.(dashDashCommand); ok {
 				if before := dd.SetDashArgs(args[sep+1:]); len(before) > 0 {
-					return nil, "", outputOpts{}, nil, api.Errorf(api.CodeInvalidArgs, "unknown flag %s of hotbed %s (before --)", before[0], name).
+					what := "unexpected argument"
+					if strings.HasPrefix(before[0], "-") {
+						what = "unknown flag"
+					}
+					return nil, "", outputOpts{}, nil, api.Errorf(api.CodeInvalidArgs, "%s %s of hotbed %s (before --)", what, before[0], name).
 						WithSuggestion(fmt.Sprintf("hotbed %s --help lists its flags; the command goes after --", name))
 				}
 				return cmd, name, opts, nil, nil

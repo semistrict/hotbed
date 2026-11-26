@@ -106,9 +106,11 @@ func InterventionSummary(commandID string, iv *hotbedv1.CommandIntervention) str
 }
 
 // Who names whoever a stamp is of: an agent by its session, a person by the
-// host they came from.
+// host they came from, a node acting by a rule of its own as the node.
 func Who(by *hotbedv1.Stamp) string {
 	switch {
+	case by.GetActorKind() == hotbedv1.ActorKind_ACTOR_KIND_NODE:
+		return "the node " + by.GetHost()
 	case by.GetSession() != "" && by.GetHost() != "":
 		return fmt.Sprintf("session %s on %s", by.Session, by.Host)
 	case by.GetSession() != "":
