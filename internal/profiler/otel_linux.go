@@ -42,6 +42,12 @@ type OTelProfiler struct {
 	symbolizer *Symbolizer
 	sampleHz   int
 
+	// lifeMu serializes Start and Stop. Loading the eBPF programs can take
+	// many seconds (under nested virtualization especially), so it is held
+	// across the load while mu, which Status takes, is not: profile queries
+	// answer "not active yet" during the load instead of waiting on it.
+	lifeMu sync.Mutex
+
 	mu       sync.Mutex
 	recv     xreceiver.Profiles
 	active   bool
@@ -75,9 +81,12 @@ func NewOTel(sampleHz int) *OTelProfiler {
 // privileges prevent eBPF loading, it records the reason in Status() and
 // returns the error so the worker can log it without failing startup.
 func (p *OTelProfiler) Start(ctx context.Context) error {
+	p.lifeMu.Lock()
+	defer p.lifeMu.Unlock()
 	p.mu.Lock()
-	defer p.mu.Unlock()
-	if p.active {
+	active := p.active
+	p.mu.Unlock()
+	if active {
 		return nil
 	}
 
@@ -138,28 +147,39 @@ func (p *OTelProfiler) Start(ctx context.Context) error {
 
 	nopConsumer, err := xconsumer.NewProfiles(func(context.Context, pprofile.Profiles) error { return nil })
 	if err != nil {
-		p.startErr = err.Error()
+		p.setStartErr(err)
 		return err
 	}
 
 	recv, err := createFn(ctx, rs, cfg, nopConsumer)
 	if err != nil {
-		p.startErr = err.Error()
+		p.setStartErr(err)
 		return fmt.Errorf("create opentelemetry ebpf profiler: %w", err)
 	}
 	if err := recv.Start(ctx, nopHost{}); err != nil {
-		p.startErr = err.Error()
+		p.setStartErr(err)
 		return fmt.Errorf("start opentelemetry ebpf profiler: %w", err)
 	}
+	p.mu.Lock()
 	p.recv = recv
 	p.active = true
 	p.startErr = ""
+	p.mu.Unlock()
 	slog.Info("started always-on OpenTelemetry eBPF profiler", "hz", p.sampleHz)
 	return nil
 }
 
-// Stop shuts down the eBPF profiler and detaches all probes cleanly.
+func (p *OTelProfiler) setStartErr(err error) {
+	p.mu.Lock()
+	p.startErr = err.Error()
+	p.mu.Unlock()
+}
+
+// Stop shuts down the eBPF profiler and detaches all probes cleanly. A Stop
+// during Start waits for the load to finish, then undoes it.
 func (p *OTelProfiler) Stop() {
+	p.lifeMu.Lock()
+	defer p.lifeMu.Unlock()
 	p.mu.Lock()
 	recv := p.recv
 	p.recv = nil

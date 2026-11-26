@@ -53,12 +53,18 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
+	// The profiler loads in the background: loading its eBPF programs takes
+	// a fraction of a second on bare metal but far longer in a nested
+	// VM, and the worker's boot deadline waits on the Health RPC, not on
+	// profiling. Until it is loaded, profile queries report it inactive.
 	var prof profiler.Profiler
 	if *listenDir == "" {
 		otelProf := profiler.NewOTel(profiler.DefaultSampleHz)
-		if err := otelProf.Start(ctx); err != nil {
-			log.Warn("always-on OpenTelemetry eBPF profiler could not start in guest; continuing without continuous profiling", "err", err)
-		}
+		go func() {
+			if err := otelProf.Start(ctx); err != nil {
+				log.Warn("always-on OpenTelemetry eBPF profiler could not start in guest; continuing without continuous profiling", "err", err)
+			}
+		}()
 		defer otelProf.Stop()
 		prof = otelProf
 	}
