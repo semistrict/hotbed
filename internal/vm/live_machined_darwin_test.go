@@ -6,7 +6,6 @@ import (
 	"bytes"
 	"context"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -15,6 +14,7 @@ import (
 	machinedv1 "github.com/semistrict/cladefs/go/machined/v1"
 
 	"github.com/semistrict/hotbed/internal/cladefs"
+	"github.com/semistrict/hotbed/internal/machinedtest"
 	"github.com/semistrict/hotbed/internal/runtime"
 	"github.com/semistrict/hotbed/internal/vm"
 )
@@ -23,65 +23,14 @@ import (
 // Hypervisor.framework) the way a macOS worker does: hotbed-guestd from an
 // initramfs, switching root onto the workspace's cell of machined's embedded
 // cladefs daemon, reached over machined's vsock socket; then takes the VM back
-// in a second Manager, as a restarted worker would, and stops it. Set
-// HOTBED_LIVE_MACHINED to a machined binary (machined-vm beside it, both
-// signed with the hypervisor entitlement) and HOTBED_LIVE_KERNEL_PATH to
-// cladefs's arm64 guest Image.
+// in a second Manager, as a restarted worker would, and stops it
+// (machinedtest.Start says what it needs).
 func TestLiveMachinedEndToEnd(t *testing.T) {
-	machined := os.Getenv("HOTBED_LIVE_MACHINED")
-	kernelSrc := os.Getenv("HOTBED_LIVE_KERNEL_PATH")
-	if machined == "" || kernelSrc == "" {
-		t.Skip("set HOTBED_LIVE_MACHINED and HOTBED_LIVE_KERNEL_PATH to run a live machined VM")
-	}
+	m := machinedtest.Start(t)
 	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Minute)
 	defer cancel()
-
-	// Short: machined's vsock sockets go under its state directory.
-	root, err := os.MkdirTemp("/tmp", "hbm")
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = os.RemoveAll(root) })
-	images, state, cells := filepath.Join(root, "images"), filepath.Join(root, "state"), filepath.Join(root, "cells")
-	for _, d := range []string{images, cells} {
-		if err := os.MkdirAll(d, 0o755); err != nil {
-			t.Fatal(err)
-		}
-	}
-	kernel := filepath.Join(images, "Image")
-	if err := os.Link(kernelSrc, kernel); err != nil {
-		t.Fatalf("link the kernel into machined's images: %v", err)
-	}
-	guestdBin := filepath.Join(root, "hotbed-guestd")
-	build := exec.CommandContext(ctx, "go", "build", "-o", guestdBin, "github.com/semistrict/hotbed/cmd/hotbed-guestd")
-	build.Env = append(os.Environ(), "GOOS=linux", "GOARCH=arm64", "CGO_ENABLED=0")
-	if out, err := build.CombinedOutput(); err != nil {
-		t.Fatalf("build hotbed-guestd: %v\n%s", err, out)
-	}
-
-	socket := filepath.Join(root, "machined.sock")
-	daemon := exec.Command(machined, "--socket", socket, "--images", images, "--state", state)
-	var daemonLog bytes.Buffer
-	daemon.Stdout, daemon.Stderr = &daemonLog, &daemonLog
-	if err := daemon.Start(); err != nil {
-		t.Fatalf("start machined: %v", err)
-	}
-	t.Cleanup(func() {
-		_ = daemon.Process.Signal(os.Interrupt)
-		_ = daemon.Wait()
-		if t.Failed() {
-			t.Logf("machined's log:\n%s", daemonLog.String())
-		}
-	})
-	for {
-		if _, err := os.Stat(socket); err == nil {
-			break
-		}
-		if ctx.Err() != nil {
-			t.Fatalf("machined never served %s:\n%s", socket, daemonLog.String())
-		}
-		time.Sleep(50 * time.Millisecond)
-	}
+	socket, images, kernel, guestdBin, root := m.Socket, m.Images, m.Kernel, m.GuestdBin, m.Dir
+	cells := filepath.Join(root, "cells")
 
 	store, err := cladefs.Open(ctx, cladefs.Config{
 		ControlSock: socket,

@@ -894,26 +894,23 @@ func (e *Engine) projectLock(name string) *sync.Mutex {
 // Sample measures the machine's load and memory now, for the next report;
 // the engine does it every api.ReportInterval.
 func (e *Engine) Sample() {
+	// What the machine's OS cannot measure (errors.ErrUnsupported: macOS
+	// has no PSI) is reported as zero, unlogged.
+	warn := func(what string, err error) {
+		if err != nil && !errors.Is(err, errors.ErrUnsupported) {
+			slog.Warn("sample "+what, "err", err)
+		}
+	}
 	cpu, err := e.cfg.System.CPU()
-	if err != nil {
-		slog.Warn("sample cpu", "err", err)
-	}
+	warn("cpu", err)
 	mem, err := e.cfg.System.Meminfo()
-	if err != nil {
-		slog.Warn("sample memory", "err", err)
-	}
+	warn("memory", err)
 	memP, err := e.cfg.System.Pressure("memory")
-	if err != nil {
-		slog.Warn("sample memory pressure", "err", err)
-	}
+	warn("memory pressure", err)
 	cpuP, err := e.cfg.System.Pressure("cpu")
-	if err != nil {
-		slog.Warn("sample cpu pressure", "err", err)
-	}
+	warn("cpu pressure", err)
 	oom, err := e.cfg.System.OOMKills()
-	if err != nil {
-		slog.Warn("sample oom kills", "err", err)
-	}
+	warn("oom kills", err)
 	var objStore *pb.ObjectStoreStats
 	if e.cfg.VM != nil {
 		objStore = e.cfg.VM.SampleObjectStore(context.Background())

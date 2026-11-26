@@ -63,6 +63,10 @@ func (e *Engine) UpgradeSystem(ctx context.Context, req *pb.WorkerUpgradeSystemR
 		return nil, api.Errorf(api.CodeInvalidArgs, "upgrade request is required")
 	}
 
+	if e.cfg.VM != nil && e.cfg.VM.OnMachined() {
+		return nil, api.Errorf(api.CodePlatformNotSupported, "this worker's VMs and cells are machined's, which hotbed's daemon upgrades with machined itself: there is no cladefsd or Firecracker to upgrade")
+	}
+
 	e.upgradeMu.Lock()
 	defer e.upgradeMu.Unlock()
 

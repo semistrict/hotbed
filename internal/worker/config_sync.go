@@ -299,7 +299,9 @@ func RequiresConfigRestart(cur, next statedir.WorkerConfig) bool {
 			cur.VM.CellRoot != next.VM.CellRoot ||
 			cur.VM.TenantID != next.VM.TenantID ||
 			cur.VM.BridgeName != next.VM.BridgeName ||
-			cur.VM.BridgeCIDR != next.VM.BridgeCIDR {
+			cur.VM.BridgeCIDR != next.VM.BridgeCIDR ||
+			cur.VM.MachinedSock != next.VM.MachinedSock ||
+			cur.VM.MachinedImages != next.VM.MachinedImages {
 			return true
 		}
 	}
@@ -485,6 +487,8 @@ func workerConfigEqual(a, b statedir.WorkerConfig) bool {
 			av.BridgeName != bv.BridgeName ||
 			av.BridgeCIDR != bv.BridgeCIDR ||
 			av.Nofile != bv.Nofile ||
+			av.MachinedSock != bv.MachinedSock ||
+			av.MachinedImages != bv.MachinedImages ||
 			!slices.Equal(av.DNSServers, bv.DNSServers) {
 			return false
 		}

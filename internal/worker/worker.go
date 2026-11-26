@@ -24,7 +24,6 @@ import (
 
 	"github.com/semistrict/hotbed/internal/api"
 	"github.com/semistrict/hotbed/internal/baseimage"
-	"github.com/semistrict/hotbed/internal/bench"
 	"github.com/semistrict/hotbed/internal/daemonlog"
 	pb "github.com/semistrict/hotbed/internal/gen/hotbed/v1"
 	"github.com/semistrict/hotbed/internal/gen/hotbed/v1/hotbedv1connect"
@@ -33,7 +32,6 @@ import (
 	"github.com/semistrict/hotbed/internal/profiler"
 	"github.com/semistrict/hotbed/internal/statedir"
 	"github.com/semistrict/hotbed/internal/storage"
-	"github.com/semistrict/hotbed/internal/sysinfo"
 	"github.com/semistrict/hotbed/internal/tailnet"
 	"github.com/semistrict/hotbed/internal/unit"
 	"github.com/semistrict/hotbed/internal/version"
@@ -381,7 +379,7 @@ func Run(ctx context.Context, dir string, cfg statedir.WorkerConfig, tn Tailnet,
 		Slice: effCfg.Slice, UnitProperties: effCfg.UnitProperties, Store: store,
 		BaseImage: baseImg, GitAuth: gitAuth,
 		Inspector: inspect.Linux{BaseRootDir: baseRootFn}, Profiler: prof,
-		Units: Systemd{}, System: &Linux{Slice: effCfg.Slice},
+		Units: hostUnits(), System: hostSystem(effCfg.Slice),
 		DaemonLogs: dlogs, ControllerNodeID: effCfg.ControllerNodeID, RequireController: true,
 		Artifacts: artifacts, Freshen: effCfg.Freshen,
 	}
@@ -419,93 +417,8 @@ func Run(ctx context.Context, dir string, cfg statedir.WorkerConfig, tn Tailnet,
 		return api.Errorf(api.CodePlatformNotSupported, "worker requires either vm or cladefs_fuse runtime to be enabled").
 			WithSuggestion("enable vm or cladefs_fuse in hotbed.json or via hotbed config set")
 	}
-	// Ensure workspace commands (via the command user's kvm supplementary group)
-	// can open /dev/userfaultfd read-write on Linux hosts, matching Firecracker
-	// guests (cmd/hotbed-guestd/devperms.go) and persisting across reboots.
-	if err := EnsureUserfaultfdAccess(ctx, effCfg.User); err != nil {
-		return fmt.Errorf("configure /dev/userfaultfd access for %s: %w", effCfg.User, err)
-	}
-	// Lower the work slice's CPU and IO priority so normal commands yield to
-	// desktop and system processes while still sharing spare CPU among
-	// themselves by their per-command CPUWeight=. Measurements run in a
-	// sibling slice (*_bench.slice) at normal priority.
-	if err := unit.StopLeftExecs(ctx); err != nil {
-		return fmt.Errorf("stop the last worker's chroot git: %w", err)
-	}
-	if err := unit.StartSlice(ctx, workSlice); err != nil {
-		return fmt.Errorf("start work slice %s: %w", workSlice, err)
-	}
-	if err := unit.SetProperties(ctx, workSlice, "CPUWeight=idle", "IOWeight=1"); err != nil {
-		return fmt.Errorf("set work slice %s priority: %w", workSlice, err)
-	}
-	// Bound what the commands take together, base builds and work alike,
-	// leaving the host room to stay up (board 9128). On zram hosts, swap
-	// sits in kernel RAM outside the slice's memcg, so the backstop also
-	// caps MemorySwapMax and accounts for zram's RAM footprint (board 9361).
-	// The engine measures its memory, and admits and parks by it, within
-	// this bound. The measurement slice is its sibling, outside it.
-	host, err := sysinfo.Meminfo()
-	if err != nil {
-		return fmt.Errorf("read the host's memory: %w", err)
-	}
-	swaps, err := sysinfo.Swaps()
-	if err != nil {
-		return fmt.Errorf("read the host's swap: %w", err)
-	}
-	var cladefsFloor int64
-	if ecfg.VM != nil {
-		if osStats := ecfg.VM.SampleObjectStore(ctx); osStats != nil {
-			cladefsFloor = int64(osStats.GetExtentCacheFloorBytes())
-		}
-	} else if ecfg.CladefsFUSE != nil {
-		if osStats := ecfg.CladefsFUSE.SampleObjectStore(ctx); osStats != nil {
-			cladefsFloor = int64(osStats.GetExtentCacheFloorBytes())
-		}
-	}
-	cladefsReserve := unit.CladefsReserve(host.Total, cladefsFloor)
-	backstop := unit.BackstopForWithReserve(host.Total, unit.Swap{Zram: swaps.ZramBytes, Disk: swaps.DiskBytes}, cladefsReserve)
-	if static, err := unit.StaticMemoryLimits(ctx, workSlice, host.Total); err != nil {
-		slog.Warn("read static work slice memory limits", "slice", workSlice, "err", err)
-	} else {
-		backstop = backstop.Clamp(static)
-	}
-	if err := unit.SetProperties(ctx, workSlice, backstop.Properties()...); err != nil {
-		return fmt.Errorf("bound work slice %s's memory: %w", workSlice, err)
-	}
-	slog.Info("work slice memory bounded",
-		"slice", workSlice,
-		"high", backstop.High,
-		"max", backstop.Max,
-		"swapMax", backstop.SwapMax,
-		"headroom", backstop.Headroom,
-		"reserve", backstop.Reserve,
-		"cladefsFloor", cladefsFloor,
-		"zram", swaps.ZramBytes,
-		"diskSwap", swaps.DiskBytes,
-	)
-	// Under /run: what an isolation saves of the host lasts as long as the
-	// kernel's settings it changed.
-	benchOpts := bench.Options{
-		State: "/run/hotbed/bench", Slice: BenchSlice(effCfg.Slice),
-		WorkSlice: workSlice, Systemd: Systemd{},
-	}
-	// Other work's writes to the volumes are kept quiet beside a
-	// measurement too: capped on a block device (btrfs's), held back on a
-	// ZFS pool, which no cap reaches.
-	if z, ok := store.(storage.Pooled); ok {
-		benchOpts.Pool = z.Dataset()
-	} else {
-		benchOpts.StoreDisk = store.Path("")
-	}
-	if cfg.Bench != nil {
-		iso, err := bench.New(*cfg.Bench, benchOpts)
-		if err != nil {
-			return fmt.Errorf("the worker's measurements: %w", err)
-		}
-		ecfg.Bench = iso
-	} else if err := bench.GiveBack(ctx, benchOpts); err != nil {
-		// A worker that took measurements before its config stopped them.
-		slog.Error("give back a measurement's isolation", "err", err)
+	if err := prepareHost(ctx, hostPrep{cfg: cfg, effCfg: effCfg, ecfg: &ecfg, store: store, workSlice: workSlice}); err != nil {
+		return err
 	}
 	eng, err := NewEngine(ctx, ecfg)
 	if err != nil {
@@ -580,6 +493,9 @@ func Run(ctx context.Context, dir string, cfg statedir.WorkerConfig, tn Tailnet,
 	// the first cold workspace and tracer capabilities are ready quickly.
 	// Retry on transient startup failures (e.g. DNS right after boot).
 	go func() {
+		if !warmsBaseImage {
+			return
+		}
 		backoff := 5 * time.Second
 		for {
 			if _, _, err := baseImg.Ensure(gctx); err == nil {

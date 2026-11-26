@@ -134,6 +134,16 @@ type VMConfig struct {
 	BridgeCIDR         string   `json:"bridgeCIDR,omitempty"`
 	DNSServers         []string `json:"dnsServers,omitempty"`
 	Nofile             uint64   `json:"nofile,omitempty"`
+	// MachinedSock is machined's API socket (macOS workers): machined's
+	// machines then run the VMs, and the cladefs daemon it embeds, whose
+	// Cladefsd service it serves on the same socket, holds their cells, in
+	// place of Firecracker and cladefsd. The cladefsd, Firecracker, TAP and
+	// tenant settings above are then unused.
+	MachinedSock string `json:"machinedSock,omitempty"`
+	// MachinedImages is machined's images directory (its --images), which
+	// KernelPath must be in; the initramfses guestd boots from are made in
+	// it.
+	MachinedImages string `json:"machinedImages,omitempty"`
 }
 
 func (c Config) validate() error {

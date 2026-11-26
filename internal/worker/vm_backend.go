@@ -24,6 +24,8 @@ import (
 	"time"
 
 	cladefsdv1 "github.com/semistrict/cladefs/go/cladefsd/v1"
+	machinedv1 "github.com/semistrict/cladefs/go/machined/v1"
+	"github.com/semistrict/hotbed/internal/api"
 	"github.com/semistrict/hotbed/internal/baseimage"
 	"github.com/semistrict/hotbed/internal/cladefs"
 	pb "github.com/semistrict/hotbed/internal/gen/hotbed/v1"
@@ -33,6 +35,7 @@ import (
 	"github.com/semistrict/hotbed/internal/storage"
 	"github.com/semistrict/hotbed/internal/unit"
 	"github.com/semistrict/hotbed/internal/vm"
+	"google.golang.org/grpc"
 )
 
 // VMBackend coordinates cladefsd cell management, Firecracker microVMs, peer
@@ -43,8 +46,11 @@ type VMBackend struct {
 	workerDir string
 	store     atomic.Pointer[cladefs.Store]
 	mgr       *vm.Manager
-	rt        *runtime.GuestRuntime
-	link      cladefsdLink
+	// machined is the connection to machined when its machines run the
+	// VMs (cfg.MachinedSock), nil under Firecracker.
+	machined *grpc.ClientConn
+	rt       *runtime.GuestRuntime
+	link     cladefsdLink
 
 	baseMu       sync.Mutex // serializes base image provisioning
 	held         heldBases  // the project bases this node hands out
@@ -135,21 +141,58 @@ func resolveVMUserIDs(vmUser string) (uid, gid uint32) {
 	return uint32(uid64), uint32(gid64)
 }
 
-// OpenVMBackend connects to cladefsd, initializes the Firecracker VM manager,
-// and reconnects to any surviving Firecracker VMs from a prior worker process.
+// OpenVMBackend connects to the cladefs daemon holding the VMs' cells,
+// initializes the VM manager, and reconnects to any VMs that survived a prior
+// worker process: Firecracker's under cladefsd, or machined's (and the cladefs
+// daemon it embeds) when cfg.MachinedSock is set.
 func OpenVMBackend(ctx context.Context, workerDir string, cfg statedir.VMConfig, slice, gitAuthHostSock string) (*VMBackend, error) {
-	cellRoot := tenantCellRoot(cmp.Or(cfg.CellRoot, "/mnt/fxdax-scratch/cladefsd/cells/hotbed"), cfg.TenantID)
-	vmUID, vmGID := resolveVMUserIDs(cfg.VMUser)
-	cstore, err := cladefs.Open(ctx, cladefs.Config{
-		ControlSock: cfg.CladefsControlSock,
-		VMSock:      cfg.CladefsVMSock,
-		CellRoot:    cellRoot,
-		TenantID:    cfg.TenantID,
-		VMUID:       vmUID,
-		VMGID:       vmGID,
-		DefaultCap:  cfg.DiskBytes,
-	})
+	var (
+		cladefsCfg cladefs.Config
+		vmmOpts    []vm.ManagerOption
+		machined   *grpc.ClientConn
+	)
+	if cfg.MachinedSock != "" {
+		if cfg.MachinedImages == "" {
+			return nil, api.Errorf(api.CodeInvalidArgs, "vm.machinedSock is set without vm.machinedImages, machined's --images")
+		}
+		conn, err := vm.DialMachined(cfg.MachinedSock)
+		if err != nil {
+			return nil, err
+		}
+		machined = conn
+		// The image tars ImportImage reads are written in the worker's own
+		// directory: machined runs as the worker's user, on its machine.
+		cladefsCfg = cladefs.Config{
+			ControlSock: cfg.MachinedSock,
+			VMSock:      cfg.MachinedSock,
+			CellRoot:    filepath.Join(workerDir, "cells"),
+			DefaultCap:  cfg.DiskBytes,
+		}
+		vmmOpts = append(vmmOpts, vm.WithVMM(vm.NewMachined(machinedv1.NewMachinedClient(conn), cfg.MachinedImages)))
+		cfg = machinedVMConfig(cfg)
+	} else {
+		if goruntime.GOOS != "linux" {
+			return nil, api.Errorf(api.CodePlatformNotSupported, "Firecracker VMs need Linux: on %s, set vm.machinedSock to run them on machined", goruntime.GOOS)
+		}
+		vmUID, vmGID := resolveVMUserIDs(cfg.VMUser)
+		cladefsCfg = cladefs.Config{
+			ControlSock: cfg.CladefsControlSock,
+			VMSock:      cfg.CladefsVMSock,
+			CellRoot:    tenantCellRoot(cmp.Or(cfg.CellRoot, "/mnt/fxdax-scratch/cladefsd/cells/hotbed"), cfg.TenantID),
+			TenantID:    cfg.TenantID,
+			VMUID:       vmUID,
+			VMGID:       vmGID,
+			DefaultCap:  cfg.DiskBytes,
+		}
+	}
+	closeMachined := func() {
+		if machined != nil {
+			_ = machined.Close()
+		}
+	}
+	cstore, err := cladefs.Open(ctx, cladefsCfg)
 	if err != nil {
+		closeMachined()
 		return nil, fmt.Errorf("open cladefs store: %w", err)
 	}
 	inc, err := cstore.Incarnation(ctx)
@@ -176,16 +219,17 @@ func OpenVMBackend(ctx context.Context, workerDir string, cfg statedir.VMConfig,
 		DNSServers:         cfg.DNSServers,
 		Nofile:             cfg.Nofile,
 		GitAuthHostSock:    gitAuthHostSock,
-	})
+	}, vmmOpts...)
 	if err != nil {
 		_ = cstore.Close()
-		return nil, fmt.Errorf("create Firecracker VM manager: %w", err)
+		closeMachined()
+		return nil, fmt.Errorf("create VM manager: %w", err)
 	}
 	n, err := mgr.Reconnect(ctx)
 	if err != nil {
 		slog.Warn("vm reconnect failed", "err", err)
 	} else if n > 0 {
-		slog.Info("reconnected surviving Firecracker VMs", "count", n)
+		slog.Info("reconnected surviving VMs", "count", n)
 	}
 
 	_ = ensureDirTraversable(workerDir)
@@ -193,6 +237,7 @@ func OpenVMBackend(ctx context.Context, workerDir string, cfg statedir.VMConfig,
 		cfg:          cfg,
 		workerDir:    workerDir,
 		mgr:          mgr,
+		machined:     machined,
 		link:         cladefsdLink{incarnation: inc},
 		baseImages:   map[string]cladefs.CellRef{},
 		wsCells:      map[string]cladefs.CellRef{},
@@ -202,6 +247,18 @@ func OpenVMBackend(ctx context.Context, workerDir string, cfg statedir.VMConfig,
 	b.loadCachedBases()
 	b.rt = runtime.NewGuestRuntime(b)
 	return b, nil
+}
+
+// machinedVMConfig is cfg as it holds on machined, whatever the cluster's
+// config says for Firecracker nodes: machined answers its guests' DNS on
+// their gateway, and its embedded daemon's cells are the default tenant's.
+// Its machines have no DAX window until a fault in one stops hanging the
+// guest on Hypervisor.framework (cladefs board 14210).
+func machinedVMConfig(cfg statedir.VMConfig) statedir.VMConfig {
+	cfg.DNSServers = []string{vm.MachinedGateway}
+	cfg.TenantID = 0
+	cfg.DisableDAX = true
+	return cfg
 }
 
 func (b *VMBackend) currentStore() *cladefs.Store {
@@ -222,6 +279,9 @@ func (b *VMBackend) configSnapshot() statedir.VMConfig {
 // peer address, and default-runtime flag for all subsequent VM boots and base
 // builds without disrupting running VMs.
 func (b *VMBackend) UpdateConfig(cfg statedir.VMConfig) {
+	if b.machined != nil {
+		cfg = machinedVMConfig(cfg)
+	}
 	b.mu.Lock()
 	if cfg.DNSServers != nil {
 		cfg.DNSServers = slices.Clone(cfg.DNSServers)
@@ -306,11 +366,19 @@ func (b *VMBackend) saveCacheJSON(name string, v any) {
 // The store pointer stays non-nil (closed) so any racing goroutine receives a
 // clean gRPC error rather than panicking on a nil pointer.
 func (b *VMBackend) Close() error {
+	var err error
 	if st := b.currentStore(); st != nil {
-		return st.Close()
+		err = st.Close()
 	}
-	return nil
+	if b.machined != nil {
+		err = errors.Join(err, b.machined.Close())
+	}
+	return err
 }
+
+// OnMachined reports whether machined runs the VMs, and the cladefs daemon
+// it embeds holds their cells.
+func (b *VMBackend) OnMachined() bool { return b.machined != nil }
 
 // Runtime returns the GuestRuntime implementing runtime.WorkspaceRuntime.
 func (b *VMBackend) Runtime() runtime.WorkspaceRuntime { return b.rt }
@@ -875,7 +943,7 @@ func (b *VMBackend) EnsureProvisionedBaseImage(ctx context.Context, spec baseima
 
 	tarPath := filepath.Join(b.currentStore().PickRoot(), "vm-"+key+".tar")
 	defer os.Remove(tarPath)
-	slog.Info("building Firecracker VM base image", "key", key, "image", spec.Image)
+	slog.Info("building VM base image", "key", key, "image", spec.Image)
 	if err := vm.BuildGuestTar(ctx, vm.GuestImageOptions{
 		ImageRef:   spec.Image,
 		Arch:       spec.Arch,
@@ -1371,7 +1439,11 @@ func (b *VMBackend) PrepareWorkspace(ctx context.Context, wsID string, baseRef c
 			return nil, fmt.Errorf("clear stale cladefs workspace cell %s: %w", wsID, err)
 		}
 	}
-	wsRef, err := b.currentStore().ForkVersion(ctx, baseRef, true)
+	// An ephemeral cell is one cladefsd never uploads to the bucket, kept
+	// in its ephemeral cell directory. machined's embedded daemon keeps
+	// every cell on its local disk, uploading none, and has no such
+	// directory: a plain fork is the same there.
+	wsRef, err := b.currentStore().ForkVersion(ctx, baseRef, !b.OnMachined())
 	if err != nil {
 		return nil, fmt.Errorf("fork ephemeral cladefs workspace %s: %w", wsID, err)
 	}
