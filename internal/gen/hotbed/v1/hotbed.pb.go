@@ -9323,7 +9323,9 @@ type FinishedCommand struct {
 	// Its stops, pauses and resumes by hand, oldest first.
 	Interventions []*CommandIntervention `protobuf:"bytes,24,rep,name=interventions,proto3" json:"interventions,omitempty"`
 	// Execution runtime that ran this command ("vm" or "cladefs").
-	Runtime       string `protobuf:"bytes,25,opt,name=runtime,proto3" json:"runtime,omitempty"`
+	Runtime string `protobuf:"bytes,25,opt,name=runtime,proto3" json:"runtime,omitempty"`
+	// How many activity samples were kept of it, as Command.samples.
+	Samples       int32 `protobuf:"varint,26,opt,name=samples,proto3" json:"samples,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -9531,6 +9533,13 @@ func (x *FinishedCommand) GetRuntime() string {
 		return x.Runtime
 	}
 	return ""
+}
+
+func (x *FinishedCommand) GetSamples() int32 {
+	if x != nil {
+		return x.Samples
+	}
+	return 0
 }
 
 type RunCommandRequest struct {
@@ -30259,7 +30268,7 @@ const file_hotbed_v1_hotbed_proto_rawDesc = "" +
 	"\t_ended_atB\f\n" +
 	"\n" +
 	"_exit_codeB\x0f\n" +
-	"\r_cold_seconds\"\xb3\x06\n" +
+	"\r_cold_seconds\"\xcd\x06\n" +
 	"\x0fFinishedCommand\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x17\n" +
 	"\arepo_id\x18\x02 \x01(\tR\x06repoId\x12\x17\n" +
@@ -30288,7 +30297,8 @@ const file_hotbed_v1_hotbed_proto_rawDesc = "" +
 	"cockpitUrl\x12\x18\n" +
 	"\aproject\x18\x17 \x01(\tR\aproject\x12D\n" +
 	"\rinterventions\x18\x18 \x03(\v2\x1e.hotbed.v1.CommandInterventionR\rinterventions\x12\x18\n" +
-	"\aruntime\x18\x19 \x01(\tR\aruntimeB\f\n" +
+	"\aruntime\x18\x19 \x01(\tR\aruntime\x12\x18\n" +
+	"\asamples\x18\x1a \x01(\x05R\asamplesB\f\n" +
 	"\n" +
 	"_exit_codeB\x0f\n" +
 	"\r_cold_secondsB\n" +

@@ -23,7 +23,7 @@ func write(t *testing.T, path string, at time.Time) {
 func TestEnsureBuildsOnlyAMissingOrStaleBundle(t *testing.T) {
 	root := t.TempDir()
 	base := time.Unix(1795300000, 0)
-	for _, src := range []string{"src/index.ts", "drizzle/0001.sql", "package.json", "cloudflare.config.ts"} {
+	for _, src := range []string{"src/index.ts", "drizzle/0001.sql", "package.json", "pnpm-lock.yaml"} {
 		write(t, filepath.Join(root, "cf-controller", src), base)
 	}
 	builds := 0
@@ -46,8 +46,19 @@ func TestEnsureBuildsOnlyAMissingOrStaleBundle(t *testing.T) {
 	if _, err := ensure(root, build); err != nil || builds != 1 {
 		t.Fatalf("fresh bundle: %d builds (err %v), want no rebuild", builds, err)
 	}
+	// What tools write, and the dependencies, are no reason to rebuild.
+	write(t, filepath.Join(root, "cf-controller", "node_modules", "x", "index.js"), base.Add(5*time.Hour))
+	write(t, filepath.Join(root, "cf-controller", ".wrangler", "state.json"), base.Add(5*time.Hour))
+	if _, err := ensure(root, build); err != nil || builds != 1 {
+		t.Fatalf("only dependencies and tool state newer: %d builds (err %v), want no rebuild", builds, err)
+	}
 	write(t, filepath.Join(root, "cf-controller", "src", "gen", "hotbed_pb.ts"), base.Add(90*time.Minute))
 	if _, err := ensure(root, build); err != nil || builds != 2 {
 		t.Fatalf("source newer than the bundle: %d builds (err %v), want a rebuild", builds, err)
+	}
+	// Any build input counts, not only src: the lockfile, the build config.
+	write(t, filepath.Join(root, "cf-controller", "pnpm-lock.yaml"), base.Add(3*time.Hour))
+	if _, err := ensure(root, build); err != nil || builds != 3 {
+		t.Fatalf("lockfile newer than the bundle: %d builds (err %v), want a rebuild", builds, err)
 	}
 }

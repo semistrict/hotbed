@@ -226,3 +226,22 @@ func TestKeptSamplesDeliveredWithAcknowledgement(t *testing.T) {
 		t.Fatalf("after ack: pending = (%d, %v), want 0", len(pending), err)
 	}
 }
+
+func TestSampleCommandDoesNotKeepSampleItCannotSave(t *testing.T) {
+	now := time.Unix(1795300000, 0)
+	units, store := &fake.Units{}, &fake.Store{Root: t.TempDir()}
+	insp := &fakeInspector{sample: &pb.ProcessSample{CommandId: "c-unsaved"}}
+	e := newInterventionEngine(t, t.TempDir(), store, units, insp, &now)
+	startTestCommand(t, e, store, units, "c-unsaved")
+	if err := e.db.sql.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	final := sampleOnce(t, e, &pb.SampleCommandRequest{Id: "c-unsaved"}, "laptop")
+	if final.Kept != nil || final.NotKept != "the worker could not save it" {
+		t.Fatalf("final chunk kept %v not kept %q, want unkept: the worker could not save it", final.Kept, final.NotKept)
+	}
+	if cmd, _ := e.current("c-unsaved"); cmd.Samples != 0 {
+		t.Fatalf("Command.Samples = %d, want 0: the next sample takes the number", cmd.Samples)
+	}
+}

@@ -1758,6 +1758,8 @@ message FinishedCommand {
   repeated CommandIntervention interventions = 24;
   // Execution runtime that ran this command ("vm" or "cladefs").
   string runtime = 25;
+  // How many activity samples were kept of it, as Command.samples.
+  int32 samples = 26;
 }
 
 message RunCommandRequest {

@@ -14,163 +14,168 @@ import type { Message } from "@bufbuild/protobuf";
 /**
  * Describes the file hotbed/v1/worker.proto.
  */
-export const file_hotbed_v1_worker: GenFile = /*@__PURE__*/
-  fileDesc("ChZob3RiZWQvdjEvd29ya2VyLnByb3RvEglob3RiZWQudjEiigEKD1dvcmtzcGFjZVJlY29yZBInCgl3b3Jrc3BhY2UYASABKAsyFC5ob3RiZWQudjEuV29ya3NwYWNlEg4KBnZvbHVtZRgCIAEoCRIVCg1iYXNlX3NuYXBzaG90GAMgASgJEgwKBG5vdGUYBCABKAkSGQoRdGhyb3dhd2F5X2NvbW1hbmQYBSABKAkiwwIKDUNvbW1hbmRSZWNvcmQSIwoHY29tbWFuZBgBIAEoCzISLmhvdGJlZC52MS5Db21tYW5kEg8KB3JlcG9faWQYAiABKAkSDwoHcHJvamVjdBgOIAEoCRINCgVhZ2VudBgDIAEoCRIOCgZ2b2x1bWUYBCABKAkSCwoDZGlyGAUgASgJEgsKA2VudhgGIAMoCRIPCgdiYXNlX2lkGAcgASgJEg0KBXBhcmtzGAggASgFEhEKCXBhcmtlZF9hdBgJIAEoAxIZChFwZWFrX21lbW9yeV9ieXRlcxgKIAEoAxIOCgZjZ3JvdXAYCyABKAkSFgoOaXNvbGF0aW9uX2xvc3QYDCABKAkSEQoJd2FpdGVkX2F0GA0gASgDEhAKCGhlbGRfZm9yGA8gASgJEhcKD3BlYWtfaGVsZF9ieXRlcxgQIAEoA0I+WjxnaXRodWIuY29tL3NlbWlzdHJpY3QvaG90YmVkL2ludGVybmFsL2dlbi9ob3RiZWQvdjE7aG90YmVkdjFiBnByb3RvMw", [file_hotbed_v1_hotbed]);
+export const file_hotbed_v1_worker: GenFile =
+	/*@__PURE__*/
+	fileDesc(
+		"ChZob3RiZWQvdjEvd29ya2VyLnByb3RvEglob3RiZWQudjEiigEKD1dvcmtzcGFjZVJlY29yZBInCgl3b3Jrc3BhY2UYASABKAsyFC5ob3RiZWQudjEuV29ya3NwYWNlEg4KBnZvbHVtZRgCIAEoCRIVCg1iYXNlX3NuYXBzaG90GAMgASgJEgwKBG5vdGUYBCABKAkSGQoRdGhyb3dhd2F5X2NvbW1hbmQYBSABKAkiwwIKDUNvbW1hbmRSZWNvcmQSIwoHY29tbWFuZBgBIAEoCzISLmhvdGJlZC52MS5Db21tYW5kEg8KB3JlcG9faWQYAiABKAkSDwoHcHJvamVjdBgOIAEoCRINCgVhZ2VudBgDIAEoCRIOCgZ2b2x1bWUYBCABKAkSCwoDZGlyGAUgASgJEgsKA2VudhgGIAMoCRIPCgdiYXNlX2lkGAcgASgJEg0KBXBhcmtzGAggASgFEhEKCXBhcmtlZF9hdBgJIAEoAxIZChFwZWFrX21lbW9yeV9ieXRlcxgKIAEoAxIOCgZjZ3JvdXAYCyABKAkSFgoOaXNvbGF0aW9uX2xvc3QYDCABKAkSEQoJd2FpdGVkX2F0GA0gASgDEhAKCGhlbGRfZm9yGA8gASgJEhcKD3BlYWtfaGVsZF9ieXRlcxgQIAEoA0I+WjxnaXRodWIuY29tL3NlbWlzdHJpY3QvaG90YmVkL2ludGVybmFsL2dlbi9ob3RiZWQvdjE7aG90YmVkdjFiBnByb3RvMw",
+		[file_hotbed_v1_hotbed],
+	);
 
 /**
  * @generated from message hotbed.v1.WorkspaceRecord
  */
 export type WorkspaceRecord = Message<"hotbed.v1.WorkspaceRecord"> & {
-  /**
-   * @generated from field: hotbed.v1.Workspace workspace = 1;
-   */
-  workspace?: Workspace | undefined;
+	/**
+	 * @generated from field: hotbed.v1.Workspace workspace = 1;
+	 */
+	workspace?: Workspace | undefined;
 
-  /**
-   * @generated from field: string volume = 2;
-   */
-  volume: string;
+	/**
+	 * @generated from field: string volume = 2;
+	 */
+	volume: string;
 
-  /**
-   * @generated from field: string base_snapshot = 3;
-   */
-  baseSnapshot: string;
+	/**
+	 * @generated from field: string base_snapshot = 3;
+	 */
+	baseSnapshot: string;
 
-  /**
-   * Why the base it forks is not up to date, if it is not; its reason once
-   * it is ready.
-   *
-   * @generated from field: string note = 4;
-   */
-  note: string;
+	/**
+	 * Why the base it forks is not up to date, if it is not; its reason once
+	 * it is ready.
+	 *
+	 * @generated from field: string note = 4;
+	 */
+	note: string;
 
-  /**
-   * Of a throwaway workspace: the one command run in it, from when it was
-   * queued. Its worker releases the workspace once that command has ended,
-   * or has been forgotten.
-   *
-   * @generated from field: string throwaway_command = 5;
-   */
-  throwawayCommand: string;
+	/**
+	 * Of a throwaway workspace: the one command run in it, from when it was
+	 * queued. Its worker releases the workspace once that command has ended,
+	 * or has been forgotten.
+	 *
+	 * @generated from field: string throwaway_command = 5;
+	 */
+	throwawayCommand: string;
 };
 
 /**
  * Describes the message hotbed.v1.WorkspaceRecord.
  * Use `create(WorkspaceRecordSchema)` to create a new message.
  */
-export const WorkspaceRecordSchema: GenMessage<WorkspaceRecord> = /*@__PURE__*/
-  messageDesc(file_hotbed_v1_worker, 0);
+export const WorkspaceRecordSchema: GenMessage<WorkspaceRecord> =
+	/*@__PURE__*/
+	messageDesc(file_hotbed_v1_worker, 0);
 
 /**
  * @generated from message hotbed.v1.CommandRecord
  */
 export type CommandRecord = Message<"hotbed.v1.CommandRecord"> & {
-  /**
-   * @generated from field: hotbed.v1.Command command = 1;
-   */
-  command?: Command | undefined;
+	/**
+	 * @generated from field: hotbed.v1.Command command = 1;
+	 */
+	command?: Command | undefined;
 
-  /**
-   * The project's repo it runs in; empty for /work itself.
-   *
-   * @generated from field: string repo_id = 2;
-   */
-  repoId: string;
+	/**
+	 * The project's repo it runs in; empty for /work itself.
+	 *
+	 * @generated from field: string repo_id = 2;
+	 */
+	repoId: string;
 
-  /**
-   * The project whose workspace or base it runs in.
-   *
-   * @generated from field: string project = 14;
-   */
-  project: string;
+	/**
+	 * The project whose workspace or base it runs in.
+	 *
+	 * @generated from field: string project = 14;
+	 */
+	project: string;
 
-  /**
-   * @generated from field: string agent = 3;
-   */
-  agent: string;
+	/**
+	 * @generated from field: string agent = 3;
+	 */
+	agent: string;
 
-  /**
-   * @generated from field: string volume = 4;
-   */
-  volume: string;
+	/**
+	 * @generated from field: string volume = 4;
+	 */
+	volume: string;
 
-  /**
-   * Working directory, as the command sees it.
-   *
-   * @generated from field: string dir = 5;
-   */
-  dir: string;
+	/**
+	 * Working directory, as the command sees it.
+	 *
+	 * @generated from field: string dir = 5;
+	 */
+	dir: string;
 
-  /**
-   * @generated from field: repeated string env = 6;
-   */
-  env: string[];
+	/**
+	 * @generated from field: repeated string env = 6;
+	 */
+	env: string[];
 
-  /**
-   * Set for a freshen: the base it builds.
-   *
-   * @generated from field: string base_id = 7;
-   */
-  baseId: string;
+	/**
+	 * Set for a freshen: the base it builds.
+	 *
+	 * @generated from field: string base_id = 7;
+	 */
+	baseId: string;
 
-  /**
-   * @generated from field: int32 parks = 8;
-   */
-  parks: number;
+	/**
+	 * @generated from field: int32 parks = 8;
+	 */
+	parks: number;
 
-  /**
-   * @generated from field: int64 parked_at = 9;
-   */
-  parkedAt: bigint;
+	/**
+	 * @generated from field: int64 parked_at = 9;
+	 */
+	parkedAt: bigint;
 
-  /**
-   * @generated from field: int64 peak_memory_bytes = 10;
-   */
-  peakMemoryBytes: bigint;
+	/**
+	 * @generated from field: int64 peak_memory_bytes = 10;
+	 */
+	peakMemoryBytes: bigint;
 
-  /**
-   * @generated from field: string cgroup = 11;
-   */
-  cgroup: string;
+	/**
+	 * @generated from field: string cgroup = 11;
+	 */
+	cgroup: string;
 
-  /**
-   * Why a measurement's isolation no longer held, once it didn't.
-   *
-   * @generated from field: string isolation_lost = 12;
-   */
-  isolationLost: string;
+	/**
+	 * Why a measurement's isolation no longer held, once it didn't.
+	 *
+	 * @generated from field: string isolation_lost = 12;
+	 */
+	isolationLost: string;
 
-  /**
-   * When an agent last started waiting on it: its soft time limit counts
-   * from then, or from its start if later.
-   *
-   * @generated from field: int64 waited_at = 13;
-   */
-  waitedAt: bigint;
+	/**
+	 * When an agent last started waiting on it: its soft time limit counts
+	 * from then, or from its start if later.
+	 *
+	 * @generated from field: int64 waited_at = 13;
+	 */
+	waitedAt: bigint;
 
-  /**
-   * Set while it is parked beside measurement held_for (its id), its
-   * volume having written to a pool the measurement uses past the
-   * measurement's bound; it is thawed once no measurement runs.
-   *
-   * @generated from field: string held_for = 15;
-   */
-  heldFor: string;
+	/**
+	 * Set while it is parked beside measurement held_for (its id), its
+	 * volume having written to a pool the measurement uses past the
+	 * measurement's bound; it is thawed once no measurement runs.
+	 *
+	 * @generated from field: string held_for = 15;
+	 */
+	heldFor: string;
 
-  /**
-   * The most memory it held of its own (anonymous and swapped, not file
-   * cache): while it runs or is parked, the node reserves at least this
-   * for it, as it may need it again.
-   *
-   * @generated from field: int64 peak_held_bytes = 16;
-   */
-  peakHeldBytes: bigint;
+	/**
+	 * The most memory it held of its own (anonymous and swapped, not file
+	 * cache): while it runs or is parked, the node reserves at least this
+	 * for it, as it may need it again.
+	 *
+	 * @generated from field: int64 peak_held_bytes = 16;
+	 */
+	peakHeldBytes: bigint;
 };
 
 /**
  * Describes the message hotbed.v1.CommandRecord.
  * Use `create(CommandRecordSchema)` to create a new message.
  */
-export const CommandRecordSchema: GenMessage<CommandRecord> = /*@__PURE__*/
-  messageDesc(file_hotbed_v1_worker, 1);
-
+export const CommandRecordSchema: GenMessage<CommandRecord> =
+	/*@__PURE__*/
+	messageDesc(file_hotbed_v1_worker, 1);

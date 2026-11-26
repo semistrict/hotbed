@@ -1996,6 +1996,7 @@ func (e *Engine) endBy(c *command, state pb.CommandState, code *int32, why strin
 		EndedAt: now, QueuedSeconds: float64(started-cmd.QueuedAt) / 1000, Seconds: seconds,
 		ColdSeconds: cmd.ColdSeconds, PeakMemoryBytes: c.rec.PeakMemoryBytes, Parks: c.rec.Parks,
 		SessionId: cmd.SessionId, Reason: why, Bench: cmd.Bench, Runtime: e.commandRuntime(c),
+		Samples: cmd.Samples,
 	}
 	if len(cmd.Interventions) > 0 {
 		f.Interventions = make([]*pb.CommandIntervention, len(cmd.Interventions))

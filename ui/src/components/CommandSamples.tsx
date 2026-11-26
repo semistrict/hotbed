@@ -18,27 +18,41 @@ function newestSeq(samples: readonly CommandSample[] | undefined): number {
 }
 
 /**
- * A fresh listing of a command's samples, with those known here that are
- * newer than its newest: a sample just kept reaches the controller a moment
- * after its taker has it, and a listing must not drop it meanwhile.
+ * A command's samples as known here: those the controller listed, and those
+ * kept here that it has not listed yet (a sample reaches the controller a
+ * moment after its taker has it).
  */
-export function withKnown(listed: readonly CommandSample[], known: readonly CommandSample[] | undefined): CommandSample[] {
-  const newest = newestSeq(listed);
-  return [...listed, ...(known ?? []).filter((k) => k.seq > newest)];
+export interface SampleList {
+  listed: CommandSample[];
+  seeded: CommandSample[];
+}
+
+/** The samples to show, oldest first: all listed, and those seeded the listing lacks. */
+export function samplesShown(l: SampleList): CommandSample[] {
+  const listed = new Set(l.listed.map((s) => s.seq));
+  return [...l.listed, ...l.seeded.filter((s) => !listed.has(s.seq))].sort((a, b) => a.seq - b.seq);
+}
+
+/** A fresh listing: seeds it now holds are the controller's, the rest wait on. */
+export function relisted(listed: CommandSample[], prev: SampleList | undefined): SampleList {
+  const have = new Set(listed.map((s) => s.seq));
+  return { listed, seeded: (prev?.seeded ?? []).filter((s) => !have.has(s.seq)) };
 }
 
 /**
  * The samples kept of command id, oldest first, without their contents.
- * count, for a live command, is how many it has: the list is fetched again
- * until it holds them all, so a sample anyone takes shows up.
+ * count is how many it has (Command.samples, FinishedCommand.samples): the
+ * list is fetched again until the controller lists the newest, so a sample
+ * anyone takes, or one still on its way as the command ends, shows up.
  */
 export function useCommandSamples(id: string, count: number | undefined) {
   const qc = useQueryClient();
   return useQuery({
     queryKey: sampleKeys.list(id),
-    queryFn: async () => withKnown(await api.listCommandSamples(id), qc.getQueryData<CommandSample[]>(sampleKeys.list(id))),
+    queryFn: async () => relisted(await api.listCommandSamples(id), qc.getQueryData<SampleList>(sampleKeys.list(id))),
     staleTime: Infinity,
-    refetchInterval: (q) => (count !== undefined && newestSeq(q.state.data) < count ? 1000 : false),
+    refetchInterval: (q) => (count !== undefined && newestSeq(q.state.data?.listed) < count ? 1000 : false),
+    select: samplesShown,
   });
 }
 
@@ -47,7 +61,10 @@ export function seedKeptSample(qc: QueryClient, id: string, kept: CommandSample,
   const full = clone(CommandSampleSchema, kept);
   full.sample = sample;
   qc.setQueryData(sampleKeys.one(id, kept.seq), full);
-  qc.setQueryData(sampleKeys.list(id), (old: CommandSample[] | undefined) => withKnown(old ?? [], [kept]));
+  qc.setQueryData(sampleKeys.list(id), (old: SampleList | undefined) => ({
+    listed: old?.listed ?? [],
+    seeded: [...(old?.seeded ?? []).filter((s) => s.seq !== kept.seq), kept],
+  }));
 }
 
 /** What a kept sample was: when, how long, which PID, and who took it. */

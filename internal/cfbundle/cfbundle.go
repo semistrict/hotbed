@@ -11,15 +11,13 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"time"
 )
 
 // Dir is where `pnpm -C cf-controller run build` writes the bundle, relative
 // to the repo root.
 var Dir = filepath.Join("cf-controller", ".cloudflare", "output", "v1", "workers", "default", "bundle")
-
-// sources are what the bundle is built from, relative to cf-controller.
-var sources = []string{"src", "drizzle", "package.json", "cloudflare.config.ts"}
 
 // Ensure returns the bundle directory under repo root, building the bundle
 // when it is missing or older than any of its sources.
@@ -64,30 +62,33 @@ func modTime(path string) (time.Time, error) {
 	return fi.ModTime(), nil
 }
 
-// newestSource is the latest modification time among the bundle's sources
-// under controller, the cf-controller directory.
+// newestSource is the latest modification time of any file the bundle may
+// be built from: all of controller, the cf-controller directory, but its
+// dependencies (node_modules) and what tools write (hidden directories, such
+// as .cloudflare, where the bundle itself is).
 func newestSource(controller string) (time.Time, error) {
 	var newest time.Time
-	for _, src := range sources {
-		err := filepath.WalkDir(filepath.Join(controller, src), func(_ string, d fs.DirEntry, err error) error {
-			if err != nil {
-				return err
-			}
-			if d.IsDir() {
-				return nil
-			}
-			fi, err := d.Info()
-			if err != nil {
-				return err
-			}
-			if fi.ModTime().After(newest) {
-				newest = fi.ModTime()
+	err := filepath.WalkDir(controller, func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if d.IsDir() {
+			if path != controller && (d.Name() == "node_modules" || strings.HasPrefix(d.Name(), ".")) {
+				return filepath.SkipDir
 			}
 			return nil
-		})
-		if err != nil {
-			return time.Time{}, fmt.Errorf("look at cf-controller sources: %w", err)
 		}
+		fi, err := d.Info()
+		if err != nil {
+			return err
+		}
+		if fi.ModTime().After(newest) {
+			newest = fi.ModTime()
+		}
+		return nil
+	})
+	if err != nil {
+		return time.Time{}, fmt.Errorf("look at cf-controller sources: %w", err)
 	}
 	return newest, nil
 }

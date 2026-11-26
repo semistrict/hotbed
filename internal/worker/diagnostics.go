@@ -261,7 +261,15 @@ func (e *Engine) keepSample(req *pb.SampleCommandRequest, by *pb.Stamp, ch *pb.S
 	cmd := c.cmd()
 	cmd.Samples++
 	cs.Seq = cmd.Samples
+	dirtyBefore := e.dirtyGen
 	e.saveCommand(c, change{what: "sampled", out: outbox{sample: cs}})
+	if e.dirtyGen != dirtyBefore {
+		// Not in worker.db, it never reaches the controller: say so, and
+		// give its number to the next.
+		cmd.Samples--
+		ch.NotKept = "the worker could not save it"
+		return
+	}
 	ch.Sample = cs.Sample
 	ch.Kept = proto.CloneOf(cs)
 	ch.Kept.Sample = nil

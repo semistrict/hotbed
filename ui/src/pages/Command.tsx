@@ -65,7 +65,7 @@ function CommandView({
 
   const [sampleSeconds, setSampleSeconds] = useState(3);
   const taking = useTaking(id);
-  const kept = useCommandSamples(id, live?.samples);
+  const kept = useCommandSamples(id, live?.samples ?? done?.samples);
   const [watchingTaking, setWatchingTaking] = useState(false);
   const view: View = watchingTaking && taking ? "taking" : (search.sample ?? "overview");
   const show = (next: "overview" | number) => {
