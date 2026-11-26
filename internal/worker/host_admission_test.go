@@ -2,6 +2,7 @@ package worker
 
 import (
 	"context"
+	"math"
 	"os"
 	"path/filepath"
 	"strings"
@@ -11,6 +12,7 @@ import (
 	"github.com/semistrict/hotbed/internal/fake"
 	pb "github.com/semistrict/hotbed/internal/gen/hotbed/v1"
 	"github.com/semistrict/hotbed/internal/gen/hotbed/v1/hotbedv1connect"
+	"github.com/semistrict/hotbed/internal/sysinfo"
 )
 
 // TestHostCPUStarvationHoldsWork verifies board 9281: when the Linux guest
@@ -41,7 +43,7 @@ func TestHostCPUStarvationHoldsWork(t *testing.T) {
 	}}
 
 	// Guest reports 92% CPU busy with 31% guest PSI (below 60% guest hold).
-	sys.SetBusy(0.92)
+	sys.SetCPU(sysinfo.CPUShare{Busy: 0.92})
 	sys.SetCPUPressure(31)
 	e.Sample()
 	if a := e.Heartbeat("c").Admission; a.Holding {
@@ -97,7 +99,7 @@ func TestHostCPUStarvationHoldsWork(t *testing.T) {
 
 	// Hysteresis: still above resume threshold (host CPU 78% > 70%), stays held.
 	now = now.Add(5 * time.Second)
-	sys.SetBusy(0.40)
+	sys.SetCPU(sysinfo.CPUShare{Busy: 0.40})
 	e.Sample()
 	e.SetHostUsage(&pb.HostUsage{
 		VmCpuBusy:          0.35,
@@ -142,6 +144,48 @@ func TestHostCPUStarvationHoldsWork(t *testing.T) {
 	}
 	if unholds := feedOf(t, e, "unhold"); len(unholds) != 1 || !strings.Contains(unholds[0], "host-cpu") {
 		t.Errorf("unhold events = %q, want one for host-cpu", unholds)
+	}
+}
+
+// TestIdleNestedVMIsNotHostCPUStarvation: an idle Firecracker microVM
+// inside the worker VM keeps its vCPU threads in KVM_RUN, so the guest
+// kernel counts them busy while the macOS host, seeing them wait, gives the
+// VM little. That gap is not steal: with the guest 98% busy, 80% of it in a
+// nested VM, and the host giving the VM 22%, new work must still start. The
+// same guest busy outside nested VMs is starvation.
+func TestIdleNestedVMIsNotHostCPUStarvation(t *testing.T) {
+	e, units, sys, clk := parkEngine(t)
+	starved := &pb.HostUsage{
+		VmCpuBusy:   0.22,
+		HostCpuBusy: 0.24,
+		HostLoad_1M: 6.3,
+		HostCpus:    15,
+		SampledAt:   clk.UnixMilli(),
+	}
+
+	sys.SetCPU(sysinfo.CPUShare{Busy: 0.98, Nested: 0.80})
+	e.Sample()
+	e.SetHostUsage(starved)
+	if _, err := e.Exec(t.Context(), &pb.RunCommandRequest{
+		Id: "nested-1", WorkspaceId: "a", Args: []string{"sleep", "60"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { units.Stop(context.WithoutCancel(t.Context()), "hotbed-nested-1") })
+	e.admit(t.Context())
+	if c, _ := e.Command("nested-1"); c.State != running {
+		t.Fatalf("with an idle nested VM, nested-1 is %v (%q), want running", c.State, c.Reason)
+	}
+	if hcpu := signal(e.Heartbeat("c").Admission, "host-cpu-starvation"); hcpu.Holding {
+		t.Errorf("host-cpu-starvation with an idle nested VM = %+v, want not holding", hcpu)
+	}
+
+	sys.SetCPU(sysinfo.CPUShare{Busy: 0.98})
+	e.Sample()
+	e.SetHostUsage(starved)
+	hcpu := signal(e.Heartbeat("c").Admission, "host-cpu-starvation")
+	if !hcpu.Holding || math.Round(hcpu.Value) != 76 {
+		t.Errorf("host-cpu-starvation with the guest's own work 98%% busy = %+v, want holding at 76%% steal", hcpu)
 	}
 }
 

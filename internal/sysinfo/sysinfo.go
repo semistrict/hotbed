@@ -14,7 +14,6 @@ import (
 	"strconv"
 	"strings"
 	"sync"
-	"time"
 
 	"golang.org/x/sys/unix"
 
@@ -409,57 +408,76 @@ func Pressure(resource string) (float64, error) {
 
 // CPU tracks /proc/stat between samples, to report how busy the CPUs were.
 type CPU struct {
-	mu         sync.Mutex
-	busy, all  uint64
-	lastSample time.Time
+	mu   sync.Mutex
+	last cpuTicks
 }
 
-// Busy is the share of CPU time, across all CPUs, that was not idle since
-// the last call. The first call measures since boot.
-func (c *CPU) Busy() (float64, error) {
-	busy, all, err := cpuTimes()
+// CPUShare is how CPU time, across all CPUs, was spent since the last sample.
+type CPUShare struct {
+	// Busy is the share that was not idle, nested VMs' vCPUs included.
+	Busy float64
+	// Nested is the share that ran nested VMs' vCPUs (/proc/stat guest and
+	// guest_nice). This machine's kernel counts it busy for as long as a
+	// vCPU thread is inside the nested VM, idle or not, so it says nothing
+	// of how much CPU the machine's own host gave it.
+	Nested float64
+}
+
+// Own is the share of CPU time busy outside nested VMs.
+func (s CPUShare) Own() float64 { return max(0, s.Busy-s.Nested) }
+
+// Sample is how CPU time was spent since the last call. The first call
+// measures since boot.
+func (c *CPU) Sample() (CPUShare, error) {
+	t, err := readCPUTicks()
 	if err != nil {
-		return 0, err
+		return CPUShare{}, err
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	db, da := busy-c.busy, all-c.all
-	c.busy, c.all, c.lastSample = busy, all, time.Now()
-	if da == 0 {
-		return 0, nil
+	d := cpuTicks{busy: t.busy - c.last.busy, nested: t.nested - c.last.nested, all: t.all - c.last.all}
+	c.last = t
+	if d.all == 0 {
+		return CPUShare{}, nil
 	}
-	return float64(db) / float64(da), nil
+	return CPUShare{Busy: float64(d.busy) / float64(d.all), Nested: float64(d.nested) / float64(d.all)}, nil
 }
 
-// cpuTimes reads the first line of /proc/stat:
+// cpuTicks is cumulative CPU time from /proc/stat, in clock ticks.
+type cpuTicks struct{ busy, nested, all uint64 }
+
+// readCPUTicks reads the first line of /proc/stat:
 // cpu user nice system idle iowait irq softirq steal guest guest_nice
-func cpuTimes() (busy, all uint64, err error) {
+func readCPUTicks() (cpuTicks, error) {
 	f, err := os.Open(path("/proc/stat"))
 	if err != nil {
-		return 0, 0, err
+		return cpuTicks{}, err
 	}
 	defer f.Close()
 	sc := bufio.NewScanner(f)
 	if !sc.Scan() {
-		return 0, 0, fmt.Errorf("/proc/stat is empty")
+		return cpuTicks{}, fmt.Errorf("/proc/stat is empty")
 	}
 	fs := strings.Fields(sc.Text())
-	if len(fs) < 9 || fs[0] != "cpu" {
-		return 0, 0, fmt.Errorf("/proc/stat starts %q", sc.Text())
+	if len(fs) < 11 || fs[0] != "cpu" {
+		return cpuTicks{}, fmt.Errorf("/proc/stat starts %q", sc.Text())
 	}
-	var v [8]uint64
+	var v [10]uint64
 	for i := range v {
 		v[i], err = strconv.ParseUint(fs[i+1], 10, 64)
 		if err != nil {
-			return 0, 0, fmt.Errorf("parse /proc/stat: %w", err)
+			return cpuTicks{}, fmt.Errorf("parse /proc/stat: %w", err)
 		}
 	}
-	// guest time is already counted in user, so it is left out.
-	for _, x := range v {
-		all += x
+	var t cpuTicks
+	// guest and guest_nice are already counted in user and nice, so only
+	// the first eight add to the total.
+	for _, x := range v[:8] {
+		t.all += x
 	}
-	idle := v[3] + v[4]
-	return all - idle, all, nil
+	t.busy = t.all - v[3] - v[4]
+	t.nested = v[8] + v[9]
+	return t, nil
 }
 
 // OOMKills is how many processes the kernel's OOM killer has killed since

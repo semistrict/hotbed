@@ -309,5 +309,5 @@ func (l *Linux) sliceDir() string { return unit.SliceDir(cmp.Or(l.Slice, unit.De
 func (l *Linux) Resources() (*pb.Resources, error) { return sysinfo.Resources(l.sliceDir()) }
 func (l *Linux) Meminfo() (sysinfo.Mem, error)     { return sysinfo.Memory(l.sliceDir()) }
 func (*Linux) Pressure(r string) (float64, error)  { return sysinfo.Pressure(r) }
-func (l *Linux) CPUBusy() (float64, error)         { return l.cpu.Busy() }
+func (l *Linux) CPU() (sysinfo.CPUShare, error)    { return l.cpu.Sample() }
 func (*Linux) OOMKills() (int64, error)            { return sysinfo.OOMKills() }

@@ -346,18 +346,18 @@ func startDevCluster(parent context.Context, addr string) (*devCluster, error) {
 		{
 			peer: ubu1Peer,
 			sys: &fake.System{
-				Arch: "amd64",
-				Mem:  sysinfo.Mem{Total: 64 << 30, Available: 44 << 30, SwapTotal: 16 << 30, SwapFree: 16 << 30},
-				Busy: 0.34,
+				Arch:     "amd64",
+				Mem:      sysinfo.Mem{Total: 64 << 30, Available: 44 << 30, SwapTotal: 16 << 30, SwapFree: 16 << 30},
+				CPUShare: sysinfo.CPUShare{Busy: 0.34},
 			},
 			bench: fake.NewIsolation("12-15", 12),
 		},
 		{
 			peer: asahiPeer,
 			sys: &fake.System{
-				Arch: "arm64",
-				Mem:  sysinfo.Mem{Total: 24 << 30, Available: 15 << 30, SwapTotal: 8 << 30, SwapFree: 8 << 30},
-				Busy: 0.19,
+				Arch:     "arm64",
+				Mem:      sysinfo.Mem{Total: 24 << 30, Available: 15 << 30, SwapTotal: 8 << 30, SwapFree: 8 << 30},
+				CPUShare: sysinfo.CPUShare{Busy: 0.19},
 			},
 		},
 	}

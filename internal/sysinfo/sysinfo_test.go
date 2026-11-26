@@ -44,16 +44,20 @@ func TestFixtures(t *testing.T) {
 	}
 
 	var c CPU
-	busy, err := c.Busy()
+	share, err := c.Sample()
 	if err != nil {
 		t.Fatal(err)
 	}
-	// 200 busy (user+system) of 1000; iowait counts as idle.
-	if busy != 0.2 {
-		t.Errorf("Busy = %v, want 0.2", busy)
+	// 800 busy (user+system) of 1600, iowait counting as idle; 600 of the
+	// user time ran a nested VM's vCPUs.
+	if want := (CPUShare{Busy: 0.5, Nested: 0.375}); share != want {
+		t.Errorf("Sample = %+v, want %+v", share, want)
 	}
-	if again, _ := c.Busy(); again != 0 {
-		t.Errorf("Busy with no time passed = %v, want 0", again)
+	if own := share.Own(); own != 0.125 {
+		t.Errorf("Own = %v, want 0.125", own)
+	}
+	if again, _ := c.Sample(); again != (CPUShare{}) {
+		t.Errorf("Sample with no time passed = %+v, want zero", again)
 	}
 }
 
