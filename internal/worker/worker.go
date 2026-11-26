@@ -106,18 +106,27 @@ func resolveCommandUser(name string) (uid, gid int, err error) {
 // CheckMachine is the real Check: Linux, root, a user to run commands as,
 // and a state directory on a filesystem that can fork.
 func CheckMachine(ctx context.Context, o JoinOptions) (string, error) {
-	if runtime.GOOS != "linux" {
-		return "", api.Errorf(api.CodePlatformNotSupported, "workers need Linux; this is %s", runtime.GOOS).
-			WithSuggestion("run the controller or the client here, and workers on Linux machines")
-	}
-	if os.Geteuid() != 0 {
-		return "", api.Errorf(api.CodeInvalidArgs, "a worker runs as root, to fork volumes and start systemd units").
-			WithSuggestion("run it with sudo; commands still run as --user")
-	}
-	if o.Slice != "" {
-		if err := unit.CheckSlice(o.Slice); err != nil {
-			return "", api.Errorf(api.CodeInvalidArgs, "%v", err)
+	switch runtime.GOOS {
+	case "linux":
+		if os.Geteuid() != 0 {
+			return "", api.Errorf(api.CodeInvalidArgs, "a worker runs as root, to fork volumes and start systemd units").
+				WithSuggestion("run it with sudo; commands still run as --user")
 		}
+		if o.Slice != "" {
+			if err := unit.CheckSlice(o.Slice); err != nil {
+				return "", api.Errorf(api.CodeInvalidArgs, "%v", err)
+			}
+		}
+	case "darwin":
+		// A Mac's worker runs as its user: every command is a VM of
+		// machined's, which needs no root (internal/macworker).
+		if os.Geteuid() == 0 {
+			return "", api.Errorf(api.CodeInvalidArgs, "a macOS worker runs as the Mac's user, not root").
+				WithSuggestion("run it without sudo")
+		}
+	default:
+		return "", api.Errorf(api.CodePlatformNotSupported, "workers need Linux or macOS; this is %s", runtime.GOOS).
+			WithSuggestion("run the controller or the client here, and workers on Linux machines or Macs")
 	}
 	if _, _, err := resolveCommandUser(o.User); err != nil {
 		return "", err

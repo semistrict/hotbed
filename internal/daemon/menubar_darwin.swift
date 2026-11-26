@@ -14,15 +14,15 @@ struct T3BridgeSummary: Decodable {
     let lastError: String?
 }
 
-struct WorkerVMSummary: Decodable {
+// The Mac's worker and machined, which runs its VMs (macworker.State).
+struct WorkerSummary: Decodable {
     let configured: Bool
-    let hostname: String?
-    let arch: String?
-    let cpus: Int?
-    let memoryMB: Int?
     let autostart: Bool
     let state: String
     let detail: String?
+    let machinedPid: Int?
+    let workerPid: Int?
+    let release: String?
 }
 
 struct DaemonSnapshot: Decodable {
@@ -33,7 +33,7 @@ struct DaemonSnapshot: Decodable {
     let cockpitUrl: String?
     let logPath: String?
     let t3Bridge: T3BridgeSummary
-    let workerVm: WorkerVMSummary
+    let worker: WorkerSummary
 }
 
 func makeDot(color: NSColor) -> NSImage {
@@ -98,8 +98,8 @@ final class HotbedMenubarDelegate: NSObject, NSApplicationDelegate {
 
     @objc private func openCockpit() { sendAction("open_cockpit") }
     @objc private func openLogs() { sendAction("open_logs") }
-    @objc private func startVM() { sendAction("start_vm") }
-    @objc private func stopVM() { sendAction("stop_vm") }
+    @objc private func startWorker() { sendAction("start_worker") }
+    @objc private func stopWorker() { sendAction("stop_worker") }
     @objc private func restartDaemon() { sendAction("restart") }
 
     private func updateIcon(_ snap: DaemonSnapshot?) {
@@ -108,21 +108,21 @@ final class HotbedMenubarDelegate: NSObject, NSApplicationDelegate {
         var tooltip = "Hotbed"
 
         if let snap = snap {
-            let vmErr = snap.workerVm.state == "error" || snap.workerVm.state == "paused"
+            let workerErr = snap.worker.state == "error"
             let bridgeConnected = snap.t3Bridge.state == "connected"
-            let vmRunning = snap.workerVm.state == "running"
+            let workerRunning = snap.worker.state == "running"
 
-            if vmErr {
+            if workerErr {
                 symbolName = "exclamationmark.triangle.fill"
-            } else if bridgeConnected || vmRunning {
+            } else if bridgeConnected || workerRunning {
                 symbolName = "flame.fill"
             } else {
                 symbolName = "flame"
             }
 
             var parts: [String] = ["Hotbed \(snap.version)"]
-            if snap.workerVm.configured, let h = snap.workerVm.hostname {
-                parts.append("\(h): \(snap.workerVm.state)")
+            if snap.worker.configured {
+                parts.append("worker: \(snap.worker.state)")
             }
             if snap.t3Bridge.enabled {
                 parts.append("T3 bridge: \(snap.t3Bridge.state)")
@@ -217,46 +217,40 @@ final class HotbedMenubarDelegate: NSObject, NSApplicationDelegate {
 
         menu.addItem(NSMenuItem.separator())
 
-        // Local Worker VM section
-        menu.addItem(sectionHeader("Local Worker VM"))
-        let vm = snap.workerVm
-        if vm.configured {
-            let name = vm.hostname ?? "vm"
-            let (vmLabel, vmColor): (String, NSColor) = {
-                switch vm.state {
-                case "running": return ("\(name): Running", .systemGreen)
-                case "starting": return ("\(name): Starting…", .systemYellow)
-                case "stopping": return ("\(name): Stopping…", .systemYellow)
-                case "asleep": return ("\(name): Asleep (Standby)", .systemBlue)
-                case "paused": return ("\(name): Paused", .systemOrange)
-                case "error": return ("\(name): Error", .systemRed)
-                default: return ("\(name): Stopped", .systemGray)
+        // Local worker section: the worker and machined, its VMs' daemon
+        menu.addItem(sectionHeader("Local Worker"))
+        let w = snap.worker
+        if w.configured {
+            let (label, color): (String, NSColor) = {
+                switch w.state {
+                case "running": return ("Worker: Running", .systemGreen)
+                case "starting": return ("Worker: Starting…", .systemYellow)
+                case "stopping": return ("Worker: Stopping…", .systemYellow)
+                case "error": return ("Worker: Error", .systemRed)
+                default: return ("Worker: Stopped", .systemGray)
                 }
             }()
-            menu.addItem(infoItem(vmLabel, dot: vmColor))
-            if let cpus = vm.cpus, let memMB = vm.memoryMB, cpus > 0, memMB > 0 {
-                let gb = Double(memMB) / 1024.0
-                let memStr = gb.truncatingRemainder(dividingBy: 1) == 0 ? "\(Int(gb)) GB" : String(format: "%.1f GB", gb)
-                let arch = vm.arch ?? ""
-                menu.addItem(infoItem("\(cpus) vCPUs · \(memStr) RAM\(arch.isEmpty ? "" : " · \(arch)")"))
+            menu.addItem(infoItem(label, dot: color))
+            if let release = w.release, !release.isEmpty {
+                menu.addItem(infoItem("machined \(release)"))
             }
-            if let detail = vm.detail, !detail.isEmpty {
+            if let detail = w.detail, !detail.isEmpty {
                 menu.addItem(infoItem(truncate(detail, maxLen: 48)))
             }
 
-            if vm.state == "running" || vm.state == "paused" {
-                let stopItem = NSMenuItem(title: "Stop Worker VM", action: #selector(stopVM), keyEquivalent: "")
+            if w.state == "running" || w.state == "error" {
+                let stopItem = NSMenuItem(title: "Stop Worker", action: #selector(stopWorker), keyEquivalent: "")
                 stopItem.target = self
                 menu.addItem(stopItem)
-            } else if vm.state == "starting" || vm.state == "stopping" {
-                menu.addItem(infoItem(vm.state == "starting" ? "Starting Worker VM…" : "Stopping Worker VM…"))
+            } else if w.state == "starting" || w.state == "stopping" {
+                menu.addItem(infoItem(w.state == "starting" ? "Starting Worker…" : "Stopping Worker…"))
             } else {
-                let startItem = NSMenuItem(title: "Start Worker VM", action: #selector(startVM), keyEquivalent: "")
+                let startItem = NSMenuItem(title: "Start Worker", action: #selector(startWorker), keyEquivalent: "")
                 startItem.target = self
                 menu.addItem(startItem)
             }
         } else {
-            menu.addItem(infoItem("No local VM configured", dot: .systemGray))
+            menu.addItem(infoItem("No local worker (hotbed worker init)", dot: .systemGray))
         }
 
         menu.addItem(NSMenuItem.separator())

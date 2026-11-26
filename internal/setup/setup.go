@@ -1,8 +1,8 @@
 // Package setup provisions a hotbed worker node on the current machine in a
 // single command: directly on Linux (using native btrfs/zfs or a sparse
-// file-backed ZFS pool in ~/.hotbed) and via an Ubuntu VM (Apple
-// Virtualization framework, run by vfkit, with nested virtualization) with
-// sparse discard-enabled raw disks and ZFS in ~/.hotbed on macOS.
+// file-backed ZFS pool in ~/.hotbed), and on macOS natively too, every
+// command in a VM of machined's, which hotbed's daemon runs beside the
+// worker (internal/macworker).
 package setup
 
 import (
@@ -17,19 +17,15 @@ import (
 	"strconv"
 	"strings"
 	"syscall"
+
+	"github.com/semistrict/hotbed/internal/macworker"
 )
 
 const (
-	// DefaultUbuntuVersion is the Ubuntu LTS release used for macOS worker VMs.
-	DefaultUbuntuVersion = "26.04"
 	// DefaultDiskSize is the default virtual size of the sparse ZFS disk image.
 	DefaultDiskSize = 256 << 30 // 256 GiB
-	// DefaultRootSize is the default virtual size of the VM OS root disk.
-	DefaultRootSize = 32 << 30 // 32 GiB
 	// DefaultPoolName is the ZFS pool name created for file- and disk-image-backed workers.
 	DefaultPoolName = "hotbed"
-	// DefaultVMStateDir is the worker state directory inside a macOS worker VM.
-	DefaultVMStateDir = "/var/lib/hotbed"
 	// DaemonLaunchAgentLabel is the unified macOS LaunchAgent label for `hotbed daemon`.
 	DaemonLaunchAgentLabel = "com.semistrict.hotbed.daemon"
 )
@@ -43,24 +39,13 @@ type Options struct {
 	DiskSize       int64  // virtual sparse ZFS disk size in bytes
 	ZFSDataset     string // optional ZFS dataset override (Linux native ZFS)
 	ZFSDevice      string // optional block device path under /dev/ for a ZFS pool (Linux)
-	TrimFS         bool   // Linux: also run fstrim -a in the periodic trim timer (for VM guests)
 	ZFSARCMax      int64  // Linux: cap on the ZFS ARC of a pool hotbed makes, in bytes; 0 for zfs's default
 	UnitProperties []string
 	Slice          string
 	NoStart        bool
-
-	// macOS worker VM options (ignored on Linux).
-	Hostname         string
-	CPUs             int
-	MemoryBytes      int64
-	RootSize         int64
-	SwapSize         int64
-	UbuntuVersion    string
-	ImageURL         string
-	BinaryPath       string // path to Linux hotbed binary
-	TailscaleAuthKey string
-	NoAutostart      bool
-	SleepAfter       string // macOS VM: how long idle before it powers off; "" default, "0" never
+	// Hostname is the worker's node name when the tailnet reports none
+	// (Linux).
+	Hostname string
 
 	// Progress receives human-readable progress lines (typically stderr).
 	Progress io.Writer
@@ -68,63 +53,37 @@ type Options struct {
 
 // Result is returned by Setup as the CLI envelope data.
 type Result struct {
-	Platform   string     `json:"platform"` // "linux" or "darwin-vz"
-	Dir        string     `json:"dir"`
-	StateDir   string     `json:"stateDir"`
-	Controller string     `json:"controller"`
-	User       string     `json:"user"`
-	Node       string     `json:"node,omitempty"`
-	ClusterID  string     `json:"clusterId,omitempty"`
-	Storage    string     `json:"storage"` // "btrfs", "zfs", "zfs-file", "zfs-device", "zfs-raw"
-	Running    bool       `json:"running"`
-	Service    string     `json:"service,omitempty"`
-	VM         *VMStatus  `json:"vm,omitempty"`
-	Disks      []DiskStat `json:"disks,omitempty"`
-	Next       []string   `json:"next,omitempty"`
+	Platform   string `json:"platform"` // "linux" or "darwin"
+	Dir        string `json:"dir"`
+	StateDir   string `json:"stateDir"`
+	Controller string `json:"controller"`
+	User       string `json:"user"`
+	Node       string `json:"node,omitempty"`
+	ClusterID  string `json:"clusterId,omitempty"`
+	Storage    string `json:"storage"` // "btrfs", "zfs", "zfs-file", "zfs-device", "zfs-raw"
+	Running    bool   `json:"running"`
+	Service    string `json:"service,omitempty"`
+	// Mac is how a Mac's worker and machined stand (hotbed's daemon runs
+	// them).
+	Mac   *macworker.State `json:"mac,omitempty"`
+	Disks []DiskStat       `json:"disks,omitempty"`
+	Next  []string         `json:"next,omitempty"`
 }
 
 // Status describes a locally configured worker.
 type Status struct {
-	Platform   string     `json:"platform"`
-	Dir        string     `json:"dir"`
-	StateDir   string     `json:"stateDir"`
-	Controller string     `json:"controller,omitempty"`
-	User       string     `json:"user,omitempty"`
-	Storage    string     `json:"storage,omitempty"`
-	Running    bool       `json:"running"`
-	Service    string     `json:"service,omitempty"`
-	VM         *VMStatus  `json:"vm,omitempty"`
-	Disks      []DiskStat `json:"disks,omitempty"`
-}
-
-// VMStatus describes the macOS VM backing a worker.
-type VMStatus struct {
-	Hostname   string   `json:"hostname"`
-	Arch       string   `json:"arch"`
-	Ubuntu     string   `json:"ubuntu"`
-	CPUs       int      `json:"cpus"`
-	MemoryMB   int64    `json:"memoryMB"`
-	PID        int    `json:"pid,omitempty"`
+	Platform   string `json:"platform"`
+	Dir        string `json:"dir"`
+	StateDir   string `json:"stateDir"`
+	Controller string `json:"controller,omitempty"`
+	User       string `json:"user,omitempty"`
+	Storage    string `json:"storage,omitempty"`
 	Running    bool   `json:"running"`
-	Paused     bool   `json:"paused,omitempty"`
-	State      string `json:"state,omitempty"` // as vfkit reports it, e.g. VirtualMachineStateRunning
-	Tailscale  string `json:"tailscale,omitempty"`
-	Autostart  bool   `json:"autostart"`
-	Supervised bool   `json:"supervised"` // its supervisor (LaunchAgent) runs
-	ConsoleLog string `json:"consoleLog,omitempty"`
-}
-
-// DaemonVMState summarizes the local worker VM state for `hotbed daemon` and
-// the macOS menubar app without incurring SSH overhead.
-type DaemonVMState struct {
-	Configured bool   `json:"configured"`
-	Hostname   string `json:"hostname,omitempty"`
-	Arch       string `json:"arch,omitempty"`
-	CPUs       int    `json:"cpus,omitempty"`
-	MemoryMB   int64  `json:"memoryMB,omitempty"`
-	Autostart  bool   `json:"autostart"`
-	State      string `json:"state"` // "running", "starting", "stopping", "asleep", "stopped", "paused", "error", "unconfigured"
-	Detail     string `json:"detail,omitempty"`
+	Service    string `json:"service,omitempty"`
+	// Mac is how a Mac's worker and machined stand (hotbed's daemon runs
+	// them).
+	Mac   *macworker.State `json:"mac,omitempty"`
+	Disks []DiskStat       `json:"disks,omitempty"`
 }
 
 // DiskStat reports virtual vs actual allocated on-disk bytes for a sparse image.
@@ -147,9 +106,8 @@ type TrimResult struct {
 
 // DestroyOptions control worker teardown.
 type DestroyOptions struct {
-	Dir        string
-	PurgeCache bool
-	Progress   io.Writer
+	Dir      string
+	Progress io.Writer
 }
 
 // DestroyResult summarizes what Destroy removed.
@@ -219,10 +177,12 @@ func JoinedController(dir string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	path := workerRecord(baseDir)
-	if path == "" {
-		return "", nil
-	}
+	return joinedController(baseDir)
+}
+
+// controllerRecord is the controller a worker init's record at path names:
+// "" if there is none.
+func controllerRecord(path string) (string, error) {
 	var rec struct {
 		Controller string `json:"controller"`
 	}
@@ -273,47 +233,6 @@ func ParseBytes(s string) (int64, error) {
 	return n * mult, nil
 }
 
-// SanitizeHostname returns a DNS/Tailscale-safe lowercase hostname label.
-func SanitizeHostname(s string) string {
-	s = strings.ToLower(strings.TrimSpace(s))
-	if host, _, ok := strings.Cut(s, "."); ok {
-		s = host
-	}
-	var b strings.Builder
-	lastDash := false
-	for _, r := range s {
-		switch {
-		case (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9'):
-			b.WriteRune(r)
-			lastDash = false
-		case !lastDash && b.Len() > 0:
-			b.WriteByte('-')
-			lastDash = true
-		}
-		if b.Len() >= 55 {
-			break
-		}
-	}
-	out := strings.Trim(b.String(), "-")
-	if out == "" {
-		return "hotbed-worker"
-	}
-	return out
-}
-
-// DefaultVMHostname derives a clean Tailscale hostname for a local VM worker.
-func DefaultVMHostname() string {
-	h, err := os.Hostname()
-	if err != nil || strings.TrimSpace(h) == "" {
-		return "hotbed-worker"
-	}
-	base := SanitizeHostname(h)
-	if strings.HasSuffix(base, "-worker") {
-		return base
-	}
-	return base + "-worker"
-}
-
 // FileDiskStat reads logical and actual allocated on-disk bytes for path.
 // On APFS and ext4/xfs/btrfs/zfs, stat.Blocks*512 reflects actual sparse
 // allocation after hole punching.
@@ -340,38 +259,6 @@ func progressf(w io.Writer, format string, args ...any) {
 		return
 	}
 	fmt.Fprintf(w, "hotbed: "+format+"\n", args...)
-}
-
-func writeJSONAtomic(path string, v any, perm fs.FileMode) error {
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		return err
-	}
-	b, err := json.MarshalIndent(v, "", "  ")
-	if err != nil {
-		return err
-	}
-	b = append(b, '\n')
-	tmp, err := os.CreateTemp(filepath.Dir(path), filepath.Base(path)+".*")
-	if err != nil {
-		return err
-	}
-	defer os.Remove(tmp.Name())
-	if err := tmp.Chmod(perm); err != nil {
-		tmp.Close()
-		return err
-	}
-	if _, err := tmp.Write(b); err != nil {
-		tmp.Close()
-		return err
-	}
-	if err := tmp.Sync(); err != nil {
-		tmp.Close()
-		return err
-	}
-	if err := tmp.Close(); err != nil {
-		return err
-	}
-	return os.Rename(tmp.Name(), path)
 }
 
 func readJSON(path string, v any) error {

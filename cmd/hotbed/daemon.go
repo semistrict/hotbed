@@ -17,7 +17,7 @@ import (
 )
 
 type daemonCmd struct {
-	Run       daemonRunCmd       `cmd:"" default:"withargs" help:"Run the local Hotbed background daemon in the foreground (T3 question notifications, macOS VM worker supervision, and macOS menubar app)."`
+	Run       daemonRunCmd       `cmd:"" default:"withargs" help:"Run the local Hotbed background daemon in the foreground (T3 question notifications, a Mac's worker and machined, and the macOS menubar app)."`
 	Install   daemonInstallCmd   `cmd:"" help:"Install and start the background Hotbed daemon (LaunchAgent on macOS, systemd user service on Linux), migrating away from any legacy separate worker/t3-bridge services."`
 	Uninstall daemonUninstallCmd `cmd:"" help:"Stop and remove the background Hotbed daemon service."`
 	Status    daemonStatusCmd    `cmd:"" help:"Show the local Hotbed daemon service and live subsystem status."`
@@ -31,7 +31,7 @@ type daemonCommonFlags struct {
 	T3Bin        string        `name:"t3-bin" env:"T3_BIN" help:"Path to the local t3 CLI binary (default: t3 on PATH or ~/.t3/bin/t3)."`
 	T3BaseDir    string        `name:"t3-base-dir" env:"T3CODE_HOME" help:"Optional T3 Code base directory passed as --base-dir to t3."`
 	NoT3Bridge   bool          `name:"no-t3-bridge" help:"Disable T3 Code question notifications."`
-	NoWorker     bool          `name:"no-worker" help:"Disable local macOS worker VM auto-start and Standby supervision."`
+	NoWorker     bool          `name:"no-worker" help:"Do not run this Mac's worker and machined."`
 	NoMenubar    bool          `name:"no-menubar" help:"Disable the macOS menubar status app."`
 }
 
@@ -51,6 +51,14 @@ func (c *daemonRunCmd) Exec(ctx context.Context, d deps) (any, error) {
 	opener := d.openURL
 	if opener == nil {
 		opener = openDefaultBrowser
+	}
+	// The binary a Mac's worker runs from: a new build replaces the file.
+	exe, err := d.exe()
+	if err != nil {
+		return nil, fmt.Errorf("locate hotbed binary: %w", err)
+	}
+	if resolved, rerr := filepath.EvalSymlinks(exe); rerr == nil {
+		exe = resolved
 	}
 
 	dm, err := daemon.New(daemon.Config{
@@ -81,7 +89,8 @@ func (c *daemonRunCmd) Exec(ctx context.Context, d deps) (any, error) {
 		Debounce:        c.Debounce,
 		PollInterval:    c.PollInterval,
 		DisableT3Bridge: c.NoT3Bridge,
-		DisableWorkerVM: c.NoWorker,
+		DisableWorker:   c.NoWorker,
+		Exe:             exe,
 		DisableMenubar:  c.NoMenubar,
 		Logger:          slog.Default(),
 		OpenURL:         opener,
@@ -197,4 +206,22 @@ type daemonStatusCmd struct {
 
 func (c *daemonStatusCmd) Exec(ctx context.Context, _ deps) (any, error) {
 	return daemon.GetServiceStatus(ctx, c.Dir)
+}
+
+// replacedAt says, once the file at path is another than was (checking
+// every interval), that it was replaced; false when ctx ends first.
+func replacedAt(ctx context.Context, path string, was os.FileInfo, interval time.Duration) bool {
+	t := time.NewTicker(interval)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return false
+		case <-t.C:
+		}
+		now, err := os.Stat(path)
+		if err == nil && (!os.SameFile(was, now) || !now.ModTime().Equal(was.ModTime())) {
+			return true
+		}
+	}
 }

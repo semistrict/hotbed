@@ -9,6 +9,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/semistrict/hotbed/internal/macworker"
 	"github.com/semistrict/hotbed/internal/setup"
 )
 
@@ -37,15 +38,16 @@ type T3BridgeSummary struct {
 // Snapshot is the live status published by `hotbed daemon` to both
 // ~/.hotbed/daemon-status.json and the macOS menubar app.
 type Snapshot struct {
-	Version    string              `json:"version"`
-	Build      int64               `json:"build"`
-	PID        int                 `json:"pid"`
-	UpdatedAt  time.Time           `json:"updatedAt"`
-	Controller string              `json:"controller,omitempty"`
-	CockpitURL string              `json:"cockpitUrl,omitempty"`
-	LogPath    string              `json:"logPath,omitempty"`
-	T3Bridge   T3BridgeSummary     `json:"t3Bridge"`
-	WorkerVM   setup.DaemonVMState `json:"workerVm"`
+	Version    string          `json:"version"`
+	Build      int64           `json:"build"`
+	PID        int             `json:"pid"`
+	UpdatedAt  time.Time       `json:"updatedAt"`
+	Controller string          `json:"controller,omitempty"`
+	CockpitURL string          `json:"cockpitUrl,omitempty"`
+	LogPath    string          `json:"logPath,omitempty"`
+	T3Bridge   T3BridgeSummary `json:"t3Bridge"`
+	// Worker is how a Mac's worker and machined stand.
+	Worker macworker.State `json:"worker"`
 }
 
 // ServiceConfig configures installing the background `hotbed daemon` service.

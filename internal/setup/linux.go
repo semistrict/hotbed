@@ -13,7 +13,6 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
-	"log/slog"
 	"net/http"
 	"os"
 	"os/exec"
@@ -27,7 +26,6 @@ import (
 	"golang.org/x/sys/unix"
 
 	"github.com/semistrict/hotbed/internal/api"
-	"github.com/semistrict/hotbed/internal/gen/hotbed/v1/hotbedv1connect"
 	"github.com/semistrict/hotbed/internal/statedir"
 	"github.com/semistrict/hotbed/internal/worker"
 )
@@ -225,7 +223,7 @@ func Setup(ctx context.Context, o Options, tn worker.Tailnet, hc *http.Client, c
 
 	if storageMode == "zfs-file" || storageMode == "zfs-device" {
 		cleanupLegacyTrimUnits(ctx, systemdUnitDir, runCmd)
-		trimSvc, trimTmr := SystemdTrimUnits(poolName, o.TrimFS)
+		trimSvc, trimTmr := SystemdTrimUnits(poolName)
 		if err := os.WriteFile(filepath.Join(systemdUnitDir, linuxTrimService), []byte(trimSvc), 0o644); err != nil {
 			return Result{}, fmt.Errorf("write %s: %w", linuxTrimService, err)
 		}
@@ -1253,14 +1251,14 @@ func validateLinuxMeta(m LinuxSetupMeta, baseDir string) error {
 	return nil
 }
 
-// workerRecord is the file worker init records the worker's setup in, its
-// controller among it.
-func workerRecord(baseDir string) string {
+// joinedController is the controller the worker init recorded in baseDir
+// joined.
+func joinedController(baseDir string) (string, error) {
 	p := linuxMetaPath(baseDir)
-	if _, err := os.Lstat(p); err == nil {
-		return p
+	if _, err := os.Lstat(p); err != nil {
+		p = legacyLinuxMetaPath(baseDir)
 	}
-	return legacyLinuxMetaPath(baseDir)
+	return controllerRecord(p)
 }
 
 func loadLinuxMeta(baseDir string, requireRoot bool) (LinuxSetupMeta, string, error) {
@@ -1658,38 +1656,6 @@ func removeAnchoredTarget(baseDir, target string, expectRegular bool) (bool, err
 	}
 	return true, nil
 }
-
-// SSH is only meaningful on macOS worker VMs.
-func SSH(context.Context, string, []string) (int, error) {
-	return 1, api.Errorf(api.CodePlatformNotSupported, "worker ssh is for macOS worker VMs; this worker runs directly on Linux")
-}
-
-// Supervise is only meaningful on macOS worker VMs: a Linux worker runs
-// on its host, which the controller does not power.
-func Supervise(context.Context, string, func(string) (hotbedv1connect.ClusterServiceClient, error), *slog.Logger) error {
-	return api.Errorf(api.CodePlatformNotSupported, "worker supervise is for macOS worker VMs; this worker runs directly on Linux")
-}
-
-func DaemonVMStatus(context.Context, string) DaemonVMState {
-	return DaemonVMState{Configured: false, State: "unconfigured"}
-}
-
-func SuperviseVMForDaemon(ctx context.Context, _ string, _ func(string) (hotbedv1connect.ClusterServiceClient, error), _ *slog.Logger, onState func(DaemonVMState)) {
-	if onState != nil {
-		onState(DaemonVMState{Configured: false, State: "unconfigured"})
-	}
-	<-ctx.Done()
-}
-
-func StartDaemonVM(context.Context, string) error {
-	return api.Errorf(api.CodePlatformNotSupported, "local VM workers are only supported on macOS")
-}
-
-func StopDaemonVM(context.Context, string) error {
-	return api.Errorf(api.CodePlatformNotSupported, "local VM workers are only supported on macOS")
-}
-
-func DisableLegacyWorkerLaunchAgent(context.Context, string) error { return nil }
 
 func zpoolExists(ctx context.Context, name string) bool {
 	return zpoolExistsWith(ctx, runCmd, name)

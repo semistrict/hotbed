@@ -117,7 +117,7 @@ type cli struct {
 	Whoami    whoamiCmd    `cmd:"" help:"Show the signed-in user, active organization, and role."`
 	Org       orgCmd       `cmd:"" help:"Manage WorkOS organizations, members, invitations, worker join tokens, and personal API tokens (ls, switch, create, members, invite, join-token, api-token)."`
 	MCP       mcpCmd       `cmd:"" name:"mcp" help:"Serve hotbed's commands as MCP tools on stdin and stdout, for an agent to start. The server is a session: the one HOTBED_SESSION or this T3 thread or git worktree names (resumed if it ended), or a new one bound here; it ends when the server does, and the next server started here resumes it."`
-	Daemon    daemonCmd    `cmd:"" name:"daemon" help:"Run or manage the local Hotbed host service (T3 Code question notifications, macOS VM worker supervision, and macOS menubar status app: run, install, uninstall, status)."`
+	Daemon    daemonCmd    `cmd:"" name:"daemon" help:"Run or manage the local Hotbed host service (T3 Code question notifications, a Mac's worker and machined, and macOS menubar status app: run, install, uninstall, status)."`
 	Join      joinCmd      `cmd:"" help:"Join this machine to a cluster as a worker (as root)."`
 	Worker    workerCmd    `cmd:"" help:"Initialize and manage a worker node on this machine in ~/.hotbed (init, status, start, stop, trim, ssh, destroy)."`
 	Serve     serveCmd     `cmd:"" help:"Run the worker whose state is in DIR, until stopped."`

@@ -13,6 +13,7 @@ import (
 
 	"github.com/semistrict/hotbed/internal/api"
 	"github.com/semistrict/hotbed/internal/gen/hotbed/v1/hotbedv1connect"
+	"github.com/semistrict/hotbed/internal/macworker"
 	"github.com/semistrict/hotbed/internal/setup"
 	"github.com/semistrict/hotbed/internal/t3bridge"
 	"github.com/semistrict/hotbed/internal/version"
@@ -20,29 +21,33 @@ import (
 
 // Config configures the unified local Hotbed host daemon.
 type Config struct {
-	BaseDir          string
-	ControllerFunc   func() (string, error)
-	TokenFunc        func(ctx context.Context, controller string) (string, error)
-	ClusterClient    func(controller string) (hotbedv1connect.ClusterServiceClient, error)
-	HTTPClient       *http.Client
-	LogPath          string
-	StateFile        string
-	T3Bin            string
-	T3BaseDir        string
-	Debounce         time.Duration
-	PollInterval     time.Duration
-	DisableT3Bridge  bool
-	DisableWorkerVM  bool
-	DisableMenubar   bool
-	Logger           *slog.Logger
-	OpenURL          func(context.Context, string) error
-	StartVM          func(context.Context, string) error
-	StopVM           func(context.Context, string) error
+	BaseDir         string
+	ControllerFunc  func() (string, error)
+	TokenFunc       func(ctx context.Context, controller string) (string, error)
+	ClusterClient   func(controller string) (hotbedv1connect.ClusterServiceClient, error)
+	HTTPClient      *http.Client
+	LogPath         string
+	StateFile       string
+	T3Bin           string
+	T3BaseDir       string
+	Debounce        time.Duration
+	PollInterval    time.Duration
+	DisableT3Bridge bool
+	// DisableWorker leaves a Mac's worker and machined to run elsewhere.
+	DisableWorker  bool
+	DisableMenubar bool
+	Logger         *slog.Logger
+	OpenURL        func(context.Context, string) error
+	// Exe is the hotbed binary a Mac's worker runs from (hotbed serve).
+	Exe string
+	// Release is the machined a Mac's worker runs on; macworker.Pinned if
+	// zero.
+	Release macworker.Release
 }
 
 // Daemon runs all local host background services under one process:
 //   - outbound T3 Code question notification bridge
-//   - macOS worker VM auto-start & Standby supervisor
+//   - a Mac's worker and machined, which runs its VMs (macworker.Supervisor)
 //   - native macOS menubar status app
 type Daemon struct {
 	cfg        Config
@@ -78,11 +83,8 @@ func New(cfg Config) (*Daemon, error) {
 	if cfg.PollInterval <= 0 {
 		cfg.PollInterval = t3bridge.DefaultPollInterval
 	}
-	if cfg.StartVM == nil {
-		cfg.StartVM = setup.StartDaemonVM
-	}
-	if cfg.StopVM == nil {
-		cfg.StopVM = setup.StopDaemonVM
+	if cfg.Release == (macworker.Release{}) {
+		cfg.Release = macworker.Pinned
 	}
 	log := cfg.Logger
 	if log == nil {
@@ -104,10 +106,7 @@ func New(cfg Config) (*Daemon, error) {
 			Enabled: !cfg.DisableT3Bridge,
 			State:   t3State,
 		},
-		WorkerVM: setup.DaemonVMState{
-			Configured: false,
-			State:      "unconfigured",
-		},
+		Worker: macworker.NewPaths(baseDir).ReadState(),
 	}
 
 	return &Daemon{
@@ -192,11 +191,6 @@ func (d *Daemon) Run(ctx context.Context) error {
 			}
 		}
 	}
-	d.update(func(s *Snapshot) {
-		if !d.cfg.DisableWorkerVM {
-			s.WorkerVM = setup.DaemonVMStatus(runCtx, d.baseDir)
-		}
-	})
 
 	var wg sync.WaitGroup
 
@@ -209,16 +203,19 @@ func (d *Daemon) Run(ctx context.Context) error {
 		}()
 	}
 
-	// 2. macOS worker VM auto-start & Standby supervisor.
-	if !d.cfg.DisableWorkerVM && runtime.GOOS == "darwin" && d.cfg.ClusterClient != nil {
+	// 2. A Mac's worker and machined.
+	if !d.cfg.DisableWorker && runtime.GOOS == "darwin" {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			setup.SuperviseVMForDaemon(runCtx, d.baseDir, d.cfg.ClusterClient, d.log, func(st setup.DaemonVMState) {
-				d.update(func(s *Snapshot) {
-					s.WorkerVM = st
-				})
-			})
+			sup := &macworker.Supervisor{
+				Paths: macworker.NewPaths(d.baseDir), Release: d.cfg.Release, Exe: d.cfg.Exe,
+				HTTP: d.cfg.HTTPClient, Log: d.log,
+				OnState: func(st macworker.State) {
+					d.update(func(s *Snapshot) { s.Worker = st })
+				},
+			}
+			sup.Run(runCtx)
 		}()
 	}
 
@@ -374,42 +371,20 @@ func (d *Daemon) handleMenubarAction(ctx context.Context, action string) {
 				d.log.Warn("daemon: open logs failed", "err", err)
 			}
 		}
-	case "start_vm":
-		go func() {
+	case "start_worker", "stop_worker":
+		p := macworker.NewPaths(d.baseDir)
+		set := p.Start
+		if action == "stop_worker" {
+			set = p.Stop
+		}
+		// The Supervisor sees it within its poll and says how it goes.
+		if err := set(); err != nil {
+			d.log.Warn("daemon: menubar "+action+" failed", "err", err)
 			d.update(func(s *Snapshot) {
-				s.WorkerVM.State = "starting"
-				s.WorkerVM.Detail = "booting worker VM"
+				s.Worker.State = "error"
+				s.Worker.Detail = err.Error()
 			})
-			if err := d.cfg.StartVM(ctx, d.baseDir); err != nil {
-				d.log.Warn("daemon: menubar start VM failed", "err", err)
-				d.update(func(s *Snapshot) {
-					s.WorkerVM.State = "error"
-					s.WorkerVM.Detail = err.Error()
-				})
-				return
-			}
-			d.update(func(s *Snapshot) {
-				s.WorkerVM = setup.DaemonVMStatus(ctx, d.baseDir)
-			})
-		}()
-	case "stop_vm":
-		go func() {
-			d.update(func(s *Snapshot) {
-				s.WorkerVM.State = "stopping"
-				s.WorkerVM.Detail = "stopping worker VM"
-			})
-			if err := d.cfg.StopVM(ctx, d.baseDir); err != nil {
-				d.log.Warn("daemon: menubar stop VM failed", "err", err)
-				d.update(func(s *Snapshot) {
-					s.WorkerVM.State = "error"
-					s.WorkerVM.Detail = err.Error()
-				})
-				return
-			}
-			d.update(func(s *Snapshot) {
-				s.WorkerVM = setup.DaemonVMStatus(ctx, d.baseDir)
-			})
-		}()
+		}
 	case "restart":
 		d.log.Info("daemon: restart requested from menubar")
 		d.mu.Lock()

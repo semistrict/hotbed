@@ -20,6 +20,9 @@ import (
 	"github.com/semistrict/hotbed/internal/api"
 )
 
+// zfsDiskByID is a dedicated ZFS disk's path as a VM guest sees one.
+const zfsDiskByID = "/dev/disk/by-id/virtio-hotbed-zfs"
+
 func TestValidateLinuxMeta(t *testing.T) {
 	baseDir := "/home/alice/.hotbed"
 	validBase := LinuxSetupMeta{
@@ -1391,17 +1394,6 @@ func TestApplyLinuxSystemdState(t *testing.T) {
 			t.Fatalf("commands = %v, want %v", cmds, want)
 		}
 	})
-}
-
-func TestSystemdTrimUnitsFstrim(t *testing.T) {
-	noFstrimSvc, _ := SystemdTrimUnits("hotbed", false)
-	if strings.Contains(noFstrimSvc, "fstrim") {
-		t.Errorf("SystemdTrimUnits(fstrimAll=false) unexpectedly contains fstrim:\n%s", noFstrimSvc)
-	}
-	withFstrimSvc, _ := SystemdTrimUnits("hotbed", true)
-	if !strings.Contains(withFstrimSvc, "fstrim -a") {
-		t.Errorf("SystemdTrimUnits(fstrimAll=true) missing fstrim -a:\n%s", withFstrimSvc)
-	}
 }
 
 func TestCleanupLegacyTrimUnits(t *testing.T) {

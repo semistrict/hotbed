@@ -645,7 +645,7 @@ hotbed schedule run nightly                 # a run now; prints its session, for
 | `hotbed org join-token create\|ls\|rm` | Mint (`hbj_<org>.*`), list, or revoke org-scoped worker join tokens |
 | `hotbed org api-token create\|ls\|rm` | Mint (`hbu_<org>.*`), list, or revoke org-scoped personal API tokens for `HOTBED_TOKEN` |
 | `hotbed api ENDPOINT [-X METHOD] [-f k=v] [-F k=v] [-d DATA] [--input FILE] [-H K:V] [-i] [--jq EXPR]` | Make an authenticated HTTP or ConnectRPC request to the controller (e.g. `hotbed api /healthz`, `hotbed api ClusterService/GetSnapshot --jq '.nodes \| length'`) |
-| `hotbed daemon [run\|install\|uninstall\|status]` | Unified local Hotbed host service: keeps an outbound `/ws/questions` stream open to wake idle local T3 Code threads when questions are answered or dismissed, auto-starts and supervises local macOS worker VMs (Standby + host metrics), and shows a native macOS menubar status app (`install` sets up one LaunchAgent on macOS or systemd user service on Linux, migrating away from legacy separate services) |
+| `hotbed daemon [run\|install\|uninstall\|status]` | Unified local Hotbed host service: keeps an outbound `/ws/questions` stream open to wake idle local T3 Code threads when questions are answered or dismissed, runs a Mac's worker and machined (which runs its workspaces' VMs), and shows a native macOS menubar status app (`install` sets up one LaunchAgent on macOS or systemd user service on Linux, migrating away from legacy separate services) |
 
 ## Output
 

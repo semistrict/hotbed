@@ -283,16 +283,11 @@ cannot make a workspace when asked (out of the controller's reach, or unable to 
 remote: a machine without a repo's credentials) is passed over for the next node placement picks;
 with none left, the run fails as the last one did.
 
-A worker in a VM sleeps when idle. Its host's supervisor (`hotbed worker supervise`, run by a
-LaunchAgent on macOS) holds the controller's `Standby` stream open, saying whether the VM runs,
-and starts or stops it as the controller says (`internal/controller/standby.go`). The controller
-puts the node to sleep once it has had no work (a session's command, a workspace being made,
-clients using it directly) for its sleep-after, and nothing is under way that powering off would
-break (a base freshened on its own); it never decides so while a run is being placed. A node
-asleep, or booting, is `asleep`, not offline: placement weighs it like an idle node plus 1, and
-one it picks is woken and waited for, then the run placed again; past 40 seconds the client
-gets `NODE_WAKING` and calls again. Its sessions are reaped as if it were up. Free page
-reporting cannot give an idle VM's memory back on macOS (`dead-ends/`), so powering off does.
+A Mac is a worker natively (`internal/macworker`): hotbed's daemon runs the worker as the Mac's
+user and machined beside it, every workspace a VM of machined's booted from a cell of the cladefs
+daemon machined embeds, whose Cladefsd service the worker makes its cells with
+(`vm.Machined`). An idle VM gives its memory back through free page reporting, which machined
+frees on Hypervisor.framework, so nothing powers a Mac's worker off when idle.
 
 ## What a command sees
 

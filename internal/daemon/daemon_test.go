@@ -2,36 +2,31 @@ package daemon
 
 import (
 	"context"
+	"errors"
 	"io"
+	"io/fs"
 	"log/slog"
+	"os"
 	"path/filepath"
-	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/semistrict/hotbed/internal/macworker"
 )
 
 func TestDaemonSnapshotAndMenubarActions(t *testing.T) {
 	dir := t.TempDir()
 	var openedURL string
-	var startedVM, stoppedVM atomic.Int32
 
 	d, err := New(Config{
 		BaseDir:         dir,
 		DisableT3Bridge: true,
-		DisableWorkerVM: true,
+		DisableWorker:   true,
 		DisableMenubar:  true,
 		ControllerFunc:  func() (string, error) { return "https://hotbed.example.com", nil },
 		Logger:          slog.New(slog.NewTextHandler(io.Discard, nil)),
 		OpenURL: func(_ context.Context, u string) error {
 			openedURL = u
-			return nil
-		},
-		StartVM: func(context.Context, string) error {
-			startedVM.Add(1)
-			return nil
-		},
-		StopVM: func(context.Context, string) error {
-			stoppedVM.Add(1)
 			return nil
 		},
 	})
@@ -67,14 +62,16 @@ func TestDaemonSnapshotAndMenubarActions(t *testing.T) {
 		t.Fatalf("open_cockpit opened %q, want https://hotbed.example.com", openedURL)
 	}
 
-	d.handleMenubarAction(ctx, "start_vm")
-	d.handleMenubarAction(ctx, "stop_vm")
-	deadline = time.Now().Add(2 * time.Second)
-	for (startedVM.Load() < 1 || stoppedVM.Load() < 1) && time.Now().Before(deadline) {
-		time.Sleep(10 * time.Millisecond)
+	// Stop and Start Worker hold the Mac's worker stopped, and let it run
+	// again, across the daemon's restarts.
+	stopped := macworker.NewPaths(dir).Stopped
+	d.handleMenubarAction(ctx, "stop_worker")
+	if _, err := os.Stat(stopped); err != nil {
+		t.Fatalf("stop_worker left no %s: %v", stopped, err)
 	}
-	if startedVM.Load() != 1 || stoppedVM.Load() != 1 {
-		t.Fatalf("start/stop counts = %d/%d, want 1/1", startedVM.Load(), stoppedVM.Load())
+	d.handleMenubarAction(ctx, "start_worker")
+	if _, err := os.Stat(stopped); !errors.Is(err, fs.ErrNotExist) {
+		t.Fatalf("start_worker left %s: %v", stopped, err)
 	}
 
 	// Restart action cleanly cancels Run.

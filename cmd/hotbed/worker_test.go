@@ -38,7 +38,6 @@ func TestWorkerInitParsesZFSDeviceFlags(t *testing.T) {
 		initCmd.Dir != "/var/lib/hotbed" ||
 		initCmd.User != "alice" ||
 		initCmd.ZFSDevice != "/dev/disk/by-id/virtio-hotbed-zfs" ||
-		initCmd.TrimFS ||
 		initCmd.Hostname != "mac-worker" ||
 		initCmd.Slice != "work.slice" ||
 		!slices.Equal(initCmd.UnitProperties, []string{"DeviceAllow=/dev/kvm"}) ||
@@ -54,21 +53,17 @@ func TestWorkerInitParsesZFSDeviceFlags(t *testing.T) {
 	if _, err := parser2.Parse([]string{
 		"--json", "worker", "init", "ctrl.ts.net:7120",
 		"--zfs-device", "/dev/disk/by-id/virtio-hotbed-zfs",
-		"--fstrim",
 		"--zfs-arc-max", "3221225472",
 	}); err != nil {
-		t.Fatalf("kong.Parse(--fstrim --zfs-arc-max): %v", err)
-	}
-	if !c2.Worker.Init.TrimFS {
-		t.Fatalf("expected TrimFS=true when --fstrim is passed")
+		t.Fatalf("kong.Parse(--zfs-arc-max): %v", err)
 	}
 	if c2.Worker.Init.ZFSARCMax != "3221225472" {
 		t.Fatalf("ZFSARCMax = %q, want %q", c2.Worker.Init.ZFSARCMax, "3221225472")
 	}
 }
 
-// The supervisor exits for a new build only when its binary was replaced,
-// not when it is told to stop (launchctl bootout).
+// The daemon exits for a new build only when its binary was replaced, not
+// when it is told to stop (launchctl bootout).
 func TestReplacedAtTellsReplacementFromStopping(t *testing.T) {
 	bin := filepath.Join(t.TempDir(), "hotbed")
 	if err := os.WriteFile(bin, []byte("build 1"), 0o755); err != nil {
