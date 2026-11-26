@@ -3,7 +3,6 @@ package cladefs
 import (
 	"context"
 	"errors"
-	"os"
 	"path/filepath"
 	"sync"
 	"syscall"
@@ -33,19 +32,23 @@ func (f *fakeHealth) Check(context.Context, *healthpb.HealthCheckRequest, ...grp
 	return &healthpb.HealthCheckResponse{Status: f.status}, nil
 }
 
+type cellKey struct {
+	tenant uint64
+	cell   uint64
+}
+
 type fakeCladefs struct {
 	cladefsdv1.CladefsdClient
 	mu         sync.Mutex
 	grantReq   *cladefsdv1.GrantRequest
 	grantSock  string
 	createReqs []*cladefsdv1.CreateCellRequest
-	createHook func(path string)
-	cells      map[string]uint64
-	synced     map[string]bool
+	cells      map[cellKey]bool
+	synced     map[cellKey]bool
 	peers      []string
 	nextCell   uint64
 	nextVer    uint64
-	deleteBusy map[string]bool
+	deleteBusy map[cellKey]bool
 }
 
 type fakeMount struct {
@@ -66,9 +69,9 @@ func (f *fakeMount) Attach(_ context.Context, req *mountv1.AttachRequest, _ ...g
 
 func newFakeCladefs() *fakeCladefs {
 	return &fakeCladefs{
-		cells:      map[string]uint64{},
-		synced:     map[string]bool{},
-		deleteBusy: map[string]bool{},
+		cells:      map[cellKey]bool{},
+		synced:     map[cellKey]bool{},
+		deleteBusy: map[cellKey]bool{},
 		nextCell:   100,
 		nextVer:    1,
 	}
@@ -80,15 +83,14 @@ func (f *fakeCladefs) Grant(_ context.Context, req *cladefsdv1.GrantRequest, _ .
 }
 
 func (f *fakeCladefs) ImportImage(_ context.Context, req *cladefsdv1.ImportImageRequest, _ ...grpc.CallOption) (*cladefsdv1.ImportImageResponse, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	f.nextCell++
-	f.cells[req.Path] = f.nextCell
+	f.cells[cellKey{req.Tenant, f.nextCell}] = true
 	return &cladefsdv1.ImportImageResponse{Tenant: req.Tenant, Cell: f.nextCell}, nil
 }
 
 func (f *fakeCladefs) CreateCell(_ context.Context, req *cladefsdv1.CreateCellRequest, _ ...grpc.CallOption) (*cladefsdv1.CreateCellResponse, error) {
-	if f.createHook != nil {
-		f.createHook(req.Path)
-	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.createReqs = append(f.createReqs, req)
@@ -97,18 +99,26 @@ func (f *fakeCladefs) CreateCell(_ context.Context, req *cladefsdv1.CreateCellRe
 		f.nextCell++
 		id = f.nextCell
 	}
-	f.cells[req.Path] = id
+	f.cells[cellKey{req.Tenant, id}] = true
 	return &cladefsdv1.CreateCellResponse{Tenant: req.Tenant, Cell: id}, nil
 }
 
 func (f *fakeCladefs) ForkCell(_ context.Context, req *cladefsdv1.ForkCellRequest, _ ...grpc.CallOption) (*cladefsdv1.ForkCellResponse, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	f.nextCell++
-	f.cells[req.To] = f.nextCell
-	return &cladefsdv1.ForkCellResponse{Tenant: req.Tenant, Cell: f.nextCell}, nil
+	tenant := req.Tenant
+	if req.TargetTenant != nil && *req.TargetTenant != 0 {
+		tenant = *req.TargetTenant
+	}
+	f.cells[cellKey{tenant, f.nextCell}] = true
+	return &cladefsdv1.ForkCellResponse{Tenant: tenant, Cell: f.nextCell}, nil
 }
 
 func (f *fakeCladefs) MakeVersion(_ context.Context, req *cladefsdv1.MakeVersionRequest, _ ...grpc.CallOption) (*cladefsdv1.MakeVersionResponse, error) {
-	if _, ok := f.cells[req.Path]; !ok {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if !f.cells[cellKey{req.Tenant, req.Cell}] {
 		return nil, status.Error(codes.NotFound, "missing")
 	}
 	v := f.nextVer
@@ -117,19 +127,31 @@ func (f *fakeCladefs) MakeVersion(_ context.Context, req *cladefsdv1.MakeVersion
 }
 
 func (f *fakeCladefs) SyncCell(_ context.Context, req *cladefsdv1.SyncCellRequest, _ ...grpc.CallOption) (*cladefsdv1.SyncCellResponse, error) {
-	f.synced[req.Path] = true
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.synced[cellKey{req.Tenant, req.Cell}] = true
 	return &cladefsdv1.SyncCellResponse{}, nil
 }
 
 func (f *fakeCladefs) DeleteCell(_ context.Context, req *cladefsdv1.DeleteCellRequest, _ ...grpc.CallOption) (*cladefsdv1.DeleteCellResponse, error) {
-	if f.deleteBusy[req.Path] {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	k := cellKey{req.Tenant, req.Cell}
+	if f.deleteBusy[k] {
 		return nil, syscall.EBUSY
 	}
-	if _, ok := f.cells[req.Path]; !ok {
+	if !f.cells[k] {
 		return nil, status.Error(codes.NotFound, "gone")
 	}
-	delete(f.cells, req.Path)
+	delete(f.cells, k)
 	return &cladefsdv1.DeleteCellResponse{}, nil
+}
+
+func (f *fakeCladefs) DropCell(_ context.Context, req *cladefsdv1.DropCellRequest, _ ...grpc.CallOption) (*cladefsdv1.DropCellResponse, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	delete(f.cells, cellKey{req.Tenant, req.Cell})
+	return &cladefsdv1.DropCellResponse{}, nil
 }
 
 func (f *fakeCladefs) SetPeers(_ context.Context, req *cladefsdv1.SetPeersRequest, _ ...grpc.CallOption) (*cladefsdv1.SetPeersResponse, error) {
@@ -141,7 +163,7 @@ func (f *fakeCladefs) ShrinkMemory(_ context.Context, req *cladefsdv1.ShrinkMemo
 	return &cladefsdv1.ShrinkMemoryResponse{Bytes: req.TargetBytes}, nil
 }
 
-func TestStoreLifecycleAndPathConfinement(t *testing.T) {
+func TestStoreLifecycleAndCellIDFormat(t *testing.T) {
 	ctx := context.Background()
 	root := t.TempDir()
 	api := newFakeCladefs()
@@ -163,42 +185,48 @@ func TestStoreLifecycleAndPathConfinement(t *testing.T) {
 		t.Fatalf("unexpected GrantRequest: %+v", api.grantReq)
 	}
 
-	// Path traversal checks
-	for _, bad := range []string{"", ".", "..", "../escape", "a/../../escape", "/abs/path"} {
-		if _, err := st.CellPath(bad); err == nil {
-			t.Fatalf("CellPath(%q) succeeded, expected error", bad)
-		}
+	// FormatCellID / ParseCellID round-trip
+	idStr := FormatCellID(7, 123456)
+	gotT, gotC, ok := ParseCellID(idStr)
+	if !ok || gotT != 7 || gotC != 123456 {
+		t.Fatalf("ParseCellID(%q) = (%d, %d, %v), want (7, 123456, true)", idStr, gotT, gotC, ok)
+	}
+	if _, _, ok := ParseCellID("/abs/path"); ok {
+		t.Fatal("ParseCellID accepted host path")
 	}
 
 	// Import -> MakeVersion -> SyncCell -> ForkVersion -> DeleteCell
-	base, err := st.ImportImage(ctx, "baseimages/debian-v1", "/tmp/img.tar", 4<<30)
+	base, err := st.ImportImage(ctx, "/tmp/img.tar", 4<<30)
 	if err != nil {
 		t.Fatalf("ImportImage: %v", err)
 	}
-	if base.Cell == 0 || base.Version == 0 || !api.synced[base.HostPath] {
+	if base.Cell == 0 || base.Version == 0 || !api.synced[cellKey{base.Tenant, base.Cell}] {
 		t.Fatalf("unexpected imported CellRef: %+v", base)
 	}
+	if base.HostPath != FormatCellID(base.Tenant, base.Cell) {
+		t.Fatalf("base.HostPath = %q, want %q", base.HostPath, FormatCellID(base.Tenant, base.Cell))
+	}
 
-	ws, err := st.ForkVersion(ctx, base, "ws/ws-1234", true)
+	ws, err := st.ForkVersion(ctx, base, true)
 	if err != nil {
 		t.Fatalf("ForkVersion: %v", err)
 	}
-	if ws.HostPath != filepath.Join(root, "ws/ws-1234") {
+	if ws.HostPath != FormatCellID(ws.Tenant, ws.Cell) {
 		t.Fatalf("ws.HostPath = %q", ws.HostPath)
 	}
 
 	// Busy delete maps to storage.ErrBusy
-	api.deleteBusy[ws.HostPath] = true
-	if err := st.DeleteCell(ctx, "ws/ws-1234"); !errors.Is(err, storage.ErrBusy) {
+	api.deleteBusy[cellKey{ws.Tenant, ws.Cell}] = true
+	if err := st.DeleteCell(ctx, ws.Tenant, ws.Cell); !errors.Is(err, storage.ErrBusy) {
 		t.Fatalf("busy DeleteCell err = %v, want storage.ErrBusy", err)
 	}
-	delete(api.deleteBusy, ws.HostPath)
+	delete(api.deleteBusy, cellKey{ws.Tenant, ws.Cell})
 
 	// Delete + idempotent second delete
-	if err := st.DeleteCell(ctx, "ws/ws-1234"); err != nil {
+	if err := st.DeleteCell(ctx, ws.Tenant, ws.Cell); err != nil {
 		t.Fatalf("DeleteCell: %v", err)
 	}
-	if err := st.DeleteCell(ctx, "ws/ws-1234"); err != nil {
+	if err := st.DeleteCell(ctx, ws.Tenant, ws.Cell); err != nil {
 		t.Fatalf("idempotent DeleteCell: %v", err)
 	}
 
@@ -233,10 +261,10 @@ func TestStoreUploadIntervalMsPlumbing(t *testing.T) {
 	st.SetMount(mnt)
 
 	// Zero duration leaves UploadIntervalMs nil (daemon default).
-	if _, err := st.CreateCell(ctx, "normal/c1", 1<<30, nil, 0); err != nil {
+	if _, err := st.CreateCell(ctx, 1<<30, nil, 0); err != nil {
 		t.Fatalf("CreateCell(0): %v", err)
 	}
-	if _, err := st.TakeCell(ctx, "normal/t1", 0, 101, 1<<30, nil, 0); err != nil {
+	if _, err := st.TakeCell(ctx, 0, 101, 1<<30, nil, 0); err != nil {
 		t.Fatalf("TakeCell(0): %v", err)
 	}
 	if _, _, err := st.MountAttach(ctx, 0, 0, 1<<30, nil, 0); err != nil {
@@ -244,10 +272,10 @@ func TestStoreUploadIntervalMsPlumbing(t *testing.T) {
 	}
 
 	// Explicit duration sets UploadIntervalMs in milliseconds.
-	if _, err := st.CreateCell(ctx, "base/c2", 1<<30, nil, 15*time.Second); err != nil {
+	if _, err := st.CreateCell(ctx, 1<<30, nil, 15*time.Second); err != nil {
 		t.Fatalf("CreateCell(15s): %v", err)
 	}
-	if _, err := st.TakeCell(ctx, "base/t2", 0, 102, 1<<30, nil, 15*time.Second); err != nil {
+	if _, err := st.TakeCell(ctx, 0, 102, 1<<30, nil, 15*time.Second); err != nil {
 		t.Fatalf("TakeCell(15s): %v", err)
 	}
 	if _, _, err := st.MountAttach(ctx, 0, 102, 0, nil, 15*time.Second); err != nil {
@@ -255,7 +283,7 @@ func TestStoreUploadIntervalMsPlumbing(t *testing.T) {
 	}
 
 	// Sub-millisecond positive duration clamps up to 1 ms (cladefsd rejects 0).
-	if _, err := st.CreateCell(ctx, "base/c3", 1<<30, nil, 500*time.Microsecond); err != nil {
+	if _, err := st.CreateCell(ctx, 1<<30, nil, 500*time.Microsecond); err != nil {
 		t.Fatalf("CreateCell(500us): %v", err)
 	}
 
@@ -289,7 +317,7 @@ func TestStoreUploadIntervalMsPlumbing(t *testing.T) {
 	}
 }
 
-func TestStoreJBODSpreadsAndResolvesAcrossMultipleRoots(t *testing.T) {
+func TestStoreStagingRoots(t *testing.T) {
 	ctx := context.Background()
 	rootA := t.TempDir()
 	rootB := t.TempDir()
@@ -299,156 +327,12 @@ func TestStoreJBODSpreadsAndResolvesAcrossMultipleRoots(t *testing.T) {
 		CellRoot: rootA + string(filepath.ListSeparator) + rootB,
 	}, api, &fakeHealth{status: healthpb.HealthCheckResponse_SERVING}, nil)
 	if err != nil {
-		t.Fatalf("NewStore JBOD: %v", err)
+		t.Fatalf("NewStore: %v", err)
 	}
 	if len(st.CellRoots()) != 2 {
 		t.Fatalf("CellRoots = %v, want 2", st.CellRoots())
 	}
-
-	c1, err := st.CreateCell(ctx, "ws/ws-1", 1<<30, nil, 0)
-	if err != nil {
-		t.Fatalf("CreateCell 1: %v", err)
-	}
-	c2, err := st.CreateCell(ctx, "ws/ws-2", 1<<30, nil, 0)
-	if err != nil {
-		t.Fatalf("CreateCell 2: %v", err)
-	}
-	if filepath.Dir(filepath.Dir(c1.HostPath)) == filepath.Dir(filepath.Dir(c2.HostPath)) {
-		t.Fatalf("expected balanced roots to spread cells: c1=%s c2=%s", c1.HostPath, c2.HostPath)
-	}
-	got2, err := st.CellPath("ws/ws-2")
-	if err != nil || got2 != c2.HostPath {
-		t.Fatalf("CellPath(ws/ws-2) = (%q, %v), want %q", got2, err, c2.HostPath)
-	}
-	if err := st.DeleteCell(ctx, "ws/ws-2"); err != nil {
-		t.Fatalf("DeleteCell ws/ws-2: %v", err)
-	}
-}
-
-func TestStoreJBODGrantIncludesAllRoots(t *testing.T) {
-	ctx := context.Background()
-	rootA := t.TempDir()
-	rootB := t.TempDir()
-	api := newFakeCladefs()
-	api.grantSock = "/run/cladefsd/t7.sock"
-
-	st, err := NewStore(ctx, Config{
-		CellRoot: rootA + string(filepath.ListSeparator) + rootB,
-		TenantID: 7,
-	}, api, nil, nil)
-	if err != nil {
-		t.Fatalf("NewStore: %v", err)
-	}
-	if st.VMSock() != "/run/cladefsd/t7.sock" {
-		t.Fatalf("VMSock = %q, want /run/cladefsd/t7.sock", st.VMSock())
-	}
-	if api.grantReq == nil || api.grantReq.Dir != rootA || len(api.grantReq.Dirs) != 1 || api.grantReq.Dirs[0] != rootB {
-		t.Fatalf("GrantRequest = %+v, want Dir=%q Dirs=[%q]", api.grantReq, rootA, rootB)
-	}
-}
-
-func TestStoreJBODCellPathIgnoresFilesAndPropagatesStatErrors(t *testing.T) {
-	ctx := context.Background()
-	rootA := t.TempDir()
-	rootB := t.TempDir()
-	api := newFakeCladefs()
-
-	st, err := NewStore(ctx, Config{CellRoots: []string{rootA, rootB}}, api, nil, nil)
-	if err != nil {
-		t.Fatalf("NewStore: %v", err)
-	}
-	// Regular file on rootA must not shadow an actual cell directory on rootB.
-	if err := os.MkdirAll(filepath.Join(rootA, "ws"), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(rootA, "ws", "orphan"), []byte("x"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	wantB := filepath.Join(rootB, "ws", "orphan")
-	if err := os.MkdirAll(wantB, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	got, err := st.CellPath("ws/orphan")
-	if err != nil || got != wantB {
-		t.Fatalf("CellPath = (%q, %v), want %q", got, err, wantB)
-	}
-
-	// Unreadable secondary root must return an error instead of falling back to rootA.
-	if os.Geteuid() != 0 {
-		if err := os.Chmod(filepath.Join(rootB, "ws"), 0o000); err != nil {
-			t.Fatal(err)
-		}
-		defer os.Chmod(filepath.Join(rootB, "ws"), 0o755)
-		if _, err := st.CellPath("ws/orphan"); err == nil {
-			t.Fatalf("expected CellPath error on unreadable secondary root, got nil")
-		}
-	}
-}
-
-func TestStoreJBODConcurrentCreateUsesSingleRoot(t *testing.T) {
-	ctx := context.Background()
-	rootA := t.TempDir()
-	rootB := t.TempDir()
-	api := newFakeCladefs()
-	started := make(chan struct{}, 2)
-	release := make(chan struct{})
-	var once sync.Once
-	api.createHook = func(string) {
-		started <- struct{}{}
-		once.Do(func() { <-release })
-	}
-
-	st, err := NewStore(ctx, Config{CellRoots: []string{rootA, rootB}}, api, nil, nil)
-	if err != nil {
-		t.Fatalf("NewStore: %v", err)
-	}
-	var wg sync.WaitGroup
-	paths := make([]string, 2)
-	for i := range 2 {
-		wg.Add(1)
-		go func(idx int) {
-			defer wg.Done()
-			ref, err := st.CreateCell(ctx, "ws/same", 1<<20, nil, 0)
-			if err != nil {
-				t.Errorf("CreateCell[%d]: %v", idx, err)
-				return
-			}
-			paths[idx] = ref.HostPath
-		}(i)
-	}
-	<-started
-	close(release)
-	wg.Wait()
-	if paths[0] == "" || paths[0] != paths[1] {
-		t.Fatalf("concurrent CreateCell split across roots: %q vs %q", paths[0], paths[1])
-	}
-}
-
-func TestStoreJBODNestedRootsLongestPrefixAndLiteralColon(t *testing.T) {
-	ctx := context.Background()
-	parent := t.TempDir()
-	nested := filepath.Join(parent, "diskB")
-	if err := os.MkdirAll(nested, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	st, err := NewStore(ctx, Config{CellRoots: []string{parent, nested}}, newFakeCladefs(), nil, nil)
-	if err != nil {
-		t.Fatalf("NewStore: %v", err)
-	}
-	if got := st.rootForHostPath(filepath.Join(nested, "ws", "a")); got != nested {
-		t.Fatalf("rootForHostPath(nested) = %q, want %q", got, nested)
-	}
-
-	// Literal colon in CellRoots slice must not be split again.
-	colonDir := filepath.Join(t.TempDir(), "disk:cells")
-	if err := os.MkdirAll(colonDir, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	st2, err := NewStore(ctx, Config{CellRoots: []string{colonDir}}, newFakeCladefs(), nil, nil)
-	if err != nil {
-		t.Fatalf("NewStore colonDir: %v", err)
-	}
-	if got := st2.CellRoots(); len(got) != 1 || got[0] != colonDir {
-		t.Fatalf("CellRoots = %v, want [%q]", got, colonDir)
+	if got := st.PickRoot(); got != rootA && got != rootB {
+		t.Fatalf("PickRoot = %q, want %q or %q", got, rootA, rootB)
 	}
 }
