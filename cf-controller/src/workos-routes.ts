@@ -456,16 +456,7 @@ async function isUserSignupApproved(
 	env: ControllerEnv,
 	userId: string,
 ): Promise<boolean> {
-	const res = await env.CONTROLLER.getByName(defaultDoName(request, url, env)).fetch(
-		new Request(new URL("/internal/signup/check", url).toString(), {
-			method: "POST",
-			headers: { "Content-Type": "application/json" },
-			body: JSON.stringify({ userId }),
-		}),
-	);
-	if (!res.ok) return false;
-	const data = (await res.json().catch(() => ({}))) as { approved?: boolean };
-	return Boolean(data.approved);
+	return env.CONTROLLER.getByName(defaultDoName(request, url, env)).checkSignupApproved(userId);
 }
 
 async function redeemSignupCode(
@@ -474,16 +465,11 @@ async function redeemSignupCode(
 	env: ControllerEnv,
 	params: { userId: string; email: string; code: string },
 ): Promise<{ ok: true } | { ok: false; message: string }> {
-	const res = await env.CONTROLLER.getByName(defaultDoName(request, url, env)).fetch(
-		new Request(new URL("/internal/signup/redeem", url).toString(), {
-			method: "POST",
-			headers: { "Content-Type": "application/json" },
-			body: JSON.stringify(params),
-		}),
+	const res = await env.CONTROLLER.getByName(defaultDoName(request, url, env)).redeemSignupCode(
+		params,
 	);
 	if (res.ok) return { ok: true };
-	const data = (await res.json().catch(() => ({}))) as { message?: string };
-	return { ok: false, message: data.message || "Invalid sign-up code." };
+	return { ok: false, message: res.message || "Invalid sign-up code." };
 }
 
 async function finalizeWorkOSLogin(
@@ -1270,13 +1256,9 @@ export async function handleAuthRoute(
 			);
 		}
 		// Enforce single-use redemption across isolates via the default ControllerDO.
-		const consumeRes = await env.CONTROLLER.getByName(defaultDoName(request, url, env)).fetch(
-			new Request(new URL("/internal/consume-handoff", url).toString(), {
-				method: "POST",
-				headers: { "Content-Type": "application/json" },
-				body: JSON.stringify({ jti: handoff.jti, exp: handoff.exp }),
-			}),
-		);
+		const consumeRes = await env.CONTROLLER.getByName(
+			defaultDoName(request, url, env),
+		).consumeCliHandoff(handoff.jti, handoff.exp);
 		if (!consumeRes.ok) {
 			return Response.json(
 				{ code: ErrorCode.NotAuthorized, message: "CLI login code has already been used" },
@@ -1594,24 +1576,14 @@ export async function handleAuthRoute(
 		if (scoped && scoped.kind === "api") {
 			const orgId = scoped.orgId ?? "";
 			const doName = orgId ? doNameForOrg(orgId, env) : defaultDoName(request, url, env);
-			const checkUrl = new URL("/auth/check", url);
-			const headers = new Headers();
-			headers.set("Authorization", `Bearer ${bearer}`);
-			if (orgId) headers.set(INTERNAL_ORG_HEADER, orgId);
-			if (doName === "default") headers.set(INTERNAL_DEFAULT_DO_HEADER, "1");
-			const doRes = await env.CONTROLLER.getByName(doName).fetch(
-				new Request(checkUrl.toString(), { method: "GET", headers }),
-			);
-			if (!doRes.ok) {
-				return doRes;
+			const info = await env.CONTROLLER.getByName(doName).checkApiToken({
+				bearer,
+				orgId,
+				isDefaultDo: doName === "default",
+			});
+			if (!info.ok) {
+				return Response.json(info.error, { status: info.status });
 			}
-			const info = (await doRes.json()) as {
-				login: string;
-				userId?: string;
-				orgId?: string;
-				orgRole?: string;
-				authMethod: string;
-			};
 			let orgName = info.orgId || orgId;
 			let organizations: WorkOSOrganizationSummary[] = [];
 			if (workosEnabled && orgId) {
@@ -1700,7 +1672,13 @@ export async function handleAuthRoute(
 				);
 			}
 			const fwd = attachInternalAuth(request, routing);
-			const doRes = await env.CONTROLLER.getByName(routing.doName).fetch(fwd);
+			const rpcReq = new Request(fwd.url, {
+				method: fwd.method,
+				headers: fwd.headers,
+				body: fwd.method === "GET" || fwd.method === "HEAD" ? undefined : fwd.body,
+				redirect: fwd.redirect,
+			});
+			const doRes = await env.CONTROLLER.getByName(routing.doName).handleHttpRequest(rpcReq);
 			return withSetCookie(doRes, routing.setCookie);
 		} catch (err) {
 			const he = fromUnknownError(err);
@@ -2196,21 +2174,17 @@ export async function handleAuthRoute(
 				addr: "",
 				authMethod: ctx.authMethod,
 			};
-			const revokeRes = await env.CONTROLLER.getByName(doNameForOrg(ctx.organizationId, env)).fetch(
-				new Request(new URL("/internal/revoke-user-tokens", url).toString(), {
-					method: "POST",
-					headers: {
-						"Content-Type": "application/json",
-						[INTERNAL_ORG_HEADER]: ctx.organizationId,
-						[INTERNAL_AUTH_HEADER]: JSON.stringify(adminCaller),
-					},
-					body: JSON.stringify({ userId: mem.userId }),
-				}),
-			);
+			const revokeRes = await env.CONTROLLER.getByName(
+				doNameForOrg(ctx.organizationId, env),
+			).revokeUserApiTokens({
+				caller: adminCaller,
+				orgId: ctx.organizationId,
+				userId: mem.userId,
+			});
 			if (!revokeRes.ok) {
 				throw hotbedError(
 					ErrorCode.Internal,
-					`member removed from WorkOS, but failed to revoke API tokens (HTTP ${revokeRes.status})`,
+					`member removed from WorkOS, but failed to revoke API tokens (HTTP ${revokeRes.status}: ${revokeRes.message})`,
 				);
 			}
 			return withSetCookie(Response.json({ ok: true, membershipId }), rotatedCookie);

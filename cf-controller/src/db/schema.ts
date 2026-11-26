@@ -1,6 +1,5 @@
 import { sql } from "drizzle-orm";
 import {
-	blob,
 	index,
 	integer,
 	primaryKey,
@@ -224,51 +223,6 @@ export const history = sqliteTable(
 		index("history_ended").on(t.endedAt),
 		index("history_project").on(t.projectId, t.endedAt),
 		index("history_session").on(t.sessionId, t.endedAt),
-	],
-);
-
-export const commandProfiles = sqliteTable(
-	"command_profiles",
-	{
-		id: text("id").primaryKey(),
-		nodeId: text("node_id").notNull(),
-		endedAt: integer("ended_at").notNull(),
-		doc: blob("doc", { mode: "buffer" }).notNull(),
-	},
-	(t) => [index("command_profiles_ended").on(t.endedAt)],
-);
-
-export const commandDiagnostics = sqliteTable(
-	"command_diagnostics",
-	{
-		commandId: text("command_id").notNull(),
-		seq: integer("seq").notNull(),
-		nodeId: text("node_id").notNull(),
-		createdAt: integer("created_at").notNull(),
-		doc: text("doc").notNull(),
-	},
-	(t) => [
-		primaryKey({ columns: [t.commandId, t.seq] }),
-		index("command_diagnostics_created").on(t.createdAt),
-	],
-);
-
-// The activity samples kept of commands (SaveCommandSample): meta is the
-// CommandSample without its sample, as protobuf JSON, for listings; doc is
-// the whole CommandSample, as protobuf binary.
-export const commandSamples = sqliteTable(
-	"command_samples",
-	{
-		commandId: text("command_id").notNull(),
-		seq: integer("seq").notNull(),
-		nodeId: text("node_id").notNull(),
-		createdAt: integer("created_at").notNull(),
-		meta: text("meta").notNull(),
-		doc: blob("doc", { mode: "buffer" }).notNull(),
-	},
-	(t) => [
-		primaryKey({ columns: [t.commandId, t.seq] }),
-		index("command_samples_created").on(t.createdAt),
 	],
 );
 

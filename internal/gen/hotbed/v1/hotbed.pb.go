@@ -10555,7 +10555,10 @@ type OutputLine struct {
 	// As settled, or raw; one longer than 2000 characters is cut, saying so.
 	Text string `protobuf:"bytes,2,opt,name=text,proto3" json:"text,omitempty"`
 	// It matched grep or until (not context around a match).
-	Match         bool `protobuf:"varint,3,opt,name=match,proto3" json:"match,omitempty"`
+	Match bool `protobuf:"varint,3,opt,name=match,proto3" json:"match,omitempty"`
+	// Unix milliseconds when this line was received; 0 when unknown (legacy log
+	// or synthetic dropped-bytes marker).
+	ReceivedAt    int64 `protobuf:"varint,4,opt,name=received_at,json=receivedAt,proto3" json:"received_at,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -10609,6 +10612,13 @@ func (x *OutputLine) GetMatch() bool {
 		return x.Match
 	}
 	return false
+}
+
+func (x *OutputLine) GetReceivedAt() int64 {
+	if x != nil {
+		return x.ReceivedAt
+	}
+	return 0
 }
 
 type OutputQuery struct {
@@ -15216,9 +15226,12 @@ type CommandLog struct {
 	// Fewer lines than asked for fit in the response's 1 MiB though the
 	// output has more: the first is the oldest that fit (or, when not even
 	// the last line fits, that line's end).
-	Cut           bool `protobuf:"varint,3,opt,name=cut,proto3" json:"cut,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	Cut bool `protobuf:"varint,3,opt,name=cut,proto3" json:"cut,omitempty"`
+	// Unix milliseconds when each line in lines was received (parallel to lines;
+	// 0 when unknown). Empty when the worker predates per-line timestamps.
+	LineTimestamps []int64 `protobuf:"varint,4,rep,packed,name=line_timestamps,json=lineTimestamps,proto3" json:"line_timestamps,omitempty"`
+	unknownFields  protoimpl.UnknownFields
+	sizeCache      protoimpl.SizeCache
 }
 
 func (x *CommandLog) Reset() {
@@ -15270,6 +15283,13 @@ func (x *CommandLog) GetCut() bool {
 		return x.Cut
 	}
 	return false
+}
+
+func (x *CommandLog) GetLineTimestamps() []int64 {
+	if x != nil {
+		return x.LineTimestamps
+	}
+	return nil
 }
 
 type WorkerEvent struct {
@@ -32328,12 +32348,14 @@ const file_hotbed_v1_hotbed_proto_rawDesc = "" +
 	"\atimeoutR\x0etimeoutSeconds\x12\x10\n" +
 	"\x03raw\x18\x0e \x01(\bR\x03raw\x12&\n" +
 	"\tmax_lines\x18\x0f \x01(\x05B\t\x82\xb5\x18\x05\n" +
-	"\x03maxR\bmaxLines\"N\n" +
+	"\x03maxR\bmaxLines\"o\n" +
 	"\n" +
 	"OutputLine\x12\x16\n" +
 	"\x06number\x18\x01 \x01(\x03R\x06number\x12\x12\n" +
 	"\x04text\x18\x02 \x01(\tR\x04text\x12\x14\n" +
-	"\x05match\x18\x03 \x01(\bR\x05match\"\x99\x03\n" +
+	"\x05match\x18\x03 \x01(\bR\x05match\x12\x1f\n" +
+	"\vreceived_at\x18\x04 \x01(\x03R\n" +
+	"receivedAt\"\x99\x03\n" +
 	"\vOutputQuery\x12\x1d\n" +
 	"\n" +
 	"command_id\x18\x01 \x01(\tR\tcommandId\x12-\n" +
@@ -32809,13 +32831,14 @@ const file_hotbed_v1_hotbed_proto_rawDesc = "" +
 	"\rWHAT_REJECTED\x10\x03\"8\n" +
 	"\x12GetLogLinesRequest\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x12\n" +
-	"\x04tail\x18\x02 \x01(\x05R\x04tail\"S\n" +
+	"\x04tail\x18\x02 \x01(\x05R\x04tail\"|\n" +
 	"\n" +
 	"CommandLog\x12\x1d\n" +
 	"\n" +
 	"command_id\x18\x01 \x01(\tR\tcommandId\x12\x14\n" +
 	"\x05lines\x18\x02 \x03(\tR\x05lines\x12\x10\n" +
-	"\x03cut\x18\x03 \x01(\bR\x03cut\"l\n" +
+	"\x03cut\x18\x03 \x01(\bR\x03cut\x12'\n" +
+	"\x0fline_timestamps\x18\x04 \x03(\x03R\x0elineTimestamps\"l\n" +
 	"\vWorkerEvent\x12\x0e\n" +
 	"\x02at\x18\x01 \x01(\x03R\x02at\x12\x12\n" +
 	"\x04kind\x18\x02 \x01(\tR\x04kind\x12\x12\n" +
@@ -34704,7 +34727,7 @@ const file_hotbed_v1_hotbed_proto_rawDesc = "" +
 	"{{else}}{{if not .ended}}nothing yet ({{.live}} live)\n" +
 	"{{end}}{{end}}{{if .ended}}session ended: {{.endReason}}\n" +
 	"{{end}}{{with .reminder}}{{.}}\n" +
-	"{{end}}{{define \"event\"}}{{time .at}}  {{with .command}}{{.commandId}}  {{pad 14 (what .what)}}  {{short 60 .argv}}{{end}}{{with .workspace}}{{.workspaceId}}  workspace {{what .what}}{{end}}{{with .question}}question #{{.question.id}}  {{what .what}}{{end}}{{with .review}}review #{{.reviewId}}  {{what .what}}{{end}}{{with .memory}}memory #{{.memory.id}}  {{what .what}}{{end}}{{with .detail}}  {{.}}{{end}}{{end}}\x90\x02\x022\xaf\x17\n" +
+	"{{end}}{{define \"event\"}}{{time .at}}  {{with .command}}{{.commandId}}  {{pad 14 (what .what)}}  {{short 60 .argv}}{{end}}{{with .workspace}}{{.workspaceId}}  workspace {{what .what}}{{end}}{{with .question}}question #{{.question.id}}  {{what .what}}{{end}}{{with .review}}review #{{.reviewId}}  {{what .what}}{{end}}{{with .memory}}memory #{{.memory.id}}  {{what .what}}{{end}}{{with .detail}}  {{.}}{{end}}{{end}}\x90\x02\x022\xcd\x17\n" +
 	"\x10WorkspaceService\x12J\n" +
 	"\x0fCreateWorkspace\x12!.hotbed.v1.CreateWorkspaceRequest\x1a\x14.hotbed.v1.Workspace\x12I\n" +
 	"\fGetWorkspace\x12\x1e.hotbed.v1.GetWorkspaceRequest\x1a\x14.hotbed.v1.Workspace\"\x03\x90\x02\x02\x12O\n" +
@@ -34727,9 +34750,9 @@ const file_hotbed_v1_hotbed_proto_rawDesc = "" +
 	"\fPauseCommand\x12\x1e.hotbed.v1.PauseCommandRequest\x1a\x12.hotbed.v1.Command\x12D\n" +
 	"\rResumeCommand\x12\x1f.hotbed.v1.ResumeCommandRequest\x1a\x12.hotbed.v1.Command\x12D\n" +
 	"\tFollowLog\x12\x1b.hotbed.v1.FollowLogRequest\x1a\x13.hotbed.v1.LogChunk\"\x03\x90\x02\x020\x01\x12H\n" +
-	"\vGetLogLines\x12\x1d.hotbed.v1.GetLogLinesRequest\x1a\x15.hotbed.v1.CommandLog\"\x03\x90\x02\x02\x12\xb1\x03\n" +
-	"\vQueryOutput\x12\x1d.hotbed.v1.QueryOutputRequest\x1a\x16.hotbed.v1.OutputQuery\"\xea\x02\x82\xb5\x18\xe2\x02\n" +
-	"\x06outputH\x01P\x01b\xd3\x02{{range .lines}}{{pad 6 .number}}{{if .match}}: {{else}}  {{end}}{{.text}}\n" +
+	"\vGetLogLines\x12\x1d.hotbed.v1.GetLogLinesRequest\x1a\x15.hotbed.v1.CommandLog\"\x03\x90\x02\x02\x12\xcf\x03\n" +
+	"\vQueryOutput\x12\x1d.hotbed.v1.QueryOutputRequest\x1a\x16.hotbed.v1.OutputQuery\"\x88\x03\x82\xb5\x18\x80\x03\n" +
+	"\x06outputH\x01P\x01b\xf1\x02{{range .lines}}{{pad 6 .number}}  {{pad 8 (time .receivedAt)}}{{if .match}}: {{else}}  {{end}}{{.text}}\n" +
 	"{{end}}[{{.commandId}} {{state .state}}{{with .exitCode}} exit {{.}}{{end}} · {{or .totalLines 0}} lines{{with .matches}} · {{.}} matching{{end}}{{with .waited}} · wait {{.}}{{end}}{{with .nextLine}} · next --after {{.}}{{end}}]{{with .omitted}}\n" +
 	"[{{.}}]{{end}}\x90\x02\x02\x12y\n" +
 	"\rDetachCommand\x12\x1f.hotbed.v1.DetachCommandRequest\x1a\x12.hotbed.v1.Command\"3\x82\xb5\x18/\n" +

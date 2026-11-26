@@ -26,6 +26,7 @@ import {
 } from "./gen/hotbed/v1/hotbed_pb.ts";
 import type { CallerIdentity } from "./auth.ts";
 import type { BuildDistributor } from "./builds.ts";
+import type { CommandStoreClient } from "./command-do.ts";
 import { ErrorCode, codeOf, hotbedError } from "./errors.ts";
 import { canonicalRemote, projectNameFor } from "./gitops.ts";
 import { HostUsageState, mergeHostAdmission } from "./hostusage.ts";
@@ -74,6 +75,7 @@ export interface ScopedRequest {
 
 export class ControllerContext {
 	readonly store: ControllerStore;
+	readonly commands: CommandStoreClient;
 	readonly tunnel: WorkerTunnelHub;
 	readonly questionBridge?: QuestionBridgeHub;
 	readonly builds: BuildDistributor;
@@ -98,6 +100,7 @@ export class ControllerContext {
 
 	constructor(opts: {
 		store: ControllerStore;
+		commands: CommandStoreClient;
 		tunnel: WorkerTunnelHub;
 		questionBridge?: QuestionBridgeHub;
 		builds: BuildDistributor;
@@ -108,6 +111,7 @@ export class ControllerContext {
 		allowLocalRepos?: boolean;
 	}) {
 		this.store = opts.store;
+		this.commands = opts.commands;
 		this.tunnel = opts.tunnel;
 		this.questionBridge = opts.questionBridge;
 		this.builds = opts.builds;

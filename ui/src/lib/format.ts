@@ -100,6 +100,12 @@ export function hhmmss(t: number | bigint): string {
   return `${hhmm(t)}:${String(d.getSeconds()).padStart(2, "0")}`;
 }
 
+/** 14:05:09.123 local. */
+export function hhmmssms(t: number | bigint): string {
+  const d = new Date(Number(t));
+  return `${hhmmss(t)}.${String(d.getMilliseconds()).padStart(3, "0")}`;
+}
+
 /** Cold time over actual: "26×". */
 export function speedup(cold: number, actual: number): string {
   if (actual <= 0) return "—";

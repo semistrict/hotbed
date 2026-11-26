@@ -1145,9 +1145,15 @@ export function createWorkspaceService(ctrl: ControllerContext): {
 		},
 
 		async getLogLines(req) {
-			const { host, nodeId } = commandOf(req.id);
+			const effectiveTail = req.tail > 0 ? req.tail : 2000;
+			const finished = ctrl.store.finishedCommand(req.id);
+			let cached = finished ? await ctrl.commands.getOutputLog(req.id) : null;
+			if (cached && (!cached.cut || cached.tail >= effectiveTail)) {
+				return sliceCommandLog(cached.log, effectiveTail);
+			}
 			try {
-				return await ctrl.tunnel.callUnary(
+				const { host, nodeId } = commandOf(req.id);
+				const res = await ctrl.tunnel.callUnary(
 					nodeId,
 					host,
 					"/hotbed.v1.WorkspaceService/GetLogLines",
@@ -1156,8 +1162,28 @@ export function createWorkspaceService(ctrl: ControllerContext): {
 					CommandLogSchema,
 					WORKER_RPC_TIMEOUT_MS,
 				);
+				if (finished || ctrl.store.finishedCommand(req.id)) {
+					await ctrl.commands.saveOutputLog(req.id, effectiveTail, res, ctrl.now());
+				}
+				return res;
 			} catch (err) {
-				throw fromWorkerError(host, err);
+				if (!cached) {
+					cached = await ctrl.commands.getOutputLog(req.id);
+				}
+				if (cached) {
+					return sliceCommandLog(cached.log, effectiveTail);
+				}
+				let host = "";
+				try {
+					const route = ctrl.store.lookupCommand(req.id);
+					host = ctrl.store.getNode(route.node).node.hostname;
+				} catch {
+					// Command or node not found; rethrow original error below.
+				}
+				if (host) {
+					throw fromWorkerError(host, err);
+				}
+				throw err;
 			}
 		},
 
@@ -1295,7 +1321,7 @@ export function createWorkspaceService(ctrl: ControllerContext): {
 						"pass a command ID (`hotbed profile CMD`)",
 					);
 				}
-				const stored = ctrl.store.getCommandProfile(id);
+				const stored = await ctrl.commands.getProfile(id);
 				if (stored) {
 					stored.live = false;
 					return queryProfile(stored, req);
@@ -1503,6 +1529,22 @@ export function createWorkspaceService(ctrl: ControllerContext): {
 			stopCommandInternal,
 		},
 	};
+}
+
+function sliceCommandLog(
+	log: import("../gen/hotbed/v1/hotbed_pb.ts").CommandLog,
+	tail: number,
+): import("../gen/hotbed/v1/hotbed_pb.ts").CommandLog {
+	if (tail <= 0 || log.lines.length <= tail) return log;
+	const start = log.lines.length - tail;
+	const lineTimestamps =
+		log.lineTimestamps.length === log.lines.length ? log.lineTimestamps.slice(start) : [];
+	return create(CommandLogSchema, {
+		commandId: log.commandId,
+		lines: log.lines.slice(start),
+		cut: log.cut,
+		lineTimestamps,
+	});
 }
 
 function findWSInViews(nvs: NodeView[], id: string): Workspace | undefined {

@@ -21,8 +21,14 @@ import (
 type output struct {
 	read  sync.Mutex // held while reading the log
 	lines *cmdlog.Lines
-	mu    sync.Mutex // guards found, held only briefly
+	mu    sync.Mutex // guards found and watch state, held only briefly
 	found found
+
+	// On Linux host-systemd commands (where systemd writes directly to the log
+	// file rather than through cmdlog.TimestampWriter), an inotify watcher
+	// stamps <path>.ts as bytes arrive.
+	watchStop chan struct{}
+	watchDone chan struct{}
 }
 
 // found is what output has read from a command's log so far.
@@ -65,10 +71,83 @@ func (o *output) catchUp() {
 	o.readLines(catchUpBytes)
 }
 
+// startTimestampWatch watches the command's log file for writes (via inotify on
+// Linux) so host-systemd commands record sub-second per-line receive timestamps
+// even though systemd appends directly to the log file. Safe to call multiple
+// times; stopped automatically by finish().
+func (o *output) startTimestampWatch() {
+	path := o.lines.Path()
+	if path == "" {
+		return
+	}
+	o.mu.Lock()
+	if o.watchStop != nil {
+		o.mu.Unlock()
+		return
+	}
+	stop := make(chan struct{})
+	done := make(chan struct{})
+	o.watchStop = stop
+	o.watchDone = done
+	o.mu.Unlock()
+
+	go func() {
+		defer close(done)
+		var watcher *logWatcher
+		defer func() {
+			if watcher != nil {
+				watcher.Close()
+			}
+		}()
+		stamp := func() {
+			_, _ = cmdlog.RecordIfGrown(path, time.Now().UnixMilli())
+		}
+		stamp()
+		for {
+			if watcher == nil {
+				watcher = newLogWatcher(path)
+				if watcher != nil {
+					stamp()
+				}
+			}
+			wait := 250 * time.Millisecond
+			var ch <-chan struct{}
+			if watcher != nil {
+				ch = watcher.Events()
+				wait = 2 * time.Second
+			}
+			timer := time.NewTimer(wait)
+			select {
+			case <-stop:
+				timer.Stop()
+				stamp()
+				return
+			case <-ch:
+				timer.Stop()
+				stamp()
+			case <-timer.C:
+				stamp()
+			}
+		}
+	}()
+}
+
+func (o *output) stopTimestampWatch() {
+	o.mu.Lock()
+	stop, done := o.watchStop, o.watchDone
+	o.watchStop, o.watchDone = nil, nil
+	o.mu.Unlock()
+	if stop != nil {
+		close(stop)
+		<-done
+	}
+}
+
 // finish reads the rest of a command's log, its last line too if that
 // lacks a newline. Call it once the command's processes are gone, so the
 // log is complete, and without the engine's lock.
 func (o *output) finish() {
+	o.stopTimestampWatch()
 	o.read.Lock()
 	defer o.read.Unlock()
 	o.readLines(0)
@@ -88,11 +167,15 @@ func (o *output) compact(l cmdlog.Limit) (cmdlog.Dropped, error) {
 }
 
 func (o *output) readLines(max int64) {
-	if o.lines.Path() == "" {
+	path := o.lines.Path()
+	if path == "" {
 		return
 	}
 	if err := o.lines.Read(o.add, max); err != nil {
 		slog.Error("read command output", "err", err)
+	}
+	if o.lines.Offset() > 0 {
+		_, _ = cmdlog.RecordIfGrown(path, time.Now().UnixMilli())
 	}
 }
 

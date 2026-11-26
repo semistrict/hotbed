@@ -1,6 +1,7 @@
 import { create } from "@bufbuild/protobuf";
 import { describe, expect, it } from "vitest";
 import { CommandLimitsSchema, RepoSummarySchema, SnapshotSchema } from "../gen/hotbed/v1/hotbed_pb";
+import { hhmmssms } from "../lib/format";
 import { formatTimeLimit, repoUnitLabel, tone } from "./Command";
 
 describe("formatTimeLimit", () => {
@@ -55,5 +56,13 @@ describe("tone", () => {
     expect(tone("  warning[E0001]: something")).toBe("text-warning-ink");
     expect(tone("error[E0308]: mismatched types")).toBe("text-critical");
     expect(tone("Finished `dev` profile")).toBe("text-good-ink");
+  });
+});
+
+describe("hhmmssms", () => {
+  it("formats local wall time with zero-padded milliseconds", () => {
+    const d = new Date(2026, 4, 10, 9, 5, 7, 42);
+    expect(hhmmssms(d.getTime())).toBe("09:05:07.042");
+    expect(hhmmssms(BigInt(d.getTime()))).toBe("09:05:07.042");
   });
 });

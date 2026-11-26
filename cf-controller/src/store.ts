@@ -3,9 +3,7 @@ import type { DrizzleSqliteDODatabase } from "drizzle-orm/durable-sqlite";
 import {
 	clone,
 	create,
-	fromBinary,
 	fromJsonString,
-	toBinary,
 	toJsonString,
 	type DescMessage,
 	type MessageShape,
@@ -16,13 +14,9 @@ import {
 	BaseFreshenSchema,
 	BaseSchema,
 	ClusterEventSchema,
-	CommandDiagnosticsSchema,
 	type Issue,
 	IssueSchema,
 	IssueState,
-	type CommandSample,
-	CommandSampleSchema,
-	CommandProfileSchema,
 	CommandSchema,
 	CommandState,
 	CommandUpdate_What,
@@ -85,9 +79,7 @@ import {
 	type Checkpoint,
 	type ClusterEvent,
 	type Command,
-	type CommandDiagnostics,
 	type CommandIntervention,
-	type CommandProfile,
 	type DaemonLogEntry,
 	type DaemonLogSource,
 	type Event,
@@ -1996,12 +1988,6 @@ export class ControllerStore {
 								this.addHistory(nodeId, cc.finished);
 								out.finished = true;
 							}
-							if (cc.profile) {
-								this.saveCommandProfile(nodeId, Number(cmd.endedAt ?? ev.at), cc.profile);
-							}
-							if (cc.diagnostics) {
-								this.saveCommandDiagnostics(nodeId, cc.diagnostics, Number(ev.at));
-							}
 							const what = COMMAND_WHAT[cc.what];
 							if (what !== undefined) {
 								if (
@@ -2383,105 +2369,6 @@ export class ControllerStore {
 			}
 		}
 		return out;
-	}
-
-	saveCommandProfile(nodeId: string, endedAtMs: number, profile: CommandProfile): void {
-		const bytes = toBinary(CommandProfileSchema, profile);
-		this.sql.exec(
-			"INSERT INTO command_profiles (id, node_id, ended_at, doc) VALUES (?, ?, ?, ?) ON CONFLICT (id) DO UPDATE SET ended_at = excluded.ended_at, doc = excluded.doc",
-			profile.commandId,
-			nodeId,
-			endedAtMs,
-			bytes,
-		);
-	}
-
-	getCommandProfile(id: string): CommandProfile | null {
-		const rows = this.sql.exec("SELECT doc FROM command_profiles WHERE id = ?", id).toArray();
-		if (rows.length === 0) return null;
-		const raw = rows[0].doc;
-		if (raw instanceof ArrayBuffer) return fromBinary(CommandProfileSchema, new Uint8Array(raw));
-		return null;
-	}
-
-	saveCommandDiagnostics(nodeId: string, d: CommandDiagnostics, nowMs = Date.now()): void {
-		const seq = d.intervention?.seq ?? 0;
-		const at = Number(d.intervention?.by?.at || BigInt(nowMs));
-		this.sql.exec(
-			"INSERT INTO command_diagnostics (command_id, seq, node_id, created_at, doc) VALUES (?, ?, ?, ?, ?) ON CONFLICT (command_id, seq) DO UPDATE SET node_id = excluded.node_id, created_at = excluded.created_at, doc = excluded.doc",
-			d.commandId,
-			seq,
-			nodeId,
-			at,
-			marshal(CommandDiagnosticsSchema, d),
-		);
-	}
-
-	getCommandDiagnostic(commandId: string, seq: number): CommandDiagnostics | null {
-		const rows = this.sql
-			.exec("SELECT doc FROM command_diagnostics WHERE command_id = ? AND seq = ?", commandId, seq)
-			.toArray();
-		return rows.length > 0 ? unmarshal(CommandDiagnosticsSchema, str(rows[0].doc)) : null;
-	}
-
-	listCommandDiagnosticsAfter(commandId: string, afterSeq: number): CommandDiagnostics[] {
-		return this.sql
-			.exec(
-				"SELECT doc FROM command_diagnostics WHERE command_id = ? AND seq > ? ORDER BY seq",
-				commandId,
-				afterSeq,
-			)
-			.toArray()
-			.map((r) => unmarshal(CommandDiagnosticsSchema, str(r.doc)));
-	}
-
-	hasCommandDiagnostics(commandId: string): boolean {
-		return (
-			this.sql
-				.exec("SELECT 1 FROM command_diagnostics WHERE command_id = ? LIMIT 1", commandId)
-				.toArray().length > 0
-		);
-	}
-
-	/**
-	 * Keeps sample, one of a command's kept activity samples, with only its
-	 * newest MAX_COMMAND_SAMPLES kept per command.
-	 */
-	saveCommandSample(nodeId: string, sample: CommandSample, nowMs = Date.now()): void {
-		const meta = create(CommandSampleSchema, { ...sample, sample: undefined });
-		this.sql.exec(
-			"INSERT INTO command_samples (command_id, seq, node_id, created_at, meta, doc) VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT (command_id, seq) DO UPDATE SET node_id = excluded.node_id, created_at = excluded.created_at, meta = excluded.meta, doc = excluded.doc",
-			sample.commandId,
-			sample.seq,
-			nodeId,
-			Number(sample.by?.at || BigInt(nowMs)),
-			marshal(CommandSampleSchema, meta),
-			toBinary(CommandSampleSchema, sample),
-		);
-		this.sql.exec(
-			"DELETE FROM command_samples WHERE command_id = ? AND seq <= ?",
-			sample.commandId,
-			sample.seq - MAX_COMMAND_SAMPLES,
-		);
-	}
-
-	/** A command's kept samples, oldest first, each without its sample. */
-	listCommandSamples(commandId: string): CommandSample[] {
-		return this.sql
-			.exec("SELECT meta FROM command_samples WHERE command_id = ? ORDER BY seq", commandId)
-			.toArray()
-			.map((r) => unmarshal(CommandSampleSchema, str(r.meta)));
-	}
-
-	getCommandSample(commandId: string, seq: number): CommandSample | null {
-		const rows = this.sql
-			.exec("SELECT doc FROM command_samples WHERE command_id = ? AND seq = ?", commandId, seq)
-			.toArray();
-		if (rows.length === 0) return null;
-		const raw = rows[0].doc;
-		if (!(raw instanceof ArrayBuffer))
-			throw new Error(`command sample ${commandId} #${seq} is not binary`);
-		return fromBinary(CommandSampleSchema, new Uint8Array(raw));
 	}
 
 	samplesSince(sinceMs: number): SampleRow[] {
@@ -4719,9 +4606,6 @@ export class ControllerStore {
 			"DELETE FROM base_freshens WHERE ended_at IS NOT NULL AND ended_at < ?",
 			histCutoff,
 		);
-		this.sql.exec("DELETE FROM command_profiles WHERE ended_at < ?", histCutoff);
-		this.sql.exec("DELETE FROM command_diagnostics WHERE created_at < ?", histCutoff);
-		this.sql.exec("DELETE FROM command_samples WHERE created_at < ?", histCutoff);
 		this.sql.exec(
 			"DELETE FROM events WHERE id <= (SELECT MAX(e.id) FROM events e) - ?",
 			KEEP_EVENTS,

@@ -464,6 +464,9 @@ func (e *Engine) step(ctx context.Context) {
 		if st := states[i]; st != nil {
 			wg.Go(func() {
 				if st.Loaded && !st.Exited {
+					if !e.usesRuntime(c.runtimeTarget()) {
+						c.out.startTimestampWatch()
+					}
 					c.out.catchUp()
 					e.compactLog(c)
 				} else {

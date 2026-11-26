@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/semistrict/hotbed/internal/api"
+	"github.com/semistrict/hotbed/internal/cmdlog"
 	pb "github.com/semistrict/hotbed/internal/gen/hotbed/v1"
 	"github.com/semistrict/hotbed/internal/gitops"
 	"github.com/semistrict/hotbed/internal/runtime"
@@ -602,13 +603,15 @@ func (u *runtimeUnits) pumpLogs(ctx context.Context, rc *rtCmd) {
 		return
 	}
 	defer f.Close()
+	tw := cmdlog.NewTimestampWriter(rc.logPath, f)
+	defer tw.Close()
 
 	var offset int64
 	if st, err := f.Stat(); err == nil {
 		offset = st.Size()
 	}
 	for {
-		n, err := u.rt.StreamLogs(ctx, rc.wsID, rc.cmdID, offset, true, f)
+		n, err := u.rt.StreamLogs(ctx, rc.wsID, rc.cmdID, offset, true, tw)
 		offset += n
 		if err == nil || ctx.Err() != nil {
 			return
@@ -620,7 +623,7 @@ func (u *runtimeUnits) pumpLogs(ctx context.Context, rc *rtCmd) {
 		if serr == nil {
 			if st, ok := stMap[rc.cmdID]; !ok || st.Exited {
 				// Final non-follow drain to ensure trailing bytes are flushed.
-				_, _ = u.rt.StreamLogs(ctx, rc.wsID, rc.cmdID, offset, false, f)
+				_, _ = u.rt.StreamLogs(ctx, rc.wsID, rc.cmdID, offset, false, tw)
 				return
 			}
 		}

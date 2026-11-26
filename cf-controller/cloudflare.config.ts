@@ -12,6 +12,7 @@ export default defineConfig({
 		exports: {
 			ControllerDO: exports.durableObject({ storage: "sqlite" }),
 			TenantRegistryDO: exports.durableObject({ storage: "sqlite" }),
+			CommandDO: exports.durableObject({ storage: "sqlite" }),
 		},
 		env: {
 			CONTROLLER: bindings.durableObject({
@@ -21,6 +22,10 @@ export default defineConfig({
 			TENANT_REGISTRY: bindings.durableObject({
 				worker: "hotbed-controller",
 				exportName: "TenantRegistryDO",
+			}),
+			COMMAND: bindings.durableObject({
+				worker: "hotbed-controller",
+				exportName: "CommandDO",
 			}),
 			ASSETS: bindings.assets(),
 			OWNER_TOKEN: bindings.secret(),

@@ -32,10 +32,12 @@ const (
 
 // Screen is a terminal emulator that emits each row once it settles.
 type Screen struct {
-	rows [][]rune
-	row  int // the cursor's row, an index into rows
-	col  int
-	emit func(string)
+	rows  [][]rune
+	rowTs []int64 // receive timestamp (unix ms) for each row in rows
+	row   int     // the cursor's row, an index into rows
+	col   int
+	emit  func(string, int64)
+	curTs int64 // timestamp of the WriteAt currently executing
 
 	// An escape sequence in progress across writes.
 	state   escState
@@ -61,7 +63,22 @@ const (
 
 // New is a screen that calls emit with each settled line, in order.
 func New(emit func(line string)) *Screen {
-	return &Screen{rows: [][]rune{nil}, emit: emit}
+	return NewTimed(func(line string, _ int64) { emit(line) })
+}
+
+// NewTimed is a screen that calls emit with each settled line and its received
+// timestamp (unix ms, 0 when unknown), in order.
+func NewTimed(emit func(line string, ts int64)) *Screen {
+	return &Screen{rows: [][]rune{nil}, rowTs: []int64{0}, emit: emit}
+}
+
+// WriteAt feeds what the program wrote, stamped with the unix-ms time ts at
+// which those bytes were received.
+func (s *Screen) WriteAt(p []byte, ts int64) {
+	prev := s.curTs
+	s.curTs = ts
+	s.Write(p)
+	s.curTs = prev
 }
 
 // Write feeds what the program wrote.
@@ -217,6 +234,7 @@ func (s *Screen) csiByte(b byte) {
 		s.row = top + min(n(0, 1), ScreenRows) - 1
 		for s.row >= len(s.rows) {
 			s.rows = append(s.rows, nil)
+			s.rowTs = append(s.rowTs, 0)
 		}
 		s.col = n(1, 1) - 1
 	case 's':
@@ -232,15 +250,23 @@ func (s *Screen) csiByte(b byte) {
 		if s.col < len(r) {
 			k := min(n(0, 1), len(r)-s.col)
 			s.rows[s.row] = append(r[:s.col], r[s.col+k:]...)
+			s.touchRow(s.row)
 		}
 	case 'X': // erase characters
 		r := s.rows[s.row]
 		for i := s.col; i < min(s.col+n(0, 1), len(r)); i++ {
 			r[i] = ' '
 		}
+		s.touchRow(s.row)
 	}
 	// m (colors), h and l (modes), r (scroll region), s and u (save and
 	// restore), and the rest change nothing seen here.
+}
+
+func (s *Screen) touchRow(row int) {
+	if s.curTs > 0 && row >= 0 && row < len(s.rowTs) {
+		s.rowTs[row] = s.curTs
+	}
 }
 
 func (s *Screen) save() { s.saved, s.savedRow, s.savedCol = true, s.row, s.col }
@@ -265,18 +291,24 @@ func (s *Screen) put(r rune) {
 		row = append(row, r)
 	}
 	s.rows[s.row] = row
+	s.touchRow(s.row)
 	s.col++
 }
 
 // lineFeed moves the cursor down a row, adding one at the bottom, where
 // the oldest row scrolls out of the window and settles.
 func (s *Screen) lineFeed() {
+	if s.curTs > 0 && s.rowTs[s.row] == 0 {
+		s.rowTs[s.row] = s.curTs
+	}
 	s.row++
 	if s.row == len(s.rows) {
 		s.rows = append(s.rows, nil)
+		s.rowTs = append(s.rowTs, 0)
 		if len(s.rows) > Window {
-			s.emit(line(s.rows[0]))
+			s.emit(line(s.rows[0]), s.rowTs[0])
 			s.rows = s.rows[1:]
+			s.rowTs = s.rowTs[1:]
 			s.row--
 			s.savedRow--
 		}
@@ -300,6 +332,7 @@ func (s *Screen) eraseLine(mode int) {
 	default:
 		s.rows[s.row] = nil
 	}
+	s.touchRow(s.row)
 }
 
 func (s *Screen) eraseDisplay(mode int) {
@@ -308,10 +341,12 @@ func (s *Screen) eraseDisplay(mode int) {
 		s.eraseLine(0)
 		for i := s.row + 1; i < len(s.rows); i++ {
 			s.rows[i] = nil
+			s.rowTs[i] = 0
 		}
 	case 1:
 		for i := 0; i < s.row; i++ {
 			s.rows[i] = nil
+			s.rowTs[i] = 0
 		}
 		s.eraseLine(1)
 	default:
@@ -319,6 +354,7 @@ func (s *Screen) eraseDisplay(mode int) {
 		// rows, as a reader of the log would not see them again.
 		for i := range s.rows {
 			s.rows[i] = nil
+			s.rowTs[i] = 0
 		}
 	}
 }
@@ -327,11 +363,7 @@ func (s *Screen) eraseDisplay(mode int) {
 // the output is the lines emitted so far plus Row()+1.
 func (s *Screen) Row() int { return s.row }
 
-// Rows is the live window as it stands, oldest first, not yet settled:
-// what a reader sees now at the end of the output. It ends at the
-// cursor's row or the last row written, whichever is lower, so an empty
-// row the program has only moved into does not show.
-func (s *Screen) Rows() []string {
+func (s *Screen) lastLiveRow() int {
 	last := len(s.rows) - 1
 	for last > s.row && len(s.rows[last]) == 0 {
 		last--
@@ -339,6 +371,15 @@ func (s *Screen) Rows() []string {
 	if last == s.row && len(s.rows[last]) == 0 {
 		last--
 	}
+	return last
+}
+
+// Rows is the live window as it stands, oldest first, not yet settled:
+// what a reader sees now at the end of the output. It ends at the
+// cursor's row or the last row written, whichever is lower, so an empty
+// row the program has only moved into does not show.
+func (s *Screen) Rows() []string {
+	last := s.lastLiveRow()
 	out := make([]string, 0, last+1)
 	for _, r := range s.rows[:last+1] {
 		out = append(out, line(r))
@@ -349,10 +390,11 @@ func (s *Screen) Rows() []string {
 // Flush emits the live window's rows (Rows), as the output ended: nothing
 // can redraw them now.
 func (s *Screen) Flush() {
-	for _, l := range s.Rows() {
-		s.emit(l)
+	last := s.lastLiveRow()
+	for i := 0; i <= last; i++ {
+		s.emit(line(s.rows[i]), s.rowTs[i])
 	}
-	s.rows, s.row, s.col = [][]rune{nil}, 0, 0
+	s.rows, s.rowTs, s.row, s.col = [][]rune{nil}, []int64{0}, 0, 0
 }
 
 func line(r []rune) string { return strings.TrimRight(string(r), " ") }

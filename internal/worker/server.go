@@ -434,7 +434,7 @@ func (s *Service) GetLogLines(_ context.Context, req *pb.GetLogLinesRequest) (*p
 	if tail <= 0 {
 		tail = 2000
 	}
-	lines, cut, err := cmdlog.Tail(path, tail, maxLogLinesBytes)
+	entries, cut, err := cmdlog.TailEntries(path, tail, maxLogLinesBytes)
 	if err != nil {
 		return nil, err
 	}
@@ -442,10 +442,36 @@ func (s *Service) GetLogLines(_ context.Context, req *pb.GetLogLinesRequest) (*p
 	// colors) settled. A tail starts at a line's start, so it settles as the
 	// whole output would, but for a redraw reaching above it. One that
 	// redraws nothing is its lines as they are, however long.
-	if joined := strings.Join(lines, "\n"); strings.ContainsAny(joined, "\x1b\r\b") {
-		lines = settle.Lines([]byte(joined))
+	needsSettle := false
+	for _, e := range entries {
+		if strings.ContainsAny(e.Text, "\x1b\r\b") {
+			needsSettle = true
+			break
+		}
 	}
-	return &pb.CommandLog{CommandId: req.Id, Lines: lines, Cut: cut}, nil
+	var lines []string
+	var timestamps []int64
+	if needsSettle {
+		sc := settle.NewTimed(func(line string, ts int64) {
+			lines = append(lines, line)
+			timestamps = append(timestamps, ts)
+		})
+		for i, e := range entries {
+			if i > 0 {
+				sc.WriteAt([]byte{'\n'}, entries[i-1].ReceivedAt)
+			}
+			sc.WriteAt([]byte(e.Text), e.ReceivedAt)
+		}
+		sc.Flush()
+	} else {
+		lines = make([]string, len(entries))
+		timestamps = make([]int64, len(entries))
+		for i, e := range entries {
+			lines[i] = e.Text
+			timestamps[i] = e.ReceivedAt
+		}
+	}
+	return &pb.CommandLog{CommandId: req.Id, Lines: lines, Cut: cut, LineTimestamps: timestamps}, nil
 }
 
 func (s *Service) QueryOutput(ctx context.Context, req *pb.QueryOutputRequest) (*pb.OutputQuery, error) {

@@ -1,4 +1,5 @@
 import { authenticateRequest, NOOP_TOKEN_LOOKUP, stripInternalAuthHeaders } from "./auth.ts";
+import { CommandDO } from "./command-do.ts";
 import { ControllerDO, type ControllerEnv } from "./controller-do.ts";
 import { fromUnknownError } from "./errors.ts";
 import { handleGcRoute } from "./gc.ts";
@@ -12,7 +13,7 @@ import {
 	withSetCookie,
 } from "./workos-routes.ts";
 
-export { ControllerDO, TenantRegistryDO };
+export { CommandDO, ControllerDO, TenantRegistryDO };
 
 const DO_PREFIXES = ["/hotbed.v1.", "/ws/", "/builds/", "/admin/"];
 
@@ -74,6 +75,15 @@ function sanitizeIncomingRequest(request: Request): Request {
 	return new Request(request, { headers });
 }
 
+function stripRequestSignal(req: Request): Request {
+	return new Request(req.url, {
+		method: req.method,
+		headers: req.headers,
+		body: req.method === "GET" || req.method === "HEAD" ? undefined : req.body,
+		redirect: req.redirect,
+	});
+}
+
 export default {
 	async fetch(rawRequest: Request, env: ControllerEnv): Promise<Response> {
 		// Strip any untrusted client-supplied X-Hotbed-Internal-* headers before routing.
@@ -86,7 +96,7 @@ export default {
 			const doName =
 				(request.headers.get("X-Hotbed-Test-DO") ?? url.searchParams.get("__do") ?? "").trim() ||
 				"default";
-			return env.CONTROLLER.getByName(doName).fetch(request);
+			return env.CONTROLLER.getByName(doName).handleHttpRequest(stripRequestSignal(request));
 		}
 
 		// 2. Authentication, WorkOS OAuth, CLI auth, and organization management routes.
@@ -128,8 +138,17 @@ export default {
 				return withSetCookie(res, routing.setCookie);
 			}
 			const stub = env.CONTROLLER.getByName(routing.doName);
+			if (url.pathname === "/healthz" && request.method === "GET") {
+				const health = await stub.getHealth();
+				return withSetCookie(Response.json(health), routing.setCookie);
+			}
 			const fwd = attachInternalAuth(request, routing);
-			const res = await stub.fetch(fwd);
+			// WebSocket upgrades (status 101 with webSocket pair) must use stub.fetch()
+			// per Cloudflare Workers runtime; all other routes use typed Workers RPC.
+			const res =
+				url.pathname === "/ws/worker" || url.pathname === "/ws/questions"
+					? await stub.fetch(fwd)
+					: await stub.handleHttpRequest(stripRequestSignal(fwd));
 			return withSetCookie(res, routing.setCookie);
 		}
 

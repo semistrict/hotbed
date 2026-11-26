@@ -8,6 +8,13 @@ import (
 	"strings"
 )
 
+// LineEntry is one line returned by TailEntries along with the unix-ms
+// timestamp at which it was received (0 when unknown or synthetic marker).
+type LineEntry struct {
+	Text       string
+	ReceivedAt int64
+}
+
 // Tail returns the last n lines of the log at path, without newlines (nor a
 // carriage return before one) and as valid UTF-8 (bytes that are not, such
 // as a binary's, are U+FFFD), reading backward from its end, so its cost
@@ -17,29 +24,48 @@ import (
 // last line fits, that line's last maxBytes. cut says it returned less
 // than n lines while the log has more. A log not yet written has no lines.
 func Tail(path string, n, maxBytes int) (lines []string, cut bool, err error) {
+	entries, cut, err := TailEntries(path, n, maxBytes)
+	if err != nil {
+		return nil, false, err
+	}
+	lines = make([]string, len(entries))
+	for i, e := range entries {
+		lines[i] = e.Text
+	}
+	return lines, cut, nil
+}
+
+// TailEntries is Tail with each line's received timestamp (unix ms) from
+// <path>.ts.
+func TailEntries(path string, n, maxBytes int) (entries []LineEntry, cut bool, err error) {
 	// Bytes dropped while it reads read as zeros: it reads again.
 	for {
 		d, err := ReadDropped(path)
 		if err != nil {
 			return nil, false, err
 		}
-		lines, cut, err := tail(path, d, n, maxBytes)
+		entries, cut, err := tailEntries(path, d, n, maxBytes)
 		if err != nil {
 			return nil, false, err
 		}
 		if after, err := ReadDropped(path); err != nil {
 			return nil, false, err
 		} else if after == d {
-			return lines, cut, nil
+			return entries, cut, nil
 		}
 	}
 }
 
-// tail is Tail of a log whose dropped bytes are d.
-func tail(path string, d Dropped, n, maxBytes int) (lines []string, cut bool, err error) {
+type tailSeg struct {
+	startOff int64 // logical byte offset in <path>; -1 for synthetic marker/separator
+	data     []byte
+}
+
+// tailEntries is TailEntries of a log whose dropped bytes are d.
+func tailEntries(path string, d Dropped, n, maxBytes int) (entries []LineEntry, cut bool, err error) {
 	f, err := os.Open(path)
 	if errors.Is(err, os.ErrNotExist) {
-		return []string{}, false, nil
+		return []LineEntry{}, false, nil
 	}
 	if err != nil {
 		return nil, false, err
@@ -51,7 +77,7 @@ func tail(path string, d Dropped, n, maxBytes int) (lines []string, cut bool, er
 	}
 	end := st.Size()
 	if n <= 0 || end == 0 {
-		return []string{}, false, nil
+		return []LineEntry{}, false, nil
 	}
 	// The last byte, if a newline, ends the last line rather than starting
 	// an empty one after it.
@@ -59,24 +85,32 @@ func tail(path string, d Dropped, n, maxBytes int) (lines []string, cut bool, er
 	if _, err := f.ReadAt(last, end-1); err != nil {
 		return nil, false, err
 	}
-	if last[0] == '\n' {
+	hadTrailingNL := last[0] == '\n'
+	if hadTrailingNL {
 		end--
 	}
 	// Read backward until the tail holds n line breaks (the start of the
 	// n-th line from the end), reaches the start, or is maxBytes long,
 	// stepping over the dropped bytes, which read as their marker's line.
-	var tail []byte
+	var segs []tailSeg // accumulated in reverse order (newest first)
+	totalLen := 0
+	nlCount := 0
 	off := end
 	const chunk = 64 << 10
-	for off > 0 && bytes.Count(tail, []byte{'\n'}) < n && len(tail) <= maxBytes {
+	for off > 0 && nlCount < n && totalLen <= maxBytes {
 		if d.Bytes() > 0 && off == d.To {
-			tail = append([]byte(Marker(d)+"\n"), tail...)
+			m := []byte(Marker(d) + "\n")
+			segs = append(segs, tailSeg{startOff: -1, data: m})
+			totalLen += len(m)
+			nlCount++
 			off = d.From
 			// The head's last line ends before the marker.
 			if nl, err := endsLine(f, off); err != nil {
 				return nil, false, err
 			} else if !nl {
-				tail = append([]byte{'\n'}, tail...)
+				segs = append(segs, tailSeg{startOff: -1, data: []byte{'\n'}})
+				totalLen++
+				nlCount++
 			}
 			continue
 		}
@@ -84,33 +118,94 @@ func tail(path string, d Dropped, n, maxBytes int) (lines []string, cut bool, er
 		if off > d.To {
 			floor = d.To
 		}
-		size := min(int64(chunk), off-floor, int64(maxBytes+1-len(tail)))
+		size := min(int64(chunk), off-floor, int64(maxBytes+1-totalLen))
 		buf := make([]byte, size)
 		if _, err := f.ReadAt(buf, off-size); err != nil && !errors.Is(err, io.EOF) {
 			return nil, false, err
 		}
 		off -= size
-		tail = append(buf, tail...)
+		segs = append(segs, tailSeg{startOff: off, data: buf})
+		totalLen += len(buf)
+		nlCount += bytes.Count(buf, []byte{'\n'})
 	}
-	parts := strings.Split(string(tail), "\n")
+	// Assemble in chronological order (oldest first) and build a parallel
+	// byte-to-logical-offset lookup via the segment boundaries.
+	tail := make([]byte, 0, totalLen)
+	ordered := make([]tailSeg, 0, len(segs))
+	for i := len(segs) - 1; i >= 0; i-- {
+		ordered = append(ordered, segs[i])
+		tail = append(tail, segs[i].data...)
+	}
+
+	tsIdx, _ := ReadTimestamps(path)
+	// logicalOff maps an index into tail to its logical offset in <path> (or -1).
+	logicalOff := func(idx int) int64 {
+		if idx < 0 {
+			return -1
+		}
+		pos := 0
+		for _, seg := range ordered {
+			if idx < pos+len(seg.data) {
+				if seg.startOff < 0 {
+					return -1
+				}
+				return seg.startOff + int64(idx-pos)
+			}
+			pos += len(seg.data)
+		}
+		// One past the end: if the log had a trailing newline, that newline sits at `end`.
+		if idx == len(tail) && hadTrailingNL {
+			return end
+		}
+		return -1
+	}
+
+	// Split tail into line spans [start, end) within tail.
+	type span struct{ start, end int }
+	var spans []span
+	lineStart := 0
+	for i := 0; i < len(tail); i++ {
+		if tail[i] == '\n' {
+			spans = append(spans, span{start: lineStart, end: i})
+			lineStart = i + 1
+		}
+	}
+	spans = append(spans, span{start: lineStart, end: len(tail)})
+
 	switch {
-	case len(parts) > n:
+	case len(spans) > n:
 		// It reached the n-th line's start.
-		parts = parts[len(parts)-n:]
+		spans = spans[len(spans)-n:]
 	case len(tail) > maxBytes:
 		// It stopped at maxBytes, inside the first part: that goes, unless
 		// it is all there is, when its end stays.
 		cut = true
-		if len(parts) > 1 {
-			parts = parts[1:]
+		if len(spans) > 1 {
+			spans = spans[1:]
 		} else {
-			parts[0] = parts[0][len(parts[0])-maxBytes:]
+			spans[0].start = spans[0].end - maxBytes
 		}
 	}
-	for i, p := range parts {
-		parts[i] = strings.ToValidUTF8(strings.TrimSuffix(p, "\r"), "\uFFFD")
+
+	entries = make([]LineEntry, len(spans))
+	for i, sp := range spans {
+		p := string(tail[sp.start:sp.end])
+		text := strings.ToValidUTF8(strings.TrimSuffix(p, "\r"), "\uFFFD")
+		var ts int64
+		if !tsIdx.Empty() {
+			// Prefer the logical offset of the terminating newline (when it
+			// came from the log itself), else the last byte of the line.
+			offForTs := logicalOff(sp.end)
+			if offForTs < 0 && sp.end > sp.start {
+				offForTs = logicalOff(sp.end - 1)
+			}
+			if offForTs >= 0 {
+				ts = tsIdx.At(offForTs)
+			}
+		}
+		entries[i] = LineEntry{Text: text, ReceivedAt: ts}
 	}
-	return parts, cut, nil
+	return entries, cut, nil
 }
 
 // endsLine says whether the log's bytes before off end a line: off is its

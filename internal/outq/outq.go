@@ -59,6 +59,18 @@ type Answer struct {
 // offset it starts at, until fn returns an error or the output ends.
 type Source func(fn func(off int64, chunk []byte) error) error
 
+// TimedSource is Source with the unix-millisecond timestamp at which each chunk
+// was received (0 when unknown).
+type TimedSource func(fn func(off int64, chunk []byte, ts int64) error) error
+
+func untimed(src Source) TimedSource {
+	return func(fn func(off int64, chunk []byte, ts int64) error) error {
+		return src(func(off int64, chunk []byte) error {
+			return fn(off, chunk, 0)
+		})
+	}
+}
+
 // Check is q's own consistency: what it cannot ask together.
 func (q *Query) Check() error {
 	if q.Head > 0 && q.Tail > 0 {
@@ -90,19 +102,21 @@ func (q *Query) max() int {
 // no end is cut (its text is clipped in an answer anyway).
 const maxRawLine = 4 * settle.MaxCols
 
-// lines reads src's lines, numbered from 1, calling fn with each and the
-// first line written at or after q.SinceOffset: 0 while the reader has not
-// passed that offset (or q has none). It is known before any line from it
-// on is read. final is how many lines can no longer change (Answer.Final).
-func (q *Query) lines(src Source, fn func(n int64, text string, sinceLine int64)) (total, final int64, err error) {
+// lines reads src's lines, numbered from 1, calling fn with each, its received
+// timestamp (unix ms, 0 when unknown), and the first line written at or after
+// q.SinceOffset: 0 while the reader has not passed that offset (or q has none).
+// It is known before any line from it on is read. final is how many lines can
+// no longer change (Answer.Final).
+func (q *Query) lines(src TimedSource, fn func(n int64, text string, ts int64, sinceLine int64)) (total, final int64, err error) {
 	var n, sinceLine int64
-	emit := func(text string) {
+	emit := func(text string, ts int64) {
 		n++
-		fn(n, text, sinceLine)
+		fn(n, text, ts, sinceLine)
 	}
 	if q.Raw {
 		var partial []byte
-		err = src(func(off int64, chunk []byte) error {
+		var lineTs int64
+		err = src(func(off int64, chunk []byte, ts int64) error {
 			if q.SinceOffset >= 0 && sinceLine == 0 && off+int64(len(chunk)) > q.SinceOffset {
 				// The line the offset falls in, begun before it or not.
 				before := max(0, q.SinceOffset-off)
@@ -111,32 +125,39 @@ func (q *Query) lines(src Source, fn func(n int64, text string, sinceLine int64)
 			for {
 				i := bytes.IndexByte(chunk, '\n')
 				if i < 0 {
+					if len(chunk) > 0 && ts > 0 {
+						lineTs = ts
+					}
 					partial = append(partial, chunk[:min(len(chunk), max(0, maxRawLine-len(partial)))]...)
 					return nil
 				}
+				if ts > 0 {
+					lineTs = ts
+				}
 				partial = append(partial, chunk[:min(i, max(0, maxRawLine-len(partial)))]...)
-				emit(toText(partial))
+				emit(toText(partial), lineTs)
 				partial = partial[:0]
+				lineTs = 0
 				chunk = chunk[i+1:]
 			}
 		})
 		final = n
 		if len(partial) > 0 {
-			emit(toText(partial))
+			emit(toText(partial), lineTs)
 		}
 		return n, final, err
 	}
-	sc := settle.New(emit)
-	err = src(func(off int64, chunk []byte) error {
+	sc := settle.NewTimed(emit)
+	err = src(func(off int64, chunk []byte, ts int64) error {
 		if q.SinceOffset >= 0 && sinceLine == 0 && off+int64(len(chunk)) > q.SinceOffset {
 			before := max(0, q.SinceOffset-off)
-			sc.Write(chunk[:before])
+			sc.WriteAt(chunk[:before], ts)
 			// The row the cursor is on as the offset passes, and every
 			// row after it.
 			sinceLine = n + int64(sc.Row()) + 1
 			chunk = chunk[before:]
 		}
-		sc.Write(chunk)
+		sc.WriteAt(chunk, ts)
 		return nil
 	})
 	final = n + int64(sc.Row())
@@ -174,6 +195,11 @@ func (q *Query) inRange(n, sinceLine int64) bool {
 
 // Run answers q of src.
 func Run(src Source, q Query) (Answer, error) {
+	return RunTimed(untimed(src), q)
+}
+
+// RunTimed answers q of timed source src, populating OutputLine.ReceivedAt.
+func RunTimed(src TimedSource, q Query) (Answer, error) {
 	if err := q.Check(); err != nil {
 		return Answer{}, err
 	}
@@ -185,7 +211,7 @@ func Run(src Source, q Query) (Answer, error) {
 
 // plain answers a query with no pattern: its range's head, its tail, or by
 // default the last lines that fit.
-func (q *Query) plain(src Source) (Answer, error) {
+func (q *Query) plain(src TimedSource) (Answer, error) {
 	max := q.max()
 	want, fromEnd := q.Head, false
 	switch {
@@ -200,12 +226,12 @@ func (q *Query) plain(src Source) (Answer, error) {
 	take := min(want, max)
 	var picked []*pb.OutputLine
 	var inRange int64
-	total, final, err := q.lines(src, func(n int64, text string, sinceLine int64) {
+	total, final, err := q.lines(src, func(n int64, text string, ts int64, sinceLine int64) {
 		if !q.inRange(n, sinceLine) {
 			return
 		}
 		inRange++
-		l := &pb.OutputLine{Number: n, Text: clip(text)}
+		l := &pb.OutputLine{Number: n, Text: clip(text), ReceivedAt: ts}
 		if fromEnd {
 			picked = append(picked, l)
 			if len(picked) > take {
@@ -245,7 +271,7 @@ func plainOmitted(q *Query, picked []*pb.OutputLine, inRange, left int64, capped
 // grep answers a query with a pattern: the matches in range, with context;
 // --head or --tail takes the first or last N, and by default the first
 // that fit.
-func (q *Query) grep(src Source) (Answer, error) {
+func (q *Query) grep(src TimedSource) (Answer, error) {
 	max := q.max()
 	want, fromEnd := 0, false
 	switch {
@@ -257,7 +283,7 @@ func (q *Query) grep(src Source) (Answer, error) {
 	// First pass: which matches to show, and how many there are.
 	var chosen []int64
 	var matches int64
-	total, final, err := q.lines(src, func(n int64, text string, sinceLine int64) {
+	total, final, err := q.lines(src, func(n int64, text string, _ int64, sinceLine int64) {
 		if !q.inRange(n, sinceLine) || !q.Grep.MatchString(text) {
 			return
 		}
@@ -293,7 +319,7 @@ func (q *Query) grep(src Source) (Answer, error) {
 	}
 	ci := 0 // the first chosen match not yet past
 	cut := false
-	_, _, err = q.lines(src, func(n int64, text string, sinceLine int64) {
+	_, _, err = q.lines(src, func(n int64, text string, ts int64, sinceLine int64) {
 		for ci < len(chosen) && chosen[ci]+int64(q.Context) < n {
 			ci++
 		}
@@ -308,7 +334,7 @@ func (q *Query) grep(src Source) (Answer, error) {
 			cut = true
 			return
 		}
-		a.Lines = append(a.Lines, &pb.OutputLine{Number: n, Text: clip(text), Match: isMatch[n]})
+		a.Lines = append(a.Lines, &pb.OutputLine{Number: n, Text: clip(text), Match: isMatch[n], ReceivedAt: ts})
 	})
 	if err != nil {
 		return Answer{}, err
@@ -340,7 +366,7 @@ func (q *Query) grep(src Source) (Answer, error) {
 // when src has not reached it yet; and how many lines src has.
 func LineAt(src Source, offset int64, raw bool) (line, total int64, err error) {
 	q := Query{SinceOffset: offset, Raw: raw}
-	total, _, err = q.lines(src, func(_ int64, _ string, since int64) { line = since })
+	total, _, err = q.lines(untimed(src), func(_ int64, _ string, _ int64, since int64) { line = since })
 	return line, total, err
 }
 

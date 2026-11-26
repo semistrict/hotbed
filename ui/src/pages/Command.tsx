@@ -21,7 +21,7 @@ import { BenchTag, KindTag, RuntimeBadge, StateBadge } from "../components/State
 import { nodeName, useSnapshot } from "../lib/data";
 import { endedExit, endedHow } from "../lib/exit";
 import { useHeld } from "../lib/follow";
-import { ago, bytes, duration, hhmmss, limit, speedup } from "../lib/format";
+import { ago, bytes, duration, hhmmss, hhmmssms, limit, speedup } from "../lib/format";
 import type { CommandSearch } from "../router";
 import { isLive } from "../lib/live";
 import { searchLog, type LogMatch } from "../lib/logsearch";
@@ -423,6 +423,12 @@ function Timeline({ events }: { events: CommandEvent[] }) {
 }
 
 const EMPTY_LINES: string[] = [];
+const EMPTY_TIMESTAMPS: bigint[] = [];
+
+interface TimedLogLine {
+  text: string;
+  at: bigint;
+}
 
 /**
  * A command's output: its lines as its terminal shows them (settled,
@@ -434,6 +440,12 @@ function LogCard({ id, live, tty }: { id: string; live: boolean; tty: boolean })
   const log = useQuery({ queryKey: ["log", id], queryFn: () => api.commandLog(id), refetchInterval: live && view === "lines" ? 1000 : false });
   const [query, setQuery] = useState("");
   const lines = log.data?.lines ?? EMPTY_LINES;
+  const timestamps = log.data?.lineTimestamps ?? EMPTY_TIMESTAMPS;
+  const timedLines = useMemo<TimedLogLine[]>(
+    () => lines.map((text, i) => ({ text, at: timestamps[i] ?? 0n })),
+    [lines, timestamps],
+  );
+  const hasTimestamps = useMemo(() => timestamps.some((t) => t > 0n), [timestamps]);
   const matches = useMemo(() => searchLog(lines, query), [lines, query]);
   const searching = query.trim() !== "";
   return (
@@ -479,9 +491,9 @@ function LogCard({ id, live, tty }: { id: string; live: boolean; tty: boolean })
       ) : !live && lines.length === 0 ? (
         <div className={`${logBox} text-faint`}>No output captured.</div>
       ) : searching ? (
-        <LogMatches lines={lines} matches={matches} />
+        <LogMatches lines={lines} timestamps={timestamps} hasTimestamps={hasTimestamps} matches={matches} />
       ) : (
-        <LogView lines={lines} live={live} />
+        <LogView lines={timedLines} hasTimestamps={hasTimestamps} live={live} />
       )}
     </Card>
   );
@@ -489,7 +501,7 @@ function LogCard({ id, live, tty }: { id: string; live: boolean; tty: boolean })
 
 const logBox = "max-h-[520px] overflow-auto rounded-lg border border-border bg-background/60 p-3 font-mono text-[11.5px] leading-[1.7]";
 
-function LogView({ lines, live }: { lines: string[]; live: boolean }) {
+function LogView({ lines, hasTimestamps, live }: { lines: TimedLogLine[]; hasTimestamps: boolean; live: boolean }) {
   const box = useRef<HTMLDivElement>(null);
   const { shown, following, behind, onScroll, follow } = useHeld(lines, live, "end");
   // Scroll only the log's own box (scrollIntoView would scroll the page too),
@@ -502,8 +514,16 @@ function LogView({ lines, live }: { lines: string[]; live: boolean }) {
     <div className="relative">
       <div ref={box} onScroll={onScroll} className={logBox}>
         {shown.map((l, i) => (
-          <div key={i} className={`whitespace-pre ${tone(l)}`}>
-            {l || " "}
+          <div key={i} className={`flex whitespace-pre ${tone(l.text)}`}>
+            {hasTimestamps && (
+              <span
+                className="num w-[92px] shrink-0 pr-3 text-right text-faint select-none"
+                title={l.at > 0n ? new Date(Number(l.at)).toISOString() : undefined}
+              >
+                {l.at > 0n ? hhmmssms(l.at) : ""}
+              </span>
+            )}
+            <span>{l.text || " "}</span>
           </div>
         ))}
         {live && following && <div className="ember-pulse text-primary">▍</div>}
@@ -518,22 +538,41 @@ function LogView({ lines, live }: { lines: string[]; live: boolean }) {
 }
 
 /** Only the lines that match, numbered by where they sit in the log, matches marked. */
-function LogMatches({ lines, matches }: { lines: string[]; matches: LogMatch[] }) {
+function LogMatches({
+  lines,
+  timestamps,
+  hasTimestamps,
+  matches,
+}: {
+  lines: string[];
+  timestamps: bigint[];
+  hasTimestamps: boolean;
+  matches: LogMatch[];
+}) {
   if (matches.length === 0) return <div className={`${logBox} text-faint`}>No line matches.</div>;
   return (
     <div className={logBox}>
       {matches.map(({ line, ranges }) => {
         const text = lines[line] ?? "";
+        const at = timestamps[line] ?? 0n;
         const parts: ReactNode[] = [];
-        let at = 0;
+        let atPos = 0;
         for (const [a, b] of ranges) {
-          parts.push(text.slice(at, a), <mark key={a} className="rounded-sm bg-ember-wash text-primary">{text.slice(a, b)}</mark>);
-          at = b;
+          parts.push(text.slice(atPos, a), <mark key={a} className="rounded-sm bg-ember-wash text-primary">{text.slice(a, b)}</mark>);
+          atPos = b;
         }
-        parts.push(text.slice(at));
+        parts.push(text.slice(atPos));
         return (
           <div key={line} className={`flex whitespace-pre ${tone(text)}`}>
-            <span className="w-12 shrink-0 pr-3 text-right text-faint select-none">{line + 1}</span>
+            <span className="num w-12 shrink-0 pr-3 text-right text-faint select-none">{line + 1}</span>
+            {hasTimestamps && (
+              <span
+                className="num w-[92px] shrink-0 pr-3 text-right text-faint select-none"
+                title={at > 0n ? new Date(Number(at)).toISOString() : undefined}
+              >
+                {at > 0n ? hhmmssms(at) : ""}
+              </span>
+            )}
             <span>{parts}</span>
           </div>
         );

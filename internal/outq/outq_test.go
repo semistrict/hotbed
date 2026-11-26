@@ -215,3 +215,60 @@ func TestLineAt(t *testing.T) {
 		}
 	}
 }
+
+func TestRunTimedPopulatesReceivedAt(t *testing.T) {
+	type timedChunk struct {
+		data string
+		ts   int64
+	}
+	chunks := []timedChunk{
+		{"line one\n", 1_700_000_001_000},
+		{"progress 10%", 1_700_000_002_000},
+		{"\rprogress 100%\n", 1_700_000_005_000},
+		{"error: boom\n", 1_700_000_009_000},
+	}
+	src := func(fn func(off int64, chunk []byte, ts int64) error) error {
+		var off int64
+		for _, c := range chunks {
+			if err := fn(off, []byte(c.data), c.ts); err != nil {
+				return err
+			}
+			off += int64(len(c.data))
+		}
+		return nil
+	}
+
+	// Settled mode collapses progress bar and keeps final update timestamp.
+	ans, err := RunTimed(src, Query{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(ans.Lines) != 3 {
+		t.Fatalf("settled lines = %+v, want 3", ans.Lines)
+	}
+	wantTs := []int64{1_700_000_001_000, 1_700_000_005_000, 1_700_000_009_000}
+	wantText := []string{"line one", "progress 100%", "error: boom"}
+	for i := range wantTs {
+		if ans.Lines[i].Text != wantText[i] || ans.Lines[i].ReceivedAt != wantTs[i] {
+			t.Errorf("settled line[%d] = (%q, %d), want (%q, %d)", i, ans.Lines[i].Text, ans.Lines[i].ReceivedAt, wantText[i], wantTs[i])
+		}
+	}
+
+	// Raw mode preserves received_at per raw line.
+	rawAns, err := RunTimed(src, Query{Raw: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rawAns.Lines) != 3 || rawAns.Lines[1].ReceivedAt != 1_700_000_005_000 {
+		t.Fatalf("raw lines = %+v", rawAns.Lines)
+	}
+
+	// Grep mode preserves received_at on matched and context lines.
+	grepAns, err := RunTimed(src, Query{Grep: regexp.MustCompile("boom"), Context: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(grepAns.Lines) != 2 || grepAns.Lines[0].ReceivedAt != 1_700_000_005_000 || grepAns.Lines[1].ReceivedAt != 1_700_000_009_000 {
+		t.Fatalf("grep lines = %+v", grepAns.Lines)
+	}
+}

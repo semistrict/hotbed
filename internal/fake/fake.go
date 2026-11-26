@@ -23,6 +23,7 @@ import (
 
 	"github.com/semistrict/hotbed/internal/baseimage"
 	"github.com/semistrict/hotbed/internal/bench"
+	"github.com/semistrict/hotbed/internal/cmdlog"
 	pb "github.com/semistrict/hotbed/internal/gen/hotbed/v1"
 	"github.com/semistrict/hotbed/internal/storage"
 	"github.com/semistrict/hotbed/internal/sysinfo"
@@ -385,6 +386,7 @@ func (u *Units) Start(_ context.Context, s unit.Spec) error {
 	if err != nil {
 		return err
 	}
+	tw := cmdlog.NewTimestampWriter(s.Log, log)
 	// Like a real unit, put the spec's directories in front of PATH before
 	// looking the command up.
 	cmd := exec.Command("/bin/sh", append([]string{"-c", `PATH="${HOTBED_PATH:+$HOTBED_PATH:}$PATH"; exec "$@"`, "hotbed"}, args...)...)
@@ -404,9 +406,10 @@ func (u *Units) Start(_ context.Context, s unit.Spec) error {
 		return strings.Join(out, ":")
 	}
 	cmd.Env = append(cmd.Env, "HOTBED_PATH="+paths(s.PathPrefix))
-	cmd.Stdout, cmd.Stderr = log, log
+	cmd.Stdout, cmd.Stderr = tw, tw
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	if err := cmd.Start(); err != nil {
+		_ = tw.Close()
 		log.Close()
 		return err
 	}
@@ -417,6 +420,7 @@ func (u *Units) Start(_ context.Context, s unit.Spec) error {
 	go func() {
 		defer u.wg.Done()
 		err := cmd.Wait()
+		_ = tw.Close()
 		log.Close()
 		u.mu.Lock()
 		defer u.mu.Unlock()

@@ -712,7 +712,16 @@ func (e *Engine) Close() error {
 		proxies = append(proxies, p)
 		delete(e.portProxies, k)
 	}
+	var outs []*output
+	for _, c := range e.commands {
+		if c.out != nil {
+			outs = append(outs, c.out)
+		}
+	}
 	e.mu.Unlock()
+	for _, o := range outs {
+		o.stopTimestampWatch()
+	}
 	for _, p := range proxies {
 		_ = p.Close()
 	}

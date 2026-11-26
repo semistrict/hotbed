@@ -79,7 +79,7 @@ func (e *Engine) QueryOutput(ctx context.Context, req *pb.QueryOutputRequest) (*
 		// What it waited for, marked, with what came around it.
 		q.Grep = until
 	}
-	ans, err := outq.Run(fileSource(path), q)
+	ans, err := outq.RunTimed(timedFileSource(path), q)
 	if err != nil {
 		return nil, api.Errorf(api.CodeInvalidArgs, "%v", err)
 	}
@@ -219,6 +219,42 @@ func (e *Engine) waitOutput(ctx context.Context, id, path string, until *regexp.
 			return waitedTimeout, nil
 		case <-changed:
 		case <-time.After(outputPoll):
+		}
+	}
+}
+
+// timedFileSource reads the log at path from its start with per-chunk received
+// timestamps from <path>.ts; dropped-byte markers carry timestamp 0.
+func timedFileSource(path string) outq.TimedSource {
+	return func(fn func(off int64, chunk []byte, ts int64) error) error {
+		f, err := os.Open(path)
+		if errors.Is(err, fs.ErrNotExist) {
+			return nil // not started: no output yet
+		}
+		if err != nil {
+			return err
+		}
+		defer f.Close()
+		tsIdx, _ := cmdlog.ReadTimestamps(path)
+		buf := make([]byte, 256<<10)
+		var off int64
+		for {
+			data, next, err := cmdlog.ReadChunk(f, path, off, buf)
+			if err != nil {
+				return err
+			}
+			if len(data) == 0 {
+				return nil
+			}
+			d, _ := cmdlog.ReadDropped(path)
+			if d.Bytes() > 0 && off >= d.From && off < d.To {
+				if err := fn(off, data, 0); err != nil {
+					return err
+				}
+			} else if err := tsIdx.SplitChunks(off, data, fn); err != nil {
+				return err
+			}
+			off = next
 		}
 	}
 }

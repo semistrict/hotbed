@@ -39,9 +39,11 @@ import {
 	sha256Hex,
 	timingSafeStringEqual,
 	type AuthEnv,
+	type CallerIdentity,
 } from "./auth.ts";
 import { formatOrgToken, isSafeReturnTo, isWorkOSEnabled } from "./workos.ts";
 import { BuildDistributor, type BuildsEnv, type TestBuildConfig } from "./builds.ts";
+import { CommandStoreClient, type CommandDO } from "./command-do.ts";
 import { createConnectFetchDispatcher, type ConnectFetchDispatcher } from "./connect-adapter.ts";
 import { ControllerContext } from "./context.ts";
 import { ErrorCode, HotbedError, fromUnknownError } from "./errors.ts";
@@ -63,6 +65,7 @@ import { WorkerTunnelHub } from "./tunnel.ts";
 export interface ControllerEnv extends AuthEnv, BuildsEnv {
 	CONTROLLER: DurableObjectNamespace<ControllerDO>;
 	TENANT_REGISTRY?: DurableObjectNamespace<TenantRegistryDO>;
+	COMMAND: DurableObjectNamespace<CommandDO>;
 	CLUSTER_ID?: string;
 	CONTROLLER_NAME?: string;
 	ALLOW_LOCAL_REPOS?: string;
@@ -72,6 +75,46 @@ export interface ControllerEnv extends AuthEnv, BuildsEnv {
 	GC_WORKER_URL?: string;
 	GC_TOKEN?: string;
 }
+
+export interface ControllerHealth {
+	ok: true;
+	clusterId: string;
+	orgId?: string;
+	cladefsTenantId?: number;
+	workosEnabled: boolean;
+	version: string;
+	build: number;
+	commit: string;
+	connectedWorkers: number;
+}
+
+export type RedeemSignupCodeResult =
+	| { ok: true; alreadyApproved?: boolean }
+	| { ok: false; code: string; message: string; status: number };
+
+export type ConsumeHandoffResult =
+	| { ok: true }
+	| { ok: false; code: string; message: string; status: number };
+
+export type RevokeUserApiTokensResult =
+	| { ok: true; revoked: number }
+	| { ok: false; code: string; message: string; status: number };
+
+export type ApiTokenCheckResult =
+	| {
+			ok: true;
+			login: string;
+			userId?: string;
+			orgId?: string;
+			cladefsTenantId?: number;
+			orgRole?: string;
+			authMethod: string;
+	  }
+	| {
+			ok: false;
+			status: number;
+			error: { code: string; message: string; suggestion?: string; retryable?: boolean };
+	  };
 
 const ACTIVE_ALARM_MS = 15_000;
 const IDLE_ALARM_MS = 60_000;
@@ -192,6 +235,7 @@ export class ControllerDO extends DurableObject<ControllerEnv> {
 
 		this.ctrl = new ControllerContext({
 			store: this.store,
+			commands: new CommandStoreClient(this.env.COMMAND, clusterId),
 			tunnel: this.tunnel,
 			questionBridge: this.questionBridge,
 			builds: this.builds,
@@ -403,7 +447,284 @@ export class ControllerDO extends DurableObject<ControllerEnv> {
 		return caller;
 	}
 
+	// ---- Typed Workers RPC methods ----------------------------------------
+
+	getHealth(): ControllerHealth {
+		return {
+			ok: true,
+			clusterId: this.ctrl.clusterId,
+			orgId: this.ctrl.orgId || undefined,
+			cladefsTenantId:
+				this.ctrl.cladefsTenantId !== null ? Number(this.ctrl.cladefsTenantId) : undefined,
+			workosEnabled: isWorkOSEnabled(this.env),
+			version: this.builds.versionString(),
+			build: this.builds.currentBuildNumber(),
+			commit: this.builds.controllerCommit(),
+			connectedWorkers: this.tunnel.connectedNodeIds().size,
+		};
+	}
+
+	checkSignupApproved(userIdRaw: string): boolean {
+		const userId = userIdRaw.trim();
+		if (!userId) return false;
+		return this.store.isUserSignupApproved(userId);
+	}
+
+	async redeemSignupCode(params: {
+		userId: string;
+		email: string;
+		code: string;
+	}): Promise<RedeemSignupCodeResult> {
+		const userId = params.userId.trim();
+		const email = params.email.trim();
+		const submitted = params.code.trim().toUpperCase();
+		if (!userId) {
+			return { ok: false, code: ErrorCode.InvalidArgs, message: "userId is required", status: 400 };
+		}
+		if (this.store.isUserSignupApproved(userId)) {
+			return { ok: true, alreadyApproved: true };
+		}
+		if (!submitted) {
+			return {
+				ok: false,
+				code: ErrorCode.NotAuthorized,
+				message: "Sign-up code is required.",
+				status: 403,
+			};
+		}
+		const active = this.store.listActiveSignupCodes();
+		let matchedCode = "";
+		for (const candidate of active) {
+			if (await timingSafeStringEqual(submitted, candidate.code)) {
+				matchedCode = candidate.code;
+			}
+		}
+		if (!matchedCode) {
+			return {
+				ok: false,
+				code: ErrorCode.NotAuthorized,
+				message: "Invalid sign-up code.",
+				status: 403,
+			};
+		}
+		this.store.recordSignupRedemption(userId, email, matchedCode, this.ctrl.now());
+		return { ok: true };
+	}
+
+	consumeCliHandoff(jtiRaw: string, expRaw: number): ConsumeHandoffResult {
+		const jti = jtiRaw.trim();
+		const exp = typeof expRaw === "number" && Number.isFinite(expRaw) ? expRaw : 0;
+		if (!jti || jti.length > 128) {
+			return { ok: false, code: ErrorCode.InvalidArgs, message: "jti is required", status: 400 };
+		}
+		const key = `cli_handoff:${jti}`;
+		if (this.store.getMeta(key) !== null) {
+			return {
+				ok: false,
+				code: ErrorCode.Conflict,
+				message: "CLI handoff code already used",
+				status: 409,
+			};
+		}
+		this.store.setMeta(key, String(Math.max(exp, this.ctrl.now() + 120_000)));
+		return { ok: true };
+	}
+
+	async revokeUserApiTokens(params: {
+		caller: CallerIdentity;
+		orgId: string;
+		userId: string;
+	}): Promise<RevokeUserApiTokensResult> {
+		const reqOrgId = params.orgId.trim();
+		if (reqOrgId && this.ctrl.orgId && this.ctrl.orgId !== reqOrgId) {
+			return {
+				ok: false,
+				code: ErrorCode.NotAuthorized,
+				message: `organization mismatch: this controller DO belongs to ${this.ctrl.orgId}, not ${reqOrgId}`,
+				status: 403,
+			};
+		}
+		const caller = params.caller;
+		const isAdmin =
+			caller.role === "owner" && (caller.orgRole === "admin" || caller.orgRole === "owner");
+		if (!isAdmin) {
+			return {
+				ok: false,
+				code: ErrorCode.NotAuthorized,
+				message: "organization admin required",
+				status: 403,
+			};
+		}
+		const effectiveOrgId = reqOrgId || caller.orgId;
+		if (effectiveOrgId && !this.ctrl.orgId) {
+			this.store.setMeta(ORG_ID_META_KEY, effectiveOrgId);
+			this.ctrl.orgId = effectiveOrgId;
+		}
+		await this.ensureCladefsTenantId(false);
+		const userId = params.userId.trim();
+		if (!userId) {
+			return { ok: false, code: ErrorCode.InvalidArgs, message: "userId is required", status: 400 };
+		}
+		const revoked = this.store.revokeApiTokensForUser(userId, this.ctrl.now());
+		return { ok: true, revoked };
+	}
+
+	async checkApiToken(params: {
+		bearer: string;
+		orgId: string;
+		isDefaultDo: boolean;
+	}): Promise<ApiTokenCheckResult> {
+		const reqOrgId = params.orgId.trim();
+		if (reqOrgId && this.ctrl.orgId && this.ctrl.orgId !== reqOrgId) {
+			return {
+				ok: false,
+				status: 403,
+				error: {
+					code: ErrorCode.NotAuthorized,
+					message: `organization mismatch: this controller DO belongs to ${this.ctrl.orgId}, not ${reqOrgId}`,
+				},
+			};
+		}
+		try {
+			const headers = new Headers({ Authorization: `Bearer ${params.bearer}` });
+			if (reqOrgId) headers.set(INTERNAL_ORG_HEADER, reqOrgId);
+			if (params.isDefaultDo) headers.set(INTERNAL_DEFAULT_DO_HEADER, "1");
+			const caller = await this.authRequest(
+				new Request("https://controller.internal/auth/check", { headers }),
+			);
+			if (caller.role !== "owner") {
+				return {
+					ok: false,
+					status: 403,
+					error: { code: ErrorCode.NotAuthorized, message: "Forbidden" },
+				};
+			}
+			return {
+				ok: true,
+				login: caller.login,
+				userId: caller.userId,
+				orgId: caller.orgId || this.ctrl.orgId,
+				cladefsTenantId:
+					this.ctrl.cladefsTenantId !== null ? Number(this.ctrl.cladefsTenantId) : undefined,
+				orgRole: caller.orgRole,
+				authMethod: caller.authMethod,
+			};
+		} catch (err) {
+			const he = fromUnknownError(err);
+			return { ok: false, status: 401, error: he.toJSON() };
+		}
+	}
+
+	/**
+	 * Cloudflare Workers requires WebSocket upgrade responses (101 with webSocket)
+	 * to return from DO `fetch()`. All other routes use typed Workers RPC methods
+	 * (`getHealth`, `checkSignupApproved`, `redeemSignupCode`, `consumeCliHandoff`,
+	 * `revokeUserApiTokens`, `checkApiToken`, `handleHttpRequest`).
+	 */
 	override async fetch(request: Request): Promise<Response> {
+		const url = new URL(request.url);
+		if (url.pathname === "/ws/worker" || url.pathname === "/ws/questions") {
+			return this.handleWebSocketUpgrade(request, url.pathname);
+		}
+		return new Response("Use typed Workers RPC methods on ControllerDO", { status: 405 });
+	}
+
+	private async handleWebSocketUpgrade(request: Request, pathname: string): Promise<Response> {
+		const mismatch = this.checkOrgMismatch(request);
+		if (mismatch) {
+			return mismatch;
+		}
+		if (pathname === "/ws/worker") {
+			const upgrade = (request.headers.get("Upgrade") ?? "").toLowerCase();
+			if (upgrade !== "websocket") {
+				return new Response("Expected Upgrade: websocket", { status: 426 });
+			}
+			let caller;
+			try {
+				caller = await this.authRequest(request);
+			} catch (err) {
+				const he = fromUnknownError(err);
+				return Response.json(he.toJSON(), { status: 403 });
+			}
+			if (caller.orgRole === "viewer") {
+				return Response.json(
+					{
+						code: ErrorCode.NotAuthorized,
+						message: "viewer role is read-only and cannot connect as a worker",
+					},
+					{ status: 403 },
+				);
+			}
+			// Pin nodeId to the token's DB-bound identity for worker-token auth so
+			// one worker token can never hijack another node's WebSocket tunnel.
+			const nodeId =
+				caller.role === "worker"
+					? caller.nodeId
+					: (request.headers.get("X-Hotbed-Node-Id") ?? "").trim() || caller.nodeId;
+			const hostname =
+				caller.role === "worker"
+					? caller.hostname || nodeId
+					: (request.headers.get("X-Hotbed-Host") ?? "").trim() || caller.hostname || nodeId;
+			const addr = (request.headers.get("X-Hotbed-Addr") ?? "").trim() || caller.addr;
+			if (!nodeId) {
+				return Response.json(
+					{ code: ErrorCode.InvalidArgs, message: "X-Hotbed-Node-Id header is required" },
+					{ status: 400 },
+				);
+			}
+
+			const pair = new WebSocketPair();
+			const client = pair[0];
+			const server = pair[1];
+			this.tunnel.accept(server, {
+				nodeId,
+				hostname,
+				addr,
+				connectedAt: this.ctrl.now(),
+			});
+			this.ctx.waitUntil(this.ensureAlarm());
+			return new Response(null, { status: 101, webSocket: client });
+		}
+
+		// /ws/questions — outbound T3 Code question bridge
+		const upgrade = (request.headers.get("Upgrade") ?? "").toLowerCase();
+		if (upgrade !== "websocket") {
+			return new Response("Expected Upgrade: websocket", { status: 426 });
+		}
+		let caller;
+		try {
+			caller = await this.authRequest(request);
+		} catch (err) {
+			const he = fromUnknownError(err);
+			return Response.json(he.toJSON(), { status: 403 });
+		}
+		if (caller.role !== "owner") {
+			return Response.json(
+				{
+					code: ErrorCode.NotAuthorized,
+					message: "owner or user authentication required for /ws/questions",
+				},
+				{ status: 403 },
+			);
+		}
+
+		const pair = new WebSocketPair();
+		const client = pair[0];
+		const server = pair[1];
+		this.questionBridge.accept(
+			server,
+			{
+				kind: "question-bridge",
+				hostname: caller.hostname,
+				login: caller.login,
+				connectedAt: this.ctrl.now(),
+			},
+			this.store.listT3OutboxQuestions(),
+		);
+		return new Response(null, { status: 101, webSocket: client });
+	}
+
+	async handleHttpRequest(request: Request): Promise<Response> {
 		const url = new URL(request.url);
 		const pathname = url.pathname;
 
@@ -414,18 +735,7 @@ export class ControllerDO extends DurableObject<ControllerEnv> {
 
 		// 1. Health check (unauthenticated)
 		if (pathname === "/healthz" && request.method === "GET") {
-			return Response.json({
-				ok: true,
-				clusterId: this.ctrl.clusterId,
-				orgId: this.ctrl.orgId || undefined,
-				cladefsTenantId:
-					this.ctrl.cladefsTenantId !== null ? Number(this.ctrl.cladefsTenantId) : undefined,
-				workosEnabled: isWorkOSEnabled(this.env),
-				version: this.builds.versionString(),
-				build: this.builds.currentBuildNumber(),
-				commit: this.builds.controllerCommit(),
-				connectedWorkers: this.tunnel.connectedNodeIds().size,
-			});
+			return Response.json(this.getHealth());
 		}
 
 		// Defense-in-depth: refuse organization mismatches before handling any route
@@ -433,110 +743,6 @@ export class ControllerDO extends DurableObject<ControllerEnv> {
 		const mismatch = this.checkOrgMismatch(request);
 		if (mismatch) {
 			return mismatch;
-		}
-
-		// 1b. Internal Worker-to-DO control routes (never exposed by index.ts DO_PREFIXES)
-		if (pathname === "/internal/revoke-user-tokens" && request.method === "POST") {
-			try {
-				const caller = await this.authRequest(request);
-				const isAdmin =
-					caller.role === "owner" && (caller.orgRole === "admin" || caller.orgRole === "owner");
-				if (!isAdmin) {
-					return Response.json(
-						{ code: ErrorCode.NotAuthorized, message: "organization admin required" },
-						{ status: 403 },
-					);
-				}
-				const body = (await request.json().catch(() => ({}))) as { userId?: string };
-				const userId = (body.userId ?? "").trim();
-				if (!userId) {
-					return Response.json(
-						{ code: ErrorCode.InvalidArgs, message: "userId is required" },
-						{ status: 400 },
-					);
-				}
-				const revoked = this.store.revokeApiTokensForUser(userId, this.ctrl.now());
-				return Response.json({ ok: true, revoked });
-			} catch (err) {
-				const he = fromUnknownError(err);
-				return Response.json(he.toJSON(), {
-					status: he.code === ErrorCode.NotAuthorized ? 403 : 500,
-				});
-			}
-		}
-
-		if (pathname === "/internal/consume-handoff" && request.method === "POST") {
-			const body = (await request.json().catch(() => ({}))) as { jti?: string; exp?: number };
-			const jti = (body.jti ?? "").trim();
-			const exp = typeof body.exp === "number" && Number.isFinite(body.exp) ? body.exp : 0;
-			if (!jti || jti.length > 128) {
-				return Response.json(
-					{ code: ErrorCode.InvalidArgs, message: "jti is required" },
-					{ status: 400 },
-				);
-			}
-			const key = `cli_handoff:${jti}`;
-			if (this.store.getMeta(key) !== null) {
-				return Response.json(
-					{ code: ErrorCode.Conflict, message: "CLI handoff code already used" },
-					{ status: 409 },
-				);
-			}
-			this.store.setMeta(key, String(Math.max(exp, this.ctrl.now() + 120_000)));
-			return Response.json({ ok: true });
-		}
-
-		if (pathname === "/internal/signup/check" && request.method === "POST") {
-			const body = (await request.json().catch(() => ({}))) as { userId?: string };
-			const userId = (body.userId ?? "").trim();
-			if (!userId) {
-				return Response.json(
-					{ code: ErrorCode.InvalidArgs, message: "userId is required" },
-					{ status: 400 },
-				);
-			}
-			return Response.json({ approved: this.store.isUserSignupApproved(userId) });
-		}
-
-		if (pathname === "/internal/signup/redeem" && request.method === "POST") {
-			const body = (await request.json().catch(() => ({}))) as {
-				userId?: string;
-				email?: string;
-				code?: string;
-			};
-			const userId = (body.userId ?? "").trim();
-			const email = (body.email ?? "").trim();
-			const submitted = (body.code ?? "").trim().toUpperCase();
-			if (!userId) {
-				return Response.json(
-					{ code: ErrorCode.InvalidArgs, message: "userId is required" },
-					{ status: 400 },
-				);
-			}
-			if (this.store.isUserSignupApproved(userId)) {
-				return Response.json({ ok: true, alreadyApproved: true });
-			}
-			if (!submitted) {
-				return Response.json(
-					{ code: ErrorCode.NotAuthorized, message: "Sign-up code is required." },
-					{ status: 403 },
-				);
-			}
-			const active = this.store.listActiveSignupCodes();
-			let matchedCode = "";
-			for (const candidate of active) {
-				if (await timingSafeStringEqual(submitted, candidate.code)) {
-					matchedCode = candidate.code;
-				}
-			}
-			if (!matchedCode) {
-				return Response.json(
-					{ code: ErrorCode.NotAuthorized, message: "Invalid sign-up code." },
-					{ status: 403 },
-				);
-			}
-			this.store.recordSignupRedemption(userId, email, matchedCode, this.ctrl.now());
-			return Response.json({ ok: true });
 		}
 
 		// 2. Cockpit cookie auth endpoints
@@ -978,98 +1184,6 @@ export class ControllerDO extends DurableObject<ControllerEnv> {
 			}
 		}
 
-		// 4. Worker persistent reverse-RPC WebSocket tunnel (/ws/worker)
-		if (pathname === "/ws/worker") {
-			const upgrade = (request.headers.get("Upgrade") ?? "").toLowerCase();
-			if (upgrade !== "websocket") {
-				return new Response("Expected Upgrade: websocket", { status: 426 });
-			}
-			let caller;
-			try {
-				caller = await this.authRequest(request);
-			} catch (err) {
-				const he = fromUnknownError(err);
-				return Response.json(he.toJSON(), { status: 403 });
-			}
-			if (caller.orgRole === "viewer") {
-				return Response.json(
-					{
-						code: ErrorCode.NotAuthorized,
-						message: "viewer role is read-only and cannot connect as a worker",
-					},
-					{ status: 403 },
-				);
-			}
-			// Pin nodeId to the token's DB-bound identity for worker-token auth so
-			// one worker token can never hijack another node's WebSocket tunnel.
-			const nodeId =
-				caller.role === "worker"
-					? caller.nodeId
-					: (request.headers.get("X-Hotbed-Node-Id") ?? "").trim() || caller.nodeId;
-			const hostname =
-				caller.role === "worker"
-					? caller.hostname || nodeId
-					: (request.headers.get("X-Hotbed-Host") ?? "").trim() || caller.hostname || nodeId;
-			const addr = (request.headers.get("X-Hotbed-Addr") ?? "").trim() || caller.addr;
-			if (!nodeId) {
-				return Response.json(
-					{ code: ErrorCode.InvalidArgs, message: "X-Hotbed-Node-Id header is required" },
-					{ status: 400 },
-				);
-			}
-
-			const pair = new WebSocketPair();
-			const client = pair[0];
-			const server = pair[1];
-			this.tunnel.accept(server, {
-				nodeId,
-				hostname,
-				addr,
-				connectedAt: this.ctrl.now(),
-			});
-			this.ctx.waitUntil(this.ensureAlarm());
-			return new Response(null, { status: 101, webSocket: client });
-		}
-
-		// 4b. Question outbox push WebSocket for outbound T3 Code bridges (/ws/questions)
-		if (pathname === "/ws/questions") {
-			const upgrade = (request.headers.get("Upgrade") ?? "").toLowerCase();
-			if (upgrade !== "websocket") {
-				return new Response("Expected Upgrade: websocket", { status: 426 });
-			}
-			let caller;
-			try {
-				caller = await this.authRequest(request);
-			} catch (err) {
-				const he = fromUnknownError(err);
-				return Response.json(he.toJSON(), { status: 403 });
-			}
-			if (caller.role !== "owner") {
-				return Response.json(
-					{
-						code: ErrorCode.NotAuthorized,
-						message: "owner or user authentication required for /ws/questions",
-					},
-					{ status: 403 },
-				);
-			}
-
-			const pair = new WebSocketPair();
-			const client = pair[0];
-			const server = pair[1];
-			this.questionBridge.accept(
-				server,
-				{
-					kind: "question-bridge",
-					hostname: caller.hostname,
-					login: caller.login,
-					connectedAt: this.ctrl.now(),
-				},
-				this.store.listT3OutboxQuestions(),
-			);
-			return new Response(null, { status: 101, webSocket: client });
-		}
-
 		// 5. Binary build downloads (/builds/{build}/{asset})
 		if (pathname.startsWith("/builds/") && request.method === "GET") {
 			try {
@@ -1297,7 +1411,7 @@ export class ControllerDO extends DurableObject<ControllerEnv> {
 					});
 				}
 				case "commandProfile": {
-					const p = this.store.getCommandProfile(id);
+					const p = await this.ctrl.commands.getProfile(id);
 					return Response.json({
 						found: Boolean(p),
 						data: p ? toJson(CommandProfileSchema, p) : null,

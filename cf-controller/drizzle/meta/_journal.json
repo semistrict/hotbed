@@ -141,6 +141,13 @@
 			"when": 1795717010976,
 			"tag": "0019_futuristic_earthquake",
 			"breakpoints": true
+		},
+		{
+			"idx": 20,
+			"version": "6",
+			"when": 1795727972818,
+			"tag": "0020_deep_kylun",
+			"breakpoints": true
 		}
 	]
 }

@@ -997,10 +997,9 @@ describe("WorkOS multi-organization, multi-user, per-org ControllerDO integratio
 			},
 		);
 		expect(unauthedRpc.status).toBe(403);
-		const spawnedDoHealth = await testEnv.CONTROLLER.getByName("org:org_unauthed_spawn").fetch(
-			new Request("https://controller.test/healthz"),
-		);
-		expect(((await spawnedDoHealth.json()) as { orgId?: string }).orgId).toBeUndefined();
+		const spawnedDoHealth =
+			await testEnv.CONTROLLER.getByName("org:org_unauthed_spawn").getHealth();
+		expect(spawnedDoHealth.orgId).toBeUndefined();
 
 		// 2. OWNER_TOKEN containing a dot works on GET /auth/me when WorkOS is enabled
 		const ownerMe = await callWorker(testEnv, "https://controller.test/auth/me", {

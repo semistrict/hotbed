@@ -2,6 +2,7 @@ import { env, SELF } from "cloudflare:test";
 import { describe, expect, it } from "vitest";
 import { INTERNAL_AUTH_HEADER, INTERNAL_ORG_HEADER, type CallerIdentity } from "../src/auth.ts";
 import { VIEWER_ALLOWED_PROCEDURES } from "../src/connect-adapter.ts";
+import type { ControllerEnv } from "../src/controller-do.ts";
 
 function viewerCaller(orgId = "org_viewer_test"): CallerIdentity {
 	return {
@@ -32,8 +33,9 @@ function memberCaller(orgId = "org_viewer_test"): CallerIdentity {
 }
 
 async function doFetch(doName: string, path: string, init: RequestInit = {}): Promise<Response> {
-	const stub = env.CONTROLLER.getByName(doName);
-	return stub.fetch(new Request(`https://controller.test${path}`, init));
+	const testEnv = env as unknown as ControllerEnv;
+	const stub = testEnv.CONTROLLER.getByName(doName);
+	return stub.handleHttpRequest(new Request(`https://controller.test${path}`, init));
 }
 
 function connectHeaders(caller: CallerIdentity): HeadersInit {

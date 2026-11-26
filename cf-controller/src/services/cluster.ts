@@ -535,8 +535,8 @@ export function createClusterService(
 		return out;
 	}
 
-	function ensureCommandOrDiagnosticsExist(id: string): void {
-		if (ctrl.store.hasCommandDiagnostics(id)) return;
+	async function ensureCommandOrDiagnosticsExist(id: string): Promise<void> {
+		if (await ctrl.commands.hasDiagnostics(id)) return;
 		ctrl.store.lookupCommand(id);
 	}
 
@@ -568,6 +568,37 @@ export function createClusterService(
 		async pushEvents(req, ctx) {
 			const caller = getCaller(ctx.values);
 			checkClusterId(caller.hostname, req.clusterId);
+			if (!ctrl.store.hasNode(caller.nodeId)) {
+				throw hotbedError(ErrorCode.NotJoined, `node ${caller.nodeId} has not joined this cluster`);
+			}
+			// Persist per-command profiles and diagnostics to each command's own
+			// CommandDO via typed Workers RPC before advancing node.applied, so a
+			// transient RPC failure lets the worker retry without dropping data.
+			const commandWrites: Array<Promise<void>> = [];
+			for (const ev of req.events) {
+				if (ev.change.case !== "command") continue;
+				const cc = ev.change.value;
+				const cmd = cc.command;
+				if (!cmd || cc.what === "forgotten") continue;
+				if (cc.profile) {
+					commandWrites.push(
+						ctrl.commands.saveProfile(
+							caller.nodeId,
+							Number(cmd.endedAt ?? ev.at),
+							cc.profile,
+							ctrl.now(),
+						),
+					);
+				}
+				if (cc.diagnostics) {
+					commandWrites.push(
+						ctrl.commands.saveDiagnostics(caller.nodeId, cc.diagnostics, Number(ev.at)),
+					);
+				}
+			}
+			if (commandWrites.length > 0) {
+				await Promise.all(commandWrites);
+			}
 			const res = ctrl.store.pushEvents(
 				caller.nodeId,
 				req,
@@ -1336,7 +1367,7 @@ export function createClusterService(
 			});
 		},
 
-		saveCommandDiagnostics(req, ctx) {
+		async saveCommandDiagnostics(req, ctx) {
 			const caller = getCaller(ctx.values);
 			if (!ctrl.store.hasNode(caller.nodeId)) {
 				throw hotbedError(ErrorCode.NotJoined, `${caller.hostname} has not joined this cluster`);
@@ -1347,11 +1378,11 @@ export function createClusterService(
 			if (!d.intervention || d.intervention.seq <= 0) {
 				throw hotbedError(ErrorCode.InvalidArgs, "intervention with positive seq is required");
 			}
-			ctrl.store.saveCommandDiagnostics(caller.nodeId, d, ctrl.now());
+			await ctrl.commands.saveDiagnostics(caller.nodeId, d, ctrl.now());
 			return create(SaveCommandDiagnosticsResponseSchema);
 		},
 
-		saveCommandSample(req, ctx) {
+		async saveCommandSample(req, ctx) {
 			const caller = getCaller(ctx.values);
 			if (!ctrl.store.hasNode(caller.nodeId)) {
 				throw hotbedError(ErrorCode.NotJoined, `${caller.hostname} has not joined this cluster`);
@@ -1361,21 +1392,21 @@ export function createClusterService(
 			if (!s.commandId.trim()) throw hotbedError(ErrorCode.InvalidArgs, "command ID is required");
 			if (s.seq <= 0)
 				throw hotbedError(ErrorCode.InvalidArgs, "sample with positive seq is required");
-			ctrl.store.saveCommandSample(caller.nodeId, s, ctrl.now());
+			await ctrl.commands.saveSample(caller.nodeId, s, ctrl.now());
 			return create(SaveCommandSampleResponseSchema);
 		},
 
-		listCommandSamples(req) {
+		async listCommandSamples(req) {
 			if (!req.id.trim()) throw hotbedError(ErrorCode.InvalidArgs, "command ID is required");
-			const samples = ctrl.store.listCommandSamples(req.id);
+			const samples = await ctrl.commands.listSamples(req.id);
 			if (samples.length === 0) ctrl.store.lookupCommand(req.id);
 			return create(ListCommandSamplesResponseSchema, { samples });
 		},
 
-		getCommandSample(req) {
+		async getCommandSample(req) {
 			if (!req.id.trim()) throw hotbedError(ErrorCode.InvalidArgs, "command ID is required");
 			if (req.seq <= 0) throw hotbedError(ErrorCode.InvalidArgs, "seq must be positive");
-			const s = ctrl.store.getCommandSample(req.id, req.seq);
+			const s = await ctrl.commands.getSample(req.id, req.seq);
 			if (s) return s;
 			ctrl.store.lookupCommand(req.id);
 			throw hotbedError(
@@ -1384,20 +1415,20 @@ export function createClusterService(
 			).withSuggestion(`list its samples (hotbed samples ls ${req.id})`);
 		},
 
-		getCommandDiagnostics(req) {
+		async getCommandDiagnostics(req) {
 			if (!req.id.trim()) throw hotbedError(ErrorCode.InvalidArgs, "command ID is required");
 			if (req.seq < 0) throw hotbedError(ErrorCode.InvalidArgs, "seq must be non-negative");
 			if (req.afterSeq < 0)
 				throw hotbedError(ErrorCode.InvalidArgs, "after_seq must be non-negative");
 			if (req.seq > 0) {
-				const d = ctrl.store.getCommandDiagnostic(req.id, req.seq);
+				const d = await ctrl.commands.getDiagnostic(req.id, req.seq);
 				if (d) return create(GetCommandDiagnosticsResponseSchema, { diagnostics: [d] });
-				ensureCommandOrDiagnosticsExist(req.id);
+				await ensureCommandOrDiagnosticsExist(req.id);
 				return create(GetCommandDiagnosticsResponseSchema);
 			}
-			const ds = ctrl.store.listCommandDiagnosticsAfter(req.id, req.afterSeq);
+			const ds = await ctrl.commands.listDiagnosticsAfter(req.id, req.afterSeq);
 			if (ds.length === 0) {
-				ensureCommandOrDiagnosticsExist(req.id);
+				await ensureCommandOrDiagnosticsExist(req.id);
 				return create(GetCommandDiagnosticsResponseSchema);
 			}
 			const page: CommandDiagnostics[] = [];

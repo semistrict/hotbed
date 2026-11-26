@@ -459,7 +459,7 @@ service WorkspaceService {
       name: "output"
       read_only: true
       waits: true
-      format: "{{range .lines}}{{pad 6 .number}}{{if .match}}: {{else}}  {{end}}{{.text}}\n{{end}}[{{.commandId}} {{state .state}}{{with .exitCode}} exit {{.}}{{end}} · {{or .totalLines 0}} lines{{with .matches}} · {{.}} matching{{end}}{{with .waited}} · wait {{.}}{{end}}{{with .nextLine}} · next --after {{.}}{{end}}]{{with .omitted}}\n[{{.}}]{{end}}"
+      format: "{{range .lines}}{{pad 6 .number}}  {{pad 8 (time .receivedAt)}}{{if .match}}: {{else}}  {{end}}{{.text}}\n{{end}}[{{.commandId}} {{state .state}}{{with .exitCode}} exit {{.}}{{end}} · {{or .totalLines 0}} lines{{with .matches}} · {{.}} matching{{end}}{{with .waited}} · wait {{.}}{{end}}{{with .nextLine}} · next --after {{.}}{{end}}]{{with .omitted}}\n[{{.}}]{{end}}"
     };
   }
   // DetachCommand lets an attached command run on with no one following
@@ -2015,6 +2015,9 @@ message OutputLine {
   string text = 2;
   // It matched grep or until (not context around a match).
   bool match = 3;
+  // Unix milliseconds when this line was received; 0 when unknown (legacy log
+  // or synthetic dropped-bytes marker).
+  int64 received_at = 4;
 }
 
 message OutputQuery {
@@ -2792,6 +2795,9 @@ message CommandLog {
   // output has more: the first is the oldest that fit (or, when not even
   // the last line fits, that line's end).
   bool cut = 3;
+  // Unix milliseconds when each line in lines was received (parallel to lines;
+  // 0 when unknown). Empty when the worker predates per-line timestamps.
+  repeated int64 line_timestamps = 4;
 }
 
 // ---- reports ------------------------------------------------------------

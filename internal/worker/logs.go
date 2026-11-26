@@ -119,6 +119,9 @@ func (e *Engine) leftover(name string, names map[string]bool, ent os.DirEntry) b
 	if log, ok := strings.CutSuffix(name, ".log.dropped"); ok {
 		return !names[log+".log"]
 	}
+	if log, ok := strings.CutSuffix(name, ".log.ts"); ok {
+		return !names[log+".log"]
+	}
 	if !strings.Contains(name, ".log.dropped.") && !strings.HasPrefix(name, ".punch-check.") {
 		return false
 	}

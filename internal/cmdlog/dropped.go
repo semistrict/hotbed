@@ -43,14 +43,16 @@ func ReadDropped(path string) (Dropped, error) {
 	return d, nil
 }
 
-// Remove removes the log at path and what records its dropped bytes.
+// Remove removes the log at path and its sidecar records (.dropped, .ts).
 func Remove(path string) error {
 	err := os.Remove(path)
 	if errors.Is(err, os.ErrNotExist) {
 		err = nil
 	}
-	if derr := os.Remove(droppedPath(path)); derr != nil && !errors.Is(derr, os.ErrNotExist) {
-		err = errors.Join(err, derr)
+	for _, sidecar := range []string{droppedPath(path), tsPath(path)} {
+		if serr := os.Remove(sidecar); serr != nil && !errors.Is(serr, os.ErrNotExist) {
+			err = errors.Join(err, serr)
+		}
 	}
 	return err
 }
