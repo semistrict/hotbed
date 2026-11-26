@@ -539,9 +539,9 @@ func (u *runtimeUnits) vmAdjustedMemory(ctx context.Context, wsID string, guestA
 		}
 		nLive := int64(u.liveCountInVM(wsID))
 		// When the host Firecracker process holds more RAM than the guest
-		// command's cgroup reports (e.g. guest zram pool, guest tmpfs, or
-		// guest kernel/page cache), attribute the VM's excess host footprint
-		// above vmHostMinResidentBytes across its live commands so admission
+		// command's cgroup reports (e.g. guest tmpfs or guest kernel/page
+		// cache), attribute the VM's excess host footprint above
+		// vmHostMinResidentBytes across its live commands so admission
 		// reservations and reclaim see the real host memory cost.
 		vmResident := max(hostAnon-vmHostMinResidentBytes, 0) / nLive
 		vmHeld := max(hostHeld-vmHostMinResidentBytes, 0) / nLive
@@ -763,7 +763,7 @@ func (u *runtimeUnits) Reclaim(cgroup string, n int64) error {
 		// Firecracker unit's cgroup into host zram/swap WITHOUT ever freezing
 		// Firecracker (keeping cladefsd DAX unmaps and guestd responsive).
 		// When the entire VM is quiescent, reclaim all host-resident anon above
-		// vmHostMinResidentBytes (including guest zram, tmpfs, and guest kernel
+		// vmHostMinResidentBytes (including guest tmpfs and guest kernel
 		// memory that the guest command cgroup does not report).
 		hctx, hcancel := context.WithTimeout(context.Background(), 2*time.Second)
 		vmCG, hostMem, hasHostMem := u.vmHostMemory(hctx, wsID)
