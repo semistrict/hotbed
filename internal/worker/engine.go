@@ -366,6 +366,9 @@ type workspace struct {
 	// vmRetryAt is when to try again to stop its VM after stopping failed.
 	// Guarded by e.mu.
 	vmRetryAt time.Time
+	// releaseRetryAt is when to start releasing a spent throwaway workspace
+	// again, should the release last started fail. Guarded by e.mu.
+	releaseRetryAt time.Time
 }
 
 func (w *workspace) ws() *pb.Workspace { return w.rec.Workspace }

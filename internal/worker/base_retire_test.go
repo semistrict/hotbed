@@ -98,7 +98,7 @@ func TestBaseRetirerLifecycleAndPersistence(t *testing.T) {
 	r.enqueue(0, 1001, "proj-old", t0.Add(2*time.Minute))
 
 	// Before grace period elapses: nothing deleted.
-	r.sweep(ctx, store, "retire", t0.Add(4*time.Minute))
+	r.sweep(ctx, store, t0.Add(4*time.Minute))
 	if len(api.createReqs) != 0 || len(api.deleteReqs) != 0 {
 		t.Fatalf("deleted prematurely: create=%d delete=%d", len(api.createReqs), len(api.deleteReqs))
 	}
@@ -116,16 +116,16 @@ func TestBaseRetirerLifecycleAndPersistence(t *testing.T) {
 		}
 		return nil
 	}
-	reloaded.sweep(ctx, store, "retire", t0.Add(5*time.Minute))
+	reloaded.sweep(ctx, store, t0.Add(5*time.Minute))
 	if len(api.deleteReqs) != 1 {
 		t.Fatalf("expected 1 delete attempt, got %d", len(api.deleteReqs))
 	}
-	reloaded.sweep(ctx, store, "retire", t0.Add(6*time.Minute))
+	reloaded.sweep(ctx, store, t0.Add(6*time.Minute))
 	if len(api.deleteReqs) != 2 {
 		t.Fatalf("expected retry delete attempt, got %d", len(api.deleteReqs))
 	}
 	// Already retired now: further sweeps do nothing.
-	reloaded.sweep(ctx, store, "retire", t0.Add(7*time.Minute))
+	reloaded.sweep(ctx, store, t0.Add(7*time.Minute))
 	if len(api.deleteReqs) != 2 {
 		t.Fatalf("expected no further deletes after retirement, got %d", len(api.deleteReqs))
 	}
@@ -144,7 +144,7 @@ func TestDeleteBucketCellTreatsAlreadyDeletedAsSuccess(t *testing.T) {
 	api.createErr = func(*cladefsdv1.CreateCellRequest) error {
 		return status.Error(codes.NotFound, "no cell")
 	}
-	if err := store.DeleteBucketCell(ctx, "retire/0-10", 0, 10); err != nil {
+	if err := store.DeleteBucketCell(ctx, 0, 10); err != nil {
 		t.Fatalf("expected nil on NotFound, got %v", err)
 	}
 
@@ -155,7 +155,7 @@ func TestDeleteBucketCellTreatsAlreadyDeletedAsSuccess(t *testing.T) {
 		return st.Err()
 	}
 	// Without errno trailer, FailedPrecondition is NOT ignored (could be EBUSY/ESTALE).
-	if err := store.DeleteBucketCell(ctx, "retire/0-11", 0, 11); err == nil {
+	if err := store.DeleteBucketCell(ctx, 0, 11); err == nil {
 		t.Fatal("expected error for plain FailedPrecondition without EROFS")
 	}
 }
@@ -270,7 +270,7 @@ func TestRetireSupersededBaseImagesRemovesStaleJSONAndRetiresCells(t *testing.T)
 		t.Fatalf("active %s was removed: %v", newJSON, err)
 	}
 
-	r.sweep(ctx, store, "retire", now)
+	r.sweep(ctx, store, now)
 	if len(api.createReqs) != 1 || api.createReqs[0].GetCell() != 201 {
 		t.Fatalf("expected TakeCell for superseded baseimage 201, got %+v", api.createReqs)
 	}
@@ -459,9 +459,9 @@ func TestVMBackendSetsUploadIntervalOnProjectBaseBuild(t *testing.T) {
 	if api.createReqs[0].UploadIntervalMs == nil || api.createReqs[0].GetUploadIntervalMs() != wantMs {
 		t.Fatalf("VM EnsureProjectBase TakeCell UploadIntervalMs = %v, want %d", api.createReqs[0].UploadIntervalMs, wantMs)
 	}
-	// DeleteCell is called once before build (pre-clean) and once on VM launch failure cleanup.
-	if len(api.deleteReqs) < 2 {
-		t.Fatalf("expected error cleanup DeleteCell after VM start failure, got %d deleteReqs", len(api.deleteReqs))
+	// DeleteCell is called on VM launch failure cleanup.
+	if len(api.deleteReqs) < 1 || api.deleteReqs[len(api.deleteReqs)-1].GetCell() != 901 {
+		t.Fatalf("expected error cleanup DeleteCell for 901 after VM start failure, got %+v", api.deleteReqs)
 	}
 
 	// Verify TakeCell failure preserves forkRef.Cell and cleans it up in R2 via DeleteBucketCell.
@@ -495,7 +495,7 @@ func TestVMBackendSetsUploadIntervalOnProjectBaseBuild(t *testing.T) {
 	if len(api2.createReqs) != 2 || api2.createReqs[1].GetCell() != 951 {
 		t.Fatalf("expected cleanup DeleteBucketCell for cell 951 after TakeCell error, got createReqs=%+v", api2.createReqs)
 	}
-	if len(api2.deleteReqs) < 2 {
-		t.Fatalf("expected DeleteCell in DeleteBucketCell cleanup, got %d deleteReqs", len(api2.deleteReqs))
+	if len(api2.deleteReqs) < 1 || api2.deleteReqs[len(api2.deleteReqs)-1].GetCell() != 951 {
+		t.Fatalf("expected DeleteCell for 951 in DeleteBucketCell cleanup, got %+v", api2.deleteReqs)
 	}
 }

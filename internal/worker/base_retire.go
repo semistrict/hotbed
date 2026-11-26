@@ -3,7 +3,6 @@ package worker
 import (
 	"context"
 	"encoding/json"
-	"fmt"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -111,8 +110,8 @@ func (r *baseRetirer) enqueue(tenant, cell uint64, baseID string, now time.Time)
 
 // sweep deletes any pending retired base cells whose grace window has elapsed.
 // Cells that fail transiently stay queued for the next sweep. Concurrent sweeps
-// return immediately so two callers never collide on the same staging directory.
-func (r *baseRetirer) sweep(ctx context.Context, store *cladefs.Store, stagingPrefix string, now time.Time) {
+// return immediately so two callers never collide.
+func (r *baseRetirer) sweep(ctx context.Context, store *cladefs.Store, now time.Time) {
 	if store == nil {
 		return
 	}
@@ -134,8 +133,7 @@ func (r *baseRetirer) sweep(ctx context.Context, store *cladefs.Store, stagingPr
 
 	deleted := make(map[[2]uint64]bool, len(due))
 	for _, entry := range due {
-		rel := filepath.Join(stagingPrefix, fmt.Sprintf("%d-%d", entry.Tenant, entry.Cell))
-		if err := store.DeleteBucketCell(ctx, rel, entry.Tenant, entry.Cell); err != nil {
+		if err := store.DeleteBucketCell(ctx, entry.Tenant, entry.Cell); err != nil {
 			slog.Warn("retire superseded R2 base cell failed; will retry",
 				"baseId", entry.BaseID, "tenant", entry.Tenant, "cell", entry.Cell, "err", err)
 			continue

@@ -11,7 +11,6 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"sync"
 	"sync/atomic"
 	"syscall"
 	"time"
@@ -36,8 +35,8 @@ const (
 type Config struct {
 	ControlSock string   // cladefsd gRPC control Unix socket (default /run/cladefsd/control.sock)
 	VMSock      string   // fallback VM socket when TenantID == 0 (default /run/cladefsd/vm.sock)
-	CellRoot    string   // host directory (or colon-separated JBOD directories) containing hotbed's cells (must live on O_DIRECT-capable FS)
-	CellRoots   []string // optional additional JBOD cell root directories merged with CellRoot
+	CellRoot    string   // optional host directory (or colon-separated directories) for staging input tars readable by cladefsd
+	CellRoots   []string // optional additional staging directories merged with CellRoot
 	TenantID    uint64   // optional tenant ID; when >0, Store calls Grant to get an isolated tenant VM socket
 	VMUID       uint32   // optional UID to own granted tenant socket
 	VMGID       uint32   // optional GID to own granted tenant socket
@@ -68,9 +67,6 @@ func parseCellRoots(cellRoot string, extra []string) ([]string, error) {
 		seen[abs] = struct{}{}
 		roots = append(roots, abs)
 	}
-	if len(roots) == 0 {
-		return nil, errors.New("cladefs: CellRoot is required")
-	}
 	return roots, nil
 }
 
@@ -91,15 +87,25 @@ func (c Config) Normalized() Config {
 // CellRef identifies a cladefs cell (and optionally a specific uploaded version
 // that can be forked on any host sharing the bucket).
 type CellRef struct {
-	RelPath  string `json:"relPath"`
-	HostPath string `json:"hostPath"`
+	RelPath  string `json:"relPath,omitempty"`
+	HostPath string `json:"hostPath,omitempty"` // canonical TENANT/CELL identifier passed to Firecracker VM socket OPEN
 	Tenant   uint64 `json:"tenant"`
 	Cell     uint64 `json:"cell"`
 	Version  uint64 `json:"version,omitempty"`
 }
 
-// Store manages hotbed cells through cladefsd's control API across one or more
-// JBOD cell roots.
+// CellID returns the canonical TENANT/CELL base32 identifier for ref.
+func (r CellRef) CellID() string {
+	if r.HostPath != "" {
+		return r.HostPath
+	}
+	if r.Cell == 0 {
+		return ""
+	}
+	return FormatCellID(r.Tenant, r.Cell)
+}
+
+// Store manages hotbed cells through cladefsd's (tenant, cell) control API.
 type Store struct {
 	cfg      Config
 	roots    []string
@@ -109,21 +115,16 @@ type Store struct {
 	closer   io.Closer
 	vmSock   string
 	nextRoot atomic.Uint64
-	mu       sync.RWMutex
-	paths    map[string]string        // clean relPath -> chosen hostPath (helps tests without on-disk dirs)
-	inflight map[string]chan struct{} // per-clean-relPath creation serialization
 }
 
-// Open connects to cladefsd at cfg.ControlSock, checks health, ensures all
-// configured JBOD CellRoots exist, and grants a tenant VM socket if cfg.TenantID > 0.
+// Open connects to cladefsd at cfg.ControlSock, checks health, ensures any
+// configured staging CellRoots exist, and grants a tenant VM socket if cfg.TenantID > 0.
 func Open(ctx context.Context, cfg Config, dialOpts ...grpc.DialOption) (*Store, error) {
 	cfg = cfg.Normalized()
 	roots, err := parseCellRoots(cfg.CellRoot, cfg.CellRoots)
 	if err != nil {
 		return nil, err
 	}
-	// Clear CellRoot before calling NewStore so literal entries in CellRoots
-	// containing filepath.ListSeparator are not split a second time.
 	cfg.CellRoot = ""
 	cfg.CellRoots = roots
 	for _, root := range roots {
@@ -152,7 +153,11 @@ func NewStore(ctx context.Context, cfg Config, api cladefsdv1.CladefsdClient, he
 	if err != nil {
 		return nil, err
 	}
-	cfg.CellRoot = roots[0]
+	if len(roots) > 0 {
+		cfg.CellRoot = roots[0]
+	} else {
+		cfg.CellRoot = ""
+	}
 	cfg.CellRoots = roots
 	if api == nil {
 		return nil, errors.New("cladefs: CladefsdClient is required")
@@ -170,10 +175,6 @@ func NewStore(ctx context.Context, cfg Config, api cladefsdv1.CladefsdClient, he
 	if cfg.TenantID > 0 {
 		req := &cladefsdv1.GrantRequest{
 			Tenant: cfg.TenantID,
-			Dir:    roots[0],
-		}
-		if len(roots) > 1 {
-			req.Dirs = append([]string(nil), roots[1:]...)
 		}
 		if cfg.VMUID > 0 {
 			u := cfg.VMUID
@@ -185,7 +186,7 @@ func NewStore(ctx context.Context, cfg Config, api cladefsdv1.CladefsdClient, he
 		}
 		resp, err := api.Grant(ctx, req)
 		if err != nil {
-			return nil, fmt.Errorf("cladefs: grant tenant %d on %v: %w", cfg.TenantID, roots, err)
+			return nil, fmt.Errorf("cladefs: grant tenant %d: %w", cfg.TenantID, err)
 		}
 		if resp.GetSocket() == "" {
 			return nil, fmt.Errorf("cladefs: grant tenant %d returned empty socket", cfg.TenantID)
@@ -193,14 +194,12 @@ func NewStore(ctx context.Context, cfg Config, api cladefsdv1.CladefsdClient, he
 		vmSock = resp.GetSocket()
 	}
 	return &Store{
-		cfg:      cfg,
-		roots:    roots,
-		api:      api,
-		health:   health,
-		closer:   closer,
-		vmSock:   vmSock,
-		paths:    make(map[string]string),
-		inflight: make(map[string]chan struct{}),
+		cfg:    cfg,
+		roots:  roots,
+		api:    api,
+		health: health,
+		closer: closer,
+		vmSock: vmSock,
 	}, nil
 }
 
@@ -221,10 +220,15 @@ func (s *Store) Close() error {
 // VMSock returns the VM socket path Firecracker should connect to.
 func (s *Store) VMSock() string { return s.vmSock }
 
-// CellRoot returns the primary host directory containing managed cells.
-func (s *Store) CellRoot() string { return s.roots[0] }
+// CellRoot returns the primary host staging directory (or empty if unset).
+func (s *Store) CellRoot() string {
+	if len(s.roots) == 0 {
+		return ""
+	}
+	return s.roots[0]
+}
 
-// CellRoots returns all configured JBOD cell root directories.
+// CellRoots returns all configured host staging directories.
 func (s *Store) CellRoots() []string {
 	out := make([]string, len(s.roots))
 	copy(out, s.roots)
@@ -234,136 +238,12 @@ func (s *Store) CellRoots() []string {
 // TenantID returns the configured tenant ID (0 for default tenant).
 func (s *Store) TenantID() uint64 { return s.cfg.TenantID }
 
-func cleanRelCellPath(relPath string) (string, error) {
-	if relPath == "" {
-		return "", errors.New("cladefs: empty cell path")
-	}
-	if filepath.IsAbs(relPath) {
-		return "", fmt.Errorf("cladefs: cell path %q must be relative", relPath)
-	}
-	clean := filepath.Clean(relPath)
-	if clean == "." || clean == ".." || strings.HasPrefix(clean, ".."+string(filepath.Separator)) {
-		return "", fmt.Errorf("cladefs: cell path %q escapes cell root", relPath)
-	}
-	return clean, nil
-}
-
-func joinInsideRoot(root, clean string) (string, error) {
-	full := filepath.Join(root, clean)
-	rel, err := filepath.Rel(root, full)
-	if err != nil || rel == "." || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
-		return "", fmt.Errorf("cladefs: cell path %q escapes cell root", clean)
-	}
-	return full, nil
-}
-
-// CellPath resolves an existing cell's relPath across all configured JBOD roots,
-// falling back to the primary root if it does not yet exist on disk.
-func (s *Store) CellPath(relPath string) (string, error) {
-	clean, err := cleanRelCellPath(relPath)
-	if err != nil {
-		return "", err
-	}
-	for _, root := range s.roots {
-		full, err := joinInsideRoot(root, clean)
-		if err != nil {
-			return "", err
-		}
-		fi, err := os.Stat(full)
-		if err == nil {
-			if fi.IsDir() {
-				return full, nil
-			}
-			continue
-		}
-		if !errors.Is(err, os.ErrNotExist) {
-			return "", fmt.Errorf("cladefs: stat cell %s: %w", full, err)
-		}
-	}
-	s.mu.RLock()
-	known, ok := s.paths[clean]
-	s.mu.RUnlock()
-	if ok {
-		return known, nil
-	}
-	return joinInsideRoot(s.roots[0], clean)
-}
-
-// NewCellPath chooses the best JBOD root for creating a new cell at relPath:
-// reuses an existing root if relPath already exists there, otherwise selects
-// the root with the most available space (breaking near-ties via round-robin so
-// balanced disks share IOPS evenly).
-func (s *Store) NewCellPath(relPath string) (string, error) {
-	clean, err := cleanRelCellPath(relPath)
-	if err != nil {
-		return "", err
-	}
-	if len(s.roots) == 1 {
-		return joinInsideRoot(s.roots[0], clean)
-	}
-	for _, root := range s.roots {
-		full, err := joinInsideRoot(root, clean)
-		if err != nil {
-			return "", err
-		}
-		fi, err := os.Stat(full)
-		if err == nil {
-			if fi.IsDir() {
-				return full, nil
-			}
-			continue
-		}
-		if !errors.Is(err, os.ErrNotExist) {
-			return "", fmt.Errorf("cladefs: stat cell %s: %w", full, err)
-		}
-	}
-	s.mu.RLock()
-	known, ok := s.paths[clean]
-	s.mu.RUnlock()
-	if ok {
-		return known, nil
-	}
-	root := s.pickRootForNewCell()
-	return joinInsideRoot(root, clean)
-}
-
-// PickRoot selects the JBOD cell root with the most available space (breaking
+// PickRoot selects the staging root with the most available space (breaking
 // near-ties via round-robin) for temporary staging files such as guest base tars.
 func (s *Store) PickRoot() string {
-	return s.pickRootForNewCell()
-}
-
-// lockCreate serializes cell-creating operations targeting the same clean
-// relPath so concurrent callers cannot split one relPath across two JBOD roots.
-func (s *Store) lockCreate(ctx context.Context, relPath string) (func(), error) {
-	clean, err := cleanRelCellPath(relPath)
-	if err != nil {
-		return nil, err
+	if len(s.roots) == 0 {
+		return os.TempDir()
 	}
-	for {
-		s.mu.Lock()
-		if ch, busy := s.inflight[clean]; busy {
-			s.mu.Unlock()
-			select {
-			case <-ch:
-				continue
-			case <-ctx.Done():
-				return nil, ctx.Err()
-			}
-		}
-		ch := make(chan struct{})
-		s.inflight[clean] = ch
-		s.mu.Unlock()
-		return func() {
-			s.mu.Lock()
-			delete(s.inflight, clean)
-			close(ch)
-			s.mu.Unlock()
-		}, nil
-	}
-}
-
-func (s *Store) pickRootForNewCell() string {
 	if len(s.roots) == 1 {
 		return s.roots[0]
 	}
@@ -384,8 +264,6 @@ func (s *Store) pickRootForNewCell() string {
 			maxAvail = avail
 		}
 	}
-	// Collect roots within 2% of the freest root so balanced JBOD drives
-	// alternate round-robin rather than piling onto one disk.
 	threshold := maxAvail - maxAvail/50
 	var top []string
 	for _, c := range cands {
@@ -400,47 +278,6 @@ func (s *Store) pickRootForNewCell() string {
 	return top[idx]
 }
 
-func (s *Store) rememberPath(relPath, hostPath string) {
-	if clean, err := cleanRelCellPath(relPath); err == nil {
-		s.mu.Lock()
-		s.paths[clean] = hostPath
-		s.mu.Unlock()
-	}
-}
-
-func (s *Store) forgetPath(relPath string) {
-	if clean, err := cleanRelCellPath(relPath); err == nil {
-		s.mu.Lock()
-		delete(s.paths, clean)
-		s.mu.Unlock()
-	}
-}
-
-func (s *Store) forgetHostPath(absPath string) {
-	s.mu.Lock()
-	for k, v := range s.paths {
-		if v == absPath {
-			delete(s.paths, k)
-		}
-	}
-	s.mu.Unlock()
-}
-
-func (s *Store) rootForHostPath(hostPath string) string {
-	best := ""
-	for _, root := range s.roots {
-		if hostPath == root || strings.HasPrefix(hostPath, root+string(filepath.Separator)) {
-			if len(root) > len(best) {
-				best = root
-			}
-		}
-	}
-	if best != "" {
-		return best
-	}
-	return s.roots[0]
-}
-
 func (s *Store) capacityOrDefault(capBytes uint64) uint64 {
 	if capBytes > 0 {
 		return capBytes
@@ -449,9 +286,8 @@ func (s *Store) capacityOrDefault(capBytes uint64) uint64 {
 }
 
 // ensureCellRoot creates root and, when running as root beneath a non-root
-// ancestor directory (e.g. creating <cellRoot>/tenant-<id> inside a
-// cladefsd-owned cellRoot), aligns ownership of newly created directories to
-// that ancestor so cladefsd can create cells inside them.
+// ancestor directory, aligns ownership of newly created directories to that
+// ancestor so cladefsd can read staging files placed beneath it.
 func ensureCellRoot(root string) error {
 	ancestor := root
 	for {
@@ -484,73 +320,71 @@ func ensureCellRoot(root string) error {
 	return nil
 }
 
-// ensureParentDir creates parent directories of hostPath inside its JBOD root
-// and matches their ownership to that root so a non-root cladefsd daemon can
-// create cell directories beneath them when hotbed-worker runs as root.
-func (s *Store) ensureParentDir(hostPath string) error {
-	parent := filepath.Dir(hostPath)
-	if err := os.MkdirAll(parent, 0o755); err != nil {
-		return err
+// Base32ID formats a cladefs u64 tenant/cell ID as 13-character zero-padded
+// lowercase Crockford base32, matching cladefs's base32_id::Padded layout.
+func Base32ID(id uint64) string {
+	const digits = "0123456789abcdefghjkmnpqrstvwxyz"
+	var out [13]byte
+	for i := len(out) - 1; i >= 0; i-- {
+		out[i] = digits[id%32]
+		id /= 32
 	}
-	if os.Geteuid() != 0 {
-		return nil
-	}
-	root := s.rootForHostPath(hostPath)
-	rootFi, err := os.Stat(root)
-	if err != nil {
-		return nil
-	}
-	st, ok := rootFi.Sys().(*syscall.Stat_t)
-	if !ok {
-		return nil
-	}
-	// Walk upward from parent to root and align ownership.
-	for cur := parent; cur != root && strings.HasPrefix(cur, root+string(filepath.Separator)); cur = filepath.Dir(cur) {
-		_ = os.Chown(cur, int(st.Uid), int(st.Gid))
-	}
-	return nil
+	return string(out[:])
 }
 
-// ImportImage imports an OCI layout or tar archive at imagePath into a new cell
-// at relPath, creates a version, and syncs it to the shared bucket so any host
-// can fork it.
-func (s *Store) ImportImage(ctx context.Context, relPath, imagePath string, capBytes uint64) (CellRef, error) {
-	unlock, err := s.lockCreate(ctx, relPath)
-	if err != nil {
-		return CellRef{}, err
+// FormatCellID formats (tenant, cell) as the TENANT/CELL Crockford base32
+// identifier accepted by cladefsd's VM socket OPEN when managed disks are active.
+func FormatCellID(tenant, cell uint64) string {
+	return Base32ID(tenant) + "/" + Base32ID(cell)
+}
+
+func parseBase32ID(s string) (uint64, bool) {
+	if s == "" || len(s) > 13 {
+		return 0, false
 	}
-	hostPath, err := s.NewCellPath(relPath)
-	if err != nil {
-		unlock()
-		return CellRef{}, err
+	var val uint64
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		if c >= 'A' && c <= 'Z' {
+			c += 'a' - 'A'
+		}
+		var d uint64
+		switch {
+		case c >= '0' && c <= '9':
+			d = uint64(c - '0')
+		case c >= 'a' && c <= 'h':
+			d = uint64(c-'a') + 10
+		case c >= 'j' && c <= 'k':
+			d = uint64(c-'j') + 18
+		case c >= 'm' && c <= 'n':
+			d = uint64(c-'m') + 20
+		case c >= 'p' && c <= 't':
+			d = uint64(c-'p') + 22
+		case c >= 'v' && c <= 'z':
+			d = uint64(c-'v') + 27
+		default:
+			return 0, false
+		}
+		if val > (^(uint64(0)) - d) / 32 {
+			return 0, false
+		}
+		val = val*32 + d
 	}
-	if err := s.ensureParentDir(hostPath); err != nil {
-		unlock()
-		return CellRef{}, fmt.Errorf("cladefs: mkdir parent for %s: %w", relPath, err)
+	return val, true
+}
+
+// ParseCellID parses a cladefs TENANT/CELL Crockford base32 cell identifier.
+func ParseCellID(s string) (tenant, cell uint64, ok bool) {
+	tStr, cStr, found := strings.Cut(s, "/")
+	if !found || strings.Contains(cStr, "/") {
+		return 0, 0, false
 	}
-	imp, err := s.api.ImportImage(ctx, &cladefsdv1.ImportImageRequest{
-		Path:     hostPath,
-		Capacity: s.capacityOrDefault(capBytes),
-		Image:    imagePath,
-		Tenant:   s.cfg.TenantID,
-	})
-	if err != nil {
-		unlock()
-		return CellRef{}, mapErr("import image "+relPath, err)
+	t, ok1 := parseBase32ID(tStr)
+	c, ok2 := parseBase32ID(cStr)
+	if !ok1 || !ok2 {
+		return 0, 0, false
 	}
-	s.rememberPath(relPath, hostPath)
-	unlock()
-	ver, err := s.MakeVersionAndSync(ctx, relPath, 0)
-	if err != nil {
-		return CellRef{}, err
-	}
-	return CellRef{
-		RelPath:  relPath,
-		HostPath: hostPath,
-		Tenant:   imp.GetTenant(),
-		Cell:     imp.GetCell(),
-		Version:  ver,
-	}, nil
+	return t, c, true
 }
 
 func uploadIntervalMsPtr(d time.Duration) *uint64 {
@@ -564,23 +398,33 @@ func uploadIntervalMsPtr(d time.Duration) *uint64 {
 	return &ms
 }
 
-// CreateCell creates a new empty Fxfs cell at relPath. When uploadInterval > 0,
-// cladefsd uses it as the per-cell background upload interval (question 534).
-func (s *Store) CreateCell(ctx context.Context, relPath string, capBytes uint64, token *uint64, uploadInterval time.Duration) (CellRef, error) {
-	unlock, err := s.lockCreate(ctx, relPath)
+// ImportImage imports an OCI layout or tar archive at imagePath into a new
+// cladefsd-managed cell, creates a version, and syncs it to the shared bucket.
+func (s *Store) ImportImage(ctx context.Context, imagePath string, capBytes uint64) (CellRef, error) {
+	imp, err := s.api.ImportImage(ctx, &cladefsdv1.ImportImageRequest{
+		Capacity: s.capacityOrDefault(capBytes),
+		Image:    imagePath,
+		Tenant:   s.cfg.TenantID,
+	})
+	if err != nil {
+		return CellRef{}, mapErr("import image "+imagePath, err)
+	}
+	ver, err := s.MakeVersionAndSync(ctx, imp.GetTenant(), imp.GetCell(), 0)
 	if err != nil {
 		return CellRef{}, err
 	}
-	defer unlock()
-	hostPath, err := s.NewCellPath(relPath)
-	if err != nil {
-		return CellRef{}, err
-	}
-	if err := s.ensureParentDir(hostPath); err != nil {
-		return CellRef{}, fmt.Errorf("cladefs: mkdir parent for %s: %w", relPath, err)
-	}
+	return CellRef{
+		HostPath: FormatCellID(imp.GetTenant(), imp.GetCell()),
+		Tenant:   imp.GetTenant(),
+		Cell:     imp.GetCell(),
+		Version:  ver,
+	}, nil
+}
+
+// CreateCell creates a new empty Fxfs cell. When uploadInterval > 0, cladefsd
+// uses it as the per-cell background upload interval (question 534).
+func (s *Store) CreateCell(ctx context.Context, capBytes uint64, token *uint64, uploadInterval time.Duration) (CellRef, error) {
 	resp, err := s.api.CreateCell(ctx, &cladefsdv1.CreateCellRequest{
-		Path:             hostPath,
 		Capacity:         s.capacityOrDefault(capBytes),
 		Token:            token,
 		Tenant:           s.cfg.TenantID,
@@ -588,12 +432,10 @@ func (s *Store) CreateCell(ctx context.Context, relPath string, capBytes uint64,
 		UploadIntervalMs: uploadIntervalMsPtr(uploadInterval),
 	})
 	if err != nil {
-		return CellRef{}, mapErr("create cell "+relPath, err)
+		return CellRef{}, mapErr("create cell", err)
 	}
-	s.rememberPath(relPath, hostPath)
 	return CellRef{
-		RelPath:  relPath,
-		HostPath: hostPath,
+		HostPath: FormatCellID(resp.GetTenant(), resp.GetCell()),
 		Tenant:   resp.GetTenant(),
 		Cell:     resp.GetCell(),
 	}, nil
@@ -601,26 +443,11 @@ func (s *Store) CreateCell(ctx context.Context, relPath string, capBytes uint64,
 
 // TakeCell opens an existing bucket-backed cell (tenant, cellID) on this host
 // with fencing token, for cross-node workspace moves or base-build upload tuning.
-// When uploadInterval > 0, cladefsd remembers it for subsequent opens of relPath
-// until the cell is dropped or deleted.
-func (s *Store) TakeCell(ctx context.Context, relPath string, tenant, cellID, capBytes uint64, token *uint64, uploadInterval time.Duration) (CellRef, error) {
+func (s *Store) TakeCell(ctx context.Context, tenant, cellID, capBytes uint64, token *uint64, uploadInterval time.Duration) (CellRef, error) {
 	if cellID == 0 {
 		return CellRef{}, errors.New("cladefs: TakeCell requires non-zero cellID")
 	}
-	unlock, err := s.lockCreate(ctx, relPath)
-	if err != nil {
-		return CellRef{}, err
-	}
-	defer unlock()
-	hostPath, err := s.NewCellPath(relPath)
-	if err != nil {
-		return CellRef{}, err
-	}
-	if err := s.ensureParentDir(hostPath); err != nil {
-		return CellRef{}, fmt.Errorf("cladefs: mkdir parent for %s: %w", relPath, err)
-	}
 	resp, err := s.api.CreateCell(ctx, &cladefsdv1.CreateCellRequest{
-		Path:             hostPath,
 		Capacity:         s.capacityOrDefault(capBytes),
 		Token:            token,
 		Tenant:           tenant,
@@ -629,149 +456,114 @@ func (s *Store) TakeCell(ctx context.Context, relPath string, tenant, cellID, ca
 		UploadIntervalMs: uploadIntervalMsPtr(uploadInterval),
 	})
 	if err != nil {
-		return CellRef{}, mapErr("take cell "+relPath, err)
+		return CellRef{}, mapErr(fmt.Sprintf("take cell %d/%d", tenant, cellID), err)
 	}
-	s.rememberPath(relPath, hostPath)
 	return CellRef{
-		RelPath:  relPath,
-		HostPath: hostPath,
+		HostPath: FormatCellID(resp.GetTenant(), resp.GetCell()),
 		Tenant:   resp.GetTenant(),
 		Cell:     resp.GetCell(),
 	}, nil
 }
 
-// ForkVersion creates a new O(1) copy-on-write cell at toRelPath from an
-// uploaded version (which may have been created on any host sharing the bucket).
-func (s *Store) ForkVersion(ctx context.Context, from CellRef, toRelPath string, ephemeral bool) (CellRef, error) {
+// ForkVersion creates a new O(1) copy-on-write cell from an uploaded version
+// (which may have been created on any host sharing the bucket).
+func (s *Store) ForkVersion(ctx context.Context, from CellRef, ephemeral bool) (CellRef, error) {
 	if from.Cell == 0 || from.Version == 0 {
 		return CellRef{}, fmt.Errorf("cladefs: ForkVersion requires cell (%d) and version (%d)", from.Cell, from.Version)
 	}
-	unlock, err := s.lockCreate(ctx, toRelPath)
-	if err != nil {
-		return CellRef{}, err
-	}
-	defer unlock()
-	toHost, err := s.NewCellPath(toRelPath)
-	if err != nil {
-		return CellRef{}, err
-	}
-	if err := s.ensureParentDir(toHost); err != nil {
-		return CellRef{}, fmt.Errorf("cladefs: mkdir parent for %s: %w", toRelPath, err)
-	}
-	resp, err := s.api.ForkCell(ctx, &cladefsdv1.ForkCellRequest{
-		To:        toHost,
+	req := &cladefsdv1.ForkCellRequest{
 		Tenant:    from.Tenant,
 		Cell:      from.Cell,
 		Version:   from.Version,
 		Ephemeral: ephemeral,
-	})
-	if err != nil {
-		return CellRef{}, mapErr("fork version into "+toRelPath, err)
 	}
-	s.rememberPath(toRelPath, toHost)
+	if s.cfg.TenantID != from.Tenant && s.cfg.TenantID != 0 {
+		t := s.cfg.TenantID
+		req.TargetTenant = &t
+	}
+	resp, err := s.api.ForkCell(ctx, req)
+	if err != nil {
+		return CellRef{}, mapErr(fmt.Sprintf("fork version %d/%d@%d", from.Tenant, from.Cell, from.Version), err)
+	}
 	return CellRef{
-		RelPath:  toRelPath,
-		HostPath: toHost,
+		HostPath: FormatCellID(resp.GetTenant(), resp.GetCell()),
 		Tenant:   resp.GetTenant(),
 		Cell:     resp.GetCell(),
 	}, nil
 }
 
-// ForkCell forks a local cell at fromRelPath into a new cell at toRelPath.
-func (s *Store) ForkCell(ctx context.Context, fromRelPath, toRelPath string) (CellRef, error) {
-	fromHost, err := s.CellPath(fromRelPath)
-	if err != nil {
-		return CellRef{}, err
-	}
-	unlock, err := s.lockCreate(ctx, toRelPath)
-	if err != nil {
-		return CellRef{}, err
-	}
-	defer unlock()
-	toHost, err := s.NewCellPath(toRelPath)
-	if err != nil {
-		return CellRef{}, err
-	}
-	if err := s.ensureParentDir(toHost); err != nil {
-		return CellRef{}, fmt.Errorf("cladefs: mkdir parent for %s: %w", toRelPath, err)
+// ForkCell forks a local cell (fromTenant, fromCell) into a new cell.
+func (s *Store) ForkCell(ctx context.Context, fromTenant, fromCell uint64) (CellRef, error) {
+	if fromCell == 0 {
+		return CellRef{}, errors.New("cladefs: ForkCell requires non-zero cell ID")
 	}
 	resp, err := s.api.ForkCell(ctx, &cladefsdv1.ForkCellRequest{
-		From: fromHost,
-		To:   toHost,
+		Tenant: fromTenant,
+		Cell:   fromCell,
 	})
 	if err != nil {
-		return CellRef{}, mapErr("fork cell "+fromRelPath+" -> "+toRelPath, err)
+		return CellRef{}, mapErr(fmt.Sprintf("fork cell %d/%d", fromTenant, fromCell), err)
 	}
-	s.rememberPath(toRelPath, toHost)
 	return CellRef{
-		RelPath:  toRelPath,
-		HostPath: toHost,
+		HostPath: FormatCellID(resp.GetTenant(), resp.GetCell()),
 		Tenant:   resp.GetTenant(),
 		Cell:     resp.GetCell(),
 	}, nil
 }
 
 // PlaceCell updates a cell's fencing token so older placements cannot reclaim it.
-func (s *Store) PlaceCell(ctx context.Context, relPath string, token uint64) error {
-	hostPath, err := s.CellPath(relPath)
-	if err != nil {
-		return err
-	}
-	_, err = s.api.PlaceCell(ctx, &cladefsdv1.PlaceCellRequest{
-		Path:  hostPath,
-		Token: token,
+func (s *Store) PlaceCell(ctx context.Context, tenant, cell, token uint64) error {
+	_, err := s.api.PlaceCell(ctx, &cladefsdv1.PlaceCellRequest{
+		Tenant: tenant,
+		Cell:   cell,
+		Token:  token,
 	})
-	return mapErr("place cell "+relPath, err)
+	return mapErr(fmt.Sprintf("place cell %d/%d", tenant, cell), err)
 }
 
-// MakeVersion creates a named version of relPath on this host.
-func (s *Store) MakeVersion(ctx context.Context, relPath string, keepLast uint32) (uint64, error) {
-	hostPath, err := s.CellPath(relPath)
-	if err != nil {
-		return 0, err
-	}
+// MakeVersion creates a named version of (tenant, cell) on this host.
+func (s *Store) MakeVersion(ctx context.Context, tenant, cell uint64, keepLast uint32) (uint64, error) {
 	resp, err := s.api.MakeVersion(ctx, &cladefsdv1.MakeVersionRequest{
-		Path:     hostPath,
+		Tenant:   tenant,
+		Cell:     cell,
 		KeepLast: keepLast,
 	})
 	if err != nil {
-		return 0, mapErr("make version "+relPath, err)
+		return 0, mapErr(fmt.Sprintf("make version %d/%d", tenant, cell), err)
 	}
 	return resp.GetVersion(), nil
 }
 
-// SyncCell waits until all commits of relPath are uploaded to the shared bucket.
-func (s *Store) SyncCell(ctx context.Context, relPath string) error {
-	hostPath, err := s.CellPath(relPath)
-	if err != nil {
-		return err
-	}
-	_, err = s.api.SyncCell(ctx, &cladefsdv1.SyncCellRequest{Path: hostPath})
-	return mapErr("sync cell "+relPath, err)
+// SyncCell waits until all commits of (tenant, cell) are uploaded to the shared bucket.
+func (s *Store) SyncCell(ctx context.Context, tenant, cell uint64) error {
+	_, err := s.api.SyncCell(ctx, &cladefsdv1.SyncCellRequest{
+		Tenant: tenant,
+		Cell:   cell,
+	})
+	return mapErr(fmt.Sprintf("sync cell %d/%d", tenant, cell), err)
 }
 
-// MakeVersionAndSync creates a version of relPath and waits until it is uploaded
-// to the shared bucket (ready for cross-host ForkVersion).
-func (s *Store) MakeVersionAndSync(ctx context.Context, relPath string, keepLast uint32) (uint64, error) {
-	ver, err := s.MakeVersion(ctx, relPath, keepLast)
+// MakeVersionAndSync creates a version of (tenant, cell) and waits until it is
+// uploaded to the shared bucket (ready for cross-host ForkVersion).
+func (s *Store) MakeVersionAndSync(ctx context.Context, tenant, cell uint64, keepLast uint32) (uint64, error) {
+	ver, err := s.MakeVersion(ctx, tenant, cell, keepLast)
 	if err != nil {
 		return 0, err
 	}
-	if err := s.SyncCell(ctx, relPath); err != nil {
+	if err := s.SyncCell(ctx, tenant, cell); err != nil {
 		return 0, err
 	}
 	return ver, nil
 }
 
-// StatCell returns cladefsd's metadata and usage stats for relPath.
-func (s *Store) StatCell(ctx context.Context, relPath string) (*cladefsdv1.StatCellResponse, error) {
-	hostPath, err := s.CellPath(relPath)
+// StatCell returns cladefsd's metadata and usage stats for (tenant, cell).
+func (s *Store) StatCell(ctx context.Context, tenant, cell uint64) (*cladefsdv1.StatCellResponse, error) {
+	resp, err := s.api.StatCell(ctx, &cladefsdv1.StatCellRequest{
+		Tenant: tenant,
+		Cell:   cell,
+	})
 	if err != nil {
-		return nil, err
-	}
-	resp, err := s.api.StatCell(ctx, &cladefsdv1.StatCellRequest{Path: hostPath})
-	if err != nil {
-		return nil, mapErr("stat cell "+relPath, err)
+		return nil, mapErr(fmt.Sprintf("stat cell %d/%d", tenant, cell), err)
 	}
 	return resp, nil
 }
@@ -797,80 +589,64 @@ func (s *Store) GetStats(ctx context.Context, req *cladefsdv1.GetStatsRequest) (
 	return resp, nil
 }
 
-// DeleteCell deletes a cell both locally and in the bucket. Deleting an already
-// absent cell returns nil (idempotent).
-func (s *Store) DeleteCell(ctx context.Context, relPath string) error {
-	hostPath, err := s.CellPath(relPath)
-	if err != nil {
-		return err
+// DeleteCell deletes (tenant, cell) both locally and in the bucket. Deleting an
+// already absent or zero cell returns nil (idempotent).
+func (s *Store) DeleteCell(ctx context.Context, tenant, cell uint64) error {
+	if cell == 0 {
+		return nil
 	}
-	_, err = s.api.DeleteCell(ctx, &cladefsdv1.DeleteCellRequest{Path: hostPath})
+	_, err := s.api.DeleteCell(ctx, &cladefsdv1.DeleteCellRequest{
+		Tenant: tenant,
+		Cell:   cell,
+	})
 	if err != nil {
 		if isNotFound(err) {
-			s.forgetPath(relPath)
 			return nil
 		}
-		return mapErr("delete cell "+relPath, err)
+		return mapErr(fmt.Sprintf("delete cell %d/%d", tenant, cell), err)
 	}
-	s.forgetPath(relPath)
 	return nil
 }
 
 // DeleteBucketCell deletes a cell in the shared bucket by (tenant, cellID) when
-// its local directory has already been dropped: it takes the cell into a
-// temporary staging directory at relPath and calls DeleteCell. Deleting an
-// already-absent or already-deleted cell returns nil (idempotent).
-func (s *Store) DeleteBucketCell(ctx context.Context, relPath string, tenant, cellID uint64) error {
+// its local directory has already been dropped: it takes the cell and calls
+// DeleteCell. Deleting an already-absent or already-deleted cell returns nil.
+func (s *Store) DeleteBucketCell(ctx context.Context, tenant, cellID uint64) error {
 	if cellID == 0 {
 		return nil
 	}
-	_ = s.DropCell(ctx, relPath)
-	if _, err := s.TakeCell(ctx, relPath, tenant, cellID, 0, nil, 0); err != nil {
-		_ = s.DropCell(ctx, relPath)
+	_ = s.DropCell(ctx, tenant, cellID)
+	if _, err := s.TakeCell(ctx, tenant, cellID, 0, nil, 0); err != nil {
+		_ = s.DropCell(ctx, tenant, cellID)
 		if errors.Is(err, storage.ErrNotFound) || isNotFound(err) || isDeleted(err) {
 			return nil
 		}
 		return fmt.Errorf("take cell %d/%d for deletion: %w", tenant, cellID, err)
 	}
-	return s.DeleteCell(ctx, relPath)
+	return s.DeleteCell(ctx, tenant, cellID)
 }
 
-// DropCell deletes only this host's local copy of relPath while keeping its
-// branch in the shared bucket (call SyncCell first).
-func (s *Store) DropCell(ctx context.Context, relPath string) error {
-	hostPath, err := s.CellPath(relPath)
-	if err != nil {
-		return err
+// DropCell deletes only this host's local copy of (tenant, cell) while keeping
+// its branch in the shared bucket (call SyncCell first).
+func (s *Store) DropCell(ctx context.Context, tenant, cell uint64) error {
+	if cell == 0 {
+		return nil
 	}
-	_, err = s.api.DropCell(ctx, &cladefsdv1.DropCellRequest{Path: hostPath})
+	_, err := s.api.DropCell(ctx, &cladefsdv1.DropCellRequest{
+		Tenant: tenant,
+		Cell:   cell,
+	})
 	if err != nil {
 		if isNotFound(err) {
-			s.forgetPath(relPath)
 			return nil
 		}
-		return mapErr("drop cell "+relPath, err)
+		return mapErr(fmt.Sprintf("drop cell %d/%d", tenant, cell), err)
 	}
-	s.forgetPath(relPath)
 	return nil
 }
 
-// Base32ID formats a cladefs u64 tenant/cell ID as 13-character zero-padded
-// lowercase Crockford base32, matching cladefs's base32_id::Padded layout used
-// in CLADEFSD_MOUNT and CLADEFSD_MOUNT_STORES directory names.
-func Base32ID(id uint64) string {
-	const digits = "0123456789abcdefghjkmnpqrstvwxyz"
-	var out [13]byte
-	for i := len(out) - 1; i >= 0; i-- {
-		out[i] = digits[id%32]
-		id /= 32
-	}
-	return string(out[:])
-}
-
 // MountAttach attaches a bucket cell (or creates a new empty Fxfs cell when
-// cell == 0) in cladefsd's host FUSE mount (CLADEFSD_MOUNT). When
-// uploadInterval > 0, cladefsd uses it as the per-cell background upload
-// interval (question 534).
+// cell == 0) in cladefsd's host FUSE mount (CLADEFSD_MOUNT).
 func (s *Store) MountAttach(ctx context.Context, tenant, cell, capBytes uint64, token *uint64, uploadInterval time.Duration) (cellID uint64, shown bool, err error) {
 	if s.mount == nil {
 		return 0, false, errors.New("cladefs: mount client not available")
@@ -892,13 +668,7 @@ func (s *Store) MountAttach(ctx context.Context, tenant, cell, capBytes uint64, 
 	return resp.GetCell(), resp.GetShown(), nil
 }
 
-// MountDetach detaches an attached cell from cladefsd's host FUSE mount and
-// unmounts its Fxfs filesystem (writing back dirty Fxfs state in both force and
-// non-force modes). When force is false, cladefsd waits indefinitely for the
-// kernel to send FUSE FORGET for every looked-up node before unmounting, and
-// rejects any subsequent Detach (including force=true) with EBUSY while
-// detaching. When force is true, cladefsd invalidates cached names and unmounts
-// immediately without waiting for kernel FORGETs.
+// MountDetach detaches an attached cell from cladefsd's host FUSE mount.
 func (s *Store) MountDetach(ctx context.Context, tenant, cell uint64, force bool) error {
 	if s.mount == nil {
 		return errors.New("cladefs: mount client not available")
@@ -924,53 +694,6 @@ func (s *Store) MountList(ctx context.Context) ([]*mountv1.AttachedCell, error) 
 		return nil, mapErr("mount list", err)
 	}
 	return resp.GetCells(), nil
-}
-
-// SyncCellAbs syncs a cell directory given by absolute host path (such as one
-// inside CLADEFSD_MOUNT_STORES).
-func (s *Store) SyncCellAbs(ctx context.Context, absPath string) error {
-	_, err := s.api.SyncCell(ctx, &cladefsdv1.SyncCellRequest{Path: absPath})
-	return mapErr("sync cell "+absPath, err)
-}
-
-// MakeVersionAndSyncAbs versions and syncs a cell directory given by absolute
-// host path (such as one inside CLADEFSD_MOUNT_STORES).
-func (s *Store) MakeVersionAndSyncAbs(ctx context.Context, absPath string, keepLast uint32) (uint64, error) {
-	if err := s.SyncCellAbs(ctx, absPath); err != nil {
-		return 0, err
-	}
-	resp, err := s.api.MakeVersion(ctx, &cladefsdv1.MakeVersionRequest{
-		Path:     absPath,
-		KeepLast: keepLast,
-	})
-	if err != nil {
-		return 0, mapErr("make version "+absPath, err)
-	}
-	if err := s.SyncCellAbs(ctx, absPath); err != nil {
-		return 0, err
-	}
-	return resp.GetVersion(), nil
-}
-
-// DropCellAbs drops only the local directory at absPath while keeping its
-// bucket state intact.
-func (s *Store) DropCellAbs(ctx context.Context, absPath string) error {
-	_, err := s.api.DropCell(ctx, &cladefsdv1.DropCellRequest{Path: absPath})
-	if err != nil && !isNotFound(err) {
-		return mapErr("drop cell "+absPath, err)
-	}
-	s.forgetHostPath(absPath)
-	return nil
-}
-
-// DeleteCellAbs deletes a cell both locally and in the bucket at absPath.
-func (s *Store) DeleteCellAbs(ctx context.Context, absPath string) error {
-	_, err := s.api.DeleteCell(ctx, &cladefsdv1.DeleteCellRequest{Path: absPath})
-	if err != nil && !isNotFound(err) {
-		return mapErr("delete cell "+absPath, err)
-	}
-	s.forgetHostPath(absPath)
-	return nil
 }
 
 // ShrinkMemory asks cladefsd to evict clean extent cache pages down to

@@ -201,6 +201,7 @@ type sessionWorkspaceStatus struct {
 	CreatedAt  int64               `json:"createdAt,omitempty"`
 	ReleasedAt *int64              `json:"releasedAt,omitempty"`
 	CockpitURL string              `json:"cockpitUrl,omitempty"`
+	Throwaway  bool                `json:"throwaway,omitempty"`
 }
 
 type sessionCommandStatus struct {
@@ -366,6 +367,7 @@ func liveWorkspaceStatus(ws *pb.Workspace, nodeHosts map[string]string, c cockpi
 		Reason:     ws.Reason,
 		CreatedAt:  ws.CreatedAt,
 		CockpitURL: c.workspace(ws.Id),
+		Throwaway:  ws.Throwaway,
 	}
 }
 
@@ -591,8 +593,9 @@ type syncResult struct {
 	Synced []*pb.SyncResponse `json:"synced"`
 }
 
-// Exec sends the checkout to every workspace the session has, into its
-// checkout of the repo: what is synced is what each of them holds.
+// Exec sends the checkout to every workspace the session has but throwaway
+// ones, into its checkout of the repo: what is synced is what each of them
+// holds.
 func (c *syncCmd) Exec(ctx context.Context, d deps) (any, error) {
 	session, err := c.sessionFlag.resolve(ctx, d)
 	if err != nil {
@@ -620,7 +623,7 @@ func (c *syncCmd) Exec(ctx context.Context, d deps) (any, error) {
 		return nil, err
 	}
 	out := syncResult{Synced: []*pb.SyncResponse{}}
-	for _, ws := range list.Workspaces {
+	for _, ws := range ownWorkspaces(list.Workspaces) {
 		w, err := c.reach(d, ws.NodeAddr)
 		if err != nil {
 			return nil, err
@@ -849,6 +852,7 @@ type runCmd struct {
 	repoFlag
 	Args   []string `arg:"" optional:"" passthrough:"" help:"The command, after --."`
 	NoSync bool     `help:"Do not sync the checkout this is run in: the run then stays in the workspace the session has, whose state lives on its node alone."`
+	Fork   bool     `help:"Run in a throwaway workspace of its own: a new one, forked from the project's base with this checkout synced in, and deleted, with whatever the command left in it, once the command ends. It neither waits for the session's workspace nor changes it."`
 	Detach bool     `help:"Return once the command is queued; it runs until it ends, hotbed stop, or a time limit given. For dev servers and long jobs; wait on it with hotbed logs -f."`
 	Port   int      `help:"Port a dev server listens on, for its URL."`
 	commandFlags
@@ -879,30 +883,17 @@ func (c *runCmd) Raw(ctx context.Context, d deps) (int, bool, error) {
 			return 0, false, err
 		}
 	}
-	ws, w, err := c.workspaceFor(ctx, d, session, repo, c.placement(req), dir)
+	ws, w, err := c.workspaceFor(ctx, d, &pb.CreateWorkspaceRequest{
+		SessionId: session, Repo: repo, Placement: c.placement(req), SyncDir: dir, Throwaway: c.Fork,
+	})
 	if err != nil {
 		return 0, false, err
 	}
-	// A run waits for its workspace to be ready (its base pulled and
-	// freshened), saying so; a detached one that syncs nothing is queued
-	// in it at once instead.
-	if dir != "" || !c.Detach {
-		if ws, err = waitReady(ctx, w, ws, d.stderr); err != nil {
-			return 0, false, err
-		}
-	}
-	if dir != "" {
-		res, err := syncTo(ctx, w, ws, repo, dir)
-		if err != nil {
-			return 0, false, err
-		}
-		if !res.Skipped {
-			fmt.Fprintf(d.stderr, "hotbed: synced %d changed files (%s) from %s\n", res.FilesChanged, size(res.BundleBytes), dir)
-		}
-	}
-	req.WorkspaceId, req.Attached, req.Port, req.Repo = ws.Id, !c.Detach, int32(c.Port), repo
-	cmd, err := w.calls.RunCommand(ctx, req)
+	cmd, err := c.start(ctx, d, w, ws, req, repo, dir)
 	if err != nil {
+		if ws.Throwaway {
+			c.discard(ctx, d, ws)
+		}
 		return 0, false, err
 	}
 	if cmd.Project == "" {
@@ -915,9 +906,53 @@ func (c *runCmd) Raw(ctx context.Context, d deps) (int, bool, error) {
 		}
 		return exitOK, true, nil
 	}
-	fmt.Fprintf(d.stderr, "hotbed: %s running in %s on %s (hotbed stop -s %s %s)\n", cmd.Id, ws.Id, ws.Node, session, cmd.Id)
+	where := ws.Id
+	if ws.Throwaway {
+		where = "throwaway workspace " + ws.Id
+	}
+	fmt.Fprintf(d.stderr, "hotbed: %s running in %s on %s (hotbed stop -s %s %s)\n", cmd.Id, where, ws.Node, session, cmd.Id)
 	code, err := attach(ctx, w, cmd.Id, d.stdout, d.stderr)
 	return code, true, err
+}
+
+// start runs req in ws, once it is ready and dir, a checkout of repo, is
+// synced to it.
+func (c *runCmd) start(ctx context.Context, d deps, w workerClients, ws *pb.Workspace, req *pb.RunCommandRequest, repo, dir string) (*pb.Command, error) {
+	// A run waits for its workspace to be ready (its base pulled and
+	// freshened), saying so; a detached one that syncs nothing is queued
+	// in it at once instead.
+	var err error
+	if dir != "" || !c.Detach {
+		if ws, err = waitReady(ctx, w, ws, d.stderr); err != nil {
+			return nil, err
+		}
+	}
+	if dir != "" {
+		res, err := syncTo(ctx, w, ws, repo, dir)
+		if err != nil {
+			return nil, err
+		}
+		if !res.Skipped {
+			fmt.Fprintf(d.stderr, "hotbed: synced %d changed files (%s) from %s\n", res.FilesChanged, size(res.BundleBytes), dir)
+		}
+	}
+	req.WorkspaceId, req.Attached, req.Port, req.Repo = ws.Id, !c.Detach, int32(c.Port), repo
+	return w.calls.RunCommand(ctx, req)
+}
+
+// discard releases a throwaway workspace no command got to run in, which
+// its worker would otherwise keep until the session ends. It runs on after
+// an interrupt, which is what stopped the run.
+func (c *runCmd) discard(ctx context.Context, d deps, ws *pb.Workspace) {
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
+	defer cancel()
+	cl, err := c.clients(d.http)
+	if err == nil {
+		_, err = cl.workspaces.ReleaseWorkspace(ctx, &pb.ReleaseWorkspaceRequest{Id: ws.Id})
+	}
+	if err != nil {
+		fmt.Fprintf(d.stderr, "hotbed: could not release throwaway workspace %s: %v; the session's end releases it\n", ws.Id, api.FromConnect(err))
+	}
 }
 
 // attach prints an attached command's output to w until it ends or is

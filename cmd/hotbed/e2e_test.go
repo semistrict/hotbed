@@ -271,7 +271,7 @@ func (c *cluster) tryWorkspace(session string, p *pb.Placement) (*pb.Workspace, 
 	f := controllerClient{Controller: addr}
 	d := c.cli
 	d.stdout, d.stderr = io.Discard, io.Discard
-	ws, w, err := f.workspaceFor(c.t.Context(), d, session, "app", p, "")
+	ws, w, err := f.workspaceFor(c.t.Context(), d, &pb.CreateWorkspaceRequest{SessionId: session, Repo: "app", Placement: p})
 	if err == nil {
 		ws, err = waitReady(c.t.Context(), w, ws, io.Discard)
 	}

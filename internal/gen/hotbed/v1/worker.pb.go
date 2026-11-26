@@ -31,9 +31,13 @@ type WorkspaceRecord struct {
 	BaseSnapshot string                 `protobuf:"bytes,3,opt,name=base_snapshot,json=baseSnapshot,proto3" json:"base_snapshot,omitempty"`
 	// Why the base it forks is not up to date, if it is not; its reason once
 	// it is ready.
-	Note          string `protobuf:"bytes,4,opt,name=note,proto3" json:"note,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	Note string `protobuf:"bytes,4,opt,name=note,proto3" json:"note,omitempty"`
+	// Of a throwaway workspace: the one command run in it, from when it was
+	// queued. Its worker releases the workspace once that command has ended,
+	// or has been forgotten.
+	ThrowawayCommand string `protobuf:"bytes,5,opt,name=throwaway_command,json=throwawayCommand,proto3" json:"throwaway_command,omitempty"`
+	unknownFields    protoimpl.UnknownFields
+	sizeCache        protoimpl.SizeCache
 }
 
 func (x *WorkspaceRecord) Reset() {
@@ -90,6 +94,13 @@ func (x *WorkspaceRecord) GetBaseSnapshot() string {
 func (x *WorkspaceRecord) GetNote() string {
 	if x != nil {
 		return x.Note
+	}
+	return ""
+}
+
+func (x *WorkspaceRecord) GetThrowawayCommand() string {
+	if x != nil {
+		return x.ThrowawayCommand
 	}
 	return ""
 }
@@ -275,12 +286,13 @@ var File_hotbed_v1_worker_proto protoreflect.FileDescriptor
 
 const file_hotbed_v1_worker_proto_rawDesc = "" +
 	"\n" +
-	"\x16hotbed/v1/worker.proto\x12\thotbed.v1\x1a\x16hotbed/v1/hotbed.proto\"\x96\x01\n" +
+	"\x16hotbed/v1/worker.proto\x12\thotbed.v1\x1a\x16hotbed/v1/hotbed.proto\"\xc3\x01\n" +
 	"\x0fWorkspaceRecord\x122\n" +
 	"\tworkspace\x18\x01 \x01(\v2\x14.hotbed.v1.WorkspaceR\tworkspace\x12\x16\n" +
 	"\x06volume\x18\x02 \x01(\tR\x06volume\x12#\n" +
 	"\rbase_snapshot\x18\x03 \x01(\tR\fbaseSnapshot\x12\x12\n" +
-	"\x04note\x18\x04 \x01(\tR\x04note\"\xd9\x03\n" +
+	"\x04note\x18\x04 \x01(\tR\x04note\x12+\n" +
+	"\x11throwaway_command\x18\x05 \x01(\tR\x10throwawayCommand\"\xd9\x03\n" +
 	"\rCommandRecord\x12,\n" +
 	"\acommand\x18\x01 \x01(\v2\x12.hotbed.v1.CommandR\acommand\x12\x17\n" +
 	"\arepo_id\x18\x02 \x01(\tR\x06repoId\x12\x18\n" +

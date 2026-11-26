@@ -203,7 +203,7 @@ func (c *shellCmd) workspaceForShell(ctx context.Context, d deps, session, repo,
 			return ws, w, nil
 		}
 	}
-	return c.workspaceFor(ctx, d, session, repo, &pb.Placement{Node: c.Node, Arch: c.Arch, Runtime: c.Runtime}, dir)
+	return c.workspaceFor(ctx, d, &pb.CreateWorkspaceRequest{SessionId: session, Repo: repo, Placement: &pb.Placement{Node: c.Node, Arch: c.Arch, Runtime: c.Runtime}, SyncDir: dir})
 }
 
 func (c *shellCmd) existingWorkspace(ctx context.Context, d deps, session, node string) (*pb.Workspace, workerClients, bool, error) {
@@ -223,7 +223,7 @@ func (c *shellCmd) existingWorkspace(ctx context.Context, d deps, session, node 
 		return nil, workerClients{}, false, err
 	}
 	var matches []*pb.Workspace
-	for _, ws := range list.Workspaces {
+	for _, ws := range ownWorkspaces(list.Workspaces) {
 		if ws.State == pb.WorkspaceState_WORKSPACE_STATE_RELEASED || ws.State == pb.WorkspaceState_WORKSPACE_STATE_FAILED {
 			continue
 		}

@@ -370,9 +370,14 @@ down, not restarting. What happened meanwhile reaches `poll` once it is back.
   that. Nothing is frozen or killed for memory: what is admitted runs, swapping if
   it must, and a full node holds new work until it has room. Stop a command by hand
   (`hotbed stop CMD`) if a node is truly overloaded.
-- On the vm runtime each command gets a VM of its own on the workspace's disk. `--vm-cpus 4` and
+- On the vm runtime each command gets a VM of its own on the workspace's disk, so a second command
+  in the workspace waits for the first. `--vm-cpus 4` and
   `--vm-mem 16G` size its VM (default: the node's); they size the VM only, and the node reserves
   nothing for them. These flags send the run to a vm-runtime node.
+- `hotbed run --fork` runs in a throwaway workspace of its own: a new one, forked from the
+  project's base with your checkout synced in, deleted with whatever the command left in it once
+  the command ends. It neither waits for your session's workspace nor changes it, so use it to run
+  something beside a command already running there; what it builds is not kept for later runs.
 - A saturated node holds new work: once its CPU pressure reaches 60%, commands queue until it is
   under 30% and has not reached 60% for 30 seconds (measurements, on CPUs of their own, are not
   held). The controller sends new workspaces to less loaded nodes. `hotbed ps` says why a command

@@ -1,0 +1,1 @@
+ALTER TABLE `workspaces` ADD `throwaway` integer DEFAULT false NOT NULL;

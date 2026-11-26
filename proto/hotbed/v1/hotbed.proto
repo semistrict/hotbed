@@ -1309,6 +1309,10 @@ message Workspace {
   string runtime = 27;
   // Cladefs cell coordinates when backed by cladefsd + Firecracker.
   CladefsCell cladefs_cell = 28;
+  // A throwaway workspace (hotbed run --fork): one command runs in it, and
+  // its worker releases it, with whatever the command left in it, once that
+  // command ends. It is not the session's workspace on its node.
+  bool throwaway = 29;
 }
 
 // One repo of a workspace, at /work/<repo>.
@@ -1328,7 +1332,7 @@ message WorkspaceRepo {
 // CreateWorkspace, called on the controller, gives a session a workspace of
 // its project for a run: on the node the controller picks for it
 // (Placement), the session's workspace there, or a new one. A session has at
-// most one workspace per node. Called on a worker (by the controller), it
+// most one workspace per node, besides throwaway ones. Called on a worker (by the controller), it
 // makes the workspace the request names.
 message CreateWorkspaceRequest {
   reserved 3, 4, 9;
@@ -1355,6 +1359,10 @@ message CreateWorkspaceRequest {
   CladefsCell shared_base = 13;
   // Set by the controller: monotonic fencing token for cladefs PlaceCell/TakeCell.
   uint64 fencing_token = 14;
+  // A throwaway workspace for one command (Workspace.throwaway): a new one,
+  // forked from the project's base, never the session's workspace, which it
+  // neither waits for nor changes.
+  bool throwaway = 15;
 }
 
 // Placement narrows where a run may go. The controller picks among the nodes

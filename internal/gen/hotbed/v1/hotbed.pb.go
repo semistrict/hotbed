@@ -6679,7 +6679,11 @@ type Workspace struct {
 	// Execution runtime backing this workspace ("vm" or "cladefs").
 	Runtime string `protobuf:"bytes,27,opt,name=runtime,proto3" json:"runtime,omitempty"`
 	// Cladefs cell coordinates when backed by cladefsd + Firecracker.
-	CladefsCell   *CladefsCell `protobuf:"bytes,28,opt,name=cladefs_cell,json=cladefsCell,proto3" json:"cladefs_cell,omitempty"`
+	CladefsCell *CladefsCell `protobuf:"bytes,28,opt,name=cladefs_cell,json=cladefsCell,proto3" json:"cladefs_cell,omitempty"`
+	// A throwaway workspace (hotbed run --fork): one command runs in it, and
+	// its worker releases it, with whatever the command left in it, once that
+	// command ends. It is not the session's workspace on its node.
+	Throwaway     bool `protobuf:"varint,29,opt,name=throwaway,proto3" json:"throwaway,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -6854,6 +6858,13 @@ func (x *Workspace) GetCladefsCell() *CladefsCell {
 	return nil
 }
 
+func (x *Workspace) GetThrowaway() bool {
+	if x != nil {
+		return x.Throwaway
+	}
+	return false
+}
+
 // One repo of a workspace, at /work/<repo>.
 type WorkspaceRepo struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
@@ -6946,7 +6957,7 @@ func (x *WorkspaceRepo) GetSyncDir() string {
 // CreateWorkspace, called on the controller, gives a session a workspace of
 // its project for a run: on the node the controller picks for it
 // (Placement), the session's workspace there, or a new one. A session has at
-// most one workspace per node. Called on a worker (by the controller), it
+// most one workspace per node, besides throwaway ones. Called on a worker (by the controller), it
 // makes the workspace the request names.
 type CreateWorkspaceRequest struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
@@ -6971,7 +6982,11 @@ type CreateWorkspaceRequest struct {
 	// Set by the controller: shared cladefs base version in R2 to fork O(1).
 	SharedBase *CladefsCell `protobuf:"bytes,13,opt,name=shared_base,json=sharedBase,proto3" json:"shared_base,omitempty"`
 	// Set by the controller: monotonic fencing token for cladefs PlaceCell/TakeCell.
-	FencingToken  uint64 `protobuf:"varint,14,opt,name=fencing_token,json=fencingToken,proto3" json:"fencing_token,omitempty"`
+	FencingToken uint64 `protobuf:"varint,14,opt,name=fencing_token,json=fencingToken,proto3" json:"fencing_token,omitempty"`
+	// A throwaway workspace for one command (Workspace.throwaway): a new one,
+	// forked from the project's base, never the session's workspace, which it
+	// neither waits for nor changes.
+	Throwaway     bool `protobuf:"varint,15,opt,name=throwaway,proto3" json:"throwaway,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -7081,6 +7096,13 @@ func (x *CreateWorkspaceRequest) GetFencingToken() uint64 {
 		return x.FencingToken
 	}
 	return 0
+}
+
+func (x *CreateWorkspaceRequest) GetThrowaway() bool {
+	if x != nil {
+		return x.Throwaway
+	}
+	return false
 }
 
 // Placement narrows where a run may go. The controller picks among the nodes
@@ -29653,7 +29675,7 @@ const file_hotbed_v1_hotbed_proto_rawDesc = "" +
 	"\x04repo\x18\x01 \x01(\tR\x04repo\x12\x16\n" +
 	"\x06commit\x18\x02 \x01(\tR\x06commit\x12\x18\n" +
 	"\amessage\x18\x03 \x01(\tR\amessage\x12\x1c\n" +
-	"\ttoolchain\x18\x04 \x01(\tR\ttoolchain\"\x84\x06\n" +
+	"\ttoolchain\x18\x04 \x01(\tR\ttoolchain\"\xa2\x06\n" +
 	"\tWorkspace\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x17\n" +
 	"\abase_id\x18\x03 \x01(\tR\x06baseId\x12\x17\n" +
@@ -29678,7 +29700,8 @@ const file_hotbed_v1_hotbed_proto_rawDesc = "" +
 	"\x04node\x18\x19 \x01(\tR\x04node\x12.\n" +
 	"\x05repos\x18\x1a \x03(\v2\x18.hotbed.v1.WorkspaceRepoR\x05repos\x12\x18\n" +
 	"\aruntime\x18\x1b \x01(\tR\aruntime\x129\n" +
-	"\fcladefs_cell\x18\x1c \x01(\v2\x16.hotbed.v1.CladefsCellR\vcladefsCellJ\x04\b\x02\x10\x03J\x04\b\x06\x10\aJ\x04\b\a\x10\bJ\x04\b\b\x10\tJ\x04\b\t\x10\n" +
+	"\fcladefs_cell\x18\x1c \x01(\v2\x16.hotbed.v1.CladefsCellR\vcladefsCell\x12\x1c\n" +
+	"\tthrowaway\x18\x1d \x01(\bR\tthrowawayJ\x04\b\x02\x10\x03J\x04\b\x06\x10\aJ\x04\b\a\x10\bJ\x04\b\b\x10\tJ\x04\b\t\x10\n" +
 	"J\x04\b\n" +
 	"\x10\vJ\x04\b\x11\x10\x12J\x04\b\x13\x10\x14R\arepo_idR\x06branchR\x04headR\vbase_commitR\x04treeR\rfiles_changedR\x04pathR\bsync_dir\"\xac\x01\n" +
 	"\rWorkspaceRepo\x12\x12\n" +
@@ -29688,7 +29711,7 @@ const file_hotbed_v1_hotbed_proto_rawDesc = "" +
 	"baseCommit\x12\x12\n" +
 	"\x04tree\x18\x04 \x01(\tR\x04tree\x12#\n" +
 	"\rfiles_changed\x18\x05 \x01(\x05R\ffilesChanged\x12\x19\n" +
-	"\bsync_dir\x18\x06 \x01(\tR\asyncDir\"\xb6\x03\n" +
+	"\bsync_dir\x18\x06 \x01(\tR\asyncDir\"\xd4\x03\n" +
 	"\x16CreateWorkspaceRequest\x12\x12\n" +
 	"\x04repo\x18\x01 \x01(\tR\x04repo\x12\x14\n" +
 	"\x05agent\x18\x02 \x01(\tR\x05agent\x122\n" +
@@ -29703,7 +29726,8 @@ const file_hotbed_v1_hotbed_proto_rawDesc = "" +
 	"\aruntime\x18\f \x01(\tR\aruntime\x127\n" +
 	"\vshared_base\x18\r \x01(\v2\x16.hotbed.v1.CladefsCellR\n" +
 	"sharedBase\x12#\n" +
-	"\rfencing_token\x18\x0e \x01(\x04R\ffencingTokenJ\x04\b\x03\x10\x04J\x04\b\x04\x10\x05J\x04\b\t\x10\n" +
+	"\rfencing_token\x18\x0e \x01(\x04R\ffencingToken\x12\x1c\n" +
+	"\tthrowaway\x18\x0f \x01(\bR\tthrowawayJ\x04\b\x03\x10\x04J\x04\b\x04\x10\x05J\x04\b\t\x10\n" +
 	"R\x06branchR\x04nodeR\vrepo_config\"\xce\x01\n" +
 	"\tPlacement\x12\x12\n" +
 	"\x04node\x18\x01 \x01(\tR\x04node\x12\x12\n" +

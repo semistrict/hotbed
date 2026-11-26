@@ -49,16 +49,6 @@ func TestLiveFirecrackerCladefsEndToEnd(t *testing.T) {
 	}
 	defer store.Close()
 
-	// Clean up any leftovers from an interrupted previous run.
-	_ = store.DeleteCell(ctx, "ws-live-1")
-	_ = store.DeleteCell(ctx, "base-live")
-	t.Cleanup(func() {
-		cctx, cc := context.WithTimeout(context.Background(), 15*time.Second)
-		defer cc()
-		_ = store.DeleteCell(cctx, "ws-live-1")
-		_ = store.DeleteCell(cctx, "base-live")
-	})
-
 	// 1. Build clean rootfs tar directly from OCI registry (no Docker, no baked-in hotbed-guestd).
 	tarPath := filepath.Join(cellRoot, "debian-guestd-live.tar")
 	t.Cleanup(func() { _ = os.Remove(tarPath) })
@@ -72,16 +62,26 @@ func TestLiveFirecrackerCladefsEndToEnd(t *testing.T) {
 	}
 
 	// 2. Import into cladefsd, snapshot version, sync to R2, and O(1) fork workspace cell.
-	baseRef, err := store.ImportImage(ctx, "base-live", tarPath, 4<<30)
+	baseRef, err := store.ImportImage(ctx, tarPath, 4<<30)
 	if err != nil {
 		t.Fatalf("ImportImage: %v", err)
 	}
+	t.Cleanup(func() {
+		cctx, cc := context.WithTimeout(context.Background(), 15*time.Second)
+		defer cc()
+		_ = store.DeleteCell(cctx, baseRef.Tenant, baseRef.Cell)
+	})
 	t.Logf("imported base cell=%d/%d ver=%d", baseRef.Tenant, baseRef.Cell, baseRef.Version)
 
-	wsRef, err := store.ForkVersion(ctx, baseRef, "ws-live-1", false)
+	wsRef, err := store.ForkVersion(ctx, baseRef, false)
 	if err != nil {
 		t.Fatalf("ForkVersion: %v", err)
 	}
+	t.Cleanup(func() {
+		cctx, cc := context.WithTimeout(context.Background(), 15*time.Second)
+		defer cc()
+		_ = store.DeleteCell(cctx, wsRef.Tenant, wsRef.Cell)
+	})
 	t.Logf("forked workspace cell=%d/%d at %s", wsRef.Tenant, wsRef.Cell, wsRef.HostPath)
 
 	// Fake host git-auth Unix socket to verify guest->host vsock 5002 bridging.
@@ -136,7 +136,7 @@ func TestLiveFirecrackerCladefsEndToEnd(t *testing.T) {
 
 	inst, err := mgr.Start(ctx, vm.LaunchSpec{
 		ID:            "ws-live-1",
-		CellHostPath:  wsRef.HostPath,
+		CellHostPath:  wsRef.CellID(),
 		CladefsVMSock: store.VMSock(),
 	})
 	if err != nil {
@@ -205,10 +205,10 @@ func TestLiveFirecrackerCladefsEndToEnd(t *testing.T) {
 	if err := mgr2.Stop(ctx, "ws-live-1", true); err != nil {
 		t.Fatalf("mgr2.Stop: %v", err)
 	}
-	if err := store.DeleteCell(ctx, "ws-live-1"); err != nil {
+	if err := store.DeleteCell(ctx, wsRef.Tenant, wsRef.Cell); err != nil {
 		t.Fatalf("DeleteCell ws-live-1: %v", err)
 	}
-	if err := store.DeleteCell(ctx, "base-live"); err != nil {
+	if err := store.DeleteCell(ctx, baseRef.Tenant, baseRef.Cell); err != nil {
 		t.Fatalf("DeleteCell base-live: %v", err)
 	}
 }

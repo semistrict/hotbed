@@ -65,7 +65,7 @@ type fakeDetachCladefsClient struct {
 	mu          sync.Mutex
 	nextCell    uint64
 	nextVersion uint64
-	deleteReqs  []string
+	deleteReqs  []uint64
 }
 
 func (f *fakeDetachCladefsClient) ForkCell(_ context.Context, req *cladefsdv1.ForkCellRequest, _ ...grpc.CallOption) (*cladefsdv1.ForkCellResponse, error) {
@@ -93,7 +93,7 @@ func (f *fakeDetachCladefsClient) DropCell(_ context.Context, _ *cladefsdv1.Drop
 func (f *fakeDetachCladefsClient) DeleteCell(_ context.Context, req *cladefsdv1.DeleteCellRequest, _ ...grpc.CallOption) (*cladefsdv1.DeleteCellResponse, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	f.deleteReqs = append(f.deleteReqs, req.GetPath())
+	f.deleteReqs = append(f.deleteReqs, req.GetCell())
 	return &cladefsdv1.DeleteCellResponse{}, nil
 }
 
