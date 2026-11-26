@@ -66,3 +66,20 @@ func TestWriteCgroupReclaimReturnsImmediatelyOnEAGAIN(t *testing.T) {
 		t.Fatalf("writeCgroupReclaim(missing) = %v, want nil", err)
 	}
 }
+
+func TestWriteProcVM(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "compact_memory")
+	if err := writeProcVM(p, "1\n"); err != nil {
+		t.Fatalf("writeProcVM: %v", err)
+	}
+	got, err := os.ReadFile(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != "1\n" {
+		t.Fatalf("wrote %q, want %q", string(got), "1\n")
+	}
+	if err := writeProcVM(filepath.Join(t.TempDir(), "no-such-dir", "compact_memory"), "1\n"); err != nil {
+		t.Fatalf("writeProcVM(missing) = %v, want nil", err)
+	}
+}

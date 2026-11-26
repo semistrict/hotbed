@@ -204,6 +204,31 @@ func pivotToWorkspaceRootWithOps(log *slog.Logger, spec string, ops pivotRootOps
 //
 // Returns true if the supervisor ran to completion (caller should exit), or
 // false if spawning the child failed and caller should fall back in-process.
+// guestWritebackSysctls bounds dirty page accumulation in large-RAM microVMs
+// (12-18.5 GiB). Linux defaults (dirty_background_ratio=10%, dirty_ratio=20%,
+// dirty_expire_centisecs=3000) let gigabytes of build outputs sit dirty in
+// guest RAM for 30s before flushing to cladefsd; dirty folios cannot be
+// reclaimed or sealed into host DAX until written back.
+var guestWritebackSysctls = []struct {
+	name  string
+	value string
+}{
+	{"dirty_bytes", "536870912\n"},            // 512 MiB cap before throttling writers
+	{"dirty_background_bytes", "67108864\n"},  // 64 MiB starts async writeback promptly
+	{"dirty_expire_centisecs", "500\n"},       // 5s dirty age (down from 30s)
+	{"dirty_writeback_centisecs", "200\n"},    // 2s flusher sweep (down from 5s)
+}
+
+func configureGuestWriteback(log *slog.Logger, procRoot string) {
+	vmDir := filepath.Join(procRoot, "sys", "vm")
+	for _, s := range guestWritebackSysctls {
+		p := filepath.Join(vmDir, s.name)
+		if err := os.WriteFile(p, []byte(s.value), 0o644); err != nil && !os.IsNotExist(err) && log != nil {
+			log.Warn("set guest vm writeback sysctl failed", "path", p, "value", strings.TrimSpace(s.value), "err", err)
+		}
+	}
+}
+
 func runPID1Supervisor(log *slog.Logger, nofile uint64) bool {
 	pivoted, devMoved, err := pivotToWorkspaceRoot(log)
 	if err != nil {
@@ -258,6 +283,7 @@ func runPID1Supervisor(log *slog.Logger, nofile uint64) bool {
 	// (or disk swap) + proactive VM memory.reclaim, so guest zram would
 	// double-compress anonymous pages and make them 1:1 incompressible when
 	// reclaimed into host zram.
+	configureGuestWriteback(log, "/proc")
 	// Ensure loopback is up (minimal Firecracker kernels leave lo DOWN).
 	if ipBin, err := exec.LookPath("ip"); err == nil {
 		_ = exec.Command(ipBin, "link", "set", "lo", "up").Run()

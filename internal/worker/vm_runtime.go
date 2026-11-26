@@ -735,7 +735,7 @@ func (u *runtimeUnits) vmHostMemory(ctx context.Context, wsID string) (cg string
 }
 
 func (u *runtimeUnits) reclaimIdleVM(ctx context.Context, wsID string) {
-	gctx, gcancel := context.WithTimeout(ctx, 3*time.Second)
+	gctx, gcancel := context.WithTimeout(ctx, 10*time.Second)
 	_ = u.rt.Reclaim(gctx, wsID, "", 0)
 	gcancel()
 	hctx, hcancel := context.WithTimeout(ctx, 2*time.Second)
@@ -754,9 +754,10 @@ func (u *runtimeUnits) Reclaim(cgroup string, n int64) error {
 	if wsID, cmdID, ok := parseVMCgroup(cgroup); ok {
 		quiescent := u.isVMQuiescent != nil && u.isVMQuiescent(wsID)
 
-		// 1. Reclaim clean page cache inside the guest so virtio-balloon
-		// free-page-reporting returns it directly to the host without swap.
-		gctx, gcancel := context.WithTimeout(context.Background(), 3*time.Second)
+		// 1. Flush dirty buffers, drop clean page cache, and compact free
+		// memory inside the guest so virtio-balloon free-page-reporting
+		// returns it directly to the host without swap.
+		gctx, gcancel := context.WithTimeout(context.Background(), 10*time.Second)
 		guestErr := u.rt.Reclaim(gctx, wsID, cmdID, n)
 		gcancel()
 
