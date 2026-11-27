@@ -210,6 +210,26 @@ func Snapshot(ctx context.Context, dir string) (Snap, error) {
 	return snapshot(ctx, root, true)
 }
 
+// copyIndex copies the index at src to dst with its mtime, which its stat
+// cache is only good against: git hashes again a file whose mtime is not
+// older than the index file's (racily clean), and a copy dated when it was
+// made would pass as clean an edit that kept a file's size in the second
+// the index was written.
+func copyIndex(src, dst string) error {
+	info, err := os.Stat(src)
+	if err != nil {
+		return err
+	}
+	b, err := os.ReadFile(src)
+	if err != nil {
+		return err
+	}
+	if err := os.WriteFile(dst, b, 0o600); err != nil {
+		return err
+	}
+	return os.Chtimes(dst, info.ModTime(), info.ModTime())
+}
+
 // snapshot freezes the worktree at root. A worktree that matches HEAD is
 // HEAD itself, unless always asks for a commit of it anyway. A snapshot
 // commit takes HEAD's date, so the same state always makes the same commit,
@@ -257,14 +277,10 @@ func snapshot(ctx context.Context, root string, always bool) (Snap, error) {
 	defer os.Remove(tmp.Name())
 	// Starting from the real index keeps its stat cache, so git add hashes
 	// only files that changed.
-	if b, err := os.ReadFile(filepath.Join(gitDir, "index")); err == nil {
-		if err := os.WriteFile(tmp.Name(), b, 0o600); err != nil {
-			return Snap{}, err
-		}
-	} else if !errors.Is(err, os.ErrNotExist) {
-		return Snap{}, err
-	} else {
+	if err := copyIndex(filepath.Join(gitDir, "index"), tmp.Name()); errors.Is(err, os.ErrNotExist) {
 		os.Remove(tmp.Name())
+	} else if err != nil {
+		return Snap{}, err
 	}
 	staged := Git{Dir: root, Env: []string{"GIT_INDEX_FILE=" + tmp.Name()}}
 	if _, err := staged.Run(ctx, "add", "--all", "--", "."); err != nil {

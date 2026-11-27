@@ -76,6 +76,42 @@ func TestSnapshotCarriesDirtyAndUntrackedNotIgnored(t *testing.T) {
 	}
 }
 
+// A snapshot sees an edit that leaves a file's size and mtime as the index
+// recorded them, as an edit in the same second as the index was written
+// does: git takes a file whose mtime is not older than the index file's as
+// racily clean and hashes it again, so the copy of the index a snapshot
+// works on must keep the index's mtime, not take the time it was copied.
+func TestSnapshotSeesARacilyCleanEdit(t *testing.T) {
+	dir, base := agentRepo(t)
+	// Stat data alone must not give the edit away: ctime moves with any
+	// write, and git compares it unless told not to.
+	git(t, dir, "config", "core.trustctime", "false")
+	then := time.Now().Add(-time.Minute).Truncate(time.Second)
+	lib := filepath.Join(dir, "src/lib.rs")
+	if err := os.Chtimes(lib, then, then); err != nil {
+		t.Fatal(err)
+	}
+	git(t, dir, "update-index", "--refresh") // the index records lib.rs at then
+	if err := os.Chtimes(filepath.Join(dir, ".git", "index"), then, then); err != nil {
+		t.Fatal(err)
+	}
+	write(t, lib, "pub fn z() {}\n") // the same size as before
+	if err := os.Chtimes(lib, then, then); err != nil {
+		t.Fatal(err)
+	}
+
+	snap, err := Snapshot(t.Context(), dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if snap.Tree == git(t, dir, "rev-parse", base+"^{tree}") {
+		t.Fatal("the snapshot's tree is HEAD's: it missed the edit to src/lib.rs")
+	}
+	if got := git(t, dir, "show", snap.Commit+":src/lib.rs"); got != "pub fn z() {}" {
+		t.Errorf("snapshot src/lib.rs = %q, want the edit", got)
+	}
+}
+
 func TestSnapshotRefusesHiddenEdits(t *testing.T) {
 	dir, _ := agentRepo(t)
 	git(t, dir, "update-index", "--skip-worktree", "src/keep.rs")
