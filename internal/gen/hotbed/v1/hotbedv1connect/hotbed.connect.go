@@ -2409,8 +2409,9 @@ type WorkspaceServiceClient interface {
 	CreateWorkspace(context.Context, *v1.CreateWorkspaceRequest) (*v1.Workspace, error)
 	GetWorkspace(context.Context, *v1.GetWorkspaceRequest) (*v1.Workspace, error)
 	// WatchWorkspace streams the workspace as it is, then again each time it
-	// changes (such as from preparing to ready), until it is released or the
-	// caller stops listening.
+	// changes (such as from preparing to ready), and again as a keepalive when
+	// it has sent nothing for 5s, until it is released or the caller stops
+	// listening.
 	WatchWorkspace(context.Context, *v1.WatchWorkspaceRequest) (WorkspaceServiceWatchWorkspaceClientStream, error)
 	ListWorkspaces(context.Context, *v1.ListWorkspacesRequest) (*v1.ListWorkspacesResponse, error)
 	ReleaseWorkspace(context.Context, *v1.ReleaseWorkspaceRequest) (*v1.ReleaseWorkspaceResponse, error)
@@ -2441,9 +2442,10 @@ type WorkspaceServiceClient interface {
 	// its limits, as a detached one is: its soft limit counts from now.
 	ResumeCommand(context.Context, *v1.ResumeCommandRequest) (*v1.Command, error)
 	// FollowLog streams a command's output from an offset, as written; with
-	// follow, until the command ends or is paused. An attached command stops
-	// when no one follows it. The controller serves it without follow (what
-	// the output has so far); a follower calls the worker.
+	// follow, until the command ends or is paused, sending a chunk with no
+	// data or state as a keepalive when it has sent nothing for 5s. An
+	// attached command stops when no one follows it. The controller serves it
+	// without follow (what the output has so far); a follower calls the worker.
 	FollowLog(context.Context, *v1.FollowLogRequest) (WorkspaceServiceFollowLogClientStream, error)
 	// GetLogLines returns the last lines of a command's output, at most
 	// 1 MiB of them, as its terminal shows them (progress redraws collapsed,
@@ -2616,8 +2618,9 @@ type WorkspaceServiceHandler interface {
 	CreateWorkspace(context.Context, *v1.CreateWorkspaceRequest) (*v1.Workspace, error)
 	GetWorkspace(context.Context, *v1.GetWorkspaceRequest) (*v1.Workspace, error)
 	// WatchWorkspace streams the workspace as it is, then again each time it
-	// changes (such as from preparing to ready), until it is released or the
-	// caller stops listening.
+	// changes (such as from preparing to ready), and again as a keepalive when
+	// it has sent nothing for 5s, until it is released or the caller stops
+	// listening.
 	WatchWorkspace(context.Context, *v1.WatchWorkspaceRequest, WorkspaceServiceWatchWorkspaceServerStream) error
 	ListWorkspaces(context.Context, *v1.ListWorkspacesRequest) (*v1.ListWorkspacesResponse, error)
 	ReleaseWorkspace(context.Context, *v1.ReleaseWorkspaceRequest) (*v1.ReleaseWorkspaceResponse, error)
@@ -2648,9 +2651,10 @@ type WorkspaceServiceHandler interface {
 	// its limits, as a detached one is: its soft limit counts from now.
 	ResumeCommand(context.Context, *v1.ResumeCommandRequest) (*v1.Command, error)
 	// FollowLog streams a command's output from an offset, as written; with
-	// follow, until the command ends or is paused. An attached command stops
-	// when no one follows it. The controller serves it without follow (what
-	// the output has so far); a follower calls the worker.
+	// follow, until the command ends or is paused, sending a chunk with no
+	// data or state as a keepalive when it has sent nothing for 5s. An
+	// attached command stops when no one follows it. The controller serves it
+	// without follow (what the output has so far); a follower calls the worker.
 	FollowLog(context.Context, *v1.FollowLogRequest, WorkspaceServiceFollowLogServerStream) error
 	// GetLogLines returns the last lines of a command's output, at most
 	// 1 MiB of them, as its terminal shows them (progress redraws collapsed,

@@ -553,9 +553,21 @@ func waitReady(ctx context.Context, w workerClients, ws *pb.Workspace, stderr io
 	return ws, nil
 }
 
+// watchSessionGrace is how long past its timeout a session watch may go on
+// before it is taken for dead.
+var watchSessionGrace = 10 * time.Second
+
 // watchSession returns the session's first update with events (or its end),
-// or how it stands when the watch times out.
+// or how it stands when the watch times out. The controller ends the watch
+// at req's timeout; one that goes on past it has died without a word (a
+// controller deploy resets the Durable Object serving it while Cloudflare's
+// edge keeps the stream open) and is ended here.
 func watchSession(ctx context.Context, stream clients, req *pb.WatchSessionRequest) (*pb.SessionEvents, error) {
+	if req.TimeoutSeconds > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, time.Duration(req.TimeoutSeconds)*time.Second+watchSessionGrace)
+		defer cancel()
+	}
 	in, err := stream.sessions.WatchSession(ctx, req)
 	if err != nil {
 		return nil, err
@@ -566,7 +578,8 @@ func watchSession(ctx context.Context, stream clients, req *pb.WatchSessionReque
 		res, err := in.Receive()
 		if err != nil && last != nil && (errors.Is(err, io.EOF) || api.FromConnect(err).Retryable) {
 			// Its two minutes are up, or the controller went away under it
-			// (a restart): nothing happened yet; the next wait goes on.
+			// (a restart), or the watch outlived its timeout: nothing
+			// happened yet; the next wait goes on.
 			return last, nil
 		}
 		if err != nil {

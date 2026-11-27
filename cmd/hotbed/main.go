@@ -35,6 +35,7 @@ func main() {
 		http:         api.NewResilientHTTPClient(60 * time.Second),
 		stream:       api.NewResilientStreamClient(),
 		rideOut:      peerRideOut,
+		silence:      api.StreamSilence,
 		check:        worker.CheckMachine,
 		stdin:        os.Stdin,
 		controller:   func() (string, error) { return localController(h.getenv) },

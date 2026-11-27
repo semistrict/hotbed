@@ -199,6 +199,16 @@ type EngineConfig struct {
 	SystemUpgradeOps *SystemUpgradeOps
 	// Freshen configures base freshen duty-cycle caps, cooldowns, and time limits.
 	Freshen *statedir.FreshenConfig
+	// StreamKeepalive is how often a quiet FollowLog or WatchWorkspace
+	// stream sends a keepalive; zero for api.StreamKeepalive.
+	StreamKeepalive time.Duration
+}
+
+func (e *Engine) streamKeepalive() time.Duration {
+	if e.cfg.StreamKeepalive > 0 {
+		return e.cfg.StreamKeepalive
+	}
+	return api.StreamKeepalive
 }
 
 // DefaultMaxSyncBundleBytes caps the total bundle bytes accepted by a single

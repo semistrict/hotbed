@@ -813,11 +813,8 @@ func TestFollowLogStreamsGrowingLogAndDrainsOnExit(t *testing.T) {
 // produces no output, FollowLog emits periodic empty keepalive chunks so edge
 // proxies keep the stream open and clients can detect silent stalls.
 func TestFollowLogEmitsKeepaliveWhileQueued(t *testing.T) {
-	origKeepalive := followLogKeepalive
-	followLogKeepalive = 30 * time.Millisecond
-	t.Cleanup(func() { followLogKeepalive = origKeepalive })
-
 	eng, _ := outputEngine(t, DefaultLogLimit)
+	eng.cfg.StreamKeepalive = 30 * time.Millisecond
 	eng.mu.Lock()
 	c := eng.newCommand(&pb.CommandRecord{
 		Command: &pb.Command{

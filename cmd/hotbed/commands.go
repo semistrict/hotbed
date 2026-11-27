@@ -38,6 +38,10 @@ type deps struct {
 	// rideOut is how long a call waits for the controller or a worker that
 	// is out of reach, as when restarting, before failing; 0 not to wait.
 	rideOut time.Duration
+	// silence is how long a stream that sends keepalives (FollowLog,
+	// WatchWorkspace) may say nothing before it is taken for dead and called
+	// again; 0 not to listen for them.
+	silence time.Duration
 	// cache keeps cursors read on this machine: each session's polls', and
 	// each review's responses'.
 	cache string

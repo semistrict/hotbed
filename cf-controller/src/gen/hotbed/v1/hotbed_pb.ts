@@ -22181,8 +22181,9 @@ export const WorkspaceService: GenService<{
 	};
 	/**
 	 * WatchWorkspace streams the workspace as it is, then again each time it
-	 * changes (such as from preparing to ready), until it is released or the
-	 * caller stops listening.
+	 * changes (such as from preparing to ready), and again as a keepalive when
+	 * it has sent nothing for 5s, until it is released or the caller stops
+	 * listening.
 	 *
 	 * @generated from rpc hotbed.v1.WorkspaceService.WatchWorkspace
 	 */
@@ -22311,9 +22312,10 @@ export const WorkspaceService: GenService<{
 	};
 	/**
 	 * FollowLog streams a command's output from an offset, as written; with
-	 * follow, until the command ends or is paused. An attached command stops
-	 * when no one follows it. The controller serves it without follow (what
-	 * the output has so far); a follower calls the worker.
+	 * follow, until the command ends or is paused, sending a chunk with no
+	 * data or state as a keepalive when it has sent nothing for 5s. An
+	 * attached command stops when no one follows it. The controller serves it
+	 * without follow (what the output has so far); a follower calls the worker.
 	 *
 	 * @generated from rpc hotbed.v1.WorkspaceService.FollowLog
 	 */

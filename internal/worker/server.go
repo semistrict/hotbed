@@ -257,17 +257,13 @@ func (s *Service) streamsDone() <-chan struct{} {
 	return s.E.streamsDone
 }
 
-// followLogKeepalive is how often FollowLog emits an empty LogChunk while a
-// followed command is quiet (e.g. queued waiting for capacity) so edge proxies
-// do not idle-close the stream and clients can distinguish a live quiet stream
-// from a silently wedged one before orphanAfter expires (issues #20, #21).
-var followLogKeepalive = 10 * time.Second
-
 // FollowLog streams a command's output from an offset. Following, it keeps
 // the stream open until the command ends, which is how an attached exec
-// shows output and keeps its command from counting as orphaned. It keeps the
-// log file descriptor open across iterations and, on Linux, waits on inotify
-// write events with a coarse fallback timer instead of re-opening on every tick.
+// shows output and keeps its command from counting as orphaned, and sends an
+// empty chunk when it has sent nothing for a keepalive (api.HearKeepalives).
+// It keeps the log file descriptor open across iterations and, on Linux,
+// waits on inotify write events with a coarse fallback timer instead of
+// re-opening on every tick.
 func (s *Service) FollowLog(ctx context.Context, req *pb.FollowLogRequest, stream hotbedv1connect.WorkspaceServiceFollowLogServerStream) error {
 	if err := validateID(req.Id); err != nil {
 		return err
@@ -309,8 +305,13 @@ func (s *Service) FollowLog(ctx context.Context, req *pb.FollowLogRequest, strea
 	var endState pb.CommandState
 	var endedBy *pb.CommandIntervention
 	var tsIdx *cmdlog.TimestampIndex
-	lastSent := time.Now()
 	buf := make([]byte, 64<<10)
+	keepalive := s.E.streamKeepalive()
+	lastSent := time.Now()
+	send := func(chunk *pb.LogChunk) error {
+		lastSent = time.Now()
+		return stream.Send(chunk)
+	}
 	for {
 		if f == nil {
 			opened, err := os.Open(path)
@@ -342,30 +343,25 @@ func (s *Service) FollowLog(ctx context.Context, req *pb.FollowLogRequest, strea
 						tsIdx, _ = cmdlog.ReadTimestamps(path)
 					}
 					if err := tsIdx.SplitChunks(offset, data, func(chunkOff int64, chunk []byte, ts int64) error {
-						if serr := stream.Send(&pb.LogChunk{
+						return send(&pb.LogChunk{
 							Data:       chunk,
 							NextOffset: chunkOff + int64(len(chunk)),
 							ReceivedAt: ts,
-						}); serr != nil {
-							return serr
-						}
-						lastSent = time.Now()
-						return nil
+						})
 					}); err != nil {
 						return nil // the client went away
 					}
 				} else {
-					if err := stream.Send(&pb.LogChunk{Data: data, NextOffset: next}); err != nil {
+					if err := send(&pb.LogChunk{Data: data, NextOffset: next}); err != nil {
 						return nil // the client went away
 					}
-					lastSent = time.Now()
 				}
 				offset = next
 			}
 		}
 		if !follow {
 			if req.Follow && (endState != pb.CommandState_COMMAND_STATE_UNSPECIFIED || endedBy != nil) {
-				_ = stream.Send(&pb.LogChunk{NextOffset: offset, State: endState, EndedBy: endedBy})
+				_ = send(&pb.LogChunk{NextOffset: offset, State: endState, EndedBy: endedBy})
 			}
 			return nil
 		}
@@ -378,11 +374,10 @@ func (s *Service) FollowLog(ctx context.Context, req *pb.FollowLogRequest, strea
 			follow = false
 			continue
 		}
-		if followLogKeepalive > 0 && time.Since(lastSent) >= followLogKeepalive {
-			if err := stream.Send(&pb.LogChunk{NextOffset: offset}); err != nil {
+		if time.Since(lastSent) >= keepalive {
+			if err := send(&pb.LogChunk{NextOffset: offset}); err != nil {
 				return nil // the client went away
 			}
-			lastSent = time.Now()
 		}
 		wait := 200 * time.Millisecond
 		var watchCh <-chan struct{}
@@ -390,9 +385,7 @@ func (s *Service) FollowLog(ctx context.Context, req *pb.FollowLogRequest, strea
 			watchCh = watcher.Events()
 			wait = 2 * time.Second
 		}
-		if followLogKeepalive > 0 && wait > followLogKeepalive {
-			wait = followLogKeepalive
-		}
+		wait = min(wait, keepalive)
 		if timer == nil {
 			timer = time.NewTimer(wait)
 		} else {
@@ -418,8 +411,9 @@ func (s *Service) FollowLog(ctx context.Context, req *pb.FollowLogRequest, strea
 	}
 }
 
-// WatchWorkspace sends the workspace whenever it changes, until it is
-// released or the caller goes.
+// WatchWorkspace sends the workspace whenever it changes, and again when it
+// has sent nothing for a keepalive (api.HearKeepalives), until it is released
+// or the caller goes.
 func (s *Service) WatchWorkspace(ctx context.Context, req *pb.WatchWorkspaceRequest, stream hotbedv1connect.WorkspaceServiceWatchWorkspaceServerStream) error {
 	if err := validateID(req.Id); err != nil {
 		return err
@@ -427,6 +421,8 @@ func (s *Service) WatchWorkspace(ctx context.Context, req *pb.WatchWorkspaceRequ
 	s.E.usedWorkspace(req.Id)
 	var sent *pb.Workspace
 	streamsDone := s.streamsDone()
+	keepalive := time.NewTimer(s.E.streamKeepalive())
+	defer keepalive.Stop()
 	for {
 		ws, updated, err := s.E.WatchWorkspace(req.Id)
 		if err != nil {
@@ -444,6 +440,7 @@ func (s *Service) WatchWorkspace(ctx context.Context, req *pb.WatchWorkspaceRequ
 				return nil // the caller went away
 			}
 			sent = ws
+			keepalive.Reset(s.E.streamKeepalive())
 		}
 		if ws.State == pb.WorkspaceState_WORKSPACE_STATE_RELEASED {
 			return nil
@@ -459,6 +456,11 @@ func (s *Service) WatchWorkspace(ctx context.Context, req *pb.WatchWorkspaceRequ
 		case <-streamsDone:
 			return connect.NewError(connect.CodeUnavailable, "worker shutting down")
 		case <-updated:
+		case <-keepalive.C:
+			if err := stream.Send(sent); err != nil {
+				return nil // the caller went away
+			}
+			keepalive.Reset(s.E.streamKeepalive())
 		}
 	}
 }
