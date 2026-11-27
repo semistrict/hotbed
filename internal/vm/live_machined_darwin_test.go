@@ -7,6 +7,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -107,6 +108,17 @@ func TestLiveMachinedEndToEnd(t *testing.T) {
 	out := run(rt, "live-check", "cat /proc/self/cgroup; test -x /run/hotbed-tools/hotbed-guestd && test ! -e /sbin/hotbed-guestd && grep -q trixie /etc/os-release && getent hosts deb.debian.org >/dev/null && echo LIVE_MACHINED_OK")
 	if !strings.Contains(out, "0::/hotbed/live-check") || !strings.Contains(out, "LIVE_MACHINED_OK") {
 		t.Fatalf("command output:\n%s\nwant cgroup /hotbed/live-check and LIVE_MACHINED_OK", out)
+	}
+
+	// The guest's clock is the host's (the board's RTC), not 1970's: TLS and
+	// signed package indexes need it.
+	out = run(rt, "live-clock", "date +%s")
+	guest, err := strconv.ParseInt(strings.TrimSpace(out), 10, 64)
+	if err != nil {
+		t.Fatalf("guest date: %q: %v", out, err)
+	}
+	if skew := time.Since(time.Unix(guest, 0)); skew < -time.Minute || skew > time.Minute {
+		t.Fatalf("guest clock %s is %s off the host's", time.Unix(guest, 0).UTC(), skew)
 	}
 
 	if err := rt.StartCommand(ctx, "ws-live-1", runtime.CommandSpec{ID: "live-sleeper", Argv: []string{"sleep", "120"}, Dir: "/work"}); err != nil {

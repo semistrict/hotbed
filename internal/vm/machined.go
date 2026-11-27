@@ -253,7 +253,10 @@ func machineStatus(s *machinedv1.MachineStatus) ProcessStatus {
 		exit := s.GetLastExit()
 		st.Result = strings.ToLower(strings.TrimPrefix(exit.GetReason().String(), "EXIT_REASON_"))
 		switch exit.GetReason() {
-		case machinedv1.ExitReason_EXIT_REASON_POWEROFF, machinedv1.ExitReason_EXIT_REASON_STOPPED:
+		// hotbed-guestd's PID 1 reboots to end its VM, as Firecracker, which
+		// exits on a reboot, has it do: a reset is a clean end too.
+		case machinedv1.ExitReason_EXIT_REASON_POWEROFF, machinedv1.ExitReason_EXIT_REASON_STOPPED,
+			machinedv1.ExitReason_EXIT_REASON_RESET:
 			st.Detail = "clean shutdown"
 		default:
 			st.ExitCode = 1
