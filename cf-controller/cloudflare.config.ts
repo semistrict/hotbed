@@ -32,7 +32,7 @@ export default defineConfig({
 				worker: "hotbed-controller",
 				exportName: "AdminAgentDO",
 			}),
-			AI: bindings.ai(),
+			AI: bindings.ai({ dev: { remote: true } }),
 			ASSETS: bindings.assets(),
 			OWNER_TOKEN: bindings.secret(),
 			JOIN_TOKEN: bindings.secret(),

@@ -9,8 +9,17 @@ export interface AdminModelOption {
   provider: "workers-ai" | "anthropic" | "openai";
 }
 
+export interface AdminOrgScopeInfo {
+  controllerDoName: string;
+  orgId: string | null;
+  clusterId: string | null;
+  cladefsTenantId: number | null;
+  isGlobalAdmin: boolean;
+}
+
 export interface AdminAgentStatus {
   ok: boolean;
+  scope: AdminOrgScopeInfo;
   aiConfigured: boolean;
   workersAiBound: boolean;
   anthropicConfigured: boolean;
@@ -120,11 +129,11 @@ export interface AdminThreadEntry {
   createdAt: number;
 }
 
-const THREADS_STORAGE_KEY = "hotbed-admin-agent-threads";
+const THREADS_STORAGE_KEY_PREFIX = "hotbed-admin-agent-threads:";
 
-export function loadAdminThreads(): AdminThreadEntry[] {
+export function loadAdminThreads(scopeKey = "default"): AdminThreadEntry[] {
   try {
-    const raw = localStorage.getItem(THREADS_STORAGE_KEY);
+    const raw = localStorage.getItem(`${THREADS_STORAGE_KEY_PREFIX}${scopeKey}`);
     if (!raw) return [{ id: "main", label: "Main thread", createdAt: Date.now() }];
     const parsed = JSON.parse(raw) as unknown;
     if (!Array.isArray(parsed) || parsed.length === 0) {
@@ -142,9 +151,9 @@ export function loadAdminThreads(): AdminThreadEntry[] {
   }
 }
 
-export function saveAdminThreads(threads: AdminThreadEntry[]): void {
+export function saveAdminThreads(scopeKey: string, threads: AdminThreadEntry[]): void {
   try {
-    localStorage.setItem(THREADS_STORAGE_KEY, JSON.stringify(threads.slice(0, 20)));
+    localStorage.setItem(`${THREADS_STORAGE_KEY_PREFIX}${scopeKey}`, JSON.stringify(threads.slice(0, 20)));
   } catch {
     // Ignore private-window storage failures.
   }

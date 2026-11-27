@@ -1,15 +1,13 @@
-// Cloudflare REST API v4 client (read-only) and Durable Object target resolver
-// for the Hotbed Admin Agent.
+// Cloudflare REST API v4 client (read-only) and org-scoped Durable Object
+// target resolver for the Hotbed Admin Agent.
 //
-// In-cluster Durable Object SQL and schema inspection work directly via typed
-// Workers RPC bindings (CONTROLLER, TENANT_REGISTRY, COMMAND, ADMIN_AGENT) with
-// zero external credentials. When CLOUDFLARE_API_TOKEN and CLOUDFLARE_ACCOUNT_ID
-// are configured on the Worker, this module additionally enables account-level
-// Cloudflare REST API inspection (listing all DO namespaces and object IDs,
-// Workers deployments, and Workers Observability telemetry).
+// Security invariant: every organization's Admin Agent is strictly confined to
+// THAT organization's Durable Objects (its own ControllerDO, CommandDOs under
+// its own clusterId, and its own AdminAgentDO threads). Non-default orgs never
+// get access to TenantRegistryDO or account-wide Cloudflare REST APIs.
 
 import type { AdminAgentDO } from "./admin-agent-do.ts";
-import type { CommandDO } from "./command-do.ts";
+import { commandDoName, type CommandDO } from "./command-do.ts";
 import type { ControllerDO, ControllerEnv } from "./controller-do.ts";
 import type { DoSchemaInfo, DoSqlResult, SqlParamValue } from "./do-sql.ts";
 import type { TenantRegistryDO } from "./tenant-registry-do.ts";
@@ -19,9 +17,26 @@ const HEX_DO_ID_RE = /^[0-9a-f]{64}$/i;
 
 export type DoBindingName = "CONTROLLER" | "TENANT_REGISTRY" | "COMMAND" | "ADMIN_AGENT";
 
+export interface AdminOrgScope {
+	/** Logical ControllerDO name for this organization ("default" or "org:<org_id>"). */
+	controllerDoName: string;
+	/** WorkOS organization ID, or "" for single-tenant/default mode. */
+	orgId: string;
+	/** Whether the caller is a cluster-level/default-org admin. */
+	isGlobalAdmin: boolean;
+}
+
+export class AdminScopeError extends Error {
+	readonly status = 403;
+	constructor(message: string) {
+		super(message);
+		this.name = "AdminScopeError";
+	}
+}
+
 export interface DoTargetInput {
 	binding: DoBindingName;
-	/** Logical Durable Object name passed to `getByName(name)` (e.g. "default", "global", "cmd:<clusterId>:<cmdId>"). */
+	/** Logical Durable Object name passed to `getByName(name)`. */
 	name?: string;
 	/** 64-character hex Cloudflare Durable Object ID passed to `idFromString(id)`. */
 	id?: string;
@@ -50,15 +65,72 @@ export function getCloudflareApiConfig(env: ControllerEnv): CloudflareApiConfig 
 	return { accountId, apiToken };
 }
 
-export function describeTarget(target: DoTargetInput): string {
-	if (target.id?.trim()) return `${target.binding}[id:${target.id.trim().slice(0, 12)}…]`;
-	return `${target.binding}[name:${(target.name ?? "").trim() || "(default)"}]`;
+export function adminAgentDoName(controllerDoName: string, threadId: string): string {
+	return `admin:${controllerDoName}:${threadId}`;
 }
 
-function getTargetStub<T extends ControllerDO | TenantRegistryDO | CommandDO | AdminAgentDO>(
-	ns: DurableObjectNamespace<T>,
+export function allowedBindingsForScope(scope: AdminOrgScope): DoBindingName[] {
+	return scope.isGlobalAdmin
+		? ["CONTROLLER", "COMMAND", "ADMIN_AGENT", "TENANT_REGISTRY"]
+		: ["CONTROLLER", "COMMAND", "ADMIN_AGENT"];
+}
+
+function assertValidHexId(rawId: string): string {
+	const cleaned = rawId.trim().toLowerCase();
+	if (!HEX_DO_ID_RE.test(cleaned)) {
+		throw new Error(
+			`invalid Durable Object ID "${rawId}": expected a 64-character hexadecimal string`,
+		);
+	}
+	return cleaned;
+}
+
+/**
+ * Verifies that a 64-hex-char CommandDO ID corresponds to a command recorded in
+ * the scoped organization's ControllerDO (`commands` or `history` table).
+ */
+async function verifyCommandHexIdBelongsToOrg(
+	env: ControllerEnv,
+	controllerStub: DurableObjectStub<ControllerDO>,
+	clusterId: string,
+	hexId: string,
+): Promise<boolean> {
+	const [cmdRows, histRows] = await Promise.all([
+		controllerStub.adminQuerySql("SELECT id FROM commands ORDER BY created_at DESC LIMIT 500", [], {
+			maxRows: 500,
+		}),
+		controllerStub.adminQuerySql("SELECT id FROM history ORDER BY ended_at DESC LIMIT 500", [], {
+			maxRows: 500,
+		}),
+	]);
+	const seen = new Set<string>();
+	for (const row of [...cmdRows.rows, ...histRows.rows]) {
+		const cmdId = String(row.id ?? "");
+		if (!cmdId || seen.has(cmdId)) continue;
+		seen.add(cmdId);
+		const candidate = env.COMMAND.idFromName(commandDoName(clusterId, cmdId))
+			.toString()
+			.toLowerCase();
+		if (candidate === hexId) return true;
+	}
+	return false;
+}
+
+/**
+ * Resolves a Durable Object target strictly within the caller's organization
+ * scope. Throws AdminScopeError (403) if the target belongs to another org or
+ * is outside the caller's allowed bindings.
+ */
+export async function resolveScopedInspectableDo(
+	env: ControllerEnv,
+	scope: AdminOrgScope,
 	target: DoTargetInput,
-): { stub: AdminInspectableStub; label: string; resolvedBy: "name" | "id"; value: string } {
+): Promise<{
+	stub: AdminInspectableStub;
+	label: string;
+	resolvedBy: "name" | "id";
+	value: string;
+}> {
 	const rawId = (target.id ?? "").trim();
 	const rawName = (target.name ?? "").trim();
 
@@ -66,72 +138,150 @@ function getTargetStub<T extends ControllerDO | TenantRegistryDO | CommandDO | A
 		throw new Error("specify either `name` or `id` for a Durable Object target, not both");
 	}
 
-	if (rawId) {
-		if (!HEX_DO_ID_RE.test(rawId)) {
-			throw new Error(
-				`invalid Durable Object ID "${rawId}": expected a 64-character hexadecimal string`,
-			);
-		}
-		const doId = ns.idFromString(rawId.toLowerCase());
-		const rawStub = ns.get(doId);
-		return {
-			stub: rawStub as unknown as AdminInspectableStub,
-			label: `${target.binding}(id:${rawId.slice(0, 12)}…)`,
-			resolvedBy: "id",
-			value: rawId.toLowerCase(),
-		};
-	}
-
-	const defaultName =
-		target.binding === "TENANT_REGISTRY"
-			? "global"
-			: target.binding === "CONTROLLER"
-				? "default"
-				: "";
-	const resolvedName = rawName || defaultName;
-	if (!resolvedName) {
-		throw new Error(
-			`\`name\` (or 64-hex \`id\`) is required for ${target.binding} (e.g. "cmd:<clusterId>:<commandId>")`,
-		);
-	}
-
-	const rawStub = ns.getByName(resolvedName);
-	return {
-		stub: rawStub as unknown as AdminInspectableStub,
-		label: `${target.binding}(${resolvedName})`,
-		resolvedBy: "name",
-		value: resolvedName,
-	};
-}
-
-/**
- * Resolves a Durable Object binding + name or 64-hex-char ID to a typed RPC stub.
- */
-export function resolveInspectableDo(
-	env: ControllerEnv,
-	target: DoTargetInput,
-): { stub: AdminInspectableStub; label: string; resolvedBy: "name" | "id"; value: string } {
 	switch (target.binding) {
-		case "CONTROLLER":
-			return getTargetStub(env.CONTROLLER, target);
-		case "TENANT_REGISTRY":
-			if (!env.TENANT_REGISTRY) {
-				throw new Error("Durable Object binding TENANT_REGISTRY is not bound in this environment");
+		case "CONTROLLER": {
+			const expectedName = scope.controllerDoName;
+			if (rawId) {
+				const hexId = assertValidHexId(rawId);
+				const expectedHex = env.CONTROLLER.idFromName(expectedName).toString().toLowerCase();
+				if (hexId !== expectedHex) {
+					throw new AdminScopeError(
+						`access denied: ControllerDO ID ${hexId.slice(0, 12)}… does not belong to this organization (${expectedName})`,
+					);
+				}
+				return {
+					stub: env.CONTROLLER.get(
+						env.CONTROLLER.idFromString(hexId),
+					) as unknown as AdminInspectableStub,
+					label: `CONTROLLER(id:${hexId.slice(0, 12)}…)`,
+					resolvedBy: "id",
+					value: hexId,
+				};
 			}
-			return getTargetStub(env.TENANT_REGISTRY, target);
-		case "COMMAND":
-			return getTargetStub(env.COMMAND, target);
-		case "ADMIN_AGENT":
+			const resolvedName = rawName || expectedName;
+			if (resolvedName !== expectedName) {
+				throw new AdminScopeError(
+					`access denied: this organization's Admin Agent may only query ControllerDO "${expectedName}", not "${resolvedName}"`,
+				);
+			}
+			return {
+				stub: env.CONTROLLER.getByName(expectedName) as unknown as AdminInspectableStub,
+				label: `CONTROLLER(${expectedName})`,
+				resolvedBy: "name",
+				value: expectedName,
+			};
+		}
+
+		case "COMMAND": {
+			const ctrlStub = env.CONTROLLER.getByName(scope.controllerDoName);
+			const health = await ctrlStub.getHealth();
+			const clusterId = health.clusterId;
+			if (!clusterId) {
+				throw new AdminScopeError("organization controller has no clusterId yet");
+			}
+			const prefix = `cmd:${clusterId}:`;
+
+			if (rawId) {
+				const hexId = assertValidHexId(rawId);
+				const owned = await verifyCommandHexIdBelongsToOrg(env, ctrlStub, clusterId, hexId);
+				if (!owned) {
+					throw new AdminScopeError(
+						`access denied: CommandDO ID ${hexId.slice(0, 12)}… does not match any command in this organization (${scope.controllerDoName})`,
+					);
+				}
+				return {
+					stub: env.COMMAND.get(env.COMMAND.idFromString(hexId)) as unknown as AdminInspectableStub,
+					label: `COMMAND(id:${hexId.slice(0, 12)}…)`,
+					resolvedBy: "id",
+					value: hexId,
+				};
+			}
+
+			if (!rawName) {
+				throw new Error(`\`name\` is required for COMMAND (expected "${prefix}<commandId>")`);
+			}
+			if (!rawName.startsWith(prefix) || rawName.length <= prefix.length) {
+				throw new AdminScopeError(
+					`access denied: CommandDO name "${rawName}" is outside this organization's cluster prefix ("${prefix}")`,
+				);
+			}
+			return {
+				stub: env.COMMAND.getByName(rawName) as unknown as AdminInspectableStub,
+				label: `COMMAND(${rawName})`,
+				resolvedBy: "name",
+				value: rawName,
+			};
+		}
+
+		case "ADMIN_AGENT": {
 			if (!env.ADMIN_AGENT) {
 				throw new Error("Durable Object binding ADMIN_AGENT is not bound in this environment");
 			}
-			return getTargetStub(env.ADMIN_AGENT, target);
+			const prefix = `admin:${scope.controllerDoName}:`;
+			if (rawId) {
+				throw new AdminScopeError(
+					`address AdminAgentDO by its organization-scoped name ("${prefix}<thread>") rather than a raw hex ID`,
+				);
+			}
+			const resolvedName = rawName || `${prefix}main`;
+			if (!resolvedName.startsWith(prefix) || resolvedName.length <= prefix.length) {
+				throw new AdminScopeError(
+					`access denied: AdminAgentDO name "${resolvedName}" is outside this organization's namespace ("${prefix}*")`,
+				);
+			}
+			return {
+				stub: env.ADMIN_AGENT.getByName(resolvedName) as unknown as AdminInspectableStub,
+				label: `ADMIN_AGENT(${resolvedName})`,
+				resolvedBy: "name",
+				value: resolvedName,
+			};
+		}
+
+		case "TENANT_REGISTRY": {
+			if (!scope.isGlobalAdmin) {
+				throw new AdminScopeError(
+					"access denied: TenantRegistryDO is global across organizations and is not accessible to organization-scoped Admin Agents",
+				);
+			}
+			if (!env.TENANT_REGISTRY) {
+				throw new Error("Durable Object binding TENANT_REGISTRY is not bound in this environment");
+			}
+			if (rawId) {
+				const hexId = assertValidHexId(rawId);
+				const expectedHex = env.TENANT_REGISTRY.idFromName("global").toString().toLowerCase();
+				if (hexId !== expectedHex) {
+					throw new AdminScopeError("TenantRegistryDO only permits the global singleton object");
+				}
+				return {
+					stub: env.TENANT_REGISTRY.get(
+						env.TENANT_REGISTRY.idFromString(hexId),
+					) as unknown as AdminInspectableStub,
+					label: `TENANT_REGISTRY(id:${hexId.slice(0, 12)}…)`,
+					resolvedBy: "id",
+					value: hexId,
+				};
+			}
+			const resolvedName = rawName || "global";
+			if (resolvedName !== "global") {
+				throw new AdminScopeError('TenantRegistryDO only permits the "global" singleton');
+			}
+			return {
+				stub: env.TENANT_REGISTRY.getByName("global") as unknown as AdminInspectableStub,
+				label: "TENANT_REGISTRY(global)",
+				resolvedBy: "name",
+				value: "global",
+			};
+		}
+
 		default:
 			throw new Error(`unknown Durable Object binding "${String(target.binding)}"`);
 	}
 }
 
-// ---- Cloudflare REST API v4 (optional, requires CLOUDFLARE_API_TOKEN + CLOUDFLARE_ACCOUNT_ID) ----
+// Suppress unused type-only import lint when referencing AdminAgentDO / CommandDO / TenantRegistryDO.
+export type _ScopedDoClasses = ControllerDO | TenantRegistryDO | CommandDO | AdminAgentDO;
+
+// ---- Cloudflare REST API v4 (optional, cluster-owner/default-org admins only) ----
 
 interface CfApiEnvelope<T> {
 	success?: boolean;
@@ -308,10 +458,6 @@ export interface CfObservabilityQueryInput {
 	groupBys?: Array<{ type: "string" | "number" | "boolean"; value: string }>;
 }
 
-/**
- * Queries Cloudflare Workers Observability telemetry for hotbed-controller (or
- * another script in the account), modeled after Cloudflare OS's observability client.
- */
 export async function queryCfObservability(
 	env: ControllerEnv,
 	input: CfObservabilityQueryInput,

@@ -268,24 +268,40 @@ export const adminAgentCatalog = defineCatalog(elementTreeSchema, {
 });
 
 export function buildAdminAgentSystemPrompt(opts: {
+	controllerDoName: string;
+	orgId: string;
+	isGlobalAdmin: boolean;
 	cloudflareApiConfigured: boolean;
 	gcWorkerConfigured: boolean;
 }): string {
-	const baseIntro = `You are the Hotbed Admin Agent, an expert Cloudflare Durable Objects and infrastructure inspector running inside the hotbed-controller Cloudflare Worker.
+	const scopeDesc = opts.orgId
+		? `organization \`${opts.orgId}\` (ControllerDO name \`${opts.controllerDoName}\`)`
+		: `organization \`${opts.controllerDoName}\``;
+	const tenantRegistryLine = opts.isGlobalAdmin
+		? `4. **TenantRegistryDO** (\`binding: "TENANT_REGISTRY"\`, \`name: "global"\`): Global mapping of Hotbed organizations to CladeFS uint64 tenant IDs (cluster-owner access).`
+		: `4. **Strict Organization Isolation**: You are strictly scoped to ${scopeDesc}. You CANNOT access other organizations' ControllerDOs, CommandDOs, AdminAgentDOs, TenantRegistryDO, or account-wide Cloudflare REST APIs.`;
+	const cfApiLine =
+		opts.isGlobalAdmin && opts.cloudflareApiConfigured
+			? "CONFIGURED (use `list_cf_do_objects`, `query_cf_observability`, and `cf_api_get` for account-wide DO listing, Workers deployments, R2, and Workers Observability telemetry)."
+			: opts.isGlobalAdmin
+				? "Not configured (CLOUDFLARE_API_TOKEN / CLOUDFLARE_ACCOUNT_ID not set). You can still discover and run SQL on all in-cluster Durable Objects via `discover_durable_objects`, `inspect_do_schema`, and `run_do_sql`."
+				: "Disabled for organization-scoped Admin Agents (account-wide Cloudflare APIs are restricted to cluster owners).";
 
-## Your Architecture & Access
-You have direct typed Workers RPC access to ALL SQLite Cloudflare Durable Objects in this project:
-1. **ControllerDO** (\`binding: "CONTROLLER"\`): One SQLite Durable Object per organization (\`name: "default"\` for the default/owner org, or \`name: "org:<org_id>"\`, or any 64-hex-char ID). Stores nodes, projects, sessions, workspaces, commands, history, samples, events, placements, schedules, questions, issues, memories, reviews, board_messages, daemon_logs, shared_bases, worker_configs, api_tokens, join_tokens, worker_tokens, signup_codes, kv_meta, base_freshens.
+	const baseIntro = `You are the Hotbed Admin Agent for ${scopeDesc}, an expert Cloudflare Durable Objects and infrastructure inspector running inside the hotbed-controller Cloudflare Worker.
+
+## Your Architecture & Access (Strictly Scoped to ${scopeDesc})
+You have direct typed Workers RPC access to this organization's SQLite Cloudflare Durable Objects:
+1. **ControllerDO** (\`binding: "CONTROLLER"\`, \`name: "${opts.controllerDoName}"\`): This organization's isolated SQLite Durable Object. Stores nodes, projects, sessions, workspaces, commands, history, samples, events, placements, schedules, questions, issues, memories, reviews, board_messages, daemon_logs, shared_bases, worker_configs, api_tokens, join_tokens, worker_tokens, signup_codes, kv_meta, base_freshens.
    - Important: All timestamps (\`created_at\`, \`started_at\`, \`ended_at\`, \`last_seen\`, \`at\`, \`t\`, \`updated_at\`) are **Unix epoch milliseconds** (integers).
    - Many tables store protobuf JSON in a \`doc\` column (use SQLite \`json_extract(doc, '$.field')\` to query structured fields cleanly!).
    - Never expose secret values (\`secret\`, \`token_hash\`) verbatim in responses.
-2. **TenantRegistryDO** (\`binding: "TENANT_REGISTRY"\`, \`name: "global"\`): Global mapping of every Hotbed organization (\`org_tenants\` table: \`org_key\`, \`tenant_id\`, \`created_at\`) to its permanent CladeFS uint64 tenant ID.
-3. **CommandDO** (\`binding: "COMMAND"\`, \`name: "cmd:<clusterId>:<commandId>"\` or 64-hex-char ID): Per-command SQLite Durable Object storing heavy per-command data: \`command_meta\`, \`command_profile\`, \`command_diagnostics\`, \`command_samples\`, \`command_output\`, \`command_output_chunks\`. To find a command's DO name, query \`kv_meta\` (\`key = 'cluster_id'\`) and \`commands\` / \`history\` in \`ControllerDO\`, then address \`CommandDO\` with \`name: "cmd:<clusterId>:<commandId>"\`.
-4. **AdminAgentDO** (\`binding: "ADMIN_AGENT"\`): Your own Durable Object SQLite database storing chat threads and messages.
+2. **CommandDO** (\`binding: "COMMAND"\`, \`name: "cmd:<clusterId>:<commandId>"\`): Per-command SQLite Durable Object for this organization's commands storing heavy per-command data: \`command_meta\`, \`command_profile\`, \`command_diagnostics\`, \`command_samples\`, \`command_output\`, \`command_output_chunks\`. To find a command's DO name, query \`kv_meta\` (\`key = 'cluster_id'\`) and \`commands\` / \`history\` in \`ControllerDO\`, then address \`CommandDO\` with \`name: "cmd:<clusterId>:<commandId>"\`.
+3. **AdminAgentDO** (\`binding: "ADMIN_AGENT"\`, \`name: "admin:${opts.controllerDoName}:<thread>"\`): This organization's Admin Agent chat thread Durable Objects.
+${tenantRegistryLine}
 
 Additional live integrations:
-- **CladeFS GC Worker**: ${opts.gcWorkerConfigured ? "CONFIGURED (use `inspect_gc_worker` to inspect R2 cell usage, health, and GC dry-runs)." : "Not configured in this environment."}
-- **Cloudflare Account REST API**: ${opts.cloudflareApiConfigured ? "CONFIGURED (use `list_cf_do_objects`, `query_cf_observability`, and `cf_api_get` for account-wide DO listing, Workers deployments, R2, and Workers Observability telemetry)." : "Not configured (CLOUDFLARE_API_TOKEN / CLOUDFLARE_ACCOUNT_ID not set). You can still discover and run SQL on all in-cluster Durable Objects via `discover_durable_objects`, `inspect_do_schema`, and `run_do_sql`."}
+- **CladeFS GC Worker**: ${opts.gcWorkerConfigured ? "CONFIGURED (use `inspect_gc_worker` to inspect THIS organization's CladeFS tenant R2 cell usage and GC dry-runs)." : "Not configured in this environment."}
+- **Cloudflare Account REST API**: ${cfApiLine}
 
 ## Working Style
 - Always inspect real data with tools before answering — never guess counts, table names, or schemas.

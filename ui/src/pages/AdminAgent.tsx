@@ -50,27 +50,27 @@ const STARTER_PROMPTS = [
   {
     title: "Durable Object inventory",
     prompt:
-      "Discover all Cloudflare Durable Objects in this cluster, show their SQLite database sizes, and break down the largest tables by row count.",
+      "Discover this organization's Cloudflare Durable Objects, show their SQLite database sizes, and break down the largest tables by row count.",
   },
   {
     title: "Recent command failures",
     prompt:
-      "Run SQL on the default Controller Cloudflare Durable Object to find commands that failed in the last 24 hours, grouped by node and repo.",
+      "Run SQL on this organization's Controller Cloudflare Durable Object to find commands that failed in the last 24 hours, grouped by node and repo.",
   },
   {
-    title: "Orgs, tenants & active sessions",
+    title: "Active sessions & workspaces",
     prompt:
-      "Query TenantRegistryDO and ControllerDO to list all organizations, their CladeFS tenant IDs, and currently live sessions.",
+      "Query this organization's Controller Cloudflare Durable Object for currently live sessions, workspaces, and connected nodes.",
   },
   {
     title: "CladeFS R2 storage & GC",
     prompt:
-      "Check CladeFS garbage collector status and summarize R2 object and byte usage across cells.",
+      "Check this organization's CladeFS tenant R2 object and byte usage across cells.",
   },
   {
     title: "Inspect latest Command object",
     prompt:
-      "Find the most recent command in ControllerDO, then inspect its CommandDO schema and check whether it has cached output, profiles, or diagnostics.",
+      "Find the most recent command in this organization's Controller Cloudflare Durable Object, then inspect its Command Cloudflare Durable Object schema and diagnostics.",
   },
 ] as const;
 
@@ -499,13 +499,33 @@ function SqlExplorerPanel({
   statusInfo: AdminAgentStatus | undefined;
   onAskAgent: (prompt: string) => void;
 }) {
+  const defaultCtrlName = statusInfo?.scope.controllerDoName ?? "default";
+  const allowedBindings = statusInfo?.bindings ?? (["CONTROLLER", "COMMAND", "ADMIN_AGENT"] as DoBindingName[]);
+  const bindingItems = useMemo(() => {
+    const labels: Record<DoBindingName, string> = {
+      CONTROLLER: "CONTROLLER (ControllerDO)",
+      TENANT_REGISTRY: "TENANT_REGISTRY (TenantRegistryDO)",
+      COMMAND: "COMMAND (CommandDO)",
+      ADMIN_AGENT: "ADMIN_AGENT (AdminAgentDO)",
+    };
+    return allowedBindings.map((b) => ({ value: b, label: labels[b] }));
+  }, [allowedBindings]);
+
   const [binding, setBinding] = useState<DoBindingName>("CONTROLLER");
   const [addressMode, setAddressMode] = useState<"name" | "id">("name");
-  const [targetName, setTargetName] = useState("default");
+  const [targetName, setTargetName] = useState(defaultCtrlName);
   const [targetId, setTargetId] = useState("");
   const [sql, setSql] = useState(
     "SELECT name, type FROM sqlite_master WHERE type = 'table' ORDER BY name",
   );
+
+  useEffect(() => {
+    if (binding === "CONTROLLER") {
+      setTargetName(defaultCtrlName);
+    } else if (binding === "ADMIN_AGENT") {
+      setTargetName(`admin:${defaultCtrlName}:main`);
+    }
+  }, [defaultCtrlName, binding]);
 
   const schemaQuery = useInspectDoSchema(
     {
@@ -534,9 +554,9 @@ function SqlExplorerPanel({
     setBinding(next);
     setAddressMode("name");
     if (next === "TENANT_REGISTRY") setTargetName("global");
-    else if (next === "CONTROLLER") setTargetName("default");
+    else if (next === "CONTROLLER") setTargetName(defaultCtrlName);
     else if (next === "COMMAND") setTargetName(statusInfo?.recentCommands[0]?.doName ?? "");
-    else if (next === "ADMIN_AGENT") setTargetName("admin:main");
+    else if (next === "ADMIN_AGENT") setTargetName(`admin:${defaultCtrlName}:main`);
   }
 
   const columns = useMemo(() => {
@@ -565,15 +585,20 @@ function SqlExplorerPanel({
           <div className="eyebrow text-[10.5px]">Target Cloudflare Durable Object</div>
 
           <div className="space-y-2">
-            <Select value={binding} onValueChange={(v) => v && handleBindingChange(v as DoBindingName)}>
-              <SelectTrigger className="h-8.5 font-mono text-[12px]">
+            <Select
+              items={bindingItems}
+              value={binding}
+              onValueChange={(v) => v && handleBindingChange(v as DoBindingName)}
+            >
+              <SelectTrigger className="h-8.5 w-full font-mono text-[12px]">
                 <SelectValue />
               </SelectTrigger>
               <SelectContent className="font-mono text-[12px]">
-                <SelectItem value="CONTROLLER">CONTROLLER (ControllerDO)</SelectItem>
-                <SelectItem value="TENANT_REGISTRY">TENANT_REGISTRY (TenantRegistryDO)</SelectItem>
-                <SelectItem value="COMMAND">COMMAND (CommandDO)</SelectItem>
-                <SelectItem value="ADMIN_AGENT">ADMIN_AGENT (AdminAgentDO)</SelectItem>
+                {bindingItems.map((item) => (
+                  <SelectItem key={item.value} value={item.value}>
+                    {item.label}
+                  </SelectItem>
+                ))}
               </SelectContent>
             </Select>
 
@@ -799,11 +824,18 @@ function SqlExplorerPanel({
 
 export function AdminAgentPage() {
   const { data: statusInfo, error: statusErr } = useAdminAgentStatus();
-  const [threads, setThreads] = useState<AdminThreadEntry[]>(() => loadAdminThreads());
-  const [activeThreadId, setActiveThreadId] = useState<string>(() => loadAdminThreads()[0]?.id ?? "main");
+  const scopeKey = statusInfo?.scope.controllerDoName ?? "default";
+  const [threads, setThreads] = useState<AdminThreadEntry[]>(() => loadAdminThreads(scopeKey));
+  const [activeThreadId, setActiveThreadId] = useState<string>(() => loadAdminThreads(scopeKey)[0]?.id ?? "main");
   const [selectedModel, setSelectedModel] = useState<string>("");
   const [activeTab, setActiveTab] = useState<string>("chat");
   const [pendingPrompt, setPendingPrompt] = useState<string | null>(null);
+
+  useEffect(() => {
+    const loaded = loadAdminThreads(scopeKey);
+    setThreads(loaded);
+    setActiveThreadId(loaded[0]?.id ?? "main");
+  }, [scopeKey]);
 
   useEffect(() => {
     if (!selectedModel && statusInfo?.defaultModel) {
@@ -820,50 +852,62 @@ export function AdminAgentPage() {
     };
     const next = [entry, ...threads];
     setThreads(next);
-    saveAdminThreads(next);
+    saveAdminThreads(scopeKey, next);
     setActiveThreadId(id);
   }
 
+  const modelItems = useMemo(
+    () => (statusInfo?.models ?? []).map((m) => ({ value: m.id, label: m.label })),
+    [statusInfo?.models],
+  );
+
   return (
     <div className="space-y-4">
-      <div className="flex flex-wrap items-start justify-between gap-3">
-        <PageTitle
-          title="Admin Agent"
-          sub="Ask questions and run read-only SQL across every Cloudflare Durable Object, with formatted json-render output"
-        />
-        <div className="flex flex-wrap items-center gap-2">
-          {statusInfo && statusInfo.models.length > 0 && (
-            <Select value={selectedModel || statusInfo.defaultModel} onValueChange={(v) => v && setSelectedModel(v)}>
-              <SelectTrigger className="h-8 w-56 bg-card/80 font-mono text-[11.5px]">
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent className="font-mono text-[11.5px]">
-                {statusInfo.models.map((m) => (
-                  <SelectItem key={m.id} value={m.id} className="text-[11.5px]">
-                    {m.label}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-          )}
-          <Button
-            type="button"
-            size="sm"
-            variant="outline"
-            className="h-8 gap-1.5 font-mono text-[11.5px]"
-            onClick={handleNewThread}
-          >
-            <Plus className="size-3.5" />
-            New thread
-          </Button>
-        </div>
-      </div>
+      <PageTitle
+        title="Admin Agent"
+        sub="Ask questions and run read-only SQL across this organization's Cloudflare Durable Objects, with formatted json-render output"
+        right={
+          <div className="flex flex-wrap items-center gap-2">
+            {statusInfo && statusInfo.models.length > 0 && (
+              <Select
+                items={modelItems}
+                value={selectedModel || statusInfo.defaultModel}
+                onValueChange={(v) => v && setSelectedModel(v)}
+              >
+                <SelectTrigger className="h-8 w-60 bg-card/80 font-mono text-[11.5px]">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent className="font-mono text-[11.5px]">
+                  {statusInfo.models.map((m) => (
+                    <SelectItem key={m.id} value={m.id} className="text-[11.5px]">
+                      {m.label}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            )}
+            <Button
+              type="button"
+              size="sm"
+              variant="outline"
+              className="h-8 gap-1.5 font-mono text-[11.5px]"
+              onClick={handleNewThread}
+            >
+              <Plus className="size-3.5" />
+              New thread
+            </Button>
+          </div>
+        }
+      />
 
       {/* Capability status badges */}
       {statusInfo && (
         <div className="flex flex-wrap items-center gap-2">
           <Badge variant="outline" className="gap-1.5 border-primary/35 bg-ember-wash font-mono text-[10.5px] text-primary">
             <DatabaseZap className="size-3" />
+            Scope: {statusInfo.scope.orgId ?? statusInfo.scope.controllerDoName}
+          </Badge>
+          <Badge variant="outline" className="font-mono text-[10.5px] text-muted-foreground">
             {statusInfo.bindings.length} Cloudflare Durable Object bindings
           </Badge>
           <Badge
@@ -877,17 +921,19 @@ export function AdminAgentPage() {
               CladeFS GC: connected
             </Badge>
           )}
-          <Badge
-            variant="outline"
-            className={`font-mono text-[10.5px] ${statusInfo.cloudflareApiConfigured ? "border-good/40 text-good-ink" : "text-muted-foreground"}`}
-            title={
-              statusInfo.cloudflareApiConfigured
-                ? "Account-wide Durable Object listing and Workers Observability enabled"
-                : "Set CLOUDFLARE_API_TOKEN and CLOUDFLARE_ACCOUNT_ID secrets to unlock account-wide listing and Workers Observability"
-            }
-          >
-            Cloudflare REST API: {statusInfo.cloudflareApiConfigured ? "configured" : "optional (not set)"}
-          </Badge>
+          {statusInfo.scope.isGlobalAdmin && (
+            <Badge
+              variant="outline"
+              className={`font-mono text-[10.5px] ${statusInfo.cloudflareApiConfigured ? "border-good/40 text-good-ink" : "text-muted-foreground"}`}
+              title={
+                statusInfo.cloudflareApiConfigured
+                  ? "Account-wide Durable Object listing and Workers Observability enabled"
+                  : "Set CLOUDFLARE_API_TOKEN and CLOUDFLARE_ACCOUNT_ID secrets to unlock account-wide listing and Workers Observability"
+              }
+            >
+              Cloudflare REST API: {statusInfo.cloudflareApiConfigured ? "configured" : "optional (not set)"}
+            </Badge>
+          )}
         </div>
       )}
 
@@ -931,7 +977,7 @@ export function AdminAgentPage() {
 
         <TabsContent value="chat" className="mt-0">
           <AgentChatPanel
-            key={activeThreadId}
+            key={`${scopeKey}:${activeThreadId}`}
             threadId={activeThreadId}
             selectedModel={selectedModel}
             statusInfo={statusInfo}

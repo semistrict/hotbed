@@ -1,7 +1,7 @@
-// AdminAgentDO: Cloudflare Agents SDK (AIChatAgent) Durable Object with direct
-// read-only SQL & schema access to every Durable Object in the Hotbed project,
-// CladeFS GC worker inspection, optional Cloudflare Account REST API / Workers
-// Observability access, and Vercel json-render streaming UI specs.
+// AdminAgentDO: Organization-scoped Cloudflare Agents SDK (AIChatAgent) Durable
+// Object with direct read-only SQL & schema access strictly confined to its
+// owning organization's Durable Objects, tenant-filtered CladeFS GC inspection,
+// optional cluster-owner Cloudflare REST API access, and Vercel json-render UI.
 
 import { createAnthropic } from "@ai-sdk/anthropic";
 import { createOpenAI } from "@ai-sdk/openai";
@@ -22,12 +22,15 @@ import {
 import { z } from "zod";
 import { buildAdminAgentSystemPrompt } from "./admin-agent-catalog.ts";
 import {
+	AdminScopeError,
+	allowedBindingsForScope,
 	cloudflareAccountGet,
 	getCloudflareApiConfig,
 	listCfDoNamespaces,
 	listCfDoObjects,
 	queryCfObservability,
-	resolveInspectableDo,
+	resolveScopedInspectableDo,
+	type AdminOrgScope,
 	type DoBindingName,
 } from "./admin-cf-api.ts";
 import { commandDoName } from "./command-do.ts";
@@ -142,8 +145,6 @@ export function resolveAdminModel(env: ControllerEnv, requestedId?: string): Lan
 	return ai.languageModel(modelId);
 }
 
-const doBindingEnum = z.enum(["CONTROLLER", "TENANT_REGISTRY", "COMMAND", "ADMIN_AGENT"]);
-
 async function callGcWorkerAdmin(
 	env: ControllerEnv,
 	path: string,
@@ -176,17 +177,59 @@ async function callGcWorkerAdmin(
 	return { ok: res.ok, status: res.status, body };
 }
 
-export function createAdminAgentTools(env: ControllerEnv): ToolSet {
+interface GcUsageCell {
+	tenant?: string | number;
+	cell?: string;
+	measuredUnixMs?: number | null;
+	objects?: number | null;
+	bytes?: number | null;
+	kinds?: Record<string, unknown> | null;
+}
+
+/**
+ * Filters a cladefs-gc `/usage` payload to ONLY cells belonging to `tenantId`,
+ * recomputing summary counts so an org never sees another org's R2 storage.
+ */
+export function filterGcUsageForTenant(usageBody: unknown, tenantId: string): unknown {
+	if (!usageBody || typeof usageBody !== "object") return usageBody;
+	const data = usageBody as { usage?: unknown[] } & Record<string, unknown>;
+	const all = Array.isArray(data.usage) ? (data.usage as GcUsageCell[]) : [];
+	const scoped = all.filter((u) => String(u.tenant ?? "") === tenantId);
+	let measuredCells = 0;
+	let totalObjects = 0;
+	let totalBytes = 0;
+	for (const u of scoped) {
+		if (u.measuredUnixMs !== null && u.measuredUnixMs !== undefined) measuredCells++;
+		if (typeof u.objects === "number") totalObjects += u.objects;
+		if (typeof u.bytes === "number") totalBytes += u.bytes;
+	}
 	return {
+		...data,
+		tenantFilter: tenantId,
+		cells: scoped.length,
+		measuredCells,
+		totalObjects,
+		totalBytes,
+		usage: scoped,
+	};
+}
+
+export function createAdminAgentTools(env: ControllerEnv, scope: AdminOrgScope): ToolSet {
+	const allowedBindings = allowedBindingsForScope(scope);
+	const doBindingEnum = scope.isGlobalAdmin
+		? z.enum(["CONTROLLER", "COMMAND", "ADMIN_AGENT", "TENANT_REGISTRY"])
+		: z.enum(["CONTROLLER", "COMMAND", "ADMIN_AGENT"]);
+
+	const tools: ToolSet = {
 		discover_durable_objects: tool({
 			description:
-				"Discover Cloudflare Durable Objects in this Hotbed deployment: TenantRegistryDO ('global'), all organization ControllerDO instances, recent CommandDO instances (with their exact `cmd:<clusterId>:<commandId>` names), and optionally live Cloudflare DO namespaces/objects when the Cloudflare REST API is configured.",
+				"Discover Cloudflare Durable Objects belonging to this organization: its ControllerDO, its recent CommandDO instances (with their exact `cmd:<clusterId>:<commandId>` names), and its AdminAgentDO namespace.",
 			inputSchema: z.object({
 				includeRecentCommands: z
 					.boolean()
 					.optional()
 					.describe(
-						"Whether to include recent CommandDO names from each ControllerDO (default true).",
+						"Whether to include recent CommandDO names from this organization's ControllerDO (default true).",
 					),
 				commandLimit: z
 					.number()
@@ -194,156 +237,102 @@ export function createAdminAgentTools(env: ControllerEnv): ToolSet {
 					.min(1)
 					.max(50)
 					.optional()
-					.describe("Max recent commands to list per controller (default 15)."),
-				includeCloudflareApi: z
-					.boolean()
-					.optional()
-					.describe(
-						"When CLOUDFLARE_API_TOKEN is set, also query Cloudflare REST API for namespaces (default true).",
-					),
+					.describe("Max recent commands to list (default 15)."),
 			}),
-			execute: async ({
-				includeRecentCommands = true,
-				commandLimit = 15,
-				includeCloudflareApi = true,
-			}) => {
-				const controllers: Array<{
-					name: string;
-					orgKey: string;
-					tenantId: string | null;
-					clusterId?: string;
-					orgId?: string;
-					connectedWorkers?: number;
-					recentCommandDos?: Array<{
-						commandId: string;
-						doName: string;
-						nodeId: string;
-						sessionId: string;
-						createdAt: number;
-					}>;
-					error?: string;
+			execute: async ({ includeRecentCommands = true, commandLimit = 15 }) => {
+				const ctrlName = scope.controllerDoName;
+				const stub = env.CONTROLLER.getByName(ctrlName);
+				let clusterId = "";
+				let orgId = scope.orgId;
+				let cladefsTenantId: number | undefined;
+				let connectedWorkers = 0;
+				let recentCommandDos: Array<{
+					commandId: string;
+					doName: string;
+					nodeId: string;
+					sessionId: string;
+					createdAt: number;
 				}> = [];
+				let error: string | undefined;
 
-				const seenNames = new Set<string>();
-				const tenantMap = new Map<string, string>();
-
-				if (env.TENANT_REGISTRY) {
-					try {
-						const tenants = await env.TENANT_REGISTRY.getByName("global").listTenants();
-						const defaultOrgId = (env.DEFAULT_ORG_ID ?? "").trim();
-						for (const t of tenants) {
-							const doName =
-								t.orgKey === "default" || (defaultOrgId && t.orgKey === defaultOrgId)
-									? "default"
-									: t.orgKey.startsWith("org:")
-										? t.orgKey
-										: `org:${t.orgKey}`;
-							seenNames.add(doName);
-							tenantMap.set(doName, t.tenantId);
-							controllers.push({ name: doName, orgKey: t.orgKey, tenantId: t.tenantId });
-						}
-					} catch (err) {
-						controllers.push({
-							name: "default",
-							orgKey: "default",
-							tenantId: null,
-							error: `TenantRegistryDO lookup failed: ${err instanceof Error ? err.message : String(err)}`,
+				try {
+					const health = await stub.getHealth();
+					clusterId = health.clusterId;
+					orgId = health.orgId ?? scope.orgId;
+					cladefsTenantId = health.cladefsTenantId;
+					connectedWorkers = health.connectedWorkers;
+					if (includeRecentCommands && clusterId) {
+						const sqlRes = await stub.adminQuerySql(
+							`SELECT id, session_id, node_id, created_at
+							 FROM commands
+							 ORDER BY created_at DESC
+							 LIMIT ?`,
+							[commandLimit],
+							{ maxRows: commandLimit },
+						);
+						recentCommandDos = sqlRes.rows.map((r) => {
+							const commandId = String(r.id ?? "");
+							return {
+								commandId,
+								doName: commandDoName(clusterId, commandId),
+								nodeId: String(r.node_id ?? ""),
+								sessionId: String(r.session_id ?? ""),
+								createdAt: Number(r.created_at ?? 0),
+							};
 						});
-						seenNames.add("default");
 					}
-				}
-
-				if (!seenNames.has("default")) {
-					controllers.unshift({
-						name: "default",
-						orgKey: "default",
-						tenantId: tenantMap.get("default") ?? null,
-					});
-				}
-
-				for (const ctrl of controllers) {
-					try {
-						const stub = env.CONTROLLER.getByName(ctrl.name);
-						const health = await stub.getHealth();
-						ctrl.clusterId = health.clusterId;
-						ctrl.orgId = health.orgId;
-						ctrl.connectedWorkers = health.connectedWorkers;
-						if (includeRecentCommands && health.clusterId) {
-							const sqlRes = await stub.adminQuerySql(
-								`SELECT id, session_id, node_id, created_at
-								 FROM commands
-								 ORDER BY created_at DESC
-								 LIMIT ?`,
-								[commandLimit],
-								{ maxRows: commandLimit },
-							);
-							ctrl.recentCommandDos = sqlRes.rows.map((r) => {
-								const commandId = String(r.id ?? "");
-								return {
-									commandId,
-									doName: commandDoName(health.clusterId, commandId),
-									nodeId: String(r.node_id ?? ""),
-									sessionId: String(r.session_id ?? ""),
-									createdAt: Number(r.created_at ?? 0),
-								};
-							});
-						}
-					} catch (err) {
-						ctrl.error = err instanceof Error ? err.message : String(err);
-					}
-				}
-
-				let cloudflareNamespaces: unknown = null;
-				const cfApiConfigured = Boolean(getCloudflareApiConfig(env));
-				if (includeCloudflareApi && cfApiConfigured) {
-					try {
-						const nsRes = await listCfDoNamespaces(env, { script: "hotbed-controller" });
-						cloudflareNamespaces = nsRes.ok ? nsRes.result : { error: nsRes.error };
-					} catch (err) {
-						cloudflareNamespaces = { error: err instanceof Error ? err.message : String(err) };
-					}
+				} catch (err) {
+					error = err instanceof Error ? err.message : String(err);
 				}
 
 				return {
-					bindings: {
-						CONTROLLER:
-							"One SQLite Durable Object per organization (e.g. 'default', 'org:<org_id>')",
-						TENANT_REGISTRY: env.TENANT_REGISTRY
-							? "Global singleton ('global') mapping orgs to CladeFS tenant IDs"
-							: "not bound",
-						COMMAND: "Per-command SQLite Durable Object ('cmd:<clusterId>:<commandId>')",
-						ADMIN_AGENT: env.ADMIN_AGENT
-							? "Per-thread Admin Agent SQLite Durable Object"
-							: "not bound",
+					scope: {
+						controllerDoName: ctrlName,
+						orgId: orgId || null,
+						cladefsTenantId: cladefsTenantId ?? null,
+						isGlobalAdmin: scope.isGlobalAdmin,
 					},
-					controllers,
-					cloudflareApiConfigured: cfApiConfigured,
-					cloudflareNamespaces,
+					allowedBindings,
+					controller: {
+						name: ctrlName,
+						clusterId,
+						orgId: orgId || null,
+						cladefsTenantId: cladefsTenantId ?? null,
+						connectedWorkers,
+						recentCommandDos,
+						...(error ? { error } : {}),
+					},
+					adminAgentNamespacePrefix: `admin:${ctrlName}:`,
+					cloudflareApiConfigured: scope.isGlobalAdmin && Boolean(getCloudflareApiConfig(env)),
 				};
 			},
 		}),
 
 		inspect_do_schema: tool({
 			description:
-				"Inspect the SQLite schema, tables, columns, row counts, indexes, database size in bytes, and scheduled alarm of any Cloudflare Durable Object in this project (ControllerDO, TenantRegistryDO, CommandDO, or AdminAgentDO). Address the object by either `name` or 64-hex `id`.",
+				"Inspect the SQLite schema, tables, columns, row counts, indexes, database size in bytes, and scheduled alarm of a Cloudflare Durable Object belonging to this organization.",
 			inputSchema: z.object({
 				binding: doBindingEnum.describe("Which Durable Object binding to inspect."),
 				name: z
 					.string()
 					.optional()
 					.describe(
-						"Durable Object name (e.g. 'default', 'global', 'cmd:<clusterId>:<commandId>').",
+						`Durable Object name within this organization (defaults to "${scope.controllerDoName}" for CONTROLLER).`,
 					),
 				id: z
 					.string()
 					.optional()
 					.describe(
-						"64-character hex Cloudflare Durable Object ID (mutually exclusive with `name`).",
+						"64-character hex Cloudflare Durable Object ID belonging to this organization.",
 					),
 			}),
 			execute: async ({ binding, name, id }) => {
 				try {
-					const target = resolveInspectableDo(env, { binding: binding as DoBindingName, name, id });
+					const target = await resolveScopedInspectableDo(env, scope, {
+						binding: binding as DoBindingName,
+						name,
+						id,
+					});
 					const schema = await target.stub.adminInspectSchema();
 					return {
 						target: target.label,
@@ -360,20 +349,20 @@ export function createAdminAgentTools(env: ControllerEnv): ToolSet {
 
 		run_do_sql: tool({
 			description:
-				"Execute a read-only SQLite query (SELECT, WITH ... SELECT, EXPLAIN, or read-only PRAGMA) directly on any Cloudflare Durable Object in this project (ControllerDO, TenantRegistryDO, CommandDO, or AdminAgentDO) addressed by `name` or 64-hex `id`.",
+				"Execute a read-only SQLite query (SELECT, WITH ... SELECT, EXPLAIN, or read-only PRAGMA) directly on a Cloudflare Durable Object belonging to this organization.",
 			inputSchema: z.object({
 				binding: doBindingEnum.describe("Which Durable Object binding to query."),
 				name: z
 					.string()
 					.optional()
 					.describe(
-						"Durable Object name (e.g. 'default', 'org:<org_id>', 'global', 'cmd:<clusterId>:<commandId>').",
+						`Durable Object name within this organization (defaults to "${scope.controllerDoName}" for CONTROLLER; for COMMAND use "cmd:<clusterId>:<commandId>").`,
 					),
 				id: z
 					.string()
 					.optional()
 					.describe(
-						"64-character hex Cloudflare Durable Object ID (mutually exclusive with `name`).",
+						"64-character hex Cloudflare Durable Object ID belonging to this organization.",
 					),
 				sql: z
 					.string()
@@ -392,8 +381,14 @@ export function createAdminAgentTools(env: ControllerEnv): ToolSet {
 			}),
 			execute: async ({ binding, name, id, sql, params, maxRows }) => {
 				try {
-					const target = resolveInspectableDo(env, { binding: binding as DoBindingName, name, id });
-					const result = await target.stub.adminQuerySql(sql, params ?? [], { maxRows });
+					const target = await resolveScopedInspectableDo(env, scope, {
+						binding: binding as DoBindingName,
+						name,
+						id,
+					});
+					const result = await target.stub.adminQuerySql(sql, (params ?? []) as SqlParamValue[], {
+						maxRows,
+					});
 					return {
 						target: target.label,
 						binding,
@@ -416,17 +411,11 @@ export function createAdminAgentTools(env: ControllerEnv): ToolSet {
 
 		get_controller_health: tool({
 			description:
-				"Fetch live ControllerDO health (clusterId, orgId, cladefsTenantId, build, commit, version, connectedWorkers).",
-			inputSchema: z.object({
-				name: z.string().optional().describe("ControllerDO name (default 'default')."),
-				id: z.string().optional().describe("Optional 64-hex ControllerDO ID."),
-			}),
-			execute: async ({ name, id }) => {
+				"Fetch live health for this organization's ControllerDO (clusterId, orgId, cladefsTenantId, build, commit, version, connectedWorkers).",
+			inputSchema: z.object({}),
+			execute: async () => {
 				try {
-					const rawId = (id ?? "").trim();
-					const stub = rawId
-						? env.CONTROLLER.get(env.CONTROLLER.idFromString(rawId))
-						: env.CONTROLLER.getByName((name ?? "").trim() || "default");
+					const stub = env.CONTROLLER.getByName(scope.controllerDoName);
 					return await stub.getHealth();
 				} catch (err) {
 					return { error: err instanceof Error ? err.message : String(err) };
@@ -436,39 +425,60 @@ export function createAdminAgentTools(env: ControllerEnv): ToolSet {
 
 		inspect_gc_worker: tool({
 			description:
-				"Inspect the bound CladeFS garbage-collector Cloudflare Worker (`cladefs-gc`): check health, R2 cell storage usage across tenants, or dry-run/live status of a specific cell.",
+				"Inspect CladeFS R2 storage usage and GC dry-run/live status strictly for THIS organization's CladeFS tenant ID.",
 			inputSchema: z.object({
 				action: z.enum(["status", "dry_run_cell", "live_cell"]).describe("Inspection action."),
-				tenant: z.string().optional().describe("Tenant ID (for dry_run_cell / live_cell)."),
 				cell: z.string().optional().describe("Cell ID (for dry_run_cell / live_cell)."),
 			}),
-			execute: async ({ action, tenant, cell }) => {
+			execute: async ({ action, cell }) => {
 				try {
+					const health = await env.CONTROLLER.getByName(scope.controllerDoName).getHealth();
+					const tenantId =
+						health.cladefsTenantId !== undefined && health.cladefsTenantId !== null
+							? String(health.cladefsTenantId)
+							: null;
+					if (tenantId === null) {
+						return {
+							ok: false,
+							error: "this organization does not have a CladeFS tenant ID assigned yet",
+						};
+					}
+
 					if (action === "status") {
-						const [health, usage] = await Promise.all([
+						const [gcHealth, usage] = await Promise.all([
 							callGcWorkerAdmin(env, "/healthz"),
 							callGcWorkerAdmin(env, "/usage"),
 						]);
-						return { health: health.body, usage: usage.body, ok: health.ok && usage.ok };
+						return {
+							ok: gcHealth.ok && usage.ok,
+							tenantId,
+							health: gcHealth.body,
+							usage: usage.ok ? filterGcUsageForTenant(usage.body, tenantId) : usage.body,
+						};
 					}
-					if (!tenant || !cell) {
-						return { error: "tenant and cell are required for cell inspection" };
+
+					if (!cell) {
+						return { error: "cell is required for cell inspection" };
 					}
 					const path =
 						action === "dry_run_cell"
-							? `/dry-run/${encodeURIComponent(tenant)}/${encodeURIComponent(cell)}`
-							: `/live/${encodeURIComponent(tenant)}/${encodeURIComponent(cell)}`;
+							? `/dry-run/${encodeURIComponent(tenantId)}/${encodeURIComponent(cell)}`
+							: `/live/${encodeURIComponent(tenantId)}/${encodeURIComponent(cell)}`;
 					const res = await callGcWorkerAdmin(env, path);
-					return { ok: res.ok, status: res.status, result: res.body };
+					return { ok: res.ok, status: res.status, tenantId, result: res.body };
 				} catch (err) {
 					return { error: err instanceof Error ? err.message : String(err) };
 				}
 			},
 		}),
+	};
 
-		list_cf_do_objects: tool({
+	// Account-wide Cloudflare REST API tools span all organizations in the account,
+	// so they are ONLY attached for cluster-owner / default-organization admins.
+	if (scope.isGlobalAdmin) {
+		tools.list_cf_do_objects = tool({
 			description:
-				"Use the Cloudflare Account REST API to list Durable Object namespaces or enumerate live Durable Object 64-hex IDs inside a namespace (requires CLOUDFLARE_API_TOKEN and CLOUDFLARE_ACCOUNT_ID secrets). Returned 64-hex IDs can be queried directly with `run_do_sql` or `inspect_do_schema`.",
+				"Use the Cloudflare Account REST API to list Durable Object namespaces or enumerate live Durable Object 64-hex IDs inside a namespace (cluster-owner only; requires CLOUDFLARE_API_TOKEN and CLOUDFLARE_ACCOUNT_ID).",
 			inputSchema: z.object({
 				namespaceId: z
 					.string()
@@ -497,11 +507,11 @@ export function createAdminAgentTools(env: ControllerEnv): ToolSet {
 					return { ok: false, error: err instanceof Error ? err.message : String(err) };
 				}
 			},
-		}),
+		});
 
-		query_cf_observability: tool({
+		tools.query_cf_observability = tool({
 			description:
-				"Query Cloudflare Workers Observability logs, invocations, and aggregate metrics for hotbed-controller or cladefs-gc (requires CLOUDFLARE_API_TOKEN and CLOUDFLARE_ACCOUNT_ID secrets).",
+				"Query Cloudflare Workers Observability logs, invocations, and aggregate metrics for hotbed-controller or cladefs-gc (cluster-owner only; requires CLOUDFLARE_API_TOKEN and CLOUDFLARE_ACCOUNT_ID).",
 			inputSchema: z.object({
 				view: z.enum(["events", "invocations", "calculations"]).default("events"),
 				scriptName: z.string().optional().describe("Worker name (default 'hotbed-controller')."),
@@ -526,11 +536,11 @@ export function createAdminAgentTools(env: ControllerEnv): ToolSet {
 					return { ok: false, error: err instanceof Error ? err.message : String(err) };
 				}
 			},
-		}),
+		});
 
-		cf_api_get: tool({
+		tools.cf_api_get = tool({
 			description:
-				"Make a read-only GET request to the Cloudflare Account REST API (`/accounts/{account_id}/<path>`, e.g. `workers/scripts`, `workers/scripts/hotbed-controller/deployments`, `r2/buckets`, `queues`). Requires CLOUDFLARE_API_TOKEN and CLOUDFLARE_ACCOUNT_ID secrets.",
+				"Make a read-only GET request to the Cloudflare Account REST API (`/accounts/{account_id}/<path>`, e.g. `workers/scripts`, `workers/scripts/hotbed-controller/deployments`, `r2/buckets`, `queues`). Cluster-owner only.",
 			inputSchema: z.object({
 				path: z.string().describe("Path relative to `/accounts/{account_id}/` (no leading slash)."),
 				query: z.record(z.string(), z.union([z.string(), z.number(), z.boolean()])).optional(),
@@ -542,11 +552,88 @@ export function createAdminAgentTools(env: ControllerEnv): ToolSet {
 					return { ok: false, error: err instanceof Error ? err.message : String(err) };
 				}
 			},
-		}),
-	};
+		});
+	}
+
+	return tools;
 }
 
 export class AdminAgentDO extends AIChatAgent<Env> {
+	static options = { sendIdentityOnConnect: true };
+
+	private ensureScopeTable(): void {
+		this.ctx.storage.sql.exec(`
+			CREATE TABLE IF NOT EXISTS admin_agent_scope (
+				id INTEGER PRIMARY KEY CHECK (id = 1),
+				controller_do_name TEXT NOT NULL,
+				org_id TEXT NOT NULL,
+				is_global_admin INTEGER NOT NULL
+			)
+		`);
+	}
+
+	/**
+	 * Permanently binds this AdminAgentDO instance to a single organization scope
+	 * (called by the edge router after cryptographic authentication). Refuses
+	 * any attempt to rebind an existing instance to a different organization.
+	 */
+	bindScope(scope: AdminOrgScope): { ok: true } | { ok: false; status: 403; message: string } {
+		this.ensureScopeTable();
+		const rows = this.ctx.storage.sql
+			.exec<{ controller_do_name: string; org_id: string; is_global_admin: number }>(
+				"SELECT controller_do_name, org_id, is_global_admin FROM admin_agent_scope WHERE id = 1",
+			)
+			.toArray();
+		if (rows.length > 0) {
+			const existing = rows[0];
+			if (existing.controller_do_name !== scope.controllerDoName) {
+				return {
+					ok: false,
+					status: 403,
+					message: `AdminAgentDO is permanently bound to "${existing.controller_do_name}", not "${scope.controllerDoName}"`,
+				};
+			}
+			// Keep org_id / is_global_admin synced for the same bound controller DO.
+			if (
+				existing.org_id !== scope.orgId ||
+				Boolean(existing.is_global_admin) !== scope.isGlobalAdmin
+			) {
+				this.ctx.storage.sql.exec(
+					"UPDATE admin_agent_scope SET org_id = ?, is_global_admin = ? WHERE id = 1",
+					scope.orgId,
+					scope.isGlobalAdmin ? 1 : 0,
+				);
+			}
+			return { ok: true };
+		}
+		this.ctx.storage.sql.exec(
+			"INSERT INTO admin_agent_scope (id, controller_do_name, org_id, is_global_admin) VALUES (1, ?, ?, ?)",
+			scope.controllerDoName,
+			scope.orgId,
+			scope.isGlobalAdmin ? 1 : 0,
+		);
+		return { ok: true };
+	}
+
+	private readBoundScope(): AdminOrgScope {
+		this.ensureScopeTable();
+		const rows = this.ctx.storage.sql
+			.exec<{ controller_do_name: string; org_id: string; is_global_admin: number }>(
+				"SELECT controller_do_name, org_id, is_global_admin FROM admin_agent_scope WHERE id = 1",
+			)
+			.toArray();
+		if (rows.length === 0) {
+			throw new AdminScopeError(
+				"AdminAgentDO has no organization scope bound; refusing fail-closed",
+			);
+		}
+		return {
+			controllerDoName: String(rows[0].controller_do_name),
+			orgId: String(rows[0].org_id),
+			isGlobalAdmin: Number(rows[0].is_global_admin) !== 0,
+		};
+	}
+
 	/** Read-only SQL access to the AdminAgentDO's own SQLite database. */
 	adminQuerySql(
 		query: string,
@@ -566,12 +653,17 @@ export class AdminAgentDO extends AIChatAgent<Env> {
 		options?: OnChatMessageOptions,
 	): Promise<Response> {
 		const controllerEnv = this.env as unknown as ControllerEnv;
+		const scope = this.readBoundScope();
 		const requestedModel =
 			typeof options?.body?.model === "string" ? options.body.model : undefined;
 		const model = resolveAdminModel(controllerEnv, requestedModel);
-		const tools = createAdminAgentTools(controllerEnv);
+		const tools = createAdminAgentTools(controllerEnv, scope);
 		const system = buildAdminAgentSystemPrompt({
-			cloudflareApiConfigured: Boolean(getCloudflareApiConfig(controllerEnv)),
+			controllerDoName: scope.controllerDoName,
+			orgId: scope.orgId,
+			isGlobalAdmin: scope.isGlobalAdmin,
+			cloudflareApiConfigured:
+				scope.isGlobalAdmin && Boolean(getCloudflareApiConfig(controllerEnv)),
 			gcWorkerConfigured: Boolean(
 				(controllerEnv.GC_WORKER || (controllerEnv.GC_WORKER_URL ?? "").trim()) &&
 				(controllerEnv.GC_TOKEN ?? "").trim(),
@@ -592,6 +684,7 @@ export class AdminAgentDO extends AIChatAgent<Env> {
 				});
 				writer.merge(pipeJsonRender(result.toUIMessageStream()));
 			},
+			onError: (err) => (err instanceof Error ? err.message : String(err)),
 		});
 
 		return createUIMessageStreamResponse({ stream });

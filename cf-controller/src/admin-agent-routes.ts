@@ -1,15 +1,19 @@
-// Edge authentication and routing for the Hotbed Admin Agent:
-//   - /agents/admin-agent/:threadId/*  -> Agents SDK WebSocket & HTTP chat transport
-//   - /api/admin-agent/status          -> Model & capability status + known DOs
-//   - /api/admin-agent/sql             -> Direct read-only SQL on any project DO
-//   - /api/admin-agent/schema          -> Direct schema inspection of any project DO
+// Edge authentication and per-organization routing for the Hotbed Admin Agent:
+//   - /agents/admin-agent/:threadId/*  -> Org-isolated Agents SDK WebSocket & HTTP transport
+//   - /api/admin-agent/status          -> Model, scope & capability status + org's DOs
+//   - /api/admin-agent/sql             -> Org-scoped direct read-only SQL
+//   - /api/admin-agent/schema          -> Org-scoped direct schema inspection
 
 import { getAgentByName } from "agents";
 import { isOrgAdminCaller } from "./auth.ts";
 import { listAvailableAdminModels } from "./admin-agent-do.ts";
 import {
+	adminAgentDoName,
+	AdminScopeError,
+	allowedBindingsForScope,
 	getCloudflareApiConfig,
-	resolveInspectableDo,
+	resolveScopedInspectableDo,
+	type AdminOrgScope,
 	type DoBindingName,
 } from "./admin-cf-api.ts";
 import { commandDoName } from "./command-do.ts";
@@ -30,7 +34,10 @@ async function authorizeAdminAgentRequest(
 	request: Request,
 	url: URL,
 	env: ControllerEnv,
-): Promise<{ ok: true; setCookie?: string; login: string } | { ok: false; response: Response }> {
+): Promise<
+	| { ok: true; setCookie?: string; login: string; scope: AdminOrgScope }
+	| { ok: false; response: Response }
+> {
 	let setCookie: string | undefined;
 	try {
 		const routing = await resolveEdgeRouting(request, url, env, {
@@ -61,21 +68,20 @@ async function authorizeAdminAgentRequest(
 			};
 		}
 
-		// Cross-DO / cluster-wide inspection belongs to the default/owner org alone.
-		if (isWorkOSEnabled(env) && routing.doName !== "default" && !routing.globalAdmin) {
-			return {
-				ok: false,
-				response: withSetCookie(
-					Response.json(
-						{ message: "Admin Agent is restricted to the default organization" },
-						{ status: 403 },
-					),
-					setCookie,
-				),
-			};
-		}
+		const isGlobalAdmin = !isWorkOSEnabled(env)
+			? routing.doName === "default"
+			: Boolean(routing.globalAdmin && routing.doName === "default");
 
-		return { ok: true, setCookie, login: caller.login };
+		return {
+			ok: true,
+			setCookie,
+			login: caller.login,
+			scope: {
+				controllerDoName: routing.doName,
+				orgId: routing.orgId || caller.orgId,
+				isGlobalAdmin,
+			},
+		};
 	} catch (err) {
 		const message = err instanceof Error ? err.message : "authentication required";
 		return {
@@ -85,41 +91,19 @@ async function authorizeAdminAgentRequest(
 	}
 }
 
-async function discoverQuickTargets(env: ControllerEnv) {
-	const controllers: Array<{ name: string; orgKey: string; tenantId: string | null }> = [];
-	const seen = new Set<string>();
-
-	if (env.TENANT_REGISTRY) {
-		try {
-			const tenants = await env.TENANT_REGISTRY.getByName("global").listTenants();
-			const defaultOrgId = (env.DEFAULT_ORG_ID ?? "").trim();
-			for (const t of tenants) {
-				const doName =
-					t.orgKey === "default" || (defaultOrgId && t.orgKey === defaultOrgId)
-						? "default"
-						: t.orgKey.startsWith("org:")
-							? t.orgKey
-							: `org:${t.orgKey}`;
-				if (!seen.has(doName)) {
-					seen.add(doName);
-					controllers.push({ name: doName, orgKey: t.orgKey, tenantId: t.tenantId });
-				}
-			}
-		} catch {
-			// Fall back to default controller below.
-		}
-	}
-
-	if (!seen.has("default")) {
-		controllers.unshift({ name: "default", orgKey: "default", tenantId: null });
-	}
-
+async function discoverOrgTargets(env: ControllerEnv, scope: AdminOrgScope) {
+	const ctrlName = scope.controllerDoName;
+	let clusterId = "";
+	let cladefsTenantId: number | null = null;
 	const recentCommands: Array<{ commandId: string; doName: string; controller: string }> = [];
+
 	try {
-		const defStub = env.CONTROLLER.getByName("default");
-		const health = await defStub.getHealth();
-		if (health.clusterId) {
-			const rows = await defStub.adminQuerySql(
+		const stub = env.CONTROLLER.getByName(ctrlName);
+		const health = await stub.getHealth();
+		clusterId = health.clusterId;
+		cladefsTenantId = health.cladefsTenantId ?? null;
+		if (clusterId) {
+			const rows = await stub.adminQuerySql(
 				"SELECT id FROM commands ORDER BY created_at DESC LIMIT 10",
 				[],
 				{ maxRows: 10 },
@@ -129,8 +113,8 @@ async function discoverQuickTargets(env: ControllerEnv) {
 				if (id) {
 					recentCommands.push({
 						commandId: id,
-						doName: commandDoName(health.clusterId, id),
-						controller: "default",
+						doName: commandDoName(clusterId, id),
+						controller: ctrlName,
 					});
 				}
 			}
@@ -139,12 +123,23 @@ async function discoverQuickTargets(env: ControllerEnv) {
 		// Non-fatal: controller may not have commands yet.
 	}
 
-	return { controllers, recentCommands };
+	return {
+		clusterId,
+		cladefsTenantId,
+		controllers: [
+			{
+				name: ctrlName,
+				orgKey: scope.orgId || ctrlName,
+				tenantId: cladefsTenantId !== null ? String(cladefsTenantId) : null,
+			},
+		],
+		recentCommands,
+	};
 }
 
 /**
- * Handles `/agents/admin-agent/*` (Cloudflare Agents SDK WebSocket + HTTP)
- * and `/api/admin-agent/*` (status, direct read-only SQL, schema inspection).
+ * Handles `/agents/admin-agent/*` (org-isolated Cloudflare Agents SDK WebSocket + HTTP)
+ * and `/api/admin-agent/*` (org-scoped status, direct read-only SQL, schema inspection).
  */
 export async function handleAdminAgentRoute(
 	request: Request,
@@ -158,6 +153,7 @@ export async function handleAdminAgentRoute(
 
 	const auth = await authorizeAdminAgentRequest(request, url, env);
 	if (!auth.ok) return auth.response;
+	const { scope } = auth;
 
 	const reply = (body: unknown, status = 200) =>
 		withSetCookie(Response.json(body, { status }), auth.setCookie);
@@ -169,7 +165,7 @@ export async function handleAdminAgentRoute(
 		// URL form: /agents/admin-agent/<threadId>[/<subpath>]
 		const rest = url.pathname.slice("/agents/admin-agent".length).replace(/^\/+/, "");
 		const slashIdx = rest.indexOf("/");
-		const rawThread = (slashIdx === -1 ? rest : rest.slice(0, slashIdx)) || "default";
+		const rawThread = (slashIdx === -1 ? rest : rest.slice(0, slashIdx)) || "main";
 		const threadId = decodeURIComponent(rawThread);
 		if (!THREAD_ID_RE.test(threadId)) {
 			return reply(
@@ -180,10 +176,14 @@ export async function handleAdminAgentRoute(
 			);
 		}
 
-		const doInstanceName = `admin:${threadId}`;
+		// Physically isolate every organization's chat threads in its own DO namespace.
+		const doInstanceName = adminAgentDoName(scope.controllerDoName, threadId);
 		const stub = await getAgentByName(env.ADMIN_AGENT, doInstanceName);
+		const bound = await stub.bindScope(scope);
+		if (!bound.ok) {
+			return reply({ message: bound.message }, bound.status);
+		}
 
-		// PartyServer / Agents SDK expects these headers when routing manually via getAgentByName.
 		const headers = new Headers(request.headers);
 		headers.set("x-partykit-room", doInstanceName);
 		headers.set("x-partykit-namespace", "admin-agent");
@@ -197,21 +197,29 @@ export async function handleAdminAgentRoute(
 
 	if (request.method === "GET" && sub === "/status") {
 		const { defaultModel, models } = listAvailableAdminModels(env);
-		const targets = await discoverQuickTargets(env);
+		const targets = await discoverOrgTargets(env, scope);
 		return reply({
 			ok: true,
+			scope: {
+				controllerDoName: scope.controllerDoName,
+				orgId: scope.orgId || null,
+				clusterId: targets.clusterId || null,
+				cladefsTenantId: targets.cladefsTenantId,
+				isGlobalAdmin: scope.isGlobalAdmin,
+			},
 			aiConfigured: models.length > 0,
 			workersAiBound: Boolean(env.AI),
 			anthropicConfigured: Boolean((env.ANTHROPIC_API_KEY ?? "").trim()),
 			openaiConfigured: Boolean((env.OPENAI_API_KEY ?? "").trim()),
-			cloudflareApiConfigured: Boolean(getCloudflareApiConfig(env)),
+			cloudflareApiConfigured: scope.isGlobalAdmin && Boolean(getCloudflareApiConfig(env)),
 			gcWorkerConfigured: Boolean(
 				(env.GC_WORKER || (env.GC_WORKER_URL ?? "").trim()) && (env.GC_TOKEN ?? "").trim(),
 			),
 			defaultModel,
 			models,
-			bindings: ["CONTROLLER", "TENANT_REGISTRY", "COMMAND", "ADMIN_AGENT"],
-			...targets,
+			bindings: allowedBindingsForScope(scope),
+			controllers: targets.controllers,
+			recentCommands: targets.recentCommands,
 		});
 	}
 
@@ -223,7 +231,7 @@ export async function handleAdminAgentRoute(
 		const name = url.searchParams.get("name") ?? undefined;
 		const id = url.searchParams.get("id") ?? undefined;
 		try {
-			const target = resolveInspectableDo(env, {
+			const target = await resolveScopedInspectableDo(env, scope, {
 				binding: binding as DoBindingName,
 				name,
 				id,
@@ -237,7 +245,10 @@ export async function handleAdminAgentRoute(
 				...schema,
 			});
 		} catch (err) {
-			return reply({ message: err instanceof Error ? err.message : String(err) }, 400);
+			return reply(
+				{ message: err instanceof Error ? err.message : String(err) },
+				err instanceof AdminScopeError ? 403 : 400,
+			);
 		}
 	}
 
@@ -258,10 +269,8 @@ export async function handleAdminAgentRoute(
 			return reply({ message: `invalid binding "${binding}"` }, 400);
 		}
 		try {
-			// Validate read-only SQL up front before crossing the DO RPC boundary
-			// (the DO itself also re-validates as defense in depth).
 			validateReadOnlySql(body.sql);
-			const target = resolveInspectableDo(env, {
+			const target = await resolveScopedInspectableDo(env, scope, {
 				binding: binding as DoBindingName,
 				name: body.name,
 				id: body.id,
@@ -278,7 +287,10 @@ export async function handleAdminAgentRoute(
 				...result,
 			});
 		} catch (err) {
-			return reply({ message: err instanceof Error ? err.message : String(err) }, 400);
+			return reply(
+				{ message: err instanceof Error ? err.message : String(err) },
+				err instanceof AdminScopeError ? 403 : 400,
+			);
 		}
 	}
 
