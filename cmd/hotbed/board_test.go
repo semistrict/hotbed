@@ -253,7 +253,9 @@ func TestBoardCLIEndToEnd(t *testing.T) {
 			} else {
 				_, _ = w.Write([]byte(`{"messages":[
 					{"id":"14200","channel":"tasks","text":"Old task 1","by":{"actor":"tailscale:user:ramon@echophase.com","principal":"tailscale:user:ramon@echophase.com"},"createdAt":"2026-04-02T12:00:00Z","task":{"state":"completed","owner":"tailscale:user:ramon@echophase.com","by":"tailscale:user:ramon@echophase.com","needs":[]}},
-					{"id":"14201","channel":"tasks","text":"Old task 2","by":{"actor":"tailscale:user:ramon@echophase.com","principal":"tailscale:user:ramon@echophase.com"},"createdAt":"2026-04-02T13:00:00Z","task":{"state":"ready","owner":"tailscale:user:ramon@echophase.com","by":"tailscale:user:ramon@echophase.com","needs":["14200"]}}
+					{"id":"14201","channel":"tasks","text":"Old task 2","by":{"actor":"tailscale:user:ramon@echophase.com","principal":"tailscale:user:ramon@echophase.com"},"createdAt":"2026-04-02T13:00:00Z","task":{"state":"ready","owner":"tailscale:user:ramon@echophase.com","by":"tailscale:user:ramon@echophase.com","needs":["14200"]}},
+					{"id":"14202","channel":"tasks","text":"Hotbed task in tasks channel","labels":{"tag.hotbed":"yes"},"by":{"actor":"tailscale:user:ramon@echophase.com","principal":"tailscale:user:ramon@echophase.com"},"createdAt":"2026-04-02T14:00:00Z","task":{"state":"ready","owner":"tailscale:user:ramon@echophase.com","by":"tailscale:user:ramon@echophase.com","needs":[]}},
+					{"id":"14203","channel":"tasks","re":"14202","text":"Reply inheriting hotbed project","by":{"actor":"tailscale:user:ramon@echophase.com","principal":"tailscale:user:ramon@echophase.com"},"createdAt":"2026-04-02T14:05:00Z"}
 				]}`))
 			}
 		case "/attachments/att1":
@@ -265,23 +267,30 @@ func TestBoardCLIEndToEnd(t *testing.T) {
 	}))
 	defer mockBoard.Close()
 
-	dry := cliJSON("board", "import", "--url", mockBoard.URL, "--map", "tasks=cladefs", "--dry-run")
-	if dry["messagesFetched"] != float64(3) || dry["dryRun"] != true {
+	dry := cliJSON("board", "import", "--url", mockBoard.URL, "--map", "tasks=cladefs", "--map-label", "tag.hotbed=yes:hotbed", "--dry-run")
+	if dry["messagesFetched"] != float64(5) || dry["dryRun"] != true {
 		t.Fatalf("unexpected dry-run summary: %v", dry)
 	}
-	imp := cliJSON("board", "import", "--url", mockBoard.URL, "--map", "tasks=cladefs")
-	if imp["messagesImported"] != float64(3) || imp["tasksImported"] != float64(2) || imp["attachmentsCopied"] != float64(1) {
+	imp := cliJSON("board", "import", "--url", mockBoard.URL, "--map", "tasks=cladefs", "--map-label", "tag.hotbed=yes:hotbed")
+	if imp["messagesImported"] != float64(5) || imp["tasksImported"] != float64(3) || imp["attachmentsCopied"] != float64(1) {
 		t.Fatalf("unexpected import summary: %v", imp)
 	}
-	// Verify preserved original ID #14201 is readable directly
+	// Verify preserved original ID #14201 is in cladefs, and #14202 + its reply #14203 routed to hotbed!
 	importedThread := cliJSON("board", "read", "14201")
 	if importedThread["message"].(map[string]any)["project"] != "cladefs" {
 		t.Fatalf("expected #14201 in cladefs, got %v", importedThread)
 	}
+	hotbedRouted := cliJSON("board", "read", "14202")
+	if hotbedRouted["message"].(map[string]any)["project"] != "hotbed" {
+		t.Fatalf("expected #14202 routed via --map-label to hotbed, got %v", hotbedRouted)
+	}
+	if reps, _ := hotbedRouted["replies"].([]any); len(reps) != 1 || reps[0].(map[string]any)["project"] != "hotbed" {
+		t.Fatalf("expected reply #14203 to inherit hotbed project, got %v", hotbedRouted)
+	}
 	// Re-import is idempotent
-	imp2 := cliJSON("board", "import", "--url", mockBoard.URL, "--map", "tasks=cladefs")
-	if imp2["messagesSkipped"] != float64(3) {
-		t.Fatalf("expected 3 skipped on re-import, got %v", imp2)
+	imp2 := cliJSON("board", "import", "--url", mockBoard.URL, "--map", "tasks=cladefs", "--map-label", "tag.hotbed=yes:hotbed")
+	if imp2["messagesSkipped"] != float64(5) {
+		t.Fatalf("expected 5 skipped on re-import, got %v", imp2)
 	}
 
 	// Plain-text formatting smoke check (ensures no panics in formatters)

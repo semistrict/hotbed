@@ -311,8 +311,8 @@ hotbed board task needs 42 10 11               # replace prerequisites (rejects 
 hotbed board task cancel 42 "Superseded"
 
 # Idempotent import from an existing @vercel/board server (uses $BOARD_URL by default)
-hotbed board import --dry-run --map tasks=cladefs
-hotbed board import --map tasks=cladefs --create-projects
+hotbed board import --dry-run --map tasks=cladefs --map-label tag.hotbed=yes:hotbed
+hotbed board import --map tasks=cladefs --map-label tag.hotbed=yes:hotbed --create-projects
 ```
 
 ## Reviews: asking reviewer agents, and the user

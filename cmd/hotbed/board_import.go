@@ -25,6 +25,7 @@ type boardImportCmd struct {
 	URL             string   `env:"BOARD_URL" help:"Source @vercel/board base URL (default: $BOARD_URL, e.g. https://ubu1.tail2353d.ts.net/api/board)."`
 	Token           string   `env:"BOARD_TOKEN" help:"Optional Bearer token for the source board."`
 	Map             []string `name:"map" help:"Map a source channel to a Hotbed project: CHANNEL=PROJECT. Repeatable."`
+	MapLabel        []string `name:"map-label" help:"Override target project for threads whose root has a matching label: KEY=VALUE:PROJECT (e.g. tag.hotbed=yes:hotbed). Replies inherit their root's routed project. Repeatable."`
 	DefaultProject  string   `name:"default-project" help:"Fallback Hotbed project for channels not listed in --map and not matching an existing project name."`
 	Channel         []string `name:"channel" help:"Only import these source channel(s). Repeatable (default: all channels)."`
 	CreateProjects  bool     `name:"create-projects" help:"Automatically create missing Hotbed projects for unmapped channels."`
@@ -37,6 +38,7 @@ type boardImportSummary struct {
 	SourceURL          string            `json:"sourceUrl"`
 	DryRun             bool              `json:"dryRun"`
 	ChannelMap         map[string]string `json:"channelMap"`
+	ProjectCounts      map[string]int    `json:"projectCounts,omitempty"`
 	Channels           int               `json:"channels"`
 	ActorsFetched      int               `json:"actorsFetched"`
 	SchemasFetched     int               `json:"schemasFetched"`
@@ -280,6 +282,34 @@ func (c *boardImportCmd) extGet(ctx context.Context, hc *http.Client, baseURL, p
 	return body, resp.Header.Get("Content-Type"), nil
 }
 
+type labelProjectRule struct {
+	key     string
+	value   string
+	project string
+}
+
+func parseMapLabels(raw []string) ([]labelProjectRule, error) {
+	if len(raw) == 0 {
+		return nil, nil
+	}
+	out := make([]labelProjectRule, 0, len(raw))
+	for _, spec := range raw {
+		lhs, proj, ok := strings.Cut(spec, ":")
+		proj = strings.TrimSpace(proj)
+		if !ok || proj == "" {
+			return nil, api.Errorf(api.CodeInvalidArgs, "invalid --map-label %q: expected KEY=VALUE:PROJECT (e.g. tag.hotbed=yes:hotbed)", spec)
+		}
+		k, v, ok := strings.Cut(lhs, "=")
+		k = strings.TrimSpace(k)
+		v = strings.TrimSpace(v)
+		if !ok || k == "" || v == "" {
+			return nil, api.Errorf(api.CodeInvalidArgs, "invalid --map-label %q: expected KEY=VALUE:PROJECT", spec)
+		}
+		out = append(out, labelProjectRule{key: k, value: v, project: proj})
+	}
+	return out, nil
+}
+
 func (c *boardImportCmd) Exec(ctx context.Context, d deps) (any, error) {
 	sourceURL := strings.TrimSpace(c.URL)
 	if sourceURL == "" {
@@ -292,6 +322,10 @@ func (c *boardImportCmd) Exec(ctx context.Context, d deps) (any, error) {
 	}
 	if explicitMap == nil {
 		explicitMap = map[string]string{}
+	}
+	labelRules, err := parseMapLabels(c.MapLabel)
+	if err != nil {
+		return nil, err
 	}
 
 	cl, err := c.clients(d.http)
@@ -476,10 +510,37 @@ func (c *boardImportCmd) Exec(ctx context.Context, d deps) (any, error) {
 		return strings.Compare(extIDString(a.ID), extIDString(b.ID))
 	})
 
+	// Resolve per-message target project: roots check --map-label overrides first,
+	// else channelMap; replies inherit their root's target project.
+	msgProject := make([]string, len(allMsgs))
+	rootProject := make(map[string]string, len(allMsgs))
+	projectCounts := map[string]int{}
 	tasksCount := 0
-	for _, m := range allMsgs {
+	for i, m := range allMsgs {
 		if m.Task != nil {
 			tasksCount++
+		}
+		extID := extIDString(m.ID)
+		reExt := extIDString(m.Re)
+		proj := channelMap[m.Channel]
+		if reExt != "" {
+			if inherited, ok := rootProject[reExt]; ok && inherited != "" {
+				proj = inherited
+			}
+		} else {
+			for _, rule := range labelRules {
+				if m.Labels[rule.key] == rule.value {
+					proj = rule.project
+					break
+				}
+			}
+			if extID != "" && proj != "" {
+				rootProject[extID] = proj
+			}
+		}
+		msgProject[i] = proj
+		if proj != "" {
+			projectCounts[proj]++
 		}
 	}
 
@@ -487,6 +548,7 @@ func (c *boardImportCmd) Exec(ctx context.Context, d deps) (any, error) {
 		SourceURL:        sourceURL,
 		DryRun:           c.DryRun,
 		ChannelMap:       channelMap,
+		ProjectCounts:    projectCounts,
 		Channels:         len(channels),
 		ActorsFetched:    len(actors),
 		SchemasFetched:   len(schemas),
@@ -546,10 +608,10 @@ func (c *boardImportCmd) Exec(ctx context.Context, d deps) (any, error) {
 		var pbMsgs []*pb.ImportedBoardMessage
 		if start < len(allMsgs) {
 			pbMsgs = make([]*pb.ImportedBoardMessage, 0, end-start)
-			for _, m := range allMsgs[start:end] {
+			for j, m := range allMsgs[start:end] {
 				extID := extIDString(m.ID)
 				prefID, _ := strconv.ParseInt(extID, 10, 64)
-				proj := channelMap[m.Channel]
+				proj := msgProject[start+j]
 				byPB := extAuthorToPB(m.By)
 				authorCopy := m.Author
 				if authorCopy != nil && authorCopy.ID == "" && byPB != nil {
@@ -651,6 +713,18 @@ func formatBoardImportSummary(s boardImportSummary) string {
 			parts = append(parts, fmt.Sprintf("%s->%s", k, s.ChannelMap[k]))
 		}
 		fmt.Fprintf(&b, "  channels: %s\n", strings.Join(parts, ", "))
+	}
+	if len(s.ProjectCounts) > 0 {
+		keys := make([]string, 0, len(s.ProjectCounts))
+		for k := range s.ProjectCounts {
+			keys = append(keys, k)
+		}
+		slices.Sort(keys)
+		parts := make([]string, 0, len(keys))
+		for _, k := range keys {
+			parts = append(parts, fmt.Sprintf("%s=%d", k, s.ProjectCounts[k]))
+		}
+		fmt.Fprintf(&b, "  projects: %s\n", strings.Join(parts, ", "))
 	}
 	if len(s.UnmappedChannels) > 0 {
 		fmt.Fprintf(&b, "  unmapped: %s (pass --map CH=PROJ or --create-projects)\n", strings.Join(s.UnmappedChannels, ", "))
