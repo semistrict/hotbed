@@ -6,6 +6,7 @@ import {
   CalendarClock,
   ChevronsUpDown,
   Cpu,
+  DatabaseZap,
   FolderKanban,
   GitPullRequestDraft,
   Layers,
@@ -76,6 +77,7 @@ interface NavItem {
     | "/commands"
     | "/schedules"
     | "/cluster"
+    | "/admin-agent"
     | "/nodes"
     | "/logs"
     | "/issues"
@@ -104,6 +106,7 @@ const INFRA_NAV: readonly NavItem[] = [
   { to: "/cluster", label: "Cluster", icon: Activity, shared: true },
   { to: "/nodes", label: "Nodes", icon: Server, shared: true },
   { to: "/logs", label: "Logs", icon: ScrollText, shared: true },
+  { to: "/admin-agent", label: "Admin Agent", icon: DatabaseZap, shared: true },
   { to: "/issues", label: "Issues", icon: Bug, shared: true },
   { to: "/settings", label: "Settings", icon: SlidersHorizontal, shared: true },
   { to: "/org", label: "Organization", icon: Building2, shared: true },

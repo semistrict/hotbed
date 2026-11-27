@@ -91,6 +91,11 @@ const workerEnv = {
 		worker: "hotbed-controller",
 		exportName: "CommandDO",
 	},
+	ADMIN_AGENT: {
+		type: "durable-object",
+		worker: "hotbed-controller",
+		exportName: "AdminAgentDO",
+	},
 	OWNER_TOKEN: { type: "text", value: opts.token },
 	JOIN_TOKEN: { type: "text", value: opts.joinToken },
 	CLUSTER_OWNER: { type: "text", value: opts.owner },
@@ -118,6 +123,10 @@ const workerConfig = {
 			storage: "sqlite",
 		},
 		CommandDO: {
+			type: "durable-object",
+			storage: "sqlite",
+		},
+		AdminAgentDO: {
 			type: "durable-object",
 			storage: "sqlite",
 		},

@@ -2,6 +2,7 @@ import { createRootRoute, createRoute, createRouter, redirect } from "@tanstack/
 import type { CommandStateSlug } from "./api";
 import { Shell } from "./components/Shell";
 import { keepScrollWithinPage } from "./lib/scroll";
+import { AdminAgentPage } from "./pages/AdminAgent";
 import { BoardPage, BoardThreadPage, type BoardSearch } from "./pages/Board";
 import { CommandPage } from "./pages/Command";
 import { CommandsPage } from "./pages/Commands";
@@ -108,6 +109,7 @@ const memoryDetail = createRoute({
   component: MemoryDetailPage,
 });
 const overview = createRoute({ getParentRoute: () => root, path: "/cluster", component: OverviewPage });
+const adminAgent = createRoute({ getParentRoute: () => root, path: "/admin-agent", component: AdminAgentPage });
 const organization = createRoute({ getParentRoute: () => root, path: "/org", component: OrganizationPage });
 const SETTINGS_TABS: readonly SettingsTab[] = ["freshen", "runtime", "vm", "fuse", "system", "git", "json"];
 const settings = createRoute({
@@ -206,7 +208,7 @@ const history = createRoute({
   },
 });
 
-const routeTree = root.addChildren([projects, board, boardThread, tasks, sessions, session, questions, questionDetail, issues, issueDetail, memories, memoryDetail, reviews, review, schedules, overview, organization, settings, nodes, node, daemonLogs, workspaces, workspace, commands, command, history]);
+const routeTree = root.addChildren([projects, board, boardThread, tasks, sessions, session, questions, questionDetail, issues, issueDetail, memories, memoryDetail, reviews, review, schedules, overview, adminAgent, organization, settings, nodes, node, daemonLogs, workspaces, workspace, commands, command, history]);
 
 export const router = createRouter({ routeTree, defaultPreload: "intent", scrollRestoration: true });
 keepScrollWithinPage(router);

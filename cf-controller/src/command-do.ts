@@ -12,6 +12,13 @@ import {
 	type CommandSample,
 } from "./gen/hotbed/v1/hotbed_pb.ts";
 import { extractLogLines, type TimedOutputChunk } from "./settle.ts";
+import {
+	executeReadOnlySql,
+	inspectDoSchema,
+	type DoSchemaInfo,
+	type DoSqlResult,
+	type SqlParamValue,
+} from "./do-sql.ts";
 import { num, str } from "./sql-values.ts";
 import { KEEP_HISTORY_MS } from "./store/index.ts";
 
@@ -485,6 +492,27 @@ export class CommandDO extends DurableObject<Env> {
 			return;
 		}
 		await this.deleteAll();
+	}
+
+	/**
+	 * Read-only SQL query executed via typed Workers RPC by the Admin Agent.
+	 * Uses `this.ctx.storage.sql` directly instead of `this.sql` so inspecting
+	 * a nonexistent or expired CommandDO does not materialize empty tables.
+	 */
+	adminQuerySql(
+		query: string,
+		params: SqlParamValue[] = [],
+		opts?: { maxRows?: number },
+	): DoSqlResult {
+		return executeReadOnlySql(this.ctx.storage.sql, query, params, opts);
+	}
+
+	/**
+	 * Schema inspection executed via typed Workers RPC by the Admin Agent.
+	 * Does not materialize empty tables on nonexistent/expired CommandDOs.
+	 */
+	adminInspectSchema(): Promise<DoSchemaInfo> {
+		return inspectDoSchema(this.ctx.storage.sql, this.ctx.storage);
 	}
 }
 

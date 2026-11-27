@@ -17,6 +17,12 @@ function sqlRawPlugin() {
 }
 
 export default defineConfig({
+	test: {
+		// Reuse the workerd module graph across test files (DO storage remains
+		// isolated per test via @cloudflare/vitest-plugin) so loading Agents SDK
+		// + AI SDK into 23 simultaneous isolates cannot exhaust workerd memory.
+		isolate: false,
+	},
 	define: {
 		__HOTBED_BUILD_NUMBER__: JSON.stringify(0),
 		__HOTBED_GIT_COMMIT__: JSON.stringify(""),
@@ -26,6 +32,7 @@ export default defineConfig({
 		sqlRawPlugin(),
 		cloudflareTest({
 			config: true,
+			remoteBindings: false,
 			miniflare: {
 				bindings: {
 					OWNER_TOKEN: "test-owner-secret",
