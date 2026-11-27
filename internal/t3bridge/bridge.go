@@ -263,7 +263,47 @@ func (b *Bridge) shutdown() {
 			tw.timer = nil
 		}
 	}
-	b.workerWG.Wait()
+	// Workers still under way deliver their results here, as they always
+	// do: a wake message sent just as the bridge stops is recorded, so the
+	// next bridge does not send it again.
+	finished := make(chan struct{})
+	go func() {
+		b.workerWG.Wait()
+		close(finished)
+	}()
+	for {
+		select {
+		case res := <-b.workerDone:
+			b.recordSent(res)
+		case <-finished:
+			for {
+				select {
+				case res := <-b.workerDone:
+					b.recordSent(res)
+				default:
+					return
+				}
+			}
+		}
+	}
+}
+
+// recordSent records, if res is a wake message delivered, its batch's
+// revisions as notified, persisted.
+func (b *Bridge) recordSent(res workerResult) {
+	if res.kind != workerResSent || res.err != nil {
+		return
+	}
+	for _, q := range res.batch {
+		if q.GetRevision() > b.notified[q.GetId()] {
+			b.notified[q.GetId()] = q.GetRevision()
+		}
+	}
+	if b.cfg.State != nil {
+		if err := b.cfg.State.Save(b.notified); err != nil {
+			b.log.Warn("t3-bridge persist notified state failed", "path", b.cfg.State.Path, "err", err)
+		}
+	}
 }
 
 func isOutboxState(s pb.QuestionState) bool {
@@ -446,10 +486,8 @@ func (b *Bridge) handleTimerFire(ctx context.Context, fire timerFire) {
 	go func(tid string) {
 		defer b.workerWG.Done()
 		st, err := b.cfg.T3.ThreadStatus(ctx, tid)
-		select {
-		case b.workerDone <- workerResult{kind: workerResStatus, threadID: tid, status: st, err: err}:
-		case <-ctx.Done():
-		}
+		// Delivered unconditionally: RunLoop, or shutdown after it, takes it.
+		b.workerDone <- workerResult{kind: workerResStatus, threadID: tid, status: st, err: err}
 	}(fire.threadID)
 }
 
@@ -522,10 +560,9 @@ func (b *Bridge) handleWorkerResult(ctx context.Context, res workerResult) {
 		go func(tid string, batch []*pb.Question, text string) {
 			defer b.workerWG.Done()
 			err := b.cfg.T3.SendMessage(ctx, tid, text)
-			select {
-			case b.workerDone <- workerResult{kind: workerResSent, threadID: tid, batch: batch, err: err}:
-			case <-ctx.Done():
-			}
+			// Delivered unconditionally: RunLoop, or shutdown after it,
+			// records what was sent.
+			b.workerDone <- workerResult{kind: workerResSent, threadID: tid, batch: batch, err: err}
 		}(res.threadID, pending, msg)
 
 	case workerResSent:
@@ -545,21 +582,14 @@ func (b *Bridge) handleWorkerResult(ctx context.Context, res workerResult) {
 		}
 		b.lastError = ""
 		tw.errBackoff = 0
+		b.recordSent(res)
 		ids := make([]int32, 0, len(res.batch))
 		for _, q := range res.batch {
 			ids = append(ids, q.GetId())
-			if q.GetRevision() > b.notified[q.GetId()] {
-				b.notified[q.GetId()] = q.GetRevision()
-			}
 		}
 		b.lastWakeAt = b.now()
 		b.lastWakeThread = res.threadID
 		b.lastWakeIDs = ids
-		if b.cfg.State != nil {
-			if err := b.cfg.State.Save(b.notified); err != nil {
-				b.log.Warn("t3-bridge persist notified state failed", "path", b.cfg.State.Path, "err", err)
-			}
-		}
 		b.log.Info("t3-bridge notified idle thread", "threadId", res.threadID, "questionIds", ids)
 
 		// If newer questions or revisions arrived while SendMessage was in flight,

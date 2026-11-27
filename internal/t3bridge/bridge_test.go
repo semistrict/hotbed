@@ -6,6 +6,7 @@ import (
 	"errors"
 	"io"
 	"log/slog"
+	"maps"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -37,6 +38,9 @@ type fakeT3 struct {
 	sent         []sentWake
 	onStatusCall func(threadID string, callNum int)
 	sentCh       chan sentWake
+	// sendReturns, when set, holds each SendMessage back from returning,
+	// its message delivered, until it is closed.
+	sendReturns chan struct{}
 }
 
 func newFakeT3() *fakeT3 {
@@ -119,8 +123,12 @@ func (f *fakeT3) SendMessage(_ context.Context, threadID string, message string)
 	}
 	w := sentWake{ThreadID: threadID, Message: message, At: time.Now()}
 	f.sent = append(f.sent, w)
+	returns := f.sendReturns
 	f.mu.Unlock()
 	f.sentCh <- w
+	if returns != nil {
+		<-returns
+	}
 	return nil
 }
 
@@ -486,6 +494,42 @@ func TestBridgeRevisionUpdatesAndRestartIdempotency(t *testing.T) {
 	w3 := waitSent(t, t3b, time.Second)
 	if !strings.Contains(w3.Message, "#41") || strings.Contains(w3.Message, "#40") {
 		t.Fatalf("expected wake for only #41, got:\n%s", w3.Message)
+	}
+}
+
+// A wake message delivered as the bridge stops is recorded all the same:
+// the next bridge, from the same state, does not send it again.
+func TestBridgeRecordsAWakeSentAsItStops(t *testing.T) {
+	store := &StateStore{Path: filepath.Join(t.TempDir(), "t3-bridge-state.json")}
+	t3 := newFakeT3()
+	t3.setState("t-stop", ThreadState{Exists: true, Status: "completed"})
+	t3.sendReturns = make(chan struct{})
+	b, ctx, stop := startTestBridge(t, Config{
+		T3:           t3,
+		State:        store,
+		Debounce:     time.Millisecond,
+		PollInterval: time.Millisecond,
+	})
+	q := answeredQ(50, 2, "t-stop", "Ship", "Ship it?", []string{"Yes"}, "", "")
+	b.Enqueue(ctx, Event{Kind: EventSnapshot, Questions: []*pb.Question{q}})
+	waitSent(t, t3, time.Second)
+
+	// The bridge is told to stop while the message's send has yet to return.
+	stopped := make(chan struct{})
+	go func() {
+		stop()
+		close(stopped)
+	}()
+	<-ctx.Done()
+	close(t3.sendReturns)
+	<-stopped
+
+	got, err := store.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := map[int32]int64{50: 2}; !maps.Equal(got, want) {
+		t.Fatalf("persisted notified = %v, want %v", got, want)
 	}
 }
 
