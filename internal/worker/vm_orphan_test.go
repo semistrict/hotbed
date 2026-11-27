@@ -162,18 +162,40 @@ func (l *fakeVMLauncher) List(_ context.Context, _ string) ([]string, error) {
 
 func startFakeGuestdDialer(t *testing.T) func(string) guestd.DialFunc {
 	t.Helper()
+	// Use a 0755 base under /tmp (and chown workDir when running as root) so
+	// guestd's unprivileged command user can chdir into WorkDir under sudo
+	// test runs (test-linux-root), while keeping socket paths <104 bytes.
 	sockDir, err := os.MkdirTemp("/tmp", "hb-vmtest-")
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = os.RemoveAll(sockDir) })
+	if err := os.Chmod(sockDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	guestWork := filepath.Join(sockDir, "work")
+	guestState := filepath.Join(sockDir, "state")
+	guestRun := filepath.Join(sockDir, "run")
+	for _, d := range []string{guestWork, guestState, guestRun} {
+		if err := os.MkdirAll(d, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if os.Geteuid() == 0 {
+		sp := fake.BaseImage(nil).Spec.Normalized()
+		_ = os.Chown(guestWork, sp.UID, sp.GID)
+	}
 	ctrlSock := filepath.Join(sockDir, "ctrl.sock")
 	ln, err := net.Listen("unix", ctrlSock)
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = ln.Close() })
-	srv, err := guestd.NewServer(guestd.ServerConfig{WorkDir: t.TempDir(), StateDir: t.TempDir()})
+	srv, err := guestd.NewServer(guestd.ServerConfig{
+		WorkDir:  guestWork,
+		StateDir: guestState,
+		RunDir:   guestRun,
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
