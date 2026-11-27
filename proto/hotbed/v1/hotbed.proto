@@ -6314,10 +6314,33 @@ message ListMemoriesRequest {
   }];
 }
 
+// What a session start recalls from the approved memories of global + one
+// project, under the startup caps: the entries it admits, their bytes, the
+// caps, and how many it omitted past them. The server applies the caps, so
+// every client shows the same numbers the briefing has.
+message MemoryBudget {
+  int32 always_count = 1;
+  int32 always_bytes = 2;
+  int32 always_max_count = 3;
+  int32 always_max_bytes = 4;
+  int32 on_demand_count = 5;
+  int32 on_demand_bytes = 6;
+  int32 on_demand_max_count = 7;
+  int32 on_demand_max_bytes = 8;
+  // Always-on memories left out of the briefing for want of room.
+  int32 omitted_always = 9;
+  // On-demand memories left out of the index for want of room.
+  int32 omitted_on_demand = 10;
+}
+
 message ListMemoriesResponse {
   repeated Memory memories = 1;
   int32 total = 2;
   optional string reminder = 3;
+  // The startup budget of global + the listed project (global alone when no
+  // single project is listed, as for --scope global or --all-projects),
+  // whatever the state, mode, tag, query and limit filters.
+  MemoryBudget budget = 4;
 }
 
 message GetMemoriesRequest {

@@ -922,6 +922,102 @@ describe("Cloudflare Workers single-DO hotbed controller", () => {
 		expect(res.status).toBe(404);
 	});
 
+	it("lists the startup budget a session start applies, caps and omissions included", async () => {
+		const owner = ownerClients();
+		await owner.cluster.addProject({
+			name: "budget-count",
+			repos: ["github.com/org/budget-count"],
+		});
+		await owner.cluster.addProject({
+			name: "budget-bytes",
+			repos: ["github.com/org/budget-bytes"],
+		});
+		const s = await owner.sessions.startSession({ project: "budget-count" });
+		const save = (project: string, slug: string, summary: string, mode: MemoryMode) =>
+			owner.memories.proposeMemory({
+				sessionId: s.id,
+				project,
+				rationale: "budget test",
+				content: { slug, summary, mode, body: mode === MemoryMode.ON_DEMAND ? "details" : "" },
+			});
+
+		// Newest memories rank first, so the oldest two of each are the ones left out.
+		const indexBytes = (prefix: string, from: number, to: number, summary: string) => {
+			let n = 0;
+			for (let i = from; i <= to; i++) n += `${prefix}-${i}: ${summary}`.length;
+			return n;
+		};
+		// Count caps: 22 always-on (cap 20) and 32 on-demand (cap 30).
+		for (let i = 0; i < 22; i++)
+			await save("budget-count", `rule-${i}`, "Short rule.", MemoryMode.ALWAYS);
+		for (let i = 0; i < 32; i++)
+			await save("budget-count", `topic-${i}`, "Short topic.", MemoryMode.ON_DEMAND);
+		// Byte cap: 240-character summaries admit 16 of 18 within 4096 bytes.
+		for (let i = 0; i < 18; i++) {
+			await save(
+				"budget-bytes",
+				`long-${String(i).padStart(2, "0")}`,
+				"x".repeat(240),
+				MemoryMode.ALWAYS,
+			);
+		}
+
+		const counts = await owner.memories.listMemories({
+			projectScope: { case: "project", value: "budget-count" },
+			states: [MemoryState.APPROVED],
+		});
+		const countBriefing = (await owner.sessions.startSession({ project: "budget-count" })).memories;
+		expect(counts.budget).toMatchObject({
+			alwaysCount: 20,
+			alwaysBytes: indexBytes("rule", 2, 21, "Short rule."),
+			alwaysMaxCount: 20,
+			alwaysMaxBytes: 4096,
+			omittedAlways: 2,
+			onDemandCount: 30,
+			onDemandBytes: indexBytes("topic", 2, 31, "Short topic."),
+			onDemandMaxCount: 30,
+			onDemandMaxBytes: 4096,
+			omittedOnDemand: 2,
+		});
+		expect(countBriefing?.always.length).toBe(counts.budget?.alwaysCount);
+		expect(countBriefing?.onDemand.length).toBe(counts.budget?.onDemandCount);
+		expect(countBriefing?.omittedAlways).toBe(counts.budget?.omittedAlways);
+		expect(countBriefing?.omittedOnDemand).toBe(counts.budget?.omittedOnDemand);
+
+		const bytes = await owner.memories.listMemories({
+			projectScope: { case: "project", value: "budget-bytes" },
+			states: [MemoryState.APPROVED],
+			limit: 1,
+		});
+		const byteBriefing = (await owner.sessions.startSession({ project: "budget-bytes" })).memories;
+		const entryBytes = "long-00: ".length + 240;
+		expect(bytes.budget).toMatchObject({
+			alwaysCount: 16,
+			alwaysBytes: 16 * entryBytes,
+			omittedAlways: 2,
+			onDemandCount: 0,
+			omittedOnDemand: 0,
+		});
+		expect(byteBriefing?.always.length).toBe(16);
+		expect(byteBriefing?.omittedAlways).toBe(2);
+
+		// The budget describes the session start, not the listing's filters, and a
+		// listing with no single project reports global alone.
+		const filtered = await owner.memories.listMemories({
+			projectScope: { case: "project", value: "budget-bytes" },
+			states: [MemoryState.ARCHIVED],
+			mode: MemoryMode.ON_DEMAND,
+			query: "no-such-memory",
+		});
+		expect(filtered.memories).toEqual([]);
+		expect(filtered.budget).toEqual(bytes.budget);
+		const all = await owner.memories.listMemories({
+			projectScope: { case: "allProjects", value: true },
+		});
+		const global = await owner.memories.listMemories({ scope: MemoryScope.GLOBAL });
+		expect(all.budget).toEqual(global.budget);
+	});
+
 	it("supports MemoryService auto-approval, full editing, promoting to global, superseding, removal, and session recall", async () => {
 		const owner = ownerClients();
 		await owner.cluster.addProject({

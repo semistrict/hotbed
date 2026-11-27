@@ -370,6 +370,7 @@ export function createMemoryService(ctrl: ControllerContext): ServiceImpl<typeof
 			return create(ListMemoriesResponseSchema, {
 				memories,
 				total,
+				budget: ctrl.store.memories.startupBudget(project),
 			});
 		},
 

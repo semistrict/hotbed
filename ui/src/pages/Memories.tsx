@@ -24,12 +24,12 @@ import {
   type Snapshot,
 } from "../api";
 import { Markdown } from "../components/Markdown";
+import { MemoryBudgetBar } from "../components/MemoryBudgetBar";
 import { ProjectTag } from "../components/ProjectTag";
 import { Card, Empty } from "../components/Panel";
 import { SortableList } from "../components/SortableList";
 import { FromLine, StampLine } from "../components/StampLine";
-import { kib } from "../lib/format";
-import { computeStartupBudget, MEMORY_TAB_STATES, memoryModeLabel, type MemoryTab } from "../lib/memories";
+import { MEMORY_TAB_STATES, memoryModeLabel, type MemoryTab } from "../lib/memories";
 import { useProject, useScopedSnapshot } from "../lib/project";
 import { remoteName } from "../lib/projects";
 import { mergeLatestByRevision, useOptimisticReorder } from "../lib/rankedList";
@@ -207,13 +207,6 @@ function MemoriesView({ s }: { s: Snapshot }) {
     placeholderData: (prev, prevQuery) => (prevQuery?.queryKey[1] === project ? prev : undefined),
   });
 
-  // Fetch active memories for startup budget calculation (global + selected project).
-  const budgetQuery = useQuery({
-    queryKey: ["memories", project, "budget"],
-    queryFn: () => clients.memories.listMemories({ projectScope: projectScope(project), states: [MemoryState.APPROVED], order: MEMORY_ORDER_FROM_SLUG.rank }),
-    refetchInterval: 5000,
-  });
-
   const seenRef = useRef<{ project: string | null; map: Map<number, Memory> }>({ project, map: new Map() });
   const rawMemories = list.data?.memories;
   const memories = useMemo(() => {
@@ -223,13 +216,13 @@ function MemoriesView({ s }: { s: Snapshot }) {
     return rawMemories ? mergeLatestByRevision(seenRef.current.map, rawMemories, MEMORY_TAB_STATES[tab]) : [];
   }, [rawMemories, tab, project]);
 
-  const budget = useMemo(() => computeStartupBudget(budgetQuery.data?.memories ?? []), [budgetQuery.data?.memories]);
   const movable = canRank && sort === "rank" && !queryText && scopeSlug === "all" && modeSlug === "all";
   const hasFilters = Boolean(queryText || scopeSlug !== "all" || modeSlug !== "all");
   const now = Number(s.now);
 
   const counts: Partial<Record<MemoryTab, number>> = {
-    active: budgetQuery.data?.total,
+    // The list's own total counts the active memories only while it lists them unfiltered.
+    active: tab === "active" && !hasFilters ? list.data?.total : undefined,
   };
 
   return (
@@ -248,7 +241,7 @@ function MemoriesView({ s }: { s: Snapshot }) {
         }
       />
 
-      <BudgetBar budget={budget} project={project} />
+      <MemoryBudgetBar budget={list.data?.budget} project={project} />
 
       {creating && (
         <Card>
@@ -390,22 +383,6 @@ function MemoriesView({ s }: { s: Snapshot }) {
       {tab === "active" && !movable && memories.length > 1 && (
         <p className="font-mono text-[11px] text-faint">Sort by startup order (with all scopes, all modes, and no search filter) to drag and reorder.</p>
       )}
-    </div>
-  );
-}
-
-function BudgetBar({ budget, project }: { budget: ReturnType<typeof computeStartupBudget>; project: string | null }) {
-  const alwaysOver = budget.alwaysCount > budget.alwaysMaxCount || budget.alwaysBytes > budget.alwaysMaxBytes;
-  const onDemandOver = budget.onDemandCount > budget.onDemandMaxCount || budget.onDemandBytes > budget.onDemandMaxBytes;
-  return (
-    <div className="flex flex-wrap items-center gap-x-6 gap-y-2 rounded-xl border border-border bg-card/60 px-4 py-2.5 font-mono text-[11px] text-muted-foreground">
-      <span className="text-foreground">Startup recall ({project ? `global + ${project}` : "all"}):</span>
-      <span className={alwaysOver ? "text-warning-ink" : ""}>
-        Always-on <strong className="text-foreground">{budget.alwaysCount}</strong>/{budget.alwaysMaxCount} · {kib(budget.alwaysBytes)}/{kib(budget.alwaysMaxBytes)}
-      </span>
-      <span className={onDemandOver ? "text-warning-ink" : ""}>
-        On-demand index <strong className="text-foreground">{budget.onDemandCount}</strong>/{budget.onDemandMaxCount} · {kib(budget.onDemandBytes)}/{kib(budget.onDemandMaxBytes)}
-      </span>
     </div>
   );
 }

@@ -1,5 +1,6 @@
 import {
 	MemoryBriefingSchema,
+	MemoryBudgetSchema,
 	MemoryChangeSchema,
 	MemoryIndexEntrySchema,
 	MemoryMode,
@@ -12,6 +13,7 @@ import {
 	StampSchema,
 	type Memory,
 	type MemoryBriefing,
+	type MemoryBudget,
 	type MemoryChange,
 	type MemoryContent,
 	type MemoryIndexEntry,
@@ -389,7 +391,18 @@ export class MemoryStore {
 		return { memories, total };
 	}
 
-	briefing(project: string): MemoryBriefing {
+	/**
+	 * The startup index for `project` (global + that project): what a session
+	 * start admits under the count/byte caps, what it omits, and the budget
+	 * those add up to. The one place the caps are applied, so the briefing and
+	 * the cockpit's budget bar cannot disagree.
+	 */
+	private startupIndex(project: string): {
+		always: MemoryIndexEntry[];
+		onDemand: MemoryIndexEntry[];
+		budget: MemoryBudget;
+		totalApproved: number;
+	} {
 		const approvedRows = this.sql
 			.exec(
 				`${MEMORY_SELECT}
@@ -400,23 +413,14 @@ export class MemoryStore {
 			)
 			.toArray();
 
-		const pendingProposals = num(
-			this.sql
-				.exec(
-					`SELECT COUNT(*) AS cnt FROM memories
-					 WHERE state = ? AND (scope_key = '' OR scope_key = ?)`,
-					stateName(MemoryState.PROPOSED),
-					project,
-				)
-				.one().cnt,
-		);
-
 		const always: MemoryIndexEntry[] = [];
 		const onDemand: MemoryIndexEntry[] = [];
-		let alwaysBytes = 0;
-		let onDemandBytes = 0;
-		let omittedAlways = 0;
-		let omittedOnDemand = 0;
+		const budget = create(MemoryBudgetSchema, {
+			alwaysMaxCount: MemoryStore.BRIEFING_ALWAYS_MAX_COUNT,
+			alwaysMaxBytes: MemoryStore.BRIEFING_ALWAYS_MAX_BYTES,
+			onDemandMaxCount: MemoryStore.BRIEFING_ON_DEMAND_MAX_COUNT,
+			onDemandMaxBytes: MemoryStore.BRIEFING_ON_DEMAND_MAX_BYTES,
+		});
 		const enc = new TextEncoder();
 
 		for (const r of approvedRows) {
@@ -438,34 +442,54 @@ export class MemoryStore {
 			const entryBytes = enc.encode(`${c.slug}: ${c.summary}`).byteLength;
 			if (c.mode === MemoryMode.ALWAYS) {
 				if (
-					always.length < MemoryStore.BRIEFING_ALWAYS_MAX_COUNT &&
-					(always.length === 0 || alwaysBytes + entryBytes <= MemoryStore.BRIEFING_ALWAYS_MAX_BYTES)
+					budget.alwaysCount < budget.alwaysMaxCount &&
+					(budget.alwaysCount === 0 || budget.alwaysBytes + entryBytes <= budget.alwaysMaxBytes)
 				) {
 					always.push(entry);
-					alwaysBytes += entryBytes;
+					budget.alwaysCount++;
+					budget.alwaysBytes += entryBytes;
 				} else {
-					omittedAlways++;
+					budget.omittedAlways++;
 				}
+			} else if (
+				budget.onDemandCount < budget.onDemandMaxCount &&
+				(budget.onDemandCount === 0 || budget.onDemandBytes + entryBytes <= budget.onDemandMaxBytes)
+			) {
+				onDemand.push(entry);
+				budget.onDemandCount++;
+				budget.onDemandBytes += entryBytes;
 			} else {
-				if (
-					onDemand.length < MemoryStore.BRIEFING_ON_DEMAND_MAX_COUNT &&
-					(onDemand.length === 0 ||
-						onDemandBytes + entryBytes <= MemoryStore.BRIEFING_ON_DEMAND_MAX_BYTES)
-				) {
-					onDemand.push(entry);
-					onDemandBytes += entryBytes;
-				} else {
-					omittedOnDemand++;
-				}
+				budget.omittedOnDemand++;
 			}
 		}
+
+		return { always, onDemand, budget, totalApproved: approvedRows.length };
+	}
+
+	/** What a session start for `project` recalls, within the startup caps. */
+	startupBudget(project: string): MemoryBudget {
+		return this.startupIndex(project).budget;
+	}
+
+	briefing(project: string): MemoryBriefing {
+		const { always, onDemand, budget, totalApproved } = this.startupIndex(project);
+		const pendingProposals = num(
+			this.sql
+				.exec(
+					`SELECT COUNT(*) AS cnt FROM memories
+					 WHERE state = ? AND (scope_key = '' OR scope_key = ?)`,
+					stateName(MemoryState.PROPOSED),
+					project,
+				)
+				.one().cnt,
+		);
 
 		return create(MemoryBriefingSchema, {
 			always,
 			onDemand,
-			omittedAlways,
-			omittedOnDemand,
-			totalApproved: approvedRows.length,
+			omittedAlways: budget.omittedAlways,
+			omittedOnDemand: budget.omittedOnDemand,
+			totalApproved,
 			pendingProposals,
 		});
 	}
