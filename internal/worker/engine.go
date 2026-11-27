@@ -396,6 +396,11 @@ type workspace struct {
 	// vmUsed says a command has started in the workspace's current VM, so
 	// the next command needs a new one. Guarded by e.mu.
 	vmUsed bool
+	// vmMeasured says a measurement started in the workspace's current VM,
+	// which runs in the measurement's slice, its vCPUs pinned to the
+	// measurement CPUs: it stops once nothing runs in it, a shell open in
+	// it or not, and no measurement starts until it has. Guarded by e.mu.
+	vmMeasured bool
 	// vmRetryAt is when to try again to stop its VM after stopping failed.
 	// Guarded by e.mu.
 	vmRetryAt time.Time
@@ -653,7 +658,8 @@ func (e *Engine) load() error {
 		r := m.(*pb.WorkspaceRecord)
 		// A VM that outlived the worker may have run a command already, so
 		// none is taken for fresh: the next command boots its own.
-		e.workspaces[r.Workspace.Id] = &workspace{rec: r, vmUsed: r.Workspace.Runtime == runtime.KindVM}
+		e.workspaces[r.Workspace.Id] = &workspace{rec: r, vmUsed: r.Workspace.Runtime == runtime.KindVM,
+			vmMeasured: e.cfg.VM != nil && e.cfg.VM.MeasuredVM(r.Workspace.Id)}
 		if r.Workspace.Runtime == runtime.KindVM {
 			e.vmWorkspaces.Store(r.Workspace.Id, struct{}{})
 			if b := e.cladefs(); b != nil && wsHasVolume(r.Workspace.State) {

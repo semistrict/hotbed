@@ -1003,6 +1003,7 @@ func (e *Engine) admit(ctx context.Context) {
 		isBench := c.cmd().Bench
 		if w, ok := e.workspaces[c.runtimeTarget()]; ok && inGuest {
 			w.vmUsed = true // the next command needs a VM of its own
+			w.vmMeasured = w.vmMeasured || isBench
 		}
 		var beforeStart func(context.Context) error
 		var onStartFail func()

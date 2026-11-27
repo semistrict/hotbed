@@ -125,10 +125,14 @@ func (p place) sampled(ws []written) []written {
 
 // Ready says whether a measurement may start as far as its quiet goes:
 // whether the samples name who writes to every place it holds writers back
-// on, so it can hold them first (Loud).
+// on, so it can hold them first (Loud). One whose writers can't be read
+// starts, to fail at once saying why (Held), rather than wait for good.
 func (i *Isolation) Ready() bool {
 	i.mu.Lock()
 	defer i.mu.Unlock()
+	if n := len(i.written); n > 0 && i.written[n-1].err != nil {
+		return true
+	}
 	ws := i.recent(time.Time{}, holdWindow)
 	for _, p := range i.places() {
 		if len(p.sampled(ws)) < 2 {

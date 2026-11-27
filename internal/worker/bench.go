@@ -136,6 +136,11 @@ func (e *Engine) benchBlocker(ahead *command) string {
 	if ahead != nil {
 		return fmt.Sprintf("waiting for measurement %s, queued before it", ahead.cmd().Id)
 	}
+	for _, w := range e.workspaces {
+		if w.vmMeasured && e.commandInVMLocked(w.ws().Id, nil) == nil {
+			return fmt.Sprintf("waiting for the VM a measurement ran in, workspace %s's, to stop", w.ws().Id)
+		}
+	}
 	if !e.cfg.Bench.Ready() {
 		return fmt.Sprintf("waiting to see who writes to %s, to hold them back beside it", e.cfg.Bench.Quieted())
 	}
@@ -226,6 +231,16 @@ func (e *Engine) quietBlocker(c *command) string {
 	return fmt.Sprintf("waiting for measurement %s to finish: it keeps %s quiet, which no cap can do", m.cmd().Id, e.cfg.Bench.Quieted())
 }
 
+// writerVolume is the volume c writes, as Loud names its writers: its
+// workspace's, or a VM base build's VM ID (VMBackend.VolumeWrites), as a
+// build has no volume of its own.
+func (c *command) writerVolume() string {
+	if c.isVMFreshen() {
+		return c.managedFreshen.vmID
+	}
+	return c.rec.Volume
+}
+
 // holdLoud holds the commands of the volumes writing past the bound beside
 // measurement m (about to start, or running), where no cap holds them,
 // until no measurement runs: frozen, not pushed to swap, as they'll be back
@@ -246,13 +261,13 @@ func (e *Engine) holdLoud(ctx context.Context, m *command) {
 	e.mu.Lock()
 	var victims []*command
 	for _, c := range e.commands {
-		if _, ok := writers[c.rec.Volume]; ok && c.cmd().State == running && !c.cmd().Bench && !c.stopping && !c.deactivating {
+		if _, ok := writers[c.writerVolume()]; ok && c.cmd().State == running && !c.cmd().Bench && !c.stopping && !c.deactivating {
 			victims = append(victims, c)
 		}
 	}
 	e.mu.Unlock()
 	for _, c := range victims {
-		e.holdOneLoud(ctx, c, m.cmd().Id, writers[c.rec.Volume])
+		e.holdOneLoud(ctx, c, m.cmd().Id, writers[c.writerVolume()])
 	}
 }
 
@@ -298,7 +313,19 @@ func (e *Engine) holdOneLoud(ctx context.Context, c *command, benchID string, w 
 		what: "held", detail: cmd.Reason,
 		feed: feed(feedPark, fmt.Sprintf("hold %s · %.1f MB/s to %s beside measurement %s", cmd.Argv, rate, w.To, benchID), ref("command", cmd.Id)),
 	})
+	inGuest, target := e.runsInGuest(c), c.runtimeTarget()
 	e.mu.Unlock()
+	if inGuest {
+		// Its guest's kernel would go on writing what it left dirty beside
+		// the measurement: written out now, as On syncs a ZFS pool. Its
+		// guest syncs once nothing in it runs unfrozen.
+		rctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+		err := e.cfg.Runtime.Reclaim(rctx, target, "", 0)
+		cancel()
+		if err != nil {
+			slog.Error("write out what a command held beside a measurement left dirty", "command", id, "err", err)
+		}
+	}
 }
 
 // releaseHeld thaws the commands held beside a measurement, once none

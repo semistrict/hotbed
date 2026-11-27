@@ -4,6 +4,7 @@ package bench
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"maps"
 	"path/filepath"
@@ -287,5 +288,22 @@ func TestLoudNamesTheHeaviestVMWriters(t *testing.T) {
 	}
 	if h.iso.Ready() {
 		t.Error("Ready after the VMs went unasked past the window: true, want false")
+	}
+}
+
+// A measurement whose VMs' writes can't be read isn't kept waiting for
+// samples that never come: it starts, and Held fails it saying why.
+func TestReadyWhenTheVMsCantBeAsked(t *testing.T) {
+	h := newVMQuietHost(t, Config{CPUs: "7-10"}, "")
+	h.iso.o.Writes = func() (map[string]int64, error) { return nil, errors.New("cladefsd: connection refused") }
+	h.measuring(nil)
+	if !h.iso.Ready() {
+		t.Fatal("Ready with the VMs' writes unreadable: false, want true")
+	}
+	h.on()
+	h.measuring(nil)
+	want := "what others write beside it can't be read: cladefsd: connection refused"
+	if err := h.iso.Held("ws/m"); err == nil || err.Error() != want {
+		t.Errorf("Held = %v, want %q", err, want)
 	}
 }

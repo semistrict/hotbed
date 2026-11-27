@@ -544,6 +544,63 @@ func TestBenchCommandBootsItsVMOnTheMeasurementCPUs(t *testing.T) {
 	}
 }
 
+// The VM a measurement ran in, in the measurement's slice and pinned to its
+// CPUs, is the measurement's alone: it stops once the measurement ends,
+// even with a shell open in it, and no other measurement starts until it
+// has (its stop failing at first).
+func TestMeasuredVMStopsBeforeAnotherMeasurement(t *testing.T) {
+	iso := fake.NewIsolation("4-7", 4)
+	eng, resolver, _, now := newLifecycleTestEngineWith(t, func(c *EngineConfig) { c.Bench = iso })
+	ctx := t.Context()
+	seedTestVMWorkspace(t, eng, resolver, "ws-a", *now)
+	seedTestVMWorkspace(t, eng, resolver, "ws-b", *now)
+	first, err := eng.Exec(ctx, &pb.RunCommandRequest{Id: "m-a", WorkspaceId: "ws-a", Bench: true, Args: []string{"/bin/sh", "-c", "sleep 60"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	eng.step(ctx)
+	if cur, _ := eng.Command(first.Id); cur.State != running {
+		t.Fatalf("m-a = %v (%q), want running", cur.State, cur.Reason)
+	}
+	shellDone := make(chan struct{})
+	eng.mu.Lock()
+	eng.shells["sh-a"] = &activeShell{id: "sh-a", workspaceID: "ws-a", cancel: func() {}, done: shellDone}
+	eng.mu.Unlock()
+	t.Cleanup(func() { close(shellDone) }) // before the engine closes, waiting for its shells
+	resolver.mu.Lock()
+	resolver.stopErr = fmt.Errorf("simulated stop failure")
+	resolver.mu.Unlock()
+	if _, err := eng.Stop(ctx, first.Id, "done"); err != nil {
+		t.Fatal(err)
+	}
+	second, err := eng.Exec(ctx, &pb.RunCommandRequest{Id: "m-b", WorkspaceId: "ws-b", Bench: true, Args: []string{"/bin/sh", "-c", "sleep 60"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	eng.step(ctx)
+	want := "waiting for the VM a measurement ran in, workspace ws-a's, to stop"
+	if cur, _ := eng.Command(second.Id); cur.State != queued || cur.Reason != want {
+		t.Fatalf("m-b = %v (%q), want queued: %q", cur.State, cur.Reason, want)
+	}
+
+	resolver.mu.Lock()
+	resolver.stopErr = nil
+	resolver.mu.Unlock()
+	*now = now.Add(61 * time.Second)
+	eng.step(ctx)
+	eng.step(ctx)
+	resolver.mu.Lock()
+	stops := resolver.stopCount["ws-a"]
+	resolver.mu.Unlock()
+	if stops != 1 {
+		t.Errorf("ws-a's VM stopped %d times with a shell open in it, want once", stops)
+	}
+	if cur, _ := eng.Command(second.Id); cur.State != running {
+		t.Errorf("m-b = %v (%q) once ws-a's VM stopped, want running", cur.State, cur.Reason)
+	}
+	_, _ = eng.Stop(ctx, second.Id, "done")
+}
+
 // A command asks of its VM only what its workspace and node can give.
 func TestExecRefusesVMRequestsItCannotMeet(t *testing.T) {
 	e, _, _, _ := parkEngine(t) // host runtime: no VMs

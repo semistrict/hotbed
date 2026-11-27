@@ -52,10 +52,8 @@ type VMBackend struct {
 	cfg          statedir.VMConfig
 	wsCells      map[string]cladefs.CellRef // wsID -> forked cell ref
 	activeBuilds map[string]struct{}        // in-flight base-* / prov-* VM IDs owned by this worker
-	// writesMu guards lastWrites: what each VM (by its cladefsd
-	// connection) last said it wrote, for VolumeWrites.
-	writesMu   sync.Mutex
-	lastWrites map[uint64]uint64
+	// writes is what the VMs wrote, for VolumeWrites.
+	writes vmWrites
 	// boots serializes EnsureVM per VM (ID -> *sync.Mutex): a VM is down
 	// between commands, and callers that find it so at once wait for one
 	// boot rather than race it.
@@ -779,6 +777,16 @@ func (b *VMBackend) BootSince(wsID string, since time.Time) (vm.BootTimes, bool)
 		return vm.BootTimes{}, false
 	}
 	return inst.Boot, true
+}
+
+// MeasuredVM says whether wsID's VM, if it runs, was booted for a
+// measurement (unit.VMBoot.BenchCPUs).
+func (b *VMBackend) MeasuredVM(wsID string) bool {
+	if b.mgr == nil {
+		return false
+	}
+	inst := b.mgr.Get(wsID)
+	return inst != nil && inst.BenchCPUs != ""
 }
 
 // bootDiffers reports whether wsID's running VM booted otherwise than a

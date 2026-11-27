@@ -128,11 +128,16 @@ func (e *Engine) retireReasonLocked(w *workspace) string {
 	if !w.vmRetryAt.IsZero() && e.now().Before(w.vmRetryAt) {
 		return ""
 	}
-	if e.commandInVMLocked(ws.Id, nil) != nil || e.shellOpenLocked(ws.Id) {
+	if e.commandInVMLocked(ws.Id, nil) != nil || (e.shellOpenLocked(ws.Id) && !w.vmMeasured) {
 		return ""
 	}
 	if ws.State == failedWS {
 		return "its workspace failed"
+	}
+	if w.vmMeasured {
+		// On the measurement CPUs, in the measurement's slice: it is the
+		// measurement's alone, and outlives it not even for a shell.
+		return "the measurement that ran in it ended"
 	}
 	if w.vmUsed {
 		return "the command that ran in it ended"
@@ -170,7 +175,7 @@ func (e *Engine) retireVMs(ctx context.Context) {
 		wsID := w.ws().Id
 		if !vmUp(wsID) {
 			e.mu.Lock()
-			w.vmUsed = false // it is gone already: the next VM is new
+			w.vmUsed, w.vmMeasured = false, false // it is gone already: the next VM is new
 			e.mu.Unlock()
 			continue
 		}
@@ -205,7 +210,7 @@ func (e *Engine) retireVMs(ctx context.Context) {
 		}
 		e.guest.forgetVMCgroup(wsID)
 		e.mu.Lock()
-		w.vmUsed = false
+		w.vmUsed, w.vmMeasured = false, false
 		w.vmRetryAt = time.Time{}
 		e.mu.Unlock()
 		slog.Info("stopped workspace VM", "workspace", wsID, "why", why)
