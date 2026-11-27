@@ -1,6 +1,7 @@
 package main
 
 import (
+	"net/http"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -260,23 +261,45 @@ func TestRunWaitsAtControllerAndTakesFirstHostWithCapacity(t *testing.T) {
 	c.nodes[1].system.SetCPUPressure(75) // mini
 	c.load(map[string]float64{"asahimbp": 0.2, "mini": 0.8})
 
-	type runRes struct {
-		code   int
-		out    string
-		stderr string
+	var stdout, stderr syncBuffer
+	d := c.cli
+	d.stdin = strings.NewReader("")
+	d.stdout = &stdout
+	d.stderr = &stderr
+	createStarted := make(chan struct{})
+	var markCreate sync.Once
+	baseTransport := d.stream.Transport
+	if baseTransport == nil {
+		baseTransport = http.DefaultTransport
 	}
-	done := make(chan runRes, 1)
+	streamCopy := *d.stream
+	streamCopy.Transport = roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		if strings.HasSuffix(req.URL.Path, "/CreateWorkspace") {
+			markCreate.Do(func() { close(createStarted) })
+		}
+		return baseTransport.RoundTrip(req)
+	})
+	d.stream = &streamCopy
+
+	done := make(chan int, 1)
 	go func() {
-		code, out, stderr := c.hotbed("run", "-s", S, "-r", "app", "--", "cat", "src/lib.txt")
-		done <- runRes{code, out, stderr}
+		done <- run(t.Context(), []string{"run", "-s", S, "-r", "app", "--", "cat", "src/lib.txt"}, d)
 	}()
 
-	// While both nodes hold work, the run waits at the controller: neither
-	// worker gets a queued command.
+	// Wait until hotbed run has actually sent CreateWorkspace (past local git
+	// setup), then verify it stays waiting at the controller while both nodes
+	// hold work and neither worker gets a queued command.
+	select {
+	case <-createStarted:
+	case code := <-done:
+		t.Fatalf("run returned before CreateWorkspace while both nodes were holding: exit %d out=%q stderr=%q", code, stdout.String(), stderr.String())
+	case <-time.After(10 * time.Second):
+		t.Fatalf("timed out waiting for CreateWorkspace request (stderr=%q)", stderr.String())
+	}
 	time.Sleep(250 * time.Millisecond)
 	select {
-	case r := <-done:
-		t.Fatalf("run returned while both nodes were holding: exit %d out=%q stderr=%q", r.code, r.out, r.stderr)
+	case code := <-done:
+		t.Fatalf("run returned while both nodes were holding: exit %d out=%q stderr=%q", code, stdout.String(), stderr.String())
 	default:
 	}
 	ps := &pb.ListCommandsResponse{}
@@ -290,12 +313,12 @@ func TestRunWaitsAtControllerAndTakesFirstHostWithCapacity(t *testing.T) {
 	workerClock.advance(31 * time.Second)
 	c.load(map[string]float64{"asahimbp": 0.2, "mini": 0.1})
 
-	res := <-done
-	if res.code != 0 || res.out != "base\n" {
-		t.Fatalf("run after mini freed up: exit %d out=%q stderr=%q", res.code, res.out, res.stderr)
+	code := <-done
+	if code != 0 || stdout.String() != "base\n" {
+		t.Fatalf("run after mini freed up: exit %d out=%q stderr=%q", code, stdout.String(), stderr.String())
 	}
-	if !strings.Contains(res.stderr, " on mini ") {
-		t.Fatalf("run went elsewhere (stderr=%q), want mini (the first host to free up)", res.stderr)
+	if !strings.Contains(stderr.String(), " on mini ") {
+		t.Fatalf("run went elsewhere (stderr=%q), want mini (the first host to free up)", stderr.String())
 	}
 	var hist pb.ListCommandsResponse
 	c.ok(&hist, "ps", "-s", S, "-e")
