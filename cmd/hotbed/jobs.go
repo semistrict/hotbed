@@ -12,6 +12,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"connectrpc.com/connect/v2"
 	"google.golang.org/protobuf/proto"
 
 	"github.com/semistrict/hotbed/internal/api"
@@ -244,19 +245,20 @@ func detachedHelp(id string, wait time.Duration) string {
 var (
 	// queryOutputSlice is the longest a single waiting QueryOutput HTTP call
 	// waits on the server before the client re-issues it for the remaining
-	// timeout. Slicing keeps any silent HTTP/2 stream drop or proxy wedge
-	// bounded instead of hanging indefinitely past --timeout.
-	queryOutputSlice = 45 * time.Second
+	// timeout. Matching the controller's 30s QUERY_OUTPUT_SLICE_SEC keeps each
+	// client HTTP slice 1:1 with a single worker RPC slice.
+	queryOutputSlice = 30 * time.Second
 	// queryOutputSliceGrace is headroom beyond a slice's server-side wait for
-	// network RTT and worker log scanning before the client treats the HTTP
-	// call as wedged, recycles its transport, and retries.
-	queryOutputSliceGrace = 30 * time.Second
+	// network RTT, worker reconnects, and log scanning before the client treats
+	// the HTTP call as wedged, recycles its transport, and retries.
+	queryOutputSliceGrace = 35 * time.Second
 	queryOutputRetryDelay = time.Second
 )
 
 // queryOutputBounded runs QueryOutput, slicing waiting calls (--wait, --until)
 // into bounded per-slice HTTP requests so a wedged stream, controller deploy,
-// or worker reconnect cannot strand the caller past --timeout.
+// or worker reconnect cannot strand the caller past --timeout, and riding out
+// transient retryable worker/controller disconnects on plain reads as well.
 func queryOutputBounded(
 	ctx context.Context,
 	client hotbedv1connect.WorkspaceServiceClient,
@@ -265,7 +267,29 @@ func queryOutputBounded(
 	req *pb.QueryOutputRequest,
 ) (*pb.OutputQuery, error) {
 	if (!req.Wait && req.Until == "") || req.TimeoutSeconds < 0 {
-		return client.QueryOutput(ctx, req)
+		var unreachableSince time.Time
+		for {
+			q, err := client.QueryOutput(ctx, req)
+			if err == nil || ctx.Err() != nil {
+				return q, err
+			}
+			ae := api.FromConnect(err)
+			if rideOut > 0 && ae.Retryable && (ae.Code == api.CodeWorkerUnreachable || ae.Code == api.CodeControllerUnreachable) {
+				if unreachableSince.IsZero() {
+					unreachableSince = time.Now()
+				}
+				if time.Since(unreachableSince) < rideOut {
+					api.ResetClientTransport(hc)
+					select {
+					case <-ctx.Done():
+						return nil, ctx.Err()
+					case <-time.After(queryOutputRetryDelay):
+					}
+					continue
+				}
+			}
+			return nil, err
+		}
 	}
 	totalWait := 60 * time.Second
 	if req.TimeoutSeconds > 0 {
@@ -299,7 +323,7 @@ func queryOutputBounded(
 		if ctx.Err() != nil {
 			return nil, ctx.Err()
 		}
-		if sliceTimedOut {
+		if sliceTimedOut || connect.CodeOf(err) == connect.CodeDeadlineExceeded {
 			api.ResetClientTransport(hc)
 			if time.Now().Before(deadline) {
 				continue

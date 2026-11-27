@@ -1,6 +1,8 @@
 package main
 
 import (
+	"encoding/base64"
+	"fmt"
 	"net"
 	"net/http"
 	"regexp"
@@ -8,6 +10,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"google.golang.org/protobuf/proto"
 
 	"github.com/semistrict/hotbed/internal/api"
 	pb "github.com/semistrict/hotbed/internal/gen/hotbed/v1"
@@ -262,5 +266,90 @@ func TestOutputWaitRecoversFromWedgedHTTPStream(t *testing.T) {
 	}
 	if elapsed > 5*time.Second {
 		t.Fatalf("output --wait took %v after wedged slice, want fast recovery", elapsed)
+	}
+}
+
+// A server-side Connect-Timeout-Ms deadline or transient retryable
+// WORKER_UNREACHABLE on QueryOutput (both --wait and plain reads like
+// --after N) must be retried by queryOutputBounded rather than aborting the
+// command immediately (issue #22).
+func TestOutputBoundedRetriesServerDeadlineAndPlainWorkerUnreachable(t *testing.T) {
+	origSlice, origGrace, origRetry := queryOutputSlice, queryOutputSliceGrace, queryOutputRetryDelay
+	queryOutputSlice = time.Second
+	queryOutputSliceGrace = 2 * time.Second
+	queryOutputRetryDelay = 20 * time.Millisecond
+	t.Cleanup(func() {
+		queryOutputSlice, queryOutputSliceGrace, queryOutputRetryDelay = origSlice, origGrace, origRetry
+	})
+
+	c := newCluster(t)
+	c.cli.rideOut = 5 * time.Second
+	c.addRepo(upstream(t))
+	c.ok(nil, "session", "start", "swift-elk")
+	c.workspace("swift-elk", nil)
+
+	var cmd pb.Command
+	c.ok(&cmd, "run", "-s", "swift-elk", "-r", "app", "--detach", "--mem", "256M", "--", "sh", "-c", "echo first; echo second")
+	c.eventually("command finishes", func() bool {
+		got, ok := c.engine().Command(cmd.Id)
+		return ok && got.State == pb.CommandState_COMMAND_STATE_SUCCEEDED
+	})
+
+	// 1. Waiting QueryOutput: first request gets Connect deadline_exceeded
+	// directly from the server before the client's local sliceCtx expires.
+	var waitCalls atomic.Int32
+	origHandler := *c.handler.Load()
+	var deadlineHandler http.Handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/hotbed.v1.WorkspaceService/QueryOutput" && waitCalls.Add(1) == 1 {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusRequestTimeout)
+			_, _ = w.Write([]byte(`{"code":"deadline_exceeded","message":"slice deadline exceeded"}`))
+			return
+		}
+		origHandler.ServeHTTP(w, r)
+	})
+	c.handler.Store(&deadlineHandler)
+
+	var q pb.OutputQuery
+	c.ok(&q, "output", cmd.Id, "--wait", "--timeout", "10")
+	if waitCalls.Load() < 2 {
+		t.Fatalf("expected retry after server deadline_exceeded, got %d calls", waitCalls.Load())
+	}
+	if q.State != pb.CommandState_COMMAND_STATE_SUCCEEDED || q.TotalLines != 2 {
+		t.Fatalf("output --wait = %+v, want SUCCEEDED with 2 lines", &q)
+	}
+
+	// 2. Plain read (--after 1): first request gets retryable WORKER_UNREACHABLE
+	// timed out; client retries and returns the trailing line.
+	var plainCalls atomic.Int32
+	detailBytes, err := proto.Marshal(&pb.ErrorInfo{
+		Code:      string(api.CodeWorkerUnreachable),
+		Retryable: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	errPayload := fmt.Sprintf(
+		`{"code":"unavailable","message":"mac: /hotbed.v1.WorkspaceService/QueryOutput timed out","details":[{"type":"hotbed.v1.ErrorInfo","value":%q}]}`,
+		base64.RawStdEncoding.EncodeToString(detailBytes),
+	)
+	var unreachableHandler http.Handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/hotbed.v1.WorkspaceService/QueryOutput" && plainCalls.Add(1) == 1 {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusServiceUnavailable)
+			_, _ = w.Write([]byte(errPayload))
+			return
+		}
+		origHandler.ServeHTTP(w, r)
+	})
+	c.handler.Store(&unreachableHandler)
+
+	var q2 pb.OutputQuery
+	c.ok(&q2, "output", cmd.Id, "--after", "1")
+	if plainCalls.Load() < 2 {
+		t.Fatalf("expected plain QueryOutput retry after WORKER_UNREACHABLE, got %d calls", plainCalls.Load())
+	}
+	if len(q2.Lines) != 1 || q2.Lines[0].Text != "second" {
+		t.Fatalf("output --after 1 = %+v, want [second]", q2.Lines)
 	}
 }

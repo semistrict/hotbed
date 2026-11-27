@@ -1734,20 +1734,36 @@ export function createWorkspaceService(ctrl: ControllerContext): {
 			};
 
 			if ((!req.wait && !req.until) || req.timeoutSeconds < 0) {
-				try {
-					const out = await ctrl.tunnel.callUnary(
-						nodeId,
-						host,
-						"/hotbed.v1.WorkspaceService/QueryOutput",
-						QueryOutputRequestSchema,
-						req,
-						OutputQuerySchema,
-						WORKER_RPC_TIMEOUT_MS,
-						ctx.signal,
-					);
-					return backfillFinished(out);
-				} catch (err) {
-					throw fromWorkerError(host, err);
+				// Retry once on a retryable WorkerUnreachable (e.g. brief worker
+				// tunnel reconnect/upgrade) so a plain read rides out reconnects.
+				for (let attempt = 0; attempt < 2; attempt++) {
+					try {
+						const out = await ctrl.tunnel.callUnary(
+							nodeId,
+							host,
+							"/hotbed.v1.WorkspaceService/QueryOutput",
+							QueryOutputRequestSchema,
+							req,
+							OutputQuerySchema,
+							WORKER_RPC_TIMEOUT_MS,
+							ctx.signal,
+						);
+						return backfillFinished(out);
+					} catch (err) {
+						const werr = fromWorkerError(host, err);
+						if (
+							attempt === 0 &&
+							werr.code === ErrorCode.WorkerUnreachable &&
+							werr.retryable &&
+							!ctx.signal.aborted
+						) {
+							await sleepAbortable(QUERY_OUTPUT_RETRY_POLL_MS, ctx.signal);
+							if (!ctx.signal.aborted) {
+								continue;
+							}
+						}
+						throw werr;
+					}
 				}
 			}
 

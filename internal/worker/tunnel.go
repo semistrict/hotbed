@@ -182,11 +182,12 @@ func runTunnelLoop(
 // defaultTunnelPingInterval and defaultTunnelReadTimeout control WebSocket
 // liveness detection. Cloudflare's WebSocket Auto-Response replies "pong" to
 // every "ping" without waking the Durable Object; if no frame arrives within
-// defaultTunnelReadTimeout (3 missed pongs), the socket is treated as
-// half-open (e.g. after a Wi-Fi AP roam) and closed so runTunnelLoop reconnects.
+// defaultTunnelReadTimeout (25s < controller WORKER_RPC_TIMEOUT_MS 30s), the
+// socket is treated as half-open (e.g. after a Wi-Fi AP roam or NAT drop) and
+// closed so runTunnelLoop reconnects before in-flight 30s RPCs time out.
 const (
-	defaultTunnelPingInterval = 25 * time.Second
-	defaultTunnelReadTimeout  = 75 * time.Second
+	defaultTunnelPingInterval = 10 * time.Second
+	defaultTunnelReadTimeout  = 25 * time.Second
 )
 
 func serveTunnelOnce(

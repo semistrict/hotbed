@@ -530,4 +530,47 @@ describe("WorkspaceService.QueryOutput --wait resilience", () => {
 			ws2.close(1000, "test done");
 		}
 	});
+
+	it("retries a plain (non-waiting) QueryOutput across a worker tunnel reconnect", async () => {
+		const nodeId = "node-plain-retry";
+		const hostname = "mac-plain";
+		const cmdId = "plain12345";
+		const owner = await seedRunningCommand(nodeId, hostname, cmdId);
+
+		let firstArrived!: () => void;
+		const firstArrivedP = new Promise<void>((r) => {
+			firstArrived = r;
+		});
+		const ws1 = await connectWorker(nodeId, hostname, () => {
+			firstArrived();
+		});
+
+		const readP = owner.workspaces.queryOutput({ id: cmdId, after: 95n });
+		await firstArrivedP;
+		ws1.close(1012, "restarting");
+
+		const ws2 = await connectWorker(nodeId, hostname, (_req, ws, id) => {
+			const out = create(OutputQuerySchema, {
+				commandId: cmdId,
+				state: CommandState.RUNNING,
+				totalLines: 110n,
+				nextLine: 110n,
+				lines: [create(OutputLineSchema, { number: 96n, text: "line 96" })],
+			});
+			ws.send(
+				JSON.stringify({
+					type: "rpc_msg",
+					id,
+					body: encodeBase64(encodeProto(OutputQuerySchema, out)),
+				} satisfies TunnelUpMessage),
+			);
+		});
+		try {
+			const res = await readP;
+			expect(res.totalLines).toBe(110n);
+			expect(res.lines[0]?.text).toBe("line 96");
+		} finally {
+			ws2.close(1000, "test done");
+		}
+	});
 });
