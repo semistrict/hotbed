@@ -21,6 +21,7 @@ import { getCaller } from "../connect-adapter.ts";
 import { listedProject, sessionProject } from "../project-scope.ts";
 import {
 	MAX_WAIT_MS,
+	STREAM_KEEPALIVE_MS,
 	validateT3CodeThread,
 	validateT3CodeThreadId,
 	type ControllerContext,
@@ -351,21 +352,28 @@ export function createSessionService(ctrl: ControllerContext): ServiceImpl<typeo
 					: MAX_WAIT_MS;
 			const deadline = Date.now() + waitMs;
 			let after = req.after;
-			let first = true;
+			// When it last sent the session: with nothing new for
+			// STREAM_KEEPALIVE_MS, it sends it again as it stands, so its
+			// client can tell a quiet watch from one a deploy cut off.
+			let sentAt = 0;
 
 			while (!ctx.signal.aborted) {
 				const waiter = ctrl.sessionWakes.wait(req.sessionId);
 				try {
 					const res = sessionState(req.sessionId, after);
-					if (first || res.events.length > 0 || res.ended) {
+					if (res.events.length > 0 || res.ended || Date.now() - sentAt >= STREAM_KEEPALIVE_MS) {
 						yield res;
-						first = false;
+						sentAt = Date.now();
 						after = res.cursor;
 					}
 					if (res.ended) return;
 					const remaining = deadline - Date.now();
 					if (remaining <= 0) return;
-					await waitAtMost(waiter.promise, remaining, ctx.signal);
+					await waitAtMost(
+						waiter.promise,
+						Math.min(remaining, sentAt + STREAM_KEEPALIVE_MS - Date.now()),
+						ctx.signal,
+					);
 				} finally {
 					waiter.cancel();
 				}

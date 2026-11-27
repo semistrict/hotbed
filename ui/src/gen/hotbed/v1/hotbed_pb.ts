@@ -21654,7 +21654,8 @@ export const SessionService: GenService<{
   },
   /**
    * WatchSession streams the session's events after a cursor: first how it
-   * stands, then each new batch of events as it happens. It ends when the
+   * stands, then each new batch of events as it happens, and how it stands
+   * again as a keepalive when it has sent nothing for 5s. It ends when the
    * session does, or after at most two minutes, so an agent that wants the
    * session kept has to keep watching it.
    *

@@ -42,6 +42,10 @@ import type { T3CodeThread } from "./store/sessions.ts";
 export const SESSION_IDLE_MS = 60 * 60_000;
 export const OFFLINE_GRACE_MS = 24 * 60 * 60_000;
 export const MAX_WAIT_MS = 2 * 60_000;
+// How often a stream with nothing to say sends something anyway, as its
+// clients count on (api.StreamKeepalive in internal/api/keepalive.go): they
+// take one silent for three of these for dead.
+export const STREAM_KEEPALIVE_MS = 5_000;
 export const WORKER_RPC_TIMEOUT_MS = 30_000;
 export const LIVE_QUERY_TIMEOUT_MS = 2_000;
 export const PROJECT_NAME_RE = /^[a-z0-9][a-z0-9-]{0,39}$/;

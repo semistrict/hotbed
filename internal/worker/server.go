@@ -270,7 +270,7 @@ func (s *Service) FollowLog(ctx context.Context, req *pb.FollowLogRequest, strea
 	}
 	s.E.usedCommand(req.Id)
 	if req.Wait && req.Follow {
-		if err := s.E.WaitOn(ctx, req.Id); err != nil {
+		if err := s.waitOn(ctx, req, stream); err != nil {
 			return err
 		}
 	}
@@ -407,6 +407,28 @@ func (s *Service) FollowLog(ctx context.Context, req *pb.FollowLogRequest, strea
 		case <-watchCh:
 			timer.Stop()
 		case <-timer.C:
+		}
+	}
+}
+
+// waitOn notes that the caller of FollowLog req waits on its command
+// (Engine.WaitOn), sending keepalives as it does: resuming a paused command
+// waits on its freeze, which pushing its memory to swap can hold for long.
+// It resumes the command even if the caller goes meanwhile, as Resume does:
+// a resume cut off halfway would leave it frozen.
+func (s *Service) waitOn(ctx context.Context, req *pb.FollowLogRequest, stream hotbedv1connect.WorkspaceServiceFollowLogServerStream) error {
+	done := make(chan error, 1)
+	go func() { done <- s.E.WaitOn(context.WithoutCancel(ctx), req.Id) }()
+	keepalive := time.NewTicker(s.E.streamKeepalive())
+	defer keepalive.Stop()
+	for {
+		select {
+		case err := <-done:
+			return err
+		case <-keepalive.C:
+			if err := stream.Send(&pb.LogChunk{NextOffset: req.Offset}); err != nil {
+				return err // the caller went away; WaitOn goes on without it
+			}
 		}
 	}
 }

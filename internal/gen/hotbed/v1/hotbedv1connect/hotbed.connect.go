@@ -1924,7 +1924,8 @@ type SessionServiceClient interface {
 	// keeps it alive.
 	EndSession(context.Context, *v1.EndSessionRequest) (*v1.Session, error)
 	// WatchSession streams the session's events after a cursor: first how it
-	// stands, then each new batch of events as it happens. It ends when the
+	// stands, then each new batch of events as it happens, and how it stands
+	// again as a keepalive when it has sent nothing for 5s. It ends when the
 	// session does, or after at most two minutes, so an agent that wants the
 	// session kept has to keep watching it.
 	WatchSession(context.Context, *v1.WatchSessionRequest) (SessionServiceWatchSessionClientStream, error)
@@ -1988,7 +1989,8 @@ type SessionServiceHandler interface {
 	// keeps it alive.
 	EndSession(context.Context, *v1.EndSessionRequest) (*v1.Session, error)
 	// WatchSession streams the session's events after a cursor: first how it
-	// stands, then each new batch of events as it happens. It ends when the
+	// stands, then each new batch of events as it happens, and how it stands
+	// again as a keepalive when it has sent nothing for 5s. It ends when the
 	// session does, or after at most two minutes, so an agent that wants the
 	// session kept has to keep watching it.
 	WatchSession(context.Context, *v1.WatchSessionRequest, SessionServiceWatchSessionServerStream) error

@@ -148,3 +148,22 @@ func TestHearKeepalivesLeavesOtherStreamsAlone(t *testing.T) {
 		t.Fatalf("silent TraceCommand: %d messages, then %v; want 1, then its caller's deadline", n, err)
 	}
 }
+
+// A caller slow to take what came (its output piped to a pager no one
+// scrolls) does not make a live stream look dead: only time spent waiting
+// in Receive counts.
+func TestHearKeepalivesCountsOnlyTimeSpentWaiting(t *testing.T) {
+	cl := listeningClient(t, &streamer{keepalive: 50 * time.Millisecond, hold: time.Second}, 200*time.Millisecond)
+	stream, err := cl.FollowLog(t.Context(), &pb.FollowLogRequest{Id: "c-1", Follow: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := stream.Receive(); err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(500 * time.Millisecond) // the caller busy elsewhere, past its silence
+	n, err := receiveAll[*pb.LogChunk](stream)
+	if err != nil || n < 1 {
+		t.Fatalf("FollowLog after a slow caller: %d more messages, then %v; want more, then its clean end", n, err)
+	}
+}
