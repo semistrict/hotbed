@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"io"
 	"net"
@@ -333,4 +334,157 @@ func writeConnectStreamEnd(w http.ResponseWriter) {
 	hdr[4] = byte(len(end))
 	_, _ = w.Write(hdr[:])
 	_, _ = w.Write(end)
+}
+
+// Regression test for issue #21: when a FollowLog stream wedges silently after
+// a command finishes (e.g. exit 1 with 0 lines of output on a stalled DO/edge
+// stream), the watchdog notices the terminal command via GetCommand, aborts
+// the wedged stream, drains any output, and returns promptly.
+func TestFollowLogStreamExitsWhenCommandFinishedOnWedgedStream(t *testing.T) {
+	origAfter, origPoll, origGrace, origIdle := followWaitNoticeAfter, followWaitPollInterval, followTerminalGrace, followStreamIdleTimeout
+	followWaitNoticeAfter = 20 * time.Millisecond
+	followWaitPollInterval = 20 * time.Millisecond
+	followTerminalGrace = 40 * time.Millisecond
+	followStreamIdleTimeout = 10 * time.Second
+	t.Cleanup(func() {
+		followWaitNoticeAfter = origAfter
+		followWaitPollInterval = origPoll
+		followTerminalGrace = origGrace
+		followStreamIdleTimeout = origIdle
+	})
+
+	var followCalls, resets atomic.Int64
+	exitCode := int32(1)
+	srv := startHandlerPeer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case strings.HasSuffix(r.URL.Path, "/FollowLog"):
+			n := followCalls.Add(1)
+			w.Header().Set("Content-Type", "application/connect+proto")
+			w.WriteHeader(http.StatusOK)
+			if f, ok := w.(http.Flusher); ok {
+				f.Flush()
+			}
+			if n == 1 {
+				// Simulate a wedged server stream that never sends EOF.
+				<-r.Context().Done()
+				return
+			}
+			// Drain call returns clean EOF (0 lines of output).
+			writeConnectStreamEnd(w)
+		case strings.HasSuffix(r.URL.Path, "/GetCommand"):
+			writeProto(w, &pb.Command{
+				Id:       "opkxenbuxn",
+				State:    pb.CommandState_COMMAND_STATE_FAILED,
+				ExitCode: &exitCode,
+			})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	hc := &http.Client{Timeout: 10 * time.Second}
+	conn, err := api.Dial(srv, api.DefaultPort, hc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wsClient := hotbedv1connect.NewWorkspaceServiceClient(conn)
+	wk := workerClients{
+		calls:       wsClient,
+		stream:      wsClient,
+		controller:  wsClient,
+		resetStream: func() { resets.Add(1) },
+	}
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+	defer cancel()
+	var out, stderr bytes.Buffer
+	cmd, err := followLog(ctx, wk, "opkxenbuxn", &out, &stderr)
+	if err != nil {
+		t.Fatalf("followLog: %v (stderr=%q)", err, stderr.String())
+	}
+	if cmd.State != pb.CommandState_COMMAND_STATE_FAILED || cmd.GetExitCode() != 1 {
+		t.Fatalf("cmd = %v, want FAILED exit 1", cmd)
+	}
+	if followCalls.Load() < 2 {
+		t.Errorf("FollowLog calls = %d, want >= 2 (wedged stream + drainLog)", followCalls.Load())
+	}
+	if resets.Load() < 1 {
+		t.Errorf("resetStream calls = %d, want >= 1", resets.Load())
+	}
+}
+
+// Regression test for issue #20: when a FollowLog stream for a queued command
+// goes silently dead (missing keepalives, e.g. DO restart behind Cloudflare
+// edge), followLogStream aborts and reconnects before orphanAfter cancels it.
+func TestFollowLogStreamReconnectsWedgedSilentStream(t *testing.T) {
+	origAfter, origPoll, origGrace, origIdle := followWaitNoticeAfter, followWaitPollInterval, followTerminalGrace, followStreamIdleTimeout
+	followWaitNoticeAfter = 5 * time.Second
+	followWaitPollInterval = 5 * time.Second
+	followTerminalGrace = 2 * time.Second
+	followStreamIdleTimeout = 100 * time.Millisecond
+	t.Cleanup(func() {
+		followWaitNoticeAfter = origAfter
+		followWaitPollInterval = origPoll
+		followTerminalGrace = origGrace
+		followStreamIdleTimeout = origIdle
+	})
+
+	var followCalls, resets atomic.Int64
+	var done atomic.Bool
+	exitCode := int32(0)
+	srv := startHandlerPeer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case strings.HasSuffix(r.URL.Path, "/FollowLog"):
+			n := followCalls.Add(1)
+			w.Header().Set("Content-Type", "application/connect+proto")
+			w.WriteHeader(http.StatusOK)
+			if f, ok := w.(http.Flusher); ok {
+				f.Flush()
+			}
+			if n == 1 {
+				// First stream wedges silently with no keepalives.
+				<-r.Context().Done()
+				return
+			}
+			// Reconnected stream delivers output and terminal chunk.
+			done.Store(true)
+			writeConnectStreamMsg(w, &pb.LogChunk{Data: []byte("ok\n"), NextOffset: 3})
+			writeConnectStreamMsg(w, &pb.LogChunk{NextOffset: 3, State: pb.CommandState_COMMAND_STATE_SUCCEEDED})
+			writeConnectStreamEnd(w)
+		case strings.HasSuffix(r.URL.Path, "/GetCommand"):
+			state := pb.CommandState_COMMAND_STATE_QUEUED
+			if done.Load() {
+				state = pb.CommandState_COMMAND_STATE_SUCCEEDED
+			}
+			writeProto(w, &pb.Command{Id: "vlzjzcn5x7", State: state, ExitCode: &exitCode})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	hc := &http.Client{Timeout: 10 * time.Second}
+	conn, err := api.Dial(srv, api.DefaultPort, hc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wsClient := hotbedv1connect.NewWorkspaceServiceClient(conn)
+	wk := workerClients{
+		calls:       wsClient,
+		stream:      wsClient,
+		controller:  wsClient,
+		resetStream: func() { resets.Add(1) },
+	}
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+	defer cancel()
+	var out, stderr bytes.Buffer
+	cmd, err := followLog(ctx, wk, "vlzjzcn5x7", &out, &stderr)
+	if err != nil {
+		t.Fatalf("followLog: %v (stderr=%q)", err, stderr.String())
+	}
+	if cmd.State != pb.CommandState_COMMAND_STATE_SUCCEEDED || out.String() != "ok\n" {
+		t.Fatalf("got state=%v out=%q, want SUCCEEDED and ok\\n", cmd.State, out.String())
+	}
+	if followCalls.Load() != 2 {
+		t.Errorf("FollowLog calls = %d, want 2 (wedged + reconnected)", followCalls.Load())
+	}
+	if resets.Load() < 1 {
+		t.Errorf("resetStream calls = %d, want >= 1", resets.Load())
+	}
 }

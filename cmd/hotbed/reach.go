@@ -27,6 +27,7 @@ import (
 type workerClients struct {
 	calls, stream hotbedv1connect.WorkspaceServiceClient
 	controller    hotbedv1connect.WorkspaceServiceClient
+	resetStream   func()
 }
 
 // reach is the clients that reach node's worker: through the controller,
@@ -40,7 +41,12 @@ func (f controllerClient) reach(d deps, node string) (workerClients, error) {
 	if err != nil {
 		return workerClients{}, err
 	}
-	w := workerClients{calls: calls.workspaces, stream: stream.workspaces, controller: calls.workspaces}
+	w := workerClients{
+		calls:       calls.workspaces,
+		stream:      stream.workspaces,
+		controller:  calls.workspaces,
+		resetStream: func() { api.ResetClientTransport(d.stream) },
+	}
 	localWorker := d.localWorker
 	if localWorker == nil {
 		localWorker = func() (setup.LocalWorkerSocket, error) { return setup.LocalWorker("") }

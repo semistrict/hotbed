@@ -809,6 +809,50 @@ func TestFollowLogStreamsGrowingLogAndDrainsOnExit(t *testing.T) {
 	}
 }
 
+// Regression test for issues #20/#21: while a followed command is queued and
+// produces no output, FollowLog emits periodic empty keepalive chunks so edge
+// proxies keep the stream open and clients can detect silent stalls.
+func TestFollowLogEmitsKeepaliveWhileQueued(t *testing.T) {
+	origKeepalive := followLogKeepalive
+	followLogKeepalive = 30 * time.Millisecond
+	t.Cleanup(func() { followLogKeepalive = origKeepalive })
+
+	eng, _ := outputEngine(t, DefaultLogLimit)
+	eng.mu.Lock()
+	c := eng.newCommand(&pb.CommandRecord{
+		Command: &pb.Command{
+			Id:          "follow-keepalive",
+			WorkspaceId: "w",
+			State:       queued,
+			Attached:    true,
+		},
+	})
+	eng.commands[c.cmd().Id] = c
+	eng.mu.Unlock()
+
+	client := clientAs(t, httpx.Peer{NodeID: "ctrl", Hostname: "ctrl", Login: "owner"}, eng)
+
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+	defer cancel()
+	stream, err := client.FollowLog(ctx, &pb.FollowLogRequest{Id: "follow-keepalive", Follow: true})
+	if err != nil {
+		t.Fatalf("FollowLog: %v", err)
+	}
+	defer stream.Close()
+
+	keepalives := 0
+	for keepalives < 2 {
+		chunk, err := stream.Receive()
+		if err != nil {
+			t.Fatalf("Receive after %d keepalives: %v", keepalives, err)
+		}
+		if len(chunk.Data) != 0 || chunk.NextOffset != 0 {
+			t.Fatalf("unexpected chunk %+v, want empty keepalive at offset 0", chunk)
+		}
+		keepalives++
+	}
+}
+
 // Engine.Sync must enforce MaxSyncBundleBytes across submodule and repo bundles,
 // rejecting oversized uploads with CodeInvalidArgs and leaving no temp bundle
 // files behind (board 8015).
