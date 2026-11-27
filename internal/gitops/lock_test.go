@@ -106,6 +106,58 @@ func TestRollbackApplyClearsStaleIndexLock(t *testing.T) {
 	}
 }
 
+func TestApplyClearsBrokenSyncRef(t *testing.T) {
+	ctx := t.Context()
+	src := t.TempDir()
+	sg := Git{Dir: src}
+	mustGit(t, sg, "init", "-b", "main")
+	mustGit(t, sg, "config", "user.email", "test@example.com")
+	mustGit(t, sg, "config", "user.name", "Test")
+	if err := os.WriteFile(filepath.Join(src, "a.txt"), []byte("v1\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	mustGit(t, sg, "add", "a.txt")
+	mustGit(t, sg, "commit", "-m", "base")
+	base := mustGit(t, sg, "rev-parse", "HEAD")
+
+	ws := t.TempDir()
+	mustGit(t, Git{Dir: ws}, "clone", "--quiet", src, ".")
+	wg := Git{Dir: ws}
+
+	if err := os.WriteFile(filepath.Join(src, "a.txt"), []byte("v2\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	mustGit(t, sg, "add", "a.txt")
+	mustGit(t, sg, "commit", "-m", "v2")
+	head := mustGit(t, sg, "rev-parse", "HEAD")
+	mustGit(t, sg, "update-ref", SyncRef, head)
+	bundle := filepath.Join(t.TempDir(), "sync.bundle")
+	mustGit(t, sg, "bundle", "create", bundle, SyncRef)
+
+	// Simulate an ENOSPC / EIO leaving an empty or truncated loose refs/hotbed/sync
+	// file, which makes `git update-ref -- refs/hotbed/sync <oid>` fail with
+	// "unable to resolve reference 'refs/hotbed/sync': reference broken".
+	brokenRef := filepath.Join(ws, ".git", filepath.FromSlash(SyncRef))
+	if err := os.MkdirAll(filepath.Dir(brokenRef), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(brokenRef, nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	changed, err := Apply(ctx, wg, bundle, head, base, nil)
+	if err != nil {
+		t.Fatalf("Apply with broken loose %s failed: %v", SyncRef, err)
+	}
+	if changed != 1 {
+		t.Fatalf("changed = %d, want 1", changed)
+	}
+	gotRef := mustGit(t, wg, "rev-parse", SyncRef)
+	if gotRef != head {
+		t.Fatalf("%s = %q, want %q", SyncRef, gotRef, head)
+	}
+}
+
 func mustGit(t *testing.T, g Git, args ...string) string {
 	t.Helper()
 	cmd := exec.Command("git", args...)

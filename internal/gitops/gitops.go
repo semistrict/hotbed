@@ -1161,6 +1161,8 @@ func clearStaleGitLocks(ctx context.Context, g Git) {
 		}
 		if staleGitLockNames[d.Name()] || strings.HasSuffix(filepath.ToSlash(path), "/"+SyncRef+".lock") {
 			_ = os.Remove(path)
+		} else if strings.HasSuffix(filepath.ToSlash(path), "/"+SyncRef) {
+			removeBrokenLooseRef(path)
 		}
 		return nil
 	})
@@ -1176,6 +1178,24 @@ func removeGitDirLocks(gitDir string) {
 	syncLock := filepath.Join(gitDir, filepath.FromSlash(SyncRef)+".lock")
 	if fi, err := os.Lstat(syncLock); err == nil && fi.Mode().IsRegular() {
 		_ = os.Remove(syncLock)
+	}
+	removeBrokenLooseRef(filepath.Join(gitDir, filepath.FromSlash(SyncRef)))
+}
+
+// removeBrokenLooseRef removes a loose ref file (such as refs/hotbed/sync) if
+// a prior I/O error or ENOSPC left it empty or truncated, which otherwise
+// makes every subsequent `git update-ref` fail with "reference broken".
+func removeBrokenLooseRef(path string) {
+	fi, err := os.Lstat(path)
+	if err != nil || !fi.Mode().IsRegular() {
+		return
+	}
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return
+	}
+	if err := ValidateSHA(strings.TrimSpace(string(raw))); err != nil {
+		_ = os.Remove(path)
 	}
 }
 
