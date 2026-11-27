@@ -1476,8 +1476,10 @@ message CreateWorkspaceRequest {
 // left by load, preferring one where the session already has a workspace,
 // then one with a warm base of its project.
 message Placement {
-  reserved 1;
-  reserved "node";
+  // Deprecated: clients may no longer pin a node by name; the controller
+  // rejects any non-empty value with INVALID_ARGS so older CLIs fail loud
+  // instead of silently dropping --node.
+  string node = 1 [deprecated = true];
   // Only nodes of this architecture, as Resources.arch says it: amd64 or arm64.
   string arch = 2;
   // A measurement: only nodes with measurement CPUs (Resources.bench_cpus).
@@ -3389,8 +3391,9 @@ message ScheduledCommand {
   // CRON_TZ=ZONE, such as "0 2 * * *".
   string cron = 2;
   string repo = 3;
-  reserved 4;
-  reserved "node";
+  // Deprecated: schedules may no longer pin a node by name; PutSchedule
+  // rejects any non-empty value with INVALID_ARGS.
+  string node = 4 [deprecated = true];
   // Puts every run on nodes of this architecture (amd64, arm64); otherwise
   // the controller places each like any run (Placement).
   string arch = 12;

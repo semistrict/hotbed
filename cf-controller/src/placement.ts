@@ -424,6 +424,17 @@ export function chooseCandidate(
 	syncs: boolean,
 	opts?: { waitForCapacity?: boolean },
 ): ChooseResult {
+	if (p?.node) {
+		return {
+			why: "",
+			err: hotbedError(
+				ErrorCode.InvalidArgs,
+				`placement by --node (${p.node}) is no longer supported; specify requirements instead (--arch, --runtime, --bench, --mem-low, --vm-cpus, --vm-mem)`,
+			).withSuggestion(
+				"drop --node, pass requirements such as --arch amd64|arm64, and run `hotbed upgrade`",
+			),
+		};
+	}
 	const waitForCapacity = Boolean(opts?.waitForCapacity);
 	const scope = cs;
 	const fits = (c: Candidate) => candidateUnfit(c, p, hosts) === "";

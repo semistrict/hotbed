@@ -52,6 +52,14 @@ describe("candidateUnfit", () => {
 			"big has 17179869184 bytes of RAM, less than the 18253611008 its VM asks",
 		);
 	});
+	it("rejects deprecated Placement.node from older CLIs instead of silently ignoring it", () => {
+		const a = vmNode({ host: "ubu1" });
+		const res = chooseCandidate([a], create(PlacementSchema, { node: "ubu1" }), [], true);
+		expect(res.err).toBeDefined();
+		expect(res.err?.code).toBe("INVALID_ARGS");
+		expect(res.err?.message).toContain("--arch");
+		expect(res.err?.suggestion).toContain("hotbed upgrade");
+	});
 });
 
 describe("buildPlacementDecision", () => {

@@ -308,6 +308,14 @@ export function createScheduleService(
 				throw hotbedError(ErrorCode.InvalidArgs, "no scheduled command");
 			}
 			const sc = clone(ScheduledCommandSchema, req.schedule);
+			if (sc.node) {
+				throw hotbedError(
+					ErrorCode.InvalidArgs,
+					`placement by --node (${sc.node}) is no longer supported; specify requirements instead (--arch, --bench, --mem-low, --vm-cpus, --vm-mem)`,
+				).withSuggestion(
+					"drop --node, pass requirements such as --arch amd64|arm64, and run `hotbed upgrade`",
+				);
+			}
 			if (!SCHEDULE_NAME_RE.test(sc.name) || sc.name.length > MAX_SCHEDULE_NAME) {
 				throw hotbedError(
 					ErrorCode.InvalidArgs,
