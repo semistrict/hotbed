@@ -31626,10 +31626,13 @@ func (x *BoardMention) GetCandidates() []*BoardActor {
 	return nil
 }
 
+// The live claim on a task: the holding actor (principal + profile) and its lease.
 type BoardTaskClaimView struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Actor         string                 `protobuf:"bytes,1,opt,name=actor,proto3" json:"actor,omitempty"`
-	Until         int64                  `protobuf:"varint,2,opt,name=until,proto3" json:"until,omitempty"`
+	state protoimpl.MessageState `protogen:"open.v1"`
+	Actor string                 `protobuf:"bytes,1,opt,name=actor,proto3" json:"actor,omitempty"`
+	Until int64                  `protobuf:"varint,2,opt,name=until,proto3" json:"until,omitempty"`
+	// The lease length renewals keep by default; 0 for claims imported without one.
+	LeaseSeconds  int32 `protobuf:"varint,3,opt,name=lease_seconds,json=leaseSeconds,proto3" json:"lease_seconds,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -31674,6 +31677,13 @@ func (x *BoardTaskClaimView) GetActor() string {
 func (x *BoardTaskClaimView) GetUntil() int64 {
 	if x != nil {
 		return x.Until
+	}
+	return 0
+}
+
+func (x *BoardTaskClaimView) GetLeaseSeconds() int32 {
+	if x != nil {
+		return x.LeaseSeconds
 	}
 	return 0
 }
@@ -31847,11 +31857,10 @@ func (x *BoardTask) GetReason() string {
 	return ""
 }
 
-// Returned only once on claim (or create --claim); token is never stored in views.
+// The claim a claim (or create --claim) or renewal leaves the caller holding.
 type BoardTaskClaim struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Epoch         int32                  `protobuf:"varint,1,opt,name=epoch,proto3" json:"epoch,omitempty"`
-	Token         string                 `protobuf:"bytes,2,opt,name=token,proto3" json:"token,omitempty"`
 	Until         int64                  `protobuf:"varint,3,opt,name=until,proto3" json:"until,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
@@ -31892,13 +31901,6 @@ func (x *BoardTaskClaim) GetEpoch() int32 {
 		return x.Epoch
 	}
 	return 0
-}
-
-func (x *BoardTaskClaim) GetToken() string {
-	if x != nil {
-		return x.Token
-	}
-	return ""
 }
 
 func (x *BoardTaskClaim) GetUntil() int64 {
@@ -34891,7 +34893,6 @@ type CreateBoardTaskRequest struct {
 	ForActor       string            `protobuf:"bytes,8,opt,name=for_actor,json=forActor,proto3" json:"for_actor,omitempty"`
 	Claim          bool              `protobuf:"varint,9,opt,name=claim,proto3" json:"claim,omitempty"`
 	LeaseSeconds   int32             `protobuf:"varint,10,opt,name=lease_seconds,json=leaseSeconds,proto3" json:"lease_seconds,omitempty"`
-	ClaimToken     string            `protobuf:"bytes,11,opt,name=claim_token,json=claimToken,proto3" json:"claim_token,omitempty"`
 	SessionId      string            `protobuf:"bytes,12,opt,name=session_id,json=sessionId,proto3" json:"session_id,omitempty"`
 	Remote         string            `protobuf:"bytes,13,opt,name=remote,proto3" json:"remote,omitempty"`
 	AsProfile      string            `protobuf:"bytes,14,opt,name=as_profile,json=asProfile,proto3" json:"as_profile,omitempty"`
@@ -34999,13 +35000,6 @@ func (x *CreateBoardTaskRequest) GetLeaseSeconds() int32 {
 		return x.LeaseSeconds
 	}
 	return 0
-}
-
-func (x *CreateBoardTaskRequest) GetClaimToken() string {
-	if x != nil {
-		return x.ClaimToken
-	}
-	return ""
 }
 
 func (x *CreateBoardTaskRequest) GetSessionId() string {
@@ -35600,7 +35594,6 @@ type ClaimBoardTaskRequest struct {
 	FromOwners    []string                      `protobuf:"bytes,8,rep,name=from_owners,json=fromOwners,proto3" json:"from_owners,omitempty"`
 	LeaseSeconds  int32                         `protobuf:"varint,9,opt,name=lease_seconds,json=leaseSeconds,proto3" json:"lease_seconds,omitempty"`
 	WaitSeconds   int32                         `protobuf:"varint,10,opt,name=wait_seconds,json=waitSeconds,proto3" json:"wait_seconds,omitempty"`
-	ClaimToken    string                        `protobuf:"bytes,11,opt,name=claim_token,json=claimToken,proto3" json:"claim_token,omitempty"`
 	AsProfile     string                        `protobuf:"bytes,12,opt,name=as_profile,json=asProfile,proto3" json:"as_profile,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
@@ -35717,13 +35710,6 @@ func (x *ClaimBoardTaskRequest) GetWaitSeconds() int32 {
 	return 0
 }
 
-func (x *ClaimBoardTaskRequest) GetClaimToken() string {
-	if x != nil {
-		return x.ClaimToken
-	}
-	return ""
-}
-
 func (x *ClaimBoardTaskRequest) GetAsProfile() string {
 	if x != nil {
 		return x.AsProfile
@@ -35750,8 +35736,6 @@ func (*ClaimBoardTaskRequest_AllProjects) isClaimBoardTaskRequest_Scope() {}
 type RenewBoardTaskRequest struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	Id    int64                  `protobuf:"varint,1,opt,name=id,proto3" json:"id,omitempty"`
-	Epoch int32                  `protobuf:"varint,2,opt,name=epoch,proto3" json:"epoch,omitempty"`
-	Token string                 `protobuf:"bytes,3,opt,name=token,proto3" json:"token,omitempty"`
 	// 0 preserves the claim's original lease duration (fallback 15m).
 	LeaseSeconds  int32  `protobuf:"varint,4,opt,name=lease_seconds,json=leaseSeconds,proto3" json:"lease_seconds,omitempty"`
 	SessionId     string `protobuf:"bytes,5,opt,name=session_id,json=sessionId,proto3" json:"session_id,omitempty"`
@@ -35797,20 +35781,6 @@ func (x *RenewBoardTaskRequest) GetId() int64 {
 	return 0
 }
 
-func (x *RenewBoardTaskRequest) GetEpoch() int32 {
-	if x != nil {
-		return x.Epoch
-	}
-	return 0
-}
-
-func (x *RenewBoardTaskRequest) GetToken() string {
-	if x != nil {
-		return x.Token
-	}
-	return ""
-}
-
 func (x *RenewBoardTaskRequest) GetLeaseSeconds() int32 {
 	if x != nil {
 		return x.LeaseSeconds
@@ -35835,8 +35805,6 @@ func (x *RenewBoardTaskRequest) GetAsProfile() string {
 type ReleaseBoardTaskRequest struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Id            int64                  `protobuf:"varint,1,opt,name=id,proto3" json:"id,omitempty"`
-	Epoch         int32                  `protobuf:"varint,2,opt,name=epoch,proto3" json:"epoch,omitempty"`
-	Token         string                 `protobuf:"bytes,3,opt,name=token,proto3" json:"token,omitempty"`
 	SessionId     string                 `protobuf:"bytes,4,opt,name=session_id,json=sessionId,proto3" json:"session_id,omitempty"`
 	AsProfile     string                 `protobuf:"bytes,5,opt,name=as_profile,json=asProfile,proto3" json:"as_profile,omitempty"`
 	unknownFields protoimpl.UnknownFields
@@ -35880,20 +35848,6 @@ func (x *ReleaseBoardTaskRequest) GetId() int64 {
 	return 0
 }
 
-func (x *ReleaseBoardTaskRequest) GetEpoch() int32 {
-	if x != nil {
-		return x.Epoch
-	}
-	return 0
-}
-
-func (x *ReleaseBoardTaskRequest) GetToken() string {
-	if x != nil {
-		return x.Token
-	}
-	return ""
-}
-
 func (x *ReleaseBoardTaskRequest) GetSessionId() string {
 	if x != nil {
 		return x.SessionId
@@ -35911,8 +35865,6 @@ func (x *ReleaseBoardTaskRequest) GetAsProfile() string {
 type CompleteBoardTaskRequest struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Id            int64                  `protobuf:"varint,1,opt,name=id,proto3" json:"id,omitempty"`
-	Epoch         int32                  `protobuf:"varint,2,opt,name=epoch,proto3" json:"epoch,omitempty"`
-	Token         string                 `protobuf:"bytes,3,opt,name=token,proto3" json:"token,omitempty"`
 	Result        string                 `protobuf:"bytes,4,opt,name=result,proto3" json:"result,omitempty"`
 	SessionId     string                 `protobuf:"bytes,5,opt,name=session_id,json=sessionId,proto3" json:"session_id,omitempty"`
 	AsProfile     string                 `protobuf:"bytes,6,opt,name=as_profile,json=asProfile,proto3" json:"as_profile,omitempty"`
@@ -35957,20 +35909,6 @@ func (x *CompleteBoardTaskRequest) GetId() int64 {
 	return 0
 }
 
-func (x *CompleteBoardTaskRequest) GetEpoch() int32 {
-	if x != nil {
-		return x.Epoch
-	}
-	return 0
-}
-
-func (x *CompleteBoardTaskRequest) GetToken() string {
-	if x != nil {
-		return x.Token
-	}
-	return ""
-}
-
 func (x *CompleteBoardTaskRequest) GetResult() string {
 	if x != nil {
 		return x.Result
@@ -35995,8 +35933,6 @@ func (x *CompleteBoardTaskRequest) GetAsProfile() string {
 type FailBoardTaskRequest struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Id            int64                  `protobuf:"varint,1,opt,name=id,proto3" json:"id,omitempty"`
-	Epoch         int32                  `protobuf:"varint,2,opt,name=epoch,proto3" json:"epoch,omitempty"`
-	Token         string                 `protobuf:"bytes,3,opt,name=token,proto3" json:"token,omitempty"`
 	Reason        string                 `protobuf:"bytes,4,opt,name=reason,proto3" json:"reason,omitempty"`
 	SessionId     string                 `protobuf:"bytes,5,opt,name=session_id,json=sessionId,proto3" json:"session_id,omitempty"`
 	AsProfile     string                 `protobuf:"bytes,6,opt,name=as_profile,json=asProfile,proto3" json:"as_profile,omitempty"`
@@ -36041,20 +35977,6 @@ func (x *FailBoardTaskRequest) GetId() int64 {
 	return 0
 }
 
-func (x *FailBoardTaskRequest) GetEpoch() int32 {
-	if x != nil {
-		return x.Epoch
-	}
-	return 0
-}
-
-func (x *FailBoardTaskRequest) GetToken() string {
-	if x != nil {
-		return x.Token
-	}
-	return ""
-}
-
 func (x *FailBoardTaskRequest) GetReason() string {
 	if x != nil {
 		return x.Reason
@@ -36081,8 +36003,6 @@ type BlockBoardTaskRequest struct {
 	Id            int64                  `protobuf:"varint,1,opt,name=id,proto3" json:"id,omitempty"`
 	Reason        string                 `protobuf:"bytes,2,opt,name=reason,proto3" json:"reason,omitempty"`
 	Kind          string                 `protobuf:"bytes,3,opt,name=kind,proto3" json:"kind,omitempty"`
-	Epoch         int32                  `protobuf:"varint,4,opt,name=epoch,proto3" json:"epoch,omitempty"`
-	Token         string                 `protobuf:"bytes,5,opt,name=token,proto3" json:"token,omitempty"`
 	SessionId     string                 `protobuf:"bytes,6,opt,name=session_id,json=sessionId,proto3" json:"session_id,omitempty"`
 	AsProfile     string                 `protobuf:"bytes,7,opt,name=as_profile,json=asProfile,proto3" json:"as_profile,omitempty"`
 	unknownFields protoimpl.UnknownFields
@@ -36136,20 +36056,6 @@ func (x *BlockBoardTaskRequest) GetReason() string {
 func (x *BlockBoardTaskRequest) GetKind() string {
 	if x != nil {
 		return x.Kind
-	}
-	return ""
-}
-
-func (x *BlockBoardTaskRequest) GetEpoch() int32 {
-	if x != nil {
-		return x.Epoch
-	}
-	return 0
-}
-
-func (x *BlockBoardTaskRequest) GetToken() string {
-	if x != nil {
-		return x.Token
 	}
 	return ""
 }
@@ -40626,10 +40532,11 @@ const file_hotbed_v1_hotbed_proto_rawDesc = "" +
 	"\x05actor\x18\x02 \x01(\v2\x15.hotbed.v1.BoardActorR\x05actor\x125\n" +
 	"\n" +
 	"candidates\x18\x03 \x03(\v2\x15.hotbed.v1.BoardActorR\n" +
-	"candidates\"@\n" +
+	"candidates\"e\n" +
 	"\x12BoardTaskClaimView\x12\x14\n" +
 	"\x05actor\x18\x01 \x01(\tR\x05actor\x12\x14\n" +
-	"\x05until\x18\x02 \x01(\x03R\x05until\">\n" +
+	"\x05until\x18\x02 \x01(\x03R\x05until\x12#\n" +
+	"\rlease_seconds\x18\x03 \x01(\x05R\fleaseSeconds\">\n" +
 	"\x10BoardTaskBlocked\x12\x12\n" +
 	"\x04kind\x18\x01 \x01(\tR\x04kind\x12\x16\n" +
 	"\x06reason\x18\x02 \x01(\tR\x06reason\"\xc7\x02\n" +
@@ -40644,11 +40551,10 @@ const file_hotbed_v1_hotbed_proto_rawDesc = "" +
 	"\ablocked\x18\b \x01(\v2\x1b.hotbed.v1.BoardTaskBlockedR\ablocked\x12\x16\n" +
 	"\x06result\x18\t \x01(\tR\x06result\x12\x16\n" +
 	"\x06reason\x18\n" +
-	" \x01(\tR\x06reason\"R\n" +
+	" \x01(\tR\x06reason\"I\n" +
 	"\x0eBoardTaskClaim\x12\x14\n" +
 	"\x05epoch\x18\x01 \x01(\x05R\x05epoch\x12\x14\n" +
-	"\x05token\x18\x02 \x01(\tR\x05token\x12\x14\n" +
-	"\x05until\x18\x03 \x01(\x03R\x05until\"\xb6\x06\n" +
+	"\x05until\x18\x03 \x01(\x03R\x05untilJ\x04\b\x02\x10\x03R\x05token\"\xb6\x06\n" +
 	"\fBoardMessage\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\x03R\x02id\x12\x18\n" +
 	"\aproject\x18\x02 \x01(\tR\aproject\x12\x12\n" +
@@ -40954,7 +40860,7 @@ const file_hotbed_v1_hotbed_proto_rawDesc = "" +
 	"as_profile\x18\x03 \x01(\tR\tasProfile\"o\n" +
 	"\x1bCancelBoardScheduleResponse\x124\n" +
 	"\bschedule\x18\x01 \x01(\v2\x18.hotbed.v1.BoardScheduleR\bschedule\x12\x1a\n" +
-	"\bcanceled\x18\x02 \x01(\bR\bcanceled\"\xcd\x04\n" +
+	"\bcanceled\x18\x02 \x01(\bR\bcanceled\"\xbf\x04\n" +
 	"\x16CreateBoardTaskRequest\x12\x18\n" +
 	"\aproject\x18\x01 \x01(\tR\aproject\x12\x0e\n" +
 	"\x02re\x18\x02 \x01(\x03R\x02re\x12\x12\n" +
@@ -40966,9 +40872,7 @@ const file_hotbed_v1_hotbed_proto_rawDesc = "" +
 	"\tfor_actor\x18\b \x01(\tR\bforActor\x12\x14\n" +
 	"\x05claim\x18\t \x01(\bR\x05claim\x12#\n" +
 	"\rlease_seconds\x18\n" +
-	" \x01(\x05R\fleaseSeconds\x12\x1f\n" +
-	"\vclaim_token\x18\v \x01(\tR\n" +
-	"claimToken\x12\x1d\n" +
+	" \x01(\x05R\fleaseSeconds\x12\x1d\n" +
 	"\n" +
 	"session_id\x18\f \x01(\tR\tsessionId\x12\x16\n" +
 	"\x06remote\x18\r \x01(\tR\x06remote\x12\x1d\n" +
@@ -40978,7 +40882,7 @@ const file_hotbed_v1_hotbed_proto_rawDesc = "" +
 	"\x10t3code_thread_id\x18\x10 \x01(\tR\x0et3codeThreadId\x1a9\n" +
 	"\vLabelsEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
-	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"A\n" +
+	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01J\x04\b\v\x10\fR\vclaim_token\"A\n" +
 	"\x12BatchBoardTaskNeed\x12\x10\n" +
 	"\x02id\x18\x01 \x01(\x03H\x00R\x02id\x12\x12\n" +
 	"\x03key\x18\x02 \x01(\tH\x00R\x03keyB\x05\n" +
@@ -41027,7 +40931,7 @@ const file_hotbed_v1_hotbed_proto_rawDesc = "" +
 	"\x05scope\"e\n" +
 	"\x16ListBoardTasksResponse\x123\n" +
 	"\x05tasks\x18\x01 \x03(\v2\x1d.hotbed.v1.BoardThreadSummaryR\x05tasks\x12\x16\n" +
-	"\x06cursor\x18\x02 \x01(\x03R\x06cursor\"\x9c\x03\n" +
+	"\x06cursor\x18\x02 \x01(\x03R\x06cursor\"\x8e\x03\n" +
 	"\x15ClaimBoardTaskRequest\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\x03R\x02id\x12\x14\n" +
 	"\x05ready\x18\x02 \x01(\bR\x05ready\x12\x1a\n" +
@@ -41041,57 +40945,45 @@ const file_hotbed_v1_hotbed_proto_rawDesc = "" +
 	"fromOwners\x12#\n" +
 	"\rlease_seconds\x18\t \x01(\x05R\fleaseSeconds\x12!\n" +
 	"\fwait_seconds\x18\n" +
-	" \x01(\x05R\vwaitSeconds\x12\x1f\n" +
-	"\vclaim_token\x18\v \x01(\tR\n" +
-	"claimToken\x12\x1d\n" +
+	" \x01(\x05R\vwaitSeconds\x12\x1d\n" +
 	"\n" +
 	"as_profile\x18\f \x01(\tR\tasProfileB\a\n" +
-	"\x05scope\"\xb6\x01\n" +
+	"\x05scopeJ\x04\b\v\x10\fR\vclaim_token\"\xa4\x01\n" +
 	"\x15RenewBoardTaskRequest\x12\x0e\n" +
-	"\x02id\x18\x01 \x01(\x03R\x02id\x12\x14\n" +
-	"\x05epoch\x18\x02 \x01(\x05R\x05epoch\x12\x14\n" +
-	"\x05token\x18\x03 \x01(\tR\x05token\x12#\n" +
+	"\x02id\x18\x01 \x01(\x03R\x02id\x12#\n" +
 	"\rlease_seconds\x18\x04 \x01(\x05R\fleaseSeconds\x12\x1d\n" +
 	"\n" +
 	"session_id\x18\x05 \x01(\tR\tsessionId\x12\x1d\n" +
 	"\n" +
-	"as_profile\x18\x06 \x01(\tR\tasProfile\"\x93\x01\n" +
+	"as_profile\x18\x06 \x01(\tR\tasProfileJ\x04\b\x02\x10\x03J\x04\b\x03\x10\x04R\x05epochR\x05token\"\x81\x01\n" +
 	"\x17ReleaseBoardTaskRequest\x12\x0e\n" +
-	"\x02id\x18\x01 \x01(\x03R\x02id\x12\x14\n" +
-	"\x05epoch\x18\x02 \x01(\x05R\x05epoch\x12\x14\n" +
-	"\x05token\x18\x03 \x01(\tR\x05token\x12\x1d\n" +
+	"\x02id\x18\x01 \x01(\x03R\x02id\x12\x1d\n" +
 	"\n" +
 	"session_id\x18\x04 \x01(\tR\tsessionId\x12\x1d\n" +
 	"\n" +
-	"as_profile\x18\x05 \x01(\tR\tasProfile\"\xac\x01\n" +
+	"as_profile\x18\x05 \x01(\tR\tasProfileJ\x04\b\x02\x10\x03J\x04\b\x03\x10\x04R\x05epochR\x05token\"\x9a\x01\n" +
 	"\x18CompleteBoardTaskRequest\x12\x0e\n" +
-	"\x02id\x18\x01 \x01(\x03R\x02id\x12\x14\n" +
-	"\x05epoch\x18\x02 \x01(\x05R\x05epoch\x12\x14\n" +
-	"\x05token\x18\x03 \x01(\tR\x05token\x12\x16\n" +
+	"\x02id\x18\x01 \x01(\x03R\x02id\x12\x16\n" +
 	"\x06result\x18\x04 \x01(\tR\x06result\x12\x1d\n" +
 	"\n" +
 	"session_id\x18\x05 \x01(\tR\tsessionId\x12\x1d\n" +
 	"\n" +
-	"as_profile\x18\x06 \x01(\tR\tasProfile\"\xa8\x01\n" +
+	"as_profile\x18\x06 \x01(\tR\tasProfileJ\x04\b\x02\x10\x03J\x04\b\x03\x10\x04R\x05epochR\x05token\"\x96\x01\n" +
 	"\x14FailBoardTaskRequest\x12\x0e\n" +
-	"\x02id\x18\x01 \x01(\x03R\x02id\x12\x14\n" +
-	"\x05epoch\x18\x02 \x01(\x05R\x05epoch\x12\x14\n" +
-	"\x05token\x18\x03 \x01(\tR\x05token\x12\x16\n" +
+	"\x02id\x18\x01 \x01(\x03R\x02id\x12\x16\n" +
 	"\x06reason\x18\x04 \x01(\tR\x06reason\x12\x1d\n" +
 	"\n" +
 	"session_id\x18\x05 \x01(\tR\tsessionId\x12\x1d\n" +
 	"\n" +
-	"as_profile\x18\x06 \x01(\tR\tasProfile\"\xbd\x01\n" +
+	"as_profile\x18\x06 \x01(\tR\tasProfileJ\x04\b\x02\x10\x03J\x04\b\x03\x10\x04R\x05epochR\x05token\"\xab\x01\n" +
 	"\x15BlockBoardTaskRequest\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\x03R\x02id\x12\x16\n" +
 	"\x06reason\x18\x02 \x01(\tR\x06reason\x12\x12\n" +
-	"\x04kind\x18\x03 \x01(\tR\x04kind\x12\x14\n" +
-	"\x05epoch\x18\x04 \x01(\x05R\x05epoch\x12\x14\n" +
-	"\x05token\x18\x05 \x01(\tR\x05token\x12\x1d\n" +
+	"\x04kind\x18\x03 \x01(\tR\x04kind\x12\x1d\n" +
 	"\n" +
 	"session_id\x18\x06 \x01(\tR\tsessionId\x12\x1d\n" +
 	"\n" +
-	"as_profile\x18\a \x01(\tR\tasProfile\"g\n" +
+	"as_profile\x18\a \x01(\tR\tasProfileJ\x04\b\x04\x10\x05J\x04\b\x05\x10\x06R\x05epochR\x05token\"g\n" +
 	"\x17UnblockBoardTaskRequest\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\x03R\x02id\x12\x1d\n" +
 	"\n" +

@@ -39,7 +39,7 @@ type boardCmd struct {
 	Actors   boardActorsCmd   `cmd:"" help:"List actors seen on the board."`
 	Schema   boardSchemaCmd   `cmd:"" aliases:"schemas" help:"List, inspect, or register structured-data block schemas (json#name@version)."`
 	Schedule boardScheduleCmd `cmd:"" aliases:"schedules" help:"Schedule, list, or cancel future/recurring board posts."`
-	Task     boardTaskCmd     `cmd:"" aliases:"tasks" help:"First-class DAG task queue with fenced claim leases (ls, create, claim, run, renew, release, complete, fail, block, unblock, reopen, assign, needs, cancel)."`
+	Task     boardTaskCmd     `cmd:"" aliases:"tasks" help:"First-class DAG task queue with claim leases (ls, create, claim, run, renew, release, complete, fail, block, unblock, reopen, assign, needs, cancel)."`
 	Import   boardImportCmd   `cmd:"" help:"Idempotently import channels, actors, schemas, messages, tasks, and attachments from an existing @vercel/board server."`
 }
 
@@ -1270,7 +1270,7 @@ func (c *boardTaskCreateCmd) Exec(ctx context.Context, d deps) (any, error) {
 	if err != nil {
 		return nil, err
 	}
-	res, err := cl.board.CreateBoardTask(ctx, &pb.CreateBoardTaskRequest{
+	return cl.board.CreateBoardTask(ctx, &pb.CreateBoardTaskRequest{
 		Project:        c.Project,
 		Re:             c.Re,
 		Text:           text,
@@ -1287,21 +1287,6 @@ func (c *boardTaskCreateCmd) Exec(ctx context.Context, d deps) (any, error) {
 		Model:          c.Model,
 		T3CodeThreadId: d.t3codeThreadID(),
 	})
-	if err != nil {
-		return nil, err
-	}
-	if res.Claim != nil && res.Claim.Token != "" && res.Task != nil {
-		if err := saveBoardClaim(d, c.Controller, res.Task.Id, sess, c.As, boardClaimRecord{
-			TaskID: res.Task.Id,
-			Epoch:  res.Claim.Epoch,
-			Token:  res.Claim.Token,
-			Until:  res.Claim.Until,
-		}); err != nil {
-			return nil, err
-		}
-		res.Claim.Token = ""
-	}
-	return res, nil
 }
 
 type boardTaskClaimCmd struct {
@@ -1315,7 +1300,6 @@ type boardTaskClaimCmd struct {
 	From        []string `help:"Filter ready tasks by owner(s). Repeatable."`
 	Lease       string   `help:"Lease duration (default 15m, e.g. 5m, 1h)."`
 	Wait        string   `help:"Wait up to this duration for a ready task (with --ready)."`
-	PrintToken  bool     `name:"print-token" help:"Include the claim token in output instead of redacting it (it is always saved locally with mode 0600)."`
 }
 
 func (c *boardTaskClaimCmd) Exec(ctx context.Context, d deps) (any, error) {
@@ -1369,24 +1353,7 @@ func (c *boardTaskClaimCmd) Exec(ctx context.Context, d deps) (any, error) {
 			req.Scope = &pb.ClaimBoardTaskRequest_Project{Project: sc.project}
 		}
 	}
-	res, err := cl.board.ClaimBoardTask(ctx, req)
-	if err != nil {
-		return nil, err
-	}
-	if res.Claim != nil && res.Claim.Token != "" && res.Task != nil {
-		if err := saveBoardClaim(d, c.Controller, res.Task.Id, sess, c.As, boardClaimRecord{
-			TaskID: res.Task.Id,
-			Epoch:  res.Claim.Epoch,
-			Token:  res.Claim.Token,
-			Until:  res.Claim.Until,
-		}); err != nil {
-			return nil, err
-		}
-		if !c.PrintToken {
-			res.Claim.Token = ""
-		}
-	}
-	return res, nil
+	return cl.board.ClaimBoardTask(ctx, req)
 }
 
 type boardTaskRunCmd struct {
@@ -1430,7 +1397,6 @@ func (c *boardTaskRunCmd) Raw(ctx context.Context, d deps) (int, bool, error) {
 		From:             c.From,
 		Lease:            c.Lease,
 		Wait:             c.Wait,
-		PrintToken:       true,
 	}
 	rawRes, err := claimCmd.Exec(ctx, d)
 	if err != nil {
@@ -1440,10 +1406,11 @@ func (c *boardTaskRunCmd) Raw(ctx context.Context, d deps) (int, bool, error) {
 	if res.Task == nil || res.Claim == nil {
 		return exitError, false, api.Errorf(api.CodeInternal, "claim returned no task or claim")
 	}
-	sess, _ := c.resolveSession(ctx, d)
+	sess, err := c.resolveSession(ctx, d)
+	if err != nil {
+		return exitError, false, err
+	}
 	taskID := res.Task.Id
-	epoch := res.Claim.Epoch
-	token := res.Claim.Token
 
 	leaseSec, _ := parseBoardDuration(c.Lease)
 	if leaseSec <= 0 {
@@ -1455,8 +1422,7 @@ func (c *boardTaskRunCmd) Raw(ctx context.Context, d deps) (int, bool, error) {
 		"id":      taskID,
 		"project": res.Task.Project,
 		"text":    res.Task.Text,
-		"epoch":   epoch,
-		"token":   token,
+		"epoch":   res.Claim.Epoch,
 		"until":   res.Claim.Until,
 	})
 
@@ -1478,8 +1444,6 @@ func (c *boardTaskRunCmd) Raw(ctx context.Context, d deps) (int, bool, error) {
 			case <-t.C:
 				_, rerr := cl.board.RenewBoardTask(runCtx, &pb.RenewBoardTaskRequest{
 					Id:        taskID,
-					Epoch:     epoch,
-					Token:     token,
 					SessionId: sess,
 					AsProfile: c.As,
 				})
@@ -1495,7 +1459,14 @@ func (c *boardTaskRunCmd) Raw(ctx context.Context, d deps) (int, bool, error) {
 	cmd.Stdin = d.stdin
 	cmd.Stdout = d.stdout
 	cmd.Stderr = d.stderr
+	// The claim belongs to this actor, so the command settles it by acting as the same one.
 	cmd.Env = append(os.Environ(), "HOTBED_BOARD_TASK="+string(envPayload))
+	if sess != "" {
+		cmd.Env = append(cmd.Env, "HOTBED_SESSION="+sess)
+	}
+	if c.As != "" {
+		cmd.Env = append(cmd.Env, "HOTBED_BOARD_PROFILE="+c.As)
+	}
 
 	sigCh := make(chan os.Signal, 2)
 	signal.Notify(sigCh, os.Interrupt, syscall.SIGTERM)
@@ -1504,9 +1475,8 @@ func (c *boardTaskRunCmd) Raw(ctx context.Context, d deps) (int, bool, error) {
 	if err := cmd.Start(); err != nil {
 		cancel()
 		_, _ = cl.board.ReleaseBoardTask(context.Background(), &pb.ReleaseBoardTaskRequest{
-			Id: taskID, Epoch: epoch, Token: token, SessionId: sess, AsProfile: c.As,
+			Id: taskID, SessionId: sess, AsProfile: c.As,
 		})
-		deleteBoardClaim(d, c.Controller, taskID, sess, c.As)
 		return exitError, false, err
 	}
 
@@ -1534,22 +1504,15 @@ func (c *boardTaskRunCmd) Raw(ctx context.Context, d deps) (int, bool, error) {
 		_ = cmd.Process.Signal(syscall.SIGTERM)
 		<-waitDone
 		_, _ = cl.board.ReleaseBoardTask(context.Background(), &pb.ReleaseBoardTaskRequest{
-			Id: taskID, Epoch: epoch, Token: token, SessionId: sess, AsProfile: c.As,
+			Id: taskID, SessionId: sess, AsProfile: c.As,
 		})
-		deleteBoardClaim(d, c.Controller, taskID, sess, c.As)
 		return exitInterrupted, true, nil
 	}
-}
-
-type boardTaskFenceFlags struct {
-	Epoch int32  `help:"Claim epoch (default: from local claim store or HOTBED_BOARD_TASK)."`
-	Token string `help:"Claim token (default: from local claim store or HOTBED_BOARD_TASK)."`
 }
 
 type boardTaskRenewCmd struct {
 	controllerClient
 	boardActorFlags
-	boardTaskFenceFlags
 	ID    int64  `arg:"" help:"Task ID to renew."`
 	Lease string `help:"Optional new lease duration (omit to preserve the claim's original lease duration)."`
 }
@@ -1563,41 +1526,21 @@ func (c *boardTaskRenewCmd) Exec(ctx context.Context, d deps) (any, error) {
 	if err != nil {
 		return nil, err
 	}
-	epoch, token, err := resolveBoardClaimFence(d, c.Controller, c.ID, sess, c.As, c.Epoch, c.Token)
-	if err != nil {
-		return nil, err
-	}
 	leaseSec, err := parseBoardDuration(c.Lease)
 	if err != nil {
 		return nil, err
 	}
-	res, err := cl.board.RenewBoardTask(ctx, &pb.RenewBoardTaskRequest{
+	return cl.board.RenewBoardTask(ctx, &pb.RenewBoardTaskRequest{
 		Id:           c.ID,
-		Epoch:        epoch,
-		Token:        token,
 		LeaseSeconds: int32(leaseSec),
 		SessionId:    sess,
 		AsProfile:    c.As,
 	})
-	if err != nil {
-		return nil, err
-	}
-	if res.Claim != nil {
-		_ = saveBoardClaim(d, c.Controller, c.ID, sess, c.As, boardClaimRecord{
-			TaskID: c.ID,
-			Epoch:  epoch,
-			Token:  token,
-			Until:  res.Claim.Until,
-		})
-		res.Claim.Token = ""
-	}
-	return res, nil
 }
 
 type boardTaskReleaseCmd struct {
 	controllerClient
 	boardActorFlags
-	boardTaskFenceFlags
 	ID int64 `arg:"" help:"Task ID to release back to ready."`
 }
 
@@ -1610,27 +1553,16 @@ func (c *boardTaskReleaseCmd) Exec(ctx context.Context, d deps) (any, error) {
 	if err != nil {
 		return nil, err
 	}
-	epoch, token, err := resolveBoardClaimFence(d, c.Controller, c.ID, sess, c.As, c.Epoch, c.Token)
-	if err != nil {
-		return nil, err
-	}
-	res, err := cl.board.ReleaseBoardTask(ctx, &pb.ReleaseBoardTaskRequest{
+	return cl.board.ReleaseBoardTask(ctx, &pb.ReleaseBoardTaskRequest{
 		Id:        c.ID,
-		Epoch:     epoch,
-		Token:     token,
 		SessionId: sess,
 		AsProfile: c.As,
 	})
-	if err == nil {
-		deleteBoardClaim(d, c.Controller, c.ID, sess, c.As)
-	}
-	return res, err
 }
 
 type boardTaskCompleteCmd struct {
 	controllerClient
 	boardActorFlags
-	boardTaskFenceFlags
 	ID     int64    `arg:"" help:"Task ID to complete."`
 	Result []string `arg:"" optional:"" help:"Optional completion summary."`
 	Note   string   `help:"Optional completion summary (alias for positional result)."`
@@ -1645,32 +1577,21 @@ func (c *boardTaskCompleteCmd) Exec(ctx context.Context, d deps) (any, error) {
 	if err != nil {
 		return nil, err
 	}
-	epoch, token, err := resolveBoardClaimFence(d, c.Controller, c.ID, sess, c.As, c.Epoch, c.Token)
-	if err != nil {
-		return nil, err
-	}
 	result := strings.TrimSpace(c.Note)
 	if result == "" {
 		result = strings.TrimSpace(strings.Join(c.Result, " "))
 	}
-	res, err := cl.board.CompleteBoardTask(ctx, &pb.CompleteBoardTaskRequest{
+	return cl.board.CompleteBoardTask(ctx, &pb.CompleteBoardTaskRequest{
 		Id:        c.ID,
-		Epoch:     epoch,
-		Token:     token,
 		Result:    result,
 		SessionId: sess,
 		AsProfile: c.As,
 	})
-	if err == nil {
-		deleteBoardClaim(d, c.Controller, c.ID, sess, c.As)
-	}
-	return res, err
 }
 
 type boardTaskFailCmd struct {
 	controllerClient
 	boardActorFlags
-	boardTaskFenceFlags
 	ID     int64    `arg:"" help:"Task ID to fail."`
 	Reason []string `arg:"" optional:"" help:"Why the task failed."`
 }
@@ -1684,28 +1605,17 @@ func (c *boardTaskFailCmd) Exec(ctx context.Context, d deps) (any, error) {
 	if err != nil {
 		return nil, err
 	}
-	epoch, token, err := resolveBoardClaimFence(d, c.Controller, c.ID, sess, c.As, c.Epoch, c.Token)
-	if err != nil {
-		return nil, err
-	}
-	res, err := cl.board.FailBoardTask(ctx, &pb.FailBoardTaskRequest{
+	return cl.board.FailBoardTask(ctx, &pb.FailBoardTaskRequest{
 		Id:        c.ID,
-		Epoch:     epoch,
-		Token:     token,
 		Reason:    strings.TrimSpace(strings.Join(c.Reason, " ")),
 		SessionId: sess,
 		AsProfile: c.As,
 	})
-	if err == nil {
-		deleteBoardClaim(d, c.Controller, c.ID, sess, c.As)
-	}
-	return res, err
 }
 
 type boardTaskBlockCmd struct {
 	controllerClient
 	boardActorFlags
-	boardTaskFenceFlags
 	ID     int64    `arg:"" help:"Task ID to hold."`
 	Reason []string `arg:"" optional:"" help:"Why the task is blocked."`
 	Kind   string   `help:"Optional hold category (e.g. needs-review, waiting-vendor)."`
@@ -1720,25 +1630,13 @@ func (c *boardTaskBlockCmd) Exec(ctx context.Context, d deps) (any, error) {
 	if err != nil {
 		return nil, err
 	}
-	epoch, token := c.Epoch, c.Token
-	if token == "" {
-		if e, t, ferr := resolveBoardClaimFence(d, c.Controller, c.ID, sess, c.As, epoch, ""); ferr == nil {
-			epoch, token = e, t
-		}
-	}
-	res, err := cl.board.BlockBoardTask(ctx, &pb.BlockBoardTaskRequest{
+	return cl.board.BlockBoardTask(ctx, &pb.BlockBoardTaskRequest{
 		Id:        c.ID,
 		Reason:    strings.TrimSpace(strings.Join(c.Reason, " ")),
 		Kind:      c.Kind,
-		Epoch:     epoch,
-		Token:     token,
 		SessionId: sess,
 		AsProfile: c.As,
 	})
-	if err == nil && token != "" {
-		deleteBoardClaim(d, c.Controller, c.ID, sess, c.As)
-	}
-	return res, err
 }
 
 type boardTaskUnblockCmd struct {

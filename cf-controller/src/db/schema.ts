@@ -647,17 +647,6 @@ export const boardTerms = sqliteTable(
 	],
 );
 
-export const boardTaskClaims = sqliteTable("board_task_claims", {
-	messageId: integer("message_id")
-		.primaryKey()
-		.references(() => boardMessages.id, { onDelete: "cascade" }),
-	epoch: integer("epoch").notNull(),
-	tokenHash: text("token_hash").notNull(),
-	leaseSeconds: integer("lease_seconds").notNull(),
-	actor: text("actor").notNull(),
-	until: integer("until").notNull(),
-});
-
 export const boardEvents = sqliteTable(
 	"board_events",
 	{

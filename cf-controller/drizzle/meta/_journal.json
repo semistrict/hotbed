@@ -155,6 +155,13 @@
 			"when": 1795779565626,
 			"tag": "0021_woozy_starfox",
 			"breakpoints": true
+		},
+		{
+			"idx": 22,
+			"version": "6",
+			"when": 1795793518537,
+			"tag": "0022_tokenless_board_claims",
+			"breakpoints": true
 		}
 	]
 }

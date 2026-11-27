@@ -607,7 +607,6 @@ export function createBoardService(
 				forActor: req.forActor,
 				claim: req.claim,
 				leaseSeconds: req.leaseSeconds,
-				claimToken: req.claimToken,
 				identity,
 				nowMs: ctrl.now(),
 			});
@@ -680,7 +679,6 @@ export function createBoardService(
 				const res = store.claimTaskById({
 					id: Number(req.id),
 					leaseSeconds: req.leaseSeconds,
-					claimToken: req.claimToken,
 					identity,
 					nowMs: ctrl.now(),
 				});
@@ -705,7 +703,6 @@ export function createBoardService(
 						labels: req.labels,
 						fromOwners: req.fromOwners,
 						leaseSeconds: req.leaseSeconds,
-						claimToken: req.claimToken,
 						identity,
 						nowMs: ctrl.now(),
 					});
@@ -739,8 +736,6 @@ export function createBoardService(
 			});
 			const res = store.renewTask({
 				id: Number(req.id),
-				epoch: req.epoch,
-				token: req.token,
 				leaseSeconds: req.leaseSeconds,
 				identity,
 				nowMs: ctrl.now(),
@@ -760,8 +755,6 @@ export function createBoardService(
 			});
 			const res = store.releaseTask({
 				id: Number(req.id),
-				epoch: req.epoch,
-				token: req.token,
 				identity,
 				nowMs: ctrl.now(),
 			});
@@ -777,8 +770,6 @@ export function createBoardService(
 			});
 			const res = store.completeTask({
 				id: Number(req.id),
-				epoch: req.epoch,
-				token: req.token,
 				result: req.result,
 				identity,
 				nowMs: ctrl.now(),
@@ -795,8 +786,6 @@ export function createBoardService(
 			});
 			const res = store.failTask({
 				id: Number(req.id),
-				epoch: req.epoch,
-				token: req.token,
 				reason: req.reason,
 				identity,
 				nowMs: ctrl.now(),
@@ -815,8 +804,6 @@ export function createBoardService(
 				id: Number(req.id),
 				reason: req.reason,
 				kind: req.kind,
-				epoch: req.epoch,
-				token: req.token,
 				identity,
 				nowMs: ctrl.now(),
 			});

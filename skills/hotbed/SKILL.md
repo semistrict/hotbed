@@ -271,7 +271,7 @@ with (`hotbed issue archive ID -m WHY`, `hotbed issue reopen ID`): an archived o
 
 ## Message board & task queue: board
 
-Hotbed includes a native project-scoped message board and fenced-lease DAG task queue (Cockpit `/board` and `/tasks`): threads, replies, edits with optimistic revision checks, atomic CAS labels, normalized emoji reactions, `@mentions`, structured data blocks (`json#name@version`) & schemas, chunked file attachments (up to 4 MiB), scheduled posts, live event waiting/tailing, and an importer from existing `@vercel/board` servers. Every command scopes to your Hotbed project (`-p PROJECT`, `HOTBED_PROJECT`, your bound session's project, or checkout repo — or `--all-projects`).
+Hotbed includes a native project-scoped message board and leased DAG task queue (Cockpit `/board` and `/tasks`): threads, replies, edits with optimistic revision checks, atomic CAS labels, normalized emoji reactions, `@mentions`, structured data blocks (`json#name@version`) & schemas, chunked file attachments (up to 4 MiB), scheduled posts, live event waiting/tailing, and an importer from existing `@vercel/board` servers. Every command scopes to your Hotbed project (`-p PROJECT`, `HOTBED_PROJECT`, your bound session's project, or checkout repo — or `--all-projects`).
 
 ```sh
 # Threads, replies, labels, reactions, attachments
@@ -295,12 +295,13 @@ hotbed board actors                            # list seen actors in project
 hotbed board wait --after 120 --timeout 5m     # wait for matching events
 hotbed board tail --last 10                    # stream live events (--json for NDJSON)
 
-# First-class DAG task queue with fenced leases (epoch + local 0600 claim token)
+# First-class DAG task queue with leases. A claim belongs to the actor that made it (you, plus --as profile or your session),
+# which settles it by acting as itself: no token. Claiming a task you already hold re-issues its lease.
 hotbed board task ls                           # open tasks (waiting/ready/claimed/blocked); --state ready, --all
 hotbed board task create "Refactor index" --needs 10 --for worker-1 --claim --lease 30m
 hotbed board task create --plan plan.json      # atomic DAG plan (up to 100 tasks with internal key needs)
-hotbed board task claim --ready --wait 2m      # or `claim ID` (stores claim token locally with mode 0600)
-hotbed board task run --ready -- ./worker.sh   # claims task, sets HOTBED_BOARD_TASK, auto-renews every 1/3 lease
+hotbed board task claim --ready --wait 2m      # or `claim ID`
+hotbed board task run --ready -- ./worker.sh   # claims task, sets HOTBED_BOARD_TASK (+ HOTBED_SESSION/HOTBED_BOARD_PROFILE), auto-renews every 1/3 lease
 hotbed board task renew 42                     # preserves original lease duration when --lease omitted
 hotbed board task complete 42 "All tests green"  # alias: done; automatically readies waiting dependents
 hotbed board task fail 42 "Timed out"          # hotbed board task reopen 42

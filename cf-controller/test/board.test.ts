@@ -291,7 +291,7 @@ describe("BoardService", () => {
 		expect(hp?.boardThreads).toBe(1);
 	});
 
-	it("supports task DAG, fenced claim leases, renew preserving original lease, expiry, auto-hold on non-owner edit, and cycle rejection", async () => {
+	it("supports task DAG, claims held by identity, renew preserving original lease, expiry, auto-hold on non-owner edit, and cycle rejection", async () => {
 		const doName = "board-tasks-test";
 		await seedProject(doName, "cladefs");
 		const ramon = ownerCaller("ramon@echophase.com");
@@ -332,42 +332,45 @@ describe("BoardService", () => {
 		// Claim Task A with custom 120s lease
 		const claim = await rpc<{
 			task: { task: { state: string } };
-			claim: { token: string; epoch: number; until: string };
+			claim: { epoch: number; until: string };
 		}>(doName, "/hotbed.v1.BoardService/ClaimBoardTask", { id: taskAId, leaseSeconds: 120 }, alice);
 		expect(claim.status).toBe(200);
-		expect(claim.data.claim.epoch).toBe(1);
+		expect(claim.data.claim).toEqual({ epoch: 1, until: claim.data.claim.until });
 		const until1 = Number(claim.data.claim.until);
-		const token1 = claim.data.claim.token;
 
 		// Advance clock 60s and renew with leaseSeconds=0 -> preserves original 120s lease (+60s over until1)
 		await advanceClock(doName, 60_000);
 		const renewed = await rpc<{
 			claim: { until: string };
-		}>(
-			doName,
-			"/hotbed.v1.BoardService/RenewBoardTask",
-			{ id: taskAId, epoch: 1, token: token1, leaseSeconds: 0 },
-			alice,
-		);
+		}>(doName, "/hotbed.v1.BoardService/RenewBoardTask", { id: taskAId, leaseSeconds: 0 }, alice);
 		expect(renewed.status).toBe(200);
 		const deltaMs = Number(renewed.data.claim.until) - until1;
 		expect(deltaMs).toBeGreaterThanOrEqual(55_000);
 		expect(deltaMs).toBeLessThanOrEqual(65_000);
 
-		// Wrong token is rejected
-		const badComplete = await rpc(
-			doName,
-			"/hotbed.v1.BoardService/CompleteBoardTask",
-			{ id: taskAId, epoch: 1, token: "wrong-token" },
-			alice,
-		);
-		expect(badComplete.status).not.toBe(200);
+		// Only the holder (principal + profile) settles a claim: not another principal,
+		// nor the same principal under another profile.
+		for (const [who, asProfile] of [
+			[ramon, ""],
+			[alice, "other-profile"],
+		] as const) {
+			const notHolder = await rpc<{ message: string }>(
+				doName,
+				"/hotbed.v1.BoardService/CompleteBoardTask",
+				{ id: taskAId, asProfile },
+				who,
+			);
+			expect(notHolder.status).toBe(409);
+			expect(notHolder.data.message).toContain(
+				`does not hold #${taskAId}: it is claimed by user:alice@echophase.com`,
+			);
+		}
 
 		// Complete Task A -> Task B automatically becomes READY
 		const done = await rpc<{ task: { state: string } }>(
 			doName,
 			"/hotbed.v1.BoardService/CompleteBoardTask",
-			{ id: taskAId, epoch: 1, token: token1, result: "index built" },
+			{ id: taskAId, result: "index built" },
 			alice,
 		);
 		expect(done.status).toBe(200);
@@ -568,5 +571,99 @@ describe("BoardService", () => {
 		expect(imp2.status).toBe(200);
 		expect(imp2.data.messagesImported ?? 0).toBe(0);
 		expect(imp2.data.messagesSkipped).toBe(1);
+	});
+
+	it("lets a claim's holder re-claim, renew and settle it with no token, including an imported claim", async () => {
+		const doName = "board-claim-identity-test";
+		await seedProject(doName, "cladefs");
+		const ramon = ownerCaller("ramon@echophase.com");
+		const holder = "user:ramon@echophase.com+definite-bison";
+		const until = Date.now() + 600_000;
+		const imp = await rpc(
+			doName,
+			"/hotbed.v1.BoardService/ImportBoard",
+			{
+				messages: [
+					{
+						externalId: "14433",
+						preferredId: "14433",
+						project: "cladefs",
+						text: "Imported claimed task",
+						by: { actor: holder, principal: "user:ramon@echophase.com", profile: "definite-bison" },
+						createdAt: String(Date.now() - 10_000),
+						task: {
+							state: "BOARD_TASK_STATE_CLAIMED",
+							epoch: 1,
+							claimActor: holder,
+							claimUntil: String(until),
+						},
+					},
+				],
+			},
+			ramon,
+		);
+		expect(imp.status).toBe(200);
+
+		// Another profile of the same principal neither re-claims nor completes it.
+		const otherClaim = await rpc<{ message: string }>(
+			doName,
+			"/hotbed.v1.BoardService/ClaimBoardTask",
+			{ id: "14433", asProfile: "shining-shad" },
+			ramon,
+		);
+		expect(otherClaim.status).toBe(409);
+		expect(otherClaim.data.message).toBe(`task_claimed: #14433 is claimed by ${holder}`);
+
+		// The holder re-claims it: same epoch, a fresh lease of the length asked for.
+		await advanceClock(doName, 60_000);
+		const reclaim = await rpc<{
+			claim: { epoch: number; until: string };
+			task: { task: { claim: { actor: string; leaseSeconds: number } } };
+		}>(
+			doName,
+			"/hotbed.v1.BoardService/ClaimBoardTask",
+			{ id: "14433", asProfile: "definite-bison", leaseSeconds: 1800 },
+			ramon,
+		);
+		expect(reclaim.status).toBe(200);
+		expect(reclaim.data.claim.epoch).toBe(1);
+		expect(reclaim.data.task.task.claim).toEqual({
+			actor: holder,
+			until: reclaim.data.claim.until,
+			leaseSeconds: 1800,
+		});
+		expect(Number(reclaim.data.claim.until)).toBeGreaterThan(until + 1_200_000);
+
+		// Renew with no lease keeps the claim's own length.
+		const renewed = await rpc<{ claim: { epoch: number; until: string } }>(
+			doName,
+			"/hotbed.v1.BoardService/RenewBoardTask",
+			{ id: "14433", asProfile: "definite-bison" },
+			ramon,
+		);
+		expect(renewed.status).toBe(200);
+		expect(renewed.data.claim.epoch).toBe(1);
+
+		const done = await rpc<{ task: { state: string; result: string } }>(
+			doName,
+			"/hotbed.v1.BoardService/CompleteBoardTask",
+			{ id: "14433", asProfile: "definite-bison", result: "simulated" },
+			ramon,
+		);
+		expect(done.status).toBe(200);
+		expect(done.data.task).toMatchObject({
+			state: "BOARD_TASK_STATE_COMPLETED",
+			result: "simulated",
+		});
+
+		// Once settled, it is no longer held.
+		const again = await rpc<{ message: string }>(
+			doName,
+			"/hotbed.v1.BoardService/ReleaseBoardTask",
+			{ id: "14433", asProfile: "definite-bison" },
+			ramon,
+		);
+		expect(again.status).toBe(409);
+		expect(again.data.message).toBe(`claim_lost: ${holder} does not hold #14433: it is completed`);
 	});
 });

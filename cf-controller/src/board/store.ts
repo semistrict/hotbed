@@ -33,6 +33,7 @@ import {
 	type BoardSchema,
 	type BoardTask,
 	type BoardTaskClaim,
+	type BoardTaskClaimView,
 	type BoardThreadSummary,
 	type ImportBoardRequest,
 	type ImportBoardResponse,
@@ -271,24 +272,6 @@ function randomBase64Url(bytes = 16): string {
 	let bin = "";
 	for (let i = 0; i < arr.length; i++) bin += String.fromCharCode(arr[i]);
 	return btoa(bin).replaceAll("+", "-").replaceAll("/", "_").replaceAll("=", "");
-}
-
-function newClaimToken(): string {
-	return randomBase64Url(16);
-}
-
-function hashToken(token: string): string {
-	return sha256HexSync(token);
-}
-
-function tokensEqual(token: string, expectedHex: string): boolean {
-	const actual = hashToken(token);
-	if (actual.length !== expectedHex.length) return false;
-	let diff = 0;
-	for (let i = 0; i < actual.length; i++) {
-		diff |= actual.charCodeAt(i) ^ expectedHex.charCodeAt(i);
-	}
-	return diff === 0;
 }
 
 function normalizeLeaseSeconds(seconds: number): number {
@@ -1382,7 +1365,6 @@ export class BoardStore {
 					reason: `edited by ${opts.identity.actor.handle}`,
 				});
 				this.syncTaskLabel(msg);
-				this.sql.exec("DELETE FROM board_task_claims WHERE message_id = ?", row.id);
 				const bseq = this.appendEvent({
 					at: opts.nowMs,
 					projectId: row.projectId,
@@ -1434,7 +1416,6 @@ export class BoardStore {
 				msg.task.claim = undefined;
 				msg.task.blocked = undefined;
 				msg.task.reason = "deleted";
-				this.sql.exec("DELETE FROM board_task_claims WHERE message_id = ?", row.id);
 				this.appendEvent({
 					at: opts.nowMs,
 					projectId: row.projectId,
@@ -2118,13 +2099,11 @@ export class BoardStore {
 		row: { id: number; projectId: number; msg: BoardMessage },
 		identity: BoardIdentity,
 		leaseSeconds: number,
-		sentToken: string,
 		nowMs: number,
 	): BoardTaskClaim {
 		const msg = row.msg;
 		const task = msg.task!;
 		const leaseS = normalizeLeaseSeconds(leaseSeconds);
-		const token = sentToken.trim() || newClaimToken();
 		const untilMs = nowMs + leaseS * 1000;
 
 		// If the previous claim lapsed, emit task.expired first.
@@ -2134,7 +2113,6 @@ export class BoardStore {
 			task.state = BoardTaskState.READY;
 			task.claim = undefined;
 			this.syncTaskLabel(msg);
-			this.sql.exec("DELETE FROM board_task_claims WHERE message_id = ?", row.id);
 			const eseq = this.appendEvent({
 				at: nowMs,
 				projectId: row.projectId,
@@ -2156,25 +2134,9 @@ export class BoardStore {
 		task.claim = create(BoardTaskClaimViewSchema, {
 			actor: identity.actor.id,
 			until: BigInt(untilMs),
+			leaseSeconds: leaseS,
 		});
 		this.syncTaskLabel(msg);
-
-		this.sql.exec(
-			`INSERT INTO board_task_claims (message_id, epoch, token_hash, lease_seconds, actor, until)
-			 VALUES (?, ?, ?, ?, ?, ?)
-			 ON CONFLICT(message_id) DO UPDATE SET
-			   epoch = excluded.epoch,
-			   token_hash = excluded.token_hash,
-			   lease_seconds = excluded.lease_seconds,
-			   actor = excluded.actor,
-			   until = excluded.until`,
-			row.id,
-			epoch,
-			hashToken(token),
-			leaseS,
-			identity.actor.id,
-			untilMs,
-		);
 
 		const seq = this.appendEvent({
 			at: nowMs,
@@ -2190,39 +2152,74 @@ export class BoardStore {
 		});
 		msg.version = BigInt(seq);
 		this.persistMessage(msg);
-		return create(BoardTaskClaimSchema, { epoch, token, until: BigInt(untilMs) });
+		return create(BoardTaskClaimSchema, { epoch, until: BigInt(untilMs) });
 	}
 
-	private verifyFence(
+	// A claim belongs to the actor (principal + profile) that made it, so the caller's
+	// identity is all the proof it needs: the task must be claimed by this very actor on a
+	// live lease.
+	private isHeldBy(task: BoardTask, identity: BoardIdentity, nowMs: number): boolean {
+		return (
+			task.state === BoardTaskState.CLAIMED &&
+			task.claim?.actor === identity.actor.id &&
+			!isLapsed(task, nowMs)
+		);
+	}
+
+	private requireHeld(
 		id: number,
-		epoch: number,
-		token: string,
+		task: BoardTask,
+		identity: BoardIdentity,
 		nowMs: number,
-	): { leaseSeconds: number } {
-		const rows = this.sql
-			.exec(
-				"SELECT epoch, token_hash, lease_seconds, until FROM board_task_claims WHERE message_id = ?",
-				id,
-			)
-			.toArray();
-		if (rows.length === 0) {
-			throw hotbedError(ErrorCode.Conflict, `claim_lost: claim on #${id} is over`).withSuggestion(
-				`hotbed board read ${id}`,
-			);
-		}
-		const r = rows[0];
-		if (
-			num(r.epoch) !== epoch ||
-			num(r.until) <= nowMs ||
-			!token ||
-			!tokensEqual(token, str(r.token_hash))
-		) {
-			throw hotbedError(
-				ErrorCode.Conflict,
-				`claim_lost: this claim on #${id} is over (lease expired or task moved on)`,
-			).withSuggestion(`hotbed board read ${id}`);
-		}
-		return { leaseSeconds: num(r.lease_seconds) };
+	): BoardTaskClaimView {
+		if (this.isHeldBy(task, identity, nowMs)) return task.claim!;
+		const live = task.state === BoardTaskState.CLAIMED && !isLapsed(task, nowMs);
+		const why = live
+			? `it is claimed by ${task.claim?.actor ?? "someone"}`
+			: `it is ${taskStateName(effectiveState(task, nowMs))}`;
+		throw hotbedError(
+			ErrorCode.Conflict,
+			`claim_lost: ${identity.actor.id} does not hold #${id}: ${why}`,
+		).withSuggestion(
+			live
+				? `act as its holder (--as <profile>), or hotbed board read ${id}`
+				: `claim it first: hotbed board task claim ${id}`,
+		);
+	}
+
+	// Gives the holder a fresh lease of leaseSeconds (0 keeps the claim's own length).
+	private renewHeld(
+		row: { id: number; projectId: number; msg: BoardMessage },
+		identity: BoardIdentity,
+		leaseSeconds: number,
+		nowMs: number,
+	): BoardTaskClaim {
+		const msg = row.msg;
+		const task = msg.task!;
+		const held = this.requireHeld(row.id, task, identity, nowMs);
+		const leaseS = normalizeLeaseSeconds(leaseSeconds > 0 ? leaseSeconds : held.leaseSeconds);
+		const untilMs = nowMs + leaseS * 1000;
+		const before = clone(BoardMessageSchema, msg);
+		task.claim = create(BoardTaskClaimViewSchema, {
+			actor: held.actor,
+			until: BigInt(untilMs),
+			leaseSeconds: leaseS,
+		});
+		const seq = this.appendEvent({
+			at: nowMs,
+			projectId: row.projectId,
+			projectName: msg.project,
+			type: "task.renewed",
+			messageId: row.id,
+			threadId: row.id,
+			actor: identity.actor,
+			beforeMsg: before,
+			afterMsg: msg,
+			payload: { epoch: task.epoch, until: untilMs },
+		});
+		msg.version = BigInt(seq);
+		this.persistMessage(msg);
+		return create(BoardTaskClaimSchema, { epoch: task.epoch, until: BigInt(untilMs) });
 	}
 
 	createTask(opts: {
@@ -2236,7 +2233,6 @@ export class BoardStore {
 		forActor: string;
 		claim: boolean;
 		leaseSeconds: number;
-		claimToken: string;
 		identity: BoardIdentity;
 		nowMs: number;
 	}): {
@@ -2367,7 +2363,7 @@ export class BoardStore {
 
 			let claim: BoardTaskClaim | undefined;
 			if (opts.claim) {
-				claim = this.applyClaim(row, opts.identity, opts.leaseSeconds, opts.claimToken, opts.nowMs);
+				claim = this.applyClaim(row, opts.identity, opts.leaseSeconds, opts.nowMs);
 			}
 			return { task: row.msg, claim, mentions, outcome: "created", project: row.msg.project };
 		});
@@ -2708,7 +2704,6 @@ export class BoardStore {
 	claimTaskById(opts: {
 		id: number;
 		leaseSeconds: number;
-		claimToken: string;
 		identity: BoardIdentity;
 		nowMs: number;
 	}): { task: BoardMessage; claim: BoardTaskClaim; project: string } {
@@ -2720,25 +2715,10 @@ export class BoardStore {
 				throw hotbedError(ErrorCode.NotFound, `not_a_task: #${opts.id} isn't a task`);
 			}
 			const task = msg.task;
-			// Idempotent re-claim with the same secret token
-			if (opts.claimToken && task.state === BoardTaskState.CLAIMED && !isLapsed(task, opts.nowMs)) {
-				const claimRows = this.sql
-					.exec(
-						"SELECT epoch, token_hash, until FROM board_task_claims WHERE message_id = ?",
-						row.id,
-					)
-					.toArray();
-				if (claimRows.length > 0 && tokensEqual(opts.claimToken, str(claimRows[0].token_hash))) {
-					return {
-						task: msg,
-						claim: create(BoardTaskClaimSchema, {
-							epoch: num(claimRows[0].epoch),
-							token: opts.claimToken,
-							until: BigInt(num(claimRows[0].until)),
-						}),
-						project: msg.project,
-					};
-				}
+			// Claiming a task the caller already holds re-issues its lease.
+			if (this.isHeldBy(task, opts.identity, opts.nowMs)) {
+				const claim = this.renewHeld(row, opts.identity, opts.leaseSeconds, opts.nowMs);
+				return { task: msg, claim, project: msg.project };
 			}
 			if (task.state === BoardTaskState.WAITING) {
 				throw hotbedError(
@@ -2770,13 +2750,7 @@ export class BoardStore {
 					`task_claimed: #${opts.id} is claimed by ${task.claim?.actor ?? "someone"}`,
 				).withSuggestion(`hotbed board read ${opts.id}`);
 			}
-			const claim = this.applyClaim(
-				row,
-				opts.identity,
-				opts.leaseSeconds,
-				opts.claimToken,
-				opts.nowMs,
-			);
+			const claim = this.applyClaim(row, opts.identity, opts.leaseSeconds, opts.nowMs);
 			return { task: msg, claim, project: msg.project };
 		});
 	}
@@ -2786,7 +2760,6 @@ export class BoardStore {
 		labels: BoardLabelFilter[];
 		fromOwners: string[];
 		leaseSeconds: number;
-		claimToken: string;
 		identity: BoardIdentity;
 		nowMs: number;
 	}): { task: BoardMessage; claim: BoardTaskClaim; project: string } | null {
@@ -2853,25 +2826,16 @@ export class BoardStore {
 			}
 			const chosen = mine ?? pool;
 			if (!chosen) return null;
-			const claim = this.applyClaim(
-				chosen,
-				opts.identity,
-				opts.leaseSeconds,
-				opts.claimToken,
-				opts.nowMs,
-			);
+			const claim = this.applyClaim(chosen, opts.identity, opts.leaseSeconds, opts.nowMs);
 			return { task: chosen.msg, claim, project: chosen.msg.project };
 		});
 	}
 
-	renewTask(opts: {
-		id: number;
-		epoch: number;
-		token: string;
-		leaseSeconds: number;
-		identity: BoardIdentity;
-		nowMs: number;
-	}): { task: BoardMessage; claim: BoardTaskClaim; project: string } {
+	renewTask(opts: { id: number; leaseSeconds: number; identity: BoardIdentity; nowMs: number }): {
+		task: BoardMessage;
+		claim: BoardTaskClaim;
+		project: string;
+	} {
 		return this.tx(() => {
 			this.upsertActor(opts.identity.actor, opts.nowMs);
 			const row = this.getMessageRow(opts.id);
@@ -2879,70 +2843,25 @@ export class BoardStore {
 			if (!msg.task) {
 				throw hotbedError(ErrorCode.NotFound, `not_a_task: #${opts.id} isn't a task`);
 			}
-			const { leaseSeconds: origLease } = this.verifyFence(
-				opts.id,
-				opts.epoch,
-				opts.token,
-				opts.nowMs,
-			);
-			// Preserve the claim's original lease duration when --lease is omitted (memory #72).
-			const leaseS = normalizeLeaseSeconds(opts.leaseSeconds > 0 ? opts.leaseSeconds : origLease);
-			const untilMs = opts.nowMs + leaseS * 1000;
-			const before = clone(BoardMessageSchema, msg);
-			msg.task.claim = create(BoardTaskClaimViewSchema, {
-				actor: msg.task.claim?.actor ?? opts.identity.actor.id,
-				until: BigInt(untilMs),
-			});
-			this.sql.exec(
-				"UPDATE board_task_claims SET lease_seconds = ?, until = ? WHERE message_id = ?",
-				leaseS,
-				untilMs,
-				row.id,
-			);
-			const seq = this.appendEvent({
-				at: opts.nowMs,
-				projectId: row.projectId,
-				projectName: msg.project,
-				type: "task.renewed",
-				messageId: row.id,
-				threadId: row.id,
-				actor: opts.identity.actor,
-				beforeMsg: before,
-				afterMsg: msg,
-				payload: { epoch: opts.epoch, until: untilMs },
-			});
-			msg.version = BigInt(seq);
-			this.persistMessage(msg);
-			return {
-				task: msg,
-				claim: create(BoardTaskClaimSchema, {
-					epoch: opts.epoch,
-					token: "",
-					until: BigInt(untilMs),
-				}),
-				project: msg.project,
-			};
+			const claim = this.renewHeld(row, opts.identity, opts.leaseSeconds, opts.nowMs);
+			return { task: msg, claim, project: msg.project };
 		});
 	}
 
-	releaseTask(opts: {
-		id: number;
-		epoch: number;
-		token: string;
-		identity: BoardIdentity;
-		nowMs: number;
-	}): { task: BoardMessage; project: string } {
+	releaseTask(opts: { id: number; identity: BoardIdentity; nowMs: number }): {
+		task: BoardMessage;
+		project: string;
+	} {
 		return this.tx(() => {
 			this.upsertActor(opts.identity.actor, opts.nowMs);
 			const row = this.getMessageRow(opts.id);
 			const msg = row.msg;
 			if (!msg.task) throw hotbedError(ErrorCode.NotFound, `not_a_task: #${opts.id} isn't a task`);
-			this.verifyFence(opts.id, opts.epoch, opts.token, opts.nowMs);
+			this.requireHeld(opts.id, msg.task, opts.identity, opts.nowMs);
 			const before = clone(BoardMessageSchema, msg);
 			msg.task.state = BoardTaskState.READY;
 			msg.task.claim = undefined;
 			this.syncTaskLabel(msg);
-			this.sql.exec("DELETE FROM board_task_claims WHERE message_id = ?", row.id);
 			const seq = this.appendEvent({
 				at: opts.nowMs,
 				projectId: row.projectId,
@@ -2953,7 +2872,7 @@ export class BoardStore {
 				actor: opts.identity.actor,
 				beforeMsg: before,
 				afterMsg: msg,
-				payload: { epoch: opts.epoch },
+				payload: { epoch: msg.task.epoch },
 			});
 			msg.version = BigInt(seq);
 			this.persistMessage(msg);
@@ -2961,27 +2880,22 @@ export class BoardStore {
 		});
 	}
 
-	completeTask(opts: {
-		id: number;
-		epoch: number;
-		token: string;
-		result: string;
-		identity: BoardIdentity;
-		nowMs: number;
-	}): { task: BoardMessage; projects: string[] } {
+	completeTask(opts: { id: number; result: string; identity: BoardIdentity; nowMs: number }): {
+		task: BoardMessage;
+		projects: string[];
+	} {
 		const cleanResult = validateTaskNote("result", opts.result, false);
 		return this.tx(() => {
 			this.upsertActor(opts.identity.actor, opts.nowMs);
 			const row = this.getMessageRow(opts.id);
 			const msg = row.msg;
 			if (!msg.task) throw hotbedError(ErrorCode.NotFound, `not_a_task: #${opts.id} isn't a task`);
-			this.verifyFence(opts.id, opts.epoch, opts.token, opts.nowMs);
+			this.requireHeld(opts.id, msg.task, opts.identity, opts.nowMs);
 			const before = clone(BoardMessageSchema, msg);
 			msg.task.state = BoardTaskState.COMPLETED;
 			msg.task.claim = undefined;
 			msg.task.result = cleanResult;
 			this.syncTaskLabel(msg);
-			this.sql.exec("DELETE FROM board_task_claims WHERE message_id = ?", row.id);
 			const seq = this.appendEvent({
 				at: opts.nowMs,
 				projectId: row.projectId,
@@ -2992,7 +2906,7 @@ export class BoardStore {
 				actor: opts.identity.actor,
 				beforeMsg: before,
 				afterMsg: msg,
-				payload: { epoch: opts.epoch, result: cleanResult || null },
+				payload: { epoch: msg.task.epoch, result: cleanResult || null },
 			});
 			msg.version = BigInt(seq);
 			this.persistMessage(msg);
@@ -3001,27 +2915,22 @@ export class BoardStore {
 		});
 	}
 
-	failTask(opts: {
-		id: number;
-		epoch: number;
-		token: string;
-		reason: string;
-		identity: BoardIdentity;
-		nowMs: number;
-	}): { task: BoardMessage; project: string } {
+	failTask(opts: { id: number; reason: string; identity: BoardIdentity; nowMs: number }): {
+		task: BoardMessage;
+		project: string;
+	} {
 		const cleanReason = validateTaskNote("reason", opts.reason, true);
 		return this.tx(() => {
 			this.upsertActor(opts.identity.actor, opts.nowMs);
 			const row = this.getMessageRow(opts.id);
 			const msg = row.msg;
 			if (!msg.task) throw hotbedError(ErrorCode.NotFound, `not_a_task: #${opts.id} isn't a task`);
-			this.verifyFence(opts.id, opts.epoch, opts.token, opts.nowMs);
+			this.requireHeld(opts.id, msg.task, opts.identity, opts.nowMs);
 			const before = clone(BoardMessageSchema, msg);
 			msg.task.state = BoardTaskState.FAILED;
 			msg.task.claim = undefined;
 			msg.task.reason = cleanReason;
 			this.syncTaskLabel(msg);
-			this.sql.exec("DELETE FROM board_task_claims WHERE message_id = ?", row.id);
 			const seq = this.appendEvent({
 				at: opts.nowMs,
 				projectId: row.projectId,
@@ -3032,7 +2941,7 @@ export class BoardStore {
 				actor: opts.identity.actor,
 				beforeMsg: before,
 				afterMsg: msg,
-				payload: { epoch: opts.epoch, reason: cleanReason },
+				payload: { epoch: msg.task.epoch, reason: cleanReason },
 			});
 			msg.version = BigInt(seq);
 			this.persistMessage(msg);
@@ -3044,8 +2953,6 @@ export class BoardStore {
 		id: number;
 		reason: string;
 		kind: string;
-		epoch: number;
-		token: string;
 		identity: BoardIdentity;
 		nowMs: number;
 	}): { task: BoardMessage; project: string } {
@@ -3075,12 +2982,13 @@ export class BoardStore {
 				);
 			}
 			if (task.state === BoardTaskState.CLAIMED && !isLapsed(task, opts.nowMs)) {
-				if (opts.token) {
-					this.verifyFence(opts.id, opts.epoch, opts.token, opts.nowMs);
-				} else if (!this.canOwnTask(task, opts.identity)) {
+				if (
+					!this.isHeldBy(task, opts.identity, opts.nowMs) &&
+					!this.canOwnTask(task, opts.identity)
+				) {
 					throw hotbedError(
 						ErrorCode.Conflict,
-						`task_claimed: #${opts.id} is claimed; pass claim proof or act as its owner`,
+						`task_claimed: #${opts.id} is claimed by ${task.claim?.actor ?? "someone"}; act as its holder or its owner`,
 					);
 				}
 			} else if (!this.canOwnTask(task, opts.identity)) {
@@ -3094,7 +3002,6 @@ export class BoardStore {
 			task.claim = undefined;
 			task.blocked = create(BoardTaskBlockedSchema, { kind: cleanKind, reason: cleanReason });
 			this.syncTaskLabel(msg);
-			this.sql.exec("DELETE FROM board_task_claims WHERE message_id = ?", row.id);
 			const seq = this.appendEvent({
 				at: opts.nowMs,
 				projectId: row.projectId,
@@ -3265,7 +3172,6 @@ export class BoardStore {
 			task.needs = validated.ids.map((n) => BigInt(n));
 			if (task.state !== BoardTaskState.BLOCKED) {
 				task.claim = undefined;
-				this.sql.exec("DELETE FROM board_task_claims WHERE message_id = ?", row.id);
 				task.state =
 					validated.ids.length > 0 && !validated.allCompleted
 						? BoardTaskState.WAITING
@@ -3319,7 +3225,6 @@ export class BoardStore {
 			task.blocked = undefined;
 			task.reason = cleanReason;
 			this.syncTaskLabel(msg);
-			this.sql.exec("DELETE FROM board_task_claims WHERE message_id = ?", row.id);
 			const seq = this.appendEvent({
 				at: opts.nowMs,
 				projectId: row.projectId,
@@ -3358,7 +3263,6 @@ export class BoardStore {
 				msg.task.state = BoardTaskState.READY;
 				msg.task.claim = undefined;
 				this.syncTaskLabel(msg);
-				this.sql.exec("DELETE FROM board_task_claims WHERE message_id = ?", id);
 				const seq = this.appendEvent({
 					at: nowMs,
 					projectId: fresh.projectId,

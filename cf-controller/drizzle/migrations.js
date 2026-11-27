@@ -21,6 +21,7 @@ import m0018 from "./0018_chunky_silvermane.sql";
 import m0019 from "./0019_futuristic_earthquake.sql";
 import m0020 from "./0020_deep_kylun.sql";
 import m0021 from "./0021_woozy_starfox.sql";
+import m0022 from "./0022_tokenless_board_claims.sql";
 
 export default {
 	journal,
@@ -47,5 +48,6 @@ export default {
 		m0019,
 		m0020,
 		m0021,
+		m0022,
 	},
 };

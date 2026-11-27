@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -205,15 +206,33 @@ func TestBoardCLIEndToEnd(t *testing.T) {
 		t.Fatalf("expected 3 open tasks, got %v", tList)
 	}
 
-	// Claim t1 (token saved locally, redacted in output), renew, release, claim again, complete -> t2 ready!
-	claimed := cliJSON("board", "task", "claim", t1ID, "--lease", "2m")
-	if claimObj, _ := claimed["claim"].(map[string]any); claimObj["token"] != nil && claimObj["token"] != "" {
-		t.Fatalf("expected claim token to be redacted by default, got %v", claimObj)
+	// A claim belongs to the claiming actor (principal + profile): it renews, releases,
+	// re-claims and completes t1 by acting as itself, with nothing stored locally, while
+	// another profile of the same principal can do none of it. Completing t1 readies t2.
+	claimed := cliJSON("board", "task", "claim", t1ID, "--lease", "2m", "--as", "worker-a")
+	if got := claimed["claim"]; !reflect.DeepEqual(got, map[string]any{"epoch": float64(1), "until": got.(map[string]any)["until"]}) {
+		t.Fatalf("claim = %v, want epoch 1 and a lease", got)
 	}
-	_ = cliJSON("board", "task", "renew", t1ID)
-	_ = cliJSON("board", "task", "release", t1ID)
-	_ = cliJSON("board", "task", "claim", t1ID)
-	done1 := cliJSON("board", "task", "complete", t1ID, "prepared cleanly")
+	_ = cliJSON("board", "task", "renew", t1ID, "--as", "worker-a")
+	_ = cliJSON("board", "task", "release", t1ID, "--as", "worker-a")
+	_ = cliJSON("board", "task", "claim", t1ID, "--as", "worker-a")
+	reclaimed := cliJSON("board", "task", "claim", t1ID, "--as", "worker-a", "--lease", "5m")
+	if got := reclaimed["claim"].(map[string]any)["epoch"]; got != float64(2) {
+		t.Fatalf("re-claim by the holder: epoch = %v, want 2 (the same claim, re-leased)", got)
+	}
+	for _, args := range [][]string{
+		{"claim", t1ID},
+		{"complete", t1ID, "not mine"},
+		{"renew", t1ID},
+		{"release", t1ID},
+		{"fail", t1ID, "not mine"},
+	} {
+		out := cliFail(append(append([]string{"board", "task"}, args...), "--as", "worker-b")...)
+		if !strings.Contains(out, "worker-a") {
+			t.Fatalf("board task %s as worker-b: want a refusal naming holder worker-a, got:\n%s", args[0], out)
+		}
+	}
+	done1 := cliJSON("board", "task", "complete", t1ID, "prepared cleanly", "--as", "worker-a")
 	if done1["task"].(map[string]any)["state"] != "BOARD_TASK_STATE_COMPLETED" {
 		t.Fatalf("expected t1 completed: %v", done1)
 	}
@@ -223,7 +242,7 @@ func TestBoardCLIEndToEnd(t *testing.T) {
 	if runCode != exitOK || !strings.Contains(runOut, "task-ran-ok") {
 		t.Fatalf("board task run failed: code=%d out=%s err=%s", runCode, runOut, runErr)
 	}
-	// Fail t2 (claim token saved by run), reopen, block, unblock, assign, needs, cancel
+	// Fail t2 (still held by this actor after run), reopen, block, unblock, assign, needs, cancel
 	_ = cliJSON("board", "task", "fail", t2ID, "flaky test")
 	_ = cliJSON("board", "task", "reopen", t2ID)
 	_ = cliJSON("board", "task", "block", t2ID, "--kind", "review", "needs sign-off")

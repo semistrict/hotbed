@@ -5875,16 +5875,18 @@ type BoardServiceClient interface {
 	// List tasks (default open: waiting/ready/claimed/blocked), oldest first or latest active.
 	ListBoardTasks(context.Context, *v1.ListBoardTasksRequest) (*v1.ListBoardTasksResponse, error)
 	// Claim a specific task by ID, or claim the oldest ready task in a project (optionally waiting).
+	// A claim belongs to the claiming actor (principal + profile); claiming a task the caller
+	// already holds re-issues its lease.
 	ClaimBoardTask(context.Context, *v1.ClaimBoardTaskRequest) (*v1.BoardTaskResult, error)
-	// Extend a held task claim's lease (fenced by epoch + token).
+	// Extend the lease of a task the caller holds.
 	RenewBoardTask(context.Context, *v1.RenewBoardTaskRequest) (*v1.BoardTaskResult, error)
-	// Release a held task back to ready (fenced by epoch + token).
+	// Release a task the caller holds back to ready.
 	ReleaseBoardTask(context.Context, *v1.ReleaseBoardTaskRequest) (*v1.BoardMessage, error)
-	// Complete a held task and atomically ready dependent waiting tasks (fenced by epoch + token).
+	// Complete a task the caller holds and atomically ready dependent waiting tasks.
 	CompleteBoardTask(context.Context, *v1.CompleteBoardTaskRequest) (*v1.BoardMessage, error)
-	// Fail a held task with a reason (fenced by epoch + token).
+	// Fail a task the caller holds, with a reason.
 	FailBoardTask(context.Context, *v1.FailBoardTaskRequest) (*v1.BoardMessage, error)
-	// Hold a task for a person (with claim proof if claimed, or as owner if unclaimed).
+	// Hold a task for a person (as its claim's holder, or as its owner).
 	BlockBoardTask(context.Context, *v1.BlockBoardTaskRequest) (*v1.BoardMessage, error)
 	// Lift a hold on a blocked task, returning it to ready or waiting.
 	UnblockBoardTask(context.Context, *v1.UnblockBoardTaskRequest) (*v1.BoardMessage, error)
@@ -5949,16 +5951,18 @@ type BoardServiceHandler interface {
 	// List tasks (default open: waiting/ready/claimed/blocked), oldest first or latest active.
 	ListBoardTasks(context.Context, *v1.ListBoardTasksRequest) (*v1.ListBoardTasksResponse, error)
 	// Claim a specific task by ID, or claim the oldest ready task in a project (optionally waiting).
+	// A claim belongs to the claiming actor (principal + profile); claiming a task the caller
+	// already holds re-issues its lease.
 	ClaimBoardTask(context.Context, *v1.ClaimBoardTaskRequest) (*v1.BoardTaskResult, error)
-	// Extend a held task claim's lease (fenced by epoch + token).
+	// Extend the lease of a task the caller holds.
 	RenewBoardTask(context.Context, *v1.RenewBoardTaskRequest) (*v1.BoardTaskResult, error)
-	// Release a held task back to ready (fenced by epoch + token).
+	// Release a task the caller holds back to ready.
 	ReleaseBoardTask(context.Context, *v1.ReleaseBoardTaskRequest) (*v1.BoardMessage, error)
-	// Complete a held task and atomically ready dependent waiting tasks (fenced by epoch + token).
+	// Complete a task the caller holds and atomically ready dependent waiting tasks.
 	CompleteBoardTask(context.Context, *v1.CompleteBoardTaskRequest) (*v1.BoardMessage, error)
-	// Fail a held task with a reason (fenced by epoch + token).
+	// Fail a task the caller holds, with a reason.
 	FailBoardTask(context.Context, *v1.FailBoardTaskRequest) (*v1.BoardMessage, error)
-	// Hold a task for a person (with claim proof if claimed, or as owner if unclaimed).
+	// Hold a task for a person (as its claim's holder, or as its owner).
 	BlockBoardTask(context.Context, *v1.BlockBoardTaskRequest) (*v1.BoardMessage, error)
 	// Lift a hold on a blocked task, returning it to ready or waiting.
 	UnblockBoardTask(context.Context, *v1.UnblockBoardTaskRequest) (*v1.BoardMessage, error)

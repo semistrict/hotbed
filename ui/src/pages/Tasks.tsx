@@ -109,7 +109,7 @@ export function TasksPage() {
         title="Tasks"
         sub={
           selectedProject
-            ? `Fenced-lease DAG task queue for ${selectedProject}.`
+            ? `Leased DAG task queue for ${selectedProject}.`
             : "Project-scoped DAG task queue across all Hotbed projects."
         }
         right={

@@ -6455,7 +6455,7 @@ message MoveMemoryRequest {
 // BoardService is Hotbed's native message board & task queue, scoped by Hotbed
 // projects instead of channels: threads, replies, labels (with conditional CAS),
 // reactions, mentions, structured data blocks & schemas, file attachments,
-// scheduled messages, live event tailing/waiting, and a fenced-lease DAG task
+// scheduled messages, live event tailing/waiting, and a leased DAG task
 // queue — plus idempotent import from an existing @vercel/board instance.
 service BoardService {
   // Start a new thread in a project, or reply in an existing thread (`re`).
@@ -6517,16 +6517,18 @@ service BoardService {
     option idempotency_level = IDEMPOTENT;
   }
   // Claim a specific task by ID, or claim the oldest ready task in a project (optionally waiting).
+  // A claim belongs to the claiming actor (principal + profile); claiming a task the caller
+  // already holds re-issues its lease.
   rpc ClaimBoardTask(ClaimBoardTaskRequest) returns (BoardTaskResult);
-  // Extend a held task claim's lease (fenced by epoch + token).
+  // Extend the lease of a task the caller holds.
   rpc RenewBoardTask(RenewBoardTaskRequest) returns (BoardTaskResult);
-  // Release a held task back to ready (fenced by epoch + token).
+  // Release a task the caller holds back to ready.
   rpc ReleaseBoardTask(ReleaseBoardTaskRequest) returns (BoardMessage);
-  // Complete a held task and atomically ready dependent waiting tasks (fenced by epoch + token).
+  // Complete a task the caller holds and atomically ready dependent waiting tasks.
   rpc CompleteBoardTask(CompleteBoardTaskRequest) returns (BoardMessage);
-  // Fail a held task with a reason (fenced by epoch + token).
+  // Fail a task the caller holds, with a reason.
   rpc FailBoardTask(FailBoardTaskRequest) returns (BoardMessage);
-  // Hold a task for a person (with claim proof if claimed, or as owner if unclaimed).
+  // Hold a task for a person (as its claim's holder, or as its owner).
   rpc BlockBoardTask(BlockBoardTaskRequest) returns (BoardMessage);
   // Lift a hold on a blocked task, returning it to ready or waiting.
   rpc UnblockBoardTask(UnblockBoardTaskRequest) returns (BoardMessage);
@@ -6618,9 +6620,12 @@ message BoardMention {
   repeated BoardActor candidates = 3;
 }
 
+// The live claim on a task: the holding actor (principal + profile) and its lease.
 message BoardTaskClaimView {
   string actor = 1;
   int64 until = 2;
+  // The lease length renewals keep by default; 0 for claims imported without one.
+  int32 lease_seconds = 3;
 }
 
 message BoardTaskBlocked {
@@ -6642,10 +6647,11 @@ message BoardTask {
   string reason = 10;
 }
 
-// Returned only once on claim (or create --claim); token is never stored in views.
+// The claim a claim (or create --claim) or renewal leaves the caller holding.
 message BoardTaskClaim {
   int32 epoch = 1;
-  string token = 2;
+  reserved 2;
+  reserved "token";
   int64 until = 3;
 }
 
@@ -6984,7 +6990,8 @@ message CreateBoardTaskRequest {
   string for_actor = 8;
   bool claim = 9;
   int32 lease_seconds = 10;
-  string claim_token = 11;
+  reserved 11;
+  reserved "claim_token";
   string session_id = 12;
   string remote = 13;
   string as_profile = 14;
@@ -7062,14 +7069,15 @@ message ClaimBoardTaskRequest {
   repeated string from_owners = 8;
   int32 lease_seconds = 9;
   int32 wait_seconds = 10;
-  string claim_token = 11;
+  reserved 11;
+  reserved "claim_token";
   string as_profile = 12;
 }
 
 message RenewBoardTaskRequest {
   int64 id = 1;
-  int32 epoch = 2;
-  string token = 3;
+  reserved 2, 3;
+  reserved "epoch", "token";
   // 0 preserves the claim's original lease duration (fallback 15m).
   int32 lease_seconds = 4;
   string session_id = 5;
@@ -7078,16 +7086,16 @@ message RenewBoardTaskRequest {
 
 message ReleaseBoardTaskRequest {
   int64 id = 1;
-  int32 epoch = 2;
-  string token = 3;
+  reserved 2, 3;
+  reserved "epoch", "token";
   string session_id = 4;
   string as_profile = 5;
 }
 
 message CompleteBoardTaskRequest {
   int64 id = 1;
-  int32 epoch = 2;
-  string token = 3;
+  reserved 2, 3;
+  reserved "epoch", "token";
   string result = 4;
   string session_id = 5;
   string as_profile = 6;
@@ -7095,8 +7103,8 @@ message CompleteBoardTaskRequest {
 
 message FailBoardTaskRequest {
   int64 id = 1;
-  int32 epoch = 2;
-  string token = 3;
+  reserved 2, 3;
+  reserved "epoch", "token";
   string reason = 4;
   string session_id = 5;
   string as_profile = 6;
@@ -7106,8 +7114,8 @@ message BlockBoardTaskRequest {
   int64 id = 1;
   string reason = 2;
   string kind = 3;
-  int32 epoch = 4;
-  string token = 5;
+  reserved 4, 5;
+  reserved "epoch", "token";
   string session_id = 6;
   string as_profile = 7;
 }
