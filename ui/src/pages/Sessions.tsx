@@ -10,6 +10,7 @@ import { isLive } from "../lib/live";
 import { useProject, useScopedSnapshot } from "../lib/project";
 import { idleLeftMs, SESSION_IDLE_MS, sessionState, type SessionState } from "../lib/sessions";
 import { PageTitle } from "../components/PageTitle";
+import { T3ThreadTag } from "../components/T3ThreadTag";
 
 export function SessionsPage() {
   const { data: s } = useScopedSnapshot();
@@ -116,7 +117,7 @@ export function SessionTable({
                     </Link>
                   )}
                   {x.t3codeThreadId && (
-                    <span title={x.t3codeThreadId}>t3:{x.t3codeThreadId.slice(0, 8)}</span>
+                    <T3ThreadTag id={x.t3codeThreadId} url={x.t3codeThreadUrl} />
                   )}
                 </div>
               )}
@@ -195,9 +196,7 @@ export function SessionTable({
                         </Link>
                       )}
                       {x.t3codeThreadId && (
-                        <span className="text-[10.5px] text-muted-foreground" title={x.t3codeThreadId}>
-                          t3:{x.t3codeThreadId.slice(0, 8)}
-                        </span>
+                        <T3ThreadTag id={x.t3codeThreadId} url={x.t3codeThreadUrl} className="text-[10.5px] text-muted-foreground" />
                       )}
                     </div>
                   </TableCell>

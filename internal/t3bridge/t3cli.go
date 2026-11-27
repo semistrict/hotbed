@@ -15,7 +15,11 @@ import (
 
 // ThreadState summarizes a local T3 Code thread's existence and busy state.
 type ThreadState struct {
-	Exists              bool
+	Exists bool
+	// Link is the thread's URL as T3 Code gives it
+	// (https://app.t3.codes/threads/ENVIRONMENT/THREAD), which opens the
+	// thread in the T3 Code app or on the web.
+	Link                string
 	Status              string
 	ActiveRunID         string
 	PendingRequestCount int
@@ -92,6 +96,7 @@ func ResolveT3Binary(explicit string) (string, error) {
 type t3ThreadShowOutput struct {
 	Thread *struct {
 		ThreadID            string  `json:"threadId"`
+		Link                string  `json:"link"`
 		Status              string  `json:"status"`
 		ActiveRunID         *string `json:"activeRunId"`
 		PendingRequestCount int     `json:"pendingRequestCount"`
@@ -150,6 +155,7 @@ func (c *CLIClient) ThreadStatus(ctx context.Context, threadID string) (ThreadSt
 	}
 	return ThreadState{
 		Exists:              true,
+		Link:                parsed.Thread.Link,
 		Status:              parsed.Thread.Status,
 		ActiveRunID:         activeRun,
 		PendingRequestCount: parsed.Thread.PendingRequestCount,

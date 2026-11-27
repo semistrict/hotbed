@@ -11817,9 +11817,13 @@ type Session struct {
 	// Exact model ID for this session, if declared on session start (e.g.
 	// gemini-4-neon, claude-opus-4-6, gpt-5.5-codex). Sub-agents sharing a
 	// session may override this per action.
-	Model         string `protobuf:"bytes,16,opt,name=model,proto3" json:"model,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	Model string `protobuf:"bytes,16,opt,name=model,proto3" json:"model,omitempty"`
+	// The link T3 Code gives t3code_thread_id (`t3 thread show`'s link, such
+	// as https://app.t3.codes/threads/ENVIRONMENT/THREAD), for the cockpit to
+	// open the thread by; empty when it is not known.
+	T3CodeThreadUrl string `protobuf:"bytes,17,opt,name=t3code_thread_url,json=t3codeThreadUrl,proto3" json:"t3code_thread_url,omitempty"`
+	unknownFields   protoimpl.UnknownFields
+	sizeCache       protoimpl.SizeCache
 }
 
 func (x *Session) Reset() {
@@ -11964,6 +11968,13 @@ func (x *Session) GetModel() string {
 	return ""
 }
 
+func (x *Session) GetT3CodeThreadUrl() string {
+	if x != nil {
+		return x.T3CodeThreadUrl
+	}
+	return ""
+}
+
 type SessionWorkspace struct {
 	state      protoimpl.MessageState `protogen:"open.v1"`
 	Id         string                 `protobuf:"bytes,1,opt,name=id,proto3" json:"id,omitempty"`
@@ -12062,9 +12073,12 @@ type StartSessionRequest struct {
 	// When true, do not include the compact memory briefing in the response.
 	OmitMemories bool `protobuf:"varint,7,opt,name=omit_memories,json=omitMemories,proto3" json:"omit_memories,omitempty"`
 	// Exact model ID running this session, if known (e.g. gemini-4-neon).
-	Model         string `protobuf:"bytes,8,opt,name=model,proto3" json:"model,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	Model string `protobuf:"bytes,8,opt,name=model,proto3" json:"model,omitempty"`
+	// The link T3 Code gives t3code_thread_id (an https URL); the CLI reads
+	// it from `t3 thread show` when it starts a session inside T3 Code.
+	T3CodeThreadUrl string `protobuf:"bytes,9,opt,name=t3code_thread_url,json=t3codeThreadUrl,proto3" json:"t3code_thread_url,omitempty"`
+	unknownFields   protoimpl.UnknownFields
+	sizeCache       protoimpl.SizeCache
 }
 
 func (x *StartSessionRequest) Reset() {
@@ -12149,6 +12163,13 @@ func (x *StartSessionRequest) GetOmitMemories() bool {
 func (x *StartSessionRequest) GetModel() string {
 	if x != nil {
 		return x.Model
+	}
+	return ""
+}
+
+func (x *StartSessionRequest) GetT3CodeThreadUrl() string {
+	if x != nil {
+		return x.T3CodeThreadUrl
 	}
 	return ""
 }
@@ -38704,7 +38725,7 @@ const file_hotbed_v1_hotbed_proto_rawDesc = "" +
 	"\x05state\x18\x03 \x01(\x0e2\x17.hotbed.v1.CommandStateR\x05state\x129\n" +
 	"\bended_by\x18\x04 \x01(\v2\x1e.hotbed.v1.CommandInterventionR\aendedBy\x12\x1f\n" +
 	"\vreceived_at\x18\x05 \x01(\x03R\n" +
-	"receivedAt\"\xc9\x04\n" +
+	"receivedAt\"\xf5\x04\n" +
 	"\aSession\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x14\n" +
 	"\x05agent\x18\x02 \x01(\tR\x05agent\x12\x1d\n" +
@@ -38727,7 +38748,8 @@ const file_hotbed_v1_hotbed_proto_rawDesc = "" +
 	"\breminder\x18\r \x01(\tH\x01R\breminder\x88\x01\x01\x12(\n" +
 	"\x10t3code_thread_id\x18\x0e \x01(\tR\x0et3codeThreadId\x125\n" +
 	"\bmemories\x18\x0f \x01(\v2\x19.hotbed.v1.MemoryBriefingR\bmemories\x12\x14\n" +
-	"\x05model\x18\x10 \x01(\tR\x05modelB\v\n" +
+	"\x05model\x18\x10 \x01(\tR\x05model\x12*\n" +
+	"\x11t3code_thread_url\x18\x11 \x01(\tR\x0ft3codeThreadUrlB\v\n" +
 	"\t_ended_atB\v\n" +
 	"\t_reminder\"\xc0\x01\n" +
 	"\x10SessionWorkspace\x12\x0e\n" +
@@ -38739,7 +38761,7 @@ const file_hotbed_v1_hotbed_proto_rawDesc = "" +
 	"releasedAt\x88\x01\x01\x12\x1f\n" +
 	"\vcockpit_url\x18\x06 \x01(\tR\n" +
 	"cockpitUrlB\x0e\n" +
-	"\f_released_atJ\x04\b\x02\x10\x03R\arepo_id\"\xea\x01\n" +
+	"\f_released_atJ\x04\b\x02\x10\x03R\arepo_id\"\x96\x02\n" +
 	"\x13StartSessionRequest\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x14\n" +
 	"\x05agent\x18\x02 \x01(\tR\x05agent\x12\x18\n" +
@@ -38748,7 +38770,8 @@ const file_hotbed_v1_hotbed_proto_rawDesc = "" +
 	"\x06resume\x18\x05 \x01(\bR\x06resume\x12(\n" +
 	"\x10t3code_thread_id\x18\x06 \x01(\tR\x0et3codeThreadId\x12#\n" +
 	"\romit_memories\x18\a \x01(\bR\fomitMemories\x12\x14\n" +
-	"\x05model\x18\b \x01(\tR\x05model\"\xd6\x01\n" +
+	"\x05model\x18\b \x01(\tR\x05model\x12*\n" +
+	"\x11t3code_thread_url\x18\t \x01(\tR\x0ft3codeThreadUrl\"\xd6\x01\n" +
 	"\x13ListSessionsRequest\x12\x1a\n" +
 	"\aproject\x18\x01 \x01(\tH\x00R\aproject\x12#\n" +
 	"\fall_projects\x18\x03 \x01(\bH\x00R\vallProjects\x12\x1d\n" +

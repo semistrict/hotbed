@@ -37,6 +37,7 @@ import {
 	type WorkspaceRow,
 } from "./store/index.ts";
 import type { WorkerTunnelHub } from "./tunnel.ts";
+import type { T3CodeThread } from "./store/sessions.ts";
 
 export const SESSION_IDLE_MS = 60 * 60_000;
 export const OFFLINE_GRACE_MS = 24 * 60 * 60_000;
@@ -47,6 +48,7 @@ export const PROJECT_NAME_RE = /^[a-z0-9][a-z0-9-]{0,39}$/;
 export const REPO_ID_RE = /^[a-z0-9][a-z0-9-]{0,39}$/;
 export const STEP_NAME_RE = /^[a-z0-9]+(-[a-z0-9]+)*$/;
 export const MAX_T3CODE_THREAD_ID_LEN = 256;
+export const MAX_T3CODE_THREAD_URL_LEN = 2048;
 
 export function validateT3CodeThreadId(raw: string): string {
 	const tid = raw.trim();
@@ -63,6 +65,38 @@ export function validateT3CodeThreadId(raw: string): string {
 		);
 	}
 	return tid;
+}
+
+/**
+ * The session's T3 Code thread: its id, and the link T3 Code gives it. The
+ * cockpit puts the link in an href, so only an https URL is taken (never
+ * javascript: or another scheme), kept as parsed; and only with a thread id,
+ * though the link's form is T3 Code's, so it is not checked to name it.
+ */
+export function validateT3CodeThread(rawId: string, rawUrl: string): T3CodeThread {
+	const id = validateT3CodeThreadId(rawId);
+	const url = rawUrl.trim();
+	if (!url) return { id, url };
+	if (!id) {
+		throw hotbedError(
+			ErrorCode.InvalidArgs,
+			"t3code_thread_url needs the t3code_thread_id it links to",
+		);
+	}
+	if (url.length > MAX_T3CODE_THREAD_URL_LEN) {
+		throw hotbedError(
+			ErrorCode.InvalidArgs,
+			`t3code_thread_url is too long (max ${MAX_T3CODE_THREAD_URL_LEN} bytes)`,
+		);
+	}
+	const parsed = URL.parse(url);
+	if (parsed?.protocol !== "https:") {
+		throw hotbedError(
+			ErrorCode.InvalidArgs,
+			`t3code_thread_url ${JSON.stringify(url)} is not an https URL`,
+		).withSuggestion("pass the link `t3 thread show THREAD --json` prints, or none");
+	}
+	return { id, url: parsed.href };
 }
 
 export interface ScopedRequest {

@@ -2278,6 +2278,10 @@ message Session {
   // gemini-4-neon, claude-opus-4-6, gpt-5.5-codex). Sub-agents sharing a
   // session may override this per action.
   string model = 16;
+  // The link T3 Code gives t3code_thread_id (`t3 thread show`'s link, such
+  // as https://app.t3.codes/threads/ENVIRONMENT/THREAD), for the cockpit to
+  // open the thread by; empty when it is not known.
+  string t3code_thread_url = 17;
 }
 
 message SessionWorkspace {
@@ -2312,6 +2316,9 @@ message StartSessionRequest {
   bool omit_memories = 7;
   // Exact model ID running this session, if known (e.g. gemini-4-neon).
   string model = 8;
+  // The link T3 Code gives t3code_thread_id (an https URL); the CLI reads
+  // it from `t3 thread show` when it starts a session inside T3 Code.
+  string t3code_thread_url = 9;
 }
 
 message ListSessionsRequest {

@@ -229,7 +229,7 @@ export function createQuestionService(
 			const { by, project } = ctrl.agentStamp(caller, req.sessionId, "");
 			const sess = ctrl.store.sessions.tryGet(by.session);
 			if (t3Thread && sess && !sess.t3codeThreadId) {
-				ctrl.store.sessions.setT3CodeThreadIdIfEmpty(sess.id, t3Thread);
+				ctrl.store.sessions.adoptT3CodeThread(sess.id, { id: t3Thread, url: "" });
 			}
 			const effectiveT3 = t3Thread || sess?.t3codeThreadId || "";
 			const repo = projectRepo(project, req.repo, req.askedFrom?.remote ?? "");

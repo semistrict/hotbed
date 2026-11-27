@@ -672,7 +672,7 @@ if [ "$1" = "thread" ] && [ "$2" = "show" ]; then
   tid="$3"
   case "$tid" in
     idle-thread)
-      echo '{"thread":{"threadId":"idle-thread","status":"completed","activeRunId":null,"pendingRequestCount":0,"blockedOnThreadWait":false,"archived":false},"messages":[],"error":null}'
+      echo '{"thread":{"threadId":"idle-thread","link":"https://app.t3.codes/threads/env-1/idle-thread","status":"completed","activeRunId":null,"pendingRequestCount":0,"blockedOnThreadWait":false,"archived":false},"messages":[],"error":null}'
       exit 0
       ;;
     busy-thread)
@@ -704,8 +704,8 @@ exit 2
 	ctx := context.Background()
 
 	st, err := cli.ThreadStatus(ctx, "idle-thread")
-	if err != nil || !st.Exists || st.IsBusy() {
-		t.Fatalf("idle-thread = (%+v, %v), want exists+idle", st, err)
+	if err != nil || !st.Exists || st.IsBusy() || st.Link != "https://app.t3.codes/threads/env-1/idle-thread" {
+		t.Fatalf("idle-thread = (%+v, %v), want exists+idle with its link", st, err)
 	}
 
 	st, err = cli.ThreadStatus(ctx, "busy-thread")

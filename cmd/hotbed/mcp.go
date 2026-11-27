@@ -179,6 +179,7 @@ func (s *mcpServer) ensure(ctx context.Context) (string, error) {
 	if req.Remote, err = s.d.checkoutRemote(ctx); err != nil {
 		return "", err
 	}
+	req.T3CodeThreadUrl = s.d.t3codeThreadURL(ctx, req.T3CodeThreadId)
 	sess, err := cl.sessions.StartSession(ctx, req)
 	if err != nil {
 		return "", err

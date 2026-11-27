@@ -78,15 +78,17 @@ func (c *sessionStartCmd) Exec(ctx context.Context, d deps) (any, error) {
 			}
 		}
 	}
+	tid := strings.TrimSpace(c.T3CodeThreadID)
 	sess, err := cl.sessions.StartSession(ctx, &pb.StartSessionRequest{
-		Id:             c.Name,
-		Agent:          c.Agent,
-		Model:          strings.TrimSpace(c.Model),
-		Project:        c.Project,
-		Remote:         remote,
-		Resume:         c.Resume,
-		T3CodeThreadId: strings.TrimSpace(c.T3CodeThreadID),
-		OmitMemories:   c.OmitMemories,
+		Id:              c.Name,
+		Agent:           c.Agent,
+		Model:           strings.TrimSpace(c.Model),
+		Project:         c.Project,
+		Remote:          remote,
+		Resume:          c.Resume,
+		T3CodeThreadId:  tid,
+		T3CodeThreadUrl: d.t3codeThreadURL(ctx, tid),
+		OmitMemories:    c.OmitMemories,
 	})
 	if err != nil {
 		return nil, err
@@ -172,6 +174,7 @@ type sessionStatusResult struct {
 	Key                string                   `json:"key,omitempty"`
 	Agent              string                   `json:"agent,omitempty"`
 	T3CodeThreadID     string                   `json:"t3codeThreadId,omitempty"`
+	T3CodeThreadURL    string                   `json:"t3codeThreadUrl,omitempty"`
 	StartedAt          int64                    `json:"startedAt,omitempty"`
 	LastActiveAt       int64                    `json:"lastActiveAt,omitempty"`
 	EndedAt            *int64                   `json:"endedAt,omitempty"`
@@ -275,6 +278,7 @@ func (c *sessionStatusCmd) Exec(ctx context.Context, d deps) (any, error) {
 		Key:                binding.Key,
 		Agent:              sess.Agent,
 		T3CodeThreadID:     sess.T3CodeThreadId,
+		T3CodeThreadURL:    sess.T3CodeThreadUrl,
 		StartedAt:          sess.StartedAt,
 		LastActiveAt:       sess.LastActiveAt,
 		EndedAt:            sess.EndedAt,

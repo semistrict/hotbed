@@ -12,6 +12,7 @@ import { idleLeftMs, sessionCommands } from "../lib/sessions";
 import { filesChanged } from "../lib/workspaces";
 import { NotFound } from "./NotFound";
 import { PageTitle } from "../components/PageTitle";
+import { T3ThreadTag } from "../components/T3ThreadTag";
 import { IdleLeft, SessionStateLabel } from "./Sessions";
 import { WorkspaceStateLabel } from "./Workspace";
 
@@ -50,9 +51,7 @@ function SessionView({ s, session }: { s: Snapshot; session: Session }) {
         {session.t3codeThreadId && (
           <>
             <span>·</span>
-            <span className="font-mono" title={session.t3codeThreadId}>
-              t3:{session.t3codeThreadId.slice(0, 8)}
-            </span>
+            <T3ThreadTag id={session.t3codeThreadId} url={session.t3codeThreadUrl} className="font-mono" />
           </>
         )}
         <span>·</span>

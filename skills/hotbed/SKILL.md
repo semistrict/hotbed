@@ -38,7 +38,8 @@ Do not pipe `hotbed session start` into `jq` or swallow its stdout: it prints ac
   is set (or `--t3code-thread-id ID` is passed), the controller also persists that T3 Code thread ID
   on the session so `hotbed session search [THREAD_ID]`, `hotbed session ls --t3code-thread-id ID`,
   and `hotbed session status --t3code-thread-id ID` can find live and ended sessions by thread from
-  any machine. In a thread or
+  any machine. It also keeps the thread's link, read from `$T3CODE_CLI_PATH thread show` (a warning,
+  not a failure, when T3 Code cannot give it), so the cockpit's session pages open the thread. In a thread or
   worktree already bound to a live session it fails with `CONFLICT` naming that session: keep
   using it, end it first, or pass `--replace` to end it and bind the new one.
   `session start NAME --resume` takes up session NAME again: live again if it ended (with no

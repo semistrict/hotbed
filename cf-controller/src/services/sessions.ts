@@ -19,7 +19,13 @@ import {
 } from "../gen/hotbed/v1/hotbed_pb.ts";
 import { getCaller } from "../connect-adapter.ts";
 import { listedProject, sessionProject } from "../project-scope.ts";
-import { MAX_WAIT_MS, validateT3CodeThreadId, type ControllerContext } from "../context.ts";
+import {
+	MAX_WAIT_MS,
+	validateT3CodeThread,
+	validateT3CodeThreadId,
+	type ControllerContext,
+} from "../context.ts";
+import type { T3CodeThread } from "../store/sessions.ts";
 import {
 	MEMORY_FAILURE_REMINDER,
 	MEMORY_FEEDBACK_REMINDER,
@@ -76,7 +82,7 @@ export function createSessionService(ctrl: ControllerContext): ServiceImpl<typeo
 	async function resumeSession(
 		id: string,
 		project: string,
-		t3codeThreadId: string,
+		t3codeThread: T3CodeThread,
 		model: string,
 	): Promise<Session> {
 		return ctrl.withSessionLock(id, () => {
@@ -87,9 +93,7 @@ export function createSessionService(ctrl: ControllerContext): ServiceImpl<typeo
 					`session ${sess.id} works on project ${sess.project}, not ${project}`,
 				).withSuggestion("resume it without naming a project, or start another session");
 			}
-			if (t3codeThreadId && !sess.t3codeThreadId) {
-				ctrl.store.sessions.setT3CodeThreadIdIfEmpty(sess.id, t3codeThreadId);
-			}
+			ctrl.store.sessions.adoptT3CodeThread(sess.id, t3codeThread);
 			if (model && !sess.model) {
 				ctrl.store.sessions.setModelIfEmpty(sess.id, model);
 			}
@@ -125,7 +129,7 @@ export function createSessionService(ctrl: ControllerContext): ServiceImpl<typeo
 		async startSession(req, ctx) {
 			const caller = getCaller(ctx.values);
 			const agent = req.agent || caller.hostname;
-			const t3codeThreadId = validateT3CodeThreadId(req.t3codeThreadId);
+			const t3codeThread = validateT3CodeThread(req.t3codeThreadId, req.t3codeThreadUrl);
 			const model = req.model.trim();
 
 			if (req.id && (!SESSION_NAME_RE.test(req.id) || req.id.length > 48)) {
@@ -143,7 +147,7 @@ export function createSessionService(ctrl: ControllerContext): ServiceImpl<typeo
 						"pick another name, or leave it out for a random one",
 					);
 				}
-				const resumed = await resumeSession(req.id, req.project, t3codeThreadId, model);
+				const resumed = await resumeSession(req.id, req.project, t3codeThread, model);
 				const proj = ctrl.store.projects.get(resumed.project);
 				resumed.reminder = sessionStartReminder(proj);
 				if (!req.omitMemories) {
@@ -159,7 +163,7 @@ export function createSessionService(ctrl: ControllerContext): ServiceImpl<typeo
 					req.id,
 					agent,
 					project.name,
-					t3codeThreadId,
+					t3codeThread,
 					ctrl.now(),
 					model,
 				);
@@ -170,7 +174,7 @@ export function createSessionService(ctrl: ControllerContext): ServiceImpl<typeo
 							generatePetname(),
 							agent,
 							project.name,
-							t3codeThreadId,
+							t3codeThread,
 							ctrl.now(),
 							model,
 						);

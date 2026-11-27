@@ -66,7 +66,7 @@ export function createScheduleService(
 		for (let n = 1; n <= 20; n++) {
 			const id = n === 1 ? baseName : `${baseName}-${n}`;
 			try {
-				ctrl.store.sessions.start(id, agent, project, "", ctrl.now());
+				ctrl.store.sessions.start(id, agent, project, { id: "", url: "" }, ctrl.now());
 				return id;
 			} catch (err) {
 				if (codeOf(err) !== ErrorCode.Conflict) throw err;

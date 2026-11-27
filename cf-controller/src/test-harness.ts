@@ -194,7 +194,7 @@ function seed(host: TestHarnessHost, b: SeedBody): void {
 			b.session.id,
 			b.session.agent,
 			b.session.project,
-			b.session.t3codeThreadId ?? "",
+			{ id: b.session.t3codeThreadId ?? "", url: "" },
 			b.session.at ?? now,
 		);
 	}

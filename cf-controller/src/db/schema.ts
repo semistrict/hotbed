@@ -158,6 +158,7 @@ export const sessions = sqliteTable(
 			.notNull()
 			.references(() => projects.id),
 		t3codeThreadId: text("t3code_thread_id").notNull().default(""),
+		t3codeThreadUrl: text("t3code_thread_url").notNull().default(""),
 		model: text("model").notNull().default(""),
 		startedAt: integer("started_at").notNull(),
 		lastActiveAt: integer("last_active_at").notNull(),

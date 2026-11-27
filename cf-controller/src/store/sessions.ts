@@ -13,7 +13,13 @@ import { KEEP_HISTORY_MS } from "./commands.ts";
 import type { ProjectStore } from "./projects.ts";
 import type { WorkspaceRow, WorkspaceStore } from "./workspaces.ts";
 
-const SESSION_SELECT = `SELECT s.id, s.agent, p.name AS project, s.t3code_thread_id, s.model, s.started_at, s.last_active_at, s.ended_at, s.end_reason
+/** The T3 Code thread a session works in: its id, and the link T3 Code gives it ("" when not known). */
+export interface T3CodeThread {
+	id: string;
+	url: string;
+}
+
+const SESSION_SELECT = `SELECT s.id, s.agent, p.name AS project, s.t3code_thread_id, s.t3code_thread_url, s.model, s.started_at, s.last_active_at, s.ended_at, s.end_reason
 	FROM sessions s JOIN projects p ON p.id = s.project_id`;
 
 /** Agent sessions and the events each is told about. */
@@ -40,18 +46,19 @@ export class SessionStore {
 		id: string,
 		agent: string,
 		project: string,
-		t3codeThreadId: string,
+		t3codeThread: T3CodeThread,
 		nowMs: number,
 		model = "",
 	): Session {
 		const pid = this.projects.idByName(project);
 		try {
 			this.sql.exec(
-				"INSERT INTO sessions (id, agent, project_id, t3code_thread_id, model, started_at, last_active_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+				"INSERT INTO sessions (id, agent, project_id, t3code_thread_id, t3code_thread_url, model, started_at, last_active_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
 				id,
 				agent,
 				pid,
-				t3codeThreadId,
+				t3codeThread.id,
+				t3codeThread.url,
 				model,
 				nowMs,
 				nowMs,
@@ -102,11 +109,24 @@ export class SessionStore {
 		);
 	}
 
-	setT3CodeThreadIdIfEmpty(id: string, threadId: string): void {
+	/**
+	 * Associates the session with thread if it has no thread yet, and takes
+	 * the thread's link when given one (T3 Code's latest, should it have
+	 * changed): a session never changes threads, nor takes a link to another
+	 * thread.
+	 */
+	adoptT3CodeThread(id: string, thread: T3CodeThread): void {
+		if (!thread.id) return;
 		this.sql.exec(
-			"UPDATE sessions SET t3code_thread_id = ? WHERE id = ? AND t3code_thread_id = ''",
-			threadId,
+			`UPDATE sessions
+			 SET t3code_thread_id = ?,
+			     t3code_thread_url = CASE WHEN ? = '' THEN t3code_thread_url ELSE ? END
+			 WHERE id = ? AND t3code_thread_id IN ('', ?)`,
+			thread.id,
+			thread.url,
+			thread.url,
 			id,
+			thread.id,
 		);
 	}
 
@@ -245,6 +265,7 @@ export class SessionStore {
 			agent: str(r.agent),
 			project: str(r.project),
 			t3codeThreadId: str(r.t3code_thread_id),
+			t3codeThreadUrl: str(r.t3code_thread_url),
 			model: str(r.model),
 			startedAt: big(r.started_at),
 			lastActiveAt: big(r.last_active_at),
