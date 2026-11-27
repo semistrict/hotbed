@@ -1,36 +1,39 @@
 # Setting up a hotbed cluster
 
-All machines are on one tailnet, owned by one Tailscale user. Nodes and clients are admitted by
-that identity: there are no tokens.
+The controller is a Cloudflare Worker (`cf-controller/`, deployed by CI) at an HTTPS URL; it also
+serves the cockpit. Workers listen on no network address: each connects out to the controller
+over an authenticated WebSocket tunnel, so a machine needs only outbound HTTPS. Auth is WorkOS
+sign-in for people and org-scoped tokens for machines (`hbj_` join, `hbw_` worker, `hbu_` personal
+API); there is no tailnet and no controller to install on a machine.
 
 ```sh
-# The binary goes in /usr/local/bin and state directories under /var/lib: on SELinux systems
-# (Fedora, Asahi) systemd cannot run binaries or write logs under a home directory.
+# Sign in once per client machine (browser; --device on a headless one). This stores the
+# controller URL, so later commands name no controller:
+hotbed login https://CONTROLLER
 
-# The controller (any machine):
-hotbed init /var/lib/hotbed               # data.address is what workers join
-hotbed serve /var/lib/hotbed
-
-# Each worker (single command, sets up in ~/.hotbed):
+# A join token (hbj_...) comes from the cockpit's Organization page ("Mint join token").
+# Each worker (single command, sets up in ~/.hotbed; token via --token or HOTBED_TOKEN, or
+# taken from your hotbed login when you are signed in):
 # - Linux: reuses btrfs/zfs if ~/.hotbed is on one, else creates a sparse file-backed ZFS pool
 #   with autotrim=on, joins the cluster, and installs/starts hotbed-worker.service.
-sudo hotbed worker init <controller>
+sudo hotbed worker init https://CONTROLLER --token hbj_...
 # - macOS (Apple silicon): the worker runs natively, as you, in ~/.hotbed/worker, every
 #   workspace a VM of machined's (cladefs's VMM on Hypervisor.framework), one per workspace,
 #   booted from a cell of the cladefs daemon machined embeds; free page reporting gives an
-#   idle VM's memory back to macOS. hotbed's daemon (`hotbed daemon install`, which worker init
-#   runs) runs machined and the worker, restarting them if they end.
-hotbed worker init <controller>
+#   idle VM's memory back to macOS. hotbed's daemon runs machined and the worker (macworker),
+#   restarting them if they end: `hotbed worker init` installs it (`hotbed daemon install`,
+#   `hotbed daemon status`).
+hotbed worker init https://CONTROLLER --token hbj_...
 #   hotbed worker status | start | stop | destroy
 
 # Or manually on Linux (as root; the directory on btrfs or zfs):
-sudo hotbed join <controller> /var/lib/hotbed --user you
-sudo hotbed serve /var/lib/hotbed
+sudo hotbed join https://CONTROLLER /var/lib/hotbed --user you --token hbj_...
+sudo hotbed serve /var/lib/hotbed       # runs the worker; it exchanges the join token for its own hbw_ token
 #   --zfs-dataset pool/hotbed     where zfs volumes go (default <pool>/hotbed)
 #   --unit-property DeviceAllow=/dev/kvm  grant what builds need, repeatable
 
-# Client commands call the controller worker init joined this machine to; no flag names it.
-# On a machine that is no worker, set HOTBED_CONTROLLER=<controller> instead.
+# Client commands call the controller you signed in to (or HOTBED_CONTROLLER=https://CONTROLLER;
+# HOTBED_TOKEN=hbu_... for a machine with no browser login).
 # For private GitHub repos and `gh` inside worker commands, log in ONCE on the controller
 # (no per-node GitHub setup or SSH keys are needed on workers — git HTTPS, git SSH, and `gh`
 # REST/GraphQL all delegate automatically to every worker, session, and command):
@@ -77,4 +80,4 @@ directory, names its measurement CPUs under `worker.bench`; it reads it when it 
 - `disk`: a path on the disk measurements keep their stores on; other commands' IO on it is
   capped while one runs.
 
-The controller serves a read-only cockpit at `http://CONTROLLER:7120/`.
+The cockpit is at the controller's HTTPS URL (sign in with WorkOS).

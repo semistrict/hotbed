@@ -1,7 +1,8 @@
 # hotbed design
 
-hotbed runs agents' builds, tests and dev servers on a fleet of Linux machines (old PCs, Apple
-Silicon laptops on Asahi) on one tailnet. Its one trick: every workspace is a copy-on-write fork of
+hotbed runs agents' builds, tests and dev servers on a fleet of machines (old PCs and Apple
+Silicon laptops on Linux, Apple Silicon Macs running macOS natively) that dial out to one
+controller. Its one trick: every workspace is a copy-on-write fork of
 a **warm base**, a checkout of main that is already built, so a branch compiles only what it changed.
 
 Scope comes from two ends: the agent experience (the CLI, `hotbed skills get hotbed`) and the human
@@ -11,21 +12,32 @@ does too.
 
 ## Pieces
 
-One binary. A node is the controller or a worker; any machine can be a client.
+Two programs: the `hotbed` Go binary (every worker, and the client agents and people use) and the
+controller, a Cloudflare Worker.
 
-- **Controller** (`hotbed serve` on a controller state dir): the truth about what spans nodes, in
-  SQLite (`hotbed.db`): repos, projects and their steps, sessions, placement, schedules, history. Places
-  workspaces on nodes, serves the API and the UI, and keeps a view of each worker folded from its
-  events (below). It is not the truth about any worker's own state.
-- **Worker** (`hotbed serve` on a worker state dir, as root): the truth about its own bases,
-  workspaces and commands, in its SQLite (`worker.db`), so it picks everything up again after a
-  restart. Admits commands, parks them under memory pressure, builds bases, and serves clients'
-  calls about its workspaces directly.
-- **Client**: agents and people. Every command prints one JSON envelope.
+- **Controller** (`cf-controller/`, deployed to Cloudflare Workers by CI): the truth about what
+  spans nodes: repos, projects and their steps, sessions, placement, schedules, history. One
+  SQLite Durable Object per organization (`ControllerDO`, schema in `cf-controller/src/db/schema.ts`,
+  Drizzle migrations that run at startup) holds it; heavy per-command data (profiles,
+  diagnostics, cached output) lives in a `CommandDO` per command, and a global `TenantRegistryDO`
+  gives each organization its cladefs tenant ID. It places workspaces on nodes, serves the
+  ConnectRPC API and the cockpit (the React app in `ui/`, served by Workers Static Assets), and
+  keeps a view of each worker folded from its events (below). It is not the truth about any
+  worker's own state.
+- **Worker** (the `hotbed` binary: `hotbed serve` as root on Linux, `macworker` under `hotbed
+  daemon` with `machined` on a Mac): the truth about its own bases, workspaces and commands, in
+  its SQLite (`worker.db`), so it picks everything up again after a restart. Admits commands,
+  parks them under memory pressure, and builds bases. It listens on no network address: it
+  connects out to the controller, which relays clients' calls about its workspaces (below).
+- **Client**: agents and people. Every command prints concise plain text by default, or one JSON
+  envelope with `--json`.
 
-Auth is the tailnet: every request's caller is looked up with tailscaled's WhoIs and must be one of
-the owner's machines (not tagged, not shared in from another tailnet). Controller and workers admit
-the same callers; on the machine itself, only root and the configured local user.
+Auth is WorkOS. People sign in to the cockpit and `hotbed login` with WorkOS (Google), each
+WorkOS organization getting its own `ControllerDO`. Machines use organization-scoped tokens:
+join tokens (`hbj_`) that a worker exchanges at join for its own node-bound worker token
+(`hbw_`), and personal API tokens (`hbu_`) for clients with no browser. Every request is
+checked by the controller; workers admit only the controller's tunnel (on a Mac, also its local
+Unix socket, whose file mode says who may connect).
 
 The controller may be far from its workers (they go where hardware is cheapest), so nothing
 between them assumes it is near or always there.
@@ -259,7 +271,7 @@ minutes with no command (its client gave up on it). A run names the project's re
 the project does not hold is refused. The agent's checkout is the truth: each run sends it to the workspace
 it runs in, and whatever earlier commands wrote stays on their node.
 
-`internal/controller/placement.go` decides. It leaves out nodes the run cannot use: offline, on another build than
+`cf-controller/src/placement.ts` decides. It leaves out nodes the run cannot use: offline, on another build than
 the controller's (it follows within minutes; until then a run waits for it, retryably), not
 keeping the project's bases, not `--node`, not `--arch`, without measurement CPUs for `--bench`, or
 with less RAM than `--mem-low`. Each node left weighs its load (CPU busy, plus queued commands
@@ -300,7 +312,7 @@ or tracing packages.
   cgroup limits, etc.). Interactive shells (`hotbed shell`) and worker-invoked checkout operations
   (`git`, `hotbed __sync-apply`) run chrooted inside a transient systemd scope (`unshare --mount
   --propagation slave` + `chroot`). The chroot is a build-environment isolation boundary for trusted
-  code on a single-owner tailnet, not an adversarial sandbox against hostile code or tailnet access.
+  code on machines one owner controls, not an adversarial sandbox against hostile code.
 
 - **Shared base rootfs image (`internal/baseimage`).** Each worker pulls a minimal Debian OCI
   rootfs (`public.ecr.aws/debian/debian:trixie-slim`) for its architecture, provisions it once with
@@ -480,24 +492,22 @@ come.
 Nothing is deployed by hand. Every push to main is tested and built by CI
 (`.github/workflows/build.yml`) for each platform hotbed runs on (linux/amd64, linux/arm64,
 darwin/arm64), stamped with its build number (`internal/version`), and published as the GitHub
-release `build-N` with the binaries' `SHA256SUMS`.
+release `build-N` with the binaries' `SHA256SUMS`. CI then deploys `cf-controller` with that
+release's metadata (`HOTBED_BUILD_NUMBER`, `HOTBED_GIT_COMMIT`, `HOTBED_BUILD_SHA256SUMS`
+compiled into the Worker), so the controller knows its own build and every platform's checksum.
 
-- **The controller follows CI.** With `updates` in its config (the repo, and a file holding a
-  GitHub token that may read its releases), it looks for a newer release every two minutes. It
-  fetches every platform's binary into `builds/N` in its state directory, each checked against
-  the sums, installs its own over its binary in one rename, and starts it in its own place
-  (exec, with the same arguments): what runs it need not restart it. A dev build (built by hand, build 0) is replaced the same way: branches are
-  tried in hotbed sessions, not on the fleet's own nodes.
-- **Everything else follows the controller, from the controller.** Workers never reach GitHub.
-  The controller serves the build it runs at `/builds/N/hotbed-OS-ARCH`, behind the same gate as
-  its API, and hands each worker its platform's build (number, path, sha256) in every heartbeat's
-  reply. A worker on another build, newer or older, downloads it, checks its sum, installs it
-  over itself and execs it; its commands, systemd units, keep running across the restart, as
-  they do across any. A client on a CI build sees the controller's build on every answer
-  (`Hotbed-Build`) and installs it after the command it ran; `hotbed upgrade` does it on demand.
-  So every node runs the controller's build.
-- **What it keeps.** The controller keeps the build it runs and fetches the next; CI keeps the
-  newest 20 releases.
+- **The controller is deployed by CI.** It is a Cloudflare Worker: there is nothing for it to
+  install or restart. A DO alarm also polls GitHub for the newest release.
+- **Everything else follows the controller.** Heartbeats and `GetBuild` hand each worker its
+  platform's build (number, download URL, sha256), and the controller serves `/builds/N/ASSET` as
+  a proxy for private repos. A worker on an older build downloads it, checks its sum, installs it
+  over itself and execs it (a newer one is never downgraded); its commands, systemd units, keep
+  running across the restart, as they do across any. A client on a CI build sees the controller's
+  build on every answer (`Hotbed-Build`) and installs it after the command it ran; `hotbed
+  upgrade` does it on demand. So every node runs the controller's build. A dev build (built by
+  hand, build 0) stops following the controller: branches are tried in hotbed sessions, not on
+  the fleet's own nodes.
+- **What it keeps.** CI keeps the newest 20 releases.
 - A build that fails to start is not rolled back: CI's tests are what stand before the fleet.
   The fleet skill's `hotbed/deploy.sh` installs a chosen release by hand.
 

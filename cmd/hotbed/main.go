@@ -1,5 +1,6 @@
-// Command hotbed is every part of a hotbed cluster: the controller, the
-// workers, and the client that agents use.
+// Command hotbed is the client that agents use and the worker that runs on
+// each machine of a hotbed cluster; the controller is the Cloudflare Worker
+// in cf-controller/.
 package main
 
 import (

@@ -430,11 +430,13 @@ never succeed; fix it.
 ## When the controller or a worker restarts
 
 Deploys restart the controller and workers often. Every hotbed call waits up to three minutes for
-one it cannot reach, saying so on stderr, so you need not retry. `run`, `sync`, `logs` and `stop`
-talk to the workspace's machine directly: with the controller down they keep working without
-waiting for it (`run` goes to the workspace this machine last ran in), and the session stays alive
-while you do. Only after the three minutes does a call fail with `CONTROLLER_UNREACHABLE`: the controller is
-down, not restarting. What happened meanwhile reaches `poll` once it is back.
+one it cannot reach, saying so on stderr, so you need not retry. Every call, `run`, `sync`, `logs`
+and `stop` included, goes through the controller (the Cloudflare Worker), which relays it to the
+workspace's worker over that worker's outbound WebSocket tunnel; only a Mac's own worker is also
+reachable over its local Unix socket. Workers listen on no network address, so with the controller
+down nothing reaches them: calls wait for it. Only after the three minutes does a call fail with
+`CONTROLLER_UNREACHABLE`: the controller is down, not restarting. Commands already running on
+workers keep running meanwhile, and what happened reaches `poll` once the controller is back.
 
 ## run
 
