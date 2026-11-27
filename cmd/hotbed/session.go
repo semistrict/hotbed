@@ -1476,10 +1476,12 @@ func followLogStream(ctx context.Context, wk workerClients, id string, timestamp
 			}
 			continue
 		}
-		if broke != nil {
-			// The stream dropped before the command ended or paused (e.g. a
-			// worker restart); drain any output written after offset without
-			// setting Wait (which would resume a paused command).
+		if broke != nil || terminalState == pb.CommandState_COMMAND_STATE_UNSPECIFIED {
+			// The stream ended before delivering a terminal chunk from the
+			// worker (e.g. a worker restart, or a clean idle EOF from an edge
+			// proxy while the command was queued before exiting quickly); drain
+			// any output written after offset without setting Wait (which would
+			// resume a paused command).
 			if err := drainLog(ctx, wk, id, offset, timestamps, writeChunk, wait); err != nil {
 				return nil, err
 			}

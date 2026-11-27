@@ -251,3 +251,86 @@ func writeProto(w http.ResponseWriter, msg proto.Message) {
 	w.Header().Set("Content-Type", "application/proto")
 	_, _ = w.Write(b)
 }
+
+// Regression test for issue #18: when a FollowLog stream closes with clean EOF
+// and no terminal chunk (e.g. edge/proxy idle close while a command was queued)
+// and the command then exits quickly before GetCommand runs, followLogStream
+// must still call drainLog so stdout/stderr is never dropped.
+func TestFollowLogStreamDrainsOnCleanEOFWithoutTerminalChunk(t *testing.T) {
+	t.Parallel()
+	var followCalls atomic.Int64
+	exitCode := int32(127)
+	wantOut := "=== 1. Clippy & release build ===\nbash: line 5: cargo: command not found\n"
+	srv := startHandlerPeer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case strings.HasSuffix(r.URL.Path, "/FollowLog"):
+			n := followCalls.Add(1)
+			w.Header().Set("Content-Type", "application/connect+proto")
+			if n == 1 {
+				// Clean EOF with zero chunks (no terminal chunk): e.g. idle
+				// stream close while the command was queued.
+				writeConnectStreamEnd(w)
+				return
+			}
+			// Drain call (Follow=false): returns the full captured output.
+			writeConnectStreamMsg(w, &pb.LogChunk{
+				Data:       []byte(wantOut),
+				NextOffset: int64(len(wantOut)),
+			})
+			writeConnectStreamEnd(w)
+		case strings.HasSuffix(r.URL.Path, "/GetCommand"):
+			writeProto(w, &pb.Command{
+				Id:       "pn3yyobh",
+				State:    pb.CommandState_COMMAND_STATE_FAILED,
+				ExitCode: &exitCode,
+			})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	hc := &http.Client{Timeout: 10 * time.Second}
+	conn, err := api.Dial(srv, api.DefaultPort, hc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wsClient := hotbedv1connect.NewWorkspaceServiceClient(conn)
+	wk := workerClients{calls: wsClient, stream: wsClient, controller: wsClient}
+	var out, stderr bytes.Buffer
+	cmd, err := followLog(t.Context(), wk, "pn3yyobh", &out, &stderr)
+	if err != nil {
+		t.Fatalf("followLog: %v (stderr=%q)", err, stderr.String())
+	}
+	if cmd.State != pb.CommandState_COMMAND_STATE_FAILED || cmd.GetExitCode() != 127 {
+		t.Fatalf("cmd = %v, want FAILED exit 127", cmd)
+	}
+	if out.String() != wantOut {
+		t.Fatalf("captured output = %q, want %q", out.String(), wantOut)
+	}
+	if got := followCalls.Load(); got != 2 {
+		t.Errorf("FollowLog calls = %d, want 2 (initial clean EOF + drainLog)", got)
+	}
+}
+
+func writeConnectStreamMsg(w http.ResponseWriter, msg proto.Message) {
+	b, err := proto.Marshal(msg)
+	if err != nil {
+		panic(err)
+	}
+	var hdr [5]byte
+	hdr[0] = 0 // uncompressed data frame
+	hdr[1] = byte(len(b) >> 24)
+	hdr[2] = byte(len(b) >> 16)
+	hdr[3] = byte(len(b) >> 8)
+	hdr[4] = byte(len(b))
+	_, _ = w.Write(hdr[:])
+	_, _ = w.Write(b)
+}
+
+func writeConnectStreamEnd(w http.ResponseWriter) {
+	end := []byte("{}")
+	var hdr [5]byte
+	hdr[0] = 2 // end-stream JSON frame
+	hdr[4] = byte(len(end))
+	_, _ = w.Write(hdr[:])
+	_, _ = w.Write(end)
+}
