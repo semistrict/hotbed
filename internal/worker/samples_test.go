@@ -38,7 +38,7 @@ func TestSampleCommandKeepsNumberedSamples(t *testing.T) {
 	units, store := &fake.Units{}, &fake.Store{Root: t.TempDir()}
 	insp := &fakeInspector{sample: &pb.ProcessSample{CommandId: "c-s", DurationMs: 3000}}
 	e := newInterventionEngine(t, t.TempDir(), store, units, insp, &now)
-	startTestCommand(t, e, store, units, "c-s")
+	startTestCommand(t, e, "c-s")
 
 	first := sampleOnce(t, e, &pb.SampleCommandRequest{Id: "c-s", SessionId: "sess-1"}, "laptop")
 	second := sampleOnce(t, e, &pb.SampleCommandRequest{Id: "c-s", DurationSeconds: 5, Pid: 42}, "desk")
@@ -84,7 +84,7 @@ func TestSampleCommandTrimsOversizedSample(t *testing.T) {
 	}
 	insp := &fakeInspector{sample: &pb.ProcessSample{CommandId: "c-big", Hostname: "asahimbp", Frames: frames}}
 	e := newInterventionEngine(t, t.TempDir(), store, units, insp, &now)
-	startTestCommand(t, e, store, units, "c-big")
+	startTestCommand(t, e, "c-big")
 
 	final := sampleOnce(t, e, &pb.SampleCommandRequest{Id: "c-big"}, "laptop")
 	if final.Kept.GetSeq() != 1 || final.Kept.Truncated != "dropped stacks to fit 1 MiB" || final.NotKept != "" {
@@ -117,7 +117,7 @@ func TestSampleCommandDoesNotKeepUnshrinkableSample(t *testing.T) {
 	units, store := &fake.Units{}, &fake.Store{Root: t.TempDir()}
 	insp := &fakeInspector{sample: &pb.ProcessSample{CommandId: "c-huge", Cgroup: strings.Repeat("x", maxSampleBytes+1)}}
 	e := newInterventionEngine(t, t.TempDir(), store, units, insp, &now)
-	startTestCommand(t, e, store, units, "c-huge")
+	startTestCommand(t, e, "c-huge")
 
 	final := sampleOnce(t, e, &pb.SampleCommandRequest{Id: "c-huge"}, "laptop")
 	if final.Kept != nil || !strings.Contains(final.NotKept, "past the 1048576 it may be") {
@@ -150,7 +150,7 @@ func TestSampleCommandDoesNotKeepSampleOfEndedCommand(t *testing.T) {
 	units, store := &fake.Units{}, &fake.Store{Root: t.TempDir()}
 	insp := &endingInspector{fakeInspector: fakeInspector{sample: &pb.ProcessSample{CommandId: "c-end"}}}
 	e := newInterventionEngine(t, t.TempDir(), store, units, insp, &now)
-	startTestCommand(t, e, store, units, "c-end")
+	startTestCommand(t, e, "c-end")
 	insp.end = func() {
 		if _, err := e.Stop(t.Context(), "c-end", "done"); err != nil {
 			t.Errorf("Stop: %v", err)
@@ -191,7 +191,7 @@ func TestKeptSamplesDeliveredWithAcknowledgement(t *testing.T) {
 	units, store := &fake.Units{}, &fake.Store{Root: t.TempDir()}
 	insp := &fakeInspector{sample: &pb.ProcessSample{CommandId: "c-deliv"}}
 	e := newInterventionEngine(t, t.TempDir(), store, units, insp, &now)
-	startTestCommand(t, e, store, units, "c-deliv")
+	startTestCommand(t, e, "c-deliv")
 	sampleOnce(t, e, &pb.SampleCommandRequest{Id: "c-deliv"}, "laptop")
 
 	cluster := &sampleDeliveryCluster{
@@ -232,7 +232,7 @@ func TestSampleCommandDoesNotKeepSampleItCannotSave(t *testing.T) {
 	units, store := &fake.Units{}, &fake.Store{Root: t.TempDir()}
 	insp := &fakeInspector{sample: &pb.ProcessSample{CommandId: "c-unsaved"}}
 	e := newInterventionEngine(t, t.TempDir(), store, units, insp, &now)
-	startTestCommand(t, e, store, units, "c-unsaved")
+	startTestCommand(t, e, "c-unsaved")
 	if err := e.db.sql.Close(); err != nil {
 		t.Fatal(err)
 	}

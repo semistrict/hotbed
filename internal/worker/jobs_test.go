@@ -19,7 +19,7 @@ func jobEngine(t *testing.T, id, out string, reqMut ...func(*pb.RunCommandReques
 	now := time.Unix(1795300000, 0)
 	units, store := &fake.Units{}, &fake.Store{Root: t.TempDir()}
 	e := newInterventionEngine(t, t.TempDir(), store, units, nil, &now)
-	startTestCommand(t, e, store, units, id, reqMut...)
+	startTestCommand(t, e, id, reqMut...)
 	writeLog(t, e, id, out)
 	return e
 }
@@ -208,11 +208,11 @@ func TestTerminalOnTheHost(t *testing.T) {
 // estimated, and one with neither the default.
 func TestReservationsByKind(t *testing.T) {
 	e := jobEngine(t, "c-quick", "")
-	startTestCommand(t, e, &fake.Store{Root: t.TempDir()}, &fake.Units{}, "c-long", func(r *pb.RunCommandRequest) {
+	startTestCommand(t, e, "c-long", func(r *pb.RunCommandRequest) {
 		r.Attached = false
 		r.Estimate = &pb.CommandEstimate{MemoryBytes: 3 << 30, Seconds: 600}
 	})
-	startTestCommand(t, e, &fake.Store{Root: t.TempDir()}, &fake.Units{}, "c-bare", func(r *pb.RunCommandRequest) { r.Attached = false })
+	startTestCommand(t, e, "c-bare", func(r *pb.RunCommandRequest) { r.Attached = false })
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	for id, want := range map[string]int64{

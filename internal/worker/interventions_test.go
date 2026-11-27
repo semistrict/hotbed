@@ -82,9 +82,11 @@ func newInterventionEngine(t *testing.T, dir string, store *fake.Store, u Units,
 	return e
 }
 
-func startTestCommand(t *testing.T, e *Engine, store *fake.Store, units *fake.Units, id string, reqMut ...func(*pb.RunCommandRequest)) {
+// startTestCommand runs command id in workspace "w" of e, on e's own store
+// and units: the cleanup that stops it reaches the very units that run it.
+func startTestCommand(t *testing.T, e *Engine, id string, reqMut ...func(*pb.RunCommandRequest)) {
 	t.Helper()
-	if err := os.MkdirAll(filepath.Join(store.Path("v"), "work", "app"), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Join(e.cfg.Store.Path("v"), "work", "app"), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	e.mu.Lock()
@@ -109,7 +111,7 @@ func startTestCommand(t *testing.T, e *Engine, store *fake.Store, units *fake.Un
 		t.Fatal(err)
 	}
 	e.admit(t.Context())
-	t.Cleanup(func() { _ = units.Stop(context.WithoutCancel(t.Context()), "hotbed-"+id) })
+	t.Cleanup(func() { _ = e.cfg.Units.Stop(context.WithoutCancel(t.Context()), "hotbed-"+id) })
 }
 
 func TestStopWithCommentAndDiagnose(t *testing.T) {
@@ -120,7 +122,7 @@ func TestStopWithCommentAndDiagnose(t *testing.T) {
 		inspectRes: &pb.InspectCommandResponse{CommandId: "c-stop", UnitName: "hotbed-c-stop"},
 	}
 	e := newInterventionEngine(t, t.TempDir(), store, units, insp, &now)
-	startTestCommand(t, e, store, units, "c-stop")
+	startTestCommand(t, e, "c-stop")
 
 	got, err := e.StopWith(t.Context(), "c-stop", Intervention{
 		Comment:  "hung waiting on mutex",
@@ -203,7 +205,7 @@ func TestStopWithDiagnosticsErrorsDoNotBlockStop(t *testing.T) {
 			inspectErr: errors.New("procfs denied"),
 		}
 		e := newInterventionEngine(t, t.TempDir(), store, units, insp, &now)
-		startTestCommand(t, e, store, units, "c-err")
+		startTestCommand(t, e, "c-err")
 
 		got, err := e.StopWith(t.Context(), "c-err", Intervention{Comment: "kill it", Diagnose: true, Host: "laptop"})
 		if err != nil {
@@ -229,7 +231,7 @@ func TestStopWithDiagnosticsErrorsDoNotBlockStop(t *testing.T) {
 			inspectRes: &pb.InspectCommandResponse{CommandId: "c-part"},
 		}
 		e := newInterventionEngine(t, t.TempDir(), store, units, insp, &now)
-		startTestCommand(t, e, store, units, "c-part")
+		startTestCommand(t, e, "c-part")
 
 		got, err := e.StopWith(t.Context(), "c-part", Intervention{Diagnose: true, Host: "laptop"})
 		if err != nil {
@@ -253,7 +255,7 @@ func TestPauseWithCommentDiagnoseAndWaitOnDoesNotResume(t *testing.T) {
 		inspectRes: &pb.InspectCommandResponse{CommandId: "c-pause", UnitName: "hotbed-c-pause"},
 	}
 	e := newInterventionEngine(t, t.TempDir(), store, units, insp, &now)
-	startTestCommand(t, e, store, units, "c-pause")
+	startTestCommand(t, e, "c-pause")
 
 	got, err := e.Pause(t.Context(), "c-pause", Intervention{
 		Comment:  "checking disk usage",
@@ -346,7 +348,7 @@ func TestResumeThawsHandPausedAndSoftPausedAndResetsSoftLimit(t *testing.T) {
 		now := time.Unix(1795300000, 0)
 		units, store := &fake.Units{}, &fake.Store{Root: t.TempDir()}
 		e := newInterventionEngine(t, t.TempDir(), store, units, nil, &now)
-		startTestCommand(t, e, store, units, "c-res")
+		startTestCommand(t, e, "c-res")
 
 		if _, err := e.Pause(t.Context(), "c-res", Intervention{Comment: "hold", Host: "laptop"}); err != nil {
 			t.Fatal(err)
@@ -392,7 +394,7 @@ func TestResumeThawsHandPausedAndSoftPausedAndResetsSoftLimit(t *testing.T) {
 		now := time.Unix(1795300000, 0)
 		units, store := &fake.Units{}, &fake.Store{Root: t.TempDir()}
 		e := newInterventionEngine(t, t.TempDir(), store, units, nil, &now)
-		startTestCommand(t, e, store, units, "c-soft")
+		startTestCommand(t, e, "c-soft")
 
 		now = now.Add(11 * time.Minute)
 		e.limit(t.Context())
@@ -415,7 +417,7 @@ func TestResumeThawsHandPausedAndSoftPausedAndResetsSoftLimit(t *testing.T) {
 		now := time.Unix(1795300000, 0)
 		units, store := &fake.Units{}, &fake.Store{Root: t.TempDir()}
 		e := newInterventionEngine(t, t.TempDir(), store, thawFails{units}, nil, &now)
-		startTestCommand(t, e, store, units, "c-failthaw")
+		startTestCommand(t, e, "c-failthaw")
 
 		if _, err := e.Pause(t.Context(), "c-failthaw", Intervention{Comment: "hold", Host: "laptop"}); err != nil {
 			t.Fatal(err)
@@ -450,7 +452,7 @@ func TestHandPauseSurvivesWorkerRestart(t *testing.T) {
 	units, store := &fake.Units{}, &fake.Store{Root: t.TempDir()}
 
 	e1 := newInterventionEngine(t, dir, store, units, nil, &now)
-	startTestCommand(t, e1, store, units, "c-restart")
+	startTestCommand(t, e1, "c-restart")
 	if _, err := e1.Pause(t.Context(), "c-restart", Intervention{Comment: "stay paused across restart", Host: "laptop"}); err != nil {
 		t.Fatal(err)
 	}
@@ -489,7 +491,7 @@ func TestServiceInterventionHostIdentityAndValidation(t *testing.T) {
 		cfg.RequireController = true
 		cfg.ControllerNodeID = "nCtrl"
 	})
-	startTestCommand(t, e, store, units, "c-auth")
+	startTestCommand(t, e, "c-auth")
 	ctrlWS := clientAs(t, httpx.Peer{NodeID: "nCtrl", Hostname: "ubu1", Login: "ramon@"}, e)
 
 	// Clients reach workers only through the controller, which sets
@@ -537,7 +539,7 @@ func TestServiceInterventionHostIdentityAndValidation(t *testing.T) {
 	}
 
 	// Internal stop from controller stops command with Reason without recording a CommandIntervention (board 9808).
-	startTestCommand(t, e, store, units, "c-int")
+	startTestCommand(t, e, "c-int")
 	stoppedInt, err := ctrlWS.StopCommand(t.Context(), &pb.StopCommandRequest{Id: "c-int", Internal: true, Reason: "scheduled cleanup"})
 	if err != nil {
 		t.Fatalf("StopCommand(internal from controller): %v", err)
@@ -591,7 +593,7 @@ func TestConcurrentSoftLimitPauseAndManualPauseKeepUnitFrozen(t *testing.T) {
 			release: make(chan struct{}),
 		}
 		e := newInterventionEngine(t, t.TempDir(), store, bu, nil, &now)
-		startTestCommand(t, e, store, baseUnits, "c-race1")
+		startTestCommand(t, e, "c-race1")
 
 		now = now.Add(11 * time.Minute)
 		softDone := make(chan struct{})
@@ -637,7 +639,7 @@ func TestConcurrentSoftLimitPauseAndManualPauseKeepUnitFrozen(t *testing.T) {
 			release: make(chan struct{}),
 		}
 		e := newInterventionEngine(t, t.TempDir(), store, bu, nil, &now)
-		startTestCommand(t, e, store, baseUnits, "c-race2")
+		startTestCommand(t, e, "c-race2")
 
 		e.mu.Lock()
 		c := e.commands["c-race2"]
@@ -705,7 +707,7 @@ func TestHardLimitExpiryCancelsInFlightDiagnosticsAndStops(t *testing.T) {
 	units, store := &fake.Units{}, &fake.Store{Root: t.TempDir()}
 	insp := &blockingInspector{entered: make(chan struct{})}
 	e := newInterventionEngine(t, t.TempDir(), store, units, insp, &now)
-	startTestCommand(t, e, store, units, "c-hard", func(req *pb.RunCommandRequest) {
+	startTestCommand(t, e, "c-hard", func(req *pb.RunCommandRequest) {
 		req.Limits = &pb.CommandLimits{SoftLimitSeconds: 600, HardLimitSeconds: 3600}
 	})
 
@@ -804,14 +806,14 @@ func TestManualResumeHonorsOnlyTheMeasurementHold(t *testing.T) {
 		units, store := &fake.Units{}, &fake.Store{Root: t.TempDir()}
 		e := newInterventionEngine(t, t.TempDir(), store, units, nil, &now)
 		// Reserve 10 GiB on a 16 GiB slice (admitLimit = 16 GiB).
-		startTestCommand(t, e, store, units, "c-big1", func(req *pb.RunCommandRequest) {
+		startTestCommand(t, e, "c-big1", func(req *pb.RunCommandRequest) {
 			req.Limits = &pb.CommandLimits{MemoryLowBytes: 10 << 30}
 		})
 		if _, err := e.Pause(t.Context(), "c-big1", Intervention{Comment: "hold", Host: "laptop"}); err != nil {
 			t.Fatal(err)
 		}
 		// While c-big1 is paused (reserves 0), admit another 10 GiB command.
-		startTestCommand(t, e, store, units, "c-big2", func(req *pb.RunCommandRequest) {
+		startTestCommand(t, e, "c-big2", func(req *pb.RunCommandRequest) {
 			req.Limits = &pb.CommandLimits{MemoryLowBytes: 10 << 30}
 		})
 		if s := e.state("c-big2"); s != running {
@@ -873,7 +875,7 @@ func TestDiagnosticsBoundedAndDeliveredIndependentlyOfCheckpoints(t *testing.T) 
 			inspectRes: &pb.InspectCommandResponse{CommandId: "c-bigdiag", UnitName: "hotbed-c-bigdiag", Maps: maps},
 		}
 		e := newInterventionEngine(t, t.TempDir(), store, units, insp, &now)
-		startTestCommand(t, e, store, units, "c-bigdiag")
+		startTestCommand(t, e, "c-bigdiag")
 
 		got, err := e.StopWith(t.Context(), "c-bigdiag", Intervention{Comment: "oom?", Diagnose: true, Host: "laptop"})
 		if err != nil {
@@ -906,7 +908,7 @@ func TestDiagnosticsBoundedAndDeliveredIndependentlyOfCheckpoints(t *testing.T) 
 			inspectRes: &pb.InspectCommandResponse{CommandId: "c-unshrink", Cgroup: huge},
 		}
 		e := newInterventionEngine(t, t.TempDir(), store, units, insp, &now)
-		startTestCommand(t, e, store, units, "c-unshrink")
+		startTestCommand(t, e, "c-unshrink")
 
 		got, err := e.StopWith(t.Context(), "c-unshrink", Intervention{Diagnose: true, Host: "laptop"})
 		if err != nil {
@@ -937,7 +939,7 @@ func TestDiagnosticsBoundedAndDeliveredIndependentlyOfCheckpoints(t *testing.T) 
 			inspectRes: &pb.InspectCommandResponse{CommandId: "c-deliv", UnitName: "hotbed-c-deliv"},
 		}
 		e := newInterventionEngine(t, dir, store, units, insp, &now)
-		startTestCommand(t, e, store, units, "c-deliv")
+		startTestCommand(t, e, "c-deliv")
 		if _, err := e.StopWith(t.Context(), "c-deliv", Intervention{Comment: "stuck", Diagnose: true, Host: "laptop"}); err != nil {
 			t.Fatal(err)
 		}
@@ -999,7 +1001,7 @@ func TestFollowLogEmitsTerminalChunkOnQuickPauseResume(t *testing.T) {
 	now := time.Unix(1795300000, 0)
 	units, store := &fake.Units{}, &fake.Store{Root: t.TempDir()}
 	e := newInterventionEngine(t, t.TempDir(), store, units, nil, &now)
-	startTestCommand(t, e, store, units, "c-follow")
+	startTestCommand(t, e, "c-follow")
 
 	logPath, err := e.logPath("c-follow")
 	if err != nil {
@@ -1081,7 +1083,7 @@ func TestInterventionCommentBoundAndTimelineConcise(t *testing.T) {
 	now := time.Unix(1795300000, 0)
 	units, store := &fake.Units{}, &fake.Store{Root: t.TempDir()}
 	e := newInterventionEngine(t, t.TempDir(), store, units, nil, &now)
-	startTestCommand(t, e, store, units, "c-bound")
+	startTestCommand(t, e, "c-bound")
 
 	tooLong := strings.Repeat("a", maxInterventionCommentBytes+1)
 	if _, err := e.Pause(t.Context(), "c-bound", Intervention{Comment: tooLong, Host: "laptop"}); api.CodeOf(err) != api.CodeInvalidArgs {
