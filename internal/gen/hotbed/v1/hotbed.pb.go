@@ -7861,8 +7861,6 @@ func (x *CreateWorkspaceRequest) GetWaitForCapacity() bool {
 // then one with a warm base of its project.
 type Placement struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
-	// Only this node (host name).
-	Node string `protobuf:"bytes,1,opt,name=node,proto3" json:"node,omitempty"`
 	// Only nodes of this architecture, as Resources.arch says it: amd64 or arm64.
 	Arch string `protobuf:"bytes,2,opt,name=arch,proto3" json:"arch,omitempty"`
 	// A measurement: only nodes with measurement CPUs (Resources.bench_cpus).
@@ -7912,13 +7910,6 @@ func (x *Placement) ProtoReflect() protoreflect.Message {
 // Deprecated: Use Placement.ProtoReflect.Descriptor instead.
 func (*Placement) Descriptor() ([]byte, []int) {
 	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{63}
-}
-
-func (x *Placement) GetNode() string {
-	if x != nil {
-		return x.Node
-	}
-	return ""
 }
 
 func (x *Placement) GetArch() string {
@@ -19290,10 +19281,8 @@ type ScheduledCommand struct {
 	// CRON_TZ=ZONE, such as "0 2 * * *".
 	Cron string `protobuf:"bytes,2,opt,name=cron,proto3" json:"cron,omitempty"`
 	Repo string `protobuf:"bytes,3,opt,name=repo,proto3" json:"repo,omitempty"`
-	// Puts every run on this node (host name), or on nodes of this
-	// architecture (amd64, arm64); otherwise the controller places each like
-	// any run (Placement).
-	Node string `protobuf:"bytes,4,opt,name=node,proto3" json:"node,omitempty"`
+	// Puts every run on nodes of this architecture (amd64, arm64); otherwise
+	// the controller places each like any run (Placement).
 	Arch string `protobuf:"bytes,12,opt,name=arch,proto3" json:"arch,omitempty"`
 	// The command, as hotbed run takes it. Its workspace_id, id, attached and
 	// port are the controller's to set.
@@ -19362,13 +19351,6 @@ func (x *ScheduledCommand) GetCron() string {
 func (x *ScheduledCommand) GetRepo() string {
 	if x != nil {
 		return x.Repo
-	}
-	return ""
-}
-
-func (x *ScheduledCommand) GetNode() string {
-	if x != nil {
-		return x.Node
 	}
 	return ""
 }
@@ -38402,16 +38384,15 @@ const file_hotbed_v1_hotbed_proto_rawDesc = "" +
 	"\rfencing_token\x18\x0e \x01(\x04R\ffencingToken\x12\x1c\n" +
 	"\tthrowaway\x18\x0f \x01(\bR\tthrowaway\x12*\n" +
 	"\x11wait_for_capacity\x18\x11 \x01(\bR\x0fwaitForCapacityJ\x04\b\x03\x10\x04J\x04\b\x04\x10\x05J\x04\b\t\x10\n" +
-	"J\x04\b\r\x10\x0eR\x06branchR\x04nodeR\vrepo_config\"\x82\x02\n" +
+	"J\x04\b\r\x10\x0eR\x06branchR\x04nodeR\vrepo_config\"\xfa\x01\n" +
 	"\tPlacement\x12\x12\n" +
-	"\x04node\x18\x01 \x01(\tR\x04node\x12\x12\n" +
 	"\x04arch\x18\x02 \x01(\tR\x04arch\x12\x14\n" +
 	"\x05bench\x18\x03 \x01(\bR\x05bench\x12(\n" +
 	"\x10memory_low_bytes\x18\x04 \x01(\x03R\x0ememoryLowBytes\x12\x18\n" +
 	"\aruntime\x18\x05 \x01(\tR\aruntime\x12\x17\n" +
 	"\avm_cpus\x18\x06 \x01(\x05R\x06vmCpus\x12&\n" +
 	"\x0fvm_memory_bytes\x18\a \x01(\x03R\rvmMemoryBytes\x122\n" +
-	"\x15memory_estimate_bytes\x18\b \x01(\x03R\x13memoryEstimateBytes\"%\n" +
+	"\x15memory_estimate_bytes\x18\b \x01(\x03R\x13memoryEstimateBytesJ\x04\b\x01\x10\x02R\x04node\"%\n" +
 	"\x13GetWorkspaceRequest\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\"'\n" +
 	"\x15WatchWorkspaceRequest\x12\x0e\n" +
@@ -39515,12 +39496,11 @@ const file_hotbed_v1_hotbed_proto_rawDesc = "" +
 	"\x15GetDaemonLogsResponse\x123\n" +
 	"\aentries\x18\x01 \x03(\v2\x19.hotbed.v1.DaemonLogEntryR\aentries\x124\n" +
 	"\asources\x18\x02 \x03(\v2\x1a.hotbed.v1.DaemonLogSourceR\asources\x12\x1c\n" +
-	"\ttruncated\x18\x03 \x01(\bR\ttruncated\"\xa3\x03\n" +
+	"\ttruncated\x18\x03 \x01(\bR\ttruncated\"\x9b\x03\n" +
 	"\x10ScheduledCommand\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x12\x12\n" +
 	"\x04cron\x18\x02 \x01(\tR\x04cron\x12\x12\n" +
 	"\x04repo\x18\x03 \x01(\tR\x04repo\x12\x12\n" +
-	"\x04node\x18\x04 \x01(\tR\x04node\x12\x12\n" +
 	"\x04arch\x18\f \x01(\tR\x04arch\x126\n" +
 	"\acommand\x18\x05 \x01(\v2\x1c.hotbed.v1.RunCommandRequestR\acommand\x12\x16\n" +
 	"\x06paused\x18\x06 \x01(\bR\x06paused\x12\x1d\n" +
@@ -39535,7 +39515,7 @@ const file_hotbed_v1_hotbed_proto_rawDesc = "" +
 	"\breminder\x18\r \x01(\tH\x01R\breminder\x88\x01\x01B\n" +
 	"\n" +
 	"\b_next_atB\v\n" +
-	"\t_reminder\"\xa3\x03\n" +
+	"\t_reminderJ\x04\b\x04\x10\x05R\x04node\"\xa3\x03\n" +
 	"\fScheduledRun\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\x03R\x02id\x12\x1a\n" +
 	"\bschedule\x18\x02 \x01(\tR\bschedule\x12\x1c\n" +

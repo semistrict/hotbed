@@ -6,7 +6,7 @@ Use hotbed itself to build, test, and verify hotbed actively while working on th
 
 ```sh
 hotbed session start                        # prints active memories and binds to T3CODE_THREAD_ID / worktree
-hotbed run -- go test -race ./...           # the controller picks the node; --arch/--node narrow it
+hotbed run -- go test -race ./...           # the controller picks the node; --arch narrows it
 hotbed session end
 ```
 

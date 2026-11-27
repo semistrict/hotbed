@@ -158,7 +158,6 @@ function roleOf(d: PlacementDecision, nodeId: string): { text: string; className
 export function placementRequirements(d: PlacementDecision): { label: string; pinned?: boolean }[] | null {
   if (!d.request) return null;
   const reqs: { label: string; pinned?: boolean }[] = [];
-  if (d.request.node) reqs.push({ label: `--node ${d.request.node}`, pinned: true });
   if (d.request.arch) reqs.push({ label: `--arch ${d.request.arch}`, pinned: true });
   if (d.request.runtime) reqs.push({ label: `--runtime ${d.request.runtime}` });
   if (d.request.bench) reqs.push({ label: "--bench", pinned: true });

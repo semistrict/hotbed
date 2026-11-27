@@ -361,9 +361,6 @@ export function upgradingFor(
 	syncs: boolean,
 ): string[] {
 	let scope = cs;
-	if (p?.node) {
-		scope = cs.filter((c) => c.host === p.node);
-	}
 	const held = scope.filter((c) => c.mine !== "");
 	if (!syncs && held.length > 0) {
 		const away = held.filter(
@@ -385,7 +382,7 @@ function refusal(
 	let retryable = false;
 	let message = `no node can take the run: ${why.join("; ")}`;
 	let suggestion =
-		"hotbed nodes lists the nodes, their architectures and whether they are online; loosen --node or --arch";
+		"hotbed nodes lists the nodes, their architectures and whether they are online; loosen --arch or resource requirements";
 	if (scope.length === 0) {
 		message = "the cluster has no nodes";
 	} else if (stuck) {
@@ -458,18 +455,7 @@ export function chooseCandidate(
 	opts?: { waitForCapacity?: boolean },
 ): ChooseResult {
 	const waitForCapacity = Boolean(opts?.waitForCapacity);
-	let scope = cs;
-	if (p?.node) {
-		scope = cs.filter((c) => c.host === p.node);
-		if (scope.length === 0) {
-			return {
-				why: "",
-				err: hotbedError(ErrorCode.InvalidArgs, `no node is called ${p.node}`).withSuggestion(
-					"hotbed nodes lists the nodes",
-				),
-			};
-		}
-	}
+	const scope = cs;
 	const fits = (c: Candidate) => candidateUnfit(c, p, hosts) === "";
 	const held = scope.filter((c) => c.mine !== "");
 	if (!syncs && held.length > 0) {
@@ -479,7 +465,7 @@ export function chooseCandidate(
 				fit,
 				p,
 				"the run syncs no checkout, so it stays in the session's workspace",
-				Boolean(p?.node) || fit.length <= 1,
+				fit.length <= 1,
 				waitForCapacity,
 			);
 		}
@@ -494,13 +480,7 @@ export function chooseCandidate(
 	if (fit.length === 0) {
 		return { why: "", err: refusal(scope, p, hosts, false) };
 	}
-	return pickFromFit(
-		fit,
-		p,
-		p?.node ? "the node asked for" : "the least costly node",
-		Boolean(p?.node) || fit.length <= 1,
-		waitForCapacity,
-	);
+	return pickFromFit(fit, p, "the least costly node", fit.length <= 1, waitForCapacity);
 }
 
 export function buildPlacementDecision(
@@ -522,8 +502,7 @@ export function buildPlacementDecision(
 		throwaway: Boolean(opts?.throwaway),
 	});
 	for (const c of cs) {
-		const unfit =
-			p?.node && c.host !== p.node ? `the run asked for ${p.node}` : candidateUnfit(c, p, hosts);
+		const unfit = candidateUnfit(c, p, hosts);
 		const pc = create(PlacementCandidateSchema, {
 			nodeId: c.view.node.id,
 			hostname: c.host,

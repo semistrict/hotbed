@@ -47,15 +47,21 @@ func (c *cluster) ranOn(s, want string, args ...string) (node, stderr string) {
 	return node, errOut
 }
 
-// Each run goes where the controller places it: the session keeps its
-// workspace while its node is not much busier than another, and gets one
-// on another node, with the checkout synced there, when it is.
-func TestRunsArePlacedByLoad(t *testing.T) {
-	c := newFleetWith(t, 2, clusterOpts{engine: []func(*worker.EngineConfig){func(cfg *worker.EngineConfig) {
+// newMixedArchFleet starts a 2-node cluster where asahimbp is arm64 and mini is amd64.
+func newMixedArchFleet(t *testing.T) *cluster {
+	t.Helper()
+	return newFleetWith(t, 2, clusterOpts{engine: []func(*worker.EngineConfig){func(cfg *worker.EngineConfig) {
 		if cfg.Host == "mini" {
 			cfg.System.(*fake.System).Arch = "amd64"
 		}
 	}}})
+}
+
+// Each run goes where the controller places it: the session keeps its
+// workspace while its node is not much busier than another, and gets one
+// on another node, with the checkout synced there, when it is.
+func TestRunsArePlacedByLoad(t *testing.T) {
+	c := newMixedArchFleet(t)
 	origin := upstream(t)
 	c.addRepo(origin)
 	const S = "keen-gnu"
@@ -111,11 +117,8 @@ func TestRunsArePlacedByLoad(t *testing.T) {
 	if node, _ := c.ranOn(S, "moved\n", "--arch", "amd64", "--", "cat", "src/lib.txt"); node != "mini" {
 		t.Errorf("--arch amd64 ran on %s, want mini", node)
 	}
-	if node, _ := c.ranOn(S, "moved\n", "--node", "mini", "--", "cat", "src/lib.txt"); node != "mini" {
-		t.Errorf("--node mini ran on %s", node)
-	}
-	if _, e := c.fails("run", "-s", S, "-r", "app", "--node", "nowhere", "--", "true"); e.Code != api.CodeInvalidArgs || e.Message != "no node is called nowhere" {
-		t.Errorf("--node nowhere: %+v", e)
+	if code, _, stderr := c.hotbed("run", "-s", S, "-r", "app", "--node", "mini", "--", "true"); code == 0 || !strings.Contains(stderr, "unknown flag --node") {
+		t.Errorf("--node should be rejected on run: code=%d stderr=%q", code, stderr)
 	}
 
 	// The checkout goes to every workspace the session has.
@@ -130,7 +133,7 @@ func TestRunsArePlacedByLoad(t *testing.T) {
 // A run that syncs no checkout stays in the session's workspace however
 // busy its node: what earlier runs changed there lives only there.
 func TestRunWithoutACheckoutStaysInItsWorkspace(t *testing.T) {
-	c := newFleet(t, 2)
+	c := newMixedArchFleet(t)
 	c.addRepo(upstream(t))
 	const S = "calm-elk"
 	c.ok(nil, "session", "start", S)
@@ -150,15 +153,15 @@ func TestRunWithoutACheckoutStaysInItsWorkspace(t *testing.T) {
 		t.Errorf("run with its workspace's node offline: %+v", e)
 	}
 	// Narrowed to where it has no workspace, it gets a fresh one there.
-	if node, _ := c.ranOn(S, "base\n", "--node", "mini", "--", "cat", "src/lib.txt"); node != "mini" {
-		t.Errorf("--node mini without a checkout ran on %s", node)
+	if node, _ := c.ranOn(S, "base\n", "--arch", "amd64", "--", "cat", "src/lib.txt"); node != "mini" {
+		t.Errorf("--arch amd64 without a checkout ran on %s", node)
 	}
 }
 
 // A node that cannot make the workspace now is passed over: the run goes to
 // the next node placement picks.
 func TestRunPassesOverANodeThatCannotTakeIt(t *testing.T) {
-	c := newFleet(t, 2)
+	c := newMixedArchFleet(t)
 	c.addRepo(upstream(t))
 	const S = "wary-ibis"
 	c.ok(nil, "session", "start", S)
@@ -168,8 +171,8 @@ func TestRunPassesOverANodeThatCannotTakeIt(t *testing.T) {
 		t.Fatalf("run went to %s, want mini, the one node the controller reaches", node)
 	}
 	// With nothing else left, the run fails as that node did.
-	if _, e := c.fails("run", "-s", S, "-r", "app", "--node", "asahimbp", "--no-sync", "--", "true"); e.Code != api.CodeWorkerUnreachable || !e.Retryable {
-		t.Errorf("run pinned to the cut-off node: %+v", e)
+	if _, e := c.fails("run", "-s", S, "-r", "app", "--arch", "arm64", "--no-sync", "--", "true"); e.Code != api.CodeWorkerUnreachable || !e.Retryable {
+		t.Errorf("run constrained to the cut-off node's arch: %+v", e)
 	}
 }
 
@@ -177,7 +180,7 @@ func TestRunPassesOverANodeThatCannotTakeIt(t *testing.T) {
 // what the caller asked for (--node, --mem-low, --fork, --no-sync, or any node)
 // and every candidate node weighed — through live state and ended history.
 func TestCommandRecordsPlacementDecisionAndRequirements(t *testing.T) {
-	c := newFleet(t, 2)
+	c := newMixedArchFleet(t)
 	origin := upstream(t)
 	c.addRepo(origin)
 	const S = "clear-owl"
@@ -191,9 +194,9 @@ func TestCommandRecordsPlacementDecisionAndRequirements(t *testing.T) {
 	if node, _ := c.ranOn(S, "base\n", "--", "cat", "src/lib.txt"); node != "mini" {
 		t.Fatalf("unconstrained run went to %s, want mini", node)
 	}
-	// Pinned + fork + mem-low run: goes to asahimbp despite load, records constraints.
-	if node, _ := c.ranOn(S, "base\n", "--node", "asahimbp", "--mem-low", "1G", "--fork", "--", "cat", "src/lib.txt"); node != "asahimbp" {
-		t.Fatalf("pinned run went to %s, want asahimbp", node)
+	// Constrained + fork + mem-low run: goes to asahimbp despite load, records constraints.
+	if node, _ := c.ranOn(S, "base\n", "--arch", "arm64", "--mem-low", "1G", "--fork", "--", "cat", "src/lib.txt"); node != "asahimbp" {
+		t.Fatalf("constrained run went to %s, want asahimbp", node)
 	}
 
 	ps := &pb.ListCommandsResponse{}
@@ -205,7 +208,7 @@ func TestCommandRecordsPlacementDecisionAndRequirements(t *testing.T) {
 	if auto == nil || auto.GetHostname() != "mini" || auto.GetReason() != "the least costly node" {
 		t.Fatalf("unconstrained command placement = %+v, want mini / least costly", auto)
 	}
-	if auto.GetRequest() == nil || auto.GetRequest().GetNode() != "" || auto.GetNoSync() || auto.GetThrowaway() {
+	if auto.GetRequest() == nil || auto.GetRequest().GetArch() != "" || auto.GetNoSync() || auto.GetThrowaway() {
 		t.Errorf("unconstrained command request = %+v, noSync=%v throwaway=%v", auto.GetRequest(), auto.GetNoSync(), auto.GetThrowaway())
 	}
 	if len(auto.GetCandidates()) != 2 {
@@ -213,11 +216,11 @@ func TestCommandRecordsPlacementDecisionAndRequirements(t *testing.T) {
 	}
 
 	pinned := ps.Commands[1].GetPlacement()
-	if pinned == nil || pinned.GetHostname() != "asahimbp" || pinned.GetReason() != "the node asked for" {
-		t.Fatalf("pinned command placement = %+v, want asahimbp / node asked for", pinned)
+	if pinned == nil || pinned.GetHostname() != "asahimbp" || pinned.GetReason() != "the least costly node" {
+		t.Fatalf("constrained command placement = %+v, want asahimbp / least costly", pinned)
 	}
-	if pinned.GetRequest().GetNode() != "asahimbp" || pinned.GetRequest().GetMemoryLowBytes() != 1<<30 || !pinned.GetThrowaway() || pinned.GetNoSync() {
-		t.Errorf("pinned command request = %+v, noSync=%v throwaway=%v", pinned.GetRequest(), pinned.GetNoSync(), pinned.GetThrowaway())
+	if pinned.GetRequest().GetArch() != "arm64" || pinned.GetRequest().GetMemoryLowBytes() != 1<<30 || !pinned.GetThrowaway() || pinned.GetNoSync() {
+		t.Errorf("constrained command request = %+v, noSync=%v throwaway=%v", pinned.GetRequest(), pinned.GetNoSync(), pinned.GetThrowaway())
 	}
 
 	// Plain-text `hotbed placements` shows requested requirements on each line.
@@ -225,7 +228,7 @@ func TestCommandRecordsPlacementDecisionAndRequirements(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("placements: exit %d, stderr %q", code, errOut)
 	}
-	if !strings.Contains(out, "[any node]") || !strings.Contains(out, "[--node asahimbp --mem-low 1.0 GiB --fork]") {
+	if !strings.Contains(out, "[any node]") || !strings.Contains(out, "[--arch arm64 --mem-low 1.0 GiB --fork]") {
 		t.Errorf("placements output missing request summary:\n%s", out)
 	}
 }

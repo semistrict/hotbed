@@ -48,8 +48,8 @@ Do not pipe `hotbed session start` into `jq` or swallow its stdout: it prints ac
   keeps a session where it already has a workspace of the repo unless that node is clearly busier
   than another, and otherwise prefers a node with a warm base. Leave the choice to it, so work
   spreads over the cluster. Narrow it only when the run needs something: `--arch amd64|arm64` for
-  an architecture, `--node HOST` for one machine (such as the one earlier measurements came
-  from). `--bench` and `--mem-low` narrow it by themselves. stderr says where it ran.
+  an architecture, `--runtime vm|cladefs` for a runtime, or `--bench`, `--mem-low`, `--vm-cpus`,
+  and `--vm-mem` for resource requirements. stderr says where it ran.
 - **A workspace per node, of the whole project, made as needed.** A workspace holds every repo
   of the session's project, each checked out at `/work/REPO`, side by side. The first run of a
   session on a node forks the project's base there, with each repo at its branch's head. Structural
@@ -74,8 +74,8 @@ Do not pipe `hotbed session start` into `jq` or swallow its stdout: it prints ac
 - **Without a checkout** (`-r REPO` elsewhere, or `--no-sync`) a run changes only what its
   workspace holds, so it stays in the session's workspace, as over ssh: `hotbed run -r ratel --
   git checkout -b fix`, `hotbed run -r ratel -- sed -i ...`, `git commit`, `git push`. If that
-  node is offline it fails retryably rather than start over; `--node`/`--arch` naming another
-  node start a fresh workspace there.
+  node is offline it fails retryably rather than start over; `--arch` naming another
+  architecture starts a fresh workspace there.
 
 ## Memories & learning
 
@@ -606,7 +606,7 @@ after two minutes means nothing happened yet. `ended: true` means the session is
 Recurring work, such as a nightly measurement, runs by itself:
 
 ```sh
-hotbed schedule add nightly -r app --cron '0 2 * * *' --node worker1 \
+hotbed schedule add nightly -r app --cron '0 2 * * *' --arch amd64 \
   --env BENCH_ENV=nightly -- scripts/nightly.sh
 hotbed schedule show nightly                # the command, the next run, its runs and their sessions
 hotbed schedule run nightly                 # a run now; prints its session, for hotbed poll -s and logs
@@ -614,8 +614,8 @@ hotbed schedule run nightly                 # a run now; prints its session, for
 
 - **Each run is a session of its own**, `NAME-YYYYMMDD-HHMM`, with a fresh workspace of the repo
   at its branch's head, in which the command runs detached at `/work/REPO`. It takes `run`'s
-  flags (`--env`, `--mem-low`, `--mem-high`, `--kind`, `--node`, `--arch`). Nothing persists between runs except what
-  the command keeps outside the workspace (pushed to git, or on the node: pin it with `--node`).
+  flags (`--env`, `--mem-low`, `--mem-high`, `--kind`, `--arch`, `--runtime`). Nothing persists between runs except what
+  the command keeps outside the workspace (such as what it pushes to git).
 - **Its session's end.** A run is never abandoned while its command runs. One that succeeds ends
   its session. One that fails keeps it for the idle hour, so you can `hotbed run -s SESSION -r REPO --
   ...` in its workspace to look; its log stays (`hotbed logs COMMAND`).
@@ -633,7 +633,7 @@ hotbed schedule run nightly                 # a run now; prints its session, for
 | `hotbed session current` | Active session and where it came from (`flag`, `env`, `thread`, `worktree`) |
 | `hotbed session ls [--ended] [--all-projects] [--t3code-thread-id ID]` | The project's live sessions (`--ended`, `--all-projects`, `--t3code-thread-id`) |
 | `hotbed session search [THREAD_ID] [--t3code-thread-id ID] [--live] [-p PROJECT] [-n N]` | Search persistently across every project (and ended sessions of any age) for sessions associated with a T3 Code thread ID (default: `T3CODE_THREAD_ID`), live ones first then most recently active |
-| `hotbed shell [--node HOST] [--arch ARCH] [--sync] [--env K=V] [-- CMD...]` | Open an interactive shell (over SSH) in the session's workspace (reuses an existing workspace when it has one; `--sync` pushes local checkout edits first) |
+| `hotbed shell [--arch ARCH] [--runtime RT] [--sync] [--env K=V] [-- CMD...]` | Open an interactive shell (over SSH) in the session's workspace (reuses an existing workspace when it has one; `--sync` pushes local checkout edits first) |
 | `hotbed project ls` | Projects, their repos, live sessions, schedules, reviews and questions |
 | `hotbed project show NAME` | A project and every change to it |
 | `hotbed project bases [PROJECT] [--node HOST] [--state STATE]` | Every node's bases for a project (or every project), newest generation first per node, with commits, freshen command ID, and failed step |
@@ -681,7 +681,7 @@ hotbed schedule run nightly                 # a run now; prints its session, for
 | `hotbed config show [HOST]` | Show controller-managed cluster default and per-node worker/VM configuration (plus merged effective config when `HOST` is given) |
 | `hotbed config set [HOST] [--replace] [--if-revision N]` | Merge (or replace) controller-managed cluster defaults or per-node worker/VM configuration (VM tuning, managed guest kernels, `hotbed-guestd`, FUSE settings) from JSON on stdin or `--file` |
 | `hotbed config rm HOST \| --defaults` | Remove controller-managed per-node overrides for `HOST`, or clear cluster-wide defaults with `--defaults` |
-| `hotbed placements [--node HOST] [--session S]` | Where the controller put each workspace and why: what the run asked for (`--node`, `--arch`, `--mem-low`, `--mem`, `--fork`, `--no-sync`, or `any node`), every node's cost in parts, or why it was ruled out (kept a day; also recorded on each command in `ps --json` and the cockpit) |
+| `hotbed placements [--node HOST] [--session S]` | Where the controller put each workspace and why: what the run asked for (`--arch`, `--runtime`, `--mem-low`, `--mem`, `--fork`, `--no-sync`, or `any node`), every node's cost in parts, or why it was ruled out (kept a day; also recorded on each command in `ps --json` and the cockpit) |
 | `hotbed events [--node HOST] [--kind KIND ...]` | The cluster's events, newest first; `--kind hold --kind wait --kind unhold` is every time a node held work and why |
 | `hotbed daemon-logs [--source controller\|HOST] [--level warn\|error] [--since 1h] [-q Q] [-n N]` | Rotating WARN/ERROR slog logs from the controller and every worker, newest first (with rotation disk stats) |
 | `hotbed snapshot` | Everything the cockpit shows, as JSON |

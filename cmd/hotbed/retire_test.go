@@ -14,7 +14,7 @@ import (
 // its session's next run goes elsewhere, and its history stays. A node
 // still online is not retired, and one that joins again is a node again.
 func TestRetireNodeGoneForGood(t *testing.T) {
-	c := newFleet(t, 2)
+	c := newMixedArchFleet(t)
 	origin := upstream(t)
 	c.addRepo(origin)
 	const S = "tidy-tern"
@@ -23,7 +23,7 @@ func TestRetireNodeGoneForGood(t *testing.T) {
 	gitIn(t, filepath.Dir(agent), "clone", "--quiet", origin, agent)
 	t.Chdir(agent)
 
-	node, _ := c.ranOn(S, "one\n", "--node", "mini", "--", "echo", "one")
+	node, _ := c.ranOn(S, "one\n", "--arch", "amd64", "--", "echo", "one")
 	if node != "mini" {
 		t.Fatalf("ran on %s, want mini", node)
 	}
@@ -60,7 +60,7 @@ func TestRetireNodeGoneForGood(t *testing.T) {
 	if _, err := joiner.Join(t.Context(), &pb.JoinRequest{}); err != nil {
 		t.Fatal(err)
 	}
-	if code, out, stderr := c.hotbed("nodes"); code != 0 || out != "asahimbp          arm64   8 cpus  online\nmini              arm64   8 cpus  offline\n" {
+	if code, out, stderr := c.hotbed("nodes"); code != 0 || out != "asahimbp          arm64   8 cpus  online\nmini              amd64   8 cpus  offline\n" {
 		t.Fatalf("nodes after mini joined again: exit %d, stdout %q, stderr %q", code, out, stderr)
 	}
 }

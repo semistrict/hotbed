@@ -58,12 +58,11 @@ describe("candidateUnfit", () => {
 describe("buildPlacementDecision", () => {
 	it("records the requested placement constraints, noSync, and throwaway", () => {
 		const node = vmNode();
-		const req = create(PlacementSchema, { node: "big", arch: "arm64", memoryLowBytes: 4n << 30n });
-		const d = buildPlacementDecision([node], req, [], node, "the node asked for", undefined, {
+		const req = create(PlacementSchema, { arch: "arm64", memoryLowBytes: 4n << 30n });
+		const d = buildPlacementDecision([node], req, [], node, "the least costly node", undefined, {
 			noSync: true,
 			throwaway: true,
 		});
-		expect(d.request?.node).toBe("big");
 		expect(d.request?.arch).toBe("arm64");
 		expect(d.request?.memoryLowBytes).toBe(4n << 30n);
 		expect(d.noSync).toBe(true);
@@ -90,12 +89,12 @@ describe("late-binding capacity and 2-host racing", () => {
 		expect(res.chosen).toBeUndefined();
 		expect(res.busyHosts).toEqual(["a", "b"]);
 
-		// Pinned to one host still chooses it immediately so worker queues it.
-		const pinned = chooseCandidate([a, b], create(PlacementSchema, { node: "a" }), [], true, {
+		// When only one host fits, choose it immediately so worker queues it.
+		const single = chooseCandidate([a], undefined, [], true, {
 			waitForCapacity: true,
 		});
-		expect(pinned.allBusy).toBeUndefined();
-		expect(pinned.chosen?.host).toBe("a");
+		expect(single.allBusy).toBeUndefined();
+		expect(single.chosen?.host).toBe("a");
 	});
 
 	it("prefers an eligible node with capacity over a holding/full warm node", () => {

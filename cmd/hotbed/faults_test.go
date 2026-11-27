@@ -150,10 +150,10 @@ func TestLostWorkerDatabase(t *testing.T) {
 // With its worker cut off, the controller answers for a command from the
 // worker's view, as it last saw it, rather than failing (board 7027).
 func TestCutOffWorkersCommandIsAnsweredFromItsView(t *testing.T) {
-	c := newFleet(t, 2)
+	c := newMixedArchFleet(t)
 	c.addRepo(upstream(t))
 	c.ok(nil, "session", "start", "far-gnu")
-	c.workspace("far-gnu", &pb.Placement{Node: "mini"})
+	c.workspace("far-gnu", &pb.Placement{Arch: "amd64"})
 	g := newGate(t)
 	var cmd pb.Command
 	c.ok(&cmd, append([]string{"run", "-s", "far-gnu", "-r", "app", "--detach", "--mem", "1G", "--"}, g.until("far")...)...)

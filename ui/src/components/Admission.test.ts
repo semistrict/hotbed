@@ -35,7 +35,6 @@ describe("placementRequirements", () => {
     expect(placementRequirements(create(PlacementDecisionSchema, { request: create(PlacementSchema) }))).toEqual([]);
     const pinned = create(PlacementDecisionSchema, {
       request: create(PlacementSchema, {
-        node: "ubu1",
         arch: "amd64",
         runtime: "vm",
         bench: true,
@@ -47,7 +46,6 @@ describe("placementRequirements", () => {
       throwaway: true,
     });
     expect(placementRequirements(pinned)).toEqual([
-      { label: "--node ubu1", pinned: true },
       { label: "--arch amd64", pinned: true },
       { label: "--runtime vm" },
       { label: "--bench", pinned: true },

@@ -157,7 +157,6 @@ export function createScheduleService(
 					repo: sc.repo,
 					waitForCapacity: true,
 					placement: create(PlacementSchema, {
-						node: sc.node,
 						arch: sc.arch,
 						bench: sc.command?.bench ?? false,
 						memoryLowBytes: sc.command?.limits?.memoryLowBytes ?? 0n,

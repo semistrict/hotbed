@@ -123,7 +123,7 @@ func TestRunOfARepoOutsideTheProjectIsRefused(t *testing.T) {
 // project hosts says which nodes keep a project's bases: runs go only to
 // them, and bases elsewhere go once unused.
 func TestProjectHostsKeepItsBases(t *testing.T) {
-	c := newFleet(t, 2)
+	c := newMixedArchFleet(t)
 	c.addRepo(upstream(t))
 	project := &pb.Project{}
 	c.ok(project, "project", "hosts", "app", "mini")
@@ -134,8 +134,8 @@ func TestProjectHostsKeepItsBases(t *testing.T) {
 	if ws := c.workspace("far-fox", nil); ws.Node != "mini" {
 		t.Errorf("workspace on %s, want mini, the one node keeping app's bases", ws.Node)
 	}
-	if _, e := c.tryWorkspace("far-fox", &pb.Placement{Node: "asahimbp"}); e == nil || e.Message != "no node can take the run: asahimbp keeps no bases of the project" {
-		t.Errorf("a run sent to asahimbp: %v, want refused: it keeps no bases of app", e)
+	if _, e := c.tryWorkspace("far-fox", &pb.Placement{Arch: "arm64"}); e == nil || e.Message != "no node can take the run: asahimbp keeps no bases of the project; mini is amd64, not arm64" {
+		t.Errorf("a run sent to arm64: %v, want refused: asahimbp keeps no bases of app", e)
 	}
 	c.ok(project, "project", "hosts", "app")
 	if len(project.Hosts) != 0 {

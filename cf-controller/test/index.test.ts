@@ -833,12 +833,12 @@ describe("Cloudflare Workers single-DO hotbed controller", () => {
 
 		const sess = await owner.sessions.startSession({ project: "clade-demo" });
 
-		// vm runtime rejected on cladefs-only asahimbp
+		// vm runtime rejected on cladefs-only arm64 asahimbp
 		await expect(
 			owner.workspaces.createWorkspace({
 				sessionId: sess.id,
 				repo: "clade-demo",
-				placement: { node: "asahimbp", runtime: "vm" },
+				placement: { arch: "arm64", runtime: "vm" },
 			}),
 		).rejects.toThrow(/does not support vm runtime/);
 
@@ -847,7 +847,7 @@ describe("Cloudflare Workers single-DO hotbed controller", () => {
 			owner.workspaces.createWorkspace({
 				sessionId: sess.id,
 				repo: "clade-demo",
-				placement: { node: "asahimbp", runtime: "chroot" },
+				placement: { arch: "arm64", runtime: "chroot" },
 			}),
 		).rejects.toThrow(/unknown runtime "chroot"/);
 
@@ -856,16 +856,16 @@ describe("Cloudflare Workers single-DO hotbed controller", () => {
 			owner.workspaces.createWorkspace({
 				sessionId: sess.id,
 				repo: "clade-demo",
-				placement: { node: "clade1", runtime: "vm", bench: true },
+				placement: { arch: "amd64", runtime: "vm", bench: true },
 			}),
 		).rejects.toThrow(/cannot run --bench inside vm runtime/);
 
-		// --bench rejected on vm-only clade1 even without explicit runtime
+		// --bench rejected on vm-only amd64 nodes even without explicit runtime
 		await expect(
 			owner.workspaces.createWorkspace({
 				sessionId: sess.id,
 				repo: "clade-demo",
-				placement: { node: "clade1", bench: true },
+				placement: { arch: "amd64", bench: true },
 			}),
 		).rejects.toThrow(/does not support cladefs runtime/);
 
@@ -901,7 +901,7 @@ describe("Cloudflare Workers single-DO hotbed controller", () => {
 			const created = await owner.workspaces.createWorkspace({
 				sessionId: sess.id,
 				repo: "clade-demo",
-				placement: { node: "clade2", runtime: "vm" },
+				placement: { arch: "amd64", runtime: "vm" },
 			});
 			expect(created.runtime).toBe("vm");
 			expect(captured.length).toBe(1);
@@ -915,7 +915,7 @@ describe("Cloudflare Workers single-DO hotbed controller", () => {
 			await owner.workspaces.createWorkspace({
 				sessionId: sess2.id,
 				repo: "clade-demo",
-				placement: { node: "clade2", runtime: "vm" },
+				placement: { arch: "amd64", runtime: "vm" },
 			});
 			expect(captured.length).toBe(2);
 			expect(captured[1].fencingToken).toBe(captured[0].fencingToken + 1n);
@@ -1302,15 +1302,30 @@ describe("BuildDistributor pinned controller version and placement semantics", (
 		expect(cs.find((c) => c.host === "same-worker")!.upgrading).toBe(0);
 		expect(cs.find((c) => c.host === "newer-worker")!.upgrading).toBe(0);
 
-		const pickNewer = chooseCandidate(cs, { node: "newer-worker" } as never, [], true);
+		const pickNewer = chooseCandidate(
+			[cs.find((c) => c.host === "newer-worker")!],
+			undefined,
+			[],
+			true,
+		);
 		expect(pickNewer.err).toBeUndefined();
 		expect(pickNewer.chosen?.host).toBe("newer-worker");
 
-		const pickUnhealthy = chooseCandidate(cs, { node: "unhealthy-worker" } as never, [], true);
+		const pickUnhealthy = chooseCandidate(
+			[cs.find((c) => c.host === "unhealthy-worker")!],
+			undefined,
+			[],
+			true,
+		);
 		expect(pickUnhealthy.err).toBeDefined();
 		expect(pickUnhealthy.err?.message).toContain("has no available runtimes");
 
-		const pickOld = chooseCandidate(cs, { node: "old-worker" } as never, [], true);
+		const pickOld = chooseCandidate(
+			[cs.find((c) => c.host === "old-worker")!],
+			undefined,
+			[],
+			true,
+		);
 		expect(pickOld.err).toBeDefined();
 		expect(pickOld.err?.message).toContain("build 171");
 
@@ -1590,7 +1605,6 @@ describe("Security, cron, daemon logs, tunnel, and workspace regression tests", 
 			await expect(
 				owner.workspaces.createWorkspace({
 					sessionId: sess.id,
-					placement: { node: "race-ws" },
 				}),
 			).rejects.toThrow(/ended/);
 
@@ -1685,7 +1699,6 @@ describe("Security, cron, daemon logs, tunnel, and workspace regression tests", 
 			await expect(
 				owner.workspaces.createWorkspace({
 					sessionId: sess.id,
-					placement: { node: "badb64" },
 				}),
 			).rejects.toThrow(/invalid base64 payload/);
 		} finally {
@@ -2139,7 +2152,7 @@ describe("Security, cron, daemon logs, tunnel, and workspace regression tests", 
 			await owner.workspaces.createWorkspace({
 				sessionId: sess.id,
 				repo: "iso-proj",
-				placement: { node: "arm-vm2", runtime: "vm" },
+				placement: { arch: "arm64", runtime: "vm" },
 			});
 			expect(capturedVM).toHaveLength(1);
 			// Must receive the arm64 VM shared base (cell 101), NOT the newer cladefs cell (202)!
@@ -2778,7 +2791,6 @@ describe("Security, cron, daemon logs, tunnel, and workspace regression tests", 
 			const ws = await owner.workspaces.createWorkspace({
 				sessionId: sess.id,
 				repo: "proj-reconnect",
-				placement: { node: "ubu-reconn" },
 			});
 			expect(ws.state).toBe(WorkspaceState.IDLE);
 			expect(ws.node).toBe("ubu-reconn");

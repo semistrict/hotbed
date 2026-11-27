@@ -47,7 +47,7 @@ func (c *scheduleAddCmd) Exec(ctx context.Context, d deps) (any, error) {
 		return nil, err
 	}
 	return cl.schedules.PutSchedule(ctx, &pb.PutScheduleRequest{Schedule: &pb.ScheduledCommand{
-		Name: c.Name, Cron: c.Cron, Repo: repo, Node: c.Node, Arch: c.Arch, Paused: c.Paused, Command: req, Project: c.Project,
+		Name: c.Name, Cron: c.Cron, Repo: repo, Arch: c.Arch, Paused: c.Paused, Command: req, Project: c.Project,
 	}})
 }
 

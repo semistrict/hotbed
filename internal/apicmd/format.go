@@ -158,7 +158,7 @@ var formatFuncs = template.FuncMap{
 		return time.UnixMilli(ms).UTC().Format("2006-01-02T15:04:05.000Z")
 	},
 	// placementReq summarizes what a PlacementDecision asked for (e.g.
-	// "--node ubu1 --mem-low 4.0 GiB"), "any node" when unconstrained, or ""
+	// "--arch arm64 --mem-low 4.0 GiB"), "any node" when unconstrained, or ""
 	// for legacy decisions that predate PlacementDecision.request.
 	"placementReq": func(v any) string {
 		m, ok := v.(map[string]any)
@@ -170,9 +170,6 @@ var formatFuncs = template.FuncMap{
 			return ""
 		}
 		var parts []string
-		if s, _ := req["node"].(string); s != "" {
-			parts = append(parts, "--node "+s)
-		}
 		if s, _ := req["arch"].(string); s != "" {
 			parts = append(parts, "--arch "+s)
 		}

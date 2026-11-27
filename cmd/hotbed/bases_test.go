@@ -12,14 +12,14 @@ import (
 )
 
 func TestProjectBasesCLIAndMCP(t *testing.T) {
-	c := newFleet(t, 2)
+	c := newMixedArchFleet(t)
 	origin := upstream(t)
 	c.addRepo(origin)
 
 	// Build a warm base on the first node (asahimbp) and another on mini.
 	c.ok(nil, "session", "start", "base-fox")
-	ws1 := c.workspace("base-fox", &pb.Placement{Node: "asahimbp"})
-	ws2 := c.workspace("base-fox", &pb.Placement{Node: "mini"})
+	ws1 := c.workspace("base-fox", &pb.Placement{Arch: "arm64"})
+	ws2 := c.workspace("base-fox", &pb.Placement{Arch: "amd64"})
 	if ws1.BaseId != "app-g1" || ws2.BaseId != "app-g1" {
 		t.Fatalf("workspaces = %s / %s, want app-g1 on both", ws1.BaseId, ws2.BaseId)
 	}
@@ -28,7 +28,7 @@ func TestProjectBasesCLIAndMCP(t *testing.T) {
 	// while g1 stays warm.
 	c.ok(nil, "step", "set", "-p", "app", "broken-step", "--", "exit 7")
 	c.ok(nil, "session", "start", "base-owl")
-	wsFail := c.workspace("base-owl", &pb.Placement{Node: "asahimbp"})
+	wsFail := c.workspace("base-owl", &pb.Placement{Arch: "arm64"})
 	if wsFail.BaseId != "app-g1" {
 		t.Fatalf("fallback workspace base = %s, want app-g1", wsFail.BaseId)
 	}
@@ -163,15 +163,15 @@ func TestProjectBasesCLIAndMCP(t *testing.T) {
 }
 
 func TestFreshenCLIAndMCP(t *testing.T) {
-	c := newFleet(t, 2)
+	c := newMixedArchFleet(t)
 	origin := upstream(t)
 	c.addRepo(origin)
 	c.ok(nil, "step", "set", "-p", "app", "prep-step", "--", "echo ok")
 
 	// 1. Cold build on asahimbp (g1) and mini (g1).
 	c.ok(nil, "session", "start", "fresh-fox")
-	ws1 := c.workspace("fresh-fox", &pb.Placement{Node: "asahimbp"})
-	ws2 := c.workspace("fresh-fox", &pb.Placement{Node: "mini"})
+	ws1 := c.workspace("fresh-fox", &pb.Placement{Arch: "arm64"})
+	ws2 := c.workspace("fresh-fox", &pb.Placement{Arch: "amd64"})
 	if ws1.BaseId != "app-g1" || ws2.BaseId != "app-g1" {
 		t.Fatalf("workspaces = %s / %s, want app-g1", ws1.BaseId, ws2.BaseId)
 	}
@@ -179,7 +179,7 @@ func TestFreshenCLIAndMCP(t *testing.T) {
 	// 2. Failing incremental freshen on asahimbp (g2), then scratch rebuild (g3).
 	c.ok(nil, "step", "set", "-p", "app", "broken-step", "--", "exit 7")
 	c.ok(nil, "session", "start", "fresh-owl")
-	_ = c.workspace("fresh-owl", &pb.Placement{Node: "asahimbp"})
+	_ = c.workspace("fresh-owl", &pb.Placement{Arch: "arm64"})
 
 	c.eventually("freshen ls reports cold g1 and failed g2 on asahimbp", func() bool {
 		var res pb.ListFreshensResponse
@@ -200,7 +200,7 @@ func TestFreshenCLIAndMCP(t *testing.T) {
 	c.ok(nil, "step", "rm", "-p", "app", "broken-step")
 	c.ok(nil, "project", "rebuild", "app")
 	c.ok(nil, "session", "start", "fresh-elk")
-	ws3 := c.workspace("fresh-elk", &pb.Placement{Node: "asahimbp"})
+	ws3 := c.workspace("fresh-elk", &pb.Placement{Arch: "arm64"})
 	if ws3.BaseId != "app-g3" {
 		t.Fatalf("rebuilt workspace base = %s, want app-g3", ws3.BaseId)
 	}

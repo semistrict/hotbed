@@ -202,23 +202,23 @@ func (c *shellCmd) Raw(ctx context.Context, d deps) (int, bool, error) {
 	return exitOK, true, nil
 }
 
-// workspaceForShell prefers an existing live workspace of session matching
-// --node/--arch (preferring ready workspaces over preparing ones, and the most
-// recently active when several exist) so shelling into a session never moves
-// you to a different idle node just because the session's node is busy. It
-// falls back to workspaceFor only when no matching existing workspace exists.
+// workspaceForShell prefers an existing live workspace of session
+// (preferring ready workspaces over preparing ones, and the most recently
+// active when several exist) so shelling into a session never moves you to a
+// different idle node just because the session's node is busy. It falls back
+// to workspaceFor only when no matching existing workspace exists.
 func (c *shellCmd) workspaceForShell(ctx context.Context, d deps, session, repo, dir string) (*pb.Workspace, workerClients, error) {
 	if c.Arch == "" {
-		if ws, w, ok, err := c.existingWorkspace(ctx, d, session, c.Node); err != nil {
+		if ws, w, ok, err := c.existingWorkspace(ctx, d, session); err != nil {
 			return nil, workerClients{}, err
 		} else if ok {
 			return ws, w, nil
 		}
 	}
-	return c.workspaceFor(ctx, d, &pb.CreateWorkspaceRequest{SessionId: session, Repo: repo, Placement: &pb.Placement{Node: c.Node, Arch: c.Arch, Runtime: c.Runtime}, SyncDir: dir})
+	return c.workspaceFor(ctx, d, &pb.CreateWorkspaceRequest{SessionId: session, Repo: repo, Placement: &pb.Placement{Arch: c.Arch, Runtime: c.Runtime}, SyncDir: dir})
 }
 
-func (c *shellCmd) existingWorkspace(ctx context.Context, d deps, session, node string) (*pb.Workspace, workerClients, bool, error) {
+func (c *shellCmd) existingWorkspace(ctx context.Context, d deps, session string) (*pb.Workspace, workerClients, bool, error) {
 	cl, err := c.clients(d.http)
 	if err != nil {
 		return nil, workerClients{}, false, err
@@ -230,9 +230,6 @@ func (c *shellCmd) existingWorkspace(ctx context.Context, d deps, session, node 
 	var matches []*pb.Workspace
 	for _, ws := range ownWorkspaces(list.Workspaces) {
 		if ws.State == pb.WorkspaceState_WORKSPACE_STATE_RELEASED || ws.State == pb.WorkspaceState_WORKSPACE_STATE_FAILED {
-			continue
-		}
-		if node != "" && ws.Node != node {
 			continue
 		}
 		matches = append(matches, ws)

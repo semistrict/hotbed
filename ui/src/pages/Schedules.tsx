@@ -57,7 +57,7 @@ function Schedules({ s }: { s: Snapshot }) {
 
 function ScheduleCard({ s, sc, now, delay }: { s: Snapshot; sc: ScheduledCommand; now: number; delay: number }) {
   const [project] = useProject();
-  const where = `${repoName(s, sc.repo)}${sc.node ? ` @${sc.node}` : ""}${sc.arch ? ` (${sc.arch})` : ""}`;
+  const where = `${repoName(s, sc.repo)}${sc.arch ? ` (${sc.arch})` : ""}`;
   const when = sc.paused ? "paused" : sc.nextAt !== undefined ? `next ${until(Number(sc.nextAt), now)}, ${dayTime(Number(sc.nextAt))}` : "";
   return (
     <Card

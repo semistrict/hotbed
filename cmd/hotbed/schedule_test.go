@@ -260,11 +260,11 @@ func TestScheduledRunSurvivesRestart(t *testing.T) {
 func TestScheduledRunThatCannotStart(t *testing.T) {
 	c := newCluster(t)
 	c.addRepo(upstream(t))
-	c.ok(nil, "schedule", "add", "pinned", "-r", "app", "--cron", nightly, "--node", "nowhere", "--", "true")
+	c.ok(nil, "schedule", "add", "pinned", "-r", "app", "--cron", nightly, "--arch", "amd64", "--", "true")
 	run := &pb.ScheduledRun{}
 	c.ok(run, "schedule", "run", "pinned")
-	if run.Outcome != pb.RunOutcome_RUN_OUTCOME_NOT_STARTED || run.Reason != "no node is called nowhere" || run.EndedAt == nil {
-		t.Fatalf("run on a node that is not there = %v", run)
+	if run.Outcome != pb.RunOutcome_RUN_OUTCOME_NOT_STARTED || run.Reason != "no node can take the run: asahimbp is arm64, not amd64" || run.EndedAt == nil {
+		t.Fatalf("run on an arch that is not there = %v", run)
 	}
 	if s := c.session(run.SessionId); s.EndedAt == nil || s.EndReason != "its scheduled run could not start" {
 		t.Errorf("the run's session = %v", s)

@@ -151,12 +151,19 @@ func (s *sim) add() string {
 		return s.start()
 	}
 	ss := free[s.rng.IntN(len(free))]
-	node := s.rng.IntN(len(s.c.nodes))
-	if _, err := s.c.tryWorkspace(ss.id, &pb.Placement{Node: s.c.nodes[node].peer.Hostname}); err != nil {
-		return fmt.Sprintf("add %s on %s: failed", ss.id, s.c.nodes[node].peer.Hostname)
+	ws, err := s.c.tryWorkspace(ss.id, nil)
+	if err != nil {
+		return fmt.Sprintf("add %s: failed", ss.id)
+	}
+	node := -1
+	for i, n := range s.c.nodes {
+		if n.peer.Hostname == ws.Node {
+			node = i
+			break
+		}
 	}
 	ss.node = node
-	return fmt.Sprintf("add %s on %s", ss.id, s.c.nodes[node].peer.Hostname)
+	return fmt.Sprintf("add %s on %s", ss.id, ws.Node)
 }
 
 func (s *sim) run() string {

@@ -725,7 +725,6 @@ const (
 // placementFlags narrow where a run may go; the controller picks among
 // the nodes left.
 type placementFlags struct {
-	Node    string `help:"Run only on this node (host name); hotbed nodes lists them."`
 	Arch    string `enum:",amd64,arm64" default:"" help:"Run only on nodes of this architecture: amd64 or arm64."`
 	Runtime string `enum:",vm,cladefs" default:"" help:"Execution runtime: vm (Firecracker + cladefs) or cladefs (host FUSE + cladefs)."`
 }
@@ -737,7 +736,7 @@ func (p placementFlags) placement(req *pb.RunCommandRequest) *pb.Placement {
 		runtime = "vm" // only a VM is sized
 	}
 	return &pb.Placement{
-		Node: p.Node, Arch: p.Arch, Bench: req.Bench, MemoryLowBytes: req.GetLimits().GetMemoryLowBytes(), Runtime: runtime,
+		Arch: p.Arch, Bench: req.Bench, MemoryLowBytes: req.GetLimits().GetMemoryLowBytes(), Runtime: runtime,
 		VmCpus: req.VmCpus, VmMemoryBytes: req.VmMemoryBytes,
 	}
 }

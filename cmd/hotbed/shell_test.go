@@ -88,7 +88,7 @@ func TestShellPrefersExistingWorkspaceOverBusyPlacement(t *testing.T) {
 	c.ok(&sess, "session", "start")
 
 	// Start a workspace on asahimbp.
-	code, _, stderr := c.hotbed("run", "-s", sess.Id, "-r", "app", "--node", "asahimbp", "--", "sh", "-c", "echo on-asahi > /work/app/marker.txt")
+	code, _, stderr := c.hotbed("run", "-s", sess.Id, "-r", "app", "--arch", "arm64", "--", "sh", "-c", "echo on-asahi > /work/app/marker.txt")
 	if code != 0 {
 		t.Fatalf("seed run on asahimbp failed: %d %q", code, stderr)
 	}
