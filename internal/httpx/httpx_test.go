@@ -2,7 +2,6 @@ package httpx
 
 import (
 	"bytes"
-	"connectrpc.com/connect/v2"
 	"context"
 	"errors"
 	"fmt"
@@ -14,6 +13,8 @@ import (
 	"net/netip"
 	"strings"
 	"testing"
+
+	"connectrpc.com/connect/v2"
 
 	"github.com/semistrict/hotbed/internal/api"
 	"github.com/semistrict/hotbed/internal/tailnet"
@@ -208,55 +209,6 @@ func TestHotbedErrorsSkipsClientCanceledLogs(t *testing.T) {
 				t.Errorf("logged=%v, want %v (logs=%q)", gotLog, tc.wantLog, logs.String())
 			}
 		})
-	}
-}
-
-type fakeConn struct {
-	net.Conn
-	local, remote net.Addr
-}
-
-func (c fakeConn) LocalAddr() net.Addr  { return c.local }
-func (c fakeConn) RemoteAddr() net.Addr { return c.remote }
-
-func TestAdmitConnMatchesGatePolicy(t *testing.T) {
-	peers := map[netip.Addr]tailnet.Peer{
-		self:                               {NodeID: "nSelf", Hostname: "ubu1", Login: "ramon@"},
-		laptop:                             {NodeID: "nLaptop", Hostname: "laptop", Login: "ramon@"},
-		netip.MustParseAddr("100.64.0.3"):  {NodeID: "nMallory", Hostname: "mallory", Login: "mallory@"},
-		netip.MustParseAddr("100.64.0.4"):  {NodeID: "nTagged", Hostname: "ci", Login: "tagged-devices", Tags: []string{"tag:ci"}},
-		netip.MustParseAddr("100.64.0.5"):  {NodeID: "nShared", Hostname: "friend", Login: "ramon@", Shared: true},
-		netip.MustParseAddr("192.168.1.9"): {NodeID: "nLan", Hostname: "lan", Login: "ramon@"},
-	}
-	owner := Policy{Owner: "ramon@", Self: []netip.Addr{self}, LocalUsers: []uint32{1000}}
-	for _, tc := range []struct {
-		name          string
-		remote, local string
-		uid           uint32
-		uidOK         bool
-		wantOK        bool
-	}{
-		{"owner laptop", "100.64.0.2:5000", "100.64.0.1:7122", 0, false, true},
-		{"other user", "100.64.0.3:5000", "100.64.0.1:7122", 0, false, false},
-		{"tagged node", "100.64.0.4:5000", "100.64.0.1:7122", 0, false, false},
-		{"shared node", "100.64.0.5:5000", "100.64.0.1:7122", 0, false, false},
-		{"non-tailnet", "192.168.1.9:5000", "100.64.0.1:7122", 0, false, false},
-		{"non-self local", "100.64.0.2:5000", "127.0.0.1:7122", 0, false, false},
-		{"local root", "100.64.0.1:5000", "100.64.0.1:7122", 0, true, true},
-		{"local allowed user", "100.64.0.1:5000", "100.64.0.1:7122", 1000, true, true},
-		{"local other user", "100.64.0.1:5000", "100.64.0.1:7122", 1001, true, false},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			r, _ := net.ResolveTCPAddr("tcp", tc.remote)
-			l, _ := net.ResolveTCPAddr("tcp", tc.local)
-			_, err := AdmitConn(t.Context(), fakeConn{local: l, remote: r}, fakeNet{peers: peers, uid: tc.uid, uidOK: tc.uidOK}, owner)
-			if (err == nil) != tc.wantOK {
-				t.Errorf("AdmitConn err = %v, wantOK = %v", err, tc.wantOK)
-			}
-		})
-	}
-	if _, err := AdmitConn(t.Context(), nil, fakeNet{peers: peers}, owner); err == nil {
-		t.Error("AdmitConn(nil) succeeded, want error")
 	}
 }
 

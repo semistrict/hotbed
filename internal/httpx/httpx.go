@@ -121,20 +121,6 @@ func unknown(format string, args ...any) *refusal {
 	return &refusal{api.Errorf(api.CodeNotAuthorized, format, args...), http.StatusUnauthorized}
 }
 
-// AdmitConn verifies that conn arrived from an admitted tailnet peer on one
-// of p.Self's addresses, applying the same fail-closed owner and local-UID
-// checks as Gate for non-HTTP protocols such as the worker's SSH server.
-func AdmitConn(ctx context.Context, conn net.Conn, id Identifier, p Policy) (tailnet.Peer, error) {
-	if conn == nil {
-		return tailnet.Peer{}, refuse("missing connection").Error
-	}
-	peer, _, ref := admitAddr(ctx, conn.RemoteAddr().String(), conn.LocalAddr(), id, p)
-	if ref != nil {
-		return tailnet.Peer{}, ref.Error
-	}
-	return peer, nil
-}
-
 // admit returns who is calling, whether they are local and their UID, or why they may not.
 func admit(r *http.Request, id Identifier, p Policy) (tailnet.Peer, localCaller, *refusal) {
 	la, _ := r.Context().Value(http.LocalAddrContextKey).(net.Addr)

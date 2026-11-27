@@ -2,13 +2,11 @@ package worker
 
 import (
 	"bytes"
-	"context"
 	"crypto/ed25519"
 	"crypto/rand"
 	"errors"
 	"io"
 	"net"
-	"net/netip"
 	"os"
 	"path/filepath"
 	"slices"
@@ -22,20 +20,7 @@ import (
 	"github.com/semistrict/hotbed/internal/api"
 	"github.com/semistrict/hotbed/internal/fake"
 	pb "github.com/semistrict/hotbed/internal/gen/hotbed/v1"
-	"github.com/semistrict/hotbed/internal/httpx"
-	"github.com/semistrict/hotbed/internal/tailnet"
 )
-
-type staticID struct {
-	peer tailnet.Peer
-	uid  uint32
-}
-
-func (s staticID) WhoIs(context.Context, string) (tailnet.Peer, error) { return s.peer, nil }
-func (s staticID) InTailnet(a netip.Addr) bool                         { return a.Unmap().IsLoopback() }
-func (s staticID) LocalUID(netip.AddrPort, netip.AddrPort) (uint32, error) {
-	return s.uid, nil
-}
 
 func genTestKey(t *testing.T) (ssh.Signer, string) {
 	t.Helper()
@@ -50,7 +35,7 @@ func genTestKey(t *testing.T) (ssh.Signer, string) {
 	return signer, strings.TrimSpace(string(ssh.MarshalAuthorizedKey(signer.PublicKey())))
 }
 
-func startShellTestEngine(t *testing.T, id httpx.Identifier, now *time.Time) (*Engine, *ShellServer, string) {
+func startShellTestEngine(t *testing.T, now *time.Time) (*Engine, *ShellServer, string) {
 	t.Helper()
 	dir := t.TempDir()
 	store := &fake.Store{Root: filepath.Join(dir, "volumes")}
@@ -96,32 +81,22 @@ func startShellTestEngine(t *testing.T, id httpx.Identifier, now *time.Time) (*E
 	}}
 	eng.mu.Unlock()
 
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
-	}
-	addr := ln.Addr().(*net.TCPAddr)
-	eng.SetShellListen(addr.String(), addr.Port)
-
-	policy := httpx.Policy{
-		Owner:      "ramon@",
-		Self:       []netip.Addr{netip.MustParseAddr("127.0.0.1")},
-		LocalUsers: []uint32{1000},
-	}
-	srv := NewShellServer(id, policy, eng)
-	go func() { _ = srv.Serve(ln) }()
+	srv := NewShellServer(eng)
+	eng.SetShellServer(srv)
 	t.Cleanup(func() { srv.Close() })
 	return eng, srv, wsID
 }
 
-func dialShellSSH(t *testing.T, resp *pb.OpenShellResponse, signer ssh.Signer) (*ssh.Client, error) {
+func dialShellSSH(t *testing.T, srv *ShellServer, resp *pb.OpenShellResponse, signer ssh.Signer) (*ssh.Client, error) {
 	t.Helper()
-	return dialShellSSHOver(t, resp, signer, func(c net.Conn) net.Conn { return c })
+	return dialShellSSHOver(t, srv, resp, signer, func(c net.Conn) net.Conn { return c })
 }
 
-// dialShellSSHOver is dialShellSSH with the client's TCP connection passed
-// through wrap, so a test can interpose on what the client reads.
-func dialShellSSHOver(t *testing.T, resp *pb.OpenShellResponse, signer ssh.Signer, wrap func(net.Conn) net.Conn) (*ssh.Client, error) {
+// dialShellSSHOver is dialShellSSH with the client's connection passed
+// through wrap, so a test can interpose on what the client reads. The client
+// connects as the controller relays it: a connection srv serves
+// (ServeConn).
+func dialShellSSHOver(t *testing.T, srv *ShellServer, resp *pb.OpenShellResponse, signer ssh.Signer, wrap func(net.Conn) net.Conn) (*ssh.Client, error) {
 	t.Helper()
 	hostPub, _, _, _, err := ssh.ParseAuthorizedKey([]byte(resp.HostPublicKey))
 	if err != nil {
@@ -133,12 +108,24 @@ func dialShellSSHOver(t *testing.T, resp *pb.OpenShellResponse, signer ssh.Signe
 		HostKeyCallback: ssh.FixedHostKey(hostPub),
 		Timeout:         5 * time.Second,
 	}
-	raw, err := net.DialTimeout("tcp", resp.Addr, cfg.Timeout)
+	// A loopback TCP pair, buffered as the controller's relay is (a
+	// net.Pipe's unbuffered writes deadlock the two sides' banners).
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
-		return nil, err
+		t.Fatal(err)
 	}
+	defer ln.Close()
+	raw, err := net.Dial("tcp", ln.Addr().String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	server, err := ln.Accept()
+	if err != nil {
+		t.Fatal(err)
+	}
+	go srv.ServeConn(server)
 	conn := wrap(raw)
-	c, chans, reqs, err := ssh.NewClientConn(conn, resp.Addr, cfg)
+	c, chans, reqs, err := ssh.NewClientConn(conn, "worker", cfg)
 	if err != nil {
 		_ = conn.Close()
 		return nil, err
@@ -181,8 +168,7 @@ func (c *stallingConn) resume() {
 
 func TestShellPTYResizeAndInteractive(t *testing.T) {
 	now := time.Now()
-	id := staticID{peer: tailnet.Peer{NodeID: "nLaptop", Hostname: "laptop", Login: "ramon@"}, uid: 1000}
-	eng, _, wsID := startShellTestEngine(t, id, &now)
+	eng, srv, wsID := startShellTestEngine(t, &now)
 
 	signer, pub := genTestKey(t)
 	resp, err := eng.OpenShell(t.Context(), &pb.OpenShellRequest{
@@ -195,7 +181,7 @@ func TestShellPTYResizeAndInteractive(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	client, err := dialShellSSH(t, resp, signer)
+	client, err := dialShellSSH(t, srv, resp, signer)
 	if err != nil {
 		t.Fatalf("ssh dial: %v", err)
 	}
@@ -248,8 +234,7 @@ func TestShellPTYResizeAndInteractive(t *testing.T) {
 
 func TestShellSecurityTicketsAndGate(t *testing.T) {
 	now := time.Now()
-	id := staticID{peer: tailnet.Peer{NodeID: "nLaptop", Hostname: "laptop", Login: "ramon@"}, uid: 1000}
-	eng, _, wsID := startShellTestEngine(t, id, &now)
+	eng, srv, wsID := startShellTestEngine(t, &now)
 
 	signer1, pub1 := genTestKey(t)
 	signer2, _ := genTestKey(t)
@@ -263,13 +248,13 @@ func TestShellSecurityTicketsAndGate(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if c, err := dialShellSSH(t, resp, signer2); err == nil {
+	if c, err := dialShellSSH(t, srv, resp, signer2); err == nil {
 		c.Close()
 		t.Fatal("ssh accepted wrong client key")
 	}
 
 	// 2. Valid key succeeds once, and ticket replay is rejected.
-	c, err := dialShellSSH(t, resp, signer1)
+	c, err := dialShellSSH(t, srv, resp, signer1)
 	if err != nil {
 		t.Fatalf("ssh with right key failed: %v", err)
 	}
@@ -287,7 +272,7 @@ func TestShellSecurityTicketsAndGate(t *testing.T) {
 	sess.Close()
 	c.Close()
 
-	if c2, err := dialShellSSH(t, resp, signer1); err == nil {
+	if c2, err := dialShellSSH(t, srv, resp, signer1); err == nil {
 		c2.Close()
 		t.Fatal("replayed ticket succeeded, want rejection")
 	}
@@ -301,31 +286,15 @@ func TestShellSecurityTicketsAndGate(t *testing.T) {
 		t.Fatal(err)
 	}
 	now = now.Add(shellTicketTTL + time.Second)
-	if c3, err := dialShellSSH(t, respExp, signer1); err == nil {
+	if c3, err := dialShellSSH(t, srv, respExp, signer1); err == nil {
 		c3.Close()
 		t.Fatal("expired ticket succeeded, want rejection")
-	}
-
-	// 4. Unauthorized tailnet peer is rejected at the TCP gate before SSH auth.
-	badID := staticID{peer: tailnet.Peer{NodeID: "nMallory", Hostname: "mallory", Login: "mallory@"}, uid: 1000}
-	engBad, _, wsBad := startShellTestEngine(t, badID, &now)
-	respBad, err := engBad.OpenShell(t.Context(), &pb.OpenShellRequest{
-		WorkspaceId: wsBad,
-		PublicKey:   pub1,
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if c4, err := dialShellSSH(t, respBad, signer1); err == nil {
-		c4.Close()
-		t.Fatal("unauthorized tailnet peer connected to SSH server")
 	}
 }
 
 func TestShellValidationAndReleaseStopsShell(t *testing.T) {
 	now := time.Now()
-	id := staticID{peer: tailnet.Peer{NodeID: "nLaptop", Hostname: "laptop", Login: "ramon@"}, uid: 1000}
-	eng, _, wsID := startShellTestEngine(t, id, &now)
+	eng, srv, wsID := startShellTestEngine(t, &now)
 
 	signer, pub := genTestKey(t)
 	if _, err := eng.OpenShell(t.Context(), &pb.OpenShellRequest{WorkspaceId: wsID, PublicKey: "not-a-key"}); api.CodeOf(err) != api.CodeInvalidArgs {
@@ -348,7 +317,7 @@ func TestShellValidationAndReleaseStopsShell(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	c, err := dialShellSSH(t, resp, signer)
+	c, err := dialShellSSH(t, srv, resp, signer)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -388,10 +357,9 @@ func TestShellValidationAndReleaseStopsShell(t *testing.T) {
 // "Connection reset by peer" / "Broken pipe": board 8025, board 8316).
 func TestShellTeardownWaitsForClientDisconnect(t *testing.T) {
 	now := time.Now()
-	id := staticID{peer: tailnet.Peer{NodeID: "nLaptop", Hostname: "laptop", Login: "ramon@"}, uid: 1000}
 
 	t.Run("exec waits for client disconnect before closing transport", func(t *testing.T) {
-		eng, srv, wsID := startShellTestEngine(t, id, &now)
+		eng, srv, wsID := startShellTestEngine(t, &now)
 		signer, pub := genTestKey(t)
 		resp, err := eng.OpenShell(t.Context(), &pb.OpenShellRequest{
 			WorkspaceId: wsID,
@@ -402,7 +370,7 @@ func TestShellTeardownWaitsForClientDisconnect(t *testing.T) {
 			t.Fatal(err)
 		}
 
-		client, err := dialShellSSH(t, resp, signer)
+		client, err := dialShellSSH(t, srv, resp, signer)
 		if err != nil {
 			t.Fatalf("ssh dial: %v", err)
 		}
@@ -449,7 +417,7 @@ func TestShellTeardownWaitsForClientDisconnect(t *testing.T) {
 	})
 
 	t.Run("pty waits for client disconnect before closing transport", func(t *testing.T) {
-		eng, _, wsID := startShellTestEngine(t, id, &now)
+		eng, srv, wsID := startShellTestEngine(t, &now)
 		signer, pub := genTestKey(t)
 		resp, err := eng.OpenShell(t.Context(), &pb.OpenShellRequest{
 			WorkspaceId: wsID,
@@ -460,7 +428,7 @@ func TestShellTeardownWaitsForClientDisconnect(t *testing.T) {
 			t.Fatal(err)
 		}
 
-		client, err := dialShellSSH(t, resp, signer)
+		client, err := dialShellSSH(t, srv, resp, signer)
 		if err != nil {
 			t.Fatalf("ssh dial: %v", err)
 		}
@@ -498,7 +466,7 @@ func TestShellTeardownWaitsForClientDisconnect(t *testing.T) {
 	// CHANNEL_CLOSE, so the client still gets the exit status and can say
 	// goodbye on a live connection (board 9208).
 	t.Run("slow client reader keeps the transport until it closes the channel", func(t *testing.T) {
-		eng, srv, wsID := startShellTestEngine(t, id, &now)
+		eng, srv, wsID := startShellTestEngine(t, &now)
 		srv.disconnectGrace = time.Millisecond
 
 		signer, pub := genTestKey(t)
@@ -513,7 +481,7 @@ func TestShellTeardownWaitsForClientDisconnect(t *testing.T) {
 			t.Fatal(err)
 		}
 		var conn *stallingConn
-		client, err := dialShellSSHOver(t, resp, signer, func(c net.Conn) net.Conn {
+		client, err := dialShellSSHOver(t, srv, resp, signer, func(c net.Conn) net.Conn {
 			conn = &stallingConn{Conn: c}
 			return conn
 		})
@@ -579,7 +547,7 @@ func TestShellTeardownWaitsForClientDisconnect(t *testing.T) {
 	})
 
 	t.Run("grace timeout closes stalled client", func(t *testing.T) {
-		eng, srv, wsID := startShellTestEngine(t, id, &now)
+		eng, srv, wsID := startShellTestEngine(t, &now)
 		srv.disconnectGrace = 100 * time.Millisecond
 
 		signer, pub := genTestKey(t)
@@ -592,7 +560,7 @@ func TestShellTeardownWaitsForClientDisconnect(t *testing.T) {
 			t.Fatal(err)
 		}
 
-		client, err := dialShellSSH(t, resp, signer)
+		client, err := dialShellSSH(t, srv, resp, signer)
 		if err != nil {
 			t.Fatalf("ssh dial: %v", err)
 		}
@@ -622,8 +590,7 @@ func TestShellTeardownWaitsForClientDisconnect(t *testing.T) {
 // opens in it.
 func TestShellRefusesAThrowawayWorkspace(t *testing.T) {
 	now := time.Now()
-	id := staticID{peer: tailnet.Peer{NodeID: "nLaptop", Hostname: "laptop", Login: "ramon@"}, uid: 1000}
-	eng, _, wsID := startShellTestEngine(t, id, &now)
+	eng, _, wsID := startShellTestEngine(t, &now)
 	eng.mu.Lock()
 	eng.workspaces[wsID].ws().Throwaway = true
 	eng.mu.Unlock()

@@ -12,8 +12,6 @@ import (
 	"io"
 	"log/slog"
 	"net"
-	"net/http"
-	"net/netip"
 	"net/url"
 	"path/filepath"
 	"slices"
@@ -26,7 +24,6 @@ import (
 
 	"github.com/semistrict/hotbed/internal/api"
 	pb "github.com/semistrict/hotbed/internal/gen/hotbed/v1"
-	"github.com/semistrict/hotbed/internal/httpx"
 	"github.com/semistrict/hotbed/internal/unit"
 )
 
@@ -70,15 +67,6 @@ func newShellHostKey() (ssh.Signer, string, error) {
 	}
 	pub := strings.TrimSpace(string(ssh.MarshalAuthorizedKey(signer.PublicKey())))
 	return signer, pub, nil
-}
-
-// SetShellListen records the address and port this worker's SSH shell server
-// listens on, so OpenShell can tell clients where to connect.
-func (e *Engine) SetShellListen(addr string, port int) {
-	e.mu.Lock()
-	defer e.mu.Unlock()
-	e.shellAddr = addr
-	e.shellPort = port
 }
 
 // SetShellServer is the shell server that serves the SSH connections the
@@ -156,9 +144,9 @@ func (e *Engine) OpenShell(ctx context.Context, req *pb.OpenShellRequest) (*pb.O
 
 	e.mu.Lock()
 	defer e.mu.Unlock()
-	if e.shellPort == 0 && e.shellAddr == "" {
+	if e.shellServer == nil {
 		return nil, api.Errorf(api.CodePlatformNotSupported, "this worker is not serving SSH shells").
-			WithSuggestion("upgrade or restart the worker so its SSH shell listener starts")
+			WithSuggestion("upgrade or restart the worker so its SSH shell server starts")
 	}
 	w, ok := e.workspaces[req.WorkspaceId]
 	if !ok || w.ws().State == released || w.releasing {
@@ -207,27 +195,11 @@ func (e *Engine) OpenShell(ctx context.Context, req *pb.OpenShellRequest) (*pb.O
 		e.active[w.ws().SessionId] = true
 	}
 
-	addr := e.shellAddrFor(ctx)
 	return &pb.OpenShellResponse{
-		Addr:          addr,
 		User:          ticketID,
 		HostPublicKey: e.shellHostPub,
 		ExpiresAt:     expires.UnixMilli(),
 	}, nil
-}
-
-// shellAddrFor returns the SSH host:port reachable on the same IP family the
-// client used for the OpenShell HTTP call, falling back to e.shellAddr.
-// Call with e.mu held.
-func (e *Engine) shellAddrFor(ctx context.Context) string {
-	if e.shellPort > 0 {
-		if la, ok := ctx.Value(http.LocalAddrContextKey).(net.Addr); ok && la != nil {
-			if ap, err := netip.ParseAddrPort(la.String()); err == nil {
-				return net.JoinHostPort(ap.Addr().Unmap().String(), strconv.Itoa(e.shellPort))
-			}
-		}
-	}
-	return e.shellAddr
 }
 
 func (e *Engine) verifyShellTicket(user string, key ssh.PublicKey, sessionID []byte) bool {
@@ -401,26 +373,23 @@ func (e *Engine) beginShell(ctx context.Context, ticket *shellTicket, args, extr
 // ShellServer serves interactive workspace shells over SSH behind the same
 // fail-closed tailnet gate as the worker's HTTP API.
 type ShellServer struct {
-	id              httpx.Identifier
-	policy          httpx.Policy
 	eng             *Engine
 	sshCfg          *ssh.ServerConfig
 	disconnectGrace time.Duration // defaults to shellDisconnectGrace
 
-	mu        sync.Mutex
-	closed    bool
-	listeners []net.Listener
-	conns     map[net.Conn]struct{}
-	wg        sync.WaitGroup
+	mu     sync.Mutex
+	closed bool
+	conns  map[net.Conn]struct{}
+	wg     sync.WaitGroup
 }
 
-// NewShellServer constructs an SSH server for eng gated by id and policy.
-func NewShellServer(id httpx.Identifier, policy httpx.Policy, eng *Engine) *ShellServer {
+// NewShellServer constructs eng's SSH server, which serves the connections
+// the controller relays (ServeConn); a shell ticket OpenShell gave admits
+// each.
+func NewShellServer(eng *Engine) *ShellServer {
 	s := &ShellServer{
-		id:     id,
-		policy: policy,
-		eng:    eng,
-		conns:  map[net.Conn]struct{}{},
+		eng:   eng,
+		conns: map[net.Conn]struct{}{},
 	}
 	cfg := &ssh.ServerConfig{
 		PublicKeyCallback: func(c ssh.ConnMetadata, key ssh.PublicKey) (*ssh.Permissions, error) {
@@ -435,50 +404,6 @@ func NewShellServer(id httpx.Identifier, policy httpx.Policy, eng *Engine) *Shel
 	cfg.AddHostKey(eng.shellHostKey)
 	s.sshCfg = cfg
 	return s
-}
-
-// Serve accepts SSH connections on l until l is closed.
-func (s *ShellServer) Serve(l net.Listener) error {
-	s.mu.Lock()
-	if s.closed {
-		s.mu.Unlock()
-		return net.ErrClosed
-	}
-	s.listeners = append(s.listeners, l)
-	s.mu.Unlock()
-
-	for {
-		conn, err := l.Accept()
-		if err != nil {
-			s.mu.Lock()
-			closed := s.closed
-			s.mu.Unlock()
-			if closed || errors.Is(err, net.ErrClosed) {
-				return nil
-			}
-			return err
-		}
-		s.mu.Lock()
-		if s.closed {
-			s.mu.Unlock()
-			conn.Close()
-			return nil
-		}
-		s.conns[conn] = struct{}{}
-		s.wg.Add(1)
-		s.mu.Unlock()
-
-		go func() {
-			defer s.wg.Done()
-			defer func() {
-				s.mu.Lock()
-				delete(s.conns, conn)
-				s.mu.Unlock()
-				conn.Close()
-			}()
-			s.handleConn(conn)
-		}()
-	}
 }
 
 // ServeConn serves one SSH connection the controller relays from a client
@@ -510,41 +435,21 @@ func (s *ShellServer) ServeConn(conn net.Conn) {
 func (s *ShellServer) Close() error {
 	s.mu.Lock()
 	s.closed = true
-	ls := slices.Clone(s.listeners)
 	conns := make([]net.Conn, 0, len(s.conns))
 	for c := range s.conns {
 		conns = append(conns, c)
 	}
 	s.mu.Unlock()
 
-	var errs []error
-	for _, l := range ls {
-		if err := l.Close(); err != nil && !errors.Is(err, net.ErrClosed) {
-			errs = append(errs, err)
-		}
-	}
 	for _, c := range conns {
 		_ = c.Close()
 	}
 	s.wg.Wait()
-	return errors.Join(errs...)
+	return nil
 }
 
-func (s *ShellServer) handleConn(conn net.Conn) {
-	ctx, cancel := context.WithTimeout(context.Background(), shellHandshakeBudget)
-	defer cancel()
-	if err := conn.SetDeadline(time.Now().Add(shellHandshakeBudget)); err != nil {
-		return
-	}
-	if _, err := httpx.AdmitConn(ctx, conn, s.id, s.policy); err != nil {
-		slog.Warn("refused an ssh shell connection", "remote", conn.RemoteAddr(), "why", err)
-		return
-	}
-	s.serveConn(conn)
-}
-
-// serveConn serves an admitted SSH connection: its shell ticket says what
-// it may run.
+// serveConn serves an SSH connection: its shell ticket says what it may
+// run.
 func (s *ShellServer) serveConn(conn net.Conn) {
 	if err := conn.SetDeadline(time.Now().Add(shellHandshakeBudget)); err != nil {
 		return

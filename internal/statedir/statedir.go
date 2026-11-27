@@ -79,10 +79,12 @@ type WorkerConfig struct {
 	// tailnet off Linux: its file mode alone says who may connect (macOS:
 	// the Mac's user, 0600).
 	Socket string `json:"socket,omitempty"`
-	// NodeID is the node the worker last ran as (its workspaces' and
-	// commands' node_id), for clients on its machine to tell their own
-	// worker's work by.
+	// NodeID is the worker's node, which its worker token is bound to (its
+	// workspaces' and commands' node_id): made at join, or its tailnet node's
+	// for a worker that joined when nodes were the tailnet's.
 	NodeID string `json:"nodeId,omitempty"`
+	// Host is its node's name, as the controller and people know it.
+	Host string `json:"host,omitempty"`
 	// VM enables the cladefsd + Firecracker microVM runtime alongside chroot.
 	VM *VMConfig `json:"vm,omitempty"`
 	// CladefsFUSE enables the cladefsd host-FUSE runtime alongside chroot

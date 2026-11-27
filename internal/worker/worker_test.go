@@ -95,7 +95,7 @@ func TestRejectRootCommandUser(t *testing.T) {
 			checkCalled := false
 			_, err := Join(t.Context(), JoinOptions{
 				Dir:        t.TempDir(),
-				Controller: "ctrl.ts.net:7120",
+				Controller: "https://ctrl.example.com",
 				User:       bad.user,
 			}, nil, nil, func(context.Context, JoinOptions) (string, error) {
 				checkCalled = true
@@ -109,7 +109,7 @@ func TestRejectRootCommandUser(t *testing.T) {
 
 		t.Run("Run/"+bad.user, func(t *testing.T) {
 			err := Run(t.Context(), t.TempDir(), statedir.WorkerConfig{
-				Controller: "ctrl.ts.net:7120",
+				Controller: "https://ctrl.example.com",
 				User:       bad.user,
 			}, nil, nil)
 			assertRejected(t, err, bad.want)

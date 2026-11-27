@@ -11278,7 +11278,10 @@ func (x *OpenShellRequest) GetPublicKey() string {
 
 type OpenShellResponse struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
-	// Worker SSH address (host:port) on the tailnet.
+	// Unset: workers listen on no address. A client reaches the shell server
+	// through the controller (/ws/pipe?workspace=ID&kind=ssh).
+	//
+	// Deprecated: Marked as deprecated in hotbed/v1/hotbed.proto.
 	Addr string `protobuf:"bytes,1,opt,name=addr,proto3" json:"addr,omitempty"`
 	// One-time SSH username (ticket) to authenticate with.
 	User string `protobuf:"bytes,2,opt,name=user,proto3" json:"user,omitempty"`
@@ -11321,6 +11324,7 @@ func (*OpenShellResponse) Descriptor() ([]byte, []int) {
 	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{108}
 }
 
+// Deprecated: Marked as deprecated in hotbed/v1/hotbed.proto.
 func (x *OpenShellResponse) GetAddr() string {
 	if x != nil {
 		return x.Addr
@@ -32739,9 +32743,9 @@ const file_hotbed_v1_hotbed_proto_rawDesc = "" +
 	"\x04args\x18\x03 \x03(\tR\x04args\x12\x10\n" +
 	"\x03env\x18\x04 \x03(\tR\x03env\x12\x1d\n" +
 	"\n" +
-	"public_key\x18\x05 \x01(\tR\tpublicKey\"\x82\x01\n" +
-	"\x11OpenShellResponse\x12\x12\n" +
-	"\x04addr\x18\x01 \x01(\tR\x04addr\x12\x12\n" +
+	"public_key\x18\x05 \x01(\tR\tpublicKey\"\x86\x01\n" +
+	"\x11OpenShellResponse\x12\x16\n" +
+	"\x04addr\x18\x01 \x01(\tB\x02\x18\x01R\x04addr\x12\x12\n" +
 	"\x04user\x18\x02 \x01(\tR\x04user\x12&\n" +
 	"\x0fhost_public_key\x18\x03 \x01(\tR\rhostPublicKey\x12\x1d\n" +
 	"\n" +

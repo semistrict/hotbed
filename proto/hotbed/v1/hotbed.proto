@@ -2160,8 +2160,9 @@ message OpenShellRequest {
 }
 
 message OpenShellResponse {
-  // Worker SSH address (host:port) on the tailnet.
-  string addr = 1;
+  // Unset: workers listen on no address. A client reaches the shell server
+  // through the controller (/ws/pipe?workspace=ID&kind=ssh).
+  string addr = 1 [deprecated = true];
   // One-time SSH username (ticket) to authenticate with.
   string user = 2;
   // Worker's SSH host public key in OpenSSH authorized_keys format, for

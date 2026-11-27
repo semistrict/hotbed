@@ -6,6 +6,8 @@ package worker
 import (
 	"cmp"
 	"context"
+	"crypto/rand"
+	"encoding/base32"
 	"errors"
 	"fmt"
 	"io/fs"
@@ -17,6 +19,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strconv"
+	"strings"
 	"time"
 
 	"connectrpc.com/connect/v2"
@@ -171,7 +174,9 @@ func Join(ctx context.Context, o JoinOptions, tn Tailnet, hc *http.Client, check
 		return JoinResult{}, err
 	}
 	o.Dir = dir
-	remote := api.IsRemoteURL(o.Controller)
+	if !api.IsRemoteURL(o.Controller) {
+		return JoinResult{}, api.Errorf(api.CodeInvalidArgs, "the controller is a URL (https://...): %q is none", o.Controller)
+	}
 	controller, err := api.ControllerAddr(o.Controller)
 	if err != nil {
 		return JoinResult{}, err
@@ -186,16 +191,14 @@ func Join(ctx context.Context, o JoinOptions, tn Tailnet, hc *http.Client, check
 	if err != nil {
 		return JoinResult{}, err
 	}
-	var interceptors []connect.ClientInterceptor
-	var self tailnet.Self
-	if remote || o.Token != "" {
-		self, err = tn.Self(ctx)
-		if err != nil {
-			return JoinResult{}, err
-		}
-		interceptors = append(interceptors, api.AuthInterceptor(o.Token, self.NodeID, self.Hostname, workerAdvertiseAddr(self)))
+	// The node's own ID and name, which the controller binds its worker
+	// token to: a worker needs no tailnet to be one.
+	nodeID, err := newNodeID()
+	if err != nil {
+		return JoinResult{}, err
 	}
-	cluster, _, err := api.Controller(controller, hc, interceptors...)
+	host := hostName()
+	cluster, _, err := api.Controller(controller, hc, api.AuthInterceptor(o.Token, nodeID, host, ""))
 	if err != nil {
 		return JoinResult{}, err
 	}
@@ -203,26 +206,14 @@ func Join(ctx context.Context, o JoinOptions, tn Tailnet, hc *http.Client, check
 	if err != nil {
 		return JoinResult{}, api.FromConnect(err)
 	}
-	var owner, ctrlNodeID string
-	if remote {
-		owner = self.Login
-		ctrlNodeID = "cf:" + joined.ClusterId
-	} else {
-		ctrl, err := controllerPeer(ctx, tn, controller)
-		if err != nil {
-			return JoinResult{}, err
-		}
-		owner = ctrl.Login
-		ctrlNodeID = ctrl.NodeID
-	}
 	workerToken := o.Token
 	if joined.WorkerToken != "" {
 		workerToken = joined.WorkerToken
 	}
 	cfg := statedir.WorkerConfig{
 		ClusterID: joined.ClusterId, Controller: controller, User: o.User, Dataset: o.Dataset,
-		UnitProperties: o.UnitProperties, Slice: o.Slice, Owner: owner, ControllerNodeID: ctrlNodeID,
-		Token: workerToken,
+		UnitProperties: o.UnitProperties, Slice: o.Slice, ControllerNodeID: "cf:" + joined.ClusterId,
+		Token: workerToken, NodeID: nodeID, Host: host,
 	}
 	if err := statedir.Commit(dir, statedir.Config{Worker: &cfg}); err != nil {
 		return JoinResult{}, err
@@ -250,53 +241,30 @@ func Run(ctx context.Context, dir string, cfg statedir.WorkerConfig, tn Tailnet,
 		_ = dlogs.Close()
 	}()
 
-	self, err := tn.Self(ctx)
-	if err != nil {
-		return err
+	if !api.IsRemoteURL(cfg.Controller) {
+		return api.Errorf(api.CodeInvalidArgs, "this worker joined a tailnet controller (%s), which is retired", cfg.Controller).
+			WithSuggestion("join the Cloudflare controller: hotbed worker init https://...")
 	}
-	remote := api.IsRemoteURL(cfg.Controller)
 	ctrlBaseURL, err := api.ControllerBaseURL(cfg.Controller)
 	if err != nil {
 		return err
 	}
-	if cfg.Socket != "" && cfg.NodeID != self.NodeID {
-		cfg.NodeID = self.NodeID
+	if cfg.NodeID == "" || cfg.Host == "" || cfg.ControllerNodeID == "" {
+		// Joined when nodes were the tailnet's: keep the node ID its worker
+		// token is bound to, recorded once.
+		self, err := tn.Self(ctx)
+		if err != nil {
+			return fmt.Errorf("this worker joined as its tailnet node, which it records once: %w", err)
+		}
+		cfg.NodeID = cmp.Or(cfg.NodeID, self.NodeID)
+		cfg.Host = cmp.Or(cfg.Host, self.Hostname)
+		cfg.ControllerNodeID = cmp.Or(cfg.ControllerNodeID, "cf:"+cfg.ClusterID)
 		if err := statedir.Rewrite(dir, statedir.Config{Worker: &cfg}); err != nil {
 			return err
 		}
+		slog.Info("recorded the worker's node", "node", cfg.NodeID, "host", cfg.Host)
 	}
-	if cfg.Owner == "" || cfg.ControllerNodeID == "" {
-		if remote {
-			if cfg.Owner == "" {
-				cfg.Owner = self.Login
-			}
-			if cfg.ControllerNodeID == "" {
-				cfg.ControllerNodeID = "cf:" + cfg.ClusterID
-			}
-		} else {
-			// Joined before workers recorded whom they serve / their controller ID:
-			// record it now from the tailnet's account of the controller's address.
-			ctrl, err := controllerPeer(ctx, tn, cfg.Controller)
-			if err != nil {
-				return err
-			}
-			if cfg.Owner == "" {
-				cfg.Owner = ctrl.Login
-			}
-			if cfg.ControllerNodeID == "" {
-				cfg.ControllerNodeID = ctrl.NodeID
-			}
-		}
-		if err := statedir.Rewrite(dir, statedir.Config{Worker: &cfg}); err != nil {
-			return err
-		}
-		slog.Info("recorded controller identity", "owner", cfg.Owner, "controllerNodeId", cfg.ControllerNodeID)
-	}
-	if self.Login != cfg.Owner {
-		return api.Errorf(api.CodeNotAuthorized, "this machine is on the tailnet as %s, but the cluster belongs to %s: refusing to serve", self.Login, cfg.Owner).
-			WithSuggestion("log this machine into the owner's tailnet account (tailscale up)")
-	}
-	workerAddr := workerAdvertiseAddr(self)
+	self := tailnet.Self{Peer: tailnet.Peer{NodeID: cfg.NodeID, Hostname: cfg.Host, Login: cfg.Owner}}
 	if hc == nil {
 		hc = api.NewResilientHTTPClient(60 * time.Second)
 	} else if hc.Transport == nil {
@@ -305,8 +273,8 @@ func Run(ctx context.Context, dir string, cfg statedir.WorkerConfig, tn Tailnet,
 		hc = &cloned
 	}
 	var ctrlInterceptors []connect.ClientInterceptor
-	if remote || cfg.Token != "" {
-		ctrlInterceptors = append(ctrlInterceptors, api.AuthInterceptor(cfg.Token, self.NodeID, self.Hostname, workerAddr))
+	if cfg.Token != "" {
+		ctrlInterceptors = append(ctrlInterceptors, api.AuthInterceptor(cfg.Token, self.NodeID, self.Hostname, ""))
 	}
 	cluster, _, err := api.Controller(cfg.Controller, hc, ctrlInterceptors...)
 	if err != nil {
@@ -322,8 +290,8 @@ func Run(ctx context.Context, dir string, cfg statedir.WorkerConfig, tn Tailnet,
 	// A binary takes longer than an API call's minute over a slow network.
 	// Direct GitHub downloads use a clean client with no controller auth headers.
 	followTransport := hc.Transport
-	if remote || cfg.Token != "" {
-		followTransport = api.AuthRoundTripper(followTransport, cfg.Token, self.NodeID, self.Hostname, workerAddr)
+	if cfg.Token != "" {
+		followTransport = api.AuthRoundTripper(followTransport, cfg.Token, self.NodeID, self.Hostname, "")
 	}
 	follow := &Follow{
 		URL:            ctrlBaseURL,
@@ -442,59 +410,22 @@ func Run(ctx context.Context, dir string, cfg statedir.WorkerConfig, tn Tailnet,
 	}
 	defer eng.Close()
 
-	// A worker admits what the controller admits: the owner's machines,
-	// whose clients call it directly to sync, run commands and read their
-	// output, and the controller among them. On this machine itself, root
-	// and the user commands run as.
-	local, err := localUsers(cfg.User)
-	if err != nil {
-		return err
-	}
-	policy := httpx.Policy{
-		Owner: cfg.Owner, Self: self.Addrs, Hosts: []string{self.Hostname, self.DNSName}, LocalUsers: local,
-		Node: self.Peer,
-	}
+	// Clients reach the worker only through the controller, over the
+	// worker's own tunnel to it; on its machine, through its Unix socket too,
+	// if it has one, whose file mode says who may connect.
+	policy := httpx.Policy{Node: self.Peer}
 	srv := &http.Server{Handler: Handler(tn, policy, eng), ReadHeaderTimeout: 10 * time.Second, Protocols: httpx.Protocols()}
 	srv.RegisterOnShutdown(eng.DrainStreams)
-	shellSrv := NewShellServer(tn, policy, eng)
+	// Serves the shells the controller relays (OpenPipe "ssh").
+	shellSrv := NewShellServer(eng)
 	eng.SetShellServer(shellSrv)
 	var listeners []net.Listener
-	var sshListeners []net.Listener
-	closeAll := func() {
-		for _, l := range listeners {
-			l.Close()
-		}
-		for _, l := range sshListeners {
-			l.Close()
-		}
-	}
-	for _, addr := range self.Addrs {
-		l, err := net.Listen("tcp", net.JoinHostPort(addr.String(), strconv.Itoa(api.WorkerPort)))
-		if err != nil {
-			closeAll()
-			return fmt.Errorf("listen on tailnet address: %w", err)
-		}
-		slog.Info("worker listening", "addr", l.Addr().String(), "storage", store.Kind())
-		listeners = append(listeners, l)
-
-		sl, err := net.Listen("tcp", net.JoinHostPort(addr.String(), strconv.Itoa(api.WorkerSSHPort)))
-		if err != nil {
-			closeAll()
-			return fmt.Errorf("listen ssh on tailnet address: %w", err)
-		}
-		slog.Info("worker ssh listening", "addr", sl.Addr().String())
-		sshListeners = append(sshListeners, sl)
-	}
-	if len(sshListeners) > 0 {
-		eng.SetShellListen(sshListeners[0].Addr().String(), api.WorkerSSHPort)
-	}
 	if cfg.Socket != "" {
 		l, err := listenUnix(cfg.Socket)
 		if err != nil {
-			closeAll()
 			return err
 		}
-		slog.Info("worker listening", "socket", cfg.Socket)
+		slog.Info("worker listening", "socket", cfg.Socket, "storage", store.Kind())
 		listeners = append(listeners, l)
 	}
 
@@ -505,11 +436,6 @@ func Run(ctx context.Context, dir string, cfg statedir.WorkerConfig, tn Tailnet,
 				return err
 			}
 			return nil
-		})
-	}
-	for _, sl := range sshListeners {
-		g.Go(func() error {
-			return shellSrv.Serve(sl)
 		})
 	}
 	g.Go(func() error {
@@ -548,11 +474,9 @@ func Run(ctx context.Context, dir string, cfg statedir.WorkerConfig, tn Tailnet,
 			}
 		})
 	})
-	if remote {
-		g.Go(func() error {
-			return Tunnel(gctx, eng, ctrlBaseURL, cfg.Token, self, workerAddr, cfg.ControllerNodeID, cfg.Owner, hc)
-		})
-	}
+	g.Go(func() error {
+		return Tunnel(gctx, eng, ctrlBaseURL, cfg.Token, self, "", cfg.ControllerNodeID, cfg.Owner, hc)
+	})
 	g.Go(func() error {
 		<-gctx.Done()
 		_ = shellSrv.Close()
@@ -581,20 +505,24 @@ func listenUnix(path string) (net.Listener, error) {
 	return l, nil
 }
 
-// workerAdvertiseAddr returns this worker's direct tailnet address (host:7121)
-// advertised to remote HTTPS controllers so clients can still reach the worker
-// directly over Tailscale for Sync, RunCommand, FollowLog, and SSH.
-func workerAdvertiseAddr(self tailnet.Self) string {
-	if len(self.Addrs) > 0 {
-		return net.JoinHostPort(self.Addrs[0].String(), strconv.Itoa(api.WorkerPort))
+// newNodeID is a new worker's node ID, the controller's name for it: random,
+// as no two may share one.
+func newNodeID() (string, error) {
+	b := make([]byte, 10)
+	if _, err := rand.Read(b); err != nil {
+		return "", err
 	}
-	if self.DNSName != "" {
-		return net.JoinHostPort(self.DNSName, strconv.Itoa(api.WorkerPort))
+	return "w" + strings.ToLower(base32.StdEncoding.WithPadding(base32.NoPadding).EncodeToString(b)), nil
+}
+
+// hostName is this machine's name, without its domain.
+func hostName() string {
+	h, err := os.Hostname()
+	if err != nil || h == "" {
+		return "worker"
 	}
-	if self.Hostname != "" {
-		return net.JoinHostPort(self.Hostname, strconv.Itoa(api.WorkerPort))
-	}
-	return ""
+	h, _, _ = strings.Cut(h, ".")
+	return strings.ToLower(h)
 }
 
 // localUsers is the unix user commands run as, which may call the worker
@@ -614,27 +542,4 @@ func Handler(id httpx.Identifier, p httpx.Policy, eng *Engine) http.Handler {
 	mux := http.NewServeMux()
 	connecthttp.Mount(mux, server)
 	return httpx.Gate(id, p, mux)
-}
-
-// controllerPeer identifies the controller at hostPort via the tailnet; the
-// controller must be one of this user's own nodes.
-func controllerPeer(ctx context.Context, tn Tailnet, hostPort string) (tailnet.Peer, error) {
-	p, err := tailnet.NodeAt(ctx, tn, hostPort)
-	if err != nil {
-		return tailnet.Peer{}, fmt.Errorf("identify the controller at %s: %w", hostPort, err)
-	}
-	if p.Login == "" || len(p.Tags) > 0 || p.Shared {
-		return tailnet.Peer{}, api.Errorf(api.CodeNotAuthorized, "the controller at %s (%s) is not a user's own node", hostPort, p.Hostname)
-	}
-	if p.NodeID == "" {
-		return tailnet.Peer{}, api.Errorf(api.CodeNotAuthorized, "the tailnet did not report a node ID for the controller at %s", hostPort)
-	}
-	self, err := tn.Self(ctx)
-	if err != nil {
-		return tailnet.Peer{}, err
-	}
-	if p.Login != self.Login {
-		return tailnet.Peer{}, api.Errorf(api.CodeNotAuthorized, "the controller at %s belongs to %s, this machine to %s", hostPort, p.Login, self.Login)
-	}
-	return p, nil
 }

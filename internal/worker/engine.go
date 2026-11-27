@@ -272,8 +272,6 @@ type Engine struct {
 	// SSH shell state: ephemeral host key, one-time tickets, and active shells.
 	shellHostKey ssh.Signer
 	shellHostPub string
-	shellPort    int
-	shellAddr    string
 	// shellServer serves the SSH connections the controller relays.
 	shellServer  *ShellServer
 	shellTickets map[string]*shellTicket

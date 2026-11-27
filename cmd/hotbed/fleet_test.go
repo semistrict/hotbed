@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/http/httputil"
@@ -22,7 +21,6 @@ import (
 	"github.com/semistrict/hotbed/internal/fake"
 	pb "github.com/semistrict/hotbed/internal/gen/hotbed/v1"
 	"github.com/semistrict/hotbed/internal/gen/hotbed/v1/hotbedv1connect"
-	"github.com/semistrict/hotbed/internal/httpx"
 	"github.com/semistrict/hotbed/internal/tailnet"
 	"github.com/semistrict/hotbed/internal/tailnet/tailnettest"
 	"github.com/semistrict/hotbed/internal/worker"
@@ -65,11 +63,9 @@ type node struct {
 	store  *fake.Store
 	units  *fake.Units
 	system *fake.System
-	srv    *httptest.Server
 	// cut, set, drops every call between the worker and the controller,
 	// both ways, as a network partition would.
-	cut     atomic.Bool
-	handler atomic.Pointer[http.Handler]
+	cut atomic.Bool
 	// tunnelHook, set, wraps the worker's handler of the calls the
 	// controller relays to it over its tunnel: clients' calls, as the
 	// controller passes them on.
@@ -77,10 +73,9 @@ type node struct {
 	// dropTunnel ends the worker's tunnel to the controller, which it
 	// dials again at once, as a dropped connection does.
 	dropTunnel atomic.Pointer[context.CancelFunc]
-	// halted is set while the worker is stopped: its server refuses
-	// calls, as a stopped worker's port does, and refused counts them.
-	halted  atomic.Bool
-	refused atomic.Int64
+	// halted is set while the worker is stopped: the calls the
+	// controller relays to it fail, as a stopped worker's would.
+	halted atomic.Bool
 	// follows counts the streams of output clients opened to it.
 	follows atomic.Int64
 	// createGate, set, holds every CreateWorkspace call until it is closed,
@@ -160,7 +155,6 @@ func newFleetWith(t *testing.T, n int, opts clusterOpts) *cluster {
 	}
 	c.applyServerConfig()
 
-	addrs := map[string]string{} // worker host name -> its direct HTTP server address
 	for i := range n {
 		nd := &node{c: c, peer: fleetPeers[i], store: &fake.Store{Root: t.TempDir()}, units: &fake.Units{}, system: fake.NewSystem(), reported: make(chan error, 1)}
 		nd.dir = filepath.Join(t.TempDir(), "worker")
@@ -177,22 +171,6 @@ func newFleetWith(t *testing.T, n int, opts clusterOpts) *cluster {
 		for _, w := range opts.engine {
 			w(&nd.cfg)
 		}
-		nd.srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			if nd.halted.Load() {
-				nd.refused.Add(1)
-				http.Error(w, "worker stopped", http.StatusServiceUnavailable)
-				return
-			}
-			if strings.HasSuffix(r.URL.Path, "/FollowLog") {
-				nd.follows.Add(1)
-			}
-			if gate := nd.createGate.Load(); gate != nil && strings.HasSuffix(r.URL.Path, "/CreateWorkspace") {
-				<-*gate
-			}
-			(*nd.handler.Load()).ServeHTTP(w, r)
-		}))
-		t.Cleanup(nd.srv.Close)
-		addrs[nd.peer.Hostname] = strings.TrimPrefix(nd.srv.URL, "http://")
 		c.nodes = append(c.nodes, nd)
 	}
 
@@ -220,9 +198,6 @@ func newFleetWith(t *testing.T, n int, opts clusterOpts) *cluster {
 		}
 		r2.Header.Set("X-Hotbed-Node-Id", peer.NodeID)
 		r2.Header.Set("X-Hotbed-Host", peer.Hostname)
-		if addr := addrs[peer.Hostname]; addr != "" {
-			r2.Header.Set("X-Hotbed-Addr", addr)
-		}
 		proxy.ServeHTTP(w, r2)
 	})
 	c.handler.Store(&baseHandler)
@@ -377,20 +352,6 @@ func (nd *node) eng() *worker.Engine {
 	return nd.engine
 }
 
-// sshTestID wraps tailnettest.Fake for the test cluster's SSH shell listener:
-// external ssh subprocesses open their own loopback TCP sockets without going
-// through tn.Client, so WhoIs attributes loopback callers to laptop.
-type sshTestID struct {
-	*tailnettest.Fake
-}
-
-func (s sshTestID) WhoIs(ctx context.Context, remote string) (tailnet.Peer, error) {
-	if p, err := s.Fake.WhoIs(ctx, remote); err == nil {
-		return p, nil
-	}
-	return laptop, nil
-}
-
 // start opens the worker's engine on its state directory and runs it, its
 // heartbeat/event connection, and its reverse-RPC WebSocket tunnel to the
 // controller.
@@ -400,21 +361,11 @@ func (nd *node) start() {
 	if err != nil {
 		t.Fatal(err)
 	}
-	sshLn, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		eng.Close()
-		t.Fatal(err)
-	}
-	sshAddr := sshLn.Addr().(*net.TCPAddr)
-	eng.SetShellListen(sshAddr.String(), sshAddr.Port)
-	shellSrv := worker.NewShellServer(sshTestID{nd.c.tn}, httpx.Policy{Owner: "ramon@", Self: loopback}, eng)
+	shellSrv := worker.NewShellServer(eng)
 	eng.SetShellServer(shellSrv)
-	h := workerHandler(nd.c.tn, eng)
-	nd.handler.Store(&h)
 	nd.halted.Store(false)
 
 	ctrlURL := nd.c.ctrlSrv.URL
-	workerAddr := strings.TrimPrefix(nd.srv.URL, "http://")
 	tunnelWrap := func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			if nd.halted.Load() || nd.cut.Load() {
@@ -439,8 +390,7 @@ func (nd *node) start() {
 
 	ctx, cancel := context.WithCancel(t.Context())
 	var wg sync.WaitGroup
-	wg.Add(4)
-	go func() { defer wg.Done(); _ = shellSrv.Serve(sshLn) }()
+	wg.Add(3)
 	go func() { defer wg.Done(); eng.Run(ctx) }()
 	go func() {
 		defer wg.Done()
@@ -461,7 +411,7 @@ func (nd *node) start() {
 				ctrlURL,
 				nd.c.harness.token,
 				tailnet.Self{Peer: nd.peer},
-				workerAddr,
+				"",
 				ubu1.Peer.NodeID,
 				"ramon@",
 				nd.c.tn.Client(nd.peer),
@@ -501,8 +451,6 @@ func (nd *node) start() {
 // halt stops the worker; its commands run on, as systemd units do.
 func (nd *node) halt() {
 	nd.halted.Store(true)
-	// Its connections end with it, clients' streams of output too.
-	nd.srv.CloseClientConnections()
 	nd.mu.Lock()
 	stop := nd.stop
 	nd.stop = nil

@@ -67,30 +67,26 @@ cockpit's feed when it is worth one. The records are the events folded.
   not a stream of orders: idempotent, and complete in each reply. A workspace request carries its
   project too, which counts over the reply to any heartbeat sent before it.
 - **No legacy reporting.** The pre-event-stream `Report` RPC and worker outbox are retired: every
-  worker syncs state exclusively through `PushEvents` and `Heartbeat`, and admits clients directly
-  at its tailnet address.
+  worker syncs state exclusively through `PushEvents` and `Heartbeat`, and serves clients only
+  through the controller's relay.
 
-## Talking to workers directly
+## Talking to workers through the controller
 
-The controller says where a workspace is (`Workspace.node_addr`, also on commands); the CLI then
-calls the worker directly for data-plane operations (`Sync`, `WatchWorkspace`, `RunCommand`,
-`StopCommand`, `FollowLog`), so bundles, commands and live logs never detour through the
-controller. Controller data-plane forwarding for older clients is retired (only the controller's
-own scheduler calls `RunCommand` and `StopCommand` on workers). Workspace placement and lifecycle
-(`CreateWorkspace`, `ReleaseWorkspace`), cluster-wide views (`ListWorkspaces`, `ListCommands`/`ps`,
-`Poll`), and cockpit read/diagnostic/shell calls (`GetWorkspace`, `GetCommand`, `ListFiles`,
-`GetFile`, `OpenShell`, `GetLogLines`, `InspectCommand`, `TraceCommand`, `SampleCommand`,
-`GetProfile`, `GetDaemonLogs`) stay on the controller, which sees every node.
+Clients reach workers only through the controller (or, for a Mac's own worker, its Unix socket,
+whose file mode says who may connect): every WorkspaceService call goes to the controller, which
+relays it to the workspace's worker over the worker's own outbound tunnel (`/ws/worker`), unary,
+server-streaming (`FollowLog`, `WatchWorkspace`) and client-streaming (`Sync`, in `rpc_send`
+frames) alike. Byte streams (`hotbed shell`'s ssh, a dev server's port) go through
+`/ws/pipe`, relayed in `pipe_*` frames to the worker's shell server or the port. Workers listen
+on no network address and need no tailnet: a worker's node ID is made at join and bound to its
+worker token.
 
 - **Sessions.** A worker counts every call about a session's workspace or command as using the
   session and says so in its next heartbeat, so a session worked on only through its worker stays
   alive.
 - **Without the controller.** Workers keep running, admitting, parking and building; their events
-  wait. The CLI goes by where this machine last found the session's workspace, so `run`, `sync`,
-  `logs` and `stop` keep working. What pauses: new workspaces (placement), `poll` and `ps`, and
-  session expiry: the controller ends no session with a workspace on a worker it has not heard from,
-  for up to a day. On a worker's own machine, the worker admits only root and the user its
-  commands run as; anyone else gets a refusal saying so.
+  wait. Clients wait for the controller (they ride out its restarts): nothing reaches a worker
+  but through it.
 
 ## Projects
 

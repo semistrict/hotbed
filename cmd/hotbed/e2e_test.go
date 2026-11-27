@@ -26,9 +26,7 @@ import (
 	pb "github.com/semistrict/hotbed/internal/gen/hotbed/v1"
 	"github.com/semistrict/hotbed/internal/gen/hotbed/v1/hotbedv1connect"
 	"github.com/semistrict/hotbed/internal/gitops"
-	"github.com/semistrict/hotbed/internal/httpx"
 	"github.com/semistrict/hotbed/internal/tailnet"
-	"github.com/semistrict/hotbed/internal/tailnet/tailnettest"
 	"github.com/semistrict/hotbed/internal/worker"
 )
 
@@ -766,12 +764,6 @@ func containsLive(cmds []*pb.Command, id string) bool {
 var sessionNameRE = regexpMust(`^[a-z]+-[a-z]+$`)
 
 func regexpMust(s string) *regexp.Regexp { return regexp.MustCompile(s) }
-
-// workerHandler serves an engine as a worker does: to the owner's
-// machines, over the fake tailnet (loopback).
-func workerHandler(tn *tailnettest.Fake, eng *worker.Engine) http.Handler {
-	return worker.Handler(tn, httpx.Policy{Owner: "ramon@", Self: loopback}, eng)
-}
 
 var loopback = []netip.Addr{netip.MustParseAddr("127.0.0.1")}
 

@@ -5,7 +5,6 @@ import (
 	"time"
 
 	pb "github.com/semistrict/hotbed/internal/gen/hotbed/v1"
-	"github.com/semistrict/hotbed/internal/tailnet"
 )
 
 // A step releases a throwaway workspace once it is done with, whatever
@@ -29,8 +28,7 @@ func TestStepReleasesAThrowawayOnceItIsDoneWith(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			now := time.Now()
-			id := staticID{peer: tailnet.Peer{NodeID: "nLaptop", Hostname: "laptop", Login: "ramon@"}, uid: 1000}
-			eng, _, wsID := startShellTestEngine(t, id, &now)
+			eng, _, wsID := startShellTestEngine(t, &now)
 			at := now.UnixMilli()
 			eng.mu.Lock()
 			w := eng.workspaces[wsID]
