@@ -1,6 +1,6 @@
 import { create } from "@bufbuild/protobuf";
 import { describe, expect, it } from "vitest";
-import { CommandLimitsSchema, RepoSummarySchema, SnapshotSchema } from "../gen/hotbed/v1/hotbed_pb";
+import { CommandLimitsSchema, RepoSummarySchema, SnapshotSchema } from "../api";
 import { hhmmssms } from "../lib/format";
 import { formatTimeLimit, repoUnitLabel, tone } from "./Command";
 

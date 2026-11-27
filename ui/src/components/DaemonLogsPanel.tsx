@@ -7,7 +7,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { api, DAEMON_LOG_LEVEL_FROM_SLUG, DaemonLogLevel, type DaemonLogEntry, type DaemonLogLevelSlug, type DaemonLogSource } from "../api";
+import { clients, DAEMON_LOG_LEVEL_FROM_SLUG, DaemonLogLevel, type DaemonLogEntry, type DaemonLogLevelSlug, type DaemonLogSource } from "../api";
 import { useHeld } from "../lib/follow";
 import { bytes, hhmmss } from "../lib/format";
 import { Card, Empty } from "./Panel";
@@ -78,11 +78,11 @@ export function DaemonLogsPanel({
   const logsQuery = useQuery({
     queryKey: ["daemon-logs", source, level, since, debouncedQuery, compact ? 100 : 300],
     queryFn: () =>
-      api.daemonLogs({
-        source: source || undefined,
-        level: level ? DAEMON_LOG_LEVEL_FROM_SLUG[level] : undefined,
-        since: since || undefined,
-        query: debouncedQuery.trim() || undefined,
+      clients.workspaces.getDaemonLogs({
+        source,
+        level: level ? DAEMON_LOG_LEVEL_FROM_SLUG[level] : DaemonLogLevel.UNSPECIFIED,
+        since,
+        query: debouncedQuery.trim(),
         limit: compact ? 100 : 300,
       }),
     refetchInterval: live ? 5000 : false,

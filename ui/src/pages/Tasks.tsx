@@ -7,14 +7,14 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Textarea } from "@/components/ui/textarea";
-import { api, BoardTaskState, type BoardThreadSummary } from "../api";
+import { BoardTaskState, clients, projectScope, type BoardThreadSummary } from "../api";
 import { Card, Empty } from "../components/Panel";
 import { ProjectTag } from "../components/ProjectTag";
 import { useSnapshot } from "../lib/data";
 import { ago } from "../lib/format";
 import { useProject } from "../lib/project";
 import { parseLabelInput, taskStateMeta } from "./Board";
-import { PageTitle } from "./Nodes";
+import { PageTitle } from "../components/PageTitle";
 
 export type TasksTab = "open" | "ready" | "claimed" | "blocked" | "waiting" | "completed" | "failed" | "canceled" | "all";
 
@@ -57,8 +57,8 @@ export function TasksPage() {
   const tasksQ = useQuery({
     queryKey: ["board", "tasks", selectedProject, tab],
     queryFn: () =>
-      api.boardTasks({
-        project: selectedProject,
+      clients.board.listBoardTasks({
+        scope: projectScope(selectedProject),
         states: tabDef.states,
         includeAll: tabDef.includeAll,
         latest: tab === "completed" || tab === "failed" || tab === "canceled" || tab === "all",
@@ -79,7 +79,7 @@ export function TasksPage() {
         .map((s) => s.replace(/^#/, "").trim())
         .filter((s) => /^\d+$/.test(s))
         .map((s) => BigInt(s));
-      return api.createBoardTask({
+      return clients.board.createBoardTask({
         project: effectiveProject,
         text,
         labels: parseLabelInput(labels),
@@ -97,8 +97,8 @@ export function TasksPage() {
     },
   });
 
-  const unblockMut = useMutation({ mutationFn: (id: bigint) => api.unblockBoardTask(id), onSuccess: refresh });
-  const reopenMut = useMutation({ mutationFn: (id: bigint) => api.reopenBoardTask(id), onSuccess: refresh });
+  const unblockMut = useMutation({ mutationFn: (id: bigint) => clients.board.unblockBoardTask({ id }), onSuccess: refresh });
+  const reopenMut = useMutation({ mutationFn: (id: bigint) => clients.board.reopenBoardTask({ id }), onSuccess: refresh });
 
   const now = Date.now();
   const tasks = tasksQ.data?.tasks ?? [];

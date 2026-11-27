@@ -1,4 +1,4 @@
-import { QuestionState, type Answer, type AnswerInput, type Question } from "../api";
+import { QuestionState, type Answer, type AnswerSchema, type MessageInitShape, type Question } from "../api";
 
 /**
  * An answer as the form holds it: the options picked, whether the user
@@ -19,7 +19,7 @@ export function draftOf(a: Answer): Draft {
 }
 
 /** The answer a draft sends: its own words only while that choice is on. */
-export function draftAnswer(d: Draft): AnswerInput {
+export function draftAnswer(d: Draft): MessageInitShape<typeof AnswerSchema> {
   return { picked: d.picked, other: d.ownWords ? d.other : "", notes: d.notes };
 }
 

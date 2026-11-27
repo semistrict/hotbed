@@ -1,7 +1,7 @@
 import { Terminal } from "@xterm/xterm";
 import "@xterm/xterm/css/xterm.css";
 import { useEffect, useRef, useState } from "react";
-import { api } from "../api";
+import { clients, outputBytes } from "../api";
 
 /** How much of the end of an output the terminal replays at first: its scrollback, roughly. */
 const REPLAY_BYTES = 2n << 20n;
@@ -71,11 +71,11 @@ export function TerminalView({ id, live }: { id: string; live: boolean }) {
       try {
         if (offset === null) {
           // Start near the end of a long output.
-          const q = await api.queryOutput(id, { tail: 1, raw: true }, ac.signal);
+          const q = await clients.workspaces.queryOutput({ id, tail: 1, raw: true }, { signal: ac.signal });
           offset = q.totalBytes > REPLAY_BYTES ? q.totalBytes - REPLAY_BYTES : 0n;
           if (offset > 0n) term.writeln(`[hotbed: the first ${q.totalBytes - REPLAY_BYTES} bytes are not replayed here: hotbed output ${id} reads all of it]`);
         }
-        const { data, next } = await api.outputBytes(id, offset, ac.signal);
+        const { data, next } = await outputBytes(id, offset, ac.signal);
         if (data.length > 0) term.write(decoder.decode(data, { stream: true }));
         offset = next;
         setError(null);

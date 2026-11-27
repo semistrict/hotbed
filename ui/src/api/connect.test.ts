@@ -20,13 +20,14 @@ import {
   WorkspaceSchema,
   WorkspaceService,
   WorkspaceState,
-} from "../gen/hotbed/v1/hotbed_pb";
+  baseStateLabel,
+  nodeAdmission,
+} from "./types";
 import { ago, bytes, hhmmss, limit } from "../lib/format";
-import { createConnectApi } from "./connect";
+import { commandStreams, createClients } from "./connect";
 import { foldStack } from "./folded";
-import { baseStateLabel, nodeAdmission } from "./types";
 
-describe("createConnectApi + protobuf-es types", () => {
+describe("Connect clients + protobuf-es types", () => {
   it("preserves BaseState.FAILED, freshen kind, unknown arch, Command.args, ScheduledCommand.arch, and CommandLimits verbatim", async () => {
     const rawSnapshot = create(SnapshotSchema, {
       now: 1795320060000n,
@@ -105,8 +106,7 @@ describe("createConnectApi + protobuf-es types", () => {
       });
     });
 
-    const api = createConnectApi(transport);
-    const s = await api.snapshot();
+    const s = await createClients(transport).cluster.getSnapshot({});
 
     // BaseState.FAILED stays distinct from STALE
     expect(s.bases[0]?.state).toBe(BaseState.FAILED);
@@ -235,9 +235,9 @@ describe("createConnectApi + protobuf-es types", () => {
       });
     });
 
-    const api = createConnectApi(transport);
+    const clients = createClients(transport);
 
-    const final = await api.sampleCommand("cmd-1", { durationSeconds: 3 }, () => {});
+    const final = await commandStreams(clients).sampleCommand({ id: "cmd-1", durationSeconds: 3 }, () => {});
     expect(final?.kept?.seq).toBe(3);
     const sample = final?.sample;
     expect(sample?.commandId).toBe("cmd-1");
@@ -256,18 +256,18 @@ describe("createConnectApi + protobuf-es types", () => {
     expect(sample?.onCpuStacks.map((st) => foldStack(st, sample.frames))).toEqual(["app;a:b;main.work"]);
     expect(sample?.frames[sample.onCpuTopFunctions[0]!.frame]?.name).toBe("main.work");
 
-    const cmdProf = await api.commandProfile("cmd-1");
+    const cmdProf = await clients.workspaces.getProfile({ target: { case: "commandId", value: "cmd-1" } });
     expect(cmdProf.commandId).toBe("cmd-1");
     expect(cmdProf.totalSamples).toBe(40n);
 
-    const prof = await api.nodeProfile("asahimbp");
+    const prof = await clients.workspaces.getProfile({ target: { case: "node", value: "asahimbp" } });
     expect(prof.node).toBe("asahimbp");
     expect(prof.totalSamples).toBe(120n);
     expect(prof.stacks.map((st) => foldStack(st, prof.frames))).toEqual(["rustc;main"]);
     expect(prof.frames[prof.buckets[0]!.topFrame]?.name).toBe("main");
     expect(prof.buckets[0]?.durationMs).toBe(640000n);
 
-    const logs = await api.daemonLogs({ level: DaemonLogLevel.WARN });
+    const logs = await clients.workspaces.getDaemonLogs({ level: DaemonLogLevel.WARN });
     expect(logs.truncated).toBe(true);
     expect(logs.entries[0]?.level).toBe(DaemonLogLevel.ERROR);
     expect(logs.entries[1]?.level).toBe(DaemonLogLevel.WARN);
@@ -365,32 +365,32 @@ describe("createConnectApi + protobuf-es types", () => {
       });
     });
 
-    const api = createConnectApi(transport);
+    const clients = createClients(transport);
 
-    const paused = await api.pauseCommand("cmd-hung", { comment: "holding for debug", diagnose: true });
+    const paused = await clients.workspaces.pauseCommand({ id: "cmd-hung", comment: "holding for debug", diagnose: true });
     expect(seen.pause).toEqual({ id: "cmd-hung", comment: "holding for debug", diagnose: true });
     expect(paused.state).toBe(CommandState.PAUSED);
     expect(paused.interventions[0]?.kind).toBe(InterventionKind.PAUSE);
     expect(paused.interventions[0]?.diagnosed).toBe(true);
 
-    const resumed = await api.resumeCommand("cmd-hung", { comment: "back to work" });
+    const resumed = await clients.workspaces.resumeCommand({ id: "cmd-hung", comment: "back to work" });
     expect(seen.resume).toEqual({ id: "cmd-hung", comment: "back to work" });
     expect(resumed.state).toBe(CommandState.RUNNING);
     expect(resumed.interventions[0]?.kind).toBe(InterventionKind.RESUME);
 
-    const stopped = await api.stopCommand("cmd-hung", { comment: "stuck on lock", diagnose: true });
+    const stopped = await clients.workspaces.stopCommand({ id: "cmd-hung", comment: "stuck on lock", diagnose: true });
     expect(seen.stop).toEqual({ id: "cmd-hung", comment: "stuck on lock", diagnose: true });
     expect(stopped.state).toBe(CommandState.CANCELLED);
     expect(stopped.interventions[0]?.kind).toBe(InterventionKind.STOP);
     expect(stopped.interventions[0]?.comment).toBe("stuck on lock");
 
-    // Defaults when options are omitted.
-    await api.stopCommand("cmd-default");
+    // Fields left out arrive as their zero values.
+    await clients.workspaces.stopCommand({ id: "cmd-default" });
     expect(seen.stop).toEqual({ id: "cmd-default", comment: "", diagnose: false });
-    await api.resumeCommand("cmd-default");
+    await clients.workspaces.resumeCommand({ id: "cmd-default" });
     expect(seen.resume).toEqual({ id: "cmd-default", comment: "" });
 
-    const diags = await api.getCommandDiagnostics("cmd-hung");
+    const diags = await commandStreams(clients).getCommandDiagnostics("cmd-hung");
     expect(seen.diagId).toBe("cmd-hung");
     expect(diags).toHaveLength(1);
     expect(diags[0]?.commandId).toBe("cmd-hung");
@@ -438,15 +438,15 @@ describe("createConnectApi + protobuf-es types", () => {
       });
     });
 
-    const api = createConnectApi(transport);
-    const combined = await api.getCommandDiagnostics("cmd-paged");
+    const { getCommandDiagnostics } = commandStreams(createClients(transport));
+    const combined = await getCommandDiagnostics("cmd-paged");
     expect(seenAfterSeqs).toEqual([0, 1]);
     expect(combined.map((d) => d.intervention?.seq)).toEqual([1, 2]);
     expect(combined.map((d) => d.intervention?.comment)).toEqual(["first", "second"]);
 
     // Non-advancing cursor must terminate cleanly instead of looping.
     seenAfterSeqs.length = 0;
-    const stalled = await api.getCommandDiagnostics("cmd-stalled");
+    const stalled = await getCommandDiagnostics("cmd-stalled");
     expect(seenAfterSeqs).toEqual([0]);
     expect(stalled).toHaveLength(1);
   });
@@ -466,8 +466,7 @@ describe("createConnectApi + protobuf-es types", () => {
       });
     });
 
-    const api = createConnectApi(transport);
-    const retired = await api.retireNode("node-dead-1");
+    const retired = await createClients(transport).cluster.retireNode({ node: "node-dead-1" });
     expect(seenNode).toBe("node-dead-1");
     expect(retired.id).toBe("node-dead-1");
     expect(retired.hostname).toBe("old-box");

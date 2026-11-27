@@ -1,5 +1,5 @@
 import { useSyncExternalStore } from "react";
-import { api, type Api, type CommandSample, type ProcessSample } from "../api";
+import { sampleCommand, type CommandSample, type CommandStreams, type ProcessSample } from "../api";
 
 /**
  * A sample being taken of a command, from the click to its final chunk.
@@ -30,7 +30,7 @@ export interface TakeOptions {
 }
 
 /** The samples being taken, one at most per command. */
-export function createSamplings(sampleCommand: Api["sampleCommand"]) {
+export function createSamplings(sample: CommandStreams["sampleCommand"]) {
   const takings = new Map<string, Taking>();
   const aborts = new Map<string, AbortController>();
   const listeners = new Set<() => void>();
@@ -66,9 +66,8 @@ export function createSamplings(sampleCommand: Api["sampleCommand"]) {
         done: false,
         cancelled: false,
       });
-      sampleCommand(
-        id,
-        { durationSeconds: opts.durationSeconds, pid: pid || undefined },
+      sample(
+        { id, durationSeconds: opts.durationSeconds, pid },
         (ch) => {
           const patch: Partial<Taking> = {};
           if (ch.status) patch.status = ch.status;
@@ -117,7 +116,7 @@ export function createSamplings(sampleCommand: Api["sampleCommand"]) {
 
 export type Samplings = ReturnType<typeof createSamplings>;
 
-export const samplings: Samplings = createSamplings((...args) => api.sampleCommand(...args));
+export const samplings: Samplings = createSamplings(sampleCommand);
 
 /** The sample being taken of command id, if any. */
 export function useTaking(id: string): Taking | null {

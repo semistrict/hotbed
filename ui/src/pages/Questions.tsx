@@ -11,7 +11,9 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Textarea } from "@/components/ui/textarea";
 import {
-  api,
+  clients,
+  placeBefore,
+  projectScope,
   QUESTION_ORDER_FROM_SLUG,
   QuestionState,
   type ListQuestionsResponse,
@@ -30,7 +32,7 @@ import { remoteName } from "../lib/projects";
 import { chooseOption, chooseOwnWords, draftAnswer, draftOf, draftReady, EMPTY_DRAFT, responseLine, TAB_STATES, type Draft, type QuestionTab } from "../lib/questions";
 import { mergeLatestByRevision, useOptimisticReorder } from "../lib/rankedList";
 import { who } from "../lib/stamps";
-import { PageTitle } from "./Nodes";
+import { PageTitle } from "../components/PageTitle";
 
 export interface QuestionsSearch {
   tab?: QuestionTab;
@@ -78,18 +80,18 @@ function Questions({ s }: { s: Snapshot }) {
     key,
     field: "questions",
     mutationKey: ["move-question"],
-    move: (id, before) => api.moveQuestion(id, before),
+    move: (id, before) => clients.questions.moveQuestion({ id, place: placeBefore(before) }),
     invalidate: ["questions"],
   });
   const list = useQuery({
     queryKey: key,
-    queryFn: () => api.questions({ project, states: TAB_STATES[tab], order: QUESTION_ORDER_FROM_SLUG[sort] }),
+    queryFn: () => clients.questions.listQuestions({ scope: projectScope(project), states: TAB_STATES[tab], order: QUESTION_ORDER_FROM_SLUG[sort] }),
     refetchInterval: move.moving ? false : 2000,
     // Only reuse previous data while staying within the same project scope;
     // switching projects must not render another project's actionable questions.
     placeholderData: (prev, prevQuery) => (prevQuery?.queryKey[1] === project ? prev : undefined),
   });
-  const outbox = useQuery({ queryKey: ["questions", project, "outbox", "count"], queryFn: () => api.questions({ project, states: TAB_STATES.outbox }), refetchInterval: 2000 });
+  const outbox = useQuery({ queryKey: ["questions", project, "outbox", "count"], queryFn: () => clients.questions.listQuestions({ scope: projectScope(project), states: TAB_STATES.outbox, order: QUESTION_ORDER_FROM_SLUG.newest }), refetchInterval: 2000 });
   const now = Number(s.now);
   const movable = canRank && sort === "rank";
   const seenRef = useRef<{ project: string | null; map: Map<number, Question> }>({ project, map: new Map() });
@@ -172,7 +174,7 @@ export function QuestionDetailPage() {
   const { id } = useParams({ from: "/questions/$id" });
   const { data: s } = useScopedSnapshot();
   // Under ["questions"], so what an answer refreshes includes it.
-  const q = useQuery({ queryKey: ["questions", "one", id], queryFn: () => api.question(Number(id)), refetchInterval: 2000 });
+  const q = useQuery({ queryKey: ["questions", "one", id], queryFn: () => clients.questions.getQuestion({ id: Number(id) }), refetchInterval: 2000 });
   if (!s) return null;
   return (
     <div className="space-y-6">
@@ -388,7 +390,7 @@ function AnswerForm({ q }: { q: Question }) {
   }, [serverDraft, baseline, dirty]);
 
   const send = useMutation({
-    mutationFn: (d: Draft) => api.answerQuestion(q.id, draftAnswer(d)),
+    mutationFn: (d: Draft) => clients.questions.answerQuestion({ id: q.id, answer: draftAnswer(d) }),
     onSuccess: (_data, d) => {
       const saved: Draft = {
         picked: d.picked,
@@ -402,7 +404,7 @@ function AnswerForm({ q }: { q: Question }) {
     onSettled: settle,
   });
   const dismiss = useMutation({
-    mutationFn: () => api.dismissQuestion(q.id, reason),
+    mutationFn: () => clients.questions.dismissQuestion({ id: q.id, reason }),
     onSuccess: () => {
       setDismissing(false);
       setReason("");
@@ -547,12 +549,15 @@ function PromptEditor({ q, onDone }: { q: Question; onDone: () => void }) {
   const [body, setBody] = useState(q.prompt?.body ?? "");
   const save = useMutation({
     mutationFn: () =>
-      api.reviseQuestion(q.id, {
-        header: q.prompt?.header ?? "",
-        options: q.prompt?.options ?? [],
-        multiSelect: q.prompt?.multiSelect ?? false,
-        question,
-        body,
+      clients.questions.reviseQuestion({
+        id: q.id,
+        prompt: {
+          header: q.prompt?.header ?? "",
+          options: q.prompt?.options ?? [],
+          multiSelect: q.prompt?.multiSelect ?? false,
+          question,
+          body,
+        },
       }),
     onSuccess: onDone,
     onSettled: settle,
@@ -583,7 +588,7 @@ function PromptEditor({ q, onDone }: { q: Question; onDone: () => void }) {
 /** Returning a question to the inbox, its response cleared. */
 function ReopenButton({ q }: { q: Question }) {
   const settle = useSettle();
-  const reopen = useMutation({ mutationFn: () => api.reopenQuestion(q.id), onSettled: settle });
+  const reopen = useMutation({ mutationFn: () => clients.questions.reopenQuestion({ id: q.id }), onSettled: settle });
   return (
     <>
       <button type="button" disabled={reopen.isPending} onClick={() => reopen.mutate()} className={LINK}>
@@ -654,7 +659,7 @@ function Response({ s, q, now }: { s: Snapshot; q: Question; now: number }) {
 /** Every change to the question, loaded when opened. */
 function History({ s, q, now }: { s: Snapshot; q: Question; now: number }) {
   const [open, setOpen] = useState(false);
-  const history = useQuery({ queryKey: ["question-history", q.id, String(q.updatedAt), String(q.rank)], queryFn: () => api.questionHistory(q.id), enabled: open });
+  const history = useQuery({ queryKey: ["question-history", q.id, String(q.updatedAt), String(q.rank)], queryFn: async () => (await clients.questions.getQuestion({ id: q.id })).history, enabled: open });
   return (
     <Collapsible open={open} onOpenChange={setOpen}>
       <CollapsibleTrigger className="group inline-flex cursor-pointer items-center gap-1 font-mono text-[11px] text-faint hover:text-foreground">

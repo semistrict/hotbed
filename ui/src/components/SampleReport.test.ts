@@ -1,6 +1,6 @@
 import { create } from "@bufbuild/protobuf";
 import { describe, expect, it } from "vitest";
-import { FoldedStackSchema, ProfileFrameSchema, SampledProcessSchema } from "../gen/hotbed/v1/hotbed_pb";
+import { FoldedStackSchema, ProfileFrameSchema, SampledProcessSchema } from "../api";
 import { signedBytes } from "../lib/format";
 import { buildCallTreeFromStacks, buildCallTreesByComm } from "./SampleReport";
 

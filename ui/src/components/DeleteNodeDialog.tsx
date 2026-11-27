@@ -11,8 +11,7 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
-import type { Node } from "../api";
-import { ErrorInfoSchema } from "../gen/hotbed/v1/hotbed_pb";
+import { ErrorInfoSchema, type Node } from "../api";
 import { useRetireNode } from "../lib/data";
 
 export function formatRetireNodeError(err: unknown): string {

@@ -28,7 +28,7 @@ import {
 } from "../lib/auth";
 import { useSnapshot } from "../lib/data";
 import { useProject } from "../lib/project";
-import { PageTitle } from "./Nodes";
+import { PageTitle } from "../components/PageTitle";
 
 function formatDate(ms: number | string | null | undefined): string {
   if (!ms) return "—";

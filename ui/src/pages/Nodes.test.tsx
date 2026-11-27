@@ -9,7 +9,7 @@ import {
   ObjectStoreStatsSchema,
   ResourcesSchema,
   SnapshotSchema,
-} from "../gen/hotbed/v1/hotbed_pb";
+} from "../api";
 
 vi.mock("@tanstack/react-router", () => ({
   Link: ({ children, className }: { children: ReactNode; className?: string }) => <a className={className}>{children}</a>,

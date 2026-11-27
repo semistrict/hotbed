@@ -2,7 +2,7 @@ import { useQuery } from "@tanstack/react-query";
 import { ChevronRightIcon } from "lucide-react";
 import { useState } from "react";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
-import { api, StepState, stepStateLabel, type Project, type StepStatus } from "../api";
+import { clients, StepState, stepStateLabel, type Project, type StepStatus } from "../api";
 import { ago, duration } from "../lib/format";
 import { ScriptBlock } from "./CommandBlock";
 
@@ -39,7 +39,7 @@ export function SetupSteps({
   const hasSteps = project.steps.length > 0;
   const status = useQuery({
     queryKey: ["steps", project.name],
-    queryFn: () => api.steps(project.name),
+    queryFn: async () => (await clients.cluster.listSteps({ project: project.name })).steps,
     enabled: hasSteps,
     refetchInterval: 5000,
   });

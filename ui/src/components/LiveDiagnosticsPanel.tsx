@@ -6,9 +6,10 @@ import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import {
-  api,
+  clients,
   InspectSection,
   TraceKind,
+  traceCommand,
   type InspectCommandResponse,
   type ProcessInfo,
   type ProcessLimits,
@@ -159,7 +160,7 @@ export function LiveDiagnosticsPanel({ id, ended = false, onSamplePid }: { id: s
     try {
       // Always include procs alongside the requested section so the PID picker stays fresh.
       const sections: InspectSection[] = section === InspectSection.PROCS ? [InspectSection.PROCS] : [InspectSection.PROCS, section];
-      const res = await api.inspectCommand(id, { sections, pid: pid || undefined }, ac.signal);
+      const res = await clients.workspaces.inspectCommand({ id, sections, pid }, { signal: ac.signal });
       if (seq !== inspectSeqRef.current || ac.signal.aborted) return;
       setInspectState((prev) => mergeInspectResult(prev, res, pid, section));
     } catch (e) {
@@ -188,13 +189,13 @@ export function LiveDiagnosticsPanel({ id, ended = false, onSamplePid }: { id: s
     setTraceError(null);
 
     try {
-      const summary = await api.traceCommand(
-        id,
+      const summary = await traceCommand(
         {
+          id,
           kind,
           durationSeconds: durationSec,
-          pid: selectedPid || undefined,
-          filter: kind === TraceKind.STRACE || kind === TraceKind.STRACE_SUMMARY ? straceFilter.trim() || undefined : undefined,
+          pid: selectedPid,
+          filter: kind === TraceKind.STRACE || kind === TraceKind.STRACE_SUMMARY ? straceFilter.trim() : "",
         },
         (chunk) => {
           if (seq !== traceSeqRef.current || ac.signal.aborted) return;

@@ -1,6 +1,6 @@
 import { create } from "@bufbuild/protobuf";
 import { describe, expect, it } from "vitest";
-import { ActorKind, ReviewSchema, ReviewerSchema, StampSchema } from "../gen/hotbed/v1/hotbed_pb";
+import { ActorKind, ReviewSchema, ReviewerSchema, StampSchema } from "../api";
 import { commitUrl, reviewerModels } from "./reviews";
 import { actorSummary, isUserActor } from "./stamps";
 

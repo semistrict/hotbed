@@ -7,7 +7,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { api, CommandState, type Command, type CommandEvent, type CommandLimits, type FinishedCommand, type Snapshot } from "../api";
+import { clients, CommandState, type Command, type CommandEvent, type CommandLimits, type FinishedCommand, type Snapshot } from "../api";
 import { Meter } from "../components/charts/Bars";
 import { SpeedBars } from "../components/charts/SpeedBars";
 import { actsFor, ByHandButtons, ByHandForm, InterventionsCard, type ByHandAction } from "../components/ByHand";
@@ -458,7 +458,7 @@ function readTimestampsPref(): boolean {
  */
 export function LogCard({ id, live, tty }: { id: string; live: boolean; tty: boolean }) {
   const [view, setView] = useState<"lines" | "terminal">(tty ? "terminal" : "lines");
-  const log = useQuery({ queryKey: ["log", id], queryFn: () => api.commandLog(id), refetchInterval: live && view === "lines" ? 1000 : false });
+  const log = useQuery({ queryKey: ["log", id], queryFn: () => clients.workspaces.getLogLines({ id, tail: 2000 }), refetchInterval: live && view === "lines" ? 1000 : false });
   const [query, setQuery] = useState("");
   const [showTimestamps, setShowTimestamps] = useState<boolean>(readTimestampsPref);
   const toggleTimestamps = (checked: boolean) => {

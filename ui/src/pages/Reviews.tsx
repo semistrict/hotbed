@@ -1,14 +1,14 @@
 import { useQuery } from "@tanstack/react-query";
 import { Link } from "@tanstack/react-router";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
-import { api, ReviewState, type Review, type Snapshot } from "../api";
+import { clients, projectScope, ReviewState, type Review, type Snapshot } from "../api";
 import { ProjectTag } from "../components/ProjectTag";
 import { Card, Empty, StatTile } from "../components/Panel";
 import { ago } from "../lib/format";
 import { useProject, useScopedSnapshot } from "../lib/project";
 import { remoteName } from "../lib/projects";
 import { reviewerModels, versionLine } from "../lib/reviews";
-import { PageTitle } from "./Nodes";
+import { PageTitle } from "../components/PageTitle";
 
 export function ReviewsPage() {
   const { data: s } = useScopedSnapshot();
@@ -20,7 +20,7 @@ function Reviews({ s }: { s: Snapshot }) {
   const [project] = useProject();
   const list = useQuery({
     queryKey: ["reviews", project],
-    queryFn: () => api.reviews(project),
+    queryFn: async () => (await clients.reviews.listReviews({ scope: projectScope(project) })).reviews,
     refetchInterval: 2000,
     placeholderData: (prev, prevQuery) => (prevQuery?.queryKey[1] === project ? prev : undefined),
   });

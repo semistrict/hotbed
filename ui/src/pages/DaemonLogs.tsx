@@ -1,7 +1,7 @@
 import { useNavigate, useSearch } from "@tanstack/react-router";
 import type { DaemonLogLevelSlug } from "../api";
 import { DaemonLogsPanel } from "../components/DaemonLogsPanel";
-import { PageTitle } from "./Nodes";
+import { PageTitle } from "../components/PageTitle";
 
 export interface DaemonLogsSearch {
   source?: string;

@@ -1,7 +1,6 @@
 import { create } from "@bufbuild/protobuf";
 import { describe, expect, it } from "vitest";
-import { QuestionState } from "../api";
-import { MemoryContentSchema, MemoryMode, MemorySchema, MemoryScope, MemoryState, QuestionSchema } from "../gen/hotbed/v1/hotbed_pb";
+import { MemoryContentSchema, MemoryMode, MemorySchema, MemoryScope, MemoryState, QuestionSchema, QuestionState } from "../api";
 import { TAB_STATES } from "./questions";
 import { dropAt, mergeLatestByRevision, placement, reorder } from "./rankedList";
 

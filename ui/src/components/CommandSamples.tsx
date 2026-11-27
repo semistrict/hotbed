@@ -2,8 +2,7 @@ import { clone } from "@bufbuild/protobuf";
 import { type QueryClient, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
 import { Button } from "@/components/ui/button";
-import { api, type CommandSample, type ProcessSample } from "../api";
-import { CommandSampleSchema } from "../gen/hotbed/v1/hotbed_pb";
+import { clients, CommandSampleSchema, type CommandSample, type ProcessSample } from "../api";
 import { hhmmss } from "../lib/format";
 import type { Taking } from "../lib/sampling";
 import { Card } from "./Panel";
@@ -67,7 +66,7 @@ export function useCommandSamples(id: string, count: number | undefined) {
   if (counted.count !== count) setCounted({ count, at: Date.now() });
   return useQuery({
     queryKey: sampleKeys.list(id),
-    queryFn: async () => relisted(await api.listCommandSamples(id), qc.getQueryData<SampleList>(sampleKeys.list(id))),
+    queryFn: async () => relisted((await clients.cluster.listCommandSamples({ id })).samples, qc.getQueryData<SampleList>(sampleKeys.list(id))),
     staleTime: Infinity,
     refetchInterval: (q) => (awaitingSamples(q.state.data?.listed, count, counted.at, Date.now()) ? 1000 : false),
     select: samplesShown,
@@ -100,7 +99,7 @@ export function sampleSummary(s: CommandSample): string {
 
 /** One kept sample of command id, in full. onSamplePid, while it runs, samples one of its processes. */
 export function KeptSampleView({ id, seq, onSamplePid }: { id: string; seq: number; onSamplePid?: (pid: number) => void }) {
-  const q = useQuery({ queryKey: sampleKeys.one(id, seq), queryFn: () => api.getCommandSample(id, seq), staleTime: Infinity });
+  const q = useQuery({ queryKey: sampleKeys.one(id, seq), queryFn: () => clients.cluster.getCommandSample({ id, seq }), staleTime: Infinity });
   const s = q.data;
   return (
     <Card title={`Sample #${seq}`} sub={s ? sampleSummary(s) : q.isError ? "Unavailable" : "Loading"}>

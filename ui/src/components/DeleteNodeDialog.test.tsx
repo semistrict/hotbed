@@ -4,7 +4,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import type { ReactNode } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it, vi } from "vitest";
-import { ErrorInfoSchema, NodeSchema } from "../gen/hotbed/v1/hotbed_pb";
+import { ErrorInfoSchema, NodeSchema } from "../api";
 
 vi.mock("@/components/ui/alert-dialog", () => ({
   AlertDialog: ({ open, children }: { open?: boolean; children?: ReactNode }) => (open ? <div data-open="true">{children}</div> : null),

@@ -1,4 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { fetchJson } from "./http";
 
 export interface GcKindUsage {
   objects: number;
@@ -59,27 +60,10 @@ export interface GcCollectCellResponse {
   left?: "held" | "swept";
 }
 
-async function fetchGcJson<T>(path: string, init?: RequestInit): Promise<T> {
-  const headers = new Headers(init?.headers);
-  headers.set("Accept", "application/json");
-  const res = await fetch(path, { ...init, headers, credentials: "same-origin" });
-  const data = (await res.json().catch(() => ({}))) as Record<string, unknown>;
-  if (!res.ok) {
-    const msg =
-      typeof data.error === "string"
-        ? data.error
-        : typeof data.message === "string"
-          ? data.message
-          : `HTTP ${res.status}`;
-    throw new Error(msg);
-  }
-  return data as T;
-}
-
 export function useGcStatus(pollFast = false) {
   return useQuery({
     queryKey: ["gc-status"],
-    queryFn: () => fetchGcJson<GcStatusResponse>("/api/gc/status"),
+    queryFn: () => fetchJson<GcStatusResponse>("/api/gc/status"),
     refetchInterval: pollFast ? 4_000 : 60_000,
     staleTime: pollFast ? 2_000 : 30_000,
     retry: false,
@@ -89,7 +73,7 @@ export function useGcStatus(pollFast = false) {
 export function useTriggerGcSweep() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: () => fetchGcJson<GcSweepResponse>("/api/gc/sweep", { method: "POST" }),
+    mutationFn: () => fetchJson<GcSweepResponse>("/api/gc/sweep", { method: "POST" }),
     onSuccess: () => {
       void qc.invalidateQueries({ queryKey: ["gc-status"] });
     },
@@ -98,7 +82,7 @@ export function useTriggerGcSweep() {
 
 export function useGcDryRunCell() {
   return useMutation({
-    mutationFn: (cell: string) => fetchGcJson<GcDryRunResponse>(`/api/gc/dry-run/${cell}`),
+    mutationFn: (cell: string) => fetchJson<GcDryRunResponse>(`/api/gc/dry-run/${cell}`),
   });
 }
 
@@ -106,7 +90,7 @@ export function useGcCollectCell() {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: (cell: string) =>
-      fetchGcJson<GcCollectCellResponse>(`/api/gc/cell/${cell}`, { method: "POST" }),
+      fetchJson<GcCollectCellResponse>(`/api/gc/cell/${cell}`, { method: "POST" }),
     onSuccess: () => {
       void qc.invalidateQueries({ queryKey: ["gc-status"] });
     },

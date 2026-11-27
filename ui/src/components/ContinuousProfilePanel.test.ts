@@ -2,7 +2,7 @@ import { create } from "@bufbuild/protobuf";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
-import { ProfileBucketSchema, ProfileFrameSchema } from "../gen/hotbed/v1/hotbed_pb";
+import { ProfileBucketSchema, ProfileFrameSchema } from "../api";
 import { aggregateTimelineBuckets, resolveBucketTopFrame, selectDisplayTimeline, TimelineBuckets } from "./ContinuousProfilePanel";
 
 describe("ContinuousProfilePanel timeline frame resolution", () => {

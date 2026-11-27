@@ -2,7 +2,7 @@ import { create } from "@bufbuild/protobuf";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
-import { FoldedStackSchema, ProfileFrameSchema } from "../gen/hotbed/v1/hotbed_pb";
+import { FoldedStackSchema, ProfileFrameSchema } from "../api";
 import { buildTree, findNodeByPath, FlameGraph } from "./FlameGraph";
 
 describe("FlameGraph findNodeByPath", () => {

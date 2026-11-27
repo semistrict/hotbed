@@ -1,4 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { fetchJson } from "./http";
 
 export interface AuthUser {
   id: string;
@@ -81,21 +82,6 @@ export interface ApiTokenMeta {
 export interface MintedApiToken extends ApiTokenMeta {
   token: string;
   orgId?: string;
-}
-
-async function fetchJson<T>(path: string, init?: RequestInit): Promise<T> {
-  const headers = new Headers(init?.headers);
-  headers.set("Accept", "application/json");
-  if (init?.body && !headers.has("Content-Type")) {
-    headers.set("Content-Type", "application/json");
-  }
-  const res = await fetch(path, { ...init, headers, credentials: "same-origin" });
-  const data = (await res.json().catch(() => ({}))) as Record<string, unknown>;
-  if (!res.ok) {
-    const msg = typeof data.message === "string" ? data.message : `HTTP ${res.status}`;
-    throw new Error(msg);
-  }
-  return data as T;
 }
 
 export async function fetchAuthMe(): Promise<AuthMe | null> {

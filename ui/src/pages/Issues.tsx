@@ -4,12 +4,12 @@ import { useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { api, IssueState, type Issue } from "../api";
+import { clients, IssueState, type Issue } from "../api";
 import { Markdown } from "../components/Markdown";
 import { Card, Empty } from "../components/Panel";
 import { ProjectTag } from "../components/ProjectTag";
 import { StampLine } from "../components/StampLine";
-import { PageTitle } from "./Nodes";
+import { PageTitle } from "../components/PageTitle";
 
 export type IssuesTab = "open" | "archived" | "all";
 
@@ -28,7 +28,7 @@ export function IssuesPage() {
   const search = useSearch({ from: "/issues" });
   const navigate = useNavigate({ from: "/issues" });
   const tab = search.tab ?? "open";
-  const list = useQuery({ queryKey: ["issues", tab], queryFn: () => api.issues(tab), refetchInterval: 5000, placeholderData: keepPreviousData });
+  const list = useQuery({ queryKey: ["issues", tab], queryFn: async () => (await clients.issues.listIssues({ archived: tab === "archived", all: tab === "all" })).issues, refetchInterval: 5000, placeholderData: keepPreviousData });
   const now = Date.now();
   return (
     <div className="space-y-6">
@@ -66,7 +66,7 @@ export function IssuesPage() {
 /** One issue on a page of its own: where a link an agent sends leads. */
 export function IssueDetailPage() {
   const { id } = useParams({ from: "/issues/$id" });
-  const q = useQuery({ queryKey: ["issues", "one", id], queryFn: () => api.issue(Number(id)), refetchInterval: 5000 });
+  const q = useQuery({ queryKey: ["issues", "one", id], queryFn: () => clients.issues.getIssue({ id: Number(id) }), refetchInterval: 5000 });
   return (
     <div className="space-y-6">
       <PageTitle
@@ -88,8 +88,8 @@ function IssueCard({ issue, now }: { issue: Issue; now: number }) {
   const qc = useQueryClient();
   const [reason, setReason] = useState("");
   const settle = () => qc.invalidateQueries({ queryKey: ["issues"] }).then(() => qc.invalidateQueries({ queryKey: ["snapshot"] }));
-  const archive = useMutation({ mutationFn: () => api.archiveIssue(issue.id, reason.trim()), onSuccess: settle });
-  const reopen = useMutation({ mutationFn: () => api.reopenIssue(issue.id), onSuccess: settle });
+  const archive = useMutation({ mutationFn: () => clients.issues.archiveIssue({ id: issue.id, reason: reason.trim() }), onSuccess: settle });
+  const reopen = useMutation({ mutationFn: () => clients.issues.reopenIssue({ id: issue.id }), onSuccess: settle });
   const archived = issue.state === IssueState.ARCHIVED;
   const failure = archive.error ?? reopen.error;
   return (

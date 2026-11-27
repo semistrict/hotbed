@@ -1,6 +1,6 @@
 import { create } from "@bufbuild/protobuf";
 import { describe, expect, it } from "vitest";
-import { CommandSampleSchema } from "../gen/hotbed/v1/hotbed_pb";
+import { CommandSampleSchema } from "../api";
 import { awaitingSamples, relisted, SAMPLE_DELIVERY_WINDOW_MS, samplesShown } from "./CommandSamples";
 
 const sample = (seq: number) => create(CommandSampleSchema, { commandId: "c1", seq });

@@ -7,8 +7,9 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import {
-  api,
   BoardTaskState,
+  clients,
+  projectScope,
   type BoardAttachment,
   type BoardMessage,
   type BoardTask,
@@ -21,7 +22,7 @@ import { SessionLink } from "../components/SessionLink";
 import { useSnapshot } from "../lib/data";
 import { ago } from "../lib/format";
 import { useProject } from "../lib/project";
-import { PageTitle } from "./Nodes";
+import { PageTitle } from "../components/PageTitle";
 
 export interface BoardSearch {
   q?: string;
@@ -209,8 +210,8 @@ export function BoardPage() {
   const threadsQ = useQuery({
     queryKey: ["board", "threads", selectedProject, search.q ?? "", search.label ?? "", search.by ?? "", before],
     queryFn: () =>
-      api.boardThreads({
-        project: selectedProject,
+      clients.board.listBoardThreads({
+        scope: projectScope(selectedProject),
         text: search.q ?? "",
         by: search.by ?? "",
         labels: parseLabelFilters(search.label),
@@ -223,7 +224,7 @@ export function BoardPage() {
   const uploadMut = useMutation({
     mutationFn: async (file: File) => {
       const bytes = new Uint8Array(await file.arrayBuffer());
-      return api.uploadBoardAttachment(file.name, file.type || "application/octet-stream", bytes);
+      return clients.board.uploadBoardAttachment({ name: file.name, contentType: file.type || "application/octet-stream", data: bytes });
     },
     onSuccess: (att) => setComposeAttachments((prev) => [...prev, att]),
   });
@@ -233,14 +234,14 @@ export function BoardPage() {
       const labels = parseLabelInput(composeLabels);
       const attachmentIds = composeAttachments.map((a) => a.id);
       if (composeAsTask) {
-        return api.createBoardTask({
+        return clients.board.createBoardTask({
           project: effectiveProject,
           text: composeText,
           labels,
           attachmentIds,
         });
       }
-      return api.postBoardMessage({
+      return clients.board.postBoardMessage({
         project: effectiveProject,
         text: composeText,
         labels,
@@ -518,7 +519,7 @@ export function BoardThreadPage() {
 
   const threadQ = useQuery({
     queryKey: ["board", "thread", id],
-    queryFn: () => api.boardThread(msgId),
+    queryFn: () => clients.board.getBoardThread({ id: msgId }),
     refetchInterval: 4000,
   });
 
@@ -534,7 +535,7 @@ export function BoardThreadPage() {
 
   const replyMut = useMutation({
     mutationFn: () =>
-      api.postBoardMessage({
+      clients.board.postBoardMessage({
         re: threadQ.data?.message?.id ?? msgId,
         text: replyText,
         attachmentIds: replyAttachments.map((a) => a.id),
@@ -549,39 +550,39 @@ export function BoardThreadPage() {
   const uploadMut = useMutation({
     mutationFn: async (file: File) => {
       const bytes = new Uint8Array(await file.arrayBuffer());
-      return api.uploadBoardAttachment(file.name, file.type || "application/octet-stream", bytes);
+      return clients.board.uploadBoardAttachment({ name: file.name, contentType: file.type || "application/octet-stream", data: bytes });
     },
     onSuccess: (att) => setReplyAttachments((prev) => [...prev, att]),
   });
 
   const adoptTaskMut = useMutation({
-    mutationFn: () => api.createBoardTask({ re: threadQ.data?.message?.id ?? msgId }),
+    mutationFn: () => clients.board.createBoardTask({ re: threadQ.data?.message?.id ?? msgId }),
     onSuccess: refresh,
   });
   const unblockMut = useMutation({
-    mutationFn: () => api.unblockBoardTask(threadQ.data!.message!.id),
+    mutationFn: () => clients.board.unblockBoardTask({ id: threadQ.data!.message!.id }),
     onSuccess: refresh,
   });
   const reopenMut = useMutation({
-    mutationFn: () => api.reopenBoardTask(threadQ.data!.message!.id),
+    mutationFn: () => clients.board.reopenBoardTask({ id: threadQ.data!.message!.id }),
     onSuccess: refresh,
   });
   const blockMut = useMutation({
-    mutationFn: () => api.blockBoardTask(threadQ.data!.message!.id, blockReason.trim() || "held in cockpit"),
+    mutationFn: () => clients.board.blockBoardTask({ id: threadQ.data!.message!.id, reason: blockReason.trim() || "held in cockpit" }),
     onSuccess: () => {
       setBlockReason("");
       refresh();
     },
   });
   const cancelTaskMut = useMutation({
-    mutationFn: () => api.cancelBoardTask(threadQ.data!.message!.id, cancelReason.trim() || "canceled in cockpit"),
+    mutationFn: () => clients.board.cancelBoardTask({ id: threadQ.data!.message!.id, reason: cancelReason.trim() || "canceled in cockpit" }),
     onSuccess: () => {
       setCancelReason("");
       refresh();
     },
   });
   const cancelSchedMut = useMutation({
-    mutationFn: (schedId: bigint) => api.cancelBoardSchedule(schedId),
+    mutationFn: (schedId: bigint) => clients.board.cancelBoardSchedule({ id: schedId }),
     onSuccess: refresh,
   });
 
@@ -857,18 +858,18 @@ function MessageCard({
   const [labelDraft, setLabelDraft] = useState("");
 
   const editMut = useMutation({
-    mutationFn: () => api.editBoardMessage(msg.id, editText, msg.revision),
+    mutationFn: () => clients.board.editBoardMessage({ id: msg.id, text: editText, ifRevision: msg.revision }),
     onSuccess: () => {
       setEditing(false);
       onChanged();
     },
   });
   const delMut = useMutation({
-    mutationFn: () => api.deleteBoardMessage(msg.id),
+    mutationFn: () => clients.board.deleteBoardMessage({ id: msg.id }),
     onSuccess: onChanged,
   });
   const reactMut = useMutation({
-    mutationFn: ({ emoji, remove }: { emoji: string; remove?: boolean }) => api.reactBoardMessage(msg.id, emoji, remove),
+    mutationFn: ({ emoji, remove }: { emoji: string; remove?: boolean }) => clients.board.reactBoardMessage({ id: msg.id, emoji, remove }),
     onSuccess: onChanged,
   });
   const labelMut = useMutation({
@@ -878,7 +879,7 @@ function MessageCard({
         .split(/[\s,]+/)
         .filter((s) => s.startsWith("-") && !s.includes("="))
         .map((s) => s.slice(1));
-      return api.labelBoardMessage(msg.id, set, unset);
+      return clients.board.labelBoardMessage({ id: msg.id, set, unset });
     },
     onSuccess: () => {
       setLabelDraft("");

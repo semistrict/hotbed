@@ -1,6 +1,6 @@
 import { create } from "@bufbuild/protobuf";
 import { describe, expect, it } from "vitest";
-import { AdmissionSignalSchema, PlacementDecisionSchema, PlacementSchema, SampleSchema } from "../gen/hotbed/v1/hotbed_pb";
+import { AdmissionSignalSchema, PlacementDecisionSchema, PlacementSchema, SampleSchema } from "../api";
 import { heldBands, placementRequirements, signalRule } from "./Admission";
 
 const sample = (t: bigint, holding: boolean) => create(SampleSchema, { t, holding });

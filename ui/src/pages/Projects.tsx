@@ -12,7 +12,7 @@ import { useProject } from "../lib/project";
 import { remoteName, scope } from "../lib/projects";
 import { sessionState } from "../lib/sessions";
 import { filesChanged, filterWorkspaces } from "../lib/workspaces";
-import { PageTitle } from "./Nodes";
+import { PageTitle } from "../components/PageTitle";
 import { stateTone } from "./Workspace";
 
 export function ProjectsPage() {

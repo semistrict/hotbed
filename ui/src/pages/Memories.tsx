@@ -11,11 +11,13 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Textarea } from "@/components/ui/textarea";
 import {
-  api,
+  clients,
   MEMORY_ORDER_FROM_SLUG,
   MemoryMode,
   MemoryScope,
   MemoryState,
+  placeBefore,
+  projectScope,
   type ListMemoriesResponse,
   type Memory,
   type MemoryOrderSlug,
@@ -32,7 +34,7 @@ import { useProject, useScopedSnapshot } from "../lib/project";
 import { remoteName } from "../lib/projects";
 import { mergeLatestByRevision, useOptimisticReorder } from "../lib/rankedList";
 import { who } from "../lib/stamps";
-import { PageTitle } from "./Nodes";
+import { PageTitle } from "../components/PageTitle";
 
 export interface MemoriesSearch {
   tab?: MemoryTab;
@@ -90,7 +92,7 @@ export function MemoryDetailPage() {
   const { data: s } = useScopedSnapshot();
   const detail = useQuery({
     queryKey: ["memory", id],
-    queryFn: () => api.memory(id),
+    queryFn: () => clients.memories.showMemory({ ref: id }),
     refetchInterval: 3000,
   });
   if (!s) return null;
@@ -185,15 +187,16 @@ function MemoriesView({ s }: { s: Snapshot }) {
     key,
     field: "memories",
     mutationKey: ["move-memory"],
-    move: (id, before) => api.moveMemory(id, before),
+    move: (id, before) => clients.memories.moveMemory({ id, place: placeBefore(before) }),
     invalidate: ["memories"],
   });
 
   const list = useQuery({
     queryKey: key,
     queryFn: () =>
-      api.memories({
-        project,
+      clients.memories.listMemories({
+        // Global memories belong to no project.
+        projectScope: scopeFilter === MemoryScope.GLOBAL ? { case: undefined } : projectScope(project),
         scope: scopeFilter,
         states: MEMORY_TAB_STATES[tab],
         mode: modeFilter,
@@ -207,7 +210,7 @@ function MemoriesView({ s }: { s: Snapshot }) {
   // Fetch active memories for startup budget calculation (global + selected project).
   const budgetQuery = useQuery({
     queryKey: ["memories", project, "budget"],
-    queryFn: () => api.memories({ project, states: [MemoryState.APPROVED], order: MEMORY_ORDER_FROM_SLUG.rank }),
+    queryFn: () => clients.memories.listMemories({ projectScope: projectScope(project), states: [MemoryState.APPROVED], order: MEMORY_ORDER_FROM_SLUG.rank }),
     refetchInterval: 5000,
   });
 
@@ -443,7 +446,7 @@ function MemoryCard({
   const needsFull = expanded || editing;
   const detail = useQuery({
     queryKey: ["memory", String(m.id), String(m.revision)],
-    queryFn: () => api.memory(String(m.id)),
+    queryFn: () => clients.memories.showMemory({ ref: String(m.id) }),
     enabled: needsFull && !isFull,
   });
   const hasFull = isFull || detail.data !== undefined;
@@ -451,19 +454,19 @@ function MemoryCard({
   const content = full.content;
 
   const promote = useMutation({
-    mutationFn: () => api.reviseMemory(m.id, { global: true, ifRevision: full.revision }),
+    mutationFn: () => clients.memories.reviseMemory({ id: m.id, global: true, ifRevision: full.revision }),
     onSettled: settle,
   });
   const archive = useMutation({
-    mutationFn: () => api.archiveMemory(m.id, "", full.revision),
+    mutationFn: () => clients.memories.archiveMemory({ id: m.id, ifRevision: full.revision }),
     onSettled: settle,
   });
   const restore = useMutation({
-    mutationFn: () => api.restoreMemory(m.id, full.revision),
+    mutationFn: () => clients.memories.restoreMemory({ id: m.id, ifRevision: full.revision }),
     onSettled: settle,
   });
   const remove = useMutation({
-    mutationFn: () => api.deleteMemory(m.id, full.revision),
+    mutationFn: () => clients.memories.deleteMemory({ id: m.id, ifRevision: full.revision }),
     onSuccess: () => {
       setConfirmRemove(false);
       onDeleted?.();
@@ -472,10 +475,11 @@ function MemoryCard({
   });
   const toggleMode = useMutation({
     mutationFn: async () => {
-      const current = hasFull ? full : await api.memory(String(m.id));
+      const current = hasFull ? full : await clients.memories.showMemory({ ref: String(m.id) });
       const c = current.content;
       const nextMode = c?.mode === MemoryMode.ALWAYS ? MemoryMode.ON_DEMAND : MemoryMode.ALWAYS;
-      return api.reviseMemory(m.id, {
+      return clients.memories.reviseMemory({
+        id: m.id,
         content: {
           mode: nextMode,
           ...(nextMode === MemoryMode.ON_DEMAND && !c?.body?.trim() ? { body: c?.summary ?? "" } : {}),
@@ -798,8 +802,9 @@ function MemoryForm(
       const where = { global: isGlobal, project: isGlobal ? "" : d.scope, rationale: d.rationale.trim() };
       const repo = d.repo === ALL_REPOS ? "" : d.repo;
       return props.mode === "create"
-        ? api.proposeMemory({ content, ...where, repo: isGlobal ? "" : repo })
-        : api.reviseMemory(props.memory.id, {
+        ? clients.memories.proposeMemory({ content, ...where, repo: isGlobal ? "" : repo })
+        : clients.memories.reviseMemory({
+            id: props.memory.id,
             content,
             replaceContent: true,
             ...where,
@@ -951,7 +956,7 @@ function MemoryHistory({ s, m, now }: { s: Snapshot; m: Memory; now: number }) {
   const [open, setOpen] = useState(false);
   const hist = useQuery({
     queryKey: ["memory-history", m.id, String(m.revision)],
-    queryFn: async () => (await api.memory(String(m.id))).history,
+    queryFn: async () => (await clients.memories.showMemory({ ref: String(m.id) })).history,
     enabled: open && m.history.length === 0,
   });
   const items = m.history.length > 0 ? m.history : hist.data;

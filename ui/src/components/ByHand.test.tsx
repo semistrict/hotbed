@@ -11,7 +11,7 @@ import {
   InterventionKind,
   ProcessSampleSchema,
   SnapshotSchema,
-} from "../gen/hotbed/v1/hotbed_pb";
+} from "../api";
 import { hhmmss } from "../lib/format";
 import { actsFor, ByHandButtons, ByHandForm, effectiveDiagnose, InterventionRow, InterventionsCard } from "./ByHand";
 

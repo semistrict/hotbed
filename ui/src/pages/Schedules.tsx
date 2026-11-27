@@ -10,7 +10,7 @@ import { nodeName, repoName } from "../lib/data";
 import { duration, hhmm } from "../lib/format";
 import { useProject, useScopedSnapshot } from "../lib/project";
 import { nextRun } from "../lib/schedules";
-import { PageTitle } from "./Nodes";
+import { PageTitle } from "../components/PageTitle";
 
 export function SchedulesPage() {
   const { data: s } = useScopedSnapshot();

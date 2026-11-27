@@ -1,19 +1,23 @@
 import { create, fromJson, toJson } from "@bufbuild/protobuf";
 import { keepPreviousData, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
-  api,
+  clients,
+  WorkerConfigSchema,
+  type DeleteWorkerConfigRequestSchema,
   type ManagedArtifact,
-  type PutGitCredentialInput,
-  type SetWorkerConfigInput,
-  type StartGitHubLoginInput,
+  type MessageInitShape,
+  type PutGitCredentialRequestSchema,
+  type SetWorkerConfigRequestSchema,
+  type StartGitHubLoginRequestSchema,
   type WorkerConfig,
-  type WorkerConfigInput,
 } from "../api";
-import { WorkerConfigSchema } from "../gen/hotbed/v1/hotbed_pb";
 import { bytes, compactDuration } from "./format";
 
 export type TriState = "inherit" | "true" | "false";
 export type ArchKey = "amd64" | "arm64";
+
+/** A worker config as the UI builds one, for create(WorkerConfigSchema, ...). */
+export type WorkerConfigInput = MessageInitShape<typeof WorkerConfigSchema>;
 
 export const ARCH_KEYS: readonly ArchKey[] = ["amd64", "arm64"];
 
@@ -587,7 +591,7 @@ export function draftToCliCommand(scope: string, input: WorkerConfigInput): stri
 export function useWorkerConfig(node = "") {
   return useQuery({
     queryKey: ["worker-config", node],
-    queryFn: () => api.getWorkerConfig(node),
+    queryFn: () => clients.cluster.getWorkerConfig({ node }),
     placeholderData: keepPreviousData,
   });
 }
@@ -595,7 +599,7 @@ export function useWorkerConfig(node = "") {
 export function useSetWorkerConfig() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: (input: SetWorkerConfigInput) => api.setWorkerConfig(input),
+    mutationFn: (req: MessageInitShape<typeof SetWorkerConfigRequestSchema>) => clients.cluster.setWorkerConfig(req),
     onSuccess: async () => {
       await qc.invalidateQueries({ queryKey: ["worker-config"] });
     },
@@ -605,7 +609,7 @@ export function useSetWorkerConfig() {
 export function useDeleteWorkerConfig() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: (input: { node?: string; defaults?: boolean }) => api.deleteWorkerConfig(input),
+    mutationFn: (req: MessageInitShape<typeof DeleteWorkerConfigRequestSchema>) => clients.cluster.deleteWorkerConfig(req),
     onSuccess: async () => {
       await qc.invalidateQueries({ queryKey: ["worker-config"] });
     },
@@ -615,7 +619,7 @@ export function useDeleteWorkerConfig() {
 export function useUpgradeSystem() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: (node: string) => api.upgradeSystem(node),
+    mutationFn: (node: string) => clients.cluster.upgradeSystem({ node }),
     onSuccess: async () => {
       await qc.invalidateQueries({ queryKey: ["snapshot"] });
     },
@@ -625,14 +629,14 @@ export function useUpgradeSystem() {
 export function useGitCredentials(host = "") {
   return useQuery({
     queryKey: ["git-credentials", host],
-    queryFn: () => api.listGitCredentials(host),
+    queryFn: async () => (await clients.gitAuth.listGitCredentials({ host })).credentials,
   });
 }
 
 export function usePutGitCredential() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: (input: PutGitCredentialInput) => api.putGitCredential(input),
+    mutationFn: (req: MessageInitShape<typeof PutGitCredentialRequestSchema>) => clients.gitAuth.putGitCredential(req),
     onSuccess: async () => {
       await qc.invalidateQueries({ queryKey: ["git-credentials"] });
     },
@@ -642,7 +646,7 @@ export function usePutGitCredential() {
 export function useDeleteGitCredential() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: (name: string) => api.deleteGitCredential(name),
+    mutationFn: (name: string) => clients.gitAuth.deleteGitCredential({ name }),
     onSuccess: async () => {
       await qc.invalidateQueries({ queryKey: ["git-credentials"] });
     },
@@ -651,14 +655,14 @@ export function useDeleteGitCredential() {
 
 export function useStartGitHubLogin() {
   return useMutation({
-    mutationFn: (input?: StartGitHubLoginInput) => api.startGitHubLogin(input),
+    mutationFn: (req: MessageInitShape<typeof StartGitHubLoginRequestSchema>) => clients.gitAuth.startGitHubLogin(req),
   });
 }
 
 export function useCompleteGitHubLogin() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: (loginId: string) => api.completeGitHubLogin(loginId),
+    mutationFn: (loginId: string) => clients.gitAuth.completeGitHubLogin({ loginId }),
     onSuccess: async () => {
       await qc.invalidateQueries({ queryKey: ["git-credentials"] });
     },

@@ -10,7 +10,7 @@ import {
   PartFetchesSchema,
   SnapshotSchema,
   TotalsSchema,
-} from "../gen/hotbed/v1/hotbed_pb";
+} from "../api";
 
 vi.mock("@tanstack/react-router", () => ({
   Link: ({ children, className }: { children: ReactNode; className?: string }) => createElement("a", { className }, children),

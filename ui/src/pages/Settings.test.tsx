@@ -11,7 +11,7 @@ import {
   WorkerConfigSchema,
   WorkerFreshenConfigSchema,
   WorkerVMConfigSchema,
-} from "../gen/hotbed/v1/hotbed_pb";
+} from "../api";
 
 let mockRole = "member";
 let mockSearch: { scope?: string; tab?: string } = {};

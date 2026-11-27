@@ -2,8 +2,7 @@ import { create } from "@bufbuild/protobuf";
 import { createElement, isValidElement, type ReactElement, type ReactNode } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
-import { InspectSection } from "../api";
-import { InspectCommandResponseSchema } from "../gen/hotbed/v1/hotbed_pb";
+import { InspectCommandResponseSchema, InspectSection } from "../api";
 import {
   InspectReport,
   inspectReportReducer,

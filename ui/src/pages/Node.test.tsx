@@ -3,7 +3,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import type { ReactNode } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { NodeSchema, ResourcesSchema, SnapshotSchema } from "../gen/hotbed/v1/hotbed_pb";
+import { NodeSchema, ResourcesSchema, SnapshotSchema } from "../api";
 
 let mockHostname = "old-box";
 let mockRole = "member";

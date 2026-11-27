@@ -9,7 +9,7 @@ import { isLive } from "../lib/live";
 import { useScopedSnapshot } from "../lib/project";
 import { clusterNow, compiled, failureRate, savings } from "../lib/stats";
 import type { CommandsSearch } from "../router";
-import { PageTitle } from "./Nodes";
+import { PageTitle } from "../components/PageTitle";
 
 const STATES: { id: CommandStateSlug | "live"; label: string }[] = [
   { id: "live", label: "all live" },

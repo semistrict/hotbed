@@ -1,15 +1,14 @@
 import { create } from "@bufbuild/protobuf";
 import { describe, expect, it } from "vitest";
-import type { Api, SampleCommandChunk } from "../api";
-import { CommandSampleSchema, ProcessSampleSchema, SampleCommandChunkSchema } from "../gen/hotbed/v1/hotbed_pb";
+import { CommandSampleSchema, ProcessSampleSchema, SampleCommandChunkSchema, type CommandStreams, type SampleCommandChunk } from "../api";
 import { createSamplings } from "./sampling";
 
 /** A sampleCommand whose stream the test drives by hand. */
 function controlledSampler() {
-  const calls: { id: string; opts: Parameters<Api["sampleCommand"]>[1]; onChunk: (ch: SampleCommandChunk) => void; signal?: AbortSignal; finish: (ch: SampleCommandChunk | null) => void; fail: (e: unknown) => void }[] = [];
-  const sampleCommand: Api["sampleCommand"] = (id, opts, onChunk, signal) =>
+  const calls: { req: Parameters<CommandStreams["sampleCommand"]>[0]; onChunk: (ch: SampleCommandChunk) => void; signal?: AbortSignal; finish: (ch: SampleCommandChunk | null) => void; fail: (e: unknown) => void }[] = [];
+  const sampleCommand: CommandStreams["sampleCommand"] = (req, onChunk, signal) =>
     new Promise((finish, fail) => {
-      calls.push({ id, opts, onChunk, signal, finish, fail });
+      calls.push({ req, onChunk, signal, finish, fail });
       signal?.addEventListener("abort", () => fail(new DOMException("aborted", "AbortError")));
     });
   const call = (i: number) => {
@@ -31,7 +30,7 @@ describe("samplings", () => {
 
     s.take("c1", { durationSeconds: 5, pid: 42 });
     s.take("c1", { durationSeconds: 1 });
-    expect(calls.map((c) => [c.id, c.opts])).toEqual([["c1", { durationSeconds: 5, pid: 42 }]]);
+    expect(calls.map((c) => c.req)).toEqual([{ id: "c1", durationSeconds: 5, pid: 42 }]);
     expect(s.get("c1")).toMatchObject({ durationSeconds: 5, pid: 42, done: false, progress: 4 });
 
     call(0).onChunk(create(SampleCommandChunkSchema, { status: "polling /proc", progressPct: 60 }));

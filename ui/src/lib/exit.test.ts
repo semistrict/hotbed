@@ -1,7 +1,6 @@
 import { create } from "@bufbuild/protobuf";
 import { describe, expect, it } from "vitest";
-import { CommandState } from "../api";
-import { FinishedCommandSchema } from "../gen/hotbed/v1/hotbed_pb";
+import { CommandState, FinishedCommandSchema } from "../api";
 import { endedExit, endedHow } from "./exit";
 
 describe("endedExit and endedHow", () => {

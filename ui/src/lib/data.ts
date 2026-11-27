@@ -1,6 +1,6 @@
 import { keepPreviousData, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useMemo } from "react";
-import { api, type Node, type Snapshot } from "../api";
+import { clients, type Node, type Snapshot } from "../api";
 import { cmpBig } from "./format";
 
 const SLOTS = 8;
@@ -9,7 +9,7 @@ const SLOTS = 8;
 export function useSnapshot() {
   return useQuery({
     queryKey: ["snapshot"],
-    queryFn: () => api.snapshot(),
+    queryFn: () => clients.cluster.getSnapshot({}),
     refetchInterval: 1000,
     placeholderData: keepPreviousData,
   });
@@ -19,7 +19,7 @@ export function useSnapshot() {
 export function useRetireNode() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: (node: string) => api.retireNode(node),
+    mutationFn: (node: string) => clients.cluster.retireNode({ node }),
     onSuccess: async (retired) => {
       qc.setQueryData<Snapshot>(["snapshot"], (prev) =>
         prev

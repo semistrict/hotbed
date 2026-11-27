@@ -7,7 +7,8 @@ import { Button } from "@/components/ui/button";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import { Textarea } from "@/components/ui/textarea";
 import {
-  api,
+  ActorKind,
+  clients,
   FindingDecision,
   FindingSeverity,
   FindingVerdict,
@@ -48,7 +49,7 @@ import { REVIEW_STATE, SeverityCounts } from "./Reviews";
 export function ReviewPage() {
   const { id } = useParams({ from: "/reviews/$id" });
   const { data: s } = useSnapshot();
-  const review = useQuery({ queryKey: ["review", Number(id)], queryFn: () => api.review(Number(id)), refetchInterval: 2000 });
+  const review = useQuery({ queryKey: ["review", Number(id)], queryFn: () => clients.reviews.getReview({ id: Number(id) }), refetchInterval: 2000 });
   if (!s) return null;
   if (review.isError) return <div className="rounded-xl border border-critical/40 bg-card p-6 font-mono text-[12px] text-critical">{String(review.error)}</div>;
   if (!review.data) return <div className="py-24 text-center font-mono text-[12px] text-muted-foreground">loading review {id}…</div>;
@@ -448,7 +449,7 @@ function Respond({ reviewId, findingId, latest = QuickResponse.UNSPECIFIED }: { 
   const qc = useQueryClient();
   const [text, setText] = useState("");
   const send = useMutation({
-    mutationFn: (quick: QuickResponse) => api.respond(reviewId, findingId, quick, text),
+    mutationFn: (quick: QuickResponse) => clients.reviews.respond({ reviewId, findingId: findingId ?? 0, quick, text, actorKind: ActorKind.USER }),
     onSuccess: () => setText(""),
     onSettled: () => Promise.all([qc.invalidateQueries({ queryKey: ["review", reviewId] }), qc.invalidateQueries({ queryKey: ["reviews"] })]),
   });

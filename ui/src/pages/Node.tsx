@@ -2,7 +2,7 @@ import { Link, useNavigate, useParams } from "@tanstack/react-router";
 import { Trash2 } from "lucide-react";
 import { useState } from "react";
 import { Button } from "@/components/ui/button";
-import { BaseState, baseStateLabel, CommandState, nodeAdmission, WorkspaceState } from "../api";
+import { BaseState, baseStateLabel, CommandState, nodeAdmission, WorkspaceState, type Base } from "../api";
 import { Meter, SegmentedBar } from "../components/charts/Bars";
 import { Columns } from "../components/charts/Columns";
 import { LineChart } from "../components/charts/LineChart";
@@ -20,8 +20,8 @@ import { useNodeColors, useSnapshot } from "../lib/data";
 import { ago, bytes, compact, duration, percent } from "../lib/format";
 import { isLive } from "../lib/live";
 import { failureRate, savings } from "../lib/stats";
+import { PageTitle } from "../components/PageTitle";
 import { NotFound } from "./NotFound";
-import { PageTitle } from "./Nodes";
 
 export function NodePage() {
   const { hostname } = useParams({ from: "/nodes/$hostname" });
@@ -213,22 +213,7 @@ export function NodePage() {
                 danger={0.95}
               />
             )}
-            <ul className="mt-4 divide-y divide-border text-[11.5px]">
-              {bases.map((b) => (
-                <li key={b.id} className="flex items-center gap-2 py-1.5 font-mono">
-                  <span className="text-foreground">{b.project}</span>
-                  <span className="text-faint">g{b.generation}</span>
-                  <span
-                    className={`text-[10px] ${
-                      b.state === BaseState.WARM || b.state === BaseState.BUILDING ? "text-primary" : b.state === BaseState.FAILED ? "text-critical" : "text-faint"
-                    }`}
-                  >
-                    {b.state === BaseState.BUILDING ? `building ${percent(b.progress)}` : baseStateLabel(b.state)}
-                  </span>
-                  <span className="num ml-auto text-muted-foreground">{bytes(b.sizeBytes)}</span>
-                </li>
-              ))}
-            </ul>
+            <BaseList bases={bases} />
           </Card>
         ) : (
           <Card title="Disk" sub={`${n.storage}, ${bytes(n.diskBytes)}`}>
@@ -242,22 +227,7 @@ export function NodePage() {
                 { id: "free", label: "free", value: Number(disk?.freeBytes ?? 0n), color: "var(--muted)" },
               ]}
             />
-            <ul className="mt-4 divide-y divide-border text-[11.5px]">
-              {bases.map((b) => (
-                <li key={b.id} className="flex items-center gap-2 py-1.5 font-mono">
-                  <span className="text-foreground">{b.project}</span>
-                  <span className="text-faint">g{b.generation}</span>
-                  <span
-                    className={`text-[10px] ${
-                      b.state === BaseState.WARM || b.state === BaseState.BUILDING ? "text-primary" : b.state === BaseState.FAILED ? "text-critical" : "text-faint"
-                    }`}
-                  >
-                    {b.state === BaseState.BUILDING ? `building ${percent(b.progress)}` : baseStateLabel(b.state)}
-                  </span>
-                  <span className="num ml-auto text-muted-foreground">{bytes(b.sizeBytes)}</span>
-                </li>
-              ))}
-            </ul>
+            <BaseList bases={bases} />
           </Card>
         )}
       </div>
@@ -331,5 +301,27 @@ export function NodePage() {
         onDeleted={() => void navigate({ to: "/nodes" })}
       />
     </div>
+  );
+}
+
+/** The node's bases on disk: each one's project, generation, state and size. */
+function BaseList({ bases }: { bases: Base[] }) {
+  return (
+    <ul className="mt-4 divide-y divide-border text-[11.5px]">
+      {bases.map((b) => (
+        <li key={b.id} className="flex items-center gap-2 py-1.5 font-mono">
+          <span className="text-foreground">{b.project}</span>
+          <span className="text-faint">g{b.generation}</span>
+          <span
+            className={`text-[10px] ${
+              b.state === BaseState.WARM || b.state === BaseState.BUILDING ? "text-primary" : b.state === BaseState.FAILED ? "text-critical" : "text-faint"
+            }`}
+          >
+            {b.state === BaseState.BUILDING ? `building ${percent(b.progress)}` : baseStateLabel(b.state)}
+          </span>
+          <span className="num ml-auto text-muted-foreground">{bytes(b.sizeBytes)}</span>
+        </li>
+      ))}
+    </ul>
   );
 }

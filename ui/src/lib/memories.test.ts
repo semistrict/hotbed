@@ -1,6 +1,6 @@
 import { create } from "@bufbuild/protobuf";
 import { describe, expect, it } from "vitest";
-import { MemoryContentSchema, MemoryMode, MemorySchema, MemoryScope, MemoryState } from "../gen/hotbed/v1/hotbed_pb";
+import { MemoryContentSchema, MemoryMode, MemorySchema, MemoryScope, MemoryState } from "../api";
 import { computeStartupBudget } from "./memories";
 
 function mkMemory(id: number, slug: string, summary: string, mode: MemoryMode, state = MemoryState.APPROVED, revision = 1n) {

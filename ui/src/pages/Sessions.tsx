@@ -9,7 +9,7 @@ import { ago, cmpBig, duration } from "../lib/format";
 import { isLive } from "../lib/live";
 import { useProject, useScopedSnapshot } from "../lib/project";
 import { idleLeftMs, SESSION_IDLE_MS, sessionState, type SessionState } from "../lib/sessions";
-import { PageTitle } from "./Nodes";
+import { PageTitle } from "../components/PageTitle";
 
 export function SessionsPage() {
   const { data: s } = useScopedSnapshot();

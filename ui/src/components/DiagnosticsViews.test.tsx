@@ -1,7 +1,7 @@
 import { create } from "@bufbuild/protobuf";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
-import { CgroupStatsSchema, MemoryRegionSchema, OpenFileSchema, SampledCgroupSchema, SampledOpenFileSchema } from "../gen/hotbed/v1/hotbed_pb";
+import { CgroupStatsSchema, MemoryRegionSchema, OpenFileSchema, SampledCgroupSchema, SampledOpenFileSchema } from "../api";
 import { CgroupView, FilesTable, MemoryMapsList } from "./DiagnosticsViews";
 
 describe("FilesTable", () => {

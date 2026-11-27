@@ -1,7 +1,7 @@
 import { keepPreviousData, useQuery } from "@tanstack/react-query";
 import { Link, useNavigate, useParams, useSearch } from "@tanstack/react-router";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
-import { api, WorkspaceState, workspaceStateLabel, type FileEntry, type Snapshot, type Workspace } from "../api";
+import { clients, WorkspaceState, workspaceStateLabel, type FileEntry, type Snapshot, type Workspace } from "../api";
 import { SegmentedBar } from "../components/charts/Bars";
 import { HistoryTable, LiveCommandTable } from "../components/CommandTable";
 import { Crumbs } from "../components/Crumbs";
@@ -12,7 +12,7 @@ import { isLive } from "../lib/live";
 import { savings } from "../lib/stats";
 import { filesChanged } from "../lib/workspaces";
 import { NotFound } from "./NotFound";
-import { PageTitle } from "./Nodes";
+import { PageTitle } from "../components/PageTitle";
 
 const WORKSPACE_HIDDEN_COLS = ["workspace", "node", "project"] as const;
 
@@ -199,10 +199,10 @@ export function WorkspacePage() {
 
 function FileBrowser({ workspaceId, selected }: { workspaceId: string; selected?: string }) {
   const navigate = useNavigate();
-  const files = useQuery({ queryKey: ["files", workspaceId], queryFn: () => api.files(workspaceId) });
+  const files = useQuery({ queryKey: ["files", workspaceId], queryFn: async () => (await clients.workspaces.listFiles({ workspaceId })).files });
   const firstChanged = files.data?.find((f) => f.kind === "file" && f.change)?.path;
   const path = selected ?? firstChanged ?? files.data?.find((f) => f.kind === "file")?.path;
-  const content = useQuery({ queryKey: ["file", workspaceId, path], queryFn: () => api.file(workspaceId, path ?? ""), enabled: !!path, placeholderData: keepPreviousData });
+  const content = useQuery({ queryKey: ["file", workspaceId, path], queryFn: () => clients.workspaces.getFile({ workspaceId, path: path ?? "" }), enabled: !!path, placeholderData: keepPreviousData });
 
   if (files.isError) return <Empty>Cannot list files: {String(files.error)}</Empty>;
   if (!files.data) return <div className="font-mono text-[11px] text-faint">listing…</div>;

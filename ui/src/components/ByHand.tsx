@@ -6,8 +6,9 @@ import { Checkbox } from "@/components/ui/checkbox";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import {
-  api,
+  clients,
   CommandState,
+  getCommandDiagnostics,
   InterventionKind,
   type Command,
   type CommandDiagnostics,
@@ -111,11 +112,11 @@ export function ByHandForm({ command, act, onDone }: { command: Command; act: By
       const trimmed = comment.trim();
       switch (act) {
         case "stop":
-          return api.stopCommand(command.id, { comment: trimmed, diagnose: takesDiagnostics && diagnose });
+          return clients.workspaces.stopCommand({ id: command.id, comment: trimmed, diagnose: takesDiagnostics && diagnose });
         case "pause":
-          return api.pauseCommand(command.id, { comment: trimmed, diagnose: takesDiagnostics && diagnose });
+          return clients.workspaces.pauseCommand({ id: command.id, comment: trimmed, diagnose: takesDiagnostics && diagnose });
         case "resume":
-          return api.resumeCommand(command.id, { comment: trimmed });
+          return clients.workspaces.resumeCommand({ id: command.id, comment: trimmed });
       }
     },
     onSuccess: onDone,
@@ -214,7 +215,7 @@ export function InterventionsCard({
   const needsDiagnostics = interventions === null || interventions.some((iv) => iv.diagnosed);
   const taken = useQuery({
     queryKey: ["diagnostics", id, interventions?.length ?? -1],
-    queryFn: () => api.getCommandDiagnostics(id),
+    queryFn: () => getCommandDiagnostics(id),
     enabled: needsDiagnostics,
   });
   const diagnostics = taken.data ?? [];

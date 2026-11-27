@@ -8,7 +8,7 @@ import {
   WorkerFreshenConfigSchema,
   WorkerSystemConfigSchema,
   WorkerVMConfigSchema,
-} from "../gen/hotbed/v1/hotbed_pb";
+} from "../api";
 import {
   draftRequiresRestart,
   draftSyncAction,

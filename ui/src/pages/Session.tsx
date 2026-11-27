@@ -11,7 +11,7 @@ import { ago, duration, hhmmss, speedup } from "../lib/format";
 import { idleLeftMs, sessionCommands } from "../lib/sessions";
 import { filesChanged } from "../lib/workspaces";
 import { NotFound } from "./NotFound";
-import { PageTitle } from "./Nodes";
+import { PageTitle } from "../components/PageTitle";
 import { IdleLeft, SessionStateLabel } from "./Sessions";
 import { WorkspaceStateLabel } from "./Workspace";
 

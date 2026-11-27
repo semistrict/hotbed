@@ -4,7 +4,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { api, type ProfileBucket, type ProfileFrame } from "../api";
+import { clients, type ProfileBucket, type ProfileFrame } from "../api";
 import { foldStack } from "../api/folded";
 import { duration, hhmmss } from "../lib/format";
 import { CopyButton } from "./CopyButton";
@@ -121,17 +121,17 @@ export function ContinuousProfilePanel({ id, node, live }: ContinuousProfileProp
     queryKey: [isNode ? "node-profile" : "command-profile", targetKey, debouncedQuery, frameType, comm, isNode ? range : "all", windowBucket ? Number(windowBucket.t) : 0],
     enabled: !isNode || live,
     queryFn: () => {
-      const fromMs = windowBucket ? windowBucket.t : isNode && RANGE_MS[range] > 0 ? Date.now() - RANGE_MS[range] : undefined;
-      const toMs = windowBucket ? windowBucket.t + windowBucket.durationMs - 1n : undefined;
-      const q = {
-        query: debouncedQuery || undefined,
-        frameType: frameType || undefined,
-        comm: comm || undefined,
+      const fromMs = windowBucket ? windowBucket.t : isNode && RANGE_MS[range] > 0 ? BigInt(Date.now() - RANGE_MS[range]) : 0n;
+      const toMs = windowBucket ? windowBucket.t + windowBucket.durationMs - 1n : 0n;
+      return clients.workspaces.getProfile({
+        target: isNode ? { case: "node", value: node } : { case: "commandId", value: id },
+        query: debouncedQuery,
+        frameType,
+        comm,
         fromMs,
         toMs,
         limit: 200,
-      };
-      return isNode ? api.nodeProfile(node, q) : api.commandProfile(id, q);
+      });
     },
     refetchInterval: live ? 5000 : false,
     placeholderData: keepPreviousData,

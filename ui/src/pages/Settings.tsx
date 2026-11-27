@@ -18,7 +18,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Textarea } from "@/components/ui/textarea";
-import type { WorkerConfig, WorkerConfigInput } from "../api";
+import type { WorkerConfig } from "../api";
 import { ArtifactEditor, ConfigFields, ConfigSection, type ConfigForm } from "../components/ConfigSection";
 import { CopyButton } from "../components/CopyButton";
 import { GitAuthSettings } from "../components/GitAuthSettings";
@@ -41,6 +41,7 @@ import {
   workerConfigToDraft,
   workerConfigToPrettyJson,
   type SettingsDraft,
+  type WorkerConfigInput,
 } from "../lib/settings";
 import {
   CONTROLLER_SECTION,
@@ -54,7 +55,7 @@ import {
   VM_COMPUTE_SECTION,
   VM_HOST_SECTION,
 } from "../lib/settingsFields";
-import { PageTitle } from "./Nodes";
+import { PageTitle } from "../components/PageTitle";
 
 export type SettingsTab = "freshen" | "runtime" | "vm" | "fuse" | "system" | "git" | "json";
 
