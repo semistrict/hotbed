@@ -4,6 +4,7 @@ import { useNavigate } from "@tanstack/react-router";
 import { useAgent } from "agents/react";
 import type { UIMessage } from "ai";
 import {
+  ArrowLeft,
   Bot,
   CheckCircle2,
   ChevronDown,
@@ -44,6 +45,7 @@ import {
   type AdminThreadEntry,
   type DoBindingName,
 } from "../lib/adminAgent";
+import { DoLinkContext, formatDoTargetLabel, type DoTargetRef } from "../lib/doLinks";
 import { bytes } from "../lib/format";
 
 const STARTER_PROMPTS = [
@@ -400,8 +402,8 @@ function AgentChatPanel({
             </div>
             <h3 className="text-[16px] font-semibold text-foreground">Ask anything about your Cloudflare Durable Objects</h3>
             <p className="mt-1 max-w-lg text-[13px] text-muted-foreground">
-              The Admin Agent can discover every Controller, Tenant Registry, and Command Cloudflare Durable Object,
-              inspect schemas, run read-only SQL, check CladeFS R2 storage, and format answers with interactive tables and charts.
+              Explore this organization's Cloudflare Durable Objects, inspect schemas, run read-only SQL, check CladeFS
+              R2 storage, and render answers with interactive tables and charts.
             </p>
             <div className="mt-6 grid w-full grid-cols-1 gap-2.5 text-left sm:grid-cols-2">
               {STARTER_PROMPTS.map((item) => (
@@ -492,11 +494,26 @@ function AgentChatPanel({
   );
 }
 
+const DEFAULT_TABLES_SQL =
+  "SELECT name, type FROM sqlite_master WHERE type = 'table' ORDER BY name";
+
+interface SqlHistoryEntry {
+  binding: DoBindingName;
+  addressMode: "name" | "id";
+  name: string;
+  id: string;
+  sql: string;
+}
+
 function SqlExplorerPanel({
   statusInfo,
+  pendingTarget,
+  onConsumePendingTarget,
   onAskAgent,
 }: {
   statusInfo: AdminAgentStatus | undefined;
+  pendingTarget: { target: DoTargetRef; seq: number } | null;
+  onConsumePendingTarget: () => void;
   onAskAgent: (prompt: string) => void;
 }) {
   const defaultCtrlName = statusInfo?.scope.controllerDoName ?? "default";
@@ -515,17 +532,59 @@ function SqlExplorerPanel({
   const [addressMode, setAddressMode] = useState<"name" | "id">("name");
   const [targetName, setTargetName] = useState(defaultCtrlName);
   const [targetId, setTargetId] = useState("");
-  const [sql, setSql] = useState(
-    "SELECT name, type FROM sqlite_master WHERE type = 'table' ORDER BY name",
-  );
+  const [sql, setSql] = useState(DEFAULT_TABLES_SQL);
+  const [navHistory, setNavHistory] = useState<SqlHistoryEntry[]>([]);
+  const lastAppliedSeqRef = useRef(0);
+  const prevDefaultCtrlRef = useRef(defaultCtrlName);
+
+  const runSql = useRunDoSql();
+  const runSqlMutateRef = useRef(runSql.mutate);
+  runSqlMutateRef.current = runSql.mutate;
 
   useEffect(() => {
+    if (prevDefaultCtrlRef.current === defaultCtrlName) return;
+    prevDefaultCtrlRef.current = defaultCtrlName;
+    setNavHistory([]);
     if (binding === "CONTROLLER") {
       setTargetName(defaultCtrlName);
     } else if (binding === "ADMIN_AGENT") {
       setTargetName(`admin:${defaultCtrlName}:main`);
     }
   }, [defaultCtrlName, binding]);
+
+  useEffect(() => {
+    if (!pendingTarget || pendingTarget.seq === lastAppliedSeqRef.current) return;
+    lastAppliedSeqRef.current = pendingTarget.seq;
+    const next = pendingTarget.target;
+    const nextMode: "name" | "id" = next.id ? "id" : "name";
+    const nextName = next.id ? "" : (next.name ?? defaultCtrlName);
+    const nextId = next.id ?? "";
+
+    if (
+      binding !== next.binding ||
+      addressMode !== nextMode ||
+      (nextMode === "name" ? targetName !== nextName : targetId !== nextId)
+    ) {
+      setNavHistory((prev) => [
+        ...prev.slice(-14),
+        { binding, addressMode, name: targetName, id: targetId, sql },
+      ]);
+    }
+
+    setBinding(next.binding);
+    setAddressMode(nextMode);
+    setTargetName(nextName);
+    setTargetId(nextId);
+    setSql(DEFAULT_TABLES_SQL);
+    runSqlMutateRef.current({
+      binding: next.binding,
+      name: nextMode === "name" ? nextName.trim() || undefined : undefined,
+      id: nextMode === "id" ? nextId.trim() || undefined : undefined,
+      sql: DEFAULT_TABLES_SQL,
+      maxRows: 200,
+    });
+    onConsumePendingTarget();
+  }, [pendingTarget, binding, addressMode, targetName, targetId, sql, defaultCtrlName, onConsumePendingTarget]);
 
   const schemaQuery = useInspectDoSchema(
     {
@@ -536,8 +595,6 @@ function SqlExplorerPanel({
     Boolean(addressMode === "name" ? targetName.trim() || binding === "CONTROLLER" || binding === "TENANT_REGISTRY" : targetId.trim().length === 64),
   );
 
-  const runSql = useRunDoSql();
-
   function executeQuery(overrideSql?: string) {
     const query = (overrideSql ?? sql).trim();
     if (!query) return;
@@ -546,6 +603,24 @@ function SqlExplorerPanel({
       name: addressMode === "name" ? targetName.trim() || undefined : undefined,
       id: addressMode === "id" ? targetId.trim() || undefined : undefined,
       sql: query,
+      maxRows: 200,
+    });
+  }
+
+  function handleBack() {
+    const prev = navHistory[navHistory.length - 1];
+    if (!prev) return;
+    setNavHistory((h) => h.slice(0, -1));
+    setBinding(prev.binding);
+    setAddressMode(prev.addressMode);
+    setTargetName(prev.name);
+    setTargetId(prev.id);
+    setSql(prev.sql);
+    runSql.mutate({
+      binding: prev.binding,
+      name: prev.addressMode === "name" ? prev.name.trim() || undefined : undefined,
+      id: prev.addressMode === "id" ? prev.id.trim() || undefined : undefined,
+      sql: prev.sql,
       maxRows: 200,
     });
   }
@@ -577,12 +652,36 @@ function SqlExplorerPanel({
     });
   }, [runSql.data]);
 
+  const prevNavEntry = navHistory[navHistory.length - 1];
+  const prevNavLabel = prevNavEntry
+    ? formatDoTargetLabel({
+        binding: prevNavEntry.binding,
+        name: prevNavEntry.addressMode === "name" ? prevNavEntry.name : undefined,
+        id: prevNavEntry.addressMode === "id" ? prevNavEntry.id : undefined,
+      })
+    : null;
+
   return (
     <div className="grid grid-cols-1 gap-4 lg:grid-cols-12">
       {/* Left sidebar: target selector + schema tables */}
       <div className="space-y-3 lg:col-span-4">
         <div className="space-y-3 rounded-2xl border border-border bg-card/75 p-4">
-          <div className="eyebrow text-[10.5px]">Target Cloudflare Durable Object</div>
+          <div className="flex items-center justify-between gap-2">
+            <div className="eyebrow text-[10.5px]">Target Cloudflare Durable Object</div>
+            {prevNavLabel && (
+              <Button
+                type="button"
+                size="sm"
+                variant="ghost"
+                className="h-6 max-w-44 gap-1 px-1.5 font-mono text-[10.5px] text-muted-foreground hover:text-foreground"
+                onClick={handleBack}
+                title={`Back to ${prevNavLabel}`}
+              >
+                <ArrowLeft className="size-3 shrink-0" />
+                <span className="truncate">{prevNavLabel}</span>
+              </Button>
+            )}
+          </div>
 
           <div className="space-y-2">
             <Select
@@ -814,6 +913,12 @@ function SqlExplorerPanel({
                 rows: runSql.data.rows,
                 searchable: true,
               }}
+              linkContext={{
+                currentBinding: runSql.data.binding,
+                currentTargetName: runSql.data.resolvedBy === "name" ? runSql.data.value : undefined,
+                currentTargetId: runSql.data.resolvedBy === "id" ? runSql.data.value : undefined,
+                sql: runSql.data.sql,
+              }}
             />
           </div>
         )}
@@ -830,6 +935,21 @@ export function AdminAgentPage() {
   const [selectedModel, setSelectedModel] = useState<string>("");
   const [activeTab, setActiveTab] = useState<string>("chat");
   const [pendingPrompt, setPendingPrompt] = useState<string | null>(null);
+  const [pendingSqlTarget, setPendingSqlTarget] = useState<{ target: DoTargetRef; seq: number } | null>(null);
+
+  const handleOpenDoTarget = useCallback((target: DoTargetRef) => {
+    setPendingSqlTarget((prev) => ({ target, seq: (prev?.seq ?? 0) + 1 }));
+    setActiveTab("sql");
+  }, []);
+
+  const doLinkContextValue = useMemo(
+    () => ({
+      scope: statusInfo?.scope,
+      allowedBindings: statusInfo?.bindings ?? (["CONTROLLER", "COMMAND", "ADMIN_AGENT"] as DoBindingName[]),
+      onOpenDoTarget: handleOpenDoTarget,
+    }),
+    [handleOpenDoTarget, statusInfo?.bindings, statusInfo?.scope],
+  );
 
   useEffect(() => {
     const loaded = loadAdminThreads(scopeKey);
@@ -864,7 +984,7 @@ export function AdminAgentPage() {
   return (
     <div className="space-y-4">
       <PageTitle
-        title="Admin Agent"
+        title="Admin Explorer"
         sub="Ask questions and run read-only SQL across this organization's Cloudflare Durable Objects, with formatted json-render output"
         right={
           <div className="flex flex-wrap items-center gap-2">
@@ -939,63 +1059,67 @@ export function AdminAgentPage() {
 
       {statusErr && (
         <Alert variant="destructive" className="rounded-xl">
-          <AlertTitle>Admin Agent unavailable</AlertTitle>
+          <AlertTitle>Admin Explorer unavailable</AlertTitle>
           <AlertDescription className="font-mono text-[12px]">{String(statusErr)}</AlertDescription>
         </Alert>
       )}
 
-      <Tabs value={activeTab} onValueChange={setActiveTab} className="space-y-3">
-        <div className="flex flex-wrap items-center justify-between gap-2">
-          <TabsList>
-            <TabsTrigger value="chat" className="gap-1.5 font-mono text-[12px]">
-              <Bot className="size-3.5" />
-              Agent Chat
-            </TabsTrigger>
-            <TabsTrigger value="sql" className="gap-1.5 font-mono text-[12px]">
-              <Database className="size-3.5" />
-              SQL Explorer
-            </TabsTrigger>
-          </TabsList>
+      <DoLinkContext.Provider value={doLinkContextValue}>
+        <Tabs value={activeTab} onValueChange={setActiveTab} className="space-y-3">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <TabsList>
+              <TabsTrigger value="chat" className="gap-1.5 font-mono text-[12px]">
+                <Bot className="size-3.5" />
+                Agent Chat
+              </TabsTrigger>
+              <TabsTrigger value="sql" className="gap-1.5 font-mono text-[12px]">
+                <Database className="size-3.5" />
+                SQL Explorer
+              </TabsTrigger>
+            </TabsList>
 
-          {activeTab === "chat" && threads.length > 1 && (
-            <div className="flex flex-wrap items-center gap-1">
-              {threads.slice(0, 6).map((t) => (
-                <Button
-                  key={t.id}
-                  type="button"
-                  size="sm"
-                  variant={t.id === activeThreadId ? "secondary" : "ghost"}
-                  className="h-7 px-2.5 font-mono text-[11px]"
-                  onClick={() => setActiveThreadId(t.id)}
-                >
-                  {t.label}
-                </Button>
-              ))}
-            </div>
-          )}
-        </div>
+            {activeTab === "chat" && threads.length > 1 && (
+              <div className="flex flex-wrap items-center gap-1">
+                {threads.slice(0, 6).map((t) => (
+                  <Button
+                    key={t.id}
+                    type="button"
+                    size="sm"
+                    variant={t.id === activeThreadId ? "secondary" : "ghost"}
+                    className="h-7 px-2.5 font-mono text-[11px]"
+                    onClick={() => setActiveThreadId(t.id)}
+                  >
+                    {t.label}
+                  </Button>
+                ))}
+              </div>
+            )}
+          </div>
 
-        <TabsContent value="chat" className="mt-0">
-          <AgentChatPanel
-            key={`${scopeKey}:${activeThreadId}`}
-            threadId={activeThreadId}
-            selectedModel={selectedModel}
-            statusInfo={statusInfo}
-            pendingPrompt={pendingPrompt}
-            onClearPendingPrompt={() => setPendingPrompt(null)}
-          />
-        </TabsContent>
+          <TabsContent value="chat" className="mt-0">
+            <AgentChatPanel
+              key={`${scopeKey}:${activeThreadId}`}
+              threadId={activeThreadId}
+              selectedModel={selectedModel}
+              statusInfo={statusInfo}
+              pendingPrompt={pendingPrompt}
+              onClearPendingPrompt={() => setPendingPrompt(null)}
+            />
+          </TabsContent>
 
-        <TabsContent value="sql" className="mt-0">
-          <SqlExplorerPanel
-            statusInfo={statusInfo}
-            onAskAgent={(prompt) => {
-              setPendingPrompt(prompt);
-              setActiveTab("chat");
-            }}
-          />
-        </TabsContent>
-      </Tabs>
+          <TabsContent value="sql" className="mt-0">
+            <SqlExplorerPanel
+              statusInfo={statusInfo}
+              pendingTarget={pendingSqlTarget}
+              onConsumePendingTarget={() => setPendingSqlTarget(null)}
+              onAskAgent={(prompt) => {
+                setPendingPrompt(prompt);
+                setActiveTab("chat");
+              }}
+            />
+          </TabsContent>
+        </Tabs>
+      </DoLinkContext.Provider>
     </div>
   );
 }

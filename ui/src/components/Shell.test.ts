@@ -23,6 +23,7 @@ describe("Shell navigation helpers", () => {
     expect(isNavActive("/settings", "/settings")).toBe(true);
     expect(isNavActive("/org", "/org")).toBe(true);
     expect(isNavActive("/cluster", "/cluster")).toBe(true);
+    expect(isNavActive("/admin-explorer", "/admin-explorer")).toBe(true);
   });
 
   it("does not match sibling prefixes accidentally", () => {
@@ -40,6 +41,7 @@ describe("Shell navigation helpers", () => {
     expect(routeTitle("/commands/abc")).toBe("Commands");
     expect(routeTitle("/sessions/warm-fox")).toBe("Sessions");
     expect(routeTitle("/settings")).toBe("Settings");
+    expect(routeTitle("/admin-explorer")).toBe("Admin Explorer");
     expect(routeTitle("/org")).toBe("Organization");
     expect(routeTitle("/org", false)).toBe("Access & Tokens");
   });

@@ -129,7 +129,14 @@ const skillDetail = createRoute({
   component: SkillDetailPage,
 });
 const overview = createRoute({ getParentRoute: () => root, path: "/cluster", component: OverviewPage });
-const adminAgent = createRoute({ getParentRoute: () => root, path: "/admin-agent", component: AdminAgentPage });
+const adminExplorer = createRoute({ getParentRoute: () => root, path: "/admin-explorer", component: AdminAgentPage });
+const adminAgent = createRoute({
+  getParentRoute: () => root,
+  path: "/admin-agent",
+  beforeLoad: () => {
+    throw redirect({ to: "/admin-explorer" });
+  },
+});
 const organization = createRoute({ getParentRoute: () => root, path: "/org", component: OrganizationPage });
 const SETTINGS_TABS: readonly SettingsTab[] = ["freshen", "runtime", "vm", "fuse", "system", "git", "json"];
 const settings = createRoute({
@@ -228,7 +235,7 @@ const history = createRoute({
   },
 });
 
-const routeTree = root.addChildren([projects, board, boardThread, tasks, sessions, session, questions, questionDetail, issues, issueDetail, memories, memoryDetail, skills, skillDetail, reviews, review, schedules, overview, adminAgent, organization, settings, nodes, node, daemonLogs, workspaces, workspace, commands, command, history]);
+const routeTree = root.addChildren([projects, board, boardThread, tasks, sessions, session, questions, questionDetail, issues, issueDetail, memories, memoryDetail, skills, skillDetail, reviews, review, schedules, overview, adminExplorer, adminAgent, organization, settings, nodes, node, daemonLogs, workspaces, workspace, commands, command, history]);
 
 export const router = createRouter({ routeTree, defaultPreload: "intent", scrollRestoration: true });
 keepScrollWithinPage(router);

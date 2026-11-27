@@ -2,8 +2,9 @@ import { SPEC_DATA_PART_TYPE, type Spec } from "@json-render/core";
 import { buildSpecFromParts, JSONUIProvider, Renderer } from "@json-render/react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
-import { adminAgentRegistry } from "../components/AdminAgentRegistry";
+import { adminAgentRegistry, DataTableView } from "../components/AdminAgentRegistry";
 import { adminAgentCatalog } from "../lib/adminAgentCatalog";
+import { DoLinkContext } from "../lib/doLinks";
 
 describe("AdminAgent json-render catalog and registry", () => {
   it("renders a full SQL diagnostic spec with metrics, DataTable, BarList, SqlBlock, and ActionButton", () => {
@@ -125,5 +126,44 @@ describe("AdminAgent json-render catalog and registry", () => {
     expect(spec).not.toBeNull();
     expect(spec?.root).toBe("callout-1");
     expect(Object.keys(adminAgentCatalog.data.components)).toContain("DataTable");
+  });
+
+  it("renders clickable Durable Object link chips for columns referencing other DOs", () => {
+    const html = renderToStaticMarkup(
+      <DoLinkContext.Provider
+        value={{
+          scope: {
+            controllerDoName: "default",
+            orgId: null,
+            clusterId: "clu-42",
+            cladefsTenantId: 0,
+            isGlobalAdmin: true,
+          },
+          allowedBindings: ["CONTROLLER", "COMMAND", "ADMIN_AGENT", "TENANT_REGISTRY"],
+          onOpenDoTarget: () => {},
+        }}
+      >
+        <DataTableView
+          props={{
+            title: "CONTROLLER(default)",
+            columns: [
+              { key: "id", label: "id", format: "code" },
+              { key: "node_id", label: "node_id", format: "code" },
+            ],
+            rows: [{ id: "cmd-99", node_id: "ubu1" }],
+          }}
+          linkContext={{
+            currentBinding: "CONTROLLER",
+            currentTargetName: "default",
+            sql: 'SELECT * FROM "commands" LIMIT 50',
+          }}
+        />
+      </DoLinkContext.Provider>,
+    );
+
+    expect(html).toContain('title="Open COMMAND(cmd:clu-42:cmd-99) in SQL Explorer"');
+    expect(html).toContain("cmd-99");
+    // Non-DO column (node_id) should not become a DO link button
+    expect(html).not.toContain('title="Open COMMAND(cmd:clu-42:ubu1)');
   });
 });

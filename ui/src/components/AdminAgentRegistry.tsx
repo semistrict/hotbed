@@ -4,6 +4,7 @@ import {
   AlertTriangle,
   ArrowDown,
   ArrowUp,
+  ArrowUpRight,
   Check,
   CheckCircle2,
   ChevronDown,
@@ -27,6 +28,13 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { adminAgentCatalog } from "../lib/adminAgentCatalog";
+import {
+  formatDoTargetLabel,
+  resolveCellDoLink,
+  useDoLinkContext,
+  type DoLinkResolutionContext,
+  type DoTargetRef,
+} from "../lib/doLinks";
 import { bytes, duration } from "../lib/format";
 
 type Tone = "default" | "ember" | "frost" | "good" | "warning" | "critical";
@@ -264,8 +272,32 @@ function rowsToCsv(
   return [header, ...lines].join("\n");
 }
 
+function DoLinkChip({
+  value,
+  target,
+  onOpen,
+}: {
+  value: string;
+  target: DoTargetRef;
+  onOpen: (target: DoTargetRef) => void;
+}) {
+  const label = formatDoTargetLabel(target);
+  return (
+    <button
+      type="button"
+      onClick={() => onOpen(target)}
+      title={`Open ${label} in SQL Explorer`}
+      className="inline-flex max-w-md cursor-pointer items-center gap-1 rounded border border-primary/35 bg-ember-wash/70 px-1.5 py-0.5 font-mono text-[11.5px] text-primary transition-colors hover:border-primary/65 hover:bg-ember-wash"
+    >
+      <span className="truncate">{value}</span>
+      <ArrowUpRight className="size-3 shrink-0 opacity-80" />
+    </button>
+  );
+}
+
 function DataTableView({
   props,
+  linkContext,
 }: {
   props: {
     title?: string;
@@ -280,10 +312,21 @@ function DataTableView({
     searchable?: boolean;
     maxHeight?: number;
   };
+  linkContext?: Omit<DoLinkResolutionContext, "scope" | "allowedBindings">;
 }) {
+  const doLinks = useDoLinkContext();
   const [query, setQuery] = useState("");
   const [sortCol, setSortCol] = useState<string | null>(null);
   const [sortDir, setSortDir] = useState<"asc" | "desc">("asc");
+
+  const resolutionCtx = useMemo<DoLinkResolutionContext>(
+    () => ({
+      ...linkContext,
+      scope: doLinks?.scope,
+      allowedBindings: doLinks?.allowedBindings,
+    }),
+    [doLinks?.allowedBindings, doLinks?.scope, linkContext],
+  );
 
   const columns = props.columns ?? [];
   const rows = props.rows ?? [];
@@ -407,12 +450,24 @@ function DataTableView({
                       col.format === "number" ||
                       col.format === "bytes" ||
                       col.format === "durationMs";
+                    const cellVal = row[col.key];
+                    const doTarget = doLinks
+                      ? resolveCellDoLink(cellVal, col.key, row, resolutionCtx)
+                      : null;
                     return (
                       <TableCell
                         key={col.key}
                         className={`px-3 py-2 align-middle ${alignRight ? "text-right" : "text-left"}`}
                       >
-                        {formatCell(row[col.key], col.format)}
+                        {doTarget && doLinks ? (
+                          <DoLinkChip
+                            value={String(cellVal)}
+                            target={doTarget}
+                            onOpen={doLinks.onOpenDoTarget}
+                          />
+                        ) : (
+                          formatCell(cellVal, col.format)
+                        )}
                       </TableCell>
                     );
                   })}
@@ -498,6 +553,62 @@ function CodeBlockView({
         </pre>
       )}
     </div>
+  );
+}
+
+function KeyValueListView({
+  items,
+}: {
+  items: Array<{
+    key: string;
+    value: string | number | boolean | null;
+    mono?: boolean;
+    badge?: boolean;
+    tone?: Tone;
+  }>;
+}) {
+  const doLinks = useDoLinkContext();
+  const resolutionCtx = useMemo<DoLinkResolutionContext>(
+    () => ({
+      scope: doLinks?.scope,
+      allowedBindings: doLinks?.allowedBindings,
+    }),
+    [doLinks?.allowedBindings, doLinks?.scope],
+  );
+
+  return (
+    <dl className="grid grid-cols-1 gap-x-6 gap-y-2 rounded-xl border border-border bg-card/70 px-3.5 py-3 sm:grid-cols-2">
+      {items.map((item, idx) => {
+        const doTarget = doLinks
+          ? resolveCellDoLink(item.value, item.key, {}, resolutionCtx)
+          : null;
+        return (
+          <div
+            key={`${item.key}-${idx}`}
+            className="flex min-w-0 items-baseline justify-between gap-2 border-b border-border/50 pb-1.5 last:border-b-0"
+          >
+            <dt className="shrink-0 font-mono text-[11px] text-muted-foreground">{item.key}</dt>
+            <dd className="min-w-0 truncate text-right text-[12px] text-foreground">
+              {item.value === null ? (
+                <span className="font-mono text-[11px] text-faint italic">NULL</span>
+              ) : doTarget && doLinks ? (
+                <DoLinkChip
+                  value={String(item.value)}
+                  target={doTarget}
+                  onOpen={doLinks.onOpenDoTarget}
+                />
+              ) : item.badge ? (
+                <UiBadge variant="outline" className={`font-mono text-[10.5px] ${toneBadgeClass(item.tone)}`}>
+                  {String(item.value)}
+                </UiBadge>
+              ) : (
+                <span className={item.mono ? "font-mono text-[11.5px]" : ""}>{String(item.value)}</span>
+              )}
+            </dd>
+          </div>
+        );
+      })}
+    </dl>
   );
 }
 
@@ -595,26 +706,7 @@ export const { registry: adminAgentRegistry } = defineRegistry(adminAgentCatalog
       );
     },
 
-    KeyValueList: ({ props }) => (
-      <dl className="grid grid-cols-1 gap-x-6 gap-y-2 rounded-xl border border-border bg-card/70 px-3.5 py-3 sm:grid-cols-2">
-        {(props.items ?? []).map((item, idx) => (
-          <div key={`${item.key}-${idx}`} className="flex min-w-0 items-baseline justify-between gap-2 border-b border-border/50 pb-1.5 last:border-b-0">
-            <dt className="shrink-0 font-mono text-[11px] text-muted-foreground">{item.key}</dt>
-            <dd className="min-w-0 truncate text-right text-[12px] text-foreground">
-              {item.value === null ? (
-                <span className="font-mono text-[11px] text-faint italic">NULL</span>
-              ) : item.badge ? (
-                <UiBadge variant="outline" className={`font-mono text-[10.5px] ${toneBadgeClass(item.tone)}`}>
-                  {String(item.value)}
-                </UiBadge>
-              ) : (
-                <span className={item.mono ? "font-mono text-[11.5px]" : ""}>{String(item.value)}</span>
-              )}
-            </dd>
-          </div>
-        ))}
-      </dl>
-    ),
+    KeyValueList: ({ props }) => <KeyValueListView items={props.items ?? []} />,
 
     Callout: ({ props }) => {
       const Icon =
