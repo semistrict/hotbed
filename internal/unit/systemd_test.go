@@ -63,18 +63,19 @@ func waitExitTimeout(t *testing.T, name string, timeout time.Duration) State {
 
 func TestMain(m *testing.M) {
 	if os.Getenv("HOTBED_TEST_OOM_CHILD") == "1" {
-		// Fault anonymous pages in 1 MiB chunks until the cgroup OOM killer
-		// terminates this process. Using the static Go test binary avoids
-		// python3's large shared-library/file-cache footprint that can
-		// livelock cgroup v2 clean-page reclaim on Ubuntu 26.04.
-		var keep [][]byte
-		for {
-			b := make([]byte, 1<<20)
-			for i := 0; i < len(b); i += 4096 {
-				b[i] = 1
-			}
-			keep = append(keep, b)
+		// Fault anonymous pages directly via mmap in a tight, zero-allocation
+		// loop (invoked with GOGC=off GOMAXPROCS=1) until the cgroup OOM killer
+		// terminates this process. Avoiding Go heap allocations and GC keeps
+		// the hot loop on a single text page so cgroup v2 reclaim cannot
+		// livelock thrashing clean executable pages of the test binary.
+		b, err := syscall.Mmap(-1, 0, 256<<20, syscall.PROT_READ|syscall.PROT_WRITE, syscall.MAP_PRIVATE|syscall.MAP_ANON)
+		if err != nil {
+			os.Exit(2)
 		}
+		for i := 0; i < len(b); i += 4096 {
+			b[i] = 1
+		}
+		os.Exit(3)
 	}
 	os.Exit(m.Run())
 }
@@ -629,12 +630,32 @@ func TestOOMKillReported(t *testing.T) {
 		// parent shell waits on it, matching how cargo/bash hosts a child
 		// rustc/ld that gets OOM-killed. Keep "; true" so dash forks the child
 		// instead of exec'ing it in place.
-		Argv: []string{"sh", "-c", `HOTBED_TEST_OOM_CHILD=1 /oom-child; true`},
+		Argv: []string{"sh", "-c", `GOGC=off GOMAXPROCS=1 HOTBED_TEST_OOM_CHILD=1 /oom-child; true`},
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	s := waitExitTimeout(t, n, 30*time.Second)
+	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
+	defer cancel()
+	if err := Wait(ctx, DefaultSlice, n); err != nil {
+		cg := filepath.Join("/sys/fs/cgroup", SliceDir(DefaultSlice), n+".service")
+		read := func(f string) string {
+			b, rerr := os.ReadFile(filepath.Join(cg, f))
+			if rerr != nil {
+				return fmt.Sprintf("<%v>", rerr)
+			}
+			return strings.TrimSpace(string(b))
+		}
+		st, _ := Status(t.Context(), n)
+		t.Fatalf("wait for %s: %v (status=%+v procs=%q mem=%q events=%q)", n, err, st, read("cgroup.procs"), read("memory.current"), read("memory.events"))
+	}
+	s, err := Status(t.Context(), n)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !s.Exited {
+		t.Fatalf("%s has no processes left but is %+v", n, s)
+	}
 	if !s.OOMKilled {
 		t.Fatalf("after cgroup OOM kill: state = %+v, want OOMKilled=true (Result=%q, Signal=%d, ExitCode=%d)", s, s.Result, s.Signal, s.ExitCode)
 	}
