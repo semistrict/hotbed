@@ -1,9 +1,6 @@
 package worker
 
 import (
-	"bufio"
-	"bytes"
-	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -11,12 +8,11 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
-	"slices"
-	"strconv"
 	"strings"
 	"syscall"
 
 	"github.com/semistrict/hotbed/internal/api"
+	"github.com/semistrict/hotbed/internal/sysinfo"
 )
 
 // Each command has a temporary directory of its own on its workspace's
@@ -280,10 +276,12 @@ func removeTmpFromRoot(tmpRoot *os.Root, tmpHostDir, id string) {
 		return
 	}
 	if fi.IsDir() {
+		// RemoveAll would delete what a mount left in it shows, so none
+		// may stay; unable to tell, it stays too.
 		dir := filepath.Join(tmpHostDir, id)
 		for range 10 {
-			targets := mountsUnder(dir)
-			if len(targets) == 0 {
+			targets, err := sysinfo.MountsUnder(dir, sysinfo.AtOrBeneath)
+			if err != nil || len(targets) == 0 {
 				break
 			}
 			for _, t := range targets {
@@ -292,7 +290,12 @@ func removeTmpFromRoot(tmpRoot *os.Root, tmpHostDir, id string) {
 				}
 			}
 		}
-		if left := mountsUnder(dir); len(left) > 0 {
+		left, err := sysinfo.MountsUnder(dir, sysinfo.AtOrBeneath)
+		if err != nil {
+			slog.Error("a command's tmp stays: cannot read its mounts", "command", id, "err", err)
+			return
+		}
+		if len(left) > 0 {
 			slog.Error("a command's tmp stays, still mounted", "command", id, "mounts", left)
 			return
 		}
@@ -327,7 +330,7 @@ func (e *Engine) sweepTmp() {
 	}
 	e.mu.Unlock()
 	for vol := range vols {
-		sweepVolTmp(vol, e.cfg.Store.Path(vol), live)
+		sweepVolTmp(vol, e.volPath(vol), live)
 	}
 }
 
@@ -358,50 +361,4 @@ func sweepVolTmp(vol, volPath string, live map[string]bool) {
 			removeTmpFromRoot(tmpRoot, tmpHostDir, name)
 		}
 	}
-}
-
-// mountsUnder lists what is mounted at or below dir, deepest first, from
-// /proc/self/mountinfo; none where there is no such file.
-func mountsUnder(dir string) []string {
-	b, err := os.ReadFile("/proc/self/mountinfo")
-	if err != nil {
-		return nil
-	}
-	return parseMountsUnder(b, dir)
-}
-
-func parseMountsUnder(mountinfo []byte, dir string) []string {
-	var out []string
-	sc := bufio.NewScanner(bytes.NewReader(mountinfo))
-	for sc.Scan() {
-		f := strings.Fields(sc.Text())
-		if len(f) < 5 {
-			continue
-		}
-		target := unescapeMount(f[4])
-		if target == dir || strings.HasPrefix(target, dir+"/") {
-			out = append(out, target)
-		}
-	}
-	slices.SortFunc(out, func(a, b string) int { return cmp.Compare(len(b), len(a)) })
-	return out
-}
-
-// unescapeMount undoes mountinfo's octal escapes (\040 for a space).
-func unescapeMount(s string) string {
-	if !strings.Contains(s, `\`) {
-		return s
-	}
-	var b strings.Builder
-	for i := 0; i < len(s); i++ {
-		if s[i] == '\\' && i+3 < len(s) {
-			if n, err := strconv.ParseUint(s[i+1:i+4], 8, 8); err == nil {
-				b.WriteByte(byte(n))
-				i += 3
-				continue
-			}
-		}
-		b.WriteByte(s[i])
-	}
-	return b.String()
 }

@@ -525,16 +525,6 @@ func hostName() string {
 	return strings.ToLower(h)
 }
 
-// localUsers is the unix user commands run as, which may call the worker
-// from this machine besides root.
-func localUsers(name string) ([]uint32, error) {
-	cred, _, err := lookupUser(name)
-	if err != nil || cred == nil {
-		return nil, err
-	}
-	return []uint32{cred.Uid}, nil
-}
-
 // Handler serves an engine's WorkspaceService behind a gate.
 func Handler(id httpx.Identifier, p httpx.Policy, eng *Engine) http.Handler {
 	server := httpx.NewServer()

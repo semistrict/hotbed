@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	goruntime "runtime"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -34,6 +35,14 @@ type projectBase struct {
 
 func (b *projectBase) usable() bool {
 	return b != nil && b.Ref.Cell > 0 && b.Ref.Version > 0
+}
+
+// repoIDs names the repos b's checkouts hold, sorted; none for no base.
+func (b *projectBase) repoIDs() []string {
+	if b == nil {
+		return nil
+	}
+	return slices.Sorted(maps.Keys(b.Repos))
 }
 
 func (b *projectBase) clone() *projectBase {

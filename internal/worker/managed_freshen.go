@@ -114,60 +114,6 @@ func (h *managedFreshenHandle) CommandID() string {
 	return h.cmdID
 }
 
-// buildCladefsFreshenScript produces one bash script that clones/fetches/checks
-// out all project repos at heads, prints ::hotbed-head:: lines, and executes
-// stepsToRun wrapped with ::hotbed:: step markers so Engine.output tracks live
-// step progress, timings, and compiled unit counts.
-func buildCladefsFreshenScript(p *pb.HostedProject, heads map[string]string, stepsToRun []*pb.Step, checkGitmodules bool) string {
-	var b strings.Builder
-	b.WriteString("set -euo pipefail\nmkdir -p /work\ncd /work\nt_git=${EPOCHREALTIME//[!0-9]/}\n")
-	for _, r := range p.GetRepos() {
-		branch := cmp.Or(r.GetBranch(), "main")
-		commit := heads[r.GetId()]
-		fmt.Fprintf(&b, `
-if [ -d %q/.git ]; then
-  git -C %q fetch --prune origin %q
-else
-  git clone --quiet --filter=blob:none --branch %q --single-branch %q %q
-fi
-`, r.GetId(), r.GetId(), branch, branch, r.GetUrl(), r.GetId())
-		if commit != "" {
-			fmt.Fprintf(&b, `
-if ! git -C %q cat-file -e %q^{commit} 2>/dev/null; then
-  git -C %q fetch --quiet origin %q
-fi
-git -C %q checkout -B %q %q
-`, r.GetId(), commit, r.GetId(), commit, r.GetId(), branch, commit)
-		} else {
-			fmt.Fprintf(&b, `
-if git -C %q rev-parse --verify FETCH_HEAD >/dev/null 2>&1; then
-  git -C %q checkout -B %q FETCH_HEAD
-fi
-`, r.GetId(), r.GetId(), branch)
-		}
-		if checkGitmodules {
-			fmt.Fprintf(&b, `
-if [ -f %q/.gitmodules ]; then
-  git -C %q submodule update --quiet --init --recursive --force
-fi
-`, r.GetId(), r.GetId())
-		} else {
-			fmt.Fprintf(&b, `
-git -C %q submodule update --quiet --init --recursive --force
-`, r.GetId())
-		}
-		fmt.Fprintf(&b, `
-if [ -f %q/Cargo.toml ] && [ ! -f %q/rust-toolchain.toml ] && [ ! -f %q/rust-toolchain ] && command -v rustup >/dev/null; then
-  rustup show active-toolchain >/dev/null 2>&1 || rustup default stable
-fi
-printf '::hotbed-head:: %s %%s\n' "$(git -C %q rev-parse HEAD)"
-`, r.GetId(), r.GetId(), r.GetId(), r.GetId(), r.GetId())
-	}
-	b.WriteString("printf '::hotbed:: phase-done git %d\\n' \"$(( ${EPOCHREALTIME//[!0-9]/} - t_git ))\"\ncd /work\n")
-	b.WriteString(stepsScript(stepsToRun))
-	return b.String()
-}
-
 // plannedManagedSteps builds the initial AppliedStep list for a VM or
 // cladefs-FUSE base build from the previous projectBase (if any).
 func plannedManagedSteps(p *pb.HostedProject, prev *projectBase, run []*pb.Step) []*pb.AppliedStep {

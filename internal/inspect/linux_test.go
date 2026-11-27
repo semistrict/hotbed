@@ -1082,3 +1082,25 @@ func TestLinuxBPFTraceLiveProbes(t *testing.T) {
 		})
 	}
 }
+
+// A line longer than the scanner takes stops the read: the tool's output
+// is reported as cut short, not returned as if it were all of it.
+func TestRunTimedToolWithDeadlineReportsOverlongLine(t *testing.T) {
+	raw, _, err := runTimedToolWithDeadline(t.Context(), 30*time.Second, "/bin/sh", []string{
+		"-c", `echo first; head -c 2000000 /dev/zero | tr '\0' a; echo; echo after`,
+	}, nil)
+	if err == nil || !strings.Contains(err.Error(), "read /bin/sh output: bufio.Scanner: token too long") {
+		t.Fatalf("err = %v, want the overlong line reported", err)
+	}
+	if raw != "first\n" {
+		t.Fatalf("raw = %q, want the output before the overlong line", raw)
+	}
+}
+
+// The cgroup a sample reads stats from is validated as perf's is: one that
+// climbs out of /sys/fs/cgroup reads nothing.
+func TestReadCgroupSnapRefusesEscapingCgroup(t *testing.T) {
+	if got := readCgroupSnap("/../../proc/self"); got.stats != nil {
+		t.Fatalf("readCgroupSnap read an escaping cgroup: %+v", got)
+	}
+}

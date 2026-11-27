@@ -1,7 +1,6 @@
 package worker
 
 import (
-	"bytes"
 	"context"
 	"crypto/rand"
 	"encoding/hex"
@@ -12,11 +11,8 @@ import (
 	"math"
 	"os"
 	"path/filepath"
-	"regexp"
 	"sort"
-	"strconv"
 	"strings"
-	"syscall"
 	"time"
 
 	"github.com/semistrict/hotbed/internal/api"
@@ -1024,8 +1020,6 @@ func (e *Engine) bundleOwnerAs(euid int) (uid, gid int, ok bool) {
 	return spec.UID, spec.GID, true
 }
 
-var errNotRegularFile = errors.New("not a regular file")
-
 // openWorkRoot opens the volume's /work root anchored at the trusted volume
 // path volPath via os.OpenRoot, verifying "work" is a real directory (not a
 // symlink) before descending into it.
@@ -1126,41 +1120,6 @@ func verifyCheckoutPath(volPath string, repoRoot *os.Root, dir string) error {
 	return nil
 }
 
-// openRegularFileNoBlock opens rel inside root without blocking on special
-// files (FIFOs, sockets, devices): it checks Lstat/Stat first, opens with
-// O_NONBLOCK, and re-verifies f.Stat().Mode().IsRegular().
-func openRegularFileNoBlock(root *os.Root, rel string) (*os.File, error) {
-	lfi, err := root.Lstat(rel)
-	if err != nil {
-		return nil, err
-	}
-	if lfi.Mode()&os.ModeSymlink != 0 {
-		sfi, err := root.Stat(rel)
-		if err != nil {
-			return nil, err
-		}
-		if !sfi.Mode().IsRegular() {
-			return nil, errNotRegularFile
-		}
-	} else if !lfi.Mode().IsRegular() {
-		return nil, errNotRegularFile
-	}
-	f, err := root.OpenFile(rel, os.O_RDONLY|syscall.O_NONBLOCK, 0)
-	if err != nil {
-		return nil, err
-	}
-	ffi, err := f.Stat()
-	if err != nil {
-		f.Close()
-		return nil, err
-	}
-	if !ffi.Mode().IsRegular() {
-		f.Close()
-		return nil, errNotRegularFile
-	}
-	return f, nil
-}
-
 // Files lists every repo's tracked files, below /work (so each path starts
 // with its repo), marked by how they differ from the workspace's base.
 func (e *Engine) Files(ctx context.Context, id string) ([]*pb.FileEntry, error) {
@@ -1207,43 +1166,7 @@ func (e *Engine) repoFiles(ctx context.Context, volPath string, repoRoot *os.Roo
 	if err != nil {
 		return nil, err
 	}
-	list, err := g.Run(ctx, "ls-files", "-z")
-	if err != nil {
-		return nil, err
-	}
-	status, err := g.Run(ctx, "diff", "--name-status", "-z", base)
-	if err != nil {
-		return nil, err
-	}
-	changes := map[string]string{}
-	parts := strings.Split(status, "\x00")
-	for i := 0; i+1 < len(parts); i += 2 {
-		switch parts[i] {
-		case "A":
-			changes[parts[i+1]] = "added"
-		case "M":
-			changes[parts[i+1]] = "modified"
-		}
-	}
-	dirs := map[string]bool{}
-	var out []*pb.FileEntry
-	for _, p := range strings.Split(list, "\x00") {
-		if p == "" {
-			continue
-		}
-		var size int64
-		if st, err := repoRoot.Lstat(p); err == nil {
-			size = st.Size()
-		}
-		out = append(out, &pb.FileEntry{Path: p, Kind: "file", SizeBytes: size, Change: changes[p]})
-		for d := filepath.Dir(p); d != "."; d = filepath.Dir(d) {
-			dirs[d] = true
-		}
-	}
-	for d := range dirs {
-		out = append(out, &pb.FileEntry{Path: d, Kind: "dir"})
-	}
-	return out, nil
+	return gitops.ListRepoFiles(ctx, g, repoRoot, base)
 }
 
 const maxFileBytes = 1 << 20
@@ -1258,17 +1181,9 @@ func (e *Engine) File(ctx context.Context, id, path string) (*pb.FileContent, er
 	if e.usesRuntime(id) {
 		return e.fileViaRuntime(ctx, id, path, repos)
 	}
-	clean := strings.TrimPrefix(filepath.Clean("/"+path), "/")
-	name, rel, _ := strings.Cut(clean, "/")
-	var r *pb.WorkspaceRepo
-	for _, o := range repos {
-		if o.Repo == name {
-			r = o
-		}
-	}
-	if r == nil || rel == "" {
-		return nil, api.Errorf(api.CodeInvalidArgs, "path %q is in none of the workspace's repos", path).
-			WithSuggestion("paths start with the repo, such as hotbed/go.mod; hotbed workspace files lists them")
+	r, rel, err := repoPath(path, repos)
+	if err != nil {
+		return nil, err
 	}
 	repoRoot, dir, err := openRepoRoot(volPath, r.Repo)
 	if err != nil {
@@ -1278,20 +1193,15 @@ func (e *Engine) File(ctx context.Context, id, path string) (*pb.FileContent, er
 		return nil, api.Errorf(api.CodeInvalidArgs, "%s: %v", path, err)
 	}
 	defer repoRoot.Close()
-	f, err := openRegularFileNoBlock(repoRoot, rel)
+	data, err := gitops.ReadRepoFile(repoRoot, rel, maxFileBytes)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			return nil, api.Errorf(api.CodeNotFound, "%s: %v", path, err)
 		}
-		if errors.Is(err, errNotRegularFile) {
+		if errors.Is(err, gitops.ErrNotRegularFile) {
 			return nil, api.Errorf(api.CodeInvalidArgs, "%s is not a regular file", path)
 		}
 		return nil, api.Errorf(api.CodeInvalidArgs, "%s: %v", path, err)
-	}
-	defer f.Close()
-	data, err := io.ReadAll(io.LimitReader(f, maxFileBytes))
-	if err != nil {
-		return nil, err
 	}
 	if err := verifyCheckoutPath(volPath, repoRoot, dir); err != nil {
 		return nil, api.Errorf(api.CodeInvalidArgs, "%s: %v", path, err)
@@ -1300,66 +1210,25 @@ func (e *Engine) File(ctx context.Context, id, path string) (*pb.FileContent, er
 	if err != nil {
 		return nil, err
 	}
-	diff, err := g.Run(ctx, "diff", "-U0", r.BaseCommit, "--", rel)
+	changed, err := gitops.FileChangedLines(ctx, g, rel, r.BaseCommit, data)
 	if err != nil {
 		return nil, err
 	}
-	return &pb.FileContent{Path: path, Text: string(data), ChangedLines: changedLines(diff, lineCount(data))}, nil
+	return &pb.FileContent{Path: path, Text: string(data), ChangedLines: changed}, nil
 }
 
-var hunk = regexp.MustCompile(`^@@ -\S+ \+(\d+)(?:,(\d+))? @@`)
-
-// changedLines reads the new side's line numbers from a -U0 diff of a
-// file of n lines: those in the file, once each, in order. The diff is the
-// rootfs's git's, which the rootfs's root may have replaced (board 8333):
-// a hunk claims no line the file does not have, and the work is the
-// diff's and the file's size, whatever the hunks claim.
-func changedLines(diff string, n int) []int32 {
-	// starts[l] - ends[l]: the hunks open over line l, by prefix sums.
-	delta := make([]int, n+2)
-	// By newlines, not a bufio.Scanner: a line of a minified file is past
-	// its limit, and every hunk after it would be lost.
-	for line := range strings.SplitSeq(diff, "\n") {
-		m := hunk.FindStringSubmatch(line)
-		if m == nil {
-			continue
-		}
-		start, err := strconv.Atoi(m[1])
-		if err != nil {
-			continue
-		}
-		count := 1
-		if m[2] != "" {
-			if count, err = strconv.Atoi(m[2]); err != nil {
-				continue
-			}
-		}
-		lo, hi := max(start, 1), min(start+count-1, n)
-		if count <= 0 || lo > hi {
-			continue
-		}
-		delta[lo]++
-		delta[hi+1]--
-	}
-	lines := []int32{}
-	open := 0
-	for l := 1; l <= n; l++ {
-		open += delta[l]
-		if open > 0 {
-			lines = append(lines, int32(l))
+// repoPath splits path, below /work, into the repo of repos it is in and
+// its path in that repo, cleaned so it never climbs out of it.
+func repoPath(path string, repos []*pb.WorkspaceRepo) (*pb.WorkspaceRepo, string, error) {
+	clean := strings.TrimPrefix(filepath.Clean("/"+path), "/")
+	name, rel, _ := strings.Cut(clean, "/")
+	for _, r := range repos {
+		if r.Repo == name && rel != "" {
+			return r, rel, nil
 		}
 	}
-	return lines
-}
-
-// lineCount is how many lines text has, a last one without a newline
-// included.
-func lineCount(text []byte) int {
-	n := bytes.Count(text, []byte("\n"))
-	if len(text) > 0 && text[len(text)-1] != '\n' {
-		n++
-	}
-	return n
+	return nil, "", api.Errorf(api.CodeInvalidArgs, "path %q is in none of the workspace's repos", path).
+		WithSuggestion("paths start with the repo, such as hotbed/go.mod; hotbed workspace files lists them")
 }
 
 // checkouts is a live workspace's trusted volume path and its repos.
@@ -1386,6 +1255,7 @@ func (e *Engine) forgetReleased() {
 		}
 		if time.Duration(e.nowMs()-w.ws().LastActiveAt)*time.Millisecond > keepReleased {
 			delete(e.workspaces, id)
+			e.vmWorkspaces.Delete(id)
 			e.deleteWorkspace(w)
 		}
 	}

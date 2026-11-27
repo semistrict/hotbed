@@ -36,6 +36,7 @@ import (
 	"github.com/semistrict/hotbed/internal/inspect"
 	"github.com/semistrict/hotbed/internal/profiler"
 	"github.com/semistrict/hotbed/internal/pty"
+	"github.com/semistrict/hotbed/internal/unit"
 )
 
 const (
@@ -108,7 +109,7 @@ type Server struct {
 type managedCmd struct {
 	mu           sync.Mutex
 	id           string
-	cmd          *exec.Cmd
+	group        *unit.ProcGroup // its process group, signalled only until reaped
 	cg           *cmdCgroup
 	logPath      string
 	logFile      *os.File
@@ -130,6 +131,12 @@ type managedCmd struct {
 	master   *os.File
 	pumped   chan struct{}
 	ttyInput bool
+	// input serializes writes to master (SendInput) with its close
+	// (waitCommand), which sets inputClosed first: no write ever reaches a
+	// terminal that is closed, or one whose fd was reused. It is not mu,
+	// which waitCommand holds while it waits for the terminal to drain.
+	input       sync.Mutex
+	inputClosed bool
 }
 
 // Terminal size a command run in a terminal gets when its start names none:
@@ -424,7 +431,7 @@ func (s *Server) StartCommand(_ context.Context, req *guestdv1.StartCommandReque
 
 	mc := &managedCmd{
 		id:      req.Id,
-		cmd:     cmd,
+		group:   unit.NewProcGroup(cmd),
 		cg:      cg,
 		logPath: logPath,
 		logFile: logFile,
@@ -450,7 +457,7 @@ func (s *Server) StartCommand(_ context.Context, req *guestdv1.StartCommandReque
 }
 
 func (s *Server) waitCommand(mc *managedCmd) {
-	err := mc.cmd.Wait()
+	err := mc.group.Wait(false)
 	code, sig := exitStatusOf(err)
 	mc.mu.Lock()
 	var finalStats cmdCgroupStats
@@ -482,7 +489,13 @@ func (s *Server) waitCommand(mc *managedCmd) {
 		case <-time.After(2 * time.Second):
 			s.log.Warn("terminal still held after the command exited; closing it", "id", mc.id)
 		}
+		// A write blocked on a terminal no one reads would hold input
+		// forever: the deadline ends it (the master is pollable).
+		_ = mc.master.SetWriteDeadline(time.Now())
+		mc.input.Lock()
+		mc.inputClosed = true
 		_ = mc.master.Close()
+		mc.input.Unlock()
 		<-mc.pumped
 	}
 	_ = mc.logFile.Close()
@@ -501,12 +514,17 @@ func (s *Server) SendInput(_ context.Context, req *guestdv1.SendInputRequest) (*
 	if mc.master == nil || !mc.ttyInput {
 		return nil, connect.NewError(connect.CodeFailedPrecondition, fmt.Sprintf("command %s does not read its input from a terminal", req.GetId()))
 	}
-	select {
-	case <-mc.done:
+	mc.input.Lock()
+	defer mc.input.Unlock()
+	if mc.inputClosed {
 		return nil, connect.NewError(connect.CodeFailedPrecondition, fmt.Sprintf("command %s has exited", req.GetId()))
-	default:
 	}
 	if _, err := mc.master.Write(req.GetData()); err != nil {
+		// EIO: nothing holds the terminal's other end, the command having
+		// exited; a deadline: waitCommand, which alone sets one, closes it.
+		if errors.Is(err, syscall.EIO) || errors.Is(err, os.ErrDeadlineExceeded) {
+			return nil, connect.NewError(connect.CodeFailedPrecondition, fmt.Sprintf("command %s has exited", req.GetId()))
+		}
 		return nil, connect.NewError(connect.CodeInternal, "write to its terminal: "+err.Error())
 	}
 	return &guestdv1.SendInputResponse{}, nil
@@ -620,7 +638,6 @@ func (s *Server) stopManagedCmd(mc *managedCmd, grace time.Duration) {
 		mc.mu.Unlock()
 		return
 	}
-	pid := mc.mainPID
 	cg := mc.cg
 	wasFrozen := mc.state == guestdv1.CommandState_COMMAND_STATE_FROZEN
 	mc.mu.Unlock()
@@ -629,10 +646,10 @@ func (s *Server) stopManagedCmd(mc *managedCmd, grace time.Duration) {
 		if cg != nil {
 			_ = cg.thaw()
 		} else {
-			_ = signalProcessGroup(pid, syscall.SIGCONT)
+			_ = mc.group.Signal(syscall.SIGCONT)
 		}
 	}
-	_ = signalProcessGroup(pid, syscall.SIGTERM)
+	_ = mc.group.Signal(syscall.SIGTERM)
 
 	timer := time.NewTimer(grace)
 	defer timer.Stop()
@@ -643,7 +660,7 @@ func (s *Server) stopManagedCmd(mc *managedCmd, grace time.Duration) {
 		if cg != nil {
 			cg.killAll()
 		}
-		_ = signalProcessGroup(pid, syscall.SIGKILL)
+		_ = mc.group.Signal(syscall.SIGKILL)
 		<-mc.done
 	}
 }
@@ -662,7 +679,7 @@ func (s *Server) FreezeCommand(_ context.Context, req *guestdv1.FreezeCommandReq
 	if mc.cg != nil {
 		err = mc.cg.freeze()
 	} else {
-		err = signalProcessGroup(mc.mainPID, syscall.SIGSTOP)
+		err = mc.group.Signal(syscall.SIGSTOP)
 	}
 	if err == nil {
 		mc.state = guestdv1.CommandState_COMMAND_STATE_FROZEN
@@ -688,7 +705,7 @@ func (s *Server) ThawCommand(_ context.Context, req *guestdv1.ThawCommandRequest
 	if mc.cg != nil {
 		err = mc.cg.thaw()
 	} else {
-		err = signalProcessGroup(mc.mainPID, syscall.SIGCONT)
+		err = mc.group.Signal(syscall.SIGCONT)
 	}
 	if err == nil {
 		mc.state = guestdv1.CommandState_COMMAND_STATE_RUNNING
@@ -1131,7 +1148,7 @@ func (s *Server) ListFiles(ctx context.Context, req *guestdv1.ListFilesRequest) 
 			return nil, connect.NewError(connect.CodeNotFound, fmt.Sprintf("open repo %s: %v", repo.Repo, err))
 		}
 		dir := filepath.Join(s.workDir, repo.Repo)
-		entries, err := listRepoFiles(ctx, repoRoot, dir, repo.BaseCommit)
+		entries, err := gitops.ListRepoFiles(ctx, repoGit(dir), repoRoot, repo.BaseCommit)
 		_ = repoRoot.Close()
 		if err != nil {
 			return nil, connect.NewError(connect.CodeInternal, fmt.Sprintf("list %s: %v", repo.Repo, err))
@@ -1146,49 +1163,10 @@ func (s *Server) ListFiles(ctx context.Context, req *guestdv1.ListFilesRequest) 
 	return &guestdv1.ListFilesResponse{Files: out}, nil
 }
 
-func listRepoFiles(ctx context.Context, repoRoot *os.Root, dir, base string) ([]*pb.FileEntry, error) {
-	g := gitops.Git{Dir: dir}
-	// hotbed-guestd runs as root while workspace repos are owned by the non-root
-	// build user; pass safe.directory=* so git does not reject dubious ownership.
-	list, err := g.Run(ctx, "-c", "safe.directory=*", "ls-files", "-z")
-	if err != nil {
-		return nil, err
-	}
-	changes := map[string]string{}
-	if base != "" {
-		status, err := g.Run(ctx, "-c", "safe.directory=*", "diff", "--name-status", "-z", base)
-		if err != nil {
-			return nil, err
-		}
-		parts := strings.Split(status, "\x00")
-		for i := 0; i+1 < len(parts); i += 2 {
-			switch parts[i] {
-			case "A":
-				changes[parts[i+1]] = "added"
-			case "M":
-				changes[parts[i+1]] = "modified"
-			}
-		}
-	}
-	dirs := map[string]bool{}
-	var out []*pb.FileEntry
-	for _, p := range strings.Split(list, "\x00") {
-		if p == "" {
-			continue
-		}
-		var size int64
-		if st, err := repoRoot.Lstat(p); err == nil {
-			size = st.Size()
-		}
-		out = append(out, &pb.FileEntry{Path: p, Kind: "file", SizeBytes: size, Change: changes[p]})
-		for d := filepath.Dir(p); d != "."; d = filepath.Dir(d) {
-			dirs[d] = true
-		}
-	}
-	for d := range dirs {
-		out = append(out, &pb.FileEntry{Path: d, Kind: "dir"})
-	}
-	return out, nil
+// repoGit runs git in the checkout dir: guestd runs as root while the
+// checkouts are the build user's, so safe.directory admits them.
+func repoGit(dir string) gitops.Git {
+	return gitops.Git{Dir: dir, Env: []string{"GIT_CONFIG_COUNT=1", "GIT_CONFIG_KEY_0=safe.directory", "GIT_CONFIG_VALUE_0=*"}}
 }
 
 func (s *Server) GetFile(ctx context.Context, req *guestdv1.GetFileRequest) (*pb.FileContent, error) {
@@ -1210,34 +1188,22 @@ func (s *Server) GetFile(ctx context.Context, req *guestdv1.GetFileRequest) (*pb
 	}
 	defer repoRoot.Close()
 
-	st, err := repoRoot.Lstat(req.RelPath)
-	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			return nil, connect.NewError(connect.CodeNotFound, err.Error())
-		}
-		return nil, connect.NewError(connect.CodeInvalidArgument, err.Error())
-	}
-	if !st.Mode().IsRegular() {
+	data, err := gitops.ReadRepoFile(repoRoot, req.RelPath, maxFileBytes)
+	switch {
+	case errors.Is(err, os.ErrNotExist):
+		return nil, connect.NewError(connect.CodeNotFound, err.Error())
+	case errors.Is(err, gitops.ErrNotRegularFile):
 		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Sprintf("%s is not a regular file", req.RelPath))
-	}
-	f, err := repoRoot.Open(req.RelPath)
-	if err != nil {
-		return nil, connect.NewError(connect.CodeInternal, err.Error())
-	}
-	defer f.Close()
-	data, err := io.ReadAll(io.LimitReader(f, maxFileBytes))
-	if err != nil {
-		return nil, connect.NewError(connect.CodeInternal, err.Error())
+	case err != nil:
+		return nil, connect.NewError(connect.CodeInvalidArgument, err.Error())
 	}
 
 	var changed []int32
 	if req.BaseCommit != "" {
-		g := gitops.Git{Dir: filepath.Join(s.workDir, req.Repo)}
-		diff, err := g.Run(ctx, "-c", "safe.directory=*", "diff", "-U0", req.BaseCommit, "--", req.RelPath)
+		changed, err = gitops.FileChangedLines(ctx, repoGit(filepath.Join(s.workDir, req.Repo)), req.RelPath, req.BaseCommit, data)
 		if err != nil {
 			return nil, connect.NewError(connect.CodeInternal, "git diff: "+err.Error())
 		}
-		changed = parseChangedLines(diff, countLines(data))
 	}
 	return &pb.FileContent{
 		Path:         req.Repo + "/" + req.RelPath,
@@ -1356,7 +1322,7 @@ func (s *Server) handleShellConn(ctx context.Context, conn net.Conn) {
 			return
 		}
 		_ = slave.Close()
-		pid := cmd.Process.Pid
+		group := unit.NewProcGroup(cmd)
 
 		// Pump PTY master -> host.
 		outDone := make(chan struct{})
@@ -1381,7 +1347,7 @@ func (s *Server) handleShellConn(ctx context.Context, conn net.Conn) {
 			for {
 				typ, payload, err := readFrame(conn)
 				if err != nil {
-					_ = signalProcessGroup(pid, syscall.SIGHUP)
+					_ = group.Signal(syscall.SIGHUP)
 					_ = master.Close()
 					return
 				}
@@ -1402,7 +1368,7 @@ func (s *Server) handleShellConn(ctx context.Context, conn net.Conn) {
 			}
 		}()
 
-		waitErr := cmd.Wait()
+		waitErr := group.Wait(false)
 		// Drain buffered PTY output before closing master: once the child
 		// closes the slave fd, master.Read returns the remaining bytes and
 		// then EIO/EOF. Bound the wait in case a grandchild kept the slave open.
@@ -1441,7 +1407,7 @@ func (s *Server) handleShellConn(ctx context.Context, conn net.Conn) {
 		_ = send(frameError, []byte("start shell: "+err.Error()))
 		return
 	}
-	pid := cmd.Process.Pid
+	group := unit.NewProcGroup(cmd)
 
 	var outWG sync.WaitGroup
 	pump := func(r io.Reader, typ byte) {
@@ -1468,7 +1434,7 @@ func (s *Server) handleShellConn(ctx context.Context, conn net.Conn) {
 			typ, payload, err := readFrame(conn)
 			if err != nil {
 				_ = stdinPipe.Close()
-				_ = signalProcessGroup(pid, syscall.SIGTERM)
+				_ = group.Signal(syscall.SIGTERM)
 				return
 			}
 			switch typ {
@@ -1483,7 +1449,7 @@ func (s *Server) handleShellConn(ctx context.Context, conn net.Conn) {
 	}()
 
 	outWG.Wait()
-	waitErr := cmd.Wait()
+	waitErr := group.Wait(false)
 	var code [4]byte
 	binary.BigEndian.PutUint32(code[:], uint32(int32(exitCodeOf(waitErr))))
 	_ = send(frameExit, code[:])
@@ -1532,28 +1498,6 @@ func handleTCPProxyConn(conn net.Conn) {
 	bridgeConns(&bufferedConn{Conn: conn, r: br}, target)
 }
 
-const guestGitCredentialHelper = `#!/bin/sh
-case "${1:-}" in
-  get)   path=/git-credential ;;
-  erase) path=/git-credential/erase ;;
-  *)     exit 0 ;;
-esac
-out=$(curl -sS --unix-socket "${HOTBED_GIT_CRED_SOCK:-/run/hotbed/git-auth/git-cred.sock}" -w '\n%{http_code}' --data-binary @- "http://localhost$path") || exit 1
-nl='
-'
-code=${out##*"$nl"}
-body=${out%"$nl"*}
-if [ "$code" = "200" ]; then
-  printf '%s\n' "$body"
-  exit 0
-fi
-if [ "$code" = "204" ]; then
-  exit 0
-fi
-printf '%s\n' "$body" >&2
-exit 1
-`
-
 // StartGitAuthBridge exposes a local Unix socket at sockPath inside the guest
 // (e.g. /run/hotbed/git-auth/git-cred.sock) and forwards every connection to
 // dialHost (vsock CID 2, GitAuthPort on Firecracker).
@@ -1562,7 +1506,9 @@ func StartGitAuthBridge(ctx context.Context, sockPath string, dialHost func() (n
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return err
 	}
-	_ = os.WriteFile(filepath.Join(dir, "git-credential-helper"), []byte(guestGitCredentialHelper), 0o755)
+	if err := os.WriteFile(filepath.Join(dir, "git-credential-helper"), []byte(gitops.GitCredentialHelperScript(sockPath)), 0o755); err != nil {
+		return fmt.Errorf("write git credential helper: %w", err)
+	}
 	_ = os.Remove(sockPath)
 	ln, err := net.Listen("unix", sockPath)
 	if err != nil {
@@ -1612,51 +1558,6 @@ func bridgeConns(a, b net.Conn) {
 func exitCodeOf(err error) int {
 	code, _ := exitStatusOf(err)
 	return code
-}
-
-var diffHunkRe = regexp.MustCompile(`^@@ -\S+ \+(\d+)(?:,(\d+))? @@`)
-
-func parseChangedLines(diff string, n int) []int32 {
-	delta := make([]int, n+2)
-	for line := range strings.SplitSeq(diff, "\n") {
-		m := diffHunkRe.FindStringSubmatch(line)
-		if m == nil {
-			continue
-		}
-		start, err := strconv.Atoi(m[1])
-		if err != nil {
-			continue
-		}
-		count := 1
-		if m[2] != "" {
-			if count, err = strconv.Atoi(m[2]); err != nil {
-				continue
-			}
-		}
-		lo, hi := max(start, 1), min(start+count-1, n)
-		if count <= 0 || lo > hi {
-			continue
-		}
-		delta[lo]++
-		delta[hi+1]--
-	}
-	lines := []int32{}
-	open := 0
-	for l := 1; l <= n; l++ {
-		open += delta[l]
-		if open > 0 {
-			lines = append(lines, int32(l))
-		}
-	}
-	return lines
-}
-
-func countLines(text []byte) int {
-	n := bytes.Count(text, []byte("\n"))
-	if len(text) > 0 && text[len(text)-1] != '\n' {
-		n++
-	}
-	return n
 }
 
 // commandWithEnv constructs an *exec.Cmd resolving a bare argv[0] against the

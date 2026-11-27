@@ -43,8 +43,8 @@ type Options struct {
 	UnitProperties []string
 	Slice          string
 	NoStart        bool
-	// Hostname is the worker's node name when the tailnet reports none
-	// (Linux).
+	// Hostname is the node name Setup reports for a worker already joined
+	// whose state names none (Linux).
 	Hostname string
 
 	// Progress receives human-readable progress lines (typically stderr).

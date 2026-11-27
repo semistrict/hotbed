@@ -57,8 +57,6 @@ func (l Linux) baseRootDir() string {
 	return ""
 }
 
-func (l Linux) rootDirFor(Target) string { return l.baseRootDir() }
-
 func (l Linux) Capabilities() []*pb.ToolCapability {
 	return capabilitiesIn(l.baseRootDir())
 }
@@ -108,7 +106,7 @@ func (l Linux) Inspect(_ context.Context, target Target, req *pb.InspectCommandR
 		CollectedAt:    time.Now().UnixMilli(),
 		Cgroup:         target.Cgroup,
 		UnitName:       target.UnitName,
-		AvailableTools: capabilitiesIn(l.rootDirFor(target)),
+		AvailableTools: capabilitiesIn(l.baseRootDir()),
 	}
 
 	commByPID := map[int]string{}
@@ -185,7 +183,7 @@ func (l Linux) Trace(ctx context.Context, target Target, req *pb.TraceCommandReq
 		return err
 	}
 
-	rootDir := l.rootDirFor(target)
+	rootDir := l.baseRootDir()
 	switch req.Kind {
 	case pb.TraceKind_TRACE_KIND_STRACE:
 		return runStraceLive(ctx, rootDir, pids, req, emit)
@@ -586,7 +584,10 @@ func readCgroupSnap(cgroup string) cgroupSnap {
 	if cgroup == "" {
 		return cgroupSnap{}
 	}
-	dir := filepath.Join("/sys/fs/cgroup", cgroup)
+	_, dir, err := validateTargetCgroup(cgroup)
+	if err != nil {
+		return cgroupSnap{}
+	}
 	if _, err := os.Stat(dir); err != nil {
 		return cgroupSnap{}
 	}
@@ -869,6 +870,12 @@ func runTimedToolWithDeadline(ctx context.Context, dur time.Duration, name strin
 			}
 		}
 	}
+	// A line longer than the scanner's buffer stops it: say so, rather
+	// than return the output cut off there as if it were all.
+	scanErr := sc.Err()
+	if scanErr != nil && emitErr == nil {
+		close(abort)
+	}
 	_, _ = io.Copy(io.Discard, pr)
 	pr.Close()
 	waitErr := cmd.Wait()
@@ -877,6 +884,9 @@ func runTimedToolWithDeadline(ctx context.Context, dur time.Duration, name strin
 	wasTimedOut := timedOut.Load()
 	if emitErr != nil {
 		return buf.String(), wasTimedOut, emitErr
+	}
+	if scanErr != nil {
+		return buf.String(), wasTimedOut, fmt.Errorf("read %s output: %w", name, scanErr)
 	}
 	// SIGINT-terminated tracers exit with signal 2 or code 130; that is normal
 	// when our deadline timer initiated the shutdown.

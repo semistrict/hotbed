@@ -17,7 +17,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/google/go-cmp/cmp"
 	"github.com/semistrict/hotbed/internal/api"
+	"github.com/semistrict/hotbed/internal/statedir"
+	"github.com/semistrict/hotbed/internal/worker"
 )
 
 // zfsDiskByID is a dedicated ZFS disk's path as a VM guest sees one.
@@ -1427,5 +1430,32 @@ func TestCleanupLegacyTrimUnits(t *testing.T) {
 		if _, err := os.Stat(p); !errors.Is(err, fs.ErrNotExist) {
 			t.Errorf("legacy unit %s still exists: err=%v", p, err)
 		}
+	}
+}
+
+// Setting up a host already joined to the controller reports the node name
+// it joined under and asks no tailnet anything: a host without tailscaled
+// sets up all the same (nil Tailnet panics if called).
+func TestJoinLinuxWorkerAlreadyJoinedNeedsNoTailnet(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "state")
+	if err := statedir.Prepare(dir); err != nil {
+		t.Fatal(err)
+	}
+	const controller = "https://hotbed-controller.example.workers.dev"
+	if err := statedir.Commit(dir, statedir.Config{Worker: &statedir.WorkerConfig{
+		ClusterID: "c1", Controller: controller, User: "alice", Host: "box",
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	got, err := joinLinuxWorker(t.Context(), Options{Hostname: "ignored"}, dir, controller, "alice", "zfs-file", nil, nil, nil)
+	if err != nil {
+		t.Fatalf("joinLinuxWorker: %v", err)
+	}
+	want := worker.JoinResult{ClusterID: "c1", Dir: dir, Controller: controller, Storage: "zfs-file", User: "alice", Node: "box"}
+	if diff := cmp.Diff(want, got); diff != "" {
+		t.Fatalf("join result (-want +got):\n%s", diff)
+	}
+	if _, err := joinLinuxWorker(t.Context(), Options{}, dir, "https://other.example", "alice", "zfs-file", nil, nil, nil); api.CodeOf(err) != api.CodeAlreadyInitialized {
+		t.Fatalf("joined to another controller: %v, want ALREADY_INITIALIZED", err)
 	}
 }

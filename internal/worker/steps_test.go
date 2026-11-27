@@ -71,23 +71,76 @@ func TestRecipeCoversEveryRepo(t *testing.T) {
 // The freshen checks out every repo side by side in /work, takes out the
 // checkouts of repos the project no longer holds, and runs the steps in /work.
 func TestFreshenScriptChecksOutEveryRepoInWork(t *testing.T) {
-	p := &pb.HostedProject{Repos: []*pb.Repo{{Id: "app", Url: "https://example.com/app.git"}, {Id: "lib", Url: "https://example.com/lib.git"}}}
-	prev := &pb.Base{Repos: []*pb.BaseRepo{{Repo: "app"}, {Repo: "gone"}}}
-	got := freshenScript(p, heads{"app": "a1", "lib": "l1"}, prev, []*pb.Step{{Name: "build", Script: "make"}})
+	repos := []*pb.Repo{{Id: "app", Url: "https://example.com/app.git"}, {Id: "lib", Url: "https://example.com/lib.git"}}
+	got := freshenScript(repos, heads{"app": "a1", "lib": "l1"}, []string{"app", "gone", "../etc"}, []*pb.Step{{Name: "build", Script: "make"}})
 	for _, want := range []string{
-		"rm -rf '/work/gone'\n",
-		"cd /work\nif [ ! -d 'app'/.git ]; then git clone --quiet --filter=blob:none --no-checkout -- 'https://example.com/app.git' 'app'; fi\ncd 'app'\n",
+		"mkdir -p '/work'\nrm -rf '/work/gone'\n",
+		"cd '/work'\nif [ ! -d 'app'/.git ]; then git clone --quiet --filter=blob:none --no-checkout -- 'https://example.com/app.git' 'app'; fi\ncd 'app'\n",
 		"git checkout --quiet --detach --force 'a1'\n",
-		"cd /work\nif [ ! -d 'lib'/.git ]; then git clone --quiet --filter=blob:none --no-checkout -- 'https://example.com/lib.git' 'lib'; fi\ncd 'lib'\n",
+		"cd '/work'\nif [ ! -d 'lib'/.git ]; then git clone --quiet --filter=blob:none --no-checkout -- 'https://example.com/lib.git' 'lib'; fi\ncd 'lib'\n",
 		"git checkout --quiet --detach --force 'l1'\n",
-		"cd /work\necho '::hotbed:: step 1/1 build'\n",
+		"cd '/work'\necho '::hotbed:: step 1/1 build'\n",
 	} {
 		if !strings.Contains(got, want) {
 			t.Errorf("freshen script lacks %q:\n%s", want, got)
 		}
 	}
-	if strings.Contains(got, "rm -rf '/work/app'") {
-		t.Errorf("freshen script removes a checkout the project holds:\n%s", got)
+	for _, never := range []string{"rm -rf '/work/app'", "rm -rf '/work/../etc'"} {
+		if strings.Contains(got, never) {
+			t.Errorf("freshen script runs %q:\n%s", never, got)
+		}
+	}
+}
+
+// A repo URL is whatever the project's owner wrote: the freshen script runs
+// it past bash as a literal, never as $(...) or `...`, and an incremental
+// freshen takes out the checkout of a repo the project dropped. Every VM,
+// cladefs and host base builds with this one script.
+func TestFreshenScriptRunsMetacharacterURLsLiterallyAndDropsRemovedRepos(t *testing.T) {
+	tmp := t.TempDir()
+	marker1, marker2 := filepath.Join(tmp, "pwn1"), filepath.Join(tmp, "pwn2")
+	origin := filepath.Join(tmp, fmt.Sprintf("origin $(touch %s) `touch %s` 'q\"", marker1, marker2))
+	runGitTest(t, tmp, "init", "-q", "-b", "main", origin)
+	if err := os.WriteFile(filepath.Join(origin, "f.txt"), []byte("x\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runGitTest(t, origin, "add", ".")
+	runGitTest(t, origin, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "-m", "one")
+	head := runGitTest(t, origin, "rev-parse", "HEAD")
+
+	work := filepath.Join(tmp, "work")
+	run := func(repos []*pb.Repo, h heads, had []string) string {
+		t.Helper()
+		// The script names /work; aim it at the test's own.
+		script := strings.ReplaceAll(freshenScript(repos, h, had, nil), "'"+WorkPath, "'"+work)
+		out, err := exec.Command("bash", "-c", script).CombinedOutput()
+		if err != nil {
+			t.Fatalf("freshen script failed: %v\nscript:\n%s\noutput:\n%s", err, script, out)
+		}
+		return string(out)
+	}
+	both := []*pb.Repo{{Id: "app", Url: origin}, {Id: "gone", Url: origin}}
+	out := run(both, heads{"app": head, "gone": head}, nil)
+	for _, m := range []string{marker1, marker2} {
+		if _, err := os.Stat(m); !os.IsNotExist(err) {
+			t.Fatalf("the repo URL ran as shell: %s exists (%v)", m, err)
+		}
+	}
+	for _, want := range []string{"::hotbed-head:: app " + head + "\n", "::hotbed-head:: gone " + head + "\n"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("output lacks %q:\n%s", want, out)
+		}
+	}
+	if got := runGitTest(t, filepath.Join(work, "app"), "rev-parse", "HEAD"); got != head {
+		t.Fatalf("app checked out %s, want %s", got, head)
+	}
+
+	run(both[:1], heads{"app": head}, []string{"app", "gone"})
+	if _, err := os.Stat(filepath.Join(work, "gone")); !os.IsNotExist(err) {
+		t.Fatalf("dropped repo's checkout still there (%v)", err)
+	}
+	if _, err := os.Stat(filepath.Join(work, "app", "f.txt")); err != nil {
+		t.Fatalf("held repo's checkout gone: %v", err)
 	}
 }
 

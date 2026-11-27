@@ -983,3 +983,56 @@ func TestShutdownPowerOffRequiresAllowPowerOff(t *testing.T) {
 		t.Fatal("PowerOff was not invoked with AllowPowerOff=true")
 	}
 }
+
+// Input typed into a command's terminal while it exits either reaches the
+// terminal or is refused as sent to an exited command: the terminal's close
+// never races a write to it (run with -race).
+func TestSendInputRacesExitSafely(t *testing.T) {
+	workDir := t.TempDir()
+	client, _ := startTestGuestd(t, workDir)
+	ctx := t.Context()
+	if _, err := client.StartCommand(ctx, &guestdv1.StartCommandRequest{
+		Id:       "typed",
+		Argv:     []string{"/bin/sh", "-c", "read x; echo GOT $x"},
+		Dir:      workDir,
+		Tty:      true,
+		TtyInput: true,
+	}); err != nil {
+		t.Fatalf("StartCommand: %v", err)
+	}
+	stop := make(chan struct{})
+	errs := make(chan error, 4)
+	for range 4 {
+		go func() {
+			for {
+				select {
+				case <-stop:
+					errs <- nil
+					return
+				default:
+				}
+				err := client.SendInput(ctx, "typed", []byte("hi\n"))
+				if err != nil && connect.CodeOf(err) != connect.CodeFailedPrecondition {
+					errs <- err
+					return
+				}
+			}
+		}()
+	}
+	var buf bytes.Buffer
+	if _, err := client.StreamLogs(ctx, "typed", 0, true, &buf); err != nil {
+		t.Fatalf("StreamLogs: %v", err)
+	}
+	close(stop)
+	for range 4 {
+		if err := <-errs; err != nil {
+			t.Fatalf("SendInput while the command exits: %v, want success or FAILED_PRECONDITION", err)
+		}
+	}
+	if !strings.Contains(buf.String(), "GOT hi") {
+		t.Fatalf("log %q lacks the typed line", buf.String())
+	}
+	if err := client.SendInput(ctx, "typed", []byte("late\n")); connect.CodeOf(err) != connect.CodeFailedPrecondition {
+		t.Fatalf("input after exit: %v, want FAILED_PRECONDITION", err)
+	}
+}

@@ -415,7 +415,7 @@ func (e *Engine) startFreshenWithOpts(ctx context.Context, p *pb.HostedProject, 
 	c := e.newCommand(&pb.CommandRecord{
 		Command: &pb.Command{
 			Id: id, NodeId: e.cfg.NodeID, Argv: fmt.Sprintf("freshen %s g%d", p.Name, gen), Project: p.Name,
-			Args: []string{"/bin/bash", "-c", freshenScript(p, h, prev, run)}, Kind: "freshen",
+			Args: []string{"/bin/bash", "-c", freshenScript(p.Repos, h, repoIDs(prev), run)}, Kind: "freshen",
 			Runtime: hotbedruntime.KindCladefs,
 			State:   queued, QueuedAt: now, Limits: limits,
 			Timeline: []*pb.CommandEvent{{At: now, What: "queued", Detail: "base " + b.Id}},
@@ -475,42 +475,56 @@ func describeHeads(repos []*pb.BaseRepo) string {
 	return strings.Join(parts, ", ")
 }
 
-// freshenScript checks out each of the project's repos at its head, with
-// its submodules, in /work/<repo>, removes the checkouts of repos the
-// project no longer holds, and runs the steps the generation needs in
-// /work.
-func freshenScript(p *pb.HostedProject, h heads, prev *pb.Base, run []*pb.Step) string {
+// freshenScript checks out each of repos at its head, detached, with its
+// submodules, in /work/<repo>, prints a ::hotbed-head:: line naming the
+// commit each holds, removes the checkouts of the repos in had that repos no
+// longer names, and runs the steps the generation needs in /work. Every
+// value that reaches bash (URLs, commits, paths) is single-quoted: a URL is
+// whatever the project's owner wrote.
+func freshenScript(repos []*pb.Repo, h heads, had []string, run []*pb.Step) string {
 	var b strings.Builder
 	q := shell.Quote
-	fmt.Fprintf(&b, "set -euo pipefail\n")
+	fmt.Fprintf(&b, "set -euo pipefail\nmkdir -p %s\n", q(WorkPath))
 	held := map[string]bool{}
-	for _, r := range p.Repos {
-		held[r.Id] = true
+	for _, r := range repos {
+		held[r.GetId()] = true
 	}
-	for _, r := range prev.GetRepos() {
-		if !held[r.Repo] {
-			fmt.Fprintf(&b, "rm -rf %s\n", q(WorkPath+"/"+r.Repo))
+	for _, id := range had {
+		// A repo ID is one path element (validateID); never let one that is
+		// not reach rm -rf.
+		if !held[id] && validateID(id) == nil {
+			fmt.Fprintf(&b, "rm -rf %s\n", q(WorkPath+"/"+id))
 		}
 	}
 	b.WriteString("t_git=${EPOCHREALTIME//[!0-9]/}\n")
-	for _, r := range p.Repos {
-		commit := h[r.Id]
-		fmt.Fprintf(&b, "cd %s\n", WorkPath)
+	for _, r := range repos {
+		id, commit := q(r.GetId()), q(h[r.GetId()])
+		fmt.Fprintf(&b, "cd %s\n", q(WorkPath))
 		// Blobless: a base needs the files of the commits it checks out, not every version of
 		// every file (cladefs's history is 2.5 GiB of packs); git fetches others when asked for.
-		fmt.Fprintf(&b, "if [ ! -d %s/.git ]; then git clone --quiet --filter=blob:none --no-checkout -- %s %s; fi\n", q(r.Id), q(r.Url), q(r.Id))
-		fmt.Fprintf(&b, "cd %s\n", q(r.Id))
-		fmt.Fprintf(&b, "git fetch --quiet --force origin %s || git fetch --quiet --force origin\n", q(commit))
-		fmt.Fprintf(&b, "git checkout --quiet --detach --force %s\n", q(commit))
-		b.WriteString("git submodule update --quiet --init --recursive --force\n")
+		fmt.Fprintf(&b, "if [ ! -d %s/.git ]; then git clone --quiet --filter=blob:none --no-checkout -- %s %s; fi\n", id, q(r.GetUrl()), id)
+		fmt.Fprintf(&b, "cd %s\n", id)
+		fmt.Fprintf(&b, "git cat-file -e %s 2>/dev/null || git fetch --quiet --force origin %s || git fetch --quiet --force origin\n", q(h[r.GetId()]+"^{commit}"), commit)
+		fmt.Fprintf(&b, "git checkout --quiet --detach --force %s\n", commit)
+		b.WriteString("if [ -f .gitmodules ]; then git submodule update --quiet --init --recursive --force; fi\n")
 		// A workspace's own toolchain home starts empty; give rustup a default
 		// when the repo does not pin one.
 		b.WriteString(`if [ -f Cargo.toml ] && [ ! -f rust-toolchain.toml ] && [ ! -f rust-toolchain ] && command -v rustup >/dev/null; then rustup show active-toolchain >/dev/null 2>&1 || rustup default stable; fi` + "\n")
+		fmt.Fprintf(&b, "printf '%%s %%s\\n' %s \"$(git rev-parse HEAD)\"\n", q("::hotbed-head:: "+r.GetId()))
 	}
 	b.WriteString("printf '::hotbed:: phase-done git %d\\n' \"$(( ${EPOCHREALTIME//[!0-9]/} - t_git ))\"\n")
-	fmt.Fprintf(&b, "cd %s\n", WorkPath)
+	fmt.Fprintf(&b, "cd %s\n", q(WorkPath))
 	b.WriteString(stepsScript(run))
 	return b.String()
+}
+
+// repoIDs names the repos base b holds.
+func repoIDs(b *pb.Base) []string {
+	ids := make([]string, 0, len(b.GetRepos()))
+	for _, r := range b.GetRepos() {
+		ids = append(ids, r.Repo)
+	}
+	return ids
 }
 
 // freshened finishes a base whose freshen ended: a snapshot makes it warm.
@@ -940,25 +954,16 @@ func toolchain(volPath, repo string) string {
 	return toolchainFromRoot(root)
 }
 
-func readSmallRegularFile(root *os.Root, rel string) ([]byte, error) {
-	f, err := openRegularFileNoBlock(root, rel)
-	if err != nil {
-		return nil, err
-	}
-	defer f.Close()
-	return io.ReadAll(io.LimitReader(f, maxToolchainBytes))
-}
-
 func toolchainFromRoot(root *os.Root) string {
 	for _, f := range []string{"rust-toolchain.toml", "rust-toolchain"} {
-		if b, err := readSmallRegularFile(root, f); err == nil {
+		if b, err := gitops.ReadRepoFile(root, f, maxToolchainBytes); err == nil {
 			if m := channel.FindSubmatch(b); m != nil {
 				return "rust " + string(m[1])
 			}
 			return "rust " + strings.TrimSpace(string(b))
 		}
 	}
-	if b, err := readSmallRegularFile(root, "go.mod"); err == nil {
+	if b, err := gitops.ReadRepoFile(root, "go.mod", maxToolchainBytes); err == nil {
 		if m := goLine.FindSubmatch(b); m != nil {
 			return "go " + string(m[1])
 		}

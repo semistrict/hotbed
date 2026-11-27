@@ -9,29 +9,6 @@ import (
 	"testing"
 )
 
-func TestParseSubmountsUnder(t *testing.T) {
-	mountinfo := "" +
-		"100 1 0:40 / /var/lib/cladefs/mnt rw,nosuid - fuse.cladefs cladefs rw\n" +
-		"101 100 0:40 / /var/lib/cladefs/mnt/t0/c1 rw - fuse.cladefs cladefs rw\n" +
-		"102 101 0:41 / /var/lib/cladefs/mnt/t0/c1/proc rw - proc proc rw\n" +
-		"103 102 0:42 / /var/lib/cladefs/mnt/t0/c1/proc/sys/fs/binfmt_misc rw - autofs systemd-1 rw\n" +
-		"104 101 0:43 / /var/lib/cladefs/mnt/t0/c1/tmp/my\\040dir rw - tmpfs tmpfs rw\n" +
-		"105 100 0:44 / /var/lib/cladefs/mnt/t0/c10/proc rw - proc proc rw\n"
-
-	got := parseSubmountsUnder(mountinfo, "/var/lib/cladefs/mnt/t0/c1")
-	want := []string{
-		"/var/lib/cladefs/mnt/t0/c1/proc/sys/fs/binfmt_misc",
-		"/var/lib/cladefs/mnt/t0/c1/tmp/my dir",
-		"/var/lib/cladefs/mnt/t0/c1/proc",
-	}
-	if !slices.Equal(got, want) {
-		t.Fatalf("parseSubmountsUnder = %q, want %q", got, want)
-	}
-	if got := parseSubmountsUnder(mountinfo, "/"); len(got) != 0 {
-		t.Fatalf("parseSubmountsUnder(/) = %q, want empty", got)
-	}
-}
-
 func TestFindMountUsers(t *testing.T) {
 	procRoot := t.TempDir()
 	mntDir := "/var/lib/cladefs/mnt/t0/c1"

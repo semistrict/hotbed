@@ -841,3 +841,26 @@ func TestProactiveGuestCacheReclaimUnderHostPressure(t *testing.T) {
 		t.Fatalf("overlapping reclaim fired while in-flight: count = %d, want 4", got)
 	}
 }
+
+// A VM workspace forgotten after its release leaves nothing in the index of
+// VM workspaces behind: the index would otherwise grow with every workspace
+// the node ever held.
+func TestForgottenVMWorkspaceLeavesTheVMIndex(t *testing.T) {
+	eng, resolver, _, now := newLifecycleTestEngine(t)
+	const wsID = "ws-forget"
+	seedTestVMWorkspace(t, eng, resolver, wsID, *now)
+	if err := eng.ReleaseWorkspace(t.Context(), wsID); err != nil {
+		t.Fatalf("ReleaseWorkspace: %v", err)
+	}
+	*now = now.Add(keepReleased + time.Minute)
+	eng.mu.Lock()
+	eng.forgetReleased()
+	_, kept := eng.workspaces[wsID]
+	eng.mu.Unlock()
+	if kept {
+		t.Fatalf("released workspace %s not forgotten", wsID)
+	}
+	if eng.isVMWorkspace(wsID) {
+		t.Fatalf("forgotten workspace %s is still indexed as a VM workspace", wsID)
+	}
+}

@@ -57,6 +57,20 @@ type trackingRuntime struct {
 	mu    sync.Mutex
 	ready map[string]int
 	torn  map[string]int
+	ports []uint16
+}
+
+func (tr *trackingRuntime) DialPort(ctx context.Context, wsID string, port uint16) (net.Conn, error) {
+	tr.mu.Lock()
+	tr.ports = append(tr.ports, port)
+	tr.mu.Unlock()
+	return tr.GuestRuntime.DialPort(ctx, wsID, port)
+}
+
+func (tr *trackingRuntime) dialedPorts() []uint16 {
+	tr.mu.Lock()
+	defer tr.mu.Unlock()
+	return slices.Clone(tr.ports)
 }
 
 func (tr *trackingRuntime) EnsureReady(ctx context.Context, wsID string) error {
@@ -413,7 +427,8 @@ func TestEngineWithGuestRuntimeEndToEnd(t *testing.T) {
 		t.Fatalf("shell output = %q", shOut.String())
 	}
 
-	// 5. TCP dev-server portProxy -> guestd TCPProxyPort -> loopback server!
+	// 5. A --port pipe to a VM command's dev server goes through the
+	// runtime's DialPort (guestd TCPProxyPort), never a host listener.
 	guestDevLn, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
@@ -427,27 +442,40 @@ func TestEngineWithGuestRuntimeEndToEnd(t *testing.T) {
 		_, _ = c.Write([]byte("DEV_SERVER_VIA_VSOCK"))
 		_ = c.Close()
 	}()
-	guestPort := uint16(guestDevLn.Addr().(*net.TCPAddr).Port)
-	proxy, err := startPortProxy("127.0.0.1:0", wsID, guestPort, rt)
+	guestPort := guestDevLn.Addr().(*net.TCPAddr).Port
+	server, err := eng.Exec(ctx, &pb.RunCommandRequest{
+		WorkspaceId: wsID,
+		Repo:        "app",
+		Port:        int32(guestPort),
+		Args:        []string{"/bin/sh", "-c", "sleep 30"},
+	})
 	if err != nil {
-		t.Fatalf("startPortProxy: %v", err)
+		t.Fatalf("Engine.Exec(--port): %v", err)
 	}
-	defer proxy.Close()
-	pConn, err := net.Dial("tcp", proxy.Addr())
+	pConn, err := eng.OpenPipe(ctx, "port", wsID, guestPort)
 	if err != nil {
-		t.Fatalf("dial port proxy: %v", err)
+		t.Fatalf("OpenPipe port: %v", err)
 	}
 	pBody, _ := io.ReadAll(pConn)
 	_ = pConn.Close()
 	if string(pBody) != "DEV_SERVER_VIA_VSOCK" {
-		t.Fatalf("port proxy body = %q", string(pBody))
+		t.Fatalf("port pipe body = %q", string(pBody))
+	}
+	if got := rt.dialedPorts(); !slices.Equal(got, []uint16{uint16(guestPort)}) {
+		t.Fatalf("runtime DialPort calls = %v, want [%d]", got, guestPort)
+	}
+	if _, err := eng.Stop(ctx, server.Id, "test done"); err != nil {
+		t.Fatalf("Stop(--port): %v", err)
+	}
+	if _, err := eng.OpenPipe(ctx, "port", wsID, guestPort); api.CodeOf(err) != api.CodeNotFound {
+		t.Fatalf("OpenPipe after the server stopped: %v, want NOT_FOUND", err)
 	}
 
 	// 6. ReleaseWorkspace calls Runtime.Teardown cleanly.
 	if err := eng.ReleaseWorkspace(ctx, wsID); err != nil {
 		t.Fatalf("ReleaseWorkspace: %v", err)
 	}
-	// One for each command's VM, and one for the release.
+	// One for each command's VM that ran, and one for the release.
 	if rt.torn[wsID] != 4 {
 		t.Fatalf("Teardown count after release = %d, want 4", rt.torn[wsID])
 	}
@@ -854,7 +882,7 @@ func TestRuntimeUnitsReclaimRoutesVMCgroupToGuestAndHostFirecrackerUnit(t *testi
 			},
 		},
 	}
-	ru := newRuntimeUnits(inner, spy, func(string) bool { return true }, 0, 0)
+	ru := newRuntimeUnits(t.Context(), inner, spy, func(string) bool { return true }, 0, 0)
 
 	// Reclaim pushes 960 MiB out of the host Firecracker unit while preserving the
 	// 64 MiB hot floor (never freezing the host Firecracker unit!).
@@ -948,7 +976,7 @@ func TestRuntimeUnitsMemoryAndReclaimAccountForHostVMRam(t *testing.T) {
 			},
 		},
 	}
-	ru := newRuntimeUnits(inner, spy, func(string) bool { return true }, 0, 0)
+	ru := newRuntimeUnits(t.Context(), inner, spy, func(string) bool { return true }, 0, 0)
 	ru.isVMQuiescent = func(string) bool { return true }
 
 	mem, err := ru.Memory("vm:ws-zram:cmd-1")

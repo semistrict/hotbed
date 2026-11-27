@@ -209,17 +209,6 @@ func setCmdOOMScoreAdj(pid, score int) {
 	_ = os.WriteFile(filepath.Join("/proc", strconv.Itoa(pid), "oom_score_adj"), []byte(strconv.Itoa(score)), 0o644)
 }
 
-func signalProcessGroup(pid int, sig syscall.Signal) error {
-	if pid <= 0 {
-		return nil
-	}
-	err := syscall.Kill(-pid, sig)
-	if errors.Is(err, syscall.ESRCH) {
-		return nil
-	}
-	return err
-}
-
 func syncFilesystems() {
 	syscall.Sync()
 }

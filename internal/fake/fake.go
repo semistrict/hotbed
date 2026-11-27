@@ -350,6 +350,7 @@ func (u *Units) Spec(name string) (unit.Spec, bool) {
 
 type proc struct {
 	cmd       *exec.Cmd
+	group     *unit.ProcGroup // its process group, signalled only until reaped
 	started   time.Time
 	exited    chan struct{} // closed once done
 	done      bool
@@ -414,13 +415,13 @@ func (u *Units) Start(_ context.Context, s unit.Spec) error {
 		log.Close()
 		return err
 	}
-	p := &proc{cmd: cmd, started: time.Now(), exited: make(chan struct{})}
+	p := &proc{cmd: cmd, group: unit.NewProcGroup(cmd), started: time.Now(), exited: make(chan struct{})}
 	u.units[s.Name] = p
 	u.specs[s.Name] = s
 	u.wg.Add(1)
 	go func() {
 		defer u.wg.Done()
-		err := cmd.Wait()
+		err := p.group.Wait(false)
 		_ = tw.Close()
 		log.Close()
 		u.mu.Lock()
@@ -563,9 +564,8 @@ func (u *Units) OOMKill(name string, sig syscall.Signal) error {
 	}
 	p.result = "oom-kill"
 	p.oomKilled = true
-	pid := p.cmd.Process.Pid
 	u.mu.Unlock()
-	if err := syscall.Kill(-pid, sig); err != nil && !errors.Is(err, syscall.ESRCH) {
+	if err := p.group.Signal(sig); err != nil {
 		return err
 	}
 	<-p.exited
@@ -590,10 +590,9 @@ func (u *Units) freeze(name string, frozen bool) error {
 		sig = syscall.SIGSTOP
 	}
 	// Its process may have exited while Start's goroutine waits for u.mu to
-	// mark it done: nothing is left to signal, as for a unit that is done.
-	// Gone, the group is ESRCH; still a zombie, macOS says EPERM, which
-	// can mean nothing else for this process's own children.
-	if err := syscall.Kill(-p.cmd.Process.Pid, sig); err != nil && !errors.Is(err, syscall.ESRCH) && !errors.Is(err, syscall.EPERM) {
+	// mark it done: the group then signals nothing, as for a unit that is
+	// done.
+	if err := p.group.Signal(sig); err != nil {
 		return err
 	}
 	p.frozen = frozen
@@ -678,8 +677,8 @@ func (u *Units) Stop(_ context.Context, name string) error {
 	select {
 	case <-p.exited:
 	default:
-		syscall.Kill(-p.cmd.Process.Pid, syscall.SIGCONT)
-		syscall.Kill(-p.cmd.Process.Pid, syscall.SIGKILL)
+		_ = p.group.Signal(syscall.SIGCONT)
+		_ = p.group.Signal(syscall.SIGKILL)
 		<-p.exited // Start's goroutine reaps it
 	}
 	u.mu.Lock()
@@ -704,9 +703,8 @@ func (u *Units) Close() {
 		select {
 		case <-p.exited:
 		default:
-			pid := p.cmd.Process.Pid
-			_ = syscall.Kill(-pid, syscall.SIGCONT)
-			_ = syscall.Kill(-pid, syscall.SIGKILL)
+			_ = p.group.Signal(syscall.SIGCONT)
+			_ = p.group.Signal(syscall.SIGKILL)
 			<-p.exited
 		}
 	}

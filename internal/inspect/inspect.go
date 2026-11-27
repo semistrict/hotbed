@@ -6,7 +6,6 @@ package inspect
 
 import (
 	"bufio"
-	"cmp"
 	"context"
 	"encoding/hex"
 	"fmt"
@@ -843,14 +842,8 @@ func ParsePerfScript(output string, limit int) ([]*pb.ProfileFrame, []*pb.Folded
 		limit = 200
 	}
 	var all flame.Table
-	type stackKey struct {
-		frames   string // flame.AppendID's key of the stack's frames
-		leafType string
-		comm     string
-	}
-	stackCounts := map[stackKey]int64{}
-	type fnCount struct{ self, total int64 }
-	funcs := map[uint32]*fnCount{}
+	stackCounts := flame.Stacks{}
+	var funcs flame.Functions
 	var totalSamples int64
 
 	var curComm string
@@ -866,24 +859,15 @@ func ParsePerfScript(output string, limit int) ([]*pb.ProfileFrame, []*pb.Folded
 		if curComm != "" {
 			key = flame.AppendID(key, all.ID(&pb.ProfileFrame{Name: curComm, FrameType: "process"}))
 		}
-		var seenInStack []uint32
+		// The functions are the stack's own frames: its process is none.
+		ids := make([]uint32, 0, len(curFrames))
 		for i := len(curFrames) - 1; i >= 0; i-- {
 			id := all.ID(curFrames[i])
 			key = flame.AppendID(key, id)
-			m := funcs[id]
-			if m == nil {
-				m = &fnCount{}
-				funcs[id] = m
-			}
-			if !slices.Contains(seenInStack, id) {
-				m.total++
-				seenInStack = append(seenInStack, id)
-			}
-			if i == 0 {
-				m.self++
-			}
+			ids = append(ids, id)
 		}
-		stackCounts[stackKey{frames: string(key), leafType: curFrames[0].FrameType, comm: curComm}]++
+		funcs.Add(ids, 1)
+		stackCounts[flame.StackKey{Frames: string(key), LeafType: curFrames[0].FrameType, Comm: curComm}]++
 		curFrames = curFrames[:0]
 	}
 
@@ -933,38 +917,9 @@ func ParsePerfScript(output string, limit int) ([]*pb.ProfileFrame, []*pb.Folded
 	flush()
 
 	frames := all.Frames()
-	stacks := make([]*pb.FoldedStack, 0, len(stackCounts))
-	for k, cnt := range stackCounts {
-		stacks = append(stacks, &pb.FoldedStack{Frames: flame.IDs(k.frames), Samples: cnt, LeafType: k.leafType, Comm: k.comm})
-	}
-	slices.SortFunc(stacks, func(a, b *pb.FoldedStack) int {
-		return cmp.Or(cmp.Compare(b.Samples, a.Samples), slices.Compare(a.Frames, b.Frames), cmp.Compare(a.Comm, b.Comm))
-	})
+	stacks := stackCounts.Folded()
 	stacks = stacks[:min(len(stacks), limit)]
-
-	topFns := make([]*pb.ProfileFunction, 0, len(funcs))
-	for id, m := range funcs {
-		var selfPct, totalPct float64
-		if totalSamples > 0 {
-			selfPct = 100 * float64(m.self) / float64(totalSamples)
-			totalPct = 100 * float64(m.total) / float64(totalSamples)
-		}
-		topFns = append(topFns, &pb.ProfileFunction{
-			Frame:        id,
-			SelfSamples:  m.self,
-			TotalSamples: m.total,
-			SelfPct:      selfPct,
-			TotalPct:     totalPct,
-		})
-	}
-	slices.SortFunc(topFns, func(a, b *pb.ProfileFunction) int {
-		return cmp.Or(
-			cmp.Compare(b.SelfSamples, a.SelfSamples),
-			cmp.Compare(b.TotalSamples, a.TotalSamples),
-			cmp.Compare(frames[a.Frame].Name, frames[b.Frame].Name),
-			cmp.Compare(a.Frame, b.Frame),
-		)
-	})
+	topFns := funcs.Top(frames, totalSamples)
 	topFns = topFns[:min(len(topFns), limit)]
 
 	// Only the frames the top stacks and functions name.

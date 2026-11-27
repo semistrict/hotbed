@@ -80,8 +80,10 @@ func (e *Engine) SetShellServer(s *ShellServer) {
 // OpenPipe is this worker's end of a byte stream the controller relays from
 // a client: kind "ssh" is its shell server (OpenShell's ticket admits the
 // client), kind "port" the port a live command of workspace serves on
-// (hotbed run --port), and nothing else on the machine.
-func (e *Engine) OpenPipe(kind, workspace string, port int) (net.Conn, error) {
+// (hotbed run --port), and nothing else on the machine. A VM workspace's
+// port is dialed inside its guest through the runtime, so no host socket
+// ever listens for it; a host workspace's command serves on host loopback.
+func (e *Engine) OpenPipe(ctx context.Context, kind, workspace string, port int) (net.Conn, error) {
 	switch kind {
 	case "ssh":
 		e.mu.Lock()
@@ -97,8 +99,13 @@ func (e *Engine) OpenPipe(kind, workspace string, port int) (net.Conn, error) {
 		if !e.servesPort(workspace, port) {
 			return nil, api.Errorf(api.CodeNotFound, "no command in workspace %s serves on port %d", workspace, port)
 		}
-		d := net.Dialer{Timeout: 5 * time.Second}
-		return d.Dial("tcp", net.JoinHostPort("127.0.0.1", strconv.Itoa(port)))
+		dctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+		defer cancel()
+		if e.usesRuntime(workspace) {
+			return e.cfg.Runtime.DialPort(dctx, workspace, uint16(port))
+		}
+		var d net.Dialer
+		return d.DialContext(dctx, "tcp", net.JoinHostPort("127.0.0.1", strconv.Itoa(port)))
 	default:
 		return nil, api.Errorf(api.CodeInvalidArgs, "no pipe of kind %q", kind)
 	}

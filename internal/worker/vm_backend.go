@@ -51,6 +51,9 @@ type VMBackend struct {
 	machined *grpc.ClientConn
 	rt       *runtime.GuestRuntime
 	link     cladefsdLink
+	// metricsURL is the host cladefsd's Prometheus endpoint, empty where
+	// none serves one (machined embeds its daemon; tests run none).
+	metricsURL string
 
 	baseMu       sync.Mutex // serializes base image provisioning
 	held         heldBases  // the project bases this node hands out
@@ -150,6 +153,7 @@ func OpenVMBackend(ctx context.Context, workerDir string, cfg statedir.VMConfig,
 		cladefsCfg cladefs.Config
 		vmmOpts    []vm.ManagerOption
 		machined   *grpc.ClientConn
+		metricsURL string
 	)
 	if cfg.MachinedSock != "" {
 		if cfg.MachinedImages == "" {
@@ -184,6 +188,7 @@ func OpenVMBackend(ctx context.Context, workerDir string, cfg statedir.VMConfig,
 			VMGID:       vmGID,
 			DefaultCap:  cfg.DiskBytes,
 		}
+		metricsURL = hostCladefsdMetricsURL
 	}
 	closeMachined := func() {
 		if machined != nil {
@@ -239,6 +244,7 @@ func OpenVMBackend(ctx context.Context, workerDir string, cfg statedir.VMConfig,
 		mgr:          mgr,
 		machined:     machined,
 		link:         cladefsdLink{incarnation: inc},
+		metricsURL:   metricsURL,
 		baseImages:   map[string]cladefs.CellRef{},
 		wsCells:      map[string]cladefs.CellRef{},
 		activeBuilds: map[string]struct{}{},
@@ -403,10 +409,16 @@ func (b *VMBackend) HeartbeatMeta() (peerAddr string, incarnation uint64, held [
 // SampleObjectStore fetches cumulative cladefsd R2 object-store counters and
 // the peer mesh this worker last applied.
 func (b *VMBackend) SampleObjectStore(ctx context.Context) *pb.ObjectStoreStats {
-	return sampleCladefsObjectStore(ctx, b.currentStore(), b.configSnapshot().CladefsPeerAddr, b.link.Peers())
+	return sampleCladefsObjectStore(ctx, b.currentStore(), b.metricsURL, b.configSnapshot().CladefsPeerAddr, b.link.Peers())
 }
 
-func sampleCladefsObjectStore(ctx context.Context, store *cladefs.Store, peerAddr string, peers []string) *pb.ObjectStoreStats {
+// hostCladefsdMetricsURL is where the Linux host's cladefsd.service serves
+// its Prometheus metrics.
+const hostCladefsdMetricsURL = "http://127.0.0.1:9184/metrics"
+
+// sampleCladefsObjectStore reads store's counters and gauges, and the
+// Prometheus metrics at metricsURL unless it is empty.
+func sampleCladefsObjectStore(ctx context.Context, store *cladefs.Store, metricsURL, peerAddr string, peers []string) *pb.ObjectStoreStats {
 	if store == nil {
 		return nil
 	}
@@ -428,7 +440,9 @@ func sampleCladefsObjectStore(ctx context.Context, store *cladefs.Store, peerAdd
 	}); serr == nil {
 		applyCladefsStats(out, stats)
 	}
-	scrapeLocalCladefsMetrics(sctx, "http://127.0.0.1:9184/metrics", out)
+	if metricsURL != "" {
+		scrapeLocalCladefsMetrics(sctx, metricsURL, out)
+	}
 	return out
 }
 
@@ -1215,7 +1229,7 @@ func (b *VMBackend) buildProjectBase(
 	prepSeconds := time.Since(prepStart).Seconds()
 
 	stepsToRun := selectProjectBaseSteps(p, prevBase, heads)
-	script := buildCladefsFreshenScript(p, heads, stepsToRun, false)
+	script := freshenScript(p.GetRepos(), heads, prevBase.repoIDs(), stepsToRun)
 
 	var (
 		repoHeads  map[string]string

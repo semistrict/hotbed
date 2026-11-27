@@ -187,21 +187,6 @@ func TestStatusManyAtEmpty(t *testing.T) {
 	}
 }
 
-func TestParseMemoryEventsOOM(t *testing.T) {
-	if parseMemoryEventsOOM("low 0\nhigh 12\nmax 3\noom 0\noom_kill 0\noom_group_kill 0\n") {
-		t.Error("expected false when oom_kill and oom_group_kill are 0")
-	}
-	if !parseMemoryEventsOOM("low 0\nhigh 12\noom 1\noom_kill 1\noom_group_kill 0\n") {
-		t.Error("expected true when oom_kill > 0")
-	}
-	if !parseMemoryEventsOOM("oom_kill 0\noom_group_kill 2\n") {
-		t.Error("expected true when oom_group_kill > 0")
-	}
-	if parseMemoryEventsOOM("") {
-		t.Error("expected false on empty input")
-	}
-}
-
 func TestSliceDir(t *testing.T) {
 	for slice, want := range map[string]string{
 		"hotbed.slice":         "/hotbed.slice",

@@ -14,7 +14,9 @@ func SystemdWorkerUnit(binaryPath, stateDir, zfsImportPre string) string {
 	b.WriteString("[Unit]\n")
 	b.WriteString("Description=hotbed worker\n")
 	b.WriteString("After=network-online.target tailscaled.service zfs-mount.service\n")
-	b.WriteString("Wants=network-online.target tailscaled.service zfs-mount.service\n\n")
+	// After= only orders: a host without tailscaled runs the worker all
+	// the same (it needs no tailnet), so nothing here Wants it.
+	b.WriteString("Wants=network-online.target zfs-mount.service\n\n")
 	b.WriteString("[Service]\n")
 	if zfsImportPre != "" {
 		fmt.Fprintf(&b, "ExecStartPre=-%s\n", zfsImportPre)

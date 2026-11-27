@@ -13,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/semistrict/hotbed/internal/sysinfo"
 	"golang.org/x/sys/unix"
 )
 
@@ -44,7 +45,7 @@ func cleanupFUSEMountDir(mntDir string, syncFS bool) {
 		return
 	}
 	terminateMountUsers("/proc", mntDir)
-	unmountSubmountsUnder("/proc/self/mountinfo", mntDir)
+	unmountSubmountsUnder(mntDir)
 	if syncFS {
 		fd, err := unix.Open(mntDir, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_CLOEXEC, 0)
 		if err == nil {
@@ -139,65 +140,13 @@ func terminateMountUsers(procRoot, mntDir string) {
 	}
 }
 
-func unescapeMountinfoPath(s string) string {
-	var b strings.Builder
-	b.Grow(len(s))
-	for i := 0; i < len(s); i++ {
-		if s[i] == '\\' && i+3 < len(s) {
-			if v, err := strconv.ParseUint(s[i+1:i+4], 8, 8); err == nil {
-				b.WriteByte(byte(v))
-				i += 3
-				continue
-			}
-		}
-		b.WriteByte(s[i])
-	}
-	return b.String()
-}
-
-// parseSubmountsUnder extracts mount points strictly beneath mntDir from Linux
-// /proc/self/mountinfo contents, sorted deepest-first for safe teardown.
-func parseSubmountsUnder(mountinfo, mntDir string) []string {
-	mntDir = filepath.Clean(mntDir)
-	if !filepath.IsAbs(mntDir) || mntDir == "/" {
-		return nil
-	}
-	prefix := mntDir + "/"
-	seen := map[string]struct{}{}
-	var out []string
-	for _, line := range strings.Split(mountinfo, "\n") {
-		fields := strings.Fields(line)
-		if len(fields) < 5 {
-			continue
-		}
-		mp := filepath.Clean(unescapeMountinfoPath(fields[4]))
-		if !strings.HasPrefix(mp, prefix) {
-			continue
-		}
-		if _, dup := seen[mp]; dup {
-			continue
-		}
-		seen[mp] = struct{}{}
-		out = append(out, mp)
-	}
-	slices.SortFunc(out, func(a, b string) int {
-		if da, db := strings.Count(a, "/"), strings.Count(b, "/"); da != db {
-			return db - da
-		}
-		if len(a) != len(b) {
-			return len(b) - len(a)
-		}
-		return strings.Compare(b, a)
-	})
-	return out
-}
-
-func unmountSubmountsUnder(mountinfoPath, mntDir string) {
-	data, err := os.ReadFile(mountinfoPath)
+func unmountSubmountsUnder(mntDir string) {
+	mounts, err := sysinfo.MountsUnder(mntDir, sysinfo.Beneath)
 	if err != nil {
+		slog.Warn("read the submounts under a cladefs FUSE cell dir", "dir", mntDir, "err", err)
 		return
 	}
-	for _, mp := range parseSubmountsUnder(string(data), mntDir) {
+	for _, mp := range mounts {
 		slog.Warn("detaching leftover submount under cladefs FUSE cell dir", "dir", mntDir, "submount", mp)
 		if err := unix.Unmount(mp, unix.MNT_DETACH); err != nil && err != unix.EINVAL && err != unix.ENOENT {
 			slog.Warn("detach leftover submount failed", "submount", mp, "err", err)

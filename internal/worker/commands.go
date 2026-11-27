@@ -151,19 +151,12 @@ func (e *Engine) Exec(_ context.Context, req *pb.RunCommandRequest) (*pb.Command
 			Tty: tty, TtyInput: ttyInput, Estimate: estimate,
 			Placement: clone(req.Placement),
 			Runtime:   e.workspaceRuntime(w),
-			Timeline: []*pb.CommandEvent{{At: now, What: "queued", Detail: "by " + w.ws().Agent}},
+			Timeline:  []*pb.CommandEvent{{At: now, What: "queued", Detail: "by " + w.ws().Agent}},
 		},
 		RepoId: req.Repo, Project: w.ws().Project, Agent: w.ws().Agent, Volume: w.rec.Volume,
 		Dir: dir, Env: req.Env,
 	})
 	if req.Port > 0 {
-		if e.usesRuntime(c.runtimeTarget()) {
-			if p, err := startPortProxy(fmt.Sprintf(":%d", req.Port), c.runtimeTarget(), uint16(req.Port), e.cfg.Runtime); err != nil {
-				slog.Warn("start VM dev-server port proxy", "command", id, "port", req.Port, "err", err)
-			} else {
-				e.portProxies[id] = p
-			}
-		}
 		c.cmd().Url = fmt.Sprintf("http://%s:%d", e.cfg.Host, req.Port)
 	}
 	if isBuild(kind) {
@@ -2044,10 +2037,6 @@ func (e *Engine) endBy(c *command, state pb.CommandState, code *int32, why strin
 	}
 	cmd.Timeline = append(cmd.Timeline, &pb.CommandEvent{At: now, What: what, Detail: detail})
 	// Its processes are gone: the unit has exited or been stopped.
-	if p, ok := e.portProxies[cmd.Id]; ok {
-		delete(e.portProxies, cmd.Id)
-		_ = p.Close()
-	}
 	if !e.usesRuntime(c.runtimeTarget()) && !c.isVMFreshen() {
 		e.dropTmp(c)
 	}

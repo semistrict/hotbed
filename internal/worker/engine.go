@@ -208,7 +208,6 @@ type Engine struct {
 	gitAuth        *gitAuthServer
 	containersConf string
 	rtUnits        *runtimeUnits
-	portProxies    map[string]*portProxy
 	freshenBudget  *freshenBudget
 
 	mu              sync.Mutex
@@ -542,7 +541,6 @@ func NewEngine(ctx context.Context, cfg EngineConfig) (*Engine, error) {
 		shellHostPub:     hostPub,
 		shellTickets:     map[string]*shellTicket{},
 		shells:           map[string]*activeShell{},
-		portProxies:      map[string]*portProxy{},
 		kick:             make(chan struct{}, 1),
 		outputKick:       make(chan struct{}, 1),
 		collect:          make(chan struct{}, 1),
@@ -584,7 +582,7 @@ func NewEngine(ctx context.Context, cfg EngineConfig) (*Engine, error) {
 			sp := cfg.BaseImage.Spec.Normalized()
 			uid, gid = sp.UID, sp.GID
 		}
-		e.rtUnits = newRuntimeUnits(cfg.Units, e.cfg.Runtime, e.usesRuntime, uid, gid)
+		e.rtUnits = newRuntimeUnits(e.bgCtx, cfg.Units, e.cfg.Runtime, e.usesRuntime, uid, gid)
 		e.rtUnits.isVMQuiescent = e.isVMQuiescent
 		e.cfg.Units = e.rtUnits
 	}
@@ -597,7 +595,7 @@ func NewEngine(ctx context.Context, cfg EngineConfig) (*Engine, error) {
 		for _, c := range e.commands {
 			if started(c.cmd().State) && e.usesRuntime(c.runtimeTarget()) {
 				if lp, lerr := e.logPath(c.cmd().Id); lerr == nil {
-					e.rtUnits.RegisterExisting(e.bgCtx, c.unitName(), c.runtimeTarget(), c.cmd().Id, lp)
+					e.rtUnits.RegisterExisting(c.unitName(), c.runtimeTarget(), c.cmd().Id, lp)
 				}
 			}
 		}
@@ -709,11 +707,6 @@ func (e *Engine) Close() error {
 	for _, sh := range e.shells {
 		active = append(active, sh)
 	}
-	var proxies []*portProxy
-	for k, p := range e.portProxies {
-		proxies = append(proxies, p)
-		delete(e.portProxies, k)
-	}
 	var outs []*output
 	for _, c := range e.commands {
 		if c.out != nil {
@@ -724,9 +717,6 @@ func (e *Engine) Close() error {
 	for _, o := range outs {
 		o.stopTimestampWatch()
 	}
-	for _, p := range proxies {
-		_ = p.Close()
-	}
 	for _, sh := range active {
 		sh.cancel()
 	}
@@ -734,6 +724,9 @@ func (e *Engine) Close() error {
 		<-sh.done
 	}
 	e.bg.Wait()
+	if e.rtUnits != nil {
+		e.rtUnits.Close()
+	}
 	if e.gitAuth != nil {
 		_ = e.gitAuth.Close()
 	}

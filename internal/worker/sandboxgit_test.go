@@ -2,7 +2,6 @@ package worker
 
 import (
 	"errors"
-	"slices"
 	"strings"
 	"testing"
 
@@ -46,43 +45,6 @@ func TestApplyInARootfsReportsWhatApplyReturned(t *testing.T) {
 		if got != want {
 			t.Errorf("%s: %+v, want %+v", name, got, want)
 		}
-	}
-}
-
-// A diff is the rootfs's git's, which its root may have replaced: hunks
-// mark only the file's own lines, once each, however many they claim.
-func TestChangedLinesAreTheFilesOwn(t *testing.T) {
-	for name, c := range map[string]struct {
-		diff string
-		n    int
-		want []int32
-	}{
-		"a hunk":                     {"@@ -1 +2,2 @@\n", 5, []int32{2, 3}},
-		"a deletion marks nothing":   {"@@ -3 +2,0 @@\n", 5, []int32{}},
-		"a hunk claiming 2^31 lines": {"@@ -1 +1,2147483647 @@\n", 3, []int32{1, 2, 3}},
-		"overlapping hunks":          {"@@ -1 +1,3 @@\n@@ -1 +2,3 @@\n", 9, []int32{1, 2, 3, 4}},
-		"a hunk past the end":        {"@@ -1 +7,2 @@\n", 5, []int32{}},
-		"a count past int":           {"@@ -1 +1,99999999999999999999 @@\n", 3, []int32{}},
-	} {
-		if got := changedLines(c.diff, c.n); !slices.Equal(got, c.want) {
-			t.Errorf("%s: %v, want %v", name, got, c.want)
-		}
-	}
-}
-
-func TestLineCount(t *testing.T) {
-	for text, want := range map[string]int{"": 0, "a": 1, "a\n": 1, "a\nb": 2, "a\nb\n": 2, "\n": 1} {
-		if got := lineCount([]byte(text)); got != want {
-			t.Errorf("lineCount(%q) = %d, want %d", text, got, want)
-		}
-	}
-}
-
-// A hunk after a line longer than a bufio.Scanner's is still read.
-func TestChangedLinesPastALongLine(t *testing.T) {
-	diff := "@@ -1 +1 @@\n-x\n+" + strings.Repeat("m", 200<<10) + "\n@@ -3 +3 @@\n-y\n+z\n"
-	if got, want := changedLines(diff, 3), []int32{1, 3}; !slices.Equal(got, want) {
-		t.Errorf("changedLines = %v, want %v", got, want)
 	}
 }
 

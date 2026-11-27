@@ -51,7 +51,7 @@ type tunnelDownMessage struct {
 // pipeOpener opens the worker's end of a pipe the controller relays a
 // client's byte stream through.
 type pipeOpener interface {
-	OpenPipe(kind, workspace string, port int) (net.Conn, error)
+	OpenPipe(ctx context.Context, kind, workspace string, port int) (net.Conn, error)
 }
 
 // tunnelUpMessage is sent by a worker back to the Cloudflare Workers controller
@@ -528,7 +528,7 @@ func dispatchTunnelStream(
 // when it closes); what the worker's end writes goes back in pipe_data
 // frames, pipe_close last, with why if it failed.
 func servePipe(ctx context.Context, pipes pipeOpener, r tunnelDownMessage, in <-chan []byte, send func(tunnelUpMessage)) {
-	conn, err := pipes.OpenPipe(r.Kind, r.Workspace, r.Port)
+	conn, err := pipes.OpenPipe(ctx, r.Kind, r.Workspace, r.Port)
 	if err != nil {
 		send(tunnelUpMessage{Type: "pipe_close", ID: r.ID, Message: err.Error()})
 		for range in {

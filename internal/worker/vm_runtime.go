@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
-	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -461,7 +460,14 @@ type runtimeUnits struct {
 	uid           int
 	gid           int
 
+	// pumpCtx bounds every guest log pump, which pumps run on until Close:
+	// a pump stopped then resumes from the host log's end after a restart
+	// (RegisterExisting). pumps counts the pumps running.
+	pumpCtx   context.Context
+	stopPumps context.CancelFunc
+	pumps     sync.WaitGroup
 	mu        sync.Mutex
+	closed    bool              // Close began: no pump starts
 	cmds      map[string]*rtCmd // unitName -> active/tracked guest command
 	vmCgroups map[string]string // wsID -> host Firecracker unit cgroup path
 }
@@ -474,8 +480,13 @@ type rtCmd struct {
 	done    chan struct{}
 }
 
-func newRuntimeUnits(inner Units, rt runtime.WorkspaceRuntime, useRT func(string) bool, uid, gid int) *runtimeUnits {
+// newRuntimeUnits routes VM workspaces' units through rt; its log pumps run
+// until ctx ends or Close.
+func newRuntimeUnits(ctx context.Context, inner Units, rt runtime.WorkspaceRuntime, useRT func(string) bool, uid, gid int) *runtimeUnits {
+	pumpCtx, stop := context.WithCancel(ctx)
 	return &runtimeUnits{
+		pumpCtx:   pumpCtx,
+		stopPumps: stop,
 		inner:     inner,
 		rt:        rt,
 		useRT:     useRT,
@@ -499,16 +510,22 @@ func envValue(env []string, key string) string {
 // RegisterExisting re-attaches a live VM command loaded from worker.db after a
 // hotbed-worker restart and resumes streaming its guest logs into logPath from
 // the existing host file offset.
-func (u *runtimeUnits) RegisterExisting(ctx context.Context, unitName, wsID, cmdID, logPath string) {
+func (u *runtimeUnits) RegisterExisting(unitName, wsID, cmdID, logPath string) {
 	if !u.useRT(wsID) {
 		return
 	}
 	u.mu.Lock()
+	defer u.mu.Unlock()
 	if _, exists := u.cmds[unitName]; exists {
-		u.mu.Unlock()
 		return
 	}
-	pumpCtx, cancel := context.WithCancel(ctx)
+	u.trackLocked(unitName, wsID, cmdID, logPath)
+}
+
+// trackLocked tracks the guest command unitName and starts pumping its log
+// into logPath, unless Close began. Call with u.mu held.
+func (u *runtimeUnits) trackLocked(unitName, wsID, cmdID, logPath string) {
+	ctx, cancel := context.WithCancel(u.pumpCtx)
 	rc := &rtCmd{
 		wsID:    wsID,
 		cmdID:   cmdID,
@@ -517,9 +534,26 @@ func (u *runtimeUnits) RegisterExisting(ctx context.Context, unitName, wsID, cmd
 		done:    make(chan struct{}),
 	}
 	u.cmds[unitName] = rc
-	u.mu.Unlock()
+	if u.closed {
+		cancel()
+		close(rc.done)
+		return
+	}
+	u.pumps.Add(1)
+	go func() {
+		defer u.pumps.Done()
+		u.pumpLogs(ctx, rc)
+	}()
+}
 
-	go u.pumpLogs(pumpCtx, rc)
+// Close stops every log pump and waits for them to end. Guest commands run
+// on: only their logs stop reaching the host until the worker restarts.
+func (u *runtimeUnits) Close() {
+	u.mu.Lock()
+	u.closed = true
+	u.mu.Unlock()
+	u.stopPumps()
+	u.pumps.Wait()
 }
 
 func (u *runtimeUnits) lookup(unitName string) *rtCmd {
@@ -575,19 +609,9 @@ func (u *runtimeUnits) Start(ctx context.Context, s unit.Spec) error {
 		return err
 	}
 
-	pumpCtx, cancel := context.WithCancel(context.Background())
-	rc := &rtCmd{
-		wsID:    wsID,
-		cmdID:   cmdID,
-		logPath: s.Log,
-		cancel:  cancel,
-		done:    make(chan struct{}),
-	}
 	u.mu.Lock()
-	u.cmds[s.Name] = rc
+	u.trackLocked(s.Name, wsID, cmdID, s.Log)
 	u.mu.Unlock()
-
-	go u.pumpLogs(pumpCtx, rc)
 	return nil
 }
 
@@ -1067,17 +1091,9 @@ func (e *Engine) filesViaRuntime(ctx context.Context, wsID string, repos []*pb.W
 func (e *Engine) fileViaRuntime(ctx context.Context, wsID, path string, repos []*pb.WorkspaceRepo) (*pb.FileContent, error) {
 	defer e.useVM(wsID)()
 	e.touchWorkspaceActive(wsID)
-	clean := strings.TrimPrefix(filepath.Clean("/"+path), "/")
-	name, rel, _ := strings.Cut(clean, "/")
-	var r *pb.WorkspaceRepo
-	for _, o := range repos {
-		if o.Repo == name {
-			r = o
-		}
-	}
-	if r == nil || rel == "" {
-		return nil, api.Errorf(api.CodeInvalidArgs, "path %q is in none of the workspace's repos", path).
-			WithSuggestion("paths start with the repo, such as hotbed/go.mod; hotbed workspace files lists them")
+	r, rel, err := repoPath(path, repos)
+	if err != nil {
+		return nil, err
 	}
 	fc, err := e.cfg.Runtime.GetFile(ctx, wsID, r.Repo, r.BaseCommit, rel)
 	if err != nil {
@@ -1089,62 +1105,3 @@ func (e *Engine) fileViaRuntime(ctx context.Context, wsID, path string, repos []
 	fc.Path = path
 	return fc, nil
 }
-
-// portProxy forwards TCP connections on a host port to a dev server listening
-// on loopback inside a VM workspace via WorkspaceRuntime.DialPort (vsock 5003).
-type portProxy struct {
-	ln   net.Listener
-	port uint16
-	wsID string
-	rt   runtime.WorkspaceRuntime
-}
-
-func startPortProxy(listenAddr string, wsID string, guestPort uint16, rt runtime.WorkspaceRuntime) (*portProxy, error) {
-	ln, err := net.Listen("tcp", listenAddr)
-	if err != nil {
-		return nil, fmt.Errorf("listen dev server proxy %s -> %s:%d: %w", listenAddr, wsID, guestPort, err)
-	}
-	p := &portProxy{ln: ln, port: guestPort, wsID: wsID, rt: rt}
-	go p.serve()
-	return p, nil
-}
-
-func (p *portProxy) Addr() string { return p.ln.Addr().String() }
-
-func (p *portProxy) serve() {
-	for {
-		src, err := p.ln.Accept()
-		if err != nil {
-			return
-		}
-		go func(c net.Conn) {
-			defer c.Close()
-			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-			dst, err := p.rt.DialPort(ctx, p.wsID, p.port)
-			cancel()
-			if err != nil {
-				return
-			}
-			defer dst.Close()
-			done := make(chan struct{}, 2)
-			go func() {
-				_, _ = io.Copy(dst, c)
-				if cw, ok := dst.(interface{ CloseWrite() error }); ok {
-					_ = cw.CloseWrite()
-				}
-				done <- struct{}{}
-			}()
-			go func() {
-				_, _ = io.Copy(c, dst)
-				if cw, ok := c.(interface{ CloseWrite() error }); ok {
-					_ = cw.CloseWrite()
-				}
-				done <- struct{}{}
-			}()
-			<-done
-			<-done
-		}(src)
-	}
-}
-
-func (p *portProxy) Close() error { return p.ln.Close() }

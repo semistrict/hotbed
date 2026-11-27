@@ -9,6 +9,8 @@ import (
 	"strconv"
 	"strings"
 	"syscall"
+
+	"github.com/semistrict/hotbed/internal/sysinfo"
 )
 
 type cmdCgroupStats struct {
@@ -53,7 +55,7 @@ func readCgroupStats(cgDir string) cmdCgroupStats {
 		_ = f.Close()
 	}
 	if b, err := os.ReadFile(filepath.Join(cgDir, "memory.events")); err == nil {
-		st.oomKilled = parseMemoryEventsOOM(string(b))
+		st.oomKilled = sysinfo.ParseMemoryEventsOOM(string(b))
 	}
 	return st
 }
@@ -68,21 +70,6 @@ func readCgroupInt64(path string) int64 {
 		return 0
 	}
 	return n
-}
-
-func parseMemoryEventsOOM(content string) bool {
-	for _, line := range strings.Split(content, "\n") {
-		fields := strings.Fields(line)
-		if len(fields) != 2 {
-			continue
-		}
-		if fields[0] == "oom_kill" || fields[0] == "oom_group_kill" {
-			if n, err := strconv.ParseInt(fields[1], 10, 64); err == nil && n > 0 {
-				return true
-			}
-		}
-	}
-	return false
 }
 
 func exitStatusOf(err error) (exitCode, sig int) {

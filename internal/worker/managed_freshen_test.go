@@ -391,7 +391,7 @@ func TestRuntimeUnitsRoutesManagedVMFreshenViaRuntimeTarget(t *testing.T) {
 			return nil
 		},
 	}
-	ru := newRuntimeUnits(inner, rt, func(wsID string) bool { return wsID == "base-cladefs-vm-12345678" }, 1000, 1000)
+	ru := newRuntimeUnits(t.Context(), inner, rt, func(wsID string) bool { return wsID == "base-cladefs-vm-12345678" }, 1000, 1000)
 	err := ru.Start(t.Context(), unit.Spec{
 		Name: "hotbed-f-cladefs-vm-12345678-abc123",
 		Argv: []string{"/bin/bash", "-c", "echo ok"},
@@ -551,5 +551,51 @@ func TestOutputParsesGitPhaseAndLiveStepSnapshot(t *testing.T) {
 	}
 	if !live[2].Ok || live[2].Seconds != 3.0 {
 		t.Fatalf("live[2] (cached) = %+v, want inherited ok=true seconds=3.0", live[2])
+	}
+}
+
+// followingRuntime streams a guest command's log until its context ends, as
+// guestd does for a command that runs on.
+type followingRuntime struct {
+	stubWorkspaceRuntime
+	streaming chan struct{}
+}
+
+func (f *followingRuntime) StreamLogs(ctx context.Context, _, _ string, _ int64, _ bool, _ io.Writer) (int64, error) {
+	f.streaming <- struct{}{}
+	<-ctx.Done()
+	return 0, ctx.Err()
+}
+
+// Closing the runtime units ends the log pumps of guest commands that run
+// on, started or re-attached, and waits for them: none outlives the engine.
+func TestRuntimeUnitsCloseEndsEveryLogPump(t *testing.T) {
+	rt := &followingRuntime{streaming: make(chan struct{}, 2)}
+	ru := newRuntimeUnits(t.Context(), &fake.Units{}, rt, func(string) bool { return true }, 0, 0)
+	if err := ru.Start(t.Context(), unit.Spec{
+		Name: "hotbed-c1",
+		Argv: []string{"true"},
+		Env:  []string{"HOTBED_WORKSPACE=ws1", "HOTBED_COMMAND=c1"},
+	}); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	ru.RegisterExisting("hotbed-c2", "ws1", "c2", "")
+	<-rt.streaming
+	<-rt.streaming
+	started := []*rtCmd{ru.lookup("hotbed-c1"), ru.lookup("hotbed-c2")}
+	ru.Close()
+	for _, rc := range started {
+		select {
+		case <-rc.done:
+		default:
+			t.Fatalf("%s's log pump still runs after Close", rc.cmdID)
+		}
+	}
+	// After Close no pump starts: the command is tracked, its pump done.
+	ru.RegisterExisting("hotbed-c3", "ws1", "c3", "")
+	select {
+	case <-ru.lookup("hotbed-c3").done:
+	default:
+		t.Fatal("a log pump started after Close")
 	}
 }

@@ -3,12 +3,10 @@
 package inspect
 
 import (
-	"cmp"
 	"context"
 	"fmt"
 	"os"
 	"runtime"
-	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -94,7 +92,7 @@ func (l Linux) Sample(ctx context.Context, target Target, req *pb.SampleCommandR
 		detail   string
 		durMs    int64
 	}
-	rootDir := l.rootDirFor(target)
+	rootDir := l.baseRootDir()
 	pCtx, pCancel := context.WithDeadline(ctx, startedAt.Add(dur+4*time.Second))
 	defer pCancel()
 	perfCh := make(chan perfResult, 1)
@@ -115,8 +113,9 @@ func (l Linux) Sample(ctx context.Context, target Target, req *pb.SampleCommandR
 						rem = avail
 					}
 				}
-				if sleepArg, ok := perfFallbackSleepArg(rem); ok {
-					cgRel := strings.TrimPrefix(target.Cgroup, "/")
+				if cgRel, _, verr := validateTargetCgroup(target.Cgroup); verr != nil {
+					runErr = verr
+				} else if sleepArg, ok := perfFallbackSleepArg(rem); ok {
 					_, c2, runErr2 := execPerfStat(pCtx, rootDir, perfBin, []string{"stat", "-a", "-e", perfStatEvents, "-G", cgRel, "--", "sleep", sleepArg})
 					if len(c2) > 0 {
 						counters = c2
@@ -503,12 +502,7 @@ func (l Linux) Sample(ctx context.Context, target Target, req *pb.SampleCommandR
 	// Assemble SampledProcess list with per-thread deltas and correlated syscalls.
 	// One frames table serves the sampled stacks and the on-CPU ones.
 	var frames flame.Table
-	type foldedKey struct {
-		frames   string // flame.AppendID's key of the stack's frames
-		leafType string
-		comm     string
-	}
-	foldedCounts := map[foldedKey]int64{}
+	foldedCounts := flame.Stacks{}
 	recordFolded := func(comm string, pid int, path []*pb.ProfileFrame) {
 		if len(path) == 0 {
 			return
@@ -525,7 +519,7 @@ func (l Linux) Sample(ctx context.Context, target Target, req *pb.SampleCommandR
 			}
 			key = flame.AppendID(key, frames.ID(fr))
 		}
-		foldedCounts[foldedKey{frames: string(key), leafType: leafType, comm: comm}]++
+		foldedCounts[flame.StackKey{Frames: string(key), LeafType: leafType, Comm: comm}]++
 	}
 
 	sort.Ints(finalPIDs)
@@ -728,18 +722,7 @@ func (l Linux) Sample(ctx context.Context, target Target, req *pb.SampleCommandR
 	}
 
 	// Collect folded stacks from our multi-snapshot sampling.
-	sampledStacks := make([]*pb.FoldedStack, 0, len(foldedCounts))
-	for fk, cnt := range foldedCounts {
-		sampledStacks = append(sampledStacks, &pb.FoldedStack{
-			Frames:   flame.IDs(fk.frames),
-			Samples:  cnt,
-			LeafType: fk.leafType,
-			Comm:     fk.comm,
-		})
-	}
-	slices.SortFunc(sampledStacks, func(a, b *pb.FoldedStack) int {
-		return cmp.Or(cmp.Compare(b.Samples, a.Samples), slices.Compare(a.Frames, b.Frames), cmp.Compare(a.Comm, b.Comm))
-	})
+	sampledStacks := foldedCounts.Folded()
 
 	// Wait for background perf stat result aligned with pCtx's deadline.
 	var perfCounters []*pb.PerfCounter

@@ -18,6 +18,7 @@ import (
 
 	"github.com/semistrict/hotbed/internal/api"
 	pb "github.com/semistrict/hotbed/internal/gen/hotbed/v1"
+	"github.com/semistrict/hotbed/internal/gitops"
 	"github.com/semistrict/hotbed/internal/shell"
 )
 
@@ -65,31 +66,6 @@ type gitAuthServer struct {
 	sshProxy   *gitSSHProxy
 }
 
-// gitCredentialHelperScript is invoked by git via GIT_CONFIG_COUNT. It reads
-// git's key=value attributes on stdin, posts them to the worker's Unix socket,
-// and writes credentials to stdout without ever touching disk.
-const gitCredentialHelperScript = `#!/bin/sh
-case "${1:-}" in
-  get)   path=/git-credential ;;
-  erase) path=/git-credential/erase ;;
-  *)     exit 0 ;;
-esac
-out=$(curl -sS --unix-socket "$HOTBED_GIT_CRED_SOCK" -w '\n%{http_code}' --data-binary @- "http://localhost$path") || exit 1
-nl='
-'
-code=${out##*"$nl"}
-body=${out%"$nl"*}
-if [ "$code" = "200" ]; then
-  printf '%s\n' "$body"
-  exit 0
-fi
-if [ "$code" = "204" ]; then
-  exit 0
-fi
-printf '%s\n' "$body" >&2
-exit 1
-`
-
 func startGitAuthServer(stateDir string, cred *syscall.Credential, provider GitAuthClient) (*gitAuthServer, error) {
 	dir := filepath.Join(stateDir, "git-auth")
 	tempDir := false
@@ -118,7 +94,7 @@ func startGitAuthServer(stateDir string, cred *syscall.Credential, provider GitA
 	}
 
 	helperPath := filepath.Join(dir, "git-credential-helper")
-	if err := os.WriteFile(helperPath, []byte(gitCredentialHelperScript), 0o755); err != nil {
+	if err := os.WriteFile(helperPath, []byte(gitops.GitCredentialHelperScript("")), 0o755); err != nil {
 		cleanupDir()
 		return nil, fmt.Errorf("write git credential helper: %w", err)
 	}

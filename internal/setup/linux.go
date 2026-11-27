@@ -68,6 +68,42 @@ var (
 	linuxPoolNameRE    = regexp.MustCompile(`^[a-zA-Z][a-zA-Z0-9_.-]{0,63}$`)
 )
 
+// joinLinuxWorker joins stateDir to controller, or reports the join it
+// already holds when it is joined to the same controller. Neither asks a
+// tailnet anything: a worker needs none.
+func joinLinuxWorker(ctx context.Context, o Options, stateDir, controller, username, storageMode string, tn worker.Tailnet, hc *http.Client, check worker.Check) (worker.JoinResult, error) {
+	existing, err := statedir.Load(stateDir)
+	switch {
+	case errors.Is(err, statedir.ErrNotInitialized):
+		progressf(o.Progress, "joining controller %s", controller)
+		return worker.Join(ctx, worker.JoinOptions{
+			Dir:            stateDir,
+			Controller:     controller,
+			User:           username,
+			Token:          o.Token,
+			Dataset:        o.ZFSDataset,
+			UnitProperties: o.UnitProperties,
+			Slice:          o.Slice,
+		}, tn, hc, check)
+	case err != nil:
+		return worker.JoinResult{}, err
+	case existing.Worker == nil:
+		return worker.JoinResult{}, api.Errorf(api.CodeAlreadyInitialized, "%s is already initialized as a controller", stateDir)
+	case existing.Worker.Controller != controller:
+		return worker.JoinResult{}, api.Errorf(api.CodeAlreadyInitialized, "%s is already joined to controller %s (want %s)", stateDir, existing.Worker.Controller, controller).
+			WithSuggestion("destroy the existing worker with `sudo hotbed worker destroy` or pass a different --dir")
+	}
+	progressf(o.Progress, "state directory %s is already joined to %s", stateDir, controller)
+	return worker.JoinResult{
+		ClusterID:  existing.Worker.ClusterID,
+		Dir:        stateDir,
+		Controller: existing.Worker.Controller,
+		Storage:    storageMode,
+		User:       existing.Worker.User,
+		Node:       cmp.Or(existing.Worker.Host, o.Hostname),
+	}, nil
+}
+
 // Setup configures and starts a hotbed worker directly on this Linux host,
 // storing its state under o.Dir (default ~/.hotbed).
 func Setup(ctx context.Context, o Options, tn worker.Tailnet, hc *http.Client, check worker.Check) (Result, error) {
@@ -107,11 +143,6 @@ func Setup(ctx context.Context, o Options, tn worker.Tailnet, hc *http.Client, c
 				WithSuggestion("install ZFS (e.g. `sudo apt install zfsutils-linux`)")
 		}
 	}
-	self, err := tn.Self(ctx)
-	if err != nil {
-		return Result{}, err
-	}
-
 	stateDir := resolveLinuxStateDir(baseDir, o.Dir, o.ZFSDevice)
 	progressf(o.Progress, "setting up Linux worker in %s (command user %s)", baseDir, username)
 	if err := prepareLinuxDirs(baseDir, stateDir, u, chownPath); err != nil {
@@ -146,41 +177,9 @@ func Setup(ctx context.Context, o Options, tn worker.Tailnet, hc *http.Client, c
 		return Result{}, fmt.Errorf("configure /dev/userfaultfd access for %s: %w", username, err)
 	}
 
-	// Join cluster (idempotent when already joined to the same controller).
-	var joinRes worker.JoinResult
-	if existing, err := statedir.Load(stateDir); err == nil {
-		if existing.Worker == nil {
-			return Result{}, api.Errorf(api.CodeAlreadyInitialized, "%s is already initialized as a controller", stateDir)
-		}
-		if existing.Worker.Controller != controller {
-			return Result{}, api.Errorf(api.CodeAlreadyInitialized, "%s is already joined to controller %s (want %s)", stateDir, existing.Worker.Controller, controller).
-				WithSuggestion("destroy the existing worker with `sudo hotbed worker destroy` or pass a different --dir")
-		}
-		progressf(o.Progress, "state directory %s is already joined to %s", stateDir, controller)
-		joinRes = worker.JoinResult{
-			ClusterID:  existing.Worker.ClusterID,
-			Dir:        stateDir,
-			Controller: existing.Worker.Controller,
-			Storage:    storageMode,
-			User:       existing.Worker.User,
-			Node:       cmp.Or(self.Hostname, o.Hostname),
-		}
-	} else if !errors.Is(err, statedir.ErrNotInitialized) {
+	joinRes, err := joinLinuxWorker(ctx, o, stateDir, controller, username, storageMode, tn, hc, check)
+	if err != nil {
 		return Result{}, err
-	} else {
-		progressf(o.Progress, "joining controller %s", controller)
-		joinRes, err = worker.Join(ctx, worker.JoinOptions{
-			Dir:            stateDir,
-			Controller:     controller,
-			User:           username,
-			Token:          o.Token,
-			Dataset:        o.ZFSDataset,
-			UnitProperties: o.UnitProperties,
-			Slice:          o.Slice,
-		}, tn, hc, check)
-		if err != nil {
-			return Result{}, err
-		}
 	}
 	if err := enforceRootStateDir(stateDir, chownPath); err != nil {
 		return Result{}, err

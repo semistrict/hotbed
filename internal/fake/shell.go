@@ -96,12 +96,14 @@ func (u *Units) StartShell(ctx context.Context, s unit.Spec, sio unit.ShellIO) (
 	u.mu.Unlock()
 
 	h := &fakeShell{
-		cmd:  cmd,
-		ptmx: ptmx,
-		done: make(chan struct{}),
+		group: unit.NewProcGroup(cmd),
+		ptmx:  ptmx,
+		done:  make(chan struct{}),
 	}
 	go func() {
-		err := cmd.Wait()
+		// What the shell left in its group dies with it, while its
+		// unreaped leader still holds the group's ID.
+		err := h.group.Wait(true)
 		code := 0
 		var exitErr *exec.ExitError
 		if errors.As(err, &exitErr) {
@@ -129,7 +131,7 @@ func (u *Units) StartShell(ctx context.Context, s unit.Spec, sio unit.ShellIO) (
 }
 
 type fakeShell struct {
-	cmd       *exec.Cmd
+	group     *unit.ProcGroup
 	ptmx      *os.File
 	done      chan struct{}
 	exitCode  int
@@ -147,9 +149,6 @@ func (h *fakeShell) Resize(cols, rows uint16) error {
 
 func (h *fakeShell) Wait() int {
 	<-h.done
-	if h.cmd.Process != nil {
-		_ = syscall.Kill(-h.cmd.Process.Pid, syscall.SIGKILL)
-	}
 	return h.exitCode
 }
 
@@ -158,9 +157,7 @@ func (h *fakeShell) Close() error {
 		if h.ptmx != nil {
 			h.ptmx.Close()
 		}
-		if h.cmd.Process != nil {
-			_ = syscall.Kill(-h.cmd.Process.Pid, syscall.SIGKILL)
-		}
+		_ = h.group.Signal(syscall.SIGKILL)
 	})
 	return nil
 }

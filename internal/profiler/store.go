@@ -111,12 +111,6 @@ func ExtractCommandIDFromEnviron(environ []byte) string {
 	return ""
 }
 
-type stackKey struct {
-	frames   string // flame.AppendID's key of the stack's frames
-	leafType string
-	comm     string
-}
-
 type bucketAcc struct {
 	t          int64
 	samples    int64
@@ -155,8 +149,8 @@ type cmdAcc struct {
 	frames flame.Table
 	// stackIndex and stackList intern distinct stacks per command (capped at
 	// Store.maxCmdStacks) so buckets only hold compact uint32 stack IDs.
-	stackIndex map[stackKey]uint32
-	stackList  []stackKey
+	stackIndex map[flame.StackKey]uint32
+	stackList  []flame.StackKey
 	comms      map[string]bool
 	types      map[string]bool
 	buckets    map[int64]*bucketAcc
@@ -181,7 +175,7 @@ type nodeBucket struct {
 	samples    int64
 	kernel     int64
 	user       int64
-	stacks     map[stackKey]int64 // naming frames in Store.nodeFrames
+	stacks     flame.Stacks // naming frames in Store.nodeFrames
 	leafCounts map[uint32]int64
 	comms      map[string]bool
 	types      map[string]bool
@@ -260,7 +254,7 @@ func (s *Store) Record(sample Sample) {
 		acc = &cmdAcc{
 			startedAt:  tsMs,
 			updatedAt:  tsMs,
-			stackIndex: map[stackKey]uint32{},
+			stackIndex: map[flame.StackKey]uint32{},
 			comms:      map[string]bool{},
 			types:      map[string]bool{},
 			buckets:    map[int64]*bucketAcc{},
@@ -317,7 +311,7 @@ func (s *Store) Record(sample Sample) {
 		ids = flame.AppendID(ids, id)
 	}
 	if allKnown {
-		sk := stackKey{frames: string(ids), leafType: leafType, comm: sample.Comm}
+		sk := flame.StackKey{Frames: string(ids), LeafType: leafType, Comm: sample.Comm}
 		if sid, known := acc.stackIndex[sk]; known {
 			if _, exists := b.stacks[sid]; exists || len(b.stacks) < maxStacksPerBucket {
 				b.stacks[sid]++
@@ -338,7 +332,7 @@ func (s *Store) Record(sample Sample) {
 			leaf = frameID(&acc.frames, fr)
 			ids = flame.AppendID(ids, leaf)
 		}
-		sk := stackKey{frames: string(ids), leafType: leafType, comm: sample.Comm}
+		sk := flame.StackKey{Frames: string(ids), LeafType: leafType, Comm: sample.Comm}
 		sid := uint32(len(acc.stackList))
 		acc.stackList = append(acc.stackList, sk)
 		acc.stackIndex[sk] = sid
@@ -436,7 +430,7 @@ func (s *Store) recordNodeLocked(tsMs, bt int64, sample Sample, leafType string,
 			t:          bt,
 			startedAt:  tsMs,
 			updatedAt:  tsMs,
-			stacks:     map[stackKey]int64{},
+			stacks:     flame.Stacks{},
 			leafCounts: map[uint32]int64{},
 			comms:      map[string]bool{},
 			types:      map[string]bool{},
@@ -471,7 +465,7 @@ func (s *Store) recordNodeLocked(tsMs, bt int64, sample Sample, leafType string,
 		leaf = frameID(&s.nodeFrames, fr)
 		key = flame.AppendID(key, leaf)
 	}
-	nsk := stackKey{frames: string(key), leafType: leafType, comm: sample.Comm}
+	nsk := flame.StackKey{Frames: string(key), LeafType: leafType, Comm: sample.Comm}
 	if _, exists := b.stacks[nsk]; exists || len(b.stacks) < maxStacksPerBucket {
 		b.stacks[nsk]++
 	}
@@ -487,13 +481,13 @@ func (s *Store) compactNodeFramesLocked() {
 	old := s.nodeFrames.Frames()
 	var t flame.Table
 	for _, b := range s.nodeBuckets {
-		stacks := make(map[stackKey]int64, len(b.stacks))
+		stacks := make(flame.Stacks, len(b.stacks))
 		for k, cnt := range b.stacks {
-			key := make([]byte, 0, len(k.frames))
-			for _, id := range flame.IDs(k.frames) {
+			key := make([]byte, 0, len(k.Frames))
+			for _, id := range flame.IDs(k.Frames) {
 				key = flame.AppendID(key, t.ID(old[id]))
 			}
-			k.frames = string(key)
+			k.Frames = string(key)
 			stacks[k] += cnt
 		}
 		b.stacks = stacks
@@ -587,7 +581,7 @@ func (s *Store) Query(cmdID string, req *pb.GetProfileRequest, live bool, status
 	}
 	type presentStack struct {
 		sid     uint32
-		key     stackKey
+		key     flame.StackKey
 		samples int64
 	}
 	present := make([]presentStack, 0, len(stackTotals))
@@ -605,10 +599,10 @@ func (s *Store) Query(cmdID string, req *pb.GetProfileRequest, live bool, status
 	for i, ps := range present {
 		sidToRaw[ps.sid] = uint32(i)
 		raw.Stacks[i] = &pb.FoldedStack{
-			Frames:   flame.IDs(ps.key.frames),
+			Frames:   flame.IDs(ps.key.Frames),
 			Samples:  ps.samples,
-			LeafType: ps.key.leafType,
-			Comm:     ps.key.comm,
+			LeafType: ps.key.LeafType,
+			Comm:     ps.key.Comm,
 		}
 	}
 	slices.SortFunc(bucketSnaps, func(a, b bucketSnap) int { return cmp.Compare(a.pb.T, b.pb.T) })
@@ -642,7 +636,7 @@ func (s *Store) QueryNode(node string, req *pb.GetProfileRequest, status *pb.Pro
 		StatusNote: status.GetError(),
 		SampleHz:   s.sampleHz,
 	}
-	stacks := map[stackKey]int64{}
+	stacks := flame.Stacks{}
 	comms := map[string]bool{}
 	types := map[string]bool{}
 	for _, b := range s.nodeBuckets {
@@ -687,9 +681,7 @@ func (s *Store) QueryNode(node string, req *pb.GetProfileRequest, status *pb.Pro
 
 	sort.Slice(raw.Buckets, func(i, j int) bool { return raw.Buckets[i].T < raw.Buckets[j].T })
 	raw.Comms, raw.FrameTypes = sortedKeys(comms), sortedKeys(types)
-	for k, cnt := range stacks {
-		raw.Stacks = append(raw.Stacks, &pb.FoldedStack{Frames: flame.IDs(k.frames), Samples: cnt, LeafType: k.leafType, Comm: k.comm})
-	}
+	raw.Stacks = stacks.Folded()
 	return summarize(raw, req)
 }
 
@@ -736,7 +728,7 @@ func MergeProfiles(node string, host *pb.CommandProfile, guests []*pb.CommandPro
 		topSamples    int64
 	}
 	buckets := map[int64]*mergedBucket{}
-	stacks := map[stackKey]int64{}
+	stacks := flame.Stacks{}
 	comms := map[string]bool{}
 	types := map[string]bool{}
 
@@ -799,7 +791,7 @@ func MergeProfiles(node string, host *pb.CommandProfile, guests []*pb.CommandPro
 			if len(ids) == 0 {
 				continue
 			}
-			sk := stackKey{frames: string(ids), leafType: st.LeafType, comm: st.Comm}
+			sk := flame.StackKey{Frames: string(ids), LeafType: st.LeafType, Comm: st.Comm}
 			stacks[sk] += st.Samples
 		}
 
@@ -838,14 +830,7 @@ func MergeProfiles(node string, host *pb.CommandProfile, guests []*pb.CommandPro
 	merged.Frames = frames.Frames()
 	merged.Comms = sortedKeys(comms)
 	merged.FrameTypes = sortedKeys(types)
-	for k, cnt := range stacks {
-		merged.Stacks = append(merged.Stacks, &pb.FoldedStack{
-			Frames:   flame.IDs(k.frames),
-			Samples:  cnt,
-			LeafType: k.leafType,
-			Comm:     k.comm,
-		})
-	}
+	merged.Stacks = stacks.Folded()
 	merged.Buckets = make([]*pb.ProfileBucket, 0, len(buckets))
 	for _, mb := range buckets {
 		merged.Buckets = append(merged.Buckets, &pb.ProfileBucket{
@@ -950,8 +935,7 @@ func summarize(raw *pb.CommandProfile, req *pb.GetProfileRequest) *pb.CommandPro
 
 	var matchedStacks []indexedStack
 	var matchedSamples, matchedKernel, matchedUser int64
-	type fnAcc struct{ self, total int64 }
-	fns := map[uint32]*fnAcc{}
+	var fns flame.Functions
 	for _, cand := range candidates {
 		st := cand.stack
 		if commFilter != "" && st.Comm != commFilter {
@@ -970,20 +954,7 @@ func summarize(raw *pb.CommandProfile, req *pb.GetProfileRequest) *pb.CommandPro
 		} else {
 			matchedUser += st.Samples
 		}
-		for i, id := range st.Frames {
-			fa := fns[id]
-			if fa == nil {
-				fa = &fnAcc{}
-				fns[id] = fa
-			}
-			// A recursive function counts once a stack.
-			if !slices.Contains(st.Frames[:i], id) {
-				fa.total += st.Samples
-			}
-			if i == len(st.Frames)-1 {
-				fa.self += st.Samples
-			}
-		}
+		fns.Add(st.Frames, st.Samples)
 	}
 
 	sort.Slice(matchedStacks, func(i, j int) bool {
@@ -997,30 +968,7 @@ func summarize(raw *pb.CommandProfile, req *pb.GetProfileRequest) *pb.CommandPro
 		return a.Comm < b.Comm
 	})
 
-	topFns := make([]*pb.ProfileFunction, 0, len(fns))
-	denom := float64(matchedSamples)
-	for id, fa := range fns {
-		var selfPct, totalPct float64
-		if denom > 0 {
-			selfPct = 100 * float64(fa.self) / denom
-			totalPct = 100 * float64(fa.total) / denom
-		}
-		topFns = append(topFns, &pb.ProfileFunction{
-			Frame:        id,
-			SelfSamples:  fa.self,
-			TotalSamples: fa.total,
-			SelfPct:      selfPct,
-			TotalPct:     totalPct,
-		})
-	}
-	slices.SortFunc(topFns, func(a, b *pb.ProfileFunction) int {
-		return cmp.Or(
-			cmp.Compare(b.SelfSamples, a.SelfSamples),
-			cmp.Compare(b.TotalSamples, a.TotalSamples),
-			cmp.Compare(raw.Frames[a.Frame].Name, raw.Frames[b.Frame].Name),
-			cmp.Compare(a.Frame, b.Frame),
-		)
-	})
+	topFns := fns.Top(raw.Frames, matchedSamples)
 	topFns = topFns[:min(len(topFns), limit, maxSnapshotFuncs)]
 
 	out := &pb.CommandProfile{

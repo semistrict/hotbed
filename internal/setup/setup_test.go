@@ -3,6 +3,7 @@ package setup
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -66,5 +67,17 @@ func TestCopyFileAtomic(t *testing.T) {
 	}
 	if err := copyFileAtomic(dir, filepath.Join(dir, "from-dir"), 0o600); err == nil {
 		t.Fatal("copyFileAtomic on directory succeeded, want error")
+	}
+}
+
+// The worker unit orders itself after tailscaled where one runs but never
+// pulls it in: a worker needs no tailnet.
+func TestSystemdWorkerUnitDoesNotWantTailscaled(t *testing.T) {
+	unit := SystemdWorkerUnit("/usr/local/bin/hotbed", "/var/lib/hotbed/worker", "")
+	if !strings.Contains(unit, "Wants=network-online.target zfs-mount.service\n") {
+		t.Fatalf("unit lacks its Wants= line:\n%s", unit)
+	}
+	if strings.Contains(unit, "Wants=network-online.target tailscaled") || strings.Contains(unit, "Requires=") {
+		t.Fatalf("unit requires tailscaled:\n%s", unit)
 	}
 }

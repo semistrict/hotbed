@@ -43,6 +43,9 @@ type CladefsFUSEBackend struct {
 	mountStoresRoot string
 	store           atomic.Pointer[cladefs.Store]
 	link            cladefsdLink
+	// metricsURL is the host cladefsd's Prometheus endpoint; empty in tests,
+	// which run none.
+	metricsURL string
 
 	baseMu sync.Mutex
 	held   heldBases // the project bases this node hands out
@@ -145,6 +148,7 @@ func OpenCladefsFUSEBackend(ctx context.Context, workerDir string, cfg statedir.
 		mountRoot:       mountRoot,
 		mountStoresRoot: mountStoresRoot,
 		link:            cladefsdLink{incarnation: inc},
+		metricsURL:      hostCladefsdMetricsURL,
 		baseImages:      map[string]cladefs.CellRef{},
 		wsMounts:        map[string]fuseWSMount{},
 	}
@@ -503,7 +507,7 @@ func (b *CladefsFUSEBackend) HeartbeatMeta() (peerAddr string, incarnation uint6
 // SampleObjectStore fetches cumulative cladefsd R2 object-store counters and
 // the peer mesh this worker last applied.
 func (b *CladefsFUSEBackend) SampleObjectStore(ctx context.Context) *pb.ObjectStoreStats {
-	return sampleCladefsObjectStore(ctx, b.currentStore(), b.configSnapshot().CladefsPeerAddr, b.link.Peers())
+	return sampleCladefsObjectStore(ctx, b.currentStore(), b.metricsURL, b.configSnapshot().CladefsPeerAddr, b.link.Peers())
 }
 
 // ApplyHeartbeat reconciles cladefs peer mesh (SetPeers), retired-host
@@ -844,7 +848,7 @@ func (b *CladefsFUSEBackend) buildProjectBase(
 	}
 
 	stepsToRun := selectProjectBaseSteps(p, prevBase, heads)
-	script := buildCladefsFreshenScript(p, heads, stepsToRun, true)
+	script := freshenScript(p.GetRepos(), heads, prevBase.repoIDs(), stepsToRun)
 	handle, err := runFreshen(ctx, managedFreshenSpec{
 		Project:     p,
 		BaseID:      baseID,

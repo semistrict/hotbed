@@ -10,43 +10,8 @@ import (
 	"time"
 
 	guestdv1 "github.com/semistrict/hotbed/internal/gen/guestd/v1"
+	"github.com/semistrict/hotbed/internal/unit"
 )
-
-func TestParseMemoryEventsOOM(t *testing.T) {
-	cases := []struct {
-		name string
-		raw  string
-		want bool
-	}{
-		{
-			name: "zero counts",
-			raw:  "low 0\nhigh 12\nmax 0\noom 0\noom_kill 0\noom_group_kill 0\n",
-			want: false,
-		},
-		{
-			name: "oom_kill recorded",
-			raw:  "low 0\nhigh 0\nmax 0\noom 1\noom_kill 1\noom_group_kill 0\n",
-			want: true,
-		},
-		{
-			name: "oom_group_kill recorded",
-			raw:  "oom 1\noom_kill 0\noom_group_kill 2\n",
-			want: true,
-		},
-		{
-			name: "empty",
-			raw:  "",
-			want: false,
-		},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			if got := parseMemoryEventsOOM(tc.raw); got != tc.want {
-				t.Fatalf("parseMemoryEventsOOM = %v, want %v", got, tc.want)
-			}
-		})
-	}
-}
 
 func TestReadCgroupStatsCapturesOOMAndPeaks(t *testing.T) {
 	cg := t.TempDir()
@@ -138,7 +103,7 @@ func TestWaitCommandCapturesSignalOOMAndPeakStatsBeforeCgroupRemoval(t *testing.
 
 	mc := &managedCmd{
 		id:      "oom-test",
-		cmd:     cmd,
+		group:   unit.NewProcGroup(cmd),
 		cg:      &cmdCgroup{path: cgDir},
 		logPath: logPath,
 		logFile: logFile,
