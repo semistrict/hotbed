@@ -407,6 +407,14 @@ type workspace struct {
 	// releaseRetryAt is when to start releasing a spent throwaway workspace
 	// again, should the release last started fail. Guarded by e.mu.
 	releaseRetryAt time.Time
+	// capturePending says a command in this capture-eligible workspace exited 0
+	// and its disk should be versioned as the project's new warm base once its
+	// VM stops cleanly (or immediately on host-FUSE). Guarded by e.mu.
+	capturePending bool
+	// capturing says runWorkspaceCapture is currently snapshotting & swapping
+	// this workspace's cladefs cell; captureDone closes when it finishes.
+	capturing   bool
+	captureDone chan struct{}
 }
 
 func (w *workspace) ws() *pb.Workspace { return w.rec.Workspace }
@@ -663,7 +671,7 @@ func (e *Engine) load() error {
 		if r.Workspace.Runtime == runtime.KindVM {
 			e.vmWorkspaces.Store(r.Workspace.Id, struct{}{})
 			if b := e.cladefs(); b != nil && wsHasVolume(r.Workspace.State) {
-				b.RestoreWorkspaceCell(r.Workspace.Id, r.Workspace.GetCladefsCell())
+				b.RestoreWorkspaceCell(r.Workspace.Id, r.Workspace.GetCladefsCell(), r.GetCaptureBase())
 			}
 		}
 	}); err != nil {

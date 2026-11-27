@@ -578,6 +578,13 @@ message SharedBase {
   map<string, string> repos = 5;
   // Each setup step's script hash, as last run in it.
   map<string, string> step_hashes = 6;
+  // Unix ms when this base was captured.
+  int64 captured_at = 7;
+  // Unix seconds of the newest upstream anchor commit in this base.
+  int64 base_commit_time = 8;
+  // True when captured automatically from a real workspace run rather than a
+  // freshen job.
+  bool auto_captured = 9;
 }
 
 message NodeUsage {
@@ -1410,6 +1417,10 @@ message Workspace {
   // won). Not persisted on the workspace itself, which a session reuses across
   // runs with different placement requests.
   PlacementDecision placement = 30;
+  // True when this workspace's cell is bucket-backed and will auto-capture as
+  // the project's shared warm base after its next successful command (and then
+  // switch to a local-only ephemeral cell for all subsequent commands).
+  bool capture_base = 31;
 }
 
 // One repo of a workspace, at /work/<repo>.
@@ -1424,6 +1435,11 @@ message WorkspaceRepo {
   // The local checkout (on the workspace's sync_host) last synced into it;
   // empty when none has been.
   string sync_dir = 6;
+  // Unix seconds of the upstream anchor commit last synced into this repo.
+  int64 base_commit_time = 7;
+  // Upstream anchor commit (e.g. merge-base with origin's default branch)
+  // present in this checkout, recorded in SharedBase.repos when captured.
+  string anchor_commit = 8;
 }
 
 // CreateWorkspace, called on the controller, gives a session a workspace of
@@ -1467,6 +1483,21 @@ message CreateWorkspaceRequest {
   // re-evaluate whenever any eligible node reports free capacity, rather than
   // committing up front to one full node's local queue.
   bool wait_for_capacity = 17;
+  // Opt out of auto-capturing this workspace as the project's shared base.
+  bool no_capture = 18;
+  // Force capturing this workspace as the project's shared base on its next
+  // successful command (from client --capture-base, or set by the controller
+  // when forwarding to a worker because the project's shared base is missing
+  // or stale).
+  bool capture_base = 19;
+  // Ignore any cached project base and start from the bare OS base image.
+  bool fresh = 20;
+  // Caller's upstream anchor commit (merge-base with origin's default branch,
+  // or HEAD), used by the controller to avoid regressing the project's shared
+  // base from an older branch.
+  string base_commit = 21;
+  // Unix seconds of base_commit.
+  int64 base_commit_time = 22;
 }
 
 // Placement narrows where a run may go. The controller picks among the nodes
@@ -1540,6 +1571,14 @@ message SyncHeader {
   // The stream's bytes are each one's bundle, in this order, then the
   // repo's own bundle to the end.
   repeated SyncSubmodule submodules = 6;
+  // Caller's upstream anchor commit (merge-base with origin's default branch,
+  // or HEAD).
+  string anchor_commit = 7;
+  // Unix seconds of anchor_commit.
+  int64 anchor_commit_time = 8;
+  // True when the synced bundle preserves anchor_commit in the checkout's git
+  // history (false for parentless tree-only bundles).
+  bool has_anchor = 9;
 }
 
 // SyncSubmodule is a submodule snapshot a sync carries, as a git bundle.
@@ -1956,6 +1995,9 @@ message RunCommandRequest {
   // The placement decision that put this run on this node (what it asked for,
   // every node weighed, and why this node won), from CreateWorkspace.
   PlacementDecision placement = 15;
+  // Opt this command out of triggering an auto-capture of its workspace as the
+  // project's shared base.
+  bool no_capture = 16 [(param) = {name: "no-capture"}];
 }
 
 // Whether a command runs in a terminal (a pseudo-terminal), as in a

@@ -85,7 +85,46 @@ import { isCommandLive } from "../wakeups.ts";
 import { queryProfile } from "../profile-query.ts";
 import { sessionEndedError, type CommandRoute, type WorkspaceRow } from "../store/index.ts";
 
+import type { SharedBaseWithMeta } from "../store/cladefs.ts";
+
 const DEFAULT_COMMAND_LIMIT = 50;
+const BASE_CAPTURE_MAX_AGE_MS = 6 * 3600_000;
+
+/**
+ * Decides whether a newly allocated workspace should open a bucket-backed cell
+ * and auto-capture its disk as the project's shared R2 warm base once a
+ * command succeeds (then swap to local-only ephemeral for subsequent runs).
+ *
+ * Returns false for ~99% of sessions so routine work stays local-only (0 R2 bytes).
+ */
+export function shouldCaptureProjectBase(opts: {
+	req: CreateWorkspaceRequest;
+	hosted: HostedProject;
+	latest: SharedBaseWithMeta | undefined;
+	inFlight: boolean;
+	captureIntervalMs: number;
+	nowMs: number;
+}): boolean {
+	const { req, hosted, latest, inFlight, captureIntervalMs, nowMs } = opts;
+	if (req.noCapture || req.placement?.bench) return false;
+	if (req.throwaway && !req.captureBase) return false;
+	if (req.captureBase) return true;
+	if (inFlight) return false;
+	if (!latest) return true;
+	if (latest.base.scratchEpoch < hosted.scratchEpoch) return true;
+	if (req.repo && !latest.base.repos[req.repo]) return true;
+	const capturedAt = Number(latest.base.capturedAt) || latest.seenAt;
+	const age = nowMs - capturedAt;
+	if (age < captureIntervalMs) return false;
+	const callerTime = Number(req.baseCommitTime);
+	const baseTime = Number(latest.base.baseCommitTime);
+	if (callerTime > 0 && baseTime > 0 && callerTime < baseTime) {
+		return false;
+	}
+	const commitMoved =
+		req.baseCommit !== "" && req.repo !== "" && latest.base.repos[req.repo] !== req.baseCommit;
+	return commitMoved || age >= BASE_CAPTURE_MAX_AGE_MS;
+}
 const DIAGNOSE_RPC_TIMEOUT_MS = 90_000;
 // A sync's bundles pass through the controller to the worker, which applies
 // them: big checkouts over slow links take minutes.
@@ -447,12 +486,23 @@ export function createWorkspaceService(ctrl: ControllerContext): {
 			(r) => r === "vm" || r === "cladefs",
 		);
 		const sharedBaseRuntime = reqRuntime || chosenRuntimes[0] || "";
-		const sharedBase = ctrl.store.cladefs.latestSharedBase(
+		const latest = ctrl.store.cladefs.latestSharedBaseWithMeta(
 			projectName,
 			chosenArch,
 			ctrl.cladefsTenantId,
 			sharedBaseRuntime,
 		);
+		const nowMs = ctrl.now();
+		const captureKey = ctrl.baseCaptureKey(projectName, chosenArch, sharedBaseRuntime);
+		const captureBase = shouldCaptureProjectBase({
+			req,
+			hosted,
+			latest,
+			inFlight: ctrl.isBaseCaptureInFlight(captureKey, nowMs),
+			captureIntervalMs: ctrl.baseCaptureIntervalMs(),
+			nowMs,
+		});
+		const sharedBase = req.fresh ? undefined : latest?.base;
 		const fencingToken = ctrl.store.cladefs.nextFencingToken();
 		const fwd = create(CreateWorkspaceRequestSchema, {
 			repo: req.repo,
@@ -466,18 +516,26 @@ export function createWorkspaceService(ctrl: ControllerContext): {
 			sharedBase,
 			fencingToken,
 			throwaway: req.throwaway,
+			noCapture: req.noCapture || (req.placement?.bench ?? false),
+			captureBase,
+			fresh: req.fresh,
+			baseCommit: req.baseCommit,
+			baseCommitTime: req.baseCommitTime,
 		});
 		const ok = ctrl.store.workspaces.addLive(
 			fwd.id,
 			sess.id,
 			node.view.node.id,
 			sess.agent,
-			ctrl.now(),
+			nowMs,
 			req.throwaway,
 		);
 		if (!ok) {
 			const cur = ctrl.store.sessions.get(sess.id);
 			throw sessionEndedError(sess.id, cur.endReason);
+		}
+		if (captureBase) {
+			ctrl.markBaseCapture(captureKey, fwd.id, nowMs);
 		}
 		ctrl.markCreatingWS(fwd.id);
 		return fwd;
@@ -890,6 +948,12 @@ export function createWorkspaceService(ctrl: ControllerContext): {
 						needProbe.push(w);
 						continue;
 					}
+					// --fresh or explicit --capture-base on an existing ephemeral
+					// workspace replaces it so the run starts on the requested cell.
+					if (!w.throwaway && (req.fresh || (req.captureBase && !found?.captureBase))) {
+						needRelease.push(w);
+						continue;
+					}
 					// A throwaway workspace is no one's to run in again, and a
 					// throwaway run gets a new workspace wherever it goes.
 					if (!w.throwaway && !req.throwaway) mine.set(w.node, w.id);
@@ -1024,6 +1088,7 @@ export function createWorkspaceService(ctrl: ControllerContext): {
 					signal,
 				);
 			} catch (err) {
+				ctrl.clearBaseCaptureForWorkspace(fwd.id);
 				if (signal?.aborted) {
 					// The worker may still finish creating the workspace after we aborted
 					// the RPC; mark it released instead of dropping the row so toRelease()

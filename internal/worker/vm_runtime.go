@@ -57,7 +57,7 @@ func (e *Engine) isVMQuiescent(wsID string) bool {
 // (release stops the VM itself). Call with e.mu held.
 func vmWorkspaceSettled(w *workspace) bool {
 	ws := w.ws()
-	return !w.releasing && !w.forking && ws.State != preparing && ws.State != failedWS && ws.State != released && !isSyncInProgress(ws.Reason)
+	return !w.releasing && !w.forking && !w.capturing && ws.State != preparing && ws.State != failedWS && ws.State != released && !isSyncInProgress(ws.Reason)
 }
 
 // shellOpenLocked reports whether an interactive shell is open in wsID.
@@ -93,6 +93,9 @@ func (e *Engine) commandInVMLocked(wsID string, except *command) *command {
 // sync a checkout or open a shell) is fresh, and c may start in it. Call with
 // e.mu held.
 func (e *Engine) vmBlockerLocked(c *command, w *workspace) string {
+	if w.capturing {
+		return "waiting for its workspace: capturing project base"
+	}
 	if other := e.commandInVMLocked(w.ws().Id, c); other != nil {
 		return fmt.Sprintf("waiting for its workspace: command %s runs in its VM", other.cmd().Id)
 	}
@@ -212,6 +215,7 @@ func (e *Engine) retireVMs(ctx context.Context) {
 		e.mu.Lock()
 		w.vmUsed, w.vmMeasured = false, false
 		w.vmRetryAt = time.Time{}
+		e.maybeStartCaptureLocked(w)
 		e.mu.Unlock()
 		slog.Info("stopped workspace VM", "workspace", wsID, "why", why)
 		e.stepSoon()

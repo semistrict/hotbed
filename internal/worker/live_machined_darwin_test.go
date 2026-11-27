@@ -48,7 +48,7 @@ func TestLiveMachinedVMBackend(t *testing.T) {
 	if err != nil {
 		t.Fatalf("EnsureProvisionedBaseImage: %v", err)
 	}
-	if _, err := b.PrepareWorkspace(ctx, "ws-live", base, 0); err != nil {
+	if _, err := b.PrepareWorkspace(ctx, "ws-live", base, 0, false); err != nil {
 		t.Fatalf("PrepareWorkspace: %v", err)
 	}
 	rt := b.Runtime()

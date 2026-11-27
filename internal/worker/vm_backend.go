@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"maps"
 	"os"
 	"os/user"
 	"path/filepath"
@@ -51,6 +52,7 @@ type VMBackend struct {
 	mu           sync.Mutex
 	cfg          statedir.VMConfig
 	wsCells      map[string]cladefs.CellRef // wsID -> forked cell ref
+	wsCapture    map[string]bool            // wsID -> true while cell is a bucket-backed uncaptured cell on cladefsd
 	activeBuilds map[string]struct{}        // in-flight base-* / prov-* VM IDs owned by this worker
 	// writes is what the VMs wrote, for VolumeWrites.
 	writes vmWrites
@@ -66,6 +68,7 @@ func newVMBackend(workerDir string, cfg statedir.VMConfig) *VMBackend {
 	b := &VMBackend{
 		cfg:          cfg,
 		wsCells:      map[string]cladefs.CellRef{},
+		wsCapture:    map[string]bool{},
 		activeBuilds: map[string]struct{}{},
 	}
 	b.cladefsCore = newCladefsCore(vmFlavor, b, workerDir)
@@ -284,6 +287,10 @@ func (b *VMBackend) Close() error {
 // it embeds holds their cells.
 func (b *VMBackend) OnMachined() bool { return b.machined != nil }
 
+// IsLocalOnly reports whether this VMBackend keeps all cells strictly on local
+// disk without uploading to R2 (machined).
+func (b *VMBackend) IsLocalOnly() bool { return b.OnMachined() }
+
 // Runtime returns the GuestRuntime implementing runtime.WorkspaceRuntime.
 func (b *VMBackend) Runtime() runtime.WorkspaceRuntime { return b.rt }
 
@@ -378,17 +385,17 @@ func (b *VMBackend) startBuildVM(ctx context.Context, vmID string, cell cladefs.
 	return err
 }
 
-// takeForBuild re-opens cell, synced to the bucket, with
-// baseBuildUploadInterval so cladefsd coalesces a build's writes into fuller
-// R2 segments; the build's MakeVersionAndSync flushes everything at the end
-// (question 534). It deletes the cell should that fail.
-func (b *VMBackend) takeForBuild(ctx context.Context, cell cladefs.CellRef) (cladefs.CellRef, error) {
+// takeWithUploadInterval re-opens cell, synced to the bucket, with
+// uploadInterval so cladefsd coalesces writes on local SSD until
+// MakeVersionAndSync flushes them (question 534). It deletes the cell should
+// that fail.
+func (b *VMBackend) takeWithUploadInterval(ctx context.Context, cell cladefs.CellRef, uploadInterval time.Duration) (cladefs.CellRef, error) {
 	st := b.currentStore()
 	if err := st.DropCell(ctx, cell.Tenant, cell.Cell); err != nil {
 		b.cleanupCell(ctx, cell.Tenant, cell.Cell)
 		return cladefs.CellRef{}, fmt.Errorf("drop cell %d before take: %w", cell.Cell, err)
 	}
-	taken, err := st.TakeCell(ctx, cell.Tenant, cell.Cell, b.configSnapshot().DiskBytes, nil, baseBuildUploadInterval)
+	taken, err := st.TakeCell(ctx, cell.Tenant, cell.Cell, b.configSnapshot().DiskBytes, nil, uploadInterval)
 	if err != nil {
 		cctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
 		if derr := st.DeleteBucketCell(cctx, cell.Tenant, cell.Cell); derr != nil {
@@ -398,6 +405,10 @@ func (b *VMBackend) takeForBuild(ctx context.Context, cell cladefs.CellRef) (cla
 		return cladefs.CellRef{}, fmt.Errorf("re-open cell %d with upload interval: %w", cell.Cell, err)
 	}
 	return taken, nil
+}
+
+func (b *VMBackend) takeForBuild(ctx context.Context, cell cladefs.CellRef) (cladefs.CellRef, error) {
+	return b.takeWithUploadInterval(ctx, cell, baseBuildUploadInterval)
 }
 
 // provisionBaseImage imports spec's OS image into a new cell and, when spec
@@ -567,11 +578,13 @@ func (v *vmBaseBuild) discard(ctx context.Context) {
 	}
 }
 
-// PrepareWorkspace forks an ephemeral workspace cell from baseRef (reads come
-// from R2 through the local SSD CLADEFSD_PART_CACHE; writes stay local-only on
-// the host SSD with FSYNC_LEVEL_ORDERED so fsync never waits on disk or R2 and
-// big builds never hit R2 upload lag bounds), and boots the microVM.
-func (b *VMBackend) PrepareWorkspace(ctx context.Context, wsID string, baseRef cladefs.CellRef, fencingToken uint64) (*pb.CladefsCell, error) {
+// PrepareWorkspace forks a workspace cell from baseRef and boots its microVM.
+// Unless captureBase is true (on an R2-backed daemon), the fork is ephemeral:
+// reads come from R2 through the local SSD CLADEFSD_PART_CACHE while writes
+// stay strictly local-only (0 R2 bytes). When captureBase is true on cladefsd,
+// the fork is bucket-backed with captureUploadInterval (24h) so writes remain
+// local during execution and only flush to R2 if CaptureWorkspaceBase promotes it.
+func (b *VMBackend) PrepareWorkspace(ctx context.Context, wsID string, baseRef cladefs.CellRef, fencingToken uint64, captureBase bool) (*pb.CladefsCell, error) {
 	if b.mgr != nil {
 		if err := b.mgr.EnsureNotRunning(ctx, wsID); err != nil {
 			return nil, fmt.Errorf("prepare ephemeral cladefs workspace %s: %w: %v", wsID, storage.ErrBusy, err)
@@ -581,6 +594,7 @@ func (b *VMBackend) PrepareWorkspace(ctx context.Context, wsID string, baseRef c
 	staleRef, hadStale := b.wsCells[wsID]
 	if hadStale {
 		delete(b.wsCells, wsID)
+		delete(b.wsCapture, wsID)
 	}
 	b.mu.Unlock()
 	if hadStale && staleRef.Cell > 0 {
@@ -592,21 +606,40 @@ func (b *VMBackend) PrepareWorkspace(ctx context.Context, wsID string, baseRef c
 	// in its ephemeral cell directory. machined's embedded daemon keeps
 	// every cell on its local disk, uploading none, and has no such
 	// directory: a plain fork is the same there.
-	wsRef, err := b.currentStore().ForkVersion(ctx, baseRef, !b.OnMachined())
+	bucketBacked := captureBase && !b.OnMachined()
+	ephemeral := !b.OnMachined() && !bucketBacked
+	wsRef, err := b.currentStore().ForkVersion(ctx, baseRef, ephemeral)
 	if err != nil {
-		return nil, fmt.Errorf("fork ephemeral cladefs workspace %s: %w", wsID, err)
+		return nil, fmt.Errorf("fork cladefs workspace %s: %w", wsID, err)
+	}
+	if bucketBacked {
+		if err := b.currentStore().SyncCell(ctx, wsRef.Tenant, wsRef.Cell); err != nil {
+			b.cleanupCell(ctx, wsRef.Tenant, wsRef.Cell)
+			return nil, fmt.Errorf("sync capture workspace cell %s: %w", wsID, err)
+		}
+		wsRef, err = b.takeWithUploadInterval(ctx, wsRef, captureUploadInterval)
+		if err != nil {
+			return nil, fmt.Errorf("open capture workspace cell %s: %w", wsID, err)
+		}
 	}
 	b.mu.Lock()
 	if b.wsCells == nil {
 		b.wsCells = map[string]cladefs.CellRef{}
 	}
+	if b.wsCapture == nil {
+		b.wsCapture = map[string]bool{}
+	}
 	b.wsCells[wsID] = wsRef
+	if bucketBacked {
+		b.wsCapture[wsID] = true
+	}
 	b.mu.Unlock()
 
 	if _, err := b.EnsureVM(ctx, wsID, unit.VMBoot{}); err != nil {
 		b.cleanupCell(ctx, wsRef.Tenant, wsRef.Cell)
 		b.mu.Lock()
 		delete(b.wsCells, wsID)
+		delete(b.wsCapture, wsID)
 		b.mu.Unlock()
 		return nil, err
 	}
@@ -619,10 +652,79 @@ func (b *VMBackend) PrepareWorkspace(ctx context.Context, wsID string, baseRef c
 	}, nil
 }
 
+// CaptureWorkspaceBase versions wsID's stopped VM cell as project's new warm
+// base, holds it on this node, and (on R2-backed cladefsd) drops the local
+// bucket-backed copy and swaps wsID onto an ephemeral fork of the new version
+// so subsequent commands in wsID incur zero R2 traffic.
+func (b *VMBackend) CaptureWorkspaceBase(
+	ctx context.Context,
+	wsID, project, baseKey string,
+	scratchEpoch int64,
+	repos map[string]string,
+	baseCommitTime, capturedAt int64,
+) (*projectBase, *pb.CladefsCell, error) {
+	b.mu.Lock()
+	cellRef, ok := b.wsCells[wsID]
+	b.mu.Unlock()
+	if !ok || cellRef.Cell == 0 {
+		return nil, nil, fmt.Errorf("capture workspace %s: no cladefs cell recorded", wsID)
+	}
+	ver, err := b.versionAndSync(ctx, cellRef)
+	if err != nil {
+		return nil, nil, fmt.Errorf("version & sync workspace %s: %w", wsID, err)
+	}
+	baseRef := cellRef
+	baseRef.Version = ver
+	baseID := fmt.Sprintf("%s-%s-cap-%s", project, b.baseIDTag, wsID)
+	held := b.heldBases().hold(project, &projectBase{
+		Ref:            baseRef,
+		BaseID:         baseID,
+		BaseKey:        baseKey,
+		ScratchEpoch:   scratchEpoch,
+		Repos:          maps.Clone(repos),
+		BaseCommitTime: baseCommitTime,
+		CapturedAt:     capturedAt,
+		AutoCaptured:   true,
+	}, true, true)
+
+	if b.OnMachined() {
+		return held, &pb.CladefsCell{
+			Tenant:  baseRef.Tenant,
+			Cell:    baseRef.Cell,
+			Version: ver,
+			Arch:    goruntime.GOARCH,
+		}, nil
+	}
+
+	// Free the local bucket-backed cell now that its version is durable in R2,
+	// then replace wsID's backing disk with a local-only ephemeral fork so
+	// subsequent commands in this session upload nothing to R2.
+	if err := b.currentStore().DropCell(ctx, baseRef.Tenant, baseRef.Cell); err != nil {
+		slog.Warn("drop local copy of captured workspace base", "workspace", wsID, "cell", baseRef.Cell, "err", err)
+	}
+	ephemRef, err := b.currentStore().ForkVersion(ctx, baseRef, true)
+	if err != nil {
+		b.mu.Lock()
+		delete(b.wsCapture, wsID)
+		b.mu.Unlock()
+		return held, nil, fmt.Errorf("fork ephemeral workspace %s after base capture: %w", wsID, err)
+	}
+	b.mu.Lock()
+	b.wsCells[wsID] = ephemRef
+	delete(b.wsCapture, wsID)
+	b.mu.Unlock()
+	return held, &pb.CladefsCell{
+		Tenant:  ephemRef.Tenant,
+		Cell:    ephemRef.Cell,
+		Version: ephemRef.Version,
+		Arch:    goruntime.GOARCH,
+	}, nil
+}
+
 // RestoreWorkspaceCell records the cladefs cell a workspace's saved record
 // names, so a worker that restarted can boot that workspace's VM again. The
 // record is the lasting copy; wsCells only caches it for this incarnation.
-func (b *VMBackend) RestoreWorkspaceCell(wsID string, cell *pb.CladefsCell) {
+func (b *VMBackend) RestoreWorkspaceCell(wsID string, cell *pb.CladefsCell, captureBase bool) {
 	if cell.GetCell() == 0 {
 		return
 	}
@@ -633,6 +735,12 @@ func (b *VMBackend) RestoreWorkspaceCell(wsID string, cell *pb.CladefsCell) {
 		Tenant:   cell.GetTenant(),
 		Cell:     cell.GetCell(),
 		Version:  cell.GetVersion(),
+	}
+	if captureBase && !b.OnMachined() {
+		if b.wsCapture == nil {
+			b.wsCapture = map[string]bool{}
+		}
+		b.wsCapture[wsID] = true
 	}
 }
 
@@ -701,6 +809,7 @@ func (b *VMBackend) DeleteWorkspace(ctx context.Context, wsID string) error {
 	b.mu.Lock()
 	ref, ok := b.wsCells[wsID]
 	delete(b.wsCells, wsID)
+	delete(b.wsCapture, wsID)
 	b.mu.Unlock()
 	if !ok || ref.Cell == 0 {
 		if b.mgr != nil {

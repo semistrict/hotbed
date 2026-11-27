@@ -17,6 +17,11 @@ const (
 	defaultBaseRetireGrace  = 5 * time.Minute
 	retiredBasesFile        = "retired-bases.json"
 	baseBuildUploadInterval = 15 * time.Second
+	// captureUploadInterval is the maximum cladefsd per-cell upload interval
+	// (24h, cladefs cells.rs MAX_UPLOAD_INTERVAL_MS). Capture-enabled workspace
+	// cells use it so writes stay on local SSD while commands run and only the
+	// surviving net extents flush to R2 if a command succeeds and captures.
+	captureUploadInterval = 24 * time.Hour
 )
 
 type retiredBase struct {

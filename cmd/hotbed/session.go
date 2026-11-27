@@ -660,14 +660,24 @@ func syncTo(ctx context.Context, w workerClients, ws *pb.Workspace, repo, dir st
 		return &pb.SyncResponse{WorkspaceId: ws.Id, Head: r.Head, Tree: r.Tree, FilesChanged: r.FilesChanged, Skipped: true}, nil
 	}
 	var bundle bytes.Buffer
-	subs, err := gitops.Bundle(ctx, snap, r.BaseCommit, &bundle)
+	anchorCommit, anchorTime := gitops.AnchorCommit(ctx, dir)
+	br, err := gitops.BundleForSync(ctx, snap, r.BaseCommit, &bundle)
 	if err != nil {
 		return nil, err
 	}
-	header := &pb.SyncHeader{WorkspaceId: ws.Id, Commit: snap.Commit, Tree: snap.Tree, Repo: repo, Dir: dir}
+	header := &pb.SyncHeader{
+		WorkspaceId:      ws.Id,
+		Commit:           br.Commit,
+		Tree:             snap.Tree,
+		Repo:             repo,
+		Dir:              dir,
+		AnchorCommit:     anchorCommit,
+		AnchorCommitTime: anchorTime,
+		HasAnchor:        br.HasAnchor,
+	}
 	// The submodules' bundles go first, each its size long, then the repo's.
 	var payload [][]byte
-	for _, s := range subs {
+	for _, s := range br.Subs {
 		header.Submodules = append(header.Submodules, &pb.SyncSubmodule{Path: s.Path, Commit: s.Commit, BundleBytes: int64(len(s.Data))})
 		payload = append(payload, s.Data)
 	}
@@ -854,8 +864,11 @@ type runCmd struct {
 	sessionFlag
 	repoFlag
 	Args   []string `arg:"" optional:"" passthrough:"" help:"The command, after --."`
-	NoSync bool     `help:"Do not sync the checkout this is run in: the run then stays in the workspace the session has, whose state lives on its node alone."`
-	Fork   bool     `help:"Run in a throwaway workspace of its own: a new one, forked from the project's base with this checkout synced in, and deleted, with whatever the command left in it, once the command ends. It neither waits for the session's workspace nor changes it."`
+	NoSync      bool   `help:"Do not sync the checkout this is run in: the run then stays in the workspace the session has, whose state lives on its node alone."`
+	NoCapture   bool   `name:"no-capture" xor:"capture" help:"Do not auto-capture this run's disk state as the project's shared warm base."`
+	CaptureBase bool   `name:"capture-base" xor:"capture" help:"Start a capture-enabled workspace and upload its disk as the project's shared warm base once this run succeeds."`
+	Fresh       bool   `help:"Ignore the project's cached warm base and start from the bare OS base image."`
+	Fork        bool   `help:"Run in a throwaway workspace of its own: a new one, forked from the project's base with this checkout synced in, and deleted, with whatever the command left in it, once the command ends. It neither waits for the session's workspace nor changes it."`
 	Detach bool     `help:"Return once the command is queued; it runs until it ends, hotbed stop, or a time limit given. For dev servers and long jobs: it needs --mem (unless an earlier run of the same command says), and runs in a terminal in a VM; read it with hotbed output."`
 	Port   int      `help:"Port a dev server listens on, for its URL."`
 	Wait   string   `help:"How long to wait on the command before leaving it running, detached (exit 125): it runs on, its output kept whole for hotbed output to read. Such as 10m; 0 to wait until it ends (default: 2m; with --soft-limit, until that pauses it)."`
@@ -915,10 +928,13 @@ func (c *runCmd) Raw(ctx context.Context, d deps) (int, bool, error) {
 		return 0, false, err
 	}
 	var dir string
+	var baseCommit string
+	var baseCommitTime int64
 	if !c.NoSync && repo != "" {
 		if dir, err = c.checkoutOf(ctx, d, session, c.Repo, repo); err != nil {
 			return 0, false, err
 		}
+		baseCommit, baseCommitTime = gitops.AnchorCommit(ctx, dir)
 	}
 	var memEst int64
 	if c.Mem != "" {
@@ -928,8 +944,20 @@ func (c *runCmd) Raw(ctx context.Context, d deps) (int, bool, error) {
 	}
 	pl := c.placement(req)
 	pl.MemoryEstimateBytes = memEst
+	noCapture := c.NoCapture || c.Bench
+	req.NoCapture = noCapture
 	ws, w, err := c.workspaceFor(ctx, d, &pb.CreateWorkspaceRequest{
-		SessionId: session, Repo: repo, Placement: pl, SyncDir: dir, Throwaway: c.Fork, WaitForCapacity: !c.Detach,
+		SessionId:       session,
+		Repo:            repo,
+		Placement:       pl,
+		SyncDir:         dir,
+		Throwaway:       c.Fork,
+		WaitForCapacity: !c.Detach,
+		NoCapture:       noCapture,
+		CaptureBase:     c.CaptureBase,
+		Fresh:           c.Fresh,
+		BaseCommit:      baseCommit,
+		BaseCommitTime:  baseCommitTime,
 	})
 	if err != nil {
 		return 0, false, err

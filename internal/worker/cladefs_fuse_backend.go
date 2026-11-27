@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"maps"
 	"os"
 	"path/filepath"
 	goruntime "runtime"
@@ -108,10 +109,11 @@ func (b *CladefsFUSEBackend) detachMount(ctx context.Context, tenant, cellID uin
 }
 
 type fuseWSMount struct {
-	Tenant    uint64 `json:"tenant"`
-	Cell      uint64 `json:"cell"`
-	MountPath string `json:"mountPath"`
-	StorePath string `json:"storePath,omitempty"`
+	Tenant      uint64 `json:"tenant"`
+	Cell        uint64 `json:"cell"`
+	MountPath   string `json:"mountPath"`
+	StorePath   string `json:"storePath,omitempty"`
+	CaptureBase bool   `json:"captureBase,omitempty"`
 }
 
 // fuseStoreConfig is how a host-FUSE node reaches cladefsd.
@@ -598,9 +600,49 @@ func (b *CladefsFUSEBackend) forkEphemeralAndMount(ctx context.Context, from cla
 	return forkRef.Tenant, attachedCell, b.mountDir(forkRef.Tenant, attachedCell), nil
 }
 
-// PrepareWorkspace forks baseRef into a host-local ephemeral cladefs cell and
-// mounts it into cladefsd's host FUSE mount at /var/lib/cladefs/mnt/<tenant>/<cell>.
-func (b *CladefsFUSEBackend) PrepareWorkspace(ctx context.Context, wsID string, baseRef cladefs.CellRef, fencingToken uint64) (*pb.CladefsCell, error) {
+// forkCaptureAndMount forks an R2 version into a bucket-backed cladefs cell
+// with uploadInterval so writes stay coalesced on local SSD until
+// CaptureWorkspaceBase flushes them, and mounts it via cladefsd's host FUSE.
+func (b *CladefsFUSEBackend) forkCaptureAndMount(ctx context.Context, from cladefs.CellRef, fencingToken uint64, uploadInterval time.Duration) (tenant, cell uint64, mountPath string, err error) {
+	st := b.currentStore()
+	forkRef, err := st.ForkVersion(ctx, from, false)
+	if err != nil {
+		return 0, 0, "", fmt.Errorf("fork capture R2 version %d/%x: %w", from.Cell, from.Version, err)
+	}
+	if err := st.SyncCell(ctx, forkRef.Tenant, forkRef.Cell); err != nil {
+		b.cleanupCell(ctx, forkRef.Tenant, forkRef.Cell)
+		return 0, 0, "", fmt.Errorf("sync capture cell %d: %w", forkRef.Cell, err)
+	}
+	if err := st.DropCell(ctx, forkRef.Tenant, forkRef.Cell); err != nil {
+		b.cleanupCell(ctx, forkRef.Tenant, forkRef.Cell)
+		return 0, 0, "", fmt.Errorf("drop capture cell %d: %w", forkRef.Cell, err)
+	}
+	var tok *uint64
+	if fencingToken > 0 {
+		t := fencingToken
+		tok = &t
+	}
+	attachedCell, shown, err := st.MountAttach(ctx, forkRef.Tenant, forkRef.Cell, 0, tok, uploadInterval)
+	if err != nil {
+		cctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 15*time.Second)
+		_ = st.DeleteBucketCell(cctx, forkRef.Tenant, forkRef.Cell)
+		cancel()
+		return 0, 0, "", fmt.Errorf("mount attach capture cell %d: %w", forkRef.Cell, err)
+	}
+	if !shown {
+		_ = b.detachMount(ctx, forkRef.Tenant, attachedCell, "", false, true)
+		cctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 15*time.Second)
+		_ = st.DeleteBucketCell(cctx, forkRef.Tenant, attachedCell)
+		cancel()
+		return 0, 0, "", fmt.Errorf("capture cell %d attached with shown=false (kind missing)", attachedCell)
+	}
+	return forkRef.Tenant, attachedCell, b.mountDir(forkRef.Tenant, attachedCell), nil
+}
+
+// PrepareWorkspace forks baseRef into a cladefs cell and mounts it into
+// cladefsd's host FUSE mount at /var/lib/cladefs/mnt/<tenant>/<cell>.
+// Unless captureBase is true, the fork is ephemeral (0 R2 bytes).
+func (b *CladefsFUSEBackend) PrepareWorkspace(ctx context.Context, wsID string, baseRef cladefs.CellRef, fencingToken uint64, captureBase bool) (*pb.CladefsCell, error) {
 	b.mu.Lock()
 	_, active := b.wsMounts[wsID]
 	b.mu.Unlock()
@@ -610,12 +652,22 @@ func (b *CladefsFUSEBackend) PrepareWorkspace(ctx context.Context, wsID string, 
 	if err := b.ensureMountReady(ctx); err != nil {
 		return nil, fmt.Errorf("enable setuid on cladefs FUSE mount %s: %w", b.mountRoot, err)
 	}
-	tenant, cellID, mntDir, err := b.forkEphemeralAndMount(ctx, baseRef)
+	var (
+		tenant uint64
+		cellID uint64
+		mntDir string
+		err    error
+	)
+	if captureBase {
+		tenant, cellID, mntDir, err = b.forkCaptureAndMount(ctx, baseRef, fencingToken, captureUploadInterval)
+	} else {
+		tenant, cellID, mntDir, err = b.forkEphemeralAndMount(ctx, baseRef)
+	}
 	if err != nil {
 		return nil, fmt.Errorf("prepare cladefs FUSE workspace %s: %w", wsID, err)
 	}
 	b.mu.Lock()
-	b.wsMounts[wsID] = fuseWSMount{Tenant: tenant, Cell: cellID, MountPath: mntDir}
+	b.wsMounts[wsID] = fuseWSMount{Tenant: tenant, Cell: cellID, MountPath: mntDir, CaptureBase: captureBase}
 	b.saveWSStateLocked()
 	b.mu.Unlock()
 	return &pb.CladefsCell{
@@ -623,6 +675,67 @@ func (b *CladefsFUSEBackend) PrepareWorkspace(ctx context.Context, wsID string, 
 		Cell:         cellID,
 		FencingToken: fencingToken,
 		Arch:         goruntime.GOARCH,
+	}, nil
+}
+
+// CaptureWorkspaceBase detaches wsID's FUSE mount, versions and uploads the
+// cell as project's new shared base, drops the local bucket copy, and re-mounts
+// an ephemeral fork of the new version for subsequent commands in wsID.
+func (b *CladefsFUSEBackend) CaptureWorkspaceBase(
+	ctx context.Context,
+	wsID, project, baseKey string,
+	scratchEpoch int64,
+	repos map[string]string,
+	baseCommitTime, capturedAt int64,
+) (*projectBase, *pb.CladefsCell, error) {
+	b.mu.Lock()
+	m, ok := b.wsMounts[wsID]
+	b.mu.Unlock()
+	if !ok || m.Cell == 0 {
+		return nil, nil, fmt.Errorf("capture cladefs FUSE workspace %s: no active mount", wsID)
+	}
+	if err := b.detachMount(ctx, m.Tenant, m.Cell, m.MountPath, true, false); err != nil {
+		return nil, nil, fmt.Errorf("detach cladefs FUSE workspace %s for capture: %w", wsID, err)
+	}
+	cellRef := cladefs.CellRef{Tenant: m.Tenant, Cell: m.Cell}
+	ver, err := b.versionAndSync(ctx, cellRef)
+	if err != nil {
+		// Re-attach the existing cell so the workspace stays usable.
+		_, _, _ = b.currentStore().MountAttach(ctx, m.Tenant, m.Cell, 0, nil, captureUploadInterval)
+		return nil, nil, fmt.Errorf("version & sync cladefs FUSE workspace %s: %w", wsID, err)
+	}
+	baseRef := cellRef
+	baseRef.Version = ver
+	baseID := fmt.Sprintf("%s-%s-cap-%s", project, b.baseIDTag, wsID)
+	held := b.heldBases().hold(project, &projectBase{
+		Ref:            baseRef,
+		BaseID:         baseID,
+		BaseKey:        baseKey,
+		ScratchEpoch:   scratchEpoch,
+		Repos:          maps.Clone(repos),
+		BaseCommitTime: baseCommitTime,
+		CapturedAt:     capturedAt,
+		AutoCaptured:   true,
+	}, true, true)
+	if err := b.currentStore().DropCell(ctx, baseRef.Tenant, baseRef.Cell); err != nil {
+		slog.Warn("drop local copy of captured FUSE workspace base", "workspace", wsID, "cell", baseRef.Cell, "err", err)
+	}
+	tenant, newCellID, mntDir, err := b.forkEphemeralAndMount(ctx, baseRef)
+	if err != nil {
+		b.mu.Lock()
+		delete(b.wsMounts, wsID)
+		b.saveWSStateLocked()
+		b.mu.Unlock()
+		return held, nil, fmt.Errorf("re-mount ephemeral FUSE workspace %s after base capture: %w", wsID, err)
+	}
+	b.mu.Lock()
+	b.wsMounts[wsID] = fuseWSMount{Tenant: tenant, Cell: newCellID, MountPath: mntDir, CaptureBase: false}
+	b.saveWSStateLocked()
+	b.mu.Unlock()
+	return held, &pb.CladefsCell{
+		Tenant: tenant,
+		Cell:   newCellID,
+		Arch:   goruntime.GOARCH,
 	}, nil
 }
 

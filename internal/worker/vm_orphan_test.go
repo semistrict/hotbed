@@ -28,11 +28,14 @@ import (
 
 type strictVMCladefsClient struct {
 	cladefsdv1.CladefsdClient
-	mu         sync.Mutex
-	cells      map[uint64]bool
-	deleted    []uint64
-	dropped    []uint64
-	nextCellID uint64
+	mu          sync.Mutex
+	cells       map[uint64]bool
+	forkReqs    []*cladefsdv1.ForkCellRequest
+	createReqs  []*cladefsdv1.CreateCellRequest
+	deleted     []uint64
+	dropped     []uint64
+	nextCellID  uint64
+	nextVersion uint64
 }
 
 func newStrictVMCladefsClient() *strictVMCladefsClient {
@@ -45,9 +48,34 @@ func newStrictVMCladefsClient() *strictVMCladefsClient {
 func (c *strictVMCladefsClient) ForkCell(_ context.Context, req *cladefsdv1.ForkCellRequest, _ ...grpc.CallOption) (*cladefsdv1.ForkCellResponse, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	c.forkReqs = append(c.forkReqs, req)
 	c.nextCellID++
 	c.cells[c.nextCellID] = true
 	return &cladefsdv1.ForkCellResponse{Tenant: req.GetTenant(), Cell: c.nextCellID}, nil
+}
+
+func (c *strictVMCladefsClient) CreateCell(_ context.Context, req *cladefsdv1.CreateCellRequest, _ ...grpc.CallOption) (*cladefsdv1.CreateCellResponse, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.createReqs = append(c.createReqs, req)
+	cell := req.GetCell()
+	if cell == 0 {
+		c.nextCellID++
+		cell = c.nextCellID
+	}
+	c.cells[cell] = true
+	return &cladefsdv1.CreateCellResponse{Tenant: req.GetTenant(), Cell: cell}, nil
+}
+
+func (c *strictVMCladefsClient) SyncCell(_ context.Context, _ *cladefsdv1.SyncCellRequest, _ ...grpc.CallOption) (*cladefsdv1.SyncCellResponse, error) {
+	return &cladefsdv1.SyncCellResponse{}, nil
+}
+
+func (c *strictVMCladefsClient) MakeVersion(_ context.Context, _ *cladefsdv1.MakeVersionRequest, _ ...grpc.CallOption) (*cladefsdv1.MakeVersionResponse, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.nextVersion++
+	return &cladefsdv1.MakeVersionResponse{Version: c.nextVersion}, nil
 }
 
 func (c *strictVMCladefsClient) DeleteCell(_ context.Context, req *cladefsdv1.DeleteCellRequest, _ ...grpc.CallOption) (*cladefsdv1.DeleteCellResponse, error) {
@@ -64,6 +92,14 @@ func (c *strictVMCladefsClient) DropCell(_ context.Context, req *cladefsdv1.Drop
 	c.dropped = append(c.dropped, req.GetCell())
 	delete(c.cells, req.GetCell())
 	return &cladefsdv1.DropCellResponse{}, nil
+}
+
+func (c *strictVMCladefsClient) GetCounters(_ context.Context, _ *cladefsdv1.GetCountersRequest, _ ...grpc.CallOption) (*cladefsdv1.GetCountersResponse, error) {
+	return &cladefsdv1.GetCountersResponse{}, nil
+}
+
+func (c *strictVMCladefsClient) GetStats(_ context.Context, _ *cladefsdv1.GetStatsRequest, _ ...grpc.CallOption) (*cladefsdv1.GetStatsResponse, error) {
+	return &cladefsdv1.GetStatsResponse{}, nil
 }
 
 type fakeVMLauncher struct {
@@ -200,7 +236,7 @@ func TestVMBackendPrepareWorkspaceIdempotentAndGuardsLiveVM(t *testing.T) {
 	// before forking a fresh cell.
 	api.cells[999] = true
 	b.wsCells["uhuvox5f"] = cladefs.CellRef{Tenant: 1, Cell: 999, HostPath: cladefs.FormatCellID(1, 999)}
-	cell, err := b.PrepareWorkspace(ctx, "uhuvox5f", baseRef, 1)
+	cell, err := b.PrepareWorkspace(ctx, "uhuvox5f", baseRef, 1, false)
 	if err != nil {
 		t.Fatalf("PrepareWorkspace with stale cell failed: %v", err)
 	}
@@ -216,7 +252,7 @@ func TestVMBackendPrepareWorkspaceIdempotentAndGuardsLiveVM(t *testing.T) {
 	api.mu.Lock()
 	deletedBefore := len(api.deleted)
 	api.mu.Unlock()
-	if _, err := b.PrepareWorkspace(ctx, "uhuvox5f", baseRef, 2); !errors.Is(err, storage.ErrBusy) {
+	if _, err := b.PrepareWorkspace(ctx, "uhuvox5f", baseRef, 2, false); !errors.Is(err, storage.ErrBusy) {
 		t.Fatalf("PrepareWorkspace while VM alive: err = %v, want storage.ErrBusy", err)
 	}
 	api.mu.Lock()
@@ -230,7 +266,7 @@ func TestVMBackendPrepareWorkspaceIdempotentAndGuardsLiveVM(t *testing.T) {
 	fl.mu.Lock()
 	fl.running["hotbed-vm-zombie-ws"] = true
 	fl.mu.Unlock()
-	if _, err := b.PrepareWorkspace(ctx, "zombie-ws", baseRef, 3); !errors.Is(err, storage.ErrBusy) {
+	if _, err := b.PrepareWorkspace(ctx, "zombie-ws", baseRef, 3, false); !errors.Is(err, storage.ErrBusy) {
 		t.Fatalf("PrepareWorkspace while untracked zombie VM alive: err = %v, want storage.ErrBusy", err)
 	}
 }
@@ -273,7 +309,7 @@ func TestEngineSweepOrphansAndPeriodicReconcileVMZombies(t *testing.T) {
 	vmb, _ := newTestVMBackend(t, api, fl)
 
 	// Live workspace VM + cell must survive startup sweep.
-	if _, err := vmb.PrepareWorkspace(ctx, "ws-live", cladefs.CellRef{Tenant: 1, Cell: 1, Version: 1}, 1); err != nil {
+	if _, err := vmb.PrepareWorkspace(ctx, "ws-live", cladefs.CellRef{Tenant: 1, Cell: 1, Version: 1}, 1, false); err != nil {
 		t.Fatalf("PrepareWorkspace ws-live: %v", err)
 	}
 
@@ -343,7 +379,7 @@ func TestVMBackendEnsureVMBootsAgainAtTheSizeAsked(t *testing.T) {
 	api := newStrictVMCladefsClient()
 	fl := newFakeVMLauncher()
 	b, _ := newTestVMBackend(t, api, fl)
-	if _, err := b.PrepareWorkspace(ctx, "sizews", cladefs.CellRef{Tenant: 1, Cell: 100, Version: 5}, 1); err != nil {
+	if _, err := b.PrepareWorkspace(ctx, "sizews", cladefs.CellRef{Tenant: 1, Cell: 100, Version: 5}, 1, false); err != nil {
 		t.Fatalf("PrepareWorkspace: %v", err)
 	}
 	t.Cleanup(func() { _ = b.mgr.Stop(context.Background(), "sizews", true) })
@@ -386,7 +422,7 @@ func TestVMBackendEnsureVMBootsOnceForConcurrentCallers(t *testing.T) {
 	api := newStrictVMCladefsClient()
 	fl := newFakeVMLauncher()
 	b, _ := newTestVMBackend(t, api, fl)
-	if _, err := b.PrepareWorkspace(ctx, "twows", cladefs.CellRef{Tenant: 1, Cell: 100, Version: 5}, 1); err != nil {
+	if _, err := b.PrepareWorkspace(ctx, "twows", cladefs.CellRef{Tenant: 1, Cell: 100, Version: 5}, 1, false); err != nil {
 		t.Fatalf("PrepareWorkspace: %v", err)
 	}
 	t.Cleanup(func() { _ = b.mgr.Stop(context.Background(), "twows", true) })

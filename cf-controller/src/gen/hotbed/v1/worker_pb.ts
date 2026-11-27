@@ -17,7 +17,7 @@ import type { Message } from "@bufbuild/protobuf";
 export const file_hotbed_v1_worker: GenFile =
 	/*@__PURE__*/
 	fileDesc(
-		"ChZob3RiZWQvdjEvd29ya2VyLnByb3RvEglob3RiZWQudjEiigEKD1dvcmtzcGFjZVJlY29yZBInCgl3b3Jrc3BhY2UYASABKAsyFC5ob3RiZWQudjEuV29ya3NwYWNlEg4KBnZvbHVtZRgCIAEoCRIVCg1iYXNlX3NuYXBzaG90GAMgASgJEgwKBG5vdGUYBCABKAkSGQoRdGhyb3dhd2F5X2NvbW1hbmQYBSABKAki3QIKDUNvbW1hbmRSZWNvcmQSIwoHY29tbWFuZBgBIAEoCzISLmhvdGJlZC52MS5Db21tYW5kEg8KB3JlcG9faWQYAiABKAkSDwoHcHJvamVjdBgOIAEoCRINCgVhZ2VudBgDIAEoCRIOCgZ2b2x1bWUYBCABKAkSCwoDZGlyGAUgASgJEgsKA2VudhgGIAMoCRIPCgdiYXNlX2lkGAcgASgJEg0KBXBhcmtzGAggASgFEhEKCXBhcmtlZF9hdBgJIAEoAxIZChFwZWFrX21lbW9yeV9ieXRlcxgKIAEoAxIOCgZjZ3JvdXAYCyABKAkSFgoOaXNvbGF0aW9uX2xvc3QYDCABKAkSEQoJd2FpdGVkX2F0GA0gASgDEhAKCGhlbGRfZm9yGA8gASgJEhcKD3BlYWtfaGVsZF9ieXRlcxgQIAEoAxIYChBzeW5jZWRfYXRfb2Zmc2V0GBEgASgDQj5aPGdpdGh1Yi5jb20vc2VtaXN0cmljdC9ob3RiZWQvaW50ZXJuYWwvZ2VuL2hvdGJlZC92MTtob3RiZWR2MWIGcHJvdG8z",
+		"ChZob3RiZWQvdjEvd29ya2VyLnByb3RvEglob3RiZWQudjEi3QEKD1dvcmtzcGFjZVJlY29yZBInCgl3b3Jrc3BhY2UYASABKAsyFC5ob3RiZWQudjEuV29ya3NwYWNlEg4KBnZvbHVtZRgCIAEoCRIVCg1iYXNlX3NuYXBzaG90GAMgASgJEgwKBG5vdGUYBCABKAkSGQoRdGhyb3dhd2F5X2NvbW1hbmQYBSABKAkSFAoMY2FwdHVyZV9iYXNlGAYgASgIEhIKCm5vX2NhcHR1cmUYByABKAgSEAoIYmFzZV9rZXkYCCABKAkSFQoNc2NyYXRjaF9lcG9jaBgJIAEoAyLxAgoNQ29tbWFuZFJlY29yZBIjCgdjb21tYW5kGAEgASgLMhIuaG90YmVkLnYxLkNvbW1hbmQSDwoHcmVwb19pZBgCIAEoCRIPCgdwcm9qZWN0GA4gASgJEg0KBWFnZW50GAMgASgJEg4KBnZvbHVtZRgEIAEoCRILCgNkaXIYBSABKAkSCwoDZW52GAYgAygJEg8KB2Jhc2VfaWQYByABKAkSDQoFcGFya3MYCCABKAUSEQoJcGFya2VkX2F0GAkgASgDEhkKEXBlYWtfbWVtb3J5X2J5dGVzGAogASgDEg4KBmNncm91cBgLIAEoCRIWCg5pc29sYXRpb25fbG9zdBgMIAEoCRIRCgl3YWl0ZWRfYXQYDSABKAMSEAoIaGVsZF9mb3IYDyABKAkSFwoPcGVha19oZWxkX2J5dGVzGBAgASgDEhgKEHN5bmNlZF9hdF9vZmZzZXQYESABKAMSEgoKbm9fY2FwdHVyZRgSIAEoCEI+WjxnaXRodWIuY29tL3NlbWlzdHJpY3QvaG90YmVkL2ludGVybmFsL2dlbi9ob3RiZWQvdjE7aG90YmVkdjFiBnByb3RvMw",
 		[file_hotbed_v1_hotbed],
 	);
 
@@ -56,6 +56,35 @@ export type WorkspaceRecord = Message<"hotbed.v1.WorkspaceRecord"> & {
 	 * @generated from field: string throwaway_command = 5;
 	 */
 	throwawayCommand: string;
+
+	/**
+	 * True while this workspace holds a bucket-backed cell slated to auto-capture
+	 * as the project's shared base after its next successful command.
+	 *
+	 * @generated from field: bool capture_base = 6;
+	 */
+	captureBase: boolean;
+
+	/**
+	 * True when the caller opted out of auto-capturing this workspace.
+	 *
+	 * @generated from field: bool no_capture = 7;
+	 */
+	noCapture: boolean;
+
+	/**
+	 * OS base image key this workspace started from (recorded in SharedBase on capture).
+	 *
+	 * @generated from field: string base_key = 8;
+	 */
+	baseKey: string;
+
+	/**
+	 * Project scratch_epoch this workspace started from (recorded in SharedBase on capture).
+	 *
+	 * @generated from field: int64 scratch_epoch = 9;
+	 */
+	scratchEpoch: bigint;
 };
 
 /**
@@ -179,6 +208,13 @@ export type CommandRecord = Message<"hotbed.v1.CommandRecord"> & {
 	 * @generated from field: int64 synced_at_offset = 17;
 	 */
 	syncedAtOffset: bigint;
+
+	/**
+	 * True when this command opted out of triggering workspace base capture.
+	 *
+	 * @generated from field: bool no_capture = 18;
+	 */
+	noCapture: boolean;
 };
 
 /**

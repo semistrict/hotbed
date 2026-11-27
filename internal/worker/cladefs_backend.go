@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"maps"
 	"os"
 	"path/filepath"
 	goruntime "runtime"
@@ -45,18 +46,33 @@ type cladefsBackend interface {
 	ApplyHeartbeat(ctx context.Context, peers []string, decommission []uint64, retire []*pb.CladefsCell)
 	heldBases() *heldBases
 	labels() cladefsLabels
+	baseKeyFor(spec baseimage.Spec) string
+	tenantID() uint64
+	// IsLocalOnly reports whether this backend's cells live strictly on local
+	// disk (never uploaded to R2, e.g. machined on macOS).
+	IsLocalOnly() bool
 
+	EnsureProvisionedBaseImage(ctx context.Context, spec baseimage.Spec, prov baseimage.Provisioner) (cladefs.CellRef, error)
 	ensureProjectBase(ctx context.Context, p *pb.HostedProject, heads map[string]string, shared *pb.SharedBase,
 		spec baseimage.Spec, prov baseimage.Provisioner, sandboxEnv []string, onBaseTarget func(baseID string),
 		runFreshen managedFreshenRunner, opts ensureBaseOpts) (ensureBaseResult, error)
 
-	// PrepareWorkspace forks baseRef into the cell wsID runs on.
-	PrepareWorkspace(ctx context.Context, wsID string, baseRef cladefs.CellRef, fencingToken uint64) (*pb.CladefsCell, error)
+	// PrepareWorkspace forks baseRef into the cell wsID runs on. When
+	// captureBase is true on an R2-backed daemon, it opens a bucket-backed cell
+	// with captureUploadInterval so writes stay local until CaptureWorkspaceBase
+	// flushes them; otherwise it opens a local-only ephemeral cell (0 R2 bytes).
+	PrepareWorkspace(ctx context.Context, wsID string, baseRef cladefs.CellRef, fencingToken uint64, captureBase bool) (*pb.CladefsCell, error)
+	// CaptureWorkspaceBase snapshots wsID's stopped/quiescent cell as the
+	// project's new warm base, holds it for future forks, and (on R2-backed
+	// daemons) drops the bucket cell and replaces wsID's backing cell with an
+	// ephemeral fork of the new version so subsequent commands stay local-only.
+	CaptureWorkspaceBase(ctx context.Context, wsID, project, baseKey string, scratchEpoch int64,
+		repos map[string]string, baseCommitTime, capturedAt int64) (*projectBase, *pb.CladefsCell, error)
 	// DeleteWorkspace deletes the cell wsID ran on, once nothing runs on it.
 	DeleteWorkspace(ctx context.Context, wsID string) error
 	// RestoreWorkspaceCell notes the cell a saved workspace record names,
 	// for a worker that restarted.
-	RestoreWorkspaceCell(wsID string, cell *pb.CladefsCell)
+	RestoreWorkspaceCell(wsID string, cell *pb.CladefsCell, captureBase bool)
 	// MountPath is the host path of a workspace volume ("ws/<id>") mounted
 	// on the host, if it is.
 	MountPath(vol string) (string, bool)
@@ -192,8 +208,18 @@ func (c *cladefsCore) Runtimes() []string             { return []string{c.kind} 
 func (c *cladefsCore) RuntimesForHeartbeat() []string { return c.Runtimes() }
 func (c *cladefsCore) heldBases() *heldBases          { return &c.held }
 func (c *cladefsCore) labels() cladefsLabels          { return c.ws }
+func (c *cladefsCore) IsLocalOnly() bool              { return false }
+func (c *cladefsCore) baseKeyFor(spec baseimage.Spec) string {
+	return c.peer.baseKey(spec.Normalized())
+}
+func (c *cladefsCore) tenantID() uint64 {
+	if st := c.currentStore(); st != nil {
+		return st.TenantID()
+	}
+	return c.peer.settings().tenant
+}
 
-func (c *cladefsCore) RestoreWorkspaceCell(string, *pb.CladefsCell) {}
+func (c *cladefsCore) RestoreWorkspaceCell(string, *pb.CladefsCell, bool) {}
 func (c *cladefsCore) MountPath(string) (string, bool)              { return "", false }
 
 // HeartbeatMeta returns the cladefs peer address, incarnation, the project
@@ -690,11 +716,10 @@ func tenantCellRoot(baseRoot string, tenantID uint64) string {
 // defaultCellRoot is where cladefsd keeps a node's cells unless configured.
 const defaultCellRoot = "/mnt/fxdax-scratch/cladefsd/cells/hotbed"
 
-// createCladefsWorkspace creates a workspace on b from a warm R2 project
-// base, without touching the host's ZFS/btrfs store. It returns at once with
-// the workspace preparing: the base's freshen (a cold one can take minutes)
-// and the fork run in the background, and WatchWorkspace tells callers the
-// instant it is ready.
+// createCladefsWorkspace creates a workspace on b from the project's warm base
+// (or the bare OS base image on a cold project / --fresh), without touching the
+// host's ZFS/btrfs store. Synced runs and runs with an existing warm base fork
+// immediately without polling remotes or running a freshen job.
 func (e *Engine) createCladefsWorkspace(req *pb.CreateWorkspaceRequest, b cladefsBackend) (*pb.Workspace, error) {
 	p := req.Project
 	l := b.labels()
@@ -703,6 +728,7 @@ func (e *Engine) createCladefsWorkspace(req *pb.CreateWorkspaceRequest, b cladef
 	for _, r := range p.GetRepos() {
 		repos = append(repos, &pb.WorkspaceRepo{Repo: r.GetId()})
 	}
+	noCapture := req.GetNoCapture() || req.GetPlacement().GetBench()
 	w := &workspace{rec: &pb.WorkspaceRecord{
 		Workspace: &pb.Workspace{
 			Id: req.Id, Project: p.Name, BaseId: l.base, NodeId: e.cfg.NodeID, Agent: req.Agent,
@@ -711,6 +737,7 @@ func (e *Engine) createCladefsWorkspace(req *pb.CreateWorkspaceRequest, b cladef
 			Reason: l.preparing,
 		},
 		Volume: wsVolume(req.Id), BaseSnapshot: l.base,
+		NoCapture: noCapture, ScratchEpoch: p.GetScratchEpoch(),
 	}}
 	e.mu.Lock()
 	if _, dup := e.workspaces[req.Id]; dup {
@@ -730,33 +757,82 @@ func (e *Engine) createCladefsWorkspace(req *pb.CreateWorkspaceRequest, b cladef
 	prepare := func(bgCtx context.Context) {
 		start := e.now()
 		baseSpec, prov := e.cfg.BaseSpec, e.baseProvisioner()
-		heads, err := e.remoteHeads(bgCtx, p)
-		var baseRes ensureBaseResult
-		if err == nil {
-			baseRes, err = b.ensureProjectBase(
-				bgCtx, p, heads, req.GetSharedBase(), baseSpec, prov, e.sandboxEnv(),
-				func(baseID string) { e.setPreparingWorkspaceBase(req.Id, baseID) },
-				e.startManagedFreshen,
-				ensureBaseOpts{
-					Budget:          e.freshenBudget,
-					Now:             e.now,
-					AllowBackground: req.GetSyncDir() != "",
-					OnRequireBuild:  func() { e.cancelBgFreshen(p.Name) },
-				},
-			)
-		}
-		projBase := baseRes.Base
-		if err == nil {
-			e.recordWarmCladefsBase(p, projBase, goruntime.GOARCH)
-			if baseRes.DeferBackground {
-				e.scheduleOptionalFreshen(p, b.Kind(), req.GetSharedBase())
+		baseKey := b.baseKeyFor(baseSpec)
+		held, heldFresh := b.heldBases().get(p.Name)
+		shared := sharedProjectBase(req.GetSharedBase(), b.tenantID())
+		projBase := pickAutoCaptureBase(held, shared, req.GetFresh(), heldFresh, p, baseKey)
+
+		var (
+			fromRef     cladefs.CellRef
+			baseID      string
+			note        string
+			captureBase bool
+			cell        *pb.CladefsCell
+			err         error
+		)
+		// Fast path: synced runs, --fresh runs, and runs with an already-warm
+		// project base fork directly without polling git remotes or running
+		// freshen steps. Only unsynced cold starts (--no-sync / schedules on a
+		// brand-new project with no captured base yet) fall back to ensureProjectBase.
+		if req.GetSyncDir() != "" || req.GetFresh() || projBase != nil {
+			if projBase != nil {
+				projBase = b.heldBases().hold(p.Name, projBase, false, false)
+				e.recordWarmCladefsBase(p, projBase, goruntime.GOARCH)
+				fromRef = projBase.Ref
+				baseID = projBase.BaseID
+			} else {
+				fromRef, err = b.EnsureProvisionedBaseImage(bgCtx, baseSpec, prov)
+				baseID = "baseimage-" + baseKey
 			}
-		}
-		var cell *pb.CladefsCell
-		if err == nil {
-			cell, err = b.PrepareWorkspace(bgCtx, req.Id, projBase.Ref, req.GetFencingToken())
-			if cladefs.IsGone(err) {
-				b.heldBases().forget(p.Name, projBase.Ref)
+			if !noCapture && (!req.GetThrowaway() || req.GetCaptureBase()) {
+				if b.IsLocalOnly() {
+					const localCaptureIntervalMs = int64(30 * time.Minute / time.Millisecond)
+					captureBase = req.GetCaptureBase() || projBase == nil ||
+						(e.nowMs()-projBase.CapturedAt >= localCaptureIntervalMs) ||
+						(req.GetBaseCommitTime() > 0 && req.GetBaseCommitTime() > projBase.BaseCommitTime)
+				} else {
+					captureBase = req.GetCaptureBase()
+				}
+			}
+			if err == nil {
+				cell, err = b.PrepareWorkspace(bgCtx, req.Id, fromRef, req.GetFencingToken(), captureBase)
+				if err != nil && projBase != nil && cladefs.IsGone(err) {
+					b.heldBases().forget(p.Name, projBase.Ref)
+					projBase = nil
+					baseID = "baseimage-" + baseKey
+					if imgRef, ierr := b.EnsureProvisionedBaseImage(bgCtx, baseSpec, prov); ierr == nil {
+						cell, err = b.PrepareWorkspace(bgCtx, req.Id, imgRef, req.GetFencingToken(), captureBase)
+					} else {
+						err = ierr
+					}
+				}
+			}
+		} else {
+			heads, herr := e.remoteHeads(bgCtx, p)
+			err = herr
+			var baseRes ensureBaseResult
+			if err == nil {
+				baseRes, err = b.ensureProjectBase(
+					bgCtx, p, heads, req.GetSharedBase(), baseSpec, prov, e.sandboxEnv(),
+					func(id string) { e.setPreparingWorkspaceBase(req.Id, id) },
+					e.startManagedFreshen,
+					ensureBaseOpts{
+						Budget:          e.freshenBudget,
+						Now:             e.now,
+						AllowBackground: false,
+						OnRequireBuild:  func() { e.cancelBgFreshen(p.Name) },
+					},
+				)
+			}
+			if err == nil {
+				projBase = baseRes.Base
+				baseID = projBase.BaseID
+				note = baseRes.Note
+				e.recordWarmCladefsBase(p, projBase, goruntime.GOARCH)
+				cell, err = b.PrepareWorkspace(bgCtx, req.Id, projBase.Ref, req.GetFencingToken(), false)
+				if cladefs.IsGone(err) {
+					b.heldBases().forget(p.Name, projBase.Ref)
+				}
 			}
 		}
 		forkMs := e.now().Sub(start).Milliseconds()
@@ -784,20 +860,28 @@ func (e *Engine) createCladefsWorkspace(req *pb.CreateWorkspaceRequest, b cladef
 			e.mu.Unlock()
 			return
 		}
-		w.ws().BaseId = projBase.BaseID
-		w.rec.BaseSnapshot = projBase.BaseID
-		w.rec.Note = baseRes.Note
-		for _, r := range w.ws().Repos {
-			if head, ok := projBase.Repos[r.Repo]; ok && head != "" {
-				r.Head = head
-				r.BaseCommit = head
+		w.ws().BaseId = baseID
+		w.ws().CaptureBase = captureBase
+		w.rec.BaseSnapshot = baseID
+		w.rec.Note = note
+		w.rec.CaptureBase = captureBase
+		w.rec.BaseKey = baseKey
+		w.rec.ScratchEpoch = p.GetScratchEpoch()
+		if projBase != nil {
+			for _, r := range w.ws().Repos {
+				if head, ok := projBase.Repos[r.Repo]; ok && head != "" {
+					r.Head = head
+					r.BaseCommit = head
+					r.AnchorCommit = head
+					r.BaseCommitTime = projBase.BaseCommitTime
+				}
 			}
 		}
 		w.ws().State = idle
 		if e.workspaceBusy(w.ws().Id) {
 			w.ws().State = activeWS
 		}
-		w.ws().Reason = baseRes.Note
+		w.ws().Reason = note
 		w.ws().ForkMillis = forkMs
 		w.ws().CladefsCell = cell
 		w.ws().LastActiveAt = e.nowMs()
@@ -824,6 +908,122 @@ func (e *Engine) createCladefsWorkspace(req *pb.CreateWorkspaceRequest, b cladef
 		return nil, fmt.Errorf("worker is shutting down")
 	}
 	return e.Workspace(req.Id)
+}
+
+// maybeStartCaptureLocked starts an asynchronous project-base capture for w if
+// w is eligible, quiescent, and not already capturing or releasing. Call with
+// e.mu held.
+func (e *Engine) maybeStartCaptureLocked(w *workspace) {
+	b := e.cladefs()
+	if b == nil || w == nil {
+		return
+	}
+	ws := w.ws()
+	if !w.capturePending || w.capturing || w.releasing || w.forking || ws.State == released || ws.State == failedWS {
+		return
+	}
+	if !w.rec.CaptureBase || w.rec.NoCapture || ws.Throwaway || ws.Runtime != b.Kind() {
+		w.capturePending = false
+		return
+	}
+	if e.usesRuntime(ws.Id) {
+		if e.commandInVMLocked(ws.Id, nil) != nil || e.shellOpenLocked(ws.Id) || w.vmUsed {
+			return
+		}
+	} else if e.workspaceBusy(ws.Id) {
+		return
+	}
+	w.capturing = true
+	done := make(chan struct{})
+	w.captureDone = done
+	started := e.startBgLocked(func(bgCtx context.Context) {
+		e.runWorkspaceCapture(bgCtx, w, b, done)
+	})
+	if !started {
+		w.capturing = false
+		w.captureDone = nil
+		close(done)
+	}
+}
+
+func (e *Engine) runWorkspaceCapture(ctx context.Context, w *workspace, b cladefsBackend, done chan struct{}) {
+	defer func() {
+		e.mu.Lock()
+		w.capturing = false
+		if w.captureDone == done {
+			w.captureDone = nil
+		}
+		close(done)
+		e.stepSoon()
+		e.mu.Unlock()
+	}()
+
+	w.vm.Lock()
+	defer w.vm.Unlock()
+
+	e.mu.Lock()
+	ws := w.ws()
+	if w.releasing || ws.State == released || ws.State == failedWS || !w.capturePending || !w.rec.CaptureBase || w.rec.NoCapture {
+		w.capturePending = false
+		e.mu.Unlock()
+		return
+	}
+	if e.usesRuntime(ws.Id) {
+		if e.commandInVMLocked(ws.Id, nil) != nil || e.shellOpenLocked(ws.Id) || w.vmUsed {
+			e.mu.Unlock()
+			return
+		}
+	} else if e.workspaceBusy(ws.Id) {
+		e.mu.Unlock()
+		return
+	}
+	wsID := ws.Id
+	project := ws.Project
+	baseKey := w.rec.BaseKey
+	scratchEpoch := w.rec.ScratchEpoch
+	repos := make(map[string]string, len(ws.Repos))
+	var maxCommitTime int64
+	for _, r := range ws.Repos {
+		commit := cmp.Or(r.AnchorCommit, r.Head, r.BaseCommit)
+		if commit != "" {
+			repos[r.Repo] = commit
+		}
+		if r.BaseCommitTime > maxCommitTime {
+			maxCommitTime = r.BaseCommitTime
+		}
+	}
+	capturedAt := e.nowMs()
+	e.mu.Unlock()
+
+	captured, newCell, err := b.CaptureWorkspaceBase(ctx, wsID, project, baseKey, scratchEpoch, repos, maxCommitTime, capturedAt)
+	if err != nil {
+		slog.Warn("auto-capture workspace base failed (keeping previous project base)",
+			"workspace", wsID, "project", project, "err", err)
+		e.mu.Lock()
+		w.capturePending = false
+		e.mu.Unlock()
+		return
+	}
+
+	e.mu.Lock()
+	w.capturePending = false
+	w.rec.CaptureBase = false
+	w.ws().CaptureBase = false
+	w.ws().BaseId = captured.BaseID
+	w.rec.BaseSnapshot = captured.BaseID
+	if newCell != nil {
+		w.ws().CladefsCell = newCell
+	}
+	e.saveWorkspace(w, change{
+		what:   "captured",
+		detail: fmt.Sprintf("captured project base %s (cell %d/%d v%d)", captured.BaseID, captured.Ref.Tenant, captured.Ref.Cell, captured.Ref.Version),
+		feed:   feed(feedBase, fmt.Sprintf("captured %s ← %s", captured.BaseID, wsID), ref("workspace", wsID)),
+	})
+	e.mu.Unlock()
+	e.recordWarmCladefsBase(&pb.HostedProject{Name: project, ScratchEpoch: scratchEpoch}, captured, goruntime.GOARCH)
+	slog.Info("auto-captured workspace as project base",
+		"workspace", wsID, "project", project, "baseId", captured.BaseID,
+		"cell", captured.Ref.Cell, "version", captured.Ref.Version, "repos", maps.Clone(repos))
 }
 
 // dropCladefsWorkspace stops what runs workspace id and deletes its cell.

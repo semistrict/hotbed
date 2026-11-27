@@ -16,6 +16,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -417,6 +418,106 @@ type SubBundle struct {
 	Path   string // slash-separated, relative to the top worktree
 	Commit string
 	Data   []byte // a git bundle of Commit
+}
+
+// AnchorCommit returns the upstream anchor commit of the worktree at dir —
+// merge-base(HEAD, origin/<default>) when an origin default ref exists, else
+// HEAD — along with its committer timestamp (unix seconds). Best-effort:
+// returns ("", 0) when dir is not a repo or has no commits.
+func AnchorCommit(ctx context.Context, dir string) (string, int64) {
+	g := Git{Dir: dir}
+	var commit string
+	for _, ref := range defaultUpstreamRefs(ctx, g) {
+		if mb, err := g.Run(ctx, "merge-base", "HEAD", ref); err == nil && ValidateSHA(mb) == nil {
+			commit = mb
+			break
+		}
+	}
+	if commit == "" {
+		if head, err := g.Run(ctx, "rev-parse", "--verify", "--quiet", "HEAD"); err == nil && ValidateSHA(head) == nil {
+			commit = head
+		}
+	}
+	if commit == "" {
+		return "", 0
+	}
+	tsStr, err := g.Run(ctx, "show", "--no-patch", "--format=%ct", commit, "--")
+	if err != nil {
+		return commit, 0
+	}
+	ts, _ := strconv.ParseInt(strings.TrimSpace(tsStr), 10, 64)
+	return commit, ts
+}
+
+func defaultUpstreamRefs(ctx context.Context, g Git) []string {
+	var refs []string
+	if sym, err := g.Run(ctx, "symbolic-ref", "--quiet", "refs/remotes/origin/HEAD"); err == nil && sym != "" {
+		refs = append(refs, sym)
+	}
+	for _, cand := range []string{"refs/remotes/origin/main", "refs/remotes/origin/master"} {
+		if !slices.Contains(refs, cand) {
+			if _, err := g.Run(ctx, "rev-parse", "--verify", "--quiet", cand); err == nil {
+				refs = append(refs, cand)
+			}
+		}
+	}
+	return refs
+}
+
+// BundleResult is what BundleForSync wrote to w.
+type BundleResult struct {
+	// Commit is the commit carried under SyncRef in the bundle: snap.Commit
+	// for an incremental bundle, or a parentless tree-only commit when base
+	// was empty or absent locally.
+	Commit string
+	// HasAnchor is true when the bundle preserves the caller's commit history
+	// (including its upstream anchor commit), false for a tree-only bundle.
+	HasAnchor bool
+	Subs      []SubBundle
+}
+
+// BundleForSync writes a git bundle of snap to w. When base is non-empty and
+// present in snap's repo, it writes a compact incremental bundle against base.
+// Otherwise (brand-new workspace without a checkout yet, or a workspace
+// captured from a commit this checkout has not fetched), it writes a
+// parentless tree-only commit of snap.Tree so sync never fails or ships full
+// repository history, while git checkout still preserves mtimes of unchanged
+// files on disk.
+func BundleForSync(ctx context.Context, snap Snap, base string, w io.Writer) (BundleResult, error) {
+	if err := ValidateSHA(snap.Commit); err != nil {
+		return BundleResult{}, fmt.Errorf("invalid snapshot commit: %w", err)
+	}
+	g := Git{Dir: snap.Root}
+	if base != "" && ValidateSHA(base) == nil && hasCommit(ctx, g, base) {
+		if err := bundle(ctx, g, snap.Commit, base, w); err != nil {
+			return BundleResult{}, err
+		}
+		var subs []SubBundle
+		if err := bundleSubs(ctx, snap, base, "", &subs); err != nil {
+			return BundleResult{}, err
+		}
+		return BundleResult{Commit: snap.Commit, HasAnchor: true, Subs: subs}, nil
+	}
+	if err := ValidateSHA(snap.Tree); err != nil {
+		return BundleResult{}, fmt.Errorf("invalid snapshot tree: %w", err)
+	}
+	date := "@0 +0000"
+	if when, err := g.Run(ctx, "show", "--no-patch", "--format=%ct", snap.Commit, "--"); err == nil && when != "" {
+		date = "@" + strings.TrimSpace(when) + " +0000"
+	}
+	env := append([]string{"GIT_AUTHOR_DATE=" + date, "GIT_COMMITTER_DATE=" + date}, identity...)
+	treeCommit, err := (Git{Dir: snap.Root, Env: env}).Run(ctx, "commit-tree", "--no-gpg-sign", snap.Tree, "-m", "hotbed sync")
+	if err != nil {
+		return BundleResult{}, fmt.Errorf("create tree-only sync commit: %w", err)
+	}
+	if err := bundle(ctx, g, treeCommit, "", w); err != nil {
+		return BundleResult{}, err
+	}
+	var subs []SubBundle
+	if err := bundleSubs(ctx, snap, "", "", &subs); err != nil {
+		return BundleResult{}, err
+	}
+	return BundleResult{Commit: treeCommit, HasAnchor: false, Subs: subs}, nil
 }
 
 // Bundle writes to w a git bundle of snap's commit that leaves out
@@ -985,8 +1086,10 @@ func Apply(ctx context.Context, g Git, bundle, commit, base string, subs []SubCh
 	if err := ValidateSHA(commit); err != nil {
 		return 0, fmt.Errorf("invalid commit: %w", err)
 	}
-	if err := ValidateSHA(base); err != nil {
-		return 0, fmt.Errorf("invalid base: %w", err)
+	if base != "" {
+		if err := ValidateSHA(base); err != nil {
+			return 0, fmt.Errorf("invalid base: %w", err)
+		}
 	}
 	if err := validateBundlePath(bundle); err != nil {
 		return 0, fmt.Errorf("invalid bundle: %w", err)
@@ -1000,6 +1103,16 @@ func Apply(ctx context.Context, g Git, bundle, commit, base string, subs []SubCh
 		}
 		if err := validateBundlePath(s.Bundle); err != nil {
 			return 0, fmt.Errorf("submodule %s: invalid bundle: %w", s.Path, err)
+		}
+	}
+	// A fresh workspace starting from the bare OS base image has no repo
+	// directory yet; initialize it so the first sync populates /work/<repo>.
+	if _, err := os.Stat(filepath.Join(g.Dir, ".git")); errors.Is(err, os.ErrNotExist) {
+		if err := os.MkdirAll(g.Dir, 0o755); err != nil {
+			return 0, fmt.Errorf("create checkout dir %s: %w", g.Dir, err)
+		}
+		if _, err := g.Run(ctx, "init", "--quiet"); err != nil {
+			return 0, fmt.Errorf("init checkout %s: %w", g.Dir, err)
 		}
 	}
 	// Sync is serialized per workspace with no active commands, so any leftover
@@ -1054,7 +1167,20 @@ func Apply(ctx context.Context, g Git, bundle, commit, base string, subs []SubCh
 	if _, err := g.Run(ctx, "submodule", "update", "--quiet", "--init", "--recursive", "--force"); err != nil {
 		return failAfterMutation(err)
 	}
-	names, err := g.Lines(ctx, "diff", "--name-only", base, commit, "--")
+	diffFrom := ""
+	switch {
+	case base != "" && hasCommit(ctx, g, base):
+		diffFrom = base
+	case prevHead != "" && hasCommit(ctx, g, prevHead):
+		diffFrom = prevHead
+	}
+	var names []string
+	var err error
+	if diffFrom != "" {
+		names, err = g.Lines(ctx, "diff", "--name-only", diffFrom, commit, "--")
+	} else {
+		names, err = g.Lines(ctx, "ls-tree", "-r", "--name-only", commit, "--")
+	}
 	if err != nil {
 		return failAfterMutation(err)
 	}

@@ -156,7 +156,7 @@ func (e *Engine) Exec(_ context.Context, req *pb.RunCommandRequest) (*pb.Command
 			Timeline:  []*pb.CommandEvent{{At: now, What: "queued", Detail: "by " + w.ws().Agent}},
 		},
 		RepoId: req.Repo, Project: w.ws().Project, Agent: w.ws().Agent, Volume: w.rec.Volume,
-		Dir: dir, Env: req.Env,
+		Dir: dir, Env: req.Env, NoCapture: req.NoCapture,
 	})
 	if req.Port > 0 {
 		c.cmd().Url = fmt.Sprintf("http://%s:%d", e.cfg.Host, req.Port)
@@ -2260,6 +2260,11 @@ func (e *Engine) endBy(c *command, state pb.CommandState, code *int32, why strin
 			wsWhat = "preparing"
 		}
 		e.saveWorkspace(w, change{what: wsWhat, detail: cmd.Id + " ended"})
+		if state == succeeded && !c.rec.NoCapture && !cmd.Bench && cmd.Kind != "server" &&
+			w.rec.CaptureBase && !w.rec.NoCapture && !w.ws().Throwaway {
+			w.capturePending = true
+			e.maybeStartCaptureLocked(w)
+		}
 	}
 	e.stepSoon()
 }

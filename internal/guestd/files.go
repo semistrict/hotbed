@@ -138,7 +138,13 @@ func (s *Server) Sync(ctx context.Context, stream guestdv1connect.GuestServiceSy
 	if (meta.Uid > 0 || meta.Gid > 0) && os.Geteuid() == 0 {
 		// guestd runs as root (PID 1 in a Firecracker VM) and created s.syncDir /
 		// tmpDir / bundle files as root; ensure the unprivileged git user can
-		// traverse to and read the bundle files.
+		// traverse to and read the bundle files, and owns repoDir if we create it
+		// on a fresh workspace starting from the bare OS base image.
+		if _, statErr := os.Stat(repoDir); errors.Is(statErr, os.ErrNotExist) {
+			if mkErr := os.MkdirAll(repoDir, 0o755); mkErr == nil {
+				_ = os.Chown(repoDir, int(meta.Uid), int(meta.Gid))
+			}
+		}
 		_ = os.Chmod(s.stateDir, 0o755)
 		_ = os.Chmod(s.syncDir, 0o755)
 		_ = os.Chown(tmpDir, int(meta.Uid), int(meta.Gid))

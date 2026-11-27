@@ -2331,7 +2331,14 @@ type SharedBase struct {
 	// Each repo's commit, checked out in it.
 	Repos map[string]string `protobuf:"bytes,5,rep,name=repos,proto3" json:"repos,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
 	// Each setup step's script hash, as last run in it.
-	StepHashes    map[string]string `protobuf:"bytes,6,rep,name=step_hashes,json=stepHashes,proto3" json:"step_hashes,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
+	StepHashes map[string]string `protobuf:"bytes,6,rep,name=step_hashes,json=stepHashes,proto3" json:"step_hashes,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
+	// Unix ms when this base was captured.
+	CapturedAt int64 `protobuf:"varint,7,opt,name=captured_at,json=capturedAt,proto3" json:"captured_at,omitempty"`
+	// Unix seconds of the newest upstream anchor commit in this base.
+	BaseCommitTime int64 `protobuf:"varint,8,opt,name=base_commit_time,json=baseCommitTime,proto3" json:"base_commit_time,omitempty"`
+	// True when captured automatically from a real workspace run rather than a
+	// freshen job.
+	AutoCaptured  bool `protobuf:"varint,9,opt,name=auto_captured,json=autoCaptured,proto3" json:"auto_captured,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -2406,6 +2413,27 @@ func (x *SharedBase) GetStepHashes() map[string]string {
 		return x.StepHashes
 	}
 	return nil
+}
+
+func (x *SharedBase) GetCapturedAt() int64 {
+	if x != nil {
+		return x.CapturedAt
+	}
+	return 0
+}
+
+func (x *SharedBase) GetBaseCommitTime() int64 {
+	if x != nil {
+		return x.BaseCommitTime
+	}
+	return 0
+}
+
+func (x *SharedBase) GetAutoCaptured() bool {
+	if x != nil {
+		return x.AutoCaptured
+	}
+	return false
 }
 
 type NodeUsage struct {
@@ -7082,7 +7110,11 @@ type Workspace struct {
 	// this run here (what it asked for, every node weighed, and why this node
 	// won). Not persisted on the workspace itself, which a session reuses across
 	// runs with different placement requests.
-	Placement     *PlacementDecision `protobuf:"bytes,30,opt,name=placement,proto3" json:"placement,omitempty"`
+	Placement *PlacementDecision `protobuf:"bytes,30,opt,name=placement,proto3" json:"placement,omitempty"`
+	// True when this workspace's cell is bucket-backed and will auto-capture as
+	// the project's shared warm base after its next successful command (and then
+	// switch to a local-only ephemeral cell for all subsequent commands).
+	CaptureBase   bool `protobuf:"varint,31,opt,name=capture_base,json=captureBase,proto3" json:"capture_base,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -7264,6 +7296,13 @@ func (x *Workspace) GetPlacement() *PlacementDecision {
 	return nil
 }
 
+func (x *Workspace) GetCaptureBase() bool {
+	if x != nil {
+		return x.CaptureBase
+	}
+	return false
+}
+
 // One repo of a workspace, at /work/<repo>.
 type WorkspaceRepo struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
@@ -7276,7 +7315,12 @@ type WorkspaceRepo struct {
 	FilesChanged int32  `protobuf:"varint,5,opt,name=files_changed,json=filesChanged,proto3" json:"files_changed,omitempty"`
 	// The local checkout (on the workspace's sync_host) last synced into it;
 	// empty when none has been.
-	SyncDir       string `protobuf:"bytes,6,opt,name=sync_dir,json=syncDir,proto3" json:"sync_dir,omitempty"`
+	SyncDir string `protobuf:"bytes,6,opt,name=sync_dir,json=syncDir,proto3" json:"sync_dir,omitempty"`
+	// Unix seconds of the upstream anchor commit last synced into this repo.
+	BaseCommitTime int64 `protobuf:"varint,7,opt,name=base_commit_time,json=baseCommitTime,proto3" json:"base_commit_time,omitempty"`
+	// Upstream anchor commit (e.g. merge-base with origin's default branch)
+	// present in this checkout, recorded in SharedBase.repos when captured.
+	AnchorCommit  string `protobuf:"bytes,8,opt,name=anchor_commit,json=anchorCommit,proto3" json:"anchor_commit,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -7353,6 +7397,20 @@ func (x *WorkspaceRepo) GetSyncDir() string {
 	return ""
 }
 
+func (x *WorkspaceRepo) GetBaseCommitTime() int64 {
+	if x != nil {
+		return x.BaseCommitTime
+	}
+	return 0
+}
+
+func (x *WorkspaceRepo) GetAnchorCommit() string {
+	if x != nil {
+		return x.AnchorCommit
+	}
+	return ""
+}
+
 // CreateWorkspace, called on the controller, gives a session a workspace of
 // its project for a run: on the node the controller picks for it
 // (Placement), the session's workspace there, or a new one. A session has at
@@ -7393,8 +7451,23 @@ type CreateWorkspaceRequest struct {
 	// re-evaluate whenever any eligible node reports free capacity, rather than
 	// committing up front to one full node's local queue.
 	WaitForCapacity bool `protobuf:"varint,17,opt,name=wait_for_capacity,json=waitForCapacity,proto3" json:"wait_for_capacity,omitempty"`
-	unknownFields   protoimpl.UnknownFields
-	sizeCache       protoimpl.SizeCache
+	// Opt out of auto-capturing this workspace as the project's shared base.
+	NoCapture bool `protobuf:"varint,18,opt,name=no_capture,json=noCapture,proto3" json:"no_capture,omitempty"`
+	// Force capturing this workspace as the project's shared base on its next
+	// successful command (from client --capture-base, or set by the controller
+	// when forwarding to a worker because the project's shared base is missing
+	// or stale).
+	CaptureBase bool `protobuf:"varint,19,opt,name=capture_base,json=captureBase,proto3" json:"capture_base,omitempty"`
+	// Ignore any cached project base and start from the bare OS base image.
+	Fresh bool `protobuf:"varint,20,opt,name=fresh,proto3" json:"fresh,omitempty"`
+	// Caller's upstream anchor commit (merge-base with origin's default branch,
+	// or HEAD), used by the controller to avoid regressing the project's shared
+	// base from an older branch.
+	BaseCommit string `protobuf:"bytes,21,opt,name=base_commit,json=baseCommit,proto3" json:"base_commit,omitempty"`
+	// Unix seconds of base_commit.
+	BaseCommitTime int64 `protobuf:"varint,22,opt,name=base_commit_time,json=baseCommitTime,proto3" json:"base_commit_time,omitempty"`
+	unknownFields  protoimpl.UnknownFields
+	sizeCache      protoimpl.SizeCache
 }
 
 func (x *CreateWorkspaceRequest) Reset() {
@@ -7516,6 +7589,41 @@ func (x *CreateWorkspaceRequest) GetWaitForCapacity() bool {
 		return x.WaitForCapacity
 	}
 	return false
+}
+
+func (x *CreateWorkspaceRequest) GetNoCapture() bool {
+	if x != nil {
+		return x.NoCapture
+	}
+	return false
+}
+
+func (x *CreateWorkspaceRequest) GetCaptureBase() bool {
+	if x != nil {
+		return x.CaptureBase
+	}
+	return false
+}
+
+func (x *CreateWorkspaceRequest) GetFresh() bool {
+	if x != nil {
+		return x.Fresh
+	}
+	return false
+}
+
+func (x *CreateWorkspaceRequest) GetBaseCommit() string {
+	if x != nil {
+		return x.BaseCommit
+	}
+	return ""
+}
+
+func (x *CreateWorkspaceRequest) GetBaseCommitTime() int64 {
+	if x != nil {
+		return x.BaseCommitTime
+	}
+	return 0
 }
 
 // Placement narrows where a run may go. The controller picks among the nodes
@@ -7997,7 +8105,15 @@ type SyncHeader struct {
 	// The submodule snapshots it carries, parents before their submodules.
 	// The stream's bytes are each one's bundle, in this order, then the
 	// repo's own bundle to the end.
-	Submodules    []*SyncSubmodule `protobuf:"bytes,6,rep,name=submodules,proto3" json:"submodules,omitempty"`
+	Submodules []*SyncSubmodule `protobuf:"bytes,6,rep,name=submodules,proto3" json:"submodules,omitempty"`
+	// Caller's upstream anchor commit (merge-base with origin's default branch,
+	// or HEAD).
+	AnchorCommit string `protobuf:"bytes,7,opt,name=anchor_commit,json=anchorCommit,proto3" json:"anchor_commit,omitempty"`
+	// Unix seconds of anchor_commit.
+	AnchorCommitTime int64 `protobuf:"varint,8,opt,name=anchor_commit_time,json=anchorCommitTime,proto3" json:"anchor_commit_time,omitempty"`
+	// True when the synced bundle preserves anchor_commit in the checkout's git
+	// history (false for parentless tree-only bundles).
+	HasAnchor     bool `protobuf:"varint,9,opt,name=has_anchor,json=hasAnchor,proto3" json:"has_anchor,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -8072,6 +8188,27 @@ func (x *SyncHeader) GetSubmodules() []*SyncSubmodule {
 		return x.Submodules
 	}
 	return nil
+}
+
+func (x *SyncHeader) GetAnchorCommit() string {
+	if x != nil {
+		return x.AnchorCommit
+	}
+	return ""
+}
+
+func (x *SyncHeader) GetAnchorCommitTime() int64 {
+	if x != nil {
+		return x.AnchorCommitTime
+	}
+	return 0
+}
+
+func (x *SyncHeader) GetHasAnchor() bool {
+	if x != nil {
+		return x.HasAnchor
+	}
+	return false
 }
 
 // SyncSubmodule is a submodule snapshot a sync carries, as a git bundle.
@@ -10255,7 +10392,10 @@ type RunCommandRequest struct {
 	Estimate *CommandEstimate `protobuf:"bytes,14,opt,name=estimate,proto3" json:"estimate,omitempty"`
 	// The placement decision that put this run on this node (what it asked for,
 	// every node weighed, and why this node won), from CreateWorkspace.
-	Placement     *PlacementDecision `protobuf:"bytes,15,opt,name=placement,proto3" json:"placement,omitempty"`
+	Placement *PlacementDecision `protobuf:"bytes,15,opt,name=placement,proto3" json:"placement,omitempty"`
+	// Opt this command out of triggering an auto-capture of its workspace as the
+	// project's shared base.
+	NoCapture     bool `protobuf:"varint,16,opt,name=no_capture,json=noCapture,proto3" json:"no_capture,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -10393,6 +10533,13 @@ func (x *RunCommandRequest) GetPlacement() *PlacementDecision {
 		return x.Placement
 	}
 	return nil
+}
+
+func (x *RunCommandRequest) GetNoCapture() bool {
+	if x != nil {
+		return x.NoCapture
+	}
+	return false
 }
 
 // What a long command is expected to need.
@@ -37766,7 +37913,7 @@ const file_hotbed_v1_hotbed_proto_rawDesc = "" +
 	"\aproject\x18\x06 \x01(\tR\aproject\x12\x12\n" +
 	"\x04arch\x18\a \x01(\tR\x04arch\x12\x16\n" +
 	"\x06recipe\x18\b \x01(\tR\x06recipe\x12\x18\n" +
-	"\aruntime\x18\t \x01(\tR\aruntime\"\x90\x03\n" +
+	"\aruntime\x18\t \x01(\tR\aruntime\"\x80\x04\n" +
 	"\n" +
 	"SharedBase\x12*\n" +
 	"\x04cell\x18\x01 \x01(\v2\x16.hotbed.v1.CladefsCellR\x04cell\x12\x19\n" +
@@ -37776,7 +37923,11 @@ const file_hotbed_v1_hotbed_proto_rawDesc = "" +
 	"\rscratch_epoch\x18\x04 \x01(\x03R\fscratchEpoch\x126\n" +
 	"\x05repos\x18\x05 \x03(\v2 .hotbed.v1.SharedBase.ReposEntryR\x05repos\x12F\n" +
 	"\vstep_hashes\x18\x06 \x03(\v2%.hotbed.v1.SharedBase.StepHashesEntryR\n" +
-	"stepHashes\x1a8\n" +
+	"stepHashes\x12\x1f\n" +
+	"\vcaptured_at\x18\a \x01(\x03R\n" +
+	"capturedAt\x12(\n" +
+	"\x10base_commit_time\x18\b \x01(\x03R\x0ebaseCommitTime\x12#\n" +
+	"\rauto_captured\x18\t \x01(\bR\fautoCaptured\x1a8\n" +
 	"\n" +
 	"ReposEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
@@ -38284,7 +38435,7 @@ const file_hotbed_v1_hotbed_proto_rawDesc = "" +
 	"\x04repo\x18\x01 \x01(\tR\x04repo\x12\x16\n" +
 	"\x06commit\x18\x02 \x01(\tR\x06commit\x12\x18\n" +
 	"\amessage\x18\x03 \x01(\tR\amessage\x12\x1c\n" +
-	"\ttoolchain\x18\x04 \x01(\tR\ttoolchain\"\xd2\x06\n" +
+	"\ttoolchain\x18\x04 \x01(\tR\ttoolchain\"\xf5\x06\n" +
 	"\tWorkspace\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x17\n" +
 	"\abase_id\x18\x03 \x01(\tR\x06baseId\x12\x17\n" +
@@ -38310,9 +38461,10 @@ const file_hotbed_v1_hotbed_proto_rawDesc = "" +
 	"\aruntime\x18\x1b \x01(\tR\aruntime\x129\n" +
 	"\fcladefs_cell\x18\x1c \x01(\v2\x16.hotbed.v1.CladefsCellR\vcladefsCell\x12\x1c\n" +
 	"\tthrowaway\x18\x1d \x01(\bR\tthrowaway\x12:\n" +
-	"\tplacement\x18\x1e \x01(\v2\x1c.hotbed.v1.PlacementDecisionR\tplacementJ\x04\b\x02\x10\x03J\x04\b\x06\x10\aJ\x04\b\a\x10\bJ\x04\b\b\x10\tJ\x04\b\t\x10\n" +
+	"\tplacement\x18\x1e \x01(\v2\x1c.hotbed.v1.PlacementDecisionR\tplacement\x12!\n" +
+	"\fcapture_base\x18\x1f \x01(\bR\vcaptureBaseJ\x04\b\x02\x10\x03J\x04\b\x06\x10\aJ\x04\b\a\x10\bJ\x04\b\b\x10\tJ\x04\b\t\x10\n" +
 	"J\x04\b\n" +
-	"\x10\vJ\x04\b\x11\x10\x12J\x04\b\x13\x10\x14J\x04\b\x16\x10\x17R\arepo_idR\x06branchR\x04headR\vbase_commitR\x04treeR\rfiles_changedR\x04pathR\bsync_dirR\tnode_addr\"\xac\x01\n" +
+	"\x10\vJ\x04\b\x11\x10\x12J\x04\b\x13\x10\x14J\x04\b\x16\x10\x17R\arepo_idR\x06branchR\x04headR\vbase_commitR\x04treeR\rfiles_changedR\x04pathR\bsync_dirR\tnode_addr\"\xfb\x01\n" +
 	"\rWorkspaceRepo\x12\x12\n" +
 	"\x04repo\x18\x01 \x01(\tR\x04repo\x12\x12\n" +
 	"\x04head\x18\x02 \x01(\tR\x04head\x12\x1f\n" +
@@ -38320,7 +38472,9 @@ const file_hotbed_v1_hotbed_proto_rawDesc = "" +
 	"baseCommit\x12\x12\n" +
 	"\x04tree\x18\x04 \x01(\tR\x04tree\x12#\n" +
 	"\rfiles_changed\x18\x05 \x01(\x05R\ffilesChanged\x12\x19\n" +
-	"\bsync_dir\x18\x06 \x01(\tR\asyncDir\"\x85\x04\n" +
+	"\bsync_dir\x18\x06 \x01(\tR\asyncDir\x12(\n" +
+	"\x10base_commit_time\x18\a \x01(\x03R\x0ebaseCommitTime\x12#\n" +
+	"\ranchor_commit\x18\b \x01(\tR\fanchorCommit\"\xa8\x05\n" +
 	"\x16CreateWorkspaceRequest\x12\x12\n" +
 	"\x04repo\x18\x01 \x01(\tR\x04repo\x12\x14\n" +
 	"\x05agent\x18\x02 \x01(\tR\x05agent\x122\n" +
@@ -38337,7 +38491,14 @@ const file_hotbed_v1_hotbed_proto_rawDesc = "" +
 	"sharedBase\x12#\n" +
 	"\rfencing_token\x18\x0e \x01(\x04R\ffencingToken\x12\x1c\n" +
 	"\tthrowaway\x18\x0f \x01(\bR\tthrowaway\x12*\n" +
-	"\x11wait_for_capacity\x18\x11 \x01(\bR\x0fwaitForCapacityJ\x04\b\x03\x10\x04J\x04\b\x04\x10\x05J\x04\b\t\x10\n" +
+	"\x11wait_for_capacity\x18\x11 \x01(\bR\x0fwaitForCapacity\x12\x1d\n" +
+	"\n" +
+	"no_capture\x18\x12 \x01(\bR\tnoCapture\x12!\n" +
+	"\fcapture_base\x18\x13 \x01(\bR\vcaptureBase\x12\x14\n" +
+	"\x05fresh\x18\x14 \x01(\bR\x05fresh\x12\x1f\n" +
+	"\vbase_commit\x18\x15 \x01(\tR\n" +
+	"baseCommit\x12(\n" +
+	"\x10base_commit_time\x18\x16 \x01(\x03R\x0ebaseCommitTimeJ\x04\b\x03\x10\x04J\x04\b\x04\x10\x05J\x04\b\t\x10\n" +
 	"J\x04\b\r\x10\x0eR\x06branchR\x04nodeR\vrepo_config\"\x86\x02\n" +
 	"\tPlacement\x12\x16\n" +
 	"\x04node\x18\x01 \x01(\tB\x02\x18\x01R\x04node\x12\x12\n" +
@@ -38366,7 +38527,7 @@ const file_hotbed_v1_hotbed_proto_rawDesc = "" +
 	"\vSyncRequest\x12/\n" +
 	"\x06header\x18\x01 \x01(\v2\x15.hotbed.v1.SyncHeaderH\x00R\x06header\x12\x16\n" +
 	"\x05chunk\x18\x02 \x01(\fH\x00R\x05chunkB\x05\n" +
-	"\x03msg\"\xbb\x01\n" +
+	"\x03msg\"\xad\x02\n" +
 	"\n" +
 	"SyncHeader\x12!\n" +
 	"\fworkspace_id\x18\x01 \x01(\tR\vworkspaceId\x12\x16\n" +
@@ -38376,7 +38537,11 @@ const file_hotbed_v1_hotbed_proto_rawDesc = "" +
 	"\x03dir\x18\x05 \x01(\tR\x03dir\x128\n" +
 	"\n" +
 	"submodules\x18\x06 \x03(\v2\x18.hotbed.v1.SyncSubmoduleR\n" +
-	"submodules\"^\n" +
+	"submodules\x12#\n" +
+	"\ranchor_commit\x18\a \x01(\tR\fanchorCommit\x12,\n" +
+	"\x12anchor_commit_time\x18\b \x01(\x03R\x10anchorCommitTime\x12\x1d\n" +
+	"\n" +
+	"has_anchor\x18\t \x01(\bR\thasAnchor\"^\n" +
 	"\rSyncSubmodule\x12\x12\n" +
 	"\x04path\x18\x01 \x01(\tR\x04path\x12\x16\n" +
 	"\x06commit\x18\x02 \x01(\tR\x06commit\x12!\n" +
@@ -38570,7 +38735,7 @@ const file_hotbed_v1_hotbed_proto_rawDesc = "" +
 	"\r_cold_secondsB\n" +
 	"\n" +
 	"\b_rebuiltB\x05\n" +
-	"\x03_of\"\x8d\x04\n" +
+	"\x03_of\"\xbe\x04\n" +
 	"\x11RunCommandRequest\x12!\n" +
 	"\fworkspace_id\x18\x01 \x01(\tR\vworkspaceId\x12\x1c\n" +
 	"\x04args\x18\x02 \x03(\tB\b\x82\xb5\x18\x04\x18\x01x\x01R\x04args\x12\x10\n" +
@@ -38588,7 +38753,11 @@ const file_hotbed_v1_hotbed_proto_rawDesc = "" +
 	"\x06vm-memr\x04SizeR\rvmMemoryBytes\x12$\n" +
 	"\x03tty\x18\r \x01(\x0e2\x12.hotbed.v1.TtyModeR\x03tty\x126\n" +
 	"\bestimate\x18\x0e \x01(\v2\x1a.hotbed.v1.CommandEstimateR\bestimate\x12:\n" +
-	"\tplacement\x18\x0f \x01(\v2\x1c.hotbed.v1.PlacementDecisionR\tplacement\"f\n" +
+	"\tplacement\x18\x0f \x01(\v2\x1c.hotbed.v1.PlacementDecisionR\tplacement\x12/\n" +
+	"\n" +
+	"no_capture\x18\x10 \x01(\bB\x10\x82\xb5\x18\f\n" +
+	"\n" +
+	"no-captureR\tnoCapture\"f\n" +
 	"\x0fCommandEstimate\x12!\n" +
 	"\fmemory_bytes\x18\x01 \x01(\x03R\vmemoryBytes\x12\x18\n" +
 	"\aseconds\x18\x02 \x01(\x03R\aseconds\x12\x16\n" +

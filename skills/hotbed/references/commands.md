@@ -440,6 +440,7 @@ Schedule a command, or replace the scheduled command of that name. Each run gets
 | `--bench` |  | Run it as a measurement: alone among measurements on the node, once running work leaves it room, on CPUs no other command uses, isolated for its whole run, never swapped or parked. |
 | `--vm-cpus` |  | vCPUs its VM's guest sees; 0 for the node's default. It sizes the VM only: admission goes by what commands are measured to use. vm runtime only. |
 | `--vm-mem` |  | Memory its VM's guest sees, such as 16G; 0 for the node's default. It sizes the VM only, as vm_cpus does. vm runtime only. |
+| `--no-capture` |  | Opt this command out of triggering an auto-capture of its workspace as the project's shared base. |
 | `--paused` |  | Add it paused. |
 | `-p`, `--project` | `HOTBED_PROJECT` | The project its runs' sessions work on: the one named when it was added (default: HOTBED_PROJECT), or else the one that holds its repo. |
 

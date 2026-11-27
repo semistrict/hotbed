@@ -1,7 +1,19 @@
 import { SharedBaseSchema, type CladefsCell, type SharedBase } from "../gen/hotbed/v1/hotbed_pb.ts";
-import { str } from "../sql-values.ts";
+import { num, str } from "../sql-values.ts";
 import { marshal, unmarshal, type SqlKernel } from "./kernel.ts";
 import type { MetaStore } from "./meta.ts";
+
+export interface RecordedSharedBaseKey {
+	project: string;
+	arch: string;
+	runtime: string;
+	tenant: string;
+}
+
+export interface SharedBaseWithMeta {
+	base: SharedBase;
+	seenAt: number;
+}
 
 /** cladefs coordination: fencing tokens, the shared bucket's project bases and retired worker incarnations. */
 export class CladefsStore {
@@ -36,7 +48,8 @@ export class CladefsStore {
 		retired: CladefsCell[],
 		nowMs: number,
 		allowedTenant?: bigint | null,
-	): void {
+	): RecordedSharedBaseKey[] {
+		const recorded: RecordedSharedBaseKey[] = [];
 		this.sql.tx(() => {
 			for (const c of retired) {
 				this.sql.exec(
@@ -84,6 +97,7 @@ export class CladefsStore {
 						marshal(SharedBaseSchema, b),
 						nodeId,
 					);
+					recorded.push({ project: c.project, arch: cellArch, runtime: c.runtime, tenant });
 				}
 				this.sql.exec(
 					"INSERT OR IGNORE INTO shared_base_holders (node_id, tenant, cell) VALUES (?, ?, ?)",
@@ -106,6 +120,7 @@ export class CladefsStore {
 				nowMs,
 			);
 		});
+		return recorded;
 	}
 
 	/**
@@ -142,6 +157,33 @@ export class CladefsStore {
 	): SharedBase | undefined {
 		const rows = this.sharedBaseRows(project, arch, allowedTenant, runtime, "base");
 		return rows.length > 0 ? unmarshal(SharedBaseSchema, str(rows[0].base)) : undefined;
+	}
+
+	latestSharedBaseWithMeta(
+		project: string,
+		arch: string,
+		allowedTenant: bigint | null | undefined,
+		runtime: string,
+	): SharedBaseWithMeta | undefined {
+		if (!project || !arch || !runtime) return undefined;
+		const conds = ["project = ?", "arch = ?", "runtime = ?"];
+		const params: SqlStorageValue[] = [project, arch, runtime];
+		if (allowedTenant !== undefined && allowedTenant !== null) {
+			conds.push("tenant = ?");
+			params.push(allowedTenant.toString());
+		}
+		const rows = this.sql
+			.exec(
+				`SELECT base, seen_at FROM shared_bases
+				 WHERE replaced_at IS NULL AND ${conds.join(" AND ")} LIMIT 1`,
+				...params,
+			)
+			.toArray();
+		if (rows.length === 0) return undefined;
+		return {
+			base: unmarshal(SharedBaseSchema, str(rows[0].base)),
+			seenAt: num(rows[0].seen_at),
+		};
 	}
 
 	hasSharedBase(

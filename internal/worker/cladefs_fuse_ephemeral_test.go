@@ -100,7 +100,7 @@ func TestCladefsFUSEBackendPrepareAndDeleteWorkspaceEphemeral(t *testing.T) {
 
 	baseRef := cladefs.CellRef{Tenant: 0, Cell: 42, Version: 7}
 
-	cell, err := b.PrepareWorkspace(ctx, "ws-1", baseRef, 99)
+	cell, err := b.PrepareWorkspace(ctx, "ws-1", baseRef, 99, false)
 	if err != nil {
 		t.Fatalf("PrepareWorkspace: %v", err)
 	}
@@ -128,7 +128,7 @@ func TestCladefsFUSEBackendPrepareAndDeleteWorkspaceEphemeral(t *testing.T) {
 	// Calling PrepareWorkspace while ws-1 still has an active FUSE mount must fail
 	// ErrBusy without deleting the live mount's cell.
 	deletesBeforeBusy := len(api.deleteReqs)
-	if _, err := b.PrepareWorkspace(ctx, "ws-1", baseRef, 100); !errors.Is(err, storage.ErrBusy) {
+	if _, err := b.PrepareWorkspace(ctx, "ws-1", baseRef, 100, false); !errors.Is(err, storage.ErrBusy) {
 		t.Fatalf("PrepareWorkspace while active mount exists: err = %v, want storage.ErrBusy", err)
 	}
 	if len(api.deleteReqs) != deletesBeforeBusy {
@@ -147,7 +147,7 @@ func TestCladefsFUSEBackendPrepareAndDeleteWorkspaceEphemeral(t *testing.T) {
 
 	// Verify attach failure cleans up the forked ephemeral cell.
 	mnt.attachErr = status.Error(codes.Internal, "boom")
-	if _, err := b.PrepareWorkspace(ctx, "ws-2", baseRef, 100); err == nil {
+	if _, err := b.PrepareWorkspace(ctx, "ws-2", baseRef, 100, false); err == nil {
 		t.Fatal("expected PrepareWorkspace error when MountAttach fails")
 	}
 	if len(api.deleteReqs) != 2 || api.deleteReqs[1].GetCell() != 102 {

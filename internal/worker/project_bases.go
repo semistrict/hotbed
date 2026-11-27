@@ -21,16 +21,19 @@ import (
 
 // projectBase is a warm project base: a version of a cell in the shared
 // bucket, which any node of its arch and runtime can fork, with what a freshen
-// on top of it needs to know of it.
+// or auto-capture on top of it needs to know of it.
 type projectBase struct {
-	Ref          cladefs.CellRef   `json:"ref"`
-	BaseID       string            `json:"baseId"`
-	Recipe       string            `json:"recipe"`
-	BaseKey      string            `json:"baseKey,omitempty"`
-	SetupHash    string            `json:"setupHash,omitempty"`
-	ScratchEpoch int64             `json:"scratchEpoch,omitempty"`
-	Repos        map[string]string `json:"repos"`                // repoID -> checked-out HEAD commit
-	StepHashes   map[string]string `json:"stepHashes,omitempty"` // step name -> last executed script hash
+	Ref            cladefs.CellRef   `json:"ref"`
+	BaseID         string            `json:"baseId"`
+	Recipe         string            `json:"recipe"`
+	BaseKey        string            `json:"baseKey,omitempty"`
+	SetupHash      string            `json:"setupHash,omitempty"`
+	ScratchEpoch   int64             `json:"scratchEpoch,omitempty"`
+	Repos          map[string]string `json:"repos"`                // repoID -> checked-out HEAD / anchor commit
+	StepHashes     map[string]string `json:"stepHashes,omitempty"` // step name -> last executed script hash
+	BaseCommitTime int64             `json:"baseCommitTime,omitempty"`
+	CapturedAt     int64             `json:"capturedAt,omitempty"`
+	AutoCaptured   bool              `json:"autoCaptured,omitempty"`
 }
 
 func (b *projectBase) usable() bool {
@@ -63,14 +66,17 @@ func sharedProjectBase(sb *pb.SharedBase, tenant uint64) *projectBase {
 		return nil
 	}
 	return &projectBase{
-		Ref:          cladefs.CellRef{Tenant: c.GetTenant(), Cell: c.GetCell(), Version: c.GetVersion()},
-		BaseID:       c.GetBaseId(),
-		Recipe:       c.GetRecipe(),
-		BaseKey:      sb.GetBaseKey(),
-		SetupHash:    sb.GetSetupHash(),
-		ScratchEpoch: sb.GetScratchEpoch(),
-		Repos:        maps.Clone(sb.GetRepos()),
-		StepHashes:   maps.Clone(sb.GetStepHashes()),
+		Ref:            cladefs.CellRef{Tenant: c.GetTenant(), Cell: c.GetCell(), Version: c.GetVersion()},
+		BaseID:         c.GetBaseId(),
+		Recipe:         c.GetRecipe(),
+		BaseKey:        sb.GetBaseKey(),
+		SetupHash:      sb.GetSetupHash(),
+		ScratchEpoch:   sb.GetScratchEpoch(),
+		Repos:          maps.Clone(sb.GetRepos()),
+		StepHashes:     maps.Clone(sb.GetStepHashes()),
+		BaseCommitTime: sb.GetBaseCommitTime(),
+		CapturedAt:     sb.GetCapturedAt(),
+		AutoCaptured:   sb.GetAutoCaptured(),
 	}
 }
 
@@ -87,12 +93,58 @@ func (b *projectBase) shared(project, rt string) *pb.SharedBase {
 			Recipe:  b.Recipe,
 			Runtime: rt,
 		},
-		BaseKey:      b.BaseKey,
-		SetupHash:    b.SetupHash,
-		ScratchEpoch: b.ScratchEpoch,
-		Repos:        maps.Clone(b.Repos),
-		StepHashes:   maps.Clone(b.StepHashes),
+		BaseKey:        b.BaseKey,
+		SetupHash:      b.SetupHash,
+		ScratchEpoch:   b.ScratchEpoch,
+		Repos:          maps.Clone(b.Repos),
+		StepHashes:     maps.Clone(b.StepHashes),
+		BaseCommitTime: b.BaseCommitTime,
+		CapturedAt:     b.CapturedAt,
+		AutoCaptured:   b.AutoCaptured,
 	}
+}
+
+// pickAutoCaptureBase picks the best warm project base to fork immediately for
+// a workspace without running a freshen job. Returns nil when fresh is true or
+// neither held nor shared matches the current OS base image key and scratch epoch.
+func pickAutoCaptureBase(held, shared *projectBase, fresh, heldFresh bool, p *pb.HostedProject, baseKey string) *projectBase {
+	if fresh {
+		return nil
+	}
+	compatible := func(b *projectBase) bool {
+		if !b.usable() {
+			return false
+		}
+		if p != nil && b.ScratchEpoch < p.GetScratchEpoch() {
+			return false
+		}
+		if baseKey != "" && b.BaseKey != "" && b.BaseKey != baseKey {
+			return false
+		}
+		return true
+	}
+	if !compatible(held) {
+		held = nil
+	}
+	if !compatible(shared) {
+		shared = nil
+	}
+	if held == nil {
+		return shared
+	}
+	if shared == nil {
+		return held
+	}
+	if held.Ref.Cell == shared.Ref.Cell && held.Ref.Version == shared.Ref.Version {
+		return held
+	}
+	if heldFresh {
+		return held
+	}
+	if held.CapturedAt > shared.CapturedAt {
+		return held
+	}
+	return shared
 }
 
 // buildableOn reports whether a freshen of p can build on b.

@@ -206,7 +206,7 @@ func TestCladefsFUSEBackendDetachCleanupForceAndTimeout(t *testing.T) {
 
 	// 3. DeleteWorkspace must still cleanupMount(mntDir, false), detach, and delete
 	// even when caller's ctx is already cancelled (without hanging forever).
-	cell, err := b.PrepareWorkspace(ctx, "ws-cancel", res.Ref, 1)
+	cell, err := b.PrepareWorkspace(ctx, "ws-cancel", res.Ref, 1, false)
 	if err != nil {
 		t.Fatalf("PrepareWorkspace: %v", err)
 	}

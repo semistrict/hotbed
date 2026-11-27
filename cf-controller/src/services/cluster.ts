@@ -584,7 +584,7 @@ export function createClusterService(
 			ctrl.store.fleet.beat(caller.nodeId, req, nowMs);
 			const holdsBases = reportsHeldBases(req, ctrl.follows(req.resources));
 			if (holdsBases) {
-				ctrl.store.cladefs.recordHeldBases(
+				const recorded = ctrl.store.cladefs.recordHeldBases(
 					caller.nodeId,
 					req.resources?.arch ?? "",
 					req.heldBases,
@@ -592,6 +592,9 @@ export function createClusterService(
 					nowMs,
 					ctrl.cladefsTenantId,
 				);
+				for (const r of recorded) {
+					ctrl.clearBaseCaptureForKey(r.project, r.arch, r.runtime, r.tenant);
+				}
 			}
 			ctrl.nodeChanges.wake(caller.hostname);
 			ctrl.capacityChanges.wake("*");

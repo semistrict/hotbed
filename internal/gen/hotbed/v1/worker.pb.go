@@ -36,8 +36,17 @@ type WorkspaceRecord struct {
 	// queued. Its worker releases the workspace once that command has ended,
 	// or has been forgotten.
 	ThrowawayCommand string `protobuf:"bytes,5,opt,name=throwaway_command,json=throwawayCommand,proto3" json:"throwaway_command,omitempty"`
-	unknownFields    protoimpl.UnknownFields
-	sizeCache        protoimpl.SizeCache
+	// True while this workspace holds a bucket-backed cell slated to auto-capture
+	// as the project's shared base after its next successful command.
+	CaptureBase bool `protobuf:"varint,6,opt,name=capture_base,json=captureBase,proto3" json:"capture_base,omitempty"`
+	// True when the caller opted out of auto-capturing this workspace.
+	NoCapture bool `protobuf:"varint,7,opt,name=no_capture,json=noCapture,proto3" json:"no_capture,omitempty"`
+	// OS base image key this workspace started from (recorded in SharedBase on capture).
+	BaseKey string `protobuf:"bytes,8,opt,name=base_key,json=baseKey,proto3" json:"base_key,omitempty"`
+	// Project scratch_epoch this workspace started from (recorded in SharedBase on capture).
+	ScratchEpoch  int64 `protobuf:"varint,9,opt,name=scratch_epoch,json=scratchEpoch,proto3" json:"scratch_epoch,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *WorkspaceRecord) Reset() {
@@ -105,6 +114,34 @@ func (x *WorkspaceRecord) GetThrowawayCommand() string {
 	return ""
 }
 
+func (x *WorkspaceRecord) GetCaptureBase() bool {
+	if x != nil {
+		return x.CaptureBase
+	}
+	return false
+}
+
+func (x *WorkspaceRecord) GetNoCapture() bool {
+	if x != nil {
+		return x.NoCapture
+	}
+	return false
+}
+
+func (x *WorkspaceRecord) GetBaseKey() string {
+	if x != nil {
+		return x.BaseKey
+	}
+	return ""
+}
+
+func (x *WorkspaceRecord) GetScratchEpoch() int64 {
+	if x != nil {
+		return x.ScratchEpoch
+	}
+	return 0
+}
+
 type CommandRecord struct {
 	state   protoimpl.MessageState `protogen:"open.v1"`
 	Command *Command               `protobuf:"bytes,1,opt,name=command,proto3" json:"command,omitempty"`
@@ -140,8 +177,10 @@ type CommandRecord struct {
 	// it wrote from there on came after an edit reached it (a dev server's
 	// output since the agent's change).
 	SyncedAtOffset int64 `protobuf:"varint,17,opt,name=synced_at_offset,json=syncedAtOffset,proto3" json:"synced_at_offset,omitempty"`
-	unknownFields  protoimpl.UnknownFields
-	sizeCache      protoimpl.SizeCache
+	// True when this command opted out of triggering workspace base capture.
+	NoCapture     bool `protobuf:"varint,18,opt,name=no_capture,json=noCapture,proto3" json:"no_capture,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *CommandRecord) Reset() {
@@ -293,17 +332,29 @@ func (x *CommandRecord) GetSyncedAtOffset() int64 {
 	return 0
 }
 
+func (x *CommandRecord) GetNoCapture() bool {
+	if x != nil {
+		return x.NoCapture
+	}
+	return false
+}
+
 var File_hotbed_v1_worker_proto protoreflect.FileDescriptor
 
 const file_hotbed_v1_worker_proto_rawDesc = "" +
 	"\n" +
-	"\x16hotbed/v1/worker.proto\x12\thotbed.v1\x1a\x16hotbed/v1/hotbed.proto\"\xc3\x01\n" +
+	"\x16hotbed/v1/worker.proto\x12\thotbed.v1\x1a\x16hotbed/v1/hotbed.proto\"\xc5\x02\n" +
 	"\x0fWorkspaceRecord\x122\n" +
 	"\tworkspace\x18\x01 \x01(\v2\x14.hotbed.v1.WorkspaceR\tworkspace\x12\x16\n" +
 	"\x06volume\x18\x02 \x01(\tR\x06volume\x12#\n" +
 	"\rbase_snapshot\x18\x03 \x01(\tR\fbaseSnapshot\x12\x12\n" +
 	"\x04note\x18\x04 \x01(\tR\x04note\x12+\n" +
-	"\x11throwaway_command\x18\x05 \x01(\tR\x10throwawayCommand\"\x83\x04\n" +
+	"\x11throwaway_command\x18\x05 \x01(\tR\x10throwawayCommand\x12!\n" +
+	"\fcapture_base\x18\x06 \x01(\bR\vcaptureBase\x12\x1d\n" +
+	"\n" +
+	"no_capture\x18\a \x01(\bR\tnoCapture\x12\x19\n" +
+	"\bbase_key\x18\b \x01(\tR\abaseKey\x12#\n" +
+	"\rscratch_epoch\x18\t \x01(\x03R\fscratchEpoch\"\xa2\x04\n" +
 	"\rCommandRecord\x12,\n" +
 	"\acommand\x18\x01 \x01(\v2\x12.hotbed.v1.CommandR\acommand\x12\x17\n" +
 	"\arepo_id\x18\x02 \x01(\tR\x06repoId\x12\x18\n" +
@@ -322,7 +373,9 @@ const file_hotbed_v1_worker_proto_rawDesc = "" +
 	"\twaited_at\x18\r \x01(\x03R\bwaitedAt\x12\x19\n" +
 	"\bheld_for\x18\x0f \x01(\tR\aheldFor\x12&\n" +
 	"\x0fpeak_held_bytes\x18\x10 \x01(\x03R\rpeakHeldBytes\x12(\n" +
-	"\x10synced_at_offset\x18\x11 \x01(\x03R\x0esyncedAtOffsetB>Z<github.com/semistrict/hotbed/internal/gen/hotbed/v1;hotbedv1b\x06proto3"
+	"\x10synced_at_offset\x18\x11 \x01(\x03R\x0esyncedAtOffset\x12\x1d\n" +
+	"\n" +
+	"no_capture\x18\x12 \x01(\bR\tnoCaptureB>Z<github.com/semistrict/hotbed/internal/gen/hotbed/v1;hotbedv1b\x06proto3"
 
 var (
 	file_hotbed_v1_worker_proto_rawDescOnce sync.Once

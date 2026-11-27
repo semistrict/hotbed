@@ -19,6 +19,15 @@ message WorkspaceRecord {
   // queued. Its worker releases the workspace once that command has ended,
   // or has been forgotten.
   string throwaway_command = 5;
+  // True while this workspace holds a bucket-backed cell slated to auto-capture
+  // as the project's shared base after its next successful command.
+  bool capture_base = 6;
+  // True when the caller opted out of auto-capturing this workspace.
+  bool no_capture = 7;
+  // OS base image key this workspace started from (recorded in SharedBase on capture).
+  string base_key = 8;
+  // Project scratch_epoch this workspace started from (recorded in SharedBase on capture).
+  int64 scratch_epoch = 9;
 }
 
 message CommandRecord {
@@ -55,4 +64,6 @@ message CommandRecord {
   // it wrote from there on came after an edit reached it (a dev server's
   // output since the agent's change).
   int64 synced_at_offset = 17;
+  // True when this command opted out of triggering workspace base capture.
+  bool no_capture = 18;
 }

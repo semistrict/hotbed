@@ -402,7 +402,7 @@ func (e *Engine) ReleaseWorkspace(ctx context.Context, id string) (retErr error)
 		return err
 	}
 	var w *workspace
-	var releaseDone, forkDone chan struct{}
+	var releaseDone, forkDone, captureDone chan struct{}
 	var running []string
 	var shells []*activeShell
 	for {
@@ -442,6 +442,7 @@ func (e *Engine) ReleaseWorkspace(ctx context.Context, id string) (retErr error)
 		w.releaseDone = releaseDone
 		w.releaseErr = nil
 		forkDone = w.forkDone
+		captureDone = w.captureDone
 		for _, c := range e.commands {
 			if c.cmd().WorkspaceId == id && api.Live(c.cmd().State) {
 				running = append(running, c.cmd().Id)
@@ -501,11 +502,18 @@ func (e *Engine) ReleaseWorkspace(ctx context.Context, id string) (retErr error)
 		e.mu.Unlock()
 	}()
 
-	// Wait for any in-flight Store.Clone on this workspace before destroying
-	// its volume.
+	// Wait for any in-flight Store.Clone or base capture on this workspace
+	// before destroying its volume.
 	if forkDone != nil {
 		select {
 		case <-forkDone:
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
+	if captureDone != nil {
+		select {
+		case <-captureDone:
 		case <-ctx.Done():
 			return ctx.Err()
 		}
@@ -740,10 +748,22 @@ func (e *Engine) Sync(ctx context.Context, h *pb.SyncHeader, bundle io.Reader) (
 	e.mu.Unlock()
 	w.sync.Lock()
 	defer w.sync.Unlock()
-	e.mu.Lock()
-	if w.ws().State == released || w.releasing {
+	for {
+		e.mu.Lock()
+		if w.ws().State == released || w.releasing {
+			e.mu.Unlock()
+			return nil, api.Errorf(api.CodeNotFound, "no workspace %s on this node", h.WorkspaceId)
+		}
+		cd := w.captureDone
+		if cd == nil {
+			break
+		}
 		e.mu.Unlock()
-		return nil, api.Errorf(api.CodeNotFound, "no workspace %s on this node", h.WorkspaceId)
+		select {
+		case <-cd:
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
 	}
 	ws := clone(w.ws())
 	e.mu.Unlock()
@@ -886,6 +906,15 @@ func (e *Engine) Sync(ctx context.Context, h *pb.SyncHeader, bundle io.Reader) (
 	}
 	cur := repoOf(w.ws(), r.Repo)
 	cur.Head, cur.Tree, cur.FilesChanged, cur.SyncDir = commit, h.Tree, int32(changed), h.Dir
+	if cur.BaseCommit == "" && commit != "" {
+		cur.BaseCommit = commit
+	}
+	if h.HasAnchor && h.AnchorCommit != "" {
+		cur.AnchorCommit = h.AnchorCommit
+	}
+	if h.AnchorCommitTime > 0 {
+		cur.BaseCommitTime = h.AnchorCommitTime
+	}
 	if n > 0 {
 		w.ws().Reason = prevReason
 	}

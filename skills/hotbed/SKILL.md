@@ -51,19 +51,23 @@ Do not pipe `hotbed session start` into `jq` or swallow its stdout: it prints ac
   spreads over the cluster. Narrow it only when the run needs something: `--arch amd64|arm64` for
   an architecture, `--runtime vm|cladefs` for a runtime, or `--bench`, `--mem-low`, `--vm-cpus`,
   and `--vm-mem` for resource requirements. stderr says where it ran.
-- **A workspace per node, of the whole project, made as needed.** A workspace holds every repo
-  of the session's project, each checked out at `/work/REPO`, side by side. The first run of a
-  session on a node forks the project's base there, with each repo at its branch's head. Structural
-  changes (first base on a node, setup step edits, repo list changes, or `hotbed project rebuild`)
-  freshen immediately. Commit-only branch movement on an existing warm base is an optimization
-  capped by duty cycle (default 5% of wall time, 30m minimum interval per project, 6h cooldown cap,
-  15m exponential failure backoff) and deferred to an idle, low-priority (`-10`) background slot
-  for syncing checkouts so your workspace forks immediately without waiting. Tune org-scoped caps
-  and settings live from the Cockpit (`/settings`) or via `hotbed config set` (`freshen.*`). A run
-  starts in `/work/REPO` of the repo it is for, or in `/work` when it is for none (outside any
-  checkout, no `-r`). Each workspace keeps its state between the commands run in it. On the vm
-  runtime each command runs in a fresh VM booted on the workspace's disk and stopped when it ends,
-  so a second command of the session on that node waits until the first ends.
+- **A workspace per node, of the whole project, made as needed (auto-captured bases).** A workspace
+  holds every repo of the session's project, each checked out at `/work/REPO`, side by side. The
+  first run of a session on a node forks the project's newest warm base immediately without waiting
+  for a background freshen, and `hotbed sync` fixes up tracked files (preserving mtimes of unchanged
+  files for incremental builds, even when starting from a bare OS base image or another worktree's
+  captured commit). Routine runs stay strictly local-only on the worker's SSD (zero R2 uploads).
+  When a project's shared R2 base is missing or stale (default 30m with a newer upstream merge-base,
+  or after `hotbed project rebuild`), the controller designates one session's workspace to
+  auto-capture: after its next successful command exits and its VM stops, the worker versions and
+  uploads that disk as the project's new shared base in the background, then swaps the workspace to
+  a local-only ephemeral fork for all subsequent commands. Pass `--no-capture` on `hotbed run` to
+  opt out, `--capture-base` to force capturing after a command succeeds (e.g. after installing a
+  system package), or `--fresh` to ignore the cached project base and start from the bare OS base
+  image. A run starts in `/work/REPO` of the repo it is for, or in `/work` when it is for none
+  (outside any checkout, no `-r`). Each workspace keeps its state between the commands run in it.
+  On the vm runtime each command runs in a fresh VM booted on the workspace's disk and stopped when
+  it ends, so a second command of the session on that node waits until the first ends.
 - **Your checkout is the truth.** Run from a checkout of the repo and each run first sends its
   state to the workspace it runs in, uncommitted and untracked files included, ignored files not.
   Only files that differ are rewritten, so builds stay incremental. Anything a command writes
@@ -486,6 +490,10 @@ workers keep running meanwhile, and what happened reaches `poll` once the contro
   project's base with your checkout synced in, deleted with whatever the command left in it once
   the command ends. It neither waits for your session's workspace nor changes it, so use it to run
   something beside a command already running there; what it builds is not kept for later runs.
+- `--no-capture` opts a run out of auto-capturing its workspace as the project's shared warm base.
+  `--capture-base` starts a capture-enabled workspace and uploads its disk as the project's shared
+  warm base once the run exits 0. `--fresh` starts from the bare OS base image instead of the
+  project's cached warm base.
 - A saturated node holds new work: once its CPU pressure reaches 60%, commands queue until it is
   under 30% and has not reached 60% for 30 seconds (measurements, on CPUs of their own, are not
   held). The controller sends new workspaces to less loaded nodes. `hotbed ps` says why a command

@@ -417,7 +417,7 @@ func TestCladefsFUSEBackendSetsUploadIntervalOnBaseBuilds(t *testing.T) {
 	}
 
 	// 3. Normal workspace PrepareWorkspace leaves UploadIntervalMs nil.
-	if _, err := b.PrepareWorkspace(ctx, "ws-normal", res.Ref, 1); err != nil {
+	if _, err := b.PrepareWorkspace(ctx, "ws-normal", res.Ref, 1, false); err != nil {
 		t.Fatalf("PrepareWorkspace: %v", err)
 	}
 	if len(mnt.attachReqs) != 3 {

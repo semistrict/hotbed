@@ -136,6 +136,12 @@ export class ControllerContext {
 	>;
 	readonly creatingWS = new Map<string, { promise: Promise<void>; resolve: () => void }>();
 	readonly sessionRaces = new Map<string, Promise<void>>();
+	/**
+	 * Tracks live workspaces currently designated to auto-capture a shared R2
+	 * project base (keyed by project|arch|tenant|runtime) so concurrent sessions
+	 * do not all upload duplicate R2 bases at once.
+	 */
+	readonly capturingBase = new Map<string, { wsId: string; since: number }>();
 	readonly startingRuns = new Map<
 		string,
 		{ schedule: string; scheduled: boolean; stopWhy: string; abort: AbortController }
@@ -197,6 +203,47 @@ export class ControllerContext {
 			return secs * 1000;
 		}
 		return OFFLINE_GRACE_MS;
+	}
+
+	/** Minimum interval between automatic R2 base captures per (project, arch, runtime). */
+	baseCaptureIntervalMs(): number {
+		const secs = this.store.workerConfigs.get("")?.freshen?.minIntervalSeconds;
+		if (secs !== undefined && secs > 0) {
+			return secs * 1000;
+		}
+		return 30 * 60_000;
+	}
+
+	baseCaptureKey(project: string, arch: string, runtime: string): string {
+		const tenant = this.cladefsTenantId !== null ? this.cladefsTenantId.toString() : "";
+		return `${project}\0${arch}\0${tenant}\0${runtime}`;
+	}
+
+	isBaseCaptureInFlight(key: string, nowMs: number): boolean {
+		const cur = this.capturingBase.get(key);
+		if (!cur) return false;
+		if (nowMs - cur.since >= 30 * 60_000) {
+			this.capturingBase.delete(key);
+			return false;
+		}
+		return true;
+	}
+
+	markBaseCapture(key: string, wsId: string, nowMs: number): void {
+		this.capturingBase.set(key, { wsId, since: nowMs });
+	}
+
+	clearBaseCaptureForWorkspace(wsId: string): void {
+		for (const [key, cur] of this.capturingBase) {
+			if (cur.wsId === wsId) this.capturingBase.delete(key);
+		}
+	}
+
+	clearBaseCaptureForKey(project: string, arch: string, runtime: string, tenant: string): void {
+		this.capturingBase.delete(`${project}\0${arch}\0${tenant}\0${runtime}`);
+		if (this.cladefsTenantId === null) {
+			this.capturingBase.delete(`${project}\0${arch}\0\0${runtime}`);
+		}
 	}
 
 	/** Async mutex for placement operations. */
@@ -530,6 +577,7 @@ export class ControllerContext {
 			});
 		}
 		this.store.workspaces.release(id, this.now());
+		this.clearBaseCaptureForWorkspace(id);
 	}
 
 	async endSession(id: string, reason: string, requireLive = false): Promise<Session> {
