@@ -84,11 +84,15 @@ arch=$(nodejq '.resources.arch')
 node_id=$(nodejq '.id')
 storage=$(nodejq '.storage')
 vm=$(nodejq '(.resources.runtimes // []) | if index("vm") then "yes" else "" end')
-# The worker's slices and scratch disk, as its config names them.
-read -r work_slice disk < <(ssh "$node" sudo -n python3 -I -c '
+# The worker's slices and scratch disk, as its config names them: the program goes on stdin, as
+# ssh joins its arguments into one line for the host's shell.
+read -r work_slice disk < <(ssh "$node" sudo -n python3 -I - << 'EOF'
 import json
 w = json.load(open("/var/lib/hotbed/worker/hotbed.json"))["worker"]
-print(w.get("slice") or "hotbed.slice", (w.get("bench") or {}).get("disk") or "-")')
+print(w.get("slice") or "hotbed.slice", (w.get("bench") or {}).get("disk") or "-")
+EOF
+) || true
+[[ -n ${work_slice:-} ]] || { echo "bench-check: can't read $node's worker config (ssh $node sudo)" >&2; exit 2; }
 bench_slice=${work_slice%.slice}_bench.slice
 echo "== $node ($arch${vm:+, VMs}), measurement CPUs $bench, slices $work_slice and $bench_slice"
 
@@ -155,7 +159,8 @@ m=$(runj --bench -- sh -c 'echo "nproc $(nproc)"; sleep 30')
 until_state "$S" "$m" COMMAND_STATE_RUNNING
 for _ in $(seq 100); do hotbed logs -s "$S" "$m" 2> /dev/null | grep -q '^nproc ' && break; sleep 0.2; done
 probe "$(unit "$S" "$m")" "$(unit "$S2" "$beside")" > "$tmp/during"
-seen=$(hotbed logs -s "$S" "$m" | sed -n 's/^nproc //p')
+# A detached command in a VM writes to a terminal: its lines end in \r.
+seen=$(hotbed logs -s "$S" "$m" | tr -d '\r' | sed -n 's/^nproc //p')
 check "it sees $(cpus count "$bench") CPUs ($seen)" test "$seen" == "$(cpus count "$bench")"
 check "its unit is in the measurement's slice ($(f .measured.slice "$tmp/during"))" test "$(f .measured.slice "$tmp/during")" == "$bench_slice"
 check "its slice a partition of $bench ($(f '.measured.partition + " " + .measured.effective' "$tmp/during"))" \
