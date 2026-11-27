@@ -948,3 +948,162 @@ func TestManagerReconcileOrphansReapsDirlessZombiesAndPreservesOwnedAndStarting(
 		t.Fatalf("ReconcileOrphans must preserve %s cache dir: %v", toolsDirName, err)
 	}
 }
+
+func TestManagerConcurrentStopJoinsInFlightStop(t *testing.T) {
+	ctx := context.Background()
+	runDir := shortSockDir(t)
+	sockDir := shortSockDir(t)
+	ctrlSock := filepath.Join(sockDir, "ctrl.sock")
+	ln, err := net.Listen("unix", ctrlSock)
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	t.Cleanup(func() { _ = ln.Close() })
+
+	var shutdownCalls atomic.Int32
+	enteredShutdown := make(chan struct{})
+	releaseShutdown := make(chan struct{})
+	mux := http.NewServeMux()
+	mux.HandleFunc("/guestd.v1.GuestService/Health", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/proto")
+		w.WriteHeader(http.StatusOK)
+	})
+	mux.HandleFunc("/guestd.v1.GuestService/Shutdown", func(w http.ResponseWriter, r *http.Request) {
+		n := shutdownCalls.Add(1)
+		if n == 1 {
+			close(enteredShutdown)
+			select {
+			case <-releaseShutdown:
+			case <-r.Context().Done():
+				return
+			}
+			w.Header().Set("Content-Type", "application/proto")
+			w.WriteHeader(http.StatusOK)
+			return
+		}
+		// Simulate vsock gone on a duplicate concurrent Shutdown.
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusServiceUnavailable)
+		_, _ = w.Write([]byte(`{"code":"unavailable","message":"vsock gone"}`))
+	})
+	srv := &http.Server{Handler: mux}
+	go func() { _ = srv.Serve(ln) }()
+	t.Cleanup(func() { _ = srv.Close() })
+
+	fl := newFakeLauncher()
+	mgr, err := NewManager(Config{
+		RunDir:              runDir,
+		Slice:               "user-1000-hotbed.slice",
+		DisableNetwork:      true,
+		BootTimeout:         5 * time.Second,
+		ShutdownTimeout:     100 * time.Millisecond,
+		SyncShutdownTimeout: 5 * time.Second,
+	}, WithLauncher(fl), WithDialerFactory(func(_ string) guestd.DialFunc {
+		return guestd.UnixMapDialer(map[uint32]string{guestd.ControlPort: ctrlSock})
+	}), fakeToolsDiskOpt(t))
+	if err != nil {
+		t.Fatalf("NewManager: %v", err)
+	}
+
+	if _, err := mgr.Start(ctx, LaunchSpec{
+		ID:            "ws-race",
+		CellHostPath:  "/mnt/cells/ws-race",
+		CladefsVMSock: "/run/cladefsd/vm.sock",
+	}); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+
+	err1 := make(chan error, 1)
+	go func() { err1 <- mgr.Stop(ctx, "ws-race", true) }()
+	<-enteredShutdown
+
+	// While Stop is in flight, Start and EnsureNotRunning must reject the ID
+	// as busy, and ReconcileOrphans must skip it.
+	if _, err := mgr.Start(ctx, LaunchSpec{
+		ID:            "ws-race",
+		CellHostPath:  "/mnt/cells/ws-race",
+		CladefsVMSock: "/run/cladefsd/vm.sock",
+	}); !errors.Is(err, ErrVMRunning) {
+		t.Fatalf("Start while stopping = %v, want ErrVMRunning", err)
+	}
+	if err := mgr.EnsureNotRunning(ctx, "ws-race"); !errors.Is(err, ErrVMRunning) {
+		t.Fatalf("EnsureNotRunning while stopping = %v, want ErrVMRunning", err)
+	}
+	if reaped, _ := mgr.ReconcileOrphans(ctx, nil); len(reaped) != 0 {
+		t.Fatalf("ReconcileOrphans while stopping reaped %q, want none", reaped)
+	}
+
+	// Concurrent Stop(syncFS=true) callers must join the in-flight Stop rather
+	// than issuing duplicate Shutdown RPCs or preserving fake crash logs.
+	err2 := make(chan error, 1)
+	err3 := make(chan error, 1)
+	go func() { err2 <- mgr.Stop(ctx, "ws-race", true) }()
+	go func() { err3 <- mgr.Stop(ctx, "ws-race", true) }()
+	time.Sleep(25 * time.Millisecond)
+
+	close(releaseShutdown)
+	for i, ch := range []chan error{err1, err2, err3} {
+		if err := <-ch; err != nil {
+			t.Fatalf("Stop caller %d failed: %v", i+1, err)
+		}
+	}
+	if got := shutdownCalls.Load(); got != 1 {
+		t.Fatalf("Shutdown RPCs = %d, want 1", got)
+	}
+	fl.mu.Lock()
+	stopCount := len(fl.stopCalls)
+	fl.mu.Unlock()
+	if stopCount != 1 {
+		t.Fatalf("VMM Stop calls = %d, want 1", stopCount)
+	}
+	if _, err := os.Stat(filepath.Join(runDir, crashedDirName)); !os.IsNotExist(err) {
+		t.Fatalf("unexpected _crashed dir created during clean concurrent stop: %v", err)
+	}
+	if mgr.Get("ws-race") != nil {
+		t.Fatal("ws-race still tracked after concurrent stop")
+	}
+
+	// If an in-flight Stop(syncFS=false) is joined by Stop(syncFS=true), the
+	// syncFS=true caller must be told guest sync did not run.
+	enteredNoSync := make(chan struct{})
+	releaseNoSync := make(chan struct{})
+	fl2 := newFakeLauncher()
+	fl2.onStop = func(_ context.Context, name string) error {
+		close(enteredNoSync)
+		<-releaseNoSync
+		fl2.mu.Lock()
+		delete(fl2.running, name)
+		fl2.exited[name] = 0
+		fl2.mu.Unlock()
+		return nil
+	}
+	mgr2, err := NewManager(Config{
+		RunDir:          shortSockDir(t),
+		DisableNetwork:  true,
+		BootTimeout:     5 * time.Second,
+		ShutdownTimeout: 50 * time.Millisecond,
+	}, WithLauncher(fl2), WithDialerFactory(startTestGuestd(t)), fakeToolsDiskOpt(t))
+	if err != nil {
+		t.Fatalf("NewManager 2: %v", err)
+	}
+	if _, err := mgr2.Start(ctx, LaunchSpec{
+		ID:            "ws-nosync",
+		CellHostPath:  "/mnt/cells/ws-nosync",
+		CladefsVMSock: "/run/cladefsd/vm.sock",
+	}); err != nil {
+		t.Fatalf("Start 2: %v", err)
+	}
+	noSyncErr := make(chan error, 1)
+	go func() { noSyncErr <- mgr2.Stop(ctx, "ws-nosync", false) }()
+	<-enteredNoSync
+	syncJoinErr := make(chan error, 1)
+	go func() { syncJoinErr <- mgr2.Stop(ctx, "ws-nosync", true) }()
+	time.Sleep(25 * time.Millisecond)
+	close(releaseNoSync)
+	if err := <-noSyncErr; err != nil {
+		t.Fatalf("Stop(syncFS=false) failed: %v", err)
+	}
+	if err := <-syncJoinErr; err == nil || !strings.Contains(err.Error(), "without guest sync") {
+		t.Fatalf("Stop(syncFS=true) joining Stop(syncFS=false) = %v, want without-guest-sync error", err)
+	}
+}

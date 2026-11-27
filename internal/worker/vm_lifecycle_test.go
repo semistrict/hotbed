@@ -29,6 +29,9 @@ type lifecycleTestResolver struct {
 	// stoppedErr is what StopVM says after stopping the VM all the same, as
 	// a stop whose guest sync failed does.
 	stoppedErr error
+	// onStop, if set, runs before StopVM acquires r.mu so tests can coordinate
+	// concurrent Teardown/ReleaseWorkspace timing.
+	onStop func(wsID string)
 	// sizes is the size each VM was last asked for.
 	sizes map[string]unit.VMBoot
 }
@@ -72,6 +75,12 @@ func (r *lifecycleTestResolver) ClientFor(wsID string) (*guestd.Client, error) {
 }
 
 func (r *lifecycleTestResolver) StopVM(_ context.Context, wsID string) error {
+	r.mu.Lock()
+	hook := r.onStop
+	r.mu.Unlock()
+	if hook != nil {
+		hook(wsID)
+	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if r.stopErr != nil {
@@ -974,5 +983,73 @@ func TestForgottenVMWorkspaceLeavesTheVMIndex(t *testing.T) {
 	}
 	if eng.isVMWorkspace(wsID) {
 		t.Fatalf("forgotten workspace %s is still indexed as a VM workspace", wsID)
+	}
+}
+
+// ReleaseWorkspace must coordinate with w.vm so it never calls Teardown or
+// deletes a workspace's storage while retireVMs is stopping the same VM.
+func TestReleaseWorkspaceWaitsForInFlightRetireVM(t *testing.T) {
+	eng, resolver, _, now := newLifecycleTestEngine(t)
+	const wsID = "ws-rel-retire"
+	seedTestVMWorkspace(t, eng, resolver, wsID, *now)
+	eng.mu.Lock()
+	eng.workspaces[wsID].vmUsed = true
+	eng.mu.Unlock()
+
+	var activeStops int
+	var overlapped bool
+	var mu sync.Mutex
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	var enteredOnce sync.Once
+	resolver.mu.Lock()
+	resolver.onStop = func(id string) {
+		if id != wsID {
+			return
+		}
+		mu.Lock()
+		activeStops++
+		if activeStops > 1 {
+			overlapped = true
+		}
+		mu.Unlock()
+		enteredOnce.Do(func() {
+			close(entered)
+			<-release
+		})
+		mu.Lock()
+		activeStops--
+		mu.Unlock()
+	}
+	resolver.mu.Unlock()
+
+	retireDone := make(chan struct{})
+	go func() {
+		defer close(retireDone)
+		eng.retireVMs(t.Context())
+	}()
+	<-entered
+
+	relDone := make(chan error, 1)
+	go func() {
+		relDone <- eng.ReleaseWorkspace(t.Context(), wsID)
+	}()
+
+	select {
+	case err := <-relDone:
+		t.Fatalf("ReleaseWorkspace returned (%v) while retireVMs still held w.vm", err)
+	case <-time.After(50 * time.Millisecond):
+	}
+
+	close(release)
+	<-retireDone
+	if err := <-relDone; err != nil {
+		t.Fatalf("ReleaseWorkspace: %v", err)
+	}
+	mu.Lock()
+	gotOverlap := overlapped
+	mu.Unlock()
+	if gotOverlap {
+		t.Fatal("ReleaseWorkspace overlapped StopVM with retireVMs")
 	}
 }

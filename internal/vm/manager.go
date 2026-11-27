@@ -109,6 +109,12 @@ func isReservedRunDirName(name string) bool {
 	return name == toolsDirName || name == crashedDirName
 }
 
+type stopOp struct {
+	done   chan struct{}
+	syncFS bool
+	err    error
+}
+
 // Manager launches, tracks, reconnects, and tears down VMs, which its VMM
 // runs. It implements runtime.GuestResolver via ClientFor.
 type Manager struct {
@@ -119,6 +125,7 @@ type Manager struct {
 	mu        sync.Mutex
 	instances map[string]*Instance
 	starting  map[string]struct{}
+	stopping  map[string]*stopOp
 	usedCIDs  map[uint32]string
 	nextCID   uint32
 }
@@ -198,6 +205,7 @@ func NewManager(cfg Config, opts ...ManagerOption) (*Manager, error) {
 		dialerFn:  o.dialerFn,
 		instances: map[string]*Instance{},
 		starting:  map[string]struct{}{},
+		stopping:  map[string]*stopOp{},
 		usedCIDs:  map[uint32]string{},
 		nextCID:   3, // CID 0,1,2 are reserved (hypervisor, local, host)
 	}, nil
@@ -279,6 +287,10 @@ func (m *Manager) Start(ctx context.Context, spec LaunchSpec) (*Instance, error)
 	}
 
 	m.mu.Lock()
+	if _, busy := m.stopping[spec.ID]; busy {
+		m.mu.Unlock()
+		return nil, fmt.Errorf("vm %s: currently stopping: %w", spec.ID, ErrVMRunning)
+	}
 	if existing, ok := m.instances[spec.ID]; ok {
 		m.mu.Unlock()
 		return existing, nil
@@ -311,14 +323,14 @@ func (m *Manager) Start(ctx context.Context, spec LaunchSpec) (*Instance, error)
 	mach := Machine{ID: spec.ID, Unit: unitName(spec.ID), Dir: filepath.Join(cfg.RunDir, spec.ID), CID: cid}
 	mach.ConsoleLog = filepath.Join(mach.Dir, "console.log")
 	if err := os.MkdirAll(mach.Dir, 0o755); err != nil {
-		m.releaseCID(cid)
+		m.releaseCID(spec.ID, cid)
 		return nil, fmt.Errorf("vm: create dir %s: %w", mach.Dir, err)
 	}
 	cleanupOnErr := func(b Booted) {
 		cctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
 		m.vmm.Free(cctx, mach, b)
 		cancel()
-		m.releaseCID(cid)
+		m.releaseCID(spec.ID, cid)
 		_ = os.RemoveAll(mach.Dir)
 	}
 
@@ -699,13 +711,40 @@ func (m *Manager) forceStopUnit(ctx context.Context, unitName string) error {
 // dirty page cache synchronously and returns an error (after still stopping and
 // cleaning up Firecracker) if the guest sync could not complete — preventing
 // callers from snapshotting a half-flushed cell to R2. Idempotent if not tracked.
-func (m *Manager) Stop(ctx context.Context, id string, syncFS bool) error {
+func (m *Manager) Stop(ctx context.Context, id string, syncFS bool) (retErr error) {
 	m.mu.Lock()
+	if op, ok := m.stopping[id]; ok {
+		m.mu.Unlock()
+		select {
+		case <-op.done:
+			if op.err != nil {
+				return op.err
+			}
+			if syncFS && !op.syncFS {
+				return fmt.Errorf("vm %s: stopped without guest sync by concurrent stop", id)
+			}
+			return nil
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
 	inst, ok := m.instances[id]
-	m.mu.Unlock()
 	if !ok {
+		m.mu.Unlock()
 		return nil
 	}
+	op := &stopOp{done: make(chan struct{}), syncFS: syncFS}
+	m.stopping[id] = op
+	m.mu.Unlock()
+	defer func() {
+		op.err = retErr
+		m.mu.Lock()
+		if m.stopping[id] == op {
+			delete(m.stopping, id)
+		}
+		m.mu.Unlock()
+		close(op.done)
+	}()
 
 	var syncErr error
 	if syncFS {
@@ -784,7 +823,7 @@ func (m *Manager) Stop(ctx context.Context, id string, syncFS bool) error {
 		_ = inst.gitAuth.Close()
 	}
 	m.vmm.Free(stopCtx, inst.machine(), inst.booted())
-	m.releaseCID(inst.GuestCID)
+	m.releaseCID(inst.ID, inst.GuestCID)
 	_ = os.RemoveAll(inst.Dir)
 	if syncErr != nil {
 		return fmt.Errorf("vm %s: %w", id, syncErr)
@@ -792,15 +831,19 @@ func (m *Manager) Stop(ctx context.Context, id string, syncFS bool) error {
 	return nil
 }
 
-// EnsureNotRunning verifies no live VM or in-flight launch holds
+// EnsureNotRunning verifies no live VM or in-flight launch or stop holds
 // id. If a tracked instance already exited, its stale state is cleaned up.
 func (m *Manager) EnsureNotRunning(ctx context.Context, id string) error {
 	m.mu.Lock()
 	_, starting := m.starting[id]
+	_, stopping := m.stopping[id]
 	tracked := m.instances[id] != nil
 	m.mu.Unlock()
 	if starting {
 		return fmt.Errorf("vm %s is currently starting: %w", id, ErrVMRunning)
+	}
+	if stopping {
+		return fmt.Errorf("vm %s is currently stopping: %w", id, ErrVMRunning)
 	}
 	unit := unitName(id)
 	if st, err := m.vmm.Status(ctx, unit); err == nil && st.Alive() {
@@ -867,6 +910,10 @@ func (m *Manager) ReconcileOrphans(ctx context.Context, ownedIDs map[string]bool
 			m.mu.Unlock()
 			continue
 		}
+		if _, stopping := m.stopping[id]; stopping {
+			m.mu.Unlock()
+			continue
+		}
 		inst := m.instances[id]
 		m.mu.Unlock()
 
@@ -926,6 +973,9 @@ func (m *Manager) ReconcileOrphans(ctx context.Context, ownedIDs map[string]bool
 		liveIDs[id] = true
 	}
 	for id := range m.starting {
+		liveIDs[id] = true
+	}
+	for id := range m.stopping {
 		liveIDs[id] = true
 	}
 	m.mu.Unlock()
@@ -1000,12 +1050,14 @@ func (m *Manager) allocCIDLocked(id string) uint32 {
 	}
 }
 
-func (m *Manager) releaseCID(cid uint32) {
+func (m *Manager) releaseCID(id string, cid uint32) {
 	if cid < 3 {
 		return
 	}
 	m.mu.Lock()
-	delete(m.usedCIDs, cid)
+	if m.usedCIDs[cid] == id {
+		delete(m.usedCIDs, cid)
+	}
 	m.mu.Unlock()
 }
 

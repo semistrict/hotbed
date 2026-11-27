@@ -538,9 +538,13 @@ func (e *Engine) ReleaseWorkspace(ctx context.Context, id string) (retErr error)
 		return err
 	}
 	// Coordinate volume teardown with any in-flight Sync so we never destroy
-	// a volume mid-gitops.Apply.
+	// a volume mid-gitops.Apply, and with any in-flight VM retire or file read
+	// holding w.vm so teardown never races retireVMs or deletes a cell while
+	// its VM is still stopping (lock order: w.sync -> w.vm).
 	w.sync.Lock()
 	defer w.sync.Unlock()
+	w.vm.Lock()
+	defer w.vm.Unlock()
 
 	e.mu.Lock()
 	if w.ws().State == released {
