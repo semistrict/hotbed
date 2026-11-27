@@ -338,21 +338,9 @@ func writeConnectStreamEnd(w http.ResponseWriter) {
 
 // Regression test for issue #21: when a FollowLog stream wedges silently after
 // a command finishes (e.g. exit 1 with 0 lines of output on a stalled DO/edge
-// stream), the watchdog notices the terminal command via GetCommand, aborts
-// the wedged stream, drains any output, and returns promptly.
+// stream), api.HearKeepalives ends the silent stream, and followLog finds the
+// command ended, drains any output, and returns promptly.
 func TestFollowLogStreamExitsWhenCommandFinishedOnWedgedStream(t *testing.T) {
-	origAfter, origPoll, origGrace, origIdle := followWaitNoticeAfter, followWaitPollInterval, followTerminalGrace, followStreamIdleTimeout
-	followWaitNoticeAfter = 20 * time.Millisecond
-	followWaitPollInterval = 20 * time.Millisecond
-	followTerminalGrace = 40 * time.Millisecond
-	followStreamIdleTimeout = 10 * time.Second
-	t.Cleanup(func() {
-		followWaitNoticeAfter = origAfter
-		followWaitPollInterval = origPoll
-		followTerminalGrace = origGrace
-		followStreamIdleTimeout = origIdle
-	})
-
 	var followCalls, resets atomic.Int64
 	exitCode := int32(1)
 	srv := startHandlerPeer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -382,7 +370,7 @@ func TestFollowLogStreamExitsWhenCommandFinishedOnWedgedStream(t *testing.T) {
 		}
 	}))
 	hc := &http.Client{Timeout: 10 * time.Second}
-	conn, err := api.Dial(srv, api.DefaultPort, hc)
+	conn, err := api.Dial(srv, api.DefaultPort, hc, api.HearKeepalives(100*time.Millisecond))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -413,20 +401,9 @@ func TestFollowLogStreamExitsWhenCommandFinishedOnWedgedStream(t *testing.T) {
 
 // Regression test for issue #20: when a FollowLog stream for a queued command
 // goes silently dead (missing keepalives, e.g. DO restart behind Cloudflare
-// edge), followLogStream aborts and reconnects before orphanAfter cancels it.
+// edge), api.HearKeepalives ends it and followLogStream reconnects before
+// orphanAfter cancels the command.
 func TestFollowLogStreamReconnectsWedgedSilentStream(t *testing.T) {
-	origAfter, origPoll, origGrace, origIdle := followWaitNoticeAfter, followWaitPollInterval, followTerminalGrace, followStreamIdleTimeout
-	followWaitNoticeAfter = 5 * time.Second
-	followWaitPollInterval = 5 * time.Second
-	followTerminalGrace = 2 * time.Second
-	followStreamIdleTimeout = 100 * time.Millisecond
-	t.Cleanup(func() {
-		followWaitNoticeAfter = origAfter
-		followWaitPollInterval = origPoll
-		followTerminalGrace = origGrace
-		followStreamIdleTimeout = origIdle
-	})
-
 	var followCalls, resets atomic.Int64
 	var done atomic.Bool
 	exitCode := int32(0)
@@ -460,7 +437,7 @@ func TestFollowLogStreamReconnectsWedgedSilentStream(t *testing.T) {
 		}
 	}))
 	hc := &http.Client{Timeout: 10 * time.Second}
-	conn, err := api.Dial(srv, api.DefaultPort, hc)
+	conn, err := api.Dial(srv, api.DefaultPort, hc, api.HearKeepalives(100*time.Millisecond))
 	if err != nil {
 		t.Fatal(err)
 	}

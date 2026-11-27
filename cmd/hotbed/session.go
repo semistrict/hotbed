@@ -1323,16 +1323,6 @@ func pausedHelp(c *pb.Command) string {
 var (
 	followWaitNoticeAfter  = 3 * time.Second
 	followWaitPollInterval = 5 * time.Second
-	// followStreamIdleTimeout aborts and reconnects a FollowLog stream if no
-	// chunk (not even the worker's 10s keepalive) arrives within this window:
-	// strictly shorter than worker orphanAfter (30s) so a silently wedged
-	// Cloudflare edge/DO stream reconnects before the worker cancels the
-	// command as "its client went away" (issue #20).
-	followStreamIdleTimeout = 20 * time.Second
-	// followTerminalGrace is how long the watchdog waits after observing a
-	// terminal/paused command via GetCommand before aborting a wedged
-	// FollowLog stream so it can drain and exit promptly (issue #21).
-	followTerminalGrace = 2 * time.Second
 )
 
 // followLog waits on a command (FollowLog with wait, which resumes it if
@@ -1351,80 +1341,38 @@ func followLog(ctx context.Context, wk workerClients, id string, w, stderr io.Wr
 func followLogStream(ctx context.Context, wk workerClients, id string, timestamps bool, writeChunk func([]byte, int64) error, stderr io.Writer) (*pb.Command, error) {
 	var offset int64
 	var lastActivity atomic.Int64
-	var lastFrame atomic.Int64
-	nowNano := time.Now().UnixNano()
-	lastActivity.Store(nowNano)
-	lastFrame.Store(nowNano)
-
-	var (
-		attemptMu      sync.Mutex
-		cancelAttempt  context.CancelFunc
-		attemptStalled bool
-	)
-	abortAttempt := func(resetTransport bool) {
-		attemptMu.Lock()
-		cancel := cancelAttempt
-		if cancel != nil {
-			attemptStalled = true
-		}
-		attemptMu.Unlock()
-		if cancel != nil {
-			if resetTransport && wk.resetStream != nil {
-				wk.resetStream()
-			}
-			cancel()
-		}
-	}
+	lastActivity.Store(time.Now().UnixNano())
 
 	watchCtx, cancelWatch := context.WithCancel(ctx)
 	var watchWG sync.WaitGroup
-	watchWG.Add(1)
-	go func() {
-		defer watchWG.Done()
-		delay := followWaitNoticeAfter
-		if delay <= 0 {
-			delay = 3 * time.Second
-		}
-		interval := followWaitPollInterval
-		if interval <= 0 {
-			interval = 5 * time.Second
-		}
-		idleTimeout := followStreamIdleTimeout
-		termGrace := followTerminalGrace
-		tickInterval := interval
-		if idleTimeout > 0 && idleTimeout/2 > 0 && idleTimeout/2 < tickInterval {
-			tickInterval = idleTimeout / 2
-		}
-		if delay < tickInterval {
-			tickInterval = delay
-		}
-		timer := time.NewTimer(tickInterval)
-		defer timer.Stop()
-		lastMsg := ""
-		var lastPoll time.Time
-		var terminalSeenAt time.Time
-		for {
-			select {
-			case <-watchCtx.Done():
-				return
-			case <-timer.C:
+	if stderr != nil {
+		watchWG.Add(1)
+		go func() {
+			defer watchWG.Done()
+			delay := followWaitNoticeAfter
+			if delay <= 0 {
+				delay = 3 * time.Second
 			}
-			now := time.Now()
-			if idleTimeout > 0 && now.Sub(time.Unix(0, lastFrame.Load())) >= idleTimeout {
-				lastFrame.Store(now.UnixNano())
-				abortAttempt(true)
+			interval := followWaitPollInterval
+			if interval <= 0 {
+				interval = 5 * time.Second
 			}
-			if now.Sub(time.Unix(0, lastActivity.Load())) >= delay &&
-				(lastPoll.IsZero() || now.Sub(lastPoll) >= interval || !terminalSeenAt.IsZero()) {
-				lastPoll = now
-				qctx, qcancel := context.WithTimeout(watchCtx, 3*time.Second)
-				cmd, err := wk.command(qctx, id)
-				qcancel()
-				if err == nil && cmd != nil && watchCtx.Err() == nil {
-					switch {
-					case cmd.State == pb.CommandState_COMMAND_STATE_QUEUED || cmd.State == pb.CommandState_COMMAND_STATE_PARKED:
-						terminalSeenAt = time.Time{}
-						if stderr != nil {
+			timer := time.NewTimer(delay)
+			defer timer.Stop()
+			lastMsg := ""
+			for {
+				select {
+				case <-watchCtx.Done():
+					return
+				case <-timer.C:
+				}
+				if time.Since(time.Unix(0, lastActivity.Load())) >= delay {
+					qctx, qcancel := context.WithTimeout(watchCtx, 3*time.Second)
+					cmd, err := wk.command(qctx, id)
+					qcancel()
+					if err == nil && cmd != nil && watchCtx.Err() == nil {
+						switch cmd.State {
+						case pb.CommandState_COMMAND_STATE_QUEUED, pb.CommandState_COMMAND_STATE_PARKED:
 							stateWord := enumWord(cmd.State)
 							msg := fmt.Sprintf("hotbed: %s %s\n", id, stateWord)
 							if cmd.Reason != "" {
@@ -1434,28 +1382,15 @@ func followLogStream(ctx context.Context, wk workerClients, id string, timestamp
 								_, _ = io.WriteString(stderr, msg)
 								lastMsg = msg
 							}
-						}
-					case cmd.State == pb.CommandState_COMMAND_STATE_RUNNING:
-						lastMsg = ""
-						terminalSeenAt = time.Time{}
-					case !api.Live(cmd.State) || cmd.State == pb.CommandState_COMMAND_STATE_PAUSED:
-						if terminalSeenAt.IsZero() {
-							terminalSeenAt = now
-						}
-						if now.Sub(terminalSeenAt) >= termGrace {
-							abortAttempt(true)
-							terminalSeenAt = time.Time{}
+						case pb.CommandState_COMMAND_STATE_RUNNING:
+							lastMsg = ""
 						}
 					}
 				}
+				timer.Reset(interval)
 			}
-			nextTick := tickInterval
-			if !terminalSeenAt.IsZero() && termGrace > 0 && termGrace < nextTick {
-				nextTick = termGrace
-			}
-			timer.Reset(nextTick)
-		}
-	}()
+		}()
+	}
 	defer func() {
 		cancelWatch()
 		watchWG.Wait()
@@ -1482,26 +1417,8 @@ func followLogStream(ctx context.Context, wk workerClients, id string, timestamp
 		}
 	}
 	for {
-		attemptCtx, cancel := context.WithCancel(ctx)
-		attemptMu.Lock()
-		cancelAttempt = cancel
-		attemptStalled = false
-		attemptMu.Unlock()
-		lastFrame.Store(time.Now().UnixNano())
-
-		in, err := wk.stream.FollowLog(attemptCtx, &pb.FollowLogRequest{Id: id, Offset: offset, Follow: true, Wait: true, Timestamps: timestamps})
+		in, err := wk.stream.FollowLog(ctx, &pb.FollowLogRequest{Id: id, Offset: offset, Follow: true, Wait: true, Timestamps: timestamps})
 		if err != nil {
-			attemptMu.Lock()
-			stalled := attemptStalled
-			cancelAttempt = nil
-			attemptMu.Unlock()
-			cancel()
-			if ctx.Err() != nil {
-				return nil, ctx.Err()
-			}
-			if stalled {
-				continue
-			}
 			if wait(err) {
 				continue
 			}
@@ -1526,15 +1443,10 @@ func followLogStream(ctx context.Context, wk workerClients, id string, timestamp
 				break
 			}
 			down = time.Time{}
-			lastFrame.Store(time.Now().UnixNano())
 			if len(chunk.Data) > 0 {
 				lastActivity.Store(time.Now().UnixNano())
 				if werr := writeChunk(chunk.Data, chunk.ReceivedAt); werr != nil {
-					attemptMu.Lock()
-					cancelAttempt = nil
-					attemptMu.Unlock()
 					in.Close()
-					cancel()
 					return nil, werr
 				}
 			}
@@ -1548,21 +1460,9 @@ func followLogStream(ctx context.Context, wk workerClients, id string, timestamp
 				terminalEndedBy = chunk.EndedBy
 			}
 		}
-		attemptMu.Lock()
-		stalled := attemptStalled
-		cancelAttempt = nil
-		attemptMu.Unlock()
 		in.Close()
-		cancel()
 		if ctx.Err() != nil {
 			return nil, ctx.Err()
-		}
-		if stalled {
-			// Aborted by our own idle/terminal watchdog: check command state
-			// and either immediately reconnect (if live) or drain and return.
-			broke = nil
-			terminalState = pb.CommandState_COMMAND_STATE_UNSPECIFIED
-			terminalEndedBy = nil
 		}
 		// If the stream ended cleanly with a terminal pause or manual stop
 		// chunk, preserve that terminal state/intervention even if a subsequent
@@ -1588,6 +1488,11 @@ func followLogStream(ctx context.Context, wk workerClients, id string, timestamp
 		}
 		if broke == nil {
 			down = time.Time{}
+		} else if api.FromConnect(broke).Retryable && wk.resetStream != nil {
+			// What broke the stream (a deploy, or a stream that died
+			// without a word, which api.HearKeepalives hears) may have left
+			// its connection wedged: the next call goes on a fresh one.
+			wk.resetStream()
 		}
 		if terminalHold {
 			return applyFollowTerminal(id, c, terminalState, terminalEndedBy), nil
