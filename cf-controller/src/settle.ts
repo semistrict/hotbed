@@ -61,7 +61,7 @@ function rowLine(r: Row): string {
 }
 
 /** A terminal emulator that emits each row once it settles. */
-class Screen {
+export class Screen {
 	private rows: Row[] = [[]];
 	private rowTs: number[] = [0]; // receive time (unix ms) of each row, 0 when unknown
 	private row = 0; // the cursor's row, an index into rows
@@ -377,10 +377,24 @@ class Screen {
 	}
 }
 
+function chunksNeedSettle(chunks: TimedOutputChunk[]): boolean {
+	for (const c of chunks) {
+		for (let i = 0; i < c.data.length; i++) {
+			const b = c.data[i];
+			if (b === 0x1b || b === 0x0d || b === 0x08) return true;
+		}
+	}
+	return false;
+}
+
 /**
  * The settled lines of ordered output chunks, each with the receive time of
  * the chunk that last wrote it, keeping at most the last `tail` lines and
  * `maxBytes` bytes of them.
+ *
+ * Matches worker's GetLogLines: output containing ESC, CR, or BS is settled
+ * through Screen (bounded at MAX_COLS); plain output that never redraws passes
+ * through line for line, however long.
  */
 export function extractLogLines(
 	chunks: TimedOutputChunk[],
@@ -390,17 +404,49 @@ export function extractLogLines(
 ): ExtractedLogLines {
 	const rawLines: string[] = [];
 	const rawTimestamps: number[] = [];
-	const screen = new Screen((line, ts) => {
-		rawLines.push(line);
-		rawTimestamps.push(ts);
-	});
-	// Streaming throughout: a rune split across chunks joins up, and one
-	// left incomplete at the end is dropped, as Go's Screen drops it.
 	const decoder = new TextDecoder("utf-8");
-	for (const c of chunks) {
-		screen.write(decoder.decode(c.data, { stream: true }), c.receivedAt);
+	if (chunksNeedSettle(chunks)) {
+		const screen = new Screen((line, ts) => {
+			rawLines.push(line);
+			rawTimestamps.push(ts);
+		});
+		// Streaming throughout: a rune split across chunks joins up, and one
+		// left incomplete at the end is dropped, as Go's Screen drops it.
+		for (const c of chunks) {
+			screen.write(decoder.decode(c.data, { stream: true }), c.receivedAt);
+		}
+		screen.flush();
+	} else {
+		let cur = "";
+		let curTs = 0;
+		const feedPlain = (text: string, ts: number) => {
+			let pos = 0;
+			while (pos < text.length) {
+				const nl = text.indexOf("\n", pos);
+				if (nl === -1) {
+					cur += text.slice(pos);
+					if (ts > 0) curTs = ts;
+					break;
+				}
+				cur += text.slice(pos, nl);
+				if (ts > 0) curTs = ts;
+				rawLines.push(cur);
+				rawTimestamps.push(curTs);
+				cur = "";
+				curTs = 0;
+				pos = nl + 1;
+			}
+		};
+		for (const c of chunks) {
+			feedPlain(decoder.decode(c.data, { stream: true }), c.receivedAt);
+		}
+		const tailText = decoder.decode();
+		if (tailText) feedPlain(tailText, 0);
+		if (cur.length > 0) {
+			rawLines.push(cur);
+			rawTimestamps.push(curTs);
+		}
 	}
-	screen.flush();
 
 	let startIdx = 0;
 	if (tail > 0 && rawLines.length > tail) {

@@ -1,7 +1,7 @@
 // The cases of internal/settle's settle_test.go, so stored output the
 // controller settles reads as the worker's live output does.
 import { describe, expect, it } from "vite-plus/test";
-import { extractLogLines, MAX_COLS, WINDOW, type TimedOutputChunk } from "../src/settle.ts";
+import { extractLogLines, MAX_COLS, Screen, WINDOW, type TimedOutputChunk } from "../src/settle.ts";
 
 function chunksOf(...parts: (string | Uint8Array)[]): TimedOutputChunk[] {
 	let offset = 0;
@@ -14,7 +14,15 @@ function chunksOf(...parts: (string | Uint8Array)[]): TimedOutputChunk[] {
 }
 
 function lines(...parts: (string | Uint8Array)[]): string[] {
-	return extractLogLines(chunksOf(...parts), 0, 0).lines;
+	const out: string[] = [];
+	const screen = new Screen((line) => out.push(line));
+	const decoder = new TextDecoder("utf-8");
+	for (const p of parts) {
+		const bytes = typeof p === "string" ? new TextEncoder().encode(p) : p;
+		screen.write(decoder.decode(bytes, { stream: true }));
+	}
+	screen.flush();
+	return out;
 }
 
 describe("settle, as internal/settle", () => {
@@ -119,5 +127,16 @@ describe("settle, as internal/settle", () => {
 		const got = extractLogLines(chunksOf("a: 1%\nb: 1%\n", "\x1b[2Aa: 100%\n\n", "tail"), 0, 0);
 		expect(got.lines).toEqual(["a: 100%", "b: 1%", "tail"]);
 		expect(got.lineTimestamps).toEqual([1001, 1000, 1002]);
+	});
+
+	it("preserves long plain-text lines verbatim (matching worker GetLogLines) and replaces invalid UTF-8", () => {
+		const bigA = `${"a".repeat(614400)}\n`;
+		const bigB = new Uint8Array(614402);
+		bigB.fill("b".charCodeAt(0), 0, 614400);
+		bigB[614400] = 0xff;
+		bigB[614401] = 0x0a;
+		const got = extractLogLines(chunksOf("first\n", bigA, bigB), 3, 1 << 20);
+		expect(got.cut).toBe(true);
+		expect(got.lines).toEqual([`${"b".repeat(614400)}\ufffd`]);
 	});
 });
