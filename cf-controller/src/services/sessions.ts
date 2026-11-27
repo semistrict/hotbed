@@ -80,7 +80,7 @@ export function createSessionService(ctrl: ControllerContext): ServiceImpl<typeo
 		model: string,
 	): Promise<Session> {
 		return ctrl.withSessionLock(id, () => {
-			const sess = ctrl.store.getSession(id);
+			const sess = ctrl.store.sessions.get(id);
 			if (project && project !== sess.project) {
 				throw hotbedError(
 					ErrorCode.Conflict,
@@ -88,24 +88,24 @@ export function createSessionService(ctrl: ControllerContext): ServiceImpl<typeo
 				).withSuggestion("resume it without naming a project, or start another session");
 			}
 			if (t3codeThreadId && !sess.t3codeThreadId) {
-				ctrl.store.setSessionT3CodeThreadIdIfEmpty(sess.id, t3codeThreadId);
+				ctrl.store.sessions.setT3CodeThreadIdIfEmpty(sess.id, t3codeThreadId);
 			}
 			if (model && !sess.model) {
-				ctrl.store.setSessionModelIfEmpty(sess.id, model);
+				ctrl.store.sessions.setModelIfEmpty(sess.id, model);
 			}
 			if (sess.endedAt !== undefined) {
-				ctrl.store.resumeSession(sess.id, ctrl.now());
+				ctrl.store.sessions.resume(sess.id, ctrl.now());
 				ctrl.sessionWakes.wake(sess.id);
 			}
-			return ctrl.store.liveSession(sess.id, ctrl.now());
+			return ctrl.store.sessions.live(sess.id, ctrl.now());
 		});
 	}
 
 	function sessionState(id: string, after: bigint): SessionEvents {
-		const sess = ctrl.store.getSession(id);
-		const events = ctrl.store.sessionEventsAfter(id, after);
+		const sess = ctrl.store.sessions.get(id);
+		const events = ctrl.store.sessions.eventsAfter(id, after);
 		const cursor = events.length > 0 ? events[events.length - 1].seq : after;
-		const views = ctrl.store.allViews();
+		const views = ctrl.store.nodeState.allViews();
 		let live = 0;
 		for (const v of views.values()) {
 			for (const c of v.commands) {
@@ -137,17 +137,17 @@ export function createSessionService(ctrl: ControllerContext): ServiceImpl<typeo
 			if (req.resume && !req.id) {
 				throw hotbedError(ErrorCode.InvalidArgs, "say which session to resume");
 			}
-			if (req.id && ctrl.store.tryGetSession(req.id)) {
+			if (req.id && ctrl.store.sessions.tryGet(req.id)) {
 				if (!req.resume) {
 					throw hotbedError(ErrorCode.Conflict, `a session called ${req.id} exists`).withSuggestion(
 						"pick another name, or leave it out for a random one",
 					);
 				}
 				const resumed = await resumeSession(req.id, req.project, t3codeThreadId, model);
-				const proj = ctrl.store.getProject(resumed.project);
+				const proj = ctrl.store.projects.get(resumed.project);
 				resumed.reminder = sessionStartReminder(proj);
 				if (!req.omitMemories) {
-					resumed.memories = ctrl.store.memoryBriefing(resumed.project);
+					resumed.memories = ctrl.store.memories.briefing(resumed.project);
 				}
 				return resumed;
 			}
@@ -155,7 +155,7 @@ export function createSessionService(ctrl: ControllerContext): ServiceImpl<typeo
 			const { project } = ctrl.sessionProject(caller, req.project, canonicalRemote(req.remote));
 			let sess: Session | null = null;
 			if (req.id) {
-				sess = ctrl.store.startSession(
+				sess = ctrl.store.sessions.start(
 					req.id,
 					agent,
 					project.name,
@@ -166,7 +166,7 @@ export function createSessionService(ctrl: ControllerContext): ServiceImpl<typeo
 			} else {
 				for (let i = 0; i < 20; i++) {
 					try {
-						sess = ctrl.store.startSession(
+						sess = ctrl.store.sessions.start(
 							generatePetname(),
 							agent,
 							project.name,
@@ -185,7 +185,7 @@ export function createSessionService(ctrl: ControllerContext): ServiceImpl<typeo
 			}
 			sess.reminder = sessionStartReminder(project);
 			if (!req.omitMemories) {
-				sess.memories = ctrl.store.memoryBriefing(project.name);
+				sess.memories = ctrl.store.memories.briefing(project.name);
 			}
 			return sess;
 		},
@@ -201,7 +201,7 @@ export function createSessionService(ctrl: ControllerContext): ServiceImpl<typeo
 			}
 			let sess: Session;
 			if (tid) {
-				const { sessions } = ctrl.store.searchSessionsByT3CodeThread(tid, "", false, 1);
+				const { sessions } = ctrl.store.sessions.searchByT3CodeThread(tid, "", false, 1);
 				if (sessions.length === 0) {
 					throw hotbedError(
 						ErrorCode.NotFound,
@@ -211,7 +211,7 @@ export function createSessionService(ctrl: ControllerContext): ServiceImpl<typeo
 				sess = sessions[0];
 				id = sess.id;
 			} else {
-				sess = ctrl.store.getSession(id);
+				sess = ctrl.store.sessions.get(id);
 			}
 
 			const nvs = ctrl.views();
@@ -236,15 +236,15 @@ export function createSessionService(ctrl: ControllerContext): ServiceImpl<typeo
 				if (!nodeWS) continue;
 				const found = nodeWS.find((ws) => ws.id === sw.id);
 				if (!found) {
-					ctrl.store.reconcileMissingWorkspace(sw.id, ctrl.now());
+					ctrl.store.workspaces.reconcileMissing(sw.id, ctrl.now());
 					reconciled = true;
 				} else if (found.state === WorkspaceState.RELEASED) {
-					ctrl.store.releaseWorkspaceRow(sw.id, ctrl.now());
+					ctrl.store.workspaces.release(sw.id, ctrl.now());
 					reconciled = true;
 				}
 			}
 			if (reconciled) {
-				sess = ctrl.store.getSession(id);
+				sess = ctrl.store.sessions.get(id);
 			}
 
 			const releasedWS = new Set(
@@ -301,7 +301,7 @@ export function createSessionService(ctrl: ControllerContext): ServiceImpl<typeo
 			}
 			const since = req.ended ? ctrl.now() - 24 * 3600_000 : ctrl.now() + 1;
 			return create(ListSessionsResponseSchema, {
-				sessions: ctrl.store.recentSessions(since, project, tid),
+				sessions: ctrl.store.sessions.recent(since, project, tid),
 			});
 		},
 
@@ -313,7 +313,7 @@ export function createSessionService(ctrl: ControllerContext): ServiceImpl<typeo
 				);
 			}
 			const project = req.project.trim();
-			if (project) ctrl.store.getProject(project);
+			if (project) ctrl.store.projects.get(project);
 			let limit = DEFAULT_SESSION_SEARCH_LIMIT;
 			if (req.limit !== undefined) {
 				if (req.limit < 0) {
@@ -321,7 +321,7 @@ export function createSessionService(ctrl: ControllerContext): ServiceImpl<typeo
 				}
 				limit = req.limit;
 			}
-			const { sessions, total } = ctrl.store.searchSessionsByT3CodeThread(
+			const { sessions, total } = ctrl.store.sessions.searchByT3CodeThread(
 				tid,
 				project,
 				req.liveOnly,
@@ -340,7 +340,7 @@ export function createSessionService(ctrl: ControllerContext): ServiceImpl<typeo
 		},
 
 		async *watchSession(req, ctx) {
-			ctrl.store.liveSession(req.sessionId, ctrl.now());
+			ctrl.store.sessions.live(req.sessionId, ctrl.now());
 			const waitMs =
 				req.timeoutSeconds > 0 && req.timeoutSeconds * 1000 < MAX_WAIT_MS
 					? req.timeoutSeconds * 1000
@@ -375,7 +375,7 @@ export function createSessionService(ctrl: ControllerContext): ServiceImpl<typeo
 					"name the session to poll: its events are what happened to its commands, questions and reviews",
 				).withSuggestion("pass -s SESSION, set HOTBED_SESSION, or run `hotbed session start`");
 			}
-			ctrl.store.liveSession(req.sessionId, ctrl.now());
+			ctrl.store.sessions.live(req.sessionId, ctrl.now());
 			const waitMs =
 				req.timeoutSeconds > 0 && req.timeoutSeconds * 1000 < MAX_WAIT_MS
 					? req.timeoutSeconds * 1000

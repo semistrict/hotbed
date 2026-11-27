@@ -41,7 +41,7 @@ export function issueMatches(issue: Issue, query: string): boolean {
 export function createIssueService(ctrl: ControllerContext): ServiceImpl<typeof IssueService> {
 	const touch = (issue: Issue, at: bigint) => {
 		issue.updatedAt = at;
-		ctrl.store.saveIssue(issue);
+		ctrl.store.issues.save(issue);
 		return issue;
 	};
 	return {
@@ -59,7 +59,7 @@ export function createIssueService(ctrl: ControllerContext): ServiceImpl<typeof 
 				throw hotbedError(ErrorCode.InvalidArgs, `a body is at most ${MAX_BODY} characters`);
 			}
 			const { by, project } = ctrl.userStamp(getCaller(ctx.values), req.sessionId, "");
-			return ctrl.store.addIssue(
+			return ctrl.store.issues.add(
 				create(IssueSchema, {
 					title,
 					body: req.body.trim(),
@@ -77,8 +77,8 @@ export function createIssueService(ctrl: ControllerContext): ServiceImpl<typeof 
 				throw hotbedError(ErrorCode.InvalidArgs, "--archived and --all: take one");
 			}
 			const state = req.all ? undefined : req.archived ? IssueState.ARCHIVED : IssueState.OPEN;
-			const issues = ctrl.store
-				.listIssues(state)
+			const issues = ctrl.store.issues
+				.list(state)
 				.filter((i) => !req.query.trim() || issueMatches(i, req.query))
 				// A listing is for finding one: its upvotes' comments are on its page.
 				.map((i) => {
@@ -89,7 +89,7 @@ export function createIssueService(ctrl: ControllerContext): ServiceImpl<typeof 
 		},
 
 		getIssue(req) {
-			return ctrl.store.getIssue(req.id);
+			return ctrl.store.issues.get(req.id);
 		},
 
 		upvoteIssue(req, ctx) {
@@ -97,7 +97,7 @@ export function createIssueService(ctrl: ControllerContext): ServiceImpl<typeof 
 				throw hotbedError(ErrorCode.InvalidArgs, `a comment is at most ${MAX_COMMENT} characters`);
 			}
 			const { by } = ctrl.userStamp(getCaller(ctx.values), req.sessionId, "");
-			const issue = ctrl.store.getIssue(req.id);
+			const issue = ctrl.store.issues.get(req.id);
 			if (issue.state === IssueState.ARCHIVED) {
 				const why = issue.archived?.reason ? `: ${issue.archived.reason}` : "";
 				throw hotbedError(
@@ -123,7 +123,7 @@ export function createIssueService(ctrl: ControllerContext): ServiceImpl<typeof 
 
 		archiveIssue(req, ctx) {
 			const { by } = ctrl.userStamp(getCaller(ctx.values), req.sessionId, req.reason.trim());
-			const issue = ctrl.store.getIssue(req.id);
+			const issue = ctrl.store.issues.get(req.id);
 			if (issue.state === IssueState.ARCHIVED) return issue;
 			issue.state = IssueState.ARCHIVED;
 			issue.archived = by;
@@ -132,7 +132,7 @@ export function createIssueService(ctrl: ControllerContext): ServiceImpl<typeof 
 
 		reopenIssue(req, ctx) {
 			const { by } = ctrl.userStamp(getCaller(ctx.values), req.sessionId, "");
-			const issue = ctrl.store.getIssue(req.id);
+			const issue = ctrl.store.issues.get(req.id);
 			if (issue.state === IssueState.OPEN) return issue;
 			issue.state = IssueState.OPEN;
 			issue.archived = undefined;

@@ -17,6 +17,7 @@ import {
 	BoardTaskClaimViewSchema,
 	BoardTaskSchema,
 	BoardTaskState,
+	BoardTaskStateSchema,
 	BoardThreadSummarySchema,
 	ImportBoardResponseSchema,
 	StampSchema,
@@ -36,8 +37,9 @@ import {
 	type ImportBoardRequest,
 	type ImportBoardResponse,
 } from "../gen/hotbed/v1/hotbed_pb.ts";
+import { enumFromWord, enumWord } from "../enums.ts";
 import { ErrorCode, hotbedError } from "../errors.ts";
-import type { ControllerStore } from "../store.ts";
+import type { ProjectStore } from "../store/projects.ts";
 import { blocksIn, findBlocks } from "./blocks.ts";
 import { canonicalEmoji, normalizeEmoji } from "./emoji.ts";
 import { mentionTerm, mentionTerms, settleMentions } from "./mentions.ts";
@@ -142,45 +144,11 @@ export interface TaskFilterOpts {
 const BOOKKEEPING_EVENTS = new Set(["task.renewed", "actor.seen"]);
 
 export function taskStateName(st: BoardTaskState): string {
-	switch (st) {
-		case BoardTaskState.WAITING:
-			return "waiting";
-		case BoardTaskState.READY:
-			return "ready";
-		case BoardTaskState.CLAIMED:
-			return "claimed";
-		case BoardTaskState.BLOCKED:
-			return "blocked";
-		case BoardTaskState.COMPLETED:
-			return "completed";
-		case BoardTaskState.FAILED:
-			return "failed";
-		case BoardTaskState.CANCELED:
-			return "canceled";
-		default:
-			return "";
-	}
+	return st === BoardTaskState.UNSPECIFIED ? "" : enumWord(BoardTaskStateSchema, st);
 }
 
 export function parseTaskState(name: string): BoardTaskState {
-	switch (name.toLowerCase()) {
-		case "waiting":
-			return BoardTaskState.WAITING;
-		case "ready":
-			return BoardTaskState.READY;
-		case "claimed":
-			return BoardTaskState.CLAIMED;
-		case "blocked":
-			return BoardTaskState.BLOCKED;
-		case "completed":
-			return BoardTaskState.COMPLETED;
-		case "failed":
-			return BoardTaskState.FAILED;
-		case "canceled":
-			return BoardTaskState.CANCELED;
-		default:
-			return BoardTaskState.UNSPECIFIED;
-	}
+	return enumFromWord(BoardTaskStateSchema, name.toLowerCase());
 }
 
 const OPEN_TASK_STATES: readonly BoardTaskState[] = [
@@ -495,26 +463,16 @@ function actorKindWord(k: BoardActorKind): string {
 export class BoardStore {
 	private readonly storage: DurableObjectStorage;
 	private readonly sql: SqlStorage;
-	private readonly core: ControllerStore;
+	private readonly projects: ProjectStore;
 
-	constructor(storage: DurableObjectStorage, core: ControllerStore) {
+	constructor(storage: DurableObjectStorage, projects: ProjectStore) {
 		this.storage = storage;
 		this.sql = storage.sql;
-		this.core = core;
+		this.projects = projects;
 	}
 
 	private tx<T>(fn: () => T): T {
 		return this.storage.transactionSync(fn);
-	}
-
-	projectIdByName(name: string): number {
-		const rows = this.sql.exec("SELECT id FROM projects WHERE name = ?", name).toArray();
-		if (rows.length === 0) {
-			throw hotbedError(ErrorCode.NotFound, `no project ${name}`).withSuggestion(
-				"hotbed project ls",
-			);
-		}
-		return num(rows[0].id);
 	}
 
 	private projectNameById(id: number): string {
@@ -1247,7 +1205,7 @@ export class BoardStore {
 					throw hotbedError(ErrorCode.InvalidArgs, "--after is only valid on replies");
 				}
 				projectName = opts.project;
-				projectId = this.projectIdByName(projectName);
+				projectId = this.projects.idByName(projectName);
 			}
 
 			// Scoped idempotency key per principal
@@ -2522,7 +2480,7 @@ export class BoardStore {
 		);
 
 		return this.tx(() => {
-			const projectId = this.projectIdByName(opts.project);
+			const projectId = this.projects.idByName(opts.project);
 			this.upsertActor(opts.identity.actor, opts.nowMs);
 			const scopedKey = opts.idempotencyKey.trim()
 				? `${opts.identity.author.principal}:${opts.idempotencyKey.trim()}`
@@ -3490,7 +3448,7 @@ export class BoardStore {
 				rootId = target.re ?? target.id;
 			} else {
 				projectName = opts.project;
-				projectId = this.projectIdByName(projectName);
+				projectId = this.projects.idByName(projectName);
 			}
 			const { text: settledText, mentions } = this.settleTextMentions(opts.text, rootId);
 			const sched = create(BoardScheduleSchema, {
@@ -3799,7 +3757,7 @@ export class BoardStore {
 						`project ${name} does not exist (pass --create-projects or --map channel=project)`,
 					).withSuggestion("hotbed project ls");
 				}
-				this.core.addProject(
+				this.projects.add(
 					name,
 					[],
 					create(StampSchema, {
@@ -3809,7 +3767,7 @@ export class BoardStore {
 					}),
 				);
 				projectsCreated++;
-				const pid = this.projectIdByName(name);
+				const pid = this.projects.idByName(name);
 				projectIdCache.set(name, pid);
 				return pid;
 			};

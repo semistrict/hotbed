@@ -10,7 +10,7 @@ import { createClient, type Interceptor } from "@connectrpc/connect";
 import { createFetchClient } from "@connectrpc/connect/protocol";
 import { createTransport } from "@connectrpc/connect/protocol-connect";
 import { describe, expect, it, vi } from "vite-plus/test";
-import type { ControllerStore } from "../src/store.ts";
+import type { ControllerStore } from "../src/store/index.ts";
 import {
 	AdmissionSchema,
 	AdmissionSignalSchema,
@@ -1184,13 +1184,13 @@ describe("BuildDistributor pinned controller version and placement semantics", (
 		const { buildCandidates, chooseCandidate } = await import("../src/placement.ts");
 		const kvData = new Map<string, string>();
 		const kv = {
-			getMeta: (k: string) => kvData.get(k) ?? null,
-			setMeta: (k: string, v: string) => {
+			get: (k: string) => kvData.get(k) ?? null,
+			set: (k: string, v: string) => {
 				kvData.set(k, v);
 			},
 		};
 		// Seed a stale SQLite cache from an older build 170.
-		kv.setMeta(
+		kv.set(
 			"github_latest_release",
 			JSON.stringify({
 				buildNumber: 170,
@@ -2201,7 +2201,8 @@ describe("Security, cron, daemon logs, tunnel, and workspace regression tests", 
 				stub,
 				async (instance) =>
 					// eslint-disable-next-line @typescript-eslint/no-explicit-any
-					(instance as any).store.latestSharedBase("chain-proj", "arm64", 0n, "vm")?.cell?.cell,
+					(instance as any).store.cladefs.latestSharedBase("chain-proj", "arm64", 0n, "vm")?.cell
+						?.cell,
 			);
 		try {
 			// a builds base 1; b takes it up; a builds base 2 on it.
@@ -3117,8 +3118,8 @@ describe("Security, cron, daemon logs, tunnel, and workspace regression tests", 
 			env.CONTROLLER.getByName("default"),
 			(instance) => (instance as any).store as ControllerStore,
 		);
-		const listAll = vi.spyOn(store, "listBaseFreshens");
-		const allEvents = vi.spyOn(store, "recentEvents");
+		const listAll = vi.spyOn(store.freshens, "list");
+		const allEvents = vi.spyOn(store.fleet, "recentEvents");
 		try {
 			const byBase = await owner.cluster.getFreshen({ id: "proj-freshen-obs-g1" });
 			expect(byBase.freshen?.id).toBe("f-proj-freshen-obs-g1-aaa111");

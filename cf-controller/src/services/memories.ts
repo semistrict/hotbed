@@ -10,10 +10,12 @@ import {
 	MemoryScope,
 	MemoryService,
 	MemoryState,
+	MemoryStateSchema,
 	type Memory,
 	type MemoryContent,
 	type Project,
 } from "../gen/hotbed/v1/hotbed_pb.ts";
+import { enumWord } from "../enums.ts";
 import { getCaller } from "../connect-adapter.ts";
 import { inProject, type ControllerContext } from "../context.ts";
 import { ErrorCode, hotbedError } from "../errors.ts";
@@ -28,25 +30,6 @@ const MAX_ON_DEMAND_SUMMARY_RUNES = 280;
 const MAX_BODY_BYTES = 64 * 1024;
 const MAX_TAGS = 10;
 const DIRTY_KEPT = 20;
-
-function stateWord(st: MemoryState): string {
-	switch (st) {
-		case MemoryState.PROPOSED:
-			return "proposed";
-		case MemoryState.APPROVED:
-			return "approved";
-		case MemoryState.REJECTED:
-			return "rejected";
-		case MemoryState.SUPERSEDED:
-			return "superseded";
-		case MemoryState.ARCHIVED:
-			return "archived";
-		case MemoryState.WITHDRAWN:
-			return "withdrawn";
-		default:
-			return "unspecified";
-	}
-}
 
 function normalizeTags(raw: string[]): string[] {
 	const out: string[] = [];
@@ -198,17 +181,17 @@ export function createMemoryService(ctrl: ControllerContext): ServiceImpl<typeof
 		remote: string;
 	}): string {
 		if (req.project) {
-			ctrl.store.getProject(req.project);
+			ctrl.store.projects.get(req.project);
 			return req.project;
 		}
 		if (req.sessionId) {
-			const sess = ctrl.store.getSession(req.sessionId);
+			const sess = ctrl.store.sessions.get(req.sessionId);
 			if (sess.project) return sess.project;
 		}
 		if (req.remote) {
 			const remote = canonicalRemote(req.remote);
 			if (remote) {
-				const holding = ctrl.store.projectsHolding(remote);
+				const holding = ctrl.store.projects.holding(remote);
 				if (holding.length === 1) return holding[0].name;
 			}
 		}
@@ -223,7 +206,7 @@ export function createMemoryService(ctrl: ControllerContext): ServiceImpl<typeof
 		}
 		const bareNum = ref.startsWith("#") ? ref.slice(1) : ref;
 		if (/^\d+$/.test(bareNum)) {
-			return ctrl.store.getMemory(Number(bareNum));
+			return ctrl.store.memories.get(Number(bareNum));
 		}
 		const slash = ref.indexOf("/");
 		if (slash >= 0) {
@@ -236,8 +219,8 @@ export function createMemoryService(ctrl: ControllerContext): ServiceImpl<typeof
 				throw hotbedError(ErrorCode.InvalidArgs, `invalid memory reference "${rawRef}"`);
 			}
 			const scopeKey = scopePart === "global" ? "" : scopePart;
-			if (scopeKey) ctrl.store.getProject(scopeKey);
-			const found = ctrl.store.findApprovedByScopeSlug(scopeKey, slugPart);
+			if (scopeKey) ctrl.store.projects.get(scopeKey);
+			const found = ctrl.store.memories.findApprovedByScopeSlug(scopeKey, slugPart);
 			if (!found) {
 				throw hotbedError(
 					ErrorCode.NotFound,
@@ -248,13 +231,13 @@ export function createMemoryService(ctrl: ControllerContext): ServiceImpl<typeof
 		}
 		const slug = ref.toLowerCase();
 		if (activeProject) {
-			const inProj = ctrl.store.findApprovedByScopeSlug(activeProject, slug);
+			const inProj = ctrl.store.memories.findApprovedByScopeSlug(activeProject, slug);
 			if (inProj) return inProj;
 		}
-		const inGlobal = ctrl.store.findApprovedByScopeSlug("", slug);
+		const inGlobal = ctrl.store.memories.findApprovedByScopeSlug("", slug);
 		if (inGlobal) return inGlobal;
 
-		const others = ctrl.store.findApprovedBySlugAnyScope(slug);
+		const others = ctrl.store.memories.findApprovedBySlugAnyScope(slug);
 		if (others.length > 0) {
 			const hints = others
 				.map((m) => `${m.project || "global"}/${m.content?.slug ?? slug}`)
@@ -296,7 +279,7 @@ export function createMemoryService(ctrl: ControllerContext): ServiceImpl<typeof
 			} else if (req.project) {
 				// Named outright, any project: a session of one project often learns
 				// what belongs to another (a cladefs session about hotbed, say).
-				targetProject = ctrl.store.getProject(req.project);
+				targetProject = ctrl.store.projects.get(req.project);
 				repo = projectRepo(targetProject, req.repo, req.from?.remote ?? "");
 			} else if (sessProject) {
 				targetProject = sessProject;
@@ -315,7 +298,7 @@ export function createMemoryService(ctrl: ControllerContext): ServiceImpl<typeof
 			// and its own. A global memory may replace any (consolidating upward).
 			if (targetProject) {
 				for (const tid of supersedesIds) {
-					const target = ctrl.store.getMemory(tid);
+					const target = ctrl.store.memories.get(tid);
 					if (target.scope === MemoryScope.PROJECT && target.project !== targetProject.name) {
 						throw hotbedError(
 							ErrorCode.Conflict,
@@ -331,7 +314,7 @@ export function createMemoryService(ctrl: ControllerContext): ServiceImpl<typeof
 			}
 			let t3Thread = req.t3codeThreadId.trim();
 			if (!t3Thread && req.sessionId) {
-				const sess = ctrl.store.tryGetSession(req.sessionId);
+				const sess = ctrl.store.sessions.tryGet(req.sessionId);
 				if (sess?.t3codeThreadId) t3Thread = sess.t3codeThreadId;
 			}
 			const provenance = create(MemoryProvenanceSchema, {
@@ -341,7 +324,7 @@ export function createMemoryService(ctrl: ControllerContext): ServiceImpl<typeof
 				rationale: req.rationale.trim(),
 			});
 
-			return ctrl.store.proposeMemory({
+			return ctrl.store.memories.propose({
 				scope,
 				project: targetProject?.name ?? "",
 				repo,
@@ -363,7 +346,7 @@ export function createMemoryService(ctrl: ControllerContext): ServiceImpl<typeof
 			}
 			let project = "";
 			if (req.scope === MemoryScope.GLOBAL) {
-				if (req.sessionId) ctrl.store.getSession(req.sessionId);
+				if (req.sessionId) ctrl.store.sessions.get(req.sessionId);
 			} else {
 				project = ctrl.listedProject({
 					scope: req.projectScope,
@@ -371,7 +354,7 @@ export function createMemoryService(ctrl: ControllerContext): ServiceImpl<typeof
 					remote: req.remote,
 				});
 			}
-			const { memories, total } = ctrl.store.listMemories({
+			const { memories, total } = ctrl.store.memories.list({
 				states: req.states,
 				scope: req.scope,
 				project,
@@ -416,7 +399,7 @@ export function createMemoryService(ctrl: ControllerContext): ServiceImpl<typeof
 		showMemory(req) {
 			const activeProject = resolveOptionalProject(req);
 			const m = resolveRef(req.ref, activeProject);
-			m.history = ctrl.store.memoryHistory(m.id);
+			m.history = ctrl.store.memories.history(m.id);
 			return m;
 		},
 
@@ -428,7 +411,7 @@ export function createMemoryService(ctrl: ControllerContext): ServiceImpl<typeof
 				throw hotbedError(ErrorCode.InvalidArgs, "a global memory cannot be scoped to a repo");
 			}
 			const { by, project } = ctrl.userStamp(getCaller(ctx.values), req.sessionId, "");
-			return ctrl.store.changeMemory(req.id, "edited", by, (item) => {
+			return ctrl.store.memories.change(req.id, "edited", by, (item) => {
 				if (item.scope === MemoryScope.PROJECT) {
 					inProject("memory", item.id, item.project, project, by);
 				}
@@ -441,7 +424,7 @@ export function createMemoryService(ctrl: ControllerContext): ServiceImpl<typeof
 					item.project = "";
 					item.repo = "";
 				} else if (req.project) {
-					const targetProj = ctrl.store.getProject(req.project);
+					const targetProj = ctrl.store.projects.get(req.project);
 					const projectChanged =
 						item.scope !== MemoryScope.PROJECT || item.project !== targetProj.name;
 					item.scope = MemoryScope.PROJECT;
@@ -461,7 +444,7 @@ export function createMemoryService(ctrl: ControllerContext): ServiceImpl<typeof
 						}
 						item.repo = "";
 					} else {
-						const curProj = ctrl.store.getProject(item.project);
+						const curProj = ctrl.store.projects.get(item.project);
 						item.repo = req.repo.trim() ? projectRepo(curProj, req.repo.trim(), "") : "";
 					}
 				}
@@ -494,7 +477,7 @@ export function createMemoryService(ctrl: ControllerContext): ServiceImpl<typeof
 					"give --reason explaining why this memory is being archived",
 				).withSuggestion('pass --reason "..."');
 			}
-			return ctrl.store.changeMemory(req.id, "archived", by, (item) => {
+			return ctrl.store.memories.change(req.id, "archived", by, (item) => {
 				if (item.scope === MemoryScope.PROJECT) {
 					inProject("memory", item.id, item.project, project, by);
 				}
@@ -502,7 +485,7 @@ export function createMemoryService(ctrl: ControllerContext): ServiceImpl<typeof
 				if (item.state !== MemoryState.APPROVED) {
 					throw hotbedError(
 						ErrorCode.Conflict,
-						`memory #${item.id} is ${stateWord(item.state)}; only an active memory can be archived`,
+						`memory #${item.id} is ${enumWord(MemoryStateSchema, item.state)}; only an active memory can be archived`,
 					);
 				}
 				item.state = MemoryState.ARCHIVED;
@@ -512,7 +495,7 @@ export function createMemoryService(ctrl: ControllerContext): ServiceImpl<typeof
 
 		restoreMemory(req, ctx) {
 			const { by, project } = ctrl.userStamp(getCaller(ctx.values), req.sessionId, "");
-			return ctrl.store.changeMemory(req.id, "restored", by, (item) => {
+			return ctrl.store.memories.change(req.id, "restored", by, (item) => {
 				if (item.scope === MemoryScope.PROJECT) {
 					inProject("memory", item.id, item.project, project, by);
 				}
@@ -524,7 +507,7 @@ export function createMemoryService(ctrl: ControllerContext): ServiceImpl<typeof
 				) {
 					throw hotbedError(
 						ErrorCode.Conflict,
-						`memory #${item.id} is ${stateWord(item.state)}; only archived, rejected, or withdrawn memories can be restored`,
+						`memory #${item.id} is ${enumWord(MemoryStateSchema, item.state)}; only archived, rejected, or withdrawn memories can be restored`,
 					);
 				}
 				item.state = MemoryState.APPROVED;
@@ -535,7 +518,7 @@ export function createMemoryService(ctrl: ControllerContext): ServiceImpl<typeof
 
 		deleteMemory(req, ctx) {
 			const { by, project } = ctrl.userStamp(getCaller(ctx.values), req.sessionId, "");
-			return ctrl.store.deleteMemory(req.id, (item) => {
+			return ctrl.store.memories.delete(req.id, (item) => {
 				if (item.scope === MemoryScope.PROJECT) {
 					inProject("memory", item.id, item.project, project, by);
 				}
@@ -559,20 +542,20 @@ export function createMemoryService(ctrl: ControllerContext): ServiceImpl<typeof
 					`say where memory #${req.id} goes: before another, first or last`,
 				);
 			}
-			return ctrl.store.moveMemory(req.id, place, by, (m, before) => {
+			return ctrl.store.memories.move(req.id, place, by, (m, before) => {
 				if (m.scope === MemoryScope.PROJECT) {
 					inProject("memory", m.id, m.project, project, by);
 				}
 				if (m.state !== MemoryState.APPROVED) {
 					throw hotbedError(
 						ErrorCode.Conflict,
-						`memory #${m.id} is ${stateWord(m.state)}: only active memories can be moved`,
+						`memory #${m.id} is ${enumWord(MemoryStateSchema, m.state)}: only active memories can be moved`,
 					);
 				}
 				if (before && before.state !== MemoryState.APPROVED) {
 					throw hotbedError(
 						ErrorCode.Conflict,
-						`memory #${before.id} is ${stateWord(before.state)}: only active memories have a place in the order`,
+						`memory #${before.id} is ${enumWord(MemoryStateSchema, before.state)}: only active memories have a place in the order`,
 					);
 				}
 			});

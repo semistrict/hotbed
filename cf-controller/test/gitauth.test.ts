@@ -6,7 +6,7 @@ import { createTransport } from "@connectrpc/connect/protocol-connect";
 import { afterEach, describe, expect, it, vi } from "vite-plus/test";
 import type { ControllerEnv } from "../src/controller-do.ts";
 import { GitAuthService, GitCredentialSchema } from "../src/gen/hotbed/v1/hotbed_pb.ts";
-import type { ControllerStore } from "../src/store.ts";
+import type { ControllerStore } from "../src/store/index.ts";
 
 const OAUTH = "https://mock-github-oauth.test";
 
@@ -44,10 +44,10 @@ describe("git token refresh", () => {
 			);
 		// Read in the controller's context: the OAuth mock runs there.
 		const tokenIn = (store: ControllerStore) =>
-			store.gitCredentialsByHost("github.com").find((c) => c.cred.name === "gh-oauth-race")?.secret
+			store.gitCredentials.byHost("github.com").find((c) => c.cred.name === "gh-oauth-race")?.secret
 				.token;
 		const store = await inController((store) => {
-			store.putGitCredential(
+			store.gitCredentials.put(
 				create(GitCredentialSchema, {
 					name: "gh-oauth-race",
 					host: "github.com",

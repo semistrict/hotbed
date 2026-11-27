@@ -54,8 +54,8 @@ export interface TestBuildConfig {
 }
 
 export interface MetaKV {
-	getMeta(key: string): string | null;
-	setMeta(key: string, value: string): void;
+	get(key: string): string | null;
+	set(key: string, value: string): void;
 }
 
 const RELEASE_CACHE_KEY = "github_latest_release";
@@ -142,7 +142,7 @@ export class BuildDistributor {
 		if (cfg.clearBuild) {
 			this.memCache = null;
 			this.mockAssets.clear();
-			this.kv.setMeta(RELEASE_CACHE_KEY, "");
+			this.kv.set(RELEASE_CACHE_KEY, "");
 		}
 		if (cfg.mockBuild) {
 			this.mockAssets.clear();
@@ -161,7 +161,7 @@ export class BuildDistributor {
 				assets,
 			};
 			this.memCache = rel;
-			this.kv.setMeta(RELEASE_CACHE_KEY, JSON.stringify(rel));
+			this.kv.set(RELEASE_CACHE_KEY, JSON.stringify(rel));
 		}
 	}
 
@@ -271,7 +271,7 @@ export class BuildDistributor {
 		}
 		let rel = this.memCache;
 		if (!rel) {
-			const raw = this.kv.getMeta(RELEASE_CACHE_KEY);
+			const raw = this.kv.get(RELEASE_CACHE_KEY);
 			if (raw) {
 				try {
 					rel = JSON.parse(raw) as CachedRelease;
@@ -383,7 +383,7 @@ export class BuildDistributor {
 			const rel = await this.fetchPinnedRelease(repo, pinned, nowMs);
 			if (rel) {
 				this.memCache = rel;
-				this.kv.setMeta(RELEASE_CACHE_KEY, JSON.stringify(rel));
+				this.kv.set(RELEASE_CACHE_KEY, JSON.stringify(rel));
 				return rel;
 			}
 			return cached;
@@ -397,7 +397,7 @@ export class BuildDistributor {
 		const next = await this.fetchLatestRelease(repo, nowMs);
 		if (!next) return cached;
 		this.memCache = next;
-		this.kv.setMeta(RELEASE_CACHE_KEY, JSON.stringify(next));
+		this.kv.set(RELEASE_CACHE_KEY, JSON.stringify(next));
 		return next;
 	}
 

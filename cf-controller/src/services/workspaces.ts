@@ -80,7 +80,7 @@ import {
 } from "../placement.ts";
 import { isCommandLive } from "../wakeups.ts";
 import { queryProfile } from "../profile-query.ts";
-import { sessionEndedError, type CommandRoute, type WorkspaceRow } from "../store.ts";
+import { sessionEndedError, type CommandRoute, type WorkspaceRow } from "../store/index.ts";
 
 const DEFAULT_COMMAND_LIMIT = 50;
 const DIAGNOSE_RPC_TIMEOUT_MS = 90_000;
@@ -164,7 +164,7 @@ export function createWorkspaceService(ctrl: ControllerContext): {
 	helpers: WorkspaceHelpers;
 } {
 	function ensureOnlineWorker(nodeId: string): { host: string } {
-		const row = ctrl.store.getNode(nodeId);
+		const row = ctrl.store.fleet.get(nodeId);
 		const node = ctrl.withOnline(row.node);
 		if (!node.online) {
 			throw hotbedError(ErrorCode.WorkerUnreachable, `${row.node.hostname} is offline`, {
@@ -175,18 +175,18 @@ export function createWorkspaceService(ctrl: ControllerContext): {
 	}
 
 	function workspaceOf(id: string): { host: string; row: WorkspaceRow; project: string } {
-		const row = ctrl.store.getWorkspace(id);
+		const row = ctrl.store.workspaces.get(id);
 		if (row.released) {
 			throw hotbedError(ErrorCode.NotFound, `workspace ${id} was released`);
 		}
-		const sess = ctrl.store.liveSession(row.session, ctrl.now());
+		const sess = ctrl.store.sessions.live(row.session, ctrl.now());
 		const { host } = ensureOnlineWorker(row.node);
 		return { host, row, project: sess.project };
 	}
 
 	function commandOf(id: string): { host: string; nodeId: string; session: string } {
-		const route = ctrl.store.lookupCommand(id);
-		if (route.session) ctrl.store.touchSession(route.session, ctrl.now());
+		const route = ctrl.store.commands.lookup(id);
+		if (route.session) ctrl.store.sessions.touch(route.session, ctrl.now());
 		const { host } = ensureOnlineWorker(route.node);
 		return { host, nodeId: route.node, session: route.session };
 	}
@@ -200,18 +200,18 @@ export function createWorkspaceService(ctrl: ControllerContext): {
 	}
 
 	function viewCommandById(id: string): Command | null {
-		const vc = ctrl.store.viewCommand(id);
+		const vc = ctrl.store.commands.view(id);
 		if (!vc) return null;
 		let row;
 		try {
-			row = ctrl.store.getNode(vc.nodeId);
+			row = ctrl.store.fleet.get(vc.nodeId);
 		} catch {
 			return null;
 		}
 		const cmd = vc.cmd;
 		cmd.nodeAddr = ctrl.addrOf(row);
 		if (cmd.sessionId) {
-			const sess = ctrl.store.tryGetSession(cmd.sessionId);
+			const sess = ctrl.store.sessions.tryGet(cmd.sessionId);
 			if (sess?.project) cmd.project = sess.project;
 		}
 		if (ctrl.withOnline(row.node).online && row.hb && isCommandLive(cmd.state)) {
@@ -231,7 +231,7 @@ export function createWorkspaceService(ctrl: ControllerContext): {
 		let nodeId = route.node;
 		let b: Base | undefined = route.base;
 		if (!route.baseChecked) {
-			const found = ctrl.store.baseByCommand(id);
+			const found = ctrl.store.commands.baseBuiltBy(id);
 			if (!found) return null;
 			nodeId = found.nodeId;
 			b = found.base;
@@ -283,7 +283,7 @@ export function createWorkspaceService(ctrl: ControllerContext): {
 			const c = codeOf(err);
 			if (c === ErrorCode.NotFound) return;
 			if (c === ErrorCode.WorkerUnreachable) {
-				ctrl.store.releaseWorkspaceRow(id, ctrl.now());
+				ctrl.store.workspaces.release(id, ctrl.now());
 				return;
 			}
 			throw err;
@@ -298,7 +298,7 @@ export function createWorkspaceService(ctrl: ControllerContext): {
 		while (!signal?.aborted) {
 			const waiters = hosts.map((h) => ctrl.nodeChanges.wait(h));
 			try {
-				const rows = ctrl.store.listNodes();
+				const rows = ctrl.store.fleet.list();
 				if (rows.some((n) => hosts.includes(n.node.hostname) && ctrl.nodeServes(n))) {
 					return true;
 				}
@@ -325,7 +325,7 @@ export function createWorkspaceService(ctrl: ControllerContext): {
 					WorkspaceSchema,
 					WORKER_RPC_TIMEOUT_MS,
 				);
-				const nodeRow = ctrl.store.getNode(row.node);
+				const nodeRow = ctrl.store.fleet.get(row.node);
 				ws.nodeAddr = ctrl.addrOf(nodeRow);
 				ws.node = nodeRow.node.hostname;
 				ws.project = project;
@@ -374,7 +374,7 @@ export function createWorkspaceService(ctrl: ControllerContext): {
 		for (const pc of d.candidates) {
 			pc.chosen = pc.nodeId === d.nodeId;
 		}
-		ctrl.store.addPlacement(d, ctrl.now());
+		ctrl.store.fleet.addPlacement(d, ctrl.now());
 		return d;
 	}
 
@@ -392,13 +392,13 @@ export function createWorkspaceService(ctrl: ControllerContext): {
 			(r) => r === "vm" || r === "cladefs",
 		);
 		const sharedBaseRuntime = reqRuntime || chosenRuntimes[0] || "";
-		const sharedBase = ctrl.store.latestSharedBase(
+		const sharedBase = ctrl.store.cladefs.latestSharedBase(
 			projectName,
 			chosenArch,
 			ctrl.cladefsTenantId,
 			sharedBaseRuntime,
 		);
-		const fencingToken = ctrl.store.nextFencingToken();
+		const fencingToken = ctrl.store.cladefs.nextFencingToken();
 		const fwd = create(CreateWorkspaceRequestSchema, {
 			repo: req.repo,
 			agent: sess.agent,
@@ -412,7 +412,7 @@ export function createWorkspaceService(ctrl: ControllerContext): {
 			fencingToken,
 			throwaway: req.throwaway,
 		});
-		const ok = ctrl.store.addLiveWorkspace(
+		const ok = ctrl.store.workspaces.addLive(
 			fwd.id,
 			sess.id,
 			node.view.node.id,
@@ -421,7 +421,7 @@ export function createWorkspaceService(ctrl: ControllerContext): {
 			req.throwaway,
 		);
 		if (!ok) {
-			const cur = ctrl.store.getSession(sess.id);
+			const cur = ctrl.store.sessions.get(sess.id);
 			throw sessionEndedError(sess.id, cur.endReason);
 		}
 		ctrl.markCreatingWS(fwd.id);
@@ -539,11 +539,11 @@ export function createWorkspaceService(ctrl: ControllerContext): {
 				if (a2 || signal?.aborted) return a2;
 				try {
 					const fwd2 = await ctrl.withPlacementLock(() => {
-						const p = ctrl.store.getProject(sess.project);
+						const p = ctrl.store.projects.get(sess.project);
 						const hosted = ctrl.hosted(p);
 						if (!req.throwaway) {
-							const existing = ctrl.store
-								.sessionWorkspaces(sess.id)
+							const existing = ctrl.store.workspaces
+								.ofSession(sess.id)
 								.find((w) => !w.throwaway && w.node === runnerUp.view.node.id);
 							if (existing) return null;
 						}
@@ -706,7 +706,7 @@ export function createWorkspaceService(ctrl: ControllerContext): {
 				`unknown runtime "${requestedRt}" (want vm or cladefs)`,
 			).withSuggestion("use --runtime vm or --runtime cladefs");
 		}
-		const sess = ctrl.store.liveSession(req.sessionId, ctrl.now());
+		const sess = ctrl.store.sessions.live(req.sessionId, ctrl.now());
 		const skip = new Set<string>();
 		let lastErr: unknown = null;
 		let upgradeDeadline = 0;
@@ -771,14 +771,14 @@ export function createWorkspaceService(ctrl: ControllerContext): {
 						continue;
 					}
 					if (ws.state === WorkspaceState.RELEASED) {
-						ctrl.store.releaseWorkspaceRow(ws.id, ctrl.now());
+						ctrl.store.workspaces.release(ws.id, ctrl.now());
 						continue;
 					}
 					ws.placement = claimed.decision;
 					return ws;
 				} catch (err) {
 					if (codeOf(err) === ErrorCode.NotFound && !ctrl.creatingWS.has(node.mine)) {
-						ctrl.store.reconcileMissingWorkspace(node.mine, ctrl.now());
+						ctrl.store.workspaces.reconcileMissing(node.mine, ctrl.now());
 						continue;
 					}
 					throw err;
@@ -840,7 +840,7 @@ export function createWorkspaceService(ctrl: ControllerContext): {
 		const probed = new Set<string>();
 		while (true) {
 			const step = await ctrl.withPlacementLock(() => {
-				const p = ctrl.store.getProject(sess.project);
+				const p = ctrl.store.projects.get(sess.project);
 				const hosted = ctrl.hosted(p);
 				if (req.repo && !hosted.repos.some((r) => r.id === req.repo)) {
 					throw hotbedError(
@@ -850,7 +850,7 @@ export function createWorkspaceService(ctrl: ControllerContext): {
 						`hotbed project add ${p.name} --repo REMOTE adds the repo's remote to it; or start a session in a project that holds it (hotbed session start -p PROJECT)`,
 					);
 				}
-				const held = ctrl.store.sessionWorkspaces(sess.id);
+				const held = ctrl.store.workspaces.ofSession(sess.id);
 				const nvs = ctrl.views();
 				const needRelease: WorkspaceRow[] = [];
 				const needProbe: WorkspaceRow[] = [];
@@ -886,7 +886,7 @@ export function createWorkspaceService(ctrl: ControllerContext): {
 								: []
 							: runtimes;
 						return targetRuntimes.some((rt) =>
-							ctrl.store.hasSharedBase(p.name, arch, ctrl.cladefsTenantId, rt),
+							ctrl.store.cladefs.hasSharedBase(p.name, arch, ctrl.cladefsTenantId, rt),
 						);
 					},
 				);
@@ -917,7 +917,7 @@ export function createWorkspaceService(ctrl: ControllerContext): {
 				d.project = p.name;
 				d.repo = req.repo;
 				if (!runnerUp) {
-					ctrl.store.addPlacement(d, ctrl.now());
+					ctrl.store.fleet.addPlacement(d, ctrl.now());
 				}
 				if (err || !chosen) {
 					const up = upgradingFor(cs, req.placement, p.hosts, req.syncDir !== "");
@@ -964,11 +964,11 @@ export function createWorkspaceService(ctrl: ControllerContext): {
 					if (gws.state === WorkspaceState.FAILED) {
 						await releaseFailedWorkspace(w.id);
 					} else if (gws.state === WorkspaceState.RELEASED) {
-						ctrl.store.releaseWorkspaceRow(w.id, ctrl.now());
+						ctrl.store.workspaces.release(w.id, ctrl.now());
 					}
 				} catch (err) {
 					if (codeOf(err) === ErrorCode.NotFound) {
-						ctrl.store.reconcileMissingWorkspace(w.id, ctrl.now());
+						ctrl.store.workspaces.reconcileMissing(w.id, ctrl.now());
 					}
 				}
 			}
@@ -1003,14 +1003,14 @@ export function createWorkspaceService(ctrl: ControllerContext): {
 					// The worker may still finish creating the workspace after we aborted
 					// the RPC; mark it released instead of dropping the row so toRelease()
 					// reaps it on the worker's next heartbeat.
-					ctrl.store.releaseWorkspaceRow(fwd.id, ctrl.now());
+					ctrl.store.workspaces.release(fwd.id, ctrl.now());
 				} else {
-					ctrl.store.dropWorkspace(fwd.id);
+					ctrl.store.workspaces.drop(fwd.id);
 				}
 				throw fromWorkerError(node.host, err);
 			}
-			const wRow = ctrl.store.getWorkspace(fwd.id);
-			const sessNow = ctrl.store.tryGetSession(sess.id);
+			const wRow = ctrl.store.workspaces.get(fwd.id);
+			const sessNow = ctrl.store.sessions.tryGet(sess.id);
 			if (wRow.released || (sessNow && sessNow.endedAt !== undefined)) {
 				try {
 					await ctrl.tunnel.callUnary(
@@ -1025,7 +1025,7 @@ export function createWorkspaceService(ctrl: ControllerContext): {
 				} catch {
 					// Worker's next heartbeat picks up the released workspace row via toRelease().
 				}
-				ctrl.store.releaseWorkspaceRow(fwd.id, ctrl.now());
+				ctrl.store.workspaces.release(fwd.id, ctrl.now());
 				if (sessNow && sessNow.endedAt !== undefined) {
 					throw sessionEndedError(sess.id, sessNow.endReason);
 				}
@@ -1057,7 +1057,7 @@ export function createWorkspaceService(ctrl: ControllerContext): {
 		const { host, row, project } = workspaceOf(req.workspaceId);
 		const fwd = clone(RunCommandRequestSchema, req);
 		if (!fwd.id) fwd.id = newId();
-		ctrl.store.addCommand(fwd.id, row.session, row.node, row.id, ctrl.now());
+		ctrl.store.commands.add(fwd.id, row.session, row.node, row.id, ctrl.now());
 		try {
 			const cmd = await ctrl.tunnel.callUnary(
 				row.node,
@@ -1071,7 +1071,7 @@ export function createWorkspaceService(ctrl: ControllerContext): {
 			cmd.project = project;
 			return cmd;
 		} catch (err) {
-			ctrl.store.dropCommand(fwd.id);
+			ctrl.store.commands.drop(fwd.id);
 			throw fromWorkerError(host, err);
 		}
 	}
@@ -1083,17 +1083,17 @@ export function createWorkspaceService(ctrl: ControllerContext): {
 		procedure: string,
 		call: (nodeId: string, host: string, timeoutMs: number) => Promise<Command>,
 	): Promise<Command> {
-		const route = ctrl.store.lookupCommand(id);
+		const route = ctrl.store.commands.lookup(id);
 		if (reqSession && reqSession !== route.session) {
 			throw hotbedError(ErrorCode.NotFound, `session ${reqSession} has no command ${id}`);
 		}
-		if (route.session) ctrl.store.touchSession(route.session, ctrl.now());
+		if (route.session) ctrl.store.sessions.touch(route.session, ctrl.now());
 		const { host } = ensureOnlineWorker(route.node);
 		const timeout = diagnose ? DIAGNOSE_RPC_TIMEOUT_MS : WORKER_RPC_TIMEOUT_MS;
 		try {
 			const res = await call(route.node, host, timeout);
 			if (route.session) {
-				const sess = ctrl.store.tryGetSession(route.session);
+				const sess = ctrl.store.sessions.tryGet(route.session);
 				if (sess) res.project = sess.project;
 			}
 			return res;
@@ -1157,8 +1157,8 @@ export function createWorkspaceService(ctrl: ControllerContext): {
 		},
 
 		async listWorkspaces(req) {
-			const sess = req.sessionId ? ctrl.store.liveSession(req.sessionId, ctrl.now()) : null;
-			if (req.project) ctrl.store.getProject(req.project);
+			const sess = req.sessionId ? ctrl.store.sessions.live(req.sessionId, ctrl.now()) : null;
+			if (req.project) ctrl.store.projects.get(req.project);
 			const nvs = ctrl.views();
 			const viewIds: string[] = [];
 			for (const nv of nvs) {
@@ -1166,7 +1166,7 @@ export function createWorkspaceService(ctrl: ControllerContext): {
 					if (ws.state !== WorkspaceState.RELEASED) viewIds.push(ws.id);
 				}
 			}
-			const releasedWS = ctrl.store.releasedWorkspaces(viewIds);
+			const releasedWS = ctrl.store.workspaces.released(viewIds);
 			const out: Workspace[] = [];
 			const seen = new Set<string>();
 			for (const nv of nvs) {
@@ -1186,7 +1186,7 @@ export function createWorkspaceService(ctrl: ControllerContext): {
 					out.push(ws);
 				} catch (err) {
 					if (codeOf(err) === ErrorCode.NotFound && !ctrl.creatingWS.has(id)) {
-						ctrl.store.reconcileMissingWorkspace(id, ctrl.now());
+						ctrl.store.workspaces.reconcileMissing(id, ctrl.now());
 					}
 				}
 			}
@@ -1290,13 +1290,13 @@ export function createWorkspaceService(ctrl: ControllerContext): {
 			let route: CommandRoute | null = null;
 			let err: unknown = null;
 			try {
-				route = ctrl.store.lookupCommand(req.id);
+				route = ctrl.store.commands.lookup(req.id);
 			} catch (e) {
 				if (codeOf(e) !== ErrorCode.NotFound) throw e;
 				err = e;
 			}
 			if (route) {
-				if (route.session) ctrl.store.touchSession(route.session, ctrl.now());
+				if (route.session) ctrl.store.sessions.touch(route.session, ctrl.now());
 				let host = route.node;
 				try {
 					host = ensureOnlineWorker(route.node).host;
@@ -1311,7 +1311,7 @@ export function createWorkspaceService(ctrl: ControllerContext): {
 					);
 					cmd.nodeAddr = ctrl.nodeAddr(cmd.nodeId);
 					if (route.session) {
-						const sess = ctrl.store.tryGetSession(route.session);
+						const sess = ctrl.store.sessions.tryGet(route.session);
 						if (sess) cmd.project = sess.project;
 					}
 					return cmd;
@@ -1324,7 +1324,7 @@ export function createWorkspaceService(ctrl: ControllerContext): {
 				const vcmd = viewCommandById(req.id);
 				if (vcmd) return vcmd;
 				if (!route?.histChecked) {
-					const f = ctrl.store.finishedCommand(req.id);
+					const f = ctrl.store.commands.finished(req.id);
 					if (f) {
 						const c = commandOfHistory(f);
 						c.nodeAddr = ctrl.nodeAddr(f.nodeId);
@@ -1339,7 +1339,7 @@ export function createWorkspaceService(ctrl: ControllerContext): {
 			}
 			if (codeOf(err) === ErrorCode.NotFound) {
 				if (!route?.histChecked) {
-					const f = ctrl.store.finishedCommand(req.id);
+					const f = ctrl.store.commands.finished(req.id);
 					if (f) {
 						const c = commandOfHistory(f);
 						c.nodeAddr = ctrl.nodeAddr(f.nodeId);
@@ -1353,7 +1353,7 @@ export function createWorkspaceService(ctrl: ControllerContext): {
 					if (bc) return bc;
 				}
 				if (route?.node) {
-					const sess = route.session ? ctrl.store.tryGetSession(route.session) : null;
+					const sess = route.session ? ctrl.store.sessions.tryGet(route.session) : null;
 					return create(CommandSchema, {
 						id: req.id,
 						nodeId: route.node,
@@ -1378,10 +1378,10 @@ export function createWorkspaceService(ctrl: ControllerContext): {
 			}
 			let sess: Session | null = null;
 			if (req.sessionId) {
-				ctrl.store.touchSession(req.sessionId, ctrl.now());
-				sess = ctrl.store.tryGetSession(req.sessionId);
+				ctrl.store.sessions.touch(req.sessionId, ctrl.now());
+				sess = ctrl.store.sessions.tryGet(req.sessionId);
 			}
-			if (req.project) ctrl.store.getProject(req.project);
+			if (req.project) ctrl.store.projects.get(req.project);
 			const nvs = ctrl.views();
 			let targetNodes: Set<string> | null = null;
 			if (req.sessionId) {
@@ -1411,12 +1411,12 @@ export function createWorkspaceService(ctrl: ControllerContext): {
 			let picked = [...endedView];
 			let total = endedView.length;
 			if (req.ended) {
-				const { items, total: kept } = ctrl.store.historyMatching(
+				const { items, total: kept } = ctrl.store.commands.historyMatching(
 					{ project: req.project, session: req.sessionId, match: req.match },
 					limit,
 				);
 				const viewIds = endedView.map((c) => c.id);
-				const inHist = ctrl.store.inHistory(viewIds);
+				const inHist = ctrl.store.commands.inHistory(viewIds);
 				total = kept + viewIds.filter((id) => !inHist.has(id)).length;
 				const seen = new Set(viewIds);
 				for (const h of items) {
@@ -1577,7 +1577,7 @@ export function createWorkspaceService(ctrl: ControllerContext): {
 					lineTimestamps: streamed.lineTimestamps.map((t) => BigInt(t)),
 				});
 			}
-			const finished = ctrl.store.finishedCommand(req.id);
+			const finished = ctrl.store.commands.finished(req.id);
 			let cached = finished ? await ctrl.commands.getOutputLog(req.id) : null;
 			if (cached && (!cached.cut || cached.tail >= effectiveTail)) {
 				return sliceCommandLog(cached.log, effectiveTail);
@@ -1593,7 +1593,7 @@ export function createWorkspaceService(ctrl: ControllerContext): {
 					CommandLogSchema,
 					WORKER_RPC_TIMEOUT_MS,
 				);
-				if (finished || ctrl.store.finishedCommand(req.id)) {
+				if (finished || ctrl.store.commands.finished(req.id)) {
 					await ctrl.commands.saveOutputLog(req.id, effectiveTail, res, ctrl.now());
 				}
 				return res;
@@ -1606,8 +1606,8 @@ export function createWorkspaceService(ctrl: ControllerContext): {
 				}
 				let host = "";
 				try {
-					const route = ctrl.store.lookupCommand(req.id);
-					host = ctrl.store.getNode(route.node).node.hostname;
+					const route = ctrl.store.commands.lookup(req.id);
+					host = ctrl.store.fleet.get(route.node).node.hostname;
 				} catch {
 					// Command or node not found; rethrow original error below.
 				}
@@ -1619,14 +1619,14 @@ export function createWorkspaceService(ctrl: ControllerContext): {
 		},
 
 		async queryOutput(req, ctx) {
-			const route = ctrl.store.lookupCommand(req.id);
-			if (route.session) ctrl.store.touchSession(route.session, ctrl.now());
+			const route = ctrl.store.commands.lookup(req.id);
+			if (route.session) ctrl.store.sessions.touch(route.session, ctrl.now());
 			const { host } = ensureOnlineWorker(route.node);
 			const nodeId = route.node;
 			const backfillFinished = (out: MessageShape<typeof OutputQuerySchema>) => {
 				if (out.state === CommandState.UNSPECIFIED) {
 					// Its worker has forgotten it, ended: history has how.
-					const f = ctrl.store.finishedCommand(req.id);
+					const f = ctrl.store.commands.finished(req.id);
 					if (f) {
 						out.state = f.state;
 						out.exitCode = f.exitCode;
@@ -1684,7 +1684,7 @@ export function createWorkspaceService(ctrl: ControllerContext): {
 					if (out.waited !== "timeout" || Date.now() >= deadline || ctx.signal.aborted) {
 						return out;
 					}
-					if (route.session) ctrl.store.touchSession(route.session, ctrl.now());
+					if (route.session) ctrl.store.sessions.touch(route.session, ctrl.now());
 				} catch (err) {
 					const werr = fromWorkerError(host, err);
 					if (werr.code === ErrorCode.WorkerUnreachable && werr.retryable && !ctx.signal.aborted) {
@@ -1727,7 +1727,7 @@ export function createWorkspaceService(ctrl: ControllerContext): {
 		},
 
 		async sendInput(req) {
-			const route = ctrl.store.lookupCommand(req.id);
+			const route = ctrl.store.commands.lookup(req.id);
 			if (req.sessionId && req.sessionId !== route.session) {
 				throw hotbedError(ErrorCode.NotFound, `session ${req.sessionId} has no command ${req.id}`);
 			}
@@ -1779,7 +1779,7 @@ export function createWorkspaceService(ctrl: ControllerContext): {
 				yield chunk;
 				if (session && Date.now() - touched > 60_000) {
 					touched = Date.now();
-					ctrl.store.touchSession(session, ctrl.now());
+					ctrl.store.sessions.touch(session, ctrl.now());
 				}
 			}
 		},
@@ -1799,7 +1799,7 @@ export function createWorkspaceService(ctrl: ControllerContext): {
 				yield chunk;
 				if (session && Date.now() - touched > 60_000) {
 					touched = Date.now();
-					ctrl.store.touchSession(session, ctrl.now());
+					ctrl.store.sessions.touch(session, ctrl.now());
 				}
 			}
 		},
@@ -1829,7 +1829,7 @@ export function createWorkspaceService(ctrl: ControllerContext): {
 						WORKER_RPC_TIMEOUT_MS,
 					);
 				} catch (err) {
-					const f = ctrl.store.finishedCommand(id);
+					const f = ctrl.store.commands.finished(id);
 					if (f) {
 						return create(CommandProfileSchema, {
 							commandId: id,
@@ -1891,7 +1891,7 @@ export function createWorkspaceService(ctrl: ControllerContext): {
 
 			const target = req.source.trim();
 			if (target === "controller") {
-				return ctrl.store.queryDaemonLogs(
+				return ctrl.store.daemonLogs.query(
 					ctrl.controllerName,
 					req.level,
 					req.query,
@@ -1902,7 +1902,7 @@ export function createWorkspaceService(ctrl: ControllerContext): {
 				);
 			}
 
-			const rows = ctrl.store.listNodes();
+			const rows = ctrl.store.fleet.list();
 			if (target) {
 				const match = rows.find((r) => r.node.hostname === target || r.node.id === target);
 				if (!match) {
@@ -1924,7 +1924,7 @@ export function createWorkspaceService(ctrl: ControllerContext): {
 				return res;
 			}
 
-			const ctrlRes = ctrl.store.queryDaemonLogs(
+			const ctrlRes = ctrl.store.daemonLogs.query(
 				ctrl.controllerName,
 				req.level,
 				req.query,

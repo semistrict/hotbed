@@ -13,7 +13,7 @@ import {
 } from "./gen/hotbed/v1/hotbed_pb.ts";
 import { extractLogLines, type TimedOutputChunk } from "./settle.ts";
 import { num, str } from "./sql-values.ts";
-import { KEEP_HISTORY_MS, MAX_COMMAND_SAMPLES } from "./store.ts";
+import { KEEP_HISTORY_MS } from "./store/index.ts";
 
 // Bounded per-CommandDO output storage: keep up to 32 MiB total (2 MiB head + 30 MiB tail)
 // so a runaway command can never exhaust a Durable Object's SQLite quota.
@@ -21,6 +21,8 @@ const MAX_STORED_OUTPUT_BYTES = 32 << 20;
 const KEEP_HEAD_OUTPUT_BYTES = 2 << 20;
 const KEEP_TAIL_OUTPUT_BYTES = 28 << 20;
 const DEFAULT_LOG_LINES_MAX_BYTES = 1 << 20;
+/** How many of a command's activity samples are kept: its newest. */
+const MAX_COMMAND_SAMPLES = 32;
 
 export interface StoredOutputLog {
 	tail: number;

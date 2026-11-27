@@ -6,6 +6,7 @@ import {
 	AddFindingsResponseSchema,
 	DecideFindingsResponseSchema,
 	FindingDecision,
+	FindingDecisionSchema,
 	FindingSchema,
 	FindingSeverity,
 	FindingVerdict,
@@ -15,10 +16,12 @@ import {
 	QuickResponse,
 	ReviewerSchema,
 	ReviewerState,
+	ReviewerStateSchema,
 	ReviewEventSchema,
 	ReviewSchema,
 	ReviewService,
 	ReviewState,
+	ReviewStateSchema,
 	ReviewUpdate_What,
 	StampSchema,
 	type AddFindingsRequest,
@@ -29,6 +32,7 @@ import {
 	type Reviewer,
 	type Stamp,
 } from "../gen/hotbed/v1/hotbed_pb.ts";
+import { enumWord } from "../enums.ts";
 import { getCaller } from "../connect-adapter.ts";
 import {
 	inProject,
@@ -52,53 +56,8 @@ function isReviewEnded(st: ReviewState): boolean {
 	return st === ReviewState.DONE || st === ReviewState.FAILED || st === ReviewState.CANCELLED;
 }
 
-function reviewStateWord(st: ReviewState): string {
-	switch (st) {
-		case ReviewState.REQUESTED:
-			return "requested";
-		case ReviewState.IN_PROGRESS:
-			return "in progress";
-		case ReviewState.DONE:
-			return "done";
-		case ReviewState.FAILED:
-			return "failed";
-		case ReviewState.CANCELLED:
-			return "cancelled";
-		default:
-			return "unspecified";
-	}
-}
-
-function reviewerStateWord(st: ReviewerState): string {
-	switch (st) {
-		case ReviewerState.IN_PROGRESS:
-			return "in progress";
-		case ReviewerState.DONE:
-			return "done";
-		case ReviewerState.FAILED:
-			return "failed";
-		default:
-			return "unspecified";
-	}
-}
-
 function decisionWord(d: FindingDecision): string {
-	switch (d) {
-		case FindingDecision.OPEN:
-			return "open";
-		case FindingDecision.ACCEPTED:
-			return "accepted";
-		case FindingDecision.DISMISSED:
-			return "dismissed";
-		case FindingDecision.FIXED:
-			return "fixed";
-		case FindingDecision.INVALID:
-			return "invalid";
-		case FindingDecision.WONT_FIX:
-			return "won't fix";
-		default:
-			return "unspecified";
-	}
+	return d === FindingDecision.WONT_FIX ? "won't fix" : enumWord(FindingDecisionSchema, d);
 }
 
 function reviewerLabel(rv: Reviewer): string {
@@ -151,7 +110,7 @@ function resolveActiveReviewer(
 		if (rv.state !== ReviewerState.IN_PROGRESS) {
 			throw hotbedError(
 				ErrorCode.Conflict,
-				`reviewer #${rv.id} (${rv.model || "unknown"}) of review ${r.id} is ${reviewerStateWord(rv.state)}, ${stamped(rv.ended)}`,
+				`reviewer #${rv.id} (${rv.model || "unknown"}) of review ${r.id} is ${enumWord(ReviewerStateSchema, rv.state)}, ${stamped(rv.ended)}`,
 			);
 		}
 		return rv;
@@ -160,7 +119,7 @@ function resolveActiveReviewer(
 	if (inProgress.length === 0) {
 		throw hotbedError(
 			ErrorCode.Conflict,
-			`review ${r.id} is ${reviewStateWord(r.state)}, ${stamped(r.ended)}`,
+			`review ${r.id} is ${enumWord(ReviewStateSchema, r.state)}, ${stamped(r.ended)}`,
 		);
 	}
 	let mine = inProgress.filter((x) => x.session === by.session);
@@ -427,7 +386,7 @@ export function createReviewService(ctrl: ControllerContext): ServiceImpl<typeof
 			let implementer = clone(StampSchema, by);
 			const implSessionId = req.implementerSession.trim();
 			if (implSessionId && implSessionId !== req.sessionId) {
-				const implSess = ctrl.store.getSession(implSessionId);
+				const implSess = ctrl.store.sessions.get(implSessionId);
 				if (implSess.project !== project.name) {
 					throw hotbedError(
 						ErrorCode.Conflict,
@@ -473,7 +432,7 @@ export function createReviewService(ctrl: ControllerContext): ServiceImpl<typeof
 				implementer,
 				implementerModel,
 			});
-			return ctrl.store.addReview(project.name, review);
+			return ctrl.store.reviews.add(project.name, review);
 		},
 
 		listReviews(req) {
@@ -482,12 +441,12 @@ export function createReviewService(ctrl: ControllerContext): ServiceImpl<typeof
 			}
 			const project = ctrl.listedProject(req);
 			return create(ListReviewsResponseSchema, {
-				reviews: ctrl.store.listReviews(project, req.states, req.limit),
+				reviews: ctrl.store.reviews.list(project, req.states, req.limit),
 			});
 		},
 
 		getReview(req) {
-			return ctrl.store.getReview(req.id, true);
+			return ctrl.store.reviews.get(req.id, true);
 		},
 
 		startReview(req, ctx) {
@@ -511,7 +470,7 @@ export function createReviewService(ctrl: ControllerContext): ServiceImpl<typeof
 			// Idempotent retry: same session, same model, same subagent already in progress (unless --new).
 			if (!req.newReviewer) {
 				try {
-					const existing = ctrl.store.getReview(req.id, false);
+					const existing = ctrl.store.reviews.get(req.id, false);
 					if (existing.state !== ReviewState.CANCELLED) {
 						const same = existing.reviewers.find(
 							(rv) =>
@@ -521,7 +480,7 @@ export function createReviewService(ctrl: ControllerContext): ServiceImpl<typeof
 								rv.subagent === subagent,
 						);
 						if (same) {
-							return ctrl.store.getReview(req.id, true);
+							return ctrl.store.reviews.get(req.id, true);
 						}
 					}
 				} catch (err) {
@@ -529,7 +488,7 @@ export function createReviewService(ctrl: ControllerContext): ServiceImpl<typeof
 				}
 			}
 
-			ctrl.store.changeReview(req.id, "started", by, (r) => {
+			ctrl.store.reviews.change(req.id, "started", by, (r) => {
 				inProject("review", r.id, r.project, project, by);
 				if (r.state === ReviewState.CANCELLED) {
 					throw hotbedError(
@@ -554,7 +513,7 @@ export function createReviewService(ctrl: ControllerContext): ServiceImpl<typeof
 				r.model = joinReviewerModels(r.reviewers);
 				return { reviewerId: rv.id, stamp: by };
 			});
-			return ctrl.store.getReview(req.id, true);
+			return ctrl.store.reviews.get(req.id, true);
 		},
 
 		addFindings(req, ctx) {
@@ -585,7 +544,7 @@ export function createReviewService(ctrl: ControllerContext): ServiceImpl<typeof
 				subagent: req.subagent,
 				t3codeThreadId: req.t3codeThreadId,
 			});
-			const out = ctrl.store.addFindings(
+			const out = ctrl.store.reviews.addFindings(
 				req.reviewId,
 				by,
 				(r) => {
@@ -615,7 +574,7 @@ export function createReviewService(ctrl: ControllerContext): ServiceImpl<typeof
 				subagent: req.subagent,
 				t3codeThreadId: req.t3codeThreadId,
 			});
-			const r = ctrl.store.changeReview(req.id, what, by, (rev) => {
+			const r = ctrl.store.reviews.change(req.id, what, by, (rev) => {
 				const rv = resolveActiveReviewer(
 					rev,
 					by,
@@ -663,7 +622,7 @@ export function createReviewService(ctrl: ControllerContext): ServiceImpl<typeof
 				};
 			});
 			if (r.requested?.session) ctrl.sessionWakes.wake(r.requested.session);
-			return ctrl.store.getReview(req.id, true);
+			return ctrl.store.reviews.get(req.id, true);
 		},
 
 		cancelReview(req, ctx) {
@@ -672,12 +631,12 @@ export function createReviewService(ctrl: ControllerContext): ServiceImpl<typeof
 				subagent: req.subagent,
 				t3codeThreadId: req.t3codeThreadId,
 			});
-			ctrl.store.changeReview(req.id, "cancelled", by, (r) => {
+			ctrl.store.reviews.change(req.id, "cancelled", by, (r) => {
 				inProject("review", r.id, r.project, project, by);
 				if (isReviewEnded(r.state)) {
 					throw hotbedError(
 						ErrorCode.Conflict,
-						`review ${r.id} is ${reviewStateWord(r.state)} already, ${stamped(r.ended)}`,
+						`review ${r.id} is ${enumWord(ReviewStateSchema, r.state)} already, ${stamped(r.ended)}`,
 					);
 				}
 				const stamp = enrichImplementerStamp(r, by);
@@ -686,7 +645,7 @@ export function createReviewService(ctrl: ControllerContext): ServiceImpl<typeof
 				r.ended = stamp;
 				return { stamp };
 			});
-			return ctrl.store.getReview(req.id, true);
+			return ctrl.store.reviews.get(req.id, true);
 		},
 
 		decideFindings(req, ctx) {
@@ -724,40 +683,46 @@ export function createReviewService(ctrl: ControllerContext): ServiceImpl<typeof
 							subagent: req.subagent,
 							t3codeThreadId: req.t3codeThreadId,
 						});
-			const findings = ctrl.store.changeFindings(req.reviewId, req.findingIds, what, by, (r, f) => {
-				inProject("review", r.id, r.project, project, by);
-				const stamp = enrichImplementerStamp(r, by);
-				if (f.decision === req.decision) {
-					throw hotbedError(
-						ErrorCode.Conflict,
-						f.decided
-							? `finding ${f.id} is ${decisionWord(f.decision)} already, ${stamped(f.decided)}`
-							: `finding ${f.id} is ${decisionWord(f.decision)} already`,
-					);
-				}
-				if (f.decision === FindingDecision.FIXED && req.decision !== FindingDecision.OPEN) {
-					throw hotbedError(
-						ErrorCode.Conflict,
-						`finding ${f.id} is fixed, in ${f.fix?.commit ?? ""}: it is handled`,
-					).withSuggestion(`hotbed review reopen ${r.id} ${f.id}, if the fix did not hold`);
-				}
-				if (
-					req.decision === FindingDecision.FIXED &&
-					(f.decision === FindingDecision.DISMISSED ||
-						f.decision === FindingDecision.INVALID ||
-						f.decision === FindingDecision.WONT_FIX)
-				) {
-					throw hotbedError(
-						ErrorCode.Conflict,
-						`finding ${f.id} is ${decisionWord(f.decision)}: reopen it before you mark it fixed`,
-					).withSuggestion(`hotbed review reopen ${r.id} ${f.id}`);
-				}
-				f.decision = req.decision;
-				f.decided = req.decision === FindingDecision.OPEN ? undefined : stamp;
-				f.fix = req.fix;
-				f.evidence = req.evidence;
-				return stamp;
-			});
+			const findings = ctrl.store.reviews.changeFindings(
+				req.reviewId,
+				req.findingIds,
+				what,
+				by,
+				(r, f) => {
+					inProject("review", r.id, r.project, project, by);
+					const stamp = enrichImplementerStamp(r, by);
+					if (f.decision === req.decision) {
+						throw hotbedError(
+							ErrorCode.Conflict,
+							f.decided
+								? `finding ${f.id} is ${decisionWord(f.decision)} already, ${stamped(f.decided)}`
+								: `finding ${f.id} is ${decisionWord(f.decision)} already`,
+						);
+					}
+					if (f.decision === FindingDecision.FIXED && req.decision !== FindingDecision.OPEN) {
+						throw hotbedError(
+							ErrorCode.Conflict,
+							`finding ${f.id} is fixed, in ${f.fix?.commit ?? ""}: it is handled`,
+						).withSuggestion(`hotbed review reopen ${r.id} ${f.id}, if the fix did not hold`);
+					}
+					if (
+						req.decision === FindingDecision.FIXED &&
+						(f.decision === FindingDecision.DISMISSED ||
+							f.decision === FindingDecision.INVALID ||
+							f.decision === FindingDecision.WONT_FIX)
+					) {
+						throw hotbedError(
+							ErrorCode.Conflict,
+							`finding ${f.id} is ${decisionWord(f.decision)}: reopen it before you mark it fixed`,
+						).withSuggestion(`hotbed review reopen ${r.id} ${f.id}`);
+					}
+					f.decision = req.decision;
+					f.decided = req.decision === FindingDecision.OPEN ? undefined : stamp;
+					f.fix = req.fix;
+					f.evidence = req.evidence;
+					return stamp;
+				},
+			);
 			return create(DecideFindingsResponseSchema, {
 				findings,
 				...(req.decision === FindingDecision.FIXED ? { reminder: MEMORY_FIX_REMINDER } : {}),
@@ -789,7 +754,7 @@ export function createReviewService(ctrl: ControllerContext): ServiceImpl<typeof
 				quick: req.quick,
 				text: req.text,
 			});
-			const saved = ctrl.store.addReviewResponse(ev, req.after, (r, f) => {
+			const saved = ctrl.store.reviews.addResponse(ev, req.after, (r, f) => {
 				inProject("review", r.id, r.project, project, by);
 				if (f?.decision === FindingDecision.FIXED) {
 					throw hotbedError(
@@ -801,14 +766,14 @@ export function createReviewService(ctrl: ControllerContext): ServiceImpl<typeof
 				}
 				ev.by = enrichImplementerStamp(r, by);
 			});
-			const r = ctrl.store.getReview(req.reviewId, false);
+			const r = ctrl.store.reviews.get(req.reviewId, false);
 			if (r.requested?.session) ctrl.sessionWakes.wake(r.requested.session);
 			return saved;
 		},
 
 		listResponses(req) {
-			ctrl.store.getReview(req.reviewId, false);
-			const events = ctrl.store.reviewEventsAfter(req.reviewId, req.after);
+			ctrl.store.reviews.get(req.reviewId, false);
+			const events = ctrl.store.reviews.eventsAfter(req.reviewId, req.after);
 			let cursor = req.after;
 			const responses = [];
 			for (const e of events) {

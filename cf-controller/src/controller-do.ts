@@ -56,7 +56,7 @@ import { createIssueService } from "./services/issues.ts";
 import { createScheduleService, type ScheduleRunner } from "./services/schedules.ts";
 import { createSessionService } from "./services/sessions.ts";
 import { createWorkspaceService } from "./services/workspaces.ts";
-import { ControllerStore } from "./store.ts";
+import { ControllerStore } from "./store/index.ts";
 import { QuestionBridgeHub } from "./question-bridge.ts";
 import type { TenantRegistryDO } from "./tenant-registry-do.ts";
 import { WorkerTunnelHub } from "./tunnel.ts";
@@ -146,7 +146,7 @@ export class ControllerDO extends DurableObject<ControllerEnv> {
 			await migrate(this.db, migrations);
 
 			this.store = new ControllerStore(this.ctx.storage, this.db);
-			this.store.autoApproveLegacyProposedMemories();
+			this.store.memories.autoApproveLegacyProposed();
 			this.tunnel = new WorkerTunnelHub(this.ctx);
 			this.questionBridge = new QuestionBridgeHub(this.ctx);
 			this.initRuntime();
@@ -154,23 +154,23 @@ export class ControllerDO extends DurableObject<ControllerEnv> {
 	}
 
 	private initRuntime(): void {
-		this.builds = new BuildDistributor(this.env, this.store, (p) => this.ctx.waitUntil(p));
+		this.builds = new BuildDistributor(this.env, this.store.meta, (p) => this.ctx.waitUntil(p));
 		if (this.testBuildConfig) {
 			this.builds.setTestConfig(this.testBuildConfig);
 		}
 
-		const orgId = this.store.getMeta(ORG_ID_META_KEY) ?? "";
+		const orgId = this.store.meta.get(ORG_ID_META_KEY) ?? "";
 		const defaultOrgId = (this.env.DEFAULT_ORG_ID ?? "").trim();
 		const allowEnvClusterId = !orgId || (defaultOrgId !== "" && orgId === defaultOrgId);
 		let clusterId = allowEnvClusterId ? (this.env.CLUSTER_ID ?? "").trim() : "";
 		if (!clusterId) {
-			clusterId = this.store.getMeta(CLUSTER_ID_META_KEY) ?? "";
+			clusterId = this.store.meta.get(CLUSTER_ID_META_KEY) ?? "";
 			if (!clusterId) {
 				clusterId = randomHex(8);
-				this.store.setMeta(CLUSTER_ID_META_KEY, clusterId);
+				this.store.meta.set(CLUSTER_ID_META_KEY, clusterId);
 			}
 		}
-		const rawTenant = this.store.getMeta(CLADEFS_TENANT_ID_META_KEY);
+		const rawTenant = this.store.meta.get(CLADEFS_TENANT_ID_META_KEY);
 		const cladefsTenantId =
 			rawTenant !== null && /^\d+$/.test(rawTenant) ? BigInt(rawTenant) : null;
 		const controllerName = (this.env.CONTROLLER_NAME ?? "").trim() || "cloudflare-do";
@@ -192,7 +192,7 @@ export class ControllerDO extends DurableObject<ControllerEnv> {
 		this.ctrl.nowFn = () => Date.now() + this.nowOffsetMs;
 		const initialSignupCode = (this.env.INITIAL_SIGNUP_CODE ?? "").trim();
 		if (initialSignupCode) {
-			this.store.seedInitialSignupCode(initialSignupCode, this.ctrl.now());
+			this.store.tokens.seedInitialSignupCode(initialSignupCode, this.ctrl.now());
 		}
 		if (this.testPlacementWaitCapMs !== undefined) {
 			this.ctrl.placementWaitCapMs = this.testPlacementWaitCapMs;
@@ -227,11 +227,11 @@ export class ControllerDO extends DurableObject<ControllerEnv> {
 
 	private desiredAlarmDelayMs(): number | null {
 		const hasActiveWork =
-			this.store.listSchedules("").some((s) => !s.paused) ||
-			this.store.liveSessionsByProject().size > 0 ||
+			this.store.schedules.list("").some((s) => !s.paused) ||
+			this.store.sessions.liveByProject().size > 0 ||
 			this.boardSvc.store.hasPendingWork(this.ctrl.now());
 		if (hasActiveWork) return ACTIVE_ALARM_MS;
-		const hasIdleWork = this.store.listNodes().length > 0 || this.builds.needsBackgroundRefresh();
+		const hasIdleWork = this.store.fleet.list().length > 0 || this.builds.needsBackgroundRefresh();
 		return hasIdleWork ? IDLE_ALARM_MS : null;
 	}
 
@@ -282,7 +282,7 @@ export class ControllerDO extends DurableObject<ControllerEnv> {
 			try {
 				await step.fn();
 			} catch (err) {
-				this.store.logDaemon(
+				this.store.daemonLogs.log(
 					step.level,
 					step.name,
 					{ err: err instanceof Error ? err.message : String(err) },
@@ -305,7 +305,7 @@ export class ControllerDO extends DurableObject<ControllerEnv> {
 
 	override webSocketMessage(ws: WebSocket, message: string | ArrayBuffer): void {
 		if (this.questionBridge.isBridgeSocket(ws)) {
-			this.questionBridge.handleMessage(ws, message, () => this.store.listT3OutboxQuestions());
+			this.questionBridge.handleMessage(ws, message, () => this.store.questions.t3Outbox());
 			return;
 		}
 		this.tunnel.handleMessage(ws, message);
@@ -348,12 +348,12 @@ export class ControllerDO extends DurableObject<ControllerEnv> {
 			isDefaultHint ||
 			(Boolean(defaultOrgId) && this.ctrl.orgId === defaultOrgId) ||
 			(!this.ctrl.orgId && !defaultOrgId) ||
-			this.store.hasLegacyTenantZeroData();
+			this.store.cladefs.hasLegacyTenantZeroData();
 		const orgKey = this.ctrl.orgId || (isDefault ? "default" : "");
 		if (!orgKey) {
 			return this.ctrl.cladefsTenantId;
 		}
-		const recordedOrgKey = this.store.getMeta(CLADEFS_TENANT_ORG_KEY_META_KEY) ?? "";
+		const recordedOrgKey = this.store.meta.get(CLADEFS_TENANT_ORG_KEY_META_KEY) ?? "";
 		if (this.ctrl.cladefsTenantId !== null) {
 			if (recordedOrgKey === orgKey || !this.env.TENANT_REGISTRY) {
 				return this.ctrl.cladefsTenantId;
@@ -374,8 +374,8 @@ export class ControllerDO extends DurableObject<ControllerEnv> {
 		const registry = this.env.TENANT_REGISTRY.getByName(TENANT_REGISTRY_DO_NAME);
 		const assignedStr = await registry.assignTenant(orgKey, { isDefault });
 		const assigned = BigInt(assignedStr);
-		this.store.setMeta(CLADEFS_TENANT_ID_META_KEY, assignedStr);
-		this.store.setMeta(CLADEFS_TENANT_ORG_KEY_META_KEY, orgKey);
+		this.store.meta.set(CLADEFS_TENANT_ID_META_KEY, assignedStr);
+		this.store.meta.set(CLADEFS_TENANT_ORG_KEY_META_KEY, orgKey);
 		this.ctrl.cladefsTenantId = assigned;
 		return assigned;
 	}
@@ -383,7 +383,7 @@ export class ControllerDO extends DurableObject<ControllerEnv> {
 	private async authRequest(request: Request, opts?: { allowJoinToken?: boolean }) {
 		const reqOrgId = (request.headers.get(INTERNAL_ORG_HEADER) ?? "").trim();
 		const isDefaultDo = request.headers.get(INTERNAL_DEFAULT_DO_HEADER) === "1";
-		const caller = await authenticateRequest(request, this.env, this.store, {
+		const caller = await authenticateRequest(request, this.env, this.store.tokens, {
 			allowJoinToken: opts?.allowJoinToken,
 			trustInternalHeader: true,
 			nowMs: this.ctrl.now(),
@@ -393,7 +393,7 @@ export class ControllerDO extends DurableObject<ControllerEnv> {
 		// requests with forged org-scoped tokens cannot poison an unbound DO.
 		const effectiveOrgId = reqOrgId || caller.orgId;
 		if (effectiveOrgId && !this.ctrl.orgId) {
-			this.store.setMeta(ORG_ID_META_KEY, effectiveOrgId);
+			this.store.meta.set(ORG_ID_META_KEY, effectiveOrgId);
 			this.ctrl.orgId = effectiveOrgId;
 		}
 		await this.ensureCladefsTenantId(isDefaultDo);
@@ -420,7 +420,7 @@ export class ControllerDO extends DurableObject<ControllerEnv> {
 	checkSignupApproved(userIdRaw: string): boolean {
 		const userId = userIdRaw.trim();
 		if (!userId) return false;
-		return this.store.isUserSignupApproved(userId);
+		return this.store.tokens.isUserSignupApproved(userId);
 	}
 
 	async redeemSignupCode(params: {
@@ -434,7 +434,7 @@ export class ControllerDO extends DurableObject<ControllerEnv> {
 		if (!userId) {
 			return { ok: false, code: ErrorCode.InvalidArgs, message: "userId is required", status: 400 };
 		}
-		if (this.store.isUserSignupApproved(userId)) {
+		if (this.store.tokens.isUserSignupApproved(userId)) {
 			return { ok: true, alreadyApproved: true };
 		}
 		if (!submitted) {
@@ -445,7 +445,7 @@ export class ControllerDO extends DurableObject<ControllerEnv> {
 				status: 403,
 			};
 		}
-		const active = this.store.listActiveSignupCodes();
+		const active = this.store.tokens.listActiveSignupCodes();
 		let matchedCode = "";
 		for (const candidate of active) {
 			if (await timingSafeStringEqual(submitted, candidate.code)) {
@@ -460,7 +460,7 @@ export class ControllerDO extends DurableObject<ControllerEnv> {
 				status: 403,
 			};
 		}
-		this.store.recordSignupRedemption(userId, email, matchedCode, this.ctrl.now());
+		this.store.tokens.recordSignupRedemption(userId, email, matchedCode, this.ctrl.now());
 		return { ok: true };
 	}
 
@@ -471,7 +471,7 @@ export class ControllerDO extends DurableObject<ControllerEnv> {
 			return { ok: false, code: ErrorCode.InvalidArgs, message: "jti is required", status: 400 };
 		}
 		const key = `cli_handoff:${jti}`;
-		if (this.store.getMeta(key) !== null) {
+		if (this.store.meta.get(key) !== null) {
 			return {
 				ok: false,
 				code: ErrorCode.Conflict,
@@ -479,7 +479,7 @@ export class ControllerDO extends DurableObject<ControllerEnv> {
 				status: 409,
 			};
 		}
-		this.store.setMeta(key, String(Math.max(exp, this.ctrl.now() + 120_000)));
+		this.store.meta.set(key, String(Math.max(exp, this.ctrl.now() + 120_000)));
 		return { ok: true };
 	}
 
@@ -507,7 +507,7 @@ export class ControllerDO extends DurableObject<ControllerEnv> {
 		}
 		const effectiveOrgId = reqOrgId || params.caller.orgId;
 		if (effectiveOrgId && !this.ctrl.orgId) {
-			this.store.setMeta(ORG_ID_META_KEY, effectiveOrgId);
+			this.store.meta.set(ORG_ID_META_KEY, effectiveOrgId);
 			this.ctrl.orgId = effectiveOrgId;
 		}
 		await this.ensureCladefsTenantId(false);
@@ -515,7 +515,7 @@ export class ControllerDO extends DurableObject<ControllerEnv> {
 		if (!userId) {
 			return { ok: false, code: ErrorCode.InvalidArgs, message: "userId is required", status: 400 };
 		}
-		const revoked = this.store.revokeApiTokensForUser(userId, this.ctrl.now());
+		const revoked = this.store.tokens.revokeApiTokensForUser(userId, this.ctrl.now());
 		return { ok: true, revoked };
 	}
 
@@ -626,11 +626,11 @@ export class ControllerDO extends DurableObject<ControllerEnv> {
 		let nodeId: string;
 		let host: string;
 		try {
-			const row = this.store.getWorkspace(workspace);
+			const row = this.store.workspaces.get(workspace);
 			if (row.released)
 				throw new HotbedError(ErrorCode.NotFound, `workspace ${workspace} was released`);
 			nodeId = row.node;
-			host = this.store.getNode(nodeId).node.hostname || nodeId;
+			host = this.store.fleet.get(nodeId).node.hostname || nodeId;
 		} catch (err) {
 			return Response.json(fromUnknownError(err).toJSON(), { status: 404 });
 		}
@@ -773,7 +773,7 @@ export class ControllerDO extends DurableObject<ControllerEnv> {
 				login: caller.login,
 				connectedAt: this.ctrl.now(),
 			},
-			this.store.listT3OutboxQuestions(),
+			this.store.questions.t3Outbox(),
 		);
 		return new Response(null, { status: 101, webSocket: client });
 	}
@@ -856,7 +856,7 @@ export class ControllerDO extends DurableObject<ControllerEnv> {
 				}
 				const token = formatOrgToken("hbw", this.ctrl.orgId || caller.orgId);
 				const hash = await sha256Hex(token);
-				this.store.putWorkerToken(hash, nodeId, hostname, this.ctrl.now());
+				this.store.tokens.putWorkerToken(hash, nodeId, hostname, this.ctrl.now());
 				return Response.json(
 					{ token, nodeId, hostname, orgId: this.ctrl.orgId || undefined },
 					{ status: 201 },
@@ -885,7 +885,7 @@ export class ControllerDO extends DurableObject<ControllerEnv> {
 				if (pathname === "/admin/join-tokens" && request.method === "GET") {
 					return Response.json({
 						orgId: this.ctrl.orgId || undefined,
-						tokens: this.store.listJoinTokens(),
+						tokens: this.store.tokens.listJoinTokens(),
 					});
 				}
 				if (pathname === "/admin/join-tokens" && request.method === "POST") {
@@ -915,7 +915,7 @@ export class ControllerDO extends DurableObject<ControllerEnv> {
 					const id = `jt_${randomHex(8)}`;
 					const token = formatOrgToken("hbj", this.ctrl.orgId || caller.orgId);
 					const tokenHash = await sha256Hex(token);
-					this.store.putJoinToken({
+					this.store.tokens.putJoinToken({
 						id,
 						tokenHash,
 						label,
@@ -953,7 +953,7 @@ export class ControllerDO extends DurableObject<ControllerEnv> {
 							{ status: 400 },
 						);
 					}
-					if (!id || !this.store.revokeJoinToken(id, this.ctrl.now())) {
+					if (!id || !this.store.tokens.revokeJoinToken(id, this.ctrl.now())) {
 						return Response.json(
 							{ code: ErrorCode.NotFound, message: `no join token ${id}` },
 							{ status: 404 },
@@ -985,7 +985,7 @@ export class ControllerDO extends DurableObject<ControllerEnv> {
 				}
 				const isAdmin = caller.orgRole === "admin" || caller.orgRole === "owner" || !caller.userId;
 				if (pathname === "/admin/api-tokens" && request.method === "GET") {
-					const tokens = this.store.listApiTokens(isAdmin ? undefined : caller.userId);
+					const tokens = this.store.tokens.listApiTokens(isAdmin ? undefined : caller.userId);
 					return Response.json({
 						orgId: this.ctrl.orgId || undefined,
 						tokens,
@@ -1015,7 +1015,7 @@ export class ControllerDO extends DurableObject<ControllerEnv> {
 					const id = `at_${randomHex(8)}`;
 					const token = formatOrgToken("hbu", this.ctrl.orgId || caller.orgId);
 					const tokenHash = await sha256Hex(token);
-					this.store.putApiToken({
+					this.store.tokens.putApiToken({
 						id,
 						tokenHash,
 						name,
@@ -1048,7 +1048,7 @@ export class ControllerDO extends DurableObject<ControllerEnv> {
 							{ status: 400 },
 						);
 					}
-					const existing = id ? this.store.getApiToken(id) : null;
+					const existing = id ? this.store.tokens.getApiToken(id) : null;
 					if (!existing) {
 						return Response.json(
 							{ code: ErrorCode.NotFound, message: `no api token ${id}` },
@@ -1061,7 +1061,7 @@ export class ControllerDO extends DurableObject<ControllerEnv> {
 							{ status: 403 },
 						);
 					}
-					this.store.revokeApiToken(id, this.ctrl.now());
+					this.store.tokens.revokeApiToken(id, this.ctrl.now());
 					return Response.json({ ok: true, id });
 				}
 				return new Response("Method Not Allowed", { status: 405 });
@@ -1113,8 +1113,8 @@ export class ControllerDO extends DurableObject<ControllerEnv> {
 				}
 				if (pathname === "/admin/signup-codes" && request.method === "GET") {
 					return Response.json({
-						codes: this.store.listSignupCodes(),
-						approvedUsersCount: this.store.countApprovedUsers(),
+						codes: this.store.tokens.listSignupCodes(),
+						approvedUsersCount: this.store.tokens.countApprovedUsers(),
 					});
 				}
 				if (pathname === "/admin/signup-codes" && request.method === "POST") {
@@ -1149,7 +1149,7 @@ export class ControllerDO extends DurableObject<ControllerEnv> {
 						maxUses = body.maxUses;
 					}
 					const nowMs = this.ctrl.now();
-					this.store.putSignupCode({ code, label, maxUses, createdAt: nowMs });
+					this.store.tokens.putSignupCode({ code, label, maxUses, createdAt: nowMs });
 					return Response.json({ code, label, maxUses, createdAt: nowMs }, { status: 201 });
 				}
 				if (pathname.startsWith("/admin/signup-codes/") && request.method === "DELETE") {
@@ -1160,7 +1160,7 @@ export class ControllerDO extends DurableObject<ControllerEnv> {
 							{ status: 400 },
 						);
 					}
-					if (!this.store.revokeSignupCode(code, this.ctrl.now())) {
+					if (!this.store.tokens.revokeSignupCode(code, this.ctrl.now())) {
 						return Response.json(
 							{ code: ErrorCode.NotFound, message: `no sign-up code ${code}` },
 							{ status: 404 },
@@ -1366,7 +1366,7 @@ export class ControllerDO extends DurableObject<ControllerEnv> {
 			};
 			const lvl =
 				(body.level ?? "").toLowerCase() === "error" ? DaemonLogLevel.ERROR : DaemonLogLevel.WARN;
-			this.store.logDaemon(lvl, body.msg ?? "", body.attrs, body.at ?? this.ctrl.now());
+			this.store.daemonLogs.log(lvl, body.msg ?? "", body.attrs, body.at ?? this.ctrl.now());
 			return Response.json({ ok: true });
 		}
 		if (sub === "seed" && request.method === "POST") {
@@ -1383,7 +1383,7 @@ export class ControllerDO extends DurableObject<ControllerEnv> {
 				run?: { schedule: string; sessionId: string; startedAt?: number; outcome?: number };
 			};
 			if (body.project) {
-				this.store.addProject(
+				this.store.projects.add(
 					body.project.name,
 					body.project.remotes ?? [],
 					create(StampSchema, {
@@ -1393,7 +1393,7 @@ export class ControllerDO extends DurableObject<ControllerEnv> {
 				);
 			}
 			if (body.session) {
-				this.store.startSession(
+				this.store.sessions.start(
 					body.session.id,
 					body.session.agent,
 					body.session.project,
@@ -1402,7 +1402,7 @@ export class ControllerDO extends DurableObject<ControllerEnv> {
 				);
 			}
 			if (body.workspace) {
-				this.store.addLiveWorkspace(
+				this.store.workspaces.addLive(
 					body.workspace.id,
 					body.workspace.sessionId,
 					body.workspace.nodeId,
@@ -1411,7 +1411,7 @@ export class ControllerDO extends DurableObject<ControllerEnv> {
 				);
 			}
 			if (body.run) {
-				this.store.addScheduleRun(
+				this.store.schedules.addRun(
 					create(ScheduledRunSchema, {
 						schedule: body.run.schedule,
 						sessionId: body.run.sessionId,
@@ -1431,17 +1431,17 @@ export class ControllerDO extends DurableObject<ControllerEnv> {
 				case "connectedQuestionBridges":
 					return Response.json({ count: this.questionBridge.connectedCount() });
 				case "session": {
-					const s = this.store.tryGetSession(id);
+					const s = this.store.sessions.tryGet(id);
 					return Response.json({ found: Boolean(s), data: s ? toJson(SessionSchema, s) : null });
 				}
 				case "sessionEvents": {
-					const evs = this.store.sessionEventsAfter(id, 0n);
+					const evs = this.store.sessions.eventsAfter(id, 0n);
 					return Response.json({
 						data: evs.map((e) => toJson(SessionEventSchema, e)),
 					});
 				}
 				case "nodeView": {
-					const cp = this.store.nodeCheckpoint(id);
+					const cp = this.store.nodeState.checkpoint(id);
 					return Response.json({
 						seq: Number(cp.seq),
 						bases: cp.bases.map((b) => toJson(BaseSchema, b)),
@@ -1450,14 +1450,14 @@ export class ControllerDO extends DurableObject<ControllerEnv> {
 					});
 				}
 				case "finished": {
-					const f = this.store.finishedCommand(id);
+					const f = this.store.commands.finished(id);
 					return Response.json({
 						found: Boolean(f),
 						data: f ? toJson(FinishedCommandSchema, f) : null,
 					});
 				}
 				case "history": {
-					const hist = this.store.historySince(0);
+					const hist = this.store.commands.historySince(0);
 					return Response.json({
 						data: hist.map((h) => toJson(FinishedCommandSchema, h)),
 					});
@@ -1470,7 +1470,7 @@ export class ControllerDO extends DurableObject<ControllerEnv> {
 					});
 				}
 				case "baseByCommand": {
-					const b = this.store.baseByCommand(id);
+					const b = this.store.commands.baseBuiltBy(id);
 					return Response.json({
 						found: Boolean(b),
 						nodeId: b?.nodeId ?? "",
@@ -1479,7 +1479,7 @@ export class ControllerDO extends DurableObject<ControllerEnv> {
 				}
 				case "command": {
 					try {
-						const route = this.store.lookupCommand(id);
+						const route = this.store.commands.lookup(id);
 						return Response.json({ found: true, session: route.session, node: route.node });
 					} catch {
 						return Response.json({ found: false });

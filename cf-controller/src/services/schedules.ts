@@ -46,14 +46,14 @@ export function createScheduleService(
 	}
 
 	function withRuns(sc: ScheduledCommand, limit: number): ScheduledCommand {
-		sc.runs = ctrl.store.listScheduleRuns(sc.name, limit);
+		sc.runs = ctrl.store.schedules.runs(sc.name, limit);
 		return sc;
 	}
 
 	function allSchedules(project: string): ScheduledCommand[] {
-		const all = ctrl.store.listSchedules(project);
+		const all = ctrl.store.schedules.list(project);
 		if (all.length === 0) return all;
-		const runsMap = ctrl.store.recentScheduleRuns(project, RUNS_LISTED);
+		const runsMap = ctrl.store.schedules.recentRuns(project, RUNS_LISTED);
 		for (const sc of all) {
 			sc.runs = runsMap.get(sc.name) ?? [];
 		}
@@ -64,7 +64,7 @@ export function createScheduleService(
 		for (let n = 1; n <= 20; n++) {
 			const id = n === 1 ? baseName : `${baseName}-${n}`;
 			try {
-				ctrl.store.startSession(id, agent, project, "", ctrl.now());
+				ctrl.store.sessions.start(id, agent, project, "", ctrl.now());
 				return id;
 			} catch (err) {
 				if (codeOf(err) !== ErrorCode.Conflict) throw err;
@@ -88,13 +88,13 @@ export function createScheduleService(
 		run.outcome = RunOutcome.NOT_STARTED;
 		run.reason = msg;
 		run.endedAt = ended;
-		const ok = ctrl.store.updateLiveScheduleRun(run);
-		if (!ok) return ctrl.store.getScheduleRun(run.id);
+		const ok = ctrl.store.schedules.updateLiveRun(run);
+		if (!ok) return ctrl.store.schedules.getRun(run.id);
 		if (run.sessionId) {
 			try {
 				await ctrl.endSession(run.sessionId, "its scheduled run could not start");
 			} catch (err) {
-				ctrl.store.logDaemon(
+				ctrl.store.daemonLogs.log(
 					DaemonLogLevel.ERROR,
 					"end session of run that could not start",
 					{ session: run.sessionId, err: String(err) },
@@ -120,17 +120,17 @@ export function createScheduleService(
 		});
 		let project;
 		try {
-			project = ctrl.store.getProject(sc.project);
+			project = ctrl.store.projects.get(sc.project);
 		} catch (err) {
 			const he = fromUnknownError(err);
 			run.outcome = RunOutcome.NOT_STARTED;
 			run.reason = he.message;
 			run.endedAt = BigInt(nowMs);
-			return { run: ctrl.store.addScheduleRun(run) };
+			return { run: ctrl.store.schedules.addRun(run) };
 		}
 		const sessName = `${sc.name}-${formatInTimeZone(atMs, timeZone, "session")}`;
 		run.sessionId = runSession(sessName, `schedule:${sc.name}`, project.name);
-		ctrl.store.addScheduleRun(run);
+		ctrl.store.schedules.addRun(run);
 		const key = String(run.id);
 		const abort = new AbortController();
 		ctrl.startingRuns.set(key, {
@@ -194,7 +194,7 @@ export function createScheduleService(
 			}
 
 			run.commandId = cmd.id;
-			const ok = ctrl.store.updateLiveScheduleRun(run);
+			const ok = ctrl.store.schedules.updateLiveRun(run);
 			if (!ok) {
 				try {
 					await ws.stopCommandInternal(
@@ -207,7 +207,7 @@ export function createScheduleService(
 				} catch {
 					// best effort
 				}
-				return ctrl.store.getScheduleRun(run.id);
+				return ctrl.store.schedules.getRun(run.id);
 			}
 			return run;
 		} catch (err) {
@@ -219,7 +219,7 @@ export function createScheduleService(
 
 	async function tickSchedules(): Promise<void> {
 		// 1. Fail interrupted starts whose DO was evicted mid-launch.
-		for (const run of ctrl.store.listAllLiveScheduleRuns()) {
+		for (const run of ctrl.store.schedules.allLiveRuns()) {
 			if (!run.commandId && !ctrl.startingRuns.has(String(run.id))) {
 				await notStarted(run, new Error("the controller stopped while starting it"));
 			}
@@ -235,7 +235,7 @@ export function createScheduleService(
 			key: string;
 			abort: AbortController;
 		}> = [];
-		for (const sc of ctrl.store.listSchedules("")) {
+		for (const sc of ctrl.store.schedules.list("")) {
 			if (sc.paused || sc.nextAt === undefined) continue;
 			const first = Number(sc.nextAt);
 			if (nowMs < first) continue;
@@ -256,12 +256,12 @@ export function createScheduleService(
 			if (nowMs - latest > SLOT_GRACE_MS) missed = slots;
 
 			const next = parsed.next(nowMs);
-			ctrl.store.setScheduleNextAt(sc.name, next !== null ? BigInt(next) : undefined);
+			ctrl.store.schedules.setNextAt(sc.name, next !== null ? BigInt(next) : undefined);
 
 			if (missed.length > 0) {
 				const ended = BigInt(nowMs);
 				const plural = missed.length === 1 ? "slot" : "slots";
-				ctrl.store.addScheduleRun(
+				ctrl.store.schedules.addRun(
 					create(ScheduledRunSchema, {
 						schedule: sc.name,
 						slotAt: BigInt(missed[missed.length - 1]),
@@ -273,14 +273,14 @@ export function createScheduleService(
 				);
 			}
 			if (missed.length < slots.length) {
-				const prev = ctrl.store.liveScheduleRun(sc.name);
+				const prev = ctrl.store.schedules.liveRun(sc.name);
 				if (prev) {
 					const how =
 						prev.slotAt !== undefined
 							? `due at ${formatInTimeZone(Number(prev.slotAt), parsed.timeZone, "hm")}`
 							: `started at ${formatInTimeZone(Number(prev.startedAt), parsed.timeZone, "hm")}`;
 					const nowBig = BigInt(nowMs);
-					ctrl.store.addScheduleRun(
+					ctrl.store.schedules.addRun(
 						create(ScheduledRunSchema, {
 							schedule: sc.name,
 							slotAt: BigInt(latest),
@@ -353,13 +353,13 @@ export function createScheduleService(
 			sc.runs = [];
 			sc.reminder = undefined;
 			try {
-				const old = ctrl.store.getSchedule(sc.name);
+				const old = ctrl.store.schedules.get(sc.name);
 				sc.createdAt = old.createdAt;
 			} catch {
 				// new schedule
 			}
 			planNext(sc);
-			ctrl.store.putSchedule(sc);
+			ctrl.store.schedules.put(sc);
 			if (sc.paused) {
 				cancelStartingRuns(sc.name, true, `schedule ${sc.name} was paused while starting`);
 			}
@@ -374,11 +374,11 @@ export function createScheduleService(
 		},
 
 		getSchedule(req) {
-			return withRuns(ctrl.store.getSchedule(req.name), RUNS_SHOWN);
+			return withRuns(ctrl.store.schedules.get(req.name), RUNS_SHOWN);
 		},
 
 		deleteSchedule(req) {
-			if (!ctrl.store.deleteSchedule(req.name)) {
+			if (!ctrl.store.schedules.delete(req.name)) {
 				throw hotbedError(ErrorCode.NotFound, `no scheduled command ${req.name}`).withSuggestion(
 					"hotbed schedule ls",
 				);
@@ -388,9 +388,9 @@ export function createScheduleService(
 		},
 
 		async runSchedule(req) {
-			const sc = ctrl.store.getSchedule(req.name);
+			const sc = ctrl.store.schedules.get(req.name);
 			await ctrl.settleRuns();
-			const prev = ctrl.store.liveScheduleRun(sc.name);
+			const prev = ctrl.store.schedules.liveRun(sc.name);
 			if (prev) {
 				throw hotbedError(
 					ErrorCode.Conflict,
@@ -406,11 +406,11 @@ export function createScheduleService(
 		},
 
 		pauseSchedule(req) {
-			const sc = ctrl.store.getSchedule(req.name);
+			const sc = ctrl.store.schedules.get(req.name);
 			sc.paused = req.paused;
 			sc.updatedAt = BigInt(ctrl.now());
 			planNext(sc);
-			ctrl.store.putSchedule(sc);
+			ctrl.store.schedules.put(sc);
 			if (sc.paused) {
 				cancelStartingRuns(sc.name, true, `schedule ${sc.name} was paused while starting`);
 			}

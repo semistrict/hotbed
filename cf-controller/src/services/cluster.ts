@@ -81,7 +81,7 @@ import { parseDurationMs } from "../durations.ts";
 import { buildFreshenSummary, isFreshenActive, quantile, withLiveState } from "../freshens.ts";
 import { canonicalRemote, parseBuildNumber, stepHash, validateRepoURL } from "../gitops.ts";
 import { isCommandLive } from "../wakeups.ts";
-import { KEEP_EVENTS, KEEP_PLACEMENTS_MS, type ForkRow, type SampleRow } from "../store.ts";
+import { KEEP_EVENTS, KEEP_PLACEMENTS_MS, type ForkRow, type SampleRow } from "../store/index.ts";
 import { applyOrgCladefsTenant, assertNoTenantOverride } from "../worker-config.ts";
 import type { ScheduleRunner } from "./schedules.ts";
 
@@ -476,8 +476,8 @@ export function createClusterService(
 	}
 
 	function filteredEvents(nodeId: string, kinds: string[], limit: number): ClusterEvent[] {
-		const all = ctrl.store.recentEvents(KEEP_EVENTS);
-		const hosts = new Map(ctrl.store.listNodes().map((r) => [r.node.id, r.node.hostname]));
+		const all = ctrl.store.fleet.recentEvents(KEEP_EVENTS);
+		const hosts = new Map(ctrl.store.fleet.list().map((r) => [r.node.id, r.node.hostname]));
 		const out: ClusterEvent[] = [];
 		for (const e of all) {
 			if (out.length >= limit) break;
@@ -490,7 +490,7 @@ export function createClusterService(
 	}
 
 	function filteredPlacements(nodeId: string, session: string, limit: number): PlacementDecision[] {
-		const all = ctrl.store.placementsSince(ctrl.now() - KEEP_PLACEMENTS_MS);
+		const all = ctrl.store.fleet.placementsSince(ctrl.now() - KEEP_PLACEMENTS_MS);
 		const out: PlacementDecision[] = [];
 		for (const d of all) {
 			if (out.length >= limit) break;
@@ -504,14 +504,14 @@ export function createClusterService(
 
 	async function ensureCommandOrDiagnosticsExist(id: string): Promise<void> {
 		if (await ctrl.commands.hasDiagnostics(id)) return;
-		ctrl.store.lookupCommand(id);
+		ctrl.store.commands.lookup(id);
 	}
 
 	return {
 		async join(_req, ctx) {
 			const caller = getCaller(ctx.values);
 			const nowMs = ctrl.now();
-			const node = ctrl.store.joinNode(
+			const node = ctrl.store.fleet.join(
 				caller.nodeId,
 				caller.hostname,
 				caller.login,
@@ -523,7 +523,7 @@ export function createClusterService(
 				const orgId = ctrl.orgId || caller.orgId;
 				workerToken = formatOrgToken("hbw", orgId);
 				const hash = await sha256Hex(workerToken);
-				ctrl.store.putWorkerToken(hash, node.id, node.hostname, nowMs);
+				ctrl.store.tokens.putWorkerToken(hash, node.id, node.hostname, nowMs);
 			}
 			return create(JoinResponseSchema, {
 				clusterId: ctrl.clusterId,
@@ -535,7 +535,7 @@ export function createClusterService(
 		async pushEvents(req, ctx) {
 			const caller = getCaller(ctx.values);
 			checkClusterId(caller.hostname, req.clusterId);
-			if (!ctrl.store.hasNode(caller.nodeId)) {
+			if (!ctrl.store.fleet.has(caller.nodeId)) {
 				throw hotbedError(ErrorCode.NotJoined, `node ${caller.nodeId} has not joined this cluster`);
 			}
 			// Persist per-command profiles and diagnostics to each command's own
@@ -566,7 +566,7 @@ export function createClusterService(
 			if (commandWrites.length > 0) {
 				await Promise.all(commandWrites);
 			}
-			const res = ctrl.store.pushEvents(
+			const res = ctrl.store.nodeState.push(
 				caller.nodeId,
 				req,
 				ctrl.now(),
@@ -589,10 +589,10 @@ export function createClusterService(
 			const caller = getCaller(ctx.values);
 			checkClusterId(caller.hostname, req.clusterId);
 			const nowMs = ctrl.now();
-			ctrl.store.beat(caller.nodeId, req, nowMs);
+			ctrl.store.fleet.beat(caller.nodeId, req, nowMs);
 			const holdsBases = reportsHeldBases(req, ctrl.follows(req.resources));
 			if (holdsBases) {
-				ctrl.store.recordHeldBases(
+				ctrl.store.cladefs.recordHeldBases(
 					caller.nodeId,
 					req.resources?.arch ?? "",
 					req.heldBases,
@@ -608,7 +608,7 @@ export function createClusterService(
 				try {
 					await ctrl.builds.ensureLoaded(nowMs);
 				} catch (err) {
-					ctrl.store.logDaemon(
+					ctrl.store.daemonLogs.log(
 						DaemonLogLevel.WARN,
 						"load controller build release metadata",
 						{ err: err instanceof Error ? err.message : String(err) },
@@ -618,7 +618,7 @@ export function createClusterService(
 			}
 			const build = ctrl.builds.buildForNode(req.resources);
 			const peerSet = new Set<string>();
-			for (const nr of ctrl.store.listNodes()) {
+			for (const nr of ctrl.store.fleet.list()) {
 				const peerAddr = nr.hb?.cladefsPeerAddr?.trim();
 				if (peerAddr && ctrl.withOnline(nr.node).online) {
 					peerSet.add(peerAddr);
@@ -627,10 +627,10 @@ export function createClusterService(
 			const cladefsPeers = [...peerSet].sort();
 			const decommissionIncarnations =
 				req.cladefsPeerAddr || req.cladefsIncarnation > 0n
-					? ctrl.store.listPendingDecommissions(nowMs - 24 * 3600_000)
+					? ctrl.store.cladefs.listPendingDecommissions(nowMs - 24 * 3600_000)
 					: [];
 			const workerConfig = applyOrgCladefsTenant(
-				ctrl.store.effectiveWorkerConfig(caller.hostname, caller.nodeId),
+				ctrl.store.workerConfigs.effective(caller.hostname, caller.nodeId),
 				ctrl.cladefsTenantId,
 				caller.hostname,
 			);
@@ -642,13 +642,13 @@ export function createClusterService(
 				decommissionIncarnations,
 				workerConfig,
 				retireBases: holdsBases
-					? ctrl.store.basesToRetire(caller.nodeId, nowMs, SHARED_BASE_RETIRE_GRACE_MS)
+					? ctrl.store.cladefs.basesToRetire(caller.nodeId, nowMs, SHARED_BASE_RETIRE_GRACE_MS)
 					: [],
 			});
 		},
 
 		listNodes() {
-			const rows = ctrl.store.listNodes();
+			const rows = ctrl.store.fleet.list();
 			return create(ListNodesResponseSchema, {
 				clusterId: ctrl.clusterId,
 				nodes: rows.map((r) => ctrl.withOnline(r.node)),
@@ -662,7 +662,7 @@ export function createClusterService(
 				try {
 					await ctrl.builds.ensureLoaded(nowMs);
 				} catch (err) {
-					ctrl.store.logDaemon(
+					ctrl.store.daemonLogs.log(
 						DaemonLogLevel.WARN,
 						"load controller build release metadata",
 						{ err: err instanceof Error ? err.message : String(err) },
@@ -689,9 +689,9 @@ export function createClusterService(
 		},
 
 		listRepos(req) {
-			let repos = ctrl.store.listRepos();
+			let repos = ctrl.store.projects.listRepos();
 			if (req.project) {
-				const p = ctrl.store.getProject(req.project);
+				const p = ctrl.store.projects.get(req.project);
 				repos = repos.filter((r) => p.repos.includes(canonicalRemote(r.url)));
 			}
 			return create(ListReposResponseSchema, { repos });
@@ -707,16 +707,16 @@ export function createClusterService(
 				);
 			}
 			validateRepoURL(repoIn.url, ctrl.allowLocalRepos);
-			if (req.project) ctrl.store.getProject(req.project);
+			if (req.project) ctrl.store.projects.get(req.project);
 			const repo = clone(RepoSchema, repoIn);
 			repo.createdAt = BigInt(ctrl.now());
 			repo.reminder = undefined;
-			ctrl.store.putRepo(repo);
+			ctrl.store.projects.putRepo(repo);
 
 			let proj;
 			if (req.project) {
 				const remote = canonicalRemote(repo.url);
-				proj = ctrl.store.addProject(
+				proj = ctrl.store.projects.add(
 					req.project,
 					remote ? [remote] : [],
 					ctrl.madeBy(caller, `for registered repo ${repo.id}`),
@@ -729,21 +729,21 @@ export function createClusterService(
 		},
 
 		deleteRepo(req) {
-			if (!ctrl.store.deleteRepo(req.id)) {
+			if (!ctrl.store.projects.deleteRepo(req.id)) {
 				throw hotbedError(ErrorCode.NotFound, `no repo ${req.id}`);
 			}
 			return create(DeleteRepoResponseSchema);
 		},
 
 		rebuildProject(req) {
-			return ctrl.store.editProjectSetup(req.name, (p) => {
+			return ctrl.store.projects.editSetup(req.name, (p) => {
 				p.scratchEpoch += 1n;
 			});
 		},
 
 		setProjectHosts(req) {
 			const hosts = [...new Set(req.hosts)].sort();
-			return ctrl.store.editProjectSetup(req.name, (p) => {
+			return ctrl.store.projects.editSetup(req.name, (p) => {
 				p.hosts = hosts;
 			});
 		},
@@ -769,7 +769,7 @@ export function createClusterService(
 				updatedAt: BigInt(ctrl.now()),
 				updatedBy: caller.hostname,
 			});
-			return ctrl.store.editProjectSetup(req.project, (p) => {
+			return ctrl.store.projects.editSetup(req.project, (p) => {
 				if (req.ifRevision > 0n && p.setupRevision !== req.ifRevision) {
 					throw hotbedError(
 						ErrorCode.Conflict,
@@ -799,7 +799,7 @@ export function createClusterService(
 		},
 
 		deleteStep(req) {
-			return ctrl.store.editProjectSetup(req.project, (p) => {
+			return ctrl.store.projects.editSetup(req.project, (p) => {
 				if (req.ifRevision > 0n && p.setupRevision !== req.ifRevision) {
 					throw hotbedError(
 						ErrorCode.Conflict,
@@ -818,7 +818,7 @@ export function createClusterService(
 		},
 
 		listSteps(req) {
-			const proj = ctrl.store.getProject(req.project);
+			const proj = ctrl.store.projects.get(req.project);
 			const nvs = ctrl.views();
 			const nodes: Array<{ node: string; base?: Base }> = [];
 			for (const nv of nvs) {
@@ -865,8 +865,8 @@ export function createClusterService(
 			const remotes = canonicalRemotes(req.repos);
 			if (!req.shared) {
 				for (const r of remotes) {
-					const others = ctrl.store
-						.projectsHolding(r)
+					const others = ctrl.store.projects
+						.holding(r)
 						.filter((p) => p.name !== req.name)
 						.map((p) => p.name);
 					if (others.length > 0) {
@@ -880,7 +880,7 @@ export function createClusterService(
 				}
 			}
 			const { by } = ctrl.userStamp(getCaller(ctx.values), req.sessionId, "");
-			const p = ctrl.store.addProject(req.name, remotes, by);
+			const p = ctrl.store.projects.add(req.name, remotes, by);
 			p.reminder = setupStepsReminder(p);
 			return p;
 		},
@@ -894,7 +894,7 @@ export function createClusterService(
 			}
 			const remotes = canonicalRemotes(req.repos);
 			const { by } = ctrl.userStamp(getCaller(ctx.values), req.sessionId, "");
-			return ctrl.store.removeProjectRepos(req.name, remotes, by);
+			return ctrl.store.projects.removeRepos(req.name, remotes, by);
 		},
 
 		listProjects() {
@@ -909,7 +909,7 @@ export function createClusterService(
 					"hotbed project ls",
 				);
 			}
-			match.history = ctrl.store.projectHistory(req.name);
+			match.history = ctrl.store.projects.history(req.name);
 			return match;
 		},
 
@@ -931,13 +931,13 @@ export function createClusterService(
 			if (target) {
 				matchProjects = new Set<string>();
 				try {
-					const p = ctrl.store.getProject(target);
+					const p = ctrl.store.projects.get(target);
 					matchProjects.add(p.name);
 				} catch (err) {
 					if (codeOf(err) !== ErrorCode.NotFound) throw err;
 					try {
 						const r = ctrl.repoById(target);
-						for (const hp of ctrl.store.projectsHolding(canonicalRemote(r.url))) {
+						for (const hp of ctrl.store.projects.holding(canonicalRemote(r.url))) {
 							matchProjects.add(hp.name);
 						}
 					} catch (rerr) {
@@ -1030,13 +1030,13 @@ export function createClusterService(
 			if (target) {
 				matchProjects = new Set<string>();
 				try {
-					const p = ctrl.store.getProject(target);
+					const p = ctrl.store.projects.get(target);
 					matchProjects.add(p.name);
 				} catch (err) {
 					if (codeOf(err) !== ErrorCode.NotFound) throw err;
 					try {
 						const r = ctrl.repoById(target);
-						for (const hp of ctrl.store.projectsHolding(canonicalRemote(r.url))) {
+						for (const hp of ctrl.store.projects.holding(canonicalRemote(r.url))) {
 							matchProjects.add(hp.name);
 						}
 					} catch (rerr) {
@@ -1056,7 +1056,7 @@ export function createClusterService(
 				nodeId = found.node.id;
 			}
 
-			const all = withLiveState(ctrl.store.listBaseFreshens(sinceMs), nvs, nowMs);
+			const all = withLiveState(ctrl.store.freshens.list(sinceMs), nvs, nowMs);
 
 			if (target && matchProjects && matchProjects.size === 0) {
 				if (all.some((f) => f.project === target)) {
@@ -1128,9 +1128,9 @@ export function createClusterService(
 				nodeId = found.node.id;
 			}
 			const onNode = (f: BaseFreshen) => !nodeId || f.nodeId === nodeId;
-			const byId = ctrl.store.getBaseFreshen(id);
+			const byId = ctrl.store.freshens.get(id);
 			let hits = byId && onNode(byId) ? [byId] : [];
-			if (hits.length === 0) hits = ctrl.store.baseFreshensOfBase(id).filter(onNode);
+			if (hits.length === 0) hits = ctrl.store.freshens.ofBase(id).filter(onNode);
 			if (hits.length === 0) {
 				throw hotbedError(ErrorCode.NotFound, `no base freshen ${id}`).withSuggestion(
 					"hotbed freshen ls lists recent and active base freshens",
@@ -1154,7 +1154,7 @@ export function createClusterService(
 			const genPhrase =
 				freshen.generation > 0 ? `base ${freshen.project} g${freshen.generation} ` : "";
 			const related: ClusterEvent[] = [];
-			for (const ev of ctrl.store.nodeEventsNewestFirst(freshen.nodeId)) {
+			for (const ev of ctrl.store.fleet.nodeEventsNewestFirst(freshen.nodeId)) {
 				const matches =
 					(ev.ref?.id && (ev.ref.id === freshen.id || ev.ref.id === freshen.baseId)) ||
 					(freshen.baseId && ev.text.includes(freshen.baseId)) ||
@@ -1176,17 +1176,17 @@ export function createClusterService(
 			const nowMs = ctrl.now();
 			const dayMs = nowMs - 24 * 3600_000;
 			const nvs = ctrl.views();
-			const repos = ctrl.store.listRepos();
-			const history = ctrl.store.historySince(dayMs);
-			const events = ctrl.store.recentEvents(EVENTS_SHOWN);
-			const samples = ctrl.store.samplesSince(dayMs);
+			const repos = ctrl.store.projects.listRepos();
+			const history = ctrl.store.commands.historySince(dayMs);
+			const events = ctrl.store.fleet.recentEvents(EVENTS_SHOWN);
+			const samples = ctrl.store.fleet.samplesSince(dayMs);
 			const { series, load, nodeHourly, hourlyR2, r2Totals } = buildSeries(samples, nowMs);
 			const oom = countOomKills(samples);
-			const forks = ctrl.store.forksSince(dayMs);
-			const sessions = ctrl.store.recentSessions(dayMs, "", "");
+			const forks = ctrl.store.workspaces.forksSince(dayMs);
+			const sessions = ctrl.store.sessions.recent(dayMs, "", "");
 			const scheds = schedules.allSchedules("");
-			const openQuestions = ctrl.store.openQuestionsCount();
-			const memCounts = ctrl.store.pendingMemoriesCounts();
+			const openQuestions = ctrl.store.questions.openCount();
+			const memCounts = ctrl.store.memories.pendingCounts();
 			const projects = ctrl.projects();
 
 			const nodes = [];
@@ -1210,7 +1210,7 @@ export function createClusterService(
 			}
 			commands.sort((a, b) => (a.queuedAt < b.queuedAt ? -1 : a.queuedAt > b.queuedAt ? 1 : 0));
 
-			const placements = ctrl.store.placementsSince(dayMs).slice(0, PLACEMENTS_SHOWN);
+			const placements = ctrl.store.fleet.placementsSince(dayMs).slice(0, PLACEMENTS_SHOWN);
 			const admissionEvents = filteredEvents("", ADMISSION_KINDS, ADMISSION_EVENTS_SHOWN);
 
 			const openBoardTasks = projects.reduce((sum, p) => sum + p.openBoardTasks, 0);
@@ -1237,11 +1237,11 @@ export function createClusterService(
 				schedules: scheds,
 				openQuestions,
 				projects,
-				controllerLogs: ctrl.store.daemonLogSummary(ctrl.controllerName, nowMs),
+				controllerLogs: ctrl.store.daemonLogs.summary(ctrl.controllerName, nowMs),
 				placements,
 				admissionEvents,
 				pendingMemories: memCounts.total,
-				openIssues: ctrl.store.countOpenIssues(),
+				openIssues: ctrl.store.issues.openCount(),
 				globalPendingMemories: memCounts.global,
 				openBoardTasks,
 				blockedBoardTasks,
@@ -1250,7 +1250,7 @@ export function createClusterService(
 
 		async saveCommandDiagnostics(req, ctx) {
 			const caller = getCaller(ctx.values);
-			if (!ctrl.store.hasNode(caller.nodeId)) {
+			if (!ctrl.store.fleet.has(caller.nodeId)) {
 				throw hotbedError(ErrorCode.NotJoined, `${caller.hostname} has not joined this cluster`);
 			}
 			const d = req.diagnostics;
@@ -1265,7 +1265,7 @@ export function createClusterService(
 
 		async saveCommandSample(req, ctx) {
 			const caller = getCaller(ctx.values);
-			if (!ctrl.store.hasNode(caller.nodeId)) {
+			if (!ctrl.store.fleet.has(caller.nodeId)) {
 				throw hotbedError(ErrorCode.NotJoined, `${caller.hostname} has not joined this cluster`);
 			}
 			const s = req.sample;
@@ -1279,7 +1279,7 @@ export function createClusterService(
 
 		async pushCommandOutput(req, ctx) {
 			const caller = getCaller(ctx.values);
-			if (!ctrl.store.hasNode(caller.nodeId)) {
+			if (!ctrl.store.fleet.has(caller.nodeId)) {
 				throw hotbedError(ErrorCode.NotJoined, `${caller.hostname} has not joined this cluster`);
 			}
 			const commandId = req.commandId.trim();
@@ -1312,7 +1312,7 @@ export function createClusterService(
 		async listCommandSamples(req) {
 			if (!req.id.trim()) throw hotbedError(ErrorCode.InvalidArgs, "command ID is required");
 			const samples = await ctrl.commands.listSamples(req.id);
-			if (samples.length === 0) ctrl.store.lookupCommand(req.id);
+			if (samples.length === 0) ctrl.store.commands.lookup(req.id);
 			return create(ListCommandSamplesResponseSchema, { samples });
 		},
 
@@ -1321,7 +1321,7 @@ export function createClusterService(
 			if (req.seq <= 0) throw hotbedError(ErrorCode.InvalidArgs, "seq must be positive");
 			const s = await ctrl.commands.getSample(req.id, req.seq);
 			if (s) return s;
-			ctrl.store.lookupCommand(req.id);
+			ctrl.store.commands.lookup(req.id);
 			throw hotbedError(
 				ErrorCode.NotFound,
 				`command ${req.id} has no sample ${req.seq}`,
@@ -1386,10 +1386,10 @@ export function createClusterService(
 				).withSuggestion("stop its worker first: hotbed worker stop (or destroy) on its machine");
 			}
 			const nowMs = ctrl.now();
-			ctrl.store.retireNode(n.id, nowMs);
+			ctrl.store.fleet.retire(n.id, nowMs);
 			const inc = r.hb?.cladefsIncarnation ?? 0n;
 			if (inc > 0n) {
-				ctrl.store.recordRetiredIncarnation(inc, n.id, n.hostname, nowMs);
+				ctrl.store.cladefs.recordRetiredIncarnation(inc, n.id, n.hostname, nowMs);
 			}
 			return n;
 		},
@@ -1418,17 +1418,17 @@ export function createClusterService(
 				);
 			}
 			const defaults = applyOrgCladefsTenant(
-				ctrl.store.getWorkerConfig("") ?? undefined,
+				ctrl.store.workerConfigs.get("") ?? undefined,
 				ctrl.cladefsTenantId,
 				"",
 			);
 			if (!target) {
-				const nodes = ctrl.store.listWorkerConfigs().filter((c) => c.node !== "");
+				const nodes = ctrl.store.workerConfigs.list().filter((c) => c.node !== "");
 				return create(GetWorkerConfigResponseSchema, { defaults, nodes });
 			}
-			const override = ctrl.store.getWorkerConfig(target);
+			const override = ctrl.store.workerConfigs.get(target);
 			const effective = applyOrgCladefsTenant(
-				ctrl.store.effectiveWorkerConfig(target),
+				ctrl.store.workerConfigs.effective(target),
 				ctrl.cladefsTenantId,
 				target,
 			);
@@ -1452,7 +1452,7 @@ export function createClusterService(
 			const scope = req.node.trim();
 			const patch = req.config ?? create(WorkerConfigSchema);
 			assertNoTenantOverride(patch, ctrl.cladefsTenantId);
-			const saved = ctrl.store.setWorkerConfig(scope, patch, {
+			const saved = ctrl.store.workerConfigs.set(scope, patch, {
 				replace: req.replace,
 				ifRevision: req.ifRevision,
 				updatedBy: caller.hostname || caller.login || "unknown",
@@ -1482,7 +1482,7 @@ export function createClusterService(
 				);
 			}
 			const scope = req.defaults ? "" : target;
-			const deleted = ctrl.store.deleteWorkerConfig(scope);
+			const deleted = ctrl.store.workerConfigs.delete(scope);
 			if (!deleted) {
 				const label = scope || "defaults";
 				throw hotbedError(ErrorCode.NotFound, `no worker config set for ${label}`);
@@ -1529,7 +1529,7 @@ export function createClusterService(
 			const results: NodeSystemUpgrade[] = [];
 			for (const node of targets) {
 				const arch = node.resources?.arch || "";
-				const effective = ctrl.store.effectiveWorkerConfig(node.hostname);
+				const effective = ctrl.store.workerConfigs.effective(node.hostname);
 				const sys = effective?.system;
 				const vm = effective?.vm;
 				const cladefsd = arch ? sys?.cladefsd[arch] : undefined;
@@ -1590,7 +1590,7 @@ export function createClusterService(
 						if (res.restartedCladefsd) {
 							parts.push("restarted cladefsd");
 						}
-						ctrl.store.recordClusterEvent(
+						ctrl.store.fleet.recordEvent(
 							node.id,
 							"upgrade",
 							`${node.hostname} system upgrade: ${parts.join(", ") || "complete"}`,

@@ -9,10 +9,12 @@ import {
 	QuestionSchema,
 	QuestionService,
 	QuestionState,
+	QuestionStateSchema,
 	type Answer,
 	type Prompt,
 	type Question,
 } from "../gen/hotbed/v1/hotbed_pb.ts";
+import { enumWord } from "../enums.ts";
 import { getCaller } from "../connect-adapter.ts";
 import {
 	inProject,
@@ -43,23 +45,6 @@ function withReminder(q: Question): Question {
 
 function inOutbox(st: QuestionState): boolean {
 	return st === QuestionState.ANSWERED || st === QuestionState.DISMISSED;
-}
-
-function stateWord(st: QuestionState): string {
-	switch (st) {
-		case QuestionState.OPEN:
-			return "open";
-		case QuestionState.ANSWERED:
-			return "answered";
-		case QuestionState.DISMISSED:
-			return "dismissed";
-		case QuestionState.HANDLED:
-			return "handled";
-		case QuestionState.DELETED:
-			return "deleted";
-		default:
-			return "unspecified";
-	}
 }
 
 function checkPrompt(p?: Prompt): HotbedError | null {
@@ -197,7 +182,7 @@ function mustBeOpen(q: Question, done: string): void {
 	if (q.state !== QuestionState.OPEN) {
 		throw hotbedError(
 			ErrorCode.Conflict,
-			`question ${q.id} is ${stateWord(q.state)}; only an open question can be ${done}`,
+			`question ${q.id} is ${enumWord(QuestionStateSchema, q.state)}; only an open question can be ${done}`,
 		).withSuggestion(
 			`hotbed question show ${q.id} says who changed it; ask a new question if it still needs asking`,
 		);
@@ -208,7 +193,7 @@ function mustBeAnswerable(q: Question, done: string): void {
 	if (q.state !== QuestionState.OPEN && !inOutbox(q.state)) {
 		throw hotbedError(
 			ErrorCode.Conflict,
-			`question ${q.id} is ${stateWord(q.state)}; only an open question, or one in the outbox, can be ${done}`,
+			`question ${q.id} is ${enumWord(QuestionStateSchema, q.state)}; only an open question, or one in the outbox, can be ${done}`,
 		).withSuggestion(`reopen it first: hotbed question reopen ${q.id}`);
 	}
 }
@@ -246,16 +231,16 @@ export function createQuestionService(
 			}
 			const t3Thread = validateT3CodeThreadId(req.t3codeThreadId);
 			const { by, project } = ctrl.agentStamp(caller, req.sessionId, "");
-			const sess = ctrl.store.tryGetSession(by.session);
+			const sess = ctrl.store.sessions.tryGet(by.session);
 			if (t3Thread && sess && !sess.t3codeThreadId) {
-				ctrl.store.setSessionT3CodeThreadIdIfEmpty(sess.id, t3Thread);
+				ctrl.store.sessions.setT3CodeThreadIdIfEmpty(sess.id, t3Thread);
 			}
 			const effectiveT3 = t3Thread || sess?.t3codeThreadId || "";
 			const repo = projectRepo(project, req.repo, req.askedFrom?.remote ?? "");
 			if (req.askedFrom && req.askedFrom.dirty.length > DIRTY_KEPT) {
 				req.askedFrom.dirty = req.askedFrom.dirty.slice(0, DIRTY_KEPT);
 			}
-			const qs = ctrl.store.addQuestions(
+			const qs = ctrl.store.questions.add(
 				project.name,
 				repo,
 				req.questions,
@@ -272,7 +257,7 @@ export function createQuestionService(
 			if (err) throw err;
 			const { by, project } = ctrl.agentStamp(getCaller(ctx.values), req.sessionId, "");
 			return withReminder(
-				ctrl.store.changeQuestion(req.id, "edited", by, (q) => {
+				ctrl.store.questions.change(req.id, "edited", by, (q) => {
 					inProject("question", q.id, q.project, project, by);
 					checkQuestionRevision(q, req.ifRevision);
 					mustBeOpen(q, "edited");
@@ -284,7 +269,7 @@ export function createQuestionService(
 
 		deleteQuestion(req, ctx) {
 			const { by, project } = ctrl.agentStamp(getCaller(ctx.values), req.sessionId, req.reason);
-			const q = ctrl.store.changeQuestion(req.id, "deleted", by, (item) => {
+			const q = ctrl.store.questions.change(req.id, "deleted", by, (item) => {
 				inProject("question", item.id, item.project, project, by);
 				checkQuestionRevision(item, req.ifRevision);
 				if (item.state === QuestionState.DELETED) {
@@ -315,7 +300,7 @@ export function createQuestionService(
 			) {
 				project = ctrl.listedProject(req);
 			}
-			const { questions, total, sessions } = ctrl.store.listQuestions({
+			const { questions, total, sessions } = ctrl.store.questions.list({
 				states: req.states,
 				order: req.order,
 				project,
@@ -333,20 +318,20 @@ export function createQuestionService(
 
 		listQuestionProjects() {
 			return create(ListQuestionProjectsResponseSchema, {
-				projects: ctrl.store.questionProjects(),
+				projects: ctrl.store.questions.byProject(),
 				reminder: POLL_REMINDER,
 			});
 		},
 
 		getQuestion(req) {
-			const q = ctrl.store.getQuestion(req.id);
-			q.history = ctrl.store.questionHistory(req.id);
+			const q = ctrl.store.questions.get(req.id);
+			q.history = ctrl.store.questions.history(req.id);
 			return withReminder(q);
 		},
 
 		answerQuestion(req, ctx) {
 			const { by, project } = ctrl.userStamp(getCaller(ctx.values), req.sessionId, "");
-			const q = ctrl.store.changeQuestion(req.id, "answered", by, (item) => {
+			const q = ctrl.store.questions.change(req.id, "answered", by, (item) => {
 				inProject("question", item.id, item.project, project, by);
 				checkQuestionRevision(item, req.ifRevision);
 				mustBeAnswerable(item, "answered");
@@ -364,7 +349,7 @@ export function createQuestionService(
 
 		dismissQuestion(req, ctx) {
 			const { by, project } = ctrl.userStamp(getCaller(ctx.values), req.sessionId, req.reason);
-			const q = ctrl.store.changeQuestion(req.id, "dismissed", by, (item) => {
+			const q = ctrl.store.questions.change(req.id, "dismissed", by, (item) => {
 				inProject("question", item.id, item.project, project, by);
 				checkQuestionRevision(item, req.ifRevision);
 				mustBeAnswerable(item, "dismissed");
@@ -382,7 +367,7 @@ export function createQuestionService(
 			const err = checkPrompt(req.prompt);
 			if (err) throw err;
 			const { by, project } = ctrl.userStamp(getCaller(ctx.values), req.sessionId, "");
-			const q = ctrl.store.changeQuestion(req.id, "edited", by, (item) => {
+			const q = ctrl.store.questions.change(req.id, "edited", by, (item) => {
 				inProject("question", item.id, item.project, project, by);
 				checkQuestionRevision(item, req.ifRevision);
 				if (item.state === QuestionState.DELETED) {
@@ -413,7 +398,7 @@ export function createQuestionService(
 
 		reopenQuestion(req, ctx) {
 			const { by, project } = ctrl.userStamp(getCaller(ctx.values), req.sessionId, "");
-			const q = ctrl.store.reopenQuestion(req.id, by, (item) => {
+			const q = ctrl.store.questions.reopen(req.id, by, (item) => {
 				inProject("question", item.id, item.project, project, by);
 				if (item.state === QuestionState.OPEN) {
 					throw hotbedError(ErrorCode.Conflict, `question ${item.id} is open already`);
@@ -451,7 +436,7 @@ export function createQuestionService(
 				);
 			}
 			return withReminder(
-				ctrl.store.moveQuestion(req.id, place, by, (q, before) => {
+				ctrl.store.questions.move(req.id, place, by, (q, before) => {
 					inProject("question", q.id, q.project, project, by);
 					mustBeOpen(q, "moved");
 					if (before && before.project !== q.project) {
@@ -463,7 +448,7 @@ export function createQuestionService(
 					if (before && before.state !== QuestionState.OPEN) {
 						throw hotbedError(
 							ErrorCode.Conflict,
-							`question ${before.id} is ${stateWord(before.state)}: only open questions have a place in the order`,
+							`question ${before.id} is ${enumWord(QuestionStateSchema, before.state)}: only open questions have a place in the order`,
 						);
 					}
 				}),
@@ -478,12 +463,12 @@ export function createQuestionService(
 				).withSuggestion("hotbed question outbox");
 			}
 			const { by, project } = ctrl.agentStamp(getCaller(ctx.values), req.sessionId, "");
-			const qs = ctrl.store.changeQuestions(req.ids, "handled", by, (q) => {
+			const qs = ctrl.store.questions.changeMany(req.ids, "handled", by, (q) => {
 				inProject("question", q.id, q.project, project, by);
 				if (!inOutbox(q.state)) {
 					throw hotbedError(
 						ErrorCode.Conflict,
-						`question ${q.id} is ${stateWord(q.state)}, not in the outbox: nothing was acknowledged`,
+						`question ${q.id} is ${enumWord(QuestionStateSchema, q.state)}, not in the outbox: nothing was acknowledged`,
 					).withSuggestion("hotbed question outbox lists what can be acknowledged");
 				}
 				q.state = QuestionState.HANDLED;

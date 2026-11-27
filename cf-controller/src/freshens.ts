@@ -27,31 +27,6 @@ import {
 } from "./gen/hotbed/v1/hotbed_pb.ts";
 import type { NodeView } from "./placement.ts";
 
-export function freshenStateName(s: FreshenState): string {
-	switch (s) {
-		case FreshenState.QUEUED:
-			return "FRESHEN_STATE_QUEUED";
-		case FreshenState.RUNNING:
-			return "FRESHEN_STATE_RUNNING";
-		case FreshenState.PARKED:
-			return "FRESHEN_STATE_PARKED";
-		case FreshenState.PAUSED:
-			return "FRESHEN_STATE_PAUSED";
-		case FreshenState.FINALIZING:
-			return "FRESHEN_STATE_FINALIZING";
-		case FreshenState.SUCCEEDED:
-			return "FRESHEN_STATE_SUCCEEDED";
-		case FreshenState.FAILED:
-			return "FRESHEN_STATE_FAILED";
-		case FreshenState.CANCELLED:
-			return "FRESHEN_STATE_CANCELLED";
-		case FreshenState.DROPPED:
-			return "FRESHEN_STATE_DROPPED";
-		default:
-			return "FRESHEN_STATE_UNSPECIFIED";
-	}
-}
-
 export function isFreshenActive(s: FreshenState): boolean {
 	return (
 		s === FreshenState.QUEUED ||

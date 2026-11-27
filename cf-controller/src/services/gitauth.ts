@@ -14,7 +14,7 @@ import { getCaller } from "../connect-adapter.ts";
 import { REPO_ID_RE, type ControllerContext } from "../context.ts";
 import { ErrorCode, hotbedError } from "../errors.ts";
 import { parseGitRepo, randomHex } from "../gitops.ts";
-import type { StoredGitCredential } from "../store.ts";
+import type { StoredGitCredential } from "../store/index.ts";
 
 const DEFAULT_GITHUB_CLIENT_ID = "Iv23li5qE6N9l4g7P3hW";
 const GIT_TOKEN_LEASE_TTL_MS = 15 * 60_000;
@@ -213,7 +213,7 @@ function selectGitCredential(
 
 export function createGitAuthService(ctrl: ControllerContext): ServiceImpl<typeof GitAuthService> {
 	function loadPendingLogins(nowMs: number): Record<string, PendingGitHubLogin> {
-		const raw = ctrl.store.getMeta(PENDING_LOGINS_META_KEY);
+		const raw = ctrl.store.meta.get(PENDING_LOGINS_META_KEY);
 		if (!raw) return {};
 		try {
 			const parsed = JSON.parse(raw) as Record<string, PendingGitHubLogin>;
@@ -230,7 +230,7 @@ export function createGitAuthService(ctrl: ControllerContext): ServiceImpl<typeo
 	}
 
 	function savePendingLogins(map: Record<string, PendingGitHubLogin>): void {
-		ctrl.store.setMeta(PENDING_LOGINS_META_KEY, JSON.stringify(map));
+		ctrl.store.meta.set(PENDING_LOGINS_META_KEY, JSON.stringify(map));
 	}
 
 	function deletePendingLogin(loginId: string, nowMs: number): void {
@@ -242,7 +242,7 @@ export function createGitAuthService(ctrl: ControllerContext): ServiceImpl<typeo
 	}
 
 	function resolveCredential(host: string, owner: string, repo: string): StoredGitCredential {
-		const candidates = ctrl.store.gitCredentialsByHost(host);
+		const candidates = ctrl.store.gitCredentials.byHost(host);
 		if (owner && repo) {
 			const best = selectGitCredential(candidates, owner, repo);
 			if (best) return best;
@@ -270,7 +270,7 @@ export function createGitAuthService(ctrl: ControllerContext): ServiceImpl<typeo
 	 * store each time so a token another request refreshed is reused.
 	 */
 	function usableToken(name: string, host: string): { token: string; expiresAt: number } | null {
-		const stored = ctrl.store.gitCredentialsByHost(host).find((c) => c.cred.name === name);
+		const stored = ctrl.store.gitCredentials.byHost(host).find((c) => c.cred.name === name);
 		if (!stored) return null;
 		const nowMs = ctrl.now();
 		if (!stored.secret.refreshToken || !stored.secret.tokenExpiresAt) {
@@ -354,7 +354,7 @@ export function createGitAuthService(ctrl: ControllerContext): ServiceImpl<typeo
 		stored.cred.expiresAt = BigInt(exp);
 		stored.cred.refreshable = Boolean(stored.secret.refreshToken);
 		stored.cred.updatedAt = BigInt(refreshedNow);
-		ctrl.store.putGitCredential(stored.cred, stored.secret);
+		ctrl.store.gitCredentials.put(stored.cred, stored.secret);
 		return {
 			token: stored.secret.token,
 			expiresAt: exp || refreshedNow + GIT_TOKEN_LEASE_TTL_MS,
@@ -553,7 +553,7 @@ export function createGitAuthService(ctrl: ControllerContext): ServiceImpl<typeo
 				updatedAt: BigInt(nowMs),
 				updatedBy: caller.hostname,
 			});
-			ctrl.store.putGitCredential(cred, {
+			ctrl.store.gitCredentials.put(cred, {
 				token: tokenData.access_token,
 				refreshToken: tokenData.refresh_token,
 				clientId: pending.clientId,
@@ -605,13 +605,13 @@ export function createGitAuthService(ctrl: ControllerContext): ServiceImpl<typeo
 				updatedAt: BigInt(ctrl.now()),
 				updatedBy: caller.hostname,
 			});
-			ctrl.store.putGitCredential(cred, { token });
+			ctrl.store.gitCredentials.put(cred, { token });
 			return cred;
 		},
 
 		listGitCredentials(req) {
 			const host = req.host.trim().toLowerCase();
-			const creds = ctrl.store.listGitCredentials().filter((c) => !host || c.host === host);
+			const creds = ctrl.store.gitCredentials.list().filter((c) => !host || c.host === host);
 			return create(ListGitCredentialsResponseSchema, { credentials: creds });
 		},
 
@@ -625,7 +625,7 @@ export function createGitAuthService(ctrl: ControllerContext): ServiceImpl<typeo
 			}
 			const name = req.name.trim();
 			if (!name) throw hotbedError(ErrorCode.InvalidArgs, "credential name is required");
-			if (!ctrl.store.deleteGitCredential(name)) {
+			if (!ctrl.store.gitCredentials.delete(name)) {
 				throw hotbedError(ErrorCode.NotFound, `no git credential "${name}"`).withSuggestion(
 					"hotbed auth ls",
 				);

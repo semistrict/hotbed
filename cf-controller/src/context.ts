@@ -33,7 +33,12 @@ import { canonicalRemote, projectNameFor } from "./gitops.ts";
 import type { NodeRow, NodeView } from "./placement.ts";
 import type { QuestionBridgeHub } from "./question-bridge.ts";
 import { ONLINE_WINDOW_MS, Wakeups, isCommandLive } from "./wakeups.ts";
-import { ControllerStore, LOST_DETAIL, sessionEndedError, type WorkspaceRow } from "./store.ts";
+import {
+	ControllerStore,
+	LOST_DETAIL,
+	sessionEndedError,
+	type WorkspaceRow,
+} from "./store/index.ts";
 import type { WorkerTunnelHub } from "./tunnel.ts";
 
 export const SESSION_IDLE_MS = 60 * 60_000;
@@ -140,7 +145,7 @@ export class ControllerContext {
 
 	/** Per-org session idle timeout in milliseconds (default 1h). */
 	sessionIdleMs(): number {
-		const secs = this.store.getWorkerConfig("")?.controller?.sessionIdleTimeoutSeconds;
+		const secs = this.store.workerConfigs.get("")?.controller?.sessionIdleTimeoutSeconds;
 		if (secs !== undefined && secs >= 60) {
 			return secs * 1000;
 		}
@@ -149,7 +154,7 @@ export class ControllerContext {
 
 	/** Per-org offline node grace period in milliseconds (default 24h). */
 	offlineGraceMs(): number {
-		const secs = this.store.getWorkerConfig("")?.controller?.offlineGraceSeconds;
+		const secs = this.store.workerConfigs.get("")?.controller?.offlineGraceSeconds;
 		if (secs !== undefined && secs >= 0) {
 			return secs * 1000;
 		}
@@ -235,14 +240,14 @@ export class ControllerContext {
 
 	nodeAddr(nodeId: string): string {
 		try {
-			return this.addrOf(this.store.getNode(nodeId));
+			return this.addrOf(this.store.fleet.get(nodeId));
 		} catch {
 			return "";
 		}
 	}
 
 	findNodeByNameOrId(name: string): NodeRow {
-		for (const r of this.store.listNodes()) {
+		for (const r of this.store.fleet.list()) {
 			if (r.node.hostname === name || r.node.id === name) {
 				return r;
 			}
@@ -253,7 +258,7 @@ export class ControllerContext {
 	}
 
 	findNodeByHost(host: string): NodeRow {
-		for (const r of this.store.listNodes()) {
+		for (const r of this.store.fleet.list()) {
 			if (r.node.hostname === host) return r;
 		}
 		throw hotbedError(ErrorCode.NotFound, `no node is called ${host}`).withSuggestion(
@@ -277,14 +282,14 @@ export class ControllerContext {
 	}
 
 	views(): NodeView[] {
-		const rows = this.store.listNodes();
-		const all = this.store.allViews();
+		const rows = this.store.fleet.list();
+		const all = this.store.nodeState.allViews();
 		const sessIds: string[] = [];
 		for (const v of all.values()) {
 			for (const w of v.workspaces) if (w.sessionId) sessIds.push(w.sessionId);
 			for (const c of v.commands) if (c.sessionId) sessIds.push(c.sessionId);
 		}
-		const sessProj = this.store.sessionProjectsFor(sessIds);
+		const sessProj = this.store.sessions.projectsFor(sessIds);
 
 		return rows.map((n) => {
 			const v = all.get(n.node.id) ?? { bases: [], workspaces: [], commands: [] };
@@ -394,7 +399,7 @@ export class ControllerContext {
 		for (const items of live.values()) {
 			for (const it of items) if (it.sessionId) sessIds.push(it.sessionId);
 		}
-		const sessProj = this.store.sessionProjectsFor(sessIds);
+		const sessProj = this.store.sessions.projectsFor(sessIds);
 		for (const items of live.values()) {
 			for (const it of items) {
 				const p = sessProj.get(it.sessionId);
@@ -406,13 +411,13 @@ export class ControllerContext {
 
 	/** Projects enriched with live session, schedule, question, and review counts. */
 	projects(): Project[] {
-		const ps = this.store.listProjects();
-		const live = this.store.liveSessionsByProject();
-		const scheds = this.store.schedulesByProject();
-		const qps = this.store.questionProjects();
+		const ps = this.store.projects.list();
+		const live = this.store.sessions.liveByProject();
+		const scheds = this.store.schedules.countByProject();
+		const qps = this.store.questions.byProject();
 		const qByName = new Map(qps.map((q) => [q.name, q]));
-		const { active, toDecide } = this.store.reviewCounts();
-		const memCounts = this.store.pendingMemoriesCounts();
+		const { active, toDecide } = this.store.reviews.counts();
+		const memCounts = this.store.memories.pendingCounts();
 		const boardCounts = this.boardCountsFn?.();
 		for (const p of ps) {
 			p.liveSessions = live.get(p.name) ?? 0;
@@ -452,7 +457,7 @@ export class ControllerContext {
 	}
 
 	hosted(p: Project): HostedProject {
-		const { hosted, missing } = this.hostedOf(p, this.store.listRepos());
+		const { hosted, missing } = this.hostedOf(p, this.store.projects.listRepos());
 		if (missing.length > 0) {
 			throw hotbedError(
 				ErrorCode.NotFound,
@@ -473,19 +478,19 @@ export class ControllerContext {
 	}
 
 	hostingFor(nodeId: string, hostname: string): { projects: HostedProject[]; release: string[] } {
-		const projects = this.store.listProjects();
-		const repos = this.store.listRepos();
+		const projects = this.store.projects.list();
+		const repos = this.store.projects.listRepos();
 		const out: HostedProject[] = [];
 		for (const p of projects) {
 			if (p.hosts.length > 0 && !p.hosts.includes(hostname)) continue;
 			const { hosted, missing } = this.hostedOf(p, repos);
 			if (missing.length === 0 && hosted.repos.length > 0) out.push(hosted);
 		}
-		return { projects: out, release: this.store.toRelease(nodeId) };
+		return { projects: out, release: this.store.nodeState.toRelease(nodeId) };
 	}
 
 	repoById(id: string): Repo {
-		const r = this.store.listRepos().find((x) => x.id === id);
+		const r = this.store.projects.listRepos().find((x) => x.id === id);
 		if (!r) {
 			throw hotbedError(ErrorCode.NotFound, `no repo ${id}`).withSuggestion("hotbed repo ls");
 		}
@@ -538,8 +543,8 @@ export class ControllerContext {
 			});
 			return { by, project: null, session: null };
 		}
-		const sess = this.store.liveSession(sessionId, this.now());
-		const project = this.store.getProject(sess.project);
+		const sess = this.store.sessions.live(sessionId, this.now());
+		const project = this.store.projects.get(sess.project);
 		const model = (opts.model ?? "").trim() || sess.model || (opts.fallbackModel ?? "").trim();
 		const subagent = (opts.subagent ?? "").trim();
 		const t3codeThreadId =
@@ -582,15 +587,15 @@ export class ControllerContext {
 	}
 
 	listedProject(req: ScopedRequest): string {
-		const sess = req.sessionId ? this.store.getSession(req.sessionId) : null;
+		const sess = req.sessionId ? this.store.sessions.get(req.sessionId) : null;
 		if (req.scope.case === "allProjects" && req.scope.value) return "";
 		if (req.scope.case === "project" && req.scope.value) {
-			this.store.getProject(req.scope.value);
+			this.store.projects.get(req.scope.value);
 			return req.scope.value;
 		}
 		if (!sess && req.remote) {
 			const remote = canonicalRemote(req.remote);
-			const holding = this.store.projectsHolding(remote);
+			const holding = this.store.projects.holding(remote);
 			if (holding.length === 1) return holding[0].name;
 			if (holding.length === 0) {
 				throw hotbedError(
@@ -623,7 +628,7 @@ export class ControllerContext {
 		remote: string,
 	): { project: Project; changed: boolean } {
 		if (name) {
-			return { project: this.store.getProject(name), changed: false };
+			return { project: this.store.projects.get(name), changed: false };
 		}
 		if (!remote) {
 			throw hotbedError(
@@ -631,7 +636,7 @@ export class ControllerContext {
 				"a session works on a project: outside a git checkout, name it",
 			).withSuggestion("pass -p PROJECT or set HOTBED_PROJECT (hotbed project ls)");
 		}
-		const holding = this.store.projectsHolding(remote);
+		const holding = this.store.projects.holding(remote);
 		if (holding.length === 1) return { project: holding[0], changed: false };
 		if (holding.length > 1) {
 			throw hotbedError(
@@ -647,7 +652,7 @@ export class ControllerContext {
 			).withSuggestion(`make one: hotbed project add NAME --repo ${remote}`);
 		}
 		try {
-			const existing = this.store.getProject(own);
+			const existing = this.store.projects.get(own);
 			if (existing.repos.length > 0) {
 				throw hotbedError(
 					ErrorCode.InvalidArgs,
@@ -659,7 +664,7 @@ export class ControllerContext {
 		} catch (err) {
 			if (codeOf(err) !== ErrorCode.NotFound) throw err;
 		}
-		const created = this.store.addProject(
+		const created = this.store.projects.add(
 			own,
 			[remote],
 			this.madeBy(caller, `for ${remote}, which a session started in and no project held`),
@@ -670,7 +675,7 @@ export class ControllerContext {
 	ensureRepoProject(caller: CallerIdentity, repoId: string, repoUrl: string): Project | null {
 		const remote = canonicalRemote(repoUrl);
 		if (!remote) return null;
-		const holding = this.store.projectsHolding(remote);
+		const holding = this.store.projects.holding(remote);
 		if (holding.length === 1) return holding[0];
 		if (holding.length > 1) return null;
 
@@ -691,12 +696,12 @@ export class ControllerContext {
 		}
 		for (const name of candidates) {
 			try {
-				const existing = this.store.getProject(name);
+				const existing = this.store.projects.get(name);
 				if (existing.repos.length > 0) continue;
 			} catch (err) {
 				if (codeOf(err) !== ErrorCode.NotFound) throw err;
 			}
-			return this.store.addProject(
+			return this.store.projects.add(
 				name,
 				[remote],
 				this.madeBy(caller, `for registered repo ${repoId}, which no project held`),
@@ -709,8 +714,8 @@ export class ControllerContext {
 	}
 
 	async releaseWorkspace(id: string): Promise<void> {
-		const w = this.store.getWorkspace(id);
-		const row = this.store.getNode(w.node);
+		const w = this.store.workspaces.get(id);
+		const row = this.store.fleet.get(w.node);
 		const node = this.withOnline(row.node);
 		if (node.online && this.tunnel.isConnected(w.node)) {
 			try {
@@ -734,28 +739,28 @@ export class ControllerContext {
 				retryable: true,
 			});
 		}
-		this.store.releaseWorkspaceRow(id, this.now());
+		this.store.workspaces.release(id, this.now());
 	}
 
 	async endSession(id: string, reason: string, requireLive = false): Promise<Session> {
 		return this.withSessionLock(id, async () => {
-			const sess = this.store.getSession(id);
+			const sess = this.store.sessions.get(id);
 			if (requireLive && sess.endedAt !== undefined) {
 				throw sessionEndedError(id, sess.endReason);
 			}
-			const wss = this.store.endSessionAndWorkspaces(id, reason, this.now());
+			const wss = this.store.sessions.endAndWorkspaces(id, reason, this.now());
 			return this.finishEndSession(id, reason, wss);
 		});
 	}
 
 	async finishEndSession(id: string, reason: string, wss: WorkspaceRow[]): Promise<Session> {
-		const runs = this.store.listLiveScheduleRunsBySession(id);
+		const runs = this.store.schedules.liveRunsOfSession(id);
 		const ended = BigInt(this.now());
 		for (const run of runs) {
 			run.outcome = RunOutcome.CANCELLED;
 			run.reason = `its session ended: ${reason}`;
 			run.endedAt = ended;
-			this.store.updateLiveScheduleRun(run);
+			this.store.schedules.updateLiveRun(run);
 		}
 		for (const ws of wss) {
 			try {
@@ -767,7 +772,7 @@ export class ControllerContext {
 					// Worker's next heartbeat releases it.
 					continue;
 				}
-				this.store.logDaemon(
+				this.store.daemonLogs.log(
 					DaemonLogLevel.WARN,
 					"release workspace on session end",
 					{ workspace: ws.id, session: id, err: String(err) },
@@ -776,27 +781,27 @@ export class ControllerContext {
 			}
 		}
 		this.sessionWakes.wake(id);
-		return this.store.getSession(id);
+		return this.store.sessions.get(id);
 	}
 
 	loseRuns(commandIds: string[]): void {
 		if (commandIds.length === 0) return;
 		const set = new Set(commandIds);
 		const ended = BigInt(this.now());
-		for (const run of this.store.listAllLiveScheduleRuns()) {
+		for (const run of this.store.schedules.allLiveRuns()) {
 			if (!run.commandId || !set.has(run.commandId)) continue;
 			run.outcome = RunOutcome.CANCELLED;
 			run.reason = LOST_DETAIL;
 			run.endedAt = ended;
-			this.store.updateLiveScheduleRun(run);
+			this.store.schedules.updateLiveRun(run);
 		}
 	}
 
 	async settleRuns(): Promise<void> {
 		const toEnd: Array<{ id: string; reason: string }> = [];
-		for (const run of this.store.listAllLiveScheduleRuns()) {
+		for (const run of this.store.schedules.allLiveRuns()) {
 			if (!run.commandId) continue;
-			const f = this.store.finishedCommand(run.commandId);
+			const f = this.store.commands.finished(run.commandId);
 			if (!f) continue;
 			run.endedAt = f.endedAt;
 			run.exitCode = f.exitCode;
@@ -812,9 +817,9 @@ export class ControllerContext {
 				}
 			}
 			if (run.outcome !== RunOutcome.SUCCEEDED) {
-				this.store.touchSession(run.sessionId, this.now());
+				this.store.sessions.touch(run.sessionId, this.now());
 			}
-			const updated = this.store.updateLiveScheduleRun(run);
+			const updated = this.store.schedules.updateLiveRun(run);
 			if (updated && run.outcome === RunOutcome.SUCCEEDED) {
 				toEnd.push({ id: run.sessionId, reason: "its scheduled run succeeded" });
 			}
@@ -823,7 +828,7 @@ export class ControllerContext {
 			try {
 				await this.endSession(e.id, e.reason);
 			} catch (err) {
-				this.store.logDaemon(
+				this.store.daemonLogs.log(
 					DaemonLogLevel.ERROR,
 					"end session of scheduled run",
 					{ session: e.id, err: String(err) },
@@ -838,9 +843,9 @@ export class ControllerContext {
 		const idleMs = this.sessionIdleMs();
 		const graceMs = this.offlineGraceMs();
 		const cutoff = nowMs - idleMs;
-		const ids = this.store.idleSessions(cutoff);
+		const ids = this.store.sessions.idle(cutoff);
 		if (ids.length === 0) return;
-		const rows = this.store.listNodes();
+		const rows = this.store.fleet.list();
 		const offline = new Set<string>();
 		for (const r of rows) {
 			const recent = r.node.lastSeen !== undefined && nowMs - Number(r.node.lastSeen) < graceMs;
@@ -855,13 +860,13 @@ export class ControllerContext {
 			hrs > 0 ? `${hrs}h${mins}m${secs}s` : mins > 0 ? `${mins}m${secs}s` : `${secs}s`;
 		for (const id of ids) {
 			await this.withSessionLock(id, async () => {
-				const sess = this.store.tryGetSession(id);
+				const sess = this.store.sessions.tryGet(id);
 				if (!sess || sess.endedAt !== undefined) return;
 				if (sess.workspaces.some((w) => w.releasedAt === undefined && offline.has(w.nodeId))) {
 					return;
 				}
 				const reason = `abandoned: nothing called it for ${idleLabel}`;
-				const { ended, workspaces } = this.store.endSessionIfIdleAndWorkspaces(
+				const { ended, workspaces } = this.store.sessions.endIfIdleAndWorkspaces(
 					id,
 					reason,
 					this.now(),
@@ -876,14 +881,14 @@ export class ControllerContext {
 	maybePrune(): void {
 		const nowMs = this.now();
 		if (this.lastPruneAt === 0) {
-			const stored = Number(this.store.getMeta("last_prune_at") ?? "0");
+			const stored = Number(this.store.meta.get("last_prune_at") ?? "0");
 			if (Number.isFinite(stored) && stored > 0) {
 				this.lastPruneAt = stored;
 			}
 		}
 		if (nowMs - this.lastPruneAt < 10 * 60_000) return;
 		this.lastPruneAt = nowMs;
-		this.store.setMeta("last_prune_at", String(nowMs));
+		this.store.meta.set("last_prune_at", String(nowMs));
 		this.store.prune(nowMs);
 	}
 }

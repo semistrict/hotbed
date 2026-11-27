@@ -68,7 +68,7 @@ export function createBoardService(
 	ctrl: ControllerContext,
 	storage: DurableObjectStorage,
 ): BoardServiceBundle {
-	const store = new BoardStore(storage, ctrl.store);
+	const store = new BoardStore(storage, ctrl.store.projects);
 
 	function wakeProjects(projects: string[]): void {
 		ctrl.boardWakes.wake("*");
@@ -97,7 +97,7 @@ export function createBoardService(
 		const principalId = `user:${baseLogin}`;
 
 		if (sessionId) {
-			const sess = ctrl.store.liveSession(sessionId, ctrl.now());
+			const sess = ctrl.store.sessions.live(sessionId, ctrl.now());
 			const effProfile = profile || sess.id;
 			const actorId = `${principalId}+${effProfile}`;
 			const handle = `${baseHandle}/${effProfile}`;
@@ -176,13 +176,13 @@ export function createBoardService(
 		remote: string,
 	): string {
 		if (explicitProject.trim()) {
-			ctrl.store.getProject(explicitProject.trim());
+			ctrl.store.projects.get(explicitProject.trim());
 			return explicitProject.trim();
 		}
 		if (sessionProject) return sessionProject;
 		if (remote.trim()) {
 			const canonical = canonicalRemote(remote.trim());
-			const holding = ctrl.store.projectsHolding(canonical);
+			const holding = ctrl.store.projects.holding(canonical);
 			if (holding.length === 1) return holding[0].name;
 			if (holding.length > 1) {
 				throw hotbedError(
@@ -207,7 +207,7 @@ export function createBoardService(
 	}): { projectName: string; projectId: number | null } {
 		const name = ctrl.listedProject(req);
 		if (!name) return { projectName: "", projectId: null };
-		return { projectName: name, projectId: store.projectIdByName(name) };
+		return { projectName: name, projectId: ctrl.store.projects.idByName(name) };
 	}
 
 	const tickBoard = () => {
