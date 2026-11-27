@@ -129,10 +129,13 @@ func TestSyncAppliesInTheChroot(t *testing.T) {
 	if err := os.Mkdir(filepath.Join(dir, "bundles"), 0o711); err != nil {
 		t.Fatal(err)
 	}
-	e := &Engine{cfg: EngineConfig{
-		Dir: dir, User: name, Units: Systemd{},
-		BaseSpec: baseimage.Spec{User: name, UID: uid, GID: gid, Home: "/home/" + name},
-	}}
+	e := &Engine{
+		cfg: EngineConfig{
+			Dir: dir, User: name, Units: Systemd{},
+			BaseSpec: baseimage.Spec{User: name, UID: uid, GID: gid, Home: "/home/" + name},
+		},
+		host: unitExecutor{units: Systemd{}, wallClock: true},
+	}
 	received, _, err := e.receiveBundle("ws1", bytes.NewReader(bundle), 1<<30)
 	if err != nil {
 		t.Fatal(err)
