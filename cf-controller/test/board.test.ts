@@ -644,10 +644,23 @@ describe("BoardService", () => {
 		expect(renewed.status).toBe(200);
 		expect(renewed.data.claim.epoch).toBe(1);
 
+		// A worker naming a claim other than the current one (a stale run under the same
+		// identity) is refused.
+		const stale = await rpc<{ message: string }>(
+			doName,
+			"/hotbed.v1.BoardService/CompleteBoardTask",
+			{ id: "14433", asProfile: "definite-bison", epoch: 2 },
+			ramon,
+		);
+		expect(stale.status).toBe(409);
+		expect(stale.data.message).toBe(
+			"claim_lost: claim 2 on #14433 is over: #14433 was claimed again (claim 1)",
+		);
+
 		const done = await rpc<{ task: { state: string; result: string } }>(
 			doName,
 			"/hotbed.v1.BoardService/CompleteBoardTask",
-			{ id: "14433", asProfile: "definite-bison", result: "simulated" },
+			{ id: "14433", asProfile: "definite-bison", epoch: 1, result: "simulated" },
 			ramon,
 		);
 		expect(done.status).toBe(200);

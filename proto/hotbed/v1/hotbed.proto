@@ -7076,8 +7076,12 @@ message ClaimBoardTaskRequest {
 
 message RenewBoardTaskRequest {
   int64 id = 1;
-  reserved 2, 3;
-  reserved "epoch", "token";
+  // Optional: when nonzero, the caller's claim must still be this one (the task's
+  // epoch when claimed), so a worker sharing the holder's identity whose claim
+  // lapsed and was re-claimed elsewhere is refused.
+  int32 epoch = 2;
+  reserved 3;
+  reserved "token";
   // 0 preserves the claim's original lease duration (fallback 15m).
   int32 lease_seconds = 4;
   string session_id = 5;
@@ -7086,16 +7090,24 @@ message RenewBoardTaskRequest {
 
 message ReleaseBoardTaskRequest {
   int64 id = 1;
-  reserved 2, 3;
-  reserved "epoch", "token";
+  // Optional: when nonzero, the caller's claim must still be this one (the task's
+  // epoch when claimed), so a worker sharing the holder's identity whose claim
+  // lapsed and was re-claimed elsewhere is refused.
+  int32 epoch = 2;
+  reserved 3;
+  reserved "token";
   string session_id = 4;
   string as_profile = 5;
 }
 
 message CompleteBoardTaskRequest {
   int64 id = 1;
-  reserved 2, 3;
-  reserved "epoch", "token";
+  // Optional: when nonzero, the caller's claim must still be this one (the task's
+  // epoch when claimed), so a worker sharing the holder's identity whose claim
+  // lapsed and was re-claimed elsewhere is refused.
+  int32 epoch = 2;
+  reserved 3;
+  reserved "token";
   string result = 4;
   string session_id = 5;
   string as_profile = 6;
@@ -7103,8 +7115,12 @@ message CompleteBoardTaskRequest {
 
 message FailBoardTaskRequest {
   int64 id = 1;
-  reserved 2, 3;
-  reserved "epoch", "token";
+  // Optional: when nonzero, the caller's claim must still be this one (the task's
+  // epoch when claimed), so a worker sharing the holder's identity whose claim
+  // lapsed and was re-claimed elsewhere is refused.
+  int32 epoch = 2;
+  reserved 3;
+  reserved "token";
   string reason = 4;
   string session_id = 5;
   string as_profile = 6;
@@ -7114,8 +7130,12 @@ message BlockBoardTaskRequest {
   int64 id = 1;
   string reason = 2;
   string kind = 3;
-  reserved 4, 5;
-  reserved "epoch", "token";
+  // Optional: when nonzero, the caller's claim must still be this one (the task's
+  // epoch when claimed), so a worker sharing the holder's identity whose claim
+  // lapsed and was re-claimed elsewhere is refused.
+  int32 epoch = 4;
+  reserved 5;
+  reserved "token";
   string session_id = 6;
   string as_profile = 7;
 }

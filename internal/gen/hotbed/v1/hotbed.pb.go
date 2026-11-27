@@ -35736,6 +35736,10 @@ func (*ClaimBoardTaskRequest_AllProjects) isClaimBoardTaskRequest_Scope() {}
 type RenewBoardTaskRequest struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	Id    int64                  `protobuf:"varint,1,opt,name=id,proto3" json:"id,omitempty"`
+	// Optional: when nonzero, the caller's claim must still be this one (the task's
+	// epoch when claimed), so a worker sharing the holder's identity whose claim
+	// lapsed and was re-claimed elsewhere is refused.
+	Epoch int32 `protobuf:"varint,2,opt,name=epoch,proto3" json:"epoch,omitempty"`
 	// 0 preserves the claim's original lease duration (fallback 15m).
 	LeaseSeconds  int32  `protobuf:"varint,4,opt,name=lease_seconds,json=leaseSeconds,proto3" json:"lease_seconds,omitempty"`
 	SessionId     string `protobuf:"bytes,5,opt,name=session_id,json=sessionId,proto3" json:"session_id,omitempty"`
@@ -35781,6 +35785,13 @@ func (x *RenewBoardTaskRequest) GetId() int64 {
 	return 0
 }
 
+func (x *RenewBoardTaskRequest) GetEpoch() int32 {
+	if x != nil {
+		return x.Epoch
+	}
+	return 0
+}
+
 func (x *RenewBoardTaskRequest) GetLeaseSeconds() int32 {
 	if x != nil {
 		return x.LeaseSeconds
@@ -35803,10 +35814,14 @@ func (x *RenewBoardTaskRequest) GetAsProfile() string {
 }
 
 type ReleaseBoardTaskRequest struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Id            int64                  `protobuf:"varint,1,opt,name=id,proto3" json:"id,omitempty"`
-	SessionId     string                 `protobuf:"bytes,4,opt,name=session_id,json=sessionId,proto3" json:"session_id,omitempty"`
-	AsProfile     string                 `protobuf:"bytes,5,opt,name=as_profile,json=asProfile,proto3" json:"as_profile,omitempty"`
+	state protoimpl.MessageState `protogen:"open.v1"`
+	Id    int64                  `protobuf:"varint,1,opt,name=id,proto3" json:"id,omitempty"`
+	// Optional: when nonzero, the caller's claim must still be this one (the task's
+	// epoch when claimed), so a worker sharing the holder's identity whose claim
+	// lapsed and was re-claimed elsewhere is refused.
+	Epoch         int32  `protobuf:"varint,2,opt,name=epoch,proto3" json:"epoch,omitempty"`
+	SessionId     string `protobuf:"bytes,4,opt,name=session_id,json=sessionId,proto3" json:"session_id,omitempty"`
+	AsProfile     string `protobuf:"bytes,5,opt,name=as_profile,json=asProfile,proto3" json:"as_profile,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -35848,6 +35863,13 @@ func (x *ReleaseBoardTaskRequest) GetId() int64 {
 	return 0
 }
 
+func (x *ReleaseBoardTaskRequest) GetEpoch() int32 {
+	if x != nil {
+		return x.Epoch
+	}
+	return 0
+}
+
 func (x *ReleaseBoardTaskRequest) GetSessionId() string {
 	if x != nil {
 		return x.SessionId
@@ -35863,11 +35885,15 @@ func (x *ReleaseBoardTaskRequest) GetAsProfile() string {
 }
 
 type CompleteBoardTaskRequest struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Id            int64                  `protobuf:"varint,1,opt,name=id,proto3" json:"id,omitempty"`
-	Result        string                 `protobuf:"bytes,4,opt,name=result,proto3" json:"result,omitempty"`
-	SessionId     string                 `protobuf:"bytes,5,opt,name=session_id,json=sessionId,proto3" json:"session_id,omitempty"`
-	AsProfile     string                 `protobuf:"bytes,6,opt,name=as_profile,json=asProfile,proto3" json:"as_profile,omitempty"`
+	state protoimpl.MessageState `protogen:"open.v1"`
+	Id    int64                  `protobuf:"varint,1,opt,name=id,proto3" json:"id,omitempty"`
+	// Optional: when nonzero, the caller's claim must still be this one (the task's
+	// epoch when claimed), so a worker sharing the holder's identity whose claim
+	// lapsed and was re-claimed elsewhere is refused.
+	Epoch         int32  `protobuf:"varint,2,opt,name=epoch,proto3" json:"epoch,omitempty"`
+	Result        string `protobuf:"bytes,4,opt,name=result,proto3" json:"result,omitempty"`
+	SessionId     string `protobuf:"bytes,5,opt,name=session_id,json=sessionId,proto3" json:"session_id,omitempty"`
+	AsProfile     string `protobuf:"bytes,6,opt,name=as_profile,json=asProfile,proto3" json:"as_profile,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -35909,6 +35935,13 @@ func (x *CompleteBoardTaskRequest) GetId() int64 {
 	return 0
 }
 
+func (x *CompleteBoardTaskRequest) GetEpoch() int32 {
+	if x != nil {
+		return x.Epoch
+	}
+	return 0
+}
+
 func (x *CompleteBoardTaskRequest) GetResult() string {
 	if x != nil {
 		return x.Result
@@ -35931,11 +35964,15 @@ func (x *CompleteBoardTaskRequest) GetAsProfile() string {
 }
 
 type FailBoardTaskRequest struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Id            int64                  `protobuf:"varint,1,opt,name=id,proto3" json:"id,omitempty"`
-	Reason        string                 `protobuf:"bytes,4,opt,name=reason,proto3" json:"reason,omitempty"`
-	SessionId     string                 `protobuf:"bytes,5,opt,name=session_id,json=sessionId,proto3" json:"session_id,omitempty"`
-	AsProfile     string                 `protobuf:"bytes,6,opt,name=as_profile,json=asProfile,proto3" json:"as_profile,omitempty"`
+	state protoimpl.MessageState `protogen:"open.v1"`
+	Id    int64                  `protobuf:"varint,1,opt,name=id,proto3" json:"id,omitempty"`
+	// Optional: when nonzero, the caller's claim must still be this one (the task's
+	// epoch when claimed), so a worker sharing the holder's identity whose claim
+	// lapsed and was re-claimed elsewhere is refused.
+	Epoch         int32  `protobuf:"varint,2,opt,name=epoch,proto3" json:"epoch,omitempty"`
+	Reason        string `protobuf:"bytes,4,opt,name=reason,proto3" json:"reason,omitempty"`
+	SessionId     string `protobuf:"bytes,5,opt,name=session_id,json=sessionId,proto3" json:"session_id,omitempty"`
+	AsProfile     string `protobuf:"bytes,6,opt,name=as_profile,json=asProfile,proto3" json:"as_profile,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -35977,6 +36014,13 @@ func (x *FailBoardTaskRequest) GetId() int64 {
 	return 0
 }
 
+func (x *FailBoardTaskRequest) GetEpoch() int32 {
+	if x != nil {
+		return x.Epoch
+	}
+	return 0
+}
+
 func (x *FailBoardTaskRequest) GetReason() string {
 	if x != nil {
 		return x.Reason
@@ -35999,12 +36043,16 @@ func (x *FailBoardTaskRequest) GetAsProfile() string {
 }
 
 type BlockBoardTaskRequest struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Id            int64                  `protobuf:"varint,1,opt,name=id,proto3" json:"id,omitempty"`
-	Reason        string                 `protobuf:"bytes,2,opt,name=reason,proto3" json:"reason,omitempty"`
-	Kind          string                 `protobuf:"bytes,3,opt,name=kind,proto3" json:"kind,omitempty"`
-	SessionId     string                 `protobuf:"bytes,6,opt,name=session_id,json=sessionId,proto3" json:"session_id,omitempty"`
-	AsProfile     string                 `protobuf:"bytes,7,opt,name=as_profile,json=asProfile,proto3" json:"as_profile,omitempty"`
+	state  protoimpl.MessageState `protogen:"open.v1"`
+	Id     int64                  `protobuf:"varint,1,opt,name=id,proto3" json:"id,omitempty"`
+	Reason string                 `protobuf:"bytes,2,opt,name=reason,proto3" json:"reason,omitempty"`
+	Kind   string                 `protobuf:"bytes,3,opt,name=kind,proto3" json:"kind,omitempty"`
+	// Optional: when nonzero, the caller's claim must still be this one (the task's
+	// epoch when claimed), so a worker sharing the holder's identity whose claim
+	// lapsed and was re-claimed elsewhere is refused.
+	Epoch         int32  `protobuf:"varint,4,opt,name=epoch,proto3" json:"epoch,omitempty"`
+	SessionId     string `protobuf:"bytes,6,opt,name=session_id,json=sessionId,proto3" json:"session_id,omitempty"`
+	AsProfile     string `protobuf:"bytes,7,opt,name=as_profile,json=asProfile,proto3" json:"as_profile,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -36058,6 +36106,13 @@ func (x *BlockBoardTaskRequest) GetKind() string {
 		return x.Kind
 	}
 	return ""
+}
+
+func (x *BlockBoardTaskRequest) GetEpoch() int32 {
+	if x != nil {
+		return x.Epoch
+	}
+	return 0
 }
 
 func (x *BlockBoardTaskRequest) GetSessionId() string {
@@ -40948,42 +41003,47 @@ const file_hotbed_v1_hotbed_proto_rawDesc = "" +
 	" \x01(\x05R\vwaitSeconds\x12\x1d\n" +
 	"\n" +
 	"as_profile\x18\f \x01(\tR\tasProfileB\a\n" +
-	"\x05scopeJ\x04\b\v\x10\fR\vclaim_token\"\xa4\x01\n" +
+	"\x05scopeJ\x04\b\v\x10\fR\vclaim_token\"\xad\x01\n" +
 	"\x15RenewBoardTaskRequest\x12\x0e\n" +
-	"\x02id\x18\x01 \x01(\x03R\x02id\x12#\n" +
+	"\x02id\x18\x01 \x01(\x03R\x02id\x12\x14\n" +
+	"\x05epoch\x18\x02 \x01(\x05R\x05epoch\x12#\n" +
 	"\rlease_seconds\x18\x04 \x01(\x05R\fleaseSeconds\x12\x1d\n" +
 	"\n" +
 	"session_id\x18\x05 \x01(\tR\tsessionId\x12\x1d\n" +
 	"\n" +
-	"as_profile\x18\x06 \x01(\tR\tasProfileJ\x04\b\x02\x10\x03J\x04\b\x03\x10\x04R\x05epochR\x05token\"\x81\x01\n" +
+	"as_profile\x18\x06 \x01(\tR\tasProfileJ\x04\b\x03\x10\x04R\x05token\"\x8a\x01\n" +
 	"\x17ReleaseBoardTaskRequest\x12\x0e\n" +
-	"\x02id\x18\x01 \x01(\x03R\x02id\x12\x1d\n" +
+	"\x02id\x18\x01 \x01(\x03R\x02id\x12\x14\n" +
+	"\x05epoch\x18\x02 \x01(\x05R\x05epoch\x12\x1d\n" +
 	"\n" +
 	"session_id\x18\x04 \x01(\tR\tsessionId\x12\x1d\n" +
 	"\n" +
-	"as_profile\x18\x05 \x01(\tR\tasProfileJ\x04\b\x02\x10\x03J\x04\b\x03\x10\x04R\x05epochR\x05token\"\x9a\x01\n" +
+	"as_profile\x18\x05 \x01(\tR\tasProfileJ\x04\b\x03\x10\x04R\x05token\"\xa3\x01\n" +
 	"\x18CompleteBoardTaskRequest\x12\x0e\n" +
-	"\x02id\x18\x01 \x01(\x03R\x02id\x12\x16\n" +
+	"\x02id\x18\x01 \x01(\x03R\x02id\x12\x14\n" +
+	"\x05epoch\x18\x02 \x01(\x05R\x05epoch\x12\x16\n" +
 	"\x06result\x18\x04 \x01(\tR\x06result\x12\x1d\n" +
 	"\n" +
 	"session_id\x18\x05 \x01(\tR\tsessionId\x12\x1d\n" +
 	"\n" +
-	"as_profile\x18\x06 \x01(\tR\tasProfileJ\x04\b\x02\x10\x03J\x04\b\x03\x10\x04R\x05epochR\x05token\"\x96\x01\n" +
+	"as_profile\x18\x06 \x01(\tR\tasProfileJ\x04\b\x03\x10\x04R\x05token\"\x9f\x01\n" +
 	"\x14FailBoardTaskRequest\x12\x0e\n" +
-	"\x02id\x18\x01 \x01(\x03R\x02id\x12\x16\n" +
+	"\x02id\x18\x01 \x01(\x03R\x02id\x12\x14\n" +
+	"\x05epoch\x18\x02 \x01(\x05R\x05epoch\x12\x16\n" +
 	"\x06reason\x18\x04 \x01(\tR\x06reason\x12\x1d\n" +
 	"\n" +
 	"session_id\x18\x05 \x01(\tR\tsessionId\x12\x1d\n" +
 	"\n" +
-	"as_profile\x18\x06 \x01(\tR\tasProfileJ\x04\b\x02\x10\x03J\x04\b\x03\x10\x04R\x05epochR\x05token\"\xab\x01\n" +
+	"as_profile\x18\x06 \x01(\tR\tasProfileJ\x04\b\x03\x10\x04R\x05token\"\xb4\x01\n" +
 	"\x15BlockBoardTaskRequest\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\x03R\x02id\x12\x16\n" +
 	"\x06reason\x18\x02 \x01(\tR\x06reason\x12\x12\n" +
-	"\x04kind\x18\x03 \x01(\tR\x04kind\x12\x1d\n" +
+	"\x04kind\x18\x03 \x01(\tR\x04kind\x12\x14\n" +
+	"\x05epoch\x18\x04 \x01(\x05R\x05epoch\x12\x1d\n" +
 	"\n" +
 	"session_id\x18\x06 \x01(\tR\tsessionId\x12\x1d\n" +
 	"\n" +
-	"as_profile\x18\a \x01(\tR\tasProfileJ\x04\b\x04\x10\x05J\x04\b\x05\x10\x06R\x05epochR\x05token\"g\n" +
+	"as_profile\x18\a \x01(\tR\tasProfileJ\x04\b\x05\x10\x06R\x05token\"g\n" +
 	"\x17UnblockBoardTaskRequest\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\x03R\x02id\x12\x1d\n" +
 	"\n" +

@@ -238,12 +238,13 @@ func TestBoardCLIEndToEnd(t *testing.T) {
 	}
 
 	// Run t2 via `board task run` subprocess (claims ready t2, injects HOTBED_BOARD_TASK)
-	runCode, runOut, runErr := c.hotbed("board", "task", "run", t2ID, "--", "sh", "-c", "test -n \"$HOTBED_BOARD_TASK\" && echo task-ran-ok")
-	if runCode != exitOK || !strings.Contains(runOut, "task-ran-ok") {
+	// The command acts as the claim's holder: it gets the same profile.
+	runCode, runOut, runErr := c.hotbed("board", "task", "run", t2ID, "--as", "worker-c", "--", "sh", "-c", "test -n \"$HOTBED_BOARD_TASK\" && echo task-ran-ok as=$HOTBED_BOARD_PROFILE")
+	if runCode != exitOK || !strings.Contains(runOut, "task-ran-ok as=worker-c") {
 		t.Fatalf("board task run failed: code=%d out=%s err=%s", runCode, runOut, runErr)
 	}
 	// Fail t2 (still held by this actor after run), reopen, block, unblock, assign, needs, cancel
-	_ = cliJSON("board", "task", "fail", t2ID, "flaky test")
+	_ = cliJSON("board", "task", "fail", t2ID, "flaky test", "--as", "worker-c")
 	_ = cliJSON("board", "task", "reopen", t2ID)
 	_ = cliJSON("board", "task", "block", t2ID, "--kind", "review", "needs sign-off")
 	_ = cliJSON("board", "task", "unblock", t2ID)

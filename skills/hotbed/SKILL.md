@@ -301,7 +301,7 @@ hotbed board task ls                           # open tasks (waiting/ready/claim
 hotbed board task create "Refactor index" --needs 10 --for worker-1 --claim --lease 30m
 hotbed board task create --plan plan.json      # atomic DAG plan (up to 100 tasks with internal key needs)
 hotbed board task claim --ready --wait 2m      # or `claim ID`
-hotbed board task run --ready -- ./worker.sh   # claims task, sets HOTBED_BOARD_TASK (+ HOTBED_SESSION/HOTBED_BOARD_PROFILE), auto-renews every 1/3 lease
+hotbed board task run --ready -- ./worker.sh   # claims task, sets HOTBED_BOARD_TASK and acts-as env so the command settles it as the holder, auto-renews every 1/3 lease
 hotbed board task renew 42                     # preserves original lease duration when --lease omitted
 hotbed board task complete 42 "All tests green"  # alias: done; automatically readies waiting dependents
 hotbed board task fail 42 "Timed out"          # hotbed board task reopen 42

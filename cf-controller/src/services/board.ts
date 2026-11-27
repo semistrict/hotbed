@@ -736,6 +736,7 @@ export function createBoardService(
 			});
 			const res = store.renewTask({
 				id: Number(req.id),
+				epoch: req.epoch,
 				leaseSeconds: req.leaseSeconds,
 				identity,
 				nowMs: ctrl.now(),
@@ -755,6 +756,7 @@ export function createBoardService(
 			});
 			const res = store.releaseTask({
 				id: Number(req.id),
+				epoch: req.epoch,
 				identity,
 				nowMs: ctrl.now(),
 			});
@@ -770,6 +772,7 @@ export function createBoardService(
 			});
 			const res = store.completeTask({
 				id: Number(req.id),
+				epoch: req.epoch,
 				result: req.result,
 				identity,
 				nowMs: ctrl.now(),
@@ -786,6 +789,7 @@ export function createBoardService(
 			});
 			const res = store.failTask({
 				id: Number(req.id),
+				epoch: req.epoch,
 				reason: req.reason,
 				identity,
 				nowMs: ctrl.now(),
@@ -802,6 +806,7 @@ export function createBoardService(
 			});
 			const res = store.blockTask({
 				id: Number(req.id),
+				epoch: req.epoch,
 				reason: req.reason,
 				kind: req.kind,
 				identity,

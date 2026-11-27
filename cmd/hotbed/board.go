@@ -46,7 +46,7 @@ type boardCmd struct {
 type boardActorFlags struct {
 	sessionFlag
 	As     string `name:"as" env:"HOTBED_BOARD_PROFILE" help:"Act as this profile name (e.g. reviewer, worker-1)."`
-	AsUser bool   `name:"as-user" help:"Act directly as the authenticated human user instead of the bound agent session."`
+	AsUser bool   `name:"as-user" env:"HOTBED_BOARD_AS_USER" help:"Act directly as the authenticated human user instead of the bound agent session."`
 	Model  string `env:"HOTBED_MODEL" help:"Model name to stamp on agent posts (default: session model)."`
 }
 
@@ -1386,9 +1386,15 @@ func (c *boardTaskRunCmd) Raw(ctx context.Context, d deps) (int, bool, error) {
 	if err != nil {
 		return exitError, false, err
 	}
+	sess, err := c.resolveSession(ctx, d)
+	if err != nil {
+		return exitError, false, err
+	}
+	actor := c.boardActorFlags
+	actor.Session = sess
 	claimCmd := &boardTaskClaimCmd{
 		controllerClient: c.controllerClient,
-		boardActorFlags:  c.boardActorFlags,
+		boardActorFlags:  actor,
 		projectFlag:      c.projectFlag,
 		ID:               c.ID,
 		Ready:            c.Ready,
@@ -1406,11 +1412,7 @@ func (c *boardTaskRunCmd) Raw(ctx context.Context, d deps) (int, bool, error) {
 	if res.Task == nil || res.Claim == nil {
 		return exitError, false, api.Errorf(api.CodeInternal, "claim returned no task or claim")
 	}
-	sess, err := c.resolveSession(ctx, d)
-	if err != nil {
-		return exitError, false, err
-	}
-	taskID := res.Task.Id
+	taskID, epoch := res.Task.Id, res.Claim.Epoch
 
 	leaseSec, _ := parseBoardDuration(c.Lease)
 	if leaseSec <= 0 {
@@ -1422,7 +1424,7 @@ func (c *boardTaskRunCmd) Raw(ctx context.Context, d deps) (int, bool, error) {
 		"id":      taskID,
 		"project": res.Task.Project,
 		"text":    res.Task.Text,
-		"epoch":   res.Claim.Epoch,
+		"epoch":   epoch,
 		"until":   res.Claim.Until,
 	})
 
@@ -1444,6 +1446,7 @@ func (c *boardTaskRunCmd) Raw(ctx context.Context, d deps) (int, bool, error) {
 			case <-t.C:
 				_, rerr := cl.board.RenewBoardTask(runCtx, &pb.RenewBoardTaskRequest{
 					Id:        taskID,
+					Epoch:     epoch,
 					SessionId: sess,
 					AsProfile: c.As,
 				})
@@ -1459,9 +1462,13 @@ func (c *boardTaskRunCmd) Raw(ctx context.Context, d deps) (int, bool, error) {
 	cmd.Stdin = d.stdin
 	cmd.Stdout = d.stdout
 	cmd.Stderr = d.stderr
-	// The claim belongs to this actor, so the command settles it by acting as the same one.
+	// The claim belongs to this actor, so the command settles it by acting as the same
+	// one; board task commands it runs on this task also check the claim's epoch.
 	cmd.Env = append(os.Environ(), "HOTBED_BOARD_TASK="+string(envPayload))
-	if sess != "" {
+	switch {
+	case c.AsUser:
+		cmd.Env = append(cmd.Env, "HOTBED_BOARD_AS_USER=true")
+	case sess != "":
 		cmd.Env = append(cmd.Env, "HOTBED_SESSION="+sess)
 	}
 	if c.As != "" {
@@ -1475,7 +1482,7 @@ func (c *boardTaskRunCmd) Raw(ctx context.Context, d deps) (int, bool, error) {
 	if err := cmd.Start(); err != nil {
 		cancel()
 		_, _ = cl.board.ReleaseBoardTask(context.Background(), &pb.ReleaseBoardTaskRequest{
-			Id: taskID, SessionId: sess, AsProfile: c.As,
+			Id: taskID, Epoch: epoch, SessionId: sess, AsProfile: c.As,
 		})
 		return exitError, false, err
 	}
@@ -1504,10 +1511,28 @@ func (c *boardTaskRunCmd) Raw(ctx context.Context, d deps) (int, bool, error) {
 		_ = cmd.Process.Signal(syscall.SIGTERM)
 		<-waitDone
 		_, _ = cl.board.ReleaseBoardTask(context.Background(), &pb.ReleaseBoardTaskRequest{
-			Id: taskID, SessionId: sess, AsProfile: c.As,
+			Id: taskID, Epoch: epoch, SessionId: sess, AsProfile: c.As,
 		})
 		return exitInterrupted, true, nil
 	}
+}
+
+// boardTaskRunEpoch is the epoch of the claim `board task run` made on task id, when
+// this runs under it (HOTBED_BOARD_TASK), else 0: it fences a command a stale run
+// started from settling the claim another run with the same identity took over.
+func boardTaskRunEpoch(d deps, id int64) int32 {
+	var task struct {
+		ID    int64 `json:"id"`
+		Epoch int32 `json:"epoch"`
+	}
+	raw := d.env("HOTBED_BOARD_TASK")
+	if raw == "" {
+		return 0
+	}
+	if err := json.Unmarshal([]byte(raw), &task); err != nil || task.ID != id {
+		return 0
+	}
+	return task.Epoch
 }
 
 type boardTaskRenewCmd struct {
@@ -1532,6 +1557,7 @@ func (c *boardTaskRenewCmd) Exec(ctx context.Context, d deps) (any, error) {
 	}
 	return cl.board.RenewBoardTask(ctx, &pb.RenewBoardTaskRequest{
 		Id:           c.ID,
+		Epoch:        boardTaskRunEpoch(d, c.ID),
 		LeaseSeconds: int32(leaseSec),
 		SessionId:    sess,
 		AsProfile:    c.As,
@@ -1555,6 +1581,7 @@ func (c *boardTaskReleaseCmd) Exec(ctx context.Context, d deps) (any, error) {
 	}
 	return cl.board.ReleaseBoardTask(ctx, &pb.ReleaseBoardTaskRequest{
 		Id:        c.ID,
+		Epoch:     boardTaskRunEpoch(d, c.ID),
 		SessionId: sess,
 		AsProfile: c.As,
 	})
@@ -1583,6 +1610,7 @@ func (c *boardTaskCompleteCmd) Exec(ctx context.Context, d deps) (any, error) {
 	}
 	return cl.board.CompleteBoardTask(ctx, &pb.CompleteBoardTaskRequest{
 		Id:        c.ID,
+		Epoch:     boardTaskRunEpoch(d, c.ID),
 		Result:    result,
 		SessionId: sess,
 		AsProfile: c.As,
@@ -1607,6 +1635,7 @@ func (c *boardTaskFailCmd) Exec(ctx context.Context, d deps) (any, error) {
 	}
 	return cl.board.FailBoardTask(ctx, &pb.FailBoardTaskRequest{
 		Id:        c.ID,
+		Epoch:     boardTaskRunEpoch(d, c.ID),
 		Reason:    strings.TrimSpace(strings.Join(c.Reason, " ")),
 		SessionId: sess,
 		AsProfile: c.As,
@@ -1632,6 +1661,7 @@ func (c *boardTaskBlockCmd) Exec(ctx context.Context, d deps) (any, error) {
 	}
 	return cl.board.BlockBoardTask(ctx, &pb.BlockBoardTaskRequest{
 		Id:        c.ID,
+		Epoch:     boardTaskRunEpoch(d, c.ID),
 		Reason:    strings.TrimSpace(strings.Join(c.Reason, " ")),
 		Kind:      c.Kind,
 		SessionId: sess,

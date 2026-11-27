@@ -2166,13 +2166,25 @@ export class BoardStore {
 		);
 	}
 
+	// epoch, when nonzero, also names the claim the caller means: actors are shared (one
+	// profile on several hosts, subagents of one session), so a worker whose claim lapsed
+	// and was re-claimed by another under the same identity is refused.
 	private requireHeld(
 		id: number,
 		task: BoardTask,
 		identity: BoardIdentity,
+		epoch: number,
 		nowMs: number,
 	): BoardTaskClaimView {
-		if (this.isHeldBy(task, identity, nowMs)) return task.claim!;
+		if (this.isHeldBy(task, identity, nowMs)) {
+			if (epoch && epoch !== task.epoch) {
+				throw hotbedError(
+					ErrorCode.Conflict,
+					`claim_lost: claim ${epoch} on #${id} is over: #${id} was claimed again (claim ${task.epoch})`,
+				).withSuggestion(`hotbed board read ${id}`);
+			}
+			return task.claim!;
+		}
 		const live = task.state === BoardTaskState.CLAIMED && !isLapsed(task, nowMs);
 		const why = live
 			? `it is claimed by ${task.claim?.actor ?? "someone"}`
@@ -2191,12 +2203,13 @@ export class BoardStore {
 	private renewHeld(
 		row: { id: number; projectId: number; msg: BoardMessage },
 		identity: BoardIdentity,
+		epoch: number,
 		leaseSeconds: number,
 		nowMs: number,
 	): BoardTaskClaim {
 		const msg = row.msg;
 		const task = msg.task!;
-		const held = this.requireHeld(row.id, task, identity, nowMs);
+		const held = this.requireHeld(row.id, task, identity, epoch, nowMs);
 		const leaseS = normalizeLeaseSeconds(leaseSeconds > 0 ? leaseSeconds : held.leaseSeconds);
 		const untilMs = nowMs + leaseS * 1000;
 		const before = clone(BoardMessageSchema, msg);
@@ -2717,7 +2730,7 @@ export class BoardStore {
 			const task = msg.task;
 			// Claiming a task the caller already holds re-issues its lease.
 			if (this.isHeldBy(task, opts.identity, opts.nowMs)) {
-				const claim = this.renewHeld(row, opts.identity, opts.leaseSeconds, opts.nowMs);
+				const claim = this.renewHeld(row, opts.identity, 0, opts.leaseSeconds, opts.nowMs);
 				return { task: msg, claim, project: msg.project };
 			}
 			if (task.state === BoardTaskState.WAITING) {
@@ -2831,7 +2844,13 @@ export class BoardStore {
 		});
 	}
 
-	renewTask(opts: { id: number; leaseSeconds: number; identity: BoardIdentity; nowMs: number }): {
+	renewTask(opts: {
+		id: number;
+		leaseSeconds: number;
+		epoch: number;
+		identity: BoardIdentity;
+		nowMs: number;
+	}): {
 		task: BoardMessage;
 		claim: BoardTaskClaim;
 		project: string;
@@ -2843,12 +2862,12 @@ export class BoardStore {
 			if (!msg.task) {
 				throw hotbedError(ErrorCode.NotFound, `not_a_task: #${opts.id} isn't a task`);
 			}
-			const claim = this.renewHeld(row, opts.identity, opts.leaseSeconds, opts.nowMs);
+			const claim = this.renewHeld(row, opts.identity, opts.epoch, opts.leaseSeconds, opts.nowMs);
 			return { task: msg, claim, project: msg.project };
 		});
 	}
 
-	releaseTask(opts: { id: number; identity: BoardIdentity; nowMs: number }): {
+	releaseTask(opts: { id: number; epoch: number; identity: BoardIdentity; nowMs: number }): {
 		task: BoardMessage;
 		project: string;
 	} {
@@ -2857,7 +2876,7 @@ export class BoardStore {
 			const row = this.getMessageRow(opts.id);
 			const msg = row.msg;
 			if (!msg.task) throw hotbedError(ErrorCode.NotFound, `not_a_task: #${opts.id} isn't a task`);
-			this.requireHeld(opts.id, msg.task, opts.identity, opts.nowMs);
+			this.requireHeld(opts.id, msg.task, opts.identity, opts.epoch, opts.nowMs);
 			const before = clone(BoardMessageSchema, msg);
 			msg.task.state = BoardTaskState.READY;
 			msg.task.claim = undefined;
@@ -2880,7 +2899,13 @@ export class BoardStore {
 		});
 	}
 
-	completeTask(opts: { id: number; result: string; identity: BoardIdentity; nowMs: number }): {
+	completeTask(opts: {
+		id: number;
+		result: string;
+		epoch: number;
+		identity: BoardIdentity;
+		nowMs: number;
+	}): {
 		task: BoardMessage;
 		projects: string[];
 	} {
@@ -2890,7 +2915,7 @@ export class BoardStore {
 			const row = this.getMessageRow(opts.id);
 			const msg = row.msg;
 			if (!msg.task) throw hotbedError(ErrorCode.NotFound, `not_a_task: #${opts.id} isn't a task`);
-			this.requireHeld(opts.id, msg.task, opts.identity, opts.nowMs);
+			this.requireHeld(opts.id, msg.task, opts.identity, opts.epoch, opts.nowMs);
 			const before = clone(BoardMessageSchema, msg);
 			msg.task.state = BoardTaskState.COMPLETED;
 			msg.task.claim = undefined;
@@ -2915,7 +2940,13 @@ export class BoardStore {
 		});
 	}
 
-	failTask(opts: { id: number; reason: string; identity: BoardIdentity; nowMs: number }): {
+	failTask(opts: {
+		id: number;
+		reason: string;
+		epoch: number;
+		identity: BoardIdentity;
+		nowMs: number;
+	}): {
 		task: BoardMessage;
 		project: string;
 	} {
@@ -2925,7 +2956,7 @@ export class BoardStore {
 			const row = this.getMessageRow(opts.id);
 			const msg = row.msg;
 			if (!msg.task) throw hotbedError(ErrorCode.NotFound, `not_a_task: #${opts.id} isn't a task`);
-			this.requireHeld(opts.id, msg.task, opts.identity, opts.nowMs);
+			this.requireHeld(opts.id, msg.task, opts.identity, opts.epoch, opts.nowMs);
 			const before = clone(BoardMessageSchema, msg);
 			msg.task.state = BoardTaskState.FAILED;
 			msg.task.claim = undefined;
@@ -2953,6 +2984,7 @@ export class BoardStore {
 		id: number;
 		reason: string;
 		kind: string;
+		epoch: number;
 		identity: BoardIdentity;
 		nowMs: number;
 	}): { task: BoardMessage; project: string } {
@@ -2981,11 +3013,10 @@ export class BoardStore {
 					`task_finished: #${opts.id} is ${taskStateName(task.state)}`,
 				);
 			}
-			if (task.state === BoardTaskState.CLAIMED && !isLapsed(task, opts.nowMs)) {
-				if (
-					!this.isHeldBy(task, opts.identity, opts.nowMs) &&
-					!this.canOwnTask(task, opts.identity)
-				) {
+			if (this.isHeldBy(task, opts.identity, opts.nowMs)) {
+				this.requireHeld(opts.id, task, opts.identity, opts.epoch, opts.nowMs);
+			} else if (task.state === BoardTaskState.CLAIMED && !isLapsed(task, opts.nowMs)) {
+				if (!this.canOwnTask(task, opts.identity)) {
 					throw hotbedError(
 						ErrorCode.Conflict,
 						`task_claimed: #${opts.id} is claimed by ${task.claim?.actor ?? "someone"}; act as its holder or its owner`,
