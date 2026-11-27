@@ -15,8 +15,7 @@ import { Miniflare } from "miniflare";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const rootDir = path.resolve(__dirname, "..");
-const bundleDir = path.join(rootDir, ".cloudflare/output/v1/workers/default/bundle");
-const entryPath = path.join(bundleDir, "index.js");
+const defaultBundleDir = path.join(rootDir, ".cloudflare/output/v1/workers/default/bundle");
 
 function parseArgs(argv) {
 	const out = {
@@ -27,10 +26,12 @@ function parseArgs(argv) {
 		joinToken: "hbj_test_join_token",
 		assets: "",
 		persist: "",
+		bundle: defaultBundleDir,
 	};
 	for (let i = 0; i < argv.length; i++) {
 		const arg = argv[i];
-		if (arg === "--port" && argv[i + 1]) out.port = Number(argv[++i]);
+		if (arg === "--bundle" && argv[i + 1]) out.bundle = path.resolve(argv[++i]);
+		else if (arg === "--port" && argv[i + 1]) out.port = Number(argv[++i]);
 		else if (arg === "--owner" && argv[i + 1]) out.owner = argv[++i];
 		else if (arg === "--name" && argv[i + 1]) out.name = argv[++i];
 		else if (arg === "--token" && argv[i + 1]) out.token = argv[++i];
@@ -61,6 +62,10 @@ function collectModules(dir, base = dir, out = {}) {
 	return out;
 }
 
+const opts = parseArgs(process.argv.slice(2));
+const bundleDir = opts.bundle;
+const entryPath = path.join(bundleDir, "index.js");
+
 if (!fs.existsSync(entryPath)) {
 	console.error(
 		`cf-controller bundle missing at ${entryPath}; run \`pnpm -C cf-controller run build\` first`,
@@ -68,7 +73,6 @@ if (!fs.existsSync(entryPath)) {
 	process.exit(1);
 }
 
-const opts = parseArgs(process.argv.slice(2));
 const modules = collectModules(bundleDir);
 
 const workerEnv = {
@@ -125,7 +129,10 @@ if (opts.assets && fs.existsSync(opts.assets)) {
 	workerEnv.ASSETS = { type: "assets" };
 	workerConfig.assets = {
 		directory: opts.assets,
+		// The Worker is in front of its assets, as in production; without
+		// hasUserWorker Miniflare's router refuses to hand it a request.
 		runWorkerFirst: true,
+		hasUserWorker: true,
 	};
 }
 

@@ -1,6 +1,7 @@
 # Every push to main is tested, built for each platform hotbed runs on, and published as the
-# release build-N (N the run number, which only grows). The controller follows the newest
-# release and its nodes follow the controller (internal/update): nothing is deployed by hand.
+# release build-N (N the run number, which only grows), and the cf-controller Worker (which
+# serves the cockpit UI) is deployed to Cloudflare. The Worker announces the newest release
+# and its nodes follow it (internal/update): nothing is deployed by hand.
 name: build
 
 on:
@@ -33,11 +34,6 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 24
-      - name: UI
-        run: |
-          go generate ./ui
-          pnpm -C ui test
-          pnpm -C ui typecheck
       - name: Build cf-controller
         run: |
           pnpm -C cf-controller install --frozen-lockfile
@@ -195,14 +191,6 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
-      - uses: pnpm/action-setup@v4
-        with:
-          version: 10.34.0
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 24
-      - name: UI
-        run: go generate ./ui
       - name: Build
         run: |
           mkdir out

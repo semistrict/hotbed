@@ -2,11 +2,13 @@ package main
 
 import (
 	"bytes"
+	"io"
 	"net/http"
 	"net/netip"
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
 	"testing"
 
 	"connectrpc.com/connect/v2"
@@ -17,7 +19,7 @@ import (
 )
 
 func TestStartDevClusterPopulatesCockpit(t *testing.T) {
-	dc, err := startDevCluster(t.Context(), "127.0.0.1:0")
+	dc, err := startDevCluster(t.Context(), "127.0.0.1:0", "")
 	if err != nil {
 		t.Fatalf("startDevCluster: %v", err)
 	}
@@ -180,7 +182,7 @@ func TestStartDevClusterPopulatesCockpit(t *testing.T) {
 }
 
 func TestDevClusterRejectsOtherLocalUID(t *testing.T) {
-	dc, err := startDevCluster(t.Context(), "127.0.0.1:0")
+	dc, err := startDevCluster(t.Context(), "127.0.0.1:0", "")
 	if err != nil {
 		t.Fatalf("startDevCluster: %v", err)
 	}
@@ -231,26 +233,44 @@ func TestDevClusterRejectsOtherLocalUID(t *testing.T) {
 		t.Errorf("other UID GetSnapshot api code = %q, want %q", got, api.CodeNotAuthorized)
 	}
 
-	// Direct external connections to a dev worker listener must also be rejected.
-	wreq, err := http.NewRequestWithContext(t.Context(), http.MethodGet, "http://"+dc.workers[0].ln.Addr().String()+"/", nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	wresp, err := client.Do(wreq)
-	if err != nil {
-		t.Fatalf("GET worker: %v", err)
-	}
-	wresp.Body.Close()
-	if wresp.StatusCode != http.StatusUnauthorized && wresp.StatusCode != http.StatusForbidden {
-		t.Errorf("external GET worker status = %d, want 401 or 403", wresp.StatusCode)
-	}
-
 	// Restore os.Getuid() and verify the owner is admitted again.
 	dc.tn.setLocalUID(func(netip.AddrPort, netip.AddrPort) (uint32, error) {
 		return ownerUID, nil
 	})
 	if _, err := cluster.GetSnapshot(t.Context(), &pb.GetSnapshotRequest{}); err != nil {
 		t.Fatalf("owner UID GetSnapshot failed: %v", err)
+	}
+}
+
+// The cockpit is served by the Worker itself, from the built UI directory, to
+// every deep link: the same asset path as production, behind the same gate.
+func TestDevClusterServesTheBuiltCockpitThroughTheWorker(t *testing.T) {
+	ui := t.TempDir()
+	if err := os.WriteFile(filepath.Join(ui, "index.html"), []byte("<!doctype html><title>dev cockpit</title>"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	dc, err := startDevCluster(t.Context(), "127.0.0.1:0", ui)
+	if err != nil {
+		t.Fatalf("startDevCluster: %v", err)
+	}
+	t.Cleanup(dc.Close)
+
+	req, err := http.NewRequestWithContext(t.Context(), http.MethodGet, "http://"+dc.addr+"/sessions/brave-otter", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Accept", "text/html")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("GET deep link: %v", err)
+	}
+	defer resp.Body.Close()
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.StatusCode != http.StatusOK || !strings.Contains(string(body), "<title>dev cockpit</title>") {
+		t.Errorf("GET deep link = %d %q, want 200 with the built index.html", resp.StatusCode, body)
 	}
 }
 

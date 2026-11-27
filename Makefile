@@ -1,14 +1,15 @@
-# The UI is embedded in the binary, so build it first.
+# The hotbed binary does not embed the UI: the cf-controller Worker serves ui/dist.
 .PHONY: build ui sqlc proto skills test dev-cockpit
 
-build: ui
+build:
 	go build -o bin/hotbed ./cmd/hotbed
 
 dev-cockpit:
 	go run ./cmd/dev-cockpit
 
 ui:
-	go generate ./ui
+	pnpm -C ui install --frozen-lockfile
+	pnpm -C ui build
 
 sqlc:
 	sqlc generate
