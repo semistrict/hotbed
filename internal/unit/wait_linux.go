@@ -19,7 +19,19 @@ import (
 // watches that file with inotify instead of asking systemd over and over. A
 // unit whose cgroup is already gone has exited.
 func Wait(ctx context.Context, slice, name string) error {
-	events := filepath.Join("/sys/fs/cgroup", SliceDir(slice), name+".service", "cgroup.events")
+	return waitEmptied(ctx, filepath.Join("/sys/fs/cgroup", SliceDir(slice), name+".service", "cgroup.events"))
+}
+
+// waitRecheck is how long waitEmptied trusts inotify alone. kernfs raises no
+// event when a cgroup is removed, and the "populated 0" of one systemd
+// removes as it empties can come to nothing: Wait once slept on, past its
+// caller's deadline, a unit whose cgroup was long gone (TestOOMKillReported,
+// TestStartSliceKeepsAUserSlice on CI). So it looks again this often.
+const waitRecheck = time.Second
+
+// waitEmptied returns once the cgroup whose cgroup.events is events has no
+// process left or is gone, or ctx is done.
+func waitEmptied(ctx context.Context, events string) error {
 	fd, err := unix.InotifyInit1(unix.IN_CLOEXEC | unix.IN_NONBLOCK)
 	if err != nil {
 		return fmt.Errorf("inotify: %w", err)
@@ -50,7 +62,13 @@ func Wait(ctx context.Context, slice, name string) error {
 		if !populated {
 			return nil
 		}
-		if _, err := f.Read(buf); err != nil {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		// ctx ending between its check and this deadline costs at most
+		// waitRecheck: the next pass sees it.
+		f.SetReadDeadline(time.Now().Add(waitRecheck))
+		if _, err := f.Read(buf); err != nil && !errors.Is(err, os.ErrDeadlineExceeded) {
 			if ctx.Err() != nil {
 				return ctx.Err()
 			}
