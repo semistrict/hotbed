@@ -30,6 +30,7 @@ var nodeProtocol = []string{
 	"/hotbed.v1.ClusterService/SaveCommandDiagnostics",
 	"/hotbed.v1.ClusterService/SaveCommandSample",
 	"/hotbed.v1.ClusterService/PushCommandOutput",
+	"/hotbed.v1.ClusterService/PushDaemonLogs",
 	// Controller-to-worker RPC invoked over the worker tunnel by ClusterService.UpgradeSystem.
 	"/hotbed.v1.WorkspaceService/UpgradeSystem",
 }

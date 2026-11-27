@@ -31,6 +31,7 @@ import {
 	NodeSystemUpgradeSchema,
 	NodeUsageSchema,
 	PushCommandOutputResponseSchema,
+	PushDaemonLogsResponseSchema,
 	PushEventsResponseSchema,
 	RepoSchema,
 	RepoSummarySchema,
@@ -473,7 +474,26 @@ export function createClusterService(
 		}
 	}
 
-	function filteredEvents(nodeId: string, kinds: string[], limit: number): ClusterEvent[] {
+	function mergeEvents(lists: ClusterEvent[][], limit: number): ClusterEvent[] {
+		const merged: ClusterEvent[] = [];
+		const seen = new Set<string>();
+		for (const list of lists) {
+			for (const ev of list) {
+				const key = `${ev.nodeId}|${ev.at}|${ev.kind}|${ev.text}|${ev.ref?.type ?? ""}|${ev.ref?.id ?? ""}`;
+				if (seen.has(key)) continue;
+				seen.add(key);
+				merged.push(ev);
+			}
+		}
+		merged.sort((a, b) => {
+			if (b.at !== a.at) return b.at > a.at ? 1 : -1;
+			if (b.id !== a.id) return b.id > a.id ? 1 : -1;
+			return a.nodeId < b.nodeId ? -1 : a.nodeId > b.nodeId ? 1 : 0;
+		});
+		return merged.length > limit ? merged.slice(0, limit) : merged;
+	}
+
+	function legacyFilteredEvents(nodeId: string, kinds: string[], limit: number): ClusterEvent[] {
 		const all = ctrl.store.fleet.recentEvents(KEEP_EVENTS);
 		const hosts = new Map(ctrl.store.fleet.list().map((r) => [r.node.id, r.node.hostname]));
 		const out: ClusterEvent[] = [];
@@ -485,6 +505,22 @@ export function createClusterService(
 			out.push(e);
 		}
 		return out;
+	}
+
+	async function filteredEvents(
+		nodeId: string,
+		kinds: string[],
+		limit: number,
+	): Promise<ClusterEvent[]> {
+		const nodes = ctrl.store.fleet.list();
+		const targetNodes = nodeId ? nodes.filter((r) => r.node.id === nodeId) : nodes;
+		const workerLists = await Promise.all(
+			targetNodes.map((r) =>
+				ctrl.workers.recentEvents(r.node.id, r.node.hostname, { kinds, limit }),
+			),
+		);
+		const legacy = legacyFilteredEvents(nodeId, kinds, limit);
+		return mergeEvents([...workerLists, legacy], limit);
 	}
 
 	function filteredPlacements(nodeId: string, session: string, limit: number): PlacementDecision[] {
@@ -564,6 +600,9 @@ export function createClusterService(
 				ctrl.now(),
 				ctrl.creatingWorkspacesSet(),
 			);
+			if (res.feedEvents.length > 0) {
+				await ctrl.workers.appendEvents(caller.nodeId, caller.hostname, res.feedEvents);
+			}
 			ctrl.sessionWakes.wakeAll(res.sessions);
 			if (res.lost.length > 0) ctrl.loseRuns(res.lost);
 			if (res.finished) await ctrl.settleRuns();
@@ -581,7 +620,8 @@ export function createClusterService(
 			const caller = getCaller(ctx.values);
 			checkClusterId(caller.hostname, req.clusterId);
 			const nowMs = ctrl.now();
-			ctrl.store.fleet.beat(caller.nodeId, req, nowMs);
+			const sample = ctrl.store.fleet.beat(caller.nodeId, req, nowMs);
+			await ctrl.workers.recordSample(caller.nodeId, caller.hostname, sample);
 			const holdsBases = reportsHeldBases(req, ctrl.follows(req.resources));
 			if (holdsBases) {
 				const recorded = ctrl.store.cladefs.recordHeldBases(
@@ -1105,7 +1145,7 @@ export function createClusterService(
 			});
 		},
 
-		getFreshen(req) {
+		async getFreshen(req) {
 			const id = req.id.trim();
 			if (!id) {
 				throw hotbedError(ErrorCode.InvalidArgs, "freshen command ID or base ID is required");
@@ -1146,16 +1186,25 @@ export function createClusterService(
 				nv && nv.online && isFreshenActive(freshen.state) ? nv.node.admission : undefined;
 
 			const hostById = new Map(nvs.map((v) => [v.node.id, v.node.hostname]));
+			const host = hostById.get(freshen.nodeId) ?? freshen.node;
 			const genPhrase =
 				freshen.generation > 0 ? `base ${freshen.project} g${freshen.generation} ` : "";
-			const related: ClusterEvent[] = [];
+			const workerEvs = await ctrl.workers.recentEvents(freshen.nodeId, host, { limit: 400 });
+			const legacyEvs: ClusterEvent[] = [];
 			for (const ev of ctrl.store.fleet.nodeEventsNewestFirst(freshen.nodeId)) {
+				ev.hostname = host;
+				legacyEvs.push(ev);
+				if (legacyEvs.length >= 400) break;
+			}
+			const candidates = mergeEvents([workerEvs, legacyEvs], 400);
+			const related: ClusterEvent[] = [];
+			for (const ev of candidates) {
 				const matches =
 					(ev.ref?.id && (ev.ref.id === freshen.id || ev.ref.id === freshen.baseId)) ||
 					(freshen.baseId && ev.text.includes(freshen.baseId)) ||
 					(genPhrase && ev.text.includes(genPhrase));
 				if (!matches) continue;
-				ev.hostname = hostById.get(ev.nodeId) ?? freshen.node;
+				ev.hostname = host;
 				related.push(ev);
 				if (related.length >= 40) break;
 			}
@@ -1167,14 +1216,38 @@ export function createClusterService(
 			});
 		},
 
-		getSnapshot() {
+		async getSnapshot() {
 			const nowMs = ctrl.now();
 			const dayMs = nowMs - 24 * 3600_000;
 			const nvs = ctrl.views();
 			const repos = ctrl.store.projects.listRepos();
 			const history = ctrl.store.commands.historySince(dayMs);
-			const events = ctrl.store.fleet.recentEvents(EVENTS_SHOWN);
-			const samples = ctrl.store.fleet.samplesSince(dayMs);
+			const [workerSamplesLists, workerEventLists, workerLogSummaries] = await Promise.all([
+				Promise.all(nvs.map((nv) => ctrl.workers.samplesSince(nv.node.id, dayMs))),
+				Promise.all(
+					nvs.map((nv) =>
+						ctrl.workers.recentEvents(nv.node.id, nv.node.hostname, {
+							limit: Math.max(EVENTS_SHOWN, ADMISSION_EVENTS_SHOWN),
+						}),
+					),
+				),
+				Promise.all(nvs.map((nv) => ctrl.workers.logSummary(nv.node.id, nv.node.hostname, nowMs))),
+			]);
+			const legacySamples = ctrl.store.fleet.samplesSince(dayMs);
+			const sampleMap = new Map<string, SampleRow>();
+			for (const s of legacySamples) sampleMap.set(`${s.node}|${s.t}`, s);
+			for (const list of workerSamplesLists) {
+				for (const s of list) sampleMap.set(`${s.node}|${s.t}`, s);
+			}
+			const samples = [...sampleMap.values()].sort((a, b) => a.t - b.t);
+			const legacyEvents = ctrl.store.fleet.recentEvents(KEEP_EVENTS);
+			const hosts = new Map(nvs.map((nv) => [nv.node.id, nv.node.hostname]));
+			for (const e of legacyEvents) e.hostname = hosts.get(e.nodeId) ?? "";
+			const allRecentEvents = mergeEvents(
+				[...workerEventLists, legacyEvents],
+				Math.max(EVENTS_SHOWN, ADMISSION_EVENTS_SHOWN),
+			);
+			const events = allRecentEvents.slice(0, EVENTS_SHOWN);
 			const { series, load, nodeHourly, hourlyR2, r2Totals } = buildSeries(samples, nowMs);
 			const oom = countOomKills(samples);
 			const forks = ctrl.store.workspaces.forksSince(dayMs);
@@ -1188,11 +1261,16 @@ export function createClusterService(
 			const bases: Base[] = [];
 			const workspaces = [];
 			const commands: Command[] = [];
-			for (const nv of nvs) {
+			for (let i = 0; i < nvs.length; i++) {
+				const nv = nvs[i];
 				const node = nv.node;
 				if (!nv.online) {
 					node.usage = create(NodeUsageSchema);
 					node.admission = undefined;
+				}
+				const logSum = workerLogSummaries[i];
+				if (logSum?.hasStreamedLogs) {
+					node.daemonLogs = logSum.source;
 				}
 				nodes.push(node);
 				bases.push(...nv.bases);
@@ -1206,7 +1284,9 @@ export function createClusterService(
 			commands.sort((a, b) => (a.queuedAt < b.queuedAt ? -1 : a.queuedAt > b.queuedAt ? 1 : 0));
 
 			const placements = ctrl.store.fleet.placementsSince(dayMs).slice(0, PLACEMENTS_SHOWN);
-			const admissionEvents = filteredEvents("", ADMISSION_KINDS, ADMISSION_EVENTS_SHOWN);
+			const admissionEvents = allRecentEvents
+				.filter((e) => ADMISSION_KINDS.includes(e.kind))
+				.slice(0, ADMISSION_EVENTS_SHOWN);
 
 			const openBoardTasks = projects.reduce((sum, p) => sum + p.openBoardTasks, 0);
 			const blockedBoardTasks = projects.reduce((sum, p) => sum + p.blockedBoardTasks, 0);
@@ -1304,6 +1384,30 @@ export function createClusterService(
 			return create(PushCommandOutputResponseSchema, { ackedOffset: BigInt(ackedOffset) });
 		},
 
+		async pushDaemonLogs(req, ctx) {
+			const caller = getCaller(ctx.values);
+			if (req.clusterId) {
+				checkClusterId(caller.hostname, req.clusterId);
+			}
+			if (!ctrl.store.fleet.has(caller.nodeId)) {
+				throw hotbedError(ErrorCode.NotJoined, `${caller.hostname} has not joined this cluster`);
+			}
+			if (req.entries.length > 1000) {
+				throw hotbedError(
+					ErrorCode.InvalidArgs,
+					`pushDaemonLogs batch too large (${req.entries.length} entries, max 1000)`,
+				);
+			}
+			const { ackedSeq } = await ctrl.workers.appendLogs(
+				caller.nodeId,
+				caller.hostname,
+				req.epoch,
+				req.entries,
+				ctrl.now(),
+			);
+			return create(PushDaemonLogsResponseSchema, { ackedSeq: BigInt(ackedSeq) });
+		},
+
 		async listCommandSamples(req) {
 			if (!req.id.trim()) throw hotbedError(ErrorCode.InvalidArgs, "command ID is required");
 			const samples = await ctrl.commands.listSamples(req.id);
@@ -1359,19 +1463,19 @@ export function createClusterService(
 			});
 		},
 
-		getNode(req) {
+		async getNode(req) {
 			const r = ctrl.findNodeByNameOrId(req.node);
 			const n = ctrl.withOnline(r.node);
 			if (!n.online) n.admission = undefined;
 			const limit = req.limit || 30;
 			return create(NodeDetailSchema, {
 				node: n,
-				events: filteredEvents(n.id, ADMISSION_KINDS, limit),
+				events: await filteredEvents(n.id, ADMISSION_KINDS, limit),
 				placements: filteredPlacements(n.id, "", limit),
 			});
 		},
 
-		retireNode(req) {
+		async retireNode(req) {
 			const r = ctrl.findNodeByNameOrId(req.node);
 			const n = ctrl.withOnline(r.node);
 			if (n.online) {
@@ -1382,6 +1486,7 @@ export function createClusterService(
 			}
 			const nowMs = ctrl.now();
 			ctrl.store.fleet.retire(n.id, nowMs);
+			await ctrl.workers.markRetired(n.id, nowMs);
 			const inc = r.hb?.cladefsIncarnation ?? 0n;
 			if (inc > 0n) {
 				ctrl.store.cladefs.recordRetiredIncarnation(inc, n.id, n.hostname, nowMs);
@@ -1396,10 +1501,10 @@ export function createClusterService(
 			});
 		},
 
-		listEvents(req) {
+		async listEvents(req) {
 			const nodeId = req.node ? ctrl.findNodeByNameOrId(req.node).node.id : "";
 			return create(ListEventsResponseSchema, {
-				events: filteredEvents(nodeId, req.kinds, req.limit || 100),
+				events: await filteredEvents(nodeId, req.kinds, req.limit || 100),
 			});
 		},
 
@@ -1585,12 +1690,15 @@ export function createClusterService(
 						if (res.restartedCladefsd) {
 							parts.push("restarted cladefsd");
 						}
-						ctrl.store.fleet.recordEvent(
-							node.id,
-							"upgrade",
-							`${node.hostname} system upgrade: ${parts.join(", ") || "complete"}`,
-							ctrl.now(),
-						);
+						await ctrl.workers.appendEvents(node.id, node.hostname, [
+							{
+								at: ctrl.now(),
+								kind: "upgrade",
+								text: `${node.hostname} system upgrade: ${parts.join(", ") || "complete"}`,
+								refType: "",
+								refId: "",
+							},
+						]);
 					}
 					if (res.status === "failed") {
 						throw hotbedError(

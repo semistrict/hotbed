@@ -517,12 +517,13 @@ function SqlExplorerPanel({
   onAskAgent: (prompt: string) => void;
 }) {
   const defaultCtrlName = statusInfo?.scope.controllerDoName ?? "default";
-  const allowedBindings = statusInfo?.bindings ?? (["CONTROLLER", "COMMAND", "ADMIN_AGENT"] as DoBindingName[]);
+  const allowedBindings = statusInfo?.bindings ?? (["CONTROLLER", "COMMAND", "WORKER", "ADMIN_AGENT"] as DoBindingName[]);
   const bindingItems = useMemo(() => {
     const labels: Record<DoBindingName, string> = {
       CONTROLLER: "CONTROLLER (ControllerDO)",
       TENANT_REGISTRY: "TENANT_REGISTRY (TenantRegistryDO)",
       COMMAND: "COMMAND (CommandDO)",
+      WORKER: "WORKER (WorkerDO)",
       ADMIN_AGENT: "ADMIN_AGENT (AdminAgentDO)",
     };
     return allowedBindings.map((b) => ({ value: b, label: labels[b] }));

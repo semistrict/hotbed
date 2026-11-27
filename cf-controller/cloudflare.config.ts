@@ -13,6 +13,7 @@ export default defineConfig({
 			ControllerDO: exports.durableObject({ storage: "sqlite" }),
 			TenantRegistryDO: exports.durableObject({ storage: "sqlite" }),
 			CommandDO: exports.durableObject({ storage: "sqlite" }),
+			WorkerDO: exports.durableObject({ storage: "sqlite" }),
 			AdminAgentDO: exports.durableObject({ storage: "sqlite" }),
 		},
 		env: {
@@ -27,6 +28,10 @@ export default defineConfig({
 			COMMAND: bindings.durableObject({
 				worker: "hotbed-controller",
 				exportName: "CommandDO",
+			}),
+			WORKER: bindings.durableObject({
+				worker: "hotbed-controller",
+				exportName: "WorkerDO",
 			}),
 			ADMIN_AGENT: bindings.durableObject({
 				worker: "hotbed-controller",

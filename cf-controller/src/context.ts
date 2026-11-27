@@ -25,6 +25,7 @@ import {
 import type { CallerIdentity } from "./auth.ts";
 import type { BuildDistributor } from "./builds.ts";
 import type { CommandStoreClient } from "./command-do.ts";
+import type { WorkerStoreClient } from "./worker-do.ts";
 import { ErrorCode, codeOf, hotbedError } from "./errors.ts";
 import { parseBuildNumber } from "./version.ts";
 import type { NodeRow, NodeView } from "./placement.ts";
@@ -115,6 +116,7 @@ export interface ScopedRequest {
 export class ControllerContext {
 	readonly store: ControllerStore;
 	readonly commands: CommandStoreClient;
+	readonly workers: WorkerStoreClient;
 	readonly tunnel: WorkerTunnelHub;
 	readonly questionBridge?: QuestionBridgeHub;
 	readonly builds: BuildDistributor;
@@ -169,6 +171,7 @@ export class ControllerContext {
 	constructor(opts: {
 		store: ControllerStore;
 		commands: CommandStoreClient;
+		workers: WorkerStoreClient;
 		tunnel: WorkerTunnelHub;
 		questionBridge?: QuestionBridgeHub;
 		builds: BuildDistributor;
@@ -181,6 +184,7 @@ export class ControllerContext {
 	}) {
 		this.store = opts.store;
 		this.commands = opts.commands;
+		this.workers = opts.workers;
 		this.tunnel = opts.tunnel;
 		this.questionBridge = opts.questionBridge;
 		this.builds = opts.builds;

@@ -80,7 +80,8 @@ export function DaemonLogsPanel({
     queryFn: () =>
       clients.workspaces.getDaemonLogs({
         source,
-        level: level ? DAEMON_LOG_LEVEL_FROM_SLUG[level] : DaemonLogLevel.UNSPECIFIED,
+        level: level && level !== "all" ? DAEMON_LOG_LEVEL_FROM_SLUG[level] : DaemonLogLevel.UNSPECIFIED,
+        includeInfo: level === "all",
         since,
         query: debouncedQuery.trim(),
         limit: compact ? 100 : 300,
@@ -163,10 +164,10 @@ export function DaemonLogsPanel({
       )}
 
       <Card
-        title={lockedSource ? "Daemon logs (WARN / ERROR)" : source ? `${source} logs` : "Log stream"}
+        title={lockedSource ? "Daemon logs (INFO / WARN / ERROR)" : source ? `${source} logs` : "Log stream"}
         sub={
           lockedSource
-            ? "Rotating WARN and ERROR slog records on this worker"
+            ? "Streamed worker slog records persisted in this worker's WorkerDO"
             : source
               ? "Filtered to this daemon · click its card above to show all"
               : "Newest first · click a daemon card above to filter"
@@ -185,16 +186,22 @@ export function DaemonLogsPanel({
               className="w-full bg-background/70 font-mono text-[11.5px] placeholder:text-faint sm:min-w-[220px] sm:flex-1"
             />
             <div className="max-w-full overflow-x-auto no-scrollbar">
-              <Tabs value={level || "__all__"} onValueChange={(v) => setLevel((v === "__all__" ? "" : v) as DaemonLogLevelSlug | "")}>
+              <Tabs value={level || "__warn_err__"} onValueChange={(v) => setLevel((v === "__warn_err__" ? "" : v) as DaemonLogLevelSlug | "")}>
                 <TabsList className="h-8 border border-border font-mono text-[11px]">
-                  <TabsTrigger value="__all__" className="px-2 font-mono text-[11px]">
+                  <TabsTrigger value="__warn_err__" className="px-2 font-mono text-[11px]">
                     Warn + Error
+                  </TabsTrigger>
+                  <TabsTrigger value="all" className="px-2 font-mono text-[11px]">
+                    All
                   </TabsTrigger>
                   <TabsTrigger value="error" className="px-2 font-mono text-[11px]">
                     Errors
                   </TabsTrigger>
                   <TabsTrigger value="warn" className="px-2 font-mono text-[11px]">
                     Warns
+                  </TabsTrigger>
+                  <TabsTrigger value="info" className="px-2 font-mono text-[11px]">
+                    Info
                   </TabsTrigger>
                 </TabsList>
               </Tabs>
@@ -455,6 +462,13 @@ function LevelBadge({ level }: { level: DaemonLogLevel }) {
     return (
       <Badge variant="destructive" className="h-auto rounded bg-[color-mix(in_oklab,var(--critical)_16%,transparent)] px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wider text-critical">
         ERROR
+      </Badge>
+    );
+  }
+  if (level === DaemonLogLevel.INFO) {
+    return (
+      <Badge variant="secondary" className="h-auto rounded bg-muted px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
+        INFO
       </Badge>
     );
   }

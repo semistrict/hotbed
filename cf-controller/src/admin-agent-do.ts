@@ -34,6 +34,7 @@ import {
 	type DoBindingName,
 } from "./admin-cf-api.ts";
 import { commandDoName } from "./command-do.ts";
+import { workerDoName } from "./worker-do.ts";
 import type { ControllerEnv } from "./controller-do.ts";
 import {
 	executeReadOnlySql,
@@ -290,13 +291,13 @@ export async function inspectGcForScope(
 export function createAdminAgentTools(env: ControllerEnv, scope: AdminOrgScope): ToolSet {
 	const allowedBindings = allowedBindingsForScope(scope);
 	const doBindingEnum = scope.isGlobalAdmin
-		? z.enum(["CONTROLLER", "COMMAND", "ADMIN_AGENT", "TENANT_REGISTRY"])
-		: z.enum(["CONTROLLER", "COMMAND", "ADMIN_AGENT"]);
+		? z.enum(["CONTROLLER", "COMMAND", "WORKER", "ADMIN_AGENT", "TENANT_REGISTRY"])
+		: z.enum(["CONTROLLER", "COMMAND", "WORKER", "ADMIN_AGENT"]);
 
 	const tools: ToolSet = {
 		discover_durable_objects: tool({
 			description:
-				"Discover Cloudflare Durable Objects belonging to this organization: its ControllerDO, its recent CommandDO instances (with their exact `cmd:<clusterId>:<commandId>` names), and its AdminAgentDO namespace.",
+				"Discover Cloudflare Durable Objects belonging to this organization: its ControllerDO, its WorkerDO instances (with their exact `worker:<clusterId>:<nodeId>` names), its recent CommandDO instances (`cmd:<clusterId>:<commandId>`), and its AdminAgentDO namespace.",
 			inputSchema: z.object({
 				includeRecentCommands: z
 					.boolean()
@@ -326,6 +327,12 @@ export function createAdminAgentTools(env: ControllerEnv, scope: AdminOrgScope):
 					sessionId: string;
 					createdAt: number;
 				}> = [];
+				let workerDos: Array<{
+					nodeId: string;
+					hostname: string;
+					doName: string;
+					lastSeen: number;
+				}> = [];
 				let error: string | undefined;
 
 				try {
@@ -334,6 +341,22 @@ export function createAdminAgentTools(env: ControllerEnv, scope: AdminOrgScope):
 					orgId = health.orgId ?? scope.orgId;
 					cladefsTenantId = health.cladefsTenantId;
 					connectedWorkers = health.connectedWorkers;
+					if (clusterId) {
+						const nodeSql = await stub.adminQuerySql(
+							`SELECT id, hostname, last_seen FROM nodes WHERE retired_at IS NULL ORDER BY hostname, id LIMIT 100`,
+							[],
+							{ maxRows: 100 },
+						);
+						workerDos = nodeSql.rows.map((r) => {
+							const nodeId = String(r.id ?? "");
+							return {
+								nodeId,
+								hostname: String(r.hostname ?? ""),
+								doName: workerDoName(clusterId, nodeId),
+								lastSeen: Number(r.last_seen ?? 0),
+							};
+						});
+					}
 					if (includeRecentCommands && clusterId) {
 						const sqlRes = await stub.adminQuerySql(
 							`SELECT id, session_id, node_id, created_at
@@ -372,6 +395,7 @@ export function createAdminAgentTools(env: ControllerEnv, scope: AdminOrgScope):
 						orgId: orgId || null,
 						cladefsTenantId: cladefsTenantId ?? null,
 						connectedWorkers,
+						workerDos,
 						recentCommandDos,
 						...(error ? { error } : {}),
 					},

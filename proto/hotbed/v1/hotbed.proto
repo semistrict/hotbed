@@ -224,6 +224,12 @@ service ClusterService {
   rpc PushCommandOutput(PushCommandOutputRequest) returns (PushCommandOutputResponse) {
     option idempotency_level = IDEMPOTENT;
   }
+  // PushDaemonLogs streams structured slog records (INFO, WARN, ERROR) from a
+  // worker into that worker's dedicated per-org WorkerDO. Idempotent by
+  // (epoch, seq).
+  rpc PushDaemonLogs(PushDaemonLogsRequest) returns (PushDaemonLogsResponse) {
+    option idempotency_level = IDEMPOTENT;
+  }
   // A node with how it decides whether to start new work (its admission:
   // whether it holds work, why, and every signal it weighs against its
   // limit), the work it recently held or made wait, and the placements
@@ -3358,13 +3364,15 @@ enum DaemonLogLevel {
   DAEMON_LOG_LEVEL_UNSPECIFIED = 0;
   DAEMON_LOG_LEVEL_WARN = 1;
   DAEMON_LOG_LEVEL_ERROR = 2;
+  DAEMON_LOG_LEVEL_INFO = 3;
 }
 
 message GetDaemonLogsRequest {
   // Which daemon to read: "controller", a worker hostname or node ID, or empty
-  // for the controller and every online worker combined.
+  // for the controller and every worker combined.
   string source = 1;
-  // Only entries of this level (warn or error); omit for both.
+  // Only entries of this level (info, warn, or error); omit for warn + error
+  // (or all levels when --include-info is set).
   DaemonLogLevel level = 2;
   // Case-insensitive substring filter over message, attributes, and source location.
   string query = 3 [(param) = {short: "q"}];
@@ -3380,6 +3388,8 @@ message GetDaemonLogsRequest {
     short: "n"
     default: "200"
   }];
+  // Include INFO-level slog entries alongside WARN and ERROR when level is omitted.
+  bool include_info = 8 [(param) = {name: "include-info"}];
 }
 
 message DaemonLogEntry {
@@ -3398,6 +3408,21 @@ message DaemonLogEntry {
   string attrs_json = 7;
   // Source file and line where slog was called, e.g. "internal/controller/server.go:274".
   string source_loc = 8;
+  // Monotonic per-process sequence number assigned by the worker when streaming
+  // to its WorkerDO (0 for legacy/controller entries).
+  int64 seq = 9;
+}
+
+message PushDaemonLogsRequest {
+  string cluster_id = 1;
+  // Per-process random epoch so seq numbers restart cleanly after worker restart.
+  string epoch = 2;
+  repeated DaemonLogEntry entries = 3;
+}
+
+message PushDaemonLogsResponse {
+  // Highest entry seq durably stored in this worker's WorkerDO for req.epoch.
+  int64 acked_seq = 1;
 }
 
 message DaemonLogSource {

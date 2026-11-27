@@ -2029,6 +2029,7 @@ export function createWorkspaceService(ctrl: ControllerContext): {
 				fromMs: BigInt(fromMs),
 				toMs: BigInt(toMs),
 				limit,
+				includeInfo: req.includeInfo,
 			});
 
 			const target = req.source.trim();
@@ -2041,8 +2042,71 @@ export function createWorkspaceService(ctrl: ControllerContext): {
 					toMs,
 					limit,
 					nowMs,
+					req.includeInfo,
 				);
 			}
+
+			const queryWorkerLogs = async (
+				node: Node,
+				timeoutMs: number,
+				failIfUnreachable: boolean,
+			): Promise<{ entries: DaemonLogEntry[]; source: DaemonLogSource; truncated: boolean }> => {
+				const doRes = await ctrl.workers.queryLogs(node.id, node.hostname, {
+					level: req.level,
+					includeInfo: req.includeInfo,
+					query: req.query,
+					fromMs,
+					toMs,
+					limit,
+					nowMs,
+				});
+				if (doRes.hasStreamedLogs) {
+					return { entries: doRes.entries, source: doRes.source, truncated: doRes.truncated };
+				}
+				// Fallback for workers on older builds that have not streamed logs into WorkerDO yet.
+				const liveNode = ctrl.withOnline(node);
+				if (!liveNode.online || !ctrl.tunnel.isConnected(node.id)) {
+					if (failIfUnreachable) {
+						ensureOnlineWorker(node.id);
+					}
+					return {
+						entries: [],
+						source: unreachableDaemonLogSource(
+							liveNode,
+							liveNode.online ? "tunnel disconnected" : "offline",
+						),
+						truncated: false,
+					};
+				}
+				try {
+					const res = await ctrl.tunnel.callUnary(
+						node.id,
+						node.hostname,
+						"/hotbed.v1.WorkspaceService/GetDaemonLogs",
+						GetDaemonLogsRequestSchema,
+						normalized,
+						GetDaemonLogsResponseSchema,
+						timeoutMs,
+					);
+					fillWorkerLogMetadata(res.entries, res.sources, node.hostname);
+					const src =
+						res.sources[0] ??
+						create(DaemonLogSourceSchema, {
+							source: node.hostname,
+							role: "worker",
+							host: node.hostname,
+							reachable: true,
+						});
+					return { entries: res.entries, source: src, truncated: res.truncated };
+				} catch (err) {
+					if (failIfUnreachable) throw err;
+					return {
+						entries: [],
+						source: unreachableDaemonLogSource(liveNode, String(err)),
+						truncated: false,
+					};
+				}
+			};
 
 			const rows = ctrl.store.fleet.list();
 			if (target) {
@@ -2052,18 +2116,12 @@ export function createWorkspaceService(ctrl: ControllerContext): {
 						`pass "controller" or a node name from hotbed nodes`,
 					);
 				}
-				const { host } = ensureOnlineWorker(match.node.id);
-				const res = await ctrl.tunnel.callUnary(
-					match.node.id,
-					host,
-					"/hotbed.v1.WorkspaceService/GetDaemonLogs",
-					GetDaemonLogsRequestSchema,
-					normalized,
-					GetDaemonLogsResponseSchema,
-					WORKER_RPC_TIMEOUT_MS,
-				);
-				fillWorkerLogMetadata(res.entries, res.sources, host);
-				return res;
+				const wr = await queryWorkerLogs(match.node, WORKER_RPC_TIMEOUT_MS, true);
+				return create(GetDaemonLogsResponseSchema, {
+					entries: wr.entries,
+					sources: [wr.source],
+					truncated: wr.truncated,
+				});
 			}
 
 			const ctrlRes = ctrl.store.daemonLogs.query(
@@ -2074,48 +2132,10 @@ export function createWorkspaceService(ctrl: ControllerContext): {
 				toMs,
 				limit,
 				nowMs,
+				req.includeInfo,
 			);
 			const workerResults = await Promise.all(
-				rows.map(async (r) => {
-					const node = ctrl.withOnline(r.node);
-					if (!node.online || !ctrl.tunnel.isConnected(node.id)) {
-						return {
-							entries: [] as DaemonLogEntry[],
-							source: unreachableDaemonLogSource(
-								node,
-								node.online ? "tunnel disconnected" : "offline",
-							),
-							truncated: false,
-						};
-					}
-					try {
-						const res = await ctrl.tunnel.callUnary(
-							node.id,
-							node.hostname,
-							"/hotbed.v1.WorkspaceService/GetDaemonLogs",
-							GetDaemonLogsRequestSchema,
-							normalized,
-							GetDaemonLogsResponseSchema,
-							DAEMON_LOG_WORKER_TIMEOUT_MS,
-						);
-						fillWorkerLogMetadata(res.entries, res.sources, node.hostname);
-						const src =
-							res.sources[0] ??
-							create(DaemonLogSourceSchema, {
-								source: node.hostname,
-								role: "worker",
-								host: node.hostname,
-								reachable: true,
-							});
-						return { entries: res.entries, source: src, truncated: res.truncated };
-					} catch (err) {
-						return {
-							entries: [] as DaemonLogEntry[],
-							source: unreachableDaemonLogSource(node, String(err)),
-							truncated: false,
-						};
-					}
-				}),
+				rows.map((r) => queryWorkerLogs(r.node, DAEMON_LOG_WORKER_TIMEOUT_MS, false)),
 			);
 
 			let allEntries: DaemonLogEntry[] = [...ctrlRes.entries];

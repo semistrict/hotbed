@@ -55,10 +55,11 @@ export const SKILL_ORDER_FROM_SLUG: Record<SkillOrderSlug, SkillOrder> = {
   name: SkillOrder.NAME,
 };
 
-export type DaemonLogLevelSlug = "warn" | "error";
-export const DAEMON_LOG_LEVEL_FROM_SLUG: Record<DaemonLogLevelSlug, DaemonLogLevel> = {
+export type DaemonLogLevelSlug = "warn" | "error" | "info" | "all";
+export const DAEMON_LOG_LEVEL_FROM_SLUG: Record<Exclude<DaemonLogLevelSlug, "all">, DaemonLogLevel> = {
   warn: DaemonLogLevel.WARN,
   error: DaemonLogLevel.ERROR,
+  info: DaemonLogLevel.INFO,
 };
 
 /** Offline nodes' last heartbeat admission no longer holds. */

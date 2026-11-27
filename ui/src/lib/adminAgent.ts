@@ -1,7 +1,7 @@
 import { useMutation, useQuery } from "@tanstack/react-query";
 import { fetchJson } from "./http";
 
-export type DoBindingName = "CONTROLLER" | "TENANT_REGISTRY" | "COMMAND" | "ADMIN_AGENT";
+export type DoBindingName = "CONTROLLER" | "TENANT_REGISTRY" | "COMMAND" | "WORKER" | "ADMIN_AGENT";
 
 export interface AdminModelOption {
   id: string;
@@ -30,6 +30,7 @@ export interface AdminAgentStatus {
   models: AdminModelOption[];
   bindings: DoBindingName[];
   controllers: Array<{ name: string; orgKey: string; tenantId: string | null }>;
+  workers?: Array<{ nodeId: string; hostname: string; doName: string; controller: string }>;
   recentCommands: Array<{ commandId: string; doName: string; controller: string }>;
 }
 

@@ -42,6 +42,14 @@ export interface NodeStateView {
 	commands: Command[];
 }
 
+export interface FeedEventRecord {
+	at: number;
+	kind: string;
+	text: string;
+	refType: string;
+	refId: string;
+}
+
 /** What applying a node's pushed events did. */
 export interface PushResult {
 	applied: bigint;
@@ -50,6 +58,7 @@ export interface PushResult {
 	finished: boolean;
 	lost: string[];
 	sessions: Set<string>;
+	feedEvents: FeedEventRecord[];
 }
 
 function whoStamp(by?: Stamp): string {
@@ -146,6 +155,7 @@ export class NodeStateStore {
 				finished: false,
 				lost: [],
 				sessions: new Set(),
+				feedEvents: [],
 			};
 			const stRows = this.sql
 				.exec("SELECT epoch, applied, applied_at FROM nodes WHERE id = ?", nodeId)
@@ -207,15 +217,13 @@ export class NodeStateStore {
 		for (const ev of events) {
 			if (ev.seq <= out.applied) continue;
 			if (ev.feed) {
-				this.sql.exec(
-					"INSERT INTO events (at, kind, node_id, text, ref_type, ref_id) VALUES (?, ?, ?, ?, ?, ?)",
-					ev.feed.at,
-					ev.feed.kind,
-					nodeId,
-					ev.feed.text,
-					ev.feed.ref?.type ?? "",
-					ev.feed.ref?.id ?? "",
-				);
+				out.feedEvents.push({
+					at: Number(ev.feed.at),
+					kind: ev.feed.kind,
+					text: ev.feed.text,
+					refType: ev.feed.ref?.type ?? "",
+					refId: ev.feed.ref?.id ?? "",
+				});
 			}
 			switch (ev.change.case) {
 				case "base": {

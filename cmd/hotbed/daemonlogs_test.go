@@ -40,16 +40,30 @@ func TestDaemonLogsCLIAndMultiNodeAggregation(t *testing.T) {
 	})
 	c.online()
 
-	// Emit WARN and ERROR on controller (DO SQLite) and each worker (rotating files).
+	// Emit INFO, WARN, and ERROR on controller (DO SQLite) and each worker.
 	if err := c.store.LogDaemon(t.Context(), "warn", "controller warn sample", map[string]any{"component": "reaper"}, now); err != nil {
 		t.Fatal(err)
 	}
 	time.Sleep(5 * time.Millisecond)
+	slog.New(workerLogs["asahimbp"].Handler(nil)).Info("asahi info sample", "base", "hotbed-vm-cap-1")
 	slog.New(workerLogs["asahimbp"].Handler(nil)).Error("asahi error sample", "err", "zfs busy")
 	time.Sleep(5 * time.Millisecond)
 	slog.New(workerLogs["mini"].Handler(nil)).Warn("mini warn sample", "volume", "ws-99")
 
-	// Default: all sources combined, newest first.
+	// Wait briefly for workers' log pusher to stream their slog entries to WorkerDO.
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		infoCheck := &pb.GetDaemonLogsResponse{}
+		c.ok(infoCheck, "daemon-logs", "--source", "asahimbp", "--level", "info")
+		miniCheck := &pb.GetDaemonLogsResponse{}
+		c.ok(miniCheck, "daemon-logs", "--source", "mini")
+		if len(infoCheck.Entries) == 1 && len(miniCheck.Entries) == 1 {
+			break
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+
+	// Default: WARN and ERROR across all sources combined, newest first (INFO omitted by default).
 	all := &pb.GetDaemonLogsResponse{}
 	c.ok(all, "daemon-logs")
 	if len(all.Entries) != 3 {
@@ -66,9 +80,18 @@ func TestDaemonLogsCLIAndMultiNodeAggregation(t *testing.T) {
 		if !src.Reachable {
 			t.Errorf("source %s unexpectedly unreachable: %s", src.Source, src.Error)
 		}
-		if src.Role == "worker" && (src.MaxFiles != 3 || src.MaxFileBytes != 4096) {
-			t.Errorf("source %s rotation stats = %+v", src.Source, src)
-		}
+	}
+
+	// --level info and --include-info expose streamed worker INFO logs from WorkerDO.
+	infoOnly := &pb.GetDaemonLogsResponse{}
+	c.ok(infoOnly, "daemon-logs", "--level", "info", "-q", "hotbed-vm-cap-1")
+	if len(infoOnly.Entries) != 1 || infoOnly.Entries[0].Level != pb.DaemonLogLevel_DAEMON_LOG_LEVEL_INFO {
+		t.Fatalf("--level info = %+v", infoOnly.Entries)
+	}
+	withInfo := &pb.GetDaemonLogsResponse{}
+	c.ok(withInfo, "daemon-logs", "--include-info")
+	if len(withInfo.Entries) != 4 {
+		t.Fatalf("--include-info got %d entries, want 4: %+v", len(withInfo.Entries), withInfo.Entries)
 	}
 
 	// Plain text rendering includes timestamps, levels, sources, messages, and attrs.
@@ -141,25 +164,17 @@ func TestDaemonLogsCLIAndMultiNodeAggregation(t *testing.T) {
 		t.Errorf("expected both workers' daemon_logs summaries in snapshot, got %d (%+v)", seenWorkerSummary, snap.Nodes)
 	}
 
-	// When one worker is halted/unreachable, querying all still returns healthy
-	// daemons and flags the unreachable worker in sources; querying that worker
-	// directly fails hard with WORKER_UNREACHABLE.
+	// Because workers stream slog to their dedicated WorkerDO, halting mini
+	// still lets both aggregate and --source mini queries read its persisted logs!
 	c.nodes[1].halt()
-	partial := &pb.GetDaemonLogsResponse{}
-	c.ok(partial, "daemon-logs")
-	if len(partial.Entries) != 2 {
-		t.Errorf("partial entries = %d, want 2 (controller + asahimbp)", len(partial.Entries))
+	afterHalt := &pb.GetDaemonLogsResponse{}
+	c.ok(afterHalt, "daemon-logs")
+	if len(afterHalt.Entries) != 3 {
+		t.Errorf("entries after mini halted = %d, want 3 (persisted in WorkerDO)", len(afterHalt.Entries))
 	}
-	foundUnreachable := false
-	for _, src := range partial.Sources {
-		if src.Source == "mini" && !src.Reachable && src.Error != "" {
-			foundUnreachable = true
-		}
-	}
-	if !foundUnreachable {
-		t.Errorf("expected mini marked unreachable in sources: %+v", partial.Sources)
-	}
-	if _, e := c.fails("daemon-logs", "--source", "mini"); e.Code != api.CodeWorkerUnreachable {
-		t.Errorf("--source halted worker = %v, want WORKER_UNREACHABLE", e)
+	miniOffline := &pb.GetDaemonLogsResponse{}
+	c.ok(miniOffline, "daemon-logs", "--source", "mini")
+	if len(miniOffline.Entries) != 1 || miniOffline.Entries[0].Msg != "mini warn sample" {
+		t.Errorf("--source halted worker from WorkerDO = %+v", miniOffline.Entries)
 	}
 }

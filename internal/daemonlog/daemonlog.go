@@ -8,6 +8,8 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -21,6 +23,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"google.golang.org/protobuf/proto"
 
 	"github.com/semistrict/hotbed/internal/api"
 	pb "github.com/semistrict/hotbed/internal/gen/hotbed/v1"
@@ -42,9 +46,10 @@ const (
 	// MaxLimit is the hard upper bound on entries returned by Query.
 	MaxLimit = 1000
 
-	activeFileName = "daemon.jsonl"
-	recentWindow   = 24 * time.Hour
-	maxRecentItems = 100_000
+	activeFileName  = "daemon.jsonl"
+	recentWindow    = 24 * time.Hour
+	maxRecentItems  = 100_000
+	maxStreamBuffer = 4096
 )
 
 // Config controls daemon log rotation and retention. Zero fields take defaults.
@@ -93,20 +98,34 @@ type recentEntry struct {
 	level pb.DaemonLogLevel
 }
 
-// Store persists WARN and ERROR slog records in rotating JSONL files under dir.
+// Store persists WARN and ERROR slog records in rotating JSONL files under dir
+// and buffers INFO, WARN, and ERROR records in a bounded in-memory ring for
+// streaming to the worker's per-org WorkerDO.
 // It is safe for concurrent use and never calls slog internally.
 type Store struct {
 	dir string
 	cfg Config
 
-	mu        sync.Mutex
-	file      *os.File
-	size      int64
-	diskBytes int64
-	files     int32
-	recent    []recentEntry
-	lastAt    int64
-	closed    bool
+	mu           sync.Mutex
+	file         *os.File
+	size         int64
+	diskBytes    int64
+	files        int32
+	recent       []recentEntry
+	lastAt       int64
+	closed       bool
+	streamEpoch  string
+	streamSeq    int64
+	streamBuf    []*pb.DaemonLogEntry
+	streamKicked chan struct{}
+}
+
+func randomEpoch() string {
+	var b [8]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		return strconv.FormatInt(time.Now().UnixNano(), 16)
+	}
+	return hex.EncodeToString(b[:])
 }
 
 // Open creates dir if needed, prunes expired rotated files, opens the active
@@ -116,7 +135,12 @@ func Open(dir string, cfg Config) (*Store, error) {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return nil, fmt.Errorf("create daemon log dir %s: %w", dir, err)
 	}
-	s := &Store{dir: dir, cfg: cfg}
+	s := &Store{
+		dir:          dir,
+		cfg:          cfg,
+		streamEpoch:  randomEpoch(),
+		streamKicked: make(chan struct{}, 1),
+	}
 	if err := s.openActiveLocked(); err != nil {
 		return nil, err
 	}
@@ -147,10 +171,11 @@ func (s *Store) Close() error {
 }
 
 // Handler returns an slog.Handler that forwards all records to primary (when
-// non-nil) and persists WARN/ERROR records to s.
+// non-nil), buffers INFO/WARN/ERROR records for streaming to WorkerDO, and
+// persists WARN/ERROR records to s's rotating local files.
 func (s *Store) Handler(primary slog.Handler) slog.Handler {
 	fileHandler := slog.NewJSONHandler(&storeWriter{store: s}, &slog.HandlerOptions{
-		Level:       slog.LevelWarn,
+		Level:       slog.LevelInfo,
 		AddSource:   true,
 		ReplaceAttr: replaceAttr,
 	})
@@ -158,6 +183,90 @@ func (s *Store) Handler(primary slog.Handler) slog.Handler {
 		return fileHandler
 	}
 	return &teeHandler{primary: primary, secondary: fileHandler}
+}
+
+// Epoch returns the per-process random epoch tagging streamed slog sequences.
+func (s *Store) Epoch() string {
+	if s == nil {
+		return ""
+	}
+	return s.streamEpoch
+}
+
+// StreamKicked returns a channel signaled whenever new slog records are queued
+// for streaming to WorkerDO.
+func (s *Store) StreamKicked() <-chan struct{} {
+	if s == nil {
+		return nil
+	}
+	return s.streamKicked
+}
+
+// StreamStats reports how many entries are buffered for streaming and whether
+// any buffered entry is WARN or ERROR (which should flush without debounce).
+func (s *Store) StreamStats() (count int, urgent bool) {
+	if s == nil {
+		return 0, false
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	count = len(s.streamBuf)
+	for _, e := range s.streamBuf {
+		if e.Level == pb.DaemonLogLevel_DAEMON_LOG_LEVEL_WARN || e.Level == pb.DaemonLogLevel_DAEMON_LOG_LEVEL_ERROR {
+			urgent = true
+			break
+		}
+	}
+	return count, urgent
+}
+
+// PendingStream returns up to limit buffered slog entries fitting within
+// maxBytes, oldest first, without removing them until AckStream is called.
+func (s *Store) PendingStream(limit, maxBytes int) []*pb.DaemonLogEntry {
+	if s == nil || limit <= 0 {
+		return nil
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if len(s.streamBuf) == 0 {
+		return nil
+	}
+	out := make([]*pb.DaemonLogEntry, 0, min(limit, len(s.streamBuf)))
+	total := 0
+	for _, e := range s.streamBuf {
+		if len(out) >= limit {
+			break
+		}
+		sz := proto.Size(e)
+		if maxBytes > 0 && len(out) > 0 && total+sz > maxBytes {
+			break
+		}
+		total += sz
+		out = append(out, proto.Clone(e).(*pb.DaemonLogEntry))
+	}
+	return out
+}
+
+// AckStream drops all buffered stream entries with seq <= ackedSeq.
+func (s *Store) AckStream(ackedSeq int64) {
+	if s == nil || ackedSeq <= 0 {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	drop := 0
+	for drop < len(s.streamBuf) && s.streamBuf[drop].Seq <= ackedSeq {
+		drop++
+	}
+	if drop == 0 {
+		return
+	}
+	remaining := len(s.streamBuf) - drop
+	copy(s.streamBuf, s.streamBuf[drop:])
+	for i := remaining; i < len(s.streamBuf); i++ {
+		s.streamBuf[i] = nil
+	}
+	s.streamBuf = s.streamBuf[:remaining]
 }
 
 // Install wraps slog.Default() so all WARN and ERROR records are also captured
@@ -361,6 +470,9 @@ func (s *Store) Query(source, role, host string, req *pb.GetDaemonLogsRequest) (
 			if level != pb.DaemonLogLevel_DAEMON_LOG_LEVEL_UNSPECIFIED && e.Level != level {
 				continue
 			}
+			if level == pb.DaemonLogLevel_DAEMON_LOG_LEVEL_UNSPECIFIED && !req.GetIncludeInfo() && e.Level == pb.DaemonLogLevel_DAEMON_LOG_LEVEL_INFO {
+				continue
+			}
 			if fromMs > 0 && e.At < fromMs {
 				continue
 			}
@@ -436,6 +548,7 @@ func (s *Store) appendLine(raw []byte) {
 	if len(line) == 0 {
 		return
 	}
+	entry, parsed := parseLine(line, "", "", "")
 	at, lvl := extractMeta(line)
 
 	s.mu.Lock()
@@ -446,6 +559,28 @@ func (s *Store) appendLine(raw []byte) {
 	now := s.cfg.Now()
 	if at == 0 {
 		at = now.UnixMilli()
+	}
+	if parsed {
+		if entry.At == 0 {
+			entry.At = at
+		}
+		s.streamSeq++
+		entry.Seq = s.streamSeq
+		if len(s.streamBuf) >= maxStreamBuffer {
+			copy(s.streamBuf, s.streamBuf[1:])
+			s.streamBuf[len(s.streamBuf)-1] = entry
+		} else {
+			s.streamBuf = append(s.streamBuf, entry)
+		}
+		select {
+		case s.streamKicked <- struct{}{}:
+		default:
+		}
+	}
+	// Local rotating JSONL files keep WARN and ERROR only; INFO is streamed to
+	// WorkerDO without inflating local daemon-logs disk budgets.
+	if lvl != pb.DaemonLogLevel_DAEMON_LOG_LEVEL_WARN && lvl != pb.DaemonLogLevel_DAEMON_LOG_LEVEL_ERROR {
+		return
 	}
 	if s.file == nil {
 		if err := s.openActiveLocked(); err != nil {
@@ -466,17 +601,15 @@ func (s *Store) appendLine(raw []byte) {
 	if s.files == 0 {
 		s.files = 1
 	}
-	if lvl != pb.DaemonLogLevel_DAEMON_LOG_LEVEL_UNSPECIFIED {
-		if at > s.lastAt {
-			s.lastAt = at
-		}
-		if at >= now.Add(-recentWindow).UnixMilli() {
-			s.recent = append(s.recent, recentEntry{at: at, level: lvl})
+	if at > s.lastAt {
+		s.lastAt = at
+	}
+	if at >= now.Add(-recentWindow).UnixMilli() {
+		s.recent = append(s.recent, recentEntry{at: at, level: lvl})
+		if len(s.recent) > maxRecentItems {
+			s.trimRecentLocked(now)
 			if len(s.recent) > maxRecentItems {
-				s.trimRecentLocked(now)
-				if len(s.recent) > maxRecentItems {
-					s.recent = s.recent[len(s.recent)-maxRecentItems:]
-				}
+				s.recent = s.recent[len(s.recent)-maxRecentItems:]
 			}
 		}
 	}
@@ -763,6 +896,8 @@ func parseLevel(s string) pb.DaemonLogLevel {
 		return pb.DaemonLogLevel_DAEMON_LOG_LEVEL_ERROR
 	case strings.HasPrefix(up, "WARN"):
 		return pb.DaemonLogLevel_DAEMON_LOG_LEVEL_WARN
+	case strings.HasPrefix(up, "INFO"):
+		return pb.DaemonLogLevel_DAEMON_LOG_LEVEL_INFO
 	default:
 		return pb.DaemonLogLevel_DAEMON_LOG_LEVEL_UNSPECIFIED
 	}

@@ -142,8 +142,8 @@ export class FleetStore {
 		return { node, hb };
 	}
 
-	beat(nodeId: string, h: HeartbeatRequest, nowMs: number): void {
-		this.sql.tx(() => {
+	beat(nodeId: string, h: HeartbeatRequest, nowMs: number): SampleRow {
+		return this.sql.tx(() => {
 			if (!this.has(nodeId)) {
 				throw hotbedError(ErrorCode.NotJoined, `node ${nodeId} has not joined this cluster`);
 			}
@@ -168,33 +168,32 @@ export class FleetStore {
 			const mb = Number(h.resources?.memoryBytes ?? 0n);
 			const memFrac = mb > 0 ? Number(h.usage?.memoryUsedBytes ?? 0n) / mb : 0;
 			const os = h.objectStore;
-			this.sql.exec(
-				"INSERT OR REPLACE INTO samples (node_id, t, cpu, memory, psi, cpu_psi, holding, running, queued, parked, oom, r2_up, r2_down, r2_puts, r2_gets, r2_fails, r2_wait_ns, peer_given, peer_served, peer_given_bytes, peer_served_bytes) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-				nodeId,
-				nowMs,
-				h.usage?.cpuBusy ?? 0,
-				memFrac,
-				h.usage?.memoryPressure ?? 0,
-				h.usage?.cpuPressure ?? 0,
-				h.admission?.holding ? 1 : 0,
-				num(counts.running),
-				num(counts.queued),
-				num(counts.parked),
-				h.oomKills,
-				os?.uploadedBytes ?? 0n,
-				os?.downloadedBytes ?? 0n,
-				os?.putRequests ?? 0n,
-				os?.getRequests ?? 0n,
-				os?.failedRequests ?? 0n,
-				os?.commitWaitNs ?? 0n,
-				os?.peerPartsGiven ?? 0n,
-				os?.peerPartsServed ?? 0n,
-				os?.peerGivenBytes ?? 0n,
-				os?.peerServedBytes ?? 0n,
-			);
 			for (const session of h.activeSessions) {
 				this.sessions.touch(session, nowMs);
 			}
+			return {
+				node: nodeId,
+				t: nowMs,
+				cpu: h.usage?.cpuBusy ?? 0,
+				memory: memFrac,
+				psi: h.usage?.memoryPressure ?? 0,
+				cpuPsi: h.usage?.cpuPressure ?? 0,
+				holding: Boolean(h.admission?.holding),
+				running: num(counts.running),
+				queued: num(counts.queued),
+				parked: num(counts.parked),
+				oom: Number(h.oomKills),
+				r2Up: Number(os?.uploadedBytes ?? 0n),
+				r2Down: Number(os?.downloadedBytes ?? 0n),
+				r2Puts: Number(os?.putRequests ?? 0n),
+				r2Gets: Number(os?.getRequests ?? 0n),
+				r2Fails: Number(os?.failedRequests ?? 0n),
+				r2WaitNs: Number(os?.commitWaitNs ?? 0n),
+				peerGiven: Number(os?.peerPartsGiven ?? 0n),
+				peerServed: Number(os?.peerPartsServed ?? 0n),
+				peerGivenBytes: Number(os?.peerGivenBytes ?? 0n),
+				peerServedBytes: Number(os?.peerServedBytes ?? 0n),
+			};
 		});
 	}
 

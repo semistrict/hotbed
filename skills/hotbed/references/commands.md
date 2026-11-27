@@ -403,13 +403,14 @@ GetDaemonLogs returns recent WARN and ERROR slog records from the controller, a 
 
 | Argument / Flag | Env | Help |
 | --- | --- | --- |
-| `--source` |  | Which daemon to read: "controller", a worker hostname or node ID, or empty for the controller and every online worker combined. |
-| `--level` |  | Only entries of this level (warn or error); omit for both. |
+| `--source` |  | Which daemon to read: "controller", a worker hostname or node ID, or empty for the controller and every worker combined. |
+| `--level` |  | Only entries of this level (info, warn, or error); omit for warn + error (or all levels when --include-info is set). |
 | `-q`, `--query` |  | Case-insensitive substring filter over message, attributes, and source location. |
 | `--from-ms` |  | Only entries at or after this unix ms timestamp (0 for no lower bound). |
 | `--to-ms` |  | Only entries at or before this unix ms timestamp (0 for no upper bound). |
 | `--since` |  | Only entries from the last duration (e.g. "15m", "1h", "24h", "7d"); sets from_ms relative to now on the server when from_ms is 0. |
 | `-n`, `--limit` |  | Maximum entries to return, newest first (default 200, max 1000). |
+| `--include-info` |  | Include INFO-level slog entries alongside WARN and ERROR when level is omitted. |
 
 ## `schedule`
 

@@ -70,12 +70,16 @@ export class DaemonLogStore {
 		toMs: number,
 		limit: number,
 		nowMs: number,
+		includeInfo = false,
 	): GetDaemonLogsResponse {
 		const clauses: string[] = [];
 		const params: unknown[] = [];
 		if (level !== DaemonLogLevel.UNSPECIFIED) {
 			clauses.push("level = ?");
 			params.push(level);
+		} else if (!includeInfo) {
+			clauses.push("level IN (?, ?)");
+			params.push(DaemonLogLevel.WARN, DaemonLogLevel.ERROR);
 		}
 		if (fromMs > 0) {
 			clauses.push("at >= ?");

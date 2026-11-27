@@ -312,3 +312,49 @@ func TestInstallRestoresTheLogPackage(t *testing.T) {
 		t.Errorf("slog.Info after restore wrote %q, want it in log's output", out.String())
 	}
 }
+
+func TestStoreStreamBufferCapturesInfoWarnErrorAndAcks(t *testing.T) {
+	now := time.Date(2026, 11, 27, 15, 0, 0, 0, time.UTC)
+	st, err := Open(t.TempDir(), Config{Now: func() time.Time { return now }})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	if st.Epoch() == "" {
+		t.Fatal("expected non-empty stream epoch")
+	}
+
+	logger := slog.New(st.Handler(nil))
+	logger.Info("auto-captured base", "baseId", "hotbed-vm-cap-1")
+	if count, urgent := st.StreamStats(); count != 1 || urgent {
+		t.Fatalf("after INFO: StreamStats = (%d, %v), want (1, false)", count, urgent)
+	}
+	// Local JSONL disk file stays WARN/ERROR only.
+	diskRes, err := st.Query("ubu1", "worker", "ubu1", &pb.GetDaemonLogsRequest{IncludeInfo: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(diskRes.Entries) != 0 {
+		t.Fatalf("expected 0 local disk entries for INFO, got %+v", diskRes.Entries)
+	}
+
+	logger.Warn("retry cell busy", "cell", 42)
+	logger.Error("disk offline", "err", "io")
+	if count, urgent := st.StreamStats(); count != 3 || !urgent {
+		t.Fatalf("after WARN+ERROR: StreamStats = (%d, %v), want (3, true)", count, urgent)
+	}
+
+	batch := st.PendingStream(2, 0)
+	if len(batch) != 2 || batch[0].Seq != 1 || batch[0].Level != pb.DaemonLogLevel_DAEMON_LOG_LEVEL_INFO || batch[1].Seq != 2 || batch[1].Level != pb.DaemonLogLevel_DAEMON_LOG_LEVEL_WARN {
+		t.Fatalf("PendingStream(2) = %+v", batch)
+	}
+	st.AckStream(2)
+	rest := st.PendingStream(10, 0)
+	if len(rest) != 1 || rest[0].Seq != 3 || rest[0].Level != pb.DaemonLogLevel_DAEMON_LOG_LEVEL_ERROR {
+		t.Fatalf("remaining after AckStream(2) = %+v", rest)
+	}
+	st.AckStream(3)
+	if count, urgent := st.StreamStats(); count != 0 || urgent {
+		t.Fatalf("after full Ack: StreamStats = (%d, %v), want (0, false)", count, urgent)
+	}
+}

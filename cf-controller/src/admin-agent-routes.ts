@@ -26,6 +26,7 @@ import {
 	type DoBindingName,
 } from "./admin-cf-api.ts";
 import { commandDoName } from "./command-do.ts";
+import { workerDoName } from "./worker-do.ts";
 import type { ControllerEnv } from "./controller-do.ts";
 import { validateReadOnlySql, type SqlParamValue } from "./do-sql.ts";
 import { isWorkOSEnabled } from "./workos.ts";
@@ -36,6 +37,7 @@ const VALID_BINDINGS = new Set<DoBindingName>([
 	"CONTROLLER",
 	"TENANT_REGISTRY",
 	"COMMAND",
+	"WORKER",
 	"ADMIN_AGENT",
 ]);
 
@@ -115,6 +117,8 @@ async function discoverOrgTargets(env: ControllerEnv, scope: AdminOrgScope, comm
 	let clusterId = "";
 	let cladefsTenantId: number | null = null;
 	const recentCommands: Array<{ commandId: string; doName: string; controller: string }> = [];
+	const workers: Array<{ nodeId: string; hostname: string; doName: string; controller: string }> =
+		[];
 
 	try {
 		const stub = env.CONTROLLER.getByName(ctrlName);
@@ -122,17 +126,33 @@ async function discoverOrgTargets(env: ControllerEnv, scope: AdminOrgScope, comm
 		clusterId = health.clusterId;
 		cladefsTenantId = health.cladefsTenantId ?? null;
 		if (clusterId) {
-			const rows = await stub.adminQuerySql(
-				"SELECT id FROM commands ORDER BY created_at DESC LIMIT ?",
-				[limit],
-				{ maxRows: limit },
-			);
-			for (const r of rows.rows) {
+			const [cmdRows, nodeRows] = await Promise.all([
+				stub.adminQuerySql("SELECT id FROM commands ORDER BY created_at DESC LIMIT ?", [limit], {
+					maxRows: limit,
+				}),
+				stub.adminQuerySql(
+					"SELECT id, hostname FROM nodes WHERE retired_at IS NULL ORDER BY hostname, id LIMIT 100",
+					[],
+					{ maxRows: 100 },
+				),
+			]);
+			for (const r of cmdRows.rows) {
 				const id = String(r.id ?? "");
 				if (id) {
 					recentCommands.push({
 						commandId: id,
 						doName: commandDoName(clusterId, id),
+						controller: ctrlName,
+					});
+				}
+			}
+			for (const r of nodeRows.rows) {
+				const id = String(r.id ?? "");
+				if (id) {
+					workers.push({
+						nodeId: id,
+						hostname: String(r.hostname ?? ""),
+						doName: workerDoName(clusterId, id),
 						controller: ctrlName,
 					});
 				}
@@ -152,6 +172,7 @@ async function discoverOrgTargets(env: ControllerEnv, scope: AdminOrgScope, comm
 				tenantId: cladefsTenantId !== null ? String(cladefsTenantId) : null,
 			},
 		],
+		workers,
 		recentCommands,
 	};
 }

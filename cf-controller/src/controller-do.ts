@@ -15,6 +15,7 @@ import {
 } from "./auth.ts";
 import { BuildDistributor, type BuildsEnv } from "./builds.ts";
 import { CommandStoreClient, type CommandDO } from "./command-do.ts";
+import { WorkerStoreClient, type WorkerDO } from "./worker-do.ts";
 import { createConnectFetchDispatcher, type ConnectFetchDispatcher } from "./connect-adapter.ts";
 import { ControllerContext } from "./context.ts";
 import * as dbSchema from "./db/schema.ts";
@@ -68,6 +69,7 @@ export interface ControllerEnv extends AuthEnv, BuildsEnv {
 	CONTROLLER: DurableObjectNamespace<ControllerDO>;
 	TENANT_REGISTRY?: DurableObjectNamespace<TenantRegistryDO>;
 	COMMAND: DurableObjectNamespace<CommandDO>;
+	WORKER: DurableObjectNamespace<WorkerDO>;
 	ADMIN_AGENT?: DurableObjectNamespace<AdminAgentDO>;
 	AI?: Ai;
 	ANTHROPIC_API_KEY?: string;
@@ -187,6 +189,7 @@ export class ControllerDO extends DurableObject<ControllerEnv> {
 		this.ctrl = new ControllerContext({
 			store: this.store,
 			commands: new CommandStoreClient(this.env.COMMAND, clusterId),
+			workers: new WorkerStoreClient(this.env.WORKER, clusterId),
 			tunnel: this.tunnel,
 			questionBridge: this.questionBridge,
 			builds: this.builds,

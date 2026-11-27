@@ -29,7 +29,7 @@ export function useDoLinkContext(): DoLinkContextValue | null {
 }
 
 const HEX_DO_ID_RE = /^[0-9a-f]{64}$/i;
-const VALID_BINDINGS = new Set<DoBindingName>(["CONTROLLER", "TENANT_REGISTRY", "COMMAND", "ADMIN_AGENT"]);
+const VALID_BINDINGS = new Set<DoBindingName>(["CONTROLLER", "TENANT_REGISTRY", "COMMAND", "WORKER", "ADMIN_AGENT"]);
 
 function parseBindingName(raw: unknown): DoBindingName | null {
   if (typeof raw !== "string") return null;
@@ -77,6 +77,13 @@ function isTargetAllowedInScope(
         return target.name.startsWith(prefix) && target.name.length > prefix.length;
       }
       return Boolean(target.id && HEX_DO_ID_RE.test(target.id));
+    case "WORKER":
+      if (target.name) {
+        if (!scope.clusterId) return false;
+        const prefix = `worker:${scope.clusterId}:`;
+        return target.name.startsWith(prefix) && target.name.length > prefix.length;
+      }
+      return Boolean(target.id && HEX_DO_ID_RE.test(target.id));
     case "ADMIN_AGENT": {
       if (!target.name) return false;
       const prefix = `admin:${scope.controllerDoName}:`;
@@ -107,6 +114,9 @@ function inferTargetFromExplicitName(val: string, rowBinding: DoBindingName | nu
   if (val.startsWith("cmd:") && val.split(":").length >= 3) {
     return { binding: "COMMAND", name: val };
   }
+  if (val.startsWith("worker:") && val.split(":").length >= 3) {
+    return { binding: "WORKER", name: val };
+  }
   if (val.startsWith("admin:") && val.split(":").length >= 3) {
     return { binding: "ADMIN_AGENT", name: val };
   }
@@ -130,6 +140,9 @@ function commandTarget(rawCommandId: string, clusterId: string | null | undefine
   if (!val) return null;
   if (val.startsWith("cmd:") && val.split(":").length >= 3) {
     return { binding: "COMMAND", name: val };
+  }
+  if (val.startsWith("worker:") && val.split(":").length >= 3) {
+    return { binding: "WORKER", name: val };
   }
   if (!clusterId) return null;
   return { binding: "COMMAND", name: `cmd:${clusterId}:${val}` };

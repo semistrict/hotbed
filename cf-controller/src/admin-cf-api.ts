@@ -11,11 +11,12 @@ import { commandDoName, type CommandDO } from "./command-do.ts";
 import type { ControllerDO, ControllerEnv } from "./controller-do.ts";
 import type { DoSchemaInfo, DoSqlResult, SqlParamValue } from "./do-sql.ts";
 import type { TenantRegistryDO } from "./tenant-registry-do.ts";
+import { workerDoName, type WorkerDO } from "./worker-do.ts";
 
 const CF_API_BASE = "https://api.cloudflare.com/client/v4";
 const HEX_DO_ID_RE = /^[0-9a-f]{64}$/i;
 
-export type DoBindingName = "CONTROLLER" | "TENANT_REGISTRY" | "COMMAND" | "ADMIN_AGENT";
+export type DoBindingName = "CONTROLLER" | "TENANT_REGISTRY" | "COMMAND" | "WORKER" | "ADMIN_AGENT";
 
 export interface AdminOrgScope {
 	/** Logical ControllerDO name for this organization ("default" or "org:<org_id>"). */
@@ -71,8 +72,8 @@ export function adminAgentDoName(controllerDoName: string, threadId: string): st
 
 export function allowedBindingsForScope(scope: AdminOrgScope): DoBindingName[] {
 	return scope.isGlobalAdmin
-		? ["CONTROLLER", "COMMAND", "ADMIN_AGENT", "TENANT_REGISTRY"]
-		: ["CONTROLLER", "COMMAND", "ADMIN_AGENT"];
+		? ["CONTROLLER", "COMMAND", "WORKER", "ADMIN_AGENT", "TENANT_REGISTRY"]
+		: ["CONTROLLER", "COMMAND", "WORKER", "ADMIN_AGENT"];
 }
 
 function assertValidHexId(rawId: string): string {
@@ -109,6 +110,26 @@ async function verifyCommandHexIdBelongsToOrg(
 		if (!cmdId || seen.has(cmdId)) continue;
 		seen.add(cmdId);
 		const candidate = env.COMMAND.idFromName(commandDoName(clusterId, cmdId))
+			.toString()
+			.toLowerCase();
+		if (candidate === hexId) return true;
+	}
+	return false;
+}
+
+async function verifyWorkerHexIdBelongsToOrg(
+	env: ControllerEnv,
+	controllerStub: DurableObjectStub<ControllerDO>,
+	clusterId: string,
+	hexId: string,
+): Promise<boolean> {
+	const nodeRows = await controllerStub.adminQuerySql("SELECT id FROM nodes LIMIT 500", [], {
+		maxRows: 500,
+	});
+	for (const row of nodeRows.rows) {
+		const nodeId = String(row.id ?? "");
+		if (!nodeId) continue;
+		const candidate = env.WORKER.idFromName(workerDoName(clusterId, nodeId))
 			.toString()
 			.toLowerCase();
 		if (candidate === hexId) return true;
@@ -213,6 +234,47 @@ export async function resolveScopedInspectableDo(
 			};
 		}
 
+		case "WORKER": {
+			const ctrlStub = env.CONTROLLER.getByName(scope.controllerDoName);
+			const health = await ctrlStub.getHealth();
+			const clusterId = health.clusterId;
+			if (!clusterId) {
+				throw new AdminScopeError("organization controller has no clusterId yet");
+			}
+			const prefix = `worker:${clusterId}:`;
+
+			if (rawId) {
+				const hexId = assertValidHexId(rawId);
+				const owned = await verifyWorkerHexIdBelongsToOrg(env, ctrlStub, clusterId, hexId);
+				if (!owned) {
+					throw new AdminScopeError(
+						`access denied: WorkerDO ID ${hexId.slice(0, 12)}… does not match any worker in this organization (${scope.controllerDoName})`,
+					);
+				}
+				return {
+					stub: env.WORKER.get(env.WORKER.idFromString(hexId)) as unknown as AdminInspectableStub,
+					label: `WORKER(id:${hexId.slice(0, 12)}…)`,
+					resolvedBy: "id",
+					value: hexId,
+				};
+			}
+
+			if (!rawName) {
+				throw new Error(`\`name\` is required for WORKER (expected "${prefix}<nodeId>")`);
+			}
+			if (!rawName.startsWith(prefix) || rawName.length <= prefix.length) {
+				throw new AdminScopeError(
+					`access denied: WorkerDO name "${rawName}" is outside this organization's cluster prefix ("${prefix}")`,
+				);
+			}
+			return {
+				stub: env.WORKER.getByName(rawName) as unknown as AdminInspectableStub,
+				label: `WORKER(${rawName})`,
+				resolvedBy: "name",
+				value: rawName,
+			};
+		}
+
 		case "ADMIN_AGENT": {
 			if (!env.ADMIN_AGENT) {
 				throw new Error("Durable Object binding ADMIN_AGENT is not bound in this environment");
@@ -278,8 +340,13 @@ export async function resolveScopedInspectableDo(
 	}
 }
 
-// Suppress unused type-only import lint when referencing AdminAgentDO / CommandDO / TenantRegistryDO.
-export type _ScopedDoClasses = ControllerDO | TenantRegistryDO | CommandDO | AdminAgentDO;
+// Suppress unused type-only import lint when referencing AdminAgentDO / CommandDO / WorkerDO / TenantRegistryDO.
+export type _ScopedDoClasses =
+	| ControllerDO
+	| TenantRegistryDO
+	| CommandDO
+	| WorkerDO
+	| AdminAgentDO;
 
 // ---- Cloudflare REST API v4 (optional, cluster-owner/default-org admins only) ----
 

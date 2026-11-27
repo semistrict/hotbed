@@ -6,6 +6,7 @@ import { ControllerDO, type ControllerEnv } from "./controller-do.ts";
 import { connectErrorResponse, ErrorCode, fromUnknownError, hotbedError } from "./errors.ts";
 import { handleGcRoute } from "./gc.ts";
 import { TenantRegistryDO } from "./tenant-registry-do.ts";
+import { WorkerDO } from "./worker-do.ts";
 import { clearWorkOSSessionCookie } from "./workos.ts";
 import {
 	attachInternalAuth,
@@ -15,7 +16,7 @@ import {
 	withSetCookie,
 } from "./workos-routes.ts";
 
-export { AdminAgentDO, CommandDO, ControllerDO, TenantRegistryDO };
+export { AdminAgentDO, CommandDO, ControllerDO, TenantRegistryDO, WorkerDO };
 
 const DO_PREFIXES = ["/hotbed.v1.", "/ws/", "/builds/", "/admin/", "/board/attachments/"];
 
