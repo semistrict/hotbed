@@ -687,27 +687,25 @@ func (b *VMBackend) CaptureWorkspaceBase(
 		AutoCaptured:   true,
 	}, true, true)
 
-	if b.OnMachined() {
-		return held, &pb.CladefsCell{
-			Tenant:  baseRef.Tenant,
-			Cell:    baseRef.Cell,
-			Version: ver,
-			Arch:    goruntime.GOARCH,
-		}, nil
+	// On R2-backed cladefsd, free the local bucket-backed copy now that its
+	// version is durable in R2; on machined (local-only), the local cell IS
+	// the base so keep it intact. In both cases, fork wsID onto its own child
+	// cell so subsequent commands in wsID upload nothing to R2 and releasing
+	// wsID later deletes only its child cell, never the held base cell.
+	if !b.OnMachined() {
+		if err := b.currentStore().DropCell(ctx, baseRef.Tenant, baseRef.Cell); err != nil {
+			slog.Warn("drop local copy of captured workspace base", "workspace", wsID, "cell", baseRef.Cell, "err", err)
+		}
 	}
-
-	// Free the local bucket-backed cell now that its version is durable in R2,
-	// then replace wsID's backing disk with a local-only ephemeral fork so
-	// subsequent commands in this session upload nothing to R2.
-	if err := b.currentStore().DropCell(ctx, baseRef.Tenant, baseRef.Cell); err != nil {
-		slog.Warn("drop local copy of captured workspace base", "workspace", wsID, "cell", baseRef.Cell, "err", err)
-	}
-	ephemRef, err := b.currentStore().ForkVersion(ctx, baseRef, true)
+	ephemRef, err := b.currentStore().ForkVersion(ctx, baseRef, !b.OnMachined())
 	if err != nil {
 		b.mu.Lock()
 		delete(b.wsCapture, wsID)
+		// Never leave wsCells[wsID] pointing at the held base cell, or
+		// DeleteWorkspace would delete the newly captured base on release.
+		delete(b.wsCells, wsID)
 		b.mu.Unlock()
-		return held, nil, fmt.Errorf("fork ephemeral workspace %s after base capture: %w", wsID, err)
+		return held, nil, fmt.Errorf("fork workspace %s after base capture: %w", wsID, err)
 	}
 	b.mu.Lock()
 	b.wsCells[wsID] = ephemRef

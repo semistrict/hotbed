@@ -5,6 +5,8 @@ import (
 	"testing"
 	"time"
 
+	"google.golang.org/grpc"
+
 	"github.com/semistrict/hotbed/internal/cladefs"
 	"github.com/semistrict/hotbed/internal/fake"
 	pb "github.com/semistrict/hotbed/internal/gen/hotbed/v1"
@@ -260,5 +262,58 @@ func TestEngineAutoCapturesAfterSuccessAndSwapsToEphemeral(t *testing.T) {
 	held, fresh := vmb.heldBases().get("hotbed")
 	if held == nil || !fresh || !held.AutoCaptured || held.Ref.Cell != initialCell || held.Ref.Version == 0 {
 		t.Fatalf("expected captured base on cell %d, got (%+v, fresh=%v)", initialCell, held, fresh)
+	}
+}
+
+func TestVMBackendOnMachinedCaptureForksChildAndPreservesBaseOnDelete(t *testing.T) {
+	ctx := t.Context()
+	api := newStrictVMCladefsClient()
+	fl := newFakeVMLauncher()
+	b, _ := newTestVMBackend(t, api, fl)
+	// Simulate local-only machined (macOS): no R2 bucket, so the local cell IS
+	// the base and must NOT be dropped on capture or deleted when ws is released.
+	b.machined = &grpc.ClientConn{}
+
+	baseRef := cladefs.CellRef{Tenant: 0, Cell: 100, Version: 5}
+	capCell, err := b.PrepareWorkspace(ctx, "ws-mac-cap", baseRef, 1, true)
+	if err != nil {
+		t.Fatalf("PrepareWorkspace machined capture: %v", err)
+	}
+	if err := b.StopVM(ctx, "ws-mac-cap"); err != nil {
+		t.Fatalf("StopVM: %v", err)
+	}
+
+	captured, newWsCell, err := b.CaptureWorkspaceBase(ctx, "ws-mac-cap", "hotbed", "base-key-mac", 1, map[string]string{"hotbed": "aaaa"}, 1700000000, 1700000500000)
+	if err != nil {
+		t.Fatalf("CaptureWorkspaceBase machined: %v", err)
+	}
+	if captured.Ref.Cell != capCell.GetCell() {
+		t.Fatalf("captured base cell = %d, want %d", captured.Ref.Cell, capCell.GetCell())
+	}
+	if newWsCell == nil || newWsCell.GetCell() == capCell.GetCell() {
+		t.Fatalf("machined workspace must fork onto a distinct child cell after capture, got %+v (base %d)", newWsCell, capCell.GetCell())
+	}
+	api.mu.Lock()
+	if len(api.dropped) != 0 {
+		t.Fatalf("machined capture must not DropCell local base, dropped=%+v", api.dropped)
+	}
+	lastFork := api.forkReqs[len(api.forkReqs)-1]
+	if lastFork.GetEphemeral() || lastFork.GetCell() != captured.Ref.Cell || lastFork.GetVersion() != captured.Ref.Version {
+		t.Fatalf("machined post-capture fork must be non-ephemeral from captured version, got %+v", lastFork)
+	}
+	api.mu.Unlock()
+
+	// Releasing the original workspace must delete only its child cell and
+	// preserve the locally held base cell.
+	if err := b.DeleteWorkspace(ctx, "ws-mac-cap"); err != nil {
+		t.Fatalf("DeleteWorkspace: %v", err)
+	}
+	api.mu.Lock()
+	defer api.mu.Unlock()
+	if !api.cells[captured.Ref.Cell] {
+		t.Fatalf("releasing captured workspace deleted machined local base cell %d (deleted=%+v)", captured.Ref.Cell, api.deleted)
+	}
+	if api.cells[newWsCell.GetCell()] {
+		t.Fatalf("expected child cell %d to be deleted on release", newWsCell.GetCell())
 	}
 }

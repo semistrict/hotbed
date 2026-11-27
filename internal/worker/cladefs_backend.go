@@ -1001,7 +1001,19 @@ func (e *Engine) runWorkspaceCapture(ctx context.Context, w *workspace, b cladef
 			"workspace", wsID, "project", project, "err", err)
 		e.mu.Lock()
 		w.capturePending = false
+		if captured != nil {
+			// The base cell was already promoted into heldBases; never leave
+			// the workspace record pointing at it or a restart/release could
+			// alias and delete the held base.
+			w.rec.CaptureBase = false
+			w.ws().CaptureBase = false
+			w.ws().CladefsCell = nil
+			e.saveWorkspace(w, change{what: "captured"})
+		}
 		e.mu.Unlock()
+		if captured != nil {
+			e.recordWarmCladefsBase(&pb.HostedProject{Name: project, ScratchEpoch: scratchEpoch}, captured, goruntime.GOARCH)
+		}
 		return
 	}
 
