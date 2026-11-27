@@ -3,7 +3,7 @@ package macworker
 // Pinned is the machined hotbed's daemon runs a Mac's worker on: a cladefs
 // release's (its release workflow's machined-macos job), pinned by SHA-256.
 var Pinned = Release{
-	Tag:      "cladefs-7abcd75e",
-	Machined: Asset{Name: "machined-darwin-arm64", SHA256: "4cca38f814bef4c9b29e8b85a4c21742c3080ee5fe0edd91ad520ff41b4ba460"},
-	Helper:   Asset{Name: "machined-vm-darwin-arm64", SHA256: "477f51cf8e99ec9160972e1e85a84621ff7ced5d504df476eb36facf5eb3c2db"},
+	Tag:      "cladefs-c9ddcd36",
+	Machined: Asset{Name: "machined-darwin-arm64", SHA256: "6136a50c015433442d2d4e4a75c3bab899cfa44d8c577eb87a9f631a6187a5f4"},
+	Helper:   Asset{Name: "machined-vm-darwin-arm64", SHA256: "3e224f2fdd5630f125225b5a51fb2c453381ee1e7385795496ffd31dcb5aea72"},
 }
