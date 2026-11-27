@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"slices"
 	"sync"
 	"testing"
 
@@ -154,6 +155,92 @@ func TestOutputPusherStreamsIncrementallyRetriesAndFlushesEOF(t *testing.T) {
 	// Subsequent once() does not re-send.
 	if more, err := p.once(t.Context()); err != nil || more || len(cluster.reqs) != 3 {
 		t.Fatalf("post-eof push: more=%v err=%v reqs=%d", more, err, len(cluster.reqs))
+	}
+}
+
+// A live command's bytes written but not yet stamped (a recorder writes
+// the byte before its timestamp) wait for their timestamp: CommandDO keeps
+// a chunk's timestamp for good, so one pushed early reads as unstamped
+// forever (TestLogsTimestampsOption's tail lost a line's time on CI).
+// Once the command ended, what is left goes as it is.
+func TestOutputPusherHoldsBytesUntilStamped(t *testing.T) {
+	eng, _ := outputEngine(t, cmdlog.Limit{})
+	id := "c-push-stamp"
+	logPath := filepath.Join(eng.logsDir(), id+".log")
+	if err := os.MkdirAll(filepath.Dir(logPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	eng.mu.Lock()
+	eng.commands[id] = &command{
+		rec: &pb.CommandRecord{Command: &pb.Command{Id: id, State: pb.CommandState_COMMAND_STATE_RUNNING}},
+	}
+	eng.mu.Unlock()
+	cluster := &outputCaptureCluster{}
+	p := newOutputPusher(eng, cluster)
+	type pushed struct {
+		data string
+		ts   int64
+		eof  bool
+	}
+	pushes := func() []pushed {
+		var out []pushed
+		for _, r := range cluster.reqs {
+			if len(r.Chunks) == 0 {
+				out = append(out, pushed{eof: r.Eof})
+			}
+			for _, ch := range r.Chunks {
+				out = append(out, pushed{data: string(ch.Data), ts: ch.ReceivedAt, eof: r.Eof})
+			}
+		}
+		return out
+	}
+
+	const ts1, ts2 = int64(1_700_000_010_000), int64(1_700_000_020_000)
+	if err := os.WriteFile(logPath, []byte("first\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// Written, not yet stamped: nothing goes.
+	if _, err := p.once(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	if got := pushes(); len(got) != 0 {
+		t.Fatalf("pushed before its timestamp: %+v", got)
+	}
+	if err := cmdlog.RecordTimestamp(logPath, 6, ts1); err != nil {
+		t.Fatal(err)
+	}
+	// "second\n" written, its timestamp not yet: only the stamped line goes.
+	f, err := os.OpenFile(logPath, os.O_APPEND|os.O_WRONLY, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+	if _, err := f.WriteString("second\n"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := p.once(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	if err := cmdlog.RecordTimestamp(logPath, 13, ts2); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := p.once(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	// It ends with a line never stamped (none of the recorders saw it):
+	// that goes too, unstamped, with the end.
+	if _, err := f.WriteString("tail\n"); err != nil {
+		t.Fatal(err)
+	}
+	eng.mu.Lock()
+	eng.commands[id].cmd().State = pb.CommandState_COMMAND_STATE_SUCCEEDED
+	eng.mu.Unlock()
+	if _, err := p.once(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	want := []pushed{{data: "first\n", ts: ts1}, {data: "second\n", ts: ts2}, {data: "tail\n", ts: 0, eof: true}}
+	if got := pushes(); !slices.Equal(got, want) {
+		t.Fatalf("pushed %+v, want %+v", got, want)
 	}
 }
 

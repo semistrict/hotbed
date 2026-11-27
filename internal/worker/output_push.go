@@ -126,6 +126,17 @@ func (p *outputPusher) pushCommand(ctx context.Context, t outputTarget, st *outp
 				if st.tsIdx == nil || next > st.tsIdx.MaxOffset() {
 					st.tsIdx, _ = cmdlog.ReadTimestamps(t.logPath)
 				}
+				if !t.ended {
+					// Every recorder writes a byte before its timestamp
+					// (TimestampWriter, the host's RecordIfGrown poller):
+					// bytes past the index wait for theirs, as CommandDO
+					// keeps a chunk's timestamp for good. Once it ended,
+					// its output was read to the end and stamped
+					// (finishOutput), so what is left goes as it is.
+					covered := max(0, st.tsIdx.MaxOffset()-offset)
+					data = data[:min(int64(len(data)), covered)]
+					next = offset + int64(len(data))
+				}
 				_ = st.tsIdx.SplitChunks(offset, data, func(chunkOff int64, chunk []byte, ts int64) error {
 					cp := append([]byte(nil), chunk...)
 					chunks = append(chunks, &pb.CommandOutputChunk{
