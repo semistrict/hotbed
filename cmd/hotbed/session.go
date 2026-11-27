@@ -41,6 +41,7 @@ type sessionStartCmd struct {
 	Replace        bool   `help:"End the live session already bound to this T3 thread or git worktree and bind the new one in its place."`
 	Resume         bool   `help:"Take up the session NAME if there is one, rather than refuse: live again if it ended (with no workspaces), as it is if not. It keeps its project."`
 	OmitMemories   bool   `name:"omit-memories" help:"Do not include the compact memory briefing in the output."`
+	OmitSkills     bool   `name:"omit-skills" help:"Do not include active skill descriptors in the output."`
 }
 
 func (c *sessionStartCmd) Exec(ctx context.Context, d deps) (any, error) {
@@ -91,6 +92,7 @@ func (c *sessionStartCmd) Exec(ctx context.Context, d deps) (any, error) {
 		T3CodeThreadId:  tid,
 		T3CodeThreadUrl: d.t3codeThreadURL(ctx, tid),
 		OmitMemories:    c.OmitMemories,
+		OmitSkills:      c.OmitSkills,
 	})
 	if err != nil {
 		return nil, err
@@ -136,6 +138,9 @@ func (c *sessionStartCmd) Exec(ctx context.Context, d deps) (any, error) {
 			_, _ = cl.sessions.EndSession(ctx, &pb.EndSessionRequest{Id: sess.Id})
 			if res.Session.Memories == nil && res.Session.Project == sess.Project {
 				res.Session.Memories = sess.Memories
+			}
+			if res.Session.Skills == nil && res.Session.Project == sess.Project {
+				res.Session.Skills = sess.Skills
 			}
 			return res.Session, nil
 		}

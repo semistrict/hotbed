@@ -521,6 +521,77 @@ export const memoryChanges = sqliteTable(
 	(t) => [index("memory_changes_memory").on(t.memoryId, t.seq)],
 );
 
+export const skills = sqliteTable(
+	"skills",
+	{
+		id: integer("id").primaryKey({ autoIncrement: true }),
+		projectId: integer("project_id").references(() => projects.id),
+		scopeKey: text("scope_key").notNull().default(""),
+		repo: text("repo").notNull().default(""),
+		name: text("name").notNull(),
+		state: text("state").notNull(),
+		rank: integer("rank").notNull().default(0),
+		createdBy: text("created_by").notNull().default(""),
+		createdAt: integer("created_at").notNull(),
+		updatedAt: integer("updated_at").notNull(),
+		searchText: text("search_text").notNull().default(""),
+		doc: text("doc").notNull(),
+	},
+	(t) => [
+		uniqueIndex("skills_active_name")
+			.on(t.scopeKey, t.name)
+			.where(sql`${t.state} = 'SKILL_STATE_ACTIVE'`),
+		index("skills_scope_state").on(t.projectId, t.state, t.rank, t.updatedAt),
+		index("skills_state_updated").on(t.state, t.updatedAt, t.id),
+	],
+);
+
+export const skillFiles = sqliteTable(
+	"skill_files",
+	{
+		skillId: integer("skill_id")
+			.notNull()
+			.references(() => skills.id, { onDelete: "cascade" }),
+		path: text("path").notNull(),
+		size: integer("size").notNull(),
+		digest: text("digest").notNull(),
+		mimeType: text("mime_type").notNull(),
+		binary: integer("binary", { mode: "boolean" }).notNull().default(false),
+		chunkCount: integer("chunk_count").notNull().default(0),
+	},
+	(t) => [primaryKey({ columns: [t.skillId, t.path] })],
+);
+
+export const skillFileChunks = sqliteTable(
+	"skill_file_chunks",
+	{
+		skillId: integer("skill_id")
+			.notNull()
+			.references(() => skills.id, { onDelete: "cascade" }),
+		path: text("path").notNull(),
+		chunkIndex: integer("chunk_index").notNull(),
+		data: blob("data", { mode: "buffer" }).notNull(),
+	},
+	(t) => [primaryKey({ columns: [t.skillId, t.path, t.chunkIndex] })],
+);
+
+export const skillChanges = sqliteTable(
+	"skill_changes",
+	{
+		seq: integer("seq").primaryKey({ autoIncrement: true }),
+		skillId: integer("skill_id")
+			.notNull()
+			.references(() => skills.id, { onDelete: "cascade" }),
+		what: text("what").notNull(),
+		at: integer("at").notNull(),
+		session: text("session").notNull(),
+		host: text("host").notNull(),
+		reason: text("reason").notNull(),
+		doc: text("doc").notNull(),
+	},
+	(t) => [index("skill_changes_skill").on(t.skillId, t.seq)],
+);
+
 export const workerConfigs = sqliteTable("worker_configs", {
 	scope: text("scope").primaryKey(),
 	revision: integer("revision").notNull().default(1),

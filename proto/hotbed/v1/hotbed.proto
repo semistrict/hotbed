@@ -2327,6 +2327,9 @@ message Session {
   // as https://app.t3.codes/threads/ENVIRONMENT/THREAD), for the cockpit to
   // open the thread by; empty when it is not known.
   string t3code_thread_url = 17;
+  // Compact descriptors of all active skills relevant to this session (global +
+  // its project); only set by StartSession unless omit_skills is true.
+  SkillBriefing skills = 18;
 }
 
 message SessionWorkspace {
@@ -2364,6 +2367,8 @@ message StartSessionRequest {
   // The link T3 Code gives t3code_thread_id (an https URL); the CLI reads
   // it from `t3 thread show` when it starts a session inside T3 Code.
   string t3code_thread_url = 9;
+  // When true, do not include the active skill descriptors briefing in the response.
+  bool omit_skills = 10;
 }
 
 message ListSessionsRequest {
@@ -6523,6 +6528,315 @@ message MoveMemoryRequest {
     hidden: true
     default: "named_session"
   }];
+}
+
+// ---- skills -----------------------------------------------------------------
+
+// SkillService manages Agent Skills (https://agentskills.io) stored on the
+// controller, scoped globally or to a Hotbed project, with full multi-file
+// trees, SHA-256 manifests for MCP Skills Extension (SEP-2640), upstream
+// provenance for npx-skills-compatible installation and updates, and session
+// start descriptor recall.
+service SkillService {
+  // Create or update a skill with its complete set of files (SKILL.md and any
+  // supporting references, scripts, templates, or assets). Replaces existing
+  // skill files when updating an existing skill of the same scope and name.
+  rpc PutSkill(PutSkillRequest) returns (Skill);
+  // List skills (metadata and file manifests without file contents). Defaults
+  // to active skills for global + active project (or global only outside a
+  // project).
+  rpc ListSkills(ListSkillsRequest) returns (ListSkillsResponse) {
+    option idempotency_level = IDEMPOTENT;
+  }
+  // Fetch a skill's metadata and file contents (SKILL.md by default, one
+  // specific file path, or all files) by ID, name, scope/name, or skill:// URI.
+  rpc GetSkill(GetSkillRequest) returns (GetSkillResponse) {
+    option idempotency_level = IDEMPOTENT;
+  }
+  // Show one skill with its full metadata, file manifest, source provenance,
+  // and revision history.
+  rpc ShowSkill(ShowSkillRequest) returns (Skill) {
+    option idempotency_level = IDEMPOTENT;
+  }
+  // Edit a skill's scope, project, repo, tags, or rationale (e.g. promote a
+  // project skill to global).
+  rpc ReviseSkill(ReviseSkillRequest) returns (Skill);
+  // Archive an active skill so it is no longer returned on session start or
+  // served over MCP; history and files are preserved and it can be restored.
+  rpc ArchiveSkill(ArchiveSkillRequest) returns (Skill);
+  // Restore an archived skill back to active.
+  rpc RestoreSkill(RestoreSkillRequest) returns (Skill);
+  // Permanently remove a skill, its files, and its revision history.
+  rpc DeleteSkill(DeleteSkillRequest) returns (Skill);
+  // Move an active skill in the startup priority order.
+  rpc MoveSkill(MoveSkillRequest) returns (Skill);
+}
+
+enum SkillScope {
+  SKILL_SCOPE_UNSPECIFIED = 0;
+  // Delivered on every session start and MCP connection across all projects.
+  SKILL_SCOPE_GLOBAL = 1;
+  // Delivered on session start and MCP connection for its project.
+  SKILL_SCOPE_PROJECT = 2;
+}
+
+enum SkillState {
+  SKILL_STATE_UNSPECIFIED = 0;
+  // Active and included in session start descriptors and MCP skills/list.
+  SKILL_STATE_ACTIVE = 1;
+  // Soft-retired; excluded from session start and MCP, restorable.
+  SKILL_STATE_ARCHIVED = 2;
+}
+
+enum SkillOrder {
+  SKILL_ORDER_UNSPECIFIED = 0;
+  SKILL_ORDER_RANK = 1;
+  SKILL_ORDER_NEWEST = 2;
+  SKILL_ORDER_OLDEST = 3;
+  SKILL_ORDER_UPDATED = 4;
+  SKILL_ORDER_NAME = 5;
+}
+
+// Metadata for a single file within a skill package (without bytes).
+message SkillFileMeta {
+  // Relative POSIX path within the skill root (e.g. "SKILL.md", "references/guide.md").
+  string path = 1;
+  // Length in bytes of the raw file content.
+  int64 size = 2;
+  // SHA-256 digest of the raw file bytes, formatted as "sha256:<64-lowercase-hex>".
+  string digest = 3;
+  // MIME type (e.g. "text/markdown", "text/plain", "application/octet-stream").
+  string mime_type = 4;
+  // True when the file contains non-UTF-8 or NUL bytes.
+  bool binary = 5;
+}
+
+// One file's path and raw bytes (used for upload in PutSkill and download in GetSkill).
+message SkillFile {
+  string path = 1;
+  bytes content = 2;
+  string mime_type = 3;
+}
+
+// Upstream provenance recorded when a skill is installed via `hotbed skills add`
+// (matching npx skills lock semantics for `check` and `update`).
+message SkillSource {
+  // "github", "gitlab", "git", "local", "well-known", "download", or "manual".
+  string source_type = 1;
+  // Canonical source string (e.g. "vercel-labs/agent-skills", "https://example.com").
+  string source = 2;
+  // Clone URL, well-known URL, or download URL.
+  string source_url = 3;
+  // Pinned branch, tag, or commit ref if specified.
+  string ref = 4;
+  // Resolved 40-char git commit SHA at install/update time, if git-backed.
+  string commit = 5;
+  // Subpath within the source repository, if any.
+  string subpath = 6;
+  // Original upstream skill name before `--rename`, if renamed.
+  string original_name = 7;
+  // npx skills v2 content hash (SHA-256 over sorted normalized files).
+  string content_hash = 8;
+  // Unix ms when last fetched from the upstream source.
+  int64 synced_at = 9;
+}
+
+message SkillProvenance {
+  AskedFrom from = 1;
+  string t3code_thread_id = 2;
+  string model = 3;
+  string rationale = 4;
+}
+
+message Skill {
+  int32 id = 1;
+  SkillScope scope = 2;
+  // Empty for GLOBAL skills.
+  string project = 3;
+  // Optional canonical git remote within project; empty for the whole project.
+  string repo = 4;
+  // Agent Skills name (1-64 lowercase letters/digits/non-consecutive hyphens).
+  string name = 5;
+  // Description from SKILL.md YAML frontmatter (1-1024 chars).
+  string description = 6;
+  // Verbatim SKILL.md YAML frontmatter serialized as a JSON object (for SEP-2640).
+  string frontmatter_json = 7;
+  // Complete manifest of all files in the skill, sorted by path (SKILL.md included).
+  repeated SkillFileMeta files = 8;
+  int32 file_count = 9;
+  int64 total_bytes = 10;
+  SkillState state = 11;
+  // Priority order for startup recall: lower comes first.
+  int64 rank = 12;
+  // Monotonic revision, incremented on every change.
+  int64 revision = 13;
+  SkillSource source = 14;
+  SkillProvenance provenance = 15;
+  Stamp created = 16;
+  Stamp edited = 17;
+  Stamp archived = 18;
+  int64 updated_at = 19;
+  // Every change to this skill, oldest first; populated only by ShowSkill.
+  repeated SkillChange history = 20;
+  // Its page in the cockpit; filled by the CLI.
+  string cockpit_url = 21;
+  // Canonical MCP Skills Extension URI: skill://global/<name>/SKILL.md or
+  // skill://<project>/<name>/SKILL.md.
+  string uri = 22;
+  // Short lowercase tags for filtering and search.
+  repeated string tags = 23;
+}
+
+message SkillChange {
+  int64 seq = 1;
+  // created, updated, edited, promoted, archived, restored, moved
+  string what = 2;
+  Stamp by = 3;
+  // Snapshot of the skill as the change left it, without history.
+  Skill skill = 4;
+}
+
+// Compact skill descriptor embedded in StartSession response (Session.skills).
+message SkillDescriptor {
+  int32 id = 1;
+  string name = 2;
+  SkillScope scope = 3;
+  string project = 4;
+  string repo = 5;
+  string description = 6;
+  // Canonical MCP URI (skill://global/<name>/SKILL.md or skill://<project>/<name>/SKILL.md).
+  string uri = 7;
+  int32 file_count = 8;
+  int64 total_bytes = 9;
+  int64 revision = 10;
+  int64 updated_at = 11;
+  string compatibility = 12;
+  string source = 13;
+}
+
+// Startup skills payload attached to Session by StartSession.
+message SkillBriefing {
+  repeated SkillDescriptor skills = 1;
+  int32 total_active = 2;
+}
+
+message PutSkillRequest {
+  // Complete set of files in the skill package; must include "SKILL.md".
+  repeated SkillFile files = 1;
+  // Install/store as a global skill (available across all projects).
+  bool global = 2;
+  // Project to scope this skill to (default: active session's project).
+  string project = 3;
+  // Optional repo within the project.
+  string repo = 4;
+  // Optional tags for filtering.
+  repeated string tags = 5;
+  // Optional upstream source provenance (from `hotbed skills add`).
+  SkillSource source = 6;
+  // Why this skill is being added or updated.
+  string rationale = 7;
+  string model = 8;
+  string session_id = 9;
+  AskedFrom from = 10;
+  string t3code_thread_id = 11;
+  // Refuse with CONFLICT unless the existing skill is at this revision (0 skips check).
+  int64 if_revision = 12;
+  // Optional explicit override name (must match SKILL.md frontmatter name).
+  string name = 13;
+  // Optional verbatim frontmatter JSON parsed from SKILL.md (re-validated on server).
+  string frontmatter_json = 14;
+}
+
+message ListSkillsRequest {
+  // Filter by state; default is ACTIVE.
+  repeated SkillState states = 1;
+  // Filter by scope: global or project; omit for global + active project.
+  SkillScope scope = 2;
+  oneof project_scope {
+    string project = 3;
+    bool all_projects = 4;
+  }
+  string tag = 5;
+  // Case-insensitive substring search across name, description, tags, source, and file paths.
+  string query = 6;
+  SkillOrder order = 7;
+  // Maximum skills to return; 0 for all.
+  int32 limit = 8;
+  string session_id = 9;
+  string remote = 10;
+}
+
+message ListSkillsResponse {
+  repeated Skill skills = 1;
+  int32 total = 2;
+}
+
+message GetSkillRequest {
+  // Skill ID ("12", "#12"), bare name ("frontend-design"), scoped name
+  // ("global/frontend-design", "hotbed/release"), or MCP URI
+  // ("skill://global/frontend-design/SKILL.md").
+  string ref = 1;
+  // Relative file path to fetch (default: "SKILL.md"). Ignored when all_files is true.
+  string path = 2;
+  // When true, return every file in the skill package.
+  bool all_files = 3;
+  // Project to resolve bare names against.
+  string project = 4;
+  string session_id = 5;
+  string remote = 6;
+}
+
+message GetSkillResponse {
+  Skill skill = 1;
+  repeated SkillFile files = 2;
+}
+
+message ShowSkillRequest {
+  string ref = 1;
+  string project = 2;
+  string session_id = 3;
+  string remote = 4;
+}
+
+message ReviseSkillRequest {
+  int32 id = 1;
+  bool global = 2;
+  string project = 3;
+  optional string repo = 4;
+  repeated string tags = 5;
+  bool replace_tags = 6;
+  optional string rationale = 7;
+  string session_id = 8;
+  int64 if_revision = 9;
+}
+
+message ArchiveSkillRequest {
+  int32 id = 1;
+  string reason = 2;
+  string session_id = 3;
+  int64 if_revision = 4;
+}
+
+message RestoreSkillRequest {
+  int32 id = 1;
+  string session_id = 2;
+  int64 if_revision = 3;
+}
+
+message DeleteSkillRequest {
+  int32 id = 1;
+  string session_id = 2;
+  int64 if_revision = 3;
+}
+
+message MoveSkillRequest {
+  int32 id = 1;
+  oneof place {
+    int32 before = 2;
+    bool first = 4;
+    bool last = 5;
+  }
+  string session_id = 3;
 }
 
 // ---- board ------------------------------------------------------------------

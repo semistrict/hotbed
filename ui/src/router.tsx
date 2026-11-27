@@ -14,6 +14,7 @@ import { OrganizationPage } from "./pages/Organization";
 import { OverviewPage } from "./pages/Overview";
 import { ProjectsPage } from "./pages/Projects";
 import { MemoriesPage, MemoryDetailPage, type MemoriesSearch } from "./pages/Memories";
+import { SkillDetailPage, SkillsPage, type SkillsSearch } from "./pages/Skills";
 import { QuestionDetailPage, QuestionsPage, type QuestionsSearch } from "./pages/Questions";
 import { IssueDetailPage, IssuesPage, type IssuesSearch, type IssuesTab } from "./pages/Issues";
 import { ReviewPage } from "./pages/Review";
@@ -107,6 +108,25 @@ const memoryDetail = createRoute({
   getParentRoute: () => root,
   path: "/memories/$id",
   component: MemoryDetailPage,
+});
+const SKILL_TABS = ["active", "archived", "all"];
+const SKILL_SCOPES = ["all", "global", "project"];
+const SKILL_SORTS = ["rank", "newest", "oldest", "updated", "name"];
+const skills = createRoute({
+  getParentRoute: () => root,
+  path: "/skills",
+  component: SkillsPage,
+  validateSearch: (s: Record<string, unknown>): SkillsSearch => ({
+    tab: typeof s.tab === "string" && SKILL_TABS.includes(s.tab) ? (s.tab as SkillsSearch["tab"]) : undefined,
+    scope: typeof s.scope === "string" && SKILL_SCOPES.includes(s.scope) ? (s.scope as SkillsSearch["scope"]) : undefined,
+    sort: typeof s.sort === "string" && SKILL_SORTS.includes(s.sort) ? (s.sort as SkillsSearch["sort"]) : undefined,
+    q: typeof s.q === "string" && s.q ? s.q : undefined,
+  }),
+});
+const skillDetail = createRoute({
+  getParentRoute: () => root,
+  path: "/skills/$id",
+  component: SkillDetailPage,
 });
 const overview = createRoute({ getParentRoute: () => root, path: "/cluster", component: OverviewPage });
 const adminAgent = createRoute({ getParentRoute: () => root, path: "/admin-agent", component: AdminAgentPage });
@@ -208,7 +228,7 @@ const history = createRoute({
   },
 });
 
-const routeTree = root.addChildren([projects, board, boardThread, tasks, sessions, session, questions, questionDetail, issues, issueDetail, memories, memoryDetail, reviews, review, schedules, overview, adminAgent, organization, settings, nodes, node, daemonLogs, workspaces, workspace, commands, command, history]);
+const routeTree = root.addChildren([projects, board, boardThread, tasks, sessions, session, questions, questionDetail, issues, issueDetail, memories, memoryDetail, skills, skillDetail, reviews, review, schedules, overview, adminAgent, organization, settings, nodes, node, daemonLogs, workspaces, workspace, commands, command, history]);
 
 export const router = createRouter({ routeTree, defaultPreload: "intent", scrollRestoration: true });
 keepScrollWithinPage(router);

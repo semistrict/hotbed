@@ -118,6 +118,10 @@ export const VIEWER_ALLOWED_PROCEDURES = new Set([
 	"/hotbed.v1.MemoryService/ListMemories",
 	"/hotbed.v1.MemoryService/GetMemories",
 	"/hotbed.v1.MemoryService/ShowMemory",
+	// SkillService (read-only)
+	"/hotbed.v1.SkillService/ListSkills",
+	"/hotbed.v1.SkillService/GetSkill",
+	"/hotbed.v1.SkillService/ShowSkill",
 	// BoardService (read-only)
 	"/hotbed.v1.BoardService/ListBoardThreads",
 	"/hotbed.v1.BoardService/GetBoardThread",

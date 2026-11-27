@@ -38,6 +38,7 @@ import {
 	ReviewService,
 	ScheduleService,
 	SessionService,
+	SkillService,
 	WorkspaceService,
 } from "./gen/hotbed/v1/hotbed_pb.ts";
 import { randomHex } from "./ids.ts";
@@ -55,6 +56,7 @@ import { createQuestionService } from "./services/questions.ts";
 import { createReviewService } from "./services/reviews.ts";
 import { createScheduleService, type ScheduleRunner } from "./services/schedules.ts";
 import { createSessionService } from "./services/sessions.ts";
+import { createSkillService } from "./services/skills.ts";
 import { createWorkspaceService } from "./services/workspaces.ts";
 import { ControllerStore } from "./store/index.ts";
 import type { TenantRegistryDO } from "./tenant-registry-do.ts";
@@ -215,6 +217,7 @@ export class ControllerDO extends DurableObject<ControllerEnv> {
 			session: createSessionService(this.ctrl),
 			question: createQuestionService(this.ctrl),
 			memory: createMemoryService(this.ctrl),
+			skill: createSkillService(this.ctrl),
 			review: createReviewService(this.ctrl),
 			issue: createIssueService(this.ctrl),
 			gitAuth: createGitAuthService(this.ctrl),
@@ -225,6 +228,7 @@ export class ControllerDO extends DurableObject<ControllerEnv> {
 			router.service(WorkspaceService, wsSvc.impl);
 			router.service(QuestionService, services.question);
 			router.service(MemoryService, services.memory);
+			router.service(SkillService, services.skill);
 			router.service(ReviewService, services.review);
 			router.service(IssueService, services.issue);
 			router.service(ScheduleService, schedSvc.impl);

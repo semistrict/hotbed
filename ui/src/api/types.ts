@@ -10,6 +10,7 @@ import {
   type Node,
   QuestionOrder,
   RunOutcome,
+  SkillOrder,
   StepState,
   WorkspaceState,
 } from "../gen/hotbed/v1/hotbed_pb";
@@ -43,6 +44,15 @@ export const MEMORY_ORDER_FROM_SLUG: Record<MemoryOrderSlug, MemoryOrder> = {
   oldest: MemoryOrder.OLDEST,
   updated: MemoryOrder.UPDATED,
   slug: MemoryOrder.SLUG,
+};
+
+export type SkillOrderSlug = "rank" | "newest" | "oldest" | "updated" | "name";
+export const SKILL_ORDER_FROM_SLUG: Record<SkillOrderSlug, SkillOrder> = {
+  rank: SkillOrder.RANK,
+  newest: SkillOrder.NEWEST,
+  oldest: SkillOrder.OLDEST,
+  updated: SkillOrder.UPDATED,
+  name: SkillOrder.NAME,
 };
 
 export type DaemonLogLevelSlug = "warn" | "error";

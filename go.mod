@@ -11,7 +11,7 @@ require (
 	github.com/google/go-containerregistry v0.22.1
 	github.com/ianlancetaylor/demangle v0.0.0-20261012173340-cbb8aaea4290
 	github.com/itchyny/gojq v0.12.20
-	github.com/modelcontextprotocol/go-sdk v1.8.0
+	github.com/modelcontextprotocol/go-sdk v1.9.0-pre.1.0.20261127161310-13d3c71f7f58
 	github.com/pressly/goose/v3 v3.30.1
 	github.com/semistrict/cladefs/go v0.0.0-20261126204959-ef58351b30b0
 	go.opentelemetry.io/collector/component v1.71.0

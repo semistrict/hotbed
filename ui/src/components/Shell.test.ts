@@ -13,6 +13,8 @@ describe("Shell navigation helpers", () => {
     expect(isNavActive("/questions", "/questions")).toBe(true);
     expect(isNavActive("/memories", "/memories")).toBe(true);
     expect(isNavActive("/memories/42", "/memories")).toBe(true);
+    expect(isNavActive("/skills", "/skills")).toBe(true);
+    expect(isNavActive("/skills/42", "/skills")).toBe(true);
     expect(isNavActive("/reviews/7", "/reviews")).toBe(true);
     expect(isNavActive("/sessions/bold-otter", "/sessions")).toBe(true);
     expect(isNavActive("/commands/cmd-9", "/commands")).toBe(true);
@@ -33,6 +35,7 @@ describe("Shell navigation helpers", () => {
     expect(routeTitle("/workspaces/ws-1")).toBe("Workspace");
     expect(routeTitle("/reviews/42")).toBe("Reviews");
     expect(routeTitle("/memories/11")).toBe("Memories");
+    expect(routeTitle("/skills/11")).toBe("Skills");
     expect(routeTitle("/nodes/ubu1")).toBe("Nodes");
     expect(routeTitle("/commands/abc")).toBe("Commands");
     expect(routeTitle("/sessions/warm-fox")).toBe("Sessions");
@@ -47,6 +50,7 @@ describe("Shell navigation helpers", () => {
     expect(routeParent("/commands/abc")).toBe("/commands");
     expect(routeParent("/reviews/42")).toBe("/reviews");
     expect(routeParent("/memories/11")).toBe("/memories");
+    expect(routeParent("/skills/11")).toBe("/skills");
     expect(routeParent("/workspaces/ws-1")).toBe("/");
 
     expect(routeParent("/")).toBeNull();

@@ -10,6 +10,7 @@ import {
   ReviewService,
   ScheduleService,
   SessionService,
+  SkillService,
   WorkspaceService,
   type CommandDiagnostics,
   type SampleCommandChunk,
@@ -31,6 +32,7 @@ export function createClients(transport: Transport) {
     gitAuth: createClient(GitAuthService, transport),
     issues: createClient(IssueService, transport),
     memories: createClient(MemoryService, transport),
+    skills: createClient(SkillService, transport),
     board: createClient(BoardService, transport),
   };
 }

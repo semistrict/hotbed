@@ -91,6 +91,32 @@ func Get(path string) (string, error) {
 	return string(b), nil
 }
 
+// ReadAll returns every embedded file for the named built-in skill, keyed by
+// relative POSIX path ("SKILL.md", "references/commands.md", ...).
+func ReadAll(name string) (map[string][]byte, error) {
+	name = strings.Trim(name, "/")
+	if name == "" || strings.Contains(name, "/") {
+		return nil, fmt.Errorf("no built-in skill %q", name)
+	}
+	out := map[string][]byte{}
+	err := fs.WalkDir(files, name, func(p string, d fs.DirEntry, err error) error {
+		if err != nil || d.IsDir() {
+			return err
+		}
+		b, err := fs.ReadFile(files, p)
+		if err != nil {
+			return err
+		}
+		rel := strings.TrimPrefix(p, name+"/")
+		out[rel] = b
+		return nil
+	})
+	if err != nil || len(out) == 0 {
+		return nil, fmt.Errorf("no built-in skill %q", name)
+	}
+	return out, nil
+}
+
 // Install writes every skill into dir (an agent's skills directory, such as
 // ~/.claude/skills), replacing older copies, and returns what it wrote.
 func Install(dir string) ([]string, error) {

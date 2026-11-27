@@ -317,6 +317,7 @@ func TestListingsScopeAlike(t *testing.T) {
 	listings := map[string][]string{
 		"hotbed.v1.ListQuestionsRequest":      {"question", "ls"},
 		"hotbed.v1.ListMemoriesRequest":       {"memory", "ls"},
+		"hotbed.v1.ListSkillsRequest":         {"skills", "ls"},
 		"hotbed.v1.ListSessionsRequest":       {"session", "ls"},
 		"hotbed.v1.ListSchedulesRequest":      {"schedule", "ls"},
 		"hotbed.v1.ListReviewsRequest":        {"review", "ls"},

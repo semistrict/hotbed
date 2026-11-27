@@ -38,7 +38,7 @@ type formatSpec struct {
 
 var defaultFormatSpecs = map[string]formatSpec{
 	"version":          {versionResult{}, `{{.version}}{{if .commit}} ({{short 12 .commit}}){{end}}  {{.os}}/{{.arch}}`},
-	"session start":    {&pb.Session{}, "{{.id}}{{if .project}}  project={{.project}}{{end}}{{if .model}}  model={{.model}}{{end}}{{if .t3codeThreadId}}  t3={{.t3codeThreadId}}{{end}}{{with .memories}}{{if or .always .onDemand}}\n\nMemories ({{len .always}} always-on, {{len .onDemand}} on-demand — fetch details with `hotbed memory get SLUG`):{{if .always}}\nAlways-on:{{range .always}}\n  [{{if .project}}{{.project}}{{else}}global{{end}}{{if .repo}}/{{.repo}}{{end}}] {{.slug}}: {{.summary}}{{end}}{{end}}{{if .omittedAlways}}\n  (+{{.omittedAlways}} more always-on memories — run `hotbed memory ls --mode always`){{end}}{{if .onDemand}}\nOn-demand (read when relevant):{{range .onDemand}}\n  [{{if .project}}{{.project}}{{else}}global{{end}}{{if .repo}}/{{.repo}}{{end}}] {{.slug}} — {{.summary}}{{end}}{{end}}{{if .omittedOnDemand}}\n  (+{{.omittedOnDemand}} more on-demand memories — run `hotbed memory ls`){{end}}{{end}}{{end}}{{if .reminder}}\n{{.reminder}}{{end}}"},
+	"session start":    {&pb.Session{}, "{{.id}}{{if .project}}  project={{.project}}{{end}}{{if .model}}  model={{.model}}{{end}}{{if .t3codeThreadId}}  t3={{.t3codeThreadId}}{{end}}{{with .memories}}{{if or .always .onDemand}}\n\nMemories ({{len .always}} always-on, {{len .onDemand}} on-demand — fetch details with `hotbed memory get SLUG`):{{if .always}}\nAlways-on:{{range .always}}\n  [{{if .project}}{{.project}}{{else}}global{{end}}{{if .repo}}/{{.repo}}{{end}}] {{.slug}}: {{.summary}}{{end}}{{end}}{{if .omittedAlways}}\n  (+{{.omittedAlways}} more always-on memories — run `hotbed memory ls --mode always`){{end}}{{if .onDemand}}\nOn-demand (read when relevant):{{range .onDemand}}\n  [{{if .project}}{{.project}}{{else}}global{{end}}{{if .repo}}/{{.repo}}{{end}}] {{.slug}} — {{.summary}}{{end}}{{end}}{{if .omittedOnDemand}}\n  (+{{.omittedOnDemand}} more on-demand memories — run `hotbed memory ls`){{end}}{{end}}{{end}}{{if .skills}}{{if .skills.skills}}\n\nSkills ({{len .skills.skills}} — load with `hotbed skills get NAME` or MCP `skills/get`):{{range .skills.skills}}\n  [{{if .project}}{{.project}}{{else}}global{{end}}{{if .repo}}/{{.repo}}{{end}}] {{.name}} — {{.description}}{{if .uri}} ({{.uri}}){{end}}{{end}}{{end}}{{end}}{{if .reminder}}\n{{.reminder}}{{end}}"},
 	"session current":  {sessionBinding{}, `{{.id}}  ({{.source}})`},
 	"session end":      {&pb.Session{}, "{{.id}}  ended{{if .reminder}}\n{{.reminder}}{{end}}"},
 	"session ls":       {&pb.ListSessionsResponse{}, "{{range .sessions}}{{pad 20 .id}}  {{pad 12 .project}}  {{if .endedAt}}ended{{else}}live {{end}}{{if .model}}  model={{.model}}{{end}}{{if .t3codeThreadId}}  t3={{.t3codeThreadId}}{{end}}\n{{end}}"},
@@ -47,9 +47,14 @@ var defaultFormatSpecs = map[string]formatSpec{
 	"pause":            {&pb.Command{}, `{{.id}}  {{state .state}}{{if .reason}}  {{.reason}}{{end}}`},
 	"resume":           {&pb.Command{}, `{{.id}}  {{state .state}}{{if .reason}}  {{.reason}}{{end}}`},
 	"step ls":          {&pb.ListStepsResponse{}, "{{range .steps}}{{with .step}}{{pad 20 .name}}  {{if .everyPull}}every-pull{{else}}once      {{end}}  {{short 50 .script}}{{end}}\n{{end}}"},
-	"skills list":      {map[string][]string{"skills": nil}, "{{range .skills}}{{.}}\n{{end}}"},
-	"skills get":       {map[string]string{"name": "", "content": ""}, `{{.content}}`},
+	"skills get":       {skillsGetResult{}, `{{.content}}`},
 	"skills install":   {map[string]any{"dir": "", "files": []string{}}, `installed {{len .files}} files in {{.dir}}`},
+	"skills edit":      {&pb.Skill{}, "#{{.id}}  {{state .state}}  rev={{.revision}}  [{{if .project}}{{.project}}{{else}}global{{end}}] {{.name}}"},
+	"skills promote":   {&pb.Skill{}, "#{{.id}}  {{state .state}}  rev={{.revision}}  [{{if .project}}{{.project}}{{else}}global{{end}}] {{.name}}"},
+	"skills archive":   {&pb.Skill{}, "#{{.id}}  {{state .state}}  rev={{.revision}}  [{{if .project}}{{.project}}{{else}}global{{end}}] {{.name}}"},
+	"skills restore":   {&pb.Skill{}, "#{{.id}}  {{state .state}}  rev={{.revision}}  [{{if .project}}{{.project}}{{else}}global{{end}}] {{.name}}"},
+	"skills rm":        {&pb.Skill{}, "#{{.id}}  removed  [{{if .project}}{{.project}}{{else}}global{{end}}] {{.name}}"},
+	"skills move":      {&pb.Skill{}, "#{{.id}}  rank={{.rank}}  rev={{.revision}}"},
 	"daemon status":    {daemon.ServiceStatus{Live: &daemon.Snapshot{}}, "installed={{.installed}}  running={{.running}}{{if .unitPath}}\nunit:  {{.unitPath}}{{end}}{{if .logPath}}\nlog:   {{.logPath}}{{end}}{{with .live}}\ncontroller: {{or .controller \"-\"}}{{with .t3Bridge}}\nt3-bridge:  {{.state}}{{if .trackedQuestions}} ({{.trackedQuestions}} tracked){{end}}{{if .pendingQuestions}} ({{.pendingQuestions}} pending){{end}}{{end}}{{with .worker}}\nworker:     {{if .configured}}{{.state}}{{if .detail}} ({{.detail}}){{end}}{{else}}unconfigured{{end}}{{end}}{{end}}"},
 	"daemon install":   {daemon.ServiceStatus{}, "installed={{.installed}}  running={{.running}}{{if .unitPath}}\nunit:  {{.unitPath}}{{end}}{{if .logPath}}\nlog:   {{.logPath}}{{end}}"},
 	"daemon uninstall": {daemon.ServiceStatus{}, "installed={{.installed}}  running={{.running}}{{if .unitPath}}\nunit:  {{.unitPath}}{{end}}"},
@@ -165,6 +170,9 @@ func formatOutputQueryWithTimestamps(res *pb.OutputQuery, now time.Time) string 
 func report(data any, timestamps bool) (text string, ok bool, err error) {
 	if res, ok := data.(boardImportSummary); ok {
 		return formatBoardImportSummary(res), true, nil
+	}
+	if text, ok := formatSkillReport(data); ok {
+		return text, true, nil
 	}
 	msg, ok := data.(proto.Message)
 	if !ok {

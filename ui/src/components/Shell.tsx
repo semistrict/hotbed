@@ -1,6 +1,7 @@
 import { Link, Outlet, useNavigate, useRouterState } from "@tanstack/react-router";
 import {
   Activity,
+  BookOpen,
   Brain,
   Building2,
   CalendarClock,
@@ -72,6 +73,7 @@ interface NavItem {
     | "/tasks"
     | "/questions"
     | "/memories"
+    | "/skills"
     | "/reviews"
     | "/sessions"
     | "/commands"
@@ -96,6 +98,7 @@ const WORKSPACE_NAV: readonly NavItem[] = [
   { to: "/tasks", label: "Tasks", icon: ListChecks },
   { to: "/questions", label: "Questions", icon: MessageCircleQuestion },
   { to: "/memories", label: "Memories", icon: Brain },
+  { to: "/skills", label: "Skills", icon: BookOpen },
   { to: "/reviews", label: "Reviews", icon: GitPullRequestDraft },
   { to: "/sessions", label: "Sessions", icon: Terminal },
   { to: "/commands", label: "Commands", icon: Cpu },

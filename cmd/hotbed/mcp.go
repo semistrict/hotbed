@@ -7,10 +7,15 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"maps"
+	"net/url"
+	"slices"
 	"strings"
 	"sync"
 	"time"
 
+	mcpskills "github.com/modelcontextprotocol/go-sdk/extensions/skills"
+	"github.com/modelcontextprotocol/go-sdk/jsonrpc"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"google.golang.org/protobuf/encoding/protojson"
 	"google.golang.org/protobuf/proto"
@@ -18,15 +23,19 @@ import (
 	"github.com/semistrict/hotbed/internal/api"
 	"github.com/semistrict/hotbed/internal/apicmd"
 	pb "github.com/semistrict/hotbed/internal/gen/hotbed/v1"
+	"github.com/semistrict/hotbed/internal/skillspec"
 	"github.com/semistrict/hotbed/internal/version"
+	"github.com/semistrict/hotbed/skills"
 )
 
 // hotbed mcp is an MCP server on stdin and stdout, whose tools are
-// hotbed.proto's commands. The server is a session: the agent that starts
-// it works in the session its environment names (HOTBED_SESSION, or the
-// one bound to its T3 thread or git worktree), resumed if it ended, or in
-// a new one bound there; the session lives while the server runs and ends
-// when it exits, and the next server started there takes it up again.
+// hotbed.proto's commands and whose skills are served over the MCP Skills
+// Extension (SEP-2640, io.modelcontextprotocol/skills) and MCP Resources.
+// The server is a session: the agent that starts it works in the session its
+// environment names (HOTBED_SESSION, or the one bound to its T3 thread or git
+// worktree), resumed if it ended, or in a new one bound there; the session
+// lives while the server runs and ends when it exits, and the next server
+// started there takes it up again.
 
 type mcpCmd struct {
 	controllerClient
@@ -60,6 +69,7 @@ type mcpServer struct {
 	session  string             // empty until started, and again once it ends
 	reminder string             // setup reminder from the latest StartSession
 	memories *pb.MemoryBriefing // compact memory briefing from the latest StartSession
+	skills   *pb.SkillBriefing  // active skill descriptors from the latest StartSession
 	// kept counts the sessions started: a keep-alive goes on only while
 	// its session is the latest, so a session resumed is kept by one.
 	kept   int
@@ -82,7 +92,8 @@ func (s *mcpServer) serve(ctx context.Context, t mcp.Transport) error {
 	s.alive = alive
 	// Started now, before the client asks for anything; if the controller
 	// cannot be reached, each tool call tries again.
-	instructions := "hotbed's tools: builds, tests and dev servers on a hotbed cluster, questions for the user, and cross-agent memories. Read `hotbed skills get hotbed` for how hotbed works. A reusable lesson goes where it will be found: its fix, the repo's AGENTS.md, a comment by the code, or a skill; save a memory (`memory_add`) only for what has none of those (a preference, a machine fact, a workaround naming its open bug), updating one that covers it (`memory_ls`)."
+	instructions := "hotbed's tools: builds, tests and dev servers on a hotbed cluster, questions for the user, cross-agent memories, and agent skills (MCP Skills Extension `io.modelcontextprotocol/skills` + `resources/read`). Read `hotbed skills get hotbed` (or `skill://builtin/hotbed/SKILL.md`) for how hotbed works. A reusable lesson goes where it will be found: its fix, the repo's AGENTS.md, a comment by the code, or a skill; save a memory (`memory_add`) only for what has none of those (a preference, a machine fact, a workaround naming its open bug), updating one that covers it (`memory_ls`)."
+	var skillBriefing *pb.SkillBriefing
 	if id, err := s.ensure(ctx); err != nil {
 		fmt.Fprintf(s.d.stderr, "hotbed mcp: no session yet: %v\n", toAPIError(err))
 	} else {
@@ -90,9 +101,13 @@ func (s *mcpServer) serve(ctx context.Context, t mcp.Transport) error {
 		s.mu.Lock()
 		reminder := s.reminder
 		memories := s.memories
+		skillBriefing = s.skills
 		s.mu.Unlock()
 		if memText := formatMemoryBriefingForInstructions(memories); memText != "" {
 			instructions += "\n\n" + memText
+		}
+		if skillText := formatSkillBriefingForInstructions(skillBriefing); skillText != "" {
+			instructions += "\n\n" + skillText
 		}
 		if reminder != "" {
 			instructions += "\n\n" + reminder
@@ -100,7 +115,19 @@ func (s *mcpServer) serve(ctx context.Context, t mcp.Transport) error {
 	}
 	defer s.end()
 
-	server := mcp.NewServer(&mcp.Implementation{Name: "hotbed", Version: version.String()}, &mcp.ServerOptions{Instructions: instructions})
+	caps := &mcp.ServerCapabilities{
+		Tools:     &mcp.ToolCapabilities{},
+		Resources: &mcp.ResourceCapabilities{},
+	}
+	caps.AddExtension(mcpskills.ExtensionID, map[string]any{"directoryRead": true})
+
+	server := mcp.NewServer(
+		&mcp.Implementation{Name: "hotbed", Version: version.String()},
+		&mcp.ServerOptions{
+			Instructions: instructions,
+			Capabilities: caps,
+		},
+	)
 	for _, tool := range schema.Tools() {
 		destructive := tool.Destructive
 		server.AddTool(&mcp.Tool{
@@ -110,7 +137,427 @@ func (s *mcpServer) serve(ctx context.Context, t mcp.Transport) error {
 			return s.call(ctx, tool.Command, req.Params.Arguments), nil
 		})
 	}
+
+	if err := s.registerSkills(server, skillBriefing); err != nil {
+		return err
+	}
+
 	return server.Run(ctx, t)
+}
+
+// registerSkills wires SEP-2640 (`skills/list`, `skills/get`,
+// `resources/directory/read`) and standard MCP Resources (`resources/read` and
+// `resources/list`) for both controller-stored skills and the compiled-in
+// `hotbed` guide.
+func (s *mcpServer) registerSkills(server *mcp.Server, initial *pb.SkillBriefing) error {
+	// Register a resource template so any skill file (including newly added skills
+	// and nested supporting files) is readable via standard `resources/read`.
+	server.AddResourceTemplate(&mcp.ResourceTemplate{
+		URITemplate: "skill://{scope}/{name}/{+path}",
+		Name:        "Hotbed Skill File",
+		Description: "Files belonging to an Agent Skill served by Hotbed.",
+	}, s.readSkillResource)
+
+	// Register top-level SKILL.md resources for standard MCP clients that call
+	// `resources/list` without implementing SEP-2640.
+	for _, b := range builtinMCPSkills() {
+		uri := b.entry.URI
+		server.AddResource(&mcp.Resource{
+			URI:         uri,
+			Name:        b.entry.Frontmatter.Name(),
+			Description: b.entry.Frontmatter.Description(),
+			MIMEType:    "text/markdown",
+		}, s.readSkillResource)
+	}
+	if initial != nil {
+		for _, d := range initial.Skills {
+			uri := d.Uri
+			server.AddResource(&mcp.Resource{
+				URI:         uri,
+				Name:        d.Name,
+				Description: d.Description,
+				MIMEType:    "text/markdown",
+			}, s.readSkillResource)
+		}
+	}
+
+	return mcpskills.AddHandlers(server, &mcpskills.Handlers{
+		List:          s.handleListSkills,
+		Get:           s.handleGetSkill,
+		ReadDirectory: s.handleReadSkillDirectory,
+	}, &mcpskills.ServerOptions{
+		Limits: mcpskills.BaselineLimits(),
+	})
+}
+
+type builtinSkillEntry struct {
+	name  string
+	entry *mcpskills.Skill
+	files map[string]skillspec.FileEntry
+}
+
+func builtinMCPSkills() []builtinSkillEntry {
+	list, err := skills.List()
+	if err != nil {
+		return nil
+	}
+	var out []builtinSkillEntry
+	for _, sk := range list {
+		rawFiles, err := skills.ReadAll(sk.Name)
+		if err != nil {
+			continue
+		}
+		skillMD, ok := rawFiles["SKILL.md"]
+		if !ok {
+			continue
+		}
+		fm, _, err := skillspec.ParseFrontmatter(skillMD)
+		if err != nil {
+			continue
+		}
+		rootURI := fmt.Sprintf("skill://builtin/%s", sk.Name)
+		skillURI := rootURI + "/SKILL.md"
+
+		paths := make([]string, 0, len(rawFiles))
+		for p := range rawFiles {
+			paths = append(paths, p)
+		}
+		slices.Sort(paths)
+
+		fileMap := make(map[string]skillspec.FileEntry, len(paths))
+		resources := make([]*mcpskills.Resource, 0, len(paths))
+		for _, p := range paths {
+			data := rawFiles[p]
+			digest := skillspec.SHA256Digest(data)
+			fileMap[p] = skillspec.FileEntry{
+				Path:     p,
+				Content:  data,
+				MIMEType: skillspec.InferMIMEType(p, data),
+				Digest:   digest,
+				Binary:   skillspec.IsBinary(data),
+			}
+			resources = append(resources, &mcpskills.Resource{
+				URI:    rootURI + "/" + p,
+				Digest: digest,
+				Size:   int64(len(data)),
+			})
+		}
+
+		out = append(out, builtinSkillEntry{
+			name: sk.Name,
+			entry: &mcpskills.Skill{
+				URI:         skillURI,
+				Frontmatter: mcpskills.Frontmatter(maps.Clone(fm)),
+				Resources:   mcpskills.StaticResources(resources...),
+			},
+			files: fileMap,
+		})
+	}
+	return out
+}
+
+func pbSkillToMCPSkill(sk *pb.Skill) (*mcpskills.Skill, error) {
+	if sk == nil {
+		return nil, fmt.Errorf("nil skill")
+	}
+	var fm mcpskills.Frontmatter
+	if sk.FrontmatterJson != "" {
+		if err := json.Unmarshal([]byte(sk.FrontmatterJson), &fm); err != nil {
+			return nil, fmt.Errorf("decode frontmatter for %s: %w", sk.Name, err)
+		}
+	}
+	if fm == nil {
+		fm = mcpskills.Frontmatter{
+			"name":        sk.Name,
+			"description": sk.Description,
+		}
+	}
+	rootURI := strings.TrimSuffix(sk.Uri, "/SKILL.md")
+	resources := make([]*mcpskills.Resource, 0, len(sk.Files))
+	for _, f := range sk.Files {
+		resources = append(resources, &mcpskills.Resource{
+			URI:    rootURI + "/" + f.Path,
+			Digest: f.Digest,
+			Size:   f.Size,
+		})
+	}
+	return &mcpskills.Skill{
+		URI:         sk.Uri,
+		Frontmatter: fm,
+		Resources:   mcpskills.StaticResources(resources...),
+	}, nil
+}
+
+func parseSkillResourceURI(rawURI string) (scope, name, relPath string, ok bool) {
+	u, err := url.Parse(rawURI)
+	if err != nil || u.Scheme != "skill" || u.Host == "" {
+		return "", "", "", false
+	}
+	scope = u.Host
+	p := strings.TrimPrefix(u.Path, "/")
+	if p == "" {
+		return "", "", "", false
+	}
+	idx := strings.IndexByte(p, '/')
+	if idx < 0 {
+		return scope, p, "", true
+	}
+	return scope, p[:idx], p[idx+1:], true
+}
+
+func (s *mcpServer) handleListSkills(ctx context.Context, req *mcpskills.ListSkillsRequest) (*mcpskills.ListSkillsResult, error) {
+	var catalog []*mcpskills.Skill
+	if sessID, err := s.ensure(ctx); err == nil {
+		if cl, cerr := s.clients(s.d.http); cerr == nil {
+			res, lerr := cl.skills.ListSkills(ctx, &pb.ListSkillsRequest{SessionId: sessID})
+			if lerr != nil {
+				return nil, lerr
+			}
+			for _, sk := range res.Skills {
+				entry, perr := pbSkillToMCPSkill(sk)
+				if perr != nil {
+					continue
+				}
+				catalog = append(catalog, entry)
+			}
+		}
+	}
+	for _, b := range builtinMCPSkills() {
+		catalog = append(catalog, b.entry)
+	}
+	page, next, err := paginateMCPSkills(catalog, req.Params.Cursor)
+	if err != nil {
+		return nil, &jsonrpc.Error{Code: jsonrpc.CodeInvalidParams, Message: err.Error()}
+	}
+	return &mcpskills.ListSkillsResult{
+		Cacheable:  mcp.Cacheable{TTLMs: 30_000, CacheScope: "private"},
+		Skills:     page,
+		NextCursor: next,
+	}, nil
+}
+
+func paginateMCPSkills(all []*mcpskills.Skill, cursor string) ([]*mcpskills.Skill, string, error) {
+	const pageSize = 100
+	start := 0
+	if cursor != "" {
+		var n int
+		if _, err := fmt.Sscanf(cursor, "offset:%d", &n); err != nil || n < 0 || n > len(all) {
+			return nil, "", fmt.Errorf("invalid cursor %q", cursor)
+		}
+		start = n
+	}
+	end := min(start+pageSize, len(all))
+	var next string
+	if end < len(all) {
+		next = fmt.Sprintf("offset:%d", end)
+	}
+	return all[start:end], next, nil
+}
+
+func (s *mcpServer) handleGetSkill(ctx context.Context, req *mcpskills.GetSkillRequest) (*mcpskills.GetSkillResult, error) {
+	uri := req.Params.URI
+	scope, name, rel, ok := parseSkillResourceURI(uri)
+	if !ok || rel != "SKILL.md" {
+		return nil, nil
+	}
+	if scope == "builtin" {
+		for _, b := range builtinMCPSkills() {
+			if b.name == name {
+				return &mcpskills.GetSkillResult{
+					Cacheable: mcp.Cacheable{TTLMs: 300_000, CacheScope: "public"},
+					Skill:     b.entry,
+				}, nil
+			}
+		}
+		return nil, nil
+	}
+	cl, err := s.clients(s.d.http)
+	if err != nil {
+		return nil, err
+	}
+	sessID, _ := s.ensure(ctx)
+	sk, err := cl.skills.ShowSkill(ctx, &pb.ShowSkillRequest{Ref: uri, SessionId: sessID})
+	if err != nil {
+		if api.CodeOf(err) == api.CodeNotFound {
+			return nil, nil
+		}
+		return nil, err
+	}
+	entry, err := pbSkillToMCPSkill(sk)
+	if err != nil {
+		return nil, err
+	}
+	return &mcpskills.GetSkillResult{
+		Cacheable: mcp.Cacheable{TTLMs: 30_000, CacheScope: "private"},
+		Skill:     entry,
+	}, nil
+}
+
+func (s *mcpServer) handleReadSkillDirectory(ctx context.Context, req *mcpskills.ReadDirectoryRequest) (*mcpskills.ReadDirectoryResult, error) {
+	dirURI := req.Params.URI
+	scope, name, subDir, ok := parseSkillResourceURI(dirURI)
+	if !ok {
+		return nil, nil
+	}
+	rootURI := fmt.Sprintf("skill://%s/%s", scope, name)
+	type fileInfo struct {
+		path     string
+		mimeType string
+		size     int64
+	}
+	var allFiles []fileInfo
+
+	if scope == "builtin" {
+		var found *builtinSkillEntry
+		for _, b := range builtinMCPSkills() {
+			if b.name == name {
+				cp := b
+				found = &cp
+				break
+			}
+		}
+		if found == nil {
+			return nil, nil
+		}
+		for _, f := range found.files {
+			allFiles = append(allFiles, fileInfo{path: f.Path, mimeType: f.MIMEType, size: int64(len(f.Content))})
+		}
+	} else {
+		cl, err := s.clients(s.d.http)
+		if err != nil {
+			return nil, err
+		}
+		sessID, _ := s.ensure(ctx)
+		sk, err := cl.skills.ShowSkill(ctx, &pb.ShowSkillRequest{Ref: rootURI + "/SKILL.md", SessionId: sessID})
+		if err != nil {
+			if api.CodeOf(err) == api.CodeNotFound {
+				return nil, nil
+			}
+			return nil, err
+		}
+		for _, f := range sk.Files {
+			allFiles = append(allFiles, fileInfo{path: f.Path, mimeType: f.MimeType, size: f.Size})
+		}
+	}
+
+	prefix := ""
+	if subDir != "" {
+		prefix = subDir + "/"
+	}
+	childrenMap := map[string]*mcp.Resource{}
+	for _, f := range allFiles {
+		if subDir != "" && f.path == subDir {
+			// Target URI is a file, not a directory.
+			return nil, nil
+		}
+		if !strings.HasPrefix(f.path, prefix) {
+			continue
+		}
+		rest := strings.TrimPrefix(f.path, prefix)
+		if rest == "" {
+			continue
+		}
+		if slash := strings.IndexByte(rest, '/'); slash >= 0 {
+			dirName := rest[:slash]
+			childURI := dirURI + "/" + dirName
+			if _, exists := childrenMap[childURI]; !exists {
+				childrenMap[childURI] = &mcp.Resource{
+					URI:      childURI,
+					Name:     dirName,
+					MIMEType: "inode/directory",
+				}
+			}
+		} else {
+			childURI := dirURI + "/" + rest
+			childrenMap[childURI] = &mcp.Resource{
+				URI:      childURI,
+				Name:     rest,
+				MIMEType: f.mimeType,
+				Size:     f.size,
+			}
+		}
+	}
+	if len(childrenMap) == 0 {
+		// Directory does not exist under this skill.
+		return nil, nil
+	}
+	children := make([]*mcp.Resource, 0, len(childrenMap))
+	for _, r := range childrenMap {
+		children = append(children, r)
+	}
+	slices.SortFunc(children, func(a, b *mcp.Resource) int {
+		return strings.Compare(a.URI, b.URI)
+	})
+	page, next, err := mcpskills.PaginateDirectoryResources(children, req.Params.Cursor, 0)
+	if err != nil {
+		return nil, &jsonrpc.Error{Code: jsonrpc.CodeInvalidParams, Message: err.Error()}
+	}
+	return &mcpskills.ReadDirectoryResult{
+		Cacheable:  mcp.Cacheable{TTLMs: 30_000, CacheScope: "private"},
+		Resources:  page,
+		NextCursor: next,
+	}, nil
+}
+
+func (s *mcpServer) readSkillResource(ctx context.Context, req *mcp.ReadResourceRequest) (*mcp.ReadResourceResult, error) {
+	uri := req.Params.URI
+	scope, name, rel, ok := parseSkillResourceURI(uri)
+	if !ok || rel == "" {
+		return nil, &jsonrpc.Error{Code: jsonrpc.CodeInvalidParams, Message: fmt.Sprintf("unknown skill resource %q", uri)}
+	}
+	if scope == "builtin" {
+		for _, b := range builtinMCPSkills() {
+			if b.name == name {
+				f, exists := b.files[rel]
+				if !exists {
+					return nil, &jsonrpc.Error{Code: jsonrpc.CodeInvalidParams, Message: fmt.Sprintf("unknown skill resource %q", uri)}
+				}
+				return skillFileToResourceResult(uri, f.MIMEType, f.Content, f.Binary), nil
+			}
+		}
+		return nil, &jsonrpc.Error{Code: jsonrpc.CodeInvalidParams, Message: fmt.Sprintf("unknown skill resource %q", uri)}
+	}
+
+	cl, err := s.clients(s.d.http)
+	if err != nil {
+		return nil, err
+	}
+	sessID, _ := s.ensure(ctx)
+	skillURI := fmt.Sprintf("skill://%s/%s/SKILL.md", scope, name)
+	res, err := cl.skills.GetSkill(ctx, &pb.GetSkillRequest{
+		Ref:       skillURI,
+		Path:      rel,
+		SessionId: sessID,
+	})
+	if err != nil {
+		if api.CodeOf(err) == api.CodeNotFound || api.CodeOf(err) == api.CodeInvalidArgs {
+			return nil, &jsonrpc.Error{Code: jsonrpc.CodeInvalidParams, Message: fmt.Sprintf("unknown skill resource %q", uri)}
+		}
+		return nil, err
+	}
+	if len(res.Files) == 0 {
+		return nil, &jsonrpc.Error{Code: jsonrpc.CodeInvalidParams, Message: fmt.Sprintf("unknown skill resource %q", uri)}
+	}
+	f := res.Files[0]
+	bin := skillspec.IsBinary(f.Content)
+	mimeType := f.MimeType
+	if mimeType == "" {
+		mimeType = skillspec.InferMIMEType(f.Path, f.Content)
+	}
+	return skillFileToResourceResult(uri, mimeType, f.Content, bin), nil
+}
+
+func skillFileToResourceResult(uri, mimeType string, content []byte, binary bool) *mcp.ReadResourceResult {
+	rc := &mcp.ResourceContents{
+		URI:      uri,
+		MIMEType: mimeType,
+	}
+	if binary {
+		rc.Blob = content
+	} else {
+		rc.Text = string(content)
+	}
+	return &mcp.ReadResourceResult{Contents: []*mcp.ResourceContents{rc}}
 }
 
 // call runs a tool's command; what fails is the tool's error, for the
@@ -192,6 +639,7 @@ func (s *mcpServer) ensure(ctx context.Context) (string, error) {
 	s.session = sess.Id
 	s.reminder = sess.GetReminder()
 	s.memories = sess.GetMemories()
+	s.skills = sess.GetSkills()
 	s.kept++
 	go s.keepAlive(s.alive, sess.Id, s.kept)
 	return s.session, nil
@@ -302,6 +750,25 @@ func formatMemoryBriefingForInstructions(b *pb.MemoryBriefing) string {
 	}
 	if b.OmittedOnDemand > 0 {
 		fmt.Fprintf(&sb, "\n  (+%d more on-demand memories — call `memory_ls`)", b.OmittedOnDemand)
+	}
+	return sb.String()
+}
+
+func formatSkillBriefingForInstructions(b *pb.SkillBriefing) string {
+	if b == nil || len(b.Skills) == 0 {
+		return ""
+	}
+	var sb strings.Builder
+	fmt.Fprintf(&sb, "Skills (%d — load via MCP `skills/get` + `resources/read` or `hotbed skills get NAME`):", len(b.Skills))
+	for _, e := range b.Skills {
+		scope := e.Project
+		if scope == "" {
+			scope = "global"
+		}
+		if e.Repo != "" {
+			scope += "/" + e.Repo
+		}
+		fmt.Fprintf(&sb, "\n  [%s] %s — %s (%s)", scope, e.Name, e.Description, e.Uri)
 	}
 	return sb.String()
 }

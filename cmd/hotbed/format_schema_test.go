@@ -198,10 +198,24 @@ func scalar(fd protoreflect.FieldDescriptor) protoreflect.Value {
 	panic("unhandled kind " + fd.Kind().String())
 }
 
+var protoMessageType = reflect.TypeFor[proto.Message]()
+
 // filledGo is a Go value of type t with every field set and every slice
 // holding one element.
 func filledGo(t reflect.Type) reflect.Value {
+	return filledGoDepth(t, 0)
+}
+
+func filledGoDepth(t reflect.Type, depth int) reflect.Value {
 	v := reflect.New(t).Elem()
+	if depth > 6 {
+		return v
+	}
+	if t.Implements(protoMessageType) && t.Kind() == reflect.Pointer {
+		p := reflect.New(t.Elem())
+		fill(p.Interface().(proto.Message).ProtoReflect(), depth+1, 0)
+		return p
+	}
 	switch t.Kind() {
 	case reflect.String:
 		v.SetString("x")
@@ -212,14 +226,14 @@ func filledGo(t reflect.Type) reflect.Value {
 	case reflect.Struct:
 		for i := range t.NumField() {
 			if t.Field(i).IsExported() {
-				v.Field(i).Set(filledGo(t.Field(i).Type))
+				v.Field(i).Set(filledGoDepth(t.Field(i).Type, depth+1))
 			}
 		}
 	case reflect.Slice:
-		v.Set(reflect.Append(v, filledGo(t.Elem())))
+		v.Set(reflect.Append(v, filledGoDepth(t.Elem(), depth+1)))
 	case reflect.Pointer:
 		p := reflect.New(t.Elem())
-		p.Elem().Set(filledGo(t.Elem()))
+		p.Elem().Set(filledGoDepth(t.Elem(), depth+1))
 		v.Set(p)
 	}
 	return v

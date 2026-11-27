@@ -14,7 +14,7 @@ you changed.
 ## The loop
 
 ```sh
-hotbed session start                             # prints active memories & binds to T3CODE_THREAD_ID / worktree
+hotbed session start                             # prints active memories + skill descriptors & binds to T3CODE_THREAD_ID / worktree
 hotbed run -- go vet ./...                       # quick work: placed on a node, syncs your edits there, runs, prints output, exits with its status
                                                  # (125 if still running after 2 min: left running, detached; see run)
 hotbed run --detach --mem 8G -- cargo nextest run  # long work: say what it needs; prints the command's ID and returns
@@ -23,7 +23,7 @@ hotbed output CMD --grep 'FAIL|panicked' -C 3    # read its output, kept whole: 
 hotbed session end                               # ends session and reminds you to save any lessons learned
 ```
 
-Do not pipe `hotbed session start` into `jq` or swallow its stdout: it prints active memories directly and auto-binds the session so `-s` is not needed.
+Do not pipe `hotbed session start` into `jq` or swallow its stdout: it prints active memories and all relevant skill descriptors directly and auto-binds the session so `-s` is not needed.
 
 - **A session works on a project.** A project is one or more repos, named by their canonical git
   remotes (`github.com/semistrict/hotbed`). `session start` picks the one project that holds this
@@ -141,6 +141,36 @@ hotbed memory rm 2                               # permanently remove a memory
   you can pass `--supersede ID` or edit in place with `hotbed memory edit ID` (supporting
   `--clear-title`, `--clear-body`, `--replace-tags`, `--replace-content`, `--repo`, `--rationale`).
   `hotbed memory show REF` prints provenance, supersession links, and full revision history.
+
+## Agent Skills (CLI, `npx skills`-compatible install, & MCP)
+
+Hotbed stores reusable [Agent Skills](https://agentskills.io) (multi-file `SKILL.md` packages with `references/`, `scripts/`, `assets/`) in the controller, scoped either globally or to a project/repo, and announces **every** active skill descriptor relevant to your session on `hotbed session start` (pass `--omit-skills` to suppress). Skills are also served natively over MCP via the **MCP Skills Extension (SEP-2640, `io.modelcontextprotocol/skills`)** and standard MCP `resources/*` (`skill://global/<name>/SKILL.md`, `skill://<project>/<name>/SKILL.md`, `skill://builtin/hotbed/SKILL.md`).
+
+```sh
+# Install from any `npx skills` source (GitHub shorthand, @skill, @ref, GitHub/GitLab/Git URL,
+# local dir, RFC 8615 well-known URL, or direct SKILL.md / .zip / .tar.gz archive):
+hotbed skills add vercel-labs/agent-skills --list            # preview skills in source
+hotbed skills add vercel-labs/agent-skills -s frontend-design -g
+hotbed skills add owner/repo@my-skill -p myproj              # project-scoped skill
+hotbed skills add ./local-skills --rename custom-name        # rename SKILL.md frontmatter on install
+hotbed skills add owner/repo --local -a claude-code -a codex # also install into local agent dirs
+hotbed skills install --from-hotbed -g -a claude-code        # materialize active hotbed skills locally
+
+# Inspect, read, search, update, and manage skills:
+hotbed skills ls [-q QUERY] [--scope global|project] [--all-projects]
+hotbed skills get NAME [SUPPORTING_FILE] [--all-files]       # e.g. `hotbed skills get code-review references/checklist.md`
+hotbed skills show NAME                                      # manifest, SHA-256 digests, upstream source, history
+hotbed skills find QUERY [--owner USER]                      # search skills.sh
+hotbed skills check [NAME...]                                # check upstream sources for updates
+hotbed skills update [NAME...]                               # pull latest upstream changes into hotbed
+hotbed skills init [NAME]                                    # scaffold a new SKILL.md locally
+hotbed skills edit REF [--global | -p PROJECT] [--tag TAG] [--rationale "..."]
+hotbed skills promote REF                                    # promote project skill to global
+hotbed skills archive REF [--reason "..."] / restore REF / rm REF / move REF --first|--last|--before ID
+```
+
+- **`hotbed skills install` (no arguments)** still installs the compiled-in `hotbed` guide into `~/.claude/skills` offline (used by `hotbed upgrade`). Passing a source (`hotbed skills install owner/repo`) delegates to `skills add`, matching `npx skills install`.
+- **Cockpit `/skills`:** browse, inspect every supporting file, create new skills, promote, archive/restore, reorder, and delete skills from the web UI.
 
 ## Missing a tool or dependency? Add a step
 
@@ -400,7 +430,7 @@ So never write a keep-alive loop. `hotbed poll` counts too: an agent polling for
 session. A detached command nothing polls or waits on is what the hour is for: an agent that went
 away leaves no dev server behind.
 
-## hotbed as MCP tools
+## hotbed as MCP tools & skills
 
 `hotbed mcp` serves hotbed's commands as MCP tools over stdin and stdout (`question add` is the tool
 `question_add`, its flags and arguments the tool's parameters), for an agent to start as a local
@@ -408,6 +438,11 @@ MCP server, e.g. `claude mcp add hotbed -- hotbed mcp`. The server is a session:
 `HOTBED_SESSION` or this T3 thread or git worktree names (resumed if it ended), or starts one bound
 here, so `hotbed` commands run here use it too. It keeps the session alive while it runs, ends it
 when it exits, and the next server started here resumes it. Its tools never take a session.
+
+It also advertises the **MCP Skills Extension (`io.modelcontextprotocol/skills`, SEP-2640)** with
+`directoryRead: true`, implementing `skills/list`, `skills/get`, `resources/directory/read`, and
+`resources/read` (plus standard `resources/list` for every skill's `SKILL.md`), and includes all
+active session skill descriptors alongside memories in `InitializeResult.instructions`.
 
 ## Waiting: poll
 

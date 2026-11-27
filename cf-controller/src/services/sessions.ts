@@ -154,6 +154,9 @@ export function createSessionService(ctrl: ControllerContext): ServiceImpl<typeo
 				if (!req.omitMemories) {
 					resumed.memories = ctrl.store.memories.briefing(resumed.project);
 				}
+				if (!req.omitSkills) {
+					resumed.skills = ctrl.store.skills.briefing(resumed.project);
+				}
 				return resumed;
 			}
 
@@ -191,6 +194,9 @@ export function createSessionService(ctrl: ControllerContext): ServiceImpl<typeo
 			sess.reminder = sessionStartReminder(project);
 			if (!req.omitMemories) {
 				sess.memories = ctrl.store.memories.briefing(project.name);
+			}
+			if (!req.omitSkills) {
+				sess.skills = ctrl.store.skills.briefing(project.name);
 			}
 			return sess;
 		},

@@ -6,8 +6,6 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"os"
-	"path/filepath"
 	"runtime"
 	"slices"
 	"strings"
@@ -20,7 +18,6 @@ import (
 	"github.com/semistrict/hotbed/internal/setup"
 	"github.com/semistrict/hotbed/internal/version"
 	"github.com/semistrict/hotbed/internal/worker"
-	"github.com/semistrict/hotbed/skills"
 )
 
 // deps is what commands use from the outside world, so tests can replace it.
@@ -138,7 +135,7 @@ type cli struct {
 	Join      joinCmd      `cmd:"" help:"Join this machine to a cluster as a worker (as root)."`
 	Worker    workerCmd    `cmd:"" help:"Initialize and manage a worker node on this machine in ~/.hotbed (init, status, start, stop, trim, ssh, destroy)."`
 	Serve     serveCmd     `cmd:"" help:"Run the worker whose state is in DIR, until stopped."`
-	Skills    skillsCmd    `cmd:"" help:"Guides for AI agents, compiled into this binary (list, get, install)."`
+	Skills    skillsCmd    `cmd:"" aliases:"skill" help:"Agent skills stored in hotbed (and built-in guides): add, ls, get, show, install, find, check, update, init, edit, promote, archive, restore, rm, move."`
 	Version   versionCmd   `cmd:"" help:"Show hotbed's version, OS and architecture."`
 	Upgrade   upgradeCmd   `cmd:"" help:"Install the controller's build over this hotbed (a client on a CI build does it by itself)."`
 	API       rawAPICmd    `cmd:"" name:"api" help:"Make an authenticated HTTP or ConnectRPC request to the controller (like gh api)."`
@@ -243,48 +240,6 @@ func commandName(n *kong.Node) string {
 		parts = append([]string{n.Name}, parts...)
 	}
 	return strings.Join(parts, " ")
-}
-
-type skillsCmd struct {
-	List    skillsListCmd    `cmd:"" help:"List the guides."`
-	Get     skillsGetCmd     `cmd:"" help:"Print a guide, or one of its references."`
-	Install skillsInstallCmd `cmd:"" help:"Write the guides into an agent's skills directory."`
-}
-
-type skillsListCmd struct{}
-
-func (c *skillsListCmd) Exec(context.Context, deps) (any, error) {
-	list, err := skills.List()
-	return map[string]any{"skills": list}, err
-}
-
-type skillsGetCmd struct {
-	Name string `arg:"" help:"A guide's name (hotbed), or a reference in it (hotbed/references/errors.md)."`
-}
-
-func (c *skillsGetCmd) Exec(context.Context, deps) (any, error) {
-	content, err := skills.Get(c.Name)
-	if err != nil {
-		return nil, api.Errorf(api.CodeInvalidArgs, "%v", err).WithSuggestion("hotbed skills list names every guide and its references")
-	}
-	return map[string]string{"name": c.Name, "content": content}, nil
-}
-
-type skillsInstallCmd struct {
-	Dir string `type:"path" help:"Skills directory to write into (default ~/.claude/skills)."`
-}
-
-func (c *skillsInstallCmd) Exec(context.Context, deps) (any, error) {
-	dir := c.Dir
-	if dir == "" {
-		home, err := os.UserHomeDir()
-		if err != nil {
-			return nil, err
-		}
-		dir = filepath.Join(home, ".claude", "skills")
-	}
-	wrote, err := skills.Install(dir)
-	return map[string]any{"dir": tildePath(dir), "files": wrote}, err
 }
 
 type versionCmd struct{}

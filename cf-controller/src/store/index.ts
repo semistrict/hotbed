@@ -21,6 +21,7 @@ import { QuestionStore } from "./questions.ts";
 import { ReviewStore } from "./reviews.ts";
 import { ScheduleStore } from "./schedules.ts";
 import { SessionStore } from "./sessions.ts";
+import { SkillStore } from "./skills.ts";
 import { TokenStore } from "./tokens.ts";
 import { WorkerConfigStore } from "./worker-configs.ts";
 import { WorkspaceStore } from "./workspaces.ts";
@@ -53,6 +54,7 @@ export class ControllerStore {
 	readonly questions: QuestionStore;
 	readonly reviews: ReviewStore;
 	readonly memories: MemoryStore;
+	readonly skills: SkillStore;
 
 	constructor(storage: DurableObjectStorage, db: DrizzleSqliteDODatabase<typeof dbSchema>) {
 		const sql = new SqlKernel(storage, db);
@@ -81,6 +83,7 @@ export class ControllerStore {
 		this.questions = new QuestionStore(sql, this.projects, this.sessions);
 		this.reviews = new ReviewStore(sql, this.projects, this.sessions);
 		this.memories = new MemoryStore(sql, this.projects);
+		this.skills = new SkillStore(sql, this.projects);
 	}
 
 	/**

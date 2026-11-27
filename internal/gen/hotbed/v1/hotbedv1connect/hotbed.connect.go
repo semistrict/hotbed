@@ -35,6 +35,8 @@ const (
 	IssueServiceName = "hotbed.v1.IssueService"
 	// MemoryServiceName is the fully-qualified name of the MemoryService service.
 	MemoryServiceName = "hotbed.v1.MemoryService"
+	// SkillServiceName is the fully-qualified name of the SkillService service.
+	SkillServiceName = "hotbed.v1.SkillService"
 	// BoardServiceName is the fully-qualified name of the BoardService service.
 	BoardServiceName = "hotbed.v1.BoardService"
 )
@@ -354,6 +356,24 @@ const (
 	MemoryServiceDeleteMemoryProcedure = "/hotbed.v1.MemoryService/DeleteMemory"
 	// MemoryServiceMoveMemoryProcedure is the procedure name of the MemoryService's MoveMemory RPC.
 	MemoryServiceMoveMemoryProcedure = "/hotbed.v1.MemoryService/MoveMemory"
+	// SkillServicePutSkillProcedure is the procedure name of the SkillService's PutSkill RPC.
+	SkillServicePutSkillProcedure = "/hotbed.v1.SkillService/PutSkill"
+	// SkillServiceListSkillsProcedure is the procedure name of the SkillService's ListSkills RPC.
+	SkillServiceListSkillsProcedure = "/hotbed.v1.SkillService/ListSkills"
+	// SkillServiceGetSkillProcedure is the procedure name of the SkillService's GetSkill RPC.
+	SkillServiceGetSkillProcedure = "/hotbed.v1.SkillService/GetSkill"
+	// SkillServiceShowSkillProcedure is the procedure name of the SkillService's ShowSkill RPC.
+	SkillServiceShowSkillProcedure = "/hotbed.v1.SkillService/ShowSkill"
+	// SkillServiceReviseSkillProcedure is the procedure name of the SkillService's ReviseSkill RPC.
+	SkillServiceReviseSkillProcedure = "/hotbed.v1.SkillService/ReviseSkill"
+	// SkillServiceArchiveSkillProcedure is the procedure name of the SkillService's ArchiveSkill RPC.
+	SkillServiceArchiveSkillProcedure = "/hotbed.v1.SkillService/ArchiveSkill"
+	// SkillServiceRestoreSkillProcedure is the procedure name of the SkillService's RestoreSkill RPC.
+	SkillServiceRestoreSkillProcedure = "/hotbed.v1.SkillService/RestoreSkill"
+	// SkillServiceDeleteSkillProcedure is the procedure name of the SkillService's DeleteSkill RPC.
+	SkillServiceDeleteSkillProcedure = "/hotbed.v1.SkillService/DeleteSkill"
+	// SkillServiceMoveSkillProcedure is the procedure name of the SkillService's MoveSkill RPC.
+	SkillServiceMoveSkillProcedure = "/hotbed.v1.SkillService/MoveSkill"
 	// BoardServicePostBoardMessageProcedure is the procedure name of the BoardService's
 	// PostBoardMessage RPC.
 	BoardServicePostBoardMessageProcedure = "/hotbed.v1.BoardService/PostBoardMessage"
@@ -5596,6 +5616,382 @@ func (h memoryServiceHandler) moveMemory(ctx context.Context, _ connect.Spec, st
 		return err
 	}
 	res, err := h.svc.MoveMemory(ctx, &req)
+	if err != nil {
+		return err
+	}
+	return stream.Send(res)
+}
+
+var (
+	skillServicePutSkillSpec = sync.OnceValue(func() connect.Spec {
+		return connect.Spec{
+			StreamType: connect.StreamTypeUnary,
+			Schema:     v1.File_hotbed_v1_hotbed_proto.Services().ByName("SkillService").Methods().ByName("PutSkill"),
+			Procedure:  SkillServicePutSkillProcedure,
+		}
+	})
+	skillServiceListSkillsSpec = sync.OnceValue(func() connect.Spec {
+		return connect.Spec{
+			StreamType:       connect.StreamTypeUnary,
+			Schema:           v1.File_hotbed_v1_hotbed_proto.Services().ByName("SkillService").Methods().ByName("ListSkills"),
+			Procedure:        SkillServiceListSkillsProcedure,
+			IdempotencyLevel: connect.IdempotencyIdempotent,
+		}
+	})
+	skillServiceGetSkillSpec = sync.OnceValue(func() connect.Spec {
+		return connect.Spec{
+			StreamType:       connect.StreamTypeUnary,
+			Schema:           v1.File_hotbed_v1_hotbed_proto.Services().ByName("SkillService").Methods().ByName("GetSkill"),
+			Procedure:        SkillServiceGetSkillProcedure,
+			IdempotencyLevel: connect.IdempotencyIdempotent,
+		}
+	})
+	skillServiceShowSkillSpec = sync.OnceValue(func() connect.Spec {
+		return connect.Spec{
+			StreamType:       connect.StreamTypeUnary,
+			Schema:           v1.File_hotbed_v1_hotbed_proto.Services().ByName("SkillService").Methods().ByName("ShowSkill"),
+			Procedure:        SkillServiceShowSkillProcedure,
+			IdempotencyLevel: connect.IdempotencyIdempotent,
+		}
+	})
+	skillServiceReviseSkillSpec = sync.OnceValue(func() connect.Spec {
+		return connect.Spec{
+			StreamType: connect.StreamTypeUnary,
+			Schema:     v1.File_hotbed_v1_hotbed_proto.Services().ByName("SkillService").Methods().ByName("ReviseSkill"),
+			Procedure:  SkillServiceReviseSkillProcedure,
+		}
+	})
+	skillServiceArchiveSkillSpec = sync.OnceValue(func() connect.Spec {
+		return connect.Spec{
+			StreamType: connect.StreamTypeUnary,
+			Schema:     v1.File_hotbed_v1_hotbed_proto.Services().ByName("SkillService").Methods().ByName("ArchiveSkill"),
+			Procedure:  SkillServiceArchiveSkillProcedure,
+		}
+	})
+	skillServiceRestoreSkillSpec = sync.OnceValue(func() connect.Spec {
+		return connect.Spec{
+			StreamType: connect.StreamTypeUnary,
+			Schema:     v1.File_hotbed_v1_hotbed_proto.Services().ByName("SkillService").Methods().ByName("RestoreSkill"),
+			Procedure:  SkillServiceRestoreSkillProcedure,
+		}
+	})
+	skillServiceDeleteSkillSpec = sync.OnceValue(func() connect.Spec {
+		return connect.Spec{
+			StreamType: connect.StreamTypeUnary,
+			Schema:     v1.File_hotbed_v1_hotbed_proto.Services().ByName("SkillService").Methods().ByName("DeleteSkill"),
+			Procedure:  SkillServiceDeleteSkillProcedure,
+		}
+	})
+	skillServiceMoveSkillSpec = sync.OnceValue(func() connect.Spec {
+		return connect.Spec{
+			StreamType: connect.StreamTypeUnary,
+			Schema:     v1.File_hotbed_v1_hotbed_proto.Services().ByName("SkillService").Methods().ByName("MoveSkill"),
+			Procedure:  SkillServiceMoveSkillProcedure,
+		}
+	})
+)
+
+// SkillServiceClient is a client for the hotbed.v1.SkillService service.
+type SkillServiceClient interface {
+	// Create or update a skill with its complete set of files (SKILL.md and any
+	// supporting references, scripts, templates, or assets). Replaces existing
+	// skill files when updating an existing skill of the same scope and name.
+	PutSkill(context.Context, *v1.PutSkillRequest) (*v1.Skill, error)
+	// List skills (metadata and file manifests without file contents). Defaults
+	// to active skills for global + active project (or global only outside a
+	// project).
+	ListSkills(context.Context, *v1.ListSkillsRequest) (*v1.ListSkillsResponse, error)
+	// Fetch a skill's metadata and file contents (SKILL.md by default, one
+	// specific file path, or all files) by ID, name, scope/name, or skill:// URI.
+	GetSkill(context.Context, *v1.GetSkillRequest) (*v1.GetSkillResponse, error)
+	// Show one skill with its full metadata, file manifest, source provenance,
+	// and revision history.
+	ShowSkill(context.Context, *v1.ShowSkillRequest) (*v1.Skill, error)
+	// Edit a skill's scope, project, repo, tags, or rationale (e.g. promote a
+	// project skill to global).
+	ReviseSkill(context.Context, *v1.ReviseSkillRequest) (*v1.Skill, error)
+	// Archive an active skill so it is no longer returned on session start or
+	// served over MCP; history and files are preserved and it can be restored.
+	ArchiveSkill(context.Context, *v1.ArchiveSkillRequest) (*v1.Skill, error)
+	// Restore an archived skill back to active.
+	RestoreSkill(context.Context, *v1.RestoreSkillRequest) (*v1.Skill, error)
+	// Permanently remove a skill, its files, and its revision history.
+	DeleteSkill(context.Context, *v1.DeleteSkillRequest) (*v1.Skill, error)
+	// Move an active skill in the startup priority order.
+	MoveSkill(context.Context, *v1.MoveSkillRequest) (*v1.Skill, error)
+}
+
+// NewSkillServiceClient constructs a client for the hotbed.v1.SkillService service. Multiple
+// service clients may share a single connect.Client.
+func NewSkillServiceClient(client *connect.Client) SkillServiceClient {
+	return &skillServiceClient{client: client}
+}
+
+// SkillServiceHandler is an implementation of the hotbed.v1.SkillService service.
+type SkillServiceHandler interface {
+	// Create or update a skill with its complete set of files (SKILL.md and any
+	// supporting references, scripts, templates, or assets). Replaces existing
+	// skill files when updating an existing skill of the same scope and name.
+	PutSkill(context.Context, *v1.PutSkillRequest) (*v1.Skill, error)
+	// List skills (metadata and file manifests without file contents). Defaults
+	// to active skills for global + active project (or global only outside a
+	// project).
+	ListSkills(context.Context, *v1.ListSkillsRequest) (*v1.ListSkillsResponse, error)
+	// Fetch a skill's metadata and file contents (SKILL.md by default, one
+	// specific file path, or all files) by ID, name, scope/name, or skill:// URI.
+	GetSkill(context.Context, *v1.GetSkillRequest) (*v1.GetSkillResponse, error)
+	// Show one skill with its full metadata, file manifest, source provenance,
+	// and revision history.
+	ShowSkill(context.Context, *v1.ShowSkillRequest) (*v1.Skill, error)
+	// Edit a skill's scope, project, repo, tags, or rationale (e.g. promote a
+	// project skill to global).
+	ReviseSkill(context.Context, *v1.ReviseSkillRequest) (*v1.Skill, error)
+	// Archive an active skill so it is no longer returned on session start or
+	// served over MCP; history and files are preserved and it can be restored.
+	ArchiveSkill(context.Context, *v1.ArchiveSkillRequest) (*v1.Skill, error)
+	// Restore an archived skill back to active.
+	RestoreSkill(context.Context, *v1.RestoreSkillRequest) (*v1.Skill, error)
+	// Permanently remove a skill, its files, and its revision history.
+	DeleteSkill(context.Context, *v1.DeleteSkillRequest) (*v1.Skill, error)
+	// Move an active skill in the startup priority order.
+	MoveSkill(context.Context, *v1.MoveSkillRequest) (*v1.Skill, error)
+}
+
+// RegisterSkillServiceHandler registers svc as the hotbed.v1.SkillService implementation on server.
+func RegisterSkillServiceHandler(server *connect.Server, svc SkillServiceHandler) {
+	adapter := skillServiceHandler{svc: svc}
+	server.Register(
+		connect.Method{Spec: skillServicePutSkillSpec(), Handler: adapter.putSkill},
+		connect.Method{Spec: skillServiceListSkillsSpec(), Handler: adapter.listSkills},
+		connect.Method{Spec: skillServiceGetSkillSpec(), Handler: adapter.getSkill},
+		connect.Method{Spec: skillServiceShowSkillSpec(), Handler: adapter.showSkill},
+		connect.Method{Spec: skillServiceReviseSkillSpec(), Handler: adapter.reviseSkill},
+		connect.Method{Spec: skillServiceArchiveSkillSpec(), Handler: adapter.archiveSkill},
+		connect.Method{Spec: skillServiceRestoreSkillSpec(), Handler: adapter.restoreSkill},
+		connect.Method{Spec: skillServiceDeleteSkillSpec(), Handler: adapter.deleteSkill},
+		connect.Method{Spec: skillServiceMoveSkillSpec(), Handler: adapter.moveSkill},
+	)
+}
+
+// UnimplementedSkillServiceHandler returns CodeUnimplemented from all methods.
+type UnimplementedSkillServiceHandler struct{}
+
+func (UnimplementedSkillServiceHandler) PutSkill(context.Context, *v1.PutSkillRequest) (*v1.Skill, error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, "hotbed.v1.SkillService.PutSkill is not implemented")
+}
+
+func (UnimplementedSkillServiceHandler) ListSkills(context.Context, *v1.ListSkillsRequest) (*v1.ListSkillsResponse, error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, "hotbed.v1.SkillService.ListSkills is not implemented")
+}
+
+func (UnimplementedSkillServiceHandler) GetSkill(context.Context, *v1.GetSkillRequest) (*v1.GetSkillResponse, error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, "hotbed.v1.SkillService.GetSkill is not implemented")
+}
+
+func (UnimplementedSkillServiceHandler) ShowSkill(context.Context, *v1.ShowSkillRequest) (*v1.Skill, error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, "hotbed.v1.SkillService.ShowSkill is not implemented")
+}
+
+func (UnimplementedSkillServiceHandler) ReviseSkill(context.Context, *v1.ReviseSkillRequest) (*v1.Skill, error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, "hotbed.v1.SkillService.ReviseSkill is not implemented")
+}
+
+func (UnimplementedSkillServiceHandler) ArchiveSkill(context.Context, *v1.ArchiveSkillRequest) (*v1.Skill, error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, "hotbed.v1.SkillService.ArchiveSkill is not implemented")
+}
+
+func (UnimplementedSkillServiceHandler) RestoreSkill(context.Context, *v1.RestoreSkillRequest) (*v1.Skill, error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, "hotbed.v1.SkillService.RestoreSkill is not implemented")
+}
+
+func (UnimplementedSkillServiceHandler) DeleteSkill(context.Context, *v1.DeleteSkillRequest) (*v1.Skill, error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, "hotbed.v1.SkillService.DeleteSkill is not implemented")
+}
+
+func (UnimplementedSkillServiceHandler) MoveSkill(context.Context, *v1.MoveSkillRequest) (*v1.Skill, error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, "hotbed.v1.SkillService.MoveSkill is not implemented")
+}
+
+type skillServiceClient struct {
+	client *connect.Client
+}
+
+func (c *skillServiceClient) PutSkill(ctx context.Context, req *v1.PutSkillRequest) (*v1.Skill, error) {
+	var res v1.Skill
+	if err := c.client.CallUnary(ctx, skillServicePutSkillSpec(), req, &res); err != nil {
+		return nil, err
+	}
+	return &res, nil
+}
+
+func (c *skillServiceClient) ListSkills(ctx context.Context, req *v1.ListSkillsRequest) (*v1.ListSkillsResponse, error) {
+	var res v1.ListSkillsResponse
+	if err := c.client.CallUnary(ctx, skillServiceListSkillsSpec(), req, &res); err != nil {
+		return nil, err
+	}
+	return &res, nil
+}
+
+func (c *skillServiceClient) GetSkill(ctx context.Context, req *v1.GetSkillRequest) (*v1.GetSkillResponse, error) {
+	var res v1.GetSkillResponse
+	if err := c.client.CallUnary(ctx, skillServiceGetSkillSpec(), req, &res); err != nil {
+		return nil, err
+	}
+	return &res, nil
+}
+
+func (c *skillServiceClient) ShowSkill(ctx context.Context, req *v1.ShowSkillRequest) (*v1.Skill, error) {
+	var res v1.Skill
+	if err := c.client.CallUnary(ctx, skillServiceShowSkillSpec(), req, &res); err != nil {
+		return nil, err
+	}
+	return &res, nil
+}
+
+func (c *skillServiceClient) ReviseSkill(ctx context.Context, req *v1.ReviseSkillRequest) (*v1.Skill, error) {
+	var res v1.Skill
+	if err := c.client.CallUnary(ctx, skillServiceReviseSkillSpec(), req, &res); err != nil {
+		return nil, err
+	}
+	return &res, nil
+}
+
+func (c *skillServiceClient) ArchiveSkill(ctx context.Context, req *v1.ArchiveSkillRequest) (*v1.Skill, error) {
+	var res v1.Skill
+	if err := c.client.CallUnary(ctx, skillServiceArchiveSkillSpec(), req, &res); err != nil {
+		return nil, err
+	}
+	return &res, nil
+}
+
+func (c *skillServiceClient) RestoreSkill(ctx context.Context, req *v1.RestoreSkillRequest) (*v1.Skill, error) {
+	var res v1.Skill
+	if err := c.client.CallUnary(ctx, skillServiceRestoreSkillSpec(), req, &res); err != nil {
+		return nil, err
+	}
+	return &res, nil
+}
+
+func (c *skillServiceClient) DeleteSkill(ctx context.Context, req *v1.DeleteSkillRequest) (*v1.Skill, error) {
+	var res v1.Skill
+	if err := c.client.CallUnary(ctx, skillServiceDeleteSkillSpec(), req, &res); err != nil {
+		return nil, err
+	}
+	return &res, nil
+}
+
+func (c *skillServiceClient) MoveSkill(ctx context.Context, req *v1.MoveSkillRequest) (*v1.Skill, error) {
+	var res v1.Skill
+	if err := c.client.CallUnary(ctx, skillServiceMoveSkillSpec(), req, &res); err != nil {
+		return nil, err
+	}
+	return &res, nil
+}
+
+type skillServiceHandler struct{ svc SkillServiceHandler }
+
+func (h skillServiceHandler) putSkill(ctx context.Context, _ connect.Spec, stream connect.ServerStream) error {
+	var req v1.PutSkillRequest
+	if err := stream.Receive(&req); err != nil {
+		return err
+	}
+	res, err := h.svc.PutSkill(ctx, &req)
+	if err != nil {
+		return err
+	}
+	return stream.Send(res)
+}
+
+func (h skillServiceHandler) listSkills(ctx context.Context, _ connect.Spec, stream connect.ServerStream) error {
+	var req v1.ListSkillsRequest
+	if err := stream.Receive(&req); err != nil {
+		return err
+	}
+	res, err := h.svc.ListSkills(ctx, &req)
+	if err != nil {
+		return err
+	}
+	return stream.Send(res)
+}
+
+func (h skillServiceHandler) getSkill(ctx context.Context, _ connect.Spec, stream connect.ServerStream) error {
+	var req v1.GetSkillRequest
+	if err := stream.Receive(&req); err != nil {
+		return err
+	}
+	res, err := h.svc.GetSkill(ctx, &req)
+	if err != nil {
+		return err
+	}
+	return stream.Send(res)
+}
+
+func (h skillServiceHandler) showSkill(ctx context.Context, _ connect.Spec, stream connect.ServerStream) error {
+	var req v1.ShowSkillRequest
+	if err := stream.Receive(&req); err != nil {
+		return err
+	}
+	res, err := h.svc.ShowSkill(ctx, &req)
+	if err != nil {
+		return err
+	}
+	return stream.Send(res)
+}
+
+func (h skillServiceHandler) reviseSkill(ctx context.Context, _ connect.Spec, stream connect.ServerStream) error {
+	var req v1.ReviseSkillRequest
+	if err := stream.Receive(&req); err != nil {
+		return err
+	}
+	res, err := h.svc.ReviseSkill(ctx, &req)
+	if err != nil {
+		return err
+	}
+	return stream.Send(res)
+}
+
+func (h skillServiceHandler) archiveSkill(ctx context.Context, _ connect.Spec, stream connect.ServerStream) error {
+	var req v1.ArchiveSkillRequest
+	if err := stream.Receive(&req); err != nil {
+		return err
+	}
+	res, err := h.svc.ArchiveSkill(ctx, &req)
+	if err != nil {
+		return err
+	}
+	return stream.Send(res)
+}
+
+func (h skillServiceHandler) restoreSkill(ctx context.Context, _ connect.Spec, stream connect.ServerStream) error {
+	var req v1.RestoreSkillRequest
+	if err := stream.Receive(&req); err != nil {
+		return err
+	}
+	res, err := h.svc.RestoreSkill(ctx, &req)
+	if err != nil {
+		return err
+	}
+	return stream.Send(res)
+}
+
+func (h skillServiceHandler) deleteSkill(ctx context.Context, _ connect.Spec, stream connect.ServerStream) error {
+	var req v1.DeleteSkillRequest
+	if err := stream.Receive(&req); err != nil {
+		return err
+	}
+	res, err := h.svc.DeleteSkill(ctx, &req)
+	if err != nil {
+		return err
+	}
+	return stream.Send(res)
+}
+
+func (h skillServiceHandler) moveSkill(ctx context.Context, _ connect.Spec, stream connect.ServerStream) error {
+	var req v1.MoveSkillRequest
+	if err := stream.Receive(&req); err != nil {
+		return err
+	}
+	res, err := h.svc.MoveSkill(ctx, &req)
 	if err != nil {
 		return err
 	}
