@@ -105,6 +105,5 @@ func (c *workspaceReleaseCmd) Exec(ctx context.Context, d deps) (any, error) {
 	if _, err := cl.workspaces.ReleaseWorkspace(ctx, &pb.ReleaseWorkspaceRequest{Id: ws.Id}); err != nil {
 		return nil, err
 	}
-	forget(d, ws.SessionId, ws.Id)
 	return releaseResult{ID: ws.Id, Project: ws.Project, Node: ws.Node, CockpitURL: d.cockpit.workspace(ws.Id)}, nil
 }

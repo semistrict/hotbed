@@ -15,8 +15,6 @@ const (
 	DefaultPort = 7120
 	// WorkerPort is where workers serve the controller.
 	WorkerPort = 7121
-	// WorkerSSHPort is where workers serve interactive workspace shells over SSH.
-	WorkerSSHPort = 7122
 
 	// ProgressHeader is a Connect/HTTP response header naming a cockpit path
 	// (such as "/commands/f-cladefs-g5-9c34da") or URL where a waiting caller

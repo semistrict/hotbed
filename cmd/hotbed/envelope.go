@@ -118,7 +118,7 @@ func toAPIError(err error) *api.Error {
 			WithSuggestion("serve it with hotbed serve DIR, or pick another directory")
 	case errors.Is(err, statedir.ErrNotInitialized):
 		return api.Errorf(api.CodeNotInitialized, "%v", err).
-			WithSuggestion("create it with hotbed init DIR (controller) or hotbed join CONTROLLER DIR (worker)")
+			WithSuggestion("create it with hotbed join CONTROLLER DIR")
 	default:
 		return api.Errorf(api.CodeInternal, "%v", err)
 	}

@@ -2,7 +2,6 @@ package main
 
 import (
 	"errors"
-	"fmt"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -15,7 +14,6 @@ import (
 	"github.com/semistrict/hotbed/internal/fake"
 	pb "github.com/semistrict/hotbed/internal/gen/hotbed/v1"
 	"github.com/semistrict/hotbed/internal/update"
-	"github.com/semistrict/hotbed/internal/update/updatetest"
 	"github.com/semistrict/hotbed/internal/version"
 	"github.com/semistrict/hotbed/internal/worker"
 )
@@ -27,12 +25,6 @@ func writeExe(t *testing.T, content string) string {
 		t.Fatal(err)
 	}
 	return exe
-}
-
-// hostBuild is build n's binary for this machine, as updatetest publishes it.
-func hostBuild(n int64) string {
-	here := update.Platform{OS: runtime.GOOS, Arch: runtime.GOARCH}
-	return string(updatetest.BinaryFor(here, fmt.Sprintf("hotbed build %d for %s", n, here)))
 }
 
 // onHostArch has a worker report this machine's arch, as one that installs a
@@ -54,20 +46,11 @@ func read(t *testing.T, path string) string {
 // a CI build install it over themselves, from the controller, never from
 // GitHub.
 func TestNodesFollowTheControllersBuild(t *testing.T) {
-	g := updatetest.NewGitHub(t)
-	g.Publish(7)
-	cache := update.Cache{Dir: t.TempDir()}
-	rel, err := g.Client().Latest(t.Context())
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := cache.Put(t.Context(), g.Client(), rel); err != nil {
-		t.Fatal(err)
-	}
+	cache, _ := publishBuild(t, 7)
 	workerExe := writeExe(t, "old worker")
 	c := newClusterWith(t, clusterOpts{
 		engine: onHostArch,
-		server: func(s *testServerConfig) { s.Builds, s.Build = &cache, 7 },
+		server: func(s *testServerConfig) { s.Builds, s.Build = cache, 7 },
 		follow: func(ctrl string, hc *http.Client) *worker.Follow {
 			return &worker.Follow{URL: "http://" + ctrl, Client: hc, Exe: workerExe}
 		},
@@ -205,16 +188,7 @@ func ridesOut(t *testing.T, logs bool) {
 // restarting, then immediately installs the new build and returns
 // update.ErrRestart once the command finishes (board 7989).
 func TestWorkerDefersUpgradeUntilRunningCommandFinishes(t *testing.T) {
-	gh := updatetest.NewGitHub(t)
-	gh.Publish(8)
-	cache := update.Cache{Dir: t.TempDir()}
-	rel, err := gh.Client().Latest(t.Context())
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := cache.Put(t.Context(), gh.Client(), rel); err != nil {
-		t.Fatal(err)
-	}
+	cache, _ := publishBuild(t, 8)
 
 	workerExe := writeExe(t, "old worker")
 	c := newClusterWith(t, clusterOpts{
@@ -249,7 +223,7 @@ func TestWorkerDefersUpgradeUntilRunningCommandFinishes(t *testing.T) {
 	})
 
 	// Advance the controller to build 8 while the command is still running.
-	c.serverCfg.Builds, c.serverCfg.Build = &cache, 8
+	c.serverCfg.Builds, c.serverCfg.Build = cache, 8
 	c.restart()
 
 	// Exercise the worker's real follow path on a heartbeat while busy: it must
@@ -297,9 +271,8 @@ func TestWorkerDefersUpgradeUntilRunningCommandFinishes(t *testing.T) {
 // immediately, sends workers a direct GitHub release download URL, and workers
 // fetch directly from GitHub without controller auth and restart into it.
 func TestPinnedControllerVersionUpdatesWorkerDirectlyFromGitHub(t *testing.T) {
-	g := updatetest.NewGitHub(t)
-	g.PublicDownloads = true
-	g.Publish(12)
+	_, files := publishBuild(t, 12)
+	g := serveReleaseDownloads(t, 12, files)
 	const wantCommit = "0123456789abcdef0123456789abcdef01234567"
 
 	workerExe := writeExe(t, "old worker")
@@ -307,16 +280,16 @@ func TestPinnedControllerVersionUpdatesWorkerDirectlyFromGitHub(t *testing.T) {
 		engine: onHostArch,
 		server: func(s *testServerConfig) {
 			s.UpdatesRepo = "semistrict/hotbed"
-			s.UpdatesDownloadBase = g.URL()
+			s.UpdatesDownloadBase = g.URL
 			s.ControllerBuild = 12
 			s.ControllerCommit = wantCommit
-			s.ControllerSha256Sums = string(g.Releases[12][update.SumsName])
+			s.ControllerSha256Sums = string(files[update.SumsName])
 		},
 		follow: func(ctrl string, hc *http.Client) *worker.Follow {
 			return &worker.Follow{
 				URL:            "http://" + ctrl,
 				Client:         hc,
-				DownloadClient: g.Client().Client,
+				DownloadClient: g.Client(),
 				Exe:            workerExe,
 				Build:          11,
 			}
@@ -334,8 +307,8 @@ func TestPinnedControllerVersionUpdatesWorkerDirectlyFromGitHub(t *testing.T) {
 	if got := read(t, workerExe); got != hostBuild(12) {
 		t.Errorf("worker binary = %q, want build 12 for this machine, %q", got, hostBuild(12))
 	}
-	if got := g.DirectDownloads.Load(); got == 0 {
-		t.Errorf("DirectDownloads = %d, want >= 1 (worker should download directly from GitHub)", got)
+	if got := g.Hits.Load(); got == 0 {
+		t.Errorf("Hits = %d, want >= 1 (worker should download directly from GitHub)", got)
 	}
 
 	var ls pb.ListNodesResponse
@@ -348,7 +321,7 @@ func TestPinnedControllerVersionUpdatesWorkerDirectlyFromGitHub(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetBuild: %v", err)
 	}
-	wantURL := g.URL() + "/semistrict/hotbed/releases/download/build-12/hotbed-" + runtime.GOOS + "-" + runtime.GOARCH
+	wantURL := g.URL + "/semistrict/hotbed/releases/download/build-12/hotbed-" + runtime.GOOS + "-" + runtime.GOARCH
 	if b.Number != 12 || b.DownloadUrl != wantURL {
 		t.Errorf("GetBuild = {Number:%d DownloadUrl:%q}, want {12 %q}", b.Number, b.DownloadUrl, wantURL)
 	}

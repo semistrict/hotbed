@@ -202,13 +202,13 @@ func (c *shellCmd) Raw(ctx context.Context, d deps) (int, bool, error) {
 	return exitOK, true, nil
 }
 
-// workspaceForShell prefers an existing live workspace of session
-// (preferring ready workspaces over preparing ones, and the most recently
-// active when several exist) so shelling into a session never moves you to a
-// different idle node just because the session's node is busy. It falls back
-// to workspaceFor only when no matching existing workspace exists.
+// workspaceForShell prefers an existing live workspace of session matching
+// --arch/--runtime (preferring ready workspaces over preparing ones, and the
+// most recently active when several exist) so shelling into a session never
+// moves you to a different idle node just because the session's node is busy.
+// It falls back to workspaceFor only when no matching existing workspace exists.
 func (c *shellCmd) workspaceForShell(ctx context.Context, d deps, session, repo, dir string) (*pb.Workspace, workerClients, error) {
-	if c.Arch == "" {
+	if c.Arch == "" && c.Runtime == "" {
 		if ws, w, ok, err := c.existingWorkspace(ctx, d, session); err != nil {
 			return nil, workerClients{}, err
 		} else if ok {
@@ -253,7 +253,6 @@ func (c *shellCmd) existingWorkspace(ctx context.Context, d deps, session string
 	if err != nil {
 		return nil, workerClients{}, false, err
 	}
-	remember(d, session, ws)
 	return ws, w, true, nil
 }
 

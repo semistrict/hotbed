@@ -141,3 +141,25 @@ func TestWaitReadyPrintsProgressHeaderAndStepsOnRun(t *testing.T) {
 		t.Errorf("run stderr missing live freshen step progress:\n%s", stderr)
 	}
 }
+
+// --runtime names where the shell runs, so it never reuses the session's
+// existing workspace, which was made without that runtime: it asks for one
+// of that runtime, as --arch does. The test cluster's workers have no
+// "vm" runtime, so the request fails where the reuse would have succeeded.
+func TestShellRuntimeDoesNotReuseExistingWorkspace(t *testing.T) {
+	c := newCluster(t)
+	c.addRepo(upstream(t))
+	var sess pb.Session
+	c.ok(&sess, "session", "start")
+	if code, _, stderr := c.hotbed("run", "-s", sess.Id, "-r", "app", "--", "true"); code != 0 {
+		t.Fatalf("seed run failed: %d %q", code, stderr)
+	}
+
+	code, out, stderr := c.hotbed("shell", "-s", sess.Id, "-r", "app", "--runtime", "vm", "--", "echo", "reused")
+	if code == 0 || strings.Contains(out, "reused") {
+		t.Fatalf("shell --runtime vm reused the existing workspace: exit %d, stdout %q, stderr %q", code, out, stderr)
+	}
+	if !strings.Contains(stderr, "vm") {
+		t.Errorf("shell --runtime vm: stderr %q does not say what is wrong with the runtime", stderr)
+	}
+}

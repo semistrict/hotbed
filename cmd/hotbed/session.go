@@ -624,7 +624,7 @@ func (c *syncCmd) Exec(ctx context.Context, d deps) (any, error) {
 	}
 	out := syncResult{Synced: []*pb.SyncResponse{}}
 	for _, ws := range ownWorkspaces(list.Workspaces) {
-		w, err := c.reach(d, ws.NodeAddr)
+		w, err := c.reach(d, ws.NodeId)
 		if err != nil {
 			return nil, err
 		}

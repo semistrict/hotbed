@@ -19,7 +19,7 @@ func Number() int64 { return parse(build) }
 
 // String says this binary's build and commit, as "build 42 (0123456789ab)"
 // or "dev (0123456789ab)".
-func String() string { return describe(build, commit()) }
+func String() string { return describe(build, Commit()) }
 
 // Of is the build a String names, 0 for a dev build or none.
 func Of(s string) int64 {
@@ -62,7 +62,8 @@ func describe(build, commit string) string {
 	return s
 }
 
-func commit() string {
+// Commit is the VCS revision this binary was built from, "" when unknown.
+func Commit() string {
 	info, ok := debug.ReadBuildInfo()
 	if !ok {
 		return ""

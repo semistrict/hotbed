@@ -1,6 +1,6 @@
 // Package statedir reads and writes a node's state directory. The directory's
-// config file says which role the node has; writing it is the last step of
-// `hotbed init` or `hotbed join`, so a directory with a config is complete.
+// config file is the worker's; writing it is the last step of `hotbed join`,
+// so a directory with a config is complete.
 package statedir
 
 import (
@@ -21,32 +21,9 @@ var (
 	ErrNotInitialized     = errors.New("state directory is not initialized")
 )
 
-// Config is a node's role. Exactly one of Controller and Worker is set.
+// Config is a node's role: a worker's.
 type Config struct {
-	Controller *ControllerConfig `json:"controller,omitempty"`
-	Worker     *WorkerConfig     `json:"worker,omitempty"`
-}
-
-// ControllerConfig is a cluster as its controller created it.
-type ControllerConfig struct {
-	ClusterID string `json:"clusterId"`
-	// Owner is the tailnet login allowed to use the cluster: the owner of the
-	// controller's own node when it was initialized.
-	Owner string `json:"owner"`
-	Port  int    `json:"port"`
-	// LocalUser is the unix user, besides root, who may call the controller
-	// from its own machine; none when empty.
-	LocalUser string `json:"localUser,omitempty"`
-	// Updates has the controller follow CI's builds; none when unset.
-	Updates *UpdatesConfig `json:"updates,omitempty"`
-}
-
-// UpdatesConfig is where CI publishes hotbed's builds, as GitHub releases.
-type UpdatesConfig struct {
-	// Repo is the GitHub repo, owner/name, such as semistrict/hotbed.
-	Repo string `json:"repo"`
-	// TokenFile holds a GitHub token that may read the repo's releases.
-	TokenFile string `json:"tokenFile"`
+	Worker *WorkerConfig `json:"worker,omitempty"`
 }
 
 // WorkerConfig is the cluster a worker joined and how it runs work.
@@ -158,8 +135,8 @@ type VMConfig struct {
 }
 
 func (c Config) validate() error {
-	if (c.Controller == nil) == (c.Worker == nil) {
-		return errors.New("config must set exactly one of controller and worker")
+	if c.Worker == nil {
+		return errors.New("config must set worker")
 	}
 	return nil
 }

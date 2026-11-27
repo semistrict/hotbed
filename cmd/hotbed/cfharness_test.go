@@ -204,7 +204,7 @@ func (h *cfHarness) doJSON(ctx context.Context, doName, method, path string, req
 type testServerConfig struct {
 	WakeWait             time.Duration
 	AllowLocalRepos      *bool
-	Builds               *update.Cache
+	Builds               *buildCache
 	Build                int64
 	UpdatesRepo          string
 	UpdatesAPIBase       string
@@ -225,7 +225,7 @@ type mockAssetPayload struct {
 	ContentBase64 string `json:"contentBase64"`
 }
 
-func buildMockPayload(cache *update.Cache, buildNum int64) (*mockBuildPayload, error) {
+func buildMockPayload(cache *buildCache, buildNum int64) (*mockBuildPayload, error) {
 	assets := make(map[string]mockAssetPayload, len(update.Platforms))
 	for _, p := range update.Platforms {
 		path := filepath.Join(cache.Dir, fmt.Sprintf("%d", buildNum), p.Asset())

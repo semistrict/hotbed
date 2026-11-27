@@ -44,23 +44,13 @@ func (f controllerClient) resolveRepo(ctx context.Context, d deps, session, expl
 
 	// 1. Match an existing workspace of this session by its SyncDir.
 	if session != "" {
-		// Out of reach, the controller is not waited for: this machine
-		// knows where it last found the session's workspaces.
+		// Out of reach, the controller is not waited for here: step 2
+		// below asks it again, and waits.
 		if list, lerr := cl.workspaces.ListWorkspaces(api.WithoutRideOut(ctx), &pb.ListWorkspacesRequest{SessionId: session}); lerr == nil {
 			for _, w := range list.Workspaces {
 				for _, r := range w.Repos {
 					if r.SyncDir != "" && gitops.CanonicalPath(r.SyncDir) == canonRoot {
 						return r.Repo, nil
-					}
-				}
-			}
-		} else if api.CodeOf(lerr) == api.CodeControllerUnreachable {
-			if known, kerr := loadKnown(d, session); kerr == nil {
-				for _, sp := range known.Workspaces {
-					for repoID, dir := range sp.SyncDirs {
-						if gitops.CanonicalPath(dir) == canonRoot {
-							return repoID, nil
-						}
 					}
 				}
 			}

@@ -231,7 +231,7 @@ func FromConnect(err error) *Error {
 		return &Error{
 			Code:       CodeControllerUnreachable,
 			Message:    err.Error(),
-			Suggestion: "check that `tailscale status` lists the controller and that `hotbed serve` is running there",
+			Suggestion: "check your network connection and that HOTBED_CONTROLLER names the controller, or run `hotbed login`",
 			Retryable:  true,
 		}
 	case connect.CodePermissionDenied, connect.CodeUnauthenticated:
@@ -248,54 +248,6 @@ func brokenConnection(err error) bool {
 		errors.Is(err, syscall.ECONNREFUSED) || errors.Is(err, syscall.ECONNABORTED) ||
 		errors.Is(err, io.ErrUnexpectedEOF)
 }
-
-// FromWorker turns a transport/unreachability error from calling a worker at
-// addr directly into WORKER_UNREACHABLE instead of CONTROLLER_UNREACHABLE.
-// nil, io.EOF, and non-unreachability errors are returned unchanged.
-func FromWorker(addr string, err error) error {
-	if err == nil || errors.Is(err, io.EOF) {
-		return err
-	}
-	e := FromConnect(err)
-	if e.Code == CodeControllerUnreachable {
-		return &Error{
-			Code:       CodeWorkerUnreachable,
-			Message:    addr + ": " + e.Message,
-			Suggestion: "check that `tailscale status` lists the worker and that `hotbed serve` is running there",
-			Retryable:  true,
-		}
-	}
-	return err
-}
-
-// WorkerErrors is a client interceptor for direct worker RPCs that translates
-// transport unreachability into WORKER_UNREACHABLE rather than blaming the
-// controller. Place it before RideOut so RideOut still sees raw transport
-// errors while retrying and WorkerErrors translates the final failure.
-func WorkerErrors(addr string) connect.ClientInterceptor {
-	return func(next connect.ClientFunc) connect.ClientFunc {
-		return func(ctx context.Context, spec connect.Spec) (connect.ClientStream, error) {
-			s, err := next(ctx, spec)
-			if err != nil {
-				return nil, FromWorker(addr, err)
-			}
-			return workerErrorStream{ClientStream: s, addr: addr}, nil
-		}
-	}
-}
-
-type workerErrorStream struct {
-	connect.ClientStream
-	addr string
-}
-
-func (w workerErrorStream) SendHeaders() error { return FromWorker(w.addr, w.ClientStream.SendHeaders()) }
-func (w workerErrorStream) Send(msg any) error { return FromWorker(w.addr, w.ClientStream.Send(msg)) }
-func (w workerErrorStream) CloseSend() error   { return FromWorker(w.addr, w.ClientStream.CloseSend()) }
-func (w workerErrorStream) Receive(msg any) error {
-	return FromWorker(w.addr, w.ClientStream.Receive(msg))
-}
-func (w workerErrorStream) Close() error { return FromWorker(w.addr, w.ClientStream.Close()) }
 
 func connectCode(c Code) connect.Code {
 	switch c {

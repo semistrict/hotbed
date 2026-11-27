@@ -2,13 +2,10 @@ package main
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"net"
 	"net/http"
 	"os"
-	"path/filepath"
-	"reflect"
 	"slices"
 	"strings"
 	"time"
@@ -45,7 +42,11 @@ func (f controllerClient) reach(d deps, node string) (workerClients, error) {
 		return workerClients{}, err
 	}
 	w := workerClients{calls: calls.workspaces, stream: stream.workspaces, controller: calls.workspaces}
-	local, err := setup.LocalWorker("")
+	localWorker := d.localWorker
+	if localWorker == nil {
+		localWorker = func() (setup.LocalWorkerSocket, error) { return setup.LocalWorker("") }
+	}
+	local, err := localWorker()
 	if err != nil || local.Socket == "" || node == "" || local.NodeID != node {
 		return w, nil
 	}
@@ -128,9 +129,6 @@ func (f controllerClient) workspaceFor(ctx context.Context, d deps, req *pb.Crea
 	w, err := f.reach(d, ws.NodeId)
 	if err != nil {
 		return nil, workerClients{}, err
-	}
-	if !ws.Throwaway {
-		remember(d, req.SessionId, ws)
 	}
 	return ws, w, nil
 }
@@ -240,7 +238,6 @@ func (f controllerClient) locate(ctx context.Context, d deps, session, node stri
 	if err != nil {
 		return nil, workerClients{}, err
 	}
-	remember(d, session, ws)
 	return ws, w, nil
 }
 
@@ -311,93 +308,8 @@ func ownerSuggestion(cmd *pb.Command) string {
 	return fmt.Sprintf("%s is session %s's: pass -s %s to act on it", cmd.Id, cmd.SessionId, cmd.SessionId)
 }
 
-// known is where this machine last used a session's workspaces, each by
-// ID, and the one it used last: the checkouts it synced into them, which a
-// run infers its repo from.
-type known struct {
-	Last       string          `json:"last,omitempty"`
-	Workspaces map[string]spot `json:"workspaces,omitempty"`
-}
-
-type spot struct {
-	Node    string `json:"node,omitempty"`
-	Project string `json:"project,omitempty"`
-	// The checkouts synced into it, by repo.
-	SyncDirs map[string]string `json:"syncDirs,omitempty"`
-}
-
-func knownFile(d deps, session string) string {
-	return filepath.Join(d.cache, "sessions", session+".workspaces.json")
-}
-
-func loadKnown(d deps, session string) (known, error) {
-	b, err := os.ReadFile(knownFile(d, session))
-	if err != nil {
-		return known{}, err
-	}
-	var k known
-	return k, json.Unmarshal(b, &k)
-}
-
-// remember notes a session's workspace and the checkouts synced into it.
-func remember(d deps, session string, ws *pb.Workspace) {
-	k, err := loadKnown(d, session)
-	if err != nil {
-		k = known{}
-	}
-	sp := spot{Node: ws.Node, Project: ws.Project}
-	for _, r := range ws.Repos {
-		if r.SyncDir != "" {
-			if sp.SyncDirs == nil {
-				sp.SyncDirs = map[string]string{}
-			}
-			sp.SyncDirs[r.Repo] = r.SyncDir
-		}
-	}
-	if k.Last == ws.Id && reflect.DeepEqual(k.Workspaces[ws.Id], sp) {
-		return
-	}
-	if k.Workspaces == nil {
-		k.Workspaces = map[string]spot{}
-	}
-	k.Last, k.Workspaces[ws.Id] = ws.Id, sp
-	if err := saveKnown(d, session, k); err != nil {
-		fmt.Fprintf(d.stderr, "hotbed: could not note where %s is: %v\n", ws.Id, err)
-	}
-}
-
 // ownWorkspaces are the session's own workspaces among ws: all but its
 // throwaway ones, which are each one command's.
 func ownWorkspaces(ws []*pb.Workspace) []*pb.Workspace {
 	return slices.DeleteFunc(slices.Clone(ws), func(w *pb.Workspace) bool { return w.Throwaway })
-}
-
-// forget drops a session's released workspace from what this machine
-// knows.
-func forget(d deps, session, id string) {
-	k, err := loadKnown(d, session)
-	if err != nil {
-		return
-	}
-	if _, ok := k.Workspaces[id]; !ok {
-		return
-	}
-	delete(k.Workspaces, id)
-	if k.Last == id {
-		k.Last = ""
-	}
-	if err := saveKnown(d, session, k); err != nil {
-		fmt.Fprintf(d.stderr, "hotbed: could not forget %s's workspace %s: %v\n", session, id, err)
-	}
-}
-
-func saveKnown(d deps, session string, k known) error {
-	b, err := json.Marshal(k)
-	if err != nil {
-		return err
-	}
-	if err := os.MkdirAll(filepath.Dir(knownFile(d, session)), 0o755); err != nil {
-		return err
-	}
-	return os.WriteFile(knownFile(d, session), b, 0o644)
 }

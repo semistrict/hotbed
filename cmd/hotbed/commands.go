@@ -9,7 +9,6 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
-	"runtime/debug"
 	"slices"
 	"strings"
 	"time"
@@ -18,6 +17,7 @@ import (
 
 	"github.com/semistrict/hotbed/internal/api"
 	"github.com/semistrict/hotbed/internal/apicmd"
+	"github.com/semistrict/hotbed/internal/setup"
 	"github.com/semistrict/hotbed/internal/version"
 	"github.com/semistrict/hotbed/internal/worker"
 	"github.com/semistrict/hotbed/skills"
@@ -57,6 +57,9 @@ type deps struct {
 	output outputOpts
 	// execve replaces the process with another program (syscall.Exec).
 	execve func(path string, argv, env []string) error
+	// localWorker finds the worker on this machine that serves its clients
+	// on a Unix socket; nil for setup.LocalWorker's.
+	localWorker func() (setup.LocalWorkerSocket, error)
 }
 
 // dashDashCommand accepts passthrough arguments after "--", parsed before kong
@@ -274,13 +277,5 @@ type versionResult struct {
 }
 
 func (c *versionCmd) Exec(context.Context, deps) (any, error) {
-	v := versionResult{Version: version.String(), Build: version.Number(), OS: runtime.GOOS, Arch: runtime.GOARCH}
-	if info, ok := debug.ReadBuildInfo(); ok {
-		for _, s := range info.Settings {
-			if s.Key == "vcs.revision" {
-				v.Commit = s.Value
-			}
-		}
-	}
-	return v, nil
+	return versionResult{Version: version.String(), Build: version.Number(), Commit: version.Commit(), OS: runtime.GOOS, Arch: runtime.GOARCH}, nil
 }

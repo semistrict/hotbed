@@ -125,9 +125,6 @@ func TestWorkspaceCommands(t *testing.T) {
 	if len(after.Workspaces) != 0 {
 		t.Errorf("workspace ls after release = %v", after.Workspaces)
 	}
-	if k, err := loadKnown(c.cli, S); err != nil || k.Last != "" || len(k.Workspaces) != 0 {
-		t.Errorf("this machine still knows the released workspace: %v, %v", k, err)
-	}
 	if code, out, errOut := c.hotbed("run", "-s", S, "-r", "app", "--", "cat", "src/lib.txt"); code != 0 || out != "edited\n" {
 		t.Fatalf("run after release: exit %d, stdout %q, stderr %q", code, out, errOut)
 	}
