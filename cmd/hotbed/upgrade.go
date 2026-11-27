@@ -44,7 +44,7 @@ func (c *upgradeCmd) Exec(ctx context.Context, d deps) (any, error) {
 	if d.build > 0 && d.build >= b.Number {
 		return upgradeResult{Build: d.build}, nil
 	}
-	if err := install(ctx, c.Controller, d, b); err != nil {
+	if err := c.install(ctx, d, b); err != nil {
 		return nil, err
 	}
 	return upgradeResult{Build: b.Number, Upgraded: true, From: d.build}, nil
@@ -52,7 +52,7 @@ func (c *upgradeCmd) Exec(ctx context.Context, d deps) (any, error) {
 
 // install puts the controller's build b over this client's binary, then has
 // the new binary install its skills.
-func install(ctx context.Context, controllerAddr string, d deps, b *pb.Build) error {
+func (f controllerClient) install(ctx context.Context, d deps, b *pb.Build) error {
 	exe, err := d.exe()
 	if err != nil {
 		return err
@@ -62,22 +62,21 @@ func install(ctx context.Context, controllerAddr string, d deps, b *pb.Build) er
 		return err
 	}
 	downloadURL := b.DownloadUrl
-	attachAuth := false
-	if downloadURL == "" {
-		base, err := api.ControllerBaseURL(controllerAddr)
+	fromController := downloadURL == ""
+	if fromController {
+		base, err := api.ControllerBaseURL(f.Controller)
 		if err != nil {
 			return err
 		}
 		downloadURL = base + b.Path
-		attachAuth = true
 	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, downloadURL, nil)
 	if err != nil {
 		return err
 	}
-	if attachAuth {
-		if tok := controllerAuthToken(d.getenv, controllerAddr); tok != "" {
-			req.Header.Set("Authorization", "Bearer "+tok)
+	if fromController {
+		if err := f.authorize(ctx, d, req.Header); err != nil {
+			return err
 		}
 	}
 	resp, err := d.stream.Do(req)
@@ -145,11 +144,12 @@ func followController(ctx context.Context, d deps, addr string, seen int64) {
 	if d.build == 0 || seen == 0 || seen <= d.build {
 		return
 	}
-	cl, err := controllerClient{Controller: addr, Getenv: d.getenv}.clients(d.http)
+	cc := controllerClient{Controller: addr, Getenv: d.getenv}
+	cl, err := cc.clients(d.http)
 	if err == nil {
 		var b *pb.Build
 		if b, err = cl.cluster.GetBuild(ctx, &pb.GetBuildRequest{Os: runtime.GOOS, Arch: runtime.GOARCH}); err == nil {
-			err = install(ctx, addr, d, b)
+			err = cc.install(ctx, d, b)
 		}
 		if err == nil {
 			fmt.Fprintf(d.stderr, "hotbed: upgraded to build %d, the controller's (was build %d)\n", b.Number, d.build)

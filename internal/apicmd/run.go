@@ -2,6 +2,7 @@ package apicmd
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"math"
 	"reflect"
@@ -29,7 +30,17 @@ type Runner struct {
 	// Getenv reads the environment env:VAR defaults name: the caller's, which
 	// is not always the process's (each of a test's CLIs has its own).
 	Getenv func(string) string
+	// CheckoutRemote is the canonical remote of the checkout the caller
+	// runs in, "" outside one: what checkout_remote defaults read.
+	CheckoutRemote func(context.Context) (string, error)
+	// Callers make some RPCs' calls their own way, by method; the rest
+	// are made as the API's unary calls.
+	Callers map[protoreflect.FullName]Caller
 }
+
+// Caller makes one RPC's call its own way (in bounded pieces, say), given
+// the request as its Go type.
+type Caller func(ctx context.Context, req proto.Message) (proto.Message, error)
 
 // Args is what a command was given, by the CLI or an MCP client.
 type Args struct {
@@ -61,12 +72,8 @@ func (r *Runner) Run(ctx context.Context, c *Command, a Args) (proto.Message, er
 			return nil, err
 		}
 	}
-	client := r.Calls
-	if c.Waits {
-		client = r.Waits
-	}
-	res := dynamicpb.NewMessage(c.Method.Output())
-	if err := client.CallUnary(ctx, Spec(c), Wire(c, req), res); err != nil {
+	res, err := r.call(ctx, c, Wire(c, req))
+	if err != nil {
 		return nil, err
 	}
 	if len(c.After) == 0 {
@@ -76,7 +83,7 @@ func (r *Runner) Run(ctx context.Context, c *Command, a Args) (proto.Message, er
 	if err != nil {
 		return nil, err
 	}
-	tres, err := typed(res)
+	tres, err := typed(res.ProtoReflect())
 	if err != nil {
 		return nil, err
 	}
@@ -86,6 +93,26 @@ func (r *Runner) Run(ctx context.Context, c *Command, a Args) (proto.Message, er
 		}
 	}
 	return tres, nil
+}
+
+// call makes c's call: its Caller's, if it has one, else the API's.
+func (r *Runner) call(ctx context.Context, c *Command, req *dynamicpb.Message) (proto.Message, error) {
+	if caller, ok := r.Callers[c.Method.FullName()]; ok {
+		t, err := typed(req)
+		if err != nil {
+			return nil, err
+		}
+		return caller(ctx, t)
+	}
+	client := r.Calls
+	if c.Waits {
+		client = r.Waits
+	}
+	res := dynamicpb.NewMessage(c.Method.Output())
+	if err := client.CallUnary(ctx, Spec(c), req, res); err != nil {
+		return nil, err
+	}
+	return res, nil
 }
 
 // Spec is how c's call is made: its procedure, and whether it is
@@ -130,23 +157,33 @@ func Wire(c *Command, req *dynamicpb.Message) *dynamicpb.Message {
 
 // Build builds c's request from a: its fields take its JSON and what was
 // given, then the command's fixed values, then (what is still not given,
-// nor taken by another member of its oneof) their defaults, then their
-// hooks. Two members of a oneof given is an error.
+// nor taken by another member of its oneof, nor dropped by its unless
+// being given) their defaults, then their hooks. Two members of a oneof
+// given is an error.
 func (r *Runner) Build(ctx context.Context, c *Command, a Args) (*dynamicpb.Message, *Call, error) {
 	if missing := r.missingHooks(c); len(missing) > 0 {
 		return nil, nil, api.Errorf(api.CodeInvalidArgs, "%s needs hooks this hotbed does not have: %s", c.Name(), strings.Join(missing, ", ")).
 			WithSuggestion("run hotbed upgrade: the controller's API is newer than this client")
 	}
-	call := &Call{Command: c, given: a.Session, sessions: r.Sessions, getenv: r.Getenv}
+	call := &Call{Command: c, given: a.Session, sessions: r.Sessions, getenv: r.Getenv, checkoutRemote: r.CheckoutRemote}
+	given, err := r.given(ctx, call, a.Given)
+	if err != nil {
+		return nil, nil, err
+	}
+	has := func(p *spec.Param) bool {
+		_, ok := given[p]
+		return ok
+	}
 	req := dynamicpb.NewMessage(c.Method.Input())
 
-	if c.Input != nil {
+	// The JSON is read unless what stands in for it was given instead.
+	if c.Input != nil && (a.Input != nil || c.Input.Unless == nil || !has(c.Input.Unless)) {
 		if err := r.input(ctx, call, req, a.Input); err != nil {
 			return nil, nil, err
 		}
 	}
 	for _, p := range c.Params {
-		v, ok := a.Given[p]
+		v, ok := given[p]
 		if !ok {
 			continue
 		}
@@ -170,8 +207,7 @@ func (r *Runner) Build(ctx context.Context, c *Command, a Args) (*dynamicpb.Mess
 	// What was not given takes its default, then its hook's value: a hook
 	// sees every default.
 	unset := func(p *spec.Param) bool {
-		_, given := a.Given[p]
-		return !given && !isSet(req, p) && otherMember(req, p) == nil
+		return !has(p) && !isSet(req, p) && otherMember(req, p) == nil && (p.Unless == nil || !has(p.Unless))
 	}
 	for _, p := range c.Params {
 		if p.Default == "" || !unset(p) {
@@ -180,6 +216,11 @@ func (r *Runner) Build(ctx context.Context, c *Command, a Args) (*dynamicpb.Mess
 		v, err := call.eval(ctx, c.defaults[p])
 		if err != nil {
 			return nil, nil, err
+		}
+		if p.Text() && !zero(v) {
+			if v, err = r.parse(ctx, call, p, v); err != nil {
+				return nil, nil, err
+			}
 		}
 		if err := setParam(req, p, v, false); err != nil {
 			return nil, nil, fmt.Errorf("%s's default for %s: %w", c.Name(), p.Field().FullName(), err)
@@ -198,41 +239,94 @@ func (r *Runner) Build(ctx context.Context, c *Command, a Args) (*dynamicpb.Mess
 		}
 	}
 	for _, p := range c.Params {
-		if !p.Required {
-			continue
-		}
-		_, given := a.Given[p]
-		if !given || (p.Field().IsList() && !isSet(req, p)) {
+		if p.Required && (!has(p) || (p.Field().IsList() && !isSet(req, p))) {
 			return nil, nil, api.Errorf(api.CodeInvalidArgs, "--%s is required", p.Name).WithSuggestion(helpOf(c))
 		}
 	}
 	return req, call, nil
 }
 
+// given is what was given as its fields' values: a switch given true as the
+// value it sets (false as nothing given), text as its parse hook reads it.
+func (r *Runner) given(ctx context.Context, call *Call, in map[*spec.Param]any) (map[*spec.Param]any, error) {
+	out := make(map[*spec.Param]any, len(in))
+	for p, v := range in {
+		switch {
+		case p.Switch != "":
+			on, ok := v.(bool)
+			if !ok {
+				return nil, api.Errorf(api.CodeInvalidArgs, "--%s: want true or false, got %T", p.Name, v)
+			}
+			if !on {
+				continue
+			}
+			v = call.Command.switches[p]
+		case p.Text():
+			var err error
+			if v, err = r.parse(ctx, call, p, v); err != nil {
+				return nil, err
+			}
+		}
+		out[p] = v
+	}
+	return out, nil
+}
+
+// parse reads a text param's value, or each of a list's values, with its
+// parse hook.
+func (r *Runner) parse(ctx context.Context, call *Call, p *spec.Param, v any) (any, error) {
+	hook := r.Hooks.Parse[p.Parse]
+	one := func(x any) (any, error) {
+		text, ok := x.(string)
+		if !ok {
+			return nil, api.Errorf(api.CodeInvalidArgs, "--%s: want text, got %T", p.Name, x)
+		}
+		out, err := hook(ctx, call, text)
+		if err != nil {
+			if _, ok := errors.AsType[*api.Error](err); ok {
+				return nil, err
+			}
+			return nil, api.Errorf(api.CodeInvalidArgs, "--%s %q: %v", p.Name, text, err).WithSuggestion(helpOf(call.Command))
+		}
+		return out, nil
+	}
+	if !p.Field().IsList() {
+		return one(v)
+	}
+	rv := reflect.ValueOf(v)
+	if rv.Kind() != reflect.Slice {
+		return nil, api.Errorf(api.CodeInvalidArgs, "--%s: want a list, got %T", p.Name, v)
+	}
+	out := make([]any, rv.Len())
+	for i := range rv.Len() {
+		x, err := one(rv.Index(i).Interface())
+		if err != nil {
+			return nil, err
+		}
+		out[i] = x
+	}
+	return out, nil
+}
+
 func (r *Runner) missingHooks(c *Command) []string {
 	var out []string
-	note := func(name string, ok bool) {
-		if !ok {
+	note := func(name string, kind spec.HookKind) {
+		if name != "" && !r.Hooks.has(name, kind) {
 			out = append(out, name)
 		}
 	}
 	for _, p := range c.Params {
-		if p.Hook != "" {
-			_, ok := r.Hooks.Fields[p.Hook]
-			note(p.Hook, ok)
-		}
+		note(p.Hook, spec.FieldHook)
+		note(p.Parse, spec.ParseHook)
 	}
-	if c.Input != nil && c.Input.Hook != "" {
-		_, ok := r.Hooks.Inputs[c.Input.Hook]
-		note(c.Input.Hook, ok)
+	if c.Input != nil {
+		note(c.Input.Hook, spec.InputHook)
 	}
 	for _, n := range c.Before {
-		_, ok := r.Hooks.Before[n]
-		note(n, ok)
+		note(n, spec.BeforeHook)
 	}
 	for _, n := range c.After {
-		_, ok := r.Hooks.After[n]
-		note(n, ok)
+		note(n, spec.AfterHook)
 	}
 	return out
 }
@@ -485,15 +579,17 @@ func float(rv reflect.Value) (float64, error) {
 	return 0, fmt.Errorf("want a number, got %v", rv)
 }
 
-// enumNumber is an enum's value by its word ("open") or name
-// (QUESTION_STATE_OPEN).
+// enumNumber is an enum's value by its word ("open", "in_progress" or
+// "in-progress") or name (QUESTION_STATE_OPEN).
 func enumNumber(e protoreflect.EnumDescriptor, s string) (protoreflect.EnumNumber, error) {
 	if v := e.Values().ByName(protoreflect.Name(s)); v != nil {
 		return v.Number(), nil
 	}
+	// A word may join its parts with dashes: fix-if-verified.
+	word := strings.ReplaceAll(s, "-", "_")
 	var words []string
 	for _, w := range spec.EnumWords(e) {
-		if w.Word == s {
+		if w.Word == word {
 			return w.Number, nil
 		}
 		words = append(words, w.Word)

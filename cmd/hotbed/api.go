@@ -12,12 +12,15 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	"google.golang.org/protobuf/encoding/protojson"
 	"google.golang.org/protobuf/proto"
+	"google.golang.org/protobuf/reflect/protoreflect"
 
 	"github.com/semistrict/hotbed/internal/api"
 	"github.com/semistrict/hotbed/internal/apicmd"
+	"github.com/semistrict/hotbed/internal/apicmd/spec"
 	pb "github.com/semistrict/hotbed/internal/gen/hotbed/v1"
 	"github.com/semistrict/hotbed/internal/gen/hotbed/v1/hotbedv1cli"
 	"github.com/semistrict/hotbed/internal/gen/hotbed/v1/hotbedv1connect"
@@ -49,38 +52,36 @@ type apiCommand struct {
 }
 
 func (c *apiCommand) Exec(ctx context.Context, d deps) (any, error) {
-	if c.Command.Input != nil {
-		b, err := jsonInput{File: c.File}.read(d, "pipe the command's JSON in, or pass --file FILE")
-		if err != nil {
-			return nil, err
-		}
-		c.Args.Input = b
+	if err := c.Load(d.readFile); err != nil {
+		return nil, err
 	}
 	return c.runAPI(ctx, d, cliSessions{d}, c.Command, c.Args)
 }
 
-// runAPI executes a proto-declared API command, routing waiting QueryOutput
-// calls through queryOutputBounded so CLI and MCP callers both get bounded
-// per-slice HTTP deadlines and transport recovery.
+// passthrough is the param taking the words after --; nil for none.
+func (c *apiCommand) passthrough() *spec.Param {
+	for _, p := range c.Command.Params {
+		if p.Passthrough {
+			return p
+		}
+	}
+	return nil
+}
+
+// SetDashArgs gives the passthrough param the words after --, handing back
+// what kong had given it before.
+func (c *apiCommand) SetDashArgs(args []string) (before []string) {
+	p := c.passthrough()
+	before, _ = c.Args.Given[p].([]string)
+	c.Args.Given[p] = args
+	return before
+}
+
+// runAPI executes a proto-declared API command for the CLI or MCP.
 func (f controllerClient) runAPI(ctx context.Context, d deps, sessions apicmd.Sessions, cmd *apicmd.Command, args apicmd.Args) (proto.Message, error) {
 	r, err := f.runner(d, sessions)
 	if err != nil {
 		return nil, err
-	}
-	if cmd.Method.FullName() == "hotbed.v1.WorkspaceService.QueryOutput" {
-		req, _, err := r.Build(ctx, cmd, args)
-		if err != nil {
-			return nil, err
-		}
-		b, err := proto.Marshal(apicmd.Wire(cmd, req))
-		if err != nil {
-			return nil, err
-		}
-		var qreq pb.QueryOutputRequest
-		if err := proto.Unmarshal(b, &qreq); err != nil {
-			return nil, err
-		}
-		return queryOutputBounded(ctx, hotbedv1connect.NewWorkspaceServiceClient(r.Waits), d.stream, d.rideOut, &qreq)
 	}
 	return r.Run(ctx, cmd, args)
 }
@@ -102,12 +103,25 @@ func (f controllerClient) runner(d deps, sessions apicmd.Sessions) (*apicmd.Runn
 	hooks := cliHooks{
 		here:    d.here,
 		cache:   d.cache,
-		stdin:   d.stdin,
 		stderr:  d.stderr,
 		gitAuth: hotbedv1connect.NewGitAuthServiceClient(calls),
 		openURL: d.openURL,
+		repo: func(ctx context.Context) (string, error) {
+			return f.resolveRepo(ctx, d, "", "", "")
+		},
 	}
-	return &apicmd.Runner{Hooks: hotbedv1cli.Table(hooks), Calls: calls, Waits: waits, Sessions: sessions, Getenv: d.getenv}, nil
+	workspaces := hotbedv1connect.NewWorkspaceServiceClient(waits)
+	return &apicmd.Runner{
+		Hooks: hotbedv1cli.Table(hooks), Calls: calls, Waits: waits, Sessions: sessions, Getenv: d.getenv,
+		CheckoutRemote: d.checkoutRemote,
+		Callers: map[protoreflect.FullName]apicmd.Caller{
+			// A wait for output goes in bounded slices, each with its own
+			// deadline, riding out the transport's failures.
+			"hotbed.v1.WorkspaceService.QueryOutput": func(ctx context.Context, req proto.Message) (proto.Message, error) {
+				return queryOutputBounded(ctx, workspaces, d.stream, d.rideOut, req.(*pb.QueryOutputRequest))
+			},
+		},
+	}, nil
 }
 
 // cliSessions is the session a command on the command line acts as: -s,
@@ -127,11 +141,12 @@ func (s cliSessions) Named(_ context.Context, given string) (string, error) {
 // cliHooks is the Go hooks hotbed.proto's commands name.
 type cliHooks struct {
 	here
-	cache   string // where this machine keeps each session's poll cursor
-	stdin   io.Reader
+	cache   string // where this machine keeps cursors: each session's polls', each review's responses'
 	stderr  io.Writer
 	gitAuth hotbedv1connect.GitAuthServiceClient
 	openURL func(ctx context.Context, url string) error
+	// repo is the registered repo this checkout is of.
+	repo func(ctx context.Context) (string, error)
 }
 
 var _ hotbedv1cli.Hooks = cliHooks{}
@@ -252,91 +267,31 @@ func (h cliHooks) StartGitHubLoginInteractive(ctx context.Context, _ *apicmd.Cal
 	return nil
 }
 
-// LoadGitCredentialSecrets reads --token-file (or stdin when "-") into the
-// request before local fields are cleared on the wire.
-func (h cliHooks) LoadGitCredentialSecrets(_ context.Context, _ *apicmd.Call, req *pb.PutGitCredentialRequest) error {
-	if req.TokenFile != "" {
-		if req.Token != "" {
-			return api.Errorf(api.CodeInvalidArgs, "give --token or --token-file, not both")
-		}
-		b, err := h.readSecretFile(req.TokenFile, "--token-file")
-		if err != nil {
-			return err
-		}
-		req.Token = strings.TrimSpace(string(b))
-	}
-	return nil
-}
-
-func (h cliHooks) readSecretFile(path, flag string) ([]byte, error) {
-	if path == "-" {
-		in := h.stdin
-		if in == nil {
-			in = os.Stdin
-		}
-		b, err := io.ReadAll(io.LimitReader(in, 1<<20))
-		if err != nil {
-			return nil, api.Errorf(api.CodeInvalidArgs, "read %s from stdin: %v", flag, err)
-		}
-		return b, nil
-	}
-	b, err := os.ReadFile(path)
-	if err != nil {
-		return nil, api.Errorf(api.CodeInvalidArgs, "read %s %s: %v", flag, path, err)
-	}
-	return b, nil
-}
-
-func (h cliHooks) AskedFrom(ctx context.Context, _ *apicmd.Call, _ *pb.AddQuestionsRequest) (*pb.AskedFrom, error) {
+// AskedFrom is where this agent asks from (askedFrom).
+func (h cliHooks) AskedFrom(ctx context.Context, _ *apicmd.Call) (*pb.AskedFrom, error) {
 	return h.askedFrom(ctx)
 }
 
-// ListedRemote is this checkout's remote, whose project question ls lists
-// when nothing else says whose.
-func (h cliHooks) ListedRemote(ctx context.Context, _ *apicmd.Call, _ *pb.ListQuestionsRequest) (string, error) {
-	return h.checkoutRemote(ctx)
+// CheckoutRepo is the registered repo this checkout is of, which a
+// scheduled command runs in when no repo is named.
+func (h cliHooks) CheckoutRepo(ctx context.Context, _ *apicmd.Call, _ *pb.PutScheduleRequest) (string, error) {
+	return h.repo(ctx)
 }
 
-func (h cliHooks) MemoryProposedFrom(ctx context.Context, _ *apicmd.Call, _ *pb.ProposeMemoryRequest) (*pb.AskedFrom, error) {
-	return h.askedFrom(ctx)
+// Size reads 512M, 2G, 1.5G or a plain byte count.
+func (cliHooks) Size(_ context.Context, _ *apicmd.Call, text string) (int64, error) {
+	return parseSize(text)
 }
 
-func (h cliHooks) MemoryListedRemote(ctx context.Context, _ *apicmd.Call, _ *pb.ListMemoriesRequest) (string, error) {
-	return h.checkoutRemote(ctx)
+// Seconds reads a duration of whole seconds, such as 30m or 2h; 0 for none.
+func (cliHooks) Seconds(_ context.Context, _ *apicmd.Call, text string) (int64, error) {
+	d, err := parseDuration(text)
+	return int64(d / time.Second), err
 }
 
-func (h cliHooks) MemoryGetRemote(ctx context.Context, _ *apicmd.Call, _ *pb.GetMemoriesRequest) (string, error) {
-	return h.checkoutRemote(ctx)
-}
-
-func (h cliHooks) MemoryShowRemote(ctx context.Context, _ *apicmd.Call, _ *pb.ShowMemoryRequest) (string, error) {
-	return h.checkoutRemote(ctx)
-}
-
-func (h cliHooks) loadMemoryBody(bodyFile string, content **pb.MemoryContent) error {
-	if bodyFile == "" {
-		return nil
-	}
-	if (*content).GetBody() != "" {
-		return api.Errorf(api.CodeInvalidArgs, "give --body or --body-file, not both")
-	}
-	b, err := h.readSecretFile(bodyFile, "--body-file")
-	if err != nil {
-		return err
-	}
-	if *content == nil {
-		*content = &pb.MemoryContent{}
-	}
-	(*content).Body = string(b)
-	return nil
-}
-
-func (h cliHooks) LoadProposeMemoryBody(_ context.Context, _ *apicmd.Call, req *pb.ProposeMemoryRequest) error {
-	return h.loadMemoryBody(req.BodyFile, &req.Content)
-}
-
-func (h cliHooks) LoadReviseMemoryBody(_ context.Context, _ *apicmd.Call, req *pb.ReviseMemoryRequest) error {
-	return h.loadMemoryBody(req.BodyFile, &req.Content)
+// Priority reads a scheduling priority: a word or an integer.
+func (cliHooks) Priority(_ context.Context, _ *apicmd.Call, text string) (int32, error) {
+	return parsePriority(text)
 }
 
 const editExample = `hotbed question edit 12 <<'EOF'
@@ -344,13 +299,8 @@ const editExample = `hotbed question edit 12 <<'EOF'
  "options": [{"label": "SQLite", "description": "One file"}, {"label": "Postgres", "description": "A server"}]}
 EOF`
 
-// EditedPrompt is the question question edit rewrites one to.
-func (cliHooks) EditedPrompt(_ context.Context, _ *apicmd.Call, input []byte) (*pb.Prompt, error) {
-	return onePrompt(input)
-}
-
-// RevisedPrompt is the question question revise rewrites one to.
-func (cliHooks) RevisedPrompt(_ context.Context, _ *apicmd.Call, input []byte) (*pb.Prompt, error) {
+// Prompt is the question question edit and question revise rewrite one to.
+func (cliHooks) Prompt(_ context.Context, _ *apicmd.Call, input []byte) (*pb.Prompt, error) {
 	return onePrompt(input)
 }
 

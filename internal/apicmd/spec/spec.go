@@ -8,6 +8,7 @@ package spec
 
 import (
 	"fmt"
+	"maps"
 	"slices"
 	"strings"
 
@@ -53,6 +54,8 @@ type Command struct {
 	// Format is an optional Go text/template rendering the RPC's response as
 	// plain text on the CLI.
 	Format string
+	// Aliases are other names for its last word on the CLI.
+	Aliases []string
 }
 
 // Name is the command's words: "question ls".
@@ -73,6 +76,9 @@ type Input struct {
 	Field protoreflect.FieldDescriptor
 	// Hook reads the JSON, when it is not simply the field's JSON.
 	Hook string
+	// Unless is the param given instead of the JSON, which is then not
+	// read; nil for none.
+	Unless *Param
 }
 
 // Param is a field of a request, or of a message flattened into it.
@@ -94,18 +100,45 @@ type Param struct {
 	Required bool
 	// Optional: a positional argument that may be left out.
 	Optional bool
-	Help     string
+	// FileFlag is a second flag's name, whose file (- for stdin) is the
+	// value; the command line's alone.
+	FileFlag string
+	// Parse is the Go hook that reads the param's text into its value; the
+	// param is then given, and defaulted, as text.
+	Parse string
+	// Passthrough: a positional list taking every word after --.
+	Passthrough bool
+	// Switch is the value a switch sets its field to: the param is then a
+	// bool flag, given only when true.
+	Switch string
+	// Unless is the param whose being given drops this one's default and
+	// hook; nil for none.
+	Unless *Param
+	Help   string
 }
 
 // Field is the param's field.
 func (p *Param) Field() protoreflect.FieldDescriptor { return p.Path[len(p.Path)-1] }
 
+// PathName is the param's field path from the request, as omit and unless
+// name it: command.limits.priority.
+func (p *Param) PathName() string {
+	names := make([]string, len(p.Path))
+	for i, f := range p.Path {
+		names[i] = string(f.Name())
+	}
+	return strings.Join(names, ".")
+}
+
+// Text says whether the param is given as text its parse hook reads.
+func (p *Param) Text() bool { return p.Parse != "" }
+
 // Var is the param's name in MCP: asked_by.
 func (p *Param) Var() string { return strings.ReplaceAll(p.Name, "-", "_") }
 
 // Message says whether the param is a message (or messages), given only as
-// JSON.
-func (p *Param) Message() bool { return p.Field().Message() != nil }
+// JSON unless parsed from text.
+func (p *Param) Message() bool { return p.Field().Message() != nil && !p.Text() }
 
 // Words are an enum param's words, by number: QUESTION_STATE_OPEN is
 // "open". The zero value, unspecified, has none.
@@ -161,25 +194,65 @@ const (
 	BeforeHook
 	// AfterHook runs after it, with its response.
 	AfterHook
+	// ParseHook reads a param's text into one value of its field.
+	ParseHook
 )
 
 // Hook is a Go hook: what it is given and gives back.
+//
+// A hook is one Go method, which more than one command may name: a before
+// or after hook for one request, a field or parse hook for values of one
+// type, an input hook for one message. A field hook every command names
+// for one request sees that request; one named for several sees none.
 type Hook struct {
-	Name    string
-	Kind    HookKind
+	Name string
+	Kind HookKind
+	// Request is what the hook is given: a before or after hook's, or a
+	// field hook's when all its uses are of one request; else nil.
 	Request protoreflect.MessageDescriptor
-	// Field is what a field hook fills in; nil for another kind.
+	// Field is a field hook's or parse hook's field, of the type it gives
+	// (a parse hook one value of it); nil for another kind.
 	Field protoreflect.FieldDescriptor
 	// Result is the message an input hook makes; nil for another kind.
 	Result protoreflect.MessageDescriptor
 	// Response is the response an after hook sees; nil for another kind.
 	Response protoreflect.MessageDescriptor
+	// Package is the API's package whose commands name it.
+	Package protoreflect.FullName
 	// Uses is where it is named, for errors.
 	Uses []string
 }
 
+// same says whether o is the same Go method as h, both named alike.
 func (h *Hook) same(o *Hook) bool {
-	return h.Kind == o.Kind && h.Request == o.Request && h.Field == o.Field && h.Result == o.Result && h.Response == o.Response
+	if h.Kind != o.Kind || h.Package != o.Package {
+		return false
+	}
+	switch h.Kind {
+	case FieldHook:
+		return sameType(h.Field, o.Field) && h.Field.IsList() == o.Field.IsList()
+	case ParseHook:
+		return sameType(h.Field, o.Field)
+	case InputHook:
+		return h.Result == o.Result
+	default:
+		return h.Request == o.Request && h.Response == o.Response
+	}
+}
+
+// sameType says whether a and b hold values of one Go type, a list's one
+// value apart.
+func sameType(a, b protoreflect.FieldDescriptor) bool {
+	if a.Kind() != b.Kind() {
+		return false
+	}
+	switch a.Kind() {
+	case protoreflect.EnumKind:
+		return a.Enum().FullName() == b.Enum().FullName()
+	case protoreflect.MessageKind, protoreflect.GroupKind:
+		return a.Message().FullName() == b.Message().FullName()
+	}
+	return true
 }
 
 // Load reads the commands of an API's descriptors, a serialized
@@ -284,15 +357,24 @@ func (s *Schema) addHooks(c *Command) []string {
 		case !ok:
 			s.Hooks[h.Name] = h
 		case old.same(h):
-			old.Uses = append(old.Uses, c.Name())
+			if !slices.Contains(old.Uses, c.Name()) {
+				old.Uses = append(old.Uses, c.Name())
+			}
+			if old.Kind == FieldHook && old.Request != h.Request {
+				old.Request = nil // named for several requests: it sees none
+			}
 		default:
 			errs = append(errs, fmt.Sprintf("%s: hook %s is named by %s too, for something else; give each its own name", c.Name(), h.Name, strings.Join(old.Uses, ", ")))
 		}
 	}
 	req := c.Method.Input()
+	pkg := c.Method.ParentFile().Package()
 	for _, p := range c.Params {
 		if p.Hook != "" {
-			add(&Hook{Name: p.Hook, Kind: FieldHook, Request: req, Field: p.Field()})
+			add(&Hook{Name: p.Hook, Kind: FieldHook, Request: req, Field: p.Field(), Package: pkg})
+		}
+		if p.Parse != "" {
+			add(&Hook{Name: p.Parse, Kind: ParseHook, Field: p.Field(), Package: pkg})
 		}
 	}
 	if c.Input != nil && c.Input.Hook != "" {
@@ -300,13 +382,13 @@ func (s *Schema) addHooks(c *Command) []string {
 		if c.Input.Field != nil {
 			result = c.Input.Field.Message()
 		}
-		add(&Hook{Name: c.Input.Hook, Kind: InputHook, Request: req, Result: result})
+		add(&Hook{Name: c.Input.Hook, Kind: InputHook, Result: result, Package: pkg})
 	}
 	for _, name := range c.Before {
-		add(&Hook{Name: name, Kind: BeforeHook, Request: req})
+		add(&Hook{Name: name, Kind: BeforeHook, Request: req, Package: pkg})
 	}
 	for _, name := range c.After {
-		add(&Hook{Name: name, Kind: AfterHook, Request: req, Response: c.Method.Output()})
+		add(&Hook{Name: name, Kind: AfterHook, Request: req, Response: c.Method.Output(), Package: pkg})
 	}
 	return errs
 }
@@ -416,7 +498,7 @@ func readCommand(m protoreflect.MethodDescriptor, cs *pb.CommandSpec) (*Command,
 	c := &Command{
 		Words: strings.Fields(cs.GetName()), Help: cs.GetHelp(), Method: m, Session: cs.GetSession(),
 		Before: cs.GetBefore(), After: cs.GetAfter(), Waits: cs.GetWaits(), ReadOnly: cs.GetReadOnly(), Destructive: cs.GetDestructive(),
-		Format: cs.GetFormat(),
+		Format: cs.GetFormat(), Aliases: cs.GetAliases(),
 	}
 	if len(c.Words) == 0 {
 		return nil, fmt.Errorf("a command needs a name")
@@ -447,6 +529,36 @@ func readCommand(m protoreflect.MethodDescriptor, cs *pb.CommandSpec) (*Command,
 		c.Fixed = append(c.Fixed, Fixed{Field: f, Value: fx.GetValue()})
 		fixed[f] = true
 	}
+	params, unless, err := readParams(req, nil, fixed)
+	if err != nil {
+		return nil, err
+	}
+	if params, err = omit(params, cs.GetOmit()); err != nil {
+		return nil, err
+	}
+	c.Params = params
+	byPath := map[string]*Param{}
+	for _, p := range params {
+		byPath[p.PathName()] = p
+	}
+	for _, cp := range cs.GetParams() {
+		p, ok := byPath[cp.GetField()]
+		if !ok {
+			return nil, fmt.Errorf("params names %q, which is no param of the command", cp.GetField())
+		}
+		if cp.GetName() != "" {
+			p.Name = cp.GetName()
+		}
+		if cp.GetHelp() != "" {
+			p.Help = cp.GetHelp()
+		}
+		p.Required = p.Required || cp.GetRequired()
+	}
+	for p, path := range unless {
+		if p.Unless = byPath[path]; p.Unless == nil || p.Unless == p {
+			return nil, fmt.Errorf("%s: unless %q is no other param of the command", p.Field().FullName(), path)
+		}
+	}
 	if in := cs.GetInput(); in != nil {
 		c.Input = &Input{Hook: in.GetHook()}
 		if in.GetField() != "" {
@@ -459,52 +571,76 @@ func readCommand(m protoreflect.MethodDescriptor, cs *pb.CommandSpec) (*Command,
 			}
 			c.Input.Field = f
 		}
+		if u := in.GetUnless(); u != "" {
+			if c.Input.Unless = byPath[u]; c.Input.Unless == nil || c.Input.Unless.Hidden {
+				return nil, fmt.Errorf("input unless %q is no param given", u)
+			}
+		}
 	}
-	params, err := readParams(req, nil, fixed)
-	if err != nil {
-		return nil, err
-	}
-	c.Params = params
 	return c, c.check()
 }
 
+// omit drops the params the paths name, each a param or a flattened
+// message holding some.
+func omit(params []*Param, paths []string) ([]*Param, error) {
+	for _, path := range paths {
+		n := len(params)
+		params = slices.DeleteFunc(params, func(p *Param) bool {
+			name := p.PathName()
+			return name == path || strings.HasPrefix(name, path+".")
+		})
+		if len(params) == n {
+			return nil, fmt.Errorf("omit %q names no param", path)
+		}
+	}
+	return params, nil
+}
+
 // readParams are msg's fields as params, under path; fixed fields are none.
-func readParams(msg protoreflect.MessageDescriptor, path []protoreflect.FieldDescriptor, fixed map[protoreflect.FieldDescriptor]bool) ([]*Param, error) {
-	var out []*Param
+// unless is each param's unless, a path the command resolves.
+func readParams(msg protoreflect.MessageDescriptor, path []protoreflect.FieldDescriptor, fixed map[protoreflect.FieldDescriptor]bool) (out []*Param, unless map[*Param]string, err error) {
+	unless = map[*Param]string{}
 	for i := range msg.Fields().Len() {
 		f := msg.Fields().Get(i)
 		pj, err := paramOption(f)
 		if err != nil {
-			return nil, fmt.Errorf("%s: %w", f.FullName(), err)
+			return nil, nil, fmt.Errorf("%s: %w", f.FullName(), err)
 		}
 		if fixed[f] {
 			if pj.GetLocal() {
-				return nil, fmt.Errorf("%s is local and fixed: a fixed field is the server's to read", f.FullName())
+				return nil, nil, fmt.Errorf("%s is local and fixed: a fixed field is the server's to read", f.FullName())
 			}
 			continue
 		}
 		at := append(slices.Clone(path), f)
 		if pj.GetFlatten() {
 			if f.Message() == nil || f.IsList() || f.IsMap() {
-				return nil, fmt.Errorf("%s: only a message field flattens", f.FullName())
+				return nil, nil, fmt.Errorf("%s: only a message field flattens", f.FullName())
 			}
-			inner, err := readParams(f.Message(), at, nil)
+			inner, innerUnless, err := readParams(f.Message(), at, nil)
 			if err != nil {
-				return nil, err
+				return nil, nil, err
 			}
 			out = append(out, inner...)
+			maps.Copy(unless, innerUnless)
 			continue
 		}
 		name := pj.GetName()
 		if name == "" {
 			name = strings.ReplaceAll(string(f.Name()), "_", "-")
 		}
-		out = append(out, &Param{
+		p := &Param{
 			Name: name, Path: at, Short: pj.GetShort(), Positional: pj.GetPositional(),
-			Default: pj.GetDefault(), Hook: pj.GetHook(), Hidden: pj.GetHidden(), Every: pj.GetEvery(), Local: pj.GetLocal(), Required: pj.GetRequired(), Optional: pj.GetOptional(), Help: oneParagraph(comment(f)),
-		})
+			Default: pj.GetDefault(), Hook: pj.GetHook(), Hidden: pj.GetHidden(), Every: pj.GetEvery(), Local: pj.GetLocal(), Required: pj.GetRequired(), Optional: pj.GetOptional(),
+			FileFlag: pj.GetFileFlag(), Parse: pj.GetParse(), Passthrough: pj.GetPassthrough(), Switch: pj.GetSwitchValue(),
+			Help: oneParagraph(comment(f)),
+		}
+		if u := pj.GetUnless(); u != "" {
+			unless[p] = u
+		}
+		out = append(out, p)
 	}
-	return out, nil
+	return out, unless, nil
 }
 
 // check refuses what a command cannot mean.
@@ -536,8 +672,6 @@ func (c *Command) check() error {
 		f := p.Field()
 		what := string(f.FullName())
 		switch {
-		case p.Default != "" && p.Hook != "":
-			return fmt.Errorf("%s has a default and a hook; give it one", what)
 		case p.Hidden && p.Default == "" && p.Hook == "":
 			return fmt.Errorf("%s is hidden with neither default nor hook to fill it in", what)
 		case p.Hidden && (p.Positional || p.Short != ""):
@@ -554,7 +688,7 @@ func (c *Command) check() error {
 			return fmt.Errorf("%s: short is one letter", what)
 		case p.Short == "h":
 			return fmt.Errorf("%s: -h is help's", what)
-		case !p.Hidden && !p.Message() && f.Kind() == protoreflect.BytesKind:
+		case !p.Hidden && !p.Message() && !p.Text() && f.Kind() == protoreflect.BytesKind:
 			return fmt.Errorf("%s: bytes are given as no flag", what)
 		case !p.Hidden && p.Message() && len(p.Path) > 1:
 			return fmt.Errorf("%s: a message in a flattened message is given no way; flatten it too, or hide it", what)
@@ -574,6 +708,20 @@ func (c *Command) check() error {
 			return fmt.Errorf("%s: optional is for a positional argument", what)
 		case p.Optional && p.Required:
 			return fmt.Errorf("%s is both optional and required", what)
+		case p.FileFlag != "" && (f.Kind() != protoreflect.StringKind || f.IsList() || p.Hidden || p.Positional || p.Text()):
+			return fmt.Errorf("%s: file_flag is for a string flag", what)
+		case p.Text() && p.Hidden:
+			return fmt.Errorf("%s is parsed and hidden: a hidden field is never given", what)
+		case p.Text() && (p.Every != "" || p.Switch != ""):
+			return fmt.Errorf("%s is parsed from text: no every or switch_value", what)
+		case p.Passthrough && (!p.Positional || !f.IsList() || f.Kind() != protoreflect.StringKind || p.Text()):
+			return fmt.Errorf("%s: passthrough is for a repeated string positional", what)
+		case p.Passthrough && p.Required:
+			return fmt.Errorf("%s: a passthrough is taken after --, so it is never required", what)
+		case p.Switch != "" && (f.IsList() || p.Positional || p.Hidden || p.Message()):
+			return fmt.Errorf("%s: switch_value is for a flag of one value", what)
+		case p.Unless != nil && p.Default == "" && p.Hook == "":
+			return fmt.Errorf("%s: unless drops its default or hook, and it has neither", what)
 		}
 		if p.Positional && !p.Hidden {
 			if listPos != "" {
@@ -600,6 +748,16 @@ func (c *Command) check() error {
 			if err := take(p.Name, what); err != nil {
 				return err
 			}
+		}
+		if p.FileFlag != "" {
+			if err := take(p.FileFlag, what+"'s file"); err != nil {
+				return err
+			}
+		}
+	}
+	for _, a := range c.Aliases {
+		if len(strings.Fields(a)) != 1 {
+			return fmt.Errorf("alias %q is not one word", a)
 		}
 	}
 	return nil

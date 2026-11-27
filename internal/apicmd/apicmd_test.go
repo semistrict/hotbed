@@ -718,15 +718,14 @@ func TestRunnerPassesIdempotencyLevelToConnectInterceptor(t *testing.T) {
 		if got != want {
 			t.Errorf("%s: Spec().IdempotencyLevel = %v, want %v (from descriptor)", c.Name(), got, want)
 		}
-		// Cross-check against compiled hotbed.proto file descriptor too.
-		svc := pb.File_hotbed_v1_hotbed_proto.Services().ByName(c.Method.Parent().Name())
-		if svc == nil {
-			t.Fatalf("%s: service %s not in compiled hotbed.proto", c.Name(), c.Method.Parent().Name())
+		// Cross-check against the compiled package's descriptor too, in
+		// whichever of its files.
+		_ = pb.File_hotbed_v1_hotbed_proto
+		d, err := protoregistry.GlobalFiles.FindDescriptorByName(c.Method.FullName())
+		if err != nil {
+			t.Fatalf("%s: method %s not in the compiled API: %v", c.Name(), c.Method.FullName(), err)
 		}
-		cm := svc.Methods().ByName(c.Method.Name())
-		if cm == nil {
-			t.Fatalf("%s: method %s not in compiled hotbed.proto", c.Name(), c.Method.Name())
-		}
+		cm := d.(protoreflect.MethodDescriptor)
 		if got != wantLevel(cm) {
 			t.Errorf("%s: Spec().IdempotencyLevel = %v, compiled proto has %v", c.Name(), got, wantLevel(cm))
 		}

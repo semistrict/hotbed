@@ -1612,21 +1612,37 @@ enum CommandState {
 }
 
 message CommandLimits {
-  // cgroup cpu.weight: the share of contended CPU.
-  int32 cpu_weight = 1;
-  // cgroup memory.low: guaranteed; admission waits until it fits.
-  int64 memory_low_bytes = 2;
-  // cgroup memory.high: past it the command is throttled and swapped.
-  int64 memory_high_bytes = 3;
-  // How long it runs before it is paused unless it has ended, counted from
-  // its start and again from each time an agent starts waiting on it
-  // (FollowLog with wait); 0 for no soft limit.
-  int64 soft_limit_seconds = 4;
-  // How long after its start it is stopped, paused or not; 0 for none.
-  int64 hard_limit_seconds = 5;
-  // Scheduling priority (default 0 = normal): higher is admitted first.
-  // Nothing running is preempted for it.
-  int32 priority = 6;
+  // cgroup cpu.weight: the share of contended CPU (1-10000).
+  int32 cpu_weight = 1 [(param) = {default: "100"}];
+  // cgroup memory.low: guaranteed, such as 2G; admission waits until it
+  // fits.
+  int64 memory_low_bytes = 2 [(param) = {
+    name: "mem-low"
+    parse: "Size"
+  }];
+  // cgroup memory.high, such as 8G: past it the command is throttled and
+  // swapped; 0 for none.
+  int64 memory_high_bytes = 3 [(param) = {
+    name: "mem-high"
+    parse: "Size"
+  }];
+  // How long it runs before it is paused unless it has ended, such as 10m,
+  // counted from its start and again from each time an agent starts
+  // waiting on it (FollowLog with wait); 0 for no soft limit.
+  int64 soft_limit_seconds = 4 [(param) = {
+    name: "soft-limit"
+    parse: "Seconds"
+  }];
+  // How long after its start it is stopped, paused or not, such as 2h; 0
+  // for none.
+  int64 hard_limit_seconds = 5 [(param) = {
+    name: "hard-limit"
+    parse: "Seconds"
+  }];
+  // Scheduling priority: low (-10), normal (0), high (10), urgent (20), or
+  // an integer from -100 to 100. Higher is admitted first; nothing running
+  // is preempted for it.
+  int32 priority = 6 [(param) = {parse: "Priority"}];
   // Keep it running while it reserves over a quarter of the node's memory
   // for work and keeps less than a core busy for each 6 GiB of it, which
   // otherwise stops it after five minutes: for a command that rightly holds
@@ -1902,11 +1918,17 @@ message FinishedCommand {
 
 message RunCommandRequest {
   string workspace_id = 1;
-  repeated string args = 2;
-  // KEY=VALUE
+  // The command and its arguments, after --.
+  repeated string args = 2 [(param) = {
+    positional: true
+    passthrough: true
+  }];
+  // KEY=VALUE for the command. Repeatable.
   repeated string env = 3;
+  // What it is, for history and build metrics: build, test, check, server
+  // or shell.
   string kind = 4;
-  CommandLimits limits = 5;
+  CommandLimits limits = 5 [(param) = {flatten: true}];
   bool attached = 6;
   // The port a dev server listens on, for its URL.
   int32 port = 7;
@@ -1923,9 +1945,12 @@ message RunCommandRequest {
   // only: admission goes by what commands are measured to use. vm runtime
   // only.
   int32 vm_cpus = 11;
-  // Memory its VM's guest sees; 0 for the node's default. It sizes the VM
-  // only, as vm_cpus does. vm runtime only.
-  int64 vm_memory_bytes = 12;
+  // Memory its VM's guest sees, such as 16G; 0 for the node's default. It
+  // sizes the VM only, as vm_cpus does. vm runtime only.
+  int64 vm_memory_bytes = 12 [(param) = {
+    name: "vm-mem"
+    parse: "Size"
+  }];
   // Whether it runs in a terminal.
   TtyMode tty = 13;
   // What it is expected to need: the memory it holds is reserved for it,
@@ -3364,33 +3389,124 @@ message GetDaemonLogsResponse {
 // as a nightly measurement. Each run is a session of its own, with a fresh
 // workspace of the repo at its branch's head, in which the command runs
 // detached. A run that succeeds ends its session; one that fails leaves it
-// for the usual idle hour, so an agent can look inside.
+// for the usual idle hour, so an agent can look inside. A schedule belongs
+// to a project, as its runs' sessions do.
 service ScheduleService {
-  // PutSchedule adds a scheduled command, or replaces the one of its name.
-  rpc PutSchedule(PutScheduleRequest) returns (ScheduledCommand);
+  // Schedule a command, or replace the scheduled command of that name. Each
+  // run gets a session of its own and a fresh workspace of the repo at its
+  // branch's head.
+  rpc PutSchedule(PutScheduleRequest) returns (ScheduledCommand) {
+    option (command) = {
+      name: "schedule add"
+      omit: [
+        "schedule.created_at",
+        "schedule.updated_at",
+        "schedule.next_at",
+        "schedule.node",
+        "schedule.runs",
+        "schedule.reminder",
+        "schedule.command.workspace_id",
+        "schedule.command.attached",
+        "schedule.command.port",
+        "schedule.command.id",
+        "schedule.command.repo",
+        "schedule.command.tty",
+        "schedule.command.estimate",
+        "schedule.command.placement"
+      ]
+      params: [
+        {
+          field: "schedule.cron"
+          required: true
+          help: "When it runs: five-field cron (minute hour day-of-month month day-of-week) in the controller's time zone, such as '0 2 * * *'; CRON_TZ=ZONE in front for another zone. A slot that passes while the controller is down is missed, not run late, and a slot that comes while the previous run is in progress is skipped."
+        },
+        {
+          field: "schedule.command.args"
+          help: "The command, after --; it runs at /work/REPO, as with hotbed run."
+        },
+        {
+          field: "schedule.paused"
+          help: "Add it paused."
+        }
+      ]
+      format: "{{.name}}  {{.cron}}  {{.repo}}{{if .project}}  project={{.project}}{{end}}{{if .paused}}  paused{{else}}  next={{time .nextAt}}{{end}}{{with .reminder}}\n{{.}}{{end}}"
+    };
+  }
+  // Scheduled commands, when each runs next, and their recent runs: the
+  // project's (default: HOTBED_PROJECT, the session's project, or the one
+  // that holds this checkout's repo), or every project's.
   rpc ListSchedules(ListSchedulesRequest) returns (ListSchedulesResponse) {
     option idempotency_level = IDEMPOTENT;
+    option (command) = {
+      name: "schedule ls"
+      session: true
+      read_only: true
+      format: "{{range .schedules}}{{pad 20 .name}}  {{pad 12 .project}}  {{pad 18 .cron}}  {{if .paused}}paused{{else}}next={{time .nextAt}}{{end}}{{with .runs}}  last={{(index . 0).outcome}}{{end}}\n{{end}}"
+    };
   }
-  // GetSchedule is one scheduled command, with more of its runs.
+  // A scheduled command and its runs, each with its session (hotbed logs -s
+  // SESSION COMMAND).
   rpc GetSchedule(GetScheduleRequest) returns (ScheduledCommand) {
     option idempotency_level = IDEMPOTENT;
+    option (command) = {
+      name: "schedule show"
+      read_only: true
+    };
   }
-  // DeleteSchedule removes a scheduled command; a run in progress goes on.
-  rpc DeleteSchedule(DeleteScheduleRequest) returns (DeleteScheduleResponse);
-  // RunSchedule starts a run now, outside the schedule, unless one is in
-  // progress.
-  rpc RunSchedule(RunScheduleRequest) returns (ScheduledRun);
+  // Remove a scheduled command; a run in progress goes on.
+  rpc DeleteSchedule(DeleteScheduleRequest) returns (DeleteScheduleResponse) {
+    option (command) = {
+      name: "schedule rm"
+      destructive: true
+    };
+  }
+  // Start a run now, outside the schedule, unless one is in progress;
+  // prints the run and its session.
+  rpc RunSchedule(RunScheduleRequest) returns (ScheduledRun) {
+    option (command) = {
+      name: "schedule run"
+      format: "#{{.id}}  {{.schedule}}  {{.outcome}}{{with .sessionId}}  session={{.}}{{end}}{{with .reason}}  {{.}}{{end}}"
+    };
+  }
   // PauseSchedule stops (or, with paused false, resumes) a schedule's runs.
-  rpc PauseSchedule(PauseScheduleRequest) returns (ScheduledCommand);
+  rpc PauseSchedule(PauseScheduleRequest) returns (ScheduledCommand) {
+    option (command) = {
+      name: "schedule pause"
+      help: "Start no runs until resumed."
+      fixed: [
+        {
+          field: "paused"
+          value: "true"
+        }
+      ]
+    };
+    option (command) = {
+      name: "schedule resume"
+      help: "Run again, from the next slot; the slots paused through are not made up."
+      fixed: [
+        {
+          field: "paused"
+          value: "false"
+        }
+      ]
+    };
+  }
 }
 
 message ScheduledCommand {
-  // lowercase words joined by dashes, such as cladefs-nightly.
-  string name = 1;
+  // Lowercase words joined by dashes, such as cladefs-nightly; each run's
+  // session is NAME-YYYYMMDD-HHMM.
+  string name = 1 [(param) = {positional: true}];
   // Five-field cron, in the controller's time zone unless it starts with
   // CRON_TZ=ZONE, such as "0 2 * * *".
   string cron = 2;
-  string repo = 3;
+  // The repo its runs work in (default: HOTBED_REPO, or the one this git
+  // checkout is of).
+  string repo = 3 [(param) = {
+    short: "r"
+    default: "env:HOTBED_REPO"
+    hook: "CheckoutRepo"
+  }];
   // Deprecated: schedules may no longer pin a node by name; PutSchedule
   // rejects any non-empty value with INVALID_ARGS.
   string node = 4 [deprecated = true];
@@ -3399,7 +3515,8 @@ message ScheduledCommand {
   string arch = 12;
   // The command, as hotbed run takes it. Its workspace_id, id, attached and
   // port are the controller's to set.
-  RunCommandRequest command = 5;
+  RunCommandRequest command = 5 [(param) = {flatten: true}];
+  // Started no runs until resumed.
   bool paused = 6;
   int64 created_at = 7;
   int64 updated_at = 8;
@@ -3408,8 +3525,11 @@ message ScheduledCommand {
   // Its runs, the newest first: a few when listed, more from GetSchedule.
   repeated ScheduledRun runs = 10;
   // The project its runs' sessions work on: the one named when it was
-  // added, or else the one that holds its repo.
-  string project = 11;
+  // added (default: HOTBED_PROJECT), or else the one that holds its repo.
+  string project = 11 [(param) = {
+    short: "p"
+    default: "env:HOTBED_PROJECT"
+  }];
   // Reminder for the agent when PutSchedule created a project or added a
   // repo to one; only set by PutSchedule.
   optional string reminder = 13;
@@ -3450,23 +3570,35 @@ message ScheduledRun {
 }
 
 message PutScheduleRequest {
-  ScheduledCommand schedule = 1;
+  ScheduledCommand schedule = 1 [(param) = {flatten: true}];
 }
 
 message ListSchedulesRequest {
   // Whose schedules: one project's or every project's; naming neither, the
   // project of the session session_id names.
   oneof scope {
-    string project = 1;
+    // Only this project's (default: HOTBED_PROJECT, else the session's
+    // project, else the one holding this checkout's repo).
+    string project = 1 [(param) = {
+      short: "p"
+      default: "env:HOTBED_PROJECT"
+    }];
+    // Every project's scheduled commands.
     bool all_projects = 2;
   }
   // The session whose project's schedules these are, when scope names no
   // project.
-  string session_id = 3;
+  string session_id = 3 [(param) = {
+    hidden: true
+    default: "session"
+  }];
   // The canonical remote of the caller's checkout (github.com/semistrict/hotbed):
   // when neither scope nor session_id says whose, the project that holds it,
   // if just one does.
-  string remote = 4;
+  string remote = 4 [(param) = {
+    hidden: true
+    default: "checkout_remote"
+  }];
 }
 
 message ListSchedulesResponse {
@@ -3474,21 +3606,25 @@ message ListSchedulesResponse {
 }
 
 message GetScheduleRequest {
-  string name = 1;
+  // The scheduled command's name.
+  string name = 1 [(param) = {positional: true}];
 }
 
 message DeleteScheduleRequest {
-  string name = 1;
+  // The scheduled command's name.
+  string name = 1 [(param) = {positional: true}];
 }
 
 message DeleteScheduleResponse {}
 
 message RunScheduleRequest {
-  string name = 1;
+  // The scheduled command's name.
+  string name = 1 [(param) = {positional: true}];
 }
 
 message PauseScheduleRequest {
-  string name = 1;
+  // The scheduled command's name.
+  string name = 1 [(param) = {positional: true}];
   bool paused = 2;
 }
 
@@ -4072,7 +4208,7 @@ service QuestionService {
       session: true
       input: {
         field: "prompt"
-        hook: "EditedPrompt"
+        hook: "Prompt"
       }
       format: "#{{.id}}  {{state .state}}  rev={{.revision}}  {{with .prompt}}{{.question}}{{end}}{{with .cockpitUrl}}\n      {{.}}{{end}}{{with .reminder}}\n{{.}}{{end}}"
     };
@@ -4169,7 +4305,7 @@ service QuestionService {
       session: true
       input: {
         field: "prompt"
-        hook: "RevisedPrompt"
+        hook: "Prompt"
       }
       format: "#{{.id}}  {{state .state}}  rev={{.revision}}  {{with .prompt}}{{.question}}{{end}}{{with .cockpitUrl}}\n      {{.}}{{end}}{{with .reminder}}\n{{.}}{{end}}"
     };
@@ -4480,7 +4616,7 @@ message ListQuestionsRequest {
   // if just one does.
   string remote = 8 [(param) = {
     hidden: true
-    hook: "ListedRemote"
+    default: "checkout_remote"
   }];
   // Only questions associated with this T3 Code thread ID (across every session
   // of that thread). When set without -p/--project, --all-projects, -s, or a
@@ -4650,40 +4786,230 @@ message AckQuestionsResponse {
 // responses. Every change and response is kept, with when and which session
 // (or the user) made it.
 service ReviewService {
-  // RequestReview asks for a review of a version, in the requesting
-  // session's project.
-  rpc RequestReview(RequestReviewRequest) returns (Review);
-  // ListReviews lists a project's reviews, or every project's, newest first,
-  // without their findings, events and reports.
+  // Ask for a review of this checkout's exact version: from --base
+  // (default: where it left the remote's default branch) to --head
+  // (default: HEAD, or a snapshot of uncommitted changes), pinned under
+  // refs/hotbed/reviews so git keeps it. Names the implementer's exact
+  // model (--model, or inherited from the session). Prints the review; give
+  // its number to reviewer agent(s).
+  rpc RequestReview(RequestReviewRequest) returns (Review) {
+    option (command) = {
+      name: "review request"
+      session: true
+      before: ["PinReviewedVersion"]
+      omit: ["repo", "branch", "snapshot_of"]
+    };
+  }
+  // A project's reviews (default: this session's project, or the one
+  // holding this checkout's repo), or every project's, newest first, with
+  // their findings counted.
   rpc ListReviews(ListReviewsRequest) returns (ListReviewsResponse) {
     option idempotency_level = IDEMPOTENT;
+    option (command) = {
+      name: "review ls"
+      session: true
+      read_only: true
+      format: "{{range .reviews}}#{{pad 4 .id}}  {{pad 12 (state .state)}}  impl={{pad 18 (or .implementerModel \"-\")}}  rev={{pad 24 (or .model \"-\")}}  {{short 60 .title}}\n{{end}}"
+    };
   }
-  // GetReview is a review with its findings and every event.
+  // A review: its version, implementer, reviewers, findings (with
+  // locations, decisions and responses) and every event.
   rpc GetReview(GetReviewRequest) returns (Review) {
     option idempotency_level = IDEMPOTENT;
+    option (command) = {
+      name: "review show"
+      read_only: true
+    };
+    option (command) = {
+      name: "review link"
+      help: "The review's page in the cockpit, to send the user."
+      read_only: true
+      format: "{{.cockpitUrl}}"
+    };
   }
-  // StartReview claims a requested review for the calling session, its
-  // reviewer.
-  rpc StartReview(StartReviewRequest) returns (Review);
-  // AddFindings adds the reviewer's findings, as ReportFindings reports
-  // them, with locations besides, or the report that ends with them; none
-  // says it found nothing. It may be called more than once.
-  rpc AddFindings(AddFindingsRequest) returns (AddFindingsResponse);
+  // Reviewer: claim or join a review with your exact model (--model);
+  // several reviewers (and sub-agents in the same session) may review the
+  // same review.
+  rpc StartReview(StartReviewRequest) returns (Review) {
+    option (command) = {
+      name: "review start"
+      session: true
+    };
+  }
+  // Reviewer: report findings, as ReportFindings takes them ({"findings":
+  // [...]}, each with file, line, summary, failure_scenario, category,
+  // severity, short_summary, verdict), with "locations": [{path,
+  // start_line, end_line, excerpt}] besides; {"findings": []} says you
+  // found none. JSON on stdin or --file, or --from-report REPORT: a
+  // reviewer's whole report ending with that JSON in a fenced json
+  // hotbed-findings block, which the review keeps. Call it as often as you
+  // like.
+  rpc AddFindings(AddFindingsRequest) returns (AddFindingsResponse) {
+    option (command) = {
+      name: "review findings"
+      session: true
+      input: {unless: "report"}
+    };
+  }
   // FinishReview ends a review: done, with the reviewer's summary, or
   // failed, with why.
-  rpc FinishReview(FinishReviewRequest) returns (Review);
-  // CancelReview withdraws a review that has not ended.
-  rpc CancelReview(CancelReviewRequest) returns (Review);
-  // DecideFindings accepts or dismisses findings, marks them fixed (with
-  // the commit) or invalid (with evidence), or opens them again. A fixed
-  // finding is handled: it takes no more responses.
-  rpc DecideFindings(DecideFindingsRequest) returns (DecideFindingsResponse);
-  // Respond answers a finding, or the review as a whole: a quick response,
-  // a comment, or both.
-  rpc Respond(RespondRequest) returns (ReviewEvent);
-  // ListResponses lists the responses to a review after a cursor.
+  rpc FinishReview(FinishReviewRequest) returns (Review) {
+    option (command) = {
+      name: "review finish"
+      help: "Reviewer: finish your review pass, with a summary."
+      session: true
+      omit: ["failed"]
+      params: [
+        {
+          field: "summary"
+          required: true
+          help: "What you found, in a few lines."
+        }
+      ]
+    };
+    option (command) = {
+      name: "review fail"
+      help: "Reviewer: end your review pass as failed, saying why."
+      session: true
+      fixed: [
+        {
+          field: "failed"
+          value: "true"
+        }
+      ]
+      params: [
+        {
+          field: "summary"
+          name: "reason"
+          required: true
+          help: "Why the review could not be done."
+        }
+      ]
+    };
+  }
+  // Withdraw a review that has not ended.
+  rpc CancelReview(CancelReviewRequest) returns (Review) {
+    option (command) = {
+      name: "review cancel"
+      session: true
+    };
+  }
+  // DecideFindings accepts or dismisses findings, marks them won't fix,
+  // fixed (with the commit) or invalid (with evidence), or opens them
+  // again. A fixed finding is handled: it takes no more responses.
+  rpc DecideFindings(DecideFindingsRequest) returns (DecideFindingsResponse) {
+    option (command) = {
+      name: "review accept"
+      help: "Accept findings: you will act on them."
+      session: true
+      fixed: [
+        {
+          field: "decision"
+          value: "FindingDecision.FINDING_DECISION_ACCEPTED"
+        }
+      ]
+      omit: ["fix", "evidence"]
+      params: [
+        {
+          field: "reason"
+          help: "What you will do."
+        }
+      ]
+    };
+    option (command) = {
+      name: "review dismiss"
+      help: "Dismiss (reject) findings: you will not act on them, saying why."
+      aliases: ["reject"]
+      session: true
+      fixed: [
+        {
+          field: "decision"
+          value: "FindingDecision.FINDING_DECISION_DISMISSED"
+        }
+      ]
+      omit: ["fix", "evidence"]
+      params: [
+        {
+          field: "reason"
+          required: true
+          help: "Why you will not act on them."
+        }
+      ]
+    };
+    option (command) = {
+      name: "review wont-fix"
+      help: "Mark findings won't fix: intentionally left unfixed, saying why."
+      session: true
+      fixed: [
+        {
+          field: "decision"
+          value: "FindingDecision.FINDING_DECISION_WONT_FIX"
+        }
+      ]
+      omit: ["fix", "evidence"]
+      params: [
+        {
+          field: "reason"
+          required: true
+          help: "Why you will not fix them."
+        }
+      ]
+    };
+    option (command) = {
+      name: "review fixed"
+      help: "Mark findings fixed, in a commit (default: HEAD), with the files it changed and notes if you like. A fixed finding is handled: the user can respond to it no more."
+      session: true
+      fixed: [
+        {
+          field: "decision"
+          value: "FindingDecision.FINDING_DECISION_FIXED"
+        }
+      ]
+      omit: ["reason", "evidence"]
+    };
+    option (command) = {
+      name: "review invalid"
+      help: "Mark findings invalid: not real defects, with the evidence (Markdown, citing commits, files and lines as you like). The user may still dispute it."
+      session: true
+      fixed: [
+        {
+          field: "decision"
+          value: "FindingDecision.FINDING_DECISION_INVALID"
+        }
+      ]
+      omit: ["reason", "fix"]
+    };
+    option (command) = {
+      name: "review reopen"
+      help: "Make decided findings (accepted, dismissed, won't fix, fixed or invalid) undecided again."
+      session: true
+      fixed: [
+        {
+          field: "decision"
+          value: "FindingDecision.FINDING_DECISION_OPEN"
+        }
+      ]
+      omit: ["reason", "fix", "evidence"]
+    };
+  }
+  // Respond to a finding, or the review as a whole: a quick response, a
+  // comment, or both. Stamped as your bound agent session by default; pass
+  // --as-user to record a human user response.
+  rpc Respond(RespondRequest) returns (ReviewEvent) {
+    option (command) = {
+      name: "review respond"
+      session: true
+    };
+  }
+  // The responses to a review since you last asked (or --after N; --all
+  // for every one), the user's above all.
   rpc ListResponses(ListResponsesRequest) returns (ListResponsesResponse) {
     option idempotency_level = IDEMPOTENT;
+    option (command) = {
+      name: "review responses"
+      read_only: true
+      after: ["SaveResponsesCursor"]
+    };
   }
 }
 
@@ -4849,12 +5175,21 @@ message Finding {
 
 // How a finding was fixed.
 message Fix {
-  // The full commit that fixed it: 40 or 64 hex digits.
-  string commit = 1;
-  // Where, in that commit; optional.
-  repeated Location locations = 2;
+  // The full commit that fixed it: 40 or 64 hex digits. On the command
+  // line, a ref resolved in this checkout (default: HEAD; outside one, give
+  // it in full).
+  string commit = 1 [(param) = {
+    default: "'HEAD'"
+    parse: "Commit"
+  }];
+  // Where, in that commit; optional. On the command line, PATH,
+  // PATH:LINE or PATH:LINE-END. Repeatable.
+  repeated Location locations = 2 [(param) = {
+    name: "where"
+    parse: "Where"
+  }];
   // What the fixing agent says of the fix, Markdown; optional.
-  string notes = 3;
+  string notes = 3 [(param) = {file_flag: "notes-file"}];
 }
 
 message Review {
@@ -4905,6 +5240,9 @@ message Review {
   string implementer_model = 26;
   // All reviewers that have started on this review, in start order.
   repeated Reviewer reviewers = 27;
+  // Its page in the cockpit. The CLI and its MCP tools fill it from the
+  // controller they call (cmd/hotbed/cockpit.go); the API leaves it empty.
+  string cockpit_url = 28;
 }
 
 // Something that happened to a review: a change, or a response.
@@ -4928,43 +5266,71 @@ message ReviewEvent {
 }
 
 message RequestReviewRequest {
-  string session_id = 1;
+  string session_id = 1 [(param) = {
+    hidden: true
+    default: "session"
+  }];
+  // What it reviews, for people (default: the branch and commit).
   string title = 2;
-  string instructions = 3;
+  // What the reviewer should look at, or for.
+  string instructions = 3 [(param) = {file_flag: "instructions-file"}];
   // The repo's remote, in any form; canonical when stored.
   string repo = 4;
+  // The commit the changes are from: on the command line, a ref (default:
+  // where HEAD left the remote's default branch), which the client
+  // resolves.
   string base = 5;
+  // The commit to review: on the command line, a ref (default: HEAD, or,
+  // with uncommitted changes, a snapshot of them), which the client
+  // resolves and pins.
   string head = 6;
   string branch = 7;
   string snapshot_of = 8;
   // Exact model ID of the implementer (e.g. gemini-4-neon, claude-opus-4-6).
   // Falls back to the implementer session's model if set; required if neither is set.
-  string model = 9;
+  string model = 9 [(param) = {default: "env:HOTBED_MODEL"}];
   // Optional sub-agent label/role of the implementer when spawned inside a session.
   string subagent = 10;
   // T3 Code thread ID of the caller/implementer, if any.
-  string t3code_thread_id = 11;
+  string t3code_thread_id = 11 [(param) = {
+    hidden: true
+    default: "env:T3CODE_THREAD_ID"
+  }];
   // Optional implementer session ID if a different session requested the review
   // on the implementer's behalf (defaults to session_id).
   string implementer_session = 12;
+  // Review the whole tree at head, not its changes from a base.
+  bool whole = 13 [(param) = {local: true}];
 }
 
 message ListReviewsRequest {
   // Whose reviews: one project's or every project's; naming neither, the
   // project of the session session_id names.
   oneof scope {
-    string project = 1;
+    // Only this project's (default: HOTBED_PROJECT, else the session's
+    // project, else the one holding this checkout's repo).
+    string project = 1 [(param) = {
+      short: "p"
+      default: "env:HOTBED_PROJECT"
+    }];
+    // Every project's reviews.
     bool all_projects = 4;
   }
   // The session whose project's reviews these are, when scope names no
   // project.
-  string session_id = 5;
+  string session_id = 5 [(param) = {
+    hidden: true
+    default: "session"
+  }];
   // The canonical remote of the caller's checkout (github.com/semistrict/hotbed):
   // when neither scope nor session_id says whose, the project that holds it,
   // if just one does.
-  string remote = 6;
-  // Only reviews in these states; none for all.
-  repeated ReviewState states = 2;
+  string remote = 6 [(param) = {
+    hidden: true
+    default: "checkout_remote"
+  }];
+  // Only reviews in this state (repeatable); none for all.
+  repeated ReviewState states = 2 [(param) = {name: "state"}];
   // At most this many, newest first; 0 for all.
   int32 limit = 3;
 }
@@ -4974,28 +5340,43 @@ message ListReviewsResponse {
 }
 
 message GetReviewRequest {
-  int32 id = 1;
+  // The review's number.
+  int32 id = 1 [(param) = {positional: true}];
 }
 
 message StartReviewRequest {
-  int32 id = 1;
-  string session_id = 2;
+  // The review's number.
+  int32 id = 1 [(param) = {positional: true}];
+  string session_id = 2 [(param) = {
+    hidden: true
+    default: "session"
+  }];
   // The exact model doing the review, as its provider names it
-  // (claude-opus-5-5, gpt-5.5-codex), not its family; required (or inherited
-  // from the session's model).
-  string model = 3;
-  // Optional sub-agent label/role when running as a sub-agent inside a session.
+  // (claude-opus-5-5, gpt-5.5-codex), not its family.
+  string model = 3 [(param) = {required: true}];
+  // Optional sub-agent label/role when running as a sub-agent inside a session
+  // (e.g. verifying-reviewer, codex-exec).
   string subagent = 4;
   // T3 Code thread ID of this reviewer, if any.
-  string t3code_thread_id = 5;
-  // When true, always start a new reviewer pass even if an identical
-  // (session, model, subagent) reviewer is already in progress.
-  bool new_reviewer = 6;
+  string t3code_thread_id = 5 [(param) = {
+    hidden: true
+    default: "env:T3CODE_THREAD_ID"
+  }];
+  // Start a new reviewer pass even if an identical (session, model,
+  // subagent) reviewer is already in progress.
+  bool new_reviewer = 6 [(param) = {name: "new"}];
 }
 
 message AddFindingsRequest {
-  int32 review_id = 1;
-  string session_id = 2;
+  // The review's number.
+  int32 review_id = 1 [(param) = {
+    positional: true
+    name: "id"
+  }];
+  string session_id = 2 [(param) = {
+    hidden: true
+    default: "session"
+  }];
   // None says the reviewer found nothing, which the review's events keep.
   repeated ReportedFinding findings = 3;
   // Instead of findings, the reviewer's whole report (Markdown), which the
@@ -5003,16 +5384,19 @@ message AddFindingsRequest {
   // ```json hotbed-findings, holding {"findings": [...]} as findings here.
   // For a reviewer that cannot call hotbed itself, such as one in a
   // network-isolated sandbox, whose caller passes its report on.
-  string report = 4;
+  string report = 4 [(param) = {file_flag: "from-report"}];
   // Which reviewer pass (1-based Reviewer.id) is reporting; optional when
   // unambiguous for this session.
-  int32 reviewer_id = 5;
+  int32 reviewer_id = 5 [(param) = {name: "reviewer"}];
   // Optional model filter to disambiguate multiple active reviewers in one session.
   string model = 6;
   // Optional sub-agent filter to disambiguate multiple active reviewers in one session.
   string subagent = 7;
   // T3 Code thread ID of this reviewer, if any.
-  string t3code_thread_id = 8;
+  string t3code_thread_id = 8 [(param) = {
+    hidden: true
+    default: "env:T3CODE_THREAD_ID"
+  }];
 }
 
 message AddFindingsResponse {
@@ -5020,49 +5404,91 @@ message AddFindingsResponse {
 }
 
 message FinishReviewRequest {
-  int32 id = 1;
-  string session_id = 2;
+  // The review's number.
+  int32 id = 1 [(param) = {positional: true}];
+  string session_id = 2 [(param) = {
+    hidden: true
+    default: "session"
+  }];
   // The summary when done; why, when failed.
   string summary = 3;
   bool failed = 4;
   // Which reviewer pass (1-based Reviewer.id) is ending; optional when
   // unambiguous for this session.
-  int32 reviewer_id = 5;
+  int32 reviewer_id = 5 [(param) = {name: "reviewer"}];
   // Optional model filter to disambiguate multiple active reviewers in one session.
   string model = 6;
   // Optional sub-agent filter to disambiguate multiple active reviewers in one session.
   string subagent = 7;
   // T3 Code thread ID of this reviewer, if any.
-  string t3code_thread_id = 8;
+  string t3code_thread_id = 8 [(param) = {
+    hidden: true
+    default: "env:T3CODE_THREAD_ID"
+  }];
 }
 
 message CancelReviewRequest {
-  int32 id = 1;
-  string session_id = 2;
+  // The review's number.
+  int32 id = 1 [(param) = {positional: true}];
+  string session_id = 2 [(param) = {
+    hidden: true
+    default: "session"
+  }];
+  // Why it is no longer wanted.
   string reason = 3;
-  string model = 4;
+  // Exact model cancelling the review (defaults to the session's or
+  // implementer's model).
+  string model = 4 [(param) = {default: "env:HOTBED_MODEL"}];
+  // Optional sub-agent label.
   string subagent = 5;
-  string t3code_thread_id = 6;
+  string t3code_thread_id = 6 [(param) = {
+    hidden: true
+    default: "env:T3CODE_THREAD_ID"
+  }];
 }
 
 message DecideFindingsRequest {
-  int32 review_id = 1;
-  repeated int32 finding_ids = 2;
+  // The review's number.
+  int32 review_id = 1 [(param) = {
+    positional: true
+    name: "id"
+  }];
+  // The findings' numbers.
+  repeated int32 finding_ids = 2 [(param) = {
+    positional: true
+    required: true
+    name: "finding"
+  }];
   FindingDecision decision = 3;
+  // Why.
   string reason = 4;
-  string session_id = 5;
+  // The deciding agent's session; none when the user decides.
+  string session_id = 5 [(param) = {
+    hidden: true
+    default: "session"
+    unless: "actor_kind"
+  }];
   // Fixed: how; given only then.
-  Fix fix = 6;
-  // Invalid: why it is not a real defect (Markdown); given only then.
-  string evidence = 7;
+  Fix fix = 6 [(param) = {flatten: true}];
+  // Invalid: why it is not a real defect (Markdown): what you checked,
+  // citing commits, files and lines; given only then.
+  string evidence = 7 [(param) = {file_flag: "evidence-file"}];
   // Exact model ID of the deciding agent (falls back to session/implementer model).
-  string model = 8;
+  string model = 8 [(param) = {default: "env:HOTBED_MODEL"}];
   // Optional sub-agent label/role of the deciding agent.
   string subagent = 9;
   // T3 Code thread ID of the deciding agent, if any.
-  string t3code_thread_id = 10;
-  // Explicitly mark USER vs AGENT when deciding from cockpit or CLI --as-user.
-  ActorKind actor_kind = 11;
+  string t3code_thread_id = 10 [(param) = {
+    hidden: true
+    default: "env:T3CODE_THREAD_ID"
+  }];
+  // Explicitly mark USER vs AGENT when deciding from cockpit or CLI
+  // --as-user, which records the decision as the human user's rather than
+  // an agent session's.
+  ActorKind actor_kind = 11 [(param) = {
+    name: "as-user"
+    switch_value: "ACTOR_KIND_USER"
+  }];
 }
 
 message DecideFindingsResponse {
@@ -5072,29 +5498,54 @@ message DecideFindingsResponse {
 }
 
 message RespondRequest {
-  int32 review_id = 1;
-  // 0 for the review as a whole.
-  int32 finding_id = 2;
+  // The review's number.
+  int32 review_id = 1 [(param) = {
+    positional: true
+    name: "id"
+  }];
+  // The finding it answers; 0 for the review as a whole.
+  int32 finding_id = 2 [(param) = {name: "finding"}];
+  // A quick response to the finding.
   QuickResponse quick = 3;
-  string text = 4;
+  // What you say.
+  string text = 4 [(param) = {name: "comment"}];
   // Set when an agent responds; empty for the user.
-  string session_id = 5;
+  string session_id = 5 [(param) = {
+    hidden: true
+    default: "session"
+    unless: "actor_kind"
+  }];
   // When > 0, refuse with CONFLICT if the review already has events after this seq.
   int64 after = 6;
   // Explicitly mark USER vs AGENT; if unspecified, inferred from session_id.
-  ActorKind actor_kind = 7;
+  // --as-user records the response as the human user's, even with a
+  // session bound.
+  ActorKind actor_kind = 7 [(param) = {
+    name: "as-user"
+    switch_value: "ACTOR_KIND_USER"
+  }];
   // Exact model ID of the responding agent (falls back to session/implementer model).
-  string model = 8;
+  string model = 8 [(param) = {default: "env:HOTBED_MODEL"}];
   // Optional sub-agent label/role of the responding agent.
   string subagent = 9;
   // T3 Code thread ID of the responding agent, if any.
-  string t3code_thread_id = 10;
+  string t3code_thread_id = 10 [(param) = {
+    hidden: true
+    default: "env:T3CODE_THREAD_ID"
+  }];
 }
 
 message ListResponsesRequest {
-  int32 review_id = 1;
-  // Events after this cursor (0 for all).
-  int64 after = 2;
+  // The review's number.
+  int32 review_id = 1 [(param) = {
+    positional: true
+    name: "id"
+  }];
+  // Events after this cursor, 0 for all (default: after the last ones this
+  // machine read).
+  int64 after = 2 [(param) = {hook: "ResponsesCursor"}];
+  // Every response, from the first.
+  bool all = 3 [(param) = {local: true}];
 }
 
 message ListResponsesResponse {
@@ -5138,7 +5589,6 @@ service GitAuthService {
   rpc PutGitCredential(PutGitCredentialRequest) returns (GitCredential) {
     option (command) = {
       name: "auth set"
-      before: ["LoadGitCredentialSecrets"]
       format: "{{.name}}  {{.host}}{{if .username}}  user={{.username}}{{end}}  repos={{if .repos}}{{join \",\" .repos}}{{else}}*{{end}}"
     };
   }
@@ -5289,13 +5739,11 @@ message PutGitCredentialRequest {
   // Optional repo patterns ("owner/repo" or "owner/*") this credential covers;
   // repeatable; omit for all repos on host.
   repeated string repos = 3 [(param) = {name: "repo"}];
-  // Access token (prefer --token-file - to read from stdin).
-  string token = 4;
-  // Path to a file holding the token, or "-" to read from stdin.
-  string token_file = 5 [(param) = {
-    name: "token-file"
-    local: true
-  }];
+  // Access token (prefer --token-file - to read from stdin, which keeps it
+  // out of argv).
+  string token = 4 [(param) = {file_flag: "token-file"}];
+  reserved 5;
+  reserved "token_file";
   // Optional GitHub login name for display in `auth ls` and `gh auth status`.
   string username = 6;
   // Optional GitHub REST/GraphQL API base URL override (default https://api.github.com).
@@ -5558,14 +6006,12 @@ service MemoryService {
     option (command) = {
       name: "memory add"
       session: true
-      before: ["LoadProposeMemoryBody"]
       format: "#{{.id}}  {{state .state}}  rev={{.revision}}  [{{if .project}}{{.project}}{{else}}global{{end}}] {{with .content}}{{.slug}}  ({{state .mode}}){{end}}{{if .cockpitUrl}}\n{{.cockpitUrl}}{{end}}{{with .reminder}}\n{{.}}{{end}}"
     };
     option (command) = {
       name: "memory propose"
       help: "Alias for `hotbed memory add`."
       session: true
-      before: ["LoadProposeMemoryBody"]
       format: "#{{.id}}  {{state .state}}  rev={{.revision}}  [{{if .project}}{{.project}}{{else}}global{{end}}] {{with .content}}{{.slug}}  ({{state .mode}}){{end}}{{if .cockpitUrl}}\n{{.cockpitUrl}}{{end}}{{with .reminder}}\n{{.}}{{end}}"
     };
   }
@@ -5609,14 +6055,12 @@ service MemoryService {
     option (command) = {
       name: "memory edit"
       session: true
-      before: ["LoadReviseMemoryBody"]
       format: "#{{.id}}  {{state .state}}  rev={{.revision}}  [{{if .project}}{{.project}}{{else}}global{{end}}] {{with .content}}{{.slug}}{{end}}"
     };
     option (command) = {
       name: "memory promote"
       help: "Promote a project-specific memory to a global memory shared across all projects."
       session: true
-      before: ["LoadReviseMemoryBody"]
       format: "#{{.id}}  {{state .state}}  rev={{.revision}}  [{{if .project}}{{.project}}{{else}}global{{end}}] {{with .content}}{{.slug}}{{end}}"
       fixed: [
         {
@@ -5720,7 +6164,7 @@ message MemoryContent {
   string summary = 3;
   // Full markdown details fetched via `hotbed memory get` (required for
   // ON_DEMAND, optional for ALWAYS; max 64 KiB).
-  string body = 4;
+  string body = 4 [(param) = {file_flag: "body-file"}];
   // Delivery mode: always (inline rule on session start) or on_demand (index
   // on session start, full body fetched on demand).
   MemoryMode mode = 5;
@@ -5825,17 +6269,14 @@ message ProposeMemoryRequest {
   }];
   AskedFrom from = 10 [(param) = {
     hidden: true
-    hook: "MemoryProposedFrom"
+    hook: "AskedFrom"
   }];
   string t3code_thread_id = 11 [(param) = {
     hidden: true
     default: "env:T3CODE_THREAD_ID"
   }];
-  // Path to a markdown file for body, or "-" to read from stdin (local).
-  string body_file = 12 [(param) = {
-    name: "body-file"
-    local: true
-  }];
+  reserved 12;
+  reserved "body_file";
 }
 
 message ListMemoriesRequest {
@@ -5872,7 +6313,7 @@ message ListMemoriesRequest {
   }];
   string remote = 11 [(param) = {
     hidden: true
-    hook: "MemoryListedRemote"
+    default: "checkout_remote"
   }];
 }
 
@@ -5900,7 +6341,7 @@ message GetMemoriesRequest {
   }];
   string remote = 4 [(param) = {
     hidden: true
-    hook: "MemoryGetRemote"
+    default: "checkout_remote"
   }];
 }
 
@@ -5925,7 +6366,7 @@ message ShowMemoryRequest {
   }];
   string remote = 4 [(param) = {
     hidden: true
-    hook: "MemoryShowRemote"
+    default: "checkout_remote"
   }];
 }
 
@@ -5943,11 +6384,8 @@ message ReviseMemoryRequest {
   }];
   // Refuse with CONFLICT unless the memory is at this revision.
   int64 if_revision = 6 [(param) = {name: "if-revision"}];
-  // Path to a markdown file for body, or "-" to read from stdin (local).
-  string body_file = 7 [(param) = {
-    name: "body-file"
-    local: true
-  }];
+  reserved 7;
+  reserved "body_file";
   // Replace all content fields (slug, title, summary, body, mode, tags) with
   // the provided content instead of merging only non-empty fields.
   bool replace_content = 8 [(param) = {name: "replace-content"}];
@@ -6771,8 +7209,9 @@ message ImportBoardResponse {
 // and a tool of the MCP server (question_ls), made at run time from this
 // file's descriptors: its request's fields are the command's flags and
 // arguments and the tool's parameters, and comments are their help. A
-// field's default is an expression ("session", "named_session", "env:VAR",
-// or a literal matching the field's type); anything richer is a Go hook, a
+// field's default is an expression ("session", "named_session",
+// "checkout_remote", "env:VAR", or a literal matching the field's type);
+// anything richer is a Go hook, a
 // method of the Hooks interface generated from these options (hotbedv1cli),
 // which the client implements.
 //
@@ -6837,6 +7276,26 @@ message CommandSpec {
   // Go text/template that renders the RPC's response protobuf message as
   // plain text for the CLI (when neither --json nor --jq is given).
   string format = 12;
+  // Request fields it does not take, by name, a flattened message's by its
+  // path (command.port): what the server sets, or what another command of
+  // the RPC takes.
+  repeated string omit = 13;
+  // How it gives some of its params, where not as their fields say.
+  repeated CommandParam params = 14;
+  // Other names for its last word on the CLI: reject for review dismiss.
+  repeated string aliases = 15;
+}
+
+// One command's take on one of its params.
+message CommandParam {
+  // The field, by its path from the request, as omit names one.
+  string field = 1;
+  // Its flag's (and parameter's) name in this command.
+  string name = 2;
+  // Its help in this command.
+  string help = 3;
+  // This command must be given it.
+  bool required = 4;
 }
 
 message FixedField {
@@ -6850,6 +7309,9 @@ message InputSpec {
   string field = 1;
   // A Go hook that reads the JSON into it, when it is not simply its JSON.
   string hook = 2;
+  // A param, by its field's path, whose value is given instead of the
+  // JSON, which is then not read: a report in place of findings.
+  string unless = 3;
 }
 
 message ParamSpec {
@@ -6862,8 +7324,9 @@ message ParamSpec {
   bool positional = 3;
   reserved 4;
   reserved "env";
-  // Its value when not given: "session", "named_session", "env:VAR", or a
-  // literal matching the field's type.
+  // Its value when not given: "session", "named_session", "checkout_remote"
+  // (the canonical remote of the checkout the command runs in, empty
+  // outside one), "env:VAR", or a literal matching the field's type.
   string default = 5;
   // Its value when not given, from a Go hook, after the defaults.
   string hook = 6;
@@ -6881,4 +7344,22 @@ message ParamSpec {
   bool required = 11;
   // A positional argument that may be left out.
   bool optional = 12;
+  // The name of a second flag, which takes a file (- for stdin) whose
+  // content is the value: --body-file beside --body. The command line's
+  // alone: MCP gives the value itself.
+  string file_flag = 13;
+  // A Go hook that reads the param's text into its field's value, such as
+  // 2G into bytes or 10m into seconds: the command line and MCP give it as
+  // text, and its default is text too. A repeated field's hook reads each
+  // of its values.
+  string parse = 14;
+  // A repeated string positional argument that takes every word after --,
+  // flags too: a command to run.
+  bool passthrough = 15;
+  // A switch: a bool flag that, given, sets the field to this value, a
+  // literal of its type (--as-user for ACTOR_KIND_USER).
+  string switch_value = 16;
+  // A param, by its field's path, whose being given drops this one's
+  // default and hook: the session, unless acting as the user.
+  string unless = 17;
 }

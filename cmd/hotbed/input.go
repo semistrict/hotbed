@@ -3,33 +3,16 @@ package main
 import (
 	"io"
 	"os"
-	"strings"
-
-	"github.com/semistrict/hotbed/internal/api"
 )
 
-// jsonInput is where a command's JSON comes from: stdin, or --file.
-type jsonInput struct {
-	File string `type:"existingfile" help:"Read the JSON from this file instead of stdin."`
-}
-
-// read is the JSON; none fails, suggesting example.
-func (in jsonInput) read(d deps, example string) ([]byte, error) {
-	var (
-		b   []byte
-		err error
-	)
-	switch {
-	case in.File != "":
-		b, err = os.ReadFile(in.File)
-	case d.stdin != nil:
-		b, err = io.ReadAll(d.stdin)
+// readFile reads a file a command names, "-" for stdin: its JSON, or a file
+// flag's (--body-file).
+func (d deps) readFile(path string) ([]byte, error) {
+	if path != "-" {
+		return os.ReadFile(path)
 	}
-	if err != nil {
-		return nil, err
+	if d.stdin == nil {
+		return nil, nil
 	}
-	if len(strings.TrimSpace(string(b))) == 0 {
-		return nil, api.Errorf(api.CodeInvalidArgs, "no JSON on stdin").WithSuggestion(example)
-	}
-	return b, nil
+	return io.ReadAll(d.stdin)
 }

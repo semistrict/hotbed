@@ -203,11 +203,18 @@ func TestReviewRoundTrip(t *testing.T) {
 		t.Errorf("reopened = %v", d)
 	}
 
-	link := struct{ URL string }{}
+	// The link is the review's cockpit page: in the review's JSON, and all
+	// the plain output says.
+	link := struct {
+		CockpitURL string `json:"cockpitUrl"`
+	}{}
 	c.ok(&link, "review", "link", "1")
 	addr, _ := c.cli.controller()
-	if link.URL != "http://"+addr+"/reviews/1" {
-		t.Errorf("link = %q", link.URL)
+	if link.CockpitURL != "http://"+addr+"/reviews/1" {
+		t.Errorf("link = %q", link.CockpitURL)
+	}
+	if code, stdout, stderr := c.hotbed("review", "link", "1"); code != 0 || stdout != "http://"+addr+"/reviews/1\n" {
+		t.Errorf("review link: exit %d, stdout %q (stderr %q); want the URL alone", code, stdout, stderr)
 	}
 
 	// The user responds in the cockpit; the requester reads it.
@@ -687,5 +694,29 @@ func TestReviewMultiReviewerSubagentsAndAttribution(t *testing.T) {
 		r.Findings[1].QuickBy.GetActorKind() != pb.ActorKind_ACTOR_KIND_USER ||
 		r.Findings[1].QuickBy.GetSession() != "" {
 		t.Fatalf("--as-user quick response attribution = %v", r.Findings[1].QuickBy)
+	}
+}
+
+// A response made with no session, named or bound, is the user's: the
+// user responds from a shell as from the cockpit. One that names a session
+// is that agent's, unless --as-user says it is the user's.
+func TestReviewRespondsAsTheUserWithoutASession(t *testing.T) {
+	t.Parallel()
+	c, _, _ := reviewCluster(t)
+	c.setenv("HOTBED_SESSION", "")
+	c.ok(nil, "review", "request", "-s", "brave-otter", "--model", "gemini-4-neon")
+	ev := &pb.ReviewEvent{}
+	c.ok(ev, "review", "respond", "1", "--comment", "from a shell")
+	if ev.By.GetActorKind() != pb.ActorKind_ACTOR_KIND_USER || ev.By.GetSession() != "" || ev.Text != "from a shell" {
+		t.Errorf("response with no session = %v, want the user's", ev)
+	}
+	c.ok(ev, "review", "respond", "1", "--comment", "from an agent", "-s", "calm-heron")
+	if ev.By.GetActorKind() != pb.ActorKind_ACTOR_KIND_AGENT || ev.By.GetSession() != "calm-heron" {
+		t.Errorf("response naming calm-heron = %v, want the agent's", ev)
+	}
+	// --as-user outweighs a session named: the response is the user's.
+	c.ok(ev, "review", "respond", "1", "--comment", "as the user", "-s", "calm-heron", "--as-user")
+	if ev.By.GetActorKind() != pb.ActorKind_ACTOR_KIND_USER || ev.By.GetSession() != "" {
+		t.Errorf("--as-user naming calm-heron = %v, want the user's", ev)
 	}
 }

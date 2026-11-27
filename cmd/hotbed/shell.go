@@ -100,7 +100,7 @@ func (c *shellCmd) Raw(ctx context.Context, d deps) (int, bool, error) {
 			return 0, false, err
 		}
 		if !res.Skipped {
-			fmt.Fprintf(d.stderr, "hotbed: synced %d changed files (%s) from %s\n", res.FilesChanged, size(res.BundleBytes), dir)
+			fmt.Fprintf(d.stderr, "hotbed: synced %d changed files (%s) from %s\n", res.FilesChanged, formatBytes(res.BundleBytes), dir)
 		}
 	}
 

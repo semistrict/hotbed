@@ -59,6 +59,7 @@ var pages = map[protoreflect.FullName]struct{ kind, key protoreflect.Name }{
 	fullName(&pb.Node{}):             {"nodes", "hostname"},
 	fullName(&pb.Memory{}):           {"memories", "id"},
 	fullName(&pb.Question{}):         {"questions", "id"},
+	fullName(&pb.Review{}):           {"reviews", "id"},
 	fullName(&pb.Issue{}):            {"issues", "id"},
 	fullName(&pb.BoardMessage{}):     {"board", "id"},
 }

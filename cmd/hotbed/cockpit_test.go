@@ -37,9 +37,13 @@ func TestEveryCockpitURLHasAPage(t *testing.T) {
 			}
 		}
 	}
-	visit(pb.File_hotbed_v1_hotbed_proto.Messages())
+	_ = pb.File_hotbed_v1_hotbed_proto // the package's files are registered
+	protoregistry.GlobalFiles.RangeFilesByPackage("hotbed.v1", func(f protoreflect.FileDescriptor) bool {
+		visit(f.Messages())
+		return true
+	})
 	slices.Sort(with)
-	if want := []string{"BoardMessage", "Command", "FinishedCommand", "Issue", "Memory", "Node", "Question", "Session", "SessionWorkspace", "Workspace"}; !slices.Equal(with, want) {
+	if want := []string{"BoardMessage", "Command", "FinishedCommand", "Issue", "Memory", "Node", "Question", "Review", "Session", "SessionWorkspace", "Workspace"}; !slices.Equal(with, want) {
 		t.Errorf("messages with a cockpit_url = %v, want %v", with, want)
 	}
 	if got := c.node("asahi mbp"); got != "http://ubu1:7120/nodes/asahi%20mbp" {

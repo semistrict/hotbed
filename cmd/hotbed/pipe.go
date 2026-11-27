@@ -9,7 +9,6 @@ import (
 	"net"
 	"net/http"
 	"net/url"
-	"os"
 	"strconv"
 	"strings"
 	"time"
@@ -46,15 +45,8 @@ func (f controllerClient) dialPipe(ctx context.Context, d deps, workspace, kind 
 	u.RawQuery = q.Encode()
 
 	hdr := http.Header{}
-	tok, err := resolveControllerAuthToken(ctx, d.getenv, f.Controller, d.http)
-	if err != nil {
+	if err := f.authorize(ctx, d, hdr); err != nil {
 		return nil, err
-	}
-	if tok != "" {
-		hdr.Set("Authorization", "Bearer "+tok)
-	}
-	if host, err := os.Hostname(); err == nil {
-		hdr.Set("X-Hotbed-Host", host)
 	}
 	conn, _, err := websocket.Dial(ctx, u.String(), &websocket.DialOptions{HTTPHeader: hdr, HTTPClient: d.stream})
 	if err != nil {

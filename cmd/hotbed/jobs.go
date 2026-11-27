@@ -205,7 +205,7 @@ func (b *outputBudget) Write(p []byte) (int, error) {
 	}
 	if len(p) > 0 {
 		if b.held == 0 {
-			if _, err := fmt.Fprintf(b.w, "\n[hotbed: output past %s stops printing here as it runs; all of it is kept, and its last lines print at its end]\n", size(b.limit)); err != nil {
+			if _, err := fmt.Fprintf(b.w, "\n[hotbed: output past %s stops printing here as it runs; all of it is kept, and its last lines print at its end]\n", formatBytes(b.limit)); err != nil {
 				return 0, err
 			}
 		}

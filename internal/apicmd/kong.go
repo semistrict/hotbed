@@ -9,6 +9,7 @@ import (
 	"github.com/alecthomas/kong"
 	"google.golang.org/protobuf/reflect/protoreflect"
 
+	"github.com/semistrict/hotbed/internal/api"
 	"github.com/semistrict/hotbed/internal/apicmd/spec"
 )
 
@@ -21,6 +22,7 @@ type Kong struct {
 
 type kongNode struct {
 	name, help string
+	aliases    []string
 	children   []*kongNode
 	leaf       *kongLeaf
 	typ        reflect.Type
@@ -35,6 +37,7 @@ type kongLeaf struct {
 // kongField is what one field of a command's struct is.
 type kongField struct {
 	param   *spec.Param // a request field's flag or argument
+	fileOf  *spec.Param // or the file flag of one
 	session bool        // or -s
 	file    bool        // or --file
 }
@@ -46,6 +49,61 @@ type Parsed struct {
 	// File is --file's value: where to read the command's JSON instead of
 	// stdin.
 	File string
+	// Files is the file each file flag given names, by its param.
+	Files map[*spec.Param]string
+}
+
+// Load reads what Parsed names to read: each file flag's file into its
+// param, and the command's JSON from --file or stdin, unless what stands
+// in for it was given. read reads a file, "-" for stdin; nil for none.
+func (p *Parsed) Load(read func(path string) ([]byte, error)) error {
+	for param, path := range p.Files {
+		if _, ok := p.Args.Given[param]; ok {
+			return api.Errorf(api.CodeInvalidArgs, "give --%s or --%s, not both", param.Name, param.FileFlag).WithSuggestion(helpOf(p.Command))
+		}
+		b, err := read(path)
+		if err != nil {
+			return api.Errorf(api.CodeInvalidArgs, "--%s: %v", param.FileFlag, err)
+		}
+		if strings.TrimSpace(string(b)) == "" {
+			return api.Errorf(api.CodeInvalidArgs, "--%s %s is empty", param.FileFlag, path).WithSuggestion(helpOf(p.Command))
+		}
+		p.Args.Given[param] = string(b)
+	}
+	in := p.Command.Input
+	if in == nil {
+		return nil
+	}
+	if in.Unless != nil {
+		if _, ok := p.Args.Given[in.Unless]; ok {
+			if p.File != "" {
+				return api.Errorf(api.CodeInvalidArgs, "give the JSON (--file) or --%s, not both", flagOf(in.Unless)).WithSuggestion(helpOf(p.Command))
+			}
+			return nil
+		}
+	}
+	path, where := "-", "on stdin"
+	if p.File != "" {
+		path, where = p.File, "in "+p.File
+	}
+	b, err := read(path)
+	if err != nil {
+		return api.Errorf(api.CodeInvalidArgs, "read the JSON: %v", err)
+	}
+	if strings.TrimSpace(string(b)) == "" {
+		return api.Errorf(api.CodeInvalidArgs, "no JSON %s", where).WithSuggestion("pipe the command's JSON in, or pass --file FILE: " + helpOf(p.Command))
+	}
+	p.Args.Input = b
+	return nil
+}
+
+// flagOf names how a param is given on the command line: its file flag,
+// when it has one, is what stands in for a file.
+func flagOf(p *spec.Param) string {
+	if p.FileFlag != "" {
+		return p.FileFlag
+	}
+	return p.Name
 }
 
 // Kong makes the schema's commands' kong types.
@@ -67,6 +125,7 @@ func (s *Schema) Kong() (*Kong, error) {
 			}
 			n = next
 		}
+		n.aliases = c.Aliases
 		leaf, err := leafType(c)
 		if err != nil {
 			return nil, fmt.Errorf("%s: %w", c.Name(), err)
@@ -113,7 +172,7 @@ func (k *Kong) Selected(n *kong.Node) (p Parsed, ok bool) {
 	if !ok {
 		return Parsed{}, false
 	}
-	p = Parsed{Command: leaf.cmd, Args: Args{Given: map[*spec.Param]any{}}}
+	p = Parsed{Command: leaf.cmd, Args: Args{Given: map[*spec.Param]any{}}, Files: map[*spec.Param]string{}}
 	// What was given, from the command line or the environment, even if
 	// zero: --x=false is given.
 	set := map[string]bool{}
@@ -130,12 +189,20 @@ func (k *Kong) Selected(n *kong.Node) (p Parsed, ok bool) {
 			p.Args.Session = v.String()
 		case f.file:
 			p.File = v.String()
-		case set[f.param.Name] && !(f.param.Field().Enum() != nil && !f.param.Field().IsList() && v.String() == ""):
-			// An enum's "" is its default, not a word given.
+		case f.fileOf != nil:
+			if set[f.fileOf.FileFlag] && v.String() != "" {
+				p.Files[f.fileOf] = v.String()
+			}
+		case set[f.param.Name] && !noWord(f.param, v):
 			p.Args.Given[f.param] = v.Interface()
 		}
 	}
 	return p, true
+}
+
+// noWord says whether v is an enum flag's "", its default, not a word given.
+func noWord(p *spec.Param, v reflect.Value) bool {
+	return v.Kind() == reflect.String && v.String() == "" && p.Field().Enum() != nil && !p.Field().IsList() && !p.Text()
 }
 
 func groupType(n *kongNode) reflect.Type {
@@ -144,10 +211,14 @@ func groupType(n *kongNode) reflect.Type {
 	}
 	var fields []reflect.StructField
 	for i, ch := range n.children {
+		kv := []string{"cmd", "", "name", ch.name, "help", ch.help}
+		if len(ch.aliases) > 0 {
+			kv = append(kv, "aliases", strings.Join(ch.aliases, ","))
+		}
 		fields = append(fields, reflect.StructField{
 			Name: fmt.Sprintf("C%d", i),
 			Type: groupType(ch),
-			Tag:  tags("cmd", "", "name", ch.name, "help", ch.help),
+			Tag:  tags(kv...),
 		})
 	}
 	n.typ = reflect.StructOf(fields)
@@ -166,6 +237,10 @@ func (l *kongLeaf) typ() reflect.Type {
 		case f.file:
 			sf.Type = reflect.TypeFor[string]()
 			sf.Tag = tags("name", "file", "type", "existingfile", "help", "Read the JSON from this file instead of stdin.")
+		case f.fileOf != nil:
+			sf.Type = reflect.TypeFor[string]()
+			sf.Tag = tags("name", f.fileOf.FileFlag, "type", "existingfile", "placeholder", "FILE",
+				"help", fmt.Sprintf("Read --%s from this file (- for stdin).", f.fileOf.Name))
 		default:
 			sf.Type, sf.Tag = paramField(f.param)
 		}
@@ -191,6 +266,9 @@ func leafType(c *Command) (*kongLeaf, error) {
 			return nil, fmt.Errorf("%s is a %s, which the command line cannot give", p.Field().FullName(), p.Field().Kind())
 		}
 		l.fields = append(l.fields, kongField{param: p})
+		if p.FileFlag != "" {
+			l.fields = append(l.fields, kongField{fileOf: p})
+		}
 	}
 	if c.Session {
 		l.fields = append(l.fields, kongField{session: true})
@@ -207,7 +285,49 @@ func paramField(p *spec.Param) (reflect.Type, reflect.StructTag) {
 	f := p.Field()
 	var t reflect.Type
 	kv := []string{"help", p.Help}
-	switch f.Kind() {
+	switch {
+	case p.Switch != "":
+		return reflect.TypeFor[bool](), tags(append(kv, "name", p.Name)...)
+	case p.Text():
+		t = reflect.TypeFor[string]()
+	default:
+		t, kv = scalarField(p, kv)
+		if t == nil {
+			return nil, ""
+		}
+	}
+	if f.IsList() {
+		t = reflect.SliceOf(t)
+	}
+	kv = append(kv, "name", p.Name)
+	if f.Kind() != protoreflect.BoolKind || p.Text() {
+		kv = append(kv, "placeholder", strings.ToUpper(p.Name))
+	}
+	if p.Positional {
+		kv = append(kv, "arg", "")
+		if (f.IsList() || p.Optional) && !p.Required {
+			kv = append(kv, "optional", "")
+		}
+		if p.Passthrough {
+			kv = append(kv, "passthrough", "")
+		}
+	} else if p.Required {
+		kv = append(kv, "required", "")
+	}
+	if p.Short != "" {
+		kv = append(kv, "short", p.Short)
+	}
+	if o := f.ContainingOneof(); o != nil && !o.IsSynthetic() {
+		kv = append(kv, "xor", string(o.Name()))
+	}
+	return t, tags(kv...)
+}
+
+// scalarField is the Go type of one value of a param given as its field's
+// own, with the tags its type adds to kv; a nil type for none.
+func scalarField(p *spec.Param, kv []string) (reflect.Type, []string) {
+	var t reflect.Type
+	switch p.Field().Kind() {
 	case protoreflect.BoolKind:
 		t = reflect.TypeFor[bool]()
 	case protoreflect.StringKind:
@@ -224,41 +344,25 @@ func paramField(p *spec.Param) (reflect.Type, reflect.StructTag) {
 		t = reflect.TypeFor[float64]()
 	case protoreflect.EnumKind:
 		t = reflect.TypeFor[string]()
-		var words []string
+		var words, accepted []string
 		for _, w := range p.Words() {
 			words = append(words, w.Word)
+			accepted = append(accepted, w.Word)
+			if dashed := strings.ReplaceAll(w.Word, "_", "-"); dashed != w.Word {
+				accepted = append(accepted, dashed) // in-progress, as in_progress
+			}
 		}
 		if p.Every != "" {
 			words = append(words, p.Every)
+			accepted = append(accepted, p.Every)
 		}
 		// Kong checks a given word; an empty one is none given.
-		kv = append(kv, "enum", strings.Join(append(words, ""), ","), "default", "")
+		kv = append(kv, "enum", strings.Join(append(accepted, ""), ","), "default", "")
 		kv[1] = strings.TrimSpace(kv[1] + " One of: " + strings.Join(words, ", ") + ".")
 	default:
-		return nil, ""
+		return nil, kv
 	}
-	if f.IsList() {
-		t = reflect.SliceOf(t)
-	}
-	kv = append(kv, "name", p.Name)
-	if f.Kind() != protoreflect.BoolKind {
-		kv = append(kv, "placeholder", strings.ToUpper(p.Name))
-	}
-	if p.Positional {
-		kv = append(kv, "arg", "")
-		if (f.IsList() || p.Optional) && !p.Required {
-			kv = append(kv, "optional", "")
-		}
-	} else if p.Required {
-		kv = append(kv, "required", "")
-	}
-	if p.Short != "" {
-		kv = append(kv, "short", p.Short)
-	}
-	if o := f.ContainingOneof(); o != nil && !o.IsSynthetic() {
-		kv = append(kv, "xor", string(o.Name()))
-	}
-	return t, tags(kv...)
+	return t, kv
 }
 
 // tags makes a struct tag of key-value pairs.

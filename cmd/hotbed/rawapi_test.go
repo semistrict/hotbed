@@ -176,3 +176,29 @@ func TestControllerAuthToken(t *testing.T) {
 		t.Fatalf("env override got token %q, want hbo_env_token", got)
 	}
 }
+
+// Every plain HTTP request the CLI makes of its controller says who calls
+// the same way: the token as a bearer, when there is one, and this
+// machine's name; a header the caller set is kept.
+func TestIdentify(t *testing.T) {
+	t.Parallel()
+	host, err := os.Hostname()
+	if err != nil {
+		t.Fatal(err)
+	}
+	h := http.Header{}
+	identify(h, "hbo_tok")
+	if h.Get("Authorization") != "Bearer hbo_tok" || h.Get("X-Hotbed-Host") != host {
+		t.Errorf("identify = %v, want the bearer token and %s", h, host)
+	}
+	h = http.Header{}
+	identify(h, "")
+	if _, ok := h["Authorization"]; ok || h.Get("X-Hotbed-Host") != host {
+		t.Errorf("identify without a token = %v, want no Authorization, and %s", h, host)
+	}
+	h = http.Header{"Authorization": {"Bearer given"}, "X-Hotbed-Host": {"elsewhere"}}
+	identify(h, "hbo_tok")
+	if h.Get("Authorization") != "Bearer given" || h.Get("X-Hotbed-Host") != "elsewhere" {
+		t.Errorf("identify over given headers = %v, want them kept", h)
+	}
+}

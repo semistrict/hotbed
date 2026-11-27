@@ -260,9 +260,8 @@ func TestMCPRegistersEveryProtoCommand(t *testing.T) {
 	// Cross-check schema against the compiled proto descriptor directly so no
 	// option (command) annotation can silently drop out.
 	var wantTools []string
-	svcs := pb.File_hotbed_v1_hotbed_proto.Services()
-	for i := range svcs.Len() {
-		ms := svcs.Get(i).Methods()
+	for _, svc := range apiServices() {
+		ms := svc.Methods()
 		for j := range ms.Len() {
 			method := ms.Get(j)
 			if method.Options() == nil || !proto.HasExtension(method.Options(), pb.E_Command) {

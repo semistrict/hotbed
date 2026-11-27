@@ -3,11 +3,19 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"regexp"
 	"strings"
 	"testing"
 	"text/template"
 
+	"google.golang.org/protobuf/proto"
+	"google.golang.org/protobuf/reflect/protodesc"
+	"google.golang.org/protobuf/reflect/protoreflect"
+	"google.golang.org/protobuf/types/descriptorpb"
+	"google.golang.org/protobuf/types/dynamicpb"
+
+	"github.com/semistrict/hotbed/internal/api"
 	"github.com/semistrict/hotbed/internal/apicmd"
 	pb "github.com/semistrict/hotbed/internal/gen/hotbed/v1"
 )
@@ -184,8 +192,12 @@ func TestDefaultFormatsUseRealNewlines(t *testing.T) {
 // so when a review has none yet (requested, or legacy) (board 7788).
 func TestReviewLsShowsTheModel(t *testing.T) {
 	t.Parallel()
+	schema, err := apiSchema()
+	if err != nil {
+		t.Fatal(err)
+	}
 	var out bytes.Buffer
-	err := apicmd.FormatPlain(&out, compiledFormats()["review ls"], &pb.ListReviewsResponse{Reviews: []*pb.Review{
+	err = apicmd.FormatPlain(&out, schema.Command("review ls").FormatTmpl, &pb.ListReviewsResponse{Reviews: []*pb.Review{
 		{Id: 2, State: pb.ReviewState_REVIEW_STATE_REQUESTED, Title: "Add B"},
 		{Id: 1, State: pb.ReviewState_REVIEW_STATE_DONE, Title: "Add A", ImplementerModel: "gemini-4-neon", Model: "claude-opus-5-5"},
 	}})
@@ -335,4 +347,34 @@ func TestFormatByHandCommandsAndDiagnostics(t *testing.T) {
 			t.Errorf("diagnostics --jq = %q, want check locks", jqOut.String())
 		}
 	})
+}
+
+// A response whose name has a report written in Go, but which will not
+// decode as this client's message of that name, is the client's schema out
+// of step with the controller's: printing fails, saying so, rather than
+// printing it some other way.
+func TestReportFailsOnSchemaSkew(t *testing.T) {
+	t.Parallel()
+	fd, err := protodesc.NewFile(&descriptorpb.FileDescriptorProto{
+		Name:    proto.String("skew.proto"),
+		Package: proto.String("hotbed.v1"),
+		Syntax:  proto.String("proto3"),
+		MessageType: []*descriptorpb.DescriptorProto{{
+			Name: proto.String("GetFreshenResponse"),
+			Field: []*descriptorpb.FieldDescriptorProto{{
+				Name: proto.String("freshen"), JsonName: proto.String("freshen"), Number: proto.Int32(1),
+				Type: descriptorpb.FieldDescriptorProto_TYPE_BYTES.Enum(), Label: descriptorpb.FieldDescriptorProto_LABEL_OPTIONAL.Enum(),
+			}},
+		}},
+	}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	newer := dynamicpb.NewMessage(fd.Messages().Get(0))
+	newer.Set(newer.Descriptor().Fields().Get(0), protoreflect.ValueOfBytes([]byte{0xff, 0xff}))
+	var out bytes.Buffer
+	err = writeOutput(&out, "freshen show", nil, newer, outputOpts{})
+	if e, ok := errors.AsType[*api.Error](err); !ok || !strings.Contains(e.Message, "read the hotbed.v1.GetFreshenResponse response as this client's") || !strings.Contains(e.Suggestion, "hotbed upgrade") {
+		t.Errorf("writeOutput of a skewed response = %v (printed %q), want it refused, suggesting an upgrade", err, out.String())
+	}
 }

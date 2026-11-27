@@ -4,8 +4,8 @@ import (
 	"fmt"
 	"slices"
 	"strings"
-	"time"
 
+	"github.com/semistrict/hotbed/internal/apicmd"
 	pb "github.com/semistrict/hotbed/internal/gen/hotbed/v1"
 )
 
@@ -140,12 +140,12 @@ func formatFreshenListReport(res *pb.ListFreshensResponse) string {
 				parts = append(parts, fmt.Sprintf("finalize=%s", fmtFreshenDur(np.GetTotalFinalizeSeconds())))
 			}
 			if np.GetActiveState() != pb.FreshenState_FRESHEN_STATE_UNSPECIFIED {
-				act := fmt.Sprintf("ACTIVE %s %s", freshenStateLabel(np.GetActiveState()), fmtFreshenDur(np.GetActiveElapsedSeconds()))
+				act := fmt.Sprintf("ACTIVE %s %s", enumWord(np.GetActiveState()), fmtFreshenDur(np.GetActiveElapsedSeconds()))
 				if np.GetActiveStep() != "" {
 					act += " (" + np.GetActiveStep() + ")"
 				}
 				if np.GetActiveReason() != "" {
-					act += " [" + truncateLine(np.GetActiveReason(), 70) + "]"
+					act += " [" + apicmd.Short(70, np.GetActiveReason()) + "]"
 				}
 				parts = append(parts, act)
 			}
@@ -225,7 +225,7 @@ func formatFreshenListReport(res *pb.ListFreshensResponse) string {
 				metrics = append(metrics, fmt.Sprintf("%d ws waiting", len(f.GetWaitingWorkspaces())))
 			}
 			if f.GetReason() != "" {
-				metrics = append(metrics, truncateLine(f.GetReason(), 80))
+				metrics = append(metrics, apicmd.Short(80, f.GetReason()))
 			}
 
 			fmt.Fprintf(&b, "  %-24s %-10s %-10s %-7s %-10s %-24s %s\n",
@@ -233,7 +233,7 @@ func formatFreshenListReport(res *pb.ListFreshensResponse) string {
 				f.GetNode(),
 				f.GetProject(),
 				f.GetRuntime(),
-				freshenStateLabel(f.GetState()),
+				enumWord(f.GetState()),
 				mode,
 				strings.Join(metrics, "  "))
 		}
@@ -252,7 +252,7 @@ func formatFreshenShowReport(res *pb.GetFreshenResponse) string {
 	}
 	var b strings.Builder
 
-	fmt.Fprintf(&b, "Freshen %s  (base %s, %s)\n", f.GetId(), f.GetBaseId(), freshenStateLabel(f.GetState()))
+	fmt.Fprintf(&b, "Freshen %s  (base %s, %s)\n", f.GetId(), f.GetBaseId(), enumWord(f.GetState()))
 	mode := "incremental"
 	if f.GetCold() {
 		mode = "cold (from nothing)"
@@ -280,12 +280,12 @@ func formatFreshenShowReport(res *pb.GetFreshenResponse) string {
 		}
 		fmt.Fprintf(&b, "  Repos:    %s\n", strings.Join(repos, ", "))
 	}
-	fmt.Fprintf(&b, "  Created:  %s", fmtFreshenTime(f.GetCreatedAt()))
+	fmt.Fprintf(&b, "  Created:  %s", apicmd.Clock(f.GetCreatedAt()))
 	if f.StartedAt != nil && *f.StartedAt > 0 {
-		fmt.Fprintf(&b, "  Started: %s", fmtFreshenTime(*f.StartedAt))
+		fmt.Fprintf(&b, "  Started: %s", apicmd.Clock(*f.StartedAt))
 	}
 	if f.EndedAt != nil && *f.EndedAt > 0 {
-		fmt.Fprintf(&b, "  Ended: %s", fmtFreshenTime(*f.EndedAt))
+		fmt.Fprintf(&b, "  Ended: %s", apicmd.Clock(*f.EndedAt))
 	}
 	b.WriteByte('\n')
 	if f.GetFailedStep() != "" {
@@ -344,7 +344,7 @@ func formatFreshenShowReport(res *pb.GetFreshenResponse) string {
 				detail = "  (" + p.GetDetail() + ")"
 			}
 			fmt.Fprintf(&b, "  %-14s %-9s %s%s\n",
-				p.GetName(), fmtFreshenDur(p.GetSeconds()), fmtFreshenTime(p.GetStartedAt()), detail)
+				p.GetName(), fmtFreshenDur(p.GetSeconds()), apicmd.Clock(p.GetStartedAt()), detail)
 		}
 	}
 
@@ -377,7 +377,7 @@ func formatFreshenShowReport(res *pb.GetFreshenResponse) string {
 	if len(f.GetTimeline()) > 0 {
 		b.WriteString("\nCommand timeline:\n")
 		for _, ev := range f.GetTimeline() {
-			fmt.Fprintf(&b, "  %s  %-10s %s\n", fmtFreshenTime(ev.GetAt()), ev.GetWhat(), ev.GetDetail())
+			fmt.Fprintf(&b, "  %s  %-10s %s\n", apicmd.Clock(ev.GetAt()), ev.GetWhat(), ev.GetDetail())
 		}
 	}
 
@@ -410,36 +410,11 @@ func formatFreshenShowReport(res *pb.GetFreshenResponse) string {
 	if len(res.GetRelatedEvents()) > 0 {
 		b.WriteString("\nRelated events:\n")
 		for _, ev := range res.GetRelatedEvents() {
-			fmt.Fprintf(&b, "  %s  %-7s %s\n", fmtFreshenTime(ev.GetAt()), ev.GetKind(), truncateLine(ev.GetText(), 120))
+			fmt.Fprintf(&b, "  %s  %-7s %s\n", apicmd.Clock(ev.GetAt()), ev.GetKind(), apicmd.Short(120, ev.GetText()))
 		}
 	}
 
 	return b.String()
-}
-
-func freshenStateLabel(s pb.FreshenState) string {
-	switch s {
-	case pb.FreshenState_FRESHEN_STATE_QUEUED:
-		return "queued"
-	case pb.FreshenState_FRESHEN_STATE_RUNNING:
-		return "running"
-	case pb.FreshenState_FRESHEN_STATE_PARKED:
-		return "parked"
-	case pb.FreshenState_FRESHEN_STATE_PAUSED:
-		return "paused"
-	case pb.FreshenState_FRESHEN_STATE_FINALIZING:
-		return "finalizing"
-	case pb.FreshenState_FRESHEN_STATE_SUCCEEDED:
-		return "succeeded"
-	case pb.FreshenState_FRESHEN_STATE_FAILED:
-		return "failed"
-	case pb.FreshenState_FRESHEN_STATE_CANCELLED:
-		return "cancelled"
-	case pb.FreshenState_FRESHEN_STATE_DROPPED:
-		return "dropped"
-	default:
-		return "unknown"
-	}
 }
 
 func fmtFreshenDur(secs float64) string {
@@ -460,25 +435,4 @@ func fmtFreshenDur(secs float64) string {
 		return fmt.Sprintf("%dh%02dm%02ds", h, m, s)
 	}
 	return fmt.Sprintf("%dm%02ds", m, s)
-}
-
-func fmtFreshenTime(ms int64) string {
-	if ms <= 0 {
-		return "-"
-	}
-	t := time.UnixMilli(ms).Local()
-	now := time.Now()
-	if t.Year() == now.Year() && t.Month() == now.Month() && t.Day() == now.Day() {
-		return t.Format("15:04:05")
-	}
-	return t.Format("Jan 2 15:04:05")
-}
-
-func truncateLine(s string, max int) string {
-	s = strings.ReplaceAll(strings.TrimSpace(s), "\n", " ")
-	r := []rune(s)
-	if len(r) <= max || max < 4 {
-		return s
-	}
-	return string(r[:max-3]) + "..."
 }

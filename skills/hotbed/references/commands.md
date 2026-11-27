@@ -411,6 +411,99 @@ GetDaemonLogs returns recent WARN and ERROR slog records from the controller, a 
 | `--since` |  | Only entries from the last duration (e.g. "15m", "1h", "24h", "7d"); sets from_ms relative to now on the server when from_ms is 0. |
 | `-n`, `--limit` |  | Maximum entries to return, newest first (default 200, max 1000). |
 
+## `schedule`
+
+Scheduled commands: recurring work the controller starts by itself, such as a nightly measurement.
+
+### `hotbed schedule add NAME [ARGS...]`
+
+Schedule a command, or replace the scheduled command of that name. Each run gets a session of its own and a fresh workspace of the repo at its branch's head.
+
+*MCP tool: `schedule_add`*
+
+| Argument / Flag | Env | Help |
+| --- | --- | --- |
+| `NAME` |  | Lowercase words joined by dashes, such as cladefs-nightly; each run's session is NAME-YYYYMMDD-HHMM. |
+| `--cron` |  | When it runs: five-field cron (minute hour day-of-month month day-of-week) in the controller's time zone, such as '0 2 * * *'; CRON_TZ=ZONE in front for another zone. A slot that passes while the controller is down is missed, not run late, and a slot that comes while the previous run is in progress is skipped. |
+| `-r`, `--repo` | `HOTBED_REPO` | The repo its runs work in (default: HOTBED_REPO, or the one this git checkout is of). |
+| `--arch` |  | Puts every run on nodes of this architecture (amd64, arm64); otherwise the controller places each like any run (Placement). |
+| `ARGS` |  | The command, after --; it runs at /work/REPO, as with hotbed run. |
+| `--env` |  | KEY=VALUE for the command. Repeatable. |
+| `--kind` |  | What it is, for history and build metrics: build, test, check, server or shell. |
+| `--cpu-weight` |  | cgroup cpu.weight: the share of contended CPU (1-10000). |
+| `--mem-low` |  | cgroup memory.low: guaranteed, such as 2G; admission waits until it fits. |
+| `--mem-high` |  | cgroup memory.high, such as 8G: past it the command is throttled and swapped; 0 for none. |
+| `--soft-limit` |  | How long it runs before it is paused unless it has ended, such as 10m, counted from its start and again from each time an agent starts waiting on it (FollowLog with wait); 0 for no soft limit. |
+| `--hard-limit` |  | How long after its start it is stopped, paused or not, such as 2h; 0 for none. |
+| `--priority` |  | Scheduling priority: low (-10), normal (0), high (10), urgent (20), or an integer from -100 to 100. Higher is admitted first; nothing running is preempted for it. |
+| `--keep-idle` |  | Keep it running while it reserves over a quarter of the node's memory for work and keeps less than a core busy for each 6 GiB of it, which otherwise stops it after five minutes: for a command that rightly holds much memory for little CPU. |
+| `--bench` |  | Run it as a measurement: alone among measurements on the node, once running work leaves it room, on CPUs no other command uses, isolated for its whole run, never swapped or parked. |
+| `--vm-cpus` |  | vCPUs its VM's guest sees; 0 for the node's default. It sizes the VM only: admission goes by what commands are measured to use. vm runtime only. |
+| `--vm-mem` |  | Memory its VM's guest sees, such as 16G; 0 for the node's default. It sizes the VM only, as vm_cpus does. vm runtime only. |
+| `--paused` |  | Add it paused. |
+| `-p`, `--project` | `HOTBED_PROJECT` | The project its runs' sessions work on: the one named when it was added (default: HOTBED_PROJECT), or else the one that holds its repo. |
+
+### `hotbed schedule ls`
+
+Scheduled commands, when each runs next, and their recent runs: the project's (default: HOTBED_PROJECT, the session's project, or the one that holds this checkout's repo), or every project's.
+
+*MCP tool: `schedule_ls` · uses `-s/--session`*
+
+| Argument / Flag | Env | Help |
+| --- | --- | --- |
+| `-p`, `--project` | `HOTBED_PROJECT` | Only this project's (default: HOTBED_PROJECT, else the session's project, else the one holding this checkout's repo). |
+| `--all-projects` |  | Every project's scheduled commands. |
+
+### `hotbed schedule show NAME`
+
+A scheduled command and its runs, each with its session (hotbed logs -s SESSION COMMAND).
+
+*MCP tool: `schedule_show`*
+
+| Argument / Flag | Env | Help |
+| --- | --- | --- |
+| `NAME` |  | The scheduled command's name. |
+
+### `hotbed schedule rm NAME`
+
+Remove a scheduled command; a run in progress goes on.
+
+*MCP tool: `schedule_rm`*
+
+| Argument / Flag | Env | Help |
+| --- | --- | --- |
+| `NAME` |  | The scheduled command's name. |
+
+### `hotbed schedule run NAME`
+
+Start a run now, outside the schedule, unless one is in progress; prints the run and its session.
+
+*MCP tool: `schedule_run`*
+
+| Argument / Flag | Env | Help |
+| --- | --- | --- |
+| `NAME` |  | The scheduled command's name. |
+
+### `hotbed schedule pause NAME`
+
+Start no runs until resumed.
+
+*MCP tool: `schedule_pause`*
+
+| Argument / Flag | Env | Help |
+| --- | --- | --- |
+| `NAME` |  | The scheduled command's name. |
+
+### `hotbed schedule resume NAME`
+
+Run again, from the next slot; the slots paused through are not made up.
+
+*MCP tool: `schedule_resume`*
+
+| Argument / Flag | Env | Help |
+| --- | --- | --- |
+| `NAME` |  | The scheduled command's name. |
+
 ## `question`
 
 Questions agents ask the user: a list for each project, shared by every session that works on it, which the user answers in the cockpit whenever they like.
@@ -564,6 +657,252 @@ Acknowledge answers you have read and acted on: they leave the outbox, handled; 
 | --- | --- | --- |
 | `ID` |  | The questions whose answers you read. |
 
+## `review`
+
+Reviews of an exact version by reviewer agents.
+
+### `hotbed review request`
+
+Ask for a review of this checkout's exact version: from --base (default: where it left the remote's default branch) to --head (default: HEAD, or a snapshot of uncommitted changes), pinned under refs/hotbed/reviews so git keeps it. Names the implementer's exact model (--model, or inherited from the session). Prints the review; give its number to reviewer agent(s).
+
+*MCP tool: `review_request` · uses `-s/--session`*
+
+| Argument / Flag | Env | Help |
+| --- | --- | --- |
+| `--title` |  | What it reviews, for people (default: the branch and commit). |
+| `--instructions` |  | What the reviewer should look at, or for. |
+| `--instructions-file` |  | Read `--instructions` from this file (`-` for stdin). |
+| `--base` |  | The commit the changes are from: on the command line, a ref (default: where HEAD left the remote's default branch), which the client resolves. |
+| `--head` |  | The commit to review: on the command line, a ref (default: HEAD, or, with uncommitted changes, a snapshot of them), which the client resolves and pins. |
+| `--model` | `HOTBED_MODEL` | Exact model ID of the implementer (e.g. gemini-4-neon, claude-opus-4-6). Falls back to the implementer session's model if set; required if neither is set. |
+| `--subagent` |  | Optional sub-agent label/role of the implementer when spawned inside a session. |
+| `--implementer-session` |  | Optional implementer session ID if a different session requested the review on the implementer's behalf (defaults to session_id). |
+| `--whole` |  | Review the whole tree at head, not its changes from a base. |
+
+### `hotbed review ls`
+
+A project's reviews (default: this session's project, or the one holding this checkout's repo), or every project's, newest first, with their findings counted.
+
+*MCP tool: `review_ls` · uses `-s/--session`*
+
+| Argument / Flag | Env | Help |
+| --- | --- | --- |
+| `-p`, `--project` | `HOTBED_PROJECT` | Only this project's (default: HOTBED_PROJECT, else the session's project, else the one holding this checkout's repo). |
+| `--all-projects` |  | Every project's reviews. |
+| `--state` |  | Only reviews in this state (repeatable); none for all. |
+| `--limit` |  | At most this many, newest first; 0 for all. |
+
+### `hotbed review show ID`
+
+A review: its version, implementer, reviewers, findings (with locations, decisions and responses) and every event.
+
+*MCP tool: `review_show`*
+
+| Argument / Flag | Env | Help |
+| --- | --- | --- |
+| `ID` |  | The review's number. |
+
+### `hotbed review link ID`
+
+The review's page in the cockpit, to send the user.
+
+*MCP tool: `review_link`*
+
+| Argument / Flag | Env | Help |
+| --- | --- | --- |
+| `ID` |  | The review's number. |
+
+### `hotbed review start ID`
+
+Reviewer: claim or join a review with your exact model (--model); several reviewers (and sub-agents in the same session) may review the same review.
+
+*MCP tool: `review_start` · uses `-s/--session`*
+
+| Argument / Flag | Env | Help |
+| --- | --- | --- |
+| `ID` |  | The review's number. |
+| `--model` |  | The exact model doing the review, as its provider names it (claude-opus-5-5, gpt-5.5-codex), not its family. |
+| `--subagent` |  | Optional sub-agent label/role when running as a sub-agent inside a session (e.g. verifying-reviewer, codex-exec). |
+| `--new` |  | Start a new reviewer pass even if an identical (session, model, subagent) reviewer is already in progress. |
+
+### `hotbed review findings ID`
+
+Reviewer: report findings, as ReportFindings takes them ({"findings": [...]}, each with file, line, summary, failure_scenario, category, severity, short_summary, verdict), with "locations": [{path, start_line, end_line, excerpt}] besides; {"findings": []} says you found none. JSON on stdin or --file, or --from-report REPORT: a reviewer's whole report ending with that JSON in a fenced json hotbed-findings block, which the review keeps. Call it as often as you like.
+
+*MCP tool: `review_findings` · uses `-s/--session` · reads JSON from stdin or `--file`*
+
+| Argument / Flag | Env | Help |
+| --- | --- | --- |
+| `ID` |  | The review's number. |
+| `--report` |  | Instead of findings, the reviewer's whole report (Markdown), which the review keeps: its findings are the last fenced block opened with ```json hotbed-findings, holding {"findings": [...]} as findings here. For a reviewer that cannot call hotbed itself, such as one in a network-isolated sandbox, whose caller passes its report on. |
+| `--from-report` |  | Read `--report` from this file (`-` for stdin). |
+| `--reviewer` |  | Which reviewer pass (1-based Reviewer.id) is reporting; optional when unambiguous for this session. |
+| `--model` |  | Optional model filter to disambiguate multiple active reviewers in one session. |
+| `--subagent` |  | Optional sub-agent filter to disambiguate multiple active reviewers in one session. |
+
+### `hotbed review finish ID`
+
+Reviewer: finish your review pass, with a summary.
+
+*MCP tool: `review_finish` · uses `-s/--session`*
+
+| Argument / Flag | Env | Help |
+| --- | --- | --- |
+| `ID` |  | The review's number. |
+| `--summary` |  | What you found, in a few lines. |
+| `--reviewer` |  | Which reviewer pass (1-based Reviewer.id) is ending; optional when unambiguous for this session. |
+| `--model` |  | Optional model filter to disambiguate multiple active reviewers in one session. |
+| `--subagent` |  | Optional sub-agent filter to disambiguate multiple active reviewers in one session. |
+
+### `hotbed review fail ID`
+
+Reviewer: end your review pass as failed, saying why.
+
+*MCP tool: `review_fail` · uses `-s/--session`*
+
+| Argument / Flag | Env | Help |
+| --- | --- | --- |
+| `ID` |  | The review's number. |
+| `--reason` |  | Why the review could not be done. |
+| `--reviewer` |  | Which reviewer pass (1-based Reviewer.id) is ending; optional when unambiguous for this session. |
+| `--model` |  | Optional model filter to disambiguate multiple active reviewers in one session. |
+| `--subagent` |  | Optional sub-agent filter to disambiguate multiple active reviewers in one session. |
+
+### `hotbed review cancel ID`
+
+Withdraw a review that has not ended.
+
+*MCP tool: `review_cancel` · uses `-s/--session`*
+
+| Argument / Flag | Env | Help |
+| --- | --- | --- |
+| `ID` |  | The review's number. |
+| `--reason` |  | Why it is no longer wanted. |
+| `--model` | `HOTBED_MODEL` | Exact model cancelling the review (defaults to the session's or implementer's model). |
+| `--subagent` |  | Optional sub-agent label. |
+
+### `hotbed review accept ID FINDING...`
+
+Accept findings: you will act on them.
+
+*MCP tool: `review_accept` · uses `-s/--session`*
+
+| Argument / Flag | Env | Help |
+| --- | --- | --- |
+| `ID` |  | The review's number. |
+| `FINDING` |  | The findings' numbers. |
+| `--reason` |  | What you will do. |
+| `--model` | `HOTBED_MODEL` | Exact model ID of the deciding agent (falls back to session/implementer model). |
+| `--subagent` |  | Optional sub-agent label/role of the deciding agent. |
+| `--as-user` |  | Explicitly mark USER vs AGENT when deciding from cockpit or CLI --as-user, which records the decision as the human user's rather than an agent session's. |
+
+### `hotbed review dismiss ID FINDING...`
+
+Dismiss (reject) findings: you will not act on them, saying why.
+
+*MCP tool: `review_dismiss` · uses `-s/--session` · also `reject`*
+
+| Argument / Flag | Env | Help |
+| --- | --- | --- |
+| `ID` |  | The review's number. |
+| `FINDING` |  | The findings' numbers. |
+| `--reason` |  | Why you will not act on them. |
+| `--model` | `HOTBED_MODEL` | Exact model ID of the deciding agent (falls back to session/implementer model). |
+| `--subagent` |  | Optional sub-agent label/role of the deciding agent. |
+| `--as-user` |  | Explicitly mark USER vs AGENT when deciding from cockpit or CLI --as-user, which records the decision as the human user's rather than an agent session's. |
+
+### `hotbed review wont-fix ID FINDING...`
+
+Mark findings won't fix: intentionally left unfixed, saying why.
+
+*MCP tool: `review_wont-fix` · uses `-s/--session`*
+
+| Argument / Flag | Env | Help |
+| --- | --- | --- |
+| `ID` |  | The review's number. |
+| `FINDING` |  | The findings' numbers. |
+| `--reason` |  | Why you will not fix them. |
+| `--model` | `HOTBED_MODEL` | Exact model ID of the deciding agent (falls back to session/implementer model). |
+| `--subagent` |  | Optional sub-agent label/role of the deciding agent. |
+| `--as-user` |  | Explicitly mark USER vs AGENT when deciding from cockpit or CLI --as-user, which records the decision as the human user's rather than an agent session's. |
+
+### `hotbed review fixed ID FINDING...`
+
+Mark findings fixed, in a commit (default: HEAD), with the files it changed and notes if you like. A fixed finding is handled: the user can respond to it no more.
+
+*MCP tool: `review_fixed` · uses `-s/--session`*
+
+| Argument / Flag | Env | Help |
+| --- | --- | --- |
+| `ID` |  | The review's number. |
+| `FINDING` |  | The findings' numbers. |
+| `--commit` |  | The full commit that fixed it: 40 or 64 hex digits. On the command line, a ref resolved in this checkout (default: HEAD; outside one, give it in full). |
+| `--where` |  | Where, in that commit; optional. On the command line, PATH, PATH:LINE or PATH:LINE-END. Repeatable. |
+| `--notes` |  | What the fixing agent says of the fix, Markdown; optional. |
+| `--notes-file` |  | Read `--notes` from this file (`-` for stdin). |
+| `--model` | `HOTBED_MODEL` | Exact model ID of the deciding agent (falls back to session/implementer model). |
+| `--subagent` |  | Optional sub-agent label/role of the deciding agent. |
+| `--as-user` |  | Explicitly mark USER vs AGENT when deciding from cockpit or CLI --as-user, which records the decision as the human user's rather than an agent session's. |
+
+### `hotbed review invalid ID FINDING...`
+
+Mark findings invalid: not real defects, with the evidence (Markdown, citing commits, files and lines as you like). The user may still dispute it.
+
+*MCP tool: `review_invalid` · uses `-s/--session`*
+
+| Argument / Flag | Env | Help |
+| --- | --- | --- |
+| `ID` |  | The review's number. |
+| `FINDING` |  | The findings' numbers. |
+| `--evidence` |  | Invalid: why it is not a real defect (Markdown): what you checked, citing commits, files and lines; given only then. |
+| `--evidence-file` |  | Read `--evidence` from this file (`-` for stdin). |
+| `--model` | `HOTBED_MODEL` | Exact model ID of the deciding agent (falls back to session/implementer model). |
+| `--subagent` |  | Optional sub-agent label/role of the deciding agent. |
+| `--as-user` |  | Explicitly mark USER vs AGENT when deciding from cockpit or CLI --as-user, which records the decision as the human user's rather than an agent session's. |
+
+### `hotbed review reopen ID FINDING...`
+
+Make decided findings (accepted, dismissed, won't fix, fixed or invalid) undecided again.
+
+*MCP tool: `review_reopen` · uses `-s/--session`*
+
+| Argument / Flag | Env | Help |
+| --- | --- | --- |
+| `ID` |  | The review's number. |
+| `FINDING` |  | The findings' numbers. |
+| `--model` | `HOTBED_MODEL` | Exact model ID of the deciding agent (falls back to session/implementer model). |
+| `--subagent` |  | Optional sub-agent label/role of the deciding agent. |
+| `--as-user` |  | Explicitly mark USER vs AGENT when deciding from cockpit or CLI --as-user, which records the decision as the human user's rather than an agent session's. |
+
+### `hotbed review respond ID`
+
+Respond to a finding, or the review as a whole: a quick response, a comment, or both. Stamped as your bound agent session by default; pass --as-user to record a human user response.
+
+*MCP tool: `review_respond` · uses `-s/--session`*
+
+| Argument / Flag | Env | Help |
+| --- | --- | --- |
+| `ID` |  | The review's number. |
+| `--finding` |  | The finding it answers; 0 for the review as a whole. |
+| `--quick` |  | A quick response to the finding. |
+| `--comment` |  | What you say. |
+| `--after` |  | When > 0, refuse with CONFLICT if the review already has events after this seq. |
+| `--as-user` |  | Explicitly mark USER vs AGENT; if unspecified, inferred from session_id. --as-user records the response as the human user's, even with a session bound. |
+| `--model` | `HOTBED_MODEL` | Exact model ID of the responding agent (falls back to session/implementer model). |
+| `--subagent` |  | Optional sub-agent label/role of the responding agent. |
+
+### `hotbed review responses ID`
+
+The responses to a review since you last asked (or --after N; --all for every one), the user's above all.
+
+*MCP tool: `review_responses`*
+
+| Argument / Flag | Env | Help |
+| --- | --- | --- |
+| `ID` |  | The review's number. |
+| `--after` |  | Events after this cursor, 0 for all (default: after the last ones this machine read). |
+| `--all` |  | Every response, from the first. |
+
 ## `auth`
 
 Centralized GitHub authentication held on the controller and delegated to every worker, session, and command (git HTTPS credential helper, git SSH protocol proxy, and worker gh REST/GraphQL proxy).
@@ -613,8 +952,8 @@ Add or replace a centralized git token on the controller (for headless or CI set
 | `NAME` |  | Unique credential name (lowercase letters, digits, dashes), e.g. github. |
 | `--host` |  | Git host (default github.com). |
 | `--repo` |  | Optional repo patterns ("owner/repo" or "owner/*") this credential covers; repeatable; omit for all repos on host. |
-| `--token` |  | Access token (prefer --token-file - to read from stdin). |
-| `--token-file` |  | Path to a file holding the token, or "-" to read from stdin. |
+| `--token` |  | Access token (prefer --token-file - to read from stdin, which keeps it out of argv). |
+| `--token-file` |  | Read `--token` from this file (`-` for stdin). |
 | `--username` |  | Optional GitHub login name for display in `auth ls` and `gh auth status`. |
 | `--api-url` |  | Optional GitHub REST/GraphQL API base URL override (default https://api.github.com). |
 
@@ -746,6 +1085,7 @@ Save a new memory or supersede/consolidate existing memories (--supersede ID). A
 | `--title` |  | Short human title (optional; max 120 chars). |
 | `--summary` |  | Compact in-context component: the complete rule for ALWAYS mode (<= 240 chars), or a 1-line description + when-to-read trigger for ON_DEMAND mode (<= 280 chars). |
 | `--body` |  | Full markdown details fetched via `hotbed memory get` (required for ON_DEMAND, optional for ALWAYS; max 64 KiB). |
+| `--body-file` |  | Read `--body` from this file (`-` for stdin). |
 | `--mode` |  | Delivery mode: always (inline rule on session start) or on_demand (index on session start, full body fetched on demand). |
 | `--tag` |  | Short lowercase tags for filtering and search (repeatable). |
 | `--global` |  | Propose as a global memory (applies across all projects and machines). |
@@ -754,7 +1094,6 @@ Save a new memory or supersede/consolidate existing memories (--supersede ID). A
 | `--supersede` |  | Existing approved memory IDs this proposal updates or consolidates (repeatable). |
 | `--rationale` |  | Why this learning is being added and what triggered it (required for agents; stored as metadata only, not returned when reading memories in context). |
 | `--model` |  | Exact model ID proposing this memory (optional). |
-| `--body-file` |  | Path to a markdown file for body, or "-" to read from stdin (local). |
 
 ### `hotbed memory propose`
 
@@ -768,6 +1107,7 @@ Alias for `hotbed memory add`.
 | `--title` |  | Short human title (optional; max 120 chars). |
 | `--summary` |  | Compact in-context component: the complete rule for ALWAYS mode (<= 240 chars), or a 1-line description + when-to-read trigger for ON_DEMAND mode (<= 280 chars). |
 | `--body` |  | Full markdown details fetched via `hotbed memory get` (required for ON_DEMAND, optional for ALWAYS; max 64 KiB). |
+| `--body-file` |  | Read `--body` from this file (`-` for stdin). |
 | `--mode` |  | Delivery mode: always (inline rule on session start) or on_demand (index on session start, full body fetched on demand). |
 | `--tag` |  | Short lowercase tags for filtering and search (repeatable). |
 | `--global` |  | Propose as a global memory (applies across all projects and machines). |
@@ -776,7 +1116,6 @@ Alias for `hotbed memory add`.
 | `--supersede` |  | Existing approved memory IDs this proposal updates or consolidates (repeatable). |
 | `--rationale` |  | Why this learning is being added and what triggered it (required for agents; stored as metadata only, not returned when reading memories in context). |
 | `--model` |  | Exact model ID proposing this memory (optional). |
-| `--body-file` |  | Path to a markdown file for body, or "-" to read from stdin (local). |
 
 ### `hotbed memory ls`
 
@@ -831,12 +1170,12 @@ Edit a memory in any way (slug, title, summary, body, mode, tags, scope, repo, o
 | `--title` |  | Short human title (optional; max 120 chars). |
 | `--summary` |  | Compact in-context component: the complete rule for ALWAYS mode (<= 240 chars), or a 1-line description + when-to-read trigger for ON_DEMAND mode (<= 280 chars). |
 | `--body` |  | Full markdown details fetched via `hotbed memory get` (required for ON_DEMAND, optional for ALWAYS; max 64 KiB). |
+| `--body-file` |  | Read `--body` from this file (`-` for stdin). |
 | `--mode` |  | Delivery mode: always (inline rule on session start) or on_demand (index on session start, full body fetched on demand). |
 | `--tag` |  | Short lowercase tags for filtering and search (repeatable). |
 | `--global` |  | Change scope to global (shared across all projects). |
 | `-p`, `--project` |  | Change scope to this project. |
 | `--if-revision` |  | Refuse with CONFLICT unless the memory is at this revision. |
-| `--body-file` |  | Path to a markdown file for body, or "-" to read from stdin (local). |
 | `--replace-content` |  | Replace all content fields (slug, title, summary, body, mode, tags) with the provided content instead of merging only non-empty fields. |
 | `--clear-title` |  | Clear the optional title. |
 | `--clear-body` |  | Clear the optional body (allowed in always mode). |
@@ -857,10 +1196,10 @@ Promote a project-specific memory to a global memory shared across all projects.
 | `--title` |  | Short human title (optional; max 120 chars). |
 | `--summary` |  | Compact in-context component: the complete rule for ALWAYS mode (<= 240 chars), or a 1-line description + when-to-read trigger for ON_DEMAND mode (<= 280 chars). |
 | `--body` |  | Full markdown details fetched via `hotbed memory get` (required for ON_DEMAND, optional for ALWAYS; max 64 KiB). |
+| `--body-file` |  | Read `--body` from this file (`-` for stdin). |
 | `--mode` |  | Delivery mode: always (inline rule on session start) or on_demand (index on session start, full body fetched on demand). |
 | `--tag` |  | Short lowercase tags for filtering and search (repeatable). |
 | `--if-revision` |  | Refuse with CONFLICT unless the memory is at this revision. |
-| `--body-file` |  | Path to a markdown file for body, or "-" to read from stdin (local). |
 | `--replace-content` |  | Replace all content fields (slug, title, summary, body, mode, tags) with the provided content instead of merging only non-empty fields. |
 | `--clear-title` |  | Clear the optional title. |
 | `--clear-body` |  | Clear the optional body (allowed in always mode). |

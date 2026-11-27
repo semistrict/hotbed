@@ -10,6 +10,9 @@ import (
 	"sync"
 	"testing"
 
+	"google.golang.org/protobuf/reflect/protoreflect"
+	"google.golang.org/protobuf/reflect/protoregistry"
+
 	pb "github.com/semistrict/hotbed/internal/gen/hotbed/v1"
 	"github.com/semistrict/hotbed/internal/worker"
 )
@@ -51,16 +54,29 @@ type roundTripper func(*http.Request) (*http.Response, error)
 
 func (f roundTripper) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
 
-// procedures is every call in the API, as Connect's paths name them.
+// procedures is every call in the API, as Connect's paths name them: every
+// service of package hotbed.v1, in whichever of its files.
 func procedures() []string {
 	var out []string
-	svcs := pb.File_hotbed_v1_hotbed_proto.Services()
-	for i := range svcs.Len() {
-		ms := svcs.Get(i).Methods()
+	for _, svc := range apiServices() {
+		ms := svc.Methods()
 		for j := range ms.Len() {
-			out = append(out, fmt.Sprintf("/%s/%s", svcs.Get(i).FullName(), ms.Get(j).Name()))
+			out = append(out, fmt.Sprintf("/%s/%s", svc.FullName(), ms.Get(j).Name()))
 		}
 	}
+	return out
+}
+
+// apiServices is every service of package hotbed.v1, across its files.
+func apiServices() []protoreflect.ServiceDescriptor {
+	_ = pb.File_hotbed_v1_hotbed_proto // the package's files are registered
+	var out []protoreflect.ServiceDescriptor
+	protoregistry.GlobalFiles.RangeFilesByPackage("hotbed.v1", func(f protoreflect.FileDescriptor) bool {
+		for i := range f.Services().Len() {
+			out = append(out, f.Services().Get(i))
+		}
+		return true
+	})
 	return out
 }
 

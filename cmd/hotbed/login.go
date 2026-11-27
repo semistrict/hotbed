@@ -432,9 +432,7 @@ func (f controllerClient) controllerJSONWithToken(ctx context.Context, d deps, m
 	if reqBody != nil {
 		req.Header.Set("Content-Type", "application/json")
 	}
-	if tok != "" {
-		req.Header.Set("Authorization", "Bearer "+tok)
-	}
+	identify(req.Header, tok)
 	hc := d.http
 	if hc == nil {
 		hc = http.DefaultClient

@@ -3473,15 +3473,21 @@ var (
 
 // ScheduleServiceClient is a client for the hotbed.v1.ScheduleService service.
 type ScheduleServiceClient interface {
-	// PutSchedule adds a scheduled command, or replaces the one of its name.
+	// Schedule a command, or replace the scheduled command of that name. Each
+	// run gets a session of its own and a fresh workspace of the repo at its
+	// branch's head.
 	PutSchedule(context.Context, *v1.PutScheduleRequest) (*v1.ScheduledCommand, error)
+	// Scheduled commands, when each runs next, and their recent runs: the
+	// project's (default: HOTBED_PROJECT, the session's project, or the one
+	// that holds this checkout's repo), or every project's.
 	ListSchedules(context.Context, *v1.ListSchedulesRequest) (*v1.ListSchedulesResponse, error)
-	// GetSchedule is one scheduled command, with more of its runs.
+	// A scheduled command and its runs, each with its session (hotbed logs -s
+	// SESSION COMMAND).
 	GetSchedule(context.Context, *v1.GetScheduleRequest) (*v1.ScheduledCommand, error)
-	// DeleteSchedule removes a scheduled command; a run in progress goes on.
+	// Remove a scheduled command; a run in progress goes on.
 	DeleteSchedule(context.Context, *v1.DeleteScheduleRequest) (*v1.DeleteScheduleResponse, error)
-	// RunSchedule starts a run now, outside the schedule, unless one is in
-	// progress.
+	// Start a run now, outside the schedule, unless one is in progress;
+	// prints the run and its session.
 	RunSchedule(context.Context, *v1.RunScheduleRequest) (*v1.ScheduledRun, error)
 	// PauseSchedule stops (or, with paused false, resumes) a schedule's runs.
 	PauseSchedule(context.Context, *v1.PauseScheduleRequest) (*v1.ScheduledCommand, error)
@@ -3495,15 +3501,21 @@ func NewScheduleServiceClient(client *connect.Client) ScheduleServiceClient {
 
 // ScheduleServiceHandler is an implementation of the hotbed.v1.ScheduleService service.
 type ScheduleServiceHandler interface {
-	// PutSchedule adds a scheduled command, or replaces the one of its name.
+	// Schedule a command, or replace the scheduled command of that name. Each
+	// run gets a session of its own and a fresh workspace of the repo at its
+	// branch's head.
 	PutSchedule(context.Context, *v1.PutScheduleRequest) (*v1.ScheduledCommand, error)
+	// Scheduled commands, when each runs next, and their recent runs: the
+	// project's (default: HOTBED_PROJECT, the session's project, or the one
+	// that holds this checkout's repo), or every project's.
 	ListSchedules(context.Context, *v1.ListSchedulesRequest) (*v1.ListSchedulesResponse, error)
-	// GetSchedule is one scheduled command, with more of its runs.
+	// A scheduled command and its runs, each with its session (hotbed logs -s
+	// SESSION COMMAND).
 	GetSchedule(context.Context, *v1.GetScheduleRequest) (*v1.ScheduledCommand, error)
-	// DeleteSchedule removes a scheduled command; a run in progress goes on.
+	// Remove a scheduled command; a run in progress goes on.
 	DeleteSchedule(context.Context, *v1.DeleteScheduleRequest) (*v1.DeleteScheduleResponse, error)
-	// RunSchedule starts a run now, outside the schedule, unless one is in
-	// progress.
+	// Start a run now, outside the schedule, unless one is in progress;
+	// prints the run and its session.
 	RunSchedule(context.Context, *v1.RunScheduleRequest) (*v1.ScheduledRun, error)
 	// PauseSchedule stops (or, with paused false, resumes) a schedule's runs.
 	PauseSchedule(context.Context, *v1.PauseScheduleRequest) (*v1.ScheduledCommand, error)
@@ -4265,34 +4277,48 @@ var (
 
 // ReviewServiceClient is a client for the hotbed.v1.ReviewService service.
 type ReviewServiceClient interface {
-	// RequestReview asks for a review of a version, in the requesting
-	// session's project.
+	// Ask for a review of this checkout's exact version: from --base
+	// (default: where it left the remote's default branch) to --head
+	// (default: HEAD, or a snapshot of uncommitted changes), pinned under
+	// refs/hotbed/reviews so git keeps it. Names the implementer's exact
+	// model (--model, or inherited from the session). Prints the review; give
+	// its number to reviewer agent(s).
 	RequestReview(context.Context, *v1.RequestReviewRequest) (*v1.Review, error)
-	// ListReviews lists a project's reviews, or every project's, newest first,
-	// without their findings, events and reports.
+	// A project's reviews (default: this session's project, or the one
+	// holding this checkout's repo), or every project's, newest first, with
+	// their findings counted.
 	ListReviews(context.Context, *v1.ListReviewsRequest) (*v1.ListReviewsResponse, error)
-	// GetReview is a review with its findings and every event.
+	// A review: its version, implementer, reviewers, findings (with
+	// locations, decisions and responses) and every event.
 	GetReview(context.Context, *v1.GetReviewRequest) (*v1.Review, error)
-	// StartReview claims a requested review for the calling session, its
-	// reviewer.
+	// Reviewer: claim or join a review with your exact model (--model);
+	// several reviewers (and sub-agents in the same session) may review the
+	// same review.
 	StartReview(context.Context, *v1.StartReviewRequest) (*v1.Review, error)
-	// AddFindings adds the reviewer's findings, as ReportFindings reports
-	// them, with locations besides, or the report that ends with them; none
-	// says it found nothing. It may be called more than once.
+	// Reviewer: report findings, as ReportFindings takes them ({"findings":
+	// [...]}, each with file, line, summary, failure_scenario, category,
+	// severity, short_summary, verdict), with "locations": [{path,
+	// start_line, end_line, excerpt}] besides; {"findings": []} says you
+	// found none. JSON on stdin or --file, or --from-report REPORT: a
+	// reviewer's whole report ending with that JSON in a fenced json
+	// hotbed-findings block, which the review keeps. Call it as often as you
+	// like.
 	AddFindings(context.Context, *v1.AddFindingsRequest) (*v1.AddFindingsResponse, error)
 	// FinishReview ends a review: done, with the reviewer's summary, or
 	// failed, with why.
 	FinishReview(context.Context, *v1.FinishReviewRequest) (*v1.Review, error)
-	// CancelReview withdraws a review that has not ended.
+	// Withdraw a review that has not ended.
 	CancelReview(context.Context, *v1.CancelReviewRequest) (*v1.Review, error)
-	// DecideFindings accepts or dismisses findings, marks them fixed (with
-	// the commit) or invalid (with evidence), or opens them again. A fixed
-	// finding is handled: it takes no more responses.
+	// DecideFindings accepts or dismisses findings, marks them won't fix,
+	// fixed (with the commit) or invalid (with evidence), or opens them
+	// again. A fixed finding is handled: it takes no more responses.
 	DecideFindings(context.Context, *v1.DecideFindingsRequest) (*v1.DecideFindingsResponse, error)
-	// Respond answers a finding, or the review as a whole: a quick response,
-	// a comment, or both.
+	// Respond to a finding, or the review as a whole: a quick response, a
+	// comment, or both. Stamped as your bound agent session by default; pass
+	// --as-user to record a human user response.
 	Respond(context.Context, *v1.RespondRequest) (*v1.ReviewEvent, error)
-	// ListResponses lists the responses to a review after a cursor.
+	// The responses to a review since you last asked (or --after N; --all
+	// for every one), the user's above all.
 	ListResponses(context.Context, *v1.ListResponsesRequest) (*v1.ListResponsesResponse, error)
 }
 
@@ -4304,34 +4330,48 @@ func NewReviewServiceClient(client *connect.Client) ReviewServiceClient {
 
 // ReviewServiceHandler is an implementation of the hotbed.v1.ReviewService service.
 type ReviewServiceHandler interface {
-	// RequestReview asks for a review of a version, in the requesting
-	// session's project.
+	// Ask for a review of this checkout's exact version: from --base
+	// (default: where it left the remote's default branch) to --head
+	// (default: HEAD, or a snapshot of uncommitted changes), pinned under
+	// refs/hotbed/reviews so git keeps it. Names the implementer's exact
+	// model (--model, or inherited from the session). Prints the review; give
+	// its number to reviewer agent(s).
 	RequestReview(context.Context, *v1.RequestReviewRequest) (*v1.Review, error)
-	// ListReviews lists a project's reviews, or every project's, newest first,
-	// without their findings, events and reports.
+	// A project's reviews (default: this session's project, or the one
+	// holding this checkout's repo), or every project's, newest first, with
+	// their findings counted.
 	ListReviews(context.Context, *v1.ListReviewsRequest) (*v1.ListReviewsResponse, error)
-	// GetReview is a review with its findings and every event.
+	// A review: its version, implementer, reviewers, findings (with
+	// locations, decisions and responses) and every event.
 	GetReview(context.Context, *v1.GetReviewRequest) (*v1.Review, error)
-	// StartReview claims a requested review for the calling session, its
-	// reviewer.
+	// Reviewer: claim or join a review with your exact model (--model);
+	// several reviewers (and sub-agents in the same session) may review the
+	// same review.
 	StartReview(context.Context, *v1.StartReviewRequest) (*v1.Review, error)
-	// AddFindings adds the reviewer's findings, as ReportFindings reports
-	// them, with locations besides, or the report that ends with them; none
-	// says it found nothing. It may be called more than once.
+	// Reviewer: report findings, as ReportFindings takes them ({"findings":
+	// [...]}, each with file, line, summary, failure_scenario, category,
+	// severity, short_summary, verdict), with "locations": [{path,
+	// start_line, end_line, excerpt}] besides; {"findings": []} says you
+	// found none. JSON on stdin or --file, or --from-report REPORT: a
+	// reviewer's whole report ending with that JSON in a fenced json
+	// hotbed-findings block, which the review keeps. Call it as often as you
+	// like.
 	AddFindings(context.Context, *v1.AddFindingsRequest) (*v1.AddFindingsResponse, error)
 	// FinishReview ends a review: done, with the reviewer's summary, or
 	// failed, with why.
 	FinishReview(context.Context, *v1.FinishReviewRequest) (*v1.Review, error)
-	// CancelReview withdraws a review that has not ended.
+	// Withdraw a review that has not ended.
 	CancelReview(context.Context, *v1.CancelReviewRequest) (*v1.Review, error)
-	// DecideFindings accepts or dismisses findings, marks them fixed (with
-	// the commit) or invalid (with evidence), or opens them again. A fixed
-	// finding is handled: it takes no more responses.
+	// DecideFindings accepts or dismisses findings, marks them won't fix,
+	// fixed (with the commit) or invalid (with evidence), or opens them
+	// again. A fixed finding is handled: it takes no more responses.
 	DecideFindings(context.Context, *v1.DecideFindingsRequest) (*v1.DecideFindingsResponse, error)
-	// Respond answers a finding, or the review as a whole: a quick response,
-	// a comment, or both.
+	// Respond to a finding, or the review as a whole: a quick response, a
+	// comment, or both. Stamped as your bound agent session by default; pass
+	// --as-user to record a human user response.
 	Respond(context.Context, *v1.RespondRequest) (*v1.ReviewEvent, error)
-	// ListResponses lists the responses to a review after a cursor.
+	// The responses to a review since you last asked (or --after N; --all
+	// for every one), the user's above all.
 	ListResponses(context.Context, *v1.ListResponsesRequest) (*v1.ListResponsesResponse, error)
 }
 

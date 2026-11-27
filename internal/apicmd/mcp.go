@@ -49,7 +49,7 @@ func inputSchema(c *Command) map[string]any {
 		if p.Hidden {
 			continue
 		}
-		s := fieldSchema(p.Field(), 0)
+		s := paramSchema(p)
 		desc := p.Help
 		if p.Every != "" {
 			desc += fmt.Sprintf(" %q is every one.", p.Every)
@@ -68,6 +68,24 @@ func inputSchema(c *Command) map[string]any {
 		out["required"] = required
 	}
 	return out
+}
+
+// paramSchema is the JSON Schema of a param's value: a switch's true or
+// false, text a parse hook reads, else its field's.
+func paramSchema(p *spec.Param) map[string]any {
+	var s map[string]any
+	switch {
+	case p.Switch != "":
+		return map[string]any{"type": "boolean"}
+	case p.Text():
+		s = map[string]any{"type": "string"}
+	default:
+		return fieldSchema(p.Field(), 0)
+	}
+	if p.Field().IsList() {
+		return map[string]any{"type": "array", "items": s}
+	}
+	return s
 }
 
 // fieldSchema is the JSON Schema of a field's value, as its tool takes it:
@@ -190,8 +208,15 @@ func (c *Command) MCPArgs(raw json.RawMessage) (Args, error) {
 // jsonValue is a param's JSON value as the Go value the command line gives.
 func jsonValue(p *spec.Param, v json.RawMessage) (any, error) {
 	f := p.Field()
+	kind := f.Kind()
+	switch {
+	case p.Switch != "":
+		kind = protoreflect.BoolKind
+	case p.Text():
+		kind = protoreflect.StringKind
+	}
 	one := func(raw json.RawMessage) (any, error) {
-		switch f.Kind() {
+		switch kind {
 		case protoreflect.BoolKind:
 			var b bool
 			return b, json.Unmarshal(raw, &b)
@@ -221,14 +246,14 @@ func jsonValue(p *spec.Param, v json.RawMessage) (any, error) {
 			return n.Float64()
 		}
 	}
-	if !f.IsList() {
+	if !f.IsList() || p.Switch != "" {
 		return one(v)
 	}
 	var items []json.RawMessage
 	if err := json.Unmarshal(v, &items); err != nil {
 		return nil, err
 	}
-	if f.Kind() == protoreflect.EnumKind {
+	if kind == protoreflect.EnumKind || kind == protoreflect.StringKind {
 		var out []string
 		for _, it := range items {
 			var s string

@@ -59,6 +59,9 @@ func RenderCommandReference(s *spec.Schema) string {
 		if c.Waits {
 			meta = append(meta, "waits (no short deadline)")
 		}
+		if len(c.Aliases) > 0 {
+			meta = append(meta, "also `"+strings.Join(c.Aliases, "`, `")+"`")
+		}
 		fmt.Fprintf(&b, "\n*%s*\n", strings.Join(meta, " · "))
 
 		var visible []*spec.Param
@@ -84,6 +87,9 @@ func RenderCommandReference(s *spec.Schema) string {
 				help := strings.ReplaceAll(strings.TrimSpace(p.Help), "\n", " ")
 				help = strings.ReplaceAll(help, "|", `\|`)
 				fmt.Fprintf(&b, "| %s | %s | %s |\n", name, env, help)
+				if p.FileFlag != "" {
+					fmt.Fprintf(&b, "| `--%s` |  | Read `--%s` from this file (`-` for stdin). |\n", p.FileFlag, p.Name)
+				}
 			}
 		}
 	}

@@ -73,6 +73,16 @@ type dashDashCommand interface {
 	SetDashArgs(args []string) (before []string)
 }
 
+// takesDashArgs is cmd as one that takes the words after --, if it does: an
+// API command does when it has a passthrough param.
+func takesDashArgs(cmd command) (dashDashCommand, bool) {
+	if ac, ok := cmd.(*apiCommand); ok && ac.passthrough() == nil {
+		return nil, false
+	}
+	dd, ok := cmd.(dashDashCommand)
+	return dd, ok
+}
+
 // command is a leaf of the command tree. Exec returns the envelope's data.
 type command interface {
 	Exec(ctx context.Context, d deps) (any, error)
@@ -104,18 +114,16 @@ type cli struct {
 	Run       runCmd       `cmd:"" help:"Run a command on the node the controller picks (--node, --arch narrow it), in the session's workspace there, which it gets if it has none; run from a checkout of the repo, it syncs it there first."`
 	Shell     shellCmd     `cmd:"" help:"Open an interactive shell (over SSH) in the session's workspace (reuses an existing workspace when it has one; --sync pushes local checkout edits first)."`
 	Sync      syncCmd      `cmd:"" help:"Send a checkout's state, uncommitted changes too, to every workspace the session has of its repo."`
-	Logs        logsCmd        `cmd:"" help:"Print a command's output (all of it, its last lines, or until it ends)."`
-	Stop        stopCmd        `cmd:"" help:"Stop a command; with --comment and --diagnose, the agent waiting on it is told why and how to read what it was doing."`
-	Pause       pauseCmd       `cmd:"" help:"Pause a command by hand (frozen, its memory to swap), as stop takes a comment and diagnostics; it stays paused until hotbed resume."`
-	Resume      resumeCmd      `cmd:"" help:"Resume a paused command."`
-	Inspect     inspectCmd     `cmd:"" help:"Opt-in Linux inspection of a running command (procs, files, cgroup, kstack, maps, limits)."`
+	Logs      logsCmd      `cmd:"" help:"Print a command's output (all of it, its last lines, or until it ends)."`
+	Stop      stopCmd      `cmd:"" help:"Stop a command; with --comment and --diagnose, the agent waiting on it is told why and how to read what it was doing."`
+	Pause     pauseCmd     `cmd:"" help:"Pause a command by hand (frozen, its memory to swap), as stop takes a comment and diagnostics; it stays paused until hotbed resume."`
+	Resume    resumeCmd    `cmd:"" help:"Resume a paused command."`
+	Inspect   inspectCmd   `cmd:"" help:"Opt-in Linux inspection of a running command (procs, files, cgroup, kstack, maps, limits)."`
 	Sample    sampleCmd    `cmd:"" help:"Activity Monitor-style Linux sample of a running command: user & kernel stacks, syscalls, open files/sockets/locks, cgroup/PSI deltas, and perf hardware counters."`
 	Trace     traceCmd     `cmd:"" help:"Opt-in active Linux tracing of a running command (strace, perf, stat, stacks, bpf)."`
 	Profile   profileCmd   `cmd:"" help:"Query the always-on OpenTelemetry eBPF continuous profile for a command (live or finished) or a node (--node HOST)."`
 	Workspace workspaceCmd `cmd:"" help:"A session's workspaces (ls, show, files, file, release); hotbed run gives it one on each node it runs on."`
 	Step      stepCmd      `cmd:"" help:"A repo's setup steps: what brings its bases up to date (add, set, ls, show, rm)."`
-	Schedule  scheduleCmd  `cmd:"" help:"Scheduled commands: recurring work the cluster runs by itself, each run a session of its own (add, ls, show, rm, run, pause, resume)."`
-	Review    reviewCmd    `cmd:"" help:"Reviews of an exact version by reviewer agents: request one, read and decide its findings, send the user its link, read the user's responses (request, ls, show, link, start, findings, finish, fail, cancel, accept, dismiss, reopen, respond, responses)."`
 	Board     boardCmd     `cmd:"" help:"Project-scoped message board & task queue (read, post, reply, edit, delete, react, label, wait, tail, upload, download, actors, schema, schedule, task, import)."`
 	UI        uiCmd        `cmd:"" help:"Open the controller's cockpit UI in the default browser."`
 	Login     loginCmd     `cmd:"" help:"Sign in to a WorkOS-enabled Hotbed controller (Google / AuthKit browser login, or --device for headless machines)."`
@@ -148,7 +156,7 @@ func parse(args []string, stdout io.Writer, getenv func(string) string) (cmd com
 	if sep := slices.Index(args, "--"); sep >= 0 {
 		cmd, name, opts, exitCode, err = parseOnce(args[:sep], stdout, getenv)
 		if err == nil && exitCode == nil {
-			if dd, ok := cmd.(dashDashCommand); ok {
+			if dd, ok := takesDashArgs(cmd); ok {
 				if before := dd.SetDashArgs(args[sep+1:]); len(before) > 0 {
 					what := "unexpected argument"
 					if strings.HasPrefix(before[0], "-") {

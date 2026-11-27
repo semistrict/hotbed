@@ -854,7 +854,16 @@ func TestCommandsActingAsNoSessionAreRefused(t *testing.T) {
 	c.ask("brave-otter", storeQuestion)
 	c.setenv("HOTBED_PROJECT", "")
 	c.setenv("HOTBED_SESSION", "")
+	// review request pins a version of the checkout it runs in before it
+	// calls: one with a commit, reviewed whole. No session is bound to it.
+	dir := t.TempDir()
+	gitIn(t, dir, "init", "-q", "-b", "main")
+	write(t, filepath.Join(dir, "a.go"), "package a\n")
+	gitIn(t, dir, "add", ".")
+	gitIn(t, dir, "commit", "-qm", "main")
+	c.chdir(dir)
 	edited := `{"question": "Which store?", "header": "Store", "options": [{"label": "A", "description": "a"}, {"label": "B", "description": "b"}]}`
+	const unnamed = "name the session making the change"
 	cases := map[string]struct {
 		stdin string
 		args  []string
@@ -870,14 +879,31 @@ func TestCommandsActingAsNoSessionAreRefused(t *testing.T) {
 		"memory propose":  {"", []string{"--slug", "s", "--summary", "sum"}, "specify --global or -p PROJECT"},
 		"memory ls":       {"", nil, "say which project"},
 		"poll":            {"", []string{"--timeout", "1"}, "name the session"},
+		"schedule ls":     {"", nil, "say which project"},
+		"review ls":       {"", nil, "say which project"},
+		"review request":  {"", []string{"--whole"}, unnamed},
+		"review start":    {"", []string{"1", "--model", "claude-opus-5-5"}, unnamed},
+		"review findings": {`{"findings": []}`, []string{"1"}, unnamed},
+		"review finish":   {"", []string{"1", "--summary", "done"}, unnamed},
+		"review fail":     {"", []string{"1", "--reason", "broken"}, unnamed},
+		"review cancel":   {"", []string{"1"}, unnamed},
+		"review accept":   {"", []string{"1", "1"}, unnamed},
+		"review dismiss":  {"", []string{"1", "1", "--reason", "no"}, unnamed},
+		"review wont-fix": {"", []string{"1", "1", "--reason", "no"}, unnamed},
+		"review fixed":    {"", []string{"1", "1"}, unnamed},
+		"review invalid":  {"", []string{"1", "1", "--evidence", "not real"}, unnamed},
+		"review reopen":   {"", []string{"1", "1"}, unnamed},
 	}
+	// A response with no session is the user's, by design
+	// (TestReviewRespondsAsTheUserWithoutASession).
+	asUser := map[string]bool{"review respond": true}
 	s, err := apiSchema()
 	if err != nil {
 		t.Fatal(err)
 	}
 	for _, cmd := range s.Commands {
 		for _, p := range cmd.Params {
-			if _, ok := cases[cmd.Name()]; p.Default == "session" && !ok {
+			if _, ok := cases[cmd.Name()]; p.Default == "session" && !ok && !asUser[cmd.Name()] {
 				t.Errorf("%s defaults %s to the session, and is not tested acting as none here", cmd.Name(), p.Field().FullName())
 			}
 		}

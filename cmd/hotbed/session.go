@@ -338,7 +338,7 @@ func (c *sessionStatusCmd) Exec(ctx context.Context, d deps) (any, error) {
 			Node:        res.NodeHosts[cmd.NodeId],
 			Argv:        cmd.Argv,
 			Kind:        cmd.Kind,
-			State:       enumStateWord(cmd.State.String(), "COMMAND_STATE_"),
+			State:       enumWord(cmd.State),
 			ExitCode:    cmd.ExitCode,
 			URL:         cmd.Url,
 			Reason:      cmd.Reason,
@@ -359,7 +359,7 @@ func liveWorkspaceStatus(ws *pb.Workspace, nodeHosts map[string]string, c cockpi
 		Project:    ws.Project,
 		Node:       nodeHosts[ws.NodeId],
 		NodeID:     ws.NodeId,
-		State:      enumStateWord(ws.State.String(), "WORKSPACE_STATE_"),
+		State:      enumWord(ws.State),
 		BaseID:     ws.BaseId,
 		Repos:      ws.Repos,
 		SyncHost:   ws.SyncHost,
@@ -368,14 +368,6 @@ func liveWorkspaceStatus(ws *pb.Workspace, nodeHosts map[string]string, c cockpi
 		CockpitURL: c.workspace(ws.Id),
 		Throwaway:  ws.Throwaway,
 	}
-}
-
-func enumStateWord(name, prefix string) string {
-	s, ok := strings.CutPrefix(name, prefix)
-	if !ok || s == "UNSPECIFIED" {
-		return "unknown"
-	}
-	return strings.ToLower(s)
 }
 
 type sessionCurrentCmd struct {
@@ -834,15 +826,21 @@ func parseLimit(flag, s string, def time.Duration) (time.Duration, error) {
 	if s == "" {
 		return def, nil
 	}
-	d, err := time.ParseDuration(s)
-	if err == nil && (d < 0 || d%time.Second != 0) {
-		err = errors.New("not whole seconds")
-	}
+	d, err := parseDuration(s)
 	if err != nil {
 		return 0, api.Errorf(api.CodeInvalidArgs, "%s %q: %v", flag, s, err).
 			WithSuggestion(flag + " takes a duration such as 30m or 2h, or 0 for none")
 	}
 	return d, nil
+}
+
+// parseDuration reads a duration of whole seconds, such as 30m or 2h.
+func parseDuration(s string) (time.Duration, error) {
+	d, err := time.ParseDuration(s)
+	if err == nil && (d < 0 || d%time.Second != 0) {
+		err = errors.New("not whole seconds")
+	}
+	return d, err
 }
 
 type runCmd struct {
@@ -1014,7 +1012,7 @@ func (c *runCmd) start(ctx context.Context, d deps, w workerClients, ws *pb.Work
 			return nil, err
 		}
 		if !res.Skipped {
-			fmt.Fprintf(d.stderr, "hotbed: synced %d changed files (%s) from %s\n", res.FilesChanged, size(res.BundleBytes), dir)
+			fmt.Fprintf(d.stderr, "hotbed: synced %d changed files (%s) from %s\n", res.FilesChanged, formatBytes(res.BundleBytes), dir)
 		}
 	}
 	req.WorkspaceId, req.Attached, req.Port, req.Repo = ws.Id, !c.Detach, int32(c.Port), repo
@@ -1172,7 +1170,7 @@ func followStatus(id string, c *pb.Command, stderr io.Writer) (int, error) {
 		}
 		return 0, err
 	case api.Live(c.State):
-		return 0, api.Errorf(api.CodeInternal, "%s is still %s", id, enumStateWord(c.State.String(), "COMMAND_STATE_"))
+		return 0, api.Errorf(api.CodeInternal, "%s is still %s", id, enumWord(c.State))
 	case c.State == pb.CommandState_COMMAND_STATE_UNSPECIFIED:
 		return 0, api.Errorf(api.CodeInternal, "%s returned unspecified state", id)
 	case strings.HasPrefix(c.Reason, "killed by the OOM killer"):
@@ -1276,7 +1274,7 @@ func followLogStream(ctx context.Context, wk workerClients, id string, timestamp
 					if err == nil && cmd != nil && watchCtx.Err() == nil {
 						switch cmd.State {
 						case pb.CommandState_COMMAND_STATE_QUEUED, pb.CommandState_COMMAND_STATE_PARKED:
-							stateWord := enumStateWord(cmd.State.String(), "COMMAND_STATE_")
+							stateWord := enumWord(cmd.State)
 							msg := fmt.Sprintf("hotbed: %s %s\n", id, stateWord)
 							if cmd.Reason != "" {
 								msg = fmt.Sprintf("hotbed: %s %s: %s\n", id, stateWord, cmd.Reason)
@@ -1713,15 +1711,4 @@ func parseSize(s string) (int64, error) {
 		return 0, api.Errorf(api.CodeInvalidArgs, "size %q is not like 512M or 2G", s)
 	}
 	return int64(f * float64(mult)), nil
-}
-
-func size(n int64) string {
-	switch {
-	case n >= 1<<20:
-		return fmt.Sprintf("%.1f MiB", float64(n)/(1<<20))
-	case n >= 1<<10:
-		return fmt.Sprintf("%.1f KiB", float64(n)/(1<<10))
-	default:
-		return fmt.Sprintf("%d B", n)
-	}
 }

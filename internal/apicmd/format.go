@@ -19,17 +19,13 @@ import (
 // formatFuncs are the helper functions available in plain-text output templates.
 var formatFuncs = template.FuncMap{
 	// time renders unix milliseconds (protojson gives int64 as a string) as
-	// local wall time: 15:04:05 today, Jan 2 15:04 before.
+	// Clock does.
 	"time": func(v any) string {
 		ms, err := toInt64(v)
-		if err != nil || ms == 0 {
+		if err != nil {
 			return "-"
 		}
-		t := time.UnixMilli(ms).Local()
-		if y, m, d := time.Now().Date(); t.Year() == y && t.Month() == m && t.Day() == d {
-			return t.Format("15:04:05")
-		}
-		return t.Format("Jan 2 15:04")
+		return Clock(ms)
 	},
 	// signal renders an admission signal's value against its limit:
 	// "72% (holds at 60%, resumes under 30%)", "3.1 GiB free (holds under 5.0 GiB)".
@@ -118,15 +114,8 @@ var formatFuncs = template.FuncMap{
 		}
 		return s + strings.Repeat(" ", width-len(s))
 	},
-	// short truncates s to at most n runes, appending "..." when trimmed.
-	"short": func(n int, v any) string {
-		s := strings.ReplaceAll(strings.TrimSpace(fmt.Sprint(v)), "\n", " ")
-		r := []rune(s)
-		if len(r) <= n || n < 4 {
-			return s
-		}
-		return string(r[:n-3]) + "..."
-	},
+	// short is v as one line of at most n runes (Short).
+	"short": func(n int, v any) string { return Short(n, fmt.Sprint(v)) },
 	// ts formats a unix-millisecond timestamp (number or protojson string) as UTC RFC3339.
 	"ts": func(v any) string {
 		var ms int64
@@ -202,6 +191,29 @@ var formatFuncs = template.FuncMap{
 		}
 		return strings.Join(parts, " ")
 	},
+}
+
+// Clock renders unix milliseconds as local wall time: 15:04:05 today, Jan 2
+// 15:04 before; - for none.
+func Clock(ms int64) string {
+	if ms <= 0 {
+		return "-"
+	}
+	t := time.UnixMilli(ms).Local()
+	if y, m, d := time.Now().Date(); t.Year() == y && t.Month() == m && t.Day() == d {
+		return t.Format("15:04:05")
+	}
+	return t.Format("Jan 2 15:04")
+}
+
+// Short is s as one line of at most n runes, ending in "..." when cut.
+func Short(n int, s string) string {
+	s = strings.ReplaceAll(strings.TrimSpace(s), "\n", " ")
+	r := []rune(s)
+	if len(r) <= n || n < 4 {
+		return s
+	}
+	return string(r[:n-3]) + "..."
 }
 
 func formatBytesShort(b int64) string {

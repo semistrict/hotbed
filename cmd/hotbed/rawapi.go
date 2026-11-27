@@ -125,13 +125,8 @@ func (c *rawAPICmd) Raw(ctx context.Context, d deps) (int, bool, error) {
 		}
 		req.Header.Add(k, strings.TrimSpace(v))
 	}
-	if req.Header.Get("Authorization") == "" {
-		if tok := controllerAuthToken(d.getenv, c.Controller); tok != "" {
-			req.Header.Set("Authorization", "Bearer "+tok)
-			if host, _ := os.Hostname(); host != "" && req.Header.Get("X-Hotbed-Host") == "" {
-				req.Header.Set("X-Hotbed-Host", host)
-			}
-		}
+	if err := c.authorize(ctx, d, req.Header); err != nil {
+		return exitError, false, err
 	}
 	if req.Header.Get("Content-Type") == "" && (autoJSON || isRPC || (len(body) > 0 && json.Valid(body))) {
 		req.Header.Set("Content-Type", "application/json")

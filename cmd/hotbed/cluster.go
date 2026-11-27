@@ -36,9 +36,7 @@ type clients struct {
 	cluster    hotbedv1connect.ClusterServiceClient
 	sessions   hotbedv1connect.SessionServiceClient
 	workspaces hotbedv1connect.WorkspaceServiceClient
-	schedules  hotbedv1connect.ScheduleServiceClient
 	questions  hotbedv1connect.QuestionServiceClient
-	reviews    hotbedv1connect.ReviewServiceClient
 	gitAuth    hotbedv1connect.GitAuthServiceClient
 	board      hotbedv1connect.BoardServiceClient
 }
@@ -84,6 +82,29 @@ func resolveControllerAuthToken(ctx context.Context, getenv func(string) string,
 		return "", nil
 	}
 	return strings.TrimSpace(string(b)), nil
+}
+
+// authorize sets on a plain HTTP request to the controller (one no RPC
+// interceptor sees) what tells it who calls: this client's token for it, if
+// any, and this machine's name (identify).
+func (f controllerClient) authorize(ctx context.Context, d deps, h http.Header) error {
+	tok, err := resolveControllerAuthToken(ctx, d.getenv, f.Controller, d.http)
+	if err != nil {
+		return err
+	}
+	identify(h, tok)
+	return nil
+}
+
+// identify sets the headers that tell the controller who calls: tok as the
+// bearer token (none for ""), and X-Hotbed-Host; one already set is kept.
+func identify(h http.Header, tok string) {
+	if tok != "" && h.Get("Authorization") == "" {
+		h.Set("Authorization", "Bearer "+tok)
+	}
+	if host, err := os.Hostname(); err == nil && host != "" && h.Get("X-Hotbed-Host") == "" {
+		h.Set("X-Hotbed-Host", host)
+	}
 }
 
 // controllerAuthToken returns the bearer token for controller, failing closed
@@ -136,9 +157,7 @@ func (f controllerClient) clients(hc *http.Client) (clients, error) {
 		cluster:    hotbedv1connect.NewClusterServiceClient(conn),
 		sessions:   hotbedv1connect.NewSessionServiceClient(conn),
 		workspaces: hotbedv1connect.NewWorkspaceServiceClient(conn),
-		schedules:  hotbedv1connect.NewScheduleServiceClient(conn),
 		questions:  hotbedv1connect.NewQuestionServiceClient(conn),
-		reviews:    hotbedv1connect.NewReviewServiceClient(conn),
 		gitAuth:    hotbedv1connect.NewGitAuthServiceClient(conn),
 		board:      hotbedv1connect.NewBoardServiceClient(conn),
 	}, nil

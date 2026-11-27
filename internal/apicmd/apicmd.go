@@ -29,6 +29,7 @@ type Command struct {
 	*spec.Command
 	fixed    []expr               // by spec.Command.Fixed
 	defaults map[*spec.Param]expr // by param, for those with a default
+	switches map[*spec.Param]any  // by param, the value each switch sets
 	// FormatTmpl is the compiled plain-text output template, or nil.
 	FormatTmpl *template.Template
 }
@@ -76,11 +77,15 @@ type Hooks struct {
 	Inputs map[string]InputHook
 	Before map[string]BeforeHook
 	After  map[string]AfterHook
+	Parse  map[string]ParseHook
 }
 
 // NewHooks is an empty table.
 func NewHooks() Hooks {
-	return Hooks{Fields: map[string]FieldHook{}, Inputs: map[string]InputHook{}, Before: map[string]BeforeHook{}, After: map[string]AfterHook{}}
+	return Hooks{
+		Fields: map[string]FieldHook{}, Inputs: map[string]InputHook{}, Before: map[string]BeforeHook{},
+		After: map[string]AfterHook{}, Parse: map[string]ParseHook{},
+	}
 }
 
 type (
@@ -92,25 +97,35 @@ type (
 	BeforeHook func(ctx context.Context, c *Call, req proto.Message) error
 	// AfterHook runs after it.
 	AfterHook func(ctx context.Context, c *Call, req, res proto.Message) error
+	// ParseHook reads a param's text into one value of its field, a Go
+	// value of its type.
+	ParseHook func(ctx context.Context, c *Call, text string) (any, error)
 )
+
+// has says whether the table has the hook of that name and kind.
+func (h Hooks) has(name string, kind spec.HookKind) bool {
+	var ok bool
+	switch kind {
+	case spec.FieldHook:
+		_, ok = h.Fields[name]
+	case spec.InputHook:
+		_, ok = h.Inputs[name]
+	case spec.BeforeHook:
+		_, ok = h.Before[name]
+	case spec.AfterHook:
+		_, ok = h.After[name]
+	case spec.ParseHook:
+		_, ok = h.Parse[name]
+	}
+	return ok
+}
 
 // Missing is the hooks s names that h lacks: a client older than the API
 // whose commands it runs.
 func (h Hooks) Missing(s *spec.Schema) []string {
 	var out []string
 	for name, hook := range s.Hooks {
-		var ok bool
-		switch hook.Kind {
-		case spec.FieldHook:
-			_, ok = h.Fields[name]
-		case spec.InputHook:
-			_, ok = h.Inputs[name]
-		case spec.BeforeHook:
-			_, ok = h.Before[name]
-		case spec.AfterHook:
-			_, ok = h.After[name]
-		}
-		if !ok {
+		if !h.has(name, hook.Kind) {
 			out = append(out, name)
 		}
 	}
@@ -120,10 +135,11 @@ func (h Hooks) Missing(s *spec.Schema) []string {
 
 // Call is a command being run, as its hooks see it.
 type Call struct {
-	Command  *Command
-	given    string // -s's value
-	sessions Sessions
-	getenv   func(string) string // Runner.Getenv
+	Command        *Command
+	given          string // -s's value
+	sessions       Sessions
+	getenv         func(string) string                   // Runner.Getenv
+	checkoutRemote func(context.Context) (string, error) // Runner.CheckoutRemote
 }
 
 // Session is the session the command acts as, "" for none: a hook that

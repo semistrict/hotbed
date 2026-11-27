@@ -382,28 +382,6 @@ func sampleNonEmpty(a, b string) string {
 	return b
 }
 
-func formatSampleBytes(b int64) string {
-	neg := b < 0
-	if neg {
-		b = -b
-	}
-	var out string
-	switch {
-	case b >= 1<<30:
-		out = fmt.Sprintf("%.2f GiB", float64(b)/(1<<30))
-	case b >= 1<<20:
-		out = fmt.Sprintf("%.1f MiB", float64(b)/(1<<20))
-	case b >= 1<<10:
-		out = fmt.Sprintf("%.1f KiB", float64(b)/(1<<10))
-	default:
-		out = fmt.Sprintf("%d B", b)
-	}
-	if neg {
-		return "-" + out
-	}
-	return out
-}
-
 // safeFoldStack formats st using frames, guarding against out-of-bounds or nil
 // frame references from malformed or version-skewed responses.
 func safeFoldStack(frames []*pb.ProfileFrame, st *pb.FoldedStack) string {
@@ -468,8 +446,8 @@ func formatSampleTextReport(s *pb.ProcessSample) string {
 		}
 		fmt.Fprintf(&b, "CPU: %.1f%% (user +%.1f ms, sys +%.1f ms) | Mem: RSS %s, PSS %s, Swap %s | IO: +%s R / +%s W | CtxSw: +%d vol / +%d invol | FDs: %d\n",
 			p.CpuPct, p.CpuUserDeltaMs, p.CpuSysDeltaMs,
-			formatSampleBytes(p.RssBytes), formatSampleBytes(p.PssBytes), formatSampleBytes(p.SwapBytes),
-			formatSampleBytes(p.IoReadDeltaBytes), formatSampleBytes(p.IoWriteDeltaBytes),
+			formatBytes(p.RssBytes), formatBytes(p.PssBytes), formatBytes(p.SwapBytes),
+			formatBytes(p.IoReadDeltaBytes), formatBytes(p.IoWriteDeltaBytes),
 			p.VoluntaryCtxtDelta, p.NonvoluntaryCtxtDelta, p.OpenFdsCount)
 
 		if len(p.Threads) > 0 {
@@ -564,7 +542,7 @@ func formatSampleTextReport(s *pb.ProcessSample) string {
 			if f.SocketProto != "" {
 				extra = fmt.Sprintf(" %s %s %s->%s", f.SocketProto, f.SocketState, f.LocalAddr, f.RemoteAddr)
 				if f.TxQueueBytes > 0 || f.RxQueueBytes > 0 {
-					extra += fmt.Sprintf(" [tx_q=%s rx_q=%s]", formatSampleBytes(f.TxQueueBytes), formatSampleBytes(f.RxQueueBytes))
+					extra += fmt.Sprintf(" [tx_q=%s rx_q=%s]", formatBytes(f.TxQueueBytes), formatBytes(f.RxQueueBytes))
 				}
 			} else if f.Peer != "" {
 				extra = " <-> " + f.Peer
@@ -575,11 +553,11 @@ func formatSampleTextReport(s *pb.ProcessSample) string {
 				}
 				extra = " watching fds [" + strings.Join(tfds, ",") + "]"
 			} else if f.Pos > 0 || f.PosDelta != 0 {
-				extra = fmt.Sprintf(" pos=%s", formatSampleBytes(f.Pos))
+				extra = fmt.Sprintf(" pos=%s", formatBytes(f.Pos))
 				if f.PosDelta > 0 {
-					extra += fmt.Sprintf(" (+%s)", formatSampleBytes(f.PosDelta))
+					extra += fmt.Sprintf(" (+%s)", formatBytes(f.PosDelta))
 				} else if f.PosDelta < 0 {
-					extra += fmt.Sprintf(" (%s)", formatSampleBytes(f.PosDelta))
+					extra += fmt.Sprintf(" (%s)", formatBytes(f.PosDelta))
 				}
 			}
 			if f.LockInfo != "" {
@@ -612,7 +590,7 @@ func formatSampleTextReport(s *pb.ProcessSample) string {
 			cg.CpuCoresAvg, float64(cg.CpuUserDeltaUsec)/1000.0, float64(cg.CpuSystemDeltaUsec)/1000.0,
 			cg.NrThrottledDelta, float64(cg.ThrottledDeltaUsec)/1000.0)
 		fmt.Fprintf(&b, "  Memory: %s (delta %s, peak %s, swap %s) | Faults: +%d minor / +%d major\n",
-			formatSampleBytes(cg.End.MemoryCurrentBytes), formatSampleBytes(cg.MemoryDeltaBytes), formatSampleBytes(cg.End.MemoryPeakBytes), formatSampleBytes(cg.End.MemorySwapBytes),
+			formatBytes(cg.End.MemoryCurrentBytes), formatBytes(cg.MemoryDeltaBytes), formatBytes(cg.End.MemoryPeakBytes), formatBytes(cg.End.MemorySwapBytes),
 			cg.PgfaultDelta, cg.PgmajfaultDelta)
 		fmt.Fprintf(&b, "  PSI stalls in window: CPU some +%.1f ms | Mem some +%.1f ms / full +%.1f ms | IO some +%.1f ms / full +%.1f ms\n",
 			float64(cg.PsiCpuSomeDeltaUsec)/1000.0,
@@ -652,10 +630,6 @@ func formatSampleTextReport(s *pb.ProcessSample) string {
 	return b.String()
 }
 
-func interventionKindWord(k pb.InterventionKind) string {
-	return enumStateWord(k.String(), "INTERVENTION_KIND_")
-}
-
 // formatCommandDiagnosticsReport renders saved CommandDiagnostics (oldest
 // first) as plain text: intervention metadata, activity sample text report,
 // and inspection summary.
@@ -674,7 +648,7 @@ func formatCommandDiagnosticsReport(res *pb.GetCommandDiagnosticsResponse) strin
 		}
 		wrote = true
 		if iv := d.Intervention; iv != nil {
-			fmt.Fprintf(&b, "== %d: %s by %s", iv.Seq, interventionKindWord(iv.Kind), api.Who(iv.By))
+			fmt.Fprintf(&b, "== %d: %s by %s", iv.Seq, enumWord(iv.Kind), api.Who(iv.By))
 			if at := iv.GetBy().GetAt(); at > 0 {
 				fmt.Fprintf(&b, " (%s)", time.UnixMilli(at).UTC().Format(time.RFC3339))
 			}
@@ -742,7 +716,7 @@ func formatInspectTextReport(ins *pb.InspectCommandResponse) string {
 		for _, p := range ins.Procs {
 			fmt.Fprintf(&b, "  PID %-7d PPID %-7d [%s] %s  threads=%d  RSS=%s  wchan=%s",
 				p.Pid, p.Ppid, sampleNonEmpty(p.State, "?"), p.Comm, p.ThreadsCount,
-				formatSampleBytes(p.RssBytes), sampleNonEmpty(p.Wchan, "—"))
+				formatBytes(p.RssBytes), sampleNonEmpty(p.Wchan, "—"))
 			if p.Cmdline != "" {
 				fmt.Fprintf(&b, "  cmd=%s", p.Cmdline)
 			}
@@ -780,9 +754,9 @@ func formatInspectTextReport(ins *pb.InspectCommandResponse) string {
 			float64(cg.CpuUsageUsec)/1000.0, float64(cg.CpuUserUsec)/1000.0, float64(cg.CpuSystemUsec)/1000.0,
 			cg.NrThrottled, float64(cg.ThrottledUsec)/1000.0)
 		fmt.Fprintf(&b, "  Memory: %s (peak %s, anon %s, file %s, swap %s) | PIDs: %d (peak %d)\n",
-			formatSampleBytes(cg.MemoryCurrentBytes), formatSampleBytes(cg.MemoryPeakBytes),
-			formatSampleBytes(cg.MemoryAnonBytes), formatSampleBytes(cg.MemoryFileBytes),
-			formatSampleBytes(cg.MemorySwapBytes), cg.PidsCurrent, cg.PidsPeak)
+			formatBytes(cg.MemoryCurrentBytes), formatBytes(cg.MemoryPeakBytes),
+			formatBytes(cg.MemoryAnonBytes), formatBytes(cg.MemoryFileBytes),
+			formatBytes(cg.MemorySwapBytes), cg.PidsCurrent, cg.PidsPeak)
 		fmt.Fprintf(&b, "  PSI avg10: CPU some=%.2f%% full=%.2f%% | Mem some=%.2f%% full=%.2f%% | IO some=%.2f%% full=%.2f%%\n",
 			cg.PsiCpuSomeAvg10, cg.PsiCpuFullAvg10,
 			cg.PsiMemSomeAvg10, cg.PsiMemFullAvg10,
@@ -792,12 +766,12 @@ func formatInspectTextReport(ins *pb.InspectCommandResponse) string {
 		fmt.Fprintf(&b, "\nMemory Maps (%d):\n", len(ins.Maps))
 		for _, m := range ins.Maps {
 			fmt.Fprintf(&b, "  PID %-7d (%s) RSS=%s PSS=%s anon=%s swap=%s\n",
-				m.Pid, m.Comm, formatSampleBytes(m.RssBytes), formatSampleBytes(m.PssBytes),
-				formatSampleBytes(m.AnonBytes), formatSampleBytes(m.SwapBytes))
+				m.Pid, m.Comm, formatBytes(m.RssBytes), formatBytes(m.PssBytes),
+				formatBytes(m.AnonBytes), formatBytes(m.SwapBytes))
 			for _, r := range m.TopRegions[:min(len(m.TopRegions), 5)] {
 				fmt.Fprintf(&b, "    %-4s size=%-10s rss=%-10s pss=%-10s %s\n",
-					r.Perms, formatSampleBytes(r.SizeBytes), formatSampleBytes(r.RssBytes),
-					formatSampleBytes(r.PssBytes), sampleNonEmpty(r.Path, "[anon]"))
+					r.Perms, formatBytes(r.SizeBytes), formatBytes(r.RssBytes),
+					formatBytes(r.PssBytes), sampleNonEmpty(r.Path, "[anon]"))
 			}
 		}
 	}
