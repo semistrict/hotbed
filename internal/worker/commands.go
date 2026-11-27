@@ -1755,16 +1755,12 @@ func (e *Engine) limit(ctx context.Context) {
 	e.mu.Lock()
 	now := e.nowMs()
 	var stop, pause []*command
-	var cancelDiags []context.CancelFunc
 	for _, c := range e.commands {
 		cmd := c.cmd()
 		if !started(cmd.State) || cmd.StartedAt == nil || c.stopping {
 			continue
 		}
 		if hard := cmd.Limits.GetHardLimitSeconds(); hard > 0 && now-cmd.GetStartedAt() >= hard*1000 {
-			if c.cancelDiag != nil {
-				cancelDiags = append(cancelDiags, c.cancelDiag)
-			}
 			stop = append(stop, c)
 			continue
 		}
@@ -1777,11 +1773,11 @@ func (e *Engine) limit(ctx context.Context) {
 		}
 	}
 	e.mu.Unlock()
-	for _, cancel := range cancelDiags {
-		cancel()
-	}
 	for _, c := range stop {
 		hard := time.Duration(c.cmd().Limits.GetHardLimitSeconds()) * time.Second
+		// e.Stop sets c.stopping=true under e.mu before cancelling c.cancelDiag,
+		// so an in-flight Pause waking from cancelled diagnostics cannot race
+		// past pauseUnit's !c.stopping check and report a successful pause.
 		if _, err := e.Stop(ctx, c.cmd().Id, fmt.Sprintf("its hard time limit of %s passed", hard)); err != nil {
 			slog.Error("stop a command past its hard time limit", "command", c.cmd().Id, "err", err)
 		}
