@@ -2,6 +2,7 @@ import { CheckCircle2, Play, RefreshCw, Search, Trash2 } from "lucide-react";
 import { useEffect, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import {
   nextSixHourCronMs,
   sortGcCells,
@@ -16,12 +17,18 @@ import {
   type GcDryRunResponse,
 } from "../lib/gc";
 import { ago, bytes, compact, duration, hhmm } from "../lib/format";
+import { formatUsd, r2StorageCost } from "../lib/r2";
 import { SegmentedBar } from "./charts/Bars";
-import { formatUsd } from "./ObjectStorePanel";
 import { Card, Empty, StatTile } from "./Panel";
 
-const R2_STORAGE_PER_GB_MO = 0.015;
 const INITIAL_CELL_ROWS = 15;
+
+const GC_SORTS: readonly (readonly [GcCellSort, string])[] = [
+  ["bytes", "size"],
+  ["objects", "objs"],
+  ["unmeasured", "pending"],
+  ["oldest", "oldest"],
+];
 
 const KIND_COLORS: Record<string, string> = {
   segment: "var(--series-1)",
@@ -110,7 +117,7 @@ export function ClusterGcSection({ now }: { now: number }) {
   const newestSweep = measuredTimes.length > 0 ? Math.max(...measuredTimes) : null;
   const oldestSweep = measuredTimes.length > 0 ? Math.min(...measuredTimes) : null;
   const unmeasuredCount = Math.max(0, (data?.cells ?? 0) - (data?.measuredCells ?? 0));
-  const monthlyStorageCost = ((data?.totalBytes ?? 0) / 1e9) * R2_STORAGE_PER_GB_MO;
+  const monthlyStorageCost = r2StorageCost(data?.totalBytes ?? 0);
   const nextCronMs = nextSixHourCronMs(now);
   const nextInSec = Math.max(0, (nextCronMs - now) / 1000);
 
@@ -298,29 +305,15 @@ export function ClusterGcSection({ now }: { now: number }) {
                   className="h-7 w-32 pl-6 font-mono text-[11px] sm:w-40"
                 />
               </div>
-              <div className="inline-flex rounded-lg border border-border bg-background/60 p-0.5 font-mono text-[10px]">
-                {(
-                  [
-                    ["bytes", "size"],
-                    ["objects", "objs"],
-                    ["unmeasured", "pending"],
-                    ["oldest", "oldest"],
-                  ] as const
-                ).map(([key, label]) => (
-                  <button
-                    key={key}
-                    type="button"
-                    onClick={() => setSort(key)}
-                    className={`rounded-md px-2 py-0.5 transition-colors ${
-                      sort === key
-                        ? "bg-primary/15 text-primary"
-                        : "text-muted-foreground hover:text-foreground"
-                    }`}
-                  >
-                    {label}
-                  </button>
-                ))}
-              </div>
+              <Tabs value={sort} onValueChange={(v) => setSort(v as GcCellSort)}>
+                <TabsList aria-label="Sort cells" className="h-7 border border-border bg-background/60">
+                  {GC_SORTS.map(([key, label]) => (
+                    <TabsTrigger key={key} value={key} className="px-2 font-mono text-[10px]">
+                      {label}
+                    </TabsTrigger>
+                  ))}
+                </TabsList>
+              </Tabs>
             </div>
           }
         >

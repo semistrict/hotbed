@@ -80,6 +80,38 @@ export function StatTile({
   );
 }
 
+const METRIC_TONE = {
+  default: "text-foreground",
+  ember: "text-primary",
+  critical: "text-critical",
+  serious: "text-serious-ink",
+} as const;
+
+/** A small figure with its label and a line of detail, for a grid of them inside a card. */
+export function MetricTile({
+  label,
+  value,
+  sub,
+  tone = "default",
+}: {
+  label: string;
+  value: ReactNode;
+  sub?: string;
+  tone?: keyof typeof METRIC_TONE;
+}) {
+  return (
+    <div className="min-w-0 rounded-lg border border-border bg-background/50 px-3 py-2 font-mono">
+      <div className="truncate text-[10px] text-muted-foreground">{label}</div>
+      <div className={cn("num mt-0.5 text-[15px] font-semibold", METRIC_TONE[tone])}>{value}</div>
+      {sub && (
+        <div className="mt-0.5 truncate text-[10px] text-faint" title={sub}>
+          {sub}
+        </div>
+      )}
+    </div>
+  );
+}
+
 export function Empty({ children }: { children: ReactNode }) {
   return (
     <ShadEmpty className="rounded-lg border border-dashed border-border-strong px-4 py-8">

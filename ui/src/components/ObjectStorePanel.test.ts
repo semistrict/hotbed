@@ -20,14 +20,8 @@ vi.mock("@tanstack/react-router", () => ({
   Link: ({ children, className }: { children: ReactNode; className?: string }) => createElement("a", { className }, children),
 }));
 
-import {
-  ClusterObjectStoreSection,
-  estimateR2MonthlyCost,
-  formatUsd,
-  nodeCacheHit,
-  NodeObjectStoreSection,
-  summarizeClusterObjectStore,
-} from "./ObjectStorePanel";
+import { estimateR2MonthlyCost, formatUsd } from "../lib/r2";
+import { ClusterObjectStoreSection, nodeCacheHit, NodeObjectStoreSection, summarizeClusterObjectStore } from "./ObjectStorePanel";
 
 describe("summarizeClusterObjectStore", () => {
   it("reports hasData=false when no node has object store counters or 24h transfer", () => {

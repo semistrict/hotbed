@@ -1,5 +1,4 @@
-import { Fragment, useMemo, useState } from "react";
-import { Button } from "@/components/ui/button";
+import { useMemo, useState } from "react";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -7,18 +6,16 @@ import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import {
   type FileLock,
   type FoldedStack,
-  type PerfCounter,
   type ProcessSample,
   type ProfileFrame,
-  type SampledCgroup,
   type SampledOpenFile,
   type SampledProcess,
   type SampledThread,
 } from "../api";
-import { bytes, hhmmss, signedBytes } from "../lib/format";
-import { SegmentedBar } from "./charts/Bars";
+import { bytes, hhmmss } from "../lib/format";
+import { CgroupView, FilesTable, MemoryMapsList, PmuCountersGrid } from "./DiagnosticsViews";
 import { FlameGraph } from "./FlameGraph";
-import { Empty } from "./Panel";
+import { Empty, MetricTile } from "./Panel";
 
 type SampleTab = "stacks" | "files" | "system";
 type StackSubView = "tree" | "threads" | "flamegraph";
@@ -177,7 +174,7 @@ export function SampleReport({ sample, onSamplePid }: { sample: ProcessSample; o
 
       {/* Summary metrics strip */}
       <div className="grid grid-cols-2 gap-2.5 font-mono text-[11.5px] sm:grid-cols-3 lg:grid-cols-5">
-        <SampleMetric
+        <MetricTile
           label="Processes / Threads"
           value={`${sample.procs.length} / ${counts.threads}`}
           sub={
@@ -187,24 +184,24 @@ export function SampleReport({ sample, onSamplePid }: { sample: ProcessSample; o
           }
           tone={counts.dState > 0 ? "critical" : "default"}
         />
-        <SampleMetric
+        <MetricTile
           label="CPU in window"
           value={`${(sample.cgroupStats?.cpuCoresAvg ?? counts.cpuDeltaMs / Math.max(1, Number(sample.durationMs))).toFixed(2)} cores`}
           sub={`Δ${counts.cpuDeltaMs.toFixed(0)} ms · ${counts.ctxtDelta.toLocaleString()} ctx sw`}
           tone="ember"
         />
-        <SampleMetric
+        <MetricTile
           label="I/O in window"
           value={bytes(counts.ioRead + counts.ioWrite)}
           sub={`R ${bytes(counts.ioRead)} · W ${bytes(counts.ioWrite)}${counts.advancingFiles > 0 ? ` · ${counts.advancingFiles} active FD` : ""}`}
         />
-        <SampleMetric
+        <MetricTile
           label="Open FDs & Locks"
           value={`${sample.files.length} FDs`}
           sub={`${sample.locks.length} locks${counts.blockedLocks > 0 ? ` (${counts.blockedLocks} blocked!)` : ""}${counts.queuedSockets > 0 ? ` · ${counts.queuedSockets} queued sock` : ""}`}
           tone={counts.blockedLocks > 0 ? "critical" : "default"}
         />
-        <SampleMetric
+        <MetricTile
           label="Memory & PSI"
           value={bytes(sample.cgroupStats?.end?.memoryCurrentBytes ?? sample.procs.reduce((a, p) => a + Number(p.rssBytes), 0))}
           sub={
@@ -215,47 +212,25 @@ export function SampleReport({ sample, onSamplePid }: { sample: ProcessSample; o
         />
       </div>
 
-      {/* Primary tabs */}
-      <div className="flex flex-wrap items-center gap-1.5 border-b border-border pb-2.5 font-mono text-[11.5px]">
-        {(
-          [
-            ["stacks", `Call Graph & Threads (${counts.threads})`],
-            ["files", `Open Files, Sockets & Locks (${sample.files.length}${sample.locks.length ? ` · ${sample.locks.length} locks` : ""})`],
-            ["system", `Cgroup, PSI & PMU${sample.perfCounters.length ? ` (${sample.perfCounters.length})` : ""}`],
-          ] as const
-        ).map(([k, label]) => (
-          <button
-            key={k}
-            type="button"
-            onClick={() => setTab(k)}
-            className={`rounded-lg border px-3 py-1 transition-colors ${
-              tab === k
-                ? "border-primary bg-ember-wash text-primary"
-                : "border-border bg-background/50 text-muted-foreground hover:border-border-strong hover:text-foreground"
-            }`}
-          >
-            {label}
-          </button>
-        ))}
-      </div>
+      <Tabs value={tab} onValueChange={(v) => setTab(v as SampleTab)}>
+        <TabsList className="h-auto max-w-full flex-wrap justify-start border border-border bg-card/70">
+          <TabsTrigger value="stacks" className="px-3 font-mono text-[11.5px]">
+            Call Graph &amp; Threads ({counts.threads})
+          </TabsTrigger>
+          <TabsTrigger value="files" className="px-3 font-mono text-[11.5px]">
+            Open Files, Sockets &amp; Locks ({sample.files.length}
+            {sample.locks.length ? ` · ${sample.locks.length} locks` : ""})
+          </TabsTrigger>
+          <TabsTrigger value="system" className="px-3 font-mono text-[11.5px]">
+            Cgroup, PSI &amp; PMU{sample.perfCounters.length ? ` (${sample.perfCounters.length})` : ""}
+          </TabsTrigger>
+        </TabsList>
+      </Tabs>
 
       {/* Tab content */}
       {tab === "stacks" && <StacksAndThreadsTab sample={sample} onSamplePid={onSamplePid} />}
       {tab === "files" && <FilesAndLocksTab files={sample.files} locks={sample.locks} />}
-      {tab === "system" && <SystemAndPmuTab cg={sample.cgroupStats ?? null} counters={sample.perfCounters} procs={sample.procs} />}
-    </div>
-  );
-}
-
-function SampleMetric({ label, value, sub, tone = "default" }: { label: string; value: string; sub: string; tone?: "default" | "ember" | "critical" }) {
-  const valCls = tone === "critical" ? "text-critical" : tone === "ember" ? "text-primary" : "text-foreground";
-  return (
-    <div className="rounded-lg border border-border bg-background/50 px-3 py-2">
-      <div className="text-[10px] text-muted-foreground">{label}</div>
-      <div className={`num mt-0.5 text-[15px] font-semibold ${valCls}`}>{value}</div>
-      <div className="mt-0.5 truncate text-[10px] text-faint" title={sub}>
-        {sub}
-      </div>
+      {tab === "system" && <SystemAndPmuTab sample={sample} />}
     </div>
   );
 }
@@ -670,38 +645,6 @@ function ThreadRow({ thread }: { thread: SampledThread }) {
 // ---- Tab 2: Open Files, Sockets, Pipes, Epoll & Locks ----------------------
 
 function FilesAndLocksTab({ files, locks }: { files: SampledOpenFile[]; locks: FileLock[] }) {
-  const [kindFilter, setKindFilter] = useState<string>("all");
-  const [search, setSearch] = useState("");
-
-  const counts = useMemo(() => {
-    const c: Record<string, number> = { all: files.length, advancing: 0, flagged: 0 };
-    for (const f of files) {
-      c[f.kind] = (c[f.kind] ?? 0) + 1;
-      if (f.posDelta !== 0n) c.advancing = (c.advancing ?? 0) + 1;
-      if (f.txQueueBytes > 0n || f.rxQueueBytes > 0n || f.lockInfo) c.flagged = (c.flagged ?? 0) + 1;
-    }
-    return c;
-  }, [files]);
-
-  const shown = useMemo(() => {
-    const q = search.trim().toLowerCase();
-    return files.filter((f) => {
-      if (kindFilter === "advancing" && f.posDelta === 0n) return false;
-      else if (kindFilter === "flagged" && f.txQueueBytes === 0n && f.rxQueueBytes === 0n && !f.lockInfo) return false;
-      else if (kindFilter !== "all" && kindFilter !== "advancing" && kindFilter !== "flagged" && f.kind !== kindFilter) return false;
-      if (!q) return true;
-      return (
-        f.target.toLowerCase().includes(q) ||
-        f.comm.toLowerCase().includes(q) ||
-        f.localAddr.toLowerCase().includes(q) ||
-        f.remoteAddr.toLowerCase().includes(q) ||
-        f.socketState.toLowerCase().includes(q) ||
-        f.peer.toLowerCase().includes(q) ||
-        f.lockInfo.toLowerCase().includes(q)
-      );
-    });
-  }, [files, kindFilter, search]);
-
   return (
     <div className="space-y-4">
       {locks.length > 0 && (
@@ -746,257 +689,33 @@ function FilesAndLocksTab({ files, locks }: { files: SampledOpenFile[]; locks: F
         </div>
       )}
 
-      {files.length === 0 ? (
-        <Empty>No open file descriptors captured.</Empty>
-      ) : (
-        <div className="space-y-2.5">
-          <div className="flex flex-wrap items-center gap-2">
-            <div className="flex flex-wrap gap-1">
-              {(
-                [
-                  ["all", "all"],
-                  ["file", "file"],
-                  ["socket", "socket"],
-                  ["pipe", "pipe"],
-                  ["anon_inode", "anon_inode"],
-                  ["deleted", "deleted"],
-                  ["device", "device"],
-                  ["advancing", "Δpos active"],
-                  ["flagged", "queued / locked"],
-                ] as const
-              ).map(([k, label]) => {
-                const n = counts[k] ?? 0;
-                if (k !== "all" && n === 0) return null;
-                return (
-                  <Button
-                    key={k}
-                    type="button"
-                    variant="outline"
-                    size="xs"
-                    onClick={() => setKindFilter(k)}
-                    className={`font-mono text-[10.5px] ${
-                      kindFilter === k ? "border-primary bg-ember-wash text-primary hover:bg-ember-wash" : "text-muted-foreground"
-                    }`}
-                  >
-                    {label} ({n})
-                  </Button>
-                );
-              })}
-            </div>
-            <Input
-              type="search"
-              value={search}
-              onChange={(e) => setSearch(e.target.value)}
-              placeholder="Filter paths, sockets, peers, locks..."
-              className="h-7 w-full bg-background/80 font-mono text-[11px] placeholder:text-faint sm:ml-auto sm:w-56"
-            />
-          </div>
-
-          {shown.length === 0 ? (
-            <Empty>No open file descriptors match the current filter.</Empty>
-          ) : (
-            <div className="max-h-[420px] overflow-auto rounded-lg border border-border">
-              <table className="w-full border-collapse font-mono text-[11px]">
-                <thead className="sticky top-0 bg-card text-left text-[10px] uppercase tracking-wider text-muted-foreground">
-                  <tr className="border-b border-border">
-                    <th className="px-2 py-1.5">PID</th>
-                    <th className="px-2 py-1.5">FD</th>
-                    <th className="px-2 py-1.5">Kind</th>
-                    <th className="px-2 py-1.5">Mode</th>
-                    <th className="px-2 py-1.5">Target / Peer / Watched FDs</th>
-                    <th className="px-2 py-1.5 text-right">State / Queues / ΔOffset</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-border">
-                  {shown.map((f, i) => (
-                    <tr key={`${f.pid}-${f.fd}-${i}`} className="hover:bg-muted/40">
-                      <td className="num px-2 py-1.5 text-muted-foreground whitespace-nowrap">
-                        {f.pid} <span className="text-faint">{f.comm}</span>
-                      </td>
-                      <td className="num px-2 py-1.5 text-foreground">{f.fd}</td>
-                      <td className="px-2 py-1.5">
-                        <span
-                          className={`rounded px-1.5 py-0.5 text-[10px] ${
-                            f.kind === "socket"
-                              ? "bg-frost-wash text-frost"
-                              : f.kind === "deleted"
-                                ? "bg-[color-mix(in_oklab,var(--critical)_15%,transparent)] text-critical"
-                                : f.kind === "pipe"
-                                  ? "bg-ember-wash text-primary"
-                                  : "bg-muted text-muted-foreground"
-                          }`}
-                        >
-                          {f.socketProto || f.kind}
-                        </span>
-                      </td>
-                      <td className="px-2 py-1.5 text-faint">{f.mode || "—"}</td>
-                      <td className="max-w-[460px] px-2 py-1.5">
-                        <div className="truncate text-foreground" title={f.target}>
-                          {f.localAddr ? `${f.localAddr}${f.remoteAddr && !f.remoteAddr.endsWith(":0") ? ` → ${f.remoteAddr}` : ""}` : f.target}
-                        </div>
-                        {(f.peer || f.epollTfds.length > 0 || f.lockInfo) && (
-                          <div className="mt-0.5 flex flex-wrap gap-2 text-[10px]">
-                            {f.peer && <span className="text-primary">↔ {f.peer}</span>}
-                            {f.epollTfds.length > 0 && <span className="text-frost">watching fds: {f.epollTfds.join(", ")}</span>}
-                            {f.lockInfo && <span className="text-warning-ink">lock: {f.lockInfo}</span>}
-                          </div>
-                        )}
-                      </td>
-                      <td className="num px-2 py-1.5 text-right whitespace-nowrap">
-                        {f.socketState ? (
-                          <div>
-                            <span className={f.socketState === "LISTEN" ? "text-good-ink" : f.socketState === "ESTABLISHED" ? "text-frost" : "text-warning-ink"}>
-                              {f.socketState}
-                            </span>
-                            {(f.txQueueBytes > 0n || f.rxQueueBytes > 0n) && (
-                              <div className="text-[10px] text-warning-ink">
-                                tx {bytes(f.txQueueBytes)} · rx {bytes(f.rxQueueBytes)}
-                              </div>
-                            )}
-                          </div>
-                        ) : f.pos > 0n || f.posDelta !== 0n ? (
-                          <div>
-                            <span className="text-muted-foreground">{bytes(f.pos)}</span>
-                            {f.posDelta !== 0n && <span className="ml-1.5 text-good-ink">({signedBytes(f.posDelta)})</span>}
-                          </div>
-                        ) : (
-                          <span className="text-faint">—</span>
-                        )}
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          )}
-        </div>
-      )}
+      <FilesTable files={files} empty="No open file descriptors captured." />
     </div>
   );
 }
 
 // ---- Tab 3: Cgroup v2, PSI & Hardware PMU Counters -------------------------
 
-function SystemAndPmuTab({ cg, counters, procs }: { cg: SampledCgroup | null; counters: PerfCounter[]; procs: SampledProcess[] }) {
+function SystemAndPmuTab({ sample }: { sample: ProcessSample }) {
+  const cg = sample.cgroupStats;
+  const maps = sample.procs
+    .filter((p) => p.memoryMap || p.limits)
+    .map((p) => ({ ...p, topRegions: p.memoryMap?.topRegions ?? [] }));
   return (
     <div className="space-y-5 font-mono text-[11.5px]">
-      {cg && cg.end ? (
-        <div className="space-y-4">
-          <div className="grid grid-cols-2 gap-2.5 sm:grid-cols-4">
-            <SampleMetric
-              label="Cgroup CPU avg"
-              value={`${cg.cpuCoresAvg.toFixed(2)} cores`}
-              sub={`user +${(Number(cg.cpuUserDeltaUsec) / 1000).toFixed(1)}ms · sys +${(Number(cg.cpuSystemDeltaUsec) / 1000).toFixed(1)}ms`}
-              tone="ember"
-            />
-            <SampleMetric
-              label="CPU Throttled (Δ)"
-              value={`+${cg.nrThrottledDelta}`}
-              sub={`+${(Number(cg.throttledDeltaUsec) / 1000).toFixed(1)} ms in window (total ${cg.end.nrThrottled})`}
-              tone={cg.nrThrottledDelta > 0n ? "critical" : "default"}
-            />
-            <SampleMetric
-              label="Memory / Peak"
-              value={bytes(cg.end.memoryCurrentBytes)}
-              sub={`Δ${signedBytes(cg.memoryDeltaBytes)} · peak ${bytes(cg.end.memoryPeakBytes)} · swap ${bytes(cg.end.memorySwapBytes)}`}
-            />
-            <SampleMetric
-              label="Page Faults (Δ)"
-              value={`+${cg.pgfaultDelta.toLocaleString()}`}
-              sub={`+${cg.pgmajfaultDelta.toLocaleString()} major · PIDs ${cg.end.pidsCurrent}/${cg.end.pidsPeak}`}
-            />
-          </div>
+      {cg?.end ? <CgroupView stats={cg.end} window={cg} /> : <Empty>No cgroup v2 stats available for this sample.</Empty>}
 
-          <div className="grid grid-cols-1 gap-2.5 sm:grid-cols-3">
-            <SampleMetric
-              label="PSI CPU stall (Δ)"
-              value={`+${(Number(cg.psiCpuSomeDeltaUsec) / 1000).toFixed(1)} ms`}
-              sub={`some avg10 ${cg.end.psiCpuSomeAvg10.toFixed(2)}%`}
-            />
-            <SampleMetric
-              label="PSI Memory stall (Δ)"
-              value={`+${(Number(cg.psiMemSomeDeltaUsec) / 1000).toFixed(1)} ms`}
-              sub={`full +${(Number(cg.psiMemFullDeltaUsec) / 1000).toFixed(1)}ms · avg10 ${cg.end.psiMemSomeAvg10.toFixed(2)}%`}
-            />
-            <SampleMetric
-              label="PSI I/O stall (Δ)"
-              value={`+${(Number(cg.psiIoSomeDeltaUsec) / 1000).toFixed(1)} ms`}
-              sub={`full +${(Number(cg.psiIoFullDeltaUsec) / 1000).toFixed(1)}ms · avg10 ${cg.end.psiIoSomeAvg10.toFixed(2)}%`}
-            />
-          </div>
-
-          <div>
-            <div className="mb-1 text-[10px] uppercase tracking-wider text-muted-foreground">Cgroup memory breakdown</div>
-            <SegmentedBar
-              tall
-              format={bytes}
-              parts={[
-                { id: "anon", label: "anon", value: Number(cg.end.memoryAnonBytes), color: "var(--series-2)" },
-                { id: "file", label: "page cache", value: Number(cg.end.memoryFileBytes), color: "var(--series-1)" },
-                { id: "kernel", label: "kernel", value: Number(cg.end.memoryKernelBytes), color: "var(--series-4)" },
-                { id: "slab", label: "slab", value: Number(cg.end.memorySlabBytes), color: "var(--series-3)" },
-                { id: "swap", label: "swap", value: Number(cg.end.memorySwapBytes), color: "var(--frost)" },
-              ]}
-            />
-          </div>
-        </div>
-      ) : (
-        <Empty>No cgroup v2 stats available for this sample.</Empty>
-      )}
-
-      {counters.length > 0 && (
+      {sample.perfCounters.length > 0 && (
         <div className="space-y-2">
           <div className="eyebrow">Hardware & Software PMU Counters (perf stat)</div>
-          <div className="grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-5">
-            {counters.map((c) => (
-              <div key={c.name} className="rounded-lg border border-border bg-card/70 px-3 py-2">
-                <div className="text-[10px] text-muted-foreground">{c.name}</div>
-                <div className="num mt-1 text-[14px] font-semibold text-foreground">
-                  {c.value}
-                  {c.unit && <span className="ml-1 text-[10.5px] font-normal text-muted-foreground">{c.unit}</span>}
-                </div>
-                {c.note && (
-                  <div className="mt-0.5 truncate text-[10px] text-faint" title={c.note}>
-                    {c.note}
-                  </div>
-                )}
-              </div>
-            ))}
-          </div>
+          <PmuCountersGrid counters={sample.perfCounters} />
         </div>
       )}
 
-      {procs.some((p) => p.memoryMap || p.limits) && (
+      {maps.length > 0 && (
         <div className="space-y-2">
           <div className="eyebrow">Per-Process Memory Maps & Security Context</div>
-          <div className="space-y-2">
-            {procs.map((p) => (
-              <Fragment key={p.pid}>
-                <div className="rounded-lg border border-border bg-card/60 p-3 text-[11px]">
-                  <div className="flex flex-wrap items-center justify-between gap-2">
-                    <span className="font-semibold text-foreground">
-                      PID {p.pid} ({p.comm})
-                    </span>
-                    <span className="num text-muted-foreground">
-                      RSS {bytes(p.rssBytes)} · PSS {bytes(p.pssBytes)} · Private Dirty {bytes(p.privateDirtyBytes)} · Swap {bytes(p.swapBytes)}
-                      {p.seccomp && ` · seccomp: ${p.seccomp}`}
-                    </span>
-                  </div>
-                  {p.memoryMap && p.memoryMap.topRegions.length > 0 && (
-                    <div className="mt-2 divide-y divide-border/60">
-                      {p.memoryMap.topRegions.slice(0, 8).map((r, i) => (
-                        <div key={i} className="flex items-center gap-3 py-0.5 text-[10.5px]">
-                          <span className="w-10 shrink-0 text-faint">{r.perms}</span>
-                          <span className="min-w-0 flex-1 truncate text-foreground">{r.path}</span>
-                          <span className="num shrink-0 text-muted-foreground">{bytes(r.sizeBytes)}</span>
-                        </div>
-                      ))}
-                    </div>
-                  )}
-                </div>
-              </Fragment>
-            ))}
-          </div>
+          <MemoryMapsList maps={maps} maxRegions={8} />
         </div>
       )}
     </div>

@@ -1,27 +1,13 @@
 import { Link } from "@tanstack/react-router";
-import { BaseState, type Node, type ObjectStoreStats, type Snapshot } from "../api";
+import type { ReactNode } from "react";
+import type { Node, ObjectStoreStats, Snapshot } from "../api";
 import { Meter, SegmentedBar } from "./charts/Bars";
 import { Columns } from "./charts/Columns";
 import { LineChart } from "./charts/LineChart";
-import { Card, Empty, StatTile } from "./Panel";
+import { Card, Empty, MetricTile, StatTile } from "./Panel";
 import { ClusterPeerCacheCard, NodePeerCacheCard } from "./PeerCachePanel";
 import { bytes, bytesPerSec, compact, duration, percent } from "../lib/format";
-
-// Published Cloudflare R2 Standard pricing (USD, gross before free tier; $0 egress).
-const R2_STORAGE_PER_GB_MO = 0.015;
-const R2_CLASS_A_PER_MILLION = 4.5;
-const R2_CLASS_B_PER_MILLION = 0.36;
-
-export interface R2MonthlyCostEstimate {
-  storageBytes: number;
-  storageCost: number;
-  classAOpsMonth: number;
-  classACost: number;
-  classBOpsMonth: number;
-  classBCost: number;
-  opsCost: number;
-  totalMonthly: number;
-}
+import { estimateR2MonthlyCost, formatUsd, type R2MonthlyCostEstimate } from "../lib/r2";
 
 export interface ClusterObjectStoreSummary {
   hasData: boolean;
@@ -59,49 +45,6 @@ export interface ClusterObjectStoreSummary {
   daxDeviceReadBytes: number;
   daxDeviceReadsSec: number;
   cost: R2MonthlyCostEstimate;
-}
-
-/**
- * Estimates gross monthly Cloudflare R2 spend from 24h extrapolated Class A/B
- * request rates plus unique warm base storage (deduplicated by project+gen+arch).
- */
-export function estimateR2MonthlyCost(s: Snapshot, puts24h: number, gets24h: number): R2MonthlyCostEstimate {
-  const nodeArch = new Map(s.nodes.map((n) => [n.id, n.resources?.arch ?? ""]));
-  const seenBase = new Map<string, number>();
-  for (const b of s.bases) {
-    if (b.state !== BaseState.WARM) continue;
-    const arch = b.cladefsCell?.arch || nodeArch.get(b.nodeId) || "any";
-    const key = `${b.project}:${b.generation}:${arch}`;
-    const sz = Number(b.sizeBytes);
-    const prev = seenBase.get(key) ?? 0;
-    if (sz > prev) seenBase.set(key, sz);
-  }
-  let storageBytes = 0;
-  for (const sz of seenBase.values()) storageBytes += sz;
-
-  const classAOpsMonth = puts24h * 30;
-  const classBOpsMonth = gets24h * 30;
-  const storageCost = (storageBytes / 1e9) * R2_STORAGE_PER_GB_MO;
-  const classACost = (classAOpsMonth / 1e6) * R2_CLASS_A_PER_MILLION;
-  const classBCost = (classBOpsMonth / 1e6) * R2_CLASS_B_PER_MILLION;
-  const opsCost = classACost + classBCost;
-  return {
-    storageBytes,
-    storageCost,
-    classAOpsMonth,
-    classACost,
-    classBOpsMonth,
-    classBCost,
-    opsCost,
-    totalMonthly: storageCost + opsCost,
-  };
-}
-
-export function formatUsd(n: number): string {
-  if (!Number.isFinite(n) || n < 0) return "—";
-  if (n === 0) return "$0.00";
-  if (n < 0.01) return "<$0.01";
-  return `$${n.toFixed(2)}`;
 }
 
 export function summarizeClusterObjectStore(s: Snapshot): ClusterObjectStoreSummary {
@@ -234,6 +177,165 @@ export function nodeCacheHit(os?: ObjectStoreStats): number | null {
 
 const hourLabel = (t: number | bigint) => String(new Date(Number(t)).getHours()).padStart(2, "0");
 
+/** What a DAX window health card shows: one node's, or the whole cluster's summed. */
+export interface DaxStats {
+  activeVms: number;
+  windowMappedBytes: number;
+  daxWindowFull: number;
+  daxWindowReclaims: number;
+  daxRegionsFull: number;
+  daxWritesHeldBySealsSec: number;
+  daxDeviceReadBytes: number;
+  daxDeviceReadsSec: number;
+}
+
+export function daxStats(os: ObjectStoreStats): DaxStats {
+  return {
+    activeVms: os.activeVms,
+    windowMappedBytes: Number(os.windowMappedBytes),
+    daxWindowFull: Number(os.daxWindowFull),
+    daxWindowReclaims: Number(os.daxWindowReclaims),
+    daxRegionsFull: Number(os.daxRegionsFull),
+    daxWritesHeldBySealsSec: Number(os.daxWritesHeldBySealsNs) / 1e9,
+    daxDeviceReadBytes: Number(os.daxDeviceReadBytes),
+    daxDeviceReadsSec: Number(os.daxDeviceReadsNs) / 1e9,
+  };
+}
+
+/** Bytes uploaded by kind since cladefsd started. */
+function UploadMixBar({ segments, extents, checkpoints, other }: { segments: number; extents: number; checkpoints: number; other: number }) {
+  return (
+    <SegmentedBar
+      tall
+      format={bytes}
+      parts={[
+        { id: "segments", label: "segments", value: segments, color: "var(--series-1)" },
+        { id: "extents", label: "extents", value: extents, color: "var(--series-2)" },
+        { id: "checkpoints", label: "checkpoints", value: checkpoints, color: "var(--series-3)" },
+        { id: "other", label: "other", value: other, color: "var(--faint)" },
+      ]}
+    />
+  );
+}
+
+/** Uploaded and downloaded bytes per hour. */
+function TransferColumns({
+  hours,
+  height,
+  current,
+}: {
+  hours: readonly { hour: bigint; uploadBytes: bigint; downloadBytes: bigint }[];
+  height: number;
+  current?: string;
+}) {
+  return (
+    <Columns
+      columns={hours.map((h) => ({ key: String(h.hour), label: hourLabel(h.hour), values: [Number(h.uploadBytes), Number(h.downloadBytes)] }))}
+      series={[
+        { id: "up", label: "uploaded", color: "var(--series-1)" },
+        { id: "down", label: "downloaded", color: "var(--series-2)" },
+      ]}
+      format={bytes}
+      labelEvery={3}
+      current={current}
+      height={height}
+    />
+  );
+}
+
+/** How full one cache is, against its capacity when it has one. */
+function CacheMeter({
+  label,
+  used,
+  cap,
+  warn,
+  danger,
+  share = false,
+  note,
+}: {
+  label: string;
+  used: number;
+  cap: number;
+  warn: number;
+  danger: number;
+  /** Name the share used beside the figures. */
+  share?: boolean;
+  note?: string;
+}) {
+  return (
+    <div>
+      <div className="mb-1 flex justify-between font-mono text-[10px] text-muted-foreground">
+        <span>{label}</span>
+        <span className="num text-foreground">
+          {bytes(used)}
+          {cap > 0 ? ` / ${bytes(cap)}${share ? ` (${percent(used / cap)})` : ""}` : ""}
+          {note}
+        </span>
+      </div>
+      <Meter value={cap > 0 ? used / cap : 0} warn={warn} danger={danger} />
+    </div>
+  );
+}
+
+const PART_CACHE = { label: "SSD part cache", warn: 0.85, danger: 0.95 } as const;
+const EXTENT_CACHE = { label: "RAM extent cache", warn: 0.9, danger: 0.98 } as const;
+
+/** DAX window pressure, seal stalls and non-DAX reads; `children` add detail under the reads. */
+function DaxHealthCard({ dax, className, children }: { dax: DaxStats; className?: string; children?: ReactNode }) {
+  const thrashing = dax.daxWindowFull > 0 || dax.daxRegionsFull > 0;
+  return (
+    <Card
+      className={className}
+      title="DAX window health"
+      sub={
+        dax.activeVms > 0
+          ? `${dax.activeVms} active ${dax.activeVms === 1 ? "VM" : "VMs"} · ${bytes(dax.windowMappedBytes)} mapped`
+          : "No active Firecracker VMs right now"
+      }
+      right={
+        dax.activeVms > 0 && (
+          <span className={`rounded-full px-2 py-0.5 font-mono text-[10px] ${thrashing ? "bg-serious/15 text-serious-ink" : "bg-sprout/15 text-sprout"}`}>
+            {thrashing ? `${compact(dax.daxWindowFull)} full` : "healthy"}
+          </span>
+        )
+      }
+    >
+      <div className="grid grid-cols-1 gap-3 font-mono text-[11px] sm:grid-cols-2">
+        <MetricTile
+          label="window full / reclaims"
+          value={`${compact(dax.daxWindowFull)} / ${compact(dax.daxWindowReclaims)}`}
+          sub={`${compact(dax.daxRegionsFull)} region pool full`}
+          tone={thrashing ? "serious" : "default"}
+        />
+        <MetricTile
+          label="writes held by seals"
+          value={duration(dax.daxWritesHeldBySealsSec)}
+          sub="guest wait on commit seals"
+          tone={dax.daxWritesHeldBySealsSec > 10 ? "ember" : "default"}
+        />
+        <div className="rounded-lg border border-border bg-background/50 px-3 py-2 sm:col-span-2">
+          <div className="flex flex-wrap items-baseline justify-between gap-1">
+            <span className="text-[10px] text-muted-foreground">non-DAX device reads</span>
+            <span className="num text-[12px] text-foreground">
+              {bytes(dax.daxDeviceReadBytes)} · {duration(dax.daxDeviceReadsSec)}
+            </span>
+          </div>
+          {children}
+        </div>
+      </div>
+    </Card>
+  );
+}
+
+function NodeDot({ n, colors }: { n: Node; colors: Map<string, string> }) {
+  return (
+    <Link to="/nodes/$hostname" params={{ hostname: n.hostname }} className="flex items-center gap-1.5 text-foreground hover:text-primary">
+      <span className="inline-block size-1.5 rounded-full" style={{ background: colors.get(n.id) ?? "var(--faint)" }} />
+      <span>{n.hostname}</span>
+    </Link>
+  );
+}
+
 export function ClusterObjectStoreSection({ s, colors }: { s: Snapshot; colors: Map<string, string> }) {
   const sum = summarizeClusterObjectStore(s);
   if (!sum.hasData) return null;
@@ -249,8 +351,6 @@ export function ClusterObjectStoreSection({ s, colors }: { s: Snapshot; colors: 
       color: colors.get(n.id) ?? "var(--faint)",
       points: (s.series[n.id]?.samples ?? []).map((p) => ({ t: Number(p.t), v: pick(p) })),
     }));
-
-  const daxThrashing = sum.daxWindowFull > 0 || sum.daxRegionsFull > 0;
 
   return (
     <section className="col-span-12 space-y-4">
@@ -311,34 +411,11 @@ export function ClusterObjectStoreSection({ s, colors }: { s: Snapshot; colors: 
         </Card>
 
         <Card className="col-span-12 lg:col-span-7" title="R2 transfer, per hour" sub="Uploaded and downloaded across all nodes, last 24 hours">
-          <Columns
-            columns={s.hourly.map((h) => ({
-              key: String(h.hour),
-              label: hourLabel(h.hour),
-              values: [Number(h.uploadBytes), Number(h.downloadBytes)],
-            }))}
-            series={[
-              { id: "up", label: "uploaded", color: "var(--series-1)" },
-              { id: "down", label: "downloaded", color: "var(--series-2)" },
-            ]}
-            format={bytes}
-            labelEvery={3}
-            current={String(s.hourly[s.hourly.length - 1]?.hour)}
-            height={170}
-          />
+          <TransferColumns hours={s.hourly} height={170} current={String(s.hourly[s.hourly.length - 1]?.hour)} />
         </Card>
 
         <Card className="col-span-12 lg:col-span-5" title="Upload mix & nodes" sub="Cumulative cladefsd counters since each daemon started">
-          <SegmentedBar
-            tall
-            format={bytes}
-            parts={[
-              { id: "segments", label: "segments", value: sum.sinceBootSegments, color: "var(--series-1)" },
-              { id: "extents", label: "extents", value: sum.sinceBootExtents, color: "var(--series-2)" },
-              { id: "checkpoints", label: "checkpoints", value: sum.sinceBootCheckpoints, color: "var(--series-3)" },
-              { id: "other", label: "other", value: sum.sinceBootOther, color: "var(--faint)" },
-            ]}
-          />
+          <UploadMixBar segments={sum.sinceBootSegments} extents={sum.sinceBootExtents} checkpoints={sum.sinceBootCheckpoints} other={sum.sinceBootOther} />
           <div className="mt-4 overflow-x-auto">
             <table className="w-full text-left font-mono text-[11px]">
               <thead>
@@ -362,10 +439,7 @@ export function ClusterObjectStoreSection({ s, colors }: { s: Snapshot; colors: 
                   return (
                     <tr key={n.id} className="hover:bg-muted/40">
                       <td className="py-1.5 pr-2">
-                        <Link to="/nodes/$hostname" params={{ hostname: n.hostname }} className="flex items-center gap-1.5 text-foreground hover:text-primary">
-                          <span className="inline-block size-1.5 rounded-full" style={{ background: colors.get(n.id) ?? "var(--faint)" }} />
-                          <span>{n.hostname}</span>
-                        </Link>
+                        <NodeDot n={n} colors={colors} />
                       </td>
                       <td className="num px-2 py-1.5 text-right text-foreground">{bytes(up24)}</td>
                       <td className="num px-2 py-1.5 text-right text-muted-foreground">{bytes(down24)}</td>
@@ -393,42 +467,17 @@ export function ClusterObjectStoreSection({ s, colors }: { s: Snapshot; colors: 
             <div className="space-y-4">
               {liveStoreNodes.map((n) => {
                 const os = n.objectStore!;
-                const partUsed = Number(os.partCacheBytes);
-                const partCap = Number(os.partCacheCapacityBytes);
-                const extUsed = Number(os.extentCacheBytes);
-                const extCap = Number(os.extentCacheCapacityBytes);
                 return (
                   <div key={n.id} className="space-y-1.5 border-b border-border/60 pb-3 last:border-b-0 last:pb-0">
                     <div className="flex flex-wrap items-center justify-between gap-1 font-mono text-[11px]">
-                      <Link to="/nodes/$hostname" params={{ hostname: n.hostname }} className="flex items-center gap-1.5 text-foreground hover:text-primary">
-                        <span className="inline-block size-1.5 rounded-full" style={{ background: colors.get(n.id) ?? "var(--faint)" }} />
-                        <span>{n.hostname}</span>
-                      </Link>
+                      <NodeDot n={n} colors={colors} />
                       <span className="text-[10px] text-faint">
                         {compact(os.extentCachePinnedEntries)} pinned · {compact(os.extentCacheIdleEntries)} idle · {compact(os.cacheTrims)} trims
                       </span>
                     </div>
                     <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-                      <div>
-                        <div className="mb-1 flex justify-between font-mono text-[10px] text-muted-foreground">
-                          <span>SSD part cache</span>
-                          <span className="num text-foreground">
-                            {bytes(partUsed)}
-                            {partCap > 0 ? ` / ${bytes(partCap)}` : ""}
-                          </span>
-                        </div>
-                        <Meter value={partCap > 0 ? partUsed / partCap : 0} warn={0.85} danger={0.95} />
-                      </div>
-                      <div>
-                        <div className="mb-1 flex justify-between font-mono text-[10px] text-muted-foreground">
-                          <span>RAM extent cache</span>
-                          <span className="num text-foreground">
-                            {bytes(extUsed)}
-                            {extCap > 0 ? ` / ${bytes(extCap)}` : ""}
-                          </span>
-                        </div>
-                        <Meter value={extCap > 0 ? extUsed / extCap : 0} warn={0.9} danger={0.98} />
-                      </div>
+                      <CacheMeter {...PART_CACHE} used={Number(os.partCacheBytes)} cap={Number(os.partCacheCapacityBytes)} />
+                      <CacheMeter {...EXTENT_CACHE} used={Number(os.extentCacheBytes)} cap={Number(os.extentCacheCapacityBytes)} />
                     </div>
                   </div>
                 );
@@ -437,68 +486,25 @@ export function ClusterObjectStoreSection({ s, colors }: { s: Snapshot; colors: 
           )}
         </Card>
 
-        <Card
-          className="col-span-12 lg:col-span-6 xl:col-span-4"
-          title="DAX window health"
-          sub={
-            sum.activeVms > 0
-              ? `${sum.activeVms} active ${sum.activeVms === 1 ? "VM" : "VMs"} · ${bytes(sum.windowMappedBytes)} mapped`
-              : "No active Firecracker VMs right now"
-          }
-          right={
-            sum.activeVms > 0 && (
-              <span
-                className={`rounded-full px-2 py-0.5 font-mono text-[10px] ${
-                  daxThrashing ? "bg-serious/15 text-serious-ink" : "bg-sprout/15 text-sprout"
-                }`}
-              >
-                {daxThrashing ? `${compact(sum.daxWindowFull)} full` : "healthy"}
-              </span>
-            )
-          }
-        >
-          <div className="grid grid-cols-1 gap-3 font-mono text-[11px] sm:grid-cols-2">
-            <div className="rounded-xl border border-border/70 bg-muted/25 p-2.5">
-              <div className="eyebrow">window full / reclaims</div>
-              <div className={`num mt-1 text-[16px] font-semibold ${daxThrashing ? "text-serious-ink" : "text-foreground"}`}>
-                {compact(sum.daxWindowFull)} <span className="text-[11px] font-normal text-muted-foreground">/ {compact(sum.daxWindowReclaims)}</span>
-              </div>
-              <div className="mt-0.5 text-[10px] text-faint">{compact(sum.daxRegionsFull)} region pool full</div>
+        <DaxHealthCard dax={sum} className="col-span-12 lg:col-span-6 xl:col-span-4">
+          {vmNodes.length > 0 && (
+            <div className="mt-2 space-y-1 border-t border-border/60 pt-1.5 text-[10.5px] text-muted-foreground">
+              {vmNodes.map((n) => {
+                const os = n.objectStore!;
+                return (
+                  <div key={n.id} className="flex flex-wrap items-center justify-between gap-1">
+                    <Link to="/nodes/$hostname" params={{ hostname: n.hostname }} className="text-foreground hover:text-primary">
+                      {n.hostname} ({os.activeVms} VM)
+                    </Link>
+                    <span className="num">
+                      {bytes(os.windowMappedBytes)} mapped · {compact(os.daxWindowFull)} full · {duration(Number(os.daxWritesHeldBySealsNs) / 1e9)} seal
+                    </span>
+                  </div>
+                );
+              })}
             </div>
-            <div className="rounded-xl border border-border/70 bg-muted/25 p-2.5">
-              <div className="eyebrow">writes held by seals</div>
-              <div className={`num mt-1 text-[16px] font-semibold ${sum.daxWritesHeldBySealsSec > 10 ? "text-primary" : "text-foreground"}`}>
-                {duration(sum.daxWritesHeldBySealsSec)}
-              </div>
-              <div className="mt-0.5 text-[10px] text-faint">guest wait on commit seals</div>
-            </div>
-            <div className="rounded-xl border border-border/70 bg-muted/25 p-2.5 sm:col-span-2">
-              <div className="flex flex-wrap items-baseline justify-between gap-1">
-                <span className="eyebrow">non-DAX device reads</span>
-                <span className="num text-[12px] text-foreground">
-                  {bytes(sum.daxDeviceReadBytes)} · {duration(sum.daxDeviceReadsSec)}
-                </span>
-              </div>
-              {vmNodes.length > 0 && (
-                <div className="mt-2 space-y-1 border-t border-border/60 pt-1.5 text-[10.5px] text-muted-foreground">
-                  {vmNodes.map((n) => {
-                    const os = n.objectStore!;
-                    return (
-                      <div key={n.id} className="flex flex-wrap items-center justify-between gap-1">
-                        <Link to="/nodes/$hostname" params={{ hostname: n.hostname }} className="text-foreground hover:text-primary">
-                          {n.hostname} ({os.activeVms} VM)
-                        </Link>
-                        <span className="num">
-                          {bytes(os.windowMappedBytes)} mapped · {compact(os.daxWindowFull)} full · {duration(Number(os.daxWritesHeldBySealsNs) / 1e9)} seal
-                        </span>
-                      </div>
-                    );
-                  })}
-                </div>
-              )}
-            </div>
-          </div>
-        </Card>
+          )}
+        </DaxHealthCard>
 
         <Card
           className="col-span-12 lg:col-span-6 xl:col-span-3"
@@ -550,12 +556,7 @@ export function NodeObjectStoreSection({ n, s }: { n: Node; s: Snapshot }) {
   const waitSec = os ? Number(os.commitWaitNs) / 1e9 : 0;
   const totalReqs = os ? Number(os.putRequests + os.getRequests + os.otherRequests) : 0;
   const fails = os ? Number(os.failedRequests) : 0;
-  const partUsed = Number(os?.partCacheBytes ?? 0n);
-  const partCap = Number(os?.partCacheCapacityBytes ?? 0n);
-  const extUsed = Number(os?.extentCacheBytes ?? 0n);
-  const extCap = Number(os?.extentCacheCapacityBytes ?? 0n);
   const hasDax = os && (os.activeVms > 0 || os.windowMappedBytes > 0n);
-  const daxThrashing = os ? os.daxWindowFull > 0n || os.daxRegionsFull > 0n : false;
 
   return (
     <section className="space-y-4">
@@ -623,35 +624,18 @@ export function NodeObjectStoreSection({ n, s }: { n: Node; s: Snapshot }) {
 
       <div className={`grid gap-4 ${os ? "lg:grid-cols-3" : "lg:grid-cols-1"}`}>
         <Card className={os ? "lg:col-span-2" : ""} title="R2 transfer, 24 hours" sub="Uploaded and downloaded per hour">
-          <Columns
-            columns={hours.map((h) => ({
-              key: String(h.hour),
-              label: hourLabel(h.hour),
-              values: [Number(h.uploadBytes), Number(h.downloadBytes)],
-            }))}
-            series={[
-              { id: "up", label: "uploaded", color: "var(--series-1)" },
-              { id: "down", label: "downloaded", color: "var(--series-2)" },
-            ]}
-            format={bytes}
-            labelEvery={3}
-            height={150}
-          />
+          <TransferColumns hours={hours} height={150} />
         </Card>
         {os && (
           <Card title="Upload mix & read path" sub="Cumulative cladefsd counters since daemon start">
             <div className="space-y-5">
               <div>
                 <div className="eyebrow mb-2">uploaded by kind · {bytes(os.uploadedBytes)}</div>
-                <SegmentedBar
-                  tall
-                  format={bytes}
-                  parts={[
-                    { id: "segments", label: "segments", value: Number(os.uploadedSegmentsBytes), color: "var(--series-1)" },
-                    { id: "extents", label: "extents", value: Number(os.uploadedExtentsBytes), color: "var(--series-2)" },
-                    { id: "checkpoints", label: "checkpoints", value: Number(os.uploadedCheckpointsBytes), color: "var(--series-3)" },
-                    { id: "other", label: "other", value: Number(os.uploadedOtherBytes), color: "var(--faint)" },
-                  ]}
+                <UploadMixBar
+                  segments={Number(os.uploadedSegmentsBytes)}
+                  extents={Number(os.uploadedExtentsBytes)}
+                  checkpoints={Number(os.uploadedCheckpointsBytes)}
+                  other={Number(os.uploadedOtherBytes)}
                 />
               </div>
               <div>
@@ -674,42 +658,17 @@ export function NodeObjectStoreSection({ n, s }: { n: Node; s: Snapshot }) {
         <div className={`grid gap-4 ${hasDax ? "lg:grid-cols-2" : "lg:grid-cols-1"}`}>
           <Card title="Part cache & extent cache" sub="Local SSD part cache and cladefsd in-memory extent cache">
             <div className="space-y-3.5 font-mono text-[11px]">
-              <div>
-                <div className="mb-1 flex justify-between text-muted-foreground">
-                  <span>SSD part cache</span>
-                  <span className="num text-foreground">
-                    {bytes(partUsed)}
-                    {partCap > 0 ? ` / ${bytes(partCap)} (${percent(partUsed / partCap)})` : ""}
-                  </span>
-                </div>
-                <Meter value={partCap > 0 ? partUsed / partCap : 0} warn={0.85} danger={0.95} />
-              </div>
-              <div>
-                <div className="mb-1 flex justify-between text-muted-foreground">
-                  <span>RAM extent cache</span>
-                  <span className="num text-foreground">
-                    {bytes(extUsed)}
-                    {extCap > 0 ? ` / ${bytes(extCap)} (${percent(extUsed / extCap)})` : ""}
-                  </span>
-                </div>
-                <Meter value={extCap > 0 ? extUsed / extCap : 0} warn={0.9} danger={0.98} />
-              </div>
+              <CacheMeter {...PART_CACHE} used={Number(os.partCacheBytes)} cap={Number(os.partCacheCapacityBytes)} share />
+              <CacheMeter {...EXTENT_CACHE} used={Number(os.extentCacheBytes)} cap={Number(os.extentCacheCapacityBytes)} share />
               {(os.pageCacheLimitBytes > 0n || os.pageCacheBytes > 0n) && (
-                <div>
-                  <div className="mb-1 flex justify-between text-muted-foreground">
-                    <span>Cell page cache</span>
-                    <span className="num text-foreground">
-                      {bytes(os.pageCacheBytes)}
-                      {os.pageCacheLimitBytes > 0n ? ` / ${bytes(os.pageCacheLimitBytes)}` : ""}
-                      {os.pageCacheDirtyBytes > 0n ? ` (${bytes(os.pageCacheDirtyBytes)} dirty)` : ""}
-                    </span>
-                  </div>
-                  <Meter
-                    value={os.pageCacheLimitBytes > 0n ? Number(os.pageCacheBytes) / Number(os.pageCacheLimitBytes) : 0}
-                    warn={0.85}
-                    danger={0.95}
-                  />
-                </div>
+                <CacheMeter
+                  label="Cell page cache"
+                  used={Number(os.pageCacheBytes)}
+                  cap={Number(os.pageCacheLimitBytes)}
+                  warn={0.85}
+                  danger={0.95}
+                  note={os.pageCacheDirtyBytes > 0n ? ` (${bytes(os.pageCacheDirtyBytes)} dirty)` : undefined}
+                />
               )}
               <div className="flex flex-wrap gap-4 pt-1 text-[10.5px] text-faint">
                 <span>
@@ -735,42 +694,7 @@ export function NodeObjectStoreSection({ n, s }: { n: Node; s: Snapshot }) {
             </div>
           </Card>
 
-          {hasDax && (
-            <Card
-              title="DAX window health"
-              sub={`${os.activeVms} active ${os.activeVms === 1 ? "VM" : "VMs"} · ${bytes(os.windowMappedBytes)} mapped`}
-              right={
-                <span
-                  className={`rounded-full px-2 py-0.5 font-mono text-[10px] ${
-                    daxThrashing ? "bg-serious/15 text-serious-ink" : "bg-sprout/15 text-sprout"
-                  }`}
-                >
-                  {daxThrashing ? `${compact(os.daxWindowFull)} full` : "healthy"}
-                </span>
-              }
-            >
-              <div className="grid grid-cols-2 gap-3 font-mono text-[11px]">
-                <div>
-                  <div className="eyebrow">window full / reclaims</div>
-                  <div className={`num mt-0.5 text-[15px] font-semibold ${daxThrashing ? "text-serious-ink" : "text-foreground"}`}>
-                    {compact(os.daxWindowFull)} / {compact(os.daxWindowReclaims)}
-                  </div>
-                  <div className="text-[10px] text-faint">{compact(os.daxRegionsFull)} region pool full</div>
-                </div>
-                <div>
-                  <div className="eyebrow">writes held by seals</div>
-                  <div className={`num mt-0.5 text-[15px] font-semibold ${Number(os.daxWritesHeldBySealsNs) > 10e9 ? "text-primary" : "text-foreground"}`}>
-                    {duration(Number(os.daxWritesHeldBySealsNs) / 1e9)}
-                  </div>
-                  <div className="text-[10px] text-faint">guest stall on commit seals</div>
-                </div>
-                <div className="col-span-2 border-t border-border/60 pt-2 text-[10.5px] text-muted-foreground">
-                  non-DAX device reads: <span className="num text-foreground">{bytes(os.daxDeviceReadBytes)}</span> in{" "}
-                  <span className="num text-foreground">{duration(Number(os.daxDeviceReadsNs) / 1e9)}</span>
-                </div>
-              </div>
-            </Card>
-          )}
+          {hasDax && <DaxHealthCard dax={daxStats(os)} />}
         </div>
       )}
 

@@ -8,7 +8,7 @@ import { Link } from "@tanstack/react-router";
 import { PartCacheShardState, type Node, type ObjectStoreStats, type PartFetches, type Snapshot } from "../api";
 import { SegmentedBar } from "./charts/Bars";
 import { LineChart } from "./charts/LineChart";
-import { Card } from "./Panel";
+import { Card, MetricTile } from "./Panel";
 import { bytes, bytesPerSec, compact, percent } from "../lib/format";
 
 export interface PeerMember {
@@ -210,16 +210,6 @@ function FetchSourcesBar({ f }: { f: FetchSources }) {
   );
 }
 
-function Tile({ label, value, sub, alert = false }: { label: string; value: string; sub: string; alert?: boolean }) {
-  return (
-    <div className="rounded-xl border border-border/70 bg-muted/25 p-2.5">
-      <div className="eyebrow">{label}</div>
-      <div className={`num mt-1 text-[16px] font-semibold ${alert ? "text-serious-ink" : "text-foreground"}`}>{value}</div>
-      <div className="mt-0.5 text-[10px] text-faint">{sub}</div>
-    </div>
-  );
-}
-
 function MeshProblems({ m, hostByAddress }: { m: PeerMember; hostByAddress: Map<string, string> }) {
   const name = (a: string) => hostByAddress.get(a) ?? a;
   if (m.missingPeers.length === 0 && m.extraPeers.length === 0) return null;
@@ -253,18 +243,18 @@ export function ClusterPeerCacheCard({ s, colors }: { s: Snapshot; colors: Map<s
     >
       <div className="grid gap-4 lg:grid-cols-12">
         <div className="grid grid-cols-2 gap-3 font-mono text-[11px] lg:col-span-4">
-          <Tile label="from peers (24h)" value={bytes(sum.givenBytes24h)} sub={`${compact(sum.given24h)} parts not downloaded from R2`} />
-          <Tile
+          <MetricTile label="from peers (24h)" value={bytes(sum.givenBytes24h)} sub={`${compact(sum.given24h)} parts not downloaded from R2`} />
+          <MetricTile
             label="peer share (24h)"
             value={sum.peerShare24h !== null ? percent(sum.peerShare24h, 1) : "—"}
             sub="of bytes from peers + R2 downloads"
           />
-          <Tile label="served (24h)" value={bytes(sum.servedBytes24h)} sub={`${compact(sum.served24h)} parts · ${compact(sum.servedMissing)} held none since start`} />
-          <Tile
+          <MetricTile label="served (24h)" value={bytes(sum.servedBytes24h)} sub={`${compact(sum.served24h)} parts · ${compact(sum.servedMissing)} held none since start`} />
+          <MetricTile
             label="failed asks"
             value={compact(sum.failed)}
             sub={`of ${compact(sum.asked)} asked · ${compact(sum.missing)} owner had none`}
-            alert={sum.failed > 0}
+            tone={sum.failed > 0 ? "serious" : "default"}
           />
         </div>
         <div className="lg:col-span-8">
