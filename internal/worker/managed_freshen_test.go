@@ -23,8 +23,9 @@ func TestManagedFreshenAdmissionHoldProgressAndCompletion(t *testing.T) {
 	now := time.Unix(1795300000, 0)
 	e := limited(t, &now)
 
-	// Hold admission via critical host memory pressure.
-	e.SetHostUsage(&pb.HostUsage{HostMemoryPressure: 100, RemainingTtlMs: 30_000})
+	// Hold admission via memory pressure.
+	sys := e.cfg.System.(*fake.System)
+	sys.Psi = 30
 	e.Sample()
 
 	fuseRoot := t.TempDir()
@@ -115,12 +116,12 @@ echo "::hotbed:: steps done"
 	if err != nil {
 		t.Fatalf("Workspace: %v", err)
 	}
-	if !strings.Contains(ws.Reason, "queued:") || !strings.Contains(ws.Reason, "host memory pressure") {
-		t.Fatalf("preparing workspace reason while queued = %q, want queued + host memory pressure", ws.Reason)
+	if !strings.Contains(ws.Reason, "queued:") || !strings.Contains(ws.Reason, "memory pressure 30%") {
+		t.Fatalf("preparing workspace reason while queued = %q, want queued + memory pressure 30%%", ws.Reason)
 	}
 
-	// Clear host memory pressure: admission now starts the command.
-	e.SetHostUsage(&pb.HostUsage{HostMemoryPressure: 0, RemainingTtlMs: 30_000})
+	// Clear memory pressure: admission now starts the command.
+	sys.Psi = 0
 	e.Sample()
 	e.admit(t.Context())
 
@@ -245,7 +246,7 @@ func TestManagedFreshenCancelWhileQueuedSkipsBeforeStartAndRollsBackOnStartFail(
 	proj := &pb.HostedProject{Name: "hotbed"}
 
 	// Case 1: Stop while queued -> BeforeStart never runs, Wait unblocks with CANCELLED.
-	e.SetHostUsage(&pb.HostUsage{HostMemoryPressure: 100, RemainingTtlMs: 30_000})
+	e.cfg.System.(*fake.System).Psi = 30
 	e.Sample()
 	var beforeCalls atomic.Int32
 	h1, err := e.startManagedFreshen(t.Context(), managedFreshenSpec{

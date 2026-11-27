@@ -16,26 +16,6 @@ const (
 	cpuHoldAt   = 60.0
 	cpuResumeAt = 30.0
 	cpuWindow   = 30 * time.Second
-
-	// hostUsageTTL is how long a host-side usage sample from the controller's
-	// heartbeat reply stays valid before it is treated as stale and ignored
-	// (board 9281).
-	hostUsageTTL = 45 * time.Second
-
-	// Host-side starvation thresholds from the VM host supervisor (board 9281).
-	// On macOS, memory pressure is discrete: normal=0, warn=50, critical=100.
-	// macOS routinely sits at warn (level 2) with ample free RAM; hard-holding
-	// at 50% blacks out vm1 for 45-50m stretches and dumps all load onto other
-	// arm64 nodes. Hard-hold only on critical (100%); warn is handled as a soft
-	// placement penalty in the controller.
-	hostMemPressureHoldAt  = 100.0
-	hostCPUBusyHoldAt      = 0.85 // host CPU utilization >= 85%
-	hostCPUBusyResumeAt    = 0.70 // resume once host CPU drops under 70%
-	hostLoadPerCPUHoldAt   = 1.25 // host 1m load >= 1.25 * host_cpus
-	hostLoadPerCPUResumeAt = 1.00 // resume once host 1m load < 1.0 * host_cpus
-	hostStealGuestMin      = 0.50 // guest CPU busy outside nested VMs >= 50% when checking steal
-	hostStealDeltaHoldAt   = 0.35 // guest busy outside nested VMs - vm_cpu_busy >= 35% steal
-	hostStealDeltaResumeAt = 0.20 // resume once steal drops under 20%
 )
 
 // pressureAt is one CPU pressure reading.
@@ -82,161 +62,6 @@ type hold struct {
 	since        time.Time
 }
 
-// SetHostUsage stores the latest host-side usage reported by the controller's
-// heartbeat reply, re-evaluates admission holds, and wakes admission when a
-// hold clears. Passing nil or an already-expired sample clears stored host
-// usage. When RemainingTtlMs is populated (> 0), the sample expires at that
-// remaining deadline (capped at hostUsageTTL) rather than extending by a full
-// hostUsageTTL on each heartbeat.
-func (e *Engine) SetHostUsage(u *pb.HostUsage) {
-	e.mu.Lock()
-	now := e.now()
-	had := e.hostUsage != nil
-	if u == nil || u.GetRemainingTtlMs() < 0 {
-		e.hostUsage = nil
-		e.hostUsageUntil = time.Time{}
-	} else {
-		ttl := hostUsageTTL
-		if rem := u.GetRemainingTtlMs(); rem > 0 {
-			ttl = min(time.Duration(rem)*time.Millisecond, hostUsageTTL)
-		}
-		e.hostUsage = clone(u)
-		e.hostUsageUntil = now.Add(ttl)
-	}
-	wasHeld := e.held.kind != ""
-	e.weighHold(now)
-	cleared := wasHeld && e.held.kind == ""
-	e.mu.Unlock()
-	if cleared {
-		e.stepSoon()
-	}
-	if had || u != nil {
-		e.changed()
-	}
-}
-
-// freshHostUsage returns the latest host-side usage if its freshness deadline
-// has not passed, or nil if absent or stale. Call with e.mu held.
-func (e *Engine) freshHostUsage(now time.Time) *pb.HostUsage {
-	if e.hostUsage == nil || e.hostUsageUntil.IsZero() || now.After(e.hostUsageUntil) {
-		return nil
-	}
-	return e.hostUsage
-}
-
-// hostMemoryStarved reports whether the VM's host is under memory pressure.
-func hostMemoryStarved(hu *pb.HostUsage) (bool, string) {
-	if hu == nil || hu.GetHostMemoryPressure() < hostMemPressureHoldAt {
-		return false, ""
-	}
-	return true, fmt.Sprintf("host memory pressure %.0f%%; new work starts again under %.0f%%", hu.GetHostMemoryPressure(), hostMemPressureHoldAt)
-}
-
-// weighHostCPU updates e.hostCPUHolding with hysteresis from the current fresh
-// host usage and guest CPU busy reading. Call with e.mu held.
-func (e *Engine) weighHostCPU(now time.Time) {
-	hu := e.freshHostUsage(now)
-	if hu == nil {
-		e.hostCPUHolding = false
-		return
-	}
-	hostBusy := hu.GetHostCpuBusy()
-	vmBusy := hu.GetVmCpuBusy()
-	guestBusy := e.cpuOwnBusy
-	steal := max(0.0, guestBusy-vmBusy)
-	hasCpus := hu.GetHostCpus() > 0
-	loadHigh := hasCpus && hu.GetHostLoad_1M() >= float64(hu.GetHostCpus())*hostLoadPerCPUHoldAt
-	busyHigh := hostBusy >= hostCPUBusyHoldAt
-	stealHigh := guestBusy >= hostStealGuestMin && steal >= hostStealDeltaHoldAt
-
-	if stealHigh || busyHigh || loadHigh {
-		e.hostCPUHolding = true
-		return
-	}
-	if e.hostCPUHolding {
-		loadOK := !hasCpus || hu.GetHostLoad_1M() < float64(hu.GetHostCpus())*hostLoadPerCPUResumeAt
-		busyOK := hostBusy < hostCPUBusyResumeAt
-		stealOK := guestBusy < hostStealGuestMin || steal < hostStealDeltaResumeAt
-		if loadOK && busyOK && stealOK {
-			e.hostCPUHolding = false
-		}
-	}
-}
-
-// hostCPUStatus evaluates host CPU starvation for hu (which must be fresh, or
-// nil when absent/stale). Call with e.mu held.
-func (e *Engine) hostCPUStatus(hu *pb.HostUsage) (holding bool, value, limit, resume float64, reason, detail string) {
-	if hu == nil {
-		return false, 0, hostCPUBusyHoldAt * 100, hostCPUBusyResumeAt * 100, "", ""
-	}
-	hostBusy := hu.GetHostCpuBusy()
-	vmBusy := hu.GetVmCpuBusy()
-	guestBusy := e.cpuOwnBusy
-	steal := max(0.0, guestBusy-vmBusy)
-	hasCpus := hu.GetHostCpus() > 0
-	loadHigh := hasCpus && hu.GetHostLoad_1M() >= float64(hu.GetHostCpus())*hostLoadPerCPUHoldAt
-	busyHigh := hostBusy >= hostCPUBusyHoldAt
-	stealHigh := guestBusy >= hostStealGuestMin && steal >= hostStealDeltaHoldAt
-
-	detail = fmt.Sprintf("host CPU %.0f%%, VM got %.0f%%, guest busy %.0f%% outside nested VMs", hostBusy*100, vmBusy*100, guestBusy*100)
-	if hasCpus {
-		detail += fmt.Sprintf(", host load %.1f/%d", hu.GetHostLoad_1M(), hu.GetHostCpus())
-	}
-
-	switch {
-	case stealHigh:
-		return true, steal * 100, hostStealDeltaHoldAt * 100, hostStealDeltaResumeAt * 100,
-			fmt.Sprintf("host CPU starvation: guest %.0f%% CPU busy outside nested VMs while VM gets %.0f%% (%.0f%% steal, host %.0f%% busy)",
-				guestBusy*100, vmBusy*100, steal*100, hostBusy*100),
-			detail
-	case busyHigh:
-		return true, hostBusy * 100, hostCPUBusyHoldAt * 100, hostCPUBusyResumeAt * 100,
-			fmt.Sprintf("host CPU starvation: host CPU %.0f%% busy; new work starts again under %.0f%%",
-				hostBusy*100, hostCPUBusyResumeAt*100),
-			detail
-	case loadHigh:
-		loadPct := (hu.GetHostLoad_1M() / float64(hu.GetHostCpus())) * 100
-		return true, loadPct, hostLoadPerCPUHoldAt * 100, hostLoadPerCPUResumeAt * 100,
-			fmt.Sprintf("host CPU starvation: host load %.1f across %d CPUs; new work starts again under %.0f%%",
-				hu.GetHostLoad_1M(), hu.GetHostCpus(), hostLoadPerCPUResumeAt*100),
-			detail
-	case e.hostCPUHolding:
-		if guestBusy >= hostStealGuestMin && steal >= hostStealDeltaResumeAt {
-			return true, steal * 100, hostStealDeltaHoldAt * 100, hostStealDeltaResumeAt * 100,
-				fmt.Sprintf("host CPU starvation: %.0f%% steal (guest %.0f%%, VM %.0f%%); new work starts again under %.0f%%",
-					steal*100, guestBusy*100, vmBusy*100, hostStealDeltaResumeAt*100),
-				detail
-		}
-		if hasCpus && hu.GetHostLoad_1M() >= float64(hu.GetHostCpus())*hostLoadPerCPUResumeAt {
-			loadPct := (hu.GetHostLoad_1M() / float64(hu.GetHostCpus())) * 100
-			return true, loadPct, hostLoadPerCPUHoldAt * 100, hostLoadPerCPUResumeAt * 100,
-				fmt.Sprintf("host CPU starvation: host load %.1f across %d CPUs; new work starts again under %.0f%%",
-					hu.GetHostLoad_1M(), hu.GetHostCpus(), hostLoadPerCPUResumeAt*100),
-				detail
-		}
-		return true, hostBusy * 100, hostCPUBusyHoldAt * 100, hostCPUBusyResumeAt * 100,
-			fmt.Sprintf("host CPU starvation: host CPU %.0f%% busy; new work starts again under %.0f%%",
-				hostBusy*100, hostCPUBusyResumeAt*100),
-			detail
-	default:
-		return false, hostBusy * 100, hostCPUBusyHoldAt * 100, hostCPUBusyResumeAt * 100, "", detail
-	}
-}
-
-// isHostStarved reports whether fresh host-side metrics indicate host CPU or
-// memory starvation. Call with e.mu held.
-func (e *Engine) isHostStarved(now time.Time) bool {
-	hu := e.freshHostUsage(now)
-	if hu == nil {
-		return false
-	}
-	if memHeld, _ := hostMemoryStarved(hu); memHeld {
-		return true
-	}
-	cpuHeld, _, _, _, _, _ := e.hostCPUStatus(hu)
-	return cpuHeld
-}
-
 // weighMemPressure updates e.memPressureHolding with hysteresis: holds once
 // memory PSI (some avg10) reaches admitPressure and clears once it drops below
 // memPressureResumeAt. Call with e.mu held.
@@ -275,16 +100,9 @@ func (e *Engine) cladefsMemoryStarved() (bool, string) {
 }
 
 // nodeHold is what holds every new command on the node now, whatever it
-// would need, or "": host starvation, cladefsd memory starvation, saturated
-// CPUs, memory pressure or a full disk. Call with e.mu held.
-func (e *Engine) nodeHold(now time.Time) (kind, reason string) {
-	hu := e.freshHostUsage(now)
-	if memHeld, memReason := hostMemoryStarved(hu); memHeld {
-		return "host-memory", memReason
-	}
-	if cpuHeld, _, _, _, cpuReason, _ := e.hostCPUStatus(hu); cpuHeld {
-		return "host-cpu", cpuReason
-	}
+// would need, or "": cladefsd memory starvation, saturated CPUs, memory
+// pressure or a full disk. Call with e.mu held.
+func (e *Engine) nodeHold() (kind, reason string) {
 	if cladefsHeld, cladefsReason := e.cladefsMemoryStarved(); cladefsHeld {
 		return "cladefs-memory", cladefsReason
 	}
@@ -305,11 +123,10 @@ func (e *Engine) diskLow() bool {
 	return e.diskBytes > 0 && e.disk.GetFreeBytes() < e.minFreeBytes()
 }
 
-// weighHold notes whether the node holds new work after a sample or host usage
-// update, and says so in the events when that changes. Call with e.mu held.
+// weighHold notes whether the node holds new work after a sample, and says
+// so in the events when that changes. Call with e.mu held.
 func (e *Engine) weighHold(now time.Time) {
-	e.weighHostCPU(now)
-	kind, reason := e.nodeHold(now)
+	kind, reason := e.nodeHold()
 	was := e.held
 	switch {
 	case kind == was.kind:
@@ -337,7 +154,6 @@ func (e *Engine) admission() *pb.Admission {
 		}
 	}
 	now := e.now()
-	hu := e.freshHostUsage(now)
 	holding := e.held.kind != ""
 	reason := e.held.reason
 	since := e.held.since
@@ -346,14 +162,6 @@ func (e *Engine) admission() *pb.Admission {
 		reason = "upgrading cladefs"
 		if since.IsZero() {
 			since = now
-		}
-	} else if (e.held.kind == "host-cpu" || e.held.kind == "host-memory") && hu == nil {
-		// Host signal went stale past TTL before the next sample/step tick.
-		kind, r := e.nodeHold(now)
-		holding = kind != ""
-		reason = r
-		if !holding {
-			since = time.Time{}
 		}
 	}
 	u := e.usage
@@ -402,26 +210,6 @@ func (e *Engine) admission() *pb.Admission {
 			Name: "cladefs-memory", Value: val, Limit: float64(floor), Resume: float64(resume), Unit: "bytes",
 			Floor: true, Holding: cladefsHeld, Waiting: waiting["cladefs-memory"], Detail: detail,
 		})
-	}
-	if hu != nil {
-		cpuHeld, cpuVal, cpuLim, cpuResume, _, cpuDetail := e.hostCPUStatus(hu)
-		memHeld, _ := hostMemoryStarved(hu)
-		memDetail := "macOS memory pressure normal"
-		if hu.GetHostMemoryPressure() >= hostMemPressureHoldAt {
-			memDetail = "macOS memory pressure critical"
-		} else if hu.GetHostMemoryPressure() >= 50 {
-			memDetail = "macOS memory pressure warn (soft placement penalty only)"
-		}
-		a.Signals = append(a.Signals,
-			&pb.AdmissionSignal{
-				Name: "host-cpu-starvation", Value: cpuVal, Limit: cpuLim, Resume: cpuResume, Unit: "%",
-				Holding: cpuHeld, Waiting: waiting["host-cpu"], Detail: cpuDetail,
-			},
-			&pb.AdmissionSignal{
-				Name: "host-memory-pressure", Value: hu.GetHostMemoryPressure(), Limit: hostMemPressureHoldAt, Unit: "%",
-				Holding: memHeld, Waiting: waiting["host-memory"], Detail: memDetail,
-			},
-		)
 	}
 	return a
 }

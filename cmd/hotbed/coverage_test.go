@@ -24,10 +24,6 @@ var nodeProtocol = []string{
 	"/hotbed.v1.ClusterService/Join",
 	"/hotbed.v1.ClusterService/PushEvents",
 	"/hotbed.v1.ClusterService/Heartbeat",
-	// What a VM worker's host supervisor called; nothing does since Macs
-	// are workers natively, until board 14220 retires them.
-	"/hotbed.v1.ClusterService/Standby",
-	"/hotbed.v1.ClusterService/ReportHostUsage",
 	"/hotbed.v1.ClusterService/SaveCommandDiagnostics",
 	"/hotbed.v1.ClusterService/SaveCommandSample",
 	"/hotbed.v1.ClusterService/PushCommandOutput",

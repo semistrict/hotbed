@@ -78,7 +78,7 @@ import {
 	type Candidate,
 	type NodeView,
 } from "../placement.ts";
-import { BOOT_TIMEOUT_MS, isCommandLive } from "../standby.ts";
+import { isCommandLive } from "../wakeups.ts";
 import { queryProfile } from "../profile-query.ts";
 import { sessionEndedError, type CommandRoute, type WorkspaceRow } from "../store.ts";
 
@@ -97,7 +97,7 @@ const WORKER_PROBE_TIMEOUT_MS = 5_000;
 const DAEMON_LOG_WORKER_TIMEOUT_MS = 5_000;
 const DEFAULT_DAEMON_LOG_LIMIT = 200;
 const MAX_DAEMON_LOG_LIMIT = 1000;
-const UPGRADE_WAIT_MS = 90_000;
+const UPGRADE_WAIT_MS = 40_000;
 const CAPACITY_WAIT_MS = 35_000;
 const WORKSPACE_RACE_HEDGE_MS = 2_000;
 const WORKSPACE_RACE_PREPARE_WAIT_MS = 1_500;
@@ -153,7 +153,8 @@ export interface WorkspaceHelpers {
 		syncHost: string,
 		signal?: AbortSignal,
 	): Promise<Workspace>;
-	createAwake(req: CreateWorkspaceRequest, signal?: AbortSignal): Promise<Workspace>;
+	/** createWorkspaceInternal, placing again for as long as every fit node is full. */
+	createWhenFree(req: CreateWorkspaceRequest, signal?: AbortSignal): Promise<Workspace>;
 	runCommandInternal(req: RunCommandRequest): Promise<Command>;
 	stopCommandInternal(req: StopCommandRequest): Promise<Command>;
 }
@@ -165,12 +166,6 @@ export function createWorkspaceService(ctrl: ControllerContext): {
 	function ensureOnlineWorker(nodeId: string): { host: string } {
 		const row = ctrl.store.getNode(nodeId);
 		const node = ctrl.withOnline(row.node);
-		if (node.asleep) {
-			throw hotbedError(ErrorCode.WorkerUnreachable, `${row.node.hostname} is asleep`, {
-				retryable: true,
-				suggestion: "a run placed on it wakes it",
-			});
-		}
 		if (!node.online) {
 			throw hotbedError(ErrorCode.WorkerUnreachable, `${row.node.hostname} is offline`, {
 				retryable: true,
@@ -295,36 +290,13 @@ export function createWorkspaceService(ctrl: ControllerContext): {
 		}
 	}
 
-	async function awaken(host: string, signal?: AbortSignal): Promise<void> {
-		ctrl.power.wake(host, ctrl.now());
-		const deadline = Date.now() + ctrl.power.wakeWaitMs;
-		while (!signal?.aborted) {
-			const waiter = ctrl.power.changes.wait(host);
-			try {
-				const n = ctrl.findNodeByHost(host);
-				if (ctrl.nodeServes(n)) return;
-				const rem = deadline - Date.now();
-				if (rem <= 0) {
-					throw hotbedError(ErrorCode.NodeWaking, `${host} was asleep and is still waking up`, {
-						retryable: true,
-						suggestion: "run again in a moment: hotbed run waits for it by itself",
-					});
-				}
-				await waitAtMost(waiter.promise, rem, signal);
-			} finally {
-				waiter.cancel();
-			}
-		}
-		throw hotbedError(ErrorCode.Internal, "canceled while waking node");
-	}
-
 	async function waitUpgrade(
 		hosts: string[],
 		deadlineMs: number,
 		signal?: AbortSignal,
 	): Promise<boolean> {
 		while (!signal?.aborted) {
-			const waiters = hosts.map((h) => ctrl.power.changes.wait(h));
+			const waiters = hosts.map((h) => ctrl.nodeChanges.wait(h));
 			try {
 				const rows = ctrl.store.listNodes();
 				if (rows.some((n) => hosts.includes(n.node.hostname) && ctrl.nodeServes(n))) {
@@ -377,10 +349,7 @@ export function createWorkspaceService(ctrl: ControllerContext): {
 		if (signal?.aborted) return;
 		const rem = deadlineMs - Date.now();
 		if (rem <= 0) return;
-		const waiters = [
-			ctrl.capacityChanges.wait("*"),
-			...hosts.map((h) => ctrl.power.changes.wait(h)),
-		];
+		const waiters = [ctrl.capacityChanges.wait("*"), ...hosts.map((h) => ctrl.nodeChanges.wait(h))];
 		try {
 			await waitAtMost(Promise.race(waiters.map((w) => w.promise)), rem, signal);
 		} finally {
@@ -578,7 +547,6 @@ export function createWorkspaceService(ctrl: ControllerContext): {
 								.find((w) => !w.throwaway && w.node === runnerUp.view.node.id);
 							if (existing) return null;
 						}
-						ctrl.power.wake(runnerUp.host, ctrl.now());
 						return allocateWorkspaceLocked(sess, p.name, hosted, runnerUp, req, syncHost);
 					});
 					if (!fwd2) return null;
@@ -760,7 +728,7 @@ export function createWorkspaceService(ctrl: ControllerContext): {
 					capacityWaitStartedAt = Date.now();
 					capacityDeadline =
 						capacityWaitStartedAt +
-						Math.min(CAPACITY_WAIT_MS, ctrl.power.wakeWaitMs || CAPACITY_WAIT_MS);
+						Math.min(CAPACITY_WAIT_MS, ctrl.placementWaitCapMs || CAPACITY_WAIT_MS);
 				}
 				if (signal?.aborted) {
 					throw hotbedError(ErrorCode.Internal, "placement canceled");
@@ -782,7 +750,7 @@ export function createWorkspaceService(ctrl: ControllerContext): {
 				if (claimed.upgrading.length > 0) {
 					if (upgradeDeadline === 0) {
 						upgradeDeadline =
-							Date.now() + Math.min(UPGRADE_WAIT_MS, ctrl.power.wakeWaitMs || UPGRADE_WAIT_MS);
+							Date.now() + Math.min(UPGRADE_WAIT_MS, ctrl.placementWaitCapMs || UPGRADE_WAIT_MS);
 					}
 					if (Date.now() < upgradeDeadline) {
 						const ready = await waitUpgrade(claimed.upgrading, upgradeDeadline, signal);
@@ -793,10 +761,6 @@ export function createWorkspaceService(ctrl: ControllerContext): {
 				throw claimed.err;
 			}
 			const node = claimed.node!;
-			if (node.asleep) {
-				await awaken(node.host, signal);
-				continue;
-			}
 			if (!claimed.fwd) {
 				const inflight = ctrl.creatingWS.get(node.mine);
 				if (inflight) await inflight.promise;
@@ -959,17 +923,12 @@ export function createWorkspaceService(ctrl: ControllerContext): {
 					const up = upgradingFor(cs, req.placement, p.hosts, req.syncDir !== "");
 					return { kind: "done" as const, decision: d, upgrading: up, err };
 				}
-				if (chosen.asleep) {
-					return { kind: "done" as const, node: chosen, decision: d, upgrading: [] };
-				}
-				ctrl.power.wake(chosen.host, ctrl.now());
 				if (chosen.mine) {
 					return { kind: "done" as const, node: chosen, decision: d, upgrading: [] };
 				}
 				const fwd = allocateWorkspaceLocked(sess, p.name, hosted, chosen, req, syncHost);
 				let runnerUpFwd: CreateWorkspaceRequest | undefined;
 				if (runnerUp && raceImmediate) {
-					ctrl.power.wake(runnerUp.host, ctrl.now());
 					runnerUpFwd = allocateWorkspaceLocked(sess, p.name, hosted, runnerUp, req, syncHost);
 				}
 				return {
@@ -1081,21 +1040,15 @@ export function createWorkspaceService(ctrl: ControllerContext): {
 		}
 	}
 
-	async function createAwake(
+	async function createWhenFree(
 		req: CreateWorkspaceRequest,
 		signal?: AbortSignal,
 	): Promise<Workspace> {
-		const deadline = Date.now() + BOOT_TIMEOUT_MS + ctrl.power.wakeWaitMs;
 		while (true) {
 			try {
 				return await createWorkspaceInternal(req, "", signal);
 			} catch (err) {
-				const c = codeOf(err);
-				if (signal?.aborted) throw err;
-				if (c === ErrorCode.NodesBusy) continue;
-				if (c !== ErrorCode.NodeWaking || Date.now() > deadline) {
-					throw err;
-				}
+				if (signal?.aborted || codeOf(err) !== ErrorCode.NodesBusy) throw err;
 			}
 		}
 	}
@@ -2062,7 +2015,7 @@ export function createWorkspaceService(ctrl: ControllerContext): {
 		impl,
 		helpers: {
 			createWorkspaceInternal,
-			createAwake,
+			createWhenFree,
 			runCommandInternal,
 			stopCommandInternal,
 		},

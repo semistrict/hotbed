@@ -134,7 +134,7 @@ export class ControllerDO extends DurableObject<ControllerEnv> {
 	private boardSvc!: BoardServiceBundle;
 	private dispatcher!: ConnectFetchDispatcher;
 	private nowOffsetMs = 0;
-	private testWakeWaitMs?: number;
+	private testPlacementWaitCapMs?: number;
 	private testAllowLocalRepos?: boolean;
 	private testBuildConfig?: TestBuildConfig;
 
@@ -194,8 +194,8 @@ export class ControllerDO extends DurableObject<ControllerEnv> {
 		if (initialSignupCode) {
 			this.store.seedInitialSignupCode(initialSignupCode, this.ctrl.now());
 		}
-		if (this.testWakeWaitMs !== undefined) {
-			this.ctrl.power.wakeWaitMs = this.testWakeWaitMs;
+		if (this.testPlacementWaitCapMs !== undefined) {
+			this.ctrl.placementWaitCapMs = this.testPlacementWaitCapMs;
 		}
 
 		const wsSvc = createWorkspaceService(this.ctrl);
@@ -1285,6 +1285,7 @@ export class ControllerDO extends DurableObject<ControllerEnv> {
 		}
 		if (sub === "config" && request.method === "POST") {
 			const body = (await request.json().catch(() => ({}))) as {
+				/** Caps placement's capacity and upgrade waits (ControllerContext.placementWaitCapMs). */
 				wakeWaitMs?: number;
 				allowLocalRepos?: boolean;
 				updatesRepo?: string;
@@ -1298,8 +1299,8 @@ export class ControllerDO extends DurableObject<ControllerEnv> {
 				clearBuild?: boolean;
 			};
 			if (typeof body.wakeWaitMs === "number") {
-				this.testWakeWaitMs = body.wakeWaitMs;
-				this.ctrl.power.wakeWaitMs = body.wakeWaitMs;
+				this.testPlacementWaitCapMs = body.wakeWaitMs;
+				this.ctrl.placementWaitCapMs = body.wakeWaitMs;
 			}
 			if (typeof body.allowLocalRepos === "boolean") {
 				this.testAllowLocalRepos = body.allowLocalRepos;

@@ -147,11 +147,11 @@ func TestQueueAdmissionOrdersByPriorityThenFIFO(t *testing.T) {
 	}
 }
 
-// TestPriorityDoesNotBypassHostStarvationAndRejectsOutOfRange verifies that
-// urgent commands cannot preempt past host starvation and that Exec rejects
-// out-of-range priorities.
-func TestPriorityDoesNotBypassHostStarvationAndRejectsOutOfRange(t *testing.T) {
-	e, units, _, now := parkEngine(t)
+// TestPriorityDoesNotBypassMemoryPressureAndRejectsOutOfRange verifies that
+// urgent commands cannot preempt past a node-wide memory pressure hold and
+// that Exec rejects out-of-range priorities.
+func TestPriorityDoesNotBypassMemoryPressureAndRejectsOutOfRange(t *testing.T) {
+	e, units, sys, now := parkEngine(t)
 
 	if _, err := e.Exec(t.Context(), &pb.RunCommandRequest{
 		Id: "bad-hi", WorkspaceId: "a", Args: []string{"sleep", "1"},
@@ -167,11 +167,8 @@ func TestPriorityDoesNotBypassHostStarvationAndRejectsOutOfRange(t *testing.T) {
 	}
 
 	_ = startWithLimits(t, e, units, now, "low-1", "a", "build", &pb.CommandLimits{Priority: -10})
-	e.SetHostUsage(&pb.HostUsage{
-		HostCpuBusy: 0.95,
-		HostCpus:    8,
-		SampledAt:   now.UnixMilli(),
-	})
+	sys.Psi = 30
+	e.Sample()
 
 	*now = now.Add(time.Second)
 	if _, err := e.Exec(t.Context(), &pb.RunCommandRequest{
@@ -184,6 +181,6 @@ func TestPriorityDoesNotBypassHostStarvationAndRejectsOutOfRange(t *testing.T) {
 	e.step(t.Context())
 
 	if sUrgent, sLow := e.state("urgent-1"), e.state("low-1"); sUrgent != queued || sLow != running {
-		t.Fatalf("under host starvation: urgent-1=%v low-1=%v, want queued/running", sUrgent, sLow)
+		t.Fatalf("under memory pressure: urgent-1=%v low-1=%v, want queued/running", sUrgent, sLow)
 	}
 }

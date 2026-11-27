@@ -53,11 +53,6 @@ const (
 	ClusterServicePushEventsProcedure = "/hotbed.v1.ClusterService/PushEvents"
 	// ClusterServiceHeartbeatProcedure is the procedure name of the ClusterService's Heartbeat RPC.
 	ClusterServiceHeartbeatProcedure = "/hotbed.v1.ClusterService/Heartbeat"
-	// ClusterServiceStandbyProcedure is the procedure name of the ClusterService's Standby RPC.
-	ClusterServiceStandbyProcedure = "/hotbed.v1.ClusterService/Standby"
-	// ClusterServiceReportHostUsageProcedure is the procedure name of the ClusterService's
-	// ReportHostUsage RPC.
-	ClusterServiceReportHostUsageProcedure = "/hotbed.v1.ClusterService/ReportHostUsage"
 	// ClusterServiceListNodesProcedure is the procedure name of the ClusterService's ListNodes RPC.
 	ClusterServiceListNodesProcedure = "/hotbed.v1.ClusterService/ListNodes"
 	// ClusterServiceGetBuildProcedure is the procedure name of the ClusterService's GetBuild RPC.
@@ -477,20 +472,6 @@ var (
 			Procedure:  ClusterServiceHeartbeatProcedure,
 		}
 	})
-	clusterServiceStandbySpec = sync.OnceValue(func() connect.Spec {
-		return connect.Spec{
-			StreamType: connect.StreamTypeServer,
-			Schema:     v1.File_hotbed_v1_hotbed_proto.Services().ByName("ClusterService").Methods().ByName("Standby"),
-			Procedure:  ClusterServiceStandbyProcedure,
-		}
-	})
-	clusterServiceReportHostUsageSpec = sync.OnceValue(func() connect.Spec {
-		return connect.Spec{
-			StreamType: connect.StreamTypeUnary,
-			Schema:     v1.File_hotbed_v1_hotbed_proto.Services().ByName("ClusterService").Methods().ByName("ReportHostUsage"),
-			Procedure:  ClusterServiceReportHostUsageProcedure,
-		}
-	})
 	clusterServiceListNodesSpec = sync.OnceValue(func() connect.Spec {
 		return connect.Spec{
 			StreamType:       connect.StreamTypeUnary,
@@ -746,19 +727,6 @@ type ClusterServiceClient interface {
 	// Heartbeat is a worker's live usage, lossy: the latest wins. It keeps
 	// the node online, and its reply is what the worker should host.
 	Heartbeat(context.Context, *v1.HeartbeatRequest) (*v1.HeartbeatResponse, error)
-	// Standby is how a worker's host powers it as the controller says: the
-	// host that runs a worker in a VM (hotbed worker supervise) holds it open,
-	// and the controller says whether the VM should run, at once and whenever
-	// that changes. A node whose host holds it open sleeps once it has had no
-	// work for its sleep_after, and wakes when a run is placed on it. It ends
-	// after at most two minutes, and the host calls again with how the VM is
-	// then, as it does each time it has started or stopped the VM.
-	Standby(context.Context, *v1.StandbyRequest) (ClusterServiceStandbyClientStream, error)
-	// ReportHostUsage reports host-side truth about a VM worker (VM CPU,
-	// host CPU/load, host memory pressure) from its host supervisor so
-	// controller placement, worker admission, and the cockpit can see host
-	// starvation that the Linux guest cannot observe from inside its VM.
-	ReportHostUsage(context.Context, *v1.ReportHostUsageRequest) (*v1.ReportHostUsageResponse, error)
 	// List the cluster's workers.
 	ListNodes(context.Context, *v1.ListNodesRequest) (*v1.ListNodesResponse, error)
 	// GetBuild is the build the controller runs, for a platform: what a node
@@ -869,26 +837,6 @@ func NewClusterServiceClient(client *connect.Client) ClusterServiceClient {
 	return &clusterServiceClient{client: client}
 }
 
-// ClusterServiceStandbyClientStream is the client stream for the ClusterService's Standby RPC.
-type ClusterServiceStandbyClientStream struct {
-	stream connect.ClientStream
-}
-
-// Receive returns the next response message from the server.
-func (s ClusterServiceStandbyClientStream) Receive() (*v1.StandbyResponse, error) {
-	var res v1.StandbyResponse
-	if err := s.stream.Receive(&res); err != nil {
-		return nil, err
-	}
-	return &res, nil
-}
-
-// Close releases the stream's resources. It is idempotent and is typically deferred to clean up a
-// stream abandoned before io.EOF.
-func (s ClusterServiceStandbyClientStream) Close() error {
-	return s.stream.Close()
-}
-
 // ClusterServiceHandler is an implementation of the hotbed.v1.ClusterService service.
 type ClusterServiceHandler interface {
 	// Join admits the calling tailnet node as a worker.
@@ -900,19 +848,6 @@ type ClusterServiceHandler interface {
 	// Heartbeat is a worker's live usage, lossy: the latest wins. It keeps
 	// the node online, and its reply is what the worker should host.
 	Heartbeat(context.Context, *v1.HeartbeatRequest) (*v1.HeartbeatResponse, error)
-	// Standby is how a worker's host powers it as the controller says: the
-	// host that runs a worker in a VM (hotbed worker supervise) holds it open,
-	// and the controller says whether the VM should run, at once and whenever
-	// that changes. A node whose host holds it open sleeps once it has had no
-	// work for its sleep_after, and wakes when a run is placed on it. It ends
-	// after at most two minutes, and the host calls again with how the VM is
-	// then, as it does each time it has started or stopped the VM.
-	Standby(context.Context, *v1.StandbyRequest, ClusterServiceStandbyServerStream) error
-	// ReportHostUsage reports host-side truth about a VM worker (VM CPU,
-	// host CPU/load, host memory pressure) from its host supervisor so
-	// controller placement, worker admission, and the cockpit can see host
-	// starvation that the Linux guest cannot observe from inside its VM.
-	ReportHostUsage(context.Context, *v1.ReportHostUsageRequest) (*v1.ReportHostUsageResponse, error)
 	// List the cluster's workers.
 	ListNodes(context.Context, *v1.ListNodesRequest) (*v1.ListNodesResponse, error)
 	// GetBuild is the build the controller runs, for a platform: what a node
@@ -1025,8 +960,6 @@ func RegisterClusterServiceHandler(server *connect.Server, svc ClusterServiceHan
 		connect.Method{Spec: clusterServiceJoinSpec(), Handler: adapter.join},
 		connect.Method{Spec: clusterServicePushEventsSpec(), Handler: adapter.pushEvents},
 		connect.Method{Spec: clusterServiceHeartbeatSpec(), Handler: adapter.heartbeat},
-		connect.Method{Spec: clusterServiceStandbySpec(), Handler: adapter.standby},
-		connect.Method{Spec: clusterServiceReportHostUsageSpec(), Handler: adapter.reportHostUsage},
 		connect.Method{Spec: clusterServiceListNodesSpec(), Handler: adapter.listNodes},
 		connect.Method{Spec: clusterServiceGetBuildSpec(), Handler: adapter.getBuild},
 		connect.Method{Spec: clusterServiceListReposSpec(), Handler: adapter.listRepos},
@@ -1062,21 +995,6 @@ func RegisterClusterServiceHandler(server *connect.Server, svc ClusterServiceHan
 	)
 }
 
-// ClusterServiceStandbyServerStream is the server stream for the ClusterService's Standby RPC.
-type ClusterServiceStandbyServerStream struct {
-	stream connect.ServerStream
-}
-
-// SendHeaders flushes the response headers without a message. The first Send does this implicitly.
-func (s ClusterServiceStandbyServerStream) SendHeaders() error {
-	return s.stream.SendHeaders()
-}
-
-// Send sends a response message to the client.
-func (s ClusterServiceStandbyServerStream) Send(res *v1.StandbyResponse) error {
-	return s.stream.Send(res)
-}
-
 // UnimplementedClusterServiceHandler returns CodeUnimplemented from all methods.
 type UnimplementedClusterServiceHandler struct{}
 
@@ -1090,14 +1008,6 @@ func (UnimplementedClusterServiceHandler) PushEvents(context.Context, *v1.PushEv
 
 func (UnimplementedClusterServiceHandler) Heartbeat(context.Context, *v1.HeartbeatRequest) (*v1.HeartbeatResponse, error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, "hotbed.v1.ClusterService.Heartbeat is not implemented")
-}
-
-func (UnimplementedClusterServiceHandler) Standby(context.Context, *v1.StandbyRequest, ClusterServiceStandbyServerStream) error {
-	return connect.NewError(connect.CodeUnimplemented, "hotbed.v1.ClusterService.Standby is not implemented")
-}
-
-func (UnimplementedClusterServiceHandler) ReportHostUsage(context.Context, *v1.ReportHostUsageRequest) (*v1.ReportHostUsageResponse, error) {
-	return nil, connect.NewError(connect.CodeUnimplemented, "hotbed.v1.ClusterService.ReportHostUsage is not implemented")
 }
 
 func (UnimplementedClusterServiceHandler) ListNodes(context.Context, *v1.ListNodesRequest) (*v1.ListNodesResponse, error) {
@@ -1251,22 +1161,6 @@ func (c *clusterServiceClient) PushEvents(ctx context.Context, req *v1.PushEvent
 func (c *clusterServiceClient) Heartbeat(ctx context.Context, req *v1.HeartbeatRequest) (*v1.HeartbeatResponse, error) {
 	var res v1.HeartbeatResponse
 	if err := c.client.CallUnary(ctx, clusterServiceHeartbeatSpec(), req, &res); err != nil {
-		return nil, err
-	}
-	return &res, nil
-}
-
-func (c *clusterServiceClient) Standby(ctx context.Context, req *v1.StandbyRequest) (ClusterServiceStandbyClientStream, error) {
-	stream, err := c.client.CallServerStream(ctx, clusterServiceStandbySpec(), req)
-	if err != nil {
-		return ClusterServiceStandbyClientStream{}, err
-	}
-	return ClusterServiceStandbyClientStream{stream: stream}, nil
-}
-
-func (c *clusterServiceClient) ReportHostUsage(ctx context.Context, req *v1.ReportHostUsageRequest) (*v1.ReportHostUsageResponse, error) {
-	var res v1.ReportHostUsageResponse
-	if err := c.client.CallUnary(ctx, clusterServiceReportHostUsageSpec(), req, &res); err != nil {
 		return nil, err
 	}
 	return &res, nil
@@ -1560,26 +1454,6 @@ func (h clusterServiceHandler) heartbeat(ctx context.Context, _ connect.Spec, st
 		return err
 	}
 	res, err := h.svc.Heartbeat(ctx, &req)
-	if err != nil {
-		return err
-	}
-	return stream.Send(res)
-}
-
-func (h clusterServiceHandler) standby(ctx context.Context, _ connect.Spec, stream connect.ServerStream) error {
-	var req v1.StandbyRequest
-	if err := stream.Receive(&req); err != nil {
-		return err
-	}
-	return h.svc.Standby(ctx, &req, ClusterServiceStandbyServerStream{stream: stream})
-}
-
-func (h clusterServiceHandler) reportHostUsage(ctx context.Context, _ connect.Spec, stream connect.ServerStream) error {
-	var req v1.ReportHostUsageRequest
-	if err := stream.Receive(&req); err != nil {
-		return err
-	}
-	res, err := h.svc.ReportHostUsage(ctx, &req)
 	if err != nil {
 		return err
 	}

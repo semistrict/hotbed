@@ -796,7 +796,7 @@ func (e *Engine) maybeStartPendingFreshens(ctx context.Context) {
 		e.mu.Unlock()
 		return
 	}
-	if cladefsHeld, _ := e.cladefsMemoryStarved(); cladefsHeld || e.held.kind != "" || e.isHostStarved(now) || e.diskLow() ||
+	if cladefsHeld, _ := e.cladefsMemoryStarved(); cladefsHeld || e.held.kind != "" || e.diskLow() ||
 		e.memPressureHolding || e.usage.GetMemoryPressure() >= admitPressure || e.cpu.holding {
 		e.mu.Unlock()
 		return

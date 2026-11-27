@@ -34,14 +34,12 @@ import {
 	PushEventsResponseSchema,
 	RepoSchema,
 	RepoSummarySchema,
-	ReportHostUsageResponseSchema,
 	SampleSchema,
 	SamplesSchema,
 	SaveCommandDiagnosticsResponseSchema,
 	SaveCommandSampleResponseSchema,
 	ListCommandSamplesResponseSchema,
 	SnapshotSchema,
-	StandbyResponseSchema,
 	StepOnNodeSchema,
 	StepSchema,
 	StepState,
@@ -82,8 +80,7 @@ import { ErrorCode, codeOf, hotbedError } from "../errors.ts";
 import { parseDurationMs } from "../durations.ts";
 import { buildFreshenSummary, isFreshenActive, quantile, withLiveState } from "../freshens.ts";
 import { canonicalRemote, parseBuildNumber, stepHash, validateRepoURL } from "../gitops.ts";
-import { overlayHostSamples, prepareHostUsage } from "../hostusage.ts";
-import { isCommandLive, workOf } from "../standby.ts";
+import { isCommandLive } from "../wakeups.ts";
 import { KEEP_EVENTS, KEEP_PLACEMENTS_MS, type ForkRow, type SampleRow } from "../store.ts";
 import { applyOrgCladefsTenant, assertNoTenantOverride } from "../worker-config.ts";
 import type { ScheduleRunner } from "./schedules.ts";
@@ -95,8 +92,6 @@ const PLACEMENTS_SHOWN = 300;
 const ADMISSION_EVENTS_SHOWN = 500;
 const ADMISSION_KINDS = ["hold", "unhold", "wait"];
 const MAX_DIAGNOSTICS_RESPONSE_BYTES = 2 * 1024 * 1024;
-const REPORT_INTERVAL_MS = 5_000;
-const STANDBY_MAX_STREAM_MS = 25_000;
 
 const DEFAULT_FRESHEN_WINDOW_MS = 24 * 3600_000;
 const DEFAULT_FRESHEN_LIMIT = 30;
@@ -581,7 +576,7 @@ export function createClusterService(
 			if (res.lost.length > 0) ctrl.loseRuns(res.lost);
 			if (res.finished) await ctrl.settleRuns();
 			if (res.finished || res.lost.length > 0) {
-				ctrl.power.changes.wake(caller.hostname);
+				ctrl.nodeChanges.wake(caller.hostname);
 				ctrl.capacityChanges.wake("*");
 			}
 			return create(PushEventsResponseSchema, {
@@ -594,7 +589,6 @@ export function createClusterService(
 			const caller = getCaller(ctx.values);
 			checkClusterId(caller.hostname, req.clusterId);
 			const nowMs = ctrl.now();
-			const hu = ctrl.hostUsages.get(caller.hostname, nowMs);
 			ctrl.store.beat(caller.nodeId, req, nowMs);
 			const holdsBases = reportsHeldBases(req, ctrl.follows(req.resources));
 			if (holdsBases) {
@@ -607,7 +601,7 @@ export function createClusterService(
 					ctrl.cladefsTenantId,
 				);
 			}
-			ctrl.power.changes.wake(caller.hostname);
+			ctrl.nodeChanges.wake(caller.hostname);
 			ctrl.capacityChanges.wake("*");
 			const { projects, release } = ctrl.hostingFor(caller.nodeId, caller.hostname);
 			if (ctrl.builds.needsImmediateRefresh(nowMs)) {
@@ -644,7 +638,6 @@ export function createClusterService(
 				projects,
 				release,
 				build,
-				hostUsage: hu,
 				cladefsPeers,
 				decommissionIncarnations,
 				workerConfig,
@@ -652,88 +645,6 @@ export function createClusterService(
 					? ctrl.store.basesToRetire(caller.nodeId, nowMs, SHARED_BASE_RETIRE_GRACE_MS)
 					: [],
 			});
-		},
-
-		async *standby(req, ctx) {
-			if (req.sleepAfterSeconds < 0n) {
-				throw hotbedError(
-					ErrorCode.InvalidArgs,
-					`sleep_after_seconds ${req.sleepAfterSeconds} is negative`,
-				);
-			}
-			ctrl.findNodeByHost(req.node);
-			const caller = getCaller(ctx.values);
-			if (caller.role === "worker" && caller.hostname !== req.node) {
-				throw hotbedError(
-					ErrorCode.NotAuthorized,
-					`worker ${caller.hostname} may not supervise ${req.node}`,
-				);
-			}
-			const release = ctrl.power.holdBy(
-				req.node,
-				caller,
-				req.running,
-				Number(req.sleepAfterSeconds) * 1000,
-				ctrl.now(),
-			);
-			const deadline = Date.now() + STANDBY_MAX_STREAM_MS;
-			let lastRun: boolean | null = null;
-			try {
-				while (!ctx.signal.aborted) {
-					const waiter = ctrl.power.changes.wait(req.node);
-					try {
-						const decision = await ctrl.withPlacementLock(() => {
-							const nowMs = ctrl.now();
-							const nv = ctrl.views().find((v) => v.node.hostname === req.node);
-							if (!nv) throw hotbedError(ErrorCode.NotFound, `no node is called ${req.node}`);
-							return ctrl.power.settleAt(req.node, nv.node.lastSeen, workOf(nv), nowMs);
-						});
-						if (lastRun === null || lastRun !== decision.run) {
-							lastRun = decision.run;
-							yield create(StandbyResponseSchema, {
-								run: decision.run,
-								reason: decision.reason,
-							});
-						}
-						const rem = deadline - Date.now();
-						if (rem <= 0) return;
-						await new Promise<void>((resolve) => {
-							const done = () => {
-								clearTimeout(timer);
-								ctx.signal.removeEventListener("abort", done);
-								resolve();
-							};
-							const timer = setTimeout(done, Math.min(rem, REPORT_INTERVAL_MS));
-							ctx.signal.addEventListener("abort", done, { once: true });
-							void waiter.promise.then(done);
-						});
-					} finally {
-						waiter.cancel();
-					}
-				}
-			} finally {
-				release();
-			}
-		},
-
-		reportHostUsage(req, ctx) {
-			if (!req.node) throw hotbedError(ErrorCode.InvalidArgs, "node is required");
-			if (!req.usage) throw hotbedError(ErrorCode.InvalidArgs, "usage is required");
-			ctrl.findNodeByHost(req.node);
-			const caller = getCaller(ctx.values);
-			if (caller.role === "worker" && caller.hostname !== req.node) {
-				throw hotbedError(
-					ErrorCode.NotAuthorized,
-					`worker ${caller.hostname} may not report host usage for ${req.node}`,
-				);
-			}
-			const nowMs = ctrl.now();
-			ctrl.power.authorizeHostReporter(req.node, caller, nowMs);
-			const { usage, effectiveAt, expiresAt } = prepareHostUsage(req.usage, nowMs);
-			ctrl.hostUsages.record(req.node, usage, effectiveAt, expiresAt, nowMs);
-			ctrl.power.changes.wake(req.node);
-			ctrl.capacityChanges.wake("*");
-			return create(ReportHostUsageResponseSchema);
 		},
 
 		listNodes() {
@@ -1287,7 +1198,6 @@ export function createClusterService(
 				if (!nv.online) {
 					node.usage = create(NodeUsageSchema);
 					node.admission = undefined;
-					node.hostUsage = undefined;
 				}
 				nodes.push(node);
 				bases.push(...nv.bases);
@@ -1318,12 +1228,7 @@ export function createClusterService(
 				commands,
 				events,
 				history,
-				series: overlayHostSamples(
-					series,
-					nvs.map((nv) => ({ id: nv.node.id, hostname: nv.node.hostname })),
-					ctrl.hostUsages,
-					nowMs,
-				),
+				series,
 				load,
 				hourly: buildHourly(history, forks, nowMs, hourlyR2),
 				nodeHourly,

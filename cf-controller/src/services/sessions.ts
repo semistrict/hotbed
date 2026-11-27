@@ -30,7 +30,7 @@ import {
 import { ErrorCode, codeOf, hotbedError } from "../errors.ts";
 import { waitAtMost } from "../waits.ts";
 import { canonicalRemote, generatePetname } from "../gitops.ts";
-import { isCommandLive } from "../standby.ts";
+import { isCommandLive } from "../wakeups.ts";
 
 const SESSION_NAME_RE = /^[a-z][a-z0-9]*(-[a-z0-9]+)+$/;
 const DEFAULT_SESSION_SEARCH_LIMIT = 50;

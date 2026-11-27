@@ -56,8 +56,6 @@ const WORKER_ALLOWED_PROCEDURES = new Set([
 	"/hotbed.v1.ClusterService/SaveCommandDiagnostics",
 	"/hotbed.v1.ClusterService/SaveCommandSample",
 	"/hotbed.v1.ClusterService/PushCommandOutput",
-	"/hotbed.v1.ClusterService/Standby",
-	"/hotbed.v1.ClusterService/ReportHostUsage",
 	// Its own config only (getWorkerConfig refuses any other scope): a worker
 	// whose cached config enables no runtime asks for it before it can serve.
 	"/hotbed.v1.ClusterService/GetWorkerConfig",

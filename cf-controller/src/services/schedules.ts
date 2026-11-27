@@ -151,7 +151,7 @@ export function createScheduleService(
 		const sr = ctrl.startingRuns.get(key);
 		try {
 			if (sr?.stopWhy) return await notStarted(run, new Error(sr.stopWhy));
-			const w = await ws.createAwake(
+			const w = await ws.createWhenFree(
 				create(CreateWorkspaceRequestSchema, {
 					sessionId: run.sessionId,
 					repo: sc.repo,

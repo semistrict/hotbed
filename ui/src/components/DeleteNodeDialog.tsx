@@ -71,11 +71,6 @@ export function DeleteNodeDialog({ node, onOpenChange, onDeleted }: DeleteNodeDi
                   cockpit so it no longer appears or takes runs. Its command, event, and placement history stays, and if
                   a worker joins again with the same identity it will reappear.
                 </span>
-                {node.asleep && !node.online && (
-                  <span className="block text-warning-ink">
-                    This node is currently asleep under standby. If its host wakes it, it will rejoin automatically.
-                  </span>
-                )}
                 {node.online && (
                   <span className="block text-critical">
                     This node is currently online and cannot be deleted. Stop its worker first (

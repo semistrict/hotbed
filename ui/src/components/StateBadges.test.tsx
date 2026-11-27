@@ -5,7 +5,7 @@ import { BuildingBadge, OnlineBadge, OutcomeBadge, StateBadge } from "./StateBad
 
 describe("OnlineBadge", () => {
   it("names a node whose worker cannot open its storage, with the reason (board 9141)", () => {
-    const html = renderToStaticMarkup(<OnlineBadge online={false} asleep={false} storageError="ZFS pool not imported: pool hotbed" />);
+    const html = renderToStaticMarkup(<OnlineBadge online={false} storageError="ZFS pool not imported: pool hotbed" />);
     expect(html).toContain('title="ZFS pool not imported: pool hotbed"');
     expect(html).toContain("no storage");
     expect(html).toContain("text-serious-ink");
@@ -13,19 +13,19 @@ describe("OnlineBadge", () => {
   });
 
   it("says offline for a node gone quiet without a storage error", () => {
-    const html = renderToStaticMarkup(<OnlineBadge online={false} asleep={false} />);
+    const html = renderToStaticMarkup(<OnlineBadge online={false} />);
     expect(html).toContain("offline");
     expect(html).not.toContain("no storage");
   });
 
   it("says online when online, whatever an old storage error said", () => {
-    const html = renderToStaticMarkup(<OnlineBadge online={true} asleep={false} storageError="stale" />);
+    const html = renderToStaticMarkup(<OnlineBadge online={true} storageError="stale" />);
     expect(html).toContain("online");
     expect(html).not.toContain("no storage");
   });
 
   it("renders as a plain non-interactive span without ghost badge hover classes", () => {
-    const html = renderToStaticMarkup(<OnlineBadge online={true} asleep={false} />);
+    const html = renderToStaticMarkup(<OnlineBadge online={true} />);
     expect(html).not.toContain('data-slot="badge"');
     expect(html).not.toContain("hover:bg-muted");
   });

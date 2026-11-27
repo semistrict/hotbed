@@ -1274,7 +1274,7 @@ func (e *Engine) focusSessionLocked() string {
 }
 
 // admissionBlocker says why c cannot start now, as a kind (preparing,
-// measurement, behind-measurement, quiet, host-memory, host-cpu, disk, memory,
+// measurement, behind-measurement, quiet, cladefs-memory, disk, memory,
 // pressure, cpu) and a reason with the numbers as they are, or "" if it can;
 // and whether a measurement's reason holds up the work queued after it: it
 // waits for room that work would take. ahead is the oldest measurement still
@@ -1325,10 +1325,9 @@ func (e *Engine) admissionBlockerFor(c, ahead, holder *command, mem sysinfo.Mem,
 		}
 	}
 	if k, r := e.roomFor(c, mem, hasMem); r != "" {
-		// Node-wide holds (host starvation, full disk) already block every
-		// command on their own; do not mislabel subsequent work as waiting
-		// behind a measurement.
-		holds := k != "host-cpu" && k != "host-memory" && k != "disk"
+		// A full disk, a node-wide hold, already blocks every command on its
+		// own; do not mislabel subsequent work as waiting behind a measurement.
+		holds := k != "disk"
 		return k, r, holds
 	}
 	if c.cmd().Bench {
@@ -1346,16 +1345,9 @@ func (e *Engine) room(c *command) (kind, reason string) {
 }
 
 // roomFor checks node capacity for c, measuring physical memory by mem when
-// hasMem: host starvation, disk, memory reservations, physical memory headroom,
+// hasMem: cladefsd memory starvation, disk, memory reservations, physical memory headroom,
 // and memory and CPU pressure. Call with e.mu held.
 func (e *Engine) roomFor(c *command, mem sysinfo.Mem, hasMem bool) (kind, reason string) {
-	hu := e.freshHostUsage(e.now())
-	if memHeld, memReason := hostMemoryStarved(hu); memHeld {
-		return "host-memory", "waiting: " + memReason
-	}
-	if cpuHeld, _, _, _, cpuReason, _ := e.hostCPUStatus(hu); cpuHeld {
-		return "host-cpu", "waiting: " + cpuReason
-	}
 	if cladefsHeld, cladefsReason := e.cladefsMemoryStarved(); cladefsHeld {
 		return "cladefs-memory", "waiting: " + cladefsReason
 	}

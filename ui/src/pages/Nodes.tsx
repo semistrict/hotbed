@@ -16,7 +16,6 @@ import { Steady } from "../components/Steady";
 import { isReadOnlyViewer, useAuthMe } from "../lib/auth";
 import { useNodeColors, useSnapshot } from "../lib/data";
 import { ago, bytes, compact, percent } from "../lib/format";
-import { formatHostUsageFoot, isHostStarved, nodeHostUsage } from "../lib/hostUsage";
 
 export function NodesPage() {
   const { data } = useSnapshot();
@@ -119,8 +118,6 @@ export function NodeCard({ n, s, color, now, delay, onDelete }: { n: Node; s: Sn
   const bases = s.bases.filter((b) => b.nodeId === n.id && b.state !== BaseState.STALE).length;
   const ws = s.workspaces.filter((w) => w.nodeId === n.id && w.state !== WorkspaceState.RELEASED).length;
   const admission = nodeAdmission(n);
-  const host = nodeHostUsage(n);
-  const hostStarved = isHostStarved(usage?.cpuBusy ?? 0, host);
   return (
     <div
       className={`rise group relative block min-w-0 rounded-2xl border border-border bg-card/80 p-4 transition-[color,border-color,opacity] hover:border-border-strong sm:p-5 ${n.online ? "" : "opacity-60 hover:opacity-100"}`}
@@ -143,7 +140,7 @@ export function NodeCard({ n, s, color, now, delay, onDelete }: { n: Node; s: Sn
             </div>
           </div>
           <div className="ml-auto flex shrink-0 flex-col items-end gap-1 text-right">
-            <OnlineBadge online={n.online} asleep={n.asleep} storageError={n.storageError} />
+            <OnlineBadge online={n.online} storageError={n.storageError} />
             {n.online && <AdmissionBadge a={admission} now={now} />}
             <div className="mt-1 font-mono text-[10px] text-faint">
               {n.online ? `${res?.cpus ?? 0} cpu · ${bytes(memBytes)}` : `seen ${ago(n.lastSeen ?? n.joinedAt, now)}`}
@@ -156,17 +153,9 @@ export function NodeCard({ n, s, color, now, delay, onDelete }: { n: Node; s: Sn
           <>
             <div className="mt-5 grid grid-cols-2 gap-5">
               <div className="flex flex-col justify-between">
-                <div>
-                  <div className="flex items-baseline justify-between">
-                    <span className="eyebrow">{host ? "guest cpu" : "cpu"}</span>
-                    <span className="num font-mono text-[13px] text-foreground">{percent(usage?.cpuBusy ?? 0)}</span>
-                  </div>
-                  {host && (
-                    <div className={`mt-0.5 flex items-baseline justify-between font-mono text-[10.5px] ${hostStarved ? "text-serious-ink" : "text-muted-foreground"}`}>
-                      <span>VM {percent(host.vmCpuBusy)}</span>
-                      <span>host {percent(host.hostCpuBusy)}</span>
-                    </div>
-                  )}
+                <div className="flex items-baseline justify-between">
+                  <span className="eyebrow">cpu</span>
+                  <span className="num font-mono text-[13px] text-foreground">{percent(usage?.cpuBusy ?? 0)}</span>
                 </div>
                 <div className="mt-2">
                   <Sparkline values={series.map((p) => p.cpuBusy)} max={1} color={color} height={34} />
@@ -183,11 +172,6 @@ export function NodeCard({ n, s, color, now, delay, onDelete }: { n: Node; s: Sn
               </div>
             </div>
             <div className="mt-4 space-y-2.5">
-              {host && (
-                <Row label="host" value={`VM ${percent(host.vmCpuBusy)} · ${formatHostUsageFoot(host)}`}>
-                  <Meter value={host.hostCpuBusy} warn={0.7} danger={0.85} />
-                </Row>
-              )}
               <Row label="RAM" value={`${bytes(memUsed)} · ${bytes(n.reservedMemoryBytes)} guaranteed`}>
                 <Meter value={mem} warn={0.8} danger={0.93} marker={memBytes > 0 ? Number(n.reservedMemoryBytes) / memBytes : 0} />
               </Row>
@@ -423,7 +407,7 @@ export function NodeTable({ s, onDelete }: { s: Snapshot; onDelete?: (n: Node) =
               <TableCell className="px-2 py-2 font-sans text-muted-foreground">{n.resources?.machine ?? ""}</TableCell>
               <TableCell className="px-2 py-2 text-muted-foreground">{n.resources?.arch || "—"}</TableCell>
               <TableCell className="px-2 py-2">
-                <OnlineBadge online={n.online} asleep={n.asleep} storageError={n.storageError} />
+                <OnlineBadge online={n.online} storageError={n.storageError} />
               </TableCell>
               <TableCell className="px-2 py-2" title={admission?.reason}>
                 {admission ? (admission.holding ? <span className="text-serious-ink">holding</span> : "starting") : "—"}
@@ -507,17 +491,5 @@ export function NodeTable({ s, onDelete }: { s: Snapshot; onDelete?: (n: Node) =
 }
 
 export function NodeCpuCell({ n }: { n: Node }) {
-  if (!n.online) return <>—</>;
-  const guestBusy = n.usage?.cpuBusy ?? 0;
-  const host = nodeHostUsage(n);
-  if (!host) return <>{percent(guestBusy)}</>;
-  const starved = isHostStarved(guestBusy, host);
-  return (
-    <span title={`Guest ${percent(guestBusy)} · VM ${percent(host.vmCpuBusy)} · ${formatHostUsageFoot(host)}`}>
-      {percent(guestBusy)}{" "}
-      <span className={starved ? "text-serious-ink" : "text-muted-foreground"}>
-        (VM {percent(host.vmCpuBusy)} · host {percent(host.hostCpuBusy)})
-      </span>
-    </span>
-  );
+  return <>{n.online ? percent(n.usage?.cpuBusy ?? 0) : "—"}</>;
 }

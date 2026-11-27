@@ -234,11 +234,6 @@ type Engine struct {
 	workspaces      map[string]*workspace
 	commands        map[string]*command
 	usage           *pb.NodeUsage
-	// cpuOwnBusy is the share of CPU time Sample last saw busy outside
-	// nested VMs (sysinfo.CPUShare.Own): what the steal check compares with
-	// what the VM's host gave it, as an idle nested vCPU looks busy here
-	// while costing the host nothing.
-	cpuOwnBusy float64
 	// lastMem is the most recent sysinfo.Mem reading from Sample, kept so
 	// fallback memory checks pair total and used from the same domain (host
 	// or enclosing cgroup slice) instead of mixing slice limit with host use.
@@ -252,20 +247,13 @@ type Engine struct {
 	// making progress on this node so admission drains its already-queued
 	// work in its warm workspace before switching.
 	lastFocusSession string
-	// hostUsage is the latest host-side view of this VM worker from the
-	// controller's heartbeat reply, and hostUsageUntil is the engine clock
-	// deadline after which it is treated as stale and ignored. hostCPUHolding
-	// tracks hysteresis for host CPU starvation.
-	hostUsage      *pb.HostUsage
-	hostUsageUntil time.Time
-	hostCPUHolding bool
-	disk           *pb.DiskUsage
-	diskBytes      int64
-	oomKills       int64
-	objectStore    *pb.ObjectStoreStats
-	resources      *pb.Resources
-	offErr         string    // the last failure to give back a measurement's isolation, logged once
-	offRetry       time.Time // when to try to give it back again, after a failure
+	disk             *pb.DiskUsage
+	diskBytes        int64
+	oomKills         int64
+	objectStore      *pb.ObjectStoreStats
+	resources        *pb.Resources
+	offErr           string    // the last failure to give back a measurement's isolation, logged once
+	offRetry         time.Time // when to try to give it back again, after a failure
 	// active is the sessions clients used here since the last heartbeat.
 	active map[string]bool
 	// SSH shell state: ephemeral host key, one-time tickets, and active shells.
@@ -953,7 +941,6 @@ func (e *Engine) Sample() {
 	if mem.Total > 0 {
 		e.lastMem = mem
 	}
-	e.cpuOwnBusy = cpu.Own()
 	e.usage = &pb.NodeUsage{
 		CpuBusy:         cpu.Busy,
 		MemoryUsedBytes: e.reportedMemUsedLocked(mem),

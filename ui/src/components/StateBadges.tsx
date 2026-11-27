@@ -46,24 +46,13 @@ export function BuildingBadge({ project, generation, progress }: { project: stri
   );
 }
 
-export function OnlineBadge({ online, asleep, storageError = "" }: { online: boolean; asleep: boolean; storageError?: string }) {
+export function OnlineBadge({ online, storageError = "" }: { online: boolean; storageError?: string }) {
   if (!online && storageError) {
     // Its worker heartbeats but cannot open its storage: it serves nothing.
     return (
       <span className="inline-flex items-center gap-1.5 font-mono text-[10.5px] font-normal whitespace-nowrap text-serious-ink" title={storageError}>
         <span className="inline-block size-1.5 shrink-0 rounded-full bg-serious" aria-hidden />
         no storage
-      </span>
-    );
-  }
-  if (asleep) {
-    return (
-      <span
-        className="inline-flex items-center gap-1.5 font-mono text-[10.5px] font-normal whitespace-nowrap text-muted-foreground"
-        title="Powered off while idle; a run placed on it wakes it"
-      >
-        <span className="inline-block size-1.5 shrink-0 rounded-full bg-muted-foreground/50" aria-hidden />
-        asleep
       </span>
     );
   }

@@ -1804,7 +1804,7 @@ func (x CommandUpdate_What) Number() protoreflect.EnumNumber {
 
 // Deprecated: Use CommandUpdate_What.Descriptor instead.
 func (CommandUpdate_What) EnumDescriptor() ([]byte, []int) {
-	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{150, 0}
+	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{145, 0}
 }
 
 type WorkspaceUpdate_What int32
@@ -1854,7 +1854,7 @@ func (x WorkspaceUpdate_What) Number() protoreflect.EnumNumber {
 
 // Deprecated: Use WorkspaceUpdate_What.Descriptor instead.
 func (WorkspaceUpdate_What) EnumDescriptor() ([]byte, []int) {
-	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{151, 0}
+	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{146, 0}
 }
 
 type QuestionUpdate_What int32
@@ -1904,7 +1904,7 @@ func (x QuestionUpdate_What) Number() protoreflect.EnumNumber {
 
 // Deprecated: Use QuestionUpdate_What.Descriptor instead.
 func (QuestionUpdate_What) EnumDescriptor() ([]byte, []int) {
-	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{152, 0}
+	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{147, 0}
 }
 
 type ReviewUpdate_What int32
@@ -1959,7 +1959,7 @@ func (x ReviewUpdate_What) Number() protoreflect.EnumNumber {
 
 // Deprecated: Use ReviewUpdate_What.Descriptor instead.
 func (ReviewUpdate_What) EnumDescriptor() ([]byte, []int) {
-	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{153, 0}
+	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{148, 0}
 }
 
 type MemoryUpdate_What int32
@@ -2011,7 +2011,7 @@ func (x MemoryUpdate_What) Number() protoreflect.EnumNumber {
 
 // Deprecated: Use MemoryUpdate_What.Descriptor instead.
 func (MemoryUpdate_What) EnumDescriptor() ([]byte, []int) {
-	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{154, 0}
+	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{149, 0}
 }
 
 // ErrorInfo rides on every error as a detail: a code programs act on, what
@@ -2782,11 +2782,6 @@ type Node struct {
 	DaemonLogs *DaemonLogSource `protobuf:"bytes,15,opt,name=daemon_logs,json=daemonLogs,proto3" json:"daemon_logs,omitempty"`
 	// How it decides whether to start new work, as of its last heartbeat.
 	Admission *Admission `protobuf:"bytes,16,opt,name=admission,proto3" json:"admission,omitempty"`
-	// Its host powered it off, or is powering it on, as the controller asked
-	// (Standby): it is not out of reach, and a run placed on it wakes it.
-	Asleep bool `protobuf:"varint,17,opt,name=asleep,proto3" json:"asleep,omitempty"`
-	// Host-side view of a VM worker, when its host supervisor reports it.
-	HostUsage *HostUsage `protobuf:"bytes,18,opt,name=host_usage,json=hostUsage,proto3" json:"host_usage,omitempty"`
 	// Why the worker cannot open its storage (a ZFS pool not imported, its
 	// disk missing), as of its last heartbeat: it waits for it and serves
 	// nothing meanwhile, so it is not online. Empty when its storage is open.
@@ -2935,20 +2930,6 @@ func (x *Node) GetDaemonLogs() *DaemonLogSource {
 func (x *Node) GetAdmission() *Admission {
 	if x != nil {
 		return x.Admission
-	}
-	return nil
-}
-
-func (x *Node) GetAsleep() bool {
-	if x != nil {
-		return x.Asleep
-	}
-	return false
-}
-
-func (x *Node) GetHostUsage() *HostUsage {
-	if x != nil {
-		return x.HostUsage
 	}
 	return nil
 }
@@ -3661,315 +3642,6 @@ func (x *PartCacheShard) GetState() PartCacheShardState {
 	return PartCacheShardState_PART_CACHE_SHARD_STATE_UNSPECIFIED
 }
 
-// Host-side view of a VM worker, reported by its host supervisor (macOS).
-type HostUsage struct {
-	state protoimpl.MessageState `protogen:"open.v1"`
-	// Share of configured vCPUs the VM process actually got on the host
-	// (0..1; e.g. 1.5 cores used on a 7-vCPU VM = 0.214).
-	VmCpuBusy float64 `protobuf:"fixed64,1,opt,name=vm_cpu_busy,json=vmCpuBusy,proto3" json:"vm_cpu_busy,omitempty"`
-	// Share of host CPUs busy across the whole host (0..1).
-	HostCpuBusy float64 `protobuf:"fixed64,2,opt,name=host_cpu_busy,json=hostCpuBusy,proto3" json:"host_cpu_busy,omitempty"`
-	// Host 1-minute load average.
-	HostLoad_1M float64 `protobuf:"fixed64,3,opt,name=host_load_1m,json=hostLoad1m,proto3" json:"host_load_1m,omitempty"`
-	// Logical CPUs on the host.
-	HostCpus int32 `protobuf:"varint,4,opt,name=host_cpus,json=hostCpus,proto3" json:"host_cpus,omitempty"`
-	// Host memory pressure, 0..100 (macOS normal=0, warn=50, critical=100).
-	HostMemoryPressure float64 `protobuf:"fixed64,5,opt,name=host_memory_pressure,json=hostMemoryPressure,proto3" json:"host_memory_pressure,omitempty"`
-	// Unix milliseconds when sampled on the host.
-	SampledAt int64 `protobuf:"varint,6,opt,name=sampled_at,json=sampledAt,proto3" json:"sampled_at,omitempty"`
-	// Remaining freshness TTL (ms) from controller ingestion, populated on
-	// HeartbeatResponse so worker admission expires the sample at its original
-	// controller deadline rather than granting a second full TTL.
-	RemainingTtlMs int64 `protobuf:"varint,7,opt,name=remaining_ttl_ms,json=remainingTtlMs,proto3" json:"remaining_ttl_ms,omitempty"`
-	unknownFields  protoimpl.UnknownFields
-	sizeCache      protoimpl.SizeCache
-}
-
-func (x *HostUsage) Reset() {
-	*x = HostUsage{}
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[12]
-	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-	ms.StoreMessageInfo(mi)
-}
-
-func (x *HostUsage) String() string {
-	return protoimpl.X.MessageStringOf(x)
-}
-
-func (*HostUsage) ProtoMessage() {}
-
-func (x *HostUsage) ProtoReflect() protoreflect.Message {
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[12]
-	if x != nil {
-		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-		if ms.LoadMessageInfo() == nil {
-			ms.StoreMessageInfo(mi)
-		}
-		return ms
-	}
-	return mi.MessageOf(x)
-}
-
-// Deprecated: Use HostUsage.ProtoReflect.Descriptor instead.
-func (*HostUsage) Descriptor() ([]byte, []int) {
-	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{12}
-}
-
-func (x *HostUsage) GetVmCpuBusy() float64 {
-	if x != nil {
-		return x.VmCpuBusy
-	}
-	return 0
-}
-
-func (x *HostUsage) GetHostCpuBusy() float64 {
-	if x != nil {
-		return x.HostCpuBusy
-	}
-	return 0
-}
-
-func (x *HostUsage) GetHostLoad_1M() float64 {
-	if x != nil {
-		return x.HostLoad_1M
-	}
-	return 0
-}
-
-func (x *HostUsage) GetHostCpus() int32 {
-	if x != nil {
-		return x.HostCpus
-	}
-	return 0
-}
-
-func (x *HostUsage) GetHostMemoryPressure() float64 {
-	if x != nil {
-		return x.HostMemoryPressure
-	}
-	return 0
-}
-
-func (x *HostUsage) GetSampledAt() int64 {
-	if x != nil {
-		return x.SampledAt
-	}
-	return 0
-}
-
-func (x *HostUsage) GetRemainingTtlMs() int64 {
-	if x != nil {
-		return x.RemainingTtlMs
-	}
-	return 0
-}
-
-type ReportHostUsageRequest struct {
-	state protoimpl.MessageState `protogen:"open.v1"`
-	// The worker's host name (same as StandbyRequest.node).
-	Node          string     `protobuf:"bytes,1,opt,name=node,proto3" json:"node,omitempty"`
-	Usage         *HostUsage `protobuf:"bytes,2,opt,name=usage,proto3" json:"usage,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
-}
-
-func (x *ReportHostUsageRequest) Reset() {
-	*x = ReportHostUsageRequest{}
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[13]
-	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-	ms.StoreMessageInfo(mi)
-}
-
-func (x *ReportHostUsageRequest) String() string {
-	return protoimpl.X.MessageStringOf(x)
-}
-
-func (*ReportHostUsageRequest) ProtoMessage() {}
-
-func (x *ReportHostUsageRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[13]
-	if x != nil {
-		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-		if ms.LoadMessageInfo() == nil {
-			ms.StoreMessageInfo(mi)
-		}
-		return ms
-	}
-	return mi.MessageOf(x)
-}
-
-// Deprecated: Use ReportHostUsageRequest.ProtoReflect.Descriptor instead.
-func (*ReportHostUsageRequest) Descriptor() ([]byte, []int) {
-	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{13}
-}
-
-func (x *ReportHostUsageRequest) GetNode() string {
-	if x != nil {
-		return x.Node
-	}
-	return ""
-}
-
-func (x *ReportHostUsageRequest) GetUsage() *HostUsage {
-	if x != nil {
-		return x.Usage
-	}
-	return nil
-}
-
-type ReportHostUsageResponse struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
-}
-
-func (x *ReportHostUsageResponse) Reset() {
-	*x = ReportHostUsageResponse{}
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[14]
-	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-	ms.StoreMessageInfo(mi)
-}
-
-func (x *ReportHostUsageResponse) String() string {
-	return protoimpl.X.MessageStringOf(x)
-}
-
-func (*ReportHostUsageResponse) ProtoMessage() {}
-
-func (x *ReportHostUsageResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[14]
-	if x != nil {
-		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-		if ms.LoadMessageInfo() == nil {
-			ms.StoreMessageInfo(mi)
-		}
-		return ms
-	}
-	return mi.MessageOf(x)
-}
-
-// Deprecated: Use ReportHostUsageResponse.ProtoReflect.Descriptor instead.
-func (*ReportHostUsageResponse) Descriptor() ([]byte, []int) {
-	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{14}
-}
-
-type StandbyRequest struct {
-	state protoimpl.MessageState `protogen:"open.v1"`
-	// The worker's host name.
-	Node string `protobuf:"bytes,1,opt,name=node,proto3" json:"node,omitempty"`
-	// Whether its VM runs now.
-	Running bool `protobuf:"varint,2,opt,name=running,proto3" json:"running,omitempty"`
-	// How long it is to have had no work before it sleeps; 0 never to sleep.
-	SleepAfterSeconds int64 `protobuf:"varint,3,opt,name=sleep_after_seconds,json=sleepAfterSeconds,proto3" json:"sleep_after_seconds,omitempty"`
-	unknownFields     protoimpl.UnknownFields
-	sizeCache         protoimpl.SizeCache
-}
-
-func (x *StandbyRequest) Reset() {
-	*x = StandbyRequest{}
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[15]
-	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-	ms.StoreMessageInfo(mi)
-}
-
-func (x *StandbyRequest) String() string {
-	return protoimpl.X.MessageStringOf(x)
-}
-
-func (*StandbyRequest) ProtoMessage() {}
-
-func (x *StandbyRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[15]
-	if x != nil {
-		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-		if ms.LoadMessageInfo() == nil {
-			ms.StoreMessageInfo(mi)
-		}
-		return ms
-	}
-	return mi.MessageOf(x)
-}
-
-// Deprecated: Use StandbyRequest.ProtoReflect.Descriptor instead.
-func (*StandbyRequest) Descriptor() ([]byte, []int) {
-	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{15}
-}
-
-func (x *StandbyRequest) GetNode() string {
-	if x != nil {
-		return x.Node
-	}
-	return ""
-}
-
-func (x *StandbyRequest) GetRunning() bool {
-	if x != nil {
-		return x.Running
-	}
-	return false
-}
-
-func (x *StandbyRequest) GetSleepAfterSeconds() int64 {
-	if x != nil {
-		return x.SleepAfterSeconds
-	}
-	return 0
-}
-
-type StandbyResponse struct {
-	state protoimpl.MessageState `protogen:"open.v1"`
-	// Whether its VM should run.
-	Run bool `protobuf:"varint,1,opt,name=run,proto3" json:"run,omitempty"`
-	// Why, for the host's log.
-	Reason        string `protobuf:"bytes,2,opt,name=reason,proto3" json:"reason,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
-}
-
-func (x *StandbyResponse) Reset() {
-	*x = StandbyResponse{}
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[16]
-	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-	ms.StoreMessageInfo(mi)
-}
-
-func (x *StandbyResponse) String() string {
-	return protoimpl.X.MessageStringOf(x)
-}
-
-func (*StandbyResponse) ProtoMessage() {}
-
-func (x *StandbyResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[16]
-	if x != nil {
-		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-		if ms.LoadMessageInfo() == nil {
-			ms.StoreMessageInfo(mi)
-		}
-		return ms
-	}
-	return mi.MessageOf(x)
-}
-
-// Deprecated: Use StandbyResponse.ProtoReflect.Descriptor instead.
-func (*StandbyResponse) Descriptor() ([]byte, []int) {
-	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{16}
-}
-
-func (x *StandbyResponse) GetRun() bool {
-	if x != nil {
-		return x.Run
-	}
-	return false
-}
-
-func (x *StandbyResponse) GetReason() string {
-	if x != nil {
-		return x.Reason
-	}
-	return ""
-}
-
 // Status of a worker's always-on continuous eBPF profiler.
 type ProfilerStatus struct {
 	state  protoimpl.MessageState `protogen:"open.v1"`
@@ -3986,7 +3658,7 @@ type ProfilerStatus struct {
 
 func (x *ProfilerStatus) Reset() {
 	*x = ProfilerStatus{}
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[17]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[12]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3998,7 +3670,7 @@ func (x *ProfilerStatus) String() string {
 func (*ProfilerStatus) ProtoMessage() {}
 
 func (x *ProfilerStatus) ProtoReflect() protoreflect.Message {
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[17]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[12]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4011,7 +3683,7 @@ func (x *ProfilerStatus) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ProfilerStatus.ProtoReflect.Descriptor instead.
 func (*ProfilerStatus) Descriptor() ([]byte, []int) {
-	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{17}
+	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{12}
 }
 
 func (x *ProfilerStatus) GetActive() bool {
@@ -4057,7 +3729,7 @@ type JoinRequest struct {
 
 func (x *JoinRequest) Reset() {
 	*x = JoinRequest{}
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[18]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[13]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4069,7 +3741,7 @@ func (x *JoinRequest) String() string {
 func (*JoinRequest) ProtoMessage() {}
 
 func (x *JoinRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[18]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[13]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4082,7 +3754,7 @@ func (x *JoinRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use JoinRequest.ProtoReflect.Descriptor instead.
 func (*JoinRequest) Descriptor() ([]byte, []int) {
-	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{18}
+	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{13}
 }
 
 type JoinResponse struct {
@@ -4100,7 +3772,7 @@ type JoinResponse struct {
 
 func (x *JoinResponse) Reset() {
 	*x = JoinResponse{}
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[19]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[14]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4112,7 +3784,7 @@ func (x *JoinResponse) String() string {
 func (*JoinResponse) ProtoMessage() {}
 
 func (x *JoinResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[19]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[14]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4125,7 +3797,7 @@ func (x *JoinResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use JoinResponse.ProtoReflect.Descriptor instead.
 func (*JoinResponse) Descriptor() ([]byte, []int) {
-	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{19}
+	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{14}
 }
 
 func (x *JoinResponse) GetClusterId() string {
@@ -4157,7 +3829,7 @@ type ListNodesRequest struct {
 
 func (x *ListNodesRequest) Reset() {
 	*x = ListNodesRequest{}
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[20]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[15]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4169,7 +3841,7 @@ func (x *ListNodesRequest) String() string {
 func (*ListNodesRequest) ProtoMessage() {}
 
 func (x *ListNodesRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[20]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[15]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4182,7 +3854,7 @@ func (x *ListNodesRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListNodesRequest.ProtoReflect.Descriptor instead.
 func (*ListNodesRequest) Descriptor() ([]byte, []int) {
-	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{20}
+	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{15}
 }
 
 type ListNodesResponse struct {
@@ -4197,7 +3869,7 @@ type ListNodesResponse struct {
 
 func (x *ListNodesResponse) Reset() {
 	*x = ListNodesResponse{}
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[21]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[16]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4209,7 +3881,7 @@ func (x *ListNodesResponse) String() string {
 func (*ListNodesResponse) ProtoMessage() {}
 
 func (x *ListNodesResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[21]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[16]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4222,7 +3894,7 @@ func (x *ListNodesResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListNodesResponse.ProtoReflect.Descriptor instead.
 func (*ListNodesResponse) Descriptor() ([]byte, []int) {
-	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{21}
+	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{16}
 }
 
 func (x *ListNodesResponse) GetClusterId() string {
@@ -4265,7 +3937,7 @@ type ManagedArtifact struct {
 
 func (x *ManagedArtifact) Reset() {
 	*x = ManagedArtifact{}
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[22]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[17]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4277,7 +3949,7 @@ func (x *ManagedArtifact) String() string {
 func (*ManagedArtifact) ProtoMessage() {}
 
 func (x *ManagedArtifact) ProtoReflect() protoreflect.Message {
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[22]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[17]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4290,7 +3962,7 @@ func (x *ManagedArtifact) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ManagedArtifact.ProtoReflect.Descriptor instead.
 func (*ManagedArtifact) Descriptor() ([]byte, []int) {
-	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{22}
+	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{17}
 }
 
 func (x *ManagedArtifact) GetUrl() string {
@@ -4342,7 +4014,7 @@ type Build struct {
 
 func (x *Build) Reset() {
 	*x = Build{}
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[23]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[18]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4354,7 +4026,7 @@ func (x *Build) String() string {
 func (*Build) ProtoMessage() {}
 
 func (x *Build) ProtoReflect() protoreflect.Message {
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[23]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[18]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4367,7 +4039,7 @@ func (x *Build) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Build.ProtoReflect.Descriptor instead.
 func (*Build) Descriptor() ([]byte, []int) {
-	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{23}
+	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{18}
 }
 
 func (x *Build) GetNumber() int64 {
@@ -4443,7 +4115,7 @@ type WorkerVMConfig struct {
 
 func (x *WorkerVMConfig) Reset() {
 	*x = WorkerVMConfig{}
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[24]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[19]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4455,7 +4127,7 @@ func (x *WorkerVMConfig) String() string {
 func (*WorkerVMConfig) ProtoMessage() {}
 
 func (x *WorkerVMConfig) ProtoReflect() protoreflect.Message {
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[24]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[19]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4468,7 +4140,7 @@ func (x *WorkerVMConfig) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use WorkerVMConfig.ProtoReflect.Descriptor instead.
 func (*WorkerVMConfig) Descriptor() ([]byte, []int) {
-	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{24}
+	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{19}
 }
 
 func (x *WorkerVMConfig) GetEnabled() bool {
@@ -4657,7 +4329,7 @@ type WorkerCladefsFUSEConfig struct {
 
 func (x *WorkerCladefsFUSEConfig) Reset() {
 	*x = WorkerCladefsFUSEConfig{}
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[25]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[20]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4669,7 +4341,7 @@ func (x *WorkerCladefsFUSEConfig) String() string {
 func (*WorkerCladefsFUSEConfig) ProtoMessage() {}
 
 func (x *WorkerCladefsFUSEConfig) ProtoReflect() protoreflect.Message {
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[25]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[20]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4682,7 +4354,7 @@ func (x *WorkerCladefsFUSEConfig) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use WorkerCladefsFUSEConfig.ProtoReflect.Descriptor instead.
 func (*WorkerCladefsFUSEConfig) Descriptor() ([]byte, []int) {
-	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{25}
+	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{20}
 }
 
 func (x *WorkerCladefsFUSEConfig) GetEnabled() bool {
@@ -4769,7 +4441,7 @@ type WorkerSystemConfig struct {
 
 func (x *WorkerSystemConfig) Reset() {
 	*x = WorkerSystemConfig{}
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[26]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[21]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4781,7 +4453,7 @@ func (x *WorkerSystemConfig) String() string {
 func (*WorkerSystemConfig) ProtoMessage() {}
 
 func (x *WorkerSystemConfig) ProtoReflect() protoreflect.Message {
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[26]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[21]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4794,7 +4466,7 @@ func (x *WorkerSystemConfig) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use WorkerSystemConfig.ProtoReflect.Descriptor instead.
 func (*WorkerSystemConfig) Descriptor() ([]byte, []int) {
-	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{26}
+	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{21}
 }
 
 func (x *WorkerSystemConfig) GetCladefsd() map[string]*ManagedArtifact {
@@ -4869,7 +4541,7 @@ type WorkerFreshenConfig struct {
 
 func (x *WorkerFreshenConfig) Reset() {
 	*x = WorkerFreshenConfig{}
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[27]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[22]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4881,7 +4553,7 @@ func (x *WorkerFreshenConfig) String() string {
 func (*WorkerFreshenConfig) ProtoMessage() {}
 
 func (x *WorkerFreshenConfig) ProtoReflect() protoreflect.Message {
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[27]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[22]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4894,7 +4566,7 @@ func (x *WorkerFreshenConfig) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use WorkerFreshenConfig.ProtoReflect.Descriptor instead.
 func (*WorkerFreshenConfig) Descriptor() ([]byte, []int) {
-	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{27}
+	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{22}
 }
 
 func (x *WorkerFreshenConfig) GetMaxDutyCycle() float64 {
@@ -4969,7 +4641,7 @@ type OrgControllerConfig struct {
 
 func (x *OrgControllerConfig) Reset() {
 	*x = OrgControllerConfig{}
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[28]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[23]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4981,7 +4653,7 @@ func (x *OrgControllerConfig) String() string {
 func (*OrgControllerConfig) ProtoMessage() {}
 
 func (x *OrgControllerConfig) ProtoReflect() protoreflect.Message {
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[28]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[23]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4994,7 +4666,7 @@ func (x *OrgControllerConfig) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use OrgControllerConfig.ProtoReflect.Descriptor instead.
 func (*OrgControllerConfig) Descriptor() ([]byte, []int) {
-	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{28}
+	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{23}
 }
 
 func (x *OrgControllerConfig) GetSessionIdleTimeoutSeconds() int32 {
@@ -5040,7 +4712,7 @@ type WorkerConfig struct {
 
 func (x *WorkerConfig) Reset() {
 	*x = WorkerConfig{}
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[29]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[24]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -5052,7 +4724,7 @@ func (x *WorkerConfig) String() string {
 func (*WorkerConfig) ProtoMessage() {}
 
 func (x *WorkerConfig) ProtoReflect() protoreflect.Message {
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[29]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[24]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -5065,7 +4737,7 @@ func (x *WorkerConfig) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use WorkerConfig.ProtoReflect.Descriptor instead.
 func (*WorkerConfig) Descriptor() ([]byte, []int) {
-	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{29}
+	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{24}
 }
 
 func (x *WorkerConfig) GetNode() string {
@@ -5162,7 +4834,7 @@ type GetWorkerConfigRequest struct {
 
 func (x *GetWorkerConfigRequest) Reset() {
 	*x = GetWorkerConfigRequest{}
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[30]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[25]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -5174,7 +4846,7 @@ func (x *GetWorkerConfigRequest) String() string {
 func (*GetWorkerConfigRequest) ProtoMessage() {}
 
 func (x *GetWorkerConfigRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[30]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[25]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -5187,7 +4859,7 @@ func (x *GetWorkerConfigRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetWorkerConfigRequest.ProtoReflect.Descriptor instead.
 func (*GetWorkerConfigRequest) Descriptor() ([]byte, []int) {
-	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{30}
+	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{25}
 }
 
 func (x *GetWorkerConfigRequest) GetNode() string {
@@ -5211,7 +4883,7 @@ type GetWorkerConfigResponse struct {
 
 func (x *GetWorkerConfigResponse) Reset() {
 	*x = GetWorkerConfigResponse{}
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[31]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[26]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -5223,7 +4895,7 @@ func (x *GetWorkerConfigResponse) String() string {
 func (*GetWorkerConfigResponse) ProtoMessage() {}
 
 func (x *GetWorkerConfigResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[31]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[26]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -5236,7 +4908,7 @@ func (x *GetWorkerConfigResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetWorkerConfigResponse.ProtoReflect.Descriptor instead.
 func (*GetWorkerConfigResponse) Descriptor() ([]byte, []int) {
-	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{31}
+	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{26}
 }
 
 func (x *GetWorkerConfigResponse) GetDefaults() *WorkerConfig {
@@ -5276,7 +4948,7 @@ type SetWorkerConfigRequest struct {
 
 func (x *SetWorkerConfigRequest) Reset() {
 	*x = SetWorkerConfigRequest{}
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[32]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[27]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -5288,7 +4960,7 @@ func (x *SetWorkerConfigRequest) String() string {
 func (*SetWorkerConfigRequest) ProtoMessage() {}
 
 func (x *SetWorkerConfigRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[32]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[27]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -5301,7 +4973,7 @@ func (x *SetWorkerConfigRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SetWorkerConfigRequest.ProtoReflect.Descriptor instead.
 func (*SetWorkerConfigRequest) Descriptor() ([]byte, []int) {
-	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{32}
+	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{27}
 }
 
 func (x *SetWorkerConfigRequest) GetNode() string {
@@ -5344,7 +5016,7 @@ type DeleteWorkerConfigRequest struct {
 
 func (x *DeleteWorkerConfigRequest) Reset() {
 	*x = DeleteWorkerConfigRequest{}
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[33]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[28]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -5356,7 +5028,7 @@ func (x *DeleteWorkerConfigRequest) String() string {
 func (*DeleteWorkerConfigRequest) ProtoMessage() {}
 
 func (x *DeleteWorkerConfigRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[33]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[28]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -5369,7 +5041,7 @@ func (x *DeleteWorkerConfigRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DeleteWorkerConfigRequest.ProtoReflect.Descriptor instead.
 func (*DeleteWorkerConfigRequest) Descriptor() ([]byte, []int) {
-	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{33}
+	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{28}
 }
 
 func (x *DeleteWorkerConfigRequest) GetNode() string {
@@ -5396,7 +5068,7 @@ type DeleteWorkerConfigResponse struct {
 
 func (x *DeleteWorkerConfigResponse) Reset() {
 	*x = DeleteWorkerConfigResponse{}
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[34]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[29]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -5408,7 +5080,7 @@ func (x *DeleteWorkerConfigResponse) String() string {
 func (*DeleteWorkerConfigResponse) ProtoMessage() {}
 
 func (x *DeleteWorkerConfigResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[34]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[29]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -5421,7 +5093,7 @@ func (x *DeleteWorkerConfigResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DeleteWorkerConfigResponse.ProtoReflect.Descriptor instead.
 func (*DeleteWorkerConfigResponse) Descriptor() ([]byte, []int) {
-	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{34}
+	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{29}
 }
 
 func (x *DeleteWorkerConfigResponse) GetNode() string {
@@ -5448,7 +5120,7 @@ type GetBuildRequest struct {
 
 func (x *GetBuildRequest) Reset() {
 	*x = GetBuildRequest{}
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[35]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[30]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -5460,7 +5132,7 @@ func (x *GetBuildRequest) String() string {
 func (*GetBuildRequest) ProtoMessage() {}
 
 func (x *GetBuildRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[35]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[30]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -5473,7 +5145,7 @@ func (x *GetBuildRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetBuildRequest.ProtoReflect.Descriptor instead.
 func (*GetBuildRequest) Descriptor() ([]byte, []int) {
-	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{35}
+	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{30}
 }
 
 func (x *GetBuildRequest) GetOs() string {
@@ -5504,7 +5176,7 @@ type UpgradeSystemRequest struct {
 
 func (x *UpgradeSystemRequest) Reset() {
 	*x = UpgradeSystemRequest{}
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[36]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[31]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -5516,7 +5188,7 @@ func (x *UpgradeSystemRequest) String() string {
 func (*UpgradeSystemRequest) ProtoMessage() {}
 
 func (x *UpgradeSystemRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[36]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[31]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -5529,7 +5201,7 @@ func (x *UpgradeSystemRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use UpgradeSystemRequest.ProtoReflect.Descriptor instead.
 func (*UpgradeSystemRequest) Descriptor() ([]byte, []int) {
-	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{36}
+	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{31}
 }
 
 func (x *UpgradeSystemRequest) GetNode() string {
@@ -5569,7 +5241,7 @@ type WorkerUpgradeSystemRequest struct {
 
 func (x *WorkerUpgradeSystemRequest) Reset() {
 	*x = WorkerUpgradeSystemRequest{}
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[37]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[32]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -5581,7 +5253,7 @@ func (x *WorkerUpgradeSystemRequest) String() string {
 func (*WorkerUpgradeSystemRequest) ProtoMessage() {}
 
 func (x *WorkerUpgradeSystemRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[37]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[32]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -5594,7 +5266,7 @@ func (x *WorkerUpgradeSystemRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use WorkerUpgradeSystemRequest.ProtoReflect.Descriptor instead.
 func (*WorkerUpgradeSystemRequest) Descriptor() ([]byte, []int) {
-	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{37}
+	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{32}
 }
 
 func (x *WorkerUpgradeSystemRequest) GetCladefsd() *ManagedArtifact {
@@ -5680,7 +5352,7 @@ type NodeSystemUpgrade struct {
 
 func (x *NodeSystemUpgrade) Reset() {
 	*x = NodeSystemUpgrade{}
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[38]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[33]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -5692,7 +5364,7 @@ func (x *NodeSystemUpgrade) String() string {
 func (*NodeSystemUpgrade) ProtoMessage() {}
 
 func (x *NodeSystemUpgrade) ProtoReflect() protoreflect.Message {
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[38]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[33]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -5705,7 +5377,7 @@ func (x *NodeSystemUpgrade) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use NodeSystemUpgrade.ProtoReflect.Descriptor instead.
 func (*NodeSystemUpgrade) Descriptor() ([]byte, []int) {
-	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{38}
+	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{33}
 }
 
 func (x *NodeSystemUpgrade) GetNode() string {
@@ -5843,7 +5515,7 @@ type UpgradeSystemResponse struct {
 
 func (x *UpgradeSystemResponse) Reset() {
 	*x = UpgradeSystemResponse{}
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[39]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[34]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -5855,7 +5527,7 @@ func (x *UpgradeSystemResponse) String() string {
 func (*UpgradeSystemResponse) ProtoMessage() {}
 
 func (x *UpgradeSystemResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[39]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[34]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -5868,7 +5540,7 @@ func (x *UpgradeSystemResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use UpgradeSystemResponse.ProtoReflect.Descriptor instead.
 func (*UpgradeSystemResponse) Descriptor() ([]byte, []int) {
-	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{39}
+	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{34}
 }
 
 func (x *UpgradeSystemResponse) GetNodes() []*NodeSystemUpgrade {
@@ -5897,7 +5569,7 @@ type Repo struct {
 
 func (x *Repo) Reset() {
 	*x = Repo{}
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[40]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[35]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -5909,7 +5581,7 @@ func (x *Repo) String() string {
 func (*Repo) ProtoMessage() {}
 
 func (x *Repo) ProtoReflect() protoreflect.Message {
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[40]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[35]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -5922,7 +5594,7 @@ func (x *Repo) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Repo.ProtoReflect.Descriptor instead.
 func (*Repo) Descriptor() ([]byte, []int) {
-	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{40}
+	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{35}
 }
 
 func (x *Repo) GetId() string {
@@ -5982,7 +5654,7 @@ type Step struct {
 
 func (x *Step) Reset() {
 	*x = Step{}
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[41]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[36]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -5994,7 +5666,7 @@ func (x *Step) String() string {
 func (*Step) ProtoMessage() {}
 
 func (x *Step) ProtoReflect() protoreflect.Message {
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[41]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[36]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -6007,7 +5679,7 @@ func (x *Step) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Step.ProtoReflect.Descriptor instead.
 func (*Step) Descriptor() ([]byte, []int) {
-	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{41}
+	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{36}
 }
 
 func (x *Step) GetName() string {
@@ -6071,7 +5743,7 @@ type AppliedStep struct {
 
 func (x *AppliedStep) Reset() {
 	*x = AppliedStep{}
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[42]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[37]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -6083,7 +5755,7 @@ func (x *AppliedStep) String() string {
 func (*AppliedStep) ProtoMessage() {}
 
 func (x *AppliedStep) ProtoReflect() protoreflect.Message {
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[42]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[37]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -6096,7 +5768,7 @@ func (x *AppliedStep) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use AppliedStep.ProtoReflect.Descriptor instead.
 func (*AppliedStep) Descriptor() ([]byte, []int) {
-	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{42}
+	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{37}
 }
 
 func (x *AppliedStep) GetName() string {
@@ -6150,7 +5822,7 @@ type PutStepRequest struct {
 
 func (x *PutStepRequest) Reset() {
 	*x = PutStepRequest{}
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[43]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[38]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -6162,7 +5834,7 @@ func (x *PutStepRequest) String() string {
 func (*PutStepRequest) ProtoMessage() {}
 
 func (x *PutStepRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[43]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[38]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -6175,7 +5847,7 @@ func (x *PutStepRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PutStepRequest.ProtoReflect.Descriptor instead.
 func (*PutStepRequest) Descriptor() ([]byte, []int) {
-	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{43}
+	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{38}
 }
 
 func (x *PutStepRequest) GetProject() string {
@@ -6218,7 +5890,7 @@ type DeleteStepRequest struct {
 
 func (x *DeleteStepRequest) Reset() {
 	*x = DeleteStepRequest{}
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[44]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[39]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -6230,7 +5902,7 @@ func (x *DeleteStepRequest) String() string {
 func (*DeleteStepRequest) ProtoMessage() {}
 
 func (x *DeleteStepRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[44]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[39]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -6243,7 +5915,7 @@ func (x *DeleteStepRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DeleteStepRequest.ProtoReflect.Descriptor instead.
 func (*DeleteStepRequest) Descriptor() ([]byte, []int) {
-	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{44}
+	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{39}
 }
 
 func (x *DeleteStepRequest) GetProject() string {
@@ -6276,7 +5948,7 @@ type ListStepsRequest struct {
 
 func (x *ListStepsRequest) Reset() {
 	*x = ListStepsRequest{}
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[45]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[40]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -6288,7 +5960,7 @@ func (x *ListStepsRequest) String() string {
 func (*ListStepsRequest) ProtoMessage() {}
 
 func (x *ListStepsRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[45]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[40]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -6301,7 +5973,7 @@ func (x *ListStepsRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListStepsRequest.ProtoReflect.Descriptor instead.
 func (*ListStepsRequest) Descriptor() ([]byte, []int) {
-	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{45}
+	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{40}
 }
 
 func (x *ListStepsRequest) GetProject() string {
@@ -6320,7 +5992,7 @@ type ListStepsResponse struct {
 
 func (x *ListStepsResponse) Reset() {
 	*x = ListStepsResponse{}
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[46]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[41]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -6332,7 +6004,7 @@ func (x *ListStepsResponse) String() string {
 func (*ListStepsResponse) ProtoMessage() {}
 
 func (x *ListStepsResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[46]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[41]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -6345,7 +6017,7 @@ func (x *ListStepsResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListStepsResponse.ProtoReflect.Descriptor instead.
 func (*ListStepsResponse) Descriptor() ([]byte, []int) {
-	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{46}
+	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{41}
 }
 
 func (x *ListStepsResponse) GetSteps() []*StepStatus {
@@ -6365,7 +6037,7 @@ type StepStatus struct {
 
 func (x *StepStatus) Reset() {
 	*x = StepStatus{}
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[47]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[42]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -6377,7 +6049,7 @@ func (x *StepStatus) String() string {
 func (*StepStatus) ProtoMessage() {}
 
 func (x *StepStatus) ProtoReflect() protoreflect.Message {
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[47]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[42]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -6390,7 +6062,7 @@ func (x *StepStatus) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use StepStatus.ProtoReflect.Descriptor instead.
 func (*StepStatus) Descriptor() ([]byte, []int) {
-	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{47}
+	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{42}
 }
 
 func (x *StepStatus) GetStep() *Step {
@@ -6420,7 +6092,7 @@ type StepOnNode struct {
 
 func (x *StepOnNode) Reset() {
 	*x = StepOnNode{}
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[48]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[43]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -6432,7 +6104,7 @@ func (x *StepOnNode) String() string {
 func (*StepOnNode) ProtoMessage() {}
 
 func (x *StepOnNode) ProtoReflect() protoreflect.Message {
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[48]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[43]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -6445,7 +6117,7 @@ func (x *StepOnNode) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use StepOnNode.ProtoReflect.Descriptor instead.
 func (*StepOnNode) Descriptor() ([]byte, []int) {
-	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{48}
+	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{43}
 }
 
 func (x *StepOnNode) GetNode() string {
@@ -6486,7 +6158,7 @@ type ListReposRequest struct {
 
 func (x *ListReposRequest) Reset() {
 	*x = ListReposRequest{}
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[49]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[44]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -6498,7 +6170,7 @@ func (x *ListReposRequest) String() string {
 func (*ListReposRequest) ProtoMessage() {}
 
 func (x *ListReposRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[49]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[44]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -6511,7 +6183,7 @@ func (x *ListReposRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListReposRequest.ProtoReflect.Descriptor instead.
 func (*ListReposRequest) Descriptor() ([]byte, []int) {
-	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{49}
+	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{44}
 }
 
 func (x *ListReposRequest) GetProject() string {
@@ -6530,7 +6202,7 @@ type ListReposResponse struct {
 
 func (x *ListReposResponse) Reset() {
 	*x = ListReposResponse{}
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[50]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[45]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -6542,7 +6214,7 @@ func (x *ListReposResponse) String() string {
 func (*ListReposResponse) ProtoMessage() {}
 
 func (x *ListReposResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[50]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[45]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -6555,7 +6227,7 @@ func (x *ListReposResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListReposResponse.ProtoReflect.Descriptor instead.
 func (*ListReposResponse) Descriptor() ([]byte, []int) {
-	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{50}
+	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{45}
 }
 
 func (x *ListReposResponse) GetRepos() []*Repo {
@@ -6584,7 +6256,7 @@ type PutRepoRequest struct {
 
 func (x *PutRepoRequest) Reset() {
 	*x = PutRepoRequest{}
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[51]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[46]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -6596,7 +6268,7 @@ func (x *PutRepoRequest) String() string {
 func (*PutRepoRequest) ProtoMessage() {}
 
 func (x *PutRepoRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[51]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[46]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -6609,7 +6281,7 @@ func (x *PutRepoRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PutRepoRequest.ProtoReflect.Descriptor instead.
 func (*PutRepoRequest) Descriptor() ([]byte, []int) {
-	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{51}
+	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{46}
 }
 
 func (x *PutRepoRequest) GetRepo() *Repo {
@@ -6657,7 +6329,7 @@ type DeleteRepoRequest struct {
 
 func (x *DeleteRepoRequest) Reset() {
 	*x = DeleteRepoRequest{}
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[52]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[47]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -6669,7 +6341,7 @@ func (x *DeleteRepoRequest) String() string {
 func (*DeleteRepoRequest) ProtoMessage() {}
 
 func (x *DeleteRepoRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[52]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[47]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -6682,7 +6354,7 @@ func (x *DeleteRepoRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DeleteRepoRequest.ProtoReflect.Descriptor instead.
 func (*DeleteRepoRequest) Descriptor() ([]byte, []int) {
-	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{52}
+	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{47}
 }
 
 func (x *DeleteRepoRequest) GetId() string {
@@ -6700,7 +6372,7 @@ type DeleteRepoResponse struct {
 
 func (x *DeleteRepoResponse) Reset() {
 	*x = DeleteRepoResponse{}
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[53]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[48]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -6712,7 +6384,7 @@ func (x *DeleteRepoResponse) String() string {
 func (*DeleteRepoResponse) ProtoMessage() {}
 
 func (x *DeleteRepoResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[53]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[48]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -6725,7 +6397,7 @@ func (x *DeleteRepoResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DeleteRepoResponse.ProtoReflect.Descriptor instead.
 func (*DeleteRepoResponse) Descriptor() ([]byte, []int) {
-	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{53}
+	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{48}
 }
 
 type RebuildProjectRequest struct {
@@ -6738,7 +6410,7 @@ type RebuildProjectRequest struct {
 
 func (x *RebuildProjectRequest) Reset() {
 	*x = RebuildProjectRequest{}
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[54]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[49]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -6750,7 +6422,7 @@ func (x *RebuildProjectRequest) String() string {
 func (*RebuildProjectRequest) ProtoMessage() {}
 
 func (x *RebuildProjectRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[54]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[49]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -6763,7 +6435,7 @@ func (x *RebuildProjectRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RebuildProjectRequest.ProtoReflect.Descriptor instead.
 func (*RebuildProjectRequest) Descriptor() ([]byte, []int) {
-	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{54}
+	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{49}
 }
 
 func (x *RebuildProjectRequest) GetName() string {
@@ -6785,7 +6457,7 @@ type SetProjectHostsRequest struct {
 
 func (x *SetProjectHostsRequest) Reset() {
 	*x = SetProjectHostsRequest{}
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[55]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[50]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -6797,7 +6469,7 @@ func (x *SetProjectHostsRequest) String() string {
 func (*SetProjectHostsRequest) ProtoMessage() {}
 
 func (x *SetProjectHostsRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[55]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[50]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -6810,7 +6482,7 @@ func (x *SetProjectHostsRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SetProjectHostsRequest.ProtoReflect.Descriptor instead.
 func (*SetProjectHostsRequest) Descriptor() ([]byte, []int) {
-	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{55}
+	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{50}
 }
 
 func (x *SetProjectHostsRequest) GetName() string {
@@ -6842,7 +6514,7 @@ type HostedProject struct {
 
 func (x *HostedProject) Reset() {
 	*x = HostedProject{}
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[56]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[51]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -6854,7 +6526,7 @@ func (x *HostedProject) String() string {
 func (*HostedProject) ProtoMessage() {}
 
 func (x *HostedProject) ProtoReflect() protoreflect.Message {
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[56]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[51]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -6867,7 +6539,7 @@ func (x *HostedProject) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use HostedProject.ProtoReflect.Descriptor instead.
 func (*HostedProject) Descriptor() ([]byte, []int) {
-	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{56}
+	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{51}
 }
 
 func (x *HostedProject) GetName() string {
@@ -6968,7 +6640,7 @@ type Base struct {
 
 func (x *Base) Reset() {
 	*x = Base{}
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[57]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[52]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -6980,7 +6652,7 @@ func (x *Base) String() string {
 func (*Base) ProtoMessage() {}
 
 func (x *Base) ProtoReflect() protoreflect.Message {
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[57]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[52]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -6993,7 +6665,7 @@ func (x *Base) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Base.ProtoReflect.Descriptor instead.
 func (*Base) Descriptor() ([]byte, []int) {
-	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{57}
+	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{52}
 }
 
 func (x *Base) GetId() string {
@@ -7235,7 +6907,7 @@ type FreshenPhase struct {
 
 func (x *FreshenPhase) Reset() {
 	*x = FreshenPhase{}
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[58]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[53]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -7247,7 +6919,7 @@ func (x *FreshenPhase) String() string {
 func (*FreshenPhase) ProtoMessage() {}
 
 func (x *FreshenPhase) ProtoReflect() protoreflect.Message {
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[58]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[53]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -7260,7 +6932,7 @@ func (x *FreshenPhase) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use FreshenPhase.ProtoReflect.Descriptor instead.
 func (*FreshenPhase) Descriptor() ([]byte, []int) {
-	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{58}
+	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{53}
 }
 
 func (x *FreshenPhase) GetName() string {
@@ -7313,7 +6985,7 @@ type BaseRepo struct {
 
 func (x *BaseRepo) Reset() {
 	*x = BaseRepo{}
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[59]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[54]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -7325,7 +6997,7 @@ func (x *BaseRepo) String() string {
 func (*BaseRepo) ProtoMessage() {}
 
 func (x *BaseRepo) ProtoReflect() protoreflect.Message {
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[59]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[54]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -7338,7 +7010,7 @@ func (x *BaseRepo) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use BaseRepo.ProtoReflect.Descriptor instead.
 func (*BaseRepo) Descriptor() ([]byte, []int) {
-	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{59}
+	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{54}
 }
 
 func (x *BaseRepo) GetRepo() string {
@@ -7420,7 +7092,7 @@ type Workspace struct {
 
 func (x *Workspace) Reset() {
 	*x = Workspace{}
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[60]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[55]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -7432,7 +7104,7 @@ func (x *Workspace) String() string {
 func (*Workspace) ProtoMessage() {}
 
 func (x *Workspace) ProtoReflect() protoreflect.Message {
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[60]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[55]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -7445,7 +7117,7 @@ func (x *Workspace) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Workspace.ProtoReflect.Descriptor instead.
 func (*Workspace) Descriptor() ([]byte, []int) {
-	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{60}
+	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{55}
 }
 
 func (x *Workspace) GetId() string {
@@ -7621,7 +7293,7 @@ type WorkspaceRepo struct {
 
 func (x *WorkspaceRepo) Reset() {
 	*x = WorkspaceRepo{}
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[61]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[56]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -7633,7 +7305,7 @@ func (x *WorkspaceRepo) String() string {
 func (*WorkspaceRepo) ProtoMessage() {}
 
 func (x *WorkspaceRepo) ProtoReflect() protoreflect.Message {
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[61]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[56]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -7646,7 +7318,7 @@ func (x *WorkspaceRepo) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use WorkspaceRepo.ProtoReflect.Descriptor instead.
 func (*WorkspaceRepo) Descriptor() ([]byte, []int) {
-	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{61}
+	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{56}
 }
 
 func (x *WorkspaceRepo) GetRepo() string {
@@ -7737,7 +7409,7 @@ type CreateWorkspaceRequest struct {
 
 func (x *CreateWorkspaceRequest) Reset() {
 	*x = CreateWorkspaceRequest{}
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[62]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[57]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -7749,7 +7421,7 @@ func (x *CreateWorkspaceRequest) String() string {
 func (*CreateWorkspaceRequest) ProtoMessage() {}
 
 func (x *CreateWorkspaceRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[62]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[57]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -7762,7 +7434,7 @@ func (x *CreateWorkspaceRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CreateWorkspaceRequest.ProtoReflect.Descriptor instead.
 func (*CreateWorkspaceRequest) Descriptor() ([]byte, []int) {
-	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{62}
+	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{57}
 }
 
 func (x *CreateWorkspaceRequest) GetRepo() string {
@@ -7884,7 +7556,7 @@ type Placement struct {
 
 func (x *Placement) Reset() {
 	*x = Placement{}
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[63]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[58]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -7896,7 +7568,7 @@ func (x *Placement) String() string {
 func (*Placement) ProtoMessage() {}
 
 func (x *Placement) ProtoReflect() protoreflect.Message {
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[63]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[58]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -7909,7 +7581,7 @@ func (x *Placement) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Placement.ProtoReflect.Descriptor instead.
 func (*Placement) Descriptor() ([]byte, []int) {
-	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{63}
+	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{58}
 }
 
 func (x *Placement) GetArch() string {
@@ -7970,7 +7642,7 @@ type GetWorkspaceRequest struct {
 
 func (x *GetWorkspaceRequest) Reset() {
 	*x = GetWorkspaceRequest{}
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[64]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[59]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -7982,7 +7654,7 @@ func (x *GetWorkspaceRequest) String() string {
 func (*GetWorkspaceRequest) ProtoMessage() {}
 
 func (x *GetWorkspaceRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[64]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[59]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -7995,7 +7667,7 @@ func (x *GetWorkspaceRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetWorkspaceRequest.ProtoReflect.Descriptor instead.
 func (*GetWorkspaceRequest) Descriptor() ([]byte, []int) {
-	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{64}
+	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{59}
 }
 
 func (x *GetWorkspaceRequest) GetId() string {
@@ -8014,7 +7686,7 @@ type WatchWorkspaceRequest struct {
 
 func (x *WatchWorkspaceRequest) Reset() {
 	*x = WatchWorkspaceRequest{}
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[65]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[60]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -8026,7 +7698,7 @@ func (x *WatchWorkspaceRequest) String() string {
 func (*WatchWorkspaceRequest) ProtoMessage() {}
 
 func (x *WatchWorkspaceRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[65]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[60]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -8039,7 +7711,7 @@ func (x *WatchWorkspaceRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use WatchWorkspaceRequest.ProtoReflect.Descriptor instead.
 func (*WatchWorkspaceRequest) Descriptor() ([]byte, []int) {
-	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{65}
+	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{60}
 }
 
 func (x *WatchWorkspaceRequest) GetId() string {
@@ -8061,7 +7733,7 @@ type ListWorkspacesRequest struct {
 
 func (x *ListWorkspacesRequest) Reset() {
 	*x = ListWorkspacesRequest{}
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[66]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[61]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -8073,7 +7745,7 @@ func (x *ListWorkspacesRequest) String() string {
 func (*ListWorkspacesRequest) ProtoMessage() {}
 
 func (x *ListWorkspacesRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[66]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[61]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -8086,7 +7758,7 @@ func (x *ListWorkspacesRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListWorkspacesRequest.ProtoReflect.Descriptor instead.
 func (*ListWorkspacesRequest) Descriptor() ([]byte, []int) {
-	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{66}
+	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{61}
 }
 
 func (x *ListWorkspacesRequest) GetSessionId() string {
@@ -8112,7 +7784,7 @@ type ListWorkspacesResponse struct {
 
 func (x *ListWorkspacesResponse) Reset() {
 	*x = ListWorkspacesResponse{}
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[67]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[62]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -8124,7 +7796,7 @@ func (x *ListWorkspacesResponse) String() string {
 func (*ListWorkspacesResponse) ProtoMessage() {}
 
 func (x *ListWorkspacesResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[67]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[62]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -8137,7 +7809,7 @@ func (x *ListWorkspacesResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListWorkspacesResponse.ProtoReflect.Descriptor instead.
 func (*ListWorkspacesResponse) Descriptor() ([]byte, []int) {
-	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{67}
+	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{62}
 }
 
 func (x *ListWorkspacesResponse) GetWorkspaces() []*Workspace {
@@ -8156,7 +7828,7 @@ type ReleaseWorkspaceRequest struct {
 
 func (x *ReleaseWorkspaceRequest) Reset() {
 	*x = ReleaseWorkspaceRequest{}
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[68]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[63]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -8168,7 +7840,7 @@ func (x *ReleaseWorkspaceRequest) String() string {
 func (*ReleaseWorkspaceRequest) ProtoMessage() {}
 
 func (x *ReleaseWorkspaceRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[68]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[63]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -8181,7 +7853,7 @@ func (x *ReleaseWorkspaceRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ReleaseWorkspaceRequest.ProtoReflect.Descriptor instead.
 func (*ReleaseWorkspaceRequest) Descriptor() ([]byte, []int) {
-	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{68}
+	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{63}
 }
 
 func (x *ReleaseWorkspaceRequest) GetId() string {
@@ -8199,7 +7871,7 @@ type ReleaseWorkspaceResponse struct {
 
 func (x *ReleaseWorkspaceResponse) Reset() {
 	*x = ReleaseWorkspaceResponse{}
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[69]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[64]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -8211,7 +7883,7 @@ func (x *ReleaseWorkspaceResponse) String() string {
 func (*ReleaseWorkspaceResponse) ProtoMessage() {}
 
 func (x *ReleaseWorkspaceResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[69]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[64]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -8224,7 +7896,7 @@ func (x *ReleaseWorkspaceResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ReleaseWorkspaceResponse.ProtoReflect.Descriptor instead.
 func (*ReleaseWorkspaceResponse) Descriptor() ([]byte, []int) {
-	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{69}
+	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{64}
 }
 
 type SyncRequest struct {
@@ -8240,7 +7912,7 @@ type SyncRequest struct {
 
 func (x *SyncRequest) Reset() {
 	*x = SyncRequest{}
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[70]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[65]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -8252,7 +7924,7 @@ func (x *SyncRequest) String() string {
 func (*SyncRequest) ProtoMessage() {}
 
 func (x *SyncRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[70]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[65]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -8265,7 +7937,7 @@ func (x *SyncRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SyncRequest.ProtoReflect.Descriptor instead.
 func (*SyncRequest) Descriptor() ([]byte, []int) {
-	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{70}
+	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{65}
 }
 
 func (x *SyncRequest) GetMsg() isSyncRequest_Msg {
@@ -8328,7 +8000,7 @@ type SyncHeader struct {
 
 func (x *SyncHeader) Reset() {
 	*x = SyncHeader{}
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[71]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[66]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -8340,7 +8012,7 @@ func (x *SyncHeader) String() string {
 func (*SyncHeader) ProtoMessage() {}
 
 func (x *SyncHeader) ProtoReflect() protoreflect.Message {
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[71]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[66]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -8353,7 +8025,7 @@ func (x *SyncHeader) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SyncHeader.ProtoReflect.Descriptor instead.
 func (*SyncHeader) Descriptor() ([]byte, []int) {
-	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{71}
+	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{66}
 }
 
 func (x *SyncHeader) GetWorkspaceId() string {
@@ -8411,7 +8083,7 @@ type SyncSubmodule struct {
 
 func (x *SyncSubmodule) Reset() {
 	*x = SyncSubmodule{}
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[72]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[67]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -8423,7 +8095,7 @@ func (x *SyncSubmodule) String() string {
 func (*SyncSubmodule) ProtoMessage() {}
 
 func (x *SyncSubmodule) ProtoReflect() protoreflect.Message {
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[72]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[67]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -8436,7 +8108,7 @@ func (x *SyncSubmodule) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SyncSubmodule.ProtoReflect.Descriptor instead.
 func (*SyncSubmodule) Descriptor() ([]byte, []int) {
-	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{72}
+	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{67}
 }
 
 func (x *SyncSubmodule) GetPath() string {
@@ -8475,7 +8147,7 @@ type SyncResponse struct {
 
 func (x *SyncResponse) Reset() {
 	*x = SyncResponse{}
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[73]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[68]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -8487,7 +8159,7 @@ func (x *SyncResponse) String() string {
 func (*SyncResponse) ProtoMessage() {}
 
 func (x *SyncResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[73]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[68]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -8500,7 +8172,7 @@ func (x *SyncResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SyncResponse.ProtoReflect.Descriptor instead.
 func (*SyncResponse) Descriptor() ([]byte, []int) {
-	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{73}
+	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{68}
 }
 
 func (x *SyncResponse) GetWorkspaceId() string {
@@ -8560,7 +8232,7 @@ type FileEntry struct {
 
 func (x *FileEntry) Reset() {
 	*x = FileEntry{}
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[74]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[69]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -8572,7 +8244,7 @@ func (x *FileEntry) String() string {
 func (*FileEntry) ProtoMessage() {}
 
 func (x *FileEntry) ProtoReflect() protoreflect.Message {
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[74]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[69]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -8585,7 +8257,7 @@ func (x *FileEntry) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use FileEntry.ProtoReflect.Descriptor instead.
 func (*FileEntry) Descriptor() ([]byte, []int) {
-	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{74}
+	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{69}
 }
 
 func (x *FileEntry) GetPath() string {
@@ -8625,7 +8297,7 @@ type ListFilesRequest struct {
 
 func (x *ListFilesRequest) Reset() {
 	*x = ListFilesRequest{}
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[75]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[70]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -8637,7 +8309,7 @@ func (x *ListFilesRequest) String() string {
 func (*ListFilesRequest) ProtoMessage() {}
 
 func (x *ListFilesRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[75]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[70]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -8650,7 +8322,7 @@ func (x *ListFilesRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListFilesRequest.ProtoReflect.Descriptor instead.
 func (*ListFilesRequest) Descriptor() ([]byte, []int) {
-	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{75}
+	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{70}
 }
 
 func (x *ListFilesRequest) GetWorkspaceId() string {
@@ -8669,7 +8341,7 @@ type ListFilesResponse struct {
 
 func (x *ListFilesResponse) Reset() {
 	*x = ListFilesResponse{}
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[76]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[71]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -8681,7 +8353,7 @@ func (x *ListFilesResponse) String() string {
 func (*ListFilesResponse) ProtoMessage() {}
 
 func (x *ListFilesResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[76]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[71]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -8694,7 +8366,7 @@ func (x *ListFilesResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListFilesResponse.ProtoReflect.Descriptor instead.
 func (*ListFilesResponse) Descriptor() ([]byte, []int) {
-	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{76}
+	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{71}
 }
 
 func (x *ListFilesResponse) GetFiles() []*FileEntry {
@@ -8715,7 +8387,7 @@ type GetFileRequest struct {
 
 func (x *GetFileRequest) Reset() {
 	*x = GetFileRequest{}
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[77]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[72]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -8727,7 +8399,7 @@ func (x *GetFileRequest) String() string {
 func (*GetFileRequest) ProtoMessage() {}
 
 func (x *GetFileRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[77]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[72]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -8740,7 +8412,7 @@ func (x *GetFileRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetFileRequest.ProtoReflect.Descriptor instead.
 func (*GetFileRequest) Descriptor() ([]byte, []int) {
-	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{77}
+	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{72}
 }
 
 func (x *GetFileRequest) GetWorkspaceId() string {
@@ -8769,7 +8441,7 @@ type FileContent struct {
 
 func (x *FileContent) Reset() {
 	*x = FileContent{}
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[78]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[73]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -8781,7 +8453,7 @@ func (x *FileContent) String() string {
 func (*FileContent) ProtoMessage() {}
 
 func (x *FileContent) ProtoReflect() protoreflect.Message {
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[78]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[73]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -8794,7 +8466,7 @@ func (x *FileContent) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use FileContent.ProtoReflect.Descriptor instead.
 func (*FileContent) Descriptor() ([]byte, []int) {
-	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{78}
+	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{73}
 }
 
 func (x *FileContent) GetPath() string {
@@ -8846,7 +8518,7 @@ type CommandLimits struct {
 
 func (x *CommandLimits) Reset() {
 	*x = CommandLimits{}
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[79]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[74]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -8858,7 +8530,7 @@ func (x *CommandLimits) String() string {
 func (*CommandLimits) ProtoMessage() {}
 
 func (x *CommandLimits) ProtoReflect() protoreflect.Message {
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[79]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[74]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -8871,7 +8543,7 @@ func (x *CommandLimits) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CommandLimits.ProtoReflect.Descriptor instead.
 func (*CommandLimits) Descriptor() ([]byte, []int) {
-	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{79}
+	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{74}
 }
 
 func (x *CommandLimits) GetCpuWeight() int32 {
@@ -8933,7 +8605,7 @@ type Rebuilt struct {
 
 func (x *Rebuilt) Reset() {
 	*x = Rebuilt{}
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[80]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[75]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -8945,7 +8617,7 @@ func (x *Rebuilt) String() string {
 func (*Rebuilt) ProtoMessage() {}
 
 func (x *Rebuilt) ProtoReflect() protoreflect.Message {
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[80]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[75]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -8958,7 +8630,7 @@ func (x *Rebuilt) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Rebuilt.ProtoReflect.Descriptor instead.
 func (*Rebuilt) Descriptor() ([]byte, []int) {
-	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{80}
+	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{75}
 }
 
 func (x *Rebuilt) GetUnits() int32 {
@@ -8996,7 +8668,7 @@ type CommandIntervention struct {
 
 func (x *CommandIntervention) Reset() {
 	*x = CommandIntervention{}
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[81]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[76]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -9008,7 +8680,7 @@ func (x *CommandIntervention) String() string {
 func (*CommandIntervention) ProtoMessage() {}
 
 func (x *CommandIntervention) ProtoReflect() protoreflect.Message {
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[81]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[76]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -9021,7 +8693,7 @@ func (x *CommandIntervention) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CommandIntervention.ProtoReflect.Descriptor instead.
 func (*CommandIntervention) Descriptor() ([]byte, []int) {
-	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{81}
+	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{76}
 }
 
 func (x *CommandIntervention) GetSeq() int32 {
@@ -9082,7 +8754,7 @@ type CommandDiagnostics struct {
 
 func (x *CommandDiagnostics) Reset() {
 	*x = CommandDiagnostics{}
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[82]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[77]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -9094,7 +8766,7 @@ func (x *CommandDiagnostics) String() string {
 func (*CommandDiagnostics) ProtoMessage() {}
 
 func (x *CommandDiagnostics) ProtoReflect() protoreflect.Message {
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[82]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[77]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -9107,7 +8779,7 @@ func (x *CommandDiagnostics) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CommandDiagnostics.ProtoReflect.Descriptor instead.
 func (*CommandDiagnostics) Descriptor() ([]byte, []int) {
-	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{82}
+	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{77}
 }
 
 func (x *CommandDiagnostics) GetCommandId() string {
@@ -9152,7 +8824,7 @@ type GetCommandDiagnosticsRequest struct {
 
 func (x *GetCommandDiagnosticsRequest) Reset() {
 	*x = GetCommandDiagnosticsRequest{}
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[83]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[78]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -9164,7 +8836,7 @@ func (x *GetCommandDiagnosticsRequest) String() string {
 func (*GetCommandDiagnosticsRequest) ProtoMessage() {}
 
 func (x *GetCommandDiagnosticsRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[83]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[78]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -9177,7 +8849,7 @@ func (x *GetCommandDiagnosticsRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetCommandDiagnosticsRequest.ProtoReflect.Descriptor instead.
 func (*GetCommandDiagnosticsRequest) Descriptor() ([]byte, []int) {
-	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{83}
+	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{78}
 }
 
 func (x *GetCommandDiagnosticsRequest) GetId() string {
@@ -9215,7 +8887,7 @@ type GetCommandDiagnosticsResponse struct {
 
 func (x *GetCommandDiagnosticsResponse) Reset() {
 	*x = GetCommandDiagnosticsResponse{}
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[84]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[79]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -9227,7 +8899,7 @@ func (x *GetCommandDiagnosticsResponse) String() string {
 func (*GetCommandDiagnosticsResponse) ProtoMessage() {}
 
 func (x *GetCommandDiagnosticsResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[84]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[79]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -9240,7 +8912,7 @@ func (x *GetCommandDiagnosticsResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetCommandDiagnosticsResponse.ProtoReflect.Descriptor instead.
 func (*GetCommandDiagnosticsResponse) Descriptor() ([]byte, []int) {
-	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{84}
+	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{79}
 }
 
 func (x *GetCommandDiagnosticsResponse) GetDiagnostics() []*CommandDiagnostics {
@@ -9273,7 +8945,7 @@ type SaveCommandDiagnosticsRequest struct {
 
 func (x *SaveCommandDiagnosticsRequest) Reset() {
 	*x = SaveCommandDiagnosticsRequest{}
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[85]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[80]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -9285,7 +8957,7 @@ func (x *SaveCommandDiagnosticsRequest) String() string {
 func (*SaveCommandDiagnosticsRequest) ProtoMessage() {}
 
 func (x *SaveCommandDiagnosticsRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[85]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[80]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -9298,7 +8970,7 @@ func (x *SaveCommandDiagnosticsRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SaveCommandDiagnosticsRequest.ProtoReflect.Descriptor instead.
 func (*SaveCommandDiagnosticsRequest) Descriptor() ([]byte, []int) {
-	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{85}
+	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{80}
 }
 
 func (x *SaveCommandDiagnosticsRequest) GetDiagnostics() *CommandDiagnostics {
@@ -9316,7 +8988,7 @@ type SaveCommandDiagnosticsResponse struct {
 
 func (x *SaveCommandDiagnosticsResponse) Reset() {
 	*x = SaveCommandDiagnosticsResponse{}
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[86]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[81]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -9328,7 +9000,7 @@ func (x *SaveCommandDiagnosticsResponse) String() string {
 func (*SaveCommandDiagnosticsResponse) ProtoMessage() {}
 
 func (x *SaveCommandDiagnosticsResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[86]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[81]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -9341,7 +9013,7 @@ func (x *SaveCommandDiagnosticsResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SaveCommandDiagnosticsResponse.ProtoReflect.Descriptor instead.
 func (*SaveCommandDiagnosticsResponse) Descriptor() ([]byte, []int) {
-	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{86}
+	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{81}
 }
 
 // An activity sample someone took of a command (SampleCommand), kept with it.
@@ -9367,7 +9039,7 @@ type CommandSample struct {
 
 func (x *CommandSample) Reset() {
 	*x = CommandSample{}
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[87]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[82]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -9379,7 +9051,7 @@ func (x *CommandSample) String() string {
 func (*CommandSample) ProtoMessage() {}
 
 func (x *CommandSample) ProtoReflect() protoreflect.Message {
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[87]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[82]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -9392,7 +9064,7 @@ func (x *CommandSample) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CommandSample.ProtoReflect.Descriptor instead.
 func (*CommandSample) Descriptor() ([]byte, []int) {
-	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{87}
+	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{82}
 }
 
 func (x *CommandSample) GetCommandId() string {
@@ -9454,7 +9126,7 @@ type ListCommandSamplesRequest struct {
 
 func (x *ListCommandSamplesRequest) Reset() {
 	*x = ListCommandSamplesRequest{}
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[88]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[83]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -9466,7 +9138,7 @@ func (x *ListCommandSamplesRequest) String() string {
 func (*ListCommandSamplesRequest) ProtoMessage() {}
 
 func (x *ListCommandSamplesRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[88]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[83]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -9479,7 +9151,7 @@ func (x *ListCommandSamplesRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListCommandSamplesRequest.ProtoReflect.Descriptor instead.
 func (*ListCommandSamplesRequest) Descriptor() ([]byte, []int) {
-	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{88}
+	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{83}
 }
 
 func (x *ListCommandSamplesRequest) GetId() string {
@@ -9499,7 +9171,7 @@ type ListCommandSamplesResponse struct {
 
 func (x *ListCommandSamplesResponse) Reset() {
 	*x = ListCommandSamplesResponse{}
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[89]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[84]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -9511,7 +9183,7 @@ func (x *ListCommandSamplesResponse) String() string {
 func (*ListCommandSamplesResponse) ProtoMessage() {}
 
 func (x *ListCommandSamplesResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[89]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[84]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -9524,7 +9196,7 @@ func (x *ListCommandSamplesResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListCommandSamplesResponse.ProtoReflect.Descriptor instead.
 func (*ListCommandSamplesResponse) Descriptor() ([]byte, []int) {
-	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{89}
+	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{84}
 }
 
 func (x *ListCommandSamplesResponse) GetSamples() []*CommandSample {
@@ -9546,7 +9218,7 @@ type GetCommandSampleRequest struct {
 
 func (x *GetCommandSampleRequest) Reset() {
 	*x = GetCommandSampleRequest{}
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[90]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[85]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -9558,7 +9230,7 @@ func (x *GetCommandSampleRequest) String() string {
 func (*GetCommandSampleRequest) ProtoMessage() {}
 
 func (x *GetCommandSampleRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[90]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[85]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -9571,7 +9243,7 @@ func (x *GetCommandSampleRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetCommandSampleRequest.ProtoReflect.Descriptor instead.
 func (*GetCommandSampleRequest) Descriptor() ([]byte, []int) {
-	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{90}
+	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{85}
 }
 
 func (x *GetCommandSampleRequest) GetId() string {
@@ -9597,7 +9269,7 @@ type SaveCommandSampleRequest struct {
 
 func (x *SaveCommandSampleRequest) Reset() {
 	*x = SaveCommandSampleRequest{}
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[91]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[86]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -9609,7 +9281,7 @@ func (x *SaveCommandSampleRequest) String() string {
 func (*SaveCommandSampleRequest) ProtoMessage() {}
 
 func (x *SaveCommandSampleRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[91]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[86]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -9622,7 +9294,7 @@ func (x *SaveCommandSampleRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SaveCommandSampleRequest.ProtoReflect.Descriptor instead.
 func (*SaveCommandSampleRequest) Descriptor() ([]byte, []int) {
-	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{91}
+	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{86}
 }
 
 func (x *SaveCommandSampleRequest) GetSample() *CommandSample {
@@ -9640,7 +9312,7 @@ type SaveCommandSampleResponse struct {
 
 func (x *SaveCommandSampleResponse) Reset() {
 	*x = SaveCommandSampleResponse{}
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[92]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[87]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -9652,7 +9324,7 @@ func (x *SaveCommandSampleResponse) String() string {
 func (*SaveCommandSampleResponse) ProtoMessage() {}
 
 func (x *SaveCommandSampleResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[92]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[87]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -9665,7 +9337,7 @@ func (x *SaveCommandSampleResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SaveCommandSampleResponse.ProtoReflect.Descriptor instead.
 func (*SaveCommandSampleResponse) Descriptor() ([]byte, []int) {
-	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{92}
+	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{87}
 }
 
 type CommandOutputChunk struct {
@@ -9686,7 +9358,7 @@ type CommandOutputChunk struct {
 
 func (x *CommandOutputChunk) Reset() {
 	*x = CommandOutputChunk{}
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[93]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[88]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -9698,7 +9370,7 @@ func (x *CommandOutputChunk) String() string {
 func (*CommandOutputChunk) ProtoMessage() {}
 
 func (x *CommandOutputChunk) ProtoReflect() protoreflect.Message {
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[93]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[88]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -9711,7 +9383,7 @@ func (x *CommandOutputChunk) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CommandOutputChunk.ProtoReflect.Descriptor instead.
 func (*CommandOutputChunk) Descriptor() ([]byte, []int) {
-	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{93}
+	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{88}
 }
 
 func (x *CommandOutputChunk) GetOffset() int64 {
@@ -9755,7 +9427,7 @@ type PushCommandOutputRequest struct {
 
 func (x *PushCommandOutputRequest) Reset() {
 	*x = PushCommandOutputRequest{}
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[94]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[89]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -9767,7 +9439,7 @@ func (x *PushCommandOutputRequest) String() string {
 func (*PushCommandOutputRequest) ProtoMessage() {}
 
 func (x *PushCommandOutputRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[94]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[89]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -9780,7 +9452,7 @@ func (x *PushCommandOutputRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PushCommandOutputRequest.ProtoReflect.Descriptor instead.
 func (*PushCommandOutputRequest) Descriptor() ([]byte, []int) {
-	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{94}
+	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{89}
 }
 
 func (x *PushCommandOutputRequest) GetCommandId() string {
@@ -9814,7 +9486,7 @@ type PushCommandOutputResponse struct {
 
 func (x *PushCommandOutputResponse) Reset() {
 	*x = PushCommandOutputResponse{}
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[95]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[90]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -9826,7 +9498,7 @@ func (x *PushCommandOutputResponse) String() string {
 func (*PushCommandOutputResponse) ProtoMessage() {}
 
 func (x *PushCommandOutputResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[95]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[90]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -9839,7 +9511,7 @@ func (x *PushCommandOutputResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PushCommandOutputResponse.ProtoReflect.Descriptor instead.
 func (*PushCommandOutputResponse) Descriptor() ([]byte, []int) {
-	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{95}
+	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{90}
 }
 
 func (x *PushCommandOutputResponse) GetAckedOffset() int64 {
@@ -9861,7 +9533,7 @@ type CommandEvent struct {
 
 func (x *CommandEvent) Reset() {
 	*x = CommandEvent{}
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[96]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[91]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -9873,7 +9545,7 @@ func (x *CommandEvent) String() string {
 func (*CommandEvent) ProtoMessage() {}
 
 func (x *CommandEvent) ProtoReflect() protoreflect.Message {
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[96]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[91]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -9886,7 +9558,7 @@ func (x *CommandEvent) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CommandEvent.ProtoReflect.Descriptor instead.
 func (*CommandEvent) Descriptor() ([]byte, []int) {
-	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{96}
+	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{91}
 }
 
 func (x *CommandEvent) GetAt() int64 {
@@ -9984,7 +9656,7 @@ type Command struct {
 
 func (x *Command) Reset() {
 	*x = Command{}
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[97]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[92]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -9996,7 +9668,7 @@ func (x *Command) String() string {
 func (*Command) ProtoMessage() {}
 
 func (x *Command) ProtoReflect() protoreflect.Message {
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[97]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[92]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -10009,7 +9681,7 @@ func (x *Command) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Command.ProtoReflect.Descriptor instead.
 func (*Command) Descriptor() ([]byte, []int) {
-	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{97}
+	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{92}
 }
 
 func (x *Command) GetId() string {
@@ -10323,7 +9995,7 @@ type FinishedCommand struct {
 
 func (x *FinishedCommand) Reset() {
 	*x = FinishedCommand{}
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[98]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[93]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -10335,7 +10007,7 @@ func (x *FinishedCommand) String() string {
 func (*FinishedCommand) ProtoMessage() {}
 
 func (x *FinishedCommand) ProtoReflect() protoreflect.Message {
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[98]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[93]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -10348,7 +10020,7 @@ func (x *FinishedCommand) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use FinishedCommand.ProtoReflect.Descriptor instead.
 func (*FinishedCommand) Descriptor() ([]byte, []int) {
-	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{98}
+	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{93}
 }
 
 func (x *FinishedCommand) GetId() string {
@@ -10588,7 +10260,7 @@ type RunCommandRequest struct {
 
 func (x *RunCommandRequest) Reset() {
 	*x = RunCommandRequest{}
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[99]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[94]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -10600,7 +10272,7 @@ func (x *RunCommandRequest) String() string {
 func (*RunCommandRequest) ProtoMessage() {}
 
 func (x *RunCommandRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[99]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[94]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -10613,7 +10285,7 @@ func (x *RunCommandRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RunCommandRequest.ProtoReflect.Descriptor instead.
 func (*RunCommandRequest) Descriptor() ([]byte, []int) {
-	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{99}
+	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{94}
 }
 
 func (x *RunCommandRequest) GetWorkspaceId() string {
@@ -10737,7 +10409,7 @@ type CommandEstimate struct {
 
 func (x *CommandEstimate) Reset() {
 	*x = CommandEstimate{}
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[100]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[95]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -10749,7 +10421,7 @@ func (x *CommandEstimate) String() string {
 func (*CommandEstimate) ProtoMessage() {}
 
 func (x *CommandEstimate) ProtoReflect() protoreflect.Message {
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[100]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[95]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -10762,7 +10434,7 @@ func (x *CommandEstimate) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CommandEstimate.ProtoReflect.Descriptor instead.
 func (*CommandEstimate) Descriptor() ([]byte, []int) {
-	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{100}
+	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{95}
 }
 
 func (x *CommandEstimate) GetMemoryBytes() int64 {
@@ -10833,7 +10505,7 @@ type QueryOutputRequest struct {
 
 func (x *QueryOutputRequest) Reset() {
 	*x = QueryOutputRequest{}
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[101]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[96]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -10845,7 +10517,7 @@ func (x *QueryOutputRequest) String() string {
 func (*QueryOutputRequest) ProtoMessage() {}
 
 func (x *QueryOutputRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[101]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[96]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -10858,7 +10530,7 @@ func (x *QueryOutputRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use QueryOutputRequest.ProtoReflect.Descriptor instead.
 func (*QueryOutputRequest) Descriptor() ([]byte, []int) {
-	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{101}
+	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{96}
 }
 
 func (x *QueryOutputRequest) GetId() string {
@@ -10991,7 +10663,7 @@ type OutputLine struct {
 
 func (x *OutputLine) Reset() {
 	*x = OutputLine{}
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[102]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[97]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -11003,7 +10675,7 @@ func (x *OutputLine) String() string {
 func (*OutputLine) ProtoMessage() {}
 
 func (x *OutputLine) ProtoReflect() protoreflect.Message {
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[102]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[97]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -11016,7 +10688,7 @@ func (x *OutputLine) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use OutputLine.ProtoReflect.Descriptor instead.
 func (*OutputLine) Descriptor() ([]byte, []int) {
-	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{102}
+	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{97}
 }
 
 func (x *OutputLine) GetNumber() int64 {
@@ -11079,7 +10751,7 @@ type OutputQuery struct {
 
 func (x *OutputQuery) Reset() {
 	*x = OutputQuery{}
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[103]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[98]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -11091,7 +10763,7 @@ func (x *OutputQuery) String() string {
 func (*OutputQuery) ProtoMessage() {}
 
 func (x *OutputQuery) ProtoReflect() protoreflect.Message {
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[103]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[98]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -11104,7 +10776,7 @@ func (x *OutputQuery) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use OutputQuery.ProtoReflect.Descriptor instead.
 func (*OutputQuery) Descriptor() ([]byte, []int) {
-	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{103}
+	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{98}
 }
 
 func (x *OutputQuery) GetCommandId() string {
@@ -11196,7 +10868,7 @@ type DetachCommandRequest struct {
 
 func (x *DetachCommandRequest) Reset() {
 	*x = DetachCommandRequest{}
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[104]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[99]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -11208,7 +10880,7 @@ func (x *DetachCommandRequest) String() string {
 func (*DetachCommandRequest) ProtoMessage() {}
 
 func (x *DetachCommandRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[104]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[99]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -11221,7 +10893,7 @@ func (x *DetachCommandRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DetachCommandRequest.ProtoReflect.Descriptor instead.
 func (*DetachCommandRequest) Descriptor() ([]byte, []int) {
-	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{104}
+	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{99}
 }
 
 func (x *DetachCommandRequest) GetId() string {
@@ -11254,7 +10926,7 @@ type SendInputRequest struct {
 
 func (x *SendInputRequest) Reset() {
 	*x = SendInputRequest{}
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[105]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[100]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -11266,7 +10938,7 @@ func (x *SendInputRequest) String() string {
 func (*SendInputRequest) ProtoMessage() {}
 
 func (x *SendInputRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[105]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[100]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -11279,7 +10951,7 @@ func (x *SendInputRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SendInputRequest.ProtoReflect.Descriptor instead.
 func (*SendInputRequest) Descriptor() ([]byte, []int) {
-	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{105}
+	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{100}
 }
 
 func (x *SendInputRequest) GetId() string {
@@ -11320,7 +10992,7 @@ type SendInputResponse struct {
 
 func (x *SendInputResponse) Reset() {
 	*x = SendInputResponse{}
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[106]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[101]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -11332,7 +11004,7 @@ func (x *SendInputResponse) String() string {
 func (*SendInputResponse) ProtoMessage() {}
 
 func (x *SendInputResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[106]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[101]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -11345,7 +11017,7 @@ func (x *SendInputResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SendInputResponse.ProtoReflect.Descriptor instead.
 func (*SendInputResponse) Descriptor() ([]byte, []int) {
-	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{106}
+	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{101}
 }
 
 func (x *SendInputResponse) GetBytes() int64 {
@@ -11372,7 +11044,7 @@ type OpenShellRequest struct {
 
 func (x *OpenShellRequest) Reset() {
 	*x = OpenShellRequest{}
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[107]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[102]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -11384,7 +11056,7 @@ func (x *OpenShellRequest) String() string {
 func (*OpenShellRequest) ProtoMessage() {}
 
 func (x *OpenShellRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[107]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[102]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -11397,7 +11069,7 @@ func (x *OpenShellRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use OpenShellRequest.ProtoReflect.Descriptor instead.
 func (*OpenShellRequest) Descriptor() ([]byte, []int) {
-	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{107}
+	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{102}
 }
 
 func (x *OpenShellRequest) GetWorkspaceId() string {
@@ -11437,11 +11109,6 @@ func (x *OpenShellRequest) GetPublicKey() string {
 
 type OpenShellResponse struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
-	// Unset: workers listen on no address. A client reaches the shell server
-	// through the controller (/ws/pipe?workspace=ID&kind=ssh).
-	//
-	// Deprecated: Marked as deprecated in hotbed/v1/hotbed.proto.
-	Addr string `protobuf:"bytes,1,opt,name=addr,proto3" json:"addr,omitempty"`
 	// One-time SSH username (ticket) to authenticate with.
 	User string `protobuf:"bytes,2,opt,name=user,proto3" json:"user,omitempty"`
 	// Worker's SSH host public key in OpenSSH authorized_keys format, for
@@ -11455,7 +11122,7 @@ type OpenShellResponse struct {
 
 func (x *OpenShellResponse) Reset() {
 	*x = OpenShellResponse{}
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[108]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[103]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -11467,7 +11134,7 @@ func (x *OpenShellResponse) String() string {
 func (*OpenShellResponse) ProtoMessage() {}
 
 func (x *OpenShellResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[108]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[103]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -11480,15 +11147,7 @@ func (x *OpenShellResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use OpenShellResponse.ProtoReflect.Descriptor instead.
 func (*OpenShellResponse) Descriptor() ([]byte, []int) {
-	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{108}
-}
-
-// Deprecated: Marked as deprecated in hotbed/v1/hotbed.proto.
-func (x *OpenShellResponse) GetAddr() string {
-	if x != nil {
-		return x.Addr
-	}
-	return ""
+	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{103}
 }
 
 func (x *OpenShellResponse) GetUser() string {
@@ -11521,7 +11180,7 @@ type GetCommandRequest struct {
 
 func (x *GetCommandRequest) Reset() {
 	*x = GetCommandRequest{}
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[109]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[104]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -11533,7 +11192,7 @@ func (x *GetCommandRequest) String() string {
 func (*GetCommandRequest) ProtoMessage() {}
 
 func (x *GetCommandRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[109]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[104]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -11546,7 +11205,7 @@ func (x *GetCommandRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetCommandRequest.ProtoReflect.Descriptor instead.
 func (*GetCommandRequest) Descriptor() ([]byte, []int) {
-	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{109}
+	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{104}
 }
 
 func (x *GetCommandRequest) GetId() string {
@@ -11579,7 +11238,7 @@ type ListCommandsRequest struct {
 
 func (x *ListCommandsRequest) Reset() {
 	*x = ListCommandsRequest{}
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[110]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[105]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -11591,7 +11250,7 @@ func (x *ListCommandsRequest) String() string {
 func (*ListCommandsRequest) ProtoMessage() {}
 
 func (x *ListCommandsRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[110]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[105]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -11604,7 +11263,7 @@ func (x *ListCommandsRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListCommandsRequest.ProtoReflect.Descriptor instead.
 func (*ListCommandsRequest) Descriptor() ([]byte, []int) {
-	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{110}
+	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{105}
 }
 
 func (x *ListCommandsRequest) GetSessionId() string {
@@ -11661,7 +11320,7 @@ type ListCommandsResponse struct {
 
 func (x *ListCommandsResponse) Reset() {
 	*x = ListCommandsResponse{}
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[111]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[106]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -11673,7 +11332,7 @@ func (x *ListCommandsResponse) String() string {
 func (*ListCommandsResponse) ProtoMessage() {}
 
 func (x *ListCommandsResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[111]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[106]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -11686,7 +11345,7 @@ func (x *ListCommandsResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListCommandsResponse.ProtoReflect.Descriptor instead.
 func (*ListCommandsResponse) Descriptor() ([]byte, []int) {
-	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{111}
+	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{106}
 }
 
 func (x *ListCommandsResponse) GetCommands() []*Command {
@@ -11726,7 +11385,7 @@ type StopCommandRequest struct {
 
 func (x *StopCommandRequest) Reset() {
 	*x = StopCommandRequest{}
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[112]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[107]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -11738,7 +11397,7 @@ func (x *StopCommandRequest) String() string {
 func (*StopCommandRequest) ProtoMessage() {}
 
 func (x *StopCommandRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[112]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[107]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -11751,7 +11410,7 @@ func (x *StopCommandRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use StopCommandRequest.ProtoReflect.Descriptor instead.
 func (*StopCommandRequest) Descriptor() ([]byte, []int) {
-	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{112}
+	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{107}
 }
 
 func (x *StopCommandRequest) GetId() string {
@@ -11820,7 +11479,7 @@ type PauseCommandRequest struct {
 
 func (x *PauseCommandRequest) Reset() {
 	*x = PauseCommandRequest{}
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[113]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[108]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -11832,7 +11491,7 @@ func (x *PauseCommandRequest) String() string {
 func (*PauseCommandRequest) ProtoMessage() {}
 
 func (x *PauseCommandRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[113]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[108]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -11845,7 +11504,7 @@ func (x *PauseCommandRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PauseCommandRequest.ProtoReflect.Descriptor instead.
 func (*PauseCommandRequest) Descriptor() ([]byte, []int) {
-	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{113}
+	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{108}
 }
 
 func (x *PauseCommandRequest) GetId() string {
@@ -11897,7 +11556,7 @@ type ResumeCommandRequest struct {
 
 func (x *ResumeCommandRequest) Reset() {
 	*x = ResumeCommandRequest{}
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[114]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[109]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -11909,7 +11568,7 @@ func (x *ResumeCommandRequest) String() string {
 func (*ResumeCommandRequest) ProtoMessage() {}
 
 func (x *ResumeCommandRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[114]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[109]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -11922,7 +11581,7 @@ func (x *ResumeCommandRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ResumeCommandRequest.ProtoReflect.Descriptor instead.
 func (*ResumeCommandRequest) Descriptor() ([]byte, []int) {
-	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{114}
+	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{109}
 }
 
 func (x *ResumeCommandRequest) GetId() string {
@@ -11970,7 +11629,7 @@ type FollowLogRequest struct {
 
 func (x *FollowLogRequest) Reset() {
 	*x = FollowLogRequest{}
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[115]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[110]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -11982,7 +11641,7 @@ func (x *FollowLogRequest) String() string {
 func (*FollowLogRequest) ProtoMessage() {}
 
 func (x *FollowLogRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[115]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[110]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -11995,7 +11654,7 @@ func (x *FollowLogRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use FollowLogRequest.ProtoReflect.Descriptor instead.
 func (*FollowLogRequest) Descriptor() ([]byte, []int) {
-	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{115}
+	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{110}
 }
 
 func (x *FollowLogRequest) GetId() string {
@@ -12057,7 +11716,7 @@ type LogChunk struct {
 
 func (x *LogChunk) Reset() {
 	*x = LogChunk{}
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[116]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[111]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -12069,7 +11728,7 @@ func (x *LogChunk) String() string {
 func (*LogChunk) ProtoMessage() {}
 
 func (x *LogChunk) ProtoReflect() protoreflect.Message {
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[116]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[111]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -12082,7 +11741,7 @@ func (x *LogChunk) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use LogChunk.ProtoReflect.Descriptor instead.
 func (*LogChunk) Descriptor() ([]byte, []int) {
-	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{116}
+	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{111}
 }
 
 func (x *LogChunk) GetData() []byte {
@@ -12163,7 +11822,7 @@ type Session struct {
 
 func (x *Session) Reset() {
 	*x = Session{}
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[117]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[112]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -12175,7 +11834,7 @@ func (x *Session) String() string {
 func (*Session) ProtoMessage() {}
 
 func (x *Session) ProtoReflect() protoreflect.Message {
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[117]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[112]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -12188,7 +11847,7 @@ func (x *Session) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Session.ProtoReflect.Descriptor instead.
 func (*Session) Descriptor() ([]byte, []int) {
-	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{117}
+	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{112}
 }
 
 func (x *Session) GetId() string {
@@ -12318,7 +11977,7 @@ type SessionWorkspace struct {
 
 func (x *SessionWorkspace) Reset() {
 	*x = SessionWorkspace{}
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[118]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[113]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -12330,7 +11989,7 @@ func (x *SessionWorkspace) String() string {
 func (*SessionWorkspace) ProtoMessage() {}
 
 func (x *SessionWorkspace) ProtoReflect() protoreflect.Message {
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[118]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[113]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -12343,7 +12002,7 @@ func (x *SessionWorkspace) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SessionWorkspace.ProtoReflect.Descriptor instead.
 func (*SessionWorkspace) Descriptor() ([]byte, []int) {
-	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{118}
+	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{113}
 }
 
 func (x *SessionWorkspace) GetId() string {
@@ -12408,7 +12067,7 @@ type StartSessionRequest struct {
 
 func (x *StartSessionRequest) Reset() {
 	*x = StartSessionRequest{}
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[119]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[114]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -12420,7 +12079,7 @@ func (x *StartSessionRequest) String() string {
 func (*StartSessionRequest) ProtoMessage() {}
 
 func (x *StartSessionRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[119]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[114]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -12433,7 +12092,7 @@ func (x *StartSessionRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use StartSessionRequest.ProtoReflect.Descriptor instead.
 func (*StartSessionRequest) Descriptor() ([]byte, []int) {
-	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{119}
+	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{114}
 }
 
 func (x *StartSessionRequest) GetId() string {
@@ -12518,7 +12177,7 @@ type ListSessionsRequest struct {
 
 func (x *ListSessionsRequest) Reset() {
 	*x = ListSessionsRequest{}
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[120]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[115]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -12530,7 +12189,7 @@ func (x *ListSessionsRequest) String() string {
 func (*ListSessionsRequest) ProtoMessage() {}
 
 func (x *ListSessionsRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[120]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[115]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -12543,7 +12202,7 @@ func (x *ListSessionsRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListSessionsRequest.ProtoReflect.Descriptor instead.
 func (*ListSessionsRequest) Descriptor() ([]byte, []int) {
-	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{120}
+	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{115}
 }
 
 func (x *ListSessionsRequest) GetScope() isListSessionsRequest_Scope {
@@ -12624,7 +12283,7 @@ type ListSessionsResponse struct {
 
 func (x *ListSessionsResponse) Reset() {
 	*x = ListSessionsResponse{}
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[121]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[116]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -12636,7 +12295,7 @@ func (x *ListSessionsResponse) String() string {
 func (*ListSessionsResponse) ProtoMessage() {}
 
 func (x *ListSessionsResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[121]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[116]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -12649,7 +12308,7 @@ func (x *ListSessionsResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListSessionsResponse.ProtoReflect.Descriptor instead.
 func (*ListSessionsResponse) Descriptor() ([]byte, []int) {
-	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{121}
+	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{116}
 }
 
 func (x *ListSessionsResponse) GetSessions() []*Session {
@@ -12675,7 +12334,7 @@ type SearchSessionsRequest struct {
 
 func (x *SearchSessionsRequest) Reset() {
 	*x = SearchSessionsRequest{}
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[122]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[117]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -12687,7 +12346,7 @@ func (x *SearchSessionsRequest) String() string {
 func (*SearchSessionsRequest) ProtoMessage() {}
 
 func (x *SearchSessionsRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[122]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[117]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -12700,7 +12359,7 @@ func (x *SearchSessionsRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SearchSessionsRequest.ProtoReflect.Descriptor instead.
 func (*SearchSessionsRequest) Descriptor() ([]byte, []int) {
-	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{122}
+	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{117}
 }
 
 func (x *SearchSessionsRequest) GetT3CodeThreadId() string {
@@ -12743,7 +12402,7 @@ type SearchSessionsResponse struct {
 
 func (x *SearchSessionsResponse) Reset() {
 	*x = SearchSessionsResponse{}
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[123]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[118]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -12755,7 +12414,7 @@ func (x *SearchSessionsResponse) String() string {
 func (*SearchSessionsResponse) ProtoMessage() {}
 
 func (x *SearchSessionsResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[123]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[118]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -12768,7 +12427,7 @@ func (x *SearchSessionsResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SearchSessionsResponse.ProtoReflect.Descriptor instead.
 func (*SearchSessionsResponse) Descriptor() ([]byte, []int) {
-	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{123}
+	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{118}
 }
 
 func (x *SearchSessionsResponse) GetSessions() []*Session {
@@ -12836,7 +12495,7 @@ type Project struct {
 
 func (x *Project) Reset() {
 	*x = Project{}
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[124]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[119]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -12848,7 +12507,7 @@ func (x *Project) String() string {
 func (*Project) ProtoMessage() {}
 
 func (x *Project) ProtoReflect() protoreflect.Message {
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[124]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[119]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -12861,7 +12520,7 @@ func (x *Project) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Project.ProtoReflect.Descriptor instead.
 func (*Project) Descriptor() ([]byte, []int) {
-	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{124}
+	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{119}
 }
 
 func (x *Project) GetName() string {
@@ -13020,7 +12679,7 @@ type ProjectChange struct {
 
 func (x *ProjectChange) Reset() {
 	*x = ProjectChange{}
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[125]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[120]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -13032,7 +12691,7 @@ func (x *ProjectChange) String() string {
 func (*ProjectChange) ProtoMessage() {}
 
 func (x *ProjectChange) ProtoReflect() protoreflect.Message {
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[125]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[120]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -13045,7 +12704,7 @@ func (x *ProjectChange) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ProjectChange.ProtoReflect.Descriptor instead.
 func (*ProjectChange) Descriptor() ([]byte, []int) {
-	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{125}
+	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{120}
 }
 
 func (x *ProjectChange) GetSeq() int64 {
@@ -13094,7 +12753,7 @@ type AddProjectRequest struct {
 
 func (x *AddProjectRequest) Reset() {
 	*x = AddProjectRequest{}
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[126]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[121]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -13106,7 +12765,7 @@ func (x *AddProjectRequest) String() string {
 func (*AddProjectRequest) ProtoMessage() {}
 
 func (x *AddProjectRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[126]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[121]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -13119,7 +12778,7 @@ func (x *AddProjectRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use AddProjectRequest.ProtoReflect.Descriptor instead.
 func (*AddProjectRequest) Descriptor() ([]byte, []int) {
-	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{126}
+	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{121}
 }
 
 func (x *AddProjectRequest) GetName() string {
@@ -13164,7 +12823,7 @@ type RemoveProjectReposRequest struct {
 
 func (x *RemoveProjectReposRequest) Reset() {
 	*x = RemoveProjectReposRequest{}
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[127]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[122]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -13176,7 +12835,7 @@ func (x *RemoveProjectReposRequest) String() string {
 func (*RemoveProjectReposRequest) ProtoMessage() {}
 
 func (x *RemoveProjectReposRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[127]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[122]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -13189,7 +12848,7 @@ func (x *RemoveProjectReposRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RemoveProjectReposRequest.ProtoReflect.Descriptor instead.
 func (*RemoveProjectReposRequest) Descriptor() ([]byte, []int) {
-	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{127}
+	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{122}
 }
 
 func (x *RemoveProjectReposRequest) GetName() string {
@@ -13223,7 +12882,7 @@ type GetProjectRequest struct {
 
 func (x *GetProjectRequest) Reset() {
 	*x = GetProjectRequest{}
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[128]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[123]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -13235,7 +12894,7 @@ func (x *GetProjectRequest) String() string {
 func (*GetProjectRequest) ProtoMessage() {}
 
 func (x *GetProjectRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[128]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[123]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -13248,7 +12907,7 @@ func (x *GetProjectRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetProjectRequest.ProtoReflect.Descriptor instead.
 func (*GetProjectRequest) Descriptor() ([]byte, []int) {
-	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{128}
+	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{123}
 }
 
 func (x *GetProjectRequest) GetName() string {
@@ -13266,7 +12925,7 @@ type ListProjectsRequest struct {
 
 func (x *ListProjectsRequest) Reset() {
 	*x = ListProjectsRequest{}
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[129]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[124]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -13278,7 +12937,7 @@ func (x *ListProjectsRequest) String() string {
 func (*ListProjectsRequest) ProtoMessage() {}
 
 func (x *ListProjectsRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[129]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[124]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -13291,7 +12950,7 @@ func (x *ListProjectsRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListProjectsRequest.ProtoReflect.Descriptor instead.
 func (*ListProjectsRequest) Descriptor() ([]byte, []int) {
-	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{129}
+	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{124}
 }
 
 type ListProjectsResponse struct {
@@ -13303,7 +12962,7 @@ type ListProjectsResponse struct {
 
 func (x *ListProjectsResponse) Reset() {
 	*x = ListProjectsResponse{}
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[130]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[125]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -13315,7 +12974,7 @@ func (x *ListProjectsResponse) String() string {
 func (*ListProjectsResponse) ProtoMessage() {}
 
 func (x *ListProjectsResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[130]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[125]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -13328,7 +12987,7 @@ func (x *ListProjectsResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListProjectsResponse.ProtoReflect.Descriptor instead.
 func (*ListProjectsResponse) Descriptor() ([]byte, []int) {
-	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{130}
+	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{125}
 }
 
 func (x *ListProjectsResponse) GetProjects() []*Project {
@@ -13352,7 +13011,7 @@ type ListBasesRequest struct {
 
 func (x *ListBasesRequest) Reset() {
 	*x = ListBasesRequest{}
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[131]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[126]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -13364,7 +13023,7 @@ func (x *ListBasesRequest) String() string {
 func (*ListBasesRequest) ProtoMessage() {}
 
 func (x *ListBasesRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[131]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[126]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -13377,7 +13036,7 @@ func (x *ListBasesRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListBasesRequest.ProtoReflect.Descriptor instead.
 func (*ListBasesRequest) Descriptor() ([]byte, []int) {
-	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{131}
+	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{126}
 }
 
 func (x *ListBasesRequest) GetProject() string {
@@ -13410,7 +13069,7 @@ type ListBasesResponse struct {
 
 func (x *ListBasesResponse) Reset() {
 	*x = ListBasesResponse{}
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[132]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[127]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -13422,7 +13081,7 @@ func (x *ListBasesResponse) String() string {
 func (*ListBasesResponse) ProtoMessage() {}
 
 func (x *ListBasesResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[132]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[127]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -13435,7 +13094,7 @@ func (x *ListBasesResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListBasesResponse.ProtoReflect.Descriptor instead.
 func (*ListBasesResponse) Descriptor() ([]byte, []int) {
-	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{132}
+	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{127}
 }
 
 func (x *ListBasesResponse) GetBases() []*NodeBase {
@@ -13458,7 +13117,7 @@ type NodeBase struct {
 
 func (x *NodeBase) Reset() {
 	*x = NodeBase{}
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[133]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[128]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -13470,7 +13129,7 @@ func (x *NodeBase) String() string {
 func (*NodeBase) ProtoMessage() {}
 
 func (x *NodeBase) ProtoReflect() protoreflect.Message {
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[133]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[128]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -13483,7 +13142,7 @@ func (x *NodeBase) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use NodeBase.ProtoReflect.Descriptor instead.
 func (*NodeBase) Descriptor() ([]byte, []int) {
-	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{133}
+	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{128}
 }
 
 func (x *NodeBase) GetNode() string {
@@ -13531,7 +13190,7 @@ type ListFreshensRequest struct {
 
 func (x *ListFreshensRequest) Reset() {
 	*x = ListFreshensRequest{}
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[134]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[129]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -13543,7 +13202,7 @@ func (x *ListFreshensRequest) String() string {
 func (*ListFreshensRequest) ProtoMessage() {}
 
 func (x *ListFreshensRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[134]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[129]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -13556,7 +13215,7 @@ func (x *ListFreshensRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListFreshensRequest.ProtoReflect.Descriptor instead.
 func (*ListFreshensRequest) Descriptor() ([]byte, []int) {
-	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{134}
+	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{129}
 }
 
 func (x *ListFreshensRequest) GetProject() string {
@@ -13630,7 +13289,7 @@ type ListFreshensResponse struct {
 
 func (x *ListFreshensResponse) Reset() {
 	*x = ListFreshensResponse{}
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[135]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[130]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -13642,7 +13301,7 @@ func (x *ListFreshensResponse) String() string {
 func (*ListFreshensResponse) ProtoMessage() {}
 
 func (x *ListFreshensResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[135]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[130]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -13655,7 +13314,7 @@ func (x *ListFreshensResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListFreshensResponse.ProtoReflect.Descriptor instead.
 func (*ListFreshensResponse) Descriptor() ([]byte, []int) {
-	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{135}
+	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{130}
 }
 
 func (x *ListFreshensResponse) GetSummary() *FreshenSummary {
@@ -13698,7 +13357,7 @@ type GetFreshenRequest struct {
 
 func (x *GetFreshenRequest) Reset() {
 	*x = GetFreshenRequest{}
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[136]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[131]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -13710,7 +13369,7 @@ func (x *GetFreshenRequest) String() string {
 func (*GetFreshenRequest) ProtoMessage() {}
 
 func (x *GetFreshenRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[136]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[131]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -13723,7 +13382,7 @@ func (x *GetFreshenRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetFreshenRequest.ProtoReflect.Descriptor instead.
 func (*GetFreshenRequest) Descriptor() ([]byte, []int) {
-	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{136}
+	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{131}
 }
 
 func (x *GetFreshenRequest) GetId() string {
@@ -13753,7 +13412,7 @@ type GetFreshenResponse struct {
 
 func (x *GetFreshenResponse) Reset() {
 	*x = GetFreshenResponse{}
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[137]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[132]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -13765,7 +13424,7 @@ func (x *GetFreshenResponse) String() string {
 func (*GetFreshenResponse) ProtoMessage() {}
 
 func (x *GetFreshenResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[137]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[132]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -13778,7 +13437,7 @@ func (x *GetFreshenResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetFreshenResponse.ProtoReflect.Descriptor instead.
 func (*GetFreshenResponse) Descriptor() ([]byte, []int) {
-	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{137}
+	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{132}
 }
 
 func (x *GetFreshenResponse) GetFreshen() *BaseFreshen {
@@ -13858,7 +13517,7 @@ type BaseFreshen struct {
 
 func (x *BaseFreshen) Reset() {
 	*x = BaseFreshen{}
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[138]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[133]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -13870,7 +13529,7 @@ func (x *BaseFreshen) String() string {
 func (*BaseFreshen) ProtoMessage() {}
 
 func (x *BaseFreshen) ProtoReflect() protoreflect.Message {
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[138]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[133]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -13883,7 +13542,7 @@ func (x *BaseFreshen) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use BaseFreshen.ProtoReflect.Descriptor instead.
 func (*BaseFreshen) Descriptor() ([]byte, []int) {
-	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{138}
+	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{133}
 }
 
 func (x *BaseFreshen) GetId() string {
@@ -14193,7 +13852,7 @@ type DurationStats struct {
 
 func (x *DurationStats) Reset() {
 	*x = DurationStats{}
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[139]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[134]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -14205,7 +13864,7 @@ func (x *DurationStats) String() string {
 func (*DurationStats) ProtoMessage() {}
 
 func (x *DurationStats) ProtoReflect() protoreflect.Message {
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[139]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[134]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -14218,7 +13877,7 @@ func (x *DurationStats) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DurationStats.ProtoReflect.Descriptor instead.
 func (*DurationStats) Descriptor() ([]byte, []int) {
-	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{139}
+	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{134}
 }
 
 func (x *DurationStats) GetCount() int32 {
@@ -14271,7 +13930,7 @@ type StepTimingSummary struct {
 
 func (x *StepTimingSummary) Reset() {
 	*x = StepTimingSummary{}
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[140]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[135]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -14283,7 +13942,7 @@ func (x *StepTimingSummary) String() string {
 func (*StepTimingSummary) ProtoMessage() {}
 
 func (x *StepTimingSummary) ProtoReflect() protoreflect.Message {
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[140]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[135]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -14296,7 +13955,7 @@ func (x *StepTimingSummary) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use StepTimingSummary.ProtoReflect.Descriptor instead.
 func (*StepTimingSummary) Descriptor() ([]byte, []int) {
-	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{140}
+	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{135}
 }
 
 func (x *StepTimingSummary) GetProject() string {
@@ -14378,7 +14037,7 @@ type NodeProjectFreshenSummary struct {
 
 func (x *NodeProjectFreshenSummary) Reset() {
 	*x = NodeProjectFreshenSummary{}
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[141]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[136]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -14390,7 +14049,7 @@ func (x *NodeProjectFreshenSummary) String() string {
 func (*NodeProjectFreshenSummary) ProtoMessage() {}
 
 func (x *NodeProjectFreshenSummary) ProtoReflect() protoreflect.Message {
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[141]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[136]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -14403,7 +14062,7 @@ func (x *NodeProjectFreshenSummary) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use NodeProjectFreshenSummary.ProtoReflect.Descriptor instead.
 func (*NodeProjectFreshenSummary) Descriptor() ([]byte, []int) {
-	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{141}
+	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{136}
 }
 
 func (x *NodeProjectFreshenSummary) GetNode() string {
@@ -14591,7 +14250,7 @@ type FreshenSummary struct {
 
 func (x *FreshenSummary) Reset() {
 	*x = FreshenSummary{}
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[142]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[137]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -14603,7 +14262,7 @@ func (x *FreshenSummary) String() string {
 func (*FreshenSummary) ProtoMessage() {}
 
 func (x *FreshenSummary) ProtoReflect() protoreflect.Message {
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[142]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[137]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -14616,7 +14275,7 @@ func (x *FreshenSummary) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use FreshenSummary.ProtoReflect.Descriptor instead.
 func (*FreshenSummary) Descriptor() ([]byte, []int) {
-	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{142}
+	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{137}
 }
 
 func (x *FreshenSummary) GetTotal() int32 {
@@ -14792,7 +14451,7 @@ type GetSessionRequest struct {
 
 func (x *GetSessionRequest) Reset() {
 	*x = GetSessionRequest{}
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[143]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[138]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -14804,7 +14463,7 @@ func (x *GetSessionRequest) String() string {
 func (*GetSessionRequest) ProtoMessage() {}
 
 func (x *GetSessionRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[143]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[138]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -14817,7 +14476,7 @@ func (x *GetSessionRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetSessionRequest.ProtoReflect.Descriptor instead.
 func (*GetSessionRequest) Descriptor() ([]byte, []int) {
-	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{143}
+	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{138}
 }
 
 func (x *GetSessionRequest) GetId() string {
@@ -14853,7 +14512,7 @@ type GetSessionResponse struct {
 
 func (x *GetSessionResponse) Reset() {
 	*x = GetSessionResponse{}
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[144]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[139]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -14865,7 +14524,7 @@ func (x *GetSessionResponse) String() string {
 func (*GetSessionResponse) ProtoMessage() {}
 
 func (x *GetSessionResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[144]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[139]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -14878,7 +14537,7 @@ func (x *GetSessionResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetSessionResponse.ProtoReflect.Descriptor instead.
 func (*GetSessionResponse) Descriptor() ([]byte, []int) {
-	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{144}
+	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{139}
 }
 
 func (x *GetSessionResponse) GetSession() *Session {
@@ -14932,7 +14591,7 @@ type EndSessionRequest struct {
 
 func (x *EndSessionRequest) Reset() {
 	*x = EndSessionRequest{}
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[145]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[140]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -14944,7 +14603,7 @@ func (x *EndSessionRequest) String() string {
 func (*EndSessionRequest) ProtoMessage() {}
 
 func (x *EndSessionRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[145]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[140]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -14957,7 +14616,7 @@ func (x *EndSessionRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use EndSessionRequest.ProtoReflect.Descriptor instead.
 func (*EndSessionRequest) Descriptor() ([]byte, []int) {
-	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{145}
+	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{140}
 }
 
 func (x *EndSessionRequest) GetId() string {
@@ -14980,7 +14639,7 @@ type WatchSessionRequest struct {
 
 func (x *WatchSessionRequest) Reset() {
 	*x = WatchSessionRequest{}
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[146]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[141]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -14992,7 +14651,7 @@ func (x *WatchSessionRequest) String() string {
 func (*WatchSessionRequest) ProtoMessage() {}
 
 func (x *WatchSessionRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[146]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[141]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -15005,7 +14664,7 @@ func (x *WatchSessionRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use WatchSessionRequest.ProtoReflect.Descriptor instead.
 func (*WatchSessionRequest) Descriptor() ([]byte, []int) {
-	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{146}
+	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{141}
 }
 
 func (x *WatchSessionRequest) GetSessionId() string {
@@ -15043,7 +14702,7 @@ type PollRequest struct {
 
 func (x *PollRequest) Reset() {
 	*x = PollRequest{}
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[147]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[142]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -15055,7 +14714,7 @@ func (x *PollRequest) String() string {
 func (*PollRequest) ProtoMessage() {}
 
 func (x *PollRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[147]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[142]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -15068,7 +14727,7 @@ func (x *PollRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PollRequest.ProtoReflect.Descriptor instead.
 func (*PollRequest) Descriptor() ([]byte, []int) {
-	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{147}
+	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{142}
 }
 
 func (x *PollRequest) GetSessionId() string {
@@ -15112,7 +14771,7 @@ type SessionEvents struct {
 
 func (x *SessionEvents) Reset() {
 	*x = SessionEvents{}
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[148]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[143]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -15124,7 +14783,7 @@ func (x *SessionEvents) String() string {
 func (*SessionEvents) ProtoMessage() {}
 
 func (x *SessionEvents) ProtoReflect() protoreflect.Message {
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[148]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[143]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -15137,7 +14796,7 @@ func (x *SessionEvents) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SessionEvents.ProtoReflect.Descriptor instead.
 func (*SessionEvents) Descriptor() ([]byte, []int) {
-	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{148}
+	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{143}
 }
 
 func (x *SessionEvents) GetEvents() []*SessionEvent {
@@ -15207,7 +14866,7 @@ type SessionEvent struct {
 
 func (x *SessionEvent) Reset() {
 	*x = SessionEvent{}
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[149]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[144]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -15219,7 +14878,7 @@ func (x *SessionEvent) String() string {
 func (*SessionEvent) ProtoMessage() {}
 
 func (x *SessionEvent) ProtoReflect() protoreflect.Message {
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[149]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[144]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -15232,7 +14891,7 @@ func (x *SessionEvent) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SessionEvent.ProtoReflect.Descriptor instead.
 func (*SessionEvent) Descriptor() ([]byte, []int) {
-	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{149}
+	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{144}
 }
 
 func (x *SessionEvent) GetSeq() int64 {
@@ -15364,7 +15023,7 @@ type CommandUpdate struct {
 
 func (x *CommandUpdate) Reset() {
 	*x = CommandUpdate{}
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[150]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[145]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -15376,7 +15035,7 @@ func (x *CommandUpdate) String() string {
 func (*CommandUpdate) ProtoMessage() {}
 
 func (x *CommandUpdate) ProtoReflect() protoreflect.Message {
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[150]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[145]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -15389,7 +15048,7 @@ func (x *CommandUpdate) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CommandUpdate.ProtoReflect.Descriptor instead.
 func (*CommandUpdate) Descriptor() ([]byte, []int) {
-	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{150}
+	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{145}
 }
 
 func (x *CommandUpdate) GetWhat() CommandUpdate_What {
@@ -15445,7 +15104,7 @@ type WorkspaceUpdate struct {
 
 func (x *WorkspaceUpdate) Reset() {
 	*x = WorkspaceUpdate{}
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[151]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[146]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -15457,7 +15116,7 @@ func (x *WorkspaceUpdate) String() string {
 func (*WorkspaceUpdate) ProtoMessage() {}
 
 func (x *WorkspaceUpdate) ProtoReflect() protoreflect.Message {
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[151]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[146]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -15470,7 +15129,7 @@ func (x *WorkspaceUpdate) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use WorkspaceUpdate.ProtoReflect.Descriptor instead.
 func (*WorkspaceUpdate) Descriptor() ([]byte, []int) {
-	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{151}
+	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{146}
 }
 
 func (x *WorkspaceUpdate) GetWhat() WorkspaceUpdate_What {
@@ -15500,7 +15159,7 @@ type QuestionUpdate struct {
 
 func (x *QuestionUpdate) Reset() {
 	*x = QuestionUpdate{}
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[152]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[147]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -15512,7 +15171,7 @@ func (x *QuestionUpdate) String() string {
 func (*QuestionUpdate) ProtoMessage() {}
 
 func (x *QuestionUpdate) ProtoReflect() protoreflect.Message {
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[152]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[147]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -15525,7 +15184,7 @@ func (x *QuestionUpdate) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use QuestionUpdate.ProtoReflect.Descriptor instead.
 func (*QuestionUpdate) Descriptor() ([]byte, []int) {
-	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{152}
+	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{147}
 }
 
 func (x *QuestionUpdate) GetWhat() QuestionUpdate_What {
@@ -15553,7 +15212,7 @@ type ReviewUpdate struct {
 
 func (x *ReviewUpdate) Reset() {
 	*x = ReviewUpdate{}
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[153]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[148]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -15565,7 +15224,7 @@ func (x *ReviewUpdate) String() string {
 func (*ReviewUpdate) ProtoMessage() {}
 
 func (x *ReviewUpdate) ProtoReflect() protoreflect.Message {
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[153]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[148]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -15578,7 +15237,7 @@ func (x *ReviewUpdate) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ReviewUpdate.ProtoReflect.Descriptor instead.
 func (*ReviewUpdate) Descriptor() ([]byte, []int) {
-	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{153}
+	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{148}
 }
 
 func (x *ReviewUpdate) GetWhat() ReviewUpdate_What {
@@ -15607,7 +15266,7 @@ type MemoryUpdate struct {
 
 func (x *MemoryUpdate) Reset() {
 	*x = MemoryUpdate{}
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[154]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[149]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -15619,7 +15278,7 @@ func (x *MemoryUpdate) String() string {
 func (*MemoryUpdate) ProtoMessage() {}
 
 func (x *MemoryUpdate) ProtoReflect() protoreflect.Message {
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[154]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[149]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -15632,7 +15291,7 @@ func (x *MemoryUpdate) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use MemoryUpdate.ProtoReflect.Descriptor instead.
 func (*MemoryUpdate) Descriptor() ([]byte, []int) {
-	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{154}
+	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{149}
 }
 
 func (x *MemoryUpdate) GetWhat() MemoryUpdate_What {
@@ -15660,7 +15319,7 @@ type GetLogLinesRequest struct {
 
 func (x *GetLogLinesRequest) Reset() {
 	*x = GetLogLinesRequest{}
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[155]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[150]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -15672,7 +15331,7 @@ func (x *GetLogLinesRequest) String() string {
 func (*GetLogLinesRequest) ProtoMessage() {}
 
 func (x *GetLogLinesRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[155]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[150]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -15685,7 +15344,7 @@ func (x *GetLogLinesRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetLogLinesRequest.ProtoReflect.Descriptor instead.
 func (*GetLogLinesRequest) Descriptor() ([]byte, []int) {
-	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{155}
+	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{150}
 }
 
 func (x *GetLogLinesRequest) GetId() string {
@@ -15720,7 +15379,7 @@ type CommandLog struct {
 
 func (x *CommandLog) Reset() {
 	*x = CommandLog{}
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[156]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[151]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -15732,7 +15391,7 @@ func (x *CommandLog) String() string {
 func (*CommandLog) ProtoMessage() {}
 
 func (x *CommandLog) ProtoReflect() protoreflect.Message {
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[156]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[151]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -15745,7 +15404,7 @@ func (x *CommandLog) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CommandLog.ProtoReflect.Descriptor instead.
 func (*CommandLog) Descriptor() ([]byte, []int) {
-	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{156}
+	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{151}
 }
 
 func (x *CommandLog) GetCommandId() string {
@@ -15790,7 +15449,7 @@ type WorkerEvent struct {
 
 func (x *WorkerEvent) Reset() {
 	*x = WorkerEvent{}
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[157]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[152]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -15802,7 +15461,7 @@ func (x *WorkerEvent) String() string {
 func (*WorkerEvent) ProtoMessage() {}
 
 func (x *WorkerEvent) ProtoReflect() protoreflect.Message {
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[157]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[152]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -15815,7 +15474,7 @@ func (x *WorkerEvent) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use WorkerEvent.ProtoReflect.Descriptor instead.
 func (*WorkerEvent) Descriptor() ([]byte, []int) {
-	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{157}
+	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{152}
 }
 
 func (x *WorkerEvent) GetAt() int64 {
@@ -15857,7 +15516,7 @@ type EventRef struct {
 
 func (x *EventRef) Reset() {
 	*x = EventRef{}
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[158]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[153]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -15869,7 +15528,7 @@ func (x *EventRef) String() string {
 func (*EventRef) ProtoMessage() {}
 
 func (x *EventRef) ProtoReflect() protoreflect.Message {
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[158]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[153]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -15882,7 +15541,7 @@ func (x *EventRef) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use EventRef.ProtoReflect.Descriptor instead.
 func (*EventRef) Descriptor() ([]byte, []int) {
-	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{158}
+	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{153}
 }
 
 func (x *EventRef) GetType() string {
@@ -15923,7 +15582,7 @@ type Event struct {
 
 func (x *Event) Reset() {
 	*x = Event{}
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[159]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[154]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -15935,7 +15594,7 @@ func (x *Event) String() string {
 func (*Event) ProtoMessage() {}
 
 func (x *Event) ProtoReflect() protoreflect.Message {
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[159]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[154]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -15948,7 +15607,7 @@ func (x *Event) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Event.ProtoReflect.Descriptor instead.
 func (*Event) Descriptor() ([]byte, []int) {
-	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{159}
+	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{154}
 }
 
 func (x *Event) GetSeq() int64 {
@@ -16041,7 +15700,7 @@ type BaseChange struct {
 
 func (x *BaseChange) Reset() {
 	*x = BaseChange{}
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[160]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[155]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -16053,7 +15712,7 @@ func (x *BaseChange) String() string {
 func (*BaseChange) ProtoMessage() {}
 
 func (x *BaseChange) ProtoReflect() protoreflect.Message {
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[160]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[155]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -16066,7 +15725,7 @@ func (x *BaseChange) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use BaseChange.ProtoReflect.Descriptor instead.
 func (*BaseChange) Descriptor() ([]byte, []int) {
-	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{160}
+	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{155}
 }
 
 func (x *BaseChange) GetWhat() string {
@@ -16104,7 +15763,7 @@ type WorkspaceChange struct {
 
 func (x *WorkspaceChange) Reset() {
 	*x = WorkspaceChange{}
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[161]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[156]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -16116,7 +15775,7 @@ func (x *WorkspaceChange) String() string {
 func (*WorkspaceChange) ProtoMessage() {}
 
 func (x *WorkspaceChange) ProtoReflect() protoreflect.Message {
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[161]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[156]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -16129,7 +15788,7 @@ func (x *WorkspaceChange) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use WorkspaceChange.ProtoReflect.Descriptor instead.
 func (*WorkspaceChange) Descriptor() ([]byte, []int) {
-	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{161}
+	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{156}
 }
 
 func (x *WorkspaceChange) GetWhat() string {
@@ -16173,7 +15832,7 @@ type CommandChange struct {
 
 func (x *CommandChange) Reset() {
 	*x = CommandChange{}
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[162]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[157]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -16185,7 +15844,7 @@ func (x *CommandChange) String() string {
 func (*CommandChange) ProtoMessage() {}
 
 func (x *CommandChange) ProtoReflect() protoreflect.Message {
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[162]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[157]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -16198,7 +15857,7 @@ func (x *CommandChange) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CommandChange.ProtoReflect.Descriptor instead.
 func (*CommandChange) Descriptor() ([]byte, []int) {
-	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{162}
+	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{157}
 }
 
 func (x *CommandChange) GetWhat() string {
@@ -16259,7 +15918,7 @@ type Checkpoint struct {
 
 func (x *Checkpoint) Reset() {
 	*x = Checkpoint{}
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[163]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[158]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -16271,7 +15930,7 @@ func (x *Checkpoint) String() string {
 func (*Checkpoint) ProtoMessage() {}
 
 func (x *Checkpoint) ProtoReflect() protoreflect.Message {
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[163]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[158]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -16284,7 +15943,7 @@ func (x *Checkpoint) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Checkpoint.ProtoReflect.Descriptor instead.
 func (*Checkpoint) Descriptor() ([]byte, []int) {
-	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{163}
+	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{158}
 }
 
 func (x *Checkpoint) GetSeq() int64 {
@@ -16338,7 +15997,7 @@ type PushEventsRequest struct {
 
 func (x *PushEventsRequest) Reset() {
 	*x = PushEventsRequest{}
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[164]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[159]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -16350,7 +16009,7 @@ func (x *PushEventsRequest) String() string {
 func (*PushEventsRequest) ProtoMessage() {}
 
 func (x *PushEventsRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[164]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[159]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -16363,7 +16022,7 @@ func (x *PushEventsRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PushEventsRequest.ProtoReflect.Descriptor instead.
 func (*PushEventsRequest) Descriptor() ([]byte, []int) {
-	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{164}
+	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{159}
 }
 
 func (x *PushEventsRequest) GetClusterId() string {
@@ -16414,7 +16073,7 @@ type PushEventsResponse struct {
 
 func (x *PushEventsResponse) Reset() {
 	*x = PushEventsResponse{}
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[165]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[160]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -16426,7 +16085,7 @@ func (x *PushEventsResponse) String() string {
 func (*PushEventsResponse) ProtoMessage() {}
 
 func (x *PushEventsResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[165]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[160]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -16439,7 +16098,7 @@ func (x *PushEventsResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PushEventsResponse.ProtoReflect.Descriptor instead.
 func (*PushEventsResponse) Descriptor() ([]byte, []int) {
-	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{165}
+	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{160}
 }
 
 func (x *PushEventsResponse) GetApplied() int64 {
@@ -16473,7 +16132,7 @@ type CommandUsage struct {
 
 func (x *CommandUsage) Reset() {
 	*x = CommandUsage{}
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[166]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[161]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -16485,7 +16144,7 @@ func (x *CommandUsage) String() string {
 func (*CommandUsage) ProtoMessage() {}
 
 func (x *CommandUsage) ProtoReflect() protoreflect.Message {
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[166]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[161]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -16498,7 +16157,7 @@ func (x *CommandUsage) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CommandUsage.ProtoReflect.Descriptor instead.
 func (*CommandUsage) Descriptor() ([]byte, []int) {
-	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{166}
+	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{161}
 }
 
 func (x *CommandUsage) GetId() string {
@@ -16555,7 +16214,7 @@ type BaseUsage struct {
 
 func (x *BaseUsage) Reset() {
 	*x = BaseUsage{}
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[167]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[162]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -16567,7 +16226,7 @@ func (x *BaseUsage) String() string {
 func (*BaseUsage) ProtoMessage() {}
 
 func (x *BaseUsage) ProtoReflect() protoreflect.Message {
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[167]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[162]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -16580,7 +16239,7 @@ func (x *BaseUsage) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use BaseUsage.ProtoReflect.Descriptor instead.
 func (*BaseUsage) Descriptor() ([]byte, []int) {
-	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{167}
+	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{162}
 }
 
 func (x *BaseUsage) GetId() string {
@@ -16615,7 +16274,7 @@ type WorkspaceUsage struct {
 
 func (x *WorkspaceUsage) Reset() {
 	*x = WorkspaceUsage{}
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[168]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[163]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -16627,7 +16286,7 @@ func (x *WorkspaceUsage) String() string {
 func (*WorkspaceUsage) ProtoMessage() {}
 
 func (x *WorkspaceUsage) ProtoReflect() protoreflect.Message {
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[168]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[163]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -16640,7 +16299,7 @@ func (x *WorkspaceUsage) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use WorkspaceUsage.ProtoReflect.Descriptor instead.
 func (*WorkspaceUsage) Descriptor() ([]byte, []int) {
-	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{168}
+	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{163}
 }
 
 func (x *WorkspaceUsage) GetId() string {
@@ -16708,7 +16367,7 @@ type HeartbeatRequest struct {
 
 func (x *HeartbeatRequest) Reset() {
 	*x = HeartbeatRequest{}
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[169]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[164]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -16720,7 +16379,7 @@ func (x *HeartbeatRequest) String() string {
 func (*HeartbeatRequest) ProtoMessage() {}
 
 func (x *HeartbeatRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[169]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[164]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -16733,7 +16392,7 @@ func (x *HeartbeatRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use HeartbeatRequest.ProtoReflect.Descriptor instead.
 func (*HeartbeatRequest) Descriptor() ([]byte, []int) {
-	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{169}
+	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{164}
 }
 
 func (x *HeartbeatRequest) GetClusterId() string {
@@ -16893,9 +16552,6 @@ type HeartbeatResponse struct {
 	// installs over itself when running an older build; unset while the
 	// controller runs a dev build with no release configured.
 	Build *Build `protobuf:"bytes,3,opt,name=build,proto3" json:"build,omitempty"`
-	// Latest fresh host-side view of this VM worker, when its host supervisor
-	// reports it; used by worker admission to hold work during host starvation.
-	HostUsage *HostUsage `protobuf:"bytes,5,opt,name=host_usage,json=hostUsage,proto3" json:"host_usage,omitempty"`
 	// Online cladefs peer addresses (HOST:PORT) for cladefsd.SetPeers.
 	CladefsPeers []string `protobuf:"bytes,7,rep,name=cladefs_peers,json=cladefsPeers,proto3" json:"cladefs_peers,omitempty"`
 	// Retired cladefs host incarnations for cladefsd.DecommissionHost.
@@ -16914,7 +16570,7 @@ type HeartbeatResponse struct {
 
 func (x *HeartbeatResponse) Reset() {
 	*x = HeartbeatResponse{}
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[170]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[165]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -16926,7 +16582,7 @@ func (x *HeartbeatResponse) String() string {
 func (*HeartbeatResponse) ProtoMessage() {}
 
 func (x *HeartbeatResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[170]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[165]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -16939,7 +16595,7 @@ func (x *HeartbeatResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use HeartbeatResponse.ProtoReflect.Descriptor instead.
 func (*HeartbeatResponse) Descriptor() ([]byte, []int) {
-	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{170}
+	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{165}
 }
 
 func (x *HeartbeatResponse) GetProjects() []*HostedProject {
@@ -16959,13 +16615,6 @@ func (x *HeartbeatResponse) GetRelease() []string {
 func (x *HeartbeatResponse) GetBuild() *Build {
 	if x != nil {
 		return x.Build
-	}
-	return nil
-}
-
-func (x *HeartbeatResponse) GetHostUsage() *HostUsage {
-	if x != nil {
-		return x.HostUsage
 	}
 	return nil
 }
@@ -17015,7 +16664,7 @@ type RepoSummary struct {
 
 func (x *RepoSummary) Reset() {
 	*x = RepoSummary{}
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[171]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[166]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -17027,7 +16676,7 @@ func (x *RepoSummary) String() string {
 func (*RepoSummary) ProtoMessage() {}
 
 func (x *RepoSummary) ProtoReflect() protoreflect.Message {
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[171]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[166]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -17040,7 +16689,7 @@ func (x *RepoSummary) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RepoSummary.ProtoReflect.Descriptor instead.
 func (*RepoSummary) Descriptor() ([]byte, []int) {
-	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{171}
+	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{166}
 }
 
 func (x *RepoSummary) GetId() string {
@@ -17101,7 +16750,7 @@ type ClusterEvent struct {
 
 func (x *ClusterEvent) Reset() {
 	*x = ClusterEvent{}
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[172]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[167]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -17113,7 +16762,7 @@ func (x *ClusterEvent) String() string {
 func (*ClusterEvent) ProtoMessage() {}
 
 func (x *ClusterEvent) ProtoReflect() protoreflect.Message {
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[172]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[167]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -17126,7 +16775,7 @@ func (x *ClusterEvent) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ClusterEvent.ProtoReflect.Descriptor instead.
 func (*ClusterEvent) Descriptor() ([]byte, []int) {
-	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{172}
+	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{167}
 }
 
 func (x *ClusterEvent) GetId() int64 {
@@ -17205,7 +16854,7 @@ type Totals struct {
 
 func (x *Totals) Reset() {
 	*x = Totals{}
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[173]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[168]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -17217,7 +16866,7 @@ func (x *Totals) String() string {
 func (*Totals) ProtoMessage() {}
 
 func (x *Totals) ProtoReflect() protoreflect.Message {
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[173]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[168]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -17230,7 +16879,7 @@ func (x *Totals) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Totals.ProtoReflect.Descriptor instead.
 func (*Totals) Descriptor() ([]byte, []int) {
-	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{173}
+	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{168}
 }
 
 func (x *Totals) GetSavedSeconds() float64 {
@@ -17354,9 +17003,6 @@ type Sample struct {
 	CpuPressure    float64                `protobuf:"fixed64,5,opt,name=cpu_pressure,json=cpuPressure,proto3" json:"cpu_pressure,omitempty"`
 	// The node held new work.
 	Holding bool `protobuf:"varint,6,opt,name=holding,proto3" json:"holding,omitempty"`
-	// Host-side CPU readings for VM nodes, when reported by the host supervisor.
-	VmCpuBusy   *float64 `protobuf:"fixed64,7,opt,name=vm_cpu_busy,json=vmCpuBusy,proto3,oneof" json:"vm_cpu_busy,omitempty"`
-	HostCpuBusy *float64 `protobuf:"fixed64,8,opt,name=host_cpu_busy,json=hostCpuBusy,proto3,oneof" json:"host_cpu_busy,omitempty"`
 	// R2 object-store transfer and commit-wait rates at this sample.
 	UploadBytesPerSec   float64 `protobuf:"fixed64,9,opt,name=upload_bytes_per_sec,json=uploadBytesPerSec,proto3" json:"upload_bytes_per_sec,omitempty"`
 	DownloadBytesPerSec float64 `protobuf:"fixed64,10,opt,name=download_bytes_per_sec,json=downloadBytesPerSec,proto3" json:"download_bytes_per_sec,omitempty"`
@@ -17375,7 +17021,7 @@ type Sample struct {
 
 func (x *Sample) Reset() {
 	*x = Sample{}
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[174]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[169]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -17387,7 +17033,7 @@ func (x *Sample) String() string {
 func (*Sample) ProtoMessage() {}
 
 func (x *Sample) ProtoReflect() protoreflect.Message {
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[174]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[169]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -17400,7 +17046,7 @@ func (x *Sample) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Sample.ProtoReflect.Descriptor instead.
 func (*Sample) Descriptor() ([]byte, []int) {
-	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{174}
+	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{169}
 }
 
 func (x *Sample) GetT() int64 {
@@ -17443,20 +17089,6 @@ func (x *Sample) GetHolding() bool {
 		return x.Holding
 	}
 	return false
-}
-
-func (x *Sample) GetVmCpuBusy() float64 {
-	if x != nil && x.VmCpuBusy != nil {
-		return *x.VmCpuBusy
-	}
-	return 0
-}
-
-func (x *Sample) GetHostCpuBusy() float64 {
-	if x != nil && x.HostCpuBusy != nil {
-		return *x.HostCpuBusy
-	}
-	return 0
 }
 
 func (x *Sample) GetUploadBytesPerSec() float64 {
@@ -17524,7 +17156,7 @@ type Samples struct {
 
 func (x *Samples) Reset() {
 	*x = Samples{}
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[175]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[170]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -17536,7 +17168,7 @@ func (x *Samples) String() string {
 func (*Samples) ProtoMessage() {}
 
 func (x *Samples) ProtoReflect() protoreflect.Message {
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[175]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[170]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -17549,7 +17181,7 @@ func (x *Samples) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Samples.ProtoReflect.Descriptor instead.
 func (*Samples) Descriptor() ([]byte, []int) {
-	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{175}
+	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{170}
 }
 
 func (x *Samples) GetSamples() []*Sample {
@@ -17572,7 +17204,7 @@ type LoadSample struct {
 
 func (x *LoadSample) Reset() {
 	*x = LoadSample{}
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[176]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[171]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -17584,7 +17216,7 @@ func (x *LoadSample) String() string {
 func (*LoadSample) ProtoMessage() {}
 
 func (x *LoadSample) ProtoReflect() protoreflect.Message {
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[176]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[171]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -17597,7 +17229,7 @@ func (x *LoadSample) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use LoadSample.ProtoReflect.Descriptor instead.
 func (*LoadSample) Descriptor() ([]byte, []int) {
-	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{176}
+	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{171}
 }
 
 func (x *LoadSample) GetT() int64 {
@@ -17646,7 +17278,7 @@ type HourBucket struct {
 
 func (x *HourBucket) Reset() {
 	*x = HourBucket{}
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[177]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[172]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -17658,7 +17290,7 @@ func (x *HourBucket) String() string {
 func (*HourBucket) ProtoMessage() {}
 
 func (x *HourBucket) ProtoReflect() protoreflect.Message {
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[177]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[172]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -17671,7 +17303,7 @@ func (x *HourBucket) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use HourBucket.ProtoReflect.Descriptor instead.
 func (*HourBucket) Descriptor() ([]byte, []int) {
-	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{177}
+	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{172}
 }
 
 func (x *HourBucket) GetHour() int64 {
@@ -17752,7 +17384,7 @@ type NodeHour struct {
 
 func (x *NodeHour) Reset() {
 	*x = NodeHour{}
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[178]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[173]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -17764,7 +17396,7 @@ func (x *NodeHour) String() string {
 func (*NodeHour) ProtoMessage() {}
 
 func (x *NodeHour) ProtoReflect() protoreflect.Message {
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[178]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[173]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -17777,7 +17409,7 @@ func (x *NodeHour) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use NodeHour.ProtoReflect.Descriptor instead.
 func (*NodeHour) Descriptor() ([]byte, []int) {
-	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{178}
+	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{173}
 }
 
 func (x *NodeHour) GetHour() int64 {
@@ -17831,7 +17463,7 @@ type NodeHours struct {
 
 func (x *NodeHours) Reset() {
 	*x = NodeHours{}
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[179]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[174]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -17843,7 +17475,7 @@ func (x *NodeHours) String() string {
 func (*NodeHours) ProtoMessage() {}
 
 func (x *NodeHours) ProtoReflect() protoreflect.Message {
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[179]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[174]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -17856,7 +17488,7 @@ func (x *NodeHours) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use NodeHours.ProtoReflect.Descriptor instead.
 func (*NodeHours) Descriptor() ([]byte, []int) {
-	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{179}
+	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{174}
 }
 
 func (x *NodeHours) GetHours() []*NodeHour {
@@ -17874,7 +17506,7 @@ type GetSnapshotRequest struct {
 
 func (x *GetSnapshotRequest) Reset() {
 	*x = GetSnapshotRequest{}
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[180]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[175]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -17886,7 +17518,7 @@ func (x *GetSnapshotRequest) String() string {
 func (*GetSnapshotRequest) ProtoMessage() {}
 
 func (x *GetSnapshotRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[180]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[175]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -17899,7 +17531,7 @@ func (x *GetSnapshotRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetSnapshotRequest.ProtoReflect.Descriptor instead.
 func (*GetSnapshotRequest) Descriptor() ([]byte, []int) {
-	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{180}
+	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{175}
 }
 
 type Snapshot struct {
@@ -17951,7 +17583,7 @@ type Snapshot struct {
 
 func (x *Snapshot) Reset() {
 	*x = Snapshot{}
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[181]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[176]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -17963,7 +17595,7 @@ func (x *Snapshot) String() string {
 func (*Snapshot) ProtoMessage() {}
 
 func (x *Snapshot) ProtoReflect() protoreflect.Message {
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[181]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[176]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -17976,7 +17608,7 @@ func (x *Snapshot) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Snapshot.ProtoReflect.Descriptor instead.
 func (*Snapshot) Descriptor() ([]byte, []int) {
-	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{181}
+	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{176}
 }
 
 func (x *Snapshot) GetClusterId() string {
@@ -18203,7 +17835,7 @@ type PlacementDecision struct {
 
 func (x *PlacementDecision) Reset() {
 	*x = PlacementDecision{}
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[182]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[177]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -18215,7 +17847,7 @@ func (x *PlacementDecision) String() string {
 func (*PlacementDecision) ProtoMessage() {}
 
 func (x *PlacementDecision) ProtoReflect() protoreflect.Message {
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[182]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[177]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -18228,7 +17860,7 @@ func (x *PlacementDecision) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PlacementDecision.ProtoReflect.Descriptor instead.
 func (*PlacementDecision) Descriptor() ([]byte, []int) {
-	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{182}
+	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{177}
 }
 
 func (x *PlacementDecision) GetId() int64 {
@@ -18333,7 +17965,7 @@ type PlacementCandidate struct {
 
 func (x *PlacementCandidate) Reset() {
 	*x = PlacementCandidate{}
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[183]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[178]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -18345,7 +17977,7 @@ func (x *PlacementCandidate) String() string {
 func (*PlacementCandidate) ProtoMessage() {}
 
 func (x *PlacementCandidate) ProtoReflect() protoreflect.Message {
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[183]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[178]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -18358,7 +17990,7 @@ func (x *PlacementCandidate) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PlacementCandidate.ProtoReflect.Descriptor instead.
 func (*PlacementCandidate) Descriptor() ([]byte, []int) {
-	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{183}
+	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{178}
 }
 
 func (x *PlacementCandidate) GetNodeId() string {
@@ -18423,7 +18055,7 @@ type CostPart struct {
 
 func (x *CostPart) Reset() {
 	*x = CostPart{}
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[184]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[179]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -18435,7 +18067,7 @@ func (x *CostPart) String() string {
 func (*CostPart) ProtoMessage() {}
 
 func (x *CostPart) ProtoReflect() protoreflect.Message {
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[184]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[179]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -18448,7 +18080,7 @@ func (x *CostPart) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CostPart.ProtoReflect.Descriptor instead.
 func (*CostPart) Descriptor() ([]byte, []int) {
-	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{184}
+	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{179}
 }
 
 func (x *CostPart) GetName() string {
@@ -18482,7 +18114,7 @@ type RetireNodeRequest struct {
 
 func (x *RetireNodeRequest) Reset() {
 	*x = RetireNodeRequest{}
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[185]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[180]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -18494,7 +18126,7 @@ func (x *RetireNodeRequest) String() string {
 func (*RetireNodeRequest) ProtoMessage() {}
 
 func (x *RetireNodeRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[185]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[180]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -18507,7 +18139,7 @@ func (x *RetireNodeRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RetireNodeRequest.ProtoReflect.Descriptor instead.
 func (*RetireNodeRequest) Descriptor() ([]byte, []int) {
-	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{185}
+	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{180}
 }
 
 func (x *RetireNodeRequest) GetNode() string {
@@ -18529,7 +18161,7 @@ type GetNodeRequest struct {
 
 func (x *GetNodeRequest) Reset() {
 	*x = GetNodeRequest{}
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[186]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[181]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -18541,7 +18173,7 @@ func (x *GetNodeRequest) String() string {
 func (*GetNodeRequest) ProtoMessage() {}
 
 func (x *GetNodeRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[186]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[181]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -18554,7 +18186,7 @@ func (x *GetNodeRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetNodeRequest.ProtoReflect.Descriptor instead.
 func (*GetNodeRequest) Descriptor() ([]byte, []int) {
-	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{186}
+	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{181}
 }
 
 func (x *GetNodeRequest) GetNode() string {
@@ -18585,7 +18217,7 @@ type NodeDetail struct {
 
 func (x *NodeDetail) Reset() {
 	*x = NodeDetail{}
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[187]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[182]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -18597,7 +18229,7 @@ func (x *NodeDetail) String() string {
 func (*NodeDetail) ProtoMessage() {}
 
 func (x *NodeDetail) ProtoReflect() protoreflect.Message {
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[187]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[182]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -18610,7 +18242,7 @@ func (x *NodeDetail) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use NodeDetail.ProtoReflect.Descriptor instead.
 func (*NodeDetail) Descriptor() ([]byte, []int) {
-	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{187}
+	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{182}
 }
 
 func (x *NodeDetail) GetNode() *Node {
@@ -18648,7 +18280,7 @@ type ListPlacementsRequest struct {
 
 func (x *ListPlacementsRequest) Reset() {
 	*x = ListPlacementsRequest{}
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[188]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[183]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -18660,7 +18292,7 @@ func (x *ListPlacementsRequest) String() string {
 func (*ListPlacementsRequest) ProtoMessage() {}
 
 func (x *ListPlacementsRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[188]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[183]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -18673,7 +18305,7 @@ func (x *ListPlacementsRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListPlacementsRequest.ProtoReflect.Descriptor instead.
 func (*ListPlacementsRequest) Descriptor() ([]byte, []int) {
-	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{188}
+	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{183}
 }
 
 func (x *ListPlacementsRequest) GetNode() string {
@@ -18706,7 +18338,7 @@ type ListPlacementsResponse struct {
 
 func (x *ListPlacementsResponse) Reset() {
 	*x = ListPlacementsResponse{}
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[189]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[184]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -18718,7 +18350,7 @@ func (x *ListPlacementsResponse) String() string {
 func (*ListPlacementsResponse) ProtoMessage() {}
 
 func (x *ListPlacementsResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[189]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[184]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -18731,7 +18363,7 @@ func (x *ListPlacementsResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListPlacementsResponse.ProtoReflect.Descriptor instead.
 func (*ListPlacementsResponse) Descriptor() ([]byte, []int) {
-	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{189}
+	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{184}
 }
 
 func (x *ListPlacementsResponse) GetPlacements() []*PlacementDecision {
@@ -18756,7 +18388,7 @@ type ListEventsRequest struct {
 
 func (x *ListEventsRequest) Reset() {
 	*x = ListEventsRequest{}
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[190]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[185]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -18768,7 +18400,7 @@ func (x *ListEventsRequest) String() string {
 func (*ListEventsRequest) ProtoMessage() {}
 
 func (x *ListEventsRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[190]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[185]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -18781,7 +18413,7 @@ func (x *ListEventsRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListEventsRequest.ProtoReflect.Descriptor instead.
 func (*ListEventsRequest) Descriptor() ([]byte, []int) {
-	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{190}
+	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{185}
 }
 
 func (x *ListEventsRequest) GetNode() string {
@@ -18814,7 +18446,7 @@ type ListEventsResponse struct {
 
 func (x *ListEventsResponse) Reset() {
 	*x = ListEventsResponse{}
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[191]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[186]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -18826,7 +18458,7 @@ func (x *ListEventsResponse) String() string {
 func (*ListEventsResponse) ProtoMessage() {}
 
 func (x *ListEventsResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[191]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[186]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -18839,7 +18471,7 @@ func (x *ListEventsResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListEventsResponse.ProtoReflect.Descriptor instead.
 func (*ListEventsResponse) Descriptor() ([]byte, []int) {
-	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{191}
+	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{186}
 }
 
 func (x *ListEventsResponse) GetEvents() []*ClusterEvent {
@@ -18873,7 +18505,7 @@ type GetDaemonLogsRequest struct {
 
 func (x *GetDaemonLogsRequest) Reset() {
 	*x = GetDaemonLogsRequest{}
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[192]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[187]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -18885,7 +18517,7 @@ func (x *GetDaemonLogsRequest) String() string {
 func (*GetDaemonLogsRequest) ProtoMessage() {}
 
 func (x *GetDaemonLogsRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[192]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[187]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -18898,7 +18530,7 @@ func (x *GetDaemonLogsRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetDaemonLogsRequest.ProtoReflect.Descriptor instead.
 func (*GetDaemonLogsRequest) Descriptor() ([]byte, []int) {
-	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{192}
+	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{187}
 }
 
 func (x *GetDaemonLogsRequest) GetSource() string {
@@ -18973,7 +18605,7 @@ type DaemonLogEntry struct {
 
 func (x *DaemonLogEntry) Reset() {
 	*x = DaemonLogEntry{}
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[193]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[188]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -18985,7 +18617,7 @@ func (x *DaemonLogEntry) String() string {
 func (*DaemonLogEntry) ProtoMessage() {}
 
 func (x *DaemonLogEntry) ProtoReflect() protoreflect.Message {
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[193]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[188]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -18998,7 +18630,7 @@ func (x *DaemonLogEntry) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DaemonLogEntry.ProtoReflect.Descriptor instead.
 func (*DaemonLogEntry) Descriptor() ([]byte, []int) {
-	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{193}
+	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{188}
 }
 
 func (x *DaemonLogEntry) GetAt() int64 {
@@ -19091,7 +18723,7 @@ type DaemonLogSource struct {
 
 func (x *DaemonLogSource) Reset() {
 	*x = DaemonLogSource{}
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[194]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[189]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -19103,7 +18735,7 @@ func (x *DaemonLogSource) String() string {
 func (*DaemonLogSource) ProtoMessage() {}
 
 func (x *DaemonLogSource) ProtoReflect() protoreflect.Message {
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[194]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[189]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -19116,7 +18748,7 @@ func (x *DaemonLogSource) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DaemonLogSource.ProtoReflect.Descriptor instead.
 func (*DaemonLogSource) Descriptor() ([]byte, []int) {
-	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{194}
+	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{189}
 }
 
 func (x *DaemonLogSource) GetSource() string {
@@ -19224,7 +18856,7 @@ type GetDaemonLogsResponse struct {
 
 func (x *GetDaemonLogsResponse) Reset() {
 	*x = GetDaemonLogsResponse{}
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[195]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[190]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -19236,7 +18868,7 @@ func (x *GetDaemonLogsResponse) String() string {
 func (*GetDaemonLogsResponse) ProtoMessage() {}
 
 func (x *GetDaemonLogsResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[195]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[190]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -19249,7 +18881,7 @@ func (x *GetDaemonLogsResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetDaemonLogsResponse.ProtoReflect.Descriptor instead.
 func (*GetDaemonLogsResponse) Descriptor() ([]byte, []int) {
-	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{195}
+	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{190}
 }
 
 func (x *GetDaemonLogsResponse) GetEntries() []*DaemonLogEntry {
@@ -19306,7 +18938,7 @@ type ScheduledCommand struct {
 
 func (x *ScheduledCommand) Reset() {
 	*x = ScheduledCommand{}
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[196]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[191]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -19318,7 +18950,7 @@ func (x *ScheduledCommand) String() string {
 func (*ScheduledCommand) ProtoMessage() {}
 
 func (x *ScheduledCommand) ProtoReflect() protoreflect.Message {
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[196]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[191]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -19331,7 +18963,7 @@ func (x *ScheduledCommand) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ScheduledCommand.ProtoReflect.Descriptor instead.
 func (*ScheduledCommand) Descriptor() ([]byte, []int) {
-	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{196}
+	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{191}
 }
 
 func (x *ScheduledCommand) GetName() string {
@@ -19440,7 +19072,7 @@ type ScheduledRun struct {
 
 func (x *ScheduledRun) Reset() {
 	*x = ScheduledRun{}
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[197]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[192]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -19452,7 +19084,7 @@ func (x *ScheduledRun) String() string {
 func (*ScheduledRun) ProtoMessage() {}
 
 func (x *ScheduledRun) ProtoReflect() protoreflect.Message {
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[197]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[192]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -19465,7 +19097,7 @@ func (x *ScheduledRun) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ScheduledRun.ProtoReflect.Descriptor instead.
 func (*ScheduledRun) Descriptor() ([]byte, []int) {
-	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{197}
+	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{192}
 }
 
 func (x *ScheduledRun) GetId() int64 {
@@ -19561,7 +19193,7 @@ type PutScheduleRequest struct {
 
 func (x *PutScheduleRequest) Reset() {
 	*x = PutScheduleRequest{}
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[198]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[193]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -19573,7 +19205,7 @@ func (x *PutScheduleRequest) String() string {
 func (*PutScheduleRequest) ProtoMessage() {}
 
 func (x *PutScheduleRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[198]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[193]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -19586,7 +19218,7 @@ func (x *PutScheduleRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PutScheduleRequest.ProtoReflect.Descriptor instead.
 func (*PutScheduleRequest) Descriptor() ([]byte, []int) {
-	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{198}
+	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{193}
 }
 
 func (x *PutScheduleRequest) GetSchedule() *ScheduledCommand {
@@ -19619,7 +19251,7 @@ type ListSchedulesRequest struct {
 
 func (x *ListSchedulesRequest) Reset() {
 	*x = ListSchedulesRequest{}
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[199]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[194]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -19631,7 +19263,7 @@ func (x *ListSchedulesRequest) String() string {
 func (*ListSchedulesRequest) ProtoMessage() {}
 
 func (x *ListSchedulesRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[199]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[194]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -19644,7 +19276,7 @@ func (x *ListSchedulesRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListSchedulesRequest.ProtoReflect.Descriptor instead.
 func (*ListSchedulesRequest) Descriptor() ([]byte, []int) {
-	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{199}
+	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{194}
 }
 
 func (x *ListSchedulesRequest) GetScope() isListSchedulesRequest_Scope {
@@ -19711,7 +19343,7 @@ type ListSchedulesResponse struct {
 
 func (x *ListSchedulesResponse) Reset() {
 	*x = ListSchedulesResponse{}
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[200]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[195]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -19723,7 +19355,7 @@ func (x *ListSchedulesResponse) String() string {
 func (*ListSchedulesResponse) ProtoMessage() {}
 
 func (x *ListSchedulesResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[200]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[195]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -19736,7 +19368,7 @@ func (x *ListSchedulesResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListSchedulesResponse.ProtoReflect.Descriptor instead.
 func (*ListSchedulesResponse) Descriptor() ([]byte, []int) {
-	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{200}
+	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{195}
 }
 
 func (x *ListSchedulesResponse) GetSchedules() []*ScheduledCommand {
@@ -19755,7 +19387,7 @@ type GetScheduleRequest struct {
 
 func (x *GetScheduleRequest) Reset() {
 	*x = GetScheduleRequest{}
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[201]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[196]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -19767,7 +19399,7 @@ func (x *GetScheduleRequest) String() string {
 func (*GetScheduleRequest) ProtoMessage() {}
 
 func (x *GetScheduleRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[201]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[196]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -19780,7 +19412,7 @@ func (x *GetScheduleRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetScheduleRequest.ProtoReflect.Descriptor instead.
 func (*GetScheduleRequest) Descriptor() ([]byte, []int) {
-	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{201}
+	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{196}
 }
 
 func (x *GetScheduleRequest) GetName() string {
@@ -19799,7 +19431,7 @@ type DeleteScheduleRequest struct {
 
 func (x *DeleteScheduleRequest) Reset() {
 	*x = DeleteScheduleRequest{}
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[202]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[197]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -19811,7 +19443,7 @@ func (x *DeleteScheduleRequest) String() string {
 func (*DeleteScheduleRequest) ProtoMessage() {}
 
 func (x *DeleteScheduleRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[202]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[197]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -19824,7 +19456,7 @@ func (x *DeleteScheduleRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DeleteScheduleRequest.ProtoReflect.Descriptor instead.
 func (*DeleteScheduleRequest) Descriptor() ([]byte, []int) {
-	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{202}
+	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{197}
 }
 
 func (x *DeleteScheduleRequest) GetName() string {
@@ -19842,7 +19474,7 @@ type DeleteScheduleResponse struct {
 
 func (x *DeleteScheduleResponse) Reset() {
 	*x = DeleteScheduleResponse{}
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[203]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[198]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -19854,7 +19486,7 @@ func (x *DeleteScheduleResponse) String() string {
 func (*DeleteScheduleResponse) ProtoMessage() {}
 
 func (x *DeleteScheduleResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[203]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[198]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -19867,7 +19499,7 @@ func (x *DeleteScheduleResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DeleteScheduleResponse.ProtoReflect.Descriptor instead.
 func (*DeleteScheduleResponse) Descriptor() ([]byte, []int) {
-	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{203}
+	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{198}
 }
 
 type RunScheduleRequest struct {
@@ -19879,7 +19511,7 @@ type RunScheduleRequest struct {
 
 func (x *RunScheduleRequest) Reset() {
 	*x = RunScheduleRequest{}
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[204]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[199]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -19891,7 +19523,7 @@ func (x *RunScheduleRequest) String() string {
 func (*RunScheduleRequest) ProtoMessage() {}
 
 func (x *RunScheduleRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[204]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[199]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -19904,7 +19536,7 @@ func (x *RunScheduleRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RunScheduleRequest.ProtoReflect.Descriptor instead.
 func (*RunScheduleRequest) Descriptor() ([]byte, []int) {
-	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{204}
+	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{199}
 }
 
 func (x *RunScheduleRequest) GetName() string {
@@ -19924,7 +19556,7 @@ type PauseScheduleRequest struct {
 
 func (x *PauseScheduleRequest) Reset() {
 	*x = PauseScheduleRequest{}
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[205]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[200]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -19936,7 +19568,7 @@ func (x *PauseScheduleRequest) String() string {
 func (*PauseScheduleRequest) ProtoMessage() {}
 
 func (x *PauseScheduleRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[205]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[200]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -19949,7 +19581,7 @@ func (x *PauseScheduleRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PauseScheduleRequest.ProtoReflect.Descriptor instead.
 func (*PauseScheduleRequest) Descriptor() ([]byte, []int) {
-	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{205}
+	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{200}
 }
 
 func (x *PauseScheduleRequest) GetName() string {
@@ -19979,7 +19611,7 @@ type InspectCommandRequest struct {
 
 func (x *InspectCommandRequest) Reset() {
 	*x = InspectCommandRequest{}
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[206]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[201]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -19991,7 +19623,7 @@ func (x *InspectCommandRequest) String() string {
 func (*InspectCommandRequest) ProtoMessage() {}
 
 func (x *InspectCommandRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[206]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[201]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -20004,7 +19636,7 @@ func (x *InspectCommandRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use InspectCommandRequest.ProtoReflect.Descriptor instead.
 func (*InspectCommandRequest) Descriptor() ([]byte, []int) {
-	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{206}
+	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{201}
 }
 
 func (x *InspectCommandRequest) GetId() string {
@@ -20042,7 +19674,7 @@ type ThreadInfo struct {
 
 func (x *ThreadInfo) Reset() {
 	*x = ThreadInfo{}
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[207]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[202]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -20054,7 +19686,7 @@ func (x *ThreadInfo) String() string {
 func (*ThreadInfo) ProtoMessage() {}
 
 func (x *ThreadInfo) ProtoReflect() protoreflect.Message {
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[207]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[202]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -20067,7 +19699,7 @@ func (x *ThreadInfo) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ThreadInfo.ProtoReflect.Descriptor instead.
 func (*ThreadInfo) Descriptor() ([]byte, []int) {
-	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{207}
+	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{202}
 }
 
 func (x *ThreadInfo) GetTid() int32 {
@@ -20137,7 +19769,7 @@ type ProcessInfo struct {
 
 func (x *ProcessInfo) Reset() {
 	*x = ProcessInfo{}
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[208]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[203]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -20149,7 +19781,7 @@ func (x *ProcessInfo) String() string {
 func (*ProcessInfo) ProtoMessage() {}
 
 func (x *ProcessInfo) ProtoReflect() protoreflect.Message {
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[208]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[203]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -20162,7 +19794,7 @@ func (x *ProcessInfo) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ProcessInfo.ProtoReflect.Descriptor instead.
 func (*ProcessInfo) Descriptor() ([]byte, []int) {
-	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{208}
+	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{203}
 }
 
 func (x *ProcessInfo) GetPid() int32 {
@@ -20306,7 +19938,7 @@ type OpenFile struct {
 
 func (x *OpenFile) Reset() {
 	*x = OpenFile{}
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[209]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[204]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -20318,7 +19950,7 @@ func (x *OpenFile) String() string {
 func (*OpenFile) ProtoMessage() {}
 
 func (x *OpenFile) ProtoReflect() protoreflect.Message {
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[209]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[204]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -20331,7 +19963,7 @@ func (x *OpenFile) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use OpenFile.ProtoReflect.Descriptor instead.
 func (*OpenFile) Descriptor() ([]byte, []int) {
-	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{209}
+	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{204}
 }
 
 func (x *OpenFile) GetPid() int32 {
@@ -20431,7 +20063,7 @@ type CgroupIO struct {
 
 func (x *CgroupIO) Reset() {
 	*x = CgroupIO{}
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[210]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[205]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -20443,7 +20075,7 @@ func (x *CgroupIO) String() string {
 func (*CgroupIO) ProtoMessage() {}
 
 func (x *CgroupIO) ProtoReflect() protoreflect.Message {
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[210]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[205]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -20456,7 +20088,7 @@ func (x *CgroupIO) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CgroupIO.ProtoReflect.Descriptor instead.
 func (*CgroupIO) Descriptor() ([]byte, []int) {
-	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{210}
+	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{205}
 }
 
 func (x *CgroupIO) GetDevice() string {
@@ -20527,7 +20159,7 @@ type CgroupStats struct {
 
 func (x *CgroupStats) Reset() {
 	*x = CgroupStats{}
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[211]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[206]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -20539,7 +20171,7 @@ func (x *CgroupStats) String() string {
 func (*CgroupStats) ProtoMessage() {}
 
 func (x *CgroupStats) ProtoReflect() protoreflect.Message {
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[211]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[206]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -20552,7 +20184,7 @@ func (x *CgroupStats) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CgroupStats.ProtoReflect.Descriptor instead.
 func (*CgroupStats) Descriptor() ([]byte, []int) {
-	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{211}
+	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{206}
 }
 
 func (x *CgroupStats) GetCpuUsageUsec() int64 {
@@ -20745,7 +20377,7 @@ type ThreadKernelStack struct {
 
 func (x *ThreadKernelStack) Reset() {
 	*x = ThreadKernelStack{}
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[212]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[207]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -20757,7 +20389,7 @@ func (x *ThreadKernelStack) String() string {
 func (*ThreadKernelStack) ProtoMessage() {}
 
 func (x *ThreadKernelStack) ProtoReflect() protoreflect.Message {
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[212]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[207]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -20770,7 +20402,7 @@ func (x *ThreadKernelStack) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ThreadKernelStack.ProtoReflect.Descriptor instead.
 func (*ThreadKernelStack) Descriptor() ([]byte, []int) {
-	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{212}
+	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{207}
 }
 
 func (x *ThreadKernelStack) GetPid() int32 {
@@ -20835,7 +20467,7 @@ type MemoryRegion struct {
 
 func (x *MemoryRegion) Reset() {
 	*x = MemoryRegion{}
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[213]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[208]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -20847,7 +20479,7 @@ func (x *MemoryRegion) String() string {
 func (*MemoryRegion) ProtoMessage() {}
 
 func (x *MemoryRegion) ProtoReflect() protoreflect.Message {
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[213]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[208]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -20860,7 +20492,7 @@ func (x *MemoryRegion) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use MemoryRegion.ProtoReflect.Descriptor instead.
 func (*MemoryRegion) Descriptor() ([]byte, []int) {
-	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{213}
+	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{208}
 }
 
 func (x *MemoryRegion) GetPerms() string {
@@ -20916,7 +20548,7 @@ type ProcessMemoryMap struct {
 
 func (x *ProcessMemoryMap) Reset() {
 	*x = ProcessMemoryMap{}
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[214]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[209]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -20928,7 +20560,7 @@ func (x *ProcessMemoryMap) String() string {
 func (*ProcessMemoryMap) ProtoMessage() {}
 
 func (x *ProcessMemoryMap) ProtoReflect() protoreflect.Message {
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[214]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[209]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -20941,7 +20573,7 @@ func (x *ProcessMemoryMap) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ProcessMemoryMap.ProtoReflect.Descriptor instead.
 func (*ProcessMemoryMap) Descriptor() ([]byte, []int) {
-	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{214}
+	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{209}
 }
 
 func (x *ProcessMemoryMap) GetPid() int32 {
@@ -21026,7 +20658,7 @@ type ResourceLimit struct {
 
 func (x *ResourceLimit) Reset() {
 	*x = ResourceLimit{}
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[215]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[210]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -21038,7 +20670,7 @@ func (x *ResourceLimit) String() string {
 func (*ResourceLimit) ProtoMessage() {}
 
 func (x *ResourceLimit) ProtoReflect() protoreflect.Message {
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[215]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[210]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -21051,7 +20683,7 @@ func (x *ResourceLimit) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ResourceLimit.ProtoReflect.Descriptor instead.
 func (*ResourceLimit) Descriptor() ([]byte, []int) {
-	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{215}
+	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{210}
 }
 
 func (x *ResourceLimit) GetName() string {
@@ -21096,7 +20728,7 @@ type ProcessLimits struct {
 
 func (x *ProcessLimits) Reset() {
 	*x = ProcessLimits{}
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[216]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[211]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -21108,7 +20740,7 @@ func (x *ProcessLimits) String() string {
 func (*ProcessLimits) ProtoMessage() {}
 
 func (x *ProcessLimits) ProtoReflect() protoreflect.Message {
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[216]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[211]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -21121,7 +20753,7 @@ func (x *ProcessLimits) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ProcessLimits.ProtoReflect.Descriptor instead.
 func (*ProcessLimits) Descriptor() ([]byte, []int) {
-	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{216}
+	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{211}
 }
 
 func (x *ProcessLimits) GetPid() int32 {
@@ -21177,7 +20809,7 @@ type ToolCapability struct {
 
 func (x *ToolCapability) Reset() {
 	*x = ToolCapability{}
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[217]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[212]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -21189,7 +20821,7 @@ func (x *ToolCapability) String() string {
 func (*ToolCapability) ProtoMessage() {}
 
 func (x *ToolCapability) ProtoReflect() protoreflect.Message {
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[217]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[212]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -21202,7 +20834,7 @@ func (x *ToolCapability) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ToolCapability.ProtoReflect.Descriptor instead.
 func (*ToolCapability) Descriptor() ([]byte, []int) {
-	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{217}
+	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{212}
 }
 
 func (x *ToolCapability) GetName() string {
@@ -21245,7 +20877,7 @@ type InspectCommandResponse struct {
 
 func (x *InspectCommandResponse) Reset() {
 	*x = InspectCommandResponse{}
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[218]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[213]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -21257,7 +20889,7 @@ func (x *InspectCommandResponse) String() string {
 func (*InspectCommandResponse) ProtoMessage() {}
 
 func (x *InspectCommandResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[218]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[213]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -21270,7 +20902,7 @@ func (x *InspectCommandResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use InspectCommandResponse.ProtoReflect.Descriptor instead.
 func (*InspectCommandResponse) Descriptor() ([]byte, []int) {
-	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{218}
+	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{213}
 }
 
 func (x *InspectCommandResponse) GetCommandId() string {
@@ -21368,7 +21000,7 @@ type TraceCommandRequest struct {
 
 func (x *TraceCommandRequest) Reset() {
 	*x = TraceCommandRequest{}
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[219]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[214]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -21380,7 +21012,7 @@ func (x *TraceCommandRequest) String() string {
 func (*TraceCommandRequest) ProtoMessage() {}
 
 func (x *TraceCommandRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[219]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[214]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -21393,7 +21025,7 @@ func (x *TraceCommandRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use TraceCommandRequest.ProtoReflect.Descriptor instead.
 func (*TraceCommandRequest) Descriptor() ([]byte, []int) {
-	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{219}
+	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{214}
 }
 
 func (x *TraceCommandRequest) GetId() string {
@@ -21450,7 +21082,7 @@ type PerfCounter struct {
 
 func (x *PerfCounter) Reset() {
 	*x = PerfCounter{}
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[220]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[215]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -21462,7 +21094,7 @@ func (x *PerfCounter) String() string {
 func (*PerfCounter) ProtoMessage() {}
 
 func (x *PerfCounter) ProtoReflect() protoreflect.Message {
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[220]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[215]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -21475,7 +21107,7 @@ func (x *PerfCounter) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PerfCounter.ProtoReflect.Descriptor instead.
 func (*PerfCounter) Descriptor() ([]byte, []int) {
-	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{220}
+	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{215}
 }
 
 func (x *PerfCounter) GetName() string {
@@ -21520,7 +21152,7 @@ type SyscallStat struct {
 
 func (x *SyscallStat) Reset() {
 	*x = SyscallStat{}
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[221]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[216]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -21532,7 +21164,7 @@ func (x *SyscallStat) String() string {
 func (*SyscallStat) ProtoMessage() {}
 
 func (x *SyscallStat) ProtoReflect() protoreflect.Message {
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[221]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[216]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -21545,7 +21177,7 @@ func (x *SyscallStat) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SyscallStat.ProtoReflect.Descriptor instead.
 func (*SyscallStat) Descriptor() ([]byte, []int) {
-	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{221}
+	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{216}
 }
 
 func (x *SyscallStat) GetName() string {
@@ -21611,7 +21243,7 @@ type TraceSummary struct {
 
 func (x *TraceSummary) Reset() {
 	*x = TraceSummary{}
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[222]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[217]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -21623,7 +21255,7 @@ func (x *TraceSummary) String() string {
 func (*TraceSummary) ProtoMessage() {}
 
 func (x *TraceSummary) ProtoReflect() protoreflect.Message {
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[222]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[217]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -21636,7 +21268,7 @@ func (x *TraceSummary) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use TraceSummary.ProtoReflect.Descriptor instead.
 func (*TraceSummary) Descriptor() ([]byte, []int) {
-	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{222}
+	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{217}
 }
 
 func (x *TraceSummary) GetKind() TraceKind {
@@ -21735,7 +21367,7 @@ type TraceCommandChunk struct {
 
 func (x *TraceCommandChunk) Reset() {
 	*x = TraceCommandChunk{}
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[223]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[218]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -21747,7 +21379,7 @@ func (x *TraceCommandChunk) String() string {
 func (*TraceCommandChunk) ProtoMessage() {}
 
 func (x *TraceCommandChunk) ProtoReflect() protoreflect.Message {
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[223]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[218]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -21760,7 +21392,7 @@ func (x *TraceCommandChunk) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use TraceCommandChunk.ProtoReflect.Descriptor instead.
 func (*TraceCommandChunk) Descriptor() ([]byte, []int) {
-	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{223}
+	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{218}
 }
 
 func (x *TraceCommandChunk) GetStatus() string {
@@ -21806,7 +21438,7 @@ type SampleCommandRequest struct {
 
 func (x *SampleCommandRequest) Reset() {
 	*x = SampleCommandRequest{}
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[224]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[219]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -21818,7 +21450,7 @@ func (x *SampleCommandRequest) String() string {
 func (*SampleCommandRequest) ProtoMessage() {}
 
 func (x *SampleCommandRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[224]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[219]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -21831,7 +21463,7 @@ func (x *SampleCommandRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SampleCommandRequest.ProtoReflect.Descriptor instead.
 func (*SampleCommandRequest) Descriptor() ([]byte, []int) {
-	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{224}
+	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{219}
 }
 
 func (x *SampleCommandRequest) GetId() string {
@@ -21884,7 +21516,7 @@ type SampleCommandChunk struct {
 
 func (x *SampleCommandChunk) Reset() {
 	*x = SampleCommandChunk{}
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[225]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[220]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -21896,7 +21528,7 @@ func (x *SampleCommandChunk) String() string {
 func (*SampleCommandChunk) ProtoMessage() {}
 
 func (x *SampleCommandChunk) ProtoReflect() protoreflect.Message {
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[225]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[220]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -21909,7 +21541,7 @@ func (x *SampleCommandChunk) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SampleCommandChunk.ProtoReflect.Descriptor instead.
 func (*SampleCommandChunk) Descriptor() ([]byte, []int) {
-	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{225}
+	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{220}
 }
 
 func (x *SampleCommandChunk) GetStatus() string {
@@ -21967,7 +21599,7 @@ type SampleCollector struct {
 
 func (x *SampleCollector) Reset() {
 	*x = SampleCollector{}
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[226]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[221]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -21979,7 +21611,7 @@ func (x *SampleCollector) String() string {
 func (*SampleCollector) ProtoMessage() {}
 
 func (x *SampleCollector) ProtoReflect() protoreflect.Message {
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[226]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[221]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -21992,7 +21624,7 @@ func (x *SampleCollector) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SampleCollector.ProtoReflect.Descriptor instead.
 func (*SampleCollector) Descriptor() ([]byte, []int) {
-	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{226}
+	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{221}
 }
 
 func (x *SampleCollector) GetName() string {
@@ -22041,7 +21673,7 @@ type ThreadSyscall struct {
 
 func (x *ThreadSyscall) Reset() {
 	*x = ThreadSyscall{}
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[227]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[222]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -22053,7 +21685,7 @@ func (x *ThreadSyscall) String() string {
 func (*ThreadSyscall) ProtoMessage() {}
 
 func (x *ThreadSyscall) ProtoReflect() protoreflect.Message {
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[227]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[222]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -22066,7 +21698,7 @@ func (x *ThreadSyscall) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ThreadSyscall.ProtoReflect.Descriptor instead.
 func (*ThreadSyscall) Descriptor() ([]byte, []int) {
-	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{227}
+	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{222}
 }
 
 func (x *ThreadSyscall) GetNumber() int64 {
@@ -22125,7 +21757,7 @@ type StackFrame struct {
 
 func (x *StackFrame) Reset() {
 	*x = StackFrame{}
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[228]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[223]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -22137,7 +21769,7 @@ func (x *StackFrame) String() string {
 func (*StackFrame) ProtoMessage() {}
 
 func (x *StackFrame) ProtoReflect() protoreflect.Message {
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[228]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[223]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -22150,7 +21782,7 @@ func (x *StackFrame) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use StackFrame.ProtoReflect.Descriptor instead.
 func (*StackFrame) Descriptor() ([]byte, []int) {
-	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{228}
+	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{223}
 }
 
 func (x *StackFrame) GetSymbol() string {
@@ -22220,7 +21852,7 @@ type SampledThread struct {
 
 func (x *SampledThread) Reset() {
 	*x = SampledThread{}
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[229]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[224]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -22232,7 +21864,7 @@ func (x *SampledThread) String() string {
 func (*SampledThread) ProtoMessage() {}
 
 func (x *SampledThread) ProtoReflect() protoreflect.Message {
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[229]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[224]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -22245,7 +21877,7 @@ func (x *SampledThread) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SampledThread.ProtoReflect.Descriptor instead.
 func (*SampledThread) Descriptor() ([]byte, []int) {
-	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{229}
+	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{224}
 }
 
 func (x *SampledThread) GetTid() int32 {
@@ -22436,7 +22068,7 @@ type SampledOpenFile struct {
 
 func (x *SampledOpenFile) Reset() {
 	*x = SampledOpenFile{}
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[230]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[225]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -22448,7 +22080,7 @@ func (x *SampledOpenFile) String() string {
 func (*SampledOpenFile) ProtoMessage() {}
 
 func (x *SampledOpenFile) ProtoReflect() protoreflect.Message {
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[230]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[225]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -22461,7 +22093,7 @@ func (x *SampledOpenFile) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SampledOpenFile.ProtoReflect.Descriptor instead.
 func (*SampledOpenFile) Descriptor() ([]byte, []int) {
-	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{230}
+	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{225}
 }
 
 func (x *SampledOpenFile) GetPid() int32 {
@@ -22608,7 +22240,7 @@ type FileLock struct {
 
 func (x *FileLock) Reset() {
 	*x = FileLock{}
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[231]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[226]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -22620,7 +22252,7 @@ func (x *FileLock) String() string {
 func (*FileLock) ProtoMessage() {}
 
 func (x *FileLock) ProtoReflect() protoreflect.Message {
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[231]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[226]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -22633,7 +22265,7 @@ func (x *FileLock) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use FileLock.ProtoReflect.Descriptor instead.
 func (*FileLock) Descriptor() ([]byte, []int) {
-	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{231}
+	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{226}
 }
 
 func (x *FileLock) GetKind() string {
@@ -22740,7 +22372,7 @@ type SampledProcess struct {
 
 func (x *SampledProcess) Reset() {
 	*x = SampledProcess{}
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[232]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[227]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -22752,7 +22384,7 @@ func (x *SampledProcess) String() string {
 func (*SampledProcess) ProtoMessage() {}
 
 func (x *SampledProcess) ProtoReflect() protoreflect.Message {
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[232]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[227]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -22765,7 +22397,7 @@ func (x *SampledProcess) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SampledProcess.ProtoReflect.Descriptor instead.
 func (*SampledProcess) Descriptor() ([]byte, []int) {
-	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{232}
+	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{227}
 }
 
 func (x *SampledProcess) GetPid() int32 {
@@ -23020,7 +22652,7 @@ type SampledCgroup struct {
 
 func (x *SampledCgroup) Reset() {
 	*x = SampledCgroup{}
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[233]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[228]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -23032,7 +22664,7 @@ func (x *SampledCgroup) String() string {
 func (*SampledCgroup) ProtoMessage() {}
 
 func (x *SampledCgroup) ProtoReflect() protoreflect.Message {
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[233]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[228]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -23045,7 +22677,7 @@ func (x *SampledCgroup) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SampledCgroup.ProtoReflect.Descriptor instead.
 func (*SampledCgroup) Descriptor() ([]byte, []int) {
-	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{233}
+	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{228}
 }
 
 func (x *SampledCgroup) GetEnd() *CgroupStats {
@@ -23213,7 +22845,7 @@ type ProcessSample struct {
 
 func (x *ProcessSample) Reset() {
 	*x = ProcessSample{}
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[234]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[229]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -23225,7 +22857,7 @@ func (x *ProcessSample) String() string {
 func (*ProcessSample) ProtoMessage() {}
 
 func (x *ProcessSample) ProtoReflect() protoreflect.Message {
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[234]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[229]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -23238,7 +22870,7 @@ func (x *ProcessSample) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ProcessSample.ProtoReflect.Descriptor instead.
 func (*ProcessSample) Descriptor() ([]byte, []int) {
-	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{234}
+	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{229}
 }
 
 func (x *ProcessSample) GetCommandId() string {
@@ -23414,7 +23046,7 @@ type GetProfileRequest struct {
 
 func (x *GetProfileRequest) Reset() {
 	*x = GetProfileRequest{}
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[235]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[230]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -23426,7 +23058,7 @@ func (x *GetProfileRequest) String() string {
 func (*GetProfileRequest) ProtoMessage() {}
 
 func (x *GetProfileRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[235]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[230]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -23439,7 +23071,7 @@ func (x *GetProfileRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetProfileRequest.ProtoReflect.Descriptor instead.
 func (*GetProfileRequest) Descriptor() ([]byte, []int) {
-	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{235}
+	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{230}
 }
 
 func (x *GetProfileRequest) GetTarget() isGetProfileRequest_Target {
@@ -23546,7 +23178,7 @@ type ProfileFrame struct {
 
 func (x *ProfileFrame) Reset() {
 	*x = ProfileFrame{}
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[236]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[231]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -23558,7 +23190,7 @@ func (x *ProfileFrame) String() string {
 func (*ProfileFrame) ProtoMessage() {}
 
 func (x *ProfileFrame) ProtoReflect() protoreflect.Message {
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[236]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[231]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -23571,7 +23203,7 @@ func (x *ProfileFrame) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ProfileFrame.ProtoReflect.Descriptor instead.
 func (*ProfileFrame) Descriptor() ([]byte, []int) {
-	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{236}
+	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{231}
 }
 
 func (x *ProfileFrame) GetName() string {
@@ -23623,7 +23255,7 @@ type FoldedStack struct {
 
 func (x *FoldedStack) Reset() {
 	*x = FoldedStack{}
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[237]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[232]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -23635,7 +23267,7 @@ func (x *FoldedStack) String() string {
 func (*FoldedStack) ProtoMessage() {}
 
 func (x *FoldedStack) ProtoReflect() protoreflect.Message {
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[237]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[232]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -23648,7 +23280,7 @@ func (x *FoldedStack) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use FoldedStack.ProtoReflect.Descriptor instead.
 func (*FoldedStack) Descriptor() ([]byte, []int) {
-	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{237}
+	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{232}
 }
 
 func (x *FoldedStack) GetFrames() []uint32 {
@@ -23693,7 +23325,7 @@ type ProfileFunction struct {
 
 func (x *ProfileFunction) Reset() {
 	*x = ProfileFunction{}
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[238]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[233]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -23705,7 +23337,7 @@ func (x *ProfileFunction) String() string {
 func (*ProfileFunction) ProtoMessage() {}
 
 func (x *ProfileFunction) ProtoReflect() protoreflect.Message {
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[238]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[233]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -23718,7 +23350,7 @@ func (x *ProfileFunction) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ProfileFunction.ProtoReflect.Descriptor instead.
 func (*ProfileFunction) Descriptor() ([]byte, []int) {
-	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{238}
+	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{233}
 }
 
 func (x *ProfileFunction) GetFrame() uint32 {
@@ -23780,7 +23412,7 @@ type ProfileBucket struct {
 
 func (x *ProfileBucket) Reset() {
 	*x = ProfileBucket{}
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[239]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[234]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -23792,7 +23424,7 @@ func (x *ProfileBucket) String() string {
 func (*ProfileBucket) ProtoMessage() {}
 
 func (x *ProfileBucket) ProtoReflect() protoreflect.Message {
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[239]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[234]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -23805,7 +23437,7 @@ func (x *ProfileBucket) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ProfileBucket.ProtoReflect.Descriptor instead.
 func (*ProfileBucket) Descriptor() ([]byte, []int) {
-	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{239}
+	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{234}
 }
 
 func (x *ProfileBucket) GetT() int64 {
@@ -23893,7 +23525,7 @@ type CommandProfile struct {
 
 func (x *CommandProfile) Reset() {
 	*x = CommandProfile{}
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[240]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[235]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -23905,7 +23537,7 @@ func (x *CommandProfile) String() string {
 func (*CommandProfile) ProtoMessage() {}
 
 func (x *CommandProfile) ProtoReflect() protoreflect.Message {
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[240]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[235]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -23918,7 +23550,7 @@ func (x *CommandProfile) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CommandProfile.ProtoReflect.Descriptor instead.
 func (*CommandProfile) Descriptor() ([]byte, []int) {
-	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{240}
+	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{235}
 }
 
 func (x *CommandProfile) GetCommandId() string {
@@ -24076,7 +23708,7 @@ type Prompt struct {
 
 func (x *Prompt) Reset() {
 	*x = Prompt{}
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[241]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[236]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -24088,7 +23720,7 @@ func (x *Prompt) String() string {
 func (*Prompt) ProtoMessage() {}
 
 func (x *Prompt) ProtoReflect() protoreflect.Message {
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[241]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[236]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -24101,7 +23733,7 @@ func (x *Prompt) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Prompt.ProtoReflect.Descriptor instead.
 func (*Prompt) Descriptor() ([]byte, []int) {
-	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{241}
+	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{236}
 }
 
 func (x *Prompt) GetQuestion() string {
@@ -24164,7 +23796,7 @@ type PromptOption struct {
 
 func (x *PromptOption) Reset() {
 	*x = PromptOption{}
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[242]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[237]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -24176,7 +23808,7 @@ func (x *PromptOption) String() string {
 func (*PromptOption) ProtoMessage() {}
 
 func (x *PromptOption) ProtoReflect() protoreflect.Message {
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[242]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[237]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -24189,7 +23821,7 @@ func (x *PromptOption) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PromptOption.ProtoReflect.Descriptor instead.
 func (*PromptOption) Descriptor() ([]byte, []int) {
-	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{242}
+	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{237}
 }
 
 func (x *PromptOption) GetLabel() string {
@@ -24244,7 +23876,7 @@ type Answer struct {
 
 func (x *Answer) Reset() {
 	*x = Answer{}
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[243]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[238]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -24256,7 +23888,7 @@ func (x *Answer) String() string {
 func (*Answer) ProtoMessage() {}
 
 func (x *Answer) ProtoReflect() protoreflect.Message {
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[243]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[238]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -24269,7 +23901,7 @@ func (x *Answer) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Answer.ProtoReflect.Descriptor instead.
 func (*Answer) Descriptor() ([]byte, []int) {
-	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{243}
+	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{238}
 }
 
 func (x *Answer) GetPicked() []string {
@@ -24321,7 +23953,7 @@ type Stamp struct {
 
 func (x *Stamp) Reset() {
 	*x = Stamp{}
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[244]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[239]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -24333,7 +23965,7 @@ func (x *Stamp) String() string {
 func (*Stamp) ProtoMessage() {}
 
 func (x *Stamp) ProtoReflect() protoreflect.Message {
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[244]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[239]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -24346,7 +23978,7 @@ func (x *Stamp) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Stamp.ProtoReflect.Descriptor instead.
 func (*Stamp) Descriptor() ([]byte, []int) {
-	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{244}
+	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{239}
 }
 
 func (x *Stamp) GetAt() int64 {
@@ -24433,7 +24065,7 @@ type AskedFrom struct {
 
 func (x *AskedFrom) Reset() {
 	*x = AskedFrom{}
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[245]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[240]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -24445,7 +24077,7 @@ func (x *AskedFrom) String() string {
 func (*AskedFrom) ProtoMessage() {}
 
 func (x *AskedFrom) ProtoReflect() protoreflect.Message {
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[245]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[240]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -24458,7 +24090,7 @@ func (x *AskedFrom) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use AskedFrom.ProtoReflect.Descriptor instead.
 func (*AskedFrom) Descriptor() ([]byte, []int) {
-	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{245}
+	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{240}
 }
 
 func (x *AskedFrom) GetDir() string {
@@ -24551,7 +24183,7 @@ type Question struct {
 
 func (x *Question) Reset() {
 	*x = Question{}
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[246]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[241]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -24563,7 +24195,7 @@ func (x *Question) String() string {
 func (*Question) ProtoMessage() {}
 
 func (x *Question) ProtoReflect() protoreflect.Message {
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[246]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[241]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -24576,7 +24208,7 @@ func (x *Question) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Question.ProtoReflect.Descriptor instead.
 func (*Question) Descriptor() ([]byte, []int) {
-	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{246}
+	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{241}
 }
 
 func (x *Question) GetId() int32 {
@@ -24734,7 +24366,7 @@ type QuestionChange struct {
 
 func (x *QuestionChange) Reset() {
 	*x = QuestionChange{}
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[247]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[242]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -24746,7 +24378,7 @@ func (x *QuestionChange) String() string {
 func (*QuestionChange) ProtoMessage() {}
 
 func (x *QuestionChange) ProtoReflect() protoreflect.Message {
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[247]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[242]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -24759,7 +24391,7 @@ func (x *QuestionChange) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use QuestionChange.ProtoReflect.Descriptor instead.
 func (*QuestionChange) Descriptor() ([]byte, []int) {
-	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{247}
+	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{242}
 }
 
 func (x *QuestionChange) GetSeq() int64 {
@@ -24816,7 +24448,7 @@ type AddQuestionsRequest struct {
 
 func (x *AddQuestionsRequest) Reset() {
 	*x = AddQuestionsRequest{}
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[248]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[243]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -24828,7 +24460,7 @@ func (x *AddQuestionsRequest) String() string {
 func (*AddQuestionsRequest) ProtoMessage() {}
 
 func (x *AddQuestionsRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[248]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[243]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -24841,7 +24473,7 @@ func (x *AddQuestionsRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use AddQuestionsRequest.ProtoReflect.Descriptor instead.
 func (*AddQuestionsRequest) Descriptor() ([]byte, []int) {
-	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{248}
+	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{243}
 }
 
 func (x *AddQuestionsRequest) GetQuestions() []*Prompt {
@@ -24899,7 +24531,7 @@ type AddQuestionsResponse struct {
 
 func (x *AddQuestionsResponse) Reset() {
 	*x = AddQuestionsResponse{}
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[249]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[244]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -24911,7 +24543,7 @@ func (x *AddQuestionsResponse) String() string {
 func (*AddQuestionsResponse) ProtoMessage() {}
 
 func (x *AddQuestionsResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[249]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[244]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -24924,7 +24556,7 @@ func (x *AddQuestionsResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use AddQuestionsResponse.ProtoReflect.Descriptor instead.
 func (*AddQuestionsResponse) Descriptor() ([]byte, []int) {
-	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{249}
+	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{244}
 }
 
 func (x *AddQuestionsResponse) GetQuestions() []*Question {
@@ -24955,7 +24587,7 @@ type EditQuestionRequest struct {
 
 func (x *EditQuestionRequest) Reset() {
 	*x = EditQuestionRequest{}
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[250]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[245]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -24967,7 +24599,7 @@ func (x *EditQuestionRequest) String() string {
 func (*EditQuestionRequest) ProtoMessage() {}
 
 func (x *EditQuestionRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[250]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[245]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -24980,7 +24612,7 @@ func (x *EditQuestionRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use EditQuestionRequest.ProtoReflect.Descriptor instead.
 func (*EditQuestionRequest) Descriptor() ([]byte, []int) {
-	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{250}
+	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{245}
 }
 
 func (x *EditQuestionRequest) GetId() int32 {
@@ -25026,7 +24658,7 @@ type DeleteQuestionRequest struct {
 
 func (x *DeleteQuestionRequest) Reset() {
 	*x = DeleteQuestionRequest{}
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[251]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[246]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -25038,7 +24670,7 @@ func (x *DeleteQuestionRequest) String() string {
 func (*DeleteQuestionRequest) ProtoMessage() {}
 
 func (x *DeleteQuestionRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[251]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[246]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -25051,7 +24683,7 @@ func (x *DeleteQuestionRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DeleteQuestionRequest.ProtoReflect.Descriptor instead.
 func (*DeleteQuestionRequest) Descriptor() ([]byte, []int) {
-	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{251}
+	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{246}
 }
 
 func (x *DeleteQuestionRequest) GetId() int32 {
@@ -25118,7 +24750,7 @@ type ListQuestionsRequest struct {
 
 func (x *ListQuestionsRequest) Reset() {
 	*x = ListQuestionsRequest{}
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[252]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[247]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -25130,7 +24762,7 @@ func (x *ListQuestionsRequest) String() string {
 func (*ListQuestionsRequest) ProtoMessage() {}
 
 func (x *ListQuestionsRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[252]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[247]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -25143,7 +24775,7 @@ func (x *ListQuestionsRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListQuestionsRequest.ProtoReflect.Descriptor instead.
 func (*ListQuestionsRequest) Descriptor() ([]byte, []int) {
-	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{252}
+	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{247}
 }
 
 func (x *ListQuestionsRequest) GetStates() []QuestionState {
@@ -25265,7 +24897,7 @@ type QuestionSession struct {
 
 func (x *QuestionSession) Reset() {
 	*x = QuestionSession{}
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[253]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[248]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -25277,7 +24909,7 @@ func (x *QuestionSession) String() string {
 func (*QuestionSession) ProtoMessage() {}
 
 func (x *QuestionSession) ProtoReflect() protoreflect.Message {
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[253]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[248]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -25290,7 +24922,7 @@ func (x *QuestionSession) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use QuestionSession.ProtoReflect.Descriptor instead.
 func (*QuestionSession) Descriptor() ([]byte, []int) {
-	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{253}
+	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{248}
 }
 
 func (x *QuestionSession) GetSessionId() string {
@@ -25367,7 +24999,7 @@ type ListQuestionsResponse struct {
 
 func (x *ListQuestionsResponse) Reset() {
 	*x = ListQuestionsResponse{}
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[254]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[249]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -25379,7 +25011,7 @@ func (x *ListQuestionsResponse) String() string {
 func (*ListQuestionsResponse) ProtoMessage() {}
 
 func (x *ListQuestionsResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[254]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[249]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -25392,7 +25024,7 @@ func (x *ListQuestionsResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListQuestionsResponse.ProtoReflect.Descriptor instead.
 func (*ListQuestionsResponse) Descriptor() ([]byte, []int) {
-	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{254}
+	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{249}
 }
 
 func (x *ListQuestionsResponse) GetQuestions() []*Question {
@@ -25431,7 +25063,7 @@ type ListQuestionProjectsRequest struct {
 
 func (x *ListQuestionProjectsRequest) Reset() {
 	*x = ListQuestionProjectsRequest{}
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[255]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[250]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -25443,7 +25075,7 @@ func (x *ListQuestionProjectsRequest) String() string {
 func (*ListQuestionProjectsRequest) ProtoMessage() {}
 
 func (x *ListQuestionProjectsRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[255]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[250]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -25456,7 +25088,7 @@ func (x *ListQuestionProjectsRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListQuestionProjectsRequest.ProtoReflect.Descriptor instead.
 func (*ListQuestionProjectsRequest) Descriptor() ([]byte, []int) {
-	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{255}
+	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{250}
 }
 
 type ListQuestionProjectsResponse struct {
@@ -25472,7 +25104,7 @@ type ListQuestionProjectsResponse struct {
 
 func (x *ListQuestionProjectsResponse) Reset() {
 	*x = ListQuestionProjectsResponse{}
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[256]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[251]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -25484,7 +25116,7 @@ func (x *ListQuestionProjectsResponse) String() string {
 func (*ListQuestionProjectsResponse) ProtoMessage() {}
 
 func (x *ListQuestionProjectsResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[256]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[251]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -25497,7 +25129,7 @@ func (x *ListQuestionProjectsResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListQuestionProjectsResponse.ProtoReflect.Descriptor instead.
 func (*ListQuestionProjectsResponse) Descriptor() ([]byte, []int) {
-	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{256}
+	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{251}
 }
 
 func (x *ListQuestionProjectsResponse) GetProjects() []*QuestionProject {
@@ -25530,7 +25162,7 @@ type QuestionProject struct {
 
 func (x *QuestionProject) Reset() {
 	*x = QuestionProject{}
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[257]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[252]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -25542,7 +25174,7 @@ func (x *QuestionProject) String() string {
 func (*QuestionProject) ProtoMessage() {}
 
 func (x *QuestionProject) ProtoReflect() protoreflect.Message {
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[257]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[252]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -25555,7 +25187,7 @@ func (x *QuestionProject) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use QuestionProject.ProtoReflect.Descriptor instead.
 func (*QuestionProject) Descriptor() ([]byte, []int) {
-	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{257}
+	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{252}
 }
 
 func (x *QuestionProject) GetName() string {
@@ -25596,7 +25228,7 @@ type GetQuestionRequest struct {
 
 func (x *GetQuestionRequest) Reset() {
 	*x = GetQuestionRequest{}
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[258]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[253]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -25608,7 +25240,7 @@ func (x *GetQuestionRequest) String() string {
 func (*GetQuestionRequest) ProtoMessage() {}
 
 func (x *GetQuestionRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[258]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[253]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -25621,7 +25253,7 @@ func (x *GetQuestionRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetQuestionRequest.ProtoReflect.Descriptor instead.
 func (*GetQuestionRequest) Descriptor() ([]byte, []int) {
-	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{258}
+	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{253}
 }
 
 func (x *GetQuestionRequest) GetId() int32 {
@@ -25646,7 +25278,7 @@ type AnswerQuestionRequest struct {
 
 func (x *AnswerQuestionRequest) Reset() {
 	*x = AnswerQuestionRequest{}
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[259]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[254]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -25658,7 +25290,7 @@ func (x *AnswerQuestionRequest) String() string {
 func (*AnswerQuestionRequest) ProtoMessage() {}
 
 func (x *AnswerQuestionRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[259]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[254]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -25671,7 +25303,7 @@ func (x *AnswerQuestionRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use AnswerQuestionRequest.ProtoReflect.Descriptor instead.
 func (*AnswerQuestionRequest) Descriptor() ([]byte, []int) {
-	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{259}
+	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{254}
 }
 
 func (x *AnswerQuestionRequest) GetId() int32 {
@@ -25717,7 +25349,7 @@ type DismissQuestionRequest struct {
 
 func (x *DismissQuestionRequest) Reset() {
 	*x = DismissQuestionRequest{}
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[260]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[255]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -25729,7 +25361,7 @@ func (x *DismissQuestionRequest) String() string {
 func (*DismissQuestionRequest) ProtoMessage() {}
 
 func (x *DismissQuestionRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[260]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[255]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -25742,7 +25374,7 @@ func (x *DismissQuestionRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DismissQuestionRequest.ProtoReflect.Descriptor instead.
 func (*DismissQuestionRequest) Descriptor() ([]byte, []int) {
-	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{260}
+	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{255}
 }
 
 func (x *DismissQuestionRequest) GetId() int32 {
@@ -25788,7 +25420,7 @@ type ReviseQuestionRequest struct {
 
 func (x *ReviseQuestionRequest) Reset() {
 	*x = ReviseQuestionRequest{}
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[261]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[256]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -25800,7 +25432,7 @@ func (x *ReviseQuestionRequest) String() string {
 func (*ReviseQuestionRequest) ProtoMessage() {}
 
 func (x *ReviseQuestionRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[261]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[256]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -25813,7 +25445,7 @@ func (x *ReviseQuestionRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ReviseQuestionRequest.ProtoReflect.Descriptor instead.
 func (*ReviseQuestionRequest) Descriptor() ([]byte, []int) {
-	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{261}
+	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{256}
 }
 
 func (x *ReviseQuestionRequest) GetId() int32 {
@@ -25856,7 +25488,7 @@ type ReopenQuestionRequest struct {
 
 func (x *ReopenQuestionRequest) Reset() {
 	*x = ReopenQuestionRequest{}
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[262]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[257]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -25868,7 +25500,7 @@ func (x *ReopenQuestionRequest) String() string {
 func (*ReopenQuestionRequest) ProtoMessage() {}
 
 func (x *ReopenQuestionRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[262]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[257]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -25881,7 +25513,7 @@ func (x *ReopenQuestionRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ReopenQuestionRequest.ProtoReflect.Descriptor instead.
 func (*ReopenQuestionRequest) Descriptor() ([]byte, []int) {
-	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{262}
+	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{257}
 }
 
 func (x *ReopenQuestionRequest) GetId() int32 {
@@ -25917,7 +25549,7 @@ type MoveQuestionRequest struct {
 
 func (x *MoveQuestionRequest) Reset() {
 	*x = MoveQuestionRequest{}
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[263]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[258]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -25929,7 +25561,7 @@ func (x *MoveQuestionRequest) String() string {
 func (*MoveQuestionRequest) ProtoMessage() {}
 
 func (x *MoveQuestionRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[263]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[258]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -25942,7 +25574,7 @@ func (x *MoveQuestionRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use MoveQuestionRequest.ProtoReflect.Descriptor instead.
 func (*MoveQuestionRequest) Descriptor() ([]byte, []int) {
-	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{263}
+	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{258}
 }
 
 func (x *MoveQuestionRequest) GetId() int32 {
@@ -26029,7 +25661,7 @@ type AckQuestionsRequest struct {
 
 func (x *AckQuestionsRequest) Reset() {
 	*x = AckQuestionsRequest{}
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[264]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[259]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -26041,7 +25673,7 @@ func (x *AckQuestionsRequest) String() string {
 func (*AckQuestionsRequest) ProtoMessage() {}
 
 func (x *AckQuestionsRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[264]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[259]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -26054,7 +25686,7 @@ func (x *AckQuestionsRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use AckQuestionsRequest.ProtoReflect.Descriptor instead.
 func (*AckQuestionsRequest) Descriptor() ([]byte, []int) {
-	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{264}
+	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{259}
 }
 
 func (x *AckQuestionsRequest) GetIds() []int32 {
@@ -26084,7 +25716,7 @@ type AckQuestionsResponse struct {
 
 func (x *AckQuestionsResponse) Reset() {
 	*x = AckQuestionsResponse{}
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[265]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[260]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -26096,7 +25728,7 @@ func (x *AckQuestionsResponse) String() string {
 func (*AckQuestionsResponse) ProtoMessage() {}
 
 func (x *AckQuestionsResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[265]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[260]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -26109,7 +25741,7 @@ func (x *AckQuestionsResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use AckQuestionsResponse.ProtoReflect.Descriptor instead.
 func (*AckQuestionsResponse) Descriptor() ([]byte, []int) {
-	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{265}
+	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{260}
 }
 
 func (x *AckQuestionsResponse) GetQuestions() []*Question {
@@ -26155,7 +25787,7 @@ type Reviewer struct {
 
 func (x *Reviewer) Reset() {
 	*x = Reviewer{}
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[266]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[261]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -26167,7 +25799,7 @@ func (x *Reviewer) String() string {
 func (*Reviewer) ProtoMessage() {}
 
 func (x *Reviewer) ProtoReflect() protoreflect.Message {
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[266]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[261]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -26180,7 +25812,7 @@ func (x *Reviewer) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Reviewer.ProtoReflect.Descriptor instead.
 func (*Reviewer) Descriptor() ([]byte, []int) {
-	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{266}
+	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{261}
 }
 
 func (x *Reviewer) GetId() int32 {
@@ -26278,7 +25910,7 @@ type Location struct {
 
 func (x *Location) Reset() {
 	*x = Location{}
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[267]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[262]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -26290,7 +25922,7 @@ func (x *Location) String() string {
 func (*Location) ProtoMessage() {}
 
 func (x *Location) ProtoReflect() protoreflect.Message {
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[267]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[262]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -26303,7 +25935,7 @@ func (x *Location) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Location.ProtoReflect.Descriptor instead.
 func (*Location) Descriptor() ([]byte, []int) {
-	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{267}
+	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{262}
 }
 
 func (x *Location) GetPath() string {
@@ -26360,7 +25992,7 @@ type ReportedFinding struct {
 
 func (x *ReportedFinding) Reset() {
 	*x = ReportedFinding{}
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[268]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[263]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -26372,7 +26004,7 @@ func (x *ReportedFinding) String() string {
 func (*ReportedFinding) ProtoMessage() {}
 
 func (x *ReportedFinding) ProtoReflect() protoreflect.Message {
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[268]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[263]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -26385,7 +26017,7 @@ func (x *ReportedFinding) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ReportedFinding.ProtoReflect.Descriptor instead.
 func (*ReportedFinding) Descriptor() ([]byte, []int) {
-	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{268}
+	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{263}
 }
 
 func (x *ReportedFinding) GetFile() string {
@@ -26486,7 +26118,7 @@ type Finding struct {
 
 func (x *Finding) Reset() {
 	*x = Finding{}
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[269]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[264]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -26498,7 +26130,7 @@ func (x *Finding) String() string {
 func (*Finding) ProtoMessage() {}
 
 func (x *Finding) ProtoReflect() protoreflect.Message {
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[269]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[264]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -26511,7 +26143,7 @@ func (x *Finding) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Finding.ProtoReflect.Descriptor instead.
 func (*Finding) Descriptor() ([]byte, []int) {
-	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{269}
+	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{264}
 }
 
 func (x *Finding) GetId() int32 {
@@ -26655,7 +26287,7 @@ type Fix struct {
 
 func (x *Fix) Reset() {
 	*x = Fix{}
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[270]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[265]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -26667,7 +26299,7 @@ func (x *Fix) String() string {
 func (*Fix) ProtoMessage() {}
 
 func (x *Fix) ProtoReflect() protoreflect.Message {
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[270]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[265]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -26680,7 +26312,7 @@ func (x *Fix) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Fix.ProtoReflect.Descriptor instead.
 func (*Fix) Descriptor() ([]byte, []int) {
-	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{270}
+	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{265}
 }
 
 func (x *Fix) GetCommit() string {
@@ -26759,7 +26391,7 @@ type Review struct {
 
 func (x *Review) Reset() {
 	*x = Review{}
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[271]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[266]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -26771,7 +26403,7 @@ func (x *Review) String() string {
 func (*Review) ProtoMessage() {}
 
 func (x *Review) ProtoReflect() protoreflect.Message {
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[271]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[266]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -26784,7 +26416,7 @@ func (x *Review) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Review.ProtoReflect.Descriptor instead.
 func (*Review) Descriptor() ([]byte, []int) {
-	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{271}
+	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{266}
 }
 
 func (x *Review) GetId() int32 {
@@ -27001,7 +26633,7 @@ type ReviewEvent struct {
 
 func (x *ReviewEvent) Reset() {
 	*x = ReviewEvent{}
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[272]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[267]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -27013,7 +26645,7 @@ func (x *ReviewEvent) String() string {
 func (*ReviewEvent) ProtoMessage() {}
 
 func (x *ReviewEvent) ProtoReflect() protoreflect.Message {
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[272]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[267]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -27026,7 +26658,7 @@ func (x *ReviewEvent) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ReviewEvent.ProtoReflect.Descriptor instead.
 func (*ReviewEvent) Descriptor() ([]byte, []int) {
-	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{272}
+	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{267}
 }
 
 func (x *ReviewEvent) GetSeq() int64 {
@@ -27112,7 +26744,7 @@ type RequestReviewRequest struct {
 
 func (x *RequestReviewRequest) Reset() {
 	*x = RequestReviewRequest{}
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[273]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[268]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -27124,7 +26756,7 @@ func (x *RequestReviewRequest) String() string {
 func (*RequestReviewRequest) ProtoMessage() {}
 
 func (x *RequestReviewRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[273]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[268]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -27137,7 +26769,7 @@ func (x *RequestReviewRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RequestReviewRequest.ProtoReflect.Descriptor instead.
 func (*RequestReviewRequest) Descriptor() ([]byte, []int) {
-	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{273}
+	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{268}
 }
 
 func (x *RequestReviewRequest) GetSessionId() string {
@@ -27251,7 +26883,7 @@ type ListReviewsRequest struct {
 
 func (x *ListReviewsRequest) Reset() {
 	*x = ListReviewsRequest{}
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[274]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[269]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -27263,7 +26895,7 @@ func (x *ListReviewsRequest) String() string {
 func (*ListReviewsRequest) ProtoMessage() {}
 
 func (x *ListReviewsRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[274]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[269]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -27276,7 +26908,7 @@ func (x *ListReviewsRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListReviewsRequest.ProtoReflect.Descriptor instead.
 func (*ListReviewsRequest) Descriptor() ([]byte, []int) {
-	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{274}
+	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{269}
 }
 
 func (x *ListReviewsRequest) GetScope() isListReviewsRequest_Scope {
@@ -27357,7 +26989,7 @@ type ListReviewsResponse struct {
 
 func (x *ListReviewsResponse) Reset() {
 	*x = ListReviewsResponse{}
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[275]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[270]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -27369,7 +27001,7 @@ func (x *ListReviewsResponse) String() string {
 func (*ListReviewsResponse) ProtoMessage() {}
 
 func (x *ListReviewsResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[275]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[270]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -27382,7 +27014,7 @@ func (x *ListReviewsResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListReviewsResponse.ProtoReflect.Descriptor instead.
 func (*ListReviewsResponse) Descriptor() ([]byte, []int) {
-	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{275}
+	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{270}
 }
 
 func (x *ListReviewsResponse) GetReviews() []*Review {
@@ -27401,7 +27033,7 @@ type GetReviewRequest struct {
 
 func (x *GetReviewRequest) Reset() {
 	*x = GetReviewRequest{}
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[276]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[271]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -27413,7 +27045,7 @@ func (x *GetReviewRequest) String() string {
 func (*GetReviewRequest) ProtoMessage() {}
 
 func (x *GetReviewRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[276]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[271]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -27426,7 +27058,7 @@ func (x *GetReviewRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetReviewRequest.ProtoReflect.Descriptor instead.
 func (*GetReviewRequest) Descriptor() ([]byte, []int) {
-	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{276}
+	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{271}
 }
 
 func (x *GetReviewRequest) GetId() int32 {
@@ -27457,7 +27089,7 @@ type StartReviewRequest struct {
 
 func (x *StartReviewRequest) Reset() {
 	*x = StartReviewRequest{}
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[277]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[272]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -27469,7 +27101,7 @@ func (x *StartReviewRequest) String() string {
 func (*StartReviewRequest) ProtoMessage() {}
 
 func (x *StartReviewRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[277]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[272]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -27482,7 +27114,7 @@ func (x *StartReviewRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use StartReviewRequest.ProtoReflect.Descriptor instead.
 func (*StartReviewRequest) Descriptor() ([]byte, []int) {
-	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{277}
+	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{272}
 }
 
 func (x *StartReviewRequest) GetId() int32 {
@@ -27554,7 +27186,7 @@ type AddFindingsRequest struct {
 
 func (x *AddFindingsRequest) Reset() {
 	*x = AddFindingsRequest{}
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[278]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[273]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -27566,7 +27198,7 @@ func (x *AddFindingsRequest) String() string {
 func (*AddFindingsRequest) ProtoMessage() {}
 
 func (x *AddFindingsRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[278]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[273]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -27579,7 +27211,7 @@ func (x *AddFindingsRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use AddFindingsRequest.ProtoReflect.Descriptor instead.
 func (*AddFindingsRequest) Descriptor() ([]byte, []int) {
-	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{278}
+	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{273}
 }
 
 func (x *AddFindingsRequest) GetReviewId() int32 {
@@ -27647,7 +27279,7 @@ type AddFindingsResponse struct {
 
 func (x *AddFindingsResponse) Reset() {
 	*x = AddFindingsResponse{}
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[279]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[274]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -27659,7 +27291,7 @@ func (x *AddFindingsResponse) String() string {
 func (*AddFindingsResponse) ProtoMessage() {}
 
 func (x *AddFindingsResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[279]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[274]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -27672,7 +27304,7 @@ func (x *AddFindingsResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use AddFindingsResponse.ProtoReflect.Descriptor instead.
 func (*AddFindingsResponse) Descriptor() ([]byte, []int) {
-	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{279}
+	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{274}
 }
 
 func (x *AddFindingsResponse) GetFindings() []*Finding {
@@ -27704,7 +27336,7 @@ type FinishReviewRequest struct {
 
 func (x *FinishReviewRequest) Reset() {
 	*x = FinishReviewRequest{}
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[280]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[275]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -27716,7 +27348,7 @@ func (x *FinishReviewRequest) String() string {
 func (*FinishReviewRequest) ProtoMessage() {}
 
 func (x *FinishReviewRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[280]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[275]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -27729,7 +27361,7 @@ func (x *FinishReviewRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use FinishReviewRequest.ProtoReflect.Descriptor instead.
 func (*FinishReviewRequest) Descriptor() ([]byte, []int) {
-	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{280}
+	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{275}
 }
 
 func (x *FinishReviewRequest) GetId() int32 {
@@ -27802,7 +27434,7 @@ type CancelReviewRequest struct {
 
 func (x *CancelReviewRequest) Reset() {
 	*x = CancelReviewRequest{}
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[281]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[276]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -27814,7 +27446,7 @@ func (x *CancelReviewRequest) String() string {
 func (*CancelReviewRequest) ProtoMessage() {}
 
 func (x *CancelReviewRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[281]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[276]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -27827,7 +27459,7 @@ func (x *CancelReviewRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CancelReviewRequest.ProtoReflect.Descriptor instead.
 func (*CancelReviewRequest) Descriptor() ([]byte, []int) {
-	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{281}
+	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{276}
 }
 
 func (x *CancelReviewRequest) GetId() int32 {
@@ -27897,7 +27529,7 @@ type DecideFindingsRequest struct {
 
 func (x *DecideFindingsRequest) Reset() {
 	*x = DecideFindingsRequest{}
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[282]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[277]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -27909,7 +27541,7 @@ func (x *DecideFindingsRequest) String() string {
 func (*DecideFindingsRequest) ProtoMessage() {}
 
 func (x *DecideFindingsRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[282]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[277]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -27922,7 +27554,7 @@ func (x *DecideFindingsRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DecideFindingsRequest.ProtoReflect.Descriptor instead.
 func (*DecideFindingsRequest) Descriptor() ([]byte, []int) {
-	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{282}
+	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{277}
 }
 
 func (x *DecideFindingsRequest) GetReviewId() int32 {
@@ -28013,7 +27645,7 @@ type DecideFindingsResponse struct {
 
 func (x *DecideFindingsResponse) Reset() {
 	*x = DecideFindingsResponse{}
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[283]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[278]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -28025,7 +27657,7 @@ func (x *DecideFindingsResponse) String() string {
 func (*DecideFindingsResponse) ProtoMessage() {}
 
 func (x *DecideFindingsResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[283]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[278]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -28038,7 +27670,7 @@ func (x *DecideFindingsResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DecideFindingsResponse.ProtoReflect.Descriptor instead.
 func (*DecideFindingsResponse) Descriptor() ([]byte, []int) {
-	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{283}
+	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{278}
 }
 
 func (x *DecideFindingsResponse) GetFindings() []*Finding {
@@ -28080,7 +27712,7 @@ type RespondRequest struct {
 
 func (x *RespondRequest) Reset() {
 	*x = RespondRequest{}
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[284]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[279]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -28092,7 +27724,7 @@ func (x *RespondRequest) String() string {
 func (*RespondRequest) ProtoMessage() {}
 
 func (x *RespondRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[284]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[279]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -28105,7 +27737,7 @@ func (x *RespondRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RespondRequest.ProtoReflect.Descriptor instead.
 func (*RespondRequest) Descriptor() ([]byte, []int) {
-	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{284}
+	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{279}
 }
 
 func (x *RespondRequest) GetReviewId() int32 {
@@ -28189,7 +27821,7 @@ type ListResponsesRequest struct {
 
 func (x *ListResponsesRequest) Reset() {
 	*x = ListResponsesRequest{}
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[285]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[280]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -28201,7 +27833,7 @@ func (x *ListResponsesRequest) String() string {
 func (*ListResponsesRequest) ProtoMessage() {}
 
 func (x *ListResponsesRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[285]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[280]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -28214,7 +27846,7 @@ func (x *ListResponsesRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListResponsesRequest.ProtoReflect.Descriptor instead.
 func (*ListResponsesRequest) Descriptor() ([]byte, []int) {
-	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{285}
+	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{280}
 }
 
 func (x *ListResponsesRequest) GetReviewId() int32 {
@@ -28244,7 +27876,7 @@ type ListResponsesResponse struct {
 
 func (x *ListResponsesResponse) Reset() {
 	*x = ListResponsesResponse{}
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[286]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[281]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -28256,7 +27888,7 @@ func (x *ListResponsesResponse) String() string {
 func (*ListResponsesResponse) ProtoMessage() {}
 
 func (x *ListResponsesResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[286]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[281]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -28269,7 +27901,7 @@ func (x *ListResponsesResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListResponsesResponse.ProtoReflect.Descriptor instead.
 func (*ListResponsesResponse) Descriptor() ([]byte, []int) {
-	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{286}
+	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{281}
 }
 
 func (x *ListResponsesResponse) GetResponses() []*ReviewEvent {
@@ -28323,7 +27955,7 @@ type GitCredential struct {
 
 func (x *GitCredential) Reset() {
 	*x = GitCredential{}
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[287]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[282]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -28335,7 +27967,7 @@ func (x *GitCredential) String() string {
 func (*GitCredential) ProtoMessage() {}
 
 func (x *GitCredential) ProtoReflect() protoreflect.Message {
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[287]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[282]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -28348,7 +27980,7 @@ func (x *GitCredential) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GitCredential.ProtoReflect.Descriptor instead.
 func (*GitCredential) Descriptor() ([]byte, []int) {
-	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{287}
+	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{282}
 }
 
 func (x *GitCredential) GetName() string {
@@ -28443,7 +28075,7 @@ type StartGitHubLoginRequest struct {
 
 func (x *StartGitHubLoginRequest) Reset() {
 	*x = StartGitHubLoginRequest{}
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[288]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[283]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -28455,7 +28087,7 @@ func (x *StartGitHubLoginRequest) String() string {
 func (*StartGitHubLoginRequest) ProtoMessage() {}
 
 func (x *StartGitHubLoginRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[288]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[283]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -28468,7 +28100,7 @@ func (x *StartGitHubLoginRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use StartGitHubLoginRequest.ProtoReflect.Descriptor instead.
 func (*StartGitHubLoginRequest) Descriptor() ([]byte, []int) {
-	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{288}
+	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{283}
 }
 
 func (x *StartGitHubLoginRequest) GetName() string {
@@ -28538,7 +28170,7 @@ type GitHubLoginChallenge struct {
 
 func (x *GitHubLoginChallenge) Reset() {
 	*x = GitHubLoginChallenge{}
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[289]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[284]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -28550,7 +28182,7 @@ func (x *GitHubLoginChallenge) String() string {
 func (*GitHubLoginChallenge) ProtoMessage() {}
 
 func (x *GitHubLoginChallenge) ProtoReflect() protoreflect.Message {
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[289]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[284]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -28563,7 +28195,7 @@ func (x *GitHubLoginChallenge) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GitHubLoginChallenge.ProtoReflect.Descriptor instead.
 func (*GitHubLoginChallenge) Descriptor() ([]byte, []int) {
-	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{289}
+	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{284}
 }
 
 func (x *GitHubLoginChallenge) GetLoginId() string {
@@ -28627,7 +28259,7 @@ type CompleteGitHubLoginRequest struct {
 
 func (x *CompleteGitHubLoginRequest) Reset() {
 	*x = CompleteGitHubLoginRequest{}
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[290]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[285]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -28639,7 +28271,7 @@ func (x *CompleteGitHubLoginRequest) String() string {
 func (*CompleteGitHubLoginRequest) ProtoMessage() {}
 
 func (x *CompleteGitHubLoginRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[290]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[285]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -28652,7 +28284,7 @@ func (x *CompleteGitHubLoginRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CompleteGitHubLoginRequest.ProtoReflect.Descriptor instead.
 func (*CompleteGitHubLoginRequest) Descriptor() ([]byte, []int) {
-	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{290}
+	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{285}
 }
 
 func (x *CompleteGitHubLoginRequest) GetLoginId() string {
@@ -28741,7 +28373,7 @@ type PutGitCredentialRequest struct {
 
 func (x *PutGitCredentialRequest) Reset() {
 	*x = PutGitCredentialRequest{}
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[291]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[286]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -28753,7 +28385,7 @@ func (x *PutGitCredentialRequest) String() string {
 func (*PutGitCredentialRequest) ProtoMessage() {}
 
 func (x *PutGitCredentialRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[291]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[286]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -28766,7 +28398,7 @@ func (x *PutGitCredentialRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PutGitCredentialRequest.ProtoReflect.Descriptor instead.
 func (*PutGitCredentialRequest) Descriptor() ([]byte, []int) {
-	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{291}
+	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{286}
 }
 
 func (x *PutGitCredentialRequest) GetName() string {
@@ -28828,7 +28460,7 @@ type ListGitCredentialsRequest struct {
 
 func (x *ListGitCredentialsRequest) Reset() {
 	*x = ListGitCredentialsRequest{}
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[292]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[287]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -28840,7 +28472,7 @@ func (x *ListGitCredentialsRequest) String() string {
 func (*ListGitCredentialsRequest) ProtoMessage() {}
 
 func (x *ListGitCredentialsRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[292]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[287]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -28853,7 +28485,7 @@ func (x *ListGitCredentialsRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListGitCredentialsRequest.ProtoReflect.Descriptor instead.
 func (*ListGitCredentialsRequest) Descriptor() ([]byte, []int) {
-	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{292}
+	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{287}
 }
 
 func (x *ListGitCredentialsRequest) GetHost() string {
@@ -28872,7 +28504,7 @@ type ListGitCredentialsResponse struct {
 
 func (x *ListGitCredentialsResponse) Reset() {
 	*x = ListGitCredentialsResponse{}
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[293]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[288]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -28884,7 +28516,7 @@ func (x *ListGitCredentialsResponse) String() string {
 func (*ListGitCredentialsResponse) ProtoMessage() {}
 
 func (x *ListGitCredentialsResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[293]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[288]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -28897,7 +28529,7 @@ func (x *ListGitCredentialsResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListGitCredentialsResponse.ProtoReflect.Descriptor instead.
 func (*ListGitCredentialsResponse) Descriptor() ([]byte, []int) {
-	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{293}
+	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{288}
 }
 
 func (x *ListGitCredentialsResponse) GetCredentials() []*GitCredential {
@@ -28917,7 +28549,7 @@ type DeleteGitCredentialRequest struct {
 
 func (x *DeleteGitCredentialRequest) Reset() {
 	*x = DeleteGitCredentialRequest{}
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[294]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[289]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -28929,7 +28561,7 @@ func (x *DeleteGitCredentialRequest) String() string {
 func (*DeleteGitCredentialRequest) ProtoMessage() {}
 
 func (x *DeleteGitCredentialRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[294]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[289]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -28942,7 +28574,7 @@ func (x *DeleteGitCredentialRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DeleteGitCredentialRequest.ProtoReflect.Descriptor instead.
 func (*DeleteGitCredentialRequest) Descriptor() ([]byte, []int) {
-	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{294}
+	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{289}
 }
 
 func (x *DeleteGitCredentialRequest) GetName() string {
@@ -28961,7 +28593,7 @@ type DeleteGitCredentialResponse struct {
 
 func (x *DeleteGitCredentialResponse) Reset() {
 	*x = DeleteGitCredentialResponse{}
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[295]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[290]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -28973,7 +28605,7 @@ func (x *DeleteGitCredentialResponse) String() string {
 func (*DeleteGitCredentialResponse) ProtoMessage() {}
 
 func (x *DeleteGitCredentialResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[295]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[290]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -28986,7 +28618,7 @@ func (x *DeleteGitCredentialResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DeleteGitCredentialResponse.ProtoReflect.Descriptor instead.
 func (*DeleteGitCredentialResponse) Descriptor() ([]byte, []int) {
-	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{295}
+	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{290}
 }
 
 func (x *DeleteGitCredentialResponse) GetName() string {
@@ -29007,7 +28639,7 @@ type MintGitTokenRequest struct {
 
 func (x *MintGitTokenRequest) Reset() {
 	*x = MintGitTokenRequest{}
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[296]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[291]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -29019,7 +28651,7 @@ func (x *MintGitTokenRequest) String() string {
 func (*MintGitTokenRequest) ProtoMessage() {}
 
 func (x *MintGitTokenRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[296]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[291]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -29032,7 +28664,7 @@ func (x *MintGitTokenRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use MintGitTokenRequest.ProtoReflect.Descriptor instead.
 func (*MintGitTokenRequest) Descriptor() ([]byte, []int) {
-	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{296}
+	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{291}
 }
 
 func (x *MintGitTokenRequest) GetRepo() string {
@@ -29061,7 +28693,7 @@ type GitToken struct {
 
 func (x *GitToken) Reset() {
 	*x = GitToken{}
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[297]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[292]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -29073,7 +28705,7 @@ func (x *GitToken) String() string {
 func (*GitToken) ProtoMessage() {}
 
 func (x *GitToken) ProtoReflect() protoreflect.Message {
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[297]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[292]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -29086,7 +28718,7 @@ func (x *GitToken) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GitToken.ProtoReflect.Descriptor instead.
 func (*GitToken) Descriptor() ([]byte, []int) {
-	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{297}
+	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{292}
 }
 
 func (x *GitToken) GetHost() string {
@@ -29151,7 +28783,7 @@ type ProxyGitHubAPIRequest struct {
 
 func (x *ProxyGitHubAPIRequest) Reset() {
 	*x = ProxyGitHubAPIRequest{}
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[298]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[293]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -29163,7 +28795,7 @@ func (x *ProxyGitHubAPIRequest) String() string {
 func (*ProxyGitHubAPIRequest) ProtoMessage() {}
 
 func (x *ProxyGitHubAPIRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[298]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[293]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -29176,7 +28808,7 @@ func (x *ProxyGitHubAPIRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ProxyGitHubAPIRequest.ProtoReflect.Descriptor instead.
 func (*ProxyGitHubAPIRequest) Descriptor() ([]byte, []int) {
-	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{298}
+	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{293}
 }
 
 func (x *ProxyGitHubAPIRequest) GetPath() string {
@@ -29233,7 +28865,7 @@ type ProxyGitHubAPIResponse struct {
 
 func (x *ProxyGitHubAPIResponse) Reset() {
 	*x = ProxyGitHubAPIResponse{}
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[299]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[294]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -29245,7 +28877,7 @@ func (x *ProxyGitHubAPIResponse) String() string {
 func (*ProxyGitHubAPIResponse) ProtoMessage() {}
 
 func (x *ProxyGitHubAPIResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[299]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[294]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -29258,7 +28890,7 @@ func (x *ProxyGitHubAPIResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ProxyGitHubAPIResponse.ProtoReflect.Descriptor instead.
 func (*ProxyGitHubAPIResponse) Descriptor() ([]byte, []int) {
-	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{299}
+	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{294}
 }
 
 func (x *ProxyGitHubAPIResponse) GetStatusCode() int32 {
@@ -29312,7 +28944,7 @@ type Issue struct {
 
 func (x *Issue) Reset() {
 	*x = Issue{}
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[300]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[295]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -29324,7 +28956,7 @@ func (x *Issue) String() string {
 func (*Issue) ProtoMessage() {}
 
 func (x *Issue) ProtoReflect() protoreflect.Message {
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[300]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[295]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -29337,7 +28969,7 @@ func (x *Issue) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Issue.ProtoReflect.Descriptor instead.
 func (*Issue) Descriptor() ([]byte, []int) {
-	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{300}
+	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{295}
 }
 
 func (x *Issue) GetId() int32 {
@@ -29428,7 +29060,7 @@ type IssueUpvote struct {
 
 func (x *IssueUpvote) Reset() {
 	*x = IssueUpvote{}
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[301]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[296]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -29440,7 +29072,7 @@ func (x *IssueUpvote) String() string {
 func (*IssueUpvote) ProtoMessage() {}
 
 func (x *IssueUpvote) ProtoReflect() protoreflect.Message {
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[301]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[296]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -29453,7 +29085,7 @@ func (x *IssueUpvote) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use IssueUpvote.ProtoReflect.Descriptor instead.
 func (*IssueUpvote) Descriptor() ([]byte, []int) {
-	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{301}
+	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{296}
 }
 
 func (x *IssueUpvote) GetBy() *Stamp {
@@ -29484,7 +29116,7 @@ type ReportIssueRequest struct {
 
 func (x *ReportIssueRequest) Reset() {
 	*x = ReportIssueRequest{}
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[302]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[297]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -29496,7 +29128,7 @@ func (x *ReportIssueRequest) String() string {
 func (*ReportIssueRequest) ProtoMessage() {}
 
 func (x *ReportIssueRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[302]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[297]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -29509,7 +29141,7 @@ func (x *ReportIssueRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ReportIssueRequest.ProtoReflect.Descriptor instead.
 func (*ReportIssueRequest) Descriptor() ([]byte, []int) {
-	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{302}
+	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{297}
 }
 
 func (x *ReportIssueRequest) GetTitle() string {
@@ -29547,7 +29179,7 @@ type ListIssuesRequest struct {
 
 func (x *ListIssuesRequest) Reset() {
 	*x = ListIssuesRequest{}
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[303]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[298]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -29559,7 +29191,7 @@ func (x *ListIssuesRequest) String() string {
 func (*ListIssuesRequest) ProtoMessage() {}
 
 func (x *ListIssuesRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[303]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[298]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -29572,7 +29204,7 @@ func (x *ListIssuesRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListIssuesRequest.ProtoReflect.Descriptor instead.
 func (*ListIssuesRequest) Descriptor() ([]byte, []int) {
-	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{303}
+	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{298}
 }
 
 func (x *ListIssuesRequest) GetArchived() bool {
@@ -29606,7 +29238,7 @@ type ListIssuesResponse struct {
 
 func (x *ListIssuesResponse) Reset() {
 	*x = ListIssuesResponse{}
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[304]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[299]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -29618,7 +29250,7 @@ func (x *ListIssuesResponse) String() string {
 func (*ListIssuesResponse) ProtoMessage() {}
 
 func (x *ListIssuesResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[304]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[299]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -29631,7 +29263,7 @@ func (x *ListIssuesResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListIssuesResponse.ProtoReflect.Descriptor instead.
 func (*ListIssuesResponse) Descriptor() ([]byte, []int) {
-	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{304}
+	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{299}
 }
 
 func (x *ListIssuesResponse) GetIssues() []*Issue {
@@ -29650,7 +29282,7 @@ type GetIssueRequest struct {
 
 func (x *GetIssueRequest) Reset() {
 	*x = GetIssueRequest{}
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[305]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[300]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -29662,7 +29294,7 @@ func (x *GetIssueRequest) String() string {
 func (*GetIssueRequest) ProtoMessage() {}
 
 func (x *GetIssueRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[305]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[300]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -29675,7 +29307,7 @@ func (x *GetIssueRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetIssueRequest.ProtoReflect.Descriptor instead.
 func (*GetIssueRequest) Descriptor() ([]byte, []int) {
-	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{305}
+	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{300}
 }
 
 func (x *GetIssueRequest) GetId() int32 {
@@ -29698,7 +29330,7 @@ type UpvoteIssueRequest struct {
 
 func (x *UpvoteIssueRequest) Reset() {
 	*x = UpvoteIssueRequest{}
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[306]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[301]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -29710,7 +29342,7 @@ func (x *UpvoteIssueRequest) String() string {
 func (*UpvoteIssueRequest) ProtoMessage() {}
 
 func (x *UpvoteIssueRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[306]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[301]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -29723,7 +29355,7 @@ func (x *UpvoteIssueRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use UpvoteIssueRequest.ProtoReflect.Descriptor instead.
 func (*UpvoteIssueRequest) Descriptor() ([]byte, []int) {
-	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{306}
+	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{301}
 }
 
 func (x *UpvoteIssueRequest) GetId() int32 {
@@ -29759,7 +29391,7 @@ type ArchiveIssueRequest struct {
 
 func (x *ArchiveIssueRequest) Reset() {
 	*x = ArchiveIssueRequest{}
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[307]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[302]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -29771,7 +29403,7 @@ func (x *ArchiveIssueRequest) String() string {
 func (*ArchiveIssueRequest) ProtoMessage() {}
 
 func (x *ArchiveIssueRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[307]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[302]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -29784,7 +29416,7 @@ func (x *ArchiveIssueRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ArchiveIssueRequest.ProtoReflect.Descriptor instead.
 func (*ArchiveIssueRequest) Descriptor() ([]byte, []int) {
-	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{307}
+	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{302}
 }
 
 func (x *ArchiveIssueRequest) GetId() int32 {
@@ -29818,7 +29450,7 @@ type ReopenIssueRequest struct {
 
 func (x *ReopenIssueRequest) Reset() {
 	*x = ReopenIssueRequest{}
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[308]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[303]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -29830,7 +29462,7 @@ func (x *ReopenIssueRequest) String() string {
 func (*ReopenIssueRequest) ProtoMessage() {}
 
 func (x *ReopenIssueRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[308]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[303]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -29843,7 +29475,7 @@ func (x *ReopenIssueRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ReopenIssueRequest.ProtoReflect.Descriptor instead.
 func (*ReopenIssueRequest) Descriptor() ([]byte, []int) {
-	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{308}
+	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{303}
 }
 
 func (x *ReopenIssueRequest) GetId() int32 {
@@ -29884,7 +29516,7 @@ type MemoryContent struct {
 
 func (x *MemoryContent) Reset() {
 	*x = MemoryContent{}
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[309]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[304]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -29896,7 +29528,7 @@ func (x *MemoryContent) String() string {
 func (*MemoryContent) ProtoMessage() {}
 
 func (x *MemoryContent) ProtoReflect() protoreflect.Message {
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[309]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[304]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -29909,7 +29541,7 @@ func (x *MemoryContent) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use MemoryContent.ProtoReflect.Descriptor instead.
 func (*MemoryContent) Descriptor() ([]byte, []int) {
-	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{309}
+	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{304}
 }
 
 func (x *MemoryContent) GetSlug() string {
@@ -29970,7 +29602,7 @@ type MemoryProvenance struct {
 
 func (x *MemoryProvenance) Reset() {
 	*x = MemoryProvenance{}
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[310]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[305]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -29982,7 +29614,7 @@ func (x *MemoryProvenance) String() string {
 func (*MemoryProvenance) ProtoMessage() {}
 
 func (x *MemoryProvenance) ProtoReflect() protoreflect.Message {
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[310]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[305]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -29995,7 +29627,7 @@ func (x *MemoryProvenance) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use MemoryProvenance.ProtoReflect.Descriptor instead.
 func (*MemoryProvenance) Descriptor() ([]byte, []int) {
-	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{310}
+	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{305}
 }
 
 func (x *MemoryProvenance) GetFrom() *AskedFrom {
@@ -30062,7 +29694,7 @@ type Memory struct {
 
 func (x *Memory) Reset() {
 	*x = Memory{}
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[311]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[306]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -30074,7 +29706,7 @@ func (x *Memory) String() string {
 func (*Memory) ProtoMessage() {}
 
 func (x *Memory) ProtoReflect() protoreflect.Message {
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[311]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[306]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -30087,7 +29719,7 @@ func (x *Memory) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Memory.ProtoReflect.Descriptor instead.
 func (*Memory) Descriptor() ([]byte, []int) {
-	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{311}
+	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{306}
 }
 
 func (x *Memory) GetId() int32 {
@@ -30237,7 +29869,7 @@ type MemoryChange struct {
 
 func (x *MemoryChange) Reset() {
 	*x = MemoryChange{}
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[312]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[307]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -30249,7 +29881,7 @@ func (x *MemoryChange) String() string {
 func (*MemoryChange) ProtoMessage() {}
 
 func (x *MemoryChange) ProtoReflect() protoreflect.Message {
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[312]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[307]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -30262,7 +29894,7 @@ func (x *MemoryChange) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use MemoryChange.ProtoReflect.Descriptor instead.
 func (*MemoryChange) Descriptor() ([]byte, []int) {
-	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{312}
+	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{307}
 }
 
 func (x *MemoryChange) GetSeq() int64 {
@@ -30312,7 +29944,7 @@ type MemoryIndexEntry struct {
 
 func (x *MemoryIndexEntry) Reset() {
 	*x = MemoryIndexEntry{}
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[313]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[308]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -30324,7 +29956,7 @@ func (x *MemoryIndexEntry) String() string {
 func (*MemoryIndexEntry) ProtoMessage() {}
 
 func (x *MemoryIndexEntry) ProtoReflect() protoreflect.Message {
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[313]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[308]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -30337,7 +29969,7 @@ func (x *MemoryIndexEntry) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use MemoryIndexEntry.ProtoReflect.Descriptor instead.
 func (*MemoryIndexEntry) Descriptor() ([]byte, []int) {
-	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{313}
+	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{308}
 }
 
 func (x *MemoryIndexEntry) GetId() int32 {
@@ -30425,7 +30057,7 @@ type MemoryBriefing struct {
 
 func (x *MemoryBriefing) Reset() {
 	*x = MemoryBriefing{}
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[314]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[309]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -30437,7 +30069,7 @@ func (x *MemoryBriefing) String() string {
 func (*MemoryBriefing) ProtoMessage() {}
 
 func (x *MemoryBriefing) ProtoReflect() protoreflect.Message {
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[314]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[309]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -30450,7 +30082,7 @@ func (x *MemoryBriefing) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use MemoryBriefing.ProtoReflect.Descriptor instead.
 func (*MemoryBriefing) Descriptor() ([]byte, []int) {
-	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{314}
+	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{309}
 }
 
 func (x *MemoryBriefing) GetAlways() []*MemoryIndexEntry {
@@ -30521,7 +30153,7 @@ type ProposeMemoryRequest struct {
 
 func (x *ProposeMemoryRequest) Reset() {
 	*x = ProposeMemoryRequest{}
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[315]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[310]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -30533,7 +30165,7 @@ func (x *ProposeMemoryRequest) String() string {
 func (*ProposeMemoryRequest) ProtoMessage() {}
 
 func (x *ProposeMemoryRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[315]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[310]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -30546,7 +30178,7 @@ func (x *ProposeMemoryRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ProposeMemoryRequest.ProtoReflect.Descriptor instead.
 func (*ProposeMemoryRequest) Descriptor() ([]byte, []int) {
-	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{315}
+	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{310}
 }
 
 func (x *ProposeMemoryRequest) GetContent() *MemoryContent {
@@ -30657,7 +30289,7 @@ type ListMemoriesRequest struct {
 
 func (x *ListMemoriesRequest) Reset() {
 	*x = ListMemoriesRequest{}
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[316]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[311]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -30669,7 +30301,7 @@ func (x *ListMemoriesRequest) String() string {
 func (*ListMemoriesRequest) ProtoMessage() {}
 
 func (x *ListMemoriesRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[316]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[311]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -30682,7 +30314,7 @@ func (x *ListMemoriesRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListMemoriesRequest.ProtoReflect.Descriptor instead.
 func (*ListMemoriesRequest) Descriptor() ([]byte, []int) {
-	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{316}
+	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{311}
 }
 
 func (x *ListMemoriesRequest) GetStates() []MemoryState {
@@ -30802,7 +30434,7 @@ type ListMemoriesResponse struct {
 
 func (x *ListMemoriesResponse) Reset() {
 	*x = ListMemoriesResponse{}
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[317]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[312]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -30814,7 +30446,7 @@ func (x *ListMemoriesResponse) String() string {
 func (*ListMemoriesResponse) ProtoMessage() {}
 
 func (x *ListMemoriesResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[317]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[312]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -30827,7 +30459,7 @@ func (x *ListMemoriesResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListMemoriesResponse.ProtoReflect.Descriptor instead.
 func (*ListMemoriesResponse) Descriptor() ([]byte, []int) {
-	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{317}
+	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{312}
 }
 
 func (x *ListMemoriesResponse) GetMemories() []*Memory {
@@ -30865,7 +30497,7 @@ type GetMemoriesRequest struct {
 
 func (x *GetMemoriesRequest) Reset() {
 	*x = GetMemoriesRequest{}
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[318]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[313]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -30877,7 +30509,7 @@ func (x *GetMemoriesRequest) String() string {
 func (*GetMemoriesRequest) ProtoMessage() {}
 
 func (x *GetMemoriesRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[318]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[313]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -30890,7 +30522,7 @@ func (x *GetMemoriesRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetMemoriesRequest.ProtoReflect.Descriptor instead.
 func (*GetMemoriesRequest) Descriptor() ([]byte, []int) {
-	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{318}
+	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{313}
 }
 
 func (x *GetMemoriesRequest) GetRefs() []string {
@@ -30930,7 +30562,7 @@ type GetMemoriesResponse struct {
 
 func (x *GetMemoriesResponse) Reset() {
 	*x = GetMemoriesResponse{}
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[319]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[314]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -30942,7 +30574,7 @@ func (x *GetMemoriesResponse) String() string {
 func (*GetMemoriesResponse) ProtoMessage() {}
 
 func (x *GetMemoriesResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[319]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[314]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -30955,7 +30587,7 @@ func (x *GetMemoriesResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetMemoriesResponse.ProtoReflect.Descriptor instead.
 func (*GetMemoriesResponse) Descriptor() ([]byte, []int) {
-	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{319}
+	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{314}
 }
 
 func (x *GetMemoriesResponse) GetMemories() []*Memory {
@@ -30979,7 +30611,7 @@ type ShowMemoryRequest struct {
 
 func (x *ShowMemoryRequest) Reset() {
 	*x = ShowMemoryRequest{}
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[320]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[315]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -30991,7 +30623,7 @@ func (x *ShowMemoryRequest) String() string {
 func (*ShowMemoryRequest) ProtoMessage() {}
 
 func (x *ShowMemoryRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[320]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[315]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -31004,7 +30636,7 @@ func (x *ShowMemoryRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ShowMemoryRequest.ProtoReflect.Descriptor instead.
 func (*ShowMemoryRequest) Descriptor() ([]byte, []int) {
-	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{320}
+	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{315}
 }
 
 func (x *ShowMemoryRequest) GetRef() string {
@@ -31068,7 +30700,7 @@ type ReviseMemoryRequest struct {
 
 func (x *ReviseMemoryRequest) Reset() {
 	*x = ReviseMemoryRequest{}
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[321]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[316]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -31080,7 +30712,7 @@ func (x *ReviseMemoryRequest) String() string {
 func (*ReviseMemoryRequest) ProtoMessage() {}
 
 func (x *ReviseMemoryRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[321]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[316]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -31093,7 +30725,7 @@ func (x *ReviseMemoryRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ReviseMemoryRequest.ProtoReflect.Descriptor instead.
 func (*ReviseMemoryRequest) Descriptor() ([]byte, []int) {
-	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{321}
+	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{316}
 }
 
 func (x *ReviseMemoryRequest) GetId() int32 {
@@ -31201,7 +30833,7 @@ type ArchiveMemoryRequest struct {
 
 func (x *ArchiveMemoryRequest) Reset() {
 	*x = ArchiveMemoryRequest{}
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[322]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[317]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -31213,7 +30845,7 @@ func (x *ArchiveMemoryRequest) String() string {
 func (*ArchiveMemoryRequest) ProtoMessage() {}
 
 func (x *ArchiveMemoryRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[322]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[317]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -31226,7 +30858,7 @@ func (x *ArchiveMemoryRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ArchiveMemoryRequest.ProtoReflect.Descriptor instead.
 func (*ArchiveMemoryRequest) Descriptor() ([]byte, []int) {
-	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{322}
+	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{317}
 }
 
 func (x *ArchiveMemoryRequest) GetId() int32 {
@@ -31269,7 +30901,7 @@ type RestoreMemoryRequest struct {
 
 func (x *RestoreMemoryRequest) Reset() {
 	*x = RestoreMemoryRequest{}
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[323]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[318]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -31281,7 +30913,7 @@ func (x *RestoreMemoryRequest) String() string {
 func (*RestoreMemoryRequest) ProtoMessage() {}
 
 func (x *RestoreMemoryRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[323]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[318]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -31294,7 +30926,7 @@ func (x *RestoreMemoryRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RestoreMemoryRequest.ProtoReflect.Descriptor instead.
 func (*RestoreMemoryRequest) Descriptor() ([]byte, []int) {
-	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{323}
+	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{318}
 }
 
 func (x *RestoreMemoryRequest) GetId() int32 {
@@ -31331,7 +30963,7 @@ type DeleteMemoryRequest struct {
 
 func (x *DeleteMemoryRequest) Reset() {
 	*x = DeleteMemoryRequest{}
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[324]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[319]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -31343,7 +30975,7 @@ func (x *DeleteMemoryRequest) String() string {
 func (*DeleteMemoryRequest) ProtoMessage() {}
 
 func (x *DeleteMemoryRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[324]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[319]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -31356,7 +30988,7 @@ func (x *DeleteMemoryRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DeleteMemoryRequest.ProtoReflect.Descriptor instead.
 func (*DeleteMemoryRequest) Descriptor() ([]byte, []int) {
-	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{324}
+	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{319}
 }
 
 func (x *DeleteMemoryRequest) GetId() int32 {
@@ -31397,7 +31029,7 @@ type MoveMemoryRequest struct {
 
 func (x *MoveMemoryRequest) Reset() {
 	*x = MoveMemoryRequest{}
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[325]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[320]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -31409,7 +31041,7 @@ func (x *MoveMemoryRequest) String() string {
 func (*MoveMemoryRequest) ProtoMessage() {}
 
 func (x *MoveMemoryRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[325]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[320]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -31422,7 +31054,7 @@ func (x *MoveMemoryRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use MoveMemoryRequest.ProtoReflect.Descriptor instead.
 func (*MoveMemoryRequest) Descriptor() ([]byte, []int) {
-	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{325}
+	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{320}
 }
 
 func (x *MoveMemoryRequest) GetId() int32 {
@@ -31519,7 +31151,7 @@ type BoardAuthor struct {
 
 func (x *BoardAuthor) Reset() {
 	*x = BoardAuthor{}
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[326]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[321]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -31531,7 +31163,7 @@ func (x *BoardAuthor) String() string {
 func (*BoardAuthor) ProtoMessage() {}
 
 func (x *BoardAuthor) ProtoReflect() protoreflect.Message {
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[326]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[321]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -31544,7 +31176,7 @@ func (x *BoardAuthor) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use BoardAuthor.ProtoReflect.Descriptor instead.
 func (*BoardAuthor) Descriptor() ([]byte, []int) {
-	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{326}
+	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{321}
 }
 
 func (x *BoardAuthor) GetActor() string {
@@ -31605,7 +31237,7 @@ type BoardActor struct {
 
 func (x *BoardActor) Reset() {
 	*x = BoardActor{}
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[327]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[322]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -31617,7 +31249,7 @@ func (x *BoardActor) String() string {
 func (*BoardActor) ProtoMessage() {}
 
 func (x *BoardActor) ProtoReflect() protoreflect.Message {
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[327]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[322]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -31630,7 +31262,7 @@ func (x *BoardActor) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use BoardActor.ProtoReflect.Descriptor instead.
 func (*BoardActor) Descriptor() ([]byte, []int) {
-	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{327}
+	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{322}
 }
 
 func (x *BoardActor) GetId() string {
@@ -31701,7 +31333,7 @@ type BoardAttachment struct {
 
 func (x *BoardAttachment) Reset() {
 	*x = BoardAttachment{}
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[328]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[323]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -31713,7 +31345,7 @@ func (x *BoardAttachment) String() string {
 func (*BoardAttachment) ProtoMessage() {}
 
 func (x *BoardAttachment) ProtoReflect() protoreflect.Message {
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[328]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[323]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -31726,7 +31358,7 @@ func (x *BoardAttachment) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use BoardAttachment.ProtoReflect.Descriptor instead.
 func (*BoardAttachment) Descriptor() ([]byte, []int) {
-	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{328}
+	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{323}
 }
 
 func (x *BoardAttachment) GetId() string {
@@ -31767,7 +31399,7 @@ type BoardReaction struct {
 
 func (x *BoardReaction) Reset() {
 	*x = BoardReaction{}
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[329]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[324]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -31779,7 +31411,7 @@ func (x *BoardReaction) String() string {
 func (*BoardReaction) ProtoMessage() {}
 
 func (x *BoardReaction) ProtoReflect() protoreflect.Message {
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[329]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[324]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -31792,7 +31424,7 @@ func (x *BoardReaction) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use BoardReaction.ProtoReflect.Descriptor instead.
 func (*BoardReaction) Descriptor() ([]byte, []int) {
-	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{329}
+	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{324}
 }
 
 func (x *BoardReaction) GetEmoji() string {
@@ -31820,7 +31452,7 @@ type BoardBlock struct {
 
 func (x *BoardBlock) Reset() {
 	*x = BoardBlock{}
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[330]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[325]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -31832,7 +31464,7 @@ func (x *BoardBlock) String() string {
 func (*BoardBlock) ProtoMessage() {}
 
 func (x *BoardBlock) ProtoReflect() protoreflect.Message {
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[330]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[325]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -31845,7 +31477,7 @@ func (x *BoardBlock) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use BoardBlock.ProtoReflect.Descriptor instead.
 func (*BoardBlock) Descriptor() ([]byte, []int) {
-	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{330}
+	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{325}
 }
 
 func (x *BoardBlock) GetSchema() string {
@@ -31880,7 +31512,7 @@ type BoardMention struct {
 
 func (x *BoardMention) Reset() {
 	*x = BoardMention{}
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[331]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[326]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -31892,7 +31524,7 @@ func (x *BoardMention) String() string {
 func (*BoardMention) ProtoMessage() {}
 
 func (x *BoardMention) ProtoReflect() protoreflect.Message {
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[331]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[326]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -31905,7 +31537,7 @@ func (x *BoardMention) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use BoardMention.ProtoReflect.Descriptor instead.
 func (*BoardMention) Descriptor() ([]byte, []int) {
-	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{331}
+	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{326}
 }
 
 func (x *BoardMention) GetWritten() string {
@@ -31939,7 +31571,7 @@ type BoardTaskClaimView struct {
 
 func (x *BoardTaskClaimView) Reset() {
 	*x = BoardTaskClaimView{}
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[332]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[327]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -31951,7 +31583,7 @@ func (x *BoardTaskClaimView) String() string {
 func (*BoardTaskClaimView) ProtoMessage() {}
 
 func (x *BoardTaskClaimView) ProtoReflect() protoreflect.Message {
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[332]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[327]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -31964,7 +31596,7 @@ func (x *BoardTaskClaimView) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use BoardTaskClaimView.ProtoReflect.Descriptor instead.
 func (*BoardTaskClaimView) Descriptor() ([]byte, []int) {
-	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{332}
+	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{327}
 }
 
 func (x *BoardTaskClaimView) GetActor() string {
@@ -31991,7 +31623,7 @@ type BoardTaskBlocked struct {
 
 func (x *BoardTaskBlocked) Reset() {
 	*x = BoardTaskBlocked{}
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[333]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[328]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -32003,7 +31635,7 @@ func (x *BoardTaskBlocked) String() string {
 func (*BoardTaskBlocked) ProtoMessage() {}
 
 func (x *BoardTaskBlocked) ProtoReflect() protoreflect.Message {
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[333]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[328]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -32016,7 +31648,7 @@ func (x *BoardTaskBlocked) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use BoardTaskBlocked.ProtoReflect.Descriptor instead.
 func (*BoardTaskBlocked) Descriptor() ([]byte, []int) {
-	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{333}
+	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{328}
 }
 
 func (x *BoardTaskBlocked) GetKind() string {
@@ -32052,7 +31684,7 @@ type BoardTask struct {
 
 func (x *BoardTask) Reset() {
 	*x = BoardTask{}
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[334]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[329]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -32064,7 +31696,7 @@ func (x *BoardTask) String() string {
 func (*BoardTask) ProtoMessage() {}
 
 func (x *BoardTask) ProtoReflect() protoreflect.Message {
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[334]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[329]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -32077,7 +31709,7 @@ func (x *BoardTask) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use BoardTask.ProtoReflect.Descriptor instead.
 func (*BoardTask) Descriptor() ([]byte, []int) {
-	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{334}
+	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{329}
 }
 
 func (x *BoardTask) GetState() BoardTaskState {
@@ -32162,7 +31794,7 @@ type BoardTaskClaim struct {
 
 func (x *BoardTaskClaim) Reset() {
 	*x = BoardTaskClaim{}
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[335]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[330]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -32174,7 +31806,7 @@ func (x *BoardTaskClaim) String() string {
 func (*BoardTaskClaim) ProtoMessage() {}
 
 func (x *BoardTaskClaim) ProtoReflect() protoreflect.Message {
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[335]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[330]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -32187,7 +31819,7 @@ func (x *BoardTaskClaim) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use BoardTaskClaim.ProtoReflect.Descriptor instead.
 func (*BoardTaskClaim) Descriptor() ([]byte, []int) {
-	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{335}
+	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{330}
 }
 
 func (x *BoardTaskClaim) GetEpoch() int32 {
@@ -32246,7 +31878,7 @@ type BoardMessage struct {
 
 func (x *BoardMessage) Reset() {
 	*x = BoardMessage{}
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[336]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[331]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -32258,7 +31890,7 @@ func (x *BoardMessage) String() string {
 func (*BoardMessage) ProtoMessage() {}
 
 func (x *BoardMessage) ProtoReflect() protoreflect.Message {
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[336]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[331]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -32271,7 +31903,7 @@ func (x *BoardMessage) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use BoardMessage.ProtoReflect.Descriptor instead.
 func (*BoardMessage) Descriptor() ([]byte, []int) {
-	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{336}
+	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{331}
 }
 
 func (x *BoardMessage) GetId() int64 {
@@ -32432,7 +32064,7 @@ type BoardThreadSummary struct {
 
 func (x *BoardThreadSummary) Reset() {
 	*x = BoardThreadSummary{}
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[337]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[332]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -32444,7 +32076,7 @@ func (x *BoardThreadSummary) String() string {
 func (*BoardThreadSummary) ProtoMessage() {}
 
 func (x *BoardThreadSummary) ProtoReflect() protoreflect.Message {
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[337]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[332]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -32457,7 +32089,7 @@ func (x *BoardThreadSummary) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use BoardThreadSummary.ProtoReflect.Descriptor instead.
 func (*BoardThreadSummary) Descriptor() ([]byte, []int) {
-	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{337}
+	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{332}
 }
 
 func (x *BoardThreadSummary) GetMessage() *BoardMessage {
@@ -32506,7 +32138,7 @@ type BoardSchedule struct {
 
 func (x *BoardSchedule) Reset() {
 	*x = BoardSchedule{}
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[338]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[333]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -32518,7 +32150,7 @@ func (x *BoardSchedule) String() string {
 func (*BoardSchedule) ProtoMessage() {}
 
 func (x *BoardSchedule) ProtoReflect() protoreflect.Message {
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[338]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[333]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -32531,7 +32163,7 @@ func (x *BoardSchedule) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use BoardSchedule.ProtoReflect.Descriptor instead.
 func (*BoardSchedule) Descriptor() ([]byte, []int) {
-	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{338}
+	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{333}
 }
 
 func (x *BoardSchedule) GetId() int64 {
@@ -32669,7 +32301,7 @@ type BoardSchema struct {
 
 func (x *BoardSchema) Reset() {
 	*x = BoardSchema{}
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[339]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[334]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -32681,7 +32313,7 @@ func (x *BoardSchema) String() string {
 func (*BoardSchema) ProtoMessage() {}
 
 func (x *BoardSchema) ProtoReflect() protoreflect.Message {
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[339]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[334]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -32694,7 +32326,7 @@ func (x *BoardSchema) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use BoardSchema.ProtoReflect.Descriptor instead.
 func (*BoardSchema) Descriptor() ([]byte, []int) {
-	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{339}
+	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{334}
 }
 
 func (x *BoardSchema) GetId() string {
@@ -32770,7 +32402,7 @@ type BoardEvent struct {
 
 func (x *BoardEvent) Reset() {
 	*x = BoardEvent{}
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[340]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[335]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -32782,7 +32414,7 @@ func (x *BoardEvent) String() string {
 func (*BoardEvent) ProtoMessage() {}
 
 func (x *BoardEvent) ProtoReflect() protoreflect.Message {
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[340]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[335]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -32795,7 +32427,7 @@ func (x *BoardEvent) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use BoardEvent.ProtoReflect.Descriptor instead.
 func (*BoardEvent) Descriptor() ([]byte, []int) {
-	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{340}
+	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{335}
 }
 
 func (x *BoardEvent) GetCursor() int64 {
@@ -32872,7 +32504,7 @@ type BoardLabelFilter struct {
 
 func (x *BoardLabelFilter) Reset() {
 	*x = BoardLabelFilter{}
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[341]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[336]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -32884,7 +32516,7 @@ func (x *BoardLabelFilter) String() string {
 func (*BoardLabelFilter) ProtoMessage() {}
 
 func (x *BoardLabelFilter) ProtoReflect() protoreflect.Message {
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[341]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[336]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -32897,7 +32529,7 @@ func (x *BoardLabelFilter) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use BoardLabelFilter.ProtoReflect.Descriptor instead.
 func (*BoardLabelFilter) Descriptor() ([]byte, []int) {
-	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{341}
+	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{336}
 }
 
 func (x *BoardLabelFilter) GetKey() string {
@@ -32925,7 +32557,7 @@ type BoardMessageResult struct {
 
 func (x *BoardMessageResult) Reset() {
 	*x = BoardMessageResult{}
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[342]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[337]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -32937,7 +32569,7 @@ func (x *BoardMessageResult) String() string {
 func (*BoardMessageResult) ProtoMessage() {}
 
 func (x *BoardMessageResult) ProtoReflect() protoreflect.Message {
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[342]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[337]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -32950,7 +32582,7 @@ func (x *BoardMessageResult) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use BoardMessageResult.ProtoReflect.Descriptor instead.
 func (*BoardMessageResult) Descriptor() ([]byte, []int) {
-	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{342}
+	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{337}
 }
 
 func (x *BoardMessageResult) GetMessage() *BoardMessage {
@@ -32986,7 +32618,7 @@ type BoardTaskResult struct {
 
 func (x *BoardTaskResult) Reset() {
 	*x = BoardTaskResult{}
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[343]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[338]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -32998,7 +32630,7 @@ func (x *BoardTaskResult) String() string {
 func (*BoardTaskResult) ProtoMessage() {}
 
 func (x *BoardTaskResult) ProtoReflect() protoreflect.Message {
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[343]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[338]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -33011,7 +32643,7 @@ func (x *BoardTaskResult) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use BoardTaskResult.ProtoReflect.Descriptor instead.
 func (*BoardTaskResult) Descriptor() ([]byte, []int) {
-	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{343}
+	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{338}
 }
 
 func (x *BoardTaskResult) GetTask() *BoardMessage {
@@ -33053,7 +32685,7 @@ type BoardScheduleResult struct {
 
 func (x *BoardScheduleResult) Reset() {
 	*x = BoardScheduleResult{}
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[344]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[339]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -33065,7 +32697,7 @@ func (x *BoardScheduleResult) String() string {
 func (*BoardScheduleResult) ProtoMessage() {}
 
 func (x *BoardScheduleResult) ProtoReflect() protoreflect.Message {
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[344]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[339]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -33078,7 +32710,7 @@ func (x *BoardScheduleResult) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use BoardScheduleResult.ProtoReflect.Descriptor instead.
 func (*BoardScheduleResult) Descriptor() ([]byte, []int) {
-	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{344}
+	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{339}
 }
 
 func (x *BoardScheduleResult) GetSchedule() *BoardSchedule {
@@ -33123,7 +32755,7 @@ type PostBoardMessageRequest struct {
 
 func (x *PostBoardMessageRequest) Reset() {
 	*x = PostBoardMessageRequest{}
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[345]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[340]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -33135,7 +32767,7 @@ func (x *PostBoardMessageRequest) String() string {
 func (*PostBoardMessageRequest) ProtoMessage() {}
 
 func (x *PostBoardMessageRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[345]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[340]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -33148,7 +32780,7 @@ func (x *PostBoardMessageRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PostBoardMessageRequest.ProtoReflect.Descriptor instead.
 func (*PostBoardMessageRequest) Descriptor() ([]byte, []int) {
-	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{345}
+	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{340}
 }
 
 func (x *PostBoardMessageRequest) GetProject() string {
@@ -33248,7 +32880,7 @@ type EditBoardMessageRequest struct {
 
 func (x *EditBoardMessageRequest) Reset() {
 	*x = EditBoardMessageRequest{}
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[346]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[341]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -33260,7 +32892,7 @@ func (x *EditBoardMessageRequest) String() string {
 func (*EditBoardMessageRequest) ProtoMessage() {}
 
 func (x *EditBoardMessageRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[346]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[341]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -33273,7 +32905,7 @@ func (x *EditBoardMessageRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use EditBoardMessageRequest.ProtoReflect.Descriptor instead.
 func (*EditBoardMessageRequest) Descriptor() ([]byte, []int) {
-	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{346}
+	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{341}
 }
 
 func (x *EditBoardMessageRequest) GetId() int64 {
@@ -33323,7 +32955,7 @@ type DeleteBoardMessageRequest struct {
 
 func (x *DeleteBoardMessageRequest) Reset() {
 	*x = DeleteBoardMessageRequest{}
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[347]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[342]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -33335,7 +32967,7 @@ func (x *DeleteBoardMessageRequest) String() string {
 func (*DeleteBoardMessageRequest) ProtoMessage() {}
 
 func (x *DeleteBoardMessageRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[347]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[342]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -33348,7 +32980,7 @@ func (x *DeleteBoardMessageRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DeleteBoardMessageRequest.ProtoReflect.Descriptor instead.
 func (*DeleteBoardMessageRequest) Descriptor() ([]byte, []int) {
-	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{347}
+	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{342}
 }
 
 func (x *DeleteBoardMessageRequest) GetId() int64 {
@@ -33392,7 +33024,7 @@ type ReactBoardMessageRequest struct {
 
 func (x *ReactBoardMessageRequest) Reset() {
 	*x = ReactBoardMessageRequest{}
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[348]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[343]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -33404,7 +33036,7 @@ func (x *ReactBoardMessageRequest) String() string {
 func (*ReactBoardMessageRequest) ProtoMessage() {}
 
 func (x *ReactBoardMessageRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[348]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[343]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -33417,7 +33049,7 @@ func (x *ReactBoardMessageRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ReactBoardMessageRequest.ProtoReflect.Descriptor instead.
 func (*ReactBoardMessageRequest) Descriptor() ([]byte, []int) {
-	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{348}
+	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{343}
 }
 
 func (x *ReactBoardMessageRequest) GetId() int64 {
@@ -33472,7 +33104,7 @@ type LabelBoardMessageRequest struct {
 
 func (x *LabelBoardMessageRequest) Reset() {
 	*x = LabelBoardMessageRequest{}
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[349]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[344]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -33484,7 +33116,7 @@ func (x *LabelBoardMessageRequest) String() string {
 func (*LabelBoardMessageRequest) ProtoMessage() {}
 
 func (x *LabelBoardMessageRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[349]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[344]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -33497,7 +33129,7 @@ func (x *LabelBoardMessageRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use LabelBoardMessageRequest.ProtoReflect.Descriptor instead.
 func (*LabelBoardMessageRequest) Descriptor() ([]byte, []int) {
-	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{349}
+	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{344}
 }
 
 func (x *LabelBoardMessageRequest) GetId() int64 {
@@ -33574,7 +33206,7 @@ type ListBoardThreadsRequest struct {
 
 func (x *ListBoardThreadsRequest) Reset() {
 	*x = ListBoardThreadsRequest{}
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[350]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[345]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -33586,7 +33218,7 @@ func (x *ListBoardThreadsRequest) String() string {
 func (*ListBoardThreadsRequest) ProtoMessage() {}
 
 func (x *ListBoardThreadsRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[350]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[345]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -33599,7 +33231,7 @@ func (x *ListBoardThreadsRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListBoardThreadsRequest.ProtoReflect.Descriptor instead.
 func (*ListBoardThreadsRequest) Descriptor() ([]byte, []int) {
-	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{350}
+	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{345}
 }
 
 func (x *ListBoardThreadsRequest) GetScope() isListBoardThreadsRequest_Scope {
@@ -33724,7 +33356,7 @@ type ListBoardThreadsResponse struct {
 
 func (x *ListBoardThreadsResponse) Reset() {
 	*x = ListBoardThreadsResponse{}
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[351]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[346]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -33736,7 +33368,7 @@ func (x *ListBoardThreadsResponse) String() string {
 func (*ListBoardThreadsResponse) ProtoMessage() {}
 
 func (x *ListBoardThreadsResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[351]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[346]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -33749,7 +33381,7 @@ func (x *ListBoardThreadsResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListBoardThreadsResponse.ProtoReflect.Descriptor instead.
 func (*ListBoardThreadsResponse) Descriptor() ([]byte, []int) {
-	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{351}
+	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{346}
 }
 
 func (x *ListBoardThreadsResponse) GetThreads() []*BoardThreadSummary {
@@ -33785,7 +33417,7 @@ type GetBoardThreadRequest struct {
 
 func (x *GetBoardThreadRequest) Reset() {
 	*x = GetBoardThreadRequest{}
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[352]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[347]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -33797,7 +33429,7 @@ func (x *GetBoardThreadRequest) String() string {
 func (*GetBoardThreadRequest) ProtoMessage() {}
 
 func (x *GetBoardThreadRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[352]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[347]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -33810,7 +33442,7 @@ func (x *GetBoardThreadRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetBoardThreadRequest.ProtoReflect.Descriptor instead.
 func (*GetBoardThreadRequest) Descriptor() ([]byte, []int) {
-	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{352}
+	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{347}
 }
 
 func (x *GetBoardThreadRequest) GetId() int64 {
@@ -33853,7 +33485,7 @@ type GetBoardThreadResponse struct {
 
 func (x *GetBoardThreadResponse) Reset() {
 	*x = GetBoardThreadResponse{}
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[353]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[348]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -33865,7 +33497,7 @@ func (x *GetBoardThreadResponse) String() string {
 func (*GetBoardThreadResponse) ProtoMessage() {}
 
 func (x *GetBoardThreadResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[353]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[348]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -33878,7 +33510,7 @@ func (x *GetBoardThreadResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetBoardThreadResponse.ProtoReflect.Descriptor instead.
 func (*GetBoardThreadResponse) Descriptor() ([]byte, []int) {
-	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{353}
+	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{348}
 }
 
 func (x *GetBoardThreadResponse) GetMessage() *BoardMessage {
@@ -33937,7 +33569,7 @@ type ListBoardEventsRequest struct {
 
 func (x *ListBoardEventsRequest) Reset() {
 	*x = ListBoardEventsRequest{}
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[354]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[349]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -33949,7 +33581,7 @@ func (x *ListBoardEventsRequest) String() string {
 func (*ListBoardEventsRequest) ProtoMessage() {}
 
 func (x *ListBoardEventsRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[354]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[349]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -33962,7 +33594,7 @@ func (x *ListBoardEventsRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListBoardEventsRequest.ProtoReflect.Descriptor instead.
 func (*ListBoardEventsRequest) Descriptor() ([]byte, []int) {
-	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{354}
+	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{349}
 }
 
 func (x *ListBoardEventsRequest) GetScope() isListBoardEventsRequest_Scope {
@@ -34107,7 +33739,7 @@ type ListBoardEventsResponse struct {
 
 func (x *ListBoardEventsResponse) Reset() {
 	*x = ListBoardEventsResponse{}
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[355]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[350]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -34119,7 +33751,7 @@ func (x *ListBoardEventsResponse) String() string {
 func (*ListBoardEventsResponse) ProtoMessage() {}
 
 func (x *ListBoardEventsResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[355]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[350]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -34132,7 +33764,7 @@ func (x *ListBoardEventsResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListBoardEventsResponse.ProtoReflect.Descriptor instead.
 func (*ListBoardEventsResponse) Descriptor() ([]byte, []int) {
-	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{355}
+	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{350}
 }
 
 func (x *ListBoardEventsResponse) GetEvents() []*BoardEvent {
@@ -34165,7 +33797,7 @@ type ListBoardActorsRequest struct {
 
 func (x *ListBoardActorsRequest) Reset() {
 	*x = ListBoardActorsRequest{}
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[356]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[351]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -34177,7 +33809,7 @@ func (x *ListBoardActorsRequest) String() string {
 func (*ListBoardActorsRequest) ProtoMessage() {}
 
 func (x *ListBoardActorsRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[356]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[351]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -34190,7 +33822,7 @@ func (x *ListBoardActorsRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListBoardActorsRequest.ProtoReflect.Descriptor instead.
 func (*ListBoardActorsRequest) Descriptor() ([]byte, []int) {
-	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{356}
+	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{351}
 }
 
 func (x *ListBoardActorsRequest) GetScope() isListBoardActorsRequest_Scope {
@@ -34265,7 +33897,7 @@ type ListBoardActorsResponse struct {
 
 func (x *ListBoardActorsResponse) Reset() {
 	*x = ListBoardActorsResponse{}
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[357]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[352]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -34277,7 +33909,7 @@ func (x *ListBoardActorsResponse) String() string {
 func (*ListBoardActorsResponse) ProtoMessage() {}
 
 func (x *ListBoardActorsResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[357]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[352]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -34290,7 +33922,7 @@ func (x *ListBoardActorsResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListBoardActorsResponse.ProtoReflect.Descriptor instead.
 func (*ListBoardActorsResponse) Descriptor() ([]byte, []int) {
-	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{357}
+	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{352}
 }
 
 func (x *ListBoardActorsResponse) GetActors() []*BoardActor {
@@ -34320,7 +33952,7 @@ type UploadBoardAttachmentRequest struct {
 
 func (x *UploadBoardAttachmentRequest) Reset() {
 	*x = UploadBoardAttachmentRequest{}
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[358]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[353]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -34332,7 +33964,7 @@ func (x *UploadBoardAttachmentRequest) String() string {
 func (*UploadBoardAttachmentRequest) ProtoMessage() {}
 
 func (x *UploadBoardAttachmentRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[358]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[353]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -34345,7 +33977,7 @@ func (x *UploadBoardAttachmentRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use UploadBoardAttachmentRequest.ProtoReflect.Descriptor instead.
 func (*UploadBoardAttachmentRequest) Descriptor() ([]byte, []int) {
-	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{358}
+	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{353}
 }
 
 func (x *UploadBoardAttachmentRequest) GetName() string {
@@ -34392,7 +34024,7 @@ type DownloadBoardAttachmentRequest struct {
 
 func (x *DownloadBoardAttachmentRequest) Reset() {
 	*x = DownloadBoardAttachmentRequest{}
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[359]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[354]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -34404,7 +34036,7 @@ func (x *DownloadBoardAttachmentRequest) String() string {
 func (*DownloadBoardAttachmentRequest) ProtoMessage() {}
 
 func (x *DownloadBoardAttachmentRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[359]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[354]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -34417,7 +34049,7 @@ func (x *DownloadBoardAttachmentRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DownloadBoardAttachmentRequest.ProtoReflect.Descriptor instead.
 func (*DownloadBoardAttachmentRequest) Descriptor() ([]byte, []int) {
-	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{359}
+	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{354}
 }
 
 func (x *DownloadBoardAttachmentRequest) GetId() string {
@@ -34437,7 +34069,7 @@ type DownloadBoardAttachmentResponse struct {
 
 func (x *DownloadBoardAttachmentResponse) Reset() {
 	*x = DownloadBoardAttachmentResponse{}
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[360]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[355]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -34449,7 +34081,7 @@ func (x *DownloadBoardAttachmentResponse) String() string {
 func (*DownloadBoardAttachmentResponse) ProtoMessage() {}
 
 func (x *DownloadBoardAttachmentResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[360]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[355]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -34462,7 +34094,7 @@ func (x *DownloadBoardAttachmentResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DownloadBoardAttachmentResponse.ProtoReflect.Descriptor instead.
 func (*DownloadBoardAttachmentResponse) Descriptor() ([]byte, []int) {
-	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{360}
+	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{355}
 }
 
 func (x *DownloadBoardAttachmentResponse) GetAttachment() *BoardAttachment {
@@ -34487,7 +34119,7 @@ type ListBoardSchemasRequest struct {
 
 func (x *ListBoardSchemasRequest) Reset() {
 	*x = ListBoardSchemasRequest{}
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[361]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[356]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -34499,7 +34131,7 @@ func (x *ListBoardSchemasRequest) String() string {
 func (*ListBoardSchemasRequest) ProtoMessage() {}
 
 func (x *ListBoardSchemasRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[361]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[356]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -34512,7 +34144,7 @@ func (x *ListBoardSchemasRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListBoardSchemasRequest.ProtoReflect.Descriptor instead.
 func (*ListBoardSchemasRequest) Descriptor() ([]byte, []int) {
-	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{361}
+	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{356}
 }
 
 type ListBoardSchemasResponse struct {
@@ -34524,7 +34156,7 @@ type ListBoardSchemasResponse struct {
 
 func (x *ListBoardSchemasResponse) Reset() {
 	*x = ListBoardSchemasResponse{}
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[362]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[357]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -34536,7 +34168,7 @@ func (x *ListBoardSchemasResponse) String() string {
 func (*ListBoardSchemasResponse) ProtoMessage() {}
 
 func (x *ListBoardSchemasResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[362]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[357]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -34549,7 +34181,7 @@ func (x *ListBoardSchemasResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListBoardSchemasResponse.ProtoReflect.Descriptor instead.
 func (*ListBoardSchemasResponse) Descriptor() ([]byte, []int) {
-	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{362}
+	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{357}
 }
 
 func (x *ListBoardSchemasResponse) GetSchemas() []*BoardSchema {
@@ -34568,7 +34200,7 @@ type GetBoardSchemaRequest struct {
 
 func (x *GetBoardSchemaRequest) Reset() {
 	*x = GetBoardSchemaRequest{}
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[363]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[358]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -34580,7 +34212,7 @@ func (x *GetBoardSchemaRequest) String() string {
 func (*GetBoardSchemaRequest) ProtoMessage() {}
 
 func (x *GetBoardSchemaRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[363]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[358]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -34593,7 +34225,7 @@ func (x *GetBoardSchemaRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetBoardSchemaRequest.ProtoReflect.Descriptor instead.
 func (*GetBoardSchemaRequest) Descriptor() ([]byte, []int) {
-	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{363}
+	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{358}
 }
 
 func (x *GetBoardSchemaRequest) GetId() string {
@@ -34617,7 +34249,7 @@ type CreateBoardSchemaRequest struct {
 
 func (x *CreateBoardSchemaRequest) Reset() {
 	*x = CreateBoardSchemaRequest{}
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[364]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[359]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -34629,7 +34261,7 @@ func (x *CreateBoardSchemaRequest) String() string {
 func (*CreateBoardSchemaRequest) ProtoMessage() {}
 
 func (x *CreateBoardSchemaRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[364]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[359]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -34642,7 +34274,7 @@ func (x *CreateBoardSchemaRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CreateBoardSchemaRequest.ProtoReflect.Descriptor instead.
 func (*CreateBoardSchemaRequest) Descriptor() ([]byte, []int) {
-	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{364}
+	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{359}
 }
 
 func (x *CreateBoardSchemaRequest) GetName() string {
@@ -34697,7 +34329,7 @@ type CreateBoardSchemaResponse struct {
 
 func (x *CreateBoardSchemaResponse) Reset() {
 	*x = CreateBoardSchemaResponse{}
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[365]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[360]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -34709,7 +34341,7 @@ func (x *CreateBoardSchemaResponse) String() string {
 func (*CreateBoardSchemaResponse) ProtoMessage() {}
 
 func (x *CreateBoardSchemaResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[365]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[360]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -34722,7 +34354,7 @@ func (x *CreateBoardSchemaResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CreateBoardSchemaResponse.ProtoReflect.Descriptor instead.
 func (*CreateBoardSchemaResponse) Descriptor() ([]byte, []int) {
-	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{365}
+	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{360}
 }
 
 func (x *CreateBoardSchemaResponse) GetSchema() *BoardSchema {
@@ -34763,7 +34395,7 @@ type ScheduleBoardMessageRequest struct {
 
 func (x *ScheduleBoardMessageRequest) Reset() {
 	*x = ScheduleBoardMessageRequest{}
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[366]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[361]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -34775,7 +34407,7 @@ func (x *ScheduleBoardMessageRequest) String() string {
 func (*ScheduleBoardMessageRequest) ProtoMessage() {}
 
 func (x *ScheduleBoardMessageRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[366]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[361]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -34788,7 +34420,7 @@ func (x *ScheduleBoardMessageRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ScheduleBoardMessageRequest.ProtoReflect.Descriptor instead.
 func (*ScheduleBoardMessageRequest) Descriptor() ([]byte, []int) {
-	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{366}
+	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{361}
 }
 
 func (x *ScheduleBoardMessageRequest) GetProject() string {
@@ -34921,7 +34553,7 @@ type ListBoardSchedulesRequest struct {
 
 func (x *ListBoardSchedulesRequest) Reset() {
 	*x = ListBoardSchedulesRequest{}
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[367]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[362]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -34933,7 +34565,7 @@ func (x *ListBoardSchedulesRequest) String() string {
 func (*ListBoardSchedulesRequest) ProtoMessage() {}
 
 func (x *ListBoardSchedulesRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[367]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[362]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -34946,7 +34578,7 @@ func (x *ListBoardSchedulesRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListBoardSchedulesRequest.ProtoReflect.Descriptor instead.
 func (*ListBoardSchedulesRequest) Descriptor() ([]byte, []int) {
-	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{367}
+	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{362}
 }
 
 func (x *ListBoardSchedulesRequest) GetScope() isListBoardSchedulesRequest_Scope {
@@ -35034,7 +34666,7 @@ type ListBoardSchedulesResponse struct {
 
 func (x *ListBoardSchedulesResponse) Reset() {
 	*x = ListBoardSchedulesResponse{}
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[368]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[363]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -35046,7 +34678,7 @@ func (x *ListBoardSchedulesResponse) String() string {
 func (*ListBoardSchedulesResponse) ProtoMessage() {}
 
 func (x *ListBoardSchedulesResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[368]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[363]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -35059,7 +34691,7 @@ func (x *ListBoardSchedulesResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListBoardSchedulesResponse.ProtoReflect.Descriptor instead.
 func (*ListBoardSchedulesResponse) Descriptor() ([]byte, []int) {
-	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{368}
+	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{363}
 }
 
 func (x *ListBoardSchedulesResponse) GetSchedules() []*BoardSchedule {
@@ -35080,7 +34712,7 @@ type CancelBoardScheduleRequest struct {
 
 func (x *CancelBoardScheduleRequest) Reset() {
 	*x = CancelBoardScheduleRequest{}
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[369]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[364]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -35092,7 +34724,7 @@ func (x *CancelBoardScheduleRequest) String() string {
 func (*CancelBoardScheduleRequest) ProtoMessage() {}
 
 func (x *CancelBoardScheduleRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[369]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[364]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -35105,7 +34737,7 @@ func (x *CancelBoardScheduleRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CancelBoardScheduleRequest.ProtoReflect.Descriptor instead.
 func (*CancelBoardScheduleRequest) Descriptor() ([]byte, []int) {
-	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{369}
+	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{364}
 }
 
 func (x *CancelBoardScheduleRequest) GetId() int64 {
@@ -35139,7 +34771,7 @@ type CancelBoardScheduleResponse struct {
 
 func (x *CancelBoardScheduleResponse) Reset() {
 	*x = CancelBoardScheduleResponse{}
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[370]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[365]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -35151,7 +34783,7 @@ func (x *CancelBoardScheduleResponse) String() string {
 func (*CancelBoardScheduleResponse) ProtoMessage() {}
 
 func (x *CancelBoardScheduleResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[370]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[365]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -35164,7 +34796,7 @@ func (x *CancelBoardScheduleResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CancelBoardScheduleResponse.ProtoReflect.Descriptor instead.
 func (*CancelBoardScheduleResponse) Descriptor() ([]byte, []int) {
-	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{370}
+	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{365}
 }
 
 func (x *CancelBoardScheduleResponse) GetSchedule() *BoardSchedule {
@@ -35206,7 +34838,7 @@ type CreateBoardTaskRequest struct {
 
 func (x *CreateBoardTaskRequest) Reset() {
 	*x = CreateBoardTaskRequest{}
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[371]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[366]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -35218,7 +34850,7 @@ func (x *CreateBoardTaskRequest) String() string {
 func (*CreateBoardTaskRequest) ProtoMessage() {}
 
 func (x *CreateBoardTaskRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[371]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[366]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -35231,7 +34863,7 @@ func (x *CreateBoardTaskRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CreateBoardTaskRequest.ProtoReflect.Descriptor instead.
 func (*CreateBoardTaskRequest) Descriptor() ([]byte, []int) {
-	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{371}
+	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{366}
 }
 
 func (x *CreateBoardTaskRequest) GetProject() string {
@@ -35359,7 +34991,7 @@ type BatchBoardTaskNeed struct {
 
 func (x *BatchBoardTaskNeed) Reset() {
 	*x = BatchBoardTaskNeed{}
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[372]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[367]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -35371,7 +35003,7 @@ func (x *BatchBoardTaskNeed) String() string {
 func (*BatchBoardTaskNeed) ProtoMessage() {}
 
 func (x *BatchBoardTaskNeed) ProtoReflect() protoreflect.Message {
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[372]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[367]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -35384,7 +35016,7 @@ func (x *BatchBoardTaskNeed) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use BatchBoardTaskNeed.ProtoReflect.Descriptor instead.
 func (*BatchBoardTaskNeed) Descriptor() ([]byte, []int) {
-	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{372}
+	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{367}
 }
 
 func (x *BatchBoardTaskNeed) GetRef() isBatchBoardTaskNeed_Ref {
@@ -35442,7 +35074,7 @@ type BatchBoardTaskSpec struct {
 
 func (x *BatchBoardTaskSpec) Reset() {
 	*x = BatchBoardTaskSpec{}
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[373]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[368]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -35454,7 +35086,7 @@ func (x *BatchBoardTaskSpec) String() string {
 func (*BatchBoardTaskSpec) ProtoMessage() {}
 
 func (x *BatchBoardTaskSpec) ProtoReflect() protoreflect.Message {
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[373]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[368]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -35467,7 +35099,7 @@ func (x *BatchBoardTaskSpec) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use BatchBoardTaskSpec.ProtoReflect.Descriptor instead.
 func (*BatchBoardTaskSpec) Descriptor() ([]byte, []int) {
-	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{373}
+	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{368}
 }
 
 func (x *BatchBoardTaskSpec) GetKey() string {
@@ -35528,7 +35160,7 @@ type BatchCreateBoardTasksRequest struct {
 
 func (x *BatchCreateBoardTasksRequest) Reset() {
 	*x = BatchCreateBoardTasksRequest{}
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[374]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[369]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -35540,7 +35172,7 @@ func (x *BatchCreateBoardTasksRequest) String() string {
 func (*BatchCreateBoardTasksRequest) ProtoMessage() {}
 
 func (x *BatchCreateBoardTasksRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[374]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[369]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -35553,7 +35185,7 @@ func (x *BatchCreateBoardTasksRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use BatchCreateBoardTasksRequest.ProtoReflect.Descriptor instead.
 func (*BatchCreateBoardTasksRequest) Descriptor() ([]byte, []int) {
-	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{374}
+	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{369}
 }
 
 func (x *BatchCreateBoardTasksRequest) GetProject() string {
@@ -35621,7 +35253,7 @@ type BatchCreateBoardTasksResponse struct {
 
 func (x *BatchCreateBoardTasksResponse) Reset() {
 	*x = BatchCreateBoardTasksResponse{}
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[375]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[370]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -35633,7 +35265,7 @@ func (x *BatchCreateBoardTasksResponse) String() string {
 func (*BatchCreateBoardTasksResponse) ProtoMessage() {}
 
 func (x *BatchCreateBoardTasksResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[375]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[370]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -35646,7 +35278,7 @@ func (x *BatchCreateBoardTasksResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use BatchCreateBoardTasksResponse.ProtoReflect.Descriptor instead.
 func (*BatchCreateBoardTasksResponse) Descriptor() ([]byte, []int) {
-	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{375}
+	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{370}
 }
 
 func (x *BatchCreateBoardTasksResponse) GetTasks() []*BoardMessage {
@@ -35682,7 +35314,7 @@ type ListBoardTasksRequest struct {
 
 func (x *ListBoardTasksRequest) Reset() {
 	*x = ListBoardTasksRequest{}
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[376]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[371]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -35694,7 +35326,7 @@ func (x *ListBoardTasksRequest) String() string {
 func (*ListBoardTasksRequest) ProtoMessage() {}
 
 func (x *ListBoardTasksRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[376]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[371]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -35707,7 +35339,7 @@ func (x *ListBoardTasksRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListBoardTasksRequest.ProtoReflect.Descriptor instead.
 func (*ListBoardTasksRequest) Descriptor() ([]byte, []int) {
-	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{376}
+	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{371}
 }
 
 func (x *ListBoardTasksRequest) GetScope() isListBoardTasksRequest_Scope {
@@ -35845,7 +35477,7 @@ type ListBoardTasksResponse struct {
 
 func (x *ListBoardTasksResponse) Reset() {
 	*x = ListBoardTasksResponse{}
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[377]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[372]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -35857,7 +35489,7 @@ func (x *ListBoardTasksResponse) String() string {
 func (*ListBoardTasksResponse) ProtoMessage() {}
 
 func (x *ListBoardTasksResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[377]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[372]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -35870,7 +35502,7 @@ func (x *ListBoardTasksResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListBoardTasksResponse.ProtoReflect.Descriptor instead.
 func (*ListBoardTasksResponse) Descriptor() ([]byte, []int) {
-	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{377}
+	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{372}
 }
 
 func (x *ListBoardTasksResponse) GetTasks() []*BoardThreadSummary {
@@ -35911,7 +35543,7 @@ type ClaimBoardTaskRequest struct {
 
 func (x *ClaimBoardTaskRequest) Reset() {
 	*x = ClaimBoardTaskRequest{}
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[378]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[373]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -35923,7 +35555,7 @@ func (x *ClaimBoardTaskRequest) String() string {
 func (*ClaimBoardTaskRequest) ProtoMessage() {}
 
 func (x *ClaimBoardTaskRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[378]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[373]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -35936,7 +35568,7 @@ func (x *ClaimBoardTaskRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ClaimBoardTaskRequest.ProtoReflect.Descriptor instead.
 func (*ClaimBoardTaskRequest) Descriptor() ([]byte, []int) {
-	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{378}
+	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{373}
 }
 
 func (x *ClaimBoardTaskRequest) GetId() int64 {
@@ -36065,7 +35697,7 @@ type RenewBoardTaskRequest struct {
 
 func (x *RenewBoardTaskRequest) Reset() {
 	*x = RenewBoardTaskRequest{}
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[379]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[374]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -36077,7 +35709,7 @@ func (x *RenewBoardTaskRequest) String() string {
 func (*RenewBoardTaskRequest) ProtoMessage() {}
 
 func (x *RenewBoardTaskRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[379]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[374]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -36090,7 +35722,7 @@ func (x *RenewBoardTaskRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RenewBoardTaskRequest.ProtoReflect.Descriptor instead.
 func (*RenewBoardTaskRequest) Descriptor() ([]byte, []int) {
-	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{379}
+	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{374}
 }
 
 func (x *RenewBoardTaskRequest) GetId() int64 {
@@ -36148,7 +35780,7 @@ type ReleaseBoardTaskRequest struct {
 
 func (x *ReleaseBoardTaskRequest) Reset() {
 	*x = ReleaseBoardTaskRequest{}
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[380]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[375]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -36160,7 +35792,7 @@ func (x *ReleaseBoardTaskRequest) String() string {
 func (*ReleaseBoardTaskRequest) ProtoMessage() {}
 
 func (x *ReleaseBoardTaskRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[380]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[375]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -36173,7 +35805,7 @@ func (x *ReleaseBoardTaskRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ReleaseBoardTaskRequest.ProtoReflect.Descriptor instead.
 func (*ReleaseBoardTaskRequest) Descriptor() ([]byte, []int) {
-	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{380}
+	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{375}
 }
 
 func (x *ReleaseBoardTaskRequest) GetId() int64 {
@@ -36225,7 +35857,7 @@ type CompleteBoardTaskRequest struct {
 
 func (x *CompleteBoardTaskRequest) Reset() {
 	*x = CompleteBoardTaskRequest{}
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[381]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[376]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -36237,7 +35869,7 @@ func (x *CompleteBoardTaskRequest) String() string {
 func (*CompleteBoardTaskRequest) ProtoMessage() {}
 
 func (x *CompleteBoardTaskRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[381]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[376]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -36250,7 +35882,7 @@ func (x *CompleteBoardTaskRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CompleteBoardTaskRequest.ProtoReflect.Descriptor instead.
 func (*CompleteBoardTaskRequest) Descriptor() ([]byte, []int) {
-	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{381}
+	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{376}
 }
 
 func (x *CompleteBoardTaskRequest) GetId() int64 {
@@ -36309,7 +35941,7 @@ type FailBoardTaskRequest struct {
 
 func (x *FailBoardTaskRequest) Reset() {
 	*x = FailBoardTaskRequest{}
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[382]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[377]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -36321,7 +35953,7 @@ func (x *FailBoardTaskRequest) String() string {
 func (*FailBoardTaskRequest) ProtoMessage() {}
 
 func (x *FailBoardTaskRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[382]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[377]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -36334,7 +35966,7 @@ func (x *FailBoardTaskRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use FailBoardTaskRequest.ProtoReflect.Descriptor instead.
 func (*FailBoardTaskRequest) Descriptor() ([]byte, []int) {
-	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{382}
+	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{377}
 }
 
 func (x *FailBoardTaskRequest) GetId() int64 {
@@ -36394,7 +36026,7 @@ type BlockBoardTaskRequest struct {
 
 func (x *BlockBoardTaskRequest) Reset() {
 	*x = BlockBoardTaskRequest{}
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[383]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[378]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -36406,7 +36038,7 @@ func (x *BlockBoardTaskRequest) String() string {
 func (*BlockBoardTaskRequest) ProtoMessage() {}
 
 func (x *BlockBoardTaskRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[383]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[378]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -36419,7 +36051,7 @@ func (x *BlockBoardTaskRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use BlockBoardTaskRequest.ProtoReflect.Descriptor instead.
 func (*BlockBoardTaskRequest) Descriptor() ([]byte, []int) {
-	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{383}
+	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{378}
 }
 
 func (x *BlockBoardTaskRequest) GetId() int64 {
@@ -36482,7 +36114,7 @@ type UnblockBoardTaskRequest struct {
 
 func (x *UnblockBoardTaskRequest) Reset() {
 	*x = UnblockBoardTaskRequest{}
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[384]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[379]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -36494,7 +36126,7 @@ func (x *UnblockBoardTaskRequest) String() string {
 func (*UnblockBoardTaskRequest) ProtoMessage() {}
 
 func (x *UnblockBoardTaskRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[384]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[379]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -36507,7 +36139,7 @@ func (x *UnblockBoardTaskRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use UnblockBoardTaskRequest.ProtoReflect.Descriptor instead.
 func (*UnblockBoardTaskRequest) Descriptor() ([]byte, []int) {
-	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{384}
+	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{379}
 }
 
 func (x *UnblockBoardTaskRequest) GetId() int64 {
@@ -36542,7 +36174,7 @@ type ReopenBoardTaskRequest struct {
 
 func (x *ReopenBoardTaskRequest) Reset() {
 	*x = ReopenBoardTaskRequest{}
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[385]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[380]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -36554,7 +36186,7 @@ func (x *ReopenBoardTaskRequest) String() string {
 func (*ReopenBoardTaskRequest) ProtoMessage() {}
 
 func (x *ReopenBoardTaskRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[385]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[380]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -36567,7 +36199,7 @@ func (x *ReopenBoardTaskRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ReopenBoardTaskRequest.ProtoReflect.Descriptor instead.
 func (*ReopenBoardTaskRequest) Descriptor() ([]byte, []int) {
-	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{385}
+	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{380}
 }
 
 func (x *ReopenBoardTaskRequest) GetId() int64 {
@@ -36604,7 +36236,7 @@ type AssignBoardTaskRequest struct {
 
 func (x *AssignBoardTaskRequest) Reset() {
 	*x = AssignBoardTaskRequest{}
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[386]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[381]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -36616,7 +36248,7 @@ func (x *AssignBoardTaskRequest) String() string {
 func (*AssignBoardTaskRequest) ProtoMessage() {}
 
 func (x *AssignBoardTaskRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[386]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[381]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -36629,7 +36261,7 @@ func (x *AssignBoardTaskRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use AssignBoardTaskRequest.ProtoReflect.Descriptor instead.
 func (*AssignBoardTaskRequest) Descriptor() ([]byte, []int) {
-	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{386}
+	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{381}
 }
 
 func (x *AssignBoardTaskRequest) GetId() int64 {
@@ -36679,7 +36311,7 @@ type SetBoardTaskNeedsRequest struct {
 
 func (x *SetBoardTaskNeedsRequest) Reset() {
 	*x = SetBoardTaskNeedsRequest{}
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[387]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[382]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -36691,7 +36323,7 @@ func (x *SetBoardTaskNeedsRequest) String() string {
 func (*SetBoardTaskNeedsRequest) ProtoMessage() {}
 
 func (x *SetBoardTaskNeedsRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[387]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[382]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -36704,7 +36336,7 @@ func (x *SetBoardTaskNeedsRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SetBoardTaskNeedsRequest.ProtoReflect.Descriptor instead.
 func (*SetBoardTaskNeedsRequest) Descriptor() ([]byte, []int) {
-	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{387}
+	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{382}
 }
 
 func (x *SetBoardTaskNeedsRequest) GetId() int64 {
@@ -36747,7 +36379,7 @@ type CancelBoardTaskRequest struct {
 
 func (x *CancelBoardTaskRequest) Reset() {
 	*x = CancelBoardTaskRequest{}
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[388]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[383]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -36759,7 +36391,7 @@ func (x *CancelBoardTaskRequest) String() string {
 func (*CancelBoardTaskRequest) ProtoMessage() {}
 
 func (x *CancelBoardTaskRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[388]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[383]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -36772,7 +36404,7 @@ func (x *CancelBoardTaskRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CancelBoardTaskRequest.ProtoReflect.Descriptor instead.
 func (*CancelBoardTaskRequest) Descriptor() ([]byte, []int) {
-	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{388}
+	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{383}
 }
 
 func (x *CancelBoardTaskRequest) GetId() int64 {
@@ -36823,7 +36455,7 @@ type ImportedBoardTask struct {
 
 func (x *ImportedBoardTask) Reset() {
 	*x = ImportedBoardTask{}
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[389]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[384]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -36835,7 +36467,7 @@ func (x *ImportedBoardTask) String() string {
 func (*ImportedBoardTask) ProtoMessage() {}
 
 func (x *ImportedBoardTask) ProtoReflect() protoreflect.Message {
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[389]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[384]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -36848,7 +36480,7 @@ func (x *ImportedBoardTask) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ImportedBoardTask.ProtoReflect.Descriptor instead.
 func (*ImportedBoardTask) Descriptor() ([]byte, []int) {
-	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{389}
+	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{384}
 }
 
 func (x *ImportedBoardTask) GetState() BoardTaskState {
@@ -36959,7 +36591,7 @@ type ImportedBoardMessage struct {
 
 func (x *ImportedBoardMessage) Reset() {
 	*x = ImportedBoardMessage{}
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[390]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[385]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -36971,7 +36603,7 @@ func (x *ImportedBoardMessage) String() string {
 func (*ImportedBoardMessage) ProtoMessage() {}
 
 func (x *ImportedBoardMessage) ProtoReflect() protoreflect.Message {
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[390]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[385]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -36984,7 +36616,7 @@ func (x *ImportedBoardMessage) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ImportedBoardMessage.ProtoReflect.Descriptor instead.
 func (*ImportedBoardMessage) Descriptor() ([]byte, []int) {
-	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{390}
+	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{385}
 }
 
 func (x *ImportedBoardMessage) GetExternalId() string {
@@ -37107,7 +36739,7 @@ type ImportBoardRequest struct {
 
 func (x *ImportBoardRequest) Reset() {
 	*x = ImportBoardRequest{}
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[391]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[386]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -37119,7 +36751,7 @@ func (x *ImportBoardRequest) String() string {
 func (*ImportBoardRequest) ProtoMessage() {}
 
 func (x *ImportBoardRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[391]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[386]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -37132,7 +36764,7 @@ func (x *ImportBoardRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ImportBoardRequest.ProtoReflect.Descriptor instead.
 func (*ImportBoardRequest) Descriptor() ([]byte, []int) {
-	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{391}
+	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{386}
 }
 
 func (x *ImportBoardRequest) GetCreateProjects() bool {
@@ -37185,7 +36817,7 @@ type ImportBoardResponse struct {
 
 func (x *ImportBoardResponse) Reset() {
 	*x = ImportBoardResponse{}
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[392]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[387]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -37197,7 +36829,7 @@ func (x *ImportBoardResponse) String() string {
 func (*ImportBoardResponse) ProtoMessage() {}
 
 func (x *ImportBoardResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[392]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[387]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -37210,7 +36842,7 @@ func (x *ImportBoardResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ImportBoardResponse.ProtoReflect.Descriptor instead.
 func (*ImportBoardResponse) Descriptor() ([]byte, []int) {
-	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{392}
+	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{387}
 }
 
 func (x *ImportBoardResponse) GetActorsImported() int32 {
@@ -37274,7 +36906,7 @@ type GroupSpec struct {
 
 func (x *GroupSpec) Reset() {
 	*x = GroupSpec{}
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[393]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[388]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -37286,7 +36918,7 @@ func (x *GroupSpec) String() string {
 func (*GroupSpec) ProtoMessage() {}
 
 func (x *GroupSpec) ProtoReflect() protoreflect.Message {
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[393]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[388]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -37299,7 +36931,7 @@ func (x *GroupSpec) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GroupSpec.ProtoReflect.Descriptor instead.
 func (*GroupSpec) Descriptor() ([]byte, []int) {
-	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{393}
+	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{388}
 }
 
 func (x *GroupSpec) GetName() string {
@@ -37350,7 +36982,7 @@ type CommandSpec struct {
 
 func (x *CommandSpec) Reset() {
 	*x = CommandSpec{}
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[394]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[389]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -37362,7 +36994,7 @@ func (x *CommandSpec) String() string {
 func (*CommandSpec) ProtoMessage() {}
 
 func (x *CommandSpec) ProtoReflect() protoreflect.Message {
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[394]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[389]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -37375,7 +37007,7 @@ func (x *CommandSpec) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CommandSpec.ProtoReflect.Descriptor instead.
 func (*CommandSpec) Descriptor() ([]byte, []int) {
-	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{394}
+	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{389}
 }
 
 func (x *CommandSpec) GetName() string {
@@ -37466,7 +37098,7 @@ type FixedField struct {
 
 func (x *FixedField) Reset() {
 	*x = FixedField{}
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[395]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[390]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -37478,7 +37110,7 @@ func (x *FixedField) String() string {
 func (*FixedField) ProtoMessage() {}
 
 func (x *FixedField) ProtoReflect() protoreflect.Message {
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[395]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[390]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -37491,7 +37123,7 @@ func (x *FixedField) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use FixedField.ProtoReflect.Descriptor instead.
 func (*FixedField) Descriptor() ([]byte, []int) {
-	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{395}
+	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{390}
 }
 
 func (x *FixedField) GetField() string {
@@ -37520,7 +37152,7 @@ type InputSpec struct {
 
 func (x *InputSpec) Reset() {
 	*x = InputSpec{}
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[396]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[391]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -37532,7 +37164,7 @@ func (x *InputSpec) String() string {
 func (*InputSpec) ProtoMessage() {}
 
 func (x *InputSpec) ProtoReflect() protoreflect.Message {
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[396]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[391]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -37545,7 +37177,7 @@ func (x *InputSpec) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use InputSpec.ProtoReflect.Descriptor instead.
 func (*InputSpec) Descriptor() ([]byte, []int) {
-	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{396}
+	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{391}
 }
 
 func (x *InputSpec) GetField() string {
@@ -37596,7 +37228,7 @@ type ParamSpec struct {
 
 func (x *ParamSpec) Reset() {
 	*x = ParamSpec{}
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[397]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[392]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -37608,7 +37240,7 @@ func (x *ParamSpec) String() string {
 func (*ParamSpec) ProtoMessage() {}
 
 func (x *ParamSpec) ProtoReflect() protoreflect.Message {
-	mi := &file_hotbed_v1_hotbed_proto_msgTypes[397]
+	mi := &file_hotbed_v1_hotbed_proto_msgTypes[392]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -37621,7 +37253,7 @@ func (x *ParamSpec) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ParamSpec.ProtoReflect.Descriptor instead.
 func (*ParamSpec) Descriptor() ([]byte, []int) {
-	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{397}
+	return file_hotbed_v1_hotbed_proto_rawDescGZIP(), []int{392}
 }
 
 func (x *ParamSpec) GetName() string {
@@ -37835,7 +37467,7 @@ const file_hotbed_v1_hotbed_proto_rawDesc = "" +
 	"\vother_bytes\x18\x03 \x01(\x03R\n" +
 	"otherBytes\x12\x1d\n" +
 	"\n" +
-	"free_bytes\x18\x04 \x01(\x03R\tfreeBytes\"\x9f\x06\n" +
+	"free_bytes\x18\x04 \x01(\x03R\tfreeBytes\"\xf2\x05\n" +
 	"\x04Node\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x1a\n" +
 	"\bhostname\x18\x02 \x01(\tR\bhostname\x12\x14\n" +
@@ -37856,14 +37488,12 @@ const file_hotbed_v1_hotbed_proto_rawDesc = "" +
 	"\bprofiler\x18\x0e \x01(\v2\x19.hotbed.v1.ProfilerStatusR\bprofiler\x12;\n" +
 	"\vdaemon_logs\x18\x0f \x01(\v2\x1a.hotbed.v1.DaemonLogSourceR\n" +
 	"daemonLogs\x122\n" +
-	"\tadmission\x18\x10 \x01(\v2\x14.hotbed.v1.AdmissionR\tadmission\x12\x16\n" +
-	"\x06asleep\x18\x11 \x01(\bR\x06asleep\x123\n" +
-	"\n" +
-	"host_usage\x18\x12 \x01(\v2\x14.hotbed.v1.HostUsageR\thostUsage\x12#\n" +
+	"\tadmission\x18\x10 \x01(\v2\x14.hotbed.v1.AdmissionR\tadmission\x12#\n" +
 	"\rstorage_error\x18\x13 \x01(\tR\fstorageError\x12>\n" +
 	"\fobject_store\x18\x14 \x01(\v2\x1b.hotbed.v1.ObjectStoreStatsR\vobjectStoreB\f\n" +
 	"\n" +
-	"_last_seen\"\xc6\x14\n" +
+	"_last_seenJ\x04\b\x11\x10\x12J\x04\b\x12\x10\x13R\x06asleepR\n" +
+	"host_usage\"\xc6\x14\n" +
 	"\x10ObjectStoreStats\x12%\n" +
 	"\x0euploaded_bytes\x18\x01 \x01(\x04R\ruploadedBytes\x126\n" +
 	"\x17uploaded_segments_bytes\x18\x02 \x01(\x04R\x15uploadedSegmentsBytes\x124\n" +
@@ -37943,28 +37573,7 @@ const file_hotbed_v1_hotbed_proto_rawDesc = "" +
 	"\x0ePartCacheShard\x12\x14\n" +
 	"\x05shard\x18\x01 \x01(\rR\x05shard\x12\x16\n" +
 	"\x06device\x18\x02 \x01(\tR\x06device\x124\n" +
-	"\x05state\x18\x03 \x01(\x0e2\x1e.hotbed.v1.PartCacheShardStateR\x05state\"\x89\x02\n" +
-	"\tHostUsage\x12\x1e\n" +
-	"\vvm_cpu_busy\x18\x01 \x01(\x01R\tvmCpuBusy\x12\"\n" +
-	"\rhost_cpu_busy\x18\x02 \x01(\x01R\vhostCpuBusy\x12 \n" +
-	"\fhost_load_1m\x18\x03 \x01(\x01R\n" +
-	"hostLoad1m\x12\x1b\n" +
-	"\thost_cpus\x18\x04 \x01(\x05R\bhostCpus\x120\n" +
-	"\x14host_memory_pressure\x18\x05 \x01(\x01R\x12hostMemoryPressure\x12\x1d\n" +
-	"\n" +
-	"sampled_at\x18\x06 \x01(\x03R\tsampledAt\x12(\n" +
-	"\x10remaining_ttl_ms\x18\a \x01(\x03R\x0eremainingTtlMs\"X\n" +
-	"\x16ReportHostUsageRequest\x12\x12\n" +
-	"\x04node\x18\x01 \x01(\tR\x04node\x12*\n" +
-	"\x05usage\x18\x02 \x01(\v2\x14.hotbed.v1.HostUsageR\x05usage\"\x19\n" +
-	"\x17ReportHostUsageResponse\"n\n" +
-	"\x0eStandbyRequest\x12\x12\n" +
-	"\x04node\x18\x01 \x01(\tR\x04node\x12\x18\n" +
-	"\arunning\x18\x02 \x01(\bR\arunning\x12.\n" +
-	"\x13sleep_after_seconds\x18\x03 \x01(\x03R\x11sleepAfterSeconds\";\n" +
-	"\x0fStandbyResponse\x12\x10\n" +
-	"\x03run\x18\x01 \x01(\bR\x03run\x12\x16\n" +
-	"\x06reason\x18\x02 \x01(\tR\x06reason\"\x98\x01\n" +
+	"\x05state\x18\x03 \x01(\x0e2\x1e.hotbed.v1.PartCacheShardStateR\x05state\"\x98\x01\n" +
 	"\x0eProfilerStatus\x12\x16\n" +
 	"\x06active\x18\x01 \x01(\bR\x06active\x12\x16\n" +
 	"\x06engine\x18\x02 \x01(\tR\x06engine\x12\x1b\n" +
@@ -38706,13 +38315,12 @@ const file_hotbed_v1_hotbed_proto_rawDesc = "" +
 	"\x04args\x18\x03 \x03(\tR\x04args\x12\x10\n" +
 	"\x03env\x18\x04 \x03(\tR\x03env\x12\x1d\n" +
 	"\n" +
-	"public_key\x18\x05 \x01(\tR\tpublicKey\"\x86\x01\n" +
-	"\x11OpenShellResponse\x12\x16\n" +
-	"\x04addr\x18\x01 \x01(\tB\x02\x18\x01R\x04addr\x12\x12\n" +
+	"public_key\x18\x05 \x01(\tR\tpublicKey\"z\n" +
+	"\x11OpenShellResponse\x12\x12\n" +
 	"\x04user\x18\x02 \x01(\tR\x04user\x12&\n" +
 	"\x0fhost_public_key\x18\x03 \x01(\tR\rhostPublicKey\x12\x1d\n" +
 	"\n" +
-	"expires_at\x18\x04 \x01(\x03R\texpiresAt\"#\n" +
+	"expires_at\x18\x04 \x01(\x03R\texpiresAtJ\x04\b\x01\x10\x02R\x04addr\"#\n" +
 	"\x11GetCommandRequest\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\"\xf0\x01\n" +
 	"\x13ListCommandsRequest\x120\n" +
@@ -39254,18 +38862,17 @@ const file_hotbed_v1_hotbed_proto_rawDesc = "" +
 	"\fobject_store\x18\x14 \x01(\v2\x1b.hotbed.v1.ObjectStoreStatsR\vobjectStore\x124\n" +
 	"\n" +
 	"held_bases\x18\x15 \x03(\v2\x15.hotbed.v1.SharedBaseR\theldBases\x12;\n" +
-	"\rretired_bases\x18\x16 \x03(\v2\x16.hotbed.v1.CladefsCellR\fretiredBasesJ\x04\b\x13\x10\x14R\fshared_bases\"\xae\x03\n" +
+	"\rretired_bases\x18\x16 \x03(\v2\x16.hotbed.v1.CladefsCellR\fretiredBasesJ\x04\b\x13\x10\x14R\fshared_bases\"\x8b\x03\n" +
 	"\x11HeartbeatResponse\x124\n" +
 	"\bprojects\x18\x04 \x03(\v2\x18.hotbed.v1.HostedProjectR\bprojects\x12\x18\n" +
 	"\arelease\x18\x02 \x03(\tR\arelease\x12&\n" +
-	"\x05build\x18\x03 \x01(\v2\x10.hotbed.v1.BuildR\x05build\x123\n" +
-	"\n" +
-	"host_usage\x18\x05 \x01(\v2\x14.hotbed.v1.HostUsageR\thostUsage\x12#\n" +
+	"\x05build\x18\x03 \x01(\v2\x10.hotbed.v1.BuildR\x05build\x12#\n" +
 	"\rcladefs_peers\x18\a \x03(\tR\fcladefsPeers\x12;\n" +
 	"\x19decommission_incarnations\x18\b \x03(\x04R\x18decommissionIncarnations\x12<\n" +
 	"\rworker_config\x18\t \x01(\v2\x17.hotbed.v1.WorkerConfigR\fworkerConfig\x129\n" +
 	"\fretire_bases\x18\n" +
-	" \x03(\v2\x16.hotbed.v1.CladefsCellR\vretireBasesJ\x04\b\x01\x10\x02J\x04\b\x06\x10\aR\x05repos\"\xa9\x01\n" +
+	" \x03(\v2\x16.hotbed.v1.CladefsCellR\vretireBasesJ\x04\b\x01\x10\x02J\x04\b\x05\x10\x06J\x04\b\x06\x10\aR\x05reposR\n" +
+	"host_usage\"\xa9\x01\n" +
 	"\vRepoSummary\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x12\n" +
 	"\x04name\x18\x02 \x01(\tR\x04name\x12\x1a\n" +
@@ -39298,7 +38905,7 @@ const file_hotbed_v1_hotbed_proto_rawDesc = "" +
 	"\x10peer_parts_given\x18\r \x01(\x04R\x0epeerPartsGiven\x12*\n" +
 	"\x11peer_parts_served\x18\x0e \x01(\x04R\x0fpeerPartsServed\x12(\n" +
 	"\x10peer_given_bytes\x18\x0f \x01(\x04R\x0epeerGivenBytes\x12*\n" +
-	"\x11peer_served_bytes\x18\x10 \x01(\x04R\x0fpeerServedBytes\"\xcd\x05\n" +
+	"\x11peer_served_bytes\x18\x10 \x01(\x04R\x0fpeerServedBytes\"\x85\x05\n" +
 	"\x06Sample\x12\f\n" +
 	"\x01t\x18\x01 \x01(\x03R\x01t\x12\x19\n" +
 	"\bcpu_busy\x18\x02 \x01(\x01R\acpuBusy\x12\x1f\n" +
@@ -39306,9 +38913,7 @@ const file_hotbed_v1_hotbed_proto_rawDesc = "" +
 	"memoryUsed\x12'\n" +
 	"\x0fmemory_pressure\x18\x04 \x01(\x01R\x0ememoryPressure\x12!\n" +
 	"\fcpu_pressure\x18\x05 \x01(\x01R\vcpuPressure\x12\x18\n" +
-	"\aholding\x18\x06 \x01(\bR\aholding\x12#\n" +
-	"\vvm_cpu_busy\x18\a \x01(\x01H\x00R\tvmCpuBusy\x88\x01\x01\x12'\n" +
-	"\rhost_cpu_busy\x18\b \x01(\x01H\x01R\vhostCpuBusy\x88\x01\x01\x12/\n" +
+	"\aholding\x18\x06 \x01(\bR\aholding\x12/\n" +
 	"\x14upload_bytes_per_sec\x18\t \x01(\x01R\x11uploadBytesPerSec\x123\n" +
 	"\x16download_bytes_per_sec\x18\n" +
 	" \x01(\x01R\x13downloadBytesPerSec\x122\n" +
@@ -39317,9 +38922,7 @@ const file_hotbed_v1_hotbed_proto_rawDesc = "" +
 	"\x19peer_parts_served_per_sec\x18\r \x01(\x01R\x15peerPartsServedPerSec\x12%\n" +
 	"\x0fr2_gets_per_sec\x18\x0e \x01(\x01R\fr2GetsPerSec\x126\n" +
 	"\x18peer_given_bytes_per_sec\x18\x0f \x01(\x01R\x14peerGivenBytesPerSec\x128\n" +
-	"\x19peer_served_bytes_per_sec\x18\x10 \x01(\x01R\x15peerServedBytesPerSecB\x0e\n" +
-	"\f_vm_cpu_busyB\x10\n" +
-	"\x0e_host_cpu_busy\"6\n" +
+	"\x19peer_served_bytes_per_sec\x18\x10 \x01(\x01R\x15peerServedBytesPerSecJ\x04\b\a\x10\bJ\x04\b\b\x10\tR\vvm_cpu_busyR\rhost_cpu_busy\"6\n" +
 	"\aSamples\x12+\n" +
 	"\asamples\x18\x01 \x03(\v2\x11.hotbed.v1.SampleR\asamples\"d\n" +
 	"\n" +
@@ -41546,16 +41149,14 @@ const file_hotbed_v1_hotbed_proto_rawDesc = "" +
 	" BOARD_SCHEDULE_STATE_UNSPECIFIED\x10\x00\x12 \n" +
 	"\x1cBOARD_SCHEDULE_STATE_PENDING\x10\x01\x12\x1d\n" +
 	"\x19BOARD_SCHEDULE_STATE_DONE\x10\x02\x12!\n" +
-	"\x1dBOARD_SCHEDULE_STATE_CANCELED\x10\x032\xad<\n" +
+	"\x1dBOARD_SCHEDULE_STATE_CANCELED\x10\x032\xf4:\n" +
 	"\x0eClusterService\x127\n" +
 	"\x04Join\x12\x16.hotbed.v1.JoinRequest\x1a\x17.hotbed.v1.JoinResponse\x12I\n" +
 	"\n" +
 	"PushEvents\x12\x1c.hotbed.v1.PushEventsRequest\x1a\x1d.hotbed.v1.PushEventsResponse\x12F\n" +
-	"\tHeartbeat\x12\x1b.hotbed.v1.HeartbeatRequest\x1a\x1c.hotbed.v1.HeartbeatResponse\x12B\n" +
-	"\aStandby\x12\x19.hotbed.v1.StandbyRequest\x1a\x1a.hotbed.v1.StandbyResponse0\x01\x12X\n" +
-	"\x0fReportHostUsage\x12!.hotbed.v1.ReportHostUsageRequest\x1a\".hotbed.v1.ReportHostUsageResponse\x12\xf1\x02\n" +
-	"\tListNodes\x12\x1b.hotbed.v1.ListNodesRequest\x1a\x1c.hotbed.v1.ListNodesResponse\"\xa8\x02\x82\xb5\x18\xa0\x02\n" +
-	"\x05nodesP\x01b\x94\x02{{range .nodes}}{{pad 16 .hostname}}  {{with .resources}}{{pad 6 .arch}}  {{.cpus}} cpus{{else}}-       - cpus{{end}}{{if .asleep}}  asleep{{else if .online}}  online{{else if .storageError}}  offline: cannot open its storage: {{.storageError}}{{else}}  offline{{end}}\n" +
+	"\tHeartbeat\x12\x1b.hotbed.v1.HeartbeatRequest\x1a\x1c.hotbed.v1.HeartbeatResponse\x12\xd6\x02\n" +
+	"\tListNodes\x12\x1b.hotbed.v1.ListNodesRequest\x1a\x1c.hotbed.v1.ListNodesResponse\"\x8d\x02\x82\xb5\x18\x85\x02\n" +
+	"\x05nodesP\x01b\xf9\x01{{range .nodes}}{{pad 16 .hostname}}  {{with .resources}}{{pad 6 .arch}}  {{.cpus}} cpus{{else}}-       - cpus{{end}}{{if .online}}  online{{else if .storageError}}  offline: cannot open its storage: {{.storageError}}{{else}}  offline{{end}}\n" +
 	"{{end}}\x90\x02\x02\x12=\n" +
 	"\bGetBuild\x12\x1a.hotbed.v1.GetBuildRequest\x1a\x10.hotbed.v1.Build\"\x03\x90\x02\x02\x12\x8c\x01\n" +
 	"\tListRepos\x12\x1b.hotbed.v1.ListReposRequest\x1a\x1c.hotbed.v1.ListReposResponse\"D\x82\xb5\x18=\n" +
@@ -41920,7 +41521,7 @@ func file_hotbed_v1_hotbed_proto_rawDescGZIP() []byte {
 }
 
 var file_hotbed_v1_hotbed_proto_enumTypes = make([]protoimpl.EnumInfo, 34)
-var file_hotbed_v1_hotbed_proto_msgTypes = make([]protoimpl.MessageInfo, 420)
+var file_hotbed_v1_hotbed_proto_msgTypes = make([]protoimpl.MessageInfo, 415)
 var file_hotbed_v1_hotbed_proto_goTypes = []any{
 	(PartCacheShardState)(0),                // 0: hotbed.v1.PartCacheShardState
 	(StepState)(0),                          // 1: hotbed.v1.StepState
@@ -41968,1163 +41569,1151 @@ var file_hotbed_v1_hotbed_proto_goTypes = []any{
 	(*ObjectStoreStats)(nil),                // 43: hotbed.v1.ObjectStoreStats
 	(*PartFetches)(nil),                     // 44: hotbed.v1.PartFetches
 	(*PartCacheShard)(nil),                  // 45: hotbed.v1.PartCacheShard
-	(*HostUsage)(nil),                       // 46: hotbed.v1.HostUsage
-	(*ReportHostUsageRequest)(nil),          // 47: hotbed.v1.ReportHostUsageRequest
-	(*ReportHostUsageResponse)(nil),         // 48: hotbed.v1.ReportHostUsageResponse
-	(*StandbyRequest)(nil),                  // 49: hotbed.v1.StandbyRequest
-	(*StandbyResponse)(nil),                 // 50: hotbed.v1.StandbyResponse
-	(*ProfilerStatus)(nil),                  // 51: hotbed.v1.ProfilerStatus
-	(*JoinRequest)(nil),                     // 52: hotbed.v1.JoinRequest
-	(*JoinResponse)(nil),                    // 53: hotbed.v1.JoinResponse
-	(*ListNodesRequest)(nil),                // 54: hotbed.v1.ListNodesRequest
-	(*ListNodesResponse)(nil),               // 55: hotbed.v1.ListNodesResponse
-	(*ManagedArtifact)(nil),                 // 56: hotbed.v1.ManagedArtifact
-	(*Build)(nil),                           // 57: hotbed.v1.Build
-	(*WorkerVMConfig)(nil),                  // 58: hotbed.v1.WorkerVMConfig
-	(*WorkerCladefsFUSEConfig)(nil),         // 59: hotbed.v1.WorkerCladefsFUSEConfig
-	(*WorkerSystemConfig)(nil),              // 60: hotbed.v1.WorkerSystemConfig
-	(*WorkerFreshenConfig)(nil),             // 61: hotbed.v1.WorkerFreshenConfig
-	(*OrgControllerConfig)(nil),             // 62: hotbed.v1.OrgControllerConfig
-	(*WorkerConfig)(nil),                    // 63: hotbed.v1.WorkerConfig
-	(*GetWorkerConfigRequest)(nil),          // 64: hotbed.v1.GetWorkerConfigRequest
-	(*GetWorkerConfigResponse)(nil),         // 65: hotbed.v1.GetWorkerConfigResponse
-	(*SetWorkerConfigRequest)(nil),          // 66: hotbed.v1.SetWorkerConfigRequest
-	(*DeleteWorkerConfigRequest)(nil),       // 67: hotbed.v1.DeleteWorkerConfigRequest
-	(*DeleteWorkerConfigResponse)(nil),      // 68: hotbed.v1.DeleteWorkerConfigResponse
-	(*GetBuildRequest)(nil),                 // 69: hotbed.v1.GetBuildRequest
-	(*UpgradeSystemRequest)(nil),            // 70: hotbed.v1.UpgradeSystemRequest
-	(*WorkerUpgradeSystemRequest)(nil),      // 71: hotbed.v1.WorkerUpgradeSystemRequest
-	(*NodeSystemUpgrade)(nil),               // 72: hotbed.v1.NodeSystemUpgrade
-	(*UpgradeSystemResponse)(nil),           // 73: hotbed.v1.UpgradeSystemResponse
-	(*Repo)(nil),                            // 74: hotbed.v1.Repo
-	(*Step)(nil),                            // 75: hotbed.v1.Step
-	(*AppliedStep)(nil),                     // 76: hotbed.v1.AppliedStep
-	(*PutStepRequest)(nil),                  // 77: hotbed.v1.PutStepRequest
-	(*DeleteStepRequest)(nil),               // 78: hotbed.v1.DeleteStepRequest
-	(*ListStepsRequest)(nil),                // 79: hotbed.v1.ListStepsRequest
-	(*ListStepsResponse)(nil),               // 80: hotbed.v1.ListStepsResponse
-	(*StepStatus)(nil),                      // 81: hotbed.v1.StepStatus
-	(*StepOnNode)(nil),                      // 82: hotbed.v1.StepOnNode
-	(*ListReposRequest)(nil),                // 83: hotbed.v1.ListReposRequest
-	(*ListReposResponse)(nil),               // 84: hotbed.v1.ListReposResponse
-	(*PutRepoRequest)(nil),                  // 85: hotbed.v1.PutRepoRequest
-	(*DeleteRepoRequest)(nil),               // 86: hotbed.v1.DeleteRepoRequest
-	(*DeleteRepoResponse)(nil),              // 87: hotbed.v1.DeleteRepoResponse
-	(*RebuildProjectRequest)(nil),           // 88: hotbed.v1.RebuildProjectRequest
-	(*SetProjectHostsRequest)(nil),          // 89: hotbed.v1.SetProjectHostsRequest
-	(*HostedProject)(nil),                   // 90: hotbed.v1.HostedProject
-	(*Base)(nil),                            // 91: hotbed.v1.Base
-	(*FreshenPhase)(nil),                    // 92: hotbed.v1.FreshenPhase
-	(*BaseRepo)(nil),                        // 93: hotbed.v1.BaseRepo
-	(*Workspace)(nil),                       // 94: hotbed.v1.Workspace
-	(*WorkspaceRepo)(nil),                   // 95: hotbed.v1.WorkspaceRepo
-	(*CreateWorkspaceRequest)(nil),          // 96: hotbed.v1.CreateWorkspaceRequest
-	(*Placement)(nil),                       // 97: hotbed.v1.Placement
-	(*GetWorkspaceRequest)(nil),             // 98: hotbed.v1.GetWorkspaceRequest
-	(*WatchWorkspaceRequest)(nil),           // 99: hotbed.v1.WatchWorkspaceRequest
-	(*ListWorkspacesRequest)(nil),           // 100: hotbed.v1.ListWorkspacesRequest
-	(*ListWorkspacesResponse)(nil),          // 101: hotbed.v1.ListWorkspacesResponse
-	(*ReleaseWorkspaceRequest)(nil),         // 102: hotbed.v1.ReleaseWorkspaceRequest
-	(*ReleaseWorkspaceResponse)(nil),        // 103: hotbed.v1.ReleaseWorkspaceResponse
-	(*SyncRequest)(nil),                     // 104: hotbed.v1.SyncRequest
-	(*SyncHeader)(nil),                      // 105: hotbed.v1.SyncHeader
-	(*SyncSubmodule)(nil),                   // 106: hotbed.v1.SyncSubmodule
-	(*SyncResponse)(nil),                    // 107: hotbed.v1.SyncResponse
-	(*FileEntry)(nil),                       // 108: hotbed.v1.FileEntry
-	(*ListFilesRequest)(nil),                // 109: hotbed.v1.ListFilesRequest
-	(*ListFilesResponse)(nil),               // 110: hotbed.v1.ListFilesResponse
-	(*GetFileRequest)(nil),                  // 111: hotbed.v1.GetFileRequest
-	(*FileContent)(nil),                     // 112: hotbed.v1.FileContent
-	(*CommandLimits)(nil),                   // 113: hotbed.v1.CommandLimits
-	(*Rebuilt)(nil),                         // 114: hotbed.v1.Rebuilt
-	(*CommandIntervention)(nil),             // 115: hotbed.v1.CommandIntervention
-	(*CommandDiagnostics)(nil),              // 116: hotbed.v1.CommandDiagnostics
-	(*GetCommandDiagnosticsRequest)(nil),    // 117: hotbed.v1.GetCommandDiagnosticsRequest
-	(*GetCommandDiagnosticsResponse)(nil),   // 118: hotbed.v1.GetCommandDiagnosticsResponse
-	(*SaveCommandDiagnosticsRequest)(nil),   // 119: hotbed.v1.SaveCommandDiagnosticsRequest
-	(*SaveCommandDiagnosticsResponse)(nil),  // 120: hotbed.v1.SaveCommandDiagnosticsResponse
-	(*CommandSample)(nil),                   // 121: hotbed.v1.CommandSample
-	(*ListCommandSamplesRequest)(nil),       // 122: hotbed.v1.ListCommandSamplesRequest
-	(*ListCommandSamplesResponse)(nil),      // 123: hotbed.v1.ListCommandSamplesResponse
-	(*GetCommandSampleRequest)(nil),         // 124: hotbed.v1.GetCommandSampleRequest
-	(*SaveCommandSampleRequest)(nil),        // 125: hotbed.v1.SaveCommandSampleRequest
-	(*SaveCommandSampleResponse)(nil),       // 126: hotbed.v1.SaveCommandSampleResponse
-	(*CommandOutputChunk)(nil),              // 127: hotbed.v1.CommandOutputChunk
-	(*PushCommandOutputRequest)(nil),        // 128: hotbed.v1.PushCommandOutputRequest
-	(*PushCommandOutputResponse)(nil),       // 129: hotbed.v1.PushCommandOutputResponse
-	(*CommandEvent)(nil),                    // 130: hotbed.v1.CommandEvent
-	(*Command)(nil),                         // 131: hotbed.v1.Command
-	(*FinishedCommand)(nil),                 // 132: hotbed.v1.FinishedCommand
-	(*RunCommandRequest)(nil),               // 133: hotbed.v1.RunCommandRequest
-	(*CommandEstimate)(nil),                 // 134: hotbed.v1.CommandEstimate
-	(*QueryOutputRequest)(nil),              // 135: hotbed.v1.QueryOutputRequest
-	(*OutputLine)(nil),                      // 136: hotbed.v1.OutputLine
-	(*OutputQuery)(nil),                     // 137: hotbed.v1.OutputQuery
-	(*DetachCommandRequest)(nil),            // 138: hotbed.v1.DetachCommandRequest
-	(*SendInputRequest)(nil),                // 139: hotbed.v1.SendInputRequest
-	(*SendInputResponse)(nil),               // 140: hotbed.v1.SendInputResponse
-	(*OpenShellRequest)(nil),                // 141: hotbed.v1.OpenShellRequest
-	(*OpenShellResponse)(nil),               // 142: hotbed.v1.OpenShellResponse
-	(*GetCommandRequest)(nil),               // 143: hotbed.v1.GetCommandRequest
-	(*ListCommandsRequest)(nil),             // 144: hotbed.v1.ListCommandsRequest
-	(*ListCommandsResponse)(nil),            // 145: hotbed.v1.ListCommandsResponse
-	(*StopCommandRequest)(nil),              // 146: hotbed.v1.StopCommandRequest
-	(*PauseCommandRequest)(nil),             // 147: hotbed.v1.PauseCommandRequest
-	(*ResumeCommandRequest)(nil),            // 148: hotbed.v1.ResumeCommandRequest
-	(*FollowLogRequest)(nil),                // 149: hotbed.v1.FollowLogRequest
-	(*LogChunk)(nil),                        // 150: hotbed.v1.LogChunk
-	(*Session)(nil),                         // 151: hotbed.v1.Session
-	(*SessionWorkspace)(nil),                // 152: hotbed.v1.SessionWorkspace
-	(*StartSessionRequest)(nil),             // 153: hotbed.v1.StartSessionRequest
-	(*ListSessionsRequest)(nil),             // 154: hotbed.v1.ListSessionsRequest
-	(*ListSessionsResponse)(nil),            // 155: hotbed.v1.ListSessionsResponse
-	(*SearchSessionsRequest)(nil),           // 156: hotbed.v1.SearchSessionsRequest
-	(*SearchSessionsResponse)(nil),          // 157: hotbed.v1.SearchSessionsResponse
-	(*Project)(nil),                         // 158: hotbed.v1.Project
-	(*ProjectChange)(nil),                   // 159: hotbed.v1.ProjectChange
-	(*AddProjectRequest)(nil),               // 160: hotbed.v1.AddProjectRequest
-	(*RemoveProjectReposRequest)(nil),       // 161: hotbed.v1.RemoveProjectReposRequest
-	(*GetProjectRequest)(nil),               // 162: hotbed.v1.GetProjectRequest
-	(*ListProjectsRequest)(nil),             // 163: hotbed.v1.ListProjectsRequest
-	(*ListProjectsResponse)(nil),            // 164: hotbed.v1.ListProjectsResponse
-	(*ListBasesRequest)(nil),                // 165: hotbed.v1.ListBasesRequest
-	(*ListBasesResponse)(nil),               // 166: hotbed.v1.ListBasesResponse
-	(*NodeBase)(nil),                        // 167: hotbed.v1.NodeBase
-	(*ListFreshensRequest)(nil),             // 168: hotbed.v1.ListFreshensRequest
-	(*ListFreshensResponse)(nil),            // 169: hotbed.v1.ListFreshensResponse
-	(*GetFreshenRequest)(nil),               // 170: hotbed.v1.GetFreshenRequest
-	(*GetFreshenResponse)(nil),              // 171: hotbed.v1.GetFreshenResponse
-	(*BaseFreshen)(nil),                     // 172: hotbed.v1.BaseFreshen
-	(*DurationStats)(nil),                   // 173: hotbed.v1.DurationStats
-	(*StepTimingSummary)(nil),               // 174: hotbed.v1.StepTimingSummary
-	(*NodeProjectFreshenSummary)(nil),       // 175: hotbed.v1.NodeProjectFreshenSummary
-	(*FreshenSummary)(nil),                  // 176: hotbed.v1.FreshenSummary
-	(*GetSessionRequest)(nil),               // 177: hotbed.v1.GetSessionRequest
-	(*GetSessionResponse)(nil),              // 178: hotbed.v1.GetSessionResponse
-	(*EndSessionRequest)(nil),               // 179: hotbed.v1.EndSessionRequest
-	(*WatchSessionRequest)(nil),             // 180: hotbed.v1.WatchSessionRequest
-	(*PollRequest)(nil),                     // 181: hotbed.v1.PollRequest
-	(*SessionEvents)(nil),                   // 182: hotbed.v1.SessionEvents
-	(*SessionEvent)(nil),                    // 183: hotbed.v1.SessionEvent
-	(*CommandUpdate)(nil),                   // 184: hotbed.v1.CommandUpdate
-	(*WorkspaceUpdate)(nil),                 // 185: hotbed.v1.WorkspaceUpdate
-	(*QuestionUpdate)(nil),                  // 186: hotbed.v1.QuestionUpdate
-	(*ReviewUpdate)(nil),                    // 187: hotbed.v1.ReviewUpdate
-	(*MemoryUpdate)(nil),                    // 188: hotbed.v1.MemoryUpdate
-	(*GetLogLinesRequest)(nil),              // 189: hotbed.v1.GetLogLinesRequest
-	(*CommandLog)(nil),                      // 190: hotbed.v1.CommandLog
-	(*WorkerEvent)(nil),                     // 191: hotbed.v1.WorkerEvent
-	(*EventRef)(nil),                        // 192: hotbed.v1.EventRef
-	(*Event)(nil),                           // 193: hotbed.v1.Event
-	(*BaseChange)(nil),                      // 194: hotbed.v1.BaseChange
-	(*WorkspaceChange)(nil),                 // 195: hotbed.v1.WorkspaceChange
-	(*CommandChange)(nil),                   // 196: hotbed.v1.CommandChange
-	(*Checkpoint)(nil),                      // 197: hotbed.v1.Checkpoint
-	(*PushEventsRequest)(nil),               // 198: hotbed.v1.PushEventsRequest
-	(*PushEventsResponse)(nil),              // 199: hotbed.v1.PushEventsResponse
-	(*CommandUsage)(nil),                    // 200: hotbed.v1.CommandUsage
-	(*BaseUsage)(nil),                       // 201: hotbed.v1.BaseUsage
-	(*WorkspaceUsage)(nil),                  // 202: hotbed.v1.WorkspaceUsage
-	(*HeartbeatRequest)(nil),                // 203: hotbed.v1.HeartbeatRequest
-	(*HeartbeatResponse)(nil),               // 204: hotbed.v1.HeartbeatResponse
-	(*RepoSummary)(nil),                     // 205: hotbed.v1.RepoSummary
-	(*ClusterEvent)(nil),                    // 206: hotbed.v1.ClusterEvent
-	(*Totals)(nil),                          // 207: hotbed.v1.Totals
-	(*Sample)(nil),                          // 208: hotbed.v1.Sample
-	(*Samples)(nil),                         // 209: hotbed.v1.Samples
-	(*LoadSample)(nil),                      // 210: hotbed.v1.LoadSample
-	(*HourBucket)(nil),                      // 211: hotbed.v1.HourBucket
-	(*NodeHour)(nil),                        // 212: hotbed.v1.NodeHour
-	(*NodeHours)(nil),                       // 213: hotbed.v1.NodeHours
-	(*GetSnapshotRequest)(nil),              // 214: hotbed.v1.GetSnapshotRequest
-	(*Snapshot)(nil),                        // 215: hotbed.v1.Snapshot
-	(*PlacementDecision)(nil),               // 216: hotbed.v1.PlacementDecision
-	(*PlacementCandidate)(nil),              // 217: hotbed.v1.PlacementCandidate
-	(*CostPart)(nil),                        // 218: hotbed.v1.CostPart
-	(*RetireNodeRequest)(nil),               // 219: hotbed.v1.RetireNodeRequest
-	(*GetNodeRequest)(nil),                  // 220: hotbed.v1.GetNodeRequest
-	(*NodeDetail)(nil),                      // 221: hotbed.v1.NodeDetail
-	(*ListPlacementsRequest)(nil),           // 222: hotbed.v1.ListPlacementsRequest
-	(*ListPlacementsResponse)(nil),          // 223: hotbed.v1.ListPlacementsResponse
-	(*ListEventsRequest)(nil),               // 224: hotbed.v1.ListEventsRequest
-	(*ListEventsResponse)(nil),              // 225: hotbed.v1.ListEventsResponse
-	(*GetDaemonLogsRequest)(nil),            // 226: hotbed.v1.GetDaemonLogsRequest
-	(*DaemonLogEntry)(nil),                  // 227: hotbed.v1.DaemonLogEntry
-	(*DaemonLogSource)(nil),                 // 228: hotbed.v1.DaemonLogSource
-	(*GetDaemonLogsResponse)(nil),           // 229: hotbed.v1.GetDaemonLogsResponse
-	(*ScheduledCommand)(nil),                // 230: hotbed.v1.ScheduledCommand
-	(*ScheduledRun)(nil),                    // 231: hotbed.v1.ScheduledRun
-	(*PutScheduleRequest)(nil),              // 232: hotbed.v1.PutScheduleRequest
-	(*ListSchedulesRequest)(nil),            // 233: hotbed.v1.ListSchedulesRequest
-	(*ListSchedulesResponse)(nil),           // 234: hotbed.v1.ListSchedulesResponse
-	(*GetScheduleRequest)(nil),              // 235: hotbed.v1.GetScheduleRequest
-	(*DeleteScheduleRequest)(nil),           // 236: hotbed.v1.DeleteScheduleRequest
-	(*DeleteScheduleResponse)(nil),          // 237: hotbed.v1.DeleteScheduleResponse
-	(*RunScheduleRequest)(nil),              // 238: hotbed.v1.RunScheduleRequest
-	(*PauseScheduleRequest)(nil),            // 239: hotbed.v1.PauseScheduleRequest
-	(*InspectCommandRequest)(nil),           // 240: hotbed.v1.InspectCommandRequest
-	(*ThreadInfo)(nil),                      // 241: hotbed.v1.ThreadInfo
-	(*ProcessInfo)(nil),                     // 242: hotbed.v1.ProcessInfo
-	(*OpenFile)(nil),                        // 243: hotbed.v1.OpenFile
-	(*CgroupIO)(nil),                        // 244: hotbed.v1.CgroupIO
-	(*CgroupStats)(nil),                     // 245: hotbed.v1.CgroupStats
-	(*ThreadKernelStack)(nil),               // 246: hotbed.v1.ThreadKernelStack
-	(*MemoryRegion)(nil),                    // 247: hotbed.v1.MemoryRegion
-	(*ProcessMemoryMap)(nil),                // 248: hotbed.v1.ProcessMemoryMap
-	(*ResourceLimit)(nil),                   // 249: hotbed.v1.ResourceLimit
-	(*ProcessLimits)(nil),                   // 250: hotbed.v1.ProcessLimits
-	(*ToolCapability)(nil),                  // 251: hotbed.v1.ToolCapability
-	(*InspectCommandResponse)(nil),          // 252: hotbed.v1.InspectCommandResponse
-	(*TraceCommandRequest)(nil),             // 253: hotbed.v1.TraceCommandRequest
-	(*PerfCounter)(nil),                     // 254: hotbed.v1.PerfCounter
-	(*SyscallStat)(nil),                     // 255: hotbed.v1.SyscallStat
-	(*TraceSummary)(nil),                    // 256: hotbed.v1.TraceSummary
-	(*TraceCommandChunk)(nil),               // 257: hotbed.v1.TraceCommandChunk
-	(*SampleCommandRequest)(nil),            // 258: hotbed.v1.SampleCommandRequest
-	(*SampleCommandChunk)(nil),              // 259: hotbed.v1.SampleCommandChunk
-	(*SampleCollector)(nil),                 // 260: hotbed.v1.SampleCollector
-	(*ThreadSyscall)(nil),                   // 261: hotbed.v1.ThreadSyscall
-	(*StackFrame)(nil),                      // 262: hotbed.v1.StackFrame
-	(*SampledThread)(nil),                   // 263: hotbed.v1.SampledThread
-	(*SampledOpenFile)(nil),                 // 264: hotbed.v1.SampledOpenFile
-	(*FileLock)(nil),                        // 265: hotbed.v1.FileLock
-	(*SampledProcess)(nil),                  // 266: hotbed.v1.SampledProcess
-	(*SampledCgroup)(nil),                   // 267: hotbed.v1.SampledCgroup
-	(*ProcessSample)(nil),                   // 268: hotbed.v1.ProcessSample
-	(*GetProfileRequest)(nil),               // 269: hotbed.v1.GetProfileRequest
-	(*ProfileFrame)(nil),                    // 270: hotbed.v1.ProfileFrame
-	(*FoldedStack)(nil),                     // 271: hotbed.v1.FoldedStack
-	(*ProfileFunction)(nil),                 // 272: hotbed.v1.ProfileFunction
-	(*ProfileBucket)(nil),                   // 273: hotbed.v1.ProfileBucket
-	(*CommandProfile)(nil),                  // 274: hotbed.v1.CommandProfile
-	(*Prompt)(nil),                          // 275: hotbed.v1.Prompt
-	(*PromptOption)(nil),                    // 276: hotbed.v1.PromptOption
-	(*Answer)(nil),                          // 277: hotbed.v1.Answer
-	(*Stamp)(nil),                           // 278: hotbed.v1.Stamp
-	(*AskedFrom)(nil),                       // 279: hotbed.v1.AskedFrom
-	(*Question)(nil),                        // 280: hotbed.v1.Question
-	(*QuestionChange)(nil),                  // 281: hotbed.v1.QuestionChange
-	(*AddQuestionsRequest)(nil),             // 282: hotbed.v1.AddQuestionsRequest
-	(*AddQuestionsResponse)(nil),            // 283: hotbed.v1.AddQuestionsResponse
-	(*EditQuestionRequest)(nil),             // 284: hotbed.v1.EditQuestionRequest
-	(*DeleteQuestionRequest)(nil),           // 285: hotbed.v1.DeleteQuestionRequest
-	(*ListQuestionsRequest)(nil),            // 286: hotbed.v1.ListQuestionsRequest
-	(*QuestionSession)(nil),                 // 287: hotbed.v1.QuestionSession
-	(*ListQuestionsResponse)(nil),           // 288: hotbed.v1.ListQuestionsResponse
-	(*ListQuestionProjectsRequest)(nil),     // 289: hotbed.v1.ListQuestionProjectsRequest
-	(*ListQuestionProjectsResponse)(nil),    // 290: hotbed.v1.ListQuestionProjectsResponse
-	(*QuestionProject)(nil),                 // 291: hotbed.v1.QuestionProject
-	(*GetQuestionRequest)(nil),              // 292: hotbed.v1.GetQuestionRequest
-	(*AnswerQuestionRequest)(nil),           // 293: hotbed.v1.AnswerQuestionRequest
-	(*DismissQuestionRequest)(nil),          // 294: hotbed.v1.DismissQuestionRequest
-	(*ReviseQuestionRequest)(nil),           // 295: hotbed.v1.ReviseQuestionRequest
-	(*ReopenQuestionRequest)(nil),           // 296: hotbed.v1.ReopenQuestionRequest
-	(*MoveQuestionRequest)(nil),             // 297: hotbed.v1.MoveQuestionRequest
-	(*AckQuestionsRequest)(nil),             // 298: hotbed.v1.AckQuestionsRequest
-	(*AckQuestionsResponse)(nil),            // 299: hotbed.v1.AckQuestionsResponse
-	(*Reviewer)(nil),                        // 300: hotbed.v1.Reviewer
-	(*Location)(nil),                        // 301: hotbed.v1.Location
-	(*ReportedFinding)(nil),                 // 302: hotbed.v1.ReportedFinding
-	(*Finding)(nil),                         // 303: hotbed.v1.Finding
-	(*Fix)(nil),                             // 304: hotbed.v1.Fix
-	(*Review)(nil),                          // 305: hotbed.v1.Review
-	(*ReviewEvent)(nil),                     // 306: hotbed.v1.ReviewEvent
-	(*RequestReviewRequest)(nil),            // 307: hotbed.v1.RequestReviewRequest
-	(*ListReviewsRequest)(nil),              // 308: hotbed.v1.ListReviewsRequest
-	(*ListReviewsResponse)(nil),             // 309: hotbed.v1.ListReviewsResponse
-	(*GetReviewRequest)(nil),                // 310: hotbed.v1.GetReviewRequest
-	(*StartReviewRequest)(nil),              // 311: hotbed.v1.StartReviewRequest
-	(*AddFindingsRequest)(nil),              // 312: hotbed.v1.AddFindingsRequest
-	(*AddFindingsResponse)(nil),             // 313: hotbed.v1.AddFindingsResponse
-	(*FinishReviewRequest)(nil),             // 314: hotbed.v1.FinishReviewRequest
-	(*CancelReviewRequest)(nil),             // 315: hotbed.v1.CancelReviewRequest
-	(*DecideFindingsRequest)(nil),           // 316: hotbed.v1.DecideFindingsRequest
-	(*DecideFindingsResponse)(nil),          // 317: hotbed.v1.DecideFindingsResponse
-	(*RespondRequest)(nil),                  // 318: hotbed.v1.RespondRequest
-	(*ListResponsesRequest)(nil),            // 319: hotbed.v1.ListResponsesRequest
-	(*ListResponsesResponse)(nil),           // 320: hotbed.v1.ListResponsesResponse
-	(*GitCredential)(nil),                   // 321: hotbed.v1.GitCredential
-	(*StartGitHubLoginRequest)(nil),         // 322: hotbed.v1.StartGitHubLoginRequest
-	(*GitHubLoginChallenge)(nil),            // 323: hotbed.v1.GitHubLoginChallenge
-	(*CompleteGitHubLoginRequest)(nil),      // 324: hotbed.v1.CompleteGitHubLoginRequest
-	(*PutGitCredentialRequest)(nil),         // 325: hotbed.v1.PutGitCredentialRequest
-	(*ListGitCredentialsRequest)(nil),       // 326: hotbed.v1.ListGitCredentialsRequest
-	(*ListGitCredentialsResponse)(nil),      // 327: hotbed.v1.ListGitCredentialsResponse
-	(*DeleteGitCredentialRequest)(nil),      // 328: hotbed.v1.DeleteGitCredentialRequest
-	(*DeleteGitCredentialResponse)(nil),     // 329: hotbed.v1.DeleteGitCredentialResponse
-	(*MintGitTokenRequest)(nil),             // 330: hotbed.v1.MintGitTokenRequest
-	(*GitToken)(nil),                        // 331: hotbed.v1.GitToken
-	(*ProxyGitHubAPIRequest)(nil),           // 332: hotbed.v1.ProxyGitHubAPIRequest
-	(*ProxyGitHubAPIResponse)(nil),          // 333: hotbed.v1.ProxyGitHubAPIResponse
-	(*Issue)(nil),                           // 334: hotbed.v1.Issue
-	(*IssueUpvote)(nil),                     // 335: hotbed.v1.IssueUpvote
-	(*ReportIssueRequest)(nil),              // 336: hotbed.v1.ReportIssueRequest
-	(*ListIssuesRequest)(nil),               // 337: hotbed.v1.ListIssuesRequest
-	(*ListIssuesResponse)(nil),              // 338: hotbed.v1.ListIssuesResponse
-	(*GetIssueRequest)(nil),                 // 339: hotbed.v1.GetIssueRequest
-	(*UpvoteIssueRequest)(nil),              // 340: hotbed.v1.UpvoteIssueRequest
-	(*ArchiveIssueRequest)(nil),             // 341: hotbed.v1.ArchiveIssueRequest
-	(*ReopenIssueRequest)(nil),              // 342: hotbed.v1.ReopenIssueRequest
-	(*MemoryContent)(nil),                   // 343: hotbed.v1.MemoryContent
-	(*MemoryProvenance)(nil),                // 344: hotbed.v1.MemoryProvenance
-	(*Memory)(nil),                          // 345: hotbed.v1.Memory
-	(*MemoryChange)(nil),                    // 346: hotbed.v1.MemoryChange
-	(*MemoryIndexEntry)(nil),                // 347: hotbed.v1.MemoryIndexEntry
-	(*MemoryBriefing)(nil),                  // 348: hotbed.v1.MemoryBriefing
-	(*ProposeMemoryRequest)(nil),            // 349: hotbed.v1.ProposeMemoryRequest
-	(*ListMemoriesRequest)(nil),             // 350: hotbed.v1.ListMemoriesRequest
-	(*ListMemoriesResponse)(nil),            // 351: hotbed.v1.ListMemoriesResponse
-	(*GetMemoriesRequest)(nil),              // 352: hotbed.v1.GetMemoriesRequest
-	(*GetMemoriesResponse)(nil),             // 353: hotbed.v1.GetMemoriesResponse
-	(*ShowMemoryRequest)(nil),               // 354: hotbed.v1.ShowMemoryRequest
-	(*ReviseMemoryRequest)(nil),             // 355: hotbed.v1.ReviseMemoryRequest
-	(*ArchiveMemoryRequest)(nil),            // 356: hotbed.v1.ArchiveMemoryRequest
-	(*RestoreMemoryRequest)(nil),            // 357: hotbed.v1.RestoreMemoryRequest
-	(*DeleteMemoryRequest)(nil),             // 358: hotbed.v1.DeleteMemoryRequest
-	(*MoveMemoryRequest)(nil),               // 359: hotbed.v1.MoveMemoryRequest
-	(*BoardAuthor)(nil),                     // 360: hotbed.v1.BoardAuthor
-	(*BoardActor)(nil),                      // 361: hotbed.v1.BoardActor
-	(*BoardAttachment)(nil),                 // 362: hotbed.v1.BoardAttachment
-	(*BoardReaction)(nil),                   // 363: hotbed.v1.BoardReaction
-	(*BoardBlock)(nil),                      // 364: hotbed.v1.BoardBlock
-	(*BoardMention)(nil),                    // 365: hotbed.v1.BoardMention
-	(*BoardTaskClaimView)(nil),              // 366: hotbed.v1.BoardTaskClaimView
-	(*BoardTaskBlocked)(nil),                // 367: hotbed.v1.BoardTaskBlocked
-	(*BoardTask)(nil),                       // 368: hotbed.v1.BoardTask
-	(*BoardTaskClaim)(nil),                  // 369: hotbed.v1.BoardTaskClaim
-	(*BoardMessage)(nil),                    // 370: hotbed.v1.BoardMessage
-	(*BoardThreadSummary)(nil),              // 371: hotbed.v1.BoardThreadSummary
-	(*BoardSchedule)(nil),                   // 372: hotbed.v1.BoardSchedule
-	(*BoardSchema)(nil),                     // 373: hotbed.v1.BoardSchema
-	(*BoardEvent)(nil),                      // 374: hotbed.v1.BoardEvent
-	(*BoardLabelFilter)(nil),                // 375: hotbed.v1.BoardLabelFilter
-	(*BoardMessageResult)(nil),              // 376: hotbed.v1.BoardMessageResult
-	(*BoardTaskResult)(nil),                 // 377: hotbed.v1.BoardTaskResult
-	(*BoardScheduleResult)(nil),             // 378: hotbed.v1.BoardScheduleResult
-	(*PostBoardMessageRequest)(nil),         // 379: hotbed.v1.PostBoardMessageRequest
-	(*EditBoardMessageRequest)(nil),         // 380: hotbed.v1.EditBoardMessageRequest
-	(*DeleteBoardMessageRequest)(nil),       // 381: hotbed.v1.DeleteBoardMessageRequest
-	(*ReactBoardMessageRequest)(nil),        // 382: hotbed.v1.ReactBoardMessageRequest
-	(*LabelBoardMessageRequest)(nil),        // 383: hotbed.v1.LabelBoardMessageRequest
-	(*ListBoardThreadsRequest)(nil),         // 384: hotbed.v1.ListBoardThreadsRequest
-	(*ListBoardThreadsResponse)(nil),        // 385: hotbed.v1.ListBoardThreadsResponse
-	(*GetBoardThreadRequest)(nil),           // 386: hotbed.v1.GetBoardThreadRequest
-	(*GetBoardThreadResponse)(nil),          // 387: hotbed.v1.GetBoardThreadResponse
-	(*ListBoardEventsRequest)(nil),          // 388: hotbed.v1.ListBoardEventsRequest
-	(*ListBoardEventsResponse)(nil),         // 389: hotbed.v1.ListBoardEventsResponse
-	(*ListBoardActorsRequest)(nil),          // 390: hotbed.v1.ListBoardActorsRequest
-	(*ListBoardActorsResponse)(nil),         // 391: hotbed.v1.ListBoardActorsResponse
-	(*UploadBoardAttachmentRequest)(nil),    // 392: hotbed.v1.UploadBoardAttachmentRequest
-	(*DownloadBoardAttachmentRequest)(nil),  // 393: hotbed.v1.DownloadBoardAttachmentRequest
-	(*DownloadBoardAttachmentResponse)(nil), // 394: hotbed.v1.DownloadBoardAttachmentResponse
-	(*ListBoardSchemasRequest)(nil),         // 395: hotbed.v1.ListBoardSchemasRequest
-	(*ListBoardSchemasResponse)(nil),        // 396: hotbed.v1.ListBoardSchemasResponse
-	(*GetBoardSchemaRequest)(nil),           // 397: hotbed.v1.GetBoardSchemaRequest
-	(*CreateBoardSchemaRequest)(nil),        // 398: hotbed.v1.CreateBoardSchemaRequest
-	(*CreateBoardSchemaResponse)(nil),       // 399: hotbed.v1.CreateBoardSchemaResponse
-	(*ScheduleBoardMessageRequest)(nil),     // 400: hotbed.v1.ScheduleBoardMessageRequest
-	(*ListBoardSchedulesRequest)(nil),       // 401: hotbed.v1.ListBoardSchedulesRequest
-	(*ListBoardSchedulesResponse)(nil),      // 402: hotbed.v1.ListBoardSchedulesResponse
-	(*CancelBoardScheduleRequest)(nil),      // 403: hotbed.v1.CancelBoardScheduleRequest
-	(*CancelBoardScheduleResponse)(nil),     // 404: hotbed.v1.CancelBoardScheduleResponse
-	(*CreateBoardTaskRequest)(nil),          // 405: hotbed.v1.CreateBoardTaskRequest
-	(*BatchBoardTaskNeed)(nil),              // 406: hotbed.v1.BatchBoardTaskNeed
-	(*BatchBoardTaskSpec)(nil),              // 407: hotbed.v1.BatchBoardTaskSpec
-	(*BatchCreateBoardTasksRequest)(nil),    // 408: hotbed.v1.BatchCreateBoardTasksRequest
-	(*BatchCreateBoardTasksResponse)(nil),   // 409: hotbed.v1.BatchCreateBoardTasksResponse
-	(*ListBoardTasksRequest)(nil),           // 410: hotbed.v1.ListBoardTasksRequest
-	(*ListBoardTasksResponse)(nil),          // 411: hotbed.v1.ListBoardTasksResponse
-	(*ClaimBoardTaskRequest)(nil),           // 412: hotbed.v1.ClaimBoardTaskRequest
-	(*RenewBoardTaskRequest)(nil),           // 413: hotbed.v1.RenewBoardTaskRequest
-	(*ReleaseBoardTaskRequest)(nil),         // 414: hotbed.v1.ReleaseBoardTaskRequest
-	(*CompleteBoardTaskRequest)(nil),        // 415: hotbed.v1.CompleteBoardTaskRequest
-	(*FailBoardTaskRequest)(nil),            // 416: hotbed.v1.FailBoardTaskRequest
-	(*BlockBoardTaskRequest)(nil),           // 417: hotbed.v1.BlockBoardTaskRequest
-	(*UnblockBoardTaskRequest)(nil),         // 418: hotbed.v1.UnblockBoardTaskRequest
-	(*ReopenBoardTaskRequest)(nil),          // 419: hotbed.v1.ReopenBoardTaskRequest
-	(*AssignBoardTaskRequest)(nil),          // 420: hotbed.v1.AssignBoardTaskRequest
-	(*SetBoardTaskNeedsRequest)(nil),        // 421: hotbed.v1.SetBoardTaskNeedsRequest
-	(*CancelBoardTaskRequest)(nil),          // 422: hotbed.v1.CancelBoardTaskRequest
-	(*ImportedBoardTask)(nil),               // 423: hotbed.v1.ImportedBoardTask
-	(*ImportedBoardMessage)(nil),            // 424: hotbed.v1.ImportedBoardMessage
-	(*ImportBoardRequest)(nil),              // 425: hotbed.v1.ImportBoardRequest
-	(*ImportBoardResponse)(nil),             // 426: hotbed.v1.ImportBoardResponse
-	(*GroupSpec)(nil),                       // 427: hotbed.v1.GroupSpec
-	(*CommandSpec)(nil),                     // 428: hotbed.v1.CommandSpec
-	(*FixedField)(nil),                      // 429: hotbed.v1.FixedField
-	(*InputSpec)(nil),                       // 430: hotbed.v1.InputSpec
-	(*ParamSpec)(nil),                       // 431: hotbed.v1.ParamSpec
-	nil,                                     // 432: hotbed.v1.SharedBase.ReposEntry
-	nil,                                     // 433: hotbed.v1.SharedBase.StepHashesEntry
-	nil,                                     // 434: hotbed.v1.WorkerVMConfig.KernelsEntry
-	nil,                                     // 435: hotbed.v1.WorkerVMConfig.GuestdEntry
-	nil,                                     // 436: hotbed.v1.WorkerSystemConfig.CladefsdEntry
-	nil,                                     // 437: hotbed.v1.WorkerSystemConfig.FirecrackerEntry
-	nil,                                     // 438: hotbed.v1.NodeProjectFreshenSummary.ColdReasonsEntry
-	nil,                                     // 439: hotbed.v1.GetSessionResponse.NodeHostsEntry
-	nil,                                     // 440: hotbed.v1.Snapshot.SeriesEntry
-	nil,                                     // 441: hotbed.v1.Snapshot.NodeHourlyEntry
-	nil,                                     // 442: hotbed.v1.SampledThread.StateCountsEntry
-	nil,                                     // 443: hotbed.v1.SampledThread.SyscallCountsEntry
-	nil,                                     // 444: hotbed.v1.BoardMessage.LabelsEntry
-	nil,                                     // 445: hotbed.v1.BoardSchedule.LabelsEntry
-	nil,                                     // 446: hotbed.v1.PostBoardMessageRequest.LabelsEntry
-	nil,                                     // 447: hotbed.v1.LabelBoardMessageRequest.SetEntry
-	nil,                                     // 448: hotbed.v1.LabelBoardMessageRequest.IfEqualsEntry
-	nil,                                     // 449: hotbed.v1.ScheduleBoardMessageRequest.LabelsEntry
-	nil,                                     // 450: hotbed.v1.CreateBoardTaskRequest.LabelsEntry
-	nil,                                     // 451: hotbed.v1.BatchBoardTaskSpec.LabelsEntry
-	nil,                                     // 452: hotbed.v1.ImportedBoardMessage.LabelsEntry
-	nil,                                     // 453: hotbed.v1.ImportBoardResponse.IdMapEntry
-	(*descriptorpb.ServiceOptions)(nil),     // 454: google.protobuf.ServiceOptions
-	(*descriptorpb.MethodOptions)(nil),      // 455: google.protobuf.MethodOptions
-	(*descriptorpb.FieldOptions)(nil),       // 456: google.protobuf.FieldOptions
+	(*ProfilerStatus)(nil),                  // 46: hotbed.v1.ProfilerStatus
+	(*JoinRequest)(nil),                     // 47: hotbed.v1.JoinRequest
+	(*JoinResponse)(nil),                    // 48: hotbed.v1.JoinResponse
+	(*ListNodesRequest)(nil),                // 49: hotbed.v1.ListNodesRequest
+	(*ListNodesResponse)(nil),               // 50: hotbed.v1.ListNodesResponse
+	(*ManagedArtifact)(nil),                 // 51: hotbed.v1.ManagedArtifact
+	(*Build)(nil),                           // 52: hotbed.v1.Build
+	(*WorkerVMConfig)(nil),                  // 53: hotbed.v1.WorkerVMConfig
+	(*WorkerCladefsFUSEConfig)(nil),         // 54: hotbed.v1.WorkerCladefsFUSEConfig
+	(*WorkerSystemConfig)(nil),              // 55: hotbed.v1.WorkerSystemConfig
+	(*WorkerFreshenConfig)(nil),             // 56: hotbed.v1.WorkerFreshenConfig
+	(*OrgControllerConfig)(nil),             // 57: hotbed.v1.OrgControllerConfig
+	(*WorkerConfig)(nil),                    // 58: hotbed.v1.WorkerConfig
+	(*GetWorkerConfigRequest)(nil),          // 59: hotbed.v1.GetWorkerConfigRequest
+	(*GetWorkerConfigResponse)(nil),         // 60: hotbed.v1.GetWorkerConfigResponse
+	(*SetWorkerConfigRequest)(nil),          // 61: hotbed.v1.SetWorkerConfigRequest
+	(*DeleteWorkerConfigRequest)(nil),       // 62: hotbed.v1.DeleteWorkerConfigRequest
+	(*DeleteWorkerConfigResponse)(nil),      // 63: hotbed.v1.DeleteWorkerConfigResponse
+	(*GetBuildRequest)(nil),                 // 64: hotbed.v1.GetBuildRequest
+	(*UpgradeSystemRequest)(nil),            // 65: hotbed.v1.UpgradeSystemRequest
+	(*WorkerUpgradeSystemRequest)(nil),      // 66: hotbed.v1.WorkerUpgradeSystemRequest
+	(*NodeSystemUpgrade)(nil),               // 67: hotbed.v1.NodeSystemUpgrade
+	(*UpgradeSystemResponse)(nil),           // 68: hotbed.v1.UpgradeSystemResponse
+	(*Repo)(nil),                            // 69: hotbed.v1.Repo
+	(*Step)(nil),                            // 70: hotbed.v1.Step
+	(*AppliedStep)(nil),                     // 71: hotbed.v1.AppliedStep
+	(*PutStepRequest)(nil),                  // 72: hotbed.v1.PutStepRequest
+	(*DeleteStepRequest)(nil),               // 73: hotbed.v1.DeleteStepRequest
+	(*ListStepsRequest)(nil),                // 74: hotbed.v1.ListStepsRequest
+	(*ListStepsResponse)(nil),               // 75: hotbed.v1.ListStepsResponse
+	(*StepStatus)(nil),                      // 76: hotbed.v1.StepStatus
+	(*StepOnNode)(nil),                      // 77: hotbed.v1.StepOnNode
+	(*ListReposRequest)(nil),                // 78: hotbed.v1.ListReposRequest
+	(*ListReposResponse)(nil),               // 79: hotbed.v1.ListReposResponse
+	(*PutRepoRequest)(nil),                  // 80: hotbed.v1.PutRepoRequest
+	(*DeleteRepoRequest)(nil),               // 81: hotbed.v1.DeleteRepoRequest
+	(*DeleteRepoResponse)(nil),              // 82: hotbed.v1.DeleteRepoResponse
+	(*RebuildProjectRequest)(nil),           // 83: hotbed.v1.RebuildProjectRequest
+	(*SetProjectHostsRequest)(nil),          // 84: hotbed.v1.SetProjectHostsRequest
+	(*HostedProject)(nil),                   // 85: hotbed.v1.HostedProject
+	(*Base)(nil),                            // 86: hotbed.v1.Base
+	(*FreshenPhase)(nil),                    // 87: hotbed.v1.FreshenPhase
+	(*BaseRepo)(nil),                        // 88: hotbed.v1.BaseRepo
+	(*Workspace)(nil),                       // 89: hotbed.v1.Workspace
+	(*WorkspaceRepo)(nil),                   // 90: hotbed.v1.WorkspaceRepo
+	(*CreateWorkspaceRequest)(nil),          // 91: hotbed.v1.CreateWorkspaceRequest
+	(*Placement)(nil),                       // 92: hotbed.v1.Placement
+	(*GetWorkspaceRequest)(nil),             // 93: hotbed.v1.GetWorkspaceRequest
+	(*WatchWorkspaceRequest)(nil),           // 94: hotbed.v1.WatchWorkspaceRequest
+	(*ListWorkspacesRequest)(nil),           // 95: hotbed.v1.ListWorkspacesRequest
+	(*ListWorkspacesResponse)(nil),          // 96: hotbed.v1.ListWorkspacesResponse
+	(*ReleaseWorkspaceRequest)(nil),         // 97: hotbed.v1.ReleaseWorkspaceRequest
+	(*ReleaseWorkspaceResponse)(nil),        // 98: hotbed.v1.ReleaseWorkspaceResponse
+	(*SyncRequest)(nil),                     // 99: hotbed.v1.SyncRequest
+	(*SyncHeader)(nil),                      // 100: hotbed.v1.SyncHeader
+	(*SyncSubmodule)(nil),                   // 101: hotbed.v1.SyncSubmodule
+	(*SyncResponse)(nil),                    // 102: hotbed.v1.SyncResponse
+	(*FileEntry)(nil),                       // 103: hotbed.v1.FileEntry
+	(*ListFilesRequest)(nil),                // 104: hotbed.v1.ListFilesRequest
+	(*ListFilesResponse)(nil),               // 105: hotbed.v1.ListFilesResponse
+	(*GetFileRequest)(nil),                  // 106: hotbed.v1.GetFileRequest
+	(*FileContent)(nil),                     // 107: hotbed.v1.FileContent
+	(*CommandLimits)(nil),                   // 108: hotbed.v1.CommandLimits
+	(*Rebuilt)(nil),                         // 109: hotbed.v1.Rebuilt
+	(*CommandIntervention)(nil),             // 110: hotbed.v1.CommandIntervention
+	(*CommandDiagnostics)(nil),              // 111: hotbed.v1.CommandDiagnostics
+	(*GetCommandDiagnosticsRequest)(nil),    // 112: hotbed.v1.GetCommandDiagnosticsRequest
+	(*GetCommandDiagnosticsResponse)(nil),   // 113: hotbed.v1.GetCommandDiagnosticsResponse
+	(*SaveCommandDiagnosticsRequest)(nil),   // 114: hotbed.v1.SaveCommandDiagnosticsRequest
+	(*SaveCommandDiagnosticsResponse)(nil),  // 115: hotbed.v1.SaveCommandDiagnosticsResponse
+	(*CommandSample)(nil),                   // 116: hotbed.v1.CommandSample
+	(*ListCommandSamplesRequest)(nil),       // 117: hotbed.v1.ListCommandSamplesRequest
+	(*ListCommandSamplesResponse)(nil),      // 118: hotbed.v1.ListCommandSamplesResponse
+	(*GetCommandSampleRequest)(nil),         // 119: hotbed.v1.GetCommandSampleRequest
+	(*SaveCommandSampleRequest)(nil),        // 120: hotbed.v1.SaveCommandSampleRequest
+	(*SaveCommandSampleResponse)(nil),       // 121: hotbed.v1.SaveCommandSampleResponse
+	(*CommandOutputChunk)(nil),              // 122: hotbed.v1.CommandOutputChunk
+	(*PushCommandOutputRequest)(nil),        // 123: hotbed.v1.PushCommandOutputRequest
+	(*PushCommandOutputResponse)(nil),       // 124: hotbed.v1.PushCommandOutputResponse
+	(*CommandEvent)(nil),                    // 125: hotbed.v1.CommandEvent
+	(*Command)(nil),                         // 126: hotbed.v1.Command
+	(*FinishedCommand)(nil),                 // 127: hotbed.v1.FinishedCommand
+	(*RunCommandRequest)(nil),               // 128: hotbed.v1.RunCommandRequest
+	(*CommandEstimate)(nil),                 // 129: hotbed.v1.CommandEstimate
+	(*QueryOutputRequest)(nil),              // 130: hotbed.v1.QueryOutputRequest
+	(*OutputLine)(nil),                      // 131: hotbed.v1.OutputLine
+	(*OutputQuery)(nil),                     // 132: hotbed.v1.OutputQuery
+	(*DetachCommandRequest)(nil),            // 133: hotbed.v1.DetachCommandRequest
+	(*SendInputRequest)(nil),                // 134: hotbed.v1.SendInputRequest
+	(*SendInputResponse)(nil),               // 135: hotbed.v1.SendInputResponse
+	(*OpenShellRequest)(nil),                // 136: hotbed.v1.OpenShellRequest
+	(*OpenShellResponse)(nil),               // 137: hotbed.v1.OpenShellResponse
+	(*GetCommandRequest)(nil),               // 138: hotbed.v1.GetCommandRequest
+	(*ListCommandsRequest)(nil),             // 139: hotbed.v1.ListCommandsRequest
+	(*ListCommandsResponse)(nil),            // 140: hotbed.v1.ListCommandsResponse
+	(*StopCommandRequest)(nil),              // 141: hotbed.v1.StopCommandRequest
+	(*PauseCommandRequest)(nil),             // 142: hotbed.v1.PauseCommandRequest
+	(*ResumeCommandRequest)(nil),            // 143: hotbed.v1.ResumeCommandRequest
+	(*FollowLogRequest)(nil),                // 144: hotbed.v1.FollowLogRequest
+	(*LogChunk)(nil),                        // 145: hotbed.v1.LogChunk
+	(*Session)(nil),                         // 146: hotbed.v1.Session
+	(*SessionWorkspace)(nil),                // 147: hotbed.v1.SessionWorkspace
+	(*StartSessionRequest)(nil),             // 148: hotbed.v1.StartSessionRequest
+	(*ListSessionsRequest)(nil),             // 149: hotbed.v1.ListSessionsRequest
+	(*ListSessionsResponse)(nil),            // 150: hotbed.v1.ListSessionsResponse
+	(*SearchSessionsRequest)(nil),           // 151: hotbed.v1.SearchSessionsRequest
+	(*SearchSessionsResponse)(nil),          // 152: hotbed.v1.SearchSessionsResponse
+	(*Project)(nil),                         // 153: hotbed.v1.Project
+	(*ProjectChange)(nil),                   // 154: hotbed.v1.ProjectChange
+	(*AddProjectRequest)(nil),               // 155: hotbed.v1.AddProjectRequest
+	(*RemoveProjectReposRequest)(nil),       // 156: hotbed.v1.RemoveProjectReposRequest
+	(*GetProjectRequest)(nil),               // 157: hotbed.v1.GetProjectRequest
+	(*ListProjectsRequest)(nil),             // 158: hotbed.v1.ListProjectsRequest
+	(*ListProjectsResponse)(nil),            // 159: hotbed.v1.ListProjectsResponse
+	(*ListBasesRequest)(nil),                // 160: hotbed.v1.ListBasesRequest
+	(*ListBasesResponse)(nil),               // 161: hotbed.v1.ListBasesResponse
+	(*NodeBase)(nil),                        // 162: hotbed.v1.NodeBase
+	(*ListFreshensRequest)(nil),             // 163: hotbed.v1.ListFreshensRequest
+	(*ListFreshensResponse)(nil),            // 164: hotbed.v1.ListFreshensResponse
+	(*GetFreshenRequest)(nil),               // 165: hotbed.v1.GetFreshenRequest
+	(*GetFreshenResponse)(nil),              // 166: hotbed.v1.GetFreshenResponse
+	(*BaseFreshen)(nil),                     // 167: hotbed.v1.BaseFreshen
+	(*DurationStats)(nil),                   // 168: hotbed.v1.DurationStats
+	(*StepTimingSummary)(nil),               // 169: hotbed.v1.StepTimingSummary
+	(*NodeProjectFreshenSummary)(nil),       // 170: hotbed.v1.NodeProjectFreshenSummary
+	(*FreshenSummary)(nil),                  // 171: hotbed.v1.FreshenSummary
+	(*GetSessionRequest)(nil),               // 172: hotbed.v1.GetSessionRequest
+	(*GetSessionResponse)(nil),              // 173: hotbed.v1.GetSessionResponse
+	(*EndSessionRequest)(nil),               // 174: hotbed.v1.EndSessionRequest
+	(*WatchSessionRequest)(nil),             // 175: hotbed.v1.WatchSessionRequest
+	(*PollRequest)(nil),                     // 176: hotbed.v1.PollRequest
+	(*SessionEvents)(nil),                   // 177: hotbed.v1.SessionEvents
+	(*SessionEvent)(nil),                    // 178: hotbed.v1.SessionEvent
+	(*CommandUpdate)(nil),                   // 179: hotbed.v1.CommandUpdate
+	(*WorkspaceUpdate)(nil),                 // 180: hotbed.v1.WorkspaceUpdate
+	(*QuestionUpdate)(nil),                  // 181: hotbed.v1.QuestionUpdate
+	(*ReviewUpdate)(nil),                    // 182: hotbed.v1.ReviewUpdate
+	(*MemoryUpdate)(nil),                    // 183: hotbed.v1.MemoryUpdate
+	(*GetLogLinesRequest)(nil),              // 184: hotbed.v1.GetLogLinesRequest
+	(*CommandLog)(nil),                      // 185: hotbed.v1.CommandLog
+	(*WorkerEvent)(nil),                     // 186: hotbed.v1.WorkerEvent
+	(*EventRef)(nil),                        // 187: hotbed.v1.EventRef
+	(*Event)(nil),                           // 188: hotbed.v1.Event
+	(*BaseChange)(nil),                      // 189: hotbed.v1.BaseChange
+	(*WorkspaceChange)(nil),                 // 190: hotbed.v1.WorkspaceChange
+	(*CommandChange)(nil),                   // 191: hotbed.v1.CommandChange
+	(*Checkpoint)(nil),                      // 192: hotbed.v1.Checkpoint
+	(*PushEventsRequest)(nil),               // 193: hotbed.v1.PushEventsRequest
+	(*PushEventsResponse)(nil),              // 194: hotbed.v1.PushEventsResponse
+	(*CommandUsage)(nil),                    // 195: hotbed.v1.CommandUsage
+	(*BaseUsage)(nil),                       // 196: hotbed.v1.BaseUsage
+	(*WorkspaceUsage)(nil),                  // 197: hotbed.v1.WorkspaceUsage
+	(*HeartbeatRequest)(nil),                // 198: hotbed.v1.HeartbeatRequest
+	(*HeartbeatResponse)(nil),               // 199: hotbed.v1.HeartbeatResponse
+	(*RepoSummary)(nil),                     // 200: hotbed.v1.RepoSummary
+	(*ClusterEvent)(nil),                    // 201: hotbed.v1.ClusterEvent
+	(*Totals)(nil),                          // 202: hotbed.v1.Totals
+	(*Sample)(nil),                          // 203: hotbed.v1.Sample
+	(*Samples)(nil),                         // 204: hotbed.v1.Samples
+	(*LoadSample)(nil),                      // 205: hotbed.v1.LoadSample
+	(*HourBucket)(nil),                      // 206: hotbed.v1.HourBucket
+	(*NodeHour)(nil),                        // 207: hotbed.v1.NodeHour
+	(*NodeHours)(nil),                       // 208: hotbed.v1.NodeHours
+	(*GetSnapshotRequest)(nil),              // 209: hotbed.v1.GetSnapshotRequest
+	(*Snapshot)(nil),                        // 210: hotbed.v1.Snapshot
+	(*PlacementDecision)(nil),               // 211: hotbed.v1.PlacementDecision
+	(*PlacementCandidate)(nil),              // 212: hotbed.v1.PlacementCandidate
+	(*CostPart)(nil),                        // 213: hotbed.v1.CostPart
+	(*RetireNodeRequest)(nil),               // 214: hotbed.v1.RetireNodeRequest
+	(*GetNodeRequest)(nil),                  // 215: hotbed.v1.GetNodeRequest
+	(*NodeDetail)(nil),                      // 216: hotbed.v1.NodeDetail
+	(*ListPlacementsRequest)(nil),           // 217: hotbed.v1.ListPlacementsRequest
+	(*ListPlacementsResponse)(nil),          // 218: hotbed.v1.ListPlacementsResponse
+	(*ListEventsRequest)(nil),               // 219: hotbed.v1.ListEventsRequest
+	(*ListEventsResponse)(nil),              // 220: hotbed.v1.ListEventsResponse
+	(*GetDaemonLogsRequest)(nil),            // 221: hotbed.v1.GetDaemonLogsRequest
+	(*DaemonLogEntry)(nil),                  // 222: hotbed.v1.DaemonLogEntry
+	(*DaemonLogSource)(nil),                 // 223: hotbed.v1.DaemonLogSource
+	(*GetDaemonLogsResponse)(nil),           // 224: hotbed.v1.GetDaemonLogsResponse
+	(*ScheduledCommand)(nil),                // 225: hotbed.v1.ScheduledCommand
+	(*ScheduledRun)(nil),                    // 226: hotbed.v1.ScheduledRun
+	(*PutScheduleRequest)(nil),              // 227: hotbed.v1.PutScheduleRequest
+	(*ListSchedulesRequest)(nil),            // 228: hotbed.v1.ListSchedulesRequest
+	(*ListSchedulesResponse)(nil),           // 229: hotbed.v1.ListSchedulesResponse
+	(*GetScheduleRequest)(nil),              // 230: hotbed.v1.GetScheduleRequest
+	(*DeleteScheduleRequest)(nil),           // 231: hotbed.v1.DeleteScheduleRequest
+	(*DeleteScheduleResponse)(nil),          // 232: hotbed.v1.DeleteScheduleResponse
+	(*RunScheduleRequest)(nil),              // 233: hotbed.v1.RunScheduleRequest
+	(*PauseScheduleRequest)(nil),            // 234: hotbed.v1.PauseScheduleRequest
+	(*InspectCommandRequest)(nil),           // 235: hotbed.v1.InspectCommandRequest
+	(*ThreadInfo)(nil),                      // 236: hotbed.v1.ThreadInfo
+	(*ProcessInfo)(nil),                     // 237: hotbed.v1.ProcessInfo
+	(*OpenFile)(nil),                        // 238: hotbed.v1.OpenFile
+	(*CgroupIO)(nil),                        // 239: hotbed.v1.CgroupIO
+	(*CgroupStats)(nil),                     // 240: hotbed.v1.CgroupStats
+	(*ThreadKernelStack)(nil),               // 241: hotbed.v1.ThreadKernelStack
+	(*MemoryRegion)(nil),                    // 242: hotbed.v1.MemoryRegion
+	(*ProcessMemoryMap)(nil),                // 243: hotbed.v1.ProcessMemoryMap
+	(*ResourceLimit)(nil),                   // 244: hotbed.v1.ResourceLimit
+	(*ProcessLimits)(nil),                   // 245: hotbed.v1.ProcessLimits
+	(*ToolCapability)(nil),                  // 246: hotbed.v1.ToolCapability
+	(*InspectCommandResponse)(nil),          // 247: hotbed.v1.InspectCommandResponse
+	(*TraceCommandRequest)(nil),             // 248: hotbed.v1.TraceCommandRequest
+	(*PerfCounter)(nil),                     // 249: hotbed.v1.PerfCounter
+	(*SyscallStat)(nil),                     // 250: hotbed.v1.SyscallStat
+	(*TraceSummary)(nil),                    // 251: hotbed.v1.TraceSummary
+	(*TraceCommandChunk)(nil),               // 252: hotbed.v1.TraceCommandChunk
+	(*SampleCommandRequest)(nil),            // 253: hotbed.v1.SampleCommandRequest
+	(*SampleCommandChunk)(nil),              // 254: hotbed.v1.SampleCommandChunk
+	(*SampleCollector)(nil),                 // 255: hotbed.v1.SampleCollector
+	(*ThreadSyscall)(nil),                   // 256: hotbed.v1.ThreadSyscall
+	(*StackFrame)(nil),                      // 257: hotbed.v1.StackFrame
+	(*SampledThread)(nil),                   // 258: hotbed.v1.SampledThread
+	(*SampledOpenFile)(nil),                 // 259: hotbed.v1.SampledOpenFile
+	(*FileLock)(nil),                        // 260: hotbed.v1.FileLock
+	(*SampledProcess)(nil),                  // 261: hotbed.v1.SampledProcess
+	(*SampledCgroup)(nil),                   // 262: hotbed.v1.SampledCgroup
+	(*ProcessSample)(nil),                   // 263: hotbed.v1.ProcessSample
+	(*GetProfileRequest)(nil),               // 264: hotbed.v1.GetProfileRequest
+	(*ProfileFrame)(nil),                    // 265: hotbed.v1.ProfileFrame
+	(*FoldedStack)(nil),                     // 266: hotbed.v1.FoldedStack
+	(*ProfileFunction)(nil),                 // 267: hotbed.v1.ProfileFunction
+	(*ProfileBucket)(nil),                   // 268: hotbed.v1.ProfileBucket
+	(*CommandProfile)(nil),                  // 269: hotbed.v1.CommandProfile
+	(*Prompt)(nil),                          // 270: hotbed.v1.Prompt
+	(*PromptOption)(nil),                    // 271: hotbed.v1.PromptOption
+	(*Answer)(nil),                          // 272: hotbed.v1.Answer
+	(*Stamp)(nil),                           // 273: hotbed.v1.Stamp
+	(*AskedFrom)(nil),                       // 274: hotbed.v1.AskedFrom
+	(*Question)(nil),                        // 275: hotbed.v1.Question
+	(*QuestionChange)(nil),                  // 276: hotbed.v1.QuestionChange
+	(*AddQuestionsRequest)(nil),             // 277: hotbed.v1.AddQuestionsRequest
+	(*AddQuestionsResponse)(nil),            // 278: hotbed.v1.AddQuestionsResponse
+	(*EditQuestionRequest)(nil),             // 279: hotbed.v1.EditQuestionRequest
+	(*DeleteQuestionRequest)(nil),           // 280: hotbed.v1.DeleteQuestionRequest
+	(*ListQuestionsRequest)(nil),            // 281: hotbed.v1.ListQuestionsRequest
+	(*QuestionSession)(nil),                 // 282: hotbed.v1.QuestionSession
+	(*ListQuestionsResponse)(nil),           // 283: hotbed.v1.ListQuestionsResponse
+	(*ListQuestionProjectsRequest)(nil),     // 284: hotbed.v1.ListQuestionProjectsRequest
+	(*ListQuestionProjectsResponse)(nil),    // 285: hotbed.v1.ListQuestionProjectsResponse
+	(*QuestionProject)(nil),                 // 286: hotbed.v1.QuestionProject
+	(*GetQuestionRequest)(nil),              // 287: hotbed.v1.GetQuestionRequest
+	(*AnswerQuestionRequest)(nil),           // 288: hotbed.v1.AnswerQuestionRequest
+	(*DismissQuestionRequest)(nil),          // 289: hotbed.v1.DismissQuestionRequest
+	(*ReviseQuestionRequest)(nil),           // 290: hotbed.v1.ReviseQuestionRequest
+	(*ReopenQuestionRequest)(nil),           // 291: hotbed.v1.ReopenQuestionRequest
+	(*MoveQuestionRequest)(nil),             // 292: hotbed.v1.MoveQuestionRequest
+	(*AckQuestionsRequest)(nil),             // 293: hotbed.v1.AckQuestionsRequest
+	(*AckQuestionsResponse)(nil),            // 294: hotbed.v1.AckQuestionsResponse
+	(*Reviewer)(nil),                        // 295: hotbed.v1.Reviewer
+	(*Location)(nil),                        // 296: hotbed.v1.Location
+	(*ReportedFinding)(nil),                 // 297: hotbed.v1.ReportedFinding
+	(*Finding)(nil),                         // 298: hotbed.v1.Finding
+	(*Fix)(nil),                             // 299: hotbed.v1.Fix
+	(*Review)(nil),                          // 300: hotbed.v1.Review
+	(*ReviewEvent)(nil),                     // 301: hotbed.v1.ReviewEvent
+	(*RequestReviewRequest)(nil),            // 302: hotbed.v1.RequestReviewRequest
+	(*ListReviewsRequest)(nil),              // 303: hotbed.v1.ListReviewsRequest
+	(*ListReviewsResponse)(nil),             // 304: hotbed.v1.ListReviewsResponse
+	(*GetReviewRequest)(nil),                // 305: hotbed.v1.GetReviewRequest
+	(*StartReviewRequest)(nil),              // 306: hotbed.v1.StartReviewRequest
+	(*AddFindingsRequest)(nil),              // 307: hotbed.v1.AddFindingsRequest
+	(*AddFindingsResponse)(nil),             // 308: hotbed.v1.AddFindingsResponse
+	(*FinishReviewRequest)(nil),             // 309: hotbed.v1.FinishReviewRequest
+	(*CancelReviewRequest)(nil),             // 310: hotbed.v1.CancelReviewRequest
+	(*DecideFindingsRequest)(nil),           // 311: hotbed.v1.DecideFindingsRequest
+	(*DecideFindingsResponse)(nil),          // 312: hotbed.v1.DecideFindingsResponse
+	(*RespondRequest)(nil),                  // 313: hotbed.v1.RespondRequest
+	(*ListResponsesRequest)(nil),            // 314: hotbed.v1.ListResponsesRequest
+	(*ListResponsesResponse)(nil),           // 315: hotbed.v1.ListResponsesResponse
+	(*GitCredential)(nil),                   // 316: hotbed.v1.GitCredential
+	(*StartGitHubLoginRequest)(nil),         // 317: hotbed.v1.StartGitHubLoginRequest
+	(*GitHubLoginChallenge)(nil),            // 318: hotbed.v1.GitHubLoginChallenge
+	(*CompleteGitHubLoginRequest)(nil),      // 319: hotbed.v1.CompleteGitHubLoginRequest
+	(*PutGitCredentialRequest)(nil),         // 320: hotbed.v1.PutGitCredentialRequest
+	(*ListGitCredentialsRequest)(nil),       // 321: hotbed.v1.ListGitCredentialsRequest
+	(*ListGitCredentialsResponse)(nil),      // 322: hotbed.v1.ListGitCredentialsResponse
+	(*DeleteGitCredentialRequest)(nil),      // 323: hotbed.v1.DeleteGitCredentialRequest
+	(*DeleteGitCredentialResponse)(nil),     // 324: hotbed.v1.DeleteGitCredentialResponse
+	(*MintGitTokenRequest)(nil),             // 325: hotbed.v1.MintGitTokenRequest
+	(*GitToken)(nil),                        // 326: hotbed.v1.GitToken
+	(*ProxyGitHubAPIRequest)(nil),           // 327: hotbed.v1.ProxyGitHubAPIRequest
+	(*ProxyGitHubAPIResponse)(nil),          // 328: hotbed.v1.ProxyGitHubAPIResponse
+	(*Issue)(nil),                           // 329: hotbed.v1.Issue
+	(*IssueUpvote)(nil),                     // 330: hotbed.v1.IssueUpvote
+	(*ReportIssueRequest)(nil),              // 331: hotbed.v1.ReportIssueRequest
+	(*ListIssuesRequest)(nil),               // 332: hotbed.v1.ListIssuesRequest
+	(*ListIssuesResponse)(nil),              // 333: hotbed.v1.ListIssuesResponse
+	(*GetIssueRequest)(nil),                 // 334: hotbed.v1.GetIssueRequest
+	(*UpvoteIssueRequest)(nil),              // 335: hotbed.v1.UpvoteIssueRequest
+	(*ArchiveIssueRequest)(nil),             // 336: hotbed.v1.ArchiveIssueRequest
+	(*ReopenIssueRequest)(nil),              // 337: hotbed.v1.ReopenIssueRequest
+	(*MemoryContent)(nil),                   // 338: hotbed.v1.MemoryContent
+	(*MemoryProvenance)(nil),                // 339: hotbed.v1.MemoryProvenance
+	(*Memory)(nil),                          // 340: hotbed.v1.Memory
+	(*MemoryChange)(nil),                    // 341: hotbed.v1.MemoryChange
+	(*MemoryIndexEntry)(nil),                // 342: hotbed.v1.MemoryIndexEntry
+	(*MemoryBriefing)(nil),                  // 343: hotbed.v1.MemoryBriefing
+	(*ProposeMemoryRequest)(nil),            // 344: hotbed.v1.ProposeMemoryRequest
+	(*ListMemoriesRequest)(nil),             // 345: hotbed.v1.ListMemoriesRequest
+	(*ListMemoriesResponse)(nil),            // 346: hotbed.v1.ListMemoriesResponse
+	(*GetMemoriesRequest)(nil),              // 347: hotbed.v1.GetMemoriesRequest
+	(*GetMemoriesResponse)(nil),             // 348: hotbed.v1.GetMemoriesResponse
+	(*ShowMemoryRequest)(nil),               // 349: hotbed.v1.ShowMemoryRequest
+	(*ReviseMemoryRequest)(nil),             // 350: hotbed.v1.ReviseMemoryRequest
+	(*ArchiveMemoryRequest)(nil),            // 351: hotbed.v1.ArchiveMemoryRequest
+	(*RestoreMemoryRequest)(nil),            // 352: hotbed.v1.RestoreMemoryRequest
+	(*DeleteMemoryRequest)(nil),             // 353: hotbed.v1.DeleteMemoryRequest
+	(*MoveMemoryRequest)(nil),               // 354: hotbed.v1.MoveMemoryRequest
+	(*BoardAuthor)(nil),                     // 355: hotbed.v1.BoardAuthor
+	(*BoardActor)(nil),                      // 356: hotbed.v1.BoardActor
+	(*BoardAttachment)(nil),                 // 357: hotbed.v1.BoardAttachment
+	(*BoardReaction)(nil),                   // 358: hotbed.v1.BoardReaction
+	(*BoardBlock)(nil),                      // 359: hotbed.v1.BoardBlock
+	(*BoardMention)(nil),                    // 360: hotbed.v1.BoardMention
+	(*BoardTaskClaimView)(nil),              // 361: hotbed.v1.BoardTaskClaimView
+	(*BoardTaskBlocked)(nil),                // 362: hotbed.v1.BoardTaskBlocked
+	(*BoardTask)(nil),                       // 363: hotbed.v1.BoardTask
+	(*BoardTaskClaim)(nil),                  // 364: hotbed.v1.BoardTaskClaim
+	(*BoardMessage)(nil),                    // 365: hotbed.v1.BoardMessage
+	(*BoardThreadSummary)(nil),              // 366: hotbed.v1.BoardThreadSummary
+	(*BoardSchedule)(nil),                   // 367: hotbed.v1.BoardSchedule
+	(*BoardSchema)(nil),                     // 368: hotbed.v1.BoardSchema
+	(*BoardEvent)(nil),                      // 369: hotbed.v1.BoardEvent
+	(*BoardLabelFilter)(nil),                // 370: hotbed.v1.BoardLabelFilter
+	(*BoardMessageResult)(nil),              // 371: hotbed.v1.BoardMessageResult
+	(*BoardTaskResult)(nil),                 // 372: hotbed.v1.BoardTaskResult
+	(*BoardScheduleResult)(nil),             // 373: hotbed.v1.BoardScheduleResult
+	(*PostBoardMessageRequest)(nil),         // 374: hotbed.v1.PostBoardMessageRequest
+	(*EditBoardMessageRequest)(nil),         // 375: hotbed.v1.EditBoardMessageRequest
+	(*DeleteBoardMessageRequest)(nil),       // 376: hotbed.v1.DeleteBoardMessageRequest
+	(*ReactBoardMessageRequest)(nil),        // 377: hotbed.v1.ReactBoardMessageRequest
+	(*LabelBoardMessageRequest)(nil),        // 378: hotbed.v1.LabelBoardMessageRequest
+	(*ListBoardThreadsRequest)(nil),         // 379: hotbed.v1.ListBoardThreadsRequest
+	(*ListBoardThreadsResponse)(nil),        // 380: hotbed.v1.ListBoardThreadsResponse
+	(*GetBoardThreadRequest)(nil),           // 381: hotbed.v1.GetBoardThreadRequest
+	(*GetBoardThreadResponse)(nil),          // 382: hotbed.v1.GetBoardThreadResponse
+	(*ListBoardEventsRequest)(nil),          // 383: hotbed.v1.ListBoardEventsRequest
+	(*ListBoardEventsResponse)(nil),         // 384: hotbed.v1.ListBoardEventsResponse
+	(*ListBoardActorsRequest)(nil),          // 385: hotbed.v1.ListBoardActorsRequest
+	(*ListBoardActorsResponse)(nil),         // 386: hotbed.v1.ListBoardActorsResponse
+	(*UploadBoardAttachmentRequest)(nil),    // 387: hotbed.v1.UploadBoardAttachmentRequest
+	(*DownloadBoardAttachmentRequest)(nil),  // 388: hotbed.v1.DownloadBoardAttachmentRequest
+	(*DownloadBoardAttachmentResponse)(nil), // 389: hotbed.v1.DownloadBoardAttachmentResponse
+	(*ListBoardSchemasRequest)(nil),         // 390: hotbed.v1.ListBoardSchemasRequest
+	(*ListBoardSchemasResponse)(nil),        // 391: hotbed.v1.ListBoardSchemasResponse
+	(*GetBoardSchemaRequest)(nil),           // 392: hotbed.v1.GetBoardSchemaRequest
+	(*CreateBoardSchemaRequest)(nil),        // 393: hotbed.v1.CreateBoardSchemaRequest
+	(*CreateBoardSchemaResponse)(nil),       // 394: hotbed.v1.CreateBoardSchemaResponse
+	(*ScheduleBoardMessageRequest)(nil),     // 395: hotbed.v1.ScheduleBoardMessageRequest
+	(*ListBoardSchedulesRequest)(nil),       // 396: hotbed.v1.ListBoardSchedulesRequest
+	(*ListBoardSchedulesResponse)(nil),      // 397: hotbed.v1.ListBoardSchedulesResponse
+	(*CancelBoardScheduleRequest)(nil),      // 398: hotbed.v1.CancelBoardScheduleRequest
+	(*CancelBoardScheduleResponse)(nil),     // 399: hotbed.v1.CancelBoardScheduleResponse
+	(*CreateBoardTaskRequest)(nil),          // 400: hotbed.v1.CreateBoardTaskRequest
+	(*BatchBoardTaskNeed)(nil),              // 401: hotbed.v1.BatchBoardTaskNeed
+	(*BatchBoardTaskSpec)(nil),              // 402: hotbed.v1.BatchBoardTaskSpec
+	(*BatchCreateBoardTasksRequest)(nil),    // 403: hotbed.v1.BatchCreateBoardTasksRequest
+	(*BatchCreateBoardTasksResponse)(nil),   // 404: hotbed.v1.BatchCreateBoardTasksResponse
+	(*ListBoardTasksRequest)(nil),           // 405: hotbed.v1.ListBoardTasksRequest
+	(*ListBoardTasksResponse)(nil),          // 406: hotbed.v1.ListBoardTasksResponse
+	(*ClaimBoardTaskRequest)(nil),           // 407: hotbed.v1.ClaimBoardTaskRequest
+	(*RenewBoardTaskRequest)(nil),           // 408: hotbed.v1.RenewBoardTaskRequest
+	(*ReleaseBoardTaskRequest)(nil),         // 409: hotbed.v1.ReleaseBoardTaskRequest
+	(*CompleteBoardTaskRequest)(nil),        // 410: hotbed.v1.CompleteBoardTaskRequest
+	(*FailBoardTaskRequest)(nil),            // 411: hotbed.v1.FailBoardTaskRequest
+	(*BlockBoardTaskRequest)(nil),           // 412: hotbed.v1.BlockBoardTaskRequest
+	(*UnblockBoardTaskRequest)(nil),         // 413: hotbed.v1.UnblockBoardTaskRequest
+	(*ReopenBoardTaskRequest)(nil),          // 414: hotbed.v1.ReopenBoardTaskRequest
+	(*AssignBoardTaskRequest)(nil),          // 415: hotbed.v1.AssignBoardTaskRequest
+	(*SetBoardTaskNeedsRequest)(nil),        // 416: hotbed.v1.SetBoardTaskNeedsRequest
+	(*CancelBoardTaskRequest)(nil),          // 417: hotbed.v1.CancelBoardTaskRequest
+	(*ImportedBoardTask)(nil),               // 418: hotbed.v1.ImportedBoardTask
+	(*ImportedBoardMessage)(nil),            // 419: hotbed.v1.ImportedBoardMessage
+	(*ImportBoardRequest)(nil),              // 420: hotbed.v1.ImportBoardRequest
+	(*ImportBoardResponse)(nil),             // 421: hotbed.v1.ImportBoardResponse
+	(*GroupSpec)(nil),                       // 422: hotbed.v1.GroupSpec
+	(*CommandSpec)(nil),                     // 423: hotbed.v1.CommandSpec
+	(*FixedField)(nil),                      // 424: hotbed.v1.FixedField
+	(*InputSpec)(nil),                       // 425: hotbed.v1.InputSpec
+	(*ParamSpec)(nil),                       // 426: hotbed.v1.ParamSpec
+	nil,                                     // 427: hotbed.v1.SharedBase.ReposEntry
+	nil,                                     // 428: hotbed.v1.SharedBase.StepHashesEntry
+	nil,                                     // 429: hotbed.v1.WorkerVMConfig.KernelsEntry
+	nil,                                     // 430: hotbed.v1.WorkerVMConfig.GuestdEntry
+	nil,                                     // 431: hotbed.v1.WorkerSystemConfig.CladefsdEntry
+	nil,                                     // 432: hotbed.v1.WorkerSystemConfig.FirecrackerEntry
+	nil,                                     // 433: hotbed.v1.NodeProjectFreshenSummary.ColdReasonsEntry
+	nil,                                     // 434: hotbed.v1.GetSessionResponse.NodeHostsEntry
+	nil,                                     // 435: hotbed.v1.Snapshot.SeriesEntry
+	nil,                                     // 436: hotbed.v1.Snapshot.NodeHourlyEntry
+	nil,                                     // 437: hotbed.v1.SampledThread.StateCountsEntry
+	nil,                                     // 438: hotbed.v1.SampledThread.SyscallCountsEntry
+	nil,                                     // 439: hotbed.v1.BoardMessage.LabelsEntry
+	nil,                                     // 440: hotbed.v1.BoardSchedule.LabelsEntry
+	nil,                                     // 441: hotbed.v1.PostBoardMessageRequest.LabelsEntry
+	nil,                                     // 442: hotbed.v1.LabelBoardMessageRequest.SetEntry
+	nil,                                     // 443: hotbed.v1.LabelBoardMessageRequest.IfEqualsEntry
+	nil,                                     // 444: hotbed.v1.ScheduleBoardMessageRequest.LabelsEntry
+	nil,                                     // 445: hotbed.v1.CreateBoardTaskRequest.LabelsEntry
+	nil,                                     // 446: hotbed.v1.BatchBoardTaskSpec.LabelsEntry
+	nil,                                     // 447: hotbed.v1.ImportedBoardMessage.LabelsEntry
+	nil,                                     // 448: hotbed.v1.ImportBoardResponse.IdMapEntry
+	(*descriptorpb.ServiceOptions)(nil),     // 449: google.protobuf.ServiceOptions
+	(*descriptorpb.MethodOptions)(nil),      // 450: google.protobuf.MethodOptions
+	(*descriptorpb.FieldOptions)(nil),       // 451: google.protobuf.FieldOptions
 }
 var file_hotbed_v1_hotbed_proto_depIdxs = []int32{
 	36,  // 0: hotbed.v1.SharedBase.cell:type_name -> hotbed.v1.CladefsCell
-	432, // 1: hotbed.v1.SharedBase.repos:type_name -> hotbed.v1.SharedBase.ReposEntry
-	433, // 2: hotbed.v1.SharedBase.step_hashes:type_name -> hotbed.v1.SharedBase.StepHashesEntry
+	427, // 1: hotbed.v1.SharedBase.repos:type_name -> hotbed.v1.SharedBase.ReposEntry
+	428, // 2: hotbed.v1.SharedBase.step_hashes:type_name -> hotbed.v1.SharedBase.StepHashesEntry
 	40,  // 3: hotbed.v1.Admission.signals:type_name -> hotbed.v1.AdmissionSignal
 	35,  // 4: hotbed.v1.Node.resources:type_name -> hotbed.v1.Resources
 	38,  // 5: hotbed.v1.Node.usage:type_name -> hotbed.v1.NodeUsage
 	41,  // 6: hotbed.v1.Node.disk:type_name -> hotbed.v1.DiskUsage
-	51,  // 7: hotbed.v1.Node.profiler:type_name -> hotbed.v1.ProfilerStatus
-	228, // 8: hotbed.v1.Node.daemon_logs:type_name -> hotbed.v1.DaemonLogSource
+	46,  // 7: hotbed.v1.Node.profiler:type_name -> hotbed.v1.ProfilerStatus
+	223, // 8: hotbed.v1.Node.daemon_logs:type_name -> hotbed.v1.DaemonLogSource
 	39,  // 9: hotbed.v1.Node.admission:type_name -> hotbed.v1.Admission
-	46,  // 10: hotbed.v1.Node.host_usage:type_name -> hotbed.v1.HostUsage
-	43,  // 11: hotbed.v1.Node.object_store:type_name -> hotbed.v1.ObjectStoreStats
-	44,  // 12: hotbed.v1.ObjectStoreStats.part_fetches:type_name -> hotbed.v1.PartFetches
-	45,  // 13: hotbed.v1.ObjectStoreStats.part_cache_shards:type_name -> hotbed.v1.PartCacheShard
-	0,   // 14: hotbed.v1.PartCacheShard.state:type_name -> hotbed.v1.PartCacheShardState
-	46,  // 15: hotbed.v1.ReportHostUsageRequest.usage:type_name -> hotbed.v1.HostUsage
-	42,  // 16: hotbed.v1.JoinResponse.node:type_name -> hotbed.v1.Node
-	42,  // 17: hotbed.v1.ListNodesResponse.nodes:type_name -> hotbed.v1.Node
-	56,  // 18: hotbed.v1.Build.guestd:type_name -> hotbed.v1.ManagedArtifact
-	434, // 19: hotbed.v1.WorkerVMConfig.kernels:type_name -> hotbed.v1.WorkerVMConfig.KernelsEntry
-	435, // 20: hotbed.v1.WorkerVMConfig.guestd:type_name -> hotbed.v1.WorkerVMConfig.GuestdEntry
-	436, // 21: hotbed.v1.WorkerSystemConfig.cladefsd:type_name -> hotbed.v1.WorkerSystemConfig.CladefsdEntry
-	437, // 22: hotbed.v1.WorkerSystemConfig.firecracker:type_name -> hotbed.v1.WorkerSystemConfig.FirecrackerEntry
-	58,  // 23: hotbed.v1.WorkerConfig.vm:type_name -> hotbed.v1.WorkerVMConfig
-	59,  // 24: hotbed.v1.WorkerConfig.cladefs_fuse:type_name -> hotbed.v1.WorkerCladefsFUSEConfig
-	60,  // 25: hotbed.v1.WorkerConfig.system:type_name -> hotbed.v1.WorkerSystemConfig
-	61,  // 26: hotbed.v1.WorkerConfig.freshen:type_name -> hotbed.v1.WorkerFreshenConfig
-	62,  // 27: hotbed.v1.WorkerConfig.controller:type_name -> hotbed.v1.OrgControllerConfig
-	63,  // 28: hotbed.v1.GetWorkerConfigResponse.defaults:type_name -> hotbed.v1.WorkerConfig
-	63,  // 29: hotbed.v1.GetWorkerConfigResponse.nodes:type_name -> hotbed.v1.WorkerConfig
-	63,  // 30: hotbed.v1.GetWorkerConfigResponse.effective:type_name -> hotbed.v1.WorkerConfig
-	63,  // 31: hotbed.v1.SetWorkerConfigRequest.config:type_name -> hotbed.v1.WorkerConfig
-	56,  // 32: hotbed.v1.WorkerUpgradeSystemRequest.cladefsd:type_name -> hotbed.v1.ManagedArtifact
-	56,  // 33: hotbed.v1.WorkerUpgradeSystemRequest.firecracker:type_name -> hotbed.v1.ManagedArtifact
-	56,  // 34: hotbed.v1.WorkerUpgradeSystemRequest.kernel:type_name -> hotbed.v1.ManagedArtifact
-	72,  // 35: hotbed.v1.UpgradeSystemResponse.nodes:type_name -> hotbed.v1.NodeSystemUpgrade
-	75,  // 36: hotbed.v1.PutStepRequest.step:type_name -> hotbed.v1.Step
-	81,  // 37: hotbed.v1.ListStepsResponse.steps:type_name -> hotbed.v1.StepStatus
-	75,  // 38: hotbed.v1.StepStatus.step:type_name -> hotbed.v1.Step
-	82,  // 39: hotbed.v1.StepStatus.nodes:type_name -> hotbed.v1.StepOnNode
-	1,   // 40: hotbed.v1.StepOnNode.state:type_name -> hotbed.v1.StepState
-	74,  // 41: hotbed.v1.ListReposResponse.repos:type_name -> hotbed.v1.Repo
-	74,  // 42: hotbed.v1.PutRepoRequest.repo:type_name -> hotbed.v1.Repo
-	74,  // 43: hotbed.v1.HostedProject.repos:type_name -> hotbed.v1.Repo
-	75,  // 44: hotbed.v1.HostedProject.steps:type_name -> hotbed.v1.Step
-	2,   // 45: hotbed.v1.Base.state:type_name -> hotbed.v1.BaseState
-	76,  // 46: hotbed.v1.Base.steps:type_name -> hotbed.v1.AppliedStep
-	93,  // 47: hotbed.v1.Base.repos:type_name -> hotbed.v1.BaseRepo
-	36,  // 48: hotbed.v1.Base.cladefs_cell:type_name -> hotbed.v1.CladefsCell
-	92,  // 49: hotbed.v1.Base.phases:type_name -> hotbed.v1.FreshenPhase
-	3,   // 50: hotbed.v1.Workspace.state:type_name -> hotbed.v1.WorkspaceState
-	95,  // 51: hotbed.v1.Workspace.repos:type_name -> hotbed.v1.WorkspaceRepo
-	36,  // 52: hotbed.v1.Workspace.cladefs_cell:type_name -> hotbed.v1.CladefsCell
-	216, // 53: hotbed.v1.Workspace.placement:type_name -> hotbed.v1.PlacementDecision
-	97,  // 54: hotbed.v1.CreateWorkspaceRequest.placement:type_name -> hotbed.v1.Placement
-	90,  // 55: hotbed.v1.CreateWorkspaceRequest.project:type_name -> hotbed.v1.HostedProject
-	37,  // 56: hotbed.v1.CreateWorkspaceRequest.shared_base:type_name -> hotbed.v1.SharedBase
-	94,  // 57: hotbed.v1.ListWorkspacesResponse.workspaces:type_name -> hotbed.v1.Workspace
-	105, // 58: hotbed.v1.SyncRequest.header:type_name -> hotbed.v1.SyncHeader
-	106, // 59: hotbed.v1.SyncHeader.submodules:type_name -> hotbed.v1.SyncSubmodule
-	108, // 60: hotbed.v1.ListFilesResponse.files:type_name -> hotbed.v1.FileEntry
-	5,   // 61: hotbed.v1.CommandIntervention.kind:type_name -> hotbed.v1.InterventionKind
-	278, // 62: hotbed.v1.CommandIntervention.by:type_name -> hotbed.v1.Stamp
-	115, // 63: hotbed.v1.CommandDiagnostics.intervention:type_name -> hotbed.v1.CommandIntervention
-	268, // 64: hotbed.v1.CommandDiagnostics.sample:type_name -> hotbed.v1.ProcessSample
-	252, // 65: hotbed.v1.CommandDiagnostics.inspect:type_name -> hotbed.v1.InspectCommandResponse
-	116, // 66: hotbed.v1.GetCommandDiagnosticsResponse.diagnostics:type_name -> hotbed.v1.CommandDiagnostics
-	116, // 67: hotbed.v1.SaveCommandDiagnosticsRequest.diagnostics:type_name -> hotbed.v1.CommandDiagnostics
-	278, // 68: hotbed.v1.CommandSample.by:type_name -> hotbed.v1.Stamp
-	268, // 69: hotbed.v1.CommandSample.sample:type_name -> hotbed.v1.ProcessSample
-	121, // 70: hotbed.v1.ListCommandSamplesResponse.samples:type_name -> hotbed.v1.CommandSample
-	121, // 71: hotbed.v1.SaveCommandSampleRequest.sample:type_name -> hotbed.v1.CommandSample
-	127, // 72: hotbed.v1.PushCommandOutputRequest.chunks:type_name -> hotbed.v1.CommandOutputChunk
-	4,   // 73: hotbed.v1.Command.state:type_name -> hotbed.v1.CommandState
-	113, // 74: hotbed.v1.Command.limits:type_name -> hotbed.v1.CommandLimits
-	114, // 75: hotbed.v1.Command.rebuilt:type_name -> hotbed.v1.Rebuilt
-	130, // 76: hotbed.v1.Command.timeline:type_name -> hotbed.v1.CommandEvent
-	115, // 77: hotbed.v1.Command.interventions:type_name -> hotbed.v1.CommandIntervention
-	134, // 78: hotbed.v1.Command.estimate:type_name -> hotbed.v1.CommandEstimate
-	216, // 79: hotbed.v1.Command.placement:type_name -> hotbed.v1.PlacementDecision
-	4,   // 80: hotbed.v1.FinishedCommand.state:type_name -> hotbed.v1.CommandState
-	115, // 81: hotbed.v1.FinishedCommand.interventions:type_name -> hotbed.v1.CommandIntervention
-	134, // 82: hotbed.v1.FinishedCommand.estimate:type_name -> hotbed.v1.CommandEstimate
-	216, // 83: hotbed.v1.FinishedCommand.placement:type_name -> hotbed.v1.PlacementDecision
-	113, // 84: hotbed.v1.RunCommandRequest.limits:type_name -> hotbed.v1.CommandLimits
-	6,   // 85: hotbed.v1.RunCommandRequest.tty:type_name -> hotbed.v1.TtyMode
-	134, // 86: hotbed.v1.RunCommandRequest.estimate:type_name -> hotbed.v1.CommandEstimate
-	216, // 87: hotbed.v1.RunCommandRequest.placement:type_name -> hotbed.v1.PlacementDecision
-	4,   // 88: hotbed.v1.OutputQuery.state:type_name -> hotbed.v1.CommandState
-	136, // 89: hotbed.v1.OutputQuery.lines:type_name -> hotbed.v1.OutputLine
-	131, // 90: hotbed.v1.ListCommandsResponse.commands:type_name -> hotbed.v1.Command
-	4,   // 91: hotbed.v1.LogChunk.state:type_name -> hotbed.v1.CommandState
-	115, // 92: hotbed.v1.LogChunk.ended_by:type_name -> hotbed.v1.CommandIntervention
-	152, // 93: hotbed.v1.Session.workspaces:type_name -> hotbed.v1.SessionWorkspace
-	348, // 94: hotbed.v1.Session.memories:type_name -> hotbed.v1.MemoryBriefing
-	151, // 95: hotbed.v1.ListSessionsResponse.sessions:type_name -> hotbed.v1.Session
-	151, // 96: hotbed.v1.SearchSessionsResponse.sessions:type_name -> hotbed.v1.Session
-	159, // 97: hotbed.v1.Project.history:type_name -> hotbed.v1.ProjectChange
-	75,  // 98: hotbed.v1.Project.steps:type_name -> hotbed.v1.Step
-	278, // 99: hotbed.v1.ProjectChange.by:type_name -> hotbed.v1.Stamp
-	158, // 100: hotbed.v1.ListProjectsResponse.projects:type_name -> hotbed.v1.Project
-	2,   // 101: hotbed.v1.ListBasesRequest.state:type_name -> hotbed.v1.BaseState
-	167, // 102: hotbed.v1.ListBasesResponse.bases:type_name -> hotbed.v1.NodeBase
-	91,  // 103: hotbed.v1.NodeBase.base:type_name -> hotbed.v1.Base
-	7,   // 104: hotbed.v1.ListFreshensRequest.state:type_name -> hotbed.v1.FreshenState
-	176, // 105: hotbed.v1.ListFreshensResponse.summary:type_name -> hotbed.v1.FreshenSummary
-	172, // 106: hotbed.v1.ListFreshensResponse.freshens:type_name -> hotbed.v1.BaseFreshen
-	172, // 107: hotbed.v1.GetFreshenResponse.freshen:type_name -> hotbed.v1.BaseFreshen
-	39,  // 108: hotbed.v1.GetFreshenResponse.node_admission:type_name -> hotbed.v1.Admission
-	206, // 109: hotbed.v1.GetFreshenResponse.related_events:type_name -> hotbed.v1.ClusterEvent
-	7,   // 110: hotbed.v1.BaseFreshen.state:type_name -> hotbed.v1.FreshenState
-	93,  // 111: hotbed.v1.BaseFreshen.repos:type_name -> hotbed.v1.BaseRepo
-	76,  // 112: hotbed.v1.BaseFreshen.steps:type_name -> hotbed.v1.AppliedStep
-	92,  // 113: hotbed.v1.BaseFreshen.phases:type_name -> hotbed.v1.FreshenPhase
-	130, // 114: hotbed.v1.BaseFreshen.timeline:type_name -> hotbed.v1.CommandEvent
-	7,   // 115: hotbed.v1.NodeProjectFreshenSummary.active_state:type_name -> hotbed.v1.FreshenState
-	438, // 116: hotbed.v1.NodeProjectFreshenSummary.cold_reasons:type_name -> hotbed.v1.NodeProjectFreshenSummary.ColdReasonsEntry
-	173, // 117: hotbed.v1.FreshenSummary.total_duration:type_name -> hotbed.v1.DurationStats
-	173, // 118: hotbed.v1.FreshenSummary.queue_duration:type_name -> hotbed.v1.DurationStats
-	173, // 119: hotbed.v1.FreshenSummary.prep_duration:type_name -> hotbed.v1.DurationStats
-	173, // 120: hotbed.v1.FreshenSummary.git_duration:type_name -> hotbed.v1.DurationStats
-	173, // 121: hotbed.v1.FreshenSummary.steps_duration:type_name -> hotbed.v1.DurationStats
-	173, // 122: hotbed.v1.FreshenSummary.parked_duration:type_name -> hotbed.v1.DurationStats
-	173, // 123: hotbed.v1.FreshenSummary.finalize_duration:type_name -> hotbed.v1.DurationStats
-	174, // 124: hotbed.v1.FreshenSummary.slowest_steps:type_name -> hotbed.v1.StepTimingSummary
-	175, // 125: hotbed.v1.FreshenSummary.by_node_project:type_name -> hotbed.v1.NodeProjectFreshenSummary
-	151, // 126: hotbed.v1.GetSessionResponse.session:type_name -> hotbed.v1.Session
-	94,  // 127: hotbed.v1.GetSessionResponse.workspaces:type_name -> hotbed.v1.Workspace
-	131, // 128: hotbed.v1.GetSessionResponse.commands:type_name -> hotbed.v1.Command
-	439, // 129: hotbed.v1.GetSessionResponse.node_hosts:type_name -> hotbed.v1.GetSessionResponse.NodeHostsEntry
-	183, // 130: hotbed.v1.SessionEvents.events:type_name -> hotbed.v1.SessionEvent
-	184, // 131: hotbed.v1.SessionEvent.command:type_name -> hotbed.v1.CommandUpdate
-	185, // 132: hotbed.v1.SessionEvent.workspace:type_name -> hotbed.v1.WorkspaceUpdate
-	186, // 133: hotbed.v1.SessionEvent.question:type_name -> hotbed.v1.QuestionUpdate
-	187, // 134: hotbed.v1.SessionEvent.review:type_name -> hotbed.v1.ReviewUpdate
-	188, // 135: hotbed.v1.SessionEvent.memory:type_name -> hotbed.v1.MemoryUpdate
-	29,  // 136: hotbed.v1.CommandUpdate.what:type_name -> hotbed.v1.CommandUpdate.What
-	4,   // 137: hotbed.v1.CommandUpdate.state:type_name -> hotbed.v1.CommandState
-	30,  // 138: hotbed.v1.WorkspaceUpdate.what:type_name -> hotbed.v1.WorkspaceUpdate.What
-	31,  // 139: hotbed.v1.QuestionUpdate.what:type_name -> hotbed.v1.QuestionUpdate.What
-	280, // 140: hotbed.v1.QuestionUpdate.question:type_name -> hotbed.v1.Question
-	32,  // 141: hotbed.v1.ReviewUpdate.what:type_name -> hotbed.v1.ReviewUpdate.What
-	33,  // 142: hotbed.v1.MemoryUpdate.what:type_name -> hotbed.v1.MemoryUpdate.What
-	345, // 143: hotbed.v1.MemoryUpdate.memory:type_name -> hotbed.v1.Memory
-	192, // 144: hotbed.v1.WorkerEvent.ref:type_name -> hotbed.v1.EventRef
-	194, // 145: hotbed.v1.Event.base:type_name -> hotbed.v1.BaseChange
-	195, // 146: hotbed.v1.Event.workspace:type_name -> hotbed.v1.WorkspaceChange
-	196, // 147: hotbed.v1.Event.command:type_name -> hotbed.v1.CommandChange
-	191, // 148: hotbed.v1.Event.feed:type_name -> hotbed.v1.WorkerEvent
-	91,  // 149: hotbed.v1.BaseChange.base:type_name -> hotbed.v1.Base
-	94,  // 150: hotbed.v1.WorkspaceChange.workspace:type_name -> hotbed.v1.Workspace
-	131, // 151: hotbed.v1.CommandChange.command:type_name -> hotbed.v1.Command
-	132, // 152: hotbed.v1.CommandChange.finished:type_name -> hotbed.v1.FinishedCommand
-	274, // 153: hotbed.v1.CommandChange.profile:type_name -> hotbed.v1.CommandProfile
-	116, // 154: hotbed.v1.CommandChange.diagnostics:type_name -> hotbed.v1.CommandDiagnostics
-	91,  // 155: hotbed.v1.Checkpoint.bases:type_name -> hotbed.v1.Base
-	94,  // 156: hotbed.v1.Checkpoint.workspaces:type_name -> hotbed.v1.Workspace
-	131, // 157: hotbed.v1.Checkpoint.commands:type_name -> hotbed.v1.Command
-	193, // 158: hotbed.v1.PushEventsRequest.events:type_name -> hotbed.v1.Event
-	197, // 159: hotbed.v1.PushEventsRequest.checkpoint:type_name -> hotbed.v1.Checkpoint
-	35,  // 160: hotbed.v1.HeartbeatRequest.resources:type_name -> hotbed.v1.Resources
-	38,  // 161: hotbed.v1.HeartbeatRequest.usage:type_name -> hotbed.v1.NodeUsage
-	41,  // 162: hotbed.v1.HeartbeatRequest.disk:type_name -> hotbed.v1.DiskUsage
-	200, // 163: hotbed.v1.HeartbeatRequest.commands:type_name -> hotbed.v1.CommandUsage
-	201, // 164: hotbed.v1.HeartbeatRequest.bases:type_name -> hotbed.v1.BaseUsage
-	202, // 165: hotbed.v1.HeartbeatRequest.workspaces:type_name -> hotbed.v1.WorkspaceUsage
-	51,  // 166: hotbed.v1.HeartbeatRequest.profiler:type_name -> hotbed.v1.ProfilerStatus
-	228, // 167: hotbed.v1.HeartbeatRequest.daemon_logs:type_name -> hotbed.v1.DaemonLogSource
-	39,  // 168: hotbed.v1.HeartbeatRequest.admission:type_name -> hotbed.v1.Admission
-	43,  // 169: hotbed.v1.HeartbeatRequest.object_store:type_name -> hotbed.v1.ObjectStoreStats
-	37,  // 170: hotbed.v1.HeartbeatRequest.held_bases:type_name -> hotbed.v1.SharedBase
-	36,  // 171: hotbed.v1.HeartbeatRequest.retired_bases:type_name -> hotbed.v1.CladefsCell
-	90,  // 172: hotbed.v1.HeartbeatResponse.projects:type_name -> hotbed.v1.HostedProject
-	57,  // 173: hotbed.v1.HeartbeatResponse.build:type_name -> hotbed.v1.Build
-	46,  // 174: hotbed.v1.HeartbeatResponse.host_usage:type_name -> hotbed.v1.HostUsage
-	63,  // 175: hotbed.v1.HeartbeatResponse.worker_config:type_name -> hotbed.v1.WorkerConfig
-	36,  // 176: hotbed.v1.HeartbeatResponse.retire_bases:type_name -> hotbed.v1.CladefsCell
-	192, // 177: hotbed.v1.ClusterEvent.ref:type_name -> hotbed.v1.EventRef
-	208, // 178: hotbed.v1.Samples.samples:type_name -> hotbed.v1.Sample
-	212, // 179: hotbed.v1.NodeHours.hours:type_name -> hotbed.v1.NodeHour
-	42,  // 180: hotbed.v1.Snapshot.nodes:type_name -> hotbed.v1.Node
-	205, // 181: hotbed.v1.Snapshot.repos:type_name -> hotbed.v1.RepoSummary
-	91,  // 182: hotbed.v1.Snapshot.bases:type_name -> hotbed.v1.Base
-	94,  // 183: hotbed.v1.Snapshot.workspaces:type_name -> hotbed.v1.Workspace
-	131, // 184: hotbed.v1.Snapshot.commands:type_name -> hotbed.v1.Command
-	206, // 185: hotbed.v1.Snapshot.events:type_name -> hotbed.v1.ClusterEvent
-	207, // 186: hotbed.v1.Snapshot.totals24h:type_name -> hotbed.v1.Totals
-	440, // 187: hotbed.v1.Snapshot.series:type_name -> hotbed.v1.Snapshot.SeriesEntry
-	210, // 188: hotbed.v1.Snapshot.load:type_name -> hotbed.v1.LoadSample
-	211, // 189: hotbed.v1.Snapshot.hourly:type_name -> hotbed.v1.HourBucket
-	441, // 190: hotbed.v1.Snapshot.node_hourly:type_name -> hotbed.v1.Snapshot.NodeHourlyEntry
-	132, // 191: hotbed.v1.Snapshot.history:type_name -> hotbed.v1.FinishedCommand
-	151, // 192: hotbed.v1.Snapshot.sessions:type_name -> hotbed.v1.Session
-	230, // 193: hotbed.v1.Snapshot.schedules:type_name -> hotbed.v1.ScheduledCommand
-	158, // 194: hotbed.v1.Snapshot.projects:type_name -> hotbed.v1.Project
-	228, // 195: hotbed.v1.Snapshot.controller_logs:type_name -> hotbed.v1.DaemonLogSource
-	216, // 196: hotbed.v1.Snapshot.placements:type_name -> hotbed.v1.PlacementDecision
-	206, // 197: hotbed.v1.Snapshot.admission_events:type_name -> hotbed.v1.ClusterEvent
-	217, // 198: hotbed.v1.PlacementDecision.candidates:type_name -> hotbed.v1.PlacementCandidate
-	97,  // 199: hotbed.v1.PlacementDecision.request:type_name -> hotbed.v1.Placement
-	218, // 200: hotbed.v1.PlacementCandidate.parts:type_name -> hotbed.v1.CostPart
-	42,  // 201: hotbed.v1.NodeDetail.node:type_name -> hotbed.v1.Node
-	206, // 202: hotbed.v1.NodeDetail.events:type_name -> hotbed.v1.ClusterEvent
-	216, // 203: hotbed.v1.NodeDetail.placements:type_name -> hotbed.v1.PlacementDecision
-	216, // 204: hotbed.v1.ListPlacementsResponse.placements:type_name -> hotbed.v1.PlacementDecision
-	206, // 205: hotbed.v1.ListEventsResponse.events:type_name -> hotbed.v1.ClusterEvent
-	8,   // 206: hotbed.v1.GetDaemonLogsRequest.level:type_name -> hotbed.v1.DaemonLogLevel
-	8,   // 207: hotbed.v1.DaemonLogEntry.level:type_name -> hotbed.v1.DaemonLogLevel
-	227, // 208: hotbed.v1.GetDaemonLogsResponse.entries:type_name -> hotbed.v1.DaemonLogEntry
-	228, // 209: hotbed.v1.GetDaemonLogsResponse.sources:type_name -> hotbed.v1.DaemonLogSource
-	133, // 210: hotbed.v1.ScheduledCommand.command:type_name -> hotbed.v1.RunCommandRequest
-	231, // 211: hotbed.v1.ScheduledCommand.runs:type_name -> hotbed.v1.ScheduledRun
-	9,   // 212: hotbed.v1.ScheduledRun.outcome:type_name -> hotbed.v1.RunOutcome
-	230, // 213: hotbed.v1.PutScheduleRequest.schedule:type_name -> hotbed.v1.ScheduledCommand
-	230, // 214: hotbed.v1.ListSchedulesResponse.schedules:type_name -> hotbed.v1.ScheduledCommand
-	10,  // 215: hotbed.v1.InspectCommandRequest.sections:type_name -> hotbed.v1.InspectSection
-	241, // 216: hotbed.v1.ProcessInfo.threads:type_name -> hotbed.v1.ThreadInfo
-	244, // 217: hotbed.v1.CgroupStats.io:type_name -> hotbed.v1.CgroupIO
-	247, // 218: hotbed.v1.ProcessMemoryMap.top_regions:type_name -> hotbed.v1.MemoryRegion
-	249, // 219: hotbed.v1.ProcessLimits.items:type_name -> hotbed.v1.ResourceLimit
-	242, // 220: hotbed.v1.InspectCommandResponse.procs:type_name -> hotbed.v1.ProcessInfo
-	243, // 221: hotbed.v1.InspectCommandResponse.files:type_name -> hotbed.v1.OpenFile
-	245, // 222: hotbed.v1.InspectCommandResponse.cgroup_stats:type_name -> hotbed.v1.CgroupStats
-	246, // 223: hotbed.v1.InspectCommandResponse.kstacks:type_name -> hotbed.v1.ThreadKernelStack
-	248, // 224: hotbed.v1.InspectCommandResponse.maps:type_name -> hotbed.v1.ProcessMemoryMap
-	250, // 225: hotbed.v1.InspectCommandResponse.limits:type_name -> hotbed.v1.ProcessLimits
-	251, // 226: hotbed.v1.InspectCommandResponse.available_tools:type_name -> hotbed.v1.ToolCapability
-	11,  // 227: hotbed.v1.TraceCommandRequest.kind:type_name -> hotbed.v1.TraceKind
-	11,  // 228: hotbed.v1.TraceSummary.kind:type_name -> hotbed.v1.TraceKind
-	271, // 229: hotbed.v1.TraceSummary.stacks:type_name -> hotbed.v1.FoldedStack
-	272, // 230: hotbed.v1.TraceSummary.top_functions:type_name -> hotbed.v1.ProfileFunction
-	254, // 231: hotbed.v1.TraceSummary.counters:type_name -> hotbed.v1.PerfCounter
-	255, // 232: hotbed.v1.TraceSummary.syscalls:type_name -> hotbed.v1.SyscallStat
-	270, // 233: hotbed.v1.TraceSummary.frames:type_name -> hotbed.v1.ProfileFrame
-	256, // 234: hotbed.v1.TraceCommandChunk.summary:type_name -> hotbed.v1.TraceSummary
-	268, // 235: hotbed.v1.SampleCommandChunk.sample:type_name -> hotbed.v1.ProcessSample
-	121, // 236: hotbed.v1.SampleCommandChunk.kept:type_name -> hotbed.v1.CommandSample
-	442, // 237: hotbed.v1.SampledThread.state_counts:type_name -> hotbed.v1.SampledThread.StateCountsEntry
-	261, // 238: hotbed.v1.SampledThread.syscall:type_name -> hotbed.v1.ThreadSyscall
-	443, // 239: hotbed.v1.SampledThread.syscall_counts:type_name -> hotbed.v1.SampledThread.SyscallCountsEntry
-	262, // 240: hotbed.v1.SampledThread.user_frames:type_name -> hotbed.v1.StackFrame
-	263, // 241: hotbed.v1.SampledProcess.threads:type_name -> hotbed.v1.SampledThread
-	248, // 242: hotbed.v1.SampledProcess.memory_map:type_name -> hotbed.v1.ProcessMemoryMap
-	250, // 243: hotbed.v1.SampledProcess.limits:type_name -> hotbed.v1.ProcessLimits
-	245, // 244: hotbed.v1.SampledCgroup.end:type_name -> hotbed.v1.CgroupStats
-	260, // 245: hotbed.v1.ProcessSample.collectors:type_name -> hotbed.v1.SampleCollector
-	266, // 246: hotbed.v1.ProcessSample.procs:type_name -> hotbed.v1.SampledProcess
-	264, // 247: hotbed.v1.ProcessSample.files:type_name -> hotbed.v1.SampledOpenFile
-	265, // 248: hotbed.v1.ProcessSample.locks:type_name -> hotbed.v1.FileLock
-	267, // 249: hotbed.v1.ProcessSample.cgroup_stats:type_name -> hotbed.v1.SampledCgroup
-	271, // 250: hotbed.v1.ProcessSample.sampled_stacks:type_name -> hotbed.v1.FoldedStack
-	271, // 251: hotbed.v1.ProcessSample.on_cpu_stacks:type_name -> hotbed.v1.FoldedStack
-	272, // 252: hotbed.v1.ProcessSample.on_cpu_top_functions:type_name -> hotbed.v1.ProfileFunction
-	254, // 253: hotbed.v1.ProcessSample.perf_counters:type_name -> hotbed.v1.PerfCounter
-	270, // 254: hotbed.v1.ProcessSample.frames:type_name -> hotbed.v1.ProfileFrame
-	271, // 255: hotbed.v1.CommandProfile.stacks:type_name -> hotbed.v1.FoldedStack
-	272, // 256: hotbed.v1.CommandProfile.top_functions:type_name -> hotbed.v1.ProfileFunction
-	273, // 257: hotbed.v1.CommandProfile.buckets:type_name -> hotbed.v1.ProfileBucket
-	270, // 258: hotbed.v1.CommandProfile.frames:type_name -> hotbed.v1.ProfileFrame
-	276, // 259: hotbed.v1.Prompt.options:type_name -> hotbed.v1.PromptOption
-	13,  // 260: hotbed.v1.Stamp.actor_kind:type_name -> hotbed.v1.ActorKind
-	275, // 261: hotbed.v1.Question.prompt:type_name -> hotbed.v1.Prompt
-	12,  // 262: hotbed.v1.Question.state:type_name -> hotbed.v1.QuestionState
-	277, // 263: hotbed.v1.Question.answer:type_name -> hotbed.v1.Answer
-	278, // 264: hotbed.v1.Question.asked:type_name -> hotbed.v1.Stamp
-	279, // 265: hotbed.v1.Question.asked_from:type_name -> hotbed.v1.AskedFrom
-	278, // 266: hotbed.v1.Question.edited:type_name -> hotbed.v1.Stamp
-	278, // 267: hotbed.v1.Question.answered:type_name -> hotbed.v1.Stamp
-	278, // 268: hotbed.v1.Question.dismissed:type_name -> hotbed.v1.Stamp
-	278, // 269: hotbed.v1.Question.handled:type_name -> hotbed.v1.Stamp
-	278, // 270: hotbed.v1.Question.deleted:type_name -> hotbed.v1.Stamp
-	281, // 271: hotbed.v1.Question.history:type_name -> hotbed.v1.QuestionChange
-	278, // 272: hotbed.v1.QuestionChange.by:type_name -> hotbed.v1.Stamp
-	280, // 273: hotbed.v1.QuestionChange.question:type_name -> hotbed.v1.Question
-	275, // 274: hotbed.v1.AddQuestionsRequest.questions:type_name -> hotbed.v1.Prompt
-	279, // 275: hotbed.v1.AddQuestionsRequest.asked_from:type_name -> hotbed.v1.AskedFrom
-	280, // 276: hotbed.v1.AddQuestionsResponse.questions:type_name -> hotbed.v1.Question
-	275, // 277: hotbed.v1.EditQuestionRequest.prompt:type_name -> hotbed.v1.Prompt
-	12,  // 278: hotbed.v1.ListQuestionsRequest.states:type_name -> hotbed.v1.QuestionState
-	14,  // 279: hotbed.v1.ListQuestionsRequest.order:type_name -> hotbed.v1.QuestionOrder
-	280, // 280: hotbed.v1.ListQuestionsResponse.questions:type_name -> hotbed.v1.Question
-	287, // 281: hotbed.v1.ListQuestionsResponse.sessions:type_name -> hotbed.v1.QuestionSession
-	291, // 282: hotbed.v1.ListQuestionProjectsResponse.projects:type_name -> hotbed.v1.QuestionProject
-	277, // 283: hotbed.v1.AnswerQuestionRequest.answer:type_name -> hotbed.v1.Answer
-	275, // 284: hotbed.v1.ReviseQuestionRequest.prompt:type_name -> hotbed.v1.Prompt
-	280, // 285: hotbed.v1.AckQuestionsResponse.questions:type_name -> hotbed.v1.Question
-	19,  // 286: hotbed.v1.Reviewer.state:type_name -> hotbed.v1.ReviewerState
-	278, // 287: hotbed.v1.Reviewer.started:type_name -> hotbed.v1.Stamp
-	278, // 288: hotbed.v1.Reviewer.ended:type_name -> hotbed.v1.Stamp
-	301, // 289: hotbed.v1.ReportedFinding.locations:type_name -> hotbed.v1.Location
-	16,  // 290: hotbed.v1.Finding.severity:type_name -> hotbed.v1.FindingSeverity
-	17,  // 291: hotbed.v1.Finding.verdict:type_name -> hotbed.v1.FindingVerdict
-	301, // 292: hotbed.v1.Finding.locations:type_name -> hotbed.v1.Location
-	18,  // 293: hotbed.v1.Finding.decision:type_name -> hotbed.v1.FindingDecision
-	278, // 294: hotbed.v1.Finding.decided:type_name -> hotbed.v1.Stamp
-	278, // 295: hotbed.v1.Finding.found:type_name -> hotbed.v1.Stamp
-	20,  // 296: hotbed.v1.Finding.quick:type_name -> hotbed.v1.QuickResponse
-	304, // 297: hotbed.v1.Finding.fix:type_name -> hotbed.v1.Fix
-	278, // 298: hotbed.v1.Finding.quick_by:type_name -> hotbed.v1.Stamp
-	301, // 299: hotbed.v1.Fix.locations:type_name -> hotbed.v1.Location
-	15,  // 300: hotbed.v1.Review.state:type_name -> hotbed.v1.ReviewState
-	278, // 301: hotbed.v1.Review.requested:type_name -> hotbed.v1.Stamp
-	278, // 302: hotbed.v1.Review.started:type_name -> hotbed.v1.Stamp
-	278, // 303: hotbed.v1.Review.ended:type_name -> hotbed.v1.Stamp
-	303, // 304: hotbed.v1.Review.findings:type_name -> hotbed.v1.Finding
-	306, // 305: hotbed.v1.Review.events:type_name -> hotbed.v1.ReviewEvent
-	278, // 306: hotbed.v1.Review.implementer:type_name -> hotbed.v1.Stamp
-	300, // 307: hotbed.v1.Review.reviewers:type_name -> hotbed.v1.Reviewer
-	278, // 308: hotbed.v1.ReviewEvent.by:type_name -> hotbed.v1.Stamp
-	20,  // 309: hotbed.v1.ReviewEvent.quick:type_name -> hotbed.v1.QuickResponse
-	15,  // 310: hotbed.v1.ListReviewsRequest.states:type_name -> hotbed.v1.ReviewState
-	305, // 311: hotbed.v1.ListReviewsResponse.reviews:type_name -> hotbed.v1.Review
-	302, // 312: hotbed.v1.AddFindingsRequest.findings:type_name -> hotbed.v1.ReportedFinding
-	303, // 313: hotbed.v1.AddFindingsResponse.findings:type_name -> hotbed.v1.Finding
-	18,  // 314: hotbed.v1.DecideFindingsRequest.decision:type_name -> hotbed.v1.FindingDecision
-	304, // 315: hotbed.v1.DecideFindingsRequest.fix:type_name -> hotbed.v1.Fix
-	13,  // 316: hotbed.v1.DecideFindingsRequest.actor_kind:type_name -> hotbed.v1.ActorKind
-	303, // 317: hotbed.v1.DecideFindingsResponse.findings:type_name -> hotbed.v1.Finding
-	20,  // 318: hotbed.v1.RespondRequest.quick:type_name -> hotbed.v1.QuickResponse
-	13,  // 319: hotbed.v1.RespondRequest.actor_kind:type_name -> hotbed.v1.ActorKind
-	306, // 320: hotbed.v1.ListResponsesResponse.responses:type_name -> hotbed.v1.ReviewEvent
-	321, // 321: hotbed.v1.ListGitCredentialsResponse.credentials:type_name -> hotbed.v1.GitCredential
-	21,  // 322: hotbed.v1.Issue.state:type_name -> hotbed.v1.IssueState
-	278, // 323: hotbed.v1.Issue.reported:type_name -> hotbed.v1.Stamp
-	335, // 324: hotbed.v1.Issue.upvotes:type_name -> hotbed.v1.IssueUpvote
-	278, // 325: hotbed.v1.Issue.archived:type_name -> hotbed.v1.Stamp
-	278, // 326: hotbed.v1.IssueUpvote.by:type_name -> hotbed.v1.Stamp
-	334, // 327: hotbed.v1.ListIssuesResponse.issues:type_name -> hotbed.v1.Issue
-	23,  // 328: hotbed.v1.MemoryContent.mode:type_name -> hotbed.v1.MemoryMode
-	279, // 329: hotbed.v1.MemoryProvenance.from:type_name -> hotbed.v1.AskedFrom
-	22,  // 330: hotbed.v1.Memory.scope:type_name -> hotbed.v1.MemoryScope
-	343, // 331: hotbed.v1.Memory.content:type_name -> hotbed.v1.MemoryContent
-	24,  // 332: hotbed.v1.Memory.state:type_name -> hotbed.v1.MemoryState
-	344, // 333: hotbed.v1.Memory.provenance:type_name -> hotbed.v1.MemoryProvenance
-	278, // 334: hotbed.v1.Memory.proposed:type_name -> hotbed.v1.Stamp
-	278, // 335: hotbed.v1.Memory.edited:type_name -> hotbed.v1.Stamp
-	278, // 336: hotbed.v1.Memory.decided:type_name -> hotbed.v1.Stamp
-	278, // 337: hotbed.v1.Memory.archived:type_name -> hotbed.v1.Stamp
-	346, // 338: hotbed.v1.Memory.history:type_name -> hotbed.v1.MemoryChange
-	278, // 339: hotbed.v1.MemoryChange.by:type_name -> hotbed.v1.Stamp
-	345, // 340: hotbed.v1.MemoryChange.memory:type_name -> hotbed.v1.Memory
-	22,  // 341: hotbed.v1.MemoryIndexEntry.scope:type_name -> hotbed.v1.MemoryScope
-	23,  // 342: hotbed.v1.MemoryIndexEntry.mode:type_name -> hotbed.v1.MemoryMode
-	347, // 343: hotbed.v1.MemoryBriefing.always:type_name -> hotbed.v1.MemoryIndexEntry
-	347, // 344: hotbed.v1.MemoryBriefing.on_demand:type_name -> hotbed.v1.MemoryIndexEntry
-	343, // 345: hotbed.v1.ProposeMemoryRequest.content:type_name -> hotbed.v1.MemoryContent
-	279, // 346: hotbed.v1.ProposeMemoryRequest.from:type_name -> hotbed.v1.AskedFrom
-	24,  // 347: hotbed.v1.ListMemoriesRequest.states:type_name -> hotbed.v1.MemoryState
-	22,  // 348: hotbed.v1.ListMemoriesRequest.scope:type_name -> hotbed.v1.MemoryScope
-	23,  // 349: hotbed.v1.ListMemoriesRequest.mode:type_name -> hotbed.v1.MemoryMode
-	25,  // 350: hotbed.v1.ListMemoriesRequest.order:type_name -> hotbed.v1.MemoryOrder
-	345, // 351: hotbed.v1.ListMemoriesResponse.memories:type_name -> hotbed.v1.Memory
-	345, // 352: hotbed.v1.GetMemoriesResponse.memories:type_name -> hotbed.v1.Memory
-	343, // 353: hotbed.v1.ReviseMemoryRequest.content:type_name -> hotbed.v1.MemoryContent
-	26,  // 354: hotbed.v1.BoardActor.kind:type_name -> hotbed.v1.BoardActorKind
-	361, // 355: hotbed.v1.BoardMention.actor:type_name -> hotbed.v1.BoardActor
-	361, // 356: hotbed.v1.BoardMention.candidates:type_name -> hotbed.v1.BoardActor
-	27,  // 357: hotbed.v1.BoardTask.state:type_name -> hotbed.v1.BoardTaskState
-	366, // 358: hotbed.v1.BoardTask.claim:type_name -> hotbed.v1.BoardTaskClaimView
-	367, // 359: hotbed.v1.BoardTask.blocked:type_name -> hotbed.v1.BoardTaskBlocked
-	444, // 360: hotbed.v1.BoardMessage.labels:type_name -> hotbed.v1.BoardMessage.LabelsEntry
-	363, // 361: hotbed.v1.BoardMessage.reactions:type_name -> hotbed.v1.BoardReaction
-	360, // 362: hotbed.v1.BoardMessage.by:type_name -> hotbed.v1.BoardAuthor
-	361, // 363: hotbed.v1.BoardMessage.author:type_name -> hotbed.v1.BoardActor
-	362, // 364: hotbed.v1.BoardMessage.attachments:type_name -> hotbed.v1.BoardAttachment
-	364, // 365: hotbed.v1.BoardMessage.blocks:type_name -> hotbed.v1.BoardBlock
-	368, // 366: hotbed.v1.BoardMessage.task:type_name -> hotbed.v1.BoardTask
-	370, // 367: hotbed.v1.BoardThreadSummary.message:type_name -> hotbed.v1.BoardMessage
-	370, // 368: hotbed.v1.BoardThreadSummary.last:type_name -> hotbed.v1.BoardMessage
-	445, // 369: hotbed.v1.BoardSchedule.labels:type_name -> hotbed.v1.BoardSchedule.LabelsEntry
-	362, // 370: hotbed.v1.BoardSchedule.attachments:type_name -> hotbed.v1.BoardAttachment
-	360, // 371: hotbed.v1.BoardSchedule.by:type_name -> hotbed.v1.BoardAuthor
-	361, // 372: hotbed.v1.BoardSchedule.author:type_name -> hotbed.v1.BoardActor
-	28,  // 373: hotbed.v1.BoardSchedule.state:type_name -> hotbed.v1.BoardScheduleState
-	370, // 374: hotbed.v1.BoardEvent.message:type_name -> hotbed.v1.BoardMessage
-	361, // 375: hotbed.v1.BoardEvent.actor:type_name -> hotbed.v1.BoardActor
-	370, // 376: hotbed.v1.BoardMessageResult.message:type_name -> hotbed.v1.BoardMessage
-	365, // 377: hotbed.v1.BoardMessageResult.mentions:type_name -> hotbed.v1.BoardMention
-	370, // 378: hotbed.v1.BoardTaskResult.task:type_name -> hotbed.v1.BoardMessage
-	369, // 379: hotbed.v1.BoardTaskResult.claim:type_name -> hotbed.v1.BoardTaskClaim
-	365, // 380: hotbed.v1.BoardTaskResult.mentions:type_name -> hotbed.v1.BoardMention
-	372, // 381: hotbed.v1.BoardScheduleResult.schedule:type_name -> hotbed.v1.BoardSchedule
-	365, // 382: hotbed.v1.BoardScheduleResult.mentions:type_name -> hotbed.v1.BoardMention
-	446, // 383: hotbed.v1.PostBoardMessageRequest.labels:type_name -> hotbed.v1.PostBoardMessageRequest.LabelsEntry
-	447, // 384: hotbed.v1.LabelBoardMessageRequest.set:type_name -> hotbed.v1.LabelBoardMessageRequest.SetEntry
-	448, // 385: hotbed.v1.LabelBoardMessageRequest.if_equals:type_name -> hotbed.v1.LabelBoardMessageRequest.IfEqualsEntry
-	375, // 386: hotbed.v1.ListBoardThreadsRequest.labels:type_name -> hotbed.v1.BoardLabelFilter
-	371, // 387: hotbed.v1.ListBoardThreadsResponse.threads:type_name -> hotbed.v1.BoardThreadSummary
-	375, // 388: hotbed.v1.GetBoardThreadRequest.labels:type_name -> hotbed.v1.BoardLabelFilter
-	370, // 389: hotbed.v1.GetBoardThreadResponse.message:type_name -> hotbed.v1.BoardMessage
-	370, // 390: hotbed.v1.GetBoardThreadResponse.replies:type_name -> hotbed.v1.BoardMessage
-	372, // 391: hotbed.v1.GetBoardThreadResponse.schedules:type_name -> hotbed.v1.BoardSchedule
-	375, // 392: hotbed.v1.ListBoardEventsRequest.labels:type_name -> hotbed.v1.BoardLabelFilter
-	374, // 393: hotbed.v1.ListBoardEventsResponse.events:type_name -> hotbed.v1.BoardEvent
-	361, // 394: hotbed.v1.ListBoardActorsResponse.actors:type_name -> hotbed.v1.BoardActor
-	362, // 395: hotbed.v1.DownloadBoardAttachmentResponse.attachment:type_name -> hotbed.v1.BoardAttachment
-	373, // 396: hotbed.v1.ListBoardSchemasResponse.schemas:type_name -> hotbed.v1.BoardSchema
-	373, // 397: hotbed.v1.CreateBoardSchemaResponse.schema:type_name -> hotbed.v1.BoardSchema
-	449, // 398: hotbed.v1.ScheduleBoardMessageRequest.labels:type_name -> hotbed.v1.ScheduleBoardMessageRequest.LabelsEntry
-	372, // 399: hotbed.v1.ListBoardSchedulesResponse.schedules:type_name -> hotbed.v1.BoardSchedule
-	372, // 400: hotbed.v1.CancelBoardScheduleResponse.schedule:type_name -> hotbed.v1.BoardSchedule
-	450, // 401: hotbed.v1.CreateBoardTaskRequest.labels:type_name -> hotbed.v1.CreateBoardTaskRequest.LabelsEntry
-	451, // 402: hotbed.v1.BatchBoardTaskSpec.labels:type_name -> hotbed.v1.BatchBoardTaskSpec.LabelsEntry
-	406, // 403: hotbed.v1.BatchBoardTaskSpec.needs:type_name -> hotbed.v1.BatchBoardTaskNeed
-	407, // 404: hotbed.v1.BatchCreateBoardTasksRequest.tasks:type_name -> hotbed.v1.BatchBoardTaskSpec
-	370, // 405: hotbed.v1.BatchCreateBoardTasksResponse.tasks:type_name -> hotbed.v1.BoardMessage
-	27,  // 406: hotbed.v1.ListBoardTasksRequest.states:type_name -> hotbed.v1.BoardTaskState
-	375, // 407: hotbed.v1.ListBoardTasksRequest.labels:type_name -> hotbed.v1.BoardLabelFilter
-	371, // 408: hotbed.v1.ListBoardTasksResponse.tasks:type_name -> hotbed.v1.BoardThreadSummary
-	375, // 409: hotbed.v1.ClaimBoardTaskRequest.labels:type_name -> hotbed.v1.BoardLabelFilter
-	27,  // 410: hotbed.v1.ImportedBoardTask.state:type_name -> hotbed.v1.BoardTaskState
-	452, // 411: hotbed.v1.ImportedBoardMessage.labels:type_name -> hotbed.v1.ImportedBoardMessage.LabelsEntry
-	363, // 412: hotbed.v1.ImportedBoardMessage.reactions:type_name -> hotbed.v1.BoardReaction
-	360, // 413: hotbed.v1.ImportedBoardMessage.by:type_name -> hotbed.v1.BoardAuthor
-	361, // 414: hotbed.v1.ImportedBoardMessage.author:type_name -> hotbed.v1.BoardActor
-	362, // 415: hotbed.v1.ImportedBoardMessage.attachments:type_name -> hotbed.v1.BoardAttachment
-	423, // 416: hotbed.v1.ImportedBoardMessage.task:type_name -> hotbed.v1.ImportedBoardTask
-	361, // 417: hotbed.v1.ImportBoardRequest.actors:type_name -> hotbed.v1.BoardActor
-	398, // 418: hotbed.v1.ImportBoardRequest.schemas:type_name -> hotbed.v1.CreateBoardSchemaRequest
-	424, // 419: hotbed.v1.ImportBoardRequest.messages:type_name -> hotbed.v1.ImportedBoardMessage
-	453, // 420: hotbed.v1.ImportBoardResponse.id_map:type_name -> hotbed.v1.ImportBoardResponse.IdMapEntry
-	429, // 421: hotbed.v1.CommandSpec.fixed:type_name -> hotbed.v1.FixedField
-	430, // 422: hotbed.v1.CommandSpec.input:type_name -> hotbed.v1.InputSpec
-	56,  // 423: hotbed.v1.WorkerVMConfig.KernelsEntry.value:type_name -> hotbed.v1.ManagedArtifact
-	56,  // 424: hotbed.v1.WorkerVMConfig.GuestdEntry.value:type_name -> hotbed.v1.ManagedArtifact
-	56,  // 425: hotbed.v1.WorkerSystemConfig.CladefsdEntry.value:type_name -> hotbed.v1.ManagedArtifact
-	56,  // 426: hotbed.v1.WorkerSystemConfig.FirecrackerEntry.value:type_name -> hotbed.v1.ManagedArtifact
-	209, // 427: hotbed.v1.Snapshot.SeriesEntry.value:type_name -> hotbed.v1.Samples
-	213, // 428: hotbed.v1.Snapshot.NodeHourlyEntry.value:type_name -> hotbed.v1.NodeHours
-	454, // 429: hotbed.v1.group:extendee -> google.protobuf.ServiceOptions
-	455, // 430: hotbed.v1.command:extendee -> google.protobuf.MethodOptions
-	456, // 431: hotbed.v1.param:extendee -> google.protobuf.FieldOptions
-	427, // 432: hotbed.v1.group:type_name -> hotbed.v1.GroupSpec
-	428, // 433: hotbed.v1.command:type_name -> hotbed.v1.CommandSpec
-	431, // 434: hotbed.v1.param:type_name -> hotbed.v1.ParamSpec
-	52,  // 435: hotbed.v1.ClusterService.Join:input_type -> hotbed.v1.JoinRequest
-	198, // 436: hotbed.v1.ClusterService.PushEvents:input_type -> hotbed.v1.PushEventsRequest
-	203, // 437: hotbed.v1.ClusterService.Heartbeat:input_type -> hotbed.v1.HeartbeatRequest
-	49,  // 438: hotbed.v1.ClusterService.Standby:input_type -> hotbed.v1.StandbyRequest
-	47,  // 439: hotbed.v1.ClusterService.ReportHostUsage:input_type -> hotbed.v1.ReportHostUsageRequest
-	54,  // 440: hotbed.v1.ClusterService.ListNodes:input_type -> hotbed.v1.ListNodesRequest
-	69,  // 441: hotbed.v1.ClusterService.GetBuild:input_type -> hotbed.v1.GetBuildRequest
-	83,  // 442: hotbed.v1.ClusterService.ListRepos:input_type -> hotbed.v1.ListReposRequest
-	85,  // 443: hotbed.v1.ClusterService.PutRepo:input_type -> hotbed.v1.PutRepoRequest
-	86,  // 444: hotbed.v1.ClusterService.DeleteRepo:input_type -> hotbed.v1.DeleteRepoRequest
-	88,  // 445: hotbed.v1.ClusterService.RebuildProject:input_type -> hotbed.v1.RebuildProjectRequest
-	89,  // 446: hotbed.v1.ClusterService.SetProjectHosts:input_type -> hotbed.v1.SetProjectHostsRequest
-	77,  // 447: hotbed.v1.ClusterService.PutStep:input_type -> hotbed.v1.PutStepRequest
-	78,  // 448: hotbed.v1.ClusterService.DeleteStep:input_type -> hotbed.v1.DeleteStepRequest
-	79,  // 449: hotbed.v1.ClusterService.ListSteps:input_type -> hotbed.v1.ListStepsRequest
-	160, // 450: hotbed.v1.ClusterService.AddProject:input_type -> hotbed.v1.AddProjectRequest
-	161, // 451: hotbed.v1.ClusterService.RemoveProjectRepos:input_type -> hotbed.v1.RemoveProjectReposRequest
-	163, // 452: hotbed.v1.ClusterService.ListProjects:input_type -> hotbed.v1.ListProjectsRequest
-	162, // 453: hotbed.v1.ClusterService.GetProject:input_type -> hotbed.v1.GetProjectRequest
-	165, // 454: hotbed.v1.ClusterService.ListBases:input_type -> hotbed.v1.ListBasesRequest
-	168, // 455: hotbed.v1.ClusterService.ListFreshens:input_type -> hotbed.v1.ListFreshensRequest
-	170, // 456: hotbed.v1.ClusterService.GetFreshen:input_type -> hotbed.v1.GetFreshenRequest
-	214, // 457: hotbed.v1.ClusterService.GetSnapshot:input_type -> hotbed.v1.GetSnapshotRequest
-	117, // 458: hotbed.v1.ClusterService.GetCommandDiagnostics:input_type -> hotbed.v1.GetCommandDiagnosticsRequest
-	119, // 459: hotbed.v1.ClusterService.SaveCommandDiagnostics:input_type -> hotbed.v1.SaveCommandDiagnosticsRequest
-	122, // 460: hotbed.v1.ClusterService.ListCommandSamples:input_type -> hotbed.v1.ListCommandSamplesRequest
-	124, // 461: hotbed.v1.ClusterService.GetCommandSample:input_type -> hotbed.v1.GetCommandSampleRequest
-	125, // 462: hotbed.v1.ClusterService.SaveCommandSample:input_type -> hotbed.v1.SaveCommandSampleRequest
-	128, // 463: hotbed.v1.ClusterService.PushCommandOutput:input_type -> hotbed.v1.PushCommandOutputRequest
-	220, // 464: hotbed.v1.ClusterService.GetNode:input_type -> hotbed.v1.GetNodeRequest
-	219, // 465: hotbed.v1.ClusterService.RetireNode:input_type -> hotbed.v1.RetireNodeRequest
-	222, // 466: hotbed.v1.ClusterService.ListPlacements:input_type -> hotbed.v1.ListPlacementsRequest
-	224, // 467: hotbed.v1.ClusterService.ListEvents:input_type -> hotbed.v1.ListEventsRequest
-	64,  // 468: hotbed.v1.ClusterService.GetWorkerConfig:input_type -> hotbed.v1.GetWorkerConfigRequest
-	66,  // 469: hotbed.v1.ClusterService.SetWorkerConfig:input_type -> hotbed.v1.SetWorkerConfigRequest
-	67,  // 470: hotbed.v1.ClusterService.DeleteWorkerConfig:input_type -> hotbed.v1.DeleteWorkerConfigRequest
-	70,  // 471: hotbed.v1.ClusterService.UpgradeSystem:input_type -> hotbed.v1.UpgradeSystemRequest
-	153, // 472: hotbed.v1.SessionService.StartSession:input_type -> hotbed.v1.StartSessionRequest
-	177, // 473: hotbed.v1.SessionService.GetSession:input_type -> hotbed.v1.GetSessionRequest
-	154, // 474: hotbed.v1.SessionService.ListSessions:input_type -> hotbed.v1.ListSessionsRequest
-	156, // 475: hotbed.v1.SessionService.SearchSessions:input_type -> hotbed.v1.SearchSessionsRequest
-	179, // 476: hotbed.v1.SessionService.EndSession:input_type -> hotbed.v1.EndSessionRequest
-	180, // 477: hotbed.v1.SessionService.WatchSession:input_type -> hotbed.v1.WatchSessionRequest
-	181, // 478: hotbed.v1.SessionService.Poll:input_type -> hotbed.v1.PollRequest
-	96,  // 479: hotbed.v1.WorkspaceService.CreateWorkspace:input_type -> hotbed.v1.CreateWorkspaceRequest
-	98,  // 480: hotbed.v1.WorkspaceService.GetWorkspace:input_type -> hotbed.v1.GetWorkspaceRequest
-	99,  // 481: hotbed.v1.WorkspaceService.WatchWorkspace:input_type -> hotbed.v1.WatchWorkspaceRequest
-	100, // 482: hotbed.v1.WorkspaceService.ListWorkspaces:input_type -> hotbed.v1.ListWorkspacesRequest
-	102, // 483: hotbed.v1.WorkspaceService.ReleaseWorkspace:input_type -> hotbed.v1.ReleaseWorkspaceRequest
-	104, // 484: hotbed.v1.WorkspaceService.Sync:input_type -> hotbed.v1.SyncRequest
-	109, // 485: hotbed.v1.WorkspaceService.ListFiles:input_type -> hotbed.v1.ListFilesRequest
-	111, // 486: hotbed.v1.WorkspaceService.GetFile:input_type -> hotbed.v1.GetFileRequest
-	133, // 487: hotbed.v1.WorkspaceService.RunCommand:input_type -> hotbed.v1.RunCommandRequest
-	141, // 488: hotbed.v1.WorkspaceService.OpenShell:input_type -> hotbed.v1.OpenShellRequest
-	143, // 489: hotbed.v1.WorkspaceService.GetCommand:input_type -> hotbed.v1.GetCommandRequest
-	144, // 490: hotbed.v1.WorkspaceService.ListCommands:input_type -> hotbed.v1.ListCommandsRequest
-	146, // 491: hotbed.v1.WorkspaceService.StopCommand:input_type -> hotbed.v1.StopCommandRequest
-	147, // 492: hotbed.v1.WorkspaceService.PauseCommand:input_type -> hotbed.v1.PauseCommandRequest
-	148, // 493: hotbed.v1.WorkspaceService.ResumeCommand:input_type -> hotbed.v1.ResumeCommandRequest
-	149, // 494: hotbed.v1.WorkspaceService.FollowLog:input_type -> hotbed.v1.FollowLogRequest
-	189, // 495: hotbed.v1.WorkspaceService.GetLogLines:input_type -> hotbed.v1.GetLogLinesRequest
-	135, // 496: hotbed.v1.WorkspaceService.QueryOutput:input_type -> hotbed.v1.QueryOutputRequest
-	138, // 497: hotbed.v1.WorkspaceService.DetachCommand:input_type -> hotbed.v1.DetachCommandRequest
-	139, // 498: hotbed.v1.WorkspaceService.SendInput:input_type -> hotbed.v1.SendInputRequest
-	240, // 499: hotbed.v1.WorkspaceService.InspectCommand:input_type -> hotbed.v1.InspectCommandRequest
-	253, // 500: hotbed.v1.WorkspaceService.TraceCommand:input_type -> hotbed.v1.TraceCommandRequest
-	258, // 501: hotbed.v1.WorkspaceService.SampleCommand:input_type -> hotbed.v1.SampleCommandRequest
-	269, // 502: hotbed.v1.WorkspaceService.GetProfile:input_type -> hotbed.v1.GetProfileRequest
-	226, // 503: hotbed.v1.WorkspaceService.GetDaemonLogs:input_type -> hotbed.v1.GetDaemonLogsRequest
-	71,  // 504: hotbed.v1.WorkspaceService.UpgradeSystem:input_type -> hotbed.v1.WorkerUpgradeSystemRequest
-	232, // 505: hotbed.v1.ScheduleService.PutSchedule:input_type -> hotbed.v1.PutScheduleRequest
-	233, // 506: hotbed.v1.ScheduleService.ListSchedules:input_type -> hotbed.v1.ListSchedulesRequest
-	235, // 507: hotbed.v1.ScheduleService.GetSchedule:input_type -> hotbed.v1.GetScheduleRequest
-	236, // 508: hotbed.v1.ScheduleService.DeleteSchedule:input_type -> hotbed.v1.DeleteScheduleRequest
-	238, // 509: hotbed.v1.ScheduleService.RunSchedule:input_type -> hotbed.v1.RunScheduleRequest
-	239, // 510: hotbed.v1.ScheduleService.PauseSchedule:input_type -> hotbed.v1.PauseScheduleRequest
-	282, // 511: hotbed.v1.QuestionService.AddQuestions:input_type -> hotbed.v1.AddQuestionsRequest
-	284, // 512: hotbed.v1.QuestionService.EditQuestion:input_type -> hotbed.v1.EditQuestionRequest
-	285, // 513: hotbed.v1.QuestionService.DeleteQuestion:input_type -> hotbed.v1.DeleteQuestionRequest
-	286, // 514: hotbed.v1.QuestionService.ListQuestions:input_type -> hotbed.v1.ListQuestionsRequest
-	289, // 515: hotbed.v1.QuestionService.ListQuestionProjects:input_type -> hotbed.v1.ListQuestionProjectsRequest
-	292, // 516: hotbed.v1.QuestionService.GetQuestion:input_type -> hotbed.v1.GetQuestionRequest
-	293, // 517: hotbed.v1.QuestionService.AnswerQuestion:input_type -> hotbed.v1.AnswerQuestionRequest
-	294, // 518: hotbed.v1.QuestionService.DismissQuestion:input_type -> hotbed.v1.DismissQuestionRequest
-	295, // 519: hotbed.v1.QuestionService.ReviseQuestion:input_type -> hotbed.v1.ReviseQuestionRequest
-	296, // 520: hotbed.v1.QuestionService.ReopenQuestion:input_type -> hotbed.v1.ReopenQuestionRequest
-	297, // 521: hotbed.v1.QuestionService.MoveQuestion:input_type -> hotbed.v1.MoveQuestionRequest
-	298, // 522: hotbed.v1.QuestionService.AckQuestions:input_type -> hotbed.v1.AckQuestionsRequest
-	307, // 523: hotbed.v1.ReviewService.RequestReview:input_type -> hotbed.v1.RequestReviewRequest
-	308, // 524: hotbed.v1.ReviewService.ListReviews:input_type -> hotbed.v1.ListReviewsRequest
-	310, // 525: hotbed.v1.ReviewService.GetReview:input_type -> hotbed.v1.GetReviewRequest
-	311, // 526: hotbed.v1.ReviewService.StartReview:input_type -> hotbed.v1.StartReviewRequest
-	312, // 527: hotbed.v1.ReviewService.AddFindings:input_type -> hotbed.v1.AddFindingsRequest
-	314, // 528: hotbed.v1.ReviewService.FinishReview:input_type -> hotbed.v1.FinishReviewRequest
-	315, // 529: hotbed.v1.ReviewService.CancelReview:input_type -> hotbed.v1.CancelReviewRequest
-	316, // 530: hotbed.v1.ReviewService.DecideFindings:input_type -> hotbed.v1.DecideFindingsRequest
-	318, // 531: hotbed.v1.ReviewService.Respond:input_type -> hotbed.v1.RespondRequest
-	319, // 532: hotbed.v1.ReviewService.ListResponses:input_type -> hotbed.v1.ListResponsesRequest
-	322, // 533: hotbed.v1.GitAuthService.StartGitHubLogin:input_type -> hotbed.v1.StartGitHubLoginRequest
-	324, // 534: hotbed.v1.GitAuthService.CompleteGitHubLogin:input_type -> hotbed.v1.CompleteGitHubLoginRequest
-	325, // 535: hotbed.v1.GitAuthService.PutGitCredential:input_type -> hotbed.v1.PutGitCredentialRequest
-	326, // 536: hotbed.v1.GitAuthService.ListGitCredentials:input_type -> hotbed.v1.ListGitCredentialsRequest
-	328, // 537: hotbed.v1.GitAuthService.DeleteGitCredential:input_type -> hotbed.v1.DeleteGitCredentialRequest
-	330, // 538: hotbed.v1.GitAuthService.MintGitToken:input_type -> hotbed.v1.MintGitTokenRequest
-	332, // 539: hotbed.v1.GitAuthService.ProxyGitHubAPI:input_type -> hotbed.v1.ProxyGitHubAPIRequest
-	336, // 540: hotbed.v1.IssueService.ReportIssue:input_type -> hotbed.v1.ReportIssueRequest
-	337, // 541: hotbed.v1.IssueService.ListIssues:input_type -> hotbed.v1.ListIssuesRequest
-	339, // 542: hotbed.v1.IssueService.GetIssue:input_type -> hotbed.v1.GetIssueRequest
-	340, // 543: hotbed.v1.IssueService.UpvoteIssue:input_type -> hotbed.v1.UpvoteIssueRequest
-	341, // 544: hotbed.v1.IssueService.ArchiveIssue:input_type -> hotbed.v1.ArchiveIssueRequest
-	342, // 545: hotbed.v1.IssueService.ReopenIssue:input_type -> hotbed.v1.ReopenIssueRequest
-	349, // 546: hotbed.v1.MemoryService.ProposeMemory:input_type -> hotbed.v1.ProposeMemoryRequest
-	350, // 547: hotbed.v1.MemoryService.ListMemories:input_type -> hotbed.v1.ListMemoriesRequest
-	352, // 548: hotbed.v1.MemoryService.GetMemories:input_type -> hotbed.v1.GetMemoriesRequest
-	354, // 549: hotbed.v1.MemoryService.ShowMemory:input_type -> hotbed.v1.ShowMemoryRequest
-	355, // 550: hotbed.v1.MemoryService.ReviseMemory:input_type -> hotbed.v1.ReviseMemoryRequest
-	356, // 551: hotbed.v1.MemoryService.ArchiveMemory:input_type -> hotbed.v1.ArchiveMemoryRequest
-	357, // 552: hotbed.v1.MemoryService.RestoreMemory:input_type -> hotbed.v1.RestoreMemoryRequest
-	358, // 553: hotbed.v1.MemoryService.DeleteMemory:input_type -> hotbed.v1.DeleteMemoryRequest
-	359, // 554: hotbed.v1.MemoryService.MoveMemory:input_type -> hotbed.v1.MoveMemoryRequest
-	379, // 555: hotbed.v1.BoardService.PostBoardMessage:input_type -> hotbed.v1.PostBoardMessageRequest
-	380, // 556: hotbed.v1.BoardService.EditBoardMessage:input_type -> hotbed.v1.EditBoardMessageRequest
-	381, // 557: hotbed.v1.BoardService.DeleteBoardMessage:input_type -> hotbed.v1.DeleteBoardMessageRequest
-	382, // 558: hotbed.v1.BoardService.ReactBoardMessage:input_type -> hotbed.v1.ReactBoardMessageRequest
-	383, // 559: hotbed.v1.BoardService.LabelBoardMessage:input_type -> hotbed.v1.LabelBoardMessageRequest
-	384, // 560: hotbed.v1.BoardService.ListBoardThreads:input_type -> hotbed.v1.ListBoardThreadsRequest
-	386, // 561: hotbed.v1.BoardService.GetBoardThread:input_type -> hotbed.v1.GetBoardThreadRequest
-	388, // 562: hotbed.v1.BoardService.ListBoardEvents:input_type -> hotbed.v1.ListBoardEventsRequest
-	390, // 563: hotbed.v1.BoardService.ListBoardActors:input_type -> hotbed.v1.ListBoardActorsRequest
-	392, // 564: hotbed.v1.BoardService.UploadBoardAttachment:input_type -> hotbed.v1.UploadBoardAttachmentRequest
-	393, // 565: hotbed.v1.BoardService.DownloadBoardAttachment:input_type -> hotbed.v1.DownloadBoardAttachmentRequest
-	395, // 566: hotbed.v1.BoardService.ListBoardSchemas:input_type -> hotbed.v1.ListBoardSchemasRequest
-	397, // 567: hotbed.v1.BoardService.GetBoardSchema:input_type -> hotbed.v1.GetBoardSchemaRequest
-	398, // 568: hotbed.v1.BoardService.CreateBoardSchema:input_type -> hotbed.v1.CreateBoardSchemaRequest
-	400, // 569: hotbed.v1.BoardService.ScheduleBoardMessage:input_type -> hotbed.v1.ScheduleBoardMessageRequest
-	401, // 570: hotbed.v1.BoardService.ListBoardSchedules:input_type -> hotbed.v1.ListBoardSchedulesRequest
-	403, // 571: hotbed.v1.BoardService.CancelBoardSchedule:input_type -> hotbed.v1.CancelBoardScheduleRequest
-	405, // 572: hotbed.v1.BoardService.CreateBoardTask:input_type -> hotbed.v1.CreateBoardTaskRequest
-	408, // 573: hotbed.v1.BoardService.BatchCreateBoardTasks:input_type -> hotbed.v1.BatchCreateBoardTasksRequest
-	410, // 574: hotbed.v1.BoardService.ListBoardTasks:input_type -> hotbed.v1.ListBoardTasksRequest
-	412, // 575: hotbed.v1.BoardService.ClaimBoardTask:input_type -> hotbed.v1.ClaimBoardTaskRequest
-	413, // 576: hotbed.v1.BoardService.RenewBoardTask:input_type -> hotbed.v1.RenewBoardTaskRequest
-	414, // 577: hotbed.v1.BoardService.ReleaseBoardTask:input_type -> hotbed.v1.ReleaseBoardTaskRequest
-	415, // 578: hotbed.v1.BoardService.CompleteBoardTask:input_type -> hotbed.v1.CompleteBoardTaskRequest
-	416, // 579: hotbed.v1.BoardService.FailBoardTask:input_type -> hotbed.v1.FailBoardTaskRequest
-	417, // 580: hotbed.v1.BoardService.BlockBoardTask:input_type -> hotbed.v1.BlockBoardTaskRequest
-	418, // 581: hotbed.v1.BoardService.UnblockBoardTask:input_type -> hotbed.v1.UnblockBoardTaskRequest
-	419, // 582: hotbed.v1.BoardService.ReopenBoardTask:input_type -> hotbed.v1.ReopenBoardTaskRequest
-	420, // 583: hotbed.v1.BoardService.AssignBoardTask:input_type -> hotbed.v1.AssignBoardTaskRequest
-	421, // 584: hotbed.v1.BoardService.SetBoardTaskNeeds:input_type -> hotbed.v1.SetBoardTaskNeedsRequest
-	422, // 585: hotbed.v1.BoardService.CancelBoardTask:input_type -> hotbed.v1.CancelBoardTaskRequest
-	425, // 586: hotbed.v1.BoardService.ImportBoard:input_type -> hotbed.v1.ImportBoardRequest
-	53,  // 587: hotbed.v1.ClusterService.Join:output_type -> hotbed.v1.JoinResponse
-	199, // 588: hotbed.v1.ClusterService.PushEvents:output_type -> hotbed.v1.PushEventsResponse
-	204, // 589: hotbed.v1.ClusterService.Heartbeat:output_type -> hotbed.v1.HeartbeatResponse
-	50,  // 590: hotbed.v1.ClusterService.Standby:output_type -> hotbed.v1.StandbyResponse
-	48,  // 591: hotbed.v1.ClusterService.ReportHostUsage:output_type -> hotbed.v1.ReportHostUsageResponse
-	55,  // 592: hotbed.v1.ClusterService.ListNodes:output_type -> hotbed.v1.ListNodesResponse
-	57,  // 593: hotbed.v1.ClusterService.GetBuild:output_type -> hotbed.v1.Build
-	84,  // 594: hotbed.v1.ClusterService.ListRepos:output_type -> hotbed.v1.ListReposResponse
-	74,  // 595: hotbed.v1.ClusterService.PutRepo:output_type -> hotbed.v1.Repo
-	87,  // 596: hotbed.v1.ClusterService.DeleteRepo:output_type -> hotbed.v1.DeleteRepoResponse
-	158, // 597: hotbed.v1.ClusterService.RebuildProject:output_type -> hotbed.v1.Project
-	158, // 598: hotbed.v1.ClusterService.SetProjectHosts:output_type -> hotbed.v1.Project
-	158, // 599: hotbed.v1.ClusterService.PutStep:output_type -> hotbed.v1.Project
-	158, // 600: hotbed.v1.ClusterService.DeleteStep:output_type -> hotbed.v1.Project
-	80,  // 601: hotbed.v1.ClusterService.ListSteps:output_type -> hotbed.v1.ListStepsResponse
-	158, // 602: hotbed.v1.ClusterService.AddProject:output_type -> hotbed.v1.Project
-	158, // 603: hotbed.v1.ClusterService.RemoveProjectRepos:output_type -> hotbed.v1.Project
-	164, // 604: hotbed.v1.ClusterService.ListProjects:output_type -> hotbed.v1.ListProjectsResponse
-	158, // 605: hotbed.v1.ClusterService.GetProject:output_type -> hotbed.v1.Project
-	166, // 606: hotbed.v1.ClusterService.ListBases:output_type -> hotbed.v1.ListBasesResponse
-	169, // 607: hotbed.v1.ClusterService.ListFreshens:output_type -> hotbed.v1.ListFreshensResponse
-	171, // 608: hotbed.v1.ClusterService.GetFreshen:output_type -> hotbed.v1.GetFreshenResponse
-	215, // 609: hotbed.v1.ClusterService.GetSnapshot:output_type -> hotbed.v1.Snapshot
-	118, // 610: hotbed.v1.ClusterService.GetCommandDiagnostics:output_type -> hotbed.v1.GetCommandDiagnosticsResponse
-	120, // 611: hotbed.v1.ClusterService.SaveCommandDiagnostics:output_type -> hotbed.v1.SaveCommandDiagnosticsResponse
-	123, // 612: hotbed.v1.ClusterService.ListCommandSamples:output_type -> hotbed.v1.ListCommandSamplesResponse
-	121, // 613: hotbed.v1.ClusterService.GetCommandSample:output_type -> hotbed.v1.CommandSample
-	126, // 614: hotbed.v1.ClusterService.SaveCommandSample:output_type -> hotbed.v1.SaveCommandSampleResponse
-	129, // 615: hotbed.v1.ClusterService.PushCommandOutput:output_type -> hotbed.v1.PushCommandOutputResponse
-	221, // 616: hotbed.v1.ClusterService.GetNode:output_type -> hotbed.v1.NodeDetail
-	42,  // 617: hotbed.v1.ClusterService.RetireNode:output_type -> hotbed.v1.Node
-	223, // 618: hotbed.v1.ClusterService.ListPlacements:output_type -> hotbed.v1.ListPlacementsResponse
-	225, // 619: hotbed.v1.ClusterService.ListEvents:output_type -> hotbed.v1.ListEventsResponse
-	65,  // 620: hotbed.v1.ClusterService.GetWorkerConfig:output_type -> hotbed.v1.GetWorkerConfigResponse
-	63,  // 621: hotbed.v1.ClusterService.SetWorkerConfig:output_type -> hotbed.v1.WorkerConfig
-	68,  // 622: hotbed.v1.ClusterService.DeleteWorkerConfig:output_type -> hotbed.v1.DeleteWorkerConfigResponse
-	73,  // 623: hotbed.v1.ClusterService.UpgradeSystem:output_type -> hotbed.v1.UpgradeSystemResponse
-	151, // 624: hotbed.v1.SessionService.StartSession:output_type -> hotbed.v1.Session
-	178, // 625: hotbed.v1.SessionService.GetSession:output_type -> hotbed.v1.GetSessionResponse
-	155, // 626: hotbed.v1.SessionService.ListSessions:output_type -> hotbed.v1.ListSessionsResponse
-	157, // 627: hotbed.v1.SessionService.SearchSessions:output_type -> hotbed.v1.SearchSessionsResponse
-	151, // 628: hotbed.v1.SessionService.EndSession:output_type -> hotbed.v1.Session
-	182, // 629: hotbed.v1.SessionService.WatchSession:output_type -> hotbed.v1.SessionEvents
-	182, // 630: hotbed.v1.SessionService.Poll:output_type -> hotbed.v1.SessionEvents
-	94,  // 631: hotbed.v1.WorkspaceService.CreateWorkspace:output_type -> hotbed.v1.Workspace
-	94,  // 632: hotbed.v1.WorkspaceService.GetWorkspace:output_type -> hotbed.v1.Workspace
-	94,  // 633: hotbed.v1.WorkspaceService.WatchWorkspace:output_type -> hotbed.v1.Workspace
-	101, // 634: hotbed.v1.WorkspaceService.ListWorkspaces:output_type -> hotbed.v1.ListWorkspacesResponse
-	103, // 635: hotbed.v1.WorkspaceService.ReleaseWorkspace:output_type -> hotbed.v1.ReleaseWorkspaceResponse
-	107, // 636: hotbed.v1.WorkspaceService.Sync:output_type -> hotbed.v1.SyncResponse
-	110, // 637: hotbed.v1.WorkspaceService.ListFiles:output_type -> hotbed.v1.ListFilesResponse
-	112, // 638: hotbed.v1.WorkspaceService.GetFile:output_type -> hotbed.v1.FileContent
-	131, // 639: hotbed.v1.WorkspaceService.RunCommand:output_type -> hotbed.v1.Command
-	142, // 640: hotbed.v1.WorkspaceService.OpenShell:output_type -> hotbed.v1.OpenShellResponse
-	131, // 641: hotbed.v1.WorkspaceService.GetCommand:output_type -> hotbed.v1.Command
-	145, // 642: hotbed.v1.WorkspaceService.ListCommands:output_type -> hotbed.v1.ListCommandsResponse
-	131, // 643: hotbed.v1.WorkspaceService.StopCommand:output_type -> hotbed.v1.Command
-	131, // 644: hotbed.v1.WorkspaceService.PauseCommand:output_type -> hotbed.v1.Command
-	131, // 645: hotbed.v1.WorkspaceService.ResumeCommand:output_type -> hotbed.v1.Command
-	150, // 646: hotbed.v1.WorkspaceService.FollowLog:output_type -> hotbed.v1.LogChunk
-	190, // 647: hotbed.v1.WorkspaceService.GetLogLines:output_type -> hotbed.v1.CommandLog
-	137, // 648: hotbed.v1.WorkspaceService.QueryOutput:output_type -> hotbed.v1.OutputQuery
-	131, // 649: hotbed.v1.WorkspaceService.DetachCommand:output_type -> hotbed.v1.Command
-	140, // 650: hotbed.v1.WorkspaceService.SendInput:output_type -> hotbed.v1.SendInputResponse
-	252, // 651: hotbed.v1.WorkspaceService.InspectCommand:output_type -> hotbed.v1.InspectCommandResponse
-	257, // 652: hotbed.v1.WorkspaceService.TraceCommand:output_type -> hotbed.v1.TraceCommandChunk
-	259, // 653: hotbed.v1.WorkspaceService.SampleCommand:output_type -> hotbed.v1.SampleCommandChunk
-	274, // 654: hotbed.v1.WorkspaceService.GetProfile:output_type -> hotbed.v1.CommandProfile
-	229, // 655: hotbed.v1.WorkspaceService.GetDaemonLogs:output_type -> hotbed.v1.GetDaemonLogsResponse
-	72,  // 656: hotbed.v1.WorkspaceService.UpgradeSystem:output_type -> hotbed.v1.NodeSystemUpgrade
-	230, // 657: hotbed.v1.ScheduleService.PutSchedule:output_type -> hotbed.v1.ScheduledCommand
-	234, // 658: hotbed.v1.ScheduleService.ListSchedules:output_type -> hotbed.v1.ListSchedulesResponse
-	230, // 659: hotbed.v1.ScheduleService.GetSchedule:output_type -> hotbed.v1.ScheduledCommand
-	237, // 660: hotbed.v1.ScheduleService.DeleteSchedule:output_type -> hotbed.v1.DeleteScheduleResponse
-	231, // 661: hotbed.v1.ScheduleService.RunSchedule:output_type -> hotbed.v1.ScheduledRun
-	230, // 662: hotbed.v1.ScheduleService.PauseSchedule:output_type -> hotbed.v1.ScheduledCommand
-	283, // 663: hotbed.v1.QuestionService.AddQuestions:output_type -> hotbed.v1.AddQuestionsResponse
-	280, // 664: hotbed.v1.QuestionService.EditQuestion:output_type -> hotbed.v1.Question
-	280, // 665: hotbed.v1.QuestionService.DeleteQuestion:output_type -> hotbed.v1.Question
-	288, // 666: hotbed.v1.QuestionService.ListQuestions:output_type -> hotbed.v1.ListQuestionsResponse
-	290, // 667: hotbed.v1.QuestionService.ListQuestionProjects:output_type -> hotbed.v1.ListQuestionProjectsResponse
-	280, // 668: hotbed.v1.QuestionService.GetQuestion:output_type -> hotbed.v1.Question
-	280, // 669: hotbed.v1.QuestionService.AnswerQuestion:output_type -> hotbed.v1.Question
-	280, // 670: hotbed.v1.QuestionService.DismissQuestion:output_type -> hotbed.v1.Question
-	280, // 671: hotbed.v1.QuestionService.ReviseQuestion:output_type -> hotbed.v1.Question
-	280, // 672: hotbed.v1.QuestionService.ReopenQuestion:output_type -> hotbed.v1.Question
-	280, // 673: hotbed.v1.QuestionService.MoveQuestion:output_type -> hotbed.v1.Question
-	299, // 674: hotbed.v1.QuestionService.AckQuestions:output_type -> hotbed.v1.AckQuestionsResponse
-	305, // 675: hotbed.v1.ReviewService.RequestReview:output_type -> hotbed.v1.Review
-	309, // 676: hotbed.v1.ReviewService.ListReviews:output_type -> hotbed.v1.ListReviewsResponse
-	305, // 677: hotbed.v1.ReviewService.GetReview:output_type -> hotbed.v1.Review
-	305, // 678: hotbed.v1.ReviewService.StartReview:output_type -> hotbed.v1.Review
-	313, // 679: hotbed.v1.ReviewService.AddFindings:output_type -> hotbed.v1.AddFindingsResponse
-	305, // 680: hotbed.v1.ReviewService.FinishReview:output_type -> hotbed.v1.Review
-	305, // 681: hotbed.v1.ReviewService.CancelReview:output_type -> hotbed.v1.Review
-	317, // 682: hotbed.v1.ReviewService.DecideFindings:output_type -> hotbed.v1.DecideFindingsResponse
-	306, // 683: hotbed.v1.ReviewService.Respond:output_type -> hotbed.v1.ReviewEvent
-	320, // 684: hotbed.v1.ReviewService.ListResponses:output_type -> hotbed.v1.ListResponsesResponse
-	323, // 685: hotbed.v1.GitAuthService.StartGitHubLogin:output_type -> hotbed.v1.GitHubLoginChallenge
-	321, // 686: hotbed.v1.GitAuthService.CompleteGitHubLogin:output_type -> hotbed.v1.GitCredential
-	321, // 687: hotbed.v1.GitAuthService.PutGitCredential:output_type -> hotbed.v1.GitCredential
-	327, // 688: hotbed.v1.GitAuthService.ListGitCredentials:output_type -> hotbed.v1.ListGitCredentialsResponse
-	329, // 689: hotbed.v1.GitAuthService.DeleteGitCredential:output_type -> hotbed.v1.DeleteGitCredentialResponse
-	331, // 690: hotbed.v1.GitAuthService.MintGitToken:output_type -> hotbed.v1.GitToken
-	333, // 691: hotbed.v1.GitAuthService.ProxyGitHubAPI:output_type -> hotbed.v1.ProxyGitHubAPIResponse
-	334, // 692: hotbed.v1.IssueService.ReportIssue:output_type -> hotbed.v1.Issue
-	338, // 693: hotbed.v1.IssueService.ListIssues:output_type -> hotbed.v1.ListIssuesResponse
-	334, // 694: hotbed.v1.IssueService.GetIssue:output_type -> hotbed.v1.Issue
-	334, // 695: hotbed.v1.IssueService.UpvoteIssue:output_type -> hotbed.v1.Issue
-	334, // 696: hotbed.v1.IssueService.ArchiveIssue:output_type -> hotbed.v1.Issue
-	334, // 697: hotbed.v1.IssueService.ReopenIssue:output_type -> hotbed.v1.Issue
-	345, // 698: hotbed.v1.MemoryService.ProposeMemory:output_type -> hotbed.v1.Memory
-	351, // 699: hotbed.v1.MemoryService.ListMemories:output_type -> hotbed.v1.ListMemoriesResponse
-	353, // 700: hotbed.v1.MemoryService.GetMemories:output_type -> hotbed.v1.GetMemoriesResponse
-	345, // 701: hotbed.v1.MemoryService.ShowMemory:output_type -> hotbed.v1.Memory
-	345, // 702: hotbed.v1.MemoryService.ReviseMemory:output_type -> hotbed.v1.Memory
-	345, // 703: hotbed.v1.MemoryService.ArchiveMemory:output_type -> hotbed.v1.Memory
-	345, // 704: hotbed.v1.MemoryService.RestoreMemory:output_type -> hotbed.v1.Memory
-	345, // 705: hotbed.v1.MemoryService.DeleteMemory:output_type -> hotbed.v1.Memory
-	345, // 706: hotbed.v1.MemoryService.MoveMemory:output_type -> hotbed.v1.Memory
-	376, // 707: hotbed.v1.BoardService.PostBoardMessage:output_type -> hotbed.v1.BoardMessageResult
-	376, // 708: hotbed.v1.BoardService.EditBoardMessage:output_type -> hotbed.v1.BoardMessageResult
-	370, // 709: hotbed.v1.BoardService.DeleteBoardMessage:output_type -> hotbed.v1.BoardMessage
-	370, // 710: hotbed.v1.BoardService.ReactBoardMessage:output_type -> hotbed.v1.BoardMessage
-	370, // 711: hotbed.v1.BoardService.LabelBoardMessage:output_type -> hotbed.v1.BoardMessage
-	385, // 712: hotbed.v1.BoardService.ListBoardThreads:output_type -> hotbed.v1.ListBoardThreadsResponse
-	387, // 713: hotbed.v1.BoardService.GetBoardThread:output_type -> hotbed.v1.GetBoardThreadResponse
-	389, // 714: hotbed.v1.BoardService.ListBoardEvents:output_type -> hotbed.v1.ListBoardEventsResponse
-	391, // 715: hotbed.v1.BoardService.ListBoardActors:output_type -> hotbed.v1.ListBoardActorsResponse
-	362, // 716: hotbed.v1.BoardService.UploadBoardAttachment:output_type -> hotbed.v1.BoardAttachment
-	394, // 717: hotbed.v1.BoardService.DownloadBoardAttachment:output_type -> hotbed.v1.DownloadBoardAttachmentResponse
-	396, // 718: hotbed.v1.BoardService.ListBoardSchemas:output_type -> hotbed.v1.ListBoardSchemasResponse
-	373, // 719: hotbed.v1.BoardService.GetBoardSchema:output_type -> hotbed.v1.BoardSchema
-	399, // 720: hotbed.v1.BoardService.CreateBoardSchema:output_type -> hotbed.v1.CreateBoardSchemaResponse
-	378, // 721: hotbed.v1.BoardService.ScheduleBoardMessage:output_type -> hotbed.v1.BoardScheduleResult
-	402, // 722: hotbed.v1.BoardService.ListBoardSchedules:output_type -> hotbed.v1.ListBoardSchedulesResponse
-	404, // 723: hotbed.v1.BoardService.CancelBoardSchedule:output_type -> hotbed.v1.CancelBoardScheduleResponse
-	377, // 724: hotbed.v1.BoardService.CreateBoardTask:output_type -> hotbed.v1.BoardTaskResult
-	409, // 725: hotbed.v1.BoardService.BatchCreateBoardTasks:output_type -> hotbed.v1.BatchCreateBoardTasksResponse
-	411, // 726: hotbed.v1.BoardService.ListBoardTasks:output_type -> hotbed.v1.ListBoardTasksResponse
-	377, // 727: hotbed.v1.BoardService.ClaimBoardTask:output_type -> hotbed.v1.BoardTaskResult
-	377, // 728: hotbed.v1.BoardService.RenewBoardTask:output_type -> hotbed.v1.BoardTaskResult
-	370, // 729: hotbed.v1.BoardService.ReleaseBoardTask:output_type -> hotbed.v1.BoardMessage
-	370, // 730: hotbed.v1.BoardService.CompleteBoardTask:output_type -> hotbed.v1.BoardMessage
-	370, // 731: hotbed.v1.BoardService.FailBoardTask:output_type -> hotbed.v1.BoardMessage
-	370, // 732: hotbed.v1.BoardService.BlockBoardTask:output_type -> hotbed.v1.BoardMessage
-	370, // 733: hotbed.v1.BoardService.UnblockBoardTask:output_type -> hotbed.v1.BoardMessage
-	370, // 734: hotbed.v1.BoardService.ReopenBoardTask:output_type -> hotbed.v1.BoardMessage
-	370, // 735: hotbed.v1.BoardService.AssignBoardTask:output_type -> hotbed.v1.BoardMessage
-	370, // 736: hotbed.v1.BoardService.SetBoardTaskNeeds:output_type -> hotbed.v1.BoardMessage
-	370, // 737: hotbed.v1.BoardService.CancelBoardTask:output_type -> hotbed.v1.BoardMessage
-	426, // 738: hotbed.v1.BoardService.ImportBoard:output_type -> hotbed.v1.ImportBoardResponse
-	587, // [587:739] is the sub-list for method output_type
-	435, // [435:587] is the sub-list for method input_type
-	432, // [432:435] is the sub-list for extension type_name
-	429, // [429:432] is the sub-list for extension extendee
-	0,   // [0:429] is the sub-list for field type_name
+	43,  // 10: hotbed.v1.Node.object_store:type_name -> hotbed.v1.ObjectStoreStats
+	44,  // 11: hotbed.v1.ObjectStoreStats.part_fetches:type_name -> hotbed.v1.PartFetches
+	45,  // 12: hotbed.v1.ObjectStoreStats.part_cache_shards:type_name -> hotbed.v1.PartCacheShard
+	0,   // 13: hotbed.v1.PartCacheShard.state:type_name -> hotbed.v1.PartCacheShardState
+	42,  // 14: hotbed.v1.JoinResponse.node:type_name -> hotbed.v1.Node
+	42,  // 15: hotbed.v1.ListNodesResponse.nodes:type_name -> hotbed.v1.Node
+	51,  // 16: hotbed.v1.Build.guestd:type_name -> hotbed.v1.ManagedArtifact
+	429, // 17: hotbed.v1.WorkerVMConfig.kernels:type_name -> hotbed.v1.WorkerVMConfig.KernelsEntry
+	430, // 18: hotbed.v1.WorkerVMConfig.guestd:type_name -> hotbed.v1.WorkerVMConfig.GuestdEntry
+	431, // 19: hotbed.v1.WorkerSystemConfig.cladefsd:type_name -> hotbed.v1.WorkerSystemConfig.CladefsdEntry
+	432, // 20: hotbed.v1.WorkerSystemConfig.firecracker:type_name -> hotbed.v1.WorkerSystemConfig.FirecrackerEntry
+	53,  // 21: hotbed.v1.WorkerConfig.vm:type_name -> hotbed.v1.WorkerVMConfig
+	54,  // 22: hotbed.v1.WorkerConfig.cladefs_fuse:type_name -> hotbed.v1.WorkerCladefsFUSEConfig
+	55,  // 23: hotbed.v1.WorkerConfig.system:type_name -> hotbed.v1.WorkerSystemConfig
+	56,  // 24: hotbed.v1.WorkerConfig.freshen:type_name -> hotbed.v1.WorkerFreshenConfig
+	57,  // 25: hotbed.v1.WorkerConfig.controller:type_name -> hotbed.v1.OrgControllerConfig
+	58,  // 26: hotbed.v1.GetWorkerConfigResponse.defaults:type_name -> hotbed.v1.WorkerConfig
+	58,  // 27: hotbed.v1.GetWorkerConfigResponse.nodes:type_name -> hotbed.v1.WorkerConfig
+	58,  // 28: hotbed.v1.GetWorkerConfigResponse.effective:type_name -> hotbed.v1.WorkerConfig
+	58,  // 29: hotbed.v1.SetWorkerConfigRequest.config:type_name -> hotbed.v1.WorkerConfig
+	51,  // 30: hotbed.v1.WorkerUpgradeSystemRequest.cladefsd:type_name -> hotbed.v1.ManagedArtifact
+	51,  // 31: hotbed.v1.WorkerUpgradeSystemRequest.firecracker:type_name -> hotbed.v1.ManagedArtifact
+	51,  // 32: hotbed.v1.WorkerUpgradeSystemRequest.kernel:type_name -> hotbed.v1.ManagedArtifact
+	67,  // 33: hotbed.v1.UpgradeSystemResponse.nodes:type_name -> hotbed.v1.NodeSystemUpgrade
+	70,  // 34: hotbed.v1.PutStepRequest.step:type_name -> hotbed.v1.Step
+	76,  // 35: hotbed.v1.ListStepsResponse.steps:type_name -> hotbed.v1.StepStatus
+	70,  // 36: hotbed.v1.StepStatus.step:type_name -> hotbed.v1.Step
+	77,  // 37: hotbed.v1.StepStatus.nodes:type_name -> hotbed.v1.StepOnNode
+	1,   // 38: hotbed.v1.StepOnNode.state:type_name -> hotbed.v1.StepState
+	69,  // 39: hotbed.v1.ListReposResponse.repos:type_name -> hotbed.v1.Repo
+	69,  // 40: hotbed.v1.PutRepoRequest.repo:type_name -> hotbed.v1.Repo
+	69,  // 41: hotbed.v1.HostedProject.repos:type_name -> hotbed.v1.Repo
+	70,  // 42: hotbed.v1.HostedProject.steps:type_name -> hotbed.v1.Step
+	2,   // 43: hotbed.v1.Base.state:type_name -> hotbed.v1.BaseState
+	71,  // 44: hotbed.v1.Base.steps:type_name -> hotbed.v1.AppliedStep
+	88,  // 45: hotbed.v1.Base.repos:type_name -> hotbed.v1.BaseRepo
+	36,  // 46: hotbed.v1.Base.cladefs_cell:type_name -> hotbed.v1.CladefsCell
+	87,  // 47: hotbed.v1.Base.phases:type_name -> hotbed.v1.FreshenPhase
+	3,   // 48: hotbed.v1.Workspace.state:type_name -> hotbed.v1.WorkspaceState
+	90,  // 49: hotbed.v1.Workspace.repos:type_name -> hotbed.v1.WorkspaceRepo
+	36,  // 50: hotbed.v1.Workspace.cladefs_cell:type_name -> hotbed.v1.CladefsCell
+	211, // 51: hotbed.v1.Workspace.placement:type_name -> hotbed.v1.PlacementDecision
+	92,  // 52: hotbed.v1.CreateWorkspaceRequest.placement:type_name -> hotbed.v1.Placement
+	85,  // 53: hotbed.v1.CreateWorkspaceRequest.project:type_name -> hotbed.v1.HostedProject
+	37,  // 54: hotbed.v1.CreateWorkspaceRequest.shared_base:type_name -> hotbed.v1.SharedBase
+	89,  // 55: hotbed.v1.ListWorkspacesResponse.workspaces:type_name -> hotbed.v1.Workspace
+	100, // 56: hotbed.v1.SyncRequest.header:type_name -> hotbed.v1.SyncHeader
+	101, // 57: hotbed.v1.SyncHeader.submodules:type_name -> hotbed.v1.SyncSubmodule
+	103, // 58: hotbed.v1.ListFilesResponse.files:type_name -> hotbed.v1.FileEntry
+	5,   // 59: hotbed.v1.CommandIntervention.kind:type_name -> hotbed.v1.InterventionKind
+	273, // 60: hotbed.v1.CommandIntervention.by:type_name -> hotbed.v1.Stamp
+	110, // 61: hotbed.v1.CommandDiagnostics.intervention:type_name -> hotbed.v1.CommandIntervention
+	263, // 62: hotbed.v1.CommandDiagnostics.sample:type_name -> hotbed.v1.ProcessSample
+	247, // 63: hotbed.v1.CommandDiagnostics.inspect:type_name -> hotbed.v1.InspectCommandResponse
+	111, // 64: hotbed.v1.GetCommandDiagnosticsResponse.diagnostics:type_name -> hotbed.v1.CommandDiagnostics
+	111, // 65: hotbed.v1.SaveCommandDiagnosticsRequest.diagnostics:type_name -> hotbed.v1.CommandDiagnostics
+	273, // 66: hotbed.v1.CommandSample.by:type_name -> hotbed.v1.Stamp
+	263, // 67: hotbed.v1.CommandSample.sample:type_name -> hotbed.v1.ProcessSample
+	116, // 68: hotbed.v1.ListCommandSamplesResponse.samples:type_name -> hotbed.v1.CommandSample
+	116, // 69: hotbed.v1.SaveCommandSampleRequest.sample:type_name -> hotbed.v1.CommandSample
+	122, // 70: hotbed.v1.PushCommandOutputRequest.chunks:type_name -> hotbed.v1.CommandOutputChunk
+	4,   // 71: hotbed.v1.Command.state:type_name -> hotbed.v1.CommandState
+	108, // 72: hotbed.v1.Command.limits:type_name -> hotbed.v1.CommandLimits
+	109, // 73: hotbed.v1.Command.rebuilt:type_name -> hotbed.v1.Rebuilt
+	125, // 74: hotbed.v1.Command.timeline:type_name -> hotbed.v1.CommandEvent
+	110, // 75: hotbed.v1.Command.interventions:type_name -> hotbed.v1.CommandIntervention
+	129, // 76: hotbed.v1.Command.estimate:type_name -> hotbed.v1.CommandEstimate
+	211, // 77: hotbed.v1.Command.placement:type_name -> hotbed.v1.PlacementDecision
+	4,   // 78: hotbed.v1.FinishedCommand.state:type_name -> hotbed.v1.CommandState
+	110, // 79: hotbed.v1.FinishedCommand.interventions:type_name -> hotbed.v1.CommandIntervention
+	129, // 80: hotbed.v1.FinishedCommand.estimate:type_name -> hotbed.v1.CommandEstimate
+	211, // 81: hotbed.v1.FinishedCommand.placement:type_name -> hotbed.v1.PlacementDecision
+	108, // 82: hotbed.v1.RunCommandRequest.limits:type_name -> hotbed.v1.CommandLimits
+	6,   // 83: hotbed.v1.RunCommandRequest.tty:type_name -> hotbed.v1.TtyMode
+	129, // 84: hotbed.v1.RunCommandRequest.estimate:type_name -> hotbed.v1.CommandEstimate
+	211, // 85: hotbed.v1.RunCommandRequest.placement:type_name -> hotbed.v1.PlacementDecision
+	4,   // 86: hotbed.v1.OutputQuery.state:type_name -> hotbed.v1.CommandState
+	131, // 87: hotbed.v1.OutputQuery.lines:type_name -> hotbed.v1.OutputLine
+	126, // 88: hotbed.v1.ListCommandsResponse.commands:type_name -> hotbed.v1.Command
+	4,   // 89: hotbed.v1.LogChunk.state:type_name -> hotbed.v1.CommandState
+	110, // 90: hotbed.v1.LogChunk.ended_by:type_name -> hotbed.v1.CommandIntervention
+	147, // 91: hotbed.v1.Session.workspaces:type_name -> hotbed.v1.SessionWorkspace
+	343, // 92: hotbed.v1.Session.memories:type_name -> hotbed.v1.MemoryBriefing
+	146, // 93: hotbed.v1.ListSessionsResponse.sessions:type_name -> hotbed.v1.Session
+	146, // 94: hotbed.v1.SearchSessionsResponse.sessions:type_name -> hotbed.v1.Session
+	154, // 95: hotbed.v1.Project.history:type_name -> hotbed.v1.ProjectChange
+	70,  // 96: hotbed.v1.Project.steps:type_name -> hotbed.v1.Step
+	273, // 97: hotbed.v1.ProjectChange.by:type_name -> hotbed.v1.Stamp
+	153, // 98: hotbed.v1.ListProjectsResponse.projects:type_name -> hotbed.v1.Project
+	2,   // 99: hotbed.v1.ListBasesRequest.state:type_name -> hotbed.v1.BaseState
+	162, // 100: hotbed.v1.ListBasesResponse.bases:type_name -> hotbed.v1.NodeBase
+	86,  // 101: hotbed.v1.NodeBase.base:type_name -> hotbed.v1.Base
+	7,   // 102: hotbed.v1.ListFreshensRequest.state:type_name -> hotbed.v1.FreshenState
+	171, // 103: hotbed.v1.ListFreshensResponse.summary:type_name -> hotbed.v1.FreshenSummary
+	167, // 104: hotbed.v1.ListFreshensResponse.freshens:type_name -> hotbed.v1.BaseFreshen
+	167, // 105: hotbed.v1.GetFreshenResponse.freshen:type_name -> hotbed.v1.BaseFreshen
+	39,  // 106: hotbed.v1.GetFreshenResponse.node_admission:type_name -> hotbed.v1.Admission
+	201, // 107: hotbed.v1.GetFreshenResponse.related_events:type_name -> hotbed.v1.ClusterEvent
+	7,   // 108: hotbed.v1.BaseFreshen.state:type_name -> hotbed.v1.FreshenState
+	88,  // 109: hotbed.v1.BaseFreshen.repos:type_name -> hotbed.v1.BaseRepo
+	71,  // 110: hotbed.v1.BaseFreshen.steps:type_name -> hotbed.v1.AppliedStep
+	87,  // 111: hotbed.v1.BaseFreshen.phases:type_name -> hotbed.v1.FreshenPhase
+	125, // 112: hotbed.v1.BaseFreshen.timeline:type_name -> hotbed.v1.CommandEvent
+	7,   // 113: hotbed.v1.NodeProjectFreshenSummary.active_state:type_name -> hotbed.v1.FreshenState
+	433, // 114: hotbed.v1.NodeProjectFreshenSummary.cold_reasons:type_name -> hotbed.v1.NodeProjectFreshenSummary.ColdReasonsEntry
+	168, // 115: hotbed.v1.FreshenSummary.total_duration:type_name -> hotbed.v1.DurationStats
+	168, // 116: hotbed.v1.FreshenSummary.queue_duration:type_name -> hotbed.v1.DurationStats
+	168, // 117: hotbed.v1.FreshenSummary.prep_duration:type_name -> hotbed.v1.DurationStats
+	168, // 118: hotbed.v1.FreshenSummary.git_duration:type_name -> hotbed.v1.DurationStats
+	168, // 119: hotbed.v1.FreshenSummary.steps_duration:type_name -> hotbed.v1.DurationStats
+	168, // 120: hotbed.v1.FreshenSummary.parked_duration:type_name -> hotbed.v1.DurationStats
+	168, // 121: hotbed.v1.FreshenSummary.finalize_duration:type_name -> hotbed.v1.DurationStats
+	169, // 122: hotbed.v1.FreshenSummary.slowest_steps:type_name -> hotbed.v1.StepTimingSummary
+	170, // 123: hotbed.v1.FreshenSummary.by_node_project:type_name -> hotbed.v1.NodeProjectFreshenSummary
+	146, // 124: hotbed.v1.GetSessionResponse.session:type_name -> hotbed.v1.Session
+	89,  // 125: hotbed.v1.GetSessionResponse.workspaces:type_name -> hotbed.v1.Workspace
+	126, // 126: hotbed.v1.GetSessionResponse.commands:type_name -> hotbed.v1.Command
+	434, // 127: hotbed.v1.GetSessionResponse.node_hosts:type_name -> hotbed.v1.GetSessionResponse.NodeHostsEntry
+	178, // 128: hotbed.v1.SessionEvents.events:type_name -> hotbed.v1.SessionEvent
+	179, // 129: hotbed.v1.SessionEvent.command:type_name -> hotbed.v1.CommandUpdate
+	180, // 130: hotbed.v1.SessionEvent.workspace:type_name -> hotbed.v1.WorkspaceUpdate
+	181, // 131: hotbed.v1.SessionEvent.question:type_name -> hotbed.v1.QuestionUpdate
+	182, // 132: hotbed.v1.SessionEvent.review:type_name -> hotbed.v1.ReviewUpdate
+	183, // 133: hotbed.v1.SessionEvent.memory:type_name -> hotbed.v1.MemoryUpdate
+	29,  // 134: hotbed.v1.CommandUpdate.what:type_name -> hotbed.v1.CommandUpdate.What
+	4,   // 135: hotbed.v1.CommandUpdate.state:type_name -> hotbed.v1.CommandState
+	30,  // 136: hotbed.v1.WorkspaceUpdate.what:type_name -> hotbed.v1.WorkspaceUpdate.What
+	31,  // 137: hotbed.v1.QuestionUpdate.what:type_name -> hotbed.v1.QuestionUpdate.What
+	275, // 138: hotbed.v1.QuestionUpdate.question:type_name -> hotbed.v1.Question
+	32,  // 139: hotbed.v1.ReviewUpdate.what:type_name -> hotbed.v1.ReviewUpdate.What
+	33,  // 140: hotbed.v1.MemoryUpdate.what:type_name -> hotbed.v1.MemoryUpdate.What
+	340, // 141: hotbed.v1.MemoryUpdate.memory:type_name -> hotbed.v1.Memory
+	187, // 142: hotbed.v1.WorkerEvent.ref:type_name -> hotbed.v1.EventRef
+	189, // 143: hotbed.v1.Event.base:type_name -> hotbed.v1.BaseChange
+	190, // 144: hotbed.v1.Event.workspace:type_name -> hotbed.v1.WorkspaceChange
+	191, // 145: hotbed.v1.Event.command:type_name -> hotbed.v1.CommandChange
+	186, // 146: hotbed.v1.Event.feed:type_name -> hotbed.v1.WorkerEvent
+	86,  // 147: hotbed.v1.BaseChange.base:type_name -> hotbed.v1.Base
+	89,  // 148: hotbed.v1.WorkspaceChange.workspace:type_name -> hotbed.v1.Workspace
+	126, // 149: hotbed.v1.CommandChange.command:type_name -> hotbed.v1.Command
+	127, // 150: hotbed.v1.CommandChange.finished:type_name -> hotbed.v1.FinishedCommand
+	269, // 151: hotbed.v1.CommandChange.profile:type_name -> hotbed.v1.CommandProfile
+	111, // 152: hotbed.v1.CommandChange.diagnostics:type_name -> hotbed.v1.CommandDiagnostics
+	86,  // 153: hotbed.v1.Checkpoint.bases:type_name -> hotbed.v1.Base
+	89,  // 154: hotbed.v1.Checkpoint.workspaces:type_name -> hotbed.v1.Workspace
+	126, // 155: hotbed.v1.Checkpoint.commands:type_name -> hotbed.v1.Command
+	188, // 156: hotbed.v1.PushEventsRequest.events:type_name -> hotbed.v1.Event
+	192, // 157: hotbed.v1.PushEventsRequest.checkpoint:type_name -> hotbed.v1.Checkpoint
+	35,  // 158: hotbed.v1.HeartbeatRequest.resources:type_name -> hotbed.v1.Resources
+	38,  // 159: hotbed.v1.HeartbeatRequest.usage:type_name -> hotbed.v1.NodeUsage
+	41,  // 160: hotbed.v1.HeartbeatRequest.disk:type_name -> hotbed.v1.DiskUsage
+	195, // 161: hotbed.v1.HeartbeatRequest.commands:type_name -> hotbed.v1.CommandUsage
+	196, // 162: hotbed.v1.HeartbeatRequest.bases:type_name -> hotbed.v1.BaseUsage
+	197, // 163: hotbed.v1.HeartbeatRequest.workspaces:type_name -> hotbed.v1.WorkspaceUsage
+	46,  // 164: hotbed.v1.HeartbeatRequest.profiler:type_name -> hotbed.v1.ProfilerStatus
+	223, // 165: hotbed.v1.HeartbeatRequest.daemon_logs:type_name -> hotbed.v1.DaemonLogSource
+	39,  // 166: hotbed.v1.HeartbeatRequest.admission:type_name -> hotbed.v1.Admission
+	43,  // 167: hotbed.v1.HeartbeatRequest.object_store:type_name -> hotbed.v1.ObjectStoreStats
+	37,  // 168: hotbed.v1.HeartbeatRequest.held_bases:type_name -> hotbed.v1.SharedBase
+	36,  // 169: hotbed.v1.HeartbeatRequest.retired_bases:type_name -> hotbed.v1.CladefsCell
+	85,  // 170: hotbed.v1.HeartbeatResponse.projects:type_name -> hotbed.v1.HostedProject
+	52,  // 171: hotbed.v1.HeartbeatResponse.build:type_name -> hotbed.v1.Build
+	58,  // 172: hotbed.v1.HeartbeatResponse.worker_config:type_name -> hotbed.v1.WorkerConfig
+	36,  // 173: hotbed.v1.HeartbeatResponse.retire_bases:type_name -> hotbed.v1.CladefsCell
+	187, // 174: hotbed.v1.ClusterEvent.ref:type_name -> hotbed.v1.EventRef
+	203, // 175: hotbed.v1.Samples.samples:type_name -> hotbed.v1.Sample
+	207, // 176: hotbed.v1.NodeHours.hours:type_name -> hotbed.v1.NodeHour
+	42,  // 177: hotbed.v1.Snapshot.nodes:type_name -> hotbed.v1.Node
+	200, // 178: hotbed.v1.Snapshot.repos:type_name -> hotbed.v1.RepoSummary
+	86,  // 179: hotbed.v1.Snapshot.bases:type_name -> hotbed.v1.Base
+	89,  // 180: hotbed.v1.Snapshot.workspaces:type_name -> hotbed.v1.Workspace
+	126, // 181: hotbed.v1.Snapshot.commands:type_name -> hotbed.v1.Command
+	201, // 182: hotbed.v1.Snapshot.events:type_name -> hotbed.v1.ClusterEvent
+	202, // 183: hotbed.v1.Snapshot.totals24h:type_name -> hotbed.v1.Totals
+	435, // 184: hotbed.v1.Snapshot.series:type_name -> hotbed.v1.Snapshot.SeriesEntry
+	205, // 185: hotbed.v1.Snapshot.load:type_name -> hotbed.v1.LoadSample
+	206, // 186: hotbed.v1.Snapshot.hourly:type_name -> hotbed.v1.HourBucket
+	436, // 187: hotbed.v1.Snapshot.node_hourly:type_name -> hotbed.v1.Snapshot.NodeHourlyEntry
+	127, // 188: hotbed.v1.Snapshot.history:type_name -> hotbed.v1.FinishedCommand
+	146, // 189: hotbed.v1.Snapshot.sessions:type_name -> hotbed.v1.Session
+	225, // 190: hotbed.v1.Snapshot.schedules:type_name -> hotbed.v1.ScheduledCommand
+	153, // 191: hotbed.v1.Snapshot.projects:type_name -> hotbed.v1.Project
+	223, // 192: hotbed.v1.Snapshot.controller_logs:type_name -> hotbed.v1.DaemonLogSource
+	211, // 193: hotbed.v1.Snapshot.placements:type_name -> hotbed.v1.PlacementDecision
+	201, // 194: hotbed.v1.Snapshot.admission_events:type_name -> hotbed.v1.ClusterEvent
+	212, // 195: hotbed.v1.PlacementDecision.candidates:type_name -> hotbed.v1.PlacementCandidate
+	92,  // 196: hotbed.v1.PlacementDecision.request:type_name -> hotbed.v1.Placement
+	213, // 197: hotbed.v1.PlacementCandidate.parts:type_name -> hotbed.v1.CostPart
+	42,  // 198: hotbed.v1.NodeDetail.node:type_name -> hotbed.v1.Node
+	201, // 199: hotbed.v1.NodeDetail.events:type_name -> hotbed.v1.ClusterEvent
+	211, // 200: hotbed.v1.NodeDetail.placements:type_name -> hotbed.v1.PlacementDecision
+	211, // 201: hotbed.v1.ListPlacementsResponse.placements:type_name -> hotbed.v1.PlacementDecision
+	201, // 202: hotbed.v1.ListEventsResponse.events:type_name -> hotbed.v1.ClusterEvent
+	8,   // 203: hotbed.v1.GetDaemonLogsRequest.level:type_name -> hotbed.v1.DaemonLogLevel
+	8,   // 204: hotbed.v1.DaemonLogEntry.level:type_name -> hotbed.v1.DaemonLogLevel
+	222, // 205: hotbed.v1.GetDaemonLogsResponse.entries:type_name -> hotbed.v1.DaemonLogEntry
+	223, // 206: hotbed.v1.GetDaemonLogsResponse.sources:type_name -> hotbed.v1.DaemonLogSource
+	128, // 207: hotbed.v1.ScheduledCommand.command:type_name -> hotbed.v1.RunCommandRequest
+	226, // 208: hotbed.v1.ScheduledCommand.runs:type_name -> hotbed.v1.ScheduledRun
+	9,   // 209: hotbed.v1.ScheduledRun.outcome:type_name -> hotbed.v1.RunOutcome
+	225, // 210: hotbed.v1.PutScheduleRequest.schedule:type_name -> hotbed.v1.ScheduledCommand
+	225, // 211: hotbed.v1.ListSchedulesResponse.schedules:type_name -> hotbed.v1.ScheduledCommand
+	10,  // 212: hotbed.v1.InspectCommandRequest.sections:type_name -> hotbed.v1.InspectSection
+	236, // 213: hotbed.v1.ProcessInfo.threads:type_name -> hotbed.v1.ThreadInfo
+	239, // 214: hotbed.v1.CgroupStats.io:type_name -> hotbed.v1.CgroupIO
+	242, // 215: hotbed.v1.ProcessMemoryMap.top_regions:type_name -> hotbed.v1.MemoryRegion
+	244, // 216: hotbed.v1.ProcessLimits.items:type_name -> hotbed.v1.ResourceLimit
+	237, // 217: hotbed.v1.InspectCommandResponse.procs:type_name -> hotbed.v1.ProcessInfo
+	238, // 218: hotbed.v1.InspectCommandResponse.files:type_name -> hotbed.v1.OpenFile
+	240, // 219: hotbed.v1.InspectCommandResponse.cgroup_stats:type_name -> hotbed.v1.CgroupStats
+	241, // 220: hotbed.v1.InspectCommandResponse.kstacks:type_name -> hotbed.v1.ThreadKernelStack
+	243, // 221: hotbed.v1.InspectCommandResponse.maps:type_name -> hotbed.v1.ProcessMemoryMap
+	245, // 222: hotbed.v1.InspectCommandResponse.limits:type_name -> hotbed.v1.ProcessLimits
+	246, // 223: hotbed.v1.InspectCommandResponse.available_tools:type_name -> hotbed.v1.ToolCapability
+	11,  // 224: hotbed.v1.TraceCommandRequest.kind:type_name -> hotbed.v1.TraceKind
+	11,  // 225: hotbed.v1.TraceSummary.kind:type_name -> hotbed.v1.TraceKind
+	266, // 226: hotbed.v1.TraceSummary.stacks:type_name -> hotbed.v1.FoldedStack
+	267, // 227: hotbed.v1.TraceSummary.top_functions:type_name -> hotbed.v1.ProfileFunction
+	249, // 228: hotbed.v1.TraceSummary.counters:type_name -> hotbed.v1.PerfCounter
+	250, // 229: hotbed.v1.TraceSummary.syscalls:type_name -> hotbed.v1.SyscallStat
+	265, // 230: hotbed.v1.TraceSummary.frames:type_name -> hotbed.v1.ProfileFrame
+	251, // 231: hotbed.v1.TraceCommandChunk.summary:type_name -> hotbed.v1.TraceSummary
+	263, // 232: hotbed.v1.SampleCommandChunk.sample:type_name -> hotbed.v1.ProcessSample
+	116, // 233: hotbed.v1.SampleCommandChunk.kept:type_name -> hotbed.v1.CommandSample
+	437, // 234: hotbed.v1.SampledThread.state_counts:type_name -> hotbed.v1.SampledThread.StateCountsEntry
+	256, // 235: hotbed.v1.SampledThread.syscall:type_name -> hotbed.v1.ThreadSyscall
+	438, // 236: hotbed.v1.SampledThread.syscall_counts:type_name -> hotbed.v1.SampledThread.SyscallCountsEntry
+	257, // 237: hotbed.v1.SampledThread.user_frames:type_name -> hotbed.v1.StackFrame
+	258, // 238: hotbed.v1.SampledProcess.threads:type_name -> hotbed.v1.SampledThread
+	243, // 239: hotbed.v1.SampledProcess.memory_map:type_name -> hotbed.v1.ProcessMemoryMap
+	245, // 240: hotbed.v1.SampledProcess.limits:type_name -> hotbed.v1.ProcessLimits
+	240, // 241: hotbed.v1.SampledCgroup.end:type_name -> hotbed.v1.CgroupStats
+	255, // 242: hotbed.v1.ProcessSample.collectors:type_name -> hotbed.v1.SampleCollector
+	261, // 243: hotbed.v1.ProcessSample.procs:type_name -> hotbed.v1.SampledProcess
+	259, // 244: hotbed.v1.ProcessSample.files:type_name -> hotbed.v1.SampledOpenFile
+	260, // 245: hotbed.v1.ProcessSample.locks:type_name -> hotbed.v1.FileLock
+	262, // 246: hotbed.v1.ProcessSample.cgroup_stats:type_name -> hotbed.v1.SampledCgroup
+	266, // 247: hotbed.v1.ProcessSample.sampled_stacks:type_name -> hotbed.v1.FoldedStack
+	266, // 248: hotbed.v1.ProcessSample.on_cpu_stacks:type_name -> hotbed.v1.FoldedStack
+	267, // 249: hotbed.v1.ProcessSample.on_cpu_top_functions:type_name -> hotbed.v1.ProfileFunction
+	249, // 250: hotbed.v1.ProcessSample.perf_counters:type_name -> hotbed.v1.PerfCounter
+	265, // 251: hotbed.v1.ProcessSample.frames:type_name -> hotbed.v1.ProfileFrame
+	266, // 252: hotbed.v1.CommandProfile.stacks:type_name -> hotbed.v1.FoldedStack
+	267, // 253: hotbed.v1.CommandProfile.top_functions:type_name -> hotbed.v1.ProfileFunction
+	268, // 254: hotbed.v1.CommandProfile.buckets:type_name -> hotbed.v1.ProfileBucket
+	265, // 255: hotbed.v1.CommandProfile.frames:type_name -> hotbed.v1.ProfileFrame
+	271, // 256: hotbed.v1.Prompt.options:type_name -> hotbed.v1.PromptOption
+	13,  // 257: hotbed.v1.Stamp.actor_kind:type_name -> hotbed.v1.ActorKind
+	270, // 258: hotbed.v1.Question.prompt:type_name -> hotbed.v1.Prompt
+	12,  // 259: hotbed.v1.Question.state:type_name -> hotbed.v1.QuestionState
+	272, // 260: hotbed.v1.Question.answer:type_name -> hotbed.v1.Answer
+	273, // 261: hotbed.v1.Question.asked:type_name -> hotbed.v1.Stamp
+	274, // 262: hotbed.v1.Question.asked_from:type_name -> hotbed.v1.AskedFrom
+	273, // 263: hotbed.v1.Question.edited:type_name -> hotbed.v1.Stamp
+	273, // 264: hotbed.v1.Question.answered:type_name -> hotbed.v1.Stamp
+	273, // 265: hotbed.v1.Question.dismissed:type_name -> hotbed.v1.Stamp
+	273, // 266: hotbed.v1.Question.handled:type_name -> hotbed.v1.Stamp
+	273, // 267: hotbed.v1.Question.deleted:type_name -> hotbed.v1.Stamp
+	276, // 268: hotbed.v1.Question.history:type_name -> hotbed.v1.QuestionChange
+	273, // 269: hotbed.v1.QuestionChange.by:type_name -> hotbed.v1.Stamp
+	275, // 270: hotbed.v1.QuestionChange.question:type_name -> hotbed.v1.Question
+	270, // 271: hotbed.v1.AddQuestionsRequest.questions:type_name -> hotbed.v1.Prompt
+	274, // 272: hotbed.v1.AddQuestionsRequest.asked_from:type_name -> hotbed.v1.AskedFrom
+	275, // 273: hotbed.v1.AddQuestionsResponse.questions:type_name -> hotbed.v1.Question
+	270, // 274: hotbed.v1.EditQuestionRequest.prompt:type_name -> hotbed.v1.Prompt
+	12,  // 275: hotbed.v1.ListQuestionsRequest.states:type_name -> hotbed.v1.QuestionState
+	14,  // 276: hotbed.v1.ListQuestionsRequest.order:type_name -> hotbed.v1.QuestionOrder
+	275, // 277: hotbed.v1.ListQuestionsResponse.questions:type_name -> hotbed.v1.Question
+	282, // 278: hotbed.v1.ListQuestionsResponse.sessions:type_name -> hotbed.v1.QuestionSession
+	286, // 279: hotbed.v1.ListQuestionProjectsResponse.projects:type_name -> hotbed.v1.QuestionProject
+	272, // 280: hotbed.v1.AnswerQuestionRequest.answer:type_name -> hotbed.v1.Answer
+	270, // 281: hotbed.v1.ReviseQuestionRequest.prompt:type_name -> hotbed.v1.Prompt
+	275, // 282: hotbed.v1.AckQuestionsResponse.questions:type_name -> hotbed.v1.Question
+	19,  // 283: hotbed.v1.Reviewer.state:type_name -> hotbed.v1.ReviewerState
+	273, // 284: hotbed.v1.Reviewer.started:type_name -> hotbed.v1.Stamp
+	273, // 285: hotbed.v1.Reviewer.ended:type_name -> hotbed.v1.Stamp
+	296, // 286: hotbed.v1.ReportedFinding.locations:type_name -> hotbed.v1.Location
+	16,  // 287: hotbed.v1.Finding.severity:type_name -> hotbed.v1.FindingSeverity
+	17,  // 288: hotbed.v1.Finding.verdict:type_name -> hotbed.v1.FindingVerdict
+	296, // 289: hotbed.v1.Finding.locations:type_name -> hotbed.v1.Location
+	18,  // 290: hotbed.v1.Finding.decision:type_name -> hotbed.v1.FindingDecision
+	273, // 291: hotbed.v1.Finding.decided:type_name -> hotbed.v1.Stamp
+	273, // 292: hotbed.v1.Finding.found:type_name -> hotbed.v1.Stamp
+	20,  // 293: hotbed.v1.Finding.quick:type_name -> hotbed.v1.QuickResponse
+	299, // 294: hotbed.v1.Finding.fix:type_name -> hotbed.v1.Fix
+	273, // 295: hotbed.v1.Finding.quick_by:type_name -> hotbed.v1.Stamp
+	296, // 296: hotbed.v1.Fix.locations:type_name -> hotbed.v1.Location
+	15,  // 297: hotbed.v1.Review.state:type_name -> hotbed.v1.ReviewState
+	273, // 298: hotbed.v1.Review.requested:type_name -> hotbed.v1.Stamp
+	273, // 299: hotbed.v1.Review.started:type_name -> hotbed.v1.Stamp
+	273, // 300: hotbed.v1.Review.ended:type_name -> hotbed.v1.Stamp
+	298, // 301: hotbed.v1.Review.findings:type_name -> hotbed.v1.Finding
+	301, // 302: hotbed.v1.Review.events:type_name -> hotbed.v1.ReviewEvent
+	273, // 303: hotbed.v1.Review.implementer:type_name -> hotbed.v1.Stamp
+	295, // 304: hotbed.v1.Review.reviewers:type_name -> hotbed.v1.Reviewer
+	273, // 305: hotbed.v1.ReviewEvent.by:type_name -> hotbed.v1.Stamp
+	20,  // 306: hotbed.v1.ReviewEvent.quick:type_name -> hotbed.v1.QuickResponse
+	15,  // 307: hotbed.v1.ListReviewsRequest.states:type_name -> hotbed.v1.ReviewState
+	300, // 308: hotbed.v1.ListReviewsResponse.reviews:type_name -> hotbed.v1.Review
+	297, // 309: hotbed.v1.AddFindingsRequest.findings:type_name -> hotbed.v1.ReportedFinding
+	298, // 310: hotbed.v1.AddFindingsResponse.findings:type_name -> hotbed.v1.Finding
+	18,  // 311: hotbed.v1.DecideFindingsRequest.decision:type_name -> hotbed.v1.FindingDecision
+	299, // 312: hotbed.v1.DecideFindingsRequest.fix:type_name -> hotbed.v1.Fix
+	13,  // 313: hotbed.v1.DecideFindingsRequest.actor_kind:type_name -> hotbed.v1.ActorKind
+	298, // 314: hotbed.v1.DecideFindingsResponse.findings:type_name -> hotbed.v1.Finding
+	20,  // 315: hotbed.v1.RespondRequest.quick:type_name -> hotbed.v1.QuickResponse
+	13,  // 316: hotbed.v1.RespondRequest.actor_kind:type_name -> hotbed.v1.ActorKind
+	301, // 317: hotbed.v1.ListResponsesResponse.responses:type_name -> hotbed.v1.ReviewEvent
+	316, // 318: hotbed.v1.ListGitCredentialsResponse.credentials:type_name -> hotbed.v1.GitCredential
+	21,  // 319: hotbed.v1.Issue.state:type_name -> hotbed.v1.IssueState
+	273, // 320: hotbed.v1.Issue.reported:type_name -> hotbed.v1.Stamp
+	330, // 321: hotbed.v1.Issue.upvotes:type_name -> hotbed.v1.IssueUpvote
+	273, // 322: hotbed.v1.Issue.archived:type_name -> hotbed.v1.Stamp
+	273, // 323: hotbed.v1.IssueUpvote.by:type_name -> hotbed.v1.Stamp
+	329, // 324: hotbed.v1.ListIssuesResponse.issues:type_name -> hotbed.v1.Issue
+	23,  // 325: hotbed.v1.MemoryContent.mode:type_name -> hotbed.v1.MemoryMode
+	274, // 326: hotbed.v1.MemoryProvenance.from:type_name -> hotbed.v1.AskedFrom
+	22,  // 327: hotbed.v1.Memory.scope:type_name -> hotbed.v1.MemoryScope
+	338, // 328: hotbed.v1.Memory.content:type_name -> hotbed.v1.MemoryContent
+	24,  // 329: hotbed.v1.Memory.state:type_name -> hotbed.v1.MemoryState
+	339, // 330: hotbed.v1.Memory.provenance:type_name -> hotbed.v1.MemoryProvenance
+	273, // 331: hotbed.v1.Memory.proposed:type_name -> hotbed.v1.Stamp
+	273, // 332: hotbed.v1.Memory.edited:type_name -> hotbed.v1.Stamp
+	273, // 333: hotbed.v1.Memory.decided:type_name -> hotbed.v1.Stamp
+	273, // 334: hotbed.v1.Memory.archived:type_name -> hotbed.v1.Stamp
+	341, // 335: hotbed.v1.Memory.history:type_name -> hotbed.v1.MemoryChange
+	273, // 336: hotbed.v1.MemoryChange.by:type_name -> hotbed.v1.Stamp
+	340, // 337: hotbed.v1.MemoryChange.memory:type_name -> hotbed.v1.Memory
+	22,  // 338: hotbed.v1.MemoryIndexEntry.scope:type_name -> hotbed.v1.MemoryScope
+	23,  // 339: hotbed.v1.MemoryIndexEntry.mode:type_name -> hotbed.v1.MemoryMode
+	342, // 340: hotbed.v1.MemoryBriefing.always:type_name -> hotbed.v1.MemoryIndexEntry
+	342, // 341: hotbed.v1.MemoryBriefing.on_demand:type_name -> hotbed.v1.MemoryIndexEntry
+	338, // 342: hotbed.v1.ProposeMemoryRequest.content:type_name -> hotbed.v1.MemoryContent
+	274, // 343: hotbed.v1.ProposeMemoryRequest.from:type_name -> hotbed.v1.AskedFrom
+	24,  // 344: hotbed.v1.ListMemoriesRequest.states:type_name -> hotbed.v1.MemoryState
+	22,  // 345: hotbed.v1.ListMemoriesRequest.scope:type_name -> hotbed.v1.MemoryScope
+	23,  // 346: hotbed.v1.ListMemoriesRequest.mode:type_name -> hotbed.v1.MemoryMode
+	25,  // 347: hotbed.v1.ListMemoriesRequest.order:type_name -> hotbed.v1.MemoryOrder
+	340, // 348: hotbed.v1.ListMemoriesResponse.memories:type_name -> hotbed.v1.Memory
+	340, // 349: hotbed.v1.GetMemoriesResponse.memories:type_name -> hotbed.v1.Memory
+	338, // 350: hotbed.v1.ReviseMemoryRequest.content:type_name -> hotbed.v1.MemoryContent
+	26,  // 351: hotbed.v1.BoardActor.kind:type_name -> hotbed.v1.BoardActorKind
+	356, // 352: hotbed.v1.BoardMention.actor:type_name -> hotbed.v1.BoardActor
+	356, // 353: hotbed.v1.BoardMention.candidates:type_name -> hotbed.v1.BoardActor
+	27,  // 354: hotbed.v1.BoardTask.state:type_name -> hotbed.v1.BoardTaskState
+	361, // 355: hotbed.v1.BoardTask.claim:type_name -> hotbed.v1.BoardTaskClaimView
+	362, // 356: hotbed.v1.BoardTask.blocked:type_name -> hotbed.v1.BoardTaskBlocked
+	439, // 357: hotbed.v1.BoardMessage.labels:type_name -> hotbed.v1.BoardMessage.LabelsEntry
+	358, // 358: hotbed.v1.BoardMessage.reactions:type_name -> hotbed.v1.BoardReaction
+	355, // 359: hotbed.v1.BoardMessage.by:type_name -> hotbed.v1.BoardAuthor
+	356, // 360: hotbed.v1.BoardMessage.author:type_name -> hotbed.v1.BoardActor
+	357, // 361: hotbed.v1.BoardMessage.attachments:type_name -> hotbed.v1.BoardAttachment
+	359, // 362: hotbed.v1.BoardMessage.blocks:type_name -> hotbed.v1.BoardBlock
+	363, // 363: hotbed.v1.BoardMessage.task:type_name -> hotbed.v1.BoardTask
+	365, // 364: hotbed.v1.BoardThreadSummary.message:type_name -> hotbed.v1.BoardMessage
+	365, // 365: hotbed.v1.BoardThreadSummary.last:type_name -> hotbed.v1.BoardMessage
+	440, // 366: hotbed.v1.BoardSchedule.labels:type_name -> hotbed.v1.BoardSchedule.LabelsEntry
+	357, // 367: hotbed.v1.BoardSchedule.attachments:type_name -> hotbed.v1.BoardAttachment
+	355, // 368: hotbed.v1.BoardSchedule.by:type_name -> hotbed.v1.BoardAuthor
+	356, // 369: hotbed.v1.BoardSchedule.author:type_name -> hotbed.v1.BoardActor
+	28,  // 370: hotbed.v1.BoardSchedule.state:type_name -> hotbed.v1.BoardScheduleState
+	365, // 371: hotbed.v1.BoardEvent.message:type_name -> hotbed.v1.BoardMessage
+	356, // 372: hotbed.v1.BoardEvent.actor:type_name -> hotbed.v1.BoardActor
+	365, // 373: hotbed.v1.BoardMessageResult.message:type_name -> hotbed.v1.BoardMessage
+	360, // 374: hotbed.v1.BoardMessageResult.mentions:type_name -> hotbed.v1.BoardMention
+	365, // 375: hotbed.v1.BoardTaskResult.task:type_name -> hotbed.v1.BoardMessage
+	364, // 376: hotbed.v1.BoardTaskResult.claim:type_name -> hotbed.v1.BoardTaskClaim
+	360, // 377: hotbed.v1.BoardTaskResult.mentions:type_name -> hotbed.v1.BoardMention
+	367, // 378: hotbed.v1.BoardScheduleResult.schedule:type_name -> hotbed.v1.BoardSchedule
+	360, // 379: hotbed.v1.BoardScheduleResult.mentions:type_name -> hotbed.v1.BoardMention
+	441, // 380: hotbed.v1.PostBoardMessageRequest.labels:type_name -> hotbed.v1.PostBoardMessageRequest.LabelsEntry
+	442, // 381: hotbed.v1.LabelBoardMessageRequest.set:type_name -> hotbed.v1.LabelBoardMessageRequest.SetEntry
+	443, // 382: hotbed.v1.LabelBoardMessageRequest.if_equals:type_name -> hotbed.v1.LabelBoardMessageRequest.IfEqualsEntry
+	370, // 383: hotbed.v1.ListBoardThreadsRequest.labels:type_name -> hotbed.v1.BoardLabelFilter
+	366, // 384: hotbed.v1.ListBoardThreadsResponse.threads:type_name -> hotbed.v1.BoardThreadSummary
+	370, // 385: hotbed.v1.GetBoardThreadRequest.labels:type_name -> hotbed.v1.BoardLabelFilter
+	365, // 386: hotbed.v1.GetBoardThreadResponse.message:type_name -> hotbed.v1.BoardMessage
+	365, // 387: hotbed.v1.GetBoardThreadResponse.replies:type_name -> hotbed.v1.BoardMessage
+	367, // 388: hotbed.v1.GetBoardThreadResponse.schedules:type_name -> hotbed.v1.BoardSchedule
+	370, // 389: hotbed.v1.ListBoardEventsRequest.labels:type_name -> hotbed.v1.BoardLabelFilter
+	369, // 390: hotbed.v1.ListBoardEventsResponse.events:type_name -> hotbed.v1.BoardEvent
+	356, // 391: hotbed.v1.ListBoardActorsResponse.actors:type_name -> hotbed.v1.BoardActor
+	357, // 392: hotbed.v1.DownloadBoardAttachmentResponse.attachment:type_name -> hotbed.v1.BoardAttachment
+	368, // 393: hotbed.v1.ListBoardSchemasResponse.schemas:type_name -> hotbed.v1.BoardSchema
+	368, // 394: hotbed.v1.CreateBoardSchemaResponse.schema:type_name -> hotbed.v1.BoardSchema
+	444, // 395: hotbed.v1.ScheduleBoardMessageRequest.labels:type_name -> hotbed.v1.ScheduleBoardMessageRequest.LabelsEntry
+	367, // 396: hotbed.v1.ListBoardSchedulesResponse.schedules:type_name -> hotbed.v1.BoardSchedule
+	367, // 397: hotbed.v1.CancelBoardScheduleResponse.schedule:type_name -> hotbed.v1.BoardSchedule
+	445, // 398: hotbed.v1.CreateBoardTaskRequest.labels:type_name -> hotbed.v1.CreateBoardTaskRequest.LabelsEntry
+	446, // 399: hotbed.v1.BatchBoardTaskSpec.labels:type_name -> hotbed.v1.BatchBoardTaskSpec.LabelsEntry
+	401, // 400: hotbed.v1.BatchBoardTaskSpec.needs:type_name -> hotbed.v1.BatchBoardTaskNeed
+	402, // 401: hotbed.v1.BatchCreateBoardTasksRequest.tasks:type_name -> hotbed.v1.BatchBoardTaskSpec
+	365, // 402: hotbed.v1.BatchCreateBoardTasksResponse.tasks:type_name -> hotbed.v1.BoardMessage
+	27,  // 403: hotbed.v1.ListBoardTasksRequest.states:type_name -> hotbed.v1.BoardTaskState
+	370, // 404: hotbed.v1.ListBoardTasksRequest.labels:type_name -> hotbed.v1.BoardLabelFilter
+	366, // 405: hotbed.v1.ListBoardTasksResponse.tasks:type_name -> hotbed.v1.BoardThreadSummary
+	370, // 406: hotbed.v1.ClaimBoardTaskRequest.labels:type_name -> hotbed.v1.BoardLabelFilter
+	27,  // 407: hotbed.v1.ImportedBoardTask.state:type_name -> hotbed.v1.BoardTaskState
+	447, // 408: hotbed.v1.ImportedBoardMessage.labels:type_name -> hotbed.v1.ImportedBoardMessage.LabelsEntry
+	358, // 409: hotbed.v1.ImportedBoardMessage.reactions:type_name -> hotbed.v1.BoardReaction
+	355, // 410: hotbed.v1.ImportedBoardMessage.by:type_name -> hotbed.v1.BoardAuthor
+	356, // 411: hotbed.v1.ImportedBoardMessage.author:type_name -> hotbed.v1.BoardActor
+	357, // 412: hotbed.v1.ImportedBoardMessage.attachments:type_name -> hotbed.v1.BoardAttachment
+	418, // 413: hotbed.v1.ImportedBoardMessage.task:type_name -> hotbed.v1.ImportedBoardTask
+	356, // 414: hotbed.v1.ImportBoardRequest.actors:type_name -> hotbed.v1.BoardActor
+	393, // 415: hotbed.v1.ImportBoardRequest.schemas:type_name -> hotbed.v1.CreateBoardSchemaRequest
+	419, // 416: hotbed.v1.ImportBoardRequest.messages:type_name -> hotbed.v1.ImportedBoardMessage
+	448, // 417: hotbed.v1.ImportBoardResponse.id_map:type_name -> hotbed.v1.ImportBoardResponse.IdMapEntry
+	424, // 418: hotbed.v1.CommandSpec.fixed:type_name -> hotbed.v1.FixedField
+	425, // 419: hotbed.v1.CommandSpec.input:type_name -> hotbed.v1.InputSpec
+	51,  // 420: hotbed.v1.WorkerVMConfig.KernelsEntry.value:type_name -> hotbed.v1.ManagedArtifact
+	51,  // 421: hotbed.v1.WorkerVMConfig.GuestdEntry.value:type_name -> hotbed.v1.ManagedArtifact
+	51,  // 422: hotbed.v1.WorkerSystemConfig.CladefsdEntry.value:type_name -> hotbed.v1.ManagedArtifact
+	51,  // 423: hotbed.v1.WorkerSystemConfig.FirecrackerEntry.value:type_name -> hotbed.v1.ManagedArtifact
+	204, // 424: hotbed.v1.Snapshot.SeriesEntry.value:type_name -> hotbed.v1.Samples
+	208, // 425: hotbed.v1.Snapshot.NodeHourlyEntry.value:type_name -> hotbed.v1.NodeHours
+	449, // 426: hotbed.v1.group:extendee -> google.protobuf.ServiceOptions
+	450, // 427: hotbed.v1.command:extendee -> google.protobuf.MethodOptions
+	451, // 428: hotbed.v1.param:extendee -> google.protobuf.FieldOptions
+	422, // 429: hotbed.v1.group:type_name -> hotbed.v1.GroupSpec
+	423, // 430: hotbed.v1.command:type_name -> hotbed.v1.CommandSpec
+	426, // 431: hotbed.v1.param:type_name -> hotbed.v1.ParamSpec
+	47,  // 432: hotbed.v1.ClusterService.Join:input_type -> hotbed.v1.JoinRequest
+	193, // 433: hotbed.v1.ClusterService.PushEvents:input_type -> hotbed.v1.PushEventsRequest
+	198, // 434: hotbed.v1.ClusterService.Heartbeat:input_type -> hotbed.v1.HeartbeatRequest
+	49,  // 435: hotbed.v1.ClusterService.ListNodes:input_type -> hotbed.v1.ListNodesRequest
+	64,  // 436: hotbed.v1.ClusterService.GetBuild:input_type -> hotbed.v1.GetBuildRequest
+	78,  // 437: hotbed.v1.ClusterService.ListRepos:input_type -> hotbed.v1.ListReposRequest
+	80,  // 438: hotbed.v1.ClusterService.PutRepo:input_type -> hotbed.v1.PutRepoRequest
+	81,  // 439: hotbed.v1.ClusterService.DeleteRepo:input_type -> hotbed.v1.DeleteRepoRequest
+	83,  // 440: hotbed.v1.ClusterService.RebuildProject:input_type -> hotbed.v1.RebuildProjectRequest
+	84,  // 441: hotbed.v1.ClusterService.SetProjectHosts:input_type -> hotbed.v1.SetProjectHostsRequest
+	72,  // 442: hotbed.v1.ClusterService.PutStep:input_type -> hotbed.v1.PutStepRequest
+	73,  // 443: hotbed.v1.ClusterService.DeleteStep:input_type -> hotbed.v1.DeleteStepRequest
+	74,  // 444: hotbed.v1.ClusterService.ListSteps:input_type -> hotbed.v1.ListStepsRequest
+	155, // 445: hotbed.v1.ClusterService.AddProject:input_type -> hotbed.v1.AddProjectRequest
+	156, // 446: hotbed.v1.ClusterService.RemoveProjectRepos:input_type -> hotbed.v1.RemoveProjectReposRequest
+	158, // 447: hotbed.v1.ClusterService.ListProjects:input_type -> hotbed.v1.ListProjectsRequest
+	157, // 448: hotbed.v1.ClusterService.GetProject:input_type -> hotbed.v1.GetProjectRequest
+	160, // 449: hotbed.v1.ClusterService.ListBases:input_type -> hotbed.v1.ListBasesRequest
+	163, // 450: hotbed.v1.ClusterService.ListFreshens:input_type -> hotbed.v1.ListFreshensRequest
+	165, // 451: hotbed.v1.ClusterService.GetFreshen:input_type -> hotbed.v1.GetFreshenRequest
+	209, // 452: hotbed.v1.ClusterService.GetSnapshot:input_type -> hotbed.v1.GetSnapshotRequest
+	112, // 453: hotbed.v1.ClusterService.GetCommandDiagnostics:input_type -> hotbed.v1.GetCommandDiagnosticsRequest
+	114, // 454: hotbed.v1.ClusterService.SaveCommandDiagnostics:input_type -> hotbed.v1.SaveCommandDiagnosticsRequest
+	117, // 455: hotbed.v1.ClusterService.ListCommandSamples:input_type -> hotbed.v1.ListCommandSamplesRequest
+	119, // 456: hotbed.v1.ClusterService.GetCommandSample:input_type -> hotbed.v1.GetCommandSampleRequest
+	120, // 457: hotbed.v1.ClusterService.SaveCommandSample:input_type -> hotbed.v1.SaveCommandSampleRequest
+	123, // 458: hotbed.v1.ClusterService.PushCommandOutput:input_type -> hotbed.v1.PushCommandOutputRequest
+	215, // 459: hotbed.v1.ClusterService.GetNode:input_type -> hotbed.v1.GetNodeRequest
+	214, // 460: hotbed.v1.ClusterService.RetireNode:input_type -> hotbed.v1.RetireNodeRequest
+	217, // 461: hotbed.v1.ClusterService.ListPlacements:input_type -> hotbed.v1.ListPlacementsRequest
+	219, // 462: hotbed.v1.ClusterService.ListEvents:input_type -> hotbed.v1.ListEventsRequest
+	59,  // 463: hotbed.v1.ClusterService.GetWorkerConfig:input_type -> hotbed.v1.GetWorkerConfigRequest
+	61,  // 464: hotbed.v1.ClusterService.SetWorkerConfig:input_type -> hotbed.v1.SetWorkerConfigRequest
+	62,  // 465: hotbed.v1.ClusterService.DeleteWorkerConfig:input_type -> hotbed.v1.DeleteWorkerConfigRequest
+	65,  // 466: hotbed.v1.ClusterService.UpgradeSystem:input_type -> hotbed.v1.UpgradeSystemRequest
+	148, // 467: hotbed.v1.SessionService.StartSession:input_type -> hotbed.v1.StartSessionRequest
+	172, // 468: hotbed.v1.SessionService.GetSession:input_type -> hotbed.v1.GetSessionRequest
+	149, // 469: hotbed.v1.SessionService.ListSessions:input_type -> hotbed.v1.ListSessionsRequest
+	151, // 470: hotbed.v1.SessionService.SearchSessions:input_type -> hotbed.v1.SearchSessionsRequest
+	174, // 471: hotbed.v1.SessionService.EndSession:input_type -> hotbed.v1.EndSessionRequest
+	175, // 472: hotbed.v1.SessionService.WatchSession:input_type -> hotbed.v1.WatchSessionRequest
+	176, // 473: hotbed.v1.SessionService.Poll:input_type -> hotbed.v1.PollRequest
+	91,  // 474: hotbed.v1.WorkspaceService.CreateWorkspace:input_type -> hotbed.v1.CreateWorkspaceRequest
+	93,  // 475: hotbed.v1.WorkspaceService.GetWorkspace:input_type -> hotbed.v1.GetWorkspaceRequest
+	94,  // 476: hotbed.v1.WorkspaceService.WatchWorkspace:input_type -> hotbed.v1.WatchWorkspaceRequest
+	95,  // 477: hotbed.v1.WorkspaceService.ListWorkspaces:input_type -> hotbed.v1.ListWorkspacesRequest
+	97,  // 478: hotbed.v1.WorkspaceService.ReleaseWorkspace:input_type -> hotbed.v1.ReleaseWorkspaceRequest
+	99,  // 479: hotbed.v1.WorkspaceService.Sync:input_type -> hotbed.v1.SyncRequest
+	104, // 480: hotbed.v1.WorkspaceService.ListFiles:input_type -> hotbed.v1.ListFilesRequest
+	106, // 481: hotbed.v1.WorkspaceService.GetFile:input_type -> hotbed.v1.GetFileRequest
+	128, // 482: hotbed.v1.WorkspaceService.RunCommand:input_type -> hotbed.v1.RunCommandRequest
+	136, // 483: hotbed.v1.WorkspaceService.OpenShell:input_type -> hotbed.v1.OpenShellRequest
+	138, // 484: hotbed.v1.WorkspaceService.GetCommand:input_type -> hotbed.v1.GetCommandRequest
+	139, // 485: hotbed.v1.WorkspaceService.ListCommands:input_type -> hotbed.v1.ListCommandsRequest
+	141, // 486: hotbed.v1.WorkspaceService.StopCommand:input_type -> hotbed.v1.StopCommandRequest
+	142, // 487: hotbed.v1.WorkspaceService.PauseCommand:input_type -> hotbed.v1.PauseCommandRequest
+	143, // 488: hotbed.v1.WorkspaceService.ResumeCommand:input_type -> hotbed.v1.ResumeCommandRequest
+	144, // 489: hotbed.v1.WorkspaceService.FollowLog:input_type -> hotbed.v1.FollowLogRequest
+	184, // 490: hotbed.v1.WorkspaceService.GetLogLines:input_type -> hotbed.v1.GetLogLinesRequest
+	130, // 491: hotbed.v1.WorkspaceService.QueryOutput:input_type -> hotbed.v1.QueryOutputRequest
+	133, // 492: hotbed.v1.WorkspaceService.DetachCommand:input_type -> hotbed.v1.DetachCommandRequest
+	134, // 493: hotbed.v1.WorkspaceService.SendInput:input_type -> hotbed.v1.SendInputRequest
+	235, // 494: hotbed.v1.WorkspaceService.InspectCommand:input_type -> hotbed.v1.InspectCommandRequest
+	248, // 495: hotbed.v1.WorkspaceService.TraceCommand:input_type -> hotbed.v1.TraceCommandRequest
+	253, // 496: hotbed.v1.WorkspaceService.SampleCommand:input_type -> hotbed.v1.SampleCommandRequest
+	264, // 497: hotbed.v1.WorkspaceService.GetProfile:input_type -> hotbed.v1.GetProfileRequest
+	221, // 498: hotbed.v1.WorkspaceService.GetDaemonLogs:input_type -> hotbed.v1.GetDaemonLogsRequest
+	66,  // 499: hotbed.v1.WorkspaceService.UpgradeSystem:input_type -> hotbed.v1.WorkerUpgradeSystemRequest
+	227, // 500: hotbed.v1.ScheduleService.PutSchedule:input_type -> hotbed.v1.PutScheduleRequest
+	228, // 501: hotbed.v1.ScheduleService.ListSchedules:input_type -> hotbed.v1.ListSchedulesRequest
+	230, // 502: hotbed.v1.ScheduleService.GetSchedule:input_type -> hotbed.v1.GetScheduleRequest
+	231, // 503: hotbed.v1.ScheduleService.DeleteSchedule:input_type -> hotbed.v1.DeleteScheduleRequest
+	233, // 504: hotbed.v1.ScheduleService.RunSchedule:input_type -> hotbed.v1.RunScheduleRequest
+	234, // 505: hotbed.v1.ScheduleService.PauseSchedule:input_type -> hotbed.v1.PauseScheduleRequest
+	277, // 506: hotbed.v1.QuestionService.AddQuestions:input_type -> hotbed.v1.AddQuestionsRequest
+	279, // 507: hotbed.v1.QuestionService.EditQuestion:input_type -> hotbed.v1.EditQuestionRequest
+	280, // 508: hotbed.v1.QuestionService.DeleteQuestion:input_type -> hotbed.v1.DeleteQuestionRequest
+	281, // 509: hotbed.v1.QuestionService.ListQuestions:input_type -> hotbed.v1.ListQuestionsRequest
+	284, // 510: hotbed.v1.QuestionService.ListQuestionProjects:input_type -> hotbed.v1.ListQuestionProjectsRequest
+	287, // 511: hotbed.v1.QuestionService.GetQuestion:input_type -> hotbed.v1.GetQuestionRequest
+	288, // 512: hotbed.v1.QuestionService.AnswerQuestion:input_type -> hotbed.v1.AnswerQuestionRequest
+	289, // 513: hotbed.v1.QuestionService.DismissQuestion:input_type -> hotbed.v1.DismissQuestionRequest
+	290, // 514: hotbed.v1.QuestionService.ReviseQuestion:input_type -> hotbed.v1.ReviseQuestionRequest
+	291, // 515: hotbed.v1.QuestionService.ReopenQuestion:input_type -> hotbed.v1.ReopenQuestionRequest
+	292, // 516: hotbed.v1.QuestionService.MoveQuestion:input_type -> hotbed.v1.MoveQuestionRequest
+	293, // 517: hotbed.v1.QuestionService.AckQuestions:input_type -> hotbed.v1.AckQuestionsRequest
+	302, // 518: hotbed.v1.ReviewService.RequestReview:input_type -> hotbed.v1.RequestReviewRequest
+	303, // 519: hotbed.v1.ReviewService.ListReviews:input_type -> hotbed.v1.ListReviewsRequest
+	305, // 520: hotbed.v1.ReviewService.GetReview:input_type -> hotbed.v1.GetReviewRequest
+	306, // 521: hotbed.v1.ReviewService.StartReview:input_type -> hotbed.v1.StartReviewRequest
+	307, // 522: hotbed.v1.ReviewService.AddFindings:input_type -> hotbed.v1.AddFindingsRequest
+	309, // 523: hotbed.v1.ReviewService.FinishReview:input_type -> hotbed.v1.FinishReviewRequest
+	310, // 524: hotbed.v1.ReviewService.CancelReview:input_type -> hotbed.v1.CancelReviewRequest
+	311, // 525: hotbed.v1.ReviewService.DecideFindings:input_type -> hotbed.v1.DecideFindingsRequest
+	313, // 526: hotbed.v1.ReviewService.Respond:input_type -> hotbed.v1.RespondRequest
+	314, // 527: hotbed.v1.ReviewService.ListResponses:input_type -> hotbed.v1.ListResponsesRequest
+	317, // 528: hotbed.v1.GitAuthService.StartGitHubLogin:input_type -> hotbed.v1.StartGitHubLoginRequest
+	319, // 529: hotbed.v1.GitAuthService.CompleteGitHubLogin:input_type -> hotbed.v1.CompleteGitHubLoginRequest
+	320, // 530: hotbed.v1.GitAuthService.PutGitCredential:input_type -> hotbed.v1.PutGitCredentialRequest
+	321, // 531: hotbed.v1.GitAuthService.ListGitCredentials:input_type -> hotbed.v1.ListGitCredentialsRequest
+	323, // 532: hotbed.v1.GitAuthService.DeleteGitCredential:input_type -> hotbed.v1.DeleteGitCredentialRequest
+	325, // 533: hotbed.v1.GitAuthService.MintGitToken:input_type -> hotbed.v1.MintGitTokenRequest
+	327, // 534: hotbed.v1.GitAuthService.ProxyGitHubAPI:input_type -> hotbed.v1.ProxyGitHubAPIRequest
+	331, // 535: hotbed.v1.IssueService.ReportIssue:input_type -> hotbed.v1.ReportIssueRequest
+	332, // 536: hotbed.v1.IssueService.ListIssues:input_type -> hotbed.v1.ListIssuesRequest
+	334, // 537: hotbed.v1.IssueService.GetIssue:input_type -> hotbed.v1.GetIssueRequest
+	335, // 538: hotbed.v1.IssueService.UpvoteIssue:input_type -> hotbed.v1.UpvoteIssueRequest
+	336, // 539: hotbed.v1.IssueService.ArchiveIssue:input_type -> hotbed.v1.ArchiveIssueRequest
+	337, // 540: hotbed.v1.IssueService.ReopenIssue:input_type -> hotbed.v1.ReopenIssueRequest
+	344, // 541: hotbed.v1.MemoryService.ProposeMemory:input_type -> hotbed.v1.ProposeMemoryRequest
+	345, // 542: hotbed.v1.MemoryService.ListMemories:input_type -> hotbed.v1.ListMemoriesRequest
+	347, // 543: hotbed.v1.MemoryService.GetMemories:input_type -> hotbed.v1.GetMemoriesRequest
+	349, // 544: hotbed.v1.MemoryService.ShowMemory:input_type -> hotbed.v1.ShowMemoryRequest
+	350, // 545: hotbed.v1.MemoryService.ReviseMemory:input_type -> hotbed.v1.ReviseMemoryRequest
+	351, // 546: hotbed.v1.MemoryService.ArchiveMemory:input_type -> hotbed.v1.ArchiveMemoryRequest
+	352, // 547: hotbed.v1.MemoryService.RestoreMemory:input_type -> hotbed.v1.RestoreMemoryRequest
+	353, // 548: hotbed.v1.MemoryService.DeleteMemory:input_type -> hotbed.v1.DeleteMemoryRequest
+	354, // 549: hotbed.v1.MemoryService.MoveMemory:input_type -> hotbed.v1.MoveMemoryRequest
+	374, // 550: hotbed.v1.BoardService.PostBoardMessage:input_type -> hotbed.v1.PostBoardMessageRequest
+	375, // 551: hotbed.v1.BoardService.EditBoardMessage:input_type -> hotbed.v1.EditBoardMessageRequest
+	376, // 552: hotbed.v1.BoardService.DeleteBoardMessage:input_type -> hotbed.v1.DeleteBoardMessageRequest
+	377, // 553: hotbed.v1.BoardService.ReactBoardMessage:input_type -> hotbed.v1.ReactBoardMessageRequest
+	378, // 554: hotbed.v1.BoardService.LabelBoardMessage:input_type -> hotbed.v1.LabelBoardMessageRequest
+	379, // 555: hotbed.v1.BoardService.ListBoardThreads:input_type -> hotbed.v1.ListBoardThreadsRequest
+	381, // 556: hotbed.v1.BoardService.GetBoardThread:input_type -> hotbed.v1.GetBoardThreadRequest
+	383, // 557: hotbed.v1.BoardService.ListBoardEvents:input_type -> hotbed.v1.ListBoardEventsRequest
+	385, // 558: hotbed.v1.BoardService.ListBoardActors:input_type -> hotbed.v1.ListBoardActorsRequest
+	387, // 559: hotbed.v1.BoardService.UploadBoardAttachment:input_type -> hotbed.v1.UploadBoardAttachmentRequest
+	388, // 560: hotbed.v1.BoardService.DownloadBoardAttachment:input_type -> hotbed.v1.DownloadBoardAttachmentRequest
+	390, // 561: hotbed.v1.BoardService.ListBoardSchemas:input_type -> hotbed.v1.ListBoardSchemasRequest
+	392, // 562: hotbed.v1.BoardService.GetBoardSchema:input_type -> hotbed.v1.GetBoardSchemaRequest
+	393, // 563: hotbed.v1.BoardService.CreateBoardSchema:input_type -> hotbed.v1.CreateBoardSchemaRequest
+	395, // 564: hotbed.v1.BoardService.ScheduleBoardMessage:input_type -> hotbed.v1.ScheduleBoardMessageRequest
+	396, // 565: hotbed.v1.BoardService.ListBoardSchedules:input_type -> hotbed.v1.ListBoardSchedulesRequest
+	398, // 566: hotbed.v1.BoardService.CancelBoardSchedule:input_type -> hotbed.v1.CancelBoardScheduleRequest
+	400, // 567: hotbed.v1.BoardService.CreateBoardTask:input_type -> hotbed.v1.CreateBoardTaskRequest
+	403, // 568: hotbed.v1.BoardService.BatchCreateBoardTasks:input_type -> hotbed.v1.BatchCreateBoardTasksRequest
+	405, // 569: hotbed.v1.BoardService.ListBoardTasks:input_type -> hotbed.v1.ListBoardTasksRequest
+	407, // 570: hotbed.v1.BoardService.ClaimBoardTask:input_type -> hotbed.v1.ClaimBoardTaskRequest
+	408, // 571: hotbed.v1.BoardService.RenewBoardTask:input_type -> hotbed.v1.RenewBoardTaskRequest
+	409, // 572: hotbed.v1.BoardService.ReleaseBoardTask:input_type -> hotbed.v1.ReleaseBoardTaskRequest
+	410, // 573: hotbed.v1.BoardService.CompleteBoardTask:input_type -> hotbed.v1.CompleteBoardTaskRequest
+	411, // 574: hotbed.v1.BoardService.FailBoardTask:input_type -> hotbed.v1.FailBoardTaskRequest
+	412, // 575: hotbed.v1.BoardService.BlockBoardTask:input_type -> hotbed.v1.BlockBoardTaskRequest
+	413, // 576: hotbed.v1.BoardService.UnblockBoardTask:input_type -> hotbed.v1.UnblockBoardTaskRequest
+	414, // 577: hotbed.v1.BoardService.ReopenBoardTask:input_type -> hotbed.v1.ReopenBoardTaskRequest
+	415, // 578: hotbed.v1.BoardService.AssignBoardTask:input_type -> hotbed.v1.AssignBoardTaskRequest
+	416, // 579: hotbed.v1.BoardService.SetBoardTaskNeeds:input_type -> hotbed.v1.SetBoardTaskNeedsRequest
+	417, // 580: hotbed.v1.BoardService.CancelBoardTask:input_type -> hotbed.v1.CancelBoardTaskRequest
+	420, // 581: hotbed.v1.BoardService.ImportBoard:input_type -> hotbed.v1.ImportBoardRequest
+	48,  // 582: hotbed.v1.ClusterService.Join:output_type -> hotbed.v1.JoinResponse
+	194, // 583: hotbed.v1.ClusterService.PushEvents:output_type -> hotbed.v1.PushEventsResponse
+	199, // 584: hotbed.v1.ClusterService.Heartbeat:output_type -> hotbed.v1.HeartbeatResponse
+	50,  // 585: hotbed.v1.ClusterService.ListNodes:output_type -> hotbed.v1.ListNodesResponse
+	52,  // 586: hotbed.v1.ClusterService.GetBuild:output_type -> hotbed.v1.Build
+	79,  // 587: hotbed.v1.ClusterService.ListRepos:output_type -> hotbed.v1.ListReposResponse
+	69,  // 588: hotbed.v1.ClusterService.PutRepo:output_type -> hotbed.v1.Repo
+	82,  // 589: hotbed.v1.ClusterService.DeleteRepo:output_type -> hotbed.v1.DeleteRepoResponse
+	153, // 590: hotbed.v1.ClusterService.RebuildProject:output_type -> hotbed.v1.Project
+	153, // 591: hotbed.v1.ClusterService.SetProjectHosts:output_type -> hotbed.v1.Project
+	153, // 592: hotbed.v1.ClusterService.PutStep:output_type -> hotbed.v1.Project
+	153, // 593: hotbed.v1.ClusterService.DeleteStep:output_type -> hotbed.v1.Project
+	75,  // 594: hotbed.v1.ClusterService.ListSteps:output_type -> hotbed.v1.ListStepsResponse
+	153, // 595: hotbed.v1.ClusterService.AddProject:output_type -> hotbed.v1.Project
+	153, // 596: hotbed.v1.ClusterService.RemoveProjectRepos:output_type -> hotbed.v1.Project
+	159, // 597: hotbed.v1.ClusterService.ListProjects:output_type -> hotbed.v1.ListProjectsResponse
+	153, // 598: hotbed.v1.ClusterService.GetProject:output_type -> hotbed.v1.Project
+	161, // 599: hotbed.v1.ClusterService.ListBases:output_type -> hotbed.v1.ListBasesResponse
+	164, // 600: hotbed.v1.ClusterService.ListFreshens:output_type -> hotbed.v1.ListFreshensResponse
+	166, // 601: hotbed.v1.ClusterService.GetFreshen:output_type -> hotbed.v1.GetFreshenResponse
+	210, // 602: hotbed.v1.ClusterService.GetSnapshot:output_type -> hotbed.v1.Snapshot
+	113, // 603: hotbed.v1.ClusterService.GetCommandDiagnostics:output_type -> hotbed.v1.GetCommandDiagnosticsResponse
+	115, // 604: hotbed.v1.ClusterService.SaveCommandDiagnostics:output_type -> hotbed.v1.SaveCommandDiagnosticsResponse
+	118, // 605: hotbed.v1.ClusterService.ListCommandSamples:output_type -> hotbed.v1.ListCommandSamplesResponse
+	116, // 606: hotbed.v1.ClusterService.GetCommandSample:output_type -> hotbed.v1.CommandSample
+	121, // 607: hotbed.v1.ClusterService.SaveCommandSample:output_type -> hotbed.v1.SaveCommandSampleResponse
+	124, // 608: hotbed.v1.ClusterService.PushCommandOutput:output_type -> hotbed.v1.PushCommandOutputResponse
+	216, // 609: hotbed.v1.ClusterService.GetNode:output_type -> hotbed.v1.NodeDetail
+	42,  // 610: hotbed.v1.ClusterService.RetireNode:output_type -> hotbed.v1.Node
+	218, // 611: hotbed.v1.ClusterService.ListPlacements:output_type -> hotbed.v1.ListPlacementsResponse
+	220, // 612: hotbed.v1.ClusterService.ListEvents:output_type -> hotbed.v1.ListEventsResponse
+	60,  // 613: hotbed.v1.ClusterService.GetWorkerConfig:output_type -> hotbed.v1.GetWorkerConfigResponse
+	58,  // 614: hotbed.v1.ClusterService.SetWorkerConfig:output_type -> hotbed.v1.WorkerConfig
+	63,  // 615: hotbed.v1.ClusterService.DeleteWorkerConfig:output_type -> hotbed.v1.DeleteWorkerConfigResponse
+	68,  // 616: hotbed.v1.ClusterService.UpgradeSystem:output_type -> hotbed.v1.UpgradeSystemResponse
+	146, // 617: hotbed.v1.SessionService.StartSession:output_type -> hotbed.v1.Session
+	173, // 618: hotbed.v1.SessionService.GetSession:output_type -> hotbed.v1.GetSessionResponse
+	150, // 619: hotbed.v1.SessionService.ListSessions:output_type -> hotbed.v1.ListSessionsResponse
+	152, // 620: hotbed.v1.SessionService.SearchSessions:output_type -> hotbed.v1.SearchSessionsResponse
+	146, // 621: hotbed.v1.SessionService.EndSession:output_type -> hotbed.v1.Session
+	177, // 622: hotbed.v1.SessionService.WatchSession:output_type -> hotbed.v1.SessionEvents
+	177, // 623: hotbed.v1.SessionService.Poll:output_type -> hotbed.v1.SessionEvents
+	89,  // 624: hotbed.v1.WorkspaceService.CreateWorkspace:output_type -> hotbed.v1.Workspace
+	89,  // 625: hotbed.v1.WorkspaceService.GetWorkspace:output_type -> hotbed.v1.Workspace
+	89,  // 626: hotbed.v1.WorkspaceService.WatchWorkspace:output_type -> hotbed.v1.Workspace
+	96,  // 627: hotbed.v1.WorkspaceService.ListWorkspaces:output_type -> hotbed.v1.ListWorkspacesResponse
+	98,  // 628: hotbed.v1.WorkspaceService.ReleaseWorkspace:output_type -> hotbed.v1.ReleaseWorkspaceResponse
+	102, // 629: hotbed.v1.WorkspaceService.Sync:output_type -> hotbed.v1.SyncResponse
+	105, // 630: hotbed.v1.WorkspaceService.ListFiles:output_type -> hotbed.v1.ListFilesResponse
+	107, // 631: hotbed.v1.WorkspaceService.GetFile:output_type -> hotbed.v1.FileContent
+	126, // 632: hotbed.v1.WorkspaceService.RunCommand:output_type -> hotbed.v1.Command
+	137, // 633: hotbed.v1.WorkspaceService.OpenShell:output_type -> hotbed.v1.OpenShellResponse
+	126, // 634: hotbed.v1.WorkspaceService.GetCommand:output_type -> hotbed.v1.Command
+	140, // 635: hotbed.v1.WorkspaceService.ListCommands:output_type -> hotbed.v1.ListCommandsResponse
+	126, // 636: hotbed.v1.WorkspaceService.StopCommand:output_type -> hotbed.v1.Command
+	126, // 637: hotbed.v1.WorkspaceService.PauseCommand:output_type -> hotbed.v1.Command
+	126, // 638: hotbed.v1.WorkspaceService.ResumeCommand:output_type -> hotbed.v1.Command
+	145, // 639: hotbed.v1.WorkspaceService.FollowLog:output_type -> hotbed.v1.LogChunk
+	185, // 640: hotbed.v1.WorkspaceService.GetLogLines:output_type -> hotbed.v1.CommandLog
+	132, // 641: hotbed.v1.WorkspaceService.QueryOutput:output_type -> hotbed.v1.OutputQuery
+	126, // 642: hotbed.v1.WorkspaceService.DetachCommand:output_type -> hotbed.v1.Command
+	135, // 643: hotbed.v1.WorkspaceService.SendInput:output_type -> hotbed.v1.SendInputResponse
+	247, // 644: hotbed.v1.WorkspaceService.InspectCommand:output_type -> hotbed.v1.InspectCommandResponse
+	252, // 645: hotbed.v1.WorkspaceService.TraceCommand:output_type -> hotbed.v1.TraceCommandChunk
+	254, // 646: hotbed.v1.WorkspaceService.SampleCommand:output_type -> hotbed.v1.SampleCommandChunk
+	269, // 647: hotbed.v1.WorkspaceService.GetProfile:output_type -> hotbed.v1.CommandProfile
+	224, // 648: hotbed.v1.WorkspaceService.GetDaemonLogs:output_type -> hotbed.v1.GetDaemonLogsResponse
+	67,  // 649: hotbed.v1.WorkspaceService.UpgradeSystem:output_type -> hotbed.v1.NodeSystemUpgrade
+	225, // 650: hotbed.v1.ScheduleService.PutSchedule:output_type -> hotbed.v1.ScheduledCommand
+	229, // 651: hotbed.v1.ScheduleService.ListSchedules:output_type -> hotbed.v1.ListSchedulesResponse
+	225, // 652: hotbed.v1.ScheduleService.GetSchedule:output_type -> hotbed.v1.ScheduledCommand
+	232, // 653: hotbed.v1.ScheduleService.DeleteSchedule:output_type -> hotbed.v1.DeleteScheduleResponse
+	226, // 654: hotbed.v1.ScheduleService.RunSchedule:output_type -> hotbed.v1.ScheduledRun
+	225, // 655: hotbed.v1.ScheduleService.PauseSchedule:output_type -> hotbed.v1.ScheduledCommand
+	278, // 656: hotbed.v1.QuestionService.AddQuestions:output_type -> hotbed.v1.AddQuestionsResponse
+	275, // 657: hotbed.v1.QuestionService.EditQuestion:output_type -> hotbed.v1.Question
+	275, // 658: hotbed.v1.QuestionService.DeleteQuestion:output_type -> hotbed.v1.Question
+	283, // 659: hotbed.v1.QuestionService.ListQuestions:output_type -> hotbed.v1.ListQuestionsResponse
+	285, // 660: hotbed.v1.QuestionService.ListQuestionProjects:output_type -> hotbed.v1.ListQuestionProjectsResponse
+	275, // 661: hotbed.v1.QuestionService.GetQuestion:output_type -> hotbed.v1.Question
+	275, // 662: hotbed.v1.QuestionService.AnswerQuestion:output_type -> hotbed.v1.Question
+	275, // 663: hotbed.v1.QuestionService.DismissQuestion:output_type -> hotbed.v1.Question
+	275, // 664: hotbed.v1.QuestionService.ReviseQuestion:output_type -> hotbed.v1.Question
+	275, // 665: hotbed.v1.QuestionService.ReopenQuestion:output_type -> hotbed.v1.Question
+	275, // 666: hotbed.v1.QuestionService.MoveQuestion:output_type -> hotbed.v1.Question
+	294, // 667: hotbed.v1.QuestionService.AckQuestions:output_type -> hotbed.v1.AckQuestionsResponse
+	300, // 668: hotbed.v1.ReviewService.RequestReview:output_type -> hotbed.v1.Review
+	304, // 669: hotbed.v1.ReviewService.ListReviews:output_type -> hotbed.v1.ListReviewsResponse
+	300, // 670: hotbed.v1.ReviewService.GetReview:output_type -> hotbed.v1.Review
+	300, // 671: hotbed.v1.ReviewService.StartReview:output_type -> hotbed.v1.Review
+	308, // 672: hotbed.v1.ReviewService.AddFindings:output_type -> hotbed.v1.AddFindingsResponse
+	300, // 673: hotbed.v1.ReviewService.FinishReview:output_type -> hotbed.v1.Review
+	300, // 674: hotbed.v1.ReviewService.CancelReview:output_type -> hotbed.v1.Review
+	312, // 675: hotbed.v1.ReviewService.DecideFindings:output_type -> hotbed.v1.DecideFindingsResponse
+	301, // 676: hotbed.v1.ReviewService.Respond:output_type -> hotbed.v1.ReviewEvent
+	315, // 677: hotbed.v1.ReviewService.ListResponses:output_type -> hotbed.v1.ListResponsesResponse
+	318, // 678: hotbed.v1.GitAuthService.StartGitHubLogin:output_type -> hotbed.v1.GitHubLoginChallenge
+	316, // 679: hotbed.v1.GitAuthService.CompleteGitHubLogin:output_type -> hotbed.v1.GitCredential
+	316, // 680: hotbed.v1.GitAuthService.PutGitCredential:output_type -> hotbed.v1.GitCredential
+	322, // 681: hotbed.v1.GitAuthService.ListGitCredentials:output_type -> hotbed.v1.ListGitCredentialsResponse
+	324, // 682: hotbed.v1.GitAuthService.DeleteGitCredential:output_type -> hotbed.v1.DeleteGitCredentialResponse
+	326, // 683: hotbed.v1.GitAuthService.MintGitToken:output_type -> hotbed.v1.GitToken
+	328, // 684: hotbed.v1.GitAuthService.ProxyGitHubAPI:output_type -> hotbed.v1.ProxyGitHubAPIResponse
+	329, // 685: hotbed.v1.IssueService.ReportIssue:output_type -> hotbed.v1.Issue
+	333, // 686: hotbed.v1.IssueService.ListIssues:output_type -> hotbed.v1.ListIssuesResponse
+	329, // 687: hotbed.v1.IssueService.GetIssue:output_type -> hotbed.v1.Issue
+	329, // 688: hotbed.v1.IssueService.UpvoteIssue:output_type -> hotbed.v1.Issue
+	329, // 689: hotbed.v1.IssueService.ArchiveIssue:output_type -> hotbed.v1.Issue
+	329, // 690: hotbed.v1.IssueService.ReopenIssue:output_type -> hotbed.v1.Issue
+	340, // 691: hotbed.v1.MemoryService.ProposeMemory:output_type -> hotbed.v1.Memory
+	346, // 692: hotbed.v1.MemoryService.ListMemories:output_type -> hotbed.v1.ListMemoriesResponse
+	348, // 693: hotbed.v1.MemoryService.GetMemories:output_type -> hotbed.v1.GetMemoriesResponse
+	340, // 694: hotbed.v1.MemoryService.ShowMemory:output_type -> hotbed.v1.Memory
+	340, // 695: hotbed.v1.MemoryService.ReviseMemory:output_type -> hotbed.v1.Memory
+	340, // 696: hotbed.v1.MemoryService.ArchiveMemory:output_type -> hotbed.v1.Memory
+	340, // 697: hotbed.v1.MemoryService.RestoreMemory:output_type -> hotbed.v1.Memory
+	340, // 698: hotbed.v1.MemoryService.DeleteMemory:output_type -> hotbed.v1.Memory
+	340, // 699: hotbed.v1.MemoryService.MoveMemory:output_type -> hotbed.v1.Memory
+	371, // 700: hotbed.v1.BoardService.PostBoardMessage:output_type -> hotbed.v1.BoardMessageResult
+	371, // 701: hotbed.v1.BoardService.EditBoardMessage:output_type -> hotbed.v1.BoardMessageResult
+	365, // 702: hotbed.v1.BoardService.DeleteBoardMessage:output_type -> hotbed.v1.BoardMessage
+	365, // 703: hotbed.v1.BoardService.ReactBoardMessage:output_type -> hotbed.v1.BoardMessage
+	365, // 704: hotbed.v1.BoardService.LabelBoardMessage:output_type -> hotbed.v1.BoardMessage
+	380, // 705: hotbed.v1.BoardService.ListBoardThreads:output_type -> hotbed.v1.ListBoardThreadsResponse
+	382, // 706: hotbed.v1.BoardService.GetBoardThread:output_type -> hotbed.v1.GetBoardThreadResponse
+	384, // 707: hotbed.v1.BoardService.ListBoardEvents:output_type -> hotbed.v1.ListBoardEventsResponse
+	386, // 708: hotbed.v1.BoardService.ListBoardActors:output_type -> hotbed.v1.ListBoardActorsResponse
+	357, // 709: hotbed.v1.BoardService.UploadBoardAttachment:output_type -> hotbed.v1.BoardAttachment
+	389, // 710: hotbed.v1.BoardService.DownloadBoardAttachment:output_type -> hotbed.v1.DownloadBoardAttachmentResponse
+	391, // 711: hotbed.v1.BoardService.ListBoardSchemas:output_type -> hotbed.v1.ListBoardSchemasResponse
+	368, // 712: hotbed.v1.BoardService.GetBoardSchema:output_type -> hotbed.v1.BoardSchema
+	394, // 713: hotbed.v1.BoardService.CreateBoardSchema:output_type -> hotbed.v1.CreateBoardSchemaResponse
+	373, // 714: hotbed.v1.BoardService.ScheduleBoardMessage:output_type -> hotbed.v1.BoardScheduleResult
+	397, // 715: hotbed.v1.BoardService.ListBoardSchedules:output_type -> hotbed.v1.ListBoardSchedulesResponse
+	399, // 716: hotbed.v1.BoardService.CancelBoardSchedule:output_type -> hotbed.v1.CancelBoardScheduleResponse
+	372, // 717: hotbed.v1.BoardService.CreateBoardTask:output_type -> hotbed.v1.BoardTaskResult
+	404, // 718: hotbed.v1.BoardService.BatchCreateBoardTasks:output_type -> hotbed.v1.BatchCreateBoardTasksResponse
+	406, // 719: hotbed.v1.BoardService.ListBoardTasks:output_type -> hotbed.v1.ListBoardTasksResponse
+	372, // 720: hotbed.v1.BoardService.ClaimBoardTask:output_type -> hotbed.v1.BoardTaskResult
+	372, // 721: hotbed.v1.BoardService.RenewBoardTask:output_type -> hotbed.v1.BoardTaskResult
+	365, // 722: hotbed.v1.BoardService.ReleaseBoardTask:output_type -> hotbed.v1.BoardMessage
+	365, // 723: hotbed.v1.BoardService.CompleteBoardTask:output_type -> hotbed.v1.BoardMessage
+	365, // 724: hotbed.v1.BoardService.FailBoardTask:output_type -> hotbed.v1.BoardMessage
+	365, // 725: hotbed.v1.BoardService.BlockBoardTask:output_type -> hotbed.v1.BoardMessage
+	365, // 726: hotbed.v1.BoardService.UnblockBoardTask:output_type -> hotbed.v1.BoardMessage
+	365, // 727: hotbed.v1.BoardService.ReopenBoardTask:output_type -> hotbed.v1.BoardMessage
+	365, // 728: hotbed.v1.BoardService.AssignBoardTask:output_type -> hotbed.v1.BoardMessage
+	365, // 729: hotbed.v1.BoardService.SetBoardTaskNeeds:output_type -> hotbed.v1.BoardMessage
+	365, // 730: hotbed.v1.BoardService.CancelBoardTask:output_type -> hotbed.v1.BoardMessage
+	421, // 731: hotbed.v1.BoardService.ImportBoard:output_type -> hotbed.v1.ImportBoardResponse
+	582, // [582:732] is the sub-list for method output_type
+	432, // [432:582] is the sub-list for method input_type
+	429, // [429:432] is the sub-list for extension type_name
+	426, // [426:429] is the sub-list for extension extendee
+	0,   // [0:426] is the sub-list for field type_name
 }
 
 func init() { file_hotbed_v1_hotbed_proto_init() }
@@ -43133,128 +42722,127 @@ func file_hotbed_v1_hotbed_proto_init() {
 		return
 	}
 	file_hotbed_v1_hotbed_proto_msgTypes[8].OneofWrappers = []any{}
+	file_hotbed_v1_hotbed_proto_msgTypes[19].OneofWrappers = []any{}
+	file_hotbed_v1_hotbed_proto_msgTypes[20].OneofWrappers = []any{}
+	file_hotbed_v1_hotbed_proto_msgTypes[21].OneofWrappers = []any{}
+	file_hotbed_v1_hotbed_proto_msgTypes[22].OneofWrappers = []any{}
+	file_hotbed_v1_hotbed_proto_msgTypes[23].OneofWrappers = []any{}
 	file_hotbed_v1_hotbed_proto_msgTypes[24].OneofWrappers = []any{}
-	file_hotbed_v1_hotbed_proto_msgTypes[25].OneofWrappers = []any{}
-	file_hotbed_v1_hotbed_proto_msgTypes[26].OneofWrappers = []any{}
-	file_hotbed_v1_hotbed_proto_msgTypes[27].OneofWrappers = []any{}
-	file_hotbed_v1_hotbed_proto_msgTypes[28].OneofWrappers = []any{}
-	file_hotbed_v1_hotbed_proto_msgTypes[29].OneofWrappers = []any{}
-	file_hotbed_v1_hotbed_proto_msgTypes[40].OneofWrappers = []any{}
-	file_hotbed_v1_hotbed_proto_msgTypes[57].OneofWrappers = []any{}
-	file_hotbed_v1_hotbed_proto_msgTypes[58].OneofWrappers = []any{}
-	file_hotbed_v1_hotbed_proto_msgTypes[70].OneofWrappers = []any{
+	file_hotbed_v1_hotbed_proto_msgTypes[35].OneofWrappers = []any{}
+	file_hotbed_v1_hotbed_proto_msgTypes[52].OneofWrappers = []any{}
+	file_hotbed_v1_hotbed_proto_msgTypes[53].OneofWrappers = []any{}
+	file_hotbed_v1_hotbed_proto_msgTypes[65].OneofWrappers = []any{
 		(*SyncRequest_Header)(nil),
 		(*SyncRequest_Chunk)(nil),
 	}
-	file_hotbed_v1_hotbed_proto_msgTypes[97].OneofWrappers = []any{}
+	file_hotbed_v1_hotbed_proto_msgTypes[92].OneofWrappers = []any{}
+	file_hotbed_v1_hotbed_proto_msgTypes[93].OneofWrappers = []any{}
 	file_hotbed_v1_hotbed_proto_msgTypes[98].OneofWrappers = []any{}
-	file_hotbed_v1_hotbed_proto_msgTypes[103].OneofWrappers = []any{}
-	file_hotbed_v1_hotbed_proto_msgTypes[110].OneofWrappers = []any{}
-	file_hotbed_v1_hotbed_proto_msgTypes[117].OneofWrappers = []any{}
-	file_hotbed_v1_hotbed_proto_msgTypes[118].OneofWrappers = []any{}
-	file_hotbed_v1_hotbed_proto_msgTypes[120].OneofWrappers = []any{
+	file_hotbed_v1_hotbed_proto_msgTypes[105].OneofWrappers = []any{}
+	file_hotbed_v1_hotbed_proto_msgTypes[112].OneofWrappers = []any{}
+	file_hotbed_v1_hotbed_proto_msgTypes[113].OneofWrappers = []any{}
+	file_hotbed_v1_hotbed_proto_msgTypes[115].OneofWrappers = []any{
 		(*ListSessionsRequest_Project)(nil),
 		(*ListSessionsRequest_AllProjects)(nil),
 	}
-	file_hotbed_v1_hotbed_proto_msgTypes[122].OneofWrappers = []any{}
-	file_hotbed_v1_hotbed_proto_msgTypes[124].OneofWrappers = []any{}
-	file_hotbed_v1_hotbed_proto_msgTypes[134].OneofWrappers = []any{}
-	file_hotbed_v1_hotbed_proto_msgTypes[138].OneofWrappers = []any{}
-	file_hotbed_v1_hotbed_proto_msgTypes[148].OneofWrappers = []any{}
-	file_hotbed_v1_hotbed_proto_msgTypes[149].OneofWrappers = []any{
+	file_hotbed_v1_hotbed_proto_msgTypes[117].OneofWrappers = []any{}
+	file_hotbed_v1_hotbed_proto_msgTypes[119].OneofWrappers = []any{}
+	file_hotbed_v1_hotbed_proto_msgTypes[129].OneofWrappers = []any{}
+	file_hotbed_v1_hotbed_proto_msgTypes[133].OneofWrappers = []any{}
+	file_hotbed_v1_hotbed_proto_msgTypes[143].OneofWrappers = []any{}
+	file_hotbed_v1_hotbed_proto_msgTypes[144].OneofWrappers = []any{
 		(*SessionEvent_Command)(nil),
 		(*SessionEvent_Workspace)(nil),
 		(*SessionEvent_Question)(nil),
 		(*SessionEvent_Review)(nil),
 		(*SessionEvent_Memory)(nil),
 	}
-	file_hotbed_v1_hotbed_proto_msgTypes[150].OneofWrappers = []any{}
-	file_hotbed_v1_hotbed_proto_msgTypes[159].OneofWrappers = []any{
+	file_hotbed_v1_hotbed_proto_msgTypes[145].OneofWrappers = []any{}
+	file_hotbed_v1_hotbed_proto_msgTypes[154].OneofWrappers = []any{
 		(*Event_Base)(nil),
 		(*Event_Workspace)(nil),
 		(*Event_Command)(nil),
 	}
-	file_hotbed_v1_hotbed_proto_msgTypes[174].OneofWrappers = []any{}
-	file_hotbed_v1_hotbed_proto_msgTypes[194].OneofWrappers = []any{}
-	file_hotbed_v1_hotbed_proto_msgTypes[196].OneofWrappers = []any{}
-	file_hotbed_v1_hotbed_proto_msgTypes[197].OneofWrappers = []any{}
-	file_hotbed_v1_hotbed_proto_msgTypes[199].OneofWrappers = []any{
+	file_hotbed_v1_hotbed_proto_msgTypes[189].OneofWrappers = []any{}
+	file_hotbed_v1_hotbed_proto_msgTypes[191].OneofWrappers = []any{}
+	file_hotbed_v1_hotbed_proto_msgTypes[192].OneofWrappers = []any{}
+	file_hotbed_v1_hotbed_proto_msgTypes[194].OneofWrappers = []any{
 		(*ListSchedulesRequest_Project)(nil),
 		(*ListSchedulesRequest_AllProjects)(nil),
 	}
-	file_hotbed_v1_hotbed_proto_msgTypes[235].OneofWrappers = []any{
+	file_hotbed_v1_hotbed_proto_msgTypes[230].OneofWrappers = []any{
 		(*GetProfileRequest_CommandId)(nil),
 		(*GetProfileRequest_Node)(nil),
 	}
-	file_hotbed_v1_hotbed_proto_msgTypes[246].OneofWrappers = []any{}
-	file_hotbed_v1_hotbed_proto_msgTypes[249].OneofWrappers = []any{}
-	file_hotbed_v1_hotbed_proto_msgTypes[252].OneofWrappers = []any{
+	file_hotbed_v1_hotbed_proto_msgTypes[241].OneofWrappers = []any{}
+	file_hotbed_v1_hotbed_proto_msgTypes[244].OneofWrappers = []any{}
+	file_hotbed_v1_hotbed_proto_msgTypes[247].OneofWrappers = []any{
 		(*ListQuestionsRequest_Project)(nil),
 		(*ListQuestionsRequest_AllProjects)(nil),
 	}
-	file_hotbed_v1_hotbed_proto_msgTypes[254].OneofWrappers = []any{}
-	file_hotbed_v1_hotbed_proto_msgTypes[256].OneofWrappers = []any{}
-	file_hotbed_v1_hotbed_proto_msgTypes[263].OneofWrappers = []any{
+	file_hotbed_v1_hotbed_proto_msgTypes[249].OneofWrappers = []any{}
+	file_hotbed_v1_hotbed_proto_msgTypes[251].OneofWrappers = []any{}
+	file_hotbed_v1_hotbed_proto_msgTypes[258].OneofWrappers = []any{
 		(*MoveQuestionRequest_Before)(nil),
 		(*MoveQuestionRequest_First)(nil),
 		(*MoveQuestionRequest_Last)(nil),
 	}
-	file_hotbed_v1_hotbed_proto_msgTypes[265].OneofWrappers = []any{}
-	file_hotbed_v1_hotbed_proto_msgTypes[274].OneofWrappers = []any{
+	file_hotbed_v1_hotbed_proto_msgTypes[260].OneofWrappers = []any{}
+	file_hotbed_v1_hotbed_proto_msgTypes[269].OneofWrappers = []any{
 		(*ListReviewsRequest_Project)(nil),
 		(*ListReviewsRequest_AllProjects)(nil),
 	}
-	file_hotbed_v1_hotbed_proto_msgTypes[283].OneofWrappers = []any{}
-	file_hotbed_v1_hotbed_proto_msgTypes[286].OneofWrappers = []any{}
-	file_hotbed_v1_hotbed_proto_msgTypes[311].OneofWrappers = []any{}
-	file_hotbed_v1_hotbed_proto_msgTypes[316].OneofWrappers = []any{
+	file_hotbed_v1_hotbed_proto_msgTypes[278].OneofWrappers = []any{}
+	file_hotbed_v1_hotbed_proto_msgTypes[281].OneofWrappers = []any{}
+	file_hotbed_v1_hotbed_proto_msgTypes[306].OneofWrappers = []any{}
+	file_hotbed_v1_hotbed_proto_msgTypes[311].OneofWrappers = []any{
 		(*ListMemoriesRequest_Project)(nil),
 		(*ListMemoriesRequest_AllProjects)(nil),
 	}
-	file_hotbed_v1_hotbed_proto_msgTypes[317].OneofWrappers = []any{}
-	file_hotbed_v1_hotbed_proto_msgTypes[321].OneofWrappers = []any{}
-	file_hotbed_v1_hotbed_proto_msgTypes[325].OneofWrappers = []any{
+	file_hotbed_v1_hotbed_proto_msgTypes[312].OneofWrappers = []any{}
+	file_hotbed_v1_hotbed_proto_msgTypes[316].OneofWrappers = []any{}
+	file_hotbed_v1_hotbed_proto_msgTypes[320].OneofWrappers = []any{
 		(*MoveMemoryRequest_Before)(nil),
 		(*MoveMemoryRequest_First)(nil),
 		(*MoveMemoryRequest_Last)(nil),
 	}
-	file_hotbed_v1_hotbed_proto_msgTypes[336].OneofWrappers = []any{}
-	file_hotbed_v1_hotbed_proto_msgTypes[350].OneofWrappers = []any{
+	file_hotbed_v1_hotbed_proto_msgTypes[331].OneofWrappers = []any{}
+	file_hotbed_v1_hotbed_proto_msgTypes[345].OneofWrappers = []any{
 		(*ListBoardThreadsRequest_Project)(nil),
 		(*ListBoardThreadsRequest_AllProjects)(nil),
 	}
-	file_hotbed_v1_hotbed_proto_msgTypes[354].OneofWrappers = []any{
+	file_hotbed_v1_hotbed_proto_msgTypes[349].OneofWrappers = []any{
 		(*ListBoardEventsRequest_Project)(nil),
 		(*ListBoardEventsRequest_AllProjects)(nil),
 	}
-	file_hotbed_v1_hotbed_proto_msgTypes[356].OneofWrappers = []any{
+	file_hotbed_v1_hotbed_proto_msgTypes[351].OneofWrappers = []any{
 		(*ListBoardActorsRequest_Project)(nil),
 		(*ListBoardActorsRequest_AllProjects)(nil),
 	}
-	file_hotbed_v1_hotbed_proto_msgTypes[367].OneofWrappers = []any{
+	file_hotbed_v1_hotbed_proto_msgTypes[362].OneofWrappers = []any{
 		(*ListBoardSchedulesRequest_Project)(nil),
 		(*ListBoardSchedulesRequest_AllProjects)(nil),
 	}
-	file_hotbed_v1_hotbed_proto_msgTypes[372].OneofWrappers = []any{
+	file_hotbed_v1_hotbed_proto_msgTypes[367].OneofWrappers = []any{
 		(*BatchBoardTaskNeed_Id)(nil),
 		(*BatchBoardTaskNeed_Key)(nil),
 	}
-	file_hotbed_v1_hotbed_proto_msgTypes[376].OneofWrappers = []any{
+	file_hotbed_v1_hotbed_proto_msgTypes[371].OneofWrappers = []any{
 		(*ListBoardTasksRequest_Project)(nil),
 		(*ListBoardTasksRequest_AllProjects)(nil),
 	}
-	file_hotbed_v1_hotbed_proto_msgTypes[378].OneofWrappers = []any{
+	file_hotbed_v1_hotbed_proto_msgTypes[373].OneofWrappers = []any{
 		(*ClaimBoardTaskRequest_Project)(nil),
 		(*ClaimBoardTaskRequest_AllProjects)(nil),
 	}
-	file_hotbed_v1_hotbed_proto_msgTypes[390].OneofWrappers = []any{}
+	file_hotbed_v1_hotbed_proto_msgTypes[385].OneofWrappers = []any{}
 	type x struct{}
 	out := protoimpl.TypeBuilder{
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_hotbed_v1_hotbed_proto_rawDesc), len(file_hotbed_v1_hotbed_proto_rawDesc)),
 			NumEnums:      34,
-			NumMessages:   420,
+			NumMessages:   415,
 			NumExtensions: 3,
 			NumServices:   10,
 		},

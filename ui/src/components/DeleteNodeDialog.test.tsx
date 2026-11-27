@@ -65,11 +65,6 @@ describe("DeleteNodeDialog", () => {
     expect(confirmBtn).toContain("text-destructive-foreground");
   });
 
-  it("warns when deleting an asleep standby node", () => {
-    const html = renderDialog(create(NodeSchema, { id: "n2", hostname: "sleepy", online: false, asleep: true }));
-    expect(html).toContain("currently asleep under standby");
-  });
-
   it("disables confirmation when the node is online", () => {
     const html = renderDialog(create(NodeSchema, { id: "n3", hostname: "ubu1", online: true }));
     expect(html).toContain("currently online and cannot be deleted");

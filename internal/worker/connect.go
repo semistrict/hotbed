@@ -410,7 +410,6 @@ func HeartbeatOnce(ctx context.Context, eng *Engine, cluster hotbedv1connect.Clu
 	}
 	eng.delivered(h)
 	eng.setProjects(reply.Projects, sent)
-	eng.SetHostUsage(reply.GetHostUsage())
 	cfCtx, cancelCF := context.WithTimeout(ctx, cladefsHeartbeatLimit)
 	eng.applyCladefsHeartbeat(cfCtx, reply)
 	cancelCF()

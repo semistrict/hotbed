@@ -37,7 +37,6 @@ import {
 	FreshenState,
 	GitAuthService,
 	HeartbeatRequestSchema,
-	HostUsageSchema,
 	ListFilesResponseSchema,
 	ManagedArtifactSchema,
 	MemoryMode,
@@ -72,7 +71,6 @@ import {
 	WorkspaceService,
 	WorkspaceState,
 } from "../src/gen/hotbed/v1/hotbed_pb.ts";
-import { hostStarvation, hostStarvationCost } from "../src/hostusage.ts";
 import type { TunnelDownMessage, TunnelUpMessage } from "../src/tunnel.ts";
 
 const OWNER_TOKEN = "test-owner-secret";
@@ -1267,13 +1265,11 @@ describe("BuildDistributor pinned controller version and placement semantics", (
 			node: {
 				id,
 				hostname,
-				asleep: false,
 				online: true,
 				storageError: "",
 			} as never,
 			addr: "100.0.0.1:7121",
 			online: true,
-			wakeFailed: false,
 			bases: [],
 			workspaces: [],
 			commands: [],
@@ -1369,7 +1365,7 @@ describe("BuildDistributor pinned controller version and placement semantics", (
 });
 
 describe("Security, cron, daemon logs, tunnel, and workspace regression tests", () => {
-	it("pins worker-token hostname, blocks JOIN_TOKEN on /ws/worker, and scopes worker Standby", async () => {
+	it("pins worker-token hostname, blocks JOIN_TOKEN on /ws/worker", async () => {
 		const owner = ownerClients();
 		const mintA = await SELF.fetch("https://controller.test/admin/worker-token", {
 			method: "POST",
@@ -1421,18 +1417,6 @@ describe("Security, cron, daemon logs, tunnel, and workspace regression tests", 
 			}),
 		);
 		expect(hbA.projects.map((p) => p.name)).not.toContain("secret-b");
-
-		// Worker A cannot supervise host-b via Standby.
-		const drainStandby = async () => {
-			for await (const _ of spoofedA.cluster.standby({
-				node: "host-b",
-				running: false,
-				sleepAfterSeconds: 60n,
-			})) {
-				// should throw before yielding
-			}
-		};
-		await expect(drainStandby()).rejects.toThrow(/may not supervise host-b/);
 	});
 
 	it("enforces CSRF on POST /auth/logout while allowing top-level GET navigations to Cockpit UI", async () => {
@@ -3152,39 +3136,5 @@ describe("Security, cron, daemon logs, tunnel, and workspace regression tests", 
 			listAll.mockRestore();
 			allEvents.mockRestore();
 		}
-	});
-
-	it("treats macOS warn (50%) host memory pressure as soft placement penalty and holds only on critical (100%)", () => {
-		const warnUsage = create(HostUsageSchema, {
-			vmCpuBusy: 0.1,
-			hostCpuBusy: 0.25,
-			hostLoad1m: 2.0,
-			hostCpus: 10,
-			hostMemoryPressure: 50,
-		});
-		const warnStarv = hostStarvation(undefined, warnUsage);
-		expect(warnStarv.holding).toBe(false);
-		const warnSig = warnStarv.signals.find((s) => s.name === "host-memory-pressure");
-		expect(warnSig?.holding).toBe(false);
-		expect(warnSig?.limit).toBe(100);
-		expect(warnSig?.detail).toContain("warn");
-
-		const warnCost = hostStarvationCost(0.1, warnUsage);
-		expect(warnCost.value).toBeGreaterThan(0);
-		expect(warnCost.value).toBeLessThan(1);
-		expect(warnCost.detail).toContain("50%");
-
-		const critUsage = create(HostUsageSchema, {
-			vmCpuBusy: 0.1,
-			hostCpuBusy: 0.25,
-			hostLoad1m: 2.0,
-			hostCpus: 10,
-			hostMemoryPressure: 100,
-		});
-		const critStarv = hostStarvation(undefined, critUsage);
-		expect(critStarv.holding).toBe(true);
-		const critSig = critStarv.signals.find((s) => s.name === "host-memory-pressure");
-		expect(critSig?.holding).toBe(true);
-		expect(critSig?.detail).toContain("critical");
 	});
 });

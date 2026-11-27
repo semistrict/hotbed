@@ -2,7 +2,7 @@ import { Link, useNavigate, useParams } from "@tanstack/react-router";
 import { Trash2 } from "lucide-react";
 import { useState } from "react";
 import { Button } from "@/components/ui/button";
-import { BaseState, baseStateLabel, CommandState, nodeAdmission, WorkspaceState, type HostUsage } from "../api";
+import { BaseState, baseStateLabel, CommandState, nodeAdmission, WorkspaceState } from "../api";
 import { Meter, SegmentedBar } from "../components/charts/Bars";
 import { Columns } from "../components/charts/Columns";
 import { LineChart } from "../components/charts/LineChart";
@@ -18,37 +18,10 @@ import { ArchBadge, BuildingBadge, OnlineBadge } from "../components/StateBadges
 import { isReadOnlyViewer, useAuthMe } from "../lib/auth";
 import { useNodeColors, useSnapshot } from "../lib/data";
 import { ago, bytes, compact, duration, percent } from "../lib/format";
-import { buildCpuChartSeries, formatHostUsageFoot, hasCpuStealWarning, isHostStarved, nodeHostUsage } from "../lib/hostUsage";
 import { isLive } from "../lib/live";
 import { failureRate, savings } from "../lib/stats";
 import { NotFound } from "./NotFound";
 import { PageTitle } from "./Nodes";
-
-export function HostStealBadge({ guestBusy, host }: { guestBusy: number; host?: HostUsage }) {
-  if (!host || !hasCpuStealWarning(guestBusy, host)) return null;
-  return (
-    <span
-      title={`Guest reports ${percent(guestBusy)} CPU busy, but the VM only receives ${percent(host.vmCpuBusy)} on the host (${formatHostUsageFoot(host)})`}
-      className="rounded-full bg-serious/15 px-2.5 py-0.5 font-mono text-[10.5px] whitespace-nowrap text-serious-ink"
-    >
-      host CPU steal · VM {percent(host.vmCpuBusy)} vs guest {percent(guestBusy)}
-    </span>
-  );
-}
-
-export function HostCpuTile({ guestBusy, vcpus, host, online = true }: { guestBusy: number; vcpus: number; host?: HostUsage; online?: boolean }) {
-  if (!host) return null;
-  const starved = online && isHostStarved(guestBusy, host);
-  return (
-    <StatTile
-      label="VM CPU (host)"
-      value={online ? percent(host.vmCpuBusy) : "—"}
-      unit={`of ${vcpus} vCPUs`}
-      tone={starved ? "ember" : "frost"}
-      foot={online ? formatHostUsageFoot(host) : "offline"}
-    />
-  );
-}
 
 export function NodePage() {
   const { hostname } = useParams({ from: "/nodes/$hostname" });
@@ -79,8 +52,6 @@ export function NodePage() {
   const res = n.resources;
   const usage = n.usage;
   const disk = n.disk;
-  const host = nodeHostUsage(n);
-  const cpuSeries = buildCpuChartSeries(n.id, color, series);
 
   return (
     <div className="space-y-6">
@@ -99,10 +70,9 @@ export function NodePage() {
                 {n.profiler.active ? `OTel eBPF · ${n.profiler.sampleHz} Hz` : "OTel eBPF off"}
               </span>
             )}
-            {n.online && <HostStealBadge guestBusy={usage?.cpuBusy ?? 0} host={host} />}
             <AdmissionBadge a={admission} now={now} />
             <ArchBadge arch={res?.arch ?? ""} />
-            <OnlineBadge online={n.online} asleep={n.asleep} storageError={n.storageError} />
+            <OnlineBadge online={n.online} storageError={n.storageError} />
             <Link
               to="/settings"
               search={{ scope: n.hostname }}
@@ -141,9 +111,8 @@ export function NodePage() {
           Its worker cannot open its storage, and serves nothing until it can: {n.storageError}
         </div>
       )}
-      <div className={`grid grid-cols-2 gap-3 ${host ? "sm:grid-cols-4 xl:grid-cols-7" : "sm:grid-cols-3 xl:grid-cols-6"}`}>
-        <StatTile label={host ? "Guest CPU" : "CPU busy"} value={n.online ? percent(usage?.cpuBusy ?? 0) : "—"} unit={`of ${res?.cpus ?? 0}`} />
-        <HostCpuTile guestBusy={usage?.cpuBusy ?? 0} vcpus={res?.cpus ?? 0} host={host} online={n.online} />
+      <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 xl:grid-cols-6">
+        <StatTile label="CPU busy" value={n.online ? percent(usage?.cpuBusy ?? 0) : "—"} unit={`of ${res?.cpus ?? 0}`} />
         <StatTile label="Memory" value={n.online ? bytes(usage?.memoryUsedBytes ?? 0n) : "—"} unit={`/ ${bytes(res?.memoryBytes ?? 0n)}`} foot={`${bytes(n.reservedMemoryBytes)} guaranteed`} />
         <StatTile label="Swap" value={n.online ? bytes(usage?.swapUsedBytes ?? 0n) : "—"} unit={`/ ${bytes(res?.swapBytes ?? 0n)}`} tone={n.online && (usage?.swapUsedBytes ?? 0n) > 0n ? "frost" : "default"} />
         <StatTile label="Saved today" value={duration(day.saved)} tone="ember" foot={`${compact(day.builds)} builds`} />
@@ -157,8 +126,8 @@ export function NodePage() {
       </div>
 
       <div className="grid gap-4 lg:grid-cols-3">
-        <Card title="CPU busy" sub={cpuSeries.length > 1 ? "Last 15 minutes · guest vs host truth" : "Last 15 minutes"}>
-          <LineChart series={cpuSeries} yMax={1} format={(v) => percent(v)} height={150} />
+        <Card title="CPU busy" sub="Last 15 minutes">
+          <LineChart series={line("cpu", (p) => p.cpuBusy)} yMax={1} format={(v) => percent(v)} height={150} />
         </Card>
         <Card title="Memory in use" sub="Last 15 minutes">
           <LineChart series={line("memory", (p) => p.memoryUsed)} yMax={1} format={(v) => percent(v)} thresholds={[{ v: 0.93, label: "park" }]} height={150} />

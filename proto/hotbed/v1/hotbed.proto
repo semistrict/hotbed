@@ -46,26 +46,13 @@ service ClusterService {
   // Heartbeat is a worker's live usage, lossy: the latest wins. It keeps
   // the node online, and its reply is what the worker should host.
   rpc Heartbeat(HeartbeatRequest) returns (HeartbeatResponse);
-  // Standby is how a worker's host powers it as the controller says: the
-  // host that runs a worker in a VM (hotbed worker supervise) holds it open,
-  // and the controller says whether the VM should run, at once and whenever
-  // that changes. A node whose host holds it open sleeps once it has had no
-  // work for its sleep_after, and wakes when a run is placed on it. It ends
-  // after at most two minutes, and the host calls again with how the VM is
-  // then, as it does each time it has started or stopped the VM.
-  rpc Standby(StandbyRequest) returns (stream StandbyResponse);
-  // ReportHostUsage reports host-side truth about a VM worker (VM CPU,
-  // host CPU/load, host memory pressure) from its host supervisor so
-  // controller placement, worker admission, and the cockpit can see host
-  // starvation that the Linux guest cannot observe from inside its VM.
-  rpc ReportHostUsage(ReportHostUsageRequest) returns (ReportHostUsageResponse);
   // List the cluster's workers.
   rpc ListNodes(ListNodesRequest) returns (ListNodesResponse) {
     option idempotency_level = IDEMPOTENT;
     option (command) = {
       name: "nodes"
       read_only: true
-      format: "{{range .nodes}}{{pad 16 .hostname}}  {{with .resources}}{{pad 6 .arch}}  {{.cpus}} cpus{{else}}-       - cpus{{end}}{{if .asleep}}  asleep{{else if .online}}  online{{else if .storageError}}  offline: cannot open its storage: {{.storageError}}{{else}}  offline{{end}}\n{{end}}"
+      format: "{{range .nodes}}{{pad 16 .hostname}}  {{with .resources}}{{pad 6 .arch}}  {{.cpus}} cpus{{else}}-       - cpus{{end}}{{if .online}}  online{{else if .storageError}}  offline: cannot open its storage: {{.storageError}}{{else}}  offline{{end}}\n{{end}}"
     };
   }
   // GetBuild is the build the controller runs, for a platform: what a node
@@ -673,11 +660,10 @@ message Node {
   DaemonLogSource daemon_logs = 15;
   // How it decides whether to start new work, as of its last heartbeat.
   Admission admission = 16;
-  // Its host powered it off, or is powering it on, as the controller asked
-  // (Standby): it is not out of reach, and a run placed on it wakes it.
-  bool asleep = 17;
-  // Host-side view of a VM worker, when its host supervisor reports it.
-  HostUsage host_usage = 18;
+  // Retired with Standby and ReportHostUsage: no host powers its worker
+  // or reports its usage any more.
+  reserved 17, 18;
+  reserved "asleep", "host_usage";
   // Why the worker cannot open its storage (a ZFS pool not imported, its
   // disk missing), as of its last heartbeat: it waits for it and serves
   // nothing meanwhile, so it is not online. Empty when its storage is open.
@@ -807,51 +793,6 @@ enum PartCacheShardState {
   PART_CACHE_SHARD_STATE_OFFLINE = 3;
   // Coming back after being offline.
   PART_CACHE_SHARD_STATE_RETURNING = 4;
-}
-
-// Host-side view of a VM worker, reported by its host supervisor (macOS).
-message HostUsage {
-  // Share of configured vCPUs the VM process actually got on the host
-  // (0..1; e.g. 1.5 cores used on a 7-vCPU VM = 0.214).
-  double vm_cpu_busy = 1;
-  // Share of host CPUs busy across the whole host (0..1).
-  double host_cpu_busy = 2;
-  // Host 1-minute load average.
-  double host_load_1m = 3;
-  // Logical CPUs on the host.
-  int32 host_cpus = 4;
-  // Host memory pressure, 0..100 (macOS normal=0, warn=50, critical=100).
-  double host_memory_pressure = 5;
-  // Unix milliseconds when sampled on the host.
-  int64 sampled_at = 6;
-  // Remaining freshness TTL (ms) from controller ingestion, populated on
-  // HeartbeatResponse so worker admission expires the sample at its original
-  // controller deadline rather than granting a second full TTL.
-  int64 remaining_ttl_ms = 7;
-}
-
-message ReportHostUsageRequest {
-  // The worker's host name (same as StandbyRequest.node).
-  string node = 1;
-  HostUsage usage = 2;
-}
-
-message ReportHostUsageResponse {}
-
-message StandbyRequest {
-  // The worker's host name.
-  string node = 1;
-  // Whether its VM runs now.
-  bool running = 2;
-  // How long it is to have had no work before it sleeps; 0 never to sleep.
-  int64 sleep_after_seconds = 3;
-}
-
-message StandbyResponse {
-  // Whether its VM should run.
-  bool run = 1;
-  // Why, for the host's log.
-  string reason = 2;
 }
 
 // Status of a worker's always-on continuous eBPF profiler.
@@ -2160,9 +2101,10 @@ message OpenShellRequest {
 }
 
 message OpenShellResponse {
-  // Unset: workers listen on no address. A client reaches the shell server
+  // Workers listen on no address: a client reaches the shell server
   // through the controller (/ws/pipe?workspace=ID&kind=ssh).
-  string addr = 1 [deprecated = true];
+  reserved 1;
+  reserved "addr";
   // One-time SSH username (ticket) to authenticate with.
   string user = 2;
   // Worker's SSH host public key in OpenSSH authorized_keys format, for
@@ -3062,10 +3004,8 @@ message HeartbeatResponse {
   // installs over itself when running an older build; unset while the
   // controller runs a dev build with no release configured.
   Build build = 3;
-  // Latest fresh host-side view of this VM worker, when its host supervisor
-  // reports it; used by worker admission to hold work during host starvation.
-  HostUsage host_usage = 5;
-  reserved 6;
+  reserved 5, 6;
+  reserved "host_usage";
   // Online cladefs peer addresses (HOST:PORT) for cladefsd.SetPeers.
   repeated string cladefs_peers = 7;
   // Retired cladefs host incarnations for cladefsd.DecommissionHost.
@@ -3135,9 +3075,9 @@ message Sample {
   double cpu_pressure = 5;
   // The node held new work.
   bool holding = 6;
-  // Host-side CPU readings for VM nodes, when reported by the host supervisor.
-  optional double vm_cpu_busy = 7;
-  optional double host_cpu_busy = 8;
+  // Host-side CPU readings, retired with ReportHostUsage.
+  reserved 7, 8;
+  reserved "vm_cpu_busy", "host_cpu_busy";
   // R2 object-store transfer and commit-wait rates at this sample.
   double upload_bytes_per_sec = 9;
   double download_bytes_per_sec = 10;

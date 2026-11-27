@@ -12,7 +12,6 @@ import {
 	type Command,
 	type CostPart,
 	type HeartbeatRequest,
-	type HostUsage,
 	type Node,
 	type Placement,
 	type PlacementDecision,
@@ -21,7 +20,6 @@ import {
 } from "./gen/hotbed/v1/hotbed_pb.ts";
 import { ErrorCode, HotbedError, hotbedError } from "./errors.ts";
 import { parseBuildNumber } from "./gitops.ts";
-import { hostStarvationCost, mergeHostAdmission } from "./hostusage.ts";
 
 const MOVE_COST = 0.3;
 const COLD_COST = 0.5;
@@ -29,7 +27,6 @@ const FULL_COST = 1;
 const BROKEN_COST = 10;
 const PRESSURE_COST = 1;
 const HOLDING_COST = 1;
-const WAKE_COST = 1;
 const RECONNECTING_COST = 5;
 export const FULL_RAM_FRAC = 0.95; // mirrors internal/worker/engine.go fullAt
 export const RACE_COST_MARGIN = 0.35;
@@ -44,7 +41,6 @@ export interface NodeView extends NodeRow {
 	online: boolean;
 	/** Whether the node currently holds an open /ws/worker reverse-RPC tunnel (defaults true when omitted). */
 	tunnelConnected?: boolean;
-	wakeFailed: boolean;
 	bases: Base[];
 	workspaces: Workspace[];
 	commands: Command[];
@@ -56,7 +52,6 @@ export interface Candidate {
 	mine: string;
 	warm: boolean;
 	broken: boolean;
-	asleep: boolean;
 	tunnelConnected: boolean;
 	upgrading: number;
 	cpus: number;
@@ -67,7 +62,6 @@ export interface Candidate {
 	free: bigint;
 	pressure: number;
 	admission?: Admission;
-	hostUsage?: HostUsage;
 }
 
 function candidateHolds(c: Candidate, p?: Placement): boolean {
@@ -91,7 +85,6 @@ function candidateMemoryNeed(c: Candidate, p?: Placement): bigint {
 }
 
 export function candidateHasCapacity(c: Candidate, p?: Placement): boolean {
-	if (c.asleep) return true; // waking an asleep node brings fresh capacity
 	if (!c.tunnelConnected) return false;
 	if (candidateHolds(c, p)) return false;
 	if (c.parked > 0) return false;
@@ -136,10 +129,6 @@ export function candidateParts(c: Candidate, p?: Placement): CostPart[] {
 			`${c.parked} command(s) held beside a measurement`,
 		);
 	}
-	const hs = hostStarvationCost(c.cpuBusy, c.hostUsage);
-	if (hs.value > 0) {
-		add("host-cpu-starvation", hs.value, hs.detail);
-	}
 	const memLow = p?.memoryLowBytes ?? 0n;
 	const need = candidateMemoryNeed(c, p);
 	if (need > c.free || (c.ram > 0n && c.free <= 0n)) {
@@ -152,9 +141,7 @@ export function candidateParts(c: Candidate, p?: Placement): CostPart[] {
 					: `no memory headroom free now (${avail} of ${c.ram} bytes)`;
 		add("memory", FULL_COST, what);
 	}
-	if (c.asleep) {
-		add("asleep", WAKE_COST, "it is asleep: the run waits for it to boot");
-	} else if (!c.tunnelConnected) {
+	if (!c.tunnelConnected) {
 		add(
 			"tunnel-reconnecting",
 			RECONNECTING_COST,
@@ -178,14 +165,11 @@ export function candidateCost(c: Candidate, p?: Placement): number {
 }
 
 export function candidateUnfit(c: Candidate, p: Placement | undefined, hosts: string[]): string {
-	if ((!c.view.online && !c.asleep) || !c.view.hb) {
+	if (!c.view.online || !c.view.hb) {
 		if (c.view.node.storageError) {
 			return `${c.host} cannot open its storage: ${c.view.node.storageError}`;
 		}
 		return `${c.host} is offline`;
-	}
-	if (c.asleep && c.view.wakeFailed) {
-		return `${c.host} did not wake when last woken`;
 	}
 	if (c.upgrading !== 0) {
 		return `${c.host} is on build ${c.upgrading}, not yet the controller's`;
@@ -240,7 +224,6 @@ function fitsOnline(c: Candidate, p: Placement | undefined, hosts: string[]): bo
 		view: {
 			...c.view,
 			online: true,
-			wakeFailed: false,
 			hb: c.view.hb ?? create(HeartbeatRequestSchema, { resources: c.view.node.resources }),
 		},
 	};
@@ -257,10 +240,9 @@ export function buildCandidates(
 	const out: Candidate[] = [];
 	for (const nv of nvs) {
 		const res = nv.hb?.resources;
-		const asleep = nv.node.asleep;
 		const want = follows(res);
 		const on = parseBuildNumber(res?.version ?? "");
-		const upgrading = want !== 0 && on < want && !asleep ? on || -1 : 0;
+		const upgrading = want !== 0 && on < want ? on || -1 : 0;
 
 		let warm = false;
 		let newest: Base | undefined;
@@ -286,7 +268,6 @@ export function buildCandidates(
 		let admission: Admission | undefined;
 		let ram = 0n;
 		let free = 0n;
-		let hostUsage: HostUsage | undefined;
 
 		if (nv.hb) {
 			cpus = nv.hb.resources?.cpus ?? 0;
@@ -297,15 +278,6 @@ export function buildCandidates(
 			const used = nv.hb.usage?.memoryUsedBytes ?? 0n;
 			const reserved = nv.hb.reservedMemoryBytes;
 			free = ram - (used > reserved ? used : reserved);
-			if (asleep) {
-				cpuBusy = 0;
-				pressure = 0;
-				admission = undefined;
-				free = ram;
-			} else if (nv.node.hostUsage) {
-				hostUsage = nv.node.hostUsage;
-				admission = mergeHostAdmission(admission, nv.hb.usage, hostUsage, 0);
-			}
 		}
 
 		let queued = 0;
@@ -321,7 +293,6 @@ export function buildCandidates(
 			mine: mine.get(nv.node.id) ?? "",
 			warm,
 			broken,
-			asleep,
 			tunnelConnected: nv.tunnelConnected !== false,
 			upgrading,
 			cpus,
@@ -332,7 +303,6 @@ export function buildCandidates(
 			free,
 			pressure,
 			admission,
-			hostUsage,
 		});
 	}
 	return out;
@@ -429,8 +399,8 @@ function pickFromFit(
 		const primary = withCap[0];
 		let runnerUp: Candidate | undefined;
 		let raceImmediate = false;
-		if (!pinned && !primary.mine && !primary.asleep) {
-			runnerUp = withCap.slice(1).find((c) => !c.mine && !c.asleep && c.tunnelConnected);
+		if (!pinned && !primary.mine) {
+			runnerUp = withCap.slice(1).find((c) => !c.mine && c.tunnelConnected);
 			if (runnerUp) {
 				raceImmediate = candidateCost(runnerUp, p) - candidateCost(primary, p) <= RACE_COST_MARGIN;
 			}

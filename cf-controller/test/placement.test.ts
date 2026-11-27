@@ -28,7 +28,6 @@ function vmNode(overrides: Partial<Candidate> = {}): Candidate {
 		mine: "",
 		warm: true,
 		broken: false,
-		asleep: false,
 		tunnelConnected: true,
 		upgrading: 0,
 		cpus: 8,

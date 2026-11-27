@@ -129,7 +129,7 @@ import {
 } from "./freshens.ts";
 import { firstLine } from "./gitops.ts";
 import type { NodeRow } from "./placement.ts";
-import { isCommandLive } from "./standby.ts";
+import { isCommandLive } from "./wakeups.ts";
 import { mergeWorkerConfig, validateWorkerConfig } from "./worker-config.ts";
 
 export const KEEP_SAMPLES_MS = 25 * 3600_000;

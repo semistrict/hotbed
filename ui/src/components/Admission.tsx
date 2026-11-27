@@ -13,8 +13,6 @@ export const SIGNAL_LABEL: Record<string, string> = {
   "memory-pressure": "Memory pressure",
   "memory-reserved": "Memory reserved",
   "disk-free": "Disk free",
-  "host-cpu-starvation": "Host CPU starvation",
-  "host-memory-pressure": "Host memory pressure",
 };
 
 const fmt = (s: AdmissionSignal, v: number) => (s.unit === "bytes" ? bytes(v) : `${v.toFixed(0)}%`);
@@ -125,9 +123,7 @@ const PART_COLOR: Record<string, string> = {
   "cpu-busy": "var(--series-1)",
   queued: "var(--series-4)",
   "cpu-pressure": "var(--serious)",
-  "host-cpu-starvation": "var(--serious)",
   holding: "var(--critical)",
-  asleep: "var(--frost)",
   memory: "var(--frost)",
   move: "var(--faint)",
   cold: "var(--series-5)",

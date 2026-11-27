@@ -30,10 +30,9 @@ import type { BuildDistributor } from "./builds.ts";
 import type { CommandStoreClient } from "./command-do.ts";
 import { ErrorCode, codeOf, hotbedError } from "./errors.ts";
 import { canonicalRemote, projectNameFor } from "./gitops.ts";
-import { HostUsageState, mergeHostAdmission } from "./hostusage.ts";
 import type { NodeRow, NodeView } from "./placement.ts";
 import type { QuestionBridgeHub } from "./question-bridge.ts";
-import { ONLINE_WINDOW_MS, StandbyState, Wakeups, isCommandLive } from "./standby.ts";
+import { ONLINE_WINDOW_MS, Wakeups, isCommandLive } from "./wakeups.ts";
 import { ControllerStore, LOST_DETAIL, sessionEndedError, type WorkspaceRow } from "./store.ts";
 import type { WorkerTunnelHub } from "./tunnel.ts";
 
@@ -80,9 +79,14 @@ export class ControllerContext {
 	readonly tunnel: WorkerTunnelHub;
 	readonly questionBridge?: QuestionBridgeHub;
 	readonly builds: BuildDistributor;
-	readonly power = new StandbyState(() => this.now());
+	/** Woken, by hostname, whenever a node's heartbeat changes what it can serve. */
+	readonly nodeChanges = new Wakeups();
 	readonly capacityChanges = new Wakeups();
-	readonly hostUsages = new HostUsageState();
+	/**
+	 * Caps how long placement waits for capacity or an upgrade; 0 leaves the
+	 * defaults. Only tests set it (POST /__test/config wakeWaitMs).
+	 */
+	placementWaitCapMs = 0;
 	readonly sessionWakes = new Wakeups();
 	readonly boardWakes = new Wakeups();
 	boardCountsFn?: () => Map<
@@ -212,14 +216,6 @@ export class ControllerContext {
 		const nowMs = this.now();
 		n.online =
 			n.lastSeen !== undefined && nowMs - Number(n.lastSeen) <= ONLINE_WINDOW_MS && !n.storageError;
-		n.asleep = this.power.asleep(n, nowMs);
-		if (n.online && !n.asleep) {
-			const hu = this.hostUsages.get(n.hostname, nowMs);
-			if (hu) {
-				n.hostUsage = hu;
-				n.admission = mergeHostAdmission(n.admission, n.usage, hu, nowMs);
-			}
-		}
 		return n;
 	}
 
@@ -272,7 +268,7 @@ export class ControllerContext {
 
 	nodeServes(row: NodeRow): boolean {
 		const node = this.withOnline(row.node);
-		if (!node.online || node.asleep) return false;
+		if (!node.online) return false;
 		const want = this.follows(row.hb?.resources);
 		if (want === 0) return true;
 		const v = row.hb?.resources?.version ?? "";
@@ -289,7 +285,6 @@ export class ControllerContext {
 			for (const c of v.commands) if (c.sessionId) sessIds.push(c.sessionId);
 		}
 		const sessProj = this.store.sessionProjectsFor(sessIds);
-		const nowMs = this.now();
 
 		return rows.map((n) => {
 			const v = all.get(n.node.id) ?? { bases: [], workspaces: [], commands: [] };
@@ -314,7 +309,6 @@ export class ControllerContext {
 				node,
 				online: node.online,
 				tunnelConnected: this.tunnel.isConnected(n.node.id),
-				wakeFailed: this.power.wakeFailed(node, nowMs),
 				bases: v.bases,
 				workspaces: v.workspaces,
 				commands: v.commands,
@@ -718,7 +712,7 @@ export class ControllerContext {
 		const w = this.store.getWorkspace(id);
 		const row = this.store.getNode(w.node);
 		const node = this.withOnline(row.node);
-		if (node.online && !node.asleep && this.tunnel.isConnected(w.node)) {
+		if (node.online && this.tunnel.isConnected(w.node)) {
 			try {
 				await this.tunnel.callUnary(
 					w.node,
@@ -736,11 +730,9 @@ export class ControllerContext {
 				}
 			}
 		} else {
-			throw hotbedError(
-				ErrorCode.WorkerUnreachable,
-				`${row.node.hostname} is ${node.asleep ? "asleep" : "offline"}`,
-				{ retryable: true },
-			);
+			throw hotbedError(ErrorCode.WorkerUnreachable, `${row.node.hostname} is offline`, {
+				retryable: true,
+			});
 		}
 		this.store.releaseWorkspaceRow(id, this.now());
 	}
@@ -843,7 +835,6 @@ export class ControllerContext {
 
 	async reapIdle(): Promise<void> {
 		const nowMs = this.now();
-		this.hostUsages.prune(nowMs);
 		const idleMs = this.sessionIdleMs();
 		const graceMs = this.offlineGraceMs();
 		const cutoff = nowMs - idleMs;
@@ -854,7 +845,7 @@ export class ControllerContext {
 		for (const r of rows) {
 			const recent = r.node.lastSeen !== undefined && nowMs - Number(r.node.lastSeen) < graceMs;
 			const node = this.withOnline(r.node);
-			if (!node.online && !node.asleep && recent) offline.add(node.id);
+			if (!node.online && recent) offline.add(node.id);
 		}
 		const idleSec = Math.round(idleMs / 1000);
 		const hrs = Math.floor(idleSec / 3600);
