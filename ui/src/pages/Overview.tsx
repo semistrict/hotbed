@@ -10,6 +10,7 @@ import { EventFeed } from "../components/EventFeed";
 import { ClusterGcSection } from "../components/GcPanel";
 import { ClusterObjectStoreSection } from "../components/ObjectStorePanel";
 import { Card, Empty, StatTile } from "../components/Panel";
+import { Steady } from "../components/Steady";
 import { nodeName, useNodeColors, useSnapshot } from "../lib/data";
 import { bytes, compact, duration, durationParts, percent, speedup } from "../lib/format";
 import { clusterNow, compiled, rebuiltBuckets, savings, speedupBuckets, storage } from "../lib/stats";
@@ -42,43 +43,45 @@ function Overview({ s, colors }: { s: Snapshot; colors: Map<string, string> }) {
     <div className="grid grid-cols-12 gap-4">
       {/* The headline: what warm forks saved. */}
       <section className="rise col-span-12 min-w-0 overflow-hidden rounded-3xl border border-border bg-card/80 lg:col-span-7">
-        <div className="relative p-5 sm:p-7 lg:p-8">
-          <div className="pointer-events-none absolute -top-24 -left-16 size-80 rounded-full bg-primary/20 blur-3xl" />
-          <div className="eyebrow relative">compile time saved · last 24 hours</div>
-          <div className="relative mt-3 flex flex-wrap items-baseline gap-y-1 text-foreground">
-            {durationParts(day.saved).map(([n, u]) => (
-              <span key={u} className="flex items-baseline">
-                <span className="display text-[56px] leading-[0.88] font-semibold sm:text-[88px] xl:text-[116px]">{n}</span>
-                <span className="display mr-2.5 text-[28px] font-light text-primary italic sm:mr-4 sm:text-[42px] xl:text-[52px]">{u}</span>
-              </span>
-            ))}
-          </div>
-          <p className="relative mt-4 max-w-xl text-[13.5px] leading-relaxed text-muted-foreground sm:mt-5 sm:text-[14px]">
-            {day.builds === 0 ? (
-              "No warm-forked builds or tests in the last 24 hours yet."
-            ) : (
-              <>
-                <span className="num font-mono text-foreground">{compact(day.builds)}</span> builds and tests started from a warm, forked base and ran in{" "}
-                <span className="num font-mono text-foreground">{duration(day.spent)}</span>. From nothing they would have taken{" "}
-                <span className="num font-mono text-foreground">{duration(day.cold)}</span>
-                {day.spent > 0 && (
-                  <>
-                    {" "}— <span className="display text-[18px] font-semibold text-primary italic">{speedup(day.cold, day.spent)} faster</span>
-                  </>
-                )}
-                .
-              </>
-            )}
-          </p>
-          <div className="relative mt-6">
-            <Sparkline values={s.hourly.map((h) => h.savedSeconds)} height={46} />
-            <div className="mt-1 flex justify-between font-mono text-[9.5px] text-faint">
-              <span>24h ago</span>
-              <span>saved per hour</span>
-              <span>now</span>
+        <Steady>
+          <div className="relative p-5 sm:p-7 lg:p-8">
+            <div className="pointer-events-none absolute -top-24 -left-16 size-80 rounded-full bg-primary/20 blur-3xl" />
+            <div className="eyebrow relative">compile time saved · last 24 hours</div>
+            <div className="relative mt-3 flex flex-wrap items-baseline gap-y-1 text-foreground">
+              {durationParts(day.saved).map(([n, u]) => (
+                <span key={u} className="flex items-baseline">
+                  <span className="display text-[56px] leading-[0.88] font-semibold sm:text-[88px] xl:text-[116px]">{n}</span>
+                  <span className="display mr-2.5 text-[28px] font-light text-primary italic sm:mr-4 sm:text-[42px] xl:text-[52px]">{u}</span>
+                </span>
+              ))}
+            </div>
+            <p className="relative mt-4 max-w-xl text-[13.5px] leading-relaxed text-muted-foreground sm:mt-5 sm:text-[14px]">
+              {day.builds === 0 ? (
+                "No warm-forked builds or tests in the last 24 hours yet."
+              ) : (
+                <>
+                  <span className="num font-mono text-foreground">{compact(day.builds)}</span> builds and tests started from a warm, forked base and ran in{" "}
+                  <span className="num font-mono text-foreground">{duration(day.spent)}</span>. From nothing they would have taken{" "}
+                  <span className="num font-mono text-foreground">{duration(day.cold)}</span>
+                  {day.spent > 0 && (
+                    <>
+                      {" "}— <span className="display text-[18px] font-semibold text-primary italic">{speedup(day.cold, day.spent)} faster</span>
+                    </>
+                  )}
+                  .
+                </>
+              )}
+            </p>
+            <div className="relative mt-6">
+              <Sparkline values={s.hourly.map((h) => h.savedSeconds)} height={46} />
+              <div className="mt-1 flex justify-between font-mono text-[9.5px] text-faint">
+                <span>24h ago</span>
+                <span>saved per hour</span>
+                <span>now</span>
+              </div>
             </div>
           </div>
-        </div>
+        </Steady>
       </section>
 
       <Card className="col-span-12 lg:col-span-5" title="Latest builds" sub="Forked from a warm base, against the same command from nothing" delay={60} right={<Link to="/commands" className="font-mono text-[11px] text-muted-foreground hover:text-primary">commands →</Link>}>

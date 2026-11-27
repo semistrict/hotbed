@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { hhmm, hhmmss } from "../../lib/format";
-import { niceTicks, useWidth } from "./useWidth";
+import { ChartBox } from "./ChartBox";
+import { niceTicks } from "./ticks";
 
 export interface LinePoint {
   t: number;
@@ -161,9 +162,36 @@ export function resolveHoverPoints(series: readonly LineSeries[], targetT: numbe
 }
 
 /** Lines over time with a crosshair that reads every series at the pointer's time. */
-export function LineChart({ series, width: fixedWidth, height = 180, yMax, format, thresholds = [], bands = [], legend = true }: Props) {
-  const [ref, measuredWidth] = useWidth<HTMLDivElement>();
-  const width = fixedWidth ?? measuredWidth;
+export function LineChart({ width, height = 180, legend = true, ...plot }: Props) {
+  const { series } = plot;
+  return (
+    <div>
+      {legend && series.length > 1 && (
+        <ul className="mb-2 flex flex-wrap gap-x-3.5 gap-y-1 text-[11px] text-muted-foreground">
+          {series.map((s) => (
+            <li key={s.id} className="flex items-center gap-1.5">
+              <span className="inline-block h-[2px] w-3 rounded-full" style={{ background: s.color }} />
+              {s.label}
+            </li>
+          ))}
+        </ul>
+      )}
+      <ChartBox height={height} width={width}>
+        {(w) => <LinePlot {...plot} width={w} height={height} />}
+      </ChartBox>
+    </div>
+  );
+}
+
+function LinePlot({
+  series,
+  width,
+  height,
+  yMax,
+  format,
+  thresholds = [],
+  bands = [],
+}: Omit<Props, "width" | "height" | "legend"> & { width: number; height: number }) {
   const [hoverT, setHoverT] = useState<number | null>(null);
   const all = series.flatMap((s) => s.points);
   const times = Array.from(new Set(all.map((p) => p.t))).sort((a, b) => a - b);
@@ -202,101 +230,89 @@ export function LineChart({ series, width: fixedWidth, height = 180, yMax, forma
   };
 
   return (
-    <div ref={ref} className="relative">
-      {legend && series.length > 1 && (
-        <ul className="mb-2 flex flex-wrap gap-x-3.5 gap-y-1 text-[11px] text-muted-foreground">
-          {series.map((s) => (
-            <li key={s.id} className="flex items-center gap-1.5">
-              <span className="inline-block h-[2px] w-3 rounded-full" style={{ background: s.color }} />
-              {s.label}
-            </li>
-          ))}
-        </ul>
-      )}
-      {width > 0 && (
-        <svg width={width} height={height} onPointerMove={onMove} onPointerLeave={() => setHoverT(null)} className="block touch-none overflow-visible">
-          {ticks.map((v) => (
-            <g key={v}>
-              <line x1={padLeft} x2={padLeft + w} y1={y(v)} y2={y(v)} stroke="var(--grid)" strokeWidth={1} />
-              <text x={padLeft - 8} y={y(v)} dy="0.32em" textAnchor="end" className="num fill-faint font-mono text-[9.5px]">
-                {format(v)}
-              </text>
-            </g>
-          ))}
-          {xTicks.map((t, i) => (
-            <text
-              key={i}
-              x={x(t)}
-              y={height - 6}
-              textAnchor={xTicks.length === 1 ? "start" : i === 0 ? "start" : i === xTicks.length - 1 ? "end" : "middle"}
-              className="num fill-faint font-mono text-[9.5px]"
-            >
-              {hhmm(t)}
+    <>
+      <svg width={width} height={height} onPointerMove={onMove} onPointerLeave={() => setHoverT(null)} className="block touch-none overflow-visible">
+        {ticks.map((v) => (
+          <g key={v}>
+            <line x1={padLeft} x2={padLeft + w} y1={y(v)} y2={y(v)} stroke="var(--grid)" strokeWidth={1} />
+            <text x={padLeft - 8} y={y(v)} dy="0.32em" textAnchor="end" className="num fill-faint font-mono text-[9.5px]">
+              {format(v)}
             </text>
-          ))}
-          {bands.map((b) => (
-            <rect key={b.from} x={x(b.from)} y={PAD.top} width={Math.max(1, x(b.to) - x(b.from))} height={h} fill="var(--serious)" opacity={0.1}>
-              <title>{b.label}</title>
-            </rect>
-          ))}
-          {thresholds.map((th, i) => (
-            <g key={th.label}>
-              <line
-                x1={padLeft}
-                x2={padLeft + w}
-                y1={y(th.v)}
-                y2={y(th.v)}
-                stroke="var(--warning)"
-                strokeOpacity={0.7}
-                strokeWidth={1}
-                strokeDasharray={i > 0 ? "4 3" : undefined}
-              />
-              <text x={padLeft + w} y={y(th.v) - 5} textAnchor="end" className="fill-muted-foreground font-mono text-[9.5px]">
-                {th.label}
-              </text>
-            </g>
-          ))}
-          {series.map((s) => {
-            const d = buildLinePath(s.points, x, y);
-            const last = s.points[s.points.length - 1];
-            const isolated = splitLineRuns(s.points)
-              .filter((run) => run.length === 1)
-              .map((run) => run[0]!)
-              .filter((p) => !(last && last.v !== null && last.t === p.t));
-            return (
-              <g key={s.id}>
-                {d && (
-                  <path
-                    d={d}
-                    fill="none"
-                    stroke={s.color}
-                    strokeWidth={2}
-                    strokeLinejoin="round"
-                    strokeLinecap="round"
-                  />
-                )}
-                {isolated.map((p) => (
-                  <circle key={p.t} cx={x(p.t)} cy={y(p.v)} r={2.5} fill={s.color} />
-                ))}
-              </g>
-            );
-          })}
-          {series.map((s) => {
-            const last = s.points[s.points.length - 1];
-            return last && last.v !== null ? (
-              <circle key={s.id} cx={x(last.t)} cy={y(last.v)} r={4} fill={s.color} stroke="var(--card)" strokeWidth={2} />
-            ) : null;
-          })}
-          {activeHoverT !== null && (
-            <g pointerEvents="none">
-              <line x1={x(activeHoverT)} x2={x(activeHoverT)} y1={PAD.top} y2={PAD.top + h} stroke="var(--axis)" strokeWidth={1} />
-              {hovered.map(({ series: s, point: p }) => (
-                <circle key={s.id} cx={x(p.t)} cy={y(p.v)} r={4} fill={s.color} stroke="var(--card)" strokeWidth={2} />
+          </g>
+        ))}
+        {xTicks.map((t, i) => (
+          <text
+            key={i}
+            x={x(t)}
+            y={height - 6}
+            textAnchor={xTicks.length === 1 ? "start" : i === 0 ? "start" : i === xTicks.length - 1 ? "end" : "middle"}
+            className="num fill-faint font-mono text-[9.5px]"
+          >
+            {hhmm(t)}
+          </text>
+        ))}
+        {bands.map((b) => (
+          <rect key={b.from} x={x(b.from)} y={PAD.top} width={Math.max(1, x(b.to) - x(b.from))} height={h} fill="var(--serious)" opacity={0.1}>
+            <title>{b.label}</title>
+          </rect>
+        ))}
+        {thresholds.map((th, i) => (
+          <g key={th.label}>
+            <line
+              x1={padLeft}
+              x2={padLeft + w}
+              y1={y(th.v)}
+              y2={y(th.v)}
+              stroke="var(--warning)"
+              strokeOpacity={0.7}
+              strokeWidth={1}
+              strokeDasharray={i > 0 ? "4 3" : undefined}
+            />
+            <text x={padLeft + w} y={y(th.v) - 5} textAnchor="end" className="fill-muted-foreground font-mono text-[9.5px]">
+              {th.label}
+            </text>
+          </g>
+        ))}
+        {series.map((s) => {
+          const d = buildLinePath(s.points, x, y);
+          const last = s.points[s.points.length - 1];
+          const isolated = splitLineRuns(s.points)
+            .filter((run) => run.length === 1)
+            .map((run) => run[0]!)
+            .filter((p) => !(last && last.v !== null && last.t === p.t));
+          return (
+            <g key={s.id}>
+              {d && (
+                <path
+                  d={d}
+                  fill="none"
+                  stroke={s.color}
+                  strokeWidth={2}
+                  strokeLinejoin="round"
+                  strokeLinecap="round"
+                />
+              )}
+              {isolated.map((p) => (
+                <circle key={p.t} cx={x(p.t)} cy={y(p.v)} r={2.5} fill={s.color} />
               ))}
             </g>
-          )}
-        </svg>
-      )}
+          );
+        })}
+        {series.map((s) => {
+          const last = s.points[s.points.length - 1];
+          return last && last.v !== null ? (
+            <circle key={s.id} cx={x(last.t)} cy={y(last.v)} r={4} fill={s.color} stroke="var(--card)" strokeWidth={2} />
+          ) : null;
+        })}
+        {activeHoverT !== null && (
+          <g pointerEvents="none">
+            <line x1={x(activeHoverT)} x2={x(activeHoverT)} y1={PAD.top} y2={PAD.top + h} stroke="var(--axis)" strokeWidth={1} />
+            {hovered.map(({ series: s, point: p }) => (
+              <circle key={s.id} cx={x(p.t)} cy={y(p.v)} r={4} fill={s.color} stroke="var(--card)" strokeWidth={2} />
+            ))}
+          </g>
+        )}
+      </svg>
       {activeHoverT !== null && hovered.length > 0 && (
         <Tooltip x={x(activeHoverT)} width={width} title={hhmmss(activeHoverT)}>
           {hovered.map(({ series: s, point: p }) => (
@@ -308,7 +324,7 @@ export function LineChart({ series, width: fixedWidth, height = 180, yMax, forma
           ))}
         </Tooltip>
       )}
-    </div>
+    </>
   );
 }
 

@@ -1,6 +1,7 @@
 import { createRootRoute, createRoute, createRouter, redirect } from "@tanstack/react-router";
 import type { CommandStateSlug } from "./api";
 import { Shell } from "./components/Shell";
+import { keepScrollWithinPage } from "./lib/scroll";
 import { CommandPage } from "./pages/Command";
 import { CommandsPage } from "./pages/Commands";
 import { DaemonLogsPage, type DaemonLogsSearch } from "./pages/DaemonLogs";
@@ -182,6 +183,7 @@ const history = createRoute({
 const routeTree = root.addChildren([projects, sessions, session, questions, questionDetail, issues, issueDetail, memories, memoryDetail, reviews, review, schedules, overview, organization, settings, nodes, node, daemonLogs, workspaces, workspace, commands, command, history]);
 
 export const router = createRouter({ routeTree, defaultPreload: "intent", scrollRestoration: true });
+keepScrollWithinPage(router);
 
 declare module "@tanstack/react-router" {
   interface Register {

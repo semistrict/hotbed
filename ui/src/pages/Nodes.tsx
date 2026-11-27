@@ -12,6 +12,7 @@ import { EventFeed } from "../components/EventFeed";
 import { nodeCacheHit } from "../components/ObjectStorePanel";
 import { Card } from "../components/Panel";
 import { ArchBadge, BuildingBadge, OnlineBadge, StateBadge } from "../components/StateBadges";
+import { Steady } from "../components/Steady";
 import { isReadOnlyViewer, useAuthMe } from "../lib/auth";
 import { useNodeColors, useSnapshot } from "../lib/data";
 import { ago, bytes, compact, percent } from "../lib/format";
@@ -125,141 +126,143 @@ export function NodeCard({ n, s, color, now, delay, onDelete }: { n: Node; s: Sn
       className={`rise group relative block min-w-0 rounded-2xl border border-border bg-card/80 p-4 transition-[color,border-color,opacity] hover:border-border-strong sm:p-5 ${n.online ? "" : "opacity-60 hover:opacity-100"}`}
       style={{ animationDelay: `${delay}ms` }}
     >
-      <div className="flex flex-wrap items-start gap-2.5 sm:flex-nowrap sm:gap-3">
-        <span className="mt-2 inline-block h-[3px] w-4 shrink-0 rounded-full" style={{ background: color }} />
-        <div className="min-w-0 flex-1">
-          <Link
-            to="/nodes/$hostname"
-            params={{ hostname: n.hostname }}
-            className="display block truncate text-[22px] leading-none font-semibold group-hover:text-primary after:absolute after:inset-0 sm:text-[26px]"
-          >
-            {n.hostname}
-          </Link>
-          <div className="mt-1.5 flex items-center gap-2 text-[11.5px] text-muted-foreground">
-            <ArchBadge arch={res?.arch ?? ""} />
-            <span className="truncate">{res?.machine ?? ""}</span>
-          </div>
-        </div>
-        <div className="ml-auto flex shrink-0 flex-col items-end gap-1 text-right">
-          <OnlineBadge online={n.online} asleep={n.asleep} storageError={n.storageError} />
-          {n.online && <AdmissionBadge a={admission} now={now} />}
-          <div className="mt-1 font-mono text-[10px] text-faint">
-            {n.online ? `${res?.cpus ?? 0} cpu · ${bytes(memBytes)}` : `seen ${ago(n.lastSeen ?? n.joinedAt, now)}`}
-          </div>
-        </div>
-      </div>
-      {!n.online && n.storageError && <div className="mt-3 font-mono text-[11px] break-words text-serious-ink">{n.storageError}</div>}
-
-      {n.online ? (
-        <>
-          <div className="mt-5 grid grid-cols-2 gap-5">
-            <div className="flex flex-col justify-between">
-              <div>
-                <div className="flex items-baseline justify-between">
-                  <span className="eyebrow">{host ? "guest cpu" : "cpu"}</span>
-                  <span className="num font-mono text-[13px] text-foreground">{percent(usage?.cpuBusy ?? 0)}</span>
-                </div>
-                {host && (
-                  <div className={`mt-0.5 flex items-baseline justify-between font-mono text-[10.5px] ${hostStarved ? "text-serious-ink" : "text-muted-foreground"}`}>
-                    <span>VM {percent(host.vmCpuBusy)}</span>
-                    <span>host {percent(host.hostCpuBusy)}</span>
-                  </div>
-                )}
-              </div>
-              <div className="mt-2">
-                <Sparkline values={series.map((p) => p.cpuBusy)} max={1} color={color} height={34} />
-              </div>
-            </div>
-            <div className="flex flex-col justify-between">
-              <div className="flex items-baseline justify-between">
-                <span className="eyebrow">memory</span>
-                <span className="num font-mono text-[13px] text-foreground">{percent(mem)}</span>
-              </div>
-              <div className="mt-2">
-                <Sparkline values={series.map((p) => p.memoryUsed)} max={1} color={color} height={34} />
-              </div>
-            </div>
-          </div>
-          <div className="mt-4 space-y-2.5">
-            {host && (
-              <Row label="host" value={`VM ${percent(host.vmCpuBusy)} · ${formatHostUsageFoot(host)}`}>
-                <Meter value={host.hostCpuBusy} warn={0.7} danger={0.85} />
-              </Row>
-            )}
-            <Row label="RAM" value={`${bytes(memUsed)} · ${bytes(n.reservedMemoryBytes)} guaranteed`}>
-              <Meter value={mem} warn={0.8} danger={0.93} marker={memBytes > 0 ? Number(n.reservedMemoryBytes) / memBytes : 0} />
-            </Row>
-            <Row label="swap" value={swapUsed > 0 ? `${bytes(swapUsed)} parked` : "none"}>
-              <Meter value={swapBytes > 0 ? swapUsed / swapBytes : 0} warn={0.6} danger={0.85} />
-            </Row>
-            <Row label="PSI cpu" value={`${(usage?.cpuPressure ?? 0).toFixed(1)}% · holds at 60%`}>
-              <Meter value={(usage?.cpuPressure ?? 0) / 100} warn={0.3} danger={0.6} />
-            </Row>
-            <Row label="PSI mem" value={`${(usage?.memoryPressure ?? 0).toFixed(1)}%`}>
-              <Meter value={(usage?.memoryPressure ?? 0) / 50} warn={0.44} danger={0.7} />
-            </Row>
-            {n.objectStore ? (
-              <NodeCladefsRows os={n.objectStore} />
-            ) : (
-              <div>
-                <div className="mb-1.5 flex justify-between text-[10.5px] text-muted-foreground">
-                  <span className="eyebrow">{n.storage}</span>
-                  <span className="font-mono">
-                    {bytes(disk?.freeBytes ?? 0n)} free of {bytes(n.diskBytes)}
-                  </span>
-                </div>
-                <SegmentedBar
-                  legend={false}
-                  format={bytes}
-                  parts={[
-                    { id: "bases", label: "warm bases", value: Number(disk?.basesBytes ?? 0n), color: "var(--series-1)" },
-                    { id: "forks", label: "fork-owned", value: Number(disk?.forksExclusiveBytes ?? 0n), color: "var(--series-2)" },
-                    { id: "other", label: "other", value: Number(disk?.otherBytes ?? 0n), color: "var(--faint)" },
-                    { id: "free", label: "free", value: Number(disk?.freeBytes ?? 0n), color: "var(--muted)" },
-                  ]}
-                />
-              </div>
-            )}
-          </div>
-          <div className="mt-4 flex flex-wrap items-center gap-x-3 gap-y-1.5 border-t border-border pt-3 font-mono text-[10.5px] text-muted-foreground">
-            <span>
-              <span className="text-foreground">{bases}</span> bases
-            </span>
-            <span>
-              <span className="text-foreground">{ws}</span> workspaces
-            </span>
-            {n.daemonLogs && (n.daemonLogs.errors24h > 0 || n.daemonLogs.warns24h > 0) && (
-              <span
-                className={n.daemonLogs.errors24h > 0 ? "text-critical" : "text-warning-ink"}
-                title={`${n.daemonLogs.errors24h} errors, ${n.daemonLogs.warns24h} warnings in 24h`}
-              >
-                {n.daemonLogs.errors24h > 0 ? `${n.daemonLogs.errors24h} err` : `${n.daemonLogs.warns24h} warn`}
-              </span>
-            )}
-            <span className="ml-auto flex flex-wrap gap-1">
-              {pills.slice(0, 3)}
-              {pills.length > 3 && <span className="text-faint">+{pills.length - 3}</span>}
-            </span>
-          </div>
-        </>
-      ) : (
-        <div className="mt-6 flex flex-wrap items-center justify-between gap-3 rounded-lg border border-dashed border-border-strong p-4 text-[12px] text-muted-foreground">
-          <span>Not reporting. Its bases stay on its disk; workspaces go to other nodes until it is back.</span>
-          {onDelete && (
-            <Button
-              type="button"
-              variant="outline"
-              size="xs"
-              onClick={() => onDelete(n)}
-              aria-label={`Delete ${n.hostname}`}
-              className="relative z-10 gap-1 font-mono text-[10.5px] text-muted-foreground hover:border-critical/60 hover:text-critical"
+      <Steady>
+        <div className="flex flex-wrap items-start gap-2.5 sm:flex-nowrap sm:gap-3">
+          <span className="mt-2 inline-block h-[3px] w-4 shrink-0 rounded-full" style={{ background: color }} />
+          <div className="min-w-0 flex-1">
+            <Link
+              to="/nodes/$hostname"
+              params={{ hostname: n.hostname }}
+              className="display block truncate text-[22px] leading-none font-semibold group-hover:text-primary after:absolute after:inset-0 sm:text-[26px]"
             >
-              <Trash2 className="size-3" />
-              Delete
-            </Button>
-          )}
+              {n.hostname}
+            </Link>
+            <div className="mt-1.5 flex items-center gap-2 text-[11.5px] text-muted-foreground">
+              <ArchBadge arch={res?.arch ?? ""} />
+              <span className="truncate">{res?.machine ?? ""}</span>
+            </div>
+          </div>
+          <div className="ml-auto flex shrink-0 flex-col items-end gap-1 text-right">
+            <OnlineBadge online={n.online} asleep={n.asleep} storageError={n.storageError} />
+            {n.online && <AdmissionBadge a={admission} now={now} />}
+            <div className="mt-1 font-mono text-[10px] text-faint">
+              {n.online ? `${res?.cpus ?? 0} cpu · ${bytes(memBytes)}` : `seen ${ago(n.lastSeen ?? n.joinedAt, now)}`}
+            </div>
+          </div>
         </div>
-      )}
+        {!n.online && n.storageError && <div className="mt-3 font-mono text-[11px] break-words text-serious-ink">{n.storageError}</div>}
+
+        {n.online ? (
+          <>
+            <div className="mt-5 grid grid-cols-2 gap-5">
+              <div className="flex flex-col justify-between">
+                <div>
+                  <div className="flex items-baseline justify-between">
+                    <span className="eyebrow">{host ? "guest cpu" : "cpu"}</span>
+                    <span className="num font-mono text-[13px] text-foreground">{percent(usage?.cpuBusy ?? 0)}</span>
+                  </div>
+                  {host && (
+                    <div className={`mt-0.5 flex items-baseline justify-between font-mono text-[10.5px] ${hostStarved ? "text-serious-ink" : "text-muted-foreground"}`}>
+                      <span>VM {percent(host.vmCpuBusy)}</span>
+                      <span>host {percent(host.hostCpuBusy)}</span>
+                    </div>
+                  )}
+                </div>
+                <div className="mt-2">
+                  <Sparkline values={series.map((p) => p.cpuBusy)} max={1} color={color} height={34} />
+                </div>
+              </div>
+              <div className="flex flex-col justify-between">
+                <div className="flex items-baseline justify-between">
+                  <span className="eyebrow">memory</span>
+                  <span className="num font-mono text-[13px] text-foreground">{percent(mem)}</span>
+                </div>
+                <div className="mt-2">
+                  <Sparkline values={series.map((p) => p.memoryUsed)} max={1} color={color} height={34} />
+                </div>
+              </div>
+            </div>
+            <div className="mt-4 space-y-2.5">
+              {host && (
+                <Row label="host" value={`VM ${percent(host.vmCpuBusy)} · ${formatHostUsageFoot(host)}`}>
+                  <Meter value={host.hostCpuBusy} warn={0.7} danger={0.85} />
+                </Row>
+              )}
+              <Row label="RAM" value={`${bytes(memUsed)} · ${bytes(n.reservedMemoryBytes)} guaranteed`}>
+                <Meter value={mem} warn={0.8} danger={0.93} marker={memBytes > 0 ? Number(n.reservedMemoryBytes) / memBytes : 0} />
+              </Row>
+              <Row label="swap" value={swapUsed > 0 ? `${bytes(swapUsed)} parked` : "none"}>
+                <Meter value={swapBytes > 0 ? swapUsed / swapBytes : 0} warn={0.6} danger={0.85} />
+              </Row>
+              <Row label="PSI cpu" value={`${(usage?.cpuPressure ?? 0).toFixed(1)}% · holds at 60%`}>
+                <Meter value={(usage?.cpuPressure ?? 0) / 100} warn={0.3} danger={0.6} />
+              </Row>
+              <Row label="PSI mem" value={`${(usage?.memoryPressure ?? 0).toFixed(1)}%`}>
+                <Meter value={(usage?.memoryPressure ?? 0) / 50} warn={0.44} danger={0.7} />
+              </Row>
+              {n.objectStore ? (
+                <NodeCladefsRows os={n.objectStore} />
+              ) : (
+                <div>
+                  <div className="mb-1.5 flex justify-between text-[10.5px] text-muted-foreground">
+                    <span className="eyebrow">{n.storage}</span>
+                    <span className="font-mono">
+                      {bytes(disk?.freeBytes ?? 0n)} free of {bytes(n.diskBytes)}
+                    </span>
+                  </div>
+                  <SegmentedBar
+                    legend={false}
+                    format={bytes}
+                    parts={[
+                      { id: "bases", label: "warm bases", value: Number(disk?.basesBytes ?? 0n), color: "var(--series-1)" },
+                      { id: "forks", label: "fork-owned", value: Number(disk?.forksExclusiveBytes ?? 0n), color: "var(--series-2)" },
+                      { id: "other", label: "other", value: Number(disk?.otherBytes ?? 0n), color: "var(--faint)" },
+                      { id: "free", label: "free", value: Number(disk?.freeBytes ?? 0n), color: "var(--muted)" },
+                    ]}
+                  />
+                </div>
+              )}
+            </div>
+            <div className="mt-4 flex flex-wrap items-center gap-x-3 gap-y-1.5 border-t border-border pt-3 font-mono text-[10.5px] text-muted-foreground">
+              <span>
+                <span className="text-foreground">{bases}</span> bases
+              </span>
+              <span>
+                <span className="text-foreground">{ws}</span> workspaces
+              </span>
+              {n.daemonLogs && (n.daemonLogs.errors24h > 0 || n.daemonLogs.warns24h > 0) && (
+                <span
+                  className={n.daemonLogs.errors24h > 0 ? "text-critical" : "text-warning-ink"}
+                  title={`${n.daemonLogs.errors24h} errors, ${n.daemonLogs.warns24h} warnings in 24h`}
+                >
+                  {n.daemonLogs.errors24h > 0 ? `${n.daemonLogs.errors24h} err` : `${n.daemonLogs.warns24h} warn`}
+                </span>
+              )}
+              <span className="ml-auto flex flex-wrap gap-1">
+                {pills.slice(0, 3)}
+                {pills.length > 3 && <span className="text-faint">+{pills.length - 3}</span>}
+              </span>
+            </div>
+          </>
+        ) : (
+          <div className="mt-6 flex flex-wrap items-center justify-between gap-3 rounded-lg border border-dashed border-border-strong p-4 text-[12px] text-muted-foreground">
+            <span>Not reporting. Its bases stay on its disk; workspaces go to other nodes until it is back.</span>
+            {onDelete && (
+              <Button
+                type="button"
+                variant="outline"
+                size="xs"
+                onClick={() => onDelete(n)}
+                aria-label={`Delete ${n.hostname}`}
+                className="relative z-10 gap-1 font-mono text-[10.5px] text-muted-foreground hover:border-critical/60 hover:text-critical"
+              >
+                <Trash2 className="size-3" />
+                Delete
+              </Button>
+            )}
+          </div>
+        )}
+      </Steady>
     </div>
   );
 }

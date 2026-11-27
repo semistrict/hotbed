@@ -213,7 +213,7 @@ function FileBrowser({ workspaceId, selected }: { workspaceId: string; selected?
     <div className="grid gap-4 lg:grid-cols-[280px_minmax(0,1fr)]">
       <ul className="max-h-[220px] overflow-y-auto rounded-lg border border-border bg-background/40 p-2 font-mono text-[11px] lg:max-h-[480px]">
         {files.data.map((f) => (
-          <TreeRow key={f.path} f={f} active={f.path === path} onPick={() => navigate({ to: "/workspaces/$id", params: { id: workspaceId }, search: { file: f.path }, replace: true, resetScroll: false })} />
+          <TreeRow key={f.path} f={f} active={f.path === path} onPick={() => navigate({ to: "/workspaces/$id", params: { id: workspaceId }, search: { file: f.path }, replace: true })} />
         ))}
       </ul>
       <div className="min-w-0 overflow-hidden rounded-lg border border-border bg-background/40">

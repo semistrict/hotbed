@@ -228,7 +228,6 @@ function Chip({ active, search, children }: { active: boolean; search: CommandsS
     <Link
       to="/commands"
       search={search}
-      resetScroll={false}
       className={`rounded-full border px-3 py-1 font-mono text-[11px] ${active ? "border-primary bg-ember-wash text-foreground" : "border-border text-muted-foreground hover:border-border-strong"}`}
     >
       {children}

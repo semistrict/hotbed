@@ -3,6 +3,7 @@ import { RouterProvider } from "@tanstack/react-router";
 import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 import { TooltipProvider } from "@/components/ui/tooltip";
+import { watchAnswers } from "./lib/asks";
 import { ProjectProvider } from "./lib/project";
 import { router } from "./router";
 import "./styles.css";
@@ -10,6 +11,7 @@ import "./styles.css";
 const queryClient = new QueryClient({
   defaultOptions: { queries: { staleTime: 500, retry: 2 } },
 });
+watchAnswers(queryClient);
 
 const el = document.getElementById("root");
 if (!el) throw new Error("index.html has no #root");
