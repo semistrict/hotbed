@@ -37,7 +37,8 @@ type CommandSpec struct {
 	// VM is the size of the VM it runs in, on a runtime that boots one for
 	// it; zero fields for the node's defaults.
 	VM unit.VMSize
-	// TTY runs it in a terminal; TTYInput its input too (unit.Spec).
+	// TTY runs it with a terminal for its output, what it writes going to
+	// LogPath; TTYInput for its input too, its controlling terminal.
 	TTY, TTYInput bool
 }
 

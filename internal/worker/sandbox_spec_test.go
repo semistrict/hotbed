@@ -34,7 +34,7 @@ func TestCommandsRunChrootedWithPerfmonAndTraceFS(t *testing.T) {
 	spec := func(bench bool) unit.Spec {
 		e.mu.Lock()
 		defer e.mu.Unlock()
-		s, err := e.spec(&command{rec: &pb.CommandRecord{Volume: "v", Dir: "/work", Command: &pb.Command{Id: "c-1", Args: []string{"true"}, Bench: bench, Limits: &pb.CommandLimits{}}}})
+		s, err := e.unitSpec(&command{rec: &pb.CommandRecord{Volume: "v", Dir: "/work", Command: &pb.Command{Id: "c-1", Args: []string{"true"}, Bench: bench, Limits: &pb.CommandLimits{}}}})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -140,7 +140,7 @@ func TestCommandsAndShellsGetRuntimeDirAndContainersConf(t *testing.T) {
 	}
 
 	e.mu.Lock()
-	cmdSpec, err := e.spec(&command{rec: &pb.CommandRecord{
+	cmdSpec, err := e.unitSpec(&command{rec: &pb.CommandRecord{
 		Volume: wsVol, Dir: "/work", Env: []string{"XDG_RUNTIME_DIR=/custom/run"},
 		Command: &pb.Command{Id: "cmd-1", Args: []string{"podman", "build", "."}, Limits: &pb.CommandLimits{}},
 	}})

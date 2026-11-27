@@ -69,7 +69,9 @@ const (
 	keepProfiles = 30 * 24 * time.Hour
 )
 
-// Units starts and controls commands; Systemd is the real one.
+// Units starts and controls commands on the host as systemd units (and the
+// units the worker's VMs run in); Systemd is the real one. unitExecutor runs
+// commands through it.
 type Units interface {
 	Start(ctx context.Context, s unit.Spec) error
 	Status(ctx context.Context, name string) (unit.State, error)
@@ -144,7 +146,9 @@ type EngineConfig struct {
 	Inspector inspect.Inspector
 	Profiler  profiler.Profiler
 	Store     storage.Store
-	Units     Units
+	// Units runs commands on the host; nil on a worker that runs every
+	// command in a VM (macOS), whose host runs none.
+	Units Units
 	// Runtime, when non-nil, executes workspace commands, syncs, interactive
 	// shells, file queries, and --port forwarding through a WorkspaceRuntime
 	// (e.g. Firecracker microVM via hotbed-guestd) instead of host chroot.
@@ -208,8 +212,11 @@ type Engine struct {
 	home           string
 	gitAuth        gitAuthHelpers
 	containersConf string
-	rtUnits        *runtimeUnits
-	freshenBudget  *freshenBudget
+	// host runs commands on the host; guest, when the node has a
+	// WorkspaceRuntime, runs them in VMs (executorFor).
+	host          unitExecutor
+	guest         *guestExecutor
+	freshenBudget *freshenBudget
 
 	mu              sync.Mutex
 	upgradeMu       sync.Mutex
@@ -563,6 +570,7 @@ func NewEngine(ctx context.Context, cfg EngineConfig) (*Engine, error) {
 	if cfg.Bench != nil {
 		e.resources.BenchCpus = cfg.Bench.CPUs().String()
 	}
+	e.host = unitExecutor{units: cfg.Units, wallClock: cfg.Now == nil}
 	if e.cfg.Runtime != nil {
 		var uid, gid int
 		if cred != nil {
@@ -571,21 +579,20 @@ func NewEngine(ctx context.Context, cfg EngineConfig) (*Engine, error) {
 			sp := cfg.BaseImage.Spec.Normalized()
 			uid, gid = sp.UID, sp.GID
 		}
-		e.rtUnits = newRuntimeUnits(e.bgCtx, cfg.Units, e.cfg.Runtime, e.usesRuntime, uid, gid)
-		e.rtUnits.isVMQuiescent = e.isVMQuiescent
-		e.cfg.Units = e.rtUnits
+		e.guest = newGuestExecutor(e.bgCtx, e.cfg.Runtime, cfg.Units, uid, gid)
+		e.guest.isVMQuiescent = e.isVMQuiescent
 	}
 	if err := e.load(); err != nil {
 		bgCancel()
 		d.close()
 		return nil, fmt.Errorf("load worker state: %w", err)
 	}
-	if e.rtUnits != nil {
-		for _, c := range e.commands {
-			if started(c.cmd().State) && e.usesRuntime(c.runtimeTarget()) {
-				if lp, lerr := e.logPath(c.cmd().Id); lerr == nil {
-					e.rtUnits.RegisterExisting(c.unitName(), c.runtimeTarget(), c.cmd().Id, lp)
-				}
+	for _, c := range e.commands {
+		// A guest command that ran on as the worker restarted is the guest
+		// executor's again, its log pumped on from where it was.
+		if started(c.cmd().State) && e.runsInGuest(c) {
+			if lp, lerr := e.logPath(c.cmd().Id); lerr == nil {
+				e.guest.register(e.ref(c), lp)
 			}
 		}
 	}
@@ -664,13 +671,15 @@ func (e *Engine) startBgLocked(fn func(ctx context.Context)) bool {
 // watchExitBgLocked spawns watchExit as a tracked background goroutine whose
 // context cancels when either ctx or the engine's lifecycle context ends.
 // Call with e.mu held.
-func (e *Engine) watchExitBgLocked(ctx context.Context, slice, name string) {
+func (e *Engine) watchExitBgLocked(ctx context.Context, c *command) {
+	x, r := e.executorFor(c), e.ref(c)
+	r.slice = e.sliceOf(c)
 	e.startBgLocked(func(bgCtx context.Context) {
 		watchCtx, cancel := context.WithCancel(ctx)
 		defer cancel()
 		stop := context.AfterFunc(bgCtx, cancel)
 		defer stop()
-		e.watchExit(watchCtx, slice, name)
+		e.watchExit(watchCtx, x, r)
 	})
 }
 
@@ -713,8 +722,8 @@ func (e *Engine) Close() error {
 		<-sh.done
 	}
 	e.bg.Wait()
-	if e.rtUnits != nil {
-		e.rtUnits.Close()
+	if e.guest != nil {
+		e.guest.Close()
 	}
 	if e.gitAuth != nil {
 		_ = e.gitAuth.Close()
@@ -740,7 +749,7 @@ func (e *Engine) Run(ctx context.Context) {
 	e.mu.Lock()
 	for _, c := range e.commands {
 		if started(c.cmd().State) {
-			e.watchExitBgLocked(ctx, e.sliceOf(c), c.unitName())
+			e.watchExitBgLocked(ctx, c)
 		}
 	}
 	e.mu.Unlock()
@@ -818,10 +827,10 @@ func (e *Engine) stepSoon() {
 
 // watchExit steps as soon as a command's unit has exited. The tick would
 // notice too, a second later.
-func (e *Engine) watchExit(ctx context.Context, slice, name string) {
-	if err := e.cfg.Units.Wait(ctx, slice, name); err != nil {
+func (e *Engine) watchExit(ctx context.Context, x commandExecutor, r cmdRef) {
+	if err := x.Wait(ctx, r); err != nil {
 		if ctx.Err() == nil {
-			slog.Warn("watch command for its exit", "unit", name, "err", err)
+			slog.Warn("watch command for its exit", "unit", r.unit, "err", err)
 		}
 		return
 	}

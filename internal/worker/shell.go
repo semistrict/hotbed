@@ -24,6 +24,7 @@ import (
 
 	"github.com/semistrict/hotbed/internal/api"
 	pb "github.com/semistrict/hotbed/internal/gen/hotbed/v1"
+	"github.com/semistrict/hotbed/internal/runtime"
 	"github.com/semistrict/hotbed/internal/unit"
 )
 
@@ -260,19 +261,19 @@ func shellCacheEnv(hasPTY bool) []string {
 	})
 }
 
-func (e *Engine) shellSpec(shellID string, w *workspace, repo string, args, extraEnv, userEnv []string, hasPTY bool) (unit.Spec, string) {
-	ws := w.ws()
-	volPath := e.volPath(w.rec.Volume)
-	dir := WorkPath
-	if repo != "" {
-		dir += "/" + repo
+// shellDir is where a shell in repo (or the workspace, for "") starts.
+func shellDir(repo string) string {
+	if repo == "" {
+		return WorkPath
 	}
-	tmpBase := filepath.Join(e.tmpRoot(w.rec.Volume), "sh-"+shellID)
-	tmpDir := filepath.Join(tmpBase, "tmp")
-	runDir := filepath.Join(tmpBase, "run")
-	runtimeTarget := e.runtimeChrootDir()
+	return WorkPath + "/" + repo
+}
 
-	env := append(shellCacheEnv(hasPTY), "XDG_RUNTIME_DIR="+runtimeTarget)
+// shellEnv is a shell's environment in w, before where it runs adds to it.
+// Call with e.mu held.
+func (e *Engine) shellEnv(w *workspace, extraEnv, userEnv []string, hasPTY bool) []string {
+	ws := w.ws()
+	env := append(shellCacheEnv(hasPTY), "XDG_RUNTIME_DIR="+e.runtimeChrootDir())
 	env = append(env, "HOTBED_WORKSPACE="+ws.Id)
 	if ws.SessionId != "" {
 		env = append(env, "HOTBED_SESSION="+ws.SessionId)
@@ -281,21 +282,39 @@ func (e *Engine) shellSpec(shellID string, w *workspace, repo string, args, extr
 		env = append(env, "HOTBED_MEMORY_BYTES="+strconv.FormatInt(mem, 10))
 	}
 	env = append(env, extraEnv...)
-	env = append(env, userEnv...)
+	return append(env, userEnv...)
+}
 
+// shellSpec is a shell in w as a systemd unit on the host, chrooted in its
+// volume, and the directory it sees as /tmp. Call with e.mu held.
+func (e *Engine) shellSpec(shellID string, w *workspace, repo string, args, extraEnv, userEnv []string, hasPTY bool) (unit.Spec, string) {
+	tmpBase := filepath.Join(e.tmpRoot(w.rec.Volume), "sh-"+shellID)
+	tmpDir := filepath.Join(tmpBase, "tmp")
+	runDir := filepath.Join(tmpBase, "run")
 	spec := unit.Spec{
 		Name:       "hotbed-sh-" + shellID,
 		Slice:      e.cfg.Slice,
 		Argv:       args,
-		Dir:        dir,
-		Binds:      []unit.Bind{{Source: runDir, Target: runtimeTarget}},
+		Dir:        shellDir(repo),
+		Binds:      []unit.Bind{{Source: runDir, Target: e.runtimeChrootDir()}},
 		Tmp:        tmpDir,
 		User:       e.cfg.User,
-		Env:        env,
+		Env:        e.shellEnv(w, extraEnv, userEnv, hasPTY),
 		PathPrefix: cachePath,
 	}
-	e.inRootfs(&spec, volPath)
+	e.inRootfs(&spec, e.volPath(w.rec.Volume))
 	return spec, tmpDir
+}
+
+// guestShellSpec is a shell in w's VM. Call with e.mu held.
+func (e *Engine) guestShellSpec(w *workspace, repo string, args, extraEnv, userEnv []string, hasPTY bool) runtime.ShellSpec {
+	env, pathPrefix := e.workspaceEnv(e.shellEnv(w, extraEnv, userEnv, hasPTY), cachePath)
+	return runtime.ShellSpec{
+		Argv: args,
+		Dir:  shellDir(repo),
+		Env:  append(env, guestPath(pathPrefix)),
+		User: e.cfg.User,
+	}
 }
 
 func (e *Engine) makeShellTmp(vol, shellID string) error {
@@ -315,7 +334,16 @@ func (e *Engine) beginShell(ctx context.Context, ticket *shellTicket, args, extr
 		e.mu.Unlock()
 		return nil, nil, api.Errorf(api.CodeConflict, "workspace %s is %s (%s)", ticket.workspaceID, state, reason)
 	}
-	spec, _ := e.shellSpec(shellID, w, ticket.repo, args, extraEnv, ticket.env, sio.PTY)
+	useRT := e.usesRuntime(ticket.workspaceID)
+	var (
+		spec      unit.Spec
+		guestSpec runtime.ShellSpec
+	)
+	if useRT {
+		guestSpec = e.guestShellSpec(w, ticket.repo, args, extraEnv, ticket.env, sio.PTY)
+	} else {
+		spec, _ = e.shellSpec(shellID, w, ticket.repo, args, extraEnv, ticket.env, sio.PTY)
+	}
 	vol := w.rec.Volume
 	volPath := e.volPath(vol)
 	sessionID := w.ws().SessionId
@@ -339,7 +367,6 @@ func (e *Engine) beginShell(ctx context.Context, ticket *shellTicket, args, extr
 	}
 	e.mu.Unlock()
 
-	useRT := e.usesRuntime(ticket.workspaceID)
 	releaseVM := func() {}
 	if useRT {
 		releaseVM = e.useVM(ticket.workspaceID)
@@ -369,7 +396,15 @@ func (e *Engine) beginShell(ctx context.Context, ticket *shellTicket, args, extr
 			return nil, nil, fmt.Errorf("make shell tmp: %w", err)
 		}
 	}
-	handle, err := e.cfg.Units.StartShell(shellCtx, spec, sio)
+	var (
+		handle unit.ShellHandle
+		err    error
+	)
+	if useRT {
+		handle, err = e.guest.StartShell(shellCtx, ticket.workspaceID, guestSpec, sio)
+	} else {
+		handle, err = e.host.StartShell(shellCtx, spec, sio)
+	}
 	if err != nil {
 		cleanup()
 		return nil, nil, err

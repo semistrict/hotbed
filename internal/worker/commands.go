@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"maps"
 	"os"
 	"path/filepath"
 	"slices"
@@ -278,7 +279,7 @@ func (e *Engine) workspaceRuntime(w *workspace) string {
 		if rt := w.ws().Runtime; rt != "" {
 			return rt
 		}
-		if e.usesRuntime(w.ws().Id) && e.cfg.Runtime != nil {
+		if e.usesRuntime(w.ws().Id) {
 			return e.cfg.Runtime.Kind()
 		}
 	}
@@ -366,14 +367,15 @@ func (e *Engine) stop(ctx context.Context, id, why string, by *byHand) (*pb.Comm
 	}
 	// A frozen unit cannot be stopped until it is thawed: one held or
 	// paused, or that pause froze as this stop began. Its unit says.
-	if st, err := e.cfg.Units.Status(ctx, c.unitName()); err != nil {
+	x, r := e.executorFor(c), e.ref(c)
+	if st, err := x.Status(ctx, r); err != nil {
 		slog.Warn("read the unit before stop", "command", id, "err", err)
 	} else if st.Frozen {
-		if err := e.cfg.Units.Thaw(ctx, c.unitName()); err != nil {
+		if err := x.Thaw(ctx, r); err != nil {
 			slog.Warn("thaw before stop", "command", id, "err", err)
 		}
 	}
-	if err := e.cfg.Units.Stop(ctx, c.unitName()); err != nil {
+	if err := x.Stop(ctx, r); err != nil {
 		e.mu.Lock()
 		c.stopping = false
 		e.mu.Unlock()
@@ -399,6 +401,51 @@ func (Systemd) StatusManyAt(ctx context.Context, names []string) (map[string]uni
 	return unit.StatusManyAt(ctx, names)
 }
 
+// readStates reads the units of active, the commands started, each from
+// the executor that runs it: nil for one whose state could not be read.
+// sampledAt is when their CPU counters were read.
+func (e *Engine) readStates(ctx context.Context, active []*command) (states []*unit.State, sampledAt time.Time) {
+	states = make([]*unit.State, len(active))
+	if len(active) == 0 {
+		return states, time.Time{}
+	}
+	var hostRefs, guestRefs []cmdRef
+	for _, c := range active {
+		if e.runsInGuest(c) {
+			guestRefs = append(guestRefs, e.ref(c))
+		} else {
+			hostRefs = append(hostRefs, e.ref(c))
+		}
+	}
+	byName := map[string]unit.State{}
+	read := func(x commandExecutor, refs []cmdRef) time.Time {
+		if len(refs) == 0 {
+			return time.Time{}
+		}
+		got, at, err := x.StatusMany(ctx, refs)
+		if err != nil {
+			slog.Warn("read commands", "count", len(refs), "err", err)
+			return time.Time{}
+		}
+		maps.Copy(byName, got)
+		return at
+	}
+	sampledAt = read(e.host, hostRefs)
+	if len(guestRefs) > 0 {
+		read(e.guest, guestRefs)
+		sampledAt = time.Time{} // a guest's counters are read now, not when the host's were
+	}
+	if sampledAt.IsZero() {
+		sampledAt = e.now()
+	}
+	for i, c := range active {
+		if st, ok := byName[c.unitName()]; ok {
+			states[i] = &st
+		}
+	}
+	return states, sampledAt
+}
+
 // minCPUSampleWindow avoids computing CPU cores over tiny stepSoon() bursts
 // where quantized counters or scheduling jitter would distort the rate.
 const minCPUSampleWindow = 100 * time.Millisecond
@@ -421,37 +468,7 @@ func (e *Engine) step(ctx context.Context) {
 	// Writers are held before the measurement's isolation is checked, so
 	// what this sample saw is held now.
 	e.quiet(ctx)
-	states := make([]*unit.State, len(active))
-	var sampledAt time.Time
-	if len(active) > 0 {
-		names := make([]string, len(active))
-		for i, c := range active {
-			names[i] = c.unitName()
-		}
-		var (
-			byName map[string]unit.State
-			err    error
-		)
-		// StatusManyAt timestamps against wall-clock time.Now(); when a test
-		// injects a synthetic clock (e.cfg.Now != nil), stay on StatusMany +
-		// e.now() so sample timestamps match the synthetic clock.
-		if s, ok := e.cfg.Units.(statusSampler); ok && e.cfg.Now == nil {
-			byName, sampledAt, err = s.StatusManyAt(ctx, names)
-		} else {
-			byName, err = e.cfg.Units.StatusMany(ctx, names)
-			sampledAt = e.now()
-		}
-		if err != nil {
-			slog.Warn("read commands", "count", len(active), "err", err)
-		} else {
-			for i, c := range active {
-				if st, ok := byName[c.unitName()]; ok {
-					st := st
-					states[i] = &st
-				}
-			}
-		}
-	}
+	states, sampledAt := e.readStates(ctx, active)
 	// Each command's output at once, so one that wrote a lot holds up the
 	// others no longer than itself.
 	var wg sync.WaitGroup
@@ -459,7 +476,7 @@ func (e *Engine) step(ctx context.Context) {
 		if st := states[i]; st != nil {
 			wg.Go(func() {
 				if st.Loaded && !st.Exited {
-					if !e.usesRuntime(c.runtimeTarget()) {
+					if !e.runsInGuest(c) {
 						c.out.startTimestampWatch()
 					}
 					c.out.catchUp()
@@ -556,7 +573,7 @@ func (e *Engine) removeUnit(ctx context.Context, c *command, st unit.State) {
 	}
 	// Its status is already read.
 	if st.Exited {
-		if err := e.cfg.Units.Stop(ctx, c.unitName()); err != nil {
+		if err := e.executorFor(c).Stop(ctx, e.ref(c)); err != nil {
 			slog.Warn("remove unit", "command", c.cmd().Id, "err", err)
 		}
 	}
@@ -737,16 +754,17 @@ func (e *Engine) observe(ctx context.Context, c *command, st unit.State, sampled
 		mem = *st.MemoryUse
 		hasMem = true
 	} else {
-		cg := st.Cgroup
-		if cg == "" {
+		r := e.ref(c)
+		r.cgroup = st.Cgroup
+		if r.cgroup == "" {
 			e.mu.Lock()
 			if api.Live(c.cmd().State) && !c.stopping {
-				cg = c.rec.Cgroup
+				r.cgroup = c.rec.Cgroup
 			}
 			e.mu.Unlock()
 		}
-		if cg != "" {
-			mem, memErr = e.cfg.Units.Memory(cg)
+		if r.cgroup != "" {
+			mem, memErr = e.executorFor(c).Memory(ctx, r)
 			hasMem = memErr == nil
 		}
 	}
@@ -778,17 +796,15 @@ func (e *Engine) observe(ctx context.Context, c *command, st unit.State, sampled
 		c.rec.PeakMemoryBytes = max(c.rec.PeakMemoryBytes, st.Memory)
 	}
 	c.rec.PeakMemoryBytes = max(c.rec.PeakMemoryBytes, st.MemoryPeak)
-	if c.rec.Cgroup != "" {
-		if hasMem {
-			cmd.SwapBytes = mem.Swap
-			if mem.Anon > cmd.MemoryBytes {
-				cmd.MemoryBytes = mem.Anon
-				c.rec.PeakMemoryBytes = max(c.rec.PeakMemoryBytes, mem.Anon)
-			}
-			c.rec.PeakHeldBytes = max(c.rec.PeakHeldBytes, mem.Held())
-		} else if memErr != nil && !st.Exited {
-			slog.Warn("read a command's memory", "command", cmd.Id, "err", memErr)
+	if hasMem {
+		cmd.SwapBytes = mem.Swap
+		if mem.Anon > cmd.MemoryBytes {
+			cmd.MemoryBytes = mem.Anon
+			c.rec.PeakMemoryBytes = max(c.rec.PeakMemoryBytes, mem.Anon)
 		}
+		c.rec.PeakHeldBytes = max(c.rec.PeakHeldBytes, mem.Held())
+	} else if memErr != nil && !st.Exited {
+		slog.Warn("read a command's memory", "command", cmd.Id, "err", memErr)
 	}
 	// While it runs and as it ends: the node is given back only after.
 	e.checkIsolation(c, st.Exited)
@@ -924,7 +940,7 @@ func (e *Engine) admit(ctx context.Context) {
 		// may use the VM meanwhile, until its unit has started.
 		var heldVM *sync.RWMutex
 		if kind == "" {
-			if w, ok := e.workspaces[c.runtimeTarget()]; ok && e.usesRuntime(w.ws().Id) && vmSize(c) != (unit.VMSize{}) {
+			if w, ok := e.workspaces[c.runtimeTarget()]; ok && e.runsInGuest(c) && vmSize(c) != (unit.VMSize{}) {
 				if w.vm.TryLock() {
 					heldVM = &w.vm
 				} else {
@@ -960,12 +976,13 @@ func (e *Engine) admit(ctx context.Context) {
 			continue
 		}
 		c.cmd().Reason = ""
-		spec, err := e.spec(c)
+		x := e.executorFor(c)
+		inGuest := e.runsInGuest(c)
+		l, err := e.launch(c)
 		volPath := e.commandVolPath(c)
 		cmdID := c.cmd().Id
 		isBench := c.cmd().Bench
-		useRT := e.usesRuntime(c.runtimeTarget()) || c.isVMFreshen()
-		if w, ok := e.workspaces[c.runtimeTarget()]; ok && e.usesRuntime(w.ws().Id) {
+		if w, ok := e.workspaces[c.runtimeTarget()]; ok && inGuest {
 			w.vmUsed = true // the next command needs a VM of its own
 		}
 		var beforeStart func(context.Context) error
@@ -990,7 +1007,7 @@ func (e *Engine) admit(ctx context.Context) {
 			}
 		}
 		madeTmp := false
-		if err == nil && !useRT {
+		if err == nil && !inGuest {
 			if err = e.makeTmp(c); err != nil {
 				err = fmt.Errorf("make its tmp: %w", err)
 			} else {
@@ -1064,7 +1081,7 @@ func (e *Engine) admit(ctx context.Context) {
 		var booted string
 		if err == nil {
 			startCall := time.Now()
-			err = e.cfg.Units.Start(ctx, spec)
+			err = x.Start(ctx, l)
 			if err == nil && e.cfg.VM != nil {
 				if b, ok := e.cfg.VM.BootSince(c.cmd().WorkspaceId, startCall); ok {
 					booted = " · VM booted in " + b.String()
@@ -1104,7 +1121,7 @@ func (e *Engine) admit(ctx context.Context) {
 		if cmd.State != queued || c.stopping {
 			// Stopped while it started.
 			e.mu.Unlock()
-			if stopErr := e.cfg.Units.Stop(ctx, c.unitName()); stopErr != nil {
+			if stopErr := x.Stop(ctx, l.ref); stopErr != nil {
 				slog.Warn("stop a command stopped while it started", "command", cmdID, "err", stopErr)
 				// Keep the command running (non-terminal) and preserve its tmpDir
 				// so a subsequent Stop retry calls Units.Stop again and cleans up
@@ -1119,7 +1136,7 @@ func (e *Engine) admit(ctx context.Context) {
 				cmd.Timeline = append(cmd.Timeline, &pb.CommandEvent{At: now, What: "admitted", Detail: detail})
 				e.saveCommand(c, change{what: "admitted", detail: detail})
 				finishAdmit()
-				e.watchExitBgLocked(ctx, spec.Slice, c.unitName())
+				e.watchExitBgLocked(ctx, c)
 				e.mu.Unlock()
 				continue
 			}
@@ -1160,7 +1177,7 @@ func (e *Engine) admit(ctx context.Context) {
 			ch.feed = feed(feedAdmit, fmt.Sprintf("admit %s · %s", cmd.Argv, cmd.WorkspaceId), ref("command", cmd.Id))
 		}
 		e.saveCommand(c, ch)
-		e.watchExitBgLocked(ctx, spec.Slice, c.unitName())
+		e.watchExitBgLocked(ctx, c)
 		e.mu.Unlock()
 		// Refresh physical memory after starting a command (which may have
 		// booted a Firecracker VM or faulted RAM) before checking the next
@@ -1175,12 +1192,13 @@ func (e *Engine) admit(ctx context.Context) {
 // stopped between starting it and recording that left, running on
 // unwatched, in a measurement's slice too.
 func (e *Engine) stopLeftover(ctx context.Context, c *command) error {
-	st, err := e.cfg.Units.Status(ctx, c.unitName())
+	x, r := e.executorFor(c), e.ref(c)
+	st, err := x.Status(ctx, r)
 	if err != nil || !st.Loaded {
 		return err
 	}
 	slog.Warn("stop a unit left by a worker that stopped as it started it", "command", c.cmd().Id)
-	if err := e.cfg.Units.Stop(ctx, c.unitName()); err != nil {
+	if err := x.Stop(ctx, r); err != nil {
 		return fmt.Errorf("stop the unit a worker before left: %w", err)
 	}
 	return nil
@@ -1307,7 +1325,7 @@ func (e *Engine) admissionBlockerFor(c, ahead, holder *command, mem sysinfo.Mem,
 		if isSyncInProgress(w.ws().Reason) {
 			return "syncing", "workspace is syncing", false
 		}
-		if e.usesRuntime(c.runtimeTarget()) {
+		if e.runsInGuest(c) {
 			if r := e.vmBlockerLocked(c, w); r != "" {
 				return "workspace-busy", r, false
 			}
@@ -1383,7 +1401,7 @@ func (e *Engine) roomFor(c *command, mem sysinfo.Mem, hasMem bool) (kind, reason
 	// low; bypass fullAt/physRoom ONLY when no other started command exists on
 	// the node so a single VM never self-deadlocks, without letting new VMs
 	// pile onto an already-full multi-command node.
-	vmSoloBypass := e.usesRuntime(c.runtimeTarget()) && !e.hasOtherStartedCommandLocked(c.runtimeTarget())
+	vmSoloBypass := e.runsInGuest(c) && !e.hasOtherStartedCommandLocked(c.runtimeTarget())
 	if memTotal > 0 && !vmSoloBypass {
 		physRoom := memTotal - memUsed
 		if memUsed >= int64(float64(memTotal)*fullAt) {
@@ -1420,33 +1438,79 @@ func (e *Engine) roomFor(c *command, mem sysinfo.Mem, hasMem bool) (kind, reason
 	return "", ""
 }
 
-// spec is the unit for c. Call with e.mu held.
-func (e *Engine) spec(c *command) (unit.Spec, error) {
+// launch is how to start c, on the executor that runs it. Call with e.mu
+// held.
+func (e *Engine) launch(c *command) (launch, error) {
+	l := launch{ref: e.ref(c)}
+	var err error
+	if e.runsInGuest(c) {
+		l.guest, err = e.guestSpec(c)
+	} else {
+		l.host, err = e.unitSpec(c)
+	}
+	return l, err
+}
+
+// commandEnv is what every command's environment starts with, wherever it
+// runs. Call with e.mu held.
+func (e *Engine) commandEnv(c *command) []string {
 	cmd := c.cmd()
+	env := append(cacheEnv(), "XDG_RUNTIME_DIR="+e.runtimeChrootDir())
+	env = append(env, c.rec.Env...)
+	env = append(env, "HOTBED_WORKSPACE="+cmd.WorkspaceId, "HOTBED_COMMAND="+cmd.Id)
+	if mem := e.memoryBudgetBytes(e.runsInGuest(c), cmd.VmMemoryBytes, cmd.Limits.GetMemoryHighBytes()); mem > 0 {
+		env = append(env, "HOTBED_MEMORY_BYTES="+strconv.FormatInt(mem, 10))
+	}
+	return env
+}
+
+// guestSpec is c as a command in its VM: in a workspace's, with the
+// workspace's home and the worker's git credentials, as in a rootfs; a base
+// build's freshen brings its own. Call with e.mu held.
+func (e *Engine) guestSpec(c *command) (runtime.CommandSpec, error) {
+	cmd := c.cmd()
+	logPath, err := e.logPath(cmd.Id)
+	if err != nil {
+		return runtime.CommandSpec{}, err
+	}
+	env, pathPrefix := e.commandEnv(c), cachePath
+	if !c.isVMFreshen() {
+		env, pathPrefix = e.workspaceEnv(env, pathPrefix)
+	}
+	return runtime.CommandSpec{
+		ID:         cmd.Id,
+		Argv:       cmd.Args,
+		Dir:        c.rec.Dir,
+		Env:        append(env, guestPath(pathPrefix)),
+		User:       e.cfg.User,
+		CPUWeight:  int(cmd.Limits.CpuWeight),
+		MemoryLow:  cmd.Limits.MemoryLowBytes,
+		MemoryHigh: cmd.Limits.MemoryHighBytes,
+		LogPath:    logPath,
+		VM:         vmSize(c),
+		TTY:        cmd.Tty,
+		TTYInput:   cmd.TtyInput,
+	}, nil
+}
+
+// unitSpec is c as a systemd unit on the host, chrooted in its volume.
+// Call with e.mu held.
+func (e *Engine) unitSpec(c *command) (unit.Spec, error) {
+	cmd := c.cmd()
+	if cmd.Tty {
+		return unit.Spec{}, api.Errorf(api.CodePlatformNotSupported, "a command in a terminal needs the vm runtime: a systemd unit writes its output to a file")
+	}
 	logPath, err := e.logPath(cmd.Id)
 	if err != nil {
 		return unit.Spec{}, err
 	}
-	vmFreshen := c.managedFreshen != nil && c.managedFreshen.vmID != ""
-	var tmpDir, runDir string
-	if !vmFreshen {
-		if tmpDir, err = e.tmpDir(c); err != nil {
-			return unit.Spec{}, err
-		}
-		if runDir, err = e.runtimeDir(c); err != nil {
-			return unit.Spec{}, err
-		}
+	tmpDir, err := e.tmpDir(c)
+	if err != nil {
+		return unit.Spec{}, err
 	}
-	volPath := e.commandVolPath(c)
-	runtimeTarget := e.runtimeChrootDir()
-	env := append(cacheEnv(), "XDG_RUNTIME_DIR="+runtimeTarget)
-	env = append(env, c.rec.Env...)
-	env = append(env, "HOTBED_WORKSPACE="+cmd.WorkspaceId, "HOTBED_COMMAND="+cmd.Id)
-	if mem := e.memoryBudgetBytes(vmFreshen || e.usesRuntime(c.runtimeTarget()), cmd.VmMemoryBytes, cmd.Limits.GetMemoryHighBytes()); mem > 0 {
-		env = append(env, "HOTBED_MEMORY_BYTES="+strconv.FormatInt(mem, 10))
-	}
-	if t := c.runtimeTarget(); t != cmd.WorkspaceId {
-		env = append(env, "HOTBED_RUNTIME_TARGET="+t)
+	runDir, err := e.runtimeDir(c)
+	if err != nil {
+		return unit.Spec{}, err
 	}
 	props := slices.Clone(e.cfg.UnitProperties)
 	if cmd.Bench {
@@ -1471,7 +1535,7 @@ func (e *Engine) spec(c *command) (unit.Spec, error) {
 		Dir:          c.rec.Dir,
 		Tmp:          tmpDir,
 		User:         e.cfg.User,
-		Env:          env,
+		Env:          e.commandEnv(c),
 		PathPrefix:   cachePath,
 		CPUWeight:    int(cmd.Limits.CpuWeight),
 		MemoryLow:    cmd.Limits.MemoryLowBytes,
@@ -1481,14 +1545,9 @@ func (e *Engine) spec(c *command) (unit.Spec, error) {
 		Capabilities: []string{"CAP_PERFMON"},
 		TraceFS:      true,
 		Properties:   props,
-		VM:           vmSize(c),
-		TTY:          cmd.Tty,
-		TTYInput:     cmd.TtyInput,
+		Binds:        []unit.Bind{{Source: runDir, Target: e.runtimeChrootDir()}},
 	}
-	if !vmFreshen {
-		spec.Binds = []unit.Bind{{Source: runDir, Target: runtimeTarget}}
-		e.inRootfs(&spec, volPath)
-	}
+	e.inRootfs(&spec, e.commandVolPath(c))
 	return spec, nil
 }
 
@@ -1496,7 +1555,7 @@ func (e *Engine) spec(c *command) (unit.Spec, error) {
 // disk at its own path, the worker's containers.conf defaults, and the worker's
 // git credentials bound read-only.
 func (e *Engine) inRootfs(spec *unit.Spec, volPath string) {
-	spec.Env = append(spec.Env, "HOME="+e.chrootHome())
+	spec.Env, spec.PathPrefix = e.workspaceEnv(spec.Env, spec.PathPrefix)
 	spec.RootDir = volPath
 	if d := e.cfg.ScratchDisk; d != "" {
 		spec.Binds = append(spec.Binds, unit.Bind{Source: d, Target: d})
@@ -1506,9 +1565,19 @@ func (e *Engine) inRootfs(spec *unit.Spec, volPath string) {
 	}
 	if e.gitAuth != nil {
 		spec.ReadOnlyBinds = append(spec.ReadOnlyBinds, unit.Bind{Source: e.gitAuth.Dir(), Target: gitauth.ChrootDir})
-		spec.Env = append(e.gitAuth.ChrootEnv(), spec.Env...)
-		spec.PathPrefix = append([]string{gitauth.ChrootDir + "/bin"}, spec.PathPrefix...)
 	}
+}
+
+// workspaceEnv is env and pathPrefix as a workspace's commands and shells
+// have them, in a rootfs or a VM: their home, and git and gh pointed at
+// the worker's git credentials at gitauth.ChrootDir.
+func (e *Engine) workspaceEnv(env, pathPrefix []string) ([]string, []string) {
+	env = append(env, "HOME="+e.chrootHome())
+	if e.gitAuth != nil {
+		env = append(e.gitAuth.ChrootEnv(), env...)
+		pathPrefix = append([]string{gitauth.ChrootDir + "/bin"}, pathPrefix...)
+	}
+	return env, pathPrefix
 }
 
 func (e *Engine) runtimeChrootDir() string {
@@ -1586,7 +1655,7 @@ func cmpBool(a, b bool) int {
 // an exited/gone unit or marks c deactivating and returns true so callers do
 // not log a spurious error or retry in a loop (board 7695).
 func (e *Engine) reconcileInactiveUnit(ctx context.Context, c *command) bool {
-	st, err := e.cfg.Units.Status(ctx, c.unitName())
+	st, err := e.executorFor(c).Status(ctx, e.ref(c))
 	sampledAt := e.now()
 	if err != nil || st.Running {
 		return false
@@ -1683,7 +1752,8 @@ func (e *Engine) thawStrays(ctx context.Context) {
 	}
 	e.mu.Unlock()
 	for _, c := range runs {
-		st, err := e.cfg.Units.Status(ctx, c.unitName())
+		x, r := e.executorFor(c), e.ref(c)
+		st, err := x.Status(ctx, r)
 		if err != nil {
 			slog.Warn("read a running command's unit", "command", c.cmd().Id, "err", err)
 			continue
@@ -1692,7 +1762,7 @@ func (e *Engine) thawStrays(ctx context.Context) {
 			continue
 		}
 		slog.Warn("thaw a running command's unit, frozen by a worker that stopped as it froze it", "command", c.cmd().Id)
-		if err := e.cfg.Units.Thaw(ctx, c.unitName()); err != nil {
+		if err := x.Thaw(ctx, r); err != nil {
 			slog.Error("thaw a running command's unit", "command", c.cmd().Id, "err", err)
 		}
 	}
@@ -1750,15 +1820,16 @@ func (e *Engine) pauseUnit(ctx context.Context, c *command, still func(was pb.Co
 	defer c.freezeMu.Unlock()
 	e.mu.Lock()
 	was := c.cmd().State
-	unitName, id := c.unitName(), c.cmd().Id
+	id := c.cmd().Id
 	if c.stopping || (was != running && was != parked && was != paused) {
 		e.mu.Unlock()
 		return false, nil
 	}
 	e.mu.Unlock()
+	x, r := e.executorFor(c), e.ref(c)
 	frozeUnit := false
 	if was == running {
-		if err := e.cfg.Units.Freeze(ctx, unitName); err != nil {
+		if err := x.Freeze(ctx, r); err != nil {
 			if e.reconcileInactiveUnit(ctx, c) {
 				return false, nil
 			}
@@ -1771,42 +1842,31 @@ func (e *Engine) pauseUnit(ctx context.Context, c *command, still func(was pb.Co
 		shouldThaw := frozeUnit && c.cmd().State == running
 		e.mu.Unlock()
 		if shouldThaw {
-			if err := e.cfg.Units.Thaw(ctx, unitName); err != nil {
+			if err := x.Thaw(ctx, r); err != nil {
 				slog.Warn("thaw a command no longer to pause", "command", id, "err", err)
 			}
 		}
 		return false, nil
 	}
 	record()
-	cgroup, memory := c.rec.Cgroup, c.cmd().MemoryBytes
+	r.cgroup = c.rec.Cgroup
+	memory := c.cmd().MemoryBytes
 	e.mu.Unlock()
-	if cgroup == "" {
-		if st, err := e.cfg.Units.Status(ctx, unitName); err == nil && st.Cgroup != "" {
-			cgroup = st.Cgroup
-			memory = max(memory, st.Memory)
-			e.mu.Lock()
-			if c.rec.Cgroup == "" {
-				c.rec.Cgroup = cgroup
-			}
-			e.mu.Unlock()
+	// Its memory goes to swap: all of it its executor says it holds.
+	if memory <= 0 {
+		if m, err := x.Memory(ctx, r); err == nil {
+			memory = max(memory, m.Anon)
 		}
 	}
-	if cgroup != "" {
-		if memory <= 0 {
-			if m, err := e.cfg.Units.Memory(cgroup); err == nil {
-				memory = max(memory, m.Anon)
-			}
+	if err := x.Reclaim(ctx, r, memory); err != nil {
+		slog.Warn("reclaim paused command", "command", id, "err", err)
+	} else if m, err := x.Memory(ctx, r); err == nil {
+		e.mu.Lock()
+		if c.cmd().State == paused {
+			c.cmd().SwapBytes = m.Swap
+			c.rec.PeakHeldBytes = max(c.rec.PeakHeldBytes, m.Held())
 		}
-		if err := e.cfg.Units.Reclaim(cgroup, memory); err != nil {
-			slog.Warn("reclaim paused command", "command", id, "err", err)
-		} else if m, err := e.cfg.Units.Memory(cgroup); err == nil {
-			e.mu.Lock()
-			if c.cmd().State == paused {
-				c.cmd().SwapBytes = m.Swap
-				c.rec.PeakHeldBytes = max(c.rec.PeakHeldBytes, m.Held())
-			}
-			e.mu.Unlock()
-		}
+		e.mu.Unlock()
 	}
 	return true, nil
 }
@@ -1915,11 +1975,10 @@ func (e *Engine) thawLocked(ctx context.Context, c *command, ch change) error {
 func (e *Engine) thawLockedBy(ctx context.Context, c *command, ch change, by *byHand, clearAttached bool) error {
 	cmd := c.cmd()
 	from, reason := cmd.State, cmd.Reason
-	unitName := c.unitName()
 	c.pendingThaw = &pendingThaw{ch: ch, by: by, clearAttached: clearAttached}
 	e.mu.Unlock()
 
-	err := e.cfg.Units.Thaw(ctx, unitName)
+	err := e.executorFor(c).Thaw(ctx, e.ref(c))
 	if err == nil {
 		e.mu.Lock()
 		// If observe() already saw the unit exit immediately after Thaw and
@@ -2030,7 +2089,7 @@ func (e *Engine) endBy(c *command, state pb.CommandState, code *int32, why strin
 	}
 	cmd.Timeline = append(cmd.Timeline, &pb.CommandEvent{At: now, What: what, Detail: detail})
 	// Its processes are gone: the unit has exited or been stopped.
-	if !e.usesRuntime(c.runtimeTarget()) && !c.isVMFreshen() {
+	if !e.runsInGuest(c) {
 		e.dropTmp(c)
 	}
 
@@ -2116,7 +2175,7 @@ func (e *Engine) endBy(c *command, state pb.CommandState, code *int32, why strin
 		line = feed(feedFinish, fmt.Sprintf("cancelled %s · %s", cmd.Argv, why), r)
 	}
 	var prof *pb.CommandProfile
-	isVM := cmd.WorkspaceId != "" && e.usesRuntime(c.runtimeTarget())
+	isVM := cmd.WorkspaceId != "" && e.runsInGuest(c)
 	var snap *pb.CommandProfile
 	if isVM {
 		snap = c.vmProfile

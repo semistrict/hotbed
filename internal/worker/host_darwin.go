@@ -5,7 +5,6 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
-	"os/exec"
 	"runtime"
 	"strings"
 
@@ -14,7 +13,6 @@ import (
 	"github.com/semistrict/hotbed/internal/api"
 	pb "github.com/semistrict/hotbed/internal/gen/hotbed/v1"
 	"github.com/semistrict/hotbed/internal/sysinfo"
-	"github.com/semistrict/hotbed/internal/unit"
 )
 
 // prepareHost checks a Mac can be the worker it is configured as: every
@@ -31,8 +29,10 @@ func prepareHost(_ context.Context, h hostPrep) error {
 	return nil
 }
 
-// hostUnits: a macOS worker runs no command on the host itself.
-func hostUnits() Units { return vmOnlyUnits{} }
+// hostUnits: a macOS worker runs no command on the host itself, so it has
+// no units (its unitExecutor answers errNoHostUnits): every command runs in
+// a VM of machined's, through its guestExecutor.
+func hostUnits() Units { return nil }
 
 // hostSystem measures the Mac through sysctl(3).
 func hostSystem(string) System { return darwinSystem{} }
@@ -40,39 +40,6 @@ func hostSystem(string) System { return darwinSystem{} }
 // warmsBaseImage: a macOS worker has no chroot workspaces to keep a shared
 // base rootfs for.
 const warmsBaseImage = false
-
-// errHostCommand is what a macOS worker answers a command it would run on
-// the host: every workspace there is a VM's.
-var errHostCommand = api.Errorf(api.CodePlatformNotSupported, "a macOS worker runs commands only in VMs, never on the host")
-
-// vmOnlyUnits is a macOS worker's Units: it runs nothing on the host, so it
-// has no units to list, wait for or stop.
-type vmOnlyUnits struct{}
-
-func (vmOnlyUnits) Start(context.Context, unit.Spec) error { return errHostCommand }
-func (vmOnlyUnits) Status(context.Context, string) (unit.State, error) {
-	return unit.State{}, nil
-}
-func (vmOnlyUnits) StatusMany(_ context.Context, names []string) (map[string]unit.State, error) {
-	out := make(map[string]unit.State, len(names))
-	for _, n := range names {
-		out[n] = unit.State{}
-	}
-	return out, nil
-}
-func (vmOnlyUnits) Freeze(context.Context, string) error           { return errHostCommand }
-func (vmOnlyUnits) Thaw(context.Context, string) error             { return errHostCommand }
-func (vmOnlyUnits) Reclaim(string, int64) error                    { return errHostCommand }
-func (vmOnlyUnits) Memory(string) (unit.MemoryUse, error)          { return unit.MemoryUse{}, errHostCommand }
-func (vmOnlyUnits) Stop(context.Context, string) error             { return nil }
-func (vmOnlyUnits) List(context.Context, string) ([]string, error) { return nil, nil }
-func (vmOnlyUnits) Wait(context.Context, string, string) error     { return nil }
-func (vmOnlyUnits) StartShell(context.Context, unit.Spec, unit.ShellIO) (unit.ShellHandle, error) {
-	return nil, errHostCommand
-}
-func (vmOnlyUnits) Exec(context.Context, string, string, unit.ExecSpec) (*exec.Cmd, error) {
-	return nil, errHostCommand
-}
 
 // darwinSystem measures a Mac. macOS has no pressure stall information or
 // OOM kill count, and its CPU ticks are a Mach call (host_processor_info)

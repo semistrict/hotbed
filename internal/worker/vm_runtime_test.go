@@ -408,8 +408,7 @@ func TestEngineWithGuestRuntimeEndToEnd(t *testing.T) {
 
 	// 4. Interactive piped shell routed through guestd!
 	var shOut bytes.Buffer
-	shHandle, err := eng.cfg.Units.StartShell(ctx, unit.Spec{
-		Name: "hotbed-sh-test",
+	shHandle, err := eng.guest.StartShell(ctx, wsID, runtime.ShellSpec{
 		Argv: []string{"/bin/sh", "-c", "echo VM_SHELL_OK"},
 		Dir:  "/work/app",
 		Env:  []string{"HOTBED_WORKSPACE=" + wsID},
@@ -692,25 +691,27 @@ func TestObjectStoreStatsFromCounters(t *testing.T) {
 	}
 }
 
-func TestToUnitStatePreservesFrozenAndOOM(t *testing.T) {
-	frozen := toUnitState("ws-1", runtime.CommandStatus{
+func TestGuestStatePreservesFrozenAndOOM(t *testing.T) {
+	frozen := guestState(runtime.CommandStatus{
 		ID:     "c-1",
 		Frozen: true,
-	})
+	}, unit.MemoryUse{})
 	if !frozen.Running || !frozen.Frozen || frozen.Exited {
 		t.Fatalf("frozen unit state = %+v, want Running=true Frozen=true Exited=false", frozen)
 	}
-	if frozen.Cgroup != "vm:ws-1:c-1" {
-		t.Fatalf("cgroup = %q, want vm:ws-1:c-1", frozen.Cgroup)
+	// A guest's cgroups are not the host's: none reaches the engine, which
+	// would read or reclaim it on the host.
+	if frozen.Cgroup != "" {
+		t.Fatalf("cgroup = %q, want none", frozen.Cgroup)
 	}
 
-	oom := toUnitState("ws-1", runtime.CommandStatus{
+	oom := guestState(runtime.CommandStatus{
 		ID:        "c-2",
 		Exited:    true,
 		Signal:    9,
 		Result:    "oom-kill",
 		OOMKilled: true,
-	})
+	}, unit.MemoryUse{})
 	if !oom.Exited || !oom.OOMKilled || oom.Signal != 9 || oom.Result != "oom-kill" {
 		t.Fatalf("oom unit state = %+v, want Exited=true OOMKilled=true Signal=9 Result=oom-kill", oom)
 	}
@@ -864,7 +865,7 @@ func (h *hostVMReclaimUnits) Reclaim(cg string, n int64) error {
 	return nil
 }
 
-func TestRuntimeUnitsReclaimRoutesVMCgroupToGuestAndHostFirecrackerUnit(t *testing.T) {
+func TestGuestExecutorReclaimsInTheGuestAndTheHostVMUnit(t *testing.T) {
 	vmCG := "/user.slice/user-1000.slice/user-1000-hotbed.slice/hotbed-vm-ws-42.service"
 	inner := &hostVMReclaimUnits{
 		Units: &fake.Units{},
@@ -883,12 +884,12 @@ func TestRuntimeUnitsReclaimRoutesVMCgroupToGuestAndHostFirecrackerUnit(t *testi
 			},
 		},
 	}
-	ru := newRuntimeUnits(t.Context(), inner, spy, func(string) bool { return true }, 0, 0)
+	ru := newGuestExecutor(t.Context(), spy, inner, 0, 0)
 
 	// Reclaim pushes 960 MiB out of the host Firecracker unit while preserving the
 	// 64 MiB hot floor (never freezing the host Firecracker unit!).
-	if err := ru.Reclaim("vm:ws-42:cmd-9", 1024<<20); err != nil {
-		t.Fatalf("Reclaim(vm cgroup): %v", err)
+	if err := ru.Reclaim(t.Context(), cmdRef{target: "ws-42", id: "cmd-9"}, 1024<<20); err != nil {
+		t.Fatalf("Reclaim: %v", err)
 	}
 	spy.mu.Lock()
 	if len(spy.calls) != 1 || spy.calls[0].wsID != "ws-42" || spy.calls[0].cmdID != "cmd-9" || spy.calls[0].bytes != 1024<<20 {
@@ -909,7 +910,7 @@ func TestRuntimeUnitsReclaimRoutesVMCgroupToGuestAndHostFirecrackerUnit(t *testi
 	inner.mu.Unlock()
 
 	// Memory() now reflects host-swapped anonymous RAM while preserving Held().
-	mem, err := ru.Memory("vm:ws-42:cmd-9")
+	mem, err := ru.Memory(t.Context(), cmdRef{target: "ws-42", id: "cmd-9"})
 	if err != nil {
 		t.Fatalf("Memory after reclaim: %v", err)
 	}
@@ -918,7 +919,7 @@ func TestRuntimeUnitsReclaimRoutesVMCgroupToGuestAndHostFirecrackerUnit(t *testi
 	}
 
 	// Tiny VM below the 64 MiB floor does not needlessly reclaim host VMM RAM.
-	if err := ru.Reclaim("vm:ws-42:cmd-9", 64<<20); err != nil {
+	if err := ru.Reclaim(t.Context(), cmdRef{target: "ws-42", id: "cmd-9"}, 64<<20); err != nil {
 		t.Fatalf("Reclaim below floor: %v", err)
 	}
 	inner.mu.Lock()
@@ -935,7 +936,7 @@ func TestRuntimeUnitsReclaimRoutesVMCgroupToGuestAndHostFirecrackerUnit(t *testi
 	spy.mu.Lock()
 	spy.reclaimErr = context.DeadlineExceeded
 	spy.mu.Unlock()
-	if err := ru.Reclaim("vm:ws-42:cmd-9", 512<<20); err != nil {
+	if err := ru.Reclaim(t.Context(), cmdRef{target: "ws-42", id: "cmd-9"}, 512<<20); err != nil {
 		t.Fatalf("Reclaim when guestd fails but host succeeds should succeed, got: %v", err)
 	}
 	inner.mu.Lock()
@@ -947,17 +948,17 @@ func TestRuntimeUnitsReclaimRoutesVMCgroupToGuestAndHostFirecrackerUnit(t *testi
 	inner.vmMem[vmCG] = unit.MemoryUse{Anon: 576 << 20, Swap: 0}
 	inner.reclaimErr = errors.New("memory.reclaim: EPERM")
 	inner.mu.Unlock()
-	if err := ru.Reclaim("vm:ws-42:cmd-9", 512<<20); err == nil {
+	if err := ru.Reclaim(t.Context(), cmdRef{target: "ws-42", id: "cmd-9"}, 512<<20); err == nil {
 		t.Fatal("expected error when host memory.reclaim fails")
 	}
 }
 
 // When guest zram, tmpfs, or guest kernel caches hold gigabytes inside the host
 // Firecracker process while the guest command cgroup reports tiny anon memory
-// (0-1 MiB), runtimeUnits.Memory must attribute the real host Firecracker RAM
-// and runtimeUnits.Reclaim on a quiescent VM must reclaim all host RAM above
+// (0-1 MiB), guestExecutor.Memory must attribute the real host Firecracker RAM
+// and guestExecutor.Reclaim on a quiescent VM must reclaim all host RAM above
 // vmHostMinResidentBytes (not just the tiny guest cgroup anon figure).
-func TestRuntimeUnitsMemoryAndReclaimAccountForHostVMRam(t *testing.T) {
+func TestGuestExecutorMemoryAndReclaimAccountForHostVMRam(t *testing.T) {
 	vmCG := "/user.slice/user-1000.slice/user-1000-hotbed.slice/hotbed-vm-ws-zram.service"
 	inner := &hostVMReclaimUnits{
 		Units: &fake.Units{},
@@ -977,10 +978,10 @@ func TestRuntimeUnitsMemoryAndReclaimAccountForHostVMRam(t *testing.T) {
 			},
 		},
 	}
-	ru := newRuntimeUnits(t.Context(), inner, spy, func(string) bool { return true }, 0, 0)
+	ru := newGuestExecutor(t.Context(), spy, inner, 0, 0)
 	ru.isVMQuiescent = func(string) bool { return true }
 
-	mem, err := ru.Memory("vm:ws-zram:cmd-1")
+	mem, err := ru.Memory(t.Context(), cmdRef{target: "ws-zram", id: "cmd-1"})
 	if err != nil {
 		t.Fatalf("Memory: %v", err)
 	}
@@ -993,7 +994,7 @@ func TestRuntimeUnitsMemoryAndReclaimAccountForHostVMRam(t *testing.T) {
 
 	// Even when the caller passes n=0 (or tiny n=1 MiB), quiescent VM fallback
 	// reclaim must push ALL reclaimable host VM RAM (3000 - 64 = 2936 MiB).
-	if err := ru.Reclaim("vm:ws-zram:cmd-1", 0); err != nil {
+	if err := ru.Reclaim(t.Context(), cmdRef{target: "ws-zram", id: "cmd-1"}, 0); err != nil {
 		t.Fatalf("Reclaim(0): %v", err)
 	}
 	inner.mu.Lock()
@@ -1394,7 +1395,7 @@ func TestVMCommandGuestOOMAndPeakMemoryTelemetry(t *testing.T) {
 			e.commands[tc.id] = c
 			e.mu.Unlock()
 
-			st := toUnitState("a", tc.status)
+			st := guestState(tc.status, unit.MemoryUse{Anon: tc.status.MemoryAnon, Swap: tc.status.MemorySwap})
 			e.observe(ctx, c, st, *now)
 
 			got := c.cmd()

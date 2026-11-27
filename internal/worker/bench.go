@@ -240,9 +240,10 @@ func (e *Engine) holdOneLoud(ctx context.Context, c *command, pool, benchID stri
 		e.mu.Unlock()
 		return
 	}
-	unitName, id := c.unitName(), c.cmd().Id
+	id := c.cmd().Id
 	e.mu.Unlock()
-	if err := e.cfg.Units.Freeze(ctx, unitName); err != nil {
+	x, r := e.executorFor(c), e.ref(c)
+	if err := x.Freeze(ctx, r); err != nil {
 		if !e.reconcileInactiveUnit(ctx, c) {
 			slog.Error("hold a command beside a measurement", "command", id, "err", err)
 		}
@@ -256,7 +257,7 @@ func (e *Engine) holdOneLoud(ctx context.Context, c *command, pool, benchID stri
 		shouldThaw := c.stopping && cmd.State == running
 		e.mu.Unlock()
 		if shouldThaw {
-			if err := e.cfg.Units.Thaw(ctx, unitName); err != nil {
+			if err := x.Thaw(ctx, r); err != nil {
 				slog.Warn("thaw a command no longer to hold", "command", id, "err", err)
 			}
 		}

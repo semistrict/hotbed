@@ -320,8 +320,7 @@ func TestFreshenAdmitsWhenIdleEvenIfGuaranteeExceedsMemAvailable(t *testing.T) {
 
 	t.Run("VM workspace commands are not deadlocked by host parkAt when PSI is low", func(t *testing.T) {
 		e, _, sys, _ := parkEngine(t)
-		e.cfg.Runtime = &trackingRuntime{}
-		e.cfg.RuntimeFor = e.isVMWorkspace
+		runInVMs(t, e)
 		e.vmWorkspaces.Store("vm-ws", struct{}{})
 		// Host at 96% used (past parkAt=93%) because the VM's own guest RAM is
 		// resident, but zero memory pressure.
@@ -402,8 +401,7 @@ func TestCommandAndShellMemoryBudgetEnv(t *testing.T) {
 	e.mu.Lock()
 	e.resources.MemoryBytes = 10 * GiB
 	e.cfg.VM = newVMBackend("", statedir.VMConfig{MemMiB: 6144})
-	e.cfg.Runtime = &trackingRuntime{}
-	e.cfg.RuntimeFor = e.isVMWorkspace
+	runInVMs(t, e)
 	e.vmWorkspaces.Store("ws-vm", struct{}{})
 
 	// Host-FUSE / chroot command (including base freshen) gets slice ceiling.
@@ -412,7 +410,7 @@ func TestCommandAndShellMemoryBudgetEnv(t *testing.T) {
 		Dir:     WorkPath,
 		Volume:  "v-host",
 	})
-	hostSpec, err := e.spec(hostCmd)
+	hostSpec, err := e.unitSpec(hostCmd)
 	if err != nil {
 		e.mu.Unlock()
 		t.Fatalf("spec(hostCmd): %v", err)
@@ -428,7 +426,7 @@ func TestCommandAndShellMemoryBudgetEnv(t *testing.T) {
 		Dir:     WorkPath,
 		Volume:  "v-host",
 	})
-	cappedSpec, err := e.spec(cappedCmd)
+	cappedSpec, err := e.unitSpec(cappedCmd)
 	if err != nil {
 		e.mu.Unlock()
 		t.Fatalf("spec(cappedCmd): %v", err)
@@ -444,7 +442,7 @@ func TestCommandAndShellMemoryBudgetEnv(t *testing.T) {
 		Dir:     WorkPath,
 		Volume:  "v-vm",
 	})
-	vmSpec, err := e.spec(vmCmd)
+	vmSpec, err := e.guestSpec(vmCmd)
 	if err != nil {
 		e.mu.Unlock()
 		t.Fatalf("spec(vmCmd): %v", err)
@@ -459,7 +457,7 @@ func TestCommandAndShellMemoryBudgetEnv(t *testing.T) {
 		Dir:     WorkPath,
 	})
 	vmFreshen.managedFreshen = &managedFreshen{vmID: "base-vm-1"}
-	vmFreshenSpec, err := e.spec(vmFreshen)
+	vmFreshenSpec, err := e.guestSpec(vmFreshen)
 	if err != nil {
 		e.mu.Unlock()
 		t.Fatalf("spec(vmFreshen): %v", err)
@@ -477,7 +475,7 @@ func TestCommandAndShellMemoryBudgetEnv(t *testing.T) {
 		t.Fatalf("host shell HOTBED_MEMORY_BYTES = %q, want %q", got, want)
 	}
 	vmWS := &workspace{rec: &pb.WorkspaceRecord{Workspace: &pb.Workspace{Id: "ws-vm", SessionId: "s1"}, Volume: "v-vm"}}
-	vmShellSpec, _ := e.shellSpec("sh2", vmWS, "", []string{"bash"}, nil, nil, false)
+	vmShellSpec := e.guestShellSpec(vmWS, "", []string{"bash"}, nil, nil, false)
 	e.mu.Unlock()
 	if got, want := envValue(vmShellSpec.Env, "HOTBED_MEMORY_BYTES"), strconv.FormatInt(6*GiB, 10); got != want {
 		t.Fatalf("VM shell HOTBED_MEMORY_BYTES = %q, want %q", got, want)
@@ -706,4 +704,24 @@ func TestReclaimableCladefsDAXCacheCreditedOnHostDomain(t *testing.T) {
 	if got := e.commands["wait-floor"].cmd(); got.State != queued || !strings.Contains(got.Reason, "in use") {
 		t.Fatalf("wait-floor at 97%% slice RAM = %v (%q), want queued (no DAX credit on slice domain)", got.State, got.Reason)
 	}
+}
+
+// envValue is the value env sets key to, or "".
+func envValue(env []string, key string) string {
+	for _, kv := range env {
+		if v, ok := strings.CutPrefix(kv, key+"="); ok {
+			return v
+		}
+	}
+	return ""
+}
+
+// runInVMs has e, made without a runtime, run its VM workspaces' commands
+// in VMs of a trackingRuntime, as NewEngine has an engine with a runtime.
+func runInVMs(t *testing.T, e *Engine) {
+	t.Helper()
+	e.cfg.Runtime = &trackingRuntime{}
+	e.cfg.RuntimeFor = e.isVMWorkspace
+	e.guest = newGuestExecutor(t.Context(), e.cfg.Runtime, e.cfg.Units, 0, 0)
+	t.Cleanup(e.guest.Close)
 }

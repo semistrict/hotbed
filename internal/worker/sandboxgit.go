@@ -171,7 +171,7 @@ func (e *Engine) gitIn(volPath, dir string) (gitops.Git, error) {
 			if err != nil {
 				return nil, err
 			}
-			return e.cfg.Units.Exec(ctx, unit.ExecPrefix+newID(), e.cfg.Slice, c)
+			return e.host.Exec(ctx, unit.ExecPrefix+newID(), e.cfg.Slice, c)
 		},
 	}, nil
 }
@@ -209,7 +209,7 @@ func (e *Engine) applyConfig(volPath, dir, bundle, commit, base string, subs []g
 
 // runApply runs c, applyConfig's chroot ExecSpec, and returns what its apply did.
 func (e *Engine) runApply(ctx context.Context, c unit.ExecSpec) (int, error) {
-	cmd, err := e.cfg.Units.Exec(ctx, unit.ExecPrefix+newID(), e.cfg.Slice, c)
+	cmd, err := e.host.Exec(ctx, unit.ExecPrefix+newID(), e.cfg.Slice, c)
 	if err != nil {
 		return 0, err
 	}

@@ -750,7 +750,6 @@ func TestProactiveGuestCacheReclaimUnderHostPressure(t *testing.T) {
 	eng.mu.Lock()
 	eng.commands["c-run"] = eng.newCommand(&pb.CommandRecord{
 		Command: &pb.Command{Id: "c-run", WorkspaceId: "ws-hot", State: running, Limits: &pb.CommandLimits{}},
-		Cgroup:  makeVMCgroup("ws-hot", "c-run"),
 	})
 	eng.mu.Unlock()
 

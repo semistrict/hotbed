@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -16,7 +17,6 @@ import (
 	"github.com/semistrict/hotbed/internal/fake"
 	pb "github.com/semistrict/hotbed/internal/gen/hotbed/v1"
 	"github.com/semistrict/hotbed/internal/runtime"
-	"github.com/semistrict/hotbed/internal/unit"
 )
 
 func TestManagedFreshenAdmissionHoldProgressAndCompletion(t *testing.T) {
@@ -232,13 +232,6 @@ waited:
 	e.collectBases(t.Context())
 }
 
-type failStartUnits struct {
-	Units
-	err error
-}
-
-func (f *failStartUnits) Start(_ context.Context, _ unit.Spec) error { return f.err }
-
 func TestManagedFreshenCancelWhileQueuedSkipsBeforeStartAndRollsBackOnStartFail(t *testing.T) {
 	now := time.Unix(1795300000, 0)
 	e := limited(t, &now)
@@ -281,8 +274,8 @@ func TestManagedFreshenCancelWhileQueuedSkipsBeforeStartAndRollsBackOnStartFail(
 	}
 	h1.Finish(false, res1, cladefs.CellRef{}, "cancelled")
 
-	// Case 2: Units.Start fails after BeforeStart succeeded -> OnStartFail cleans up VM.
-	// Use a dedicated engine constructed with failStartUnits so e.cfg.Units is never mutated concurrently.
+	// Case 2: the guest fails to start it after BeforeStart booted its VM ->
+	// OnStartFail cleans up the VM.
 	store2 := &fake.Store{Root: t.TempDir()}
 	baseImg2 := fake.BaseImage(store2)
 	e2, err := NewEngine(t.Context(), EngineConfig{
@@ -291,9 +284,13 @@ func TestManagedFreshenCancelWhileQueuedSkipsBeforeStartAndRollsBackOnStartFail(
 		Host:      "n-failstart",
 		BaseImage: baseImg2,
 		Store:     store2,
-		Units:     &failStartUnits{Units: &fake.Units{}, err: errors.New("guestd start failed")},
-		System:    fake.NewSystem(),
-		Now:       func() time.Time { return now },
+		Units:     &fake.Units{},
+		Runtime: &stubWorkspaceRuntime{onStart: func(string, runtime.CommandSpec) error {
+			return errors.New("guestd start failed")
+		}},
+		RuntimeFor: func(string) bool { return false },
+		System:     fake.NewSystem(),
+		Now:        func() time.Time { return now },
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -381,38 +378,52 @@ func TestReconcileLoadedEndsInterruptedCladefsBasesAndWorkspaces(t *testing.T) {
 	}
 }
 
-func TestRuntimeUnitsRoutesManagedVMFreshenViaRuntimeTarget(t *testing.T) {
-	inner := &fake.Units{}
+// A base build's freshen launches in its build VM, named to the guest
+// executor as what it runs in: nothing smuggles the VM into its
+// environment.
+func TestManagedVMFreshenLaunchesInItsBuildVM(t *testing.T) {
+	now := time.Unix(1795300000, 0)
+	e := limited(t, &now)
+	c := e.newCommand(&pb.CommandRecord{
+		Command: &pb.Command{Id: "f-cladefs-vm-12345678-abc123", Kind: "freshen", Args: []string{"/bin/bash", "-c", "echo ok"}, Limits: &pb.CommandLimits{CpuWeight: 100}},
+		Dir:     "/work",
+		Env:     []string{"FOO=bar"},
+	})
+	c.managedFreshen = &managedFreshen{vmID: "base-cladefs-vm-12345678"}
+	runInVMs(t, e)
+	e.mu.Lock()
+	inGuest := e.runsInGuest(c)
+	l, err := e.launch(c)
+	e.mu.Unlock()
+	if err != nil {
+		t.Fatalf("launch: %v", err)
+	}
+	if !inGuest || l.ref.target != "base-cladefs-vm-12345678" || l.ref.id != c.cmd().Id || l.ref.unit != c.unitName() {
+		t.Fatalf("launch ref = %+v (in guest %v), want the build VM base-cladefs-vm-12345678", l.ref, inGuest)
+	}
+
 	var gotWSID string
-	var gotEnv []string
+	var gotSpec runtime.CommandSpec
 	rt := &stubWorkspaceRuntime{
 		onStart: func(wsID string, spec runtime.CommandSpec) error {
-			gotWSID = wsID
-			gotEnv = spec.Env
+			gotWSID, gotSpec = wsID, spec
 			return nil
 		},
 	}
-	ru := newRuntimeUnits(t.Context(), inner, rt, func(wsID string) bool { return wsID == "base-cladefs-vm-12345678" }, 1000, 1000)
-	err := ru.Start(t.Context(), unit.Spec{
-		Name: "hotbed-f-cladefs-vm-12345678-abc123",
-		Argv: []string{"/bin/bash", "-c", "echo ok"},
-		Dir:  "/work",
-		Env: []string{
-			"HOTBED_WORKSPACE=",
-			"HOTBED_COMMAND=f-cladefs-vm-12345678-abc123",
-			"HOTBED_RUNTIME_TARGET=base-cladefs-vm-12345678",
-			"FOO=bar",
-		},
-	})
-	if err != nil {
-		t.Fatalf("runtimeUnits.Start: %v", err)
+	g := newGuestExecutor(t.Context(), rt, nil, 1000, 1000)
+	t.Cleanup(g.Close)
+	if err := g.Start(t.Context(), l); err != nil {
+		t.Fatalf("guestExecutor.Start: %v", err)
 	}
-	if gotWSID != "base-cladefs-vm-12345678" {
-		t.Fatalf("routed target = %q, want base-cladefs-vm-12345678", gotWSID)
+	if gotWSID != "base-cladefs-vm-12345678" || gotSpec.UID != 1000 || gotSpec.GID != 1000 {
+		t.Fatalf("started in %q as %d:%d, want base-cladefs-vm-12345678 as 1000:1000", gotWSID, gotSpec.UID, gotSpec.GID)
 	}
-	for _, kv := range gotEnv {
-		if strings.HasPrefix(kv, "HOTBED_RUNTIME_TARGET=") {
-			t.Fatalf("internal HOTBED_RUNTIME_TARGET leaked into guest env: %v", gotEnv)
+	if !slices.Contains(gotSpec.Env, "FOO=bar") || !slices.Contains(gotSpec.Env, "HOTBED_COMMAND=f-cladefs-vm-12345678-abc123") {
+		t.Fatalf("guest env = %v, want the command's own and HOTBED_COMMAND", gotSpec.Env)
+	}
+	for _, kv := range gotSpec.Env {
+		if strings.HasPrefix(kv, "HOTBED_RUNTIME_TARGET=") || strings.HasPrefix(kv, "HOME=") {
+			t.Fatalf("guest env = %v: a freshen brings its own HOME, and nothing names its VM", gotSpec.Env)
 		}
 	}
 }
@@ -509,6 +520,8 @@ type stubWorkspaceRuntime struct {
 	onStart func(wsID string, spec runtime.CommandSpec) error
 }
 
+func (s *stubWorkspaceRuntime) Kind() string { return runtime.KindVM }
+
 func (s *stubWorkspaceRuntime) StartCommand(_ context.Context, wsID string, spec runtime.CommandSpec) error {
 	if s.onStart != nil {
 		return s.onStart(wsID, spec)
@@ -568,19 +581,18 @@ func (f *followingRuntime) StreamLogs(ctx context.Context, _, _ string, _ int64,
 	return 0, ctx.Err()
 }
 
-// Closing the runtime units ends the log pumps of guest commands that run
+// Closing the guest executor ends the log pumps of guest commands that run
 // on, started or re-attached, and waits for them: none outlives the engine.
-func TestRuntimeUnitsCloseEndsEveryLogPump(t *testing.T) {
+func TestGuestExecutorCloseEndsEveryLogPump(t *testing.T) {
 	rt := &followingRuntime{streaming: make(chan struct{}, 2)}
-	ru := newRuntimeUnits(t.Context(), &fake.Units{}, rt, func(string) bool { return true }, 0, 0)
-	if err := ru.Start(t.Context(), unit.Spec{
-		Name: "hotbed-c1",
-		Argv: []string{"true"},
-		Env:  []string{"HOTBED_WORKSPACE=ws1", "HOTBED_COMMAND=c1"},
+	ru := newGuestExecutor(t.Context(), rt, &fake.Units{}, 0, 0)
+	if err := ru.Start(t.Context(), launch{
+		ref:   cmdRef{unit: "hotbed-c1", target: "ws1", id: "c1"},
+		guest: runtime.CommandSpec{ID: "c1", Argv: []string{"true"}},
 	}); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
-	ru.RegisterExisting("hotbed-c2", "ws1", "c2", "")
+	ru.register(cmdRef{unit: "hotbed-c2", target: "ws1", id: "c2"}, "")
 	<-rt.streaming
 	<-rt.streaming
 	started := []*rtCmd{ru.lookup("hotbed-c1"), ru.lookup("hotbed-c2")}
@@ -593,7 +605,7 @@ func TestRuntimeUnitsCloseEndsEveryLogPump(t *testing.T) {
 		}
 	}
 	// After Close no pump starts: the command is tracked, its pump done.
-	ru.RegisterExisting("hotbed-c3", "ws1", "c3", "")
+	ru.register(cmdRef{unit: "hotbed-c3", target: "ws1", id: "c3"}, "")
 	select {
 	case <-ru.lookup("hotbed-c3").done:
 	default:

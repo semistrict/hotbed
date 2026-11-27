@@ -37,10 +37,10 @@ type managedFreshen struct {
 	// base build (used instead of e.volPath(c.rec.Volume)).
 	rootDir string
 	// vmID, when non-empty, is the temporary Firecracker VM ID ("base-<baseID>")
-	// for a VM base build; routed through runtimeUnits instead of host systemd.
+	// for a VM base build, which its command runs in (guestExecutor).
 	vmID string
 	// beforeStart, when non-nil, runs inside admit() after admission checks pass
-	// and before Units.Start (e.g. booting the temporary base Firecracker VM).
+	// and before its executor starts it (e.g. booting the temporary base VM).
 	beforeStart func(ctx context.Context) error
 	// onStartFail, when non-nil, runs if Units.Start fails or the command is
 	// cancelled after beforeStart succeeded (e.g. stopping the temporary base VM).

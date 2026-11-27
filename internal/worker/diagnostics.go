@@ -94,9 +94,9 @@ func (e *Engine) resolveLiveCommand(id string) (liveCommandRoute, error) {
 	wsID := c.runtimeTarget()
 	unitName := c.unitName()
 	cgroup := c.rec.Cgroup
+	isVM := e.runsInGuest(c)
 	e.mu.Unlock()
 
-	isVM := wsID != "" && e.usesRuntime(wsID)
 	if state == queued {
 		return liveCommandRoute{}, api.Errorf(api.CodeConflict, "command %s is still queued and has not started yet", id)
 	}
@@ -116,7 +116,7 @@ func (e *Engine) resolveLiveCommand(id string) (liveCommandRoute, error) {
 func (e *Engine) hostInspectTarget(ctx context.Context, id string, route liveCommandRoute) inspect.Target {
 	cgroup := route.cgroup
 	var mainPID int
-	if st, err := e.cfg.Units.Status(ctx, route.unitName); err == nil && st.Loaded {
+	if st, err := e.host.Status(ctx, cmdRef{unit: route.unitName}); err == nil && st.Loaded {
 		mainPID = st.PID
 		if st.Cgroup != "" {
 			cgroup = st.Cgroup
@@ -285,12 +285,11 @@ func (e *Engine) CommandProfile(id string, req *pb.GetProfileRequest) (*pb.Comma
 	e.mu.Lock()
 	c, ok := e.commands[id]
 	isLive := ok && api.Live(c.cmd().State)
-	wsID := ""
+	wsID, isVM := "", false
 	if ok {
-		wsID = c.runtimeTarget()
+		wsID, isVM = c.runtimeTarget(), e.runsInGuest(c)
 	}
 	e.mu.Unlock()
-	isVM := wsID != "" && e.usesRuntime(wsID)
 
 	if isLive {
 		if isVM {
@@ -371,10 +370,10 @@ func (e *Engine) snapshotVMProfile(c *command) {
 	}
 	c.vmProfileDone = true
 	cmd := c.cmd()
-	wsID, cmdID, isFreshen := c.runtimeTarget(), cmd.Id, c.isFreshen()
+	wsID, cmdID, isFreshen, inGuest := c.runtimeTarget(), cmd.Id, c.isFreshen(), e.runsInGuest(c)
 	e.mu.Unlock()
 
-	if isFreshen || wsID == "" || !e.usesRuntime(wsID) {
+	if isFreshen || !inGuest {
 		return
 	}
 	pctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)

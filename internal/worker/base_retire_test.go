@@ -37,6 +37,7 @@ type fakeRetireCladefsClient struct {
 	createErr       func(*cladefsdv1.CreateCellRequest) error
 	forkErr         func(*cladefsdv1.ForkCellRequest) error
 	deleteErr       func(*cladefsdv1.DeleteCellRequest) error
+	makeVersionErr  func(*cladefsdv1.MakeVersionRequest) error
 }
 
 func (f *fakeRetireCladefsClient) CreateCell(_ context.Context, req *cladefsdv1.CreateCellRequest, _ ...grpc.CallOption) (*cladefsdv1.CreateCellResponse, error) {
@@ -67,6 +68,11 @@ func (f *fakeRetireCladefsClient) SyncCell(_ context.Context, req *cladefsdv1.Sy
 
 func (f *fakeRetireCladefsClient) MakeVersion(_ context.Context, req *cladefsdv1.MakeVersionRequest, _ ...grpc.CallOption) (*cladefsdv1.MakeVersionResponse, error) {
 	f.makeVersionReqs = append(f.makeVersionReqs, req)
+	if f.makeVersionErr != nil {
+		if err := f.makeVersionErr(req); err != nil {
+			return nil, err
+		}
+	}
 	f.nextVersion++
 	return &cladefsdv1.MakeVersionResponse{Version: f.nextVersion}, nil
 }
