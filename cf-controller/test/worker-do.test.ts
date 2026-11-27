@@ -24,7 +24,11 @@ import {
 import { KEEP_WORKER_INFO_LOGS_MS, workerDoName } from "../src/worker-do.ts";
 
 const OWNER_TOKEN = "test-owner-secret";
-const JOIN_TOKEN = "test-join-secret";
+// Dedicated org so this suite never collides with ControllerDO("default") state
+// mutated by other test files (e.g. test/workos.test.ts binding DEFAULT_ORG_ID)
+// when Vitest reuses a worker across files.
+const TEST_ORG_ID = "org_worker_do_test";
+const TEST_CONTROLLER_DO = `org:${TEST_ORG_ID}`;
 
 function makeClients(token: string, extraHeaders: Record<string, string> = {}) {
 	const authInterceptor: Interceptor = (next) => async (req) => {
@@ -52,16 +56,31 @@ function makeClients(token: string, extraHeaders: Record<string, string> = {}) {
 describe("WorkerDO per-org / per-worker SQLite storage", () => {
 	it("streams worker slog (INFO/WARN/ERROR), samples, and feed events into WorkerDO without bloating ControllerDO", async () => {
 		const testEnv = env as unknown as ControllerEnv;
-		const owner = makeClients(OWNER_TOKEN);
+		const owner = makeClients(OWNER_TOKEN, { "X-Hotbed-Org-Id": TEST_ORG_ID });
+
+		// Mint an org-scoped join token so all calls route deterministically to
+		// ControllerDO("org:org_worker_do_test").
+		const joinTokenRes = await SELF.fetch("https://controller.test/admin/join-tokens", {
+			method: "POST",
+			headers: {
+				Authorization: `Bearer ${OWNER_TOKEN}`,
+				"X-Hotbed-Org-Id": TEST_ORG_ID,
+				"Content-Type": "application/json",
+			},
+			body: JSON.stringify({ label: "worker-do-test" }),
+		});
+		expect(joinTokenRes.status).toBe(201);
+		const { token: joinToken } = (await joinTokenRes.json()) as { token: string };
+		expect(joinToken.startsWith(`hbj_${TEST_ORG_ID}.`)).toBe(true);
 
 		// Join worker "ubu1" with a dedicated node identity.
-		const joinClient = makeClients(JOIN_TOKEN, {
+		const joinClient = makeClients(joinToken, {
 			"X-Hotbed-Node-ID": "node-ubu1",
 			"X-Hotbed-Host": "ubu1",
 		});
 		const joined = await joinClient.cluster.join({});
 		expect(joined.clusterId).toBeTruthy();
-		expect(joined.workerToken).toBeTruthy();
+		expect(joined.workerToken.startsWith(`hbw_${TEST_ORG_ID}.`)).toBe(true);
 
 		const worker = makeClients(joined.workerToken, {
 			"X-Hotbed-Node-ID": "node-ubu1",
@@ -139,7 +158,7 @@ describe("WorkerDO per-org / per-worker SQLite storage", () => {
 		expect(push2.ackedSeq).toBe(3n);
 
 		// Verify ControllerDO SQLite stayed completely free of samples and events bloat.
-		const ctrlStub = testEnv.CONTROLLER.getByName("default");
+		const ctrlStub = testEnv.CONTROLLER.getByName(TEST_CONTROLLER_DO);
 		const ctrlSamples = await ctrlStub.adminQuerySql("SELECT COUNT(*) AS c FROM samples");
 		const ctrlEvents = await ctrlStub.adminQuerySql("SELECT COUNT(*) AS c FROM events");
 		expect(ctrlSamples.ok && Number(ctrlSamples.result.rows[0].c)).toBe(0);
@@ -207,11 +226,11 @@ describe("WorkerDO per-org / per-worker SQLite storage", () => {
 
 	it("enforces strict per-organization scoping on Admin Agent WORKER DO access", async () => {
 		const testEnv = env as unknown as ControllerEnv;
-		const ctrlStub = testEnv.CONTROLLER.getByName("default");
+		const ctrlStub = testEnv.CONTROLLER.getByName(TEST_CONTROLLER_DO);
 		const health = await ctrlStub.getHealth();
 		const scope: AdminOrgScope = {
-			controllerDoName: "default",
-			orgId: "",
+			controllerDoName: TEST_CONTROLLER_DO,
+			orgId: TEST_ORG_ID,
 		};
 
 		// Same-org WorkerDO resolves cleanly.
