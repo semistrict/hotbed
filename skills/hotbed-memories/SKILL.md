@@ -9,7 +9,8 @@ license: MIT
 Memories are lessons shared across every agent harness and machine. Each is like a skill: a
 **summary**, one line saying what it is about and when to read it, and a **body**, the memory
 itself. Every `hotbed session start` (and `hotbed mcp`'s instructions) lists each active memory's
-summary; read a body with `hotbed memory get` once its summary applies to what you are doing. New
+summary under its slug (`global/SLUG` or `PROJECT/SLUG` only when two share a slug); read a body
+with `hotbed memory get` once its summary applies to what you are doing. New
 memories are approved and active at once; the user can edit any field, promote a project memory to
 global, archive and restore, reorder, or remove them in the cockpit or CLI.
 

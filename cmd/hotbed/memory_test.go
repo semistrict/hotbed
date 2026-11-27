@@ -107,8 +107,8 @@ func TestMemoryLifecycleAndSessionRecall(t *testing.T) {
 	}
 	plainOut := plainOutBuf.String()
 	wantMemories := "\n\nMemories (read one with `hotbed memory get SLUG` when its summary applies):\n" +
-		"  [test] zfs-base-freshen — How to debug ZFS snapshot/clone base freshening flakes.\n" +
-		"  [global] subagent-model-neon — Use gemini-4-neon (not GPT models) for all T3 Code delegated subagents.\n\n"
+		"  zfs-base-freshen — How to debug ZFS snapshot/clone base freshening flakes.\n" +
+		"  subagent-model-neon — Use gemini-4-neon (not GPT models) for all T3 Code delegated subagents.\n\n"
 	if !strings.Contains(plainOut, wantMemories) {
 		t.Errorf("plain session start output missing %q:\n%s", wantMemories, plainOut)
 	}

@@ -9,8 +9,10 @@ license: MIT
 Hotbed stores reusable [Agent Skills](https://agentskills.io) (multi-file `SKILL.md` packages with `references/`, `scripts/`, `assets/`) in the controller, scoped either globally or to a project/repo, and announces **every** active skill descriptor relevant to your session on `hotbed session start` (pass `--omit-skills` to suppress). Skills are also served natively over MCP via the **MCP Skills Extension (SEP-2640, `io.modelcontextprotocol/skills`)** and standard MCP `resources/*` (`skill://global/<name>/SKILL.md`, `skill://<project>/<name>/SKILL.md`, `skill://builtin/<name>/SKILL.md`).
 
 hotbed's own guides (`hotbed`, `hotbed-questions`, …) are **built-in skills**: compiled into the
-CLI, listed first on every session start (`[builtin]`), read offline with `hotbed skills get NAME`,
-and never stored on the controller. Their source is `skills/` in the hotbed repo.
+CLI, listed first on every session start, read offline with `hotbed skills get NAME`,
+and never stored on the controller. Session start names each skill bare; only a stored skill whose
+name another shares is named `global/NAME` or `PROJECT/NAME`, the ref `hotbed skills get` takes
+(a built-in's bare name always reads the built-in). `hotbed skills show NAME` says where one is from. Their source is `skills/` in the hotbed repo.
 
 ```sh
 # Install from any `npx skills` source (GitHub shorthand, @skill, @ref, GitHub/GitLab/Git URL,

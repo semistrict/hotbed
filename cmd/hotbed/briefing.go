@@ -51,7 +51,7 @@ func builtinSkillURI(name string) string { return "skill://builtin/" + name + "/
 type briefingHints struct {
 	skill, memory, moreMemories string
 	// skillURIs puts each skill's URI after it, for an MCP client to read
-	// it by: a scope tag does not make one (a repo's skill is in its project).
+	// it by.
 	skillURIs bool
 }
 
@@ -85,14 +85,20 @@ func formatSessionStarted(sess *pb.Session) string {
 }
 
 // formatBriefing renders the session's skills, memories and reminder, each
-// part only when it has something to say.
+// part only when it has something to say. Each line names what to read by
+// the ref `skills get` or `memory get` takes; where a skill or memory is from
+// is left to that call, unless two share a name.
 func formatBriefing(sess *pb.Session, h briefingHints) string {
 	var parts []string
 	if sk := sess.GetSkills().GetSkills(); len(sk) > 0 {
+		names := map[string]int{}
+		for _, s := range sk {
+			names[s.Name]++
+		}
 		var sb strings.Builder
 		fmt.Fprintf(&sb, "Skills (read one with %s when its description applies):", h.skill)
 		for _, s := range sk {
-			fmt.Fprintf(&sb, "\n  [%s] %s — %s", skillScopeTag(s), s.Name, s.Description)
+			fmt.Fprintf(&sb, "\n  %s — %s", skillRef(s, names[s.Name] > 1), s.Description)
 			if h.skillURIs {
 				fmt.Fprintf(&sb, " (%s)", s.Uri)
 			}
@@ -100,10 +106,18 @@ func formatBriefing(sess *pb.Session, h briefingHints) string {
 		parts = append(parts, sb.String())
 	}
 	if m := sess.GetMemories(); len(m.GetEntries()) > 0 || m.GetOmitted() > 0 {
+		slugs := map[string]int{}
+		for _, e := range m.Entries {
+			slugs[e.Slug]++
+		}
 		var sb strings.Builder
 		fmt.Fprintf(&sb, "Memories (read one with %s when its summary applies):", h.memory)
 		for _, e := range m.Entries {
-			fmt.Fprintf(&sb, "\n  [%s] %s — %s", scopeTag(e.Project, e.Repo), e.Slug, e.Summary)
+			ref := e.Slug
+			if slugs[e.Slug] > 1 {
+				ref = scopeOf(e.Project) + "/" + e.Slug
+			}
+			fmt.Fprintf(&sb, "\n  %s — %s", ref, e.Summary)
 		}
 		if m.Omitted > 0 {
 			fmt.Fprintf(&sb, "\n  (+%d more, left out for room: %s)", m.Omitted, h.moreMemories)
@@ -116,21 +130,21 @@ func formatBriefing(sess *pb.Session, h briefingHints) string {
 	return strings.Join(parts, "\n\n")
 }
 
-func skillScopeTag(s *pb.SkillDescriptor) string {
-	if s.Scope == pb.SkillScope_SKILL_SCOPE_BUILTIN {
-		return "builtin"
+// skillRef is what `skills get` reads s by. A built-in skill's bare name
+// always reads the built-in, so only a stored skill sharing its name with
+// another needs its scope.
+func skillRef(s *pb.SkillDescriptor, shared bool) string {
+	if !shared || s.Scope == pb.SkillScope_SKILL_SCOPE_BUILTIN {
+		return s.Name
 	}
-	return scopeTag(s.Project, s.Repo)
+	return scopeOf(s.Project) + "/" + s.Name
 }
 
-// scopeTag names where a stored skill or memory applies: global, or its
-// project and, when it has one, the repo within it.
-func scopeTag(project, repo string) string {
+// scopeOf is the scope part of a stored skill's or memory's ref: its
+// project, or global.
+func scopeOf(project string) string {
 	if project == "" {
 		return "global"
-	}
-	if repo != "" {
-		return project + "/" + repo
 	}
 	return project
 }

@@ -102,7 +102,11 @@ func TestSkillsLifecycleSessionRecallAndNpxAdd(t *testing.T) {
 	}
 	want = append(want, "test release-prod", "global code-review")
 	for _, d := range started.GetSkills().GetSkills() {
-		got = append(got, skillScopeTag(d)+" "+d.Name)
+		scope := scopeOf(d.Project)
+		if d.Scope == pb.SkillScope_SKILL_SCOPE_BUILTIN {
+			scope = "builtin"
+		}
+		got = append(got, scope+" "+d.Name)
 	}
 	if !slices.Equal(got, want) {
 		t.Errorf("session start skills = %q, want %q", got, want)
@@ -119,8 +123,8 @@ func TestSkillsLifecycleSessionRecallAndNpxAdd(t *testing.T) {
 		t.Fatalf("plain session start failed (%d): %s", code, plainErr.String())
 	}
 	outStr := plainOut.String()
-	wantStored := "\n  [test] release-prod — Deploy the app safely.\n  [global] code-review — Review code changes for bugs and security issues.\n"
-	if !strings.HasPrefix(outStr, "wise-owl  project=test\n\nSkills (read one with `hotbed skills get NAME` when its description applies):\n  [builtin] hotbed — ") ||
+	wantStored := "\n  release-prod — Deploy the app safely.\n  code-review — Review code changes for bugs and security issues.\n"
+	if !strings.HasPrefix(outStr, "wise-owl  project=test\n\nSkills (read one with `hotbed skills get NAME` when its description applies):\n  hotbed — ") ||
 		!strings.Contains(outStr, wantStored) {
 		t.Errorf("plain session start = %q, want the built-in skills first, then%q", outStr, wantStored)
 	}
@@ -401,10 +405,10 @@ func TestMCPSkillsExtensionSEP2640AndResources(t *testing.T) {
 	}
 
 	// 2. Instructions list each relevant skill with the URI to read it by
-	// (and NOT other-only): a scope tag such as [test/REPO] makes no URI.
+	// (and NOT other-only).
 	for _, want := range []string{
-		"\n  [test] proj-only — Only for project test. (skill://test/proj-only/SKILL.md)",
-		"\n  [global] pdf-processing — Extract, fill, and assemble PDF documents. (skill://global/pdf-processing/SKILL.md)",
+		"\n  proj-only — Only for project test. (skill://test/proj-only/SKILL.md)",
+		"\n  pdf-processing — Extract, fill, and assemble PDF documents. (skill://global/pdf-processing/SKILL.md)",
 		" (skill://builtin/hotbed/SKILL.md)",
 	} {
 		if !strings.Contains(initRes.Instructions, want) {

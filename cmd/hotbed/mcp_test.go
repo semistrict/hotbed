@@ -386,7 +386,7 @@ func TestMCPInstructionsListBuiltinSkillsWithoutASession(t *testing.T) {
 	defer m.stop()
 
 	instr := m.InitializeResult().Instructions
-	want := "\n  [builtin] hotbed-questions — " + mustBuiltin(t, "hotbed-questions").Description + " (skill://builtin/hotbed-questions/SKILL.md)"
+	want := "\n  hotbed-questions — " + mustBuiltin(t, "hotbed-questions").Description + " (skill://builtin/hotbed-questions/SKILL.md)"
 	if !strings.Contains(instr, "Skills (read one with `resources/read` of its URI, or `hotbed skills get NAME` when its description applies):") || !strings.Contains(instr, want) {
 		t.Errorf("instructions without a session = %q, want the built-in skills, such as %q", instr, want)
 	}
