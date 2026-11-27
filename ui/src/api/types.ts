@@ -617,7 +617,7 @@ export interface Api {
   /** A command's output as written, from offset to what it has so far, and the offset to read on from. */
   outputBytes(id: string, offset: bigint, signal?: AbortSignal): Promise<{ data: Uint8Array; next: bigint }>;
   /** Questions of a command's output (QueryOutput). */
-  queryOutput(id: string, query: OutputQueryInput): Promise<OutputQuery>;
+  queryOutput(id: string, query: OutputQueryInput, signal?: AbortSignal): Promise<OutputQuery>;
   files(workspaceId: string): Promise<FileEntry[]>;
   file(workspaceId: string, path: string): Promise<FileContent>;
   inspectCommand(id: string, opts?: { sections?: InspectSection[]; pid?: number }, signal?: AbortSignal): Promise<InspectCommandResponse>;

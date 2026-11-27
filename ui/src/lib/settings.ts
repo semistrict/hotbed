@@ -1,5 +1,5 @@
 import { create, fromJson, toJson } from "@bufbuild/protobuf";
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { keepPreviousData, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   api,
   type ManagedArtifact,
@@ -415,33 +415,58 @@ export function draftToWorkerConfigInput(draft: SettingsDraft, opts: { isOrgDefa
 }
 
 /**
- * Mirrors worker's RequiresConfigRestart: indicates whether saving the diff
- * between baseline and next changes structural runtime fields (requiring an
- * idle-deferred worker restart) vs hot-reloading immediately in place.
+ * Mirrors worker's RequiresConfigRestart (internal/worker/config_sync.go):
+ * indicates whether saving the diff between baseline and next changes
+ * structural runtime fields (requiring an idle-deferred worker restart) vs
+ * hot-reloading immediately in place. Sub-fields of the VM and FUSE sections
+ * only matter when both sides enable the section. The draft carries neither
+ * tenantId (the UI never sets it) nor the machined fields (not in the proto).
  */
 export function draftRequiresRestart(prev: SettingsDraft, next: SettingsDraft): boolean {
   if (prev.slice.trim() !== next.slice.trim()) return true;
-  if (prev.unitPropertiesText.trim() !== next.unitPropertiesText.trim()) return true;
-  if (prev.vm.enabled !== next.vm.enabled) return true;
-  if (
-    prev.vm.cladefsControlSock.trim() !== next.vm.cladefsControlSock.trim() ||
-    prev.vm.cladefsVmSock.trim() !== next.vm.cladefsVmSock.trim() ||
-    prev.vm.cellRoot.trim() !== next.vm.cellRoot.trim() ||
-    prev.vm.bridgeName.trim() !== next.vm.bridgeName.trim() ||
-    prev.vm.bridgeCidr.trim() !== next.vm.bridgeCidr.trim()
-  ) {
-    return true;
-  }
-  if (prev.cladefsFuse.enabled !== next.cladefsFuse.enabled) return true;
-  if (
-    prev.cladefsFuse.cladefsControlSock.trim() !== next.cladefsFuse.cladefsControlSock.trim() ||
-    prev.cladefsFuse.cellRoot.trim() !== next.cladefsFuse.cellRoot.trim() ||
-    prev.cladefsFuse.mountRoot.trim() !== next.cladefsFuse.mountRoot.trim() ||
-    prev.cladefsFuse.mountStoresRoot.trim() !== next.cladefsFuse.mountStoresRoot.trim()
-  ) {
+  const prevUnits = parseLines(prev.unitPropertiesText);
+  const nextUnits = parseLines(next.unitPropertiesText);
+  if (prevUnits.length !== nextUnits.length || prevUnits.some((u, i) => u !== nextUnits[i])) return true;
+
+  const prevVm = prev.vm.enabled === "true";
+  const nextVm = next.vm.enabled === "true";
+  if (prevVm !== nextVm) return true;
+  if (prevVm && nextVm && differsTrimmed(prev.vm, next.vm, VM_STRUCTURAL_KEYS)) return true;
+
+  const prevFuse = prev.cladefsFuse.enabled === "true";
+  const nextFuse = next.cladefsFuse.enabled === "true";
+  if (prevFuse !== nextFuse) return true;
+  if (prevFuse && nextFuse && differsTrimmed(prev.cladefsFuse, next.cladefsFuse, FUSE_STRUCTURAL_KEYS)) {
     return true;
   }
   return false;
+}
+
+const VM_STRUCTURAL_KEYS = ["cladefsControlSock", "cladefsVmSock", "cellRoot", "bridgeName", "bridgeCidr"] as const;
+const FUSE_STRUCTURAL_KEYS = ["cladefsControlSock", "cellRoot", "mountRoot", "mountStoresRoot"] as const;
+
+function differsTrimmed<T extends object, K extends keyof T>(a: T, b: T, keys: readonly K[]): boolean {
+  return keys.some((k) => String(a[k]).trim() !== String(b[k]).trim());
+}
+
+/** Which saved config (scope and its content signature) a settings draft was last reset to. */
+export interface DraftSync {
+  scope: string;
+  sig: string;
+}
+
+/**
+ * What the settings draft does when the saved config it follows may have moved:
+ * "current" (nothing moved), "hold" (the saved config changed under unsaved
+ * edits: keep them and offer a reload) or "reset" (follow the saved config).
+ * Switching scope always resets; a background refetch never wipes edits.
+ * `hasUnsavedEdits` means edits to the draft since it last followed the saved
+ * config (not "differs from the new saved config", which a refetch alone makes true).
+ */
+export function draftSyncAction(synced: DraftSync, current: DraftSync, hasUnsavedEdits: boolean): "current" | "hold" | "reset" {
+  if (synced.scope !== current.scope) return "reset";
+  if (synced.sig === current.sig) return "current";
+  return hasUnsavedEdits ? "hold" : "reset";
 }
 
 export function workerConfigToPrettyJson(cfg?: WorkerConfig | WorkerConfigInput): string {
@@ -523,6 +548,7 @@ export function useWorkerConfig(node = "") {
   return useQuery({
     queryKey: ["worker-config", node],
     queryFn: () => api.getWorkerConfig(node),
+    placeholderData: keepPreviousData,
   });
 }
 

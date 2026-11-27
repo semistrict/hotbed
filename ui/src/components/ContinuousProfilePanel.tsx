@@ -1,4 +1,4 @@
-import { useQuery } from "@tanstack/react-query";
+import { keepPreviousData, useQuery } from "@tanstack/react-query";
 import { useEffect, useState } from "react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -134,6 +134,7 @@ export function ContinuousProfilePanel({ id, node, live }: ContinuousProfileProp
       return isNode ? api.nodeProfile(node, q) : api.commandProfile(id, q);
     },
     refetchInterval: live ? 5000 : false,
+    placeholderData: keepPreviousData,
   });
 
   const p = profileQuery.data;
@@ -466,7 +467,8 @@ export function TimelineBuckets({
   selected: ProfileBucket | null;
   onSelect: (b: ProfileBucket) => void;
 }) {
-  const shown = aggregateTimelineBuckets(buckets);
+  // `buckets` arrive aggregated already (displayBuckets).
+  const shown = buckets;
   const maxS = Math.max(1, ...shown.map((b) => Number(b.samples)));
   const gapCls = shown.length > 30 ? "gap-px" : "gap-1";
   return (

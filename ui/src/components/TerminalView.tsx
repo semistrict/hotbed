@@ -28,6 +28,16 @@ function themeOf(el: HTMLElement) {
 export function TerminalView({ id, live }: { id: string; live: boolean }) {
   const host = useRef<HTMLDivElement>(null);
   const [error, setError] = useState<string | null>(null);
+  // The poll loop and the terminal outlive `live` flipping to false: the loop
+  // reads it each round and makes one last read when it is false, so the
+  // terminal and its scroll position stay.
+  const liveRef = useRef(live);
+  const pollNow = useRef<(() => void) | null>(null);
+  useEffect(() => {
+    const was = liveRef.current;
+    liveRef.current = live;
+    if (was && !live) pollNow.current?.();
+  }, [live]);
 
   useEffect(() => {
     const el = host.current;
@@ -47,13 +57,21 @@ export function TerminalView({ id, live }: { id: string; live: boolean }) {
     const ac = new AbortController();
     let offset: bigint | null = null;
     let timer: ReturnType<typeof setTimeout> | undefined;
+    let reading = false;
+    let readAgain = false;
     const decoder = new TextDecoder();
 
     const read = async () => {
+      if (reading) {
+        readAgain = true; // a read is in flight: follow it with one that sees what it missed
+        return;
+      }
+      reading = true;
+      clearTimeout(timer);
       try {
         if (offset === null) {
           // Start near the end of a long output.
-          const q = await api.queryOutput(id, { tail: 1, raw: true });
+          const q = await api.queryOutput(id, { tail: 1, raw: true }, ac.signal);
           offset = q.totalBytes > REPLAY_BYTES ? q.totalBytes - REPLAY_BYTES : 0n;
           if (offset > 0n) term.writeln(`[hotbed: the first ${q.totalBytes - REPLAY_BYTES} bytes are not replayed here: hotbed output ${id} reads all of it]`);
         }
@@ -64,16 +82,25 @@ export function TerminalView({ id, live }: { id: string; live: boolean }) {
       } catch (e) {
         if (ac.signal.aborted) return;
         setError(e instanceof Error ? e.message : String(e));
+      } finally {
+        reading = false;
       }
-      if (live && !ac.signal.aborted) timer = setTimeout(read, POLL_MS);
+      if (ac.signal.aborted) return;
+      if (readAgain) {
+        readAgain = false;
+        return read();
+      }
+      if (liveRef.current) timer = setTimeout(read, POLL_MS);
     };
+    pollNow.current = () => void read();
     void read();
     return () => {
+      pollNow.current = null;
       ac.abort();
       clearTimeout(timer);
       term.dispose();
     };
-  }, [id, live]);
+  }, [id]);
 
   return (
     <div className="space-y-2">

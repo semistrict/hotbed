@@ -11,6 +11,7 @@ import {
 } from "../gen/hotbed/v1/hotbed_pb";
 import {
   draftRequiresRestart,
+  draftSyncAction,
   draftToCliCommand,
   draftToWorkerConfigInput,
   formatBytesHint,
@@ -129,6 +130,55 @@ describe("settings draft conversion & helpers", () => {
     const vmToggleChanged = structuredClone(base);
     vmToggleChanged.vm.enabled = "false";
     expect(draftRequiresRestart(base, vmToggleChanged)).toBe(true);
+  });
+
+  it("compares unit properties normalized, like Go's RequiresConfigRestart", () => {
+    const base = workerConfigToDraft(undefined);
+    base.unitPropertiesText = "MemoryHigh=1G\nTasksMax=100";
+
+    const whitespaceOnly = structuredClone(base);
+    whitespaceOnly.unitPropertiesText = "  MemoryHigh=1G \r\n\n\n TasksMax=100  \n";
+    expect(draftRequiresRestart(base, whitespaceOnly)).toBe(false);
+
+    const added = structuredClone(base);
+    added.unitPropertiesText = "MemoryHigh=1G\nTasksMax=100\nNice=5";
+    expect(draftRequiresRestart(base, added)).toBe(true);
+
+    const reordered = structuredClone(base);
+    reordered.unitPropertiesText = "TasksMax=100\nMemoryHigh=1G";
+    expect(draftRequiresRestart(base, reordered)).toBe(true);
+  });
+
+  it("ignores VM and FUSE sub-fields unless both sides enable the section", () => {
+    const disabled = workerConfigToDraft(undefined);
+    const vmSocketChanged = structuredClone(disabled);
+    vmSocketChanged.vm.cladefsControlSock = "/run/other.sock";
+    vmSocketChanged.vm.bridgeName = "br9";
+    vmSocketChanged.cladefsFuse.mountRoot = "/mnt/other";
+    expect(draftRequiresRestart(disabled, vmSocketChanged)).toBe(false);
+
+    const vmOn = structuredClone(disabled);
+    vmOn.vm.enabled = "true";
+    const vmOnChanged = structuredClone(vmOn);
+    vmOnChanged.vm.cellRoot = "/cells/other";
+    expect(draftRequiresRestart(vmOn, vmOnChanged)).toBe(true);
+
+    const fuseOn = structuredClone(disabled);
+    fuseOn.cladefsFuse.enabled = "true";
+    const fuseOnChanged = structuredClone(fuseOn);
+    fuseOnChanged.cladefsFuse.mountStoresRoot = "/stores/other";
+    expect(draftRequiresRestart(fuseOn, fuseOnChanged)).toBe(true);
+    const fuseOnVmChanged = structuredClone(fuseOn);
+    fuseOnVmChanged.vm.cladefsVmSock = "/run/vm.sock";
+    expect(draftRequiresRestart(fuseOn, fuseOnVmChanged)).toBe(false);
+  });
+
+  it("keeps unsaved edits across a background refetch but resets on a scope switch", () => {
+    const synced = { scope: "", sig: ":1:a" };
+    expect(draftSyncAction(synced, { scope: "", sig: ":1:a" }, true)).toBe("current");
+    expect(draftSyncAction(synced, { scope: "", sig: ":2:b" }, true)).toBe("hold");
+    expect(draftSyncAction(synced, { scope: "", sig: ":2:b" }, false)).toBe("reset");
+    expect(draftSyncAction(synced, { scope: "ubu1", sig: "ubu1:0:c" }, true)).toBe("reset");
   });
 
   it("validates invalid duty cycle, session idle timeout, and integer fields", () => {

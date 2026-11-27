@@ -91,7 +91,7 @@ export function createConnectApi(
       }
       return { data, next };
     },
-    queryOutput: (id, query) => workspaces.queryOutput({ ...query, id }),
+    queryOutput: (id, query, signal) => workspaces.queryOutput({ ...query, id }, { signal }),
     files: async (workspaceId) => (await workspaces.listFiles({ workspaceId })).files,
     file: (workspaceId, path) => workspaces.getFile({ workspaceId, path }),
     inspectCommand: (id, opts, signal) =>

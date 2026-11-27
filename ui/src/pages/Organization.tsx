@@ -170,7 +170,7 @@ export function OrganizationPage() {
         title={activeOrg ? activeOrg.name : "Organization & Access"}
         sub={
           activeOrg
-            ? `Isolated Controller DO · ${activeOrg.id} · cluster ${snap?.clusterId ?? "…"} · signed in as ${auth?.user.email ?? ""}`
+            ? `Isolated Cloudflare Durable Object · ${activeOrg.id} · cluster ${snap?.clusterId ?? "…"} · signed in as ${auth?.user.email ?? ""}`
             : `Cluster ${snap?.clusterId ?? "…"} · manage worker join tokens and API tokens`
         }
         right={

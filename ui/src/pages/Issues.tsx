@@ -1,4 +1,4 @@
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { keepPreviousData, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link, useNavigate, useParams, useSearch } from "@tanstack/react-router";
 import { useState } from "react";
 import { Button } from "@/components/ui/button";
@@ -29,7 +29,7 @@ export function IssuesPage() {
   const search = useSearch({ from: "/issues" });
   const navigate = useNavigate({ from: "/issues" });
   const tab = search.tab ?? "open";
-  const list = useQuery({ queryKey: ["issues", tab], queryFn: () => api.issues(tab), refetchInterval: 5000 });
+  const list = useQuery({ queryKey: ["issues", tab], queryFn: () => api.issues(tab), refetchInterval: 5000, placeholderData: keepPreviousData });
   const now = Date.now();
   return (
     <div className="space-y-6">

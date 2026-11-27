@@ -45,10 +45,12 @@ export function CommandsPage() {
   const reserved = s.nodes.reduce((n, x) => n + Number(x.reservedMemoryBytes), 0);
   const baseSearch: CommandsSearch = { state: state === "live" ? undefined : state, node, repo, outcome };
   const limit = showAll ? MAX_HISTORY : INITIAL_HISTORY;
-  const oomKills = s.totals24h?.oomKills ?? 0;
+  // The cluster's OOM total is counted from node samples and cannot be narrowed
+  // to a node or repo; a filtered view counts the OOM-killed commands it shows.
+  const oomKills = node || repo ? scopedHistory.filter((c) => c.failure === "oom").length : (s.totals24h?.oomKills ?? 0);
   const repoFailureCols = s.repos
-    .filter((r) => s.history.some((c) => c.repoId === r.id))
-    .map((r) => ({ key: r.id, label: r.id, values: [failureRate(s.history.filter((c) => c.repoId === r.id)) * 100] }));
+    .filter((r) => scopedHistory.some((c) => c.repoId === r.id))
+    .map((r) => ({ key: r.id, label: r.id, values: [failureRate(scopedHistory.filter((c) => c.repoId === r.id)) * 100] }));
   const historyToggleLabel = showAll
     ? `show latest ${INITIAL_HISTORY}`
     : ended.length > MAX_HISTORY
@@ -205,7 +207,7 @@ export function CommandsPage() {
             )}
           </Card>
           <Card title="Build time by repo, p50" sub="Warm forks; the cold build is the faint mark">
-            <RepoTimes s={s} />
+            <RepoTimes repos={s.repos} history={scopedHistory} />
           </Card>
         </div>
 
@@ -280,10 +282,10 @@ function FailureBars({ rows }: { rows: FinishedCommand[] }) {
   );
 }
 
-function RepoTimes({ s }: { s: Snapshot }) {
-  const rows = s.repos
+function RepoTimes({ repos, history }: { repos: Snapshot["repos"]; history: FinishedCommand[] }) {
+  const rows = repos
     .map((r) => {
-      const c = compiled(s.history.filter((x) => x.repoId === r.id));
+      const c = compiled(history.filter((x) => x.repoId === r.id));
       return { r, count: c.length, p50: quantile(c.map((x) => x.seconds), 0.5), cold: quantile(c.map((x) => x.coldSeconds), 0.5) };
     })
     .filter((x) => x.count > 0);

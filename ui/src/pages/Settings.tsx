@@ -15,6 +15,17 @@ import {
   Zap,
 } from "lucide-react";
 import { useEffect, useMemo, useState, type FormEvent, type ReactNode } from "react";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+  AlertDialogTrigger,
+} from "@/components/ui/alert-dialog";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -32,6 +43,7 @@ import {
   ARCH_KEYS,
   BUILTIN_DEFAULTS,
   draftRequiresRestart,
+  draftSyncAction,
   draftToCliCommand,
   draftToWorkerConfigInput,
   formatBytesHint,
@@ -157,6 +169,14 @@ function RestartTag() {
   );
 }
 
+/** A DOM-id-safe form of a title: lowercase words joined by hyphens. */
+function slugify(text: string): string {
+  return text
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "");
+}
+
 function ArtifactEditor({
   title,
   sub,
@@ -172,6 +192,7 @@ function ArtifactEditor({
   disabled?: boolean;
   onChange: (arch: ArchKey, patch: Partial<ArtifactDraft>) => void;
 }) {
+  const idBase = slugify(title);
   return (
     <Card title={title} sub={sub}>
       <div className="space-y-4">
@@ -209,9 +230,9 @@ function ArtifactEditor({
                 )}
               </div>
               <div className="grid gap-3 sm:grid-cols-2">
-                <Field id={`${title}-${arch}-version`} label="Version / tag">
+                <Field id={`${idBase}-${arch}-version`} label="Version / tag">
                   <Input
-                    id={`${title}-${arch}-version`}
+                    id={`${idBase}-${arch}-version`}
                     value={item.version}
                     disabled={disabled}
                     placeholder={inh?.version || "e.g. build-235 or cladefs-6.12"}
@@ -219,9 +240,9 @@ function ArtifactEditor({
                     className="bg-background font-mono text-[12px]"
                   />
                 </Field>
-                <Field id={`${title}-${arch}-sha256`} label="SHA-256 (64 hex chars)">
+                <Field id={`${idBase}-${arch}-sha256`} label="SHA-256 (64 hex chars)">
                   <Input
-                    id={`${title}-${arch}-sha256`}
+                    id={`${idBase}-${arch}-sha256`}
                     value={item.sha256}
                     disabled={disabled}
                     placeholder={inh?.sha256 ? `${inh.sha256.slice(0, 16)}…` : "64-char lowercase hex"}
@@ -229,9 +250,9 @@ function ArtifactEditor({
                     className="bg-background font-mono text-[12px]"
                   />
                 </Field>
-                <Field id={`${title}-${arch}-url`} label="Download URL (https://...)">
+                <Field id={`${idBase}-${arch}-url`} label="Download URL (https://...)">
                   <Input
-                    id={`${title}-${arch}-url`}
+                    id={`${idBase}-${arch}-url`}
                     value={item.url}
                     disabled={disabled}
                     placeholder={inh?.url || "https://github.com/.../releases/download/..."}
@@ -239,9 +260,9 @@ function ArtifactEditor({
                     className="bg-background font-mono text-[12px]"
                   />
                 </Field>
-                <Field id={`${title}-${arch}-path`} label="Controller-relative fallback path">
+                <Field id={`${idBase}-${arch}-path`} label="Controller-relative fallback path">
                   <Input
-                    id={`${title}-${arch}-path`}
+                    id={`${idBase}-${arch}-path`}
                     value={item.path}
                     disabled={disabled}
                     placeholder={inh?.path || "/builds/N/..."}
@@ -276,6 +297,8 @@ export function SettingsPage() {
   // a node override, fetch that node's server-computed effective config too.
   const allCfgQuery = useWorkerConfig("");
   const nodeCfgQuery = useWorkerConfig(scope);
+  // keepPreviousData would otherwise show the last node's config under this scope.
+  const nodeCfgPlaceholderless = nodeCfgQuery.isPlaceholderData ? undefined : nodeCfgQuery.data;
 
   const setConfig = useSetWorkerConfig();
   const deleteConfig = useDeleteWorkerConfig();
@@ -291,8 +314,8 @@ export function SettingsPage() {
   const savedNodeOverrides: WorkerConfig[] = allCfgQuery.data?.nodes ?? [];
   const activeScopeCfg: WorkerConfig | undefined = isOrgDefaults
     ? orgDefaultsCfg
-    : savedNodeOverrides.find((n) => n.node === scope) ?? nodeCfgQuery.data?.nodes?.[0];
-  const effectiveCfg: WorkerConfig | undefined = isOrgDefaults ? orgDefaultsCfg : nodeCfgQuery.data?.effective;
+    : savedNodeOverrides.find((n) => n.node === scope) ?? nodeCfgPlaceholderless?.nodes?.[0];
+  const effectiveCfg: WorkerConfig | undefined = isOrgDefaults ? orgDefaultsCfg : nodeCfgPlaceholderless?.effective;
 
   const tenantId =
     effectiveCfg?.vm?.tenantId ??
@@ -312,6 +335,7 @@ export function SettingsPage() {
   const [rawJsonErr, setRawJsonErr] = useState<string | null>(null);
   const [saveErr, setSaveErr] = useState<string | null>(null);
   const [saveOk, setSaveOk] = useState<string | null>(null);
+  const [confirmReset, setConfirmReset] = useState(false);
   const [customNodeInput, setCustomNodeInput] = useState("");
   const [copiedKey, setCopiedKey] = useState<string | null>(null);
   const [upgradeResults, setUpgradeResults] = useState<NodeSystemUpgrade[] | null>(null);
@@ -329,14 +353,29 @@ export function SettingsPage() {
   const [patApiUrl, setPatApiUrl] = useState("");
   const [patToken, setPatToken] = useState("");
 
-  useEffect(() => {
+  const isDirty = useMemo(() => JSON.stringify(draft) !== JSON.stringify(baselineDraft), [draft, baselineDraft]);
+
+  // The draft follows the saved config only while it holds no unsaved edits, or
+  // when the scope changes: a background refetch must not wipe what is typed.
+  const baselineJson = JSON.stringify(baselineDraft);
+  const [synced, setSynced] = useState({ scope, sig: baselineSig, draftJson: baselineJson });
+  const draftJson = JSON.stringify(draft);
+  const hasUnsavedEdits = draftJson !== synced.draftJson && draftJson !== baselineJson;
+  const syncAction = draftSyncAction(synced, { scope, sig: baselineSig }, hasUnsavedEdits);
+  const remoteChangedWhileDirty = syncAction === "hold";
+
+  function resetDraftToBaseline() {
     setDraft(baselineDraft);
     setRawJsonText(workerConfigToPrettyJson(activeScopeCfg));
     setRawJsonErr(null);
     setSaveErr(null);
-  }, [baselineSig]);
+    setSynced({ scope, sig: baselineSig, draftJson: baselineJson });
+  }
 
-  const isDirty = useMemo(() => JSON.stringify(draft) !== JSON.stringify(baselineDraft), [draft, baselineDraft]);
+  useEffect(() => {
+    if (syncAction === "reset") resetDraftToBaseline();
+  }, [syncAction]);
+
   const needsRestart = useMemo(() => draftRequiresRestart(baselineDraft, draft), [baselineDraft, draft]);
 
   const knownNodes = useMemo(() => {
@@ -410,6 +449,7 @@ export function SettingsPage() {
         replace: true,
         ifRevision: activeScopeCfg?.revision ?? 0n,
       });
+      setDraft(workerConfigToDraft(saved));
       setRawJsonText(workerConfigToPrettyJson(saved));
       setSaveOk(
         isOrgDefaults
@@ -553,7 +593,7 @@ export function SettingsPage() {
         title={activeOrg ? `${activeOrg.name} Settings` : "Organization Settings"}
         sub={
           activeOrg
-            ? `Scoped exclusively to ${activeOrg.name} (${activeOrg.id}) · isolated Controller DO · cluster ${snap?.clusterId ?? "…"} · never shared across organizations`
+            ? `Scoped exclusively to ${activeOrg.name} (${activeOrg.id}) · isolated Cloudflare Durable Object · cluster ${snap?.clusterId ?? "…"} · never shared across organizations`
             : `Per-organization configuration for cluster ${snap?.clusterId ?? "…"} · defaults apply to every node in this organization unless overridden per node`
         }
         right={
@@ -705,6 +745,19 @@ export function SettingsPage() {
         </Alert>
       )}
 
+      {remoteChangedWhileDirty && (
+        <Alert className="rounded-xl border-warning/40 font-mono text-[11.5px]">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <AlertDescription className="text-[11.5px] text-warning-ink">
+              This config changed elsewhere. Your unsaved edits are kept; saving may fail on the revision check.
+            </AlertDescription>
+            <Button type="button" variant="outline" size="xs" onClick={resetDraftToBaseline} className="font-mono text-[10.5px]">
+              <RefreshCw className="mr-1 size-3" /> Discard edits and reload
+            </Button>
+          </div>
+        </Alert>
+      )}
+
       {saveOk && (
         <Alert className="rounded-xl border-primary/40 bg-ember-wash/60 font-mono text-[11.5px]">
           <Check className="size-4 text-primary" />
@@ -742,29 +795,53 @@ export function SettingsPage() {
           {isOrgAdmin && (
             <div className="flex flex-wrap items-center gap-2">
               {activeScopeCfg && activeScopeCfg.revision > 0n && (
-                <Button
-                  type="button"
-                  variant="outline"
-                  size="sm"
-                  disabled={deleteConfig.isPending || setConfig.isPending}
-                  onClick={() => void onResetScope()}
-                  className="gap-1.5 font-mono text-[11px] text-muted-foreground hover:border-critical/60 hover:text-critical"
-                >
-                  <Trash2 className="size-3.5" />
-                  {isOrgDefaults ? "Reset org defaults" : `Remove ${scope} override`}
-                </Button>
+                <AlertDialog open={confirmReset} onOpenChange={setConfirmReset}>
+                  <AlertDialogTrigger
+                    render={
+                      <Button
+                        type="button"
+                        variant="outline"
+                        size="sm"
+                        disabled={deleteConfig.isPending || setConfig.isPending}
+                        className="gap-1.5 font-mono text-[11px] text-muted-foreground hover:border-critical/60 hover:text-critical"
+                      />
+                    }
+                  >
+                    <Trash2 className="size-3.5" />
+                    {isOrgDefaults ? "Reset org defaults" : `Remove ${scope} override`}
+                  </AlertDialogTrigger>
+                  <AlertDialogContent>
+                    <AlertDialogHeader>
+                      <AlertDialogTitle>
+                        {isOrgDefaults ? "Reset organization defaults?" : `Remove the override for ${scope}?`}
+                      </AlertDialogTitle>
+                      <AlertDialogDescription>
+                        {isOrgDefaults
+                          ? "This deletes the saved organization defaults. Every node without its own override falls back to built-in defaults."
+                          : `This deletes the saved override for ${scope}. The node inherits the organization defaults again.`}
+                      </AlertDialogDescription>
+                    </AlertDialogHeader>
+                    <AlertDialogFooter>
+                      <AlertDialogCancel>Cancel</AlertDialogCancel>
+                      <AlertDialogAction
+                        variant="destructive"
+                        onClick={() => {
+                          setConfirmReset(false);
+                          void onResetScope();
+                        }}
+                      >
+                        {isOrgDefaults ? "Reset org defaults" : "Remove override"}
+                      </AlertDialogAction>
+                    </AlertDialogFooter>
+                  </AlertDialogContent>
+                </AlertDialog>
               )}
               <Button
                 type="button"
                 variant="outline"
                 size="sm"
                 disabled={!isDirty || setConfig.isPending}
-                onClick={() => {
-                  setDraft(baselineDraft);
-                  setRawJsonText(workerConfigToPrettyJson(activeScopeCfg));
-                  setSaveErr(null);
-                  setRawJsonErr(null);
-                }}
+                onClick={resetDraftToBaseline}
                 className="gap-1.5 font-mono text-[11px]"
               >
                 <RotateCcw className="size-3.5" />
@@ -1105,7 +1182,7 @@ export function SettingsPage() {
 
             <Card
               title="Controller & Session Lifecycle"
-              sub="Per-organization session reaping timeouts enforced by this organization's Controller Durable Object."
+              sub="Per-organization session reaping timeouts enforced by this organization's Cloudflare Durable Object."
               right={
                 !isOrgDefaults && (
                   <Button
@@ -1895,7 +1972,7 @@ export function SettingsPage() {
           <TabsContent value="git" className="space-y-5">
             <Card
               title="Organization Git Credentials"
-              sub={`Stored write-only inside ${orgLabel}'s isolated Controller DO and delegated as short-lived tokens to this organization's workers, bases, and commands.`}
+              sub={`Stored write-only inside ${orgLabel}'s isolated Cloudflare Durable Object and delegated as short-lived tokens to this organization's workers, bases, and commands.`}
               right={
                 <Badge variant="outline" className="font-mono text-[10.5px] text-muted-foreground">
                   <GitBranch className="mr-1 size-3" /> org-scoped

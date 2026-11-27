@@ -1,4 +1,4 @@
-import { useQuery } from "@tanstack/react-query";
+import { keepPreviousData, useQuery } from "@tanstack/react-query";
 import { Link, useNavigate, useParams, useSearch } from "@tanstack/react-router";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { api, WorkspaceState, workspaceStateLabel, type FileEntry, type Snapshot, type Workspace } from "../api";
@@ -202,7 +202,7 @@ function FileBrowser({ workspaceId, selected }: { workspaceId: string; selected?
   const files = useQuery({ queryKey: ["files", workspaceId], queryFn: () => api.files(workspaceId) });
   const firstChanged = files.data?.find((f) => f.kind === "file" && f.change)?.path;
   const path = selected ?? firstChanged ?? files.data?.find((f) => f.kind === "file")?.path;
-  const content = useQuery({ queryKey: ["file", workspaceId, path], queryFn: () => api.file(workspaceId, path ?? ""), enabled: !!path });
+  const content = useQuery({ queryKey: ["file", workspaceId, path], queryFn: () => api.file(workspaceId, path ?? ""), enabled: !!path, placeholderData: keepPreviousData });
 
   if (files.isError) return <Empty>Cannot list files: {String(files.error)}</Empty>;
   if (!files.data) return <div className="font-mono text-[11px] text-faint">listing…</div>;
