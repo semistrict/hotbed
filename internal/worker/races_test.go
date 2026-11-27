@@ -5,8 +5,6 @@ import (
 	"context"
 	"errors"
 	"io"
-	"net/http/httptest"
-	"net/netip"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -19,10 +17,7 @@ import (
 	"github.com/semistrict/hotbed/internal/api"
 	"github.com/semistrict/hotbed/internal/fake"
 	pb "github.com/semistrict/hotbed/internal/gen/hotbed/v1"
-	"github.com/semistrict/hotbed/internal/gen/hotbed/v1/hotbedv1connect"
 	"github.com/semistrict/hotbed/internal/httpx"
-	"github.com/semistrict/hotbed/internal/tailnet"
-	"github.com/semistrict/hotbed/internal/tailnet/tailnettest"
 	"github.com/semistrict/hotbed/internal/unit"
 )
 
@@ -727,21 +722,7 @@ func TestFollowLogStreamsGrowingLogAndDrainsOnExit(t *testing.T) {
 	eng.commands["follow-1"] = c
 	eng.mu.Unlock()
 
-	peer := tailnet.Peer{NodeID: "nClient", Hostname: "laptop", Login: "ramon@"}
-	tn := tailnettest.New(tailnet.Self{Peer: peer})
-	ts := httptest.NewUnstartedServer(Handler(tn, httpx.Policy{
-		Owner: "ramon@",
-		Self:  []netip.Addr{netip.MustParseAddr("127.0.0.1")},
-	}, eng))
-	ts.Config.Protocols = httpx.Protocols()
-	ts.Start()
-	defer ts.Close()
-
-	conn, err := api.Dial(strings.TrimPrefix(ts.URL, "http://"), api.WorkerPort, tn.Client(peer))
-	if err != nil {
-		t.Fatal(err)
-	}
-	client := hotbedv1connect.NewWorkspaceServiceClient(conn)
+	client := clientAs(t, httpx.Peer{NodeID: "nClient", Hostname: "laptop", Login: "ramon@"}, eng)
 
 	// Call FollowLog in a goroutine: HTTP response headers are flushed on the
 	// first chunk, which arrives once the queued command starts writing its log.

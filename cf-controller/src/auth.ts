@@ -23,7 +23,6 @@ export interface CallerIdentity {
 	userId: string;
 	orgId: string;
 	orgRole: string;
-	addr: string;
 	authMethod:
 		| "bearer"
 		| "worker-token"
@@ -170,8 +169,8 @@ const REFRESH_MARGIN_MS = 60_000;
 
 /**
  * The caller verified WorkOS claims name: a member of the organization they
- * select. A token's caller (a CLI or agent) may name its node and address
- * in headers; a browser session's may not.
+ * select. A token's caller (a CLI or agent) may name its node in headers; a
+ * browser session's may not.
  */
 export function workosCaller(
 	req: Request,
@@ -189,7 +188,6 @@ export function workosCaller(
 		userId: claims.sub,
 		orgId: claims.orgId,
 		orgRole: claims.role || "member",
-		addr: token ? header("X-Hotbed-Addr") : "",
 		authMethod: how.authMethod,
 	};
 }
@@ -497,7 +495,6 @@ export async function authenticateRequest(
 
 	const headerHost = (req.headers.get("X-Hotbed-Host") ?? "").trim();
 	const headerNodeId = (req.headers.get("X-Hotbed-Node-Id") ?? "").trim();
-	const headerAddr = (req.headers.get("X-Hotbed-Addr") ?? "").trim();
 	const expectedOrgId = (opts?.orgId || req.headers.get(INTERNAL_ORG_HEADER) || "").trim();
 
 	// 0. Edge-verified WorkOS identity forwarded from index.ts into ControllerDO
@@ -532,7 +529,6 @@ export async function authenticateRequest(
 				userId: "",
 				orgId: expectedOrgId,
 				orgRole: "owner",
-				addr: headerAddr,
 				authMethod: "bearer",
 			};
 		}
@@ -550,7 +546,6 @@ export async function authenticateRequest(
 					userId: at.userId,
 					orgId: expectedOrgId,
 					orgRole: at.orgRole || "member",
-					addr: headerAddr,
 					authMethod: "api-token",
 				};
 			}
@@ -566,7 +561,6 @@ export async function authenticateRequest(
 				userId: "",
 				orgId: expectedOrgId,
 				orgRole: "worker",
-				addr: headerAddr,
 				authMethod: "worker-token",
 			};
 		}
@@ -583,7 +577,6 @@ export async function authenticateRequest(
 						userId: "",
 						orgId: expectedOrgId,
 						orgRole: "worker",
-						addr: headerAddr,
 						authMethod: "join-token",
 					};
 				}
@@ -597,7 +590,6 @@ export async function authenticateRequest(
 					userId: "",
 					orgId: expectedOrgId,
 					orgRole: "worker",
-					addr: headerAddr,
 					authMethod: "join-token",
 				};
 			}
@@ -641,7 +633,6 @@ export async function authenticateRequest(
 					userId: "",
 					orgId: expectedOrgId,
 					orgRole: "owner",
-					addr: "",
 					authMethod: "cf-access",
 				};
 			}
@@ -668,7 +659,6 @@ export async function authenticateRequest(
 					userId: "",
 					orgId: expectedOrgId,
 					orgRole: "owner",
-					addr: "",
 					authMethod: "cookie",
 				};
 			}

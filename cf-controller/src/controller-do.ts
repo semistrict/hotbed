@@ -645,7 +645,6 @@ export class ControllerDO extends DurableObject<ControllerEnv> {
 		const hostname = worker
 			? caller.hostname || nodeId
 			: header("X-Hotbed-Host") || caller.hostname || nodeId;
-		const addr = header("X-Hotbed-Addr") || caller.addr;
 		if (!nodeId) {
 			return Response.json(
 				{ code: ErrorCode.InvalidArgs, message: "X-Hotbed-Node-Id header is required" },
@@ -653,7 +652,7 @@ export class ControllerDO extends DurableObject<ControllerEnv> {
 			);
 		}
 		const pair = new WebSocketPair();
-		this.tunnel.accept(pair[1], { nodeId, hostname, addr, connectedAt: this.ctrl.now() });
+		this.tunnel.accept(pair[1], { nodeId, hostname, connectedAt: this.ctrl.now() });
 		this.ctx.waitUntil(this.ensureAlarm());
 		return new Response(null, { status: 101, webSocket: pair[0] });
 	}

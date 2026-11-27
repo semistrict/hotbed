@@ -509,13 +509,7 @@ export function createClusterService(
 		async join(_req, ctx) {
 			const caller = getCaller(ctx.values);
 			const nowMs = ctrl.now();
-			const node = ctrl.store.fleet.join(
-				caller.nodeId,
-				caller.hostname,
-				caller.login,
-				caller.addr,
-				nowMs,
-			);
+			const node = ctrl.store.fleet.join(caller.nodeId, caller.hostname, caller.login, nowMs);
 			let workerToken = "";
 			if (caller.authMethod !== "worker-token") {
 				const orgId = ctrl.orgId || caller.orgId;

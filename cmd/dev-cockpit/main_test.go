@@ -4,14 +4,11 @@ import (
 	"bytes"
 	"io"
 	"net/http"
-	"net/netip"
 	"os"
 	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
-
-	"connectrpc.com/connect/v2"
 
 	"github.com/semistrict/hotbed/internal/api"
 	pb "github.com/semistrict/hotbed/internal/gen/hotbed/v1"
@@ -162,7 +159,7 @@ func TestStartDevClusterPopulatesCockpit(t *testing.T) {
 	}
 
 	// Verify Vite proxy-style browser requests (Host: localhost:5173, same-origin)
-	// pass httpx.Gate cleanly.
+	// pass sameMachineBrowser cleanly.
 	req, err := http.NewRequestWithContext(t.Context(), http.MethodPost, "http://"+dc.addr+"/hotbed.v1.ClusterService/GetSnapshot", bytes.NewReader([]byte("{}")))
 	if err != nil {
 		t.Fatal(err)
@@ -181,64 +178,60 @@ func TestStartDevClusterPopulatesCockpit(t *testing.T) {
 	}
 }
 
-func TestDevClusterRejectsOtherLocalUID(t *testing.T) {
+// The dev cluster admits whoever reaches it as the owner, and its workers
+// run real processes: it refuses what a web page in the owner's browser
+// could send it from another site, by DNS rebinding or a cross-site request.
+func TestDevClusterRejectsOtherSitesRequests(t *testing.T) {
 	dc, err := startDevCluster(t.Context(), "127.0.0.1:0", "")
 	if err != nil {
 		t.Fatalf("startDevCluster: %v", err)
 	}
 	t.Cleanup(dc.Close)
 
-	ownerUID := uint32(os.Getuid())
-	otherUID := ownerUID + 1
-	if otherUID == 0 {
-		otherUID = 1
+	for _, tc := range []struct {
+		name, host, site, origin string
+		status                   int
+	}{
+		{"the CLI", "", "", "", http.StatusOK},
+		{"the Vite proxy", "localhost:5173", "same-origin", "http://localhost:5173", http.StatusOK},
+		{"a top-level navigation", "localhost:7120", "none", "", http.StatusOK},
+		{"DNS rebinding", "evil.example:7120", "", "", http.StatusForbidden},
+		{"a cross-site fetch", "127.0.0.1:7120", "cross-site", "https://evil.example", http.StatusForbidden},
+		{"another site's origin", "127.0.0.1:7120", "", "https://evil.example", http.StatusForbidden},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			req, err := http.NewRequestWithContext(t.Context(), http.MethodPost, "http://"+dc.addr+"/hotbed.v1.ClusterService/ListNodes", strings.NewReader("{}"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			req.Header.Set("Content-Type", "application/json")
+			if tc.host != "" {
+				req.Host = tc.host
+			}
+			if tc.site != "" {
+				req.Header.Set("Sec-Fetch-Site", tc.site)
+			}
+			if tc.origin != "" {
+				req.Header.Set("Origin", tc.origin)
+			}
+			resp, err := http.DefaultClient.Do(req)
+			if err != nil {
+				t.Fatalf("ListNodes: %v", err)
+			}
+			body, _ := io.ReadAll(resp.Body)
+			resp.Body.Close()
+			if resp.StatusCode != tc.status {
+				t.Errorf("status = %d, want %d: %s", resp.StatusCode, tc.status, body)
+			}
+		})
 	}
+}
 
-	// Simulate a loopback connection opened by a different local OS user.
-	dc.tn.setLocalUID(func(netip.AddrPort, netip.AddrPort) (uint32, error) {
-		return otherUID, nil
-	})
-
-	client := &http.Client{Transport: &http.Transport{}}
-	t.Cleanup(client.CloseIdleConnections)
-
-	// Plain HTTP request must be rejected with 403 Forbidden.
-	req, err := http.NewRequestWithContext(t.Context(), http.MethodGet, "http://"+dc.addr+"/", nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	resp, err := client.Do(req)
-	if err != nil {
-		t.Fatalf("GET /: %v", err)
-	}
-	resp.Body.Close()
-	if resp.StatusCode != http.StatusForbidden {
-		t.Errorf("other UID GET / status = %d, want 403", resp.StatusCode)
-	}
-
-	// ConnectRPC request must be rejected with PERMISSION_DENIED / NOT_AUTHORIZED.
-	conn, err := api.Dial(dc.addr, api.DefaultPort, client)
-	if err != nil {
-		t.Fatalf("dial dev-cockpit: %v", err)
-	}
-	cluster := hotbedv1connect.NewClusterServiceClient(conn)
-	_, err = cluster.GetSnapshot(t.Context(), &pb.GetSnapshotRequest{})
-	if err == nil {
-		t.Fatalf("other UID GetSnapshot unexpectedly succeeded")
-	}
-	if got := connect.CodeOf(err); got != connect.CodePermissionDenied {
-		t.Errorf("other UID GetSnapshot connect code = %v, want %v (err: %v)", got, connect.CodePermissionDenied, err)
-	}
-	if got := api.CodeOf(err); got != api.CodeNotAuthorized {
-		t.Errorf("other UID GetSnapshot api code = %q, want %q", got, api.CodeNotAuthorized)
-	}
-
-	// Restore os.Getuid() and verify the owner is admitted again.
-	dc.tn.setLocalUID(func(netip.AddrPort, netip.AddrPort) (uint32, error) {
-		return ownerUID, nil
-	})
-	if _, err := cluster.GetSnapshot(t.Context(), &pb.GetSnapshotRequest{}); err != nil {
-		t.Fatalf("owner UID GetSnapshot failed: %v", err)
+// It listens on loopback alone.
+func TestDevClusterRefusesANonLoopbackAddress(t *testing.T) {
+	_, err := startDevCluster(t.Context(), "0.0.0.0:0", "")
+	if err == nil || !strings.Contains(err.Error(), "dev-cockpit listens only on loopback") {
+		t.Fatalf("startDevCluster on 0.0.0.0 = %v, want a refusal to listen off loopback", err)
 	}
 }
 

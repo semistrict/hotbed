@@ -477,12 +477,12 @@ func (c *sessionEndCmd) Exec(ctx context.Context, d deps) (any, error) {
 // for on stderr.
 func waitReady(ctx context.Context, w workerClients, ws *pb.Workspace, stderr io.Writer) (*pb.Workspace, error) {
 	// The worker's copy lacks what the controller filled in.
-	addr, node, project := ws.NodeAddr, ws.Node, ws.Project
+	node, project := ws.Node, ws.Project
 	defer func() {
 		if ws == nil {
 			return
 		}
-		ws.NodeAddr, ws.Node = addr, node
+		ws.Node = node
 		if ws.Project == "" {
 			ws.Project = project
 		}

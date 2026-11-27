@@ -3,8 +3,6 @@ package worker
 import (
 	"bytes"
 	"context"
-	"net/http/httptest"
-	"net/netip"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -19,8 +17,6 @@ import (
 	"github.com/semistrict/hotbed/internal/gen/hotbed/v1/hotbedv1connect"
 	"github.com/semistrict/hotbed/internal/httpx"
 	"github.com/semistrict/hotbed/internal/profiler"
-	"github.com/semistrict/hotbed/internal/tailnet"
-	"github.com/semistrict/hotbed/internal/tailnet/tailnettest"
 )
 
 func TestValidateID(t *testing.T) {
@@ -505,7 +501,7 @@ func TestTmpCleanupAndSweepRefuseSymlinkedTmpDir(t *testing.T) {
 
 // board 8005: remoteHead rejects malicious repo URLs and leading-dash branches
 // before spawning host git, and Service.CreateWorkspace admits only the
-// controller's tailnet peer when ControllerNodeID is configured.
+// controller when ControllerNodeID is configured.
 func TestWorkerRejectsMaliciousRepoURLAndBranchBeforeGit(t *testing.T) {
 	// Put a trap git binary first in PATH: if validation misses an input and
 	// spawns git, the trap writes a marker file and fails the test.
@@ -565,9 +561,8 @@ func TestWorkerRejectsMaliciousRepoURLAndBranchBeforeGit(t *testing.T) {
 }
 
 func TestServiceCreateWorkspaceRequiresControllerPeer(t *testing.T) {
-	ctrl := tailnet.Peer{NodeID: "nCtrl", Hostname: "ubu1", Login: "ramon@"}
-	client := tailnet.Peer{NodeID: "nLaptop", Hostname: "laptop", Login: "ramon@"}
-	tn := tailnettest.New(tailnet.Self{Peer: ctrl})
+	ctrl := httpx.Peer{NodeID: "nCtrl", Hostname: "ubu1", Login: "ramon@"}
+	client := httpx.Peer{NodeID: "nLaptop", Hostname: "laptop", Login: "ramon@"}
 
 	store := &fake.Store{Root: t.TempDir()}
 	eng, err := NewEngine(t.Context(), EngineConfig{
@@ -580,19 +575,8 @@ func TestServiceCreateWorkspaceRequiresControllerPeer(t *testing.T) {
 	}
 	t.Cleanup(func() { eng.Close() })
 
-	srv := httptest.NewServer(Handler(tn, httpx.Policy{
-		Owner: "ramon@",
-		Self:  []netip.Addr{netip.MustParseAddr("127.0.0.1")},
-	}, eng))
-	t.Cleanup(srv.Close)
-	addr := strings.TrimPrefix(srv.URL, "http://")
-
 	// Non-controller peer (same owner's laptop) must be refused CreateWorkspace.
-	laptopConn, err := api.Dial(addr, api.WorkerPort, tn.Client(client))
-	if err != nil {
-		t.Fatal(err)
-	}
-	laptopWS := hotbedv1connect.NewWorkspaceServiceClient(laptopConn)
+	laptopWS := clientAs(t, client, eng)
 	_, err = laptopWS.CreateWorkspace(t.Context(), &pb.CreateWorkspaceRequest{
 		Id: "ws-evil", SessionId: "s1",
 		Project: &pb.HostedProject{
@@ -605,11 +589,7 @@ func TestServiceCreateWorkspaceRequiresControllerPeer(t *testing.T) {
 	}
 
 	// Controller peer passes the authorization check (reaches ID/project validation).
-	ctrlConn, err := api.Dial(addr, api.WorkerPort, tn.Client(ctrl))
-	if err != nil {
-		t.Fatal(err)
-	}
-	ctrlWS := hotbedv1connect.NewWorkspaceServiceClient(ctrlConn)
+	ctrlWS := clientAs(t, ctrl, eng)
 	_, err = ctrlWS.CreateWorkspace(t.Context(), &pb.CreateWorkspaceRequest{
 		Id: "ws-ok", SessionId: "s1",
 		Project: &pb.HostedProject{
@@ -621,50 +601,18 @@ func TestServiceCreateWorkspaceRequiresControllerPeer(t *testing.T) {
 		t.Fatalf("controller CreateWorkspace with bad URL code = %q (%v), want %q", code, err, api.CodeInvalidArgs)
 	}
 
-	// Finding #6: colocated local non-root caller (CallerUID: 1000) sharing the
-	// controller's NodeID must be refused CreateWorkspace even when admitted by
-	// Gate's LocalUsers policy, while local root (CallerUID: 0) is admitted.
-	colocatedTN := tailnettest.New(tailnet.Self{Peer: ctrl})
-	colocatedTN.CallerUID = 1000
-	colocatedSrv := httptest.NewServer(Handler(colocatedTN, httpx.Policy{
-		Owner:      "ramon@",
-		Self:       []netip.Addr{netip.MustParseAddr("127.0.0.1")},
-		LocalUsers: []uint32{1000},
-	}, eng))
-	t.Cleanup(colocatedSrv.Close)
-	colocatedAddr := strings.TrimPrefix(colocatedSrv.URL, "http://")
-
-	nonRootConn, err := api.Dial(colocatedAddr, api.WorkerPort, colocatedTN.Client(ctrl))
-	if err != nil {
-		t.Fatal(err)
-	}
-	nonRootWS := hotbedv1connect.NewWorkspaceServiceClient(nonRootConn)
-	_, err = nonRootWS.CreateWorkspace(t.Context(), &pb.CreateWorkspaceRequest{
-		Id: "ws-nonroot", SessionId: "s1",
+	// A caller over the worker's own Unix socket is this node itself, never
+	// the controller: it must be refused CreateWorkspace.
+	selfWS := clientAs(t, httpx.Peer{NodeID: "nW1", Hostname: "w1", Login: "ramon@"}, eng)
+	_, err = selfWS.CreateWorkspace(t.Context(), &pb.CreateWorkspaceRequest{
+		Id: "ws-self", SessionId: "s1",
 		Project: &pb.HostedProject{
 			Name:  "app",
 			Repos: []*pb.Repo{{Id: "r", Url: "--upload-pack=evil"}},
 		},
 	})
 	if code := api.CodeOf(err); code != api.CodeNotAuthorized {
-		t.Fatalf("colocated non-root CreateWorkspace code = %q (%v), want %q", code, err, api.CodeNotAuthorized)
-	}
-
-	colocatedTN.CallerUID = 0
-	rootConn, err := api.Dial(colocatedAddr, api.WorkerPort, colocatedTN.Client(ctrl))
-	if err != nil {
-		t.Fatal(err)
-	}
-	rootWS := hotbedv1connect.NewWorkspaceServiceClient(rootConn)
-	_, err = rootWS.CreateWorkspace(t.Context(), &pb.CreateWorkspaceRequest{
-		Id: "ws-root", SessionId: "s1",
-		Project: &pb.HostedProject{
-			Name:  "app",
-			Repos: []*pb.Repo{{Id: "r", Url: "--upload-pack=evil"}},
-		},
-	})
-	if code := api.CodeOf(err); code != api.CodeInvalidArgs {
-		t.Fatalf("colocated root CreateWorkspace with bad URL code = %q (%v), want %q", code, err, api.CodeInvalidArgs)
+		t.Fatalf("worker's own socket CreateWorkspace code = %q (%v), want %q", code, err, api.CodeNotAuthorized)
 	}
 
 	// Finding #5: RequireController: true with empty ControllerNodeID must fail closed.
@@ -678,16 +626,7 @@ func TestServiceCreateWorkspaceRequiresControllerPeer(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { failClosedEng.Close() })
-	failClosedSrv := httptest.NewServer(Handler(tn, httpx.Policy{
-		Owner: "ramon@",
-		Self:  []netip.Addr{netip.MustParseAddr("127.0.0.1")},
-	}, failClosedEng))
-	t.Cleanup(failClosedSrv.Close)
-	fcConn, err := api.Dial(strings.TrimPrefix(failClosedSrv.URL, "http://"), api.WorkerPort, tn.Client(ctrl))
-	if err != nil {
-		t.Fatal(err)
-	}
-	fcWS := hotbedv1connect.NewWorkspaceServiceClient(fcConn)
+	fcWS := clientAs(t, ctrl, failClosedEng)
 	_, err = fcWS.CreateWorkspace(t.Context(), &pb.CreateWorkspaceRequest{
 		Id: "ws-fc", SessionId: "s1",
 		Project: &pb.HostedProject{Name: "app"},

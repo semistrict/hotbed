@@ -13,7 +13,6 @@ function viewerCaller(orgId = "org_viewer_test"): CallerIdentity {
 		userId: "user_viewer_1",
 		orgId,
 		orgRole: "viewer",
-		addr: "",
 		authMethod: "workos-jwt",
 	};
 }
@@ -27,7 +26,6 @@ function memberCaller(orgId = "org_viewer_test"): CallerIdentity {
 		userId: "user_member_1",
 		orgId,
 		orgRole: "member",
-		addr: "",
 		authMethod: "workos-jwt",
 	};
 }

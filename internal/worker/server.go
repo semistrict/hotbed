@@ -37,8 +37,8 @@ func (s *Service) isController(ctx context.Context) bool {
 	if !s.E.cfg.RequireController && s.E.cfg.ControllerNodeID == "" {
 		return true
 	}
-	peer := httpx.Peer(ctx)
-	return s.E.cfg.ControllerNodeID != "" && peer.NodeID != "" && peer.NodeID == s.E.cfg.ControllerNodeID && !httpx.IsLocalNonRoot(ctx)
+	peer := httpx.PeerFrom(ctx)
+	return s.E.cfg.ControllerNodeID != "" && peer.NodeID != "" && peer.NodeID == s.E.cfg.ControllerNodeID
 }
 
 // checkInterventionTarget validates req.Id and, when sessionID is non-empty,
@@ -250,7 +250,7 @@ func (s *Service) callerHost(ctx context.Context, host string) string {
 	if host != "" && s.isController(ctx) {
 		return host
 	}
-	return httpx.Peer(ctx).Hostname
+	return httpx.PeerFrom(ctx).Hostname
 }
 
 func (s *Service) streamsDone() <-chan struct{} {
@@ -553,7 +553,7 @@ func (s *Service) SampleCommand(ctx context.Context, req *pb.SampleCommandReques
 		return err
 	}
 	s.E.usedCommand(req.Id)
-	return s.E.SampleCommand(ctx, req, httpx.Peer(ctx).Hostname, func(chunk *pb.SampleCommandChunk) error {
+	return s.E.SampleCommand(ctx, req, httpx.PeerFrom(ctx).Hostname, func(chunk *pb.SampleCommandChunk) error {
 		return stream.Send(chunk)
 	})
 }

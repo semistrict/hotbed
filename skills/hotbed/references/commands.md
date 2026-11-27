@@ -222,7 +222,7 @@ A node with how it decides whether to start new work (its admission: whether it 
 
 ### `hotbed node retire NODE`
 
-Retire a node that is gone for good (its machine or VM deleted): it no longer shows in hotbed nodes or the cockpit and takes no runs, while its history (commands, events, placements) stays. Its sessions' runs go elsewhere. Refused while it is online. A worker joining again with the same tailnet identity is a node again.
+Retire a node that is gone for good (its machine or VM deleted): it no longer shows in hotbed nodes or the cockpit and takes no runs, while its history (commands, events, placements) stays. Its sessions' runs go elsewhere. Refused while it is online. A worker joining again with the same node ID is a node again.
 
 *MCP tool: `node_retire`*
 

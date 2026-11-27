@@ -12,6 +12,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -161,16 +162,23 @@ func (s *Store) Handler(primary slog.Handler) slog.Handler {
 
 // Install wraps slog.Default() so all WARN and ERROR records are also captured
 // in s, returning an idempotent restore function.
+//
+// slog.SetDefault points the log package's output at the new handler, and
+// setting slog's own default handler back does not undo that: log would
+// then write through slog's default handler, which writes through log, and
+// deadlock on log's mutex. Restoring puts log's output and flags back too.
 func Install(s *Store) func() {
 	if s == nil {
 		return func() {}
 	}
-	prev := slog.Default()
+	prev, prevOut, prevFlags := slog.Default(), log.Writer(), log.Flags()
 	slog.SetDefault(slog.New(s.Handler(prev.Handler())))
 	var once sync.Once
 	return func() {
 		once.Do(func() {
 			slog.SetDefault(prev)
+			log.SetOutput(prevOut)
+			log.SetFlags(prevFlags)
 		})
 	}
 }

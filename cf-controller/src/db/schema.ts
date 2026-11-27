@@ -83,6 +83,8 @@ export const nodes = sqliteTable("nodes", {
 	id: text("id").primaryKey(),
 	hostname: text("hostname").notNull(),
 	login: text("login").notNull(),
+	// Unused: workers listen on no address (they dial the controller's
+	// tunnel). Kept, empty, so no live Durable Object needs a migration.
 	addr: text("addr").notNull().default(""),
 	joinedAt: integer("joined_at").notNull(),
 	lastSeen: integer("last_seen"),

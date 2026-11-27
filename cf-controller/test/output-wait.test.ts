@@ -143,7 +143,6 @@ describe("WorkerTunnelHub socket ownership on reconnect", () => {
 		const meta1: WorkerSocketAttachment = {
 			nodeId: "node-a",
 			hostname: "asahimbp",
-			addr: "100.71.192.45:7121",
 			connectedAt: 1000,
 		};
 		hub.accept(ws1 as unknown as WebSocket, meta1);
@@ -220,7 +219,6 @@ describe("WorkspaceService.QueryOutput --wait resilience", () => {
 		const workerTransport = makeTransport(OWNER_TOKEN, {
 			"X-Hotbed-Node-Id": nodeId,
 			"X-Hotbed-Host": hostname,
-			"X-Hotbed-Addr": "100.71.192.45:7121",
 		});
 		const workerCluster = createClient(ClusterService, workerTransport);
 		const joined = await workerCluster.join({});
@@ -264,7 +262,6 @@ describe("WorkspaceService.QueryOutput --wait resilience", () => {
 				Authorization: `Bearer ${OWNER_TOKEN}`,
 				"X-Hotbed-Node-Id": nodeId,
 				"X-Hotbed-Host": hostname,
-				"X-Hotbed-Addr": "100.71.192.45:7121",
 			},
 		});
 		expect(res.status).toBe(101);

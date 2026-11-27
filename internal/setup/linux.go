@@ -69,9 +69,8 @@ var (
 )
 
 // joinLinuxWorker joins stateDir to controller, or reports the join it
-// already holds when it is joined to the same controller. Neither asks a
-// tailnet anything: a worker needs none.
-func joinLinuxWorker(ctx context.Context, o Options, stateDir, controller, username, storageMode string, tn worker.Tailnet, hc *http.Client, check worker.Check) (worker.JoinResult, error) {
+// already holds when it is joined to the same controller.
+func joinLinuxWorker(ctx context.Context, o Options, stateDir, controller, username, storageMode string, hc *http.Client, check worker.Check) (worker.JoinResult, error) {
 	existing, err := statedir.Load(stateDir)
 	switch {
 	case errors.Is(err, statedir.ErrNotInitialized):
@@ -84,7 +83,7 @@ func joinLinuxWorker(ctx context.Context, o Options, stateDir, controller, usern
 			Dataset:        o.ZFSDataset,
 			UnitProperties: o.UnitProperties,
 			Slice:          o.Slice,
-		}, tn, hc, check)
+		}, hc, check)
 	case err != nil:
 		return worker.JoinResult{}, err
 	case existing.Worker == nil:
@@ -106,7 +105,7 @@ func joinLinuxWorker(ctx context.Context, o Options, stateDir, controller, usern
 
 // Setup configures and starts a hotbed worker directly on this Linux host,
 // storing its state under o.Dir (default ~/.hotbed).
-func Setup(ctx context.Context, o Options, tn worker.Tailnet, hc *http.Client, check worker.Check) (Result, error) {
+func Setup(ctx context.Context, o Options, hc *http.Client, check worker.Check) (Result, error) {
 	if os.Geteuid() != 0 {
 		return Result{}, api.Errorf(api.CodeInvalidArgs, "setting up a Linux worker requires root privileges (for storage, join, and systemd)").
 			WithSuggestion("run with sudo: sudo hotbed worker init " + o.Controller)
@@ -177,7 +176,7 @@ func Setup(ctx context.Context, o Options, tn worker.Tailnet, hc *http.Client, c
 		return Result{}, fmt.Errorf("configure /dev/userfaultfd access for %s: %w", username, err)
 	}
 
-	joinRes, err := joinLinuxWorker(ctx, o, stateDir, controller, username, storageMode, tn, hc, check)
+	joinRes, err := joinLinuxWorker(ctx, o, stateDir, controller, username, storageMode, hc, check)
 	if err != nil {
 		return Result{}, err
 	}

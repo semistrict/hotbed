@@ -23,8 +23,7 @@ import (
 	"github.com/semistrict/hotbed/internal/fake"
 	pb "github.com/semistrict/hotbed/internal/gen/hotbed/v1"
 	"github.com/semistrict/hotbed/internal/gen/hotbed/v1/hotbedv1connect"
-	"github.com/semistrict/hotbed/internal/tailnet"
-	"github.com/semistrict/hotbed/internal/tailnet/tailnettest"
+	"github.com/semistrict/hotbed/internal/httpx"
 	"github.com/semistrict/hotbed/internal/worker"
 )
 
@@ -38,7 +37,6 @@ type cluster struct {
 	id       string
 	doName   string
 	harness  *cfbundle.Harness
-	tn       *tailnettest.Fake
 	server   *testServer
 	store    *testStore
 	asWorker hotbedv1connect.ClusterServiceClient
@@ -113,7 +111,7 @@ func (c *cluster) chdir(dir string) { c.where.chdir(dir) }
 // commands' units).
 type node struct {
 	c      *cluster
-	peer   tailnet.Peer
+	peer   httpx.Peer
 	dir    string
 	cfg    worker.EngineConfig
 	store  *fake.Store
@@ -147,7 +145,7 @@ type node struct {
 	stop   func() // stops the engine and its connections, and waits
 }
 
-var fleetPeers = []tailnet.Peer{
+var fleetPeers = []httpx.Peer{
 	asahi,
 	{NodeID: "nMini", Hostname: "mini", Login: "ramon@"},
 	{NodeID: "nOldpc", Hostname: "oldpc", Login: "ramon@"},
@@ -193,13 +191,11 @@ func newFleetWith(t *testing.T, n int, opts clusterOpts) *cluster {
 		t.Fatal(err)
 	}
 	doName := fmt.Sprintf("test-%d-%d", os.Getpid(), harnessSeq.Add(1))
-	tn := tailnettest.New(ubu1)
 
 	c := &cluster{
 		t:       t,
 		doName:  doName,
 		harness: h,
-		tn:      tn,
 		server:  &testServer{h: h, doName: doName},
 		store:   &testStore{h: h, doName: doName},
 	}
@@ -229,7 +225,7 @@ func newFleetWith(t *testing.T, n int, opts clusterOpts) *cluster {
 		nd.cfg = worker.EngineConfig{
 			Dir: nd.dir, NodeID: nd.peer.NodeID, Host: nd.peer.Hostname,
 			Store: nd.store, BaseImage: fake.BaseImage(nd.store), Units: nd.units, System: nd.system,
-			ControllerNodeID: ubu1.Peer.NodeID, AllowLocalRepos: true,
+			ControllerNodeID: controllerNode, AllowLocalRepos: true,
 		}
 		for _, w := range opts.engine {
 			w(&nd.cfg)
@@ -249,8 +245,9 @@ func newFleetWith(t *testing.T, n int, opts clusterOpts) *cluster {
 		r.Host = target.Host
 	}
 	var baseHandler http.Handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		peer, err := tn.WhoIs(r.Context(), r.RemoteAddr)
-		if err != nil {
+		// Every test client says which node it is (peerClient): one that
+		// does not is no test peer.
+		if r.Header.Get("X-Hotbed-Node-Id") == "" {
 			http.Error(w, "unknown test peer", http.StatusForbidden)
 			return
 		}
@@ -259,8 +256,6 @@ func newFleetWith(t *testing.T, n int, opts clusterOpts) *cluster {
 		if r2.Header.Get("Authorization") == "" {
 			r2.Header.Set("Authorization", "Bearer "+h.Token())
 		}
-		r2.Header.Set("X-Hotbed-Node-Id", peer.NodeID)
-		r2.Header.Set("X-Hotbed-Host", peer.Hostname)
 		proxy.ServeHTTP(w, r2)
 	})
 	c.handler.Store(&baseHandler)
@@ -274,7 +269,7 @@ func newFleetWith(t *testing.T, n int, opts clusterOpts) *cluster {
 	ctrl := strings.TrimPrefix(c.ctrlSrv.URL, "http://")
 
 	for _, nd := range c.nodes {
-		hc := &http.Client{Transport: partition{next: tn.Client(nd.peer).Transport, cut: func(string) bool { return nd.cut.Load() }}}
+		hc := &http.Client{Transport: partition{next: peerClient(nd.peer).Transport, cut: func(string) bool { return nd.cut.Load() }}}
 		if nd.cluster, _, err = api.Controller(ctrl, hc); err != nil {
 			t.Fatal(err)
 		}
@@ -286,7 +281,7 @@ func newFleetWith(t *testing.T, n int, opts clusterOpts) *cluster {
 			nd.cfg.GitAuth = hotbedv1connect.NewGitAuthServiceClient(conn)
 		}
 		// Joining is not cut off: it is how a worker comes to be.
-		joiner, _, err := api.Controller(ctrl, tn.Client(nd.peer))
+		joiner, _, err := api.Controller(ctrl, peerClient(nd.peer))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -294,7 +289,7 @@ func newFleetWith(t *testing.T, n int, opts clusterOpts) *cluster {
 			t.Fatal(err)
 		}
 		if opts.follow != nil {
-			nd.follow = opts.follow(ctrl, tn.Client(nd.peer))
+			nd.follow = opts.follow(ctrl, peerClient(nd.peer))
 		}
 		nd.start()
 		t.Cleanup(nd.halt)
@@ -321,10 +316,8 @@ func newFleetWith(t *testing.T, n int, opts clusterOpts) *cluster {
 	c.cli = deps{
 		here:       c.where.here(),
 		controller: at(ctrl),
-		// The CLI runs on the laptop: its tailnet says so, and its calls
-		// come from the laptop.
-		tailnet: tailnettest.New(tailnet.Self{Peer: laptop}),
-		http:    recording(tn.Client(laptop)), stream: recording(tn.Client(laptop)), cache: t.TempDir(),
+		// The CLI runs on the laptop: its calls come from the laptop.
+		http: recording(peerClient(laptop)), stream: recording(peerClient(laptop)), cache: t.TempDir(),
 		sessionsFile: filepath.Join(t.TempDir(), "sessions.json"),
 		exe:          func() (string, error) { return "", errors.New("the tests' client has no binary to upgrade") },
 		reexec:       func(...string) error { return errors.New("the tests' client runs nothing") },
@@ -334,7 +327,10 @@ func newFleetWith(t *testing.T, n int, opts clusterOpts) *cluster {
 
 func (c *cluster) applyServerConfig() {
 	c.t.Helper()
-	payload := map[string]any{}
+	// The controller's maintenance alarm runs on the wall clock, not the
+	// tests' clock: paused, it never races a test that jumps the clock or
+	// drives maintenance itself (testServer's ticks).
+	payload := map[string]any{"maintenanceAlarm": false}
 	if c.serverCfg.WakeWait > 0 {
 		payload["wakeWaitMs"] = c.serverCfg.WakeWait.Milliseconds()
 	}
@@ -478,11 +474,10 @@ func (nd *node) start() {
 				eng,
 				ctrlURL,
 				nd.c.harness.Token(),
-				tailnet.Self{Peer: nd.peer},
-				"",
-				ubu1.Peer.NodeID,
+				nd.peer,
+				controllerNode,
 				"ramon@",
-				nd.c.tn.Client(nd.peer),
+				peerClient(nd.peer),
 				tunnelWrap,
 			)
 			drop()

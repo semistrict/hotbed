@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"log"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -279,5 +280,35 @@ func TestParseSince(t *testing.T) {
 		if _, err := ParseSince(bad); err == nil {
 			t.Errorf("ParseSince(%q) succeeded, want error", bad)
 		}
+	}
+}
+
+// Restoring what Install replaced puts the log package back as it was: left
+// pointing at the replaced handler, log would write through slog's default
+// handler, which writes through log, and deadlock on log's mutex.
+func TestInstallRestoresTheLogPackage(t *testing.T) {
+	st, err := Open(t.TempDir(), Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	prevSlog, prevOut, prevFlags := slog.Default(), log.Writer(), log.Flags()
+	t.Cleanup(func() {
+		slog.SetDefault(prevSlog)
+		log.SetOutput(prevOut)
+		log.SetFlags(prevFlags)
+	})
+	var out bytes.Buffer
+	log.SetOutput(&out)
+	log.SetFlags(log.Lshortfile)
+
+	Install(st)()
+
+	if log.Writer() != &out || log.Flags() != log.Lshortfile {
+		t.Fatalf("after restore log writes to %T with flags %d, want the buffer with flags %d", log.Writer(), log.Flags(), log.Lshortfile)
+	}
+	slog.Info("after restore")
+	if !strings.Contains(out.String(), "after restore") {
+		t.Errorf("slog.Info after restore wrote %q, want it in log's output", out.String())
 	}
 }

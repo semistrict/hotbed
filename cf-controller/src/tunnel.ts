@@ -8,7 +8,6 @@ import { randomHex } from "./ids.ts";
 export interface WorkerSocketAttachment {
 	nodeId: string;
 	hostname: string;
-	addr: string;
 	connectedAt: number;
 }
 
@@ -276,7 +275,6 @@ export class WorkerTunnelHub {
 			const meta = (ws.deserializeAttachment() as WorkerSocketAttachment | null) ?? {
 				nodeId,
 				hostname: nodeId,
-				addr: "",
 				connectedAt: 0,
 			};
 			out.push({ ws, meta });

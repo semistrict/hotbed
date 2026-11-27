@@ -16,7 +16,6 @@
 | `NOT_AUTHORIZED` | The sign-in or token is missing, expired, revoked, or for another organization (WorkOS sign-in, or an `hbj_`, `hbw_` or `hbu_` token) | `hotbed login` again, or pass a valid token (`HOTBED_TOKEN`; mint join and API tokens on the cockpit's Organization page) |
 | `ALREADY_INITIALIZED` | `join` or `worker init` on a directory that already holds a node, or one joined to another controller | Use another directory, or `hotbed worker destroy` first |
 | `NOT_INITIALIZED` | No controller is configured on this machine, or no worker in the state directory | `hotbed login https://CONTROLLER` or set `HOTBED_CONTROLLER`; on a worker, `hotbed worker init` or `join` first |
-| `TAILSCALE_UNAVAILABLE` | The controller was given as a tailnet name and no tailscaled is running here, or it is not logged in (not needed with an HTTPS controller URL) | Use the controller's HTTPS URL, or `tailscale up` |
 | `NOT_JOINED`, `CLUSTER_MISMATCH` | A worker the controller does not know, or one of another cluster | `hotbed worker init` again (new directory, with a fresh join token) |
 | `PLATFORM_NOT_SUPPORTED` | The operation does not exist on this worker's platform (Linux, or Apple-silicon macOS with a native `macworker` and `machined` VMs), such as `worker trim` on a Mac, or a guest-agent operation an old VM image lacks | Run it where it exists |
 | `INTERNAL` | A bug or an unexpected failure | Report it with the message |

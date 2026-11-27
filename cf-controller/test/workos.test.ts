@@ -345,7 +345,6 @@ describe("WorkOS multi-organization, multi-user, per-org ControllerDO integratio
 		const joiner = makeRpcClient(testEnv, jt.token, {
 			"X-Hotbed-Node-Id": "node-acme-1",
 			"X-Hotbed-Host": "acme-ubu1",
-			"X-Hotbed-Addr": "100.64.1.10:7121",
 		});
 		const joined = await joiner.join({});
 		expect(joined.workerToken.startsWith("hbw_org_acme_tok.")).toBe(true);
@@ -355,7 +354,6 @@ describe("WorkOS multi-organization, multi-user, per-org ControllerDO integratio
 		const workerClient = makeRpcClient(testEnv, joined.workerToken, {
 			"X-Hotbed-Node-Id": "node-acme-1",
 			"X-Hotbed-Host": "acme-ubu1",
-			"X-Hotbed-Addr": "100.64.1.10:7121",
 		});
 		const hb = await workerClient.heartbeat(
 			create(HeartbeatRequestSchema, {
@@ -1667,13 +1665,11 @@ describe("WorkOS multi-organization, multi-user, per-org ControllerDO integratio
 		const workerJoinRpc = makeRpcClient(testEnv, jt.token, {
 			"X-Hotbed-Node-Id": "node-a1",
 			"X-Hotbed-Host": "node-a1",
-			"X-Hotbed-Addr": "100.70.0.10:7121",
 		});
 		const joined = await workerJoinRpc.join({});
 		const workerRpc = makeRpcClient(testEnv, joined.workerToken, {
 			"X-Hotbed-Node-Id": "node-a1",
 			"X-Hotbed-Host": "node-a1",
-			"X-Hotbed-Addr": "100.70.0.10:7121",
 		});
 		const hb = await workerRpc.heartbeat(
 			create(HeartbeatRequestSchema, {
@@ -1927,7 +1923,6 @@ describe("WorkOS multi-organization, multi-user, per-org ControllerDO integratio
 					Authorization: `Bearer ${bearer}`,
 					"X-Hotbed-Host": "laptop",
 					"X-Hotbed-Node-Id": "node-7",
-					"X-Hotbed-Addr": "10.0.0.7",
 				},
 			});
 		expect(await verifyWorkOSBearer(req(foreign), foreign, testEnv)).toBeNull();
@@ -1951,7 +1946,6 @@ describe("WorkOS multi-organization, multi-user, per-org ControllerDO integratio
 			userId: "user_seam",
 			orgId: "org_seam",
 			orgRole: "admin",
-			addr: "10.0.0.7",
 			authMethod: "workos-jwt",
 		};
 		const routing = await resolveEdgeRouting(req(jwt), new URL(req(jwt).url), testEnv);

@@ -1434,9 +1434,9 @@ func TestCleanupLegacyTrimUnits(t *testing.T) {
 }
 
 // Setting up a host already joined to the controller reports the node name
-// it joined under and asks no tailnet anything: a host without tailscaled
-// sets up all the same (nil Tailnet panics if called).
-func TestJoinLinuxWorkerAlreadyJoinedNeedsNoTailnet(t *testing.T) {
+// it joined under and asks the controller nothing (nil client and check
+// panic if called).
+func TestJoinLinuxWorkerAlreadyJoined(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "state")
 	if err := statedir.Prepare(dir); err != nil {
 		t.Fatal(err)
@@ -1447,7 +1447,7 @@ func TestJoinLinuxWorkerAlreadyJoinedNeedsNoTailnet(t *testing.T) {
 	}}); err != nil {
 		t.Fatal(err)
 	}
-	got, err := joinLinuxWorker(t.Context(), Options{Hostname: "ignored"}, dir, controller, "alice", "zfs-file", nil, nil, nil)
+	got, err := joinLinuxWorker(t.Context(), Options{Hostname: "ignored"}, dir, controller, "alice", "zfs-file", nil, nil)
 	if err != nil {
 		t.Fatalf("joinLinuxWorker: %v", err)
 	}
@@ -1455,7 +1455,7 @@ func TestJoinLinuxWorkerAlreadyJoinedNeedsNoTailnet(t *testing.T) {
 	if diff := cmp.Diff(want, got); diff != "" {
 		t.Fatalf("join result (-want +got):\n%s", diff)
 	}
-	if _, err := joinLinuxWorker(t.Context(), Options{}, dir, "https://other.example", "alice", "zfs-file", nil, nil, nil); api.CodeOf(err) != api.CodeAlreadyInitialized {
+	if _, err := joinLinuxWorker(t.Context(), Options{}, dir, "https://other.example", "alice", "zfs-file", nil, nil); api.CodeOf(err) != api.CodeAlreadyInitialized {
 		t.Fatalf("joined to another controller: %v, want ALREADY_INITIALIZED", err)
 	}
 }

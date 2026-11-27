@@ -37,7 +37,7 @@ service ClusterService {
     name: "freshen"
     help: "Inspect active and historical base freshens, phase/step timings, and latency bottlenecks (ls, show)."
   };
-  // Join admits the calling tailnet node as a worker.
+  // Join admits the calling node, which its join token names, as a worker.
   rpc Join(JoinRequest) returns (JoinResponse);
   // PushEvents delivers a worker's events, in order, from after what the
   // controller has applied; or a checkpoint of its state when the
@@ -240,7 +240,7 @@ service ClusterService {
   // longer shows in hotbed nodes or the cockpit and takes no runs, while
   // its history (commands, events, placements) stays. Its sessions' runs go
   // elsewhere. Refused while it is online. A worker joining again with the
-  // same tailnet identity is a node again.
+  // same node ID is a node again.
   rpc RetireNode(RetireNodeRequest) returns (Node) {
     option (command) = {
       name: "node retire"
@@ -366,10 +366,10 @@ service SessionService {
   }
 }
 
-// Workspaces and the commands in them. Workers serve it to clients, which
-// call the worker that holds a workspace (Workspace.node_addr) directly. The
-// controller serves workspace placement, lifecycle, listings, and cockpit
-// read/diagnostics calls.
+// Workspaces and the commands in them. Clients call the controller, which
+// serves workspace placement, lifecycle, listings, and cockpit
+// read/diagnostics calls itself and relays the rest to the worker that
+// holds the workspace, over that worker's tunnel to it.
 service WorkspaceService {
   rpc CreateWorkspace(CreateWorkspaceRequest) returns (Workspace);
   rpc GetWorkspace(GetWorkspaceRequest) returns (Workspace) {
@@ -636,7 +636,7 @@ message DiskUsage {
   int64 free_bytes = 4;
 }
 
-// A worker. Its identity (id, hostname, login) comes from the tailnet.
+// A worker. Its identity (id, hostname) is what it named itself as it joined.
 message Node {
   string id = 1;
   string hostname = 2;
@@ -1371,8 +1371,8 @@ enum WorkspaceState {
 // every repo of the project at /work/<repo>.
 message Workspace {
   string id = 1;
-  reserved 2, 6, 7, 8, 9, 10, 17, 19;
-  reserved "repo_id", "branch", "head", "base_commit", "tree", "files_changed", "path", "sync_dir";
+  reserved 2, 6, 7, 8, 9, 10, 17, 19, 22;
+  reserved "repo_id", "branch", "head", "base_commit", "tree", "files_changed", "path", "sync_dir", "node_addr";
   string base_id = 3;
   string node_id = 4;
   string agent = 5;
@@ -1388,9 +1388,6 @@ message Workspace {
   // Why it failed, what it waits for while preparing, or, once ready, why
   // its base is not up to date (a step failed in the newer one).
   string reason = 21;
-  // Set by the controller: where clients call the workspace's worker
-  // (host:port) to sync, run commands and read their output.
-  string node_addr = 22;
   // Its page in the cockpit. The CLI fills it from the controller it
   // calls (cmd/hotbed/cockpit.go); the API leaves it empty.
   string cockpit_url = 23;
@@ -1802,6 +1799,8 @@ message CommandEvent {
 
 // A command in a workspace, live or just ended.
 message Command {
+  reserved 24;
+  reserved "node_addr";
   string id = 1;
   string workspace_id = 2;
   string node_id = 3;
@@ -1834,8 +1833,6 @@ message Command {
   // A measurement: it runs alone on the node's measurement CPUs, isolated,
   // never swapped or parked.
   bool bench = 23;
-  // Set by the controller: where clients call the command's worker.
-  string node_addr = 24;
   // Its page in the cockpit. The CLI fills it from the controller it
   // calls (cmd/hotbed/cockpit.go); the API leaves it empty.
   string cockpit_url = 25;
@@ -3335,7 +3332,7 @@ message DaemonLogEntry {
   string source = 3;
   // "controller" or "worker".
   string role = 4;
-  // Tailnet hostname of the machine that logged it.
+  // Hostname of the machine that logged it.
   string host = 5;
   // The slog message.
   string msg = 6;
@@ -3350,7 +3347,7 @@ message DaemonLogSource {
   string source = 1;
   // "controller" or "worker".
   string role = 2;
-  // Tailnet hostname of the machine.
+  // Hostname of the machine.
   string host = 3;
   // True when the daemon answered this query.
   bool reachable = 4;

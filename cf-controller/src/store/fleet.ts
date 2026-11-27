@@ -66,19 +66,17 @@ export class FleetStore {
 		private readonly sessions: SessionStore,
 	) {}
 
-	join(id: string, hostname: string, login: string, addr: string, nowMs: number): Node {
+	join(id: string, hostname: string, login: string, nowMs: number): Node {
 		this.sql.exec(
-			`INSERT INTO nodes (id, hostname, login, addr, joined_at)
-			 VALUES (?, ?, ?, ?, ?)
+			`INSERT INTO nodes (id, hostname, login, joined_at)
+			 VALUES (?, ?, ?, ?)
 			 ON CONFLICT (id) DO UPDATE SET
 			   hostname = excluded.hostname,
 			   login = excluded.login,
-			   addr = CASE WHEN excluded.addr != '' THEN excluded.addr ELSE nodes.addr END,
 			   retired_at = NULL`,
 			id,
 			hostname,
 			login,
-			addr,
 			nowMs,
 		);
 		return this.get(id).node;
@@ -99,7 +97,7 @@ export class FleetStore {
 	list(): NodeRow[] {
 		const rows = this.sql
 			.exec(
-				"SELECT id, hostname, login, addr, joined_at, last_seen, heartbeat FROM nodes WHERE retired_at IS NULL ORDER BY hostname, id",
+				"SELECT id, hostname, login, joined_at, last_seen, heartbeat FROM nodes WHERE retired_at IS NULL ORDER BY hostname, id",
 			)
 			.toArray();
 		return rows.map((r) => this.toNodeRow(r));
@@ -108,7 +106,7 @@ export class FleetStore {
 	get(id: string): NodeRow {
 		const rows = this.sql
 			.exec(
-				"SELECT id, hostname, login, addr, joined_at, last_seen, heartbeat FROM nodes WHERE id = ?",
+				"SELECT id, hostname, login, joined_at, last_seen, heartbeat FROM nodes WHERE id = ?",
 				id,
 			)
 			.toArray();
@@ -141,7 +139,7 @@ export class FleetStore {
 			node.storageError = hb.storageError;
 			node.objectStore = hb.objectStore;
 		}
-		return { node, addr: str(r.addr), hb };
+		return { node, hb };
 	}
 
 	beat(nodeId: string, h: HeartbeatRequest, nowMs: number): void {

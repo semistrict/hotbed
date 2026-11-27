@@ -14,7 +14,6 @@ import (
 	"google.golang.org/protobuf/types/dynamicpb"
 
 	"github.com/semistrict/hotbed/internal/api"
-	"github.com/semistrict/hotbed/internal/tailnet"
 )
 
 // thingRequest is a request with a local field, dry, compiled at run time
@@ -76,7 +75,7 @@ func TestServerRefusesLocalFields(t *testing.T) {
 		},
 	})
 	call := func(req proto.Message) error {
-		ctx := context.WithValue(t.Context(), peerKey{}, tailnet.Peer{})
+		ctx := WithPeer(t.Context(), Peer{})
 		return server.Call(ctx, "/t.v1.ThingService/PutThing", nil, stream{req: req})
 	}
 	req := dynamicpb.NewMessage(md)

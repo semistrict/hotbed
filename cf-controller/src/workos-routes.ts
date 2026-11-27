@@ -2018,7 +2018,6 @@ export async function handleAuthRoute(
 				userId: ctx.userId,
 				orgId: ctx.organizationId,
 				orgRole: ctx.role,
-				addr: "",
 				authMethod: ctx.authMethod,
 			};
 			const revokeRes = await env.CONTROLLER.getByName(

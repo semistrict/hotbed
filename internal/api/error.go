@@ -10,7 +10,6 @@ const (
 	CodeInvalidArgs           Code = "INVALID_ARGS"
 	CodeAlreadyInitialized    Code = "ALREADY_INITIALIZED"
 	CodeNotInitialized        Code = "NOT_INITIALIZED"
-	CodeTailscaleUnavailable  Code = "TAILSCALE_UNAVAILABLE"
 	CodeControllerUnreachable Code = "CONTROLLER_UNREACHABLE"
 	CodeNotAuthorized         Code = "NOT_AUTHORIZED"
 	CodeNotJoined             Code = "NOT_JOINED"
@@ -24,8 +23,7 @@ const (
 	CodeStepNotIdempotent     Code = "STEP_NOT_IDEMPOTENT"
 	CodeSyncRefused           Code = "SYNC_REFUSED"
 	CodeWorkerUnreachable     Code = "WORKER_UNREACHABLE"
-	CodeNodeWaking            Code = "NODE_WAKING" // the node a run goes to is booting; call again
-	CodeNodesBusy             Code = "NODES_BUSY"  // all eligible nodes are full/holding; call again as any frees up
+	CodeNodesBusy             Code = "NODES_BUSY" // all eligible nodes are full/holding; call again as any frees up
 	// CodeCommandStopped is how waiting on a command ends when someone
 	// stopped it by hand: its message says who, what they wrote, and how to
 	// read its diagnostics.

@@ -33,7 +33,6 @@ export const RACE_COST_MARGIN = 0.35;
 
 export interface NodeRow {
 	node: Node;
-	addr: string;
 	hb?: HeartbeatRequest;
 }
 

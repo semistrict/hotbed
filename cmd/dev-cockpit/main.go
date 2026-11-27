@@ -32,58 +32,15 @@ import (
 	pb "github.com/semistrict/hotbed/internal/gen/hotbed/v1"
 	"github.com/semistrict/hotbed/internal/gen/hotbed/v1/hotbedv1connect"
 	"github.com/semistrict/hotbed/internal/httpx"
-	"github.com/semistrict/hotbed/internal/peercred"
 	"github.com/semistrict/hotbed/internal/profiler"
 	"github.com/semistrict/hotbed/internal/sysinfo"
-	"github.com/semistrict/hotbed/internal/tailnet"
-	"github.com/semistrict/hotbed/internal/tailnet/tailnettest"
 	"github.com/semistrict/hotbed/internal/worker"
 )
 
 const devOwner = "dev@local"
 
-var loopbackAddrs = []netip.Addr{
-	netip.MustParseAddr("127.0.0.1"),
-	netip.MustParseAddr("::1"),
-}
-
-type uidLookupFunc func(client, server netip.AddrPort) (uint32, error)
-
-// devTailnet wraps tailnettest.Fake so internal worker clients keep their node
-// identities while local browser / Vite proxy requests on loopback are
-// authenticated by real OS peer credentials (os.Getuid() only).
-type devTailnet struct {
-	*tailnettest.Fake
-	fallback tailnet.Peer
-	mu       sync.RWMutex
-	localUID uidLookupFunc
-}
-
-func (d *devTailnet) WhoIs(ctx context.Context, remote string) (tailnet.Peer, error) {
-	if p, err := d.Fake.WhoIs(ctx, remote); err == nil {
-		return p, nil
-	}
-	if ap, err := netip.ParseAddrPort(remote); err == nil && ap.Addr().Unmap().IsLoopback() {
-		return d.fallback, nil
-	}
-	return tailnet.Peer{}, fmt.Errorf("no tailnet node at %s", remote)
-}
-
-func (d *devTailnet) LocalUID(client, server netip.AddrPort) (uint32, error) {
-	d.mu.RLock()
-	fn := d.localUID
-	d.mu.RUnlock()
-	return fn(client, server)
-}
-
-func (d *devTailnet) setLocalUID(fn uidLookupFunc) {
-	d.mu.Lock()
-	d.localUID = fn
-	d.mu.Unlock()
-}
-
 type devWorker struct {
-	peer   tailnet.Peer
+	peer   httpx.Peer
 	eng    *worker.Engine
 	units  *fake.Units
 	prof   *fake.Profiler
@@ -96,7 +53,6 @@ type devCluster struct {
 	root    string
 	doName  string
 	harness *cfbundle.Harness
-	tn      *devTailnet
 	ctrlSrv *http.Server
 	ctrlLn  net.Listener
 	workers []*devWorker
@@ -147,6 +103,11 @@ func builtUIDir() (string, error) {
 // startDevCluster starts the dev cluster listening on addr. uiDir, when not
 // empty, is the built cockpit the Worker serves as its static assets.
 func startDevCluster(parent context.Context, addr, uiDir string) (*devCluster, error) {
+	// It admits whoever reaches it as the owner, and its workers run real
+	// processes: only this machine may.
+	if host, _, err := net.SplitHostPort(addr); err != nil || !isLoopbackHost(host) {
+		return nil, fmt.Errorf("dev-cockpit listens only on loopback, not %q: give -addr 127.0.0.1:PORT", addr)
+	}
 	root, err := os.MkdirTemp("", "hotbed-dev-cockpit-*")
 	if err != nil {
 		return nil, err
@@ -180,20 +141,17 @@ func startDevCluster(parent context.Context, addr, uiDir string) (*devCluster, e
 	}
 	clusterID := cfgRes.ClusterID
 
-	ownerUID := uint32(os.Getuid())
-	ubu1Peer := tailnet.Peer{NodeID: "nUbu1", Hostname: "ubu1", Login: devOwner}
-	asahiPeer := tailnet.Peer{NodeID: "nAsahi", Hostname: "asahimbp", Login: devOwner}
-	browserPeer := tailnet.Peer{NodeID: "nDevBrowser", Hostname: "localhost", Login: devOwner}
-
-	tn := &devTailnet{
-		Fake:     tailnettest.New(tailnet.Self{Peer: ubu1Peer, Addrs: loopbackAddrs}),
-		fallback: browserPeer,
-		localUID: peercred.SocketUID,
+	ubu1Peer := httpx.Peer{NodeID: "nUbu1", Hostname: "ubu1", Login: devOwner}
+	asahiPeer := httpx.Peer{NodeID: "nAsahi", Hostname: "asahimbp", Login: devOwner}
+	browserPeer := httpx.Peer{NodeID: "nDevBrowser", Hostname: "localhost", Login: devOwner}
+	// as is a client whose calls name peer's node to the controller, as a
+	// worker's do; a call that names none is the browser's.
+	as := func(peer httpx.Peer) *http.Client {
+		return &http.Client{Transport: api.AuthRoundTripper(&http.Transport{}, harness.Token(), peer.NodeID, peer.Hostname)}
 	}
-	dc.tn = tn
 
 	specs := []struct {
-		peer  tailnet.Peer
+		peer  httpx.Peer
 		sys   *fake.System
 		bench worker.Isolator
 	}{
@@ -261,26 +219,20 @@ func startDevCluster(parent context.Context, addr, uiDir string) (*devCluster, e
 		r.Host = target.Host
 	}
 	// Every request, the cockpit's pages and assets included, goes to the
-	// Worker, which serves the UI itself. The gate has authenticated the
-	// caller, so the proxy speaks for it: as the node it is (the workers' own
-	// requests) or as the owner (a browser).
+	// Worker, which serves the UI itself. The proxy speaks for its caller:
+	// as the node a worker's request names, or as the owner (a browser).
 	inner := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		peer := httpx.Peer(r.Context())
 		r2 := r.Clone(r.Context())
 		r2.Header.Set("X-Hotbed-Test-DO", dc.doName)
 		if r2.Header.Get("Authorization") == "" {
 			r2.Header.Set("Authorization", "Bearer "+harness.Token())
 		}
-		r2.Header.Set("X-Hotbed-Node-Id", peer.NodeID)
-		r2.Header.Set("X-Hotbed-Host", peer.Hostname)
+		if r2.Header.Get("X-Hotbed-Node-Id") == "" {
+			r2.Header.Set("X-Hotbed-Node-Id", browserPeer.NodeID)
+			r2.Header.Set("X-Hotbed-Host", browserPeer.Hostname)
+		}
 		proxy.ServeHTTP(w, r2)
 	})
-	gated := httpx.Gate(tn, httpx.Policy{
-		Owner:      devOwner,
-		Self:       loopbackAddrs,
-		Hosts:      []string{"ubu1", "localhost"},
-		LocalUsers: []uint32{ownerUID},
-	}, inner)
 
 	ctrlLn, err := net.Listen("tcp", addr)
 	if err != nil {
@@ -289,7 +241,7 @@ func startDevCluster(parent context.Context, addr, uiDir string) (*devCluster, e
 	dc.ctrlLn = ctrlLn
 	dc.addr = ctrlLn.Addr().String()
 	dc.ctrlSrv = &http.Server{
-		Handler:           gated,
+		Handler:           sameMachineBrowser(inner),
 		Protocols:         httpx.Protocols(),
 		ReadHeaderTimeout: 10 * time.Second,
 	}
@@ -303,7 +255,7 @@ func startDevCluster(parent context.Context, addr, uiDir string) (*devCluster, e
 
 	// Join, connect, and open the reverse-RPC tunnel for each worker.
 	for _, dw := range dc.workers {
-		cl, _, err := api.Controller(dc.addr, tn.Client(dw.peer))
+		cl, _, err := api.Controller(dc.addr, as(dw.peer))
 		if err != nil {
 			return nil, fmt.Errorf("dial controller for %s: %w", dw.peer.Hostname, err)
 		}
@@ -322,11 +274,10 @@ func startDevCluster(parent context.Context, addr, uiDir string) (*devCluster, e
 				dw.eng,
 				"http://"+dc.addr,
 				harness.Token(),
-				tailnet.Self{Peer: dw.peer},
-				"",
+				dw.peer,
 				ubu1Peer.NodeID,
 				devOwner,
-				tn.Client(dw.peer),
+				as(dw.peer),
 			)
 		}(dw)
 	}
@@ -348,11 +299,50 @@ func startDevCluster(parent context.Context, addr, uiDir string) (*devCluster, e
 		return nil, fmt.Errorf("wait for worker tunnels: %w", err)
 	}
 
-	if err := dc.seed(ctx, tn.Client(browserPeer), tn.Client(ubu1Peer)); err != nil {
+	if err := dc.seed(ctx, &http.Client{}, as(ubu1Peer)); err != nil {
 		return nil, fmt.Errorf("seed dev cluster: %w", err)
 	}
 	ok = true
 	return dc, nil
+}
+
+// sameMachineBrowser refuses what a web page in the owner's browser could
+// send this loopback server from another site: a request whose Host is not
+// a loopback name (DNS rebinding) or that the browser marks cross-site.
+func sameMachineBrowser(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !isLoopbackHost(r.Host) {
+			http.Error(w, fmt.Sprintf("host %q is not this machine's loopback", r.Host), http.StatusForbidden)
+			return
+		}
+		if site := strings.ToLower(strings.TrimSpace(r.Header.Get("Sec-Fetch-Site"))); site != "" && site != "same-origin" && site != "none" {
+			http.Error(w, fmt.Sprintf("cross-site browser request (%s) is not allowed", site), http.StatusForbidden)
+			return
+		}
+		if origin := strings.TrimSpace(r.Header.Get("Origin")); origin != "" {
+			u, err := url.Parse(origin)
+			if err != nil || (u.Scheme != "http" && u.Scheme != "https") || !isLoopbackHost(u.Host) {
+				http.Error(w, fmt.Sprintf("origin %q is not this machine's loopback", origin), http.StatusForbidden)
+				return
+			}
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+// isLoopbackHost says whether hostport names this machine's loopback:
+// localhost or a loopback address, with or without a port.
+func isLoopbackHost(hostport string) bool {
+	h := hostport
+	if host, _, err := net.SplitHostPort(hostport); err == nil {
+		h = host
+	}
+	h = strings.TrimSuffix(strings.ToLower(strings.Trim(h, "[]")), ".")
+	if h == "localhost" {
+		return true
+	}
+	a, err := netip.ParseAddr(h)
+	return err == nil && a.Unmap().IsLoopback()
 }
 
 func (dc *devCluster) Close() {

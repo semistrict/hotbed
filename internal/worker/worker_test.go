@@ -5,7 +5,7 @@ import (
 	"errors"
 	"net"
 	"net/http"
-	"net/netip"
+	"net/http/httptest"
 	"os"
 	"os/user"
 	"path/filepath"
@@ -21,8 +21,6 @@ import (
 	"github.com/semistrict/hotbed/internal/gen/hotbed/v1/hotbedv1connect"
 	"github.com/semistrict/hotbed/internal/httpx"
 	"github.com/semistrict/hotbed/internal/statedir"
-	"github.com/semistrict/hotbed/internal/tailnet"
-	"github.com/semistrict/hotbed/internal/tailnet/tailnettest"
 )
 
 // A worker must reject --user root (or any account resolving to uid 0 or gid 0)
@@ -97,7 +95,7 @@ func TestRejectRootCommandUser(t *testing.T) {
 				Dir:        t.TempDir(),
 				Controller: "https://ctrl.example.com",
 				User:       bad.user,
-			}, nil, nil, func(context.Context, JoinOptions) (string, error) {
+			}, nil, func(context.Context, JoinOptions) (string, error) {
 				checkCalled = true
 				return "btrfs", nil
 			})
@@ -111,7 +109,7 @@ func TestRejectRootCommandUser(t *testing.T) {
 			err := Run(t.Context(), t.TempDir(), statedir.WorkerConfig{
 				Controller: "https://ctrl.example.com",
 				User:       bad.user,
-			}, nil, nil)
+			}, nil)
 			assertRejected(t, err, bad.want)
 		})
 
@@ -178,13 +176,9 @@ func TestServerShutdownDrainsStreamsImmediately(t *testing.T) {
 	}}
 	eng.mu.Unlock()
 
-	peer := tailnet.Peer{NodeID: "nClient", Hostname: "laptop", Login: "ramon@"}
-	tn := tailnettest.New(tailnet.Self{Peer: peer})
+	peer := httpx.Peer{NodeID: "nClient", Hostname: "laptop", Login: "ramon@"}
 	srv := &http.Server{
-		Handler: Handler(tn, httpx.Policy{
-			Owner: "ramon@",
-			Self:  []netip.Addr{netip.MustParseAddr("127.0.0.1")},
-		}, eng),
+		Handler:           Handler(peer, eng),
 		ReadHeaderTimeout: 10 * time.Second,
 		Protocols:         httpx.Protocols(),
 	}
@@ -207,7 +201,7 @@ func TestServerShutdownDrainsStreamsImmediately(t *testing.T) {
 		<-serveErr
 	})
 
-	conn, err := api.Dial(ln.Addr().String(), api.WorkerPort, tn.Client(peer))
+	conn, err := api.Dial(ln.Addr().String(), api.WorkerPort, &http.Client{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -287,5 +281,39 @@ func TestServerShutdownDrainsStreamsImmediately(t *testing.T) {
 		case <-time.After(time.Second):
 			t.Errorf("%s did not terminate promptly on shutdown", tc.name)
 		}
+	}
+}
+
+// clientAs is a WorkspaceService client of eng whose every call comes from
+// peer, as the worker's tunnel or Unix socket names its caller.
+func clientAs(t *testing.T, peer httpx.Peer, eng *Engine) hotbedv1connect.WorkspaceServiceClient {
+	t.Helper()
+	ts := httptest.NewUnstartedServer(Handler(peer, eng))
+	ts.Config.Protocols = httpx.Protocols()
+	ts.Start()
+	t.Cleanup(ts.Close)
+	conn, err := api.Dial(strings.TrimPrefix(ts.URL, "http://"), api.WorkerPort, ts.Client())
+	if err != nil {
+		t.Fatal(err)
+	}
+	return hotbedv1connect.NewWorkspaceServiceClient(conn)
+}
+
+// A worker whose hotbed.json records no node of its own (one that joined
+// when nodes were the tailnet's) refuses to run and says to join again,
+// rather than ask a tailnet for one.
+func TestRunRefusesAWorkerWithNoNode(t *testing.T) {
+	origLookup := lookupOSUser
+	t.Cleanup(func() { lookupOSUser = origLookup })
+	lookupOSUser = func(name string) (*user.User, error) {
+		return &user.User{Username: name, Uid: "1000", Gid: "1000", HomeDir: "/home/" + name}, nil
+	}
+	err := Run(t.Context(), t.TempDir(), statedir.WorkerConfig{
+		ClusterID: "c1", Controller: "https://ctrl.example.com", User: "builder", Token: "tok",
+	}, nil)
+	e := api.FromConnect(err)
+	if e.Code != api.CodeInvalidArgs || !strings.Contains(e.Message, "records no node ID, host or controller node") ||
+		e.Suggestion != "join again: hotbed worker init https://ctrl.example.com" {
+		t.Fatalf("Run with no node = %+v, want INVALID_ARGS saying to join again", e)
 	}
 }

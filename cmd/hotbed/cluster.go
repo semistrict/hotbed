@@ -127,7 +127,7 @@ func controllerAuthInterceptors(getenv func(string) string, controller string, h
 		return nil, nil
 	}
 	host, _ := os.Hostname()
-	return []connect.ClientInterceptor{api.AuthInterceptor(tok, "", host, "")}, nil
+	return []connect.ClientInterceptor{api.AuthInterceptor(tok, "", host)}, nil
 }
 
 func (f controllerClient) interceptors(hc *http.Client) ([]connect.ClientInterceptor, error) {
@@ -164,7 +164,7 @@ func (f controllerClient) clients(hc *http.Client) (clients, error) {
 }
 
 type joinCmd struct {
-	Controller     string   `arg:"" help:"The controller's HTTPS URL (or tailnet host[:port])."`
+	Controller     string   `arg:"" help:"The controller's HTTPS URL."`
 	Dir            string   `arg:"" type:"path" help:"State directory to create, on btrfs or zfs; volumes live under it."`
 	User           string   `required:"" help:"User every command runs as."`
 	Token          string   `env:"HOTBED_TOKEN" help:"Bearer token for authenticating to a remote HTTPS controller."`
@@ -180,7 +180,7 @@ func (c *joinCmd) Exec(ctx context.Context, d deps) (any, error) {
 	}
 	return worker.Join(ctx, worker.JoinOptions{
 		Dir: c.Dir, Controller: c.Controller, User: c.User, Token: token, Dataset: c.ZFSDataset, UnitProperties: c.UnitProperties, Slice: c.Slice,
-	}, d.tailnet, d.http, d.check)
+	}, d.http, d.check)
 }
 
 type serveCmd struct {
@@ -210,7 +210,7 @@ func (c *serveCmd) Exec(ctx context.Context, d deps) (any, error) {
 		exe = resolved
 	}
 	res := serveResult{Role: "worker"}
-	err = worker.Run(ctx, c.Dir, *cfg.Worker, d.tailnet, d.http)
+	err = worker.Run(ctx, c.Dir, *cfg.Worker, d.http)
 	return afterServe(res, err, exe, os.Args, d.execve)
 }
 

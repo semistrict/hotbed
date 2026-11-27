@@ -281,7 +281,6 @@ export function createWorkspaceService(ctrl: ControllerContext): {
 			return null;
 		}
 		const cmd = vc.cmd;
-		cmd.nodeAddr = ctrl.addrOf(row);
 		if (cmd.sessionId) {
 			const sess = ctrl.store.sessions.tryGet(cmd.sessionId);
 			if (sess?.project) cmd.project = sess.project;
@@ -315,7 +314,6 @@ export function createWorkspaceService(ctrl: ControllerContext): {
 		const cmd = create(CommandSchema, {
 			id,
 			nodeId: nid,
-			nodeAddr: ctrl.nodeAddr(nid),
 			project: b.project,
 			kind: "freshen",
 			runtime: baseRuntime,
@@ -384,7 +382,6 @@ export function createWorkspaceService(ctrl: ControllerContext): {
 					WORKER_RPC_TIMEOUT_MS,
 				);
 				const nodeRow = ctrl.store.fleet.get(row.node);
-				ws.nodeAddr = ctrl.addrOf(nodeRow);
 				ws.node = nodeRow.node.hostname;
 				ws.project = project;
 				return ws;
@@ -1059,7 +1056,6 @@ export function createWorkspaceService(ctrl: ControllerContext): {
 				}
 				throw hotbedError(ErrorCode.NotFound, `workspace ${fwd.id} was released`);
 			}
-			ws.nodeAddr = ctrl.addrOf(node.view);
 			ws.node = node.host;
 			ws.project = sess.project;
 			return ws;
@@ -1337,7 +1333,6 @@ export function createWorkspaceService(ctrl: ControllerContext): {
 						CommandSchema,
 						WORKER_RPC_TIMEOUT_MS,
 					);
-					cmd.nodeAddr = ctrl.nodeAddr(cmd.nodeId);
 					if (route.session) {
 						const sess = ctrl.store.sessions.tryGet(route.session);
 						if (sess) cmd.project = sess.project;
@@ -1354,9 +1349,7 @@ export function createWorkspaceService(ctrl: ControllerContext): {
 				if (!route?.histChecked) {
 					const f = ctrl.store.commands.finished(req.id);
 					if (f) {
-						const c = commandOfHistory(f);
-						c.nodeAddr = ctrl.nodeAddr(f.nodeId);
-						return c;
+						return commandOfHistory(f);
 					}
 				}
 				if (route) {
@@ -1369,9 +1362,7 @@ export function createWorkspaceService(ctrl: ControllerContext): {
 				if (!route?.histChecked) {
 					const f = ctrl.store.commands.finished(req.id);
 					if (f) {
-						const c = commandOfHistory(f);
-						c.nodeAddr = ctrl.nodeAddr(f.nodeId);
-						return c;
+						return commandOfHistory(f);
 					}
 				}
 				const vcmd = viewCommandById(req.id);
@@ -1385,7 +1376,6 @@ export function createWorkspaceService(ctrl: ControllerContext): {
 					return create(CommandSchema, {
 						id: req.id,
 						nodeId: route.node,
-						nodeAddr: ctrl.nodeAddr(route.node),
 						sessionId: route.session,
 						project: sess?.project ?? "",
 						kind: !route.session && req.id.startsWith("f-") ? "freshen" : "",
@@ -1449,9 +1439,7 @@ export function createWorkspaceService(ctrl: ControllerContext): {
 				const seen = new Set(viewIds);
 				for (const h of items) {
 					if (!seen.has(h.id)) {
-						const c = commandOfHistory(h);
-						c.nodeAddr = ctrl.nodeAddr(h.nodeId);
-						picked.push(c);
+						picked.push(commandOfHistory(h));
 					}
 				}
 			}

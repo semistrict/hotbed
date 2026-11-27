@@ -7,7 +7,6 @@ export const ErrorCode = {
 	InvalidArgs: "INVALID_ARGS",
 	AlreadyInitialized: "ALREADY_INITIALIZED",
 	NotInitialized: "NOT_INITIALIZED",
-	TailscaleUnavailable: "TAILSCALE_UNAVAILABLE",
 	ControllerUnreachable: "CONTROLLER_UNREACHABLE",
 	NotAuthorized: "NOT_AUTHORIZED",
 	NotJoined: "NOT_JOINED",
@@ -88,7 +87,6 @@ export function connectCodeFor(code: HotbedErrorCode): Code {
 		case ErrorCode.WorkerUnreachable:
 		case ErrorCode.NodesBusy:
 		case ErrorCode.ControllerUnreachable:
-		case ErrorCode.TailscaleUnavailable:
 			return Code.Unavailable;
 		case ErrorCode.PlatformNotSupported:
 			return Code.Unimplemented;

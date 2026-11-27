@@ -2757,7 +2757,7 @@ func (x *DiskUsage) GetFreeBytes() int64 {
 	return 0
 }
 
-// A worker. Its identity (id, hostname, login) comes from the tailnet.
+// A worker. Its identity (id, hostname) is what it named itself as it joined.
 type Node struct {
 	state     protoimpl.MessageState `protogen:"open.v1"`
 	Id        string                 `protobuf:"bytes,1,opt,name=id,proto3" json:"id,omitempty"`
@@ -7061,9 +7061,6 @@ type Workspace struct {
 	// Why it failed, what it waits for while preparing, or, once ready, why
 	// its base is not up to date (a step failed in the newer one).
 	Reason string `protobuf:"bytes,21,opt,name=reason,proto3" json:"reason,omitempty"`
-	// Set by the controller: where clients call the workspace's worker
-	// (host:port) to sync, run commands and read their output.
-	NodeAddr string `protobuf:"bytes,22,opt,name=node_addr,json=nodeAddr,proto3" json:"node_addr,omitempty"`
 	// Its page in the cockpit. The CLI fills it from the controller it
 	// calls (cmd/hotbed/cockpit.go); the API leaves it empty.
 	CockpitUrl string `protobuf:"bytes,23,opt,name=cockpit_url,json=cockpitUrl,proto3" json:"cockpit_url,omitempty"`
@@ -7207,13 +7204,6 @@ func (x *Workspace) GetSyncHost() string {
 func (x *Workspace) GetReason() string {
 	if x != nil {
 		return x.Reason
-	}
-	return ""
-}
-
-func (x *Workspace) GetNodeAddr() string {
-	if x != nil {
-		return x.NodeAddr
 	}
 	return ""
 }
@@ -9635,8 +9625,6 @@ type Command struct {
 	// A measurement: it runs alone on the node's measurement CPUs, isolated,
 	// never swapped or parked.
 	Bench bool `protobuf:"varint,23,opt,name=bench,proto3" json:"bench,omitempty"`
-	// Set by the controller: where clients call the command's worker.
-	NodeAddr string `protobuf:"bytes,24,opt,name=node_addr,json=nodeAddr,proto3" json:"node_addr,omitempty"`
 	// Its page in the cockpit. The CLI fills it from the controller it
 	// calls (cmd/hotbed/cockpit.go); the API leaves it empty.
 	CockpitUrl string `protobuf:"bytes,25,opt,name=cockpit_url,json=cockpitUrl,proto3" json:"cockpit_url,omitempty"`
@@ -9861,13 +9849,6 @@ func (x *Command) GetBench() bool {
 		return x.Bench
 	}
 	return false
-}
-
-func (x *Command) GetNodeAddr() string {
-	if x != nil {
-		return x.NodeAddr
-	}
-	return ""
 }
 
 func (x *Command) GetCockpitUrl() string {
@@ -18612,7 +18593,7 @@ type DaemonLogEntry struct {
 	Source string `protobuf:"bytes,3,opt,name=source,proto3" json:"source,omitempty"`
 	// "controller" or "worker".
 	Role string `protobuf:"bytes,4,opt,name=role,proto3" json:"role,omitempty"`
-	// Tailnet hostname of the machine that logged it.
+	// Hostname of the machine that logged it.
 	Host string `protobuf:"bytes,5,opt,name=host,proto3" json:"host,omitempty"`
 	// The slog message.
 	Msg string `protobuf:"bytes,6,opt,name=msg,proto3" json:"msg,omitempty"`
@@ -18716,7 +18697,7 @@ type DaemonLogSource struct {
 	Source string `protobuf:"bytes,1,opt,name=source,proto3" json:"source,omitempty"`
 	// "controller" or "worker".
 	Role string `protobuf:"bytes,2,opt,name=role,proto3" json:"role,omitempty"`
-	// Tailnet hostname of the machine.
+	// Hostname of the machine.
 	Host string `protobuf:"bytes,3,opt,name=host,proto3" json:"host,omitempty"`
 	// True when the daemon answered this query.
 	Reachable bool `protobuf:"varint,4,opt,name=reachable,proto3" json:"reachable,omitempty"`
@@ -38188,7 +38169,7 @@ const file_hotbed_v1_hotbed_proto_rawDesc = "" +
 	"\x04repo\x18\x01 \x01(\tR\x04repo\x12\x16\n" +
 	"\x06commit\x18\x02 \x01(\tR\x06commit\x12\x18\n" +
 	"\amessage\x18\x03 \x01(\tR\amessage\x12\x1c\n" +
-	"\ttoolchain\x18\x04 \x01(\tR\ttoolchain\"\xde\x06\n" +
+	"\ttoolchain\x18\x04 \x01(\tR\ttoolchain\"\xd2\x06\n" +
 	"\tWorkspace\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x17\n" +
 	"\abase_id\x18\x03 \x01(\tR\x06baseId\x12\x17\n" +
@@ -38205,8 +38186,7 @@ const file_hotbed_v1_hotbed_proto_rawDesc = "" +
 	"\n" +
 	"session_id\x18\x12 \x01(\tR\tsessionId\x12\x1b\n" +
 	"\tsync_host\x18\x14 \x01(\tR\bsyncHost\x12\x16\n" +
-	"\x06reason\x18\x15 \x01(\tR\x06reason\x12\x1b\n" +
-	"\tnode_addr\x18\x16 \x01(\tR\bnodeAddr\x12\x1f\n" +
+	"\x06reason\x18\x15 \x01(\tR\x06reason\x12\x1f\n" +
 	"\vcockpit_url\x18\x17 \x01(\tR\n" +
 	"cockpitUrl\x12\x18\n" +
 	"\aproject\x18\x18 \x01(\tR\aproject\x12\x12\n" +
@@ -38217,7 +38197,7 @@ const file_hotbed_v1_hotbed_proto_rawDesc = "" +
 	"\tthrowaway\x18\x1d \x01(\bR\tthrowaway\x12:\n" +
 	"\tplacement\x18\x1e \x01(\v2\x1c.hotbed.v1.PlacementDecisionR\tplacementJ\x04\b\x02\x10\x03J\x04\b\x06\x10\aJ\x04\b\a\x10\bJ\x04\b\b\x10\tJ\x04\b\t\x10\n" +
 	"J\x04\b\n" +
-	"\x10\vJ\x04\b\x11\x10\x12J\x04\b\x13\x10\x14R\arepo_idR\x06branchR\x04headR\vbase_commitR\x04treeR\rfiles_changedR\x04pathR\bsync_dir\"\xac\x01\n" +
+	"\x10\vJ\x04\b\x11\x10\x12J\x04\b\x13\x10\x14J\x04\b\x16\x10\x17R\arepo_idR\x06branchR\x04headR\vbase_commitR\x04treeR\rfiles_changedR\x04pathR\bsync_dirR\tnode_addr\"\xac\x01\n" +
 	"\rWorkspaceRepo\x12\x12\n" +
 	"\x04repo\x18\x01 \x01(\tR\x04repo\x12\x12\n" +
 	"\x04head\x18\x02 \x01(\tR\x04head\x12\x1f\n" +
@@ -38389,7 +38369,7 @@ const file_hotbed_v1_hotbed_proto_rawDesc = "" +
 	"\fCommandEvent\x12\x0e\n" +
 	"\x02at\x18\x01 \x01(\x03R\x02at\x12\x12\n" +
 	"\x04what\x18\x02 \x01(\tR\x04what\x12\x16\n" +
-	"\x06detail\x18\x03 \x01(\tR\x06detail\"\x91\n" +
+	"\x06detail\x18\x03 \x01(\tR\x06detail\"\x85\n" +
 	"\n" +
 	"\aCommand\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12!\n" +
@@ -38418,8 +38398,7 @@ const file_hotbed_v1_hotbed_proto_rawDesc = "" +
 	"\battached\x18\x15 \x01(\bR\battached\x12\x1d\n" +
 	"\n" +
 	"session_id\x18\x16 \x01(\tR\tsessionId\x12\x14\n" +
-	"\x05bench\x18\x17 \x01(\bR\x05bench\x12\x1b\n" +
-	"\tnode_addr\x18\x18 \x01(\tR\bnodeAddr\x12\x1f\n" +
+	"\x05bench\x18\x17 \x01(\bR\x05bench\x12\x1f\n" +
 	"\vcockpit_url\x18\x19 \x01(\tR\n" +
 	"cockpitUrl\x12\x18\n" +
 	"\aproject\x18\x1a \x01(\tR\aproject\x12\x12\n" +
@@ -38438,7 +38417,7 @@ const file_hotbed_v1_hotbed_proto_rawDesc = "" +
 	"\t_ended_atB\f\n" +
 	"\n" +
 	"_exit_codeB\x0f\n" +
-	"\r_cold_seconds\"\xc1\a\n" +
+	"\r_cold_secondsJ\x04\b\x18\x10\x19R\tnode_addr\"\xc1\a\n" +
 	"\x0fFinishedCommand\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x17\n" +
 	"\arepo_id\x18\x02 \x01(\tR\x06repoId\x12\x17\n" +

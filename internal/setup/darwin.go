@@ -26,7 +26,7 @@ import (
 // Setup makes this Mac a worker: it joins the controller as a worker in
 // <dir>/worker whose every workspace is a VM of machined's. hotbed's daemon
 // (hotbed daemon install) runs the worker and machined.
-func Setup(ctx context.Context, o Options, tn worker.Tailnet, hc *http.Client, check worker.Check) (Result, error) {
+func Setup(ctx context.Context, o Options, hc *http.Client, check worker.Check) (Result, error) {
 	if o.ZFSDevice != "" || o.ZFSDataset != "" || o.ZFSARCMax != 0 {
 		return Result{}, api.Errorf(api.CodeInvalidArgs, "a macOS worker keeps its workspaces in machined's cladefs cells, not ZFS: --zfs-* are for Linux workers")
 	}
@@ -49,7 +49,7 @@ func Setup(ctx context.Context, o Options, tn worker.Tailnet, hc *http.Client, c
 	progressf(o.Progress, "Joining %s as a worker in %s\n", o.Controller, p.Worker)
 	joined, err := worker.Join(ctx, worker.JoinOptions{
 		Dir: p.Worker, Controller: o.Controller, User: me.Username, Token: o.Token,
-	}, tn, hc, check)
+	}, hc, check)
 	if err != nil {
 		return Result{}, err
 	}

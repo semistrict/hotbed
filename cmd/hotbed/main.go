@@ -20,7 +20,6 @@ import (
 	"github.com/semistrict/hotbed/internal/api"
 	"github.com/semistrict/hotbed/internal/cliauth"
 	"github.com/semistrict/hotbed/internal/setup"
-	"github.com/semistrict/hotbed/internal/tailnet"
 	"github.com/semistrict/hotbed/internal/version"
 	"github.com/semistrict/hotbed/internal/worker"
 )
@@ -33,7 +32,6 @@ func main() {
 	h := processHere()
 	code := run(ctx, os.Args[1:], deps{
 		here:         h,
-		tailnet:      &tailnet.Local{},
 		http:         api.NewResilientHTTPClient(60 * time.Second),
 		stream:       api.NewResilientStreamClient(),
 		rideOut:      peerRideOut,

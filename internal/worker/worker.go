@@ -36,17 +36,10 @@ import (
 	"github.com/semistrict/hotbed/internal/profiler"
 	"github.com/semistrict/hotbed/internal/statedir"
 	"github.com/semistrict/hotbed/internal/storage"
-	"github.com/semistrict/hotbed/internal/tailnet"
 	"github.com/semistrict/hotbed/internal/unit"
 	"github.com/semistrict/hotbed/internal/version"
 	"github.com/semistrict/hotbed/internal/vm"
 )
-
-// Tailnet is what a worker needs from this machine's tailscaled.
-type Tailnet interface {
-	httpx.Identifier
-	Self(ctx context.Context) (tailnet.Self, error)
-}
 
 // JoinOptions are how a new worker will run.
 type JoinOptions struct {
@@ -168,7 +161,7 @@ func refreshControllerConfig(ctx context.Context, cluster hotbedv1connect.Cluste
 	return fresh, nil
 }
 
-func Join(ctx context.Context, o JoinOptions, tn Tailnet, hc *http.Client, check Check) (JoinResult, error) {
+func Join(ctx context.Context, o JoinOptions, hc *http.Client, check Check) (JoinResult, error) {
 	dir, err := filepath.Abs(o.Dir)
 	if err != nil {
 		return JoinResult{}, err
@@ -192,13 +185,13 @@ func Join(ctx context.Context, o JoinOptions, tn Tailnet, hc *http.Client, check
 		return JoinResult{}, err
 	}
 	// The node's own ID and name, which the controller binds its worker
-	// token to: a worker needs no tailnet to be one.
+	// token to.
 	nodeID, err := newNodeID()
 	if err != nil {
 		return JoinResult{}, err
 	}
 	host := hostName()
-	cluster, _, err := api.Controller(controller, hc, api.AuthInterceptor(o.Token, nodeID, host, ""))
+	cluster, _, err := api.Controller(controller, hc, api.AuthInterceptor(o.Token, nodeID, host))
 	if err != nil {
 		return JoinResult{}, err
 	}
@@ -226,11 +219,24 @@ func Join(ctx context.Context, o JoinOptions, tn Tailnet, hc *http.Client, check
 
 // Run runs the worker in dir until ctx ends: the engine, the server the
 // controller calls, and the reports to the controller.
-func Run(ctx context.Context, dir string, cfg statedir.WorkerConfig, tn Tailnet, hc *http.Client) error {
+func Run(ctx context.Context, dir string, cfg statedir.WorkerConfig, hc *http.Client) error {
 	uid, gid, err := resolveCommandUser(cfg.User)
 	if err != nil {
 		return err
 	}
+	if !api.IsRemoteURL(cfg.Controller) {
+		return api.Errorf(api.CodeInvalidArgs, "this worker joined a controller by host name (%s), which is retired", cfg.Controller).
+			WithSuggestion("join the Cloudflare controller: hotbed worker init https://...")
+	}
+	ctrlBaseURL, err := api.ControllerBaseURL(cfg.Controller)
+	if err != nil {
+		return err
+	}
+	if cfg.NodeID == "" || cfg.Host == "" || cfg.ControllerNodeID == "" {
+		return api.Errorf(api.CodeInvalidArgs, "this worker's %s records no node ID, host or controller node: it joined before workers named themselves", statedir.Path(dir)).
+			WithSuggestion("join again: hotbed worker init " + cfg.Controller)
+	}
+
 	dlogs, err := daemonlog.Open(filepath.Join(dir, "daemon-logs"), daemonlog.DefaultConfig())
 	if err != nil {
 		return err
@@ -241,30 +247,7 @@ func Run(ctx context.Context, dir string, cfg statedir.WorkerConfig, tn Tailnet,
 		_ = dlogs.Close()
 	}()
 
-	if !api.IsRemoteURL(cfg.Controller) {
-		return api.Errorf(api.CodeInvalidArgs, "this worker joined a tailnet controller (%s), which is retired", cfg.Controller).
-			WithSuggestion("join the Cloudflare controller: hotbed worker init https://...")
-	}
-	ctrlBaseURL, err := api.ControllerBaseURL(cfg.Controller)
-	if err != nil {
-		return err
-	}
-	if cfg.NodeID == "" || cfg.Host == "" || cfg.ControllerNodeID == "" {
-		// Joined when nodes were the tailnet's: keep the node ID its worker
-		// token is bound to, recorded once.
-		self, err := tn.Self(ctx)
-		if err != nil {
-			return fmt.Errorf("this worker joined as its tailnet node, which it records once: %w", err)
-		}
-		cfg.NodeID = cmp.Or(cfg.NodeID, self.NodeID)
-		cfg.Host = cmp.Or(cfg.Host, self.Hostname)
-		cfg.ControllerNodeID = cmp.Or(cfg.ControllerNodeID, "cf:"+cfg.ClusterID)
-		if err := statedir.Rewrite(dir, statedir.Config{Worker: &cfg}); err != nil {
-			return err
-		}
-		slog.Info("recorded the worker's node", "node", cfg.NodeID, "host", cfg.Host)
-	}
-	self := tailnet.Self{Peer: tailnet.Peer{NodeID: cfg.NodeID, Hostname: cfg.Host, Login: cfg.Owner}}
+	self := httpx.Peer{NodeID: cfg.NodeID, Hostname: cfg.Host, Login: cfg.Owner}
 	if hc == nil {
 		hc = api.NewResilientHTTPClient(60 * time.Second)
 	} else if hc.Transport == nil {
@@ -274,7 +257,7 @@ func Run(ctx context.Context, dir string, cfg statedir.WorkerConfig, tn Tailnet,
 	}
 	var ctrlInterceptors []connect.ClientInterceptor
 	if cfg.Token != "" {
-		ctrlInterceptors = append(ctrlInterceptors, api.AuthInterceptor(cfg.Token, self.NodeID, self.Hostname, ""))
+		ctrlInterceptors = append(ctrlInterceptors, api.AuthInterceptor(cfg.Token, self.NodeID, self.Hostname))
 	}
 	cluster, _, err := api.Controller(cfg.Controller, hc, ctrlInterceptors...)
 	if err != nil {
@@ -291,7 +274,7 @@ func Run(ctx context.Context, dir string, cfg statedir.WorkerConfig, tn Tailnet,
 	// Direct GitHub downloads use a clean client with no controller auth headers.
 	followTransport := hc.Transport
 	if cfg.Token != "" {
-		followTransport = api.AuthRoundTripper(followTransport, cfg.Token, self.NodeID, self.Hostname, "")
+		followTransport = api.AuthRoundTripper(followTransport, cfg.Token, self.NodeID, self.Hostname)
 	}
 	follow := &Follow{
 		URL:            ctrlBaseURL,
@@ -412,9 +395,9 @@ func Run(ctx context.Context, dir string, cfg statedir.WorkerConfig, tn Tailnet,
 
 	// Clients reach the worker only through the controller, over the
 	// worker's own tunnel to it; on its machine, through its Unix socket too,
-	// if it has one, whose file mode says who may connect.
-	policy := httpx.Policy{Node: self.Peer}
-	srv := &http.Server{Handler: Handler(tn, policy, eng), ReadHeaderTimeout: 10 * time.Second, Protocols: httpx.Protocols()}
+	// if it has one, whose file mode says who may connect: its callers are
+	// this node itself.
+	srv := &http.Server{Handler: Handler(self, eng), ReadHeaderTimeout: 10 * time.Second, Protocols: httpx.Protocols()}
 	srv.RegisterOnShutdown(eng.DrainStreams)
 	// Serves the shells the controller relays (OpenPipe "ssh").
 	shellSrv := NewShellServer(eng)
@@ -475,7 +458,7 @@ func Run(ctx context.Context, dir string, cfg statedir.WorkerConfig, tn Tailnet,
 		})
 	})
 	g.Go(func() error {
-		return Tunnel(gctx, eng, ctrlBaseURL, cfg.Token, self, "", cfg.ControllerNodeID, cfg.Owner, hc)
+		return Tunnel(gctx, eng, ctrlBaseURL, cfg.Token, self, cfg.ControllerNodeID, cfg.Owner, hc)
 	})
 	g.Go(func() error {
 		<-gctx.Done()
@@ -525,11 +508,12 @@ func hostName() string {
 	return strings.ToLower(h)
 }
 
-// Handler serves an engine's WorkspaceService behind a gate.
-func Handler(id httpx.Identifier, p httpx.Policy, eng *Engine) http.Handler {
+// Handler serves an engine's WorkspaceService to callers who are all peer:
+// the controller over the worker's tunnel, or this node over its Unix socket.
+func Handler(peer httpx.Peer, eng *Engine) http.Handler {
 	server := httpx.NewServer()
 	hotbedv1connect.RegisterWorkspaceServiceHandler(server, &Service{E: eng})
 	mux := http.NewServeMux()
 	connecthttp.Mount(mux, server)
-	return httpx.Gate(id, p, mux)
+	return httpx.WithStaticPeer(peer, mux)
 }

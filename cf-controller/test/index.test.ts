@@ -125,11 +125,10 @@ function ownerClients(extraHeaders?: Record<string, string>) {
 	};
 }
 
-function workerClients(token: string, nodeId: string, hostname: string, addr: string) {
+function workerClients(token: string, nodeId: string, hostname: string) {
 	const transport = makeTransport(token, {
 		"X-Hotbed-Node-Id": nodeId,
 		"X-Hotbed-Host": hostname,
-		"X-Hotbed-Addr": addr,
 	});
 	return {
 		cluster: createClient(ClusterService, transport),
@@ -141,7 +140,6 @@ async function openMockWorkerTunnel(
 	token: string,
 	nodeId: string,
 	hostname: string,
-	addr: string,
 	handlers: {
 		unary?: Record<string, (reqBytes: Uint8Array) => Uint8Array>;
 		stream?: Record<string, (reqBytes: Uint8Array) => Uint8Array[]>;
@@ -153,7 +151,6 @@ async function openMockWorkerTunnel(
 			Authorization: `Bearer ${token}`,
 			"X-Hotbed-Node-Id": nodeId,
 			"X-Hotbed-Host": hostname,
-			"X-Hotbed-Addr": addr,
 		},
 	});
 	expect(res.status).toBe(101);
@@ -310,7 +307,7 @@ describe("Cloudflare Workers single-DO hotbed controller", () => {
 		expect(workerToken.startsWith("hbw_")).toBe(true);
 
 		// Worker joins with JOIN_TOKEN
-		const joiner = workerClients(JOIN_TOKEN, "node-ubu1", "ubu1", "100.73.156.10:7121");
+		const joiner = workerClients(JOIN_TOKEN, "node-ubu1", "ubu1");
 		const joined = await joiner.cluster.join({});
 		expect(joined.clusterId.length).toBeGreaterThan(0);
 
@@ -346,7 +343,7 @@ describe("Cloudflare Workers single-DO hotbed controller", () => {
 		expect(updatedProj.steps.length).toBe(1);
 
 		// Heartbeat with per-worker token returns hosted projects
-		const worker = workerClients(workerToken, "node-ubu1", "ubu1", "100.73.156.10:7121");
+		const worker = workerClients(workerToken, "node-ubu1", "ubu1");
 		// Worker token cannot invoke owner RPCs
 		await expect(
 			worker.cluster.putRepo({
@@ -393,9 +390,9 @@ describe("Cloudflare Workers single-DO hotbed controller", () => {
 
 	it("places workspaces and multiplexes unary + server-streaming RPCs over /ws/worker", async () => {
 		const owner = ownerClients();
-		const joiner = workerClients(JOIN_TOKEN, "node-ws1", "ws1", "100.73.156.11:7121");
+		const joiner = workerClients(JOIN_TOKEN, "node-ws1", "ws1");
 		const joined = await joiner.cluster.join({});
-		const worker = workerClients(OWNER_TOKEN, "node-ws1", "ws1", "100.73.156.11:7121");
+		const worker = workerClients(OWNER_TOKEN, "node-ws1", "ws1");
 
 		await owner.cluster.putRepo({
 			repo: create(RepoSchema, {
@@ -447,65 +444,58 @@ describe("Cloudflare Workers single-DO hotbed controller", () => {
 		expect(sess.t3codeThreadId).toBe("thread-xyz");
 
 		// Open mock worker WebSocket tunnel
-		const tunnel = await openMockWorkerTunnel(
-			OWNER_TOKEN,
-			"node-ws1",
-			"ws1",
-			"100.73.156.11:7121",
-			{
-				unary: {
-					"/hotbed.v1.WorkspaceService/CreateWorkspace": (reqBytes) => {
-						const req = fromBinary(CreateWorkspaceRequestSchema, reqBytes);
-						return encodeProto(
-							WorkspaceSchema,
-							create(WorkspaceSchema, {
-								id: req.id,
-								project: req.project?.name ?? "",
-								sessionId: req.sessionId,
-								node: "ws1",
-								nodeAddr: "100.73.156.11:7121",
-								state: WorkspaceState.ACTIVE,
-								createdAt: BigInt(Date.now()),
-							}),
-						);
-					},
-					"/hotbed.v1.WorkspaceService/ListFiles": () =>
-						encodeProto(
-							ListFilesResponseSchema,
-							create(ListFilesResponseSchema, {
-								files: [{ path: "README.md", kind: "file", sizeBytes: BigInt(12) }],
-							}),
-						),
-					"/hotbed.v1.WorkspaceService/GetLogLines": () =>
-						encodeProto(
-							CommandLogSchema,
-							create(CommandLogSchema, {
-								commandId: "cmd-trace-1",
-								lines: ["hello from worker"],
-							}),
-						),
-					"/hotbed.v1.WorkspaceService/ReleaseWorkspace": () =>
-						encodeProto(ReleaseWorkspaceResponseSchema, create(ReleaseWorkspaceResponseSchema, {})),
+		const tunnel = await openMockWorkerTunnel(OWNER_TOKEN, "node-ws1", "ws1", {
+			unary: {
+				"/hotbed.v1.WorkspaceService/CreateWorkspace": (reqBytes) => {
+					const req = fromBinary(CreateWorkspaceRequestSchema, reqBytes);
+					return encodeProto(
+						WorkspaceSchema,
+						create(WorkspaceSchema, {
+							id: req.id,
+							project: req.project?.name ?? "",
+							sessionId: req.sessionId,
+							node: "ws1",
+							state: WorkspaceState.ACTIVE,
+							createdAt: BigInt(Date.now()),
+						}),
+					);
 				},
-				stream: {
-					"/hotbed.v1.WorkspaceService/TraceCommand": () => [
-						encodeProto(
-							TraceCommandChunkSchema,
-							create(TraceCommandChunkSchema, {
-								text: 'openat(AT_FDCWD, "foo", O_RDONLY) = 3',
-							}),
-						),
-						encodeProto(
-							TraceCommandChunkSchema,
-							create(TraceCommandChunkSchema, {
-								text: 'read(3, "bar", 3) = 3',
-								done: true,
-							}),
-						),
-					],
-				},
+				"/hotbed.v1.WorkspaceService/ListFiles": () =>
+					encodeProto(
+						ListFilesResponseSchema,
+						create(ListFilesResponseSchema, {
+							files: [{ path: "README.md", kind: "file", sizeBytes: BigInt(12) }],
+						}),
+					),
+				"/hotbed.v1.WorkspaceService/GetLogLines": () =>
+					encodeProto(
+						CommandLogSchema,
+						create(CommandLogSchema, {
+							commandId: "cmd-trace-1",
+							lines: ["hello from worker"],
+						}),
+					),
+				"/hotbed.v1.WorkspaceService/ReleaseWorkspace": () =>
+					encodeProto(ReleaseWorkspaceResponseSchema, create(ReleaseWorkspaceResponseSchema, {})),
 			},
-		);
+			stream: {
+				"/hotbed.v1.WorkspaceService/TraceCommand": () => [
+					encodeProto(
+						TraceCommandChunkSchema,
+						create(TraceCommandChunkSchema, {
+							text: 'openat(AT_FDCWD, "foo", O_RDONLY) = 3',
+						}),
+					),
+					encodeProto(
+						TraceCommandChunkSchema,
+						create(TraceCommandChunkSchema, {
+							text: 'read(3, "bar", 3) = 3',
+							done: true,
+						}),
+					),
+				],
+			},
+		});
 
 		try {
 			// CreateWorkspace routes through placement -> WebSocket tunnel
@@ -752,9 +742,9 @@ describe("Cloudflare Workers single-DO hotbed controller", () => {
 
 	it("coordinates cladefs peer mesh, shared R2 bases, monotonic fencing tokens, runtime placement, and retired host decommission", async () => {
 		const owner = ownerClients();
-		const ubu1 = workerClients(OWNER_TOKEN, "node-clade-1", "clade1", "100.73.156.10:7121");
-		const node2 = workerClients(OWNER_TOKEN, "node-clade-2", "clade2", "100.73.156.20:7121");
-		const asahi = workerClients(OWNER_TOKEN, "node-asahi-1", "asahimbp", "100.73.156.30:7121");
+		const ubu1 = workerClients(OWNER_TOKEN, "node-clade-1", "clade1");
+		const node2 = workerClients(OWNER_TOKEN, "node-clade-2", "clade2");
+		const asahi = workerClients(OWNER_TOKEN, "node-asahi-1", "asahimbp");
 
 		const j1 = await ubu1.cluster.join({});
 		await node2.cluster.join({});
@@ -870,31 +860,25 @@ describe("Cloudflare Workers single-DO hotbed controller", () => {
 
 		// Connect /ws/worker tunnel for clade2 to capture forwarded CreateWorkspaceRequest
 		const captured: Array<MessageShape<typeof CreateWorkspaceRequestSchema>> = [];
-		const tunnel = await openMockWorkerTunnel(
-			OWNER_TOKEN,
-			"node-clade-2",
-			"clade2",
-			"100.73.156.20:7121",
-			{
-				unary: {
-					"/hotbed.v1.WorkspaceService/CreateWorkspace": (reqBytes) => {
-						const req = fromBinary(CreateWorkspaceRequestSchema, reqBytes);
-						captured.push(req);
-						return encodeProto(
-							WorkspaceSchema,
-							create(WorkspaceSchema, {
-								id: req.id,
-								sessionId: req.sessionId,
-								nodeId: "node-clade-2",
-								project: "clade-demo",
-								runtime: "vm",
-								state: WorkspaceState.IDLE,
-							}),
-						);
-					},
+		const tunnel = await openMockWorkerTunnel(OWNER_TOKEN, "node-clade-2", "clade2", {
+			unary: {
+				"/hotbed.v1.WorkspaceService/CreateWorkspace": (reqBytes) => {
+					const req = fromBinary(CreateWorkspaceRequestSchema, reqBytes);
+					captured.push(req);
+					return encodeProto(
+						WorkspaceSchema,
+						create(WorkspaceSchema, {
+							id: req.id,
+							sessionId: req.sessionId,
+							nodeId: "node-clade-2",
+							project: "clade-demo",
+							runtime: "vm",
+							state: WorkspaceState.IDLE,
+						}),
+					);
 				},
 			},
-		);
+		});
 
 		try {
 			const created = await owner.workspaces.createWorkspace({
@@ -1268,7 +1252,6 @@ describe("BuildDistributor pinned controller version and placement semantics", (
 				online: true,
 				storageError: "",
 			} as never,
-			addr: "100.0.0.1:7121",
 			online: true,
 			bases: [],
 			workspaces: [],
@@ -1378,8 +1361,8 @@ describe("Security, cron, daemon logs, tunnel, and workspace regression tests", 
 		expect(mintA.status).toBe(201);
 		const { token: tokenA } = (await mintA.json()) as { token: string };
 
-		const joinA = workerClients(JOIN_TOKEN, "node-iso-a", "host-a", "100.73.156.51:7121");
-		const joinB = workerClients(JOIN_TOKEN, "node-iso-b", "host-b", "100.73.156.52:7121");
+		const joinA = workerClients(JOIN_TOKEN, "node-iso-a", "host-a");
+		const joinB = workerClients(JOIN_TOKEN, "node-iso-b", "host-b");
 		const jA = await joinA.cluster.join({});
 		await joinB.cluster.join({});
 
@@ -1405,7 +1388,7 @@ describe("Security, cron, daemon logs, tunnel, and workspace regression tests", 
 		await owner.cluster.setProjectHosts({ name: "secret-b", hosts: ["host-b"] });
 
 		// Worker A spoofing X-Hotbed-Host: host-b still resolves to DB-bound host-a and does not receive secret-b.
-		const spoofedA = workerClients(tokenA, "node-iso-a", "host-b", "100.73.156.51:7121");
+		const spoofedA = workerClients(tokenA, "node-iso-a", "host-b");
 		const hbA = await spoofedA.cluster.heartbeat(
 			create(HeartbeatRequestSchema, {
 				clusterId: jA.clusterId,
@@ -1509,7 +1492,7 @@ describe("Security, cron, daemon logs, tunnel, and workspace regression tests", 
 
 	it("keeps workspace row released for toRelease() when session ends during CreateWorkspace", async () => {
 		const owner = ownerClients();
-		const worker = workerClients(OWNER_TOKEN, "node-race-ws", "race-ws", "100.73.156.62:7121");
+		const worker = workerClients(OWNER_TOKEN, "node-race-ws", "race-ws");
 		const joined = await worker.cluster.join({});
 		await owner.cluster.putRepo({
 			repo: create(RepoSchema, {
@@ -1538,7 +1521,6 @@ describe("Security, cron, daemon logs, tunnel, and workspace regression tests", 
 				Authorization: `Bearer ${OWNER_TOKEN}`,
 				"X-Hotbed-Node-Id": "node-race-ws",
 				"X-Hotbed-Host": "race-ws",
-				"X-Hotbed-Addr": "100.73.156.62:7121",
 			},
 		});
 		expect(res.status).toBe(101);
@@ -1633,7 +1615,7 @@ describe("Security, cron, daemon logs, tunnel, and workspace regression tests", 
 
 	it("rejects malformed base64 tunnel frames cleanly instead of stranding unary RPCs", async () => {
 		const owner = ownerClients();
-		const worker = workerClients(OWNER_TOKEN, "node-badb64", "badb64", "100.73.156.61:7121");
+		const worker = workerClients(OWNER_TOKEN, "node-badb64", "badb64");
 		const joined = await worker.cluster.join({});
 		await owner.cluster.putRepo({
 			repo: create(RepoSchema, {
@@ -1662,7 +1644,6 @@ describe("Security, cron, daemon logs, tunnel, and workspace regression tests", 
 				Authorization: `Bearer ${OWNER_TOKEN}`,
 				"X-Hotbed-Node-Id": "node-badb64",
 				"X-Hotbed-Host": "badb64",
-				"X-Hotbed-Addr": "100.73.156.61:7121",
 			},
 		});
 		expect(res.status).toBe(101);
@@ -1818,14 +1799,9 @@ describe("Security, cron, daemon logs, tunnel, and workspace regression tests", 
 			});
 		});
 		const beat = async (nodeId: string, host: string, resources: object) => {
-			const w = workerClients(OWNER_TOKEN, nodeId, host, "100.73.156.20:7121");
+			const w = workerClients(OWNER_TOKEN, nodeId, host);
 			const joined = await w.cluster.join({});
-			const wt = workerClients(
-				joined.workerToken || OWNER_TOKEN,
-				nodeId,
-				host,
-				"100.73.156.20:7121",
-			);
+			const wt = workerClients(joined.workerToken || OWNER_TOKEN, nodeId, host);
 			const hb = await wt.cluster.heartbeat(
 				create(HeartbeatRequestSchema, {
 					clusterId: joined.clusterId,
@@ -1857,14 +1833,9 @@ describe("Security, cron, daemon logs, tunnel, and workspace regression tests", 
 
 	it("manages centralized worker & VM config, merges into HeartbeatResponse, and attaches Build.guestd", async () => {
 		const owner = ownerClients();
-		const worker = workerClients(OWNER_TOKEN, "node-cfg-1", "ubu1", "100.73.156.10:7121");
+		const worker = workerClients(OWNER_TOKEN, "node-cfg-1", "ubu1");
 		const joined = await worker.cluster.join({});
-		const workerWithToken = workerClients(
-			joined.workerToken || OWNER_TOKEN,
-			"node-cfg-1",
-			"ubu1",
-			"100.73.156.10:7121",
-		);
+		const workerWithToken = workerClients(joined.workerToken || OWNER_TOKEN, "node-cfg-1", "ubu1");
 		const kernelSha = "a".repeat(64);
 		const guestdSha = "b".repeat(64);
 		const hotbedSha = "c".repeat(64);
@@ -2034,9 +2005,9 @@ describe("Security, cron, daemon logs, tunnel, and workspace regression tests", 
 			name: "iso-proj",
 			repos: ["github.com/semistrict/iso-proj"],
 		});
-		const vmNode = workerClients(OWNER_TOKEN, "node-arm-vm", "arm-vm", "100.73.156.51:7121");
-		const fuseNode = workerClients(OWNER_TOKEN, "node-arm-fuse", "arm-fuse", "100.73.156.52:7121");
-		const vm2Node = workerClients(OWNER_TOKEN, "node-arm-vm2", "arm-vm2", "100.73.156.53:7121");
+		const vmNode = workerClients(OWNER_TOKEN, "node-arm-vm", "arm-vm");
+		const fuseNode = workerClients(OWNER_TOKEN, "node-arm-fuse", "arm-fuse");
+		const vm2Node = workerClients(OWNER_TOKEN, "node-arm-vm2", "arm-vm2");
 		const j = await vmNode.cluster.join({});
 		await fuseNode.cluster.join({});
 		await vm2Node.cluster.join({});
@@ -2107,31 +2078,25 @@ describe("Security, cron, daemon logs, tunnel, and workspace regression tests", 
 		);
 
 		const capturedVM: Array<MessageShape<typeof CreateWorkspaceRequestSchema>> = [];
-		const vmTunnel = await openMockWorkerTunnel(
-			OWNER_TOKEN,
-			"node-arm-vm2",
-			"arm-vm2",
-			"100.73.156.53:7121",
-			{
-				unary: {
-					"/hotbed.v1.WorkspaceService/CreateWorkspace": (reqBytes) => {
-						const req = fromBinary(CreateWorkspaceRequestSchema, reqBytes);
-						capturedVM.push(req);
-						return encodeProto(
-							WorkspaceSchema,
-							create(WorkspaceSchema, {
-								id: req.id,
-								sessionId: req.sessionId,
-								nodeId: "node-arm-vm2",
-								project: "iso-proj",
-								runtime: "vm",
-								state: WorkspaceState.IDLE,
-							}),
-						);
-					},
+		const vmTunnel = await openMockWorkerTunnel(OWNER_TOKEN, "node-arm-vm2", "arm-vm2", {
+			unary: {
+				"/hotbed.v1.WorkspaceService/CreateWorkspace": (reqBytes) => {
+					const req = fromBinary(CreateWorkspaceRequestSchema, reqBytes);
+					capturedVM.push(req);
+					return encodeProto(
+						WorkspaceSchema,
+						create(WorkspaceSchema, {
+							id: req.id,
+							sessionId: req.sessionId,
+							nodeId: "node-arm-vm2",
+							project: "iso-proj",
+							runtime: "vm",
+							state: WorkspaceState.IDLE,
+						}),
+					);
 				},
 			},
-		);
+		});
 		try {
 			const sess = await owner.sessions.startSession({ project: "iso-proj" });
 			await owner.workspaces.createWorkspace({
@@ -2150,8 +2115,8 @@ describe("Security, cron, daemon logs, tunnel, and workspace regression tests", 
 
 	it("keeps one chain of shared bases per project, arch and runtime, and retires replaced bases no worker holds", async () => {
 		const owner = ownerClients();
-		const a = workerClients(OWNER_TOKEN, "node-chain-a", "chain-a", "100.73.157.1:7121");
-		const b = workerClients(OWNER_TOKEN, "node-chain-b", "chain-b", "100.73.157.2:7121");
+		const a = workerClients(OWNER_TOKEN, "node-chain-a", "chain-a");
+		const b = workerClients(OWNER_TOKEN, "node-chain-b", "chain-b");
 		const j = await a.cluster.join({});
 		await b.cluster.join({});
 		const stub = env.CONTROLLER.getByName("default");
@@ -2290,13 +2255,12 @@ describe("Security, cron, daemon logs, tunnel, and workspace regression tests", 
 
 	it("validates WorkerSystemConfig and orchestrates explicit system upgrade over worker tunnel", async () => {
 		const owner = ownerClients();
-		const worker = workerClients(OWNER_TOKEN, "node-sys-1", "ubu-sys-1", "100.73.156.99:7121");
+		const worker = workerClients(OWNER_TOKEN, "node-sys-1", "ubu-sys-1");
 		const joined = await worker.cluster.join({});
 		const workerWithToken = workerClients(
 			joined.workerToken || OWNER_TOKEN,
 			"node-sys-1",
 			"ubu-sys-1",
-			"100.73.156.99:7121",
 		);
 		await workerWithToken.cluster.heartbeat(
 			create(HeartbeatRequestSchema, {
@@ -2354,7 +2318,6 @@ describe("Security, cron, daemon logs, tunnel, and workspace regression tests", 
 			joined.workerToken || OWNER_TOKEN,
 			"node-sys-1",
 			"ubu-sys-1",
-			"100.73.156.99:7121",
 			{
 				unary: {
 					"/hotbed.v1.WorkspaceService/UpgradeSystem": (reqBytes) => {
@@ -2443,7 +2406,6 @@ describe("Security, cron, daemon logs, tunnel, and workspace regression tests", 
 			makeTransport(JOIN_TOKEN, {
 				"X-Hotbed-Node-Id": "node-qbridge-worker",
 				"X-Hotbed-Host": "qbridge-worker",
-				"X-Hotbed-Addr": "100.73.156.77:7121",
 			}),
 		).join({});
 		const workerWs = await SELF.fetch("https://controller.test/ws/questions", {
@@ -2673,19 +2635,9 @@ describe("Security, cron, daemon logs, tunnel, and workspace regression tests", 
 
 	it("includes live freshen commands in getSnapshot and excludes ended ones", async () => {
 		const owner = ownerClients();
-		const joiner = workerClients(
-			JOIN_TOKEN,
-			"node-freshen-snap",
-			"ubu-freshen",
-			"100.73.156.99:7121",
-		);
+		const joiner = workerClients(JOIN_TOKEN, "node-freshen-snap", "ubu-freshen");
 		const joined = await joiner.cluster.join({});
-		const worker = workerClients(
-			OWNER_TOKEN,
-			"node-freshen-snap",
-			"ubu-freshen",
-			"100.73.156.99:7121",
-		);
+		const worker = workerClients(OWNER_TOKEN, "node-freshen-snap", "ubu-freshen");
 
 		await worker.cluster.heartbeat(
 			create(HeartbeatRequestSchema, {
@@ -2750,9 +2702,9 @@ describe("Security, cron, daemon logs, tunnel, and workspace regression tests", 
 				branch: "main",
 			}),
 		});
-		const joiner = workerClients(JOIN_TOKEN, "node-reconn", "ubu-reconn", "100.73.156.81:7121");
+		const joiner = workerClients(JOIN_TOKEN, "node-reconn", "ubu-reconn");
 		const joined = await joiner.cluster.join({});
-		const worker = workerClients(OWNER_TOKEN, "node-reconn", "ubu-reconn", "100.73.156.81:7121");
+		const worker = workerClients(OWNER_TOKEN, "node-reconn", "ubu-reconn");
 		await worker.cluster.heartbeat(
 			create(HeartbeatRequestSchema, {
 				clusterId: joined.clusterId,
@@ -2775,7 +2727,7 @@ describe("Security, cron, daemon logs, tunnel, and workspace regression tests", 
 		const tunnels: Array<Awaited<ReturnType<typeof openMockWorkerTunnel>>> = [];
 		const connectTimer = setTimeout(async () => {
 			tunnels.push(
-				await openMockWorkerTunnel(OWNER_TOKEN, "node-reconn", "ubu-reconn", "100.73.156.81:7121", {
+				await openMockWorkerTunnel(OWNER_TOKEN, "node-reconn", "ubu-reconn", {
 					unary: {
 						"/hotbed.v1.WorkspaceService/CreateWorkspace": (reqBytes) => {
 							const req = fromBinary(CreateWorkspaceRequestSchema, reqBytes);
@@ -2817,9 +2769,9 @@ describe("Security, cron, daemon logs, tunnel, and workspace regression tests", 
 				branch: "main",
 			}),
 		});
-		const j1 = workerClients(JOIN_TOKEN, "node-tpref-1", "ubu-tpref-1", "100.73.156.82:7121");
+		const j1 = workerClients(JOIN_TOKEN, "node-tpref-1", "ubu-tpref-1");
 		const joined1 = await j1.cluster.join({});
-		const w1 = workerClients(OWNER_TOKEN, "node-tpref-1", "ubu-tpref-1", "100.73.156.82:7121");
+		const w1 = workerClients(OWNER_TOKEN, "node-tpref-1", "ubu-tpref-1");
 		await w1.cluster.heartbeat(
 			create(HeartbeatRequestSchema, {
 				clusterId: joined1.clusterId,
@@ -2833,9 +2785,9 @@ describe("Security, cron, daemon logs, tunnel, and workspace regression tests", 
 			}),
 		);
 
-		const j2 = workerClients(JOIN_TOKEN, "node-tpref-2", "vm-tpref-2", "100.73.156.83:7121");
+		const j2 = workerClients(JOIN_TOKEN, "node-tpref-2", "vm-tpref-2");
 		const joined2 = await j2.cluster.join({});
-		const w2 = workerClients(OWNER_TOKEN, "node-tpref-2", "vm-tpref-2", "100.73.156.83:7121");
+		const w2 = workerClients(OWNER_TOKEN, "node-tpref-2", "vm-tpref-2");
 		await w2.cluster.heartbeat(
 			create(HeartbeatRequestSchema, {
 				clusterId: joined2.clusterId,
@@ -2849,29 +2801,23 @@ describe("Security, cron, daemon logs, tunnel, and workspace regression tests", 
 			}),
 		);
 
-		const tunnel2 = await openMockWorkerTunnel(
-			OWNER_TOKEN,
-			"node-tpref-2",
-			"vm-tpref-2",
-			"100.73.156.83:7121",
-			{
-				unary: {
-					"/hotbed.v1.WorkspaceService/CreateWorkspace": (reqBytes) => {
-						const req = fromBinary(CreateWorkspaceRequestSchema, reqBytes);
-						return toBinary(
-							WorkspaceSchema,
-							create(WorkspaceSchema, {
-								id: req.id,
-								sessionId: req.sessionId,
-								project: "proj-tunnel-pref",
-								state: WorkspaceState.IDLE,
-								node: "vm-tpref-2",
-							}),
-						);
-					},
+		const tunnel2 = await openMockWorkerTunnel(OWNER_TOKEN, "node-tpref-2", "vm-tpref-2", {
+			unary: {
+				"/hotbed.v1.WorkspaceService/CreateWorkspace": (reqBytes) => {
+					const req = fromBinary(CreateWorkspaceRequestSchema, reqBytes);
+					return toBinary(
+						WorkspaceSchema,
+						create(WorkspaceSchema, {
+							id: req.id,
+							sessionId: req.sessionId,
+							project: "proj-tunnel-pref",
+							state: WorkspaceState.IDLE,
+							node: "vm-tpref-2",
+						}),
+					);
 				},
 			},
-		);
+		});
 
 		try {
 			const sess = await owner.sessions.startSession({
@@ -2901,9 +2847,9 @@ describe("Security, cron, daemon logs, tunnel, and workspace regression tests", 
 				branch: "main",
 			}),
 		});
-		const j = workerClients(JOIN_TOKEN, "node-fobs-1", "ubu-fobs", "100.73.156.90:7121");
+		const j = workerClients(JOIN_TOKEN, "node-fobs-1", "ubu-fobs");
 		const joined = await j.cluster.join({});
-		const w = workerClients(OWNER_TOKEN, "node-fobs-1", "ubu-fobs", "100.73.156.90:7121");
+		const w = workerClients(OWNER_TOKEN, "node-fobs-1", "ubu-fobs");
 
 		const now = Date.now();
 		const t0 = BigInt(now - 600_000);

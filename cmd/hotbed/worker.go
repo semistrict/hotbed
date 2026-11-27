@@ -22,7 +22,7 @@ type workerCmd struct {
 }
 
 type workerInitCmd struct {
-	Controller     string   `arg:"" optional:"" env:"HOTBED_CONTROLLER" help:"The controller's HTTPS URL or tailnet name/address, with :PORT unless 7120 (or set HOTBED_CONTROLLER)."`
+	Controller     string   `arg:"" optional:"" env:"HOTBED_CONTROLLER" help:"The controller's HTTPS URL (or set HOTBED_CONTROLLER)."`
 	Token          string   `env:"HOTBED_TOKEN" help:"Bearer or org join token (hbj_...) for authenticating to a remote HTTPS controller."`
 	Dir            string   `type:"path" help:"Base directory for worker state (default ~/.hotbed)."`
 	User           string   `help:"Unix user commands run as (default: invoking user)."`
@@ -32,7 +32,7 @@ type workerInitCmd struct {
 	ZFSARCMax      string   `name:"zfs-arc-max" help:"Linux: cap the ZFS ARC of the pool hotbed makes, e.g. 4G (default: zfs's own, nearly all of RAM)."`
 	UnitProperties []string `name:"unit-property" help:"Linux: systemd property every command gets (repeatable)."`
 	Slice          string   `help:"Linux: systemd slice commands run in (default hotbed.slice)."`
-	Hostname       string   `help:"Linux: the worker's node name when the tailnet reports none."`
+	Hostname       string   `help:"Linux: the node name to report for a worker already joined that records none."`
 	NoStart        bool     `name:"no-start" help:"Set up the worker without leaving it running."`
 }
 
@@ -70,7 +70,7 @@ func (c *workerInitCmd) Exec(ctx context.Context, d deps) (any, error) {
 		NoStart:        c.NoStart,
 		Hostname:       c.Hostname,
 		Progress:       d.stderr,
-	}, d.tailnet, cmp.Or(d.stream, d.http), d.check)
+	}, cmp.Or(d.stream, d.http), d.check)
 	if err != nil || runtime.GOOS != "darwin" || c.NoStart {
 		return res, err
 	}

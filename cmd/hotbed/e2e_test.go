@@ -26,11 +26,11 @@ import (
 	pb "github.com/semistrict/hotbed/internal/gen/hotbed/v1"
 	"github.com/semistrict/hotbed/internal/gen/hotbed/v1/hotbedv1connect"
 	"github.com/semistrict/hotbed/internal/gitops"
-	"github.com/semistrict/hotbed/internal/tailnet"
+	"github.com/semistrict/hotbed/internal/httpx"
 	"github.com/semistrict/hotbed/internal/worker"
 )
 
-var asahi = tailnet.Peer{NodeID: "nAsahi", Hostname: "asahimbp", Login: "ramon@"}
+var asahi = httpx.Peer{NodeID: "nAsahi", Hostname: "asahimbp", Login: "ramon@"}
 
 // switchboard serves the controller, records the calls it gets, and, taken
 // down, answers every call as unavailable, as a proxy in front of an

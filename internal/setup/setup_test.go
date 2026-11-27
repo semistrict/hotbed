@@ -70,14 +70,14 @@ func TestCopyFileAtomic(t *testing.T) {
 	}
 }
 
-// The worker unit orders itself after tailscaled where one runs but never
-// pulls it in: a worker needs no tailnet.
-func TestSystemdWorkerUnitDoesNotWantTailscaled(t *testing.T) {
+// The worker unit neither waits for nor pulls in tailscaled: a worker
+// needs no tailnet.
+func TestSystemdWorkerUnitNeedsNoTailscaled(t *testing.T) {
 	unit := SystemdWorkerUnit("/usr/local/bin/hotbed", "/var/lib/hotbed/worker", "")
 	if !strings.Contains(unit, "Wants=network-online.target zfs-mount.service\n") {
 		t.Fatalf("unit lacks its Wants= line:\n%s", unit)
 	}
-	if strings.Contains(unit, "Wants=network-online.target tailscaled") || strings.Contains(unit, "Requires=") {
-		t.Fatalf("unit requires tailscaled:\n%s", unit)
+	if strings.Contains(unit, "tailscaled") || strings.Contains(unit, "Requires=") {
+		t.Fatalf("unit depends on tailscaled:\n%s", unit)
 	}
 }

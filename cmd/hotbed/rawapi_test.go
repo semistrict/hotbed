@@ -163,7 +163,7 @@ func TestControllerAuthToken(t *testing.T) {
 
 	where := newTestHere(t, nil)
 	if got := controllerAuthToken(where.getenv, "ubu1:7120"); got != "" {
-		t.Fatalf("tailnet controller got token %q, want empty", got)
+		t.Fatalf("host:port controller got token %q, want empty", got)
 	}
 	if got := controllerAuthToken(where.getenv, "http://127.0.0.1:7120"); got != "" {
 		t.Fatalf("plaintext http controller got token %q, want empty", got)

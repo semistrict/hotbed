@@ -46,42 +46,41 @@ func TestBaseURLAndIsRemoteURL(t *testing.T) {
 }
 
 func TestAuthInterceptorAndRoundTripper(t *testing.T) {
-	var gotAuth, gotNode, gotHost, gotAddr string
+	var gotAuth, gotNode, gotHost string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		gotAuth = r.Header.Get("Authorization")
 		gotNode = r.Header.Get("X-Hotbed-Node-Id")
 		gotHost = r.Header.Get("X-Hotbed-Host")
-		gotAddr = r.Header.Get("X-Hotbed-Addr")
 		w.WriteHeader(http.StatusOK)
 	}))
 	defer srv.Close()
 
 	// Test AuthInterceptor on Connect RPC
-	conn, err := Dial(srv.URL, DefaultPort, srv.Client(), AuthInterceptor("tok-1", "node-1", "ubu1", "100.1.2.3:7121"))
+	conn, err := Dial(srv.URL, DefaultPort, srv.Client(), AuthInterceptor("tok-1", "node-1", "ubu1"))
 	if err != nil {
 		t.Fatalf("Dial: %v", err)
 	}
 	cl := hotbedv1connect.NewClusterServiceClient(conn)
 	_, _ = cl.ListNodes(context.Background(), &pb.ListNodesRequest{})
-	if gotAuth != "Bearer tok-1" || gotNode != "node-1" || gotHost != "ubu1" || gotAddr != "100.1.2.3:7121" {
-		t.Fatalf("AuthInterceptor headers = (%q, %q, %q, %q)", gotAuth, gotNode, gotHost, gotAddr)
+	if gotAuth != "Bearer tok-1" || gotNode != "node-1" || gotHost != "ubu1" {
+		t.Fatalf("AuthInterceptor headers = (%q, %q, %q)", gotAuth, gotNode, gotHost)
 	}
 
 	// Test AuthRoundTripper on plain HTTP GET
-	gotAuth, gotNode, gotHost, gotAddr = "", "", "", ""
-	hc := &http.Client{Transport: AuthRoundTripper(srv.Client().Transport, "tok-2", "node-2", "ws2", "100.1.2.4:7121")}
+	gotAuth, gotNode, gotHost = "", "", ""
+	hc := &http.Client{Transport: AuthRoundTripper(srv.Client().Transport, "tok-2", "node-2", "ws2")}
 	resp, err := hc.Get(srv.URL + "/builds/1/hotbed-linux-amd64")
 	if err != nil {
 		t.Fatalf("Get: %v", err)
 	}
 	resp.Body.Close()
-	if gotAuth != "Bearer tok-2" || gotNode != "node-2" || gotHost != "ws2" || gotAddr != "100.1.2.4:7121" {
-		t.Fatalf("AuthRoundTripper headers = (%q, %q, %q, %q)", gotAuth, gotNode, gotHost, gotAddr)
+	if gotAuth != "Bearer tok-2" || gotNode != "node-2" || gotHost != "ws2" {
+		t.Fatalf("AuthRoundTripper headers = (%q, %q, %q)", gotAuth, gotNode, gotHost)
 	}
 }
 
-// worker init takes the controller as a URL or a tailnet name, as its help
-// says: a URL stays a URL, a name becomes host:port.
+// A controller given as a URL stays a URL; one given as a host name becomes
+// host:port.
 func TestControllerAddr(t *testing.T) {
 	for in, want := range map[string]string{
 		"https://hotbed-controller.example.workers.dev/": "https://hotbed-controller.example.workers.dev",

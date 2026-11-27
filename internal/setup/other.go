@@ -18,7 +18,7 @@ func unsupported() error {
 // joinedController is "": worker init sets up no worker here.
 func joinedController(string) (string, error) { return "", nil }
 
-func Setup(context.Context, Options, worker.Tailnet, *http.Client, worker.Check) (Result, error) {
+func Setup(context.Context, Options, *http.Client, worker.Check) (Result, error) {
 	return Result{}, unsupported()
 }
 

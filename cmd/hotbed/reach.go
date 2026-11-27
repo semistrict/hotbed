@@ -115,7 +115,7 @@ func (f controllerClient) workspaceFor(ctx context.Context, d deps, req *pb.Crea
 	if err != nil {
 		return nil, workerClients{}, err
 	}
-	ws, err := createWaking(ctx, d, cl.workspaces, req)
+	ws, err := createQueued(ctx, d, cl.workspaces, req)
 	if err != nil {
 		return nil, workerClients{}, err
 	}
@@ -134,20 +134,15 @@ func (f controllerClient) workspaceFor(ctx context.Context, d deps, req *pb.Crea
 
 // createWorkspaceTimeout bounds CreateWorkspace on d.stream so a live-but-stuck
 // controller cannot hang `hotbed run` forever, while still allowing >60s base
-// prep and wakeRideOut (5m).
+// prep.
 var createWorkspaceTimeout = 10 * time.Minute
 
-// wakeRideOut is how long a run waits for the node it goes to to wake.
-const wakeRideOut = 5 * time.Minute
-
-// createWaking creates the workspace, calling again while the node placement
-// picked is waking up (NODE_WAKING, up to wakeRideOut) or while all eligible
+// createQueued creates the workspace, calling again while all eligible
 // nodes are full and the run is queued at the controller (NODES_BUSY, until
 // any eligible node frees up), saying so once on stderr. Each individual RPC
 // is bounded by createWorkspaceTimeout so a stuck controller fails promptly.
-func createWaking(ctx context.Context, d deps, ws hotbedv1connect.WorkspaceServiceClient, req *pb.CreateWorkspaceRequest) (*pb.Workspace, error) {
-	wakeDeadline := time.Now().Add(wakeRideOut)
-	saidWake, saidBusy := false, false
+func createQueued(ctx context.Context, d deps, ws hotbedv1connect.WorkspaceServiceClient, req *pb.CreateWorkspaceRequest) (*pb.Workspace, error) {
+	saidBusy := false
 	for {
 		call := ctx
 		var cancel context.CancelFunc
@@ -158,25 +153,12 @@ func createWaking(ctx context.Context, d deps, ws hotbedv1connect.WorkspaceServi
 		if cancel != nil {
 			cancel()
 		}
-		switch api.CodeOf(err) {
-		case api.CodeNodeWaking:
-			if time.Now().After(wakeDeadline) || ctx.Err() != nil {
-				return w, err
-			}
-			if !saidWake {
-				fmt.Fprintf(d.stderr, "hotbed: %s; waiting up to %s for it\n", api.FromConnect(err).Message, wakeRideOut)
-				saidWake = true
-			}
-		case api.CodeNodesBusy:
-			if ctx.Err() != nil {
-				return w, err
-			}
-			if !saidBusy {
-				fmt.Fprintf(d.stderr, "hotbed: %s\n", api.FromConnect(err).Message)
-				saidBusy = true
-			}
-		default:
+		if api.CodeOf(err) != api.CodeNodesBusy || ctx.Err() != nil {
 			return w, err
+		}
+		if !saidBusy {
+			fmt.Fprintf(d.stderr, "hotbed: %s\n", api.FromConnect(err).Message)
+			saidBusy = true
 		}
 	}
 }
@@ -191,7 +173,7 @@ func (f controllerClient) onWorker(ctx context.Context, d deps, found *pb.Worksp
 	if err != nil {
 		return nil, workerClients{}, err
 	}
-	ws.NodeAddr, ws.Node = found.NodeAddr, found.Node
+	ws.Node = found.Node
 	if ws.Project == "" {
 		ws.Project = found.Project
 	}

@@ -18,15 +18,12 @@ import (
 	"sync"
 	"time"
 
-	"connectrpc.com/connect/v2/connecthttp"
 	"github.com/coder/websocket"
 	"google.golang.org/protobuf/proto"
 
 	"github.com/semistrict/hotbed/internal/api"
 	pb "github.com/semistrict/hotbed/internal/gen/hotbed/v1"
-	"github.com/semistrict/hotbed/internal/gen/hotbed/v1/hotbedv1connect"
 	"github.com/semistrict/hotbed/internal/httpx"
-	"github.com/semistrict/hotbed/internal/tailnet"
 )
 
 // tunnelDownMessage is sent by the Cloudflare Workers controller DO to a worker
@@ -85,13 +82,12 @@ func Tunnel(
 	eng *Engine,
 	controllerBaseURL string,
 	token string,
-	self tailnet.Self,
-	workerAddr string,
+	self httpx.Peer,
 	controllerNodeID string,
 	owner string,
 	hc *http.Client,
 ) error {
-	return TunnelWithMiddleware(ctx, eng, controllerBaseURL, token, self, workerAddr, controllerNodeID, owner, hc, nil)
+	return TunnelWithMiddleware(ctx, eng, controllerBaseURL, token, self, controllerNodeID, owner, hc, nil)
 }
 
 // TunnelWithMiddleware is Tunnel with an optional HTTP middleware around the
@@ -102,32 +98,21 @@ func TunnelWithMiddleware(
 	eng *Engine,
 	controllerBaseURL string,
 	token string,
-	self tailnet.Self,
-	workerAddr string,
+	self httpx.Peer,
 	controllerNodeID string,
 	owner string,
 	hc *http.Client,
 	wrap func(http.Handler) http.Handler,
 ) error {
-	handler := newTunnelHandler(eng, tailnet.Peer{
+	handler := Handler(httpx.Peer{
 		NodeID:   controllerNodeID,
 		Hostname: "controller",
 		Login:    owner,
-	})
+	}, eng)
 	if wrap != nil {
 		handler = wrap(handler)
 	}
-	return runTunnelLoop(ctx, handler, eng, controllerBaseURL, token, self, workerAddr, hc)
-}
-
-func newTunnelHandler(eng *Engine, peer tailnet.Peer) http.Handler {
-	server := httpx.NewServer()
-	hotbedv1connect.RegisterWorkspaceServiceHandler(server, &Service{E: eng})
-	mux := http.NewServeMux()
-	connecthttp.Mount(mux, server)
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		mux.ServeHTTP(w, r.WithContext(httpx.WithPeer(r.Context(), peer)))
-	})
+	return runTunnelLoop(ctx, handler, eng, controllerBaseURL, token, self, hc)
 }
 
 func tunnelWSURL(controllerBaseURL string) (string, error) {
@@ -154,8 +139,7 @@ func runTunnelLoop(
 	pipes pipeOpener,
 	controllerBaseURL string,
 	token string,
-	self tailnet.Self,
-	workerAddr string,
+	self httpx.Peer,
 	hc *http.Client,
 ) error {
 	wsURL, err := tunnelWSURL(controllerBaseURL)
@@ -173,7 +157,7 @@ func runTunnelLoop(
 			return nil
 		}
 		connectedAt := time.Now()
-		err := serveTunnelOnce(ctx, handler, pipes, wsURL, token, self, workerAddr, hc)
+		err := serveTunnelOnce(ctx, handler, pipes, wsURL, token, self, hc)
 		if ctx.Err() != nil {
 			return nil
 		}
@@ -211,11 +195,10 @@ func serveTunnelOnce(
 	pipes pipeOpener,
 	wsURL string,
 	token string,
-	self tailnet.Self,
-	workerAddr string,
+	self httpx.Peer,
 	hc *http.Client,
 ) error {
-	return serveTunnelOnceWithTimeouts(ctx, handler, pipes, wsURL, token, self, workerAddr, hc, defaultTunnelPingInterval, defaultTunnelReadTimeout)
+	return serveTunnelOnceWithTimeouts(ctx, handler, pipes, wsURL, token, self, hc, defaultTunnelPingInterval, defaultTunnelReadTimeout)
 }
 
 func serveTunnelOnceWithTimeouts(
@@ -224,8 +207,7 @@ func serveTunnelOnceWithTimeouts(
 	pipes pipeOpener,
 	wsURL string,
 	token string,
-	self tailnet.Self,
-	workerAddr string,
+	self httpx.Peer,
 	hc *http.Client,
 	pingInterval time.Duration,
 	readTimeout time.Duration,
@@ -239,9 +221,6 @@ func serveTunnelOnceWithTimeouts(
 	}
 	if self.Hostname != "" {
 		headers.Set("X-Hotbed-Host", self.Hostname)
-	}
-	if workerAddr != "" {
-		headers.Set("X-Hotbed-Addr", workerAddr)
 	}
 	dialCtx, dialCancel := context.WithTimeout(ctx, 20*time.Second)
 	defer dialCancel()
@@ -307,22 +286,21 @@ func serveTunnelOnceWithTimeouts(
 	// The request streams of client-streaming calls under way, by ID: the
 	// read loop's alone.
 	sending := map[string]chan []byte{}
-	defer func() {
-		for _, ch := range sending {
-			close(ch)
-		}
-	}()
 	// The pipes open, by ID: what the client sends each, in order. The read
 	// loop's alone.
 	piping := map[string]chan []byte{}
+	var wg sync.WaitGroup
+	// As the connection ends, the calls and pipes it served drain what the
+	// read loop fed them until it is closed: close it before waiting for
+	// them, or they wait for each other forever.
 	defer func() {
+		connCancel()
+		for _, ch := range sending {
+			close(ch)
+		}
 		for _, ch := range piping {
 			close(ch)
 		}
-	}()
-	var wg sync.WaitGroup
-	defer func() {
-		connCancel()
 		wg.Wait()
 	}()
 

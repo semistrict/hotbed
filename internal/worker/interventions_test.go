@@ -5,8 +5,6 @@ import (
 	"context"
 	"errors"
 	"io"
-	"net/http/httptest"
-	"net/netip"
 	"os"
 	"path/filepath"
 	"strings"
@@ -24,8 +22,6 @@ import (
 	"github.com/semistrict/hotbed/internal/gen/hotbed/v1/hotbedv1connect"
 	"github.com/semistrict/hotbed/internal/httpx"
 	"github.com/semistrict/hotbed/internal/inspect"
-	"github.com/semistrict/hotbed/internal/tailnet"
-	"github.com/semistrict/hotbed/internal/tailnet/tailnettest"
 )
 
 type fakeInspector struct {
@@ -494,19 +490,7 @@ func TestServiceInterventionHostIdentityAndValidation(t *testing.T) {
 		cfg.ControllerNodeID = "nCtrl"
 	})
 	startTestCommand(t, e, store, units, "c-auth")
-	ctrl := tailnet.Peer{NodeID: "nCtrl", Hostname: "ubu1", Login: "ramon@"}
-	agent := tailnet.Peer{NodeID: "nAgent", Hostname: "agentbox", Login: "ramon@"}
-	self := tailnet.Self{Peer: tailnet.Peer{NodeID: "n1", Hostname: "asahimbp", Login: "ramon@"}, Addrs: []netip.Addr{netip.MustParseAddr("127.0.0.1")}}
-	tn := tailnettest.New(self)
-	srv := httptest.NewServer(Handler(tn, httpx.Policy{Owner: "ramon@", Self: self.Addrs}, e))
-	t.Cleanup(srv.Close)
-	addr := strings.TrimPrefix(srv.URL, "http://")
-
-	ctrlConn, err := api.Dial(addr, api.WorkerPort, tn.Client(ctrl))
-	if err != nil {
-		t.Fatal(err)
-	}
-	ctrlWS := hotbedv1connect.NewWorkspaceServiceClient(ctrlConn)
+	ctrlWS := clientAs(t, httpx.Peer{NodeID: "nCtrl", Hostname: "ubu1", Login: "ramon@"}, e)
 
 	// Clients reach workers only through the controller, which sets
 	// req.Host to the host it authenticated the caller as (overwriting any
@@ -521,12 +505,8 @@ func TestServiceInterventionHostIdentityAndValidation(t *testing.T) {
 		t.Errorf("controller-forwarded host = %q, want laptop, the caller the controller says", got)
 	}
 
-	// Non-controller caller cannot spoof req.Host: uses httpx.Peer hostname.
-	agentConn, err := api.Dial(addr, api.WorkerPort, tn.Client(agent))
-	if err != nil {
-		t.Fatal(err)
-	}
-	agentWS := hotbedv1connect.NewWorkspaceServiceClient(agentConn)
+	// Non-controller caller cannot spoof req.Host: uses its httpx.Peer hostname.
+	agentWS := clientAs(t, httpx.Peer{NodeID: "nAgent", Hostname: "agentbox", Login: "ramon@"}, e)
 
 	// Mismatched SessionId is rejected on Resume/Pause/Stop (board 9796).
 	if _, err := agentWS.ResumeCommand(t.Context(), &pb.ResumeCommandRequest{Id: "c-auth", SessionId: "other-sess"}); api.CodeOf(err) != api.CodeNotFound {
@@ -1029,21 +1009,7 @@ func TestFollowLogEmitsTerminalChunkOnQuickPauseResume(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	peer := tailnet.Peer{NodeID: "nClient", Hostname: "laptop", Login: "ramon@"}
-	tn := tailnettest.New(tailnet.Self{Peer: peer})
-	ts := httptest.NewUnstartedServer(Handler(tn, httpx.Policy{
-		Owner: "ramon@",
-		Self:  []netip.Addr{netip.MustParseAddr("127.0.0.1")},
-	}, e))
-	ts.Config.Protocols = httpx.Protocols()
-	ts.Start()
-	defer ts.Close()
-
-	conn, err := api.Dial(strings.TrimPrefix(ts.URL, "http://"), api.WorkerPort, tn.Client(peer))
-	if err != nil {
-		t.Fatal(err)
-	}
-	client := hotbedv1connect.NewWorkspaceServiceClient(conn)
+	client := clientAs(t, httpx.Peer{NodeID: "nClient", Hostname: "laptop", Login: "ramon@"}, e)
 
 	var chunks []*pb.LogChunk
 	var received bytes.Buffer

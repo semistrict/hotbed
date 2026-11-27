@@ -412,8 +412,8 @@ func (e *Engine) beginShell(ctx context.Context, ticket *shellTicket, args, extr
 	return handle, cleanup, nil
 }
 
-// ShellServer serves interactive workspace shells over SSH behind the same
-// fail-closed tailnet gate as the worker's HTTP API.
+// ShellServer serves interactive workspace shells over SSH, to the
+// connections the controller relays over the worker's tunnel.
 type ShellServer struct {
 	eng             *Engine
 	sshCfg          *ssh.ServerConfig

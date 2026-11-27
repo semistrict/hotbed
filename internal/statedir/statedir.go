@@ -16,6 +16,9 @@ import (
 
 const configName = "hotbed.json"
 
+// Path is where the state directory dir keeps its config.
+func Path(dir string) string { return filepath.Join(dir, configName) }
+
 var (
 	ErrAlreadyInitialized = errors.New("state directory is already initialized")
 	ErrNotInitialized     = errors.New("state directory is not initialized")
@@ -42,23 +45,22 @@ type WorkerConfig struct {
 	// Bench is the node's measurements (hotbed run --bench), as the host's
 	// setup step sets them; none taken without.
 	Bench *bench.Config `json:"bench,omitempty"`
-	// Owner is the tailnet login the cluster belongs to: the worker admits
-	// its machines.
+	// Owner is the login the cluster belongs to: who the worker names the
+	// controller's calls as coming from.
 	Owner string `json:"owner,omitempty"`
-	// ControllerNodeID is the controller's stable tailnet node ID: only it may
-	// call CreateWorkspace on this worker.
+	// ControllerNodeID is the node ID the worker names the controller's
+	// calls, over its tunnel, as coming from: only it may call
+	// CreateWorkspace on this worker.
 	ControllerNodeID string `json:"controllerNodeId,omitempty"`
 	// Token is the bearer token used to authenticate to a remote HTTPS
 	// controller (such as Cloudflare Workers) and its /ws/worker tunnel.
 	Token string `json:"token,omitempty"`
 	// Socket, if set, is a Unix socket the worker serves its API on too, for
-	// clients on its own machine, who cannot be told apart by user over the
-	// tailnet off Linux: its file mode alone says who may connect (macOS:
-	// the Mac's user, 0600).
+	// clients on its own machine: its file mode alone says who may connect
+	// (macOS: the Mac's user, 0600), and its callers are this node itself.
 	Socket string `json:"socket,omitempty"`
 	// NodeID is the worker's node, which its worker token is bound to (its
-	// workspaces' and commands' node_id): made at join, or its tailnet node's
-	// for a worker that joined when nodes were the tailnet's.
+	// workspaces' and commands' node_id): made at join.
 	NodeID string `json:"nodeId,omitempty"`
 	// Host is its node's name, as the controller and people know it.
 	Host string `json:"host,omitempty"`

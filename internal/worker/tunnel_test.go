@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -17,7 +18,6 @@ import (
 	pb "github.com/semistrict/hotbed/internal/gen/hotbed/v1"
 	"github.com/semistrict/hotbed/internal/gen/hotbed/v1/hotbedv1connect"
 	"github.com/semistrict/hotbed/internal/httpx"
-	"github.com/semistrict/hotbed/internal/tailnet"
 )
 
 type stubTunnelService struct {
@@ -30,7 +30,7 @@ func (stubTunnelService) GetWorkspace(ctx context.Context, req *pb.GetWorkspaceR
 	}
 	return &pb.Workspace{
 		Id:   req.Id,
-		Node: httpx.Peer(ctx).NodeID,
+		Node: httpx.PeerFrom(ctx).NodeID,
 	}, nil
 }
 
@@ -52,13 +52,11 @@ func TestWorkerWebSocketTunnel(t *testing.T) {
 	hotbedv1connect.RegisterWorkspaceServiceHandler(srv, stubTunnelService{})
 	mux := http.NewServeMux()
 	connecthttp.Mount(mux, srv)
-	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		mux.ServeHTTP(w, r.WithContext(httpx.WithPeer(r.Context(), tailnet.Peer{
-			NodeID:   "cf:cluster-1",
-			Hostname: "controller",
-			Login:    "ramon",
-		})))
-	})
+	handler := httpx.WithStaticPeer(httpx.Peer{
+		NodeID:   "cf:cluster-1",
+		Hostname: "controller",
+		Login:    "ramon",
+	}, mux)
 
 	done := make(chan error, 1)
 	wsSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -206,10 +204,10 @@ func TestWorkerWebSocketTunnel(t *testing.T) {
 		t.Fatalf("tunnelWSURL: %v", err)
 	}
 	go func() {
-		_ = serveTunnelOnce(ctx, handler, nil, wsURL, "sec-tok", tailnet.Self{
+		_ = serveTunnelOnce(ctx, handler, nil, wsURL, "sec-tok", httpx.Peer{
 			NodeID:   "node-1",
 			Hostname: "ubu1",
-		}, "100.73.156.10:7121", wsSrv.Client())
+		}, wsSrv.Client())
 	}()
 
 	select {
@@ -246,15 +244,76 @@ func TestWorkerWebSocketTunnelReadTimeoutOnSilentServer(t *testing.T) {
 	defer cancel()
 
 	start := time.Now()
-	err = serveTunnelOnceWithTimeouts(ctx, http.NotFoundHandler(), nil, wsURL, "tok", tailnet.Self{
+	err = serveTunnelOnceWithTimeouts(ctx, http.NotFoundHandler(), nil, wsURL, "tok", httpx.Peer{
 		NodeID:   "node-1",
 		Hostname: "ubu1",
-	}, "100.73.156.10:7121", wsSrv.Client(), 40*time.Millisecond, 150*time.Millisecond)
+	}, wsSrv.Client(), 40*time.Millisecond, 150*time.Millisecond)
 	elapsed := time.Since(start)
 	if err == nil {
 		t.Fatal("expected read timeout error on silent server, got nil")
 	}
 	if elapsed > 2*time.Second {
 		t.Fatalf("serveTunnelOnce took %s, expected fast reconnect on missed pongs", elapsed)
+	}
+}
+
+// heldPipes opens pipes whose far end no one uses: they stay open until the
+// worker's end closes.
+type heldPipes struct{ far chan net.Conn }
+
+func (h heldPipes) OpenPipe(context.Context, string, string, int) (net.Conn, error) {
+	near, far := net.Pipe()
+	h.far <- far
+	return near, nil
+}
+
+// A tunnel connection that ends while a pipe is open returns, its pipe
+// closed, so the worker dials again: the pipe drains what the client sent
+// until the read loop closes it, which it must do before waiting for it.
+func TestTunnelEndsWithAPipeOpen(t *testing.T) {
+	opened := make(chan struct{})
+	wsSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		c, err := websocket.Accept(w, r, nil)
+		if err != nil {
+			t.Errorf("accept: %v", err)
+			return
+		}
+		defer c.CloseNow()
+		b, _ := json.Marshal(tunnelDownMessage{Type: "pipe_open", ID: "p1", Kind: "ssh", Workspace: "w1"})
+		if err := c.Write(r.Context(), websocket.MessageText, b); err != nil {
+			t.Errorf("write pipe_open: %v", err)
+			return
+		}
+		for {
+			_, data, err := c.Read(r.Context())
+			if err != nil {
+				t.Errorf("read: %v", err)
+				return
+			}
+			var m tunnelUpMessage
+			if json.Unmarshal(data, &m) == nil && m.Type == "pipe_opened" {
+				close(opened)
+				_ = c.Close(websocket.StatusGoingAway, "controller restarting")
+				return
+			}
+		}
+	}))
+	defer wsSrv.Close()
+	wsURL, err := tunnelWSURL(wsSrv.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pipes := heldPipes{far: make(chan net.Conn, 1)}
+	served := make(chan error, 1)
+	go func() {
+		served <- serveTunnelOnce(t.Context(), http.NotFoundHandler(), pipes, wsURL, "tok", httpx.Peer{NodeID: "node-1", Hostname: "ubu1"}, wsSrv.Client())
+	}()
+	<-opened
+	far := <-pipes.far
+	defer far.Close()
+	select {
+	case <-served:
+	case <-time.After(10 * time.Second):
+		t.Fatal("serveTunnelOnce never returned after its connection ended with a pipe open")
 	}
 }

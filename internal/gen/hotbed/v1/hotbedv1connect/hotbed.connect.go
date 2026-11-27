@@ -718,7 +718,7 @@ var (
 
 // ClusterServiceClient is a client for the hotbed.v1.ClusterService service.
 type ClusterServiceClient interface {
-	// Join admits the calling tailnet node as a worker.
+	// Join admits the calling node, which its join token names, as a worker.
 	Join(context.Context, *v1.JoinRequest) (*v1.JoinResponse, error)
 	// PushEvents delivers a worker's events, in order, from after what the
 	// controller has applied; or a checkpoint of its state when the
@@ -807,7 +807,7 @@ type ClusterServiceClient interface {
 	// longer shows in hotbed nodes or the cockpit and takes no runs, while
 	// its history (commands, events, placements) stays. Its sessions' runs go
 	// elsewhere. Refused while it is online. A worker joining again with the
-	// same tailnet identity is a node again.
+	// same node ID is a node again.
 	RetireNode(context.Context, *v1.RetireNodeRequest) (*v1.Node, error)
 	// Placement decisions, newest first: each candidate node with its cost
 	// in parts, or why it was ruled out, and the node chosen. Kept a day.
@@ -839,7 +839,7 @@ func NewClusterServiceClient(client *connect.Client) ClusterServiceClient {
 
 // ClusterServiceHandler is an implementation of the hotbed.v1.ClusterService service.
 type ClusterServiceHandler interface {
-	// Join admits the calling tailnet node as a worker.
+	// Join admits the calling node, which its join token names, as a worker.
 	Join(context.Context, *v1.JoinRequest) (*v1.JoinResponse, error)
 	// PushEvents delivers a worker's events, in order, from after what the
 	// controller has applied; or a checkpoint of its state when the
@@ -928,7 +928,7 @@ type ClusterServiceHandler interface {
 	// longer shows in hotbed nodes or the cockpit and takes no runs, while
 	// its history (commands, events, placements) stays. Its sessions' runs go
 	// elsewhere. Refused while it is online. A worker joining again with the
-	// same tailnet identity is a node again.
+	// same node ID is a node again.
 	RetireNode(context.Context, *v1.RetireNodeRequest) (*v1.Node, error)
 	// Placement decisions, newest first: each candidate node with its cost
 	// in parts, or why it was ruled out, and the node chosen. Kept a day.

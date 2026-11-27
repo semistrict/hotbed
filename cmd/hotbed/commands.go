@@ -27,7 +27,6 @@ import (
 type deps struct {
 	// here is where the command runs: its environment and working directory.
 	here
-	tailnet worker.Tailnet
 	// http calls the API; stream reads output, which has no deadline.
 	http, stream *http.Client
 	check        worker.Check
@@ -103,8 +102,8 @@ const description = `For AI agents, read this first:
 Commands print concise plain text by default. Pass --json for one JSON
 envelope, or --jq EXPR to filter the response JSON.
 
-Run builds, tests and dev servers on a cluster of Linux machines on your
-tailnet, each in a fork of a repo whose main is already built.`
+Run builds, tests and dev servers on a cluster of Linux machines, each in
+a fork of a repo whose main is already built.`
 
 type cli struct {
 	JSON bool   `name:"json" help:"Print the response as one JSON envelope."`

@@ -120,7 +120,7 @@ type System interface {
 type EngineConfig struct {
 	Dir    string // state directory: logs, bundles, worker.db
 	NodeID string
-	Host   string // tailnet host name, for dev server URLs
+	Host   string // the node's host name, for dev server URLs
 	User   string // commands run as this user
 	// Slice is the systemd slice commands run in; empty for hotbed.slice.
 	// One under a capped slice (user-hotbed.slice, in user.slice) shares that
@@ -172,8 +172,9 @@ type EngineConfig struct {
 	LogLimit cmdlog.Limit
 	// DaemonLogs holds this worker's rotating WARN/ERROR slog store; nil disables persistence.
 	DaemonLogs *daemonlog.Store
-	// ControllerNodeID, when set, restricts Service.CreateWorkspace to requests
-	// authenticated as this tailnet node ID (the cluster controller).
+	// ControllerNodeID, when set, restricts Service.CreateWorkspace to calls
+	// whose transport names this node ID as their caller: the controller,
+	// over the worker's tunnel.
 	ControllerNodeID string
 	// RequireController fails Service.CreateWorkspace closed even when
 	// ControllerNodeID is empty (production always sets this).

@@ -54,7 +54,7 @@ func TestRetireNodeGoneForGood(t *testing.T) {
 	}
 
 	// Joining again, it is a node again.
-	joiner, _, err := api.Controller(strings.TrimPrefix(c.ctrlSrv.URL, "http://"), c.tn.Client(mini.peer))
+	joiner, _, err := api.Controller(strings.TrimPrefix(c.ctrlSrv.URL, "http://"), peerClient(mini.peer))
 	if err != nil {
 		t.Fatal(err)
 	}

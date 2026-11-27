@@ -13,7 +13,6 @@ function ownerCaller(login = "ramon@echophase.com", orgId = "org_board_test"): C
 		userId: `user_${login}`,
 		orgId,
 		orgRole: "admin",
-		addr: "",
 		authMethod: "workos-jwt",
 	};
 }
@@ -27,7 +26,6 @@ function memberCaller(login = "alice@echophase.com", orgId = "org_board_test"): 
 		userId: `user_${login}`,
 		orgId,
 		orgRole: "member",
-		addr: "",
 		authMethod: "workos-jwt",
 	};
 }

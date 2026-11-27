@@ -43,7 +43,6 @@ export const OFFLINE_GRACE_MS = 24 * 60 * 60_000;
 export const MAX_WAIT_MS = 2 * 60_000;
 export const WORKER_RPC_TIMEOUT_MS = 30_000;
 export const LIVE_QUERY_TIMEOUT_MS = 2_000;
-export const WORKER_PORT = 7121;
 export const PROJECT_NAME_RE = /^[a-z0-9][a-z0-9-]{0,39}$/;
 export const REPO_ID_RE = /^[a-z0-9][a-z0-9-]{0,39}$/;
 export const STEP_NAME_RE = /^[a-z0-9]+(-[a-z0-9]+)*$/;
@@ -229,28 +228,6 @@ export class ControllerContext {
 		return n;
 	}
 
-	addrOf(n: NodeRow): string {
-		const target = n.addr || n.node.hostname;
-		if (!target) return "";
-		if (target.includes("://")) return target;
-		// Check if port already present (IPv6 bracketed or host:port)
-		if (target.startsWith("[")) {
-			return target.includes("]:") ? target : `${target}:${WORKER_PORT}`;
-		}
-		const colons = target.split(":").length - 1;
-		if (colons === 1) return target;
-		if (colons > 1) return `[${target}]:${WORKER_PORT}`;
-		return `${target}:${WORKER_PORT}`;
-	}
-
-	nodeAddr(nodeId: string): string {
-		try {
-			return this.addrOf(this.store.fleet.get(nodeId));
-		} catch {
-			return "";
-		}
-	}
-
 	findNodeByNameOrId(name: string): NodeRow {
 		for (const r of this.store.fleet.list()) {
 			if (r.node.hostname === name || r.node.id === name) {
@@ -297,15 +274,12 @@ export class ControllerContext {
 		return rows.map((n) => {
 			const v = all.get(n.node.id) ?? { bases: [], workspaces: [], commands: [] };
 			const node = this.withOnline(n.node);
-			const addr = this.addrOf(n);
 			for (const w of v.workspaces) {
-				w.nodeAddr = addr;
 				w.node = n.node.hostname;
 				const p = sessProj.get(w.sessionId);
 				if (p) w.project = p;
 			}
 			for (const c of v.commands) {
-				c.nodeAddr = addr;
 				const p = sessProj.get(c.sessionId);
 				if (p) c.project = p;
 			}
@@ -340,8 +314,6 @@ export class ControllerContext {
 				ListCommandsResponseSchema,
 				LIVE_QUERY_TIMEOUT_MS,
 			);
-			const addr = this.addrOf(nv);
-			for (const cmd of res.commands) cmd.nodeAddr = addr;
 			return res.commands;
 		});
 	}
@@ -361,11 +333,7 @@ export class ControllerContext {
 				ListWorkspacesResponseSchema,
 				LIVE_QUERY_TIMEOUT_MS,
 			);
-			const addr = this.addrOf(nv);
-			for (const ws of res.workspaces) {
-				ws.nodeAddr = addr;
-				ws.node = nv.node.hostname;
-			}
+			for (const ws of res.workspaces) ws.node = nv.node.hostname;
 			return res.workspaces;
 		});
 	}

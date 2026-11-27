@@ -23,13 +23,13 @@ import (
 const BuildHeader = "Hotbed-Build"
 
 // IsRemoteURL reports whether addr is an explicit HTTP(S) base URL (such as a
-// Cloudflare Workers controller URL) rather than a tailnet host[:port].
+// Cloudflare Workers controller URL) rather than a host[:port].
 func IsRemoteURL(addr string) bool {
 	return strings.HasPrefix(addr, "https://") || strings.HasPrefix(addr, "http://")
 }
 
 // BaseURL normalizes a node address into a base URL without a trailing slash:
-// an explicit http:// or https:// URL stays as given; a tailnet host[:port]
+// an explicit http:// or https:// URL stays as given; a host[:port]
 // becomes "http://<host>:<port>".
 func BaseURL(addr string, defaultPort int) (string, error) {
 	if IsRemoteURL(addr) {
@@ -58,7 +58,7 @@ func ControllerBaseURL(addr string) (string, error) {
 // AuthInterceptor attaches Bearer authentication and optional worker/client
 // identity headers to outgoing Connect calls (used when calling a remote
 // Cloudflare Workers controller).
-func AuthInterceptor(token, nodeID, hostname, addr string) connect.ClientInterceptor {
+func AuthInterceptor(token, nodeID, hostname string) connect.ClientInterceptor {
 	return func(next connect.ClientFunc) connect.ClientFunc {
 		return func(ctx context.Context, spec connect.Spec) (connect.ClientStream, error) {
 			if info, ok := connect.CallInfoForClientContext(ctx); ok {
@@ -72,9 +72,6 @@ func AuthInterceptor(token, nodeID, hostname, addr string) connect.ClientInterce
 				if hostname != "" && h.Get("X-Hotbed-Host") == "" {
 					h.Set("X-Hotbed-Host", hostname)
 				}
-				if addr != "" && h.Get("X-Hotbed-Addr") == "" {
-					h.Set("X-Hotbed-Addr", addr)
-				}
 			}
 			return next(ctx, spec)
 		}
@@ -83,16 +80,16 @@ func AuthInterceptor(token, nodeID, hostname, addr string) connect.ClientInterce
 
 // AuthRoundTripper wraps base to attach Bearer auth and optional identity
 // headers on plain HTTP requests (such as /builds/{build}/{asset} downloads).
-func AuthRoundTripper(base http.RoundTripper, token, nodeID, hostname, addr string) http.RoundTripper {
+func AuthRoundTripper(base http.RoundTripper, token, nodeID, hostname string) http.RoundTripper {
 	if base == nil {
 		base = http.DefaultTransport
 	}
-	return authRoundTripper{base: base, token: token, nodeID: nodeID, hostname: hostname, addr: addr}
+	return authRoundTripper{base: base, token: token, nodeID: nodeID, hostname: hostname}
 }
 
 type authRoundTripper struct {
-	base                        http.RoundTripper
-	token, nodeID, hostname, addr string
+	base                    http.RoundTripper
+	token, nodeID, hostname string
 }
 
 func (a authRoundTripper) RoundTrip(r *http.Request) (*http.Response, error) {
@@ -106,13 +103,10 @@ func (a authRoundTripper) RoundTrip(r *http.Request) (*http.Response, error) {
 	if a.hostname != "" && clone.Header.Get("X-Hotbed-Host") == "" {
 		clone.Header.Set("X-Hotbed-Host", a.hostname)
 	}
-	if a.addr != "" && clone.Header.Get("X-Hotbed-Addr") == "" {
-		clone.Header.Set("X-Hotbed-Addr", a.addr)
-	}
 	return a.base.RoundTrip(clone)
 }
 
-// Dial returns a Connect client for the node at addr: a tailnet host name or
+// Dial returns a Connect client for the server at addr: a host name or
 // address, with or without a port (defaultPort when it has none), or an
 // explicit http(s):// base URL.
 func Dial(addr string, defaultPort int, hc *http.Client, interceptors ...connect.ClientInterceptor) (*connect.Client, error) {
@@ -134,7 +128,7 @@ func Controller(addr string, hc *http.Client, interceptors ...connect.ClientInte
 
 // ControllerAddr normalizes a controller address as a person types it: an
 // http(s):// URL (such as a Cloudflare Workers controller) becomes its base
-// URL (ControllerBaseURL), a tailnet name or address its host:port
+// URL (ControllerBaseURL), a host name or address its host:port
 // (ControllerHostPort).
 func ControllerAddr(addr string) (string, error) {
 	if IsRemoteURL(addr) {
@@ -154,7 +148,7 @@ func ControllerHostPort(addr string) (string, error) {
 func HostPort(addr string, defaultPort int) (string, error) {
 	invalid := func(why string) error {
 		return Errorf(CodeInvalidArgs, "controller address %q %s", addr, why).
-			WithSuggestion("give the controller's tailnet name or address, such as ubu1 or ubu1:7120")
+			WithSuggestion("give the controller's HTTPS URL, such as https://hotbed-controller.example.workers.dev")
 	}
 	if addr == "" {
 		return "", invalid("is empty")
@@ -261,7 +255,7 @@ func connectCode(c Code) connect.Code {
 		return connect.CodeAlreadyExists
 	case CodeNotJoined, CodeClusterMismatch, CodeSyncRefused, CodeNotInitialized:
 		return connect.CodeFailedPrecondition
-	case CodeRepoUnreachable, CodeWorkerUnreachable, CodeNodeWaking, CodeControllerUnreachable, CodeTailscaleUnavailable:
+	case CodeRepoUnreachable, CodeWorkerUnreachable, CodeControllerUnreachable:
 		return connect.CodeUnavailable
 	case CodePlatformNotSupported:
 		return connect.CodeUnimplemented
