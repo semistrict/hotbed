@@ -269,7 +269,7 @@ func queryOutputBounded(
 	}
 	totalWait := 60 * time.Second
 	if req.TimeoutSeconds > 0 {
-		totalWait = min(time.Duration(req.TimeoutSeconds)*time.Second, 10*time.Minute)
+		totalWait = time.Duration(req.TimeoutSeconds) * time.Second
 	}
 	deadline := time.Now().Add(totalWait)
 	var unreachableSince time.Time

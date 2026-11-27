@@ -1,6 +1,6 @@
 //go:build darwin && !cgo
 
-package main
+package peercred
 
 import (
 	"bufio"
@@ -13,7 +13,10 @@ import (
 	"strings"
 )
 
-func lookupSocketUID(client, server netip.AddrPort) (uint32, error) {
+// SocketUID is the unix user that opened the connection from client, on
+// this machine, to server. Without cgo on macOS, lsof queries the current
+// user's established TCP sockets (release binaries are built with CGO_ENABLED=0).
+func SocketUID(client, server netip.AddrPort) (uint32, error) {
 	uid := uint32(os.Getuid())
 	out, err := exec.Command("lsof", "-nP", "-a", "-u"+strconv.FormatUint(uint64(uid), 10), "-iTCP", "-sTCP:ESTABLISHED", "-Fn").Output()
 	if err != nil {

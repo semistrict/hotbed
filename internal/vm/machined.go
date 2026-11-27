@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"time"
 
 	machinedv1 "github.com/semistrict/cladefs/go/machined/v1"
 	"google.golang.org/grpc"
@@ -140,6 +141,7 @@ func machinedBootArgs(cfg Config, spec LaunchSpec) []string {
 		"psi=1",
 		"rdinit=/hotbed-guestd",
 		"HOTBED_ROOT=cladefs:" + machinedRootTag,
+		fmt.Sprintf("HOTBED_NOW=%d", time.Now().Unix()),
 	}
 	if cfg.Nofile > 0 {
 		args = append(args, fmt.Sprintf("HOTBED_NOFILE=%d", cfg.Nofile))

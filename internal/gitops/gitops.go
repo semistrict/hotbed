@@ -11,6 +11,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -1001,6 +1002,12 @@ func Apply(ctx context.Context, g Git, bundle, commit, base string, subs []SubCh
 			return 0, fmt.Errorf("submodule %s: invalid bundle: %w", s.Path, err)
 		}
 	}
+	// Sync is serialized per workspace with no active commands, so any leftover
+	// git lock files (e.g. .git/index.lock from a previously timed-out or
+	// cancelled Sync whose git child was SIGKILLed) are stale and would wedge
+	// every subsequent run in this workspace.
+	clearStaleGitLocks(ctx, g)
+
 	prevHead, _ := g.Run(ctx, "rev-parse", "--verify", "--quiet", "HEAD")
 
 	// Fetch the top-level bundle and confirm its SyncRef resolves to commit
@@ -1066,6 +1073,10 @@ func rollbackApply(ctx context.Context, g Git, prevHead string) error {
 	rbCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
 	defer cancel()
 
+	// Clear any lock files left by a killed/cancelled git process in Apply
+	// before rolling back; otherwise update-index and checkout fail immediately.
+	clearStaleGitLocks(rbCtx, g)
+
 	if err := deinitDropped(rbCtx, g, prevHead); err != nil {
 		return fmt.Errorf("deinit dropped submodules: %w", err)
 	}
@@ -1104,6 +1115,68 @@ func rollbackApply(ctx context.Context, g Git, prevHead string) error {
 		}
 	}
 	return nil
+}
+
+// staleGitLockNames are git lock files that a SIGKILLed Sync (checkout,
+// update-index, update-ref, submodule update) can leave behind in a gitdir.
+var staleGitLockNames = map[string]bool{
+	"index.lock":       true,
+	"HEAD.lock":        true,
+	"shallow.lock":     true,
+	"packed-refs.lock": true,
+	"config.lock":      true,
+}
+
+// clearStaleGitLocks removes leftover git lock files in g's gitdir (and any
+// submodule gitdirs under its modules/ tree). Best-effort: Sync is serialized
+// per workspace with no active commands, so any lock file present when Apply
+// begins or rolls back belongs to an aborted prior git process.
+func clearStaleGitLocks(ctx context.Context, g Git) {
+	gitDir, err := g.Run(ctx, "rev-parse", "--absolute-git-dir")
+	if err != nil || gitDir == "" {
+		return
+	}
+	removeGitDirLocks(gitDir)
+	modulesDir := filepath.Join(gitDir, "modules")
+	if fi, err := os.Lstat(modulesDir); err != nil || !fi.IsDir() || fi.Mode()&os.ModeSymlink != 0 {
+		return
+	}
+	_ = filepath.WalkDir(modulesDir, func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return nil
+		}
+		if d.Type()&os.ModeSymlink != 0 {
+			if d.IsDir() {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		if d.IsDir() {
+			// Skip git object/pack/logs/worktrees subtrees to keep the walk fast.
+			switch d.Name() {
+			case "objects", "logs", "hooks", "info":
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		if staleGitLockNames[d.Name()] || strings.HasSuffix(filepath.ToSlash(path), "/"+SyncRef+".lock") {
+			_ = os.Remove(path)
+		}
+		return nil
+	})
+}
+
+func removeGitDirLocks(gitDir string) {
+	for name := range staleGitLockNames {
+		p := filepath.Join(gitDir, name)
+		if fi, err := os.Lstat(p); err == nil && fi.Mode().IsRegular() {
+			_ = os.Remove(p)
+		}
+	}
+	syncLock := filepath.Join(gitDir, filepath.FromSlash(SyncRef)+".lock")
+	if fi, err := os.Lstat(syncLock); err == nil && fi.Mode().IsRegular() {
+		_ = os.Remove(syncLock)
+	}
 }
 
 // deinitDroppedInSubs walks populated submodules of g bottom-up and deinits any

@@ -41,7 +41,12 @@ func testUser(t *testing.T) string {
 // waitExit waits for the unit's command to exit and returns its state.
 func waitExit(t *testing.T, name string) State {
 	t.Helper()
-	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+	return waitExitTimeout(t, name, 10*time.Second)
+}
+
+func waitExitTimeout(t *testing.T, name string, timeout time.Duration) State {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(t.Context(), timeout)
 	defer cancel()
 	if err := Wait(ctx, DefaultSlice, name); err != nil {
 		t.Fatalf("wait for %s: %v", name, err)
@@ -54,6 +59,24 @@ func waitExit(t *testing.T, name string) State {
 		t.Fatalf("%s has no processes left but is %+v", name, s)
 	}
 	return s
+}
+
+func TestMain(m *testing.M) {
+	if os.Getenv("HOTBED_TEST_OOM_CHILD") == "1" {
+		// Fault anonymous pages in 1 MiB chunks until the cgroup OOM killer
+		// terminates this process. Using the static Go test binary avoids
+		// python3's large shared-library/file-cache footprint that can
+		// livelock cgroup v2 clean-page reclaim on Ubuntu 26.04.
+		var keep [][]byte
+		for {
+			b := make([]byte, 1<<20)
+			for i := 0; i < len(b); i += 4096 {
+				b[i] = 1
+			}
+			keep = append(keep, b)
+		}
+	}
+	os.Exit(m.Run())
 }
 
 func name(t *testing.T) string {
@@ -583,30 +606,35 @@ func TestChrootShellsTerminalHasANameInside(t *testing.T) {
 // main process with SIGTERM (15). Status must report OOMKilled=true rather
 // than leaving callers thinking it was an unexplained SIGTERM (board 7232).
 func TestOOMKillReported(t *testing.T) {
-	t.Skip("flaky on CI: the cgroup OOM kill sometimes never comes within 10 s (board 14249)")
 	root, roBinds := minimalRoot(t)
+	exe, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "oom-child"), nil, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	roBinds = append(roBinds, Bind{Source: exe, Target: "/oom-child"})
 	n := name(t)
 	log := filepath.Join(t.TempDir(), "out.log")
-	err := Start(t.Context(), Spec{
+	err = Start(t.Context(), Spec{
 		Name:          n,
 		RootDir:       root,
 		ReadOnlyBinds: roBinds,
 		User:          testUser(t),
 		Log:           log,
-		NoSwap:     true,
-		Properties: []string{"MemoryMax=64M"},
-		// Spawn a child that faults 192 MiB of anonymous pages while the parent
-		// shell waits on it, matching how cargo/bash hosts a child rustc/ld
-		// that gets OOM-killed. Keep MemoryMax well above python3's startup
-		// text/shared-lib footprint (so cgroup reclaim cannot livelock thrashing
-		// clean executable pages under Ubuntu 26.04), and keep "; true" so dash
-		// forks python3 instead of exec'ing it in place.
-		Argv: []string{"sh", "-c", `python3 -c 'b = b"x" * (192*1024*1024); import time; time.sleep(10)'; true`},
+		NoSwap:        true,
+		Properties:    []string{"MemoryMax=64M"},
+		// Spawn a child that faults anonymous pages until OOM-killed while the
+		// parent shell waits on it, matching how cargo/bash hosts a child
+		// rustc/ld that gets OOM-killed. Keep "; true" so dash forks the child
+		// instead of exec'ing it in place.
+		Argv: []string{"sh", "-c", `HOTBED_TEST_OOM_CHILD=1 /oom-child; true`},
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	s := waitExit(t, n)
+	s := waitExitTimeout(t, n, 30*time.Second)
 	if !s.OOMKilled {
 		t.Fatalf("after cgroup OOM kill: state = %+v, want OOMKilled=true (Result=%q, Signal=%d, ExitCode=%d)", s, s.Result, s.Signal, s.ExitCode)
 	}

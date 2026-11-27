@@ -9,6 +9,7 @@ import (
 	"slices"
 	"syscall"
 	"testing"
+	"time"
 )
 
 func TestPivotToWorkspaceRootUnsetIsNoop(t *testing.T) {
@@ -175,5 +176,45 @@ func TestConfigureGuestSysctls(t *testing.T) {
 		if string(got) != wantVal {
 			t.Fatalf("%s = %q, want %q", name, string(got), wantVal)
 		}
+	}
+}
+
+func TestSyncGuestClock(t *testing.T) {
+	hostSec := int64(1795738800)
+
+	// Guest clock at epoch 1970 (no RTC) -> steps to hostSec and unsets env.
+	var setTo int64
+	var unset []string
+	syncGuestClockWithOps(nil, fmt.Sprint(hostSec), func() time.Time { return time.Unix(12, 0) }, func(sec int64) error {
+		setTo = sec
+		return nil
+	}, func(k string) error {
+		unset = append(unset, k)
+		return nil
+	})
+	if setTo != hostSec {
+		t.Fatalf("setTo = %d, want %d", setTo, hostSec)
+	}
+	if !slices.Equal(unset, []string{"HOTBED_NOW"}) {
+		t.Fatalf("unset = %v, want [HOTBED_NOW]", unset)
+	}
+
+	// Guest clock already within 5s -> no-op.
+	called := false
+	syncGuestClockWithOps(nil, fmt.Sprint(hostSec), func() time.Time { return time.Unix(hostSec-2, 0) }, func(int64) error {
+		called = true
+		return nil
+	}, func(string) error { return nil })
+	if called {
+		t.Fatal("expected no clock step when skew is within 5s")
+	}
+
+	// Invalid/empty HOTBED_NOW -> no-op.
+	syncGuestClockWithOps(nil, "not-a-timestamp", func() time.Time { return time.Unix(0, 0) }, func(int64) error {
+		called = true
+		return nil
+	}, func(string) error { return nil })
+	if called {
+		t.Fatal("expected no clock step for invalid HOTBED_NOW")
 	}
 }

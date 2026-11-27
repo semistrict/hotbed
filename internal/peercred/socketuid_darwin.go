@@ -1,6 +1,6 @@
 //go:build darwin && cgo
 
-package main
+package peercred
 
 /*
 #include <arpa/inet.h>
@@ -107,7 +107,11 @@ import (
 	"unsafe"
 )
 
-func lookupSocketUID(client, server netip.AddrPort) (uint32, error) {
+// SocketUID is the unix user that opened the connection from client, on
+// this machine, to server. On macOS, an unprivileged daemon can inspect
+// sockets of processes owned by its own UID, which is all the caller check
+// needs (same user as the daemon).
+func SocketUID(client, server netip.AddrPort) (uint32, error) {
 	uid := uint32(os.Getuid())
 	ca := client.Addr().Unmap()
 	sa := server.Addr().Unmap()

@@ -265,6 +265,7 @@ func firecrackerConfig(cfg Config, spec LaunchSpec, cid uint32, vsockUDS string,
 	if cfg.Nofile > 0 {
 		bootParts = append(bootParts, fmt.Sprintf("HOTBED_NOFILE=%d", cfg.Nofile))
 	}
+	bootParts = append(bootParts, fmt.Sprintf("HOTBED_NOW=%d", time.Now().Unix()))
 	if extra := strings.TrimSpace(spec.ExtraBootArgs); extra != "" {
 		bootParts = append(bootParts, extra)
 	}

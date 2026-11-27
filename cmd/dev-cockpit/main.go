@@ -34,6 +34,7 @@ import (
 	pb "github.com/semistrict/hotbed/internal/gen/hotbed/v1"
 	"github.com/semistrict/hotbed/internal/gen/hotbed/v1/hotbedv1connect"
 	"github.com/semistrict/hotbed/internal/httpx"
+	"github.com/semistrict/hotbed/internal/peercred"
 	"github.com/semistrict/hotbed/internal/profiler"
 	"github.com/semistrict/hotbed/internal/sysinfo"
 	"github.com/semistrict/hotbed/internal/tailnet"
@@ -330,7 +331,7 @@ func startDevCluster(parent context.Context, addr string) (*devCluster, error) {
 	tn := &devTailnet{
 		Fake:     tailnettest.New(tailnet.Self{Peer: ubu1Peer, Addrs: loopbackAddrs}),
 		fallback: browserPeer,
-		localUID: lookupSocketUID,
+		localUID: peercred.SocketUID,
 	}
 	dc.tn = tn
 	workerID := &workerTailnet{Fake: tn.Fake, ownerUID: ownerUID, ctrlTN: tn}

@@ -13,6 +13,7 @@ import (
 	"strconv"
 	"strings"
 	"syscall"
+	"time"
 )
 
 type pid1Mount struct {
@@ -291,6 +292,7 @@ func runPID1Supervisor(log *slog.Logger, nofile uint64) bool {
 	if _, err := applyNofileLimit(log, nofile); err != nil {
 		log.Warn("pid1 set RLIMIT_NOFILE failed", "limit", nofile, "err", err)
 	}
+	syncGuestClock(log)
 	for _, m := range pid1Mounts {
 		if m.target == "/dev" && devMoved {
 			continue
@@ -373,5 +375,37 @@ func runPID1Supervisor(log *slog.Logger, nofile uint64) bool {
 			}
 			return true
 		}
+	}
+}
+
+// syncGuestClock steps the guest's CLOCK_REALTIME to the host's HOTBED_NOW
+// unix timestamp (passed via the kernel command line) when the guest clock is
+// off by more than 5 seconds (e.g. VMMs without a hardware RTC, where guests
+// boot at epoch 1970 or a stale time and TLS/apt signature checks fail).
+func syncGuestClock(log *slog.Logger) {
+	syncGuestClockWithOps(log, os.Getenv("HOTBED_NOW"), time.Now, func(sec int64) error {
+		return syscall.Settimeofday(&syscall.Timeval{Sec: sec})
+	}, os.Unsetenv)
+}
+
+func syncGuestClockWithOps(log *slog.Logger, raw string, now func() time.Time, setTime func(int64) error, unsetenv func(string) error) {
+	_ = unsetenv("HOTBED_NOW")
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return
+	}
+	hostSec, err := strconv.ParseInt(raw, 10, 64)
+	if err != nil || hostSec <= 0 {
+		if log != nil {
+			log.Warn("ignore invalid HOTBED_NOW", "value", raw)
+		}
+		return
+	}
+	skew := now().Unix() - hostSec
+	if skew >= -5 && skew <= 5 {
+		return
+	}
+	if err := setTime(hostSec); err != nil && log != nil {
+		log.Warn("sync guest clock from HOTBED_NOW failed", "host_sec", hostSec, "skew_s", skew, "err", err)
 	}
 }
