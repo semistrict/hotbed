@@ -320,6 +320,35 @@ describe("BoardService", () => {
 		expect(batch.data.tasks[0].task.state).toBe("BOARD_TASK_STATE_READY");
 		expect(batch.data.tasks[1].task.state).toBe("BOARD_TASK_STATE_WAITING");
 
+		// Regression test for issue #19: BatchCreateBoardTasks with an existing task
+		// ID (int64 -> BigInt) alongside an internal plan key in `needs` must not
+		// fail JSON.stringify digesting with "Do not know how to serialize a BigInt".
+		const mixedBatch = await rpc<{
+			tasks: Array<{ id: string; task: { state: string; needs: string[] } }>;
+		}>(
+			doName,
+			"/hotbed.v1.BoardService/BatchCreateBoardTasks",
+			{
+				project: "cladefs",
+				idempotencyKey: "plan-mixed-needs",
+				tasks: [
+					{ key: "c", text: "Task C: depends on existing A", needs: [{ id: taskAId }] },
+					{
+						key: "d",
+						text: "Task D: depends on existing A and plan key c",
+						needs: [{ id: taskAId }, { key: "c" }],
+					},
+				],
+			},
+			ramon,
+		);
+		expect(mixedBatch.status).toBe(200);
+		expect(mixedBatch.data.tasks).toHaveLength(2);
+		expect(mixedBatch.data.tasks[0].task.state).toBe("BOARD_TASK_STATE_WAITING");
+		expect(mixedBatch.data.tasks[0].task.needs).toEqual([taskAId]);
+		expect(mixedBatch.data.tasks[1].task.state).toBe("BOARD_TASK_STATE_WAITING");
+		expect(mixedBatch.data.tasks[1].task.needs).toEqual([taskAId, mixedBatch.data.tasks[0].id]);
+
 		// Cycle rejection: A cannot need B
 		const cycle = await rpc(
 			doName,

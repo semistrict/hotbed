@@ -2483,7 +2483,9 @@ export class BoardStore {
 					labels: t.labels,
 					attachments: t.attachmentIds,
 					for: t.forActor,
-					needs: t.needs.map((n) => n.ref),
+					needs: t.needs.map((n) =>
+						n.ref.case === "id" ? { case: "id", value: n.ref.value.toString() } : n.ref,
+					),
 				})),
 			}),
 		);
