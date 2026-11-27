@@ -2,6 +2,7 @@ import { env, runInDurableObject } from "cloudflare:test";
 import { describe, expect, it } from "vitest";
 import { INTERNAL_AUTH_HEADER, INTERNAL_ORG_HEADER, type CallerIdentity } from "../src/auth.ts";
 import type { ControllerDO, ControllerEnv } from "../src/controller-do.ts";
+import type { TestOverrides } from "../src/test-harness.ts";
 
 function ownerCaller(login = "ramon@echophase.com", orgId = "org_board_test"): CallerIdentity {
 	return {
@@ -84,7 +85,7 @@ async function advanceClock(doName: string, ms: number): Promise<void> {
 	const testEnv = env as unknown as ControllerEnv;
 	const stub = testEnv.CONTROLLER.getByName(doName);
 	await runInDurableObject(stub, (instance: ControllerDO) => {
-		(instance as unknown as { nowOffsetMs: number }).nowOffsetMs += ms;
+		(instance as unknown as { test: TestOverrides }).test.nowOffsetMs += ms;
 	});
 }
 

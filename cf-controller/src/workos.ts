@@ -1,5 +1,4 @@
-import { escapeHtml } from "./encoding.ts";
-import { bytesToHex, randomHex } from "./gitops.ts";
+import { bytesToHex, randomHex } from "./ids.ts";
 import { ErrorCode, hotbedError } from "./errors.ts";
 
 export interface WorkOSEnv {
@@ -180,10 +179,6 @@ export function workosJwksUrl(env: WorkOSEnv): string {
 	const override = (env.WORKOS_JWKS_URL ?? "").trim();
 	if (override) return override;
 	return `${workosApiBase(env)}/sso/jwks/${encodeURIComponent(workosClientId(env))}`;
-}
-
-export function workosAuthProvider(_env?: WorkOSEnv): string {
-	return GOOGLE_OAUTH_PROVIDER;
 }
 
 export function assertGoogleAuthMethod(authenticationMethod: string): void {
@@ -483,6 +478,15 @@ async function fetchWorkOSJwks(
 	return keys;
 }
 
+/**
+ * The issuers a WorkOS access token for this client may name: User
+ * Management at the API this controller talks to, or at WorkOS's own.
+ */
+function workosIssuers(env: WorkOSEnv): string[] {
+	const path = `/user_management/${workosClientId(env)}`;
+	return [...new Set([`${workosApiBase(env)}${path}`, `https://api.workos.com${path}`])];
+}
+
 export function decodeJwtClaimsUnverified(jwt: string): Record<string, unknown> | null {
 	const parts = jwt.split(".");
 	if (parts.length !== 3) return null;
@@ -514,10 +518,12 @@ export async function verifyWorkOSAccessToken(
 			role?: string;
 			sid?: string;
 			email?: string;
+			iss?: string;
 			exp?: number;
 			nbf?: number;
 		};
 		if (!header.kid || (header.alg !== "RS256" && header.alg !== "ES256")) return null;
+		if (payload.iss !== undefined && !workosIssuers(env).includes(payload.iss)) return null;
 		if (typeof payload.exp !== "number" || payload.exp * 1000 <= nowMs) return null;
 		if (typeof payload.nbf === "number" && payload.nbf * 1000 > nowMs + JWT_CLOCK_SKEW_MS) {
 			return null;
@@ -1241,125 +1247,4 @@ export async function revokeOrganizationInvitation(
 		`/user_management/invitations/${encodeURIComponent(invitationId)}/revoke`,
 		{ method: "POST" },
 	);
-}
-
-// ---- HTML Pages for Org Selection & Onboarding ------------------------
-
-export function renderOrgPickerPage(opts: {
-	email: string;
-	organizations: Array<{ id: string; name: string; role?: string }>;
-	pendingSelection?: boolean;
-	error?: string;
-	returnTo?: string;
-}): string {
-	const errHtml = opts.error ? `<p class="err">${escapeHtml(opts.error)}</p>` : "";
-	const actionPath = opts.pendingSelection ? "/auth/org/select-pending" : "/auth/org/switch";
-	const orgButtons = opts.organizations
-		.map(
-			(o) => `<form method="POST" action="${actionPath}" class="org-row">
-  <input type="hidden" name="organization_id" value="${escapeHtml(o.id)}" />
-  <input type="hidden" name="return_to" value="${escapeHtml(opts.returnTo || "/")}" />
-  <button type="submit" class="org-btn">
-    <span class="org-name">${escapeHtml(o.name)}</span>
-    <span class="org-meta">${escapeHtml(o.role || "member")} · ${escapeHtml(o.id)}</span>
-  </button>
-</form>`,
-		)
-		.join("\n");
-
-	const createSection = opts.pendingSelection
-		? ""
-		: `<div class="divider"><span>or create a new organization</span></div>
-<form method="POST" action="/auth/org/create" class="create-form">
-  <input type="hidden" name="return_to" value="${escapeHtml(opts.returnTo || "/")}" />
-  <input type="text" name="name" placeholder="Organization name (e.g. Acme)" maxlength="100" required />
-  <button type="submit" class="primary">Create organization</button>
-</form>`;
-
-	return `<!doctype html>
-<html lang="en">
-<head>
-<meta charset="utf-8" />
-<meta name="viewport" content="width=device-width,initial-scale=1" />
-<title>hotbed — select organization</title>
-<style>
-  body{margin:0;min-height:100vh;display:grid;place-items:center;background:#0b0d12;color:#e5e7eb;font-family:system-ui,-apple-system,sans-serif;padding:24px;box-sizing:border-box}
-  .card{width:100%;max-width:440px;padding:28px;border:1px solid #1f2430;border-radius:14px;background:#121620;box-sizing:border-box}
-  h1{margin:0 0 6px;font-size:19px;font-weight:600}
-  .sub{margin:0 0 20px;color:#9ca3af;font-size:13px}
-  .err{color:#f87171;margin:0 0 14px;font-size:13px;padding:10px 12px;border:1px solid #7f1d1d;background:#1f1115;border-radius:8px}
-  .org-row{margin-bottom:8px}
-  .org-btn{width:100%;text-align:left;padding:12px 14px;border-radius:10px;border:1px solid #262e40;background:#0d1017;color:#f3f4f6;cursor:pointer;display:flex;flex-direction:column;gap:3px;transition:border-color .15s,background .15s}
-  .org-btn:hover{border-color:#3b82f6;background:#151b28}
-  .org-name{font-size:14px;font-weight:600}
-  .org-meta{font-size:11.5px;color:#9ca3af;font-family:ui-monospace,SFMono-Regular,Menlo,monospace}
-  .divider{display:flex;align-items:center;gap:10px;margin:20px 0 14px;color:#6b7280;font-size:12px}
-  .divider::before,.divider::after{content:"";flex:1;height:1px;background:#1f2430}
-  input[type=text]{width:100%;padding:10px 12px;border-radius:8px;border:1px solid #2b3242;background:#0b0d12;color:#f9fafb;font-size:14px;box-sizing:border-box;margin-bottom:10px}
-  button.primary{width:100%;padding:10px 12px;border-radius:8px;border:0;background:#3b82f6;color:#fff;font-weight:600;font-size:14px;cursor:pointer}
-  button.primary:hover{background:#2563eb}
-  .footer{margin-top:18px;display:flex;justify-content:space-between;align-items:center;font-size:12px;color:#6b7280}
-  .logout{background:none;border:0;color:#9ca3af;cursor:pointer;font-size:12px;padding:0;text-decoration:underline}
-  .logout:hover{color:#e5e7eb}
-</style>
-</head>
-<body>
-<div class="card">
-  <h1>Choose an organization</h1>
-  <p class="sub">${opts.email ? `Signed in as ${escapeHtml(opts.email)}. ` : ""}Each organization runs its own isolated hotbed cluster.</p>
-  ${errHtml}
-  ${orgButtons || `<p class="sub">You don't belong to an organization yet. Create one below to start your cluster.</p>`}
-  ${createSection}
-  <div class="footer">
-    <span>hotbed cockpit</span>
-    <form method="POST" action="/auth/logout"><button type="submit" class="logout">Sign out</button></form>
-  </div>
-</div>
-</body>
-</html>`;
-}
-
-export function renderSignupCodePage(opts: {
-	email: string;
-	error?: string;
-	returnTo?: string;
-}): string {
-	const errHtml = opts.error ? `<p class="err">${escapeHtml(opts.error)}</p>` : "";
-	return `<!doctype html>
-<html lang="en">
-<head>
-<meta charset="utf-8" />
-<meta name="viewport" content="width=device-width,initial-scale=1" />
-<title>hotbed — sign-up code</title>
-<style>
-  body{margin:0;min-height:100vh;display:grid;place-items:center;background:#0b0d12;color:#e5e7eb;font-family:system-ui,-apple-system,sans-serif;padding:24px;box-sizing:border-box}
-  .card{width:100%;max-width:440px;padding:28px;border:1px solid #1f2430;border-radius:14px;background:#121620;box-sizing:border-box}
-  h1{margin:0 0 6px;font-size:19px;font-weight:600}
-  .sub{margin:0 0 20px;color:#9ca3af;font-size:13px;line-height:1.45}
-  .err{color:#f87171;margin:0 0 14px;font-size:13px;padding:10px 12px;border:1px solid #7f1d1d;background:#1f1115;border-radius:8px}
-  input[type=text]{width:100%;padding:10px 12px;border-radius:8px;border:1px solid #2b3242;background:#0b0d12;color:#f9fafb;font-size:14px;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;letter-spacing:.04em;box-sizing:border-box;margin-bottom:12px}
-  button.primary{width:100%;padding:10px 12px;border-radius:8px;border:0;background:#3b82f6;color:#fff;font-weight:600;font-size:14px;cursor:pointer}
-  button.primary:hover{background:#2563eb}
-  .footer{margin-top:18px;display:flex;justify-content:space-between;align-items:center;font-size:12px;color:#6b7280}
-  .logout{background:none;border:0;color:#9ca3af;cursor:pointer;font-size:12px;padding:0;text-decoration:underline}
-  .logout:hover{color:#e5e7eb}
-</style>
-</head>
-<body>
-<div class="card">
-  <h1>Enter sign-up code</h1>
-  <p class="sub">${opts.email ? `Signed in with Google as ${escapeHtml(opts.email)}. ` : ""}New hotbed accounts require a sign-up code to continue.</p>
-  ${errHtml}
-  <form method="POST" action="/auth/signup-code">
-    <input type="hidden" name="return_to" value="${escapeHtml(opts.returnTo || "/")}" />
-    <input type="text" name="code" placeholder="Sign-up code" autocomplete="one-time-code" autocapitalize="characters" spellcheck="false" autofocus required />
-    <button type="submit" class="primary">Continue</button>
-  </form>
-  <div class="footer">
-    <span>hotbed cockpit</span>
-    <form method="POST" action="/auth/logout"><button type="submit" class="logout">Sign out</button></form>
-  </div>
-</div>
-</body>
-</html>`;
 }

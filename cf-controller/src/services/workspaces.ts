@@ -1,6 +1,7 @@
 import type { ServiceImpl } from "@connectrpc/connect";
 import { clone, create, type MessageShape } from "@bufbuild/protobuf";
 import {
+	DaemonLogLevel,
 	BaseState,
 	CommandInterventionSchema,
 	CommandLogSchema,
@@ -63,13 +64,15 @@ import {
 	type Session,
 	type StopCommandRequest,
 	type Workspace,
+	type HostedProject,
 } from "../gen/hotbed/v1/hotbed_pb.ts";
 import { getCaller } from "../connect-adapter.ts";
+import { hostedProject } from "../project-scope.ts";
 import { WORKER_RPC_TIMEOUT_MS, type ControllerContext } from "../context.ts";
 import { parseDurationMs } from "../durations.ts";
 import { waitAtMost } from "../waits.ts";
 import { ErrorCode, codeOf, fromWorkerError, hotbedError } from "../errors.ts";
-import { newId } from "../gitops.ts";
+import { newId } from "../ids.ts";
 import {
 	buildCandidates,
 	buildPlacementDecision,
@@ -157,6 +160,75 @@ export interface WorkspaceHelpers {
 	createWhenFree(req: CreateWorkspaceRequest, signal?: AbortSignal): Promise<Workspace>;
 	runCommandInternal(req: RunCommandRequest): Promise<Command>;
 	stopCommandInternal(req: StopCommandRequest): Promise<Command>;
+}
+
+/**
+ * Releases a workspace a failed or abandoned creation left behind. One the
+ * worker no longer has needs nothing; one on an unreachable worker has its
+ * row released here, and the worker's next heartbeat releases it there.
+ */
+export async function releaseFailedWorkspace(ctrl: ControllerContext, id: string): Promise<void> {
+	try {
+		await ctrl.releaseWorkspace(id);
+	} catch (err) {
+		const c = codeOf(err);
+		if (c === ErrorCode.NotFound) return;
+		if (c === ErrorCode.WorkerUnreachable) {
+			ctrl.store.workspaces.release(id, ctrl.now());
+			return;
+		}
+		throw err;
+	}
+}
+
+/**
+ * Gives up the losing creation of a workspace race: aborts it, and releases
+ * whatever it made once it settles. That cleanup is the controller's
+ * background work (ControllerContext.waitUntil): the winner's response
+ * does not wait for it, and it still finishes once that response is sent.
+ */
+export function discardRacedWorkspace(
+	ctrl: ControllerContext,
+	node: Pick<Candidate, "host"> & { view: { node: { id: string } } },
+	workspaceId: string,
+	ac: AbortController,
+	creating: Promise<{ ws?: Workspace; err?: unknown }>,
+): void {
+	ac.abort();
+	ctrl.waitUntil(
+		creating.then(async (res) => {
+			if (res.ws) {
+				try {
+					await releaseFailedWorkspace(ctrl, res.ws.id);
+				} catch (err) {
+					ctrl.store.daemonLogs.log(
+						DaemonLogLevel.WARN,
+						"release the losing workspace of a race",
+						{ workspace: res.ws.id, node: node.host, err: String(err) },
+						ctrl.now(),
+					);
+				}
+				return;
+			}
+			// The worker may have made it just as the controller aborted its
+			// CreateWorkspace: release it by ID. One never made, or on a worker
+			// gone away, answers NotFound or unreachable, which is the outcome
+			// wanted.
+			try {
+				await ctrl.tunnel.callUnary(
+					node.view.node.id,
+					node.host,
+					"/hotbed.v1.WorkspaceService/ReleaseWorkspace",
+					ReleaseWorkspaceRequestSchema,
+					create(ReleaseWorkspaceRequestSchema, { id: workspaceId }),
+					ReleaseWorkspaceResponseSchema,
+					WORKER_RPC_TIMEOUT_MS,
+				);
+			} catch {
+				// See above: never made, or its worker is unreachable.
+			}
+		}),
+	);
 }
 
 export function createWorkspaceService(ctrl: ControllerContext): {
@@ -276,20 +348,6 @@ export function createWorkspaceService(ctrl: ControllerContext): {
 		return cmd;
 	}
 
-	async function releaseFailedWorkspace(id: string): Promise<void> {
-		try {
-			await ctrl.releaseWorkspace(id);
-		} catch (err) {
-			const c = codeOf(err);
-			if (c === ErrorCode.NotFound) return;
-			if (c === ErrorCode.WorkerUnreachable) {
-				ctrl.store.workspaces.release(id, ctrl.now());
-				return;
-			}
-			throw err;
-		}
-	}
-
 	async function waitUpgrade(
 		hosts: string[],
 		deadlineMs: number,
@@ -381,7 +439,7 @@ export function createWorkspaceService(ctrl: ControllerContext): {
 	function allocateWorkspaceLocked(
 		sess: Session,
 		projectName: string,
-		hosted: ReturnType<ControllerContext["hosted"]>,
+		hosted: HostedProject,
 		node: Candidate,
 		req: CreateWorkspaceRequest,
 		syncHost: string,
@@ -426,36 +484,6 @@ export function createWorkspaceService(ctrl: ControllerContext): {
 		}
 		ctrl.markCreatingWS(fwd.id);
 		return fwd;
-	}
-
-	function discardRacedWorkspace(
-		node: Candidate,
-		fwd: CreateWorkspaceRequest,
-		ac: AbortController,
-		promise: Promise<{ ws?: Workspace; err?: unknown }>,
-	): void {
-		ac.abort();
-		void promise.then(async (res) => {
-			if (res.ws) {
-				await releaseFailedWorkspace(res.ws.id).catch(() => {});
-				return;
-			}
-			// Best-effort cleanup in case the worker already created the workspace
-			// right as the controller aborted the CreateWorkspace RPC.
-			try {
-				await ctrl.tunnel.callUnary(
-					node.view.node.id,
-					node.host,
-					"/hotbed.v1.WorkspaceService/ReleaseWorkspace",
-					ReleaseWorkspaceRequestSchema,
-					create(ReleaseWorkspaceRequestSchema, { id: fwd.id }),
-					ReleaseWorkspaceResponseSchema,
-					WORKER_RPC_TIMEOUT_MS,
-				);
-			} catch {
-				// Worker never created it or is unreachable.
-			}
-		});
 	}
 
 	function linkAbort(parent?: AbortSignal): { ac: AbortController; unlink: () => void } {
@@ -540,7 +568,7 @@ export function createWorkspaceService(ctrl: ControllerContext): {
 				try {
 					const fwd2 = await ctrl.withPlacementLock(() => {
 						const p = ctrl.store.projects.get(sess.project);
-						const hosted = ctrl.hosted(p);
+						const hosted = hostedProject(ctrl, p);
 						if (!req.throwaway) {
 							const existing = ctrl.store.workspaces
 								.ofSession(sess.id)
@@ -607,7 +635,7 @@ export function createWorkspaceService(ctrl: ControllerContext): {
 			}
 
 			if (isReady(a1.res)) {
-				discardRacedWorkspace(a2.node, a2.fwd, a2.ac, a2.promise);
+				discardRacedWorkspace(ctrl, a2.node, a2.fwd.id, a2.ac, a2.promise);
 				a1.res!.ws!.placement = finalizeDecision(
 					decision,
 					primary,
@@ -616,7 +644,7 @@ export function createWorkspaceService(ctrl: ControllerContext): {
 				return { ws: a1.res!.ws };
 			}
 			if (isReady(a2.res)) {
-				discardRacedWorkspace(a1.node, a1.fwd, a1.ac, a1.promise);
+				discardRacedWorkspace(ctrl, a1.node, a1.fwd.id, a1.ac, a1.promise);
 				a2.res!.ws!.placement = finalizeDecision(
 					decision,
 					runnerUp,
@@ -641,7 +669,7 @@ export function createWorkspaceService(ctrl: ControllerContext): {
 			const r1 = a1.res;
 			const r2 = a2.res;
 			if (isReady(r1)) {
-				discardRacedWorkspace(a2.node, a2.fwd, a2.ac, a2.promise);
+				discardRacedWorkspace(ctrl, a2.node, a2.fwd.id, a2.ac, a2.promise);
 				r1!.ws!.placement = finalizeDecision(
 					decision,
 					primary,
@@ -650,7 +678,7 @@ export function createWorkspaceService(ctrl: ControllerContext): {
 				return { ws: r1!.ws };
 			}
 			if (isReady(r2)) {
-				discardRacedWorkspace(a1.node, a1.fwd, a1.ac, a1.promise);
+				discardRacedWorkspace(ctrl, a1.node, a1.fwd.id, a1.ac, a1.promise);
 				r2!.ws!.placement = finalizeDecision(
 					decision,
 					runnerUp,
@@ -660,7 +688,7 @@ export function createWorkspaceService(ctrl: ControllerContext): {
 			}
 			// Both are PREPARING, or one succeeded as PREPARING while the other failed/stalled.
 			if (r1?.ws) {
-				discardRacedWorkspace(a2.node, a2.fwd, a2.ac, a2.promise);
+				discardRacedWorkspace(ctrl, a2.node, a2.fwd.id, a2.ac, a2.promise);
 				r1.ws.placement = finalizeDecision(
 					decision,
 					primary,
@@ -669,7 +697,7 @@ export function createWorkspaceService(ctrl: ControllerContext): {
 				return { ws: r1.ws };
 			}
 			if (r2?.ws) {
-				discardRacedWorkspace(a1.node, a1.fwd, a1.ac, a1.promise);
+				discardRacedWorkspace(ctrl, a1.node, a1.fwd.id, a1.ac, a1.promise);
 				r2.ws.placement = finalizeDecision(
 					decision,
 					runnerUp,
@@ -767,7 +795,7 @@ export function createWorkspaceService(ctrl: ControllerContext): {
 				try {
 					const ws = await getWorkspaceInternal(node.mine);
 					if (ws.state === WorkspaceState.FAILED) {
-						await releaseFailedWorkspace(ws.id);
+						await releaseFailedWorkspace(ctrl, ws.id);
 						continue;
 					}
 					if (ws.state === WorkspaceState.RELEASED) {
@@ -841,7 +869,7 @@ export function createWorkspaceService(ctrl: ControllerContext): {
 		while (true) {
 			const step = await ctrl.withPlacementLock(() => {
 				const p = ctrl.store.projects.get(sess.project);
-				const hosted = ctrl.hosted(p);
+				const hosted = hostedProject(ctrl, p);
 				if (req.repo && !hosted.repos.some((r) => r.id === req.repo)) {
 					throw hotbedError(
 						ErrorCode.InvalidArgs,
@@ -946,7 +974,7 @@ export function createWorkspaceService(ctrl: ControllerContext): {
 				return step;
 			}
 			for (const w of step.needRelease) {
-				await releaseFailedWorkspace(w.id);
+				await releaseFailedWorkspace(ctrl, w.id);
 			}
 			for (const w of step.needProbe) {
 				probed.add(w.id);
@@ -962,7 +990,7 @@ export function createWorkspaceService(ctrl: ControllerContext): {
 						WORKER_PROBE_TIMEOUT_MS,
 					);
 					if (gws.state === WorkspaceState.FAILED) {
-						await releaseFailedWorkspace(w.id);
+						await releaseFailedWorkspace(ctrl, w.id);
 					} else if (gws.state === WorkspaceState.RELEASED) {
 						ctrl.store.workspaces.release(w.id, ctrl.now());
 					}

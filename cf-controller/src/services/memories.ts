@@ -17,6 +17,7 @@ import {
 } from "../gen/hotbed/v1/hotbed_pb.ts";
 import { enumWord } from "../enums.ts";
 import { getCaller } from "../connect-adapter.ts";
+import { listedProject } from "../project-scope.ts";
 import { inProject, type ControllerContext } from "../context.ts";
 import { ErrorCode, hotbedError } from "../errors.ts";
 import { canonicalRemote } from "../gitops.ts";
@@ -348,7 +349,7 @@ export function createMemoryService(ctrl: ControllerContext): ServiceImpl<typeof
 			if (req.scope === MemoryScope.GLOBAL) {
 				if (req.sessionId) ctrl.store.sessions.get(req.sessionId);
 			} else {
-				project = ctrl.listedProject({
+				project = listedProject(ctrl, {
 					scope: req.projectScope,
 					sessionId: req.sessionId,
 					remote: req.remote,

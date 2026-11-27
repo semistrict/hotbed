@@ -34,15 +34,12 @@ import {
 } from "../gen/hotbed/v1/hotbed_pb.ts";
 import { enumWord } from "../enums.ts";
 import { getCaller } from "../connect-adapter.ts";
-import {
-	inProject,
-	MEMORY_FEEDBACK_REMINDER,
-	MEMORY_FIX_REMINDER,
-	stamped,
-	type ControllerContext,
-} from "../context.ts";
+import { listedProject } from "../project-scope.ts";
+import { inProject, stamped, type ControllerContext } from "../context.ts";
+import { MEMORY_FEEDBACK_REMINDER, MEMORY_FIX_REMINDER } from "../reminders.ts";
 import { ErrorCode, hotbedError } from "../errors.ts";
-import { canonicalRemote, firstLine } from "../gitops.ts";
+import { canonicalRemote } from "../gitops.ts";
+import { firstLine } from "../encoding.ts";
 
 const MAX_TITLE = 60;
 const COMMIT_RE = /^[0-9a-f]{7,64}$/;
@@ -439,7 +436,7 @@ export function createReviewService(ctrl: ControllerContext): ServiceImpl<typeof
 			if (req.limit < 0) {
 				throw hotbedError(ErrorCode.InvalidArgs, `limit ${req.limit}: give 0 for all, or how many`);
 			}
-			const project = ctrl.listedProject(req);
+			const project = listedProject(ctrl, req);
 			return create(ListReviewsResponseSchema, {
 				reviews: ctrl.store.reviews.list(project, req.states, req.limit),
 			});

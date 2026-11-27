@@ -1,12 +1,16 @@
-import { escapeHtml } from "./encoding.ts";
-import { bytesToHex } from "./gitops.ts";
+import { bytesToHex } from "./ids.ts";
 import { ErrorCode, hotbedError } from "./errors.ts";
 import {
+	authenticateWithRefreshToken,
 	base64UrlDecode,
+	getOrganization,
 	isWorkOSEnabled,
+	makeWorkOSSessionCookie,
+	sealPayload,
 	unsealPayload,
 	verifyWorkOSAccessToken,
 	WORKOS_SESSION_COOKIE,
+	type VerifiedWorkOSClaims,
 	type WorkOSEnv,
 	type WorkOSSessionPayload,
 } from "./workos.ts";
@@ -146,6 +150,177 @@ export function getBearerToken(req: Request): string {
 		return authHeader.slice(7).trim();
 	}
 	return "";
+}
+
+export function clientIp(req: Request): string | undefined {
+	return req.headers.get("CF-Connecting-IP") ?? req.headers.get("X-Forwarded-For") ?? undefined;
+}
+
+export function clientUa(req: Request): string | undefined {
+	return req.headers.get("User-Agent") ?? undefined;
+}
+
+// ---- WorkOS callers --------------------------------------------------------
+// The one place a WorkOS access token or sealed session cookie becomes a
+// CallerIdentity, for authenticateRequest inside ControllerDO and for the
+// edge (workos-routes.ts resolveEdgeRouting and the /auth/org* routes).
+
+/** Refresh a session's access token once it expires within this. */
+const REFRESH_MARGIN_MS = 60_000;
+
+/**
+ * The caller verified WorkOS claims name: a member of the organization they
+ * select. A token's caller (a CLI or agent) may name its node and address
+ * in headers; a browser session's may not.
+ */
+export function workosCaller(
+	req: Request,
+	claims: VerifiedWorkOSClaims,
+	how: { authMethod: "workos-jwt" | "workos-cookie"; login?: string },
+): CallerIdentity {
+	const header = (name: string) => (req.headers.get(name) ?? "").trim();
+	const login = how.login || claims.email || claims.sub;
+	const token = how.authMethod === "workos-jwt";
+	return {
+		role: "owner",
+		nodeId: (token && header("X-Hotbed-Node-Id")) || `workos:${claims.sub}`,
+		hostname: header("X-Hotbed-Host") || login,
+		login,
+		userId: claims.sub,
+		orgId: claims.orgId,
+		orgRole: claims.role || "member",
+		addr: token ? header("X-Hotbed-Addr") : "",
+		authMethod: how.authMethod,
+	};
+}
+
+/** Throws unless claims select an organization, and expectedOrgId's when one is given. */
+export function requireWorkOSOrg(
+	claims: VerifiedWorkOSClaims,
+	expectedOrgId: string,
+	of: "token" | "session",
+): void {
+	if (!claims.orgId) {
+		throw of === "token"
+			? hotbedError(
+					ErrorCode.NotAuthorized,
+					"this WorkOS token has no active organization selected",
+				).withSuggestion(
+					"select or create an organization: `hotbed org switch`, `hotbed org create`, or the Cockpit",
+				)
+			: hotbedError(
+					ErrorCode.NotAuthorized,
+					"no active organization selected for this session",
+				).withSuggestion("visit /auth/orgs to choose or create an organization");
+	}
+	if (expectedOrgId && claims.orgId !== expectedOrgId) {
+		throw hotbedError(
+			ErrorCode.NotAuthorized,
+			`organization mismatch: ${of} belongs to ${claims.orgId}, not ${expectedOrgId}`,
+		);
+	}
+}
+
+/**
+ * The caller a WorkOS access token (a bearer) names, or null when it is no
+ * valid WorkOS token. Throws when it is valid but selects no organization,
+ * or another than expectedOrgId.
+ */
+export async function verifyWorkOSBearer(
+	req: Request,
+	bearer: string,
+	env: WorkOSEnv,
+	opts: { nowMs?: number; expectedOrgId?: string } = {},
+): Promise<CallerIdentity | null> {
+	const claims = await verifyWorkOSAccessToken(bearer, env, opts.nowMs);
+	if (!claims) return null;
+	requireWorkOSOrg(claims, opts.expectedOrgId ?? "", "token");
+	return workosCaller(req, claims, { authMethod: "workos-jwt" });
+}
+
+export interface VerifiedWorkOSSession {
+	session: WorkOSSessionPayload;
+	claims: VerifiedWorkOSClaims;
+	/** The refreshed session's cookie, to set on the response. */
+	setCookie?: string;
+}
+
+/**
+ * The request's sealed WorkOS session cookie, verified: null when there is
+ * none or its access token no longer verifies. Throws on a cross-site
+ * request (CSRF). With refresh, an access token that has expired or soon
+ * will is refreshed, and the new session returned with its cookie.
+ */
+export async function verifyWorkOSSession(
+	req: Request,
+	env: WorkOSEnv,
+	opts: { allowTopLevelNavigate?: boolean; refresh?: boolean; nowMs?: number } = {},
+): Promise<VerifiedWorkOSSession | null> {
+	if (!isWorkOSEnabled(env)) return null;
+	const raw = getCookie(req, WORKOS_SESSION_COOKIE);
+	if (!raw) return null;
+	const session = await unsealPayload<WorkOSSessionPayload>(env, "session", raw);
+	if (!session?.accessToken) return null;
+	const csrfErr = checkSameOrigin(req, { allowTopLevelNavigate: opts.allowTopLevelNavigate });
+	if (csrfErr) throw hotbedError(ErrorCode.NotAuthorized, csrfErr);
+
+	const nowMs = opts.nowMs ?? Date.now();
+	const claims = await verifyWorkOSAccessToken(session.accessToken, env, nowMs);
+	if (opts.refresh && session.refreshToken && (!claims || claims.exp - nowMs < REFRESH_MARGIN_MS)) {
+		const refreshed = await refreshWorkOSSession(req, env, session);
+		if (refreshed) {
+			const secure = new URL(req.url).protocol === "https:";
+			const sealed = await sealPayload(env, "session", refreshed.session);
+			return { ...refreshed, setCookie: makeWorkOSSessionCookie(sealed, secure) };
+		}
+	}
+	return claims ? { session, claims } : null;
+}
+
+/** session with a fresh access token, or null when WorkOS refuses its refresh token. */
+async function refreshWorkOSSession(
+	req: Request,
+	env: WorkOSEnv,
+	session: WorkOSSessionPayload,
+): Promise<{ session: WorkOSSessionPayload; claims: VerifiedWorkOSClaims } | null> {
+	try {
+		const refreshed = await authenticateWithRefreshToken(env, {
+			refreshToken: session.refreshToken,
+			organizationId: session.organizationId || undefined,
+			ipAddress: clientIp(req),
+			userAgent: clientUa(req),
+		});
+		const claims = await verifyWorkOSAccessToken(refreshed.accessToken, env, Date.now());
+		if (!claims) return null;
+		let orgName = session.organizationName;
+		if (claims.orgId && claims.orgId !== session.organizationId) {
+			try {
+				orgName = (await getOrganization(env, claims.orgId)).name;
+			} catch {
+				orgName = claims.orgId;
+			}
+		} else if (!claims.orgId) {
+			orgName = "";
+		}
+		return {
+			claims,
+			session: {
+				userId: refreshed.user.id,
+				email: refreshed.user.email,
+				firstName: refreshed.user.firstName,
+				lastName: refreshed.user.lastName,
+				organizationId: claims.orgId,
+				organizationName: orgName,
+				role: claims.role || "member",
+				sessionId: refreshed.sessionId || session.sessionId,
+				accessToken: refreshed.accessToken,
+				refreshToken: refreshed.refreshToken,
+				expiresAt: refreshed.expiresAt,
+			},
+		};
+	} catch {
+		return null;
+	}
 }
 
 interface JWKSCache {
@@ -429,82 +604,21 @@ export async function authenticateRequest(
 		}
 
 		if (workosEnabled && bearer.includes(".")) {
-			const claims = await verifyWorkOSAccessToken(bearer, env, nowMs);
-			if (claims) {
-				if (!claims.orgId) {
-					throw hotbedError(
-						ErrorCode.NotAuthorized,
-						"this WorkOS token has no active organization selected",
-					).withSuggestion(
-						"select or create an organization with `hotbed org switch` or in the Cockpit",
-					);
-				}
-				if (expectedOrgId && claims.orgId !== expectedOrgId) {
-					throw hotbedError(
-						ErrorCode.NotAuthorized,
-						`organization mismatch: token belongs to ${claims.orgId}, not ${expectedOrgId}`,
-					);
-				}
-				const login = claims.email || claims.sub;
-				return {
-					role: "owner",
-					nodeId: headerNodeId || `workos:${claims.sub}`,
-					hostname: headerHost || login,
-					login,
-					userId: claims.sub,
-					orgId: claims.orgId,
-					orgRole: claims.role || "member",
-					addr: headerAddr,
-					authMethod: "workos-jwt",
-				};
-			}
+			const caller = await verifyWorkOSBearer(req, bearer, env, { nowMs, expectedOrgId });
+			if (caller) return caller;
 		}
 
 		throw hotbedError(ErrorCode.NotAuthorized, "invalid bearer token");
 	}
 
 	// 2. WorkOS sealed session cookie (for Cockpit UI)
-	if (workosEnabled) {
-		const rawCookie = getCookie(req, WORKOS_SESSION_COOKIE);
-		if (rawCookie) {
-			const session = await unsealPayload<WorkOSSessionPayload>(env, "session", rawCookie);
-			if (session && session.accessToken) {
-				const claims = await verifyWorkOSAccessToken(session.accessToken, env, nowMs);
-				if (claims) {
-					const csrfErr = checkSameOrigin(req, {
-						allowTopLevelNavigate: opts?.allowTopLevelNavigate,
-					});
-					if (csrfErr) {
-						throw hotbedError(ErrorCode.NotAuthorized, csrfErr);
-					}
-					const orgId = claims.orgId;
-					if (!orgId) {
-						throw hotbedError(
-							ErrorCode.NotAuthorized,
-							"no active organization selected for this session",
-						).withSuggestion("visit /auth/orgs to choose or create an organization");
-					}
-					if (expectedOrgId && orgId !== expectedOrgId) {
-						throw hotbedError(
-							ErrorCode.NotAuthorized,
-							`organization mismatch: session belongs to ${orgId}, not ${expectedOrgId}`,
-						);
-					}
-					const login = session.email || claims.email || claims.sub;
-					return {
-						role: "owner",
-						nodeId: `workos:${claims.sub}`,
-						hostname: headerHost || login,
-						login,
-						userId: claims.sub,
-						orgId,
-						orgRole: claims.role || "member",
-						addr: "",
-						authMethod: "workos-cookie",
-					};
-				}
-			}
-		}
+	const wos = await verifyWorkOSSession(req, env, {
+		allowTopLevelNavigate: opts?.allowTopLevelNavigate,
+		nowMs,
+	});
+	if (wos) {
+		requireWorkOSOrg(wos.claims, expectedOrgId, "session");
+		return workosCaller(req, wos.claims, { authMethod: "workos-cookie", login: wos.session.email });
 	}
 
 	// 3. Cloudflare Access JWT
@@ -566,67 +680,4 @@ export async function authenticateRequest(
 			? "run `hotbed login` or sign in at /auth/login"
 			: "set Authorization: Bearer <OWNER_TOKEN> (or HOTBED_TOKEN in CLI) or sign in at /auth/login",
 	);
-}
-
-export function renderLoginPage(error?: string, workosEnabled = false, returnTo = "/"): string {
-	const errHtml = error
-		? `<p style="color:#f87171;margin:0 0 12px;font-size:14px">${escapeHtml(error)}</p>`
-		: "";
-	if (workosEnabled) {
-		const googleHref =
-			returnTo && returnTo !== "/"
-				? `/auth/login?return_to=${encodeURIComponent(returnTo)}`
-				: "/auth/login";
-		return `<!doctype html>
-<html lang="en">
-<head>
-<meta charset="utf-8" />
-<meta name="viewport" content="width=device-width,initial-scale=1" />
-<title>hotbed cockpit — sign in</title>
-<style>
-  body{margin:0;min-height:100vh;display:grid;place-items:center;background:#0b0d12;color:#e5e7eb;font-family:system-ui,-apple-system,sans-serif;padding:16px;box-sizing:border-box}
-  .card{width:100%;max-width:360px;padding:28px;border:1px solid #1f2430;border-radius:12px;background:#121620;box-sizing:border-box}
-  h1{margin:0 0 8px;font-size:18px;font-weight:600}
-  p.sub{margin:0 0 18px;color:#9ca3af;font-size:13px}
-  a.btn{display:block;text-align:center;text-decoration:none;width:100%;padding:10px 12px;border-radius:8px;background:#3b82f6;color:#fff;font-weight:600;font-size:14px;box-sizing:border-box}
-  a.btn:hover{background:#2563eb}
-</style>
-</head>
-<body>
-<div class="card">
-  <h1>hotbed cockpit</h1>
-  <p class="sub">Sign in with your Google account to continue.</p>
-  ${errHtml}
-  <a href="${escapeHtml(googleHref)}" class="btn">Sign in with Google</a>
-</div>
-</body>
-</html>`;
-	}
-	return `<!doctype html>
-<html lang="en">
-<head>
-<meta charset="utf-8" />
-<meta name="viewport" content="width=device-width,initial-scale=1" />
-<title>hotbed cockpit — sign in</title>
-<style>
-  body{margin:0;min-height:100vh;display:grid;place-items:center;background:#0b0d12;color:#e5e7eb;font-family:system-ui,-apple-system,sans-serif;padding:16px;box-sizing:border-box}
-  form{width:100%;max-width:360px;padding:28px;border:1px solid #1f2430;border-radius:12px;background:#121620;box-sizing:border-box}
-  h1{margin:0 0 8px;font-size:18px;font-weight:600}
-  p.sub{margin:0 0 18px;color:#9ca3af;font-size:13px}
-  input{width:100%;padding:10px 12px;border-radius:8px;border:1px solid #2b3242;background:#0b0d12;color:#f9fafb;font-size:14px;box-sizing:border-box;margin-bottom:12px}
-  button{width:100%;padding:10px 12px;border-radius:8px;border:0;background:#3b82f6;color:#fff;font-weight:600;font-size:14px;cursor:pointer}
-  button:hover{background:#2563eb}
-</style>
-</head>
-<body>
-<form method="POST" action="/auth/login">
-  <h1>hotbed cockpit</h1>
-  <p class="sub">Enter your controller owner token to sign in.</p>
-  ${errHtml}
-  <input type="hidden" name="return_to" value="${escapeHtml(returnTo || "/")}" />
-  <input type="password" name="token" placeholder="Owner token" autocomplete="current-password" autofocus required />
-  <button type="submit">Sign in</button>
-</form>
-</body>
-</html>`;
 }

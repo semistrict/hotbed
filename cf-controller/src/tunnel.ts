@@ -1,6 +1,6 @@
 import { fromBinary, toBinary, type DescMessage, type MessageShape } from "@bufbuild/protobuf";
-import { ErrorCode, HotbedError, hotbedError } from "./errors.ts";
-import { randomHex } from "./gitops.ts";
+import { ErrorCode, fromUnknownError, HotbedError, hotbedError } from "./errors.ts";
+import { randomHex } from "./ids.ts";
 
 /**
  * Attachment persisted across Durable Object WebSocket hibernation.
@@ -110,6 +110,14 @@ export interface PipeHandlers {
 	onOpened: () => void;
 	onData: (bytes: Uint8Array) => void;
 	onClose: (message: string) => void;
+}
+
+/** What ControllerDO decides for servePipe. */
+export interface PipeRequestHooks {
+	/** Authenticates the request; a Response refuses the pipe with it. */
+	authorize(request: Request): Promise<Response | null>;
+	/** The node holding workspace and its hostname; throws for one unknown or released. */
+	locate(workspace: string): { nodeId: string; host: string };
 }
 
 /** The controller's end of a pipe to a worker. */
@@ -888,5 +896,87 @@ export class WorkerTunnelHub {
 				}
 			},
 		};
+	}
+
+	/**
+	 * Serves /ws/pipe?workspace=ID&kind=ssh|port[&port=N]: a client's byte
+	 * stream to the workspace's worker, relayed over the worker's tunnel: its
+	 * shell server (hotbed shell's ssh; OpenShell's ticket admits it), or a
+	 * port a command of the workspace serves on. Binary messages carry the
+	 * bytes; one text message, {"type":"opened"}, says the worker's end is
+	 * open; the socket closes when either end does, with why if it failed.
+	 */
+	async servePipe(request: Request, url: URL, hooks: PipeRequestHooks): Promise<Response> {
+		if ((request.headers.get("Upgrade") ?? "").toLowerCase() !== "websocket") {
+			return new Response("Expected Upgrade: websocket", { status: 426 });
+		}
+		const refused = await hooks.authorize(request);
+		if (refused) return refused;
+		const workspace = url.searchParams.get("workspace") ?? "";
+		const kind = url.searchParams.get("kind") ?? "";
+		const port = Number(url.searchParams.get("port") ?? "0");
+		if ((kind !== "ssh" && kind !== "port") || (kind === "port" && !(port > 0 && port < 65536))) {
+			return Response.json(
+				{
+					code: ErrorCode.InvalidArgs,
+					message: "kind is ssh, or port with a port from 1 to 65535",
+				},
+				{ status: 400 },
+			);
+		}
+		let nodeId: string;
+		let host: string;
+		try {
+			({ nodeId, host } = hooks.locate(workspace));
+		} catch (err) {
+			return Response.json(fromUnknownError(err).toJSON(), { status: 404 });
+		}
+
+		const pair = new WebSocketPair();
+		const client = pair[0];
+		const server = pair[1];
+		server.accept();
+		const closeClient = (message: string) => {
+			try {
+				server.close(message ? 1011 : 1000, message.slice(0, 120));
+			} catch {
+				// already closed
+			}
+		};
+		let pipe: PipeEnd;
+		try {
+			pipe = await this.openPipe(nodeId, host, kind, workspace, port, {
+				onOpened: () => server.send(JSON.stringify({ type: "opened" })),
+				onData: (bytes) => server.send(bytes),
+				onClose: closeClient,
+			});
+		} catch (err) {
+			closeClient(fromUnknownError(err).message);
+			return new Response(null, { status: 101, webSocket: client });
+		}
+		// Sent in order, a message's bytes once the one before's are. A frame
+		// that fails to send ends the pipe: the client's byte stream has a hole
+		// in it, and the chain must not stay rejected for every later frame.
+		let sending: Promise<void> = Promise.resolve();
+		server.addEventListener("message", (ev) => {
+			const data: unknown = ev.data;
+			sending = sending
+				.then(async () => {
+					if (typeof data === "string") pipe.send(new TextEncoder().encode(data));
+					else if (data instanceof ArrayBuffer) pipe.send(new Uint8Array(data));
+					else if (ArrayBuffer.isView(data))
+						pipe.send(new Uint8Array(data.buffer, data.byteOffset, data.byteLength));
+					else if (data instanceof Blob) pipe.send(new Uint8Array(await data.arrayBuffer()));
+				})
+				.catch((err: unknown) => {
+					const message = fromUnknownError(err).message;
+					console.error(`pipe to ${host} workspace ${workspace}: send failed: ${message}`);
+					pipe.close();
+					closeClient(`send failed: ${message}`);
+				});
+		});
+		server.addEventListener("close", () => pipe.close());
+		server.addEventListener("error", () => pipe.close());
+		return new Response(null, { status: 101, webSocket: client });
 	}
 }

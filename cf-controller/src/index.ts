@@ -1,4 +1,4 @@
-import { authenticateRequest, NOOP_TOKEN_LOOKUP, stripInternalAuthHeaders } from "./auth.ts";
+import { stripInternalAuthHeaders } from "./auth.ts";
 import { CommandDO } from "./command-do.ts";
 import { ControllerDO, type ControllerEnv } from "./controller-do.ts";
 import { connectErrorResponse, ErrorCode, fromUnknownError, hotbedError } from "./errors.ts";
@@ -7,6 +7,7 @@ import { TenantRegistryDO } from "./tenant-registry-do.ts";
 import { clearWorkOSSessionCookie } from "./workos.ts";
 import {
 	attachInternalAuth,
+	edgeCaller,
 	handleAuthRoute,
 	resolveEdgeRouting,
 	withSetCookie,
@@ -188,12 +189,8 @@ export default {
 			setCookie = routing.setCookie;
 			clearWosCookie = Boolean(routing.clearWorkOSCookie);
 			needsOrgSelection = Boolean(routing.needsOrgSelection);
-			if (routing.caller?.role === "owner") {
-				authed = true;
-			} else if (!needsOrgSelection) {
-				const caller = await authenticateRequest(request, env, NOOP_TOKEN_LOOKUP, {
-					allowTopLevelNavigate: true,
-				});
+			if (!needsOrgSelection) {
+				const caller = await edgeCaller(request, env, routing, { allowTopLevelNavigate: true });
 				authed = caller.role === "owner";
 			}
 		} catch {

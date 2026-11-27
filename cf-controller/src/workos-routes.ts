@@ -2,6 +2,8 @@ import {
 	authenticateRequest,
 	checkSameOrigin,
 	clearSessionCookie,
+	clientIp,
+	clientUa,
 	getBearerToken,
 	getCookie,
 	INTERNAL_AUTH_HEADER,
@@ -10,14 +12,18 @@ import {
 	INTERNAL_ORG_HEADER,
 	makeSessionCookie,
 	NOOP_TOKEN_LOOKUP,
-	renderLoginPage,
 	timingSafeStringEqual,
+	verifyWorkOSBearer,
+	verifyWorkOSSession,
+	workosCaller,
 	type CallerIdentity,
+	type VerifiedWorkOSSession,
 } from "./auth.ts";
 import type { ControllerEnv } from "./controller-do.ts";
 import { decodePathSegment } from "./encoding.ts";
 import { ErrorCode, fromUnknownError, hotbedError } from "./errors.ts";
-import { randomHex } from "./gitops.ts";
+import { randomHex } from "./ids.ts";
+import { renderLoginPage, renderOrgPickerPage, renderSignupCodePage } from "./pages.ts";
 import {
 	authenticateWithCode,
 	authenticateWithOrgSelection,
@@ -49,8 +55,6 @@ import {
 	pollDeviceToken,
 	randomBase64Url,
 	removeOrganizationMembership,
-	renderOrgPickerPage,
-	renderSignupCodePage,
 	revokeOrganizationInvitation,
 	sealPayload,
 	sendOrganizationInvitation,
@@ -70,8 +74,6 @@ import {
 	type WorkOSSessionPayload,
 	type WorkOSUser,
 } from "./workos.ts";
-
-const REFRESH_MARGIN_MS = 60_000;
 
 function isOrgAdmin(role: string): boolean {
 	return role === "admin" || role === "owner";
@@ -98,116 +100,19 @@ function defaultDoName(request: Request, url: URL, env: ControllerEnv): string {
 	return "default";
 }
 
-function clientIp(req: Request): string | undefined {
-	return req.headers.get("CF-Connecting-IP") ?? req.headers.get("X-Forwarded-For") ?? undefined;
+/**
+ * A verified session as the edge hands it on: its organization and role as
+ * its access token states them.
+ */
+function sessionView(v: VerifiedWorkOSSession): WorkOSSessionPayload {
+	if (!v.claims.orgId) return { ...v.session, organizationId: "" };
+	return { ...v.session, organizationId: v.claims.orgId, role: v.claims.role || "member" };
 }
 
-function clientUa(req: Request): string | undefined {
-	return req.headers.get("User-Agent") ?? undefined;
-}
-
-async function resolveSessionCookie(
-	request: Request,
-	env: ControllerEnv,
-	opts?: { allowTopLevelNavigate?: boolean; allowNoOrg?: boolean },
-): Promise<{
-	session: WorkOSSessionPayload;
-	caller: CallerIdentity | null;
-	setCookie?: string;
-	needsOrgSelection?: boolean;
-} | null> {
-	if (!isWorkOSEnabled(env)) return null;
-	const raw = getCookie(request, WORKOS_SESSION_COOKIE);
-	if (!raw) return null;
-	let session = await unsealPayload<WorkOSSessionPayload>(env, "session", raw);
-	if (!session || !session.accessToken) return null;
-
-	const csrfErr = checkSameOrigin(request, {
-		allowTopLevelNavigate: opts?.allowTopLevelNavigate,
-	});
-	if (csrfErr) {
-		throw hotbedError(ErrorCode.NotAuthorized, csrfErr);
-	}
-
-	const nowMs = Date.now();
-	let claims = await verifyWorkOSAccessToken(session.accessToken, env, nowMs);
-	let setCookie: string | undefined;
-
-	const needsRefresh = !claims || claims.exp - nowMs < REFRESH_MARGIN_MS;
-	if (needsRefresh && session.refreshToken) {
-		try {
-			const refreshed = await authenticateWithRefreshToken(env, {
-				refreshToken: session.refreshToken,
-				organizationId: session.organizationId || undefined,
-				ipAddress: clientIp(request),
-				userAgent: clientUa(request),
-			});
-			const refreshedClaims = await verifyWorkOSAccessToken(refreshed.accessToken, env, Date.now());
-			if (!refreshedClaims) {
-				if (!claims) return null;
-			} else {
-				let orgName = session.organizationName;
-				if (refreshedClaims.orgId && refreshedClaims.orgId !== session.organizationId) {
-					try {
-						orgName = (await getOrganization(env, refreshedClaims.orgId)).name;
-					} catch {
-						orgName = refreshedClaims.orgId;
-					}
-				} else if (!refreshedClaims.orgId) {
-					orgName = "";
-				}
-				session = {
-					userId: refreshed.user.id,
-					email: refreshed.user.email,
-					firstName: refreshed.user.firstName,
-					lastName: refreshed.user.lastName,
-					organizationId: refreshedClaims.orgId,
-					organizationName: orgName,
-					role: refreshedClaims.role || "member",
-					sessionId: refreshed.sessionId || session.sessionId,
-					accessToken: refreshed.accessToken,
-					refreshToken: refreshed.refreshToken,
-					expiresAt: refreshed.expiresAt,
-				};
-				claims = refreshedClaims;
-				const sealed = await sealPayload(env, "session", session);
-				const secure = new URL(request.url).protocol === "https:";
-				setCookie = makeWorkOSSessionCookie(sealed, secure);
-			}
-		} catch {
-			if (!claims) {
-				return null;
-			}
-		}
-	}
-
-	if (!claims) return null;
-
-	const orgId = claims.orgId;
-	if (!orgId) {
-		return {
-			session: { ...session, organizationId: "" },
-			caller: null,
-			setCookie,
-			needsOrgSelection: true,
-		};
-	}
-
-	const headerHost = (request.headers.get("X-Hotbed-Host") ?? "").trim();
-	const login = session.email || claims.email || claims.sub;
-	const effectiveRole = claims.role || "member";
-	const caller: CallerIdentity = {
-		role: "owner",
-		nodeId: `workos:${claims.sub}`,
-		hostname: headerHost || login,
-		login,
-		userId: claims.sub,
-		orgId,
-		orgRole: effectiveRole,
-		addr: "",
-		authMethod: "workos-cookie",
-	};
-	return { session: { ...session, organizationId: orgId, role: effectiveRole }, caller, setCookie };
+/** Whether caller administers the default organization: the cluster's own. */
+function isDefaultOrgAdmin(env: ControllerEnv, caller: CallerIdentity): boolean {
+	const defaultOrg = (env.DEFAULT_ORG_ID ?? "").trim();
+	return Boolean(defaultOrg && caller.orgId === defaultOrg && isOrgAdmin(caller.orgRole));
 }
 
 /**
@@ -224,9 +129,6 @@ export async function resolveEdgeRouting(
 	const bearer = getBearerToken(request);
 	const ownerToken = (env.OWNER_TOKEN ?? "").trim();
 	const joinToken = (env.JOIN_TOKEN ?? "").trim();
-	const headerHost = (request.headers.get("X-Hotbed-Host") ?? "").trim();
-	const headerNodeId = (request.headers.get("X-Hotbed-Node-Id") ?? "").trim();
-	const headerAddr = (request.headers.get("X-Hotbed-Addr") ?? "").trim();
 
 	// 1. Bearer tokens
 	if (bearer) {
@@ -264,41 +166,18 @@ export async function resolveEdgeRouting(
 
 		// 1d. WorkOS JWT access token
 		if (isWorkOSEnabled(env) && bearer.includes(".")) {
-			const claims = await verifyWorkOSAccessToken(bearer, env);
-			if (!claims) {
+			const caller = await verifyWorkOSBearer(request, bearer, env);
+			if (!caller) {
 				throw hotbedError(
 					ErrorCode.NotAuthorized,
 					"invalid or expired WorkOS access token",
 				).withSuggestion("run `hotbed login` to refresh your credentials");
 			}
-			if (!claims.orgId) {
-				throw hotbedError(
-					ErrorCode.NotAuthorized,
-					"this WorkOS token has no active organization selected",
-				).withSuggestion(
-					"select or create an organization with `hotbed org switch` or `hotbed org create`",
-				);
-			}
-			const login = claims.email || claims.sub;
-			const caller: CallerIdentity = {
-				role: "owner",
-				nodeId: headerNodeId || `workos:${claims.sub}`,
-				hostname: headerHost || login,
-				login,
-				userId: claims.sub,
-				orgId: claims.orgId,
-				orgRole: claims.role || "member",
-				addr: headerAddr,
-				authMethod: "workos-jwt",
-			};
-			const defaultOrg = (env.DEFAULT_ORG_ID ?? "").trim();
 			return {
-				doName: doNameForOrg(claims.orgId, env),
-				orgId: claims.orgId,
+				doName: doNameForOrg(caller.orgId, env),
+				orgId: caller.orgId,
 				caller,
-				globalAdmin: Boolean(
-					defaultOrg && claims.orgId === defaultOrg && isOrgAdmin(caller.orgRole),
-				),
+				globalAdmin: isDefaultOrgAdmin(env, caller),
 			};
 		}
 
@@ -307,41 +186,58 @@ export async function resolveEdgeRouting(
 	}
 
 	// 2. WorkOS sealed session cookie
-	if (isWorkOSEnabled(env)) {
-		const rawCookie = getCookie(request, WORKOS_SESSION_COOKIE);
-		if (rawCookie) {
-			const resolved = await resolveSessionCookie(request, env, {
-				allowTopLevelNavigate: opts?.allowTopLevelNavigate,
-			});
-			if (!resolved) {
-				return { doName: fallbackDo, orgId: "", caller: null, clearWorkOSCookie: true };
-			}
-			if (resolved.needsOrgSelection || !resolved.caller) {
-				return {
-					doName: fallbackDo,
-					orgId: "",
-					caller: null,
-					session: resolved.session,
-					setCookie: resolved.setCookie,
-					needsOrgSelection: true,
-				};
-			}
-			const defaultOrg = (env.DEFAULT_ORG_ID ?? "").trim();
+	if (isWorkOSEnabled(env) && getCookie(request, WORKOS_SESSION_COOKIE)) {
+		const verified = await verifyWorkOSSession(request, env, {
+			allowTopLevelNavigate: opts?.allowTopLevelNavigate,
+			refresh: true,
+		});
+		if (!verified) {
+			return { doName: fallbackDo, orgId: "", caller: null, clearWorkOSCookie: true };
+		}
+		const session = sessionView(verified);
+		if (!verified.claims.orgId) {
 			return {
-				doName: doNameForOrg(resolved.caller.orgId, env),
-				orgId: resolved.caller.orgId,
-				caller: resolved.caller,
-				session: resolved.session,
-				setCookie: resolved.setCookie,
-				globalAdmin: Boolean(
-					defaultOrg && resolved.caller.orgId === defaultOrg && isOrgAdmin(resolved.caller.orgRole),
-				),
+				doName: fallbackDo,
+				orgId: "",
+				caller: null,
+				session,
+				setCookie: verified.setCookie,
+				needsOrgSelection: true,
 			};
 		}
+		const caller = workosCaller(request, verified.claims, {
+			authMethod: "workos-cookie",
+			login: verified.session.email,
+		});
+		return {
+			doName: doNameForOrg(caller.orgId, env),
+			orgId: caller.orgId,
+			caller,
+			session,
+			setCookie: verified.setCookie,
+			globalAdmin: isDefaultOrgAdmin(env, caller),
+		};
 	}
 
 	// 3. Legacy session cookie / CF Access / unauthenticated
 	return { doName: fallbackDo, orgId: "", caller: null };
+}
+
+/**
+ * The caller of a request the edge serves itself (the Cockpit's assets,
+ * /api/gc/*): the one routing verified (a WorkOS token or session), else
+ * the one OWNER_TOKEN, Cloudflare Access or the owner's cookie admits.
+ * Throws when none does. Tokens kept in a controller (API, worker and join
+ * tokens) are verified there, never here.
+ */
+export function edgeCaller(
+	request: Request,
+	env: ControllerEnv,
+	routing: EdgeAuthResult,
+	opts: { allowTopLevelNavigate: boolean },
+): Promise<CallerIdentity> {
+	if (routing.caller) return Promise.resolve(routing.caller);
+	return authenticateRequest(request, env, NOOP_TOKEN_LOOKUP, opts);
 }
 
 export function attachInternalAuth(request: Request, routing: EdgeAuthResult): Request {
@@ -597,24 +493,25 @@ async function resolveWorkOSCallerForOrgRoute(
 		};
 	}
 
-	const resolved = await resolveSessionCookie(request, env, { allowNoOrg: opts?.allowNoOrg });
-	if (!resolved) {
+	const verified = await verifyWorkOSSession(request, env, { refresh: true });
+	if (!verified) {
 		throw hotbedError(ErrorCode.NotAuthorized, "authentication required");
 	}
-	if (!resolved.session.organizationId && !opts?.allowNoOrg) {
+	const session = sessionView(verified);
+	if (!session.organizationId && !opts?.allowNoOrg) {
 		throw hotbedError(ErrorCode.NotAuthorized, "no active organization selected");
 	}
 	return {
-		userId: resolved.session.userId,
-		email: resolved.session.email,
-		firstName: resolved.session.firstName,
-		lastName: resolved.session.lastName,
-		organizationId: resolved.session.organizationId,
-		organizationName: resolved.session.organizationName,
-		role: resolved.session.role || "member",
+		userId: session.userId,
+		email: session.email,
+		firstName: session.firstName,
+		lastName: session.lastName,
+		organizationId: session.organizationId,
+		organizationName: session.organizationName,
+		role: session.role || "member",
 		authMethod: "workos-cookie",
-		session: resolved.session,
-		setCookie: resolved.setCookie,
+		session,
+		setCookie: verified.setCookie,
 	};
 }
 
@@ -1138,9 +1035,9 @@ export async function handleAuthRoute(
 			return Response.redirect(new URL("/", url).toString(), 302);
 		}
 		try {
-			const resolved = await resolveSessionCookie(request, env, {
+			const resolved = await verifyWorkOSSession(request, env, {
 				allowTopLevelNavigate: true,
-				allowNoOrg: true,
+				refresh: true,
 			});
 			if (!resolved) {
 				return Response.redirect(new URL("/auth/login", url).toString(), 302);

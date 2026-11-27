@@ -16,7 +16,9 @@ import {
 	type ScheduledRun,
 } from "../gen/hotbed/v1/hotbed_pb.ts";
 import { getCaller } from "../connect-adapter.ts";
-import { setupStepsReminder, type ControllerContext } from "../context.ts";
+import { listedProject, repoById, sessionProject } from "../project-scope.ts";
+import { type ControllerContext } from "../context.ts";
+import { setupStepsReminder } from "../reminders.ts";
 import { formatInTimeZone, parseCron } from "../cron.ts";
 import { ErrorCode, codeOf, fromUnknownError, hotbedError } from "../errors.ts";
 import { canonicalRemote } from "../gitops.ts";
@@ -323,8 +325,9 @@ export function createScheduleService(
 				);
 			}
 			parseCron(sc.cron, ctrl.now());
-			const repo = ctrl.repoById(sc.repo);
-			const { project, changed } = ctrl.sessionProject(
+			const repo = repoById(ctrl, sc.repo);
+			const { project, changed } = sessionProject(
+				ctrl,
 				getCaller(ctx.values),
 				sc.project,
 				canonicalRemote(repo.url),
@@ -369,7 +372,7 @@ export function createScheduleService(
 		},
 
 		listSchedules(req) {
-			const project = ctrl.listedProject(req);
+			const project = listedProject(ctrl, req);
 			return create(ListSchedulesResponseSchema, { schedules: allSchedules(project) });
 		},
 

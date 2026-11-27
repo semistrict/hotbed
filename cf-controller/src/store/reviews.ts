@@ -23,7 +23,7 @@ import {
 import { enumFromName, enumName } from "../enums.ts";
 import { big, num, str } from "../sql-values.ts";
 import { ErrorCode, hotbedError } from "../errors.ts";
-import { firstLine } from "../gitops.ts";
+import { firstLine } from "../encoding.ts";
 import { create, clone } from "@bufbuild/protobuf";
 import { marshal, unmarshal, type Row, type SqlKernel } from "./kernel.ts";
 import type { ProjectStore } from "./projects.ts";

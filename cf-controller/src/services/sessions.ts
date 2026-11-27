@@ -18,18 +18,18 @@ import {
 	type Workspace,
 } from "../gen/hotbed/v1/hotbed_pb.ts";
 import { getCaller } from "../connect-adapter.ts";
+import { listedProject, sessionProject } from "../project-scope.ts";
+import { MAX_WAIT_MS, validateT3CodeThreadId, type ControllerContext } from "../context.ts";
 import {
-	MAX_WAIT_MS,
 	MEMORY_FAILURE_REMINDER,
 	MEMORY_FEEDBACK_REMINDER,
 	MEMORY_SESSION_END_REMINDER,
 	sessionStartReminder,
-	validateT3CodeThreadId,
-	type ControllerContext,
-} from "../context.ts";
+} from "../reminders.ts";
 import { ErrorCode, codeOf, hotbedError } from "../errors.ts";
 import { waitAtMost } from "../waits.ts";
-import { canonicalRemote, generatePetname } from "../gitops.ts";
+import { canonicalRemote } from "../gitops.ts";
+import { generatePetname } from "../ids.ts";
 import { isCommandLive } from "../wakeups.ts";
 
 const SESSION_NAME_RE = /^[a-z][a-z0-9]*(-[a-z0-9]+)+$/;
@@ -152,7 +152,7 @@ export function createSessionService(ctrl: ControllerContext): ServiceImpl<typeo
 				return resumed;
 			}
 
-			const { project } = ctrl.sessionProject(caller, req.project, canonicalRemote(req.remote));
+			const { project } = sessionProject(ctrl, caller, req.project, canonicalRemote(req.remote));
 			let sess: Session | null = null;
 			if (req.id) {
 				sess = ctrl.store.sessions.start(
@@ -297,7 +297,7 @@ export function createSessionService(ctrl: ControllerContext): ServiceImpl<typeo
 				req.sessionId ||
 				req.remote
 			) {
-				project = ctrl.listedProject(req);
+				project = listedProject(ctrl, req);
 			}
 			const since = req.ended ? ctrl.now() - 24 * 3600_000 : ctrl.now() + 1;
 			return create(ListSessionsResponseSchema, {

@@ -19,7 +19,7 @@ import {
 	type Workspace,
 } from "./gen/hotbed/v1/hotbed_pb.ts";
 import { ErrorCode, HotbedError, hotbedError } from "./errors.ts";
-import { parseBuildNumber } from "./gitops.ts";
+import { parseBuildNumber } from "./version.ts";
 
 const MOVE_COST = 0.3;
 const COLD_COST = 0.5;

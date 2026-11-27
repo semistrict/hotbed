@@ -69,17 +69,15 @@ import { isSupportedPlatform } from "../builds.ts";
 import { isOrgAdminCaller, sha256Hex } from "../auth.ts";
 import { getCaller } from "../connect-adapter.ts";
 import { formatOrgToken } from "../workos.ts";
-import {
-	PROJECT_NAME_RE,
-	REPO_ID_RE,
-	STEP_NAME_RE,
-	setupStepsReminder,
-	type ControllerContext,
-} from "../context.ts";
+import { ensureRepoProject, hostingFor, projectsWithCounts, repoById } from "../project-scope.ts";
+import { PROJECT_NAME_RE, REPO_ID_RE, STEP_NAME_RE, type ControllerContext } from "../context.ts";
+import { setupStepsReminder } from "../reminders.ts";
 import { ErrorCode, codeOf, hotbedError } from "../errors.ts";
 import { parseDurationMs } from "../durations.ts";
 import { buildFreshenSummary, isFreshenActive, quantile, withLiveState } from "../freshens.ts";
-import { canonicalRemote, parseBuildNumber, stepHash, validateRepoURL } from "../gitops.ts";
+import { canonicalRemote, validateRepoURL } from "../gitops.ts";
+import { parseBuildNumber } from "../version.ts";
+import { stepHash } from "../ids.ts";
 import { isCommandLive } from "../wakeups.ts";
 import { KEEP_EVENTS, KEEP_PLACEMENTS_MS, type ForkRow, type SampleRow } from "../store/index.ts";
 import { applyOrgCladefsTenant, assertNoTenantOverride } from "../worker-config.ts";
@@ -603,7 +601,7 @@ export function createClusterService(
 			}
 			ctrl.nodeChanges.wake(caller.hostname);
 			ctrl.capacityChanges.wake("*");
-			const { projects, release } = ctrl.hostingFor(caller.nodeId, caller.hostname);
+			const { projects, release } = hostingFor(ctrl, caller.nodeId, caller.hostname);
 			if (ctrl.builds.needsImmediateRefresh(nowMs)) {
 				try {
 					await ctrl.builds.ensureLoaded(nowMs);
@@ -722,7 +720,7 @@ export function createClusterService(
 					ctrl.madeBy(caller, `for registered repo ${repo.id}`),
 				);
 			} else {
-				proj = ctrl.ensureRepoProject(caller, repo.id, repo.url);
+				proj = ensureRepoProject(ctrl, caller, repo.id, repo.url);
 			}
 			repo.reminder = setupStepsReminder(proj);
 			return repo;
@@ -898,11 +896,11 @@ export function createClusterService(
 		},
 
 		listProjects() {
-			return create(ListProjectsResponseSchema, { projects: ctrl.projects() });
+			return create(ListProjectsResponseSchema, { projects: projectsWithCounts(ctrl) });
 		},
 
 		getProject(req) {
-			const ps = ctrl.projects();
+			const ps = projectsWithCounts(ctrl);
 			const match = ps.find((p) => p.name === req.name);
 			if (!match) {
 				throw hotbedError(ErrorCode.NotFound, `no project ${req.name}`).withSuggestion(
@@ -936,7 +934,7 @@ export function createClusterService(
 				} catch (err) {
 					if (codeOf(err) !== ErrorCode.NotFound) throw err;
 					try {
-						const r = ctrl.repoById(target);
+						const r = repoById(ctrl, target);
 						for (const hp of ctrl.store.projects.holding(canonicalRemote(r.url))) {
 							matchProjects.add(hp.name);
 						}
@@ -1035,7 +1033,7 @@ export function createClusterService(
 				} catch (err) {
 					if (codeOf(err) !== ErrorCode.NotFound) throw err;
 					try {
-						const r = ctrl.repoById(target);
+						const r = repoById(ctrl, target);
 						for (const hp of ctrl.store.projects.holding(canonicalRemote(r.url))) {
 							matchProjects.add(hp.name);
 						}
@@ -1187,7 +1185,7 @@ export function createClusterService(
 			const scheds = schedules.allSchedules("");
 			const openQuestions = ctrl.store.questions.openCount();
 			const memCounts = ctrl.store.memories.pendingCounts();
-			const projects = ctrl.projects();
+			const projects = projectsWithCounts(ctrl);
 
 			const nodes = [];
 			const bases: Base[] = [];
@@ -1529,7 +1527,7 @@ export function createClusterService(
 			const results: NodeSystemUpgrade[] = [];
 			for (const node of targets) {
 				const arch = node.resources?.arch || "";
-				const effective = ctrl.store.workerConfigs.effective(node.hostname);
+				const effective = ctrl.store.workerConfigs.effective(node.hostname, node.id);
 				const sys = effective?.system;
 				const vm = effective?.vm;
 				const cladefsd = arch ? sys?.cladefsd[arch] : undefined;

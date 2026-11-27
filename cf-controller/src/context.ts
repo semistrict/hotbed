@@ -4,7 +4,6 @@ import {
 	BaseState,
 	CommandState,
 	DaemonLogLevel,
-	HostedProjectSchema,
 	ReleaseWorkspaceRequestSchema,
 	ReleaseWorkspaceResponseSchema,
 	ListCommandsRequestSchema,
@@ -16,10 +15,8 @@ import {
 	type Base,
 	type Command,
 	type HeartbeatRequest,
-	type HostedProject,
 	type Node,
 	type Project,
-	type Repo,
 	type Resources,
 	type Session,
 	type Stamp,
@@ -29,7 +26,7 @@ import type { CallerIdentity } from "./auth.ts";
 import type { BuildDistributor } from "./builds.ts";
 import type { CommandStoreClient } from "./command-do.ts";
 import { ErrorCode, codeOf, hotbedError } from "./errors.ts";
-import { canonicalRemote, projectNameFor } from "./gitops.ts";
+import { parseBuildNumber } from "./version.ts";
 import type { NodeRow, NodeView } from "./placement.ts";
 import type { QuestionBridgeHub } from "./question-bridge.ts";
 import { ONLINE_WINDOW_MS, Wakeups, isCommandLive } from "./wakeups.ts";
@@ -84,6 +81,12 @@ export class ControllerContext {
 	readonly tunnel: WorkerTunnelHub;
 	readonly questionBridge?: QuestionBridgeHub;
 	readonly builds: BuildDistributor;
+	/**
+	 * Keeps the controller alive until p settles, past the request that
+	 * started it: background work a response does not wait for
+	 * (DurableObjectState.waitUntil).
+	 */
+	readonly waitUntil: (p: Promise<unknown>) => void;
 	/** Woken, by hostname, whenever a node's heartbeat changes what it can serve. */
 	readonly nodeChanges = new Wakeups();
 	readonly capacityChanges = new Wakeups();
@@ -121,6 +124,7 @@ export class ControllerContext {
 		tunnel: WorkerTunnelHub;
 		questionBridge?: QuestionBridgeHub;
 		builds: BuildDistributor;
+		waitUntil: (p: Promise<unknown>) => void;
 		clusterId: string;
 		orgId?: string;
 		cladefsTenantId?: bigint | null;
@@ -132,6 +136,7 @@ export class ControllerContext {
 		this.tunnel = opts.tunnel;
 		this.questionBridge = opts.questionBridge;
 		this.builds = opts.builds;
+		this.waitUntil = opts.waitUntil;
 		this.clusterId = opts.clusterId;
 		this.orgId = opts.orgId ?? "";
 		this.cladefsTenantId = opts.cladefsTenantId ?? null;
@@ -276,9 +281,7 @@ export class ControllerContext {
 		if (!node.online) return false;
 		const want = this.follows(row.hb?.resources);
 		if (want === 0) return true;
-		const v = row.hb?.resources?.version ?? "";
-		const m = /^build\s+(\d+)\b/.exec(v.trim());
-		return (m ? Number(m[1]) : 0) >= want;
+		return parseBuildNumber(row.hb?.resources?.version ?? "") >= want;
 	}
 
 	views(): NodeView[] {
@@ -409,94 +412,6 @@ export class ControllerContext {
 		return live;
 	}
 
-	/** Projects enriched with live session, schedule, question, and review counts. */
-	projects(): Project[] {
-		const ps = this.store.projects.list();
-		const live = this.store.sessions.liveByProject();
-		const scheds = this.store.schedules.countByProject();
-		const qps = this.store.questions.byProject();
-		const qByName = new Map(qps.map((q) => [q.name, q]));
-		const { active, toDecide } = this.store.reviews.counts();
-		const memCounts = this.store.memories.pendingCounts();
-		const boardCounts = this.boardCountsFn?.();
-		for (const p of ps) {
-			p.liveSessions = live.get(p.name) ?? 0;
-			p.schedules = scheds.get(p.name) ?? 0;
-			p.activeReviews = active.get(p.name) ?? 0;
-			p.reviewsToDecide = toDecide.get(p.name) ?? 0;
-			p.pendingMemories = memCounts.byProject.get(p.name) ?? 0;
-			const bc = boardCounts?.get(p.name);
-			if (bc) {
-				p.boardThreads = bc.threads;
-				p.openBoardTasks = bc.openTasks;
-				p.readyBoardTasks = bc.readyTasks;
-				p.blockedBoardTasks = bc.blockedTasks;
-			}
-			const qp = qByName.get(p.name);
-			if (qp) {
-				p.openQuestions = qp.open;
-				p.outbox = qp.outbox;
-			}
-		}
-		return ps;
-	}
-
-	hostedOf(p: Project, repos: Repo[]): { hosted: HostedProject; missing: string[] } {
-		const h = create(HostedProjectSchema, {
-			name: p.name,
-			steps: p.steps,
-			scratchEpoch: p.scratchEpoch,
-		});
-		const missing: string[] = [];
-		for (const remote of p.repos) {
-			const match = repos.find((r) => canonicalRemote(r.url) === remote);
-			if (!match) missing.push(remote);
-			else h.repos.push(match);
-		}
-		return { hosted: h, missing };
-	}
-
-	hosted(p: Project): HostedProject {
-		const { hosted, missing } = this.hostedOf(p, this.store.projects.listRepos());
-		if (missing.length > 0) {
-			throw hotbedError(
-				ErrorCode.NotFound,
-				`project ${p.name} holds ${missing.join(", ")}, which no repo of the cluster has`,
-			).withSuggestion(
-				`hotbed repo add NAME ${missing[0]} -p ${p.name} registers it; or hotbed project rm-repo ${p.name} --repo ${missing[0]}`,
-			);
-		}
-		if (hosted.repos.length === 0) {
-			throw hotbedError(
-				ErrorCode.NotFound,
-				`project ${p.name} holds no repos to check out`,
-			).withSuggestion(
-				`hotbed project add ${p.name} --repo REMOTE, then hotbed repo add NAME REMOTE`,
-			);
-		}
-		return hosted;
-	}
-
-	hostingFor(nodeId: string, hostname: string): { projects: HostedProject[]; release: string[] } {
-		const projects = this.store.projects.list();
-		const repos = this.store.projects.listRepos();
-		const out: HostedProject[] = [];
-		for (const p of projects) {
-			if (p.hosts.length > 0 && !p.hosts.includes(hostname)) continue;
-			const { hosted, missing } = this.hostedOf(p, repos);
-			if (missing.length === 0 && hosted.repos.length > 0) out.push(hosted);
-		}
-		return { projects: out, release: this.store.nodeState.toRelease(nodeId) };
-	}
-
-	repoById(id: string): Repo {
-		const r = this.store.projects.listRepos().find((x) => x.id === id);
-		if (!r) {
-			throw hotbedError(ErrorCode.NotFound, `no repo ${id}`).withSuggestion("hotbed repo ls");
-		}
-		return r;
-	}
-
 	madeBy(caller: CallerIdentity, reason: string): Stamp {
 		return create(StampSchema, {
 			at: BigInt(this.now()),
@@ -584,133 +499,6 @@ export class ControllerContext {
 			...extra,
 		});
 		return { by: res.by, project: res.project!, session: res.session! };
-	}
-
-	listedProject(req: ScopedRequest): string {
-		const sess = req.sessionId ? this.store.sessions.get(req.sessionId) : null;
-		if (req.scope.case === "allProjects" && req.scope.value) return "";
-		if (req.scope.case === "project" && req.scope.value) {
-			this.store.projects.get(req.scope.value);
-			return req.scope.value;
-		}
-		if (!sess && req.remote) {
-			const remote = canonicalRemote(req.remote);
-			const holding = this.store.projects.holding(remote);
-			if (holding.length === 1) return holding[0].name;
-			if (holding.length === 0) {
-				throw hotbedError(
-					ErrorCode.NotFound,
-					`say which project: no project holds ${remote}, this checkout's repo`,
-				).withSuggestion("pass -p PROJECT or --all-projects (hotbed project ls)");
-			}
-			throw hotbedError(
-				ErrorCode.InvalidArgs,
-				`say which project: ${remote}, this checkout's repo, is in projects ${holding.map((p) => p.name).join(", ")}`,
-			).withSuggestion("pass -p PROJECT or --all-projects");
-		}
-		if (!sess) {
-			throw hotbedError(
-				ErrorCode.InvalidArgs,
-				"say which project: name one, all of them, or the session whose project it is",
-			).withSuggestion("pass -p PROJECT, --all-projects, or -s SESSION");
-		}
-		if (!sess.project) {
-			throw hotbedError(ErrorCode.InvalidArgs, `session ${sess.id} has no project`).withSuggestion(
-				"pass -p PROJECT or --all-projects",
-			);
-		}
-		return sess.project;
-	}
-
-	sessionProject(
-		caller: CallerIdentity,
-		name: string,
-		remote: string,
-	): { project: Project; changed: boolean } {
-		if (name) {
-			return { project: this.store.projects.get(name), changed: false };
-		}
-		if (!remote) {
-			throw hotbedError(
-				ErrorCode.InvalidArgs,
-				"a session works on a project: outside a git checkout, name it",
-			).withSuggestion("pass -p PROJECT or set HOTBED_PROJECT (hotbed project ls)");
-		}
-		const holding = this.store.projects.holding(remote);
-		if (holding.length === 1) return { project: holding[0], changed: false };
-		if (holding.length > 1) {
-			throw hotbedError(
-				ErrorCode.InvalidArgs,
-				`${remote} is in projects ${holding.map((p) => p.name).join(", ")}: name the session's project`,
-			).withSuggestion("pass -p PROJECT or set HOTBED_PROJECT");
-		}
-		const own = projectNameFor(remote);
-		if (!own) {
-			throw hotbedError(
-				ErrorCode.InvalidArgs,
-				`no project holds ${remote}, and its name makes none`,
-			).withSuggestion(`make one: hotbed project add NAME --repo ${remote}`);
-		}
-		try {
-			const existing = this.store.projects.get(own);
-			if (existing.repos.length > 0) {
-				throw hotbedError(
-					ErrorCode.InvalidArgs,
-					`no project holds ${remote}, and project ${own} holds other repos (${existing.repos.join(", ")})`,
-				).withSuggestion(
-					`add it there (hotbed project add ${own} --repo ${remote}), or pass -p PROJECT`,
-				);
-			}
-		} catch (err) {
-			if (codeOf(err) !== ErrorCode.NotFound) throw err;
-		}
-		const created = this.store.projects.add(
-			own,
-			[remote],
-			this.madeBy(caller, `for ${remote}, which a session started in and no project held`),
-		);
-		return { project: created, changed: true };
-	}
-
-	ensureRepoProject(caller: CallerIdentity, repoId: string, repoUrl: string): Project | null {
-		const remote = canonicalRemote(repoUrl);
-		if (!remote) return null;
-		const holding = this.store.projects.holding(remote);
-		if (holding.length === 1) return holding[0];
-		if (holding.length > 1) return null;
-
-		const candidates: string[] = [];
-		const own = projectNameFor(remote);
-		if (own) candidates.push(own);
-		if (repoId && candidates[0] !== repoId && PROJECT_NAME_RE.test(repoId)) {
-			candidates.push(repoId);
-		}
-		const base = candidates[0] ?? "repo";
-		for (let n = 2; n <= 99; n++) {
-			const suffix = `-${n}`;
-			let prefix = base;
-			if (prefix.length + suffix.length > 40) {
-				prefix = prefix.slice(0, 40 - suffix.length).replace(/-+$/, "");
-			}
-			candidates.push(prefix + suffix);
-		}
-		for (const name of candidates) {
-			try {
-				const existing = this.store.projects.get(name);
-				if (existing.repos.length > 0) continue;
-			} catch (err) {
-				if (codeOf(err) !== ErrorCode.NotFound) throw err;
-			}
-			return this.store.projects.add(
-				name,
-				[remote],
-				this.madeBy(caller, `for registered repo ${repoId}, which no project held`),
-			);
-		}
-		throw hotbedError(
-			ErrorCode.Conflict,
-			`could not find a free project name for repo ${repoId}`,
-		).withSuggestion("pass -p PROJECT to place the repo in an explicit project");
 	}
 
 	async releaseWorkspace(id: string): Promise<void> {
@@ -891,47 +679,6 @@ export class ControllerContext {
 		this.store.meta.set("last_prune_at", String(nowMs));
 		this.store.prune(nowMs);
 	}
-}
-
-export function setupStepsReminder(p?: Project | null): string {
-	const standard =
-		"By default, after all setup steps have run, common dev commands (build, test, check, lint, etc.) should run without downloading or compiling anything.";
-	if (!p || !p.name) {
-		return (
-			"Reminder: add setup steps (`hotbed step ls -p PROJECT`, `hotbed step add NAME -- ...`, `hotbed step set -p PROJECT NAME -- ...`; use `--every-pull` for dependency installs and builds) for common things like toolchain installs, dependencies, and pre-builds. " +
-			standard
-		);
-	}
-	if (p.steps.length === 0) {
-		return `Reminder: project ${p.name} has no setup steps yet. Add setup steps (\`hotbed step add NAME -- ...\` or \`hotbed step set -p ${p.name} NAME -- ...\`; use \`--every-pull\` for dependency installs and builds) for common things like toolchain installs, dependencies, and pre-builds. ${standard}`;
-	}
-	return `Reminder: make sure project ${p.name} has setup steps (\`hotbed step ls -p ${p.name}\`, \`hotbed step add\`, \`hotbed step set\`; use \`--every-pull\` for dependency installs and builds) for common things like toolchain installs, dependencies, and pre-builds. ${standard}`;
-}
-
-// Where a lesson goes. Every always-on memory costs every session's context,
-// so the reminders below send a lesson to the place it will be found first
-// (its fix, the repo, a skill) and to memory only when it has no such home.
-const LESSON_HOMES =
-	'fix its cause, or write it where it will be found (the repo\'s AGENTS.md, a comment by the code, the tool\'s skill); save a memory only for what has no such home (a preference, a machine fact, a workaround naming its open bug): `hotbed memory ls -q WORD` for one to update, else `hotbed memory add --slug SLUG --summary "..." --rationale "..."` (MCP: `memory_add`).';
-
-export const MEMORY_FAILURE_REMINDER = `Reminder: if this failure revealed a reusable fix or quirk, ${LESSON_HOMES}`;
-
-export const MEMORY_FEEDBACK_REMINDER = `Reminder: if this user answer or review feedback reflects a standing preference or convention, ${LESSON_HOMES}`;
-
-export const MEMORY_FIX_REMINDER = `Reminder: if this defect exposed a reusable pitfall or invariant, ${LESSON_HOMES}`;
-
-export const MEMORY_SESSION_END_REMINDER = `Before wrapping up: if this session taught something reusable, ${LESSON_HOMES} Archive memories it made obsolete with \`hotbed memory archive ID --reason "..."\`.`;
-
-export function memorySavingReminder(): string {
-	return `Lessons: ${LESSON_HOMES} Archive obsolete memories with \`hotbed memory archive ID --reason "..."\`.`;
-}
-
-/** How an agent reports a problem with hotbed itself, once, and counts its own hitting of one already reported. */
-export const ISSUE_REMINDER =
-	"Hotbed itself failing you (a bug, a missing capability, a misleading error)? `hotbed issue ls -q WORD`: +1 one already reported (`hotbed issue upvote ID -m WHAT`), else `hotbed issue report TITLE -m DETAILS`.";
-
-export function sessionStartReminder(p?: Project | null): string {
-	return `${setupStepsReminder(p)}\n${memorySavingReminder()}\n${ISSUE_REMINDER}`;
 }
 
 export function inProject(

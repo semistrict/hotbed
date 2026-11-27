@@ -2396,6 +2396,28 @@ describe("Security, cron, daemon logs, tunnel, and workspace regression tests", 
 			// Cluster events log records the upgrade event.
 			const evs = await owner.cluster.listEvents({ node: "ubu-sys-1", kinds: ["upgrade"] });
 			expect(evs.events.some((e) => e.text.includes("system upgrade"))).toBe(true);
+
+			// An override keyed by the node's ID, which heartbeats honor, is the
+			// one an upgrade installs too.
+			const pinnedFcSha = "f".repeat(64);
+			await owner.cluster.setWorkerConfig({
+				node: "node-sys-1",
+				config: create(WorkerConfigSchema, {
+					system: create(WorkerSystemConfigSchema, {
+						firecracker: {
+							amd64: create(ManagedArtifactSchema, {
+								url: "https://example.com/firecracker-pinned",
+								sha256: pinnedFcSha,
+								version: "fc-pinned",
+							}),
+						},
+					}),
+				}),
+			});
+			await owner.cluster.upgradeSystem({ node: "ubu-sys-1" });
+			expect(receivedReqs).toHaveLength(2);
+			expect(receivedReqs[1].firecracker?.sha256).toBe(pinnedFcSha);
+			expect(receivedReqs[1].cladefsd?.sha256).toBe(cladefsdSha);
 		} finally {
 			tunnel.close();
 		}

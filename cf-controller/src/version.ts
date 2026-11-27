@@ -33,3 +33,11 @@ export function formatControllerVersion(buildNumber: number, commit: string): st
 	const shortCommit = commit.trim().slice(0, 12);
 	return shortCommit ? `${label} (${shortCommit})` : `${label} (cloudflare-do)`;
 }
+
+/** Extracts build number from version string like "build 42 (0123456789ab)"; returns 0 for dev. */
+export function parseBuildNumber(version: string): number {
+	const m = /^build\s+(\d+)\b/.exec(version.trim());
+	if (!m) return 0;
+	const n = Number(m[1]);
+	return Number.isSafeInteger(n) && n > 0 ? n : 0;
+}

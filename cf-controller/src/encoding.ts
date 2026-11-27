@@ -15,3 +15,10 @@ export function escapeHtml(s: string): string {
 		.replace(/>/g, "&gt;")
 		.replace(/"/g, "&quot;");
 }
+
+/** s's first line, trimmed. */
+export function firstLine(s: string): string {
+	const trimmed = s.trim();
+	const nl = trimmed.indexOf("\n");
+	return nl >= 0 ? trimmed.slice(0, nl) : trimmed;
+}

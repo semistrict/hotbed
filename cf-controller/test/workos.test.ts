@@ -20,8 +20,10 @@ import {
 	WorkerFreshenConfigSchema,
 	WorkerVMConfigSchema,
 } from "../src/gen/hotbed/v1/hotbed_pb.ts";
+import { authenticateRequest, NOOP_TOKEN_LOOKUP, verifyWorkOSBearer } from "../src/auth.ts";
 import { handleGcRoute, type GcFetch } from "../src/gc.ts";
 import worker from "../src/index.ts";
+import { resolveEdgeRouting } from "../src/workos-routes.ts";
 import type { ControllerEnv } from "../src/controller-do.ts";
 import {
 	base64UrlEncode,
@@ -1899,5 +1901,64 @@ describe("WorkOS multi-organization, multi-user, per-org ControllerDO integratio
 		const res = await gc(admin, "/api/gc/sweep");
 		expect(res?.status).toBe(200);
 		expect(gcCalls).toEqual(["https://gc.example.test/sweep"]);
+	});
+
+	it("verifies WorkOS tokens through one seam: the client's issuer only, and the same caller on the edge and in the controller", async () => {
+		const testEnv = makeWorkOSEnv();
+		const nowSec = Math.floor(Date.now() / 1000);
+		const token = (iss?: string, orgId = "org_seam") =>
+			signJwt({
+				sub: "user_seam",
+				email: "seam@example.test",
+				org_id: orgId,
+				role: "admin",
+				exp: nowSec + 3600,
+				...(iss === undefined ? {} : { iss }),
+			});
+
+		// A token another WorkOS client's issuer names is refused, signed or not.
+		const foreign = await token("https://api.workos.com/user_management/client_someone_else");
+		await expect(makeRpcClient(testEnv, foreign).listNodes({})).rejects.toThrow(
+			/invalid or expired WorkOS access token/,
+		);
+		const req = (bearer: string) =>
+			new Request("https://controller.test/hotbed.v1.ClusterService/ListNodes", {
+				headers: {
+					Authorization: `Bearer ${bearer}`,
+					"X-Hotbed-Host": "laptop",
+					"X-Hotbed-Node-Id": "node-7",
+					"X-Hotbed-Addr": "10.0.0.7",
+				},
+			});
+		expect(await verifyWorkOSBearer(req(foreign), foreign, testEnv)).toBeNull();
+
+		// This client's issuer, at the configured API or WorkOS's own, is accepted.
+		for (const iss of [
+			`${WORKOS_ORIGIN}/user_management/${WORKOS_CLIENT_ID}`,
+			`https://api.workos.com/user_management/${WORKOS_CLIENT_ID}`,
+		]) {
+			const res = await makeRpcClient(testEnv, await token(iss)).listNodes({});
+			expect(res.nodes).toEqual([]);
+		}
+
+		// The edge's routing and the controller's authentication name one caller.
+		const jwt = await token();
+		const expected = {
+			role: "owner",
+			nodeId: "node-7",
+			hostname: "laptop",
+			login: "seam@example.test",
+			userId: "user_seam",
+			orgId: "org_seam",
+			orgRole: "admin",
+			addr: "10.0.0.7",
+			authMethod: "workos-jwt",
+		};
+		const routing = await resolveEdgeRouting(req(jwt), new URL(req(jwt).url), testEnv);
+		expect(routing.caller).toEqual(expected);
+		expect(await authenticateRequest(req(jwt), testEnv, NOOP_TOKEN_LOOKUP)).toEqual(expected);
+		await expect(
+			authenticateRequest(req(jwt), testEnv, NOOP_TOKEN_LOOKUP, { orgId: "org_other" }),
+		).rejects.toThrow("organization mismatch: token belongs to org_seam, not org_other");
 	});
 });

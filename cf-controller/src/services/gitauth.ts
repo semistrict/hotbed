@@ -13,7 +13,8 @@ import { isOrgAdminCaller } from "../auth.ts";
 import { getCaller } from "../connect-adapter.ts";
 import { REPO_ID_RE, type ControllerContext } from "../context.ts";
 import { ErrorCode, hotbedError } from "../errors.ts";
-import { parseGitRepo, randomHex } from "../gitops.ts";
+import { parseGitRepo } from "../gitops.ts";
+import { randomHex } from "../ids.ts";
 import type { StoredGitCredential } from "../store/index.ts";
 
 const DEFAULT_GITHUB_CLIENT_ID = "Iv23li5qE6N9l4g7P3hW";

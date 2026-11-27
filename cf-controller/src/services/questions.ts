@@ -16,13 +16,9 @@ import {
 } from "../gen/hotbed/v1/hotbed_pb.ts";
 import { enumWord } from "../enums.ts";
 import { getCaller } from "../connect-adapter.ts";
-import {
-	inProject,
-	MEMORY_FEEDBACK_REMINDER,
-	stamped,
-	validateT3CodeThreadId,
-	type ControllerContext,
-} from "../context.ts";
+import { listedProject } from "../project-scope.ts";
+import { inProject, stamped, validateT3CodeThreadId, type ControllerContext } from "../context.ts";
+import { MEMORY_FEEDBACK_REMINDER } from "../reminders.ts";
 import { ErrorCode, hotbedError, type HotbedError } from "../errors.ts";
 import { checkRevision, projectRepo } from "./project-items.ts";
 
@@ -298,7 +294,7 @@ export function createQuestionService(
 				req.sessionId ||
 				req.remote
 			) {
-				project = ctrl.listedProject(req);
+				project = listedProject(ctrl, req);
 			}
 			const { questions, total, sessions } = ctrl.store.questions.list({
 				states: req.states,

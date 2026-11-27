@@ -23,8 +23,9 @@ import {
 import type { CallerIdentity } from "../auth.ts";
 import { BoardStore, validateProfileName, type BoardIdentity } from "../board/store.ts";
 import { getCaller } from "../connect-adapter.ts";
+import { listedProject } from "../project-scope.ts";
 import { MAX_WAIT_MS, type ControllerContext } from "../context.ts";
-import { ErrorCode, hotbedError } from "../errors.ts";
+import { ErrorCode, fromUnknownError, hotbedError } from "../errors.ts";
 import { canonicalRemote } from "../gitops.ts";
 
 function sanitizeHandlePart(raw: string): string {
@@ -62,6 +63,45 @@ export interface BoardServiceBundle {
 	impl: ServiceImpl<typeof BoardService>;
 	store: BoardStore;
 	tickBoard: () => void;
+}
+
+/**
+ * GET or HEAD /board/attachments/{id}, its caller authenticated: the
+ * attachment's bytes, shown inline only for types a browser renders safely,
+ * and sandboxed either way.
+ */
+export function serveBoardAttachment(store: BoardStore, request: Request, id: string): Response {
+	try {
+		const { attachment, data } = store.downloadAttachment(id);
+		const ct = attachment.contentType || "application/octet-stream";
+		const safeInline =
+			ct.startsWith("image/") ||
+			ct.startsWith("video/") ||
+			ct.startsWith("audio/") ||
+			ct === "text/plain" ||
+			ct === "application/pdf";
+		const safeName = attachment.name.replace(/["\\\r\n]/g, "_");
+		const headers = new Headers({
+			"Content-Type": ct,
+			"Content-Length": String(data.byteLength),
+			"Content-Disposition": `${safeInline ? "inline" : "attachment"}; filename="${safeName}"`,
+			"Content-Security-Policy": "sandbox",
+			"X-Content-Type-Options": "nosniff",
+			"Cache-Control": "private, max-age=31536000, immutable",
+		});
+		return new Response(request.method === "HEAD" ? null : data, { status: 200, headers });
+	} catch (err) {
+		const he = fromUnknownError(err);
+		const status =
+			he.code === ErrorCode.NotFound
+				? 404
+				: he.code === ErrorCode.NotAuthorized
+					? 403
+					: he.code === ErrorCode.InvalidArgs
+						? 400
+						: 500;
+		return Response.json(he.toJSON(), { status });
+	}
 }
 
 export function createBoardService(
@@ -205,7 +245,7 @@ export function createBoardService(
 		sessionId: string;
 		remote: string;
 	}): { projectName: string; projectId: number | null } {
-		const name = ctrl.listedProject(req);
+		const name = listedProject(ctrl, req);
 		if (!name) return { projectName: "", projectId: null };
 		return { projectName: name, projectId: ctrl.store.projects.idByName(name) };
 	}
